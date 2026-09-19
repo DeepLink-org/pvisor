@@ -52,6 +52,8 @@ libkrun's embedded Linux guest init.
 
 ## Links
 
+- [Operation-chain IR and Trace v3](../../docs/pvisor-ir.md): operation terms with ordered context wrappers, ordered rewrites,
+  readable serialization and a runnable backend example; driver migration follows separately.
 - [The PolicyVisor model](../../docs/src/en/concepts/policyvisor.md)
 - [Get started](../../docs/src/en/start/first-run.md)
 - [Isolation architecture](../../docs/src/en/design/isolation.md)

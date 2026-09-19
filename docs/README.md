@@ -60,11 +60,13 @@ broken links, missing anchors and invalid redirect targets.
 
 ## Design proposals
 
-- [pVisor core algebra (Chinese)](pvisor-algebra.md): a small Haskell-style definition
-  of operations, composition and rewrites, with concrete backend obligations and
-  Event observations. Includes conditional laws and
-  [finite model checks](pvisor-algebra-check.py). This is the semantic starting point
-  for a future core rewrite, not a statement of current implementation guarantees.
-- [Event v2 contract (Chinese)](event-contract-v2.md): proposed observations of
-  interface operations and backend execution, with shared identity, links,
-  collection and commit contracts; follows the core semantics and is not yet implemented.
+- [pVisor core contract v3 (Chinese)](pvisor-algebra.md): the semantic baseline for
+  the core → events/logging → module migration sequence. Defines operations,
+  outcomes, contexts, rewrite evaluation and backend obligations, including a
+  file-range contract and [finite model checks](pvisor-algebra-check.py).
+  Runtime guarantees follow as each module adopts and tests these contracts.
+- [Operation-chain IR v3 and Trace v3 implementation (Chinese)](pvisor-ir.md): readable text,
+  typed verification, ordered rewrites, backend contracts and durable trace facts.
+- [Event v3 contract (Chinese)](event-contract-v3.md): immutable requests, verifiable
+  rewrites, outcomes and domain observations with scopes and causal links; implemented
+  in the new core and journal, with production driver migration still pending.

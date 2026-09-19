@@ -6,11 +6,13 @@
 
 pub mod client;
 pub mod events;
+pub mod ir;
 pub mod overlay;
 pub mod policy;
 pub mod protocol;
 pub mod runtime;
 mod time;
+pub mod trace;
 
 pub use client::{AgentCtlClient, AgentCtlClientConfig, AgentCtlResponseError};
 pub use events::{EventIdentity, EventRecord, EventValidationError, unix_now_ms};

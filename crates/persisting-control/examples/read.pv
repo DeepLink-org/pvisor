@@ -1,0 +1,2 @@
+// The adapter constructs this request; runtime identity and capabilities are separate.
+fs.read("input", offset: 0, length: 5)

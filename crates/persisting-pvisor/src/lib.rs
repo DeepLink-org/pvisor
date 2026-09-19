@@ -5,7 +5,9 @@
 //! EventRecord output uses local JSONL when recording is enabled.
 
 pub mod cli;
+pub mod core;
 mod runtime;
+pub mod trace;
 
 mod agentctl;
 mod artifact;
