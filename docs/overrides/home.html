@@ -8,14 +8,56 @@
 <div class="pc-home" id="{{ (page.toc | first).id if page.toc else '__skip' }}" tabindex="-1">
   <section class="pc-home-hero">
     <div class="pc-home-hero-grid">
-      <div class="pc-home-copy"><p class="pc-home-kicker">Persisting</p><h1>{% if zh %}运行 Agent，审查后再应用改动{% else %}Run Agents. Review changes.{% endif %}</h1><p>{% if zh %}用 pVisor 暂存工作区改动、检查运行记录，再决定哪些内容进入项目。{% else %}Use pVisor to stage workspace changes, inspect the execution record, and choose what reaches your project.{% endif %}</p><p>{% if zh %}支持宿主、容器和 VM；实际隔离能力以每次 Run 的记录为准。{% else %}Choose host, container, or VM execution. Inspect each Run for its effective isolation.{% endif %}</p><div class="pc-home-actions"><a class="pc-home-btn primary" href="{{ prefix }}start/first-run/">{% if zh %}运行第一个 Agent{% else %}Run your first Agent{% endif %}</a><a class="pc-home-btn" href="{{ prefix }}start/">{% if zh %}选择工作流{% else %}Choose a workflow{% endif %}</a></div></div>
-      <div class="pc-home-terminal-wrap"><div class="pc-home-tabs"><span class="active">{% if zh %}快速开始{% else %}Quick start{% endif %}</span></div><div class="pc-home-terminal"><div class="pc-home-terminal-bar"><span class="dot red"></span><span class="dot yellow"></span><span class="dot green"></span></div><pre class="pc-home-terminal-body"><span class="pc-home-command-line"><span class="pc-home-prompt">$ </span>pip install persisting</span><span class="pc-home-command-line"><span class="pc-home-prompt">$ </span>pvisor run --stage ../stage-001 -- codex</span><span class="pc-home-command-line"><span class="pc-home-prompt">$ </span>pvisor review last</span><span class="pc-home-command-line"><span class="pc-home-prompt">$ </span>pvisor apply last --path src</span></pre></div></div>
+      <div class="pc-home-copy">
+        <p class="pc-home-kicker">PolicyVisor · pVisor</p>
+        <h1>{% if zh %}策略约束下的可审查执行。{% else %}Policy-governed, reviewable execution.{% endif %}</h1>
+        <p>{% if zh %}运行现有 Agent、脚本与自动化命令。声明权限，检查实际控制，审查暂存改动，再决定哪些内容进入项目。{% else %}Run your existing Agents, scripts, and automation commands. Define their authority, inspect effective controls, and review staged changes before applying them.{% endif %}</p>
+        <p>{% if zh %}支持宿主机、容器和 VM；实际边界以每次 Run 的能力证据为准。{% else %}Use host, container, or VM execution. Check each Run's capability evidence for its actual boundary.{% endif %}</p>
+        <div class="pc-home-actions">
+          <a class="pc-home-btn primary" href="{{ prefix }}start/first-run/">{% if zh %}开始第一次运行{% else %}Start your first Run{% endif %}</a>
+          <a class="pc-home-btn" href="{{ prefix }}concepts/policyvisor/">{% if zh %}理解 PolicyVisor{% else %}Explore the model{% endif %}</a>
+        </div>
+      </div>
+      <div class="pc-home-terminal-wrap">
+        <div class="pc-home-tabs"><span class="active">{% if zh %}以 Agent CLI 为例{% else %}Example: an Agent CLI{% endif %}</span></div>
+        <div class="pc-home-terminal">
+          <div class="pc-home-terminal-bar"><span class="dot red"></span><span class="dot yellow"></span><span class="dot green"></span></div>
+          <pre class="pc-home-terminal-body"><span class="pc-home-command-line"><span class="pc-home-prompt">$ </span>pip install persisting</span><span class="pc-home-command-line"><span class="pc-home-prompt">$ </span>pvisor run --stage ../stage-001 -- codex</span><span class="pc-home-command-line"><span class="pc-home-prompt">$ </span>pvisor review last</span><span class="pc-home-command-line"><span class="pc-home-prompt">$ </span>pvisor apply last --path src</span></pre>
+        </div>
+        <p>{% if zh %}安装包仍为 <code>persisting</code>。首次使用请先完成<a href="{{ prefix }}start/installation/">平台配置</a>。{% else %}The package remains <code>persisting</code>. Complete the <a href="{{ prefix }}start/installation/">platform setup</a> before your first Run.{% endif %}</p>
+      </div>
     </div>
   </section>
-  <section class="pc-home-value"><p class="pc-home-badge">{% if zh %}可审查的执行{% else %}Reviewable execution{% endif %}</p><h2>{% if zh %}让 Agent 的改动先经过审查{% else %}Make agent changes reviewable.{% endif %}</h2><p class="pc-home-lede">{% if zh %}显式启用暂存后，Agent 在工作区副本中写入。审查文件改动和实际安装的控制，再选择应用或丢弃。{% else %}Enable a stage explicitly, inspect file changes and installed controls, then apply a selected batch or discard the remainder.{% endif %}</p><div class="pc-home-cards"><article><h3>{% if zh %}Stage{% else %}Stage{% endif %}</h3><p>{% if zh %}使用 --stage 后，工作区写入先保留在 Run 独占视图中。{% else %}With --stage, workspace writes stay in a Run-owned view until apply.{% endif %}</p></article><article><h3>{% if zh %}审查{% else %}Review{% endif %}</h3><p>{% if zh %}查看 Effect、实际安装的控制和警告，再决定应用或丢弃。{% else %}Inspect Effects, installed controls, and warnings before you apply or drop.{% endif %}</p></article><article><h3>{% if zh %}捕获{% else %}Capture{% endif %}</h3><p>{% if zh %}需要时把这次 Run 的模型流量记到 Run 目录里。{% else %}Optionally keep the Run's model traffic next to the Run.{% endif %}</p></article></div></section>
-  <section class="pc-home-split"><div class="pc-home-split-copy"><p class="pc-home-badge">{% if zh %}设计方法{% else %}Design approach{% endif %}</p><h2>{% if zh %}先审查，再写入项目{% else %}Review first. Write the project second.{% endif %}</h2><h3>{% if zh %}执行先于解释{% else %}Execution before interpretation{% endif %}</h3><p>{% if zh %}先在 staged workspace 中运行并审查，再决定哪些 Effect 进入项目。{% else %}Run and review inside a staged workspace, then decide which Effects reach the project.{% endif %}</p><h3>{% if zh %}记录跟着 Run 走{% else %}The record stays with the Run{% endif %}</h3><p>{% if zh %}Bundle 记录实际安装的控制和观察到的 Effect。{% else %}The Bundle records the controls that were installed and the Effects that were observed.{% endif %}</p></div></section>
-  <section class="pc-home-modes"><p class="pc-home-badge">{% if zh %}文档入口{% else %}Documentation surfaces{% endif %}</p><h2>{% if zh %}从你当前的问题开始{% else %}Start with the question you have.{% endif %}</h2><div class="pc-home-mode-grid"><a class="pc-home-mode" href="{{ prefix }}start/what-is-pvisor/"><strong>pVisor</strong><span>{% if zh %}运行、审查并选择性应用 Agent 修改。{% else %}Run, review, and selectively apply Agent changes.{% endif %}</span></a><a class="pc-home-mode" href="{{ prefix }}design/"><strong>{% if zh %}系统设计{% else %}System design{% endif %}</strong><span>{% if zh %}理解架构、边界和实际保证。{% else %}Understand architecture, boundaries, and guarantees.{% endif %}</span></a><a class="pc-home-mode" href="{{ prefix }}development/"><strong>{% if zh %}项目{% else %}Project{% endif %}</strong><span>{% if zh %}查看工程说明和示例。{% else %}Browse engineering notes and examples.{% endif %}</span></a></div></section>
-  <footer class="pc-home-footer"><p>{% if zh %}开源 · Apache-2.0 · Persisting{% else %}Open source · Apache-2.0 · Persisting{% endif %}</p><p><a href="https://github.com/DeepLink-org/Persisting">GitHub</a></p></footer>
+  <section class="pc-home-value">
+    <p class="pc-home-badge">{% if zh %}p 代表 Policy{% else %}p stands for Policy{% endif %}</p>
+    <h2>{% if zh %}从允许做什么，到实际做了什么{% else %}From declared authority to recorded outcomes.{% endif %}</h2>
+    <p class="pc-home-lede">{% if zh %}策略描述权限与约束，执行器提供实际控制，Run Bundle 保存可供审查的结果。{% else %}Policy describes permissions and constraints. The executor supplies the controls. The Run Bundle preserves the results for review.{% endif %}</p>
+    <div class="pc-home-cards">
+      <article><h3>{% if zh %}声明策略{% else %}Define policy{% endif %}</h3><p>{% if zh %}选择执行器与能力要求，确认哪些控制得到支持、哪些存在限制。{% else %}Choose the executor and capability requirements. Inspect supported controls and their limits.{% endif %}</p></article>
+      <article><h3>{% if zh %}暂存改动{% else %}Stage changes{% endif %}</h3><p>{% if zh %}显式使用 --stage，让工作区文件改动在应用前保留在 Run 独占视图中。{% else %}Enable --stage explicitly to keep workspace file changes in a Run-owned view until apply.{% endif %}</p></article>
+      <article><h3>{% if zh %}审查结果{% else %}Review results{% endif %}</h3><p>{% if zh %}查看文件差异、实际控制和警告，再选择应用或丢弃暂存改动。{% else %}Inspect file changes, effective controls, and warnings. Apply selected staged files or discard the remainder.{% endif %}</p></article>
+    </div>
+  </section>
+  <section class="pc-home-split">
+    <div class="pc-home-split-copy">
+      <p class="pc-home-badge">{% if zh %}执行边界{% else %}Execution boundaries{% endif %}</p>
+      <h2>{% if zh %}每次执行，都有据可查{% else %}Keep the evidence with the Run.{% endif %}</h2>
+      <h3>{% if zh %}区分声明与实际控制{% else %}Inspect effective controls{% endif %}</h3>
+      <p>{% if zh %}声明的权限不等于已落实的隔离。检查所选执行器实际安装的机制、能力降级与警告。{% else %}Requested authority does not prove enforcement. Check the selected executor's installed mechanisms, capability degradation, and warnings.{% endif %}</p>
+      <h3>{% if zh %}明确审查的范围{% else %}Know what review covers{% endif %}</h3>
+      <p>{% if zh %}apply 和 drop 管理暂存文件，无法撤销外部 API 调用。模型流量捕获按需启用，检查点保存暂存文件状态。{% else %}Apply and drop govern staged files; they cannot undo external API calls. Model capture is optional, and checkpoints preserve staged filesystem state.{% endif %}</p>
+    </div>
+  </section>
+  <section class="pc-home-modes">
+    <p class="pc-home-badge">{% if zh %}文档入口{% else %}Documentation{% endif %}</p>
+    <h2>{% if zh %}从你当前的问题开始{% else %}Start with the question you have.{% endif %}</h2>
+    <div class="pc-home-mode-grid">
+      <a class="pc-home-mode" href="{{ prefix }}start/what-is-pvisor/"><strong>PolicyVisor</strong><span>{% if zh %}了解产品定位，完成运行、审查与应用。{% else %}Understand the product and the run, review, apply workflow.{% endif %}</span></a>
+      <a class="pc-home-mode" href="{{ prefix }}design/"><strong>{% if zh %}系统设计{% else %}System design{% endif %}</strong><span>{% if zh %}理解架构、边界和实际保证。{% else %}Understand architecture, boundaries, and guarantees.{% endif %}</span></a>
+      <a class="pc-home-mode" href="{{ prefix }}development/"><strong>{% if zh %}参与开发{% else %}Development{% endif %}</strong><span>{% if zh %}查看工程说明和示例。{% else %}Browse engineering notes and examples.{% endif %}</span></a>
+    </div>
+  </section>
+  <footer class="pc-home-footer"><p>{% if zh %}开源 · Apache-2.0 · PolicyVisor{% else %}Open source · Apache-2.0 · PolicyVisor{% endif %}</p><p><a href="https://github.com/DeepLink-org/Persisting">GitHub</a></p></footer>
 </div>
     {% endblock %}
   </article>

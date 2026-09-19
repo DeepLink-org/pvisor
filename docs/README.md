@@ -1,5 +1,15 @@
 # PolicyVisor Documentation
 
+Use **PolicyVisor** for the product name, **pVisor** for its short name, and
+`pvisor` for the CLI. The positioning is **Policy-governed, reviewable execution.**
+In Chinese, use **策略约束下的可审查执行。** The product covers Agent CLIs,
+scripts, and automation commands; describe Agent-specific integrations as such.
+
+Keep published package names (`persisting`), crate names, `PERSISTING_*`
+environment variables, and existing repository/deployment URLs accurate until
+they are migrated. Separate requested policy, installed controls, and observed
+results; describe filesystem staging as opt-in and platform-dependent.
+
 The site uses Zensical 0.0.61. English and Chinese Markdown live under
 `docs/src/en/` and `docs/src/zh/`, with matching relative paths.
 

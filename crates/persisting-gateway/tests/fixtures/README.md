@@ -31,7 +31,7 @@ fixtures/
 │   ├── bedrock/
 │   ├── responses/
 │   └── detect/
-└── local/             # Persisting 自有 fixture（非 AG），见 local/README.md
+└── local/             # PolicyVisor 自有 fixture（非 AG），见 local/README.md
 ```
 
 - **`.json`** / 无后缀文本：原始 wire 输入（请求或上游响应）。
@@ -49,7 +49,7 @@ fixtures/
 协议解析与流式转换还通过 `crates/persisting-gateway/fuzz/` 下的两个 cargo-fuzz target
 覆盖任意输入、分块边界和不完整 SSE frame。
 
-Persisting 当前实现 **Messages ↔ Completions**、**Responses ↔ Completions**，以及
+PolicyVisor 当前实现 **Messages ↔ Completions**、**Responses ↔ Completions**，以及
 **Completions/Messages/Responses ↔ Gemini native generateContent** bridge。支持的请求、响应和
 SSE 用例会与上游 snap 做严格 JSON/事件比较；Bedrock、Vertex 和 Detect 等其他 adapter 的
 snap 仅作为后续扩展参考，不代表已经实现。

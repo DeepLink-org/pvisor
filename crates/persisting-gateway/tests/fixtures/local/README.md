@@ -1,6 +1,6 @@
-# Persisting 自有 fixture（`local/`）
+# PolicyVisor 自有 fixture（`local/`）
 
-本目录 **不属于** [agentgateway](https://github.com/agentgateway/agentgateway) 上游测试集，由 Persisting 维护，用于 AG 未覆盖的场景（如 Codex 多轮、tool roundtrip、截断 SSE 片段）。
+本目录 **不属于** [agentgateway](https://github.com/agentgateway/agentgateway) 上游测试集，由 PolicyVisor 维护，用于 AG 未覆盖的场景（如 Codex 多轮、tool roundtrip、截断 SSE 片段）。
 
 ## 与 `fixtures/` 其余内容的关系
 
