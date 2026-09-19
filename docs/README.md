@@ -57,3 +57,14 @@ the build emits redirects for English, Chinese, and the original unprefixed
 published URLs. Update incoming source links to canonical paths as well.
 The checker rejects unpaired pages, omitted or duplicate navigation entries,
 broken links, missing anchors and invalid redirect targets.
+
+## Design proposals
+
+- [pVisor core algebra (Chinese)](pvisor-algebra.md): a small Haskell-style definition
+  of operations, composition and rewrites, with concrete backend obligations and
+  Event observations. Includes conditional laws and
+  [finite model checks](pvisor-algebra-check.py). This is the semantic starting point
+  for a future core rewrite, not a statement of current implementation guarantees.
+- [Event v2 contract (Chinese)](event-contract-v2.md): proposed observations of
+  interface operations and backend execution, with shared identity, links,
+  collection and commit contracts; follows the core semantics and is not yet implemented.
