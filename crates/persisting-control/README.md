@@ -1,10 +1,25 @@
-# persisting-agentctl
+# persisting-control
 
-**Agent control contracts, policies, the versioned AgentCtl v1 protocol, and its
-synchronous client SDK.**
+**Shared Run contracts, authorization policies, AgentCtl messages, and event records.**
 
-Owns the runtime control state machine, the wire protocol, and
-`AgentCtlClient`. AgentCtl is an optional, cooperative channel between pVisor
+This dependency-light crate supplies the contracts shared by pVisor, Gateway,
+and OverlayNet. It owns value types, policy decisions, the AgentCtl wire
+protocol/client, and the EventRecord envelope. Runtime servers, executors, and
+storage implementations stay in their respective components.
+
+| Module | Responsibility |
+| --- | --- |
+| `runtime` | Run/Attempt identity, configuration, capabilities and results |
+| `policy` | Network/model authorization and control transitions |
+| `protocol` | Versioned AgentCtl requests, state reports and directives |
+| `events` | Shared event identity, envelope and validation |
+| `client` | Synchronous AgentCtl Unix-socket client |
+
+Types remain re-exported at the crate root. Commands and events keep their
+existing JSON formats and sequencing scopes; they do not share a new transport
+or acknowledgement protocol.
+
+AgentCtl is an optional, cooperative channel between pVisor
 and a Run-local runtime client. It is not a sandbox, does not discover
 processes or external effects, and is never enforcement evidence by itself.
 
@@ -47,7 +62,7 @@ examples, state semantics, typed errors, and safety boundary.
 ## Develop
 
 ```rust
-use persisting_agentctl::{AgentCtlClient, AgentCtlClientConfig, AgentState};
+use persisting_control::{AgentCtlClient, AgentCtlClientConfig, AgentState};
 
 let Some(config) = AgentCtlClientConfig::from_current_environment("worker-1")? else {
     return Ok(()); // not running under pVisor
@@ -59,8 +74,8 @@ let directive = client.sync(AgentState::Active)?;
 ```
 
 ```bash
-just test persisting-agentctl
-# or: just test-crate agentctl
+just test persisting-control
+# or: just test control
 ```
 
 ## Links

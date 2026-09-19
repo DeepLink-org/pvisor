@@ -1,6 +1,6 @@
 //! Files and result hand-off for a pVisor delegated through Docker or KVM.
 
-use persisting_agentctl::{AttemptId, RunInvocation, RunResult, RunSpec};
+use persisting_control::{AttemptId, RunInvocation, RunResult, RunSpec};
 use std::path::{Path, PathBuf};
 
 pub(crate) const SPEC_FILENAME: &str = "run-spec.json";
@@ -43,9 +43,9 @@ impl DelegatedRunFiles {
         if capture {
             // pVisor v1 does not support captured stdin. Null stdin also
             // prevents the nested host executor from attempting tty control.
-            process.stdin = persisting_agentctl::StdioMode::Null;
-            process.stdout = persisting_agentctl::StdioMode::Capture;
-            process.stderr = persisting_agentctl::StdioMode::Capture;
+            process.stdin = persisting_control::StdioMode::Null;
+            process.stdout = persisting_control::StdioMode::Capture;
+            process.stderr = persisting_control::StdioMode::Capture;
         }
         write_private_json(&spec_path, &delegated)?;
         Ok(Self {
@@ -57,7 +57,7 @@ impl DelegatedRunFiles {
 
     pub(crate) fn read_result(
         &self,
-        run_id: &persisting_agentctl::RunId,
+        run_id: &persisting_control::RunId,
         attempt_id: &AttemptId,
         lease_epoch: u64,
     ) -> anyhow::Result<DelegatedRunOutput> {

@@ -7,12 +7,11 @@ PolicyVisor (pVisor) combines capability admission, executors, runtime controls,
 | Crate | Responsibility |
 | --- | --- |
 | `persisting-pvisor` | CLI, admission, Attempt lifecycle, executors, Run Bundle, review/apply/checkpoint |
-| `persisting-agentctl` | Control contracts, capability policy, cooperative AgentCtl protocol and client |
+| `persisting-control` | Run contracts, capability policy, AgentCtl messages/client, and shared event records |
 | `persisting-overlay-core` | Shared copy-on-write semantics and first-touch file fingerprints |
 | `persisting-overlayfs` | Host FUSE adapter and optional Jujutsu backend |
 | `persisting-overlaynet` | Network authorization, resolution, proxy forwarding and VM network attachment |
 | `persisting-gateway` | Model routing, protocol conversion and capture |
-| `persisting-events` | Shared event envelope and identities |
 | `persisting-replay` | Agent-native trajectory replay and continuation adapters |
 
 ## Execution path

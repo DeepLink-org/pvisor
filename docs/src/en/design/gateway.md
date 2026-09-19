@@ -9,7 +9,7 @@ Agent → injected proxy/base URL → OverlayNet HTTP path
       → protocol adapters → capture engine → per-story actor → event sink
 ```
 
-The protocol adapters turn supported requests and responses into the shared `persisting-events` record vocabulary. The engine carries Run, Attempt, agent, session and story identities. A per-story actor serializes sink writes and updates the in-memory turn index after an append succeeds.
+The protocol adapters turn supported requests and responses into the shared `persisting-control` record vocabulary. The engine carries Run, Attempt, agent, session and story identities. A per-story actor serializes sink writes and updates the in-memory turn index after an append succeeds.
 
 The public capture output is EventRecord JSONL. Draft commands are currently ignored by the story actor. `--gateway-stream-markdown` is retained for compatibility but does not produce a live Markdown projection. Build derived views from the persisted records instead of relying on that flag.
 
@@ -33,7 +33,7 @@ Capture levels select how much payload is retained. Full payloads can include us
 | --- | --- | --- |
 | Protocol decoding and forwarding | `persisting-gateway` | Translate model protocols and observe calls |
 | Engine and story actors | `persisting-gateway/src/engine` | Identity, ordering, WAL, append and turn state |
-| Event vocabulary | `persisting-events` | Shared serializable records and sink contract |
+| Event vocabulary | `persisting-control` | Shared serializable records and sink contract |
 | Runtime integration | `persisting-pvisor` | Run lifecycle, route setup, event sink and shutdown |
 | Network path | `persisting-overlaynet` | Proxy transport and policy hooks |
 

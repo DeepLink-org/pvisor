@@ -8,8 +8,7 @@ description = "Reviewable Agent execution boundary"
 [workspace]
 resolver = "3"
 members = [
-    "crates/persisting-agentctl",
-    "crates/persisting-events",
+    "crates/persisting-control",
     "crates/persisting-gateway",
     "crates/persisting-pvisor",
     "crates/persisting-replay",
@@ -49,8 +48,7 @@ jj-lib = "0.43.0"
 libc = "0.2"
 libkrun = "=1.19.3"
 log = "0.4"
-persisting-agentctl = { path = "crates/persisting-agentctl" }
-persisting-events = { path = "crates/persisting-events" }
+persisting-control = { path = "crates/persisting-control" }
 persisting-gateway = { path = "crates/persisting-gateway", default-features = false }
 persisting-overlayfs = { path = "crates/persisting-overlayfs", default-features = false }
 persisting-overlay-core = { path = "crates/persisting-overlay-core" }

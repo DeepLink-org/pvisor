@@ -10,7 +10,7 @@ are in
 
 Use the smallest surface that matches your next decision:
 
-- **Run an Agent:** start with [`pvisor run`](../start/first-run.md), then use
+- **Run a command:** start with [`pvisor run`](../start/first-run.md), then use
   `review`, `inspect`, and `apply` to decide what reaches the project.
 - **Understand a boundary:** use `status` and `inspect`, then read the
   [execution guide](../guides/execution.md) before changing providers.
@@ -34,7 +34,7 @@ clear verification step.
 
 ```text
 pvisor
-├── run                 execute one Agent Run
+├── run                 execute one Run
 ├── replay              replay and continue an Agent-native trajectory
 ├── env                 manage durable reusable environments
 ├── status              aggregate Run, filesystem, and network state
@@ -58,7 +58,7 @@ into an OverlayFS stage for the current workspace, creates an independent Run
 and writable stage at the supplied path,
 retains changes for manual review, and writes `run-bundle.json` with mode `0600`.
 
-`--strict` fails closed before Agent start unless every requested capability
+`--strict` fails closed before command start unless every requested capability
 dimension has non-bypassable enforcement evidence. Today host, container, and
 VM executors all request Network and Subprocess enforcement, and none claim
 Subprocess — so `--strict` currently exits with `UnsupportedPolicy` on those
@@ -443,7 +443,7 @@ retains compact Run/Overlay metadata, the apply ledger, and capture artifacts.
 
 ## Related workflows
 
-- [Run your first Agent](../start/first-run.md) for the shortest complete loop.
+- [Your first Run](../start/first-run.md) for the shortest complete loop.
 - [Execution environments](../guides/execution.md) for choosing a provider.
 - [Review and apply changes](../guides/review-apply.md) for filtered, repeatable apply.
 - [Network control](../guides/network.md) and [capture](../guides/capture.md) for other Effect dimensions.

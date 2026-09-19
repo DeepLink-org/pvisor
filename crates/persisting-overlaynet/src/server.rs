@@ -10,8 +10,8 @@ use axum::extract::{ConnectInfo, Request, State};
 use axum::http::{Method, StatusCode};
 use axum::response::{IntoResponse, Response};
 use axum::routing::any;
-use persisting_agentctl::ControlController;
-use persisting_agentctl::{NetworkAccessRequest, NetworkTransport, RunId, StorylineId};
+use persisting_control::ControlController;
+use persisting_control::{NetworkAccessRequest, NetworkTransport, RunId, StorylineId};
 
 use crate::bandwidth::{BandwidthRegistry, BandwidthSession, throttle_body};
 use crate::forward::{
@@ -294,7 +294,7 @@ where
             attempt_id: context
                 .attempt_id
                 .clone()
-                .map(persisting_agentctl::AttemptId),
+                .map(persisting_control::AttemptId),
             storyline_id: context.storyline_id.clone().map(StorylineId),
             host: host.to_string(),
             port,
@@ -326,7 +326,7 @@ impl Drop for ActiveRequestGuard {
 mod tests {
     use super::*;
     use crate::policy::{NetworkConfig, NetworkMode};
-    use persisting_agentctl::PolicyControlController;
+    use persisting_control::PolicyControlController;
 
     #[derive(Clone)]
     struct EventSink;

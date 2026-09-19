@@ -138,7 +138,7 @@ fn lifecycle_record(
     payload: SessionLifecyclePayload,
 ) -> EventRecord {
     EventRecord {
-        identity: persisting_events::EventIdentity::default(),
+        identity: persisting_control::EventIdentity::default(),
         seq: 0,
         source: "persisting-gateway".into(),
         kind: kind.into(),

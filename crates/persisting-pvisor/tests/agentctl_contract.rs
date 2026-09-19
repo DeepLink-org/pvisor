@@ -1,4 +1,4 @@
-use persisting_agentctl::{
+use persisting_control::{
     AgentCtlClient, AgentCtlClientConfig, AgentCtlResponseError, AgentDirective, AgentErrorCode,
     AgentState, AttemptId, RunId,
 };

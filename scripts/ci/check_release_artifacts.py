@@ -31,6 +31,10 @@ def _metadata_version(wheel: Path) -> str:
                 f"{wheel.name}: expected one METADATA file, found {len(metadata_files)}"
             )
         metadata = BytesParser().parsebytes(archive.read(metadata_files[0]))
+    if metadata.get("Name", "").lower() != "pvisor":
+        raise ArtifactValidationError(
+            f"{wheel.name}: expected METADATA Name 'pvisor', got {metadata.get('Name')!r}"
+        )
     version = metadata.get("Version")
     if not version:
         raise ArtifactValidationError(f"{wheel.name}: METADATA has no Version")
@@ -50,7 +54,7 @@ def validate_artifacts(
             f"expected {len(PLATFORM_PATTERNS)} wheels, found {len(wheels)}: {names}"
         )
 
-    prefix = f"persisting-{version}-py3-none-"
+    prefix = f"pvisor-{version}-py3-none-"
     found: dict[str, Path] = {}
     for wheel in wheels:
         if wheel.stat().st_size > max_bytes:

@@ -1,13 +1,17 @@
 # 安装指南
 
 PolicyVisor（pVisor）为 Agent CLI、脚本和自动化命令提供策略控制与可检查的执行记录。
-CLI 仍为 `pvisor`，已发布的 Python 包仍为 `persisting`。仓库链接、crate 名称和
+Python 包和 CLI 统一使用 `pvisor`。仓库链接、Rust crate 名称和
 `PERSISTING_*` 环境变量继续使用现有名称。
+
+如果之前安装了 `persisting`，请先执行 `python -m pip uninstall persisting`，
+再安装 `pvisor`（包括 nightly wheel）。两个发行包会安装到相同的 CLI 路径，
+不应在同一环境中并存。
 
 ## 1. 安装工具
 
 ```bash
-pip install persisting
+pip install pvisor
 ```
 
 确认命令可用：
@@ -23,7 +27,7 @@ Python 依赖时，建议使用虚拟环境：
 python3 -m venv .venv
 source .venv/bin/activate
 python -m pip install --upgrade pip
-pip install persisting
+pip install pvisor
 ```
 
 !!! tip "从一次 Run 开始"

@@ -1,6 +1,6 @@
 <svg xmlns="http://www.w3.org/2000/svg" width="1400" height="760" viewBox="0 0 1400 760" role="img" aria-labelledby="title desc">
-  <title id="title">The AgentVisor effect governance loop</title>
-  <desc id="desc">An Agent action moves through intent, admission, execution, observation, containment, and a decision to promote, reject, or compensate. Evidence closes the loop. Reversible, transactional, compensatable, and irreversible effects require different controls.</desc>
+  <title id="title">The PolicyVisor effect governance loop</title>
+  <desc id="desc">Design direction: an action moves through intent, admission, execution, observation, containment, and a decision to promote, reject, or compensate. Evidence closes the loop. Reversible, transactional, compensatable, and irreversible effects require different controls.</desc>
   <defs>
     <linearGradient id="bg" x1="0" y1="0" x2="1" y2="1">
       <stop offset="0" stop-color="#08111f"/>
@@ -29,8 +29,8 @@
   </defs>
 
   <rect width="1400" height="760" rx="28" fill="url(#bg)"/>
-  <text x="52" y="55" class="title">The effect governance loop</text>
-  <text x="52" y="84" class="subtitle">Autonomy is useful only when consequences have identity, state, policy, and evidence</text>
+  <text x="52" y="55" class="title">Effect governance (design direction)</text>
+  <text x="52" y="84" class="subtitle">Connect intent, policy decisions, runtime mechanisms, and observed outcomes</text>
 
   <path d="M205 268H327" class="line"/>
   <path d="M493 268H615" class="line"/>
@@ -41,7 +41,7 @@
     <rect x="45" y="207" width="160" height="122" rx="19" class="card" stroke="#60a5fa"/>
     <circle cx="78" cy="241" r="13" fill="#1d4ed8"/>
     <text x="104" y="248" class="label">Intent</text>
-    <text x="70" y="280" class="small">Agent proposes</text>
+    <text x="70" y="280" class="small">Declare intent</text>
     <text x="70" y="303" class="small">an action</text>
 
     <polygon points="410,192 493,268 410,344 327,268" fill="#18233a" stroke="#c084fc" stroke-width="2"/>

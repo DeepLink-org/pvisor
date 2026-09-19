@@ -1,6 +1,6 @@
 <svg xmlns="http://www.w3.org/2000/svg" width="1400" height="820" viewBox="0 0 1400 820" role="img" aria-labelledby="title desc">
-  <title id="title">The AgentVisor category in the Agent infrastructure stack</title>
-  <desc id="desc">Multiple Agents share a pool of compute, filesystem, network, model, tool, and credential resources through an AgentVisor. Each Agent Run receives an isolated virtual execution environment with its own identity, state, authority, effects, and failure boundary.</desc>
+  <title id="title">PolicyVisor resource governance: design direction</title>
+  <desc id="desc">Design direction: multiple workloads share a pool of compute, filesystem, network, model, tool, and credential resources through PolicyVisor. Each Run receives an isolated virtual execution environment with its own identity, state, authority, effects, and failure boundary.</desc>
   <defs>
     <linearGradient id="bg" x1="0" y1="0" x2="1" y2="1">
       <stop offset="0" stop-color="#08111f"/>
@@ -34,37 +34,37 @@
   </defs>
 
   <rect width="1400" height="820" rx="28" fill="url(#bg)"/>
-  <text x="52" y="55" class="title">The AgentVisor category</text>
-  <text x="52" y="84" class="subtitle">The hypervisor for Agent execution</text>
+  <text x="52" y="55" class="title">PolicyVisor: resource governance (design direction)</text>
+  <text x="52" y="84" class="subtitle">Policy-governed, reviewable execution.</text>
 
   <g filter="url(#shadow)">
     <rect x="380" y="112" width="640" height="94" rx="20" class="card" stroke="#60a5fa" stroke-width="2"/>
-    <text x="428" y="151" class="label">Independent Agent Runs</text>
-    <text x="428" y="179" class="small">Agent A · Agent B · Agent C · different frameworks and goals</text>
+    <text x="428" y="151" class="label">Independent Runs</text>
+    <text x="428" y="179" class="small">Agent CLI · script · automation · different frameworks and goals</text>
   </g>
   <path d="M700 206V245" class="line"/>
-    <text x="719" y="231" class="tiny">request an Agent virtual execution environment</text>
+    <text x="719" y="231" class="tiny">request an execution environment</text>
 
   <g filter="url(#shadow)">
     <rect x="250" y="248" width="900" height="326" rx="27" fill="url(#visor)" stroke="#5eead4" stroke-width="2.5"/>
-    <text x="291" y="291" class="label" fill="#5eead4">AgentVisor</text>
-    <text x="418" y="291" class="small">maps shared resources into isolated Agent virtual execution environments</text>
+    <text x="291" y="291" class="label" fill="#5eead4">PolicyVisor</text>
+    <text x="435" y="291" class="small">maps shared resources into bounded execution environments</text>
 
     <rect x="291" y="319" width="248" height="96" rx="16" class="inner"/>
     <circle cx="322" cy="348" r="8" fill="#60a5fa"/>
-    <text x="343" y="355" class="label">Agent environment A</text>
+    <text x="343" y="355" class="label">Run environment A</text>
     <text x="312" y="385" class="small">identity · workspace · authority</text>
     <text x="312" y="405" class="tiny">Isolated state and effect boundary</text>
 
     <rect x="576" y="319" width="248" height="96" rx="16" class="inner"/>
     <circle cx="607" cy="348" r="8" fill="#c084fc"/>
-    <text x="628" y="355" class="label">Agent environment B</text>
+    <text x="628" y="355" class="label">Run environment B</text>
     <text x="597" y="385" class="small">identity · workspace · authority</text>
     <text x="597" y="405" class="tiny">Isolated state and effect boundary</text>
 
     <rect x="861" y="319" width="248" height="96" rx="16" class="inner"/>
     <circle cx="892" cy="348" r="8" fill="#fbbf24"/>
-    <text x="913" y="355" class="label">Agent environment C</text>
+    <text x="913" y="355" class="label">Run environment C</text>
     <text x="882" y="385" class="small">identity · workspace · authority</text>
     <text x="882" y="405" class="tiny">Isolated state and effect boundary</text>
 
@@ -137,5 +137,5 @@
     <rect x="270" y="746" width="860" height="48" rx="15" fill="#10281e" stroke="#86efac" stroke-width="1.5"/>
     <text x="331" y="777" class="small">Models · tools · files · data · networks · services · people · physical systems</text>
   </g>
-  <text x="52" y="812" class="tiny">Multiple Agents share the infrastructure pool while identity, state, authority, effects, and failures remain isolated.</text>
+  <text x="52" y="812" class="tiny">Future design: shared resource pools, remote attestation, and workload migration are not current CLI guarantees.</text>
 </svg>

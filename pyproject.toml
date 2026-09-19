@@ -1,7 +1,7 @@
 [project]
-name = "persisting"
+name = "pvisor"
 version = "0.3.0"
-description = "Reviewable Agent execution boundary"
+description = "Policy-governed, reviewable execution"
 readme = "README.md"
 requires-python = ">=3.10"
 license = "Apache-2.0"
@@ -21,7 +21,7 @@ dev = [
 ]
 
 [tool.setuptools.packages.find]
-include = ["persisting*"]
+include = ["pvisor*"]
 
 [build-system]
 requires = ["setuptools>=77"]

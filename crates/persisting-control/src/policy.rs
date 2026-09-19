@@ -1,20 +1,8 @@
-//! Shared Agent control contracts, policies, wire protocol, and client SDK.
-//!
-//! Drivers such as OverlayNet and Capture submit typed resources to a
-//! [`ControlController`]. Authorization is represented as a state transition;
-//! the driver then records whether the authorized operation was applied or
-//! failed. [`AgentCtlClient`] implements pVisor's optional cooperative
-//! AgentCtl protocol.
+//! Resource authorization policies and control transitions.
 
-mod client;
-pub mod protocol;
-mod runtime;
-
-pub use client::{AgentCtlClient, AgentCtlClientConfig, AgentCtlResponseError};
+use crate::runtime::*;
+pub use crate::runtime::{AccessEffect as ControlEffect, AccessReason as ControlReason};
 use ipnet::IpNet;
-pub use protocol::*;
-pub use runtime::*;
-pub use runtime::{AccessEffect as ControlEffect, AccessReason as ControlReason};
 use serde::{Deserialize, Serialize};
 use std::net::IpAddr;
 use std::str::FromStr;

@@ -9,7 +9,7 @@ Agent → 注入的代理或 base URL → OverlayNet HTTP 路径
       → 协议适配器 → capture engine → 按 story 串行处理的 actor → event sink
 ```
 
-协议适配器把支持的请求和响应转换为 `persisting-events` 共享事件词汇。引擎携带 Run、Attempt、agent、session 和 story 身份。每个 story 的 actor 串行写入 sink，并在追加成功后更新内存中的轮次索引。
+协议适配器把支持的请求和响应转换为 `persisting-control` 共享事件词汇。引擎携带 Run、Attempt、agent、session 和 story 身份。每个 story 的 actor 串行写入 sink，并在追加成功后更新内存中的轮次索引。
 
 公开的捕获输出是 EventRecord JSONL。story actor 当前忽略草稿命令。`--gateway-stream-markdown` 为兼容旧调用保留，不会生成实时 Markdown 投影；需要展示层时，应从持久事件派生。
 
@@ -33,7 +33,7 @@ sink 追加可能在写入部分字节后失败。除非 sink 能证明完全拒
 | --- | --- | --- |
 | 协议解析与转发 | `persisting-gateway` | 模型协议转换与调用观察 |
 | 引擎与 story actor | `persisting-gateway/src/engine` | 身份、顺序、WAL、追加和轮次状态 |
-| 事件词汇 | `persisting-events` | 共享序列化记录和 sink 契约 |
+| 事件词汇 | `persisting-control` | 共享序列化记录和 sink 契约 |
 | 运行时集成 | `persisting-pvisor` | Run 生命周期、路由配置、事件 sink 和关闭 |
 | 网络路径 | `persisting-overlaynet` | 代理传输和策略接入 |
 

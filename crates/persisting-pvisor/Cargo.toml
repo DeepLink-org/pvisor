@@ -22,8 +22,7 @@ fs2.workspace = true
 globset.workspace = true
 libc.workspace = true
 libkrun = { workspace = true, features = ["net"] }
-persisting-agentctl.workspace = true
-persisting-events = { workspace = true }
+persisting-control.workspace = true
 persisting-gateway = { workspace = true, default-features = false }
 persisting-overlaynet.workspace = true
 persisting-overlayfs = { workspace = true, default-features = false }

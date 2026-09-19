@@ -1,4 +1,4 @@
-"""PEP 517 backend that adds Persisting's native CLIs to setuptools wheels."""
+"""PEP 517 backend that adds pVisor's native CLIs to setuptools wheels."""
 
 from __future__ import annotations
 

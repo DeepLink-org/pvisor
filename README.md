@@ -32,13 +32,17 @@ requested policy is not proof of enforcement; inspect the evidence for the Run.
 ## Install
 
 ```bash
-pip install persisting
+pip install pvisor
 pvisor --version
 ```
 
-The product name is PolicyVisor; the published Python package remains
-`persisting`, and the CLI remains `pvisor`. Existing repository URLs, crate
-names, and `PERSISTING_*` environment variables retain their current names.
+PolicyVisor uses `pvisor` for both its Python package and CLI. Wheel filenames
+use `pvisor-<version>-py3-none-<platform>.whl`. Existing repository URLs,
+Rust crate names, and `PERSISTING_*` environment variables retain their current names.
+
+If you installed the earlier `persisting` distribution, uninstall it with
+`python -m pip uninstall persisting` before installing `pvisor`: both packages
+provide the same CLI path.
 
 The rolling nightly build installs the same command without a Rust toolchain:
 

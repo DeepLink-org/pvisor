@@ -1,5 +1,5 @@
 #!/usr/bin/env python3
-"""Verify that a Persisting wheel installs its complete native CLI set."""
+"""Verify that a pVisor wheel installs its complete native CLI set."""
 
 from __future__ import annotations
 
@@ -51,6 +51,8 @@ def _wheel_contents(
         if len(metadata_names) != 1:
             raise RuntimeError(f"expected one METADATA file, found {metadata_names}")
         metadata = BytesParser().parsebytes(archive.read(metadata_names[0]))
+        if metadata.get("Name", "").lower() != "pvisor":
+            raise RuntimeError(f"expected wheel Name 'pvisor', got {metadata.get('Name')!r}")
         version = metadata.get("Version")
         if not version:
             raise RuntimeError("wheel METADATA has no Version")
@@ -110,7 +112,7 @@ def verify_native_payloads(
     else:
         raise RuntimeError(f"cannot determine native architecture from wheel name: {wheel.name}")
 
-    with tempfile.TemporaryDirectory(prefix="persisting-wheel-native-") as temporary:
+    with tempfile.TemporaryDirectory(prefix="pvisor-wheel-native-") as temporary:
         root = Path(temporary)
         with zipfile.ZipFile(wheel) as archive:
             firmware_path = root / Path(firmware.filename).name
@@ -156,12 +158,22 @@ def verify_native_payloads(
 
 
 def install_smoke(wheel: Path, version: str) -> None:
-    with tempfile.TemporaryDirectory(prefix="persisting-wheel-") as temporary:
+    with tempfile.TemporaryDirectory(prefix="pvisor-wheel-") as temporary:
         environment = Path(temporary) / "venv"
         venv.EnvBuilder(with_pip=True).create(environment)
         scripts = _installed_script_dir(environment)
         python = scripts / ("python.exe" if os.name == "nt" else "python")
         _run([str(python), "-m", "pip", "install", "--no-deps", str(wheel)])
+        _run(
+            [
+                str(python),
+                "-I",
+                "-c",
+                "import pvisor; from importlib.metadata import version; "
+                "import sys; assert pvisor.__version__ == version('pvisor') == sys.argv[1]",
+                version,
+            ]
+        )
 
         env = os.environ.copy()
         env.pop("PERSISTING_PVISOR_BIN", None)

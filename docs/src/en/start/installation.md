@@ -2,13 +2,17 @@
 
 PolicyVisor (pVisor) runs Agent CLIs, scripts, and automation commands with
 policy controls and an inspectable execution record. The CLI is `pvisor`;
-the published Python package remains `persisting`. Existing repository URLs,
+the Python package is also named `pvisor`. Existing repository URLs,
 crate names, and `PERSISTING_*` environment variables retain their current names.
+
+If you previously installed `persisting`, run `python -m pip uninstall persisting`
+before installing `pvisor` (including nightly wheels). Both distributions install
+the same CLI path, so they should not coexist in one environment.
 
 ## 1. Install the tools
 
 ```bash
-pip install persisting
+pip install pvisor
 ```
 
 Verify that the command is available:
@@ -25,7 +29,7 @@ project has other Python dependencies:
 python3 -m venv .venv
 source .venv/bin/activate
 python -m pip install --upgrade pip
-pip install persisting
+pip install pvisor
 ```
 
 !!! tip "Start with a Run"

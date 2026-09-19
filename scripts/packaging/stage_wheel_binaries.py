@@ -1,5 +1,5 @@
 #!/usr/bin/env python3
-"""Build and stage the native CLI component set for a Persisting wheel."""
+"""Build and stage the native CLI component set for a pVisor wheel."""
 
 from __future__ import annotations
 

@@ -17,7 +17,7 @@ use std::sync::atomic::{AtomicBool, Ordering};
 use std::thread::JoinHandle;
 use std::time::Duration;
 
-use persisting_agentctl::{ExecutorDescriptor, ResourceLimits};
+use persisting_control::{ExecutorDescriptor, ResourceLimits};
 
 pub const RUN_META_FILENAME: &str = "run.json";
 pub const LEASE_FILENAME: &str = "lease.lock";

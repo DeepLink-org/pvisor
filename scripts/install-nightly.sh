@@ -1,5 +1,5 @@
 #!/usr/bin/env bash
-# Install the latest persisting nightly wheel from GitHub Releases (tag: nightly).
+# Install the latest pVisor nightly wheel from GitHub Releases (tag: nightly).
 #
 # Usage:
 #   curl -fsSL https://raw.githubusercontent.com/DeepLink-org/Persisting/main/scripts/install-nightly.sh | bash
@@ -31,24 +31,23 @@ case "$(uname -s)-$(uname -m)" in
     ;;
 esac
 
-min_py="$("$PYTHON" -c 'import sys; print(sys.version_info.major * 10 + sys.version_info.minor)')"
-if [ "$min_py" -lt 310 ]; then
-  echo "error: persisting wheels require Python 3.10+; got $("$PYTHON" --version)" >&2
+if ! "$PYTHON" -c 'import sys; sys.exit(sys.version_info < (3, 10))'; then
+  echo "error: pVisor wheels require Python 3.10+; got $("$PYTHON" --version)" >&2
   exit 1
 fi
 api="https://api.github.com/repos/${REPO}/releases/tags/${TAG}"
 
 echo "Fetching nightly release assets from ${REPO} (tag=${TAG})..." >&2
 
-url="$("$PYTHON" - <<PY
+url="$("$PYTHON" - "$api" "$platform_re" "$REPO" "$TAG" <<'PY'
 import json
 import re
 import sys
 import urllib.error
 import urllib.request
 
-api = "${api}"
-platform_re = re.compile(r"${platform_re}")
+api, platform_pattern, repo, tag = sys.argv[1:]
+platform_re = re.compile(platform_pattern)
 
 # Wheels contain native CLIs but only pure Python modules, so one py3-none wheel
 # is published per supported OS/architecture.
@@ -62,13 +61,13 @@ except urllib.error.HTTPError as e:
     if e.code == 404:
         sys.exit(
             "nightly release not found — wait for the Nightly Build workflow on main, "
-            f"or open https://github.com/${REPO}/actions/workflows/nightly.yml"
+            f"or open https://github.com/{repo}/actions/workflows/nightly.yml"
         )
     raise
 
 for asset in data.get("assets", []):
     name = asset.get("name", "")
-    if not name.endswith(".whl") or not name.startswith("persisting-"):
+    if not name.endswith(".whl") or not name.startswith("pvisor-"):
         continue
     if not PY3_RE.search(name):
         continue
@@ -77,8 +76,8 @@ for asset in data.get("assets", []):
         break
 else:
     sys.exit(
-        f"no platform wheel for ${platform_re.pattern} in nightly release — "
-        "check https://github.com/" + "${REPO}" + "/releases/tag/nightly"
+        f"no platform wheel for {platform_re.pattern} in nightly release — "
+        f"check https://github.com/{repo}/releases/tag/{tag}"
     )
 PY
 )"
@@ -86,9 +85,9 @@ PY
 echo "Installing ${url}" >&2
 "$PYTHON" -m pip install --upgrade pip
 "$PYTHON" -m pip install --force-reinstall "$url"
-"$PYTHON" -c "import persisting; print('persisting', persisting.__version__)"
+"$PYTHON" -c "import pvisor; print('pVisor', pvisor.__version__)"
 
-scripts_dir="$($PYTHON -c 'import sysconfig; print(sysconfig.get_path("scripts"))')"
+scripts_dir="$("$PYTHON" -c 'import sysconfig; print(sysconfig.get_path("scripts"))')"
 for binary in pvisor; do
   if [ ! -x "$scripts_dir/$binary" ]; then
     echo "error: wheel did not install executable $scripts_dir/$binary" >&2

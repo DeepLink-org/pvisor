@@ -22,9 +22,9 @@
         <div class="pc-home-tabs"><span class="active">{% if zh %}以 Agent CLI 为例{% else %}Example: an Agent CLI{% endif %}</span></div>
         <div class="pc-home-terminal">
           <div class="pc-home-terminal-bar"><span class="dot red"></span><span class="dot yellow"></span><span class="dot green"></span></div>
-          <pre class="pc-home-terminal-body"><span class="pc-home-command-line"><span class="pc-home-prompt">$ </span>pip install persisting</span><span class="pc-home-command-line"><span class="pc-home-prompt">$ </span>pvisor run --stage ../stage-001 -- codex</span><span class="pc-home-command-line"><span class="pc-home-prompt">$ </span>pvisor review last</span><span class="pc-home-command-line"><span class="pc-home-prompt">$ </span>pvisor apply last --path src</span></pre>
+          <pre class="pc-home-terminal-body"><span class="pc-home-command-line"><span class="pc-home-prompt">$ </span>pip install pvisor</span><span class="pc-home-command-line"><span class="pc-home-prompt">$ </span>pvisor run --stage ../stage-001 -- codex</span><span class="pc-home-command-line"><span class="pc-home-prompt">$ </span>pvisor review last</span><span class="pc-home-command-line"><span class="pc-home-prompt">$ </span>pvisor apply last --path src</span></pre>
         </div>
-        <p>{% if zh %}安装包仍为 <code>persisting</code>。首次使用请先完成<a href="{{ prefix }}start/installation/">平台配置</a>。{% else %}The package remains <code>persisting</code>. Complete the <a href="{{ prefix }}start/installation/">platform setup</a> before your first Run.{% endif %}</p>
+        <p>{% if zh %}安装包与 CLI 均为 <code>pvisor</code>。首次使用请先完成<a href="{{ prefix }}start/installation/">平台配置</a>。{% else %}The package and CLI are both <code>pvisor</code>. Complete the <a href="{{ prefix }}start/installation/">platform setup</a> before your first Run.{% endif %}</p>
       </div>
     </div>
   </section>

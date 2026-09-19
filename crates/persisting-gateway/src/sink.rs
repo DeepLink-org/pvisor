@@ -610,7 +610,7 @@ pub fn llm_request_summary_record(
         }
     }
     let mut rec = EventRecord {
-        identity: persisting_events::EventIdentity::default(),
+        identity: persisting_control::EventIdentity::default(),
         seq: 0,
         source: "persisting-proxy".to_string(),
         kind: "llm.request".to_string(),
@@ -640,7 +640,7 @@ pub fn llm_request_record(
     body: &serde_json::Value,
 ) -> EventRecord {
     EventRecord {
-        identity: persisting_events::EventIdentity::default(),
+        identity: persisting_control::EventIdentity::default(),
         seq: 0,
         source: "persisting-proxy".to_string(),
         kind: "llm.request".to_string(),
@@ -671,7 +671,7 @@ pub fn llm_response_record(
     call: &Call,
 ) -> EventRecord {
     let mut rec = EventRecord {
-        identity: persisting_events::EventIdentity::default(),
+        identity: persisting_control::EventIdentity::default(),
         seq: 0,
         source: "persisting-proxy".to_string(),
         kind: if streaming {
@@ -722,7 +722,7 @@ pub fn llm_response_record_with_content(
         "llm.response"
     };
     let mut rec = EventRecord {
-        identity: persisting_events::EventIdentity::default(),
+        identity: persisting_control::EventIdentity::default(),
         seq: 0,
         source: "persisting-proxy".to_string(),
         kind: kind.to_string(),

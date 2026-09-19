@@ -33,8 +33,7 @@ pulsing-actor = { workspace = true }
 dashmap.workspace = true
 blake3.workspace = true
 hostname.workspace = true
-persisting-agentctl.workspace = true
-persisting-events.workspace = true
+persisting-control.workspace = true
 persisting-overlaynet.workspace = true
 
 [dev-dependencies]

@@ -5,7 +5,7 @@ PyPI。项目仍然以 Python wheel 交付，但不包含 PyO3 扩展，也不�
 
 每个平台 wheel 标记为 `py3-none-<platform>`，并包含：
 
-- Python `persisting` 包；
+- Python `pvisor` 包；
 - 原生命令行脚本；
 - pVisor 所需的平台 libkrun firmware payload。
 
@@ -17,7 +17,7 @@ PyPI。项目仍然以 Python wheel 交付，但不包含 PyO3 扩展，也不�
 1. 创建名为 `pypi` 的 GitHub environment。不要要求 reviewer；把部署限制到
    匹配 `v*` 的 tag。
 2. 在 PyPI 发布设置中添加 pending Trusted Publisher：
-   - PyPI project: `persisting`
+   - PyPI project: `pvisor`
    - GitHub owner: `DeepLink-org`
    - Repository: `Persisting`
    - Workflow: `release.yml`
@@ -26,10 +26,13 @@ PyPI。项目仍然以 Python wheel 交付，但不包含 PyO3 扩展，也不�
 GitHub 中不存放 PyPI API token。pending publisher 可以在首次成功上传时
 创建项目，但不预留名称。
 
+PyPI 的 `pvisor` 项目需要独立配置 Trusted Publisher；旧 `persisting` 项目的
+发布配置不会随改名自动迁移。首次推送发布 tag 前，确认具有 `pvisor` 的发布权限。
+
 ## 准备一次发布
 
 1. 在 `pyproject.toml`、`Cargo.toml` 的 workspace package 段以及
-   `persisting/__init__.py` 中更新同一 `X.Y.Z` 版本。
+   `pvisor/__init__.py` 中更新同一 `X.Y.Z` 版本。
 2. 刷新 lockfile 中的本地 workspace 版本，且不升级依赖：
 
    ```bash

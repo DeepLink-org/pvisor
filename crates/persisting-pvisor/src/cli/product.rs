@@ -115,16 +115,16 @@ pub fn review(args: ReviewArgs) -> anyhow::Result<()> {
             .as_ref()
             .map(|executor| executor.isolation)
         {
-            Some(persisting_agentctl::IsolationKind::RootlessProcess) => {
+            Some(persisting_control::IsolationKind::RootlessProcess) => {
                 "rootless user namespace + Landlock"
             }
-            Some(persisting_agentctl::IsolationKind::SandboxedProcess) => {
+            Some(persisting_control::IsolationKind::SandboxedProcess) => {
                 "macOS Seatbelt process sandbox"
             }
-            Some(persisting_agentctl::IsolationKind::Container) => {
+            Some(persisting_control::IsolationKind::Container) => {
                 "OCI container with injected pVisor"
             }
-            Some(persisting_agentctl::IsolationKind::VirtualMachine) => {
+            Some(persisting_control::IsolationKind::VirtualMachine) => {
                 "libkrun/KVM guest over the pVisor root OverlayFS"
             }
             _ => "host process (not a host-isolation boundary)",

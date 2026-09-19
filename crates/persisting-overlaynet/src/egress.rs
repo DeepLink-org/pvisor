@@ -9,7 +9,7 @@ use crate::policy::{DenyReason, NetworkPolicy};
 use crate::resolver::{
     ResolvedAddressPolicy, TargetAuthorizationError, authorize_target_with_policy,
 };
-use persisting_agentctl::{
+use persisting_control::{
     AttemptId, ControlController, NetworkAccessRequest, NetworkTransport, RunId, StorylineId,
 };
 use tokio::net::TcpStream;

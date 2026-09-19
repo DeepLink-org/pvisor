@@ -9,8 +9,8 @@ use super::overlay::{
 use super::registry::{EnvironmentProjection, RunControlServer, RunLease, RunLineage, RunRecord};
 use crate::TrajectoryEventSink;
 use anyhow::Context as _;
-use persisting_agentctl::ControlController;
-use persisting_agentctl::{NetworkCapability, ProcessInvocation, RunInvocation, RunSpec, RunState};
+use persisting_control::ControlController;
+use persisting_control::{NetworkCapability, ProcessInvocation, RunInvocation, RunSpec, RunState};
 use persisting_gateway::config::ProxyConfig;
 use persisting_gateway::injection::{
     client_gateway_config_args, proxy_environment_with_local_auth,
@@ -173,20 +173,20 @@ impl AttemptSession {
     /// instead of leaving a stale `running` record behind.
     pub(crate) fn abort_startup(
         self,
-        attempt_id: &persisting_agentctl::AttemptId,
+        attempt_id: &persisting_control::AttemptId,
         lease_epoch: u64,
         agentctl: crate::AgentCtlSnapshot,
         safe_profile_requested: bool,
         message: String,
     ) -> anyhow::Result<()> {
-        let run_id = persisting_agentctl::RunId::new(self.run_record.run_id.clone());
+        let run_id = persisting_control::RunId::new(self.run_record.run_id.clone());
         let started_at_unix_ms = self.run_record.started_at_unix_ms;
         let mut teardown = self.teardown(None);
         let mut warnings = Vec::new();
         if let Some(error) = teardown.error_message() {
             warnings.push(format!("attempt teardown after startup failure: {error}"));
         }
-        let result = persisting_agentctl::RunResult {
+        let result = persisting_control::RunResult {
             run_id,
             attempt_id: attempt_id.clone(),
             lease_epoch,
@@ -194,8 +194,8 @@ impl AttemptSession {
             started_at_unix_ms,
             finished_at_unix_ms: crate::util::unix_now_ms(),
             exit_code: None,
-            failure: Some(persisting_agentctl::RunFailure {
-                kind: persisting_agentctl::RunFailureKind::Infrastructure,
+            failure: Some(persisting_control::RunFailure {
+                kind: persisting_control::RunFailureKind::Infrastructure,
                 message,
                 retryable: true,
             }),
@@ -922,7 +922,7 @@ fn workspace_from_spec(spec: &RunSpec) -> Option<PathBuf> {
         .map(PathBuf::from)
 }
 
-fn executor_from_spec(spec: &RunSpec) -> Option<persisting_agentctl::ExecutorDescriptor> {
+fn executor_from_spec(spec: &RunSpec) -> Option<persisting_control::ExecutorDescriptor> {
     spec.metadata
         .get("pvisor.executor")
         .cloned()
@@ -1204,8 +1204,8 @@ fn enrich_with_session(
             plan.env.insert(
                 "PERSISTING_NETWORK_POLICY".into(),
                 match default_action {
-                    persisting_agentctl::NetworkDefaultAction::Allow => "default-allow",
-                    persisting_agentctl::NetworkDefaultAction::Deny => "default-deny",
+                    persisting_control::NetworkDefaultAction::Allow => "default-allow",
+                    persisting_control::NetworkDefaultAction::Deny => "default-deny",
                 }
                 .into(),
             );
@@ -1321,7 +1321,7 @@ pub(crate) fn apply_implant(process: &mut ProcessInvocation, plan: &ImplantPlan)
 #[cfg(test)]
 mod vm_network_tests {
     use super::rewrite_vm_gateway_implant;
-    use persisting_agentctl::{RunInvocation, RunSpec};
+    use persisting_control::{RunInvocation, RunSpec};
 
     #[test]
     fn gateway_loopback_urls_and_embedded_arguments_are_rewritten() {

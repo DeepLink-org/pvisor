@@ -62,4 +62,4 @@ libkrun's embedded Linux guest init.
 - [`persisting-overlayfs`](../persisting-overlayfs/README.md)
 - [`persisting-overlaynet`](../persisting-overlaynet/README.md)
 - [`persisting-gateway`](../persisting-gateway/README.md)
-- [`persisting-agentctl`](../persisting-agentctl/README.md)
+- [`persisting-control`](../persisting-control/README.md)

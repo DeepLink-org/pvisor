@@ -1,5 +1,5 @@
 #!/usr/bin/env python3
-"""Validate the version contract for a stable Persisting release."""
+"""Validate the version contract for a stable pVisor release."""
 
 from __future__ import annotations
 
@@ -49,7 +49,7 @@ def read_versions(root: Path = ROOT) -> dict[str, str]:
         return {
             "pyproject.toml": str(pyproject["project"]["version"]),
             "Cargo.toml": str(cargo["workspace"]["package"]["version"]),
-            "persisting/__init__.py": _python_version(root / "persisting" / "__init__.py"),
+            "pvisor/__init__.py": _python_version(root / "pvisor" / "__init__.py"),
         }
     except KeyError as error:
         raise ReleaseValidationError(f"missing version field: {error}") from error

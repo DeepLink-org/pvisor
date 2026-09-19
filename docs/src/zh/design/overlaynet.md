@@ -67,7 +67,7 @@ network:    pVisor embeds a userspace TCP/IP stack and IS the child's network
 3. `tun` 文件描述符在 `exec` 之前经 `socketpair` 回传给 pVisor 父进程。此后
    pVisor 拥有整棵进程树的唯一出口路径。
 4. pVisor 在 `tun` fd 上运行基于 `smoltcp` 的 userspace 栈。入站 TCP 流在栈
-   内终止，通过 `persisting-agentctl` 策略门后在 host 侧重起源。现有
+   内终止，通过 `persisting-control` 策略门后在 host 侧重起源。现有
    OverlayNet 代理 / Gateway sink 仍是 LLM capture 路径，保持不变。
 5. DNS：栈回答经 namespace `resolv.conf` 通告的虚拟 resolver 地址。查询在
    host 侧解析，从而在任何连接存在之前给出域名级策略点。

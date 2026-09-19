@@ -96,7 +96,7 @@ jobs:
     runs-on: ubuntu-latest
     environment:
       name: pypi
-      url: https://pypi.org/p/persisting
+      url: https://pypi.org/p/pvisor
     permissions:
       id-token: write
     steps:
@@ -140,5 +140,5 @@ jobs:
               --verify-tag \
               --generate-notes \
               --latest \
-              --title "Persisting ${RELEASE_VERSION}"
+              --title "pVisor ${RELEASE_VERSION}"
           fi

@@ -7,7 +7,7 @@ use std::path::{Path, PathBuf};
 use std::sync::{Arc, Mutex};
 
 use async_trait::async_trait;
-use persisting_events::EventRecord;
+use persisting_control::EventRecord;
 use persisting_gateway::sink::CallbackSink;
 
 use crate::{EventSink, TrajectoryEventSink};
@@ -104,7 +104,7 @@ pub fn jsonl_capture_sink(
 #[cfg(test)]
 mod tests {
     use super::*;
-    use persisting_events::EventIdentity;
+    use persisting_control::EventIdentity;
 
     #[test]
     fn jsonl_writer_preserves_complete_http_payload() {

@@ -1,6 +1,8 @@
 from __future__ import annotations
 
 import importlib.util
+import os
+import subprocess
 import sys
 import zipfile
 from pathlib import Path
@@ -21,6 +23,7 @@ def _load_script(name: str):
 
 release_version = _load_script("check_release_version")
 release_artifacts = _load_script("check_release_artifacts")
+nightly_version = _load_script("set_nightly_local_version")
 
 
 def _load_wheel_stage():
@@ -73,23 +76,23 @@ def test_platform_wheels_use_cibuildwheel() -> None:
 
 
 def _write_version_tree(root: Path, *, pyproject: str, cargo: str, package: str) -> None:
-    (root / "persisting").mkdir()
+    (root / "pvisor").mkdir()
     (root / "pyproject.toml").write_text(
-        f'[project]\nname = "persisting"\nversion = "{pyproject}"\n', encoding="utf-8"
+        f'[project]\nname = "pvisor"\nversion = "{pyproject}"\n', encoding="utf-8"
     )
     (root / "Cargo.toml").write_text(
         f'[workspace.package]\nversion = "{cargo}"\n', encoding="utf-8"
     )
-    (root / "persisting" / "__init__.py").write_text(
+    (root / "pvisor" / "__init__.py").write_text(
         f'__version__ = "{package}"\n', encoding="utf-8"
     )
 
 
-def _write_wheel(path: Path, version: str) -> None:
+def _write_wheel(path: Path, version: str, name: str = "pvisor") -> None:
     with zipfile.ZipFile(path, "w") as archive:
         archive.writestr(
-            f"persisting-{version}.dist-info/METADATA",
-            f"Metadata-Version: 2.1\nName: persisting\nVersion: {version}\n",
+            f"pvisor-{version}.dist-info/METADATA",
+            f"Metadata-Version: 2.1\nName: {name}\nVersion: {version}\n",
         )
 
 
@@ -117,11 +120,81 @@ def test_release_version_rejects_tag_version_mismatch(tmp_path: Path) -> None:
         release_version.validate_versions("v1.2.4", tmp_path)
 
 
+def test_nightly_version_updates_python_package(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    _write_version_tree(tmp_path, pyproject="1.2.3", cargo="1.2.3", package="1.2.3")
+    monkeypatch.setattr(nightly_version, "ROOT", tmp_path)
+    monkeypatch.setattr(sys, "argv", ["set_nightly_local_version.py", "g42.abcdef0"])
+    nightly_version.main()
+    assert set(release_version.read_versions(tmp_path).values()) == {"1.2.3+g42.abcdef0"}
+
+
+@pytest.mark.parametrize("include_pvisor", [True, False])
+def test_nightly_installer_selects_pvisor_wheel(tmp_path: Path, include_pvisor: bool) -> None:
+    """Exercise the installer offline, with both old and new release assets."""
+    interpreter = tmp_path / "python"
+    interpreter.write_text(
+        f"#!{sys.executable}\n"
+        "import io, json, sys, sysconfig, urllib.request\n"
+        "from pathlib import Path\n"
+        f"root = Path({str(tmp_path)!r})\n"
+        f"sys.path.insert(0, {str(ROOT)!r})\n"
+        "if sys.argv[1:3] == ['-m', 'pip']:\n"
+        "    with (root / 'pip.log').open('a') as log:\n"
+        "        log.write(json.dumps(sys.argv[3:]) + '\\n')\n"
+        "elif sys.argv[1] == '-c':\n"
+        "    sysconfig.get_path = lambda name: str(root)\n"
+        "    exec(sys.argv[2])\n"
+        "elif sys.argv[1] == '-':\n"
+        "    assets = [{'name': f'{name}-0.3.0-py3-none-{platform}.whl',\n"
+        "               'browser_download_url': f'https://example.test/{name}-{platform}.whl'}\n"
+        f"              for name in {('persisting', 'pvisor') if include_pvisor else ('persisting',)!r}\n"
+        "              for platform in ('macosx_11_0_arm64', 'manylinux_2_28_x86_64')]\n"
+        "    urllib.request.urlopen = lambda *a, **k: io.BytesIO(json.dumps({'assets': assets}).encode())\n"
+        "    sys.argv = sys.argv[1:]\n"
+        "    exec(sys.stdin.read())\n",
+        encoding="utf-8",
+    )
+    interpreter.chmod(0o755)
+    executable = tmp_path / "pvisor"
+    executable.write_text('#!/bin/sh\necho "pvisor 0.3.0"\n', encoding="utf-8")
+    executable.chmod(0o755)
+    result = subprocess.run(
+        ["bash", str(ROOT / "scripts/install-nightly.sh")],
+        env={**os.environ, "PYTHON": str(interpreter)},
+        capture_output=True,
+        text=True,
+        timeout=30,
+    )
+    if not include_pvisor:
+        assert result.returncode != 0
+        assert "no platform wheel" in result.stderr
+        assert not (tmp_path / "pip.log").exists()
+        return
+    assert result.returncode == 0, result.stderr
+    installs = (tmp_path / "pip.log").read_text()
+    assert "https://example.test/pvisor-" in installs
+    assert "persisting" not in installs
+    assert "pVisor 0.3.0" in result.stdout
+
+
+@pytest.mark.parametrize("name", ["persisting", "unrelated"])
+def test_release_artifacts_reject_wrong_distribution(tmp_path: Path, name: str) -> None:
+    for platform in ("manylinux_2_28_x86_64", "macosx_11_0_arm64"):
+        wheel = tmp_path / f"pvisor-1.2.3-py3-none-{platform}.whl"
+        _write_wheel(wheel, "1.2.3", name=name)
+    with pytest.raises(release_artifacts.ArtifactValidationError, match="METADATA Name"):
+        release_artifacts.validate_artifacts(tmp_path, "1.2.3")
+    with pytest.raises(RuntimeError, match="wheel Name"):
+        wheel_verify._wheel_contents(wheel)
+
+
 def test_release_artifacts_accept_supported_matrix(tmp_path: Path) -> None:
     version = "1.2.3"
     names = [
-        f"persisting-{version}-py3-none-manylinux_2_28_x86_64.whl",
-        f"persisting-{version}-py3-none-macosx_11_0_arm64.whl",
+        f"pvisor-{version}-py3-none-manylinux_2_28_x86_64.whl",
+        f"pvisor-{version}-py3-none-macosx_11_0_arm64.whl",
     ]
     for name in names:
         _write_wheel(tmp_path / name, version)
@@ -133,7 +206,7 @@ def test_release_artifacts_accept_supported_matrix(tmp_path: Path) -> None:
 def test_release_artifacts_reject_missing_platform(tmp_path: Path) -> None:
     version = "1.2.3"
     _write_wheel(
-        tmp_path / f"persisting-{version}-py3-none-macosx_11_0_arm64.whl",
+        tmp_path / f"pvisor-{version}-py3-none-macosx_11_0_arm64.whl",
         version,
     )
     with pytest.raises(release_artifacts.ArtifactValidationError, match="expected 2 wheels"):
@@ -143,8 +216,8 @@ def test_release_artifacts_reject_missing_platform(tmp_path: Path) -> None:
 def test_release_artifacts_reject_metadata_version_mismatch(tmp_path: Path) -> None:
     filename_version = "1.2.3"
     names = [
-        f"persisting-{filename_version}-py3-none-manylinux_2_28_x86_64.whl",
-        f"persisting-{filename_version}-py3-none-macosx_11_0_arm64.whl",
+        f"pvisor-{filename_version}-py3-none-manylinux_2_28_x86_64.whl",
+        f"pvisor-{filename_version}-py3-none-macosx_11_0_arm64.whl",
     ]
     for name in names:
         _write_wheel(tmp_path / name, "1.2.4")
@@ -156,8 +229,8 @@ def test_release_artifacts_reject_metadata_version_mismatch(tmp_path: Path) -> N
 def test_release_artifacts_reject_oversized_wheel(tmp_path: Path) -> None:
     version = "1.2.3"
     names = [
-        f"persisting-{version}-py3-none-manylinux_2_28_x86_64.whl",
-        f"persisting-{version}-py3-none-macosx_11_0_arm64.whl",
+        f"pvisor-{version}-py3-none-manylinux_2_28_x86_64.whl",
+        f"pvisor-{version}-py3-none-macosx_11_0_arm64.whl",
     ]
     for name in names:
         _write_wheel(tmp_path / name, version)

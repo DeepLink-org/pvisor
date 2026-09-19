@@ -75,7 +75,7 @@ jobs:
         uses: ncipollo/release-action@v1
         with:
           tag: nightly
-          name: Nightly (main)
+          name: pVisor Nightly (main)
           commit: ${{ github.sha }}
           allowUpdates: true
           makeLatest: false
@@ -86,7 +86,7 @@ jobs:
           body: |
             Rolling nightly build from [`${{ github.sha }}`](${{ github.server_url }}/${{ github.repository }}/commit/${{ github.sha }}) on **${{ github.ref_name }}**.
 
-            **Python wheel** (auto-detect platform / Python):
+            **pVisor Python wheel** (auto-detect platform / Python):
 
             ```bash
             curl -fsSL https://raw.githubusercontent.com/${{ github.repository }}/main/scripts/install-nightly.sh | bash

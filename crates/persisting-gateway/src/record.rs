@@ -1,14 +1,14 @@
 //! Capture-side behavior over the shared
-//! [`EventRecord`](persisting_events::EventRecord) schema.
+//! [`EventRecord`](persisting_control::EventRecord) schema.
 
 use serde_json::Value;
 
 use super::dialogue_extract::{extract_assistant_text_from_json, extract_assistant_turn_from_sse};
 use crate::protocol::ProtocolKind;
 
-pub use persisting_events::EventRecord;
+pub use persisting_control::EventRecord;
 
-pub use persisting_events::unix_now_ms;
+pub use persisting_control::unix_now_ms;
 
 /// Parse an RFC3339 event timestamp into Unix milliseconds.
 pub fn unix_ms_from_rfc3339(timestamp: &str) -> Option<u64> {

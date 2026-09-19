@@ -7,13 +7,13 @@ use crate::sandbox::{MACOS_SANDBOX_EXEC, SEATBELT_ATTESTATION, SeatbeltPlan, sea
 use crate::sandbox::{ROOTLESS_ATTESTATION, SandboxPlan, landlock_runtime_available};
 use crate::sandbox::{SANDBOX_PLAN_ENV, SANDBOX_SETUP_FAILED_WARNING};
 use async_trait::async_trait;
-use persisting_agentctl::{
+use persisting_control::{
     CapabilityDimension, CapabilityEnforcementEvidence, ExecutorDescriptor, ExecutorKind,
     IsolationKind, ProcessInvocation, ProcessOutput, ResourceLimits, RunFailure, RunFailureKind,
     RunInvocation, RunResult, RunSpec, RunState, StdioMode,
 };
 #[cfg(any(target_os = "linux", target_os = "macos"))]
-use persisting_agentctl::{FilesystemAccess, NetworkCapability};
+use persisting_control::{FilesystemAccess, NetworkCapability};
 #[cfg(any(target_os = "linux", target_os = "macos"))]
 use std::path::Path;
 use std::path::PathBuf;

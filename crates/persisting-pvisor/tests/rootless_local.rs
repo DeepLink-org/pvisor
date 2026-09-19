@@ -1,6 +1,6 @@
 #![cfg(target_os = "linux")]
 
-use persisting_agentctl::{IsolationKind, RunFailureKind};
+use persisting_control::{IsolationKind, RunFailureKind};
 use persisting_pvisor::RunBundle;
 use persisting_pvisor::sandbox::SANDBOX_SETUP_EXIT_CODE;
 use std::fs;

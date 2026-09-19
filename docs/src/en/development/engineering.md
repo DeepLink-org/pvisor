@@ -27,7 +27,7 @@ package name or a short crate alias (`pvisor`, `agentctl`, `capture`).
 
 | Note | Audience | Purpose |
 |---|---|---|
-| [Releasing `persisting`](releasing.md) | Maintainers | Version, trusted-publisher, and stable release procedure |
+| [Releasing PolicyVisor](releasing.md) | Maintainers | Version, trusted-publisher, and stable release procedure |
 | [Reproducible examples](examples.md) | Contributors | Product CLI suites under `examples/` |
 
 ## Fast local builds
@@ -61,7 +61,7 @@ edit loop:
   Inspect them with `just build-analysis-report` (or pass `report=timings` or
   `report=rebuilds`). The dedicated target directory prevents diagnostic
   artifacts from polluting the normal incremental cache.
-- `just sanitize address persisting-agentctl` runs the selected crate's tests
+- `just sanitize address persisting-control` runs the selected crate's tests
   with LLVM AddressSanitizer. The recipe uses `-Z build-std`, so the nightly
   `rust-src` component is required. Other supported values are `leak`,
   `thread`, and `undefined`; availability depends on the host platform.

@@ -6,7 +6,7 @@ use crate::runtime::{
 use crate::sandbox::SANDBOX_SETUP_FAILED_WARNING;
 use crate::util::{atomic_write, sync_directory};
 use crate::{AgentCtlSnapshot, unix_now_ms};
-use persisting_agentctl::{
+use persisting_control::{
     ArtifactRef, CapabilityDimension, ExecutorDescriptor, IsolationKind, ProcessOutput,
     ResourceLimits, RunFailure, RunResult, RunState,
 };
@@ -477,7 +477,7 @@ fn environment_summary(record: &RunRecord) -> crate::runtime::EnvironmentProject
 mod tests {
     use super::*;
     use crate::runtime::{OverlayRecord, OverlayUpper};
-    use persisting_agentctl::{AttemptId, CapabilityEnforcementEvidence, NetworkCapability, RunId};
+    use persisting_control::{AttemptId, CapabilityEnforcementEvidence, NetworkCapability, RunId};
     use std::os::unix::fs::PermissionsExt;
 
     const V1_MINIMAL_FIXTURE: &[u8] = include_bytes!(concat!(
@@ -618,7 +618,7 @@ mod tests {
 
         record.executor = Some(ExecutorDescriptor {
             name: "libkrun-root-overlay-v1".into(),
-            kind: persisting_agentctl::ExecutorKind::VirtualMachine,
+            kind: persisting_control::ExecutorKind::VirtualMachine,
             isolation: IsolationKind::VirtualMachine,
             capability_enforcement: Default::default(),
             supports_checkpoint: true,
@@ -645,7 +645,7 @@ mod tests {
 
         record.executor = Some(ExecutorDescriptor {
             name: "local-rootless-v1".into(),
-            kind: persisting_agentctl::ExecutorKind::Process,
+            kind: persisting_control::ExecutorKind::Process,
             isolation: IsolationKind::RootlessProcess,
             capability_enforcement: Default::default(),
             supports_checkpoint: false,
@@ -683,7 +683,7 @@ mod tests {
 
         record.executor = Some(ExecutorDescriptor {
             name: "local-seatbelt-v1".into(),
-            kind: persisting_agentctl::ExecutorKind::Process,
+            kind: persisting_control::ExecutorKind::Process,
             isolation: IsolationKind::SandboxedProcess,
             capability_enforcement: Default::default(),
             supports_checkpoint: false,

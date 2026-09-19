@@ -1,7 +1,7 @@
 //! Shared helpers for pVisor.
 
 use anyhow::Context;
-pub use persisting_events::unix_now_ms;
+pub use persisting_control::unix_now_ms;
 use std::fs::{self, OpenOptions};
 use std::io::Write;
 use std::os::unix::fs::PermissionsExt;

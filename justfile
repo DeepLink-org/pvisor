@@ -9,9 +9,9 @@ docs_dir := repo / "docs"
 component_pvisor := "-p persisting-pvisor --bin pvisor"
 
 # Python 路径（ruff format）
-ruff_paths := "persisting tests examples"
+ruff_paths := "pvisor tests examples"
 # lint 默认只扫包代码（与 CI 一致）；全量用 lint-py-all
-ruff_lint_paths := "persisting"
+ruff_lint_paths := "pvisor"
 
 # ── 帮助 ─────────────────────────────────────────────────────────────────────
 
@@ -279,7 +279,7 @@ ci:
 
 # ── Rust 测试 ─────────────────────────────────────────────────────────────────
 
-# CI shard helper: `just ci-nextest persisting-gateway persisting-events …`
+# CI shard helper: `just ci-nextest persisting-gateway persisting-control …`
 # Variadic args are interpolated by just (not passed as shebang $@).
 [group('test')]
 ci-nextest +packages:
@@ -291,15 +291,15 @@ ci-nextest +packages:
     done
     cargo nextest run --locked "${args[@]}"
 
-# 单 crate：agentctl | capture | pvisor
+# 单 crate：control (alias: agentctl) | capture | pvisor
 test-crate crate:
     #!/usr/bin/env bash
     set -euo pipefail
     case "{{ crate }}" in
-      agentctl) cargo nextest run -p persisting-agentctl --locked ;;
+      control|agentctl) cargo nextest run -p persisting-control --locked ;;
       capture) cargo nextest run -p persisting-gateway --locked ;;
       pvisor) cargo nextest run -p persisting-pvisor --locked ;;
-      *) echo "unknown crate: {{ crate }} (agentctl|capture|pvisor)" >&2; exit 2 ;;
+      *) echo "unknown crate: {{ crate }} (control|agentctl|capture|pvisor)" >&2; exit 2 ;;
     esac
 
 test-rust package="":
@@ -355,7 +355,7 @@ test package="":
       exit 0
     fi
     case "$package" in
-      agentctl|capture|pvisor)
+      control|agentctl|capture|pvisor)
         just test-crate "$package"
         ;;
       *)
@@ -396,8 +396,7 @@ docs-build: docs-sync
 
 check-quick:
     cargo check \
-      -p persisting-agentctl \
-      -p persisting-events \
+      -p persisting-control \
       -p persisting-gateway \
       -p persisting-pvisor \
       --locked

@@ -1,16 +1,17 @@
 [package]
-name = "persisting-agentctl"
+name = "persisting-control"
 version.workspace = true
 edition.workspace = true
 authors.workspace = true
 license.workspace = true
-description = "Agent control contracts, policies, wire protocol, and client SDK"
+description = "Shared runtime contracts, policies, control messages, and event records"
 
 [dependencies]
 anyhow.workspace = true
 ipnet.workspace = true
 serde = { workspace = true, features = ["derive"] }
 serde_json.workspace = true
+thiserror.workspace = true
 
 [dev-dependencies]
 proptest.workspace = true

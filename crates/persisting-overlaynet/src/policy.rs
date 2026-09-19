@@ -1,13 +1,13 @@
 //! Egress policy for the explicit HTTP proxy backend.
 
 use axum::http::StatusCode;
-use persisting_agentctl::{
+use persisting_control::{
     ControlController, ControlMachine, ControlReason, ControlRequest, NetworkGuard,
     PolicyControlController,
 };
-use persisting_agentctl::{NetworkAccessRequest, NetworkCapability, NetworkDefaultAction};
-pub use persisting_agentctl::{NetworkAccessRule, NetworkBandwidthLimit};
-pub use persisting_agentctl::{
+use persisting_control::{NetworkAccessRequest, NetworkCapability, NetworkDefaultAction};
+pub use persisting_control::{NetworkAccessRule, NetworkBandwidthLimit};
+pub use persisting_control::{
     NetworkRule as AllowedEntry, host_matches, normalize_host,
     parse_network_rule as parse_allowed_entry,
 };
@@ -288,8 +288,8 @@ pub fn forbidden_response(host: &str, reason: &DenyReason) -> (StatusCode, Strin
 #[cfg(test)]
 mod tests {
     use super::*;
-    use persisting_agentctl::NetworkTransport;
-    use persisting_agentctl::PolicyControlController;
+    use persisting_control::NetworkTransport;
+    use persisting_control::PolicyControlController;
     use proptest::prelude::*;
 
     fn host_strategy() -> impl Strategy<Value = String> {

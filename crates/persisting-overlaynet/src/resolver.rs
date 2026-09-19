@@ -5,8 +5,8 @@ use std::collections::HashSet;
 use std::net::{IpAddr, SocketAddr};
 use std::time::Duration;
 
-use persisting_agentctl::ControlController;
-use persisting_agentctl::NetworkAccessRequest;
+use persisting_control::ControlController;
+use persisting_control::NetworkAccessRequest;
 use tokio::net::lookup_host;
 use tokio::time::timeout;
 
@@ -150,10 +150,10 @@ pub(crate) fn is_host_connector_alias(host: &str, address: IpAddr) -> bool {
 mod tests {
     use super::*;
     use crate::policy::{NetworkConfig, NetworkMode};
-    use persisting_agentctl::{
+    use persisting_control::{
         ControlReason, ControlRequest, ControlTransition, PolicyControlController,
     };
-    use persisting_agentctl::{NetworkAccessRule, NetworkTransport};
+    use persisting_control::{NetworkAccessRule, NetworkTransport};
     use proptest::prelude::*;
 
     fn request(host: &str) -> NetworkAccessRequest {

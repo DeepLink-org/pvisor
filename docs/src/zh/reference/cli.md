@@ -387,7 +387,7 @@ staging 数据，但保留紧凑的 Run/Overlay 元数据、apply ledger 和 cap
 
 ## 相关工作流
 
-- [运行第一个 Agent](../start/first-run.md)：最短完整闭环。
+- [第一次运行](../start/first-run.md)：最短完整闭环。
 - [执行环境](../guides/execution.md)：选择 provider。
 - [审查并应用 Effect](../guides/review-apply.md)：过滤且可重复的 apply。
 - [网络控制](../guides/network.md) 与 [捕获轨迹](../guides/capture.md)：其他

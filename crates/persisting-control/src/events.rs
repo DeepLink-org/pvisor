@@ -6,8 +6,7 @@
 use serde::{Deserialize, Serialize};
 use serde_json::Value;
 
-mod time;
-pub use time::unix_now_ms;
+pub use crate::time::unix_now_ms;
 
 /// Runtime identity shared by lifecycle and trajectory events.
 ///
@@ -33,8 +32,9 @@ pub struct EventIdentity {
 
 /// Canonical storage-independent Agent runtime event.
 ///
-/// Ordering within one Attempt is defined by `seq`; wall-clock timestamps are
-/// evidence for correlation and display, not the source of ordering truth.
+/// `seq` orders events within the producer's scope: pVisor lifecycle events use
+/// an Attempt, while Gateway capture uses a session/storage target. Preserve
+/// routing identities when combining streams; timestamps do not define order.
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 pub struct EventRecord {
     #[serde(flatten)]

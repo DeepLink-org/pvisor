@@ -2845,20 +2845,11 @@ source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "9b4f627cb1b25917193a259e49bdad08f671f8d9708acfd5fe0a8c1455d87220"
 
 [[package]]
-name = "persisting-agentctl"
+name = "persisting-control"
 version = "0.3.0"
 dependencies = [
  "anyhow",
  "ipnet",
- "proptest",
- "serde",
- "serde_json",
-]
-
-[[package]]
-name = "persisting-events"
-version = "0.3.0"
-dependencies = [
  "proptest",
  "serde",
  "serde_json",
@@ -2880,8 +2871,7 @@ dependencies = [
  "dirs",
  "futures-util",
  "hostname",
- "persisting-agentctl",
- "persisting-events",
+ "persisting-control",
  "persisting-overlaynet",
  "proptest",
  "pulsing-actor",
@@ -2937,7 +2927,7 @@ dependencies = [
  "http-body-util",
  "hyper",
  "hyper-util",
- "persisting-agentctl",
+ "persisting-control",
  "proptest",
  "reqwest",
  "serde",
@@ -2961,8 +2951,7 @@ dependencies = [
  "globset",
  "libc",
  "libkrun",
- "persisting-agentctl",
- "persisting-events",
+ "persisting-control",
  "persisting-gateway",
  "persisting-overlay-core",
  "persisting-overlayfs",

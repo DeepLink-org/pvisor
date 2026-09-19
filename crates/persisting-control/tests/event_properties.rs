@@ -4,7 +4,7 @@
 //! behavior belongs in the producer crate; this suite verifies that any
 //! producer can serialize, validate, and round-trip the shared envelope.
 
-use persisting_events::{EventIdentity, EventRecord, EventValidationError};
+use persisting_control::{EventIdentity, EventRecord, EventValidationError};
 use proptest::prelude::*;
 use serde_json::Value;
 

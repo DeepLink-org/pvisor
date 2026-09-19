@@ -9,7 +9,7 @@ use axum::extract::Path;
 use axum::http::{HeaderMap, StatusCode, Uri};
 use axum::response::{IntoResponse, Response};
 use axum::routing::{get, post};
-use persisting_agentctl::{
+use persisting_control::{
     ControlController, ControlReason, ControlRequest, ControlTransition, PolicyControlController,
 };
 use persisting_gateway::config::ProxyConfig;

@@ -4,7 +4,7 @@
 
 Owns the proxy data plane: request classification, HTTP `CONNECT`,
 absolute-URI forwarding, access enforcement through
-[`persisting-agentctl`](../persisting-agentctl/README.md), request accounting,
+[`persisting-control`](../persisting-control/README.md), request accounting,
 shared proxy header safety, and dispatch to one caller-supplied `OverlaySink`.
 
 Also owns the libkrun VM driver: a non-bypassable virtio-net path whose
@@ -39,4 +39,4 @@ just test persisting-overlaynet
 - [OverlayNet architecture](../../docs/src/en/design/overlaynet.md)
 - [Network control](../../docs/src/en/guides/network.md)
 - [`persisting-gateway`](../persisting-gateway/README.md)
-- [`persisting-agentctl`](../persisting-agentctl/README.md)
+- [`persisting-control`](../persisting-control/README.md)

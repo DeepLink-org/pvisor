@@ -1,12 +1,13 @@
-# Releasing `persisting`
+# Releasing PolicyVisor
 
+PolicyVisor release wheels use the `pvisor` distribution and Python package name.
 Stable releases are built by GitHub Actions from version tags and published to
 PyPI with Trusted Publishing. The project still ships as a Python wheel, but it
 does not contain a PyO3 extension and does not use Maturin.
 
 Each platform wheel is tagged `py3-none-<platform>` and contains:
 
-- the Python `persisting` package;
+- the Python `pvisor` package;
 - native command-line scripts;
 - the platform libkrun firmware payload required by pVisor.
 
@@ -18,7 +19,7 @@ Source distributions are not part of the published artifact set.
 1. Create a GitHub environment named `pypi`. Do not require reviewers; restrict
    deployments to tags matching `v*`.
 2. In the PyPI publishing settings, add a pending Trusted Publisher:
-   - PyPI project: `persisting`
+   - PyPI project: `pvisor`
    - GitHub owner: `DeepLink-org`
    - Repository: `Persisting`
    - Workflow: `release.yml`
@@ -27,10 +28,14 @@ Source distributions are not part of the published artifact set.
 No PyPI API token is stored in GitHub. The pending publisher can create the
 project during the first successful upload but does not reserve the name.
 
+The `pvisor` PyPI project needs its own Trusted Publisher configuration; the
+previous `persisting` project configuration does not transfer with the rename.
+Confirm publishing access to `pvisor` before pushing the first release tag.
+
 ## Prepare a release
 
 1. Update the same `X.Y.Z` version in `pyproject.toml`, the workspace package
-   section of `Cargo.toml`, and `persisting/__init__.py`.
+   section of `Cargo.toml`, and `pvisor/__init__.py`.
 2. Refresh local workspace versions in the lockfile without upgrading
    dependencies:
 

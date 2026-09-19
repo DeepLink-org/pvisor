@@ -55,7 +55,7 @@ Rust 测试用 `cargo nextest` 做进程隔离和并行执行；用
   `-Z build-analysis`，并把每会话 JSONL 指标写到 `$CARGO_HOME/log`。用
   `just build-analysis-report` 查看（也可传 `report=timings` 或
   `report=rebuilds`）。独立的 target 目录避免诊断产物污染普通增量缓存。
-- `just sanitize address persisting-agentctl` 用 LLVM AddressSanitizer 跑
+- `just sanitize address persisting-control` 用 LLVM AddressSanitizer 跑
   所选 crate 的测试。该 recipe 使用 `-Z build-std`，因此需要 nightly
   `rust-src` 组件。其他支持值是 `leak`、`thread` 和 `undefined`；可用性
   取决于宿主平台。

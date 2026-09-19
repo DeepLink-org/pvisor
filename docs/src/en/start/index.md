@@ -2,7 +2,7 @@
 
 **PolicyVisor (pVisor)** provides policy-governed, reviewable execution for Agent CLIs, scripts, and automation commands. It records effective controls and, with staging enabled, lets you review file changes before applying them.
 
-The CLI remains `pvisor`. The published Python package is still `persisting`, and repository links retain the existing `Persisting` path.
+The Python package and CLI are both named `pvisor`. Repository links retain the existing `Persisting` path.
 
 ## Your first workflow
 

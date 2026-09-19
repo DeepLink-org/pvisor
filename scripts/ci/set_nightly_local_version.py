@@ -8,7 +8,7 @@ import sys
 from pathlib import Path
 
 ROOT = Path(__file__).resolve().parents[2]
-VERSION_RE = re.compile(r'^(version = ")([^"+]+)(")', re.MULTILINE)
+VERSION_RE = re.compile(r'^((?:version|__version__) = ")([^"+]+)(")', re.MULTILINE)
 
 
 def patch(path: Path, local: str) -> None:
@@ -25,6 +25,7 @@ def main() -> None:
     local = sys.argv[1].strip()
     patch(ROOT / "pyproject.toml", local)
     patch(ROOT / "Cargo.toml", local)
+    patch(ROOT / "pvisor" / "__init__.py", local)
     print(f"patched nightly local version +{local}")
 
 

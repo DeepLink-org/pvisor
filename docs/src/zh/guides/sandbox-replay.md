@@ -150,11 +150,11 @@ bridge 删除 transport nonce，再将请求转发到模型服务；续跑结束
 
 ### 4.1 安装 pVisor
 
-pVisor CLI 随 `persisting` wheel 发布。沙箱内有 Python 3.10 或更高版本时，推荐直接
+pVisor CLI 随 `pvisor` wheel 发布。沙箱内有 Python 3.10 或更高版本时，推荐直接
 安装发布版：
 
 ~~~bash
-python -m pip install persisting
+python -m pip install pvisor
 
 command -v pvisor
 pvisor --version
