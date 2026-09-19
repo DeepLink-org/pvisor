@@ -2854,7 +2854,6 @@ dependencies = [
  "proptest",
  "serde",
  "serde_json",
- "tempfile",
  "tokio",
  "tokio-util",
 ]
@@ -2863,14 +2862,10 @@ dependencies = [
 name = "persisting-events"
 version = "0.3.0"
 dependencies = [
- "anyhow",
- "async-trait",
- "persisting-agentctl",
  "proptest",
  "serde",
  "serde_json",
  "thiserror 2.0.18",
- "tokio",
 ]
 
 [[package]]

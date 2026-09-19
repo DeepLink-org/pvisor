@@ -18,7 +18,7 @@
 | 使用 VM、宿主 rootfs 或 OCI 镜像 | E01–E06 |
 | 使用原生 OCI 容器 | F01–F04 |
 | 配置网络代理或禁止网络 | G01–G06 |
-| 接入 Gateway 或记录轨迹 | H01–H03 |
+| 接入 Gateway 或记录轨迹 | H01–H02 |
 | 从配置文件或 RunSpec 执行 | I01–I03 |
 | 参考完整生产组合 | J01–J03 |
 
@@ -61,7 +61,6 @@ case 注释中的 `requires` 描述运行环境；缺少前置条件时脚本将
 | OCI runtime | 安装 `crun`；F04 显式使用 `runc`，也需要安装它 |
 | 自定义 libkrunfw 目录 | `PVISOR_CASE_FIRMWARE`；未设置时脚本尝试查找本机缓存 |
 | VM 中要执行的 Agent | `PVISOR_CASE_AGENT`，用于替换 `/usr/local/bin/agent`；此路径必须在 guest 中也可执行 |
-| Lance 记录 | 安装带相应支持的组件，并设置 `PVISOR_CASE_LANCE=1` |
 
 Linux host stage 示例需要可用的 user/mount namespace。VM 示例需要可访问的
 `/dev/kvm`。容器需要本机 OCI runtime 具备实际启动容器的权限；
@@ -1094,7 +1093,7 @@ D01 讲视图层组合，D02/D03 讲 host executor 的默认隔离和 workspace 
 
 ### H. Gateway 与记录
 
-需要审计、模型路由或轨迹回放时使用这一组。H01 是 Gateway 配置示例，H02 适合轻量 JSONL，H03 适合 Lance warehouse。
+需要审计、模型路由或轨迹回放时使用这一组。H01 是 Gateway 配置示例，H02 把事件写成 JSONL。
 
 - [ ] **H01：Gateway capture 完整组合**
 
@@ -1136,12 +1135,12 @@ D01 讲视图层组合，D02/D03 讲 host executor 的默认隔离和 workspace 
 
   建议场景：适合接入 Gateway、模型路由或记录轨迹的任务。
 
-  用途：把本次运行事件写成轻量的 JSONL 文件，不启动 Lance warehouse。
+  用途：把本次运行事件写成 JSONL 文件。
 
   预期：指定文件非空，首行具有 JSON 对象形式。每行应是一个事件；本例只检查文件建立和首行外观。
 
   ```bash
-  pvisor --record-format json --record-destination /tmp/pvisor-cases/events.jsonl -- /bin/true
+  pvisor --record-destination /tmp/pvisor-cases/events.jsonl -- /bin/true
   ```
 
   <details>
@@ -1152,34 +1151,6 @@ D01 讲视图层组合，D02/D03 讲 host executor 的默认隔离和 workspace 
   ```bash
   test -s "$PVISOR_CASE_ROOT/events.jsonl"
   head -n 1 "$PVISOR_CASE_ROOT/events.jsonl" | grep -q '^{'
-  ```
-
-  </details>
-
-- [ ] **H03：Lance 记录**
-
-  建议场景：适合接入 Gateway、模型路由或记录轨迹的任务。
-
-  用途：需要 warehouse 形式的记录时选择 Lance。先安装相应构建和运行依赖，再让脚本启用该例。
-
-  准备：Lance 运行依赖齐备，脚本设置 PVISOR_CASE_LANCE=1。
-
-  预期：运行完成，指定位置建立 warehouse 目录；本例未查询其中的记录。
-
-  <!-- pvisor-case: requires=lance -->
-
-  ```bash
-  pvisor --record-format lance --record-destination /tmp/pvisor-cases/warehouse -- /bin/true
-  ```
-
-  <details>
-  <summary>自动回归断言（由脚本执行）</summary>
-
-  <!-- pvisor-assert -->
-
-  ```bash
-  bundle_expect run.state completed
-  test -d "$PVISOR_CASE_ROOT/warehouse"
   ```
 
   </details>
@@ -1282,7 +1253,6 @@ D01 讲视图层组合，D02/D03 讲 host executor 的默认隔离和 workspace 
     --stage /tmp/pvisor-cases/host-full \
     --overlaynet-deny-all \
     --stdio capture \
-    --record-format json \
     --record-destination /tmp/pvisor-cases/host-full/trajectory/events.jsonl \
     --memory 512MiB \
     --max-processes 64 \
@@ -1316,13 +1286,13 @@ D01 讲视图层组合，D02/D03 讲 host executor 的默认隔离和 workspace 
 
   建议场景：适合上线前验证多项能力组合的端到端任务。
 
-  用途：在 VM 中运行真实 Agent，同时保留 stage、使用 smoltcp 网络、Gateway 和 Lance 轨迹记录。需提供含 Agent 及其依赖的镜像，并把示例上游替换为实际服务。
+  用途：在 VM 中运行真实 Agent，同时保留 stage、使用 smoltcp 网络、Gateway 和 JSONL 轨迹记录。需提供含 Agent 及其依赖的镜像，并把示例上游替换为实际服务。
 
-  准备：Linux；可访问 /dev/kvm；为脚本设置 PVISOR_CASE_IMAGE；PVISOR_CASE_AGENT 指向 guest 中也可执行的 Agent；Lance 运行依赖齐备，脚本设置 PVISOR_CASE_LANCE=1。
+  准备：Linux；可访问 /dev/kvm；为脚本设置 PVISOR_CASE_IMAGE；PVISOR_CASE_AGENT 指向 guest 中也可执行的 Agent。
 
   预期：VM 以请求的内存运行，保留 stage 和轨迹目录。是否产生模型对话取决于 Agent 是否真的调用 Gateway；当前断言不检查对话内容。
 
-  <!-- pvisor-case: requires=linux,kvm,image,agent,lance -->
+  <!-- pvisor-case: requires=linux,kvm,image,agent -->
 
   ```bash
   pvisor --name vm-full \
@@ -1333,7 +1303,6 @@ D01 讲视图层组合，D02/D03 讲 host executor 的默认隔离和 workspace 
     --gateway-mode capture \
     --gateway-level dialogue \
     --gateway-route 'name="default",upstream="https://example.com/v1"' \
-    --record-format lance \
     --record-destination /tmp/pvisor-cases/vm-full/trajectory \
     --memory 4GiB \
     --cpu 4 \

@@ -15,16 +15,13 @@
 | `just docs-serve` | 本地 Zensical 预览，文件修改时自动刷新 |
 | `just docs-serve-dirty` | 自动重载卡住时重新启动 Zensical 预览 |
 | `just docs-build` | 构建静态文档站点 |
-| `just examples` | pVisor 与 pChronicle 产品示例套件 |
+| `just examples` | pVisor 产品示例套件 |
 | `just gate` | 格式化、lint 以及完整 Rust 测试工作区 |
 | `just dev` | 限定范围的 runtime crate 检查；不是完整工作区矩阵 |
 
 `just test` 使用 debug nextest profile 以便更快迭代。传入 Cargo package 名
-或短 crate 别名（`pvisor`、`pchronicle`、`pchronicle-cli`、
-`agentctl`、`capture`）。`just test pchronicle` 会同时跑
-`persisting-pchronicle` 与 `persisting-pchronicle-cli`（与 CI 的 pchronicle
-shard 一致）；只要 CLI 时用 `just test pchronicle-cli`。无参数形式还会跑
-`just test-py`。
+或短 crate 别名（`pvisor`、`agentctl`、`capture`）。`capture` 跑 Gateway 包。
+无参数形式还会跑 `just test-py`。
 
 ## 当前笔记
 
@@ -46,9 +43,7 @@ Rust 测试用 `cargo nextest` 做进程隔离和并行执行；用
 镜像（glibc 2.28），以便 rustc libstd 和 libkrun 能链接 `statx` /
 `copy_file_range`。
 
-`just dev` 刻意限定在 runtime crate 以及无默认 feature 的 pChronicle 检查。
-完整工作区、all-targets 和 storage-feature 矩阵请用 `just gate` 或 CI
-工作流。
+`just dev` 会格式化、lint 并跑 Rust 测试。`just ci` 在此基础上再做一次 debug 构建。
 
 `cargo nextest` 不跑 doctest。需要时把文档测试留在常规 Cargo runner 上，
 例如 `cargo test --doc -p <package>`。
@@ -69,7 +64,5 @@ Rust 测试用 `cargo nextest` 做进程隔离和并行执行；用
 Sanitizer 构建故意不进入 `just dev` / CI 的默认路径：它们会重建标准库，
 只适合聚焦的调试会话。
 
-支持的行为请从 [pVisor 指南](../pvisor/guides/index.md)、
-批量 Run 编排 或
-[pChronicle 指南](../pchronicle/guides/index.md) 开始，实现理由见
+支持的行为请从 [pVisor 指南](../pvisor/guides/index.md) 开始，实现理由见
 [系统架构](../system-design/index.md)。

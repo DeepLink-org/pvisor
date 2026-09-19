@@ -115,11 +115,8 @@ Landlock 完全是内部的：不向用户暴露系统策略文件、root helper
 工具兼容。后续可用可度量的 runtime-closure builder 收窄它；当前策略从不让
 这些层级可写。
 
-默认 pVisor 依赖图不包含 pChronicle 存储 backend、Lance 或 DataFusion。
-Durable Attempt 与轨迹发布使用轻量 `persisting-events` control feature 来
-启动并与 `pchronicle serve` 的 Control 组件通信；存储引擎和云 SDK 依赖留在
-该进程。`jujutsu-overlay` 增加 Jujutsu OverlayFS upper。依赖边界见
-[RFC-0007](../../rfcs/0007-events-contract-pchronicle-sidecar.md)。
+默认 pVisor 依赖图不包含单独的轨迹仓库。
+`jujutsu-overlay` 增加 Jujutsu OverlayFS upper。
 
 ```text
 pVisor process
@@ -153,7 +150,7 @@ root 中缺席；Landlock 独立对已投影层级强制访问权。绝对路径
 | 所需共享库与 runtime 数据 | 只读 |
 | 显式输入 Dataset | 只读 |
 | Run scratch 目录 | 读/写；最好是有大小限制的 tmpfs |
-| pVisor 状态、pChronicle、源凭据、home 目录 | 拒绝 |
+| pVisor 状态、Run capture 存储、源凭据、home 目录 | 拒绝 |
 | `/proc`、`/sys`、host socket | 除非显式投影或另行虚拟化，否则不给 Agent 访问 |
 | 最小设备 | 仅精确的 null、zero/full、random/urandom 和 tty 节点 |
 
@@ -355,7 +352,7 @@ host 与 guest 最初应要求相同架构和精确 macOS build。host 可执行
 relay。剪贴板、host 音频、GUI 设备、任意共享文件夹、端口转发和 ambient
 host socket 都不存在。host VMM helper 只获得对已准备合并 root、VM 模板、
 其私有 control socket 以及所需 Virtualization.framework 资源的访问；它不得
-继承 pChronicle、源凭据或不相关描述符。
+继承 Run capture 存储、源凭据或不相关描述符。
 
 VirtioFS 是最大的可行性风险。GhostVM 有一份关于 macOS guest 下
 [空 mount 与不可读文件](https://github.com/groundwater/GhostVM/issues/255)

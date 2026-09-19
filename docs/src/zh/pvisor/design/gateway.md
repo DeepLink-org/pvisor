@@ -1,8 +1,7 @@
 # pVisor Gateway — 架构与设计
 
 本文负责模型路由、协议适配、非阻塞 capture 与 event emission。如何捕获一次 Run 属于
-[Capture 指南](../guides/capture.md)；capture 之后的事实与投影 ownership 属于
-[pChronicle 轨迹存储](../../pchronicle/design/trajectory-storage.md)。
+[Capture 指南](../guides/capture.md)。捕获到的事件留在这次 Run 里。
 
 > **读者**：需要在 Agent 与 LLM 之间落地**可观测、可回放、可审计**轨迹的平台工程师、架构师与集成方。
 > **版本**：1.1（对外） &emsp;|&emsp; **最后更新**：2026-07-30
@@ -30,23 +29,22 @@
 
 ## 1. 摘要
 
-**Persisting Gateway 是 coding agents 的轨迹观察层**：让 **Claude Code** 或 **OpenAI Codex** 通过 `persisting-overlaynet` 的本地显式代理运行，即可得到可回放的事件流，并由 pChronicle 完成结构化落盘。
+**Persisting Gateway 是 coding agents 的轨迹观察层**：让 **Claude Code** 或 **OpenAI Codex** 通过 `persisting-overlaynet` 的本地显式代理运行，即可得到可回放的事件流，并以 EventRecord JSONL 形式留在这次 Run（可选 live Markdown）。
 
 主链路：
 
 ```text
 HTTP  ──►  events 流
-              ├─ 记录（append → events.lance，SoT）
+              ├─ 记录（append → events.jsonl，SoT）
               └─ 触发（订阅 / handler）
-                   └─ 格式转换（经 storyline hub）+ 落盘
-                      （agenticmd / atif / openai_msg / …）
+                   └─ 可选 live Markdown 投影
 ```
 
 它是 overlaynet 代理之上的可嵌入 **事件观察器与状态机**。在已支持的客户端上，通过 `pvisor run` 注入代理或显式设置模型 API 地址，即可在**不修改业务代码**的前提下：
 
 - 透明转发对话流量到上游模型；
 - 把每次 HTTP 交换写入 **events 流**（可持久化、可回放）；
-- 由 events 上的订阅触发物化与导出（Markdown、ATIF、openai_msg 等），而不是在代理路径里硬编码多种格式。
+- 由 events 上的订阅触发可选 live Markdown，而不是在代理路径里硬编码多种格式。
 
 Gateway 不是通用企业 API 网关的替代品，也不拥有网络数据面的实现；它作为 OverlayNet sink，围绕 **Agent 轨迹（trajectory）** 解释代理交换、转发协议并生产事件。
 
@@ -83,7 +81,7 @@ Gateway 不是通用企业 API 网关的替代品，也不拥有网络数据面�
 - `pvisor run` 内嵌 Gateway 对 **Claude Code / Codex** 的对话采集；
 - Claude Code 场景的 history replay 去重、subagent 分轨；
 - Codex 场景的 Responses ↔ Completions 桥接与上下文注入过滤；
-- Lance 全量事件 + Markdown 物化视图的双层存储；
+- EventRecord JSONL + 可选 live Markdown 的双层存储；
 - 轻量模型路由、协议桥接（Messages / Completions / Responses 等）。
 
 **不替代**
@@ -101,13 +99,13 @@ Agent 客户端
 ┌─────────────────────────────────────┐
 │  Persisting Gateway                  │
 │  HTTP → events 流                    │
-│   · 记录 → events.lance（SoT）       │
-│   · 触发 → storyline → 格式落盘      │
+│   · 记录 → events.jsonl（SoT）       │
+│   · 触发 → 可选 Markdown             │
 └──────────────┬──────────────────────┘
-               │ events / 派生产物
+               │ capture 留在这次 Run
                ▼
 ┌─────────────────────────────────────┐
-│  pChronicle / 分析 / 检索          │
+│  Run 存储（JSONL + Run Bundle）      │
 └─────────────────────────────────────┘
 ```
 
@@ -120,9 +118,9 @@ Agent 客户端
 | **观测不阻断** | 用户请求的延迟与成功率优先；采集失败写入 dead letter，**不**因写盘失败而中断 HTTP 响应。 |
 | **HTTP → events** | 代理主产物是 **events 流**（HTTP-first wire）；不是直接写 Markdown / ATIF。 |
 | **记录与触发分离** | 同一条 event 可 **append 落盘**，也可 **fan-out 触发**下游 handler；二者解耦。 |
-| **转换经 hub** | 物化 / 导出经 **storyline**（ATIF-aligned）再落到各格式；禁止外围格式两两直转。 |
-| **Lance 为事实源** | canonical 仅 `events.lance`；Markdown / ATIF 等是**派生落盘**，允许有损。 |
-| **单一写入门** | 进入 Lance 的 append 经统一引擎路径，避免双写竞态。 |
+| **派生视图可选** | live Markdown 是 events 流上的 handler，不是与 JSONL 并列的第二事实源。 |
+| **JSONL 为事实源** | canonical 存储是 EventRecord JSONL（`events.jsonl`）；Markdown 是**派生视图**，允许有损。 |
+| **单一写入门** | JSONL append 经统一引擎路径，避免双写竞态。 |
 
 ---
 
@@ -142,20 +140,11 @@ Gateway Sink（LLM 协议适配 + 发出轨迹观测）
     ▼
 events 流  ────────────────────────────────────────┐
     │                                              │
-    ├─ 记录 append ──► events.lance（SoT / replay） │
+    ├─ 记录 append ──► events.jsonl（SoT / replay） │
     │                                              │
-    └─ 触发 handler ──► interpret / fold            │
-                           │                       │
-                           ▼                       │
-                      storyline（hub）              │
-                           │                       │
-              ┌────────────┼────────────┐          │
-              ▼            ▼            ▼          │
-         agenticmd       atif      openai_msg …    │
-              │            │            │          │
-              └──────── 落盘 / 物化 ─────┘          │
+    └─ 触发 handler ──► 可选 live Markdown          │
                                                    │
-（可选）从 Lance 重放 ──────────────────────────────┘
+（可选）从 JSONL 重放 ──────────────────────────────┘
 ```
 
 要点：
@@ -163,7 +152,7 @@ events 流  ──────────────────────�
 1. **overlaynet 负责代理机制**：请求分类、CONNECT、绝对 URI 转发、出口策略与连接计数。
 2. **Gateway Sink 负责业务语义**：LLM 路由/协议转换、session 关联与 capture event，不实现第二套代理。
 3. **events 流是总线**：可记录、可订阅；同一条记录可同时落盘与触发。
-4. **格式转换与落盘是下游**：经 storyline hub，输出 agenticmd / atif / openai_msg 等。
+4. **派生视图是下游**：可选 live Markdown 由 events 流上的 handler 产生；capture 留在这次 Run。
 
 辅助坐标（会话边界，非 SoT）：
 
@@ -188,14 +177,14 @@ events 流  ──────────────────────�
 └───────────────┬─────────────────────────┬───────────────────┘
                 │ record                  │ trigger
                 ▼                         ▼
-         events.lance              handlers（interpret）
+         events.jsonl              handlers（interpret）
                                           │
                                           ▼
-                                   storyline → 各格式落盘
+                                   可选 live Markdown
 ```
 
 **Ingress**：协议层 → events（尽量保留 wire；摘要字段可选）。
-**Egress**：events 重放 / 订阅 → storyline → 派生格式落盘；与采集主路径解耦。
+**Egress**：events 重放 / 订阅 → 可选 live Markdown；与采集主路径解耦。
 
 ![Gateway event 写入与派生数据流](../../../assets/diagrams/persisting/gateway-dataflow.svg)
 
@@ -204,7 +193,7 @@ events 流  ──────────────────────�
 | | 写路径（记录） | 派生路径（触发） |
 |---|--------|--------|
 | **输入** | Proxy / import 发出的 event | 已进入流的 event（实时或重放） |
-| **输出** | `events.lance` append | storyline 及 agenticmd / atif / … |
+| **输出** | `events.jsonl` append | 可选 live Markdown |
 | **失败策略** | dead letter；不阻断 HTTP | 独立重试；不影响 SoT |
 | **保真** | HTTP-first，目标可回放 | 允许有损折叠 |
 
@@ -237,16 +226,16 @@ Live Markdown、轮次索引等视为 **events 触发的一类 handler**，不�
           │
     ┌─────┴──────────────────┐
     ▼                        ▼
- events.lance          handlers → storyline
- （SoT）                  → agenticmd / atif / … 落盘
+ events.jsonl          handlers → 可选 Markdown
+ （SoT）
 ```
 
 | 组件 | 职责 |
 |------|------|
 | **Proxy** | 唯一 HTTP 入口；转发上下游；把观测 **emit 进 events 流**（不直接写多种格式）。 |
-| **events 引擎** | 维护有序流：**记录**（append Lance）与 **触发**（fan-out handlers）。 |
-| **记录路径** | WAL → per-session 有序 apply → `events.lance`。 |
-| **触发路径** | 订阅 events → interpret → storyline → 各格式落盘 / Live Markdown。 |
+| **events 引擎** | 维护有序流：**记录**（append JSONL）与 **触发**（fan-out handlers）。 |
+| **记录路径** | WAL → per-session 有序 apply → `events.jsonl`。 |
+| **触发路径** | 订阅 events → interpret → 可选 live Markdown。 |
 | **会话索引** | 轻量 `sessions.json`：列表、token、费用估算。 |
 | **对账与 dead letter** | SoT 与派生落盘一致性；失败事件可重放。 |
 
@@ -275,8 +264,8 @@ Gateway 在**配置语义与路由模型**上借鉴 agentgateway 子集，并可
 要点：
 
 1. **Proxy 不等待**派生落盘完成再响应；先 emit，再继续转发。
-2. **草稿默认只触发 handler**（如 Live Markdown）；完整响应才 **记录**进 Lance，避免 partial 污染 SoT。
-3. 派生格式（agenticmd / atif / …）一律经 **storyline**；可实时触发，也可事后从 Lance 重放再触发。
+2. **草稿默认只触发 handler**（如 Live Markdown）；完整响应才 **记录**进 JSONL，避免 partial 污染 SoT。
+3. live Markdown 由 events 流上的 handler 产生；可实时触发，也可事后从 JSONL 重放再触发。
 
 ### 6.2 采集事件与记录类型
 
@@ -284,15 +273,15 @@ Gateway 在**配置语义与路由模型**上借鉴 agentgateway 子集，并可
 
 | 事件 | 典型效果（Dialogue 级别） |
 |------|---------------------------|
-| 请求到达 | Lance：请求记录；Markdown：user 块 |
+| 请求到达 | JSONL：请求记录；Markdown：user 块 |
 | 流式草稿 | 仅 Markdown：assistant 草稿（可原地覆盖） |
-| 响应完成 | Lance：流式/完整响应记录；Markdown：定稿 assistant |
-| 调用取消 | 仅 Lance：取消记录 |
-| Spawn 关联 | Lance + Markdown：关联元数据（不当作可跳过噪音） |
+| 响应完成 | JSONL：流式/完整响应记录；Markdown：定稿 assistant |
+| 调用取消 | 仅 JSONL：取消记录 |
+| Spawn 关联 | JSONL + Markdown：关联元数据（不当作可跳过噪音） |
 
 **采集级别**（Summary / Dialogue / Full）控制记录粒度；生产默认 **Dialogue**：
 
-| 级别 | Lance / Markdown 摘要字段 | `payload.body` |
+| 级别 | JSONL / Markdown 摘要字段 | `payload.body` |
 |------|---------------------------|----------------|
 | `summary` | 仅 model、path、字节数 | ❌ |
 | `dialogue`（默认） | `user_content` / `assistant_content` 可见对话文本 | ❌ |
@@ -300,7 +289,7 @@ Gateway 在**配置语义与路由模型**上借鉴 agentgateway 子集，并可
 
 省略无关探测流量（如 `count_tokens`、history replay）的规则与采集级别无关，由物化过滤统一处理。详见本页 6.4 节。
 
-存储记录类型（`http.request` / `llm.request`、`llm.response.stream`、`session.*` 等）属于 **events 词汇**，由 Proxy emit；handler 再折叠为 storyline，不必与 HTTP 帧一一对应到对话轮。
+存储记录类型（`http.request` / `llm.request`、`llm.response.stream`、`session.*` 等）属于 **events 词汇**，由 Proxy emit；Markdown handler 处理，不必与 HTTP 帧一一对应到对话轮。
 
 #### 6.2.1 时间戳与顺序
 
@@ -318,13 +307,13 @@ Gateway 在**配置语义与路由模型**上借鉴 agentgateway 子集，并可
 ```text
 助手输出:  "你" → "你好" → "你好，我来帮你…"
 Markdown:   [草稿] → [覆盖草稿] → [定稿]
-Lance:      —      —              一条最终响应事件
+JSONL:      —      —              一条最终响应事件
 ```
 
 - 草稿块带明确标记；定稿时按 **call + 角色** 覆盖同一块，避免重复段落。
 - 块头 schema 带版本号（`v: 1`），便于将来演进线格式而不改文件后缀。
 
-详见 [AgenticMD 格式](../../pchronicle/reference/agenticmd.md)。
+详见 Capture 指南中的 Markdown 布局。
 
 ### 6.4 可见对话提取（含多模态）
 
@@ -350,8 +339,7 @@ Gateway 在 **Dialogue** 级别下，从客户端原始 HTTP body（而非 upstr
 `capture_level = full` 时完整 JSON 仍在 `payload.body`，但 Markdown 物化**仍只展示占位符**，不嵌入像素数据。
 
 **后续（规划）**：sidecar 资产目录 `{run}/assets/{call_id}/…` + payload 引用；内部
-materializer 可以输出指向 `assets/…` 的 Markdown 图片。当前公共 `pchronicle` CLI 不为
-这项规划预留命令。见本页 11 节演进方向。
+materializer 可以输出指向 `assets/…` 的 Markdown 图片。见本页 11 节演进方向。
 
 协议回归：`crates/persisting-gateway/tests/ag_fixture_tests.rs` + `tests/support/ag_capture_cases.rs`（agentgateway fixture 矩阵）。
 
@@ -359,16 +347,16 @@ materializer 可以输出指向 `assets/…` 的 Markdown 图片。当前公共 
 
 ## 7. 存储与一致性
 
-> 双层存储、目录约定、materialize/import 路径见 [轨迹存储模型](../../pchronicle/design/trajectory-storage.md)。
+> 双层存储、目录约定、materialize/import 路径见 轨迹存储模型。
 
 ### 7.1 双层存储
 
-| | Lance（事实源） | Markdown（物化视图） |
+| | JSONL（事实源） | Markdown（物化视图） |
 |---|----------------|----------------------|
 | **读者** | 程序、检索、replay | 人、git、review |
 | **完整性** | 无损（在采集级别内） | 有损：过滤内部与重复 history |
-| **写入** | append 到 `events.lance` | live upsert 或批量 append / 全量 materialize |
-| **关系** | 行数 ≥ 块数（物化只减不增） | 从 Lance 重建可修复漂移 |
+| **写入** | append 到 `events.jsonl` | 启用 `--gateway-stream-markdown` 时 live upsert |
+| **关系** | 行数 ≥ 块数（物化只减不增） | 从 JSONL 重建可修复漂移 |
 
 ### 7.2 物化过滤（统一策略）
 
@@ -377,7 +365,7 @@ materializer 可以输出指向 `assets/…` 的 Markdown 图片。当前公共 
 - 内部 `count_tokens`、影子模型预热；
 - Claude Code 式 **history replay**（用户消息计数未增加的重发）；
 - 无可见正文的空记录；
-- 纯生命周期、仅-cancel 类记录（保留在 Lance）。
+- 纯生命周期、仅-cancel 类记录（保留在 JSONL）。
 
 Spawn 关联等「对人仍有意义」的事件**不会**被误杀。
 
@@ -386,25 +374,16 @@ Spawn 关联等「对人仍有意义」的事件**不会**被误杀。
 每个 Markdown 会话文件可带 YAML 摘要：`turns`、token、估算费用、子 Agent 列表、客户端信息等。
 **轮次数以故事读模型为准**，块内 `turn` 字段仅作展示启发式，不作为权威计数。
 
-### 7.4 三轨对账（Reconcile）
+### 7.4 对账（Reconcile）
 
-一次 Run 正常结束时，对每个 session 比对：
-
-| 轨道 | 含义 |
-|------|------|
-| **Markdown** | 物化块中的 call 集合 |
-| **Lance** | 事件日志中应对话出现的 call 集合 |
-| **Story** | 从事件重放得到的 call 集合 |
-
-三者一致且结构检查通过，才认为「人读视图与事实源对齐」。不一致时应用 materialize 或排查 dead letter，而非直接信任 Markdown。
+一次 Run 正常结束时，将人读 Markdown 视图（若启用）与 JSONL 事件日志比对。不一致时重放 handler 或排查 dead letter，而非直接信任 Markdown。
 
 ### 7.5 辅助产物
 
 | 产物 | 作用 |
 |------|------|
 | 事件 WAL | 进程崩溃后重放未确认的采集事件 |
-| dead letter | 应用失败或 Lance 刷盘失败的留存与重放 |
-| 故事快照 | 退出时固化各 Story 的轮次读模型，供摘要与恢复 |
+| dead letter | 应用失败或 JSONL 刷盘失败的留存与重放 |
 
 ---
 
@@ -427,7 +406,7 @@ Persisting Gateway 是一个**轻量 LLM 协议网关**，服务于「本地或�
 
 ### 9.1 路由与存储键
 
-每个 HTTP 请求绑定一条**采集路由**：逻辑 session、磁盘上的 storage 键（决定 `.md` 文件名与 Lance 事件日志路径）、可选 subagent 标识。
+每个 HTTP 请求绑定一条**采集路由**：逻辑 session、磁盘上的 storage 键（决定 `.md` 文件名与 JSONL 事件日志路径）、可选 subagent 标识。
 Capture run 下，子 Agent 通常写入 `agent-{id}.md`；主会话写入 `run-{id}.md` 或扁平 session 名。
 
 ### 9.2 文件隔离不变式
@@ -440,21 +419,15 @@ Capture run 下，子 Agent 通常写入 `agent-{id}.md`；主会话写入 `run-
 
 主 Agent 助手消息中的 spawn 提示与子 Agent 首包注册可能**时间错开**。系统用 Run 级注册表做延迟匹配与回填，使主会话在事后仍能看到「调用了哪个子 Agent、轨迹文件在哪」。
 
-### 9.4 单 run dataset 多 `session_id`（Claude run bucket）
+### 9.4 单次 Run 中的多个 `session_id`
 
-一次 `pvisor run --record-format lance --record-destination WAREHOUSE` 的 pChronicle sidecar 通常在 run 目录写一个
-`events.lance/` dataset，但行内 `session_id` **可能混存多个值**。pVisor 不直接打开
-Lance：
+`--record-destination` 把 EventRecord JSONL 写到目标目录。同一文件里的
+`session_id` **仍可能混有多个值**：
 
 | 典型来源 | `session_id` 取值 |
 |----------|-------------------|
 | pVisor 生命周期 / Run 头 | `run-{uuid}`（与目录名一致） |
 | Claude Code 对话 HTTP | header 注入的 UUID（与 run id 不同） |
-
-因此内部统计展开 run bucket（`session_id == root_session_id`）时，会先读 Lance 中 distinct
-`session_id`，再**逐分区统计**，避免“第二个 session 显示 0 turns”。实现位于
-`persisting-pchronicle::expand_story_locations`；当前公共 CLI 通过 `analysis` 和 `query`
-暴露统计能力。详见[轨迹存储](../../pchronicle/design/trajectory-storage.md)的 run bucket 分区说明。
 
 ---
 
@@ -465,7 +438,7 @@ Lance：
 ```text
 请求线程 ──► 发事件（WAL 非阻塞入队 + apply 入队）──► 继续转发
                     │
-                    └──► 后台：有序 apply ──► pChronicle sidecar / Markdown
+                    └──► 后台：有序 apply ──► events.jsonl / Markdown
                               │
                               ├─ 成功 → 确认 WAL
                               └─ 失败 → dead letter + 保留 WAL（重启重放，不影响 HTTP）
@@ -488,8 +461,8 @@ Lance：
 | 形态 | 适用场景 |
 |------|----------|
 | **`pvisor run`** | 包装一次 Agent 命令（如 `claude`、`codex`）；注入代理环境变量并管理内嵌 Gateway |
-| **pChronicle sidecar / 补 Markdown** | `--record-format lance` 由 sidecar 落盘到 `events.lance/`；需要 live md 时同时启用 `--gateway-stream-markdown` |
-| **Dead letter** | 保留在 Run storage 中供 pChronicle API 诊断 |
+| **JSONL 记录** | `--record-destination` 写入 EventRecord JSONL；需要 live Markdown 时同时启用 `--gateway-stream-markdown` |
+| **Dead letter** | 保留在 Run storage 中供 capture 诊断 |
 
 配置示例（节选）：
 
@@ -516,17 +489,16 @@ api_key_env = "DEEPSEEK_API_KEY"
 
 | 方向 | 动机 |
 |------|------|
-| **多模态 sidecar（Phase 1）** | 将 base64 / 生成图落盘到 `{run}/assets/`，Lance 只存引用；支持 materialize 嵌图与可控 replay |
+| **多模态 sidecar（Phase 1）** | 将 base64 / 生成图落盘到 `{run}/assets/`，JSONL 只存引用 |
 | **Cursor 实时采集与 import** | 与 Claude Code 对等的注入与 JSONL 导入 |
-| Lance dataset 拆分与 compaction | 长 run 下 `events.lance/` 过大时的拆分策略 |
+| JSONL compaction | 长 run 下 `events.jsonl` 过大时的拆分或轮转策略 |
 | WAL 与序号恢复增强 | 降低 crash 后重复 apply 与 seq 冲突风险 |
 | Markdown 追加日志 + 周期性 compact | 长会话 live upsert 的 IO 与 git diff 友好性 |
 | 外部定价表 | 摘要费用估算可配置 |
-| 故事读模型 enrich | 父子 Story、调用元数据与 spawn 完全闭环 |
-| Lance 列布局优化 | 更好利用列存检索，而非大 blob |
+| 会话读模型 enrich | 父子 session、调用元数据与 spawn 完全闭环 |
 | 协议面收敛 | 随行业 API 稳定，收缩长期维护的转换矩阵 |
 
-块格式通过 `v: 1` 显式版本化；详见 [AgenticMD 格式](../../pchronicle/reference/agenticmd.md)。
+块格式通过 `v: 1` 显式版本化；详见 Capture 指南中的 Markdown 布局。
 
 ---
 
@@ -535,10 +507,7 @@ api_key_env = "DEEPSEEK_API_KEY"
 | 文档 | 内容 |
 |------|------|
 | [Capture 快速上手](../guides/capture.md) | **上手**：构建 CLI、`pvisor run`、查看轨迹、排错 |
-| [轨迹存储模型](../../pchronicle/design/trajectory-storage.md) | Lance ↔ Markdown 数据流、materialize、import |
-| [轨迹 Markdown 格式](../../pchronicle/reference/agenticmd.md) | 块结构、字段规范、subagent 脚注、golden 示例 |
 | [pVisor 命令](../reference/cli.md) | 单 Run 执行、状态与文件系统操作 |
-| [pChronicle 命令](../../pchronicle/reference/cli.md) | Dataset 查询、分析、交换与只读服务 |
 
 **可执行示例**：
 

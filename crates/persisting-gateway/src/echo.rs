@@ -109,7 +109,7 @@ pub async fn serve_with_shutdown(
 }
 
 async fn health() -> Json<Value> {
-    Json(json!({"status": "ok", "service": "pchronicle-echo"}))
+    Json(json!({"status": "ok", "service": "pvisor-echo"}))
 }
 
 async fn raw_echo(
@@ -737,7 +737,7 @@ mod tests {
     }
 
     #[tokio::test]
-    async fn pchronicle_echo_exercises_forward_rewrite_bridge_and_capture() {
+    async fn echo_exercises_forward_rewrite_bridge_and_capture() {
         let (echo_base, echo_stop) = spawn_echo().await;
         let gateway_listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
         let gateway_address = gateway_listener.local_addr().unwrap();

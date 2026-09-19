@@ -356,7 +356,7 @@ pub(crate) fn prepare_attempt(
         },
     )?;
 
-    // A Run has one top-level identity across pVisor, Gateway and pChronicle.
+    // A Run has one top-level identity across pVisor and Gateway.
     // Subagent sessions remain separate Storylines beneath this root.
     let root_session = spec.run_id.as_str().to_string();
     write_run_session(&capture_storage, &root_session)?;
@@ -880,7 +880,9 @@ fn orchestration_from_spec(
 ) -> std::collections::BTreeMap<String, serde_json::Value> {
     spec.metadata
         .iter()
-        .filter(|(key, _)| key.starts_with("ppilot.") || key.starts_with("persisting.ppilot."))
+        .filter(|(key, _)| {
+            key.starts_with("pvisor.orchestration.") || key.starts_with("pvisor.supervisor.")
+        })
         .map(|(key, value)| (key.clone(), value.clone()))
         .collect()
 }

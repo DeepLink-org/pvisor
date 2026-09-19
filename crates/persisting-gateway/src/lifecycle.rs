@@ -1,4 +1,4 @@
-//! Session lifecycle events for the raw Lance event log.
+//! Session lifecycle events for the raw event log.
 
 use serde::{Deserialize, Serialize};
 use serde_json::{Value, json};

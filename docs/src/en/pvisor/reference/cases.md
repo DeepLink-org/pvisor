@@ -18,7 +18,7 @@ people and executed by `scripts/run-pvisor-cases.py`.
 | Review, apply, and drop changes | C01–C05 |
 | Host and VM execution | D01–E06 |
 | Native OCI containers | F01–F04 |
-| Network and Gateway behavior | G01–H03 |
+| Network and Gateway behavior | G01–H02 |
 | RunConfig and RunSpec inputs | I01–I03 |
 | Complete combinations | J01–J03 |
 

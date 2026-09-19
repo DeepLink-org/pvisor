@@ -1,8 +1,7 @@
 # End-to-end architecture
 
-This document defines the contracts between Persisting products. Provider
-mechanisms belong to pVisor Design; storage layouts belong to pChronicle Design;
-commands belong to each product's Reference.
+This document defines the contracts inside pVisor. Provider mechanisms belong
+to pVisor Design; commands belong to the pVisor Reference.
 
 ![Persisting product domains and integration](../../assets/diagrams/persisting/system-products.svg)
 
@@ -10,9 +9,8 @@ commands belong to each product's Reference.
 
 | Product or layer | Owns | Does not own |
 | --- | --- | --- |
-| `persisting-events` contract | storage-independent `EventRecord` identity/envelope and the optional versioned pChronicle control protocol | storage rows, storage engines, query, or projection |
-| pVisor | one Run, its Attempts, execution environment, capability admission, effects, and runtime evidence | many-Run scheduling or durable history queries |
-| pChronicle | Agent trajectory storage engine: path identity, Snapshot, canonical events, projections, query, and exchange | starting, scheduling, or controlling a Run |
+| `persisting-events` contract | storage-independent `EventRecord` identity and envelope | storage engines, query, or projection |
+| pVisor | one Run, its Attempts, execution environment, capability admission, effects, and runtime evidence | many-Run scheduling |
 | Runtime provider | one physical execution mechanism | logical Run identity or product policy |
 
 Gateway, OverlayFS, and OverlayNet are pVisor runtime mechanisms. They do not
@@ -102,12 +100,12 @@ Selected paths can be applied more than once while the stage remains available.
 Network requests and remote tool mutations are separate effect dimensions and
 cannot be inferred from filesystem state.
 
-When configured, pVisor publishes Gateway trajectory events plus `run.created`,
-`run.state_changed`, and terminal lifecycle records to pChronicle. Those records
-carry Run/Attempt identity, lifecycle facts, and available event-carried
-Evidence. Artifact references, lineage, staged filesystem Effects,
-AgentCtl/network/resource Evidence, and the full Run Bundle remain local unless
-a separate adapter moves them.
+When configured, pVisor writes Gateway trajectory events plus `run.created`,
+`run.state_changed`, and terminal lifecycle records as EventRecord JSONL with
+the Run. Those records carry Run/Attempt identity, lifecycle facts, and
+available event-carried Evidence. Artifact references, lineage, staged
+filesystem Effects, AgentCtl/network/resource Evidence, and the full Run Bundle
+remain local unless moved separately.
 
 ## Dataset path
 
@@ -140,13 +138,9 @@ external file does not convert it into a canonical runtime event Source.
 Ingestion preserves these boundaries. A normalized representation or Catalog
 Snapshot does not upgrade the evidence supplied by its Source.
 
-The default pVisor build does not link Lance or DataFusion. Configured
-Chronicle publication starts a pChronicle sidecar over authenticated loopback
-IPC and treats only a successful sidecar acknowledgement as durable. The
-legacy mode name `lance` is an alias for `spawn`; pVisor no longer writes Lance
-itself. Sidecar flags and mode names belong to the
-[pVisor CLI reference](../pvisor/reference/cli.md) and
-[RFC-0007](../rfcs/0007-events-contract-pchronicle-sidecar.md).
+Capture writes `EventRecord` values into the Run as local JSONL; this
+repository does not start a separate history process. Flag names belong to the
+[pVisor CLI reference](../pvisor/reference/cli.md).
 
 ## Failure and recovery
 
@@ -154,9 +148,9 @@ itself. Sidecar flags and mode names belong to the
 | --- | --- | --- |
 | Attempt exits or provider disappears | pVisor | finalize evidence; expose failure or create a fenced replacement Attempt |
 | sidecar append queue is saturated or closed | pVisor/Gateway producer | reject before submission and report the failure; do not claim durability |
-| append connection or acknowledgement is lost | producer and pChronicle writer | preserve the write as unknown because it may have committed; do not reuse its sequence as if definitely rejected |
-| history publication conflicts | pChronicle writer | preserve the previously published Snapshot; surface or retry according to the writer contract |
-| view generation fails | pChronicle | keep canonical facts readable; rebuild the derived view |
+| append connection is lost | producer | preserve the write as unknown; do not reuse its sequence as if definitely rejected |
+| history publication conflicts | capture sink | preserve the previously published records; surface or retry according to the sink contract |
+| view generation fails | Gateway | keep canonical events readable |
 
 Recovery never upgrades uncertainty into success. A missing terminal fact, a
 lost callback, and an unenforced capability remain visible states.
@@ -165,9 +159,9 @@ lost callback, and an unenforced capability remain visible states.
 
 Security is reported per capability dimension. pVisor records requested policy,
 installed mechanism, provider identity, enforcement result, and observed
-effects. Configured pChronicle capture stores lifecycle facts and only the
-Evidence carried by Gateway or lifecycle event records; the broader Run Bundle
-evidence inventory remains local unless moved separately.
+effects. Configured capture stores lifecycle facts and only the Evidence
+carried by Gateway or lifecycle event records; the broader Run Bundle evidence
+inventory remains local.
 
 This produces a chain rather than a boolean label. The local Run evidence
 chain does not mean every layer is automatically published into durable
@@ -184,7 +178,7 @@ requested policy
 Optional configured persistence
   Gateway trajectory events + pVisor lifecycle records
     → event-carried Evidence only
-    → pChronicle durable history
+    → Run-local capture
 ```
 
 See [Security and evidence](security-evidence.md) for evidence levels and
@@ -194,13 +188,10 @@ See [Security and evidence](security-evidence.md) for evidence levels and
 
 | Boundary | Contract owner | Detailed document |
 | --- | --- | --- |
-| logical runtime event and local Chronicle control protocol | `persisting-events` | [RFC-0007](../rfcs/0007-events-contract-pchronicle-sidecar.md) |
+| logical runtime event | `persisting-events` | [pVisor Gateway design](../pvisor/design/gateway.md) |
 | Agent execution and Effect review | pVisor | [pVisor concepts](../pvisor/concepts/index.md) and [guides](../pvisor/guides/index.md) |
 | provider and runtime mechanisms | pVisor | [pVisor design](../pvisor/design/index.md) |
-| Dataset, facts, and projections | pChronicle | [pChronicle concepts](../pchronicle/concepts/index.md) |
-| storage and Snapshot implementation | pChronicle | [pChronicle design](../pchronicle/design/index.md) |
-| stable command syntax and formats | each product | [pVisor reference](../pvisor/reference/index.md) and [pChronicle reference](../pchronicle/reference/index.md) |
-| normative ownership decisions | Project RFCs | [RFC index](../rfcs/index.md) |
+| stable command syntax | pVisor | [pVisor reference](../pvisor/reference/index.md) |
 
 This document changes only when a cross-product contract changes. Product
 implementation status and roadmap details belong to their owning Design pages

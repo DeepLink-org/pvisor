@@ -80,7 +80,7 @@ enum WalCommand {
 /// Event and ACK submissions are both best-effort and asynchronous. Once a line
 /// reaches the writer it is protected by group commit, while queue saturation or
 /// a crash before the next commit may lose the WAL copy. Canonical capture keeps
-/// its independent apply/Lance durability path.
+/// its independent apply durability path.
 pub(crate) struct EventWal {
     next_seq: AtomicU64,
     sender: Option<mpsc::SyncSender<WalCommand>>,

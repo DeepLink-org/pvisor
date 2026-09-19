@@ -7,15 +7,12 @@
 
 - 让 pVisor 的 Run → review → apply 在 macOS 和 Linux 上稳定可预测。
 - 在每个 Run Bundle 中清楚展示实际控制机制、Effect 和警告。
-- 让 pChronicle 的 onboarding、Dataset 发现、有界 SQL 和 Evidence 定位无需服务
-  或账号即可使用。
 - 保持中英文文档路径一致，并让示例可以运行。
 
-## 下一步：把执行连接到持久历史
+## 下一步：收紧 capture 和比较
 
-- 让配置好的 pVisor capture 生成稳定的 pChronicle Source。
-- 在捕获、规范化和查询之间保留 Run identity 与 lineage。
-- 改进 Run、Session 和 revision 的比较流程。
+- 让配置好的 capture 挂在稳定的 Run identity 上。
+- 改进同一项目上多次 Run 的比较。
 - 记录不同 provider 的边界，不宣称一个统一的隔离强度。
 
 ## 之后：从单机走向团队和集群

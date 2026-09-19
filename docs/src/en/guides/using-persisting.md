@@ -1,7 +1,6 @@
 # Using Persisting
 
-Choose the smallest workflow that answers the question in front of you. You do
-not need to adopt every component at once.
+Choose the smallest workflow that answers the question in front of you.
 
 ## I need an Agent to change a project safely
 
@@ -9,25 +8,19 @@ Start with [pVisor](../pvisor/get-started.md): run one Agent in a staged
 workspace, review the Run Bundle, and apply only a trusted path. Add network or
 provider controls when the next Run needs them.
 
-## I already have trajectory data
+## I need a record of model traffic
 
-Start with [pChronicle](../pchronicle/get-started.md): open a Dataset, inspect a
-summary, ask one bounded SQL question, and locate the evidence behind the
-answer. Use exchange or serving guides only after the read-only path works.
-
-## I need execution and history together
-
-Use [pVisor capture](../pvisor/guides/capture.md) when lifecycle events from a
-Run should become a pChronicle Source. The private Run Bundle remains a local
-execution record; capture is an explicit handoff, not an implicit copy of every
-artifact.
+Use [pVisor capture](../pvisor/guides/capture.md) when a Run should keep the
+model requests and responses it actually sent. The private Run Bundle remains
+the local execution record.
 
 ## A reliable operating habit
 
-1. Start with one Run or one Dataset.
+1. Start with one Run.
 2. Record the exact command, path, and provider.
-3. Review the result before applying, exporting, or sharing it.
-4. Keep the Source and evidence location with any conclusion.
-5. Move to automation only after the manual path is repeatable.
+3. Review the result before applying or sharing it.
+4. Keep the Run Bundle with any conclusion.
+5. Automate only after the manual path is repeatable.
 
-For implementation context, read the [design principles](../system-design/design-principles.md).
+See [Design principles](../system-design/design-principles.md) for the
+implementation background.

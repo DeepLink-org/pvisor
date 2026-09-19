@@ -3,9 +3,8 @@
 #
 repo := justfile_directory()
 docs_dir := repo / "docs"
-gen_py := repo / "scripts" / "generate_benchmark_data.py"
 
-# Product CLI component set. Keep all Cargo build entry points below routed
+# Product CLI component set. Keep Cargo build entry points below routed
 # through `build-components` so package/bin changes have one source in just.
 component_pvisor := "-p persisting-pvisor --bin pvisor"
 
@@ -26,10 +25,6 @@ default:
     @echo "  just pvisor              # 构建 release pVisor；macOS 自动签名"
     @echo "  just examples-pvisor     # 构建并验证全部 pVisor examples"
     @echo "  just benchmark-pvisor    # pVisor 进程启动与 Bundle 访问基准"
-    @echo "  just chronicle-binary    # 构建可直接测试的 pChronicle UI binary"
-    @echo "  just echo                # 启动确定性的本地 LLM Echo upstream"
-    @echo "  just benchmark-gateway   # Gateway 转发与持久化黑盒压测"
-    @echo "  just benchmark-gateway-replay # 回放 examples/data 并生成人工 review bundle"
     @echo "  just build-wheel         # 打 release wheel → dist/"
     @echo "  just docs-serve          # 本地文档"
 
@@ -47,13 +42,8 @@ test-list:
         just dev                  提交前：fmt + lint + test-rust
         just ci                   CI 近似
         just test [package]        日常功能测试；可指定 Cargo 包
-        just proptest pchronicle   pChronicle 全量性质测试回归
         just capture-test / test-py  其他定向测试入口
         （Rust 测试由 cargo nextest 执行；文档测试仍用 cargo test）
-        just regression           大规模黑盒回归（按场景运行 tests/regression）
-        just gateway-fuzz         一分钟 Gateway 四类 fuzz 汇总
-        just gateway-fuzz-formats / gateway-fuzz-forwarding
-        just gateway-fuzz-storage / gateway-fuzz-network
         just cases pvisor
         just cases pvisor --run-unavailable --keep
 
@@ -98,100 +88,6 @@ example-pvisor scenario profile="release": (pvisor profile)
 
 examples: examples-pvisor
 
-# Run repository-level black-box regression scenarios against prebuilt real
-# component binaries. Long-running scenarios are excluded from this sweep.
-[group('test')]
-regression:
-    bash tests/regression/run.sh
-
-# Run the four Gateway fuzz contracts (about one minute total by default).
-# Override duration, concurrency, and rate through PERSISTING_FUZZ_* variables.
-[group('test')]
-gateway-fuzz:
-    bash tests/regression/gateway-fuzz/run.sh
-
-[group('test')]
-gateway-fuzz-formats:
-    bash tests/regression/gateway-fuzz/formats/run.sh
-
-[group('test')]
-gateway-fuzz-forwarding:
-    bash tests/regression/gateway-fuzz/forwarding/run.sh
-
-[group('test')]
-gateway-fuzz-storage:
-    bash tests/regression/gateway-fuzz/storage/run.sh
-
-[group('test')]
-gateway-fuzz-network:
-    bash tests/regression/gateway-fuzz/network-policy/run.sh
-
-# Benchmark Gateway forwarding, typed capture, WAL, and durable Lance append
-# against the deterministic local Echo upstream.
-# Set PERSISTING_KEEP_TEST_ARTIFACTS=1 to retain the Dataset, WAL, and logs.
-# Usage: `just benchmark-gateway`, or `just benchmark-gateway 30 32 1024 0 16 2048`.
-[group('benchmark')]
-benchmark-gateway duration="10" concurrency="16" payload_bytes="256" warmup="0" sessions="16" requests="1024":
-    #!/usr/bin/env bash
-    set -euo pipefail
-    extra_args=()
-    if [[ "${PERSISTING_KEEP_TEST_ARTIFACTS:-0}" == "1" ]]; then
-      extra_args+=(--keep-artifacts)
-    fi
-    bash benchmark/gateway/run.sh \
-      --duration "{{ duration }}" \
-      --concurrency "{{ concurrency }}" \
-      --sessions "{{ sessions }}" \
-      --requests "{{ requests }}" \
-      --payload-bytes "{{ payload_bytes }}" \
-      --warmup "{{ warmup }}" \
-      "${extra_args[@]}"
-
-# Replay every supported trajectory example through Gateway and write a
-# timestamped, human-reviewable bundle. Both arguments accept relative paths.
-[group('benchmark')]
-benchmark-gateway-replay data="examples/data" output="benchmark/gateway/results/replay-review":
-    bash benchmark/gateway/replay.sh \
-      --data "{{ data }}" \
-      --output "{{ output }}"
-
-# Find Gateway's saturation point with a closed-loop concurrency sweep. This
-# consumes the existing release binary and deliberately skips the Echo baseline.
-# Usage: `just benchmark-gateway-sweep`, or
-# `just benchmark-gateway-sweep 10 "1 2 4 8 16 32 64" 256 0 16 256`.
-[group('benchmark')]
-benchmark-gateway-sweep duration="5" concurrencies="1 2 4 8 16 32" payload_bytes="256" warmup="0" sessions="16" requests="256":
-    #!/usr/bin/env bash
-    set -euo pipefail
-    for concurrency in {{ concurrencies }}; do
-      printf '\n==> Gateway concurrency %s\n' "$concurrency"
-      bash benchmark/gateway/run.sh \
-        --duration "{{ duration }}" \
-        --concurrency "$concurrency" \
-        --sessions "{{ sessions }}" \
-        --requests "{{ requests }}" \
-        --payload-bytes "{{ payload_bytes }}" \
-        --warmup "{{ warmup }}" \
-        --skip-baseline \
-        --output "benchmark/gateway/results/sweep-c${concurrency}.json"
-    done
-
-# Run the unified Criterion + hyperfine pChronicle smoke benchmark and render
-# raw JSON, Markdown, HTML, and a Bencher-compatible metric projection.
-[group('benchmark')]
-benchmark-pchronicle suite="smoke" output="target/pchronicle-benchmark/current":
-    python3 benchmark/pchronicle/bench.py run \
-      --suite "{{ suite }}" \
-      --output "{{ output }}"
-
-# Compare two pChronicle raw reports generated on the same testbed.
-[group('benchmark')]
-benchmark-pchronicle-compare baseline candidate output="target/pchronicle-benchmark/comparison":
-    python3 benchmark/pchronicle/bench.py compare \
-      --baseline "{{ baseline }}" \
-      --candidate "{{ candidate }}" \
-      --output "{{ output }}"
-
 # Run pVisor's process-level startup and durable Run Bundle benchmark. The
 # smoke suite is intended for PR CI; nightly raises warmups and sample counts.
 [group('benchmark')]
@@ -218,49 +114,13 @@ test-pvisor-benchmark:
 
 # ── 构建 ─────────────────────────────────────────────────────────────────────
 
-# Start the deterministic local LLM upstream used to test Gateway forwarding,
-# model/protocol rewriting, streaming, and capture.
-# Usage: `just echo`, or `just echo 127.0.0.1:19080 base64`.
-[group('build')]
-echo listen="127.0.0.1:19080" encoding="plain":
-    target/release/pchronicle echo --listen "{{ listen }}" --encoding "{{ encoding }}"
-
-# Build the Dioxus trajectory workbench for compile-time embedding.
-chronicle-web-build:
-    python3 scripts/packaging/stage_wheel_binaries.py --web-only
-
-# Start the Web frontend against a separately running pChronicle server.
-chronicle-web-dev:
-    cd pchronicle-web && dx serve
-
-# Build the embedded Web UI and a directly runnable pChronicle test binary.
-# Usage: `just chronicle-binary` or `just chronicle-binary release`.
-[group('build')]
-chronicle-binary profile="debug": chronicle-web-build
-    #!/usr/bin/env bash
-    set -euo pipefail
-    profile="{{ profile }}"
-    case "$profile" in
-      debug|release) ;;
-      *)
-        echo "unsupported pChronicle profile: $profile (expected debug or release)" >&2
-        exit 2
-        ;;
-    esac
-    just build-components "$profile" pchronicle
-    binary="{{ repo }}/target/$profile/pchronicle"
-    test -x "$binary"
-    "$binary" serve --help >/dev/null
-    printf 'Built pChronicle test binary: %s\n' "$binary"
-    printf 'Run: %s serve --warehouse %s\n' "$binary" "{{ repo }}/data"
-
-# Thin forward to `build-components` for the full product CLI set.
+# Thin forward to `build-components` for the product CLI.
 [group('build')]
 build profile="debug":
     just build-components "{{ profile }}" all
 
-# Single Cargo build entry for product CLIs. Any set that produces `pvisor`
-# also applies the macOS Hypervisor entitlement when running on Darwin.
+# Single Cargo build entry for the product CLI. Building `pvisor` also applies
+# the macOS Hypervisor entitlement when running on Darwin.
 [group('build')]
 build-components profile="debug" components="all":
     #!/usr/bin/env bash
@@ -273,11 +133,9 @@ build-components profile="debug" components="all":
       *) echo "unsupported build profile: $profile (expected debug or release)" >&2; exit 2 ;;
     esac
 
-    built_pvisor=0
     case "$components" in
-      all|runtime|pvisor|pvisor-pchronicle)
+      all|runtime|pvisor)
         cargo build --profile "$cargo_profile" --locked {{ component_pvisor }}
-        built_pvisor=1
         ;;
       *)
         echo "unsupported component set: $components (all|pvisor)" >&2
@@ -285,9 +143,7 @@ build-components profile="debug" components="all":
         ;;
     esac
 
-    if [[ "$built_pvisor" -eq 1 ]]; then
-      just _sign-pvisor "$profile"
-    fi
+    just _sign-pvisor "$profile"
 
 # macOS HVF entitlement for the pVisor binary produced by `build-components`.
 [private]
@@ -387,19 +243,6 @@ lint-py-all:
 clippy-deny:
     cargo clippy --workspace --all-targets --locked -- -D warnings
 
-# pchronicle-web is a separate Cargo workspace and is not covered by the root
-# workspace Clippy invocation above.
-clippy-pchronicle-web:
-    cargo clippy --manifest-path pchronicle-web/Cargo.toml --all-targets --locked -- -D warnings
-
-clippy-pchronicle-panics:
-    cargo clippy -p persisting-pchronicle --lib --locked -- -D warnings -D clippy::unwrap_used -D clippy::expect_used -D clippy::unreachable
-
-clippy-pchronicle-features:
-    cargo clippy -p persisting-pchronicle --lib --no-default-features --locked -- -D warnings -D clippy::unwrap_used -D clippy::expect_used -D clippy::unreachable
-    cargo clippy -p persisting-pchronicle --lib --no-default-features --features lance-store --locked -- -D warnings -D clippy::unwrap_used -D clippy::expect_used -D clippy::unreachable
-    cargo clippy -p persisting-pchronicle --lib --no-default-features --features oss-store --locked -- -D warnings -D clippy::unwrap_used -D clippy::expect_used -D clippy::unreachable
-
 # 兼容旧名
 clippy:
     just lint-rust
@@ -412,7 +255,7 @@ fix: fmt
 fix-py: fmt-py
     uvx ruff check {{ ruff_paths }} --fix
 
-# 格式 + lint 快检（不跑测试；对应 Pulsing 的 check-quick 语义）
+# 格式 + lint 快检（不跑测试）
 style: fmt-check lint
     @echo "✅ format + lint OK"
 
@@ -429,17 +272,10 @@ ci-lint:
     just lint-rust
     just lint-py
 
-# CI 近似：功能门禁 + Proptest 回归 + 构建
+# CI 近似：功能门禁 + 构建
 ci:
     just dev
-    just proptest pchronicle
     just build
-
-# Build the Agent runtime binaries that pPilot integration tests resolve from PATH.
-[group('build')]
-build-agent-runtime profile="debug":
-    just pvisor "{{ profile }}"
-    just build-components "{{ profile }}" pchronicle-ppilot
 
 # ── Rust 测试 ─────────────────────────────────────────────────────────────────
 
@@ -455,39 +291,21 @@ ci-nextest +packages:
     done
     cargo nextest run --locked "${args[@]}"
 
-# 单 crate：pchronicle（含 CLI，对齐 CI pchronicle shard）| pchronicle-cli | …
+# 单 crate：agentctl | capture | pvisor
 test-crate crate:
     #!/usr/bin/env bash
     set -euo pipefail
     case "{{ crate }}" in
-      pchronicle)
-        cargo nextest run --locked \
-          -p persisting-pchronicle \
-          -p persisting-pchronicle-cli
-        ;;
-      pchronicle-cli) cargo nextest run -p persisting-pchronicle-cli --locked ;;
       agentctl) cargo nextest run -p persisting-agentctl --locked ;;
       capture) cargo nextest run -p persisting-gateway --locked ;;
-      ppilot)
-        just build-components debug pvisor
-        cargo nextest run -p persisting-ppilot --locked
-        ;;
       pvisor) cargo nextest run -p persisting-pvisor --locked ;;
-      *) echo "unknown crate: {{ crate }} (pchronicle|pchronicle-cli|agentctl|capture|ppilot|pvisor)" >&2; exit 2 ;;
+      *) echo "unknown crate: {{ crate }} (agentctl|capture|pvisor)" >&2; exit 2 ;;
     esac
 
 test-rust package="":
     #!/usr/bin/env bash
     set -euo pipefail
     package="{{ package }}"
-    if [[ -z "$package" || "$package" == "persisting-ppilot" ]]; then
-        target_dir="${CARGO_TARGET_DIR:-$PWD/target}"
-        if [[ "$target_dir" != /* ]]; then
-            target_dir="$PWD/$target_dir"
-        fi
-        just build-components debug pvisor-pchronicle
-        export PATH="$target_dir/debug:$PATH"
-    fi
     if [[ -n "$package" ]]; then
         cargo nextest run --locked -p "$package"
     else
@@ -513,31 +331,6 @@ smoke-pvisor-cli:
     target/debug/pvisor status --help >/dev/null
     target/debug/pvisor review --help >/dev/null
 
-[group('test')]
-smoke-ppilot-cli:
-    target/debug/ppilot run --help >/dev/null
-    target/debug/ppilot produce --help >/dev/null
-
-[group('test')]
-smoke-pchronicle-cli:
-    just build-components debug pchronicle
-    target/debug/pchronicle query --help >/dev/null
-
-# Shared EventRecord control-plane feature contract used by the Linux core shard.
-[group('test')]
-test-events-control:
-    cargo nextest run -p persisting-events --features control --locked
-
-# Separate Cargo workspace covering the Dioxus trajectory workbench.
-[group('test')]
-test-pchronicle-web: chronicle-web-build
-    cargo nextest run --manifest-path pchronicle-web/Cargo.toml --locked
-
-# Real S3/MinIO contract (ignored by default; requires PCHRONICLE_S3_TEST_URI).
-[group('test')]
-test-pchronicle-s3:
-    cargo nextest run -p persisting-pchronicle --test s3_storage --locked --run-ignored all
-
 test-capture-claude:
     cargo nextest run -p persisting-gateway --test capture_apps_claude --locked
 
@@ -548,29 +341,10 @@ test-capture-network:
     cargo nextest run -p persisting-gateway --locked --lib network_policy
     cargo nextest run -p persisting-gateway --locked --test network_policy_http
 
-test-search-integration:
-    cargo test -p persisting-pchronicle --test search_integration
-
-# 按包执行全量性质测试回归，例如：`just proptest pchronicle`。
-[group('test')]
-proptest package:
-    #!/usr/bin/env bash
-    set -euo pipefail
-    case "{{ package }}" in
-      pchronicle)
-        cargo nextest run -p persisting-pchronicle --features proptest --locked \
-          -E 'test(/proptest/) or binary(proptest_*)'
-        ;;
-      *)
-        echo "unknown proptest package: {{ package }} (pchronicle)" >&2
-        exit 2
-        ;;
-    esac
-
 # Rust + Python. Rust tests run debug-mode nextest for faster iteration; use
 # `just test-rust` with a package for targeted coverage. Passing a package runs
-# only that Rust package; `pchronicle` also runs persisting-pchronicle-cli.
-# The full Python suite runs only for the no-argument repository-wide invocation.
+# only that Rust package. The full Python suite runs only for the no-argument
+# repository-wide invocation.
 test package="":
     #!/usr/bin/env bash
     set -euo pipefail
@@ -581,7 +355,7 @@ test package="":
       exit 0
     fi
     case "$package" in
-      pchronicle|pchronicle-cli|agentctl|capture|ppilot|pvisor)
+      agentctl|capture|pvisor)
         just test-crate "$package"
         ;;
       *)
@@ -619,51 +393,19 @@ docs-serve-dirty: docs-sync
 docs-build: docs-sync
     cd "{{ docs_dir }}" && .venv/bin/python "{{ repo }}/scripts/build-docs.py"
 
-# ── 数据与 fixture ───────────────────────────────────────────────────────────
-
-# 生成 search/traj 基准数据。
-generate-benchmark search_rows="100" traj_rows="50" seed="42" search_out="" traj_out="":
-    #!/usr/bin/env bash
-    set -euo pipefail
-    gen_py="{{ gen_py }}"
-    [[ -f "$gen_py" ]] || { echo "missing $gen_py" >&2; exit 1; }
-    args=(--seed "{{ seed }}" --search-rows "{{ search_rows }}" --traj-rows "{{ traj_rows }}")
-    [[ -n "{{ search_out }}" ]] && args+=(--search-out "{{ search_out }}")
-    [[ -n "{{ traj_out }}" ]] && args+=(--traj-out "{{ traj_out }}")
-    python3 "$gen_py" "${args[@]}"
-
 check-quick:
     cargo check \
       -p persisting-agentctl \
       -p persisting-events \
       -p persisting-gateway \
-      -p persisting-ppilot \
       -p persisting-pvisor \
       --locked
-    cargo check -p persisting-pchronicle --no-default-features --locked
 
 # capture 相关 Rust 测试（Gateway 包测试已覆盖全部 capture targets）。
 capture-test:
     just test-crate capture
 
-# Execute pChronicle single-machine/self-service cases.
-[group('test')]
-test-pchronicle-cases:
-    cargo build --release -p persisting-pchronicle-cli --locked
-    python3 scripts/run-pchronicle-cases.py --document docs/src/zh/pchronicle/reference/cases-self.md --pchronicle target/release/pchronicle --report target/pchronicle-self-case-report.md
-
-# List and execute pChronicle platform/Catalog cases. Server lifecycle cases are
-# reported as MANUAL unless explicitly selected with PCHRONICLE_CASE_MODE.
-[group('test')]
-test-pchronicle-cases-platform:
-    cargo build --release -p persisting-pchronicle-cli --locked
-    python3 scripts/run-pchronicle-cases.py --document docs/src/zh/pchronicle/reference/cases-platform.md --pchronicle target/release/pchronicle --report target/pchronicle-platform-case-report.md
-
-# Run documented integration cases by component.
-# Examples:
-#   just cases pvisor
-#   just cases pchronicle
-#   just cases pchronicle-cluster
+# Run documented pVisor integration cases.
 # Extra runner flags can be passed directly, e.g.
 #   just cases pvisor --run-unavailable --keep
 #   just cases pvisor --case A01,A02 --case B01
@@ -682,16 +424,8 @@ cases target *args:
         just pvisor release
         python3 scripts/run-pvisor-cases.py --report target/pvisor-case-report.md "$@"
         ;;
-      pchronicle)
-        just build-components release pchronicle
-        python3 scripts/run-pchronicle-cases.py --document docs/src/zh/pchronicle/reference/cases-self.md --pchronicle "{{ repo }}/target/release/pchronicle" --report target/pchronicle-self-case-report.md "$@"
-        ;;
-      pchronicle-cluster)
-        just build-components release pchronicle
-        python3 scripts/run-pchronicle-cases.py --document docs/src/zh/pchronicle/reference/cases-platform.md --pchronicle "{{ repo }}/target/release/pchronicle" --report target/pchronicle-platform-case-report.md "$@"
-        ;;
       *)
-        echo "usage: just cases pvisor|pchronicle|pchronicle-cluster [runner-args...]" >&2
+        echo "usage: just cases pvisor [runner-args...]" >&2
         exit 2
         ;;
     esac

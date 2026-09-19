@@ -18,11 +18,8 @@ pvisor run \
 ```
 
 pVisor 启动内嵌 Gateway、向子进程注入代理或 base URL、等待执行、排空捕获并停止
-Gateway。`--gateway-stream-markdown` 生成实时人读投影；使用
-`--record-format json --record-destination ./capture` 写本地 JSONL，或使用
-`--record-format lance --record-destination WAREHOUSE` 启动完整 pChronicle sidecar。
-Dataset 目录、查询、分析、导入导出和只读 Web UI
-由 [`pchronicle`](../../pchronicle/get-started.md) 提供。
+Gateway。`--gateway-stream-markdown` 生成实时人读投影；设置
+`--record-destination ./capture` 把 EventRecord JSONL 写到 Run 旁边。
 
 ### 事件时间戳
 
@@ -39,4 +36,4 @@ producer 生成的记录兜底补齐这两个字段，pVisor runtime 事件则�
 客户端只有使用注入的代理或 base URL 才能被观察；直接 socket 是否受限取决于 executor，
 实际隔离边界以 Run Bundle 为准。
 
-下一步：[查询捕获的历史](../../pchronicle/get-started.md)，或者阅读 [Gateway 内部实现](../design/gateway.md)。
+下一步：阅读 [Gateway 内部实现](../design/gateway.md)。

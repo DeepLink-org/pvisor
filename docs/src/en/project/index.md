@@ -1,8 +1,7 @@
 # Project
 
-Persisting's public product path is pVisor and pChronicle. This
-section records delivery state, durable decisions, contributor workflows, and
-systems outside that current path.
+Persisting's public product is pVisor. This section records delivery state and
+contributor workflows.
 
 ## Architecture
 
@@ -19,16 +18,4 @@ systems outside that current path.
 
 ## Decisions
 
-- [RFC index](../rfcs/index.md)
 - [Contributor workflows](engineering.md)
-
-## Standalone data systems
-
-Queue and its Python API remain independent of the Agent execution path:
-
-- Queue guide
-- Queue API remains outside the default product documentation
-- Custom Queue backends remain outside the default product documentation
-
-Historical queue-era design notes are retained outside the published site in
-the repository's `docs/archive/` directory.

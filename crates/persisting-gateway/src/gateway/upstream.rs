@@ -19,7 +19,7 @@ pub fn prepare_upstream_body(
 ) -> Result<Bytes> {
     if bridge.needs_request_translation() && !client_body.is_empty() {
         let semantic = semantic.ok_or_else(|| {
-            anyhow::anyhow!("protocol translation requires a Chronicle typed LLM request")
+            anyhow::anyhow!("protocol translation requires a typed LLM request")
         })?;
         return translate_request_for_bridge(bridge, semantic, upstream_model, reasoning_cache);
     }

@@ -1,20 +1,13 @@
 //! Storage-independent runtime event contracts shared by Persisting components.
 //!
-//! Producers such as pVisor and Gateway emit these records. Consumers such as
-//! pChronicle decide how to persist, query, and project them.
-//! The optional `control` feature also carries the lightweight, versioned
-//! sidecar protocol so callers do not need another protocol-only package.
+//! Producers such as pVisor and Gateway emit these records. Consumers decide
+//! how to persist, query, and project them.
 
 use serde::{Deserialize, Serialize};
 use serde_json::Value;
 
 mod time;
 pub use time::unix_now_ms;
-
-#[cfg(feature = "control")]
-mod control;
-#[cfg(feature = "control")]
-pub use control::*;
 
 /// Runtime identity shared by lifecycle and trajectory events.
 ///

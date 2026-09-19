@@ -37,7 +37,7 @@ pub struct RequestEvent {
     pub body_bytes: usize,
     pub user_content: Option<String>,
     pub body_json: Option<Value>,
-    /// Provider-neutral Chronicle semantics parsed from the untouched client body.
+    /// Provider-neutral typed LLM semantics parsed from the untouched client body.
     pub semantic: Option<std::sync::Arc<crate::llm::LlmRequestEventPayload>>,
     pub model_rewritten: bool,
     /// HTTP request headers as `(name, value)` pairs (may include duplicates).

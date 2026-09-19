@@ -1,4 +1,4 @@
-//! Stable value types shared by pVisor, pPilot, capture, and storage.
+//! Stable value types shared by pVisor, Gateway, and storage contracts.
 //!
 //! The runtime and narrative dimensions are deliberately orthogonal:
 //!
@@ -11,14 +11,6 @@ use std::collections::BTreeMap;
 use std::fmt;
 
 pub const RUNTIME_SCHEMA_VERSION: u32 = 1;
-
-fn default_supervisor_connect_timeout_ms() -> u64 {
-    500
-}
-
-fn default_attempt_ttl_ms() -> u64 {
-    15_000
-}
 
 macro_rules! string_id {
     ($name:ident) => {
@@ -64,22 +56,6 @@ string_id!(RunId);
 string_id!(AttemptId);
 string_id!(StorylineId);
 
-/// Connection material injected by pPilot into a RunSpec it launches.
-#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
-pub struct SupervisorBootstrap {
-    pub endpoint: String,
-    pub token: String,
-    pub controller_epoch: u64,
-    #[serde(default = "default_supervisor_connect_timeout_ms")]
-    pub connect_timeout_ms: u64,
-    /// pChronicle root used by pVisor to publish durable Attempt liveness and
-    /// terminal results. This is optional for standalone pVisor Runs.
-    #[serde(default, skip_serializing_if = "Option::is_none")]
-    pub attempt_registry_uri: Option<String>,
-    #[serde(default = "default_attempt_ttl_ms")]
-    pub attempt_ttl_ms: u64,
-}
-
 /// A versioned logical Agent reference. It describes identity, not placement.
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub struct AgentRef {
@@ -106,8 +82,8 @@ pub struct RunSpec {
     #[serde(default = "runtime_schema_version")]
     pub schema_version: u32,
     pub run_id: RunId,
-    /// Monotonic pPilot ownership generation. Zero is reserved for callers that
-    /// do not use durable orchestration/fencing.
+    /// Monotonic ownership generation for durable fencing. Zero is reserved for
+    /// callers that do not use orchestration fencing.
     #[serde(default)]
     pub lease_epoch: u64,
     #[serde(default, skip_serializing_if = "Option::is_none")]
@@ -122,10 +98,6 @@ pub struct RunSpec {
     pub runtime: RuntimeConfig,
     #[serde(default)]
     pub capabilities: CapabilitySet,
-    /// Optional pPilot control channel. Absence, connection failure, or later
-    /// disconnection never prevents standalone pVisor execution.
-    #[serde(default, skip_serializing_if = "Option::is_none")]
-    pub supervisor: Option<SupervisorBootstrap>,
     #[serde(default)]
     pub metadata: BTreeMap<String, Value>,
 }
@@ -147,7 +119,6 @@ impl RunSpec {
             input: Value::Null,
             runtime: RuntimeConfig::default(),
             capabilities: CapabilitySet::default(),
-            supervisor: None,
             metadata: BTreeMap::new(),
         }
     }
@@ -794,7 +765,7 @@ pub struct RunResult {
     pub warnings: Vec<String>,
 }
 
-/// The current pPilot execution owner for one logical Run.
+/// The current execution owner for one logical Run.
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub struct RunLeaseRecord {
     pub run_id: RunId,
@@ -809,7 +780,7 @@ pub struct RunLeaseRecord {
 }
 
 /// Immutable terminal commit request. `result_digest` binds the commit to the
-/// durable pPilot completion record without embedding an arbitrarily large
+/// durable completion record without embedding an arbitrarily large
 /// result in the control object.
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub struct RunCommitRequest {
@@ -832,8 +803,8 @@ pub struct RunCommit {
     pub committed_at_unix_ms: u64,
 }
 
-/// CAS-managed pChronicle control record. Lease acquisition and terminal
-/// commit update this same object, closing the stale-lease/commit race.
+/// CAS-managed Run control record. Lease acquisition and terminal commit
+/// update this same object, closing the stale-lease/commit race.
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub struct RunControlRecord {
     pub revision: u64,

@@ -23,7 +23,7 @@ globset.workspace = true
 libc.workspace = true
 libkrun = { workspace = true, features = ["net"] }
 persisting-agentctl.workspace = true
-persisting-events = { workspace = true, features = ["control"] }
+persisting-events = { workspace = true }
 persisting-gateway.workspace = true
 persisting-overlaynet.workspace = true
 persisting-overlayfs = { workspace = true, default-features = false }

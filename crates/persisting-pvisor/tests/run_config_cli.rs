@@ -1,6 +1,6 @@
 use std::{net::TcpListener, process::Command};
 
-use persisting_pvisor::{RecordFormat, RunBundle, RunConfig};
+use persisting_pvisor::{RunBundle, RunConfig};
 
 #[cfg(unix)]
 use std::os::unix::fs::PermissionsExt;
@@ -190,55 +190,14 @@ fn current_directory_selects_the_host_process_working_directory() {
 #[test]
 fn record_destination_survives_toml_round_trip() {
     let mut config = RunConfig::default();
-    config.record.format = RecordFormat::Lance;
-    config.record.destination = Some("s3://trajectory-bucket/pvisor/轨迹".into());
+    config.record.destination = Some("/tmp/pvisor/events".into());
 
     let encoded = toml::to_string_pretty(&config).expect("serialize RunConfig");
     let decoded: RunConfig = toml::from_str(&encoded).expect("deserialize RunConfig");
-    assert_eq!(decoded.record.format, RecordFormat::Lance);
     assert_eq!(
         decoded.record.destination.as_deref(),
-        Some(std::path::Path::new("s3://trajectory-bucket/pvisor/轨迹"))
+        Some(std::path::Path::new("/tmp/pvisor/events"))
     );
-}
-
-#[test]
-#[ignore = "requires a built pchronicle sidecar binary"]
-fn run_accepts_portable_object_store_chronicle_sink() {
-    let temporary = tempfile::tempdir().expect("create CLI fixture");
-    let workspace = temporary.path().join("workspace");
-    std::fs::create_dir(&workspace).unwrap();
-    let run_home = temporary.path().join("runs");
-    let uri = format!(
-        "shared-memory://pvisor-chronicle-{}-{}/runs",
-        std::process::id(),
-        std::time::SystemTime::now()
-            .duration_since(std::time::UNIX_EPOCH)
-            .unwrap()
-            .as_nanos()
-    );
-
-    let output = Command::new(env!("CARGO_BIN_EXE_pvisor"))
-        .args(["run", "--record-format", "lance", "--record-destination"])
-        .arg(&uri)
-        .args(["--", "/usr/bin/true"])
-        .current_dir(&workspace)
-        .env("PERSISTING_RUN_HOME", &run_home)
-        .output()
-        .expect("execute pvisor with object-store pChronicle sink");
-    assert!(
-        output.status.success(),
-        "pvisor failed: {}",
-        String::from_utf8_lossy(&output.stderr)
-    );
-
-    let run_dir = only_run_dir(&run_home);
-    let bundle = RunBundle::read(&run_dir).expect("read generated Run Bundle");
-    assert_eq!(bundle.run.exit_code, Some(0));
-    assert!(bundle.run.failure.is_none());
-    let record: serde_json::Value =
-        serde_json::from_slice(&std::fs::read(run_dir.join("run.json")).unwrap()).unwrap();
-    assert_eq!(record["state"], "completed");
 }
 
 #[cfg(unix)]
@@ -465,7 +424,6 @@ fn every_public_run_option_is_accepted_by_the_real_cli_parser() {
             "--gateway-route",
             "name=\"default\",upstream=\"https://example.com\"",
         ],
-        &["--record-format", "json"],
         &["--record-destination", "/tmp/events.jsonl"],
     ];
     // `--help` short-circuits before execution, so this exercises the parser

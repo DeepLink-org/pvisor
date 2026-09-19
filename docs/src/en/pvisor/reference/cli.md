@@ -78,7 +78,7 @@ non-bypassable. For deny-all Runs it blocks IP and ambient host Unix sockets,
 while retaining the exact AgentCtl and Run-local IPC. Reads and selective
 network policy remain ambient/cooperative and are labeled separately in the
 Bundle. Docker and KVM transports retain the same outer Run, OverlayFS,
-AgentCtl state observation, and pChronicle control plane.
+and AgentCtl state observation.
 
 After completion:
 
@@ -208,8 +208,8 @@ path.
 By default, replay's internal state, WAL, manifest, fresh-observation
 comparisons, and native working files remain under
 `/tmp/pvisor-sandbox-replay` and disappear with the sandbox. Replay does not
-enable pVisor Gateway, pChronicle, a model-traffic capture store, or a Claude
-Resume Transport audit. A caller that explicitly selects `--state-dir` or
+enable pVisor Gateway, a model-traffic capture store, or a Claude Resume
+Transport audit. A caller that explicitly selects `--state-dir` or
 `--output-dir` owns those files. Use `--replay-only` to execute the prefix and
 stop before live inference, or `--prepare-only` to construct it without execution.
 
@@ -234,15 +234,12 @@ pvisor run \
   --gateway-level dialogue \
   --gateway-route \
     'name="openai", provider="openai", upstream="https://api.openai.com/v1", api_key_env="OPENAI_API_KEY"' \
-  --record-format lance \
-  --record-destination ./warehouse \
+  --record-destination ./capture \
   -- codex
 ```
 
-`--record-format lance` starts `pchronicle serve --control 127.0.0.1:0 DATASET`;
-pVisor sends shared `EventRecord` values and waits for durable
-acknowledgements. Use `--record-format json` for local JSONL or a JSON warehouse
-archive.
+`--record-destination` writes local EventRecord JSONL. This repository does not
+ship a separate history service.
 
 All newly persisted records contain both `timestamp` (RFC3339 UTC) and
 `timestamp_unix_ms` (Unix milliseconds). They describe the same observation
@@ -293,8 +290,8 @@ provider = "openai"
 upstream = "https://api.openai.com/v1"
 api_key_env = "OPENAI_API_KEY"
 
-[chronicle]
-mode = "lance"
+[record]
+destination = "./capture"
 ```
 
 Run it with `pvisor run --spec run.toml`. Explicit CLI scalars replace TOML
@@ -415,7 +412,7 @@ project/                         # reusable workspace / default base
     ├── lease.lock
     ├── control.sock             # while a live OverlayFS Run is available
     ├── .capture/                # when OverlayNet/Gateway is enabled
-    └── chronicle/               # default pChronicle location
+    └── events.jsonl             # when --record-destination is set
 ```
 
 Lifecycle commands accept a Run id, Run directory, project workspace,
@@ -443,7 +440,7 @@ no single atomic commit point for an arbitrary multi-file batch.
 Applying all remaining changes or dropping the stage is terminal; `drop` cannot
 undo already applied batches, and `apply` cannot recover discarded changes.
 Terminal cleanup removes `upper`, `work`, and other disposable staging data but
-retains compact Run/Overlay metadata, the apply ledger, and pChronicle history.
+retains compact Run/Overlay metadata, the apply ledger, and capture artifacts.
 
 ## Related workflows
 

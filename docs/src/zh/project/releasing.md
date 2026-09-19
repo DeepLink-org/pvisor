@@ -7,7 +7,6 @@ PyPI。项目仍然以 Python wheel 交付，但不包含 PyO3 扩展，也不�
 
 - Python `persisting` 包；
 - 原生命令行脚本；
-- 捆绑的 pChronicle Web 资源；
 - pVisor 所需的平台 libkrun firmware payload。
 
 当前发布集包含 Linux x86_64 和 Apple Silicon macOS wheel。源码分发不是已

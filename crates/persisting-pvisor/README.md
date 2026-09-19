@@ -8,11 +8,8 @@ execution placement, and the host CLI (`pvisor`). It can place Runs on host,
 container, and libkrun VM executors while preserving one Agent-facing contract.
 It is not an Agent framework, an OCI runtime, or an operating system.
 
-Does not own batch planning or global scheduling
-([`persisting-ppilot`](../persisting-ppilot/README.md)), canonical trajectory
-storage ([`persisting-pchronicle`](../persisting-pchronicle/README.md)), or the
-implementation of every isolation backend. OverlayFS, OverlayNet, Gateway, and
-AgentCtl are pVisor runtime drivers, not peer products.
+Does not own an Agent framework, an OCI runtime, or an operating system.
+OverlayFS, OverlayNet, Gateway, and AgentCtl are pVisor runtime drivers.
 
 ![pVisor AgentVisor architecture](../../docs/src/assets/diagrams/pvisor/agentvisor-architecture.svg)
 
@@ -28,14 +25,10 @@ AgentCtl are pVisor runtime drivers, not peer products.
 
 The standalone product loop is `RunSpec → admission → Attempt → terminal
 RunResult + private Run Bundle + staged Effects → later review/apply/drop`.
-pChronicle is not a runtime prerequisite for that loop. Capture is a Gateway
-capability, not pVisor's component identity.
+Capture is a Gateway capability, not a second product.
 
-The default build includes the local Lance/DataFusion pChronicle backend for an
-optional durable Attempt-state handoff to pPilot. The default build excludes
-cloud object-store SDKs, Jujutsu, `prost`, and a protobuf toolchain. Use
-`lance-chronicle` for S3 support, `jujutsu-overlay` for the Jujutsu upper
-backend, or `--no-default-features` for a storage-light binary.
+The default build excludes Jujutsu. Use `jujutsu-overlay` for the Jujutsu upper
+backend, or `--no-default-features` for a smaller binary.
 
 ## Develop
 
@@ -43,7 +36,6 @@ backend, or `--no-default-features` for a storage-light binary.
 just pvisor          # release build + macOS Hypervisor signing
 just pvisor debug    # debug build + macOS signing
 just test persisting-pvisor
-just test-pvisor-lance
 just examples-pvisor
 ```
 

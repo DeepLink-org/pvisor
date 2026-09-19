@@ -2,44 +2,18 @@
 
 ## Default project scope
 
-Unless the user explicitly asks otherwise, treat the following subsystems as
-out of scope for analysis, planning, implementation, refactoring, testing, and
-documentation work:
+The active product is pVisor: the executor, Gateway, Control, OverlayFS,
+OverlayNet, replay, and the `persisting-events` records those components share.
 
-- TTAS and tiered tensor memory
-- Search
-
-Do not modify these subsystems, expand their APIs, fix their tests, or include
-their failures in the acceptance criteria for an unrelated task. Prefer
-targeted build, lint, and test commands over workspace-wide commands when a
-workspace-wide command would pull them into scope.
-
-This exclusion covers, in particular:
-
-- TTAS and tiered-memory code
-- `persisting/search/`, `crates/persisting-pchronicle/src/search/`, Search CLI
-  surfaces, and their tests and docs
-
-The default active scope is the Agent infrastructure centered on pVisor,
-pPilot, pChronicle, Gateway, Control, OverlayFS, OverlayNet, and trajectory CLI
-surfaces.
-
-Enter an excluded subsystem only when:
-
-1. the user explicitly names that subsystem in the current task; or
-2. an in-scope change cannot be completed without a minimal dependency-boundary
-   adjustment there.
-
-For the second case, keep the adjustment minimal and explain why it is
-required. Do not use incidental cleanup as a reason to broaden scope.
+Prefer targeted build, lint, and test commands over workspace-wide commands
+when a workspace-wide command would pull unrelated crates into scope.
 
 ## Test command
 
 Use `just test` as the default validation command. It runs Rust tests through
 `cargo nextest` in debug mode (for faster iteration) and then runs the Python
 test suite. To limit Rust coverage to one package, pass its Cargo package name
-positionally, for example `just test persisting-agentctl`. The `pchronicle`
-alias also runs `persisting-pchronicle-cli` (same as the CI pchronicle shard);
-use `just test pchronicle-cli` for the CLI crate alone. Use a direct
-`cargo test` invocation only when doctests or an explicitly documented special
-runner is required.
+positionally, for example `just test persisting-agentctl`. Short aliases are
+`pvisor`, `agentctl`, and `capture` (Gateway). Use a direct `cargo test`
+invocation only when doctests or an explicitly documented special runner is
+required.

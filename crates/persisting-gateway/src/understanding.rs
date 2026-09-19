@@ -1,4 +1,4 @@
-//! Parse provider wire requests into Chronicle's typed LLM event payload.
+//! Parse provider wire requests into the typed LLM event payload.
 //!
 //! The original JSON remains available for exact wire capture. This module
 //! extracts the provider-neutral semantics once, before model rewrite or

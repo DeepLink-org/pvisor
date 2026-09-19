@@ -5,7 +5,7 @@
 **pVisor 在受控执行环境中运行现有的 Agent 命令。** 它为每个 Run 提供独立的工作区边界，
 记录实际生效的控制机制，并让你在文件变更进入项目之前先进行审查。
 
-在 Persisting 里，pVisor 负责跑一次 Agent 并审查其改动；可与 pChronicle 分开使用。
+在 Persisting 里，pVisor 负责跑一次 Agent 并审查其改动。
 
 !!! tip "你将完成什么"
 
@@ -49,8 +49,7 @@ Run 描述得比它实际拥有的隔离程度更高。
 - **发布轨迹 event：** [采集轨迹](guides/capture.md)
 - **查找精确选项：** [命令行参考](reference/cli.md)
 
-pVisor 的本地 run—review—apply 闭环可以独立工作。pChronicle 是可选项：当你希望在 Run
-结束后保留并查询轨迹 Dataset 时再使用它。
+pVisor 的本地 run—review—apply 闭环就是产品本身。打开 capture 时，记录也留在这次 Run 里。
 
 ## 推荐阅读顺序
 
@@ -68,4 +67,3 @@ pVisor 的本地 run—review—apply 闭环可以独立工作。pChronicle 是�
 - [理解 pVisor 概念](concepts/index.md)
 - [完成常见工作流](guides/index.md)
 - [了解运行时与隔离设计](design/index.md)
-- [使用 pChronicle 探索轨迹历史](../pchronicle/index.md)

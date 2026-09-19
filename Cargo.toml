@@ -3,7 +3,7 @@ version = "0.3.0"
 edition = "2024"
 authors = ["reiase"]
 license = "Apache-2.0"
-description = "Agent execution, orchestration, and durable history infrastructure"
+description = "Reviewable Agent execution boundary"
 
 [workspace]
 resolver = "3"

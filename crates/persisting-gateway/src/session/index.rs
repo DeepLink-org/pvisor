@@ -1,4 +1,4 @@
-//! Session index on disk for `capture list` without full Lance replay.
+//! Session index on disk for `capture list` without replaying the full event log.
 
 use std::collections::HashMap;
 use std::fs;

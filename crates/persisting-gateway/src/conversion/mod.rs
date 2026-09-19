@@ -150,7 +150,7 @@ pub fn translate_request_for_bridge(
     }
 }
 
-/// A provider response after its single parse into Chronicle semantics.
+/// A provider response after its single parse into typed LLM semantics.
 pub struct TranslatedResponse {
     pub body: Bytes,
     pub semantic: std::sync::Arc<crate::llm::LlmResponseEventPayload>,

@@ -11,12 +11,11 @@
 ## 开始前
 
 你需要 macOS 或 Linux、一个项目目录，以及 `codex` 这样的 Agent 命令。
-先安装 CLI，并确认两个产品入口都可用：
+先安装 CLI，并确认入口可用：
 
 ```bash
 pip install persisting
 pvisor --help
-pchronicle --help
 ```
 
 macOS 使用 staged host workspace 前，需要安装一次 macFUSE：
@@ -82,7 +81,5 @@ pvisor apply last --include 'tests/**' --exclude 'tests/generated/**'
 - [多次选择性 apply，并保留检查点](guides/review-apply.md)
 - [选择 host、OCI 或 VM 执行环境](guides/execution.md)
 - [控制网络访问](guides/network.md)
-- [把 Run 捕获为 pChronicle 历史](guides/capture.md)
+- [捕获这次 Run 的模型流量](guides/capture.md)
 - [回放或比较 sandbox](guides/sandbox-replay.md)
-
-要学习配套的历史工作流，请继续阅读[探索第一个 Dataset](../pchronicle/get-started.md)。

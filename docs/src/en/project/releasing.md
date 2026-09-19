@@ -8,7 +8,6 @@ Each platform wheel is tagged `py3-none-<platform>` and contains:
 
 - the Python `persisting` package;
 - native command-line scripts;
-- the bundled pChronicle Web assets;
 - the platform libkrun firmware payload required by pVisor.
 
 The release set currently contains Linux x86_64 and Apple Silicon macOS wheels.

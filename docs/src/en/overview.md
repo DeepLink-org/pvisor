@@ -5,16 +5,15 @@ hide:
 
 # Get started
 
-Follow one path from an installed CLI to an Agent run you can review and query.
+Follow one path from an installed CLI to an Agent run you can review.
 
 ## 1. Installation
 
-Install the command-line tools and confirm both product entry points:
+Install the command-line tool and confirm the entry point:
 
 ```bash
 pip install persisting
 pvisor --help
-pchronicle --help
 ```
 
 On macOS, install macFUSE before using a staged host workspace:
@@ -44,27 +43,8 @@ then learn [selective apply](pvisor/guides/review-apply.md).
 **At the end of this section:** you have a reviewed project change and a clear
 record of what remains staged.
 
-## 3. Recording and Analyzing Agent Trajectories
+## 3. Capture model traffic when you need it
 
-Once an Agent has run, use pChronicle to turn its trajectory into a Dataset you
-can inspect and query. Start with a temporary example so the workflow is safe:
-
-```bash
-pchronicle onboard
-```
-
-The onboarding walks through listing data, checking a summary, and asking one
-read-only SQL question. Then repeat the same path with your own data:
-
-```bash
-pchronicle onboard ./trajectory-data
-pchronicle query ./trajectory-data \
-  --sql 'SELECT session_id, COUNT(*) AS steps FROM dataset.steps GROUP BY session_id'
-```
-
-Continue with [Explore your first Dataset](pchronicle/get-started.md) to learn
-Dataset health, evidence location, formats, exchange, and the read-only Web/API.
-
-**At the end of this section:** you can connect an answer to the Dataset and
-Source that produced it. If you need the two products together, continue with
-[pVisor capture](pvisor/guides/capture.md).
+Gateway can record the model traffic of a Run into that Run's directory. It is
+optional and stays inside pVisor. Continue with [Capture](pvisor/guides/capture.md)
+after the review loop is familiar.

@@ -5,8 +5,6 @@
 //! producer can serialize, validate, and round-trip the shared envelope.
 
 use persisting_events::{EventIdentity, EventRecord, EventValidationError};
-#[cfg(feature = "control")]
-use persisting_events::{TrajectoryAppendRequest, TrajectoryFormat};
 use proptest::prelude::*;
 use serde_json::Value;
 
@@ -115,46 +113,5 @@ proptest! {
         let mut missing_kind = record;
         missing_kind.kind.clear();
         prop_assert_eq!(missing_kind.validate(), Err(EventValidationError::MissingKind));
-    }
-}
-
-#[cfg(feature = "control")]
-prop_compose! {
-    fn append_request_strategy()(
-        storage in non_empty_string(),
-        agent_id in non_empty_string(),
-        session_id in non_empty_string(),
-        format in prop_oneof![Just(TrajectoryFormat::Json), Just(TrajectoryFormat::Lance)],
-        root_session_id in optional_string(),
-        records in prop::collection::vec(event_record_strategy(), 0..4),
-    ) -> TrajectoryAppendRequest {
-        TrajectoryAppendRequest {
-            storage,
-            agent_id,
-            session_id,
-            format,
-            root_session_id,
-            records,
-        }
-    }
-}
-
-#[cfg(feature = "control")]
-proptest! {
-    #![proptest_config(ProptestConfig { cases: 128, .. ProptestConfig::default() })]
-
-    #[test]
-    fn trajectory_append_json_roundtrip_preserves_format_and_records(
-        request in append_request_strategy()
-    ) {
-        let encoded = serde_json::to_value(&request).expect("serialize append request");
-        let decoded: TrajectoryAppendRequest =
-            serde_json::from_value(encoded).expect("deserialize append request");
-        prop_assert_eq!(decoded.format, request.format);
-        prop_assert_eq!(decoded.records, request.records);
-        prop_assert_eq!(decoded.storage, request.storage);
-        prop_assert_eq!(decoded.agent_id, request.agent_id);
-        prop_assert_eq!(decoded.session_id, request.session_id);
-        prop_assert_eq!(decoded.root_session_id, request.root_session_id);
     }
 }

@@ -57,20 +57,15 @@ be reported as an external Effect or may be unavailable to the executor. Keep
 the stage path inside the intended project boundary and avoid comparing a
 generated Run directory with the project root by filename alone.
 
-## Capture or Dataset output is missing
+## Capture output is missing
 
-Execution review and trajectory capture are separate decisions. First confirm
+Execution review and model-traffic capture are separate decisions. First confirm
 that the Run completed and its Bundle is readable. Then check the capture
-configuration and the destination Dataset with pChronicle:
+configuration and the destination you passed to `--record-destination`.
 
-```bash
-pchronicle ls ./trajectory-data
-pchronicle analysis overview ./trajectory-data
-```
-
-If the Dataset is not present, read [Capture Agent trajectories](capture.md)
-and verify the configured destination before starting another Run. A local Run
-Bundle is not automatically a pChronicle Dataset.
+If the destination is empty, read [Capture Agent trajectories](capture.md)
+before starting another Run. A local Run Bundle is the execution record; it is
+not a second copy of every model payload unless capture was enabled.
 
 ## Before opening an issue
 

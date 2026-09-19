@@ -1,4 +1,4 @@
-//! Markdown / Lance eligibility rules for [`EventRecord`] (storage layer only).
+//! Markdown eligibility rules for [`EventRecord`] (storage layer only).
 
 use crate::dialogue_extract::is_subagent_shape_payload;
 use crate::record::{EventRecord, EventRecordExt};

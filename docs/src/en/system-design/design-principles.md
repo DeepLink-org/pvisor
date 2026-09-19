@@ -1,13 +1,11 @@
 # Design principles
 
-These principles explain why Persisting has separate products and why the
-documentation emphasizes reviewable steps.
+These principles explain why pVisor documentation emphasizes reviewable steps.
 
 ## Boundaries are explicit
 
-pVisor describes the execution boundary that was actually installed. pChronicle
-describes the Source and Dataset that were actually observed. Neither product
-silently upgrades a missing control or incomplete Source into a stronger claim.
+pVisor describes the execution boundary that was actually installed. It does
+not silently upgrade a missing control into a stronger claim.
 
 ## Writes are reversible until reviewed
 
@@ -16,21 +14,19 @@ Review is part of the workflow, not a report added after the write.
 
 ## Evidence travels with the result
 
-A summary should point back to the Run, Dataset, Source, or query that produced
-it. Lineage is useful only when it survives export, normalization, and later
-inspection.
+A summary should point back to the Run that produced it. Lineage is useful
+only when it survives later inspection.
 
-## Execution and history stay composable
+## Capture stays optional
 
-pVisor can run without pChronicle, and pChronicle can analyze external Sources
-without pVisor. The integration is a narrow capture contract so each product
-remains useful on its own.
+pVisor can run without model-traffic capture. When capture is enabled, it is a
+narrow handoff into the same Run, not a second product.
 
 ## Portable data beats a privileged viewer
 
-Datasets, query results, and Run records should remain inspectable through the
-CLI and documented formats. A web view can improve discovery, but it should not
-be the only way to recover an answer.
+Run records should remain inspectable through the CLI and documented formats.
+A web view can improve discovery, but it should not be the only way to recover
+an answer.
 
 See the [system overview](index.md) and the [roadmap](../roadmap.md) for how
 these principles shape current delivery.

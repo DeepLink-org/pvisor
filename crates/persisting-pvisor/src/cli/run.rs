@@ -87,7 +87,6 @@ use std::sync::Arc;
 use anyhow::{Context, bail};
 use clap::{Args, ValueEnum};
 use persisting_agentctl::{PolicyMode, RunInvocation, RunSpec, RunState, StdioMode};
-use persisting_events::TrajectoryFormat;
 use persisting_gateway::config::{
     CaptureLevel, ModelRoute, NetworkConfig, NetworkMode, OverlayBackend, OverlayConfig,
     ProxyConfig,
@@ -98,7 +97,7 @@ use serde::Deserialize;
 use crate::config::{
     ContainerMount, ContainerNetwork, ContainerPlatform, GatewayMode, OverlayFsBackend,
     OverlayFsCommit, OverlayFsSettings, OverlayNetMode, OverlayNetPolicy, OverlayNetSettings,
-    RecordFormat, RunConfig, RunExecutorKind, RunPolicy, RunStdio,
+    RunConfig, RunExecutorKind, RunPolicy, RunStdio,
 };
 use crate::runtime::{RunLineage, default_run_home, resolve_run};
 use crate::{
@@ -107,16 +106,7 @@ use crate::{
     latest_logical_checkpoint, restore_logical_checkpoint,
 };
 
-use super::trajectory::{
-    ChronicleWriter, JsonlEventSink, JsonlWriter, chronicle_sink, jsonl_capture_sink,
-};
-
-type ChronicleSinks = (
-    Arc<dyn TrajectoryEventSink>,
-    Arc<dyn crate::EventSink>,
-    Option<ChronicleWriter>,
-    Option<Arc<dyn persisting_events::ChronicleControl>>,
-);
+use super::trajectory::{JsonlEventSink, JsonlWriter, jsonl_capture_sink};
 
 #[cfg(target_os = "linux")]
 pub(super) const RUN_COMMAND_ABOUT: &str =
@@ -525,12 +515,8 @@ struct GatewayOverrides {
 
 #[derive(Debug, Clone, Default, Args)]
 struct RecordOverrides {
-    /// Durable event format. `json` is the lightweight local JSONL path;
-    /// `lance` starts the full pChronicle warehouse path.
-    #[arg(long, value_enum, value_name = "FORMAT")]
-    record_format: Option<RecordFormat>,
-    /// Directory or file for JSONL, or warehouse URI/directory for Lance.
-    #[arg(long, value_name = "PATH|URI")]
+    /// Local directory or file for EventRecord JSONL.
+    #[arg(long, value_name = "PATH")]
     record_destination: Option<PathBuf>,
 }
 
@@ -770,7 +756,7 @@ async fn run_prepared_spec(args: RunArgs) -> anyhow::Result<i32> {
             "JSON --spec accepts only --stage as an OverlayFS override"
         );
         anyhow::ensure!(
-            config.record.destination.is_none() && config.record.format == RecordFormat::Json,
+            config.record.destination.is_none(),
             "JSON --spec does not accept recording overrides"
         );
         let storage = resolve_run_storage(&stage_path)?;
@@ -1146,55 +1132,36 @@ async fn execute_config(
         persisting_gateway::runtime::debug::enable_debug(&storage)?;
     }
 
-    let remote_json = config.record.format == RecordFormat::Json
-        && config
-            .record
-            .destination
-            .as_ref()
-            .is_some_and(|path| path.to_string_lossy().contains("://"));
-    let use_chronicle = config.record.format == RecordFormat::Lance || remote_json;
+    if config
+        .record
+        .destination
+        .as_ref()
+        .is_some_and(|path| path.to_string_lossy().contains("://"))
+    {
+        bail!("--record-destination only accepts a local path; remote URIs are unsupported");
+    }
     let mut json_writer = None;
-    let (sink, event_sink, writer, chronicle_control): ChronicleSinks = if use_chronicle {
-        let dir = config
-            .record
-            .destination
-            .clone()
-            .unwrap_or_else(|| storage.join("warehouse"));
-        let chronicle_format = if config.record.format == RecordFormat::Json {
-            TrajectoryFormat::Json
+    let (sink, event_sink): (Arc<dyn TrajectoryEventSink>, Arc<dyn crate::EventSink>) =
+        if config.gateway.mode == GatewayMode::Capture || config.record.destination.is_some() {
+            let destination = config
+                .record
+                .destination
+                .clone()
+                .unwrap_or_else(|| storage.join(".capture"));
+            let writer = JsonlWriter::open(&destination).with_context(|| {
+                format!("open JSONL recording destination {}", destination.display())
+            })?;
+            let sink = jsonl_capture_sink(&writer, &config.run.agent);
+            let event_sink =
+                Arc::new(JsonlEventSink::new(writer.clone())) as Arc<dyn crate::EventSink>;
+            json_writer = Some(writer);
+            (sink, event_sink)
         } else {
-            TrajectoryFormat::Lance
+            (
+                Arc::new(persisting_gateway::sink::SeqOnlySink::new()),
+                Arc::new(crate::NoopEventSink),
+            )
         };
-        let (sink, event_sink, writer, control) = chronicle_sink(
-            &dir,
-            &config.run.agent,
-            &run_id,
-            &config.chronicle.binary,
-            chronicle_format,
-        )
-        .await?;
-        (sink, event_sink, Some(writer), Some(control))
-    } else if config.gateway.mode == GatewayMode::Capture || config.record.destination.is_some() {
-        let destination = config
-            .record
-            .destination
-            .clone()
-            .unwrap_or_else(|| storage.join(".capture"));
-        let writer = JsonlWriter::open(&destination).with_context(|| {
-            format!("open JSONL recording destination {}", destination.display())
-        })?;
-        let sink = jsonl_capture_sink(&writer, &config.run.agent);
-        let event_sink = Arc::new(JsonlEventSink::new(writer.clone())) as Arc<dyn crate::EventSink>;
-        json_writer = Some(writer);
-        (sink, event_sink, None, None)
-    } else {
-        (
-            Arc::new(persisting_gateway::sink::SeqOnlySink::new()),
-            Arc::new(crate::NoopEventSink),
-            None,
-            None,
-        )
-    };
 
     let executor: Arc<dyn RunExecutor> = match config.run.executor {
         #[cfg(target_os = "linux")]
@@ -1238,7 +1205,6 @@ async fn execute_config(
         .storage(&storage)
         .trajectory_sink(sink)
         .event_sink(event_sink)
-        .pchronicle_binary(config.chronicle.binary.clone())
         .executors(vec![executor])
         .network(NetworkDriverConfig::new(
             config.overlaynet.mode,
@@ -1254,9 +1220,6 @@ async fn execute_config(
                 limits: config.overlaynet.limits.clone(),
             },
         ));
-    if let Some(control) = chronicle_control {
-        builder = builder.chronicle_control(control);
-    }
     if let Some(proxy) = proxy {
         builder = builder.gateway(
             GatewayDriverConfig::new(proxy)
@@ -1432,9 +1395,6 @@ async fn execute_config(
     };
     drop(pvisor);
     if let Some(writer) = json_writer {
-        writer.finish()?;
-    }
-    if let Some(writer) = writer {
         writer.finish()?;
     }
     if result.state == RunState::Completed
@@ -1852,9 +1812,6 @@ fn apply_cli(config: &mut RunConfig, args: RunArgs) -> anyhow::Result<()> {
             .collect();
     }
 
-    if let Some(value) = args.record.record_format {
-        config.record.format = value;
-    }
     if let Some(value) = args.record.record_destination {
         config.record.destination = Some(value);
     }
@@ -1968,8 +1925,7 @@ fn validate(config: &RunConfig) -> anyhow::Result<()> {
         GatewayMode::Off if !config.gateway.routes.is_empty() => {
             bail!("Gateway routes require --gateway-mode capture");
         }
-        // Capture without explicit routes uses the Gateway's default route;
-        // this is required by internal pPilot delegation.
+        // Capture without explicit routes uses the Gateway's default route.
         GatewayMode::Capture if config.gateway.routes.is_empty() => {}
         _ => {}
     }
@@ -2204,7 +2160,7 @@ mod tests {
         std::fs::write(&json, b"[run]\nagent = \"x\"\n").unwrap();
         assert!(!spec_is_json(&json).unwrap());
     }
-    use clap::Parser;
+    use clap::{CommandFactory, Parser};
     use proptest::prelude::*;
 
     use crate::cli::Cli;
@@ -2262,10 +2218,8 @@ mod tests {
             "capture",
             "--gateway-route",
             r#"name="openai", upstream="https://api.openai.com/v1""#,
-            "--record-format",
-            "lance",
             "--record-destination",
-            "s3://trajectory-bucket/pvisor-runs",
+            "/tmp/pvisor-runs",
             "--",
             "codex",
         ])
@@ -2273,29 +2227,34 @@ mod tests {
     }
 
     #[test]
-    fn cli_record_options_are_the_only_persistence_selection() {
-        let _ = Cli::try_parse_from([
+    fn cli_record_destination_is_the_only_persistence_selection() {
+        let crate::cli::Command::Run(args) = Cli::try_parse_from([
             "pvisor",
             "run",
-            "--record-format",
-            "json",
             "--record-destination",
             "/tmp/events",
             "--",
             "codex",
         ])
-        .unwrap();
-        let _ = Cli::try_parse_from([
-            "pvisor",
-            "run",
-            "--record-format",
-            "lance",
-            "--record-destination",
-            "s3://warehouse/runs",
-            "--",
-            "codex",
-        ])
-        .unwrap();
+        .unwrap()
+        .command
+        else {
+            unreachable!()
+        };
+        assert_eq!(
+            args.record.record_destination.as_deref(),
+            Some(std::path::Path::new("/tmp/events"))
+        );
+        let help = Cli::command().render_long_help().to_string();
+        assert!(
+            !help.contains("--record-format"),
+            "removed --record-format must not appear in help"
+        );
+        assert!(
+            toml::from_str::<RunConfig>("[record]\nformat = \"json\"\ndestination = \"/tmp/e\"\n")
+                .is_err(),
+            "record.format must be rejected by deny_unknown_fields"
+        );
     }
 
     #[test]

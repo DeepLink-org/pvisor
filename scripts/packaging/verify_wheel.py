@@ -14,7 +14,7 @@ import zipfile
 from email.parser import BytesParser
 from pathlib import Path
 
-EXPECTED_BINARIES = ("pchronicle", "pvisor", "ppilot")
+EXPECTED_BINARIES = ("pvisor",)
 FIRMWARE_NAMES = ("libkrunfw.so.5", "libkrunfw.5.dylib")
 MANYLINUX_MAX_GLIBC = (2, 28, 0)
 _GLIBC_NEED = re.compile(r"GLIBC_(\d+)\.(\d+)(?:\.(\d+))?")
@@ -165,7 +165,6 @@ def install_smoke(wheel: Path, version: str) -> None:
 
         env = os.environ.copy()
         env.pop("PERSISTING_PVISOR_BIN", None)
-        env.pop("PERSISTING_PPILOT_BIN", None)
         env["PATH"] = os.pathsep.join((str(scripts), env.get("PATH", "")))
         for name in EXPECTED_BINARIES:
             executable = scripts / name
@@ -181,8 +180,6 @@ def install_smoke(wheel: Path, version: str) -> None:
             _run([str(executable), "--help"], env=env)
 
         _run([str(scripts / "pvisor"), "run", "--help"], env=env)
-        _run([str(scripts / "ppilot"), "produce", "--help"], env=env)
-        _run([str(scripts / "pchronicle"), "query", "--help"], env=env)
 
 
 def main() -> None:

@@ -1,4 +1,4 @@
-//! Provider SSE → Chronicle stream events → client SSE.
+//! Provider SSE → typed stream events → client SSE.
 //!
 //! Decoding and rendering are deliberately separate. No client/provider wire
 //! shape is used as an intermediate protocol.

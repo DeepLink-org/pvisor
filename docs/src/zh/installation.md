@@ -1,11 +1,6 @@
 # 安装指南
 
-Persisting 提供两条公开命令行路径：
-
-- `pvisor` 在可审查的执行边界中运行 Agent。
-- `pchronicle` 打开、查询、交换和服务轨迹 Dataset。
-
-默认安装包含公开 CLI 和 Dataset 工作流所需的全部能力。
+`pvisor` 在可审查的执行边界中运行 Agent。默认安装就是这个 CLI。
 
 ## 1. 安装工具
 
@@ -17,10 +12,9 @@ pip install persisting
 
 ```bash
 pvisor --version
-pchronicle --help
 ```
 
-wheel 会把匹配版本的 Python 包和公开 CLI 入口安装到当前 Python 环境。项目有其他
+wheel 会把匹配版本的 Python 包和 `pvisor` CLI 安装到当前 Python 环境。项目有其他
 Python 依赖时，建议使用虚拟环境：
 
 ```bash
@@ -30,10 +24,9 @@ python -m pip install --upgrade pip
 pip install persisting
 ```
 
-!!! tip "可以从任意一个产品开始"
+!!! tip "从一次 Run 开始"
 
-    探索 pChronicle 不要求先运行 pVisor。如果你想先运行 Agent，继续阅读[运行第一个 Agent](pvisor/get-started.md)；
-    如果已经有轨迹数据，继续阅读[探索第一个 Dataset](pchronicle/get-started.md)。
+    继续阅读[运行第一个 Agent](pvisor/get-started.md)。审查 staged workspace 不需要另起一个历史服务。
 
 ## 2. 检查平台要求
 
@@ -64,7 +57,7 @@ cd Persisting
 pip install -e .
 ```
 
-也可以从源码构建 CLI 组件：
+也可以从源码构建 CLI：
 
 ```bash
 just install-cli
@@ -95,6 +88,5 @@ brew install zig
 ## 5. 选择下一步
 
 - [运行第一个 Agent](pvisor/get-started.md) —— 暂存、审查并选择性应用修改。
-- [探索第一个 Dataset](pchronicle/get-started.md) —— 在准备真实 Source 前查询临时数据。
-- [选择工作流](overview.md) —— 按当前任务决定使用哪个产品。
+- [选择工作流](overview.md) —— 从安装到一次可审查 Run 的最短路径。
 - [执行环境](pvisor/guides/execution.md) —— 比较 host、OCI 与 VM 的边界。

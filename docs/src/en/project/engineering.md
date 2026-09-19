@@ -16,16 +16,13 @@ Run these from the repository root. `just --list` shows the full recipe set.
 | `just docs-serve` | Local Zensical preview with automatic reload when files change |
 | `just docs-serve-dirty` | Local Zensical preview when automatic reload stalls |
 | `just docs-build` | Build the static documentation site |
-| `just examples` | pVisor and pChronicle product example suites |
+| `just examples` | pVisor product example suite |
 | `just gate` | Format, lint, and the full Rust test workspace |
 | `just dev` | Scoped runtime-crate check; not the full workspace matrix |
 
 `just test` uses the debug nextest profile for faster iteration. Pass a Cargo
-package name or a short crate alias (`pvisor`, `pchronicle`,
-`pchronicle-cli`, `agentctl`, `capture`). `just test pchronicle` runs both
-`persisting-pchronicle` and `persisting-pchronicle-cli` (same as the CI
-pchronicle shard); use `just test pchronicle-cli` for the CLI crate alone.
-The no-argument form also runs `just test-py`.
+package name or a short crate alias (`pvisor`, `agentctl`, `capture`).
+`capture` runs the Gateway package. The no-argument form also runs `just test-py`.
 
 ## Current notes
 
@@ -49,9 +46,8 @@ Local and ordinary CI builds use the platform's default linker. Linux wheels
 use the manylinux_2_28 image (glibc 2.28) so rustc libstd and libkrun can
 link `statx` / `copy_file_range`.
 
-`just dev` is intentionally scoped to runtime crates and a no-default-feature
-pChronicle check. Use `just gate` or the CI workflows for the full workspace,
-all-targets, and storage-feature matrix.
+`just dev` formats, lints, and runs the Rust tests. Use `just ci` for that
+plus a debug build.
 
 `cargo nextest` does not run doctests. Keep documentation tests on the regular
 Cargo runner when needed, for example `cargo test --doc -p <package>`.
@@ -75,8 +71,6 @@ Sanitizer builds are deliberately not part of `just dev`/CI's default path:
 they rebuild the standard library and are intended for focused debugging
 sessions.
 
-For supported behavior, start with [pVisor Guides](../pvisor/guides/index.md),
-批量 Run 工作流，或
-[pChronicle Guides](../pchronicle/guides/index.md), and consult
-[System Design](../system-design/index.md) for the rationale behind an
-implementation.
+For supported behavior, start with [pVisor Guides](../pvisor/guides/index.md)
+and consult [System Design](../system-design/index.md) for the rationale behind
+an implementation.

@@ -21,10 +21,7 @@ from typing import Any, Mapping
 
 ROOT = Path(__file__).resolve().parents[2]
 WHEEL_DATA = ROOT / "target" / "wheel-data"
-WEB_ROOT = ROOT / "pchronicle-web"
-WEB_PUBLIC = ROOT / "crates" / "persisting-pchronicle-cli" / "web-assets" / "public"
-DX_PUBLIC = WEB_ROOT / "target" / "dx" / "pchronicle-web" / "release" / "web" / "public"
-EXPECTED_BINARIES = ("pchronicle", "pvisor", "ppilot")
+EXPECTED_BINARIES = ("pvisor",)
 SUPPORTED_TARGETS = {
     "x86_64-unknown-linux-gnu",
     "aarch64-apple-darwin",
@@ -143,17 +140,9 @@ def _cargo_command(options: BuildOptions) -> list[str]:
         options.profile,
         "--message-format=json-render-diagnostics",
         "-p",
-        "persisting-pchronicle-cli",
-        "--bin",
-        "pchronicle",
-        "-p",
         "persisting-pvisor",
         "--bin",
         "pvisor",
-        "-p",
-        "persisting-ppilot",
-        "--bin",
-        "ppilot",
     ]
     if options.target is not None:
         command.extend(("--target", options.target))
@@ -314,74 +303,9 @@ def _sign_macos_pvisor(path: Path) -> None:
     )
 
 
-def _web_inputs_digest() -> str:
-    """Hash the inputs that affect the generated Dioxus public directory."""
-    digest = hashlib.sha256()
-    inputs = [WEB_ROOT / "Cargo.toml", WEB_ROOT / "Dioxus.toml"]
-    inputs.extend(sorted((WEB_ROOT / "src").rglob("*")))
-    inputs.extend(sorted((WEB_ROOT / "assets").rglob("*")))
-    for path in inputs:
-        if not path.is_file():
-            continue
-        digest.update(str(path.relative_to(WEB_ROOT)).encode("utf-8"))
-        digest.update(b"\0")
-        digest.update(path.read_bytes())
-        digest.update(b"\0")
-    return digest.hexdigest()
-
-
-def _web_assets_are_current(manifest: Path, digest: str) -> bool:
-    if not manifest.is_file() or not (WEB_PUBLIC / "index.html").is_file():
-        return False
-    lines = manifest.read_text(encoding="utf-8").splitlines()
-    return len(lines) >= 2 and lines[1] == digest
-
-
-def _build_web_assets() -> None:
-    """Build the target-independent Dioxus bundle when its inputs changed."""
-    manifest = WEB_PUBLIC / "embedded.manifest"
-    digest = _web_inputs_digest()
-    if _web_assets_are_current(manifest, digest):
-        print(f"Using current pChronicle Web assets: {WEB_PUBLIC}", file=sys.stderr)
-        return
-    if shutil.which("dx") is None and manifest.is_file():
-        raise RuntimeError(
-            "pChronicle Web assets are stale or incomplete and Dioxus CLI is unavailable"
-        )
-    command = ["dx", "bundle", "--release", "--debug-symbols", "false"]
-    print(f"Building pChronicle Web assets: {shlex.join(command)}", file=sys.stderr)
-    try:
-        shutil.rmtree(WEB_PUBLIC.parent, ignore_errors=True)
-        shutil.rmtree(DX_PUBLIC, ignore_errors=True)
-        subprocess.run(command, cwd=WEB_ROOT, check=True)
-    except FileNotFoundError as error:
-        raise RuntimeError(
-            "Dioxus CLI is required for wheel builds; install dioxus-cli 0.7.9"
-        ) from error
-    index = WEB_PUBLIC / "index.html"
-    if not index.is_file():
-        raise RuntimeError(f"Dioxus did not produce {index}")
-    assets = WEB_PUBLIC / "assets"
-    assets.mkdir(parents=True, exist_ok=True)
-    for stylesheet in sorted((WEB_ROOT / "assets").glob("*.css")):
-        shutil.copy2(stylesheet, assets / stylesheet.name)
-    home_assets = WEB_ROOT / "assets" / "home"
-    if home_assets.is_dir():
-        destination = assets / "home"
-        destination.mkdir(parents=True, exist_ok=True)
-        for asset in sorted(home_assets.iterdir()):
-            if asset.is_file():
-                shutil.copy2(asset, destination / asset.name)
-    manifest.write_text(
-        f"__PCHRONICLE_EMBEDDED_WEB_ASSETS_V1__\n{digest}\n",
-        encoding="utf-8",
-    )
-
-
 def stage_wheel_binaries(options: BuildOptions) -> Path:
-    """Build all host CLIs and atomically replace the wheel scripts directory."""
+    """Build the host CLI and atomically replace the wheel scripts directory."""
     firmware = _firmware_source(options) if options.bundle_firmware else None
-    _build_web_assets()
     artifacts = _build(options)
     ensure_wheel_data_directory()
     staged = WHEEL_DATA / f".scripts-{os.getpid()}"
@@ -441,11 +365,7 @@ def main() -> None:
     parser.add_argument("--frozen", action="store_true")
     parser.add_argument("--offline", action="store_true")
     parser.add_argument("--jobs")
-    parser.add_argument("--web-only", action="store_true")
     args = parser.parse_args()
-    if args.web_only:
-        _build_web_assets()
-        return
     options = BuildOptions(
         target=_normalize_target(args.target),
         profile=args.profile,

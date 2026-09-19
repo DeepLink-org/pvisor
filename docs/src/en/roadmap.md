@@ -8,15 +8,12 @@ source of truth for delivered behavior.
 
 - Make pVisor Run → review → apply predictable on macOS and Linux.
 - Keep effective controls, Effects, and warnings visible in every Run Bundle.
-- Make pChronicle onboarding, Dataset discovery, bounded SQL, and evidence
-  lookup useful without a service or account.
 - Keep English and Chinese documentation paths aligned and examples runnable.
 
-## Next: connect execution to durable history
+## Next: tighten capture and comparison
 
-- Make configured pVisor capture produce stable pChronicle Sources.
-- Preserve Run identity and lineage across capture, normalization, and query.
-- Improve comparison workflows for Runs, Sessions, and revisions.
+- Keep configured capture attached to a stable Run identity.
+- Improve comparison of Runs that share a project.
 - Document provider-specific boundaries instead of presenting one universal
   isolation claim.
 

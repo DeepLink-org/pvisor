@@ -62,7 +62,7 @@ Agent 进程树不可绕过。
 Seatbelt 策略，使 staged 写入不可绕过。对 deny-all Run，它拦截 IP 和
 ambient host Unix socket，同时保留精确的 AgentCtl 与 Run 本地 IPC。读取和
 选择性网络策略仍是 ambient/协作式，并在 Bundle 中单独标注。Docker 和 KVM
-传输保留同样的外层 Run、OverlayFS、AgentCtl 状态观察和 pChronicle 控制面。
+传输保留同样的外层 Run、OverlayFS 和 AgentCtl 状态观察。
 
 完成后：
 
@@ -179,8 +179,7 @@ Agent 原生的 prepared 或 continued 轨迹可以包含这条用户消息。
 
 默认情况下，replay 的内部状态、WAL、manifest、新鲜 observation 比较和原生
 工作文件留在 `/tmp/pvisor-sandbox-replay`，并随 sandbox 消失。Replay 不启用
-pVisor Gateway、pChronicle、模型流量 capture store 或 Claude Resume
-Transport 审计。显式选择 `--state-dir` 或 `--output-dir` 的调用方拥有这些
+pVisor Gateway、模型流量 capture store 或 Claude Resume Transport 审计。显式选择 `--state-dir` 或 `--output-dir` 的调用方拥有这些
 文件。用 `--replay-only` 执行前缀并在 live 推理前停止，或用 `--prepare-only`
 在不执行的情况下构造它。
 
@@ -204,14 +203,11 @@ pvisor run \
   --gateway-level dialogue \
   --gateway-route \
     'name="openai", provider="openai", upstream="https://api.openai.com/v1", api_key_env="OPENAI_API_KEY"' \
-  --record-format lance \
-  --record-destination ./warehouse \
+  --record-destination ./capture \
   -- codex
 ```
 
-`--record-format lance` 启动 `pchronicle serve --control 127.0.0.1:0 DATASET`；
-pVisor 发送共享 `EventRecord` 并等待 durable acknowledgement。本地 JSONL
-或 JSON warehouse 归档使用 `--record-format json`。
+`--record-destination` 写入本地 EventRecord JSONL。本仓库不再附带单独的历史服务。
 
 所有新持久化的记录都同时包含 `timestamp`（RFC3339 UTC）和
 `timestamp_unix_ms`（Unix 毫秒）。它们描述同一观测时间，必须在一毫秒内
@@ -261,8 +257,8 @@ provider = "openai"
 upstream = "https://api.openai.com/v1"
 api_key_env = "OPENAI_API_KEY"
 
-[chronicle]
-mode = "lance"
+[record]
+destination = "./capture"
 ```
 
 用 `pvisor run --spec run.toml` 运行。显式 CLI 标量替换 TOML 标量。提供
@@ -362,7 +358,7 @@ project/                         # reusable workspace / default base
     ├── lease.lock
     ├── control.sock             # while a live OverlayFS Run is available
     ├── .capture/                # when OverlayNet/Gateway is enabled
-    └── chronicle/               # default pChronicle location
+    └── events.jsonl             # when --record-destination is set
 ```
 
 生命周期命令接受 Run id、Run 目录、项目工作区、`run.json`、upper 或 merged
@@ -387,8 +383,7 @@ overlay 为每个被改写的目标路径记录 durable first-touch fingerprint�
 多文件 batch 提供单一原子提交点。
 提交全部剩余改动或丢弃 stage 是终态；`drop` 不能撤销已 apply 的 batch，
 `apply` 也不能恢复已丢弃的改动。终态清理删除 `upper`、`work` 和其他一次性
-staging 数据，但保留紧凑的 Run/Overlay 元数据、apply ledger 和 pChronicle
-历史。
+staging 数据，但保留紧凑的 Run/Overlay 元数据、apply ledger 和 capture 产物。
 
 ## 相关工作流
 

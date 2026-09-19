@@ -1,7 +1,7 @@
-//! Chronicle typed LLM payload → provider/client wire renderers.
+//! Typed LLM payload → provider/client wire renderers.
 //!
 //! This module is the only semantic conversion boundary used by the runtime.
-//! Wire JSON is parsed into Chronicle types before entering here; renderers
+//! Wire JSON is parsed into typed LLM payloads before entering here; renderers
 //! never reinterpret a second protocol-shaped JSON document.
 
 use std::collections::HashMap;
@@ -1010,7 +1010,7 @@ fn render_content_part(
             }
             Some(json!({"type":"image_url","image_url":image_url}))
         }
-        // Reasoning is retained in the Chronicle IR but Chat Completions has no
+        // Reasoning is retained in the typed IR but Chat Completions has no
         // lossless replay field for provider-signed thinking blocks.
         LlmContentPart::Reasoning { .. } => None,
         LlmContentPart::Unknown { value, .. } => Some(value.clone()),

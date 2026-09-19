@@ -31,12 +31,8 @@ jobs:
         uses: ./.github/actions/setup-build-env
         with:
           python-version: "3.12"
-          install-dioxus: "true"
 
       - uses: Swatinem/rust-cache@v2
-
-      - name: Build pChronicle Web assets
-        run: just chronicle-web-build
 
       - name: Apply nightly local version (PEP 440)
         if: inputs.local_version != ''

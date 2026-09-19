@@ -1,7 +1,7 @@
 //! pVisor — foreground Agent Run manager and portable execution runtime.
 //!
-//! Callers configure a [`PVisor`] and invoke [`PVisor::run`]. There is no
-//! separate control plane: CLI / pPilot talk to this API directly.
+//! Callers configure a [`PVisor`] and invoke [`PVisor::run`]. CLI and other
+//! embedders talk to this API directly; there is no separate control-plane process.
 
 use crate::TrajectoryEventSink;
 use crate::config::{GatewayDriverConfig, NetworkDriverConfig, PVisorConfig};
@@ -20,7 +20,7 @@ use persisting_agentctl::{
     ExecutorDescriptor, IsolationKind, NetworkCapability, PolicyMode, RUNTIME_SCHEMA_VERSION,
     RunFailure, RunFailureKind, RunInvocation, RunResult, RunSpec, RunState, RunStatus,
 };
-use persisting_events::{ChronicleControl, ChronicleServeProcessClient, EventRecord};
+use persisting_events::EventRecord;
 use serde_json::json;
 use std::sync::Arc;
 use tokio::sync::{broadcast, watch};
@@ -46,8 +46,6 @@ pub enum PVisorError {
     },
     #[error("event sink rejected run creation: {0}")]
     EventSink(#[source] anyhow::Error),
-    #[error("durable Attempt registration failed: {0}")]
-    AttemptRegistry(#[source] anyhow::Error),
     #[error("run task failed to join: {0}")]
     Join(#[from] tokio::task::JoinError),
 }
@@ -163,8 +161,6 @@ pub struct PVisorBuilder {
     runtime: RuntimeSupervisorBuilder,
     event_sink: Option<Arc<dyn EventSink>>,
     executors: Option<Vec<Arc<dyn RunExecutor>>>,
-    chronicle_control: Option<Arc<dyn ChronicleControl>>,
-    pchronicle_binary: std::path::PathBuf,
 }
 
 impl std::fmt::Debug for PVisorBuilder {
@@ -176,14 +172,6 @@ impl std::fmt::Debug for PVisorBuilder {
                 &self.event_sink.as_ref().map(|_| "<EventSink>"),
             )
             .field("executors", &self.executors.as_ref().map(|e| e.len()))
-            .field(
-                "chronicle_control",
-                &self
-                    .chronicle_control
-                    .as_ref()
-                    .map(|_| "<ChronicleControl>"),
-            )
-            .field("pchronicle_binary", &self.pchronicle_binary)
             .finish()
     }
 }
@@ -242,20 +230,6 @@ impl PVisorBuilder {
         self
     }
 
-    /// Inject the lightweight pChronicle control-plane port used for durable
-    /// Attempt registration. Storage engines remain outside the pVisor process.
-    pub fn chronicle_control(mut self, control: Arc<dyn ChronicleControl>) -> Self {
-        self.chronicle_control = Some(control);
-        self
-    }
-
-    /// Select the sidecar executable used when a Run requests durable Attempt
-    /// registration without an injected control connection.
-    pub fn pchronicle_binary(mut self, binary: impl Into<std::path::PathBuf>) -> Self {
-        self.pchronicle_binary = binary.into();
-        self
-    }
-
     pub fn executors(mut self, executors: Vec<Arc<dyn RunExecutor>>) -> Self {
         self.executors = Some(executors);
         self
@@ -270,12 +244,6 @@ impl PVisorBuilder {
                 .event_sink
                 .unwrap_or_else(|| Arc::new(NoopEventSink) as Arc<dyn EventSink>),
             runtime: self.runtime.build(),
-            chronicle_control: self.chronicle_control,
-            pchronicle_binary: if self.pchronicle_binary.as_os_str().is_empty() {
-                "pchronicle".into()
-            } else {
-                self.pchronicle_binary
-            },
         }
     }
 }
@@ -289,8 +257,6 @@ pub struct PVisor {
     executors: Arc<Vec<Arc<dyn RunExecutor>>>,
     event_sink: Arc<dyn EventSink>,
     runtime: RuntimeSupervisor,
-    chronicle_control: Option<Arc<dyn ChronicleControl>>,
-    pchronicle_binary: std::path::PathBuf,
 }
 
 impl Default for PVisor {
@@ -376,34 +342,9 @@ impl PVisor {
         );
         let attempt_id = AttemptId::new(format!("attempt-{}", uuid::Uuid::new_v4()));
         let cancellation = CancellationToken::new();
-        let supervisor = crate::supervisor::connect_optional(
-            spec.supervisor.as_ref(),
-            &spec.run_id,
-            &attempt_id,
-            spec.lease_epoch,
-            cancellation.clone(),
-        )
-        .await;
-        if let Some(connected) = supervisor.connected {
-            spec.metadata.insert(
-                "persisting.ppilot.supervisor.connected".into(),
-                json!(connected),
-            );
-        }
-        if let Some(controller_epoch) = supervisor.controller_epoch {
-            spec.metadata.insert(
-                "persisting.ppilot.supervisor.controller_epoch".into(),
-                json!(controller_epoch),
-            );
-        }
         let mut session = self
             .runtime
-            .prepare(
-                &mut spec,
-                &supervisor.initial_limits,
-                vm_network_executor,
-                &attempt_id,
-            )
+            .prepare(&mut spec, &[], vm_network_executor, &attempt_id)
             .map_err(PVisorError::Prepare)?;
         let attachments = session
             .as_ref()
@@ -502,105 +443,6 @@ impl PVisor {
             return Err(PVisorError::EventSink(error));
         }
 
-        let attempt_ttl_ms = spec
-            .supervisor
-            .as_ref()
-            .map(|bootstrap| bootstrap.attempt_ttl_ms.max(1_000))
-            .unwrap_or(15_000);
-        let attempt_registry: Option<Arc<dyn ChronicleControl>> = match spec
-            .supervisor
-            .as_ref()
-            .and_then(|bootstrap| bootstrap.attempt_registry_uri.as_deref())
-        {
-            Some(root) => {
-                let registry = match self
-                    .chronicle_control
-                    .as_ref()
-                    .filter(|control| control.root_uri() == root)
-                {
-                    Some(control) => Arc::clone(control),
-                    None => Arc::new(
-                        ChronicleServeProcessClient::spawn(&self.pchronicle_binary, root)
-                            .await
-                            .map_err(PVisorError::AttemptRegistry)?,
-                    ) as Arc<dyn ChronicleControl>,
-                };
-                let registered = registry
-                    .publish_attempt_active(
-                        run_id.as_str(),
-                        attempt_id.as_str(),
-                        spec.lease_epoch,
-                        attempt_ttl_ms,
-                    )
-                    .await
-                    .map_err(PVisorError::AttemptRegistry)?;
-                if !registered {
-                    return Err(PVisorError::AttemptRegistry(anyhow::anyhow!(
-                        "Run {} lease epoch {} was fenced before execution",
-                        run_id,
-                        spec.lease_epoch
-                    )));
-                }
-                Some(registry)
-            }
-            None => None,
-        };
-        let attempt_heartbeat_stop = CancellationToken::new();
-        if let Some(registry) = attempt_registry.as_ref().map(Arc::clone) {
-            let heartbeat_run_id = run_id.to_string();
-            let heartbeat_attempt_id = attempt_id.to_string();
-            let heartbeat_epoch = spec.lease_epoch;
-            let heartbeat_stop = attempt_heartbeat_stop.clone();
-            let heartbeat_cancel = cancellation.clone();
-            tokio::spawn(async move {
-                let period_ms = (attempt_ttl_ms / 3).max(250);
-                let mut interval =
-                    tokio::time::interval(std::time::Duration::from_millis(period_ms));
-                let mut last_success = tokio::time::Instant::now();
-                loop {
-                    tokio::select! {
-                        _ = heartbeat_stop.cancelled() => break,
-                        _ = interval.tick() => {
-                            match registry
-                                .heartbeat_attempt(
-                                    &heartbeat_run_id,
-                                    &heartbeat_attempt_id,
-                                    heartbeat_epoch,
-                                    attempt_ttl_ms,
-                                )
-                                .await
-                            {
-                                Ok(true) => last_success = tokio::time::Instant::now(),
-                                Ok(false) => {
-                                    tracing::warn!(
-                                        run_id = %heartbeat_run_id,
-                                        attempt_id = %heartbeat_attempt_id,
-                                        "durable Attempt was fenced; cancelling workload"
-                                    );
-                                    heartbeat_cancel.cancel();
-                                    break;
-                                }
-                                Err(error) => {
-                                    tracing::warn!(
-                                        run_id = %heartbeat_run_id,
-                                        attempt_id = %heartbeat_attempt_id,
-                                        %error,
-                                        "durable Attempt heartbeat failed"
-                                    );
-                                    if last_success.elapsed()
-                                        >= std::time::Duration::from_millis(attempt_ttl_ms)
-                                    {
-                                        heartbeat_cancel.cancel();
-                                        break;
-                                    }
-                                }
-                            }
-                        }
-                    }
-                }
-            });
-        }
-
         let context = AttemptContext::new(
             Arc::new(spec),
             attempt_id.clone(),
@@ -610,16 +452,10 @@ impl PVisor {
             agentctl.clone(),
             attachments,
         );
-        let supervisor_warning = supervisor.warning;
-        let supervisor_session = supervisor.session;
         let join = tokio::spawn(async move {
             // Keep the Run-scoped endpoint alive until executor finalization finishes.
             let _agentctl_server = agentctl_server;
-            let _supervisor_session = supervisor_session;
             let mut result = executor.execute(context.clone()).await;
-            if let Some(warning) = supervisor_warning {
-                result.warnings.push(warning);
-            }
             // The owning pVisor, not a pluggable executor, is authoritative for
             // the scheduling generation attached to this Attempt.
             result.lease_epoch = context.spec().lease_epoch;
@@ -719,31 +555,6 @@ impl PVisor {
                 result.state,
                 result.failure.as_ref().map(|f| f.message.clone()),
             );
-            if let Some(registry) = attempt_registry {
-                match serde_json::to_value(&result) {
-                    Ok(value) => match registry
-                        .publish_attempt_terminal(
-                            result.run_id.as_str(),
-                            result.attempt_id.as_str(),
-                            result.lease_epoch,
-                            value,
-                        )
-                        .await
-                    {
-                        Ok(true) => {}
-                        Ok(false) => result
-                            .warnings
-                            .push("durable Attempt terminal result was fenced".into()),
-                        Err(error) => result.warnings.push(format!(
-                            "publish durable Attempt terminal result failed: {error:#}"
-                        )),
-                    },
-                    Err(error) => result.warnings.push(format!(
-                        "encode durable Attempt terminal result failed: {error}"
-                    )),
-                }
-            }
-            attempt_heartbeat_stop.cancel();
             result
         });
 
@@ -927,9 +738,7 @@ mod tests {
     use super::*;
     use crate::{EventSink, MemoryEventSink};
     use async_trait::async_trait;
-    use persisting_agentctl::SupervisorBootstrap;
     use persisting_agentctl::{NetworkCapability, RunFailureKind, RunInvocation, StdioMode};
-    use persisting_events::{AttemptRecordState, MemoryChronicleControl};
     use std::sync::Mutex;
 
     #[derive(Default)]
@@ -1070,49 +879,6 @@ mod tests {
         assert_eq!(kinds.first().map(String::as_str), Some("run.created"));
         assert_eq!(kinds.last().map(String::as_str), Some("run.completed"));
         assert!(kinds.iter().any(|kind| kind == "run.state_changed"));
-    }
-
-    #[cfg(unix)]
-    #[tokio::test]
-    async fn durable_attempt_registry_receives_terminal_run_result() {
-        let dir = tempfile::tempdir().unwrap();
-        let control = Arc::new(MemoryChronicleControl::new(
-            dir.path().display().to_string(),
-        ));
-        let mut spec = RunSpec::process("run-durable-registry", "test-agent", "/bin/sh");
-        spec.lease_epoch = 7;
-        spec.supervisor = Some(SupervisorBootstrap {
-            endpoint: "tcp://127.0.0.1:9".into(),
-            token: "unavailable".into(),
-            controller_epoch: 1,
-            connect_timeout_ms: 25,
-            attempt_registry_uri: Some(dir.path().display().to_string()),
-            attempt_ttl_ms: 1_000,
-        });
-        let RunInvocation::Process(process) = &mut spec.invocation;
-        process.args = vec!["-c".into(), "printf durable".into()];
-        process.stdout = StdioMode::Capture;
-
-        let result = PVisor::builder()
-            .chronicle_control(control.clone())
-            .build()
-            .run(spec)
-            .await
-            .unwrap()
-            .wait()
-            .await
-            .unwrap();
-        assert_eq!(result.state, RunState::Completed);
-        let record = control
-            .get_attempt("run-durable-registry")
-            .await
-            .unwrap()
-            .unwrap();
-        assert_eq!(record.state, AttemptRecordState::Terminal);
-        assert_eq!(record.lease_epoch, 7);
-        let recovered: RunResult = serde_json::from_value(record.terminal_result.unwrap()).unwrap();
-        assert_eq!(recovered.attempt_id, result.attempt_id);
-        assert_eq!(recovered.state, RunState::Completed);
     }
 
     #[cfg(unix)]

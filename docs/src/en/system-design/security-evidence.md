@@ -3,10 +3,9 @@
 Persisting does not compress security into one `safe` or `sandboxed` label.
 Every Run reports guarantees by capability dimension. pVisor owns admission
 and runtime enforcement. Placement and recovery mechanisms do not upgrade a
-pVisor evidence level.
-Configured pChronicle capture preserves lifecycle facts and only the Evidence
-carried by Gateway or lifecycle event records. The full Run Bundle evidence
-inventory remains local unless moved separately.
+pVisor evidence level. Configured capture preserves lifecycle facts and only
+the Evidence carried by Gateway or lifecycle event records. The full Run Bundle
+evidence inventory remains local.
 
 | Dimension | Example mechanism | Evidence question |
 | --- | --- | --- |
@@ -46,6 +45,4 @@ AgentCtl/network/resource Evidence, output, or metrics inventory.
 
 Read [Capabilities and evidence](../pvisor/concepts/capabilities-and-evidence.md)
 for the user model, [pVisor isolation design](../pvisor/design/isolation.md) and
-[OverlayNet](../pvisor/design/overlaynet.md) for mechanisms, and
-[Facts and projections](../pchronicle/concepts/facts-and-projections.md) for the
-history boundary.
+[OverlayNet](../pvisor/design/overlaynet.md) for mechanisms.

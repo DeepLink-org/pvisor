@@ -137,13 +137,8 @@ compatibility with shell, Python, Node, and dynamically linked local tools. A
 measured runtime-closure builder may narrow it later; the current policy never
 makes those hierarchies writable.
 
-The default pVisor dependency graph does not include a pChronicle storage
-backend, Lance, or DataFusion. Durable Attempt and trajectory publication uses
-the lightweight `persisting-events` control feature to start and communicate
-with the Control component of `pchronicle serve`; storage-engine and cloud SDK dependencies
-remain in that process. `jujutsu-overlay` adds the Jujutsu OverlayFS upper.
-See [RFC-0007](../../rfcs/0007-events-contract-pchronicle-sidecar.md) for the
-dependency boundary.
+The default pVisor dependency graph does not include a separate trajectory
+warehouse. `jujutsu-overlay` adds the Jujutsu OverlayFS upper.
 
 ```text
 pVisor process
@@ -179,7 +174,7 @@ inside that root rather than redirected into the workspace.
 | required shared libraries and runtime data | read-only |
 | explicit input datasets | read-only |
 | Run scratch directory | read/write; preferably a size-limited tmpfs |
-| pVisor state, pChronicle, source credentials, home directory | denied |
+| pVisor state, Run capture storage, source credentials, home directory | denied |
 | `/proc`, `/sys`, host sockets | not admitted to Agent access unless explicitly projected or separately virtualized |
 | minimal devices | exact null, zero/full, random/urandom, and tty nodes only |
 
@@ -404,7 +399,7 @@ explicit vsock relay owned by OverlayNet. Clipboard, host audio, GUI devices,
 arbitrary shared folders, port forwarding, and ambient host sockets are absent.
 The host VMM helper receives access only to the prepared merged root, VM
 template, its private control socket, and required Virtualization.framework
-resources; it must not inherit pChronicle, source credentials, or unrelated
+resources; it must not inherit Run capture storage, source credentials, or unrelated
 descriptors.
 
 VirtioFS is the largest feasibility risk. GhostVM has an open report of

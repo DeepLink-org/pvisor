@@ -1,7 +1,6 @@
 # Project
 
-Persisting 的公开产品主路径是 pVisor 与 pChronicle。这一节记录交付状态、稳定决策、贡献者
-工作流，以及不在当前主路径中的独立系统。
+Persisting 的公开产品是 pVisor。这一节记录交付状态和贡献者工作流。
 
 ## 架构
 
@@ -18,15 +17,4 @@ Persisting 的公开产品主路径是 pVisor 与 pChronicle。这一节记录�
 
 ## 决策
 
-- [RFC 索引](../rfcs/index.md)
 - [贡献者工作流](engineering.md)
-
-## 独立数据系统
-
-Queue 及其 Python API 独立于 Agent 执行主路径：
-
-- Queue 指南
-- Queue API remains outside the default product documentation
-- 自定义 Queue backend 保持在默认产品文档范围之外
-
-历史 Queue 时代的设计笔记保留在仓库的 `docs/archive/` 目录中，不进入发布站点。

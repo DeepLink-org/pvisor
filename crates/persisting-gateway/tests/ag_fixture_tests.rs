@@ -55,7 +55,7 @@ fn ag_messages_request_matches_completions_snap() {
 }
 
 #[test]
-fn chronicle_semantic_ir_messages_request_matches_completions_snap() {
+fn semantic_ir_messages_request_matches_completions_snap() {
     let report = for_each_existing_case(
         MESSAGES_TO_COMPLETIONS,
         "requests/messages/",
@@ -79,7 +79,7 @@ fn chronicle_semantic_ir_messages_request_matches_completions_snap() {
             assert_json_eq(&actual, &expected, case);
         },
     );
-    report.assert_min_ran(3, "Chronicle semantic IR messages→completions snap");
+    report.assert_min_ran(3, "Semantic IR messages→completions snap");
 }
 
 #[test]
@@ -142,7 +142,7 @@ fn ag_responses_request_to_completions() {
 }
 
 #[test]
-fn chronicle_semantic_ir_responses_bridge_is_usable() {
+fn semantic_ir_responses_bridge_is_usable() {
     let report = for_each_existing_case(
         RESPONSES_TO_COMPLETIONS,
         "requests/responses/",
@@ -169,7 +169,7 @@ fn chronicle_semantic_ir_responses_bridge_is_usable() {
             );
         },
     );
-    report.assert_min_ran(5, "Chronicle semantic IR responses→completions");
+    report.assert_min_ran(5, "Semantic IR responses→completions");
 }
 
 // --- conversion: chat completions ↔ Gemini native ---

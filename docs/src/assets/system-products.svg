@@ -1,6 +1,6 @@
 <svg xmlns="http://www.w3.org/2000/svg" width="1400" height="780" viewBox="0 0 1400 780" role="img" aria-labelledby="title desc">
   <title id="title">Persisting workflows and optional integration</title>
-  <desc id="desc">pVisor runs one Agent with a reviewable execution boundary, while pChronicle queries trajectory Datasets. Execution and history are independent starting points that can be connected by configured capture.</desc>
+  <desc id="desc">pVisor runs one Agent with a reviewable execution boundary. Gateway, OverlayFS, and OverlayNet are runtime mechanisms; configured capture writes EventRecord JSONL with the Run.</desc>
   <defs>
     <linearGradient id="background" x1="0" y1="0" x2="1" y2="1">
       <stop offset="0" stop-color="#08111f"/>
@@ -44,8 +44,8 @@
   </defs>
 
   <rect width="1400" height="780" rx="28" fill="url(#background)"/>
-  <text x="52" y="56" class="title">Persisting product paths and optional integration</text>
-  <text x="52" y="86" class="subtitle">pPilot plans many Runs; pVisor governs each Attempt; pChronicle stores history</text>
+  <text x="52" y="56" class="title">pVisor product path</text>
+  <text x="52" y="86" class="subtitle">Gateway, OverlayFS, and OverlayNet govern each Run; capture stays with the Run</text>
 
   <text x="70" y="119" class="eyebrow">Inputs</text>
   <g id="agent-task-input" filter="url(#shadow)">
@@ -67,7 +67,7 @@
 
     <rect x="100" y="351" width="440" height="106" rx="16" class="inner-card visor-card"/>
     <text x="124" y="395" class="body">pVisor: one governed Run per Agent</text>
-    <text x="124" y="426" class="small">pPilot adds planning, leases, retry, and reconciliation</text>
+    <text x="124" y="426" class="small">Gateway · OverlayFS · OverlayNet runtime mechanisms</text>
 
     <rect x="100" y="518" width="440" height="114" rx="16" class="inner-card"/>
     <text x="124" y="568" class="body">Host · OCI container · libkrun VM</text>
@@ -76,22 +76,22 @@
 
   <g id="pchronicle-domain" filter="url(#shadow)">
     <rect x="830" y="250" width="500" height="410" rx="24" class="domain-shell chronicle-shell"/>
-    <text x="860" y="290" class="eyebrow chronicle-accent">HISTORY PATH</text>
-    <text x="860" y="324" class="domain-title">pChronicle: trajectory Datasets</text>
+    <text x="860" y="290" class="eyebrow chronicle-accent">RUN CAPTURE</text>
+    <text x="860" y="324" class="domain-title">EventRecord JSONL with the Run</text>
 
     <rect x="860" y="351" width="440" height="106" rx="16" class="inner-card chronicle-card"/>
-    <text x="884" y="411" class="body">local/S3 files · Storyline Sources · @alias</text>
+    <text x="884" y="411" class="body">events.jsonl · optional live Markdown · Run Bundle</text>
 
     <rect x="860" y="518" width="440" height="114" rx="16" class="inner-card chronicle-card"/>
-    <text x="884" y="583" class="body">Snapshot · normalize · query · analyze · exchange</text>
+    <text x="884" y="583" class="body">review · apply · drop staged Effects</text>
   </g>
 
   <g id="integration-handoff">
     <rect x="590" y="340" width="220" height="132" rx="18" fill="#101c30" stroke="#60a5fa" stroke-width="1.7"/>
-    <text x="700" y="370" text-anchor="middle" class="eyebrow">OPTIONAL CAPTURE</text>
+    <text x="700" y="370" text-anchor="middle" class="eyebrow">CONFIGURED CAPTURE</text>
     <text x="700" y="399" text-anchor="middle" class="small">Gateway trajectory events</text>
     <text x="700" y="423" text-anchor="middle" class="small">pVisor lifecycle records</text>
-    <text x="700" y="447" text-anchor="middle" class="small">recorded execution context</text>
+    <text x="700" y="447" text-anchor="middle" class="small">written as EventRecord JSONL</text>
     <path d="M570 500H830" class="handoff-line"/>
     <rect x="602" y="483" width="196" height="34" rx="17" fill="#17233a" stroke="#60a5fa" stroke-width="1.4"/>
     <text x="700" y="505" text-anchor="middle" class="small handoff-label">configured capture</text>

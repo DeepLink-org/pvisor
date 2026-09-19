@@ -54,50 +54,6 @@ jobs:
       - name: Workspace Clippy
         run: just clippy-deny
 
-  rust-clippy-pchronicle:
-    name: Clippy / pChronicle Feature Contracts
-    runs-on: ubuntu-latest
-    steps:
-      - uses: actions/checkout@v4
-
-      - name: Setup Build Environment
-        uses: ./.github/actions/setup-build-env
-        with:
-          install-nextest: "false"
-          install-zig: "false"
-          components: "clippy"
-
-      - uses: Swatinem/rust-cache@v2
-        with:
-          shared-key: ci-clippy-pchronicle
-
-      - name: Strict pChronicle Clippy
-        run: just clippy-pchronicle-panics
-
-      - name: pChronicle storage feature contracts
-        run: just clippy-pchronicle-features
-
-  rust-clippy-pchronicle-web:
-    name: Clippy / pChronicle Web
-    runs-on: ubuntu-latest
-    steps:
-      - uses: actions/checkout@v4
-
-      - name: Setup Build Environment
-        uses: ./.github/actions/setup-build-env
-        with:
-          install-nextest: "false"
-          install-zig: "false"
-          components: "clippy"
-
-      - uses: Swatinem/rust-cache@v2
-        with:
-          shared-key: ci-clippy-pchronicle-web
-          workspaces: pchronicle-web -> target
-
-      - name: pChronicle Web Clippy
-        run: just clippy-pchronicle-web
-
   python-lint:
     name: Python Lint
     runs-on: ubuntu-latest
@@ -131,58 +87,22 @@ jobs:
               persisting-overlayfs
               persisting-overlaynet
               persisting-replay
-            event_control: true
             prepare_pvisor: false
-            prepare_runtime: false
             smoke_pvisor: false
-            smoke_ppilot: false
-            smoke_pchronicle: false
             install_zig: false
           - platform: Linux
             os: ubuntu-latest
             shard: gateway
             packages: persisting-gateway
-            event_control: false
             prepare_pvisor: false
-            prepare_runtime: false
             smoke_pvisor: false
-            smoke_ppilot: false
-            smoke_pchronicle: false
             install_zig: false
           - platform: Linux
             os: ubuntu-latest
             shard: pvisor
             packages: persisting-pvisor
-            event_control: false
             prepare_pvisor: true
-            prepare_runtime: false
             smoke_pvisor: true
-            smoke_ppilot: false
-            smoke_pchronicle: false
-            install_zig: false
-          - platform: Linux
-            os: ubuntu-latest
-            shard: ppilot
-            packages: persisting-ppilot
-            event_control: false
-            prepare_pvisor: false
-            prepare_runtime: true
-            smoke_pvisor: false
-            smoke_ppilot: true
-            smoke_pchronicle: false
-            install_zig: false
-          - platform: Linux
-            os: ubuntu-latest
-            shard: pchronicle
-            packages: >-
-              persisting-pchronicle
-              persisting-pchronicle-cli
-            event_control: false
-            prepare_pvisor: false
-            prepare_runtime: false
-            smoke_pvisor: false
-            smoke_ppilot: false
-            smoke_pchronicle: true
             install_zig: false
           - platform: macOS
             os: macos-latest
@@ -194,40 +114,18 @@ jobs:
               persisting-overlay-core
               persisting-overlayfs
               persisting-overlaynet
-              persisting-ppilot
               persisting-pvisor
               persisting-replay
-            event_control: false
-            prepare_pvisor: false
-            prepare_runtime: true
+            prepare_pvisor: true
             smoke_pvisor: true
-            smoke_ppilot: true
-            smoke_pchronicle: false
             install_zig: true
           - platform: macOS
             os: macos-latest
             shard: pvisor
             packages: persisting-pvisor
-            event_control: false
             prepare_pvisor: true
-            prepare_runtime: false
             smoke_pvisor: true
-            smoke_ppilot: false
-            smoke_pchronicle: false
             install_zig: true
-          - platform: macOS
-            os: macos-latest
-            shard: pchronicle
-            packages: >-
-              persisting-pchronicle
-              persisting-pchronicle-cli
-            event_control: false
-            prepare_pvisor: false
-            prepare_runtime: false
-            smoke_pvisor: false
-            smoke_ppilot: false
-            smoke_pchronicle: true
-            install_zig: false
     steps:
       - uses: actions/checkout@v4
 
@@ -247,14 +145,6 @@ jobs:
         if: matrix.prepare_pvisor
         run: just pvisor debug
 
-      # pPilot's integration tests resolve the real pVisor and pChronicle
-      # executables from PATH. Build them once in this shard before nextest.
-      - name: Build Agent runtime component set
-        if: matrix.prepare_runtime
-        run: |
-          just build-agent-runtime debug
-          echo "${GITHUB_WORKSPACE}/target/debug" >> "${GITHUB_PATH}"
-
       - name: Run ${{ matrix.shard }} tests
         env:
           # GitHub-hosted Linux runners may disable unprivileged user
@@ -262,64 +152,9 @@ jobs:
           PERSISTING_TEST_ALLOW_NO_USERNS: "1"
         run: just ci-nextest ${{ matrix.packages }}
 
-      - name: Test shared event control contract
-        if: matrix.event_control
-        run: just test-events-control
-
       - name: Smoke pVisor CLI
         if: matrix.smoke_pvisor
         run: just smoke-pvisor-cli
-
-      - name: Smoke pPilot CLI
-        if: matrix.smoke_ppilot
-        run: just smoke-ppilot-cli
-
-      - name: Smoke pChronicle CLI
-        if: matrix.smoke_pchronicle
-        run: just smoke-pchronicle-cli
-
-  rust-proptest:
-    name: Rust Proptest / pChronicle
-    runs-on: ubuntu-latest
-    timeout-minutes: 30
-    steps:
-      - uses: actions/checkout@v4
-
-      - name: Setup Build Environment
-        uses: ./.github/actions/setup-build-env
-        with:
-          install-zig: "false"
-          components: ""
-
-      - uses: Swatinem/rust-cache@v2
-        with:
-          shared-key: ci-rust-proptest-pchronicle
-
-      # Keep property tests out of the regular pChronicle package shard so
-      # nextest can schedule the two workloads on separate runners.
-      - name: Run pChronicle property-test regression
-        run: just proptest pchronicle
-
-  pchronicle-web-test:
-    name: pChronicle Web
-    runs-on: ubuntu-latest
-    steps:
-      - uses: actions/checkout@v4
-
-      - name: Setup Build Environment
-        uses: ./.github/actions/setup-build-env
-        with:
-          install-dioxus: "true"
-          install-zig: "false"
-          components: ""
-
-      - uses: Swatinem/rust-cache@v2
-        with:
-          shared-key: ci-pchronicle-web
-          workspaces: pchronicle-web -> target
-
-      - name: Build and test Web crate
-        run: just test-pchronicle-web
 
   pvisor-isolation-regression:
     name: pVisor Isolation Regression / Linux
@@ -361,66 +196,6 @@ jobs:
         env:
           WORK_ROOT: ${{ runner.temp }}/pvisor-filesystem-examples
         run: just examples-pvisor-filesystem
-
-  s3-contract:
-    name: pChronicle S3 Contract / MinIO
-    runs-on: ubuntu-latest
-    timeout-minutes: 30
-    steps:
-      - uses: actions/checkout@v4
-
-      - name: Setup Build Environment
-        uses: ./.github/actions/setup-build-env
-        with:
-          install-zig: "false"
-          components: ""
-
-      - uses: Swatinem/rust-cache@v2
-        with:
-          shared-key: ci-pchronicle-s3
-
-      - name: Start pinned MinIO server
-        run: |
-          docker run --detach --name persisting-minio-contract \
-            --publish 9000:9000 \
-            --env MINIO_ROOT_USER=minioadmin \
-            --env MINIO_ROOT_PASSWORD=minioadmin123 \
-            quay.io/minio/minio:RELEASE.2025-07-23T15-54-02Z \
-            server /data
-          for attempt in $(seq 1 30); do
-            if curl --fail --silent http://127.0.0.1:9000/minio/health/live >/dev/null; then
-              exit 0
-            fi
-            sleep 1
-          done
-          docker logs persisting-minio-contract
-          exit 1
-
-      - name: Create isolated test bucket
-        run: |
-          docker run --rm --network host --entrypoint /bin/sh \
-            quay.io/minio/mc:RELEASE.2025-08-13T08-35-41Z -c \
-            'mc alias set local http://127.0.0.1:9000 minioadmin minioadmin123 && mc mb --ignore-existing local/persisting-tests'
-
-      - name: Run real S3 storage contract
-        env:
-          PCHRONICLE_S3_TEST_URI: s3://persisting-tests/contracts
-          AWS_ACCESS_KEY_ID: minioadmin
-          AWS_SECRET_ACCESS_KEY: minioadmin123
-          AWS_REGION: us-east-1
-          AWS_DEFAULT_REGION: us-east-1
-          AWS_ENDPOINT: http://127.0.0.1:9000
-          AWS_ALLOW_HTTP: "true"
-          AWS_VIRTUAL_HOSTED_STYLE_REQUEST: "false"
-        run: just test-pchronicle-s3
-
-      - name: Show MinIO logs after failure
-        if: failure()
-        run: docker logs persisting-minio-contract
-
-      - name: Stop MinIO
-        if: always()
-        run: docker rm --force persisting-minio-contract || true
 
   python-test:
     name: Python Test
@@ -490,10 +265,6 @@ jobs:
             command: |
               just test-pvisor-benchmark
               just examples-pvisor-portable
-          - shard: ppilot
-            command: just examples-ppilot
-          - shard: pchronicle
-            command: just examples-pchronicle
     steps:
       - uses: actions/checkout@v4
 
@@ -529,14 +300,9 @@ jobs:
     needs:
       - format
       - rust-clippy-workspace
-      - rust-clippy-pchronicle
-      - rust-clippy-pchronicle-web
       - python-lint
       - rust-test
-      - rust-proptest
-      - pchronicle-web-test
       - pvisor-isolation-regression
-      - s3-contract
       - python-test
       - pvisor-cases
       - examples

@@ -24,12 +24,8 @@ child, waits for the child, flushes capture, and stops the Gateway. Each Run
 writes all metadata, trajectory, and optional filesystem state into the Run
 record directory (or the explicit `--stage` directory).
 
-Use `--gateway-stream-markdown` for a live human-readable projection. Select
-`--record-format json --record-destination ./capture` for lightweight local
-JSONL, or `--record-format lance --record-destination WAREHOUSE` for the full
-pChronicle sidecar path. Dataset catalog, query,
-analysis, import/export, and the read-only Web UI are provided by
-[`pchronicle`](../../pchronicle/get-started.md).
+Use `--gateway-stream-markdown` for a live human-readable projection. Set
+`--record-destination ./capture` to write EventRecord JSONL next to the Run.
 
 ### Event timestamps
 
@@ -49,5 +45,4 @@ Clients must use an injected proxy or base URL to be observed. Direct sockets
 can bypass the explicit proxy unless the selected executor provides an enforced
 network boundary; inspect the Run Bundle for the effective isolation level.
 
-Next: [explore the captured history](../../pchronicle/get-started.md) or read the
-[Gateway implementation](../design/gateway.md).
+Next: read the [Gateway implementation](../design/gateway.md).

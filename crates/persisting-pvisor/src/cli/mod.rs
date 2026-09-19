@@ -196,24 +196,6 @@ mod tests {
     }
 
     #[test]
-    fn replay_rejects_removed_chronicle_flag() {
-        let error = Cli::try_parse_from([
-            "pvisor",
-            "replay",
-            "--agent",
-            "claude-code",
-            "--trajectory",
-            "/input/session.jsonl",
-            "--after-step",
-            "30",
-            "--chronicle-mode",
-            "off",
-        ])
-        .unwrap_err();
-        assert!(error.to_string().contains("--chronicle-mode"));
-    }
-
-    #[test]
     fn replay_modes_are_mutually_exclusive_cli_flags() {
         for mode in ["--prepare-only", "--replay-only"] {
             Cli::try_parse_from([

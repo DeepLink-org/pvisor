@@ -264,11 +264,7 @@ impl RunBundle {
             kind: "run-record".into(),
             path: record.stage_dir().join("run.json"),
         }];
-        for (kind, relative) in [
-            ("capture", ".capture"),
-            ("chronicle", "chronicle"),
-            ("live-markdown", "live.md"),
-        ] {
+        for (kind, relative) in [("capture", ".capture"), ("live-markdown", "live.md")] {
             let path = record.storage.join(relative);
             if path.exists() {
                 artifacts.push(BundleArtifact {
@@ -574,7 +570,7 @@ mod tests {
             overlay_lowers: vec![],
             lineage: None,
             orchestration: std::collections::BTreeMap::from([(
-                "ppilot.job_id".into(),
+                "pvisor.orchestration.job_id".into(),
                 serde_json::json!("job-1"),
             )]),
         };
@@ -611,7 +607,7 @@ mod tests {
         assert!(!bundle.safety.network_non_bypassable);
         assert_eq!(bundle.run.parent_run_id.as_deref(), Some("job-1"));
         assert_eq!(bundle.run.task_id.as_deref(), Some("task-1"));
-        assert_eq!(bundle.orchestration["ppilot.job_id"], "job-1");
+        assert_eq!(bundle.orchestration["pvisor.orchestration.job_id"], "job-1");
         assert!(
             bundle
                 .environment

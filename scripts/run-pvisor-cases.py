@@ -361,8 +361,6 @@ def requirement_reason(requirement: str) -> str | None:
         return "requires crun or runc"
     if requirement == "agent" and not environment.get("PVISOR_CASE_AGENT"):
         return "requires PVISOR_CASE_AGENT"
-    if requirement == "lance" and environment.get("PVISOR_CASE_LANCE") != "1":
-        return "requires PVISOR_CASE_LANCE=1"
     if requirement in {
         "curl",
         "firmware",
@@ -373,7 +371,6 @@ def requirement_reason(requirement: str) -> str | None:
         "rootfs",
         "rootless",
         "agent",
-        "lance",
         "container",
         "container-runtime",
     }:

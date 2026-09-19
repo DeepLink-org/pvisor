@@ -7,8 +7,7 @@ environment.** It gives each Run its own workspace boundary, records the
 controls that were actually installed, and lets you review filesystem changes
 before they reach the project.
 
-In Persisting, pVisor runs one Agent and reviews its changes. You can use it
-without pChronicle.
+In Persisting, pVisor runs one Agent and reviews its changes.
 
 !!! tip "What you will complete"
 
@@ -58,8 +57,8 @@ When you already know what you need, follow the matching path:
 - **Publish trajectory events:** [Capture trajectories](guides/capture.md)
 - **Look up exact flags:** [CLI reference](reference/cli.md)
 
-pVisor's local run-review-apply loop works on its own. pChronicle is optional:
-use it when you want to retain and query trajectory Datasets after a Run.
+pVisor's local run-review-apply loop is the product. Capture, when enabled,
+stays inside that Run.
 
 ## A useful reading order
 
@@ -75,4 +74,3 @@ use it when you want to retain and query trajectory Datasets after a Run.
 - [Learn the pVisor concepts](concepts/index.md)
 - [Follow practical guides](guides/index.md)
 - [Inspect runtime and isolation design](design/index.md)
-- [Explore trajectory history with pChronicle](../pchronicle/index.md)

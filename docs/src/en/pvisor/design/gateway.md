@@ -2,9 +2,7 @@
 
 This page covers model routing, protocol adaptation, non-blocking capture,
 and event emission. How to capture a Run belongs to the
-[Capture guide](../guides/capture.md). Ownership of facts and projections
-after capture belongs to
-[pChronicle run storage](../../pchronicle/design/trajectory-storage.md).
+[Capture guide](../guides/capture.md). Captured events stay with the Run.
 
 > **Audience**: platform engineers, architects, and integrators who need
 > **observable, replayable, auditable** trajectories between Agents and
@@ -39,17 +37,16 @@ end. The text avoids binding to specific source-code paths.
 
 **Persisting Gateway is the trajectory observation layer for coding
 agents.** Run **Claude Code** or **OpenAI Codex** through a local explicit
-proxy from `persisting-overlaynet` and you get a replayable event stream,
-which pChronicle then persists in structured form.
+proxy from `persisting-overlaynet` and you get a replayable event stream
+persisted as EventRecord JSONL with the Run (and optional live Markdown).
 
 Main path:
 
 ```text
 HTTP  ──►  events stream
-              ├─ record (append → events.lance, SoT)
+              ├─ record (append → events.jsonl, SoT)
               └─ trigger (subscribe / handler)
-                   └─ format conversion (via storyline hub) + persist
-                      (agenticmd / atif / openai_msg / …)
+                   └─ optional live Markdown projection
 ```
 
 It is an embeddable **event observer and state machine** on top of the
@@ -60,9 +57,8 @@ code**, you can:
 - transparently forward dialogue traffic to the upstream model;
 - write every HTTP exchange into the **events stream** (durable and
   replayable);
-- let subscriptions on events trigger materialize and export (Markdown,
-  ATIF, openai_msg, and so on) instead of hard-coding formats on the
-  proxy path.
+- let subscriptions on events trigger optional live Markdown instead of
+  hard-coding formats on the proxy path.
 
 Gateway is not a substitute for a general enterprise API gateway, and it
 does not own the network data-plane implementation. As an OverlayNet
@@ -106,7 +102,7 @@ table above.
 - History-replay dedup and subagent tracks for Claude Code;
 - Responses ↔ Completions bridging and context-injection filtering for
   Codex;
-- Dual storage: full Lance events plus a Markdown materialized view;
+- Dual storage: EventRecord JSONL plus an optional live Markdown view;
 - Lightweight model routing and protocol bridging (Messages /
   Completions / Responses, and so on).
 
@@ -128,13 +124,13 @@ Agent client
 ┌─────────────────────────────────────┐
 │  Persisting Gateway                  │
 │  HTTP → events stream                │
-│   · record → events.lance (SoT)      │
-│   · trigger → storyline → persist    │
+│   · record → events.jsonl (SoT)      │
+│   · trigger → optional Markdown      │
 └──────────────┬──────────────────────┘
-               │ events / derived artifacts
+               │ capture stays with the Run
                ▼
 ┌─────────────────────────────────────┐
-│  pChronicle / analysis / retrieval   │
+│  Run storage (JSONL + Run Bundle)    │
 └─────────────────────────────────────┘
 ```
 
@@ -147,9 +143,9 @@ Agent client
 | **Observation does not block** | User-request latency and success come first. Capture failures write dead letter and do **not** interrupt the HTTP response because a disk write failed. |
 | **HTTP → events** | The proxy's primary product is the **events stream** (HTTP-first wire), not a direct Markdown / ATIF write. |
 | **Record and trigger are separate** | The same event can **append** to storage and **fan-out** to downstream handlers; the two are decoupled. |
-| **Convert through the hub** | Materialize / export goes through **storyline** (ATIF-aligned) and then to each format. Pairwise conversion among peripheral formats is forbidden. |
-| **Lance is the source of truth** | Canonical storage is only `events.lance`. Markdown / ATIF and similar are **derived persistence** and may be lossy. |
-| **Single write gate** | Lance appends go through one engine path, avoiding dual-write races. |
+| **Derived views are optional** | Live Markdown is a handler on the events stream, not a second source of truth beside JSONL. |
+| **JSONL is the source of truth** | Canonical storage is EventRecord JSONL (`events.jsonl`). Markdown is **derived** and may be lossy. |
+| **Single write gate** | JSONL appends go through one engine path, avoiding dual-write races. |
 
 ---
 
@@ -169,20 +165,11 @@ Gateway Sink (LLM protocol adapt + emit trajectory observations)
     ▼
 events stream ─────────────────────────────────────────┐
     │                                              │
-    ├─ record append ──► events.lance (SoT / replay) │
+    ├─ record append ──► events.jsonl (SoT / replay) │
     │                                              │
-    └─ trigger handler ──► interpret / fold            │
-                           │                       │
-                           ▼                       │
-                      storyline (hub)              │
-                           │                       │
-              ┌────────────┼────────────┐          │
-              ▼            ▼            ▼          │
-         agenticmd       atif      openai_msg …    │
-              │            │            │          │
-              └──────── persist / materialize ─────┘          │
+    └─ trigger handler ──► optional live Markdown    │
                                                    │
-(optional) replay from Lance ──────────────────────┘
+(optional) replay from JSONL ──────────────────────┘
 ```
 
 Key points:
@@ -195,8 +182,8 @@ Key points:
    implement a second proxy.
 3. **The events stream is the bus**: it can be recorded and subscribed.
    The same record can persist and trigger at once.
-4. **Format conversion and persistence are downstream**: they go through
-   the storyline hub and emit agenticmd / atif / openai_msg and so on.
+4. **Derived views are downstream**: optional live Markdown is produced by
+   handlers on the events stream; capture stays with the Run.
 
 Auxiliary coordinates (session bounds, not SoT):
 
@@ -221,16 +208,16 @@ Auxiliary coordinates (session bounds, not SoT):
 └───────────────┬─────────────────────────┬───────────────────┘
                 │ record                  │ trigger
                 ▼                         ▼
-         events.lance              handlers (interpret)
+         events.jsonl             handlers (interpret)
                                           │
                                           ▼
-                                   storyline → persist formats
+                                   optional live Markdown
 ```
 
 **Ingress**: protocol layer → events (keep the wire when possible;
 summary fields are optional).
-**Egress**: events replay / subscribe → storyline → derived-format
-persist; decoupled from the capture hot path.
+**Egress**: events replay / subscribe → optional live Markdown; decoupled
+from the capture hot path.
 
 ![Gateway event write and derived data flow](../../../assets/diagrams/persisting/gateway-dataflow.svg)
 
@@ -239,7 +226,7 @@ persist; decoupled from the capture hot path.
 | | Write path (record) | Derived path (trigger) |
 |---|--------|--------|
 | **Input** | Event emitted by proxy / import | Event already in the stream (live or replay) |
-| **Output** | `events.lance` append | storyline and agenticmd / atif / … |
+| **Output** | `events.jsonl` append | optional live Markdown |
 | **Failure** | dead letter; do not block HTTP | Independent retry; does not affect SoT |
 | **Fidelity** | HTTP-first, target is replay | Lossy fold is allowed |
 
@@ -275,16 +262,16 @@ events**, not a second source of truth beside events.
           │
     ┌─────┴──────────────────┐
     ▼                        ▼
- events.lance          handlers → storyline
- (SoT)                  → persist agenticmd / atif / …
+ events.jsonl          handlers → optional Markdown
+ (SoT)
 ```
 
 | Component | Role |
 |------|------|
 | **Proxy** | Sole HTTP entry; forwards up and down stream; **emits** observations **into the events stream** (does not write multiple formats directly). |
-| **events engine** | Maintains the ordered stream: **record** (append Lance) and **trigger** (fan-out handlers). |
-| **Record path** | WAL → per-session ordered apply → `events.lance`. |
-| **Trigger path** | Subscribe events → interpret → storyline → persist formats / Live Markdown. |
+| **events engine** | Maintains the ordered stream: **record** (append JSONL) and **trigger** (fan-out handlers). |
+| **Record path** | WAL → per-session ordered apply → `events.jsonl`. |
+| **Trigger path** | Subscribe events → interpret → optional live Markdown. |
 | **Session index** | Lightweight `sessions.json`: listing, tokens, cost estimates. |
 | **Reconcile and dead letter** | Consistency of SoT vs derived persist; failed events can be replayed. |
 
@@ -325,10 +312,10 @@ Key points:
 1. The **Proxy does not wait** for derived persist to finish before
    responding; it emits first, then continues forwarding.
 2. **Drafts trigger handlers only by default** (for example Live
-   Markdown). Only a complete response is **recorded** into Lance, so
+   Markdown). Only a complete response is **recorded** into JSONL, so
    partials do not pollute SoT.
-3. Derived formats (agenticmd / atif / …) always go through
-   **storyline**. They can trigger live or be replayed from Lance later.
+3. Live Markdown is produced by handlers on the events stream; it can
+   trigger live or be replayed from JSONL later.
 
 ### 6.2 Capture events and record types
 
@@ -337,16 +324,16 @@ kinds**:
 
 | Event | Typical effect (Dialogue level) |
 |------|---------------------------|
-| Request arrived | Lance: request record; Markdown: user block |
+| Request arrived | JSONL: request record; Markdown: user block |
 | Streaming draft | Markdown only: assistant draft (in-place overwrite) |
-| Response complete | Lance: stream/full response record; Markdown: final assistant |
-| Call canceled | Lance only: cancel record |
-| Spawn link | Lance + Markdown: association metadata (not skippable noise) |
+| Response complete | JSONL: stream/full response record; Markdown: final assistant |
+| Call canceled | JSONL only: cancel record |
+| Spawn link | JSONL + Markdown: association metadata (not skippable noise) |
 
 **Capture level** (Summary / Dialogue / Full) controls record grain.
 Production default is **Dialogue**:
 
-| Level | Lance / Markdown summary fields | `payload.body` |
+| Level | JSONL / Markdown summary fields | `payload.body` |
 |------|---------------------------|----------------|
 | `summary` | model, path, byte counts only | ❌ |
 | `dialogue` (default) | visible dialogue text in `user_content` / `assistant_content` | ❌ |
@@ -359,7 +346,7 @@ handles them uniformly. See §6.4 on this page.
 Storage record types (`http.request` / `llm.request`,
 `llm.response.stream`, `session.*`, and so on) belong to the **events
 vocabulary** and are emitted by the Proxy. Handlers then fold them into
-storyline; they need not map one HTTP frame to one dialogue turn.
+Markdown handlers; they need not map one HTTP frame to one dialogue turn.
 
 #### 6.2.1 Timestamps and order
 
@@ -382,7 +369,7 @@ independent `seq` spaces.
 ```text
 Assistant:  "H" → "He" → "Hello, I can help…"
 Markdown:   [draft] → [overwrite draft] → [final]
-Lance:      —      —                    one final response event
+JSONL:      —      —                    one final response event
 ```
 
 - Draft blocks are explicitly marked. On finalize, the same block is
@@ -390,7 +377,7 @@ Lance:      —      —                    one final response event
 - The block-header schema carries a version (`v: 1`) so the line format
   can evolve without changing the file suffix.
 
-See [AgenticMD run format](../../pchronicle/reference/agenticmd.md).
+See the capture guide for Markdown layout.
 
 ### 6.4 Visible-dialogue extraction (including multimodal)
 
@@ -426,9 +413,8 @@ placeholders** and does not embed pixel data.
 
 **Later (planned)**: a sidecar asset directory
 `{run}/assets/{call_id}/…` plus payload references. An internal
-materializer can emit Markdown images that point at `assets/…`. The
-current public `pchronicle` CLI does not reserve a command for this
-plan. See §11 Evolution on this page.
+materializer can emit Markdown images that point at `assets/…`.
+See §11 Evolution on this page.
 
 Protocol regression:
 `crates/persisting-gateway/tests/ag_fixture_tests.rs` +
@@ -439,16 +425,16 @@ Protocol regression:
 ## 7. Storage and consistency
 
 > Dual storage, directory conventions, and materialize/import paths are
-> in [Run storage](../../pchronicle/design/trajectory-storage.md).
+> in Run storage.
 
 ### 7.1 Dual storage
 
-| | Lance (source of truth) | Markdown (materialized view) |
+| | JSONL (source of truth) | Markdown (optional view) |
 |---|----------------|----------------------|
 | **Reader** | Programs, retrieval, replay | Humans, git, review |
 | **Completeness** | Lossless (within the capture level) | Lossy: filters internals and repeated history |
-| **Write** | append to `events.lance` | live upsert or batch append / full materialize |
-| **Relation** | row count ≥ block count (materialize only shrinks) | Rebuild from Lance can repair drift |
+| **Write** | append to `events.jsonl` | live upsert when `--gateway-stream-markdown` is enabled |
+| **Relation** | canonical event count ≥ block count | Rebuild from JSONL can repair drift |
 
 ### 7.2 Materialize filtering (one policy)
 
@@ -459,7 +445,7 @@ decide whether an event appears in Markdown, for example:
 - Claude Code-style **history replay** (resend that does not increase
   the user-message count);
 - Empty records with no visible body;
-- Pure lifecycle and cancel-only records (kept in Lance).
+- Pure lifecycle and cancel-only records (kept in JSONL).
 
 Events that still matter to humans, such as spawn links, are **not**
 dropped by mistake.
@@ -471,28 +457,18 @@ estimated cost, subagent list, client info, and so on.
 **Turn count follows the story read model.** The in-block `turn` field
 is a display heuristic only, not the authoritative count.
 
-### 7.4 Three-track reconcile
+### 7.4 Reconcile
 
-When a Run ends normally, each session is compared:
-
-| Track | Meaning |
-|------|------|
-| **Markdown** | Call set in materialized blocks |
-| **Lance** | Call set that should appear as dialogue in the event log |
-| **Story** | Call set obtained by replaying events |
-
-Only when all three agree and structure checks pass is the
-human-readable view considered aligned with the source of truth. On
-mismatch, apply materialize or inspect dead letter rather than trusting
-Markdown directly.
+When a Run ends normally, the human-readable Markdown view (when enabled)
+is compared against the JSONL event log. On mismatch, replay handlers or
+inspect dead letter rather than trusting Markdown directly.
 
 ### 7.5 Auxiliary artifacts
 
 | Artifact | Role |
 |------|------|
 | Event WAL | Replay unconfirmed capture events after a process crash |
-| dead letter | Retain and replay apply failures or Lance flush failures |
-| Story snapshot | On exit, freeze each Story's turn read model for summary and recovery |
+| dead letter | Retain and replay apply failures or JSONL flush failures |
 
 ---
 
@@ -520,7 +496,7 @@ from turn semantics.
 ### 9.1 Routing and storage keys
 
 Each HTTP request binds a **capture route**: logical session, on-disk
-storage key (which decides the `.md` filename and the Lance event-log
+storage key (which decides the `.md` filename and the JSONL event-log
 path), and an optional subagent id.
 Under a Capture run, subagents usually write `agent-{id}.md`; the main
 session writes `run-{id}.md` or a flat session name.
@@ -540,26 +516,15 @@ first-packet registration may be **time-skewed**. A Run-level registry
 does delayed match and backfill so the main session can still see, after
 the fact, which subagent was called and where its trajectory file is.
 
-### 9.4 One run dataset, several `session_id`s (Claude run bucket)
+### 9.4 One run, several `session_id`s
 
-A `pvisor run --record-format lance --record-destination WAREHOUSE`
-pChronicle sidecar usually writes one `events.lance/` dataset under the
-run directory, but in-row `session_id` **may mix several values**.
-pVisor does not open Lance itself:
+`--record-destination` writes EventRecord JSONL under the destination
+directory. Rows in that file may still mix several `session_id` values:
 
 | Typical source | `session_id` value |
 |----------|-------------------|
 | pVisor lifecycle / Run header | `run-{uuid}` (matches the directory name) |
 | Claude Code dialogue HTTP | UUID injected via header (different from the run id) |
-
-So when internal stats expand a run bucket
-(`session_id == root_session_id`), they first read distinct
-`session_id`s from Lance, then **stat each partition**, avoiding "the
-second session shows 0 turns". Implementation:
-`persisting-pchronicle::expand_story_locations`. The current public CLI
-exposes stats through `analysis` and `query`. See the run-bucket
-partition notes in
-[Run storage](../../pchronicle/design/trajectory-storage.md).
 
 ---
 
@@ -570,7 +535,7 @@ partition notes in
 ```text
 Request thread ──► emit event (non-blocking WAL enqueue + apply enqueue) ──► continue forward
                     │
-                    └──► background: ordered apply ──► pChronicle sidecar / Markdown
+                    └──► background: ordered apply ──► events.jsonl / Markdown
                               │
                               ├─ success → confirm WAL
                               └─ failure → dead letter + keep WAL (replay on restart; HTTP unaffected)
@@ -579,8 +544,8 @@ Request thread ──► emit event (non-blocking WAL enqueue + apply enqueue) �
 | Mechanism | Purpose |
 |------|------|
 | **Async apply** | Capture does not occupy the upstream connection thread |
-| **Blocking-sink isolation** | sidecar durable ACK wait runs on a blocking pool, not Gateway Tokio HTTP workers |
-| **Per-story ordered queue** | Event order is reproducible inside one storyline |
+| **Blocking-sink isolation** | durable ACK wait runs on a blocking pool, not Gateway Tokio HTTP workers |
+| **Per-session ordered queue** | Event order is reproducible inside one session |
 | **Event WAL** | The request thread only does a bounded `try_send`; the background waits at most 2 ms to batch and `sync_data`. Persisted events can replay after a crash |
 | **ACK WAL** | Async best-effort batching. A lost ACK only causes safe replay. The flush/shutdown barrier persists already-received ACKs first |
 | **Barrier flush** | Drain queues and actor mailboxes before graceful exit |
@@ -595,8 +560,8 @@ full-file Markdown upsert on very long sessions — see §11 Evolution.
 | Shape | When to use |
 |------|----------|
 | **`pvisor run`** | Wrap one Agent command (for example `claude`, `codex`); inject proxy environment variables and manage the embedded Gateway |
-| **pChronicle sidecar / extra Markdown** | `--record-format lance` persists to `events.lance/` via sidecar; enable `--gateway-stream-markdown` as well when live md is needed |
-| **Dead letter** | Retained in Run storage for pChronicle API diagnosis |
+| **JSONL recording** | `--record-destination` writes EventRecord JSONL; enable `--gateway-stream-markdown` as well when live Markdown is needed |
+| **Dead letter** | Retained in Run storage for capture diagnosis |
 
 Config excerpt:
 
@@ -625,18 +590,17 @@ active request count) for sidecar monitoring.
 
 | Direction | Motive |
 |------|------|
-| **Multimodal sidecar (Phase 1)** | Persist base64 / generated images under `{run}/assets/`; Lance stores references only. Supports materialize embeds and controlled replay |
+| **Multimodal sidecar (Phase 1)** | Persist base64 / generated images under `{run}/assets/`; JSONL stores references only |
 | **Cursor live capture and import** | Injection and JSONL import on par with Claude Code |
-| Lance dataset split and compaction | Split strategy when `events.lance/` grows too large on a long run |
+| JSONL compaction | Split or rotate strategy when `events.jsonl` grows too large on a long run |
 | Stronger WAL and sequence recovery | Lower risk of duplicate apply and seq conflict after a crash |
 | Markdown append log + periodic compact | I/O and git-diff friendliness of live upsert on long sessions |
 | External price table | Configurable cost estimates in the summary |
-| Story read-model enrich | Close the loop on parent/child Stories, call metadata, and spawn |
-| Lance column-layout optimization | Better columnar retrieval instead of large blobs |
+| Session read-model enrich | Close the loop on parent/child sessions, call metadata, and spawn |
 | Narrower protocol surface | Shrink the conversion matrix as industry APIs stabilize |
 
 Block format is explicitly versioned with `v: 1`. See
-[AgenticMD run format](../../pchronicle/reference/agenticmd.md).
+the capture guide for Markdown layout.
 
 ---
 
@@ -645,10 +609,7 @@ Block format is explicitly versioned with `v: 1`. See
 | Document | Contents |
 |------|------|
 | [Capture quick start](../guides/capture.md) | **Getting started**: build the CLI, `pvisor run`, view trajectories, troubleshoot |
-| [Run storage](../../pchronicle/design/trajectory-storage.md) | Lance ↔ Markdown data flow, materialize, import |
-| [AgenticMD run format](../../pchronicle/reference/agenticmd.md) | Block structure, field spec, subagent footnotes, golden examples |
 | [pVisor commands](../reference/cli.md) | Single-Run execution, status, and filesystem operations |
-| [pChronicle CLI](../../pchronicle/reference/cli.md) | Dataset query, analysis, exchange, and read-only serve |
 
 **Runnable examples**:
 

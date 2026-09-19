@@ -14,7 +14,7 @@ the guest's virtual router; Gateway and ordinary VM egress share the Attempt
 controller, metrics, and bandwidth buckets.
 
 Does not own LLM protocol adaptation, upstream selection, session correlation,
-capture events, WAL, or pChronicle writes.
+capture events, or WAL writes.
 [`persisting-gateway`](../persisting-gateway/README.md) implements `OverlaySink`
 for those. pVisor owns Run configuration, executor selection, and the recorded
 interception profile.

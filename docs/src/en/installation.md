@@ -1,11 +1,7 @@
 # Installation
 
-Persisting gives you two public command-line paths:
-
-- `pvisor` runs an Agent inside a reviewable execution boundary.
-- `pchronicle` opens, queries, exchanges, and serves trajectory Datasets.
-
-The default install includes the complete public CLI and Dataset workflow.
+`pvisor` runs an Agent inside a reviewable execution boundary. The default
+install is that CLI.
 
 ## 1. Install the tools
 
@@ -13,16 +9,15 @@ The default install includes the complete public CLI and Dataset workflow.
 pip install persisting
 ```
 
-Verify that the commands are available:
+Verify that the command is available:
 
 ```bash
 pvisor --version
-pchronicle --help
 ```
 
-The wheel installs matching versions of the Python package and the public CLI
-entry points into the active Python environment. Use a virtual environment when
-the project has other Python dependencies:
+The wheel installs matching versions of the Python package and the `pvisor`
+CLI into the active Python environment. Use a virtual environment when the
+project has other Python dependencies:
 
 ```bash
 python3 -m venv .venv
@@ -31,11 +26,10 @@ python -m pip install --upgrade pip
 pip install persisting
 ```
 
-!!! tip "You can start with either product"
+!!! tip "Start with a Run"
 
-    You do not need a pVisor Run to explore pChronicle. If you want to run an Agent
-    first, continue with [Run your first Agent](pvisor/get-started.md). If you
-    already have trajectory data, continue with [Explore your first Dataset](pchronicle/get-started.md).
+    Continue with [Run your first Agent](pvisor/get-started.md). You do not need
+    a separate history service to review a staged workspace.
 
 ## 2. Check platform requirements
 
@@ -68,7 +62,7 @@ cd Persisting
 pip install -e .
 ```
 
-A source build of the CLI components is also available:
+A source build of the CLI is also available:
 
 ```bash
 just install-cli
@@ -103,6 +97,5 @@ workflow so that you have a baseline Run Bundle to compare against.
 ## 5. Choose the next step
 
 - [Run your first Agent](pvisor/get-started.md) — stage, review, and selectively apply changes.
-- [Explore your first Dataset](pchronicle/get-started.md) — query temporary data before preparing a source.
-- [Choose a workflow](overview.md) — decide which product matches the work in front of you.
+- [Choose a workflow](overview.md) — the shortest path from install to a reviewed Run.
 - [Execution environments](pvisor/guides/execution.md) — compare host, OCI, and VM boundaries.

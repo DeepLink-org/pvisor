@@ -1,12 +1,8 @@
 //! pVisor — foreground Agent Run manager and portable execution runtime.
 //!
-//! pVisor is a top-level Persisting component alongside pPilot and pChronicle.
 //! Hosts call [`PVisor::run`] directly; pVisor assembles execution, control,
-//! network, filesystem, and the optional internal Gateway driver.
-//!
-//! pChronicle is a peer history service, not a child module. When persistence
-//! is requested, pVisor starts the Control component of `pchronicle serve` and
-//! talks to it over the lightweight versioned client protocol.
+//! network, filesystem, and the optional internal Gateway driver. Durable
+//! EventRecord output uses local JSONL when recording is enabled.
 
 pub mod cli;
 mod runtime;
@@ -27,7 +23,6 @@ mod process;
 mod pvisor;
 #[doc(hidden)]
 pub mod sandbox;
-mod supervisor;
 mod util;
 mod vm;
 
@@ -43,11 +38,11 @@ pub use checkpoint::{
     latest_logical_checkpoint, restore_logical_checkpoint,
 };
 pub use config::{
-    ChronicleMode, ChronicleSettings, ContainerMount, ContainerNetwork, ContainerPlatform,
-    ContainerSettings, GatewayDriverConfig, GatewayMode, GatewaySettings, NetworkDriverConfig,
-    OverlayFsBackend, OverlayFsCommit, OverlayFsSettings, OverlayNetMode, OverlayNetPolicy,
-    OverlayNetSettings, PVisorConfig, RecordFormat, RecordSettings, RunConfig, RunExecutorKind,
-    RunPolicy, RunSettings, RunStdio, VmSettings,
+    ContainerMount, ContainerNetwork, ContainerPlatform, ContainerSettings, GatewayDriverConfig,
+    GatewayMode, GatewaySettings, NetworkDriverConfig, OverlayFsBackend, OverlayFsCommit,
+    OverlayFsSettings, OverlayNetMode, OverlayNetPolicy, OverlayNetSettings, PVisorConfig,
+    RecordSettings, RunConfig, RunExecutorKind, RunPolicy, RunSettings, RunStdio,
+    VmSettings,
 };
 pub use container::ContainerExecutor;
 pub use control::{
@@ -62,9 +57,7 @@ pub use executor::{AttemptContext, RunExecutor};
 pub use persisting_agentctl::{
     AGENTCTL_ENDPOINT_ENV, AGENTCTL_MAX_FRAME_BYTES, AGENTCTL_TOKEN_ENV, AGENTCTL_TRANSPORT_ENV,
     AGENTCTL_VERSION, AGENTCTL_VERSION_ENV, AgentDirective, AgentErrorCode, AgentRequest,
-    AgentResponse, AgentState, SUPERVISOR_PROTOCOL_VERSION, SupervisorClientMessage,
-    SupervisorDirective, SupervisorDirectiveAck, SupervisorDirectiveEnvelope, SupervisorHeartbeat,
-    SupervisorNetworkQuotaGrant, SupervisorRegistration, SupervisorServerMessage,
+    AgentResponse, AgentState,
 };
 pub use persisting_gateway::sink::CaptureEventSink as TrajectoryEventSink;
 pub use process::ProcessExecutor;

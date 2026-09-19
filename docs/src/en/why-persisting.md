@@ -10,13 +10,12 @@ long-running session. A terminal transcript is too shallow to review safely;
 an isolated sandbox without a durable record is hard to learn from; a raw event
 log is difficult to query consistently.
 
-Persisting treats execution and history as two related but independent jobs:
+Persisting treats a Run as one job with a reviewable record:
 
 - **pVisor governs the Run.** It gives an Agent a staged workspace, records the
   controls that were actually active, and lets a person review Effects before
-  applying them.
-- **pChronicle preserves the trajectory.** It normalizes supported Sources into
-  queryable Datasets so teams can inspect, compare, and improve Runs later.
+  applying them. Optional capture keeps the model traffic of that Run next to
+  the Bundle.
 
 ## The product promise
 
@@ -33,10 +32,8 @@ actually available.
 ## When Persisting fits
 
 Use Persisting when an Agent can change a real project, when a Run needs human
-review before merge, or when trajectory history should remain useful after the
-terminal session ends. Start with pVisor for controlled execution, pChronicle
-for existing history, or connect both when the question crosses the execution
-and history boundaries.
+review before merge, or when the Run record should remain useful after the
+terminal session ends. Start with pVisor.
 
 If you only need a one-off script with no review or history requirement,
 Persisting may be more infrastructure than the task needs.

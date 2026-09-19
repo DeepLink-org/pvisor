@@ -49,18 +49,13 @@ pvisor inspect last -- git status --short
 Agent 修改的是 Run-owned view。写入该 view 之外的路径可能被记录为 external Effect，也可能
 无法被 executor 提供。保持 stage 位于预期项目边界内，不要只按文件名比较生成的 Run 目录与项目根目录。
 
-## capture 或 Dataset 输出缺失
+## capture 输出缺失
 
-执行审查和轨迹捕获是两个独立决策。先确认 Run 已完成且 Bundle 可读，再使用 pChronicle 检查
-capture 配置和目标 Dataset：
+执行审查和模型流量捕获是两个独立决策。先确认 Run 已完成且 Bundle 可读，再检查
+capture 配置和传给 `--record-destination` 的目标路径。
 
-```bash
-pchronicle ls ./trajectory-data
-pchronicle analysis overview ./trajectory-data
-```
-
-如果 Dataset 不存在，阅读[捕获 Agent 轨迹](capture.md)，确认目标路径后再启动新的 Run。
-本地 Run Bundle 不会自动变成 pChronicle Dataset。
+如果目标目录是空的，阅读[捕获 Agent 轨迹](capture.md)，确认配置后再启动新的 Run。
+本地 Run Bundle 是执行记录；只有打开 capture 时，它才会带上模型请求和响应。
 
 ## 提交 issue 前
 
