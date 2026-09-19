@@ -36,5 +36,7 @@ cat "$work_dir/mock.log"
 echo 'Gateway counters:'
 jq '.network.intercepted' "$run_dir/run-bundle.json"
 
-echo 'Generated AgenticMD:'
-cat "$run_dir"/gateway-example/*/*.md
+echo 'Captured LLM events:'
+jq -c 'select(.kind == "llm.request" or .kind == "llm.response") |
+  {kind, call_id, user: .payload.user_content, assistant: .payload.assistant_content}' \
+  "$run_dir/.capture/events.jsonl"

@@ -8,7 +8,7 @@ does not contain a PyO3 extension and does not use Maturin.
 Each platform wheel is tagged `py3-none-<platform>` and contains:
 
 - the Python `pvisor` package;
-- native command-line scripts;
+- the native `pvisor` CLI;
 - the platform libkrun firmware payload required by pVisor.
 
 The release set currently contains Linux x86_64 and Apple Silicon macOS wheels.
@@ -40,7 +40,7 @@ Confirm publishing access to `pvisor` before pushing the first release tag.
    dependencies:
 
    ```bash
-   cargo metadata --format-version 1 --no-deps >/dev/null
+   cargo metadata --format-version 1 >/dev/null
    ```
 
 3. Commit and merge the version change to `main`. The workflow refuses a tag
@@ -57,8 +57,8 @@ Confirm publishing access to `pvisor` before pushing the first release tag.
 ## Build and verification path
 
 The PEP 517 backend is setuptools with the repository-owned
-`scripts/packaging/build_backend.py`. Before wheel assembly it builds the three
-Rust CLIs, stages firmware, and ensures the Dioxus bundle exists. `setup.py`
+`scripts/packaging/build_backend.py`. Before wheel assembly it builds the
+`pvisor` Rust CLI and stages firmware. `setup.py`
 marks the wheel platform-specific while keeping the Python and ABI tags
 `py3-none`.
 
@@ -78,6 +78,15 @@ publishing.
 
 Re-running a partially completed tagged release skips files PyPI already
 accepted and repairs missing GitHub Release assets.
+
+## Nightly builds
+
+**Nightly Build** runs daily at 03:00 UTC or manually on `main`; pushes run CI
+without rebuilding nightly wheels. Nightly and stable releases share the same
+Linux/macOS build matrix, installation smoke tests, and complete artifact-set
+validation. Nightly versions append `+g<run-number>.<commit>` and publish only to
+the rolling GitHub `nightly` release. Stable tag releases publish to PyPI first,
+then attach the same verified wheels to GitHub.
 
 ## Related documents
 

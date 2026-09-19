@@ -2894,7 +2894,7 @@ version = "0.3.0"
 dependencies = [
  "libc",
  "log",
- "serde",
+ "persisting-control",
  "serde_json",
  "sha2",
  "tempfile",

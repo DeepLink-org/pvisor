@@ -10,7 +10,6 @@ policy = "public"
 mode = "capture"
 admin_listen = "127.0.0.1:19082"
 level = "dialogue"
-stream_markdown = true
 
 [[gateway.routes]]
 name = "*"

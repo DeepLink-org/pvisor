@@ -1,20 +1,12 @@
-name: Build Wheel
+name: Build Wheels
 
 on:
   workflow_call:
     inputs:
-      runner:
+      artifact_prefix:
         required: true
         type: string
-      artifact_name:
-        required: true
-        type: string
-      retention_days:
-        required: false
-        type: number
-        default: 30
       local_version:
-        required: false
         type: string
         default: ""
 
@@ -23,21 +15,31 @@ permissions:
 
 jobs:
   build:
-    runs-on: ${{ inputs.runner }}
+    name: Wheel / ${{ matrix.platform }}
+    runs-on: ${{ matrix.runner }}
+    timeout-minutes: 45
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - platform: linux-x86_64
+            runner: ubuntu-latest
+          - platform: macos-arm64
+            runner: macos-latest
     steps:
       - uses: actions/checkout@v4
-
-      - name: Setup Build Environment
-        uses: ./.github/actions/setup-build-env
+      - uses: ./.github/actions/setup-build-env
         with:
-          python-version: "3.12"
-
+          rust: "true"
+          install-zig: "true"
       - uses: Swatinem/rust-cache@v2
 
       - name: Apply nightly local version (PEP 440)
         if: inputs.local_version != ''
+        env:
+          LOCAL_VERSION: ${{ inputs.local_version }}
         run: |
-          python scripts/ci/set_nightly_local_version.py "${{ inputs.local_version }}"
+          python scripts/ci/set_nightly_local_version.py "$LOCAL_VERSION"
           cargo metadata --format-version 1 >/dev/null
 
       - name: Build wheel
@@ -45,16 +47,17 @@ jobs:
         with:
           output-dir: dist
 
-      - name: Verify wheel component set
+      - name: Verify wheel and installation
+        shell: bash
         run: |
-          wheel="$(find dist -maxdepth 1 -name '*.whl' -print -quit)"
-          test -n "$wheel"
-          python scripts/packaging/verify_wheel.py "$wheel" --install-smoke
+          shopt -s nullglob
+          wheels=(dist/*.whl)
+          test "${#wheels[@]}" -eq 1
+          python scripts/packaging/verify_wheel.py "${wheels[0]}" --install-smoke
 
-      - name: Upload wheel
-        uses: actions/upload-artifact@v4
+      - uses: actions/upload-artifact@v4
         with:
-          name: ${{ inputs.artifact_name }}
+          name: ${{ inputs.artifact_prefix }}-${{ matrix.platform }}
           path: dist/*.whl
           if-no-files-found: error
-          retention-days: ${{ inputs.retention_days }}
+          retention-days: 14

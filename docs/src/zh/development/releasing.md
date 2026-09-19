@@ -6,7 +6,7 @@ PyPI。项目仍然以 Python wheel 交付，但不包含 PyO3 扩展，也不�
 每个平台 wheel 标记为 `py3-none-<platform>`，并包含：
 
 - Python `pvisor` 包；
-- 原生命令行脚本；
+- 原生 `pvisor` CLI；
 - pVisor 所需的平台 libkrun firmware payload。
 
 当前发布集包含 Linux x86_64 和 Apple Silicon macOS wheel。源码分发不是已
@@ -36,7 +36,7 @@ PyPI 的 `pvisor` 项目需要独立配置 Trusted Publisher；旧 `persisting` 
 2. 刷新 lockfile 中的本地 workspace 版本，且不升级依赖：
 
    ```bash
-   cargo metadata --format-version 1 --no-deps >/dev/null
+   cargo metadata --format-version 1 >/dev/null
    ```
 
 3. 提交版本变更并合并到 `main`。工作流会拒绝其 commit 无法从 `main` 到达
@@ -53,8 +53,8 @@ PyPI 的 `pvisor` 项目需要独立配置 Trusted Publisher；旧 `persisting` 
 ## 构建与校验路径
 
 PEP 517 backend 是 setuptools，配合仓库自有的
-`scripts/packaging/build_backend.py`。组装 wheel 之前，它会构建三条 Rust
-CLI、暂存 firmware，并确保 Dioxus bundle 存在。`setup.py` 把 wheel 标为
+`scripts/packaging/build_backend.py`。组装 wheel 之前，它会构建 `pvisor` Rust
+CLI 并暂存 firmware。`setup.py` 把 wheel 标为
 平台相关，同时把 Python 与 ABI tag 保持为 `py3-none`。
 
 打包脚本会拉取 pinned 的 libkrun firmware 归档（Linux x86_64 与 Apple
@@ -71,6 +71,14 @@ manylinux2014 上没有这些符号。
 
 对部分完成的 tagged 发布再跑一遍时，会跳过 PyPI 已经接受的文件，并补齐
 缺失的 GitHub Release 资源。
+
+## Nightly 构建
+
+**Nightly Build** 每天 UTC 03:00（北京时间 11:00）运行，也可以在 `main` 上手动
+触发；普通 push 运行 CI，不再重复构建 nightly wheel。Nightly 与稳定发布共用
+Linux/macOS 构建矩阵、安装 smoke test 和完整产物集校验。
+Nightly 版本追加 `+g<run-number>.<commit>`，仅更新 GitHub 的 `nightly` release。
+稳定 tag 发布先上传 PyPI，再把同一组已校验 wheel 附加到 GitHub Release。
 
 ## 相关文档
 

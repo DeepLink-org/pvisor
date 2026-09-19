@@ -2,9 +2,29 @@ name: pVisor Benchmark
 
 on:
   push:
-    branches: [main, master]
+    branches: [main]
+    paths:
+      - 'Cargo.*'
+      - '.cargo/**'
+      - 'rust-toolchain.toml'
+      - 'crates/**'
+      - 'vendor/**'
+      - 'benchmark/**'
+      - 'justfile'
+      - '.github/actions/setup-build-env/**'
+      - '.github/workflows/pvisor-benchmark.yml'
   pull_request:
-    branches: [main, master]
+    branches: [main]
+    paths:
+      - 'Cargo.*'
+      - '.cargo/**'
+      - 'rust-toolchain.toml'
+      - 'crates/**'
+      - 'vendor/**'
+      - 'benchmark/**'
+      - 'justfile'
+      - '.github/actions/setup-build-env/**'
+      - '.github/workflows/pvisor-benchmark.yml'
   workflow_dispatch:
 
 concurrency:
@@ -28,7 +48,7 @@ jobs:
       - name: Setup Build Environment
         uses: ./.github/actions/setup-build-env
         with:
-          components: ""
+          rust: "true"
 
       - uses: Swatinem/rust-cache@v2
         with:
@@ -36,23 +56,24 @@ jobs:
 
       - name: Resolve main baseline
         id: baseline
+        env:
+          BASE_REF: ${{ github.base_ref }}
         shell: bash
         run: |
           set -euo pipefail
-          if [[ "${{ github.event_name }}" == "pull_request" ]]; then
-            baseline_ref="origin/${{ github.base_ref }}"
+          if [[ "$GITHUB_EVENT_NAME" == "pull_request" ]]; then
+            baseline_ref="origin/$BASE_REF"
           elif git rev-parse --verify HEAD^ >/dev/null 2>&1; then
             baseline_ref="HEAD^"
           else
             baseline_ref="HEAD"
           fi
           baseline_sha="$(git rev-parse "$baseline_ref")"
-          baseline_repo="${RUNNER_TEMP}/persisting-main"
+          baseline_repo="${RUNNER_TEMP}/pvisor-main"
           git worktree add --detach "$baseline_repo" "$baseline_sha"
           echo "repo=$baseline_repo" >> "$GITHUB_OUTPUT"
           echo "sha=$baseline_sha" >> "$GITHUB_OUTPUT"
-          if [[ -x "$baseline_repo/benchmark/pvisor/run.sh" ]] && \
-             grep -q '^benchmark-pvisor ' "$baseline_repo/justfile"; then
+          if [[ -x "$baseline_repo/benchmark/pvisor/run.sh" ]]; then
             echo "supported=true" >> "$GITHUB_OUTPUT"
           else
             echo "supported=false" >> "$GITHUB_OUTPUT"
@@ -64,15 +85,15 @@ jobs:
         run: |
           set -euo pipefail
           cd "${{ steps.baseline.outputs.repo }}"
-          just benchmark-pvisor \
-            smoke \
-            "${RUNNER_TEMP}/pvisor-benchmark/main" \
-            "${GITHUB_WORKSPACE}/target/pvisor-benchmark-main"
+          bash benchmark/pvisor/run.sh run \
+            --suite smoke \
+            --output "${RUNNER_TEMP}/pvisor-benchmark/main" \
+            --target-dir "${GITHUB_WORKSPACE}/target/pvisor-benchmark-main"
 
       - name: Benchmark candidate
         shell: bash
         run: |
-          just benchmark-pvisor \
+          just benchmark \
             smoke \
             "${RUNNER_TEMP}/pvisor-benchmark/candidate" \
             "${GITHUB_WORKSPACE}/target/pvisor-benchmark-candidate"
@@ -85,9 +106,9 @@ jobs:
           baseline="${RUNNER_TEMP}/pvisor-benchmark/main/raw-report.json"
           output="${RUNNER_TEMP}/pvisor-benchmark/comparison"
           if [[ -f "$baseline" ]]; then
-            just benchmark-pvisor-compare "$candidate" "$baseline" "$output"
+            just benchmark-compare "$candidate" "$baseline" "$output"
           else
-            just benchmark-pvisor-compare "$candidate" "" "$output"
+            just benchmark-compare "$candidate" "" "$output"
           fi
           cat "$output/report.md" >> "$GITHUB_STEP_SUMMARY"
 

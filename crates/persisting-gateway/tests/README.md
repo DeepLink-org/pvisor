@@ -20,9 +20,14 @@
 
 ## Run
 
+移除 pChronicle 时，AgenticMD 编解码、Markdown 生成、草稿替换和投影去重
+的实现及测试一并移除。保留的事件写入、草稿不入日志、Story 快照和 WAL
+行为由 `src/engine/tests/` 覆盖；仍公开的投影过滤规则由
+`src/projection/policy.rs` 的测试覆盖。
+
 ```bash
-just test-capture-fixtures
-just test-capture-claude
+cargo nextest run --locked -p persisting-gateway --test llm_fixtures --test ag_fixture_tests
+cargo nextest run --locked -p persisting-gateway --test capture_apps_claude
 cargo nextest run -p persisting-gateway --test model_api_forwarding --locked
 ```
 

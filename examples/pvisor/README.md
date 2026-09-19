@@ -4,7 +4,7 @@
 
 这组示例依次展示 pVisor 的事务工作区、changeset、显式网络代理和 Gateway。每个
 `run.sh` 只保留场景准备、pVisor 命令和产物展示；对应的 `test.sh`
-调用同一个 `run.sh`，再对 lower/upper、Run Bundle、日志或 AgenticMD 执行回归断言。
+调用同一个 `run.sh`，再对 lower/upper、Run Bundle、日志或事件日志 执行回归断言。
 这里不拥有隔离后端或 Gateway 实现。
 
 | 示例 | 可复现结论 |
@@ -22,10 +22,10 @@
 ## Run
 
 ```bash
-just examples-pvisor
-just examples-pvisor-filesystem  # 01/02，需要 FUSE
-just examples-pvisor-portable    # 03/04，普通 CI runner
-just example-pvisor 03-network-isolation
+just examples
+just examples 01-filesystem-isolation 02-changeset-management  # 01/02，需要 FUSE
+just examples 03-network-isolation 04-gateway-llm-control    # 03/04，普通 CI runner
+just examples 03-network-isolation
 ```
 
 `examples/pvisor/run.sh` 可批量演示场景，`examples/pvisor/test.sh` 可批量验证场景。两者都

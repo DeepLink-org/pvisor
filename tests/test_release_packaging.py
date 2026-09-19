@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import importlib.util
 import os
+import shutil
 import subprocess
 import sys
 import zipfile
@@ -83,9 +84,7 @@ def _write_version_tree(root: Path, *, pyproject: str, cargo: str, package: str)
     (root / "Cargo.toml").write_text(
         f'[workspace.package]\nversion = "{cargo}"\n', encoding="utf-8"
     )
-    (root / "pvisor" / "__init__.py").write_text(
-        f'__version__ = "{package}"\n', encoding="utf-8"
-    )
+    (root / "pvisor" / "__init__.py").write_text(f'__version__ = "{package}"\n', encoding="utf-8")
 
 
 def _write_wheel(path: Path, version: str, name: str = "pvisor") -> None:
@@ -118,6 +117,20 @@ def test_release_version_rejects_tag_version_mismatch(tmp_path: Path) -> None:
     _write_version_tree(tmp_path, pyproject="1.2.3", cargo="1.2.3", package="1.2.3")
     with pytest.raises(release_version.ReleaseValidationError, match="does not match"):
         release_version.validate_versions("v1.2.4", tmp_path)
+
+
+@pytest.mark.skipif(shutil.which("cargo") is None, reason="Cargo is needed to check lockfiles")
+def test_release_lockfile_rejects_stale_workspace_version(tmp_path: Path) -> None:
+    manifest = tmp_path / "Cargo.toml"
+    manifest.write_text('[package]\nname = "lockfile-check"\nversion = "1.2.3"\n')
+    (tmp_path / "src").mkdir()
+    (tmp_path / "src/lib.rs").write_text("")
+    subprocess.run(["cargo", "generate-lockfile", "--offline"], cwd=tmp_path, check=True)
+    release_version.validate_lockfile(tmp_path)
+
+    manifest.write_text(manifest.read_text().replace("1.2.3", "1.2.4"))
+    with pytest.raises(release_version.ReleaseValidationError, match="--locked"):
+        release_version.validate_lockfile(tmp_path)
 
 
 def test_nightly_version_updates_python_package(
@@ -190,8 +203,8 @@ def test_release_artifacts_reject_wrong_distribution(tmp_path: Path, name: str) 
         wheel_verify._wheel_contents(wheel)
 
 
-def test_release_artifacts_accept_supported_matrix(tmp_path: Path) -> None:
-    version = "1.2.3"
+@pytest.mark.parametrize("version", ["1.2.3", "1.2.3+g42.abcdef0"])
+def test_release_artifacts_accept_supported_matrix(tmp_path: Path, version: str) -> None:
     names = [
         f"pvisor-{version}-py3-none-manylinux_2_28_x86_64.whl",
         f"pvisor-{version}-py3-none-macosx_11_0_arm64.whl",

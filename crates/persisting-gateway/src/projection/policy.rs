@@ -51,3 +51,92 @@ fn should_skip_main_flash_companion_request(rec: &EventRecord) -> bool {
     }
     !is_subagent_shape_payload(&rec.payload)
 }
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::Call;
+    use crate::config::CaptureLevel;
+    use crate::sink::{llm_request_summary_record, llm_response_record_with_content};
+    use serde_json::json;
+
+    fn test_call() -> Call {
+        Call {
+            call_id: "call-test".into(),
+            trace_id: "trace-test".into(),
+            started_at: "2026-01-01T00:00:00Z".into(),
+        }
+    }
+
+    const LEVEL: CaptureLevel = CaptureLevel::Dialogue;
+
+    #[test]
+    fn skip_internal_suggestion_request_and_silent_response() {
+        let req = llm_request_summary_record(
+            Some("s".into()),
+            None,
+            "m",
+            "/v1/messages",
+            100,
+            "messages",
+            "anthropic",
+            None,
+            None,
+            &test_call(),
+            LEVEL,
+            None,
+        );
+        assert!(should_skip_record(&req));
+        let resp = llm_response_record_with_content(
+            Some("s".into()),
+            None,
+            200,
+            &json!({"body": "event: x\ndata: {}\n"}),
+            true,
+            Some(String::new()),
+            &test_call(),
+            LEVEL,
+        );
+        assert!(should_skip_record(&resp));
+    }
+
+    #[test]
+    fn skip_count_tokens_request() {
+        let req = llm_request_summary_record(
+            Some("s".into()),
+            None,
+            "m",
+            "/v1/messages/count_tokens",
+            1000,
+            "count_tokens",
+            "anthropic",
+            Some("huge context".into()),
+            None,
+            &test_call(),
+            LEVEL,
+            None,
+        );
+        assert!(should_skip_record(&req));
+    }
+
+    #[test]
+    fn skip_main_flash_companion_user_duplicate() {
+        let mut rec = llm_request_summary_record(
+            Some("sess".into()),
+            Some("proxy".into()),
+            "deepseek-v4-flash",
+            "/v1/messages",
+            100,
+            "messages",
+            "anthropic",
+            Some("再次开三个subagent".into()),
+            None,
+            &test_call(),
+            LEVEL,
+            None,
+        );
+        assert!(should_skip_record(&rec));
+        rec.subagent_id = Some("abc".into());
+        assert!(!should_skip_record(&rec));
+    }
+}

@@ -18,6 +18,7 @@ jobs:
     name: Validate release
     if: github.repository == 'DeepLink-org/Persisting'
     runs-on: ubuntu-latest
+    timeout-minutes: 15
     outputs:
       version: ${{ steps.version.outputs.version }}
     steps:
@@ -28,6 +29,8 @@ jobs:
       - uses: actions/setup-python@v5
         with:
           python-version: "3.12"
+
+      - uses: dtolnay/rust-toolchain@stable
 
       - name: Fetch main release boundary
         run: git fetch --no-tags origin main:refs/remotes/origin/main
@@ -43,29 +46,23 @@ jobs:
           version="$(python scripts/ci/check_release_version.py "${args[@]}")"
           echo "version=$version" >> "$GITHUB_OUTPUT"
 
-  linux:
-    name: Wheel (Linux x86_64)
+  wheels:
     needs: validate
     uses: ./.github/workflows/wheel.yml
     with:
-      runner: ubuntu-latest
-      artifact_name: release-wheel-linux-x86_64
-
-  macos:
-    name: Wheel (macOS aarch64)
-    needs: validate
-    uses: ./.github/workflows/wheel.yml
-    with:
-      runner: macos-latest
-      artifact_name: release-wheel-macos-aarch64
+      artifact_prefix: release-wheel
 
   verify:
     name: Verify release artifact set
-    needs: [validate, linux, macos]
+    needs: [validate, wheels]
     runs-on: ubuntu-latest
+    timeout-minutes: 15
     steps:
       - uses: actions/checkout@v4
 
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
       - uses: astral-sh/setup-uv@v6
 
       - name: Download platform wheels
@@ -94,6 +91,7 @@ jobs:
     if: github.event_name == 'push'
     needs: [validate, verify]
     runs-on: ubuntu-latest
+    timeout-minutes: 15
     environment:
       name: pypi
       url: https://pypi.org/p/pvisor
@@ -117,6 +115,7 @@ jobs:
     if: github.event_name == 'push'
     needs: [validate, pypi-publish]
     runs-on: ubuntu-latest
+    timeout-minutes: 15
     permissions:
       contents: write
     steps:

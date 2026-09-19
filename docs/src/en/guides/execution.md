@@ -39,7 +39,7 @@ pvisor run --executor vm --rootfs image=ubuntu:24.04 \
 
 On Linux, `--rootfs host` can expose the host root as a read-only lower layer to a separate guest kernel. This exposes host contents for reading. Keep an explicit workspace `--overlayfs-path`; use this layout only for same-owner local work.
 
-Linux needs accessible `/dev/kvm`. On macOS, `just pvisor` builds and signs the binary with the Hypervisor entitlement; source builds also need Zig. VM networking supports policy-controlled IPv4 TCP, DHCP and synthetic DNS; UDP application traffic, IPv6, QUIC and inbound connections are outside the current network surface.
+Linux needs accessible `/dev/kvm`. On macOS, `just build release` builds and signs the binary with the Hypervisor entitlement; source builds also need Zig. VM networking supports policy-controlled IPv4 TCP, DHCP and synthetic DNS; UDP application traffic, IPv6, QUIC and inbound connections are outside the current network surface.
 
 ## Compose and commit
 

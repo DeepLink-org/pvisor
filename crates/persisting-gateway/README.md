@@ -25,8 +25,8 @@ protocol-conversion path.
 
 ```bash
 just test persisting-gateway
-# or: just test-crate capture
-just test-capture-fixtures
+# or: just test capture
+cargo nextest run --locked -p persisting-gateway --test llm_fixtures --test ag_fixture_tests
 ```
 
 ## Links

@@ -1,5 +1,4 @@
 docs/site/
-docs/website/node_modules/
 examples/**/.work/
 target/
 /store/
@@ -9,7 +8,6 @@ __pycache__/
 .pytest_cache/
 .persisting/
 .venv/
-crates/persisting-engine/ds/
 
 # Local review, benchmark, and runtime artifacts
 /data/
@@ -21,24 +19,7 @@ crates/persisting-engine/ds/
 /examples/pvisor/03-network-isolation/run.json
 /examples/pvisor/03-network-isolation/run-bundle.json
 
-# persisting-dlcapt runtime / release artifacts
-crates/persisting-dlcapt/var/
-crates/persisting-dlcapt/.capture/
-crates/persisting-dlcapt/tmp/
 .build-tmp/
-target/dlcapt/
 build/
-pchronicle-web/dist
-pchronicle-web/target/
-crates/persisting-pchronicle-cli/web-assets/
+/dist/
 .worktrees/
-
-# Docusaurus generated metadata
-docs/website/.docusaurus/
-
-# Docusaurus docs generated from docs/src
-
-# Docusaurus local dependencies and generated output
-docs/node_modules/
-docs/.docusaurus/
-docs/build/

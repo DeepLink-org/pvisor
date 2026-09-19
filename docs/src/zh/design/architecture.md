@@ -7,7 +7,7 @@ PolicyVisor（pVisor）通过能力准入、执行器、运行时控制和执行
 | Crate | 职责 |
 | --- | --- |
 | `persisting-pvisor` | CLI、准入、Attempt 生命周期、执行器、Run Bundle、审查／应用／检查点 |
-| `persisting-control` | 运行契约、能力策略、AgentCtl 消息与客户端、共享事件记录 |
+| `persisting-control` | 运行与 Overlay 契约、能力策略、控制消息与客户端、共享事件记录 |
 | `persisting-overlay-core` | 共享写时复制语义与首次修改时的文件指纹 |
 | `persisting-overlayfs` | 宿主 FUSE 适配器与可选 Jujutsu 后端 |
 | `persisting-overlaynet` | 网络授权、解析、代理转发与 VM 网络接入 |
@@ -26,6 +26,8 @@ CLI／配置 → RunSpec → 能力准入 → 准备运行时驱动
 当前每次运行创建一个 Attempt。宿主执行在主进程退出后清理进程组，并限时排空输出，超时和取消路径也遵循此规则。主动脱离进程组的后代不在进程组清理范围内；输出排空期限可以避免其继承的管道阻塞 Run 完成。更强的后代进程隔离取决于所选平台机制。
 
 ## 文件应用
+
+`persisting-control::overlay` 定义审查／应用记录、首次修改状态格式和本地 Run 检查消息。OverlayCore 计算文件指纹并保存日志，pVisor 处理请求并执行应用／丢弃。
 
 OverlayCore 在首次修改时记录目标的原始状态。Apply 将选择扩展到必要的目录和硬链接成员，校验受影响的原始状态，写入持久化意图，更新目标，然后移除已经应用的 upper 条目。
 

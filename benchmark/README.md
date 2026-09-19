@@ -7,9 +7,9 @@
 ## pVisor
 
 ```bash
-just benchmark-pvisor
-just benchmark-pvisor nightly target/pvisor-benchmark/nightly
-just benchmark-pvisor-compare \
+just benchmark
+just benchmark nightly target/pvisor-benchmark/nightly
+just benchmark-compare \
   target/pvisor-benchmark/candidate/raw-report.json \
   target/pvisor-benchmark/main/raw-report.json
 ```

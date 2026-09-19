@@ -1,5 +1,5 @@
 use crate::sys;
-use serde::{Deserialize, Serialize};
+use persisting_control::overlay::{PathFingerprint, PathPreimage};
 use sha2::{Digest, Sha256};
 use std::collections::{BTreeSet, HashMap};
 use std::ffi::{OsStr, OsString};
@@ -36,54 +36,11 @@ pub struct OverlayCore {
     upper: PathBuf,
     work: Option<PathBuf>,
     excluded: BTreeSet<PathBuf>,
-    copied_hard_links: Mutex<HashMap<(u64, u64), PathBuf>>,
+    // Keep every upper alias so unlink/replacement can retire a path without
+    // losing the copied inode while another alias still carries its changes.
+    copied_hard_links: Mutex<HashMap<(u64, u64), Vec<PathBuf>>>,
     preimage_dir: Option<PathBuf>,
     preimage_lock: Mutex<()>,
-}
-
-/// Durable first-touch state of one apply target path.
-#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
-pub struct PathPreimage {
-    /// Raw Unix path bytes relative to the overlay root.
-    pub path: Vec<u8>,
-    pub state: PathFingerprint,
-}
-
-impl PathPreimage {
-    pub fn relative_path(&self) -> PathBuf {
-        PathBuf::from(OsString::from_vec(self.path.clone()))
-    }
-}
-
-/// Content and metadata relevant to detecting a destructive apply conflict.
-#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
-#[serde(tag = "kind", rename_all = "snake_case")]
-pub enum PathFingerprint {
-    Absent,
-    File {
-        sha256: String,
-        mode: u32,
-        uid: u32,
-        gid: u32,
-    },
-    Directory {
-        mode: u32,
-        uid: u32,
-        gid: u32,
-        mtime_seconds: i64,
-        mtime_nanoseconds: i64,
-    },
-    Symlink {
-        target: Vec<u8>,
-        uid: u32,
-        gid: u32,
-    },
-    Other {
-        mode: u32,
-        uid: u32,
-        gid: u32,
-        rdev: u64,
-    },
 }
 
 fn error(errno: i32) -> io::Error {
@@ -606,11 +563,13 @@ impl OverlayCore {
             } else if kind.is_file() {
                 let identity = (metadata.dev(), metadata.ino());
                 let existing = if metadata.nlink() > 1 {
-                    self.copied_hard_links
-                        .lock()
-                        .ok()
-                        .and_then(|links| links.get(&identity).cloned())
-                        .filter(|path| exists(path))
+                    self.copied_hard_links.lock().ok().and_then(|links| {
+                        links
+                            .get(&identity)?
+                            .iter()
+                            .find(|path| exists(path))
+                            .cloned()
+                    })
                 } else {
                     None
                 };
@@ -635,7 +594,10 @@ impl OverlayCore {
                 && metadata.nlink() > 1
                 && let Ok(mut links) = self.copied_hard_links.lock()
             {
-                links.insert((metadata.dev(), metadata.ino()), upper.clone());
+                links
+                    .entry((metadata.dev(), metadata.ino()))
+                    .or_default()
+                    .push(upper.clone());
             }
             Ok(())
         })();
@@ -816,6 +778,7 @@ impl OverlayCore {
             } else {
                 fs::remove_file(&resolved.path)?;
             }
+            self.forget_copied_hard_links(&resolved.path);
         }
         if self.exists_in_lower(rel) {
             self.create_whiteout(rel)?;
@@ -880,11 +843,21 @@ impl OverlayCore {
         }
     }
 
+    fn forget_copied_hard_links(&self, removed: &Path) {
+        let Ok(mut links) = self.copied_hard_links.lock() else {
+            return;
+        };
+        links.retain(|_, paths| {
+            paths.retain(|path| !path.starts_with(removed));
+            !paths.is_empty()
+        });
+    }
+
     fn remap_copied_hard_links(&self, old: &Path, new: &Path) {
         let Ok(mut links) = self.copied_hard_links.lock() else {
             return;
         };
-        for path in links.values_mut() {
+        for path in links.values_mut().flatten() {
             if (path == old || path.starts_with(old))
                 && let Ok(suffix) = path.strip_prefix(old)
             {
@@ -901,7 +874,7 @@ impl OverlayCore {
         let Ok(mut links) = self.copied_hard_links.lock() else {
             return;
         };
-        for path in links.values_mut() {
+        for path in links.values_mut().flatten() {
             if path == first || path.starts_with(first) {
                 if let Ok(suffix) = path.strip_prefix(first) {
                     *path = if suffix.as_os_str().is_empty() {
@@ -976,6 +949,7 @@ impl OverlayCore {
                 backup.display()
             );
         }
+        self.forget_copied_hard_links(&self.upper_path(new));
         self.remap_copied_hard_links(&self.upper_path(old), &self.upper_path(new));
         Ok(())
     }
@@ -994,7 +968,14 @@ impl OverlayCore {
         let source = self.copy_up(source)?;
         self.ensure_upper_parents(destination)?;
         self.clear_whiteout(destination)?;
-        fs::hard_link(source, self.upper_path(destination))
+        let destination = self.upper_path(destination);
+        fs::hard_link(&source, &destination)?;
+        if let Ok(mut links) = self.copied_hard_links.lock()
+            && let Some(paths) = links.values_mut().find(|paths| paths.contains(&source))
+        {
+            paths.push(destination);
+        }
+        Ok(())
     }
 
     pub fn exchange(&self, first: &Path, second: &Path) -> io::Result<()> {
@@ -1217,6 +1198,73 @@ mod tests {
             fs::metadata(fixture.upper.join("one")).expect("one").ino(),
             fs::metadata(fixture.upper.join("two")).expect("two").ino()
         );
+    }
+
+    #[test]
+    fn lower_hard_link_copy_up_does_not_reuse_replaced_paths() {
+        for surviving_alias in ["none", "copied", "linked"] {
+            for replace_by_rename in [false, true] {
+                let fixture = Fixture::new();
+                let core = &fixture.core;
+                fs::write(fixture.lower2.join("one"), b"original").unwrap();
+                fs::hard_link(fixture.lower2.join("one"), fixture.lower2.join("two")).unwrap();
+                core.copy_up(Path::new("one")).unwrap();
+                let replaced = match surviving_alias {
+                    "copied" => {
+                        fs::hard_link(fixture.lower2.join("one"), fixture.lower2.join("alias"))
+                            .unwrap();
+                        core.copy_up(Path::new("alias")).unwrap();
+                        Path::new("alias")
+                    }
+                    "linked" => {
+                        core.hard_link(Path::new("one"), Path::new("alias"))
+                            .unwrap();
+                        Path::new("one")
+                    }
+                    _ => Path::new("one"),
+                };
+                if surviving_alias != "none" {
+                    fs::write(fixture.upper.join("one"), b"updated").unwrap();
+                }
+                if replace_by_rename {
+                    core.create_file(Path::new("replacement"), 0o600, libc::O_WRONLY)
+                        .unwrap()
+                        .write_all(b"replacement")
+                        .unwrap();
+                    core.rename(Path::new("replacement"), replaced, false)
+                        .unwrap();
+                } else {
+                    core.remove(replaced, false).unwrap();
+                    core.create_file(replaced, 0o600, libc::O_WRONLY)
+                        .unwrap()
+                        .write_all(b"replacement")
+                        .unwrap();
+                }
+                let copied = core.copy_up(Path::new("two")).unwrap();
+                let expected = if surviving_alias == "none" {
+                    "original"
+                } else {
+                    "updated"
+                };
+                assert_eq!(
+                    fs::read_to_string(&copied).unwrap(),
+                    expected,
+                    "alias={surviving_alias}, rename={replace_by_rename}"
+                );
+                if surviving_alias != "none" {
+                    let survivor = if surviving_alias == "copied" {
+                        "one"
+                    } else {
+                        "alias"
+                    };
+                    assert_eq!(
+                        fs::metadata(copied).unwrap().ino(),
+                        fs::metadata(fixture.upper.join(survivor)).unwrap().ino()
+                    );
+                }
+                assert_eq!(fs::read(core.upper_path(replaced)).unwrap(), b"replacement");
+            }
+        }
     }
 
     #[test]

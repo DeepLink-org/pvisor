@@ -17,6 +17,8 @@ use std::sync::atomic::{AtomicBool, Ordering};
 use std::thread::JoinHandle;
 use std::time::Duration;
 
+pub use persisting_control::overlay::OverlayStatus as ControlOverlayStatus;
+use persisting_control::overlay::{RunControlRequest, RunControlResponse};
 use persisting_control::{ExecutorDescriptor, ResourceLimits};
 
 pub const RUN_META_FILENAME: &str = "run.json";
@@ -172,31 +174,6 @@ impl Drop for RunLease {
     }
 }
 
-#[derive(Debug, Serialize, Deserialize)]
-#[serde(tag = "op", rename_all = "snake_case")]
-enum ControlRequest {
-    Ping,
-    OverlayStatus,
-    MountInspect,
-    UnmountInspect { id: String },
-}
-
-#[derive(Debug, Serialize, Deserialize)]
-struct ControlResponse {
-    ok: bool,
-    id: Option<String>,
-    mountpoint: Option<PathBuf>,
-    error: Option<String>,
-    overlay_status: Option<ControlOverlayStatus>,
-}
-
-#[derive(Debug, Clone, Serialize, Deserialize)]
-pub struct ControlOverlayStatus {
-    pub changed_files: usize,
-    pub whiteouts: usize,
-    pub sample_paths: Vec<String>,
-}
-
 /// Attempt-scoped local control endpoint. The owning pVisor creates read-only
 /// views so a second CLI process never interferes with a live writable mount.
 pub struct RunControlServer {
@@ -277,40 +254,36 @@ fn serve_control(
     mounts: &mut HashMap<String, ReadOnlyOverlayMount>,
 ) {
     use std::io::{BufRead, Write};
-    let request = (|| -> anyhow::Result<ControlRequest> {
+    let request = (|| -> anyhow::Result<RunControlRequest> {
         let mut line = String::new();
         std::io::BufReader::new(&stream).read_line(&mut line)?;
         Ok(serde_json::from_str(&line)?)
     })();
     let response = match request {
-        Ok(ControlRequest::Ping) => ControlResponse {
+        Ok(RunControlRequest::Ping) => RunControlResponse {
             ok: true,
             id: None,
             mountpoint: None,
             error: None,
             overlay_status: None,
         },
-        Ok(ControlRequest::OverlayStatus) => match overlay_status(overlay) {
-            Ok(status) => ControlResponse {
+        Ok(RunControlRequest::OverlayStatus) => match overlay_status(overlay) {
+            Ok(status) => RunControlResponse {
                 ok: true,
                 id: None,
                 mountpoint: None,
                 error: None,
-                overlay_status: Some(ControlOverlayStatus {
-                    changed_files: status.changed_files,
-                    whiteouts: status.whiteouts,
-                    sample_paths: status.sample_paths,
-                }),
+                overlay_status: Some(status),
             },
             Err(error) => control_error(error),
         },
-        Ok(ControlRequest::MountInspect) => {
+        Ok(RunControlRequest::MountInspect) => {
             let id = uuid::Uuid::new_v4().to_string();
             let mountpoint = stage.join("inspect").join(&id).join("merged");
             match mount_overlay_record_read_only(overlay, lowers, &mountpoint) {
                 Ok(mount) => {
                     mounts.insert(id.clone(), mount);
-                    ControlResponse {
+                    RunControlResponse {
                         ok: true,
                         id: Some(id),
                         mountpoint: Some(mountpoint),
@@ -321,10 +294,10 @@ fn serve_control(
                 Err(error) => control_error(error),
             }
         }
-        Ok(ControlRequest::UnmountInspect { id }) => {
+        Ok(RunControlRequest::UnmountInspect { id }) => {
             if let Some(mount) = mounts.remove(&id) {
                 match mount.unmount() {
-                    Ok(()) => ControlResponse {
+                    Ok(()) => RunControlResponse {
                         ok: true,
                         id: None,
                         mountpoint: None,
@@ -345,8 +318,8 @@ fn serve_control(
     }
 }
 
-fn control_error(error: impl std::fmt::Display) -> ControlResponse {
-    ControlResponse {
+fn control_error(error: impl std::fmt::Display) -> RunControlResponse {
+    RunControlResponse {
         ok: false,
         id: None,
         mountpoint: None,
@@ -355,14 +328,17 @@ fn control_error(error: impl std::fmt::Display) -> ControlResponse {
     }
 }
 
-fn control_request(stage: &Path, request: &ControlRequest) -> anyhow::Result<ControlResponse> {
+fn control_request(
+    stage: &Path,
+    request: &RunControlRequest,
+) -> anyhow::Result<RunControlResponse> {
     use std::io::{BufRead, Write};
     let mut stream = std::os::unix::net::UnixStream::connect(stage.join(CONTROL_FILENAME))?;
     serde_json::to_writer(&mut stream, request)?;
     stream.write_all(b"\n")?;
     let mut line = String::new();
     std::io::BufReader::new(stream).read_line(&mut line)?;
-    let response: ControlResponse = serde_json::from_str(&line)?;
+    let response: RunControlResponse = serde_json::from_str(&line)?;
     if !response.ok {
         anyhow::bail!(
             "pVisor control request failed: {}",
@@ -373,11 +349,11 @@ fn control_request(stage: &Path, request: &ControlRequest) -> anyhow::Result<Con
 }
 
 pub fn control_ping(stage: &Path) -> bool {
-    control_request(stage, &ControlRequest::Ping).is_ok()
+    control_request(stage, &RunControlRequest::Ping).is_ok()
 }
 
 pub fn control_mount_inspect(stage: &Path) -> anyhow::Result<(String, PathBuf)> {
-    let response = control_request(stage, &ControlRequest::MountInspect)?;
+    let response = control_request(stage, &RunControlRequest::MountInspect)?;
     Ok((
         response.id.context("control response missing inspect id")?,
         response
@@ -387,13 +363,13 @@ pub fn control_mount_inspect(stage: &Path) -> anyhow::Result<(String, PathBuf)> 
 }
 
 pub fn control_overlay_status(stage: &Path) -> anyhow::Result<ControlOverlayStatus> {
-    control_request(stage, &ControlRequest::OverlayStatus)?
+    control_request(stage, &RunControlRequest::OverlayStatus)?
         .overlay_status
         .context("control response missing OverlayFS status")
 }
 
 pub fn control_unmount_inspect(stage: &Path, id: String) -> anyhow::Result<()> {
-    control_request(stage, &ControlRequest::UnmountInspect { id })?;
+    control_request(stage, &RunControlRequest::UnmountInspect { id })?;
     Ok(())
 }
 
@@ -687,6 +663,31 @@ mod tests {
             lineage: None,
             orchestration: Default::default(),
         }
+    }
+
+    #[test]
+    fn local_control_serves_shared_overlay_contracts() {
+        let temp = tempfile::tempdir().unwrap();
+        let stage = temp.path().join("stage");
+        let upper = stage.join("upper");
+        fs::create_dir_all(&upper).unwrap();
+        fs::write(upper.join("new.txt"), b"new").unwrap();
+        fs::write(upper.join(".wh.removed.txt"), b"").unwrap();
+        let record = record(temp.path(), &stage, &upper);
+        let _server = RunControlServer::start(&record).unwrap().unwrap();
+
+        assert!(control_ping(&stage));
+        let response = control_request(&stage, &RunControlRequest::OverlayStatus).unwrap();
+        let status: persisting_control::overlay::OverlayStatus = response.overlay_status.unwrap();
+        assert_eq!(status.changed_files, 1);
+        assert_eq!(status.whiteouts, 1);
+        assert!(status.sample_paths.contains(&"new.txt".to_string()));
+        assert!(
+            control_unmount_inspect(&stage, "missing".into())
+                .unwrap_err()
+                .to_string()
+                .contains("unknown inspect session missing")
+        );
     }
 
     #[test]

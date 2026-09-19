@@ -2,9 +2,9 @@ name: CI
 
 on:
   push:
-    branches: [main, master]
+    branches: [main]
   pull_request:
-    branches: [main, master]
+    branches: [main]
 
 concurrency:
   group: ci-${{ github.workflow }}-${{ github.ref }}
@@ -18,61 +18,41 @@ env:
   RUST_BACKTRACE: 1
 
 jobs:
-  format:
-    name: Format
+  checks:
+    name: Format, Clippy, and workflows
     runs-on: ubuntu-latest
+    timeout-minutes: 30
     steps:
       - uses: actions/checkout@v4
-
-      - name: Setup Build Environment
-        uses: ./.github/actions/setup-build-env
+      - uses: ./.github/actions/setup-build-env
         with:
-          install-nextest: "false"
-          install-zig: "false"
-          components: "rustfmt"
-
-      - name: Rust formatting
-        run: just fmt-check-rust
-
-  rust-clippy-workspace:
-    name: Clippy / Workspace
-    runs-on: ubuntu-latest
-    steps:
-      - uses: actions/checkout@v4
-
-      - name: Setup Build Environment
-        uses: ./.github/actions/setup-build-env
-        with:
-          install-nextest: "false"
-          install-zig: "false"
-          components: "clippy"
-
+          rust: "true"
+          components: rustfmt, clippy
       - uses: Swatinem/rust-cache@v2
         with:
-          shared-key: ci-clippy-workspace
+          shared-key: ci-clippy
+      - uses: taiki-e/install-action@v2
+        with:
+          tool: actionlint@1.7.7
+      - run: actionlint
+      - run: just fmt-rust --check
+      - run: just lint-rust
 
-      - name: Workspace Clippy
-        run: just clippy-deny
-
-  python-lint:
-    name: Python Lint
+  python:
+    name: Python and benchmark checks
     runs-on: ubuntu-latest
+    timeout-minutes: 10
     steps:
       - uses: actions/checkout@v4
-
-      - name: Setup Build Environment
-        uses: ./.github/actions/setup-build-env
-        with:
-          install-nextest: "false"
-          install-zig: "false"
-          components: ""
-
-      - name: Ruff
-        run: just lint-py
+      - uses: ./.github/actions/setup-build-env
+      - run: just lint-py
+      - run: just test-py
+      - run: just test-benchmark
 
   rust-test:
     name: Rust Test / ${{ matrix.platform }} / ${{ matrix.shard }}
     runs-on: ${{ matrix.os }}
+    timeout-minutes: 30
     strategy:
       fail-fast: false
       matrix:
@@ -87,25 +67,22 @@ jobs:
               persisting-overlaynet
               persisting-replay
             prepare_pvisor: false
-            smoke_pvisor: false
             install_zig: false
           - platform: Linux
             os: ubuntu-latest
             shard: gateway
             packages: persisting-gateway
             prepare_pvisor: false
-            smoke_pvisor: false
             install_zig: false
           - platform: Linux
             os: ubuntu-latest
             shard: pvisor
             packages: persisting-pvisor
             prepare_pvisor: true
-            smoke_pvisor: true
             install_zig: false
           - platform: macOS
             os: macos-latest
-            shard: agent-runtime
+            shard: workspace
             packages: >-
               persisting-control
               persisting-gateway
@@ -115,14 +92,6 @@ jobs:
               persisting-pvisor
               persisting-replay
             prepare_pvisor: true
-            smoke_pvisor: true
-            install_zig: true
-          - platform: macOS
-            os: macos-latest
-            shard: pvisor
-            packages: persisting-pvisor
-            prepare_pvisor: true
-            smoke_pvisor: true
             install_zig: true
     steps:
       - uses: actions/checkout@v4
@@ -130,8 +99,9 @@ jobs:
       - name: Setup Build Environment
         uses: ./.github/actions/setup-build-env
         with:
+          rust: "true"
+          install-nextest: "true"
           install-zig: "${{ matrix.install_zig }}"
-          components: ""
 
       - uses: Swatinem/rust-cache@v2
         with:
@@ -139,23 +109,19 @@ jobs:
 
       # macOS needs the Hypervisor entitlement on the product binary. Running
       # the same recipe on Linux also keeps the smoke-test setup identical.
-      - name: Build pVisor product binary
+      - name: Build and smoke-test pVisor product binary
         if: matrix.prepare_pvisor
-        run: just pvisor debug
+        run: just smoke
 
       - name: Run ${{ matrix.shard }} tests
         env:
           # GitHub-hosted Linux runners may disable unprivileged user
           # namespaces. The dedicated isolation job remains strict.
           PERSISTING_TEST_ALLOW_NO_USERNS: "1"
-        run: just ci-nextest ${{ matrix.packages }}
-
-      - name: Smoke pVisor CLI
-        if: matrix.smoke_pvisor
-        run: just smoke-pvisor-cli
+        run: just test-rust ${{ matrix.packages }}
 
   pvisor-isolation-regression:
-    name: pVisor Isolation Regression / Linux
+    name: pVisor isolation and documented cases / Linux
     runs-on: ubuntu-latest
     timeout-minutes: 30
     steps:
@@ -164,8 +130,8 @@ jobs:
       - name: Setup Build Environment
         uses: ./.github/actions/setup-build-env
         with:
-          install-zig: "false"
-          components: ""
+          rust: "true"
+          install-nextest: "true"
 
       - uses: Swatinem/rust-cache@v2
         with:
@@ -188,52 +154,16 @@ jobs:
       - name: Run strict pVisor isolation regressions
         env:
           PERSISTING_RUN_HOME: ${{ runner.temp }}/pvisor-isolation-runs
-        run: just test-pvisor-isolation
+        run: just test-isolation
 
       - name: Run pVisor filesystem examples
         env:
           WORK_ROOT: ${{ runner.temp }}/pvisor-filesystem-examples
-        run: just examples-pvisor-filesystem
-
-  python-test:
-    name: Python Test
-    runs-on: ubuntu-latest
-    steps:
-      - uses: actions/checkout@v4
-
-      - name: Setup Build Environment
-        uses: ./.github/actions/setup-build-env
-        with:
-          install-nextest: "false"
-          install-zig: "false"
-          components: ""
-
-      - name: Sync Python deps
-        run: just py-dev
-
-      - name: Pytest
-        run: just test-py
-
-  pvisor-cases:
-    name: pVisor case checklist
-    runs-on: ubuntu-latest
-    steps:
-      - uses: actions/checkout@v4
-
-      - name: Setup Build Environment
-        uses: ./.github/actions/setup-build-env
-        with:
-          install-nextest: "false"
-          install-zig: "false"
-          components: ""
-
-      - uses: Swatinem/rust-cache@v2
-        with:
-          shared-key: ci-pvisor-cases
+        run: just examples 01-filesystem-isolation 02-changeset-management
 
       - name: Run documented cases
         run: |
-          just cases pvisor \
+          just cases \
             --case A01,A02,A03,A04,A05,A06 \
             --case B01,B02,B03,B04 \
             --case C02,C03,C04 \
@@ -253,58 +183,35 @@ jobs:
           if-no-files-found: ignore
 
   examples:
-    name: Examples / ${{ matrix.shard }}
+    name: pVisor network and Gateway examples
     runs-on: ubuntu-latest
-    strategy:
-      fail-fast: false
-      matrix:
-        include:
-          - shard: pvisor
-            command: |
-              just test-pvisor-benchmark
-              just examples-pvisor-portable
+    timeout-minutes: 30
     steps:
       - uses: actions/checkout@v4
-
-      - name: Setup Python for examples
-        id: setup-python
-        uses: actions/setup-python@v5
-        with:
-          python-version: "3.12"
 
       - name: Setup Build Environment
         uses: ./.github/actions/setup-build-env
         with:
-          install-nextest: "false"
-          install-zig: "false"
-          components: ""
+          rust: "true"
 
       - uses: Swatinem/rust-cache@v2
         with:
-          shared-key: ci-examples-${{ matrix.shard }}
+          shared-key: ci-pvisor-examples
 
       - name: Install jq
         run: sudo apt-get update -qq && sudo apt-get install -y -qq jq
 
-      - name: Run ${{ matrix.shard }} examples
+      - name: Run network and Gateway examples
         env:
-          WORK_ROOT: ${{ runner.temp }}/${{ matrix.shard }}-examples
-          PYTHON_BIN: ${{ steps.setup-python.outputs.python-path }}
-        run: ${{ matrix.command }}
+          WORK_ROOT: ${{ runner.temp }}/pvisor-examples
+        run: just examples 03-network-isolation 04-gateway-llm-control
 
   ci:
     name: CI
     if: always()
-    needs:
-      - format
-      - rust-clippy-workspace
-      - python-lint
-      - rust-test
-      - pvisor-isolation-regression
-      - python-test
-      - pvisor-cases
-      - examples
+    needs: [checks, python, rust-test, pvisor-isolation-regression, examples]
     runs-on: ubuntu-latest
+    timeout-minutes: 5
     steps:
       - name: Require every CI shard to pass
         env:

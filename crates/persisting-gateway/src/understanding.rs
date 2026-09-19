@@ -417,6 +417,12 @@ fn parse_responses_request(object: &Map<String, Value>) -> LlmRequest {
                         flush_pending_calls(&mut pending_calls, &mut request.messages);
                         push_wire_message(item, &mut request);
                     }
+                    "" if item.get("role").and_then(Value::as_str).is_some()
+                        && item.get("content").is_some() =>
+                    {
+                        flush_pending_calls(&mut pending_calls, &mut request.messages);
+                        push_wire_message(item, &mut request);
+                    }
                     _ => {
                         flush_pending_calls(&mut pending_calls, &mut request.messages);
                         let parts = parse_content_parts(item);
@@ -1158,6 +1164,43 @@ mod tests {
             parsed.request.messages[1].parts[0],
             LlmContentPart::ToolCall { ref signature, .. } if signature.as_deref() == Some("sig")
         ));
+    }
+
+    #[test]
+    fn responses_easy_messages_preserve_roles_through_translation() {
+        use crate::conversion::{ProtocolBridge, translate_request_for_bridge};
+
+        let messages = json!([
+            {"role":"developer","content":"Keep replies short."},
+            {"role":"user","content":"hello"},
+            {"role":"assistant","content":"hi"},
+            {"role":"user","content":"continue"}
+        ]);
+        let body = json!({"model":"test","input":messages});
+        let parsed = understand_request_value(ProtocolKind::Responses, &body).unwrap();
+        assert_eq!(parsed.request.messages[0].role, LlmRole::Developer);
+        let translated = translate_request_for_bridge(
+            ProtocolBridge::ResponsesToCompletions,
+            &parsed,
+            "test",
+            None,
+        )
+        .unwrap();
+        let wire: Value = serde_json::from_slice(&translated).unwrap();
+        let mut expected = messages;
+        // The existing Chat bridge maps developer instructions to system.
+        expected[0]["role"] = json!("system");
+        assert_eq!(wire["messages"], expected);
+
+        let mut explicit = body;
+        for message in explicit["input"].as_array_mut().unwrap() {
+            message["type"] = json!("message");
+        }
+        let explicit = understand_request_value(ProtocolKind::Responses, &explicit).unwrap();
+        assert_eq!(
+            serde_json::to_value(parsed.request).unwrap(),
+            serde_json::to_value(explicit.request).unwrap()
+        );
     }
 
     #[test]

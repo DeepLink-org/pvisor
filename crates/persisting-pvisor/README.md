@@ -35,17 +35,17 @@ backend. Default features are empty.
 ## Develop
 
 ```bash
-just pvisor          # release build + macOS Hypervisor signing
-just pvisor debug    # debug build + macOS signing
+just build release          # release build + macOS Hypervisor signing
+just build    # debug build + macOS signing
 just test persisting-pvisor
-just examples-pvisor
+just examples
 ```
 
 ```bash
 cargo build --locked -p persisting-pvisor --bin pvisor --release
 ```
 
-On macOS, source builds that use HVF must be signed. `just pvisor` does this;
+On macOS, source builds that use HVF must be signed. `just build release` does this;
 the equivalent entitlements file is `macos-hypervisor.entitlements`. Building
 from source on macOS also requires Zig (`brew install zig`) to cross-compile
 libkrun's embedded Linux guest init.

@@ -63,19 +63,10 @@ pub fn normalize_tool_arguments_string(raw: &str) -> String {
     "{}".to_string()
 }
 
-/// Decode a streaming `function.arguments` delta chunk.
-///
-/// Some providers JSON-encode argument fragments; unwrap once when the chunk is
-/// a quoted JSON string (moon-bridge `unquoteArguments` streaming variant).
+/// Preserve a streaming `function.arguments` fragment after the SSE JSON decode.
+/// A fragment may itself look like a quoted JSON string; decoding it again would
+/// remove quotes that belong to the assembled arguments.
 pub fn decode_stream_arguments_delta(raw: &str) -> String {
-    if raw.is_empty() {
-        return String::new();
-    }
-    if raw.starts_with('"')
-        && let Ok(decoded) = serde_json::from_str::<String>(raw)
-    {
-        return decoded;
-    }
     raw.to_string()
 }
 

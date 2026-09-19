@@ -94,7 +94,7 @@ def _run(command: list[str], root: Path) -> None:
 
 
 def validate_lockfile(root: Path = ROOT) -> None:
-    _run(["cargo", "metadata", "--format-version", "1", "--no-deps", "--locked"], root)
+    _run(["cargo", "metadata", "--format-version", "1", "--locked"], root)
 
 
 def validate_main_ancestry(main_ref: str, root: Path = ROOT) -> None:

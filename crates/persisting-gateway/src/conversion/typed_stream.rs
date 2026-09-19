@@ -1243,6 +1243,55 @@ mod tests {
     use super::*;
 
     #[test]
+    fn tool_arguments_survive_every_fragment_boundary() {
+        let arguments = r#"{"cmd":"pwd","note":"say \"hello\""}"#;
+        // Every three-fragment partition includes complete quoted keys/values
+        // as standalone deltas, not just incomplete JSON prefixes and suffixes.
+        for first in 0..=arguments.len() {
+            for second in first..=arguments.len() {
+                let mut translator = TypedStreamTranslator::new(
+                    ProtocolBridge::MessagesToCompletions,
+                    ProtocolKind::Messages,
+                    "test",
+                )
+                .unwrap();
+                let mut rendered = Vec::new();
+                for fragment in [
+                    &arguments[..first],
+                    &arguments[first..second],
+                    &arguments[second..],
+                ] {
+                    let frame = json!({"choices":[{"index":0,"delta":{"tool_calls":[{
+                        "index":0,"id":"call-1","type":"function",
+                        "function":{"name":"shell","arguments":fragment}
+                    }]}}]});
+                    rendered.extend_from_slice(
+                        &translator
+                            .push_chunk(format!("data: {frame}\n\n").as_bytes())
+                            .unwrap(),
+                    );
+                }
+                rendered.extend_from_slice(&translator.finish_stream().unwrap());
+                let response = translator.semantic_response();
+                assert!(
+                    matches!(&response.response.candidates[0].message.parts[0],
+                    LlmContentPart::ToolCall { arguments: actual, .. }
+                        if actual == &serde_json::from_str::<Value>(arguments).unwrap()),
+                    "split at {first}, {second}"
+                );
+                let emitted: String = std::str::from_utf8(&rendered)
+                    .unwrap()
+                    .lines()
+                    .filter_map(|line| line.strip_prefix("data: "))
+                    .map(|data| serde_json::from_str::<Value>(data).unwrap())
+                    .filter_map(|value| value["delta"]["partial_json"].as_str().map(str::to_owned))
+                    .collect();
+                assert_eq!(emitted, arguments, "split at {first}, {second}");
+            }
+        }
+    }
+
+    #[test]
     fn chat_stream_roundtrips_through_typed_events() {
         let mut translator = TypedStreamTranslator::new(
             ProtocolBridge::MessagesToCompletions,

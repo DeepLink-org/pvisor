@@ -11,15 +11,15 @@ incomplete Run is rejected.
 ## Run
 
 ```bash
-just benchmark-pvisor
-just benchmark-pvisor nightly target/pvisor-benchmark/nightly
+just benchmark
+just benchmark nightly target/pvisor-benchmark/nightly
 
-just benchmark-pvisor-compare \
+just benchmark-compare \
   target/pvisor-benchmark/candidate/raw-report.json \
   target/pvisor-benchmark/main/raw-report.json
 ```
 
-`just benchmark-pvisor-compare` takes candidate then optional baseline. The
+`just benchmark-compare` takes candidate then optional baseline. The
 `smoke` suite uses 2 warmups and 10 samples for pull-request feedback. The
 `nightly` suite uses 10 warmups and 50 samples for a more stable distribution.
 Both write the same `pvisor-benchmark/v1` raw schema and Markdown report.
@@ -32,7 +32,7 @@ informational unless the runner is explicitly given `--fail-on-regression`.
 Unit-test the report contract without running the suite:
 
 ```bash
-just test-pvisor-benchmark
+just test-benchmark
 ```
 
 ## Links

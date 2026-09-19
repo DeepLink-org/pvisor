@@ -2,10 +2,10 @@ name: Documentation
 
 on:
   push:
-    branches: [main, master]
+    branches: [main]
     paths: ['docs/**', 'scripts/*docs*.py', 'justfile', '.github/workflows/docs.yml']
   pull_request:
-    branches: [main, master]
+    branches: [main]
     paths: ['docs/**', 'scripts/*docs*.py', 'justfile', '.github/workflows/docs.yml']
   workflow_dispatch:
 
@@ -13,13 +13,14 @@ permissions:
   contents: read
 
 concurrency:
-  group: pages
-  cancel-in-progress: true
+  group: docs-${{ github.ref }}
+  cancel-in-progress: ${{ github.event_name == 'pull_request' }}
 
 jobs:
   build:
     name: Build Zensical site
     runs-on: ubuntu-latest
+    timeout-minutes: 10
     steps:
       - uses: actions/checkout@v4
       - uses: astral-sh/setup-uv@v6
@@ -33,9 +34,13 @@ jobs:
           path: docs/site
 
   deploy:
-    if: github.event_name == 'push' || github.event_name == 'workflow_dispatch'
+    if: github.repository == 'DeepLink-org/Persisting' && github.ref == 'refs/heads/main' && github.event_name != 'pull_request'
     needs: build
+    concurrency:
+      group: pages
+      cancel-in-progress: false
     runs-on: ubuntu-latest
+    timeout-minutes: 10
     permissions:
       pages: write
       id-token: write

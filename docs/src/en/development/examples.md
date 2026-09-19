@@ -7,7 +7,6 @@ sequence: execute, then govern effects.
 
 ```bash
 just examples
-just examples-pvisor
 ```
 
 ## pVisor
@@ -21,8 +20,8 @@ just examples-pvisor
 
 Requirements are macOS or Linux, Cargo, Python 3, and common POSIX tools such
 as `jq`. The filesystem examples additionally require macFUSE or FUSE3.
-`just examples-pvisor-filesystem` runs the FUSE-backed 01/02 scenarios;
-`just examples-pvisor-portable` runs 03/04 without FUSE.
+`just examples 01-filesystem-isolation 02-changeset-management` runs the FUSE-backed 01/02 scenarios;
+`just examples 03-network-isolation 04-gateway-llm-control` runs 03/04 without FUSE.
 
 Start with `pvisor/01-filesystem-isolation`, then continue to changeset
 management.

@@ -3,21 +3,33 @@
 **Shared Run contracts, authorization policies, AgentCtl messages, and event records.**
 
 This dependency-light crate supplies the contracts shared by pVisor, Gateway,
-and OverlayNet. It owns value types, policy decisions, the AgentCtl wire
+OverlayFS, and OverlayNet. It owns value types, policy decisions, the AgentCtl wire
 protocol/client, and the EventRecord envelope. Runtime servers, executors, and
 storage implementations stay in their respective components.
+
+Add a type here only when it defines an existing cross-component message or
+record contract. Driver configuration, filesystem operations, storage code,
+and component-private helpers belong with the component that owns them.
 
 | Module | Responsibility |
 | --- | --- |
 | `runtime` | Run/Attempt identity, configuration, capabilities and results |
 | `policy` | Network/model authorization and control transitions |
 | `protocol` | Versioned AgentCtl requests, state reports and directives |
+| `overlay` | Overlay state, review/apply contracts, file preimages, and local Run inspection messages |
 | `events` | Shared event identity, envelope and validation |
 | `client` | Synchronous AgentCtl Unix-socket client |
 
 Types remain re-exported at the crate root. Commands and events keep their
 existing JSON formats and sequencing scopes; they do not share a new transport
 or acknowledgement protocol.
+
+The `overlay` module defines `RunControlRequest` / `RunControlResponse` for
+the existing local `control.sock` inspection endpoint (`ping`, `overlay_status`,
+`mount_inspect`, `unmount_inspect`). It also owns `OverlayRecord`, `ChangeEntry`,
+`ApplySelection`, `ApplyRecord`, and the `PathPreimage` / `PathFingerprint` records
+shared with OverlayCore. Filesystem operations, journal I/O, mount lifecycle,
+and request handling stay in OverlayCore and pVisor.
 
 AgentCtl is an optional, cooperative channel between pVisor
 and a Run-local runtime client. It is not a sandbox, does not discover

@@ -14,11 +14,9 @@ The site uses Zensical 0.0.61. English and Chinese Markdown live under
 `docs/src/en/` and `docs/src/zh/`, with matching relative paths.
 
 ```bash
-just docs-sync          # install the same pinned Zensical version as CI
-just docs-serve         # build both languages and serve on 127.0.0.1:3000
-just docs-serve-dirty   # watch sources; rebuild both languages (refresh the browser)
-just docs-build         # produce docs/site
-python3 scripts/check-docs.py  # validate all generated pages and links
+just docs-serve         # build, watch, and serve on 127.0.0.1:3000
+just docs-serve --port 3001
+just docs-build         # build docs/site and validate generated pages
 ```
 
 `scripts/build-docs.py` renders the English configuration, then renders Chinese
