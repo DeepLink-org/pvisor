@@ -1,18 +1,33 @@
-# <img src="docs/src/assets/logos/persisting-icon.png" alt="Persisting" width="72" /> Persisting
+# <img src="docs/src/assets/logos/pvisor-icon.png" alt="PolicyVisor" width="72" /> PolicyVisor (pVisor)
 
-**Reviewable execution for Agents.**
+**Policy-governed, reviewable execution.**  
+**策略约束下的可审查执行。**
 
 [![CI](https://github.com/DeepLink-org/Persisting/actions/workflows/ci.yml/badge.svg)](https://github.com/DeepLink-org/Persisting/actions/workflows/ci.yml)
 [![Documentation](https://img.shields.io/badge/docs-latest-blue)](https://deeplink-org.github.io/Persisting/)
 [![License: Apache-2.0](https://img.shields.io/badge/license-Apache--2.0-blue.svg)](LICENSE)
 
-<img src="docs/src/assets/logos/pvisor-with-text.png" alt="pVisor" width="220" />
+**PolicyVisor**, abbreviated **pVisor**, is an execution layer for Agent CLIs,
+scripts, and automation commands. Keep your existing tools; use policies to
+define their authority, inspect the controls installed by the selected executor,
+and review staged file changes before applying them to your project.
 
-**`pvisor`** runs an existing Agent command inside a controlled execution
-environment. It stages filesystem effects, records the controls that were
-actually installed, and lets you review changes before they reach the project.
+The **p** stands for **Policy**. Each Run connects requested capabilities,
+effective runtime controls, and an inspectable execution record.
 
-![Current Persisting workflows](docs/src/assets/diagrams/persisting/system-products.svg)
+![PolicyVisor execution and review workflow](docs/src/assets/diagrams/persisting/system-products.svg)
+
+## Define, execute, review
+
+- **Define the boundary:** select an executor and the filesystem, network, and
+  other capability requirements for the task.
+- **Execute with evidence:** retain the command, outcome, installed controls,
+  warnings, and observed effects in a local Run Bundle.
+- **Review staged changes:** enable `--stage`, inspect file changes, then apply
+  selected paths or discard the remaining changes.
+
+Host, container, and libkrun VM executors provide different boundaries. A
+requested policy is not proof of enforcement; inspect the evidence for the Run.
 
 ## Install
 
@@ -21,42 +36,61 @@ pip install persisting
 pvisor --version
 ```
 
+The product name is PolicyVisor; the published Python package remains
+`persisting`, and the CLI remains `pvisor`. Existing repository URLs, crate
+names, and `PERSISTING_*` environment variables retain their current names.
+
 The rolling nightly build installs the same command without a Rust toolchain:
 
 ```bash
 curl -fsSL https://raw.githubusercontent.com/DeepLink-org/Persisting/main/scripts/install-nightly.sh | bash
 ```
 
-See the [installation guide](https://deeplink-org.github.io/Persisting/installation/)
+See the [installation guide](https://deeplink-org.github.io/Persisting/en/start/installation/)
 for platform requirements and executor setup.
 
-## Run one Agent and review its changes
+## Run a command and review its changes
 
 ```bash
-pvisor run --stage ./runs/task-001 -- codex
+pvisor run --stage ../task-stage-001 -- /bin/sh -c 'printf "hello\n" > hello.txt'
 pvisor review last
-pvisor apply last --all   # or: pvisor drop last
+pvisor apply last --path hello.txt   # or: pvisor drop last
+```
+
+Run this from your project directory after completing the platform setup in
+the installation guide. Use a fresh stage directory outside the project for
+each Run. Replace the command after `--` with your script or installed Agent CLI:
+
+```bash
+pvisor run --stage ../agent-stage-001 -- codex
+pvisor review last
 ```
 
 `--stage` creates a copy-on-write workspace view for review; without it the
-Agent may write the real project tree. The exact boundary is
+command may write the real project tree. The exact boundary is
 platform-dependent and recorded with the Run—consult the
-[execution guide](https://deeplink-org.github.io/Persisting/pvisor/guides/execution/)
+[execution guide](https://deeplink-org.github.io/Persisting/en/guides/execution/)
 before treating it as a security boundary.
+
+`apply` and `drop` govern staged files. They cannot undo remote API calls,
+database writes, or messages already sent. Model-traffic capture is optional;
+logical checkpoints preserve staged filesystem state, not process memory.
 
 ## Current maturity
 
 | Capability | Status |
 |---|---|
-| pVisor host execution, review, checkpoints, and transactional workspace | Implemented |
+| Local execution records, staged workspace review, selective apply, and logical checkpoints | Implemented |
 | Gateway capture and cooperative proxy policy | Implemented |
 | Container/libkrun executors and transparent network boundaries | Platform-dependent; see the pVisor and OverlayNet docs |
 
 ## Documentation
 
-- [Choose a workflow](https://deeplink-org.github.io/Persisting/overview/) — the path from install to a reviewed Run
-- [Run your first Agent](https://deeplink-org.github.io/Persisting/pvisor/get-started/) — the run-review-apply loop
-- [Project architecture](https://deeplink-org.github.io/Persisting/system-design/) — ownership and delivery boundaries
+- [Choose a workflow](https://deeplink-org.github.io/Persisting/en/start/) — the path from install to a reviewed Run
+- [Your first Run](https://deeplink-org.github.io/Persisting/en/start/first-run/) — the run-review-apply loop
+- [PolicyVisor model](https://deeplink-org.github.io/Persisting/en/concepts/policyvisor/) — policy, controls, and evidence
+- [Project architecture](https://deeplink-org.github.io/Persisting/en/design/) — ownership and delivery boundaries
+- [中文文档](https://deeplink-org.github.io/Persisting/zh/start/) — 从安装到策略约束下的可审查执行
 
 ## License
 

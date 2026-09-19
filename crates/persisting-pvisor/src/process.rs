@@ -324,12 +324,20 @@ struct Captured {
 async fn read_limited<R: AsyncRead + Unpin>(
     mut reader: R,
     limit: usize,
+    stop: tokio_util::sync::CancellationToken,
 ) -> std::io::Result<Captured> {
     let mut retained = Vec::with_capacity(limit.min(8192));
     let mut buf = [0_u8; 8192];
     let mut truncated = false;
     loop {
-        let read = reader.read(&mut buf).await?;
+        let read = tokio::select! {
+            biased;
+            _ = stop.cancelled() => {
+                truncated = true;
+                break;
+            }
+            read = reader.read(&mut buf) => read?,
+        };
         if read == 0 {
             break;
         }
@@ -867,23 +875,31 @@ fn push_existing(paths: &mut Vec<PathBuf>, path: &Path) {
     }
 }
 
-async fn terminate_process_tree(child: &mut Child, grace_ms: u64) {
+async fn terminate_process_tree(child: &mut Child, process_group: Option<u32>, grace_ms: u64) {
     #[cfg(unix)]
     {
-        if let Some(pid) = child.id() {
+        if let Some(pid) = process_group {
             // The child is the leader of the process group configured above.
             let process_group = -(pid as i32);
             unsafe {
                 libc::kill(process_group, libc::SIGTERM);
             }
-            if tokio::time::timeout(std::time::Duration::from_millis(grace_ms), child.wait())
-                .await
-                .is_ok()
-            {
-                return;
-            }
-            unsafe {
-                libc::kill(process_group, libc::SIGKILL);
+            let deadline = tokio::time::Instant::now() + std::time::Duration::from_millis(grace_ms);
+            loop {
+                // Reaping the leader does not mean its descendants have exited.
+                let _ = child.try_wait();
+                if unsafe { libc::kill(process_group, 0) } != 0
+                    && std::io::Error::last_os_error().raw_os_error() == Some(libc::ESRCH)
+                {
+                    break;
+                }
+                if tokio::time::Instant::now() >= deadline {
+                    unsafe {
+                        libc::kill(process_group, libc::SIGKILL);
+                    }
+                    break;
+                }
+                tokio::time::sleep(std::time::Duration::from_millis(5)).await;
             }
             let _ = child.wait().await;
             return;
@@ -1024,11 +1040,17 @@ impl RunExecutor for ProcessExecutor {
                 };
             }
         };
+        let process_group = child.id();
         #[cfg(unix)]
         let _foreground = match ForegroundProcessGroup::give_to(&child, invocation) {
             Ok(foreground) => foreground,
             Err(error) => {
-                terminate_process_tree(&mut child, spec.runtime.termination_grace_ms).await;
+                terminate_process_tree(
+                    &mut child,
+                    process_group,
+                    spec.runtime.termination_grace_ms,
+                )
+                .await;
                 return RunResult {
                     run_id: spec.run_id,
                     attempt_id: context.attempt_id().clone(),
@@ -1052,13 +1074,16 @@ impl RunExecutor for ProcessExecutor {
             }
         };
 
+        let drain_stop = tokio_util::sync::CancellationToken::new();
         let stdout_task = child.stdout.take().map(|stdout| {
             let limit = spec.runtime.max_output_bytes;
-            tokio::spawn(async move { read_limited(stdout, limit).await })
+            let stop = drain_stop.clone();
+            tokio::spawn(async move { read_limited(stdout, limit, stop).await })
         });
         let stderr_task = child.stderr.take().map(|stderr| {
             let limit = spec.runtime.max_output_bytes;
-            tokio::spawn(async move { read_limited(stderr, limit).await })
+            let stop = drain_stop.clone();
+            tokio::spawn(async move { read_limited(stderr, limit, stop).await })
         });
 
         context.transition(RunState::Running, None).await;
@@ -1085,25 +1110,46 @@ impl RunExecutor for ProcessExecutor {
             }
         };
 
-        if matches!(end, End::Cancelled | End::Deadline) {
-            if matches!(end, End::Cancelled) {
-                context
-                    .transition(RunState::Cancelling, Some("cancellation requested".into()))
-                    .await;
-            }
-            terminate_process_tree(&mut child, spec.runtime.termination_grace_ms).await;
+        if matches!(end, End::Cancelled) {
+            context
+                .transition(RunState::Cancelling, Some("cancellation requested".into()))
+                .await;
         }
+        terminate_process_tree(&mut child, process_group, spec.runtime.termination_grace_ms).await;
 
-        let mut output = ProcessOutput::default();
-        if let Some(task) = stdout_task
-            && let Ok(Ok(captured)) = task.await
+        let capture = async {
+            let stdout = match stdout_task {
+                Some(task) => task.await.ok().and_then(Result::ok),
+                None => None,
+            };
+            let stderr = match stderr_task {
+                Some(task) => task.await.ok().and_then(Result::ok),
+                None => None,
+            };
+            (stdout, stderr)
+        };
+        tokio::pin!(capture);
+        let (stdout, stderr) = match tokio::time::timeout(
+            std::time::Duration::from_millis(spec.runtime.termination_grace_ms),
+            &mut capture,
+        )
+        .await
         {
+            Ok(output) => output,
+            Err(_) => {
+                drain_stop.cancel();
+                warnings.push(
+                    "output drain timed out; a descendant may still hold an output pipe".into(),
+                );
+                capture.await
+            }
+        };
+        let mut output = ProcessOutput::default();
+        if let Some(captured) = stdout {
             output.stdout = Some(captured.text);
             output.stdout_truncated = captured.truncated;
         }
-        if let Some(task) = stderr_task
-            && let Ok(Ok(captured)) = task.await
-        {
+        if let Some(captured) = stderr {
             output.stderr = Some(captured.text);
             output.stderr_truncated = captured.truncated;
         }
@@ -1190,6 +1236,53 @@ impl RunExecutor for ProcessExecutor {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[cfg(unix)]
+    #[tokio::test]
+    async fn run_finishes_with_background_pipes_after_exit_or_deadline() {
+        for (script, expected_state) in [
+            ("printf ready; sleep 5 & exit 0", RunState::Completed),
+            (
+                "(trap '' TERM; printf ready; sleep 5) & wait",
+                RunState::Failed,
+            ),
+        ] {
+            let mut spec = RunSpec::process("process-cleanup", "test", "/bin/sh");
+            let RunInvocation::Process(process) = &mut spec.invocation;
+            process.args = vec!["-c".into(), script.into()];
+            process.stdout = StdioMode::Capture;
+            process.stderr = StdioMode::Capture;
+            spec.runtime.timeout_ms = Some(150);
+            spec.runtime.termination_grace_ms = 25;
+            let handle = crate::PVisor::new().run(spec).await.unwrap();
+            let result = tokio::time::timeout(std::time::Duration::from_secs(2), handle.wait())
+                .await
+                .expect("Run waited for a background pipe after leader exit")
+                .unwrap();
+            assert_eq!(result.state, expected_state);
+            assert_eq!(result.output.stdout.as_deref(), Some("ready"));
+            if expected_state == RunState::Failed {
+                assert_eq!(
+                    result.failure.unwrap().kind,
+                    RunFailureKind::DeadlineExceeded
+                );
+            }
+        }
+    }
+
+    #[tokio::test]
+    async fn stopped_output_drain_preserves_captured_bytes() {
+        use tokio::io::AsyncWriteExt;
+        let (mut writer, reader) = tokio::io::duplex(64);
+        let stop = tokio_util::sync::CancellationToken::new();
+        let capture = tokio::spawn(read_limited(reader, 64, stop.clone()));
+        writer.write_all(b"partial").await.unwrap();
+        tokio::task::yield_now().await;
+        stop.cancel();
+        let captured = capture.await.unwrap().unwrap();
+        assert_eq!(captured.text, "partial");
+        assert!(captured.truncated);
+    }
 
     #[cfg(target_os = "linux")]
     #[test]

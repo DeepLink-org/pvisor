@@ -2850,12 +2850,9 @@ version = "0.3.0"
 dependencies = [
  "anyhow",
  "ipnet",
- "libc",
  "proptest",
  "serde",
  "serde_json",
- "tokio",
- "tokio-util",
 ]
 
 [[package]]
@@ -2883,7 +2880,6 @@ dependencies = [
  "dirs",
  "futures-util",
  "hostname",
- "http-body-util",
  "persisting-agentctl",
  "persisting-events",
  "persisting-overlaynet",
@@ -2984,7 +2980,6 @@ dependencies = [
  "tokio-util",
  "toml",
  "tracing",
- "tracing-subscriber",
  "uuid",
  "zstd",
 ]

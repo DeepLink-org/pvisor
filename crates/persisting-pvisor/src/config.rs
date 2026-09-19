@@ -350,17 +350,11 @@ pub enum GatewayMode {
     Capture,
 }
 
-#[derive(Debug, Clone, Deserialize, Serialize)]
+#[derive(Debug, Clone, Default, Deserialize, Serialize)]
 #[serde(default, deny_unknown_fields)]
 pub struct RecordSettings {
     /// Local directory or file for EventRecord JSONL.
     pub destination: Option<PathBuf>,
-}
-
-impl Default for RecordSettings {
-    fn default() -> Self {
-        Self { destination: None }
-    }
 }
 
 /// Resolved configuration for the internal OverlayNet + optional Gateway sink.

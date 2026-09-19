@@ -41,8 +41,7 @@ pub use config::{
     ContainerMount, ContainerNetwork, ContainerPlatform, ContainerSettings, GatewayDriverConfig,
     GatewayMode, GatewaySettings, NetworkDriverConfig, OverlayFsBackend, OverlayFsCommit,
     OverlayFsSettings, OverlayNetMode, OverlayNetPolicy, OverlayNetSettings, PVisorConfig,
-    RecordSettings, RunConfig, RunExecutorKind, RunPolicy, RunSettings, RunStdio,
-    VmSettings,
+    RecordSettings, RunConfig, RunExecutorKind, RunPolicy, RunSettings, RunStdio, VmSettings,
 };
 pub use container::ContainerExecutor;
 pub use control::{

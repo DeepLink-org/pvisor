@@ -18,5 +18,5 @@
 ## Links
 
 - [pVisor examples](../README.md)
-- [Capture trajectories](../../../docs/src/pvisor/guides/capture.zh.md)
-- [Gateway architecture](../../../docs/src/pvisor/design/gateway.zh.md)
+- [Capture trajectories](../../../docs/src/zh/guides/capture.md)
+- [Gateway architecture](../../../docs/src/zh/design/gateway.md)

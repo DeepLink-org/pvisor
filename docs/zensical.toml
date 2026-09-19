@@ -1,6 +1,6 @@
 [project]
-site_name = "Persisting"
-site_description = "Persistent Infrastructure for the Agent Era"
+site_name = "PolicyVisor"
+site_description = "Policy-governed, reviewable execution for Agents, scripts, and automation."
 site_url = "https://deeplink-org.github.io/Persisting/"
 docs_dir = "src"
 site_dir = "site"
@@ -11,20 +11,19 @@ extra_css = ["stylesheets/extra.css"]
 
 nav = [
   { "Home" = "en/index.md" },
-  { "Get started" = [
-    "en/overview.md",
-    { "Installation" = "en/installation.md" },
-    { "Running an Agent with pVisor" = "en/pvisor/get-started.md" },
-  ] },
-  { "pVisor" = ["en/pvisor/index.md", "en/pvisor/get-started.md", { "Concepts" = ["en/pvisor/concepts/index.md", "en/pvisor/concepts/agentvisor.md", "en/pvisor/concepts/run-model.md", "en/pvisor/concepts/capabilities-and-evidence.md"] }, { "Guides" = ["en/pvisor/guides/index.md", "en/pvisor/guides/execution.md", "en/pvisor/guides/review-apply.md", "en/pvisor/guides/network.md", "en/pvisor/guides/capture.md", "en/pvisor/guides/sandbox-replay.md", "en/pvisor/guides/troubleshooting.md"] }, { "Design" = ["en/pvisor/design/index.md", "en/pvisor/design/isolation.md", "en/pvisor/design/overlaynet.md", "en/pvisor/design/gateway.md", "en/pvisor/design/cli.md"] }, { "Reference" = ["en/pvisor/reference/index.md", "en/pvisor/reference/cli.md", "en/pvisor/reference/cases.md"] }] },
-  { "Agent Infra Thinkings" = ["en/why-persisting.md", "en/roadmap.md", "en/guides/using-persisting.md", "en/system-design/index.md", "en/system-design/design-principles.md", "en/system-design/architecture.md", "en/system-design/local-to-fleet.md", "en/system-design/security-evidence.md", "en/project/index.md", "en/project/examples.md", "en/project/engineering.md", "en/project/releasing.md"] },
+  { "Get started" = ["en/start/index.md", "en/start/what-is-pvisor.md", "en/start/installation.md", "en/start/first-run.md"] },
+  { "Guides" = ["en/guides/index.md", "en/guides/workflows.md", "en/guides/review-apply.md", "en/guides/execution.md", "en/guides/network.md", "en/guides/capture.md", "en/guides/sandbox-replay.md", "en/guides/troubleshooting.md"] },
+  { "Concepts" = ["en/concepts/index.md", "en/concepts/run-model.md", "en/concepts/capabilities-and-evidence.md", "en/concepts/security-evidence.md", "en/concepts/why-pvisor.md", "en/concepts/policyvisor.md"] },
+  { "Reference" = ["en/reference/index.md", "en/reference/cli.md", "en/reference/cases.md"] },
+  { "Development" = ["en/development/index.md", "en/development/engineering.md", "en/development/examples.md", "en/development/releasing.md", "en/development/roadmap.md"] },
+  { "Design" = ["en/design/index.md", "en/design/architecture.md", "en/design/isolation.md", "en/design/overlaynet.md", "en/design/gateway.md", "en/design/cli.md", "en/design/principles.md", "en/design/local-to-fleet.md"] },
 ]
 
 [project.theme]
 language = "en"
 custom_dir = "overrides"
-logo = "assets/persisting-icon.png"
-favicon = "assets/persisting-icon.png"
+logo = "assets/logos/pvisor-icon.png"
+favicon = "assets/logos/pvisor-icon.png"
 features = [
   "navigation.tabs",
   "navigation.sections",

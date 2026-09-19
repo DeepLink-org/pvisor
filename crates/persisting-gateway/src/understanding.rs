@@ -7,13 +7,13 @@
 use std::collections::BTreeMap;
 use std::sync::Arc;
 
-use anyhow::{Context, Result};
-use bytes::Bytes;
 use crate::llm::{
     LlmCandidate, LlmContentPart, LlmGenerationParams, LlmImageSource, LlmMessage, LlmProtocol,
     LlmRequest, LlmRequestEventPayload, LlmResponse, LlmResponseEventPayload, LlmResponseFormat,
     LlmRole, LlmToolChoice, LlmToolChoiceMode, LlmToolDefinition, LlmUsage,
 };
+use anyhow::{Context, Result};
+use bytes::Bytes;
 use serde_json::{Map, Value};
 
 use crate::dialogue_extract::extract_user_message_from_request_body;

@@ -37,5 +37,5 @@ just test-pvisor-benchmark
 
 ## Links
 
-- [pVisor design](../../docs/src/pvisor/design/index.md)
+- [pVisor design](../../docs/src/en/design/index.md)
 - [`persisting-pvisor`](../../crates/persisting-pvisor/README.md)

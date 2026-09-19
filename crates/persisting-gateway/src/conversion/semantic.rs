@@ -6,13 +6,13 @@
 
 use std::collections::HashMap;
 
-use anyhow::{Context, Result};
-use bytes::Bytes;
 use crate::llm::{
     LlmCandidate, LlmContentPart, LlmImageSource, LlmMessage, LlmProtocol, LlmRequest,
     LlmRequestEventPayload, LlmResponse, LlmResponseEventPayload, LlmRole, LlmToolChoiceMode,
     LlmUsage,
 };
+use anyhow::{Context, Result};
+use bytes::Bytes;
 use serde_json::{Value, json};
 
 pub fn request_to_chat_completions(

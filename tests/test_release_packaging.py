@@ -208,7 +208,6 @@ def test_editable_staging_does_not_resolve_firmware(
         artifacts[name] = artifact
 
     monkeypatch.setattr(wheel_stage, "WHEEL_DATA", tmp_path / "wheel-data")
-    monkeypatch.setattr(wheel_stage, "_build_web_assets", lambda: None)
     monkeypatch.setattr(wheel_stage, "_build", lambda _options: artifacts)
     monkeypatch.setattr(wheel_stage, "_is_macos", lambda _options: False)
 

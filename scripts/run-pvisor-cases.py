@@ -1,5 +1,5 @@
 #!/usr/bin/env python3
-"""Execute the bash cases embedded in docs/src/zh/pvisor/reference/cases.md.
+"""Execute the bash cases embedded in docs/src/zh/reference/cases.md.
 
 The Markdown document is the source of truth for the `pvisor run` behaviour
 contract.  A case heading has the form ``- [ ] **A01：...**`` and may carry a
@@ -25,7 +25,6 @@ import argparse
 import dataclasses
 import datetime as dt
 import os
-from pathlib import Path
 import re
 import shlex
 import shutil
@@ -34,6 +33,7 @@ import subprocess
 import sys
 import tempfile
 import time
+from pathlib import Path
 
 CASE_RE = re.compile(r"^- \[ \] \*\*([A-J][0-9]{2})：(.+?)\*\*\s*$")
 META_RE = re.compile(r"^\s*<!--\s*pvisor-case:\s*(.*?)\s*-->\s*$")
@@ -587,7 +587,7 @@ def main() -> int:
     parser.add_argument(
         "--document",
         type=Path,
-        default=repository / "docs/src/zh/pvisor/reference/cases.md",
+        default=repository / "docs/src/zh/reference/cases.md",
     )
     parser.add_argument("--pvisor", help="pvisor executable (or set PVISOR_BIN)")
     parser.add_argument("--case", action="append", dest="case_ids", help="case ID; repeatable")

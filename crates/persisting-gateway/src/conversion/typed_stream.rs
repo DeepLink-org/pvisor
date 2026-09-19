@@ -6,12 +6,12 @@
 use std::collections::{BTreeMap, HashMap};
 use std::time::Instant;
 
-use anyhow::{Context, Result};
-use bytes::Bytes;
 use crate::llm::{
     LlmCandidate, LlmContentPart, LlmMessage, LlmProtocol, LlmResponse, LlmResponseEventPayload,
     LlmRole, LlmStreamEvent, LlmUsage,
 };
+use anyhow::{Context, Result};
+use bytes::Bytes;
 use serde_json::{Value, json};
 
 use super::{MAX_SSE_FRAME_BYTES, ProtocolBridge};

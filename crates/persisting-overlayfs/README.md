@@ -49,6 +49,6 @@ cargo build -p persisting-overlayfs --release
 
 ## Links
 
-- [Isolation architecture](../../docs/src/pvisor/design/isolation.md)
-- [Review and apply effects](../../docs/src/pvisor/guides/review-apply.md)
+- [Isolation architecture](../../docs/src/en/design/isolation.md)
+- [Review and apply effects](../../docs/src/en/guides/review-apply.md)
 - [`persisting-pvisor`](../persisting-pvisor/README.md)

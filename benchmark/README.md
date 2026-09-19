@@ -1,4 +1,4 @@
-# Persisting benchmarks
+# PolicyVisor benchmarks
 
 **仓库级基准入口：pVisor 进程启动与 Run Bundle 访问。**
 
@@ -18,4 +18,4 @@ just benchmark-pvisor-compare \
 
 ## Links
 
-- [pVisor design](../docs/src/en/pvisor/design/index.md)
+- [pVisor design](../docs/src/en/design/index.md)

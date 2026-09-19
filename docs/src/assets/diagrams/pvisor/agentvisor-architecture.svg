@@ -93,9 +93,9 @@
   <g filter="url(#shadow)">
     <rect x="35" y="322" width="205" height="132" rx="20" class="card" stroke="#c084fc"/>
     <text x="70" y="360" class="label">Control plane</text>
-    <text x="70" y="387" class="small">plan · lease · schedule</text>
-    <text x="70" y="410" class="small">retry · reconcile</text>
-    <text x="70" y="434" class="tiny">Many Runs</text>
+    <text x="70" y="387" class="small">Embedded Control</text>
+    <text x="70" y="410" class="small">admission · policy</text>
+    <text x="70" y="434" class="tiny">Per-Run authorization</text>
   </g>
   <path d="M240 388H278" class="line"/>
 
@@ -103,7 +103,7 @@
     <rect x="1160" y="322" width="205" height="132" rx="20" class="card" stroke="#86efac"/>
     <text x="1191" y="360" class="label">Capture store</text>
     <text x="1176" y="387" class="small">Configured event handoff</text>
-    <text x="1191" y="410" class="small">Dataset · history</text>
+    <text x="1191" y="410" class="small">JSONL · Run records</text>
     <text x="1191" y="434" class="tiny">Event-carried facts only</text>
   </g>
   <path d="M1122 388H1142V294H1262V322" class="teal-line"/>
@@ -120,7 +120,7 @@
 
     <rect x="496" y="642" width="190" height="82" rx="17" class="card"/>
     <text x="533" y="678" class="label">Container</text>
-    <text x="533" y="702" class="tiny">Docker · Podman</text>
+    <text x="533" y="702" class="tiny">crun · runc</text>
 
     <rect x="714" y="642" width="190" height="82" rx="17" class="card"/>
     <text x="754" y="678" class="label">libkrun VM</text>
@@ -128,7 +128,7 @@
 
     <rect x="932" y="642" width="190" height="82" rx="17" class="card" stroke-dasharray="7 6"/>
     <text x="968" y="678" class="label">Fleet provider</text>
-    <text x="968" y="702" class="tiny">Product gate</text>
+    <text x="968" y="702" class="tiny">Future design</text>
   </g>
 
   <text x="52" y="752" class="tiny">AgentVisor defines Agent semantics; execution providers define process, container, VM, and node mechanics.</text>

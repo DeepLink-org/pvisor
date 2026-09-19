@@ -1,4 +1,4 @@
-# Persisting Documentation
+# PolicyVisor Documentation
 
 The site uses Zensical 0.0.61. English and Chinese Markdown live under
 `docs/src/en/` and `docs/src/zh/`, with matching relative paths.
@@ -25,3 +25,27 @@ gradient, grid, brand contrast and homepage layout. Use native Markdown fences,
 `!!! note` / `!!! tip` callouts, and relative image paths.
 
 CI uses the same bilingual build and page checks before uploading `docs/site`.
+
+## Information architecture
+
+Both locales use the same six directories:
+
+- `start/`: product scope, installation and the first reproducible Run.
+- `guides/`: tasks, commands, expected results and troubleshooting.
+- `concepts/`: terminology, evidence and capability limits.
+- `reference/`: CLI options and concrete cases.
+- `development/`: contributor setup, validation, release and roadmap.
+- `design/`: implementation ownership, mechanisms and explicitly labeled future designs.
+
+Keep one canonical article per subject and link to it instead of repeating its
+contract. Start task guides with prerequisites and executable examples. Separate
+implemented behavior from design goals; describe a guarantee only with its
+executor and scope. Every workspace-review example must enable OverlayFS
+explicitly, normally with `--stage` outside the project.
+
+`zensical.toml` owns navigation. Add or move both language versions together.
+`redirects.json` maps old locale-relative Markdown paths to their replacements;
+the build emits redirects for English, Chinese, and the original unprefixed
+published URLs. Update incoming source links to canonical paths as well.
+The checker rejects unpaired pages, omitted or duplicate navigation entries,
+broken links, missing anchors and invalid redirect targets.

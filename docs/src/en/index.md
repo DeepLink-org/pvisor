@@ -1,10 +1,10 @@
 ---
 template: home.html
-title: Persistent Infrastructure for the Agent Era
-description: Run Agents inside a reviewable execution boundary and preserve queryable history.
+title: Policy-governed, reviewable execution.
+description: PolicyVisor runs Agents, scripts, and automation with explicit policies, recorded controls, and staged file review.
 hide:
   - navigation
   - toc
 ---
 
-# Persistent Infrastructure for the Agent Era
+# Policy-governed, reviewable execution.

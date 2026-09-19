@@ -3,8 +3,8 @@ template: home.html
 hide:
   - navigation
   - toc
-title: Persisting — Persistent Infrastructure for the Agent Era
-description: Run Agents under a reviewable execution boundary and preserve queryable history.
+title: PolicyVisor — Policy-governed, reviewable execution.
+description: PolicyVisor runs Agents, scripts, and automation with explicit policies, recorded controls, and staged file review.
 ---
 
 <!--

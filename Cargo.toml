@@ -51,11 +51,10 @@ libkrun = "=1.19.3"
 log = "0.4"
 persisting-agentctl = { path = "crates/persisting-agentctl" }
 persisting-events = { path = "crates/persisting-events" }
-persisting-gateway = { path = "crates/persisting-gateway" }
+persisting-gateway = { path = "crates/persisting-gateway", default-features = false }
 persisting-overlayfs = { path = "crates/persisting-overlayfs", default-features = false }
 persisting-overlay-core = { path = "crates/persisting-overlay-core" }
 persisting-overlaynet = { path = "crates/persisting-overlaynet" }
-persisting-pvisor = { path = "crates/persisting-pvisor" }
 persisting-replay = { path = "crates/persisting-replay" }
 pollster = "0.4"
 pulsing-actor = { version = "0.1.2", default-features = false }
@@ -75,7 +74,6 @@ tokio-stream = "0.1"
 tokio-util = { version = "0.7", default-features = false }
 toml = "0.8"
 tracing = "0.1"
-tracing-subscriber = "0.3"
 url = "2"
 uuid = "1"
 zstd = "0.13"

@@ -2,6 +2,7 @@
 
 use std::fs::{File, OpenOptions, create_dir_all};
 use std::io::{BufWriter, Write};
+use std::os::unix::fs::{OpenOptionsExt, PermissionsExt};
 use std::path::{Path, PathBuf};
 use std::sync::{Arc, Mutex};
 
@@ -9,7 +10,7 @@ use async_trait::async_trait;
 use persisting_events::EventRecord;
 use persisting_gateway::sink::CallbackSink;
 
-use crate::{EventAppendErrorKind, EventSink, TrajectoryEventSink};
+use crate::{EventSink, TrajectoryEventSink};
 
 /// Append-only JSONL writer used by the pVisor recording path.
 /// The serialized value is the complete EventRecord, not a Markdown or
@@ -38,7 +39,12 @@ impl JsonlWriter {
         if let Some(parent) = path.parent() {
             create_dir_all(parent)?;
         }
-        let file = OpenOptions::new().create(true).append(true).open(&path)?;
+        let file = OpenOptions::new()
+            .create(true)
+            .append(true)
+            .mode(0o600)
+            .open(&path)?;
+        file.set_permissions(std::fs::Permissions::from_mode(0o600))?;
         Ok(Self {
             path,
             file: Arc::new(Mutex::new(BufWriter::new(file))),
@@ -81,10 +87,6 @@ impl JsonlEventSink {
 impl EventSink for JsonlEventSink {
     async fn append(&self, event: &EventRecord) -> anyhow::Result<()> {
         self.writer.append(event)
-    }
-
-    fn classify_append_error(&self, _error: &anyhow::Error) -> EventAppendErrorKind {
-        EventAppendErrorKind::Rejected
     }
 }
 
@@ -133,6 +135,17 @@ mod tests {
         };
         writer.append(&event).unwrap();
         writer.finish().unwrap();
+        let path = dir.path().join("events.jsonl");
+        assert_eq!(
+            std::fs::metadata(&path).unwrap().permissions().mode() & 0o777,
+            0o600
+        );
+        std::fs::set_permissions(&path, std::fs::Permissions::from_mode(0o644)).unwrap();
+        JsonlWriter::open(&path).unwrap().finish().unwrap();
+        assert_eq!(
+            std::fs::metadata(&path).unwrap().permissions().mode() & 0o777,
+            0o600
+        );
         let line = std::fs::read_to_string(dir.path().join("events.jsonl")).unwrap();
         let decoded: EventRecord = serde_json::from_str(line.trim()).unwrap();
         assert_eq!(

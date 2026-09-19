@@ -19,4 +19,4 @@
 ## Links
 
 - [pVisor examples](../README.md)
-- [Review and apply effects](../../../docs/src/pvisor/guides/review-apply.zh.md)
+- [Review and apply effects](../../../docs/src/zh/guides/review-apply.md)

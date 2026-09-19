@@ -128,7 +128,12 @@ pub fn fingerprint_at(root: &Path, rel: &Path) -> io::Result<PathFingerprint> {
     };
     let metadata = match fs::symlink_metadata(&path) {
         Ok(metadata) => metadata,
-        Err(error) if error.kind() == io::ErrorKind::NotFound => {
+        Err(error)
+            if matches!(
+                error.kind(),
+                io::ErrorKind::NotFound | io::ErrorKind::NotADirectory
+            ) =>
+        {
             return Ok(PathFingerprint::Absent);
         }
         Err(error) => return Err(error),

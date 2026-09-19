@@ -1181,7 +1181,7 @@ pub fn apply_overlay_selected(
         OverlayState::Active | OverlayState::Staged => {}
     }
     let plan = plan_overlay_apply(record, lower_dirs, selection)?;
-    let preimages = prepare_apply_preimages(record, &plan.selected_paths)?;
+    let preimages = prepare_apply_preimages(record, &plan.selected_paths, &plan.selected)?;
     validate_target_preimages(record, &preimages, &plan.selected, false)?;
     let apply_id = uuid::Uuid::new_v4().to_string();
     append_apply_record(
@@ -1289,7 +1289,15 @@ fn consume_applied_preimages(
     record: &OverlayRecord,
     selected_paths: &BTreeSet<PathBuf>,
 ) -> Result<(), OverlayError> {
-    let paths = selected_paths.iter().cloned().collect::<Vec<_>>();
+    // A partially applied directory remains in upper for its pending children.
+    // Keep the post-apply baseline written before TargetApplied was committed.
+    let paths = selected_paths
+        .iter()
+        .filter(|path| {
+            !fs::symlink_metadata(record.upper.path().join(path)).is_ok_and(|m| m.is_dir())
+        })
+        .cloned()
+        .collect::<Vec<_>>();
     remove_preimages(&record.stage_dir.join("preimages"), &paths).map_err(OverlayError::Io)
 }
 
@@ -1304,6 +1312,27 @@ fn apply_prepared_target(
     let upper_dir = record.upper.path();
     if upper_dir.is_dir() && !selected_paths.is_empty() {
         apply_selected_upper(upper_dir, &record.target, selected_paths)?;
+        // Persist this before TargetApplied/pruning: recovery must not adopt
+        // arbitrary target edits made after a crash as a new baseline.
+        for path in selected_paths {
+            let state = fingerprint_at(upper_dir, path)?;
+            if matches!(state, PathFingerprint::Directory { .. }) {
+                let preimage = PathPreimage {
+                    path: path.as_os_str().as_bytes().to_vec(),
+                    state,
+                };
+                atomic_write(
+                    &record
+                        .stage_dir
+                        .join("preimages/entries")
+                        .join(format!("{}.json", path_digest(path))),
+                    &serde_json::to_vec(&preimage)
+                        .map_err(|error| OverlayError::Persist(error.to_string()))?,
+                    0o600,
+                )
+                .map_err(|error| OverlayError::Persist(error.to_string()))?;
+            }
+        }
     }
     Ok(())
 }
@@ -1311,6 +1340,7 @@ fn apply_prepared_target(
 fn prepare_apply_preimages(
     record: &OverlayRecord,
     selected_paths: &BTreeSet<PathBuf>,
+    changes: &[ChangeEntry],
 ) -> Result<Vec<PathPreimage>, OverlayError> {
     let journal_directory = record.stage_dir.join("preimages");
     let complete = preimage_journal_is_complete(&journal_directory);
@@ -1337,7 +1367,21 @@ fn prepare_apply_preimages(
             });
         }
     }
+    // Whiteouts collapse a removed tree to one change, but every recorded
+    // descendant still needs validation before recursive deletion/replacement.
+    preimages.extend(journal.into_values().filter(|preimage| {
+        changes.iter().any(|change| {
+            replaces_directory(change) && preimage.relative_path().starts_with(&change.path)
+        })
+    }));
+    preimages.sort_by(|left, right| left.path.cmp(&right.path));
     Ok(preimages)
+}
+
+fn replaces_directory(change: &ChangeEntry) -> bool {
+    change.kind == ChangeKind::Opaque
+        || (change.old_type == Some(ChangeEntryType::Directory)
+            && matches!(change.kind, ChangeKind::Deleted | ChangeKind::TypeChanged))
 }
 
 fn recovery_fingerprint_matches(current: &PathFingerprint, expected: &PathFingerprint) -> bool {
@@ -1370,13 +1414,15 @@ fn desired_fingerprint(
     path: &Path,
     changes: &[ChangeEntry],
 ) -> Result<Option<PathFingerprint>, OverlayError> {
-    let Some(change) = changes
-        .iter()
-        .find(|change| Path::new(&change.path) == path)
-    else {
+    let Some(change) = changes.iter().find(|change| {
+        Path::new(&change.path) == path
+            || (replaces_directory(change) && path.starts_with(&change.path))
+    }) else {
         return Ok(None);
     };
-    if change.kind == ChangeKind::Deleted {
+    if change.kind == ChangeKind::Deleted
+        || (change.kind == ChangeKind::TypeChanged && Path::new(&change.path) != path)
+    {
         return Ok(Some(PathFingerprint::Absent));
     }
     Ok(Some(fingerprint_at(record.upper.path(), path)?))
@@ -2600,13 +2646,20 @@ mod tests {
         let stage = tmp.path().join("stage");
         let upper = stage.join("upper");
         fs::create_dir_all(target.join("src")).unwrap();
-        fs::create_dir_all(upper.join("src")).unwrap();
         fs::write(target.join("src/a.txt"), b"old-a").unwrap();
         fs::write(target.join("src/b.txt"), b"old-b").unwrap();
         fs::write(target.join("gone.txt"), b"old-gone").unwrap();
-        fs::write(upper.join("src/a.txt"), b"new-a").unwrap();
-        fs::write(upper.join("src/b.txt"), b"new-b").unwrap();
-        fs::write(upper.join(".wh.gone.txt"), b"").unwrap();
+        let core = persisting_overlay_core::OverlayCore::new_with_exclusions_and_preimages(
+            vec![target.clone()],
+            upper.clone(),
+            Some(stage.join("work")),
+            Vec::new(),
+            Some(stage.join("preimages")),
+        )
+        .unwrap();
+        fs::write(core.copy_up(Path::new("src/a.txt")).unwrap(), b"new-a").unwrap();
+        fs::write(core.copy_up(Path::new("src/b.txt")).unwrap(), b"new-b").unwrap();
+        core.remove(Path::new("gone.txt"), false).unwrap();
         let mut record = OverlayRecord {
             generation: 0,
             id: "selective".into(),
@@ -2646,6 +2699,28 @@ mod tests {
         assert!(upper.join("src/b.txt").is_file());
         assert!(upper.join(".wh.gone.txt").is_file());
 
+        // Re-enter the durable crash state after pruning, before the final
+        // ledger commit. Recovery must retain, not rebaseline, a shared parent.
+        mark_apply_target_applied(&record, &first.apply_id).unwrap();
+        let permissions = fs::metadata(target.join("src")).unwrap().permissions();
+        fs::set_permissions(
+            target.join("src"),
+            fs::Permissions::from_mode(permissions.mode() ^ 0o020),
+        )
+        .unwrap();
+        recover_pending_applies(&mut record, std::slice::from_ref(&target)).unwrap();
+        let error = apply_overlay_selected(
+            &mut record,
+            std::slice::from_ref(&target),
+            &ApplySelection {
+                paths: vec!["src/b.txt".into()],
+                ..ApplySelection::default()
+            },
+        )
+        .unwrap_err();
+        assert!(error.to_string().contains("target changed after staging"));
+        fs::set_permissions(target.join("src"), permissions).unwrap();
+
         apply_overlay_selected(
             &mut record,
             std::slice::from_ref(&target),
@@ -2684,6 +2759,106 @@ mod tests {
     }
 
     #[test]
+    fn directory_replacement_checks_descendants_and_recovers_after_mutation() {
+        for operation in ["delete", "rename", "replace", "opaque"] {
+            let tmp = tempdir().unwrap();
+            let target = tmp.path().join("target");
+            let stage = tmp.path().join("stage");
+            let upper = stage.join("upper");
+            fs::create_dir_all(target.join("dir/nested")).unwrap();
+            fs::write(target.join("dir/nested/file"), b"original").unwrap();
+            let core = persisting_overlay_core::OverlayCore::new_with_exclusions_and_preimages(
+                vec![target.clone()],
+                upper.clone(),
+                Some(stage.join("work")),
+                Vec::new(),
+                Some(stage.join("preimages")),
+            )
+            .unwrap();
+            if operation == "rename" {
+                core.rename(Path::new("dir"), Path::new("moved"), false)
+                    .unwrap();
+            } else {
+                core.remove(Path::new("dir/nested/file"), false).unwrap();
+                core.remove(Path::new("dir/nested"), true).unwrap();
+                core.remove(Path::new("dir"), true).unwrap();
+                if operation == "replace" {
+                    core.create_file(Path::new("dir"), 0o600, libc::O_WRONLY)
+                        .unwrap();
+                } else if operation == "opaque" {
+                    core.create_dir(Path::new("dir"), 0o700).unwrap();
+                }
+            }
+            let mut record = OverlayRecord {
+                id: operation.into(),
+                generation: 0,
+                target: target.clone(),
+                upper: OverlayUpper::Directory {
+                    upper_dir: upper.clone(),
+                    work_dir: stage.join("work"),
+                },
+                merged_dir: stage.join("merged"),
+                stage_dir: stage.clone(),
+                excluded_paths: Vec::new(),
+                auto_apply: false,
+                auto_discard: false,
+                protect_target: false,
+                state: OverlayState::Staged,
+            };
+            fs::write(target.join("dir/nested/file"), b"concurrent").unwrap();
+            let error = apply_overlay(&mut record).unwrap_err();
+            assert!(
+                error.to_string().contains("target changed after staging"),
+                "{operation}: {error}"
+            );
+            assert_eq!(
+                fs::read(target.join("dir/nested/file")).unwrap(),
+                b"concurrent"
+            );
+            assert!(load_apply_records(&stage).unwrap().is_empty());
+
+            fs::write(target.join("dir/nested/file"), b"original").unwrap();
+            let plan = plan_overlay_apply(
+                &record,
+                std::slice::from_ref(&target),
+                &ApplySelection::default(),
+            )
+            .unwrap();
+            let preimages =
+                prepare_apply_preimages(&record, &plan.selected_paths, &plan.selected).unwrap();
+            append_apply_record(
+                &record,
+                ApplyRecord {
+                    schema_version: APPLY_LEDGER_SCHEMA_VERSION,
+                    apply_id: "recovery".into(),
+                    created_at_unix_ms: 0,
+                    overlay_id: record.id.clone(),
+                    overlay_generation: 0,
+                    target: target.clone(),
+                    selection: ApplySelection::default(),
+                    changes: plan.selected,
+                    planned_paths: plan.selected_paths.iter().cloned().collect(),
+                    preimages,
+                    state: ApplyRecordState::Prepared,
+                    remaining_changes: 0,
+                },
+            )
+            .unwrap();
+            // Crash after writing the target, before recording TargetApplied.
+            apply_selected_upper(&upper, &target, &plan.selected_paths).unwrap();
+            recover_pending_applies(&mut record, std::slice::from_ref(&target)).unwrap();
+            assert_eq!(record.state, OverlayState::Applied, "{operation}");
+            assert!(!target.join("dir/nested/file").exists());
+            if operation == "rename" {
+                assert_eq!(
+                    fs::read(target.join("moved/nested/file")).unwrap(),
+                    b"original"
+                );
+            }
+        }
+    }
+
+    #[test]
     fn prepared_apply_recovers_before_or_after_target_mutation() {
         for target_already_mutated in [false, true] {
             let tmp = tempdir().unwrap();
@@ -2713,7 +2888,8 @@ mod tests {
             let selection = ApplySelection::default();
             let plan =
                 plan_overlay_apply(&record, std::slice::from_ref(&target), &selection).unwrap();
-            let preimages = prepare_apply_preimages(&record, &plan.selected_paths).unwrap();
+            let preimages =
+                prepare_apply_preimages(&record, &plan.selected_paths, &plan.selected).unwrap();
             let apply_id = format!("prepared-{target_already_mutated}");
             append_apply_record(
                 &record,

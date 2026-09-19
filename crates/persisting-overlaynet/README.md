@@ -36,7 +36,7 @@ just test persisting-overlaynet
 
 ## Links
 
-- [OverlayNet architecture](../../docs/src/pvisor/design/overlaynet.md)
-- [Network control](../../docs/src/pvisor/guides/network.md)
+- [OverlayNet architecture](../../docs/src/en/design/overlaynet.md)
+- [Network control](../../docs/src/en/guides/network.md)
 - [`persisting-gateway`](../persisting-gateway/README.md)
 - [`persisting-agentctl`](../persisting-agentctl/README.md)

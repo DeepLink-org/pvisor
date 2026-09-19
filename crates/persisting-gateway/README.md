@@ -31,6 +31,6 @@ just test-capture-fixtures
 
 ## Links
 
-- [Gateway architecture](../../docs/src/pvisor/design/gateway.md)
-- [Capture trajectories](../../docs/src/pvisor/guides/capture.md)
+- [Gateway architecture](../../docs/src/en/design/gateway.md)
+- [Capture trajectories](../../docs/src/en/guides/capture.md)
 - [`persisting-overlaynet`](../persisting-overlaynet/README.md)

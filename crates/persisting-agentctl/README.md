@@ -65,7 +65,7 @@ just test persisting-agentctl
 
 ## Links
 
-- [pVisor isolation architecture](../../docs/src/pvisor/design/isolation.md)
-- [OverlayNet architecture](../../docs/src/pvisor/design/overlaynet.md)
-- [System architecture](../../docs/src/system-design/architecture.md)
+- [pVisor isolation architecture](../../docs/src/en/design/isolation.md)
+- [OverlayNet architecture](../../docs/src/en/design/overlaynet.md)
+- [System architecture](../../docs/src/en/design/architecture.md)
 - [`persisting-pvisor`](../persisting-pvisor/README.md)

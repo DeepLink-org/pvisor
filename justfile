@@ -370,10 +370,10 @@ py-dev:
     uv sync --all-extras
 
 test-py:
-    uv run pytest tests/ -q
+    uv run --extra dev pytest tests/ -q
 
 test-py-v:
-    uv run pytest tests/ -v
+    uv run --extra dev pytest tests/ -v
 
 # 安装本地 nightly 脚本自检（需已有 GitHub nightly release）
 install-nightly:
@@ -382,7 +382,8 @@ install-nightly:
 # ── 文档（docs/ 子项目）──────────────────────────────────────────────────────
 
 docs-sync:
-    cd "{{ docs_dir }}" && if [[ ! -x .venv/bin/zensical ]]; then uv venv .venv && UV_CACHE_DIR=/tmp/uv-cache uv pip install --python .venv/bin/python zensical==0.0.61; fi
+    cd "{{ docs_dir }}" && if [[ ! -x .venv/bin/python ]]; then uv venv .venv; fi
+    cd "{{ docs_dir }}" && UV_CACHE_DIR=/tmp/uv-cache uv pip install --python .venv/bin/python zensical==0.0.61
 
 docs-serve: docs-sync
     cd "{{ docs_dir }}" && .venv/bin/python "{{ repo }}/scripts/build-docs.py" && .venv/bin/python "{{ repo }}/scripts/serve-docs.py" --host 127.0.0.1 --port 3000 --directory site

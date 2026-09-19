@@ -1111,11 +1111,8 @@ version = "0.3.0"
 dependencies = [
  "anyhow",
  "ipnet",
- "libc",
  "serde",
  "serde_json",
- "tokio",
- "tokio-util",
 ]
 
 [[package]]
@@ -1142,7 +1139,6 @@ dependencies = [
  "dirs",
  "futures-util",
  "hostname",
- "http-body-util",
  "persisting-agentctl",
  "persisting-events",
  "persisting-overlaynet",

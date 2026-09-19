@@ -1,10 +1,10 @@
 ---
 template: home.html
-title: Agent 时代的持久化基础设施
-description: 在可审查的执行边界中运行 Agent，把真实发生的事情保存为可查询的历史。
+title: 策略约束下的可审查执行。
+description: PolicyVisor 管理 Agent、脚本与自动化命令，明确策略、记录实际控制，并支持暂存文件审查。
 hide:
   - navigation
   - toc
 ---
 
-# Agent 时代的持久化基础设施
+# 策略约束下的可审查执行。
