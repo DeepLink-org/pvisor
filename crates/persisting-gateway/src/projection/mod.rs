@@ -1,19 +1,14 @@
-//! Capture-time human-readable trajectory projection.
+//! Capture eligibility filters.
 //!
-//! This layer interprets provider payloads, applies live-only eligibility and
-//! history deduplication, and orchestrates AgenticMD upserts. Generic formats,
-//! schemas, offline projection, and physical storage remain pChronicle-owned.
+//! Storyline and AgenticMD projection are no longer part of this crate. Canonical
+//! events remain the capture contract.
+
+mod policy;
 
 pub mod dialogue;
-pub mod frontmatter;
 
-#[path = "markdown.rs"]
-pub mod markdown_trajectory;
+pub use policy::{should_refresh_frontmatter, should_skip_record};
 
-#[path = "pipeline.rs"]
-pub mod markdown_pipeline;
-
-#[path = "policy.rs"]
-pub mod markdown_policy;
-
-pub mod reconcile;
+pub fn skip_markdown_block(rec: &crate::record::EventRecord) -> bool {
+    should_skip_record(rec)
+}

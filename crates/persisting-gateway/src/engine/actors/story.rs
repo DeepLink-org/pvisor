@@ -8,18 +8,18 @@ use anyhow::{Context, Result};
 use pulsing_actor::prelude::*;
 
 use super::super::story::{StoryId, TurnMachine};
-use super::super::wire::{CaptureAck, DraftPayload, StoryCommand, StoryReply, StoryScope};
-use crate::projection::dialogue::draft_stream_assistant_turn;
-use crate::projection::frontmatter::refresh_document_frontmatter;
-use crate::projection::markdown_pipeline::{LiveMarkdownWriter, MarkdownTarget};
-use crate::projection::markdown_policy::should_refresh_frontmatter;
+use super::super::wire::{CaptureAck, StoryCommand, StoryReply};
 use crate::sink::CaptureEventSink;
 
-/// Injected sink + markdown flag for each story actor instance.
+/// Injected sink for each story actor instance.
 #[derive(Clone)]
 pub(crate) struct StoryActorDeps {
     pub sink: Arc<dyn CaptureEventSink>,
+    /// Retained so callers can keep passing the historical flag. Markdown
+    /// projection no longer consumes it.
+    #[allow(dead_code)]
     pub stream_markdown: bool,
+    #[allow(dead_code)]
     pub storage: Arc<PathBuf>,
 }
 
@@ -37,21 +37,12 @@ impl StoryActorDeps {
     }
 }
 
-/// Refresh frontmatter every Nth record so a single turn (request + response)
-/// only triggers one rewrite instead of two. `Flush` always rewrites pending changes.
-const FRONTMATTER_REFRESH_EVERY_N_RECORDS: u32 = 4;
-
 /// Per-story actor — serializes I/O and maintains [`TurnMachine`] for the narrative index.
 pub(crate) struct StoryActor {
     story_id: StoryId,
     deps: StoryActorDeps,
     turns: TurnMachine,
-    md: Option<LiveMarkdownWriter>,
     storage_session_id: Option<String>,
-    /// Counter of records since last frontmatter rewrite — drives [`FRONTMATTER_REFRESH_EVERY_N_RECORDS`].
-    frontmatter_pending: u32,
-    /// Last scope seen — `Flush` doesn't carry one but still needs to refresh frontmatter.
-    last_scope: Option<StoryScope>,
 }
 
 impl StoryActor {
@@ -61,67 +52,19 @@ impl StoryActor {
             story_id,
             deps,
             turns,
-            md: None,
             storage_session_id: None,
-            frontmatter_pending: 0,
-            last_scope: None,
         }
     }
 
-    fn sync_scope(&mut self, scope: &StoryScope) {
+    fn sync_scope(&mut self, scope: &super::super::wire::StoryScope) {
         self.storage_session_id = Some(scope.route().storage_session_id.clone());
         self.turns
             .set_story_meta(scope.agent_id(), scope.context.run_id.clone());
-        self.last_scope = Some(scope.clone());
-    }
-
-    fn md_writer(&mut self, scope: &StoryScope) -> &mut LiveMarkdownWriter {
-        if self.md.is_none() {
-            self.md = Some(LiveMarkdownWriter::new(
-                MarkdownTarget::new(
-                    scope.route().clone(),
-                    scope.agent_id().to_string(),
-                    self.deps.storage.as_path().to_path_buf(),
-                ),
-                self.deps.stream_markdown,
-            ));
-        }
-        self.md.as_mut().expect("md writer initialized")
-    }
-
-    /// Rewrite the markdown frontmatter for the current story, swallowing errors
-    /// (frontmatter is a derived projection — failure is non-fatal).
-    fn refresh_frontmatter(&mut self, scope: &StoryScope) {
-        let story = self.turns.snapshot();
-        let user_turns = crate::engine::story_user_turn_count(&story);
-        let path = self.md_writer(scope).path();
-        let _ = refresh_document_frontmatter(
-            self.deps.storage.as_path(),
-            scope.agent_id(),
-            scope.route(),
-            &path,
-            Some(user_turns),
-        )
-        .map_err(|e| tracing::debug!("frontmatter refresh: {e:#}"));
-        self.frontmatter_pending = 0;
-    }
-
-    fn flush_pending_frontmatter(&mut self, scope: &StoryScope) {
-        if self.frontmatter_pending > 0 {
-            self.refresh_frontmatter(scope);
-        }
     }
 
     async fn handle(&mut self, cmd: StoryCommand) -> Result<StoryReply> {
         match cmd {
             StoryCommand::Flush => {
-                // Drain any pending frontmatter writes so external observers see a
-                // consistent markdown file after `flush()` returns.
-                if self.frontmatter_pending > 0
-                    && let Some(scope) = self.last_scope.clone()
-                {
-                    self.refresh_frontmatter(&scope);
-                }
                 return Ok(StoryReply::Ack(CaptureAck::ok()));
             }
             StoryCommand::LocalSnapshot => {
@@ -136,7 +79,6 @@ impl StoryActor {
             }
             StoryCommand::Snapshot { scope } => {
                 self.sync_scope(&scope);
-                self.flush_pending_frontmatter(&scope);
                 return Ok(StoryReply::Snapshot {
                     story: self.turns.snapshot(),
                 });
@@ -153,42 +95,16 @@ impl StoryActor {
                 let sink = Arc::clone(&self.deps.sink);
                 let route = scope.route().clone();
                 let agent_id = scope.agent_id().to_string();
-                rec = tokio::task::spawn_blocking(move || {
+                tokio::task::spawn_blocking(move || {
                     sink.append(&route, &agent_id, &mut rec)
                         .context("capture append")?;
-                    Ok::<_, anyhow::Error>(rec)
+                    Ok::<_, anyhow::Error>(())
                 })
                 .await
                 .context("join capture append")??;
                 self.turns = next_turns;
-                if let Err(error) = self.md_writer(&scope).write_record(&rec) {
-                    tracing::warn!(
-                        target: "persisting_gateway",
-                        story_id = %self.story_id.as_str(),
-                        "markdown projection lagged canonical event: {error:#}"
-                    );
-                }
-                if should_refresh_frontmatter(&rec) {
-                    self.frontmatter_pending = self.frontmatter_pending.saturating_add(1);
-                    if self.frontmatter_pending >= FRONTMATTER_REFRESH_EVERY_N_RECORDS {
-                        self.refresh_frontmatter(&scope);
-                    }
-                }
             }
-            StoryCommand::UpsertDraft { draft_bytes, .. } => {
-                let draft: DraftPayload = serde_json::from_slice(&draft_bytes)?;
-                let mut rec: crate::record::EventRecord =
-                    serde_json::from_slice(&draft.record_bytes)?;
-                rec.seq = self
-                    .deps
-                    .sink
-                    .peek_next_seq(scope.route())
-                    .context("draft markdown requires sink peek_next_seq")?;
-                if let Some(turn) = draft_stream_assistant_turn(&rec, &draft.assistant_content)? {
-                    self.md_writer(&scope)
-                        .write_draft(rec.call_id.as_deref().unwrap_or(""), turn)?;
-                }
-            }
+            StoryCommand::UpsertDraft { .. } => {}
             StoryCommand::Flush | StoryCommand::Snapshot { .. } | StoryCommand::LocalSnapshot => {
                 unreachable!()
             }

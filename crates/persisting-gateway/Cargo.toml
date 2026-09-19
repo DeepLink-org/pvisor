@@ -37,7 +37,6 @@ hostname.workspace = true
 persisting-agentctl.workspace = true
 persisting-events.workspace = true
 persisting-overlaynet.workspace = true
-persisting-pchronicle = { workspace = true, default-features = false }
 
 [dev-dependencies]
 proptest.workspace = true
@@ -56,13 +55,7 @@ path = "tests/ag_fixture_tests.rs"
 name = "capture_apps_claude"
 path = "tests/capture_apps_claude.rs"
 
-[[test]]
-name = "agenticmd_golden"
-path = "tests/agenticmd_golden.rs"
 
-[[test]]
-name = "agenticmd_bridge"
-path = "tests/agenticmd_bridge.rs"
 
 [[test]]
 name = "network_policy_http"

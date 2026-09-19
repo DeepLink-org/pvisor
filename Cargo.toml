@@ -11,12 +11,8 @@ members = [
     "crates/persisting-agentctl",
     "crates/persisting-events",
     "crates/persisting-gateway",
-    "crates/persisting-dlcapt",
-    "crates/persisting-ppilot",
     "crates/persisting-pvisor",
     "crates/persisting-replay",
-    "crates/persisting-pchronicle",
-    "crates/persisting-pchronicle-cli",
     "crates/persisting-overlayfs",
     "crates/persisting-overlay-core",
     "crates/persisting-overlaynet",
@@ -24,8 +20,6 @@ members = [
 exclude = ["vendor/libkrun", "vendor/krun-vmm", "vendor/krun-devices"]
 
 default-members = [
-    "crates/persisting-pchronicle-cli",
-    "crates/persisting-ppilot",
     "crates/persisting-pvisor",
 ]
 
@@ -39,13 +33,11 @@ bytes = "1"
 chrono = "0.4"
 clap = "4"
 dashmap = "6"
-datafusion = { version = "54.1.0", default-features = false }
 dirs = "6"
 env_logger = "0.11"
 fs2 = "0.4"
 flate2 = "1"
 fuser = { version = "0.15", default-features = false }
-futures = "0.3"
 futures-util = { version = "0.3", default-features = false }
 globset = "0.4"
 hostname = "0.4"
@@ -54,36 +46,15 @@ hyper = "1"
 hyper-util = { version = "0.1", default-features = false }
 ipnet = "2"
 jj-lib = "0.43.0"
-lance = { version = "11.0.0", default-features = false }
-lance-arrow = "11.0.0"
-lance-core = "11.0.0"
-lance-file = "11.0.0"
-lance-datafusion = "11.0.0"
-lance-index = { version = "11.0.0", features = ["tokenizer-jieba"] }
-lance-io = "11.0.0"
-lance-linalg = "11.0.0"
-lance-table = "11.0.0"
 libc = "0.2"
 libkrun = "=1.19.3"
 log = "0.4"
-opendal = { version = "0.57.0", default-features = true, features = [
-    "services-azblob",
-    "services-cos",
-    "services-fs",
-    "services-gcs",
-    "services-memory",
-    "services-oss",
-    "services-s3",
-    "services-tos",
-] }
-object_store = "0.13.2"
 persisting-agentctl = { path = "crates/persisting-agentctl" }
 persisting-events = { path = "crates/persisting-events" }
 persisting-gateway = { path = "crates/persisting-gateway" }
 persisting-overlayfs = { path = "crates/persisting-overlayfs", default-features = false }
 persisting-overlay-core = { path = "crates/persisting-overlay-core" }
 persisting-overlaynet = { path = "crates/persisting-overlaynet" }
-persisting-pchronicle = { path = "crates/persisting-pchronicle", default-features = false }
 persisting-pvisor = { path = "crates/persisting-pvisor" }
 persisting-replay = { path = "crates/persisting-replay" }
 pollster = "0.4"
@@ -110,9 +81,8 @@ uuid = "1"
 zstd = "0.13"
 
 [profile.dev]
-# This workspace links several large Lance/DataFusion binaries. Keep incremental
-# compilation for the normal edit/build/check loop, but omit debug information
-# to limit artifact size. The test profile below disables incremental state
+# Keep incremental compilation for the normal edit/build/check loop, but omit
+# debug information to limit artifact size. The test profile below disables incremental state
 # because its many binaries and feature combinations otherwise dominate disk.
 # Use `--profile dev-debug` when source-level debugger information is needed.
 # `debug = 0` already omits debug info; `strip = "none"` avoids a redundant
@@ -151,10 +121,6 @@ codegen-units = 8
 panic = "abort"
 
 [patch.crates-io]
-# Lance 9.0.1 invokes prost-build from six build scripts. This compatibility
-# adapter preserves Prost's code generation API but parses .proto files with
-# pure-Rust protox, avoiding both a system protoc and vendored protobuf-src.
-prost-build = { path = "vendor/prost-build-protox" }
 fuser = { path = "vendor/fuser" }
 libkrun = { path = "vendor/libkrun" }
 krun-init-blob = { path = "vendor/krun-init-blob" }

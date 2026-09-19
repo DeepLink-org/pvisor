@@ -8,7 +8,7 @@ use bytes::Bytes;
 use super::chain::{ephemeral_session_id, extract_claude_agent_id, extract_session_from_headers};
 use crate::dialogue_extract::{is_main_agent_continuation, is_subagent_shape_payload};
 use crate::runtime::run_env::read_run_session;
-use persisting_pchronicle::storage::{
+use super::markdown_path::{
     is_subagent_session_storage_key, session_markdown_write_path_for_key,
 };
 

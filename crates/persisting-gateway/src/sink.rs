@@ -14,7 +14,6 @@ use serde_json::Value;
 use super::record::{EventRecord, ensure_timestamp, now_rfc3339};
 use crate::Call;
 use crate::config::CaptureLevel;
-use crate::projection::markdown_pipeline::stamp_request_payload;
 use crate::session::storage::CaptureRoute;
 
 pub trait CaptureEventSink: Send + Sync {
@@ -559,6 +558,13 @@ pub fn attach_recorded_headers(payload: &mut Value, headers: &[(String, String)]
     }
     if redacted {
         obj.insert("headers_redacted".into(), Value::Bool(true));
+    }
+}
+
+fn stamp_request_payload(payload: &mut Value, body_json: Option<&Value>) {
+    if let Some(body) = body_json {
+        payload["user_message_count"] =
+            serde_json::json!(crate::dialogue_extract::count_visible_user_messages(body));
     }
 }
 

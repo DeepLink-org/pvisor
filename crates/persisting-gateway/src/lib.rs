@@ -21,6 +21,7 @@ pub mod engine;
 mod gateway;
 pub mod injection;
 pub mod lifecycle;
+pub mod llm;
 pub mod projection;
 pub mod protocol;
 pub mod provider;

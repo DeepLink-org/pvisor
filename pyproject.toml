@@ -8,10 +8,6 @@ license = "Apache-2.0"
 authors = [
     {name = "reiase"}
 ]
-dependencies = [
-    "pulsing",
-    "tensordict>=0.6.0",
-]
 
 [project.urls]
 Homepage = "https://deeplink-org.github.io/Persisting/"
@@ -20,21 +16,12 @@ Repository = "https://github.com/DeepLink-org/Persisting"
 Issues = "https://github.com/DeepLink-org/Persisting/issues"
 
 [project.optional-dependencies]
-lance = [
-    "lance>=0.9.0",
-    "pyarrow>=14.0.0",
-]
-all = [
-    "persisting[lance]",
-]
 dev = [
     "pytest>=7.0.0",
-    "pytest-asyncio>=0.21.0",
 ]
 
 [tool.setuptools.packages.find]
 include = ["persisting*"]
-exclude = ["persisting.dldb*"]
 
 [build-system]
 requires = ["setuptools>=77"]

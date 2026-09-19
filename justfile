@@ -7,9 +7,7 @@ gen_py := repo / "scripts" / "generate_benchmark_data.py"
 
 # Product CLI component set. Keep all Cargo build entry points below routed
 # through `build-components` so package/bin changes have one source in just.
-component_pchronicle := "-p persisting-pchronicle-cli --bin pchronicle"
 component_pvisor := "-p persisting-pvisor --bin pvisor"
-component_ppilot := "-p persisting-ppilot --bin ppilot"
 
 # Python 路径（ruff format）
 ruff_paths := "persisting tests examples"
@@ -24,10 +22,7 @@ default:
     @echo "常用："
     @echo "  just dev                 # 提交前（fmt + lint + test-rust）"
     @echo "  just test [package]      # 日常功能测试（可指定 Cargo 包）"
-    @echo "  just proptest pchronicle # pChronicle 全量 Proptest 回归"
-    @echo "  just ci                  # CI 近似全量"
-    @echo "  just py-dev              # 同步纯 Python 开发环境"
-    @echo "  just install-cli         # 安装 pchronicle、pvisor 和 ppilot"
+    @echo "  just install-cli         # 安装 pvisor"
     @echo "  just pvisor              # 构建 release pVisor；macOS 自动签名"
     @echo "  just examples-pvisor     # 构建并验证全部 pVisor examples"
     @echo "  just benchmark-pvisor    # pVisor 进程启动与 Bundle 访问基准"
@@ -59,7 +54,7 @@ test-list:
         just gateway-fuzz         一分钟 Gateway 四类 fuzz 汇总
         just gateway-fuzz-formats / gateway-fuzz-forwarding
         just gateway-fuzz-storage / gateway-fuzz-network
-        just cases pvisor|pchronicle|pchronicle-cluster
+        just cases pvisor
         just cases pvisor --run-unavailable --keep
 
       组件示例
@@ -67,10 +62,9 @@ test-list:
         just examples-pvisor-filesystem   需要 FUSE 的 01/02 场景
         just examples-pvisor-portable     普通 runner 可跑的 03/04 场景
         just example-pvisor 03-network-isolation
-        just examples-pchronicle / examples-ppilot
 
       pVisor 回归 / 基准
-        just test-pvisor / test-pvisor-lance / test-pvisor-isolation
+        just test-pvisor / test-pvisor-isolation
         just smoke-pvisor-cli
         just benchmark-pvisor             快速 smoke 基准
         just benchmark-pvisor nightly     稳定分布基准
@@ -102,29 +96,7 @@ examples-pvisor-portable profile="release": (pvisor profile)
 example-pvisor scenario profile="release": (pvisor profile)
     bash examples/pvisor/test.sh --profile "{{ profile }}" "{{ scenario }}"
 
-# Run the deterministic, quantitative pChronicle examples.
-[group('test')]
-examples-pchronicle:
-    #!/usr/bin/env bash
-    set -euo pipefail
-    just build-components release pchronicle-benchmark
-    bash "{{ repo }}/examples/pchronicle/test.sh" --profile release
-    bash "{{ repo }}/examples/pchronicle/output-contract.sh" >/dev/null
-
-# Run the deterministic, quantitative pPilot examples.
-[group('test')]
-examples-ppilot:
-    #!/usr/bin/env bash
-    set -euo pipefail
-    just build-components release all
-    for example in "{{ repo }}"/examples/ppilot/*; do
-        [[ -f "$example/run.sh" ]] || continue
-        echo "==> ${example#"{{ repo }}/"}/run.sh"
-        (cd "$example" && bash run.sh)
-    done
-
-[group('test')]
-examples: examples-pvisor examples-pchronicle examples-ppilot
+examples: examples-pvisor
 
 # Run repository-level black-box regression scenarios against prebuilt real
 # component binaries. Long-running scenarios are excluded from this sweep.
@@ -303,37 +275,12 @@ build-components profile="debug" components="all":
 
     built_pvisor=0
     case "$components" in
-      all|runtime)
-        cargo build --profile "$cargo_profile" --locked \
-          {{ component_pchronicle }} {{ component_pvisor }} {{ component_ppilot }}
-        built_pvisor=1
-        ;;
-      pchronicle)
-        cargo build --profile "$cargo_profile" --locked {{ component_pchronicle }}
-        ;;
-      pchronicle-benchmark)
-        cargo build --profile "$cargo_profile" --locked \
-          {{ component_pchronicle }} \
-          -p persisting-pchronicle --example pchronicle_storage_query_benchmark
-        ;;
-      pvisor-pchronicle)
-        cargo build --profile "$cargo_profile" --locked \
-          {{ component_pvisor }} {{ component_pchronicle }}
-        built_pvisor=1
-        ;;
-      pvisor)
+      all|runtime|pvisor|pvisor-pchronicle)
         cargo build --profile "$cargo_profile" --locked {{ component_pvisor }}
         built_pvisor=1
         ;;
-      ppilot)
-        cargo build --profile "$cargo_profile" --locked {{ component_ppilot }}
-        ;;
-      pchronicle-ppilot)
-        cargo build --profile "$cargo_profile" --locked \
-          {{ component_pchronicle }} {{ component_ppilot }}
-        ;;
       *)
-        echo "unsupported component set: $components (all|pchronicle|pchronicle-benchmark|pvisor|pvisor-pchronicle|ppilot|pchronicle-ppilot)" >&2
+        echo "unsupported component set: $components (all|pvisor)" >&2
         exit 2
         ;;
     esac
@@ -372,17 +319,15 @@ _sign-pvisor profile:
 pvisor profile="release":
     just build-components "{{ profile }}" pvisor
 
-# Install the three product CLIs.
+# Install the pVisor CLI.
 install-cli:
     #!/usr/bin/env bash
     set -euo pipefail
     install_root="${CARGO_INSTALL_ROOT:-${CARGO_HOME:-$HOME/.cargo}}"
-    cargo install --path crates/persisting-pchronicle-cli --locked --force --root "$install_root"
     cargo install --path crates/persisting-pvisor --locked --force --root "$install_root"
-    cargo install --path crates/persisting-ppilot --locked --force --root "$install_root"
-    printf 'Installed Persisting component set in %s/bin\n' "$install_root"
+    printf 'Installed pVisor in %s/bin\n' "$install_root"
 
-# PEP 517 release wheel（Python package + pchronicle/pvisor/ppilot）→ dist/
+# PEP 517 release wheel（Python package + pvisor）→ dist/
 build-wheel:
     #!/usr/bin/env bash
     set -euo pipefail
@@ -414,7 +359,6 @@ fmt: fmt-rust fmt-py
 
 fmt-rust:
     cargo fmt --all
-    cargo fmt --manifest-path pchronicle-web/Cargo.toml
 
 fmt-py:
     uvx ruff format {{ ruff_paths }}
@@ -424,7 +368,6 @@ fmt-check: fmt-check-rust fmt-check-py
 
 fmt-check-rust:
     cargo fmt --all -- --check
-    cargo fmt --manifest-path pchronicle-web/Cargo.toml -- --check
 
 fmt-check-py:
     uvx ruff format --check {{ ruff_paths }}
@@ -432,7 +375,7 @@ fmt-check-py:
 # clippy + ruff（不改写）
 lint: lint-rust lint-py
 
-lint-rust: clippy-deny clippy-pchronicle-web clippy-pchronicle-panics clippy-pchronicle-features
+lint-rust: clippy-deny
 
 lint-py:
     uvx ruff check {{ ruff_lint_paths }}
@@ -442,7 +385,7 @@ lint-py-all:
     uvx ruff check {{ ruff_paths }}
 
 clippy-deny:
-    cargo clippy --workspace --exclude persisting-dlcapt --all-targets --locked -- -D warnings
+    cargo clippy --workspace --all-targets --locked -- -D warnings
 
 # pchronicle-web is a separate Cargo workspace and is not covered by the root
 # workspace Clippy invocation above.
@@ -530,8 +473,7 @@ test-crate crate:
         cargo nextest run -p persisting-ppilot --locked
         ;;
       pvisor) cargo nextest run -p persisting-pvisor --locked ;;
-      dlcapt) cargo test -p persisting-dlcapt ;;
-      *) echo "unknown crate: {{ crate }} (pchronicle|pchronicle-cli|agentctl|capture|ppilot|pvisor|dlcapt)" >&2; exit 2 ;;
+      *) echo "unknown crate: {{ crate }} (pchronicle|pchronicle-cli|agentctl|capture|ppilot|pvisor)" >&2; exit 2 ;;
     esac
 
 test-rust package="":
@@ -549,18 +491,13 @@ test-rust package="":
     if [[ -n "$package" ]]; then
         cargo nextest run --locked -p "$package"
     else
-        cargo nextest run --workspace --exclude persisting-dlcapt --locked
+        cargo nextest run --workspace --locked
     fi
 
 # Default pVisor crate profile, including CLI and integration regressions.
 [group('test')]
 test-pvisor:
     cargo nextest run -p persisting-pvisor --locked
-
-# Mandatory pVisor ↔ pChronicle capture bridge feature profile.
-[group('test')]
-test-pvisor-lance:
-    cargo nextest run -p persisting-pvisor --features lance-chronicle --locked
 
 # Strict Linux rootless/FUSE boundary tests. This deliberately does not allow
 # the optional-userns skip used by the broad cross-platform workspace job.
@@ -644,7 +581,7 @@ test package="":
       exit 0
     fi
     case "$package" in
-      pchronicle|pchronicle-cli|agentctl|capture|ppilot|pvisor|dlcapt)
+      pchronicle|pchronicle-cli|agentctl|capture|ppilot|pvisor)
         just test-crate "$package"
         ;;
       *)

@@ -6,7 +6,7 @@ mod story;
 
 pub(crate) use headers::{headers_to_header_map, headers_to_vec};
 pub(crate) use run::{RUN_ACTOR_NAME, RunCommand, RunReply, run_enrich, run_main_route};
-pub(crate) use story::{DraftPayload, StoryCommand, StoryReply, StoryScope};
+pub(crate) use story::{StoryCommand, StoryReply, StoryScope};
 
 /// Unified ask/tell acknowledgement for story actors.
 #[derive(Debug, Clone, serde::Serialize, serde::Deserialize)]
