@@ -39,6 +39,47 @@ Use `--overlaynet off|auto|proxy` as the primary OverlayNet switch:
 
 If omitted, policy flags and Gateway capture infer the executor-appropriate mode.
 
+## Forward through an existing proxy
+
+When the server requires an existing HTTP proxy for egress, configure it explicitly:
+
+```bash
+pvisor run \
+  --overlaynet proxy \
+  --overlaynet-upstream-proxy http://127.0.0.1:17897 \
+  --gateway-mode off --gateway-debug \
+  -- agent-command
+```
+
+Traffic flows from the Agent through OverlayNet policy checks and recording, then
+through the upstream proxy to the destination. pVisor does not inherit an ambient
+upstream proxy: it replaces the Agent's proxy variables with its own listener.
+Currently the upstream must use HTTP, a numeric IP, and no authentication. These
+options require the explicit `proxy` driver with Gateway capture disabled. An
+unavailable upstream produces an error without falling back to a direct connection.
+
+If local DNS also returns unusable addresses, optionally select an HTTPS DNS JSON
+service supporting A/AAAA queries, such as
+`--overlaynet-dns-over-https https://dns.google/resolve`. This requires an upstream
+proxy; DNS queries travel through that proxy, and the selected resolver receives
+the queried hostnames. Omit the option to retain system DNS. pVisor authorizes the
+hostname, checks the resolved IPs, then asks the upstream to CONNECT to an authorized
+IP. The upstream does not re-resolve the destination hostname and bypass IP/CIDR
+checks. DNS failures do not fall back to system resolution.
+
+The TOML fields are `[overlaynet] upstream_proxy` and `dns_over_https`. Plain HTTP
+also travels through a CONNECT tunnel to the authorized IP. HTTPS clients must
+use standard CONNECT tunnels.
+
+With `--gateway-debug`, the Run's `.capture/debug.log` includes `network.result`
+entries with method, target authority, and response status. CONNECT 200 only means
+the tunnel was established; it does not prove TLS or application success. These
+entries do not expose HTTPS URL paths, bodies, or tool-call semantics. The Run
+bundle's `network.intercepted` holds request, allow, deny, and handler-failure counts.
+This proxy path does not update VM-specific DNS/TCP-flow/byte counters, or count
+pVisor's own DNS queries as Agent requests. Traffic bypassing the explicit proxy
+is outside these records, and network enforcement remains cooperative.
+
 ## Choose a policy
 
 The policy options configure the selected driver (or infer one when no explicit

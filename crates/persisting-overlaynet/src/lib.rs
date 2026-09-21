@@ -12,6 +12,7 @@ pub mod interception;
 pub mod policy;
 mod resolver;
 pub mod server;
+pub mod upstream;
 pub mod vm;
 
 pub use bandwidth::BandwidthRegistry;

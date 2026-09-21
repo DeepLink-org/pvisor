@@ -28,13 +28,18 @@ pub(crate) async fn handle_connect_authorized(
     target: ConnectTarget,
     authorized: &AuthorizedTarget,
     bandwidth: BandwidthSession,
+    upstream: &crate::upstream::UpstreamConfig,
 ) -> anyhow::Result<Response> {
     let on_upgrade: OnUpgrade = hyper::upgrade::on(req);
     // Establish the upstream before reporting success. Returning 200 first
     // makes a refused or unroutable destination look like an accepted tunnel.
-    let mut destination = connect_tcp_addresses(&authorized.addresses, &target.host, target.port)
-        .await
-        .map_err(|error| anyhow::anyhow!("CONNECT to {} failed: {error}", target.authority))?;
+    let mut destination = if upstream.proxy.is_some() {
+        upstream.connect(&authorized.addresses).await?
+    } else {
+        connect_tcp_addresses(&authorized.addresses, &target.host, target.port)
+            .await
+            .map_err(|error| anyhow::anyhow!("CONNECT to {} failed: {error}", target.authority))?
+    };
     tokio::spawn(async move {
         let Ok(upgraded) = on_upgrade.await else {
             return;
@@ -105,7 +110,11 @@ pub(crate) async fn transparent_forward_authorized(
     req: Request,
     target: &AuthorizedTarget,
     bandwidth: BandwidthSession,
+    upstream: &crate::upstream::UpstreamConfig,
 ) -> anyhow::Result<Response<Body>> {
+    if upstream.proxy.is_some() {
+        return forward_through_upstream(req, target, bandwidth, upstream).await;
+    }
     let (parts, body) = req.into_parts();
     let url = parts.uri.to_string();
 
@@ -162,6 +171,62 @@ pub(crate) async fn transparent_forward_authorized(
     builder
         .body(Body::from_stream(download))
         .map_err(|error| anyhow::anyhow!("build response: {error}"))
+}
+
+async fn forward_through_upstream(
+    request: Request,
+    target: &AuthorizedTarget,
+    bandwidth: BandwidthSession,
+    upstream: &crate::upstream::UpstreamConfig,
+) -> anyhow::Result<Response<Body>> {
+    anyhow::ensure!(
+        request.uri().scheme_str() == Some("http"),
+        "HTTPS through an upstream proxy must use CONNECT"
+    );
+    let stream = upstream.connect(&target.addresses).await?;
+    let (mut sender, connection) =
+        hyper::client::conn::http1::handshake(TokioIo::new(stream)).await?;
+    tokio::spawn(async move {
+        let _ = connection.await;
+    });
+    let (mut parts, body) = request.into_parts();
+    let authority = parts
+        .uri
+        .authority()
+        .ok_or_else(|| anyhow::anyhow!("HTTP target requires authority"))?
+        .as_str()
+        .to_owned();
+    parts.uri = parts
+        .uri
+        .path_and_query()
+        .map_or("/", |path| path.as_str())
+        .parse()?;
+    let mut headers = axum::http::HeaderMap::new();
+    for (name, value) in &parts.headers {
+        if !skip_transparent_forward_header_for(&parts.headers, name.as_str()) {
+            headers.append(name.clone(), value.clone());
+        }
+    }
+    headers.insert(axum::http::header::HOST, authority.parse()?);
+    parts.headers = headers;
+    let request = Request::from_parts(
+        parts,
+        crate::bandwidth::throttle_body(body, bandwidth.clone()),
+    );
+    let response =
+        tokio::time::timeout(Duration::from_secs(600), sender.send_request(request)).await??;
+    let (mut parts, body) = response.into_parts();
+    let mut headers = axum::http::HeaderMap::new();
+    for (name, value) in &parts.headers {
+        if !skip_transparent_forward_header_for(&parts.headers, name.as_str()) {
+            headers.append(name.clone(), value.clone());
+        }
+    }
+    parts.headers = headers;
+    Ok(Response::from_parts(
+        parts,
+        crate::bandwidth::throttle_body(Body::new(body), bandwidth),
+    ))
 }
 
 async fn copy_limited<R, W>(
@@ -245,6 +310,85 @@ mod tests {
                 "accepted malformed authority {authority:?}"
             );
         }
+    }
+
+    #[tokio::test]
+    async fn upstream_http_preserves_target_and_body_without_leaking_proxy_headers() {
+        use crate::upstream::UpstreamConfig;
+        use tokio::net::TcpListener;
+
+        let listener = TcpListener::bind("127.0.0.1:0").await.unwrap();
+        let proxy = listener.local_addr().unwrap();
+        let peer = tokio::spawn(async move {
+            let (mut stream, _) = listener.accept().await.unwrap();
+            let mut connect = Vec::new();
+            while !connect.ends_with(b"\r\n\r\n") {
+                connect.push(stream.read_u8().await.unwrap());
+            }
+            assert_eq!(
+                connect,
+                b"CONNECT 203.0.113.7:80 HTTP/1.1\r\nHost: 203.0.113.7:80\r\n\r\n"
+            );
+            stream
+                .write_all(b"HTTP/1.1 200 Connection established\r\n\r\n")
+                .await
+                .unwrap();
+            let mut request = Vec::new();
+            while !request.ends_with(b"\r\n\r\n") {
+                request.push(stream.read_u8().await.unwrap());
+            }
+            let headers = String::from_utf8(request).unwrap().to_ascii_lowercase();
+            assert!(headers.starts_with("post /resource?q=1 http/1.1\r\n"));
+            assert!(headers.contains("\r\nhost: logical.example\r\n"));
+            assert!(headers.contains("\r\nx-end-to-end: keep\r\n"));
+            assert!(!headers.contains("proxy-authorization"));
+            assert!(!headers.contains("x-private-hop"));
+            let mut body = [0; 4];
+            stream.read_exact(&mut body).await.unwrap();
+            assert_eq!(&body, b"ping");
+            stream.write_all(b"HTTP/1.1 201 Created\r\nContent-Length: 4\r\nConnection: close, x-private-hop\r\nX-Private-Hop: secret\r\nX-End-To-End: keep\r\n\r\npong").await.unwrap();
+        });
+        let request = Request::builder()
+            .method(Method::POST)
+            .uri("http://logical.example/resource?q=1")
+            .header("host", "wrong.example")
+            .header("content-length", "4")
+            .header("proxy-authorization", "Basic dummy")
+            .header("connection", "x-private-hop")
+            .header("x-private-hop", "secret")
+            .header("x-end-to-end", "keep")
+            .body(Body::from("ping"))
+            .unwrap();
+        let target = AuthorizedTarget {
+            host: "logical.example".into(),
+            addresses: vec!["203.0.113.7:80".parse().unwrap()],
+        };
+        let response = tokio::time::timeout(
+            Duration::from_secs(5),
+            transparent_forward_authorized(
+                request,
+                &target,
+                BandwidthSession::default(),
+                &UpstreamConfig {
+                    proxy: Some(format!("http://{proxy}")),
+                    ..Default::default()
+                },
+            ),
+        )
+        .await
+        .unwrap()
+        .unwrap();
+        assert_eq!(response.status(), StatusCode::CREATED);
+        assert_eq!(response.headers()["x-end-to-end"], "keep");
+        assert!(!response.headers().contains_key("x-private-hop"));
+        assert!(!response.headers().contains_key("connection"));
+        assert_eq!(
+            axum::body::to_bytes(response.into_body(), 16)
+                .await
+                .unwrap(),
+            "pong"
+        );
+        peer.await.unwrap();
     }
 
     #[tokio::test(start_paused = true)]

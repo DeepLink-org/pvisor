@@ -274,6 +274,10 @@ pub enum OverlayFsCommit {
 #[derive(Debug, Clone, Deserialize, Serialize)]
 #[serde(default, deny_unknown_fields)]
 pub struct OverlayNetSettings {
+    /// Trusted HTTP proxy used by the explicit forward-proxy driver.
+    pub upstream_proxy: Option<String>,
+    /// Explicit HTTPS DNS JSON resolver; only used with upstream_proxy.
+    pub dns_over_https: Option<String>,
     pub mode: OverlayNetMode,
     pub listen: String,
     pub policy: OverlayNetPolicy,
@@ -287,6 +291,8 @@ pub struct OverlayNetSettings {
 impl Default for OverlayNetSettings {
     fn default() -> Self {
         Self {
+            upstream_proxy: None,
+            dns_over_https: None,
             mode: OverlayNetMode::Auto,
             listen: "127.0.0.1:19081".into(),
             policy: OverlayNetPolicy::Public,

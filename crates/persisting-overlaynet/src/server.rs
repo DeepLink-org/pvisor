@@ -57,6 +57,10 @@ pub trait OverlaySink: Clone + Send + Sync + 'static {
         false
     }
 
+    /// CONNECT 200 means the tunnel was established, not that TLS or the
+    /// application request succeeded. No request bodies or URL queries here.
+    fn on_result(&self, _method: &str, _authority: &str, _status: u16) {}
+
     fn on_denied(
         &self,
         _context: &OverlayRequestContext<Self::RequestContext>,
@@ -131,11 +135,26 @@ where
 {
     let _active_request = ActiveRequestGuard::new(Arc::clone(&state.active_requests));
     state.interception_metrics.request_seen();
+    let method = request.method().as_str().to_owned();
+    let authority = request
+        .uri()
+        .authority()
+        .map(|value| value.as_str())
+        .unwrap_or_default()
+        .to_owned();
     let response = dispatch(&state, request, peer).await;
     match response {
-        Ok(response) => response,
+        Ok(response) => {
+            state
+                .sink
+                .on_result(&method, &authority, response.status().as_u16());
+            response
+        }
         Err(error) => {
             state.interception_metrics.failure();
+            state
+                .sink
+                .on_result(&method, &authority, StatusCode::BAD_GATEWAY.as_u16());
             tracing::warn!("overlaynet proxy error: {error:#}");
             (
                 StatusCode::BAD_GATEWAY,
@@ -197,7 +216,14 @@ where
         state.sink.on_dispatch(&context, &request, "connect");
         let bandwidth =
             bandwidth_session(state, &context, &host, Some(target.port), Some(&authorized)).await;
-        return handle_connect_authorized(request, target, &authorized, bandwidth).await;
+        return handle_connect_authorized(
+            request,
+            target,
+            &authorized,
+            bandwidth,
+            context.policy.upstream(),
+        )
+        .await;
     }
 
     if is_forward_proxy_request(request.method(), request.uri()) {
@@ -233,9 +259,14 @@ where
             return Ok(throttle_response(response, bandwidth));
         }
         state.sink.on_dispatch(&context, &request, "forward");
-        return transparent_forward_authorized(request, &authorized, bandwidth)
-            .await
-            .map(IntoResponse::into_response);
+        return transparent_forward_authorized(
+            request,
+            &authorized,
+            bandwidth,
+            context.policy.upstream(),
+        )
+        .await
+        .map(IntoResponse::into_response);
     }
 
     state.interception_metrics.sink_request();
@@ -399,6 +430,10 @@ mod tests {
                     rules: Vec::new(),
                     deny_rules: Vec::new(),
                     limits: Vec::new(),
+                    upstream: crate::upstream::UpstreamConfig {
+                        proxy: Some("http://127.0.0.1:9".into()),
+                        dns_over_https: Some("https://invalid.invalid/resolve".into()),
+                    },
                 })?,
                 run_id: Some("run-1".into()),
                 attempt_id: Some("attempt-1".into()),
