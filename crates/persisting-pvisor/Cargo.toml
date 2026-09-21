@@ -6,6 +6,7 @@ authors.workspace = true
 license.workspace = true
 description = "pVisor foreground Agent Run manager and portable execution runtime"
 readme = "README.md"
+build = "build.rs"
 
 [features]
 default = []
@@ -21,7 +22,6 @@ flate2.workspace = true
 fs2.workspace = true
 globset.workspace = true
 libc.workspace = true
-libkrun = { workspace = true, features = ["net"] }
 persisting-control.workspace = true
 persisting-gateway = { workspace = true, default-features = false }
 persisting-overlaynet.workspace = true
@@ -42,9 +42,15 @@ uuid = { workspace = true, features = ["v4"] }
 zstd.workspace = true
 reqwest = { workspace = true, features = ["blocking", "json", "rustls-tls"] }
 
+[target.'cfg(not(all(target_os = "macos", target_arch = "x86_64")))'.dependencies]
+libkrun = { workspace = true, features = ["net"] }
+
 [[bin]]
 name = "pvisor"
 path = "src/bin/pvisor.rs"
 
 [dev-dependencies]
 proptest.workspace = true
+
+[build-dependencies]
+libloading.workspace = true

@@ -118,9 +118,6 @@ package = "krun-input"
 [dependencies.libc]
 version = ">=0.2.39"
 
-[dependencies.libloading]
-version = "0.8"
-
 [dependencies.log]
 version = "0.4.0"
 
@@ -138,6 +135,9 @@ package = "krun-utils"
 [dependencies.vmm]
 version = "=0.1.0-1.19.3"
 package = "krun-vmm"
+
+[target.'cfg(not(target_env = "musl"))'.dependencies.libloading]
+version = "0.8"
 
 [target.'cfg(target_os = "linux")'.dependencies.aws-nitro]
 version = "=0.1.0-1.19.3"
