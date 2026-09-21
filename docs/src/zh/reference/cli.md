@@ -44,7 +44,8 @@ pvisor run --stage ../stage-001 -- codex
 pvisor review last
 ```
 
-默认 host 执行使用 safe-best-effort 隔离；`--stage <PATH>` 才启用当前目录的
+默认 host 执行保留宿主机文件系统视图；`--filesystem sandbox` 才启用 pVisor 的
+synthetic-root/Landlock 或 Seatbelt 文件系统访问策略。`--stage <PATH>` 独立启用当前目录的
 OverlayFS stage，在显式 `--stage` 路径创建独立
 Run 和可写 stage，保留改动供人工审查，并以 `0600` 写入 `run-bundle.json`。
 
@@ -52,14 +53,11 @@ Run 和可写 stage，保留改动供人工审查，并以 `0600` 写入 `run-bu
 否则在 Agent 启动前失败关闭。当前 host / container / VM 都会请求 Network 与
 Subprocess，且无一 claim Subprocess，因此 `--strict` 在这些路径上会以
 `UnsupportedPolicy` 退出。该旗标用于验证 fail-closed，不表示「更强沙箱已就绪」。
-在 Linux 上，默认 host executor 会在异步 runtime 到达 Agent 之前，通过
-pVisor 的 rootless launcher 自执行。User/mount/PID namespace、namespace 内
-PID 1 后代回收器、最小 bind-projected root 加 `chroot`、按内核协商的 Landlock ABI v1-v3
-策略、关闭继承描述符、`no_new_privs` 以及空 capability 集，使工作区约束对
-Agent 进程树不可绕过。
-`--overlaynet-deny-all` 再加一个私有 network namespace；public/allowlist
-代理模式仍是协作式。在 macOS 上，默认 safe host executor 安装生成的
-Seatbelt 策略，使 staged 写入不可绕过。对 deny-all Run，它拦截 IP 和
+在 Linux 上，`--filesystem sandbox` 会使用 pVisor 的 rootless launcher，启用
+User/mount/PID namespace、最小 bind-projected root、`chroot` 和按内核协商的
+Landlock 策略。`--overlaynet-deny-all` 独立增加私有 network namespace；public/allowlist
+代理模式仍是协作式。在 macOS 上，host executor 只在请求文件系统 sandbox 或网络隔离时安装生成的
+Seatbelt 策略；文件系统策略与网络策略相互独立。对 deny-all Run，它拦截 IP 和
 ambient host Unix socket，同时保留精确的 AgentCtl 与 Run 本地 IPC。读取和
 选择性网络策略仍是 ambient/协作式，并在 Bundle 中单独标注。原生 OCI 和 libkrun
 executor保留同样的外层 Run、OverlayFS 和 AgentCtl 状态观察。
@@ -217,6 +215,9 @@ pvisor run \
 等价 TOML 是：
 
 ```toml
+# host（默认）或 sandbox；与 OverlayNet 和 OverlayFS 暂存相互独立
+filesystem = "host"
+
 [run]
 agent = "codex"
 executor = "container"

@@ -6,8 +6,8 @@
 
 | Executor | 机制 | 必须明确的限制 |
 | --- | --- | --- |
-| Linux host | rootless launcher、user/mount/PID namespace、投影根目录、协商后的 Landlock、描述符清理和 capability 清除 | 依赖内核及宿主配置；选择性代理网络仍是协作式 |
-| macOS host | 生成的 Seatbelt 配置约束暂存写入；请求 deny-all 时安装 socket 策略 | 读取和选择性网络访问仍为 ambient/协作式；暂存挂载需要 macFUSE |
+| Linux host | `--filesystem sandbox` 启用 rootless launcher、user/mount/PID namespace、投影根目录和协商后的 Landlock；`--overlaynet-deny-all` 独立启用私有网络 namespace | 依赖内核及宿主配置；选择性代理网络仍是协作式；默认 host 文件系统视图不受限制 |
+| macOS host | `--filesystem sandbox` 启用 Seatbelt 文件系统控制；`--overlaynet-deny-all` 独立启用 deny-all socket 策略；`--stage` 独立选择暂存工作区 | 未请求对应策略时，读取和选择性网络访问仍为 ambient/协作式；暂存挂载需要 macFUSE |
 | 原生 OCI 容器 | Linux OCI runtime、镜像用户空间和配置的挂载及网络 | 不声明所有 capability 维度均已完整强制执行 |
 | libkrun VM | 独立 Linux 客户机内核、virtio-fs 工作区和 smoltcp 网络路径 | 需要 KVM 或 HVF；宿主连接器和共享文件仍是边界的一部分 |
 
@@ -15,10 +15,11 @@
 
 ## 工作区与生命周期
 
-显式启用暂存，才能得到可审查工作区：
+文件系统访问、网络隔离和改动暂存是独立设置。Host 默认保留宿主文件系统视图。需要限制路径访问时使用 `--filesystem sandbox`，需要审查改动时显式启用暂存：
 
 ```bash
 pvisor run --stage ../stage-001 -- codex
+pvisor run --filesystem sandbox --overlaynet-deny-all -- codex
 ```
 
 没有 OverlayFS 选项时，host 命令可能直接写入项目。暂存不能回滚远程 API 调用或覆盖工作区之外的写入。

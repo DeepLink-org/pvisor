@@ -6,8 +6,8 @@ A copy-on-write workspace and a security boundary solve different problems. Over
 
 | Executor | Mechanisms | Limits to keep explicit |
 | --- | --- | --- |
-| Linux host | Rootless launcher, user/mount/PID namespaces, projected root, negotiated Landlock, descriptor cleanup and capability dropping | Kernel and host configuration matter; selective proxy networking remains cooperative |
-| macOS host | Generated Seatbelt profile with staged write controls; deny-all socket policy when requested | Reads and selective network access remain ambient/cooperative; staged mounts require macFUSE |
+| Linux host | `--filesystem sandbox` enables the rootless launcher, user/mount/PID namespaces, projected root and negotiated Landlock; `--overlaynet-deny-all` independently enables a private network namespace | Kernel and host configuration matter; selective proxy networking remains cooperative; the default host filesystem view is unrestricted |
+| macOS host | `--filesystem sandbox` enables Seatbelt filesystem controls; `--overlaynet-deny-all` independently enables the deny-all socket policy; `--stage` independently selects a staged workspace | Reads and selective network access remain ambient/cooperative unless the corresponding policy is requested; staged mounts require macFUSE |
 | Native OCI container | Linux OCI runtime, image userland and configured mounts/network | Does not claim complete enforcement of every capability dimension |
 | libkrun VM | Separate Linux guest kernel, virtio-fs workspace and smoltcp network path | Requires KVM or HVF; host connectors and shared files still form part of the boundary |
 
@@ -15,10 +15,11 @@ Check the actual Run Bundle. Configuration expresses a request; installed contro
 
 ## Workspace and lifecycle
 
-Enable an explicit stage for a reviewable workspace:
+Filesystem access, network isolation, and change staging are separate settings. Host runs preserve the host filesystem view by default. Use `--filesystem sandbox` when path access must be restricted, and enable an explicit stage when changes should be reviewable:
 
 ```bash
 pvisor run --stage ../stage-001 -- codex
+pvisor run --filesystem sandbox --overlaynet-deny-all -- codex
 ```
 
 Without an OverlayFS option, the host command may write the project directly. The stage does not roll back remote API calls or writes outside its covered workspace.
