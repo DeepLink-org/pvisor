@@ -590,6 +590,22 @@ fn effective_capability_enforcement(
     vm_network_enforcing: bool,
 ) -> CapabilityEnforcementEvidence {
     let mut evidence = descriptor.capability_enforcement.clone();
+    if matches!(
+        descriptor.isolation,
+        IsolationKind::RootlessProcess | IsolationKind::SandboxedProcess
+    ) && spec
+        .metadata
+        .get("pvisor.filesystem.mode")
+        .and_then(serde_json::Value::as_str)
+        == Some("host")
+    {
+        evidence
+            .dimensions
+            .remove(&CapabilityDimension::FilesystemRead);
+        evidence
+            .dimensions
+            .remove(&CapabilityDimension::FilesystemWrite);
+    }
     if proxy_network_configured {
         evidence.record(
             CapabilityDimension::Network,
@@ -738,8 +754,39 @@ mod tests {
     use super::*;
     use crate::{EventSink, MemoryEventSink};
     use async_trait::async_trait;
-    use persisting_control::{NetworkCapability, RunFailureKind, RunInvocation, StdioMode};
+    use persisting_control::{
+        ExecutorKind, NetworkCapability, RunFailureKind, RunInvocation, StdioMode,
+    };
     use std::sync::Mutex;
+
+    #[test]
+    fn host_filesystem_mode_only_removes_local_process_filesystem_evidence() {
+        let mut process = ExecutorDescriptor {
+            name: "local-rootless-v1".into(),
+            kind: ExecutorKind::Process,
+            isolation: IsolationKind::RootlessProcess,
+            capability_enforcement: CapabilityEnforcementEvidence::default()
+                .enforced(CapabilityDimension::FilesystemRead, "test-read")
+                .enforced(CapabilityDimension::FilesystemWrite, "test-write"),
+            supports_checkpoint: false,
+            supports_migration: false,
+        };
+        let mut process_spec = RunSpec::process("host-fs", "agent", "/bin/true");
+        process_spec.metadata.insert(
+            "pvisor.filesystem.mode".into(),
+            serde_json::Value::String("host".into()),
+        );
+        let process_evidence =
+            effective_capability_enforcement(&process, &process_spec, false, false);
+        assert!(!process_evidence.is_enforced(CapabilityDimension::FilesystemRead));
+        assert!(!process_evidence.is_enforced(CapabilityDimension::FilesystemWrite));
+
+        process.isolation = IsolationKind::VirtualMachine;
+        process.kind = ExecutorKind::VirtualMachine;
+        let vm_evidence = effective_capability_enforcement(&process, &process_spec, false, false);
+        assert!(vm_evidence.is_enforced(CapabilityDimension::FilesystemRead));
+        assert!(vm_evidence.is_enforced(CapabilityDimension::FilesystemWrite));
+    }
 
     #[derive(Default)]
     struct RejectCompletedSink {

@@ -13,15 +13,15 @@ use clap::{Parser, Subcommand};
 
 #[cfg(target_os = "linux")]
 const ROOT_ABOUT: &str =
-    "Foreground Agent Run manager with rootless Linux sandboxing and reviewable workspaces";
+    "Foreground Agent Run manager with independent filesystem, network, and staging policies";
 #[cfg(target_os = "linux")]
-const ROOT_LONG_ABOUT: &str = "Foreground Agent Run manager: execute, control, Gateway, and OverlayFS.\n\nOn Linux, host runs use safe-best-effort rootless isolation when supported: user and mount namespaces, a minimal synthetic root with chroot, Landlock, no_new_privs, and dropped capabilities. Add `--overlaynet-deny-all` to isolate direct network sockets in a private network namespace.";
+const ROOT_LONG_ABOUT: &str = "Foreground Agent Run manager: execute, control, Gateway, and OverlayFS.\n\nHost execution preserves the host filesystem view by default. Use `--filesystem sandbox` for synthetic-root/Landlock restrictions, `--stage` for independent workspace staging, and `--overlaynet` for network policy. On Linux, `--overlaynet-deny-all` uses a private network namespace without enabling filesystem restrictions.";
 
 #[cfg(target_os = "macos")]
 const ROOT_ABOUT: &str =
-    "Foreground Agent Run manager with Seatbelt isolation and reviewable workspaces";
+    "Foreground Agent Run manager with independent filesystem, network, and staging policies";
 #[cfg(target_os = "macos")]
-const ROOT_LONG_ABOUT: &str = "Foreground Agent Run manager: execute, control, Gateway, and OverlayFS.\n\nOn macOS, host runs use safe-best-effort macFUSE workspace views and Seatbelt confinement when supported. Full-disk reads remain available for local toolchain compatibility. `--overlaynet-deny-all` also blocks non-loopback IP and ambient host Unix sockets while retaining loopback proxy access and Run-local IPC.";
+const ROOT_LONG_ABOUT: &str = "Foreground Agent Run manager: execute, control, Gateway, and OverlayFS.\n\nHost execution preserves the host filesystem view by default. Use `--filesystem sandbox` for Seatbelt filesystem restrictions, `--stage` for independent workspace staging (macFUSE may be required), and `--overlaynet` for network policy. Full-disk reads remain available and ambient unless filesystem sandboxing is requested. `--overlaynet-deny-all` blocks non-loopback IP and ambient host Unix sockets while retaining loopback proxy access and Run-local IPC.";
 
 #[cfg(not(any(target_os = "linux", target_os = "macos")))]
 const ROOT_ABOUT: &str = "Foreground Agent Run manager with staged, reviewable workspaces";
@@ -268,8 +268,8 @@ mod tests {
 
         #[cfg(target_os = "linux")]
         {
-            assert!(help.contains("safe-best-effort"));
-            assert!(help.contains("rootless isolation"));
+            assert!(help.contains("independent filesystem, network, and staging policies"));
+            assert!(help.contains("--filesystem sandbox"));
             assert!(help.contains("namespace"));
             assert!(help.contains("Landlock"));
         }

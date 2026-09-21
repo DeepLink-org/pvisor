@@ -15,6 +15,13 @@ use std::path::PathBuf;
 
 pub(crate) const INTERNAL_SANDBOX_ARG: &str = "__pvisor-sandbox-exec";
 pub(crate) const SANDBOX_PLAN_ENV: &str = "PERSISTING_INTERNAL_SANDBOX_PLAN";
+/// Original Agent argv[0] preserved across the canonicalizing launcher.
+///
+/// Linux distributions such as Alpine commonly expose commands as symlinks
+/// to BusyBox.  The launcher must execute the canonical inode for its
+/// filesystem setup, while still presenting the symlink's basename to the
+/// child so BusyBox selects the requested applet.
+pub(crate) const SANDBOX_ARG0_ENV: &str = "PERSISTING_INTERNAL_SANDBOX_ARG0";
 /// Reserved launcher exit status: setup failed before the Agent was executed.
 #[doc(hidden)]
 pub const SANDBOX_SETUP_EXIT_CODE: i32 = 125;
@@ -70,10 +77,19 @@ pub(crate) struct SandboxPlan {
     pub read_only: Vec<PathBuf>,
     pub read_write: Vec<PathBuf>,
     pub network: NetworkIsolation,
+    /// Whether the launcher should construct the synthetic root and install
+    /// Landlock. Network isolation can run independently of this policy.
+    #[serde(default = "default_filesystem_isolated")]
+    pub filesystem_isolated: bool,
     /// Applied after the private PID namespace is initialized so the trusted
     /// launcher itself can still create its init/reaper process.
     #[serde(default)]
     pub process_limit: Option<u64>,
+}
+
+#[cfg(any(target_os = "linux", target_os = "macos"))]
+const fn default_filesystem_isolated() -> bool {
+    true
 }
 
 #[cfg(target_os = "macos")]
@@ -81,6 +97,8 @@ pub(crate) struct SandboxPlan {
 pub(crate) struct SeatbeltPlan {
     pub attestation: PathBuf,
     pub network: NetworkIsolation,
+    #[serde(default = "default_filesystem_isolated")]
+    pub filesystem_isolated: bool,
 }
 
 /// Enter the hidden launcher when the first argument is the internal marker.
@@ -100,6 +118,7 @@ pub fn run_internal_if_requested() -> anyhow::Result<bool> {
 #[cfg(target_os = "linux")]
 fn run_internal() -> anyhow::Result<()> {
     use anyhow::{Context, bail};
+    use std::os::unix::process::CommandExt;
 
     let encoded = std::env::var(SANDBOX_PLAN_ENV).context("missing rootless sandbox plan")?;
     let plan: SandboxPlan =
@@ -112,17 +131,19 @@ fn run_internal() -> anyhow::Result<()> {
         .next()
         .context("rootless sandbox invocation is missing the Agent executable")?;
     let arguments = arguments.collect::<Vec<_>>();
+    let arg0 = std::env::var_os(SANDBOX_ARG0_ENV).unwrap_or_else(|| program.clone());
 
-    enter_rootless_namespaces(plan.network)
-        .context("initialize rootless user and mount namespaces")?;
-    enter_child_pid_namespace().context("initialize private PID namespace")?;
+    enter_rootless_namespaces(plan.network).context("initialize rootless namespaces")?;
+    if plan.filesystem_isolated {
+        enter_child_pid_namespace().context("initialize private PID namespace")?;
+    }
     if let Some(limit) = plan.process_limit {
         apply_process_limit(limit).context("apply Agent process limit")?;
     }
     // Open the parent-owned inode before chroot/Landlock. The descriptor is
     // retained only by trusted setup code and closed before Agent execution,
     // so no attestation pathname needs to be projected into the sandbox.
-    let attestation = std::fs::OpenOptions::new()
+    let mut attestation = std::fs::OpenOptions::new()
         .write(true)
         .open(&plan.attestation)
         .with_context(|| {
@@ -131,12 +152,15 @@ fn run_internal() -> anyhow::Result<()> {
                 plan.attestation.display()
             )
         })?;
-    enter_synthetic_root(&plan).context("construct private sandbox root")?;
-    // The private tmpfs created by `enter_synthetic_root` is writable by the
-    // Agent, but must also be present in the Landlock allowlist.  This uses the
-    // host-side mount path because rules are installed before chroot.
     let mut plan = plan;
-    plan.read_write.push(PathBuf::from("/tmp"));
+    if plan.filesystem_isolated {
+        enter_synthetic_root(&plan).context("construct private sandbox root")?;
+        // The private tmpfs created by `enter_synthetic_root` is writable by
+        // the Agent, but must also be present in the Landlock allowlist. This
+        // uses the host-side mount path because rules are installed before
+        // chroot.
+        plan.read_write.push(PathBuf::from("/tmp"));
+    }
     std::env::set_current_dir(&plan.cwd)
         .with_context(|| format!("enter sandbox workspace {}", plan.cwd.display()))?;
 
@@ -144,14 +168,35 @@ fn run_internal() -> anyhow::Result<()> {
     // removes access to the host procfs tree.
     close_unexpected_file_descriptors(Some(attestation.as_raw_fd()))
         .context("close inherited file descriptors")?;
-    let landlock_abi = install_landlock(&plan).context("install Landlock filesystem policy")?;
+    let landlock_abi = if plan.filesystem_isolated {
+        let abi = install_landlock(&plan).context("install Landlock filesystem policy")?;
+        Some(abi)
+    } else {
+        None
+    };
+    // Network-only runs still use a user namespace so the Agent cannot create
+    // another namespace and escape the deny-all network policy. The UID/GID
+    // mapping preserves ordinary host filesystem permissions; skipping
+    // Landlock keeps the host filesystem view unrestricted.
     drop_process_capabilities().context("drop namespace capabilities")?;
     // The child process is configuring its environment immediately before
     // exec; no concurrent environment mutation occurs in this scope.
     unsafe {
         std::env::remove_var(SANDBOX_PLAN_ENV);
-        std::env::set_var("PERSISTING_SANDBOX_FILESYSTEM", "landlock");
-        std::env::set_var("PERSISTING_SANDBOX_LANDLOCK_ABI", landlock_abi.to_string());
+        std::env::remove_var(SANDBOX_ARG0_ENV);
+        std::env::set_var(
+            "PERSISTING_SANDBOX_FILESYSTEM",
+            if plan.filesystem_isolated {
+                "landlock"
+            } else {
+                "host"
+            },
+        );
+        if let Some(landlock_abi) = landlock_abi {
+            std::env::set_var("PERSISTING_SANDBOX_LANDLOCK_ABI", landlock_abi.to_string());
+        } else {
+            std::env::remove_var("PERSISTING_SANDBOX_LANDLOCK_ABI");
+        }
         std::env::set_var("PERSISTING_SANDBOX_USER_NAMESPACE", "1");
         std::env::set_var(
             "PERSISTING_SANDBOX_NETWORK",
@@ -163,7 +208,20 @@ fn run_internal() -> anyhow::Result<()> {
         );
     }
 
-    supervise_pid_namespace(program, arguments, attestation)
+    if !plan.filesystem_isolated {
+        // Network-only runs deliberately do not enter CLONE_NEWPID.  Exec the
+        // Agent in the launcher's existing process group so the outer
+        // ProcessExecutor can terminate that group without the PID-namespace
+        // supervisor's kill(-1) semantics reaching unrelated host processes.
+        write_rootless_attestation(&mut attestation)
+            .context("record installed rootless network controls")?;
+        drop(attestation);
+        let mut command = std::process::Command::new(program);
+        command.args(arguments).arg0(arg0);
+        return Err(command.exec().into());
+    }
+
+    supervise_pid_namespace(program, arguments, arg0, attestation)
 }
 
 #[cfg(target_os = "macos")]
@@ -183,6 +241,7 @@ fn run_internal() -> anyhow::Result<()> {
         .next()
         .context("Seatbelt sandbox invocation is missing the Agent executable")?;
     let arguments = arguments.collect::<Vec<_>>();
+    let arg0 = std::env::var_os(SANDBOX_ARG0_ENV).unwrap_or_else(|| program.clone());
 
     // The parent keeps the already-open inode and checks these bytes after the
     // process exits. Unlinking before Agent execution keeps the random path and
@@ -214,7 +273,15 @@ fn run_internal() -> anyhow::Result<()> {
     // exec; no concurrent environment mutation occurs in this scope.
     unsafe {
         std::env::remove_var(SANDBOX_PLAN_ENV);
-        std::env::set_var("PERSISTING_SANDBOX_FILESYSTEM", "seatbelt-write");
+        std::env::remove_var(SANDBOX_ARG0_ENV);
+        std::env::set_var(
+            "PERSISTING_SANDBOX_FILESYSTEM",
+            if plan.filesystem_isolated {
+                "seatbelt-write"
+            } else {
+                "host"
+            },
+        );
         std::env::set_var(
             "PERSISTING_SANDBOX_NETWORK",
             if plan.network.is_loopback_only() {
@@ -225,10 +292,9 @@ fn run_internal() -> anyhow::Result<()> {
         );
     }
 
-    Err(std::process::Command::new(program)
-        .args(arguments)
-        .exec()
-        .into())
+    let mut command = std::process::Command::new(program);
+    command.args(arguments).arg0(arg0);
+    Err(command.exec().into())
 }
 
 #[cfg(target_os = "linux")]
@@ -372,6 +438,7 @@ pub(crate) fn restrict_krun_runner(
         read_only,
         read_write,
         network: NetworkIsolation::LoopbackOnly,
+        filesystem_isolated: true,
         process_limit: None,
     };
     let abi = install_landlock(&plan).context("install libkrun Landlock policy")?;
@@ -499,6 +566,7 @@ pub(crate) fn seatbelt_profile(
     allowed_unix_sockets: &[PathBuf],
     local_socket_roots: &[PathBuf],
     network: NetworkIsolation,
+    filesystem_isolated: bool,
 ) -> std::io::Result<(String, Vec<(String, PathBuf)>)> {
     use std::io::{Error, ErrorKind};
 
@@ -577,14 +645,18 @@ pub(crate) fn seatbelt_profile(
                  (require-not (remote ip \"localhost:*\"))))\n\
              (allow network-outbound (remote ip \"localhost:*\"))\n",
         );
-        profile.push_str("(allow file-write*\n");
-        for index in 0..writable_paths.len() {
-            profile.push_str(&format!(
-                "  (literal (param \"PVISOR_WRITABLE_{index}\"))\n\
-                 (subpath (param \"PVISOR_WRITABLE_{index}\"))\n"
-            ));
+        if filesystem_isolated {
+            profile.push_str("(allow file-write*\n");
+            for index in 0..writable_paths.len() {
+                profile.push_str(&format!(
+                    "  (literal (param \"PVISOR_WRITABLE_{index}\"))\n\
+                     (subpath (param \"PVISOR_WRITABLE_{index}\"))\n"
+                ));
+            }
+            profile.push_str(")\n");
+        } else {
+            profile.push_str("(allow file-write*)\n");
         }
-        profile.push_str(")\n");
         profile.push_str("(deny network-outbound\n  (require-all\n    (remote unix-socket)\n");
         for index in 0..allowed_unix_sockets.len() {
             profile.push_str(&format!(
@@ -728,11 +800,11 @@ fn bring_loopback_up() -> std::io::Result<()> {
     };
     ifreq.name[0] = b'l' as libc::c_char;
     ifreq.name[1] = b'o' as libc::c_char;
-    if unsafe { libc::ioctl(fd, libc::SIOCGIFFLAGS, &mut ifreq) } != 0 {
+    if unsafe { libc::ioctl(fd, libc::SIOCGIFFLAGS as _, &mut ifreq) } != 0 {
         return Err(std::io::Error::last_os_error());
     }
     ifreq.flags |= libc::IFF_UP as libc::c_short | libc::IFF_RUNNING as libc::c_short;
-    if unsafe { libc::ioctl(fd, libc::SIOCSIFFLAGS, &ifreq) } != 0 {
+    if unsafe { libc::ioctl(fd, libc::SIOCSIFFLAGS as _, &ifreq) } != 0 {
         return Err(std::io::Error::last_os_error());
     }
     Ok(())
@@ -960,6 +1032,10 @@ fn drop_process_capabilities() -> std::io::Result<()> {
         inheritable: u32,
     }
 
+    if unsafe { libc::prctl(libc::PR_SET_NO_NEW_PRIVS, 1, 0, 0, 0) } != 0 {
+        return Err(Error::last_os_error());
+    }
+
     let mut header = CapabilityHeader {
         version: LINUX_CAPABILITY_VERSION_3,
         pid: 0,
@@ -1048,6 +1124,7 @@ fn exit_with_wait_status(status: libc::c_int) -> ! {
 fn supervise_pid_namespace(
     program: std::ffi::OsString,
     arguments: Vec<std::ffi::OsString>,
+    arg0: std::ffi::OsString,
     mut attestation: std::fs::File,
 ) -> anyhow::Result<()> {
     use anyhow::Context;
@@ -1193,7 +1270,9 @@ fn supervise_pid_namespace(
         if release_count != 1 || release != 1 {
             unsafe { libc::_exit(SANDBOX_SETUP_EXIT_CODE) };
         }
-        let error = std::process::Command::new(program).args(arguments).exec();
+        let mut command = std::process::Command::new(program);
+        command.args(arguments).arg0(arg0);
+        let error = command.exec();
         eprintln!("pvisor: execute sandboxed Agent: {error}");
         unsafe { libc::_exit(SANDBOX_SETUP_EXIT_CODE) };
     }
@@ -1261,6 +1340,7 @@ mod tests {
             &[],
             &[],
             NetworkIsolation::LoopbackOnly,
+            true,
         )
         .unwrap();
 
@@ -1270,8 +1350,14 @@ mod tests {
         assert!(profile.contains("(remote ip \"localhost:*\")"));
         assert!(profile.contains("(allow network-outbound (remote ip \"localhost:*\"))"));
 
-        let error = seatbelt_profile(&[PathBuf::from("/")], &[], &[], NetworkIsolation::Ambient)
-            .unwrap_err();
+        let error = seatbelt_profile(
+            &[PathBuf::from("/")],
+            &[],
+            &[],
+            NetworkIsolation::Ambient,
+            true,
+        )
+        .unwrap_err();
         assert_eq!(error.kind(), std::io::ErrorKind::InvalidInput);
     }
 }

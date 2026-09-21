@@ -53,13 +53,18 @@ fn setup_failure(root: &Path) -> Option<String> {
 }
 
 fn user_namespaces_are_unavailable(stderr: &str) -> bool {
-    const CONTEXT: &str = "initialize rootless user and mount namespaces: ";
+    const CONTEXTS: &[&str] = &[
+        "initialize rootless namespaces: ",
+        "initialize rootless user and mount namespaces: ",
+    ];
     stderr.lines().any(|line| {
-        let Some((_, error)) = line.split_once(CONTEXT) else {
-            return false;
-        };
-        error == "unshare user namespace: Operation not permitted (os error 1)"
-            || error == "unshare user namespace: Permission denied (os error 13)"
+        CONTEXTS.iter().any(|context| {
+            let Some((_, error)) = line.split_once(context) else {
+                return false;
+            };
+            error == "unshare user namespace: Operation not permitted (os error 1)"
+                || error == "unshare user namespace: Permission denied (os error 13)"
+        })
     })
 }
 
@@ -553,6 +558,7 @@ fn denied_network_uses_a_private_network_namespace() {
     let temporary = tempfile::tempdir().unwrap();
     let workspace = temporary.path().join("workspace");
     let run_home = temporary.path().join("runs");
+    let host_write = temporary.path().join("host-visible.txt");
     fs::create_dir_all(&workspace).unwrap();
     let listener = TcpListener::bind("127.0.0.1:0").unwrap();
     let host_port = listener.local_addr().unwrap().port().to_string();
@@ -560,6 +566,8 @@ fn denied_network_uses_a_private_network_namespace() {
     let script = r#"
 set -eu
 test "$PERSISTING_SANDBOX_NETWORK" = deny
+test "$PERSISTING_SANDBOX_FILESYSTEM" = host
+printf 'host-visible' > "$HOST_WRITE"
 if exec 3<>"/dev/tcp/127.0.0.1/${HOST_PORT}"; then
   echo 'host listener unexpectedly reachable' >&2
   exit 50
@@ -578,8 +586,11 @@ printf 'network:%s\n' "$PERSISTING_SANDBOX_NETWORK"
             "--overlaynet-deny-all",
             "--pass-env",
             "HOST_PORT",
+            "--pass-env",
+            "HOST_WRITE",
         ])
         .current_dir(&workspace)
+        .env("HOST_WRITE", &host_write)
         .args(["--", "/bin/bash", "-c", script])
         .output()
         .unwrap();
@@ -593,6 +604,7 @@ printf 'network:%s\n' "$PERSISTING_SANDBOX_NETWORK"
         String::from_utf8_lossy(&output.stdout),
         String::from_utf8_lossy(&output.stderr)
     );
+    assert_eq!(fs::read_to_string(&host_write).unwrap(), "host-visible");
 
     let run = only_run(&stage_root(&run_home));
     let bundle = RunBundle::read(&run).unwrap();
