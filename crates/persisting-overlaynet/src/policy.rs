@@ -17,6 +17,9 @@ use std::net::SocketAddr;
 #[derive(Debug, Clone, Default, Deserialize, Serialize, PartialEq, Eq)]
 #[serde(deny_unknown_fields)]
 pub struct NetworkConfig {
+    /// Explicit forward-proxy transport. Independent of Agent destination grants.
+    #[serde(default)]
+    pub upstream: crate::upstream::UpstreamConfig,
     #[serde(default)]
     pub mode: NetworkMode,
     #[serde(default)]
@@ -49,6 +52,7 @@ pub trait PolicyConfig {
 
 #[derive(Debug, Clone)]
 pub struct NetworkPolicy {
+    upstream: crate::upstream::UpstreamConfig,
     mode: NetworkMode,
     guard: NetworkGuard,
     limits: Vec<CompiledBandwidthLimit>,
@@ -62,6 +66,7 @@ struct CompiledBandwidthLimit {
 
 impl NetworkPolicy {
     pub fn compile(network: &NetworkConfig) -> anyhow::Result<Self> {
+        network.upstream.validate()?;
         anyhow::ensure!(
             network.mode == NetworkMode::Allowlist
                 || (network.allowed_hosts.is_empty() && network.rules.is_empty()),
@@ -95,6 +100,7 @@ impl NetworkPolicy {
             })
             .collect::<anyhow::Result<Vec<_>>>()?;
         Ok(Self {
+            upstream: network.upstream.clone(),
             mode: network.mode,
             guard,
             limits,
@@ -111,6 +117,10 @@ impl NetworkPolicy {
             NetworkMode::NoNetwork => "no-network",
             NetworkMode::Allowlist => "allowlist",
         }
+    }
+
+    pub(crate) fn upstream(&self) -> &crate::upstream::UpstreamConfig {
+        &self.upstream
     }
 
     pub(crate) fn preflight(&self, request: &NetworkAccessRequest) -> Result<(), DenyReason> {

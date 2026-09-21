@@ -59,21 +59,29 @@ pub(crate) async fn authorize_target_with_policy(
             request.host
         ))
     })?;
-    let resolved = timeout(DNS_TIMEOUT, lookup_host((request.host.as_str(), port)))
-        .await
-        .map_err(|_| {
-            TargetAuthorizationError::Resolve(anyhow::anyhow!(
-                "DNS resolution for `{}` timed out",
-                request.host
-            ))
-        })?
-        .map_err(|error| {
-            TargetAuthorizationError::Resolve(anyhow::anyhow!(
-                "resolve `{}`: {error}",
-                request.host
-            ))
-        })?
-        .collect::<Vec<_>>();
+    let resolved = if policy.upstream().dns_over_https.is_some() {
+        policy
+            .upstream()
+            .resolve(&request.host, port)
+            .await
+            .map_err(TargetAuthorizationError::Resolve)?
+    } else {
+        timeout(DNS_TIMEOUT, lookup_host((request.host.as_str(), port)))
+            .await
+            .map_err(|_| {
+                TargetAuthorizationError::Resolve(anyhow::anyhow!(
+                    "DNS resolution for `{}` timed out",
+                    request.host
+                ))
+            })?
+            .map_err(|error| {
+                TargetAuthorizationError::Resolve(anyhow::anyhow!(
+                    "resolve `{}`: {error}",
+                    request.host
+                ))
+            })?
+            .collect::<Vec<_>>()
+    };
 
     authorize_resolved_target_with_policy(
         controller,

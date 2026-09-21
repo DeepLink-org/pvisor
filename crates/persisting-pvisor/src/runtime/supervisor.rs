@@ -90,6 +90,7 @@ fn network_config_from_capability(
             rules: allow.clone(),
             deny_rules: deny.clone(),
             limits: limits.clone(),
+            ..Default::default()
         },
     }
 }

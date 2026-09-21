@@ -35,6 +35,39 @@ pvisor run \
 
 省略该参数时，策略参数和 Gateway capture 会按 executor 自动推导模式。
 
+## 通过已有代理出网
+
+如果服务器需要通过已有 HTTP 代理联网，显式指定上游出口：
+
+```bash
+pvisor run \
+  --overlaynet proxy \
+  --overlaynet-upstream-proxy http://127.0.0.1:17897 \
+  --gateway-mode off --gateway-debug \
+  -- agent-command
+```
+
+路径为 Agent → OverlayNet 策略检查与记录 → 上游代理 → 目标服务。pVisor 不会自动
+继承终端的上游代理，因为它会将 Agent 的代理变量指向自己的监听地址。目前上游配置
+要求 HTTP 协议、数值 IP，且不支持认证；只适用于显式 `proxy` driver 和关闭 Gateway
+capture 的组合。上游不可达时返回错误，不回退到直连。
+
+如果本地 DNS 也无法返回可用地址，可额外选择支持 A/AAAA 查询的 HTTPS DNS JSON
+服务，例如 `--overlaynet-dns-over-https https://dns.google/resolve`。这个选项需要上游
+代理，DNS 查询也通过该代理发送；被选中的 DNS 服务会看到所查询的域名。省略时继续
+使用系统 DNS。pVisor 先检查 hostname，再检查解析所得 IP，最后要求上游 CONNECT
+到授权 IP，不让上游重新解析目标域名而绕过 IP/CIDR 检查。DNS 失败不会回退到系统解析。
+
+对应 TOML 字段是 `[overlaynet] upstream_proxy` 和 `dns_over_https`。普通 HTTP 会通过
+到授权 IP 的 CONNECT 隧道转发，HTTPS 客户端需要使用标准 CONNECT 隧道。
+
+`--gateway-debug` 在本次 Run 的 `.capture/debug.log` 中写入 `network.result`，包含
+方法、目标 authority 和返回状态。CONNECT 200 仅表示隧道建立，不代表 TLS 或应用请求
+成功；它不提供 HTTPS 内部 URL、请求正文或工具调用语义。Run bundle 的
+`network.intercepted` 保存请求、允许、拒绝和处理失败计数。此 proxy 路径不更新 VM
+专用的 DNS/TCP flow/字节字段，也不将 pVisor 自己的 DNS 查询计入 Agent 请求计数。
+这些记录不覆盖绕过显式代理的流量，网络边界仍然是 cooperative。
+
 ## 选择策略
 
 策略参数用于配置已选择的 driver（未显式指定模式时会自动推导）：

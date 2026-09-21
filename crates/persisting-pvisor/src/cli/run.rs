@@ -318,6 +318,12 @@ struct OverlayFsOverrides {
 
 #[derive(Debug, Clone, Default, Args)]
 struct OverlayNetOverrides {
+    /// Trusted upstream HTTP proxy (IP address, no credentials); explicit-proxy driver only.
+    #[arg(long, value_name = "URL")]
+    overlaynet_upstream_proxy: Option<String>,
+    /// HTTPS DNS JSON endpoint, queried through the explicit upstream proxy.
+    #[arg(long, value_name = "URL")]
+    overlaynet_dns_over_https: Option<String>,
     /// Network driver: auto selects VM smoltcp, proxy is host/container only, off disables it.
     #[arg(
         long,
@@ -776,6 +782,10 @@ async fn run_prepared_spec(args: RunArgs) -> anyhow::Result<i32> {
                     rules: config.overlaynet.rules.clone(),
                     deny_rules: config.overlaynet.deny.clone(),
                     limits: config.overlaynet.limits.clone(),
+                    upstream: persisting_overlaynet::upstream::UpstreamConfig {
+                        proxy: config.overlaynet.upstream_proxy.clone(),
+                        dns_over_https: config.overlaynet.dns_over_https.clone(),
+                    },
                 },
             ));
         if let Some(proxy) = proxy {
@@ -1218,6 +1228,10 @@ async fn execute_config(
                 rules: config.overlaynet.rules.clone(),
                 deny_rules: config.overlaynet.deny.clone(),
                 limits: config.overlaynet.limits.clone(),
+                upstream: persisting_overlaynet::upstream::UpstreamConfig {
+                    proxy: config.overlaynet.upstream_proxy.clone(),
+                    dns_over_https: config.overlaynet.dns_over_https.clone(),
+                },
             },
         ));
     if let Some(proxy) = proxy {
@@ -1719,7 +1733,15 @@ fn apply_cli(config: &mut RunConfig, args: RunArgs) -> anyhow::Result<()> {
         || !args.overlaynet.overlaynet_limit.is_empty()
         || !args.overlaynet.overlaynet_rule.is_empty()
         || args.overlaynet.overlaynet_deny_all
-        || args.overlaynet.overlaynet_listen.is_some();
+        || args.overlaynet.overlaynet_listen.is_some()
+        || args.overlaynet.overlaynet_upstream_proxy.is_some()
+        || args.overlaynet.overlaynet_dns_over_https.is_some();
+    if let Some(value) = args.overlaynet.overlaynet_upstream_proxy {
+        config.overlaynet.upstream_proxy = Some(value);
+    }
+    if let Some(value) = args.overlaynet.overlaynet_dns_over_https {
+        config.overlaynet.dns_over_https = Some(value);
+    }
     if let Some(value) = explicit_overlaynet_mode {
         config.overlaynet.mode = value;
     }
@@ -1888,6 +1910,17 @@ fn validate(config: &RunConfig) -> anyhow::Result<()> {
     {
         bail!(
             "--overlayfs-commit apply cannot be combined with --overlayfs-compose until composed layers can be materialized safely"
+        );
+    }
+    if config.overlaynet.upstream_proxy.is_some() || config.overlaynet.dns_over_https.is_some() {
+        anyhow::ensure!(
+            config.overlaynet.mode == OverlayNetMode::Proxy
+                && config.run.executor != RunExecutorKind::Vm,
+            "upstream proxy/DNS options require the explicit --overlaynet proxy driver"
+        );
+        anyhow::ensure!(
+            config.gateway.mode == GatewayMode::Off,
+            "upstream proxy/DNS options currently require --gateway-mode off"
         );
     }
     if config.overlaynet.mode == OverlayNetMode::Off {
@@ -2111,6 +2144,10 @@ fn resolve_proxy(config: &RunConfig) -> anyhow::Result<Option<ProxyConfig>> {
         rules: config.overlaynet.rules.clone(),
         deny_rules: config.overlaynet.deny.clone(),
         limits: config.overlaynet.limits.clone(),
+        upstream: persisting_overlaynet::upstream::UpstreamConfig {
+            proxy: config.overlaynet.upstream_proxy.clone(),
+            dns_over_https: config.overlaynet.dns_over_https.clone(),
+        },
     };
     let proxy = ProxyConfig {
         listen: config.overlaynet.listen.clone(),
@@ -2164,6 +2201,46 @@ mod tests {
     use proptest::prelude::*;
 
     use crate::cli::Cli;
+
+    #[test]
+    fn upstream_options_reach_forward_proxy_and_reject_unsupported_modes() {
+        let crate::cli::Command::Run(args) = Cli::try_parse_from([
+            "pvisor",
+            "run",
+            "--overlaynet",
+            "proxy",
+            "--overlaynet-upstream-proxy",
+            "http://127.0.0.1:17897",
+            "--overlaynet-dns-over-https",
+            "https://dns.google/resolve",
+            "--gateway-mode",
+            "off",
+            "--",
+            "true",
+        ])
+        .unwrap()
+        .command
+        else {
+            unreachable!()
+        };
+        let mut config = RunConfig::default();
+        apply_cli(&mut config, *args).unwrap();
+        validate(&config).unwrap();
+        let proxy = resolve_proxy(&config).unwrap().unwrap();
+        assert_eq!(
+            proxy.network.upstream.proxy.as_deref(),
+            Some("http://127.0.0.1:17897")
+        );
+        assert_eq!(
+            proxy.network.upstream.dns_over_https.as_deref(),
+            Some("https://dns.google/resolve")
+        );
+        config.overlaynet.mode = OverlayNetMode::Off;
+        assert!(validate(&config).is_err());
+        config.overlaynet.mode = OverlayNetMode::Proxy;
+        config.gateway.mode = GatewayMode::Capture;
+        assert!(validate(&config).is_err());
+    }
 
     #[test]
     fn safe_profile_builds_a_reviewable_default_run() {
