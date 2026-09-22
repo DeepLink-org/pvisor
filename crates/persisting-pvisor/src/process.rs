@@ -2,7 +2,10 @@ use crate::executor::{AttemptContext, RunExecutor};
 #[cfg(any(target_os = "linux", target_os = "macos"))]
 use crate::sandbox::{INTERNAL_SANDBOX_ARG, NetworkIsolation};
 #[cfg(target_os = "macos")]
-use crate::sandbox::{MACOS_SANDBOX_EXEC, SEATBELT_ATTESTATION, SeatbeltPlan, seatbelt_profile};
+use crate::sandbox::{
+    MACOS_SANDBOX_EXEC, SEATBELT_ATTESTATION, SeatbeltPlan, seatbelt_profile,
+    seatbelt_profile_with_reads,
+};
 #[cfg(target_os = "linux")]
 use crate::sandbox::{ROOTLESS_ATTESTATION, SandboxPlan, landlock_runtime_available};
 use crate::sandbox::{SANDBOX_PLAN_ENV, SANDBOX_SETUP_FAILED_WARNING};
@@ -361,11 +364,35 @@ fn stdio(mode: StdioMode) -> Stdio {
 }
 
 #[cfg(any(target_os = "linux", target_os = "macos"))]
-fn network_isolation(spec: &RunSpec) -> NetworkIsolation {
+fn network_isolation(spec: &RunSpec) -> std::io::Result<NetworkIsolation> {
+    if crate::sandbox::sandbox_required(spec) {
+        #[cfg(target_os = "macos")]
+        {
+            let proxy = spec
+                .metadata
+                .get(crate::sandbox::SANDBOX_PROXY_KEY)
+                .and_then(serde_json::Value::as_str)
+                .map(str::parse::<std::net::SocketAddr>)
+                .transpose()
+                .map_err(std::io::Error::other)?;
+            if proxy.is_none() && !matches!(spec.capabilities.network, NetworkCapability::Deny) {
+                return Err(std::io::Error::other(
+                    "required sandbox needs a supervisor-owned proxy",
+                ));
+            }
+            return Ok(NetworkIsolation::ProxyOnly(proxy));
+        }
+        #[cfg(target_os = "linux")]
+        if !matches!(spec.capabilities.network, NetworkCapability::Deny) {
+            return Err(std::io::Error::other(
+                "required Linux host sandbox cannot enforce selective egress without a namespace proxy bridge",
+            ));
+        }
+    }
     if matches!(spec.capabilities.network, NetworkCapability::Deny) {
-        NetworkIsolation::LoopbackOnly
+        Ok(NetworkIsolation::LoopbackOnly)
     } else {
-        NetworkIsolation::Ambient
+        Ok(NetworkIsolation::Ambient)
     }
 }
 
@@ -482,6 +509,11 @@ impl ProcessExecutor {
         // an OverlayFS merged root. The executable belongs to the host-process
         // executor and need not exist inside the projected lower filesystem.
         let program = resolve_host_program(&invocation.program);
+        if crate::sandbox::sandbox_required(spec) && !self.is_sandboxed() {
+            return Err(std::io::Error::other(
+                "required sandbox cannot use an unsandboxed process executor",
+            ));
+        }
         let (mut command, sandbox_plan, resources) = if let Some(launcher) = &self.sandbox_launcher
         {
             platform_launcher_command(launcher, spec, invocation, &program)?
@@ -526,6 +558,14 @@ impl ProcessExecutor {
             // A Run-owned temporary directory avoids granting the Agent the
             // shared /tmp or per-user Darwin temporary hierarchy.
             command.env("TMPDIR", scratch);
+            if crate::sandbox::sandbox_required(spec) {
+                command.env("HOME", scratch);
+            }
+        }
+        #[cfg(target_os = "linux")]
+        if crate::sandbox::sandbox_required(spec) {
+            // The rootless launcher creates a private writable /tmp tmpfs.
+            command.env("HOME", "/tmp");
         }
         Ok(PreparedCommand { command, resources })
     }
@@ -623,7 +663,7 @@ fn platform_launcher_command(
         )
     })?;
     let sandbox_root = SandboxResources::create()?;
-    let network = network_isolation(spec);
+    let network = network_isolation(spec)?;
     let plan = rootless_plan(
         spec,
         invocation,
@@ -668,6 +708,8 @@ fn platform_launcher_command(
         .map(PathBuf::from)
         .unwrap_or(std::env::current_dir()?);
     let cwd = cwd.canonicalize()?;
+    let restrict_reads = crate::sandbox::sandbox_required(spec);
+    let mut readable_paths = vec![program.clone(), launcher.canonicalize()?];
     let mut writable_paths = vec![
         cwd.clone(),
         resources
@@ -682,10 +724,31 @@ fn platform_launcher_command(
     for path in ["/dev/null", "/dev/zero", "/dev/tty", "/dev/fd"] {
         push_existing(&mut writable_paths, Path::new(path));
     }
+    // Runtime locations are readable (never writable) in the required profile.
+    for path in [
+        "/System/Library",
+        "/System/Cryptexes/OS",
+        "/usr",
+        "/bin",
+        "/sbin",
+        "/Library/Apple",
+        "/Library/Developer",
+        "/Library/Frameworks",
+        "/opt/homebrew",
+        "/private/var/db/dyld",
+        "/private/var/db/timezone",
+        "/private/etc/localtime",
+        "/private/etc/hosts",
+        "/private/etc/resolv.conf",
+        "/private/etc/services",
+        "/private/etc/protocols",
+        "/private/etc/ssl",
+        "/dev/urandom",
+        "/dev/random",
+    ] {
+        push_existing(&mut readable_paths, Path::new(path));
+    }
     for capability in &spec.capabilities.filesystem {
-        if capability.access != FilesystemAccess::ReadWrite {
-            continue;
-        }
         let path = PathBuf::from(&capability.path);
         let path = if path.is_absolute() {
             path
@@ -701,10 +764,13 @@ fn platform_launcher_command(
                 ),
             ));
         }
-        writable_paths.push(path);
+        match capability.access {
+            FilesystemAccess::Read => readable_paths.push(path),
+            FilesystemAccess::ReadWrite => writable_paths.push(path),
+        }
     }
 
-    let network = network_isolation(spec);
+    let network = network_isolation(spec)?;
     let (allowed_unix_sockets, local_socket_roots) = if network.is_loopback_only() {
         (
             invocation
@@ -725,13 +791,26 @@ fn platform_launcher_command(
     } else {
         (Vec::new(), Vec::new())
     };
-    let (profile, parameters) = seatbelt_profile(
-        &writable_paths,
-        &allowed_unix_sockets,
-        &local_socket_roots,
-        network,
-    )?;
+    // Socket metadata must be readable, but its containing directory is not shared.
+    readable_paths.extend(allowed_unix_sockets.iter().cloned());
+    let (profile, parameters) = if restrict_reads {
+        seatbelt_profile_with_reads(
+            &writable_paths,
+            Some(&readable_paths),
+            &allowed_unix_sockets,
+            &local_socket_roots,
+            network,
+        )?
+    } else {
+        seatbelt_profile(
+            &writable_paths,
+            &allowed_unix_sockets,
+            &local_socket_roots,
+            network,
+        )?
+    };
     let plan = SeatbeltPlan {
+        restrict_reads,
         attestation: resources
             .attestation_path()
             .expect("created Seatbelt attestation")

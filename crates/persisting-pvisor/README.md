@@ -50,6 +50,10 @@ the equivalent entitlements file is `macos-hypervisor.entitlements`. Building
 from source on macOS also requires Zig (`brew install zig`) to cross-compile
 libkrun's embedded Linux guest init.
 
+The vendored libkrun is built only as an `rlib` and statically linked into
+`pvisor`; no `libkrun.so` or `libkrun.dylib` is required. The separate guest
+kernel payload, `libkrunfw.so.5` / `libkrunfw.5.dylib`, is still loaded at runtime.
+
 ## Links
 
 - [Operation-chain IR and Trace v3](../../docs/pvisor-ir.md): operation terms with ordered context wrappers, ordered rewrites,

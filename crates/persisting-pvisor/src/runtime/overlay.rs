@@ -359,6 +359,7 @@ pub fn resolve_overlay_workspace(
         merged_dir: merged,
         stage_dir,
         excluded_paths,
+        access_policy: cfg.access_policy.clone(),
         auto_apply: cfg.auto_apply,
         auto_discard: cfg.auto_discard,
         protect_target: cfg.protect_target,
@@ -385,6 +386,7 @@ pub fn hint_from_record(record: &OverlayRecord, lower_dirs: Vec<PathBuf>) -> Ove
         ),
     };
     OverlayHint {
+        access_policy: record.access_policy.clone(),
         lower_dirs,
         stage_dir: Some(record.stage_dir.clone()),
         upper_dir,
@@ -472,6 +474,7 @@ pub fn mount_overlay_record(
     };
     config.fsname = format!("pvisor-{}", record.id);
     config.excluded_paths = record.excluded_paths.clone();
+    config.access_policy = record.access_policy.clone();
     config.preimage_dir = Some(record.stage_dir.join("preimages"));
     let session = mount_embedded_overlay(config).map_err(embedded_mount_error)?;
     wait_merged_ready(&record.merged_dir, &session)?;
@@ -581,6 +584,7 @@ pub fn mount_overlay_record_read_only(
     };
     config.fsname = format!("pvisor-inspect-{}", record.id);
     config.excluded_paths = record.excluded_paths.clone();
+    config.access_policy = record.access_policy.clone();
     config.read_only = true;
     let session = mount_embedded_overlay(config).map_err(embedded_mount_error)?;
     wait_merged_ready(mountpoint, &session)?;
@@ -2288,6 +2292,7 @@ mod tests {
             merged_dir: stage.join("merged"),
             stage_dir: stage.clone(),
             excluded_paths: Vec::new(),
+            access_policy: Default::default(),
             auto_apply: false,
             auto_discard: false,
             protect_target: false,
@@ -2381,6 +2386,7 @@ mod tests {
             merged_dir: merged.clone(),
             stage_dir: stage.clone(),
             excluded_paths: Vec::new(),
+            access_policy: Default::default(),
             auto_apply: false,
             auto_discard: false,
             protect_target: false,
@@ -2457,6 +2463,7 @@ mod tests {
             merged_dir: tmp.path().join("merged"),
             stage_dir: tmp.path().to_path_buf(),
             excluded_paths: Vec::new(),
+            access_policy: Default::default(),
             auto_apply: false,
             auto_discard: false,
             protect_target: false,
@@ -2510,6 +2517,7 @@ mod tests {
             merged_dir: stage.join("merged"),
             stage_dir: stage.clone(),
             excluded_paths: Vec::new(),
+            access_policy: Default::default(),
             auto_apply: false,
             auto_discard: false,
             protect_target: false,
@@ -2639,6 +2647,7 @@ mod tests {
                 merged_dir: stage.join("merged"),
                 stage_dir: stage.clone(),
                 excluded_paths: Vec::new(),
+                access_policy: Default::default(),
                 auto_apply: false,
                 auto_discard: false,
                 protect_target: false,
@@ -2719,6 +2728,7 @@ mod tests {
                 merged_dir: stage.join("merged"),
                 stage_dir: stage.clone(),
                 excluded_paths: Vec::new(),
+                access_policy: Default::default(),
                 auto_apply: false,
                 auto_discard: false,
                 protect_target: false,
@@ -2809,6 +2819,7 @@ mod tests {
             merged_dir: stage.join("merged"),
             stage_dir: stage.clone(),
             excluded_paths: Vec::new(),
+            access_policy: Default::default(),
             auto_apply: false,
             auto_discard: false,
             protect_target: false,
@@ -2844,6 +2855,7 @@ mod tests {
             merged_dir: stage.join("merged"),
             stage_dir: stage.clone(),
             excluded_paths: Vec::new(),
+            access_policy: Default::default(),
             auto_apply: false,
             auto_discard: false,
             protect_target: false,
@@ -2920,6 +2932,7 @@ mod tests {
             merged_dir: stage.join("merged"),
             stage_dir: stage,
             excluded_paths: Vec::new(),
+            access_policy: Default::default(),
             auto_apply: false,
             auto_discard: false,
             protect_target: false,
@@ -2970,6 +2983,7 @@ mod tests {
             merged_dir: stage.join("merged"),
             stage_dir: stage,
             excluded_paths: Vec::new(),
+            access_policy: Default::default(),
             auto_apply: false,
             auto_discard: false,
             protect_target: false,
@@ -3021,6 +3035,7 @@ mod tests {
             merged_dir: stage.join("merged"),
             stage_dir: stage,
             excluded_paths: Vec::new(),
+            access_policy: Default::default(),
             auto_apply: false,
             auto_discard: false,
             protect_target: false,
@@ -3064,6 +3079,7 @@ mod tests {
             merged_dir: tmp.path().join("merged"),
             stage_dir: tmp.path().to_path_buf(),
             excluded_paths: Vec::new(),
+            access_policy: Default::default(),
             auto_apply: false,
             auto_discard: false,
             protect_target: false,
@@ -3106,6 +3122,7 @@ mod tests {
             merged_dir: tmp.path().join("merged"),
             stage_dir: tmp.path().to_path_buf(),
             excluded_paths: Vec::new(),
+            access_policy: Default::default(),
             auto_apply: false,
             auto_discard: false,
             protect_target: false,
@@ -3153,6 +3170,7 @@ mod tests {
             merged_dir: tmp.path().join("merged"),
             stage_dir: tmp.path().to_path_buf(),
             excluded_paths: Vec::new(),
+            access_policy: Default::default(),
             auto_apply: false,
             auto_discard: false,
             protect_target: true,
@@ -3213,6 +3231,7 @@ mod tests {
             merged_dir: tmp.path().join("merged"),
             stage_dir: tmp.path().to_path_buf(),
             excluded_paths: Vec::new(),
+            access_policy: Default::default(),
             auto_apply: false,
             auto_discard: false,
             protect_target: false,
@@ -3239,6 +3258,7 @@ mod tests {
             merged_dir: tmp.path().join("merged"),
             stage_dir: tmp.path().to_path_buf(),
             excluded_paths: Vec::new(),
+            access_policy: Default::default(),
             auto_apply: false,
             auto_discard: false,
             protect_target: false,
@@ -3268,6 +3288,7 @@ mod tests {
             merged_dir: applied_root.path().join("merged"),
             stage_dir: applied_root.path().to_path_buf(),
             excluded_paths: Vec::new(),
+            access_policy: Default::default(),
             auto_apply: false,
             auto_discard: false,
             protect_target: false,
@@ -3297,6 +3318,7 @@ mod tests {
             merged_dir: dropped_root.path().join("merged"),
             stage_dir: dropped_root.path().to_path_buf(),
             excluded_paths: Vec::new(),
+            access_policy: Default::default(),
             auto_apply: false,
             auto_discard: false,
             protect_target: false,

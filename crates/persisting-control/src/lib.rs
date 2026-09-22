@@ -6,6 +6,7 @@
 
 pub mod client;
 pub mod events;
+mod file_access;
 pub mod ir;
 pub mod overlay;
 pub mod policy;

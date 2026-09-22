@@ -120,6 +120,14 @@ impl OverlayFs {
         )?)
     }
 
+    pub fn with_access_policy(
+        mut self,
+        policy: &persisting_overlay_core::FileAccessPolicy,
+    ) -> Self {
+        self.core = self.core.with_access_policy(policy);
+        self
+    }
+
     fn from_core(core: OverlayCore) -> anyhow::Result<Self> {
         let mut root_paths = BTreeSet::new();
         root_paths.insert(PathBuf::new());
@@ -348,6 +356,9 @@ impl OverlayFs {
     }
 
     fn open_path(&self, path: &Path, flags: i32) -> io::Result<File> {
+        if self.core.metadata(path)?.file_type().is_symlink() {
+            return Err(io::Error::from_raw_os_error(libc::ELOOP));
+        }
         let writing = flags & libc::O_ACCMODE != libc::O_RDONLY
             || flags & (libc::O_APPEND | libc::O_TRUNC) != 0;
         let real = if writing {
@@ -366,12 +377,13 @@ impl OverlayFs {
             .append(flags & libc::O_APPEND != 0)
             .truncate(flags & libc::O_TRUNC != 0)
             .custom_flags(
-                flags
-                    & !(libc::O_ACCMODE
-                        | libc::O_CREAT
-                        | libc::O_EXCL
-                        | libc::O_TRUNC
-                        | libc::O_APPEND),
+                libc::O_NOFOLLOW
+                    | flags
+                        & !(libc::O_ACCMODE
+                            | libc::O_CREAT
+                            | libc::O_EXCL
+                            | libc::O_TRUNC
+                            | libc::O_APPEND),
             );
         options.open(real)
     }
@@ -1167,6 +1179,41 @@ impl Filesystem for OverlayFs {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn open_cannot_follow_a_link_around_file_rules() {
+        let dir = tempfile::tempdir().unwrap();
+        let lower = dir.path().join("lower");
+        fs::create_dir_all(lower.join(".ssh")).unwrap();
+        fs::write(lower.join(".ssh/id_rsa"), b"dummy-private").unwrap();
+        fs::write(lower.join(".env"), b"warn-only").unwrap();
+        std::os::unix::fs::symlink(".ssh/id_rsa", lower.join("alias")).unwrap();
+        let overlay = OverlayFs::new(vec![lower], dir.path().join("upper"), None)
+            .unwrap()
+            .with_access_policy(
+                &persisting_overlay_core::FileAccessPolicy::new(
+                    vec!["**/.ssh".into()],
+                    vec!["**/.env".into()],
+                )
+                .unwrap(),
+            );
+        assert!(
+            overlay
+                .open_path(Path::new(".ssh/id_rsa"), libc::O_RDONLY)
+                .is_err()
+        );
+        assert!(
+            overlay
+                .open_path(Path::new("alias"), libc::O_RDONLY)
+                .is_err()
+        );
+        assert!(
+            overlay
+                .open_path(Path::new("alias"), libc::O_WRONLY)
+                .is_err()
+        );
+        assert!(overlay.open_path(Path::new(".env"), libc::O_RDONLY).is_ok());
+    }
 
     #[test]
     fn atime_only_setattr_does_not_require_copy_up() {

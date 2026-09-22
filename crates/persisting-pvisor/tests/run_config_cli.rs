@@ -20,6 +20,57 @@ fn only_run_dir(run_home: &std::path::Path) -> std::path::PathBuf {
 }
 
 #[test]
+fn safe_preset_reaches_the_run_and_reports_its_limits() {
+    let temporary = tempfile::Builder::new()
+        .prefix("pvsafe")
+        .tempdir_in("/tmp")
+        .unwrap();
+    let run_home = temporary.path().join("runs");
+    let workspace = temporary.path().join("workspace");
+    std::fs::create_dir_all(workspace.join(".ssh")).unwrap();
+    std::fs::write(workspace.join(".ssh/id_ed25519"), "dummy-private-key").unwrap();
+    std::fs::write(workspace.join(".env"), "warn-only-fixture").unwrap();
+    std::os::unix::fs::symlink(".ssh/id_ed25519", workspace.join("alias")).unwrap();
+    let output = Command::new(env!("CARGO_BIN_EXE_pvisor"))
+        .args([
+            "run",
+            "--safe",
+            "--",
+            "/bin/sh",
+            "-c",
+            "test ! -e .ssh/id_ed25519 && ! cat .ssh/id_ed25519 && ! cat alias && cat .env",
+        ])
+        .current_dir(&workspace)
+        .env("PERSISTING_RUN_HOME", &run_home)
+        .output()
+        .unwrap();
+    let stderr = String::from_utf8_lossy(&output.stderr);
+    assert!(output.status.success(), "{stderr}");
+    assert!(stderr.contains("CLI > safe preset > config > defaults"));
+    assert!(stderr.contains("sensitive file access warning"), "{stderr}");
+    assert!(!String::from_utf8_lossy(&output.stdout).contains("dummy-private-key"));
+    assert!(String::from_utf8_lossy(&output.stdout).contains("warn-only-fixture"));
+    assert!(stderr.contains("cannot distinguish inference"));
+    let bundle = RunBundle::read(&only_run_dir(&run_home)).unwrap();
+    assert!(
+        bundle
+            .filesystem
+            .as_ref()
+            .unwrap()
+            .access_policy
+            .deny()
+            .contains(&"**/.ssh".into())
+    );
+    assert_eq!(bundle.network.policy["mode"], "no-network");
+    assert!(matches!(
+        bundle.run.executor.unwrap().isolation,
+        persisting_control::IsolationKind::HostProcess
+            | persisting_control::IsolationKind::RootlessProcess
+            | persisting_control::IsolationKind::SandboxedProcess
+    ));
+}
+
+#[test]
 fn network_run_uses_the_current_workspace_and_external_run_home() {
     let temporary = tempfile::Builder::new()
         .prefix("pv")
@@ -384,9 +435,11 @@ fn every_public_run_option_is_accepted_by_the_real_cli_parser() {
         &["--mem", "256MiB"],
         &["--cpu", "2"],
         &["--strict"],
+        &["--safe"],
         &["--timeout", "1s"],
         &["--stdio", "capture"],
         &["--pass-env", "PATH"],
+        &["--clear-pass-env"],
         &["--max-processes", "8"],
         &["--max-cpu-time", "5s"],
         &["--max-open-files", "32"],
@@ -456,7 +509,7 @@ fn advertised_run_options() -> std::collections::BTreeSet<String> {
         .filter(|token| token.starts_with("--") && token.len() > 2)
         .map(str::to_owned)
         .collect::<std::collections::BTreeSet<_>>();
-    for anchor in ["--executor", "--stage", "--strict"] {
+    for anchor in ["--executor", "--stage", "--strict", "--safe"] {
         assert!(
             options.contains(anchor),
             "help scraping is broken: {anchor} is missing from {options:?}"
@@ -473,7 +526,6 @@ fn removed_run_options_stay_off_the_cli_surface() {
     // option list can.
     let advertised = advertised_run_options();
     for option in [
-        "--safe",
         "--workspace",
         "--config",
         "--run-spec",

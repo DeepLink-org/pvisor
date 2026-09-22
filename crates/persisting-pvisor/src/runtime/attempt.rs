@@ -356,6 +356,11 @@ pub(crate) fn prepare_attempt(
         },
     )?;
 
+    spec.metadata.insert(
+        crate::sandbox::SANDBOX_PROXY_KEY.into(),
+        gateway.listen.clone().into(),
+    );
+
     // A Run has one top-level identity across pVisor and Gateway.
     // Subagent sessions remain separate Storylines beneath this root.
     let root_session = spec.run_id.as_str().to_string();
@@ -934,6 +939,9 @@ fn apply_overlay_override(
     overlay_override: &OverlayHint,
 ) {
     overlay_cfg.backend = overlay_override.backend;
+    if overlay_override != &OverlayHint::default() {
+        overlay_cfg.access_policy = overlay_override.access_policy.clone();
+    }
     overlay_cfg.auto_apply = overlay_override.auto_apply;
     overlay_cfg.auto_discard = overlay_override.auto_discard;
     overlay_cfg.protect_target = overlay_override.protect_target;
@@ -1068,6 +1076,7 @@ fn inject_krun_overlay_metadata(
             "work": work,
             "preimages": record.stage_dir.join("preimages"),
             "excluded": record.excluded_paths,
+            "access_policy": record.access_policy,
         }),
     );
 }
@@ -1319,9 +1328,31 @@ pub(crate) fn apply_implant(process: &mut ProcessInvocation, plan: &ImplantPlan)
 }
 
 #[cfg(test)]
-mod vm_network_tests {
+mod tests {
     use super::rewrite_vm_gateway_implant;
     use persisting_control::{RunInvocation, RunSpec};
+
+    #[test]
+    fn absent_overlay_hint_preserves_configured_file_policy() {
+        let mut config = persisting_gateway::config::OverlayConfig {
+            access_policy: persisting_control::FileAccessPolicy::new(
+                vec!["**/.ssh".into()],
+                vec![],
+            )
+            .unwrap(),
+            ..Default::default()
+        };
+        super::apply_overlay_override(&mut config, &super::OverlayHint::default());
+        assert_eq!(config.access_policy.deny(), ["**/.ssh"]);
+        super::apply_overlay_override(
+            &mut config,
+            &super::OverlayHint {
+                stage_dir: Some("/stage".into()),
+                ..Default::default()
+            },
+        );
+        assert!(config.access_policy.deny().is_empty());
+    }
 
     #[test]
     fn gateway_loopback_urls_and_embedded_arguments_are_rewritten() {

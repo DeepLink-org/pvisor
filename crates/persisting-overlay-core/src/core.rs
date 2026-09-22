@@ -36,6 +36,7 @@ pub struct OverlayCore {
     upper: PathBuf,
     work: Option<PathBuf>,
     excluded: BTreeSet<PathBuf>,
+    access: crate::FileAccessPolicy,
     // Keep every upper alias so unlink/replacement can retire a path without
     // losing the copied inode while another alias still carries its changes.
     copied_hard_links: Mutex<HashMap<(u64, u64), Vec<PathBuf>>>,
@@ -260,6 +261,7 @@ impl OverlayCore {
             work,
             excluded,
             copied_hard_links: Mutex::new(HashMap::new()),
+            access: crate::FileAccessPolicy::default(),
             preimage_dir,
             preimage_lock: Mutex::new(()),
         };
@@ -325,15 +327,77 @@ impl OverlayCore {
     }
 
     fn is_excluded(&self, rel: &Path) -> bool {
-        self.excluded
-            .iter()
-            .any(|prefix| rel == prefix || rel.starts_with(prefix))
+        self.access.denied(rel)
+            || self.excluded.iter().any(|prefix| {
+                rel.starts_with(prefix)
+                    || (cfg!(target_os = "macos")
+                        && rel.components().count() >= prefix.components().count()
+                        && rel.components().zip(prefix.components()).all(|(a, b)| {
+                            a.as_os_str()
+                                .as_bytes()
+                                .eq_ignore_ascii_case(b.as_os_str().as_bytes())
+                        }))
+            })
     }
 
     fn require_visible(&self, rel: &Path) -> io::Result<()> {
         Self::validate_rel(rel)?;
+        self.access.check(rel).map_err(|_| error(libc::EACCES))?;
         if self.is_excluded(rel) {
             return Err(error(libc::ENOENT));
+        }
+        Ok(())
+    }
+
+    pub fn with_access_policy(mut self, policy: &crate::FileAccessPolicy) -> Self {
+        self.access = policy.clone();
+        self
+    }
+
+    // ponytail: reject multiply-linked files when denials exist; an inode index would
+    // require scanning every lower and tracking external changes to avoid alias bypasses.
+    fn require_unaliased(&self, path: &Path) -> io::Result<()> {
+        if self.access.has_denials() {
+            let metadata = fs::symlink_metadata(path)?;
+            if metadata.is_file() && metadata.nlink() > 1 {
+                return Err(error(libc::EACCES));
+            }
+        }
+        Ok(())
+    }
+
+    /// Validate physical descendants, including names hidden by access rules, before
+    /// moving/removing a directory. Never follow symlinks into another tree.
+    fn require_tree_access(&self, old: &Path, new: &Path) -> io::Result<()> {
+        if !self.access.has_denials() {
+            return Ok(());
+        }
+        self.require_visible(old)?;
+        self.require_visible(new)?;
+        let mut names = BTreeSet::new();
+        for root in std::iter::once(&self.upper).chain(&self.lowers) {
+            if old.ancestors().skip(1).any(|parent| {
+                fs::symlink_metadata(root.join(parent)).is_ok_and(|meta| !meta.is_dir())
+            }) {
+                continue;
+            }
+            let path = root.join(old);
+            match fs::symlink_metadata(&path) {
+                Ok(metadata) if metadata.is_dir() => {
+                    for entry in fs::read_dir(path)? {
+                        let name = entry?.file_name();
+                        if !Self::is_whiteout_name(&name) {
+                            names.insert(name);
+                        }
+                    }
+                }
+                Ok(_) => self.require_unaliased(&path)?,
+                Err(err) if err.kind() == io::ErrorKind::NotFound => {}
+                Err(err) => return Err(err),
+            }
+        }
+        for name in names {
+            self.require_tree_access(&old.join(&name), &new.join(&name))?;
         }
         Ok(())
     }
@@ -440,6 +504,7 @@ impl OverlayCore {
         for (index, component) in rel.components().enumerate() {
             current.push(component.as_os_str());
             let item = self.resolve_component(&current)?;
+            self.require_unaliased(&item.path).ok()?;
             if index + 1 != count {
                 let metadata = fs::symlink_metadata(&item.path).ok()?;
                 if !metadata.is_dir() {
@@ -541,12 +606,14 @@ impl OverlayCore {
     pub fn copy_up(&self, rel: &Path) -> io::Result<PathBuf> {
         self.require_visible(rel)?;
         Self::validate_rel(rel)?;
-        self.record_preimage(rel)?;
         let upper = self.upper_path(rel);
         if exists(&upper) {
+            self.require_unaliased(&upper)?;
+            self.record_preimage(rel)?;
             return Ok(upper);
         }
         let resolved = self.resolve(rel).ok_or_else(|| error(libc::ENOENT))?;
+        self.record_preimage(rel)?;
         if resolved.is_upper {
             return Ok(resolved.path);
         }
@@ -582,7 +649,10 @@ impl OverlayCore {
                         .create_new(true)
                         .mode(metadata.mode() & 0o7777);
                     let mut destination = options.open(&temporary)?;
-                    let mut source = File::open(&resolved.path)?;
+                    let mut source = OpenOptions::new()
+                        .read(true)
+                        .custom_flags(libc::O_NOFOLLOW)
+                        .open(&resolved.path)?;
                     io::copy(&mut source, &mut destination)?;
                 }
             } else {
@@ -642,7 +712,12 @@ impl OverlayCore {
         }
         names.retain(|name| {
             !self.is_whiteouted(rel, name)
-                && Self::child(rel, name).is_ok_and(|child| !self.is_excluded(&child))
+                && Self::child(rel, name).is_ok_and(|child| {
+                    !self.is_excluded(&child)
+                        && self
+                            .resolve_component(&child)
+                            .is_some_and(|item| self.require_unaliased(&item.path).is_ok())
+                })
         });
         Ok(names.into_iter().collect())
     }
@@ -758,6 +833,9 @@ impl OverlayCore {
 
     pub fn remove(&self, rel: &Path, directory: bool) -> io::Result<()> {
         self.require_visible(rel)?;
+        if directory {
+            self.require_tree_access(rel, rel)?;
+        }
         let resolved = self.resolve(rel).ok_or_else(|| error(libc::ENOENT))?;
         let metadata = fs::symlink_metadata(&resolved.path)?;
         if directory {
@@ -908,6 +986,10 @@ impl OverlayCore {
             return Err(error(libc::EINVAL));
         }
         let replaced_upper = self.validate_replacement(old, new, no_replace)?;
+        self.require_tree_access(old, new)?;
+        if self.resolve(new).is_some() {
+            self.require_tree_access(new, new)?;
+        }
         self.record_logical_tree_mapping(old, old)?;
         self.record_logical_tree_mapping(old, new)?;
         let source = if source_meta.is_dir() {
@@ -955,6 +1037,9 @@ impl OverlayCore {
     }
 
     pub fn hard_link(&self, source: &Path, destination: &Path) -> io::Result<()> {
+        if self.access.has_denials() {
+            return Err(error(libc::EACCES));
+        }
         self.require_visible(source)?;
         self.require_visible(destination)?;
         let metadata = self.metadata(source)?;
@@ -991,6 +1076,8 @@ impl OverlayCore {
         }
         let first_meta = self.metadata(first)?;
         let second_meta = self.metadata(second)?;
+        self.require_tree_access(first, second)?;
+        self.require_tree_access(second, first)?;
         self.record_logical_tree_mapping(first, first)?;
         self.record_logical_tree_mapping(second, second)?;
         self.record_logical_tree_mapping(first, second)?;
@@ -1040,6 +1127,68 @@ mod tests {
         lower2: PathBuf,
         upper: PathBuf,
         core: OverlayCore,
+    }
+
+    #[test]
+    fn access_rules_cover_layers_new_files_and_directory_moves() {
+        let mut fixture = Fixture::new();
+        for root in [&fixture.lower1, &fixture.lower2, &fixture.upper] {
+            fs::create_dir_all(root.join("project/.ssh")).unwrap();
+            fs::write(root.join("project/.ssh/id_ed25519"), b"private").unwrap();
+            fs::write(root.join("project/.env"), b"warn only").unwrap();
+        }
+        fixture.core = fixture.core.with_access_policy(
+            &crate::FileAccessPolicy::new(
+                vec!["**/.ssh".into(), "**/id_rsa".into()],
+                vec!["**/.env".into()],
+            )
+            .unwrap(),
+        );
+        let core = &fixture.core;
+        assert!(core.resolve(Path::new("project/.ssh/id_ed25519")).is_none());
+        assert_eq!(
+            core.list_names(Path::new("project")).unwrap(),
+            [OsString::from(".env")]
+        );
+        assert!(core.copy_up(Path::new("project/.env")).is_ok());
+        assert!(
+            core.create_file(Path::new("id_rsa"), 0o600, libc::O_RDWR)
+                .is_err()
+        );
+        assert!(
+            core.rename(Path::new("project"), Path::new("renamed"), false)
+                .is_err()
+        );
+        assert!(core.remove(Path::new("project/.env"), false).is_ok());
+        assert!(core.remove(Path::new("project"), true).is_err());
+        assert!(fixture.upper.join("project/.ssh/id_ed25519").exists());
+        core.create_dir(Path::new("ordinary"), 0o700).unwrap();
+        core.rename(Path::new("ordinary"), Path::new("renamed"), false)
+            .unwrap();
+    }
+
+    #[test]
+    fn access_rules_reject_hardlink_aliases_and_symlink_traversal() {
+        let mut fixture = Fixture::new();
+        for root in [&fixture.lower1, &fixture.upper] {
+            fs::write(root.join("id_rsa"), b"private").unwrap();
+            fs::hard_link(root.join("id_rsa"), root.join("alias")).unwrap();
+        }
+        fixture.core = fixture.core.with_access_policy(
+            &crate::FileAccessPolicy::new(vec!["**/id_rsa".into()], vec![]).unwrap(),
+        );
+        let core = &fixture.core;
+        assert!(core.resolve(Path::new("alias")).is_none());
+        assert!(core.copy_up(Path::new("alias")).is_err());
+        assert!(
+            core.hard_link(Path::new("id_rsa"), Path::new("new-alias"))
+                .is_err()
+        );
+        core.create_symlink(Path::new("link"), Path::new("id_rsa"))
+            .unwrap();
+        assert!(core.resolve(Path::new("link/child")).is_none());
+        assert!(core.metadata(Path::new("../id_rsa")).is_err());
+        assert!(core.metadata(Path::new("/id_rsa")).is_err());
     }
 
     impl Fixture {

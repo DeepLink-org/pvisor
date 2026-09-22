@@ -57,6 +57,71 @@ struct OverlayDeviceSpec {
     preimages: Option<PathBuf>,
     #[serde(default)]
     excluded: Vec<PathBuf>,
+    #[serde(default)]
+    access_policy: persisting_control::overlay::FileAccessPolicy,
+}
+
+/// A host-root VM must not reach the same workspace through its original lower
+/// path, or reach writable backing state through the root device.
+fn protect_overlay_backing(
+    root: &mut OverlayDeviceSpec,
+    workspace: Option<&OverlayDeviceSpec>,
+) -> anyhow::Result<()> {
+    let mut deny = root.access_policy.deny().to_vec();
+    let mut warn = root.access_policy.warn().to_vec();
+    let mut hidden = vec![root.upper.clone()];
+    hidden.extend(root.work.iter().cloned());
+    hidden.extend(root.preimages.iter().cloned());
+    if let Some(workspace) = workspace {
+        hidden.push(workspace.upper.clone());
+        hidden.extend(workspace.work.iter().cloned());
+        hidden.extend(workspace.preimages.iter().cloned());
+        for lower in &root.lowers {
+            let lower = lower.canonicalize()?;
+            for source in &workspace.lowers {
+                let source = source.canonicalize()?;
+                if let Ok(relative) = source.strip_prefix(&lower) {
+                    if relative.as_os_str().is_empty() {
+                        continue;
+                    }
+                    let prefix = globset::escape(
+                        relative
+                            .to_str()
+                            .ok_or_else(|| anyhow::anyhow!("file rule prefix must be UTF-8"))?,
+                    );
+                    deny.extend(
+                        workspace
+                            .access_policy
+                            .deny()
+                            .iter()
+                            .map(|glob| format!("{prefix}/{glob}")),
+                    );
+                    warn.extend(
+                        workspace
+                            .access_policy
+                            .warn()
+                            .iter()
+                            .map(|glob| format!("{prefix}/{glob}")),
+                    );
+                }
+            }
+        }
+    }
+    root.access_policy = persisting_control::FileAccessPolicy::new(deny, warn)?;
+    for lower in &root.lowers {
+        let lower = lower.canonicalize()?;
+        for path in &hidden {
+            let path = path.canonicalize()?;
+            if let Ok(relative) = path.strip_prefix(&lower) {
+                anyhow::ensure!(
+                    !relative.as_os_str().is_empty(),
+                    "overlay backing must not equal its lower"
+                );
+                root.excluded.push(relative.to_owned());
+            }
+        }
+    }
+    Ok(())
 }
 
 #[derive(Debug, Serialize, Deserialize)]
@@ -216,6 +281,10 @@ impl RunExecutor for VmExecutor {
                 );
             }
         };
+        let access_policy = configured_overlay
+            .as_ref()
+            .map(|overlay| overlay.access_policy.clone())
+            .unwrap_or_default();
         let (root_overlay, workspace) = if overlay_target.is_none() {
             (
                 configured_overlay.unwrap_or_else(|| OverlayDeviceSpec {
@@ -224,6 +293,7 @@ impl RunExecutor for VmExecutor {
                     work: None,
                     preimages: None,
                     excluded: Vec::new(),
+                    access_policy: access_policy.clone(),
                 }),
                 None,
             )
@@ -235,6 +305,7 @@ impl RunExecutor for VmExecutor {
                     work: None,
                     preimages: None,
                     excluded: Vec::new(),
+                    access_policy: access_policy.clone(),
                 },
                 configured_overlay,
             )
@@ -314,10 +385,14 @@ impl RunExecutor for VmExecutor {
                 work: Some(root_work.clone()),
                 preimages: root_overlay.preimages,
                 excluded: root_overlay.excluded,
+                access_policy: root_overlay.access_policy,
             }
         } else {
             root_overlay
         };
+        if let Err(error) = protect_overlay_backing(&mut root_overlay, workspace.as_ref()) {
+            return failed_to_start(&spec, context.attempt_id(), started_at, error.to_string());
+        }
         let vm_network_enabled = context
             .spec()
             .metadata
@@ -770,6 +845,7 @@ fn add_krun_overlay(
         !overlay.lowers.is_empty(),
         "libkrun overlay requires a lower directory"
     );
+    let policy = CString::new(serde_json::to_string(&overlay.access_policy)?)?;
     let tag = CString::new(tag)?;
     let lowers = overlay
         .lowers
@@ -791,7 +867,7 @@ fn add_krun_overlay(
         .collect::<Vec<_>>();
     check_krun(
         unsafe {
-            krun::krun_add_virtiofs_overlay(
+            krun::krun_add_virtiofs_overlay_with_policy(
                 ctx,
                 tag.as_ptr(),
                 lower_ptrs.as_ptr(),
@@ -804,6 +880,7 @@ fn add_krun_overlay(
                 excluded_ptrs.as_ptr(),
                 excluded_ptrs.len(),
                 shm_size,
+                policy.as_ptr(),
             )
         },
         "krun_add_virtiofs_overlay",
@@ -1021,6 +1098,43 @@ fn check_krun(value: i32, operation: &str) -> anyhow::Result<()> {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn file_rules_cover_original_vm_workspace_paths_and_hide_backing() {
+        let temp = tempfile::tempdir().unwrap();
+        let root = temp.path().canonicalize().unwrap();
+        for name in ["project[1]", "upper", "work", "root-upper"] {
+            std::fs::create_dir(root.join(name)).unwrap();
+        }
+        let policy = persisting_control::overlay::FileAccessPolicy::new(
+            vec!["private.key".into()],
+            vec![".env".into()],
+        )
+        .unwrap();
+        let workspace = OverlayDeviceSpec {
+            lowers: vec![root.join("project[1]")],
+            upper: root.join("upper"),
+            work: Some(root.join("work")),
+            preimages: None,
+            excluded: vec![],
+            access_policy: policy.clone(),
+        };
+        let mut device = OverlayDeviceSpec {
+            lowers: vec![root.clone()],
+            upper: root.join("root-upper"),
+            work: None,
+            preimages: None,
+            excluded: vec![],
+            access_policy: policy,
+        };
+        protect_overlay_backing(&mut device, Some(&workspace)).unwrap();
+        let access = &device.access_policy;
+        assert!(access.denied(Path::new("project[1]/private.key")));
+        assert!(!access.denied(Path::new("project1/private.key")));
+        for name in ["root-upper", "upper", "work"] {
+            assert!(device.excluded.contains(&PathBuf::from(name)));
+        }
+    }
 
     #[test]
     fn settings_validate_resource_limits() {

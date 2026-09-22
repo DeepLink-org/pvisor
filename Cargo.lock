@@ -2507,6 +2507,7 @@ dependencies = [
  "libloading",
  "log",
  "once_cell",
+ "serde_json",
  "vm-memory",
 ]
 
@@ -2849,6 +2850,7 @@ name = "persisting-control"
 version = "0.3.0"
 dependencies = [
  "anyhow",
+ "globset",
  "ipnet",
  "proptest",
  "serde",

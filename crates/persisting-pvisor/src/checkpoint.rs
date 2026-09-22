@@ -37,6 +37,8 @@ pub struct LogicalCheckpoint {
     pub lower_dirs: Vec<PathBuf>,
     #[serde(default)]
     pub protect_target: bool,
+    #[serde(default)]
+    pub access_policy: persisting_control::overlay::FileAccessPolicy,
 }
 
 impl LogicalCheckpoint {
@@ -143,6 +145,7 @@ fn create_checkpoint(
             record.overlay_lowers.clone()
         },
         protect_target: overlay.protect_target,
+        access_policy: overlay.access_policy.clone(),
     };
     atomic_write(
         &root.join(CHECKPOINT_FILENAME),
@@ -265,6 +268,7 @@ mod tests {
                 merged_dir: root.join("merged"),
                 stage_dir: root.to_path_buf(),
                 excluded_paths: Vec::new(),
+                access_policy: Default::default(),
                 auto_apply: false,
                 auto_discard: false,
                 protect_target: false,
@@ -284,6 +288,8 @@ mod tests {
         let temp = tempfile::tempdir().unwrap();
         let mut record = stopped_record(temp.path());
         record.overlay.as_mut().unwrap().protect_target = true;
+        record.overlay.as_mut().unwrap().access_policy =
+            persisting_control::FileAccessPolicy::new(vec!["**/.ssh".into()], vec![]).unwrap();
         let upper = record.overlay.as_ref().unwrap().upper.path();
         fs::write(upper.join("one"), b"value").unwrap();
         fs::hard_link(upper.join("one"), upper.join("two")).unwrap();
@@ -291,6 +297,13 @@ mod tests {
 
         let checkpoint = create_logical_checkpoint(&record, Some("before-refactor")).unwrap();
         assert!(checkpoint.protect_target);
+        assert_eq!(checkpoint.access_policy.deny(), ["**/.ssh"]);
+        assert_eq!(
+            LogicalCheckpoint::read(&checkpoint.manifest_path())
+                .unwrap()
+                .access_policy,
+            checkpoint.access_policy
+        );
         let restored = temp.path().join("restored");
         restore_logical_checkpoint(&checkpoint, &restored).unwrap();
 
