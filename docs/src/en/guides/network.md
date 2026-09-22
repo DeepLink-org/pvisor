@@ -39,6 +39,118 @@ Use `--overlaynet off|auto|proxy` as the primary OverlayNet switch:
 
 If omitted, policy flags and Gateway capture infer the executor-appropriate mode.
 
+## Forward through an existing proxy
+
+When the server requires an existing HTTP proxy for egress, configure it explicitly:
+
+```bash
+pvisor run \
+  --overlaynet proxy \
+  --overlaynet-upstream-proxy http://127.0.0.1:17897 \
+  --gateway-mode off --gateway-debug \
+  -- agent-command
+```
+
+Traffic flows from the Agent through OverlayNet policy checks and recording, then
+through the upstream proxy to the destination. pVisor does not inherit an ambient
+upstream proxy: it replaces the Agent's proxy variables with its own listener.
+Currently the upstream must use HTTP, a numeric IP, and no authentication. These
+options require the explicit `proxy` driver. An
+unavailable upstream produces an error without falling back to a direct connection.
+
+If local DNS also returns unusable addresses, optionally select an HTTPS DNS JSON
+service supporting A/AAAA queries, such as
+`--overlaynet-dns-over-https https://dns.google/resolve`. This requires an upstream
+proxy; DNS queries travel through that proxy, and the selected resolver receives
+the queried hostnames. Omit the option to retain system DNS. pVisor authorizes the
+hostname, checks the resolved IPs, then asks the upstream to CONNECT to an authorized
+IP. The upstream does not re-resolve the destination hostname and bypass IP/CIDR
+checks. DNS failures do not fall back to system resolution.
+
+The TOML fields are `[overlaynet] upstream_proxy` and `dns_over_https`. Plain HTTP
+also travels through a CONNECT tunnel to the authorized IP. HTTPS clients must
+use standard CONNECT tunnels.
+
+With `--gateway-debug`, the Run's `.capture/debug.log` includes `network.result`
+entries with method, target authority, and response status. CONNECT 200 only means
+the tunnel was established; it does not prove TLS or application success. These
+entries do not expose HTTPS URL paths, bodies, or tool-call semantics. The Run
+bundle's `network.intercepted` holds request, allow, deny, and handler-failure counts.
+This proxy path does not update VM-specific DNS/TCP-flow/byte counters, or count
+pVisor's own DNS queries as Agent requests. Traffic bypassing the explicit proxy
+is outside these records, and network enforcement remains cooperative.
+
+### Save Agent defaults once
+
+`pvisor run -- codex` automatically reads `~/.config/pvisor/agents/codex.toml`.
+If `XDG_CONFIG_HOME` is an absolute path, it replaces `~/.config`.
+For the ChatGPT Gateway profile and an existing HTTP proxy, save:
+
+```toml
+[gateway]
+profile = "codex-chatgpt"
+level = "full"
+debug = true
+
+[overlaynet]
+mode = "proxy"
+upstream_proxy = "http://127.0.0.1:17897"
+dns_over_https = "https://dns.google/resolve"
+```
+
+Set the proxy address for your environment; omit DoH if system DNS works.
+After building and placing the desired pVisor binary on PATH, run from your project:
+
+```bash
+pvisor run -- codex
+```
+
+Defaults are selected by the command executable's basename and use the normal
+RunConfig TOML schema. They are not loaded from the repository. Missing files leave
+built-in defaults unchanged; invalid or unreadable files stop launch with an error.
+CLI options override matching settings, subject to existing conflict validation.
+`--spec` uses only the specified configuration; `--no-config` skips personal defaults.
+Other agents are unaffected unless their own defaults file exists. Full capture
+stores model request/response content; it does not enable stronger filesystem isolation.
+An SSH reverse proxy must remain connected while the agent runs.
+
+### Capture Codex model traffic through the upstream proxy
+
+For Codex using ChatGPT authentication, build `pvisor` and run from the repository:
+
+```bash
+./target/debug/pvisor run \
+  --gateway-profile codex-chatgpt \
+  --gateway-level full --gateway-debug \
+  --overlaynet-upstream-proxy http://127.0.0.1:17897 \
+  --overlaynet-dns-over-https https://dns.google/resolve \
+  -- codex
+```
+
+Replace the proxy address with your existing HTTP proxy. The DNS option is optional.
+Append Codex arguments after `codex`, for example `-- codex exec "Reply OK without using tools"`.
+The profile enables Gateway capture and infers the network driver; the example selects full capture.
+It preserves native Responses requests and
+model discovery, and selects HTTP/SSE for this Codex process only. Existing ChatGPT
+authentication is reused; saved Codex configuration is not rewritten. This profile
+does not enable WebSocket capture. It requires a direct `codex` executable and rejects
+custom Gateway routes or an explicit `--gateway-mode off`. Existing capture levels
+remain unchanged unless `--gateway-level` is supplied. The TOML equivalent is
+`[gateway] profile = "codex-chatgpt"`. Omit the profile for API keys or custom providers.
+The older Python helper delegates to this same built-in profile.
+
+Gateway model requests now travel through OverlayNet's policy and DNS checks, then
+through the configured upstream proxy. With an upstream proxy, all model route
+upstreams must be HTTPS, and allowlists must permit their destinations. Failures do
+not fall back to a direct connection. Explicit `wire_api="responses"` treats the
+route upstream as the complete API base and avoids Chat Completions conversion.
+One route may set `forward_models=true` to forward model discovery to that base.
+
+The Run's capture events contain `llm.request` and `llm.response.stream` for model
+HTTP/SSE traffic. Full capture records prompt and response content locally. Other
+HTTPS traffic still provides CONNECT metadata only. Successful capture does not
+establish filesystem isolation: check the Run's actual executor and boundary.
+
 ## Choose a policy
 
 The policy options configure the selected driver (or infer one when no explicit

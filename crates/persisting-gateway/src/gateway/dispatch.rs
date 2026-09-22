@@ -37,6 +37,12 @@ pub(crate) fn build_router(state: GatewayState) -> Router {
 impl OverlaySink for GatewayState {
     type RequestContext = GatewayRequestContext;
 
+    fn on_result(&self, method: &str, authority: &str, status: u16) {
+        if is_debug_enabled(&self.config, self.storage.as_path()) {
+            debug::log_network_result(self.storage.as_path(), method, authority, status);
+        }
+    }
+
     fn request_context(
         &self,
         request: &Request,

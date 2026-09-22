@@ -95,9 +95,9 @@ use persisting_overlaynet::{NetworkAccessRule, NetworkBandwidthLimit};
 use serde::Deserialize;
 
 use crate::config::{
-    ContainerMount, ContainerNetwork, ContainerPlatform, GatewayMode, OverlayFsBackend,
-    OverlayFsCommit, OverlayFsSettings, OverlayNetMode, OverlayNetPolicy, OverlayNetSettings,
-    RunConfig, RunExecutorKind, RunPolicy, RunStdio,
+    ContainerMount, ContainerNetwork, ContainerPlatform, GatewayMode, GatewayProfile,
+    OverlayFsBackend, OverlayFsCommit, OverlayFsSettings, OverlayNetMode, OverlayNetPolicy,
+    OverlayNetSettings, RunConfig, RunExecutorKind, RunPolicy, RunStdio,
 };
 use crate::runtime::{RunLineage, default_run_home, resolve_run};
 use crate::{
@@ -149,6 +149,10 @@ pub struct RunArgs {
     /// TOML RunConfig or prepared JSON RunSpec; explicit CLI values replace matching fields.
     #[arg(long, value_name = "FILE")]
     spec: Option<PathBuf>,
+
+    /// Skip personal Agent defaults from $XDG_CONFIG_HOME/pvisor/agents/<program>.toml.
+    #[arg(long)]
+    no_config: bool,
 
     /// Atomically write the delegated RunResult as JSON.
     #[arg(long, value_name = "FILE")]
@@ -318,6 +322,12 @@ struct OverlayFsOverrides {
 
 #[derive(Debug, Clone, Default, Args)]
 struct OverlayNetOverrides {
+    /// Trusted upstream HTTP proxy (IP address, no credentials); explicit-proxy driver only.
+    #[arg(long, value_name = "URL")]
+    overlaynet_upstream_proxy: Option<String>,
+    /// HTTPS DNS JSON endpoint, queried through the explicit upstream proxy.
+    #[arg(long, value_name = "URL")]
+    overlaynet_dns_over_https: Option<String>,
     /// Network driver: auto selects VM smoltcp, proxy is host/container only, off disables it.
     #[arg(
         long,
@@ -494,6 +504,9 @@ impl FromStr for OverlayNetRuleArg {
 
 #[derive(Debug, Clone, Default, Args)]
 struct GatewayOverrides {
+    /// Adapt a supported client and enable Gateway capture (without changing saved client config).
+    #[arg(long, value_enum)]
+    gateway_profile: Option<GatewayProfile>,
     #[arg(long, value_enum)]
     gateway_mode: Option<GatewayMode>,
     #[arg(long, value_name = "ADDR")]
@@ -555,6 +568,57 @@ impl FromStr for GatewayRouteArg {
     }
 }
 
+fn personal_config_root() -> Option<PathBuf> {
+    std::env::var_os("XDG_CONFIG_HOME")
+        .map(PathBuf::from)
+        .filter(|path| path.is_absolute())
+        .or_else(|| dirs::home_dir().map(|home| home.join(".config")))
+}
+
+fn load_run_config(args: &RunArgs, config_root: Option<&Path>) -> anyhow::Result<RunConfig> {
+    // Explicit specs are self-contained. Never discover configuration in the
+    // workspace: repository content must not silently choose a credential sink.
+    if let Some(path) = &args.spec {
+        return RunConfig::from_file(path)
+            .with_context(|| format!("load pVisor Run config {}", path.display()));
+    }
+    if args.no_config {
+        return Ok(RunConfig::default());
+    }
+    let name = args
+        .command
+        .first()
+        .and_then(|program| Path::new(program).file_name())
+        .and_then(|name| name.to_str());
+    let (Some(root), Some(name)) = (config_root, name) else {
+        return Ok(RunConfig::default());
+    };
+    if name.is_empty()
+        || name == "."
+        || name == ".."
+        || !name
+            .bytes()
+            .all(|b| b.is_ascii_alphanumeric() || b"._-".contains(&b))
+    {
+        return Ok(RunConfig::default());
+    }
+    let path = root.join("pvisor/agents").join(format!("{name}.toml"));
+    let source = match std::fs::read_to_string(&path) {
+        Ok(source) => source,
+        Err(error) if error.kind() == std::io::ErrorKind::NotFound => {
+            return Ok(RunConfig::default());
+        }
+        Err(error) => {
+            return Err(error)
+                .with_context(|| format!("read personal Agent config {}", path.display()));
+        }
+    };
+    let config = toml::from_str(&source)
+        .with_context(|| format!("parse personal Agent config {}", path.display()))?;
+    eprintln!("pVisor Agent defaults: {}", path.display());
+    Ok(config)
+}
+
 pub async fn run(args: RunArgs) -> anyhow::Result<i32> {
     if let Some(path) = args.spec.as_deref()
         && spec_is_json(path)?
@@ -564,13 +628,7 @@ pub async fn run(args: RunArgs) -> anyhow::Result<i32> {
     // Host runs use the safe-best-effort profile by default.
     let safe = true;
     let run_id = format!("run-{}", uuid::Uuid::new_v4());
-    let mut config = args
-        .spec
-        .as_deref()
-        .map(RunConfig::from_file)
-        .transpose()
-        .context("load pVisor Run config")?
-        .unwrap_or_default();
+    let mut config = load_run_config(&args, personal_config_root().as_deref())?;
     apply_cli(&mut config, args.clone())?;
     let stage_limit = config
         .overlayfs
@@ -684,6 +742,10 @@ fn directory_size_bytes(root: &Path) -> anyhow::Result<u64> {
 
 async fn run_prepared_spec(args: RunArgs) -> anyhow::Result<i32> {
     anyhow::ensure!(
+        args.gateway.gateway_profile.is_none(),
+        "--gateway-profile requires a normal run, not JSON --spec"
+    );
+    anyhow::ensure!(
         args.command.is_empty(),
         "a command cannot be combined with a JSON --spec"
     );
@@ -776,6 +838,10 @@ async fn run_prepared_spec(args: RunArgs) -> anyhow::Result<i32> {
                     rules: config.overlaynet.rules.clone(),
                     deny_rules: config.overlaynet.deny.clone(),
                     limits: config.overlaynet.limits.clone(),
+                    upstream: persisting_overlaynet::upstream::UpstreamConfig {
+                        proxy: config.overlaynet.upstream_proxy.clone(),
+                        dns_over_https: config.overlaynet.dns_over_https.clone(),
+                    },
                 },
             ));
         if let Some(proxy) = proxy {
@@ -1218,6 +1284,10 @@ async fn execute_config(
                 rules: config.overlaynet.rules.clone(),
                 deny_rules: config.overlaynet.deny.clone(),
                 limits: config.overlaynet.limits.clone(),
+                upstream: persisting_overlaynet::upstream::UpstreamConfig {
+                    proxy: config.overlaynet.upstream_proxy.clone(),
+                    dns_over_https: config.overlaynet.dns_over_https.clone(),
+                },
             },
         ));
     if let Some(proxy) = proxy {
@@ -1239,6 +1309,12 @@ async fn execute_config(
         .split_first()
         .context("missing Agent command; pass it after `--` or set run.command")?;
     let mut spec = RunSpec::process(run_id.as_str(), &config.run.agent, program);
+    if let Some(profile) = config.gateway.profile {
+        spec.metadata.insert(
+            "pvisor.gateway.profile".into(),
+            serde_json::to_value(profile)?,
+        );
+    }
     let RunInvocation::Process(process) = &mut spec.invocation;
     process.args = program_args.to_vec();
     process.stdin = StdioMode::Inherit;
@@ -1719,7 +1795,15 @@ fn apply_cli(config: &mut RunConfig, args: RunArgs) -> anyhow::Result<()> {
         || !args.overlaynet.overlaynet_limit.is_empty()
         || !args.overlaynet.overlaynet_rule.is_empty()
         || args.overlaynet.overlaynet_deny_all
-        || args.overlaynet.overlaynet_listen.is_some();
+        || args.overlaynet.overlaynet_listen.is_some()
+        || args.overlaynet.overlaynet_upstream_proxy.is_some()
+        || args.overlaynet.overlaynet_dns_over_https.is_some();
+    if let Some(value) = args.overlaynet.overlaynet_upstream_proxy {
+        config.overlaynet.upstream_proxy = Some(value);
+    }
+    if let Some(value) = args.overlaynet.overlaynet_dns_over_https {
+        config.overlaynet.dns_over_https = Some(value);
+    }
     if let Some(value) = explicit_overlaynet_mode {
         config.overlaynet.mode = value;
     }
@@ -1778,6 +1862,23 @@ fn apply_cli(config: &mut RunConfig, args: RunArgs) -> anyhow::Result<()> {
         };
     }
 
+    if let Some(profile) = args.gateway.gateway_profile {
+        config.gateway.profile = Some(profile);
+    }
+    if config.gateway.profile.is_some() {
+        anyhow::ensure!(
+            args.gateway.gateway_mode != Some(GatewayMode::Off),
+            "--gateway-profile conflicts with --gateway-mode off"
+        );
+        config.gateway.mode = GatewayMode::Capture;
+        if explicit_overlaynet_mode.is_none() {
+            config.overlaynet.mode = if config.run.executor == RunExecutorKind::Vm {
+                OverlayNetMode::Auto
+            } else {
+                OverlayNetMode::Proxy
+            };
+        }
+    }
     if let Some(value) = args.gateway.gateway_mode {
         config.gateway.mode = value;
         if value == GatewayMode::Capture && explicit_overlaynet_mode.is_none() {
@@ -1836,6 +1937,23 @@ fn validate(config: &RunConfig) -> anyhow::Result<()> {
     if config.run.command.is_empty() {
         bail!("missing Agent command; pass it after `--` or set run.command");
     }
+    if config.gateway.profile.is_some() {
+        anyhow::ensure!(
+            config.gateway.mode == GatewayMode::Capture,
+            "Gateway profile requires capture mode"
+        );
+        anyhow::ensure!(
+            config.gateway.routes.is_empty(),
+            "Gateway profile cannot be combined with custom model routes"
+        );
+        anyhow::ensure!(
+            Path::new(&config.run.command[0])
+                .file_name()
+                .and_then(|s| s.to_str())
+                == Some("codex"),
+            "codex-chatgpt profile requires a direct codex command"
+        );
+    }
     let overlay_path = config
         .overlayfs
         .as_ref()
@@ -1888,6 +2006,13 @@ fn validate(config: &RunConfig) -> anyhow::Result<()> {
     {
         bail!(
             "--overlayfs-commit apply cannot be combined with --overlayfs-compose until composed layers can be materialized safely"
+        );
+    }
+    if config.overlaynet.upstream_proxy.is_some() || config.overlaynet.dns_over_https.is_some() {
+        anyhow::ensure!(
+            config.overlaynet.mode == OverlayNetMode::Proxy
+                && config.run.executor != RunExecutorKind::Vm,
+            "upstream proxy/DNS options require the explicit --overlaynet proxy driver"
         );
     }
     if config.overlaynet.mode == OverlayNetMode::Off {
@@ -2111,6 +2236,10 @@ fn resolve_proxy(config: &RunConfig) -> anyhow::Result<Option<ProxyConfig>> {
         rules: config.overlaynet.rules.clone(),
         deny_rules: config.overlaynet.deny.clone(),
         limits: config.overlaynet.limits.clone(),
+        upstream: persisting_overlaynet::upstream::UpstreamConfig {
+            proxy: config.overlaynet.upstream_proxy.clone(),
+            dns_over_https: config.overlaynet.dns_over_https.clone(),
+        },
     };
     let proxy = ProxyConfig {
         listen: config.overlaynet.listen.clone(),
@@ -2122,7 +2251,11 @@ fn resolve_proxy(config: &RunConfig) -> anyhow::Result<Option<ProxyConfig>> {
         network,
         overlay: OverlayConfig::default(),
         models: if config.gateway.mode == GatewayMode::Capture {
-            config.gateway.routes.clone()
+            config
+                .gateway
+                .profile
+                .map(GatewayProfile::routes)
+                .unwrap_or_else(|| config.gateway.routes.clone())
         } else {
             Vec::new()
         },
@@ -2138,6 +2271,142 @@ fn paths_overlap(left: &Path, right: &Path) -> bool {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn personal_agent_defaults_are_scoped_overridable_and_fail_closed() {
+        let root = tempfile::tempdir().unwrap();
+        let dir = root.path().join("pvisor/agents");
+        std::fs::create_dir_all(&dir).unwrap();
+        let file = dir.join("codex.toml");
+        std::fs::write(
+            &file,
+            "[gateway]\nprofile = 'codex-chatgpt'\nlevel = 'full'\n",
+        )
+        .unwrap();
+        let parse = |argv: Vec<&str>| {
+            let crate::cli::Command::Run(args) = Cli::try_parse_from(argv).unwrap().command else {
+                unreachable!()
+            };
+            *args
+        };
+        let args = parse(vec![
+            "pvisor",
+            "run",
+            "--gateway-level",
+            "summary",
+            "--",
+            "/opt/bin/codex",
+            "exec",
+            "a prompt",
+        ]);
+        let mut config = load_run_config(&args, Some(root.path())).unwrap();
+        assert_eq!(config.gateway.profile, Some(GatewayProfile::CodexChatgpt));
+        assert_eq!(
+            config.gateway.level,
+            persisting_gateway::config::CaptureLevel::Full
+        );
+        apply_cli(&mut config, args).unwrap();
+        assert_eq!(
+            config.gateway.level,
+            persisting_gateway::config::CaptureLevel::Summary
+        );
+        assert_eq!(config.run.command, ["/opt/bin/codex", "exec", "a prompt"]);
+        let other = parse(vec!["pvisor", "run", "--", "sh"]);
+        assert!(
+            load_run_config(&other, Some(root.path()))
+                .unwrap()
+                .gateway
+                .profile
+                .is_none()
+        );
+        std::fs::write(&file, "invalid = [").unwrap();
+        let ordinary = parse(vec!["pvisor", "run", "--", "codex"]);
+        assert!(load_run_config(&ordinary, Some(root.path())).is_err());
+        let disabled = parse(vec!["pvisor", "run", "--no-config", "--", "codex"]);
+        assert!(
+            load_run_config(&disabled, Some(root.path()))
+                .unwrap()
+                .gateway
+                .profile
+                .is_none()
+        );
+        let explicit = root.path().join("explicit.toml");
+        std::fs::write(&explicit, "[gateway]\nlevel = 'summary'\n").unwrap();
+        let args = parse(vec![
+            "pvisor",
+            "run",
+            "--spec",
+            explicit.to_str().unwrap(),
+            "--",
+            "codex",
+        ]);
+        assert!(
+            load_run_config(&args, Some(root.path()))
+                .unwrap()
+                .gateway
+                .profile
+                .is_none()
+        );
+    }
+
+    fn codex_profile_config(extra: &[&str], command: &str) -> anyhow::Result<RunConfig> {
+        let mut argv = vec!["pvisor", "run", "--gateway-profile", "codex-chatgpt"];
+        argv.extend_from_slice(extra);
+        argv.extend(["--", command]);
+        let crate::cli::Command::Run(args) = Cli::try_parse_from(argv)?.command else {
+            unreachable!()
+        };
+        let mut config = RunConfig::default();
+        apply_cli(&mut config, *args)?;
+        validate(&config)?;
+        Ok(config)
+    }
+
+    #[test]
+    fn codex_profile_selects_capture_and_native_route_without_changing_capture_level() {
+        let config = codex_profile_config(&["--gateway-level", "full"], "/opt/bin/codex").unwrap();
+        assert_eq!(config.gateway.mode, GatewayMode::Capture);
+        assert_eq!(config.overlaynet.mode, OverlayNetMode::Proxy);
+        assert_eq!(
+            config.gateway.level,
+            persisting_gateway::config::CaptureLevel::Full
+        );
+        let roundtrip: RunConfig = toml::from_str(&toml::to_string(&config).unwrap()).unwrap();
+        assert_eq!(
+            roundtrip.gateway.profile,
+            Some(GatewayProfile::CodexChatgpt)
+        );
+        let proxy = resolve_proxy(&roundtrip).unwrap().unwrap();
+        assert_eq!(proxy.models.len(), 1);
+        assert_eq!(
+            proxy.models[0].upstream.as_deref(),
+            Some("https://chatgpt.com/backend-api/codex")
+        );
+        assert!(proxy.models[0].forward_models);
+        let config = codex_profile_config(&[], "codex").unwrap();
+        assert_eq!(
+            config.gateway.level,
+            persisting_gateway::config::CaptureLevel::Dialogue
+        );
+        assert!(RunConfig::default().gateway.profile.is_none());
+    }
+
+    #[test]
+    fn codex_profile_rejects_conflicting_modes_routes_and_other_programs() {
+        assert!(codex_profile_config(&["--gateway-mode", "off"], "codex").is_err());
+        assert!(codex_profile_config(&["--overlaynet", "off"], "codex").is_err());
+        assert!(
+            codex_profile_config(
+                &[
+                    "--gateway-route",
+                    "name=\"*\", upstream=\"https://example.com\""
+                ],
+                "codex"
+            )
+            .is_err()
+        );
+        assert!(codex_profile_config(&[], "sh").is_err());
+    }
 
     #[test]
     fn stage_spec_parses_persistent_and_drop_forms() {
@@ -2164,6 +2433,46 @@ mod tests {
     use proptest::prelude::*;
 
     use crate::cli::Cli;
+
+    #[test]
+    fn upstream_options_reach_forward_proxy_and_reject_unsupported_modes() {
+        let crate::cli::Command::Run(args) = Cli::try_parse_from([
+            "pvisor",
+            "run",
+            "--overlaynet",
+            "proxy",
+            "--overlaynet-upstream-proxy",
+            "http://127.0.0.1:17897",
+            "--overlaynet-dns-over-https",
+            "https://dns.google/resolve",
+            "--gateway-mode",
+            "off",
+            "--",
+            "true",
+        ])
+        .unwrap()
+        .command
+        else {
+            unreachable!()
+        };
+        let mut config = RunConfig::default();
+        apply_cli(&mut config, *args).unwrap();
+        validate(&config).unwrap();
+        let proxy = resolve_proxy(&config).unwrap().unwrap();
+        assert_eq!(
+            proxy.network.upstream.proxy.as_deref(),
+            Some("http://127.0.0.1:17897")
+        );
+        assert_eq!(
+            proxy.network.upstream.dns_over_https.as_deref(),
+            Some("https://dns.google/resolve")
+        );
+        config.overlaynet.mode = OverlayNetMode::Off;
+        assert!(validate(&config).is_err());
+        config.overlaynet.mode = OverlayNetMode::Proxy;
+        config.gateway.mode = GatewayMode::Capture;
+        assert!(validate(&config).is_ok());
+    }
 
     #[test]
     fn safe_profile_builds_a_reviewable_default_run() {

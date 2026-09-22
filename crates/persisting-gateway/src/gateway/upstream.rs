@@ -39,6 +39,8 @@ mod tests {
             provider: None,
             upstream: Some(upstream.into()),
             upstream_anthropic: None,
+            wire_api: None,
+            forward_models: false,
             api_key_env: None,
             api_key: None,
             forward: None,

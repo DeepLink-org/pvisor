@@ -1284,18 +1284,31 @@ fn enrich_with_session(
         plan.notes.push("filesystem: host view (no overlay)".into());
     }
 
+    let profile = spec
+        .metadata
+        .get("pvisor.gateway.profile")
+        .cloned()
+        .map(serde_json::from_value::<crate::config::GatewayProfile>)
+        .transpose()?;
     let RunInvocation::Process(ref mut process) = spec.invocation;
     apply_implant(process, &plan);
     if gateway_enabled {
-        inject_gateway_args(process, listen);
+        inject_gateway_args(process, listen, profile);
     }
     spec.metadata
         .insert("pvisor.runtime.implant".into(), plan.as_metadata_json());
     Ok(plan)
 }
 
-fn inject_gateway_args(process: &mut ProcessInvocation, listen: &str) {
-    let extra = client_gateway_config_args(&process.program, listen);
+fn inject_gateway_args(
+    process: &mut ProcessInvocation,
+    listen: &str,
+    profile: Option<crate::config::GatewayProfile>,
+) {
+    let extra = match profile {
+        Some(profile) => profile.client_args(listen),
+        None => client_gateway_config_args(&process.program, listen),
+    };
     if extra.is_empty() {
         return;
     }
@@ -1322,6 +1335,50 @@ pub(crate) fn apply_implant(process: &mut ProcessInvocation, plan: &ImplantPlan)
 mod vm_network_tests {
     use super::rewrite_vm_gateway_implant;
     use persisting_control::{RunInvocation, RunSpec};
+
+    #[test]
+    fn codex_profile_injection_preserves_user_arguments_and_uses_bound_gateway() {
+        let mut spec = RunSpec::process("run-1", "codex", "/opt/bin/codex");
+        let RunInvocation::Process(process) = &mut spec.invocation;
+        let original = vec![
+            "exec".to_string(),
+            "--json".into(),
+            "a prompt with spaces and $shell syntax".into(),
+        ];
+        process.args = original.clone();
+        super::inject_gateway_args(
+            process,
+            "127.0.0.1:49123",
+            Some(crate::config::GatewayProfile::CodexChatgpt),
+        );
+        assert!(process.args.ends_with(&original));
+        assert_eq!(process.program, "/opt/bin/codex");
+        assert!(
+            process
+                .args
+                .iter()
+                .any(|s| s
+                    == "model_providers.pvisor_gateway.base_url=\"http://127.0.0.1:49123/v1\"")
+        );
+        assert!(
+            process
+                .args
+                .iter()
+                .any(|s| s == "model_providers.pvisor_gateway.supports_websockets=false")
+        );
+        assert!(
+            process
+                .args
+                .iter()
+                .any(|s| s == "model_providers.pvisor_gateway.requires_openai_auth=true")
+        );
+
+        let mut ordinary = RunSpec::process("run-2", "agent", "python3");
+        let RunInvocation::Process(process) = &mut ordinary.invocation;
+        process.args = original.clone();
+        super::inject_gateway_args(process, "127.0.0.1:49123", None);
+        assert_eq!(process.args, original);
+    }
 
     #[test]
     fn gateway_loopback_urls_and_embedded_arguments_are_rewritten() {

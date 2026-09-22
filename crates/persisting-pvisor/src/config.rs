@@ -274,6 +274,10 @@ pub enum OverlayFsCommit {
 #[derive(Debug, Clone, Deserialize, Serialize)]
 #[serde(default, deny_unknown_fields)]
 pub struct OverlayNetSettings {
+    /// Trusted HTTP proxy used by the explicit forward-proxy driver.
+    pub upstream_proxy: Option<String>,
+    /// Explicit HTTPS DNS JSON resolver; only used with upstream_proxy.
+    pub dns_over_https: Option<String>,
     pub mode: OverlayNetMode,
     pub listen: String,
     pub policy: OverlayNetPolicy,
@@ -287,6 +291,8 @@ pub struct OverlayNetSettings {
 impl Default for OverlayNetSettings {
     fn default() -> Self {
         Self {
+            upstream_proxy: None,
+            dns_over_https: None,
             mode: OverlayNetMode::Auto,
             listen: "127.0.0.1:19081".into(),
             policy: OverlayNetPolicy::Public,
@@ -320,6 +326,7 @@ pub enum OverlayNetPolicy {
 #[serde(default, deny_unknown_fields)]
 pub struct GatewaySettings {
     pub mode: GatewayMode,
+    pub profile: Option<GatewayProfile>,
     pub admin_listen: String,
     pub level: CaptureLevel,
     pub session_header: String,
@@ -332,6 +339,7 @@ impl Default for GatewaySettings {
     fn default() -> Self {
         Self {
             mode: GatewayMode::Off,
+            profile: None,
             admin_listen: "127.0.0.1:9876".into(),
             level: CaptureLevel::Dialogue,
             session_header: "x-persisting-session-id".into(),
@@ -348,6 +356,51 @@ pub enum GatewayMode {
     #[default]
     Off,
     Capture,
+}
+
+/// Opt-in client adaptation; never inferred from credentials on disk.
+#[derive(Debug, Clone, Copy, Deserialize, Serialize, PartialEq, Eq, clap::ValueEnum)]
+#[serde(rename_all = "kebab-case")]
+pub enum GatewayProfile {
+    CodexChatgpt,
+}
+
+impl GatewayProfile {
+    pub fn routes(self) -> Vec<ModelRoute> {
+        match self {
+            Self::CodexChatgpt => vec![ModelRoute {
+                name: "*".into(),
+                provider: Some("openai".into()),
+                upstream: Some("https://chatgpt.com/backend-api/codex".into()),
+                upstream_anthropic: None,
+                wire_api: Some(persisting_gateway::protocol::ProtocolKind::Responses),
+                forward_models: true,
+                api_key_env: None,
+                api_key: None,
+                forward: None,
+            }],
+        }
+    }
+
+    pub fn client_args(self, listen: &str) -> Vec<String> {
+        let base = persisting_gateway::injection::env::capture_openai_v1_base(listen);
+        match self {
+            Self::CodexChatgpt => [
+                "model_provider=\"pvisor_gateway\"".to_string(),
+                "model_providers.pvisor_gateway.name=\"pVisor Gateway\"".into(),
+                format!(
+                    "model_providers.pvisor_gateway.base_url={}",
+                    serde_json::to_string(&base).expect("serialize URL")
+                ),
+                "model_providers.pvisor_gateway.wire_api=\"responses\"".into(),
+                "model_providers.pvisor_gateway.requires_openai_auth=true".into(),
+                "model_providers.pvisor_gateway.supports_websockets=false".into(),
+            ]
+            .into_iter()
+            .flat_map(|value| ["-c".into(), value])
+            .collect(),
+        }
+    }
 }
 
 #[derive(Debug, Clone, Default, Deserialize, Serialize)]

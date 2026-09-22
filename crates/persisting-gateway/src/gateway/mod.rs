@@ -3,6 +3,7 @@
 mod admin;
 mod auth;
 mod common;
+mod decoding;
 mod dispatch;
 mod llm_capture;
 mod model;

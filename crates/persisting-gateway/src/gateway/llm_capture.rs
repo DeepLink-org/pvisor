@@ -70,7 +70,7 @@ pub(super) async fn llm_capture(
     cfg: Arc<ProxyConfig>,
     debug_on: bool,
 ) -> anyhow::Result<Response> {
-    let (parts, body) = req.into_parts();
+    let (mut parts, body) = req.into_parts();
 
     if is_websocket_upgrade(&parts.headers) {
         return Ok(Response::builder()
@@ -99,6 +99,37 @@ pub(super) async fn llm_capture(
                 .into_response());
         }
     };
+    if parts.headers.contains_key("content-encoding") {
+        let values = parts
+            .headers
+            .get_all("content-encoding")
+            .iter()
+            .collect::<Vec<_>>();
+        if values.len() != 1 {
+            return Ok((
+                StatusCode::UNSUPPORTED_MEDIA_TYPE,
+                "multiple Content-Encoding values are unsupported",
+            )
+                .into_response());
+        }
+    }
+    let encoding = parts
+        .headers
+        .get("content-encoding")
+        .map(|value| value.to_str().unwrap_or("unsupported").to_owned());
+    let body_bytes = match tokio::task::spawn_blocking(move || {
+        super::decoding::decode_body(encoding.as_deref(), body_bytes, MAX_REQUEST_BODY_BYTES)
+    })
+    .await
+    .context("decode request body worker")?
+    {
+        Ok(body) => body,
+        Err(error) => return Ok(error.into_response()),
+    };
+    // Capture and forward the decoded representation consistently. reqwest
+    // computes the new length; stale compression/framing must not survive.
+    parts.headers.remove("content-encoding");
+    parts.headers.remove("content-length");
     let path = parts.uri.path().to_string();
     let method = parts.method.clone();
     let protocol = ProtocolKind::from_path(&path);
@@ -114,6 +145,27 @@ pub(super) async fn llm_capture(
     let session_id = capture_route.session_id.clone();
 
     if method == Method::GET && is_models_list_path(&path) {
+        if let Some(route) = cfg.models.iter().find(|route| route.forward_models) {
+            let mut url = route.resolve_upstream_url(&path, ProtocolKind::Responses)?;
+            url.set_query(parts.uri.query());
+            let request = apply_upstream_headers(
+                state.client.get(url),
+                &parts.headers,
+                route,
+                ProtocolKind::Responses,
+            )?;
+            let response = request.send().await.context("forward model discovery")?;
+            let status = response.status();
+            let headers = response.headers().clone();
+            let body = read_response_body_limited(response, MAX_RESPONSE_BODY_BYTES).await?;
+            let mut response = Response::builder().status(status);
+            for (name, value) in &headers {
+                if !skip_response_header_after_reframing(&headers, name.as_str(), false) {
+                    response = response.header(name, value);
+                }
+            }
+            return Ok(response.body(Body::from(body))?);
+        }
         let json = build_models_response(&cfg);
         let bytes = serde_json::to_vec(&json).context("serialize /v1/models")?;
         return Ok(Response::builder()

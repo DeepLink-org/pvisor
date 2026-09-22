@@ -2886,6 +2886,7 @@ dependencies = [
  "toml",
  "tracing",
  "url",
+ "zstd",
 ]
 
 [[package]]
@@ -2931,6 +2932,7 @@ dependencies = [
  "proptest",
  "reqwest",
  "serde",
+ "serde_json",
  "smoltcp",
  "thiserror 2.0.18",
  "tokio",

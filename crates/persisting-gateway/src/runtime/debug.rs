@@ -110,6 +110,13 @@ pub fn log_connect(storage: &Path, target: &str, session_id: &str) {
     );
 }
 
+pub fn log_network_result(storage: &Path, method: &str, authority: &str, status: u16) {
+    emit(
+        storage,
+        &format!("network.result method={method} authority={authority} status={status}"),
+    );
+}
+
 pub fn log_network_denied(storage: &Path, host: &str, mode: &str, reason: &str, session_id: &str) {
     emit(
         storage,

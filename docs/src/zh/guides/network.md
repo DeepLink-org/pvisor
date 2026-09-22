@@ -35,6 +35,104 @@ pvisor run \
 
 省略该参数时，策略参数和 Gateway capture 会按 executor 自动推导模式。
 
+## 通过已有代理出网
+
+如果服务器需要通过已有 HTTP 代理联网，显式指定上游出口：
+
+```bash
+pvisor run \
+  --overlaynet proxy \
+  --overlaynet-upstream-proxy http://127.0.0.1:17897 \
+  --gateway-mode off --gateway-debug \
+  -- agent-command
+```
+
+路径为 Agent → OverlayNet 策略检查与记录 → 上游代理 → 目标服务。pVisor 不会自动
+继承终端的上游代理，因为它会将 Agent 的代理变量指向自己的监听地址。目前上游配置
+要求 HTTP 协议、数值 IP，且不支持认证；只适用于显式 `proxy` driver。
+上游不可达时返回错误，不回退到直连。
+
+如果本地 DNS 也无法返回可用地址，可额外选择支持 A/AAAA 查询的 HTTPS DNS JSON
+服务，例如 `--overlaynet-dns-over-https https://dns.google/resolve`。这个选项需要上游
+代理，DNS 查询也通过该代理发送；被选中的 DNS 服务会看到所查询的域名。省略时继续
+使用系统 DNS。pVisor 先检查 hostname，再检查解析所得 IP，最后要求上游 CONNECT
+到授权 IP，不让上游重新解析目标域名而绕过 IP/CIDR 检查。DNS 失败不会回退到系统解析。
+
+对应 TOML 字段是 `[overlaynet] upstream_proxy` 和 `dns_over_https`。普通 HTTP 会通过
+到授权 IP 的 CONNECT 隧道转发，HTTPS 客户端需要使用标准 CONNECT 隧道。
+
+`--gateway-debug` 在本次 Run 的 `.capture/debug.log` 中写入 `network.result`，包含
+方法、目标 authority 和返回状态。CONNECT 200 仅表示隧道建立，不代表 TLS 或应用请求
+成功；它不提供 HTTPS 内部 URL、请求正文或工具调用语义。Run bundle 的
+`network.intercepted` 保存请求、允许、拒绝和处理失败计数。此 proxy 路径不更新 VM
+专用的 DNS/TCP flow/字节字段，也不将 pVisor 自己的 DNS 查询计入 Agent 请求计数。
+这些记录不覆盖绕过显式代理的流量，网络边界仍然是 cooperative。
+
+### 配置一次，之后自动读取
+
+`pvisor run -- codex` 会自动读取 `~/.config/pvisor/agents/codex.toml`。
+若设置了绝对路径的 `XDG_CONFIG_HOME`，则以它替换 `~/.config`。
+使用 ChatGPT Gateway 和已有 HTTP 代理时，可保存以下内容：
+
+```toml
+[gateway]
+profile = "codex-chatgpt"
+level = "full"
+debug = true
+
+[overlaynet]
+mode = "proxy"
+upstream_proxy = "http://127.0.0.1:17897"
+dns_over_https = "https://dns.google/resolve"
+```
+
+代理地址按实际环境设置；系统 DNS 可用时可省略 DoH。构建并将所需 pVisor 版本
+放入 PATH 后，在工作项目目录直接运行：
+
+```bash
+pvisor run -- codex
+```
+
+配置按命令的可执行文件名匹配，格式沿用 RunConfig TOML，不从项目仓库自动加载。
+文件不存在时使用内置默认值；文件无效或不可读时明确报错，不静默忽略。
+命令行参数覆盖对应设置，仍须满足原有冲突校验；`--spec` 只使用指定配置，
+`--no-config` 跳过个人默认配置。其他 Agent 只有自己的配置文件存在时才会加载。
+Full capture 保存模型请求与回复内容，不改变文件隔离能力。使用 SSH 反向代理时，
+代理连接仍须保持在线。
+
+### 通过上游代理采集 Codex 模型请求
+
+使用 ChatGPT 登录的 Codex，可在构建 `pvisor` 后，从仓库目录运行：
+
+```bash
+./target/debug/pvisor run \
+  --gateway-profile codex-chatgpt \
+  --gateway-level full --gateway-debug \
+  --overlaynet-upstream-proxy http://127.0.0.1:17897 \
+  --overlaynet-dns-over-https https://dns.google/resolve \
+  -- codex
+```
+
+代理地址替换为已有 HTTP 代理；DNS 参数可省略。在 `codex` 后可追加参数，
+例如 `-- codex exec "只回复 OK，不调用工具"`。profile 开启 Gateway capture 并推导网络
+driver，上例另行选择 full 采集级别。它保留原生
+Responses 请求和模型列表转发，仅为本次 Codex 进程选择 HTTP/SSE，复用现有
+ChatGPT 登录，不修改持久化配置。本配置不提供 WebSocket 内容采集。
+此 profile 要求直接启动 `codex` 可执行文件，不能与自定义 Gateway 路由或显式
+`--gateway-mode off` 组合；未指定 `--gateway-level` 时沿用原来的采集级别。
+TOML 对应 `[gateway] profile = "codex-chatgpt"`。API Key 和自定义服务不应使用此 profile。
+旧 Python 脚本也已改为调用这个内置 profile。
+
+Gateway 模型请求经过 OverlayNet 策略和 DNS 检查，再通过上游代理联网。
+配置上游代理时，模型路由的 upstream 必须为 HTTPS，allowlist 也必须允许模型服务
+目的地；失败不回退到直连。显式 `wire_api="responses"` 将 upstream 视为完整 API
+根路径，避免转换成 Chat Completions。最多一个路由可配置 `forward_models=true`，
+将模型列表请求转发至该根路径。
+
+模型 HTTP/SSE 请求会产生 `llm.request` 和 `llm.response.stream` 等 capture 事件。
+Full capture 会在本地保存提示词和回复内容；其他 HTTPS 流量仍只有 CONNECT 元数据。
+采集成功不代表文件隔离生效，需另行检查 Run 的实际 executor 和 boundary。
+
 ## 选择策略
 
 策略参数用于配置已选择的 driver（未显式指定模式时会自动推导）：
