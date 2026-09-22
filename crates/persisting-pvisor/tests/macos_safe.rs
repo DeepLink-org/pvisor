@@ -46,8 +46,9 @@ fn safe_profile_stages_reviews_and_applies_on_macos() {
     let mut command = Command::new(env!("CARGO_BIN_EXE_pvisor"));
     command
         .env("PERSISTING_RUN_HOME", &run_home)
-        .args(["run", "--stdio", "capture", "--overlayfs-compose"])
-        .arg(&workspace)
+        .current_dir(&workspace)
+        .args(["run", "--stdio", "capture", "--stage"])
+        .arg(run_home.join("stage"))
         .args([
             "--",
             "/bin/sh",
@@ -120,6 +121,7 @@ fn safe_profile_stages_reviews_and_applies_on_macos() {
             .is_some_and(|stdout| stdout == "macos-ok")
     );
     let filesystem = bundle.filesystem.as_ref().expect("filesystem summary");
+    assert_eq!(filesystem.target, workspace.canonicalize().unwrap());
     assert_eq!(filesystem.changed_files, 2);
     assert!(filesystem.upper.join("macos-staged.txt").is_file());
     assert!(filesystem.upper.join("outside-link").is_symlink());
