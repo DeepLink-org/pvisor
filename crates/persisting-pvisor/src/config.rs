@@ -222,6 +222,8 @@ pub enum RunPolicy {
 #[derive(Debug, Clone, Deserialize, Serialize)]
 #[serde(default, deny_unknown_fields)]
 pub struct OverlayFsSettings {
+    #[serde(default)]
+    pub access_policy: persisting_control::overlay::FileAccessPolicy,
     /// Optional host base layer and default apply destination (normally the workspace).
     pub base: Option<PathBuf>,
     /// Absolute path where the staged overlay is exposed inside a libkrun guest.
@@ -242,6 +244,7 @@ pub struct OverlayFsSettings {
 impl Default for OverlayFsSettings {
     fn default() -> Self {
         Self {
+            access_policy: Default::default(),
             base: None,
             target: None,
             merged_dir: None,

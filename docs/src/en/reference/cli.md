@@ -120,6 +120,142 @@ in place; they create a monotonically increasing Overlay generation.
 After a command takes the environment lease it re-reads the generation
 so metadata from before the reset cannot overwrite the new stage.
 
+## `--safe` parameter preset
+
+```bash
+pvisor run --safe -- claude
+pvisor run --safe --vm --rootfs image=my-agent-image:latest -- codex
+pvisor run --safe -- zcode
+pvisor run --safe --overlaynet-allow inference.example.com:443 -- zcode
+```
+
+`--safe` generates a command-line argument patch, parses it through the same CLI parser, and
+applies it before explicit user arguments. Each Agent owns a file under `cli/run/safe/`:
+`codex.rs`, `claude.rs`, `gemini.rs`, and `zcode.rs`. Shared code selects and combines patches;
+The flag also requires the selected executor to enforce isolation; it never chooses an executor.
+Precedence is **explicit CLI > safe preset > configuration
+file > ordinary defaults**. Runs without `--safe` retain their existing behavior. The preset
+supports commands and TOML specs; prepared JSON RunSpecs reject it.
+
+`--safe` directly requires filesystem read/write and network isolation, without falling
+back to a plain host process. There is no separate sandbox flag or configuration setting.
+`--strict` continues to validate all requested capability dimensions, including resource
+limits, separately.
+
+- macOS host: Seatbelt confines reads/writes and allows only the allocated loopback TCP proxy
+  port, with necessary Run-local Unix IPC. Direct IP traffic and ambient host Unix sockets
+  are blocked. The Agent gets a temporary HOME; provide credentials explicitly or through
+  Gateway. System runtime files and path metadata needed for loading remain readable.
+- Linux host: namespaces and Landlock are mandatory. Currently only deny-all ordinary egress
+  is supported; selective egress/Gateway requires a namespace proxy bridge and fails closed.
+  Select VM explicitly for those combinations.
+- VM: the existing `auto` network boundary is required. Safe never selects VM automatically.
+- Container: `--safe` is rejected until a complete enforcement boundary is available.
+
+Sandbox setup failure stops execution. `--safe` cannot be combined with `--overlaynet off`.
+
+| Executed command | Default ordinary egress destination |
+| --- | --- |
+| `codex` | `api.openai.com:443` |
+| `claude` | `api.anthropic.com:443` |
+| `gemini` | `generativelanguage.googleapis.com:443` |
+| `zcode` | `api.z.ai:443`, `open.bigmodel.cn:443` |
+| Other commands or shell wrappers | Denied unless explicitly configured |
+
+Detection uses the executable filename, including absolute paths, rather than `--name`.
+These are standard API defaults; the preset does not inspect private Agent configuration or
+discover OAuth/custom provider endpoints. Unmatched destinations, including separate telemetry,
+upload, update and package download hosts, are denied by the policy. `--overlaynet-allow`
+replaces the preset grants; `--overlaynet-deny` adds denials. Configured deny rules and bandwidth
+limits are retained.
+
+The ZCode preset targets **API keys with direct OpenAI-compatible endpoints**, based on the
+[official model configuration guide](https://zcode.z.ai/cn/docs/configuration). Coding Plan uses
+`https://api.z.ai/api/coding/paas/v4` or `https://open.bigmodel.cn/api/coding/paas/v4`;
+ordinary API access uses `/api/paas/v4` on those hosts. The policy restricts hosts and ports,
+not these paths. It does not grant `zcode.z.ai`, login hosts, object storage, plugin markets
+or update hosts.
+
+Source review is pinned to ZCode commit `872ad960de7ec172591f7e1952f7849229f94521`.
+Its [model routing code](https://github.com/zai-org/ZCode/blob/872ad960de7ec172591f7e1952f7849229f94521/apps/zcode-cli/packages/adapters/src/model/official-coding-plan-gateway.ts)
+rewrites both official Anthropic messages endpoints to `zcode.z.ai`; that route and account
+login flows needing business hosts are outside this preset. API-key login alone does not imply
+direct OpenAI-compatible access.
+Its [proxy resolver](https://github.com/zai-org/ZCode/blob/872ad960de7ec172591f7e1952f7849229f94521/apps/zcode-cli/packages/adapters/src/network/http-config.ts)
+requires an explicit proxy setting or `ZCODE_HTTP_PROXY` for model calls, ignoring ordinary
+`HTTP_PROXY`. Generic proxy variables alone do not make its model calls use the proxy;
+`--safe` on macOS blocks direct connections. Configure its dedicated proxy setting for
+connectivity, or select VM for transparent egress. Other APIs sharing an allowed host, including
+business APIs on `api.z.ai`, remain reachable.
+
+The [original 3.12.3 forensic report](https://blog.ferstar.org/posts/zcode-silent-workspace-snapshot-upload/)
+describes snapshot uploads to object storage after obtaining credentials from the business host;
+its update reports removal of that pipeline in 3.14.0. This is version-specific external evidence,
+not a finding about every release. The allowlist rejects ungranted upload destinations without
+enumerating buckets, but cannot prevent local reads, packaging or content sent in permitted model
+requests. This preset has not been validated against a live ZCode account.
+
+If the effective configuration enables Gateway capture with explicit routes, the preset denies
+ordinary egress and retains those Gateway routes. Gateway continues its existing forwarding
+behavior; it does not become an inference-path filter.
+
+The preset uses `--clear-pass-env` to clear configured `run.pass_env` and selects manual commit for
+an existing overlay. `--clear-pass-env` also works on its own; explicit `--pass-env NAME` grants
+are applied afterward.
+Explicit CLI options can restore or override these settings. `--safe` now enables OverlayFS to
+apply file rules. Existing container mounts and compose layers are retained; the project base,
+rootfs and executor remain unchanged. Use `--pass-env` to deliver credentials explicitly, or let a configured
+Gateway hold the upstream key on the trusted side.
+
+Startup messages report the effective policy and overrides. Without `--safe`, host/container
+selective proxies remain bypassable. Hostname rules cannot
+distinguish inference from telemetry/upload APIs on the same host or detect data inside model
+requests. Glob rules cover the overlay view; `--safe` also limits access outside it, while
+explicitly granted shares need their own protection. Renamed copies, embedded secrets and Git history are not identified by filename rules.
+Bulk-read and tool-call attribution monitoring are not provided. Additional shares and
+`--rootfs host` expand the exposed data. `--safe` cannot be combined with disabling OverlayNet.
+
+## File access rules
+
+```bash
+pvisor run --overlayfs-deny '**/.ssh' --overlayfs-warn '**/.env*' -- my-agent
+```
+
+Both repeatable options enable OverlayFS. Globs are relative to the mount root: `*` stays within
+one component, `**` crosses directories, and a matching directory covers all descendants.
+Matching is case-insensitive to avoid casing aliases on backing filesystems. Empty patterns,
+absolute paths and `.`/`..` components are rejected. Deny takes precedence over warn: denied paths
+are hidden from directory listings and cannot be accessed, created or modified. Warnings allow
+access and print the path, never file contents, to supervisor stderr. They report filesystem
+access attempts including metadata operations, not exact read counts; kernel caching may coalesce accesses.
+
+Safe denies `.ssh` and `.gnupg` directories at any depth and files named `id_rsa`, `id_dsa`,
+`id_ecdsa`, `id_ecdsa_sk`, `id_ed25519`, or `id_ed25519_sk`. It warns on `.env`, `.env.*`,
+`*.pem`, `*.key`, `*.pub`, `*.p12`, `*.pfx`, `.aws/credentials`, `.netrc`, and `.npmrc`.
+Public keys inside `.ssh` are hidden with the directory; those outside only warn. These names
+cannot identify every private key; add rules for custom names.
+
+```toml
+[overlayfs.access_policy]
+deny = ["**/.ssh", "secrets/private.pem"]
+warn = ["**/.env", "**/*.key"]
+```
+
+Explicit `--overlayfs-deny` replaces the entire deny list; `--overlayfs-warn` replaces the entire
+warn list. They do not append to safe defaults. `--overlayfs-clear-rules` clears both lists before
+applying explicit entries, without disabling OverlayFS. CLI > safe > configuration > defaults
+still applies. Policies persist in Run records, checkpoints/forks, inspect mounts and Run Bundles.
+
+Host FUSE and VM virtio-fs share the checks. With any deny rule, this initial implementation
+conservatively rejects all multiply-linked regular files and new hard links to prevent alias
+bypasses. Directory moves, exchanges and removals check affected subtrees and reject operations
+that include denied files. Symlinks resolve through the mount namespace; file opens do not follow
+a final symlink into raw backing storage. VM root views also receive rules, with workspace
+original paths and overlay backing directories protected. Executor isolation is still required:
+ambient host reads, extra container shares and credentials outside the view remain separate
+concerns. Backing directories must be managed by a trusted supervisor; concurrent mutation by
+other host processes is outside this rule mechanism's guarantee.
+
 ## Replay an Agent trajectory
 
 `pvisor replay` assumes the caller has normally created a fresh sandbox. It

@@ -203,6 +203,7 @@ fn create(args: CreateArgs) -> Result<i32> {
         merged_dir: stage.join("merged"),
         stage_dir: stage.clone(),
         excluded_paths: Vec::new(),
+        access_policy: Default::default(),
         auto_apply: false,
         auto_discard: false,
         protect_target: false,

@@ -45,6 +45,8 @@ pub struct ProxyConfig {
 #[derive(Debug, Clone, Default, Deserialize, Serialize, PartialEq, Eq)]
 #[serde(deny_unknown_fields)]
 pub struct OverlayConfig {
+    #[serde(default)]
+    pub access_policy: persisting_control::overlay::FileAccessPolicy,
     /// When true, pVisor mounts its embedded OverlayFS for the Attempt.
     #[serde(default)]
     pub enabled: bool,

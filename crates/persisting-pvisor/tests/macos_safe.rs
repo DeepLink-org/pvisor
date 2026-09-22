@@ -256,3 +256,139 @@ raise SystemExit(0 if inet_code in denied and loopback_code == 0 and host_code i
             .all(|warning| !warning.contains("direct sockets may bypass"))
     );
 }
+
+#[test]
+fn required_sandbox_blocks_original_files_and_direct_sockets_but_allows_its_proxy() {
+    if !macfuse_is_installed() {
+        eprintln!("skipping required sandbox integration: macFUSE is not installed");
+        return;
+    }
+    let temporary = tempfile::Builder::new()
+        .prefix("pvstrict")
+        .tempdir_in("/tmp")
+        .unwrap();
+    let workspace = temporary.path().join("workspace");
+    let run_home = temporary.path().join("runs");
+    let outside = temporary.path().join("outside.key");
+    let outside_socket = temporary.path().join("host.sock");
+    fs::create_dir(&workspace).unwrap();
+    fs::write(&outside, "dummy-private-key").unwrap();
+    std::os::unix::fs::symlink(&outside, workspace.join("alias")).unwrap();
+    let _unix = UnixListener::bind(&outside_socket).unwrap();
+    // The listener needs no application server: a successful CONNECT proves the
+    // proxy reached this local fixture. No request leaves the machine.
+    let destination = TcpListener::bind("127.0.0.1:0").unwrap();
+    let port = destination.local_addr().unwrap().port();
+    let rule = format!(
+        r#"host="127.0.0.1",ports=[{port}],transports=["tcp_tunnel"],allow_private_ips=true"#
+    );
+    use std::os::fd::AsRawFd;
+    use std::os::unix::process::CommandExt;
+    let outside_file = fs::File::open(&outside).unwrap();
+    let outside_fd = outside_file.as_raw_fd();
+    let mut command = Command::new(env!("CARGO_BIN_EXE_pvisor"));
+    command
+        .current_dir(&workspace)
+        .env("PERSISTING_RUN_HOME", &run_home)
+        .args([
+            "run",
+            "--safe",
+            "--stdio",
+            "capture",
+            "--overlaynet-policy",
+            "allowlist",
+            "--overlaynet-rule",
+            &rule,
+            "--",
+            "/usr/bin/python3",
+            "-c",
+            r#"
+import errno, os, socket, subprocess, sys, urllib.parse
+assert os.environ['PERSISTING_SANDBOX_FILESYSTEM'] == 'seatbelt-read-write'
+assert os.environ['PERSISTING_SANDBOX_NETWORK'] == 'proxy-only'
+denied = (errno.EACCES, errno.EPERM)
+try: os.read(177, 1)
+except OSError as e: assert e.errno == errno.EBADF
+else: raise AssertionError('inherited descriptor leaked')
+for path in [sys.argv[1], 'alias']:
+    try:
+        with open(path) as f: f.read()
+    except OSError as e:
+        assert e.errno in denied, (path, e)
+    else:
+        raise AssertionError('outside file readable: ' + path)
+assert subprocess.run(['/bin/cat', sys.argv[1]], capture_output=True).returncode != 0
+for family, target in [(socket.AF_INET, ('127.0.0.1', int(sys.argv[3]))),
+                       (socket.AF_INET, ('192.0.2.1', 443)),
+                       (socket.AF_INET6, ('::1', int(sys.argv[3]))),
+                       (socket.AF_UNIX, sys.argv[2])]:
+    try:
+        with socket.socket(family, socket.SOCK_STREAM) as s:
+            s.settimeout(1)
+            code = s.connect_ex(target)
+    except PermissionError as e: code = e.errno
+    assert code in denied, (target, code)
+try:
+    with socket.socket(socket.AF_INET, socket.SOCK_DGRAM) as s:
+        s.sendto(b'probe', ('127.0.0.1', int(sys.argv[3])))
+except PermissionError: pass
+else: raise AssertionError('UDP escaped')
+try:
+    with socket.socket(socket.AF_INET, socket.SOCK_STREAM) as s:
+        s.bind(('127.0.0.1', 0))
+        s.listen(1)
+except PermissionError: pass
+else: raise AssertionError('inbound listener escaped')
+proxy = urllib.parse.urlparse(os.environ['HTTP_PROXY'])
+try: proxy_socket = socket.create_connection((proxy.hostname, proxy.port), timeout=2)
+except OSError as e: raise AssertionError((proxy.hostname, proxy.port, e)) from e
+with proxy_socket as s:
+    request = 'CONNECT 127.0.0.1:{0} HTTP/1.1\r\nHost: 127.0.0.1:{0}\r\n\r\n'.format(sys.argv[3])
+    s.sendall(request.encode())
+    response = s.recv(4096)
+    assert b'200' in response.split(b'\r\n')[0], response
+with socket.socket(socket.AF_UNIX, socket.SOCK_STREAM) as s:
+    s.connect(os.environ['PERSISTING_AGENTCTL_ENDPOINT'])
+with open(os.path.join(os.environ['HOME'], 'state'), 'w') as f: f.write('local-state')
+with open('result.txt', 'w') as f: f.write('staged')
+print('required-sandbox-ok')
+"#,
+        ])
+        .arg(&outside)
+        .arg(&outside_socket)
+        .arg(port.to_string());
+    // Simulate a caller accidentally passing an already-open sensitive file.
+    unsafe {
+        command.pre_exec(move || {
+            if libc::dup2(outside_fd, 177) < 0 {
+                return Err(std::io::Error::last_os_error());
+            }
+            Ok(())
+        });
+    }
+    let output = command.output().unwrap();
+    if !output.status.success() {
+        let bundle = RunBundle::read(&only_run(&run_home)).unwrap();
+        eprintln!("Agent output: {:?}", bundle.run.output);
+    }
+    assert!(
+        output.status.success(),
+        "stdout:\n{}\nstderr:\n{}",
+        String::from_utf8_lossy(&output.stdout),
+        String::from_utf8_lossy(&output.stderr)
+    );
+    let bundle = RunBundle::read(&only_run(&run_home)).unwrap();
+    assert!(bundle.safety.filesystem_read_non_bypassable);
+    assert!(bundle.safety.filesystem_write_non_bypassable);
+    assert!(bundle.safety.network_non_bypassable);
+    assert!(
+        bundle
+            .run
+            .output
+            .stdout
+            .as_deref()
+            .unwrap_or("")
+            .contains("required-sandbox-ok")
+    );
+    assert!(!workspace.join("result.txt").exists());
+}

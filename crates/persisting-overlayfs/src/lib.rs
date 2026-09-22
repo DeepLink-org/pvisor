@@ -51,6 +51,7 @@ pub struct OverlayMountConfig {
     /// namespace. Exclusions apply to every lower and the writable upper and
     /// cannot be recreated from inside the mount.
     pub excluded_paths: Vec<PathBuf>,
+    pub access_policy: persisting_overlay_core::FileAccessPolicy,
 }
 
 impl OverlayMountConfig {
@@ -76,6 +77,7 @@ impl OverlayMountConfig {
             debug: false,
             preimage_dir: None,
             excluded_paths: Vec::new(),
+            access_policy: Default::default(),
         }
     }
 
@@ -360,7 +362,8 @@ fn prepare(
             }
             filesystem
         }
-    };
+    }
+    .with_access_policy(&config.access_policy);
     // Access time is not part of a pVisor changeset. Disabling it also avoids
     // macFUSE issuing read-induced SETATTR requests that would otherwise force
     // lower files into the writable upper.

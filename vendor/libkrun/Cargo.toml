@@ -14,7 +14,6 @@ edition = "2021"
 name = "libkrun"
 version = "1.19.3"
 authors = ["The libkrun Authors"]
-build = "build.rs"
 autolib = false
 autobins = false
 autoexamples = false
@@ -82,10 +81,8 @@ virgl_resource_map2 = ["devices/virgl_resource_map2"]
 
 [lib]
 name = "krun"
-crate-type = [
-    "cdylib",
-    "lib",
-]
+# pVisor embeds libkrun; do not build or select a shared library.
+crate-type = ["rlib"]
 path = "src/lib.rs"
 
 [dependencies.crossbeam-channel]
@@ -120,6 +117,9 @@ version = ">=0.2.39"
 
 [dependencies.libloading]
 version = "0.8"
+
+[dependencies.serde_json]
+version = "1"
 
 [dependencies.log]
 version = "0.4.0"

@@ -7,6 +7,8 @@
 use serde::{Deserialize, Serialize};
 use std::path::{Path, PathBuf};
 
+pub use crate::file_access::{FileAccessDecision, FileAccessPolicy};
+
 /// Local Run inspection request, encoded as one JSON line on `control.sock`.
 /// This endpoint is separate from the cooperative AgentCtl protocol.
 #[derive(Debug, Serialize, Deserialize)]
@@ -46,6 +48,8 @@ pub struct OverlayRecord {
     /// merged view. Root overlays use this to hide their own backing state.
     #[serde(default)]
     pub excluded_paths: Vec<PathBuf>,
+    #[serde(default)]
+    pub access_policy: FileAccessPolicy,
     pub auto_apply: bool,
     #[serde(default)]
     pub auto_discard: bool,

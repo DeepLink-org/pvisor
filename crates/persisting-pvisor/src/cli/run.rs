@@ -1,3 +1,5 @@
+mod safe;
+
 use std::path::{Path, PathBuf};
 
 #[derive(Debug, Clone)]
@@ -194,6 +196,9 @@ pub struct ForkArgs {
 
 #[derive(Debug, Clone, Default, Args)]
 struct RunOverrides {
+    /// Require sandbox isolation and apply Agent-aware network/file presets; explicit CLI overrides win. Does not select an executor.
+    #[arg(long)]
+    safe: bool,
     /// Human-readable Run/Agent name.
     #[arg(long)]
     name: Option<String>,
@@ -215,6 +220,9 @@ struct RunOverrides {
     /// Project one host environment variable by name; repeat as needed.
     #[arg(long, value_name = "NAME")]
     pass_env: Vec<String>,
+    /// Clear environment names inherited from the TOML pass_env list before applying --pass-env.
+    #[arg(long)]
+    clear_pass_env: bool,
     /// Maximum processes/threads admitted for the Run.
     #[arg(long, value_name = "COUNT")]
     max_processes: Option<u64>,
@@ -303,6 +311,15 @@ impl FromStr for ContainerMountArg {
 
 #[derive(Debug, Clone, Default, Args)]
 struct OverlayFsOverrides {
+    /// Deny matching mount-relative paths and their descendants; repeatable glob.
+    #[arg(long, value_name = "GLOB")]
+    overlayfs_deny: Vec<String>,
+    /// Warn on access to matching mount-relative paths; repeatable glob.
+    #[arg(long, value_name = "GLOB")]
+    overlayfs_warn: Vec<String>,
+    /// Clear inherited file access rules before applying explicit deny/warn rules.
+    #[arg(long)]
+    overlayfs_clear_rules: bool,
     /// Absolute path visible to the Agent after the overlay view is mounted.
     #[arg(long = "overlayfs-path", value_name = "PATH")]
     overlayfs_path: Option<PathBuf>,
@@ -561,8 +578,6 @@ pub async fn run(args: RunArgs) -> anyhow::Result<i32> {
     {
         return run_prepared_spec(args).await;
     }
-    // Host runs use the safe-best-effort profile by default.
-    let safe = true;
     let run_id = format!("run-{}", uuid::Uuid::new_v4());
     let mut config = args
         .spec
@@ -571,7 +586,7 @@ pub async fn run(args: RunArgs) -> anyhow::Result<i32> {
         .transpose()
         .context("load pVisor Run config")?
         .unwrap_or_default();
-    apply_cli(&mut config, args.clone())?;
+    apply_run_options(&mut config, args.clone())?;
     let stage_limit = config
         .overlayfs
         .as_ref()
@@ -606,8 +621,10 @@ pub async fn run(args: RunArgs) -> anyhow::Result<i32> {
         .overlayfs
         .as_ref()
         .and_then(|overlay| overlay.stage.clone());
-    apply_safe_defaults(&mut config)?;
-    let mut result = execute_config(config, run_id.clone(), safe, None).await;
+    if args.run.safe {
+        warn_safe_preset(&config, &args);
+    }
+    let mut result = execute_config(config, run_id.clone(), args.run.safe, None).await;
     if result.is_ok()
         && let Some(limit) = stage_limit
         && let Some(path) = effective_stage
@@ -684,6 +701,10 @@ fn directory_size_bytes(root: &Path) -> anyhow::Result<u64> {
 
 async fn run_prepared_spec(args: RunArgs) -> anyhow::Result<i32> {
     anyhow::ensure!(
+        !args.run.safe,
+        "--safe cannot modify a prepared JSON RunSpec"
+    );
+    anyhow::ensure!(
         args.command.is_empty(),
         "a command cannot be combined with a JSON --spec"
     );
@@ -749,6 +770,7 @@ async fn run_prepared_spec(args: RunArgs) -> anyhow::Result<i32> {
                     && overlay.target.is_none()
                     && overlay.merged_dir.is_none()
                     && overlay.compose.is_empty()
+                    && overlay.access_policy == Default::default()
                     && overlay.backend == OverlayFsBackend::Directory
                     && overlay.commit == OverlayFsCommit::Manual
                     && overlay.stage.as_deref() == Some(stage_path.as_path())
@@ -949,6 +971,7 @@ pub async fn fork(args: ForkArgs) -> anyhow::Result<i32> {
     config.run.agent = agent;
     config.run.command = command;
     config.overlayfs = Some(OverlayFsSettings {
+        access_policy: checkpoint.access_policy.clone(),
         base: Some(checkpoint.target.clone()),
         target: None,
         merged_dir: None,
@@ -975,7 +998,7 @@ pub async fn fork(args: ForkArgs) -> anyhow::Result<i32> {
     execute_config(
         config,
         run_id,
-        true,
+        false,
         Some(RunLineage {
             parent_run_id: source.run_id,
             checkpoint_id: checkpoint.checkpoint_id,
@@ -1003,7 +1026,7 @@ fn fork_command(
 async fn execute_config(
     mut config: RunConfig,
     run_id: String,
-    safe_profile_requested: bool,
+    safe: bool,
     lineage: Option<RunLineage>,
 ) -> anyhow::Result<i32> {
     validate_vm_rootfs_platform(&config)?;
@@ -1090,9 +1113,9 @@ async fn execute_config(
             }
         }
     }
-    validate(&config)?;
+    validate(&config, safe)?;
 
-    if config.overlaynet.mode == OverlayNetMode::Proxy {
+    if config.overlaynet.mode == OverlayNetMode::Proxy && !safe {
         eprintln!(
             "pVisor OverlayNet boundary: explicit cooperative proxy; direct sockets remain ambient"
         );
@@ -1165,7 +1188,25 @@ async fn execute_config(
 
     let executor: Arc<dyn RunExecutor> = match config.run.executor {
         #[cfg(target_os = "linux")]
-        RunExecutorKind::Host if safe_profile_requested => {
+        RunExecutorKind::Host if safe => {
+            anyhow::ensure!(
+                crate::process::rootless_runtime_available(),
+                "required sandbox unavailable: Linux namespaces and Landlock must be enabled"
+            );
+            Arc::new(ProcessExecutor::rootless_with_launcher(
+                std::env::current_exe()?,
+            )?)
+        }
+        #[cfg(target_os = "macos")]
+        RunExecutorKind::Host if safe => Arc::new(ProcessExecutor::seatbelt_with_launcher(
+            std::env::current_exe()?,
+        )?),
+        #[cfg(not(any(target_os = "linux", target_os = "macos")))]
+        RunExecutorKind::Host if safe => {
+            bail!("required host sandbox is unsupported on this platform")
+        }
+        #[cfg(target_os = "linux")]
+        RunExecutorKind::Host => {
             if crate::process::rootless_runtime_available() {
                 match ProcessExecutor::rootless_with_launcher(std::env::current_exe()?) {
                     Ok(executor) => Arc::new(executor),
@@ -1184,7 +1225,7 @@ async fn execute_config(
             }
         }
         #[cfg(target_os = "macos")]
-        RunExecutorKind::Host if safe_profile_requested => {
+        RunExecutorKind::Host => {
             match ProcessExecutor::seatbelt_with_launcher(std::env::current_exe()?) {
                 Ok(executor) => Arc::new(executor),
                 Err(error) => {
@@ -1196,7 +1237,6 @@ async fn execute_config(
             }
         }
         #[cfg(not(any(target_os = "linux", target_os = "macos")))]
-        RunExecutorKind::Host if safe_profile_requested => Arc::new(ProcessExecutor::default()),
         RunExecutorKind::Host => Arc::new(ProcessExecutor::default()),
         RunExecutorKind::Container => Arc::new(ContainerExecutor::new(config.container.clone())?),
         RunExecutorKind::Vm => Arc::new(VmExecutor::new(config.vm.clone())?),
@@ -1267,6 +1307,10 @@ async fn execute_config(
     if !overlay_enabled {
         process.cwd = Some(workspace.display().to_string());
     }
+    if safe {
+        spec.metadata
+            .insert(crate::sandbox::REQUIRED_SANDBOX_KEY.into(), true.into());
+    }
     spec.runtime.timeout_ms = config.run.timeout_ms;
     spec.runtime.resource_limits = config.run.resource_limits.clone();
     spec.metadata.insert(
@@ -1322,12 +1366,14 @@ async fn execute_config(
         spec.metadata
             .insert("pvisor.lineage".into(), serde_json::to_value(lineage)?);
     }
-    if safe_profile_requested {
-        spec.metadata
-            .insert("pvisor.safe".into(), serde_json::Value::Bool(true));
-    }
+    spec.metadata
+        .insert("pvisor.safe".into(), serde_json::Value::Bool(true));
 
-    if safe_profile_requested {
+    if safe {
+        eprintln!(
+            "pVisor --safe: filesystem read/write and network boundaries must be enforced before Agent execution"
+        );
+    } else {
         let network_boundary = if config.run.executor == RunExecutorKind::Vm
             && config.overlaynet.mode == OverlayNetMode::Auto
         {
@@ -1424,17 +1470,16 @@ async fn execute_config(
         )
     })?;
     let bundle_path = RunBundle::path(&record.stage_dir());
-    if safe_profile_requested {
-        eprintln!("Run Bundle: {}", bundle_path.display());
-        eprintln!("Review: pvisor review {}", record.stage_dir().display());
-        if bundle.filesystem.is_some() {
-            eprintln!(
-                "Decide: pvisor apply {} | pvisor drop {}",
-                record.stage_dir().display(),
-                record.stage_dir().display()
-            );
-        }
+    eprintln!("Run Bundle: {}", bundle_path.display());
+    eprintln!("Review: pvisor review {}", record.stage_dir().display());
+    if bundle.filesystem.is_some() {
+        eprintln!(
+            "Decide: pvisor apply {} | pvisor drop {}",
+            record.stage_dir().display(),
+            record.stage_dir().display()
+        );
     }
+
     if result.state != RunState::Completed {
         if let Some(failure) = &result.failure {
             eprintln!("pVisor Run failed: {:?}: {}", failure.kind, failure.message);
@@ -1504,6 +1549,105 @@ fn apply_safe_defaults(config: &mut RunConfig) -> anyhow::Result<()> {
 fn free_loopback_address() -> anyhow::Result<String> {
     let listener = std::net::TcpListener::bind("127.0.0.1:0")?;
     Ok(listener.local_addr()?.to_string())
+}
+
+/// Resolve ordinary defaults/config, then the opt-in preset, then explicit CLI values.
+fn apply_run_options(config: &mut RunConfig, args: RunArgs) -> anyhow::Result<()> {
+    if args.run.safe {
+        // Resolve the actual command/executor/routes first, without mistaking --name for an Agent.
+        let mut requested = config.clone();
+        apply_cli(&mut requested, args.clone())?;
+        use clap::Parser;
+        let patch = safe::patch(&requested);
+        let super::Command::Run(patch) = super::Cli::try_parse_from(
+            ["pvisor".to_owned(), "run".to_owned()]
+                .into_iter()
+                .chain(patch),
+        )?
+        .command
+        else {
+            unreachable!("safe patch is a Run command")
+        };
+        apply_cli(config, *patch)?;
+    }
+    apply_cli(config, args.clone())?;
+    apply_safe_defaults(config)?;
+    // Unlike the legacy host defaults, the opt-in preset permits an explicit CLI override.
+    if args.run.safe
+        && let Some(commit) = args.overlayfs.overlayfs_commit
+        && let Some(overlay) = &mut config.overlayfs
+    {
+        overlay.commit = commit;
+    }
+    Ok(())
+}
+
+fn warn_safe_preset(config: &RunConfig, args: &RunArgs) {
+    eprintln!(
+        "pVisor --safe: executor={:?}, network={:?}; CLI > safe preset > config > defaults",
+        config.run.executor, config.overlaynet.policy
+    );
+    for rule in &config.overlaynet.rules {
+        eprintln!(
+            "pVisor --safe: allowed destination {:?}, ports {:?}",
+            rule.host, rule.ports
+        );
+    }
+    if config.overlaynet.policy == OverlayNetPolicy::Deny {
+        eprintln!(
+            "pVisor --safe: ordinary egress denied; configured Gateway routes remain separate. Use --overlaynet-allow or configure Gateway routes for an unrecognized/custom Agent."
+        );
+    }
+    if config.overlaynet.mode == OverlayNetMode::Off {
+        eprintln!("pVisor --safe warning: explicit CLI disabled OverlayNet");
+    } else if config.overlaynet.mode == OverlayNetMode::Auto
+        && config.run.executor != RunExecutorKind::Vm
+        && config.gateway.mode == GatewayMode::Off
+    {
+        eprintln!(
+            "pVisor --safe warning: explicit CLI selected auto without VM/Gateway; no selective proxy is installed"
+        );
+    }
+    eprintln!(
+        "pVisor --safe warning: destination rules cannot distinguish inference from telemetry/upload APIs on the same host; Gateway routes are not an inference-path filter."
+    );
+    eprintln!(
+        "pVisor --safe: OverlayFS denies private-key paths and warns on sensitive paths according to the effective rules. Glob rules cover the overlay view; required sandbox restricts access outside that view. Explicit shares, renamed copies and embedded secrets need separate rules. No bulk-read or tool-call attribution monitoring."
+    );
+    if let Some(overlay) = &config.overlayfs {
+        eprintln!(
+            "pVisor --safe: file deny={:?}, warn={:?}",
+            overlay.access_policy.deny(),
+            overlay.access_policy.warn()
+        );
+    }
+    if !config.container.mounts.is_empty()
+        || config
+            .overlayfs
+            .as_ref()
+            .is_some_and(|overlay| !overlay.compose.is_empty())
+    {
+        eprintln!(
+            "pVisor --safe warning: configured extra file shares are preserved; sensitive files in these paths remain accessible"
+        );
+    }
+    if !args.overlaynet.overlaynet_allow.is_empty()
+        || !args.overlaynet.overlaynet_rule.is_empty()
+        || args.overlaynet.overlaynet_policy.is_some()
+        || !args.run.pass_env.is_empty()
+        || !args.container.container_mount.is_empty()
+        || !args.overlayfs.overlayfs_compose.is_empty()
+        || args.overlayfs.overlayfs_commit == Some(OverlayFsCommit::Apply)
+    {
+        eprintln!(
+            "pVisor --safe warning: explicit CLI overrides preset network/sharing/commit defaults; additional destinations, credentials or files may be exposed"
+        );
+    }
+    if config.vm.rootfs.as_deref() == Some(Path::new("/")) {
+        eprintln!(
+            "pVisor --safe warning: host rootfs exposes host files, including credentials; the preset does not replace your rootfs"
+        );
+    }
 }
 
 fn apply_cli(config: &mut RunConfig, args: RunArgs) -> anyhow::Result<()> {
@@ -1588,6 +1732,9 @@ fn apply_cli(config: &mut RunConfig, args: RunArgs) -> anyhow::Result<()> {
     }
     if args.run.strict {
         config.run.policy = RunPolicy::Enforce;
+    }
+    if args.run.clear_pass_env {
+        config.run.pass_env.clear();
     }
     if !args.run.pass_env.is_empty() {
         config.run.pass_env = args.run.pass_env;
@@ -1693,6 +1840,9 @@ fn apply_cli(config: &mut RunConfig, args: RunArgs) -> anyhow::Result<()> {
     }
 
     let enables_overlayfs = args.overlayfs.overlayfs_path.is_some()
+        || !args.overlayfs.overlayfs_deny.is_empty()
+        || !args.overlayfs.overlayfs_warn.is_empty()
+        || args.overlayfs.overlayfs_clear_rules
         || !args.overlayfs.overlayfs_compose.is_empty()
         || args.overlayfs.overlayfs_backend.is_some()
         || args.overlayfs.overlayfs_commit.is_some();
@@ -1700,6 +1850,20 @@ fn apply_cli(config: &mut RunConfig, args: RunArgs) -> anyhow::Result<()> {
         let overlayfs = config
             .overlayfs
             .get_or_insert_with(OverlayFsSettings::default);
+        if args.overlayfs.overlayfs_clear_rules {
+            overlayfs.access_policy = Default::default();
+        }
+        let deny = if args.overlayfs.overlayfs_deny.is_empty() {
+            overlayfs.access_policy.deny().to_vec()
+        } else {
+            args.overlayfs.overlayfs_deny
+        };
+        let warn = if args.overlayfs.overlayfs_warn.is_empty() {
+            overlayfs.access_policy.warn().to_vec()
+        } else {
+            args.overlayfs.overlayfs_warn
+        };
+        overlayfs.access_policy = persisting_control::FileAccessPolicy::new(deny, warn)?;
         if let Some(value) = args.overlayfs.overlayfs_path {
             overlayfs.target = Some(value);
         }
@@ -1722,12 +1886,23 @@ fn apply_cli(config: &mut RunConfig, args: RunArgs) -> anyhow::Result<()> {
         || args.overlaynet.overlaynet_listen.is_some();
     if let Some(value) = explicit_overlaynet_mode {
         config.overlaynet.mode = value;
+        if value == OverlayNetMode::Off {
+            config.overlaynet.policy = OverlayNetPolicy::Public;
+            config.overlaynet.allow.clear();
+            config.overlaynet.rules.clear();
+            config.overlaynet.deny.clear();
+            config.overlaynet.limits.clear();
+        }
     }
     if let Some(value) = args.overlaynet.overlaynet_listen {
         config.overlaynet.listen = value;
     }
     if let Some(value) = args.overlaynet.overlaynet_policy {
         config.overlaynet.policy = value;
+        if value != OverlayNetPolicy::Allowlist {
+            config.overlaynet.allow.clear();
+            config.overlaynet.rules.clear();
+        }
     }
     if args.overlaynet.overlaynet_deny_all {
         config.overlaynet.policy = OverlayNetPolicy::Deny;
@@ -1831,7 +2006,25 @@ fn validate_vm_rootfs_platform(config: &RunConfig) -> anyhow::Result<()> {
     Ok(())
 }
 
-fn validate(config: &RunConfig) -> anyhow::Result<()> {
+fn validate(config: &RunConfig, safe: bool) -> anyhow::Result<()> {
+    if safe {
+        anyhow::ensure!(
+            config.run.executor != RunExecutorKind::Container,
+            "--safe does not yet support the container executor; select host/VM"
+        );
+        anyhow::ensure!(
+            config.overlaynet.mode != OverlayNetMode::Off,
+            "--safe requires OverlayNet and cannot be combined with --overlaynet off"
+        );
+        #[cfg(target_os = "linux")]
+        if config.run.executor == RunExecutorKind::Host {
+            anyhow::ensure!(
+                config.overlaynet.policy == OverlayNetPolicy::Deny
+                    && config.gateway.mode == GatewayMode::Off,
+                "--safe on Linux host currently supports deny-all only; selective egress/Gateway requires a namespace proxy bridge. Use --vm"
+            );
+        }
+    }
     validate_vm_rootfs_platform(config)?;
     if config.run.command.is_empty() {
         bail!("missing Agent command; pass it after `--` or set run.command");
@@ -2073,6 +2266,7 @@ fn resolve_overlay(
     compose.push(base);
     let merged_dir = overlayfs.merged_dir.clone();
     Ok(Some(OverlayHint {
+        access_policy: overlayfs.access_policy.clone(),
         lower_dirs: compose,
         stage_dir: Some(stage.clone()),
         merged_dir,
@@ -2164,6 +2358,329 @@ mod tests {
     use proptest::prelude::*;
 
     use crate::cli::Cli;
+
+    fn preset_args(values: &[&str]) -> RunArgs {
+        let crate::cli::Command::Run(args) =
+            Cli::try_parse_from(["pvisor", "run"].into_iter().chain(values.iter().copied()))
+                .unwrap()
+                .command
+        else {
+            unreachable!()
+        };
+        *args
+    }
+
+    #[test]
+    fn safe_preset_uses_command_not_label_and_keeps_executor_independent() {
+        for (command, hosts) in [
+            ("/usr/local/bin/codex", vec!["api.openai.com"]),
+            ("claude", vec!["api.anthropic.com"]),
+            ("gemini", vec!["generativelanguage.googleapis.com"]),
+            ("/usr/local/bin/zcode", vec!["api.z.ai", "open.bigmodel.cn"]),
+        ] {
+            for executor in [
+                RunExecutorKind::Host,
+                RunExecutorKind::Container,
+                RunExecutorKind::Vm,
+            ] {
+                let mut config = RunConfig::default();
+                config.run.executor = executor;
+                apply_run_options(
+                    &mut config,
+                    preset_args(&["--safe", "--name", "zcode", "--", command]),
+                )
+                .unwrap();
+                assert_eq!(config.run.executor, executor);
+                assert_eq!(
+                    config.overlaynet.mode,
+                    if executor == RunExecutorKind::Vm {
+                        OverlayNetMode::Auto
+                    } else {
+                        OverlayNetMode::Proxy
+                    }
+                );
+                assert_eq!(config.overlaynet.policy, OverlayNetPolicy::Allowlist);
+                assert_eq!(config.overlaynet.rules.len(), hosts.len());
+                for (rule, host) in config.overlaynet.rules.iter().zip(&hosts) {
+                    assert_eq!(&rule.host, host);
+                    assert_eq!(rule.ports, [443]);
+                    assert!(!rule.allow_private_ips);
+                }
+            }
+        }
+        for command in ["/bin/sh", "unknown-agent"] {
+            let mut config = RunConfig::default();
+            apply_run_options(
+                &mut config,
+                preset_args(&["--safe", "--name", "codex", "--", command]),
+            )
+            .unwrap();
+            assert_eq!(config.overlaynet.policy, OverlayNetPolicy::Deny);
+            assert!(config.overlaynet.rules.is_empty());
+        }
+    }
+
+    #[test]
+    fn safe_preset_zcode_denies_non_api_destinations() {
+        use persisting_control::{
+            ControlController, ControlRequest, NetworkAccessRequest, NetworkGuard,
+            NetworkTransport, PolicyControlController,
+        };
+
+        let mut config = RunConfig::default();
+        config.overlaynet.allow = vec!["configured-upload.example".into()];
+        apply_run_options(&mut config, preset_args(&["--safe", "--", "zcode"])).unwrap();
+        let proxy = resolve_proxy(&config).unwrap().unwrap();
+        let guard = NetworkGuard::compile(
+            persisting_overlaynet::policy::network_capability(&proxy.network),
+            Vec::new(),
+        )
+        .unwrap();
+        for (host, port, allowed) in [
+            ("api.z.ai", 443, true),
+            ("open.bigmodel.cn", 443, true),
+            ("api.z.ai", 80, false),
+            ("open.bigmodel.cn", 8443, false),
+            ("zcode.z.ai", 443, false),
+            ("chat.z.ai", 443, false),
+            ("bigmodel.cn", 443, false),
+            ("zcode-prod.oss-cn-beijing.aliyuncs.com", 443, false),
+            ("telemetry.example", 443, false),
+            ("configured-upload.example", 443, false),
+            ("api.z.ai.example", 443, false),
+        ] {
+            let request = NetworkAccessRequest {
+                run_id: None,
+                attempt_id: None,
+                storyline_id: None,
+                host: host.into(),
+                port: Some(port),
+                transport: NetworkTransport::TcpTunnel,
+                resolved_ip: None,
+            };
+            let decision = PolicyControlController.authorize(ControlRequest::Network {
+                policy: &guard,
+                request: &request,
+            });
+            assert_eq!(decision.is_allowed(), allowed, "{host}:{port}");
+        }
+    }
+
+    #[test]
+    fn safe_preset_precedence_preserves_unrelated_config_and_explicit_overrides() {
+        let source = r#"
+[run]
+command = ["claude"]
+executor = "vm"
+timeout_ms = 1234
+pass_env = ["CONFIG_SECRET"]
+[overlaynet]
+mode = "off"
+policy = "public"
+[overlayfs]
+compose = ["/configured/share"]
+commit = "apply"
+"#;
+        let mut config: RunConfig = toml::from_str(source).unwrap();
+        apply_run_options(&mut config, preset_args(&["--safe"])).unwrap();
+        assert_eq!(config.run.executor, RunExecutorKind::Vm);
+        assert_eq!(config.run.timeout_ms, Some(1234));
+        assert!(config.run.pass_env.is_empty());
+        assert_eq!(config.overlaynet.mode, OverlayNetMode::Auto);
+        assert_eq!(config.overlaynet.rules[0].host, "api.anthropic.com");
+        assert_eq!(
+            config.overlayfs.as_ref().unwrap().compose,
+            [PathBuf::from("/configured/share")]
+        );
+        assert_eq!(
+            config.overlayfs.as_ref().unwrap().commit,
+            OverlayFsCommit::Manual
+        );
+
+        let mut config: RunConfig = toml::from_str(source).unwrap();
+        apply_run_options(
+            &mut config,
+            preset_args(&[
+                "--safe",
+                "--executor",
+                "host",
+                "--overlaynet-allow",
+                "inference.example:8443",
+                "--pass-env",
+                "CLI_TOKEN",
+                "--overlayfs-compose",
+                "/explicit/share",
+                "--overlayfs-commit",
+                "apply",
+                "--",
+                "codex",
+            ]),
+        )
+        .unwrap();
+        assert_eq!(config.run.executor, RunExecutorKind::Host);
+        assert_eq!(config.run.timeout_ms, Some(1234));
+        assert_eq!(config.run.pass_env, ["CLI_TOKEN"]);
+        assert_eq!(config.overlaynet.mode, OverlayNetMode::Proxy);
+        assert_eq!(config.overlaynet.rules.len(), 1);
+        assert_eq!(config.overlaynet.rules[0].host, "inference.example");
+        assert_eq!(config.overlaynet.rules[0].ports, [8443]);
+        assert_eq!(
+            config.overlayfs.as_ref().unwrap().compose,
+            [PathBuf::from("/explicit/share")]
+        );
+        assert_eq!(
+            config.overlayfs.as_ref().unwrap().commit,
+            OverlayFsCommit::Apply
+        );
+
+        let mut config: RunConfig = toml::from_str(source).unwrap();
+        apply_run_options(&mut config, preset_args(&[])).unwrap();
+        assert_eq!(config.overlaynet.mode, OverlayNetMode::Off);
+        assert_eq!(config.run.pass_env, ["CONFIG_SECRET"]);
+        assert_eq!(
+            config.overlayfs.as_ref().unwrap().compose,
+            [PathBuf::from("/configured/share")]
+        );
+    }
+
+    #[test]
+    fn file_access_rules_follow_cli_safe_config_priority() {
+        let mut config: RunConfig = toml::from_str(
+            r#"
+[overlayfs.access_policy]
+deny = ["configured-secret"]
+warn = ["configured-warning"]
+"#,
+        )
+        .unwrap();
+        apply_run_options(
+            &mut config,
+            preset_args(&["--safe", "--overlayfs-warn", "custom/*.pem", "--", "codex"]),
+        )
+        .unwrap();
+        let policy = &config.overlayfs.as_ref().unwrap().access_policy;
+        assert!(policy.deny().contains(&"**/.ssh".into()));
+        assert!(!policy.deny().contains(&"configured-secret".into()));
+        assert_eq!(policy.warn(), ["custom/*.pem"]);
+        let overlay = resolve_overlay(
+            &config,
+            Path::new("."),
+            &tempfile::tempdir().unwrap().path().join("stage"),
+            "test",
+        )
+        .unwrap()
+        .unwrap();
+        assert_eq!(&overlay.access_policy, policy);
+        apply_run_options(
+            &mut config,
+            preset_args(&[
+                "--safe",
+                "--overlayfs-clear-rules",
+                "--overlayfs-deny",
+                "private/**",
+                "--",
+                "codex",
+            ]),
+        )
+        .unwrap();
+        let policy = &config.overlayfs.as_ref().unwrap().access_policy;
+        assert_eq!(policy.deny(), ["private/**"]);
+        assert!(policy.warn().is_empty());
+        assert!(
+            apply_run_options(
+                &mut config,
+                preset_args(&["--overlayfs-deny", "../outside", "--", "codex"]),
+            )
+            .is_err()
+        );
+        assert_eq!(
+            config.overlayfs.as_ref().unwrap().access_policy.deny(),
+            ["private/**"]
+        );
+    }
+
+    #[test]
+    fn safe_preset_respects_explicit_network_disable_and_gateway_routes() {
+        for (options, expected) in [
+            (vec!["--overlaynet", "off"], OverlayNetPolicy::Public),
+            (
+                vec!["--overlaynet-policy", "public"],
+                OverlayNetPolicy::Public,
+            ),
+            (vec!["--overlaynet-deny-all"], OverlayNetPolicy::Deny),
+        ] {
+            let mut args = vec!["--safe"];
+            args.extend(options);
+            args.extend(["--", "codex"]);
+            let mut config = RunConfig::default();
+            apply_run_options(&mut config, preset_args(&args)).unwrap();
+            assert_eq!(config.overlaynet.policy, expected);
+            assert!(config.overlaynet.rules.is_empty());
+            if config.overlaynet.mode == OverlayNetMode::Off {
+                assert!(validate(&config, true).is_err());
+            }
+        }
+        let mut config = RunConfig::default();
+        apply_run_options(
+            &mut config,
+            preset_args(&[
+                "--safe",
+                "--gateway-mode",
+                "capture",
+                "--gateway-route",
+                r#"name="*", upstream="https://private.example/v1", api_key_env="PRIVATE_KEY""#,
+                "--",
+                "zcode",
+            ]),
+        )
+        .unwrap();
+        assert_eq!(config.overlaynet.policy, OverlayNetPolicy::Deny);
+        let proxy = resolve_proxy(&config).unwrap().unwrap();
+        assert_eq!(
+            proxy.models[0].upstream.as_deref(),
+            Some("https://private.example/v1")
+        );
+        assert_eq!(proxy.network.mode, NetworkMode::NoNetwork);
+    }
+
+    #[test]
+    fn safe_requires_isolation_without_a_separate_sandbox_option() {
+        let args = preset_args(&["--safe", "--", "/bin/true"]);
+        assert!(args.run.safe);
+        let mut config = RunConfig::default();
+        apply_run_options(&mut config, args).unwrap();
+        assert_eq!(config.run.executor, RunExecutorKind::Host);
+        validate(&config, true).unwrap();
+        config.overlaynet.mode = OverlayNetMode::Off;
+        assert!(
+            validate(&config, true)
+                .unwrap_err()
+                .to_string()
+                .contains("--safe requires OverlayNet")
+        );
+        apply_run_options(
+            &mut config,
+            preset_args(&["--safe", "--vm", "--", "claude"]),
+        )
+        .unwrap();
+        assert_eq!(config.run.executor, RunExecutorKind::Vm);
+        assert_eq!(config.overlaynet.mode, OverlayNetMode::Auto);
+        use clap::CommandFactory;
+        assert!(
+            !Cli::command()
+                .find_subcommand("run")
+                .unwrap()
+                .get_arguments()
+                .any(|arg| arg.get_long() == Some("sandbox"))
+        );
+        assert!(
+            toml::from_str::<RunConfig>(
+                r#"[run]
+sandbox = "required""#
+            )
+            .is_err()
+        );
+    }
 
     #[test]
     fn safe_profile_builds_a_reviewable_default_run() {
@@ -2300,7 +2817,7 @@ mod tests {
         assert!(config.container.read_only_rootfs);
         assert_eq!(config.container.mounts.len(), 1);
         assert!(config.container.mounts[0].read_only);
-        validate(&config).unwrap();
+        validate(&config, false).unwrap();
     }
 
     #[test]
@@ -2312,7 +2829,7 @@ mod tests {
         config.container.network = ContainerNetwork::Bridge;
         config.run.workspace = Some("/tmp/run".into());
         config.overlaynet.mode = OverlayNetMode::Proxy;
-        let error = validate(&config).unwrap_err();
+        let error = validate(&config, false).unwrap_err();
         assert!(error.to_string().contains("container.network = \"host\""));
     }
 
@@ -2432,7 +2949,7 @@ mod tests {
             ..OverlayFsSettings::default()
         });
         config.overlaynet.mode = OverlayNetMode::Proxy;
-        let error = validate(&config).unwrap_err();
+        let error = validate(&config, false).unwrap_err();
         assert!(error.to_string().contains("smoltcp driver"));
     }
 
@@ -2490,7 +3007,7 @@ mod tests {
         });
         config.vm.rootfs = Some(tempfile::tempdir().unwrap().keep());
         config.run.executor = RunExecutorKind::Vm;
-        assert!(validate(&config).is_ok());
+        assert!(validate(&config, false).is_ok());
     }
 
     #[test]
@@ -2659,7 +3176,7 @@ mod tests {
         );
         assert_eq!(config.overlaynet.limits[1].bytes_per_second, 250_000);
         assert!(config.run.workspace.is_none());
-        validate(&config).unwrap();
+        validate(&config, false).unwrap();
     }
 
     #[test]
@@ -3106,7 +3623,7 @@ mod tests {
             ..RunConfig::default()
         };
         assert!(
-            validate(&config)
+            validate(&config, false)
                 .unwrap_err()
                 .to_string()
                 .contains("cannot be combined")

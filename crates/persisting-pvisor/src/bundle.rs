@@ -103,6 +103,8 @@ pub struct FilesystemSummary {
     pub root_overlay: bool,
     #[serde(default)]
     pub excluded_paths: Vec<PathBuf>,
+    #[serde(default)]
+    pub access_policy: persisting_control::overlay::FileAccessPolicy,
     /// Identity of the host root used as the immutable lower view.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub host_root_device: Option<u64>,
@@ -167,6 +169,7 @@ impl RunBundle {
                     whiteouts: status.whiteouts,
                     root_overlay,
                     excluded_paths: overlay.excluded_paths.clone(),
+                    access_policy: overlay.access_policy.clone(),
                     host_root_device: root_metadata.as_ref().map(MetadataExt::dev),
                     host_root_inode: root_metadata.as_ref().map(MetadataExt::ino),
                     host_uid: root_overlay.then(|| unsafe { libc::geteuid() }),
@@ -562,6 +565,7 @@ mod tests {
                 merged_dir: temp.path().join("merged"),
                 stage_dir: temp.path().to_path_buf(),
                 excluded_paths: Vec::new(),
+                access_policy: Default::default(),
                 auto_apply: false,
                 auto_discard: false,
                 protect_target: false,

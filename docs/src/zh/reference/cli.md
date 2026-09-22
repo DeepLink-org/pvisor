@@ -101,6 +101,128 @@ pvisor env delete dev --force
 Overlay generation。命令取得环境 lease 后会重新读取 generation，避免用 reset 前的
 metadata 覆盖新 stage。
 
+## `--safe` 参数预设
+
+```bash
+pvisor run --safe -- claude
+pvisor run --safe --vm --rootfs image=my-agent-image:latest -- codex
+pvisor run --safe -- zcode
+pvisor run --safe --overlaynet-allow inference.example.com:443 -- zcode
+```
+
+`--safe` 生成一组命令行参数补丁，经过同一个 CLI 解析器后应用，再应用用户显式参数。
+各 Agent 的补丁分别放在 `cli/run/safe/codex.rs`、`claude.rs`、`gemini.rs`、`zcode.rs`，
+公共部分只负责选择与组合。`--safe` 同时要求所选执行器落实隔离，也不选择 executor。
+优先级是 **显式 CLI > safe 预设 > 配置文件 > 普通默认值**。不带 `--safe` 的行为不变。
+支持普通命令和 TOML `--spec`；已准备好的 JSON RunSpec 不接受该预设。
+
+`--safe` 直接要求落实文件读取、写入和网络隔离，不允许静默回退到普通 host 进程。
+不引入额外的 sandbox 命令行参数或配置项。`--strict` 仍是对全部请求能力的校验，
+含资源限制等，和该隔离要求不同。
+
+- macOS host：强制 Seatbelt 读取/写入范围，只允许连接 pVisor 分配的 loopback TCP 代理端口；
+  阻止其他直接 IP 出口和环境中的宿主 Unix socket，仅保留必要的 Run 内 IPC。
+  Agent 使用临时 HOME，不能直接读取原来的主目录；凭据需显式传入或由 Gateway 持有。
+  系统运行库和启动所需的路径元数据仍可读取。
+- Linux host：必须启用 namespaces 和 Landlock。目前仅支持普通出口 deny-all，
+  选择性代理或 Gateway 缺少 namespace 代理桥时直接拒绝启动；需要此组合时显式使用 VM。
+- VM：要求现有 `auto` 网络边界；safe 不自动选择 VM。
+- container：当前缺少完整强制边界，`--safe` 拒绝启动。
+
+隔离安装失败会停止运行。`--safe` 不能与 `--overlaynet off` 同时使用。
+
+
+| 实际执行的命令 | 默认允许的普通网络目标 |
+| --- | --- |
+| `codex` | `api.openai.com:443` |
+| `claude` | `api.anthropic.com:443` |
+| `gemini` | `generativelanguage.googleapis.com:443` |
+| `zcode` | `api.z.ai:443`、`open.bigmodel.cn:443` |
+| 其他命令或 shell 包装器 | 默认拒绝；需显式声明目标或配置 Gateway |
+
+识别依据是命令的文件名，支持绝对路径，`--name` 只影响显示名称。
+这些是标准 API 服务预设，不会读取 Agent 私有配置或自动发现 OAuth、自定义供应商地址。
+未匹配目标（包括独立域名上的遥测、上传、更新和依赖下载）被策略拒绝。
+`--overlaynet-allow` 替换预设的允许目标；`--overlaynet-deny` 在允许列表上增加拒绝规则。
+已有配置中的拒绝规则和限速保留。
+
+ZCode 预设面向 **API Key + OpenAI 兼容协议直连**，依据
+[官方模型配置文档](https://zcode.z.ai/cn/docs/configuration)：Coding Plan 使用
+`https://api.z.ai/api/coding/paas/v4` 或 `https://open.bigmodel.cn/api/coding/paas/v4`；
+普通 API 使用对应域名的 `/api/paas/v4`。这里只放行域名和端口，不限制这些路径。
+不默认放行 `zcode.z.ai`、登录域名、对象存储、插件市场或更新地址。
+
+核对依据为 ZCode 官方源码提交 `872ad960de7ec172591f7e1952f7849229f94521`：
+[模型转发代码](https://github.com/zai-org/ZCode/blob/872ad960de7ec172591f7e1952f7849229f94521/apps/zcode-cli/packages/adapters/src/model/official-coding-plan-gateway.ts)
+会将两家官方 Anthropic messages 端点改发 `zcode.z.ai`，因此该路径和依赖业务域名的账号登录流程
+不在本预设的可用范围内；不要把“API Key 登录”直接等同于 OpenAI 协议直连。
+[代理解析代码](https://github.com/zai-org/ZCode/blob/872ad960de7ec172591f7e1952f7849229f94521/apps/zcode-cli/packages/adapters/src/network/http-config.ts)
+要求显式代理配置或 `ZCODE_HTTP_PROXY`，模型请求不会默认采用普通 `HTTP_PROXY`。
+仅注入通用代理变量不能让 ZCode 的模型请求使用代理；macOS required 会拒绝其直连，
+需要配置其专用代理入口才能联网，或显式使用 VM 的透明出口。
+同域名的其他 API（例如 `api.z.ai` 的业务接口）仍可访问，不能称为只允许推理。
+
+历史上传风险参考 [3.12.3 的原始取证报告](https://blog.ferstar.org/posts/zcode-silent-workspace-snapshot-upload/)：
+报告描述了业务域名获取凭证后向对象存储上传快照的链路，其后续更新称 3.14.0 已移除该链路。
+这是版本相关的外部取证，不能外推所有版本；上述白名单无需枚举存储桶即可拒绝未授权上传目标，
+但不会阻止本地读取、打包或通过已允许的模型请求传出内容。本预设未做真实账号联网验证。
+
+当最终配置启用 Gateway capture 且有明确路由时，预设拒绝普通出口，保留配置好的 Gateway
+通道。Gateway 自己仍按既有路由转发；这不提供推理 API 路径过滤。
+
+预设通过 `--clear-pass-env` 清空配置文件中的 `run.pass_env`，并使已有 OverlayFS 使用 manual 提交；
+`--clear-pass-env` 也可单独使用，之后的显式 `--pass-env NAME` 仍然生效。
+对应的显式 CLI 参数可以重新授予或覆盖。`--safe` 现在自动启用 OverlayFS，用于执行文件规则，
+已有容器挂载和 compose 层仍保留；项目 base、rootfs、executor 不变。
+需要向 Agent 交付凭据时显式使用 `--pass-env`；使用已配置的 Gateway 可由可信侧持有上游 Key。
+
+启动时会打印实际策略及覆盖提醒。必须注意：
+
+- 不使用 `--safe` 时，host/container 选择性代理仍可绕过。
+- 域名规则无法区分同域名下的推理、遥测与上传 API，也无法阻止内容被夹带在模型请求中。
+- 通配符规则覆盖 OverlayFS 视图；`--safe` 同时限制视图之外的访问，但显式授权的额外路径仍需单独保护。
+  文件名规则不能识别改名副本、源码中的密钥或 Git 历史中的内容，也没有批量读取或 tool-call 关联监控。
+- 扩大共享范围或选择 `--rootfs host` 会增加可访问的数据；`--safe` 不能与关闭 OverlayNet 同时使用。
+
+## 文件访问规则
+
+```bash
+pvisor run --overlayfs-deny '**/.ssh' --overlayfs-warn '**/.env*' -- my-agent
+```
+
+`--overlayfs-deny GLOB` 和 `--overlayfs-warn GLOB` 可重复使用，都会启用 OverlayFS。
+规则相对于挂载根目录匹配：`*` 不跨目录，`**` 可跨目录，匹配目录时覆盖全部后代。
+为防止大小写不敏感文件系统上的别名绕过，匹配不区分大小写；绝对路径、空规则及 `.`/`..`
+路径分量无效。deny 优先于 warn。命中 deny 的路径在目录枚举中隐藏，访问、创建和修改被拒绝；
+warn 放行并在监督进程 stderr 打印路径，不打印文件内容。告警表示文件系统访问尝试（含元数据访问），
+不是准确的内容读取计数；内核缓存可能合并访问。
+
+`--safe` 的默认 deny 为任意层级的 `.ssh`、`.gnupg` 目录，以及 `id_rsa`、`id_dsa`、
+`id_ecdsa`、`id_ecdsa_sk`、`id_ed25519`、`id_ed25519_sk` 文件。
+默认 warn 为 `.env`、`.env.*`、`*.pem`、`*.key`、`*.pub`、`*.p12`、`*.pfx`、
+`.aws/credentials`、`.netrc`、`.npmrc`。`.ssh` 内公钥也随目录被隐藏；目录外公钥只告警。
+这不保证识别所有私钥；自定义文件名需要增加规则。
+
+TOML 中对应：
+
+```toml
+[overlayfs.access_policy]
+deny = ["**/.ssh", "secrets/private.pem"]
+warn = ["**/.env", "**/*.key"]
+```
+
+显式 `--overlayfs-deny` 替换整个 deny 列表，`--overlayfs-warn` 替换整个 warn 列表；
+不会在 safe 默认列表上追加。`--overlayfs-clear-rules` 先清空两类规则，再应用显式列表。
+清空规则不会关闭 OverlayFS。优先级仍为 CLI > safe > 配置文件 > 默认值。
+规则随运行记录、checkpoint/fork 和 inspect 挂载保留，并写入 Run Bundle。
+
+FUSE 与 VM virtio-fs 共用规则检查。开启 deny 时，本版保守拒绝所有多硬链接普通文件和新建硬链接，
+避免通过别名读取；普通目录改名/交换/删除会检查受影响子树，含受保护文件时拒绝操作。
+符号链接由挂载命名空间解析，文件打开不跟随最终符号链接到后端原始文件。
+VM 对根视图也应用规则，并保护工作区原始路径和 overlay 后端目录。
+这不替代执行器隔离：host 的环境读取权限、容器额外分享和未经该视图的凭据仍须单独控制。
+底层目录应由可信监督进程管理，规则不承诺抵抗宿主其他进程同时改写底层文件的竞态。
+
 ## 回放一条 Agent 轨迹 {#replay-an-agent-trajectory}
 
 `pvisor replay` 假定调用方已经正常创建了新 sandbox。它通过 `after_step`

@@ -13,6 +13,16 @@ use std::os::fd::AsRawFd;
 #[cfg(any(target_os = "linux", target_os = "macos"))]
 use std::path::PathBuf;
 
+pub(crate) const REQUIRED_SANDBOX_KEY: &str = "pvisor.sandbox.required";
+pub(crate) const SANDBOX_PROXY_KEY: &str = "pvisor.sandbox.proxy";
+
+pub(crate) fn sandbox_required(spec: &persisting_control::RunSpec) -> bool {
+    spec.metadata
+        .get(REQUIRED_SANDBOX_KEY)
+        .and_then(serde_json::Value::as_bool)
+        == Some(true)
+}
+
 pub(crate) const INTERNAL_SANDBOX_ARG: &str = "__pvisor-sandbox-exec";
 pub(crate) const SANDBOX_PLAN_ENV: &str = "PERSISTING_INTERNAL_SANDBOX_PLAN";
 /// Reserved launcher exit status: setup failed before the Agent was executed.
@@ -52,12 +62,14 @@ const LANDLOCK_ACCESS_FS_READ: u64 =
 pub(crate) enum NetworkIsolation {
     Ambient,
     LoopbackOnly,
+    /// Only the supervisor-owned proxy may receive IP traffic. None denies all IP.
+    ProxyOnly(Option<std::net::SocketAddr>),
 }
 
 #[cfg(any(target_os = "linux", target_os = "macos"))]
 impl NetworkIsolation {
     pub(crate) const fn is_loopback_only(self) -> bool {
-        matches!(self, Self::LoopbackOnly)
+        matches!(self, Self::LoopbackOnly | Self::ProxyOnly(_))
     }
 }
 
@@ -79,6 +91,7 @@ pub(crate) struct SandboxPlan {
 #[cfg(target_os = "macos")]
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub(crate) struct SeatbeltPlan {
+    pub restrict_reads: bool,
     pub attestation: PathBuf,
     pub network: NetworkIsolation,
 }
@@ -155,7 +168,9 @@ fn run_internal() -> anyhow::Result<()> {
         std::env::set_var("PERSISTING_SANDBOX_USER_NAMESPACE", "1");
         std::env::set_var(
             "PERSISTING_SANDBOX_NETWORK",
-            if plan.network.is_loopback_only() {
+            if matches!(plan.network, NetworkIsolation::ProxyOnly(Some(_))) {
+                "proxy-only"
+            } else if plan.network.is_loopback_only() {
                 "deny"
             } else {
                 "ambient"
@@ -210,14 +225,28 @@ fn run_internal() -> anyhow::Result<()> {
         )
     })?;
 
+    if plan.restrict_reads {
+        // Do not retain host files or sockets opened before Seatbelt was installed.
+        close_unexpected_file_descriptors(None).context("close inherited file descriptors")?;
+    }
+
     // The child process is configuring its environment immediately before
     // exec; no concurrent environment mutation occurs in this scope.
     unsafe {
         std::env::remove_var(SANDBOX_PLAN_ENV);
-        std::env::set_var("PERSISTING_SANDBOX_FILESYSTEM", "seatbelt-write");
+        std::env::set_var(
+            "PERSISTING_SANDBOX_FILESYSTEM",
+            if plan.restrict_reads {
+                "seatbelt-read-write"
+            } else {
+                "seatbelt-write"
+            },
+        );
         std::env::set_var(
             "PERSISTING_SANDBOX_NETWORK",
-            if plan.network.is_loopback_only() {
+            if matches!(plan.network, NetworkIsolation::ProxyOnly(Some(_))) {
+                "proxy-only"
+            } else if plan.network.is_loopback_only() {
                 "deny"
             } else {
                 "ambient"
@@ -500,6 +529,23 @@ pub(crate) fn seatbelt_profile(
     local_socket_roots: &[PathBuf],
     network: NetworkIsolation,
 ) -> std::io::Result<(String, Vec<(String, PathBuf)>)> {
+    seatbelt_profile_with_reads(
+        writable_paths,
+        None,
+        allowed_unix_sockets,
+        local_socket_roots,
+        network,
+    )
+}
+
+#[cfg(target_os = "macos")]
+pub(crate) fn seatbelt_profile_with_reads(
+    writable_paths: &[PathBuf],
+    readable_paths: Option<&[PathBuf]>,
+    allowed_unix_sockets: &[PathBuf],
+    local_socket_roots: &[PathBuf],
+    network: NetworkIsolation,
+) -> std::io::Result<(String, Vec<(String, PathBuf)>)> {
     use std::io::{Error, ErrorKind};
 
     let writable_paths = canonical_seatbelt_paths(writable_paths, "writable")?;
@@ -577,6 +623,63 @@ pub(crate) fn seatbelt_profile(
                  (require-not (remote ip \"localhost:*\"))))\n\
              (allow network-outbound (remote ip \"localhost:*\"))\n",
         );
+        if let Some(readable) = readable_paths {
+            let readable = canonical_seatbelt_paths(readable, "readable")?;
+            if readable
+                .iter()
+                .any(|path| path == std::path::Path::new("/"))
+            {
+                return Err(Error::new(
+                    ErrorKind::InvalidInput,
+                    "required sandbox cannot grant the host root",
+                ));
+            }
+            profile = profile.replace(
+                "(allow file-read* file-test-existence file-map-executable)",
+                // dyld's libignition opens / as an openat traversal anchor (see
+                // Apple's dyld-support.sb). This is literal, never recursive.
+                "(allow file-read-metadata)\n(allow file-read* (literal \"/\"))",
+            );
+            profile.push_str("(allow file-read* file-test-existence file-map-executable\n");
+            for (index, path) in readable.into_iter().enumerate() {
+                let key = format!("PVISOR_READABLE_{index}");
+                profile.push_str(&format!(
+                    "  (literal (param \"{key}\")) (subpath (param \"{key}\"))\n"
+                ));
+                parameters.push((key, path));
+            }
+            for index in 0..writable_paths.len() {
+                profile.push_str(&format!("  (literal (param \"PVISOR_WRITABLE_{index}\")) (subpath (param \"PVISOR_WRITABLE_{index}\"))\n"));
+            }
+            profile.push_str(")\n");
+        }
+        if let NetworkIsolation::ProxyOnly(endpoint) = network {
+            // connect() may implicitly bind an ephemeral local port. Restrict
+            // peers and deny inbound connections instead of denying that bind.
+            profile = profile.replace("(deny network-bind (local ip))", "");
+            // Deny all IP except the allocated loopback TCP proxy port; unrelated localhost
+            // services must not become alternate egress paths.
+            profile = profile.replace("(allow network-outbound (remote ip \"localhost:*\"))", "");
+            match endpoint {
+                Some(endpoint) if endpoint.ip().is_loopback() && endpoint.port() != 0 => {
+                    profile = profile.replace(
+                        "(remote ip \"localhost:*\")",
+                        &format!("(remote tcp \"localhost:{}\")", endpoint.port()),
+                    );
+                    profile.push_str(&format!(
+                        "(allow network-outbound (remote tcp \"localhost:{}\"))\n",
+                        endpoint.port()
+                    ));
+                }
+                Some(_) => {
+                    return Err(Error::new(
+                        ErrorKind::InvalidInput,
+                        "sandbox proxy must be a concrete loopback endpoint",
+                    ));
+                }
+                None => profile.push_str("(deny network-outbound (remote ip))\n"),
+            }
+        }
         profile.push_str("(allow file-write*\n");
         for index in 0..writable_paths.len() {
             profile.push_str(&format!(
@@ -1220,10 +1323,15 @@ fn supervise_pid_namespace(
     }
 }
 
-#[cfg(target_os = "linux")]
+#[cfg(any(target_os = "linux", target_os = "macos"))]
 fn close_unexpected_file_descriptors(retain: Option<libc::c_int>) -> std::io::Result<()> {
     let mut descriptors = Vec::new();
-    for entry in std::fs::read_dir("/proc/self/fd")? {
+    let directory = if cfg!(target_os = "linux") {
+        "/proc/self/fd"
+    } else {
+        "/dev/fd"
+    };
+    for entry in std::fs::read_dir(directory)? {
         let entry = entry?;
         let Some(name) = entry.file_name().to_str().map(str::to_owned) else {
             continue;
@@ -1248,6 +1356,46 @@ fn close_unexpected_file_descriptors(retain: Option<libc::c_int>) -> std::io::Re
 #[cfg(all(test, target_os = "macos"))]
 mod tests {
     use super::*;
+
+    #[test]
+    fn required_seatbelt_can_start_the_trusted_launcher() {
+        let temp = tempfile::tempdir().unwrap();
+        let launcher = std::env::current_exe()
+            .unwrap()
+            .parent()
+            .unwrap()
+            .parent()
+            .unwrap()
+            .join("pvisor");
+        let readable = vec![
+            launcher.clone(),
+            PathBuf::from("/System/Library"),
+            PathBuf::from("/System/Cryptexes/OS"),
+            PathBuf::from("/usr"),
+            PathBuf::from("/bin"),
+            PathBuf::from("/dev"),
+        ];
+        let (profile, params) = seatbelt_profile_with_reads(
+            &[temp.path().to_owned()],
+            Some(&readable),
+            &[],
+            &[],
+            NetworkIsolation::ProxyOnly(None),
+        )
+        .unwrap();
+        let mut command = std::process::Command::new(MACOS_SANDBOX_EXEC);
+        command.arg("-p").arg(&profile);
+        for (key, value) in params {
+            command.arg("-D").arg(format!("{key}={}", value.display()));
+        }
+        let output = command.arg(&launcher).arg("--version").output().unwrap();
+        assert!(
+            output.status.success(),
+            "{:?}: {}",
+            output.status,
+            String::from_utf8_lossy(&output.stderr)
+        );
+    }
 
     #[test]
     fn seatbelt_profile_uses_parameters_and_rejects_a_writable_host_root() {

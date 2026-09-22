@@ -305,12 +305,28 @@ impl PVisor {
             )));
         }
         self.runtime.apply_network_capability(&mut spec);
+        // Runtime preparation supplies this capability from the bound listener.
+        spec.metadata.remove(crate::sandbox::SANDBOX_PROXY_KEY);
         let capability_enforcement = effective_capability_enforcement(
             &descriptor,
             &spec,
             self.runtime.proxy_network_is_configured(),
             vm_network_executor && self.runtime.vm_network_is_enforcing(),
         );
+        if crate::sandbox::sandbox_required(&spec) {
+            for dimension in [
+                CapabilityDimension::FilesystemRead,
+                CapabilityDimension::FilesystemWrite,
+                CapabilityDimension::Network,
+            ] {
+                if !capability_enforcement.is_enforced(dimension) {
+                    return Err(PVisorError::UnsupportedPolicy {
+                        executor: descriptor.name,
+                        dimensions: format!("required sandbox: {dimension}"),
+                    });
+                }
+            }
+        }
         if spec.runtime.policy_mode == PolicyMode::Enforce {
             let missing = capability_enforcement
                 .missing_dimensions(&spec.capabilities, &spec.runtime.resource_limits);
@@ -610,6 +626,23 @@ fn effective_capability_enforcement(
                 "macos-seatbelt-network-deny",
             ),
             _ => {}
+        }
+    }
+    if crate::sandbox::sandbox_required(spec)
+        && descriptor.isolation == IsolationKind::SandboxedProcess
+    {
+        evidence.record(
+            CapabilityDimension::FilesystemRead,
+            EnforcementLevel::Enforced,
+            "macos-seatbelt-read-policy",
+        );
+        if proxy_network_configured || matches!(spec.capabilities.network, NetworkCapability::Deny)
+        {
+            evidence.record(
+                CapabilityDimension::Network,
+                EnforcementLevel::Enforced,
+                "macos-seatbelt-proxy-only",
+            );
         }
     }
     if vm_network_enforcing {
@@ -1079,6 +1112,18 @@ mod tests {
                 .iter()
                 .any(|key| key == "PRIVATE_API_TOKEN")
         );
+    }
+
+    #[tokio::test]
+    async fn required_sandbox_refuses_an_unsandboxed_executor_before_launch() {
+        let mut spec = RunSpec::process("required-no-fallback", "test", "/bin/true");
+        spec.metadata
+            .insert(crate::sandbox::REQUIRED_SANDBOX_KEY.into(), true.into());
+        let error = match PVisor::new().run(spec).await {
+            Ok(_) => panic!("required sandbox silently fell back"),
+            Err(error) => error,
+        };
+        assert!(matches!(error, PVisorError::UnsupportedPolicy { .. }));
     }
 
     #[tokio::test]

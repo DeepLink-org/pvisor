@@ -654,6 +654,7 @@ mod tests {
                 merged_dir: stage.join("merged"),
                 stage_dir: stage.to_path_buf(),
                 excluded_paths: Vec::new(),
+                access_policy: Default::default(),
                 auto_apply: false,
                 auto_discard: false,
                 protect_target: false,

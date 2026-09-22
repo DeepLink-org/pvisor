@@ -7,6 +7,7 @@ use persisting_gateway::config::OverlayBackend;
 /// Optional in-process FUSE overlay root for one Attempt.
 #[derive(Debug, Clone, Default, PartialEq, Eq)]
 pub struct OverlayHint {
+    pub access_policy: persisting_control::overlay::FileAccessPolicy,
     /// Shared read-only lower layers (host paths).
     pub lower_dirs: Vec<PathBuf>,
     /// Durable staging root containing upper storage and the merged mount.
