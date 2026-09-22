@@ -159,6 +159,8 @@ printf '%s:%s:%s\n' "$PERSISTING_SANDBOX_FILESYSTEM" "$PERSISTING_SANDBOX_LANDLO
             "capture",
             "--stage",
             temporary.path().join("stage").to_str().unwrap(),
+            "--filesystem",
+            "sandbox",
             "--pass-env",
             "OUTSIDE_SECRET",
             "--pass-env",
@@ -259,6 +261,8 @@ printf metadata-denied
             "capture",
             "--stage",
             temporary.path().join("stage").to_str().unwrap(),
+            "--filesystem",
+            "sandbox",
             "--pass-env",
             "OUTSIDE_FILE",
             "--pass-env",
@@ -414,7 +418,14 @@ fn safe_apply_refuses_to_overwrite_a_concurrently_changed_target() {
 
     let output = Command::new(env!("CARGO_BIN_EXE_pvisor"))
         .env("PERSISTING_RUN_HOME", &run_home)
-        .args(["run", "--stdio", "capture", "--stage"])
+        .args([
+            "run",
+            "--stdio",
+            "capture",
+            "--filesystem",
+            "sandbox",
+            "--stage",
+        ])
         .arg(temporary.path().join("stage"))
         .current_dir(&workspace)
         .args(["--", "/bin/sh", "-c", "printf staged > value.txt"])
@@ -488,6 +499,8 @@ fn safe_launcher_closes_inherited_host_file_descriptors() {
             "capture",
             "--stage",
             temporary.path().join("stage").to_str().unwrap(),
+            "--filesystem",
+            "sandbox",
             "--overlaynet-deny-all",
             "--pass-env",
             "PERSISTING_LEAKED_FD",
@@ -643,7 +656,14 @@ fn synthetic_root_hides_ungranted_host_unix_sockets() {
         .env("PERSISTING_RUN_HOME", &run_home)
         .env("PERSISTING_SOCKET_PROBE", &host_socket)
         .env("SSH_AUTH_SOCK", &host_socket)
-        .args(["run", "--stdio", "capture", "--stage"])
+        .args([
+            "run",
+            "--stdio",
+            "capture",
+            "--filesystem",
+            "sandbox",
+            "--stage",
+        ])
         .arg(temporary.path().join("stage"))
         .current_dir(&workspace)
         .arg("--")
@@ -683,7 +703,14 @@ fn safe_run_reaps_setsid_double_fork_descendants_after_success() {
 
     let output = Command::new(env!("CARGO_BIN_EXE_pvisor"))
         .env("PERSISTING_RUN_HOME", &run_home)
-        .args(["run", "--stdio", "capture", "--stage"])
+        .args([
+            "run",
+            "--stdio",
+            "capture",
+            "--filesystem",
+            "sandbox",
+            "--stage",
+        ])
         .arg(temporary.path().join("stage"))
         .current_dir(&workspace)
         .arg("--")

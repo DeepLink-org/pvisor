@@ -268,10 +268,11 @@ mod tests {
 
         #[cfg(target_os = "linux")]
         {
-            assert!(help.contains("independent filesystem, network, and staging policies"));
-            assert!(help.contains("--filesystem sandbox"));
-            assert!(help.contains("namespace"));
-            assert!(help.contains("Landlock"));
+            let normalized = help.split_whitespace().collect::<Vec<_>>().join(" ");
+            assert!(normalized.contains("host filesystem view by default"));
+            assert!(normalized.contains("--filesystem sandbox"));
+            assert!(normalized.contains("namespace"));
+            assert!(normalized.contains("Landlock"));
         }
         #[cfg(target_os = "macos")]
         {
