@@ -252,18 +252,29 @@ async fn serve_with_bound_listeners(
     )
     .await?;
     let capture_for_shutdown = capture_engine.clone();
+    let mut client = reqwest::Client::builder()
+        .no_proxy()
+        .redirect(reqwest::redirect::Policy::none())
+        .connect_timeout(Duration::from_secs(10))
+        .timeout(Duration::from_secs(600));
+    if config.network.upstream.proxy.is_some() {
+        // Re-enter only the CONNECT transport, never the model sink. This keeps
+        // OverlayNet DNS/IP authorization and upstream IP pinning in one place.
+        // HTTPS-only route validation prevents absolute-URI HTTP recursion.
+        let mut address = listen;
+        if address.ip().is_unspecified() {
+            address.set_ip(if address.is_ipv4() {
+                std::net::Ipv4Addr::LOCALHOST.into()
+            } else {
+                std::net::Ipv6Addr::LOCALHOST.into()
+            });
+        }
+        client = client.proxy(reqwest::Proxy::https(format!("http://{address}"))?);
+    }
     let state = GatewayState {
         config: Arc::new(config.clone()),
         storage,
-        client: reqwest::Client::builder()
-            .no_proxy()
-            // Redirects must return to the proxy client so every destination
-            // gets a fresh OverlayNet authorization decision. Following a
-            // cross-origin Location here would bypass the policy gate.
-            .redirect(reqwest::redirect::Policy::none())
-            .connect_timeout(Duration::from_secs(10))
-            .timeout(Duration::from_secs(600))
-            .build()?,
+        client: client.build()?,
         capture_engine,
         session_clients: Arc::new(SessionClientRegistry::default()),
         reasoning_cache: Arc::new(ReasoningCacheHandle::new()),

@@ -260,6 +260,151 @@ async fn spawn_proxy(toml: &str) -> (String, tempfile::TempDir, oneshot::Sender<
     (format!("http://127.0.0.1:{listen_port}"), tmp, stop_tx)
 }
 
+#[tokio::test]
+async fn native_responses_zstd_preserves_body_headers_and_path() {
+    let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
+    let upstream = listener.local_addr().unwrap();
+    let seen = Arc::new(std::sync::Mutex::new(None));
+    let capture = Arc::clone(&seen);
+    let app = Router::new().route("/backend-api/codex/responses", post(move |headers: HeaderMap, body: axum::body::Bytes| {
+        let capture = Arc::clone(&capture);
+        async move {
+            *capture.lock().unwrap() = Some((headers, serde_json::from_slice::<serde_json::Value>(&body).unwrap()));
+            axum::Json(serde_json::json!({"id":"resp-test","object":"response","status":"completed","output":[]}))
+        }
+    }));
+    let app = app.route(
+        "/backend-api/codex/models",
+        get(|uri: Uri, headers: HeaderMap| async move {
+            assert_eq!(uri.query(), Some("client_version=0.155.1"));
+            assert_eq!(headers["authorization"], "Bearer test-token");
+            axum::Json(serde_json::json!({"models":[{"slug":"test-model"}]}))
+        }),
+    );
+    let task = tokio::spawn(async move { axum::serve(listener, app).await.unwrap() });
+    let config = format!(
+        r#"
+listen = "{{{{LISTEN}}}}"
+admin_listen = "{{{{ADMIN}}}}"
+[[models]]
+name = "*"
+upstream = "http://{upstream}/backend-api/codex"
+wire_api = "responses"
+forward_models = true
+"#
+    );
+    let (proxy, _storage, stop) = spawn_proxy(&config).await;
+    let original = serde_json::json!({"model":"test-model","input":"hello","store":false,"future_field":{"unknown":[1,2]}});
+    let compressed =
+        zstd::stream::encode_all(serde_json::to_vec(&original).unwrap().as_slice(), 1).unwrap();
+    let response = reqwest::Client::builder()
+        .no_proxy()
+        .build()
+        .unwrap()
+        .post(format!("{proxy}/v1/responses"))
+        .header("Content-Encoding", "zstd")
+        .header("Content-Type", "application/json")
+        .header("Authorization", "Bearer test-token")
+        .header("ChatGPT-Account-ID", "test-account")
+        .body(compressed)
+        .send()
+        .await
+        .unwrap();
+    assert_eq!(response.status(), StatusCode::OK);
+    assert_eq!(
+        response.json::<serde_json::Value>().await.unwrap()["id"],
+        "resp-test"
+    );
+    let (headers, received) = seen.lock().unwrap().clone().unwrap();
+    assert_eq!(received, original);
+    assert!(!headers.contains_key("content-encoding"));
+    assert_eq!(headers["authorization"], "Bearer test-token");
+    assert_eq!(headers["chatgpt-account-id"], "test-account");
+    let catalog = reqwest::Client::builder()
+        .no_proxy()
+        .build()
+        .unwrap()
+        .get(format!("{proxy}/v1/models?client_version=0.155.1"))
+        .header("Authorization", "Bearer test-token")
+        .send()
+        .await
+        .unwrap();
+    assert_eq!(catalog.status(), StatusCode::OK);
+    assert_eq!(
+        catalog.json::<serde_json::Value>().await.unwrap()["models"][0]["slug"],
+        "test-model"
+    );
+    let _ = stop.send(());
+    task.abort();
+}
+
+#[tokio::test]
+async fn gateway_upstream_uses_overlaynet_connect_and_denial_has_no_proxy_request() {
+    use tokio::io::{AsyncReadExt, AsyncWriteExt};
+    let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
+    let upstream = listener.local_addr().unwrap();
+    let make_config = |mode| {
+        format!(
+            r#"
+listen = "{{{{LISTEN}}}}"
+admin_listen = "{{{{ADMIN}}}}"
+[network]
+mode = "{mode}"
+[network.upstream]
+proxy = "http://{upstream}"
+[[models]]
+name = "*"
+upstream = "https://203.0.113.7/backend-api/codex"
+wire_api = "responses"
+"#
+        )
+    };
+    let (proxy, _storage, stop) = spawn_proxy(&make_config("public")).await;
+    let client = reqwest::Client::builder()
+        .no_proxy()
+        .timeout(Duration::from_secs(3))
+        .build()
+        .unwrap();
+    let request = client
+        .post(format!("{proxy}/v1/responses"))
+        .json(&serde_json::json!({"model":"m","input":"x"}));
+    let pending = tokio::spawn(async move { request.send().await.unwrap() });
+    let (mut socket, _) = tokio::time::timeout(Duration::from_secs(2), listener.accept())
+        .await
+        .unwrap()
+        .unwrap();
+    let mut bytes = Vec::new();
+    while !bytes.ends_with(b"\r\n\r\n") {
+        bytes.push(socket.read_u8().await.unwrap());
+    }
+    assert!(
+        String::from_utf8(bytes)
+            .unwrap()
+            .starts_with("CONNECT 203.0.113.7:443 HTTP/1.1\r\n")
+    );
+    socket
+        .write_all(b"HTTP/1.1 407 Proxy Authentication Required\r\nContent-Length: 0\r\n\r\n")
+        .await
+        .unwrap();
+    assert_eq!(pending.await.unwrap().status(), StatusCode::BAD_GATEWAY);
+    let _ = stop.send(());
+
+    let (proxy, _storage, stop) = spawn_proxy(&make_config("no-network")).await;
+    let response = client
+        .post(format!("{proxy}/v1/responses"))
+        .json(&serde_json::json!({"model":"m","input":"x"}))
+        .send()
+        .await
+        .unwrap();
+    assert_eq!(response.status(), StatusCode::BAD_GATEWAY);
+    assert!(
+        tokio::time::timeout(Duration::from_millis(150), listener.accept())
+            .await
+            .is_err()
+    );
+    let _ = stop.send(());
+}
+
 async fn spawn_proxy_with_controller(
     toml: &str,
     controller: Arc<dyn ControlController>,

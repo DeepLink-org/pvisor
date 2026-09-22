@@ -49,6 +49,9 @@ pub enum ProtocolBridge {
 
 impl ProtocolBridge {
     pub fn needed(client: ProtocolKind, route: &ModelRoute) -> Self {
+        if route.wire_api == Some(client) {
+            return Self::Passthrough;
+        }
         if route.provider_kind() == ProviderKind::Gemini {
             return match client {
                 ProtocolKind::ChatCompletions => Self::CompletionsToGemini,

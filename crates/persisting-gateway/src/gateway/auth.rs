@@ -121,6 +121,8 @@ mod tests {
             provider: provider.map(str::to_string),
             upstream: Some("https://example.com/v1".into()),
             upstream_anthropic: None,
+            wire_api: None,
+            forward_models: false,
             api_key_env: api_key_env.map(str::to_string),
             api_key: api_key.map(str::to_string),
             forward: None,

@@ -19,6 +19,79 @@ fn only_run_dir(run_home: &std::path::Path) -> std::path::PathBuf {
     runs.into_iter().next().unwrap()
 }
 
+#[cfg(unix)]
+#[test]
+fn codex_gateway_profile_launches_directly_with_dynamic_provider_config() {
+    check_codex_gateway_launch(false);
+}
+
+#[cfg(unix)]
+#[test]
+fn codex_gateway_defaults_load_automatically_without_profile_flags() {
+    check_codex_gateway_launch(true);
+}
+
+#[cfg(unix)]
+fn check_codex_gateway_launch(automatic: bool) {
+    let temporary = tempfile::tempdir().unwrap();
+    let client = temporary.path().join("codex");
+    // A local stand-in verifies the exact launch argv without credentials or network requests.
+    std::fs::write(
+        &client,
+        "#!/bin/sh\nprintf '%s\\n' \"$OPENAI_BASE_URL\" \"$@\"\n",
+    )
+    .unwrap();
+    std::fs::set_permissions(&client, std::fs::Permissions::from_mode(0o755)).unwrap();
+    let run_home = temporary.path().join("runs");
+    let mut command = Command::new(env!("CARGO_BIN_EXE_pvisor"));
+    command.arg("run");
+    if automatic {
+        let dir = temporary.path().join("pvisor/agents");
+        std::fs::create_dir_all(&dir).unwrap();
+        std::fs::write(
+            dir.join("codex.toml"),
+            "[gateway]\nprofile = 'codex-chatgpt'\n[overlaynet]\npolicy = 'deny'\n",
+        )
+        .unwrap();
+    } else {
+        command.args([
+            "--gateway-profile",
+            "codex-chatgpt",
+            "--overlaynet-deny-all",
+        ]);
+    }
+    let output = command
+        .arg("--")
+        .arg(&client)
+        .args(["exec", "--json", "keep spaces and $literal unchanged"])
+        .env("XDG_CONFIG_HOME", temporary.path())
+        .env("PERSISTING_RUN_HOME", &run_home)
+        .output()
+        .unwrap();
+    assert!(
+        output.status.success(),
+        "{}",
+        String::from_utf8_lossy(&output.stderr)
+    );
+    let stdout = String::from_utf8(output.stdout).unwrap();
+    let lines = stdout.lines().collect::<Vec<_>>();
+    let base = lines
+        .iter()
+        .find(|s| s.starts_with("http://127.0.0.1:") && s.ends_with("/v1"))
+        .unwrap();
+    assert!(
+        lines.contains(&format!("model_providers.pvisor_gateway.base_url=\"{base}\"").as_str())
+    );
+    assert!(lines.contains(&"model_provider=\"pvisor_gateway\""));
+    assert!(lines.ends_with(&["exec", "--json", "keep spaces and $literal unchanged"]));
+    let run_dir = only_run_dir(&run_home);
+    let record: serde_json::Value =
+        serde_json::from_slice(&std::fs::read(run_dir.join("run.json")).unwrap()).unwrap();
+    assert_eq!(record["command"][0], client.to_str().unwrap());
+    let bundle = RunBundle::read(&run_dir).unwrap();
+    assert_eq!(bundle.run.exit_code, Some(0));
+}
+
 #[test]
 fn network_run_uses_the_current_workspace_and_external_run_home() {
     let temporary = tempfile::Builder::new()

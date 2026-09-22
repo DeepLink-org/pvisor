@@ -152,6 +152,14 @@ pub struct ModelRoute {
     /// Anthropic-compatible upstream (e.g. `https://api.deepseek.com/anthropic/v1`). Falls back to `upstream`.
     #[serde(default)]
     pub upstream_anthropic: Option<String>,
+    /// Explicit native upstream protocol. With `responses`, upstream is the
+    /// complete API base, and the client /v1 prefix is not added to it.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub wire_api: Option<ProtocolKind>,
+    /// Forward model discovery to this route instead of synthesizing an API list.
+    /// At most one route can own the model catalog.
+    #[serde(default)]
+    pub forward_models: bool,
     #[serde(default)]
     pub api_key_env: Option<String>,
     #[serde(default)]
@@ -211,7 +219,36 @@ impl ProxyConfig {
             }
         }
         let mut seen = HashSet::new();
+        anyhow::ensure!(
+            self.models.iter().filter(|r| r.forward_models).count() <= 1,
+            "only one route can forward model discovery"
+        );
         for route in &self.models {
+            anyhow::ensure!(
+                !route.forward_models || route.wire_api == Some(ProtocolKind::Responses),
+                "forward_models requires an explicit responses route"
+            );
+            if let Some(protocol) = route.wire_api {
+                anyhow::ensure!(
+                    protocol == ProtocolKind::Responses && route.upstream.is_some(),
+                    "wire_api currently supports responses on an upstream route"
+                );
+            }
+            if self.network.upstream.proxy.is_some()
+                && let Some(upstream) = &route.upstream
+            {
+                anyhow::ensure!(
+                    Url::parse(upstream)?.scheme() == "https",
+                    "Gateway routes using an upstream proxy must use HTTPS"
+                );
+                anyhow::ensure!(
+                    route
+                        .upstream_anthropic
+                        .as_deref()
+                        .is_none_or(|url| Url::parse(url).is_ok_and(|url| url.scheme() == "https")),
+                    "Gateway routes using an upstream proxy must use HTTPS"
+                );
+            }
             if !seen.insert(route.name.clone()) {
                 anyhow::bail!("duplicate models[].name `{}`", route.name);
             }
@@ -298,7 +335,9 @@ impl ModelRoute {
         let suffix = strip_incoming_api_prefix(incoming_path, &api_prefix);
         let base_path = base.path().trim_end_matches('/');
 
-        let final_path = if base_path.is_empty() || base_path == "/" {
+        let final_path = if self.wire_api == Some(protocol) {
+            join_api_path(base_path, &suffix)
+        } else if base_path.is_empty() || base_path == "/" {
             join_api_path(&api_prefix, &suffix)
         } else if base_includes_api_prefix(base_path, &api_prefix) {
             join_api_path(base_path, &suffix)
@@ -414,9 +453,68 @@ mod tests {
             provider: None,
             upstream: Some(upstream.into()),
             upstream_anthropic: upstream_anthropic.map(str::to_string),
+            wire_api: None,
+            forward_models: false,
             api_key_env: None,
             api_key: None,
             forward: None,
+        }
+    }
+
+    #[test]
+    fn upstream_proxy_rejects_plaintext_model_routes_and_ambiguous_catalogs() {
+        let prefix =
+            "listen = \"127.0.0.1:0\"\n[network.upstream]\nproxy = \"http://127.0.0.1:17897\"\n";
+        let valid = "[[models]]\nname = \"*\"\nupstream = \"https://example.com/api\"\nwire_api = \"responses\"\nforward_models = true\n";
+        ProxyConfig::from_toml_str(&format!("{prefix}{valid}")).unwrap();
+        let http = valid.replace("https://example.com", "http://example.com");
+        assert!(ProxyConfig::from_toml_str(&format!("{prefix}{http}")).is_err());
+        assert!(
+            ProxyConfig::from_toml_str(&format!(
+                "{prefix}{valid}upstream_anthropic = \"http://example.com\"\n"
+            ))
+            .is_err()
+        );
+        let duplicate_catalog = valid.replace("name = \"*\"", "name = \"other\"");
+        assert!(
+            ProxyConfig::from_toml_str(&format!("{prefix}{valid}{duplicate_catalog}")).is_err()
+        );
+        assert!(
+            ProxyConfig::from_toml_str(&format!(
+                "{prefix}{}",
+                valid.replace("wire_api = \"responses\"\n", "")
+            ))
+            .is_err()
+        );
+    }
+
+    #[test]
+    fn explicit_responses_preserves_native_protocol_and_complete_base_path() {
+        for (base, expected) in [
+            (
+                "https://chatgpt.com/backend-api/codex",
+                "https://chatgpt.com/backend-api/codex/responses",
+            ),
+            (
+                "https://api.example.com/v1",
+                "https://api.example.com/v1/responses",
+            ),
+        ] {
+            let route: ModelRoute = toml::from_str(&format!(
+                "name = \"*\"\nupstream = \"{base}\"\nwire_api = \"responses\""
+            ))
+            .unwrap();
+            assert_eq!(
+                route
+                    .resolve_upstream_url("/v1/responses", ProtocolKind::Responses)
+                    .unwrap()
+                    .as_str(),
+                expected
+            );
+            assert_eq!(
+                crate::conversion::ProtocolBridge::needed(ProtocolKind::Responses, &route),
+                crate::conversion::ProtocolBridge::Passthrough
+            );
         }
     }
 
