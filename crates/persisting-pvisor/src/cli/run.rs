@@ -95,9 +95,9 @@ use persisting_overlaynet::{NetworkAccessRule, NetworkBandwidthLimit};
 use serde::Deserialize;
 
 use crate::config::{
-    ContainerMount, ContainerNetwork, ContainerPlatform, GatewayMode, OverlayFsBackend,
-    OverlayFsCommit, OverlayFsSettings, OverlayNetMode, OverlayNetPolicy, OverlayNetSettings,
-    RunConfig, RunExecutorKind, RunPolicy, RunStdio,
+    ContainerMount, ContainerNetwork, ContainerPlatform, FilesystemMode, GatewayMode,
+    OverlayFsBackend, OverlayFsCommit, OverlayFsSettings, OverlayNetMode, OverlayNetPolicy,
+    OverlayNetSettings, RunConfig, RunExecutorKind, RunPolicy, RunStdio,
 };
 use crate::runtime::{RunLineage, default_run_home, resolve_run};
 use crate::{
@@ -110,20 +110,20 @@ use super::trajectory::{JsonlEventSink, JsonlWriter, jsonl_capture_sink};
 
 #[cfg(target_os = "linux")]
 pub(super) const RUN_COMMAND_ABOUT: &str =
-    "Execute one Agent Run with safe-best-effort host isolation by default";
+    "Execute one Agent Run with independent filesystem, staging, and network policies";
 #[cfg(target_os = "linux")]
-pub(super) const RUN_COMMAND_LONG_ABOUT: &str = "Execute one Agent Run under pVisor management. Host execution uses safe-best-effort isolation when supported by the system.";
+pub(super) const RUN_COMMAND_LONG_ABOUT: &str = "Execute one Agent Run under pVisor management. Host execution preserves the host filesystem view by default; use --filesystem sandbox for filesystem access restrictions, --stage for change staging, and --overlaynet for network policy.";
 
 #[cfg(target_os = "macos")]
 pub(super) const RUN_COMMAND_ABOUT: &str =
-    "Execute one Agent Run with safe-best-effort host isolation by default";
+    "Execute one Agent Run with independent filesystem, staging, and network policies";
 #[cfg(target_os = "macos")]
 pub(super) const RUN_COMMAND_LONG_ABOUT: &str = MACOS_RUN_COMMAND_LONG_ABOUT;
 
 // Compile the macOS description in tests on every platform so Linux CI also
 // checks its safety disclosures instead of leaving them to the macOS shard.
 #[cfg(any(target_os = "macos", test))]
-const MACOS_RUN_COMMAND_LONG_ABOUT: &str = "Execute one Agent Run under pVisor management. Host execution uses safe-best-effort isolation when supported by the system.\n\nOn macOS, staged workspace views use macFUSE and Seatbelt confines writes when available. Full-disk reads remain ambient; selective network policies remain cooperative. With --overlaynet-deny-all, Seatbelt blocks non-loopback IP traffic and ambient host Unix sockets while permitting loopback proxy access and Run-scoped Unix IPC.\n\nUnavailable isolation capabilities are reported as warnings in best-effort mode. With --strict, insufficient isolation guarantees cause the Run to fail before Agent execution.";
+const MACOS_RUN_COMMAND_LONG_ABOUT: &str = "Execute one Agent Run under pVisor management. Host execution preserves the host filesystem view by default. Use --filesystem sandbox for filesystem access restrictions, --stage for change staging, and --overlaynet for network policy.\n\nOn macOS, staged workspace views use macFUSE when requested, and Seatbelt is used for requested filesystem sandboxing or deny-all network isolation. Full-disk reads remain ambient unless filesystem sandboxing is requested; selective network policies remain cooperative. With --overlaynet-deny-all, Seatbelt blocks non-loopback IP traffic and ambient host Unix sockets while permitting loopback proxy access and Run-scoped Unix IPC.\n\nUnavailable isolation capabilities are reported as warnings in best-effort mode. With --strict, insufficient isolation guarantees cause the Run to fail before Agent execution.";
 
 #[cfg(not(any(target_os = "linux", target_os = "macos")))]
 pub(super) const RUN_COMMAND_ABOUT: &str = "Execute one Agent Run under pVisor management";
@@ -131,9 +131,9 @@ pub(super) const RUN_COMMAND_ABOUT: &str = "Execute one Agent Run under pVisor m
 pub(super) const RUN_COMMAND_LONG_ABOUT: &str = RUN_COMMAND_ABOUT;
 
 #[cfg(target_os = "linux")]
-const EXECUTOR_HELP: &str = "Execution provider: host, container, or vm. `vm` uses the statically linked libkrun backend; host uses safe-best-effort isolation";
+const EXECUTOR_HELP: &str = "Execution provider: host, container, or vm. `vm` uses the statically linked libkrun backend; host supports optional filesystem and network isolation";
 #[cfg(target_os = "macos")]
-const EXECUTOR_HELP: &str = "Execution provider: host, container, or vm. `vm` uses the statically linked libkrun backend; host uses safe-best-effort isolation";
+const EXECUTOR_HELP: &str = "Execution provider: host, container, or vm. `vm` uses the statically linked libkrun backend; host supports optional filesystem and network isolation";
 #[cfg(not(any(target_os = "linux", target_os = "macos")))]
 const EXECUTOR_HELP: &str = "Execution provider for the Agent command";
 
@@ -199,6 +199,9 @@ struct RunOverrides {
     name: Option<String>,
     #[arg(long, value_enum, help = EXECUTOR_HELP)]
     executor: Option<RunExecutorKind>,
+    /// Filesystem access policy; independent from OverlayNet and OverlayFS staging.
+    #[arg(long, value_enum)]
+    filesystem: Option<FilesystemMode>,
     #[arg(long, value_name = "DURATION")]
     timeout: Option<DurationMs>,
     #[arg(long, value_enum)]
@@ -561,7 +564,8 @@ pub async fn run(args: RunArgs) -> anyhow::Result<i32> {
     {
         return run_prepared_spec(args).await;
     }
-    // Host runs use the safe-best-effort profile by default.
+    // Host runs keep the best-effort lifecycle/evidence profile by default;
+    // filesystem restrictions, staging, and network isolation remain opt-in.
     let safe = true;
     let run_id = format!("run-{}", uuid::Uuid::new_v4());
     let mut config = args
@@ -1037,37 +1041,54 @@ async fn execute_config(
         None
     };
     if config.run.executor == RunExecutorKind::Vm {
-        let (rootfs, workspace) = resolve_vm_layout(&config)?;
-        config.vm.rootfs = Some(rootfs.clone());
-        config.run.workspace = Some(workspace.clone());
-        let has_guest_overlay = config
-            .overlayfs
-            .as_ref()
-            .and_then(|overlay| overlay.target.as_ref())
-            .is_some();
-        if !has_guest_overlay {
-            let overlay = config
+        #[cfg(all(target_os = "macos", target_arch = "x86_64"))]
+        anyhow::bail!(
+            "VM execution is unsupported on Intel macOS; use Linux x86_64 or Apple Silicon macOS"
+        );
+        #[cfg(not(all(target_os = "macos", target_arch = "x86_64")))]
+        {
+            let (rootfs, workspace) = resolve_vm_layout(&config)?;
+            config.vm.rootfs = Some(rootfs.clone());
+            config.run.workspace = Some(workspace.clone());
+            let has_guest_overlay = config
                 .overlayfs
-                .get_or_insert_with(OverlayFsSettings::default);
-            // Keep the host workspace path stable inside the guest. The
-            // workspace is a separate virtio-fs mount; using the rootfs as its
-            // base would make `cwd` point at a path that does not exist in an
-            // image guest and would bypass workspace staging.
-            overlay.base = Some(workspace.clone());
-            overlay.target = Some(workspace.clone());
-            overlay.commit = OverlayFsCommit::Manual;
-        }
-        if config.vm.library_dir.is_none() && crate::vm::bundled_firmware_dir().is_none() {
-            eprintln!(
-                "pVisor firmware: resolving libkrunfw {}",
-                crate::firmware::VERSION
+                .as_ref()
+                .and_then(|overlay| overlay.target.as_ref())
+                .is_some();
+            if !has_guest_overlay {
+                let overlay = config
+                    .overlayfs
+                    .get_or_insert_with(OverlayFsSettings::default);
+                // Keep the host workspace path stable inside the guest. The
+                // workspace is a separate virtio-fs mount; using the rootfs as its
+                // base would make `cwd` point at a path that does not exist in an
+                // image guest and would bypass workspace staging.
+                overlay.base = Some(workspace.clone());
+                overlay.target = Some(workspace.clone());
+                overlay.commit = OverlayFsCommit::Manual;
+            }
+            #[cfg(all(target_os = "linux", target_env = "musl", target_arch = "x86_64"))]
+            anyhow::ensure!(
+                config.vm.library_dir.is_none(),
+                "--vm-library-dir is unavailable in the static musl build; libkrun's kernel bundle is embedded"
             );
-            let directory =
-                tokio::task::spawn_blocking(|| crate::firmware::FirmwareStore::new()?.prepare())
-                    .await
-                    .context("libkrunfw preparation task failed")??;
-            eprintln!("pVisor firmware: {}", directory.display());
-            config.vm.library_dir = Some(directory);
+            #[cfg(not(any(
+                all(target_os = "linux", target_env = "musl", target_arch = "x86_64"),
+                all(target_os = "macos", target_arch = "x86_64")
+            )))]
+            if config.vm.library_dir.is_none() && crate::vm::bundled_firmware_dir().is_none() {
+                eprintln!(
+                    "pVisor firmware: resolving libkrunfw {}",
+                    crate::firmware::VERSION
+                );
+                let directory = tokio::task::spawn_blocking(|| {
+                    crate::firmware::FirmwareStore::new()?.prepare()
+                })
+                .await
+                .context("libkrunfw preparation task failed")??;
+                eprintln!("pVisor firmware: {}", directory.display());
+                config.vm.library_dir = Some(directory);
+            }
         }
     } else {
         if let Some(base) = config
@@ -1125,6 +1146,9 @@ async fn execute_config(
         overlay.protect_target = true;
     }
     let overlay_enabled = overlay.is_some();
+    let filesystem_isolated = config.filesystem == FilesystemMode::Sandbox;
+    let network_namespace_required = config.run.executor == RunExecutorKind::Host
+        && config.overlaynet.policy == OverlayNetPolicy::Deny;
     let resolved_stage_for_limit = overlay.as_ref().and_then(|hint| hint.stage_dir.clone());
     let proxy = resolve_proxy(&config)?;
 
@@ -1165,8 +1189,10 @@ async fn execute_config(
 
     let executor: Arc<dyn RunExecutor> = match config.run.executor {
         #[cfg(target_os = "linux")]
-        RunExecutorKind::Host if safe_profile_requested => {
-            if crate::process::rootless_runtime_available() {
+        RunExecutorKind::Host
+            if safe_profile_requested && (filesystem_isolated || network_namespace_required) =>
+        {
+            if crate::process::rootless_runtime_available(!filesystem_isolated) {
                 match ProcessExecutor::rootless_with_launcher(std::env::current_exe()?) {
                     Ok(executor) => Arc::new(executor),
                     Err(error) => {
@@ -1178,13 +1204,15 @@ async fn execute_config(
                 }
             } else {
                 eprintln!(
-                    "pVisor safe-best-effort: user/mount/PID namespaces unavailable; falling back to host process"
+                    "pVisor safe-best-effort: required namespaces unavailable; falling back to host process"
                 );
                 Arc::new(ProcessExecutor::default())
             }
         }
         #[cfg(target_os = "macos")]
-        RunExecutorKind::Host if safe_profile_requested => {
+        RunExecutorKind::Host
+            if safe_profile_requested && (filesystem_isolated || network_namespace_required) =>
+        {
             match ProcessExecutor::seatbelt_with_launcher(std::env::current_exe()?) {
                 Ok(executor) => Arc::new(executor),
                 Err(error) => {
@@ -1196,7 +1224,9 @@ async fn execute_config(
             }
         }
         #[cfg(not(any(target_os = "linux", target_os = "macos")))]
-        RunExecutorKind::Host if safe_profile_requested => Arc::new(ProcessExecutor::default()),
+        RunExecutorKind::Host if safe_profile_requested && filesystem_isolated => {
+            Arc::new(ProcessExecutor::default())
+        }
         RunExecutorKind::Host => Arc::new(ProcessExecutor::default()),
         RunExecutorKind::Container => Arc::new(ContainerExecutor::new(config.container.clone())?),
         RunExecutorKind::Vm => Arc::new(VmExecutor::new(config.vm.clone())?),
@@ -1326,6 +1356,16 @@ async fn execute_config(
         spec.metadata
             .insert("pvisor.safe".into(), serde_json::Value::Bool(true));
     }
+    spec.metadata.insert(
+        "pvisor.filesystem.mode".into(),
+        serde_json::Value::String(
+            match config.filesystem {
+                FilesystemMode::Host => "host",
+                FilesystemMode::Sandbox => "sandbox",
+            }
+            .into(),
+        ),
+    );
 
     if safe_profile_requested {
         let network_boundary = if config.run.executor == RunExecutorKind::Vm
@@ -1344,29 +1384,50 @@ async fn execute_config(
         } else {
             "cooperative network review"
         };
-        if overlay_enabled {
-            eprintln!("pVisor safe profile: staged workspace + {network_boundary}");
+        let filesystem_boundary = if filesystem_isolated {
+            "restricted filesystem access"
         } else {
-            eprintln!(
-                "pVisor safe profile: best-effort isolation + {network_boundary}; workspace writes are not staged (pass --stage for COW/review)"
-            );
-        }
+            "host filesystem access"
+        };
+        let staging = if overlay_enabled {
+            "staged workspace"
+        } else {
+            "workspace writes are direct"
+        };
+        eprintln!("pVisor safe profile: {filesystem_boundary} + {staging} + {network_boundary}");
         eprintln!("workspace: {}", workspace.display());
         eprintln!("Run storage: {}", storage.display());
         match config.run.executor {
             RunExecutorKind::Host => {
                 #[cfg(target_os = "linux")]
-                eprintln!(
-                    "boundary: rootless user/mount/PID namespaces + PID 1 reaper + synthetic root + Landlock filesystem; network remains cooperative unless explicitly denied"
-                );
+                {
+                    let process_boundary = if filesystem_isolated {
+                        "rootless user/mount/PID namespaces + PID 1 reaper"
+                    } else if network_namespace_required {
+                        "private network namespace + process supervisor"
+                    } else {
+                        "host process"
+                    };
+                    eprintln!(
+                        "boundary: {process_boundary}; filesystem and network boundaries follow the selected policies"
+                    );
+                }
                 #[cfg(target_os = "macos")]
-                if overlay_enabled {
+                if filesystem_isolated && overlay_enabled {
                     eprintln!(
                         "boundary: Seatbelt-enforced staged writes; reads and selective network policies remain ambient/cooperative"
                     );
+                } else if filesystem_isolated {
+                    eprintln!(
+                        "boundary: Seatbelt-enforced filesystem writes; reads and selective network policies remain ambient/cooperative"
+                    );
+                } else if network_namespace_required {
+                    eprintln!(
+                        "boundary: Seatbelt-enforced deny-all network; filesystem access remains host-visible"
+                    );
                 } else {
                     eprintln!(
-                        "boundary: Seatbelt best-effort when available; workspace writes are not staged; reads and selective network policies remain ambient/cooperative"
+                        "boundary: host process; filesystem access and selective network policies remain host-visible/cooperative"
                     );
                 }
                 #[cfg(not(any(target_os = "linux", target_os = "macos")))]
@@ -1576,6 +1637,9 @@ fn apply_cli(config: &mut RunConfig, args: RunArgs) -> anyhow::Result<()> {
     }
     if let Some(value) = explicit_executor {
         config.run.executor = value;
+    }
+    if let Some(value) = args.run.filesystem {
+        config.filesystem = value;
     }
     if args.vm.vm {
         config.run.executor = RunExecutorKind::Vm;
@@ -1944,6 +2008,7 @@ fn resolve_workspace(workspace: &Path) -> anyhow::Result<PathBuf> {
     Ok(workspace)
 }
 
+#[cfg_attr(all(target_os = "macos", target_arch = "x86_64"), allow(dead_code))]
 fn resolve_vm_layout(config: &RunConfig) -> anyhow::Result<(PathBuf, PathBuf)> {
     let rootfs = config
         .vm
@@ -2178,12 +2243,47 @@ mod tests {
         apply_cli(&mut config, *args).unwrap();
         apply_safe_defaults(&mut config).unwrap();
         assert!(config.overlayfs.is_none(), "stage is opt-in");
+        assert_eq!(config.filesystem, FilesystemMode::Host);
         assert_eq!(config.overlaynet.mode, OverlayNetMode::Auto);
         assert_eq!(config.run.agent, "true");
         assert_ne!(
             config.overlaynet.listen,
             OverlayNetSettings::default().listen
         );
+    }
+
+    #[test]
+    fn filesystem_policy_is_independent_from_overlaynet() {
+        let crate::cli::Command::Run(args) = Cli::try_parse_from([
+            "pvisor",
+            "run",
+            "--overlaynet-deny-all",
+            "--filesystem",
+            "sandbox",
+            "--",
+            "true",
+        ])
+        .unwrap()
+        .command
+        else {
+            unreachable!()
+        };
+        let mut config = RunConfig::default();
+        apply_cli(&mut config, *args).unwrap();
+        assert_eq!(config.filesystem, FilesystemMode::Sandbox);
+        assert_eq!(config.overlaynet.policy, OverlayNetPolicy::Deny);
+
+        let crate::cli::Command::Run(args) =
+            Cli::try_parse_from(["pvisor", "run", "--overlaynet-deny-all", "--", "true"])
+                .unwrap()
+                .command
+        else {
+            unreachable!()
+        };
+        let mut config = RunConfig::default();
+        apply_cli(&mut config, *args).unwrap();
+        assert_eq!(config.filesystem, FilesystemMode::Host);
+        assert_eq!(config.overlaynet.policy, OverlayNetPolicy::Deny);
     }
 
     #[test]
@@ -2418,6 +2518,7 @@ mod tests {
         assert!(error.to_string().contains("requires --executor vm"));
     }
 
+    #[cfg(not(all(target_os = "macos", target_arch = "x86_64")))]
     #[test]
     fn vm_rejects_the_host_only_explicit_proxy_mode() {
         let temporary = tempfile::tempdir().unwrap();
@@ -2479,6 +2580,7 @@ mod tests {
         assert_eq!(resolved_workspace, project.canonicalize().unwrap());
     }
 
+    #[cfg(not(all(target_os = "macos", target_arch = "x86_64")))]
     #[test]
     fn overlayfs_path_is_valid_for_vm_executor() {
         let mut config = RunConfig::default();
@@ -2713,7 +2815,7 @@ mod tests {
         // Terminal wrapping must not affect checks of the safety description.
         let help = help.split_whitespace().collect::<Vec<_>>().join(" ");
         for disclosure in [
-            "safe-best-effort",
+            "filesystem sandbox",
             "macFUSE",
             "Seatbelt",
             "Full-disk reads remain ambient",
@@ -2739,8 +2841,8 @@ mod tests {
 
         #[cfg(target_os = "linux")]
         {
-            assert!(help.contains("safe-best-effort"));
-            assert!(help.contains("Host execution uses safe-best-effort isolation"));
+            assert!(help.contains("host filesystem view by default"));
+            assert!(help.contains("--filesystem sandbox"));
         }
         #[cfg(target_os = "macos")]
         {

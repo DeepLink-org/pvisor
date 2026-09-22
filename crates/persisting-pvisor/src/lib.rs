@@ -4,6 +4,8 @@
 //! network, filesystem, and the optional internal Gateway driver. Durable
 //! EventRecord output uses local JSONL when recording is enabled.
 
+#![cfg_attr(all(target_os = "macos", target_arch = "x86_64"), allow(dead_code))]
+
 pub mod cli;
 pub mod core;
 mod runtime;
@@ -19,6 +21,10 @@ mod control;
 mod delegated;
 mod event;
 mod executor;
+#[cfg(not(any(
+    all(target_os = "linux", target_env = "musl", target_arch = "x86_64"),
+    all(target_os = "macos", target_arch = "x86_64")
+)))]
 mod firmware;
 mod oci;
 mod process;
@@ -40,10 +46,11 @@ pub use checkpoint::{
     latest_logical_checkpoint, restore_logical_checkpoint,
 };
 pub use config::{
-    ContainerMount, ContainerNetwork, ContainerPlatform, ContainerSettings, GatewayDriverConfig,
-    GatewayMode, GatewaySettings, NetworkDriverConfig, OverlayFsBackend, OverlayFsCommit,
-    OverlayFsSettings, OverlayNetMode, OverlayNetPolicy, OverlayNetSettings, PVisorConfig,
-    RecordSettings, RunConfig, RunExecutorKind, RunPolicy, RunSettings, RunStdio, VmSettings,
+    ContainerMount, ContainerNetwork, ContainerPlatform, ContainerSettings, FilesystemMode,
+    GatewayDriverConfig, GatewayMode, GatewaySettings, NetworkDriverConfig, OverlayFsBackend,
+    OverlayFsCommit, OverlayFsSettings, OverlayNetMode, OverlayNetPolicy, OverlayNetSettings,
+    PVisorConfig, RecordSettings, RunConfig, RunExecutorKind, RunPolicy, RunSettings, RunStdio,
+    VmSettings,
 };
 pub use container::ContainerExecutor;
 pub use control::{

@@ -25,6 +25,14 @@ const NETWORK_FD_ENV: &str = "PERSISTING_KRUN_NETWORK_FD";
 const NETWORK_CHILD_FD: RawFd = 198;
 const NET_FLAG_DHCP_CLIENT: u32 = 1 << 1;
 
+#[cfg(all(target_os = "linux", target_env = "musl", not(target_arch = "x86_64")))]
+compile_error!("static musl VM support currently targets x86_64 only");
+
+#[cfg(all(target_os = "linux", target_env = "musl", target_arch = "x86_64"))]
+mod embedded_kernel {
+    include!(concat!(env!("OUT_DIR"), "/embedded_kernel.rs"));
+}
+
 #[derive(Debug, Clone)]
 pub struct VmExecutor {
     settings: VmSettings,
@@ -72,6 +80,11 @@ impl VmExecutor {
         anyhow::ensure!(settings.memory_mib > 0, "vm.memory_mib must be positive");
         anyhow::ensure!(settings.cpus > 0, "vm.cpus must be positive");
         anyhow::ensure!(settings.cpus <= 8, "libkrunfw supports at most 8 vCPUs");
+        #[cfg(all(target_os = "linux", target_env = "musl", target_arch = "x86_64"))]
+        anyhow::ensure!(
+            settings.library_dir.is_none(),
+            "vm.library_dir is unavailable in the static musl build; libkrun's kernel bundle is embedded"
+        );
         let rootfs = settings
             .rootfs
             .as_deref()
@@ -171,6 +184,19 @@ impl RunExecutor for VmExecutor {
                 context.attempt_id(),
                 started_at,
                 "libkrun execution requires Linux/KVM or Apple Silicon macOS/HVF".into(),
+            );
+        }
+        #[cfg(target_os = "linux")]
+        if let Err(error) = std::fs::OpenOptions::new()
+            .read(true)
+            .write(true)
+            .open("/dev/kvm")
+        {
+            return failed_to_start(
+                &spec,
+                context.attempt_id(),
+                started_at,
+                format!("libkrun VM requires an accessible /dev/kvm: {error}"),
             );
         }
 
@@ -705,6 +731,19 @@ fn run_linked_krun(spec: RunnerSpec) -> anyhow::Result<()> {
     check_krun(
         krun::krun_set_vm_config(ctx, spec.cpus, spec.memory_mib),
         "krun_set_vm_config",
+    )?;
+    #[cfg(all(target_os = "linux", target_env = "musl", target_arch = "x86_64"))]
+    check_krun(
+        unsafe {
+            krun::krun_set_embedded_kernel(
+                ctx,
+                embedded_kernel::KERNEL.as_ptr(),
+                embedded_kernel::KERNEL.len(),
+                embedded_kernel::GUEST_ADDR,
+                embedded_kernel::ENTRY_ADDR,
+            )
+        },
+        "krun_set_embedded_kernel",
     )?;
     add_krun_overlay(ctx, "/dev/root", &spec.root, 1 << 29)?;
     if let Some(workspace) = &spec.workspace {

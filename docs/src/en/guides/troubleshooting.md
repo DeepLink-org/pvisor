@@ -28,10 +28,10 @@ Check whether the command used a stage:
 pvisor run --stage ./runs/task-001 -- AGENT_COMMAND
 ```
 
-Without a stage, the host executor may still provide safe-best-effort controls,
-but there is no staged filesystem Effect to review and selectively apply. If a
-staged Run was expected, inspect the recorded stage path and the executor
-warnings before rerunning it.
+Without a stage, there is no staged filesystem Effect to review and selectively
+apply. Host filesystem access remains direct unless `--filesystem sandbox` was
+requested. If a staged Run was expected, inspect the recorded stage path and the
+executor warnings before rerunning it.
 
 ## A requested capability was not enforced
 
