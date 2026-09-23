@@ -8,6 +8,7 @@ mod implant;
 mod overlay;
 mod registry;
 mod supervisor;
+mod zcode;
 
 pub(crate) use attempt::AttemptTeardown;
 pub(crate) use attempt::VmNetworkAttachment;
