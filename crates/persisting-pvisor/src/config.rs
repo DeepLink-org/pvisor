@@ -6,7 +6,7 @@
 
 use std::path::{Path, PathBuf};
 
-use persisting_control::ResourceLimits;
+use persisting_control::{FilesystemCapability, ResourceLimits};
 use persisting_gateway::config::{CaptureLevel, ModelRoute, ProxyConfig};
 use persisting_overlaynet::{NetworkAccessRule, NetworkBandwidthLimit};
 use serde::{Deserialize, Serialize};
@@ -51,6 +51,9 @@ pub struct RunSettings {
     pub inherit_env: bool,
     /// Host environment variables projected by name when `inherit_env=false`.
     pub pass_env: Vec<String>,
+    /// Explicit host paths available outside the project stage. Read-write
+    /// grants persist immediately and are not covered by apply/drop.
+    pub filesystem: Vec<FilesystemCapability>,
     pub resource_limits: ResourceLimits,
     pub command: Vec<String>,
 }
@@ -66,6 +69,7 @@ impl Default for RunSettings {
             policy: RunPolicy::Observe,
             inherit_env: true,
             pass_env: Vec::new(),
+            filesystem: Vec::new(),
             resource_limits: ResourceLimits::default(),
             command: Vec::new(),
         }
@@ -320,6 +324,10 @@ pub enum OverlayNetPolicy {
 #[serde(default, deny_unknown_fields)]
 pub struct GatewaySettings {
     pub mode: GatewayMode,
+    pub profile: Option<GatewayProfile>,
+    /// Installed, non-secret ZCode built-in provider catalog. The ZCode profile
+    /// snapshots this file per Run rather than changing the installed catalog.
+    pub zcode_builtin_config: Option<PathBuf>,
     pub admin_listen: String,
     pub level: CaptureLevel,
     pub session_header: String,
@@ -332,6 +340,8 @@ impl Default for GatewaySettings {
     fn default() -> Self {
         Self {
             mode: GatewayMode::Off,
+            profile: None,
+            zcode_builtin_config: None,
             admin_listen: "127.0.0.1:9876".into(),
             level: CaptureLevel::Dialogue,
             session_header: "x-persisting-session-id".into(),
@@ -348,6 +358,29 @@ pub enum GatewayMode {
     #[default]
     Off,
     Capture,
+}
+
+/// Opt-in client adaptation; never inferred from credentials on disk.
+#[derive(Debug, Clone, Copy, Deserialize, Serialize, PartialEq, Eq, clap::ValueEnum)]
+#[serde(rename_all = "kebab-case")]
+pub enum GatewayProfile {
+    ZcodeBigmodel,
+}
+
+impl GatewayProfile {
+    pub fn routes(self) -> Vec<ModelRoute> {
+        match self {
+            Self::ZcodeBigmodel => vec![ModelRoute {
+                name: "*".into(),
+                provider: Some("anthropic".into()),
+                upstream: Some("https://open.bigmodel.cn/api/anthropic/v1".into()),
+                upstream_anthropic: Some("https://open.bigmodel.cn/api/anthropic/v1".into()),
+                api_key_env: None,
+                api_key: None,
+                forward: None,
+            }],
+        }
+    }
 }
 
 #[derive(Debug, Clone, Default, Deserialize, Serialize)]

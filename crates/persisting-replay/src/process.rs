@@ -627,21 +627,29 @@ mod tests {
         let temporary = tempfile::tempdir().unwrap();
         let log_path = temporary.path().join("redirect-idle.log");
         let events_path = temporary.path().join("events.jsonl");
-        // stderr stays silent; only the redirect file grows. Without polling
-        // the redirect, a 300ms idle watchdog would kill this mid-loop.
-        let script = "for i in 1 2 3 4 5 6; do echo event-$i; sleep 0.2; done";
+        // stderr stays silent; only the redirect file grows. Leave ample room
+        // for CI scheduling delays between writes, but run longer than the idle
+        // timeout so failing to refresh the watchdog still kills the process.
+        let script =
+            "i=0; while [ \"$i\" -lt 20 ]; do echo event-$i; i=$((i + 1)); sleep 0.2; done";
         let mut spec = shell_spec(script, &log_path);
         spec.stdout_redirect = Some(events_path.clone());
-        spec.idle_timeout = Some(Duration::from_millis(300));
-        spec.timeout = Duration::from_secs(10);
+        spec.idle_timeout = Some(Duration::from_secs(2));
+        spec.timeout = Duration::from_secs(30);
 
         let output = run_process(spec).unwrap();
 
-        assert!(output.status.success());
+        let events = std::fs::read_to_string(&events_path).unwrap();
+        assert!(
+            output.status.success(),
+            "status={}, timed_out={}, stderr={:?}, events={events:?}",
+            output.status,
+            output.timed_out,
+            String::from_utf8_lossy(&output.stderr_tail),
+        );
         assert!(!output.timed_out);
         assert!(!output.step_limited);
-        let events = std::fs::read_to_string(&events_path).unwrap();
-        assert_eq!(events.lines().count(), 6);
+        assert_eq!(events.lines().count(), 20);
     }
 
     #[test]

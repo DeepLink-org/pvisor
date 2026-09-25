@@ -86,7 +86,9 @@ use std::sync::Arc;
 
 use anyhow::{Context, bail};
 use clap::{Args, ValueEnum};
-use persisting_control::{PolicyMode, RunInvocation, RunSpec, RunState, StdioMode};
+use persisting_control::{
+    FilesystemAccess, FilesystemCapability, PolicyMode, RunInvocation, RunSpec, RunState, StdioMode,
+};
 use persisting_gateway::config::{
     CaptureLevel, ModelRoute, NetworkConfig, NetworkMode, OverlayBackend, OverlayConfig,
     ProxyConfig,
@@ -95,9 +97,9 @@ use persisting_overlaynet::{NetworkAccessRule, NetworkBandwidthLimit};
 use serde::Deserialize;
 
 use crate::config::{
-    ContainerMount, ContainerNetwork, ContainerPlatform, GatewayMode, OverlayFsBackend,
-    OverlayFsCommit, OverlayFsSettings, OverlayNetMode, OverlayNetPolicy, OverlayNetSettings,
-    RunConfig, RunExecutorKind, RunPolicy, RunStdio,
+    ContainerMount, ContainerNetwork, ContainerPlatform, GatewayMode, GatewayProfile,
+    OverlayFsBackend, OverlayFsCommit, OverlayFsSettings, OverlayNetMode, OverlayNetPolicy,
+    OverlayNetSettings, RunConfig, RunExecutorKind, RunPolicy, RunStdio,
 };
 use crate::runtime::{RunLineage, default_run_home, resolve_run};
 use crate::{
@@ -149,6 +151,10 @@ pub struct RunArgs {
     /// TOML RunConfig or prepared JSON RunSpec; explicit CLI values replace matching fields.
     #[arg(long, value_name = "FILE")]
     spec: Option<PathBuf>,
+
+    /// Skip personal Agent defaults from $XDG_CONFIG_HOME/pvisor/agents/<program>.toml.
+    #[arg(long)]
+    no_config: bool,
 
     /// Atomically write the delegated RunResult as JSON.
     #[arg(long, value_name = "FILE")]
@@ -215,6 +221,12 @@ struct RunOverrides {
     /// Project one host environment variable by name; repeat as needed.
     #[arg(long, value_name = "NAME")]
     pass_env: Vec<String>,
+    /// Expose an existing absolute host path read-only; repeat as needed.
+    #[arg(long, value_name = "PATH")]
+    fs_read: Vec<PathBuf>,
+    /// Expose a writable host path outside staging (writes persist immediately).
+    #[arg(long, value_name = "PATH")]
+    fs_write: Vec<PathBuf>,
     /// Maximum processes/threads admitted for the Run.
     #[arg(long, value_name = "COUNT")]
     max_processes: Option<u64>,
@@ -494,6 +506,9 @@ impl FromStr for OverlayNetRuleArg {
 
 #[derive(Debug, Clone, Default, Args)]
 struct GatewayOverrides {
+    /// Adapt a supported client and enable Gateway capture (without changing saved client config).
+    #[arg(long, value_enum)]
+    gateway_profile: Option<GatewayProfile>,
     #[arg(long, value_enum)]
     gateway_mode: Option<GatewayMode>,
     #[arg(long, value_name = "ADDR")]
@@ -555,6 +570,57 @@ impl FromStr for GatewayRouteArg {
     }
 }
 
+fn personal_config_root() -> Option<PathBuf> {
+    std::env::var_os("XDG_CONFIG_HOME")
+        .map(PathBuf::from)
+        .filter(|path| path.is_absolute())
+        .or_else(|| dirs::home_dir().map(|home| home.join(".config")))
+}
+
+fn load_run_config(args: &RunArgs, config_root: Option<&Path>) -> anyhow::Result<RunConfig> {
+    // Explicit specs are self-contained. Never discover configuration in the
+    // workspace: repository content must not silently choose a credential sink.
+    if let Some(path) = &args.spec {
+        return RunConfig::from_file(path)
+            .with_context(|| format!("load pVisor Run config {}", path.display()));
+    }
+    if args.no_config {
+        return Ok(RunConfig::default());
+    }
+    let name = args
+        .command
+        .first()
+        .and_then(|program| Path::new(program).file_name())
+        .and_then(|name| name.to_str());
+    let (Some(root), Some(name)) = (config_root, name) else {
+        return Ok(RunConfig::default());
+    };
+    if name.is_empty()
+        || name == "."
+        || name == ".."
+        || !name
+            .bytes()
+            .all(|b| b.is_ascii_alphanumeric() || b"._-".contains(&b))
+    {
+        return Ok(RunConfig::default());
+    }
+    let path = root.join("pvisor/agents").join(format!("{name}.toml"));
+    let source = match std::fs::read_to_string(&path) {
+        Ok(source) => source,
+        Err(error) if error.kind() == std::io::ErrorKind::NotFound => {
+            return Ok(RunConfig::default());
+        }
+        Err(error) => {
+            return Err(error)
+                .with_context(|| format!("read personal Agent config {}", path.display()));
+        }
+    };
+    let config = toml::from_str(&source)
+        .with_context(|| format!("parse personal Agent config {}", path.display()))?;
+    eprintln!("pVisor Agent defaults: {}", path.display());
+    Ok(config)
+}
+
 pub async fn run(args: RunArgs) -> anyhow::Result<i32> {
     if let Some(path) = args.spec.as_deref()
         && spec_is_json(path)?
@@ -564,13 +630,7 @@ pub async fn run(args: RunArgs) -> anyhow::Result<i32> {
     // Host runs use the safe-best-effort profile by default.
     let safe = true;
     let run_id = format!("run-{}", uuid::Uuid::new_v4());
-    let mut config = args
-        .spec
-        .as_deref()
-        .map(RunConfig::from_file)
-        .transpose()
-        .context("load pVisor Run config")?
-        .unwrap_or_default();
+    let mut config = load_run_config(&args, personal_config_root().as_deref())?;
     apply_cli(&mut config, args.clone())?;
     let stage_limit = config
         .overlayfs
@@ -683,6 +743,14 @@ fn directory_size_bytes(root: &Path) -> anyhow::Result<u64> {
 }
 
 async fn run_prepared_spec(args: RunArgs) -> anyhow::Result<i32> {
+    anyhow::ensure!(
+        args.run.fs_read.is_empty() && args.run.fs_write.is_empty(),
+        "--fs-read/--fs-write cannot be combined with JSON --spec; use spec capabilities"
+    );
+    anyhow::ensure!(
+        args.gateway.gateway_profile.is_none(),
+        "--gateway-profile requires a normal run, not JSON --spec"
+    );
     anyhow::ensure!(
         args.command.is_empty(),
         "a command cannot be combined with a JSON --spec"
@@ -1112,6 +1180,7 @@ async fn execute_config(
         .unwrap_or(std::env::current_dir()?);
     let workspace = resolve_workspace(&workspace)?;
     let storage = resolve_run_storage(&select_run_storage(&config, &workspace, &run_id)?)?;
+    let filesystem = resolve_filesystem_grants(&config, &workspace, &storage)?;
     let mut overlay = resolve_overlay(&config, &workspace, &storage, &run_id)?;
     if config.run.executor == RunExecutorKind::Vm
         && config.vm.rootfs_immutable
@@ -1239,6 +1308,19 @@ async fn execute_config(
         .split_first()
         .context("missing Agent command; pass it after `--` or set run.command")?;
     let mut spec = RunSpec::process(run_id.as_str(), &config.run.agent, program);
+    spec.capabilities.filesystem = filesystem;
+    if let Some(path) = &config.gateway.zcode_builtin_config {
+        spec.metadata.insert(
+            "pvisor.gateway.zcode_builtin_config".into(),
+            serde_json::to_value(path.canonicalize()?)?,
+        );
+    }
+    if let Some(profile) = config.gateway.profile {
+        spec.metadata.insert(
+            "pvisor.gateway.profile".into(),
+            serde_json::to_value(profile)?,
+        );
+    }
     let RunInvocation::Process(process) = &mut spec.invocation;
     process.args = program_args.to_vec();
     process.stdin = StdioMode::Inherit;
@@ -1592,6 +1674,17 @@ fn apply_cli(config: &mut RunConfig, args: RunArgs) -> anyhow::Result<()> {
     if !args.run.pass_env.is_empty() {
         config.run.pass_env = args.run.pass_env;
     }
+    for (paths, access) in [
+        (args.run.fs_read, FilesystemAccess::Read),
+        (args.run.fs_write, FilesystemAccess::ReadWrite),
+    ] {
+        for path in paths {
+            config.run.filesystem.push(FilesystemCapability {
+                path: path.to_string_lossy().into_owned(),
+                access,
+            });
+        }
+    }
     if let Some(value) = args.run.memory {
         config.run.resource_limits.memory_bytes = Some(value.0);
     }
@@ -1778,6 +1871,23 @@ fn apply_cli(config: &mut RunConfig, args: RunArgs) -> anyhow::Result<()> {
         };
     }
 
+    if let Some(profile) = args.gateway.gateway_profile {
+        config.gateway.profile = Some(profile);
+    }
+    if config.gateway.profile.is_some() {
+        anyhow::ensure!(
+            args.gateway.gateway_mode != Some(GatewayMode::Off),
+            "--gateway-profile conflicts with --gateway-mode off"
+        );
+        config.gateway.mode = GatewayMode::Capture;
+        if explicit_overlaynet_mode.is_none() {
+            config.overlaynet.mode = if config.run.executor == RunExecutorKind::Vm {
+                OverlayNetMode::Auto
+            } else {
+                OverlayNetMode::Proxy
+            };
+        }
+    }
     if let Some(value) = args.gateway.gateway_mode {
         config.gateway.mode = value;
         if value == GatewayMode::Capture && explicit_overlaynet_mode.is_none() {
@@ -1833,8 +1943,52 @@ fn validate_vm_rootfs_platform(config: &RunConfig) -> anyhow::Result<()> {
 
 fn validate(config: &RunConfig) -> anyhow::Result<()> {
     validate_vm_rootfs_platform(config)?;
+    anyhow::ensure!(
+        config.run.filesystem.is_empty() || config.run.executor == RunExecutorKind::Host,
+        "run.filesystem / --fs-read / --fs-write currently require the host executor"
+    );
     if config.run.command.is_empty() {
         bail!("missing Agent command; pass it after `--` or set run.command");
+    }
+    if let Some(profile) = config.gateway.profile {
+        anyhow::ensure!(
+            config.gateway.mode == GatewayMode::Capture,
+            "Gateway profile requires capture mode"
+        );
+        anyhow::ensure!(
+            config.gateway.routes.is_empty(),
+            "Gateway profile cannot be combined with custom model routes"
+        );
+        let command = match profile {
+            GatewayProfile::ZcodeBigmodel => "zcode",
+        };
+        anyhow::ensure!(
+            Path::new(&config.run.command[0])
+                .file_name()
+                .and_then(|s| s.to_str())
+                == Some(command),
+            "Gateway profile requires a direct {command} command"
+        );
+    }
+    if config.gateway.profile == Some(GatewayProfile::ZcodeBigmodel) {
+        anyhow::ensure!(
+            config.run.executor == RunExecutorKind::Host,
+            "zcode-bigmodel currently requires the host executor"
+        );
+        let path = config
+            .gateway
+            .zcode_builtin_config
+            .as_deref()
+            .context("zcode-bigmodel requires gateway.zcode_builtin_config")?;
+        anyhow::ensure!(
+            path.is_absolute() && path.is_file(),
+            "gateway.zcode_builtin_config must name an existing absolute file"
+        );
+    } else {
+        anyhow::ensure!(
+            config.gateway.zcode_builtin_config.is_none(),
+            "gateway.zcode_builtin_config requires the zcode-bigmodel profile"
+        );
     }
     let overlay_path = config
         .overlayfs
@@ -2122,7 +2276,11 @@ fn resolve_proxy(config: &RunConfig) -> anyhow::Result<Option<ProxyConfig>> {
         network,
         overlay: OverlayConfig::default(),
         models: if config.gateway.mode == GatewayMode::Capture {
-            config.gateway.routes.clone()
+            config
+                .gateway
+                .profile
+                .map(GatewayProfile::routes)
+                .unwrap_or_else(|| config.gateway.routes.clone())
         } else {
             Vec::new()
         },
@@ -2135,9 +2293,298 @@ fn paths_overlap(left: &Path, right: &Path) -> bool {
     left.starts_with(right) || right.starts_with(left)
 }
 
+fn resolve_filesystem_grants(
+    config: &RunConfig,
+    workspace: &Path,
+    storage: &Path,
+) -> anyhow::Result<Vec<FilesystemCapability>> {
+    let grants = config.run.filesystem.iter().map(|grant| {
+        let path = Path::new(&grant.path);
+        anyhow::ensure!(path.is_absolute(), "filesystem grant must be absolute: {}", path.display());
+        let path = path.canonicalize()
+            .with_context(|| format!("resolve filesystem grant {}", path.display()))?;
+        // The rootless launcher grants its private /tmp read-write. Landlock
+        // permissions are additive, so a read grant below that mount would
+        // also become writable. Reject it instead of promising read-only.
+        anyhow::ensure!(
+            !cfg!(target_os = "linux") || grant.access != FilesystemAccess::Read
+                || !path.starts_with("/tmp"),
+            "read-only filesystem grants must be outside the private /tmp: {}", path.display()
+        );
+        anyhow::ensure!(
+            !paths_overlap(&path, workspace) && !paths_overlap(&path, storage),
+            "filesystem grant {} overlaps the project or Run storage; use staging for project files",
+            path.display()
+        );
+        if grant.access == FilesystemAccess::ReadWrite {
+            eprintln!("pVisor persistent filesystem grant: {} (writes bypass staging and apply/drop)", path.display());
+        }
+        Ok(FilesystemCapability { path: path.display().to_string(), access: grant.access })
+    }).collect::<anyhow::Result<Vec<_>>>()?;
+    for read in grants.iter().filter(|g| g.access == FilesystemAccess::Read) {
+        for write in grants
+            .iter()
+            .filter(|g| g.access == FilesystemAccess::ReadWrite)
+        {
+            anyhow::ensure!(
+                !paths_overlap(Path::new(&read.path), Path::new(&write.path)),
+                "read-only and writable filesystem grants overlap: {} and {}",
+                read.path,
+                write.path
+            );
+        }
+    }
+    Ok(grants)
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn filesystem_grants_reject_conflicting_access_modes() {
+        let root = tempfile::tempdir_in(env!("CARGO_MANIFEST_DIR")).unwrap();
+        let state = root.path().join("state");
+        std::fs::create_dir(&state).unwrap();
+        let mut config = RunConfig::default();
+        config.run.filesystem = vec![
+            FilesystemCapability {
+                path: root.path().display().to_string(),
+                access: FilesystemAccess::Read,
+            },
+            FilesystemCapability {
+                path: state.display().to_string(),
+                access: FilesystemAccess::ReadWrite,
+            },
+        ];
+        let error = resolve_filesystem_grants(
+            &config,
+            Path::new("/unrelated-project"),
+            Path::new("/unrelated-storage"),
+        )
+        .unwrap_err();
+        assert!(error.to_string().contains("grants overlap"));
+    }
+
+    #[cfg(target_os = "linux")]
+    #[test]
+    fn readonly_filesystem_grants_reject_private_tmp() {
+        let root = tempfile::tempdir_in("/tmp").unwrap();
+        let mut config = RunConfig::default();
+        config.run.filesystem = vec![FilesystemCapability {
+            path: root.path().display().to_string(),
+            access: FilesystemAccess::Read,
+        }];
+        let error = resolve_filesystem_grants(
+            &config,
+            Path::new("/unrelated-project"),
+            Path::new("/unrelated-storage"),
+        )
+        .unwrap_err();
+        assert!(error.to_string().contains("private /tmp"));
+    }
+
+    #[test]
+    fn filesystem_grants_load_from_personal_defaults_and_cli() {
+        let root = tempfile::tempdir().unwrap();
+        let dir = root.path().join("pvisor/agents");
+        std::fs::create_dir_all(&dir).unwrap();
+        std::fs::write(
+            dir.join("zcode.toml"),
+            "[[run.filesystem]]\npath = '/opt/zcode'\naccess = 'read'\n",
+        )
+        .unwrap();
+        let crate::cli::Command::Run(args) = Cli::try_parse_from([
+            "pvisor",
+            "run",
+            "--fs-write",
+            "/var/zcode-state",
+            "--",
+            "zcode",
+        ])
+        .unwrap()
+        .command
+        else {
+            unreachable!()
+        };
+        let mut config = load_run_config(&args, Some(root.path())).unwrap();
+        apply_cli(&mut config, *args).unwrap();
+        assert_eq!(
+            config.run.filesystem,
+            vec![
+                FilesystemCapability {
+                    path: "/opt/zcode".into(),
+                    access: FilesystemAccess::Read
+                },
+                FilesystemCapability {
+                    path: "/var/zcode-state".into(),
+                    access: FilesystemAccess::ReadWrite
+                },
+            ]
+        );
+        assert!(validate(&config).is_ok());
+        config.run.executor = RunExecutorKind::Container;
+        assert!(
+            validate(&config)
+                .unwrap_err()
+                .to_string()
+                .contains("host executor")
+        );
+    }
+
+    #[test]
+    fn filesystem_grants_reject_missing_relative_and_project_aliases() {
+        let root = tempfile::tempdir().unwrap();
+        // Match execute_config: macOS /var may alias /private/var.
+        let canonical_root = root.path().canonicalize().unwrap();
+        let workspace = canonical_root.join("workspace");
+        let storage = canonical_root.join("storage");
+        let runtime = canonical_root.join("runtime");
+        for path in [&workspace, &storage, &runtime] {
+            std::fs::create_dir(path).unwrap();
+        }
+        let mut config = RunConfig::default();
+        for path in [
+            PathBuf::from("relative"),
+            root.path().join("missing"),
+            workspace.clone(),
+            storage.clone(),
+            root.path().to_path_buf(),
+        ] {
+            config.run.filesystem = vec![FilesystemCapability {
+                path: path.display().to_string(),
+                access: FilesystemAccess::ReadWrite,
+            }];
+            assert!(resolve_filesystem_grants(&config, &workspace, &storage).is_err());
+        }
+        #[cfg(unix)]
+        {
+            let alias = root.path().join("alias");
+            std::os::unix::fs::symlink(&workspace, &alias).unwrap();
+            config.run.filesystem[0].path = alias.display().to_string();
+            assert!(resolve_filesystem_grants(&config, &workspace, &storage).is_err());
+        }
+        config.run.filesystem[0].path = runtime.display().to_string();
+        assert_eq!(
+            resolve_filesystem_grants(&config, &workspace, &storage)
+                .unwrap()
+                .len(),
+            1
+        );
+    }
+
+    #[test]
+    fn personal_agent_defaults_are_scoped_overridable_and_fail_closed() {
+        let root = tempfile::tempdir().unwrap();
+        let dir = root.path().join("pvisor/agents");
+        std::fs::create_dir_all(&dir).unwrap();
+        let file = dir.join("zcode.toml");
+        std::fs::write(&file, "[gateway]\nmode = 'capture'\nlevel = 'full'\n").unwrap();
+        let parse = |argv: Vec<&str>| {
+            let crate::cli::Command::Run(args) = Cli::try_parse_from(argv).unwrap().command else {
+                unreachable!()
+            };
+            *args
+        };
+        let args = parse(vec![
+            "pvisor",
+            "run",
+            "--gateway-level",
+            "summary",
+            "--",
+            "/opt/bin/zcode",
+            "exec",
+            "a prompt",
+        ]);
+        let mut config = load_run_config(&args, Some(root.path())).unwrap();
+        assert_eq!(config.gateway.mode, GatewayMode::Capture);
+        assert_eq!(
+            config.gateway.level,
+            persisting_gateway::config::CaptureLevel::Full
+        );
+        apply_cli(&mut config, args).unwrap();
+        assert_eq!(
+            config.gateway.level,
+            persisting_gateway::config::CaptureLevel::Summary
+        );
+        assert_eq!(config.run.command, ["/opt/bin/zcode", "exec", "a prompt"]);
+        let other = parse(vec!["pvisor", "run", "--", "sh"]);
+        assert!(
+            load_run_config(&other, Some(root.path()))
+                .unwrap()
+                .gateway
+                .profile
+                .is_none()
+        );
+        std::fs::write(&file, "invalid = [").unwrap();
+        let ordinary = parse(vec!["pvisor", "run", "--", "zcode"]);
+        assert!(load_run_config(&ordinary, Some(root.path())).is_err());
+        let disabled = parse(vec!["pvisor", "run", "--no-config", "--", "zcode"]);
+        assert!(
+            load_run_config(&disabled, Some(root.path()))
+                .unwrap()
+                .gateway
+                .profile
+                .is_none()
+        );
+        let explicit = root.path().join("explicit.toml");
+        std::fs::write(&explicit, "[gateway]\nlevel = 'summary'\n").unwrap();
+        let args = parse(vec![
+            "pvisor",
+            "run",
+            "--spec",
+            explicit.to_str().unwrap(),
+            "--",
+            "zcode",
+        ]);
+        assert!(
+            load_run_config(&args, Some(root.path()))
+                .unwrap()
+                .gateway
+                .profile
+                .is_none()
+        );
+    }
+
+    #[test]
+    fn zcode_profile_requires_catalog_and_keeps_native_messages_route() {
+        let catalog = tempfile::NamedTempFile::new().unwrap();
+        let crate::cli::Command::Run(args) = Cli::try_parse_from([
+            "pvisor",
+            "run",
+            "--gateway-profile",
+            "zcode-bigmodel",
+            "--",
+            "zcode",
+        ])
+        .unwrap()
+        .command
+        else {
+            unreachable!()
+        };
+        let mut config = RunConfig::default();
+        apply_cli(&mut config, *args).unwrap();
+        assert!(validate(&config).is_err());
+        config.gateway.zcode_builtin_config = Some(catalog.path().to_path_buf());
+        validate(&config).unwrap();
+        let roundtrip: RunConfig = toml::from_str(&toml::to_string(&config).unwrap()).unwrap();
+        let proxy = resolve_proxy(&roundtrip).unwrap().unwrap();
+        let route = &proxy.models[0];
+        let protocol = persisting_gateway::protocol::ProtocolKind::Messages;
+        assert_eq!(
+            persisting_gateway::conversion::ProtocolBridge::needed(protocol, route),
+            persisting_gateway::conversion::ProtocolBridge::Passthrough
+        );
+        assert_eq!(
+            route
+                .resolve_upstream_url("/v1/messages", protocol)
+                .unwrap()
+                .as_str(),
+            "https://open.bigmodel.cn/api/anthropic/v1/messages"
+        );
+        config.run.command = vec!["codex".into()];
+        assert!(validate(&config).is_err());
+    }
 
     #[test]
     fn stage_spec_parses_persistent_and_drop_forms() {

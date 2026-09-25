@@ -1284,8 +1284,16 @@ fn enrich_with_session(
         plan.notes.push("filesystem: host view (no overlay)".into());
     }
 
+    let profile = spec
+        .metadata
+        .get("pvisor.gateway.profile")
+        .cloned()
+        .map(serde_json::from_value::<crate::config::GatewayProfile>)
+        .transpose()?;
+    super::zcode::prepare(spec, &mut plan, listen, run_storage, profile)?;
     let RunInvocation::Process(ref mut process) = spec.invocation;
     apply_implant(process, &plan);
+    super::zcode::apply_environment(process, &plan);
     if gateway_enabled {
         inject_gateway_args(process, listen);
     }

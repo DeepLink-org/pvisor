@@ -109,6 +109,78 @@ fn skip_if_rootless_runtime_is_explicitly_optional() -> bool {
 }
 
 #[test]
+fn normal_command_uses_readonly_runtime_and_persistent_state_grants() {
+    // Runtime grants must be outside the launcher's private writable /tmp.
+    let temporary = tempfile::tempdir_in(env!("CARGO_MANIFEST_DIR")).unwrap();
+    let workspace = temporary.path().join("workspace");
+    let runtime = temporary.path().join("runtime");
+    let state = temporary.path().join("state");
+    let config = temporary.path().join("config");
+    let run_home = temporary.path().join("runs");
+    for path in [&workspace, &runtime, &state, &config.join("pvisor/agents")] {
+        fs::create_dir_all(path).unwrap();
+    }
+    let secret = temporary.path().join("secret");
+    fs::write(&secret, "not granted").unwrap();
+    fs::write(runtime.join("data"), "runtime data").unwrap();
+    fs::write(
+        runtime.join("agent.sh"),
+        r#"
+set -eu
+test "$(cat "$1/data")" = 'runtime data'
+if (printf changed > "$1/data") 2>/dev/null; then exit 41; fi
+if cat "$3" >/dev/null 2>&1; then exit 42; fi
+printf 'persisted' > "$2/session"
+printf 'review me' > project-change.txt
+"#,
+    )
+    .unwrap();
+    fs::write(config.join("pvisor/agents/sh.toml"), format!(
+        "[[run.filesystem]]\npath = {:?}\naccess = 'read'\n[[run.filesystem]]\npath = {:?}\naccess = 'read_write'\n",
+        runtime.to_str().unwrap(), state.to_str().unwrap(),
+    )).unwrap();
+    let output = Command::new(env!("CARGO_BIN_EXE_pvisor"))
+        .env("PERSISTING_RUN_HOME", &run_home)
+        .env("XDG_CONFIG_HOME", &config)
+        .current_dir(&workspace)
+        .args(["run", "--stdio", "capture", "--stage"])
+        .arg(temporary.path().join("stage"))
+        .args(["--", "/bin/sh"])
+        .arg(runtime.join("agent.sh"))
+        .args([&runtime, &state, &secret])
+        .output()
+        .unwrap();
+    if skip_if_user_namespaces_are_explicitly_optional(&run_home, &output) {
+        return;
+    }
+    assert!(
+        output.status.success(),
+        "stdout: {}\nstderr: {}",
+        String::from_utf8_lossy(&output.stdout),
+        String::from_utf8_lossy(&output.stderr)
+    );
+    assert!(
+        String::from_utf8_lossy(&output.stderr).contains("writes bypass staging and apply/drop")
+    );
+    assert_eq!(
+        fs::read_to_string(runtime.join("data")).unwrap(),
+        "runtime data"
+    );
+    assert_eq!(
+        fs::read_to_string(state.join("session")).unwrap(),
+        "persisted"
+    );
+    assert!(!workspace.join("project-change.txt").exists());
+    let bundle = RunBundle::read(&only_run(&stage_root(&run_home))).unwrap();
+    assert!(bundle.safety.filesystem_non_bypassable);
+    let filesystem = bundle.filesystem.unwrap();
+    assert_eq!(
+        fs::read_to_string(filesystem.upper.join("project-change.txt")).unwrap(),
+        "review me"
+    );
+}
+
+#[test]
 fn safe_local_executable_cannot_escape_the_workspace() {
     let temporary = tempfile::tempdir().unwrap();
     let workspace = temporary.path().join("workspace");

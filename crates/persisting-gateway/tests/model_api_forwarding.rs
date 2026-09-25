@@ -355,7 +355,9 @@ fn sse_event(event: &str, value: Value) -> String {
 #[derive(Clone)]
 struct MockState {
     response_content_type: &'static str,
-    response_body: String,
+    response_body: Vec<u8>,
+    response_status: StatusCode,
+    response_encoding: Option<&'static str>,
     captured: Arc<Mutex<Option<CapturedRequest>>>,
 }
 
@@ -395,10 +397,14 @@ async fn mock_model(State(state): State<MockState>, request: Request) -> Respons
     };
     *state.captured.lock().expect("lock captured request") = Some(captured);
 
-    Response::builder()
-        .status(StatusCode::OK)
+    let mut response = Response::builder()
+        .status(state.response_status)
         .header("content-type", state.response_content_type)
-        .header("x-model-request-id", MODEL_REQUEST_ID)
+        .header("x-model-request-id", MODEL_REQUEST_ID);
+    if let Some(encoding) = state.response_encoding {
+        response = response.header("content-encoding", encoding);
+    }
+    response
         .body(Body::from(state.response_body))
         .expect("build mock model response")
 }
@@ -406,6 +412,26 @@ async fn mock_model(State(state): State<MockState>, request: Request) -> Respons
 async fn spawn_mock_model(
     response_content_type: &'static str,
     response_body: String,
+) -> (
+    String,
+    Arc<Mutex<Option<CapturedRequest>>>,
+    oneshot::Sender<()>,
+    tokio::task::JoinHandle<()>,
+) {
+    spawn_mock_response(
+        response_content_type,
+        response_body.into_bytes(),
+        StatusCode::OK,
+        None,
+    )
+    .await
+}
+
+async fn spawn_mock_response(
+    response_content_type: &'static str,
+    response_body: Vec<u8>,
+    response_status: StatusCode,
+    response_encoding: Option<&'static str>,
 ) -> (
     String,
     Arc<Mutex<Option<CapturedRequest>>>,
@@ -422,6 +448,8 @@ async fn spawn_mock_model(
         .with_state(MockState {
             response_content_type,
             response_body,
+            response_status,
+            response_encoding,
             captured: Arc::clone(&captured),
         });
     let (stop_tx, stop_rx) = oneshot::channel();
@@ -507,6 +535,169 @@ upstream = {upstream:?}
     tokio::task::yield_now().await;
 
     (format!("http://{gateway_address}"), storage, stop_tx, task)
+}
+
+fn encode_response(encoding: &str, body: &[u8]) -> Vec<u8> {
+    use std::io::Write;
+    match encoding {
+        "gzip" => {
+            let mut encoder =
+                flate2::write::GzEncoder::new(Vec::new(), flate2::Compression::fast());
+            encoder.write_all(body).unwrap();
+            encoder.finish().unwrap()
+        }
+        "deflate" => {
+            let mut encoder =
+                flate2::write::ZlibEncoder::new(Vec::new(), flate2::Compression::fast());
+            encoder.write_all(body).unwrap();
+            encoder.finish().unwrap()
+        }
+        _ => unreachable!(),
+    }
+}
+
+async fn encoded_response_round_trip(
+    encoding: &'static str,
+    body: Vec<u8>,
+    upstream_status: StatusCode,
+    stream: bool,
+) -> (StatusCode, axum::http::HeaderMap, Vec<u8>) {
+    let content_type = if stream {
+        "text/event-stream"
+    } else {
+        "application/json"
+    };
+    let (mock_base, captured, mock_stop, mock_task) =
+        spawn_mock_response(content_type, body, upstream_status, Some(encoding)).await;
+    let (gateway_base, _storage, gateway_stop, gateway_task) =
+        spawn_gateway(Api::Messages, &mock_base).await;
+    // Do not let the test client hide a stale response Content-Encoding header
+    // or compensate for a Gateway that merely relays compressed bytes.
+    let client = reqwest::Client::builder()
+        .no_proxy()
+        .no_gzip()
+        .no_deflate()
+        .timeout(std::time::Duration::from_secs(15))
+        .build()
+        .unwrap();
+    let response = client
+        .post(format!("{gateway_base}/v1/messages"))
+        .header("accept-encoding", "br, gzip, deflate")
+        .json(&Api::Messages.request(stream, false))
+        .send()
+        .await
+        .unwrap();
+    let status = response.status();
+    let headers = response.headers().clone();
+    let body = response.bytes().await.unwrap().to_vec();
+    let _ = gateway_stop.send(());
+    gateway_task.await.unwrap().unwrap();
+    let _ = mock_stop.send(());
+    mock_task.await.unwrap();
+    let captured = captured.lock().unwrap();
+    let encodings = captured.as_ref().unwrap().headers["accept-encoding"]
+        .split(',')
+        .map(str::trim)
+        .collect::<Vec<_>>();
+    assert!(encodings.contains(&"gzip"));
+    assert!(encodings.contains(&"deflate"));
+    assert!(
+        !encodings.contains(&"br"),
+        "do not forward encodings this Gateway cannot decode"
+    );
+    (status, headers, body)
+}
+
+#[tokio::test]
+async fn compressed_messages_responses_decode_before_json_parsing() {
+    let expected = serde_json::to_vec(&Api::Messages.tool_non_streaming_response()).unwrap();
+    for encoding in ["gzip", "deflate"] {
+        let (status, headers, body) = encoded_response_round_trip(
+            encoding,
+            encode_response(encoding, &expected),
+            StatusCode::OK,
+            false,
+        )
+        .await;
+        assert_eq!(
+            status,
+            StatusCode::OK,
+            "{encoding}: {}",
+            String::from_utf8_lossy(&body)
+        );
+        assert_eq!(body, expected);
+        assert!(!headers.contains_key("content-encoding"));
+        if let Some(length) = headers.get("content-length") {
+            assert_eq!(
+                length.to_str().unwrap().parse::<usize>().unwrap(),
+                body.len()
+            );
+        }
+    }
+}
+
+#[tokio::test]
+async fn compressed_error_responses_preserve_upstream_status_and_json() {
+    let expected =
+        br#"{"type":"error","error":{"type":"rate_limit_error","message":"retry later"}}"#;
+    for encoding in ["gzip", "deflate"] {
+        let (status, headers, body) = encoded_response_round_trip(
+            encoding,
+            encode_response(encoding, expected),
+            StatusCode::TOO_MANY_REQUESTS,
+            false,
+        )
+        .await;
+        assert_eq!(status, StatusCode::TOO_MANY_REQUESTS);
+        assert_eq!(body, expected);
+        assert!(!headers.contains_key("content-encoding"));
+    }
+}
+
+#[tokio::test]
+async fn compressed_sse_responses_still_stream() {
+    let expected = Api::Messages.streaming_response();
+    for encoding in ["gzip", "deflate"] {
+        let (status, headers, body) = encoded_response_round_trip(
+            encoding,
+            encode_response(encoding, expected.as_bytes()),
+            StatusCode::OK,
+            true,
+        )
+        .await;
+        assert_eq!(status, StatusCode::OK);
+        assert_eq!(body, expected.as_bytes());
+        assert!(!headers.contains_key("content-encoding"));
+    }
+}
+
+#[tokio::test]
+async fn compressed_responses_cannot_bypass_decoded_body_limit() {
+    let limit = persisting_gateway::conversion::MAX_RESPONSE_BODY_BYTES;
+    let oversized = vec![b' '; limit + 1];
+    for encoding in ["gzip", "deflate"] {
+        let compressed = encode_response(encoding, &oversized);
+        assert!(compressed.len() < limit);
+        let (status, _, body) =
+            encoded_response_round_trip(encoding, compressed, StatusCode::OK, false).await;
+        assert_eq!(status, StatusCode::BAD_GATEWAY);
+        assert!(String::from_utf8_lossy(&body).contains("upstream response body exceeds"));
+    }
+}
+
+#[tokio::test]
+async fn malformed_compressed_responses_fail_without_json_passthrough() {
+    for encoding in ["gzip", "deflate"] {
+        let (status, _, body) = encoded_response_round_trip(
+            encoding,
+            b"not a compressed response".to_vec(),
+            StatusCode::OK,
+            false,
+        )
+        .await;
+        assert_eq!(status, StatusCode::BAD_GATEWAY);
+        assert!(String::from_utf8_lossy(&body).contains("read upstream response body"));
+    }
 }
 
 async fn assert_round_trip(api: Api, stream: bool, tool_call: bool) {

@@ -13,6 +13,7 @@
 | [02-changeset-management](02-changeset-management) | changeset 可 review，并可分别 apply 或 drop |
 | [03-network-isolation](03-network-isolation) | 三条平铺命令展示 allowlist、deny-all 与 cooperative proxy 的 direct-socket 边界 |
 | [04-gateway-llm-control](04-gateway-llm-control) | Gateway 路由并捕获两次 OpenAI-compatible 调用 |
+| [05-zcode-cli](05-zcode-cli)（可选） | 真实 ZCode CLI 的文件工具、SSE 捕获、选择性 apply/drop 与超时清理 |
 
 文件系统示例需要 macOS 的 macFUSE 或 Linux 的 FUSE3。这里的“轻量级隔离”特指
 事务工作区和示例中 cooperative public proxy 所覆盖的数据面；直接 socket 可绕过
@@ -36,3 +37,5 @@ just examples 03-network-isolation
 - [Reproducible examples](../../docs/src/en/development/examples.md)
 - [pVisor get started](../../docs/src/zh/start/first-run.md)
 - [Isolation architecture](../../docs/src/zh/design/isolation.md)
+
+`05-zcode-cli` 需要额外安装 ZCode CLI 和 Node.js，默认批量运行仍只包含 01–04。配置方式见该示例的 README。
