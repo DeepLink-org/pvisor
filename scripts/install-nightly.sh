@@ -39,7 +39,9 @@ api="https://api.github.com/repos/${REPO}/releases/tags/${TAG}"
 
 echo "Fetching nightly release assets from ${REPO} (tag=${TAG})..." >&2
 
-url="$("$PYTHON" - "$api" "$platform_re" "$REPO" "$TAG" <<'PY'
+# Avoid a delimiter that prefixes a Python identifier (e.g. PY3_RE): Bash 5.2
+# can terminate a heredoc inside command substitution at that prefix.
+url="$("$PYTHON" - "$api" "$platform_re" "$REPO" "$TAG" <<'PVISOR_NIGHTLY_PYTHON'
 import json
 import re
 import sys
@@ -79,7 +81,7 @@ else:
         f"no platform wheel for {platform_re.pattern} in nightly release — "
         f"check https://github.com/{repo}/releases/tag/{tag}"
     )
-PY
+PVISOR_NIGHTLY_PYTHON
 )"
 
 echo "Installing ${url}" >&2
