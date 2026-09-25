@@ -26,7 +26,9 @@ OverlayFS, OverlayNet, Gateway, and AgentCtl are pVisor runtime drivers.
 | Evidence | Run Bundle, lifecycle events, capability enforcement, filesystem changes, network counters, AgentCtl observations, output, and artifact references |
 
 The standalone product loop is `RunSpec → admission → Attempt → terminal
-RunResult + private Run Bundle + staged Effects → later review/apply/drop`.
+RunResult + private Run Bundle + staged Effects → later review/apply/drop` when
+the CLI receives `--stage PATH`. Otherwise it drops the temporary stage at Run
+exit; the current cleanup also removes the Run Bundle kept in that directory.
 Capture is a Gateway capability, not a second product.
 
 The default build excludes Jujutsu. Use `jujutsu-overlay` for the Jujutsu upper

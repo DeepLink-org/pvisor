@@ -38,15 +38,15 @@ pip install pvisor
 
 ## 2. 检查平台要求
 
-CLI 支持 macOS 和 Linux，要求 Python 3.10 或更新版本。普通 host Run 不需要文件系统扩展。
-在 macOS 上使用 host-process 的 staged Run（`pvisor run --stage …`）前，先安装 macFUSE：
+CLI 支持 macOS 和 Linux，要求 Python 3.10 或更新版本。每个 CLI host Run 都使用文件系统暂存，
+包括未显式指定 `--stage` 的运行。在 macOS 上使用 host executor 前，先安装 macFUSE：
 
 ```bash
 brew install --cask macfuse
 ```
 
-macOS 提示时允许 macFUSE system extension。不带 `--stage` 时命令 可能直写项目目录；
-带 `--stage` 且挂载能力不可用时，Run 会 fail closed，而不会静默退化为无 COW 直写。
+macOS 提示时允许 macFUSE system extension。CLI 的 host Run 默认就需要暂存挂载，
+挂载能力不可用时会 fail closed，而不会静默退化为无 COW 直写。
 libkrun VM executor 不需要 macFUSE。
 
 ## 3. 需要时从源码安装
@@ -85,7 +85,7 @@ pvisor run --executor vm --rootfs image=ubuntu:24.04 -- /bin/echo hello
 未指定 rootfs 或镜像时，Linux 上 VM 默认通过 virtiofs 和 OverlayFS 使用宿主 `/`，
 不拉取镜像；macOS 上需要显式指定 Linux rootfs 或镜像。
 `--image-store DIR` 修改本地内容寻址缓存，
-`--overlayfs-path` 选择 guest workspace，`--rootfs DIR` 指向预先准备的 Linux rootfs。
+`--mount SOURCE[:TARGET]:ACCESS` 暴露宿主路径，`--rootfs DIR` 指向预先准备的 Linux rootfs。
 Linux 使用 KVM；Apple Silicon macOS 使用 HVF。从源码在 macOS 构建 VM 支持还需要 Zig：
 
 ```bash

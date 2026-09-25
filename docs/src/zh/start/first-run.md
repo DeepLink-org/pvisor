@@ -36,7 +36,7 @@ cat hello.txt
 
 ## 4. 换成你的命令
 
-在真实项目中，把示例命令换成你的脚本或自动化命令。已安装的 Agent CLI 也使用相同入口：
+在真实项目中，把示例命令换成你的脚本或自动化命令。已安装的 Agent CLI 也使用相同入口；依赖 Codex 项目与账号状态同时暂存之前，请先看 [Codex 状态限制](../reference/cli.md)：
 
 ```bash
 pvisor run --stage ../agent-stage-001 -- codex

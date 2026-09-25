@@ -8,7 +8,7 @@ scripts, and automation commands; describe Agent-specific integrations as such.
 Use `pvisor` for the Python distribution, import package, and wheel filename
 prefix. Keep Rust crate names, `PERSISTING_*` environment variables, and existing
 repository/deployment URLs accurate until they are migrated. Separate requested policy, installed controls, and observed
-results; describe filesystem staging as opt-in and platform-dependent.
+results; describe the default temporary filesystem stage and its platform-dependent boundary.
 
 The site uses Zensical 0.0.61. English and Chinese Markdown live under
 `docs/src/en/` and `docs/src/zh/`, with matching relative paths.
@@ -48,8 +48,8 @@ Both locales use the same six directories:
 Keep one canonical article per subject and link to it instead of repeating its
 contract. Start task guides with prerequisites and executable examples. Separate
 implemented behavior from design goals; describe a guarantee only with its
-executor and scope. Every workspace-review example must enable OverlayFS
-explicitly, normally with `--stage` outside the project.
+executor and scope. Every example that reviews or applies changes must retain
+the stage explicitly with `--stage` outside the project.
 
 `zensical.toml` owns navigation. Add or move both language versions together.
 `redirects.json` maps old locale-relative Markdown paths to their replacements;

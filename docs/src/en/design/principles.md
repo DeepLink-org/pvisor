@@ -9,8 +9,8 @@ not silently upgrade a missing control into a stronger claim.
 
 ## Staged files are reviewed before application
 
-With `--stage` enabled, workspace file changes remain staged until explicitly
-applied. Review belongs before those changes reach the project. This does not
+With `--stage PATH`, workspace file changes remain staged until explicitly
+applied. Without it, pVisor discards the temporary changeset at Run exit. Review belongs before retained changes reach the project. This does not
 make remote API calls or other external side effects reversible.
 
 ## Evidence travels with the result

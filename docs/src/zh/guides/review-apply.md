@@ -8,7 +8,7 @@ pvisor review last
 pvisor inspect last -- git status --short
 ```
 
-没有 `--stage` 等 OverlayFS 选项时，host Run 可以直接修改真实项目。`review` 展示记录的证据和暂存改动；`inspect` 在只读视图中执行检查命令。
+省略 `--stage` 时，工作区仍使用临时写时复制视图，但 pVisor 会在 Run 结束后丢弃它。`review` 展示记录的证据和保留的改动；`inspect` 在只读视图中执行检查命令。直接运行 Codex 前请先阅读 [Codex 状态限制](../reference/cli.md)：当前单一 overlay 可能选择 Codex 状态，而不是项目目录。
 
 ## 分批应用
 

@@ -501,7 +501,7 @@ D01 讲视图层组合，D02/D03 讲 host executor 的默认隔离和 workspace 
 
   建议场景：适合检查 OverlayFS 视图和 host 安全边界。
 
-  用途：把宿主的两个目录依次叠加到工作区视图，并指定 Agent 看到的路径。`directory` 选择目录后端，`manual` 表示退出后不自动应用改动。
+  用途：把宿主的两个目录依次叠加到工作区视图，并指定 Agent 看到的路径。`directory` 选择目录后端；改动只通过显式 `apply` 提交。
 
   准备：Linux user/mount namespace 或 macOS Seatbelt 可用。
 
@@ -511,11 +511,9 @@ D01 讲视图层组合，D02/D03 讲 host executor 的默认隔离和 workspace 
   mkdir -p /tmp/pvisor-cases/base /tmp/pvisor-cases/layer "$PWD/view"
   pvisor \
     --stage /tmp/pvisor-cases/composed-stage \
-    --overlayfs-path "$PWD/view" \
-    --overlayfs-compose /tmp/pvisor-cases/base \
-    --overlayfs-compose /tmp/pvisor-cases/layer \
-    --overlayfs-backend directory \
-    --overlayfs-commit manual \
+    --mount "/tmp/pvisor-cases/base:$PWD/view:stage" \
+    --mount "/tmp/pvisor-cases/layer:$PWD/view:stage" \
+    --filesystem-backend directory \
     -- /bin/true
   ```
 
@@ -739,7 +737,7 @@ D01 讲视图层组合，D02/D03 讲 host executor 的默认隔离和 workspace 
   pvisor --vm \
     --rootfs image=/path/to/image \
     --stage /tmp/pvisor-cases/vm-stage \
-    --overlayfs-path "$PWD" \
+    --mount "$PWD:stage" \
     -- /bin/pwd > guest-cwd.txt
   ```
 

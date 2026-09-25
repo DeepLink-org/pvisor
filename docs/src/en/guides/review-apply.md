@@ -8,7 +8,7 @@ pvisor review last
 pvisor inspect last -- git status --short
 ```
 
-Without an OverlayFS option such as `--stage`, a host Run can modify the real project directly. `review` reports recorded evidence and the staged changes; `inspect` runs a command against a read-only view.
+Without `--stage`, the workspace still uses a temporary copy-on-write view, but pVisor discards it at Run exit. `review` reports recorded evidence and retained changes; `inspect` runs a command against a read-only view. For direct Codex runs, first read the [Codex state limitation](../reference/cli.md): the current single overlay may select Codex state instead of the project.
 
 ## Apply a selected batch
 

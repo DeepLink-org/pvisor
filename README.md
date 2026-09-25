@@ -23,8 +23,9 @@ effective runtime controls, and an inspectable execution record.
   other capability requirements for the task.
 - **Execute with evidence:** retain the command, outcome, installed controls,
   warnings, and observed effects in a local Run Bundle.
-- **Review staged changes:** enable `--stage`, inspect file changes, then apply
-  selected paths or discard the remaining changes.
+- **Review staged changes:** pass `--stage PATH` to retain the copy-on-write
+  changeset, then apply selected paths or discard the remainder. Without it,
+  the temporary stage is discarded when the Run ends.
 
 Host, container, and libkrun VM executors provide different boundaries. A
 requested policy is not proof of enforcement; inspect the evidence for the Run.
@@ -63,15 +64,19 @@ pvisor apply last --path hello.txt   # or: pvisor drop last
 
 Run this from your project directory after completing the platform setup in
 the installation guide. Use a fresh stage directory outside the project for
-each Run. Replace the command after `--` with your script or installed Agent CLI:
+each Run. Replace the command after `--` with your script or installed Agent CLI.
+For Codex, review the [current state-staging limitation](docs/src/en/reference/cli.md)
+before relying on project writes being staged:
 
 ```bash
 pvisor run --stage ../agent-stage-001 -- codex
 pvisor review last
 ```
 
-`--stage` creates a copy-on-write workspace view for review; without it the
-command may write the real project tree. The exact boundary is
+The workspace uses a copy-on-write view by default. `--stage` retains its
+changeset for review; an omitted stage is temporary and discarded at Run exit.
+Explicit writable mounts and application state outside the workspace can still
+write through to the host. The exact boundary is
 platform-dependent and recorded with the Run—consult the
 [execution guide](https://deeplink-org.github.io/Persisting/en/guides/execution/)
 before treating it as a security boundary.
@@ -84,7 +89,8 @@ logical checkpoints preserve staged filesystem state, not process memory.
 
 | Capability | Status |
 |---|---|
-| Local execution records, staged workspace review, selective apply, and logical checkpoints | Implemented |
+| Staged workspace review, selective apply, and logical checkpoints | Implemented with an explicit retained stage |
+| Run Bundle retained after an auto-dropped temporary stage | Not yet implemented; supply `--stage PATH` for durable audit |
 | Gateway capture and cooperative proxy policy | Implemented |
 | Container/libkrun executors and transparent network boundaries | Platform-dependent; see the pVisor and OverlayNet docs |
 

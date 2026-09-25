@@ -6,7 +6,7 @@ A copy-on-write workspace and a security boundary solve different problems. Over
 
 | Executor | Mechanisms | Limits to keep explicit |
 | --- | --- | --- |
-| Linux host | Rootless launcher, user/mount/PID namespaces, projected root, negotiated Landlock, descriptor cleanup and capability dropping | Kernel and host configuration matter; selective proxy networking remains cooperative |
+| Linux host | Rootless launcher, user/mount/PID namespaces, projected root, descriptor cleanup and capability dropping; Landlock on ordinary runs or when required by policy | Kernel and host configuration matter; selective proxy networking remains cooperative |
 | macOS host | Generated Seatbelt profile with staged write controls; deny-all socket policy when requested | Reads and selective network access remain ambient/cooperative; staged mounts require macFUSE |
 | Native OCI container | Linux OCI runtime, image userland and configured mounts/network | Does not claim complete enforcement of every capability dimension |
 | libkrun VM | Separate Linux guest kernel, virtio-fs workspace and smoltcp network path | Requires KVM or HVF; host connectors and shared files still form part of the boundary |
@@ -15,13 +15,13 @@ Check the actual Run Bundle. Configuration expresses a request; installed contro
 
 ## Workspace and lifecycle
 
-Enable an explicit stage for a reviewable workspace:
+Pass an explicit stage path to retain a reviewable workspace:
 
 ```bash
 pvisor run --stage ../stage-001 -- codex
 ```
 
-Without an OverlayFS option, the host command may write the project directly. The stage does not roll back remote API calls or writes outside its covered workspace.
+Without `--stage`, the CLI still uses a copy-on-write workspace and drops its temporary stage at Run exit. The stage does not roll back remote API calls or writes outside its covered workspace. ZCode's Linux host adapter grants persistent write access to its application state; see the [CLI reference](../reference/cli.md).
 
 The host process executor creates a process group, sends termination signals to the group on completion or cancellation, and escalates after the grace period. It also bounds output draining when descendants hold pipes open. A process that leaves the group requires stronger platform containment; process-group cleanup alone is not a complete descendant boundary.
 

@@ -1,6 +1,6 @@
 # What is PolicyVisor?
 
-**PolicyVisor (pVisor)** provides **policy-governed, reviewable execution** for existing Agent CLIs, scripts, and automation commands. You keep your tools; pVisor manages capability admission, runtime controls, optional workspace staging, and a local execution record.
+**PolicyVisor (pVisor)** provides **policy-governed, reviewable execution** for existing Agent CLIs, scripts, and automation commands. You keep your tools; pVisor manages capability admission, runtime controls, workspace staging, and a local execution record.
 
 The **p** stands for **Policy**. A Run connects the authority you request with the controls actually installed and the effects available for review. See [the PolicyVisor model](../concepts/policyvisor.md) for how these fit together.
 
@@ -10,16 +10,16 @@ pvisor review last
 pvisor apply last --all
 ```
 
-!!! tip "Use an explicit stage"
+!!! tip "Retain a stage for review"
 
-    `--stage` creates the copy-on-write workspace view used by review/apply. Without it, a host command may modify the project directly.
+    The CLI creates a copy-on-write workspace view by default. `--stage PATH` retains its changes for review/apply; without it, the temporary stage is discarded at Run exit.
 
 ## What you get
 
 - **Capability admission and runtime controls:** evaluate requested authority against the selected executor and record effective controls and any degradation.
 
 - **A Run record:** command, executor, outcome, warnings, and the controls actually installed.
-- **A staged workspace, when enabled:** inspect changed files and apply selected batches or discard the remainder.
+- **A staged workspace:** retain it with `--stage PATH` to inspect changed files and apply selected batches or discard the remainder.
 - **Optional network policy and Gateway capture:** control mediated traffic and record model requests and responses.
 - **Logical checkpoints and forks:** preserve a staged filesystem state and start a related Run.
 

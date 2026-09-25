@@ -16,15 +16,14 @@ pvisor run -- codex
 ```
 
 Use `--stage` when filesystem changes must remain available for review. Without
-a stage, pVisor still records a Run, but there is no durable workspace change set
-to apply. The selected host, container, or VM provider records its effective
+it, pVisor drops the temporary copy-on-write stage at Run exit. The selected host, container, or VM provider records its effective
 capabilities and limitations in the Run Bundle.
 
 Common controls are grouped by purpose:
 
 | Purpose | Options | Result |
 | --- | --- | --- |
-| Workspace | `--stage`, `--overlayfs-path`, `--overlayfs-compose` | create a copy-on-write view and retain a changeset |
+| Filesystem | `--stage`, `--mount SOURCE[:TARGET]:read\|stage\|write`, `--access PATH-GLOB:deny\|read` | keep a copy-on-write view and declare path access |
 | Runtime | `--executor host\|container\|vm`, `--rootfs`, `--container-image` | select the execution provider and root filesystem |
 | Network | `--overlaynet-deny-all`, `--overlaynet-allow`, `--overlaynet-limit` | request deny, allowlist, or rate-limit policy |
 | Gateway | `--gateway-mode`, `--gateway-route`, `--gateway-level` | route and optionally capture model traffic |

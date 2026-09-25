@@ -36,8 +36,9 @@ pvisor run --access '/workspace/**/.ssh:deny' -- zcode
 ```
 
 `--mount SOURCE[:TARGET]:ACCESS` 支持 `read`、`stage` 和 `write`；省略 target 时使用
-source。`write` 直接修改宿主机，`stage` 写入当前 changeset。`--access PATH-GLOB:LEVEL`
-支持 `deny` 和 `read`，用于为 Agent-visible 路径增加更严格的访问规则。
+source。`write` 直接修改宿主机；`read` 与 `stage` 当前都成为写时复制视图的底层，
+因此 `read` 目前不是强制只读边界。`--access PATH-GLOB:LEVEL` 支持 `deny` 和 `read`；
+`deny` 阻止访问，`read` 当前仅记录访问警告，不阻止写入。
 
 ```text
 pvisor
@@ -63,6 +64,7 @@ pvisor review last
 默认 host 执行使用 safe-best-effort 隔离；没有 `--stage` 时使用临时 changeset
 并在 Run 结束后自动丢弃。显式 `--stage <PATH>` 会保留独立 Run 和可写 stage，
 改动可供人工审查，并以 `0600` 写入 `run-bundle.json`。
+当前实现会连同临时 stage 一起删除其中的 Run Bundle；需要保留审计记录时应显式指定 stage。
 
 `--strict` 要求每个被请求的 capability 维度都有不可绕过的 enforcement 证据，
 否则在 Agent 启动前失败关闭。当前 host / container / VM 都会请求 Network 与
@@ -71,8 +73,9 @@ Subprocess，且无一 claim Subprocess，因此 `--strict` 在这些路径上�
 在 Linux 上，默认 host executor 会在异步 runtime 到达 Agent 之前，通过
 pVisor 的 rootless launcher 自执行。User/mount/PID namespace、namespace 内
 PID 1 后代回收器、最小 bind-projected root 加 `chroot`、关闭继承描述符以及空
-capability 集提供兼容性隔离，并保留 Agent 自己的 sandbox。`--strict` 才额外启用
-按内核协商的 Landlock ABI v1-v3 策略和 `no_new_privs`，因此可能拒绝需要 setuid
+capability 集提供兼容性隔离。普通 host Run 启用 Landlock；未带 `--strict` 的 `--safe`
+为应用兼容性跳过 Landlock。`--strict` 要求按内核协商的 Landlock ABI v1-v3 策略和
+`no_new_privs`，因此可能拒绝需要 setuid
 sandbox helper 的程序。
 `--overlaynet-deny-all` 再加一个私有 network namespace；public/allowlist
 代理模式仍是协作式。在 macOS 上，默认 safe host executor 安装生成的
@@ -141,10 +144,11 @@ pvisor run --safe --overlaynet-allow inference.example.com:443 -- zcode
   阻止其他直接 IP 出口和环境中的宿主 Unix socket，仅保留必要的 Run 内 IPC。
   Agent 使用临时 HOME，不能直接读取原来的主目录；凭据需显式传入或由 Gateway 持有。
   系统运行库和启动所需的路径元数据仍可读取。
-- Linux host：默认 `--safe` 使用 rootless namespace、synthetic root 和 chroot，保留应用
-  自己的 sandbox；`--strict` 额外要求 Landlock 和 `no_new_privs`。选择性出口和 Gateway
+- Linux host：默认 `--safe` 使用 rootless namespace、synthetic root 和 chroot；
+  `--strict` 额外要求 Landlock 和 `no_new_privs`。选择性出口和 Gateway
   通过 supervisor loopback proxy cooperative 转发，直接 socket 仍可能绕过；需要不可绕过
-  网络边界时使用 VM 或 deny-all。
+  网络边界时使用 VM 或 deny-all。启动器目前还会只读投影宿主 HOME；overlay deny 规则
+  不会隐藏工作区视图之外原路径上的秘密文件。
 - VM：要求现有 `auto` 网络边界；safe 不自动选择 VM。
 - container：当前缺少完整强制边界，`--safe` 拒绝启动。
 
@@ -164,6 +168,20 @@ pvisor run --safe --overlaynet-allow inference.example.com:443 -- zcode
 未匹配目标（包括独立域名上的遥测、上传、更新和依赖下载）被策略拒绝。
 `--overlaynet-allow` 替换预设的允许目标；`--overlaynet-deny` 在允许列表上增加拒绝规则。
 已有配置中的拒绝规则和限速保留。
+
+直接运行 `codex` 要特别注意：未使用 `--safe` 且未显式挂载 Codex 状态时，
+`ensure_codex_state_stage` 当前会把 `CODEX_HOME`（或 `~/.codex`）选为 overlay base 和
+项目关联，单一 overlay 不会同时暂存原项目目录。`--safe` 预设会添加 Codex 状态挂载，
+避免这个 base 重定向，但当前单视图挂载模型对 Codex 状态与项目写入仍需分别验证。
+不能仅凭 Codex Run Bundle 推断两个路径都已暂存。
+
+独立于 `--safe`，Linux rootless host 直接运行 `zcode` 时会应用兼容策略：继承宿主环境变量，
+允许直接持久写入已存在的 `~/.zcode`、`$XDG_CONFIG_HOME`（或 `~/.config`）和
+`~/.local/share/applications`。找到随包 Chromium setuid helper 时，pVisor 会隐藏它并加上
+`--no-sandbox`，同时加上 `--disable-gpu`。这条路径会关闭 Chromium 自身沙箱，
+但保留 pVisor 外层 rootless 边界。这些应用状态写入绕过工作区 stage，带 `--safe` 时也一样。
+策略按直接可执行文件名匹配，shell 包装器不会触发。`zcode-bigmodel` Gateway profile
+是独立的路由适配。
 
 ZCode 预设面向 **API Key + OpenAI 兼容协议直连**，依据
 [官方模型配置文档](https://zcode.z.ai/cn/docs/configuration)：Coding Plan 使用
@@ -196,27 +214,34 @@ cooperative 的，直接 socket 仍可能绕过代理。需要不可绕过边界
 当最终配置启用 Gateway capture 且有明确路由时，预设拒绝普通出口，保留配置好的 Gateway
 通道。Gateway 自己仍按既有路由转发；这不提供推理 API 路径过滤。
 
-预设通过 `--clear-pass-env` 清空配置文件中的 `run.pass_env`，并使已有 OverlayFS 使用 manual 提交；
+预设通过 `--clear-pass-env` 清空配置文件中的 `run.pass_env`；
 `--clear-pass-env` 也可单独使用，之后的显式 `--pass-env NAME` 仍然生效。
-对应的显式 CLI 参数可以重新授予或覆盖。`--safe` 现在自动启用 OverlayFS，用于执行文件规则，
-已有容器挂载和 compose 层仍保留；项目 base、rootfs、executor 不变。
+直接运行 `codex` 时，为了发现账号和路由，即使带 `--safe` 也会继承宿主环境变量。
+对应的显式 CLI 参数可以重新授予或覆盖。工作区默认已暂存；
+已有容器挂载和文件系统底层仍保留；项目 base、rootfs、executor 不变。
 需要向 Agent 交付凭据时显式使用 `--pass-env`；使用已配置的 Gateway 可由可信侧持有上游 Key。
 
 启动时会打印实际策略及覆盖提醒。必须注意：
 
 - 不使用 `--safe` 时，host/container 选择性代理仍可绕过。
 - 域名规则无法区分同域名下的推理、遥测与上传 API，也无法阻止内容被夹带在模型请求中。
-- 通配符规则覆盖 OverlayFS 视图；`--safe` 同时限制视图之外的访问，但显式授权的额外路径仍需单独保护。
+- 通配符规则覆盖 OverlayFS 视图；Linux 上投影的 HOME 可能仍暴露原路径上的敏感文件，显式授权的额外路径也需单独保护。
   文件名规则不能识别改名副本、源码中的密钥或 Git 历史中的内容，也没有批量读取或 tool-call 关联监控。
 - 扩大共享范围或选择 `--rootfs host` 会增加可访问的数据；`--safe` 不能与关闭 OverlayNet 同时使用。
 
 ## 文件访问规则
 
 ```bash
-pvisor run --overlayfs-deny '**/.ssh' --overlayfs-warn '**/.env*' -- my-agent
+pvisor run --mount /opt/tool:read --access '**/.ssh:deny' --access '**/.env*:read' -- my-agent
 ```
 
-`--overlayfs-deny GLOB` 和 `--overlayfs-warn GLOB` 可重复使用，都会启用 OverlayFS。
+`--mount SOURCE[:TARGET]:read|stage|write` 声明宿主路径；省略 TARGET 时等于 SOURCE。
+`write` 授予持久宿主写权限；`read` 和 `stage` 当前都进入写时复制视图的底层，
+所以 `read` 挂载并非该路径的强制只读边界。当前一次 Run 仅接受一个与 SOURCE 不同的
+TARGET；`write` 要求 TARGET 等于 SOURCE。
+`--access PATH-GLOB:deny|read` 在视图内加规则：`deny` 隐藏并阻止匹配路径，
+`read` 当前对应访问警告，并不阻止写入。访问规则不能提升到 `stage` 或 `write`。
+
 规则相对于挂载根目录匹配：`*` 不跨目录，`**` 可跨目录，匹配目录时覆盖全部后代。
 为防止大小写不敏感文件系统上的别名绕过，匹配不区分大小写；绝对路径、空规则及 `.`/`..`
 路径分量无效。deny 优先于 warn。命中 deny 的路径在目录枚举中隐藏，访问、创建和修改被拒绝；
@@ -232,15 +257,18 @@ warn 放行并在监督进程 stderr 打印路径，不打印文件内容。告�
 TOML 中对应：
 
 ```toml
-[overlayfs.access_policy]
-deny = ["**/.ssh", "secrets/private.pem"]
-warn = ["**/.env", "**/*.key"]
+[filesystem]
+stage = "../stage-001"
+backend = "directory"
+mount = [{ source = "/opt/tool", access = "read" }]
+access = [
+  { path = "**/.ssh", level = "deny" },
+  { path = "**/.env", level = "read" },
+]
 ```
 
-显式 `--overlayfs-deny` 替换整个 deny 列表，`--overlayfs-warn` 替换整个 warn 列表；
-不会在 safe 默认列表上追加。`--overlayfs-clear-rules` 先清空两类规则，再应用显式列表。
-清空规则不会关闭 OverlayFS。优先级仍为 CLI > safe > 配置文件 > 默认值。
-规则随运行记录、checkpoint/fork 和 inspect 挂载保留，并写入 Run Bundle。
+显式 CLI 访问规则追加在配置文件与 safe 预设之后；deny 优先于告警。
+规则随 Run 和 overlay 记录保存。
 
 FUSE 与 VM virtio-fs 共用规则检查。开启 deny 时，本版保守拒绝所有多硬链接普通文件和新建硬链接，
 避免通过别名读取；普通目录改名/交换/删除会检查受影响子树，含受保护文件时拒绝操作。
@@ -333,17 +361,20 @@ pVisor Gateway、模型流量 capture store 或 Claude Resume Transport 审计�
 
 ## 一套配置模型
 
-`pvisor run` 只有一份规范 `RunConfig`。TOML 和命令行选项是同一组字段的两种
-表示。`--spec` 是可选且显式的；JSON 对象按准备好的 RunSpec 处理，否则按
+`pvisor run` 只有一份规范 `RunConfig`。CLI 覆盖常用字段，但 `run.inherit_env`
+当前没有对应的直接 CLI 开关。而且 `apply_safe_defaults` 当前会在未指定 `--safe` 的
+非 Codex CLI 命令上清除环境继承；直接 `zcode` 的 host 适配又会重新启用它。
+这些 CLI 路径上的 TOML `inherit_env` 目前不能按配置值生效。
+`--spec` 是可选且显式的；JSON 对象按准备好的 RunSpec 处理，否则按
 TOML RunConfig 处理。pVisor 不会发现隐藏的项目配置文件。
 
 ```bash
 pvisor run \
-  --name codex \
-  --overlayfs-path /workspace \
-  --overlayfs-compose /path/to/project \
-  --overlayfs-backend directory \
-  --overlayfs-commit manual \
+  --name my-agent \
+  --stage ../stage-001 \
+  --mount /opt/tool:read \
+  --access '**/.ssh:deny' \
+  --filesystem-backend directory \
   --overlaynet-allow api.openai.com:443 \
   --overlaynet-deny 169.254.0.0/16 \
   --overlaynet-limit 10mbps \
@@ -352,7 +383,7 @@ pvisor run \
   --gateway-route \
     'name="openai", provider="openai", upstream="https://api.openai.com/v1", api_key_env="OPENAI_API_KEY"' \
   --record-destination ./capture \
-  -- codex
+  -- my-agent
 ```
 
 `--record-destination` 写入本地 EventRecord JSONL。本仓库不再附带单独的历史服务。
@@ -366,20 +397,15 @@ pvisor run \
 
 ```toml
 [run]
-agent = "codex"
-executor = "container"
-command = ["codex"]
+agent = "my-agent"
+executor = "host"
+command = ["my-agent"]
 
-[container]
-runtime = "docker"
-image = "example/codex-agent:latest"
-network = "host"
-
-[overlayfs]
-path = "/workspace"
-compose = ["/path/to/project"]
+[filesystem]
+stage = "../stage-001"
+mount = [{ source = "/opt/tool", access = "read" }]
+access = [{ path = "**/.ssh", level = "deny" }]
 backend = "directory"
-commit = "manual"
 
 [overlaynet]
 mode = "proxy"
@@ -409,10 +435,12 @@ api_key_env = "OPENAI_API_KEY"
 destination = "./capture"
 ```
 
-用 `pvisor run --spec run.toml` 运行。显式 CLI 标量替换 TOML 标量。提供
-任一重复 CLI 字段（`--overlayfs-compose`、`--overlaynet-allow`、
-`--overlaynet-deny`、`--overlaynet-limit` 或 `--gateway-route`）会替换该
-完整 TOML 列表。`--` 之后的命令替换 `run.command`。
+用 `pvisor run --spec run.toml` 运行。显式 CLI 标量替换 TOML 标量。网络和 Gateway
+列表选项替换配置中的完整列表；文件系统的 `--mount` 和 `--access` 追加到配置条目。
+`[filesystem]` 的序列化字段 `stage`、`mount`、`access`、`backend`、`max_size`
+分别对应 `--stage`、`--mount`、`--access`、`--filesystem-backend`、
+`--filesystem-max-size`。`--` 之后的命令替换 `run.command`。
+大小限制在运行结束后检查，因此不限制 Agent 运行期间的峰值占用。
 
 `--container-image IMAGE` 自动选择原生 OCI container executor；
 `--executor container` 让选择显式。传输层生成标准 OCI bundle，解析匹配的静态
@@ -455,10 +483,9 @@ rootfs。
 `--executor` 时选择 VM executor。`--rootfs <PATH>` 使用准备好的目录，
 `--rootfs image=<PATH>` 使用 OCI 镜像或镜像路径；三者互斥，host rootfs 在
 macOS 上被拒绝。这是统一 rootfs 语法；
-`--overlayfs-path` 指定 Agent 看到的绝对路径；重复 `--overlayfs-compose` 可按命令行顺序从底层叠加到顶层，当前 workspace 是隐式底层。带 guest 工作区路径时，
-省略 `--overlayfs-path` 时，视图内容默认来自当前目录；为避免 lower 与挂载点递归覆盖，pVisor 会把 merged mount 放在每个 Run 的受管路径中。
-工作区外的写入使用临时 root upper，并在 VM 退出时丢弃；工作区改动使用
-durable OverlayFS stage。
+`--mount SOURCE[:TARGET]:read|stage|write` 向 guest 提供额外宿主路径，当前工作区是隐式底层；
+省略 TARGET 时保持原路径。工作区改动进入配置的 stage，省略 `--stage` 则在 Run 退出时丢弃；
+VM 根目录其他写入使用临时 upper，并在 VM 退出时丢弃。
 
 合并后的 rootfs 是 guest `/`，`/workspace` 成为 guest cwd。在 Linux 和
 macOS 上，vendored libkrun 通过 virtio-fs 直接服务 pVisor 的 rootfs 与
@@ -473,14 +500,12 @@ namespace 和 Landlock 约束 VMM。macOS VMM 仍拥有调用用户的 host 权�
 尽管有 guest-kernel 隔离，第一版 OCI-image 也不应被当成敌对多租户边界。
 
 在 host/container 执行上，四个可见 OverlayNet 策略标志和 Gateway capture
-会自动启用代理 driver。任一 `--overlayfs-path`、`--overlayfs-compose`、
-`--stage`、`--overlayfs-backend` 或 `--overlayfs-commit` 选项会
-自动启用 OverlayFS；没有单独的 mode 开关。workspace 是隐式 base，compose 层按给定顺序叠加；显式 `--stage`
-是元数据、轨迹和文件系统状态的统一记录目录。当 stage 嵌在 base 或 compose 层内时，pVisor 从合并视图
+会自动启用代理 driver。CLI Run 默认暂存工作区，`--mount` 添加显式底层；
+指定 `--stage` 才保留文件系统改动供审查。当 stage 嵌在 base 或 compose 层内时，pVisor 从合并视图
 隐藏该子树，并拒绝 guest 重建它。libkrun Run 不创建 live host mountpoint，
 防止 host indexer 递归进入 `<stage>/merged`。反向拓扑——stage 包含 lower
 层——会被拒绝。在 pVisor 能安全物化完整 merged-vs-base diff 之前，组合 Run
-拒绝 `commit=apply` 和随后的 `pvisor apply` 命令。
+拒绝随后的 `pvisor apply` 命令。
 在 host/container 执行上，OverlayNet 策略作用于经显式代理路由的流量，并不
 声称不可绕过的 host 网络隔离。在 libkrun VM 上，`auto` 挂上不可绕过的
 smoltcp IPv4 TCP/DNS；`off` 让 guest 离线。`--overlaynet-deny-all` 把同一
@@ -489,8 +514,8 @@ default-deny 策略交给当前 driver。host/container 直接 socket 仍是 amb
 
 ## Run 项目发现
 
-当前目录是默认项目关联。启用 OverlayFS 时，`--overlayfs-compose` 指定宿主机叠加层，
-`--overlayfs-path` 指定 Agent 看到的视图路径。每个 Run 在 pVisor 默认记录根目录下获得独立目录。若该根会落在
+当前目录是默认项目关联。`--mount` 指定额外宿主底层和可选的 Agent 可见路径。
+每个 Run 在 pVisor 默认记录根目录下获得独立目录。若该根会落在
 所选 OverlayFS base 或 compose 层内，pVisor 改用系统临时 Run 根，以保持
 可写 stage 分离：
 

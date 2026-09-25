@@ -1,6 +1,6 @@
 # Choose an execution environment
 
-Choose the executor for the kernel and userland your command needs. Enable a stage separately when you want to review workspace writes.
+Choose the executor for the kernel and userland your command needs. Every CLI Run stages workspace writes; pass `--stage PATH` to retain them for review.
 
 | Executor | Environment | Requirements |
 | --- | --- | --- |
@@ -16,7 +16,7 @@ The command must exist in the selected environment. An Ubuntu image does not inc
 pvisor run --executor host --stage ../stage-host -- /bin/sh
 ```
 
-The working directory is the managed copy-on-write view. Without an OverlayFS option, a host command can write directly to the project. Safe-best-effort isolation reports unsupported controls; it is not a uniform guarantee across platforms.
+The working directory keeps its original path inside a managed copy-on-write view. Without `--stage`, pVisor discards that view at Run exit. Explicit writable mounts and application state outside the workspace can still persist immediately. Safe-best-effort isolation reports unsupported controls; it is not a uniform guarantee across platforms.
 
 ## Linux container
 
@@ -32,25 +32,19 @@ This uses the native OCI executor. Additional mounts and the injected pVisor bin
 
 ```bash
 pvisor run --executor vm --rootfs image=ubuntu:24.04 \
-  --overlayfs-path /workspace --stage ../stage-vm -- /bin/sh
+  --stage ../stage-vm --mount "$PWD:stage" -- /bin/sh
 ```
 
 `--rootfs DIR` uses a prepared Linux rootfs instead. Image resolution is daemonless; the VM executor does not need Docker. Pin an image digest when reproducibility matters. Rootfs writes are temporary; the workspace stage persists for review.
 
-On Linux, `--rootfs host` can expose the host root as a read-only lower layer to a separate guest kernel. This exposes host contents for reading. Keep an explicit workspace `--overlayfs-path`; use this layout only for same-owner local work.
+On Linux, `--rootfs host` can expose the host root as a lower layer to a separate guest kernel. This exposes host contents for reading. Declare any additional workspace share with `--mount`; use this layout only for same-owner local work.
 
 Linux needs accessible `/dev/kvm`. On macOS, `just build release` builds and signs the binary with the Hypervisor entitlement; source builds also need Zig. VM networking supports policy-controlled IPv4 TCP, DHCP and synthetic DNS; UDP application traffic, IPv6, QUIC and inbound connections are outside the current network surface.
 
-## Compose and commit
+## Filesystem access and decisions
 
-`--overlayfs-compose DIR` adds read-only layers in bottom-to-top order above the current workspace. `--overlayfs-path PATH` sets the absolute command-visible workspace path. Keep the stage outside all lower layers.
+`--mount SOURCE[:TARGET]:read|stage|write` exposes a host path; an omitted target equals the source. `read` and `stage` add lower layers to the workspace view, and `write` grants direct persistent host writes. `--access PATH-GLOB:deny|read` applies a rule within the overlay view: `deny` hides matching paths, while `read` currently warns on access. The current implementation does not enforce `read` as an immutable per-path permission. Keep `--stage` outside every lower layer.
 
-| Commit mode | Behavior |
-| --- | --- |
-| `manual` (default) | Retain changes for `review`, `apply`, or `drop` |
-| `apply` | Automatically apply at Run exit, including a nonzero command exit |
-| `drop` | Discard the stage at Run exit |
-
-Use manual mode when accepting changes depends on tests or review. A host process Run cleans up its process group on completion or timeout and bounds output draining; detached descendants outside that group are not covered by process-group cleanup alone.
+With `--stage PATH`, changes remain for an explicit `review`, `apply`, or `drop` decision. Without it, the temporary stage is removed at Run exit. A host process Run cleans up its process group on completion or timeout and bounds output draining; detached descendants outside that group are not covered by process-group cleanup alone.
 
 Continue with [Review and apply](review-apply.md) or [Network policy](network.md).
