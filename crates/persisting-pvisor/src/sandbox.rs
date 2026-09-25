@@ -16,6 +16,8 @@ use std::path::PathBuf;
 pub(crate) const REQUIRED_SANDBOX_KEY: &str = "pvisor.sandbox.required";
 pub(crate) const LANDLOCK_SANDBOX_KEY: &str = "pvisor.sandbox.landlock";
 pub(crate) const SANDBOX_PROXY_KEY: &str = "pvisor.sandbox.proxy";
+pub(crate) const SANDBOX_HIDDEN_PATHS_KEY: &str = "pvisor.sandbox.hidden_paths";
+pub(crate) const SANDBOX_NO_GPU_KEY: &str = "pvisor.sandbox.no_gpu";
 
 pub(crate) fn sandbox_required(spec: &persisting_control::RunSpec) -> bool {
     spec.metadata
@@ -156,10 +158,13 @@ fn run_internal() -> anyhow::Result<()> {
         })?;
     enter_synthetic_root(&plan).context("construct private sandbox root")?;
     // The private tmpfs created by `enter_synthetic_root` is writable by the
-    // Agent, but must also be present in the Landlock allowlist.  This uses the
-    // host-side mount path because rules are installed before chroot.
+    // Agent, but must also be present in the Landlock allowlist.
     let mut plan = plan;
     plan.read_write.push(PathBuf::from("/tmp"));
+    plan.read_write.push(PathBuf::from("/dev/shm"));
+    if let Some(runtime) = private_runtime_dconf_path() {
+        plan.read_write.push(runtime);
+    }
     std::env::set_current_dir(&plan.cwd)
         .with_context(|| format!("enter sandbox workspace {}", plan.cwd.display()))?;
 
@@ -167,37 +172,7 @@ fn run_internal() -> anyhow::Result<()> {
     // removes access to the host procfs tree.
     close_unexpected_file_descriptors(Some(attestation.as_raw_fd()))
         .context("close inherited file descriptors")?;
-    let landlock_abi = if plan.landlock {
-        install_landlock(&plan).context("install Landlock filesystem policy")?
-    } else {
-        0
-    };
-    drop_process_capabilities().context("drop namespace capabilities")?;
-    // The child process is configuring its environment immediately before
-    // exec; no concurrent environment mutation occurs in this scope.
-    unsafe {
-        std::env::remove_var(SANDBOX_PLAN_ENV);
-        std::env::set_var(
-            "PERSISTING_SANDBOX_FILESYSTEM",
-            if plan.landlock { "landlock" } else { "chroot" },
-        );
-        if plan.landlock {
-            std::env::set_var("PERSISTING_SANDBOX_LANDLOCK_ABI", landlock_abi.to_string());
-        }
-        std::env::set_var("PERSISTING_SANDBOX_USER_NAMESPACE", "1");
-        std::env::set_var(
-            "PERSISTING_SANDBOX_NETWORK",
-            if matches!(plan.network, NetworkIsolation::ProxyOnly(Some(_))) {
-                "proxy-only"
-            } else if plan.network.is_loopback_only() {
-                "deny"
-            } else {
-                "ambient"
-            },
-        );
-    }
-
-    supervise_pid_namespace(program, arguments, attestation)
+    supervise_pid_namespace(program, arguments, attestation, &plan)
 }
 
 #[cfg(target_os = "macos")]
@@ -911,6 +886,7 @@ fn write_rootless_attestation(attestation: &mut std::fs::File) -> std::io::Resul
 #[cfg(target_os = "linux")]
 fn enter_synthetic_root(plan: &SandboxPlan) -> std::io::Result<()> {
     use std::io::{Error, ErrorKind};
+    use std::os::unix::fs::PermissionsExt;
 
     if !plan.root.is_absolute() || plan.root == std::path::Path::new("/") {
         return Err(Error::new(
@@ -963,14 +939,48 @@ fn enter_synthetic_root(plan: &SandboxPlan) -> std::io::Result<()> {
         return Err(Error::last_os_error());
     }
 
-    // procfs is needed by the trusted launcher for FD cleanup.  Landlock does
-    // not admit it to the Agent, including magic-link escape paths.
+    // Chromium uses POSIX shared memory even when its own sandbox is disabled.
+    // Give it a private, ephemeral /dev/shm rather than exposing the host's.
+    let dev_shm = plan.root.join("dev/shm");
+    std::fs::create_dir_all(&dev_shm)?;
+    let dev_shm_mount = path_cstring(&dev_shm)?;
+    if unsafe {
+        libc::mount(
+            c"tmpfs".as_ptr(),
+            dev_shm_mount.as_ptr(),
+            c"tmpfs".as_ptr(),
+            libc::MS_NOSUID | libc::MS_NODEV,
+            c"mode=1777,size=256m".as_ptr().cast(),
+        )
+    } != 0
+    {
+        return Err(Error::last_os_error());
+    }
+
+    // Desktop toolkits sometimes create dconf state below XDG_RUNTIME_DIR.
+    // Keep that one writable runtime subdirectory private and ephemeral while
+    // still allowing explicitly projected Wayland/D-Bus sockets beside it.
+    if let Some(runtime) = private_runtime_dconf_path() {
+        let runtime = plan
+            .root
+            .join(runtime.strip_prefix("/").expect("absolute runtime path"));
+        let runtime_root = runtime.parent().expect("dconf path has a runtime parent");
+        std::fs::create_dir_all(runtime_root)?;
+        std::fs::set_permissions(runtime_root, std::fs::Permissions::from_mode(0o700))?;
+        std::fs::create_dir_all(&runtime)?;
+        std::fs::set_permissions(&runtime, std::fs::Permissions::from_mode(0o700))?;
+    }
+
+    // The trusted launcher needs /proc/self/fd to close inherited descriptors.
+    // PID 1 replaces this temporary host procfs with a private PID-scoped
+    // procfs before it forks or releases the Agent.
     bind_path_into_root(&plan.root, std::path::Path::new("/proc"))?;
 
     let mut paths = plan
         .read_only
         .iter()
         .chain(&plan.read_write)
+        .filter(|path| !path.starts_with(&plan.root))
         .collect::<Vec<_>>();
     paths.sort_unstable_by(|left, right| {
         left.components()
@@ -999,6 +1009,16 @@ fn enter_synthetic_root(plan: &SandboxPlan) -> std::io::Result<()> {
         return Err(Error::last_os_error());
     }
     Ok(())
+}
+
+#[cfg(target_os = "linux")]
+fn private_runtime_dconf_path() -> Option<std::path::PathBuf> {
+    let runtime = std::env::var_os("XDG_RUNTIME_DIR")?;
+    let runtime = std::path::PathBuf::from(runtime);
+    if !runtime.is_absolute() || runtime.starts_with("/tmp") {
+        return None;
+    }
+    Some(runtime.join("dconf"))
 }
 
 #[cfg(target_os = "linux")]
@@ -1172,6 +1192,7 @@ fn supervise_pid_namespace(
     program: std::ffi::OsString,
     arguments: Vec<std::ffi::OsString>,
     mut attestation: std::fs::File,
+    plan: &SandboxPlan,
 ) -> anyhow::Result<()> {
     use anyhow::Context;
     use std::os::unix::process::CommandExt;
@@ -1201,6 +1222,7 @@ fn supervise_pid_namespace(
         return Err(std::io::Error::last_os_error()).context("fork PID namespace init");
     }
     if namespace_init > 0 {
+        drop_process_capabilities().context("drop PID supervisor namespace capabilities")?;
         unsafe {
             libc::close(ready_pipe[1]);
             libc::close(release_pipe[0]);
@@ -1274,6 +1296,39 @@ fn supervise_pid_namespace(
     }
     drop(attestation);
 
+    // This child is PID 1 in the new namespace and still holds the temporary
+    // user-namespace mount capability. A procfs mounted here exposes only
+    // this private PID namespace to Chromium and other child processes.
+    mount_pid_namespace_procfs().context("mount private PID namespace procfs")?;
+    let landlock_abi = if plan.landlock {
+        install_landlock(plan).context("install Landlock filesystem policy")?
+    } else {
+        0
+    };
+    // This is still trusted setup code, before the Agent child is forked.
+    unsafe {
+        std::env::remove_var(SANDBOX_PLAN_ENV);
+        std::env::set_var(
+            "PERSISTING_SANDBOX_FILESYSTEM",
+            if plan.landlock { "landlock" } else { "chroot" },
+        );
+        if plan.landlock {
+            std::env::set_var("PERSISTING_SANDBOX_LANDLOCK_ABI", landlock_abi.to_string());
+        }
+        std::env::set_var("PERSISTING_SANDBOX_USER_NAMESPACE", "1");
+        std::env::set_var(
+            "PERSISTING_SANDBOX_NETWORK",
+            if matches!(plan.network, NetworkIsolation::ProxyOnly(Some(_))) {
+                "proxy-only"
+            } else if plan.network.is_loopback_only() {
+                "deny"
+            } else {
+                "ambient"
+            },
+        );
+    }
+    drop_process_capabilities().context("drop PID namespace capabilities")?;
+
     // If the outer launcher is terminated before it can forward a signal,
     // killing PID 1 still gives the kernel an authoritative cleanup point.
     if unsafe { libc::prctl(libc::PR_SET_PDEATHSIG, libc::SIGKILL) } != 0 {
@@ -1341,6 +1396,32 @@ fn supervise_pid_namespace(
             }
         }
     }
+}
+
+#[cfg(target_os = "linux")]
+fn mount_pid_namespace_procfs() -> std::io::Result<()> {
+    if unsafe { libc::umount2(c"/proc".as_ptr(), libc::MNT_DETACH) } != 0 {
+        return Err(with_io_context(
+            "unmount temporary host procfs",
+            std::io::Error::last_os_error(),
+        ));
+    }
+    if unsafe {
+        libc::mount(
+            c"proc".as_ptr(),
+            c"/proc".as_ptr(),
+            c"proc".as_ptr(),
+            libc::MS_NOSUID | libc::MS_NODEV | libc::MS_NOEXEC,
+            std::ptr::null(),
+        )
+    } != 0
+    {
+        return Err(with_io_context(
+            "mount procfs for private PID namespace",
+            std::io::Error::last_os_error(),
+        ));
+    }
+    Ok(())
 }
 
 #[cfg(any(target_os = "linux", target_os = "macos"))]

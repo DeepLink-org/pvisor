@@ -15,6 +15,139 @@ use crate::config::GatewayProfile;
 const BUILTIN_ENV: &str = "ZCODE_BUILTIN_PROVIDER_CONFIG_FILE";
 const PERSONAL_ENV: &str = "ZCODE_PERSONAL_PROVIDER_CONFIG_FILE";
 const PROVIDER_ID: &str = "account:bigmodel-individual-coding-plan";
+const CHROMIUM_SANDBOX_HELPERS: &[&str] = &[
+    "chrome-sandbox",
+    "chrome-sandbox-helper",
+    "chromium-sandbox",
+];
+
+/// Apply ZCode's Linux host compatibility policy to the final process
+/// invocation, after CLI/config command resolution has finished.
+pub(crate) fn apply_host_process_policy(spec: &mut RunSpec) -> anyhow::Result<()> {
+    if !cfg!(target_os = "linux") {
+        return Ok(());
+    }
+    let program_name = {
+        let RunInvocation::Process(process) = &spec.invocation;
+        if !is_zcode(process) {
+            return Ok(());
+        }
+        process.program.clone()
+    };
+    if program_name.is_empty() {
+        return Ok(());
+    }
+    let RunInvocation::Process(process) = &mut spec.invocation;
+    process.inherit_env = true;
+
+    if let Some(environment) = spec.metadata.get_mut("pvisor.environment") {
+        environment["inherits_host"] = true.into();
+    }
+    grant_host_state(spec)?;
+
+    let helper = resolve_program(&program_name)
+        .and_then(|program| program.parent().map(Path::to_path_buf))
+        .and_then(|directory| {
+            CHROMIUM_SANDBOX_HELPERS
+                .iter()
+                .map(|name| directory.join(name))
+                .find(|path| path.is_file())
+        })
+        .and_then(|path| path.canonicalize().ok());
+
+    if let Some(helper) = &helper {
+        let hidden_paths = spec
+            .metadata
+            .entry(crate::sandbox::SANDBOX_HIDDEN_PATHS_KEY.into())
+            .or_insert_with(|| Value::Array(Vec::new()));
+        if let Some(paths) = hidden_paths.as_array_mut() {
+            let helper = Value::String(helper.display().to_string());
+            if !paths.contains(&helper) {
+                paths.push(helper);
+            }
+        }
+    }
+
+    // The bundled setuid helper cannot work in a rootless user namespace.
+    // Chromium must use its own no-sandbox mode beneath pVisor's process
+    // boundary. Render nodes needing supplementary groups are inaccessible
+    // after the namespace transition, so use software rendering where needed.
+    let RunInvocation::Process(process) = &mut spec.invocation;
+    if helper.is_some() {
+        insert_switch(&mut process.args, "--no-sandbox");
+    }
+    // Chromium's GPU probing depends on procfs and device permissions that
+    // cannot be faithfully inferred from host mode bits (notably ACLs). Keep
+    // Electron on its software-rendering path inside the rootless namespace.
+    insert_switch(&mut process.args, "--disable-gpu");
+    spec.metadata
+        .insert(crate::sandbox::SANDBOX_NO_GPU_KEY.into(), Value::Bool(true));
+    eprintln!(
+        "pVisor ZCode policy: {}pVisor process isolation enabled; software GPU rendering enabled",
+        if helper.is_some() {
+            "bundled Chromium helper hidden; "
+        } else {
+            ""
+        }
+    );
+    Ok(())
+}
+
+fn grant_host_state(spec: &mut RunSpec) -> anyhow::Result<()> {
+    let Some(home) = std::env::var_os("HOME").map(std::path::PathBuf::from) else {
+        return Ok(());
+    };
+    let config_dir = std::env::var_os("XDG_CONFIG_HOME")
+        .map(std::path::PathBuf::from)
+        .unwrap_or_else(|| home.join(".config"));
+    for source in [
+        home.join(".zcode"),
+        config_dir,
+        home.join(".local/share/applications"),
+    ] {
+        if !source.exists() {
+            continue;
+        }
+        let source = source.canonicalize().unwrap_or(source);
+        if spec.capabilities.filesystem.iter().any(|grant| {
+            grant.access == FilesystemAccess::ReadWrite
+                && grant.path == source.display().to_string()
+        }) {
+            continue;
+        }
+        spec.capabilities.filesystem.push(FilesystemCapability {
+            path: source.display().to_string(),
+            access: FilesystemAccess::ReadWrite,
+        });
+    }
+    Ok(())
+}
+
+fn insert_switch(arguments: &mut Vec<String>, switch: &str) {
+    if arguments
+        .iter()
+        .any(|argument| argument == switch || argument.starts_with(&format!("{switch}=")))
+    {
+        return;
+    }
+    arguments.insert(0, switch.to_owned());
+}
+
+fn resolve_program(program: &str) -> Option<std::path::PathBuf> {
+    let path = Path::new(program);
+    if path.components().count() > 1 {
+        let path = if path.is_absolute() {
+            path.to_path_buf()
+        } else {
+            std::env::current_dir().ok()?.join(path)
+        };
+        return path.canonicalize().ok();
+    }
+    std::env::split_paths(&std::env::var_os("PATH")?).find_map(|directory| {
+        let path = directory.join(program);
+        path.is_file().then(|| path.canonicalize().ok()).flatten()
+    })
+}
 
 fn is_zcode(process: &ProcessInvocation) -> bool {
     Path::new(&process.program)

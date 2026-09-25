@@ -15,6 +15,20 @@ pub(crate) use attempt::VmNetworkAttachment;
 pub(crate) use supervisor::RuntimeSupervisor;
 pub(crate) use supervisor::RuntimeSupervisorBuilder;
 
+/// Apply application-specific process compatibility policies before the
+/// Run's capabilities are validated and the executor prepares its sandbox.
+pub(crate) fn apply_process_policies(
+    spec: &mut persisting_control::RunSpec,
+    executor: &persisting_control::ExecutorDescriptor,
+) -> anyhow::Result<()> {
+    if executor.kind == persisting_control::ExecutorKind::Process
+        && executor.isolation == persisting_control::IsolationKind::RootlessProcess
+    {
+        zcode::apply_host_process_policy(spec)?;
+    }
+    Ok(())
+}
+
 pub use implant::{ImplantPlan, OverlayHint};
 #[cfg(all(test, target_os = "macos"))]
 pub use overlay::apply_overlay;

@@ -874,6 +874,18 @@ fn rootless_plan(
     let cwd = cwd.canonicalize()?;
     let mut read_only = Vec::new();
     let mut read_write = vec![cwd.clone()];
+    // The PID-namespace init mounts a fresh procfs here. Grant read access to
+    // that mountpoint, rather than exposing the host's procfs in the chroot.
+    read_only.push(PathBuf::from("/proc"));
+    let hidden_paths = spec
+        .metadata
+        .get(crate::sandbox::SANDBOX_HIDDEN_PATHS_KEY)
+        .and_then(serde_json::Value::as_array)
+        .into_iter()
+        .flatten()
+        .filter_map(serde_json::Value::as_str)
+        .map(PathBuf::from)
+        .collect::<Vec<_>>();
 
     // Safe compatibility mode preserves the caller's path and environment
     // semantics. Project the user's home and XDG roots so applications such
@@ -895,6 +907,7 @@ fn rootless_plan(
             push_existing(&mut read_only, &path);
         }
     }
+    let graphical_display = project_graphical_session(invocation, &mut read_only, &mut read_write);
 
     // A broad but immutable OS runtime keeps arbitrary local executables and
     // dynamic language runtimes working while excluding user data by default.
@@ -919,7 +932,7 @@ fn rootless_plan(
     // inside a rootless user namespace is unusable and makes Chromium abort
     // instead of selecting its user-namespace sandbox fallback.
     if let Some(parent) = program.parent() {
-        push_runtime_directory(&mut read_only, parent);
+        push_runtime_directory(&mut read_only, parent, &hidden_paths);
     }
     for path in [
         "/dev/null",
@@ -930,6 +943,25 @@ fn rootless_plan(
         "/dev/tty",
     ] {
         push_existing(&mut read_write, Path::new(path));
+    }
+    let project_render_nodes = graphical_display
+        && !spec
+            .metadata
+            .get(crate::sandbox::SANDBOX_NO_GPU_KEY)
+            .and_then(serde_json::Value::as_bool)
+            .unwrap_or(false);
+    if project_render_nodes {
+        if let Ok(devices) = std::fs::read_dir("/dev/dri") {
+            for device in devices.flatten().map(|entry| entry.path()) {
+                if device
+                    .file_name()
+                    .and_then(|name| name.to_str())
+                    .is_some_and(|name| name.starts_with("renderD"))
+                {
+                    push_existing(&mut read_write, &device);
+                }
+            }
+        }
     }
 
     // The Run-scoped AgentCtl and an explicitly supplied SSH agent are
@@ -988,6 +1020,70 @@ fn rootless_plan(
     })
 }
 
+#[cfg(target_os = "linux")]
+fn project_graphical_session(
+    invocation: &ProcessInvocation,
+    read_only: &mut Vec<PathBuf>,
+    read_write: &mut Vec<PathBuf>,
+) -> bool {
+    let value = |key: &str| {
+        invocation.env.get(key).cloned().or_else(|| {
+            invocation
+                .inherit_env
+                .then(|| std::env::var(key).ok())
+                .flatten()
+        })
+    };
+
+    let display = value("DISPLAY");
+    if let Some(authority) = value("XAUTHORITY") {
+        push_existing(read_only, Path::new(&authority));
+    }
+    if let Some(display) = &display {
+        // Local X11 displays use /tmp/.X11-unix/X<N>. Remote displays do not
+        // need a host socket projection.
+        let display_number = display
+            .rsplit_once(':')
+            .map(|(_, suffix)| suffix.split('.').next().unwrap_or(suffix));
+        if let Some(number) = display_number
+            .filter(|number| !number.is_empty() && number.bytes().all(|b| b.is_ascii_digit()))
+        {
+            push_existing(
+                read_write,
+                &PathBuf::from(format!("/tmp/.X11-unix/X{number}")),
+            );
+        }
+    }
+    let wayland_available = if let (Some(runtime), Some(wayland)) =
+        (value("XDG_RUNTIME_DIR"), value("WAYLAND_DISPLAY"))
+    {
+        let socket = Path::new(&wayland);
+        let socket = if socket.is_absolute() {
+            socket.to_path_buf()
+        } else {
+            Path::new(&runtime).join(socket)
+        };
+        push_existing(read_write, &socket);
+        true
+    } else {
+        false
+    };
+    let dbus_address = value("DBUS_SESSION_BUS_ADDRESS");
+    if let Some(address) = &dbus_address {
+        for transport in address.split(';') {
+            if let Some(path) = transport.strip_prefix("unix:path=") {
+                let path = path.split(',').next().unwrap_or(path);
+                push_existing(read_write, Path::new(path));
+            }
+        }
+    }
+    let desktop_session = display.is_some() || wayland_available || dbus_address.is_some();
+    if desktop_session {
+        push_existing(read_write, Path::new("/run/dbus/system_bus_socket"));
+    }
+    desktop_session
+}
+
 #[cfg(any(target_os = "linux", target_os = "macos"))]
 fn push_existing(paths: &mut Vec<PathBuf>, path: &Path) {
     if let Ok(path) = path.canonicalize() {
@@ -996,23 +1092,21 @@ fn push_existing(paths: &mut Vec<PathBuf>, path: &Path) {
 }
 
 #[cfg(target_os = "linux")]
-fn push_runtime_directory(paths: &mut Vec<PathBuf>, directory: &Path) {
-    const HIDDEN_SUID_HELPERS: &[&str] = &[
-        "chrome-sandbox",
-        "chrome-sandbox-helper",
-        "chromium-sandbox",
-    ];
+fn push_runtime_directory(paths: &mut Vec<PathBuf>, directory: &Path, hidden: &[PathBuf]) {
     let Ok(entries) = std::fs::read_dir(directory) else {
         push_existing(paths, directory);
         return;
     };
     for entry in entries.flatten() {
         let path = entry.path();
-        if path
-            .file_name()
-            .and_then(|name| name.to_str())
-            .is_some_and(|name| HIDDEN_SUID_HELPERS.contains(&name))
-        {
+        // Application-specific adapters can hide helpers that are incompatible
+        // with the rootless namespace without suppressing unrelated programs.
+        if hidden.iter().any(|candidate| {
+            candidate == &path
+                || path
+                    .canonicalize()
+                    .is_ok_and(|canonical| candidate == &canonical)
+        }) {
             continue;
         }
         push_existing(paths, &path);

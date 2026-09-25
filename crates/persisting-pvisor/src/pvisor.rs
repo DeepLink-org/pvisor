@@ -293,6 +293,8 @@ impl PVisor {
             .cloned()
             .ok_or(PVisorError::UnsupportedInvocation)?;
         let mut descriptor = executor.descriptor();
+        crate::runtime::apply_process_policies(&mut spec, &descriptor)
+            .map_err(PVisorError::Prepare)?;
         let vm_executor = descriptor.kind == persisting_control::ExecutorKind::VirtualMachine;
         let vm_network_executor = vm_executor && executor.supports_vm_network_attachment();
         if self.runtime.vm_network_is_requested()
