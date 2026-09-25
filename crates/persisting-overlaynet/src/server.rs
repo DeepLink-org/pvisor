@@ -72,6 +72,22 @@ pub trait OverlaySink: Clone + Send + Sync + 'static {
         _target: &str,
     ) {
     }
+
+    fn on_proxy_result(
+        &self,
+        _context: &OverlayRequestContext<Self::RequestContext>,
+        _target: &str,
+        _status: StatusCode,
+    ) {
+    }
+
+    fn on_proxy_error(
+        &self,
+        _context: &OverlayRequestContext<Self::RequestContext>,
+        _target: &str,
+        _error: &str,
+    ) {
+    }
 }
 
 #[derive(Clone)]
@@ -197,7 +213,20 @@ where
         state.sink.on_dispatch(&context, &request, "connect");
         let bandwidth =
             bandwidth_session(state, &context, &host, Some(target.port), Some(&authorized)).await;
-        return handle_connect_authorized(request, target, &authorized, bandwidth).await;
+        let response =
+            match handle_connect_authorized(request, target, &authorized, bandwidth).await {
+                Ok(response) => response,
+                Err(error) => {
+                    state
+                        .sink
+                        .on_proxy_error(&context, &authority, &format!("{error:#}"));
+                    return Err(error);
+                }
+            };
+        state
+            .sink
+            .on_proxy_result(&context, &authority, response.status());
+        return Ok(response);
     }
 
     if is_forward_proxy_request(request.method(), request.uri()) {
@@ -233,9 +262,20 @@ where
             return Ok(throttle_response(response, bandwidth));
         }
         state.sink.on_dispatch(&context, &request, "forward");
-        return transparent_forward_authorized(request, &authorized, bandwidth)
-            .await
-            .map(IntoResponse::into_response);
+        let target = request.uri().to_string();
+        let response = match transparent_forward_authorized(request, &authorized, bandwidth).await {
+            Ok(response) => response.into_response(),
+            Err(error) => {
+                state
+                    .sink
+                    .on_proxy_error(&context, &target, &format!("{error:#}"));
+                return Err(error);
+            }
+        };
+        state
+            .sink
+            .on_proxy_result(&context, &target, response.status());
+        return Ok(response);
     }
 
     state.interception_metrics.sink_request();

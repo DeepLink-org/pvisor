@@ -23,6 +23,22 @@ pvisor apply last --path src
 
 下面的参考按 Run 生命周期组织；每组参数都配有验证下一步。
 
+### 文件系统参数
+
+工作区始终运行在 pVisor 的 changeset 视图中。指定 `--stage PATH` 时保留
+changeset，Run 结束后由 `review`、`apply` 或 `drop` 手动处理；不指定 `--stage`
+时使用临时 changeset，并在 Run 结束后自动丢弃。
+
+```bash
+pvisor run --stage ./run-stage -- codex
+pvisor run --mount /opt/zcode:read --mount /var/lib/zcode:write -- zcode
+pvisor run --access '/workspace/**/.ssh:deny' -- zcode
+```
+
+`--mount SOURCE[:TARGET]:ACCESS` 支持 `read`、`stage` 和 `write`；省略 target 时使用
+source。`write` 直接修改宿主机，`stage` 写入当前 changeset。`--access PATH-GLOB:LEVEL`
+支持 `deny` 和 `read`，用于为 Agent-visible 路径增加更严格的访问规则。
+
 ```text
 pvisor
 ├── run                 execute one Agent Run
@@ -44,9 +60,9 @@ pvisor run --stage ../stage-001 -- codex
 pvisor review last
 ```
 
-默认 host 执行使用 safe-best-effort 隔离；`--stage <PATH>` 才启用当前目录的
-OverlayFS stage，在显式 `--stage` 路径创建独立
-Run 和可写 stage，保留改动供人工审查，并以 `0600` 写入 `run-bundle.json`。
+默认 host 执行使用 safe-best-effort 隔离；没有 `--stage` 时使用临时 changeset
+并在 Run 结束后自动丢弃。显式 `--stage <PATH>` 会保留独立 Run 和可写 stage，
+改动可供人工审查，并以 `0600` 写入 `run-bundle.json`。
 
 `--strict` 要求每个被请求的 capability 维度都有不可绕过的 enforcement 证据，
 否则在 Agent 启动前失败关闭。当前 host / container / VM 都会请求 Network 与
@@ -54,9 +70,10 @@ Subprocess，且无一 claim Subprocess，因此 `--strict` 在这些路径上�
 `UnsupportedPolicy` 退出。该旗标用于验证 fail-closed，不表示「更强沙箱已就绪」。
 在 Linux 上，默认 host executor 会在异步 runtime 到达 Agent 之前，通过
 pVisor 的 rootless launcher 自执行。User/mount/PID namespace、namespace 内
-PID 1 后代回收器、最小 bind-projected root 加 `chroot`、按内核协商的 Landlock ABI v1-v3
-策略、关闭继承描述符、`no_new_privs` 以及空 capability 集，使工作区约束对
-Agent 进程树不可绕过。
+PID 1 后代回收器、最小 bind-projected root 加 `chroot`、关闭继承描述符以及空
+capability 集提供兼容性隔离，并保留 Agent 自己的 sandbox。`--strict` 才额外启用
+按内核协商的 Landlock ABI v1-v3 策略和 `no_new_privs`，因此可能拒绝需要 setuid
+sandbox helper 的程序。
 `--overlaynet-deny-all` 再加一个私有 network namespace；public/allowlist
 代理模式仍是协作式。在 macOS 上，默认 safe host executor 安装生成的
 Seatbelt 策略，使 staged 写入不可绕过。对 deny-all Run，它拦截 IP 和
@@ -124,8 +141,10 @@ pvisor run --safe --overlaynet-allow inference.example.com:443 -- zcode
   阻止其他直接 IP 出口和环境中的宿主 Unix socket，仅保留必要的 Run 内 IPC。
   Agent 使用临时 HOME，不能直接读取原来的主目录；凭据需显式传入或由 Gateway 持有。
   系统运行库和启动所需的路径元数据仍可读取。
-- Linux host：必须启用 namespaces 和 Landlock。目前仅支持普通出口 deny-all，
-  选择性代理或 Gateway 缺少 namespace 代理桥时直接拒绝启动；需要此组合时显式使用 VM。
+- Linux host：默认 `--safe` 使用 rootless namespace、synthetic root 和 chroot，保留应用
+  自己的 sandbox；`--strict` 额外要求 Landlock 和 `no_new_privs`。选择性出口和 Gateway
+  通过 supervisor loopback proxy cooperative 转发，直接 socket 仍可能绕过；需要不可绕过
+  网络边界时使用 VM 或 deny-all。
 - VM：要求现有 `auto` 网络边界；safe 不自动选择 VM。
 - container：当前缺少完整强制边界，`--safe` 拒绝启动。
 
@@ -134,7 +153,7 @@ pvisor run --safe --overlaynet-allow inference.example.com:443 -- zcode
 
 | 实际执行的命令 | 默认允许的普通网络目标 |
 | --- | --- |
-| `codex` | `api.openai.com:443` |
+| `codex` | `api.openai.com:443`、`chatgpt.com:443`、`ab.chatgpt.com:443` |
 | `claude` | `api.anthropic.com:443` |
 | `gemini` | `generativelanguage.googleapis.com:443` |
 | `zcode` | `api.z.ai:443`、`open.bigmodel.cn:443` |
@@ -151,6 +170,13 @@ ZCode 预设面向 **API Key + OpenAI 兼容协议直连**，依据
 `https://api.z.ai/api/coding/paas/v4` 或 `https://open.bigmodel.cn/api/coding/paas/v4`；
 普通 API 使用对应域名的 `/api/paas/v4`。这里只放行域名和端口，不限制这些路径。
 不默认放行 `zcode.z.ai`、登录域名、对象存储、插件市场或更新地址。
+
+Linux host 的 `--safe` 会通过 supervisor loopback proxy 转发 ZCode 请求；该路径是
+cooperative 的，直接 socket 仍可能绕过代理。需要不可绕过边界时使用
+`pvisor --safe --vm -- zcode`。
+`zcode-bigmodel` Gateway profile 当前要求 host executor，因此可以在 Linux host 的
+`--safe` cooperative 模式下使用；如果需要 VM 的不可绕过网络边界，则该 profile 还需要
+补充 VM 侧的 provider catalog 注入支持。
 
 核对依据为 ZCode 官方源码提交 `872ad960de7ec172591f7e1952f7849229f94521`：
 [模型转发代码](https://github.com/zai-org/ZCode/blob/872ad960de7ec172591f7e1952f7849229f94521/apps/zcode-cli/packages/adapters/src/model/official-coding-plan-gateway.ts)
@@ -416,7 +442,9 @@ enforcement。
 
 `--executor vm` 使用静态链接的 libkrun 及其嵌入 init 启动最小 Linux guest。
 `--rootfs image=<IMAGE>` 选择该 executor，并直接拉取 OCI/Docker 镜像，不调用 Docker、
-Podman 或 Buildah。未提供显式 rootfs 时，默认是 `ubuntu:latest`。
+Podman 或 Buildah。未提供显式 rootfs 或镜像时，Linux 上默认通过 virtiofs 和
+OverlayFS 使用宿主 `/`，保留宿主运行环境、PATH 和 HOME，不拉取镜像。
+macOS 上需要显式提供 Linux rootfs 或镜像。
 manifest 和 layer digest 会被校验，host 架构选择 `linux/arm64` 或
 `linux/amd64`，解包后的 rootfs 成为 pVisor OverlayFS 的不可变 lower。
 `--image-store` 覆盖平台缓存目录。OCI 缓存目标被标为不可变，且该保护在逻辑

@@ -478,7 +478,11 @@ pub(crate) fn prepare_attempt(
     )?;
     run_record.environment.runtime_injected_keys = implant.env.keys().cloned().collect();
     run_record.write()?;
-    if opts.vm_network && opts.gateway_enabled {
+    // The Attempt listener is also the VM's explicit HTTP proxy endpoint.
+    // Rewrite it for every VM OverlayNet run; gateway_enabled only controls
+    // LLM capture, not proxy reachability. Without this, clients in the guest
+    // try to connect to their own 127.0.0.1 and fail immediately.
+    if opts.vm_network {
         rewrite_vm_gateway_implant(spec, &gateway.listen);
     }
     inject_krun_overlay_metadata(spec, &overlay_hint, overlay_record.as_ref());
@@ -576,9 +580,10 @@ pub(crate) fn prepare_overlay_attempt(
     run_record.write()?;
     let control = RunControlServer::start(&run_record)?;
 
+    let transparent_cwd = process_cwd(spec);
     let mut plan = ImplantPlan {
         env: ImplantPlan::marker_env(),
-        cwd: overlay_hint.merged_dir.clone(),
+        cwd: transparent_cwd,
         overlay: overlay_hint,
         notes: vec![format!(
             "filesystem: overlay target={} staging={} (apply later unless auto_apply)",
@@ -774,7 +779,7 @@ fn start_vm_network(
         },
     );
     config.metrics = metrics;
-    if let Some((listen, _)) = gateway.filter(|(_, enabled)| *enabled) {
+    if let Some((listen, _)) = gateway {
         let host: std::net::SocketAddr = listen
             .strip_prefix("http://")
             .or_else(|| listen.strip_prefix("https://"))
@@ -1110,7 +1115,7 @@ fn enrich_with_session(
     } = opts;
     let mut plan = ImplantPlan {
         env: ImplantPlan::marker_env(),
-        cwd: overlay.merged_dir.clone(),
+        cwd: process_cwd(spec),
         overlay: overlay.clone(),
         notes: Vec::new(),
     };
@@ -1293,14 +1298,33 @@ fn enrich_with_session(
         plan.notes.push("filesystem: host view (no overlay)".into());
     }
 
+    let profile = spec
+        .metadata
+        .get("pvisor.gateway.profile")
+        .cloned()
+        .map(serde_json::from_value::<crate::config::GatewayProfile>)
+        .transpose()?;
+    super::zcode::prepare(spec, &mut plan, listen, run_storage, profile)?;
+
     let RunInvocation::Process(ref mut process) = spec.invocation;
     apply_implant(process, &plan);
+    super::zcode::apply_environment(process, &plan);
     if gateway_enabled {
         inject_gateway_args(process, listen);
     }
     spec.metadata
         .insert("pvisor.runtime.implant".into(), plan.as_metadata_json());
     Ok(plan)
+}
+
+fn process_cwd(spec: &RunSpec) -> Option<PathBuf> {
+    match &spec.invocation {
+        RunInvocation::Process(process) => process
+            .cwd
+            .as_ref()
+            .map(PathBuf::from)
+            .or_else(|| std::env::current_dir().ok()),
+    }
 }
 
 fn inject_gateway_args(process: &mut ProcessInvocation, listen: &str) {

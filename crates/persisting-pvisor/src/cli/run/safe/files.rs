@@ -1,5 +1,5 @@
 pub(super) fn patch() -> Vec<String> {
-    let mut args = vec!["--overlayfs-commit".into(), "manual".into()];
+    let mut args = Vec::new();
     for pattern in [
         "**/.ssh",
         "**/.gnupg",
@@ -10,7 +10,7 @@ pub(super) fn patch() -> Vec<String> {
         "**/id_ed25519",
         "**/id_ed25519_sk",
     ] {
-        args.extend(["--overlayfs-deny".into(), pattern.into()]);
+        args.extend(["--access".into(), format!("{pattern}:deny")]);
     }
     for pattern in [
         "**/.env",
@@ -24,7 +24,7 @@ pub(super) fn patch() -> Vec<String> {
         "**/.netrc",
         "**/.npmrc",
     ] {
-        args.extend(["--overlayfs-warn".into(), pattern.into()]);
+        args.extend(["--access".into(), format!("{pattern}:read")]);
     }
     args
 }

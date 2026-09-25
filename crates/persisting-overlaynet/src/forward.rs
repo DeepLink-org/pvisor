@@ -5,6 +5,7 @@ use axum::extract::Request;
 use axum::http::uri::Authority;
 use axum::http::{Method, StatusCode, Uri};
 use axum::response::{IntoResponse, Response};
+use bytes::Bytes;
 use futures_util::StreamExt;
 use hyper::upgrade::OnUpgrade;
 use hyper_util::rt::TokioIo;
@@ -12,7 +13,7 @@ use std::time::Duration;
 use tokio::io::{AsyncRead, AsyncReadExt, AsyncWrite, AsyncWriteExt};
 
 use crate::bandwidth::BandwidthSession;
-use crate::egress::{CONNECT_TIMEOUT, connect_tcp_addresses};
+use crate::egress::{CONNECT_TIMEOUT, connect_tcp_addresses, connect_via_ambient_http_proxy};
 use crate::headers::skip_transparent_forward_header_for;
 use crate::resolver::AuthorizedTarget;
 
@@ -29,12 +30,78 @@ pub(crate) async fn handle_connect_authorized(
     authorized: &AuthorizedTarget,
     bandwidth: BandwidthSession,
 ) -> anyhow::Result<Response> {
+    // HTTP/1 CONNECT uses hyper's connection upgrade. HTTP/2 has no
+    // connection-wide upgrade; extended CONNECT carries the tunnel in the
+    // request and response bodies, so it must be bridged as a duplex stream.
+    if req.version() == axum::http::Version::HTTP_2 {
+        let (_parts, body) = req.into_parts();
+        let destination = match connect_via_ambient_http_proxy(&target.host, target.port).await {
+            Some(Ok(stream)) => stream,
+            Some(Err(error)) => {
+                return Err(anyhow::anyhow!(
+                    "CONNECT to {} through the host proxy failed: {error}",
+                    target.authority
+                ));
+            }
+            None => connect_tcp_addresses(&authorized.addresses, &target.host, target.port)
+                .await
+                .map_err(|error| {
+                    anyhow::anyhow!("CONNECT to {} failed: {error}", target.authority)
+                })?,
+        };
+        let (destination_read, mut destination_write) = destination.into_split();
+        let mut upload = body.into_data_stream();
+        let upload_bandwidth = bandwidth.clone();
+        tokio::spawn(async move {
+            while let Some(chunk) = upload.next().await {
+                let Ok(chunk) = chunk else { break };
+                upload_bandwidth.throttle(chunk.len()).await;
+                if destination_write.write_all(&chunk).await.is_err() {
+                    break;
+                }
+            }
+            let _ = destination_write.shutdown().await;
+        });
+        let stream = futures_util::stream::unfold(
+            (destination_read, bandwidth),
+            |(mut reader, bandwidth)| async move {
+                let mut buffer = vec![0_u8; 16 * 1024];
+                match reader.read(&mut buffer).await {
+                    Ok(0) => None,
+                    Ok(read) => {
+                        bandwidth.throttle(read).await;
+                        Some((
+                            Ok::<Bytes, std::io::Error>(Bytes::copy_from_slice(&buffer[..read])),
+                            (reader, bandwidth),
+                        ))
+                    }
+                    // A read error terminates the tunnel. Returning the same
+                    // reader here would make `Stream` yield the error forever.
+                    Err(_) => None,
+                }
+            },
+        );
+        return Response::builder()
+            .status(StatusCode::OK)
+            .body(Body::from_stream(stream))
+            .map_err(|error| anyhow::anyhow!("build HTTP/2 CONNECT response: {error}"))
+            .map(IntoResponse::into_response);
+    }
     let on_upgrade: OnUpgrade = hyper::upgrade::on(req);
     // Establish the upstream before reporting success. Returning 200 first
     // makes a refused or unroutable destination look like an accepted tunnel.
-    let mut destination = connect_tcp_addresses(&authorized.addresses, &target.host, target.port)
-        .await
-        .map_err(|error| anyhow::anyhow!("CONNECT to {} failed: {error}", target.authority))?;
+    let mut destination = match connect_via_ambient_http_proxy(&target.host, target.port).await {
+        Some(Ok(stream)) => stream,
+        Some(Err(error)) => {
+            return Err(anyhow::anyhow!(
+                "CONNECT to {} through the host proxy failed: {error}",
+                target.authority
+            ));
+        }
+        None => connect_tcp_addresses(&authorized.addresses, &target.host, target.port)
+            .await
+            .map_err(|error| anyhow::anyhow!("CONNECT to {} failed: {error}", target.authority))?,
+    };
     tokio::spawn(async move {
         let Ok(upgraded) = on_upgrade.await else {
             return;
@@ -110,10 +177,14 @@ pub(crate) async fn transparent_forward_authorized(
     let url = parts.uri.to_string();
 
     let mut client = reqwest::Client::builder()
-        .no_proxy()
         .redirect(reqwest::redirect::Policy::none())
         .connect_timeout(CONNECT_TIMEOUT)
         .timeout(Duration::from_secs(600));
+    if let Some(proxy) = ambient_upstream_proxy() {
+        client = client.proxy(reqwest::Proxy::all(&proxy).map_err(|error| {
+            anyhow::anyhow!("configure ambient upstream proxy {proxy}: {error}")
+        })?);
+    }
     if target.host.parse::<std::net::IpAddr>().is_err() {
         client = client.resolve_to_addrs(&target.host, &target.addresses);
     }
@@ -162,6 +233,22 @@ pub(crate) async fn transparent_forward_authorized(
     builder
         .body(Body::from_stream(download))
         .map_err(|error| anyhow::anyhow!("build response: {error}"))
+}
+
+fn ambient_upstream_proxy() -> Option<String> {
+    [
+        "HTTPS_PROXY",
+        "https_proxy",
+        "HTTP_PROXY",
+        "http_proxy",
+        "ALL_PROXY",
+        "all_proxy",
+    ]
+    .into_iter()
+    .filter_map(|key| std::env::var(key).ok())
+    .find(|value| {
+        !value.is_empty() && !value.contains("127.0.0.1:492") && !value.contains("127.0.0.1:493")
+    })
 }
 
 async fn copy_limited<R, W>(

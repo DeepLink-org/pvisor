@@ -331,13 +331,17 @@ impl RunExecutor for VmExecutor {
         ] {
             env.remove(key);
         }
-        if !invocation.env.contains_key("PATH") {
+        if !invocation.env.contains_key("PATH")
+            && (root != Path::new("/") || !env.contains_key("PATH"))
+        {
             env.insert(
                 "PATH".into(),
                 "/usr/local/sbin:/usr/local/bin:/usr/sbin:/usr/bin:/sbin:/bin".into(),
             );
         }
-        if !invocation.env.contains_key("HOME") {
+        if !invocation.env.contains_key("HOME")
+            && (root != Path::new("/") || !env.contains_key("HOME"))
+        {
             env.insert("HOME".into(), "/root".into());
         }
         if !invocation.env.contains_key("TMPDIR") {
@@ -927,7 +931,9 @@ fn write_guest_helper(
     }
     script.push_str("\ncd ");
     script.push_str(&shell_quote(&guest.cwd.to_string_lossy())?);
-    script.push_str("\nexec env -i");
+    // The guest init may start the helper without PATH. Use the conventional
+    // absolute location so environment sanitization does not depend on it.
+    script.push_str("\nexec /usr/bin/env -i");
     for (key, value) in &guest.env {
         script.push(' ');
         script.push_str(&shell_quote(&format!("{key}={value}"))?);
@@ -1171,6 +1177,11 @@ mod tests {
             cwd: temporary.path().to_path_buf(),
         };
         write_guest_helper(&helper, None, None, &guest, &ResourceLimits::default()).unwrap();
+        assert!(
+            std::fs::read_to_string(&helper)
+                .unwrap()
+                .contains("exec /usr/bin/env -i")
+        );
 
         let status = std::process::Command::new(&helper).status().unwrap();
         assert!(status.success());

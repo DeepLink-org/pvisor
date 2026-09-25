@@ -31,7 +31,7 @@ test -x "$PVISOR_BIN"
 
 for scenario in "$@"; do
   case "$scenario" in
-    01-filesystem-isolation|02-changeset-management|03-network-isolation|04-gateway-llm-control) ;;
+    01-filesystem-isolation|02-changeset-management|03-network-isolation|04-gateway-llm-control|05-zcode-cli) ;;
     *)
       echo "unknown pVisor example: $scenario" >&2
       exit 2

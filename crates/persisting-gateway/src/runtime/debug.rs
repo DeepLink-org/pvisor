@@ -141,6 +141,20 @@ pub fn log_dispatch(storage: &Path, method: &str, uri: &str, session_id: &str, m
     );
 }
 
+pub fn log_proxy_result(storage: &Path, target: &str, status: u16, session_id: &str) {
+    emit(
+        storage,
+        &format!("network.proxy_result target={target} status={status} session={session_id}"),
+    );
+}
+
+pub fn log_proxy_error(storage: &Path, target: &str, error: &str, session_id: &str) {
+    emit(
+        storage,
+        &format!("network.proxy_error target={target} error={error} session={session_id}"),
+    );
+}
+
 #[allow(clippy::too_many_arguments)]
 pub fn log_llm_request(
     storage: &Path,

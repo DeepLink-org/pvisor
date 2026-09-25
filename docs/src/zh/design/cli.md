@@ -13,15 +13,15 @@ pvisor -- codex
 pvisor run -- codex
 ```
 
-需要保留文件修改以便审查时使用 `--stage`。不指定 stage 时，pVisor 仍会记录 Run，但不会
-产生可供 apply 的持久 workspace changeset。选中的 host、container 或 VM Provider 会在
+`--stage PATH` 将 changeset 保留在指定目录；省略时使用临时 stage，并在 Run 结束后自动
+丢弃。选中的 host、container 或 VM Provider 会在
 Run Bundle 中分别记录实际 capability 与限制。
 
 常用控制按目的分组：
 
 | 目的 | 选项 | 结果 |
 | --- | --- | --- |
-| Workspace | `--stage`、`--overlayfs-path`、`--overlayfs-compose` | 创建 COW 视图并保留 changeset |
+| Filesystem | `--stage`、`--mount SOURCE[:TARGET]:read\|stage\|write`、`--access PATH-GLOB:deny\|read` | 创建 COW 视图并声明路径权限 |
 | Runtime | `--executor host\|container\|vm`、`--rootfs`、`--container-image` | 选择执行 Provider 与 rootfs |
 | Network | `--overlaynet-deny-all`、`--overlaynet-allow`、`--overlaynet-limit` | 请求 deny、allowlist 或限速策略 |
 | Gateway | `--gateway-mode`、`--gateway-route`、`--gateway-level` | 配置路由，并按需捕获模型流量 |

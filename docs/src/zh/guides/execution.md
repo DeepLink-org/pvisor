@@ -32,24 +32,23 @@ pvisor run --executor container \
 
 ```bash
 pvisor run --executor vm --rootfs image=ubuntu:24.04 \
-  --overlayfs-path /workspace --stage ../stage-vm -- /bin/sh
+  --stage ../stage-vm --mount "$PWD:stage" -- /bin/sh
 ```
 
 也可用 `--rootfs DIR` 指定准备好的 Linux rootfs。镜像直接拉取，VM executor 不需要 Docker。需要可复现时固定镜像摘要。rootfs 写入是临时的；工作区暂存内容会保留供审查。
 
-Linux 上的 `--rootfs host` 可将宿主根目录作为只读底层提供给独立客户机内核。这会暴露宿主内容供读取。应显式设置工作区 `--overlayfs-path`，仅用于同一所有者的本地工作。
+Linux 上的 `--rootfs host` 可将宿主根目录作为只读底层提供给独立客户机内核。这会暴露宿主内容供读取。应通过 `--mount` 显式声明需要暴露的路径。
 
 Linux 需要可访问的 `/dev/kvm`。macOS 上用 `just build release` 构建并签署 Hypervisor entitlement；源码构建还需要 Zig。VM 网络支持策略控制的 IPv4 TCP、DHCP 和合成 DNS；应用 UDP 流量、IPv6、QUIC 和入站连接不在当前支持范围内。
 
 ## 组合底层与提交方式
 
-`--overlayfs-compose DIR` 在当前工作区之上按从下到上的顺序添加只读层。`--overlayfs-path PATH` 设置命令看到的绝对工作区路径。暂存目录应放在所有底层之外。
+`--mount SOURCE[:TARGET]:ACCESS` 声明路径及其权限；省略 target 时 target 等于 source。权限分为 deny、read、stage、write。`--stage PATH` 指定持久 stage，省略时使用临时 stage。
 
-| 提交模式 | 行为 |
+| Stage 生命周期 | 行为 |
 | --- | --- |
-| `manual`（默认） | 保留改动，由 `review`、`apply` 或 `drop` 决定 |
-| `apply` | Run 退出时自动应用，包括命令以非零状态退出的情况 |
-| `drop` | Run 退出时丢弃暂存内容 |
+| `--stage PATH` | 保留改动，由 `review`、`apply` 或 `drop` 决定 |
+| 未指定 `--stage` | 使用临时目录，Run 结束后自动丢弃 |
 
 需要根据测试或审查结果决定是否接受改动时，使用 manual。宿主进程 Run 在完成或超时后清理进程组，并限制等待输出管道的时间；脱离该组的后代不能仅靠进程组清理来约束。
 

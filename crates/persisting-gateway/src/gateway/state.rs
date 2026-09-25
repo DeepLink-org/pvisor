@@ -3,7 +3,6 @@
 use std::path::Path;
 use std::sync::Arc;
 use std::sync::atomic::AtomicUsize;
-use std::time::Duration;
 
 use anyhow::Context;
 use persisting_control::{ControlController, PolicyControlController};
@@ -252,18 +251,31 @@ async fn serve_with_bound_listeners(
     )
     .await?;
     let capture_for_shutdown = capture_engine.clone();
+    let mut client_builder = reqwest::Client::builder()
+        // Redirects must return to the proxy client so every destination
+        // gets a fresh OverlayNet authorization decision. Following a
+        // cross-origin Location here would bypass the policy gate.
+        .redirect(reqwest::redirect::Policy::none())
+        .connect_timeout(std::time::Duration::from_secs(10))
+        .timeout(std::time::Duration::from_secs(600));
+    if let Some(proxy) = [
+        "HTTPS_PROXY",
+        "https_proxy",
+        "HTTP_PROXY",
+        "http_proxy",
+        "ALL_PROXY",
+        "all_proxy",
+    ]
+    .into_iter()
+    .filter_map(|key| std::env::var(key).ok())
+    .find(|value| !value.is_empty())
+    {
+        client_builder = client_builder.proxy(reqwest::Proxy::all(proxy)?);
+    }
     let state = GatewayState {
         config: Arc::new(config.clone()),
         storage,
-        client: reqwest::Client::builder()
-            .no_proxy()
-            // Redirects must return to the proxy client so every destination
-            // gets a fresh OverlayNet authorization decision. Following a
-            // cross-origin Location here would bypass the policy gate.
-            .redirect(reqwest::redirect::Policy::none())
-            .connect_timeout(Duration::from_secs(10))
-            .timeout(Duration::from_secs(600))
-            .build()?,
+        client: client_builder.build()?,
         capture_engine,
         session_clients: Arc::new(SessionClientRegistry::default()),
         reasoning_cache: Arc::new(ReasoningCacheHandle::new()),

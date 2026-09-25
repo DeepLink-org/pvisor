@@ -384,9 +384,11 @@ fn network_isolation(spec: &RunSpec) -> std::io::Result<NetworkIsolation> {
         }
         #[cfg(target_os = "linux")]
         if !matches!(spec.capabilities.network, NetworkCapability::Deny) {
-            return Err(std::io::Error::other(
-                "required Linux host sandbox cannot enforce selective egress without a namespace proxy bridge",
-            ));
+            // Host selective egress is cooperative: clients such as ZCode use
+            // the supervisor-owned loopback proxy, while direct sockets remain
+            // outside the proxy boundary. Strict policy rejects this evidence;
+            // VM or deny-all is required for non-bypassable egress.
+            return Ok(NetworkIsolation::Ambient);
         }
     }
     if matches!(spec.capabilities.network, NetworkCapability::Deny) {
@@ -562,11 +564,6 @@ impl ProcessExecutor {
                 command.env("HOME", scratch);
             }
         }
-        #[cfg(target_os = "linux")]
-        if crate::sandbox::sandbox_required(spec) {
-            // The rootless launcher creates a private writable /tmp tmpfs.
-            command.env("HOME", "/tmp");
-        }
         Ok(PreparedCommand { command, resources })
     }
 }
@@ -577,14 +574,18 @@ impl ProcessExecutor {
 /// host capability from a later Agent failure.
 #[cfg(target_os = "linux")]
 pub(crate) fn rootless_runtime_available() -> bool {
-    landlock_runtime_available()
-        && StdCommand::new("unshare")
-            .args(["--user", "--mount", "--pid", "--fork", "true"])
-            .stdin(Stdio::null())
-            .stdout(Stdio::null())
-            .stderr(Stdio::null())
-            .status()
-            .is_ok_and(|status| status.success())
+    landlock_runtime_available() && rootless_namespaces_available()
+}
+
+#[cfg(target_os = "linux")]
+pub(crate) fn rootless_namespaces_available() -> bool {
+    StdCommand::new("unshare")
+        .args(["--user", "--mount", "--pid", "--fork", "true"])
+        .stdin(Stdio::null())
+        .stdout(Stdio::null())
+        .stderr(Stdio::null())
+        .status()
+        .is_ok_and(|status| status.success())
 }
 
 #[cfg(unix)]
@@ -874,6 +875,27 @@ fn rootless_plan(
     let mut read_only = Vec::new();
     let mut read_write = vec![cwd.clone()];
 
+    // Safe compatibility mode preserves the caller's path and environment
+    // semantics. Project the user's home and XDG roots so applications such
+    // as Codex keep their existing configuration and cache identity. Writes
+    // remain governed by the filesystem policy/stage layer.
+    for key in [
+        "HOME",
+        "XDG_CONFIG_HOME",
+        "XDG_DATA_HOME",
+        "XDG_STATE_HOME",
+        "XDG_CACHE_HOME",
+    ] {
+        let path = invocation
+            .env
+            .get(key)
+            .map(PathBuf::from)
+            .or_else(|| std::env::var_os(key).map(PathBuf::from));
+        if let Some(path) = path {
+            push_existing(&mut read_only, &path);
+        }
+    }
+
     // A broad but immutable OS runtime keeps arbitrary local executables and
     // dynamic language runtimes working while excluding user data by default.
     for path in ["/bin", "/sbin", "/usr", "/lib", "/lib64", "/etc"] {
@@ -889,6 +911,16 @@ fn rootless_plan(
     // whose containing hierarchy is intentionally not otherwise projected.
     push_existing(&mut read_only, Path::new("/etc/resolv.conf"));
     read_only.push(program.to_path_buf());
+    // Application bundles commonly keep private ELF dependencies beside the
+    // launcher (for example ZCode's libffmpeg.so). Projecting the executable
+    // alone lets the ELF loader find the program but not its bundle-local
+    // shared libraries. Project the directory entries individually so known
+    // Chromium SUID helpers are absent from the synthetic root. Their presence
+    // inside a rootless user namespace is unusable and makes Chromium abort
+    // instead of selecting its user-namespace sandbox fallback.
+    if let Some(parent) = program.parent() {
+        push_runtime_directory(&mut read_only, parent);
+    }
     for path in [
         "/dev/null",
         "/dev/zero",
@@ -936,6 +968,9 @@ fn rootless_plan(
     read_only.dedup();
     read_write.sort_unstable();
     read_write.dedup();
+    // A staged application directory is already mounted at its original
+    // path. Do not re-bind the host lower read-only over that COW view.
+    read_only.retain(|path| !read_write.binary_search(path).is_ok());
     Ok(SandboxPlan {
         root,
         cwd,
@@ -943,6 +978,12 @@ fn rootless_plan(
         read_only,
         read_write,
         network,
+        // Ordinary best-effort host runs retain the historical Landlock
+        // policy. The only profile that deliberately skips it is required
+        // safe compatibility mode, which is selected explicitly by the CLI
+        // when `--strict` is absent.
+        landlock: !crate::sandbox::sandbox_required(spec)
+            || crate::sandbox::landlock_required(spec),
         process_limit: spec.runtime.resource_limits.processes,
     })
 }
@@ -951,6 +992,30 @@ fn rootless_plan(
 fn push_existing(paths: &mut Vec<PathBuf>, path: &Path) {
     if let Ok(path) = path.canonicalize() {
         paths.push(path);
+    }
+}
+
+#[cfg(target_os = "linux")]
+fn push_runtime_directory(paths: &mut Vec<PathBuf>, directory: &Path) {
+    const HIDDEN_SUID_HELPERS: &[&str] = &[
+        "chrome-sandbox",
+        "chrome-sandbox-helper",
+        "chromium-sandbox",
+    ];
+    let Ok(entries) = std::fs::read_dir(directory) else {
+        push_existing(paths, directory);
+        return;
+    };
+    for entry in entries.flatten() {
+        let path = entry.path();
+        if path
+            .file_name()
+            .and_then(|name| name.to_str())
+            .is_some_and(|name| HIDDEN_SUID_HELPERS.contains(&name))
+        {
+            continue;
+        }
+        push_existing(paths, &path);
     }
 }
 

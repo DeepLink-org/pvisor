@@ -56,7 +56,17 @@ mod tests {
     #[test]
     fn patches_are_cli_arguments_and_never_select_an_executor() {
         for (agent, expected) in [
-            ("codex", vec!["--overlaynet-allow", "api.openai.com:443"]),
+            (
+                "codex",
+                vec![
+                    "--overlaynet-allow",
+                    "api.openai.com:443",
+                    "--overlaynet-allow",
+                    "chatgpt.com:443",
+                    "--overlaynet-allow",
+                    "ab.chatgpt.com:443",
+                ],
+            ),
             (
                 "claude",
                 vec!["--overlaynet-allow", "api.anthropic.com:443"],
@@ -82,9 +92,19 @@ mod tests {
             let mut requested = RunConfig::default();
             requested.run.command = vec![agent.into()];
             let args = patch(&requested);
-            let mut expected = expected;
-            expected.extend(["--overlaynet", "proxy", "--clear-pass-env"]);
             let mut expected = expected.into_iter().map(str::to_owned).collect::<Vec<_>>();
+            if agent == "codex" {
+                if let Some(home) = std::env::var_os("CODEX_HOME")
+                    .map(std::path::PathBuf::from)
+                    .or_else(|| {
+                        std::env::var_os("HOME")
+                            .map(|home| std::path::PathBuf::from(home).join(".codex"))
+                    })
+                {
+                    expected.extend(["--mount".into(), format!("{}:stage", home.display())]);
+                }
+            }
+            expected.extend(["--overlaynet", "proxy", "--clear-pass-env"].map(str::to_owned));
             expected.extend(files::patch());
             assert_eq!(args, expected);
         }

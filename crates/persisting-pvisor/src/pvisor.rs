@@ -319,7 +319,21 @@ impl PVisor {
                 CapabilityDimension::FilesystemWrite,
                 CapabilityDimension::Network,
             ] {
-                if !capability_enforcement.is_enforced(dimension) {
+                let cooperative_linux_proxy = cfg!(target_os = "linux")
+                    && dimension == CapabilityDimension::Network
+                    && self.runtime.proxy_network_is_configured()
+                    && !matches!(spec.capabilities.network, NetworkCapability::Deny);
+                let cooperative_rootless_chroot = cfg!(target_os = "linux")
+                    && descriptor.isolation == IsolationKind::RootlessProcess
+                    && !crate::sandbox::landlock_required(&spec)
+                    && matches!(
+                        dimension,
+                        CapabilityDimension::FilesystemRead | CapabilityDimension::FilesystemWrite
+                    );
+                if !capability_enforcement.is_enforced(dimension)
+                    && !cooperative_linux_proxy
+                    && !cooperative_rootless_chroot
+                {
                     return Err(PVisorError::UnsupportedPolicy {
                         executor: descriptor.name,
                         dimensions: format!("required sandbox: {dimension}"),
@@ -606,6 +620,27 @@ fn effective_capability_enforcement(
     vm_network_enforcing: bool,
 ) -> CapabilityEnforcementEvidence {
     let mut evidence = descriptor.capability_enforcement.clone();
+    if crate::sandbox::sandbox_required(spec)
+        && !crate::sandbox::landlock_required(spec)
+        && descriptor.isolation == IsolationKind::RootlessProcess
+    {
+        evidence
+            .dimensions
+            .remove(&CapabilityDimension::FilesystemRead);
+        evidence
+            .dimensions
+            .remove(&CapabilityDimension::FilesystemWrite);
+        evidence.record(
+            CapabilityDimension::FilesystemRead,
+            EnforcementLevel::Cooperative,
+            "linux-rootless-chroot",
+        );
+        evidence.record(
+            CapabilityDimension::FilesystemWrite,
+            EnforcementLevel::Cooperative,
+            "linux-rootless-chroot",
+        );
+    }
     if proxy_network_configured {
         evidence.record(
             CapabilityDimension::Network,

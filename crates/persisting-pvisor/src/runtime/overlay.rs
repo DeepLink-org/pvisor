@@ -199,9 +199,17 @@ impl OverlayMount {
         if !self.record.merged_dir.starts_with(&self.record.stage_dir)
             && self.record.merged_dir.is_dir()
         {
-            fs::remove_dir(&self.record.merged_dir)?;
-            if let Some(parent) = self.record.merged_dir.parent() {
-                let _ = fs::remove_dir(parent);
+            match fs::remove_dir(&self.record.merged_dir) {
+                Ok(()) => {
+                    if let Some(parent) = self.record.merged_dir.parent() {
+                        let _ = fs::remove_dir(parent);
+                    }
+                }
+                // A target mounted over an existing directory (for example
+                // ~/.codex) reveals the original lower again after unmount.
+                // It is expected to remain non-empty and must not be removed.
+                Err(error) if error.kind() == io::ErrorKind::DirectoryNotEmpty => {}
+                Err(error) => return Err(error.into()),
             }
         }
         Ok(())
@@ -416,8 +424,46 @@ pub fn lower_stack_from_config(cfg: &OverlayConfig, storage: &Path, target: &Pat
     };
     let mut lowers: Vec<PathBuf> = cfg.lower_dirs.iter().map(|p| resolve(p)).collect();
     lowers.retain(|p| p != target);
-    lowers.push(target.to_path_buf());
+    // A stage mounted back onto its source cannot use the source directory as
+    // both FUSE mountpoint and lower layer. Snapshot the lower into the Run
+    // storage first; the upper remains the only writable copy.
+    let lower = if cfg.target.is_some() && target.is_dir() {
+        use std::hash::{Hash, Hasher};
+        let mut hasher = std::collections::hash_map::DefaultHasher::new();
+        target.to_string_lossy().hash(&mut hasher);
+        let snapshot = storage
+            .join(".overlay-lowers")
+            .join(format!("{:016x}", hasher.finish()));
+        if !snapshot.exists() {
+            if let Err(error) = copy_tree(target, &snapshot) {
+                tracing::warn!(%error, path = %target.display(), "failed to snapshot staged lower");
+            }
+        }
+        if snapshot.is_dir() {
+            snapshot
+        } else {
+            target.to_path_buf()
+        }
+    } else {
+        target.to_path_buf()
+    };
+    lowers.push(lower);
     lowers
+}
+
+fn copy_tree(source: &Path, destination: &Path) -> std::io::Result<()> {
+    std::fs::create_dir_all(destination)?;
+    for entry in std::fs::read_dir(source)? {
+        let entry = entry?;
+        let from = entry.path();
+        let to = destination.join(entry.file_name());
+        if from.is_dir() {
+            copy_tree(&from, &to)?;
+        } else {
+            std::fs::copy(from, to)?;
+        }
+    }
+    Ok(())
 }
 
 /// Mount the overlay in-process; pVisor becomes the FUSE userspace server.

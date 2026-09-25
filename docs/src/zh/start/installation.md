@@ -82,7 +82,9 @@ just install-cli
 pvisor run --executor vm --rootfs image=ubuntu:24.04 -- /bin/echo hello
 ```
 
-未指定时 VM 也默认使用 `ubuntu:latest`。`--image-store DIR` 修改本地内容寻址缓存，
+未指定 rootfs 或镜像时，Linux 上 VM 默认通过 virtiofs 和 OverlayFS 使用宿主 `/`，
+不拉取镜像；macOS 上需要显式指定 Linux rootfs 或镜像。
+`--image-store DIR` 修改本地内容寻址缓存，
 `--overlayfs-path` 选择 guest workspace，`--rootfs DIR` 指向预先准备的 Linux rootfs。
 Linux 使用 KVM；Apple Silicon macOS 使用 HVF。从源码在 macOS 构建 VM 支持还需要 Zig：
 

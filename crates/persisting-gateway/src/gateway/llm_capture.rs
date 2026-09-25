@@ -323,7 +323,7 @@ pub(super) async fn llm_capture(
         debug::log_llm_auth_resolved(state.storage.as_path(), &session_id, auth_source);
     }
 
-    let mut upstream_req = state.client.request(method, upstream_url.clone());
+    let mut upstream_req = state.client.request(method.clone(), upstream_url.clone());
     upstream_req = upstream_req.body(upstream_body.clone());
     upstream_req =
         match apply_upstream_headers(upstream_req, &parts.headers, route, upstream_protocol) {

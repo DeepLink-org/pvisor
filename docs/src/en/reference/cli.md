@@ -66,10 +66,11 @@ paths. Use it to verify fail-closed behavior, not as a “stronger sandbox is
 ready” switch.
 On Linux, the default host executor self-executes through pVisor's rootless
 launcher before the async runtime reaches the Agent. User/mount/PID namespaces,
-an in-namespace PID 1 descendant reaper,
-minimal bind-projected root plus `chroot`, a kernel-negotiated Landlock ABI v1-v3 policy, closed
-inherited descriptors, `no_new_privs`, and an empty capability set make
-workspace containment non-bypassable for the Agent process tree.
+an in-namespace PID 1 descendant reaper, minimal bind-projected root plus
+`chroot`, closed inherited descriptors, and an empty capability set provide a
+compatibility boundary while preserving the Agent's own sandbox. `--strict`
+additionally requires a kernel-negotiated Landlock ABI v1-v3 policy and
+`no_new_privs`; that mode can reject programs that need a setuid sandbox helper.
 `--overlaynet-deny-all` adds a private network namespace; the
 public/allowlist proxy modes remain cooperative. On macOS the default safe
 host executor installs a generated Seatbelt policy that makes staged writes
@@ -146,9 +147,11 @@ limits, separately.
   port, with necessary Run-local Unix IPC. Direct IP traffic and ambient host Unix sockets
   are blocked. The Agent gets a temporary HOME; provide credentials explicitly or through
   Gateway. System runtime files and path metadata needed for loading remain readable.
-- Linux host: namespaces and Landlock are mandatory. Currently only deny-all ordinary egress
-  is supported; selective egress/Gateway requires a namespace proxy bridge and fails closed.
-  Select VM explicitly for those combinations.
+- Linux host: default `--safe` uses rootless namespaces, a synthetic root, and chroot while
+  preserving the application's own sandbox; `--strict` additionally requires Landlock and
+  `no_new_privs`. Selective egress and Gateway traffic use the supervisor loopback proxy
+  cooperatively; direct sockets may still bypass it. Select VM or deny-all when a non-bypassable
+  network boundary is required.
 - VM: the existing `auto` network boundary is required. Safe never selects VM automatically.
 - Container: `--safe` is rejected until a complete enforcement boundary is available.
 
@@ -156,7 +159,7 @@ Sandbox setup failure stops execution. `--safe` cannot be combined with `--overl
 
 | Executed command | Default ordinary egress destination |
 | --- | --- |
-| `codex` | `api.openai.com:443` |
+| `codex` | `api.openai.com:443`, `chatgpt.com:443`, `ab.chatgpt.com:443` |
 | `claude` | `api.anthropic.com:443` |
 | `gemini` | `generativelanguage.googleapis.com:443` |
 | `zcode` | `api.z.ai:443`, `open.bigmodel.cn:443` |
@@ -465,7 +468,9 @@ capability enforcement.
 `--executor vm` uses statically linked libkrun and its embedded init to boot a
 minimal Linux guest. `--rootfs image=IMAGE` selects this executor and pulls an
 OCI/Docker image directly, without invoking Docker, Podman, or Buildah. When no
-explicit rootfs is supplied, the default is `ubuntu:latest`. Manifests
+explicit rootfs or image is supplied, VM execution uses the host `/` through
+virtiofs and OverlayFS on Linux, preserving the host runtime, PATH, and HOME.
+On macOS, supply a Linux rootfs or image explicitly. Manifests
 and layer digests are verified, the host architecture selects `linux/arm64` or
 `linux/amd64`, and the unpacked rootfs becomes the immutable lower layer of a
 pVisor OverlayFS. `--image-store` overrides the platform cache directory.

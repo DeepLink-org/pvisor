@@ -16,8 +16,6 @@ use std::fs::{self, File, OpenOptions};
 use std::io::{Read, Write};
 use std::path::{Component, Path, PathBuf};
 
-pub const DEFAULT_IMAGE: &str = "ubuntu:latest";
-
 const MANIFEST_ACCEPT: &str = concat!(
     "application/vnd.oci.image.index.v1+json, ",
     "application/vnd.docker.distribution.manifest.list.v2+json, ",

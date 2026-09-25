@@ -30,6 +30,7 @@ use tokio::task::JoinHandle;
 
 use crate::egress::{
     CONNECT_TIMEOUT, EgressContext, EgressError, EgressRuntime, connect_tcp_addresses,
+    connect_via_ambient_http_proxy,
 };
 use crate::interception::{InterceptionMetrics, InterceptionSnapshot};
 use crate::policy::DenyReason;
@@ -642,7 +643,17 @@ async fn connect_vm_egress(
     if addresses.is_empty() {
         return Err(EgressError::Denied(DenyReason::ResolvedAddressNotAllowed));
     }
-    let stream = connect_tcp_addresses(&addresses, host, port).await?;
+    let stream = match connect_via_ambient_http_proxy(host, port).await {
+        Some(Ok(stream)) => stream,
+        Some(Err(source)) => {
+            return Err(EgressError::Connect {
+                host: host.to_owned(),
+                port,
+                source,
+            });
+        }
+        None => connect_tcp_addresses(&addresses, host, port).await?,
+    };
     Ok((stream, bandwidth))
 }
 

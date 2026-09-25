@@ -14,11 +14,19 @@ use std::os::fd::AsRawFd;
 use std::path::PathBuf;
 
 pub(crate) const REQUIRED_SANDBOX_KEY: &str = "pvisor.sandbox.required";
+pub(crate) const LANDLOCK_SANDBOX_KEY: &str = "pvisor.sandbox.landlock";
 pub(crate) const SANDBOX_PROXY_KEY: &str = "pvisor.sandbox.proxy";
 
 pub(crate) fn sandbox_required(spec: &persisting_control::RunSpec) -> bool {
     spec.metadata
         .get(REQUIRED_SANDBOX_KEY)
+        .and_then(serde_json::Value::as_bool)
+        == Some(true)
+}
+
+pub(crate) fn landlock_required(spec: &persisting_control::RunSpec) -> bool {
+    spec.metadata
+        .get(LANDLOCK_SANDBOX_KEY)
         .and_then(serde_json::Value::as_bool)
         == Some(true)
 }
@@ -82,6 +90,8 @@ pub(crate) struct SandboxPlan {
     pub read_only: Vec<PathBuf>,
     pub read_write: Vec<PathBuf>,
     pub network: NetworkIsolation,
+    #[serde(default)]
+    pub landlock: bool,
     /// Applied after the private PID namespace is initialized so the trusted
     /// launcher itself can still create its init/reaper process.
     #[serde(default)]
@@ -157,14 +167,23 @@ fn run_internal() -> anyhow::Result<()> {
     // removes access to the host procfs tree.
     close_unexpected_file_descriptors(Some(attestation.as_raw_fd()))
         .context("close inherited file descriptors")?;
-    let landlock_abi = install_landlock(&plan).context("install Landlock filesystem policy")?;
+    let landlock_abi = if plan.landlock {
+        install_landlock(&plan).context("install Landlock filesystem policy")?
+    } else {
+        0
+    };
     drop_process_capabilities().context("drop namespace capabilities")?;
     // The child process is configuring its environment immediately before
     // exec; no concurrent environment mutation occurs in this scope.
     unsafe {
         std::env::remove_var(SANDBOX_PLAN_ENV);
-        std::env::set_var("PERSISTING_SANDBOX_FILESYSTEM", "landlock");
-        std::env::set_var("PERSISTING_SANDBOX_LANDLOCK_ABI", landlock_abi.to_string());
+        std::env::set_var(
+            "PERSISTING_SANDBOX_FILESYSTEM",
+            if plan.landlock { "landlock" } else { "chroot" },
+        );
+        if plan.landlock {
+            std::env::set_var("PERSISTING_SANDBOX_LANDLOCK_ABI", landlock_abi.to_string());
+        }
         std::env::set_var("PERSISTING_SANDBOX_USER_NAMESPACE", "1");
         std::env::set_var(
             "PERSISTING_SANDBOX_NETWORK",
@@ -401,6 +420,7 @@ pub(crate) fn restrict_krun_runner(
         read_only,
         read_write,
         network: NetworkIsolation::LoopbackOnly,
+        landlock: true,
         process_limit: None,
     };
     let abi = install_landlock(&plan).context("install libkrun Landlock policy")?;
