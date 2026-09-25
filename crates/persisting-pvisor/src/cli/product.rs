@@ -140,6 +140,36 @@ pub fn review(args: ReviewArgs) -> anyhow::Result<()> {
         );
     }
 
+    if let Some(observed) = bundle
+        .run_observation
+        .as_ref()
+        .and_then(|observation| observation.filesystem.as_ref())
+    {
+        println!("\nFile access observations");
+        for (path, operations) in observed.paths.iter().take(REVIEW_PATH_LIMIT) {
+            for (operation, counts) in operations {
+                println!(
+                    "  {} {}: hits={} succeeded={} denied={} failed={} effects={} uncertain_effects={}",
+                    path,
+                    operation,
+                    counts.hits,
+                    counts.succeeded,
+                    counts.denied,
+                    counts.failed,
+                    counts.effects,
+                    counts.uncertain_effects
+                );
+            }
+        }
+        if observed.paths.len() > REVIEW_PATH_LIMIT || observed.overflow_hits > 0 {
+            println!(
+                "  {} more paths; {} observations omitted by the path limit; use --json for details",
+                observed.paths.len().saturating_sub(REVIEW_PATH_LIMIT),
+                observed.overflow_hits
+            );
+        }
+    }
+
     println!("\nChanges");
     if let Some(filesystem) = &bundle.filesystem {
         println!(

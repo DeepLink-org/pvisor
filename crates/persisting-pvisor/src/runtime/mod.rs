@@ -6,6 +6,7 @@
 mod attempt;
 mod implant;
 mod overlay;
+pub(crate) mod plan;
 mod registry;
 mod supervisor;
 pub(crate) mod zcode;

@@ -259,6 +259,14 @@ pub struct PVisor {
     runtime: RuntimeSupervisor,
 }
 
+struct ResolvedRun {
+    spec: RunSpec,
+    executor: Arc<dyn RunExecutor>,
+    descriptor: ExecutorDescriptor,
+    vm_network_executor: bool,
+    plan: persisting_control::ir::run::RunPlan,
+}
+
 impl Default for PVisor {
     fn default() -> Self {
         Self::new()
@@ -283,8 +291,16 @@ impl PVisor {
         self.runtime.plan_for(spec)
     }
 
-    /// Start one Run: prepare controls → execute → teardown on completion.
-    pub async fn run(&self, mut spec: RunSpec) -> Result<RunHandle, PVisorError> {
+    /// Resolve the same immutable Run IR used by execution, without starting
+    /// an Attempt or mounting filesystems.
+    pub fn resolve_run_plan(
+        &self,
+        spec: RunSpec,
+    ) -> Result<persisting_control::ir::run::RunPlan, PVisorError> {
+        Ok(self.resolve_run(spec)?.plan)
+    }
+
+    fn resolve_run(&self, mut spec: RunSpec) -> Result<ResolvedRun, PVisorError> {
         validate_spec(&spec)?;
         let executor = self
             .executors
@@ -357,6 +373,17 @@ impl PVisor {
                 });
             }
         }
+        let run_plan = crate::runtime::plan::compile(
+            &spec,
+            &descriptor,
+            &capability_enforcement,
+            self.runtime.overlay_hint(),
+        )
+        .map_err(PVisorError::Prepare)?;
+        spec.metadata.insert(
+            "pvisor.ir.run_plan".into(),
+            serde_json::to_value(&run_plan).map_err(|error| PVisorError::Prepare(error.into()))?,
+        );
         // Persist the effective, Run-specific evidence in Attempt status and
         // Run Bundle descriptors, including enforcement supplied by drivers.
         descriptor.capability_enforcement = capability_enforcement.clone();
@@ -372,6 +399,24 @@ impl PVisor {
                 PVisorError::InvalidSpec(format!("serialize capability enforcement: {error}"))
             })?,
         );
+        Ok(ResolvedRun {
+            spec,
+            executor,
+            descriptor,
+            vm_network_executor,
+            plan: run_plan,
+        })
+    }
+
+    /// Start one Run: resolve IR → prepare controls → execute → teardown.
+    pub async fn run(&self, spec: RunSpec) -> Result<RunHandle, PVisorError> {
+        let ResolvedRun {
+            mut spec,
+            executor,
+            descriptor,
+            vm_network_executor,
+            plan: run_plan,
+        } = self.resolve_run(spec)?;
         let attempt_id = AttemptId::new(format!("attempt-{}", uuid::Uuid::new_v4()));
         let cancellation = CancellationToken::new();
         let mut session = self
@@ -457,6 +502,24 @@ impl PVisor {
                     "policy_mode": spec.runtime.policy_mode,
                     "capture_session": session.as_ref().map(|session| session.root_session()),
                     "agentctl_version": AGENTCTL_VERSION,
+                    "ir_request": persisting_control::trace::Fact::Requested {
+                        request: run_plan.request.clone(),
+                    },
+                    "ir_rewrites": run_plan.rewrites.iter().enumerate().scan(
+                        run_plan.request.clone(),
+                        |before, (pass, rule)| {
+                            let after = rule.apply(before).ok()?;
+                            let fact = persisting_control::trace::Fact::Rewritten {
+                                rule: rule.clone(), pass, before: before.clone(), after: after.clone(),
+                            };
+                            *before = after;
+                            Some(fact)
+                        }
+                    ).collect::<Vec<_>>(),
+                    "ir_dispatch": persisting_control::trace::Fact::Dispatched {
+                        backend: descriptor.name.clone(),
+                        expression: run_plan.expression.clone(),
+                    },
                 }),
             )
             .await
@@ -538,9 +601,23 @@ impl PVisor {
                 RunState::Cancelled => "run.cancelled",
                 _ => "run.failed",
             };
+            let run_observation = crate::runtime::plan::observe(
+                &run_plan,
+                &result,
+                teardown.as_ref().and_then(|teardown| {
+                    teardown.run_record().network_interception_metrics.as_ref()
+                }),
+                teardown
+                    .as_ref()
+                    .and_then(|teardown| teardown.run_record().filesystem_observation.as_ref()),
+            );
             if let Err(error) = context
                 .events()
-                .publish(kind, "runtime", terminal_payload(&result))
+                .publish(
+                    kind,
+                    "runtime",
+                    terminal_payload(&result, &run_plan, &run_observation),
+                )
                 .await
             {
                 let append_error_kind = context.events().classify_append_error(&error);
@@ -566,7 +643,11 @@ impl PVisor {
                 if append_error_kind == crate::EventAppendErrorKind::Rejected
                     && let Err(error) = context
                         .events()
-                        .publish("run.failed", "runtime", terminal_payload(&result))
+                        .publish(
+                            "run.failed",
+                            "runtime",
+                            terminal_payload(&result, &run_plan, &run_observation),
+                        )
                         .await
                 {
                     result.warnings.push(format!(
@@ -692,7 +773,11 @@ fn effective_capability_enforcement(
     evidence
 }
 
-fn terminal_payload(result: &RunResult) -> serde_json::Value {
+fn terminal_payload(
+    result: &RunResult,
+    plan: &persisting_control::ir::run::RunPlan,
+    observation: &persisting_control::ir::run::RunObservation,
+) -> serde_json::Value {
     json!({
         "state": result.state,
         "lease_epoch": result.lease_epoch,
@@ -700,6 +785,12 @@ fn terminal_payload(result: &RunResult) -> serde_json::Value {
         "failure": result.failure,
         "started_at_unix_ms": result.started_at_unix_ms,
         "finished_at_unix_ms": result.finished_at_unix_ms,
+        "ir_fact": persisting_control::trace::Fact::Completed {
+            expression: plan.expression.clone(),
+            outcome: observation.outcome.clone(),
+            origin: persisting_control::trace::Origin::Backend,
+        },
+        "rule_observations": observation.rules,
     })
 }
 

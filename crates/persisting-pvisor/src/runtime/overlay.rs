@@ -471,6 +471,14 @@ pub fn mount_overlay_record(
     record: &OverlayRecord,
     lower_dirs: &[PathBuf],
 ) -> Result<OverlayMount, OverlayError> {
+    mount_overlay_record_observed(record, lower_dirs, None)
+}
+
+pub(crate) fn mount_overlay_record_observed(
+    record: &OverlayRecord,
+    lower_dirs: &[PathBuf],
+    observation: Option<persisting_overlayfs::FsMetrics>,
+) -> Result<OverlayMount, OverlayError> {
     if lower_dirs.is_empty() {
         return Err(OverlayError::MissingTarget);
     }
@@ -521,6 +529,7 @@ pub fn mount_overlay_record(
     config.fsname = format!("pvisor-{}", record.id);
     config.excluded_paths = record.excluded_paths.clone();
     config.access_policy = record.access_policy.clone();
+    config.observation = observation;
     config.preimage_dir = Some(record.stage_dir.join("preimages"));
     let session = mount_embedded_overlay(config).map_err(embedded_mount_error)?;
     wait_merged_ready(&record.merged_dir, &session)?;

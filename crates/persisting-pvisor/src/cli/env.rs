@@ -228,6 +228,7 @@ fn create(args: CreateArgs) -> Result<i32> {
         overlaynet_listen: None,
         network_interception: None,
         network_interception_metrics: None,
+        filesystem_observation: None,
         gateway_listen: None,
         network: serde_json::json!({"mode": "host"}),
         network_policy: None,
@@ -237,6 +238,7 @@ fn create(args: CreateArgs) -> Result<i32> {
         overlay_lowers: vec![target],
         lineage: None,
         orchestration: Default::default(),
+        run_plan: None,
     }
     .write()?;
     println!("created environment '{}' at {}", args.name, stage.display());

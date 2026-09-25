@@ -252,6 +252,7 @@ mod tests {
             overlaynet_listen: None,
             network_interception: None,
             network_interception_metrics: None,
+            filesystem_observation: None,
             gateway_listen: None,
             network: serde_json::json!({"mode": "ambient"}),
             network_policy: None,
@@ -280,6 +281,7 @@ mod tests {
                 checkpoint_id: "parent-cp".into(),
             }),
             orchestration: Default::default(),
+            run_plan: None,
         }
     }
 

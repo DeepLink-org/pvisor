@@ -3,7 +3,7 @@
 use super::implant::{ImplantPlan, OverlayHint};
 use super::overlay::{
     OverlayMount, OverlayRecord, apply_overlay, discard_overlay, hint_from_record,
-    lower_stack_from_config, mount_overlay_record, prepare_overlay_record_mountless,
+    lower_stack_from_config, mount_overlay_record_observed, prepare_overlay_record_mountless,
     resolve_overlay_workspace, stage_overlay_record,
 };
 use super::registry::{EnvironmentProjection, RunControlServer, RunLease, RunLineage, RunRecord};
@@ -39,6 +39,7 @@ pub(crate) struct AttemptSession {
     gateway: Option<InProcessCapture>,
     vm_network: Option<Arc<std::sync::Mutex<Option<VmNetworkAttachment>>>>,
     network_metrics: Option<InterceptionMetrics>,
+    fs_metrics: Option<persisting_overlayfs::FsMetrics>,
     overlay: Option<OverlayMount>,
     sink: Option<Arc<dyn TrajectoryEventSink>>,
     started_at: Instant,
@@ -132,6 +133,9 @@ impl AttemptSession {
             }
         }
         self.overlay_record = record;
+        if let Some(metrics) = &self.fs_metrics {
+            self.run_record.filesystem_observation = Some(metrics.snapshot());
+        }
 
         if let Some(metrics) = &self.network_metrics {
             self.run_record.network_interception_metrics = Some(metrics.snapshot());
@@ -315,6 +319,7 @@ struct PreparedVmNetwork {
 
 struct PreparedOverlay {
     mount: Option<OverlayMount>,
+    fs_metrics: Option<persisting_overlayfs::FsMetrics>,
     hint: OverlayHint,
     record: Option<OverlayRecord>,
     lowers: Vec<std::path::PathBuf>,
@@ -378,6 +383,7 @@ pub(crate) fn prepare_attempt(
     )?;
     let PreparedOverlay {
         mount: overlay_mount,
+        fs_metrics,
         hint: overlay_hint,
         record: overlay_record,
         lowers: overlay_lowers,
@@ -430,6 +436,7 @@ pub(crate) fn prepare_attempt(
             persisting_overlaynet::InterceptionProfile::explicit_proxy()
         }),
         network_interception_metrics: None,
+        filesystem_observation: None,
         gateway_listen: opts.gateway_enabled.then(|| gateway.listen.clone()),
         network: serde_json::to_value(&spec.capabilities.network)?,
         network_policy: Some(serde_json::to_value(&config.network)?),
@@ -439,6 +446,7 @@ pub(crate) fn prepare_attempt(
         overlay_lowers,
         lineage: lineage_from_spec(spec),
         orchestration: orchestration_from_spec(spec),
+        run_plan: run_plan_from_spec(spec)?,
     };
     run_record.write()?;
     let control = RunControlServer::start(&run_record)?;
@@ -494,6 +502,7 @@ pub(crate) fn prepare_attempt(
         gateway: Some(gateway),
         vm_network,
         network_metrics: Some(network_metrics),
+        fs_metrics,
         overlay: overlay_mount,
         sink: Some(sink),
         started_at: Instant::now(),
@@ -523,6 +532,7 @@ pub(crate) fn prepare_overlay_attempt(
     )?;
     let PreparedOverlay {
         mount: overlay_mount,
+        fs_metrics,
         hint: overlay_hint,
         record: overlay_record,
         lowers: overlay_lowers,
@@ -567,6 +577,7 @@ pub(crate) fn prepare_overlay_attempt(
             .as_ref()
             .map(|_| persisting_overlaynet::InterceptionProfile::vm_smoltcp()),
         network_interception_metrics: None,
+        filesystem_observation: None,
         gateway_listen: None,
         network: serde_json::to_value(&spec.capabilities.network)?,
         network_policy,
@@ -576,6 +587,7 @@ pub(crate) fn prepare_overlay_attempt(
         overlay_lowers,
         lineage: lineage_from_spec(spec),
         orchestration: orchestration_from_spec(spec),
+        run_plan: run_plan_from_spec(spec)?,
     };
     run_record.write()?;
     let control = RunControlServer::start(&run_record)?;
@@ -653,6 +665,7 @@ pub(crate) fn prepare_overlay_attempt(
         gateway: None,
         vm_network,
         network_metrics,
+        fs_metrics,
         overlay: overlay_mount,
         sink: None,
         started_at: Instant::now(),
@@ -707,6 +720,7 @@ pub(crate) fn prepare_storage_attempt(
             .as_ref()
             .map(|_| persisting_overlaynet::InterceptionProfile::vm_smoltcp()),
         network_interception_metrics: None,
+        filesystem_observation: None,
         gateway_listen: None,
         network: serde_json::to_value(&spec.capabilities.network)?,
         network_policy,
@@ -716,6 +730,7 @@ pub(crate) fn prepare_storage_attempt(
         overlay_lowers: Vec::new(),
         lineage: lineage_from_spec(spec),
         orchestration: orchestration_from_spec(spec),
+        run_plan: run_plan_from_spec(spec)?,
     };
     run_record.write()?;
     let control = RunControlServer::start(&run_record)?;
@@ -751,6 +766,7 @@ pub(crate) fn prepare_storage_attempt(
         gateway: None,
         vm_network,
         network_metrics,
+        fs_metrics: None,
         overlay: None,
         sink: None,
         started_at: Instant::now(),
@@ -897,6 +913,21 @@ fn orchestration_from_spec(
         .collect()
 }
 
+fn run_plan_from_spec(
+    spec: &RunSpec,
+) -> anyhow::Result<Option<persisting_control::ir::run::RunPlan>> {
+    let Some(value) = spec.metadata.get("pvisor.ir.run_plan") else {
+        return Ok(None);
+    };
+    let plan: persisting_control::ir::run::RunPlan = serde_json::from_value(value.clone())?;
+    plan.validate()?;
+    anyhow::ensure!(
+        plan.expression.operation.file() == spec.run_id.as_str(),
+        "Run plan identity does not match the prepared Run"
+    );
+    Ok(Some(plan))
+}
+
 fn environment_from_spec(spec: &RunSpec) -> EnvironmentProjection {
     if let Some(value) = spec.metadata.get("pvisor.environment") {
         let inherits_host = value
@@ -1009,6 +1040,7 @@ fn prepare_overlay(
     if !overlay_cfg.enabled && overlay_cfg.target.is_none() {
         return Ok(PreparedOverlay {
             mount: None,
+            fs_metrics: None,
             hint: OverlayHint::default(),
             record: None,
             lowers: Vec::new(),
@@ -1024,12 +1056,17 @@ fn prepare_overlay(
                 );
             }
             let lowers = lower_stack_from_config(overlay_cfg, storage, &record.target);
-            let (mount, record) = if mountless {
-                (None, prepare_overlay_record_mountless(&record, &lowers)?)
+            let (mount, record, fs_metrics) = if mountless {
+                (
+                    None,
+                    prepare_overlay_record_mountless(&record, &lowers)?,
+                    None,
+                )
             } else {
-                let mount = mount_overlay_record(&record, &lowers)?;
+                let metrics = persisting_overlayfs::FsMetrics::default();
+                let mount = mount_overlay_record_observed(&record, &lowers, Some(metrics.clone()))?;
                 let record = mount.record().clone();
-                (Some(mount), record)
+                (Some(mount), record, Some(metrics))
             };
             let mut hint = hint_from_record(&record, lowers.clone());
             if mountless {
@@ -1037,6 +1074,7 @@ fn prepare_overlay(
             }
             Ok(PreparedOverlay {
                 mount,
+                fs_metrics,
                 hint,
                 record: Some(record),
                 lowers,
@@ -1044,6 +1082,7 @@ fn prepare_overlay(
         }
         None => Ok(PreparedOverlay {
             mount: None,
+            fs_metrics: None,
             hint: OverlayHint::default(),
             record: None,
             lowers: Vec::new(),

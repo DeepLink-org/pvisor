@@ -1,7 +1,6 @@
 //! Standalone `pvisor` command-line frontend.
 
 mod env;
-mod ir;
 mod product;
 mod replay;
 mod run;
@@ -43,8 +42,6 @@ struct Cli {
 
 #[derive(Debug, Subcommand)]
 enum Command {
-    /// Validate and format the readable core IR.
-    Ir(ir::IrArgs),
     /// Inspect and validate a closed v3 trace journal.
     Trace(trace::TraceArgs),
     #[command(
@@ -75,7 +72,6 @@ enum Command {
 pub fn main() -> anyhow::Result<()> {
     let args = normalize_default_run(std::env::args_os().collect());
     match Cli::parse_from(args).command {
-        Command::Ir(args) => ir::run(args)?,
         Command::Trace(args) => trace::run(args)?,
         Command::Run(args) => {
             let code = tokio::runtime::Runtime::new()?.block_on(run::run(*args))?;

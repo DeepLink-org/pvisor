@@ -5,6 +5,8 @@
 //! and manual-mount CLI wrapper around this library.
 
 mod fs;
+mod observation;
+pub use observation::FsMetrics;
 #[cfg(feature = "jujutsu")]
 mod jj_backend;
 #[cfg(not(feature = "jujutsu"))]
@@ -52,6 +54,8 @@ pub struct OverlayMountConfig {
     /// cannot be recreated from inside the mount.
     pub excluded_paths: Vec<PathBuf>,
     pub access_policy: persisting_overlay_core::FileAccessPolicy,
+    /// Optional Run-scoped observation sink; a stand-alone mount leaves it unset.
+    pub observation: Option<FsMetrics>,
 }
 
 impl OverlayMountConfig {
@@ -78,6 +82,7 @@ impl OverlayMountConfig {
             preimage_dir: None,
             excluded_paths: Vec::new(),
             access_policy: Default::default(),
+            observation: None,
         }
     }
 
@@ -363,7 +368,8 @@ fn prepare(
             filesystem
         }
     }
-    .with_access_policy(&config.access_policy);
+    .with_access_policy(&config.access_policy)
+    .with_observation(config.observation.clone());
     // Access time is not part of a pVisor changeset. Disabling it also avoids
     // macFUSE issuing read-induced SETATTR requests that would otherwise force
     // lower files into the writable upper.

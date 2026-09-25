@@ -199,6 +199,9 @@ impl Default for RuntimeSupervisor {
 }
 
 impl RuntimeSupervisor {
+    pub(crate) fn overlay_hint(&self) -> &OverlayHint {
+        &self.overlay
+    }
     fn network_mode(&self) -> OverlayNetMode {
         self.network
             .as_ref()

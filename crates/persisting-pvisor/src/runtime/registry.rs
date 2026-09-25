@@ -79,6 +79,8 @@ pub struct RunRecord {
     pub network_interception: Option<persisting_overlaynet::InterceptionProfile>,
     #[serde(default)]
     pub network_interception_metrics: Option<persisting_overlaynet::InterceptionSnapshot>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub filesystem_observation: Option<persisting_control::ir::run::FilesystemObservation>,
     pub gateway_listen: Option<String>,
     pub network: serde_json::Value,
     #[serde(default, skip_serializing_if = "Option::is_none")]
@@ -94,6 +96,8 @@ pub struct RunRecord {
     pub lineage: Option<RunLineage>,
     #[serde(default, skip_serializing_if = "std::collections::BTreeMap::is_empty")]
     pub orchestration: std::collections::BTreeMap<String, serde_json::Value>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub run_plan: Option<persisting_control::ir::run::RunPlan>,
 }
 
 impl RunRecord {
@@ -638,6 +642,7 @@ mod tests {
             overlaynet_listen: None,
             network_interception: None,
             network_interception_metrics: None,
+            filesystem_observation: None,
             gateway_listen: None,
             network: serde_json::json!({"mode": "ambient"}),
             network_policy: None,
@@ -663,6 +668,7 @@ mod tests {
             overlay_lowers: vec![storage.join("target")],
             lineage: None,
             orchestration: Default::default(),
+            run_plan: None,
         }
     }
 

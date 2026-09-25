@@ -2943,6 +2943,7 @@ dependencies = [
  "jj-lib",
  "libc",
  "log",
+ "persisting-control",
  "persisting-overlay-core",
  "pollster",
  "tempfile",

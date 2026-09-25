@@ -1,5 +1,6 @@
 //! One immutable operation request with an ordered chain of context wrappers.
 //! Wrappers are stored inner-to-outer, exactly as printed by the pipeline syntax.
+pub mod run;
 mod text;
 
 use anyhow::{Result, bail, ensure};
@@ -7,7 +8,7 @@ use serde::{Deserialize, Serialize};
 use serde_json::Value as Json;
 use std::collections::BTreeMap;
 
-pub const VERSION: u16 = 3;
+pub const VERSION: u16 = 4;
 pub const MAX_TEXT_BYTES: usize = 1024 * 1024;
 pub const MAX_CONTEXTS: usize = 32;
 
@@ -16,6 +17,10 @@ pub const MAX_CONTEXTS: usize = 32;
 pub enum Value {
     Bytes(Vec<u8>),
     U64(u64),
+    Run {
+        state: crate::runtime::RunState,
+        exit_code: Option<i32>,
+    },
 }
 
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
@@ -63,12 +68,15 @@ pub enum OpCode {
     Read,
     #[serde(rename = "fs.write")]
     Write,
+    #[serde(rename = "run.execute")]
+    Run,
 }
 impl OpCode {
     pub fn name(self) -> &'static str {
         match self {
             Self::Read => "fs.read",
             Self::Write => "fs.write",
+            Self::Run => "run.execute",
         }
     }
 }
@@ -89,24 +97,32 @@ pub enum Operation {
         offset: u64,
         data: Vec<u8>,
     },
+    #[serde(rename = "run.execute")]
+    Run { run_id: String },
 }
 impl Operation {
     pub fn code(&self) -> OpCode {
         match self {
             Self::Read { .. } => OpCode::Read,
             Self::Write { .. } => OpCode::Write,
+            Self::Run { .. } => OpCode::Run,
         }
     }
     pub fn file(&self) -> &str {
         match self {
             Self::Read { file, .. } | Self::Write { file, .. } => file,
+            Self::Run { run_id } => run_id,
         }
     }
     pub fn validate(&self) -> Result<()> {
-        ensure!(!self.file().is_empty(), "empty file reference");
+        ensure!(!self.file().is_empty(), "empty resource reference");
+        if matches!(self, Self::Run { .. }) {
+            return Ok(());
+        }
         let (offset, length) = match self {
             Self::Read { offset, length, .. } => (*offset, *length),
             Self::Write { offset, data, .. } => (*offset, data.len() as u64),
+            Self::Run { .. } => unreachable!(),
         };
         ensure!(offset.checked_add(length).is_some(), "file range overflow");
         Ok(())
@@ -120,6 +136,9 @@ impl Operation {
                 ),
                 (Self::Write { data, .. }, Value::U64(count)) => {
                     ensure!(*count <= data.len() as u64, "write exceeds supplied bytes")
+                }
+                (Self::Run { .. }, Value::Run { state, .. }) => {
+                    ensure!(state.is_terminal(), "run result requires a terminal state")
                 }
                 _ => bail!("operation result type mismatch"),
             }
@@ -183,7 +202,8 @@ impl Expression {
     }
     pub fn validate(&self) -> Result<()> {
         ensure!(
-            self.version == VERSION,
+            self.version == VERSION
+                || (self.version == 3 && !matches!(&self.operation, Operation::Run { .. })),
             "unsupported IR version {}",
             self.version
         );

@@ -19,6 +19,7 @@ path = "src/main.rs"
 anyhow.workspace = true
 libc.workspace = true
 persisting-overlay-core.workspace = true
+persisting-control.workspace = true
 log.workspace = true
 env_logger.workspace = true
 clap = { workspace = true, features = ["derive"] }

@@ -1,5 +1,6 @@
 use globset::{GlobBuilder, GlobSet, GlobSetBuilder};
 use serde::{Deserialize, Serialize};
+use std::collections::BTreeSet;
 use std::{io, path::Path};
 
 /// Validated mount-relative rules and their compiled matchers. Deny wins over warn.
@@ -108,6 +109,27 @@ impl FileAccessPolicy {
         } else {
             FileAccessDecision::Allow
         }
+    }
+
+    /// Stable IDs of the rules that actually matched this mount-relative path.
+    /// Deny takes precedence over warn, just as it does in `authorize`.
+    pub fn matched_rule_ids(&self, path: &Path) -> Vec<String> {
+        fn matches(set: &GlobSet, path: &Path) -> BTreeSet<usize> {
+            path.ancestors()
+                .flat_map(|part| set.matches(part))
+                .collect()
+        }
+        let deny = matches(&self.deny, path);
+        if !deny.is_empty() {
+            return deny
+                .into_iter()
+                .map(|index| format!("fs.deny.{index}"))
+                .collect();
+        }
+        matches(&self.warn, path)
+            .into_iter()
+            .map(|index| format!("fs.warn.{index}"))
+            .collect()
     }
 
     /// Enforce the decision and emit path-only diagnostics for warnings/denials.
