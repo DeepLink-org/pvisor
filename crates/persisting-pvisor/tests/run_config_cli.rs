@@ -150,14 +150,14 @@ fn toml_and_cli_share_one_run_configuration() {
     assert!(bundle.safety.safe_profile_requested);
 
     let review = Command::new(env!("CARGO_BIN_EXE_pvisor"))
-        .args(["review", "--json"])
+        .args(["status", "--review", "--json"])
         .arg(&workspace)
         .env("PERSISTING_RUN_HOME", &run_home)
         .output()
         .expect("review generated Run Bundle");
     assert!(
         review.status.success(),
-        "pvisor review failed: {}",
+        "pvisor status --review failed: {}",
         String::from_utf8_lossy(&review.stderr)
     );
     let reviewed: serde_json::Value = serde_json::from_slice(&review.stdout).unwrap();
@@ -206,7 +206,7 @@ fn one_workspace_accepts_multiple_independent_runs() {
     );
 
     let review = Command::new(env!("CARGO_BIN_EXE_pvisor"))
-        .args(["review", "last"])
+        .args(["status", "--review", "last"])
         .current_dir(&workspace)
         .env("PERSISTING_RUN_HOME", &run_home)
         .output()

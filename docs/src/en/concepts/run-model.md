@@ -1,8 +1,14 @@
-# Run, Attempt, and Effect
+# Job, Run, Attempt, and Effect
 
-## Run: one managed invocation
+A **Job** is the CLI's durable unit of work. `pvisor run` starts one;
+`status`, `kill`, `inspect`, `fork`, `apply`, and `drop` act on it without an
+extra command layer. Each Job currently corresponds to one internal Run record.
+The existing `run-*` ID, `run.json`, and Run Bundle names remain on disk for
+compatibility.
 
-A Run identifies the command, configuration, and execution result. Its ID is independent of the operating-system PID. The local record lets `status`, `review`, `apply`, and `drop` refer to the same work after the process exits.
+## Run: the internal record of a Job
+
+A Run identifies the command, configuration, and execution result. Its ID is independent of the operating-system PID. The local record lets `status`, `apply`, and `drop` refer to the same work after the process exits. Use `status --review` for the Run Bundle and staged changes.
 
 ## Attempt: one execution
 
@@ -24,6 +30,6 @@ Network requests and external service mutations are also consequences, but files
 
 ## Checkpoint: a filesystem snapshot
 
-The CLI snapshots the upper layer of a stopped staged Run. The embedded API also supports cooperative AgentCtl quiescence. A checkpoint preserves staged files and lineage, not process memory, external services, or an immutable copy of every lower layer.
+The `fork` command snapshots the upper layer of a stopped staged Run. The embedded API also supports cooperative AgentCtl quiescence. A checkpoint preserves staged files and lineage, not process memory, external services, or an immutable copy of every lower layer.
 
 Read [review and apply](../guides/review-apply.md) for the operational workflow and [capabilities and evidence](capabilities-and-evidence.md) for execution guarantees.

@@ -1,10 +1,12 @@
 # pVisor command model
 
-The `pvisor` command is the public entry point for one governed Agent Run. Its
-interface is organized around four responsibilities: start a Run, inspect its
-record, decide what happens to staged changes, and manage reusable environments.
-The command line and `RunConfig` describe the same model; a configuration file
-is an explicit input, never an implicit project policy.
+The Job is the CLI's primary object: a managed command, its execution evidence,
+and any staged changes. `pvisor run` starts a Job; `status`, `kill`, `inspect`,
+`fork`, `apply`, and `drop` act on that Job directly. The commands stay flat.
+`env` manages reusable environments for Jobs, and `replay` creates a Job from
+an existing trajectory. Internally, a Job is stored as a Run record; `RunConfig`
+remains the configuration type. A configuration file is an explicit input,
+never an implicit project policy.
 
 ## Start with `run`
 
@@ -16,7 +18,7 @@ pvisor run -- codex
 ```
 
 Use `--stage` when filesystem changes must remain available for review. Without
-it, pVisor drops the temporary copy-on-write stage at Run exit. The selected host, container, or VM provider records its effective
+it, pVisor drops the temporary copy-on-write stage when the Job ends. The selected host, container, or VM provider records its effective
 capabilities and limitations in the Run Bundle.
 
 Common controls are grouped by purpose:
@@ -36,11 +38,11 @@ reported separately.
 
 ## Inspect and decide
 
-A completed Run remains a record until its staged effects are explicitly
+A completed Job remains a record until its staged effects are explicitly
 accepted or discarded:
 
 ```bash
-pvisor review last
+pvisor status --review last
 pvisor inspect last -- git status --short
 pvisor apply last --path src
 pvisor apply last --include 'tests/**' --exclude 'tests/generated/**'
@@ -48,10 +50,10 @@ pvisor apply last --all
 # or: pvisor drop last
 ```
 
-`review` explains the Run Bundle and staged changes. `inspect` executes a
-read-only command against the Run view. `apply` commits a selected path set and
+`status --review` explains the Run Bundle and staged changes. `inspect` executes a
+read-only command against the Job view. `apply` commits a selected path set and
 keeps the remainder staged; `drop` discards the stage. Neither operation
-rewrites a live Run. A reset creates a new stage generation so stale metadata
+rewrites a live Job. A reset creates a new stage generation so stale metadata
 cannot replace a newer decision.
 
 ## Checkpoints and forks
@@ -60,12 +62,12 @@ Checkpoints are stopped-consistent filesystem and AgentCtl safe points. They do
 not claim to capture process memory:
 
 ```bash
-pvisor checkpoint last --name before-experiment
-pvisor fork last --checkpoint before-experiment -- codex
+pvisor fork last -- codex
 ```
 
-Use checkpoints to preserve a known workspace state before a new attempt. The CLI requires a stopped Run. Embedded callers can use the cooperative
-AgentCtl protocol to quiesce participating sessions before checkpointing.
+`fork` snapshots the stopped Job before starting a new attempt. Embedded callers
+can use the cooperative AgentCtl protocol to quiesce participating sessions
+before checkpointing.
 
 ## Reusable environments
 
@@ -93,7 +95,7 @@ and the command after `--` replaces `run.command`. `--container-image` and
 `--rootfs` may infer the matching executor; an explicit `--executor` remains
 clearer in automation.
 
-Keep the public workflow small: start a Run, inspect its evidence, then make an
+Keep the public workflow small: start a Job, inspect its evidence, then make an
 explicit decision about staged effects. Detailed provider behavior belongs to
 [execution environments](../guides/execution.md), while the complete option
 surface belongs to the [CLI reference](../reference/cli.md).

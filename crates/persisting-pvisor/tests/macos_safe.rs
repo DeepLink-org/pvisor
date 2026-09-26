@@ -126,7 +126,7 @@ fn safe_profile_stages_reviews_and_applies_on_macos() {
 
     let review = Command::new(env!("CARGO_BIN_EXE_pvisor"))
         .env("PERSISTING_RUN_HOME", &run_home)
-        .args(["review", "--json"])
+        .args(["status", "--review", "--json"])
         .arg(&run)
         .output()
         .expect("review macOS Run");

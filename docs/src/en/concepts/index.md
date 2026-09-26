@@ -1,6 +1,6 @@
 # Concepts and boundaries
 
-Use these pages to interpret a Run, not to configure it. Start with the terms that appear in `pvisor review`.
+Use these pages to interpret a Run, not to configure it. Start with the terms that appear in `pvisor status --review`.
 
 - [Run, Attempt, and Effect](run-model.md): execution identity, outcome, and staged changes.
 - [Capabilities and evidence](capabilities-and-evidence.md): requested policy versus installed controls.

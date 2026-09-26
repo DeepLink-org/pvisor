@@ -4,11 +4,11 @@
 
 ```bash
 pvisor run --stage ../stage-001 -- codex
-pvisor review last
+pvisor status --review last
 pvisor inspect last -- git status --short
 ```
 
-普通 host Run 省略 `--stage` 时直接写入 lower；`--safe` 会使用临时写时复制视图，并在 Run 结束后丢弃它。`review` 展示记录的证据和保留的改动；`inspect` 在只读视图中执行检查命令。`--safe` 会独立暂存 Codex 的 HOME 状态。
+普通 host Run 省略 `--stage` 时直接写入 lower；`--safe` 会使用临时写时复制视图，并在 Run 结束后丢弃它。`status --review` 展示记录的证据和保留的改动；`inspect` 在只读视图中执行检查命令。`--safe` 会独立暂存 Codex 的 HOME 状态。
 
 ## 分批应用
 
@@ -29,11 +29,11 @@ pvisor apply last --all
 在全部应用或丢弃暂存内容之前：
 
 ```bash
-pvisor checkpoint last --name before-experiment
-pvisor fork last --checkpoint before-experiment -- codex
+pvisor fork last -- codex
 ```
 
-CLI 检查点要求 Run 已停止。它保存文件系统上层和派生关系，不保存进程内存，也不是所有底层宿主文件的不可变快照。
+`fork` 要求源 Run 已停止，并在启动子 Run 前创建逻辑文件系统快照。
+快照保存文件系统上层和派生关系，不保存进程内存，也不是所有底层宿主文件的不可变副本。
 
 ```bash
 pvisor drop last

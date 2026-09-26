@@ -1,12 +1,15 @@
 # `pvisor` 命令参考
 
-`pvisor` 是单个 Run 和持久环境的产品命令。
+Job 是 pVisor 面向用户的核心对象：一次受管理的命令、执行证据以及暂存文件改动。
+`pvisor run` 创建 Job；其余扁平命令直接操作 Job，不新增 `job` 子命令。
+`env` 提供可复用环境，`replay` 从轨迹创建 Job。现有 Job ID 和磁盘记录仍保留
+`run-*`、`Run Bundle` 等名称。
 Host、OCI VM 和透明 host-rootfs VM 的完整命令示例见
 [使用 pVisor 运行工作负载](../guides/execution.md)。
 
 ## 按任务查找命令
 
-- **运行命令：** 从[`pvisor run`](../start/first-run.md)开始，再用 `review`、
+- **运行命令：** 从[`pvisor run`](../start/first-run.md)开始，再用 `status --review`、
   `inspect` 和 `apply` 决定哪些修改进入项目。
 - **理解执行边界：** 使用 `status` 和 `inspect`，然后阅读[执行指南](../guides/execution.md)。
 - **保留工作区：** 用 `env create` 和 `env exec` 管理可复用的 staged environment，
@@ -17,7 +20,7 @@ Host、OCI VM 和透明 host-rootfs VM 的完整命令示例见
 
 ```bash
 pvisor run --stage ./runs/task-001 -- codex
-pvisor review last
+pvisor status --review last
 pvisor apply last --path src
 ```
 
@@ -27,19 +30,21 @@ pvisor apply last --path src
 pvisor run --tui -- bash
 ```
 
-默认键盘输入交给 shell 或 Agent，终端始终保持完整宽度。pVisor 自身的启动信息显示在
+默认键盘输入交给 shell 或 Agent，终端始终保持完整宽度。底栏显示 Job 状态、运行时间、
+文件与网络计数、日志数量和 `Ctrl-]` 引导提示；按下引导键后，同一行切换为完整快捷键。
+pVisor 自身的启动信息显示在
 Log 面板，不混入 Agent 终端。按 `Ctrl-]` 进入命令模式，再按 `r`、`f`、`n`、
-`u`、`l` 打开概览、文件、网络、Run 或 Log 面板，按 `?` 查看按键帮助。在面板中用
+`u`、`l` 打开概览、文件、网络、Job 或 Log 面板，按 `?` 查看按键帮助。在面板中用
 Tab 或 `1`–`5` 切换视图，用 `j`/`k` 滚动，按 Esc 或 `Ctrl-]` 返回 Agent。
 连续按两次 `Ctrl-]` 可将该按键原样发送给 Agent。
 
-下面的参考按 Run 生命周期组织；每组参数都配有验证下一步。
+下面的参考按 Job 生命周期组织；每组参数都配有验证下一步。
 
 ### 文件系统参数
 
-普通 host Run 默认将工作区写入直接透传到 lower。`--safe` 会为工作区创建临时
-changeset，Run 结束后自动丢弃；指定 `--stage PATH` 则保留 changeset，
-由 `review`、`apply` 或 `drop` 手动处理。
+普通 host Job 默认将工作区写入直接透传到 lower。`--safe` 会为工作区创建临时
+changeset，Job 结束后自动丢弃；指定 `--stage PATH` 则保留 changeset，
+由 `status --review`、`apply` 或 `drop` 手动处理。
 
 ```bash
 pvisor run --stage ./run-stage -- codex
@@ -54,29 +59,28 @@ source。`write` 直接修改宿主机；`read` 与 `stage` 当前都成为写�
 
 ```text
 pvisor
-├── run                 execute one Agent Run
-├── replay              replay and continue an Agent-native trajectory
-├── env                 manage durable reusable environments
-├── status              aggregate Run, filesystem, and network state
-├── inspect             open a read-only Run view
-├── review              review the durable Run Bundle
-├── checkpoint          snapshot a stopped transactional upper
-├── fork                start a child Run from a logical checkpoint
-├── apply               commit a stopped Run's filesystem stage
-└── drop                discard a stopped Run's filesystem stage
+├── run                 创建 Job
+├── apply               提交已停止 Job 的暂存改动
+├── drop                丢弃已停止 Job 的暂存改动
+├── status              查看 Job 状态和审查证据
+├── kill                请求终止正在运行的 Job
+├── fork                从已停止的 Job 创建子 Job
+├── inspect             只读查看 Job 的文件系统
+├── env                 管理 Job 使用的可复用环境
+└── replay              从 Agent 轨迹创建 Job
 ```
 
 ## 安全的第一次运行
 
 ```bash
 pvisor run --safe --stage ../stage-001 -- codex
-pvisor review last
+pvisor status --review last
 ```
 
 默认 host 执行使用 best-effort rootless 隔离，可写路径直接透传到 lower。
 `--safe` 默认暂存工作区，并给 HOME（包括在 shell 内启动的 Codex）提供独立的写时复制视图。
-没有 `--stage` 时使用临时 changeset 并在 Run 结束后自动丢弃。
-显式 `--stage <PATH>` 会保留工作区 Run 和可写 stage，
+没有 `--stage` 时使用临时 changeset 并在 Job 结束后自动丢弃。
+显式 `--stage <PATH>` 会保留 Job 和可写 stage，
 改动可供人工审查，并以 `0600` 写入 `run-bundle.json`。
 当前实现会连同临时 stage 一起删除其中的 Run Bundle；需要保留审计记录时应显式指定 stage。
 
@@ -100,17 +104,20 @@ executor保留同样的外层 Run、OverlayFS 和 AgentCtl 状态观察。
 完成后：
 
 ```bash
-pvisor review last
-pvisor checkpoint last --name before-experiment
-pvisor fork last --checkpoint before-experiment -- codex
+pvisor status --review last
+pvisor fork last -- codex
 pvisor apply last --all # or: pvisor drop last
 ```
 
-CLI checkpoint 是 stopped-consistent。嵌入式 host 可以调用
+`fork` 会先为已停止 Job 的暂存文件系统创建快照，再启动子 Job。
+传入 `--checkpoint ID` 可复用已有逻辑检查点。嵌入式 host 可以调用
 `RunHandle::checkpoint`：pVisor 发布 AgentCtl quiesce 指令，要求每个被冻进
 checkpoint 的 Session 报告匹配的 quiesced 状态，快照 raw upper，再发布
 `continue`。逻辑 checkpoint 保留文件系统和协作客户端 safe-point 边界，不
 保留进程内存。
+
+要结束正在运行的 Job，使用 `pvisor kill JOB_ID`。它向 Job 的监督进程请求正常
+终止；用 `pvisor status JOB_ID` 查看最终状态。已停止的 Job 仍可审查并选择应用或丢弃。
 
 持久环境拥有稳定名称和可复用 OverlayFS upper：
 

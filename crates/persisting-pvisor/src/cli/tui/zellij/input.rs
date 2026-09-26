@@ -36,7 +36,7 @@ impl Panel {
             Self::Overview => "Overview",
             Self::Files => "Files",
             Self::Network => "Network",
-            Self::Run => "Run",
+            Self::Run => "Job",
             Self::Log => "Log",
             Self::Keys => "Keys",
         }
@@ -94,7 +94,7 @@ const BINDINGS: &[Binding] = &[
     bind!(Command, b'r', Action::Open(Panel::Overview), "r Review"),
     bind!(Command, b'f', Action::Open(Panel::Files), "f Files"),
     bind!(Command, b'n', Action::Open(Panel::Network), "n Network"),
-    bind!(Command, b'u', Action::Open(Panel::Run), "u Run"),
+    bind!(Command, b'u', Action::Open(Panel::Run), "u Job"),
     bind!(Command, b'l', Action::Open(Panel::Log), "l Log"),
     bind!(Command, b'?', Action::Open(Panel::Keys), "? Keys"),
     bind!(Command, 0x1b, Action::SwitchTo(Mode::Agent), "Esc Cancel"),
@@ -181,6 +181,39 @@ impl UiState {
             .map(|binding| binding.hint)
             .collect::<Vec<_>>()
             .join("  ")
+    }
+
+    /// Shortcut tiles are selected from the same bindings that handle input.
+    pub fn ribbon_hints(&self) -> Vec<&'static str> {
+        match self.mode {
+            Mode::Agent => BINDINGS
+                .iter()
+                .filter(|binding| binding.mode == Mode::Agent && !binding.hint.is_empty())
+                .map(|binding| binding.hint)
+                .collect(),
+            Mode::Command | Mode::Panel => {
+                let mut hints: Vec<_> = BINDINGS
+                    .iter()
+                    .filter(|binding| {
+                        !binding.hint.is_empty()
+                            && binding.mode == self.mode
+                            && matches!(binding.action, Action::SwitchTo(Mode::Agent))
+                    })
+                    .map(|binding| binding.hint)
+                    .collect();
+                hints.extend(
+                    BINDINGS
+                        .iter()
+                        .filter(|binding| {
+                            !binding.hint.is_empty()
+                                && binding.mode == self.mode
+                                && !matches!(binding.action, Action::SwitchTo(Mode::Agent))
+                        })
+                        .map(|binding| binding.hint),
+                );
+                hints
+            }
+        }
     }
 
     /// Returns a byte for the Agent PTY, or consumes it as a UI binding.

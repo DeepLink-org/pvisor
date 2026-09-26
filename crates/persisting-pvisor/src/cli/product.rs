@@ -1,7 +1,7 @@
 //! Product-facing review and logical checkpoint commands.
 
 use crate::runtime::{RunRecord, resolve_run};
-use crate::{ChangeEntryType, ChangeKind, RunBundle, create_logical_checkpoint};
+use crate::{ChangeEntryType, ChangeKind, RunBundle};
 use anyhow::Context;
 use clap::Args;
 use std::collections::BTreeMap;
@@ -16,7 +16,7 @@ const REVIEW_PATH_LIMIT: usize = 200;
 
 #[derive(Debug, Clone, Args)]
 pub struct ReviewArgs {
-    /// Run id, project workspace, run.json, or a path inside the Run filesystem.
+    /// Job id, project workspace, run.json, or a path inside the Job filesystem.
     pub selector: Option<PathBuf>,
     #[arg(long, short = 'o', default_value = DEFAULT_STORAGE)]
     pub output_dir: PathBuf,
@@ -34,24 +34,11 @@ pub struct ReviewArgs {
     pub max_diff_file_bytes: u64,
 }
 
-#[derive(Debug, Clone, Args)]
-pub struct CheckpointArgs {
-    /// Stopped Run id, project workspace, or run.json.
-    pub selector: Option<PathBuf>,
-    #[arg(long, short = 'o', default_value = DEFAULT_STORAGE)]
-    pub output_dir: PathBuf,
-    /// Stable checkpoint name; generated when omitted.
-    #[arg(long, value_name = "NAME")]
-    pub name: Option<String>,
-    #[arg(long)]
-    pub json: bool,
-}
-
 pub fn review(args: ReviewArgs) -> anyhow::Result<()> {
     let record = selected(args.selector.as_deref(), &args.output_dir)?;
     let bundle = RunBundle::read(&record.stage_dir()).with_context(|| {
         format!(
-            "Run {} has no readable Run Bundle; re-run it with this pVisor version",
+            "Job {} has no readable Run Bundle; re-run it with this pVisor version",
             record.run_id
         )
     })?;
@@ -266,7 +253,7 @@ pub fn review(args: ReviewArgs) -> anyhow::Result<()> {
     if bundle.filesystem.is_some() {
         println!("Next:");
         println!("  pvisor inspect {}", record.stage_dir().display());
-        println!("  pvisor checkpoint {}", record.stage_dir().display());
+        println!("  pvisor fork {} -- <agent>", record.stage_dir().display());
         println!("  pvisor apply {}", record.stage_dir().display());
         println!("  pvisor drop {}", record.stage_dir().display());
     }
@@ -401,26 +388,6 @@ fn is_binary_file(path: &Path) -> bool {
     let mut prefix = [0_u8; 8192];
     let read = file.read(&mut prefix).unwrap_or(0);
     prefix[..read].contains(&0)
-}
-
-pub fn checkpoint(args: CheckpointArgs) -> anyhow::Result<()> {
-    let record = selected(args.selector.as_deref(), &args.output_dir)?;
-    let checkpoint = create_logical_checkpoint(&record, args.name.as_deref())?;
-    if args.json {
-        println!("{}", serde_json::to_string_pretty(&checkpoint)?);
-    } else {
-        println!(
-            "checkpointed {} @ {} ({:?})",
-            checkpoint.run_id, checkpoint.checkpoint_id, checkpoint.consistency
-        );
-        println!("manifest: {}", checkpoint.manifest_path().display());
-        println!(
-            "fork: pvisor fork {} --checkpoint {} -- <agent>",
-            record.stage_dir().display(),
-            checkpoint.checkpoint_id
-        );
-    }
-    Ok(())
 }
 
 fn selected(selector: Option<&Path>, output_dir: &Path) -> anyhow::Result<RunRecord> {

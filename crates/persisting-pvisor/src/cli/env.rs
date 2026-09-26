@@ -347,6 +347,10 @@ fn status(args: StatusArgs) -> Result<i32> {
         selector: Some(args.select.selector),
         output_dir: root,
         json: args.json,
+        review: false,
+        diff: false,
+        max_diff_bytes: 256 * 1024,
+        max_diff_file_bytes: 1024 * 1024,
     })?;
     Ok(0)
 }

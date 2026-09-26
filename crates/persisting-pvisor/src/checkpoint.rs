@@ -72,7 +72,7 @@ pub fn create_logical_checkpoint(
 ) -> anyhow::Result<LogicalCheckpoint> {
     anyhow::ensure!(
         !is_live(&record.stage_dir())?,
-        "Run {} is live; CLI checkpoint requires a stopped Run so it cannot copy a changing upper",
+        "Run {} is live; forking from its current staged files requires a stopped Run",
         record.run_id
     );
     create_checkpoint(record, requested_id, CheckpointConsistency::Stopped)

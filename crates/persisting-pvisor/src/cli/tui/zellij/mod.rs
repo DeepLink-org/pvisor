@@ -34,6 +34,7 @@ pub(super) mod boundary_type {
 
 mod input;
 mod runtime;
+mod status_bar;
 mod view;
 
 pub(super) mod border_glyphs;

@@ -6,7 +6,7 @@
 
 ```bash
 pvisor run --stage ../task-stage -- codex
-pvisor review last
+pvisor status --review last
 pvisor apply last --all
 ```
 
@@ -25,7 +25,7 @@ pvisor apply last --all
 
 ## 保证到哪里为止
 
-宿主机、容器和 VM 的边界不同。存在暂存目录，不代表所有宿主路径或网络连接都已隔离。请查看 `pvisor review` 中的警告和能力证据。
+宿主机、容器和 VM 的边界不同。存在暂存目录，不代表所有宿主路径或网络连接都已隔离。请查看 `pvisor status --review` 中的警告和能力证据。
 
 `apply` 和 `drop` 管理暂存文件，无法撤销已经发生的外部 API 调用、数据库写入或消息发送。逻辑检查点不保存进程内存。分布式调度和面向恶意租户的多租户隔离不属于当前本地工作流。
 

@@ -47,7 +47,7 @@ Linux 需要可访问的 `/dev/kvm`。macOS 上用 `just build release` 构建�
 
 | Stage 生命周期 | 行为 |
 | --- | --- |
-| `--stage PATH` | 保留改动，由 `review`、`apply` 或 `drop` 决定 |
+| `--stage PATH` | 保留改动，由 `status --review`、`apply` 或 `drop` 决定 |
 | 仅 `--safe`，未指定 `--stage` | 使用临时目录，Run 结束后自动丢弃 |
 | 普通 host Run，未指定 `--stage` | 直接写入 lower |
 

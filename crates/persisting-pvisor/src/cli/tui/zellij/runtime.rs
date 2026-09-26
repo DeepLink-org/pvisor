@@ -413,7 +413,7 @@ pub(crate) fn run(args: Vec<OsString>) -> Result<i32> {
     drop(stdout);
     drop(terminal);
     if let Some(path) = review_path {
-        eprintln!("Review: pvisor review {}", path.display());
+        eprintln!("Review: pvisor status --review {}", path.display());
     }
     Ok(status
         .code()

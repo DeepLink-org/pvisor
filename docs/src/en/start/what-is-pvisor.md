@@ -6,7 +6,7 @@ The **p** stands for **Policy**. A Run connects the authority you request with t
 
 ```bash
 pvisor run --stage ../task-stage -- codex
-pvisor review last
+pvisor status --review last
 pvisor apply last --all
 ```
 
@@ -25,7 +25,7 @@ pvisor apply last --all
 
 ## Where the guarantees stop
 
-The host, container, and VM executors have different boundaries. A staged directory does not prove that every host path or network connection is isolated. Read the warnings and capability evidence in `pvisor review`.
+The host, container, and VM executors have different boundaries. A staged directory does not prove that every host path or network connection is isolated. Read the warnings and capability evidence in `pvisor status --review`.
 
 `apply` and `drop` govern staged files. They cannot undo an external API call, a database write, or a message already sent. Logical checkpoints do not save process memory. Distributed scheduling and hostile multi-tenant operation are outside the current local workflow.
 

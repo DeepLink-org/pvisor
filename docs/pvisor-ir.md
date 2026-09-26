@@ -101,14 +101,11 @@ Context → Requested → Rewritten* → Dispatched? → Completed
 
 ```sh
 cargo run --locked -p persisting-pvisor --example core_trace -- /tmp/read.trace.jsonl
-cargo run --locked -p persisting-pvisor --bin pvisor -- trace check /tmp/read.trace.jsonl
-cargo run --locked -p persisting-pvisor --bin pvisor -- trace show /tmp/read.trace.jsonl
-cargo run --locked -p persisting-pvisor --bin pvisor -- trace json /tmp/read.trace.jsonl
 ```
 
-IR 文本或 JSON 由 `persisting_control::ir::Expression` 解析和校验。`trace` 子命令只读 journal，要求写入句柄已关闭。
-`trace show` 展示操作优先的管道行；`trace json` 保留完整信封、规则与结构化结果。
-`trace check` 检查单事件、位置、身份和已知因果环，同时报告尚未解析的因果引用。
+IR 文本或 JSON 由 `persisting_control::ir::Expression` 解析和校验。写入句柄关闭后，
+可在代码中通过 `persisting_pvisor::trace::Journal::read` 读取和校验 journal；
+记录中的事件可用 `Event::to_text` 展示为操作优先的管道行，也可序列化为 JSON。
 
 ## 实现位置与验证
 

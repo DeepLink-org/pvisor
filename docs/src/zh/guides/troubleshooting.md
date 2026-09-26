@@ -10,11 +10,11 @@ Bundle 会记录请求的边界、实际安装的机制，以及限制 Run 能�
 ```bash
 pvisor status last
 pvisor inspect last -- git status --short
-pvisor review last
+pvisor status --review last
 ```
 
 `status` 告诉你 Run 仍在运行还是已经停止；`inspect` 在 Run view 中执行只读命令，
-可以区分 staged 修改与真实项目中的修改；`review` 展示持久化 Run Bundle 和 Evidence，
+可以区分 staged 修改与真实项目中的修改；`status --review` 展示持久化 Run Bundle 和 Evidence，
 帮助你在 apply 或 drop 之前做决定。
 
 ## Agent 直接修改了项目
@@ -59,6 +59,6 @@ capture 配置和传给 `--record-destination` 的目标路径。
 
 ## 提交 issue 前
 
-请提供 pVisor 版本、操作系统、executor、完整命令，以及相关的 `status` 和 `review` 输出，
+请提供 pVisor 版本、操作系统、executor、完整命令，以及相关的 `status` 和 `status --review` 输出，
 并移除凭据和私有 workspace 内容。最有帮助的问题描述会说明请求了什么 capability、Bundle
 记录了什么机制，以及实际结果在哪里不同。

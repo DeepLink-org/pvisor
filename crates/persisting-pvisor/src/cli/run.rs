@@ -88,7 +88,7 @@ use crate::runtime::{RunLineage, default_run_home, resolve_run};
 use crate::{
     ContainerExecutor, GatewayDriverConfig, LogicalCheckpoint, NetworkDriverConfig, OverlayHint,
     PVisor, ProcessExecutor, RunBundle, RunExecutor, TrajectoryEventSink, VmExecutor,
-    latest_logical_checkpoint, restore_logical_checkpoint,
+    create_logical_checkpoint, restore_logical_checkpoint,
 };
 
 use super::trajectory::{JsonlEventSink, JsonlWriter, jsonl_capture_sink};
@@ -105,23 +105,23 @@ macro_rules! run_log {
 
 #[cfg(target_os = "linux")]
 pub(super) const RUN_COMMAND_ABOUT: &str =
-    "Execute one Agent Run with safe-best-effort host isolation by default";
+    "Start one Agent Job with safe-best-effort host isolation by default";
 #[cfg(target_os = "linux")]
-pub(super) const RUN_COMMAND_LONG_ABOUT: &str = "Execute one Agent Run under pVisor management. Host execution uses safe-best-effort isolation when supported by the system.";
+pub(super) const RUN_COMMAND_LONG_ABOUT: &str = "Start one Agent Job under pVisor management. Host execution uses safe-best-effort isolation when supported by the system.";
 
 #[cfg(target_os = "macos")]
 pub(super) const RUN_COMMAND_ABOUT: &str =
-    "Execute one Agent Run with safe-best-effort host isolation by default";
+    "Start one Agent Job with safe-best-effort host isolation by default";
 #[cfg(target_os = "macos")]
 pub(super) const RUN_COMMAND_LONG_ABOUT: &str = MACOS_RUN_COMMAND_LONG_ABOUT;
 
 // Compile the macOS description in tests on every platform so Linux CI also
 // checks its safety disclosures instead of leaving them to the macOS shard.
 #[cfg(any(target_os = "macos", test))]
-const MACOS_RUN_COMMAND_LONG_ABOUT: &str = "Execute one Agent Run under pVisor management. Host execution uses safe-best-effort isolation when supported by the system.\n\nOn macOS, staged workspace views use macFUSE and Seatbelt confines writes when available. Full-disk reads remain ambient; selective network policies remain cooperative. With --overlaynet-deny-all, Seatbelt blocks non-loopback IP traffic and ambient host Unix sockets while permitting loopback proxy access and Run-scoped Unix IPC.\n\nUnavailable isolation capabilities are reported as warnings in best-effort mode. With --strict, insufficient isolation guarantees cause the Run to fail before Agent execution.";
+const MACOS_RUN_COMMAND_LONG_ABOUT: &str = "Start one Agent Job under pVisor management. Host execution uses safe-best-effort isolation when supported by the system.\n\nOn macOS, staged workspace views use macFUSE and Seatbelt confines writes when available. Full-disk reads remain ambient; selective network policies remain cooperative. With --overlaynet-deny-all, Seatbelt blocks non-loopback IP traffic and ambient host Unix sockets while permitting loopback proxy access and Job-scoped Unix IPC.\n\nUnavailable isolation capabilities are reported as warnings in best-effort mode. With --strict, insufficient isolation guarantees cause the Job to fail before Agent execution.";
 
 #[cfg(not(any(target_os = "linux", target_os = "macos")))]
-pub(super) const RUN_COMMAND_ABOUT: &str = "Execute one Agent Run under pVisor management";
+pub(super) const RUN_COMMAND_ABOUT: &str = "Start one Agent Job under pVisor management";
 #[cfg(not(any(target_os = "linux", target_os = "macos")))]
 pub(super) const RUN_COMMAND_LONG_ABOUT: &str = RUN_COMMAND_ABOUT;
 
@@ -160,7 +160,7 @@ pub struct RunArgs {
     #[arg(long, value_name = "PATH")]
     stage: Option<PathBuf>,
 
-    #[command(flatten, next_help_heading = "Run options")]
+    #[command(flatten, next_help_heading = "Job options")]
     run: RunOverrides,
     #[command(flatten, next_help_heading = "Container executor options")]
     container: ContainerOverrides,
@@ -200,14 +200,14 @@ impl RunArgs {
 
 #[derive(Debug, Clone, Args)]
 pub struct ForkArgs {
-    /// Source Run id, workspace, run.json, or path inside the source Run.
+    /// Source Job id, workspace, run.json, or path inside the source Job.
     source: PathBuf,
-    /// Logical checkpoint id; the latest checkpoint is used when omitted.
+    /// Existing logical checkpoint id; when omitted, snapshot the stopped source Job now.
     #[arg(long, value_name = "ID")]
     checkpoint: Option<String>,
     #[arg(long, short = 'o', default_value = ".persisting/capture")]
     output_dir: PathBuf,
-    /// Agent command; defaults to the source Run command.
+    /// Agent command; defaults to the source Job command.
     #[arg(last = true, allow_hyphen_values = true)]
     command: Vec<String>,
 }
@@ -217,7 +217,7 @@ struct RunOverrides {
     /// Require sandbox isolation and apply Agent-aware network/file presets; explicit CLI overrides win. Does not select an executor.
     #[arg(long)]
     safe: bool,
-    /// Human-readable Run/Agent name.
+    /// Human-readable Job/Agent name.
     #[arg(long)]
     name: Option<String>,
     #[arg(long, value_enum, help = EXECUTOR_HELP)]
@@ -241,7 +241,7 @@ struct RunOverrides {
     /// Clear environment names inherited from the TOML pass_env list before applying --pass-env.
     #[arg(long)]
     clear_pass_env: bool,
-    /// Maximum processes/threads admitted for the Run.
+    /// Maximum processes/threads admitted for the Job.
     #[arg(long, value_name = "COUNT")]
     max_processes: Option<u64>,
     /// CPU-time budget (for example `500ms`, `5s`, or `1m`).
@@ -1065,11 +1065,11 @@ pub async fn fork(args: ForkArgs) -> anyhow::Result<i32> {
             );
             LogicalCheckpoint::read(&source.stage_dir().join(crate::CHECKPOINTS_DIR).join(id))?
         }
-        None => latest_logical_checkpoint(&source)?,
+        None => create_logical_checkpoint(&source, None)?,
     };
     anyhow::ensure!(
         checkpoint.run_id == source.run_id,
-        "checkpoint {} belongs to Run {}, not {}",
+        "checkpoint {} belongs to Job {}, not {}",
         checkpoint.checkpoint_id,
         checkpoint.run_id,
         source.run_id
@@ -1548,7 +1548,7 @@ async fn execute_config(
             run_log!("pVisor profile: writable lower + {network_boundary}");
         }
         run_log!("workspace: {}", workspace.display());
-        run_log!("Run storage: {}", storage.display());
+        run_log!("Job storage: {}", storage.display());
         match config.run.executor {
             RunExecutorKind::Host => {
                 #[cfg(target_os = "linux")]
@@ -1621,7 +1621,10 @@ async fn execute_config(
     })?;
     let bundle_path = RunBundle::path(&record.stage_dir());
     run_log!("Run Bundle: {}", bundle_path.display());
-    run_log!("Review: pvisor review {}", record.stage_dir().display());
+    run_log!(
+        "Review: pvisor status --review {}",
+        record.stage_dir().display()
+    );
     if bundle.filesystem.is_some() {
         run_log!(
             "Decide: pvisor apply {} | pvisor drop {}",
@@ -1632,10 +1635,10 @@ async fn execute_config(
 
     if result.state != RunState::Completed {
         if let Some(failure) = &result.failure {
-            run_log!("pVisor Run failed: {:?}: {}", failure.kind, failure.message);
+            run_log!("pVisor Job failed: {:?}: {}", failure.kind, failure.message);
         }
         for warning in &result.warnings {
-            run_log!("pVisor Run warning: {warning}");
+            run_log!("pVisor Job warning: {warning}");
         }
     }
     Ok(match result.state {
@@ -2424,10 +2427,10 @@ fn resolve_vm_layout(config: &RunConfig) -> anyhow::Result<(PathBuf, PathBuf)> {
 
 fn resolve_run_storage(storage: &Path) -> anyhow::Result<PathBuf> {
     std::fs::create_dir_all(storage)
-        .with_context(|| format!("create pVisor Run storage {}", storage.display()))?;
+        .with_context(|| format!("create pVisor Job storage {}", storage.display()))?;
     storage
         .canonicalize()
-        .with_context(|| format!("resolve pVisor Run storage {}", storage.display()))
+        .with_context(|| format!("resolve pVisor Job storage {}", storage.display()))
 }
 
 fn select_run_storage(
@@ -2636,7 +2639,7 @@ fn resolve_filesystem_grants(
                     .as_ref()
                     .is_some_and(|filesystem| filesystem.base.as_ref() == Some(&path)))
                     || (!paths_overlap(&path, workspace) && !paths_overlap(&path, storage)),
-                "filesystem grant overlaps project or Run storage: {}",
+                "filesystem grant overlaps project or Job storage: {}",
                 path.display()
             );
             Ok(FilesystemCapability {
@@ -3588,7 +3591,7 @@ sandbox = "required""#
             "Full-disk reads remain ambient",
             "selective network policies remain cooperative",
             "ambient host Unix sockets",
-            "Run-scoped Unix IPC",
+            "Job-scoped Unix IPC",
             "reported as warnings in best-effort mode",
             "With --strict",
             "fail before Agent execution",

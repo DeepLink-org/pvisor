@@ -45,6 +45,6 @@ Linux needs accessible `/dev/kvm`. On macOS, `just build release` builds and sig
 
 `--mount SOURCE[:TARGET]:read|stage|write` exposes a host path; an omitted target equals the source. `read` and `stage` add lower layers to the workspace view, and `write` grants direct persistent host writes. `--access PATH-GLOB:deny|read` applies a rule within the overlay view: `deny` hides matching paths, while `read` currently warns on access. The current implementation does not enforce `read` as an immutable per-path permission. Keep `--stage` outside every lower layer.
 
-With `--stage PATH`, changes remain for an explicit `review`, `apply`, or `drop` decision. With `--safe` alone, the temporary stage is removed at Run exit. Without either option, ordinary host Runs write through. A host process Run cleans up its process group on completion or timeout and bounds output draining; detached descendants outside that group are not covered by process-group cleanup alone.
+With `--stage PATH`, changes remain for an explicit `status --review`, `apply`, or `drop` decision. With `--safe` alone, the temporary stage is removed at Run exit. Without either option, ordinary host Runs write through. A host process Run cleans up its process group on completion or timeout and bounds output draining; detached descendants outside that group are not covered by process-group cleanup alone.
 
 Continue with [Review and apply](review-apply.md) or [Network policy](network.md).

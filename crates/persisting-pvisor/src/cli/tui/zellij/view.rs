@@ -1,6 +1,6 @@
-use super::input::{Mode, Panel, UiState};
+use super::input::{Panel, UiState};
 use super::runtime::Snapshot;
-use super::{LineStyle, border_glyphs};
+use super::{LineStyle, border_glyphs, status_bar};
 use anyhow::Result;
 use std::io::Write;
 use std::time::Instant;
@@ -29,10 +29,14 @@ impl Layout {
     }
 
     fn floating_rect(self) -> (u16, u16, u16, u16) {
-        let width = self.cols.saturating_sub(6).min(76);
-        let height = self.agent_rows.min(16);
+        let width = (self.cols - self.cols / 5)
+            .max(76)
+            .min(self.cols.saturating_sub(4));
+        let height = (self.agent_rows - self.agent_rows / 4)
+            .max(16)
+            .min(self.agent_rows);
         let x = (self.cols - width) / 2 + 1;
-        let y = 3 + (self.agent_rows - height) / 3;
+        let y = 3 + (self.agent_rows - height) / 2;
         (x, y, width, height)
     }
 }
@@ -235,7 +239,7 @@ fn panel_lines(snapshot: &Snapshot, panel: Panel, started: Instant, width: usize
             record.map_or("pending".into(), |run| run.network.to_string()),
         ],
         Panel::Run => vec![
-            "RUN ID".into(),
+            "JOB ID".into(),
             record.map_or("pending".into(), |run| run.run_id.clone()),
             String::new(),
             "COMMAND".into(),
@@ -295,9 +299,9 @@ fn floating_panel(
     print_clipped(buf, &format!(" pVisor Review · {title} "), width - 4);
 
     let tabs = if width < 55 {
-        "1 Overview  2 Files  3 Net  4 Run  5 Log"
+        "1 Overview  2 Files  3 Net  4 Job  5 Log"
     } else {
-        "1 Overview   2 Files   3 Network   4 Run   5 Log"
+        "1 Overview   2 Files   3 Network   4 Job   5 Log"
     };
     let lines = panel_lines(snapshot, state.panel, started, (width - 4) as usize);
     for inner in 0..height - 2 {
@@ -390,7 +394,7 @@ pub(super) fn render(
     buf.extend_from_slice(b"\x1b[48;2;167;230;54;38;2;18;22;17;1m");
     print_clipped(
         &mut buf,
-        " ❯ Run #1 ",
+        " ❯ Job #1 ",
         layout
             .cols
             .saturating_sub(UnicodeWidthStr::width(session.as_str()) as u16),
@@ -464,32 +468,7 @@ pub(super) fn render(
     if state.panel_open() {
         floating_panel(&mut buf, layout, state, snapshot, started);
     }
-    let run_state = snapshot
-        .record
-        .as_ref()
-        .map_or("starting", |run| run.state.as_str());
-    let (_, effects, denied, failed) = snapshot.file_totals();
-    let (_, net_denied, net_failed) = snapshot.network_totals();
-    let footer = if state.mode != Mode::Agent {
-        format!(" {}  {}", state.mode.label(), state.hints())
-    } else if layout.cols < 55 {
-        format!(" NORMAL  {}  │  {run_state}", state.hints())
-    } else if layout.cols < 110 {
-        format!(
-            " NORMAL  {}  │  {run_state}  │  files {effects} eff / {denied} deny  │  net {net_denied} deny",
-            state.hints()
-        )
-    } else {
-        format!(
-            " NORMAL  {}   │   {run_state}   │   files {effects} effects, {denied} denied, {failed} failed   │   net {net_denied} denied, {net_failed} failed",
-            state.hints()
-        )
-    };
-    bar_line(&mut buf, layout.rows, layout.cols, &footer);
-    move_to(&mut buf, layout.rows, 1);
-    buf.extend_from_slice(b"\x1b[48;2;167;230;54;38;2;18;22;17;1m");
-    write!(&mut buf, " {} ", state.mode.label()).unwrap();
-    buf.extend_from_slice(b"\x1b[0m");
+    status_bar::render(&mut buf, layout.cols, layout.rows, state, snapshot, started);
     if state.agent_input_active() && !screen.hide_cursor() {
         let (cursor_row, cursor_col) = screen.cursor_position();
         move_to(
@@ -509,9 +488,9 @@ pub(super) fn render(
 mod tests {
     use super::*;
 
-    fn size(cols: u16) -> libc::winsize {
+    fn size(cols: u16, rows: u16) -> libc::winsize {
         libc::winsize {
-            ws_row: 24,
+            ws_row: rows,
             ws_col: cols,
             ws_xpixel: 0,
             ws_ypixel: 0,
@@ -520,21 +499,25 @@ mod tests {
 
     #[test]
     fn review_overlay_keeps_agent_dimensions_on_wide_and_narrow_terminals() {
-        for cols in [80, 156] {
+        for (cols, rows) in [(30, 8), (80, 24), (156, 90)] {
             let mut state = UiState::default();
-            let before = Layout::new(size(cols), &state);
+            let before = Layout::new(size(cols, rows), &state);
             assert_eq!(state.input(0x1d), None);
             assert_eq!(state.input(b'r'), None);
-            let after = Layout::new(size(cols), &state);
+            let after = Layout::new(size(cols, rows), &state);
             assert_eq!(
                 (before.agent_rows, before.agent_cols),
                 (after.agent_rows, after.agent_cols)
             );
-            assert_eq!(after.agent_rows, 20);
+            assert_eq!(after.agent_rows, rows - 4);
             assert_eq!(after.agent_cols, cols - 2);
             let (x, y, width, height) = after.floating_rect();
             assert!(x >= 2 && x + width <= cols);
             assert!(y >= 3 && y + height <= after.rows - 1);
+            if cols == 156 {
+                assert!(width >= 120, "wide terminal panel should remain readable");
+                assert!(height >= 60, "tall terminal panel should show more rows");
+            }
         }
     }
 

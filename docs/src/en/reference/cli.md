@@ -1,7 +1,11 @@
 # `pvisor` command reference
 
-`pvisor` is the product command for a single Run and for durable
-environments.
+The Job is pVisor's primary user-facing object: one managed command, its
+execution evidence, and any staged filesystem changes. `pvisor run` creates a
+Job. The other flat commands act directly on that Job; there is no `job`
+subcommand. `env` provides reusable environments, and `replay` starts a Job
+from a trajectory. Existing Job IDs and on-disk records retain their `run-*`
+and `Run Bundle` names.
 Full command examples for Host, OCI VM, and transparent host-rootfs VM
 are in
 [Run workloads with pVisor](../guides/execution.md).
@@ -11,7 +15,7 @@ are in
 Use the smallest surface that matches your next decision:
 
 - **Run a command:** start with [`pvisor run`](../start/first-run.md), then use
-  `review`, `inspect`, and `apply` to decide what reaches the project.
+  `status --review`, `inspect`, and `apply` to decide what reaches the project.
 - **Understand a boundary:** use `status` and `inspect`, then read the
   [execution guide](../guides/execution.md) before changing providers.
 - **Keep a workspace:** use `env create` and `env exec` for a reusable staged
@@ -24,54 +28,57 @@ If this is your first command, do not start with the full option list below:
 
 ```bash
 pvisor run --stage ./runs/task-001 -- codex
-pvisor review last
+pvisor status --review last
 pvisor apply last --path src
 ```
 
-Add `--tui` for a Zellij-style terminal frame, status bar, and floating review panel:
+Add `--tui` for a Zellij-style terminal frame, bottom status bar, and floating
+review panel:
 
 ```bash
 pvisor run --tui -- bash
 ```
 
 The shell or Agent keeps the terminal width and receives keyboard input by
-default. pVisor's own startup diagnostics appear in the Log panel instead of
+default. The bottom bar shows Job state, elapsed time, filesystem and network
+counts, log count, and the `Ctrl-]` command hint. Pressing the prefix replaces
+the same bar with the available shortcuts. pVisor's own startup
+diagnostics appear in the Log panel instead of
 the Agent terminal. Press `Ctrl-]` to enter command mode, then `r`, `f`, `n`,
-`u`, or `l` to open the Overview, Files, Network, Run, or Log panel. Press `?`
+`u`, or `l` to open the Overview, Files, Network, Job, or Log panel. Press `?`
 for key help. In a panel, use Tab or `1`–`5` to switch views, `j`/`k` to scroll,
 and Esc or `Ctrl-]` to return to the Agent. Press `Ctrl-]` twice to send a
 literal Ctrl-] to the Agent.
 
 The reference that follows is organized by lifecycle. Options that affect the
-same Run are intentionally described together so that a copied command has a
+same Job are intentionally described together so that a copied command has a
 clear verification step.
 
 ```text
 pvisor
-├── run                 execute one Run
-├── replay              replay and continue an Agent-native trajectory
-├── env                 manage durable reusable environments
-├── status              aggregate Run, filesystem, and network state
-├── inspect             open a read-only Run view
-├── review              review the durable Run Bundle
-├── checkpoint          snapshot a stopped transactional upper
-├── fork                start a child Run from a logical checkpoint
-├── apply               commit a stopped Run's filesystem stage
-└── drop                discard a stopped Run's filesystem stage
+├── run                 start a Job
+├── apply               commit a stopped Job's staged changes
+├── drop                discard a stopped Job's staged changes
+├── status              show Job state and review its evidence
+├── kill                request termination of a live Job
+├── fork                start a child Job from a stopped Job
+├── inspect             open a read-only Job filesystem view
+├── env                 manage reusable environments for Jobs
+└── replay              start a Job from an Agent trajectory
 ```
 
 ## Safe first run
 
 ```bash
 pvisor run --safe --stage ../stage-001 -- codex
-pvisor review last
+pvisor status --review last
 ```
 
 Host execution uses best-effort rootless isolation by default and writes through
 projected lower paths. `--safe` stages workspace writes and keeps writable home
 state in a private copy-on-write view, including Codex launched from a shell.
 `--stage <PATH>` retains the workspace stage for manual review;
-otherwise pVisor removes the temporary stage when the Run ends. The Run writes
+otherwise pVisor removes the temporary stage when the Job ends. The Job writes
 `run-bundle.json` with mode `0600` inside the stage. In the current
 implementation, auto-dropping a temporary stage also removes its Run Bundle;
 use an explicit stage when the record must remain inspectable.
@@ -86,9 +93,9 @@ On Linux, the default host executor self-executes through pVisor's rootless
 launcher before the async runtime reaches the Agent. User/mount/PID namespaces,
 an in-namespace PID 1 descendant reaper, minimal bind-projected root plus
 `chroot`, closed inherited descriptors, and an empty capability set provide a
-compatibility boundary. Ordinary host Runs permit writes through projected
+compatibility boundary. Ordinary host Jobs permit writes through projected
 lower paths. `--safe` requires Landlock and stages home state in a private
-copy-on-write overlay; those state changes are discarded after the Run.
+copy-on-write overlay; those state changes are discarded after the Job.
 `--strict` additionally validates all requested capabilities.
 `--overlaynet-deny-all` adds a private network namespace; the
 public/allowlist proxy modes remain cooperative. On macOS the default safe
@@ -102,18 +109,22 @@ and AgentCtl state observation.
 After completion:
 
 ```bash
-pvisor review last
-pvisor checkpoint last --name before-experiment
-pvisor fork last --checkpoint before-experiment -- codex
+pvisor status --review last
+pvisor fork last -- codex
 pvisor apply last --all # or: pvisor drop last
 ```
 
-The CLI checkpoint is stopped-consistent. Embedded hosts can call
+`fork` snapshots the stopped Job's staged filesystem before starting the child.
+Pass `--checkpoint ID` to reuse an existing logical checkpoint. Embedded hosts can call
 `RunHandle::checkpoint`: pVisor publishes an AgentCtl quiesce directive,
 requires every Session frozen into the checkpoint to report the matching
 quiesced state, snapshots the raw upper, then publishes `continue`. Logical
 checkpoints preserve filesystem and cooperative client safe-point boundaries,
 not process memory.
+
+To stop a running Job, use `pvisor kill JOB_ID`. It requests graceful
+termination from the Job supervisor; check `pvisor status JOB_ID` for the final
+state. A stopped Job can still be reviewed and applied or dropped.
 
 A durable environment has a stable name and a reusable OverlayFS upper:
 
@@ -627,7 +638,7 @@ retains compact Run/Overlay metadata, the apply ledger, and capture artifacts.
 
 ## Related workflows
 
-- [Your first Run](../start/first-run.md) for the shortest complete loop.
+- [Your first Job](../start/first-run.md) for the shortest complete loop.
 - [Execution environments](../guides/execution.md) for choosing a provider.
 - [Review and apply changes](../guides/review-apply.md) for filtered, repeatable apply.
 - [Network control](../guides/network.md) and [capture](../guides/capture.md) for other Effect dimensions.

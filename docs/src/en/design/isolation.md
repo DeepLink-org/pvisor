@@ -25,7 +25,7 @@ Without `--stage`, the CLI still uses a copy-on-write workspace and drops its te
 
 The host process executor creates a process group, sends termination signals to the group on completion or cancellation, and escalates after the grace period. It also bounds output draining when descendants hold pipes open. A process that leaves the group requires stronger platform containment; process-group cleanup alone is not a complete descendant boundary.
 
-CLI checkpoints require stopped Runs and save the upper layer. They do not save process memory or freeze every lower-layer host file. Embedded AgentCtl participants can cooperate with quiescence, which does not turn arbitrary subprocesses into checkpointable processes.
+The `fork` command requires a stopped Run and snapshots its upper layer. They do not save process memory or freeze every lower-layer host file. Embedded AgentCtl participants can cooperate with quiescence, which does not turn arbitrary subprocesses into checkpointable processes.
 
 ## Network boundary
 
