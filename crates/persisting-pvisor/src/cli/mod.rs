@@ -16,7 +16,7 @@ use clap::{Parser, Subcommand};
 const ROOT_ABOUT: &str =
     "Foreground Agent Run manager with rootless Linux sandboxing and reviewable workspaces";
 #[cfg(target_os = "linux")]
-const ROOT_LONG_ABOUT: &str = "Foreground Agent Run manager: execute, control, Gateway, and OverlayFS.\n\nOn Linux, host runs use safe-best-effort rootless isolation when supported: user and mount namespaces, a minimal synthetic root with chroot, closed inherited descriptors, and dropped capabilities. This compatibility profile preserves the Agent's own sandbox; `--strict` additionally requires Landlock and no_new_privs. Add `--overlaynet-deny-all` to isolate direct network sockets in a private network namespace.";
+const ROOT_LONG_ABOUT: &str = "Foreground Agent Run manager: execute, control, Gateway, and OverlayFS.\n\nOn Linux, ordinary host runs use rootless isolation when available and write through projected host paths. `--safe` requires rootless namespaces and Landlock, stages the workspace and writable home state, and never writes those lower paths directly. Add `--overlaynet-deny-all` to isolate direct network sockets in a private network namespace.";
 
 #[cfg(target_os = "macos")]
 const ROOT_ABOUT: &str =

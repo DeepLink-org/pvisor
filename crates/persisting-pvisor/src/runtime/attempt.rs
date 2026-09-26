@@ -597,10 +597,9 @@ pub(crate) fn prepare_overlay_attempt(
     let control =
         RunControlServer::start_observed(&run_record, fs_metrics.clone(), network_metrics.clone())?;
 
-    let transparent_cwd = process_cwd(spec);
     let mut plan = ImplantPlan {
         env: ImplantPlan::marker_env(),
-        cwd: transparent_cwd,
+        cwd: overlay_cwd(spec, &overlay_hint, Some(&overlay_record)),
         overlay: overlay_hint,
         notes: vec![format!(
             "filesystem: overlay target={} staging={} (apply later unless auto_apply)",
@@ -1060,7 +1059,7 @@ fn prepare_overlay(
                     existing.run_id
                 );
             }
-            let lowers = lower_stack_from_config(overlay_cfg, storage, &record.target);
+            let lowers = lower_stack_from_config(overlay_cfg, storage, &record.target)?;
             let (mount, record, fs_metrics) = if mountless {
                 (
                     None,
@@ -1159,7 +1158,7 @@ fn enrich_with_session(
     } = opts;
     let mut plan = ImplantPlan {
         env: ImplantPlan::marker_env(),
-        cwd: process_cwd(spec),
+        cwd: overlay_cwd(spec, overlay, overlay_record),
         overlay: overlay.clone(),
         notes: Vec::new(),
     };
@@ -1369,6 +1368,21 @@ fn process_cwd(spec: &RunSpec) -> Option<PathBuf> {
             .map(PathBuf::from)
             .or_else(|| std::env::current_dir().ok()),
     }
+}
+
+fn overlay_cwd(
+    spec: &RunSpec,
+    overlay: &OverlayHint,
+    record: Option<&OverlayRecord>,
+) -> Option<PathBuf> {
+    if crate::sandbox::sandbox_required(spec)
+        && !uses_krun_executor(spec)
+        && overlay.merged_dir.is_some()
+        && let Some(record) = record
+    {
+        return Some(record.target.clone());
+    }
+    overlay.merged_dir.clone().or_else(|| process_cwd(spec))
 }
 
 fn inject_gateway_args(process: &mut ProcessInvocation, listen: &str) {

@@ -20,7 +20,7 @@ use crate::forward::{
 };
 use crate::interception::InterceptionMetrics;
 use crate::policy::{DenyReason, NetworkPolicy, forbidden_response};
-use crate::resolver::{AuthorizedTarget, TargetAuthorizationError, authorize_target};
+use crate::resolver::{AuthorizedTarget, TargetAuthorizationError};
 #[derive(Clone)]
 pub struct OverlayRequestContext<T> {
     pub policy: NetworkPolicy,
@@ -326,7 +326,11 @@ async fn authorize<S>(
 where
     S: OverlaySink,
 {
-    authorize_target(
+    // A host DNS/TUN connector may resolve an allowed hostname to a fake
+    // 198.18/15 address. Apply the same narrowly scoped alias handling used
+    // by the VM egress path; IP literals and explicit address denies still
+    // remain subject to the ordinary policy.
+    crate::resolver::authorize_target_with_policy(
         state.control_controller.as_ref(),
         &context.policy,
         NetworkAccessRequest {
@@ -341,6 +345,7 @@ where
             transport,
             resolved_ip: None,
         },
+        crate::resolver::ResolvedAddressPolicy::HostConnectorAliases,
     )
     .await
 }

@@ -8,7 +8,7 @@ pvisor review last
 pvisor inspect last -- git status --short
 ```
 
-省略 `--stage` 时，工作区仍使用临时写时复制视图，但 pVisor 会在 Run 结束后丢弃它。`review` 展示记录的证据和保留的改动；`inspect` 在只读视图中执行检查命令。直接运行 Codex 前请先阅读 [Codex 状态限制](../reference/cli.md)：当前单一 overlay 可能选择 Codex 状态，而不是项目目录。
+普通 host Run 省略 `--stage` 时直接写入 lower；`--safe` 会使用临时写时复制视图，并在 Run 结束后丢弃它。`review` 展示记录的证据和保留的改动；`inspect` 在只读视图中执行检查命令。`--safe` 会独立暂存 Codex 的 HOME 状态。
 
 ## 分批应用
 

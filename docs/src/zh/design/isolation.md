@@ -21,7 +21,7 @@
 pvisor run --stage ../stage-001 -- codex
 ```
 
-省略 `--stage` 时，CLI 仍使用写时复制工作区，并在 Run 结束后丢弃临时 stage。暂存不能回滚远程 API 调用或覆盖工作区之外的写入。ZCode 的 Linux host 适配会向应用状态目录授予持久写权限；详见 [CLI 参考](../reference/cli.md)。
+普通 host Run 省略 `--stage` 时直接写入工作区 lower。`--safe` 使用写时复制工作区，并在 Run 结束后丢弃临时 stage。暂存不能回滚远程 API 调用或覆盖工作区之外的写入。ZCode 的 Linux host 适配会向应用状态目录授予持久写权限；详见 [CLI 参考](../reference/cli.md)。
 
 宿主进程 executor 创建进程组，在完成或取消后向整组发送终止信号，并在宽限期后升级终止。后代持有输出管道时，读取等待也有时限。主动脱离进程组的进程需要更强的平台约束；进程组清理本身不是完整的后代隔离边界。
 

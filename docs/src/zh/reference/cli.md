@@ -21,13 +21,25 @@ pvisor review last
 pvisor apply last --path src
 ```
 
+加上 `--tui` 可显示类似 Zellij 的终端边框、底部状态栏和浮动审查面板：
+
+```bash
+pvisor run --tui -- bash
+```
+
+默认键盘输入交给 shell 或 Agent，终端始终保持完整宽度。pVisor 自身的启动信息显示在
+Log 面板，不混入 Agent 终端。按 `Ctrl-]` 进入命令模式，再按 `r`、`f`、`n`、
+`u`、`l` 打开概览、文件、网络、Run 或 Log 面板，按 `?` 查看按键帮助。在面板中用
+Tab 或 `1`–`5` 切换视图，用 `j`/`k` 滚动，按 Esc 或 `Ctrl-]` 返回 Agent。
+连续按两次 `Ctrl-]` 可将该按键原样发送给 Agent。
+
 下面的参考按 Run 生命周期组织；每组参数都配有验证下一步。
 
 ### 文件系统参数
 
-工作区始终运行在 pVisor 的 changeset 视图中。指定 `--stage PATH` 时保留
-changeset，Run 结束后由 `review`、`apply` 或 `drop` 手动处理；不指定 `--stage`
-时使用临时 changeset，并在 Run 结束后自动丢弃。
+普通 host Run 默认将工作区写入直接透传到 lower。`--safe` 会为工作区创建临时
+changeset，Run 结束后自动丢弃；指定 `--stage PATH` 则保留 changeset，
+由 `review`、`apply` 或 `drop` 手动处理。
 
 ```bash
 pvisor run --stage ./run-stage -- codex
@@ -57,12 +69,14 @@ pvisor
 ## 安全的第一次运行
 
 ```bash
-pvisor run --stage ../stage-001 -- codex
+pvisor run --safe --stage ../stage-001 -- codex
 pvisor review last
 ```
 
-默认 host 执行使用 safe-best-effort 隔离；没有 `--stage` 时使用临时 changeset
-并在 Run 结束后自动丢弃。显式 `--stage <PATH>` 会保留独立 Run 和可写 stage，
+默认 host 执行使用 best-effort rootless 隔离，可写路径直接透传到 lower。
+`--safe` 默认暂存工作区，并给 HOME（包括在 shell 内启动的 Codex）提供独立的写时复制视图。
+没有 `--stage` 时使用临时 changeset 并在 Run 结束后自动丢弃。
+显式 `--stage <PATH>` 会保留工作区 Run 和可写 stage，
 改动可供人工审查，并以 `0600` 写入 `run-bundle.json`。
 当前实现会连同临时 stage 一起删除其中的 Run Bundle；需要保留审计记录时应显式指定 stage。
 
@@ -73,10 +87,9 @@ Subprocess，且无一 claim Subprocess，因此 `--strict` 在这些路径上�
 在 Linux 上，默认 host executor 会在异步 runtime 到达 Agent 之前，通过
 pVisor 的 rootless launcher 自执行。User/mount/PID namespace、namespace 内
 PID 1 后代回收器、最小 bind-projected root 加 `chroot`、关闭继承描述符以及空
-capability 集提供兼容性隔离。普通 host Run 启用 Landlock；未带 `--strict` 的 `--safe`
-为应用兼容性跳过 Landlock。`--strict` 要求按内核协商的 Landlock ABI v1-v3 策略和
-`no_new_privs`，因此可能拒绝需要 setuid
-sandbox helper 的程序。
+capability 集提供兼容性隔离。普通 host Run 允许对投影的 lower 路径直接写入；
+`--safe` 要求 Landlock，并把 HOME 状态写入独立的私有写时复制视图，Run 结束后丢弃。
+`--strict` 另外验证全部请求的能力边界。
 `--overlaynet-deny-all` 再加一个私有 network namespace；public/allowlist
 代理模式仍是协作式。在 macOS 上，默认 safe host executor 安装生成的
 Seatbelt 策略，使 staged 写入不可绕过。对 deny-all Run，它拦截 IP 和
@@ -133,7 +146,7 @@ pvisor run --safe --overlaynet-allow inference.example.com:443 -- zcode
 `--safe` 生成一组命令行参数补丁，经过同一个 CLI 解析器后应用，再应用用户显式参数。
 各 Agent 的补丁分别放在 `cli/run/safe/codex.rs`、`claude.rs`、`gemini.rs`、`zcode.rs`，
 公共部分只负责选择与组合。`--safe` 同时要求所选执行器落实隔离，也不选择 executor。
-优先级是 **显式 CLI > safe 预设 > 配置文件 > 普通默认值**。不带 `--safe` 的行为不变。
+优先级是 **显式 CLI > safe 预设 > 配置文件 > 普通默认值**。
 支持普通命令和 TOML `--spec`；已准备好的 JSON RunSpec 不接受该预设。
 
 `--safe` 直接要求落实文件读取、写入和网络隔离，不允许静默回退到普通 host 进程。
@@ -144,10 +157,10 @@ pvisor run --safe --overlaynet-allow inference.example.com:443 -- zcode
   阻止其他直接 IP 出口和环境中的宿主 Unix socket，仅保留必要的 Run 内 IPC。
   Agent 使用临时 HOME，不能直接读取原来的主目录；凭据需显式传入或由 Gateway 持有。
   系统运行库和启动所需的路径元数据仍可读取。
-- Linux host：默认 `--safe` 使用 rootless namespace、synthetic root 和 chroot；
-  `--strict` 额外要求 Landlock 和 `no_new_privs`。选择性出口和 Gateway
+- Linux host：`--safe` 要求 rootless namespace、synthetic root、chroot、Landlock
+  和 HOME 写时复制视图。选择性出口和 Gateway
   通过 supervisor loopback proxy cooperative 转发，直接 socket 仍可能绕过；需要不可绕过
-  网络边界时使用 VM 或 deny-all。启动器目前还会只读投影宿主 HOME；overlay deny 规则
+  网络边界时使用 VM 或 deny-all。启动器通过私有 stage 投影宿主 HOME；overlay deny 规则
   不会隐藏工作区视图之外原路径上的秘密文件。
 - VM：要求现有 `auto` 网络边界；safe 不自动选择 VM。
 - container：当前缺少完整强制边界，`--safe` 拒绝启动。
@@ -158,10 +171,11 @@ pvisor run --safe --overlaynet-allow inference.example.com:443 -- zcode
 | 实际执行的命令 | 默认允许的普通网络目标 |
 | --- | --- |
 | `codex` | `api.openai.com:443`、`chatgpt.com:443`、`ab.chatgpt.com:443` |
+| `bash`、`sh`、`zsh`、`fish` | 与 Codex 相同，供 shell 内启动的 Codex 使用 |
 | `claude` | `api.anthropic.com:443` |
 | `gemini` | `generativelanguage.googleapis.com:443` |
 | `zcode` | `api.z.ai:443`、`open.bigmodel.cn:443` |
-| 其他命令或 shell 包装器 | 默认拒绝；需显式声明目标或配置 Gateway |
+| 其他命令 | 默认拒绝；需显式声明目标或配置 Gateway |
 
 识别依据是命令的文件名，支持绝对路径，`--name` 只影响显示名称。
 这些是标准 API 服务预设，不会读取 Agent 私有配置或自动发现 OAuth、自定义供应商地址。
@@ -169,11 +183,9 @@ pvisor run --safe --overlaynet-allow inference.example.com:443 -- zcode
 `--overlaynet-allow` 替换预设的允许目标；`--overlaynet-deny` 在允许列表上增加拒绝规则。
 已有配置中的拒绝规则和限速保留。
 
-直接运行 `codex` 要特别注意：未使用 `--safe` 且未显式挂载 Codex 状态时，
-`ensure_codex_state_stage` 当前会把 `CODEX_HOME`（或 `~/.codex`）选为 overlay base 和
-项目关联，单一 overlay 不会同时暂存原项目目录。`--safe` 预设会添加 Codex 状态挂载，
-避免这个 base 重定向，但当前单视图挂载模型对 Codex 状态与项目写入仍需分别验证。
-不能仅凭 Codex Run Bundle 推断两个路径都已暂存。
+未使用 `--safe` 时，Codex 状态和项目写入会到达宿主 lower。使用 `--safe` 时，
+工作区进入可审查的 Run stage；HOME（及显式设置的 `CODEX_HOME`）使用单独的私有 stage。
+HOME 状态改动在 Run 结束后丢弃，不包含在工作区 Run Bundle 中。
 
 独立于 `--safe`，Linux rootless host 直接运行 `zcode` 时会应用兼容策略：继承宿主环境变量，
 允许直接持久写入已存在的 `~/.zcode`、`$XDG_CONFIG_HOME`（或 `~/.config`）和
@@ -217,7 +229,7 @@ cooperative 的，直接 socket 仍可能绕过代理。需要不可绕过边界
 预设通过 `--clear-pass-env` 清空配置文件中的 `run.pass_env`；
 `--clear-pass-env` 也可单独使用，之后的显式 `--pass-env NAME` 仍然生效。
 直接运行 `codex` 时，为了发现账号和路由，即使带 `--safe` 也会继承宿主环境变量。
-对应的显式 CLI 参数可以重新授予或覆盖。工作区默认已暂存；
+对应的显式 CLI 参数可以重新授予或覆盖。`--safe` 默认暂存工作区；
 已有容器挂载和文件系统底层仍保留；项目 base、rootfs、executor 不变。
 需要向 Agent 交付凭据时显式使用 `--pass-env`；使用已配置的 Gateway 可由可信侧持有上游 Key。
 
@@ -500,7 +512,7 @@ namespace 和 Landlock 约束 VMM。macOS VMM 仍拥有调用用户的 host 权�
 尽管有 guest-kernel 隔离，第一版 OCI-image 也不应被当成敌对多租户边界。
 
 在 host/container 执行上，四个可见 OverlayNet 策略标志和 Gateway capture
-会自动启用代理 driver。CLI Run 默认暂存工作区，`--mount` 添加显式底层；
+会自动启用代理 driver。`--safe` 默认暂存工作区，`--mount` 添加显式底层；
 指定 `--stage` 才保留文件系统改动供审查。当 stage 嵌在 base 或 compose 层内时，pVisor 从合并视图
 隐藏该子树，并拒绝 guest 重建它。libkrun Run 不创建 live host mountpoint，
 防止 host indexer 递归进入 `<stage>/merged`。反向拓扑——stage 包含 lower

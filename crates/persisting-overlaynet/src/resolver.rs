@@ -28,12 +28,14 @@ pub(crate) enum TargetAuthorizationError {
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub(crate) enum ResolvedAddressPolicy {
+    #[cfg(test)]
     Strict,
     /// Accept an opaque address returned by a host fake-IP DNS/TUN connector.
     /// The logical hostname is re-authorized and IP literals never qualify.
     HostConnectorAliases,
 }
 
+#[cfg(test)]
 pub(crate) async fn authorize_target(
     controller: &dyn ControlController,
     policy: &NetworkPolicy,

@@ -41,9 +41,9 @@ Published wheels target Linux x86_64 and macOS arm64. Check the release artifact
 
 ## 2. Check platform requirements
 
-The CLI supports macOS and Linux with Python 3.10 or newer. Every CLI host Run
-uses a filesystem stage, including runs without `--stage`. On macOS, install
-macFUSE before using the host executor:
+The CLI supports macOS and Linux with Python 3.10 or newer. Ordinary host Runs
+write through to the workspace; `--safe` or `--stage` uses a filesystem stage.
+On macOS, install macFUSE before using staged host execution:
 
 ```bash
 brew install --cask macfuse

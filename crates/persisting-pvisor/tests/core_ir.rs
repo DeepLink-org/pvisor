@@ -127,6 +127,7 @@ impl Backend for Files {
                 }
                 Outcome::success(Value::U64(data.len() as u64))
             }
+            Operation::Run { .. } => unreachable!("file backend does not execute Runs"),
         }
     }
 }

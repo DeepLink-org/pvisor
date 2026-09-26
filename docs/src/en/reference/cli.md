@@ -28,6 +28,20 @@ pvisor review last
 pvisor apply last --path src
 ```
 
+Add `--tui` for a Zellij-style terminal frame, status bar, and floating review panel:
+
+```bash
+pvisor run --tui -- bash
+```
+
+The shell or Agent keeps the terminal width and receives keyboard input by
+default. pVisor's own startup diagnostics appear in the Log panel instead of
+the Agent terminal. Press `Ctrl-]` to enter command mode, then `r`, `f`, `n`,
+`u`, or `l` to open the Overview, Files, Network, Run, or Log panel. Press `?`
+for key help. In a panel, use Tab or `1`–`5` to switch views, `j`/`k` to scroll,
+and Esc or `Ctrl-]` to return to the Agent. Press `Ctrl-]` twice to send a
+literal Ctrl-] to the Agent.
+
 The reference that follows is organized by lifecycle. Options that affect the
 same Run are intentionally described together so that a copied command has a
 clear verification step.
@@ -49,12 +63,14 @@ pvisor
 ## Safe first run
 
 ```bash
-pvisor run --stage ../stage-001 -- codex
+pvisor run --safe --stage ../stage-001 -- codex
 pvisor review last
 ```
 
-Host execution uses safe-best-effort isolation by default. Every CLI Run stages
-workspace writes. `--stage <PATH>` retains that stage for manual review;
+Host execution uses best-effort rootless isolation by default and writes through
+projected lower paths. `--safe` stages workspace writes and keeps writable home
+state in a private copy-on-write view, including Codex launched from a shell.
+`--stage <PATH>` retains the workspace stage for manual review;
 otherwise pVisor removes the temporary stage when the Run ends. The Run writes
 `run-bundle.json` with mode `0600` inside the stage. In the current
 implementation, auto-dropping a temporary stage also removes its Run Bundle;
@@ -70,10 +86,10 @@ On Linux, the default host executor self-executes through pVisor's rootless
 launcher before the async runtime reaches the Agent. User/mount/PID namespaces,
 an in-namespace PID 1 descendant reaper, minimal bind-projected root plus
 `chroot`, closed inherited descriptors, and an empty capability set provide a
-compatibility boundary. Ordinary host Runs use a kernel-negotiated Landlock
-policy; `--safe` without `--strict` skips Landlock for application compatibility.
-`--strict` requires Landlock ABI v1-v3 and
-`no_new_privs`; that mode can reject programs that need a setuid sandbox helper.
+compatibility boundary. Ordinary host Runs permit writes through projected
+lower paths. `--safe` requires Landlock and stages home state in a private
+copy-on-write overlay; those state changes are discarded after the Run.
+`--strict` additionally validates all requested capabilities.
 `--overlaynet-deny-all` adds a private network namespace; the
 public/allowlist proxy modes remain cooperative. On macOS the default safe
 host executor installs a generated Seatbelt policy that makes staged writes
@@ -150,11 +166,10 @@ limits, separately.
   port, with necessary Run-local Unix IPC. Direct IP traffic and ambient host Unix sockets
   are blocked. The Agent gets a temporary HOME; provide credentials explicitly or through
   Gateway. System runtime files and path metadata needed for loading remain readable.
-- Linux host: default `--safe` uses rootless namespaces, a synthetic root, and chroot;
-  `--strict` additionally requires Landlock and
-  `no_new_privs`. Selective egress and Gateway traffic use the supervisor loopback proxy
+- Linux host: `--safe` requires rootless namespaces, a synthetic root, chroot,
+  Landlock, and copy-on-write home state. Selective egress and Gateway traffic use the supervisor loopback proxy
   cooperatively; direct sockets may still bypass it. Select VM or deny-all when a non-bypassable
-  network boundary is required. The launcher currently projects the caller's HOME read-only;
+  network boundary is required. The launcher projects the caller's HOME through a private stage;
   overlay deny globs do not hide secrets at their original paths outside the overlay view.
 - VM: the existing `auto` network boundary is required. Safe never selects VM automatically.
 - Container: `--safe` is rejected until a complete enforcement boundary is available.
@@ -164,10 +179,11 @@ Sandbox setup failure stops execution. `--safe` cannot be combined with `--overl
 | Executed command | Default ordinary egress destination |
 | --- | --- |
 | `codex` | `api.openai.com:443`, `chatgpt.com:443`, `ab.chatgpt.com:443` |
+| `bash`, `sh`, `zsh`, `fish` | Same Codex destinations, for Codex started inside the shell |
 | `claude` | `api.anthropic.com:443` |
 | `gemini` | `generativelanguage.googleapis.com:443` |
 | `zcode` | `api.z.ai:443`, `open.bigmodel.cn:443` |
-| Other commands or shell wrappers | Denied unless explicitly configured |
+| Other commands | Denied unless explicitly configured |
 
 Detection uses the executable filename, including absolute paths, rather than `--name`.
 These are standard API defaults; the preset does not inspect private Agent configuration or
@@ -176,14 +192,10 @@ upload, update and package download hosts, are denied by the policy. `--overlayn
 replaces the preset grants; `--overlaynet-deny` adds denials. Configured deny rules and bandwidth
 limits are retained.
 
-The direct `codex` adapter needs particular care: without `--safe` or an
-explicit Codex state mount, `ensure_codex_state_stage` currently selects
-`CODEX_HOME` (or `~/.codex`) as the overlay base and project association. That
-single overlay does not also stage the original project directory. The `--safe`
-preset adds a Codex state mount, which avoids that base reassignment, but the
-current single-view mount model still needs separate verification for Codex
-state and project writes. Do not assume a Codex Run Bundle proves that both
-paths were staged.
+Without `--safe`, Codex state and project writes reach their host lower paths.
+With `--safe`, the workspace uses the reviewable Run stage and HOME (including
+`CODEX_HOME` when set) uses a separate private stage. Home-state changes are
+discarded when the Run ends and are not part of the workspace Run Bundle.
 
 Independently of `--safe`, direct `zcode` on the Linux rootless host executor
 receives a compatibility policy. It inherits the host environment and grants
@@ -230,8 +242,8 @@ The preset uses `--clear-pass-env` to clear configured `run.pass_env`.
 `--clear-pass-env` also works on its own; explicit `--pass-env NAME` grants
 are applied afterward. Direct `codex` runs inherit the host environment for
 account and routing discovery, including under `--safe`; see the limitations below.
-Explicit CLI options can restore or override these settings. Workspace staging
-is already the default. Existing container mounts and filesystem layers are retained; the project base,
+Explicit CLI options can restore or override these settings. `--safe` stages the
+workspace by default. Existing container mounts and filesystem layers are retained; the project base,
 rootfs and executor remain unchanged. Use `--pass-env` to deliver credentials explicitly, or let a configured
 Gateway hold the upstream key on the trusted side.
 
@@ -545,7 +557,7 @@ user's host permissions, so the first OCI-image version must not be treated as
 a hostile multi-tenant boundary despite the guest-kernel isolation.
 
 On host/container execution, the four visible OverlayNet policy flags and
-Gateway capture automatically enable the proxy driver. CLI Runs stage the
+Gateway capture automatically enable the proxy driver. `--safe` stages the
 workspace by default; `--mount` adds explicit layers. An explicit `--stage`
 retains the filesystem state for review. When a stage is nested inside a base or compose layer, pVisor hides
 that subtree from the merged view and rejects guest attempts to recreate it.

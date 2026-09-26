@@ -12,7 +12,7 @@ pvisor apply last --all
 
 !!! tip "显式保留暂存"
 
-    CLI 默认创建写时复制工作区。`--stage PATH` 将改动保留供 review/apply 使用；省略时临时 stage 在 Run 结束后丢弃。
+    普通 host Run 默认直接写入工作区 lower。使用 `--safe` 会创建写时复制工作区并在 Run 结束后丢弃临时 stage；`--stage PATH` 将改动保留供 review/apply 使用。
 
 ## 你会得到什么
 

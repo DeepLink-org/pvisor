@@ -93,6 +93,16 @@ use crate::{
 
 use super::trajectory::{JsonlEventSink, JsonlWriter, jsonl_capture_sink};
 
+// Keep pVisor diagnostics separate from the Agent PTY in TUI runs.
+macro_rules! run_log {
+    ($($arg:tt)*) => {{
+        #[cfg(unix)]
+        super::tui::diagnostic(format_args!($($arg)*));
+        #[cfg(not(unix))]
+        eprintln!($($arg)*);
+    }};
+}
+
 #[cfg(target_os = "linux")]
 pub(super) const RUN_COMMAND_ABOUT: &str =
     "Execute one Agent Run with safe-best-effort host isolation by default";
@@ -131,7 +141,7 @@ const DENY_ALL_HELP: &str = "Deny all OverlayNet egress; direct sockets remain o
 
 #[derive(Debug, Clone, Args)]
 pub struct RunArgs {
-    /// Show the optional status bar; Ctrl-] opens the tabbed dashboard.
+    /// Show a terminal with status bar; Ctrl-] opens the TUI command mode.
     #[arg(long)]
     tui: bool,
     /// TOML RunConfig or prepared JSON RunSpec; explicit CLI values replace matching fields.
@@ -701,7 +711,7 @@ fn load_run_config(args: &RunArgs, root: Option<&Path>) -> anyhow::Result<RunCon
     };
     let config = toml::from_str(&source)
         .with_context(|| format!("parse personal Agent config {}", path.display()))?;
-    eprintln!("pVisor Agent defaults: {}", path.display());
+    run_log!("pVisor Agent defaults: {}", path.display());
     Ok(config)
 }
 
@@ -718,21 +728,7 @@ pub async fn run(args: RunArgs) -> anyhow::Result<i32> {
         .filesystem
         .as_ref()
         .and_then(|overlay| overlay.stage_size_bytes);
-    let mut cleanup_stage = None;
-    let stage_path = args.stage.clone().or_else(|| {
-        config
-            .filesystem
-            .as_ref()
-            .and_then(|filesystem| filesystem.stage.clone())
-    });
-    let stage_path = stage_path.unwrap_or_else(|| {
-        cleanup_stage = Some(std::env::temp_dir().join(format!("pvisor-stage-{run_id}")));
-        cleanup_stage.clone().expect("temporary stage path")
-    });
-    config
-        .filesystem
-        .get_or_insert_with(OverlayFsSettings::default)
-        .stage = Some(stage_path);
+    let cleanup_stage = ensure_default_stage(&mut config, &args, &run_id);
     let effective_stage = config
         .filesystem
         .as_ref()
@@ -769,13 +765,36 @@ pub async fn run(args: RunArgs) -> anyhow::Result<i32> {
                 return Err(error)
                     .with_context(|| format!("remove temporary stage {}", path.display()));
             }
-            eprintln!(
+            run_log!(
                 "pVisor warning: failed to remove temporary stage {}: {error}",
                 path.display()
             );
         }
     }
     result
+}
+
+fn ensure_default_stage(config: &mut RunConfig, args: &RunArgs, run_id: &str) -> Option<PathBuf> {
+    if !args.run.safe {
+        return None;
+    }
+    let existing = args.stage.clone().or_else(|| {
+        config
+            .filesystem
+            .as_ref()
+            .and_then(|filesystem| filesystem.stage.clone())
+    });
+    let temporary = existing
+        .is_none()
+        .then(|| std::env::temp_dir().join(format!("pvisor-stage-{run_id}")));
+    let stage = existing
+        .or_else(|| temporary.clone())
+        .expect("safe stage selected");
+    config
+        .filesystem
+        .get_or_insert_with(OverlayFsSettings::default)
+        .stage = Some(stage);
+    temporary
 }
 
 fn directory_size_bytes(root: &Path) -> anyhow::Result<u64> {
@@ -965,7 +984,7 @@ fn cleanup_temporary_stage(path: &Path, run_id: &str, successful: bool) -> anyho
         if successful {
             return Err(error);
         }
-        eprintln!(
+        run_log!(
             "pVisor warning: refusing to remove unowned temporary stage {}",
             path.display()
         );
@@ -976,7 +995,7 @@ fn cleanup_temporary_stage(path: &Path, run_id: &str, successful: bool) -> anyho
             return Err(error)
                 .with_context(|| format!("remove temporary stage {}", path.display()));
         }
-        eprintln!(
+        run_log!(
             "pVisor warning: failed to remove temporary stage {}: {error}",
             path.display()
         );
@@ -1134,7 +1153,6 @@ async fn execute_config(
     safe: bool,
     lineage: Option<RunLineage>,
 ) -> anyhow::Result<i32> {
-    ensure_codex_state_stage(&mut config);
     normalize_filesystem_config(&mut config)?;
     resolve_default_vm_rootfs(&mut config)?;
     let prepared_image = if config.run.executor == RunExecutorKind::Vm && config.vm.rootfs.is_none()
@@ -1145,13 +1163,13 @@ async fn execute_config(
             .clone()
             .context("VM image must be explicitly configured")?;
         let store = config.vm.image_store.clone();
-        eprintln!("pVisor image: resolving {image}");
+        run_log!("pVisor image: resolving {image}");
         let prepared = tokio::task::spawn_blocking(move || {
             crate::oci::ImageStore::new(store)?.prepare(&image)
         })
         .await
         .context("OCI image preparation task failed")??;
-        eprintln!(
+        run_log!(
             "pVisor image: {} ({})",
             prepared.digest,
             prepared.rootfs.display()
@@ -1188,7 +1206,7 @@ async fn execute_config(
             overlay.commit = OverlayFsCommit::Manual;
         }
         if config.vm.library_dir.is_none() && crate::vm::bundled_firmware_dir().is_none() {
-            eprintln!(
+            run_log!(
                 "pVisor firmware: resolving libkrunfw {}",
                 crate::firmware::VERSION
             );
@@ -1196,7 +1214,7 @@ async fn execute_config(
                 tokio::task::spawn_blocking(|| crate::firmware::FirmwareStore::new()?.prepare())
                     .await
                     .context("libkrunfw preparation task failed")??;
-            eprintln!("pVisor firmware: {}", directory.display());
+            run_log!("pVisor firmware: {}", directory.display());
             config.vm.library_dir = Some(directory);
         }
     } else {
@@ -1223,13 +1241,13 @@ async fn execute_config(
     validate(&config, safe)?;
 
     if config.overlaynet.mode == OverlayNetMode::Proxy && !safe {
-        eprintln!(
+        run_log!(
             "pVisor OverlayNet boundary: explicit cooperative proxy; direct sockets remain ambient"
         );
     } else if config.run.executor == RunExecutorKind::Vm
         && config.overlaynet.mode == OverlayNetMode::Auto
     {
-        eprintln!(
+        run_log!(
             "pVisor OverlayNet boundary: non-bypassable libkrun virtio-net → smoltcp IPv4 TCP/DNS"
         );
     }
@@ -1307,11 +1325,7 @@ async fn execute_config(
     let executor: Arc<dyn RunExecutor> = match config.run.executor {
         #[cfg(target_os = "linux")]
         RunExecutorKind::Host if safe => {
-            let available = if config.run.policy == RunPolicy::Enforce {
-                crate::process::rootless_runtime_available()
-            } else {
-                crate::process::rootless_namespaces_available()
-            };
+            let available = crate::process::rootless_runtime_available();
             anyhow::ensure!(
                 available,
                 "required sandbox unavailable: Linux rootless namespaces must be enabled"
@@ -1334,14 +1348,14 @@ async fn execute_config(
                 match ProcessExecutor::rootless_with_launcher(std::env::current_exe()?) {
                     Ok(executor) => Arc::new(executor),
                     Err(error) => {
-                        eprintln!(
+                        run_log!(
                             "pVisor safe-best-effort: rootless launcher unavailable ({error}); falling back to host process"
                         );
                         Arc::new(ProcessExecutor::default())
                     }
                 }
             } else {
-                eprintln!(
+                run_log!(
                     "pVisor safe-best-effort: user/mount/PID namespaces unavailable; falling back to host process"
                 );
                 Arc::new(ProcessExecutor::default())
@@ -1352,7 +1366,7 @@ async fn execute_config(
             match ProcessExecutor::seatbelt_with_launcher(std::env::current_exe()?) {
                 Ok(executor) => Arc::new(executor),
                 Err(error) => {
-                    eprintln!(
+                    run_log!(
                         "pVisor safe-best-effort: Seatbelt unavailable ({error}); falling back to host process"
                     );
                     Arc::new(ProcessExecutor::default())
@@ -1506,12 +1520,10 @@ async fn execute_config(
         .insert("pvisor.safe".into(), serde_json::Value::Bool(true));
 
     if safe {
-        spec.metadata.insert(
-            crate::sandbox::LANDLOCK_SANDBOX_KEY.into(),
-            (config.run.policy == RunPolicy::Enforce).into(),
-        );
-        eprintln!(
-            "pVisor --safe: rootless chroot isolation is enabled; --strict adds Landlock/no_new_privs, while host selective network policies use the supervisor proxy cooperatively"
+        spec.metadata
+            .insert(crate::sandbox::LANDLOCK_SANDBOX_KEY.into(), true.into());
+        run_log!(
+            "pVisor --safe: rootless chroot, staged state, and Landlock are enabled; host selective network policies use the supervisor proxy cooperatively"
         );
     } else {
         let network_boundary = if config.run.executor == RunExecutorKind::Vm
@@ -1531,38 +1543,36 @@ async fn execute_config(
             "cooperative network review"
         };
         if overlay_enabled {
-            eprintln!("pVisor safe profile: staged workspace + {network_boundary}");
+            run_log!("pVisor profile: staged workspace + {network_boundary}");
         } else {
-            eprintln!(
-                "pVisor safe profile: staged workspace + {network_boundary}; temporary stages are dropped unless --stage is provided"
-            );
+            run_log!("pVisor profile: writable lower + {network_boundary}");
         }
-        eprintln!("workspace: {}", workspace.display());
-        eprintln!("Run storage: {}", storage.display());
+        run_log!("workspace: {}", workspace.display());
+        run_log!("Run storage: {}", storage.display());
         match config.run.executor {
             RunExecutorKind::Host => {
                 #[cfg(target_os = "linux")]
-                eprintln!(
+                run_log!(
                     "boundary: rootless user/mount/PID namespaces + PID 1 reaper + synthetic root + Landlock filesystem; network remains cooperative unless explicitly denied"
                 );
                 #[cfg(target_os = "macos")]
                 if overlay_enabled {
-                    eprintln!(
+                    run_log!(
                         "boundary: Seatbelt-enforced staged writes; reads and selective network policies remain ambient/cooperative"
                     );
                 } else {
-                    eprintln!(
+                    run_log!(
                         "boundary: Seatbelt best-effort when available; temporary staged writes are dropped; reads and selective network policies remain ambient/cooperative"
                     );
                 }
                 #[cfg(not(any(target_os = "linux", target_os = "macos")))]
-                eprintln!("boundary: review-only host process");
+                run_log!("boundary: review-only host process");
             }
-            RunExecutorKind::Container => eprintln!(
+            RunExecutorKind::Container => run_log!(
                 "boundary: OCI container process; direct sockets remain outside proxy enforcement"
             ),
             RunExecutorKind::Vm => {
-                eprintln!(
+                run_log!(
                     "boundary: libkrun Linux virtual machine (KVM/HVF); virtio-net is owned by pVisor smoltcp and Gateway capture uses a virtual guest route"
                 )
             }
@@ -1610,10 +1620,10 @@ async fn execute_config(
         )
     })?;
     let bundle_path = RunBundle::path(&record.stage_dir());
-    eprintln!("Run Bundle: {}", bundle_path.display());
-    eprintln!("Review: pvisor review {}", record.stage_dir().display());
+    run_log!("Run Bundle: {}", bundle_path.display());
+    run_log!("Review: pvisor review {}", record.stage_dir().display());
     if bundle.filesystem.is_some() {
-        eprintln!(
+        run_log!(
             "Decide: pvisor apply {} | pvisor drop {}",
             record.stage_dir().display(),
             record.stage_dir().display()
@@ -1622,10 +1632,10 @@ async fn execute_config(
 
     if result.state != RunState::Completed {
         if let Some(failure) = &result.failure {
-            eprintln!("pVisor Run failed: {:?}: {}", failure.kind, failure.message);
+            run_log!("pVisor Run failed: {:?}: {}", failure.kind, failure.message);
         }
         for warning in &result.warnings {
-            eprintln!("pVisor Run warning: {warning}");
+            run_log!("pVisor Run warning: {warning}");
         }
     }
     Ok(match result.state {
@@ -1633,61 +1643,6 @@ async fn execute_config(
         RunState::Cancelled => 130,
         _ => result.exit_code.unwrap_or(1),
     })
-}
-
-fn ensure_codex_state_stage(config: &mut RunConfig) {
-    let is_codex = config
-        .run
-        .command
-        .first()
-        .and_then(|command| Path::new(command).file_name())
-        .and_then(|name| name.to_str())
-        == Some("codex");
-    if !is_codex {
-        return;
-    }
-    let Some(path) = std::env::var_os("CODEX_HOME")
-        .map(PathBuf::from)
-        .or_else(|| std::env::var_os("HOME").map(|home| PathBuf::from(home).join(".codex")))
-    else {
-        return;
-    };
-    let path = path.canonicalize().unwrap_or(path);
-    let filesystem = config
-        .filesystem
-        .get_or_insert_with(OverlayFsSettings::default);
-    if filesystem
-        .mount
-        .iter()
-        .any(|mount| mount.source == path || mount.target.as_ref() == Some(&path))
-    {
-        return;
-    }
-    if filesystem.base.is_none() && filesystem.target.is_none() {
-        // Keep the staged Codex state at its original absolute path. The
-        // process continues to see the same CODEX_HOME while the overlay
-        // redirects writes into the Run's temporary upper directory.
-        filesystem.base = Some(path.clone());
-        filesystem.target = Some(path.clone());
-    }
-    filesystem.mount.push(crate::config::FilesystemMount {
-        source: path.clone(),
-        target: Some(path),
-        access: FilesystemAccessLevel::Stage,
-    });
-    // The rootless launcher must bind the mounted COW view as writable; the
-    // stage mount itself still directs all mutations into the temporary upper.
-    if config.run.executor == RunExecutorKind::Host
-        && let Some(path) = filesystem
-            .mount
-            .last()
-            .map(|mount| mount.source.display().to_string())
-    {
-        config.run.filesystem.push(FilesystemCapability {
-            path,
-            access: FilesystemAccess::ReadWrite,
-        });
-    }
 }
 
 fn normalize_filesystem_config(config: &mut RunConfig) -> anyhow::Result<()> {
@@ -1766,6 +1721,11 @@ fn project_safe_baseline_environment(env: &mut std::collections::BTreeMap<String
     for key in [
         "PATH",
         "HOME",
+        "CODEX_HOME",
+        "XDG_CONFIG_HOME",
+        "XDG_DATA_HOME",
+        "XDG_STATE_HOME",
+        "XDG_CACHE_HOME",
         "USER",
         "LOGNAME",
         "SHELL",
@@ -1854,39 +1814,41 @@ fn apply_run_options(config: &mut RunConfig, args: RunArgs) -> anyhow::Result<()
 }
 
 fn warn_safe_preset(config: &RunConfig, args: &RunArgs) {
-    eprintln!(
+    run_log!(
         "pVisor --safe: executor={:?}, network={:?}; CLI > safe preset > config > defaults",
-        config.run.executor, config.overlaynet.policy
+        config.run.executor,
+        config.overlaynet.policy
     );
     for rule in &config.overlaynet.rules {
-        eprintln!(
+        run_log!(
             "pVisor --safe: allowed destination {:?}, ports {:?}",
-            rule.host, rule.ports
+            rule.host,
+            rule.ports
         );
     }
     if config.overlaynet.policy == OverlayNetPolicy::Deny {
-        eprintln!(
+        run_log!(
             "pVisor --safe: ordinary egress denied; configured Gateway routes remain separate. Use --overlaynet-allow or configure Gateway routes for an unrecognized/custom Agent."
         );
     }
     if config.overlaynet.mode == OverlayNetMode::Off {
-        eprintln!("pVisor --safe warning: explicit CLI disabled OverlayNet");
+        run_log!("pVisor --safe warning: explicit CLI disabled OverlayNet");
     } else if config.overlaynet.mode == OverlayNetMode::Auto
         && config.run.executor != RunExecutorKind::Vm
         && config.gateway.mode == GatewayMode::Off
     {
-        eprintln!(
+        run_log!(
             "pVisor --safe warning: explicit CLI selected auto without VM/Gateway; no selective proxy is installed"
         );
     }
-    eprintln!(
+    run_log!(
         "pVisor --safe warning: destination rules cannot distinguish inference from telemetry/upload APIs on the same host; Gateway routes are not an inference-path filter."
     );
-    eprintln!(
+    run_log!(
         "pVisor --safe: OverlayFS denies private-key paths and warns on sensitive paths according to the effective rules. Glob rules cover the overlay view; required sandbox restricts access outside that view. Explicit shares, renamed copies and embedded secrets need separate rules. No bulk-read or tool-call attribution monitoring."
     );
     if let Some(overlay) = &config.filesystem {
-        eprintln!(
+        run_log!(
             "pVisor --safe: file deny={:?}, warn={:?}",
             overlay.access_policy.deny(),
             overlay.access_policy.warn()
@@ -1898,7 +1860,7 @@ fn warn_safe_preset(config: &RunConfig, args: &RunArgs) {
             .as_ref()
             .is_some_and(|overlay| !overlay.compose.is_empty())
     {
-        eprintln!(
+        run_log!(
             "pVisor --safe warning: configured extra file shares are preserved; sensitive files in these paths remain accessible"
         );
     }
@@ -1909,12 +1871,12 @@ fn warn_safe_preset(config: &RunConfig, args: &RunArgs) {
         || !args.container.container_mount.is_empty()
         || !args.overlayfs.mounts.is_empty()
     {
-        eprintln!(
+        run_log!(
             "pVisor --safe warning: explicit CLI overrides preset network/filesystem defaults; additional destinations, credentials or files may be exposed"
         );
     }
     if config.vm.rootfs.as_deref() == Some(Path::new("/")) {
-        eprintln!(
+        run_log!(
             "pVisor --safe warning: host rootfs exposes host files, including credentials; the preset does not replace your rootfs"
         );
     }
@@ -2733,6 +2695,19 @@ mod tests {
     }
 
     #[test]
+    fn only_safe_runs_create_an_implicit_workspace_stage() {
+        let mut normal = RunConfig::default();
+        let normal_args = preset_args(&["--", "bash"]);
+        assert!(ensure_default_stage(&mut normal, &normal_args, "normal").is_none());
+        assert!(normal.filesystem.is_none());
+
+        let mut safe = RunConfig::default();
+        let safe_args = preset_args(&["--safe", "--", "bash"]);
+        let temporary = ensure_default_stage(&mut safe, &safe_args, "safe").unwrap();
+        assert_eq!(safe.filesystem.unwrap().stage, Some(temporary));
+    }
+
+    #[test]
     fn safe_preset_uses_command_not_label_and_keeps_executor_independent() {
         for (command, hosts) in [
             (
@@ -2773,7 +2748,7 @@ mod tests {
                 }
             }
         }
-        for command in ["/bin/sh", "unknown-agent"] {
+        for command in ["unknown-agent"] {
             let mut config = RunConfig::default();
             apply_run_options(
                 &mut config,
@@ -3244,18 +3219,6 @@ sandbox = "required""#
             config.vm.rootfs.as_deref(),
             Some(Path::new("/prepared-root"))
         );
-    }
-
-    #[test]
-    fn vm_codex_stage_does_not_add_host_filesystem_grants() {
-        let mut config = RunConfig::default();
-        config.run.executor = RunExecutorKind::Vm;
-        config.run.command = vec!["codex".into()];
-        ensure_codex_state_stage(&mut config);
-        normalize_filesystem_config(&mut config).unwrap();
-        let grants =
-            resolve_filesystem_grants(&config, Path::new("/project"), Path::new("/runs")).unwrap();
-        assert!(grants.is_empty());
     }
 
     #[test]

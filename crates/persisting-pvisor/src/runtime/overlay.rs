@@ -413,7 +413,11 @@ pub fn hint_from_record(record: &OverlayRecord, lower_dirs: Vec<PathBuf>) -> Ove
 }
 
 /// Lower stack for mount: compose layers first (top), then the base target.
-pub fn lower_stack_from_config(cfg: &OverlayConfig, storage: &Path, target: &Path) -> Vec<PathBuf> {
+pub fn lower_stack_from_config(
+    cfg: &OverlayConfig,
+    storage: &Path,
+    target: &Path,
+) -> io::Result<Vec<PathBuf>> {
     let resolve = |p: &str| -> PathBuf {
         let path = PathBuf::from(p);
         if path.is_absolute() {
@@ -435,34 +439,43 @@ pub fn lower_stack_from_config(cfg: &OverlayConfig, storage: &Path, target: &Pat
             .join(".overlay-lowers")
             .join(format!("{:016x}", hasher.finish()));
         if !snapshot.exists() {
-            if let Err(error) = copy_tree(target, &snapshot) {
-                tracing::warn!(%error, path = %target.display(), "failed to snapshot staged lower");
+            let pending = snapshot.with_extension(format!("pending-{}", uuid::Uuid::new_v4()));
+            let copied = copy_tree(target, &pending, storage)
+                .and_then(|()| std::fs::rename(&pending, &snapshot));
+            if let Err(error) = copied {
+                let _ = std::fs::remove_dir_all(&pending);
+                return Err(error);
             }
         }
-        if snapshot.is_dir() {
-            snapshot
-        } else {
-            target.to_path_buf()
-        }
+        snapshot
     } else {
         target.to_path_buf()
     };
     lowers.push(lower);
-    lowers
+    Ok(lowers)
 }
 
-fn copy_tree(source: &Path, destination: &Path) -> std::io::Result<()> {
+fn copy_tree(source: &Path, destination: &Path, excluded: &Path) -> std::io::Result<()> {
     std::fs::create_dir_all(destination)?;
     for entry in std::fs::read_dir(source)? {
         let entry = entry?;
         let from = entry.path();
+        if from.starts_with(excluded) {
+            continue;
+        }
         let to = destination.join(entry.file_name());
-        if from.is_dir() {
-            copy_tree(&from, &to)?;
-        } else {
-            std::fs::copy(from, to)?;
+        let kind = std::fs::symlink_metadata(&from)?.file_type();
+        if kind.is_symlink() {
+            std::os::unix::fs::symlink(std::fs::read_link(&from)?, &to)?;
+            copy_host_metadata(&from, &to)?;
+        } else if kind.is_dir() {
+            copy_tree(&from, &to, excluded)?;
+        } else if kind.is_file() {
+            std::fs::copy(&from, &to)?;
+            copy_host_metadata(&from, &to)?;
         }
     }
+    copy_host_metadata(source, destination)?;
     Ok(())
 }
 
@@ -2408,13 +2421,39 @@ mod tests {
             ..OverlayConfig::default()
         };
         assert_eq!(
-            lower_stack_from_config(&cfg, Path::new("/store"), Path::new("/target")),
+            lower_stack_from_config(&cfg, Path::new("/store"), Path::new("/target")).unwrap(),
             vec![
                 PathBuf::from("/store/extra-a"),
                 PathBuf::from("/store/extra-b"),
                 PathBuf::from("/target"),
             ]
         );
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn staged_lower_preserves_external_symlinks_without_copying_their_targets() {
+        let temporary = tempfile::tempdir().unwrap();
+        let workspace = temporary.path().join("workspace");
+        let outside = temporary.path().join("outside");
+        let storage = temporary.path().join("stage");
+        std::fs::create_dir_all(&workspace).unwrap();
+        std::fs::create_dir_all(&outside).unwrap();
+        std::fs::write(outside.join("secret"), b"secret").unwrap();
+        std::os::unix::fs::symlink(&outside, workspace.join("escape")).unwrap();
+        let cfg = OverlayConfig {
+            target: Some(workspace.display().to_string()),
+            ..OverlayConfig::default()
+        };
+        let lowers = lower_stack_from_config(&cfg, &storage, &workspace).unwrap();
+        let staged_link = lowers[0].join("escape");
+        assert!(
+            std::fs::symlink_metadata(&staged_link)
+                .unwrap()
+                .file_type()
+                .is_symlink()
+        );
+        assert_eq!(std::fs::read_link(staged_link).unwrap(), outside);
     }
 
     #[cfg(target_os = "macos")]

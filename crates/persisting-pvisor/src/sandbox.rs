@@ -91,6 +91,12 @@ pub(crate) struct SandboxPlan {
     pub attestation: PathBuf,
     pub read_only: Vec<PathBuf>,
     pub read_write: Vec<PathBuf>,
+    #[serde(default)]
+    pub staged_roots: Vec<PathBuf>,
+    #[serde(default)]
+    pub staged_workspace: Option<PathBuf>,
+    #[serde(default)]
+    pub staged_workspace_source: Option<PathBuf>,
     pub network: NetworkIsolation,
     #[serde(default)]
     pub landlock: bool,
@@ -126,9 +132,10 @@ pub fn run_internal_if_requested() -> anyhow::Result<bool> {
 fn run_internal() -> anyhow::Result<()> {
     use anyhow::{Context, bail};
 
-    let encoded = std::env::var(SANDBOX_PLAN_ENV).context("missing rootless sandbox plan")?;
+    let plan_path = std::env::var(SANDBOX_PLAN_ENV).context("missing rootless sandbox plan")?;
+    let encoded = std::fs::read(&plan_path).context("read rootless sandbox plan")?;
     let plan: SandboxPlan =
-        serde_json::from_str(&encoded).context("decode rootless sandbox plan")?;
+        serde_json::from_slice(&encoded).context("decode rootless sandbox plan")?;
     let mut arguments = std::env::args_os().skip(2);
     if arguments.next().as_deref() != Some(std::ffi::OsStr::new("--")) {
         bail!("invalid internal rootless sandbox invocation");
@@ -394,6 +401,9 @@ pub(crate) fn restrict_krun_runner(
         attestation: PathBuf::from("/dev/null"),
         read_only,
         read_write,
+        staged_roots: Vec::new(),
+        staged_workspace: None,
+        staged_workspace_source: None,
         network: NetworkIsolation::LoopbackOnly,
         landlock: true,
         process_limit: None,
@@ -957,6 +967,25 @@ fn enter_synthetic_root(plan: &SandboxPlan) -> std::io::Result<()> {
         return Err(Error::last_os_error());
     }
 
+    // The synthetic /dev starts empty. Recreate the conventional descriptor
+    // links locally instead of bind-mounting the host's /dev/fd magic link,
+    // which would remain tied to the setup process's procfs view.
+    let dev = plan.root.join("dev");
+    for (link, target) in [
+        ("fd", "/proc/self/fd"),
+        ("stdin", "/proc/self/fd/0"),
+        ("stdout", "/proc/self/fd/1"),
+        ("stderr", "/proc/self/fd/2"),
+        ("ptmx", "pts/ptmx"),
+    ] {
+        let link = dev.join(link);
+        if std::fs::symlink_metadata(&link).is_err() {
+            std::os::unix::fs::symlink(target, link)?;
+        }
+    }
+
+    mount_staged_roots(plan)?;
+
     // Desktop toolkits sometimes create dconf state below XDG_RUNTIME_DIR.
     // Keep that one writable runtime subdirectory private and ephemeral while
     // still allowing explicitly projected Wayland/D-Bus sockets beside it.
@@ -980,7 +1009,7 @@ fn enter_synthetic_root(plan: &SandboxPlan) -> std::io::Result<()> {
         .read_only
         .iter()
         .chain(&plan.read_write)
-        .filter(|path| !path.starts_with(&plan.root))
+        .filter(|path| !path.starts_with(&plan.root) && *path != std::path::Path::new("/"))
         .collect::<Vec<_>>();
     paths.sort_unstable_by(|left, right| {
         left.components()
@@ -990,13 +1019,13 @@ fn enter_synthetic_root(plan: &SandboxPlan) -> std::io::Result<()> {
     });
     paths.dedup();
     for path in paths {
-        if path == std::path::Path::new("/") {
-            return Err(Error::new(
-                ErrorKind::InvalidInput,
-                "the host root cannot be granted to a rootless sandbox",
-            ));
-        }
         bind_path_into_root(&plan.root, path)?;
+    }
+    if let Some(workspace) = &plan.staged_workspace {
+        let source = plan.staged_workspace_source.as_ref().ok_or_else(|| {
+            std::io::Error::other("staged workspace is missing its merged source")
+        })?;
+        bind_staged_workspace(&plan.root, source, workspace)?;
     }
 
     // chroot is safe here because the process has a private mount namespace,
@@ -1007,6 +1036,116 @@ fn enter_synthetic_root(plan: &SandboxPlan) -> std::io::Result<()> {
     }
     if unsafe { libc::chdir(c"/".as_ptr()) } != 0 {
         return Err(Error::last_os_error());
+    }
+    Ok(())
+}
+
+#[cfg(target_os = "linux")]
+fn mount_staged_roots(plan: &SandboxPlan) -> std::io::Result<()> {
+    use std::os::unix::ffi::OsStrExt;
+    use std::os::unix::fs::PermissionsExt;
+
+    if plan.staged_roots.is_empty() {
+        return Ok(());
+    }
+    let stage = plan.root.join(".pvisor-state-stage");
+    std::fs::create_dir(&stage)?;
+    std::fs::set_permissions(&stage, std::fs::Permissions::from_mode(0o700))?;
+    let stage_path = path_cstring(&stage)?;
+    if unsafe {
+        libc::mount(
+            c"tmpfs".as_ptr(),
+            stage_path.as_ptr(),
+            c"tmpfs".as_ptr(),
+            libc::MS_NOSUID | libc::MS_NODEV,
+            c"mode=0700".as_ptr().cast(),
+        )
+    } != 0
+    {
+        return Err(with_io_context(
+            "mount private state stage",
+            std::io::Error::last_os_error(),
+        ));
+    }
+
+    for (index, source) in plan.staged_roots.iter().enumerate() {
+        let target = plan
+            .root
+            .join(source.strip_prefix("/").map_err(std::io::Error::other)?);
+        std::fs::create_dir_all(&target)?;
+        let backing = stage.join(index.to_string());
+        let upper = backing.join("upper");
+        let work = backing.join("work");
+        std::fs::create_dir_all(&upper)?;
+        std::fs::create_dir_all(&work)?;
+        let mut options = b"userxattr,lowerdir=".to_vec();
+        for path in [source, &upper, &work] {
+            if path
+                .as_os_str()
+                .as_bytes()
+                .iter()
+                .any(|byte| matches!(byte, b',' | b':' | b'\\'))
+            {
+                return Err(std::io::Error::other(format!(
+                    "overlay stage path contains an unsupported separator: {}",
+                    path.display()
+                )));
+            }
+        }
+        options.extend_from_slice(source.as_os_str().as_bytes());
+        options.extend_from_slice(b",upperdir=");
+        options.extend_from_slice(upper.as_os_str().as_bytes());
+        options.extend_from_slice(b",workdir=");
+        options.extend_from_slice(work.as_os_str().as_bytes());
+        let options = std::ffi::CString::new(options).map_err(std::io::Error::other)?;
+        let target = path_cstring(&target)?;
+        if unsafe {
+            libc::mount(
+                c"overlay".as_ptr(),
+                target.as_ptr(),
+                c"overlay".as_ptr(),
+                libc::MS_NOSUID | libc::MS_NODEV,
+                options.as_ptr().cast(),
+            )
+        } != 0
+        {
+            return Err(with_io_context(
+                &format!("mount staged state at {}", source.display()),
+                std::io::Error::last_os_error(),
+            ));
+        }
+    }
+    Ok(())
+}
+
+#[cfg(target_os = "linux")]
+fn bind_staged_workspace(
+    root: &std::path::Path,
+    source: &std::path::Path,
+    destination: &std::path::Path,
+) -> std::io::Result<()> {
+    let target = root.join(
+        destination
+            .strip_prefix("/")
+            .map_err(std::io::Error::other)?,
+    );
+    std::fs::create_dir_all(&target)?;
+    let source = path_cstring(source)?;
+    let target = path_cstring(&target)?;
+    if unsafe {
+        libc::mount(
+            source.as_ptr(),
+            target.as_ptr(),
+            std::ptr::null(),
+            libc::MS_BIND | libc::MS_REC,
+            std::ptr::null(),
+        )
+    } != 0
+    {
+        return Err(with_io_context(
+            "bind staged workspace at original path",
+            std::io::Error::last_os_error(),
+        ));
     }
     Ok(())
 }

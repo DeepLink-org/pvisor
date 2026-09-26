@@ -295,11 +295,15 @@ fn mutate(
         .overlay
         .take()
         .context("this Run has no OverlayFS workspace")?;
+    // The final lower may be the Run-owned snapshot of the target. It is
+    // still the base workspace, whereas any preceding lower is a composed
+    // read-only layer whose changes cannot be applied to that workspace.
+    let base_snapshot = record.storage.join(".overlay-lowers");
     if apply
-        && record
-            .overlay_lowers
-            .iter()
-            .any(|lower| lower != &overlay.target)
+        && (record.overlay_lowers.len() > 1
+            || record.overlay_lowers.first().is_some_and(|lower| {
+                lower != &overlay.target && !lower.starts_with(&base_snapshot)
+            }))
     {
         bail!(
             "Run {} composes read-only layers above its base; apply is disabled until pVisor can materialize the complete merged diff",

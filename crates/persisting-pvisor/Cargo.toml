@@ -3,7 +3,7 @@ name = "persisting-pvisor"
 version.workspace = true
 edition.workspace = true
 authors.workspace = true
-license.workspace = true
+license = "Apache-2.0 AND MIT"
 description = "pVisor foreground Agent Run manager and portable execution runtime"
 readme = "README.md"
 
@@ -39,6 +39,8 @@ tokio = { workspace = true, features = ["io-util", "macros", "process", "rt-mult
 tokio-util = { workspace = true, features = ["rt"] }
 tracing.workspace = true
 uuid = { workspace = true, features = ["v4"] }
+unicode-width = "0.2.2"
+vt100 = "0.16.2"
 zstd.workspace = true
 reqwest = { workspace = true, features = ["blocking", "json", "rustls-tls"] }
 

@@ -191,6 +191,7 @@ enum SandboxResources {
     Linux {
         root: PathBuf,
         attestation: tempfile::NamedTempFile,
+        plan: tempfile::NamedTempFile,
     },
     #[cfg(target_os = "macos")]
     MacOS {
@@ -218,9 +219,13 @@ impl SandboxResources {
         let attestation = tempfile::Builder::new()
             .prefix("pvisor-rootless-attestation-")
             .tempfile()?;
+        let plan = tempfile::Builder::new()
+            .prefix("pvisor-rootless-plan-")
+            .tempfile()?;
         Ok(Self::Linux {
             root: path,
             attestation,
+            plan,
         })
     }
 
@@ -238,6 +243,21 @@ impl SandboxResources {
             Self::Linux { attestation, .. } => Some(attestation.path()),
             Self::None => None,
         }
+    }
+
+    #[cfg(target_os = "linux")]
+    fn write_plan(&mut self, encoded: &[u8]) -> std::io::Result<&Path> {
+        use std::io::{Seek, Write};
+
+        let Self::Linux { plan, .. } = self else {
+            unreachable!("Linux sandbox resources required")
+        };
+        let file = plan.as_file_mut();
+        file.rewind()?;
+        file.set_len(0)?;
+        file.write_all(encoded)?;
+        file.sync_all()?;
+        Ok(plan.path())
     }
 
     #[cfg(target_os = "macos")]
@@ -663,7 +683,7 @@ fn platform_launcher_command(
             format!("resolve Agent executable {}: {error}", program.display()),
         )
     })?;
-    let sandbox_root = SandboxResources::create()?;
+    let mut sandbox_root = SandboxResources::create()?;
     let network = network_isolation(spec)?;
     let plan = rootless_plan(
         spec,
@@ -679,14 +699,18 @@ fn platform_launcher_command(
             .to_owned(),
         network,
     )?;
-    let encoded = serde_json::to_string(&plan).map_err(std::io::Error::other)?;
+    let encoded = serde_json::to_vec(&plan).map_err(std::io::Error::other)?;
+    let plan_path = sandbox_root
+        .write_plan(&encoded)?
+        .to_string_lossy()
+        .into_owned();
     let mut command = Command::new(launcher);
     command
         .arg(INTERNAL_SANDBOX_ARG)
         .arg("--")
         .arg(&program)
         .args(&invocation.args);
-    Ok((command, Some(encoded), sandbox_root))
+    Ok((command, Some(plan_path), sandbox_root))
 }
 
 #[cfg(target_os = "macos")]
@@ -877,6 +901,9 @@ fn rootless_plan(
     // The PID-namespace init mounts a fresh procfs here. Grant read access to
     // that mountpoint, rather than exposing the host's procfs in the chroot.
     read_only.push(PathBuf::from("/proc"));
+    // Interactive programs resolve their inherited terminal through
+    // /dev/pts/<n>; the synthetic /dev tree does not otherwise contain it.
+    push_existing(&mut read_only, Path::new("/dev/pts"));
     let hidden_paths = spec
         .metadata
         .get(crate::sandbox::SANDBOX_HIDDEN_PATHS_KEY)
@@ -887,25 +914,81 @@ fn rootless_plan(
         .map(PathBuf::from)
         .collect::<Vec<_>>();
 
-    // Safe compatibility mode preserves the caller's path and environment
-    // semantics. Project the user's home and XDG roots so applications such
-    // as Codex keep their existing configuration and cache identity. Writes
-    // remain governed by the filesystem policy/stage layer.
+    // A normal Run writes through the projected home and XDG roots. A safe
+    // Run mounts private copy-on-write views of them at the same paths, so
+    // programs launched later from a shell get the same protection as the
+    // initial executable.
+    let safe = crate::sandbox::sandbox_required(spec);
+    let mut staged_roots = Vec::new();
     for key in [
         "HOME",
+        "CODEX_HOME",
         "XDG_CONFIG_HOME",
         "XDG_DATA_HOME",
         "XDG_STATE_HOME",
         "XDG_CACHE_HOME",
     ] {
-        let path = invocation
-            .env
-            .get(key)
-            .map(PathBuf::from)
-            .or_else(|| std::env::var_os(key).map(PathBuf::from));
-        if let Some(path) = path {
-            push_existing(&mut read_only, &path);
+        let path = invocation.env.get(key).map(PathBuf::from).or_else(|| {
+            invocation
+                .inherit_env
+                .then(|| std::env::var_os(key).map(PathBuf::from))
+                .flatten()
+        });
+        if let Some(path) = path.and_then(|path| path.canonicalize().ok())
+            && path.is_dir()
+        {
+            if safe {
+                if path == Path::new("/") {
+                    return Err(std::io::Error::other("safe state root cannot be /"));
+                }
+                staged_roots.push(path);
+            } else {
+                read_write.push(path);
+            }
         }
+    }
+    staged_roots.sort_unstable_by(|left, right| {
+        left.components()
+            .count()
+            .cmp(&right.components().count())
+            .then_with(|| left.cmp(right))
+    });
+    staged_roots.dedup();
+    let mut minimal_roots = Vec::<PathBuf>::new();
+    for path in staged_roots {
+        if !minimal_roots.iter().any(|root| path.starts_with(root)) {
+            minimal_roots.push(path);
+        }
+    }
+    read_write.extend(minimal_roots.iter().cloned());
+    // Keep the original project path visible as cwd so tools retain stable
+    // workspace identity. The trusted implant records the FUSE merged path,
+    // which is bind-mounted over that original path inside the sandbox.
+    let staged_workspace_source = safe
+        .then(|| spec.metadata.get("pvisor.runtime.implant"))
+        .flatten()
+        .and_then(|implant| implant.get("overlay_merged"))
+        .and_then(serde_json::Value::as_str)
+        .and_then(|path| Path::new(path).canonicalize().ok());
+    let staged_workspace = safe
+        .then(|| spec.metadata.get("pvisor.workspace"))
+        .flatten()
+        .and_then(serde_json::Value::as_str)
+        .and_then(|path| Path::new(path).canonicalize().ok())
+        .filter(|path| {
+            staged_workspace_source
+                .as_ref()
+                .is_some_and(|source| source != path)
+                && path.is_dir()
+        });
+    if let (Some(source), Some(path)) = (&staged_workspace_source, &staged_workspace) {
+        read_write.push(source.clone());
+        read_write.push(path.clone());
+    }
+    if !safe {
+        // The synthetic root itself is writable, and projected host paths
+        // retain their ordinary lower filesystem write semantics.
+        read_write.push(PathBuf::from("/"));
     }
     let graphical_display = project_graphical_session(invocation, &mut read_only, &mut read_write);
 
@@ -1009,13 +1092,13 @@ fn rootless_plan(
         attestation,
         read_only,
         read_write,
+        staged_roots: minimal_roots,
+        staged_workspace,
+        staged_workspace_source,
         network,
-        // Ordinary best-effort host runs retain the historical Landlock
-        // policy. The only profile that deliberately skips it is required
-        // safe compatibility mode, which is selected explicitly by the CLI
-        // when `--strict` is absent.
-        landlock: !crate::sandbox::sandbox_required(spec)
-            || crate::sandbox::landlock_required(spec),
+        // Both ordinary and safe host runs install Landlock. The safe profile
+        // also binds staged views over the workspace and state roots.
+        landlock: true,
         process_limit: spec.runtime.resource_limits.processes,
     })
 }
@@ -1633,6 +1716,69 @@ mod tests {
 
     #[cfg(target_os = "linux")]
     #[test]
+    fn rootless_plan_writes_through_normally_and_stages_state_for_safe_shells() {
+        let temporary = tempfile::tempdir().unwrap();
+        let home = temporary.path().join("home");
+        let codex_home = home.join(".codex");
+        let workspace = home.join("project");
+        let merged = temporary.path().join("merged");
+        for path in [&codex_home, &workspace, &merged] {
+            std::fs::create_dir_all(path).unwrap();
+        }
+        let mut spec = RunSpec::process("run", "bash", "/bin/bash");
+        let RunInvocation::Process(invocation) = &mut spec.invocation;
+        invocation.inherit_env = false;
+        invocation.cwd = Some(merged.display().to_string());
+        invocation
+            .env
+            .insert("HOME".into(), home.display().to_string());
+        invocation
+            .env
+            .insert("CODEX_HOME".into(), codex_home.display().to_string());
+        let RunInvocation::Process(invocation) = &spec.invocation;
+
+        let normal = rootless_plan(
+            &spec,
+            invocation,
+            Path::new("/bin/bash"),
+            temporary.path().join("root"),
+            temporary.path().join("attestation"),
+            NetworkIsolation::Ambient,
+        )
+        .unwrap();
+        assert!(normal.read_write.contains(&PathBuf::from("/")));
+        assert!(normal.read_write.contains(&home));
+        assert!(normal.staged_roots.is_empty());
+
+        spec.metadata
+            .insert(crate::sandbox::REQUIRED_SANDBOX_KEY.into(), true.into());
+        spec.metadata.insert(
+            "pvisor.workspace".into(),
+            workspace.display().to_string().into(),
+        );
+        spec.metadata.insert(
+            "pvisor.runtime.implant".into(),
+            serde_json::json!({"overlay_merged": merged.display().to_string()}),
+        );
+        let RunInvocation::Process(invocation) = &spec.invocation;
+        let safe = rootless_plan(
+            &spec,
+            invocation,
+            Path::new("/bin/bash"),
+            temporary.path().join("root"),
+            temporary.path().join("attestation"),
+            NetworkIsolation::Ambient,
+        )
+        .unwrap();
+        assert!(!safe.read_write.contains(&PathBuf::from("/")));
+        assert_eq!(safe.staged_roots, vec![home]);
+        assert_eq!(safe.staged_workspace, Some(workspace));
+        assert_eq!(safe.staged_workspace_source, Some(merged));
+        assert!(safe.landlock);
+    }
+
+    #[cfg(target_os = "linux")]
+    #[test]
     fn rootless_plan_is_reserved_even_when_the_run_clears_or_poisons_its_environment() {
         let temporary = tempfile::tempdir().unwrap();
         let mut spec = RunSpec::process("run", "agent", "/bin/true");
@@ -1649,7 +1795,7 @@ mod tests {
             ProcessExecutor::rootless_with_launcher(std::env::current_exe().unwrap()).unwrap();
         let RunInvocation::Process(invocation) = &spec.invocation;
         let command = executor.spawn_command(&spec, invocation).unwrap();
-        let encoded = command
+        let plan_path = command
             .command
             .as_std()
             .get_envs()
@@ -1657,6 +1803,7 @@ mod tests {
                 (key == SANDBOX_PLAN_ENV).then(|| value.unwrap().to_string_lossy().into_owned())
             })
             .expect("trusted sandbox plan must survive env_clear");
+        let encoded = std::fs::read_to_string(&plan_path).unwrap();
         let plan: SandboxPlan = serde_json::from_str(&encoded).unwrap();
         assert_eq!(plan.cwd, temporary.path().canonicalize().unwrap());
         assert_ne!(encoded, r#"{"read_write":["/"]}"#);
