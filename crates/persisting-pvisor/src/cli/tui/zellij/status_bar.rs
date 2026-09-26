@@ -242,8 +242,10 @@ mod tests {
     fn shortcut_ribbon_never_exceeds_terminal_width() {
         for cols in [30, 45, 80, 120] {
             for mode in [Mode::Command, Mode::Panel] {
-                let mut state = UiState::default();
-                state.mode = mode;
+                let state = UiState {
+                    mode,
+                    ..UiState::default()
+                };
                 let used = render_shortcuts(&mut Vec::new(), 24, cols, &state);
                 assert!(used <= usize::from(cols), "{mode:?} at {cols} columns");
             }

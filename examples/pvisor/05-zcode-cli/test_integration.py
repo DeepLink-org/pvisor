@@ -26,12 +26,19 @@ def verify_normal_command():
     with socket.socket() as listener:
         listener.bind(("127.0.0.1", 0))
         port = listener.getsockname()[1]
-    subprocess.run([
-        sys.executable, str(EXAMPLE / "prepare.py"), str(work),
-        f"http://127.0.0.1:{port}/v1", PVISOR,
-    ], check=True)
+    subprocess.run(
+        [
+            sys.executable,
+            str(EXAMPLE / "prepare.py"),
+            str(work),
+            f"http://127.0.0.1:{port}/v1",
+            PVISOR,
+        ],
+        check=True,
+    )
     state = work / "state"
-    env = {**os.environ,
+    env = {
+        **os.environ,
         "ZCODE_DATA_BASE_DIR": str(state),
         "ZCODE_STORAGE_DIR": str(state / "storage"),
         "ZCODE_SESSION_DB_PATH": str(state / "storage/sessions.sqlite"),
@@ -40,18 +47,31 @@ def verify_normal_command():
         "ZCODE_MODEL_TELEMETRY_ENABLED": "false",
     }
     with (work / "mock.jsonl").open("w") as log:
-        server = subprocess.Popen([sys.executable, str(EXAMPLE / "mock_llm.py"), str(port), "write"], stdout=log)
+        server = subprocess.Popen(
+            [sys.executable, str(EXAMPLE / "mock_llm.py"), str(port), "write"], stdout=log
+        )
         try:
             for _ in range(100):
                 try:
-                    with socket.create_connection(("127.0.0.1", port), timeout=.1):
+                    with socket.create_connection(("127.0.0.1", port), timeout=0.1):
                         break
                 except OSError:
-                    time.sleep(.05)
-            output = subprocess.run([
-                "zcode", "--prompt", "Create hello.txt, then reply PVISOR_ZCODE_OK.",
-                "--mode", "edit", "--no-color",
-            ], cwd=work / "base", env=env, capture_output=True, text=True, timeout=60)
+                    time.sleep(0.05)
+            output = subprocess.run(
+                [
+                    "zcode",
+                    "--prompt",
+                    "Create hello.txt, then reply PVISOR_ZCODE_OK.",
+                    "--mode",
+                    "edit",
+                    "--no-color",
+                ],
+                cwd=work / "base",
+                env=env,
+                capture_output=True,
+                text=True,
+                timeout=60,
+            )
         finally:
             server.terminate()
             server.wait(timeout=10)

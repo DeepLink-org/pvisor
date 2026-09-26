@@ -151,11 +151,23 @@ pub(crate) async fn connect_via_ambient_http_proxy(
     host: &str,
     port: u16,
 ) -> Option<std::io::Result<TcpStream>> {
+    // A host proxy cannot reach this machine's loopback service reliably, and
+    // may acknowledge CONNECT before it has connected to the destination.
+    if is_loopback_destination(host) {
+        return None;
+    }
     let proxy = ["HTTPS_PROXY", "https_proxy", "HTTP_PROXY", "http_proxy"]
         .into_iter()
         .filter_map(|key| std::env::var(key).ok())
         .find(|value| value.starts_with("http://") && !is_pvisor_loopback_proxy(value))?;
     Some(connect_via_http_proxy(&proxy, host, port).await)
+}
+
+fn is_loopback_destination(host: &str) -> bool {
+    host.trim_end_matches('.').eq_ignore_ascii_case("localhost")
+        || host
+            .parse::<std::net::IpAddr>()
+            .is_ok_and(|address| address.is_loopback())
 }
 
 fn is_pvisor_loopback_proxy(value: &str) -> bool {
@@ -207,4 +219,19 @@ async fn connect_via_http_proxy(proxy: &str, host: &str, port: u16) -> std::io::
     })
     .await
     .map_err(|_| std::io::Error::new(std::io::ErrorKind::TimedOut, "upstream proxy timeout"))?
+}
+
+#[cfg(test)]
+mod tests {
+    use super::is_loopback_destination;
+
+    #[test]
+    fn loopback_destinations_bypass_the_host_proxy() {
+        for host in ["127.0.0.1", "127.0.0.2", "::1", "localhost", "LOCALHOST."] {
+            assert!(is_loopback_destination(host), "{host}");
+        }
+        for host in ["127.0.0.1.example.com", "192.168.1.1", "example.com"] {
+            assert!(!is_loopback_destination(host), "{host}");
+        }
+    }
 }

@@ -39,7 +39,7 @@ api="https://api.github.com/repos/${REPO}/releases/tags/${TAG}"
 
 echo "Fetching nightly release assets from ${REPO} (tag=${TAG})..." >&2
 
-url="$("$PYTHON" - "$api" "$platform_re" "$REPO" "$TAG" <<'PY'
+url="$("$PYTHON" - "$api" "$platform_re" "$REPO" "$TAG" <<'PVISOR_NIGHTLY_PYTHON'
 import json
 import re
 import sys
@@ -79,7 +79,7 @@ else:
         f"no platform wheel for {platform_re.pattern} in nightly release — "
         f"check https://github.com/{repo}/releases/tag/{tag}"
     )
-PY
+PVISOR_NIGHTLY_PYTHON
 )"
 
 echo "Installing ${url}" >&2

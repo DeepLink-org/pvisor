@@ -757,19 +757,18 @@ pub async fn run(args: RunArgs) -> anyhow::Result<i32> {
             _ => {}
         }
     }
-    if let Some(path) = cleanup_stage {
-        if path.exists()
-            && let Err(error) = std::fs::remove_dir_all(&path)
-        {
-            if result.is_ok() {
-                return Err(error)
-                    .with_context(|| format!("remove temporary stage {}", path.display()));
-            }
-            run_log!(
-                "pVisor warning: failed to remove temporary stage {}: {error}",
-                path.display()
-            );
+    if let Some(path) = cleanup_stage
+        && path.exists()
+        && let Err(error) = std::fs::remove_dir_all(&path)
+    {
+        if result.is_ok() {
+            return Err(error)
+                .with_context(|| format!("remove temporary stage {}", path.display()));
         }
+        run_log!(
+            "pVisor warning: failed to remove temporary stage {}: {error}",
+            path.display()
+        );
     }
     result
 }
@@ -2067,28 +2066,40 @@ fn apply_cli(config: &mut RunConfig, args: RunArgs) -> anyhow::Result<()> {
         let overlayfs = config
             .filesystem
             .get_or_insert_with(OverlayFsSettings::default);
-        for access in args.overlayfs.access {
-            overlayfs.access.push(crate::config::FilesystemAccessRule {
-                path: access.path,
-                level: match access.level {
-                    FilesystemLevel::Deny => FilesystemAccessLevel::Deny,
-                    FilesystemLevel::Read => FilesystemAccessLevel::Read,
-                    FilesystemLevel::Stage => FilesystemAccessLevel::Stage,
-                    FilesystemLevel::Write => FilesystemAccessLevel::Write,
-                },
-            });
+        if !args.overlayfs.access.is_empty() {
+            overlayfs.access_policy = Default::default();
+            overlayfs.access = args
+                .overlayfs
+                .access
+                .into_iter()
+                .map(|access| crate::config::FilesystemAccessRule {
+                    path: access.path,
+                    level: match access.level {
+                        FilesystemLevel::Deny => FilesystemAccessLevel::Deny,
+                        FilesystemLevel::Read => FilesystemAccessLevel::Read,
+                        FilesystemLevel::Stage => FilesystemAccessLevel::Stage,
+                        FilesystemLevel::Write => FilesystemAccessLevel::Write,
+                    },
+                })
+                .collect();
         }
-        for mount in args.overlayfs.mounts {
-            overlayfs.mount.push(crate::config::FilesystemMount {
-                source: mount.source,
-                target: Some(mount.target),
-                access: match mount.access {
-                    FilesystemLevel::Deny => FilesystemAccessLevel::Deny,
-                    FilesystemLevel::Read => FilesystemAccessLevel::Read,
-                    FilesystemLevel::Stage => FilesystemAccessLevel::Stage,
-                    FilesystemLevel::Write => FilesystemAccessLevel::Write,
-                },
-            });
+        if !args.overlayfs.mounts.is_empty() {
+            overlayfs.compose.clear();
+            overlayfs.mount = args
+                .overlayfs
+                .mounts
+                .into_iter()
+                .map(|mount| crate::config::FilesystemMount {
+                    source: mount.source,
+                    target: Some(mount.target),
+                    access: match mount.access {
+                        FilesystemLevel::Deny => FilesystemAccessLevel::Deny,
+                        FilesystemLevel::Read => FilesystemAccessLevel::Read,
+                        FilesystemLevel::Stage => FilesystemAccessLevel::Stage,
+                        FilesystemLevel::Write => FilesystemAccessLevel::Write,
+                    },
+                })
+                .collect();
         }
         if let Some(value) = args.overlayfs.backend {
             overlayfs.backend = value;
@@ -2253,6 +2264,12 @@ fn validate_vm_rootfs_platform(config: &RunConfig) -> anyhow::Result<()> {
 }
 
 fn validate(config: &RunConfig, safe: bool) -> anyhow::Result<()> {
+    if let Some(filesystem) = &config.filesystem {
+        anyhow::ensure!(
+            filesystem.compose.is_empty() || filesystem.commit != OverlayFsCommit::Apply,
+            "composed filesystem layers cannot be combined with automatic apply"
+        );
+    }
     if let Some(profile) = config.gateway.profile {
         anyhow::ensure!(
             config.gateway.mode == GatewayMode::Capture,
@@ -2751,16 +2768,14 @@ mod tests {
                 }
             }
         }
-        for command in ["unknown-agent"] {
-            let mut config = RunConfig::default();
-            apply_run_options(
-                &mut config,
-                preset_args(&["--safe", "--name", "codex", "--", command]),
-            )
-            .unwrap();
-            assert_eq!(config.overlaynet.policy, OverlayNetPolicy::Deny);
-            assert!(config.overlaynet.rules.is_empty());
-        }
+        let mut config = RunConfig::default();
+        apply_run_options(
+            &mut config,
+            preset_args(&["--safe", "--name", "codex", "--", "unknown-agent"]),
+        )
+        .unwrap();
+        assert_eq!(config.overlaynet.policy, OverlayNetPolicy::Deny);
+        assert!(config.overlaynet.rules.is_empty());
     }
 
     #[test]
@@ -2876,29 +2891,45 @@ access = "read"
         assert_eq!(config.overlaynet.mode, OverlayNetMode::Off);
         assert_eq!(config.run.pass_env, ["CONFIG_SECRET"]);
         assert_eq!(
-            config.filesystem.as_ref().unwrap().compose,
-            [PathBuf::from("/configured/share")]
+            config.filesystem.as_ref().unwrap().mount[0].source,
+            PathBuf::from("/configured/share")
         );
     }
 
     #[test]
     fn file_access_rules_follow_cli_safe_config_priority() {
-        let mut config: RunConfig = toml::from_str(
-            r#"
-[filesystem.access_policy]
-deny = ["configured-secret"]
-warn = ["configured-warning"]
-"#,
-        )
-        .unwrap();
-        apply_run_options(
-            &mut config,
-            preset_args(&["--safe", "--access", "custom/*.pem", "--", "codex"]),
-        )
-        .unwrap();
+        let source = r#"
+[[filesystem.access]]
+path = "configured-secret"
+level = "deny"
+[[filesystem.access]]
+path = "configured-warning"
+level = "read"
+"#;
+        let mut config: RunConfig = toml::from_str(source).unwrap();
+        apply_run_options(&mut config, preset_args(&["--safe", "--", "codex"])).unwrap();
+        normalize_filesystem_config(&mut config).unwrap();
         let policy = &config.filesystem.as_ref().unwrap().access_policy;
         assert!(policy.deny().contains(&"**/.ssh".into()));
         assert!(!policy.deny().contains(&"configured-secret".into()));
+
+        let mut config: RunConfig = toml::from_str(source).unwrap();
+        apply_run_options(
+            &mut config,
+            preset_args(&[
+                "--safe",
+                "--access",
+                "custom/*.pem:read",
+                "--access",
+                "private/**:deny",
+                "--",
+                "codex",
+            ]),
+        )
+        .unwrap();
+        normalize_filesystem_config(&mut config).unwrap();
+        let policy = &config.filesystem.as_ref().unwrap().access_policy;
+        assert_eq!(policy.deny(), ["private/**"]);
         assert_eq!(policy.warn(), ["custom/*.pem"]);
         let overlay = resolve_overlay(
             &config,
@@ -2909,25 +2940,14 @@ warn = ["configured-warning"]
         .unwrap()
         .unwrap();
         assert_eq!(&overlay.access_policy, policy);
+
+        let mut config: RunConfig = toml::from_str(source).unwrap();
         apply_run_options(
             &mut config,
-            preset_args(&["--safe", "--access", "private/**", "--", "codex"]),
+            preset_args(&["--access", "../outside:deny", "--", "codex"]),
         )
         .unwrap();
-        let policy = &config.filesystem.as_ref().unwrap().access_policy;
-        assert_eq!(policy.deny(), ["private/**"]);
-        assert!(policy.warn().is_empty());
-        assert!(
-            apply_run_options(
-                &mut config,
-                preset_args(&["--access", "../outside", "--", "codex"]),
-            )
-            .is_err()
-        );
-        assert_eq!(
-            config.filesystem.as_ref().unwrap().access_policy.deny(),
-            ["private/**"]
-        );
+        assert!(normalize_filesystem_config(&mut config).is_err());
     }
 
     #[test]

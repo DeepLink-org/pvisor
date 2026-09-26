@@ -110,10 +110,12 @@ write_json(state / "provider.json", provider)
 runtime = Path(os.environ["ZCODE_RUNTIME_ROOT"]).resolve(strict=True)
 config = work / "config/pvisor/agents/zcode.toml"
 config.parent.mkdir(parents=True)
-config.write_text("\n".join(
-    f"[[filesystem.mount]]\nsource = {json.dumps(str(path))}\naccess = '{'write' if access == 'read_write' else access}'\n"
-    for path, access in [(runtime, "read"), (node.parent.parent, "read"), (state, "read_write")]
-))
+config.write_text(
+    "\n".join(
+        f"[[filesystem.mount]]\nsource = {json.dumps(str(path))}\naccess = '{'write' if access == 'read_write' else access}'\n"
+        for path, access in [(runtime, "read"), (node.parent.parent, "read"), (state, "read_write")]
+    )
+)
 write_json(
     work / "base-before.json",
     {

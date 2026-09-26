@@ -21,8 +21,8 @@ pub enum RunControlRequest {
     UnmountInspect { id: String },
 }
 
-/// Response to a local Run inspection request. Optional fields remain explicit
-/// JSON nulls for compatibility with existing clients.
+/// Response to a local Run inspection request. Existing optional fields remain
+/// explicit JSON nulls; the newer observations field is absent when unused.
 #[derive(Debug, Serialize, Deserialize)]
 pub struct RunControlResponse {
     pub ok: bool,
@@ -30,7 +30,7 @@ pub struct RunControlResponse {
     pub mountpoint: Option<PathBuf>,
     pub error: Option<String>,
     pub overlay_status: Option<OverlayStatus>,
-    #[serde(default)]
+    #[serde(default, skip_serializing_if = "Option::is_none")]
     pub observations: Option<serde_json::Value>,
 }
 

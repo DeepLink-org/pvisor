@@ -513,7 +513,7 @@ mod tests {
             assert_eq!(after.agent_cols, cols - 2);
             let (x, y, width, height) = after.floating_rect();
             assert!(x >= 2 && x + width <= cols);
-            assert!(y >= 3 && y + height <= after.rows - 1);
+            assert!(y >= 3 && y + height < after.rows);
             if cols == 156 {
                 assert!(width >= 120, "wide terminal panel should remain readable");
                 assert!(height >= 60, "tall terminal panel should show more rows");

@@ -32,10 +32,11 @@ import socket
 import subprocess
 import sys
 import tempfile
+import textwrap
 import time
 from pathlib import Path
 
-CASE_RE = re.compile(r"^- \[ \] \*\*([A-J][0-9]{2})：(.+?)\*\*\s*$")
+CASE_RE = re.compile(r"^- \[ \] \*\*([A-M][0-9]{2})：(.+?)\*\*\s*$")
 META_RE = re.compile(r"^\s*<!--\s*pvisor-case:\s*(.*?)\s*-->\s*$")
 ASSERT_RE = re.compile(r"^\s*<!--\s*pvisor-assert\s*-->\s*$")
 VALID_EXPECTATIONS = {"success", "nonzero", "any"}
@@ -266,8 +267,8 @@ def parse_cases(document: Path) -> list[Case]:
             Case(
                 case_id,
                 title,
-                "\n".join(code).strip(),
-                "\n".join(assertion or []).strip(),
+                textwrap.dedent("\n".join(code)).strip(),
+                textwrap.dedent("\n".join(assertion or [])).strip(),
                 expect,
                 requires,
             )

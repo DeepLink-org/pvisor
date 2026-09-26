@@ -1033,16 +1033,14 @@ fn rootless_plan(
             .get(crate::sandbox::SANDBOX_NO_GPU_KEY)
             .and_then(serde_json::Value::as_bool)
             .unwrap_or(false);
-    if project_render_nodes {
-        if let Ok(devices) = std::fs::read_dir("/dev/dri") {
-            for device in devices.flatten().map(|entry| entry.path()) {
-                if device
-                    .file_name()
-                    .and_then(|name| name.to_str())
-                    .is_some_and(|name| name.starts_with("renderD"))
-                {
-                    push_existing(&mut read_write, &device);
-                }
+    if project_render_nodes && let Ok(devices) = std::fs::read_dir("/dev/dri") {
+        for device in devices.flatten().map(|entry| entry.path()) {
+            if device
+                .file_name()
+                .and_then(|name| name.to_str())
+                .is_some_and(|name| name.starts_with("renderD"))
+            {
+                push_existing(&mut read_write, &device);
             }
         }
     }

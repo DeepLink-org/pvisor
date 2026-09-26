@@ -26,15 +26,16 @@ fn safe_preset_reaches_the_run_and_reports_its_limits() {
         .tempdir_in("/tmp")
         .unwrap();
     let run_home = temporary.path().join("runs");
+    let stage = temporary.path().join("stage");
     let workspace = temporary.path().join("workspace");
     std::fs::create_dir_all(workspace.join(".ssh")).unwrap();
     std::fs::write(workspace.join(".ssh/id_ed25519"), "dummy-private-key").unwrap();
     std::fs::write(workspace.join(".env"), "warn-only-fixture").unwrap();
     std::os::unix::fs::symlink(".ssh/id_ed25519", workspace.join("alias")).unwrap();
     let output = Command::new(env!("CARGO_BIN_EXE_pvisor"))
+        .args(["run", "--safe", "--stage"])
+        .arg(&stage)
         .args([
-            "run",
-            "--safe",
             "--",
             "/bin/sh",
             "-c",
@@ -51,7 +52,7 @@ fn safe_preset_reaches_the_run_and_reports_its_limits() {
     assert!(!String::from_utf8_lossy(&output.stdout).contains("dummy-private-key"));
     assert!(String::from_utf8_lossy(&output.stdout).contains("warn-only-fixture"));
     assert!(stderr.contains("cannot distinguish inference"));
-    let bundle = RunBundle::read(&only_run_dir(&run_home)).unwrap();
+    let bundle = RunBundle::read(&stage).unwrap();
     assert!(
         bundle
             .filesystem
@@ -61,7 +62,7 @@ fn safe_preset_reaches_the_run_and_reports_its_limits() {
             .deny()
             .contains(&"**/.ssh".into())
     );
-    assert_eq!(bundle.network.policy["mode"], "no-network");
+    assert_eq!(bundle.network.policy["mode"], "allowlist");
     assert!(matches!(
         bundle.run.executor.unwrap().isolation,
         persisting_control::IsolationKind::HostProcess
@@ -444,7 +445,7 @@ fn every_public_run_option_is_accepted_by_the_real_cli_parser() {
         &["--max-cpu-time", "5s"],
         &["--max-open-files", "32"],
         &["--max-file-size", "1MiB"],
-        &["--max-stage-size", "2GiB"],
+        &["--filesystem-max-size", "2GiB"],
         &["--container-runtime", "runc"],
         &["--container-image", "alpine:latest"],
         &["--container-rootfs", "/tmp/rootfs"],
@@ -455,10 +456,9 @@ fn every_public_run_option_is_accepted_by_the_real_cli_parser() {
         &["--container-user", "1000:1000"],
         &["--container-read-only-rootfs"],
         &["--container-mount", "source=\"/tmp\",target=\"/workspace\""],
-        &["--overlayfs-path", "/workspace"],
-        &["--overlayfs-compose", "/tmp/lower"],
-        &["--overlayfs-backend", "directory"],
-        &["--overlayfs-commit", "manual"],
+        &["--mount", "/tmp/lower:read"],
+        &["--access", "**/.ssh:deny"],
+        &["--filesystem-backend", "directory"],
         &["--overlaynet", "proxy"],
         &["--overlaynet", "auto"],
         &["--overlaynet"],
