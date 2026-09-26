@@ -189,6 +189,14 @@ pub struct RunControlServer {
 
 impl RunControlServer {
     pub fn start(record: &RunRecord) -> anyhow::Result<Option<Self>> {
+        Self::start_observed(record, None, None)
+    }
+
+    pub fn start_observed(
+        record: &RunRecord,
+        filesystem: Option<persisting_overlayfs::FsMetrics>,
+        network: Option<persisting_overlaynet::InterceptionMetrics>,
+    ) -> anyhow::Result<Option<Self>> {
         let Some(overlay) = record.overlay.clone() else {
             return Ok(None);
         };
@@ -220,7 +228,15 @@ impl RunControlServer {
                 while !thread_stop.load(Ordering::Acquire) {
                     match listener.accept() {
                         Ok((stream, _)) => {
-                            serve_control(stream, &stage, &overlay, &lowers, &mut mounts);
+                            serve_control(
+                                stream,
+                                &stage,
+                                &overlay,
+                                &lowers,
+                                &mut mounts,
+                                filesystem.as_ref(),
+                                network.as_ref(),
+                            );
                         }
                         Err(error) if error.kind() == std::io::ErrorKind::WouldBlock => {
                             std::thread::sleep(Duration::from_millis(20));
@@ -256,6 +272,8 @@ fn serve_control(
     overlay: &OverlayRecord,
     lowers: &[PathBuf],
     mounts: &mut HashMap<String, ReadOnlyOverlayMount>,
+    filesystem: Option<&persisting_overlayfs::FsMetrics>,
+    network: Option<&persisting_overlaynet::InterceptionMetrics>,
 ) {
     use std::io::{BufRead, Write};
     let request = (|| -> anyhow::Result<RunControlRequest> {
@@ -270,6 +288,7 @@ fn serve_control(
             mountpoint: None,
             error: None,
             overlay_status: None,
+            observations: None,
         },
         Ok(RunControlRequest::OverlayStatus) => match overlay_status(overlay) {
             Ok(status) => RunControlResponse {
@@ -278,8 +297,20 @@ fn serve_control(
                 mountpoint: None,
                 error: None,
                 overlay_status: Some(status),
+                observations: None,
             },
             Err(error) => control_error(error),
+        },
+        Ok(RunControlRequest::Observations) => RunControlResponse {
+            ok: true,
+            id: None,
+            mountpoint: None,
+            error: None,
+            overlay_status: None,
+            observations: Some(serde_json::json!({
+                "filesystem": filesystem.map(|metrics| metrics.snapshot()),
+                "network": network.map(|metrics| metrics.snapshot()),
+            })),
         },
         Ok(RunControlRequest::MountInspect) => {
             let id = uuid::Uuid::new_v4().to_string();
@@ -293,6 +324,7 @@ fn serve_control(
                         mountpoint: Some(mountpoint),
                         error: None,
                         overlay_status: None,
+                        observations: None,
                     }
                 }
                 Err(error) => control_error(error),
@@ -307,6 +339,7 @@ fn serve_control(
                         mountpoint: None,
                         error: None,
                         overlay_status: None,
+                        observations: None,
                     },
                     Err(error) => control_error(error),
                 }
@@ -329,6 +362,7 @@ fn control_error(error: impl std::fmt::Display) -> RunControlResponse {
         mountpoint: None,
         error: Some(error.to_string()),
         overlay_status: None,
+        observations: None,
     }
 }
 
@@ -370,6 +404,12 @@ pub fn control_overlay_status(stage: &Path) -> anyhow::Result<ControlOverlayStat
     control_request(stage, &RunControlRequest::OverlayStatus)?
         .overlay_status
         .context("control response missing OverlayFS status")
+}
+
+pub(crate) fn control_observations(stage: &Path) -> anyhow::Result<serde_json::Value> {
+    control_request(stage, &RunControlRequest::Observations)?
+        .observations
+        .context("control response missing observations")
 }
 
 pub fn control_unmount_inspect(stage: &Path, id: String) -> anyhow::Result<()> {

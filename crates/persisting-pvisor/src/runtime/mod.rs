@@ -40,6 +40,7 @@ pub use overlay::{
     overlay_changes, overlay_status, restore_overlay_upper, snapshot_overlay_upper,
     write_overlay_record,
 };
+pub(crate) use registry::control_observations;
 pub use registry::{
     EnvironmentProjection, RunLease, RunLineage, RunRecord, all_runs, control_mount_inspect,
     control_overlay_status, control_ping, control_unmount_inspect, default_run_home, is_live,

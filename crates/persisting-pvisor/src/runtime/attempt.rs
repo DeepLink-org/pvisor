@@ -449,7 +449,11 @@ pub(crate) fn prepare_attempt(
         run_plan: run_plan_from_spec(spec)?,
     };
     run_record.write()?;
-    let control = RunControlServer::start(&run_record)?;
+    let control = RunControlServer::start_observed(
+        &run_record,
+        fs_metrics.clone(),
+        Some(network_metrics.clone()),
+    )?;
 
     let RunInvocation::Process(ref process) = spec.invocation;
     let program = process.program.clone();
@@ -590,7 +594,8 @@ pub(crate) fn prepare_overlay_attempt(
         run_plan: run_plan_from_spec(spec)?,
     };
     run_record.write()?;
-    let control = RunControlServer::start(&run_record)?;
+    let control =
+        RunControlServer::start_observed(&run_record, fs_metrics.clone(), network_metrics.clone())?;
 
     let transparent_cwd = process_cwd(spec);
     let mut plan = ImplantPlan {

@@ -16,6 +16,7 @@ pub use crate::file_access::{FileAccessDecision, FileAccessPolicy};
 pub enum RunControlRequest {
     Ping,
     OverlayStatus,
+    Observations,
     MountInspect,
     UnmountInspect { id: String },
 }
@@ -29,6 +30,8 @@ pub struct RunControlResponse {
     pub mountpoint: Option<PathBuf>,
     pub error: Option<String>,
     pub overlay_status: Option<OverlayStatus>,
+    #[serde(default)]
+    pub observations: Option<serde_json::Value>,
 }
 
 /// Durable record of one overlay staging workspace (survives Attempt teardown).

@@ -131,6 +131,9 @@ const DENY_ALL_HELP: &str = "Deny all OverlayNet egress; direct sockets remain o
 
 #[derive(Debug, Clone, Args)]
 pub struct RunArgs {
+    /// Show the optional status bar; Ctrl-] opens the tabbed dashboard.
+    #[arg(long)]
+    tui: bool,
     /// TOML RunConfig or prepared JSON RunSpec; explicit CLI values replace matching fields.
     #[arg(long, value_name = "FILE")]
     spec: Option<PathBuf>,
@@ -165,6 +168,24 @@ pub struct RunArgs {
     /// Agent command; replaces `run.command` from the TOML spec.
     #[arg(trailing_var_arg = true, allow_hyphen_values = true)]
     command: Vec<String>,
+}
+
+impl RunArgs {
+    #[cfg(unix)]
+    pub(super) fn tui_requested(&self) -> bool {
+        self.tui
+    }
+
+    #[cfg(unix)]
+    pub(super) fn wants_tui(&self) -> bool {
+        self.tui
+            && self.result_file.is_none()
+            && self.run.stdio != Some(RunStdio::Capture)
+            && self
+                .spec
+                .as_ref()
+                .is_none_or(|path| path.extension().is_none_or(|ext| ext != "json"))
+    }
 }
 
 #[derive(Debug, Clone, Args)]
@@ -1222,6 +1243,13 @@ async fn execute_config(
     let workspace = resolve_workspace(&workspace)?;
     let storage = resolve_run_storage(&select_run_storage(&config, &workspace, &run_id)?)?;
     let mut overlay = resolve_overlay(&config, &workspace, &storage, &run_id)?;
+    #[cfg(unix)]
+    super::tui::announce_stage(
+        overlay
+            .as_ref()
+            .and_then(|hint| hint.stage_dir.as_deref())
+            .unwrap_or(&storage),
+    );
     if config.run.executor == RunExecutorKind::Vm
         && config.vm.rootfs_immutable
         && config

@@ -7,6 +7,8 @@ mod run;
 pub mod runtime;
 mod trace;
 mod trajectory;
+#[cfg(unix)]
+mod tui;
 
 use clap::{Parser, Subcommand};
 
@@ -70,8 +72,27 @@ enum Command {
 }
 
 pub fn main() -> anyhow::Result<()> {
+    #[cfg(unix)]
+    tui::init_child_context();
     let args = normalize_default_run(std::env::args_os().collect());
-    match Cli::parse_from(args).command {
+    let parsed = Cli::parse_from(args.clone());
+    #[cfg(unix)]
+    if let Command::Run(run) = &parsed.command
+        && run.tui_requested()
+        && !tui::is_child()
+    {
+        anyhow::ensure!(
+            run.wants_tui(),
+            "--tui requires inherited stdio and a normal Run"
+        );
+        anyhow::ensure!(tui::available(), "--tui requires an interactive terminal");
+        let code = tui::run(args)?;
+        if code != 0 {
+            std::process::exit(code);
+        }
+        return Ok(());
+    }
+    match parsed.command {
         Command::Trace(args) => trace::run(args)?,
         Command::Run(args) => {
             let code = tokio::runtime::Runtime::new()?.block_on(run::run(*args))?;
