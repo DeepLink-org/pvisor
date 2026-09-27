@@ -25,6 +25,27 @@ const NETWORK_FD_ENV: &str = "PERSISTING_KRUN_NETWORK_FD";
 const NETWORK_CHILD_FD: RawFd = 198;
 const NET_FLAG_DHCP_CLIENT: u32 = 1 << 1;
 
+#[cfg(all(target_os = "linux", target_arch = "x86_64"))]
+fn needs_krun_enomem_workaround() -> bool {
+    match std::env::var("PERSISTING_KRUN_ENOMEM_WORKAROUND").as_deref() {
+        Ok("1") => return true,
+        Ok("0") => return false,
+        _ => {}
+    }
+    std::fs::read_to_string("/proc/sys/kernel/osrelease").map_or(true, |release| {
+        kernel_release_needs_krun_workaround(&release)
+    })
+}
+
+#[cfg(all(target_os = "linux", target_arch = "x86_64"))]
+fn kernel_release_needs_krun_workaround(release: &str) -> bool {
+    release
+        .split('.')
+        .next()
+        .and_then(|major| major.parse::<u32>().ok())
+        .is_none_or(|major| major < 7)
+}
+
 #[derive(Debug, Clone)]
 pub struct VmExecutor {
     settings: VmSettings,
@@ -604,13 +625,16 @@ impl RunExecutor for VmExecutor {
                 });
             }
         }
-        // libkrun's x86_64 KVM path can otherwise race guest workqueue
-        // creation and halt before init runs. The upstream compatibility
-        // switch is still required on the Fedora 43 / Linux 6.17 host used by
-        // pVisor's Linux validation, not only the older kernels named in the
-        // vendored libkrun comment.
+        // The vendored workaround sleeps before every KVM_RUN. It is still
+        // needed on the Fedora 43 / Linux 6.17 host used by pVisor's Linux
+        // validation, but makes newer kernels much slower. Keep it for 6.x
+        // and unknown hosts; allow an explicit override for diagnostics.
         #[cfg(all(target_os = "linux", target_arch = "x86_64"))]
-        command.env("KRUN_ENOMEM_WORKAROUND", "1");
+        if needs_krun_enomem_workaround() {
+            command.env("KRUN_ENOMEM_WORKAROUND", "1");
+        } else {
+            command.env_remove("KRUN_ENOMEM_WORKAROUND");
+        }
         if let Some(directory) = &self.settings.library_dir {
             #[cfg(target_os = "linux")]
             command.env("LD_LIBRARY_PATH", directory);
@@ -932,6 +956,15 @@ fn write_guest_helper(
     if let Some(bytes) = limits.file_size_bytes {
         script.push_str(&format!("ulimit -f {}\n", bytes.div_ceil(512)));
     }
+    // libkrun starts interactive guests on /dev/console. Its file descriptor
+    // accepts terminal I/O, but ttyname(3) cannot identify it as /dev/hvc0.
+    // Reopen only terminal-backed streams so redirected and captured I/O keep
+    // their separate virtio-console ports.
+    script.push_str("if [ -c /dev/hvc0 ]; then\n");
+    script.push_str("  if [ -t 0 ]; then exec 0</dev/hvc0; fi\n");
+    script.push_str("  if [ -t 1 ]; then exec 1>/dev/hvc0; fi\n");
+    script.push_str("  if [ -t 2 ]; then exec 2>/dev/hvc0; fi\n");
+    script.push_str("fi\n");
     script.push_str("rm -f /init.krun \"$0\"");
     if let Some(mount_helper) = mount_helper {
         script.push(' ');
@@ -1112,6 +1145,16 @@ fn check_krun(value: i32, operation: &str) -> anyhow::Result<()> {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[cfg(all(target_os = "linux", target_arch = "x86_64"))]
+    #[test]
+    fn krun_workaround_keeps_slow_path_on_older_or_unknown_kernels() {
+        assert!(kernel_release_needs_krun_workaround("6.17.0-foo"));
+        assert!(kernel_release_needs_krun_workaround("unknown"));
+        assert!(!kernel_release_needs_krun_workaround(
+            "7.1.13-200.fc44.x86_64"
+        ));
+    }
 
     #[test]
     fn file_rules_cover_original_vm_workspace_paths_and_hide_backing() {
