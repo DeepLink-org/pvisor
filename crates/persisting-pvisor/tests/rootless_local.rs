@@ -486,7 +486,14 @@ fn safe_apply_refuses_to_overwrite_a_concurrently_changed_target() {
     if skip_if_user_namespaces_are_explicitly_optional(&run_home, &output) {
         return;
     }
-    assert!(output.status.success());
+    assert!(
+        output.status.success(),
+        "safe run failed ({}):\nstdout:\n{}\nstderr:\n{}\nsetup failure: {:?}",
+        output.status,
+        String::from_utf8_lossy(&output.stdout),
+        String::from_utf8_lossy(&output.stderr),
+        setup_failure(&run_home)
+    );
     assert_eq!(fs::read(workspace.join("value.txt")).unwrap(), b"original");
     fs::write(workspace.join("value.txt"), b"concurrent").unwrap();
 
