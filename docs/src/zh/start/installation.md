@@ -45,8 +45,11 @@ CLI 支持 macOS 和 Linux，要求 Python 3.10 或更新版本。普通 host Jo
 brew install --cask macfuse
 ```
 
-macOS 提示时允许 macFUSE system extension。暂存挂载不可用时，要求暂存的 Job
-会直接报错，不会静默退化为直写。
+macOS 默认使用 macFUSE 的 **FSKit 后端**。安装 macFUSE 5.4.0 或更新版本（旧版 FSKit 存在小写入变零的数据损坏问题）后，在
+“系统设置 → 通用 → 登录项与扩展 → 文件系统扩展”中启用 macFUSE。
+这条路径不加载内核扩展，不需要进入 Recovery 或降低启动安全级别。
+挂载点位于 `/Volumes/pvisor-*`，暂存数据仍保存在 Job 的 stage 目录。
+FSKit 不可用时会直接报错，不会自动切换内核后端或退化为直写。
 libkrun VM executor 不需要 macFUSE。
 
 ## 3. 需要时从源码安装

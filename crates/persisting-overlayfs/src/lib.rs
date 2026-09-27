@@ -44,7 +44,7 @@ pub struct OverlayMountConfig {
     pub default_permissions: bool,
     pub read_only: bool,
     pub fsname: String,
-    /// macFUSE backend (`kernel` or `fskit`). Ignored on non-macOS hosts.
+    /// macFUSE backend (`kernel` or `fskit`); defaults to FSKit on macOS.
     pub backend: Option<String>,
     pub debug: bool,
     /// Optional durable first-touch journal used to reject apply conflicts.
@@ -77,7 +77,7 @@ impl OverlayMountConfig {
             default_permissions: true,
             read_only: false,
             fsname: "persisting-overlayfs".into(),
-            backend: None,
+            backend: cfg!(target_os = "macos").then(|| "fskit".into()),
             debug: false,
             preimage_dir: None,
             excluded_paths: Vec::new(),
@@ -155,6 +155,8 @@ impl Drop for OverlaySession {
 }
 
 pub fn mount(config: OverlayMountConfig) -> Result<OverlaySession> {
+    #[cfg(target_os = "macos")]
+    check_fskit_version(&config)?;
     let (filesystem, mountpoint, options, jujutsu) = prepare(config)?;
     let session = Session::new(filesystem, &mountpoint, &options)
         .with_context(|| format!("mount {}", mountpoint.display()))?;
@@ -168,6 +170,8 @@ pub fn mount(config: OverlayMountConfig) -> Result<OverlaySession> {
 }
 
 pub fn run_foreground(config: OverlayMountConfig) -> Result<()> {
+    #[cfg(target_os = "macos")]
+    check_fskit_version(&config)?;
     let (filesystem, mountpoint, options, jujutsu) = prepare(config)?;
     log::info!("persisting-overlayfs mounted at {}", mountpoint.display());
     let mut session = Session::new(filesystem, &mountpoint, &options)
@@ -177,6 +181,39 @@ pub fn run_foreground(config: OverlayMountConfig) -> Result<()> {
         workspace
             .snapshot()
             .context("snapshot Jujutsu overlay workspace")?;
+    }
+    Ok(())
+}
+
+#[cfg(target_os = "macos")]
+fn check_fskit_version(config: &OverlayMountConfig) -> Result<()> {
+    if config.backend.as_deref() != Some("fskit") {
+        return Ok(());
+    }
+    let output = std::process::Command::new("/usr/bin/defaults")
+        .args([
+            "read",
+            "/Library/Filesystems/macfuse.fs/Contents/Info",
+            "CFBundleVersion",
+        ])
+        .output()
+        .context("read installed macFUSE version")?;
+    if !output.status.success() {
+        bail!("cannot read installed macFUSE version; FSKit requires macFUSE >= 5.4.0");
+    }
+    require_fskit_version(std::str::from_utf8(&output.stdout)?.trim())
+}
+
+#[cfg(target_os = "macos")]
+fn require_fskit_version(version: &str) -> Result<()> {
+    let parts = version
+        .split('.')
+        .map(str::parse::<u32>)
+        .collect::<Result<Vec<_>, _>>()?;
+    if parts.as_slice() < [5, 4, 0].as_slice() {
+        bail!(
+            "macFUSE {version} FSKit can corrupt small writes with zero-filled data; macFUSE >= 5.4.0 is required (brew upgrade --cask macfuse)"
+        );
     }
     Ok(())
 }
@@ -214,6 +251,11 @@ fn prepare(
         && !matches!(backend.as_str(), "kernel" | "fskit")
     {
         bail!("unsupported macFUSE backend: {backend}");
+    }
+    if fskit && (!config.default_permissions || config.allow_root) {
+        bail!(
+            "FSKit requires default_permissions and does not support allow_root caller filtering"
+        );
     }
     if !fskit {
         std::fs::create_dir_all(&config.mountpoint)
@@ -368,6 +410,8 @@ fn prepare(
             filesystem
         }
     }
+    .with_private_root(fskit && !config.allow_other)
+    .with_read_only(config.read_only)
     .with_access_policy(&config.access_policy)
     .with_observation(config.observation.clone());
     // Access time is not part of a pVisor changeset. Disabling it also avoids
@@ -395,6 +439,32 @@ fn prepare(
     Ok((filesystem, mountpoint, options, jujutsu))
 }
 
+/// Check the mount table without issuing requests to an unresponsive FSKit server.
+#[cfg(target_os = "macos")]
+pub fn is_mountpoint(path: &Path) -> bool {
+    use std::ffi::CStr;
+    use std::os::unix::ffi::OsStrExt;
+    let count = unsafe { libc::getfsstat(std::ptr::null_mut(), 0, libc::MNT_NOWAIT) };
+    if count < 0 {
+        return true;
+    } // Fail closed when checking whether it is safe to clean up.
+    let mut mounts = vec![unsafe { std::mem::zeroed::<libc::statfs>() }; count as usize + 8];
+    let count = unsafe {
+        libc::getfsstat(
+            mounts.as_mut_ptr(),
+            std::mem::size_of_val(mounts.as_slice()) as i32,
+            libc::MNT_NOWAIT,
+        )
+    };
+    if count < 0 {
+        return true;
+    }
+    mounts.iter().take(count as usize).any(|mount| unsafe {
+        CStr::from_ptr(mount.f_mntonname.as_ptr()).to_bytes() == path.as_os_str().as_bytes()
+    })
+}
+
+#[cfg(not(target_os = "macos"))]
 fn is_mountpoint(path: &Path) -> bool {
     let Ok(metadata) = std::fs::metadata(path) else {
         return false;
@@ -407,4 +477,43 @@ fn is_mountpoint(path: &Path) -> bool {
     };
     metadata.dev() != parent_metadata.dev()
         || (metadata.dev() == parent_metadata.dev() && metadata.ino() == parent_metadata.ino())
+}
+
+#[cfg(test)]
+mod mount_config_tests {
+    #[cfg(target_os = "macos")]
+    #[test]
+    fn fskit_rejects_versions_with_small_write_corruption() {
+        for version in ["5.0.0", "5.3.3", "unknown"] {
+            assert!(super::require_fskit_version(version).is_err());
+        }
+        for version in ["5.4.0", "5.10.0", "6.0.0"] {
+            assert!(super::require_fskit_version(version).is_ok());
+        }
+    }
+
+    use super::*;
+
+    #[cfg(target_os = "macos")]
+    #[test]
+    fn mount_table_probe_does_not_need_to_access_the_volume() {
+        assert!(is_mountpoint(Path::new("/")));
+        assert!(!is_mountpoint(Path::new(
+            "/Volumes/pvisor-nonexistent-mount-test"
+        )));
+    }
+
+    #[test]
+    fn platform_default_backend_applies_to_directory_and_jujutsu_mounts() {
+        let expected = if cfg!(target_os = "macos") {
+            Some("fskit")
+        } else {
+            None
+        };
+        let directory = OverlayMountConfig::new(vec![], "upper".into(), None, "merged".into());
+        let jujutsu =
+            OverlayMountConfig::new_jujutsu(vec![], "store".into(), "test".into(), "merged".into());
+        assert_eq!(directory.backend.as_deref(), expected);
+        assert_eq!(jujutsu.backend.as_deref(), expected);
+    }
 }

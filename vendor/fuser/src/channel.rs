@@ -1,24 +1,40 @@
-use std::{
-    fs::File,
-    io,
-    os::{
-        fd::{AsFd, BorrowedFd},
-        unix::prelude::AsRawFd,
-    },
-    sync::Arc,
-};
+use std::{fs::File, io, os::unix::prelude::AsRawFd, sync::Arc};
 
 use libc::{c_int, c_void, size_t};
 
 use crate::reply::ReplySender;
 
-/// A raw communication channel to the FUSE kernel driver
-#[derive(Debug)]
-pub struct Channel(Arc<File>);
+#[cfg(all(target_os = "macos", feature = "macfuse-5"))]
+use crate::mnt::fuse2_sys::{fuse_chan, MacChannel};
+#[cfg(not(all(target_os = "macos", feature = "macfuse-5")))]
+use std::os::fd::{AsFd, BorrowedFd};
 
+/// A raw communication channel to the FUSE kernel driver
+#[derive(Clone, Debug)]
+pub enum Channel {
+    File(Arc<File>),
+    #[cfg(all(target_os = "macos", feature = "macfuse-5"))]
+    Mac(Arc<MacChannel>),
+}
+
+impl From<Arc<File>> for Channel {
+    fn from(file: Arc<File>) -> Self {
+        Self::File(file)
+    }
+}
+#[cfg(all(target_os = "macos", feature = "macfuse-5"))]
+impl From<Arc<MacChannel>> for Channel {
+    fn from(channel: Arc<MacChannel>) -> Self {
+        Self::Mac(channel)
+    }
+}
+
+#[cfg(not(all(target_os = "macos", feature = "macfuse-5")))]
 impl AsFd for Channel {
     fn as_fd(&self) -> BorrowedFd<'_> {
-        self.0.as_fd()
+        match self {
+            Self::File(file) => file.as_fd(),
+        }
     }
 }
 
@@ -26,15 +42,30 @@ impl Channel {
     /// Create a new communication channel to the kernel driver by mounting the
     /// given path. The kernel driver will delegate filesystem operations of
     /// the given path to the channel.
-    pub(crate) fn new(device: Arc<File>) -> Self {
-        Self(device)
+    pub(crate) fn new(device: impl Into<Self>) -> Self {
+        device.into()
     }
 
     /// Receives data up to the capacity of the given buffer (can block).
     pub fn receive(&self, buffer: &mut [u8]) -> io::Result<usize> {
+        #[cfg(all(target_os = "macos", feature = "macfuse-5"))]
+        if let Self::Mac(ch) = self {
+            let mut ptr = ch.channel as *mut fuse_chan;
+            let rc = unsafe { (ch.api.recv)(&mut ptr, buffer.as_mut_ptr().cast(), buffer.len()) };
+            return if rc < 0 {
+                Err(io::Error::from_raw_os_error(-rc))
+            } else {
+                Ok(rc as usize)
+            };
+        }
+        #[allow(irrefutable_let_patterns)]
+        let Self::File(file) = self
+        else {
+            unreachable!()
+        };
         let rc = unsafe {
             libc::read(
-                self.0.as_raw_fd(),
+                file.as_raw_fd(),
                 buffer.as_ptr() as *mut c_void,
                 buffer.len() as size_t,
             )
@@ -52,18 +83,38 @@ impl Channel {
     pub fn sender(&self) -> ChannelSender {
         // Since write/writev syscalls are threadsafe, we can simply create
         // a sender by using the same file and use it in other threads.
-        ChannelSender(self.0.clone())
+        ChannelSender(self.clone())
     }
 }
 
 #[derive(Clone, Debug)]
-pub struct ChannelSender(Arc<File>);
+pub struct ChannelSender(Channel);
 
 impl ReplySender for ChannelSender {
     fn send(&self, bufs: &[io::IoSlice<'_>]) -> io::Result<()> {
+        #[cfg(all(target_os = "macos", feature = "macfuse-5"))]
+        if let Channel::Mac(ch) = &self.0 {
+            let rc = unsafe {
+                (ch.api.send)(
+                    ch.channel as *mut fuse_chan,
+                    bufs.as_ptr().cast(),
+                    bufs.len(),
+                )
+            };
+            return if rc < 0 {
+                Err(io::Error::from_raw_os_error(-rc))
+            } else {
+                Ok(())
+            };
+        }
+        #[allow(irrefutable_let_patterns)]
+        let Channel::File(file) = &self.0
+        else {
+            unreachable!()
+        };
         let rc = unsafe {
             libc::writev(
-                self.0.as_raw_fd(),
+                file.as_raw_fd(),
                 bufs.as_ptr() as *const libc::iovec,
                 bufs.len() as c_int,
             )

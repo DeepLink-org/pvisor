@@ -32,16 +32,22 @@ pub struct fuse_chan {
 pub struct MacFuseApi {
     _library: libloading::Library,
     pub mount: unsafe extern "C" fn(*const c_char, *const fuse_args) -> *mut fuse_chan,
-    pub chan_fd: unsafe extern "C" fn(*mut fuse_chan) -> c_int,
+    pub recv: unsafe extern "C" fn(*mut *mut fuse_chan, *mut c_char, usize) -> c_int,
+    pub send: unsafe extern "C" fn(*mut fuse_chan, *const libc::iovec, usize) -> c_int,
+    pub session_new:
+        unsafe extern "C" fn(*const SessionOps, *mut libc::c_void) -> *mut libc::c_void,
+    pub session_add_chan: unsafe extern "C" fn(*mut libc::c_void, *mut fuse_chan),
+    pub session_destroy: unsafe extern "C" fn(*mut libc::c_void),
+    pub chan_unmount: unsafe extern "C" fn(*mut fuse_chan),
+    pub chan_interrupt: unsafe extern "C" fn(*mut fuse_chan),
+    pub chan_not_mounted: unsafe extern "C" fn(*mut fuse_chan) -> bool,
     pub unmount: unsafe extern "C" fn(*const c_char, *mut fuse_chan),
 }
 
 #[cfg(all(target_os = "macos", feature = "macfuse-5"))]
 impl std::fmt::Debug for MacFuseApi {
     fn fmt(&self, formatter: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
-        formatter
-            .debug_struct("MacFuseApi")
-            .finish_non_exhaustive()
+        formatter.debug_struct("MacFuseApi").finish_non_exhaustive()
     }
 }
 
@@ -73,24 +79,50 @@ impl MacFuseApi {
             };
             let symbols = unsafe {
                 let mount = *library
-                    .get::<unsafe extern "C" fn(
-                        *const c_char,
-                        *const fuse_args,
-                    ) -> *mut fuse_chan>(b"fuse_mount\0")
-                    .map_err(io::Error::other)?;
-                let chan_fd = *library
-                    .get::<unsafe extern "C" fn(*mut fuse_chan) -> c_int>(b"fuse_chan_fd\0")
+                    .get::<unsafe extern "C" fn(*const c_char, *const fuse_args) -> *mut fuse_chan>(
+                        b"fuse_mount\0",
+                    )
                     .map_err(io::Error::other)?;
                 let unmount = *library
                     .get::<unsafe extern "C" fn(*const c_char, *mut fuse_chan)>(b"fuse_unmount\0")
                     .map_err(io::Error::other)?;
-                (mount, chan_fd, unmount)
+                (
+                    mount,
+                    unmount,
+                    *library.get(b"fuse_chan_recv\0").map_err(io::Error::other)?,
+                    *library.get(b"fuse_chan_send\0").map_err(io::Error::other)?,
+                    *library
+                        .get(b"fuse_session_new\0")
+                        .map_err(io::Error::other)?,
+                    *library
+                        .get(b"fuse_session_add_chan\0")
+                        .map_err(io::Error::other)?,
+                    *library
+                        .get(b"fuse_session_destroy\0")
+                        .map_err(io::Error::other)?,
+                    *library
+                        .get(b"fuse_darwin_chan_unmount\0")
+                        .map_err(io::Error::other)?,
+                    *library
+                        .get(b"fuse_darwin_chan_interrupt\0")
+                        .map_err(io::Error::other)?,
+                    *library
+                        .get(b"fuse_darwin_chan_not_mounted\0")
+                        .map_err(io::Error::other)?,
+                )
             };
             return Ok(Arc::new(Self {
                 _library: library,
                 mount: symbols.0,
-                chan_fd: symbols.1,
-                unmount: symbols.2,
+                unmount: symbols.1,
+                recv: symbols.2,
+                send: symbols.3,
+                session_new: symbols.4,
+                session_add_chan: symbols.5,
+                session_destroy: symbols.6,
+                chan_unmount: symbols.7,
+                chan_interrupt: symbols.8,
+                chan_not_mounted: symbols.9,
             }));
         }
         Err(io::Error::new(
@@ -118,4 +150,115 @@ extern "C" {
         target_os = "netbsd"
     )))]
     pub fn fuse_unmount_compat22(mountpoint: *const c_char);
+}
+
+#[cfg(all(target_os = "macos", feature = "macfuse-5"))]
+#[repr(C)]
+#[derive(Debug, Default)]
+pub struct SessionOps {
+    pub process:
+        Option<unsafe extern "C" fn(*mut libc::c_void, *const c_char, usize, *mut fuse_chan)>,
+    pub exit: Option<unsafe extern "C" fn(*mut libc::c_void, c_int)>,
+    pub exited: Option<unsafe extern "C" fn(*mut libc::c_void) -> c_int>,
+    pub destroy: Option<unsafe extern "C" fn(*mut libc::c_void)>,
+}
+
+/// Owns the libfuse session and its channel until all Rust receivers/senders stop.
+#[cfg(all(target_os = "macos", feature = "macfuse-5"))]
+#[derive(Debug)]
+pub struct MacChannel {
+    pub channel: usize,
+    pub session: usize,
+    pub stopped: Box<std::sync::atomic::AtomicBool>,
+    pub api: Arc<MacFuseApi>,
+}
+
+#[cfg(all(target_os = "macos", feature = "macfuse-5"))]
+impl Drop for MacChannel {
+    fn drop(&mut self) {
+        unsafe { (self.api.session_destroy)(self.session as *mut libc::c_void) };
+    }
+}
+
+#[cfg(all(test, target_os = "macos", feature = "macfuse-5"))]
+mod tests {
+    use super::*;
+    use crate::{channel::Channel, reply::ReplySender};
+    use std::sync::atomic::{AtomicBool, Ordering};
+
+    #[test]
+    fn fdless_channel_preserves_errno_and_outlives_reply_senders() {
+        static DESTROYED: AtomicBool = AtomicBool::new(false);
+        unsafe extern "C" fn recv(_: *mut *mut fuse_chan, _: *mut c_char, _: usize) -> c_int {
+            -libc::EACCES
+        }
+        unsafe extern "C" fn send(_: *mut fuse_chan, _: *const libc::iovec, _: usize) -> c_int {
+            -libc::ENODEV
+        }
+        unsafe extern "C" fn destroy(_: *mut libc::c_void) {
+            DESTROYED.store(true, Ordering::SeqCst);
+        }
+        unsafe extern "C" fn mount(_: *const c_char, _: *const fuse_args) -> *mut fuse_chan {
+            unreachable!()
+        }
+        unsafe extern "C" fn unmount(_: *const c_char, _: *mut fuse_chan) {
+            unreachable!()
+        }
+        unsafe extern "C" fn new(_: *const SessionOps, _: *mut libc::c_void) -> *mut libc::c_void {
+            unreachable!()
+        }
+        unsafe extern "C" fn add(_: *mut libc::c_void, _: *mut fuse_chan) {
+            unreachable!()
+        }
+        unsafe extern "C" fn detach(_: *mut fuse_chan) {}
+        unsafe extern "C" fn not_mounted(channel: *mut fuse_chan) -> bool {
+            channel.is_null()
+        }
+        let api = Arc::new(MacFuseApi {
+            _library: libloading::os::unix::Library::this().into(),
+            mount,
+            unmount,
+            recv,
+            send,
+            session_new: new,
+            session_add_chan: add,
+            session_destroy: destroy,
+            chan_unmount: detach,
+            chan_interrupt: detach,
+            chan_not_mounted: not_mounted,
+        });
+        let channel = Channel::new(Arc::new(MacChannel {
+            channel: 0,
+            session: 0,
+            stopped: Box::default(),
+            api: Arc::clone(&api),
+        }));
+        let sender = channel.sender();
+        assert_eq!(
+            channel.receive(&mut [0; 8]).unwrap_err().raw_os_error(),
+            Some(libc::EACCES)
+        );
+        drop(channel);
+        assert!(!DESTROYED.load(Ordering::SeqCst));
+        assert_eq!(
+            sender.send(&[]).unwrap_err().raw_os_error(),
+            Some(libc::ENODEV)
+        );
+        drop(sender);
+        assert!(DESTROYED.load(Ordering::SeqCst));
+        let stalled = crate::mnt::Mount {
+            channel: Arc::new(MacChannel {
+                channel: 1,
+                session: 0,
+                stopped: Box::default(),
+                api,
+            }),
+        };
+        assert_eq!(
+            stalled.unmount_gracefully().unwrap_err().kind(),
+            io::ErrorKind::TimedOut
+        );
+        assert!(stalled.channel.stopped.load(Ordering::Acquire));
+        drop(stalled);
+    }
 }

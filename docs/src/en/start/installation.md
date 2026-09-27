@@ -49,9 +49,12 @@ On macOS, install macFUSE before using staged host execution:
 brew install --cask macfuse
 ```
 
-Approve the macFUSE system extension when macOS asks. If the required mount
-capability is unavailable, the host Run fails closed rather than silently writing
-the workspace without COW. The libkrun VM executor does not require macFUSE.
+macOS uses the macFUSE **FSKit backend** by default. Install macFUSE 5.4.0 or later (older FSKit releases can corrupt small writes with zero-filled data),
+then enable it under System Settings → General → Login Items & Extensions →
+File System Extensions. This backend does not load a kernel extension and needs
+no Recovery-mode security changes. Mounts appear at `/Volumes/pvisor-*`; backing
+data stays in the Run's stage directory. If FSKit is unavailable, the Run fails
+closed without falling back to a kernel backend or writing through. The libkrun VM executor does not require macFUSE.
 
 ## 3. Install from source when needed
 

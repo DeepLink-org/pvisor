@@ -16,7 +16,7 @@ members = [
     "crates/persisting-overlay-core",
     "crates/persisting-overlaynet",
 ]
-exclude = ["vendor/libkrun", "vendor/krun-vmm", "vendor/krun-devices"]
+exclude = ["vendor/fuser", "vendor/libkrun", "vendor/krun-vmm", "vendor/krun-devices"]
 
 default-members = [
     "crates/persisting-pvisor",

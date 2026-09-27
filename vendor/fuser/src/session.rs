@@ -9,7 +9,9 @@ use libc::{EAGAIN, EINTR, ENODEV, ENOENT};
 use log::{info, warn};
 use nix::unistd::geteuid;
 use std::fmt;
-use std::os::fd::{AsFd, BorrowedFd, OwnedFd};
+use std::os::fd::OwnedFd;
+#[cfg(not(all(target_os = "macos", feature = "macfuse-5")))]
+use std::os::fd::{AsFd, BorrowedFd};
 use std::path::{Path, PathBuf};
 use std::sync::{Arc, Mutex};
 use std::thread::{self, JoinHandle};
@@ -64,10 +66,13 @@ pub struct Session<FS: Filesystem> {
     pub(crate) proto_minor: u32,
     /// True if the filesystem is initialized (init operation done)
     pub(crate) initialized: bool,
+    /// FSKit sends requests without caller credentials.
+    pub(crate) fskit: bool,
     /// True if the filesystem was destroyed (destroy operation done)
     pub(crate) destroyed: bool,
 }
 
+#[cfg(not(all(target_os = "macos", feature = "macfuse-5")))]
 impl<FS: Filesystem> AsFd for Session<FS> {
     fn as_fd(&self) -> BorrowedFd<'_> {
         self.ch.as_fd()
@@ -116,6 +121,7 @@ impl<FS: Filesystem> Session<FS> {
             proto_major: 0,
             proto_minor: 0,
             initialized: false,
+            fskit: cfg!(target_os = "macos") && options.iter().any(|option| matches!(option, MountOption::CUSTOM(value) if value == "backend=fskit")),
             destroyed: false,
         })
     }
@@ -123,7 +129,7 @@ impl<FS: Filesystem> Session<FS> {
     /// Wrap an existing /dev/fuse file descriptor. This doesn't mount the
     /// filesystem anywhere; that must be done separately.
     pub fn from_fd(filesystem: FS, fd: OwnedFd, acl: SessionACL) -> Self {
-        let ch = Channel::new(Arc::new(fd.into()));
+        let ch = Channel::new(Arc::new(std::fs::File::from(fd)));
         Session {
             filesystem,
             ch,
@@ -133,6 +139,7 @@ impl<FS: Filesystem> Session<FS> {
             proto_major: 0,
             proto_minor: 0,
             initialized: false,
+            fskit: false,
             destroyed: false,
         }
     }
@@ -277,10 +284,18 @@ impl BackgroundSession {
                 sender: _,
             _mount,
         } = self;
+        #[cfg(all(target_os = "macos", feature = "macfuse-5"))]
+        let unmount_result = match &_mount {
+            Some(mount) => mount.unmount_gracefully(),
+            None => Ok(()),
+        };
         drop(_mount);
-        guard
+        let result = guard
             .join()
-            .map_err(|_| io::Error::new(io::ErrorKind::Other, "FUSE request thread panicked"))?
+            .map_err(|_| io::Error::new(io::ErrorKind::Other, "FUSE request thread panicked"))?;
+        #[cfg(all(target_os = "macos", feature = "macfuse-5"))]
+        unmount_result?;
+        result
     }
 
     /// Unmount the filesystem and join the background thread.

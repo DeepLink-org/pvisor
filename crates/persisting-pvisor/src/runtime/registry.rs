@@ -277,6 +277,9 @@ fn serve_control(
 ) {
     use std::io::{BufRead, Write};
     let request = (|| -> anyhow::Result<RunControlRequest> {
+        // macOS accept inherits O_NONBLOCK from the listener. The line-based
+        // protocol must wait for the complete request, including its newline.
+        stream.set_nonblocking(false)?;
         let mut line = String::new();
         std::io::BufReader::new(&stream).read_line(&mut line)?;
         Ok(serde_json::from_str(&line)?)
@@ -317,6 +320,7 @@ fn serve_control(
             let mountpoint = stage.join("inspect").join(&id).join("merged");
             match mount_overlay_record_read_only(overlay, lowers, &mountpoint) {
                 Ok(mount) => {
+                    let mountpoint = mount.mountpoint().to_path_buf();
                     mounts.insert(id.clone(), mount);
                     RunControlResponse {
                         ok: true,
@@ -735,6 +739,56 @@ mod tests {
                 .to_string()
                 .contains("unknown inspect session missing")
         );
+    }
+
+    #[test]
+    fn local_control_waits_for_a_complete_request_on_a_nonblocking_connection() {
+        use std::io::{BufRead, Write};
+        use std::os::unix::net::UnixStream;
+        use std::sync::mpsc;
+
+        let temp = tempfile::tempdir().unwrap();
+        let record = record(temp.path(), temp.path(), &temp.path().join("upper"));
+        let (mut client, server) = UnixStream::pair().unwrap();
+        server.set_nonblocking(true).unwrap();
+        server
+            .set_read_timeout(Some(Duration::from_secs(2)))
+            .unwrap();
+        client
+            .set_read_timeout(Some(Duration::from_secs(2)))
+            .unwrap();
+        let mut request = serde_json::to_vec(&RunControlRequest::Ping).unwrap();
+        request.push(b'\n');
+        let split = request.len() / 2;
+        client.write_all(&request[..split]).unwrap();
+        let (done_tx, done_rx) = mpsc::channel();
+        std::thread::scope(|scope| {
+            scope.spawn(|| {
+                serve_control(
+                    server,
+                    temp.path(),
+                    record.overlay.as_ref().unwrap(),
+                    &[],
+                    &mut HashMap::new(),
+                    None,
+                    None,
+                );
+                done_tx.send(()).unwrap();
+            });
+            // An incomplete packet must neither be rejected nor close the connection.
+            assert!(matches!(
+                done_rx.recv_timeout(Duration::from_millis(100)),
+                Err(mpsc::RecvTimeoutError::Timeout)
+            ));
+            client.write_all(&request[split..]).unwrap();
+            let mut line = String::new();
+            std::io::BufReader::new(&client)
+                .read_line(&mut line)
+                .unwrap();
+            let response: RunControlResponse = serde_json::from_str(&line).unwrap();
+            assert!(response.ok, "{:?}", response.error);
+            done_rx.recv_timeout(Duration::from_secs(2)).unwrap();
+        });
     }
 
     #[test]

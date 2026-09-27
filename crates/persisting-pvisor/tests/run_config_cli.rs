@@ -361,26 +361,19 @@ fn container_executor_deadline_stops_the_runtime_client() {
     std::fs::write(
         &runtime,
         r#"#!/bin/sh
-if [ "$1" = "run" ]; then
-  shift
-  control=""
-  while [ "$1" != "fixture-image" ]; do
-    if [ "$1" = "--mount" ]; then
-      shift
-      case "$1" in
-        *target=/run/persisting*)
-          control=$(printf '%s' "$1" | sed -e 's/^.*source=//' -e 's/,target=.*$//')
-          ;;
-      esac
-    fi
-    shift
-  done
-  shift
-    exec "$PERSISTING_TEST_PVISOR" run --executor host \
-    --spec "$control/run-spec.json" \
-    --result-file "$control/run-result.json"
-fi
-exit 0
+set -eu
+bundle=""
+while [ "$#" -gt 0 ]; do
+  case "$1" in
+    --bundle) bundle="$2"; shift 2 ;;
+    *) shift ;;
+  esac
+done
+[ -n "$bundle" ] || exit 0
+control=$(dirname "$bundle")
+exec "$PERSISTING_TEST_PVISOR" run --executor host --stdio capture \
+  --spec "$control/run-spec.json" \
+  --result-file "$control/run-result.json"
 "#,
     )
     .unwrap();
@@ -391,9 +384,9 @@ exit 0
         .args(["run", "--timeout", "20ms", "--container-runtime"])
         .arg(&runtime)
         .args(["--container-pvisor-binary", env!("CARGO_BIN_EXE_pvisor")])
+        .arg("--container-rootfs")
+        .arg(&workspace)
         .args([
-            "--container-image",
-            "fixture-image",
             "--container-platform",
             "linux/amd64",
             "--container-network",
@@ -418,17 +411,12 @@ exit 0
     let bundle = RunBundle::read(&run_dir).unwrap();
     assert_eq!(bundle.run.state, persisting_control::RunState::Failed);
     let failure_kind = bundle.run.failure.as_ref().map(|failure| failure.kind);
-    // Sandboxed CI runners may prohibit executing helper scripts from the
-    // temporary directory; that setup failure is still a valid transport
-    // termination result for this fixture.
-    if failure_kind == Some(persisting_control::RunFailureKind::Spawn) {
-        // accepted when the runner blocks temporary executable files
-    } else {
-        assert_eq!(
-            failure_kind,
-            Some(persisting_control::RunFailureKind::DeadlineExceeded)
-        );
-    }
+    assert_eq!(
+        failure_kind,
+        Some(persisting_control::RunFailureKind::DeadlineExceeded),
+        "expected a running agent to reach its deadline: {:?}",
+        bundle.run.failure
+    );
     assert!(!bundle.safety.host_process);
 }
 

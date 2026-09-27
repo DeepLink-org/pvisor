@@ -1579,8 +1579,13 @@ async fn execute_config(
     if safe {
         spec.metadata
             .insert(crate::sandbox::LANDLOCK_SANDBOX_KEY.into(), true.into());
+        #[cfg(target_os = "linux")]
         run_log!(
             "pVisor --safe: rootless chroot, staged state, and Landlock are enabled; host selective network policies use the supervisor proxy cooperatively"
+        );
+        #[cfg(target_os = "macos")]
+        run_log!(
+            "pVisor --safe: required sandbox with staged workspace; the macOS host executor uses Seatbelt read/write restrictions and allows IP traffic only through the supervisor proxy"
         );
     } else {
         let network_boundary = if config.run.executor == RunExecutorKind::Vm
@@ -1619,7 +1624,7 @@ async fn execute_config(
                     );
                 } else {
                     run_log!(
-                        "boundary: Seatbelt best-effort when available; temporary staged writes are dropped; reads and selective network policies remain ambient/cooperative"
+                        "boundary: Seatbelt best-effort when available; workspace and projected HOME/CODEX_HOME/XDG state writes persist; reads and selective network policies remain ambient/cooperative"
                     );
                 }
                 #[cfg(not(any(target_os = "linux", target_os = "macos")))]
