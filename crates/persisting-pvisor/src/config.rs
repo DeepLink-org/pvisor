@@ -292,6 +292,7 @@ pub struct FilesystemAccessRule {
 #[serde(rename_all = "snake_case")]
 pub enum FilesystemAccessLevel {
     Deny,
+    Ask,
     Read,
     Stage,
     Write,

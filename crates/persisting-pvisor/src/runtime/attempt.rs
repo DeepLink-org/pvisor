@@ -490,6 +490,8 @@ pub(crate) fn prepare_attempt(
     )?;
     run_record.environment.runtime_injected_keys = implant.env.keys().cloned().collect();
     run_record.write()?;
+    #[cfg(unix)]
+    persisting_control::audit::arm();
     // The Attempt listener is also the VM's explicit HTTP proxy endpoint.
     // Rewrite it for every VM OverlayNet run; gateway_enabled only controls
     // LLM capture, not proxy reachability. Without this, clients in the guest
@@ -658,6 +660,8 @@ pub(crate) fn prepare_overlay_attempt(
     apply_implant(process, &plan);
     run_record.environment.runtime_injected_keys = plan.env.keys().cloned().collect();
     run_record.write()?;
+    #[cfg(unix)]
+    persisting_control::audit::arm();
     spec.metadata
         .insert("pvisor.runtime.implant".into(), plan.as_metadata_json());
     inject_krun_overlay_metadata(spec, &plan.overlay, Some(&overlay_record));
@@ -760,6 +764,8 @@ pub(crate) fn prepare_storage_attempt(
     apply_implant(process, &plan);
     run_record.environment.runtime_injected_keys = plan.env.keys().cloned().collect();
     run_record.write()?;
+    #[cfg(unix)]
+    persisting_control::audit::arm();
     spec.metadata
         .insert("pvisor.runtime.implant".into(), plan.as_metadata_json());
 
@@ -1059,7 +1065,7 @@ fn prepare_overlay(
                     existing.run_id
                 );
             }
-            let lowers = lower_stack_from_config(overlay_cfg, storage, &record.target)?;
+            let lowers = lower_stack_from_config(overlay_cfg, storage, &record)?;
             let (mount, record, fs_metrics) = if mountless {
                 (
                     None,

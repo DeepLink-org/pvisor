@@ -68,6 +68,7 @@ fn protect_overlay_backing(
     workspace: Option<&OverlayDeviceSpec>,
 ) -> anyhow::Result<()> {
     let mut deny = root.access_policy.deny().to_vec();
+    let mut ask = root.access_policy.ask().to_vec();
     let mut warn = root.access_policy.warn().to_vec();
     let mut hidden = vec![root.upper.clone()];
     hidden.extend(root.work.iter().cloned());
@@ -96,6 +97,13 @@ fn protect_overlay_backing(
                             .iter()
                             .map(|glob| format!("{prefix}/{glob}")),
                     );
+                    ask.extend(
+                        workspace
+                            .access_policy
+                            .ask()
+                            .iter()
+                            .map(|glob| format!("{prefix}/{glob}")),
+                    );
                     warn.extend(
                         workspace
                             .access_policy
@@ -107,7 +115,7 @@ fn protect_overlay_backing(
             }
         }
     }
-    root.access_policy = persisting_control::FileAccessPolicy::new(deny, warn)?;
+    root.access_policy = persisting_control::FileAccessPolicy::new_with_ask(deny, ask, warn)?;
     for lower in &root.lowers {
         let lower = lower.canonicalize()?;
         for path in &hidden {

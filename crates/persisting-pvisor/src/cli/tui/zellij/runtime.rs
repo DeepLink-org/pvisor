@@ -1,13 +1,18 @@
 //! PTY ownership and event loop for the native pane UI.
 
-use super::{input, view};
+use super::{
+    audit_ui::{self, AuditServer, Scope, SessionPolicy},
+    input, view,
+};
 use crate::runtime::{RunRecord, control_observations};
 use anyhow::{Context, Result};
+use persisting_control::audit::{AuditDecision, AuditRequest};
 use persisting_control::ir::run::FilesystemObservation;
 use std::ffi::OsString;
 use std::fs::{File, OpenOptions};
 use std::io::{Read, Write};
 use std::os::fd::{AsRawFd, FromRawFd};
+use std::os::unix::fs::OpenOptionsExt;
 use std::os::unix::process::{CommandExt, ExitStatusExt};
 use std::path::{Path, PathBuf};
 use std::process::{Command, Stdio};
@@ -17,6 +22,7 @@ use std::time::{Duration, Instant};
 const CHILD_MARKER: &str = "PVISOR_UI_CHILD";
 const STAGE_FILE: &str = "PVISOR_UI_STAGE_FILE";
 const LOG_FILE: &str = "PVISOR_UI_LOG_FILE";
+const AUDIT_SOCKET: &str = "PVISOR_UI_AUDIT_SOCKET";
 static CHILD_CONTEXT: OnceLock<Option<PathBuf>> = OnceLock::new();
 static LOG_CONTEXT: OnceLock<Option<PathBuf>> = OnceLock::new();
 
@@ -31,11 +37,20 @@ pub(crate) fn init_child_context() {
     } else {
         None
     };
+    let audit_socket = if path.is_some() {
+        std::env::var_os(AUDIT_SOCKET).map(PathBuf::from)
+    } else {
+        None
+    };
     // This runs before the Tokio runtime and any Agent environment is built.
     unsafe {
         std::env::remove_var(CHILD_MARKER);
         std::env::remove_var(STAGE_FILE);
         std::env::remove_var(LOG_FILE);
+        std::env::remove_var(AUDIT_SOCKET);
+    }
+    if let Some(socket) = audit_socket {
+        persisting_control::audit::init(socket);
     }
     let _ = CHILD_CONTEXT.set(path);
     let _ = LOG_CONTEXT.set(log_path);
@@ -117,6 +132,8 @@ pub(super) struct Snapshot {
     pub(super) filesystem: Option<FilesystemObservation>,
     pub(super) network: Option<serde_json::Value>,
     pub(super) log: Vec<String>,
+    pub(super) audit: Option<AuditRequest>,
+    pub(super) audit_rules: Vec<String>,
 }
 
 impl Snapshot {
@@ -206,6 +223,42 @@ fn resize_pty(master: &File, layout: view::Layout) {
     unsafe { libc::ioctl(master.as_raw_fd(), libc::TIOCSWINSZ, &size) };
 }
 
+fn persist_audit_decision(
+    storage: &Path,
+    request: &AuditRequest,
+    decision: AuditDecision,
+    scope: Scope,
+    automatic: bool,
+) -> Result<()> {
+    let mut file = OpenOptions::new()
+        .create(true)
+        .append(true)
+        .mode(0o600)
+        .custom_flags(libc::O_NOFOLLOW | libc::O_CLOEXEC)
+        .open(storage.join("audit.jsonl"))
+        .context("open Job audit journal")?;
+    anyhow::ensure!(
+        file.metadata()?.is_file(),
+        "Job audit journal is not a regular file"
+    );
+    let timestamp = std::time::SystemTime::now()
+        .duration_since(std::time::UNIX_EPOCH)?
+        .as_millis();
+    serde_json::to_writer(
+        &mut file,
+        &serde_json::json!({
+            "at_unix_ms": timestamp,
+            "request": request,
+            "decision": decision,
+            "scope": scope,
+            "automatic": automatic,
+        }),
+    )?;
+    file.write_all(b"\n")?;
+    file.sync_data().context("sync Job audit journal")?;
+    Ok(())
+}
+
 #[derive(Default)]
 struct HostInputModes {
     paste: bool,
@@ -241,10 +294,14 @@ fn sync_input_modes(
     Ok(())
 }
 
-pub(crate) fn run(args: Vec<OsString>) -> Result<i32> {
+pub(crate) fn run(args: Vec<OsString>, audit_enabled: bool) -> Result<i32> {
     let temporary = tempfile::tempdir()?;
     let stage_file = temporary.path().join("stage");
     let log_file = temporary.path().join("diagnostics.log");
+    let audit_socket = temporary.path().join("audit.sock");
+    let mut audit = audit_enabled
+        .then(|| AuditServer::bind(&audit_socket))
+        .transpose()?;
     File::create(&log_file).context("create TUI log")?;
     let mut size = terminal_size();
     let mut state = input::UiState::default();
@@ -280,6 +337,9 @@ pub(crate) fn run(args: Vec<OsString>) -> Result<i32> {
         .stdin(Stdio::from(slave.try_clone()?))
         .stdout(Stdio::from(slave.try_clone()?))
         .stderr(Stdio::from(slave.try_clone()?));
+    if audit_enabled {
+        child.env(AUDIT_SOCKET, &audit_socket);
+    }
     unsafe {
         child.pre_exec(|| {
             if libc::setsid() < 0 || libc::ioctl(libc::STDIN_FILENO, libc::TIOCSCTTY, 0) < 0 {
@@ -300,6 +360,8 @@ pub(crate) fn run(args: Vec<OsString>) -> Result<i32> {
     let mut parser = vt100::Parser::new(layout.agent_rows, layout.agent_cols, 2000);
     let mut input_modes = HostInputModes::default();
     let mut snapshot = Snapshot::default();
+    let mut audit_policy = SessionPolicy::default();
+    let mut audit_policy_loaded = false;
     let started = Instant::now();
     let mut last_draw = Instant::now() - Duration::from_secs(1);
     let mut last_refresh = Instant::now() - Duration::from_secs(1);
@@ -307,6 +369,36 @@ pub(crate) fn run(args: Vec<OsString>) -> Result<i32> {
     let mut exited = None;
     let mut drained_at = None;
     loop {
+        if let Some(audit) = audit.as_mut()
+            && audit.poll()?
+        {
+            snapshot.refresh(&stage_file, &log_file);
+            sync_input_modes(&mut stdout, parser.screen(), true, &mut input_modes)?;
+            dirty = true;
+        }
+        if audit.is_some()
+            && !audit_policy_loaded
+            && let Some(record) = snapshot.record.as_ref()
+        {
+            audit_policy =
+                SessionPolicy::load(&record.storage).context("load Job session audit policy")?;
+            audit_policy_loaded = true;
+        }
+        if let Some(server) = audit.as_mut() {
+            while let Some(request) = server.active().cloned() {
+                let Some((decision, scope)) = audit_policy.resolve(&request) else {
+                    break;
+                };
+                if let Some(record) = snapshot.record.as_ref() {
+                    let _ =
+                        persist_audit_decision(&record.storage, &request, decision, scope, true);
+                }
+                let _ = server.decide(decision);
+                dirty = true;
+            }
+        }
+        snapshot.audit_rules = audit_policy.rule_labels();
+        snapshot.audit = audit.as_ref().and_then(AuditServer::active).cloned();
         let next_size = terminal_size();
         if next_size.ws_row != size.ws_row || next_size.ws_col != size.ws_col {
             size = next_size;
@@ -372,7 +464,7 @@ pub(crate) fn run(args: Vec<OsString>) -> Result<i32> {
                     sync_input_modes(
                         &mut stdout,
                         parser.screen(),
-                        !state.agent_input_active(),
+                        !state.agent_input_active() || snapshot.audit.is_some(),
                         &mut input_modes,
                     )?;
                     // The Agent screen and the pVisor frame are always drawn
@@ -389,6 +481,59 @@ pub(crate) fn run(args: Vec<OsString>) -> Result<i32> {
             let count = stdin.read(&mut bytes)?;
             let mut forward = Vec::with_capacity(count);
             for byte in &bytes[..count] {
+                if let Some(server) = audit.as_mut()
+                    && server.active().is_some()
+                {
+                    if let Some((scope, decision)) = server
+                        .active()
+                        .and_then(|request| audit_ui::choice(request, *byte))
+                        && let Some(request) = server.active().cloned()
+                    {
+                        let next = audit_policy.with_decision(&request, scope, decision);
+                        let save = snapshot
+                            .record
+                            .as_ref()
+                            .ok_or_else(|| anyhow::anyhow!("Job record is not ready"))
+                            .and_then(|record| {
+                                next.as_ref()
+                                    .ok_or_else(|| anyhow::anyhow!("invalid audit scope"))?
+                                    .persist(&record.storage)
+                            });
+                        let actual = if save.is_ok() {
+                            decision
+                        } else {
+                            AuditDecision::Deny
+                        };
+                        if let (Ok(()), Some(next)) = (&save, next) {
+                            audit_policy = next;
+                        }
+                        let _ = server.decide(actual);
+                        let mut file = OpenOptions::new().append(true).open(&log_file)?;
+                        if let Err(error) = save {
+                            writeln!(file, "audit policy unavailable; access denied: {error:#}")?;
+                        }
+                        if let Some(record) = snapshot.record.as_ref()
+                            && let Err(error) = persist_audit_decision(
+                                &record.storage,
+                                &request,
+                                actual,
+                                scope,
+                                false,
+                            )
+                        {
+                            writeln!(file, "audit journal unavailable: {error:#}")?;
+                        }
+                        writeln!(
+                            file,
+                            "audit {:?} {:?}: {:?} {:?} ({:?})",
+                            actual, scope, request.kind, request.target, request.reason
+                        )?;
+                        snapshot.audit_rules = audit_policy.rule_labels();
+                        snapshot.audit = server.active().cloned();
+                    }
+                    dirty = true;
+                    continue;
+                }
                 if let Some(byte) = state.input(*byte) {
                     forward.push(byte);
                 } else {
@@ -401,7 +546,7 @@ pub(crate) fn run(args: Vec<OsString>) -> Result<i32> {
             sync_input_modes(
                 &mut stdout,
                 parser.screen(),
-                !state.agent_input_active(),
+                !state.agent_input_active() || snapshot.audit.is_some(),
                 &mut input_modes,
             )?;
         }

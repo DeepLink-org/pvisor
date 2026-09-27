@@ -27,6 +27,7 @@ pub(super) enum Panel {
     Network,
     Run,
     Log,
+    Permissions,
     Keys,
 }
 
@@ -38,6 +39,7 @@ impl Panel {
             Self::Network => "Network",
             Self::Run => "Job",
             Self::Log => "Log",
+            Self::Permissions => "Permissions",
             Self::Keys => "Keys",
         }
     }
@@ -48,7 +50,8 @@ impl Panel {
             Self::Files => Self::Network,
             Self::Network => Self::Run,
             Self::Run => Self::Log,
-            Self::Log | Self::Keys => Self::Overview,
+            Self::Log => Self::Permissions,
+            Self::Permissions | Self::Keys => Self::Overview,
         }
     }
 }
@@ -96,6 +99,12 @@ const BINDINGS: &[Binding] = &[
     bind!(Command, b'n', Action::Open(Panel::Network), "n Network"),
     bind!(Command, b'u', Action::Open(Panel::Run), "u Job"),
     bind!(Command, b'l', Action::Open(Panel::Log), "l Log"),
+    bind!(
+        Command,
+        b'p',
+        Action::Open(Panel::Permissions),
+        "p Permissions"
+    ),
     bind!(Command, b'?', Action::Open(Panel::Keys), "? Keys"),
     bind!(Command, 0x1b, Action::SwitchTo(Mode::Agent), "Esc Cancel"),
     bind!(Command, b'q', Action::SwitchTo(Mode::Agent), ""),
@@ -105,14 +114,16 @@ const BINDINGS: &[Binding] = &[
     bind!(Command, b'3', Action::Open(Panel::Network), ""),
     bind!(Command, b'4', Action::Open(Panel::Run), ""),
     bind!(Command, b'5', Action::Open(Panel::Log), ""),
+    bind!(Command, b'6', Action::Open(Panel::Permissions), ""),
     bind!(Panel, b'\t', Action::NextPanel, "Tab View"),
     bind!(Panel, b'j', Action::ScrollDown, "j/k Scroll"),
     bind!(Panel, b'k', Action::ScrollUp, ""),
-    bind!(Panel, b'1', Action::Open(Panel::Overview), "1-5 Select"),
+    bind!(Panel, b'1', Action::Open(Panel::Overview), "1-6 Select"),
     bind!(Panel, b'2', Action::Open(Panel::Files), ""),
     bind!(Panel, b'3', Action::Open(Panel::Network), ""),
     bind!(Panel, b'4', Action::Open(Panel::Run), ""),
     bind!(Panel, b'5', Action::Open(Panel::Log), ""),
+    bind!(Panel, b'6', Action::Open(Panel::Permissions), ""),
     bind!(Panel, b'?', Action::Open(Panel::Keys), "? Keys"),
     bind!(Panel, 0x1b, Action::SwitchTo(Mode::Agent), "Esc Close"),
     bind!(Panel, PREFIX, Action::SwitchTo(Mode::Agent), ""),
@@ -123,6 +134,7 @@ const BINDINGS: &[Binding] = &[
     bind!(Panel, b'n', Action::Open(Panel::Network), ""),
     bind!(Panel, b'u', Action::Open(Panel::Run), ""),
     bind!(Panel, b'l', Action::Open(Panel::Log), ""),
+    bind!(Panel, b'p', Action::Open(Panel::Permissions), ""),
 ];
 
 pub(super) fn help_lines() -> Vec<String> {

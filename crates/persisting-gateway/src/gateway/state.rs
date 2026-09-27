@@ -158,7 +158,11 @@ pub async fn serve_with_runtime_control(
             attempt_id: None,
             gateway_enabled: true,
         },
-        ready,
+        ready.map(|tx| {
+            Box::new(move || {
+                let _ = tx.send(());
+            }) as Box<dyn FnOnce() + Send>
+        }),
         shutdown,
     )
     .await
@@ -170,7 +174,7 @@ pub(crate) async fn serve_with_runtime_control_and_metrics(
     sink: Arc<dyn CaptureEventSink>,
     stream_markdown: bool,
     runtime_control: GatewayRuntimeControl,
-    ready: Option<tokio::sync::oneshot::Sender<()>>,
+    ready: Option<Box<dyn FnOnce() + Send>>,
     shutdown: impl std::future::Future<Output = ()> + Send + 'static,
 ) -> anyhow::Result<()> {
     let admin_listen: std::net::SocketAddr = config.admin_listen.parse().with_context(|| {
@@ -212,7 +216,7 @@ async fn serve_with_bound_listeners(
     runtime_control: GatewayRuntimeControl,
     listener: tokio::net::TcpListener,
     admin_listener: tokio::net::TcpListener,
-    ready: Option<tokio::sync::oneshot::Sender<()>>,
+    ready: Option<Box<dyn FnOnce() + Send>>,
     shutdown: impl std::future::Future<Output = ()> + Send + 'static,
 ) -> anyhow::Result<()> {
     let (stop_tx, stop_rx) = tokio::sync::watch::channel(());
@@ -310,7 +314,7 @@ async fn serve_with_bound_listeners(
     });
 
     if let Some(tx) = ready {
-        let _ = tx.send(());
+        tx();
     }
     tracing::debug!(target: "persisting_gateway", "capture LLM proxy on http://{listen}");
     let serve_result = axum::serve(

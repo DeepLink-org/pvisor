@@ -35,6 +35,160 @@ Unit-test the report contract without running the suite:
 just test-benchmark
 ```
 
+## Sandbox startup and resource occupancy
+
+`startup.py` is a separate Linux benchmark for the three executor levels and
+host option costs. It leaves the existing `pvisor-benchmark/v1` smoke/nightly
+report unchanged. The one-command entry builds a release binary, assembles a
+small local rootfs with `/bin/sh`, `sleep`, `mount`, `env`, `rm`, and their
+dynamic libraries, checks
+each case, runs every available case, then writes JSON and Markdown reports.
+It does not download an image or include build/setup time in the measurements.
+
+```bash
+just benchmark-startup
+```
+
+The results are `target/pvisor-benchmark/startup/startup.json` (raw samples)
+and `target/pvisor-benchmark/startup/startup.md` (summary and skipped cases).
+For a quick check, use `just benchmark-startup --no-build --warmups 0 --samples 1`.
+`--adapter /path/to/adapters.json` includes third-party cases in the same
+run. The entry reports missing `crun`/`runc`, KVM, or failed preflights as
+skipped cases while continuing with available cases. It always runs `direct`
+as a control. Failed preflight stderr is copied to `preflight-logs/` beside
+the report.
+
+To use a prepared image filesystem or control the comparison inputs, supply
+explicit paths. The one-command entry copies those rootfs directories into
+temporary setup storage to leave the originals untouched, then builds and
+preflights before
+sampling:
+
+```bash
+just benchmark-startup \
+  --container-rootfs /absolute/path/to/rootfs \
+  --container-pvisor-binary /absolute/path/to/linux/pvisor \
+  --vm-rootfs /absolute/path/to/vm-rootfs
+```
+
+Use `just benchmark-startup-raw` to run `startup.py` directly with explicit
+rootfs or image arguments and without automatic preflight. A pinned image
+digest or immutable prepared rootfs is preferable for repeated comparisons;
+keep any image download outside measured trials.
+
+The default matrix includes `direct`, host without extra options, host with an
+explicit stage, host `--safe` with the same explicit stage, cooperative network
+proxy, deny-all network, safe plus deny-all, individual memory/process/file
+descriptor limits, Gateway capture, local event recording, OCI container, and
+libkrun VM. A case fails the run if the command fails or pVisor does not
+produce a completed, zero-exit Run Bundle.
+Container and VM cases also check the observed isolation in that bundle;
+`--safe` host cases require `rootless_process`. The ordinary host case can
+fall back to `host_process` on a system without the rootless sandbox: inspect
+`observed_isolation` before comparing it with another machine. The VM case
+sets `--overlaynet off` and the container case uses `--container-network none`,
+so both run the payload without network access. The host `--safe`
+preset changes filesystem and network configuration together; read its row as
+the cost of that preset rather than the cost of one kernel mechanism.
+
+For an initial capability check or a focused experiment:
+
+```bash
+python3 benchmark/pvisor/startup.py --output target/pvisor-benchmark/probe \
+  --cases direct,host,host_stage,host_safe,container,vm \
+  --container-rootfs /absolute/path/to/rootfs --vm-rootfs host \
+  --warmups 0 --samples 1
+```
+
+`--vm-rootfs host` is Linux-only and exposes the host root to the guest as a
+read-only base. Use a prepared VM rootfs for cross-implementation comparisons.
+The low-level `startup.py` requires explicit rootfs inputs for container and
+VM; the one-command entry prepares them locally. Trials use a fresh system
+temporary directory, separate
+from the report output. A failed trial and its stderr log remain at the path
+printed by the script; `--keep-trials` retains successful trials too.
+`--scratch-root` selects another parent directory when the same storage medium
+must be used for all competitors. Avoid placing it inside the tested workspace
+or pVisor's staged view.
+
+Each randomized round runs two commands per case. `/bin/sh -c ':'` measures
+**Popen to zero-exit completion** in milliseconds (p50, p95, mean). It includes
+CLI parsing, sandbox setup, minimal command startup, Run persistence and
+teardown. This is a cold-start *proxy*, not a timestamp for first guest
+instruction. A separate `/bin/sh -c 'sleep 0.2'` run holds the sandbox open
+for 200 ms while the sampler records peak live process count and the sum of
+resident bytes in the launcher process tree. `--resource-hold-ms` changes that
+duration; guests must support fractional `sleep`. CPU time is the
+`RUSAGE_CHILDREN` user plus system delta for the minimal startup run. The
+`--shell` flag changes the shell path in both workloads; use the same shell
+build in each rootfs when comparing small startup differences. The
+process tree is sampled every 2 ms by default. Short peaks and daemonized
+descendants can be missed; summed RSS also counts shared pages more than once.
+CPU accounting depends on the runtime waiting for its descendants.
+For precise all-process memory or CPU attribution, collect cgroup v2
+`memory.peak` and `cpu.stat` around the same commands on a dedicated host.
+
+The JSON report preserves each measured trial and its observed isolation;
+the Markdown table gives p50/p95 and ratios to direct execution. A second table
+shows the median **paired** latency, CPU, and sampled RSS differences within
+the same round. `host_safe` uses `host_stage` as its reference;
+`host_safe_net_deny_all` uses `host_safe`; other host options use plain `host`.
+Defaults are three warmups and 30 measured rounds with a fixed
+randomization seed. The report records the kernel, CPU, memory, pVisor binary
+hash, source commit, rootfs references, commands and sampling protocol.
+
+### Comparing other implementations
+
+Add argv templates through an adapter JSON file. `{workload}` expands to the
+same three arguments used for pVisor. Other placeholders are `{workspace}`,
+`{stage}`, `{record}` and `{run_home}`; each trial gets fresh directories.
+`{port}` and `{admin_port}` allocate loopback ports before timing for services
+that require an explicit port. There is a small bind/close race, so a port
+collision fails that trial instead of entering the statistics.
+For example, with the **same pinned OCI image** used by pVisor:
+
+```json
+{
+  "schema": "pvisor-startup-adapter/v1",
+  "cases": [
+    {
+      "name": "docker_container",
+      "command": ["docker", "run", "--rm", "--pull", "never", "--network", "none", "--memory", "512m", "--cpus", "1", "my-image@sha256:REPLACE_ME", "{workload}"]
+    }
+  ]
+}
+```
+
+```bash
+python3 benchmark/pvisor/startup.py --output target/pvisor-benchmark/compare \
+  --adapter /path/to/adapters.json \
+  --cases direct,host,container,vm,docker_container \
+  --common-memory 512MiB --common-cpu 1 \
+  --container-image my-image@sha256:REPLACE_ME \
+  --vm-rootfs image=my-image@sha256:REPLACE_ME
+```
+
+`--common-memory` and `--common-cpu` pass the same requested limits to every
+pVisor case. `direct` remains an uncapped control. Select a case list without
+`host_memory_limit` when using `--common-memory`, and confirm each executor's
+effective limit in its Run Bundle; a common request does not imply identical
+enforcement.
+
+An adapter exits successfully only after its payload finishes. If a runtime
+has asynchronous `start` semantics, write a wrapper that waits for the payload
+and exits with its exit status; otherwise its timing is not comparable. Use
+the same image contents, network policy, CPU and memory allocation, storage
+medium, and warm cache state for each comparison. Keep `docker` daemon cost
+and `pvisor` OCI runtime cost in scope if that matches the product question;
+label such comparisons as end-to-end rather than isolation-only. Run on an
+otherwise idle host with fixed CPU governor, no concurrent builds, and
+pre-pulled images. Repeat the full run at least three times and compare p50,
+p95, and run-to-run spread. Review any failure log and Run Bundle isolation
+before accepting a result; never treat a fast failure as a sample. An external
+daemon such as `dockerd` is outside the launcher process tree, so its CPU and
+RSS are absent from this report. For cross-runtime resource comparisons,
+measure all involved processes in a dedicated cgroup instead.
+
 ## Links
 
 - [pVisor design](../../docs/src/en/design/index.md)

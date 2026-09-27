@@ -1,4 +1,4 @@
-pub(super) fn patch() -> Vec<String> {
+pub(super) fn patch(audit: bool) -> Vec<String> {
     let mut args = Vec::new();
     for pattern in [
         "**/.ssh",
@@ -24,7 +24,10 @@ pub(super) fn patch() -> Vec<String> {
         "**/.netrc",
         "**/.npmrc",
     ] {
-        args.extend(["--access".into(), format!("{pattern}:read")]);
+        args.extend([
+            "--access".into(),
+            format!("{pattern}:{}", if audit { "ask" } else { "read" }),
+        ]);
     }
     args
 }

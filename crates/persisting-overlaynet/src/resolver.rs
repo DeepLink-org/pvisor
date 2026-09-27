@@ -51,9 +51,55 @@ pub(crate) async fn authorize_target_with_policy(
     resolved_address_policy: ResolvedAddressPolicy,
 ) -> Result<AuthorizedTarget, TargetAuthorizationError> {
     request.resolved_ip = None;
-    policy
-        .authorize(controller, &request)
-        .map_err(TargetAuthorizationError::Denied)?;
+    let grant = match policy.authorize(controller, &request) {
+        Ok(()) => None,
+        Err(reason) => {
+            #[cfg(unix)]
+            if matches!(
+                reason,
+                DenyReason::AllowlistEmpty
+                    | DenyReason::NotInAllowlist
+                    | DenyReason::PortNotAllowed
+                    | DenyReason::TransportNotAllowed
+            ) && persisting_control::audit::enabled()
+            {
+                let prompt = persisting_control::audit::AuditRequest {
+                    kind: persisting_control::audit::AuditKind::Network,
+                    target: format!(
+                        "{}:{} ({:?})",
+                        request.host,
+                        request.port.unwrap_or(0),
+                        request.transport
+                    ),
+                    reason: reason.as_str().into(),
+                    host: Some(request.host.clone()),
+                    port: request.port,
+                    transport: Some(request.transport),
+                };
+                let decision = tokio::task::spawn_blocking(move || {
+                    persisting_control::audit::request(&prompt)
+                })
+                .await
+                .unwrap_or(persisting_control::audit::AuditDecision::Deny);
+                if decision == persisting_control::audit::AuditDecision::Allow {
+                    let grant = policy
+                        .one_time_grant(&request)
+                        .map_err(TargetAuthorizationError::Resolve)?;
+                    grant
+                        .authorize(controller, &request)
+                        .map_err(TargetAuthorizationError::Denied)?;
+                    Some(grant)
+                } else {
+                    return Err(TargetAuthorizationError::Denied(reason));
+                }
+            } else {
+                return Err(TargetAuthorizationError::Denied(reason));
+            }
+            #[cfg(not(unix))]
+            return Err(TargetAuthorizationError::Denied(reason));
+        }
+    };
+    let policy = grant.as_ref().unwrap_or(policy);
 
     let port = request.port.ok_or_else(|| {
         TargetAuthorizationError::Resolve(anyhow::anyhow!(

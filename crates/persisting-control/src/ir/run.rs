@@ -15,7 +15,7 @@ pub struct PlanRule {
     pub id: String,
     pub dimension: CapabilityDimension,
     pub target: String,
-    /// The effective access decision, such as read, stage, write, deny or allow.
+    /// The effective access decision, such as deny, ask, read, stage or write.
     pub action: String,
     pub enforcement: EnforcementEvidence,
 }

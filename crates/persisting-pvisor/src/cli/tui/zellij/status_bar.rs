@@ -92,17 +92,21 @@ fn metrics(snapshot: &Snapshot, elapsed: &str, available: usize) -> String {
 fn state_color(state: &str) -> Rgb {
     match state {
         "completed" | "running" => LIME,
-        "starting" | "pending" => AMBER,
+        "starting" | "pending" | "paused" => AMBER,
         _ => RED,
     }
 }
 
 fn render_metrics(buf: &mut Vec<u8>, row: u16, cols: u16, snapshot: &Snapshot, started: Instant) {
     clear_line(buf, row, cols, BASE);
-    let state = snapshot
-        .record
-        .as_ref()
-        .map_or("starting", |run| run.state.as_str());
+    let state = if snapshot.audit.is_some() {
+        "paused"
+    } else {
+        snapshot
+            .record
+            .as_ref()
+            .map_or("starting", |run| run.state.as_str())
+    };
     let chip = format!(" {} ", state.to_ascii_uppercase());
     let chip_width = UnicodeWidthStr::width(chip.as_str());
     let color = state_color(state);
@@ -131,6 +135,7 @@ fn short_label(label: &str, compact: bool) -> &str {
     match label {
         "Review" => "Rev",
         "Network" => "Net",
+        "Permissions" => "Perm",
         "Cancel" => "Back",
         "Select" => "Views",
         _ => label,
@@ -162,7 +167,7 @@ fn render_shortcuts(buf: &mut Vec<u8>, row: u16, cols: u16, state: &UiState) -> 
         let label = short_label(label, cols < 105);
         let compact = cols < 105;
         let body = if compact {
-            format!(" {key} {label}")
+            format!("{key} {label}")
         } else {
             format!(" <{key}> {label} ")
         };
@@ -183,7 +188,7 @@ fn render_shortcuts(buf: &mut Vec<u8>, row: u16, cols: u16, state: &UiState) -> 
         buf.extend_from_slice(ARROW.as_bytes());
         style(buf, AMBER, bg, true);
         if compact {
-            write!(buf, " {key}").unwrap();
+            write!(buf, "{key}").unwrap();
         } else {
             write!(buf, " <{key}>").unwrap();
         }

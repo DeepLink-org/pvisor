@@ -416,8 +416,9 @@ pub fn hint_from_record(record: &OverlayRecord, lower_dirs: Vec<PathBuf>) -> Ove
 pub fn lower_stack_from_config(
     cfg: &OverlayConfig,
     storage: &Path,
-    target: &Path,
+    record: &OverlayRecord,
 ) -> io::Result<Vec<PathBuf>> {
+    let target = &record.target;
     let resolve = |p: &str| -> PathBuf {
         let path = PathBuf::from(p);
         if path.is_absolute() {
@@ -428,10 +429,14 @@ pub fn lower_stack_from_config(
     };
     let mut lowers: Vec<PathBuf> = cfg.lower_dirs.iter().map(|p| resolve(p)).collect();
     lowers.retain(|p| p != target);
-    // A stage mounted back onto its source cannot use the source directory as
-    // both FUSE mountpoint and lower layer. Snapshot the lower into the Run
-    // storage first; the upper remains the only writable copy.
-    let lower = if cfg.target.is_some() && target.is_dir() {
+    // Snapshot only when the mount or its backing paths overlap the source.
+    // With an external stage (the normal --safe layout), the source is already
+    // a valid read-only lower. Copying it into Run storage can be both slow and
+    // larger than the available space there.
+    let needs_snapshot = record.merged_dir == *target
+        || !record.excluded_paths.is_empty()
+        || storage.starts_with(target);
+    let lower = if cfg.target.is_some() && target.is_dir() && needs_snapshot {
         use std::hash::{Hash, Hasher};
         let mut hasher = std::collections::hash_map::DefaultHasher::new();
         target.to_string_lossy().hash(&mut hasher);
@@ -2417,17 +2422,42 @@ mod tests {
     #[test]
     fn lower_stack_keeps_target_as_bottom_base_layer() {
         let cfg = OverlayConfig {
+            target: Some("/target".into()),
             lower_dirs: vec!["extra-a".into(), "extra-b".into()],
             ..OverlayConfig::default()
         };
+        let record = resolve_overlay_workspace(&cfg, Path::new("/store"), "test")
+            .unwrap()
+            .unwrap();
         assert_eq!(
-            lower_stack_from_config(&cfg, Path::new("/store"), Path::new("/target")).unwrap(),
+            lower_stack_from_config(&cfg, Path::new("/store"), &record).unwrap(),
             vec![
                 PathBuf::from("/store/extra-a"),
                 PathBuf::from("/store/extra-b"),
                 PathBuf::from("/target"),
             ]
         );
+    }
+
+    #[test]
+    fn external_stage_uses_workspace_directly_without_snapshot() {
+        let temporary = tempfile::tempdir().unwrap();
+        let workspace = temporary.path().join("workspace");
+        let storage = temporary.path().join("stage");
+        std::fs::create_dir(&workspace).unwrap();
+        std::fs::write(workspace.join("file"), b"content").unwrap();
+        let cfg = OverlayConfig {
+            target: Some(workspace.display().to_string()),
+            ..OverlayConfig::default()
+        };
+        let record = resolve_overlay_workspace(&cfg, &storage, "test")
+            .unwrap()
+            .unwrap();
+        assert_eq!(
+            lower_stack_from_config(&cfg, &storage, &record).unwrap(),
+            vec![workspace]
+        );
+        assert!(!storage.join(".overlay-lowers").exists());
     }
 
     #[cfg(unix)]
@@ -2443,9 +2473,14 @@ mod tests {
         std::os::unix::fs::symlink(&outside, workspace.join("escape")).unwrap();
         let cfg = OverlayConfig {
             target: Some(workspace.display().to_string()),
+            merged_dir: Some(workspace.display().to_string()),
             ..OverlayConfig::default()
         };
-        let lowers = lower_stack_from_config(&cfg, &storage, &workspace).unwrap();
+        let record = resolve_overlay_workspace(&cfg, &storage, "test")
+            .unwrap()
+            .unwrap();
+        let lowers = lower_stack_from_config(&cfg, &storage, &record).unwrap();
+        assert_ne!(lowers[0], workspace);
         let staged_link = lowers[0].join("escape");
         assert!(
             std::fs::symlink_metadata(&staged_link)

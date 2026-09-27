@@ -34,8 +34,8 @@ pvisor run --tui -- bash
 文件与网络计数、日志数量和 `Ctrl-]` 引导提示；按下引导键后，同一行切换为完整快捷键。
 pVisor 自身的启动信息显示在
 Log 面板，不混入 Agent 终端。按 `Ctrl-]` 进入命令模式，再按 `r`、`f`、`n`、
-`u`、`l` 打开概览、文件、网络、Job 或 Log 面板，按 `?` 查看按键帮助。在面板中用
-Tab 或 `1`–`5` 切换视图，用 `j`/`k` 滚动，按 Esc 或 `Ctrl-]` 返回 Agent。
+`u`、`l`、`p` 打开概览、文件、网络、Job、Log 或 Permissions 面板，按 `?` 查看按键帮助。在面板中用
+Tab 或 `1`–`6` 切换视图，用 `j`/`k` 滚动，按 Esc 或 `Ctrl-]` 返回 Agent。
 连续按两次 `Ctrl-]` 可将该按键原样发送给 Agent。
 
 下面的参考按 Job 生命周期组织；每组参数都配有验证下一步。
@@ -50,12 +50,24 @@ changeset，Job 结束后自动丢弃；指定 `--stage PATH` 则保留 changese
 pvisor run --stage ./run-stage -- codex
 pvisor run --mount /opt/zcode:read --mount /var/lib/zcode:write -- zcode
 pvisor run --access '/workspace/**/.ssh:deny' -- zcode
+pvisor run --access '.env:ask' -- codex
 ```
 
 `--mount SOURCE[:TARGET]:ACCESS` 支持 `read`、`stage` 和 `write`；省略 target 时使用
 source。`write` 直接修改宿主机；`read` 与 `stage` 当前都成为写时复制视图的底层，
-因此 `read` 目前不是强制只读边界。`--access PATH-GLOB:LEVEL` 支持 `deny` 和 `read`；
-`deny` 阻止访问，`read` 当前仅记录访问警告，不阻止写入。
+因此 `read` 目前不是强制只读边界。`--access PATH-GLOB:LEVEL` 支持 `deny`、`ask`
+和 `read`；`deny` 阻止访问，`ask` 暂停命中的文件操作并询问用户，`read` 当前仅记录
+访问警告，不阻止写入。这里的访问级别是文件审计规则；`stage` 和 `write` 用于
+`--mount`，不作为 `--access` 的级别。
+
+指定 `--access ...:ask` 会自动启用审计 TUI 和 safe 暂存视图，无需另加 `--audit`
+或 `--tui`。弹窗可按 `1` 仅允许此文件、`2` 允许同级目录、`3` 允许相同后缀；
+`d` 拒绝此次目标。对于未列入规则的代理网络目标，`--audit` 的弹窗可按 `1` 仅允许
+此目标，或按 `2` 允许当前域名及其子域名；两种选择都限定在当前端口和传输协议，
+IP 地址不能使用域名范围。明确的 `deny` 规则仍然直接拒绝，不进入询问弹窗。
+选择会写入当前 Job 目录的 `audit-policy.json`，之后命中相同范围时自动应用；
+每次决策记录在 `audit.jsonl`。使用 `--stage PATH` 可在 Job 结束后保留这些记录。
+代理网络审计属于协作式边界：未经过代理的直接连接不会触发此弹窗。
 
 ```text
 pvisor

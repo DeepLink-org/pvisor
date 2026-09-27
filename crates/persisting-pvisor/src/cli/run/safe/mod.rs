@@ -10,7 +10,7 @@ use std::path::Path;
 
 use super::{GatewayMode, RunConfig, RunExecutorKind};
 
-pub(super) fn patch(requested: &RunConfig) -> Vec<String> {
+pub(super) fn patch(requested: &RunConfig, audit: bool) -> Vec<String> {
     let program = requested
         .run
         .command
@@ -40,7 +40,7 @@ pub(super) fn patch(requested: &RunConfig) -> Vec<String> {
         .into(),
         "--clear-pass-env".into(),
     ]);
-    args.extend(files::patch());
+    args.extend(files::patch(audit));
     args
 }
 
@@ -102,10 +102,10 @@ mod tests {
         ] {
             let mut requested = RunConfig::default();
             requested.run.command = vec![agent.into()];
-            let args = patch(&requested);
+            let args = patch(&requested, false);
             let mut expected = expected.into_iter().map(str::to_owned).collect::<Vec<_>>();
             expected.extend(["--overlaynet", "proxy", "--clear-pass-env"].map(str::to_owned));
-            expected.extend(files::patch());
+            expected.extend(files::patch(false));
             assert_eq!(args, expected);
         }
     }

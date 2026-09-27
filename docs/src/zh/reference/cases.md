@@ -13,17 +13,17 @@
 | 只想运行一个命令，或确认默认写入 | A01–A03、A07 |
 | 需要超时、内存或文件限制 | A04、B01–B04 |
 | 想保留、丢弃或检查文件改动 | C01–C06 |
-| 需要组合 OverlayFS 层或授予路径权限 | D01、D04–D05 |
+| 需要组合 OverlayFS 层或授予路径权限 | D01、D04–D06 |
 | 想了解 host 默认隔离 | D02–D03 |
 | 使用 VM、宿主 rootfs 或 OCI 镜像 | E01–E06 |
 | 使用原生 OCI 容器 | F01–F04 |
 | 配置网络代理或禁止网络 | G01–G06 |
 | 接入 Gateway 或记录轨迹 | H01–H02 |
 | 从配置文件或 RunSpec 执行 | I01–I03 |
-| 参考完整生产组合 | J01–J03 |
+| 参考多能力组合 | J01–J03 |
 | 审查、选择性提交、分支或终止 Job | K01–K04 |
 | 复用环境或准备轨迹回放 | L01–L02、M01 |
-| 验证终端界面 | M02 |
+| 验证终端界面与权限弹窗 | D06、M02 |
 
 每个场景都包含三层信息：命令是用户实际输入，正文说明适用场景和预期，
 折叠的断言是自动回归使用的实现检查。你可以只复制命令，也可以运行脚本做完整验证。
@@ -471,9 +471,9 @@ Linux host stage 示例需要可用的 user/mount namespace。VM 示例需要可
   预期：命令成功，原有的 `user-file` 和新生成的 Run Bundle 都保存在指定目录。
 
   ```bash
-  mkdir -p /tmp/pvisor-cases/not-owned
-  touch /tmp/pvisor-cases/not-owned/user-file
-  pvisor --stage /tmp/pvisor-cases/not-owned -- /bin/true
+  mkdir -p /tmp/pvisor-cases/existing-stage
+  touch /tmp/pvisor-cases/existing-stage/user-file
+  pvisor --stage /tmp/pvisor-cases/existing-stage -- /bin/true
   ```
 
   <details>
@@ -482,8 +482,8 @@ Linux host stage 示例需要可用的 user/mount namespace。VM 示例需要可
   <!-- pvisor-assert -->
 
   ```bash
-  test -f "$PVISOR_CASE_ROOT/not-owned/user-file"
-  test -f "$PVISOR_CASE_ROOT/not-owned/run-bundle.json"
+  test -f "$PVISOR_CASE_ROOT/existing-stage/user-file"
+  test -f "$PVISOR_CASE_ROOT/existing-stage/run-bundle.json"
   ```
 
   </details>
@@ -550,7 +550,15 @@ Linux host stage 示例需要可用的 user/mount namespace。VM 示例需要可
 
 ### D. OverlayFS 与 Host 安全边界
 
-D01 讲视图层组合，D02/D03 讲 host executor，D04/D05 讲拒绝读取和显式授予写入。
+D01 讲视图层组合，D02/D03 讲 host executor，D04–D06 讲拒绝、显式写入和交互授权。
+文件权限级别为 `deny`、`ask`、`read`、`stage`、`write`：`deny` 直接拒绝，
+`ask` 暂停命中的文件操作并询问用户，`read` 目前只记录访问警告；
+`stage` 和 `write` 用于 `--mount`，其中 `write` 直接写入宿主 lower。
+`--access PATH-GLOB:ask` 会自动启用审计 TUI 和 safe 暂存视图，无需另加 `--audit`。
+文件弹窗的 `1` 仅允许此文件，`2` 允许同级目录中的文件，`3` 允许相同后缀的文件；
+`d` 拒绝此目标。明确的 `deny` 规则仍直接拒绝，不弹窗。
+选择写入当前 Job 的 `audit-policy.json`，后续命中同一范围时自动应用；
+`audit.jsonl` 记录人工及自动决策。显式指定 `--stage PATH` 才能在 Job 结束后保留这些记录。
 
 - [ ] **D01：高级 OverlayFS 组合**
 
@@ -708,6 +716,90 @@ D01 讲视图层组合，D02/D03 讲 host executor，D04/D05 讲拒绝读取和�
 
   </details>
 
+- [ ] **D06：`ask` 弹窗与当前 Job 的目录授权**
+
+  用途：用 `--access 'private/*.txt:ask'` 启动审计 TUI；第一次读取时按 `2` 授权同级目录，再读取另一文件，验证规则自动复用。
+
+  准备：Linux user/mount namespace 和 Python 3 可用。示例用伪终端自动输入 `2`；手工运行时在弹窗中按该键。
+
+  预期：只出现一次文件授权弹窗，两个文件均可读取；`audit-policy.json` 保存目录规则，`audit.jsonl` 记录第二次自动允许。`--stage` 保留当前 Job 的审计记录，不会把选择变成全局配置。
+
+  <!-- pvisor-case: requires=rootless,python3 -->
+
+  ```bash
+  mkdir -p private
+  printf ASK_ONE > private/one.txt
+  printf ASK_TWO > private/two.txt
+  python3 - <<'PY'
+  import fcntl, os, pty, select, signal, struct, time
+
+  pid, master = pty.fork()
+  if pid == 0:
+      os.environ['TERM'] = 'xterm-256color'
+      os.execvp('pvisor', [
+          'pvisor', '--no-config', '--stage', '/tmp/pvisor-cases/ask-stage',
+          '--access', 'private/*.txt:ask', '--', '/bin/sh', '-c',
+          'cat private/one.txt; sleep 1; cat private/two.txt',
+      ])
+  fcntl.ioctl(master, 0x5414, struct.pack('HHHH', 24, 100, 0, 0))
+  screen = bytearray()
+  prompted = False
+  status = None
+  deadline = time.monotonic() + 25
+  try:
+      while time.monotonic() < deadline:
+          ready, _, _ = select.select([master], [], [], 0.1)
+          if ready:
+              try:
+                  screen.extend(os.read(master, 65536))
+              except OSError:
+                  pass
+          if not prompted and b'FILE ACCESS PAUSED' in screen:
+              os.write(master, b'2')
+              prompted = True
+          ended, result = os.waitpid(pid, os.WNOHANG)
+          if ended:
+              status = result
+              break
+      if status is None:
+          os.killpg(pid, signal.SIGTERM)
+          _, status = os.waitpid(pid, 0)
+          raise RuntimeError('timed out waiting for the Job')
+  finally:
+      os.close(master)
+  assert prompted and os.waitstatus_to_exitcode(status) == 0
+  assert b'ASK_ONE' in screen and b'ASK_TWO' in screen
+  print('ASK directory grant reused')
+  PY
+  ```
+
+  <details>
+  <summary>自动回归断言（由脚本执行）</summary>
+
+  <!-- pvisor-assert -->
+
+  ```bash
+  stdout_has 'ASK directory grant reused'
+  python3 - <<'PY'
+  import json
+  from pathlib import Path
+
+  stage = Path('/tmp/pvisor-cases/ask-stage')
+  policy = json.loads((stage / 'audit-policy.json').read_text())
+  assert any(rule['kind'] == 'file' and rule['scope'] == 'directory'
+             and rule['value'] == 'private' and rule['decision'] == 'allow'
+             for rule in policy['rules'])
+  decisions = [json.loads(line) for line in (stage / 'audit.jsonl').read_text().splitlines()]
+  assert any(item['request']['target'] == 'private/two.txt'
+             and item['decision'] == 'allow' and item['automatic']
+             for item in decisions)
+  PY
+  test "$(cat private/one.txt)" = ASK_ONE
+  test "$(cat private/two.txt)" = ASK_TWO
+  ```
+
+  </details>
+
 ### E. VM 与 rootfs
 
 需要更强边界、独立 guest kernel 或 OCI rootfs 时使用 VM。E01 最接近“直接运行”，E02/E03 展示目录和镜像来源，E04/E05 再加入资源与 stage。
@@ -716,7 +808,7 @@ D01 讲视图层组合，D02/D03 讲 host executor，D04/D05 讲拒绝读取和�
 
   建议场景：适合需要 VM guest kernel、独立 rootfs 或更强隔离的任务。
 
-  用途：用 `--vm` 选择 VM executor，并以宿主根目录作为 guest rootfs。该方式扩大了 guest 可读取的宿主文件范围，只应在可信测试环境使用。
+  用途：用 `--vm` 选择 VM executor；Linux 默认以宿主根目录作为 guest rootfs。该方式扩大了 guest 可读取的宿主文件范围，只应在可信测试环境使用。
 
   准备：Linux；可访问 /dev/kvm。
 
@@ -1031,6 +1123,10 @@ D01 讲视图层组合，D02/D03 讲 host executor，D04/D05 讲拒绝读取和�
 ### G. OverlayNet
 
 这一组只讨论网络边界。proxy 适合需要 host Gateway 的协作式访问，VM auto 和 host deny-all 才适合需要更强网络边界的场景。
+使用 `--audit` 时，未列入规则的代理网络目标会暂停并弹窗：`1` 仅允许当前目标，
+`2` 允许当前主机名及其子域名，范围仍限于相同端口和传输协议；IP 地址没有域名选项，
+`d` 拒绝当前目标。选择同样只保存在当前 Job 的 `audit-policy.json` 中。
+显式拒绝规则不进入弹窗；未经代理的直接 socket 连接也不会触发此审计。
 
 - [ ] **G01：启用默认 proxy**
 
@@ -1057,7 +1153,7 @@ D01 讲视图层组合，D02/D03 讲 host executor，D04/D05 讲拒绝读取和�
 
   </details>
 
-- [ ] **G02：显式 proxy 地址和 mode**
+- [ ] **G02：自定义 proxy 监听地址**
 
   建议场景：适合配置出站网络、代理访问或禁止网络的任务。
 
@@ -1339,7 +1435,7 @@ D01 讲视图层组合，D02/D03 讲 host executor，D04/D05 讲拒绝读取和�
 
 ### J. 复杂组合
 
-这些不是入门命令，而是上线前的组合参考：J01 偏 host 安全，J02 偏 VM 生产链路，J03 偏容器链路。遇到问题时请拆回对应的 A–I 场景定位。
+这些是多项能力同时启用的回归示例：J01 偏 host 安全，J02 偏 VM，J03 偏容器。它们使用简短测试命令，不能代替真实 Agent 工作负载的验收；遇到问题时请拆回对应的 A–I 场景定位。
 
 - [ ] **J01：host + persistent stage + deny-all + capture + limits**
 

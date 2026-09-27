@@ -71,19 +71,24 @@ pub fn main() -> anyhow::Result<()> {
     let parsed = Cli::parse_from(args.clone());
     #[cfg(unix)]
     if let Command::Run(run) = &parsed.command
-        && run.tui_requested()
         && !tui::is_child()
     {
-        anyhow::ensure!(
-            run.wants_tui(),
-            "--tui requires inherited stdio and a normal Job"
-        );
-        anyhow::ensure!(tui::available(), "--tui requires an interactive terminal");
-        let code = tui::run(args)?;
-        if code != 0 {
-            std::process::exit(code);
+        let audit = run.audit_requested()?;
+        if run.tui_requested() || audit {
+            anyhow::ensure!(
+                run.wants_tui(audit),
+                "--tui/--audit requires inherited stdio and a normal Job"
+            );
+            anyhow::ensure!(
+                tui::available(),
+                "--tui/--audit requires an interactive terminal"
+            );
+            let code = tui::run(args, audit)?;
+            if code != 0 {
+                std::process::exit(code);
+            }
+            return Ok(());
         }
-        return Ok(());
     }
     match parsed.command {
         Command::Run(args) => {

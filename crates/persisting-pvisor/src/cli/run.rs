@@ -144,6 +144,9 @@ pub struct RunArgs {
     /// Show a terminal with status bar; Ctrl-] opens the TUI command mode.
     #[arg(long)]
     tui: bool,
+    /// Ask on `ask` file rules and unlisted proxy destinations; implies --tui and --safe.
+    #[arg(long)]
+    audit: bool,
     /// TOML RunConfig or prepared JSON RunSpec; explicit CLI values replace matching fields.
     #[arg(long, value_name = "FILE")]
     spec: Option<PathBuf>,
@@ -181,14 +184,41 @@ pub struct RunArgs {
 }
 
 impl RunArgs {
-    #[cfg(unix)]
-    pub(super) fn tui_requested(&self) -> bool {
-        self.tui
+    fn cli_asks(&self) -> bool {
+        self.overlayfs
+            .access
+            .iter()
+            .any(|rule| rule.level == FilesystemLevel::Ask)
     }
 
     #[cfg(unix)]
-    pub(super) fn wants_tui(&self) -> bool {
-        self.tui
+    pub(super) fn tui_requested(&self) -> bool {
+        self.tui || self.audit || self.cli_asks()
+    }
+
+    #[cfg(unix)]
+    pub(super) fn audit_requested(&self) -> anyhow::Result<bool> {
+        if self.audit || self.cli_asks() {
+            return Ok(true);
+        }
+        if let Some(path) = self.spec.as_deref()
+            && spec_is_json(path)?
+        {
+            return Ok(false);
+        }
+        let config = load_run_config(self, personal_config_root().as_deref(), false)?;
+        Ok(config.filesystem.as_ref().is_some_and(|filesystem| {
+            !filesystem.access_policy.ask().is_empty()
+                || filesystem
+                    .access
+                    .iter()
+                    .any(|rule| rule.level == FilesystemAccessLevel::Ask)
+        }))
+    }
+
+    #[cfg(unix)]
+    pub(super) fn wants_tui(&self, audit: bool) -> bool {
+        (self.tui || audit)
             && self.result_file.is_none()
             && self.run.stdio != Some(RunStdio::Capture)
             && self
@@ -377,6 +407,7 @@ struct FilesystemAccessArg {
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 enum FilesystemLevel {
     Deny,
+    Ask,
     Read,
     Stage,
     Write,
@@ -391,11 +422,14 @@ impl FromStr for FilesystemAccessArg {
             .ok_or_else(|| "access must use PATH-GLOB:LEVEL".to_string())?;
         let level = match level {
             "deny" => FilesystemLevel::Deny,
+            "ask" => FilesystemLevel::Ask,
             "read" => FilesystemLevel::Read,
             "stage" => FilesystemLevel::Stage,
             "write" => FilesystemLevel::Write,
             _ => {
-                return Err(format!("invalid access level `{level}`; use deny or read"));
+                return Err(format!(
+                    "invalid access level `{level}`; use deny, ask, read, stage, or write"
+                ));
             }
         };
         if path.is_empty() {
@@ -413,7 +447,7 @@ struct OverlayFsOverrides {
     /// Host path mount: SOURCE[:TARGET]:ACCESS. ACCESS is read, stage, or write.
     #[arg(long = "mount", value_name = "SOURCE[:TARGET]:ACCESS")]
     mounts: Vec<FilesystemMountArg>,
-    /// Agent-visible path policy: PATH-GLOB:LEVEL. LEVEL is deny or read.
+    /// Agent-visible path policy: PATH-GLOB:LEVEL. LEVEL is deny, ask, or read; ask opens the audit TUI.
     /// Use `--mount` when a path must be staged or writable.
     #[arg(long = "access", value_name = "PATH-GLOB:LEVEL")]
     access: Vec<FilesystemAccessArg>,
@@ -672,7 +706,11 @@ fn personal_config_root() -> Option<PathBuf> {
         .or_else(|| dirs::home_dir().map(|home| home.join(".config")))
 }
 
-fn load_run_config(args: &RunArgs, root: Option<&Path>) -> anyhow::Result<RunConfig> {
+fn load_run_config(
+    args: &RunArgs,
+    root: Option<&Path>,
+    diagnostic: bool,
+) -> anyhow::Result<RunConfig> {
     if let Some(path) = &args.spec {
         return RunConfig::from_file(path)
             .with_context(|| format!("load pVisor Run config {}", path.display()));
@@ -711,18 +749,24 @@ fn load_run_config(args: &RunArgs, root: Option<&Path>) -> anyhow::Result<RunCon
     };
     let config = toml::from_str(&source)
         .with_context(|| format!("parse personal Agent config {}", path.display()))?;
-    run_log!("pVisor Agent defaults: {}", path.display());
+    if diagnostic {
+        run_log!("pVisor Agent defaults: {}", path.display());
+    }
     Ok(config)
 }
 
-pub async fn run(args: RunArgs) -> anyhow::Result<i32> {
+pub async fn run(mut args: RunArgs) -> anyhow::Result<i32> {
+    #[cfg(unix)]
+    if persisting_control::audit::configured() {
+        args.audit = true;
+    }
     if let Some(path) = args.spec.as_deref()
         && spec_is_json(path)?
     {
         return run_prepared_spec(args).await;
     }
     let run_id = format!("run-{}", uuid::Uuid::new_v4());
-    let mut config = load_run_config(&args, personal_config_root().as_deref())?;
+    let mut config = load_run_config(&args, personal_config_root().as_deref(), true)?;
     apply_run_options(&mut config, args.clone())?;
     let stage_limit = config
         .filesystem
@@ -733,10 +777,11 @@ pub async fn run(args: RunArgs) -> anyhow::Result<i32> {
         .filesystem
         .as_ref()
         .and_then(|overlay| overlay.stage.clone());
-    if args.run.safe {
+    if args.run.safe || args.audit {
         warn_safe_preset(&config, &args);
     }
-    let mut result = execute_config(config, run_id.clone(), args.run.safe, None).await;
+    let mut result =
+        execute_config(config, run_id.clone(), args.run.safe || args.audit, None).await;
     if result.is_ok()
         && let Some(limit) = stage_limit
         && let Some(path) = effective_stage
@@ -774,7 +819,7 @@ pub async fn run(args: RunArgs) -> anyhow::Result<i32> {
 }
 
 fn ensure_default_stage(config: &mut RunConfig, args: &RunArgs, run_id: &str) -> Option<PathBuf> {
-    if !args.run.safe {
+    if !args.run.safe && !args.audit {
         return None;
     }
     let existing = args.stage.clone().or_else(|| {
@@ -824,8 +869,8 @@ fn directory_size_bytes(root: &Path) -> anyhow::Result<u64> {
 
 async fn run_prepared_spec(args: RunArgs) -> anyhow::Result<i32> {
     anyhow::ensure!(
-        !args.run.safe,
-        "--safe cannot modify a prepared JSON RunSpec"
+        !args.run.safe && !args.audit,
+        "--safe/--audit cannot modify a prepared JSON RunSpec"
     );
     anyhow::ensure!(
         args.command.is_empty(),
@@ -1239,6 +1284,14 @@ async fn execute_config(
     }
     validate(&config, safe)?;
 
+    // The rootless capability check launches `unshare`, but does not depend on
+    // workspace, storage, OverlayFS, or Gateway configuration. Run it while
+    // those independent inputs are resolved instead of blocking at executor
+    // construction.
+    #[cfg(target_os = "linux")]
+    let rootless_probe = (config.run.executor == RunExecutorKind::Host)
+        .then(|| tokio::task::spawn_blocking(crate::process::rootless_runtime_available));
+
     if config.overlaynet.mode == OverlayNetMode::Proxy && !safe {
         run_log!(
             "pVisor OverlayNet boundary: explicit cooperative proxy; direct sockets remain ambient"
@@ -1321,12 +1374,17 @@ async fn execute_config(
             )
         };
 
+    #[cfg(target_os = "linux")]
+    let rootless_available = match rootless_probe {
+        Some(probe) => probe.await.context("rootless capability probe failed")?,
+        None => false,
+    };
+
     let executor: Arc<dyn RunExecutor> = match config.run.executor {
         #[cfg(target_os = "linux")]
         RunExecutorKind::Host if safe => {
-            let available = crate::process::rootless_runtime_available();
             anyhow::ensure!(
-                available,
+                rootless_available,
                 "required sandbox unavailable: Linux rootless namespaces must be enabled"
             );
             Arc::new(ProcessExecutor::rootless_with_launcher(
@@ -1343,7 +1401,7 @@ async fn execute_config(
         }
         #[cfg(target_os = "linux")]
         RunExecutorKind::Host => {
-            if crate::process::rootless_runtime_available() {
+            if rootless_available {
                 match ProcessExecutor::rootless_with_launcher(std::env::current_exe()?) {
                     Ok(executor) => Arc::new(executor),
                     Err(error) => {
@@ -1665,8 +1723,8 @@ fn normalize_filesystem_config(config: &mut RunConfig) -> anyhow::Result<()> {
             }
         }
         match mount.access {
-            FilesystemAccessLevel::Deny => anyhow::bail!(
-                "filesystem mount access `deny` is invalid; use an access rule instead"
+            FilesystemAccessLevel::Deny | FilesystemAccessLevel::Ask => anyhow::bail!(
+                "filesystem mount access `deny` or `ask` is invalid; use an access rule instead"
             ),
             FilesystemAccessLevel::Read | FilesystemAccessLevel::Stage => {
                 filesystem.compose.push(mount.source);
@@ -1691,16 +1749,27 @@ fn normalize_filesystem_config(config: &mut RunConfig) -> anyhow::Result<()> {
             FilesystemAccessLevel::Deny => {
                 let mut deny = filesystem.access_policy.deny().to_vec();
                 deny.push(normalize_policy_glob(&rule.path));
-                filesystem.access_policy = persisting_control::FileAccessPolicy::new(
+                filesystem.access_policy = persisting_control::FileAccessPolicy::new_with_ask(
                     deny,
+                    filesystem.access_policy.ask().to_vec(),
+                    filesystem.access_policy.warn().to_vec(),
+                )?;
+            }
+            FilesystemAccessLevel::Ask => {
+                let mut ask = filesystem.access_policy.ask().to_vec();
+                ask.push(normalize_policy_glob(&rule.path));
+                filesystem.access_policy = persisting_control::FileAccessPolicy::new_with_ask(
+                    filesystem.access_policy.deny().to_vec(),
+                    ask,
                     filesystem.access_policy.warn().to_vec(),
                 )?;
             }
             FilesystemAccessLevel::Read => {
                 let mut warn = filesystem.access_policy.warn().to_vec();
                 warn.push(normalize_policy_glob(&rule.path));
-                filesystem.access_policy = persisting_control::FileAccessPolicy::new(
+                filesystem.access_policy = persisting_control::FileAccessPolicy::new_with_ask(
                     filesystem.access_policy.deny().to_vec(),
+                    filesystem.access_policy.ask().to_vec(),
                     warn,
                 )?;
             }
@@ -1793,12 +1862,28 @@ fn free_loopback_address() -> anyhow::Result<String> {
 
 /// Resolve ordinary defaults/config, then the opt-in preset, then explicit CLI values.
 fn apply_run_options(config: &mut RunConfig, args: RunArgs) -> anyhow::Result<()> {
-    if args.run.safe {
+    if args.run.safe || args.audit {
+        let configured_ask = if args.audit {
+            config
+                .filesystem
+                .as_ref()
+                .map(|filesystem| {
+                    filesystem
+                        .access
+                        .iter()
+                        .filter(|rule| rule.level == FilesystemAccessLevel::Ask)
+                        .cloned()
+                        .collect::<Vec<_>>()
+                })
+                .unwrap_or_default()
+        } else {
+            Vec::new()
+        };
         // Resolve the actual command/executor/routes first, without mistaking --name for an Agent.
         let mut requested = config.clone();
         apply_cli(&mut requested, args.clone())?;
         use clap::Parser;
-        let patch = safe::patch(&requested);
+        let patch = safe::patch(&requested, args.audit);
         let super::Command::Run(patch) = super::Cli::try_parse_from(
             ["pvisor".to_owned(), "run".to_owned()]
                 .into_iter()
@@ -1809,6 +1894,9 @@ fn apply_run_options(config: &mut RunConfig, args: RunArgs) -> anyhow::Result<()
             unreachable!("safe patch is a Run command")
         };
         apply_cli(config, *patch)?;
+        if let Some(filesystem) = config.filesystem.as_mut() {
+            filesystem.access.extend(configured_ask);
+        }
     }
     apply_cli(config, args.clone())?;
     apply_safe_defaults(config)?;
@@ -1847,12 +1935,13 @@ fn warn_safe_preset(config: &RunConfig, args: &RunArgs) {
         "pVisor --safe warning: destination rules cannot distinguish inference from telemetry/upload APIs on the same host; Gateway routes are not an inference-path filter."
     );
     run_log!(
-        "pVisor --safe: OverlayFS denies private-key paths and warns on sensitive paths according to the effective rules. Glob rules cover the overlay view; required sandbox restricts access outside that view. Explicit shares, renamed copies and embedded secrets need separate rules. No bulk-read or tool-call attribution monitoring."
+        "pVisor --safe: OverlayFS denies private-key paths and asks or warns on sensitive paths according to the effective rules. Glob rules cover the overlay view; required sandbox restricts access outside that view. Explicit shares, renamed copies and embedded secrets need separate rules. No bulk-read or tool-call attribution monitoring."
     );
     if let Some(overlay) = &config.filesystem {
         run_log!(
-            "pVisor --safe: file deny={:?}, warn={:?}",
+            "pVisor --safe: file deny={:?}, ask={:?}, warn={:?}",
             overlay.access_policy.deny(),
+            overlay.access_policy.ask(),
             overlay.access_policy.warn()
         );
     }
@@ -2076,6 +2165,7 @@ fn apply_cli(config: &mut RunConfig, args: RunArgs) -> anyhow::Result<()> {
                     path: access.path,
                     level: match access.level {
                         FilesystemLevel::Deny => FilesystemAccessLevel::Deny,
+                        FilesystemLevel::Ask => FilesystemAccessLevel::Ask,
                         FilesystemLevel::Read => FilesystemAccessLevel::Read,
                         FilesystemLevel::Stage => FilesystemAccessLevel::Stage,
                         FilesystemLevel::Write => FilesystemAccessLevel::Write,
@@ -2094,6 +2184,7 @@ fn apply_cli(config: &mut RunConfig, args: RunArgs) -> anyhow::Result<()> {
                     target: Some(mount.target),
                     access: match mount.access {
                         FilesystemLevel::Deny => FilesystemAccessLevel::Deny,
+                        FilesystemLevel::Ask => FilesystemAccessLevel::Ask,
                         FilesystemLevel::Read => FilesystemAccessLevel::Read,
                         FilesystemLevel::Stage => FilesystemAccessLevel::Stage,
                         FilesystemLevel::Write => FilesystemAccessLevel::Write,
@@ -2715,7 +2806,7 @@ mod tests {
     }
 
     #[test]
-    fn only_safe_runs_create_an_implicit_workspace_stage() {
+    fn safe_and_audit_runs_create_an_implicit_workspace_stage() {
         let mut normal = RunConfig::default();
         let normal_args = preset_args(&["--", "bash"]);
         assert!(ensure_default_stage(&mut normal, &normal_args, "normal").is_none());
@@ -2725,6 +2816,48 @@ mod tests {
         let safe_args = preset_args(&["--safe", "--", "bash"]);
         let temporary = ensure_default_stage(&mut safe, &safe_args, "safe").unwrap();
         assert_eq!(safe.filesystem.unwrap().stage, Some(temporary));
+
+        let mut audit = RunConfig::default();
+        let audit_args = preset_args(&["--audit", "--", "codex"]);
+        assert!(audit_args.tui_requested());
+        assert!(audit_args.wants_tui(true));
+        let temporary = ensure_default_stage(&mut audit, &audit_args, "audit").unwrap();
+        assert_eq!(audit.filesystem.unwrap().stage, Some(temporary));
+        let mut config = RunConfig::default();
+        apply_run_options(&mut config, audit_args).unwrap();
+        assert_eq!(config.overlaynet.policy, OverlayNetPolicy::Allowlist);
+        normalize_filesystem_config(&mut config).unwrap();
+        assert!(!config.filesystem.unwrap().access_policy.ask().is_empty());
+    }
+
+    #[test]
+    fn ask_rules_select_audit_without_an_extra_flag_and_keep_configured_rules() {
+        let args = preset_args(&["--access", ".env:ask", "--", "bash"]);
+        assert!(args.audit_requested().unwrap());
+        assert!(args.tui_requested());
+
+        let directory = tempfile::tempdir().unwrap();
+        let spec = directory.path().join("run.toml");
+        std::fs::write(
+            &spec,
+            "[[filesystem.access]]\npath = 'secrets/*.pem'\nlevel = 'ask'\n",
+        )
+        .unwrap();
+        let args = preset_args(&["--spec", spec.to_str().unwrap(), "--", "bash"]);
+        assert!(args.audit_requested().unwrap());
+        let mut config = load_run_config(&args, None, false).unwrap();
+        let mut effective = args;
+        effective.audit = true;
+        apply_run_options(&mut config, effective).unwrap();
+        normalize_filesystem_config(&mut config).unwrap();
+        assert!(
+            config
+                .filesystem
+                .unwrap()
+                .access_policy
+                .ask()
+                .contains(&"secrets/*.pem".into())
+        );
     }
 
     #[test]
@@ -2948,6 +3081,17 @@ level = "read"
         )
         .unwrap();
         assert!(normalize_filesystem_config(&mut config).is_err());
+
+        let mut config = RunConfig::default();
+        apply_run_options(
+            &mut config,
+            preset_args(&["--audit", "--access", "secrets/*.pem:ask", "--", "codex"]),
+        )
+        .unwrap();
+        normalize_filesystem_config(&mut config).unwrap();
+        let policy = &config.filesystem.as_ref().unwrap().access_policy;
+        assert_eq!(policy.ask(), ["secrets/*.pem"]);
+        assert!(policy.warn().is_empty());
     }
 
     #[test]

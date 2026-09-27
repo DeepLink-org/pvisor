@@ -258,6 +258,22 @@ fn panel_lines(snapshot: &Snapshot, panel: Panel, started: Instant, width: usize
                 wrap_log_lines(&snapshot.log, width)
             }
         }
+        Panel::Permissions => {
+            let mut lines = vec!["SESSION PERMISSIONS".into(), String::new()];
+            if let Some(record) = snapshot.record.as_ref() {
+                lines.push(format!(
+                    "Stored at {}/audit-policy.json",
+                    record.storage.display()
+                ));
+                lines.push(String::new());
+            }
+            if snapshot.audit_rules.is_empty() {
+                lines.push("No decisions yet. Ask rules pause the matching access.".into());
+            } else {
+                lines.extend(snapshot.audit_rules.iter().cloned());
+            }
+            lines
+        }
         Panel::Keys => super::input::help_lines(),
     }
 }
@@ -299,9 +315,9 @@ fn floating_panel(
     print_clipped(buf, &format!(" pVisor Review · {title} "), width - 4);
 
     let tabs = if width < 55 {
-        "1 Overview  2 Files  3 Net  4 Job  5 Log"
+        "1 Overview  2 Files  3 Net  4 Job  5 Log  6 Perm"
     } else {
-        "1 Overview   2 Files   3 Network   4 Job   5 Log"
+        "1 Overview   2 Files   3 Network   4 Job   5 Log   6 Permissions"
     };
     let lines = panel_lines(snapshot, state.panel, started, (width - 4) as usize);
     for inner in 0..height - 2 {
@@ -354,6 +370,79 @@ fn floating_panel(
         )
         .as_bytes(),
     );
+    buf.extend_from_slice(b"\x1b[0m");
+}
+
+fn audit_dialog(
+    buf: &mut Vec<u8>,
+    layout: Layout,
+    request: &persisting_control::audit::AuditRequest,
+) {
+    let width = layout.cols.saturating_sub(4).clamp(10, 88);
+    let height = layout.agent_rows.clamp(4, 12);
+    let x = (layout.cols - width) / 2 + 1;
+    let y = 3 + (layout.agent_rows - height) / 2;
+    let title = match request.kind {
+        persisting_control::audit::AuditKind::File => "FILE ACCESS PAUSED",
+        persisting_control::audit::AuditKind::Network => "NETWORK ACCESS PAUSED",
+    };
+    let mut lines = wrap_log_lines(
+        std::slice::from_ref(&request.target),
+        usize::from(width.saturating_sub(4)),
+    );
+    lines.push(String::new());
+    lines.extend(wrap_log_lines(
+        std::slice::from_ref(&request.reason),
+        usize::from(width.saturating_sub(4)),
+    ));
+    for row in 0..height {
+        move_to(buf, y + row, x);
+        buf.extend_from_slice(ACTIVE.as_bytes());
+        let (left, right) = if row == 0 {
+            ("┌", "┐")
+        } else if row == height - 1 {
+            ("└", "┘")
+        } else {
+            ("│", "│")
+        };
+        buf.extend_from_slice(left.as_bytes());
+        if row == 0 || row == height - 1 {
+            buf.extend_from_slice("─".repeat((width - 2) as usize).as_bytes());
+        } else {
+            buf.extend_from_slice(b"\x1b[48;2;15;19;16m");
+            buf.extend_from_slice(" ".repeat((width - 2) as usize).as_bytes());
+        }
+        move_to(buf, y + row, x + width - 1);
+        buf.extend_from_slice(ACTIVE.as_bytes());
+        buf.extend_from_slice(right.as_bytes());
+        if row == 0 {
+            move_to(buf, y, x + 2);
+            buf.extend_from_slice(b"\x1b[38;2;167;230;54m");
+            print_clipped(buf, &format!(" {title} "), width - 4);
+        } else if row > 0 && row < height - 1 {
+            move_to(buf, y + row, x + 2);
+            buf.extend_from_slice(b"\x1b[48;2;15;19;16;38;2;220;224;220m");
+            let line = if row == height - 2 {
+                match request.kind {
+                    persisting_control::audit::AuditKind::File if width < 55 => {
+                        "1 File  2 Dir  3 Ext  d Deny"
+                    }
+                    persisting_control::audit::AuditKind::File => {
+                        "1 This file   2 Same directory   3 Same suffix   d Deny"
+                    }
+                    persisting_control::audit::AuditKind::Network if width < 55 => {
+                        "1 Target  2 Domain  d Deny"
+                    }
+                    persisting_control::audit::AuditKind::Network => {
+                        "1 This target   2 Host and subdomains (same port)   d Deny"
+                    }
+                }
+            } else {
+                lines.get((row - 1) as usize).map_or("", String::as_str)
+            };
+            print_clipped(buf, line, width - 4);
+        }
+    }
     buf.extend_from_slice(b"\x1b[0m");
 }
 
@@ -468,8 +557,11 @@ pub(super) fn render(
     if state.panel_open() {
         floating_panel(&mut buf, layout, state, snapshot, started);
     }
+    if let Some(request) = &snapshot.audit {
+        audit_dialog(&mut buf, layout, request);
+    }
     status_bar::render(&mut buf, layout.cols, layout.rows, state, snapshot, started);
-    if state.agent_input_active() && !screen.hide_cursor() {
+    if state.agent_input_active() && snapshot.audit.is_none() && !screen.hide_cursor() {
         let (cursor_row, cursor_col) = screen.cursor_position();
         move_to(
             &mut buf,
@@ -487,6 +579,7 @@ pub(super) fn render(
 #[cfg(test)]
 mod tests {
     use super::*;
+    use persisting_control::audit::{AuditKind, AuditRequest};
 
     fn size(cols: u16, rows: u16) -> libc::winsize {
         libc::winsize {
@@ -519,6 +612,39 @@ mod tests {
                 assert!(height >= 60, "tall terminal panel should show more rows");
             }
         }
+    }
+
+    #[test]
+    fn audit_prompt_covers_agent_input_and_keeps_decision_keys_visible() {
+        let layout = Layout::new(size(80, 24), &UiState::default());
+        let snapshot = Snapshot {
+            audit: Some(AuditRequest {
+                kind: AuditKind::Network,
+                target: "unexpected.example:443".into(),
+                reason: "not-in-allowlist".into(),
+                host: Some("unexpected.example".into()),
+                port: Some(443),
+                transport: Some(persisting_control::NetworkTransport::TcpTunnel),
+            }),
+            ..Snapshot::default()
+        };
+        let screen = vt100::Parser::new(layout.agent_rows, layout.agent_cols, 0);
+        let mut output = Vec::new();
+        render(
+            &mut output,
+            layout,
+            &UiState::default(),
+            screen.screen(),
+            &snapshot,
+            Instant::now(),
+        )
+        .unwrap();
+        let output = String::from_utf8(output).unwrap();
+        assert!(output.contains("NETWORK ACCESS PAUSED"));
+        assert!(output.contains("unexpected.example:443"));
+        assert!(output.contains("1 This target"));
+        assert!(output.contains("2 Host and subdomains"));
+        assert!(!output.contains("\x1b[?25h"));
     }
 
     #[test]

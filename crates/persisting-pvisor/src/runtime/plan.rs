@@ -118,6 +118,14 @@ pub(crate) fn compile(
             "deny",
         );
     }
+    for (index, path) in overlay.access_policy.ask().iter().enumerate() {
+        push(
+            format!("fs.ask.{index}"),
+            CapabilityDimension::FilesystemRead,
+            path.clone(),
+            "ask",
+        );
+    }
     for (index, path) in overlay.access_policy.warn().iter().enumerate() {
         push(
             format!("fs.warn.{index}"),
@@ -302,6 +310,7 @@ pub(crate) fn observe(
         for rule in &plan.rules {
             if rule.id == "fs.stage"
                 || rule.id.starts_with("fs.deny.")
+                || rule.id.starts_with("fs.ask.")
                 || rule.id.starts_with("fs.warn.")
             {
                 let count = filesystem.rules.get(&rule.id).cloned().unwrap_or_default();

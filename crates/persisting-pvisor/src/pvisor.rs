@@ -419,10 +419,24 @@ impl PVisor {
         } = self.resolve_run(spec)?;
         let attempt_id = AttemptId::new(format!("attempt-{}", uuid::Uuid::new_v4()));
         let cancellation = CancellationToken::new();
-        let mut session = self
+        // AgentCtl only needs the Run and Attempt IDs. Bind its socket while
+        // the runtime prepares independent Gateway/OverlayFS drivers.
+        let agentctl_start = {
+            let run_id = spec.run_id.clone();
+            let attempt_id = attempt_id.clone();
+            tokio::task::spawn_blocking(move || AgentCtlServer::start(&run_id, &attempt_id))
+        };
+        let prepared = self
             .runtime
-            .prepare(&mut spec, &[], vm_network_executor, &attempt_id)
-            .map_err(PVisorError::Prepare)?;
+            .prepare(&mut spec, &[], vm_network_executor, &attempt_id);
+        let mut session = match prepared {
+            Ok(session) => session,
+            Err(error) => {
+                // Do not leave a detached Run-scoped listener behind on failure.
+                let _ = agentctl_start.await;
+                return Err(PVisorError::Prepare(error));
+            }
+        };
         let attachments = session
             .as_ref()
             .map(|session| session.attachments())
@@ -435,7 +449,11 @@ impl PVisor {
             .get("pvisor.safe")
             .and_then(serde_json::Value::as_bool)
             .unwrap_or(false);
-        let agentctl_server = match AgentCtlServer::start(&spec.run_id, &attempt_id) {
+        let agentctl_server = match agentctl_start
+            .await
+            .map_err(anyhow::Error::from)
+            .and_then(|result| result)
+        {
             Ok(server) => server,
             Err(error) => {
                 if let Some(session) = session.take() {

@@ -32,6 +32,7 @@ pub(super) mod boundary_type {
     pub const CROSS: &str = "┼";
 }
 
+mod audit_ui;
 mod input;
 mod runtime;
 mod status_bar;

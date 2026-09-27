@@ -74,7 +74,9 @@ fn update(
     decision: FileAccessDecision,
 ) {
     counters.hits = counters.hits.saturating_add(1);
-    if matches!(outcome, Err(libc::EACCES | libc::EPERM)) && decision == FileAccessDecision::Deny {
+    if matches!(outcome, Err(libc::EACCES | libc::EPERM))
+        && matches!(decision, FileAccessDecision::Deny | FileAccessDecision::Ask)
+    {
         counters.denied = counters.denied.saturating_add(1);
         return;
     }

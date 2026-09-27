@@ -3,7 +3,8 @@ use serde::{Deserialize, Serialize};
 use std::collections::BTreeSet;
 use std::{io, path::Path};
 
-/// Validated mount-relative rules and their compiled matchers. Deny wins over warn.
+/// Validated mount-relative rules and their compiled matchers.
+/// Precedence is deny, ask, warn/read, then ordinary access.
 /// Rules are immutable so the serialized policy always agrees with authorization.
 #[derive(Debug, Clone, Default, Serialize, Deserialize)]
 #[serde(try_from = "FileAccessRules")]
@@ -13,6 +14,8 @@ pub struct FileAccessPolicy {
     #[serde(skip)]
     deny: GlobSet,
     #[serde(skip)]
+    ask: GlobSet,
+    #[serde(skip)]
     warn: GlobSet,
 }
 
@@ -20,6 +23,8 @@ pub struct FileAccessPolicy {
 #[serde(default, deny_unknown_fields)]
 struct FileAccessRules {
     deny: Vec<String>,
+    #[serde(skip_serializing_if = "Vec::is_empty")]
+    ask: Vec<String>,
     warn: Vec<String>,
 }
 
@@ -27,6 +32,7 @@ struct FileAccessRules {
 pub enum FileAccessDecision {
     Allow,
     Warn,
+    Ask,
     Deny,
 }
 
@@ -42,12 +48,20 @@ impl TryFrom<FileAccessRules> for FileAccessPolicy {
     type Error = io::Error;
 
     fn try_from(rules: FileAccessRules) -> io::Result<Self> {
-        Self::new(rules.deny, rules.warn)
+        Self::new_with_ask(rules.deny, rules.ask, rules.warn)
     }
 }
 
 impl FileAccessPolicy {
     pub fn new(deny: Vec<String>, warn: Vec<String>) -> io::Result<Self> {
+        Self::new_with_ask(deny, Vec::new(), warn)
+    }
+
+    pub fn new_with_ask(
+        deny: Vec<String>,
+        ask: Vec<String>,
+        warn: Vec<String>,
+    ) -> io::Result<Self> {
         fn compile(patterns: &[String]) -> io::Result<GlobSet> {
             let mut builder = GlobSetBuilder::new();
             for pattern in patterns {
@@ -79,8 +93,9 @@ impl FileAccessPolicy {
         }
         Ok(Self {
             deny: compile(&deny)?,
+            ask: compile(&ask)?,
             warn: compile(&warn)?,
-            rules: FileAccessRules { deny, warn },
+            rules: FileAccessRules { deny, ask, warn },
         })
     }
 
@@ -92,8 +107,12 @@ impl FileAccessPolicy {
         &self.rules.warn
     }
 
+    pub fn ask(&self) -> &[String] {
+        &self.rules.ask
+    }
+
     pub fn has_denials(&self) -> bool {
-        !self.deny.is_empty()
+        !self.deny.is_empty() || !self.ask.is_empty()
     }
 
     pub fn denied(&self, path: &Path) -> bool {
@@ -104,6 +123,8 @@ impl FileAccessPolicy {
     pub fn authorize(&self, path: &Path) -> FileAccessDecision {
         if self.denied(path) {
             FileAccessDecision::Deny
+        } else if path.ancestors().any(|path| self.ask.is_match(path)) {
+            FileAccessDecision::Ask
         } else if path.ancestors().any(|path| self.warn.is_match(path)) {
             FileAccessDecision::Warn
         } else {
@@ -126,6 +147,13 @@ impl FileAccessPolicy {
                 .map(|index| format!("fs.deny.{index}"))
                 .collect();
         }
+        let ask = matches(&self.ask, path);
+        if !ask.is_empty() {
+            return ask
+                .into_iter()
+                .map(|index| format!("fs.ask.{index}"))
+                .collect();
+        }
         matches(&self.warn, path)
             .into_iter()
             .map(|index| format!("fs.warn.{index}"))
@@ -137,6 +165,33 @@ impl FileAccessPolicy {
         match self.authorize(path) {
             FileAccessDecision::Deny => {
                 eprintln!("pVisor file access denied: {path:?}");
+                Err(io::ErrorKind::PermissionDenied.into())
+            }
+            FileAccessDecision::Ask => {
+                #[cfg(unix)]
+                if crate::audit::configured() && !crate::audit::enabled() {
+                    // The supervisor may inspect the overlay while preparing
+                    // the Job, before the Agent exists to authorize.
+                    return Ok(());
+                }
+                #[cfg(unix)]
+                if crate::audit::enabled() {
+                    if crate::audit::request(&crate::audit::AuditRequest {
+                        kind: crate::audit::AuditKind::File,
+                        target: path.display().to_string(),
+                        reason: format!(
+                            "ask file rule: {}",
+                            self.matched_rule_ids(path).join(", ")
+                        ),
+                        host: None,
+                        port: None,
+                        transport: None,
+                    }) != crate::audit::AuditDecision::Allow
+                    {
+                        return Err(io::ErrorKind::PermissionDenied.into());
+                    }
+                    return Ok(());
+                }
                 Err(io::ErrorKind::PermissionDenied.into())
             }
             FileAccessDecision::Warn => {
@@ -224,5 +279,44 @@ mod tests {
         ] {
             assert!(serde_json::from_value::<FileAccessPolicy>(wire).is_err());
         }
+    }
+
+    #[test]
+    fn ask_is_a_separate_fail_closed_level_between_deny_and_read() {
+        let policy = FileAccessPolicy::new_with_ask(
+            vec!["secrets/private.key".into()],
+            vec!["secrets/*.key".into()],
+            vec!["secrets/**".into()],
+        )
+        .unwrap();
+        assert_eq!(
+            policy.authorize(Path::new("secrets/private.key")),
+            FileAccessDecision::Deny
+        );
+        assert_eq!(
+            policy.authorize(Path::new("secrets/public.key")),
+            FileAccessDecision::Ask
+        );
+        assert_eq!(
+            policy.authorize(Path::new("secrets/note.txt")),
+            FileAccessDecision::Warn
+        );
+        assert_eq!(
+            policy.matched_rule_ids(Path::new("secrets/public.key")),
+            ["fs.ask.0"]
+        );
+        assert_eq!(
+            policy
+                .check(Path::new("secrets/public.key"))
+                .unwrap_err()
+                .kind(),
+            io::ErrorKind::PermissionDenied
+        );
+        let wire = serde_json::to_value(&policy).unwrap();
+        assert_eq!(wire["ask"], serde_json::json!(["secrets/*.key"]));
+        assert_eq!(
+            serde_json::from_value::<FileAccessPolicy>(wire).unwrap(),
+            policy
+        );
     }
 }
