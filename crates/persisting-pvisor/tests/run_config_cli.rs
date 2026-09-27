@@ -46,6 +46,17 @@ fn safe_preset_reaches_the_run_and_reports_its_limits() {
         .output()
         .unwrap();
     let stderr = String::from_utf8_lossy(&output.stderr);
+    #[cfg(target_os = "linux")]
+    if std::env::var_os("PERSISTING_TEST_ALLOW_NO_USERNS").is_some()
+        && !output.status.success()
+        && stderr.lines().any(|line| {
+            line == "Error: required sandbox unavailable: Linux rootless namespaces must be enabled"
+        })
+    {
+        assert!(!stage.join("run-bundle.json").exists());
+        eprintln!("safe correctly refused to run without rootless namespaces; skipping runtime assertions on this optional shard");
+        return;
+    }
     assert!(output.status.success(), "{stderr}");
     assert!(stderr.contains("CLI > safe preset > config > defaults"));
     assert!(stderr.contains("sensitive file access warning"), "{stderr}");

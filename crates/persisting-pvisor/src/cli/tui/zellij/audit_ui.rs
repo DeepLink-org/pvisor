@@ -339,14 +339,15 @@ mod tests {
         assert!(server.active().is_none());
 
         let mut pending = UnixStream::connect(&path).unwrap();
+        // macOS rejects setting socket timeouts after the peer has closed.
+        pending
+            .set_read_timeout(Some(std::time::Duration::from_secs(1)))
+            .unwrap();
         serde_json::to_writer(&mut pending, &file("workspace/.env")).unwrap();
         pending.write_all(b"\n").unwrap();
         server.poll().unwrap();
         assert!(server.active().is_some());
         drop(server);
-        pending
-            .set_read_timeout(Some(std::time::Duration::from_secs(1)))
-            .unwrap();
         let mut byte = [0];
         assert_eq!(pending.read(&mut byte).unwrap(), 0);
     }

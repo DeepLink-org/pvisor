@@ -105,7 +105,7 @@ test-py *args:
 
 # Strict Linux rootless/FUSE regression: never skip missing user namespaces.
 test-isolation:
-    env -u PERSISTING_TEST_ALLOW_NO_USERNS cargo nextest run --locked -p persisting-pvisor --test rootless_local --no-capture
+    env -u PERSISTING_TEST_ALLOW_NO_USERNS cargo nextest run --locked -p persisting-pvisor --test rootless_local --test run_config_cli --no-capture
 
 # Build the debug CLI and check its main command surfaces.
 smoke: build
