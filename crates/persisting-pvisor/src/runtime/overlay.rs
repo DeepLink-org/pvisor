@@ -162,6 +162,7 @@ impl ReadOnlyOverlayMount {
         if let Some(session) = self.session.take() {
             session.unmount()?;
         }
+        #[cfg(not(target_os = "macos"))]
         if self.mountpoint.is_dir() {
             let _ = fs::remove_dir(&self.mountpoint);
         }
@@ -196,6 +197,8 @@ impl OverlayMount {
         if let Some(session) = self.session.take() {
             session.unmount()?;
         }
+        // FSKit owns and removes its /Volumes directory. Do not stat a detached volume.
+        #[cfg(not(target_os = "macos"))]
         if !self.record.merged_dir.starts_with(&self.record.stage_dir)
             && self.record.merged_dir.is_dir()
         {
@@ -492,6 +495,16 @@ pub fn mount_overlay_record(
     mount_overlay_record_observed(record, lower_dirs, None)
 }
 
+/// FSKit creates its own mount directory under /Volumes. Backing state stays in
+/// the private stage; every mount (including inspect) receives a distinct name.
+pub(crate) fn host_mountpoint(requested: &Path) -> PathBuf {
+    if cfg!(target_os = "macos") {
+        PathBuf::from("/Volumes").join(format!("pvisor-{}", uuid::Uuid::new_v4()))
+    } else {
+        requested.to_path_buf()
+    }
+}
+
 pub(crate) fn mount_overlay_record_observed(
     record: &OverlayRecord,
     lower_dirs: &[PathBuf],
@@ -500,10 +513,14 @@ pub(crate) fn mount_overlay_record_observed(
     if lower_dirs.is_empty() {
         return Err(OverlayError::MissingTarget);
     }
-    for dir in lower_dirs
-        .iter()
-        .chain([&record.merged_dir, &record.stage_dir])
-    {
+    let mut record = record.clone();
+    record.merged_dir = host_mountpoint(&record.merged_dir);
+    for lower in lower_dirs {
+        if let Ok(relative) = record.merged_dir.strip_prefix(lower) {
+            record.excluded_paths.push(relative.to_path_buf());
+        }
+    }
+    for dir in lower_dirs.iter().chain([&record.stage_dir]) {
         create_dir_all_durable(dir)
             .map_err(|error| OverlayError::Prepare(io::Error::other(error)))?;
     }
@@ -550,9 +567,9 @@ pub(crate) fn mount_overlay_record_observed(
     config.observation = observation;
     config.preimage_dir = Some(record.stage_dir.join("preimages"));
     let session = mount_embedded_overlay(config).map_err(embedded_mount_error)?;
-    wait_merged_ready(&record.merged_dir, &session)?;
+    wait_merged_ready(&record.merged_dir, &session)
+        .map_err(|error| embedded_mount_error(error.into()))?;
 
-    let mut record = record.clone();
     record.state = OverlayState::Active;
     write_overlay_record(&record)?;
 
@@ -633,7 +650,7 @@ pub fn mount_overlay_record_read_only(
     if lower_dirs.is_empty() {
         return Err(OverlayError::MissingTarget);
     }
-    fs::create_dir_all(mountpoint).map_err(OverlayError::Prepare)?;
+    let mountpoint = host_mountpoint(mountpoint);
     let mut config = match &record.upper {
         OverlayUpper::Directory {
             upper_dir,
@@ -657,10 +674,17 @@ pub fn mount_overlay_record_read_only(
     };
     config.fsname = format!("pvisor-inspect-{}", record.id);
     config.excluded_paths = record.excluded_paths.clone();
+    for lower in lower_dirs {
+        if let Ok(relative) = mountpoint.strip_prefix(lower)
+            && !relative.as_os_str().is_empty()
+        {
+            config.excluded_paths.push(relative.to_path_buf());
+        }
+    }
     config.access_policy = record.access_policy.clone();
     config.read_only = true;
     let session = mount_embedded_overlay(config).map_err(embedded_mount_error)?;
-    wait_merged_ready(mountpoint, &session)?;
+    wait_merged_ready(&mountpoint, &session).map_err(|error| embedded_mount_error(error.into()))?;
     Ok(ReadOnlyOverlayMount {
         session: Some(session),
         mountpoint: mountpoint.to_path_buf(),
@@ -671,7 +695,7 @@ fn embedded_mount_error(error: anyhow::Error) -> OverlayError {
     #[cfg(target_os = "macos")]
     {
         OverlayError::Mount(format!(
-            "{error}; macOS staged workspaces require macFUSE 5 to be installed and enabled (brew install --cask macfuse)"
+            "{error:#}; macOS mounts require macFUSE >= 5.4.0 with its FSKit extension enabled in System Settings > General > Login Items & Extensions > File System Extensions (brew install --cask macfuse); no kernel extension is used. If already enabled, inspect fskit_agent/fskitd logs for extension startup failures"
         ))
     }
     #[cfg(not(target_os = "macos"))]
@@ -2199,7 +2223,9 @@ fn walk_upper(
 }
 
 fn wait_merged_ready(merged: &Path, session: &OverlaySession) -> Result<(), OverlayError> {
-    for _ in 0..50 {
+    // FSKit activates volumes asynchronously; concurrent mounts can exceed 2.5s.
+    let attempts = if cfg!(target_os = "macos") { 600 } else { 50 };
+    for _ in 0..attempts {
         if session.has_exited() {
             return Err(OverlayError::Mount(
                 "embedded FUSE request loop exited before mount became ready".into(),
@@ -2228,6 +2254,12 @@ fn merged_root_is_ready(path: &Path) -> bool {
     }
 }
 
+#[cfg(target_os = "macos")]
+fn is_mountpoint(path: &Path) -> bool {
+    persisting_overlayfs::is_mountpoint(path)
+}
+
+#[cfg(not(target_os = "macos"))]
 fn is_mountpoint(path: &Path) -> bool {
     let Ok(metadata) = fs::metadata(path) else {
         return false;

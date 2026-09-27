@@ -1598,6 +1598,63 @@ mod tests {
     use super::*;
 
     #[test]
+    fn seatbelt_proxy_allows_only_its_tcp_endpoint() {
+        let temp = tempfile::tempdir().unwrap();
+        let proxy = std::net::TcpListener::bind("127.0.0.1:0").unwrap();
+        let other = std::net::TcpListener::bind("127.0.0.1:0").unwrap();
+        let endpoint = proxy.local_addr().unwrap();
+        let socket_path = temp.path().join("agentctl.sock");
+        let _unix = std::os::unix::net::UnixListener::bind(&socket_path).unwrap();
+        let (profile, params) = seatbelt_profile_with_reads(
+            &[temp.path().to_owned()],
+            Some(&[
+                PathBuf::from("/System"),
+                PathBuf::from("/usr"),
+                PathBuf::from("/Library/Developer"),
+                PathBuf::from("/private/etc"),
+                PathBuf::from("/dev"),
+            ]),
+            &[socket_path],
+            &[temp.path().to_owned()],
+            NetworkIsolation::ProxyOnly(Some(endpoint)),
+        )
+        .unwrap();
+        let mut command = std::process::Command::new(MACOS_SANDBOX_EXEC);
+        command.current_dir(temp.path()).arg("-p").arg(&profile);
+        for (key, value) in params {
+            command.arg("-D").arg(format!("{key}={}", value.display()));
+        }
+        let output = command
+            .args([
+                "/usr/bin/python3",
+                "-c",
+                r#"
+import errno, socket, sys
+allowed, denied = map(int, sys.argv[1:])
+for kind, port in [(socket.SOCK_STREAM, denied), (socket.SOCK_DGRAM, allowed)]:
+    with socket.socket(socket.AF_INET, kind) as s:
+        assert s.connect_ex(('127.0.0.1', port)) in (errno.EACCES, errno.EPERM)
+try:
+    with socket.socket() as s:
+        s.bind(('127.0.0.1', 0))
+        s.listen(1)
+except PermissionError: pass
+else: raise AssertionError('listener escaped')
+with socket.create_connection(('127.0.0.1', allowed), timeout=1): pass
+"#,
+            ])
+            .arg(endpoint.port().to_string())
+            .arg(other.local_addr().unwrap().port().to_string())
+            .output()
+            .unwrap();
+        assert!(
+            output.status.success(),
+            "{}",
+            String::from_utf8_lossy(&output.stderr)
+        );
+    }
+
+    #[test]
     fn required_seatbelt_can_start_the_trusted_launcher() {
         let temp = tempfile::tempdir().unwrap();
         let launcher = std::env::current_exe()

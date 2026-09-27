@@ -185,7 +185,9 @@ fn main() -> Result<()> {
     config.default_permissions = opts.default_permissions;
     config.read_only = opts.read_only;
     config.fsname = opts.fsname;
-    config.backend = opts.backend;
+    if opts.backend.is_some() {
+        config.backend = opts.backend;
+    }
     config.debug = args.debug;
     run_foreground(config)
 }

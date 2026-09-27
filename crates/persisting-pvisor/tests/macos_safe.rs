@@ -24,6 +24,67 @@ fn only_run(root: &Path) -> PathBuf {
 }
 
 #[test]
+fn ordinary_run_can_write_home_aliases_and_sqlite_state() {
+    let temp = tempfile::Builder::new()
+        .prefix("pvstate")
+        .tempdir_in("/tmp")
+        .unwrap();
+    let home = temp.path().join("home");
+    let codex = temp.path().join("external-codex");
+    let xdg = temp.path().join("external-state");
+    let workspace = temp.path().join("workspace");
+    for path in [&home, &codex, &xdg, &workspace] {
+        fs::create_dir(path).unwrap();
+    }
+    let output = Command::new(env!("CARGO_BIN_EXE_pvisor"))
+        .current_dir(&workspace)
+        .env("HOME", &home)
+        .env("CODEX_HOME", &codex)
+        .env("XDG_STATE_HOME", &xdg)
+        .env("PERSISTING_RUN_HOME", temp.path().join("runs"))
+        .args([
+            "run",
+            "--stdio",
+            "capture",
+            "--",
+            "/usr/bin/python3",
+            "-c",
+            r#"
+import os, pathlib, sqlite3
+assert os.environ['PERSISTING_SANDBOX_FILESYSTEM'] == 'seatbelt-write'
+aliases = pathlib.Path(os.environ['HOME']) / '.codex/tmp/aliases'
+aliases.mkdir(parents=True)
+(aliases / 'tool').symlink_to('/usr/bin/true')
+for root in [os.environ['CODEX_HOME'], os.environ['XDG_STATE_HOME']]:
+    path = pathlib.Path(root) / 'state_5.sqlite'
+    db = sqlite3.connect(path)
+    db.execute('CREATE TABLE state (value TEXT)')
+    db.commit()
+    db.close()
+    db = sqlite3.connect(path)
+    assert db.execute('PRAGMA journal_mode=WAL').fetchone()[0] == 'wal'
+    db.execute("INSERT INTO state VALUES ('persisted')")
+    db.commit()
+    assert db.execute('SELECT value FROM state').fetchone()[0] == 'persisted'
+    db.close()
+print('state-write-ok')
+"#,
+        ])
+        .output()
+        .unwrap();
+    assert!(
+        output.status.success(),
+        "stdout:\n{}\nstderr:\n{}",
+        String::from_utf8_lossy(&output.stdout),
+        String::from_utf8_lossy(&output.stderr)
+    );
+    assert!(home.join(".codex/tmp/aliases/tool").is_symlink());
+    for root in [&codex, &xdg] {
+        assert!(root.join("state_5.sqlite").is_file());
+    }
+}
+
+#[test]
 fn safe_profile_stages_reviews_and_applies_on_macos() {
     if !macfuse_is_installed() {
         eprintln!(
@@ -107,7 +168,11 @@ fn safe_profile_stages_reviews_and_applies_on_macos() {
         Some(IsolationKind::SandboxedProcess)
     );
     assert!(bundle.safety.safe_profile_requested);
-    assert!(bundle.safety.filesystem_changes_staged);
+    assert!(
+        bundle.safety.filesystem_changes_staged,
+        "filesystem={:?}; warnings={:?}",
+        bundle.filesystem, bundle.run.warnings
+    );
     assert!(!bundle.safety.filesystem_non_bypassable);
     assert!(!bundle.safety.filesystem_read_non_bypassable);
     assert!(bundle.safety.filesystem_write_non_bypassable);
@@ -124,6 +189,11 @@ fn safe_profile_stages_reviews_and_applies_on_macos() {
     assert_eq!(filesystem.target, workspace.canonicalize().unwrap());
     assert_eq!(filesystem.changed_files, 2);
     assert!(filesystem.upper.join("macos-staged.txt").is_file());
+    assert_eq!(
+        fs::read(filesystem.upper.join("macos-staged.txt")).unwrap(),
+        b"staged",
+        "upper contents after unmount"
+    );
     assert!(filesystem.upper.join("outside-link").is_symlink());
 
     let review = Command::new(env!("CARGO_BIN_EXE_pvisor"))
@@ -140,6 +210,11 @@ fn safe_profile_stages_reviews_and_applies_on_macos() {
     let reviewed: serde_json::Value = serde_json::from_slice(&review.stdout).unwrap();
     assert_eq!(reviewed["safety"]["filesystem_non_bypassable"], false);
     assert_eq!(reviewed["safety"]["filesystem_write_non_bypassable"], true);
+    assert_eq!(
+        fs::read(filesystem.upper.join("macos-staged.txt")).unwrap(),
+        b"staged",
+        "review must preserve upper contents"
+    );
 
     let apply = Command::new(env!("CARGO_BIN_EXE_pvisor"))
         .env("PERSISTING_RUN_HOME", &run_home)
@@ -371,8 +446,9 @@ print('required-sandbox-ok')
         });
     }
     let output = command.output().unwrap();
-    if !output.status.success() {
-        let bundle = RunBundle::read(&only_run(&run_home)).unwrap();
+    if !output.status.success()
+        && let Ok(bundle) = RunBundle::read(&run_home.join("stage"))
+    {
         eprintln!("Agent output: {:?}", bundle.run.output);
     }
     assert!(

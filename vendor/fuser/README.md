@@ -135,3 +135,18 @@ Fork, hack, submit pull request. Make sure to make it useful for the target audi
 [FUSE for Linux]: https://github.com/libfuse/libfuse/
 [FUSE for macOS]: https://osxfuse.github.io
 [FUSE for FreeBSD]: https://wiki.freebsd.org/FUSEFS
+
+## pVisor macFUSE adaptation
+
+With `macfuse-5`, sessions use libfuse channel callbacks rather than a duplicated
+file descriptor. FSKit has no device FD, so `Session` does not implement `AsFd`
+with this feature on macOS. A shared native session keeps the channel alive for
+pending reply senders; unmount interrupts the receiver before joining it.
+
+Run the transport regression without installing macFUSE:
+
+```sh
+cargo nextest run --manifest-path vendor/fuser/Cargo.toml \
+  --no-default-features --features libfuse,macfuse-5,abi-7-31 \
+  --lib -E 'test(fdless_channel)'
+```

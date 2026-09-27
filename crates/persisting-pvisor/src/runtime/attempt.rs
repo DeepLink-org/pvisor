@@ -85,11 +85,13 @@ impl AttemptSession {
             errors.push(format!("append session.ended: {err:#}"));
         }
 
+        let mut overlay_unmounted = true;
         let mut record = if let Some(mount) = self.overlay.take() {
             let fallback = self.overlay_record.take();
             match mount.unmount() {
                 Ok(record) => Some(record),
                 Err(err) => {
+                    overlay_unmounted = false;
                     errors.push(format!("unmount OverlayFS: {err:#}"));
                     fallback
                 }
@@ -109,7 +111,7 @@ impl AttemptSession {
                 if let Err(err) = discard_overlay(rec) {
                     errors.push(format!("discard OverlayFS staging: {err:#}"));
                 }
-            } else if rec.auto_apply {
+            } else if rec.auto_apply && overlay_unmounted {
                 if let Err(err) = apply_overlay(rec) {
                     errors.push(format!("apply OverlayFS staging: {err:#}"));
                 } else {

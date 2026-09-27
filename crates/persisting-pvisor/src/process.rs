@@ -746,6 +746,17 @@ fn platform_launcher_command(
             .expect("created Seatbelt attestation")
             .to_owned(),
     ];
+    let staged = spec
+        .metadata
+        .get("pvisor.runtime.implant")
+        .and_then(|implant| implant.get("overlay_merged"))
+        .and_then(serde_json::Value::as_str)
+        .is_some();
+    if !restrict_reads && !staged {
+        // Ordinary runs write through to their projected state directories.
+        // Granting HOME for a staged run would also expose its original workspace.
+        writable_paths.extend(projected_state_roots(invocation));
+    }
     for path in ["/dev/null", "/dev/zero", "/dev/tty", "/dev/fd"] {
         push_existing(&mut writable_paths, Path::new(path));
     }
@@ -920,31 +931,14 @@ fn rootless_plan(
     // initial executable.
     let safe = crate::sandbox::sandbox_required(spec);
     let mut staged_roots = Vec::new();
-    for key in [
-        "HOME",
-        "CODEX_HOME",
-        "XDG_CONFIG_HOME",
-        "XDG_DATA_HOME",
-        "XDG_STATE_HOME",
-        "XDG_CACHE_HOME",
-    ] {
-        let path = invocation.env.get(key).map(PathBuf::from).or_else(|| {
-            invocation
-                .inherit_env
-                .then(|| std::env::var_os(key).map(PathBuf::from))
-                .flatten()
-        });
-        if let Some(path) = path.and_then(|path| path.canonicalize().ok())
-            && path.is_dir()
-        {
-            if safe {
-                if path == Path::new("/") {
-                    return Err(std::io::Error::other("safe state root cannot be /"));
-                }
-                staged_roots.push(path);
-            } else {
-                read_write.push(path);
+    for path in projected_state_roots(invocation) {
+        if safe {
+            if path == Path::new("/") {
+                return Err(std::io::Error::other("safe state root cannot be /"));
             }
+            staged_roots.push(path);
+        } else {
+            read_write.push(path);
         }
     }
     staged_roots.sort_unstable_by(|left, right| {
@@ -1163,6 +1157,30 @@ fn project_graphical_session(
         push_existing(read_write, Path::new("/run/dbus/system_bus_socket"));
     }
     desktop_session
+}
+
+#[cfg(any(target_os = "linux", target_os = "macos"))]
+fn projected_state_roots(invocation: &ProcessInvocation) -> Vec<PathBuf> {
+    [
+        "HOME",
+        "CODEX_HOME",
+        "XDG_CONFIG_HOME",
+        "XDG_DATA_HOME",
+        "XDG_STATE_HOME",
+        "XDG_CACHE_HOME",
+    ]
+    .into_iter()
+    .filter_map(|key| {
+        invocation.env.get(key).map(PathBuf::from).or_else(|| {
+            invocation
+                .inherit_env
+                .then(|| std::env::var_os(key).map(PathBuf::from))
+                .flatten()
+        })
+    })
+    .filter_map(|path| path.canonicalize().ok())
+    .filter(|path| path.is_dir())
+    .collect()
 }
 
 #[cfg(any(target_os = "linux", target_os = "macos"))]
@@ -1710,6 +1728,60 @@ mod tests {
         assert_ne!(plan.attestation, PathBuf::from("/"));
         assert_ne!(environment.get("TMPDIR").map(String::as_str), Some("/"));
         assert!(prepared.resources.scratch_path().unwrap().is_dir());
+    }
+
+    #[cfg(target_os = "macos")]
+    #[test]
+    fn seatbelt_grants_state_writes_only_for_ordinary_unstaged_runs() {
+        let temp = tempfile::tempdir().unwrap();
+        let workspace = temp.path().join("workspace");
+        let home = temp.path().join("home");
+        let codex = temp.path().join("external-codex");
+        for path in [&workspace, &home, &codex] {
+            std::fs::create_dir(path).unwrap();
+        }
+        let home = home.canonicalize().unwrap();
+        let codex = codex.canonicalize().unwrap();
+        let mut spec = RunSpec::process("run", "agent", "/usr/bin/true");
+        spec.capabilities.network = NetworkCapability::Deny;
+        let RunInvocation::Process(invocation) = &mut spec.invocation;
+        invocation.cwd = Some(workspace.display().to_string());
+        invocation.inherit_env = false;
+        invocation
+            .env
+            .insert("HOME".into(), home.display().to_string());
+        invocation
+            .env
+            .insert("CODEX_HOME".into(), codex.display().to_string());
+        let executor =
+            ProcessExecutor::seatbelt_with_launcher(std::env::current_exe().unwrap()).unwrap();
+        for (safe, staged) in [(false, false), (false, true), (true, false), (true, true)] {
+            spec.metadata
+                .insert(crate::sandbox::REQUIRED_SANDBOX_KEY.into(), safe.into());
+            spec.metadata.insert(
+                "pvisor.runtime.implant".into(),
+                serde_json::json!({
+                    "overlay_merged": staged.then_some(workspace.display().to_string()),
+                }),
+            );
+            let RunInvocation::Process(invocation) = &spec.invocation;
+            let prepared = executor.spawn_command(&spec, invocation).unwrap();
+            let writable = prepared
+                .command
+                .as_std()
+                .get_args()
+                .filter_map(|arg| arg.to_str())
+                .filter(|arg| arg.starts_with("-DPVISOR_WRITABLE_"))
+                .filter_map(|arg| arg.split_once('=').map(|(_, path)| PathBuf::from(path)))
+                .collect::<Vec<_>>();
+            for path in [&home, &codex] {
+                assert_eq!(
+                    writable.contains(path),
+                    !safe && !staged,
+                    "safe={safe} staged={staged} path={path:?}"
+                );
+            }
+        }
     }
 
     #[cfg(target_os = "linux")]

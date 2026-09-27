@@ -25,9 +25,16 @@ emulated.
 ### Prerequisites
 
 macOS: install [macFUSE](https://macfuse.github.io/) (`brew install --cask macfuse`),
-enable third-party kernel extensions on Apple Silicon, and ensure `pkg-config`
-can find macFUSE (`brew install pkgconf`). macFUSE 5 is supported through the
-workspace's patched `fuser` dependency.
+and enable its FSKit file system extension in System Settings → General →
+Login Items & Extensions. The default backend is `fskit`; no kernel extension
+or reduced boot security is needed. Use macFUSE 5.4.0 or later; older FSKit versions can corrupt small writes. The patched
+`fuser` loads libfuse at runtime and uses channel callbacks, since FSKit does
+not expose a device file descriptor. Standalone mounts must use a path under
+`/Volumes`; pVisor chooses a unique mountpoint automatically.
+FSKit requests do not provide caller credentials. The default overlay therefore
+uses an owner-only root directory (`0700`) and OS permission checks;
+`default_permissions` is required and `allow_root` is rejected for this backend.
+
 
 Linux: FUSE3 development packages, for example `libfuse3-dev`.
 

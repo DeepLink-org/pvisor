@@ -40,6 +40,8 @@ struct DirectoryEntry {
 
 pub struct OverlayFs {
     core: OverlayCore,
+    read_only: bool,
+    private_root: bool,
     access_policy: FileAccessPolicy,
     observation: Option<crate::FsMetrics>,
     nodes: HashMap<u64, Node>,
@@ -133,6 +135,37 @@ impl OverlayFs {
         self
     }
 
+    pub(crate) fn with_private_root(mut self, private_root: bool) -> Self {
+        self.private_root = private_root;
+        self
+    }
+
+    pub(crate) fn with_read_only(mut self, read_only: bool) -> Self {
+        self.read_only = read_only;
+        self
+    }
+
+    fn open_inode(&self, ino: u64, flags: i32) -> io::Result<File> {
+        // FSKit may send O_RDWR even for a read. A read-only inspection must
+        // never copy lower files into the persistent upper merely by opening.
+        let flags = if self.read_only {
+            if flags & (libc::O_TRUNC | libc::O_APPEND) != 0 {
+                return Err(io::Error::from_raw_os_error(libc::EROFS));
+            }
+            flags & !libc::O_ACCMODE
+        } else {
+            flags
+        };
+        let writing = flags & libc::O_ACCMODE != libc::O_RDONLY
+            || flags & (libc::O_APPEND | libc::O_TRUNC) != 0;
+        let path = if writing {
+            self.copy_up_inode(ino)?
+        } else {
+            self.node_path(ino)?
+        };
+        self.open_path(&path, flags)
+    }
+
     pub fn with_observation(mut self, observation: Option<crate::FsMetrics>) -> Self {
         self.observation = observation;
         self
@@ -183,6 +216,8 @@ impl OverlayFs {
         by_path.insert(PathBuf::new(), FUSE_ROOT_ID);
         Ok(Self {
             core,
+            read_only: false,
+            private_root: false,
             access_policy: FileAccessPolicy::default(),
             observation: None,
             nodes,
@@ -311,7 +346,7 @@ impl OverlayFs {
         handle
     }
 
-    fn attr_from_metadata(ino: u64, metadata: &fs::Metadata) -> FileAttr {
+    fn attr_from_metadata(&self, ino: u64, metadata: &fs::Metadata) -> FileAttr {
         let mtime = metadata.modified().unwrap_or(UNIX_EPOCH);
         let atime = metadata.accessed().unwrap_or(mtime);
         let ctime = UNIX_EPOCH
@@ -335,9 +370,19 @@ impl OverlayFs {
             ctime,
             crtime: metadata.created().unwrap_or(ctime),
             kind: file_type(metadata),
-            perm: (metadata.mode() & 0o7777) as u16,
+            // FSKit has no request credentials to enforce fuser's owner ACL.
+            // Keep its root private using the OS file permission check instead.
+            perm: if self.private_root && ino == FUSE_ROOT_ID {
+                0o700
+            } else {
+                (metadata.mode() & 0o7777) as u16
+            },
             nlink: metadata.nlink().min(u32::MAX as u64) as u32,
-            uid: metadata.uid(),
+            uid: if self.private_root && ino == FUSE_ROOT_ID {
+                unsafe { libc::geteuid() }
+            } else {
+                metadata.uid()
+            },
             gid: metadata.gid(),
             rdev: metadata.rdev() as u32,
             blksize: metadata.blksize().min(u32::MAX as u64) as u32,
@@ -346,7 +391,7 @@ impl OverlayFs {
     }
 
     fn attr(&self, ino: u64, path: &Path) -> io::Result<FileAttr> {
-        Ok(Self::attr_from_metadata(ino, &self.core.metadata(path)?))
+        Ok(self.attr_from_metadata(ino, &self.core.metadata(path)?))
     }
 
     fn child_path(&self, parent: u64, name: &OsStr) -> io::Result<PathBuf> {
@@ -398,7 +443,7 @@ impl OverlayFs {
                 ino: child_ino,
                 kind: file_type(&metadata),
                 name,
-                attr: Self::attr_from_metadata(child_ino, &metadata),
+                attr: self.attr_from_metadata(child_ino, &metadata),
             });
         }
         Ok(entries)
@@ -449,7 +494,7 @@ impl Filesystem for OverlayFs {
         })();
         self.observe_result(observed_path.as_deref(), "lookup", &result, 0, false);
         match result {
-            Ok((ino, metadata)) => reply.entry(&TTL, &Self::attr_from_metadata(ino, &metadata), 0),
+            Ok((ino, metadata)) => reply.entry(&TTL, &self.attr_from_metadata(ino, &metadata), 0),
             Err(error) => reply.error(errno(&error)),
         }
     }
@@ -732,14 +777,7 @@ impl Filesystem for OverlayFs {
 
     fn open(&mut self, _request: &Request<'_>, ino: u64, flags: i32, reply: ReplyOpen) {
         let observed_path = self.node_path(ino).ok();
-        let writing = flags & libc::O_ACCMODE != libc::O_RDONLY
-            || flags & (libc::O_APPEND | libc::O_TRUNC) != 0;
-        let result = (if writing {
-            self.copy_up_inode(ino)
-        } else {
-            self.node_path(ino)
-        })
-        .and_then(|path| self.open_path(&path, flags));
+        let result = self.open_inode(ino, flags);
         self.observe_result(
             observed_path.as_deref(),
             "open",
@@ -1357,6 +1395,22 @@ mod tests {
     use super::*;
 
     #[test]
+    fn fskit_private_root_uses_mount_owner_without_changing_the_lower() {
+        use std::os::unix::fs::PermissionsExt;
+        let dir = tempfile::tempdir().unwrap();
+        let lower = dir.path().join("lower");
+        fs::create_dir(&lower).unwrap();
+        fs::set_permissions(&lower, fs::Permissions::from_mode(0o755)).unwrap();
+        let overlay = OverlayFs::new(vec![lower.clone()], dir.path().join("upper"), None)
+            .unwrap()
+            .with_private_root(true);
+        let attr = overlay.attr(FUSE_ROOT_ID, Path::new("")).unwrap();
+        assert_eq!(attr.perm, 0o700);
+        assert_eq!(attr.uid, unsafe { libc::geteuid() });
+        assert_eq!(fs::metadata(lower).unwrap().mode() & 0o777, 0o755);
+    }
+
+    #[test]
     fn open_cannot_follow_a_link_around_file_rules() {
         let dir = tempfile::tempdir().unwrap();
         let lower = dir.path().join("lower");
@@ -1389,6 +1443,32 @@ mod tests {
                 .is_err()
         );
         assert!(overlay.open_path(Path::new(".env"), libc::O_RDONLY).is_ok());
+    }
+
+    #[test]
+    fn readonly_inspection_accepts_fskit_open_without_staging_or_writing() {
+        let dir = tempfile::tempdir().unwrap();
+        let lower = dir.path().join("lower");
+        let upper = dir.path().join("upper");
+        fs::create_dir(&lower).unwrap();
+        fs::write(lower.join("file"), b"original").unwrap();
+        let mut overlay = OverlayFs::new(vec![lower.clone()], upper.clone(), None)
+            .unwrap()
+            .with_read_only(true);
+        let metadata = overlay.core.metadata(Path::new("file")).unwrap();
+        let ino = overlay.allocate_inode("file".into(), &metadata);
+        let file = overlay.open_inode(ino, libc::O_RDWR).unwrap();
+        let mut contents = [0; 8];
+        assert_eq!(file.read_at(&mut contents, 0).unwrap(), 8);
+        assert_eq!(&contents, b"original");
+        assert!(file.write_at(b"changed", 0).is_err());
+        assert!(!upper.join("file").exists());
+        assert!(
+            overlay
+                .open_inode(ino, libc::O_RDWR | libc::O_TRUNC)
+                .is_err()
+        );
+        assert_eq!(fs::read(lower.join("file")).unwrap(), b"original");
     }
 
     #[test]

@@ -1495,7 +1495,7 @@ D01 讲视图层组合，D02/D03 讲 host executor，D04–D06 讲拒绝、显�
 
   ```bash
   bundle_expect run.agent host-full
-  bundle_contains run.output.stdout "$PVISOR_CASE_ROOT/host-full/merged"
+  test "$(bundle_get run.output.stdout)" = "$(record_get overlay.merged_dir)"
   bundle_expect network.policy.mode no-network
   bundle_expect safety.network_non_bypassable true
   bundle_expect safety.filesystem_changes_staged true
