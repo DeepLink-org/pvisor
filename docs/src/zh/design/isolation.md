@@ -6,7 +6,7 @@
 
 | Executor | 机制 | 必须明确的限制 |
 | --- | --- | --- |
-| Linux host | rootless launcher、user/mount/PID namespace、投影根目录、协商后的 Landlock、描述符清理和 capability 清除 | 依赖内核及宿主配置；选择性代理网络仍是协作式 |
+| Linux host | rootless launcher、user/mount/PID namespace、投影根目录、描述符清理和 capability 清除；普通 Run 或策略要求时启用 Landlock | 依赖内核及宿主配置；选择性代理网络仍是协作式 |
 | macOS host | 生成的 Seatbelt 配置约束暂存写入；请求 deny-all 时安装 socket 策略 | 读取和选择性网络访问仍为 ambient/协作式；暂存挂载需要 macFUSE |
 | 原生 OCI 容器 | Linux OCI runtime、镜像用户空间和配置的挂载及网络 | 不声明所有 capability 维度均已完整强制执行 |
 | libkrun VM | 独立 Linux 客户机内核、virtio-fs 工作区和 smoltcp 网络路径 | 需要 KVM 或 HVF；宿主连接器和共享文件仍是边界的一部分 |
@@ -15,17 +15,17 @@
 
 ## 工作区与生命周期
 
-显式启用暂存，才能得到可审查工作区：
+显式指定 stage 路径，才能在运行结束后保留可审查工作区：
 
 ```bash
 pvisor run --stage ../stage-001 -- codex
 ```
 
-没有 OverlayFS 选项时，host 命令可能直接写入项目。暂存不能回滚远程 API 调用或覆盖工作区之外的写入。
+普通 host Run 省略 `--stage` 时直接写入工作区 lower。`--safe` 使用写时复制工作区，并在 Run 结束后丢弃临时 stage。暂存不能回滚远程 API 调用或覆盖工作区之外的写入。ZCode 的 Linux host 适配会向应用状态目录授予持久写权限；详见 [CLI 参考](../reference/cli.md)。
 
 宿主进程 executor 创建进程组，在完成或取消后向整组发送终止信号，并在宽限期后升级终止。后代持有输出管道时，读取等待也有时限。主动脱离进程组的进程需要更强的平台约束；进程组清理本身不是完整的后代隔离边界。
 
-CLI 检查点要求 Run 已停止，保存文件系统上层，不保存进程内存或冻结所有底层宿主文件。嵌入式 AgentCtl 参与者可以配合静默协议，但这不会使任意子进程变成可检查点恢复的进程。
+`fork` 命令要求 Run 已停止，保存文件系统上层，不保存进程内存或冻结所有底层宿主文件。嵌入式 AgentCtl 参与者可以配合静默协议，但这不会使任意子进程变成可检查点恢复的进程。
 
 ## 网络边界
 

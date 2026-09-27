@@ -1,33 +1,31 @@
 //! Standalone `pvisor` command-line frontend.
 
 mod env;
-mod ir;
 mod product;
 mod replay;
 mod run;
 pub mod runtime;
-mod trace;
 mod trajectory;
+#[cfg(unix)]
+mod tui;
 
 use clap::{Parser, Subcommand};
 
 #[cfg(target_os = "linux")]
 const ROOT_ABOUT: &str =
-    "Foreground Agent Run manager with rootless Linux sandboxing and reviewable workspaces";
+    "Manage Agent Jobs with rootless Linux sandboxing and reviewable workspaces";
 #[cfg(target_os = "linux")]
-const ROOT_LONG_ABOUT: &str = "Foreground Agent Run manager: execute, control, Gateway, and OverlayFS.\n\nOn Linux, host runs use safe-best-effort rootless isolation when supported: user and mount namespaces, a minimal synthetic root with chroot, Landlock, no_new_privs, and dropped capabilities. Add `--overlaynet-deny-all` to isolate direct network sockets in a private network namespace.";
+const ROOT_LONG_ABOUT: &str = "pVisor manages Jobs: `run` starts one, and `status`, `kill`, `inspect`, `fork`, `apply`, and `drop` act on it. `env` supplies reusable environments; `replay` starts a Job from a trajectory.\n\nOn Linux, ordinary host Jobs use rootless isolation when available and write through projected host paths. `--safe` requires rootless namespaces and Landlock, stages the workspace and writable home state, and never writes those lower paths directly. Add `--overlaynet-deny-all` to isolate direct network sockets in a private network namespace.";
 
 #[cfg(target_os = "macos")]
-const ROOT_ABOUT: &str =
-    "Foreground Agent Run manager with Seatbelt isolation and reviewable workspaces";
+const ROOT_ABOUT: &str = "Manage Agent Jobs with Seatbelt isolation and reviewable workspaces";
 #[cfg(target_os = "macos")]
-const ROOT_LONG_ABOUT: &str = "Foreground Agent Run manager: execute, control, Gateway, and OverlayFS.\n\nOn macOS, host runs use safe-best-effort macFUSE workspace views and Seatbelt confinement when supported. Full-disk reads remain available for local toolchain compatibility. `--overlaynet-deny-all` also blocks non-loopback IP and ambient host Unix sockets while retaining loopback proxy access and Run-local IPC.";
+const ROOT_LONG_ABOUT: &str = "pVisor manages Jobs: `run` starts one, and `status`, `kill`, `inspect`, `fork`, `apply`, and `drop` act on it. `env` supplies reusable environments; `replay` starts a Job from a trajectory.\n\nOn macOS, host Jobs use safe-best-effort macFUSE workspace views and Seatbelt confinement when supported. Full-disk reads remain available for local toolchain compatibility. `--overlaynet-deny-all` also blocks non-loopback IP and ambient host Unix sockets while retaining loopback proxy access and Job-local IPC.";
 
 #[cfg(not(any(target_os = "linux", target_os = "macos")))]
-const ROOT_ABOUT: &str = "Foreground Agent Run manager with staged, reviewable workspaces";
+const ROOT_ABOUT: &str = "Manage Agent Jobs with staged, reviewable workspaces";
 #[cfg(not(any(target_os = "linux", target_os = "macos")))]
-const ROOT_LONG_ABOUT: &str =
-    "Foreground Agent Run manager: execute, control, Gateway, and OverlayFS.";
+const ROOT_LONG_ABOUT: &str = "pVisor manages Jobs: `run` starts one; `status`, `kill`, `inspect`, `fork`, `apply`, and `drop` act on it.";
 
 #[derive(Debug, Parser)]
 #[command(
@@ -43,48 +41,74 @@ struct Cli {
 
 #[derive(Debug, Subcommand)]
 enum Command {
-    /// Validate and format the readable core IR.
-    Ir(ir::IrArgs),
-    /// Inspect and validate a closed v3 trace journal.
-    Trace(trace::TraceArgs),
     #[command(
         about = run::RUN_COMMAND_ABOUT,
         long_about = run::RUN_COMMAND_LONG_ABOUT
     )]
     Run(Box<run::RunArgs>),
-    /// Replay an agent-native trajectory in this sandbox, then continue the same Agent.
-    Replay(Box<replay::ReplayArgs>),
-    /// Manage durable reusable execution environments.
-    Env(env::EnvArgs),
-    /// Show the selected Run's process, filesystem, and network status.
-    Status(runtime::StatusArgs),
-    /// Open a read-only shell or run a command against a Run filesystem view.
-    Inspect(runtime::InspectArgs),
-    /// Review the durable Run Bundle before accepting filesystem changes.
-    Review(product::ReviewArgs),
-    /// Create a stopped-consistent logical filesystem checkpoint.
-    Checkpoint(product::CheckpointArgs),
-    /// Start a new safe Run from a logical checkpoint.
-    Fork(run::ForkArgs),
-    /// Apply a stopped Run's staged filesystem changes to its target.
+    /// Apply selected staged changes from a stopped Job.
     Apply(runtime::ApplyArgs),
-    /// Drop a stopped Run's staged filesystem changes.
+    /// Discard staged changes from a stopped Job.
     Drop(runtime::SelectArgs),
+    /// Show a Job's process, filesystem, and network status.
+    Status(runtime::StatusArgs),
+    /// Request graceful termination of a live Job.
+    Kill(runtime::KillArgs),
+    /// Start a new safe Job from a stopped Job or a logical checkpoint.
+    Fork(run::ForkArgs),
+    /// Open a read-only shell or run a command against a Job filesystem view.
+    Inspect(runtime::InspectArgs),
+    /// Manage reusable execution environments for Jobs.
+    Env(env::EnvArgs),
+    /// Start a Job by replaying an agent-native trajectory, then continue the Agent.
+    Replay(Box<replay::ReplayArgs>),
 }
 
 pub fn main() -> anyhow::Result<()> {
+    #[cfg(unix)]
+    tui::init_child_context();
     let args = normalize_default_run(std::env::args_os().collect());
-    match Cli::parse_from(args).command {
-        Command::Ir(args) => ir::run(args)?,
-        Command::Trace(args) => trace::run(args)?,
+    let parsed = Cli::parse_from(args.clone());
+    #[cfg(unix)]
+    if let Command::Run(run) = &parsed.command
+        && !tui::is_child()
+    {
+        let audit = run.audit_requested()?;
+        if run.tui_requested() || audit {
+            anyhow::ensure!(
+                run.wants_tui(audit),
+                "--tui/--audit requires inherited stdio and a normal Job"
+            );
+            anyhow::ensure!(
+                tui::available(),
+                "--tui/--audit requires an interactive terminal"
+            );
+            let code = tui::run(args, audit)?;
+            if code != 0 {
+                std::process::exit(code);
+            }
+            return Ok(());
+        }
+    }
+    match parsed.command {
         Command::Run(args) => {
             let code = tokio::runtime::Runtime::new()?.block_on(run::run(*args))?;
             if code != 0 {
                 std::process::exit(code);
             }
         }
-        Command::Replay(args) => {
-            let code = replay::run(*args);
+        Command::Apply(args) => runtime::apply(args)?,
+        Command::Drop(args) => runtime::drop_overlay(args)?,
+        Command::Status(args) => runtime::status(args)?,
+        Command::Kill(args) => runtime::kill(args)?,
+        Command::Fork(args) => {
+            let code = tokio::runtime::Runtime::new()?.block_on(run::fork(args))?;
+            if code != 0 {
+                std::process::exit(code);
+            }
+        }
+        Command::Inspect(args) => {
+            let code = runtime::inspect(args)?;
             if code != 0 {
                 std::process::exit(code);
             }
@@ -95,23 +119,12 @@ pub fn main() -> anyhow::Result<()> {
                 std::process::exit(code);
             }
         }
-        Command::Status(args) => runtime::status(args)?,
-        Command::Inspect(args) => {
-            let code = runtime::inspect(args)?;
+        Command::Replay(args) => {
+            let code = replay::run(*args);
             if code != 0 {
                 std::process::exit(code);
             }
         }
-        Command::Review(args) => product::review(args)?,
-        Command::Checkpoint(args) => product::checkpoint(args)?,
-        Command::Fork(args) => {
-            let code = tokio::runtime::Runtime::new()?.block_on(run::fork(args))?;
-            if code != 0 {
-                std::process::exit(code);
-            }
-        }
-        Command::Apply(args) => runtime::apply(args)?,
-        Command::Drop(args) => runtime::drop_overlay(args)?,
     }
     Ok(())
 }
@@ -125,6 +138,7 @@ fn normalize_default_run(mut args: Vec<std::ffi::OsString>) -> Vec<std::ffi::OsS
         "replay",
         "env",
         "status",
+        "kill",
         "inspect",
         "review",
         "checkpoint",
@@ -150,8 +164,8 @@ mod tests {
         for args in [
             vec!["pvisor", "status"],
             vec!["pvisor", "inspect", "run-1", "--", "rg", "TODO"],
-            vec!["pvisor", "review", "run-1"],
-            vec!["pvisor", "checkpoint", "run-1", "--name", "before"],
+            vec!["pvisor", "status", "run-1", "--review"],
+            vec!["pvisor", "kill", "run-1"],
             vec!["pvisor", "fork", "run-1", "--", "codex"],
             vec!["pvisor", "apply", "run-1"],
             vec!["pvisor", "apply", "run-1", "--target", "/tmp/restored"],
@@ -265,6 +279,15 @@ mod tests {
         let help = Cli::try_parse_from(["pvisor", "--help"])
             .unwrap_err()
             .to_string();
+
+        for command in [
+            "run", "apply", "drop", "status", "kill", "fork", "inspect", "env", "replay",
+        ] {
+            assert!(help.contains(&format!("\n  {command} ")));
+        }
+        for removed in ["review", "checkpoint", "trace", "job"] {
+            assert!(!help.contains(&format!("\n  {removed} ")));
+        }
 
         #[cfg(target_os = "linux")]
         {

@@ -1,6 +1,6 @@
 # Start here
 
-**PolicyVisor (pVisor)** provides policy-governed, reviewable execution for Agent CLIs, scripts, and automation commands. It records effective controls and, with staging enabled, lets you review file changes before applying them.
+**PolicyVisor (pVisor)** provides policy-governed, reviewable execution for Agent CLIs, scripts, and automation commands. It records effective controls and stages workspace changes; retain the stage to review and apply them.
 
 The Python package and CLI are both named `pvisor`. Repository links retain the existing `Persisting` path.
 
@@ -11,7 +11,7 @@ The Python package and CLI are both named `pvisor`. Repository links retain the 
 3. Replace the example command with your script, automation command, or Agent CLI.
 4. [Review and apply](../guides/review-apply.md) the changes you want to keep.
 
-Use `--stage` for reviewable workspace changes. Without it, the command may write directly to the project. Filesystem staging does not undo network requests or changes to external services.
+Use `--stage PATH` to retain reviewable workspace changes. Without it, pVisor discards the temporary stage at Run exit. Filesystem staging does not undo network requests or changes to external services.
 
 ## Find an answer
 

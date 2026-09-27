@@ -9,7 +9,8 @@ description = "Network interception and egress policy drivers for pVisor"
 [dependencies]
 anyhow.workspace = true
 async-trait.workspace = true
-axum = { workspace = true, features = ["http1", "tokio"] }
+axum = { workspace = true, features = ["http1", "http2", "tokio"] }
+bytes.workspace = true
 futures-util = { workspace = true, features = ["async-await", "std"] }
 hyper.workspace = true
 hyper-util = { workspace = true, features = ["tokio"] }
@@ -24,4 +25,5 @@ thiserror.workspace = true
 [dev-dependencies]
 http-body-util.workspace = true
 proptest.workspace = true
+serde_json.workspace = true
 tokio = { workspace = true, features = ["macros", "rt", "test-util"] }

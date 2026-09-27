@@ -20,6 +20,76 @@ fn only_run_dir(run_home: &std::path::Path) -> std::path::PathBuf {
 }
 
 #[test]
+fn safe_preset_reaches_the_run_and_reports_its_limits() {
+    #[cfg(target_os = "macos")]
+    if !std::path::Path::new("/Library/Filesystems/macfuse.fs").is_dir() {
+        eprintln!("skipping macOS safe preset integration: macFUSE is not installed");
+        return;
+    }
+    let temporary = tempfile::Builder::new()
+        .prefix("pvsafe")
+        .tempdir_in("/tmp")
+        .unwrap();
+    let run_home = temporary.path().join("runs");
+    let stage = temporary.path().join("stage");
+    let workspace = temporary.path().join("workspace");
+    std::fs::create_dir_all(workspace.join(".ssh")).unwrap();
+    std::fs::write(workspace.join(".ssh/id_ed25519"), "dummy-private-key").unwrap();
+    std::fs::write(workspace.join(".env"), "warn-only-fixture").unwrap();
+    std::os::unix::fs::symlink(".ssh/id_ed25519", workspace.join("alias")).unwrap();
+    let output = Command::new(env!("CARGO_BIN_EXE_pvisor"))
+        .args(["run", "--safe", "--stage"])
+        .arg(&stage)
+        .args([
+            "--",
+            "/bin/sh",
+            "-c",
+            "test ! -e .ssh/id_ed25519 && ! cat .ssh/id_ed25519 && ! cat alias && cat .env",
+        ])
+        .current_dir(&workspace)
+        .env("PERSISTING_RUN_HOME", &run_home)
+        .output()
+        .unwrap();
+    let stderr = String::from_utf8_lossy(&output.stderr);
+    #[cfg(target_os = "linux")]
+    if std::env::var_os("PERSISTING_TEST_ALLOW_NO_USERNS").is_some()
+        && !output.status.success()
+        && stderr.lines().any(|line| {
+            line == "Error: required sandbox unavailable: Linux rootless namespaces must be enabled"
+        })
+    {
+        assert!(!stage.join("run-bundle.json").exists());
+        eprintln!(
+            "safe correctly refused to run without rootless namespaces; skipping runtime assertions on this optional shard"
+        );
+        return;
+    }
+    assert!(output.status.success(), "{stderr}");
+    assert!(stderr.contains("CLI > safe preset > config > defaults"));
+    assert!(stderr.contains("sensitive file access warning"), "{stderr}");
+    assert!(!String::from_utf8_lossy(&output.stdout).contains("dummy-private-key"));
+    assert!(String::from_utf8_lossy(&output.stdout).contains("warn-only-fixture"));
+    assert!(stderr.contains("cannot distinguish inference"));
+    let bundle = RunBundle::read(&stage).unwrap();
+    assert!(
+        bundle
+            .filesystem
+            .as_ref()
+            .unwrap()
+            .access_policy
+            .deny()
+            .contains(&"**/.ssh".into())
+    );
+    assert_eq!(bundle.network.policy["mode"], "allowlist");
+    assert!(matches!(
+        bundle.run.executor.unwrap().isolation,
+        persisting_control::IsolationKind::HostProcess
+            | persisting_control::IsolationKind::RootlessProcess
+            | persisting_control::IsolationKind::SandboxedProcess
+    ));
+}
+
+#[test]
 fn network_run_uses_the_current_workspace_and_external_run_home() {
     let temporary = tempfile::Builder::new()
         .prefix("pv")
@@ -99,14 +169,14 @@ fn toml_and_cli_share_one_run_configuration() {
     assert!(bundle.safety.safe_profile_requested);
 
     let review = Command::new(env!("CARGO_BIN_EXE_pvisor"))
-        .args(["review", "--json"])
+        .args(["status", "--review", "--json"])
         .arg(&workspace)
         .env("PERSISTING_RUN_HOME", &run_home)
         .output()
         .expect("review generated Run Bundle");
     assert!(
         review.status.success(),
-        "pvisor review failed: {}",
+        "pvisor status --review failed: {}",
         String::from_utf8_lossy(&review.stderr)
     );
     let reviewed: serde_json::Value = serde_json::from_slice(&review.stdout).unwrap();
@@ -155,7 +225,7 @@ fn one_workspace_accepts_multiple_independent_runs() {
     );
 
     let review = Command::new(env!("CARGO_BIN_EXE_pvisor"))
-        .args(["review", "last"])
+        .args(["status", "--review", "last"])
         .current_dir(&workspace)
         .env("PERSISTING_RUN_HOME", &run_home)
         .output()
@@ -384,14 +454,16 @@ fn every_public_run_option_is_accepted_by_the_real_cli_parser() {
         &["--mem", "256MiB"],
         &["--cpu", "2"],
         &["--strict"],
+        &["--safe"],
         &["--timeout", "1s"],
         &["--stdio", "capture"],
         &["--pass-env", "PATH"],
+        &["--clear-pass-env"],
         &["--max-processes", "8"],
         &["--max-cpu-time", "5s"],
         &["--max-open-files", "32"],
         &["--max-file-size", "1MiB"],
-        &["--max-stage-size", "2GiB"],
+        &["--filesystem-max-size", "2GiB"],
         &["--container-runtime", "runc"],
         &["--container-image", "alpine:latest"],
         &["--container-rootfs", "/tmp/rootfs"],
@@ -402,10 +474,9 @@ fn every_public_run_option_is_accepted_by_the_real_cli_parser() {
         &["--container-user", "1000:1000"],
         &["--container-read-only-rootfs"],
         &["--container-mount", "source=\"/tmp\",target=\"/workspace\""],
-        &["--overlayfs-path", "/workspace"],
-        &["--overlayfs-compose", "/tmp/lower"],
-        &["--overlayfs-backend", "directory"],
-        &["--overlayfs-commit", "manual"],
+        &["--mount", "/tmp/lower:read"],
+        &["--access", "**/.ssh:deny"],
+        &["--filesystem-backend", "directory"],
         &["--overlaynet", "proxy"],
         &["--overlaynet", "auto"],
         &["--overlaynet"],
@@ -456,7 +527,7 @@ fn advertised_run_options() -> std::collections::BTreeSet<String> {
         .filter(|token| token.starts_with("--") && token.len() > 2)
         .map(str::to_owned)
         .collect::<std::collections::BTreeSet<_>>();
-    for anchor in ["--executor", "--stage", "--strict"] {
+    for anchor in ["--executor", "--stage", "--strict", "--safe"] {
         assert!(
             options.contains(anchor),
             "help scraping is broken: {anchor} is missing from {options:?}"
@@ -473,7 +544,6 @@ fn removed_run_options_stay_off_the_cli_surface() {
     // option list can.
     let advertised = advertised_run_options();
     for option in [
-        "--safe",
         "--workspace",
         "--config",
         "--run-spec",

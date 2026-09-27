@@ -105,15 +105,16 @@ test-py *args:
 
 # Strict Linux rootless/FUSE regression: never skip missing user namespaces.
 test-isolation:
-    env -u PERSISTING_TEST_ALLOW_NO_USERNS cargo nextest run --locked -p persisting-pvisor --test rootless_local -- --nocapture
+    env -u PERSISTING_TEST_ALLOW_NO_USERNS cargo nextest run --locked -p persisting-pvisor --test rootless_local --test run_config_cli --no-capture
 
 # Build the debug CLI and check its main command surfaces.
 smoke: build
     #!/usr/bin/env bash
     set -euo pipefail
-    for command in run status review; do
+    for command in run status inspect apply drop; do
       "{{ target_dir }}/debug/pvisor" "$command" --help >/dev/null
     done
+    "{{ target_dir }}/debug/pvisor" status --help | grep -Fq -- '--review'
 
 # Run all examples, or pass scenario directory names to select a subset.
 examples *scenarios: (build "release")
@@ -127,12 +128,22 @@ cases *args: (build "release")
 benchmark suite="smoke" output="target/pvisor-benchmark/current" build_dir="target/pvisor-benchmark-build":
     bash benchmark/pvisor/run.sh run --suite "$1" --output "$2" --target-dir "$3"
 
+# Build, preflight, and benchmark all available sandbox cases in one command.
+benchmark-startup *args:
+    python3 benchmark/pvisor/run_all.py "$@"
+
+# Run the low-level startup harness with explicit rootfs/image inputs.
+benchmark-startup-raw *args:
+    python3 benchmark/pvisor/startup.py --output target/pvisor-benchmark/startup "$@"
+
 # Compare reports from the same host; an empty baseline is allowed.
 benchmark-compare candidate baseline="" output="target/pvisor-benchmark/comparison" threshold="15":
     bash benchmark/pvisor/run.sh compare --candidate "$1" --baseline "$2" --output "$3" --regression-threshold "$4"
 
 test-benchmark:
     PYTHONDONTWRITEBYTECODE=1 python3 benchmark/pvisor/test_bench.py
+    PYTHONDONTWRITEBYTECODE=1 python3 benchmark/pvisor/test_startup.py
+    PYTHONDONTWRITEBYTECODE=1 python3 benchmark/pvisor/test_run_all.py
 
 # Build both languages with the same pinned tool as CI, then validate links.
 docs-build:

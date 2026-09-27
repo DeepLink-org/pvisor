@@ -1,8 +1,8 @@
-# pVisor `run` 用户场景与回归示例
+# pVisor Job 用户场景与回归示例
 
-从最简单的命令开始，逐步加入资源限制、stage、VM、容器和网络功能。
+从最简单的 Job 开始，逐步加入资源限制、stage、VM、容器和网络功能，最后走完审查、分支与环境复用流程。
 每个 case 先说明用途、准备和预期结果，再给出可执行命令；编号便于单独回归。
-本文只讨论 `run`，其它子命令请参阅各自的使用文档。编号（如 A01）只用于回归报告和问题定位；阅读时请按场景选择命令。
+`run` 创建 Job；`status`、`inspect`、`apply`、`drop`、`fork`、`kill` 直接操作 Job。`env` 管理可复用环境，`replay` 从轨迹启动 Job。编号（如 A01）只用于回归报告和问题定位。
 
 
 
@@ -10,17 +10,20 @@
 
 | 你的需求 | 建议先看 |
 |---|---|
-| 只想运行一个命令 | A01–A03 |
+| 只想运行一个命令，或确认默认写入 | A01–A03、A07 |
 | 需要超时、内存或文件限制 | A04、B01–B04 |
-| 想保留、丢弃或检查文件改动 | C01–C05 |
-| 需要组合多个 OverlayFS 层 | D01 |
+| 想保留、丢弃或检查文件改动 | C01–C06 |
+| 需要组合 OverlayFS 层或授予路径权限 | D01、D04–D06 |
 | 想了解 host 默认隔离 | D02–D03 |
 | 使用 VM、宿主 rootfs 或 OCI 镜像 | E01–E06 |
 | 使用原生 OCI 容器 | F01–F04 |
-| 配置网络代理或禁止网络 | G01–G06 |
+| 配置网络代理或禁止网络 | G01–G07 |
 | 接入 Gateway 或记录轨迹 | H01–H02 |
 | 从配置文件或 RunSpec 执行 | I01–I03 |
-| 参考完整生产组合 | J01–J03 |
+| 参考多能力组合 | J01–J03 |
+| 审查、选择性提交、分支或终止 Job | K01–K04 |
+| 复用环境或准备轨迹回放 | L01–L02、M01 |
+| 验证终端界面与权限弹窗 | D06、M02 |
 
 每个场景都包含三层信息：命令是用户实际输入，正文说明适用场景和预期，
 折叠的断言是自动回归使用的实现检查。你可以只复制命令，也可以运行脚本做完整验证。
@@ -74,7 +77,7 @@ Linux host stage 示例需要可用的 user/mount namespace。VM 示例需要可
 
 - [ ] **A01：省略 `run` 的最简调用**
 
-  建议场景：适合第一次使用 pVisor、确认命令和 Run 身份。
+  建议场景：适合第一次使用 pVisor、确认命令和 Job 身份。
 
   用途：在当前目录执行一个命令，不需要显式写出 `run`。`--` 后全部是交给 Agent 的命令和参数。
 
@@ -101,11 +104,11 @@ Linux host stage 示例需要可用的 user/mount namespace。VM 示例需要可
 
 - [ ] **A02：显式 `run` 与省略形式等价**
 
-  建议场景：适合第一次使用 pVisor、确认命令和 Run 身份。
+  建议场景：适合第一次使用 pVisor、确认命令和 Job 身份。
 
   用途：对比省略和显式写出 `run` 的两种调用。分别保存 Agent 的标准输出，便于比较。
 
-  预期：两个输出文件内容相同，都是当前工作目录。两次运行会各自生成记录，Run ID 和时间可以不同。
+  预期：两个输出文件内容相同，都是当前工作目录。两次运行会各自生成记录，Job ID 和时间可以不同。
 
   ```bash
   pvisor -- /bin/pwd > implicit.txt
@@ -125,13 +128,13 @@ Linux host stage 示例需要可用的 user/mount namespace。VM 示例需要可
 
   </details>
 
-- [ ] **A03：Run 名称和 stdio capture**
+- [ ] **A03：Job 名称和 stdio capture**
 
-  建议场景：适合第一次使用 pVisor、确认命令和 Run 身份。
+  建议场景：适合第一次使用 pVisor、确认命令和 Job 身份。
 
   用途：为这次运行命名，并将 Agent 输出保存到运行结果。`--name smoke` 指定显示名，`--stdio capture` 开启输出采集。
 
-  预期：Run 名称为 `smoke`，结果中的标准输出为 `hello`，未被截断。
+  预期：Job 名称为 `smoke`，结果中的标准输出为 `hello`，未被截断。
 
   ```bash
   pvisor --name smoke --stdio capture -- /bin/sh -c 'printf hello'
@@ -152,7 +155,7 @@ Linux host stage 示例需要可用的 user/mount namespace。VM 示例需要可
 
 - [ ] **A04：超时**
 
-  建议场景：适合第一次使用 pVisor、确认命令和 Run 身份。
+  建议场景：适合第一次使用 pVisor、确认命令和 Job 身份。
 
   用途：给运行设置墙钟超时。`100ms` 是从运行开始计时的持续时间，不是 CPU 时间；命令故意睡眠 10 秒。
 
@@ -179,7 +182,7 @@ Linux host stage 示例需要可用的 user/mount namespace。VM 示例需要可
 
 - [ ] **A05：严格执行模式拒绝 best-effort 边界**
 
-  建议场景：适合第一次使用 pVisor、确认命令和 Run 身份。
+  建议场景：适合第一次使用 pVisor、确认命令和 Job 身份。
 
   用途：要求严格执行能力检查。`--strict` 不接受所请求能力缺少强制执行证据；这里同时要求禁止网络。
 
@@ -208,7 +211,7 @@ Linux host stage 示例需要可用的 user/mount namespace。VM 示例需要可
 
 - [ ] **A06：显式环境投影**
 
-  建议场景：适合第一次使用 pVisor、确认命令和 Run 身份。
+  建议场景：适合第一次使用 pVisor、确认命令和 Job 身份。
 
   用途：只把指定的宿主环境变量传给子进程。变量仅为这条命令设置，通过 `--pass-env` 显式允许投影。
 
@@ -227,6 +230,28 @@ Linux host stage 示例需要可用的 user/mount namespace。VM 示例需要可
   stdout_has "TEST_PVISOR_VALUE=visible"
   bundle_contains environment.projected_keys TEST_PVISOR_VALUE
   bundle_expect environment.inherits_host false
+  ```
+
+  </details>
+
+- [ ] **A07：默认写入直接到 workspace**
+
+  用途：验证普通 host Job 的默认可写 lower；无需为日常命令额外选择执行器或 stage。
+
+  预期：命令退出后，`direct.txt` 直接出现在原 workspace，记录中没有 OverlayFS stage。
+
+  ```bash
+  pvisor -- /bin/sh -c 'printf direct > direct.txt'
+  ```
+
+  <details>
+  <summary>自动回归断言（由脚本执行）</summary>
+
+  <!-- pvisor-assert -->
+
+  ```bash
+  test "$(cat direct.txt)" = direct
+  record_expect overlay null
   ```
 
   </details>
@@ -332,7 +357,7 @@ Linux host stage 示例需要可用的 user/mount namespace。VM 示例需要可
   预期：stage 成功建立并保存在指定路径。此例只验证参数可用和目录建立；当前产物未记录该上限，也未在此例中尝试写满 stage。
 
   ```bash
-  pvisor --stage /tmp/pvisor-cases/limited-stage --max-stage-size 1GiB -- /bin/true
+  pvisor --stage /tmp/pvisor-cases/limited-stage --filesystem-max-size 1GiB -- /bin/true
   ```
 
   <details>
@@ -350,7 +375,7 @@ Linux host stage 示例需要可用的 user/mount namespace。VM 示例需要可
 
 ### C. Stage 与 whole-rootfs
 
-当你希望 Agent 可以自由修改文件、但不污染当前 workspace 时使用这一组。C01 是最常用的持久模式；C02/C03 适合一次性试运行。
+当你希望 Agent 可以自由修改文件、但不污染当前 workspace 时使用这一组。C01 是最常用的持久模式；C02 使用 `--safe` 自动创建并清理临时 stage，C03 演示对持久 stage 显式执行 `drop`。
 
 - [ ] **C01：持久 stage**
 
@@ -385,14 +410,14 @@ Linux host stage 示例需要可用的 user/mount namespace。VM 示例需要可
 
   建议场景：适合隔离文件变更、保留 stage 或验证 whole-rootfs 的任务。
 
-  用途：运行一次不需要保留改动的任务。`--stage drop` 自动选择系统临时目录，退出后删除该目录。
+  用途：运行一次不需要保留改动的任务。`--safe` 在没有指定 `--stage` 时自动创建系统临时 stage，退出后删除该目录。
 
   准备：Linux user/mount namespace 或 macOS Seatbelt 可用。
 
   预期：命令成功，日志中给出的临时存储目录已删除，原 workspace 也没有新建的文件。
 
   ```bash
-  pvisor --stage drop -- /bin/sh -c 'printf changed > result.txt'
+  pvisor --safe -- /bin/sh -c 'printf changed > result.txt'
   ```
 
   <details>
@@ -401,7 +426,7 @@ Linux host stage 示例需要可用的 user/mount namespace。VM 示例需要可
   <!-- pvisor-assert -->
 
   ```bash
-  storage=$(grep -m1 '^Run storage: ' "$PVISOR_CASE_STDOUT" | cut -d' ' -f3-)
+  storage=$(dirname "$(grep -m1 '^Run Bundle: ' "$PVISOR_CASE_STDOUT" | cut -d' ' -f3-)")
   test -n "$storage"
   test ! -e "$storage"
   test ! -e result.txt
@@ -409,19 +434,19 @@ Linux host stage 示例需要可用的 user/mount namespace。VM 示例需要可
 
   </details>
 
-- [ ] **C03：指定自动删除目录**
+- [ ] **C03：显式丢弃持久 stage 的改动**
 
   建议场景：适合隔离文件变更、保留 stage 或验证 whole-rootfs 的任务。
 
-  用途：自己选择临时 stage 路径，但仍要求运行结束后自动删除。示例先创建一个空目录。
+  用途：指定持久 stage 路径，完成运行后通过 `pvisor drop` 显式丢弃其中的改动。
 
   准备：Linux user/mount namespace 或 macOS Seatbelt 可用。
 
-  预期：运行完成后 `stage-drop` 目录不存在。请使用专用空目录，不要指定含有用户文件的目录。
+  预期：stage 目录保留，运行记录的文件系统状态变为 `discarded`；原 workspace 没有新文件。
 
   ```bash
-  mkdir -p /tmp/pvisor-cases/stage-drop
-  pvisor --stage drop:/tmp/pvisor-cases/stage-drop -- /bin/true
+  pvisor --stage /tmp/pvisor-cases/stage-drop -- /bin/sh -c 'printf changed > result.txt'
+  pvisor drop /tmp/pvisor-cases/stage-drop
   ```
 
   <details>
@@ -430,25 +455,25 @@ Linux host stage 示例需要可用的 user/mount namespace。VM 示例需要可
   <!-- pvisor-assert -->
 
   ```bash
-  test ! -e "$PVISOR_CASE_ROOT/stage-drop"
+  record_expect overlay.state discarded "$PVISOR_CASE_ROOT/stage-drop"
+  test ! -e result.txt
+  test -f "$PVISOR_CASE_ROOT/stage-drop/run-bundle.json"
   ```
 
   </details>
 
-- [ ] **C04：拒绝删除非空目录**
+- [ ] **C04：显式 stage 保留已有目录内容**
 
   建议场景：适合隔离文件变更、保留 stage 或验证 whole-rootfs 的任务。
 
-  用途：验证误用保护：把 `drop:` 指向已有用户文件的目录。
+  用途：验证 `--stage PATH` 始终表示持久目录；目录里已有的用户文件不会因运行结束而被删除。
 
-  预期：启动前报错，提示临时 stage 必须为空；原有的 `user-file` 保持完整。此例预期非零退出。
-
-  <!-- pvisor-case: expect=nonzero -->
+  预期：命令成功，原有的 `user-file` 和新生成的 Run Bundle 都保存在指定目录。
 
   ```bash
-  mkdir -p /tmp/pvisor-cases/not-owned
-  touch /tmp/pvisor-cases/not-owned/user-file
-  pvisor --stage drop:/tmp/pvisor-cases/not-owned -- /bin/true
+  mkdir -p /tmp/pvisor-cases/existing-stage
+  touch /tmp/pvisor-cases/existing-stage/user-file
+  pvisor --stage /tmp/pvisor-cases/existing-stage -- /bin/true
   ```
 
   <details>
@@ -457,8 +482,8 @@ Linux host stage 示例需要可用的 user/mount namespace。VM 示例需要可
   <!-- pvisor-assert -->
 
   ```bash
-  stdout_has "temporary stage must be empty before use"
-  test -f "$PVISOR_CASE_ROOT/not-owned/user-file"
+  test -f "$PVISOR_CASE_ROOT/existing-stage/user-file"
+  test -f "$PVISOR_CASE_ROOT/existing-stage/run-bundle.json"
   ```
 
   </details>
@@ -493,29 +518,65 @@ Linux host stage 示例需要可用的 user/mount namespace。VM 示例需要可
 
   </details>
 
+- [ ] **C06：`--safe` 隔离 HOME 写入**
+
+  用途：检查 `--safe` 除暂存 workspace 外，还为 HOME 提供独立的写时复制视图。示例把测试 HOME 放在专用目录，不触碰真实用户目录。
+
+  准备：Linux user/mount namespace 可用。
+
+  预期：Agent 能在自己的 HOME 中读回刚写入的状态；宿主 HOME 没有该文件，workspace 的持久 stage 仍可审查。
+
+  <!-- pvisor-case: requires=rootless -->
+
+  ```bash
+  mkdir -p /tmp/pvisor-cases/home
+  HOME=/tmp/pvisor-cases/home pvisor --safe --stage /tmp/pvisor-cases/safe-home -- \
+    /bin/sh -c 'printf private > "$HOME/state"; cat "$HOME/state"'
+  ```
+
+  <details>
+  <summary>自动回归断言（由脚本执行）</summary>
+
+  <!-- pvisor-assert -->
+
+  ```bash
+  stdout_has private
+  test ! -e "$PVISOR_CASE_ROOT/home/state"
+  bundle_expect filesystem.state staged "$PVISOR_CASE_ROOT/safe-home"
+  bundle_expect network.policy.mode allowlist "$PVISOR_CASE_ROOT/safe-home"
+  ```
+
+  </details>
+
 ### D. OverlayFS 与 Host 安全边界
 
-D01 讲视图层组合，D02/D03 讲 host executor 的默认隔离和 workspace 可见性。生产使用前建议先阅读这组三个例子。
+D01 讲视图层组合，D02/D03 讲 host executor，D04–D06 讲拒绝、显式写入和交互授权。
+文件权限级别为 `deny`、`ask`、`read`、`stage`、`write`：`deny` 直接拒绝，
+`ask` 暂停命中的文件操作并询问用户，`read` 目前只记录访问警告；
+`stage` 和 `write` 用于 `--mount`，其中 `write` 直接写入宿主 lower。
+`--access PATH-GLOB:ask` 会自动启用审计 TUI 和 safe 暂存视图，无需另加 `--audit`。
+文件弹窗的 `1` 仅允许此文件，`2` 允许同级目录中的文件，`3` 允许相同后缀的文件；
+`d` 拒绝此目标。明确的 `deny` 规则仍直接拒绝，不弹窗。
+选择写入当前 Job 的 `audit-policy.json`，后续命中同一范围时自动应用；
+`audit.jsonl` 记录人工及自动决策。显式指定 `--stage PATH` 才能在 Job 结束后保留这些记录。
 
 - [ ] **D01：高级 OverlayFS 组合**
 
   建议场景：适合检查 OverlayFS 视图和 host 安全边界。
 
-  用途：把宿主的两个目录依次叠加到工作区视图，并指定 Agent 看到的路径。`directory` 选择目录后端，`manual` 表示退出后不自动应用改动。
+  用途：把宿主的两个目录依次叠加到工作区视图，并指定 Agent 看到的路径。`directory` 选择目录后端；改动只通过显式 `apply` 提交。
 
   准备：Linux user/mount namespace 或 macOS Seatbelt 可用。
 
-  预期：记录的目标为 `view`，从顶层到底层依次为 `layer`、`base`、当前 workspace。目录为空，因此此例检查配置顺序，不检查同名文件覆盖内容。
+  预期：记录的目标为 `view`，从顶层到底层依次为 `layer`、`base`、本次运行持有的 workspace 快照。目录为空，因此此例检查配置顺序，不检查同名文件覆盖内容。
 
   ```bash
   mkdir -p /tmp/pvisor-cases/base /tmp/pvisor-cases/layer "$PWD/view"
   pvisor \
     --stage /tmp/pvisor-cases/composed-stage \
-    --overlayfs-path "$PWD/view" \
-    --overlayfs-compose /tmp/pvisor-cases/base \
-    --overlayfs-compose /tmp/pvisor-cases/layer \
-    --overlayfs-backend directory \
-    --overlayfs-commit manual \
+    --mount "/tmp/pvisor-cases/base:$PWD/view:stage" \
+    --mount "/tmp/pvisor-cases/layer:$PWD/view:stage" \
+    --filesystem-backend directory \
     -- /bin/true
   ```
 
@@ -528,7 +589,8 @@ D01 讲视图层组合，D02/D03 讲 host executor 的默认隔离和 workspace 
   bundle_expect filesystem.state staged
   record_expect overlay_lowers.0 "$(realpath "$PVISOR_CASE_ROOT/layer")"
   record_expect overlay_lowers.1 "$(realpath "$PVISOR_CASE_ROOT/base")"
-  record_expect overlay_lowers.2 "$(realpath "$PVISOR_CASE_WORKSPACE")"
+  record_contains overlay_lowers.2 "$PVISOR_CASE_ROOT/composed-stage/.overlay-lowers/"
+  test -d "$(record_get overlay_lowers.2)"
   ```
 
   </details>
@@ -579,7 +641,7 @@ D01 讲视图层组合，D02/D03 讲 host executor 的默认隔离和 workspace 
   <!-- pvisor-case: requires=rootless -->
 
   ```bash
-  pvisor --executor host --stage /tmp/pvisor-cases/host-stage -- /bin/sh -c \
+  pvisor --stage /tmp/pvisor-cases/host-stage -- /bin/sh -c \
     'pwd; readlink /proc/self/root; readlink /proc/self/cwd' > views.txt
   ```
 
@@ -597,6 +659,148 @@ D01 讲视图层组合，D02/D03 讲 host executor 的默认隔离和 workspace 
 
   </details>
 
+- [ ] **D04：显式拒绝敏感路径读取**
+
+  用途：用 `--access PATH-GLOB:deny` 阻止 Agent 在工作区中读取匹配的文件。
+
+  准备：Linux user/mount namespace 可用。
+
+  预期：读取失败并记录拒绝规则；宿主文件保持原样。
+
+  <!-- pvisor-case: expect=nonzero requires=rootless -->
+
+  ```bash
+  mkdir -p private
+  printf secret > private/token
+  pvisor --stage /tmp/pvisor-cases/access-stage --access 'private/**:deny' -- \
+    /bin/cat private/token
+  ```
+
+  <details>
+  <summary>自动回归断言（由脚本执行）</summary>
+
+  <!-- pvisor-assert -->
+
+  ```bash
+  stdout_has 'pVisor file access denied'
+  bundle_expect filesystem.access_policy.deny.0 'private/**'
+  bundle_contains run_observation.filesystem.paths private/token
+  test "$(cat private/token)" = secret
+  ```
+
+  </details>
+
+- [ ] **D05：显式共享路径的直接写入**
+
+  用途：用 `--mount SOURCE:write` 授予一个工作区之外的宿主目录可写访问。
+
+  准备：Linux user/mount namespace 可用。
+
+  预期：共享目录的 `out` 直接写入宿主 lower；无需对它执行 `pvisor apply`。
+
+  <!-- pvisor-case: requires=rootless -->
+
+  ```bash
+  mkdir -p /tmp/pvisor-cases/shared
+  pvisor --mount /tmp/pvisor-cases/shared:write -- \
+    /bin/sh -c 'printf mounted > "$1"' sh /tmp/pvisor-cases/shared/out
+  ```
+
+  <details>
+  <summary>自动回归断言（由脚本执行）</summary>
+
+  <!-- pvisor-assert -->
+
+  ```bash
+  test "$(cat "$PVISOR_CASE_ROOT/shared/out")" = mounted
+  ```
+
+  </details>
+
+- [ ] **D06：`ask` 弹窗与当前 Job 的目录授权**
+
+  用途：用 `--access 'private/*.txt:ask'` 启动审计 TUI；第一次读取时按 `2` 授权同级目录，再读取另一文件，验证规则自动复用。
+
+  准备：Linux user/mount namespace 和 Python 3 可用。示例用伪终端自动输入 `2`；手工运行时在弹窗中按该键。
+
+  预期：只出现一次文件授权弹窗，两个文件均可读取；`audit-policy.json` 保存目录规则，`audit.jsonl` 记录第二次自动允许。`--stage` 保留当前 Job 的审计记录，不会把选择变成全局配置。
+
+  <!-- pvisor-case: requires=rootless,python3 -->
+
+  ```bash
+  mkdir -p private
+  printf ASK_ONE > private/one.txt
+  printf ASK_TWO > private/two.txt
+  python3 - <<'PY'
+  import fcntl, os, pty, select, signal, struct, time
+
+  pid, master = pty.fork()
+  if pid == 0:
+      os.environ['TERM'] = 'xterm-256color'
+      os.execvp('pvisor', [
+          'pvisor', '--no-config', '--stage', '/tmp/pvisor-cases/ask-stage',
+          '--access', 'private/*.txt:ask', '--', '/bin/sh', '-c',
+          'cat private/one.txt; sleep 1; cat private/two.txt',
+      ])
+  fcntl.ioctl(master, 0x5414, struct.pack('HHHH', 24, 100, 0, 0))
+  screen = bytearray()
+  prompted = False
+  status = None
+  deadline = time.monotonic() + 25
+  try:
+      while time.monotonic() < deadline:
+          ready, _, _ = select.select([master], [], [], 0.1)
+          if ready:
+              try:
+                  screen.extend(os.read(master, 65536))
+              except OSError:
+                  pass
+          if not prompted and b'FILE ACCESS PAUSED' in screen:
+              os.write(master, b'2')
+              prompted = True
+          ended, result = os.waitpid(pid, os.WNOHANG)
+          if ended:
+              status = result
+              break
+      if status is None:
+          os.killpg(pid, signal.SIGTERM)
+          _, status = os.waitpid(pid, 0)
+          raise RuntimeError('timed out waiting for the Job')
+  finally:
+      os.close(master)
+  assert prompted and os.waitstatus_to_exitcode(status) == 0
+  assert b'ASK_ONE' in screen and b'ASK_TWO' in screen
+  print('ASK directory grant reused')
+  PY
+  ```
+
+  <details>
+  <summary>自动回归断言（由脚本执行）</summary>
+
+  <!-- pvisor-assert -->
+
+  ```bash
+  stdout_has 'ASK directory grant reused'
+  python3 - <<'PY'
+  import json
+  from pathlib import Path
+
+  stage = Path('/tmp/pvisor-cases/ask-stage')
+  policy = json.loads((stage / 'audit-policy.json').read_text())
+  assert any(rule['kind'] == 'file' and rule['scope'] == 'directory'
+             and rule['value'] == 'private' and rule['decision'] == 'allow'
+             for rule in policy['rules'])
+  decisions = [json.loads(line) for line in (stage / 'audit.jsonl').read_text().splitlines()]
+  assert any(item['request']['target'] == 'private/two.txt'
+             and item['decision'] == 'allow' and item['automatic']
+             for item in decisions)
+  PY
+  test "$(cat private/one.txt)" = ASK_ONE
+  test "$(cat private/two.txt)" = ASK_TWO
+  ```
+
+  </details>
+
 ### E. VM 与 rootfs
 
 需要更强边界、独立 guest kernel 或 OCI rootfs 时使用 VM。E01 最接近“直接运行”，E02/E03 展示目录和镜像来源，E04/E05 再加入资源与 stage。
@@ -605,7 +809,7 @@ D01 讲视图层组合，D02/D03 讲 host executor 的默认隔离和 workspace 
 
   建议场景：适合需要 VM guest kernel、独立 rootfs 或更强隔离的任务。
 
-  用途：用 `--vm` 选择 VM executor，并以宿主根目录作为 guest rootfs。该方式扩大了 guest 可读取的宿主文件范围，只应在可信测试环境使用。
+  用途：用 `--vm` 选择 VM executor；Linux 默认以宿主根目录作为 guest rootfs。该方式扩大了 guest 可读取的宿主文件范围，只应在可信测试环境使用。
 
   准备：Linux；可访问 /dev/kvm。
 
@@ -614,7 +818,7 @@ D01 讲视图层组合，D02/D03 讲 host executor 的默认隔离和 workspace 
   <!-- pvisor-case: requires=linux,kvm -->
 
   ```bash
-  pvisor --vm --rootfs host -- /bin/pwd > guest-cwd.txt
+  pvisor --vm -- /bin/pwd > guest-cwd.txt
   ```
 
   <details>
@@ -697,14 +901,13 @@ D01 讲视图层组合，D02/D03 讲 host executor 的默认隔离和 workspace 
 
   准备：Linux；可访问 /dev/kvm；准备好 Linux rootfs，并为脚本设置 PVISOR_CASE_ROOTFS；libkrunfw 目录或本机缓存可用。
 
-  预期：VM 成功运行，内存请求记录为 2147483648 字节。这里使用目录 rootfs，`--image-store` 不会触发镜像下载；CPU 数量未由本例断言核验。
+  预期：VM 成功运行，内存请求记录为 2147483648 字节。CPU 数量未由本例断言核验。
 
   <!-- pvisor-case: requires=linux,kvm,rootfs,firmware -->
 
   ```bash
   pvisor --vm \
     --rootfs /path/to/rootfs \
-    --image-store /tmp/pvisor-cases/images \
     --vm-library-dir /path/to/libkrunfw \
     --memory 2GiB \
     --cpu 2 \
@@ -727,7 +930,7 @@ D01 讲视图层组合，D02/D03 讲 host executor 的默认隔离和 workspace 
 
   建议场景：适合需要 VM guest kernel、独立 rootfs 或更强隔离的任务。
 
-  用途：在 VM 镜像运行基础上增加持久 stage，并显式要求工作区视图位于宿主 cwd 的同一路径。
+  用途：在 VM 镜像运行基础上增加持久 stage。工作区路径默认保持与宿主 cwd 一致。
 
   准备：Linux；可访问 /dev/kvm；为脚本设置 PVISOR_CASE_IMAGE。
 
@@ -739,7 +942,6 @@ D01 讲视图层组合，D02/D03 讲 host executor 的默认隔离和 workspace 
   pvisor --vm \
     --rootfs image=/path/to/image \
     --stage /tmp/pvisor-cases/vm-stage \
-    --overlayfs-path "$PWD" \
     -- /bin/pwd > guest-cwd.txt
   ```
 
@@ -786,19 +988,16 @@ D01 讲视图层组合，D02/D03 讲 host executor 的默认隔离和 workspace 
 需要复用 OCI rootfs、但不想运行 Docker/Podman daemon 时使用原生 OCI container。请按 F01 → F04 逐步增加复杂度；F04 适合验证跨 ABI 注入和 mount 配置。
 
 这些例子使用原生 OCI bundle，由 pVisor 准备文件系统并调用 runc/crun，
-不依赖 Docker/Podman daemon。F01–F03 使用默认 runtime crun，F04 显式选择 runc。
+不依赖 Docker/Podman daemon。F01–F03 使用自动发现的 runtime，F04 显式选择 runc。
 镜像或目录需与本机架构兼容；如果当前 pVisor 是动态链接构建，guest 必须提供
 相应的动态加载器和库，否则应像 F04 一样指定兼容的静态构建。
 默认注入当前 pVisor，不需要在最小命令中显式指定 binary。
 
-当前容器执行仍有 OCI 命令行兼容性问题，这些例子可能在 runner 启动阶段失败。
-下面保留期望成功的命令和断言，便于重构完成后直接回归。
-
-- [ ] **F01：最小 container Run**
+- [ ] **F01：最小 container Job**
 
   建议场景：适合由 runc/crun 直接启动 OCI 容器的任务。
 
-  用途：以 OCI 镜像启动最小容器运行。`--executor container` 选择原生 OCI runtime，`--rootfs image=...` 指定容器文件系统来源。
+  用途：以 OCI 镜像启动最小容器运行。`--container-image` 同时选择容器 executor 和镜像来源。
 
   准备：OCI runtime 可运行，并为脚本设置 PVISOR_CASE_CONTAINER_IMAGE。
 
@@ -807,7 +1006,7 @@ D01 讲视图层组合，D02/D03 讲 host executor 的默认隔离和 workspace 
   <!-- pvisor-case: requires=container -->
 
   ```bash
-  pvisor --executor container --rootfs image=alpine:latest -- /bin/true
+  pvisor --container-image alpine:latest -- /bin/true
   ```
 
   <details>
@@ -836,8 +1035,7 @@ D01 讲视图层组合，D02/D03 讲 host executor 的默认隔离和 workspace 
   <!-- pvisor-case: requires=container -->
 
   ```bash
-  pvisor --executor container \
-    --rootfs image=alpine:latest \
+  pvisor --container-image alpine:latest \
     --container-network none \
     -- /bin/true
   ```
@@ -926,6 +1124,10 @@ D01 讲视图层组合，D02/D03 讲 host executor 的默认隔离和 workspace 
 ### G. OverlayNet
 
 这一组只讨论网络边界。proxy 适合需要 host Gateway 的协作式访问，VM auto 和 host deny-all 才适合需要更强网络边界的场景。
+使用 `--audit` 时，未列入规则的代理网络目标会暂停并弹窗：`1` 仅允许当前目标，
+`2` 允许当前主机名及其子域名，范围仍限于相同端口和传输协议；IP 地址没有域名选项，
+`d` 拒绝当前目标。选择同样只保存在当前 Job 的 `audit-policy.json` 中。
+显式拒绝规则不进入弹窗；未经代理的直接 socket 连接也不会触发此审计。
 
 - [ ] **G01：启用默认 proxy**
 
@@ -952,16 +1154,16 @@ D01 讲视图层组合，D02/D03 讲 host executor 的默认隔离和 workspace 
 
   </details>
 
-- [ ] **G02：显式 proxy 地址和 mode**
+- [ ] **G02：自定义 proxy 监听地址**
 
   建议场景：适合配置出站网络、代理访问或禁止网络的任务。
 
-  用途：显式选择 proxy，并指定代理监听地址。手工运行时确保 18080 端口未被占用；脚本会替换为空闲端口。
+  用途：指定代理监听地址；该参数会自动启用 host proxy。手工运行时确保 18080 端口未被占用；脚本会替换为空闲端口。
 
   预期：记录的 OverlayNet 监听地址与请求一致，网络驱动为 explicit-proxy。
 
   ```bash
-  pvisor --overlaynet proxy --overlaynet-listen 127.0.0.1:18080 -- /bin/true
+  pvisor --overlaynet-listen 127.0.0.1:18080 -- /bin/true
   ```
 
   <details>
@@ -985,8 +1187,7 @@ D01 讲视图层组合，D02/D03 讲 host executor 的默认隔离和 workspace 
   预期：记录为 allowlist 模式，允许 `api.example.com:443`，拒绝 `10.0.0.0/8`，并把 `1mbps` 记录为每秒 125000 字节。本例不实际发请求。
 
   ```bash
-  pvisor --overlaynet proxy \
-    --overlaynet-allow api.example.com:443 \
+  pvisor --overlaynet-allow api.example.com:443 \
     --overlaynet-deny 10.0.0.0/8 \
     --overlaynet-limit api.example.com=1mbps \
     -- /bin/true
@@ -1042,7 +1243,7 @@ D01 讲视图层组合，D02/D03 讲 host executor 的默认隔离和 workspace 
 
   建议场景：适合配置出站网络、代理访问或禁止网络的任务。
 
-  用途：显式为 VM 选择 OverlayNet auto，使流量经过虚拟机的 smoltcp 网络驱动。
+  用途：验证 VM 默认使用 OverlayNet auto，使流量经过虚拟机的 smoltcp 网络驱动。
 
   准备：Linux；可访问 /dev/kvm；准备好 Linux rootfs，并为脚本设置 PVISOR_CASE_ROOTFS。
 
@@ -1051,7 +1252,7 @@ D01 讲视图层组合，D02/D03 讲 host executor 的默认隔离和 workspace 
   <!-- pvisor-case: requires=linux,kvm,rootfs -->
 
   ```bash
-  pvisor --vm --rootfs /path/to/rootfs --overlaynet auto -- /bin/true
+  pvisor --vm --rootfs /path/to/rootfs -- /bin/true
   ```
 
   <details>
@@ -1087,6 +1288,33 @@ D01 讲视图层组合，D02/D03 讲 host executor 的默认隔离和 workspace 
 
   ```bash
   stdout_has "OverlayNet policy options require --overlaynet auto or proxy"
+  ```
+
+  </details>
+
+- [ ] **G07：审查被代理拒绝的具体目标**
+
+  用途：通过 pVisor 注入的代理访问一个明确拒绝的域名，确认 Job 记录的是具体目标和拒绝次数，而不只是网络失败总数。请求在策略层被拒绝，不依赖该域名真实可访问。
+
+  准备：安装 curl。
+
+  预期：curl 请求失败；`status --review` 的 Network access observations 可指出 `blocked.example:80` 被拒绝。host proxy 是协作式边界，本例只证明经过代理的请求被拦截。
+
+  <!-- pvisor-case: expect=nonzero requires=curl -->
+
+  ```bash
+  pvisor --overlaynet-deny blocked.example -- /bin/sh -c \
+    'curl --fail --silent --show-error --noproxy "" -x "$http_proxy" --max-time 2 http://blocked.example/'
+  ```
+
+  <details>
+  <summary>自动回归断言（由脚本执行）</summary>
+
+  <!-- pvisor-assert -->
+
+  ```bash
+  bundle_contains network.intercepted.targets 'HTTP blocked.example:80'
+  bundle_contains network.intercepted.targets '"denied": 1'
   ```
 
   </details>
@@ -1191,7 +1419,7 @@ D01 讲视图层组合，D02/D03 讲 host executor 的默认隔离和 workspace 
 
   准备：Linux user/mount namespace 或 macOS Seatbelt 可用。
 
-  预期：运行名称为 `case-i02`，`run-result.json` 非空。该委托路径当前只支持 host executor，不套用普通 Run 的 rootless safe profile；不要把此例视为隔离模式示例。
+  预期：运行名称为 `case-i02`，`run-result.json` 非空。该委托路径当前只支持 host executor，不套用普通 Job 的 rootless safe profile；不要把此例视为隔离模式示例。
 
   ```bash
   pvisor --spec ./run-spec.json --result-file ./run-result.json --stage ./delegated-stage
@@ -1235,7 +1463,7 @@ D01 讲视图层组合，D02/D03 讲 host executor 的默认隔离和 workspace 
 
 ### J. 复杂组合
 
-这些不是入门命令，而是上线前的组合参考：J01 偏 host 安全，J02 偏 VM 生产链路，J03 偏容器链路。遇到问题时请拆回对应的 A–I 场景定位。
+这些是多项能力同时启用的回归示例：J01 偏 host 安全，J02 偏 VM，J03 偏容器。它们使用简短测试命令，不能代替真实 Agent 工作负载的验收；遇到问题时请拆回对应的 A–I 场景定位。
 
 - [ ] **J01：host + persistent stage + deny-all + capture + limits**
 
@@ -1249,14 +1477,13 @@ D01 讲视图层组合，D02/D03 讲 host executor 的默认隔离和 workspace 
 
   ```bash
   pvisor --name host-full \
-    --executor host \
     --stage /tmp/pvisor-cases/host-full \
     --overlaynet-deny-all \
     --stdio capture \
     --record-destination /tmp/pvisor-cases/host-full/trajectory/events.jsonl \
     --memory 512MiB \
     --max-processes 64 \
-    --max-stage-size 2GiB \
+    --filesystem-max-size 2GiB \
     --max-cpu-time 30s \
     -- /bin/sh -c 'pwd; printf changed > result.txt'
   ```
@@ -1339,8 +1566,7 @@ D01 讲视图层组合，D02/D03 讲 host executor 的默认隔离和 workspace 
 
   ```bash
   pvisor --name container-full \
-    --executor container \
-    --rootfs image=alpine:latest \
+    --container-image alpine:latest \
     --container-read-only-rootfs \
     --container-network none \
     --stage /tmp/pvisor-cases/container-full \
@@ -1358,6 +1584,295 @@ D01 讲视图层组合，D02/D03 讲 host executor 的默认隔离和 workspace 
   bundle_expect run.executor.kind container
   bundle_expect run.state completed
   bundle_expect filesystem.state staged
+  ```
+
+  </details>
+
+### K. Job 的审查与生命周期
+
+Job 是面向用户的核心对象。以下命令都直接使用 Job 的 stage 路径作为 selector，无需额外的 `job` 子命令。
+
+- [ ] **K01：审查并只读查看暂存文件**
+
+  用途：运行后通过 `status --review` 查看变更，再用 `inspect` 读取暂存视图，并确认 inspect 无法写入。
+
+  准备：Linux user/mount namespace 可用。
+
+  预期：审查结果列出一个文件；只读视图能读到 `staged`，写入被拒绝，原 workspace 不变。
+
+  <!-- pvisor-case: requires=rootless -->
+
+  ```bash
+  pvisor --stage /tmp/pvisor-cases/review-stage -- /bin/sh -c 'printf staged > note.txt'
+  pvisor status --review --json /tmp/pvisor-cases/review-stage > status.json
+  pvisor inspect /tmp/pvisor-cases/review-stage -- /bin/cat note.txt
+  if pvisor inspect /tmp/pvisor-cases/review-stage -- /bin/sh -c 'printf changed > note.txt'; then
+    exit 1
+  fi
+  ```
+
+  <details>
+  <summary>自动回归断言（由脚本执行）</summary>
+
+  <!-- pvisor-assert -->
+
+  ```bash
+  stdout_has staged
+  test ! -e note.txt
+  python3 -c 'import json; d=json.load(open("status.json")); assert d["filesystem"]["changed_files"] == 1'
+  ```
+
+  </details>
+
+- [ ] **K02：选择性 apply 后丢弃剩余改动**
+
+  用途：只提交 `one.txt`，保留 `two.txt` 在 stage 中等待决定，然后显式丢弃剩余改动。
+
+  准备：Linux user/mount namespace 可用。
+
+  预期：原 workspace 仅出现 `one.txt`；`two.txt` 从未进入 lower。
+
+  <!-- pvisor-case: requires=rootless -->
+
+  ```bash
+  pvisor --stage /tmp/pvisor-cases/partial-stage -- /bin/sh -c \
+    'printf one > one.txt; printf two > two.txt'
+  pvisor apply /tmp/pvisor-cases/partial-stage --path one.txt
+  pvisor drop /tmp/pvisor-cases/partial-stage
+  ```
+
+  <details>
+  <summary>自动回归断言（由脚本执行）</summary>
+
+  <!-- pvisor-assert -->
+
+  ```bash
+  test "$(cat one.txt)" = one
+  test ! -e two.txt
+  record_expect overlay.state discarded "$PVISOR_CASE_ROOT/partial-stage"
+  ```
+
+  </details>
+
+- [ ] **K03：从已停止 Job fork**
+
+  用途：从源 Job 的暂存视图启动一个子 Job。子 Job 可以读取源改动，同时产生自己的独立变更。
+
+  准备：Linux user/mount namespace 可用。
+
+  预期：子 Job 读到 `inherited`，但两个 Job 的变更都没有直接写入原 workspace。
+
+  <!-- pvisor-case: requires=rootless -->
+
+  ```bash
+  pvisor --stage /tmp/pvisor-cases/source-stage -- /bin/sh -c 'printf inherited > inherited.txt'
+  pvisor fork /tmp/pvisor-cases/source-stage -- /bin/sh -c \
+    'cat inherited.txt; printf child > child.txt' > child.out
+  ```
+
+  <details>
+  <summary>自动回归断言（由脚本执行）</summary>
+
+  <!-- pvisor-assert -->
+
+  ```bash
+  test "$(cat child.out)" = inherited
+  test ! -e inherited.txt
+  test ! -e child.txt
+  bundle_contains filesystem.changes inherited.txt "$PVISOR_CASE_ROOT/source-stage"
+  bundle_contains filesystem.changes child.txt "$PVISOR_CASE_RECORDS"
+  ```
+
+  </details>
+
+- [ ] **K04：终止运行中的 Job**
+
+  用途：让一个长时间运行的 Job 进入后台，然后按 stage 路径请求正常终止。
+
+  准备：Linux user/mount namespace 可用。
+
+  预期：Job 在睡眠结束前退出，`status --json` 报告 `cancelled`，不再处于 live 状态。
+
+  <!-- pvisor-case: requires=rootless -->
+
+  ```bash
+  pvisor --stage /tmp/pvisor-cases/live-stage -- /bin/sleep 30 > live.log 2>&1 &
+  job_pid=$!
+  for ((attempt=0; attempt<100; attempt++)); do
+    test -f /tmp/pvisor-cases/live-stage/run.json && break
+    sleep 0.05
+  done
+  pvisor kill /tmp/pvisor-cases/live-stage
+  if wait "$job_pid"; then exit 1; fi
+  pvisor status --json /tmp/pvisor-cases/live-stage > stopped.json
+  ```
+
+  <details>
+  <summary>自动回归断言（由脚本执行）</summary>
+
+  <!-- pvisor-assert -->
+
+  ```bash
+  python3 -c 'import json; d=json.load(open("stopped.json")); assert d["run"]["state"] == "cancelled" and d["live"] is False'
+  ```
+
+  </details>
+
+### L. 可复用环境
+
+`env` 有稳定名称和跨命令复用的可写层；它与一次性 Job 的 stage 生命周期不同。
+
+- [ ] **L01：环境跨命令保留改动并可丢弃**
+
+  用途：创建环境，执行写入，在下一次 `exec` 和只读 `inspect` 中查看同一份暂存状态，最后丢弃改动。
+
+  准备：Linux user/mount namespace 可用。
+
+  预期：两个后续命令都能读到 `staged`；原 workspace 始终没有 `env.txt`，丢弃后环境可继续使用。
+
+  <!-- pvisor-case: requires=rootless -->
+
+  ```bash
+  export PERSISTING_ENV_HOME=/tmp/pvisor-cases/envs
+  pvisor env create dev
+  pvisor env exec dev -- /bin/sh -c 'printf staged > env.txt'
+  pvisor env exec dev -- /bin/cat env.txt
+  pvisor env inspect dev -- /bin/cat env.txt
+  pvisor env drop dev
+  pvisor env status dev --json > env-status.json
+  ```
+
+  <details>
+  <summary>自动回归断言（由脚本执行）</summary>
+
+  <!-- pvisor-assert -->
+
+  ```bash
+  stdout_has staged
+  test ! -e env.txt
+  python3 -c 'import json; d=json.load(open("env-status.json")); assert d["filesystem"]["changed_files"] == 0'
+  ```
+
+  </details>
+
+- [ ] **L02：环境提交后重置为空 stage**
+
+  用途：通过 `env apply --all` 把环境的改动提交到 target，并保留可继续使用的环境。
+
+  准备：Linux user/mount namespace 可用。
+
+  预期：原 workspace 得到 `accepted.txt`；环境的新一代 stage 没有待提交文件。
+
+  <!-- pvisor-case: requires=rootless -->
+
+  ```bash
+  export PERSISTING_ENV_HOME=/tmp/pvisor-cases/envs
+  pvisor env create dev
+  pvisor env exec dev -- /bin/sh -c 'printf accepted > accepted.txt'
+  pvisor env apply dev --all
+  pvisor env status dev --json > env-status.json
+  ```
+
+  <details>
+  <summary>自动回归断言（由脚本执行）</summary>
+
+  <!-- pvisor-assert -->
+
+  ```bash
+  test "$(cat accepted.txt)" = accepted
+  python3 -c 'import json; d=json.load(open("env-status.json")); assert d["filesystem"]["changed_files"] == 0 and d["run"]["overlay"]["generation"] == 1'
+  ```
+
+  </details>
+
+### M. Replay 与交互终端
+
+- [ ] **M01：离线准备回放前缀**
+
+  用途：用一个最小 mini-swe-agent 原生轨迹验证 `replay --prepare-only`。该模式解析前缀，不启动 Agent，也不执行历史工具。
+
+  预期：输出结果的 phase 为 `prepared`，历史命令没有创建 `marker`。
+
+  ```bash
+  cat > trajectory.json <<'JSON'
+  {"trajectory_format":"mini-swe-agent-1.1","info":{"mini_version":"2.4.6"},"messages":[{"role":"assistant","content":"historical action","extra":{"response":{},"actions":[{"tool_call_id":"call-1","command":"printf should-not-run > marker"}]}},{"role":"tool","content":"old observation","extra":{"returncode":0}}]}
+  JSON
+  pvisor replay --agent mini-swe-agent --trajectory ./trajectory.json \
+    --after-step 1 --prepare-only \
+    --state-dir /tmp/pvisor-cases/replay-state \
+    --output-dir /tmp/pvisor-cases/replay-output > prepared.json
+  ```
+
+  <details>
+  <summary>自动回归断言（由脚本执行）</summary>
+
+  <!-- pvisor-assert -->
+
+  ```bash
+  test ! -e marker
+  python3 -c 'import json; d=json.load(open("prepared.json")); assert d["phase"] == "prepared" and d["replayed_tool_calls"] == 0'
+  ```
+
+  </details>
+
+- [ ] **M02：TUI 保留命令输出并可打开 Log 面板**
+
+  用途：用伪终端执行 `--tui`，验证 Agent 输出、底栏引导键和 `Ctrl-]` → `l` 打开的浮动 Log 面板。交互终端由测试脚本提供。
+
+  准备：Linux 和 Python 3。
+
+  预期：子命令正常退出；屏幕流中出现命令输出、底栏引导和 Log 面板。
+
+  <!-- pvisor-case: requires=linux,python3 -->
+
+  ```bash
+  python3 - <<'PY'
+  import fcntl, os, pty, select, struct, subprocess, termios, time
+
+  master, slave = pty.openpty()
+  fcntl.ioctl(slave, termios.TIOCSWINSZ, struct.pack('HHHH', 24, 100, 0, 0))
+  env = os.environ.copy()
+  env['TERM'] = 'xterm-256color'
+  child = subprocess.Popen(
+      ['pvisor', '--tui', '--', '/bin/sh', '-c', 'printf TUI_READY; sleep 1.5'],
+      stdin=slave, stdout=slave, stderr=slave, env=env, start_new_session=True,
+  )
+  os.close(slave)
+  screen = bytearray()
+  sent = False
+  deadline = time.monotonic() + 8
+  try:
+      while time.monotonic() < deadline:
+          ready, _, _ = select.select([master], [], [], 0.1)
+          if ready:
+              try:
+                  screen.extend(os.read(master, 65536))
+              except OSError:
+                  break
+          if not sent and b'TUI_READY' in screen:
+              os.write(master, b'\x1dl')
+              sent = True
+          if child.poll() is not None and not ready:
+              break
+      if child.poll() is None:
+          child.kill()
+      child.wait(timeout=2)
+  finally:
+      os.close(master)
+  assert child.returncode == 0, child.returncode
+  assert sent and b'TUI_READY' in screen
+  assert b'Ctrl-]' in screen and b'pVisor Review' in screen
+  print('TUI_READY status-bar log-panel')
+  PY
+  ```
+
+  <details>
+  <summary>自动回归断言（由脚本执行）</summary>
+
+  <!-- pvisor-assert -->
+
+  ```bash
+  stdout_has 'TUI_READY status-bar log-panel'
   ```
 
   </details>

@@ -121,4 +121,31 @@ impl OverlaySink for GatewayState {
             );
         }
     }
+
+    fn on_proxy_result(
+        &self,
+        context: &OverlayRequestContext<Self::RequestContext>,
+        target: &str,
+        status: StatusCode,
+    ) {
+        if context.sink.debug_on {
+            debug::log_proxy_result(
+                self.storage.as_path(),
+                target,
+                status.as_u16(),
+                &context.session_id,
+            );
+        }
+    }
+
+    fn on_proxy_error(
+        &self,
+        context: &OverlayRequestContext<Self::RequestContext>,
+        target: &str,
+        error: &str,
+    ) {
+        if context.sink.debug_on {
+            debug::log_proxy_error(self.storage.as_path(), target, error, &context.session_id);
+        }
+    }
 }

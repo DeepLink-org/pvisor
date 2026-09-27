@@ -12,12 +12,12 @@ Run these from the project that started the Agent:
 ```bash
 pvisor status last
 pvisor inspect last -- git status --short
-pvisor review last
+pvisor status --review last
 ```
 
 `status` tells you whether the Run is still active or stopped. `inspect` runs a
 read-only command in the Run view, so it helps distinguish a staged change from
-a change already present in the base project. `review` shows the durable Run
+a change already present in the base project. `status --review` shows the durable Run
 Bundle and its Evidence before any apply or drop decision.
 
 ## The Agent changed the project directly
@@ -70,7 +70,7 @@ not a second copy of every model payload unless capture was enabled.
 ## Before opening an issue
 
 Include the pVisor version, operating system, executor, the exact command, and
-the relevant `status` and `review` output. Remove credentials and private
+the relevant `status` and `status --review` output. Remove credentials and private
 workspace contents. The most useful report explains which capability was
 requested, which mechanism the Bundle records, and where the observed result
 differs.

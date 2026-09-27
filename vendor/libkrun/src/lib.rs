@@ -3,17 +3,17 @@ extern crate log;
 
 use crossbeam_channel::unbounded;
 #[cfg(feature = "blk")]
+use devices::virtio::CacheType;
+#[cfg(feature = "blk")]
 use devices::virtio::block::{ImageType, SyncMode};
 #[cfg(not(any(feature = "tee", feature = "aws-nitro")))]
-use devices::virtio::fs::passthrough::PermissionSemantics;
-#[cfg(not(any(feature = "tee", feature = "aws-nitro")))]
 use devices::virtio::fs::OverlayConfig;
+#[cfg(not(any(feature = "tee", feature = "aws-nitro")))]
+use devices::virtio::fs::passthrough::PermissionSemantics;
 #[cfg(feature = "gpu")]
 use devices::virtio::gpu::display::DisplayInfo;
 #[cfg(feature = "net")]
 use devices::virtio::net::device::VirtioNetBackend;
-#[cfg(feature = "blk")]
-use devices::virtio::CacheType;
 use env_logger::{Env, Target};
 #[cfg(feature = "gpu")]
 use krun_display::DisplayBackend;
@@ -23,12 +23,12 @@ use devices::virtio::fs::virtual_entry::{VirtualDirEntry, VirtualEntry, VirtualE
 use libc::{c_char, c_int, size_t};
 use once_cell::sync::Lazy;
 use polly::event_manager::EventManager;
-use std::collections::hash_map::Entry;
 use std::collections::HashMap;
+use std::collections::hash_map::Entry;
 use std::convert::TryInto;
 use std::env;
 use std::ffi::CString;
-use std::ffi::{c_void, CStr};
+use std::ffi::{CStr, c_void};
 use std::fs::File;
 use std::io::IsTerminal;
 #[cfg(target_os = "linux")]
@@ -36,9 +36,9 @@ use std::os::fd::AsRawFd;
 use std::os::fd::{BorrowedFd, FromRawFd, RawFd};
 use std::path::PathBuf;
 use std::slice;
-use std::sync::atomic::{AtomicI32, Ordering};
 use std::sync::LazyLock;
 use std::sync::Mutex;
+use std::sync::atomic::{AtomicI32, Ordering};
 use utils::eventfd::EventFd;
 use vmm::resources::{
     DefaultVirtioConsoleConfig, PortConfig, SerialConsoleConfig, TsiFlags, VirtioConsoleConfigMode,
@@ -55,7 +55,7 @@ use vmm::vmm_config::fs::FsDeviceConfig;
 use vmm::vmm_config::kernel_bundle::KernelBundle;
 #[cfg(feature = "tee")]
 use vmm::vmm_config::kernel_bundle::{InitrdBundle, QbootBundle};
-use vmm::vmm_config::kernel_cmdline::{KernelCmdlineConfig, DEFAULT_KERNEL_CMDLINE};
+use vmm::vmm_config::kernel_cmdline::{DEFAULT_KERNEL_CMDLINE, KernelCmdlineConfig};
 use vmm::vmm_config::machine_config::VmConfig;
 #[cfg(feature = "net")]
 use vmm::vmm_config::net::NetworkInterfaceConfig;
@@ -65,7 +65,7 @@ use vmm::vmm_config::vsock::VsockDeviceConfig;
 use aws_nitro::enclave::NitroEnclave;
 
 #[cfg(feature = "gpu")]
-use devices::virtio::display::{DisplayInfoEdid, PhysicalSize, MAX_DISPLAYS};
+use devices::virtio::display::{DisplayInfoEdid, MAX_DISPLAYS, PhysicalSize};
 #[cfg(feature = "input")]
 use krun_input::{InputConfigBackend, InputEventProviderBackend};
 
@@ -700,6 +700,37 @@ pub unsafe extern "C" fn krun_add_virtiofs_overlay(
     excluded_count: usize,
     shm_size: u64,
 ) -> i32 {
+    krun_add_virtiofs_overlay_with_policy(
+        ctx_id,
+        c_tag,
+        lower_paths,
+        lower_count,
+        c_upper_path,
+        c_work_path,
+        c_preimage_path,
+        excluded_paths,
+        excluded_count,
+        shm_size,
+        std::ptr::null(),
+    )
+}
+
+#[allow(clippy::missing_safety_doc, clippy::too_many_arguments)]
+#[unsafe(no_mangle)]
+#[cfg(not(any(feature = "tee", feature = "aws-nitro")))]
+pub unsafe extern "C" fn krun_add_virtiofs_overlay_with_policy(
+    ctx_id: u32,
+    c_tag: *const c_char,
+    lower_paths: *const *const c_char,
+    lower_count: usize,
+    c_upper_path: *const c_char,
+    c_work_path: *const c_char,
+    c_preimage_path: *const c_char,
+    excluded_paths: *const *const c_char,
+    excluded_count: usize,
+    shm_size: u64,
+    c_access_policy: *const c_char,
+) -> i32 {
     if c_tag.is_null()
         || c_upper_path.is_null()
         || lower_paths.is_null()
@@ -749,6 +780,17 @@ pub unsafe extern "C" fn krun_add_virtiofs_overlay(
         Ok(value) => value,
         Err(()) => return -libc::EINVAL,
     };
+    let access_policy = if c_access_policy.is_null() {
+        Default::default()
+    } else {
+        match parse(c_access_policy)
+            .ok()
+            .and_then(|json| serde_json::from_str(&json).ok())
+        {
+            Some(policy) => policy,
+            None => return -libc::EINVAL,
+        }
+    };
     let excluded = if excluded_count == 0 {
         Vec::new()
     } else {
@@ -791,6 +833,7 @@ pub unsafe extern "C" fn krun_add_virtiofs_overlay(
                     work_dir,
                     preimage_dir,
                     excluded_paths: excluded,
+                    access_policy,
                     semantics: PermissionSemantics::LinuxComplete,
                 }),
                 virtual_entries,
@@ -1287,7 +1330,9 @@ pub unsafe extern "C" fn krun_add_net_tap(
     if features & (NET_FEATURE_GUEST_TSO4 | NET_FEATURE_GUEST_TSO6 | NET_FEATURE_GUEST_UFO) != 0
         && features & NET_FEATURE_GUEST_CSUM == 0
     {
-        debug!("Network tap backend requires GUEST_CSUM to be requested if any of GUEST_TSO4, GUEST_TSO6 and/or GUEST_UFO are required");
+        debug!(
+            "Network tap backend requires GUEST_CSUM to be requested if any of GUEST_TSO4, GUEST_TSO6 and/or GUEST_UFO are required"
+        );
         return -libc::EINVAL;
     }
 
@@ -2120,7 +2165,7 @@ pub extern "C" fn krun_has_feature(feature: u64) -> c_int {
 pub extern "C" fn krun_get_max_vcpus() -> i32 {
     #[cfg(target_os = "macos")]
     {
-        use hvf::bindings::{hv_vm_get_max_vcpu_count, HV_SUCCESS};
+        use hvf::bindings::{HV_SUCCESS, hv_vm_get_max_vcpu_count};
         let mut max_vcpu_count: u32 = 0;
         let ret = unsafe { hv_vm_get_max_vcpu_count(&mut max_vcpu_count as *mut u32) };
         if ret == HV_SUCCESS {
@@ -3248,6 +3293,38 @@ mod test_disable_implicit_init {
         assert_eq!(overlay.upper_dir, "/upper");
         assert_eq!(overlay.preimage_dir.as_deref(), Some("/preimages"));
         assert_eq!(overlay.excluded_paths, [".stage"]);
+        assert!(overlay.access_policy.deny().is_empty());
+        drop(ctx_map);
+        let policy = CString::new(r#"{"deny":["**/.ssh"],"warn":["**/.env"]}"#).unwrap();
+        assert_eq!(
+            unsafe {
+                krun_add_virtiofs_overlay_with_policy(
+                    ctx,
+                    tag.as_ptr(),
+                    lowers.as_ptr(),
+                    lowers.len(),
+                    upper.as_ptr(),
+                    work.as_ptr(),
+                    preimages.as_ptr(),
+                    excluded_paths.as_ptr(),
+                    excluded_paths.len(),
+                    0,
+                    policy.as_ptr(),
+                )
+            },
+            KRUN_SUCCESS
+        );
+        let ctx_map = CTX_MAP.lock().unwrap();
+        let overlay = ctx_map[&ctx]
+            .vmr
+            .fs
+            .last()
+            .unwrap()
+            .overlay
+            .as_ref()
+            .unwrap();
+        assert_eq!(overlay.access_policy.deny(), ["**/.ssh"]);
+        assert_eq!(overlay.access_policy.warn(), ["**/.env"]);
         drop(ctx_map);
         assert_eq!(krun_free_ctx(ctx), KRUN_SUCCESS);
 

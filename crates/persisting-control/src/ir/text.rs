@@ -12,6 +12,11 @@ impl fmt::Display for Value {
                 write!(f, ")")
             }
             Self::U64(value) => write!(f, "{value}"),
+            Self::Run { state, exit_code } => {
+                write!(f, "run(")?;
+                json(f, &(state, exit_code))?;
+                write!(f, ")")
+            }
         }
     }
 }
@@ -40,6 +45,7 @@ impl fmt::Display for Expression {
                 json(f, data)?;
                 write!(f, "))")?;
             }
+            Operation::Run { .. } => write!(f, ")")?,
         }
         for layer in &self.contexts {
             write!(f, " |> ")?;
@@ -134,6 +140,12 @@ impl Parser<'_> {
             self.offset += length;
             Ok(Value::U64(value))
         } else {
+            if self.take("run") {
+                self.expect("(")?;
+                let (state, exit_code): (crate::runtime::RunState, Option<i32>) = self.json()?;
+                self.expect(")")?;
+                return Ok(Value::Run { state, exit_code });
+            }
             self.expect("bytes")?;
             self.expect("(")?;
             let data = self.json()?;
@@ -155,11 +167,11 @@ impl Parser<'_> {
             );
         }
         self.expect(")")?;
-        let Some(Value::U64(offset)) = fields.remove("offset") else {
-            bail!("offset must be u64");
-        };
         let operation = match name.as_str() {
             "fs.read" => {
+                let Some(Value::U64(offset)) = fields.remove("offset") else {
+                    bail!("offset must be u64");
+                };
                 let Some(Value::U64(length)) = fields.remove("length") else {
                     bail!("length must be u64");
                 };
@@ -170,11 +182,15 @@ impl Parser<'_> {
                 }
             }
             "fs.write" => {
+                let Some(Value::U64(offset)) = fields.remove("offset") else {
+                    bail!("offset must be u64");
+                };
                 let Some(Value::Bytes(data)) = fields.remove("data") else {
                     bail!("data must be bytes");
                 };
                 Operation::Write { file, offset, data }
             }
+            "run.execute" => Operation::Run { run_id: file },
             _ => bail!("unknown operation {name}"),
         };
         ensure!(fields.is_empty(), "unknown operation arguments");

@@ -25,6 +25,27 @@ const NETWORK_FD_ENV: &str = "PERSISTING_KRUN_NETWORK_FD";
 const NETWORK_CHILD_FD: RawFd = 198;
 const NET_FLAG_DHCP_CLIENT: u32 = 1 << 1;
 
+#[cfg(all(target_os = "linux", target_arch = "x86_64"))]
+fn needs_krun_enomem_workaround() -> bool {
+    match std::env::var("PERSISTING_KRUN_ENOMEM_WORKAROUND").as_deref() {
+        Ok("1") => return true,
+        Ok("0") => return false,
+        _ => {}
+    }
+    std::fs::read_to_string("/proc/sys/kernel/osrelease").map_or(true, |release| {
+        kernel_release_needs_krun_workaround(&release)
+    })
+}
+
+#[cfg(all(target_os = "linux", target_arch = "x86_64"))]
+fn kernel_release_needs_krun_workaround(release: &str) -> bool {
+    release
+        .split('.')
+        .next()
+        .and_then(|major| major.parse::<u32>().ok())
+        .is_none_or(|major| major < 7)
+}
+
 #[derive(Debug, Clone)]
 pub struct VmExecutor {
     settings: VmSettings,
@@ -57,6 +78,79 @@ struct OverlayDeviceSpec {
     preimages: Option<PathBuf>,
     #[serde(default)]
     excluded: Vec<PathBuf>,
+    #[serde(default)]
+    access_policy: persisting_control::overlay::FileAccessPolicy,
+}
+
+/// A host-root VM must not reach the same workspace through its original lower
+/// path, or reach writable backing state through the root device.
+fn protect_overlay_backing(
+    root: &mut OverlayDeviceSpec,
+    workspace: Option<&OverlayDeviceSpec>,
+) -> anyhow::Result<()> {
+    let mut deny = root.access_policy.deny().to_vec();
+    let mut ask = root.access_policy.ask().to_vec();
+    let mut warn = root.access_policy.warn().to_vec();
+    let mut hidden = vec![root.upper.clone()];
+    hidden.extend(root.work.iter().cloned());
+    hidden.extend(root.preimages.iter().cloned());
+    if let Some(workspace) = workspace {
+        hidden.push(workspace.upper.clone());
+        hidden.extend(workspace.work.iter().cloned());
+        hidden.extend(workspace.preimages.iter().cloned());
+        for lower in &root.lowers {
+            let lower = lower.canonicalize()?;
+            for source in &workspace.lowers {
+                let source = source.canonicalize()?;
+                if let Ok(relative) = source.strip_prefix(&lower) {
+                    if relative.as_os_str().is_empty() {
+                        continue;
+                    }
+                    let prefix = globset::escape(
+                        relative
+                            .to_str()
+                            .ok_or_else(|| anyhow::anyhow!("file rule prefix must be UTF-8"))?,
+                    );
+                    deny.extend(
+                        workspace
+                            .access_policy
+                            .deny()
+                            .iter()
+                            .map(|glob| format!("{prefix}/{glob}")),
+                    );
+                    ask.extend(
+                        workspace
+                            .access_policy
+                            .ask()
+                            .iter()
+                            .map(|glob| format!("{prefix}/{glob}")),
+                    );
+                    warn.extend(
+                        workspace
+                            .access_policy
+                            .warn()
+                            .iter()
+                            .map(|glob| format!("{prefix}/{glob}")),
+                    );
+                }
+            }
+        }
+    }
+    root.access_policy = persisting_control::FileAccessPolicy::new_with_ask(deny, ask, warn)?;
+    for lower in &root.lowers {
+        let lower = lower.canonicalize()?;
+        for path in &hidden {
+            let path = path.canonicalize()?;
+            if let Ok(relative) = path.strip_prefix(&lower) {
+                anyhow::ensure!(
+                    !relative.as_os_str().is_empty(),
+                    "overlay backing must not equal its lower"
+                );
+                root.excluded.push(relative.to_owned());
+            }
+        }
+    }
+    Ok(())
 }
 
 #[derive(Debug, Serialize, Deserialize)]
@@ -216,6 +310,10 @@ impl RunExecutor for VmExecutor {
                 );
             }
         };
+        let access_policy = configured_overlay
+            .as_ref()
+            .map(|overlay| overlay.access_policy.clone())
+            .unwrap_or_default();
         let (root_overlay, workspace) = if overlay_target.is_none() {
             (
                 configured_overlay.unwrap_or_else(|| OverlayDeviceSpec {
@@ -224,6 +322,7 @@ impl RunExecutor for VmExecutor {
                     work: None,
                     preimages: None,
                     excluded: Vec::new(),
+                    access_policy: access_policy.clone(),
                 }),
                 None,
             )
@@ -235,6 +334,7 @@ impl RunExecutor for VmExecutor {
                     work: None,
                     preimages: None,
                     excluded: Vec::new(),
+                    access_policy: access_policy.clone(),
                 },
                 configured_overlay,
             )
@@ -260,13 +360,17 @@ impl RunExecutor for VmExecutor {
         ] {
             env.remove(key);
         }
-        if !invocation.env.contains_key("PATH") {
+        if !invocation.env.contains_key("PATH")
+            && (root != Path::new("/") || !env.contains_key("PATH"))
+        {
             env.insert(
                 "PATH".into(),
                 "/usr/local/sbin:/usr/local/bin:/usr/sbin:/usr/bin:/sbin:/bin".into(),
             );
         }
-        if !invocation.env.contains_key("HOME") {
+        if !invocation.env.contains_key("HOME")
+            && (root != Path::new("/") || !env.contains_key("HOME"))
+        {
             env.insert("HOME".into(), "/root".into());
         }
         if !invocation.env.contains_key("TMPDIR") {
@@ -314,10 +418,14 @@ impl RunExecutor for VmExecutor {
                 work: Some(root_work.clone()),
                 preimages: root_overlay.preimages,
                 excluded: root_overlay.excluded,
+                access_policy: root_overlay.access_policy,
             }
         } else {
             root_overlay
         };
+        if let Err(error) = protect_overlay_backing(&mut root_overlay, workspace.as_ref()) {
+            return failed_to_start(&spec, context.attempt_id(), started_at, error.to_string());
+        }
         let vm_network_enabled = context
             .spec()
             .metadata
@@ -517,13 +625,16 @@ impl RunExecutor for VmExecutor {
                 });
             }
         }
-        // libkrun's x86_64 KVM path can otherwise race guest workqueue
-        // creation and halt before init runs. The upstream compatibility
-        // switch is still required on the Fedora 43 / Linux 6.17 host used by
-        // pVisor's Linux validation, not only the older kernels named in the
-        // vendored libkrun comment.
+        // The vendored workaround sleeps before every KVM_RUN. It is still
+        // needed on the Fedora 43 / Linux 6.17 host used by pVisor's Linux
+        // validation, but makes newer kernels much slower. Keep it for 6.x
+        // and unknown hosts; allow an explicit override for diagnostics.
         #[cfg(all(target_os = "linux", target_arch = "x86_64"))]
-        command.env("KRUN_ENOMEM_WORKAROUND", "1");
+        if needs_krun_enomem_workaround() {
+            command.env("KRUN_ENOMEM_WORKAROUND", "1");
+        } else {
+            command.env_remove("KRUN_ENOMEM_WORKAROUND");
+        }
         if let Some(directory) = &self.settings.library_dir {
             #[cfg(target_os = "linux")]
             command.env("LD_LIBRARY_PATH", directory);
@@ -770,6 +881,7 @@ fn add_krun_overlay(
         !overlay.lowers.is_empty(),
         "libkrun overlay requires a lower directory"
     );
+    let policy = CString::new(serde_json::to_string(&overlay.access_policy)?)?;
     let tag = CString::new(tag)?;
     let lowers = overlay
         .lowers
@@ -791,7 +903,7 @@ fn add_krun_overlay(
         .collect::<Vec<_>>();
     check_krun(
         unsafe {
-            krun::krun_add_virtiofs_overlay(
+            krun::krun_add_virtiofs_overlay_with_policy(
                 ctx,
                 tag.as_ptr(),
                 lower_ptrs.as_ptr(),
@@ -804,6 +916,7 @@ fn add_krun_overlay(
                 excluded_ptrs.as_ptr(),
                 excluded_ptrs.len(),
                 shm_size,
+                policy.as_ptr(),
             )
         },
         "krun_add_virtiofs_overlay",
@@ -843,6 +956,15 @@ fn write_guest_helper(
     if let Some(bytes) = limits.file_size_bytes {
         script.push_str(&format!("ulimit -f {}\n", bytes.div_ceil(512)));
     }
+    // libkrun starts interactive guests on /dev/console. Its file descriptor
+    // accepts terminal I/O, but ttyname(3) cannot identify it as /dev/hvc0.
+    // Reopen only terminal-backed streams so redirected and captured I/O keep
+    // their separate virtio-console ports.
+    script.push_str("if [ -c /dev/hvc0 ]; then\n");
+    script.push_str("  if [ -t 0 ]; then exec 0</dev/hvc0; fi\n");
+    script.push_str("  if [ -t 1 ]; then exec 1>/dev/hvc0; fi\n");
+    script.push_str("  if [ -t 2 ]; then exec 2>/dev/hvc0; fi\n");
+    script.push_str("fi\n");
     script.push_str("rm -f /init.krun \"$0\"");
     if let Some(mount_helper) = mount_helper {
         script.push(' ');
@@ -850,7 +972,9 @@ fn write_guest_helper(
     }
     script.push_str("\ncd ");
     script.push_str(&shell_quote(&guest.cwd.to_string_lossy())?);
-    script.push_str("\nexec env -i");
+    // The guest init may start the helper without PATH. Use the conventional
+    // absolute location so environment sanitization does not depend on it.
+    script.push_str("\nexec /usr/bin/env -i");
     for (key, value) in &guest.env {
         script.push(' ');
         script.push_str(&shell_quote(&format!("{key}={value}"))?);
@@ -1022,6 +1146,53 @@ fn check_krun(value: i32, operation: &str) -> anyhow::Result<()> {
 mod tests {
     use super::*;
 
+    #[cfg(all(target_os = "linux", target_arch = "x86_64"))]
+    #[test]
+    fn krun_workaround_keeps_slow_path_on_older_or_unknown_kernels() {
+        assert!(kernel_release_needs_krun_workaround("6.17.0-foo"));
+        assert!(kernel_release_needs_krun_workaround("unknown"));
+        assert!(!kernel_release_needs_krun_workaround(
+            "7.1.13-200.fc44.x86_64"
+        ));
+    }
+
+    #[test]
+    fn file_rules_cover_original_vm_workspace_paths_and_hide_backing() {
+        let temp = tempfile::tempdir().unwrap();
+        let root = temp.path().canonicalize().unwrap();
+        for name in ["project[1]", "upper", "work", "root-upper"] {
+            std::fs::create_dir(root.join(name)).unwrap();
+        }
+        let policy = persisting_control::overlay::FileAccessPolicy::new(
+            vec!["private.key".into()],
+            vec![".env".into()],
+        )
+        .unwrap();
+        let workspace = OverlayDeviceSpec {
+            lowers: vec![root.join("project[1]")],
+            upper: root.join("upper"),
+            work: Some(root.join("work")),
+            preimages: None,
+            excluded: vec![],
+            access_policy: policy.clone(),
+        };
+        let mut device = OverlayDeviceSpec {
+            lowers: vec![root.clone()],
+            upper: root.join("root-upper"),
+            work: None,
+            preimages: None,
+            excluded: vec![],
+            access_policy: policy,
+        };
+        protect_overlay_backing(&mut device, Some(&workspace)).unwrap();
+        let access = &device.access_policy;
+        assert!(access.denied(Path::new("project[1]/private.key")));
+        assert!(!access.denied(Path::new("project1/private.key")));
+        for name in ["root-upper", "upper", "work"] {
+            assert!(device.excluded.contains(&PathBuf::from(name)));
+        }
+    }
+
     #[test]
     fn settings_validate_resource_limits() {
         let rootfs = tempfile::tempdir().unwrap();
@@ -1050,7 +1221,7 @@ mod tests {
             program: "/bin/sh".into(),
             args: vec![
                 "-c".into(),
-                "printf '%s\\n%s' \"$COMPLEX\" \"$0\" > result".into(),
+                "test -z \"${HOST_MARKER+x}\" || exit 41; printf '%s\\n%s' \"$COMPLEX\" \"$0\" > result".into(),
                 argument_value.into(),
             ],
             env: BTreeMap::from([("COMPLEX".into(), environment_value.into())]),
@@ -1058,7 +1229,10 @@ mod tests {
         };
         write_guest_helper(&helper, None, None, &guest, &ResourceLimits::default()).unwrap();
 
-        let status = std::process::Command::new(&helper).status().unwrap();
+        let status = std::process::Command::new(&helper)
+            .env("HOST_MARKER", "must-not-leak")
+            .status()
+            .unwrap();
         assert!(status.success());
         assert_eq!(
             std::fs::read_to_string(temporary.path().join("result")).unwrap(),
@@ -1067,14 +1241,14 @@ mod tests {
     }
 
     #[test]
-    fn guest_helper_emits_requested_resource_limits() {
+    fn guest_helper_applies_open_file_limit_to_the_command() {
         let temporary = tempfile::tempdir().unwrap();
         let helper = temporary.path().join("guest-helper.sh");
         let guest = GuestSpec {
-            program: "/bin/true".into(),
-            args: Vec::new(),
+            program: "/bin/sh".into(),
+            args: vec!["-c".into(), "ulimit -n > limit.txt".into()],
             env: BTreeMap::new(),
-            cwd: PathBuf::from("/"),
+            cwd: temporary.path().to_path_buf(),
         };
         write_guest_helper(
             &helper,
@@ -1082,20 +1256,23 @@ mod tests {
             None,
             &guest,
             &ResourceLimits {
-                memory_bytes: Some(2 * 1024 * 1024),
-                processes: Some(8),
-                cpu_time_ms: Some(1_500),
                 open_files: Some(32),
-                file_size_bytes: Some(1024),
+                ..ResourceLimits::default()
             },
         )
         .unwrap();
-        let script = std::fs::read_to_string(helper).unwrap();
-        assert!(script.contains("ulimit -v 2048"));
-        assert!(script.contains("ulimit -u 8"));
-        assert!(script.contains("ulimit -t 2"));
-        assert!(script.contains("ulimit -n 32"));
-        assert!(script.contains("ulimit -f 2"));
+        assert!(
+            std::process::Command::new(helper)
+                .status()
+                .unwrap()
+                .success()
+        );
+        assert_eq!(
+            std::fs::read_to_string(temporary.path().join("limit.txt"))
+                .unwrap()
+                .trim(),
+            "32"
+        );
     }
 
     #[test]

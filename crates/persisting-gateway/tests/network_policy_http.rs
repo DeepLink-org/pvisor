@@ -486,7 +486,11 @@ upstream = "http://127.0.0.1:9/v1"
 
 #[tokio::test]
 async fn e2e_connect_does_not_report_success_before_upstream_connects() {
-    let closed_port = free_port();
+    // Keep the port reserved without listening. Releasing a free_port() result
+    // lets another parallel test bind it before this CONNECT reaches upstream.
+    let closed_socket = tokio::net::TcpSocket::new_v4().unwrap();
+    closed_socket.bind("127.0.0.1:0".parse().unwrap()).unwrap();
+    let closed_port = closed_socket.local_addr().unwrap().port();
     let (proxy, _tmp, stop) = spawn_proxy(
         r#"
 listen = "{{LISTEN}}"
@@ -504,6 +508,7 @@ upstream = "http://127.0.0.1:9/v1"
     .await;
 
     let (status, body) = raw_connect(&proxy, &format!("127.0.0.1:{closed_port}")).await;
+    drop(closed_socket);
     assert_eq!(status, StatusCode::BAD_GATEWAY);
     assert!(body.contains("CONNECT"), "{body}");
     let _ = stop.send(());

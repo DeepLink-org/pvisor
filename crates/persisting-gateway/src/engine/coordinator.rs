@@ -76,7 +76,7 @@ impl CaptureRuntime {
                 stream_markdown,
             }),
             run,
-            story_deps: StoryActorDeps::new(sink, Arc::clone(&storage), stream_markdown),
+            story_deps: StoryActorDeps::new(sink, Arc::clone(&storage)),
             stories: Arc::new(DashMap::new()),
             wal,
         });

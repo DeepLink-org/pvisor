@@ -1,4 +1,4 @@
-# 第一次运行
+# 第一个 Job
 
 这个示例在暂存项目中创建一个文件，审查后再应用到原项目，不需要 Agent 账号或模型 API。请先完成[安装](installation.md)，包括宿主机暂存所需的 FUSE/macFUSE。
 
@@ -20,10 +20,12 @@ pvisor run --stage ../stage-001 -- /bin/sh -c 'printf "hello from the stage\n" >
 
 ```bash
 test ! -e hello.txt
-pvisor review last
+pvisor status --review last
 ```
 
 此时原项目中没有 `hello.txt`，但审查结果中可以看到它。除了文件列表，也要阅读实际隔离能力和警告。如果暂存挂载失败，应先解决平台配置问题。
+
+审查输出的 **File access observations** 会列出到达 OverlayFS 的路径、操作和结果，包括读取、拒绝与写入效果；**Network access observations** 会按目标列出到达 OverlayNet 的策略允许、拒绝和连接失败。运行中的 Job 可用 `pvisor status last` 查看摘要，TUI 的 Files/Network 面板可查看明细。`--json` 保留完整的有界记录。普通 host 代理是协作式的，因此这些网络记录只证明经过代理的请求；未出现的目标不能据此判定为从未访问。
 
 ## 3. 接受改动
 
@@ -36,13 +38,13 @@ cat hello.txt
 
 ## 4. 换成你的命令
 
-在真实项目中，把示例命令换成你的脚本或自动化命令。已安装的 Agent CLI 也使用相同入口：
+在真实项目中，把示例命令换成你的脚本或自动化命令。已安装的 Agent CLI 也使用相同入口。Codex 的 HOME 状态只有在 `--safe` 下才会独立暂存；详见 [CLI 参考](../reference/cli.md)：
 
 ```bash
-pvisor run --stage ../agent-stage-001 -- codex
-pvisor review last
+pvisor run --safe --stage ../agent-stage-001 -- codex
+pvisor status --review last
 ```
 
-审查后，再选择 `pvisor apply last --path PATH`、`--all` 或 `pvisor drop last`。同时处理多个项目或运行时，建议用命令输出的明确 Run ID 或暂存路径代替 `last`。
+审查后，再选择 `pvisor apply last --path PATH`、`--all` 或 `pvisor drop last`。同时处理多个项目或 Job 时，建议用命令输出的明确 Job ID（`run-*`）或暂存路径代替 `last`。
 
 继续阅读[审查与应用](../guides/review-apply.md)，了解分批处理、冲突和检查点。

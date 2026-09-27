@@ -6,7 +6,7 @@
 
 use std::path::{Path, PathBuf};
 
-use persisting_control::ResourceLimits;
+use persisting_control::{FilesystemCapability, ResourceLimits};
 use persisting_gateway::config::{CaptureLevel, ModelRoute, ProxyConfig};
 use persisting_overlaynet::{NetworkAccessRule, NetworkBandwidthLimit};
 use serde::{Deserialize, Serialize};
@@ -21,7 +21,7 @@ pub struct RunConfig {
     #[serde(alias = "kvm")]
     pub vm: VmSettings,
     /// Transactional filesystem configuration. Absence means host filesystem access.
-    pub overlayfs: Option<OverlayFsSettings>,
+    pub filesystem: Option<OverlayFsSettings>,
     pub overlaynet: OverlayNetSettings,
     pub gateway: GatewaySettings,
     /// Durable EventRecord JSONL recording.
@@ -51,6 +51,8 @@ pub struct RunSettings {
     pub inherit_env: bool,
     /// Host environment variables projected by name when `inherit_env=false`.
     pub pass_env: Vec<String>,
+    /// Explicit host paths available outside the project stage.
+    pub filesystem: Vec<FilesystemCapability>,
     pub resource_limits: ResourceLimits,
     pub command: Vec<String>,
 }
@@ -66,6 +68,7 @@ impl Default for RunSettings {
             policy: RunPolicy::Observe,
             inherit_env: true,
             pass_env: Vec::new(),
+            filesystem: Vec::new(),
             resource_limits: ResourceLimits::default(),
             command: Vec::new(),
         }
@@ -154,9 +157,9 @@ impl std::str::FromStr for ContainerPlatform {
 #[derive(Debug, Clone, Deserialize, Serialize, PartialEq, Eq)]
 #[serde(default, deny_unknown_fields)]
 pub struct VmSettings {
-    /// Linux root filesystem exported to the libkrun guest.
+    /// Linux root filesystem exported to the libkrun guest; defaults to host `/`.
     pub rootfs: Option<PathBuf>,
-    /// OCI image used when no explicit rootfs is supplied.
+    /// Explicit OCI image used instead of the host root filesystem.
     pub image: Option<String>,
     /// Content-addressed OCI cache. The platform cache directory is used when omitted.
     pub image_store: Option<PathBuf>,
@@ -173,7 +176,7 @@ impl Default for VmSettings {
     fn default() -> Self {
         Self {
             rootfs: None,
-            image: Some(crate::oci::DEFAULT_IMAGE.into()),
+            image: None,
             image_store: None,
             rootfs_immutable: false,
             library_dir: None,
@@ -222,26 +225,41 @@ pub enum RunPolicy {
 #[derive(Debug, Clone, Deserialize, Serialize)]
 #[serde(default, deny_unknown_fields)]
 pub struct OverlayFsSettings {
+    #[serde(skip)]
+    pub access_policy: persisting_control::overlay::FileAccessPolicy,
+    /// New unified filesystem mounts. Runtime normalization converts these into executor capabilities.
+    pub mount: Vec<FilesystemMount>,
+    /// New unified Agent-visible access rules.
+    pub access: Vec<FilesystemAccessRule>,
     /// Optional host base layer and default apply destination (normally the workspace).
+    #[serde(skip)]
     pub base: Option<PathBuf>,
     /// Absolute path where the staged overlay is exposed inside a libkrun guest.
     #[serde(rename = "path")]
+    #[serde(skip)]
     pub target: Option<PathBuf>,
     /// Host mount point used as the Agent-visible overlay view.
+    #[serde(skip)]
     pub merged_dir: Option<PathBuf>,
     /// Read-only host layers, listed bottom-to-top as supplied on the CLI.
+    #[serde(skip)]
     pub compose: Vec<PathBuf>,
     /// Durable writable stage root. Defaults to the generated per-Run storage directory.
     pub stage: Option<PathBuf>,
     /// Aggregate byte budget for the whole staged filesystem.
+    #[serde(rename = "max_size")]
     pub stage_size_bytes: Option<u64>,
     pub backend: OverlayFsBackend,
+    #[serde(skip)]
     pub commit: OverlayFsCommit,
 }
 
 impl Default for OverlayFsSettings {
     fn default() -> Self {
         Self {
+            access_policy: Default::default(),
+            mount: Vec::new(),
+            access: Vec::new(),
             base: None,
             target: None,
             merged_dir: None,
@@ -252,6 +270,32 @@ impl Default for OverlayFsSettings {
             commit: OverlayFsCommit::Manual,
         }
     }
+}
+
+#[derive(Debug, Clone, Deserialize, Serialize, PartialEq, Eq)]
+#[serde(deny_unknown_fields)]
+pub struct FilesystemMount {
+    pub source: PathBuf,
+    #[serde(default)]
+    pub target: Option<PathBuf>,
+    pub access: FilesystemAccessLevel,
+}
+
+#[derive(Debug, Clone, Deserialize, Serialize, PartialEq, Eq)]
+#[serde(deny_unknown_fields)]
+pub struct FilesystemAccessRule {
+    pub path: String,
+    pub level: FilesystemAccessLevel,
+}
+
+#[derive(Debug, Clone, Copy, Deserialize, Serialize, PartialEq, Eq)]
+#[serde(rename_all = "snake_case")]
+pub enum FilesystemAccessLevel {
+    Deny,
+    Ask,
+    Read,
+    Stage,
+    Write,
 }
 
 #[derive(Debug, Clone, Copy, Default, Deserialize, Serialize, PartialEq, Eq, clap::ValueEnum)]
@@ -320,6 +364,8 @@ pub enum OverlayNetPolicy {
 #[serde(default, deny_unknown_fields)]
 pub struct GatewaySettings {
     pub mode: GatewayMode,
+    pub profile: Option<GatewayProfile>,
+    pub zcode_builtin_config: Option<PathBuf>,
     pub admin_listen: String,
     pub level: CaptureLevel,
     pub session_header: String,
@@ -332,6 +378,8 @@ impl Default for GatewaySettings {
     fn default() -> Self {
         Self {
             mode: GatewayMode::Off,
+            profile: None,
+            zcode_builtin_config: None,
             admin_listen: "127.0.0.1:9876".into(),
             level: CaptureLevel::Dialogue,
             session_header: "x-persisting-session-id".into(),
@@ -348,6 +396,28 @@ pub enum GatewayMode {
     #[default]
     Off,
     Capture,
+}
+
+#[derive(Debug, Clone, Copy, Deserialize, Serialize, PartialEq, Eq, clap::ValueEnum)]
+#[serde(rename_all = "kebab-case")]
+pub enum GatewayProfile {
+    ZcodeBigmodel,
+}
+
+impl GatewayProfile {
+    pub fn routes(self) -> Vec<ModelRoute> {
+        match self {
+            Self::ZcodeBigmodel => vec![ModelRoute {
+                name: "*".into(),
+                provider: Some("anthropic".into()),
+                upstream: Some("https://open.bigmodel.cn/api/anthropic/v1".into()),
+                upstream_anthropic: Some("https://open.bigmodel.cn/api/anthropic/v1".into()),
+                api_key_env: None,
+                api_key: None,
+                forward: None,
+            }],
+        }
+    }
 }
 
 #[derive(Debug, Clone, Default, Deserialize, Serialize)]
@@ -457,9 +527,11 @@ runtime = "podman"
 image = "example/agent:latest"
 network = "none"
 
-[overlayfs]
-path = "/workspace"
-compose = ["/tmp/lower"]
+[filesystem]
+
+[[filesystem.mount]]
+source = "/tmp/lower"
+access = "read"
 
 [overlaynet]
 mode = "proxy"
@@ -489,15 +561,8 @@ upstream = "https://api.openai.com/v1"
         )
         .unwrap();
         assert_eq!(
-            config
-                .overlayfs
-                .as_ref()
-                .and_then(|overlay| overlay.target.as_deref()),
-            Some(Path::new("/workspace"))
-        );
-        assert_eq!(
-            config.overlayfs.as_ref().unwrap().compose,
-            [PathBuf::from("/tmp/lower")]
+            config.filesystem.as_ref().unwrap().mount[0].source,
+            PathBuf::from("/tmp/lower")
         );
         assert_eq!(config.run.executor, RunExecutorKind::Container);
         assert_eq!(config.container.runtime, Path::new("podman"));

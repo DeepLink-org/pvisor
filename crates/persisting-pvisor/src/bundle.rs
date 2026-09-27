@@ -37,6 +37,10 @@ pub struct RunBundle {
     pub agentctl: AgentCtlSnapshot,
     #[serde(default, skip_serializing_if = "std::collections::BTreeMap::is_empty")]
     pub orchestration: std::collections::BTreeMap<String, serde_json::Value>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub run_plan: Option<persisting_control::ir::run::RunPlan>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub run_observation: Option<persisting_control::ir::run::RunObservation>,
     #[serde(default)]
     pub artifacts: Vec<BundleArtifact>,
 }
@@ -103,6 +107,8 @@ pub struct FilesystemSummary {
     pub root_overlay: bool,
     #[serde(default)]
     pub excluded_paths: Vec<PathBuf>,
+    #[serde(default)]
+    pub access_policy: persisting_control::overlay::FileAccessPolicy,
     /// Identity of the host root used as the immutable lower view.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub host_root_device: Option<u64>,
@@ -167,6 +173,7 @@ impl RunBundle {
                     whiteouts: status.whiteouts,
                     root_overlay,
                     excluded_paths: overlay.excluded_paths.clone(),
+                    access_policy: overlay.access_policy.clone(),
                     host_root_device: root_metadata.as_ref().map(MetadataExt::dev),
                     host_root_inode: root_metadata.as_ref().map(MetadataExt::ino),
                     host_uid: root_overlay.then(|| unsafe { libc::geteuid() }),
@@ -324,6 +331,15 @@ impl RunBundle {
             resources,
             agentctl,
             orchestration: record.orchestration.clone(),
+            run_plan: record.run_plan.clone(),
+            run_observation: record.run_plan.as_ref().map(|plan| {
+                crate::runtime::plan::observe(
+                    plan,
+                    result,
+                    record.network_interception_metrics.as_ref(),
+                    record.filesystem_observation.as_ref(),
+                )
+            }),
             artifacts,
         })
     }
@@ -546,6 +562,7 @@ mod tests {
             overlaynet_listen: None,
             network_interception: Some(InterceptionProfile::explicit_proxy()),
             network_interception_metrics: None,
+            filesystem_observation: None,
             gateway_listen: None,
             network: serde_json::json!({"mode": "ambient"}),
             network_policy: None,
@@ -562,6 +579,7 @@ mod tests {
                 merged_dir: temp.path().join("merged"),
                 stage_dir: temp.path().to_path_buf(),
                 excluded_paths: Vec::new(),
+                access_policy: Default::default(),
                 auto_apply: false,
                 auto_discard: false,
                 protect_target: false,
@@ -573,6 +591,7 @@ mod tests {
                 "pvisor.orchestration.job_id".into(),
                 serde_json::json!("job-1"),
             )]),
+            run_plan: None,
         };
         let result = RunResult {
             run_id: RunId::new("run-1"),

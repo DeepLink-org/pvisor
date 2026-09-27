@@ -2,7 +2,10 @@ use crate::executor::{AttemptContext, RunExecutor};
 #[cfg(any(target_os = "linux", target_os = "macos"))]
 use crate::sandbox::{INTERNAL_SANDBOX_ARG, NetworkIsolation};
 #[cfg(target_os = "macos")]
-use crate::sandbox::{MACOS_SANDBOX_EXEC, SEATBELT_ATTESTATION, SeatbeltPlan, seatbelt_profile};
+use crate::sandbox::{
+    MACOS_SANDBOX_EXEC, SEATBELT_ATTESTATION, SeatbeltPlan, seatbelt_profile,
+    seatbelt_profile_with_reads,
+};
 #[cfg(target_os = "linux")]
 use crate::sandbox::{ROOTLESS_ATTESTATION, SandboxPlan, landlock_runtime_available};
 use crate::sandbox::{SANDBOX_PLAN_ENV, SANDBOX_SETUP_FAILED_WARNING};
@@ -188,6 +191,7 @@ enum SandboxResources {
     Linux {
         root: PathBuf,
         attestation: tempfile::NamedTempFile,
+        plan: tempfile::NamedTempFile,
     },
     #[cfg(target_os = "macos")]
     MacOS {
@@ -215,9 +219,13 @@ impl SandboxResources {
         let attestation = tempfile::Builder::new()
             .prefix("pvisor-rootless-attestation-")
             .tempfile()?;
+        let plan = tempfile::Builder::new()
+            .prefix("pvisor-rootless-plan-")
+            .tempfile()?;
         Ok(Self::Linux {
             root: path,
             attestation,
+            plan,
         })
     }
 
@@ -235,6 +243,21 @@ impl SandboxResources {
             Self::Linux { attestation, .. } => Some(attestation.path()),
             Self::None => None,
         }
+    }
+
+    #[cfg(target_os = "linux")]
+    fn write_plan(&mut self, encoded: &[u8]) -> std::io::Result<&Path> {
+        use std::io::{Seek, Write};
+
+        let Self::Linux { plan, .. } = self else {
+            unreachable!("Linux sandbox resources required")
+        };
+        let file = plan.as_file_mut();
+        file.rewind()?;
+        file.set_len(0)?;
+        file.write_all(encoded)?;
+        file.sync_all()?;
+        Ok(plan.path())
     }
 
     #[cfg(target_os = "macos")]
@@ -361,11 +384,37 @@ fn stdio(mode: StdioMode) -> Stdio {
 }
 
 #[cfg(any(target_os = "linux", target_os = "macos"))]
-fn network_isolation(spec: &RunSpec) -> NetworkIsolation {
+fn network_isolation(spec: &RunSpec) -> std::io::Result<NetworkIsolation> {
+    if crate::sandbox::sandbox_required(spec) {
+        #[cfg(target_os = "macos")]
+        {
+            let proxy = spec
+                .metadata
+                .get(crate::sandbox::SANDBOX_PROXY_KEY)
+                .and_then(serde_json::Value::as_str)
+                .map(str::parse::<std::net::SocketAddr>)
+                .transpose()
+                .map_err(std::io::Error::other)?;
+            if proxy.is_none() && !matches!(spec.capabilities.network, NetworkCapability::Deny) {
+                return Err(std::io::Error::other(
+                    "required sandbox needs a supervisor-owned proxy",
+                ));
+            }
+            return Ok(NetworkIsolation::ProxyOnly(proxy));
+        }
+        #[cfg(target_os = "linux")]
+        if !matches!(spec.capabilities.network, NetworkCapability::Deny) {
+            // Host selective egress is cooperative: clients such as ZCode use
+            // the supervisor-owned loopback proxy, while direct sockets remain
+            // outside the proxy boundary. Strict policy rejects this evidence;
+            // VM or deny-all is required for non-bypassable egress.
+            return Ok(NetworkIsolation::Ambient);
+        }
+    }
     if matches!(spec.capabilities.network, NetworkCapability::Deny) {
-        NetworkIsolation::LoopbackOnly
+        Ok(NetworkIsolation::LoopbackOnly)
     } else {
-        NetworkIsolation::Ambient
+        Ok(NetworkIsolation::Ambient)
     }
 }
 
@@ -482,6 +531,11 @@ impl ProcessExecutor {
         // an OverlayFS merged root. The executable belongs to the host-process
         // executor and need not exist inside the projected lower filesystem.
         let program = resolve_host_program(&invocation.program);
+        if crate::sandbox::sandbox_required(spec) && !self.is_sandboxed() {
+            return Err(std::io::Error::other(
+                "required sandbox cannot use an unsandboxed process executor",
+            ));
+        }
         let (mut command, sandbox_plan, resources) = if let Some(launcher) = &self.sandbox_launcher
         {
             platform_launcher_command(launcher, spec, invocation, &program)?
@@ -526,6 +580,9 @@ impl ProcessExecutor {
             // A Run-owned temporary directory avoids granting the Agent the
             // shared /tmp or per-user Darwin temporary hierarchy.
             command.env("TMPDIR", scratch);
+            if crate::sandbox::sandbox_required(spec) {
+                command.env("HOME", scratch);
+            }
         }
         Ok(PreparedCommand { command, resources })
     }
@@ -537,14 +594,18 @@ impl ProcessExecutor {
 /// host capability from a later Agent failure.
 #[cfg(target_os = "linux")]
 pub(crate) fn rootless_runtime_available() -> bool {
-    landlock_runtime_available()
-        && StdCommand::new("unshare")
-            .args(["--user", "--mount", "--pid", "--fork", "true"])
-            .stdin(Stdio::null())
-            .stdout(Stdio::null())
-            .stderr(Stdio::null())
-            .status()
-            .is_ok_and(|status| status.success())
+    landlock_runtime_available() && rootless_namespaces_available()
+}
+
+#[cfg(target_os = "linux")]
+pub(crate) fn rootless_namespaces_available() -> bool {
+    StdCommand::new("unshare")
+        .args(["--user", "--mount", "--pid", "--fork", "true"])
+        .stdin(Stdio::null())
+        .stdout(Stdio::null())
+        .stderr(Stdio::null())
+        .status()
+        .is_ok_and(|status| status.success())
 }
 
 #[cfg(unix)]
@@ -622,8 +683,8 @@ fn platform_launcher_command(
             format!("resolve Agent executable {}: {error}", program.display()),
         )
     })?;
-    let sandbox_root = SandboxResources::create()?;
-    let network = network_isolation(spec);
+    let mut sandbox_root = SandboxResources::create()?;
+    let network = network_isolation(spec)?;
     let plan = rootless_plan(
         spec,
         invocation,
@@ -638,14 +699,18 @@ fn platform_launcher_command(
             .to_owned(),
         network,
     )?;
-    let encoded = serde_json::to_string(&plan).map_err(std::io::Error::other)?;
+    let encoded = serde_json::to_vec(&plan).map_err(std::io::Error::other)?;
+    let plan_path = sandbox_root
+        .write_plan(&encoded)?
+        .to_string_lossy()
+        .into_owned();
     let mut command = Command::new(launcher);
     command
         .arg(INTERNAL_SANDBOX_ARG)
         .arg("--")
         .arg(&program)
         .args(&invocation.args);
-    Ok((command, Some(encoded), sandbox_root))
+    Ok((command, Some(plan_path), sandbox_root))
 }
 
 #[cfg(target_os = "macos")]
@@ -668,6 +733,8 @@ fn platform_launcher_command(
         .map(PathBuf::from)
         .unwrap_or(std::env::current_dir()?);
     let cwd = cwd.canonicalize()?;
+    let restrict_reads = crate::sandbox::sandbox_required(spec);
+    let mut readable_paths = vec![program.clone(), launcher.canonicalize()?];
     let mut writable_paths = vec![
         cwd.clone(),
         resources
@@ -682,10 +749,31 @@ fn platform_launcher_command(
     for path in ["/dev/null", "/dev/zero", "/dev/tty", "/dev/fd"] {
         push_existing(&mut writable_paths, Path::new(path));
     }
+    // Runtime locations are readable (never writable) in the required profile.
+    for path in [
+        "/System/Library",
+        "/System/Cryptexes/OS",
+        "/usr",
+        "/bin",
+        "/sbin",
+        "/Library/Apple",
+        "/Library/Developer",
+        "/Library/Frameworks",
+        "/opt/homebrew",
+        "/private/var/db/dyld",
+        "/private/var/db/timezone",
+        "/private/etc/localtime",
+        "/private/etc/hosts",
+        "/private/etc/resolv.conf",
+        "/private/etc/services",
+        "/private/etc/protocols",
+        "/private/etc/ssl",
+        "/dev/urandom",
+        "/dev/random",
+    ] {
+        push_existing(&mut readable_paths, Path::new(path));
+    }
     for capability in &spec.capabilities.filesystem {
-        if capability.access != FilesystemAccess::ReadWrite {
-            continue;
-        }
         let path = PathBuf::from(&capability.path);
         let path = if path.is_absolute() {
             path
@@ -701,10 +789,13 @@ fn platform_launcher_command(
                 ),
             ));
         }
-        writable_paths.push(path);
+        match capability.access {
+            FilesystemAccess::Read => readable_paths.push(path),
+            FilesystemAccess::ReadWrite => writable_paths.push(path),
+        }
     }
 
-    let network = network_isolation(spec);
+    let network = network_isolation(spec)?;
     let (allowed_unix_sockets, local_socket_roots) = if network.is_loopback_only() {
         (
             invocation
@@ -725,13 +816,26 @@ fn platform_launcher_command(
     } else {
         (Vec::new(), Vec::new())
     };
-    let (profile, parameters) = seatbelt_profile(
-        &writable_paths,
-        &allowed_unix_sockets,
-        &local_socket_roots,
-        network,
-    )?;
+    // Socket metadata must be readable, but its containing directory is not shared.
+    readable_paths.extend(allowed_unix_sockets.iter().cloned());
+    let (profile, parameters) = if restrict_reads {
+        seatbelt_profile_with_reads(
+            &writable_paths,
+            Some(&readable_paths),
+            &allowed_unix_sockets,
+            &local_socket_roots,
+            network,
+        )?
+    } else {
+        seatbelt_profile(
+            &writable_paths,
+            &allowed_unix_sockets,
+            &local_socket_roots,
+            network,
+        )?
+    };
     let plan = SeatbeltPlan {
+        restrict_reads,
         attestation: resources
             .attestation_path()
             .expect("created Seatbelt attestation")
@@ -794,6 +898,99 @@ fn rootless_plan(
     let cwd = cwd.canonicalize()?;
     let mut read_only = Vec::new();
     let mut read_write = vec![cwd.clone()];
+    // The PID-namespace init mounts a fresh procfs here. Grant read access to
+    // that mountpoint, rather than exposing the host's procfs in the chroot.
+    read_only.push(PathBuf::from("/proc"));
+    // Interactive programs resolve their inherited terminal through
+    // /dev/pts/<n>; the synthetic /dev tree does not otherwise contain it.
+    push_existing(&mut read_only, Path::new("/dev/pts"));
+    let hidden_paths = spec
+        .metadata
+        .get(crate::sandbox::SANDBOX_HIDDEN_PATHS_KEY)
+        .and_then(serde_json::Value::as_array)
+        .into_iter()
+        .flatten()
+        .filter_map(serde_json::Value::as_str)
+        .map(PathBuf::from)
+        .collect::<Vec<_>>();
+
+    // A normal Run writes through the projected home and XDG roots. A safe
+    // Run mounts private copy-on-write views of them at the same paths, so
+    // programs launched later from a shell get the same protection as the
+    // initial executable.
+    let safe = crate::sandbox::sandbox_required(spec);
+    let mut staged_roots = Vec::new();
+    for key in [
+        "HOME",
+        "CODEX_HOME",
+        "XDG_CONFIG_HOME",
+        "XDG_DATA_HOME",
+        "XDG_STATE_HOME",
+        "XDG_CACHE_HOME",
+    ] {
+        let path = invocation.env.get(key).map(PathBuf::from).or_else(|| {
+            invocation
+                .inherit_env
+                .then(|| std::env::var_os(key).map(PathBuf::from))
+                .flatten()
+        });
+        if let Some(path) = path.and_then(|path| path.canonicalize().ok())
+            && path.is_dir()
+        {
+            if safe {
+                if path == Path::new("/") {
+                    return Err(std::io::Error::other("safe state root cannot be /"));
+                }
+                staged_roots.push(path);
+            } else {
+                read_write.push(path);
+            }
+        }
+    }
+    staged_roots.sort_unstable_by(|left, right| {
+        left.components()
+            .count()
+            .cmp(&right.components().count())
+            .then_with(|| left.cmp(right))
+    });
+    staged_roots.dedup();
+    let mut minimal_roots = Vec::<PathBuf>::new();
+    for path in staged_roots {
+        if !minimal_roots.iter().any(|root| path.starts_with(root)) {
+            minimal_roots.push(path);
+        }
+    }
+    read_write.extend(minimal_roots.iter().cloned());
+    // Keep the original project path visible as cwd so tools retain stable
+    // workspace identity. The trusted implant records the FUSE merged path,
+    // which is bind-mounted over that original path inside the sandbox.
+    let staged_workspace_source = safe
+        .then(|| spec.metadata.get("pvisor.runtime.implant"))
+        .flatten()
+        .and_then(|implant| implant.get("overlay_merged"))
+        .and_then(serde_json::Value::as_str)
+        .and_then(|path| Path::new(path).canonicalize().ok());
+    let staged_workspace = safe
+        .then(|| spec.metadata.get("pvisor.workspace"))
+        .flatten()
+        .and_then(serde_json::Value::as_str)
+        .and_then(|path| Path::new(path).canonicalize().ok())
+        .filter(|path| {
+            staged_workspace_source
+                .as_ref()
+                .is_some_and(|source| source != path)
+                && path.is_dir()
+        });
+    if let (Some(source), Some(path)) = (&staged_workspace_source, &staged_workspace) {
+        read_write.push(source.clone());
+        read_write.push(path.clone());
+    }
+    if !safe {
+        // The synthetic root itself is writable, and projected host paths
+        // retain their ordinary lower filesystem write semantics.
+        read_write.push(PathBuf::from("/"));
+    }
+    let graphical_display = project_graphical_session(invocation, &mut read_only, &mut read_write);
 
     // A broad but immutable OS runtime keeps arbitrary local executables and
     // dynamic language runtimes working while excluding user data by default.
@@ -810,6 +1007,16 @@ fn rootless_plan(
     // whose containing hierarchy is intentionally not otherwise projected.
     push_existing(&mut read_only, Path::new("/etc/resolv.conf"));
     read_only.push(program.to_path_buf());
+    // Application bundles commonly keep private ELF dependencies beside the
+    // launcher (for example ZCode's libffmpeg.so). Projecting the executable
+    // alone lets the ELF loader find the program but not its bundle-local
+    // shared libraries. Project the directory entries individually so known
+    // Chromium SUID helpers are absent from the synthetic root. Their presence
+    // inside a rootless user namespace is unusable and makes Chromium abort
+    // instead of selecting its user-namespace sandbox fallback.
+    if let Some(parent) = program.parent() {
+        push_runtime_directory(&mut read_only, parent, &hidden_paths);
+    }
     for path in [
         "/dev/null",
         "/dev/zero",
@@ -819,6 +1026,23 @@ fn rootless_plan(
         "/dev/tty",
     ] {
         push_existing(&mut read_write, Path::new(path));
+    }
+    let project_render_nodes = graphical_display
+        && !spec
+            .metadata
+            .get(crate::sandbox::SANDBOX_NO_GPU_KEY)
+            .and_then(serde_json::Value::as_bool)
+            .unwrap_or(false);
+    if project_render_nodes && let Ok(devices) = std::fs::read_dir("/dev/dri") {
+        for device in devices.flatten().map(|entry| entry.path()) {
+            if device
+                .file_name()
+                .and_then(|name| name.to_str())
+                .is_some_and(|name| name.starts_with("renderD"))
+            {
+                push_existing(&mut read_write, &device);
+            }
+        }
     }
 
     // The Run-scoped AgentCtl and an explicitly supplied SSH agent are
@@ -857,21 +1081,116 @@ fn rootless_plan(
     read_only.dedup();
     read_write.sort_unstable();
     read_write.dedup();
+    // A staged application directory is already mounted at its original
+    // path. Do not re-bind the host lower read-only over that COW view.
+    read_only.retain(|path| !read_write.binary_search(path).is_ok());
     Ok(SandboxPlan {
         root,
         cwd,
         attestation,
         read_only,
         read_write,
+        staged_roots: minimal_roots,
+        staged_workspace,
+        staged_workspace_source,
         network,
+        // Both ordinary and safe host runs install Landlock. The safe profile
+        // also binds staged views over the workspace and state roots.
+        landlock: true,
         process_limit: spec.runtime.resource_limits.processes,
     })
+}
+
+#[cfg(target_os = "linux")]
+fn project_graphical_session(
+    invocation: &ProcessInvocation,
+    read_only: &mut Vec<PathBuf>,
+    read_write: &mut Vec<PathBuf>,
+) -> bool {
+    let value = |key: &str| {
+        invocation.env.get(key).cloned().or_else(|| {
+            invocation
+                .inherit_env
+                .then(|| std::env::var(key).ok())
+                .flatten()
+        })
+    };
+
+    let display = value("DISPLAY");
+    if let Some(authority) = value("XAUTHORITY") {
+        push_existing(read_only, Path::new(&authority));
+    }
+    if let Some(display) = &display {
+        // Local X11 displays use /tmp/.X11-unix/X<N>. Remote displays do not
+        // need a host socket projection.
+        let display_number = display
+            .rsplit_once(':')
+            .map(|(_, suffix)| suffix.split('.').next().unwrap_or(suffix));
+        if let Some(number) = display_number
+            .filter(|number| !number.is_empty() && number.bytes().all(|b| b.is_ascii_digit()))
+        {
+            push_existing(
+                read_write,
+                &PathBuf::from(format!("/tmp/.X11-unix/X{number}")),
+            );
+        }
+    }
+    let wayland_available = if let (Some(runtime), Some(wayland)) =
+        (value("XDG_RUNTIME_DIR"), value("WAYLAND_DISPLAY"))
+    {
+        let socket = Path::new(&wayland);
+        let socket = if socket.is_absolute() {
+            socket.to_path_buf()
+        } else {
+            Path::new(&runtime).join(socket)
+        };
+        push_existing(read_write, &socket);
+        true
+    } else {
+        false
+    };
+    let dbus_address = value("DBUS_SESSION_BUS_ADDRESS");
+    if let Some(address) = &dbus_address {
+        for transport in address.split(';') {
+            if let Some(path) = transport.strip_prefix("unix:path=") {
+                let path = path.split(',').next().unwrap_or(path);
+                push_existing(read_write, Path::new(path));
+            }
+        }
+    }
+    let desktop_session = display.is_some() || wayland_available || dbus_address.is_some();
+    if desktop_session {
+        push_existing(read_write, Path::new("/run/dbus/system_bus_socket"));
+    }
+    desktop_session
 }
 
 #[cfg(any(target_os = "linux", target_os = "macos"))]
 fn push_existing(paths: &mut Vec<PathBuf>, path: &Path) {
     if let Ok(path) = path.canonicalize() {
         paths.push(path);
+    }
+}
+
+#[cfg(target_os = "linux")]
+fn push_runtime_directory(paths: &mut Vec<PathBuf>, directory: &Path, hidden: &[PathBuf]) {
+    let Ok(entries) = std::fs::read_dir(directory) else {
+        push_existing(paths, directory);
+        return;
+    };
+    for entry in entries.flatten() {
+        let path = entry.path();
+        // Application-specific adapters can hide helpers that are incompatible
+        // with the rootless namespace without suppressing unrelated programs.
+        if hidden.iter().any(|candidate| {
+            candidate == &path
+                || path
+                    .canonicalize()
+                    .is_ok_and(|canonical| candidate == &canonical)
+        }) {
+            continue;
+        }
+        push_existing(paths, &path);
     }
 }
 
@@ -1395,6 +1714,69 @@ mod tests {
 
     #[cfg(target_os = "linux")]
     #[test]
+    fn rootless_plan_writes_through_normally_and_stages_state_for_safe_shells() {
+        let temporary = tempfile::tempdir().unwrap();
+        let home = temporary.path().join("home");
+        let codex_home = home.join(".codex");
+        let workspace = home.join("project");
+        let merged = temporary.path().join("merged");
+        for path in [&codex_home, &workspace, &merged] {
+            std::fs::create_dir_all(path).unwrap();
+        }
+        let mut spec = RunSpec::process("run", "bash", "/bin/bash");
+        let RunInvocation::Process(invocation) = &mut spec.invocation;
+        invocation.inherit_env = false;
+        invocation.cwd = Some(merged.display().to_string());
+        invocation
+            .env
+            .insert("HOME".into(), home.display().to_string());
+        invocation
+            .env
+            .insert("CODEX_HOME".into(), codex_home.display().to_string());
+        let RunInvocation::Process(invocation) = &spec.invocation;
+
+        let normal = rootless_plan(
+            &spec,
+            invocation,
+            Path::new("/bin/bash"),
+            temporary.path().join("root"),
+            temporary.path().join("attestation"),
+            NetworkIsolation::Ambient,
+        )
+        .unwrap();
+        assert!(normal.read_write.contains(&PathBuf::from("/")));
+        assert!(normal.read_write.contains(&home));
+        assert!(normal.staged_roots.is_empty());
+
+        spec.metadata
+            .insert(crate::sandbox::REQUIRED_SANDBOX_KEY.into(), true.into());
+        spec.metadata.insert(
+            "pvisor.workspace".into(),
+            workspace.display().to_string().into(),
+        );
+        spec.metadata.insert(
+            "pvisor.runtime.implant".into(),
+            serde_json::json!({"overlay_merged": merged.display().to_string()}),
+        );
+        let RunInvocation::Process(invocation) = &spec.invocation;
+        let safe = rootless_plan(
+            &spec,
+            invocation,
+            Path::new("/bin/bash"),
+            temporary.path().join("root"),
+            temporary.path().join("attestation"),
+            NetworkIsolation::Ambient,
+        )
+        .unwrap();
+        assert!(!safe.read_write.contains(&PathBuf::from("/")));
+        assert_eq!(safe.staged_roots, vec![home]);
+        assert_eq!(safe.staged_workspace, Some(workspace));
+        assert_eq!(safe.staged_workspace_source, Some(merged));
+        assert!(safe.landlock);
+    }
+
+    #[cfg(target_os = "linux")]
+    #[test]
     fn rootless_plan_is_reserved_even_when_the_run_clears_or_poisons_its_environment() {
         let temporary = tempfile::tempdir().unwrap();
         let mut spec = RunSpec::process("run", "agent", "/bin/true");
@@ -1411,7 +1793,7 @@ mod tests {
             ProcessExecutor::rootless_with_launcher(std::env::current_exe().unwrap()).unwrap();
         let RunInvocation::Process(invocation) = &spec.invocation;
         let command = executor.spawn_command(&spec, invocation).unwrap();
-        let encoded = command
+        let plan_path = command
             .command
             .as_std()
             .get_envs()
@@ -1419,6 +1801,7 @@ mod tests {
                 (key == SANDBOX_PLAN_ENV).then(|| value.unwrap().to_string_lossy().into_owned())
             })
             .expect("trusted sandbox plan must survive env_clear");
+        let encoded = std::fs::read_to_string(&plan_path).unwrap();
         let plan: SandboxPlan = serde_json::from_str(&encoded).unwrap();
         assert_eq!(plan.cwd, temporary.path().canonicalize().unwrap());
         assert_ne!(encoded, r#"{"read_write":["/"]}"#);

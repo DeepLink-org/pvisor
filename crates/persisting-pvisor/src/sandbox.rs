@@ -13,6 +13,26 @@ use std::os::fd::AsRawFd;
 #[cfg(any(target_os = "linux", target_os = "macos"))]
 use std::path::PathBuf;
 
+pub(crate) const REQUIRED_SANDBOX_KEY: &str = "pvisor.sandbox.required";
+pub(crate) const LANDLOCK_SANDBOX_KEY: &str = "pvisor.sandbox.landlock";
+pub(crate) const SANDBOX_PROXY_KEY: &str = "pvisor.sandbox.proxy";
+pub(crate) const SANDBOX_HIDDEN_PATHS_KEY: &str = "pvisor.sandbox.hidden_paths";
+pub(crate) const SANDBOX_NO_GPU_KEY: &str = "pvisor.sandbox.no_gpu";
+
+pub(crate) fn sandbox_required(spec: &persisting_control::RunSpec) -> bool {
+    spec.metadata
+        .get(REQUIRED_SANDBOX_KEY)
+        .and_then(serde_json::Value::as_bool)
+        == Some(true)
+}
+
+pub(crate) fn landlock_required(spec: &persisting_control::RunSpec) -> bool {
+    spec.metadata
+        .get(LANDLOCK_SANDBOX_KEY)
+        .and_then(serde_json::Value::as_bool)
+        == Some(true)
+}
+
 pub(crate) const INTERNAL_SANDBOX_ARG: &str = "__pvisor-sandbox-exec";
 pub(crate) const SANDBOX_PLAN_ENV: &str = "PERSISTING_INTERNAL_SANDBOX_PLAN";
 /// Reserved launcher exit status: setup failed before the Agent was executed.
@@ -52,12 +72,14 @@ const LANDLOCK_ACCESS_FS_READ: u64 =
 pub(crate) enum NetworkIsolation {
     Ambient,
     LoopbackOnly,
+    /// Only the supervisor-owned proxy may receive IP traffic. None denies all IP.
+    ProxyOnly(Option<std::net::SocketAddr>),
 }
 
 #[cfg(any(target_os = "linux", target_os = "macos"))]
 impl NetworkIsolation {
     pub(crate) const fn is_loopback_only(self) -> bool {
-        matches!(self, Self::LoopbackOnly)
+        matches!(self, Self::LoopbackOnly | Self::ProxyOnly(_))
     }
 }
 
@@ -69,7 +91,15 @@ pub(crate) struct SandboxPlan {
     pub attestation: PathBuf,
     pub read_only: Vec<PathBuf>,
     pub read_write: Vec<PathBuf>,
+    #[serde(default)]
+    pub staged_roots: Vec<PathBuf>,
+    #[serde(default)]
+    pub staged_workspace: Option<PathBuf>,
+    #[serde(default)]
+    pub staged_workspace_source: Option<PathBuf>,
     pub network: NetworkIsolation,
+    #[serde(default)]
+    pub landlock: bool,
     /// Applied after the private PID namespace is initialized so the trusted
     /// launcher itself can still create its init/reaper process.
     #[serde(default)]
@@ -79,6 +109,7 @@ pub(crate) struct SandboxPlan {
 #[cfg(target_os = "macos")]
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub(crate) struct SeatbeltPlan {
+    pub restrict_reads: bool,
     pub attestation: PathBuf,
     pub network: NetworkIsolation,
 }
@@ -101,9 +132,10 @@ pub fn run_internal_if_requested() -> anyhow::Result<bool> {
 fn run_internal() -> anyhow::Result<()> {
     use anyhow::{Context, bail};
 
-    let encoded = std::env::var(SANDBOX_PLAN_ENV).context("missing rootless sandbox plan")?;
+    let plan_path = std::env::var(SANDBOX_PLAN_ENV).context("missing rootless sandbox plan")?;
+    let encoded = std::fs::read(&plan_path).context("read rootless sandbox plan")?;
     let plan: SandboxPlan =
-        serde_json::from_str(&encoded).context("decode rootless sandbox plan")?;
+        serde_json::from_slice(&encoded).context("decode rootless sandbox plan")?;
     let mut arguments = std::env::args_os().skip(2);
     if arguments.next().as_deref() != Some(std::ffi::OsStr::new("--")) {
         bail!("invalid internal rootless sandbox invocation");
@@ -133,10 +165,13 @@ fn run_internal() -> anyhow::Result<()> {
         })?;
     enter_synthetic_root(&plan).context("construct private sandbox root")?;
     // The private tmpfs created by `enter_synthetic_root` is writable by the
-    // Agent, but must also be present in the Landlock allowlist.  This uses the
-    // host-side mount path because rules are installed before chroot.
+    // Agent, but must also be present in the Landlock allowlist.
     let mut plan = plan;
     plan.read_write.push(PathBuf::from("/tmp"));
+    plan.read_write.push(PathBuf::from("/dev/shm"));
+    if let Some(runtime) = private_runtime_dconf_path() {
+        plan.read_write.push(runtime);
+    }
     std::env::set_current_dir(&plan.cwd)
         .with_context(|| format!("enter sandbox workspace {}", plan.cwd.display()))?;
 
@@ -144,26 +179,7 @@ fn run_internal() -> anyhow::Result<()> {
     // removes access to the host procfs tree.
     close_unexpected_file_descriptors(Some(attestation.as_raw_fd()))
         .context("close inherited file descriptors")?;
-    let landlock_abi = install_landlock(&plan).context("install Landlock filesystem policy")?;
-    drop_process_capabilities().context("drop namespace capabilities")?;
-    // The child process is configuring its environment immediately before
-    // exec; no concurrent environment mutation occurs in this scope.
-    unsafe {
-        std::env::remove_var(SANDBOX_PLAN_ENV);
-        std::env::set_var("PERSISTING_SANDBOX_FILESYSTEM", "landlock");
-        std::env::set_var("PERSISTING_SANDBOX_LANDLOCK_ABI", landlock_abi.to_string());
-        std::env::set_var("PERSISTING_SANDBOX_USER_NAMESPACE", "1");
-        std::env::set_var(
-            "PERSISTING_SANDBOX_NETWORK",
-            if plan.network.is_loopback_only() {
-                "deny"
-            } else {
-                "ambient"
-            },
-        );
-    }
-
-    supervise_pid_namespace(program, arguments, attestation)
+    supervise_pid_namespace(program, arguments, attestation, &plan)
 }
 
 #[cfg(target_os = "macos")]
@@ -210,14 +226,28 @@ fn run_internal() -> anyhow::Result<()> {
         )
     })?;
 
+    if plan.restrict_reads {
+        // Do not retain host files or sockets opened before Seatbelt was installed.
+        close_unexpected_file_descriptors(None).context("close inherited file descriptors")?;
+    }
+
     // The child process is configuring its environment immediately before
     // exec; no concurrent environment mutation occurs in this scope.
     unsafe {
         std::env::remove_var(SANDBOX_PLAN_ENV);
-        std::env::set_var("PERSISTING_SANDBOX_FILESYSTEM", "seatbelt-write");
+        std::env::set_var(
+            "PERSISTING_SANDBOX_FILESYSTEM",
+            if plan.restrict_reads {
+                "seatbelt-read-write"
+            } else {
+                "seatbelt-write"
+            },
+        );
         std::env::set_var(
             "PERSISTING_SANDBOX_NETWORK",
-            if plan.network.is_loopback_only() {
+            if matches!(plan.network, NetworkIsolation::ProxyOnly(Some(_))) {
+                "proxy-only"
+            } else if plan.network.is_loopback_only() {
                 "deny"
             } else {
                 "ambient"
@@ -371,7 +401,11 @@ pub(crate) fn restrict_krun_runner(
         attestation: PathBuf::from("/dev/null"),
         read_only,
         read_write,
+        staged_roots: Vec::new(),
+        staged_workspace: None,
+        staged_workspace_source: None,
         network: NetworkIsolation::LoopbackOnly,
+        landlock: true,
         process_limit: None,
     };
     let abi = install_landlock(&plan).context("install libkrun Landlock policy")?;
@@ -500,6 +534,23 @@ pub(crate) fn seatbelt_profile(
     local_socket_roots: &[PathBuf],
     network: NetworkIsolation,
 ) -> std::io::Result<(String, Vec<(String, PathBuf)>)> {
+    seatbelt_profile_with_reads(
+        writable_paths,
+        None,
+        allowed_unix_sockets,
+        local_socket_roots,
+        network,
+    )
+}
+
+#[cfg(target_os = "macos")]
+pub(crate) fn seatbelt_profile_with_reads(
+    writable_paths: &[PathBuf],
+    readable_paths: Option<&[PathBuf]>,
+    allowed_unix_sockets: &[PathBuf],
+    local_socket_roots: &[PathBuf],
+    network: NetworkIsolation,
+) -> std::io::Result<(String, Vec<(String, PathBuf)>)> {
     use std::io::{Error, ErrorKind};
 
     let writable_paths = canonical_seatbelt_paths(writable_paths, "writable")?;
@@ -577,6 +628,63 @@ pub(crate) fn seatbelt_profile(
                  (require-not (remote ip \"localhost:*\"))))\n\
              (allow network-outbound (remote ip \"localhost:*\"))\n",
         );
+        if let Some(readable) = readable_paths {
+            let readable = canonical_seatbelt_paths(readable, "readable")?;
+            if readable
+                .iter()
+                .any(|path| path == std::path::Path::new("/"))
+            {
+                return Err(Error::new(
+                    ErrorKind::InvalidInput,
+                    "required sandbox cannot grant the host root",
+                ));
+            }
+            profile = profile.replace(
+                "(allow file-read* file-test-existence file-map-executable)",
+                // dyld's libignition opens / as an openat traversal anchor (see
+                // Apple's dyld-support.sb). This is literal, never recursive.
+                "(allow file-read-metadata)\n(allow file-read* (literal \"/\"))",
+            );
+            profile.push_str("(allow file-read* file-test-existence file-map-executable\n");
+            for (index, path) in readable.into_iter().enumerate() {
+                let key = format!("PVISOR_READABLE_{index}");
+                profile.push_str(&format!(
+                    "  (literal (param \"{key}\")) (subpath (param \"{key}\"))\n"
+                ));
+                parameters.push((key, path));
+            }
+            for index in 0..writable_paths.len() {
+                profile.push_str(&format!("  (literal (param \"PVISOR_WRITABLE_{index}\")) (subpath (param \"PVISOR_WRITABLE_{index}\"))\n"));
+            }
+            profile.push_str(")\n");
+        }
+        if let NetworkIsolation::ProxyOnly(endpoint) = network {
+            // connect() may implicitly bind an ephemeral local port. Restrict
+            // peers and deny inbound connections instead of denying that bind.
+            profile = profile.replace("(deny network-bind (local ip))", "");
+            // Deny all IP except the allocated loopback TCP proxy port; unrelated localhost
+            // services must not become alternate egress paths.
+            profile = profile.replace("(allow network-outbound (remote ip \"localhost:*\"))", "");
+            match endpoint {
+                Some(endpoint) if endpoint.ip().is_loopback() && endpoint.port() != 0 => {
+                    profile = profile.replace(
+                        "(remote ip \"localhost:*\")",
+                        &format!("(remote tcp \"localhost:{}\")", endpoint.port()),
+                    );
+                    profile.push_str(&format!(
+                        "(allow network-outbound (remote tcp \"localhost:{}\"))\n",
+                        endpoint.port()
+                    ));
+                }
+                Some(_) => {
+                    return Err(Error::new(
+                        ErrorKind::InvalidInput,
+                        "sandbox proxy must be a concrete loopback endpoint",
+                    ));
+                }
+                None => profile.push_str("(deny network-outbound (remote ip))\n"),
+            }
+        }
         profile.push_str("(allow file-write*\n");
         for index in 0..writable_paths.len() {
             profile.push_str(&format!(
@@ -788,6 +896,7 @@ fn write_rootless_attestation(attestation: &mut std::fs::File) -> std::io::Resul
 #[cfg(target_os = "linux")]
 fn enter_synthetic_root(plan: &SandboxPlan) -> std::io::Result<()> {
     use std::io::{Error, ErrorKind};
+    use std::os::unix::fs::PermissionsExt;
 
     if !plan.root.is_absolute() || plan.root == std::path::Path::new("/") {
         return Err(Error::new(
@@ -840,14 +949,67 @@ fn enter_synthetic_root(plan: &SandboxPlan) -> std::io::Result<()> {
         return Err(Error::last_os_error());
     }
 
-    // procfs is needed by the trusted launcher for FD cleanup.  Landlock does
-    // not admit it to the Agent, including magic-link escape paths.
+    // Chromium uses POSIX shared memory even when its own sandbox is disabled.
+    // Give it a private, ephemeral /dev/shm rather than exposing the host's.
+    let dev_shm = plan.root.join("dev/shm");
+    std::fs::create_dir_all(&dev_shm)?;
+    let dev_shm_mount = path_cstring(&dev_shm)?;
+    if unsafe {
+        libc::mount(
+            c"tmpfs".as_ptr(),
+            dev_shm_mount.as_ptr(),
+            c"tmpfs".as_ptr(),
+            libc::MS_NOSUID | libc::MS_NODEV,
+            c"mode=1777,size=256m".as_ptr().cast(),
+        )
+    } != 0
+    {
+        return Err(Error::last_os_error());
+    }
+
+    // The synthetic /dev starts empty. Recreate the conventional descriptor
+    // links locally instead of bind-mounting the host's /dev/fd magic link,
+    // which would remain tied to the setup process's procfs view.
+    let dev = plan.root.join("dev");
+    for (link, target) in [
+        ("fd", "/proc/self/fd"),
+        ("stdin", "/proc/self/fd/0"),
+        ("stdout", "/proc/self/fd/1"),
+        ("stderr", "/proc/self/fd/2"),
+        ("ptmx", "pts/ptmx"),
+    ] {
+        let link = dev.join(link);
+        if std::fs::symlink_metadata(&link).is_err() {
+            std::os::unix::fs::symlink(target, link)?;
+        }
+    }
+
+    mount_staged_roots(plan)?;
+
+    // Desktop toolkits sometimes create dconf state below XDG_RUNTIME_DIR.
+    // Keep that one writable runtime subdirectory private and ephemeral while
+    // still allowing explicitly projected Wayland/D-Bus sockets beside it.
+    if let Some(runtime) = private_runtime_dconf_path() {
+        let runtime = plan
+            .root
+            .join(runtime.strip_prefix("/").expect("absolute runtime path"));
+        let runtime_root = runtime.parent().expect("dconf path has a runtime parent");
+        std::fs::create_dir_all(runtime_root)?;
+        std::fs::set_permissions(runtime_root, std::fs::Permissions::from_mode(0o700))?;
+        std::fs::create_dir_all(&runtime)?;
+        std::fs::set_permissions(&runtime, std::fs::Permissions::from_mode(0o700))?;
+    }
+
+    // The trusted launcher needs /proc/self/fd to close inherited descriptors.
+    // PID 1 replaces this temporary host procfs with a private PID-scoped
+    // procfs before it forks or releases the Agent.
     bind_path_into_root(&plan.root, std::path::Path::new("/proc"))?;
 
     let mut paths = plan
         .read_only
         .iter()
         .chain(&plan.read_write)
+        .filter(|path| !path.starts_with(&plan.root) && *path != std::path::Path::new("/"))
         .collect::<Vec<_>>();
     paths.sort_unstable_by(|left, right| {
         left.components()
@@ -857,13 +1019,13 @@ fn enter_synthetic_root(plan: &SandboxPlan) -> std::io::Result<()> {
     });
     paths.dedup();
     for path in paths {
-        if path == std::path::Path::new("/") {
-            return Err(Error::new(
-                ErrorKind::InvalidInput,
-                "the host root cannot be granted to a rootless sandbox",
-            ));
-        }
         bind_path_into_root(&plan.root, path)?;
+    }
+    if let Some(workspace) = &plan.staged_workspace {
+        let source = plan.staged_workspace_source.as_ref().ok_or_else(|| {
+            std::io::Error::other("staged workspace is missing its merged source")
+        })?;
+        bind_staged_workspace(&plan.root, source, workspace)?;
     }
 
     // chroot is safe here because the process has a private mount namespace,
@@ -876,6 +1038,126 @@ fn enter_synthetic_root(plan: &SandboxPlan) -> std::io::Result<()> {
         return Err(Error::last_os_error());
     }
     Ok(())
+}
+
+#[cfg(target_os = "linux")]
+fn mount_staged_roots(plan: &SandboxPlan) -> std::io::Result<()> {
+    use std::os::unix::ffi::OsStrExt;
+    use std::os::unix::fs::PermissionsExt;
+
+    if plan.staged_roots.is_empty() {
+        return Ok(());
+    }
+    let stage = plan.root.join(".pvisor-state-stage");
+    std::fs::create_dir(&stage)?;
+    std::fs::set_permissions(&stage, std::fs::Permissions::from_mode(0o700))?;
+    let stage_path = path_cstring(&stage)?;
+    if unsafe {
+        libc::mount(
+            c"tmpfs".as_ptr(),
+            stage_path.as_ptr(),
+            c"tmpfs".as_ptr(),
+            libc::MS_NOSUID | libc::MS_NODEV,
+            c"mode=0700".as_ptr().cast(),
+        )
+    } != 0
+    {
+        return Err(with_io_context(
+            "mount private state stage",
+            std::io::Error::last_os_error(),
+        ));
+    }
+
+    for (index, source) in plan.staged_roots.iter().enumerate() {
+        let target = plan
+            .root
+            .join(source.strip_prefix("/").map_err(std::io::Error::other)?);
+        std::fs::create_dir_all(&target)?;
+        let backing = stage.join(index.to_string());
+        let upper = backing.join("upper");
+        let work = backing.join("work");
+        std::fs::create_dir_all(&upper)?;
+        std::fs::create_dir_all(&work)?;
+        let mut options = b"userxattr,lowerdir=".to_vec();
+        for path in [source, &upper, &work] {
+            if path
+                .as_os_str()
+                .as_bytes()
+                .iter()
+                .any(|byte| matches!(byte, b',' | b':' | b'\\'))
+            {
+                return Err(std::io::Error::other(format!(
+                    "overlay stage path contains an unsupported separator: {}",
+                    path.display()
+                )));
+            }
+        }
+        options.extend_from_slice(source.as_os_str().as_bytes());
+        options.extend_from_slice(b",upperdir=");
+        options.extend_from_slice(upper.as_os_str().as_bytes());
+        options.extend_from_slice(b",workdir=");
+        options.extend_from_slice(work.as_os_str().as_bytes());
+        let options = std::ffi::CString::new(options).map_err(std::io::Error::other)?;
+        let target = path_cstring(&target)?;
+        if unsafe {
+            libc::mount(
+                c"overlay".as_ptr(),
+                target.as_ptr(),
+                c"overlay".as_ptr(),
+                libc::MS_NOSUID | libc::MS_NODEV,
+                options.as_ptr().cast(),
+            )
+        } != 0
+        {
+            return Err(with_io_context(
+                &format!("mount staged state at {}", source.display()),
+                std::io::Error::last_os_error(),
+            ));
+        }
+    }
+    Ok(())
+}
+
+#[cfg(target_os = "linux")]
+fn bind_staged_workspace(
+    root: &std::path::Path,
+    source: &std::path::Path,
+    destination: &std::path::Path,
+) -> std::io::Result<()> {
+    let target = root.join(
+        destination
+            .strip_prefix("/")
+            .map_err(std::io::Error::other)?,
+    );
+    std::fs::create_dir_all(&target)?;
+    let source = path_cstring(source)?;
+    let target = path_cstring(&target)?;
+    if unsafe {
+        libc::mount(
+            source.as_ptr(),
+            target.as_ptr(),
+            std::ptr::null(),
+            libc::MS_BIND | libc::MS_REC,
+            std::ptr::null(),
+        )
+    } != 0
+    {
+        return Err(with_io_context(
+            "bind staged workspace at original path",
+            std::io::Error::last_os_error(),
+        ));
+    }
+    Ok(())
+}
+
+#[cfg(target_os = "linux")]
+fn private_runtime_dconf_path() -> Option<std::path::PathBuf> {
+    let runtime = std::env::var_os("XDG_RUNTIME_DIR")?;
+    let runtime = std::path::PathBuf::from(runtime);
+    if !runtime.is_absolute() || runtime.starts_with("/tmp") {
+        return None;
+    }
+    Some(runtime.join("dconf"))
 }
 
 #[cfg(target_os = "linux")]
@@ -1049,6 +1331,7 @@ fn supervise_pid_namespace(
     program: std::ffi::OsString,
     arguments: Vec<std::ffi::OsString>,
     mut attestation: std::fs::File,
+    plan: &SandboxPlan,
 ) -> anyhow::Result<()> {
     use anyhow::Context;
     use std::os::unix::process::CommandExt;
@@ -1078,6 +1361,7 @@ fn supervise_pid_namespace(
         return Err(std::io::Error::last_os_error()).context("fork PID namespace init");
     }
     if namespace_init > 0 {
+        drop_process_capabilities().context("drop PID supervisor namespace capabilities")?;
         unsafe {
             libc::close(ready_pipe[1]);
             libc::close(release_pipe[0]);
@@ -1151,6 +1435,39 @@ fn supervise_pid_namespace(
     }
     drop(attestation);
 
+    // This child is PID 1 in the new namespace and still holds the temporary
+    // user-namespace mount capability. A procfs mounted here exposes only
+    // this private PID namespace to Chromium and other child processes.
+    mount_pid_namespace_procfs().context("mount private PID namespace procfs")?;
+    let landlock_abi = if plan.landlock {
+        install_landlock(plan).context("install Landlock filesystem policy")?
+    } else {
+        0
+    };
+    // This is still trusted setup code, before the Agent child is forked.
+    unsafe {
+        std::env::remove_var(SANDBOX_PLAN_ENV);
+        std::env::set_var(
+            "PERSISTING_SANDBOX_FILESYSTEM",
+            if plan.landlock { "landlock" } else { "chroot" },
+        );
+        if plan.landlock {
+            std::env::set_var("PERSISTING_SANDBOX_LANDLOCK_ABI", landlock_abi.to_string());
+        }
+        std::env::set_var("PERSISTING_SANDBOX_USER_NAMESPACE", "1");
+        std::env::set_var(
+            "PERSISTING_SANDBOX_NETWORK",
+            if matches!(plan.network, NetworkIsolation::ProxyOnly(Some(_))) {
+                "proxy-only"
+            } else if plan.network.is_loopback_only() {
+                "deny"
+            } else {
+                "ambient"
+            },
+        );
+    }
+    drop_process_capabilities().context("drop PID namespace capabilities")?;
+
     // If the outer launcher is terminated before it can forward a signal,
     // killing PID 1 still gives the kernel an authoritative cleanup point.
     if unsafe { libc::prctl(libc::PR_SET_PDEATHSIG, libc::SIGKILL) } != 0 {
@@ -1221,9 +1538,40 @@ fn supervise_pid_namespace(
 }
 
 #[cfg(target_os = "linux")]
+fn mount_pid_namespace_procfs() -> std::io::Result<()> {
+    if unsafe { libc::umount2(c"/proc".as_ptr(), libc::MNT_DETACH) } != 0 {
+        return Err(with_io_context(
+            "unmount temporary host procfs",
+            std::io::Error::last_os_error(),
+        ));
+    }
+    if unsafe {
+        libc::mount(
+            c"proc".as_ptr(),
+            c"/proc".as_ptr(),
+            c"proc".as_ptr(),
+            libc::MS_NOSUID | libc::MS_NODEV | libc::MS_NOEXEC,
+            std::ptr::null(),
+        )
+    } != 0
+    {
+        return Err(with_io_context(
+            "mount procfs for private PID namespace",
+            std::io::Error::last_os_error(),
+        ));
+    }
+    Ok(())
+}
+
+#[cfg(any(target_os = "linux", target_os = "macos"))]
 fn close_unexpected_file_descriptors(retain: Option<libc::c_int>) -> std::io::Result<()> {
     let mut descriptors = Vec::new();
-    for entry in std::fs::read_dir("/proc/self/fd")? {
+    let directory = if cfg!(target_os = "linux") {
+        "/proc/self/fd"
+    } else {
+        "/dev/fd"
+    };
+    for entry in std::fs::read_dir(directory)? {
         let entry = entry?;
         let Some(name) = entry.file_name().to_str().map(str::to_owned) else {
             continue;
@@ -1248,6 +1596,46 @@ fn close_unexpected_file_descriptors(retain: Option<libc::c_int>) -> std::io::Re
 #[cfg(all(test, target_os = "macos"))]
 mod tests {
     use super::*;
+
+    #[test]
+    fn required_seatbelt_can_start_the_trusted_launcher() {
+        let temp = tempfile::tempdir().unwrap();
+        let launcher = std::env::current_exe()
+            .unwrap()
+            .parent()
+            .unwrap()
+            .parent()
+            .unwrap()
+            .join("pvisor");
+        let readable = vec![
+            launcher.clone(),
+            PathBuf::from("/System/Library"),
+            PathBuf::from("/System/Cryptexes/OS"),
+            PathBuf::from("/usr"),
+            PathBuf::from("/bin"),
+            PathBuf::from("/dev"),
+        ];
+        let (profile, params) = seatbelt_profile_with_reads(
+            &[temp.path().to_owned()],
+            Some(&readable),
+            &[],
+            &[],
+            NetworkIsolation::ProxyOnly(None),
+        )
+        .unwrap();
+        let mut command = std::process::Command::new(MACOS_SANDBOX_EXEC);
+        command.arg("-p").arg(&profile);
+        for (key, value) in params {
+            command.arg("-D").arg(format!("{key}={}", value.display()));
+        }
+        let output = command.arg(&launcher).arg("--version").output().unwrap();
+        assert!(
+            output.status.success(),
+            "{:?}: {}",
+            output.status,
+            String::from_utf8_lossy(&output.stderr)
+        );
+    }
 
     #[test]
     fn seatbelt_profile_uses_parameters_and_rejects_a_writable_host_root() {

@@ -1,13 +1,17 @@
+#[cfg(target_os = "linux")]
+use std::os::unix::fs::MetadataExt;
 use std::path::{Path, PathBuf};
 use std::process::Command;
 
+#[cfg(target_os = "linux")]
+use crate::runtime::LEASE_FILENAME;
 use anyhow::{Context, bail};
 use clap::Args;
 
 use crate::runtime::{
     ApplySelection, OverlayState, ReadOnlyOverlayMount, RunLease, RunRecord,
-    apply_overlay_selected, control_mount_inspect, control_overlay_status, control_ping,
-    control_unmount_inspect, discard_overlay, is_live, load_apply_records,
+    apply_overlay_selected, control_mount_inspect, control_observations, control_overlay_status,
+    control_ping, control_unmount_inspect, discard_overlay, is_live, load_apply_records,
     mount_overlay_record_read_only, overlay_status, resolve_run,
 };
 
@@ -15,17 +19,35 @@ const DEFAULT_STORAGE: &str = ".persisting/capture";
 
 #[derive(Debug, Clone, Args)]
 pub struct StatusArgs {
-    /// Run id, stage directory, upper directory, or workspace path.
+    /// Job id, stage directory, upper directory, or workspace path.
     pub selector: Option<PathBuf>,
     #[arg(long, short = 'o', default_value = DEFAULT_STORAGE)]
     pub output_dir: PathBuf,
     #[arg(long)]
     pub json: bool,
+    /// Show the Job's Run Bundle, safety evidence, and staged changes.
+    #[arg(long)]
+    pub review: bool,
+    /// Include bounded unified diffs in the review view.
+    #[arg(long, conflicts_with = "json")]
+    pub diff: bool,
+    #[arg(long, default_value_t = 256 * 1024, requires = "diff")]
+    pub max_diff_bytes: usize,
+    #[arg(long, default_value_t = 1024 * 1024, requires = "diff")]
+    pub max_diff_file_bytes: u64,
+}
+
+#[derive(Debug, Clone, Args)]
+pub struct KillArgs {
+    /// Live Job id, stage directory, or workspace path.
+    pub selector: PathBuf,
+    #[arg(long, short = 'o', default_value = DEFAULT_STORAGE)]
+    pub output_dir: PathBuf,
 }
 
 #[derive(Debug, Clone, Args)]
 pub struct InspectArgs {
-    /// Run id, stage directory, upper directory, or workspace path.
+    /// Job id, stage directory, upper directory, or workspace path.
     pub selector: Option<PathBuf>,
     #[arg(long, short = 'o', default_value = DEFAULT_STORAGE)]
     pub output_dir: PathBuf,
@@ -36,7 +58,7 @@ pub struct InspectArgs {
 
 #[derive(Debug, Clone, Args)]
 pub struct SelectArgs {
-    /// Run id, stage directory, upper directory, or workspace path.
+    /// Job id, stage directory, upper directory, or workspace path.
     pub selector: Option<PathBuf>,
     #[arg(long, short = 'o', default_value = DEFAULT_STORAGE)]
     pub output_dir: PathBuf,
@@ -44,11 +66,11 @@ pub struct SelectArgs {
 
 #[derive(Debug, Clone, Args)]
 pub struct ApplyArgs {
-    /// Run id, stage directory, upper directory, or workspace path.
+    /// Job id, stage directory, upper directory, or workspace path.
     pub selector: Option<PathBuf>,
     #[arg(long, short = 'o', default_value = DEFAULT_STORAGE)]
     pub output_dir: PathBuf,
-    /// Apply staged changes here instead of the target recorded by the Run.
+    /// Apply staged changes here instead of the target recorded by the Job.
     #[arg(long, value_name = "PATH")]
     pub target: Option<PathBuf>,
     /// Apply this relative path and its descendants. Repeatable.
@@ -66,6 +88,16 @@ pub struct ApplyArgs {
 }
 
 pub fn status(args: StatusArgs) -> anyhow::Result<()> {
+    if args.review || args.diff {
+        return super::product::review(super::product::ReviewArgs {
+            selector: args.selector,
+            output_dir: args.output_dir,
+            json: args.json,
+            diff: args.diff,
+            max_diff_bytes: args.max_diff_bytes,
+            max_diff_file_bytes: args.max_diff_file_bytes,
+        });
+    }
     let record = selected(args.selector.as_deref(), &args.output_dir)?;
     let live = control_ping(&record.stage_dir()) || is_live(&record.stage_dir())?;
     let apply_history = load_apply_records(&record.stage_dir())?;
@@ -90,6 +122,29 @@ pub fn status(args: StatusArgs) -> anyhow::Result<()> {
             }
         })
         .transpose()?;
+    let observations = if live {
+        control_observations(&record.stage_dir()).ok()
+    } else {
+        None
+    };
+    let file_observed = observations
+        .as_ref()
+        .and_then(|value| value.get("filesystem"))
+        .and_then(|value| {
+            serde_json::from_value::<persisting_control::ir::run::FilesystemObservation>(
+                value.clone(),
+            )
+            .ok()
+        })
+        .or_else(|| record.filesystem_observation.clone());
+    let net_observed = observations
+        .as_ref()
+        .and_then(|value| value.get("network"))
+        .and_then(|value| {
+            serde_json::from_value::<persisting_overlaynet::InterceptionSnapshot>(value.clone())
+                .ok()
+        })
+        .or_else(|| record.network_interception_metrics.clone());
     if args.json {
         println!(
             "{}",
@@ -97,6 +152,10 @@ pub fn status(args: StatusArgs) -> anyhow::Result<()> {
                 "run": record,
                 "live": live,
                 "apply_history": apply_history,
+                "observations": {
+                    "filesystem": file_observed,
+                    "network": net_observed,
+                },
                 "filesystem": fs.as_ref().map(|status| serde_json::json!({
                     "state": record.overlay.as_ref().map(|overlay| overlay.state),
                     "changed_files": status.changed_files,
@@ -108,7 +167,7 @@ pub fn status(args: StatusArgs) -> anyhow::Result<()> {
         return Ok(());
     }
 
-    println!("run: {}", record.run_id);
+    println!("job: {}", record.run_id);
     println!("session: {}", record.session_id);
     let state = if live {
         "running"
@@ -142,6 +201,47 @@ pub fn status(args: StatusArgs) -> anyhow::Result<()> {
             interception.is_enforcing()
         );
     }
+    if let Some(observed) = &file_observed {
+        let (hits, denied) = observed
+            .paths
+            .values()
+            .flat_map(|operations| operations.values())
+            .fold((0u64, 0u64), |sum, counts| {
+                (sum.0 + counts.hits, sum.1 + counts.denied)
+            });
+        println!(
+            "file accesses observed: {hits} operations, {denied} denied across {} paths ({} omitted)",
+            observed.paths.len(),
+            observed.overflow_hits
+        );
+        for (path, operations) in observed
+            .paths
+            .iter()
+            .filter(|(_, operations)| operations.values().any(|counts| counts.denied > 0))
+            .take(5)
+        {
+            let denied: u64 = operations.values().map(|counts| counts.denied).sum();
+            println!("  denied {denied}: {path}");
+        }
+    }
+    if let Some(observed) = &net_observed {
+        println!(
+            "network accesses observed: {} policy allowed, {} denied, {} transport failures across {} destinations ({} omitted)",
+            observed.policy_allowed,
+            observed.policy_denied + observed.tcp_flows_denied,
+            observed.tcp_connect_failures + observed.failures,
+            observed.targets.len(),
+            observed.target_overflow
+        );
+        for (target, counts) in observed
+            .targets
+            .iter()
+            .filter(|(_, counts)| counts.denied > 0)
+            .take(5)
+        {
+            println!("  denied {}: {target}", counts.denied);
+        }
+    }
     println!(
         "gateway: {}",
         record.gateway_listen.as_deref().unwrap_or("disabled")
@@ -161,6 +261,52 @@ pub fn status(args: StatusArgs) -> anyhow::Result<()> {
     Ok(())
 }
 
+pub fn kill(args: KillArgs) -> anyhow::Result<()> {
+    let record = selected(Some(&args.selector), &args.output_dir)?;
+    anyhow::ensure!(
+        record.executor.is_some(),
+        "{} is an environment, not a Job; use `pvisor env stop`",
+        record.run_id
+    );
+    anyhow::ensure!(
+        record.state == "running" && is_live(&record.stage_dir())?,
+        "Job {} is not live",
+        record.run_id
+    );
+    let pid = libc::pid_t::try_from(record.pid).context("Job PID does not fit pid_t")?;
+    anyhow::ensure!(
+        pid > 1 && pid != std::process::id() as libc::pid_t,
+        "invalid Job PID {pid}"
+    );
+    #[cfg(target_os = "linux")]
+    anyhow::ensure!(
+        pid_holds_lease(pid, &record.stage_dir().join(LEASE_FILENAME))?,
+        "Job {} PID {} no longer owns its storage lease",
+        record.run_id,
+        pid
+    );
+    if unsafe { libc::kill(pid, libc::SIGTERM) } != 0 {
+        return Err(std::io::Error::last_os_error())
+            .with_context(|| format!("terminate Job {} (PID {pid})", record.run_id));
+    }
+    println!("requested termination of Job {} (PID {pid})", record.run_id);
+    Ok(())
+}
+
+#[cfg(target_os = "linux")]
+fn pid_holds_lease(pid: libc::pid_t, lease: &Path) -> anyhow::Result<bool> {
+    let expected = std::fs::metadata(lease)?;
+    for entry in std::fs::read_dir(format!("/proc/{pid}/fd"))? {
+        if let Ok(actual) = std::fs::metadata(entry?.path())
+            && actual.dev() == expected.dev()
+            && actual.ino() == expected.ino()
+        {
+            return Ok(true);
+        }
+    }
+    Ok(false)
+}
+
 struct FsSummary {
     changed_files: usize,
     whiteouts: usize,
@@ -172,7 +318,7 @@ pub fn inspect(args: InspectArgs) -> anyhow::Result<i32> {
     let overlay = record
         .overlay
         .as_ref()
-        .context("this Run has no OverlayFS workspace to inspect")?;
+        .context("this Job has no OverlayFS workspace to inspect")?;
     let lowers = if record.overlay_lowers.is_empty() {
         vec![overlay.target.clone()]
     } else {
@@ -194,7 +340,7 @@ pub fn inspect(args: InspectArgs) -> anyhow::Result<i32> {
         ));
         let mountpoint = inspect_root.join("merged");
         let session = mount_overlay_record_read_only(overlay, &lowers, &mountpoint)
-            .with_context(|| format!("mount read-only Run view at {}", mountpoint.display()))?;
+            .with_context(|| format!("mount read-only Job view at {}", mountpoint.display()))?;
         InspectMount::Local {
             inspect_root,
             session,
@@ -285,7 +431,7 @@ fn mutate(
     let mut record = selected(args.selector.as_deref(), &args.output_dir)?;
     if is_live(&record.stage_dir())? {
         bail!(
-            "Run {} is still running; its upper cannot be {}",
+            "Job {} is still running; its upper cannot be {}",
             record.run_id,
             if apply { "applied" } else { "dropped" }
         );
@@ -294,15 +440,19 @@ fn mutate(
     let mut overlay = record
         .overlay
         .take()
-        .context("this Run has no OverlayFS workspace")?;
+        .context("this Job has no OverlayFS workspace")?;
+    // The final lower may be the Run-owned snapshot of the target. It is
+    // still the base workspace, whereas any preceding lower is a composed
+    // read-only layer whose changes cannot be applied to that workspace.
+    let base_snapshot = record.storage.join(".overlay-lowers");
     if apply
-        && record
-            .overlay_lowers
-            .iter()
-            .any(|lower| lower != &overlay.target)
+        && (record.overlay_lowers.len() > 1
+            || record.overlay_lowers.first().is_some_and(|lower| {
+                lower != &overlay.target && !lower.starts_with(&base_snapshot)
+            }))
     {
         bail!(
-            "Run {} composes read-only layers above its base; apply is disabled until pVisor can materialize the complete merged diff",
+            "Job {} composes read-only layers above its base; apply is disabled until pVisor can materialize the complete merged diff",
             record.run_id
         );
     }
@@ -324,14 +474,14 @@ fn mutate(
         }
         (false, OverlayState::Applied) => {
             bail!(
-                "Run {} was already applied; drop cannot undo changes written to {}",
+                "Job {} was already applied; drop cannot undo changes written to {}",
                 record.run_id,
                 overlay.target.display()
             );
         }
         (true, OverlayState::Discarded) => {
             bail!(
-                "Run {} was already dropped; apply cannot recover discarded changes",
+                "Job {} was already dropped; apply cannot recover discarded changes",
                 record.run_id
             );
         }
@@ -340,7 +490,7 @@ fn mutate(
     if apply {
         if overlay.target == Path::new("/") {
             bail!(
-                "Run {} is a full-root libkrun changeset; checkpoint/fork it or drop it instead of applying it to the host root",
+                "Job {} is a full-root libkrun changeset; fork it or drop it instead of applying it to the host root",
                 record.run_id
             );
         }
@@ -431,5 +581,17 @@ mod tests {
             shell_join(&["rg".into(), "hello world".into()]),
             "rg \"hello world\""
         );
+    }
+
+    #[cfg(target_os = "linux")]
+    #[test]
+    fn process_must_hold_the_selected_run_lease() {
+        let temporary = tempfile::tempdir().unwrap();
+        let lease = RunLease::acquire(temporary.path()).unwrap();
+        let path = temporary.path().join(LEASE_FILENAME);
+        let pid = std::process::id() as libc::pid_t;
+        assert!(pid_holds_lease(pid, &path).unwrap());
+        drop(lease);
+        assert!(!pid_holds_lease(pid, &path).unwrap());
     }
 }

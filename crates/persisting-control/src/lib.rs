@@ -4,8 +4,11 @@
 //! recorded events share this dependency-light crate. Execution, transport
 //! servers, and persistence remain owned by the runtime drivers.
 
+#[cfg(unix)]
+pub mod audit;
 pub mod client;
 pub mod events;
+mod file_access;
 pub mod ir;
 pub mod overlay;
 pub mod policy;

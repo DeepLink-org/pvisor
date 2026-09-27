@@ -41,17 +41,16 @@ Published wheels target Linux x86_64 and macOS arm64. Check the release artifact
 
 ## 2. Check platform requirements
 
-The CLI supports macOS and Linux with Python 3.10 or newer. A normal host Run
-works without a filesystem extension. On macOS, install macFUSE before using a
-host-process staged Run (`pvisor run --stage …`):
+The CLI supports macOS and Linux with Python 3.10 or newer. Ordinary host Runs
+write through to the workspace; `--safe` or `--stage` uses a filesystem stage.
+On macOS, install macFUSE before using staged host execution:
 
 ```bash
 brew install --cask macfuse
 ```
 
-Approve the macFUSE system extension when macOS asks. Without `--stage`, the
-command may write the real project tree. With `--stage`, if the required mount
-capability is unavailable, the Run fails closed rather than silently writing
+Approve the macFUSE system extension when macOS asks. If the required mount
+capability is unavailable, the host Run fails closed rather than silently writing
 the workspace without COW. The libkrun VM executor does not require macFUSE.
 
 ## 3. Install from source when needed
@@ -89,8 +88,9 @@ image through the VM executor, provide an image explicitly:
 pvisor run --executor vm --rootfs image=ubuntu:24.04 -- /bin/echo hello
 ```
 
-`ubuntu:latest` is also the default VM image. `--image-store DIR` changes the
-local content-addressed cache, `--overlayfs-path` selects the guest workspace,
+Without a rootfs or image option, Linux VM runs use the host `/` through virtio-fs;
+macOS requires an explicit Linux rootfs or image. `--image-store DIR` changes the
+local content-addressed cache, `--mount SOURCE[:TARGET]:ACCESS` exposes a path,
 and `--rootfs DIR` points to a prepared Linux rootfs. Linux hosts use KVM;
 Apple Silicon macOS hosts use HVF. Building the VM support from source on macOS
 also requires Zig:

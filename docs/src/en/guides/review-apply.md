@@ -3,12 +3,12 @@
 Start a staged Run from the project directory. Keep the stage outside the project and choose a new directory for each Run:
 
 ```bash
-pvisor run --stage ../stage-001 -- codex
-pvisor review last
+pvisor run --safe --stage ../stage-001 -- codex
+pvisor status --review last
 pvisor inspect last -- git status --short
 ```
 
-Without an OverlayFS option such as `--stage`, a host Run can modify the real project directly. `review` reports recorded evidence and the staged changes; `inspect` runs a command against a read-only view.
+Ordinary host Jobs without `--stage` write through to the workspace. `--safe` uses a temporary copy-on-write view and discards it at Job exit. `status --review` reports recorded evidence and retained changes; `inspect` runs a command against a read-only view. With `--safe`, Codex home state is staged separately from the project workspace; see the [CLI reference](../reference/cli.md).
 
 ## Apply a selected batch
 
@@ -29,11 +29,12 @@ A durable `apply-ledger.json` tracks each batch across recovery. Recovery accept
 Before fully applying or dropping the stage:
 
 ```bash
-pvisor checkpoint last --name before-experiment
-pvisor fork last --checkpoint before-experiment -- codex
+pvisor fork last -- codex
 ```
 
-A CLI checkpoint requires a stopped Run. It captures the filesystem upper layer and lineage, not process memory or an immutable snapshot of all underlying host files.
+`fork` requires a stopped Run and creates a logical filesystem snapshot before
+starting the child. The snapshot preserves the upper layer and lineage, not
+process memory or an immutable copy of every underlying host file.
 
 ```bash
 pvisor drop last

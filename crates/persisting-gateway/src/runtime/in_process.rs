@@ -1,6 +1,5 @@
 //! In-process Gateway for one pVisor Attempt (no forked daemon).
 
-use std::net::TcpStream;
 use std::path::PathBuf;
 use std::sync::Arc;
 use std::thread::JoinHandle;
@@ -70,6 +69,7 @@ impl InProcessCapture {
     ) -> Result<Self> {
         let listen = config.listen.clone();
         let (shutdown_tx, shutdown_rx) = oneshot::channel();
+        let (ready_tx, ready_rx) = std::sync::mpsc::channel();
         let interception_metrics = runtime.interception_metrics.clone();
         let thread_metrics = interception_metrics.clone();
 
@@ -89,7 +89,9 @@ impl InProcessCapture {
                         attempt_id: runtime.attempt_id,
                         gateway_enabled: runtime.gateway_enabled,
                     },
-                    None,
+                    Some(Box::new(move || {
+                        let _ = ready_tx.send(());
+                    })),
                     async {
                         let _ = shutdown_rx.await;
                     },
@@ -97,7 +99,17 @@ impl InProcessCapture {
             })
             .context("spawn in-process capture")?;
 
-        wait_proxy_ready(&listen)?;
+        match ready_rx.recv_timeout(Duration::from_secs(5)) {
+            Ok(()) => {}
+            Err(std::sync::mpsc::RecvTimeoutError::Disconnected) => {
+                join.join()
+                    .map_err(|_| anyhow::anyhow!("in-process capture thread panicked"))??;
+                anyhow::bail!("capture proxy exited before becoming ready on http://{listen}");
+            }
+            Err(std::sync::mpsc::RecvTimeoutError::Timeout) => {
+                anyhow::bail!("capture proxy did not become ready on http://{listen}");
+            }
+        }
 
         Ok(Self {
             shutdown_tx: Some(shutdown_tx),
@@ -156,20 +168,27 @@ impl Drop for InProcessCapture {
     }
 }
 
-fn wait_proxy_ready(listen: &str) -> Result<()> {
-    for _ in 0..100 {
-        if tcp_bound(listen) {
-            return Ok(());
-        }
-        std::thread::sleep(Duration::from_millis(50));
-    }
-    anyhow::bail!("capture proxy did not become ready on http://{listen}");
-}
+#[cfg(test)]
+mod tests {
+    use super::*;
 
-fn tcp_bound(listen: &str) -> bool {
-    let addr = listen
-        .strip_prefix("http://")
-        .or_else(|| listen.strip_prefix("https://"))
-        .unwrap_or(listen);
-    TcpStream::connect(addr).is_ok()
+    #[test]
+    fn startup_reports_listener_errors_without_waiting_for_a_probe_timeout() {
+        let config: ProxyConfig =
+            toml::from_str("listen = 'invalid-address'\nmodels = []").unwrap();
+        let storage = tempfile::tempdir().unwrap();
+        let error = InProcessCapture::start(
+            config,
+            storage.path().to_path_buf(),
+            Arc::new(crate::sink::SeqOnlySink::new()),
+            false,
+        )
+        .err()
+        .expect("invalid address should fail startup");
+        assert!(
+            error
+                .to_string()
+                .contains("invalid overlaynet listen address")
+        );
+    }
 }

@@ -15,25 +15,12 @@ use crate::sink::CaptureEventSink;
 #[derive(Clone)]
 pub(crate) struct StoryActorDeps {
     pub sink: Arc<dyn CaptureEventSink>,
-    /// Retained so callers can keep passing the historical flag. Markdown
-    /// projection no longer consumes it.
-    #[allow(dead_code)]
-    pub stream_markdown: bool,
-    #[allow(dead_code)]
     pub storage: Arc<PathBuf>,
 }
 
 impl StoryActorDeps {
-    pub fn new(
-        sink: Arc<dyn CaptureEventSink>,
-        storage: Arc<PathBuf>,
-        stream_markdown: bool,
-    ) -> Self {
-        Self {
-            sink,
-            stream_markdown,
-            storage,
-        }
+    pub fn new(sink: Arc<dyn CaptureEventSink>, storage: Arc<PathBuf>) -> Self {
+        Self { sink, storage }
     }
 }
 

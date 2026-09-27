@@ -18,9 +18,10 @@ static AGENT_ID_TOOL_RESULT: LazyLock<Regex> = LazyLock::new(|| {
 static TOOL_AGENT_BLOCK: LazyLock<Regex> = LazyLock::new(|| {
     Regex::new(r"```tool:(?:Agent|Task)\s*\n([\s\S]*?)```").expect("tool agent block")
 });
-/// Design-doc paths in prompts (`*.md` or legacy `*.zh.md` under docs/src/design/).
-static DOC_TARGET: LazyLock<Regex> =
-    LazyLock::new(|| Regex::new(r"docs/src/design/[^\s\)\]]+\.md").expect("doc target path"));
+/// Design-doc paths in current bilingual and older unlocalized prompts.
+static DOC_TARGET: LazyLock<Regex> = LazyLock::new(|| {
+    Regex::new(r"docs/src/(?:en/|zh/)?design/[^\s\)\]]+\.md").expect("doc target path")
+});
 static TASK_ID_XML: LazyLock<Regex> = LazyLock::new(|| {
     Regex::new(r"(?i)<task-id>\s*([a-zA-Z0-9_-]{4,})\s*</task-id>").expect("task-id xml")
 });

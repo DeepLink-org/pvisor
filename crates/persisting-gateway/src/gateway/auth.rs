@@ -49,7 +49,12 @@ pub fn apply_upstream_headers(
     let anthropic_style = provider == ProviderKind::Anthropic || protocol == ProtocolKind::Messages;
 
     for (name, value) in client_headers.iter() {
-        if skip_upstream_forward_header(name.as_str()) {
+        // Gateway parses the upstream body, so negotiate its own supported
+        // encodings. reqwest decodes gzip/deflate before parsing or streaming
+        // and removes stale Content-Encoding/Content-Length response headers.
+        if name == axum::http::header::ACCEPT_ENCODING
+            || skip_upstream_forward_header(name.as_str())
+        {
             continue;
         }
         req = req.header(name, value);

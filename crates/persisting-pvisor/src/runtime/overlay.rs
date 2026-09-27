@@ -199,9 +199,17 @@ impl OverlayMount {
         if !self.record.merged_dir.starts_with(&self.record.stage_dir)
             && self.record.merged_dir.is_dir()
         {
-            fs::remove_dir(&self.record.merged_dir)?;
-            if let Some(parent) = self.record.merged_dir.parent() {
-                let _ = fs::remove_dir(parent);
+            match fs::remove_dir(&self.record.merged_dir) {
+                Ok(()) => {
+                    if let Some(parent) = self.record.merged_dir.parent() {
+                        let _ = fs::remove_dir(parent);
+                    }
+                }
+                // A target mounted over an existing directory (for example
+                // ~/.codex) reveals the original lower again after unmount.
+                // It is expected to remain non-empty and must not be removed.
+                Err(error) if error.kind() == io::ErrorKind::DirectoryNotEmpty => {}
+                Err(error) => return Err(error.into()),
             }
         }
         Ok(())
@@ -359,6 +367,7 @@ pub fn resolve_overlay_workspace(
         merged_dir: merged,
         stage_dir,
         excluded_paths,
+        access_policy: cfg.access_policy.clone(),
         auto_apply: cfg.auto_apply,
         auto_discard: cfg.auto_discard,
         protect_target: cfg.protect_target,
@@ -385,6 +394,7 @@ pub fn hint_from_record(record: &OverlayRecord, lower_dirs: Vec<PathBuf>) -> Ove
         ),
     };
     OverlayHint {
+        access_policy: record.access_policy.clone(),
         lower_dirs,
         stage_dir: Some(record.stage_dir.clone()),
         upper_dir,
@@ -403,7 +413,12 @@ pub fn hint_from_record(record: &OverlayRecord, lower_dirs: Vec<PathBuf>) -> Ove
 }
 
 /// Lower stack for mount: compose layers first (top), then the base target.
-pub fn lower_stack_from_config(cfg: &OverlayConfig, storage: &Path, target: &Path) -> Vec<PathBuf> {
+pub fn lower_stack_from_config(
+    cfg: &OverlayConfig,
+    storage: &Path,
+    record: &OverlayRecord,
+) -> io::Result<Vec<PathBuf>> {
+    let target = &record.target;
     let resolve = |p: &str| -> PathBuf {
         let path = PathBuf::from(p);
         if path.is_absolute() {
@@ -414,14 +429,73 @@ pub fn lower_stack_from_config(cfg: &OverlayConfig, storage: &Path, target: &Pat
     };
     let mut lowers: Vec<PathBuf> = cfg.lower_dirs.iter().map(|p| resolve(p)).collect();
     lowers.retain(|p| p != target);
-    lowers.push(target.to_path_buf());
-    lowers
+    // Snapshot only when the mount or its backing paths overlap the source.
+    // With an external stage (the normal --safe layout), the source is already
+    // a valid read-only lower. Copying it into Run storage can be both slow and
+    // larger than the available space there.
+    let needs_snapshot = record.merged_dir == *target
+        || !record.excluded_paths.is_empty()
+        || storage.starts_with(target);
+    let lower = if cfg.target.is_some() && target.is_dir() && needs_snapshot {
+        use std::hash::{Hash, Hasher};
+        let mut hasher = std::collections::hash_map::DefaultHasher::new();
+        target.to_string_lossy().hash(&mut hasher);
+        let snapshot = storage
+            .join(".overlay-lowers")
+            .join(format!("{:016x}", hasher.finish()));
+        if !snapshot.exists() {
+            let pending = snapshot.with_extension(format!("pending-{}", uuid::Uuid::new_v4()));
+            let copied = copy_tree(target, &pending, storage)
+                .and_then(|()| std::fs::rename(&pending, &snapshot));
+            if let Err(error) = copied {
+                let _ = std::fs::remove_dir_all(&pending);
+                return Err(error);
+            }
+        }
+        snapshot
+    } else {
+        target.to_path_buf()
+    };
+    lowers.push(lower);
+    Ok(lowers)
+}
+
+fn copy_tree(source: &Path, destination: &Path, excluded: &Path) -> std::io::Result<()> {
+    std::fs::create_dir_all(destination)?;
+    for entry in std::fs::read_dir(source)? {
+        let entry = entry?;
+        let from = entry.path();
+        if from.starts_with(excluded) {
+            continue;
+        }
+        let to = destination.join(entry.file_name());
+        let kind = std::fs::symlink_metadata(&from)?.file_type();
+        if kind.is_symlink() {
+            std::os::unix::fs::symlink(std::fs::read_link(&from)?, &to)?;
+            copy_host_metadata(&from, &to)?;
+        } else if kind.is_dir() {
+            copy_tree(&from, &to, excluded)?;
+        } else if kind.is_file() {
+            std::fs::copy(&from, &to)?;
+            copy_host_metadata(&from, &to)?;
+        }
+    }
+    copy_host_metadata(source, destination)?;
+    Ok(())
 }
 
 /// Mount the overlay in-process; pVisor becomes the FUSE userspace server.
 pub fn mount_overlay_record(
     record: &OverlayRecord,
     lower_dirs: &[PathBuf],
+) -> Result<OverlayMount, OverlayError> {
+    mount_overlay_record_observed(record, lower_dirs, None)
+}
+
+pub(crate) fn mount_overlay_record_observed(
+    record: &OverlayRecord,
+    lower_dirs: &[PathBuf],
+    observation: Option<persisting_overlayfs::FsMetrics>,
 ) -> Result<OverlayMount, OverlayError> {
     if lower_dirs.is_empty() {
         return Err(OverlayError::MissingTarget);
@@ -472,6 +546,8 @@ pub fn mount_overlay_record(
     };
     config.fsname = format!("pvisor-{}", record.id);
     config.excluded_paths = record.excluded_paths.clone();
+    config.access_policy = record.access_policy.clone();
+    config.observation = observation;
     config.preimage_dir = Some(record.stage_dir.join("preimages"));
     let session = mount_embedded_overlay(config).map_err(embedded_mount_error)?;
     wait_merged_ready(&record.merged_dir, &session)?;
@@ -581,6 +657,7 @@ pub fn mount_overlay_record_read_only(
     };
     config.fsname = format!("pvisor-inspect-{}", record.id);
     config.excluded_paths = record.excluded_paths.clone();
+    config.access_policy = record.access_policy.clone();
     config.read_only = true;
     let session = mount_embedded_overlay(config).map_err(embedded_mount_error)?;
     wait_merged_ready(mountpoint, &session)?;
@@ -2288,6 +2365,7 @@ mod tests {
             merged_dir: stage.join("merged"),
             stage_dir: stage.clone(),
             excluded_paths: Vec::new(),
+            access_policy: Default::default(),
             auto_apply: false,
             auto_discard: false,
             protect_target: false,
@@ -2344,17 +2422,73 @@ mod tests {
     #[test]
     fn lower_stack_keeps_target_as_bottom_base_layer() {
         let cfg = OverlayConfig {
+            target: Some("/target".into()),
             lower_dirs: vec!["extra-a".into(), "extra-b".into()],
             ..OverlayConfig::default()
         };
+        let record = resolve_overlay_workspace(&cfg, Path::new("/store"), "test")
+            .unwrap()
+            .unwrap();
         assert_eq!(
-            lower_stack_from_config(&cfg, Path::new("/store"), Path::new("/target")),
+            lower_stack_from_config(&cfg, Path::new("/store"), &record).unwrap(),
             vec![
                 PathBuf::from("/store/extra-a"),
                 PathBuf::from("/store/extra-b"),
                 PathBuf::from("/target"),
             ]
         );
+    }
+
+    #[test]
+    fn external_stage_uses_workspace_directly_without_snapshot() {
+        let temporary = tempfile::tempdir().unwrap();
+        let workspace = temporary.path().join("workspace");
+        let storage = temporary.path().join("stage");
+        std::fs::create_dir(&workspace).unwrap();
+        std::fs::write(workspace.join("file"), b"content").unwrap();
+        let cfg = OverlayConfig {
+            target: Some(workspace.display().to_string()),
+            ..OverlayConfig::default()
+        };
+        let record = resolve_overlay_workspace(&cfg, &storage, "test")
+            .unwrap()
+            .unwrap();
+        assert_eq!(
+            lower_stack_from_config(&cfg, &storage, &record).unwrap(),
+            vec![workspace]
+        );
+        assert!(!storage.join(".overlay-lowers").exists());
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn staged_lower_preserves_external_symlinks_without_copying_their_targets() {
+        let temporary = tempfile::tempdir().unwrap();
+        let workspace = temporary.path().join("workspace");
+        let outside = temporary.path().join("outside");
+        let storage = temporary.path().join("stage");
+        std::fs::create_dir_all(&workspace).unwrap();
+        std::fs::create_dir_all(&outside).unwrap();
+        std::fs::write(outside.join("secret"), b"secret").unwrap();
+        std::os::unix::fs::symlink(&outside, workspace.join("escape")).unwrap();
+        let cfg = OverlayConfig {
+            target: Some(workspace.display().to_string()),
+            merged_dir: Some(workspace.display().to_string()),
+            ..OverlayConfig::default()
+        };
+        let record = resolve_overlay_workspace(&cfg, &storage, "test")
+            .unwrap()
+            .unwrap();
+        let lowers = lower_stack_from_config(&cfg, &storage, &record).unwrap();
+        assert_ne!(lowers[0], workspace);
+        let staged_link = lowers[0].join("escape");
+        assert!(
+            std::fs::symlink_metadata(&staged_link)
+                .unwrap()
+                .file_type()
+                .is_symlink()
+        );
+        assert_eq!(std::fs::read_link(staged_link).unwrap(), outside);
     }
 
     #[cfg(target_os = "macos")]
@@ -2381,6 +2515,7 @@ mod tests {
             merged_dir: merged.clone(),
             stage_dir: stage.clone(),
             excluded_paths: Vec::new(),
+            access_policy: Default::default(),
             auto_apply: false,
             auto_discard: false,
             protect_target: false,
@@ -2457,6 +2592,7 @@ mod tests {
             merged_dir: tmp.path().join("merged"),
             stage_dir: tmp.path().to_path_buf(),
             excluded_paths: Vec::new(),
+            access_policy: Default::default(),
             auto_apply: false,
             auto_discard: false,
             protect_target: false,
@@ -2510,6 +2646,7 @@ mod tests {
             merged_dir: stage.join("merged"),
             stage_dir: stage.clone(),
             excluded_paths: Vec::new(),
+            access_policy: Default::default(),
             auto_apply: false,
             auto_discard: false,
             protect_target: false,
@@ -2639,6 +2776,7 @@ mod tests {
                 merged_dir: stage.join("merged"),
                 stage_dir: stage.clone(),
                 excluded_paths: Vec::new(),
+                access_policy: Default::default(),
                 auto_apply: false,
                 auto_discard: false,
                 protect_target: false,
@@ -2719,6 +2857,7 @@ mod tests {
                 merged_dir: stage.join("merged"),
                 stage_dir: stage.clone(),
                 excluded_paths: Vec::new(),
+                access_policy: Default::default(),
                 auto_apply: false,
                 auto_discard: false,
                 protect_target: false,
@@ -2809,6 +2948,7 @@ mod tests {
             merged_dir: stage.join("merged"),
             stage_dir: stage.clone(),
             excluded_paths: Vec::new(),
+            access_policy: Default::default(),
             auto_apply: false,
             auto_discard: false,
             protect_target: false,
@@ -2844,6 +2984,7 @@ mod tests {
             merged_dir: stage.join("merged"),
             stage_dir: stage.clone(),
             excluded_paths: Vec::new(),
+            access_policy: Default::default(),
             auto_apply: false,
             auto_discard: false,
             protect_target: false,
@@ -2920,6 +3061,7 @@ mod tests {
             merged_dir: stage.join("merged"),
             stage_dir: stage,
             excluded_paths: Vec::new(),
+            access_policy: Default::default(),
             auto_apply: false,
             auto_discard: false,
             protect_target: false,
@@ -2970,6 +3112,7 @@ mod tests {
             merged_dir: stage.join("merged"),
             stage_dir: stage,
             excluded_paths: Vec::new(),
+            access_policy: Default::default(),
             auto_apply: false,
             auto_discard: false,
             protect_target: false,
@@ -3021,6 +3164,7 @@ mod tests {
             merged_dir: stage.join("merged"),
             stage_dir: stage,
             excluded_paths: Vec::new(),
+            access_policy: Default::default(),
             auto_apply: false,
             auto_discard: false,
             protect_target: false,
@@ -3064,6 +3208,7 @@ mod tests {
             merged_dir: tmp.path().join("merged"),
             stage_dir: tmp.path().to_path_buf(),
             excluded_paths: Vec::new(),
+            access_policy: Default::default(),
             auto_apply: false,
             auto_discard: false,
             protect_target: false,
@@ -3106,6 +3251,7 @@ mod tests {
             merged_dir: tmp.path().join("merged"),
             stage_dir: tmp.path().to_path_buf(),
             excluded_paths: Vec::new(),
+            access_policy: Default::default(),
             auto_apply: false,
             auto_discard: false,
             protect_target: false,
@@ -3153,6 +3299,7 @@ mod tests {
             merged_dir: tmp.path().join("merged"),
             stage_dir: tmp.path().to_path_buf(),
             excluded_paths: Vec::new(),
+            access_policy: Default::default(),
             auto_apply: false,
             auto_discard: false,
             protect_target: true,
@@ -3213,6 +3360,7 @@ mod tests {
             merged_dir: tmp.path().join("merged"),
             stage_dir: tmp.path().to_path_buf(),
             excluded_paths: Vec::new(),
+            access_policy: Default::default(),
             auto_apply: false,
             auto_discard: false,
             protect_target: false,
@@ -3239,6 +3387,7 @@ mod tests {
             merged_dir: tmp.path().join("merged"),
             stage_dir: tmp.path().to_path_buf(),
             excluded_paths: Vec::new(),
+            access_policy: Default::default(),
             auto_apply: false,
             auto_discard: false,
             protect_target: false,
@@ -3268,6 +3417,7 @@ mod tests {
             merged_dir: applied_root.path().join("merged"),
             stage_dir: applied_root.path().to_path_buf(),
             excluded_paths: Vec::new(),
+            access_policy: Default::default(),
             auto_apply: false,
             auto_discard: false,
             protect_target: false,
@@ -3297,6 +3447,7 @@ mod tests {
             merged_dir: dropped_root.path().join("merged"),
             stage_dir: dropped_root.path().to_path_buf(),
             excluded_paths: Vec::new(),
+            access_policy: Default::default(),
             auto_apply: false,
             auto_discard: false,
             protect_target: false,

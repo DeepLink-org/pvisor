@@ -5,6 +5,7 @@ use fuser::{
     ReplyDirectory, ReplyDirectoryPlus, ReplyEmpty, ReplyEntry, ReplyLseek, ReplyOpen, ReplyStatfs,
     ReplyWrite, ReplyXattr, Request, TimeOrNow,
 };
+use persisting_control::overlay::FileAccessPolicy;
 use persisting_overlay_core::{OverlayCore, sys};
 use std::collections::{BTreeSet, HashMap};
 use std::ffi::{OsStr, OsString};
@@ -39,11 +40,14 @@ struct DirectoryEntry {
 
 pub struct OverlayFs {
     core: OverlayCore,
+    access_policy: FileAccessPolicy,
+    observation: Option<crate::FsMetrics>,
     nodes: HashMap<u64, Node>,
     by_path: HashMap<PathBuf, u64>,
     by_object: HashMap<ObjectKey, u64>,
     next_ino: u64,
     open_files: HashMap<u64, File>,
+    open_paths: HashMap<u64, PathBuf>,
     open_directories: HashMap<u64, Vec<DirectoryEntry>>,
     next_handle: u64,
 }
@@ -120,6 +124,56 @@ impl OverlayFs {
         )?)
     }
 
+    pub fn with_access_policy(
+        mut self,
+        policy: &persisting_overlay_core::FileAccessPolicy,
+    ) -> Self {
+        self.core = self.core.with_access_policy(policy);
+        self.access_policy = policy.clone();
+        self
+    }
+
+    pub fn with_observation(mut self, observation: Option<crate::FsMetrics>) -> Self {
+        self.observation = observation;
+        self
+    }
+
+    fn observe(&self, path: &Path, operation: &str, outcome: io::Result<u64>, mutating: bool) {
+        if let Some(metrics) = &self.observation {
+            let decision = self.access_policy.authorize(path);
+            let rules = self.access_policy.matched_rule_ids(path);
+            metrics.observe(
+                path,
+                operation,
+                outcome.map_err(|error| error.raw_os_error().unwrap_or(libc::EIO)),
+                mutating,
+                decision,
+                &rules,
+            );
+        }
+    }
+
+    fn observe_result<T>(
+        &self,
+        path: Option<&Path>,
+        operation: &str,
+        result: &io::Result<T>,
+        bytes: u64,
+        mutating: bool,
+    ) {
+        if let Some(path) = path {
+            self.observe(
+                path,
+                operation,
+                result
+                    .as_ref()
+                    .map(|_| bytes)
+                    .map_err(|error| io::Error::from_raw_os_error(errno(error))),
+                mutating,
+            );
+        }
+    }
+
     fn from_core(core: OverlayCore) -> anyhow::Result<Self> {
         let mut root_paths = BTreeSet::new();
         root_paths.insert(PathBuf::new());
@@ -129,11 +183,14 @@ impl OverlayFs {
         by_path.insert(PathBuf::new(), FUSE_ROOT_ID);
         Ok(Self {
             core,
+            access_policy: FileAccessPolicy::default(),
+            observation: None,
             nodes,
             by_path,
             by_object: HashMap::new(),
             next_ino: FUSE_ROOT_ID + 1,
             open_files: HashMap::new(),
+            open_paths: HashMap::new(),
             open_directories: HashMap::new(),
             next_handle: 1,
         })
@@ -348,6 +405,9 @@ impl OverlayFs {
     }
 
     fn open_path(&self, path: &Path, flags: i32) -> io::Result<File> {
+        if self.core.metadata(path)?.file_type().is_symlink() {
+            return Err(io::Error::from_raw_os_error(libc::ELOOP));
+        }
         let writing = flags & libc::O_ACCMODE != libc::O_RDONLY
             || flags & (libc::O_APPEND | libc::O_TRUNC) != 0;
         let real = if writing {
@@ -366,12 +426,13 @@ impl OverlayFs {
             .append(flags & libc::O_APPEND != 0)
             .truncate(flags & libc::O_TRUNC != 0)
             .custom_flags(
-                flags
-                    & !(libc::O_ACCMODE
-                        | libc::O_CREAT
-                        | libc::O_EXCL
-                        | libc::O_TRUNC
-                        | libc::O_APPEND),
+                libc::O_NOFOLLOW
+                    | flags
+                        & !(libc::O_ACCMODE
+                            | libc::O_CREAT
+                            | libc::O_EXCL
+                            | libc::O_TRUNC
+                            | libc::O_APPEND),
             );
         options.open(real)
     }
@@ -379,12 +440,14 @@ impl OverlayFs {
 
 impl Filesystem for OverlayFs {
     fn lookup(&mut self, _request: &Request<'_>, parent: u64, name: &OsStr, reply: ReplyEntry) {
+        let observed_path = self.child_path(parent, name).ok();
         let result = (|| {
             let path = self.child_path(parent, name)?;
             let metadata = self.core.metadata(&path)?;
             let ino = self.allocate_inode(path, &metadata);
             Ok((ino, metadata))
         })();
+        self.observe_result(observed_path.as_deref(), "lookup", &result, 0, false);
         match result {
             Ok((ino, metadata)) => reply.entry(&TTL, &Self::attr_from_metadata(ino, &metadata), 0),
             Err(error) => reply.error(errno(&error)),
@@ -392,7 +455,9 @@ impl Filesystem for OverlayFs {
     }
 
     fn getattr(&mut self, _request: &Request<'_>, ino: u64, _fh: Option<u64>, reply: ReplyAttr) {
+        let observed_path = self.node_path(ino).ok();
         let result = self.node_path(ino).and_then(|path| self.attr(ino, &path));
+        self.observe_result(observed_path.as_deref(), "getattr", &result, 0, false);
         match result {
             Ok(attr) => reply.attr(&TTL, &attr),
             Err(error) => reply.error(errno(&error)),
@@ -418,6 +483,8 @@ impl Filesystem for OverlayFs {
         flags: Option<u32>,
         reply: ReplyAttr,
     ) {
+        let observed_path = self.node_path(ino).ok();
+        let mutating = setattr_requires_copy_up(mode, uid, gid, size, atime, mtime, flags);
         let result = (|| {
             let path = self.node_path(ino)?;
             // macFUSE can report a read-induced atime update through SETATTR.
@@ -462,6 +529,7 @@ impl Filesystem for OverlayFs {
             }
             self.attr(ino, &path)
         })();
+        self.observe_result(observed_path.as_deref(), "setattr", &result, 0, mutating);
         match result {
             Ok(attr) => reply.attr(&TTL, &attr),
             Err(error) => reply.error(errno(&error)),
@@ -469,6 +537,7 @@ impl Filesystem for OverlayFs {
     }
 
     fn readlink(&mut self, _request: &Request<'_>, ino: u64, reply: ReplyData) {
+        let observed_path = self.node_path(ino).ok();
         let result = self.node_path(ino).and_then(|path| {
             let resolved = self
                 .core
@@ -476,6 +545,7 @@ impl Filesystem for OverlayFs {
                 .ok_or_else(|| io::Error::from_raw_os_error(libc::ENOENT))?;
             fs::read_link(resolved.path)
         });
+        self.observe_result(observed_path.as_deref(), "readlink", &result, 0, false);
         match result {
             Ok(target) => reply.data(target.as_os_str().as_encoded_bytes()),
             Err(error) => reply.error(errno(&error)),
@@ -492,6 +562,7 @@ impl Filesystem for OverlayFs {
         rdev: u32,
         reply: ReplyEntry,
     ) {
+        let observed_path = self.child_path(parent, name).ok();
         let result = (|| {
             let path = self.child_path(parent, name)?;
             self.core.create_node(&path, mode & !umask, rdev)?;
@@ -499,6 +570,7 @@ impl Filesystem for OverlayFs {
             let ino = self.allocate_inode(path.clone(), &metadata);
             self.attr(ino, &path)
         })();
+        self.observe_result(observed_path.as_deref(), "mknod", &result, 0, true);
         match result {
             Ok(attr) => reply.entry(&TTL, &attr, 0),
             Err(error) => reply.error(errno(&error)),
@@ -514,6 +586,7 @@ impl Filesystem for OverlayFs {
         umask: u32,
         reply: ReplyEntry,
     ) {
+        let observed_path = self.child_path(parent, name).ok();
         let result = (|| {
             let path = self.child_path(parent, name)?;
             self.core.create_dir(&path, mode & !umask)?;
@@ -521,6 +594,7 @@ impl Filesystem for OverlayFs {
             let ino = self.allocate_inode(path.clone(), &metadata);
             self.attr(ino, &path)
         })();
+        self.observe_result(observed_path.as_deref(), "mkdir", &result, 0, true);
         match result {
             Ok(attr) => reply.entry(&TTL, &attr, 0),
             Err(error) => reply.error(errno(&error)),
@@ -528,9 +602,11 @@ impl Filesystem for OverlayFs {
     }
 
     fn unlink(&mut self, _request: &Request<'_>, parent: u64, name: &OsStr, reply: ReplyEmpty) {
+        let observed_path = self.child_path(parent, name).ok();
         let result = self
             .child_path(parent, name)
             .and_then(|path| self.core.remove(&path, false).map(|()| path));
+        self.observe_result(observed_path.as_deref(), "unlink", &result, 0, true);
         match result {
             Ok(path) => {
                 self.remove_inode_prefix(&path);
@@ -541,9 +617,11 @@ impl Filesystem for OverlayFs {
     }
 
     fn rmdir(&mut self, _request: &Request<'_>, parent: u64, name: &OsStr, reply: ReplyEmpty) {
+        let observed_path = self.child_path(parent, name).ok();
         let result = self
             .child_path(parent, name)
             .and_then(|path| self.core.remove(&path, true).map(|()| path));
+        self.observe_result(observed_path.as_deref(), "rmdir", &result, 0, true);
         match result {
             Ok(path) => {
                 self.remove_inode_prefix(&path);
@@ -561,6 +639,7 @@ impl Filesystem for OverlayFs {
         target: &Path,
         reply: ReplyEntry,
     ) {
+        let observed_path = self.child_path(parent, name).ok();
         let result = (|| {
             let path = self.child_path(parent, name)?;
             self.core.create_symlink(&path, target)?;
@@ -568,6 +647,7 @@ impl Filesystem for OverlayFs {
             let ino = self.allocate_inode(path.clone(), &metadata);
             self.attr(ino, &path)
         })();
+        self.observe_result(observed_path.as_deref(), "symlink", &result, 0, true);
         match result {
             Ok(attr) => reply.entry(&TTL, &attr, 0),
             Err(error) => reply.error(errno(&error)),
@@ -584,9 +664,19 @@ impl Filesystem for OverlayFs {
         flags: u32,
         reply: ReplyEmpty,
     ) {
+        let old_path = self.child_path(parent, name).ok();
+        let new_path = self.child_path(newparent, newname).ok();
         if flags & !(RENAME_NOREPLACE | RENAME_EXCHANGE) != 0
             || flags == (RENAME_NOREPLACE | RENAME_EXCHANGE)
         {
+            if let Some(path) = old_path.as_deref() {
+                self.observe(
+                    path,
+                    "rename_from",
+                    Err(io::Error::from_raw_os_error(libc::ENOTSUP)),
+                    false,
+                );
+            }
             reply.error(libc::ENOTSUP);
             return;
         }
@@ -602,6 +692,8 @@ impl Filesystem for OverlayFs {
                 Ok((old, new, false))
             }
         })();
+        self.observe_result(old_path.as_deref(), "rename_from", &result, 0, true);
+        self.observe_result(new_path.as_deref(), "rename_to", &result, 0, true);
         match result {
             Ok((old, new, exchange)) => {
                 if exchange {
@@ -623,6 +715,7 @@ impl Filesystem for OverlayFs {
         newname: &OsStr,
         reply: ReplyEntry,
     ) {
+        let observed_path = self.child_path(newparent, newname).ok();
         let result = (|| {
             let source = self.node_path(ino)?;
             let destination = self.child_path(newparent, newname)?;
@@ -630,6 +723,7 @@ impl Filesystem for OverlayFs {
             self.add_inode_alias(ino, destination.clone());
             self.attr(ino, &destination)
         })();
+        self.observe_result(observed_path.as_deref(), "link", &result, 0, true);
         match result {
             Ok(attr) => reply.entry(&TTL, &attr, 0),
             Err(error) => reply.error(errno(&error)),
@@ -637,6 +731,7 @@ impl Filesystem for OverlayFs {
     }
 
     fn open(&mut self, _request: &Request<'_>, ino: u64, flags: i32, reply: ReplyOpen) {
+        let observed_path = self.node_path(ino).ok();
         let writing = flags & libc::O_ACCMODE != libc::O_RDONLY
             || flags & (libc::O_APPEND | libc::O_TRUNC) != 0;
         let result = (if writing {
@@ -645,10 +740,20 @@ impl Filesystem for OverlayFs {
             self.node_path(ino)
         })
         .and_then(|path| self.open_path(&path, flags));
+        self.observe_result(
+            observed_path.as_deref(),
+            "open",
+            &result,
+            0,
+            flags & libc::O_TRUNC != 0,
+        );
         match result {
             Ok(file) => {
                 let handle = self.allocate_handle();
                 self.open_files.insert(handle, file);
+                if let Some(path) = observed_path {
+                    self.open_paths.insert(handle, path);
+                }
                 reply.opened(handle, 0);
             }
             Err(error) => reply.error(errno(&error)),
@@ -658,7 +763,7 @@ impl Filesystem for OverlayFs {
     fn read(
         &mut self,
         _request: &Request<'_>,
-        _ino: u64,
+        ino: u64,
         fh: u64,
         offset: i64,
         size: u32,
@@ -666,16 +771,43 @@ impl Filesystem for OverlayFs {
         _lock_owner: Option<u64>,
         reply: ReplyData,
     ) {
+        let observed_path = self
+            .open_paths
+            .get(&fh)
+            .cloned()
+            .or_else(|| self.node_path(ino).ok());
         if offset < 0 {
+            self.observe_result(
+                observed_path.as_deref(),
+                "read",
+                &Err::<(), _>(io::Error::from_raw_os_error(libc::EINVAL)),
+                0,
+                false,
+            );
             reply.error(libc::EINVAL);
             return;
         }
         let Some(file) = self.open_files.get(&fh) else {
+            self.observe_result(
+                observed_path.as_deref(),
+                "read",
+                &Err::<(), _>(io::Error::from_raw_os_error(libc::EBADF)),
+                0,
+                false,
+            );
             reply.error(libc::EBADF);
             return;
         };
         let mut data = vec![0; size as usize];
-        match file.read_at(&mut data, offset as u64) {
+        let result = file.read_at(&mut data, offset as u64);
+        self.observe_result(
+            observed_path.as_deref(),
+            "read",
+            &result,
+            result.as_ref().copied().unwrap_or(0) as u64,
+            false,
+        );
+        match result {
             Ok(read) => {
                 data.truncate(read);
                 reply.data(&data);
@@ -687,7 +819,7 @@ impl Filesystem for OverlayFs {
     fn write(
         &mut self,
         _request: &Request<'_>,
-        _ino: u64,
+        ino: u64,
         fh: u64,
         offset: i64,
         data: &[u8],
@@ -696,15 +828,42 @@ impl Filesystem for OverlayFs {
         _lock_owner: Option<u64>,
         reply: ReplyWrite,
     ) {
+        let observed_path = self
+            .open_paths
+            .get(&fh)
+            .cloned()
+            .or_else(|| self.node_path(ino).ok());
         if offset < 0 {
+            self.observe_result(
+                observed_path.as_deref(),
+                "write",
+                &Err::<(), _>(io::Error::from_raw_os_error(libc::EINVAL)),
+                0,
+                false,
+            );
             reply.error(libc::EINVAL);
             return;
         }
         let Some(file) = self.open_files.get(&fh) else {
+            self.observe_result(
+                observed_path.as_deref(),
+                "write",
+                &Err::<(), _>(io::Error::from_raw_os_error(libc::EBADF)),
+                0,
+                false,
+            );
             reply.error(libc::EBADF);
             return;
         };
-        match file.write_at(data, offset as u64) {
+        let result = file.write_at(data, offset as u64);
+        self.observe_result(
+            observed_path.as_deref(),
+            "write",
+            &result,
+            result.as_ref().copied().unwrap_or(0) as u64,
+            true,
+        );
+        match result {
             Ok(written) => reply.written(written as u32),
             Err(error) => reply.error(errno(&error)),
         }
@@ -735,6 +894,7 @@ impl Filesystem for OverlayFs {
         _flush: bool,
         reply: ReplyEmpty,
     ) {
+        self.open_paths.remove(&fh);
         if self.open_files.remove(&fh).is_some() {
             reply.ok();
         } else {
@@ -760,7 +920,10 @@ impl Filesystem for OverlayFs {
     }
 
     fn opendir(&mut self, _request: &Request<'_>, ino: u64, _flags: i32, reply: ReplyOpen) {
-        match self.directory_snapshot(ino) {
+        let observed_path = self.node_path(ino).ok();
+        let result = self.directory_snapshot(ino);
+        self.observe_result(observed_path.as_deref(), "opendir", &result, 0, false);
+        match result {
             Ok(entries) => {
                 let handle = self.allocate_handle();
                 self.open_directories.insert(handle, entries);
@@ -885,6 +1048,7 @@ impl Filesystem for OverlayFs {
         position: u32,
         reply: ReplyEmpty,
     ) {
+        let observed_path = self.node_path(ino).ok();
         if position != 0 {
             reply.error(libc::ENOTSUP);
             return;
@@ -893,6 +1057,13 @@ impl Filesystem for OverlayFs {
             .copy_up_inode(ino)
             .and_then(|path| self.core.copy_up(&path))
             .and_then(|path| sys::set_xattr(&path, name, value, flags));
+        self.observe_result(
+            observed_path.as_deref(),
+            "setxattr",
+            &result,
+            value.len() as u64,
+            true,
+        );
         match result {
             Ok(()) => reply.ok(),
             Err(error) => reply.error(errno(&error)),
@@ -907,6 +1078,7 @@ impl Filesystem for OverlayFs {
         size: u32,
         reply: ReplyXattr,
     ) {
+        let observed_path = self.node_path(ino).ok();
         let result = self.node_path(ino).and_then(|path| {
             let real = self
                 .core
@@ -914,6 +1086,7 @@ impl Filesystem for OverlayFs {
                 .ok_or_else(|| io::Error::from_raw_os_error(libc::ENOENT))?;
             sys::get_xattr(&real.path, name)
         });
+        self.observe_result(observed_path.as_deref(), "getxattr", &result, 0, false);
         match result {
             Ok(value) if size == 0 => reply.size(value.len() as u32),
             Ok(value) if value.len() <= size as usize => reply.data(&value),
@@ -945,10 +1118,12 @@ impl Filesystem for OverlayFs {
     }
 
     fn removexattr(&mut self, _request: &Request<'_>, ino: u64, name: &OsStr, reply: ReplyEmpty) {
+        let observed_path = self.node_path(ino).ok();
         let result = self
             .copy_up_inode(ino)
             .and_then(|path| self.core.copy_up(&path))
             .and_then(|path| sys::remove_xattr(&path, name));
+        self.observe_result(observed_path.as_deref(), "removexattr", &result, 0, true);
         match result {
             Ok(()) => reply.ok(),
             Err(error) => reply.error(errno(&error)),
@@ -956,6 +1131,7 @@ impl Filesystem for OverlayFs {
     }
 
     fn access(&mut self, _request: &Request<'_>, ino: u64, mask: i32, reply: ReplyEmpty) {
+        let observed_path = self.node_path(ino).ok();
         let result = self.node_path(ino).and_then(|path| {
             let real = self
                 .core
@@ -963,6 +1139,7 @@ impl Filesystem for OverlayFs {
                 .ok_or_else(|| io::Error::from_raw_os_error(libc::ENOENT))?;
             sys::access(&real.path, mask)
         });
+        self.observe_result(observed_path.as_deref(), "access", &result, 0, false);
         match result {
             Ok(()) => reply.ok(),
             Err(error) => reply.error(errno(&error)),
@@ -979,6 +1156,7 @@ impl Filesystem for OverlayFs {
         flags: i32,
         reply: ReplyCreate,
     ) {
+        let observed_path = self.child_path(parent, name).ok();
         let result = (|| {
             let path = self.child_path(parent, name)?;
             let file = self.core.create_file(&path, mode & !umask, flags)?;
@@ -987,10 +1165,14 @@ impl Filesystem for OverlayFs {
             let attr = self.attr(ino, &path)?;
             Ok((file, attr))
         })();
+        self.observe_result(observed_path.as_deref(), "create", &result, 0, true);
         match result {
             Ok((file, attr)) => {
                 let handle = self.allocate_handle();
                 self.open_files.insert(handle, file);
+                if let Some(path) = observed_path {
+                    self.open_paths.insert(handle, path);
+                }
                 reply.created(&TTL, &attr, 0, handle, 0);
             }
             Err(error) => reply.error(errno(&error)),
@@ -1000,13 +1182,18 @@ impl Filesystem for OverlayFs {
     fn fallocate(
         &mut self,
         _request: &Request<'_>,
-        _ino: u64,
+        ino: u64,
         fh: u64,
         offset: i64,
         length: i64,
         mode: i32,
         reply: ReplyEmpty,
     ) {
+        let observed_path = self
+            .open_paths
+            .get(&fh)
+            .cloned()
+            .or_else(|| self.node_path(ino).ok());
         if offset < 0 || length < 0 {
             reply.error(libc::EINVAL);
             return;
@@ -1027,6 +1214,7 @@ impl Filesystem for OverlayFs {
                 Ok(())
             }
         });
+        self.observe_result(observed_path.as_deref(), "fallocate", &result, 0, true);
         match result {
             Ok(()) => reply.ok(),
             Err(error) => reply.error(errno(&error)),
@@ -1167,6 +1355,41 @@ impl Filesystem for OverlayFs {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn open_cannot_follow_a_link_around_file_rules() {
+        let dir = tempfile::tempdir().unwrap();
+        let lower = dir.path().join("lower");
+        fs::create_dir_all(lower.join(".ssh")).unwrap();
+        fs::write(lower.join(".ssh/id_rsa"), b"dummy-private").unwrap();
+        fs::write(lower.join(".env"), b"warn-only").unwrap();
+        std::os::unix::fs::symlink(".ssh/id_rsa", lower.join("alias")).unwrap();
+        let overlay = OverlayFs::new(vec![lower], dir.path().join("upper"), None)
+            .unwrap()
+            .with_access_policy(
+                &persisting_overlay_core::FileAccessPolicy::new(
+                    vec!["**/.ssh".into()],
+                    vec!["**/.env".into()],
+                )
+                .unwrap(),
+            );
+        assert!(
+            overlay
+                .open_path(Path::new(".ssh/id_rsa"), libc::O_RDONLY)
+                .is_err()
+        );
+        assert!(
+            overlay
+                .open_path(Path::new("alias"), libc::O_RDONLY)
+                .is_err()
+        );
+        assert!(
+            overlay
+                .open_path(Path::new("alias"), libc::O_WRONLY)
+                .is_err()
+        );
+        assert!(overlay.open_path(Path::new(".env"), libc::O_RDONLY).is_ok());
+    }
 
     #[test]
     fn atime_only_setattr_does_not_require_copy_up() {

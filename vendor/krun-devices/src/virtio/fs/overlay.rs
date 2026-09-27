@@ -35,6 +35,7 @@ pub struct Config {
     pub work_dir: Option<String>,
     pub preimage_dir: Option<String>,
     pub excluded_paths: Vec<String>,
+    pub access_policy: persisting_overlay_core::FileAccessPolicy,
     pub semantics: passthrough::PermissionSemantics,
 }
 
@@ -68,6 +69,9 @@ struct Nodes {
 }
 
 pub struct OverlayFs {
+    // ponytail: serialize requests so guest renames cannot race path checks/open;
+    // use directory-fd-based resolution before relaxing this for throughput.
+    operation_lock: Mutex<()>,
     core: OverlayCore,
     roots: Vec<PathBuf>,
     layers: Vec<PassthroughFs>,
@@ -93,7 +97,8 @@ impl OverlayFs {
             work,
             excluded,
             preimages,
-        )?;
+        )?
+        .with_access_policy(&cfg.access_policy);
 
         let mut roots = Vec::with_capacity(lowers.len() + 1);
         roots.push(upper);
@@ -117,6 +122,7 @@ impl OverlayFs {
         nodes.by_inode.insert(fuse::ROOT_ID, PathBuf::new());
         nodes.by_path.insert(PathBuf::new(), fuse::ROOT_ID);
         Ok(Self {
+            operation_lock: Mutex::new(()),
             core,
             roots,
             layers,
@@ -287,6 +293,10 @@ impl FileSystem for OverlayFs {
     type Handle = u64;
 
     fn init(&self, capable: FsOptions) -> io::Result<FsOptions> {
+        let _operation = self
+            .operation_lock
+            .lock()
+            .map_err(|_| io::Error::from_raw_os_error(libc::EIO))?;
         let mut options = None;
         for layer in &self.layers {
             let layer_options = layer.init(capable)?;
@@ -303,6 +313,10 @@ impl FileSystem for OverlayFs {
     }
 
     fn lookup(&self, ctx: Context, parent: u64, name: &CStr) -> io::Result<Entry> {
+        let _operation = self
+            .operation_lock
+            .lock()
+            .map_err(|_| io::Error::from_raw_os_error(libc::EIO))?;
         let path = self.child(parent, name)?;
         self.core.metadata(&path)?;
         let inode = self.allocate_inode(path.clone());
@@ -315,6 +329,10 @@ impl FileSystem for OverlayFs {
         inode: u64,
         _handle: Option<u64>,
     ) -> io::Result<(bindings::stat64, Duration)> {
+        let _operation = self
+            .operation_lock
+            .lock()
+            .map_err(|_| io::Error::from_raw_os_error(libc::EIO))?;
         let entry = self.entry(ctx, &self.path(inode)?, inode)?;
         Ok((entry.attr, entry.attr_timeout))
     }
@@ -327,6 +345,10 @@ impl FileSystem for OverlayFs {
         _handle: Option<u64>,
         valid: SetattrValid,
     ) -> io::Result<(bindings::stat64, Duration)> {
+        let _operation = self
+            .operation_lock
+            .lock()
+            .map_err(|_| io::Error::from_raw_os_error(libc::EIO))?;
         let path = self.path(inode)?;
         let inner = self.writable_inner(ctx, &path)?;
         let result = self.layers[0].setattr(ctx, inner, attr, None, valid);
@@ -337,6 +359,10 @@ impl FileSystem for OverlayFs {
     }
 
     fn readlink(&self, ctx: Context, inode: u64) -> io::Result<Vec<u8>> {
+        let _operation = self
+            .operation_lock
+            .lock()
+            .map_err(|_| io::Error::from_raw_os_error(libc::EIO))?;
         let path = self.path(inode)?;
         let layer = self.layer(&path)?;
         let inner = self.inner_inode(layer, &path, ctx)?;
@@ -353,6 +379,10 @@ impl FileSystem for OverlayFs {
         name: &CStr,
         extensions: Extensions,
     ) -> io::Result<Entry> {
+        let _operation = self
+            .operation_lock
+            .lock()
+            .map_err(|_| io::Error::from_raw_os_error(libc::EIO))?;
         let path = self.child(parent, name)?;
         let (upper_parent, upper_name) = self.upper_parent(ctx, &path)?;
         self.layers[0].symlink(ctx, linkname, upper_parent, &upper_name, extensions)?;
@@ -373,6 +403,10 @@ impl FileSystem for OverlayFs {
         umask: u32,
         extensions: Extensions,
     ) -> io::Result<Entry> {
+        let _operation = self
+            .operation_lock
+            .lock()
+            .map_err(|_| io::Error::from_raw_os_error(libc::EIO))?;
         let path = self.child(parent, name)?;
         let (upper_parent, upper_name) = self.upper_parent(ctx, &path)?;
         self.layers[0].mknod(
@@ -400,6 +434,10 @@ impl FileSystem for OverlayFs {
         umask: u32,
         extensions: Extensions,
     ) -> io::Result<Entry> {
+        let _operation = self
+            .operation_lock
+            .lock()
+            .map_err(|_| io::Error::from_raw_os_error(libc::EIO))?;
         let path = self.child(parent, name)?;
         let (upper_parent, upper_name) = self.upper_parent(ctx, &path)?;
         self.layers[0].mkdir(ctx, upper_parent, &upper_name, mode, umask, extensions)?;
@@ -411,6 +449,10 @@ impl FileSystem for OverlayFs {
     }
 
     fn unlink(&self, _ctx: Context, parent: u64, name: &CStr) -> io::Result<()> {
+        let _operation = self
+            .operation_lock
+            .lock()
+            .map_err(|_| io::Error::from_raw_os_error(libc::EIO))?;
         let path = self.child(parent, name)?;
         self.core.remove(&path, false)?;
         self.remove_path(&path);
@@ -418,6 +460,10 @@ impl FileSystem for OverlayFs {
     }
 
     fn rmdir(&self, _ctx: Context, parent: u64, name: &CStr) -> io::Result<()> {
+        let _operation = self
+            .operation_lock
+            .lock()
+            .map_err(|_| io::Error::from_raw_os_error(libc::EIO))?;
         let path = self.child(parent, name)?;
         self.core.remove(&path, true)?;
         self.remove_path(&path);
@@ -433,6 +479,10 @@ impl FileSystem for OverlayFs {
         newname: &CStr,
         flags: u32,
     ) -> io::Result<()> {
+        let _operation = self
+            .operation_lock
+            .lock()
+            .map_err(|_| io::Error::from_raw_os_error(libc::EIO))?;
         let old = self.child(olddir, oldname)?;
         let new = self.child(newdir, newname)?;
         match flags {
@@ -442,10 +492,7 @@ impl FileSystem for OverlayFs {
             _ => return Err(io::Error::from_raw_os_error(libc::ENOTSUP)),
         }
         if flags == RENAME_EXCHANGE {
-            let marker = PathBuf::from(format!(
-                ".pvisor-exchange-{}",
-                self.inode_alloc.next()
-            ));
+            let marker = PathBuf::from(format!(".pvisor-exchange-{}", self.inode_alloc.next()));
             self.remap_path(&old, &marker);
             self.remap_path(&new, &old);
             self.remap_path(&marker, &new);
@@ -457,6 +504,10 @@ impl FileSystem for OverlayFs {
     }
 
     fn link(&self, ctx: Context, inode: u64, newparent: u64, newname: &CStr) -> io::Result<Entry> {
+        let _operation = self
+            .operation_lock
+            .lock()
+            .map_err(|_| io::Error::from_raw_os_error(libc::EIO))?;
         let source = self.path(inode)?;
         let destination = self.child(newparent, newname)?;
         self.core.hard_link(&source, &destination)?;
@@ -471,7 +522,16 @@ impl FileSystem for OverlayFs {
         kill_priv: bool,
         flags: u32,
     ) -> io::Result<(Option<u64>, OpenOptions)> {
+        let _operation = self
+            .operation_lock
+            .lock()
+            .map_err(|_| io::Error::from_raw_os_error(libc::EIO))?;
         let path = self.path(inode)?;
+        // Symlinks are resolved by the guest through overlay lookups, never by
+        // the passthrough layer against an unfiltered lower directory.
+        if self.core.metadata(&path)?.file_type().is_symlink() {
+            return Err(io::Error::from_raw_os_error(libc::ELOOP));
+        }
         let writing = flags as i32 & libc::O_ACCMODE != libc::O_RDONLY
             || flags as i32 & (libc::O_APPEND | libc::O_TRUNC) != 0;
         let layer = if writing {
@@ -502,6 +562,10 @@ impl FileSystem for OverlayFs {
         umask: u32,
         extensions: Extensions,
     ) -> io::Result<(Entry, Option<u64>, OpenOptions)> {
+        let _operation = self
+            .operation_lock
+            .lock()
+            .map_err(|_| io::Error::from_raw_os_error(libc::EIO))?;
         let path = self.child(parent, name)?;
         let inode = self.allocate_inode(path.clone());
         let (upper_parent, upper_name) = self.upper_parent(ctx, &path)?;
@@ -541,6 +605,10 @@ impl FileSystem for OverlayFs {
         lock_owner: Option<u64>,
         flags: u32,
     ) -> io::Result<usize> {
+        let _operation = self
+            .operation_lock
+            .lock()
+            .map_err(|_| io::Error::from_raw_os_error(libc::EIO))?;
         self.with_file_handle(handle, |fs, h| {
             fs.read(ctx, h.inode, h.handle, w, size, offset, lock_owner, flags)
         })
@@ -559,6 +627,10 @@ impl FileSystem for OverlayFs {
         kill_priv: bool,
         flags: u32,
     ) -> io::Result<usize> {
+        let _operation = self
+            .operation_lock
+            .lock()
+            .map_err(|_| io::Error::from_raw_os_error(libc::EIO))?;
         self.with_file_handle(handle, |fs, h| {
             fs.write(
                 ctx,
@@ -576,10 +648,18 @@ impl FileSystem for OverlayFs {
     }
 
     fn flush(&self, ctx: Context, _inode: u64, handle: u64, lock_owner: u64) -> io::Result<()> {
+        let _operation = self
+            .operation_lock
+            .lock()
+            .map_err(|_| io::Error::from_raw_os_error(libc::EIO))?;
         self.with_file_handle(handle, |fs, h| fs.flush(ctx, h.inode, h.handle, lock_owner))
     }
 
     fn fsync(&self, ctx: Context, _inode: u64, datasync: bool, handle: u64) -> io::Result<()> {
+        let _operation = self
+            .operation_lock
+            .lock()
+            .map_err(|_| io::Error::from_raw_os_error(libc::EIO))?;
         self.with_file_handle(handle, |fs, h| fs.fsync(ctx, h.inode, datasync, h.handle))
     }
 
@@ -593,6 +673,10 @@ impl FileSystem for OverlayFs {
         flock_release: bool,
         lock_owner: Option<u64>,
     ) -> io::Result<()> {
+        let _operation = self
+            .operation_lock
+            .lock()
+            .map_err(|_| io::Error::from_raw_os_error(libc::EIO))?;
         let handle = self.handles.lock().unwrap().remove(&handle);
         match handle {
             Some(Handle::File(h)) => {
@@ -613,6 +697,10 @@ impl FileSystem for OverlayFs {
     }
 
     fn statfs(&self, ctx: Context, inode: u64) -> io::Result<bindings::statvfs64> {
+        let _operation = self
+            .operation_lock
+            .lock()
+            .map_err(|_| io::Error::from_raw_os_error(libc::EIO))?;
         let path = self.path(inode)?;
         let layer = self.layer(&path)?;
         let inner = self.inner_inode(layer, &path, ctx)?;
@@ -631,6 +719,10 @@ impl FileSystem for OverlayFs {
         value: &[u8],
         flags: u32,
     ) -> io::Result<()> {
+        let _operation = self
+            .operation_lock
+            .lock()
+            .map_err(|_| io::Error::from_raw_os_error(libc::EIO))?;
         let path = self.path(inode)?;
         let inner = self.writable_inner(ctx, &path)?;
         let result = self.layers[0].setxattr(ctx, inner, name, value, flags);
@@ -645,6 +737,10 @@ impl FileSystem for OverlayFs {
         name: &CStr,
         size: u32,
     ) -> io::Result<GetxattrReply> {
+        let _operation = self
+            .operation_lock
+            .lock()
+            .map_err(|_| io::Error::from_raw_os_error(libc::EIO))?;
         let path = self.path(inode)?;
         let layer = self.layer(&path)?;
         let inner = self.inner_inode(layer, &path, ctx)?;
@@ -654,6 +750,10 @@ impl FileSystem for OverlayFs {
     }
 
     fn listxattr(&self, ctx: Context, inode: u64, size: u32) -> io::Result<ListxattrReply> {
+        let _operation = self
+            .operation_lock
+            .lock()
+            .map_err(|_| io::Error::from_raw_os_error(libc::EIO))?;
         let path = self.path(inode)?;
         let layer = self.layer(&path)?;
         let inner = self.inner_inode(layer, &path, ctx)?;
@@ -663,6 +763,10 @@ impl FileSystem for OverlayFs {
     }
 
     fn removexattr(&self, ctx: Context, inode: u64, name: &CStr) -> io::Result<()> {
+        let _operation = self
+            .operation_lock
+            .lock()
+            .map_err(|_| io::Error::from_raw_os_error(libc::EIO))?;
         let path = self.path(inode)?;
         let inner = self.writable_inner(ctx, &path)?;
         let result = self.layers[0].removexattr(ctx, inner, name);
@@ -676,6 +780,10 @@ impl FileSystem for OverlayFs {
         inode: u64,
         _flags: u32,
     ) -> io::Result<(Option<u64>, OpenOptions)> {
+        let _operation = self
+            .operation_lock
+            .lock()
+            .map_err(|_| io::Error::from_raw_os_error(libc::EIO))?;
         let path = self.path(inode)?;
         let mut items = Vec::new();
         for name in self.core.list_names(&path)? {
@@ -704,6 +812,10 @@ impl FileSystem for OverlayFs {
     where
         F: FnMut(DirEntry) -> io::Result<usize>,
     {
+        let _operation = self
+            .operation_lock
+            .lock()
+            .map_err(|_| io::Error::from_raw_os_error(libc::EIO))?;
         let handles = self.handles.lock().unwrap();
         let items = match handles.get(&handle) {
             Some(Handle::Directory(items)) => items,
@@ -735,6 +847,10 @@ impl FileSystem for OverlayFs {
     where
         F: FnMut(DirEntry, Entry) -> io::Result<usize>,
     {
+        let _operation = self
+            .operation_lock
+            .lock()
+            .map_err(|_| io::Error::from_raw_os_error(libc::EIO))?;
         let handles = self.handles.lock().unwrap();
         let items = match handles.get(&handle) {
             Some(Handle::Directory(items)) => items,
@@ -760,6 +876,10 @@ impl FileSystem for OverlayFs {
     }
 
     fn releasedir(&self, _ctx: Context, _inode: u64, _flags: u32, handle: u64) -> io::Result<()> {
+        let _operation = self
+            .operation_lock
+            .lock()
+            .map_err(|_| io::Error::from_raw_os_error(libc::EIO))?;
         match self.handles.lock().unwrap().remove(&handle) {
             Some(Handle::Directory(_)) => Ok(()),
             _ => Err(io::Error::from_raw_os_error(libc::EBADF)),
@@ -767,6 +887,10 @@ impl FileSystem for OverlayFs {
     }
 
     fn access(&self, ctx: Context, inode: u64, mask: u32) -> io::Result<()> {
+        let _operation = self
+            .operation_lock
+            .lock()
+            .map_err(|_| io::Error::from_raw_os_error(libc::EIO))?;
         let path = self.path(inode)?;
         let layer = self.layer(&path)?;
         let inner = self.inner_inode(layer, &path, ctx)?;
@@ -785,6 +909,10 @@ impl FileSystem for OverlayFs {
         offset: u64,
         whence: u32,
     ) -> io::Result<u64> {
+        let _operation = self
+            .operation_lock
+            .lock()
+            .map_err(|_| io::Error::from_raw_os_error(libc::EIO))?;
         self.with_file_handle(handle, |fs, h| {
             fs.lseek(ctx, h.inode, h.handle, offset, whence)
         })
@@ -794,6 +922,57 @@ impl FileSystem for OverlayFs {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn access_policy_reaches_virtiofs_lookup_and_open() {
+        let temp = tempfile::tempdir().unwrap();
+        let lower = temp.path().join("lower");
+        std::fs::create_dir(&lower).unwrap();
+        std::fs::write(lower.join("private.key"), b"dummy-private").unwrap();
+        std::fs::write(lower.join(".env"), b"warn-only").unwrap();
+        std::os::unix::fs::symlink("private.key", lower.join("alias")).unwrap();
+        let fs = OverlayFs::new(
+            Config {
+                lower_dirs: vec![lower.to_string_lossy().into_owned()],
+                upper_dir: temp.path().join("upper").to_string_lossy().into_owned(),
+                work_dir: None,
+                preimage_dir: None,
+                excluded_paths: vec![],
+                access_policy: persisting_overlay_core::FileAccessPolicy::new(
+                    vec!["private.key".into()],
+                    vec![".env".into()],
+                )
+                .unwrap(),
+                semantics: passthrough::PermissionSemantics::LinuxComplete,
+            },
+            Arc::new(InodeAllocator::new()),
+        )
+        .unwrap();
+        fs.init(FsOptions::empty()).unwrap();
+        let ctx = Context {
+            uid: 0,
+            gid: 0,
+            pid: 1,
+        };
+        assert!(
+            fs.lookup(ctx, fuse::ROOT_ID, &CString::new("private.key").unwrap())
+                .is_err()
+        );
+        let alias = fs
+            .lookup(ctx, fuse::ROOT_ID, &CString::new("alias").unwrap())
+            .unwrap();
+        assert!(
+            fs.open(ctx, alias.inode, false, libc::O_RDONLY as u32)
+                .is_err()
+        );
+        let env = fs
+            .lookup(ctx, fuse::ROOT_ID, &CString::new(".env").unwrap())
+            .unwrap();
+        assert!(
+            fs.open(ctx, env.inode, false, libc::O_RDONLY as u32)
+                .is_ok()
+        );
+    }
 
     #[test]
     fn mutations_land_in_upper_and_lower_stays_immutable() {
@@ -810,6 +989,7 @@ mod tests {
                 work_dir: Some(work.to_string_lossy().into_owned()),
                 preimage_dir: None,
                 excluded_paths: Vec::new(),
+                access_policy: Default::default(),
                 semantics: passthrough::PermissionSemantics::LinuxComplete,
             },
             Arc::new(InodeAllocator::new()),
@@ -869,6 +1049,7 @@ mod tests {
                 work_dir: None,
                 preimage_dir: None,
                 excluded_paths: Vec::new(),
+                access_policy: Default::default(),
                 semantics: passthrough::PermissionSemantics::LinuxComplete,
             },
             inode_alloc.clone(),

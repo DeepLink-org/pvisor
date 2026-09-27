@@ -191,7 +191,7 @@ pvisor run \
   --overlaynet-deny 169.254.0.0/16 \
   -- agent-command
 
-pvisor review --json last | jq '{policy: .network.policy,
+pvisor status --review --json last | jq '{policy: .network.policy,
      interception: .network.interception,
      counters: .network.intercepted,
      non_bypassable: .safety.network_non_bypassable}'

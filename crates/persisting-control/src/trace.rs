@@ -84,7 +84,16 @@ impl Fact {
             Self::Rewritten { .. } => "policy",
             Self::Observation { domain, .. } => domain,
             Self::Context { .. } => "execution",
-            _ => "filesystem",
+            Self::Requested { request } => match request.operation.code() {
+                crate::ir::OpCode::Run => "run",
+                _ => "filesystem",
+            },
+            Self::Dispatched { expression, .. } | Self::Completed { expression, .. } => {
+                match expression.operation.code() {
+                    crate::ir::OpCode::Run => "run",
+                    _ => "filesystem",
+                }
+            }
         }
     }
 }

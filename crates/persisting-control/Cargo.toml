@@ -7,6 +7,7 @@ license.workspace = true
 description = "Shared runtime contracts, policies, control messages, and event records"
 
 [dependencies]
+globset.workspace = true
 anyhow.workspace = true
 ipnet.workspace = true
 serde = { workspace = true, features = ["derive"] }

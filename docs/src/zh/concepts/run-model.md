@@ -1,8 +1,13 @@
-# Run、Attempt 与 Effect
+# Job、Run、Attempt 与 Effect
 
-## Run：一次受管理的调用
+**Job** 是 CLI 中持久的一项工作。`pvisor run` 创建 Job；`status`、`kill`、
+`inspect`、`fork`、`apply`、`drop` 无需额外命令层级即可操作它。当前每个 Job
+对应一条内部 Run 记录。为保持兼容，磁盘上的 `run-*` ID、`run.json` 和 Run Bundle
+名称保持不变。
 
-Run 标识命令、配置与执行结果，其 ID 与操作系统 PID 无关。进程退出后，本地记录仍让 `status`、`review`、`apply` 和 `drop` 指向同一段工作。
+## Run：Job 的内部记录
+
+Run 标识命令、配置与执行结果，其 ID 与操作系统 PID 无关。进程退出后，本地记录仍让 `status`、`apply` 和 `drop` 指向同一段工作。使用 `status --review` 查看 Run Bundle 与暂存改动。
 
 ## Attempt：一次执行
 
@@ -24,6 +29,6 @@ Fork 根据逻辑检查点创建带有来源关系的新 Run，不会恢复原�
 
 ## Checkpoint：文件系统快照
 
-CLI 对已停止的暂存 Run 的 upper 层创建快照。嵌入式 API 还支持 AgentCtl 协作静默点。检查点保留暂存文件和来源关系，不保存进程内存、外部服务状态，也不冻结所有 lower 层。
+`fork` 命令对已停止的暂存 Run 的 upper 层创建快照。嵌入式 API 还支持 AgentCtl 协作静默点。检查点保留暂存文件和来源关系，不保存进程内存、外部服务状态，也不冻结所有 lower 层。
 
 操作步骤见[审查与应用](../guides/review-apply.md)，执行保证见[能力与证据](capabilities-and-evidence.md)。

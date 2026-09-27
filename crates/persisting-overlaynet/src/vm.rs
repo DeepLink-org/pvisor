@@ -13,6 +13,7 @@ use std::thread;
 use std::time::Duration as StdDuration;
 
 use anyhow::Context as _;
+use persisting_control::NetworkTransport;
 use smoltcp::iface::{Config as InterfaceConfig, Interface, SocketHandle, SocketSet};
 use smoltcp::phy::{Device, DeviceCapabilities, Medium, RxToken, TxToken};
 use smoltcp::socket::udp::UdpMetadata;
@@ -30,6 +31,7 @@ use tokio::task::JoinHandle;
 
 use crate::egress::{
     CONNECT_TIMEOUT, EgressContext, EgressError, EgressRuntime, connect_tcp_addresses,
+    connect_via_ambient_http_proxy,
 };
 use crate::interception::{InterceptionMetrics, InterceptionSnapshot};
 use crate::policy::DenyReason;
@@ -376,6 +378,11 @@ fn ensure_listener(
     }
     if flows.len() >= config.max_flows {
         metrics.tcp_flow_denied();
+        metrics.target_denied(
+            &key.destination_addr.to_string(),
+            key.destination_port,
+            NetworkTransport::TcpTunnel,
+        );
         return;
     }
     let destination = if key.destination_port == 53 {
@@ -399,11 +406,21 @@ fn ensure_listener(
             },
             None => {
                 metrics.tcp_flow_denied();
+                metrics.target_denied(
+                    &key.destination_addr.to_string(),
+                    key.destination_port,
+                    NetworkTransport::TcpTunnel,
+                );
                 return;
             }
         }
     } else if blocked_literal_destination(key.destination_addr) {
         metrics.tcp_flow_denied();
+        metrics.target_denied(
+            &key.destination_addr.to_string(),
+            key.destination_port,
+            NetworkTransport::TcpTunnel,
+        );
         return;
     } else {
         FlowDestination::Egress {
@@ -642,7 +659,17 @@ async fn connect_vm_egress(
     if addresses.is_empty() {
         return Err(EgressError::Denied(DenyReason::ResolvedAddressNotAllowed));
     }
-    let stream = connect_tcp_addresses(&addresses, host, port).await?;
+    let stream = match connect_via_ambient_http_proxy(host, port).await {
+        Some(Ok(stream)) => stream,
+        Some(Err(source)) => {
+            return Err(EgressError::Connect {
+                host: host.to_owned(),
+                port,
+                source,
+            });
+        }
+        None => connect_tcp_addresses(&addresses, host, port).await?,
+    };
     Ok((stream, bandwidth))
 }
 
@@ -725,6 +752,9 @@ fn apply_flow_event(
                     .pause_synack(false);
                 if policy_authorized {
                     metrics.policy_allowed();
+                    if let FlowDestination::Egress { host, port } = &flow.destination {
+                        metrics.target_allowed(host, *port, NetworkTransport::TcpTunnel);
+                    }
                 }
             }
         }
@@ -761,8 +791,14 @@ fn apply_flow_event(
                 sockets.get_mut::<tcp::Socket>(flow.handle).abort();
                 if denied {
                     metrics.tcp_flow_denied();
+                    if let FlowDestination::Egress { host, port } = &flow.destination {
+                        metrics.target_denied(host, *port, NetworkTransport::TcpTunnel);
+                    }
                 } else {
                     metrics.tcp_connect_failure();
+                    if let FlowDestination::Egress { host, port } = &flow.destination {
+                        metrics.target_failed(host, *port, NetworkTransport::TcpTunnel);
+                    }
                 }
             }
         }
@@ -1207,6 +1243,51 @@ impl TxToken for FrameTxToken<'_> {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn denied_vm_flow_records_its_destination() {
+        let key = FlowKey {
+            guest_port: 49152,
+            destination_addr: Ipv4Addr::new(198, 18, 0, 1),
+            destination_port: 443,
+        };
+        let mut sockets = SocketSet::new(Vec::new());
+        let handle = sockets.add(tcp::Socket::new(
+            tcp::SocketBuffer::new(vec![0; 1024]),
+            tcp::SocketBuffer::new(vec![0; 1024]),
+        ));
+        let mut flows = HashMap::from([(
+            key,
+            Flow {
+                handle,
+                destination: FlowDestination::Egress {
+                    host: "blocked.example".into(),
+                    port: 443,
+                },
+                phase: FlowPhase::Connecting,
+                upstream: None,
+                upstream_task: None,
+                inbound: VecDeque::new(),
+                inbound_offset: 0,
+                dns_input: Vec::new(),
+                remote_eof: false,
+            },
+        )]);
+        let metrics = InterceptionMetrics::default();
+        apply_flow_event(
+            FlowEvent::ConnectFailed {
+                key,
+                denied: true,
+                error: "explicit deny".into(),
+            },
+            &mut flows,
+            &mut sockets,
+            &metrics,
+        );
+        let snapshot = metrics.snapshot();
+        assert_eq!(snapshot.tcp_flows_denied, 1);
+        assert_eq!(snapshot.targets["TCP blocked.example:443"].denied, 1);
+    }
 
     fn query(name: &str, kind: u16) -> Vec<u8> {
         let mut bytes = vec![0x12, 0x34, 0x01, 0x00, 0x00, 0x01, 0, 0, 0, 0, 0, 0];

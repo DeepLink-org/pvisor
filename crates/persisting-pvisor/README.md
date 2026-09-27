@@ -6,9 +6,10 @@ PolicyVisor (pVisor) manages execution for Agent CLIs, scripts, and automation
 commands. The **p** stands for **Policy**: connect requested capabilities,
 effective runtime controls, and reviewable results.
 
-Owns one Run, its Attempts, capability admission, staged filesystem Effects,
-execution placement, and the host CLI (`pvisor`). It can place Runs on host,
-container, and libkrun VM executors while preserving one Run contract.
+Owns one Job, its internal Run record and Attempts, capability admission,
+filesystem Effects, execution placement, and the host CLI (`pvisor`). It can
+place Jobs on host, container, and libkrun VM executors while preserving one
+Run contract.
 It is not an Agent framework, an OCI runtime, or an operating system.
 
 OverlayFS, OverlayNet, Gateway, and AgentCtl are pVisor runtime drivers.
@@ -25,8 +26,11 @@ OverlayFS, OverlayNet, Gateway, and AgentCtl are pVisor runtime drivers.
 | Execution placement | Host process, native OCI container executor, or libkrun VM using an OCI image, prepared rootfs, or Linux host rootfs |
 | Evidence | Run Bundle, lifecycle events, capability enforcement, filesystem changes, network counters, AgentCtl observations, output, and artifact references |
 
-The standalone product loop is `RunSpec → admission → Attempt → terminal
-RunResult + private Run Bundle + staged Effects → later review/apply/drop`.
+With `--stage PATH`, the product loop is `RunSpec → admission → Attempt →
+RunResult + private Run Bundle + staged Effects → review/apply/drop`. Ordinary
+host Jobs without `--stage` write through to the workspace. `--safe` creates a
+temporary stage that is removed at Job exit unless `--stage PATH` retains it;
+removing that stage also removes its Run Bundle.
 Capture is a Gateway capability, not a second product.
 
 The default build excludes Jujutsu. Use `jujutsu-overlay` for the Jujutsu upper
@@ -49,6 +53,10 @@ On macOS, source builds that use HVF must be signed. `just build release` does t
 the equivalent entitlements file is `macos-hypervisor.entitlements`. Building
 from source on macOS also requires Zig (`brew install zig`) to cross-compile
 libkrun's embedded Linux guest init.
+
+The vendored libkrun is built only as an `rlib` and statically linked into
+`pvisor`; no `libkrun.so` or `libkrun.dylib` is required. The separate guest
+kernel payload, `libkrunfw.so.5` / `libkrunfw.5.dylib`, is still loaded at runtime.
 
 ## Links
 

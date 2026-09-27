@@ -70,6 +70,11 @@ fn skip_if_user_namespaces_are_explicitly_optional(
     if std::env::var_os("PERSISTING_TEST_ALLOW_NO_USERNS").is_none() || output.status.success() {
         return false;
     }
+    // Namespace setup can fail before a Run Bundle exists. In the optional CI
+    // shard, verify host capability directly before inspecting bundle details.
+    if skip_if_rootless_runtime_is_explicitly_optional() {
+        return true;
+    }
     let combined = String::from_utf8_lossy(&output.stderr);
     // Safe-best-effort intentionally falls back to the host process when the
     // runner cannot create namespaces. Treat that capability result as a
@@ -103,13 +108,92 @@ fn skip_if_rootless_runtime_is_explicitly_optional() -> bool {
         .status()
         .is_ok_and(|status| status.success());
     if !available {
-        eprintln!("skipping: the test host disables the rootless PID namespace");
+        eprintln!("skipping: the test host cannot create rootless user/mount/PID namespaces");
+        return true;
     }
-    !available
+    if OpenOptions::new()
+        .read(true)
+        .write(true)
+        .open("/dev/fuse")
+        .is_err()
+    {
+        eprintln!("skipping: the test host cannot open /dev/fuse");
+        return true;
+    }
+    false
+}
+
+#[test]
+fn ordinary_shell_writes_lower_and_safe_shell_stages_home_and_workspace() {
+    if skip_if_rootless_runtime_is_explicitly_optional() {
+        return;
+    }
+    let temporary = tempfile::tempdir().unwrap();
+    let home = temporary.path().join("home");
+    let workspace = temporary.path().join("workspace");
+    fs::create_dir_all(home.join(".codex")).unwrap();
+    fs::create_dir_all(&workspace).unwrap();
+    fs::write(home.join(".codex/state"), b"lower").unwrap();
+
+    let normal = Command::new(env!("CARGO_BIN_EXE_pvisor"))
+        .env("HOME", &home)
+        .env_remove("CODEX_HOME")
+        .current_dir(&workspace)
+        .args([
+            "run",
+            "--",
+            "/bin/sh",
+            "-c",
+            "printf direct > \"$HOME/.codex/state\"; printf direct > project-state",
+        ])
+        .output()
+        .unwrap();
+    assert!(
+        normal.status.success(),
+        "normal run: {}",
+        String::from_utf8_lossy(&normal.stderr)
+    );
+    assert_eq!(fs::read(home.join(".codex/state")).unwrap(), b"direct");
+    assert_eq!(
+        fs::read(workspace.join("project-state")).unwrap(),
+        b"direct"
+    );
+
+    fs::write(home.join(".codex/state"), b"lower").unwrap();
+    fs::remove_file(workspace.join("project-state")).unwrap();
+    let safe = Command::new(env!("CARGO_BIN_EXE_pvisor"))
+        .env("HOME", &home)
+        .env_remove("CODEX_HOME")
+        .current_dir(&workspace)
+        .args(["run", "--safe", "--stage"])
+        .arg(temporary.path().join("stage"))
+        .args([
+            "--",
+            "/bin/sh",
+            "-c",
+            "test \"$(pwd -P)\" = \"$PERSISTING_OVERLAY_TARGET\"; printf staged > \"$HOME/.codex/state\"; printf staged > project-state; cd \"$PERSISTING_OVERLAY_TARGET\"; printf staged > alias-state",
+        ])
+        .output()
+        .unwrap();
+    assert!(
+        safe.status.success(),
+        "safe run: {}",
+        String::from_utf8_lossy(&safe.stderr)
+    );
+    assert_eq!(fs::read(home.join(".codex/state")).unwrap(), b"lower");
+    assert!(!workspace.join("project-state").exists());
+    assert!(!workspace.join("alias-state").exists());
+    let bundle = RunBundle::read(&temporary.path().join("stage")).unwrap();
+    let filesystem = bundle.filesystem.expect("safe workspace stage");
+    assert!(filesystem.upper.join("project-state").is_file());
+    assert!(filesystem.upper.join("alias-state").is_file());
 }
 
 #[test]
 fn safe_local_executable_cannot_escape_the_workspace() {
+    if skip_if_rootless_runtime_is_explicitly_optional() {
+        return;
+    }
     let temporary = tempfile::tempdir().unwrap();
     let workspace = temporary.path().join("workspace");
     let outside = temporary.path().join("outside");
@@ -150,6 +234,7 @@ printf '%s:%s:%s\n' "$PERSISTING_SANDBOX_FILESYSTEM" "$PERSISTING_SANDBOX_LANDLO
         .env("OUTSIDE_WRITE", outside.join("escaped.txt"))
         .args([
             "run",
+            "--safe",
             "--stdio",
             "capture",
             "--stage",
@@ -224,6 +309,9 @@ printf '%s:%s:%s\n' "$PERSISTING_SANDBOX_FILESYSTEM" "$PERSISTING_SANDBOX_LANDLO
 
 #[test]
 fn safe_local_executable_cannot_mutate_outside_metadata() {
+    if skip_if_rootless_runtime_is_explicitly_optional() {
+        return;
+    }
     let temporary = tempfile::tempdir().unwrap();
     let workspace = temporary.path().join("workspace");
     let outside = temporary.path().join("outside");
@@ -250,6 +338,7 @@ printf metadata-denied
         .env("OUTSIDE_DIR", &outside)
         .args([
             "run",
+            "--safe",
             "--stdio",
             "capture",
             "--stage",
@@ -298,6 +387,9 @@ printf metadata-denied
 
 #[test]
 fn safe_run_selectively_applies_then_drops_remaining_changes() {
+    if skip_if_rootless_runtime_is_explicitly_optional() {
+        return;
+    }
     let temporary = tempfile::tempdir().unwrap();
     let workspace = temporary.path().join("workspace");
     let run_home = temporary.path().join("runs");
@@ -306,7 +398,7 @@ fn safe_run_selectively_applies_then_drops_remaining_changes() {
 
     let output = Command::new(env!("CARGO_BIN_EXE_pvisor"))
         .env("PERSISTING_RUN_HOME", &run_home)
-        .args(["run", "--stdio", "capture", "--stage"])
+        .args(["run", "--safe", "--stdio", "capture", "--stage"])
         .arg(temporary.path().join("stage"))
         .current_dir(&workspace)
         .args([
@@ -401,6 +493,9 @@ fn safe_run_selectively_applies_then_drops_remaining_changes() {
 
 #[test]
 fn safe_apply_refuses_to_overwrite_a_concurrently_changed_target() {
+    if skip_if_rootless_runtime_is_explicitly_optional() {
+        return;
+    }
     let temporary = tempfile::tempdir().unwrap();
     let workspace = temporary.path().join("workspace");
     let run_home = temporary.path().join("runs");
@@ -409,7 +504,7 @@ fn safe_apply_refuses_to_overwrite_a_concurrently_changed_target() {
 
     let output = Command::new(env!("CARGO_BIN_EXE_pvisor"))
         .env("PERSISTING_RUN_HOME", &run_home)
-        .args(["run", "--stdio", "capture", "--stage"])
+        .args(["run", "--safe", "--stdio", "capture", "--stage"])
         .arg(temporary.path().join("stage"))
         .current_dir(&workspace)
         .args(["--", "/bin/sh", "-c", "printf staged > value.txt"])
@@ -418,7 +513,14 @@ fn safe_apply_refuses_to_overwrite_a_concurrently_changed_target() {
     if skip_if_user_namespaces_are_explicitly_optional(&run_home, &output) {
         return;
     }
-    assert!(output.status.success());
+    assert!(
+        output.status.success(),
+        "safe run failed ({}):\nstdout:\n{}\nstderr:\n{}\nsetup failure: {:?}",
+        output.status,
+        String::from_utf8_lossy(&output.stdout),
+        String::from_utf8_lossy(&output.stderr),
+        setup_failure(&run_home)
+    );
     assert_eq!(fs::read(workspace.join("value.txt")).unwrap(), b"original");
     fs::write(workspace.join("value.txt"), b"concurrent").unwrap();
 
@@ -448,6 +550,9 @@ fn safe_apply_refuses_to_overwrite_a_concurrently_changed_target() {
 
 #[test]
 fn safe_launcher_closes_inherited_host_file_descriptors() {
+    if skip_if_rootless_runtime_is_explicitly_optional() {
+        return;
+    }
     let temporary = tempfile::tempdir().unwrap();
     let workspace = temporary.path().join("workspace");
     let run_home = temporary.path().join("runs");
@@ -479,6 +584,7 @@ fn safe_launcher_closes_inherited_host_file_descriptors() {
         .env("PERSISTING_LEAKED_SOCKET_FD", socket_fd.to_string())
         .args([
             "run",
+            "--safe",
             "--stdio",
             "capture",
             "--stage",
@@ -550,6 +656,9 @@ fn inherited_fd_probe_agent() {
 
 #[test]
 fn denied_network_uses_a_private_network_namespace() {
+    if skip_if_rootless_runtime_is_explicitly_optional() {
+        return;
+    }
     let temporary = tempfile::tempdir().unwrap();
     let workspace = temporary.path().join("workspace");
     let run_home = temporary.path().join("runs");
@@ -620,6 +729,9 @@ printf 'network:%s\n' "$PERSISTING_SANDBOX_NETWORK"
 
 #[test]
 fn synthetic_root_hides_ungranted_host_unix_sockets() {
+    if skip_if_rootless_runtime_is_explicitly_optional() {
+        return;
+    }
     let temporary = tempfile::tempdir().unwrap();
     let workspace = temporary.path().join("workspace");
     let run_home = temporary.path().join("runs");
@@ -631,7 +743,7 @@ fn synthetic_root_hides_ungranted_host_unix_sockets() {
         .env("PERSISTING_RUN_HOME", &run_home)
         .env("PERSISTING_SOCKET_PROBE", &host_socket)
         .env("SSH_AUTH_SOCK", &host_socket)
-        .args(["run", "--stdio", "capture", "--stage"])
+        .args(["run", "--safe", "--stdio", "capture", "--stage"])
         .arg(temporary.path().join("stage"))
         .current_dir(&workspace)
         .arg("--")
@@ -671,7 +783,7 @@ fn safe_run_reaps_setsid_double_fork_descendants_after_success() {
 
     let output = Command::new(env!("CARGO_BIN_EXE_pvisor"))
         .env("PERSISTING_RUN_HOME", &run_home)
-        .args(["run", "--stdio", "capture", "--stage"])
+        .args(["run", "--safe", "--stdio", "capture", "--stage"])
         .arg(temporary.path().join("stage"))
         .current_dir(&workspace)
         .arg("--")
@@ -745,6 +857,9 @@ fn daemon_listener_agent() {
 
 #[test]
 fn sandboxed_agent_may_legitimately_exit_with_reserved_launcher_code() {
+    if skip_if_rootless_runtime_is_explicitly_optional() {
+        return;
+    }
     let temporary = tempfile::tempdir().unwrap();
     let workspace = temporary.path().join("workspace");
     let run_home = temporary.path().join("runs");
@@ -802,11 +917,14 @@ fn unix_socket_probe_agent() {
 
 #[test]
 fn internal_launcher_reports_setup_failure_with_reserved_status() {
+    let temporary = tempfile::tempdir().unwrap();
+    let plan = temporary.path().join("invalid-plan.json");
+    fs::write(&plan, "not-json").unwrap();
     let output = Command::new(env!("CARGO_BIN_EXE_pvisor"))
         .arg("__pvisor-sandbox-exec")
         .arg("--")
         .arg("/bin/true")
-        .env("PERSISTING_INTERNAL_SANDBOX_PLAN", "not-json")
+        .env("PERSISTING_INTERNAL_SANDBOX_PLAN", &plan)
         .output()
         .unwrap();
 

@@ -3,7 +3,7 @@
 use super::implant::{ImplantPlan, OverlayHint};
 use super::overlay::{
     OverlayMount, OverlayRecord, apply_overlay, discard_overlay, hint_from_record,
-    lower_stack_from_config, mount_overlay_record, prepare_overlay_record_mountless,
+    lower_stack_from_config, mount_overlay_record_observed, prepare_overlay_record_mountless,
     resolve_overlay_workspace, stage_overlay_record,
 };
 use super::registry::{EnvironmentProjection, RunControlServer, RunLease, RunLineage, RunRecord};
@@ -39,6 +39,7 @@ pub(crate) struct AttemptSession {
     gateway: Option<InProcessCapture>,
     vm_network: Option<Arc<std::sync::Mutex<Option<VmNetworkAttachment>>>>,
     network_metrics: Option<InterceptionMetrics>,
+    fs_metrics: Option<persisting_overlayfs::FsMetrics>,
     overlay: Option<OverlayMount>,
     sink: Option<Arc<dyn TrajectoryEventSink>>,
     started_at: Instant,
@@ -132,6 +133,9 @@ impl AttemptSession {
             }
         }
         self.overlay_record = record;
+        if let Some(metrics) = &self.fs_metrics {
+            self.run_record.filesystem_observation = Some(metrics.snapshot());
+        }
 
         if let Some(metrics) = &self.network_metrics {
             self.run_record.network_interception_metrics = Some(metrics.snapshot());
@@ -315,6 +319,7 @@ struct PreparedVmNetwork {
 
 struct PreparedOverlay {
     mount: Option<OverlayMount>,
+    fs_metrics: Option<persisting_overlayfs::FsMetrics>,
     hint: OverlayHint,
     record: Option<OverlayRecord>,
     lowers: Vec<std::path::PathBuf>,
@@ -356,6 +361,11 @@ pub(crate) fn prepare_attempt(
         },
     )?;
 
+    spec.metadata.insert(
+        crate::sandbox::SANDBOX_PROXY_KEY.into(),
+        gateway.listen.clone().into(),
+    );
+
     // A Run has one top-level identity across pVisor and Gateway.
     // Subagent sessions remain separate Storylines beneath this root.
     let root_session = spec.run_id.as_str().to_string();
@@ -373,6 +383,7 @@ pub(crate) fn prepare_attempt(
     )?;
     let PreparedOverlay {
         mount: overlay_mount,
+        fs_metrics,
         hint: overlay_hint,
         record: overlay_record,
         lowers: overlay_lowers,
@@ -425,6 +436,7 @@ pub(crate) fn prepare_attempt(
             persisting_overlaynet::InterceptionProfile::explicit_proxy()
         }),
         network_interception_metrics: None,
+        filesystem_observation: None,
         gateway_listen: opts.gateway_enabled.then(|| gateway.listen.clone()),
         network: serde_json::to_value(&spec.capabilities.network)?,
         network_policy: Some(serde_json::to_value(&config.network)?),
@@ -434,9 +446,14 @@ pub(crate) fn prepare_attempt(
         overlay_lowers,
         lineage: lineage_from_spec(spec),
         orchestration: orchestration_from_spec(spec),
+        run_plan: run_plan_from_spec(spec)?,
     };
     run_record.write()?;
-    let control = RunControlServer::start(&run_record)?;
+    let control = RunControlServer::start_observed(
+        &run_record,
+        fs_metrics.clone(),
+        Some(network_metrics.clone()),
+    )?;
 
     let RunInvocation::Process(ref process) = spec.invocation;
     let program = process.program.clone();
@@ -473,7 +490,13 @@ pub(crate) fn prepare_attempt(
     )?;
     run_record.environment.runtime_injected_keys = implant.env.keys().cloned().collect();
     run_record.write()?;
-    if opts.vm_network && opts.gateway_enabled {
+    #[cfg(unix)]
+    persisting_control::audit::arm();
+    // The Attempt listener is also the VM's explicit HTTP proxy endpoint.
+    // Rewrite it for every VM OverlayNet run; gateway_enabled only controls
+    // LLM capture, not proxy reachability. Without this, clients in the guest
+    // try to connect to their own 127.0.0.1 and fail immediately.
+    if opts.vm_network {
         rewrite_vm_gateway_implant(spec, &gateway.listen);
     }
     inject_krun_overlay_metadata(spec, &overlay_hint, overlay_record.as_ref());
@@ -485,6 +508,7 @@ pub(crate) fn prepare_attempt(
         gateway: Some(gateway),
         vm_network,
         network_metrics: Some(network_metrics),
+        fs_metrics,
         overlay: overlay_mount,
         sink: Some(sink),
         started_at: Instant::now(),
@@ -514,6 +538,7 @@ pub(crate) fn prepare_overlay_attempt(
     )?;
     let PreparedOverlay {
         mount: overlay_mount,
+        fs_metrics,
         hint: overlay_hint,
         record: overlay_record,
         lowers: overlay_lowers,
@@ -558,6 +583,7 @@ pub(crate) fn prepare_overlay_attempt(
             .as_ref()
             .map(|_| persisting_overlaynet::InterceptionProfile::vm_smoltcp()),
         network_interception_metrics: None,
+        filesystem_observation: None,
         gateway_listen: None,
         network: serde_json::to_value(&spec.capabilities.network)?,
         network_policy,
@@ -567,13 +593,15 @@ pub(crate) fn prepare_overlay_attempt(
         overlay_lowers,
         lineage: lineage_from_spec(spec),
         orchestration: orchestration_from_spec(spec),
+        run_plan: run_plan_from_spec(spec)?,
     };
     run_record.write()?;
-    let control = RunControlServer::start(&run_record)?;
+    let control =
+        RunControlServer::start_observed(&run_record, fs_metrics.clone(), network_metrics.clone())?;
 
     let mut plan = ImplantPlan {
         env: ImplantPlan::marker_env(),
-        cwd: overlay_hint.merged_dir.clone(),
+        cwd: overlay_cwd(spec, &overlay_hint, Some(&overlay_record)),
         overlay: overlay_hint,
         notes: vec![format!(
             "filesystem: overlay target={} staging={} (apply later unless auto_apply)",
@@ -632,6 +660,8 @@ pub(crate) fn prepare_overlay_attempt(
     apply_implant(process, &plan);
     run_record.environment.runtime_injected_keys = plan.env.keys().cloned().collect();
     run_record.write()?;
+    #[cfg(unix)]
+    persisting_control::audit::arm();
     spec.metadata
         .insert("pvisor.runtime.implant".into(), plan.as_metadata_json());
     inject_krun_overlay_metadata(spec, &plan.overlay, Some(&overlay_record));
@@ -643,6 +673,7 @@ pub(crate) fn prepare_overlay_attempt(
         gateway: None,
         vm_network,
         network_metrics,
+        fs_metrics,
         overlay: overlay_mount,
         sink: None,
         started_at: Instant::now(),
@@ -697,6 +728,7 @@ pub(crate) fn prepare_storage_attempt(
             .as_ref()
             .map(|_| persisting_overlaynet::InterceptionProfile::vm_smoltcp()),
         network_interception_metrics: None,
+        filesystem_observation: None,
         gateway_listen: None,
         network: serde_json::to_value(&spec.capabilities.network)?,
         network_policy,
@@ -706,6 +738,7 @@ pub(crate) fn prepare_storage_attempt(
         overlay_lowers: Vec::new(),
         lineage: lineage_from_spec(spec),
         orchestration: orchestration_from_spec(spec),
+        run_plan: run_plan_from_spec(spec)?,
     };
     run_record.write()?;
     let control = RunControlServer::start(&run_record)?;
@@ -731,6 +764,8 @@ pub(crate) fn prepare_storage_attempt(
     apply_implant(process, &plan);
     run_record.environment.runtime_injected_keys = plan.env.keys().cloned().collect();
     run_record.write()?;
+    #[cfg(unix)]
+    persisting_control::audit::arm();
     spec.metadata
         .insert("pvisor.runtime.implant".into(), plan.as_metadata_json());
 
@@ -741,6 +776,7 @@ pub(crate) fn prepare_storage_attempt(
         gateway: None,
         vm_network,
         network_metrics,
+        fs_metrics: None,
         overlay: None,
         sink: None,
         started_at: Instant::now(),
@@ -769,7 +805,7 @@ fn start_vm_network(
         },
     );
     config.metrics = metrics;
-    if let Some((listen, _)) = gateway.filter(|(_, enabled)| *enabled) {
+    if let Some((listen, _)) = gateway {
         let host: std::net::SocketAddr = listen
             .strip_prefix("http://")
             .or_else(|| listen.strip_prefix("https://"))
@@ -887,6 +923,21 @@ fn orchestration_from_spec(
         .collect()
 }
 
+fn run_plan_from_spec(
+    spec: &RunSpec,
+) -> anyhow::Result<Option<persisting_control::ir::run::RunPlan>> {
+    let Some(value) = spec.metadata.get("pvisor.ir.run_plan") else {
+        return Ok(None);
+    };
+    let plan: persisting_control::ir::run::RunPlan = serde_json::from_value(value.clone())?;
+    plan.validate()?;
+    anyhow::ensure!(
+        plan.expression.operation.file() == spec.run_id.as_str(),
+        "Run plan identity does not match the prepared Run"
+    );
+    Ok(Some(plan))
+}
+
 fn environment_from_spec(spec: &RunSpec) -> EnvironmentProjection {
     if let Some(value) = spec.metadata.get("pvisor.environment") {
         let inherits_host = value
@@ -934,6 +985,9 @@ fn apply_overlay_override(
     overlay_override: &OverlayHint,
 ) {
     overlay_cfg.backend = overlay_override.backend;
+    if overlay_override != &OverlayHint::default() {
+        overlay_cfg.access_policy = overlay_override.access_policy.clone();
+    }
     overlay_cfg.auto_apply = overlay_override.auto_apply;
     overlay_cfg.auto_discard = overlay_override.auto_discard;
     overlay_cfg.protect_target = overlay_override.protect_target;
@@ -996,6 +1050,7 @@ fn prepare_overlay(
     if !overlay_cfg.enabled && overlay_cfg.target.is_none() {
         return Ok(PreparedOverlay {
             mount: None,
+            fs_metrics: None,
             hint: OverlayHint::default(),
             record: None,
             lowers: Vec::new(),
@@ -1010,13 +1065,18 @@ fn prepare_overlay(
                     existing.run_id
                 );
             }
-            let lowers = lower_stack_from_config(overlay_cfg, storage, &record.target);
-            let (mount, record) = if mountless {
-                (None, prepare_overlay_record_mountless(&record, &lowers)?)
+            let lowers = lower_stack_from_config(overlay_cfg, storage, &record)?;
+            let (mount, record, fs_metrics) = if mountless {
+                (
+                    None,
+                    prepare_overlay_record_mountless(&record, &lowers)?,
+                    None,
+                )
             } else {
-                let mount = mount_overlay_record(&record, &lowers)?;
+                let metrics = persisting_overlayfs::FsMetrics::default();
+                let mount = mount_overlay_record_observed(&record, &lowers, Some(metrics.clone()))?;
                 let record = mount.record().clone();
-                (Some(mount), record)
+                (Some(mount), record, Some(metrics))
             };
             let mut hint = hint_from_record(&record, lowers.clone());
             if mountless {
@@ -1024,6 +1084,7 @@ fn prepare_overlay(
             }
             Ok(PreparedOverlay {
                 mount,
+                fs_metrics,
                 hint,
                 record: Some(record),
                 lowers,
@@ -1031,6 +1092,7 @@ fn prepare_overlay(
         }
         None => Ok(PreparedOverlay {
             mount: None,
+            fs_metrics: None,
             hint: OverlayHint::default(),
             record: None,
             lowers: Vec::new(),
@@ -1068,6 +1130,7 @@ fn inject_krun_overlay_metadata(
             "work": work,
             "preimages": record.stage_dir.join("preimages"),
             "excluded": record.excluded_paths,
+            "access_policy": record.access_policy,
         }),
     );
 }
@@ -1101,7 +1164,7 @@ fn enrich_with_session(
     } = opts;
     let mut plan = ImplantPlan {
         env: ImplantPlan::marker_env(),
-        cwd: overlay.merged_dir.clone(),
+        cwd: overlay_cwd(spec, overlay, overlay_record),
         overlay: overlay.clone(),
         notes: Vec::new(),
     };
@@ -1284,14 +1347,50 @@ fn enrich_with_session(
         plan.notes.push("filesystem: host view (no overlay)".into());
     }
 
+    let profile = spec
+        .metadata
+        .get("pvisor.gateway.profile")
+        .cloned()
+        .map(serde_json::from_value::<crate::config::GatewayProfile>)
+        .transpose()?;
+    super::zcode::prepare(spec, &mut plan, listen, run_storage, profile)?;
+
     let RunInvocation::Process(ref mut process) = spec.invocation;
     apply_implant(process, &plan);
+    super::zcode::apply_environment(process, &plan);
     if gateway_enabled {
         inject_gateway_args(process, listen);
     }
     spec.metadata
         .insert("pvisor.runtime.implant".into(), plan.as_metadata_json());
     Ok(plan)
+}
+
+fn process_cwd(spec: &RunSpec) -> Option<PathBuf> {
+    match &spec.invocation {
+        RunInvocation::Process(process) => process
+            .cwd
+            .as_ref()
+            .map(PathBuf::from)
+            .or_else(|| std::env::current_dir().ok()),
+    }
+}
+
+fn overlay_cwd(
+    spec: &RunSpec,
+    overlay: &OverlayHint,
+    record: Option<&OverlayRecord>,
+) -> Option<PathBuf> {
+    // Only Linux binds the merged view over the original path in a private root.
+    if cfg!(target_os = "linux")
+        && crate::sandbox::sandbox_required(spec)
+        && !uses_krun_executor(spec)
+        && overlay.merged_dir.is_some()
+        && let Some(record) = record
+    {
+        return Some(record.target.clone());
+    }
+    overlay.merged_dir.clone().or_else(|| process_cwd(spec))
 }
 
 fn inject_gateway_args(process: &mut ProcessInvocation, listen: &str) {
@@ -1319,9 +1418,64 @@ pub(crate) fn apply_implant(process: &mut ProcessInvocation, plan: &ImplantPlan)
 }
 
 #[cfg(test)]
-mod vm_network_tests {
+mod tests {
     use super::rewrite_vm_gateway_implant;
     use persisting_control::{RunInvocation, RunSpec};
+
+    #[test]
+    fn safe_overlay_cwd_uses_original_path_only_on_linux() {
+        let mut spec = RunSpec::process("run-1", "agent", "sh");
+        spec.metadata
+            .insert(crate::sandbox::REQUIRED_SANDBOX_KEY.into(), true.into());
+        let config = persisting_gateway::config::OverlayConfig {
+            enabled: true,
+            target: Some("/workspace".into()),
+            stage_dir: Some("/stage".into()),
+            ..Default::default()
+        };
+        let record = super::super::overlay::resolve_overlay_workspace(
+            &config,
+            std::path::Path::new("/runs"),
+            "run-1",
+        )
+        .unwrap()
+        .unwrap();
+        let overlay = super::OverlayHint {
+            merged_dir: Some(record.merged_dir.clone()),
+            ..Default::default()
+        };
+        let expected = if cfg!(target_os = "linux") {
+            &record.target
+        } else {
+            &record.merged_dir
+        };
+        assert_eq!(
+            super::overlay_cwd(&spec, &overlay, Some(&record)).as_ref(),
+            Some(expected)
+        );
+    }
+
+    #[test]
+    fn absent_overlay_hint_preserves_configured_file_policy() {
+        let mut config = persisting_gateway::config::OverlayConfig {
+            access_policy: persisting_control::FileAccessPolicy::new(
+                vec!["**/.ssh".into()],
+                vec![],
+            )
+            .unwrap(),
+            ..Default::default()
+        };
+        super::apply_overlay_override(&mut config, &super::OverlayHint::default());
+        assert_eq!(config.access_policy.deny(), ["**/.ssh"]);
+        super::apply_overlay_override(
+            &mut config,
+            &super::OverlayHint {
+                stage_dir: Some("/stage".into()),
+                ..Default::default()
+            },
+        );
+        assert!(config.access_policy.deny().is_empty());
+    }
 
     #[test]
     fn gateway_loopback_urls_and_embedded_arguments_are_rewritten() {

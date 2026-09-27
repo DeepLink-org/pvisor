@@ -6,13 +6,29 @@
 mod attempt;
 mod implant;
 mod overlay;
+pub(crate) mod plan;
 mod registry;
 mod supervisor;
+pub(crate) mod zcode;
 
 pub(crate) use attempt::AttemptTeardown;
 pub(crate) use attempt::VmNetworkAttachment;
 pub(crate) use supervisor::RuntimeSupervisor;
 pub(crate) use supervisor::RuntimeSupervisorBuilder;
+
+/// Apply application-specific process compatibility policies before the
+/// Run's capabilities are validated and the executor prepares its sandbox.
+pub(crate) fn apply_process_policies(
+    spec: &mut persisting_control::RunSpec,
+    executor: &persisting_control::ExecutorDescriptor,
+) -> anyhow::Result<()> {
+    if executor.kind == persisting_control::ExecutorKind::Process
+        && executor.isolation == persisting_control::IsolationKind::RootlessProcess
+    {
+        zcode::apply_host_process_policy(spec)?;
+    }
+    Ok(())
+}
 
 pub use implant::{ImplantPlan, OverlayHint};
 #[cfg(all(test, target_os = "macos"))]
@@ -24,6 +40,9 @@ pub use overlay::{
     overlay_changes, overlay_status, restore_overlay_upper, snapshot_overlay_upper,
     write_overlay_record,
 };
+#[cfg(target_os = "linux")]
+pub(crate) use registry::LEASE_FILENAME;
+pub(crate) use registry::control_observations;
 pub use registry::{
     EnvironmentProjection, RunLease, RunLineage, RunRecord, all_runs, control_mount_inspect,
     control_overlay_status, control_ping, control_unmount_inspect, default_run_home, is_live,

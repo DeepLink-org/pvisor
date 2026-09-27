@@ -1,6 +1,6 @@
 # 选择执行环境
 
-按命令需要的内核和用户空间选择 executor。需要审查工作区写入时，再显式启用暂存目录。
+按命令需要的内核和用户空间选择 executor。普通 host Run 默认直接写入工作区；`--safe` 暂存工作区写入。需要在运行后审查时用 `--stage PATH` 保留改动。
 
 | Executor | 执行环境 | 前提 |
 | --- | --- | --- |
@@ -16,7 +16,7 @@
 pvisor run --executor host --stage ../stage-host -- /bin/sh
 ```
 
-工作目录是受管理的写时复制视图。没有 OverlayFS 选项时，host 命令可以直接写入项目。safe-best-effort 隔离会报告不支持的控制，不代表各平台具有相同保证。
+工作目录在沙箱内保持原路径。普通运行直接写入 lower；`--safe` 使用写时复制视图，省略 `--stage` 时在 Run 结束后丢弃该视图。显式可写挂载及工作区外的应用状态仍可能直接写入宿主。safe-best-effort 隔离会报告不支持的控制，不代表各平台具有相同保证。
 
 ## Linux 容器
 
@@ -32,25 +32,25 @@ pvisor run --executor container \
 
 ```bash
 pvisor run --executor vm --rootfs image=ubuntu:24.04 \
-  --overlayfs-path /workspace --stage ../stage-vm -- /bin/sh
+  --stage ../stage-vm --mount "$PWD:stage" -- /bin/sh
 ```
 
 也可用 `--rootfs DIR` 指定准备好的 Linux rootfs。镜像直接拉取，VM executor 不需要 Docker。需要可复现时固定镜像摘要。rootfs 写入是临时的；工作区暂存内容会保留供审查。
 
-Linux 上的 `--rootfs host` 可将宿主根目录作为只读底层提供给独立客户机内核。这会暴露宿主内容供读取。应显式设置工作区 `--overlayfs-path`，仅用于同一所有者的本地工作。
+Linux 上的 `--rootfs host` 可将宿主根目录作为只读底层提供给独立客户机内核。这会暴露宿主内容供读取。应通过 `--mount` 显式声明需要暴露的路径。
 
 Linux 需要可访问的 `/dev/kvm`。macOS 上用 `just build release` 构建并签署 Hypervisor entitlement；源码构建还需要 Zig。VM 网络支持策略控制的 IPv4 TCP、DHCP 和合成 DNS；应用 UDP 流量、IPv6、QUIC 和入站连接不在当前支持范围内。
 
 ## 组合底层与提交方式
 
-`--overlayfs-compose DIR` 在当前工作区之上按从下到上的顺序添加只读层。`--overlayfs-path PATH` 设置命令看到的绝对工作区路径。暂存目录应放在所有底层之外。
+`--mount SOURCE[:TARGET]:read|stage|write` 声明宿主路径；省略 target 时 target 等于 source。`read` 和 `stage` 当前都作为工作区视图的底层，`write` 授予直接写宿主路径的权限。`--access PATH-GLOB:deny|read` 在视图内应用规则：`deny` 隐藏匹配路径，`read` 当前仅记录访问警告，尚未强制只读。`--stage PATH` 指定持久 stage；`--safe` 未指定 stage 时使用临时 stage。
 
-| 提交模式 | 行为 |
+| Stage 生命周期 | 行为 |
 | --- | --- |
-| `manual`（默认） | 保留改动，由 `review`、`apply` 或 `drop` 决定 |
-| `apply` | Run 退出时自动应用，包括命令以非零状态退出的情况 |
-| `drop` | Run 退出时丢弃暂存内容 |
+| `--stage PATH` | 保留改动，由 `status --review`、`apply` 或 `drop` 决定 |
+| 仅 `--safe`，未指定 `--stage` | 使用临时目录，Run 结束后自动丢弃 |
+| 普通 host Run，未指定 `--stage` | 直接写入 lower |
 
-需要根据测试或审查结果决定是否接受改动时，使用 manual。宿主进程 Run 在完成或超时后清理进程组，并限制等待输出管道的时间；脱离该组的后代不能仅靠进程组清理来约束。
+需要根据审查结果决定是否接受改动时，显式指定 `--stage PATH`。宿主进程 Run 在完成或超时后清理进程组，并限制等待输出管道的时间；脱离该组的后代不能仅靠进程组清理来约束。
 
 继续阅读[审查并应用](review-apply.md)或[网络策略](network.md)。

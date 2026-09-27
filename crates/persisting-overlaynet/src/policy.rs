@@ -52,6 +52,7 @@ pub struct NetworkPolicy {
     mode: NetworkMode,
     guard: NetworkGuard,
     limits: Vec<CompiledBandwidthLimit>,
+    source: NetworkConfig,
 }
 
 #[derive(Debug, Clone)]
@@ -98,6 +99,7 @@ impl NetworkPolicy {
             mode: network.mode,
             guard,
             limits,
+            source: network.clone(),
         })
     }
 
@@ -126,6 +128,27 @@ impl NetworkPolicy {
         // controller may further restrict it, but must never be able to widen it.
         self.preflight(request)?;
         authorize_egress(controller, self, request)
+    }
+
+    /// A TUI decision grants only this logical host, transport, and port.
+    /// Explicit denies, resolved-address safety, and bandwidth limits remain.
+    pub(crate) fn one_time_grant(&self, request: &NetworkAccessRequest) -> anyhow::Result<Self> {
+        anyhow::ensure!(
+            self.mode == NetworkMode::Allowlist,
+            "only an allowlist can be extended by audit"
+        );
+        let port = request
+            .port
+            .ok_or_else(|| anyhow::anyhow!("network port is required"))?;
+        let mut source = self.source.clone();
+        source.allowed_hosts.clear();
+        source.rules = vec![NetworkAccessRule {
+            host: request.host.clone(),
+            ports: vec![port],
+            transports: vec![request.transport],
+            allow_private_ips: false,
+        }];
+        Self::compile(&source)
     }
 
     pub(crate) fn matching_limits(
@@ -288,9 +311,58 @@ pub fn forbidden_response(host: &str, reason: &DenyReason) -> (StatusCode, Strin
 #[cfg(test)]
 mod tests {
     use super::*;
+    use persisting_control::NetworkAccessRequest;
     use persisting_control::NetworkTransport;
     use persisting_control::PolicyControlController;
     use proptest::prelude::*;
+
+    #[test]
+    fn audit_grant_is_exact_and_keeps_denies_and_address_checks() {
+        let policy = NetworkPolicy::compile(&NetworkConfig {
+            mode: NetworkMode::Allowlist,
+            deny_rules: vec![NetworkAccessRule {
+                host: "blocked.example".into(),
+                ports: vec![],
+                transports: vec![],
+                allow_private_ips: false,
+            }],
+            ..NetworkConfig::default()
+        })
+        .unwrap();
+        let mut request = NetworkAccessRequest {
+            run_id: None,
+            attempt_id: None,
+            storyline_id: None,
+            host: "new.example".into(),
+            port: Some(443),
+            transport: NetworkTransport::TcpTunnel,
+            resolved_ip: None,
+        };
+        assert_eq!(
+            policy.authorize(&PolicyControlController, &request),
+            Err(DenyReason::AllowlistEmpty)
+        );
+        let grant = policy.one_time_grant(&request).unwrap();
+        assert!(grant.authorize(&PolicyControlController, &request).is_ok());
+        request.resolved_ip = Some("8.8.8.8".parse().unwrap());
+        assert!(grant.authorize(&PolicyControlController, &request).is_ok());
+        request.resolved_ip = Some("127.0.0.1".parse().unwrap());
+        assert_eq!(
+            grant.authorize(&PolicyControlController, &request),
+            Err(DenyReason::ResolvedAddressNotAllowed)
+        );
+        request.resolved_ip = None;
+        request.host = "other.example".into();
+        assert_eq!(
+            grant.authorize(&PolicyControlController, &request),
+            Err(DenyReason::NotInAllowlist)
+        );
+        request.host = "blocked.example".into();
+        assert_eq!(
+            grant.authorize(&PolicyControlController, &request),
+            Err(DenyReason::ExplicitDeny)
+        );
+    }
 
     fn host_strategy() -> impl Strategy<Value = String> {
         proptest::string::string_regex("[a-z]{1,12}\\.example\\.com").unwrap()

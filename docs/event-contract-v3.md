@@ -75,7 +75,7 @@ op=17 dispatched backend="router" fs.read(...) |> remote("node-a")
 op=17 completed  fs.read(...) |> remote("node-a") => ok(bytes([...]))
 ```
 
-以上 ID 与省略号仅缩短示意。实际 `trace show` 输出完整表达式和结果，JSON 保留完整
+以上 ID 与省略号仅缩短示意。`Event::to_text` 输出完整表达式和结果，JSON 保留完整
 信封及结构化载荷。匹配、验证与重放使用结构，不解析展示行来猜测权限或执行状态。
 当前记录内联数据内容，不实现自动脱敏；读取和导出沿用执行环境的数据权限。
 
@@ -104,5 +104,5 @@ Volatile/LocalSync。文件头为 `pvisor.trace/3`，旧草稿 journal 明确拒
 生产入口尚未迁移。不能以新 Event 的存在推断已有系统调用已获得新核心覆盖。
 
 运行 [IR 示例](pvisor-ir.md) 可生成文件读取及 mock 改写的真实 trace，并通过
-`pvisor trace show/check/json` 检查。测试覆盖原请求保持、改写证据、派发链、结果类型、
+`Journal::read` 读取和校验。测试覆盖原请求保持、改写证据、派发链、结果类型、
 取消、审计缺口、提交幂等、并发位置、断尾恢复、完整损坏和因果环。

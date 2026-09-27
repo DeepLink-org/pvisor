@@ -7,6 +7,8 @@
 use serde::{Deserialize, Serialize};
 use std::path::{Path, PathBuf};
 
+pub use crate::file_access::{FileAccessDecision, FileAccessPolicy};
+
 /// Local Run inspection request, encoded as one JSON line on `control.sock`.
 /// This endpoint is separate from the cooperative AgentCtl protocol.
 #[derive(Debug, Serialize, Deserialize)]
@@ -14,12 +16,13 @@ use std::path::{Path, PathBuf};
 pub enum RunControlRequest {
     Ping,
     OverlayStatus,
+    Observations,
     MountInspect,
     UnmountInspect { id: String },
 }
 
-/// Response to a local Run inspection request. Optional fields remain explicit
-/// JSON nulls for compatibility with existing clients.
+/// Response to a local Run inspection request. Existing optional fields remain
+/// explicit JSON nulls; the newer observations field is absent when unused.
 #[derive(Debug, Serialize, Deserialize)]
 pub struct RunControlResponse {
     pub ok: bool,
@@ -27,6 +30,8 @@ pub struct RunControlResponse {
     pub mountpoint: Option<PathBuf>,
     pub error: Option<String>,
     pub overlay_status: Option<OverlayStatus>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub observations: Option<serde_json::Value>,
 }
 
 /// Durable record of one overlay staging workspace (survives Attempt teardown).
@@ -46,6 +51,8 @@ pub struct OverlayRecord {
     /// merged view. Root overlays use this to hide their own backing state.
     #[serde(default)]
     pub excluded_paths: Vec<PathBuf>,
+    #[serde(default)]
+    pub access_policy: FileAccessPolicy,
     pub auto_apply: bool,
     #[serde(default)]
     pub auto_discard: bool,

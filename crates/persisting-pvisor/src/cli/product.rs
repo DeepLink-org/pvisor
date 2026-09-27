@@ -1,7 +1,7 @@
 //! Product-facing review and logical checkpoint commands.
 
 use crate::runtime::{RunRecord, resolve_run};
-use crate::{ChangeEntryType, ChangeKind, RunBundle, create_logical_checkpoint};
+use crate::{ChangeEntryType, ChangeKind, RunBundle};
 use anyhow::Context;
 use clap::Args;
 use std::collections::BTreeMap;
@@ -16,7 +16,7 @@ const REVIEW_PATH_LIMIT: usize = 200;
 
 #[derive(Debug, Clone, Args)]
 pub struct ReviewArgs {
-    /// Run id, project workspace, run.json, or a path inside the Run filesystem.
+    /// Job id, project workspace, run.json, or a path inside the Job filesystem.
     pub selector: Option<PathBuf>,
     #[arg(long, short = 'o', default_value = DEFAULT_STORAGE)]
     pub output_dir: PathBuf,
@@ -34,24 +34,11 @@ pub struct ReviewArgs {
     pub max_diff_file_bytes: u64,
 }
 
-#[derive(Debug, Clone, Args)]
-pub struct CheckpointArgs {
-    /// Stopped Run id, project workspace, or run.json.
-    pub selector: Option<PathBuf>,
-    #[arg(long, short = 'o', default_value = DEFAULT_STORAGE)]
-    pub output_dir: PathBuf,
-    /// Stable checkpoint name; generated when omitted.
-    #[arg(long, value_name = "NAME")]
-    pub name: Option<String>,
-    #[arg(long)]
-    pub json: bool,
-}
-
 pub fn review(args: ReviewArgs) -> anyhow::Result<()> {
     let record = selected(args.selector.as_deref(), &args.output_dir)?;
     let bundle = RunBundle::read(&record.stage_dir()).with_context(|| {
         format!(
-            "Run {} has no readable Run Bundle; re-run it with this pVisor version",
+            "Job {} has no readable Run Bundle; re-run it with this pVisor version",
             record.run_id
         )
     })?;
@@ -135,9 +122,79 @@ pub fn review(args: ReviewArgs) -> anyhow::Result<()> {
     }
     if let Some(metrics) = &bundle.network.intercepted {
         println!(
-            "  intercepted: {} requests ({} allowed, {} denied, {} failures)",
-            metrics.requests_seen, metrics.policy_allowed, metrics.policy_denied, metrics.failures
+            "  observed: {} proxy requests; {} allowed, {} denied, {} failures; {} VM TCP flows",
+            metrics.requests_seen,
+            metrics.policy_allowed,
+            metrics.policy_denied + metrics.tcp_flows_denied,
+            metrics.failures + metrics.tcp_connect_failures,
+            metrics.tcp_flows_opened
         );
+        println!("\nNetwork access observations (only traffic reaching OverlayNet)");
+        let mut targets = metrics.targets.iter().collect::<Vec<_>>();
+        targets.sort_by(|left, right| {
+            (right.1.denied, right.1.failed, right.1.allowed)
+                .cmp(&(left.1.denied, left.1.failed, left.1.allowed))
+                .then_with(|| left.0.cmp(right.0))
+        });
+        for (target, counts) in targets.iter().take(REVIEW_PATH_LIMIT) {
+            println!(
+                "  {target}: policy-allowed={} denied={} failed={}",
+                counts.allowed, counts.denied, counts.failed
+            );
+        }
+        if metrics.target_overflow > 0 || targets.len() > REVIEW_PATH_LIMIT {
+            println!(
+                "  {} destinations hidden by display limit; {} events omitted by capture limit; use --json for retained details",
+                targets.len().saturating_sub(REVIEW_PATH_LIMIT),
+                metrics.target_overflow
+            );
+        }
+    }
+
+    if let Some(observed) = bundle
+        .run_observation
+        .as_ref()
+        .and_then(|observation| observation.filesystem.as_ref())
+    {
+        println!("\nFile access observations (only operations reaching OverlayFS)");
+        let mut paths = observed.paths.iter().collect::<Vec<_>>();
+        paths.sort_by(|left, right| {
+            let priority =
+                |operations: &BTreeMap<_, persisting_control::ir::run::PathOperationCounters>| {
+                    operations.values().fold((0u64, 0u64, 0u64), |sum, counts| {
+                        (
+                            sum.0 + counts.denied,
+                            sum.1 + counts.effects,
+                            sum.2 + counts.hits,
+                        )
+                    })
+                };
+            priority(right.1)
+                .cmp(&priority(left.1))
+                .then_with(|| left.0.cmp(right.0))
+        });
+        for (path, operations) in paths.iter().take(REVIEW_PATH_LIMIT) {
+            for (operation, counts) in operations.iter() {
+                println!(
+                    "  {} {}: hits={} succeeded={} denied={} failed={} effects={} uncertain_effects={}",
+                    path,
+                    operation,
+                    counts.hits,
+                    counts.succeeded,
+                    counts.denied,
+                    counts.failed,
+                    counts.effects,
+                    counts.uncertain_effects
+                );
+            }
+        }
+        if observed.paths.len() > REVIEW_PATH_LIMIT || observed.overflow_hits > 0 {
+            println!(
+                "  {} more paths; {} observations omitted by the path limit; use --json for details",
+                observed.paths.len().saturating_sub(REVIEW_PATH_LIMIT),
+                observed.overflow_hits
+            );
+        }
     }
 
     println!("\nChanges");
@@ -236,7 +293,7 @@ pub fn review(args: ReviewArgs) -> anyhow::Result<()> {
     if bundle.filesystem.is_some() {
         println!("Next:");
         println!("  pvisor inspect {}", record.stage_dir().display());
-        println!("  pvisor checkpoint {}", record.stage_dir().display());
+        println!("  pvisor fork {} -- <agent>", record.stage_dir().display());
         println!("  pvisor apply {}", record.stage_dir().display());
         println!("  pvisor drop {}", record.stage_dir().display());
     }
@@ -371,26 +428,6 @@ fn is_binary_file(path: &Path) -> bool {
     let mut prefix = [0_u8; 8192];
     let read = file.read(&mut prefix).unwrap_or(0);
     prefix[..read].contains(&0)
-}
-
-pub fn checkpoint(args: CheckpointArgs) -> anyhow::Result<()> {
-    let record = selected(args.selector.as_deref(), &args.output_dir)?;
-    let checkpoint = create_logical_checkpoint(&record, args.name.as_deref())?;
-    if args.json {
-        println!("{}", serde_json::to_string_pretty(&checkpoint)?);
-    } else {
-        println!(
-            "checkpointed {} @ {} ({:?})",
-            checkpoint.run_id, checkpoint.checkpoint_id, checkpoint.consistency
-        );
-        println!("manifest: {}", checkpoint.manifest_path().display());
-        println!(
-            "fork: pvisor fork {} --checkpoint {} -- <agent>",
-            record.stage_dir().display(),
-            checkpoint.checkpoint_id
-        );
-    }
-    Ok(())
 }
 
 fn selected(selector: Option<&Path>, output_dir: &Path) -> anyhow::Result<RunRecord> {

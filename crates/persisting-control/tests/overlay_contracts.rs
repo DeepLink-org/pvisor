@@ -33,6 +33,19 @@ fn inspection_protocol_keeps_existing_json() {
 }
 
 #[test]
+fn inspection_observations_are_only_emitted_when_present() {
+    assert_wire_roundtrip::<RunControlRequest>(json!({"op": "observations"}));
+    assert_wire_roundtrip::<RunControlResponse>(json!({
+        "ok": true,
+        "id": null,
+        "mountpoint": null,
+        "error": null,
+        "overlay_status": null,
+        "observations": {"filesystem": {"hits": 2}}
+    }));
+}
+
+#[test]
 fn legacy_overlay_and_apply_records_keep_defaults() {
     let overlay: OverlayRecord = serde_json::from_value(json!({
         "id": "overlay-1", "target": "/target",

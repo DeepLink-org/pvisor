@@ -12,8 +12,10 @@ scripts, and automation commands. Keep your existing tools; use policies to
 define their authority, inspect the controls installed by the selected executor,
 and review staged file changes before applying them to your project.
 
-The **p** stands for **Policy**. Each Run connects requested capabilities,
-effective runtime controls, and an inspectable execution record.
+The **p** stands for **Policy**. A **Job** is one managed command, its effective
+runtime controls, and an inspectable execution record. `pvisor run` starts a
+Job; the flat `status`, `kill`, `inspect`, `fork`, `apply`, and `drop` commands
+act on it. On disk, Jobs retain the existing Run record and `run-*` IDs.
 
 ![PolicyVisor execution and review workflow](docs/src/assets/diagrams/persisting/system-products.svg)
 
@@ -22,12 +24,13 @@ effective runtime controls, and an inspectable execution record.
 - **Define the boundary:** select an executor and the filesystem, network, and
   other capability requirements for the task.
 - **Execute with evidence:** retain the command, outcome, installed controls,
-  warnings, and observed effects in a local Run Bundle.
-- **Review staged changes:** enable `--stage`, inspect file changes, then apply
-  selected paths or discard the remaining changes.
+  warnings, and observed effects in the Job's Run Bundle.
+- **Review staged changes:** pass `--stage PATH` to retain the copy-on-write
+  changeset, then apply selected paths or discard the remainder. Without it,
+  the temporary stage is discarded when the Job ends.
 
 Host, container, and libkrun VM executors provide different boundaries. A
-requested policy is not proof of enforcement; inspect the evidence for the Run.
+requested policy is not proof of enforcement; inspect the evidence for the Job.
 
 ## Install
 
@@ -57,22 +60,27 @@ for platform requirements and executor setup.
 
 ```bash
 pvisor run --stage ../task-stage-001 -- /bin/sh -c 'printf "hello\n" > hello.txt'
-pvisor review last
+pvisor status --review last
 pvisor apply last --path hello.txt   # or: pvisor drop last
 ```
 
 Run this from your project directory after completing the platform setup in
 the installation guide. Use a fresh stage directory outside the project for
-each Run. Replace the command after `--` with your script or installed Agent CLI:
+each Job. Replace the command after `--` with your script or installed Agent CLI.
+For Codex, `--safe` stages its home state separately from project files; see
+the [CLI reference](docs/src/en/reference/cli.md) for what each stage retains:
 
 ```bash
-pvisor run --stage ../agent-stage-001 -- codex
-pvisor review last
+pvisor run --safe --stage ../agent-stage-001 -- codex
+pvisor status --review last
 ```
 
-`--stage` creates a copy-on-write workspace view for review; without it the
-command may write the real project tree. The exact boundary is
-platform-dependent and recorded with the Run—consult the
+Ordinary host Jobs write through to the workspace. `--safe` stages workspace
+and home changes and discards its temporary stage when the Job ends; `--stage`
+retains a changeset for review.
+Explicit writable mounts and application state outside the workspace can still
+write through to the host. The exact boundary is
+platform-dependent and recorded with the Job—consult the
 [execution guide](https://deeplink-org.github.io/Persisting/en/guides/execution/)
 before treating it as a security boundary.
 
@@ -84,14 +92,15 @@ logical checkpoints preserve staged filesystem state, not process memory.
 
 | Capability | Status |
 |---|---|
-| Local execution records, staged workspace review, selective apply, and logical checkpoints | Implemented |
+| Staged workspace review, selective apply, and logical checkpoints | Implemented with an explicit retained stage |
+| Run Bundle retained after an auto-dropped temporary stage | Not yet implemented; supply `--stage PATH` for durable audit |
 | Gateway capture and cooperative proxy policy | Implemented |
 | Container/libkrun executors and transparent network boundaries | Platform-dependent; see the pVisor and OverlayNet docs |
 
 ## Documentation
 
-- [Choose a workflow](https://deeplink-org.github.io/Persisting/en/start/) — the path from install to a reviewed Run
-- [Your first Run](https://deeplink-org.github.io/Persisting/en/start/first-run/) — the run-review-apply loop
+- [Choose a workflow](https://deeplink-org.github.io/Persisting/en/start/) — the path from install to a reviewed Job
+- [Your first Job](https://deeplink-org.github.io/Persisting/en/start/first-run/) — the run-review-apply loop
 - [PolicyVisor model](https://deeplink-org.github.io/Persisting/en/concepts/policyvisor/) — policy, controls, and evidence
 - [Project architecture](https://deeplink-org.github.io/Persisting/en/design/) — ownership and delivery boundaries
 - [中文文档](https://deeplink-org.github.io/Persisting/zh/start/) — 从安装到策略约束下的可审查执行
