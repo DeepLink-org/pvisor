@@ -70,6 +70,11 @@ fn skip_if_user_namespaces_are_explicitly_optional(
     if std::env::var_os("PERSISTING_TEST_ALLOW_NO_USERNS").is_none() || output.status.success() {
         return false;
     }
+    // Namespace setup can fail before a Run Bundle exists. In the optional CI
+    // shard, verify host capability directly before inspecting bundle details.
+    if skip_if_rootless_runtime_is_explicitly_optional() {
+        return true;
+    }
     let combined = String::from_utf8_lossy(&output.stderr);
     // Safe-best-effort intentionally falls back to the host process when the
     // runner cannot create namespaces. Treat that capability result as a
