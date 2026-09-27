@@ -1381,7 +1381,9 @@ fn overlay_cwd(
     overlay: &OverlayHint,
     record: Option<&OverlayRecord>,
 ) -> Option<PathBuf> {
-    if crate::sandbox::sandbox_required(spec)
+    // Only Linux binds the merged view over the original path in a private root.
+    if cfg!(target_os = "linux")
+        && crate::sandbox::sandbox_required(spec)
         && !uses_krun_executor(spec)
         && overlay.merged_dir.is_some()
         && let Some(record) = record
@@ -1419,6 +1421,39 @@ pub(crate) fn apply_implant(process: &mut ProcessInvocation, plan: &ImplantPlan)
 mod tests {
     use super::rewrite_vm_gateway_implant;
     use persisting_control::{RunInvocation, RunSpec};
+
+    #[test]
+    fn safe_overlay_cwd_uses_original_path_only_on_linux() {
+        let mut spec = RunSpec::process("run-1", "agent", "sh");
+        spec.metadata
+            .insert(crate::sandbox::REQUIRED_SANDBOX_KEY.into(), true.into());
+        let config = persisting_gateway::config::OverlayConfig {
+            enabled: true,
+            target: Some("/workspace".into()),
+            stage_dir: Some("/stage".into()),
+            ..Default::default()
+        };
+        let record = super::super::overlay::resolve_overlay_workspace(
+            &config,
+            std::path::Path::new("/runs"),
+            "run-1",
+        )
+        .unwrap()
+        .unwrap();
+        let overlay = super::OverlayHint {
+            merged_dir: Some(record.merged_dir.clone()),
+            ..Default::default()
+        };
+        let expected = if cfg!(target_os = "linux") {
+            &record.target
+        } else {
+            &record.merged_dir
+        };
+        assert_eq!(
+            super::overlay_cwd(&spec, &overlay, Some(&record)).as_ref(),
+            Some(expected)
+        );
+    }
 
     #[test]
     fn absent_overlay_hint_preserves_configured_file_policy() {

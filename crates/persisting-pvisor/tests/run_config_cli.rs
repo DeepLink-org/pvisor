@@ -21,6 +21,11 @@ fn only_run_dir(run_home: &std::path::Path) -> std::path::PathBuf {
 
 #[test]
 fn safe_preset_reaches_the_run_and_reports_its_limits() {
+    #[cfg(target_os = "macos")]
+    if !std::path::Path::new("/Library/Filesystems/macfuse.fs").is_dir() {
+        eprintln!("skipping macOS safe preset integration: macFUSE is not installed");
+        return;
+    }
     let temporary = tempfile::Builder::new()
         .prefix("pvsafe")
         .tempdir_in("/tmp")
@@ -54,7 +59,9 @@ fn safe_preset_reaches_the_run_and_reports_its_limits() {
         })
     {
         assert!(!stage.join("run-bundle.json").exists());
-        eprintln!("safe correctly refused to run without rootless namespaces; skipping runtime assertions on this optional shard");
+        eprintln!(
+            "safe correctly refused to run without rootless namespaces; skipping runtime assertions on this optional shard"
+        );
         return;
     }
     assert!(output.status.success(), "{stderr}");

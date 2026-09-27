@@ -178,6 +178,7 @@ fn deny_all_blocks_ip_and_host_unix_sockets_on_macos() {
     let _listener = UnixListener::bind(&outside_socket).unwrap();
 
     let output = Command::new(env!("CARGO_BIN_EXE_pvisor"))
+        .current_dir(&workspace)
         .env("PERSISTING_RUN_HOME", &run_home)
         .env("LOOPBACK_PORT", loopback_port.to_string())
         .args([
@@ -185,9 +186,9 @@ fn deny_all_blocks_ip_and_host_unix_sockets_on_macos() {
             "--overlaynet-deny-all",
             "--stdio",
             "capture",
-            "--overlayfs-compose",
+            "--stage",
         ])
-        .arg(&workspace)
+        .arg(run_home.join("stage"))
         .args(["--pass-env", "LOOPBACK_PORT"])
         .args([
             "--",
@@ -292,8 +293,9 @@ fn required_sandbox_blocks_original_files_and_direct_sockets_but_allows_its_prox
     command
         .current_dir(&workspace)
         .env("PERSISTING_RUN_HOME", &run_home)
+        .args(["run", "--stage"])
+        .arg(run_home.join("stage"))
         .args([
-            "run",
             "--safe",
             "--stdio",
             "capture",
