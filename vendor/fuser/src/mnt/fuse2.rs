@@ -35,6 +35,9 @@ impl Mount {
             // throughout that grace period instead of cutting them off at 5s.
             for _ in 0..1500 {
                 if (self.channel.api.chan_not_mounted)(self.channel.channel as *mut fuse_chan) {
+                    self.channel
+                        .stopped
+                        .store(true, std::sync::atomic::Ordering::Release);
                     return Ok(());
                 }
                 std::thread::sleep(std::time::Duration::from_millis(20));
@@ -120,7 +123,6 @@ impl Drop for Mount {
                 .stopped
                 .store(true, std::sync::atomic::Ordering::Release);
             (self.channel.api.chan_interrupt)(self.channel.channel as *mut fuse_chan);
-            (self.channel.api.chan_unmount)(self.channel.channel as *mut fuse_chan);
         }
         #[cfg(not(all(target_os = "macos", feature = "macfuse-5")))]
         {

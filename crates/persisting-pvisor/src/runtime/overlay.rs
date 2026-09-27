@@ -204,9 +204,7 @@ impl OverlayMount {
         {
             match fs::remove_dir(&self.record.merged_dir) {
                 Ok(()) => {
-                    if let Some(parent) = self.record.merged_dir.parent()
-                        && parent != Path::new("/Volumes")
-                    {
+                    if let Some(parent) = self.record.merged_dir.parent() {
                         let _ = fs::remove_dir(parent);
                     }
                 }

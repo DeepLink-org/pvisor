@@ -48,32 +48,32 @@ impl Channel {
 
     /// Receives data up to the capacity of the given buffer (can block).
     pub fn receive(&self, buffer: &mut [u8]) -> io::Result<usize> {
-        #[cfg(all(target_os = "macos", feature = "macfuse-5"))]
-        if let Self::Mac(ch) = self {
-            let mut ptr = ch.channel as *mut fuse_chan;
-            let rc = unsafe { (ch.api.recv)(&mut ptr, buffer.as_mut_ptr().cast(), buffer.len()) };
-            return if rc < 0 {
-                Err(io::Error::from_raw_os_error(-rc))
-            } else {
-                Ok(rc as usize)
-            };
-        }
-        #[allow(irrefutable_let_patterns)]
-        let Self::File(file) = self
-        else {
-            unreachable!()
-        };
-        let rc = unsafe {
-            libc::read(
-                file.as_raw_fd(),
-                buffer.as_ptr() as *mut c_void,
-                buffer.len() as size_t,
-            )
-        };
-        if rc < 0 {
-            Err(io::Error::last_os_error())
-        } else {
-            Ok(rc as usize)
+        match self {
+            #[cfg(all(target_os = "macos", feature = "macfuse-5"))]
+            Self::Mac(ch) => {
+                let mut ptr = ch.channel as *mut fuse_chan;
+                let rc =
+                    unsafe { (ch.api.recv)(&mut ptr, buffer.as_mut_ptr().cast(), buffer.len()) };
+                if rc < 0 {
+                    Err(io::Error::from_raw_os_error(-rc))
+                } else {
+                    Ok(rc as usize)
+                }
+            }
+            Self::File(file) => {
+                let rc = unsafe {
+                    libc::read(
+                        file.as_raw_fd(),
+                        buffer.as_ptr() as *mut c_void,
+                        buffer.len() as size_t,
+                    )
+                };
+                if rc < 0 {
+                    Err(io::Error::last_os_error())
+                } else {
+                    Ok(rc as usize)
+                }
+            }
         }
     }
 
@@ -92,38 +92,37 @@ pub struct ChannelSender(Channel);
 
 impl ReplySender for ChannelSender {
     fn send(&self, bufs: &[io::IoSlice<'_>]) -> io::Result<()> {
-        #[cfg(all(target_os = "macos", feature = "macfuse-5"))]
-        if let Channel::Mac(ch) = &self.0 {
-            let rc = unsafe {
-                (ch.api.send)(
-                    ch.channel as *mut fuse_chan,
-                    bufs.as_ptr().cast(),
-                    bufs.len(),
-                )
-            };
-            return if rc < 0 {
-                Err(io::Error::from_raw_os_error(-rc))
-            } else {
-                Ok(())
-            };
-        }
-        #[allow(irrefutable_let_patterns)]
-        let Channel::File(file) = &self.0
-        else {
-            unreachable!()
-        };
-        let rc = unsafe {
-            libc::writev(
-                file.as_raw_fd(),
-                bufs.as_ptr() as *const libc::iovec,
-                bufs.len() as c_int,
-            )
-        };
-        if rc < 0 {
-            Err(io::Error::last_os_error())
-        } else {
-            debug_assert_eq!(bufs.iter().map(|b| b.len()).sum::<usize>(), rc as usize);
-            Ok(())
+        match &self.0 {
+            #[cfg(all(target_os = "macos", feature = "macfuse-5"))]
+            Channel::Mac(ch) => {
+                let rc = unsafe {
+                    (ch.api.send)(
+                        ch.channel as *mut fuse_chan,
+                        bufs.as_ptr().cast(),
+                        bufs.len(),
+                    )
+                };
+                if rc < 0 {
+                    Err(io::Error::from_raw_os_error(-rc))
+                } else {
+                    Ok(())
+                }
+            }
+            Channel::File(file) => {
+                let rc = unsafe {
+                    libc::writev(
+                        file.as_raw_fd(),
+                        bufs.as_ptr() as *const libc::iovec,
+                        bufs.len() as c_int,
+                    )
+                };
+                if rc < 0 {
+                    Err(io::Error::last_os_error())
+                } else {
+                    debug_assert_eq!(bufs.iter().map(|b| b.len()).sum::<usize>(), rc as usize);
+                    Ok(())
+                }
+            }
         }
     }
 }

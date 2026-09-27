@@ -77,52 +77,32 @@ impl MacFuseApi {
                     continue;
                 }
             };
-            let symbols = unsafe {
-                let mount = *library
-                    .get::<unsafe extern "C" fn(*const c_char, *const fuse_args) -> *mut fuse_chan>(
-                        b"fuse_mount\0",
-                    )
-                    .map_err(io::Error::other)?;
-                let unmount = *library
-                    .get::<unsafe extern "C" fn(*const c_char, *mut fuse_chan)>(b"fuse_unmount\0")
-                    .map_err(io::Error::other)?;
-                (
-                    mount,
-                    unmount,
-                    *library.get(b"fuse_chan_recv\0").map_err(io::Error::other)?,
-                    *library.get(b"fuse_chan_send\0").map_err(io::Error::other)?,
-                    *library
+            return Ok(Arc::new(unsafe {
+                Self {
+                    mount: *library.get(b"fuse_mount\0").map_err(io::Error::other)?,
+                    unmount: *library.get(b"fuse_unmount\0").map_err(io::Error::other)?,
+                    recv: *library.get(b"fuse_chan_recv\0").map_err(io::Error::other)?,
+                    send: *library.get(b"fuse_chan_send\0").map_err(io::Error::other)?,
+                    session_new: *library
                         .get(b"fuse_session_new\0")
                         .map_err(io::Error::other)?,
-                    *library
+                    session_add_chan: *library
                         .get(b"fuse_session_add_chan\0")
                         .map_err(io::Error::other)?,
-                    *library
+                    session_destroy: *library
                         .get(b"fuse_session_destroy\0")
                         .map_err(io::Error::other)?,
-                    *library
+                    chan_unmount: *library
                         .get(b"fuse_darwin_chan_unmount\0")
                         .map_err(io::Error::other)?,
-                    *library
+                    chan_interrupt: *library
                         .get(b"fuse_darwin_chan_interrupt\0")
                         .map_err(io::Error::other)?,
-                    *library
+                    chan_not_mounted: *library
                         .get(b"fuse_darwin_chan_not_mounted\0")
                         .map_err(io::Error::other)?,
-                )
-            };
-            return Ok(Arc::new(Self {
-                _library: library,
-                mount: symbols.0,
-                unmount: symbols.1,
-                recv: symbols.2,
-                send: symbols.3,
-                session_new: symbols.4,
-                session_add_chan: symbols.5,
-                session_destroy: symbols.6,
-                chan_unmount: symbols.7,
-                chan_interrupt: symbols.8,
-                chan_not_mounted: symbols.9,
+                    _library: library,
+                }
             }));
         }
         Err(io::Error::new(
@@ -184,10 +164,11 @@ impl Drop for MacChannel {
 mod tests {
     use super::*;
     use crate::{channel::Channel, reply::ReplySender};
-    use std::sync::atomic::{AtomicBool, Ordering};
+    use std::sync::atomic::{AtomicBool, AtomicUsize, Ordering};
 
     #[test]
     fn fdless_channel_preserves_errno_and_outlives_reply_senders() {
+        static UNMOUNTS: AtomicUsize = AtomicUsize::new(0);
         static DESTROYED: AtomicBool = AtomicBool::new(false);
         unsafe extern "C" fn recv(_: *mut *mut fuse_chan, _: *mut c_char, _: usize) -> c_int {
             -libc::EACCES
@@ -211,6 +192,9 @@ mod tests {
             unreachable!()
         }
         unsafe extern "C" fn detach(_: *mut fuse_chan) {}
+        unsafe extern "C" fn request_unmount(_: *mut fuse_chan) {
+            UNMOUNTS.fetch_add(1, Ordering::SeqCst);
+        }
         unsafe extern "C" fn not_mounted(channel: *mut fuse_chan) -> bool {
             channel.is_null()
         }
@@ -223,7 +207,7 @@ mod tests {
             session_new: new,
             session_add_chan: add,
             session_destroy: destroy,
-            chan_unmount: detach,
+            chan_unmount: request_unmount,
             chan_interrupt: detach,
             chan_not_mounted: not_mounted,
         });
@@ -246,6 +230,17 @@ mod tests {
         );
         drop(sender);
         assert!(DESTROYED.load(Ordering::SeqCst));
+        let mounted = crate::mnt::Mount {
+            channel: Arc::new(MacChannel {
+                channel: 0,
+                session: 0,
+                stopped: Box::default(),
+                api: Arc::clone(&api),
+            }),
+        };
+        mounted.unmount_gracefully().unwrap();
+        drop(mounted);
+        assert_eq!(UNMOUNTS.load(Ordering::SeqCst), 1);
         let stalled = crate::mnt::Mount {
             channel: Arc::new(MacChannel {
                 channel: 1,
