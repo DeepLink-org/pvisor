@@ -108,9 +108,19 @@ fn skip_if_rootless_runtime_is_explicitly_optional() -> bool {
         .status()
         .is_ok_and(|status| status.success());
     if !available {
-        eprintln!("skipping: the test host disables the rootless PID namespace");
+        eprintln!("skipping: the test host cannot create rootless user/mount/PID namespaces");
+        return true;
     }
-    !available
+    if OpenOptions::new()
+        .read(true)
+        .write(true)
+        .open("/dev/fuse")
+        .is_err()
+    {
+        eprintln!("skipping: the test host cannot open /dev/fuse");
+        return true;
+    }
+    false
 }
 
 #[test]
@@ -181,6 +191,9 @@ fn ordinary_shell_writes_lower_and_safe_shell_stages_home_and_workspace() {
 
 #[test]
 fn safe_local_executable_cannot_escape_the_workspace() {
+    if skip_if_rootless_runtime_is_explicitly_optional() {
+        return;
+    }
     let temporary = tempfile::tempdir().unwrap();
     let workspace = temporary.path().join("workspace");
     let outside = temporary.path().join("outside");
@@ -296,6 +309,9 @@ printf '%s:%s:%s\n' "$PERSISTING_SANDBOX_FILESYSTEM" "$PERSISTING_SANDBOX_LANDLO
 
 #[test]
 fn safe_local_executable_cannot_mutate_outside_metadata() {
+    if skip_if_rootless_runtime_is_explicitly_optional() {
+        return;
+    }
     let temporary = tempfile::tempdir().unwrap();
     let workspace = temporary.path().join("workspace");
     let outside = temporary.path().join("outside");
@@ -371,6 +387,9 @@ printf metadata-denied
 
 #[test]
 fn safe_run_selectively_applies_then_drops_remaining_changes() {
+    if skip_if_rootless_runtime_is_explicitly_optional() {
+        return;
+    }
     let temporary = tempfile::tempdir().unwrap();
     let workspace = temporary.path().join("workspace");
     let run_home = temporary.path().join("runs");
@@ -474,6 +493,9 @@ fn safe_run_selectively_applies_then_drops_remaining_changes() {
 
 #[test]
 fn safe_apply_refuses_to_overwrite_a_concurrently_changed_target() {
+    if skip_if_rootless_runtime_is_explicitly_optional() {
+        return;
+    }
     let temporary = tempfile::tempdir().unwrap();
     let workspace = temporary.path().join("workspace");
     let run_home = temporary.path().join("runs");
@@ -528,6 +550,9 @@ fn safe_apply_refuses_to_overwrite_a_concurrently_changed_target() {
 
 #[test]
 fn safe_launcher_closes_inherited_host_file_descriptors() {
+    if skip_if_rootless_runtime_is_explicitly_optional() {
+        return;
+    }
     let temporary = tempfile::tempdir().unwrap();
     let workspace = temporary.path().join("workspace");
     let run_home = temporary.path().join("runs");
@@ -631,6 +656,9 @@ fn inherited_fd_probe_agent() {
 
 #[test]
 fn denied_network_uses_a_private_network_namespace() {
+    if skip_if_rootless_runtime_is_explicitly_optional() {
+        return;
+    }
     let temporary = tempfile::tempdir().unwrap();
     let workspace = temporary.path().join("workspace");
     let run_home = temporary.path().join("runs");
@@ -701,6 +729,9 @@ printf 'network:%s\n' "$PERSISTING_SANDBOX_NETWORK"
 
 #[test]
 fn synthetic_root_hides_ungranted_host_unix_sockets() {
+    if skip_if_rootless_runtime_is_explicitly_optional() {
+        return;
+    }
     let temporary = tempfile::tempdir().unwrap();
     let workspace = temporary.path().join("workspace");
     let run_home = temporary.path().join("runs");
@@ -826,6 +857,9 @@ fn daemon_listener_agent() {
 
 #[test]
 fn sandboxed_agent_may_legitimately_exit_with_reserved_launcher_code() {
+    if skip_if_rootless_runtime_is_explicitly_optional() {
+        return;
+    }
     let temporary = tempfile::tempdir().unwrap();
     let workspace = temporary.path().join("workspace");
     let run_home = temporary.path().join("runs");
