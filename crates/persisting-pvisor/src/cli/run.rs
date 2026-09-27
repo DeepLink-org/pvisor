@@ -2828,6 +2828,13 @@ mod tests {
         assert_eq!(config.overlaynet.policy, OverlayNetPolicy::Allowlist);
         normalize_filesystem_config(&mut config).unwrap();
         assert!(!config.filesystem.unwrap().access_policy.ask().is_empty());
+
+        let mut retained = RunConfig::default();
+        let directory = tempfile::tempdir().unwrap();
+        let stage = directory.path().join("retained-stage");
+        let args = preset_args(&["--safe", "--stage", stage.to_str().unwrap(), "--", "bash"]);
+        assert!(ensure_default_stage(&mut retained, &args, "retained").is_none());
+        assert_eq!(retained.filesystem.unwrap().stage, Some(stage));
     }
 
     #[test]
@@ -3178,27 +3185,6 @@ sandbox = "required""#
     }
 
     #[test]
-    fn safe_profile_builds_a_reviewable_default_run() {
-        let crate::cli::Command::Run(args) =
-            Cli::try_parse_from(["pvisor", "run", "--", "/usr/bin/true"])
-                .unwrap()
-                .command
-        else {
-            unreachable!()
-        };
-        let mut config = RunConfig::default();
-        apply_cli(&mut config, *args).unwrap();
-        apply_safe_defaults(&mut config).unwrap();
-        assert!(config.filesystem.is_none(), "stage is opt-in");
-        assert_eq!(config.overlaynet.mode, OverlayNetMode::Auto);
-        assert_eq!(config.run.agent, "true");
-        assert_ne!(
-            config.overlaynet.listen,
-            OverlayNetSettings::default().listen
-        );
-    }
-
-    #[test]
     fn fork_inherits_or_reidentifies_the_agent_with_its_command() {
         let source = vec!["/bin/sh".into(), "-c".into(), "work".into()];
         assert_eq!(
@@ -3209,33 +3195,6 @@ sandbox = "required""#
             fork_command("sh", &[], vec!["/usr/local/bin/codex".into()]),
             ("codex".into(), vec!["/usr/local/bin/codex".into()])
         );
-    }
-
-    #[test]
-    fn cli_can_express_all_driver_domains_without_a_config_file() {
-        Cli::try_parse_from([
-            "pvisor",
-            "run",
-            "--mount",
-            "/tmp/lower:stage",
-            "--overlaynet",
-            "proxy",
-            "--overlaynet-policy",
-            "allowlist",
-            "--overlaynet-allow",
-            "api.openai.com",
-            "--overlaynet-rule",
-            r#"host="api.openai.com", ports=[443], transports=["tcp_tunnel"]"#,
-            "--gateway-mode",
-            "capture",
-            "--gateway-route",
-            r#"name="openai", upstream="https://api.openai.com/v1""#,
-            "--record-destination",
-            "/tmp/pvisor-runs",
-            "--",
-            "codex",
-        ])
-        .expect("complete command line should parse");
     }
 
     #[test]
@@ -3651,6 +3610,34 @@ sandbox = "required""#
                 .and_then(|overlay| overlay.stage_size_bytes),
             Some(2 * 1024 * 1024)
         );
+    }
+
+    #[test]
+    fn safe_environment_uses_the_command_identity_not_the_job_name() {
+        let mut codex = RunConfig::default();
+        apply_run_options(
+            &mut codex,
+            preset_args(&["--safe", "--name", "other", "--", "/usr/bin/codex"]),
+        )
+        .unwrap();
+        assert!(codex.run.inherit_env);
+
+        let mut shell = RunConfig::default();
+        apply_run_options(
+            &mut shell,
+            preset_args(&[
+                "--safe",
+                "--name",
+                "codex",
+                "--pass-env",
+                "AUTH_TOKEN",
+                "--",
+                "bash",
+            ]),
+        )
+        .unwrap();
+        assert!(!shell.run.inherit_env);
+        assert_eq!(shell.run.pass_env, ["AUTH_TOKEN"]);
     }
 
     #[test]

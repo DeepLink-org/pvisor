@@ -1,6 +1,6 @@
 //! Claude Code–specific capture regressions (routing, spawn links, markdown filters).
 //!
-//! See `docs/src/design/capture.md` §8 and `trajectory.md` §7 for the contract these tests guard.
+//! Claude capture regressions for subagent linking and Markdown event filtering.
 
 mod dialogue_extract;
 mod markdown_filter;

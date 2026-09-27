@@ -36,10 +36,10 @@ cat hello.txt
 
 ## 4. 换成你的命令
 
-在真实项目中，把示例命令换成你的脚本或自动化命令。已安装的 Agent CLI 也使用相同入口；依赖 Codex 项目与账号状态同时暂存之前，请先看 [Codex 状态限制](../reference/cli.md)：
+在真实项目中，把示例命令换成你的脚本或自动化命令。已安装的 Agent CLI 也使用相同入口。Codex 的 HOME 状态只有在 `--safe` 下才会独立暂存；详见 [CLI 参考](../reference/cli.md)：
 
 ```bash
-pvisor run --stage ../agent-stage-001 -- codex
+pvisor run --safe --stage ../agent-stage-001 -- codex
 pvisor status --review last
 ```
 

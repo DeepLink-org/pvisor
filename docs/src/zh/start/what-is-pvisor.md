@@ -5,7 +5,7 @@
 **p 代表 Policy**。一次 Run 将声明的权限、实际安装的控制和可供审查的执行结果关联起来。它们之间的关系见 [PolicyVisor 的设计思路](../concepts/policyvisor.md)。
 
 ```bash
-pvisor run --stage ../task-stage -- codex
+pvisor run --safe --stage ../task-stage -- codex
 pvisor status --review last
 pvisor apply last --all
 ```

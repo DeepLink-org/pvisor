@@ -3,12 +3,12 @@
 Start a staged Run from the project directory. Keep the stage outside the project and choose a new directory for each Run:
 
 ```bash
-pvisor run --stage ../stage-001 -- codex
+pvisor run --safe --stage ../stage-001 -- codex
 pvisor status --review last
 pvisor inspect last -- git status --short
 ```
 
-Without `--stage`, the workspace still uses a temporary copy-on-write view, but pVisor discards it at Run exit. `status --review` reports recorded evidence and retained changes; `inspect` runs a command against a read-only view. For direct Codex runs, first read the [Codex state limitation](../reference/cli.md): the current single overlay may select Codex state instead of the project.
+Ordinary host Jobs without `--stage` write through to the workspace. `--safe` uses a temporary copy-on-write view and discards it at Job exit. `status --review` reports recorded evidence and retained changes; `inspect` runs a command against a read-only view. With `--safe`, Codex home state is staged separately from the project workspace; see the [CLI reference](../reference/cli.md).
 
 ## Apply a selected batch
 

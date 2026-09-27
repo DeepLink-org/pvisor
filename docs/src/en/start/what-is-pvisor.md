@@ -5,14 +5,14 @@
 The **p** stands for **Policy**. A Run connects the authority you request with the controls actually installed and the effects available for review. See [the PolicyVisor model](../concepts/policyvisor.md) for how these fit together.
 
 ```bash
-pvisor run --stage ../task-stage -- codex
+pvisor run --safe --stage ../task-stage -- codex
 pvisor status --review last
 pvisor apply last --all
 ```
 
 !!! tip "Retain a stage for review"
 
-    The CLI creates a copy-on-write workspace view by default. `--stage PATH` retains its changes for review/apply; without it, the temporary stage is discarded at Run exit.
+    Ordinary host Jobs write through to the workspace. `--safe` stages workspace and home changes and discards its temporary stage at Job exit; `--stage PATH` retains changes for review and apply.
 
 ## What you get
 

@@ -38,15 +38,15 @@ pip install pvisor
 
 ## 2. 检查平台要求
 
-CLI 支持 macOS 和 Linux，要求 Python 3.10 或更新版本。每个 CLI host Run 都使用文件系统暂存，
-包括未显式指定 `--stage` 的运行。在 macOS 上使用 host executor 前，先安装 macFUSE：
+CLI 支持 macOS 和 Linux，要求 Python 3.10 或更新版本。普通 host Job 默认直接写入工作区；
+`--safe` 或 `--stage` 才使用文件系统暂存。在 macOS 上运行暂存的 host Job 前，先安装 macFUSE：
 
 ```bash
 brew install --cask macfuse
 ```
 
-macOS 提示时允许 macFUSE system extension。CLI 的 host Run 默认就需要暂存挂载，
-挂载能力不可用时会 fail closed，而不会静默退化为无 COW 直写。
+macOS 提示时允许 macFUSE system extension。暂存挂载不可用时，要求暂存的 Job
+会直接报错，不会静默退化为直写。
 libkrun VM executor 不需要 macFUSE。
 
 ## 3. 需要时从源码安装

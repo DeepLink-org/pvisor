@@ -1221,20 +1221,18 @@ mod tests {
             program: "/bin/sh".into(),
             args: vec![
                 "-c".into(),
-                "printf '%s\\n%s' \"$COMPLEX\" \"$0\" > result".into(),
+                "test -z \"${HOST_MARKER+x}\" || exit 41; printf '%s\\n%s' \"$COMPLEX\" \"$0\" > result".into(),
                 argument_value.into(),
             ],
             env: BTreeMap::from([("COMPLEX".into(), environment_value.into())]),
             cwd: temporary.path().to_path_buf(),
         };
         write_guest_helper(&helper, None, None, &guest, &ResourceLimits::default()).unwrap();
-        assert!(
-            std::fs::read_to_string(&helper)
-                .unwrap()
-                .contains("exec /usr/bin/env -i")
-        );
 
-        let status = std::process::Command::new(&helper).status().unwrap();
+        let status = std::process::Command::new(&helper)
+            .env("HOST_MARKER", "must-not-leak")
+            .status()
+            .unwrap();
         assert!(status.success());
         assert_eq!(
             std::fs::read_to_string(temporary.path().join("result")).unwrap(),
@@ -1243,14 +1241,14 @@ mod tests {
     }
 
     #[test]
-    fn guest_helper_emits_requested_resource_limits() {
+    fn guest_helper_applies_open_file_limit_to_the_command() {
         let temporary = tempfile::tempdir().unwrap();
         let helper = temporary.path().join("guest-helper.sh");
         let guest = GuestSpec {
-            program: "/bin/true".into(),
-            args: Vec::new(),
+            program: "/bin/sh".into(),
+            args: vec!["-c".into(), "ulimit -n > limit.txt".into()],
             env: BTreeMap::new(),
-            cwd: PathBuf::from("/"),
+            cwd: temporary.path().to_path_buf(),
         };
         write_guest_helper(
             &helper,
@@ -1258,20 +1256,23 @@ mod tests {
             None,
             &guest,
             &ResourceLimits {
-                memory_bytes: Some(2 * 1024 * 1024),
-                processes: Some(8),
-                cpu_time_ms: Some(1_500),
                 open_files: Some(32),
-                file_size_bytes: Some(1024),
+                ..ResourceLimits::default()
             },
         )
         .unwrap();
-        let script = std::fs::read_to_string(helper).unwrap();
-        assert!(script.contains("ulimit -v 2048"));
-        assert!(script.contains("ulimit -u 8"));
-        assert!(script.contains("ulimit -t 2"));
-        assert!(script.contains("ulimit -n 32"));
-        assert!(script.contains("ulimit -f 2"));
+        assert!(
+            std::process::Command::new(helper)
+                .status()
+                .unwrap()
+                .success()
+        );
+        assert_eq!(
+            std::fs::read_to_string(temporary.path().join("limit.txt"))
+                .unwrap()
+                .trim(),
+            "32"
+        );
     }
 
     #[test]

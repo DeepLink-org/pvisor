@@ -17,15 +17,16 @@ pvisor -- codex
 pvisor run -- codex
 ```
 
-Use `--stage` when filesystem changes must remain available for review. Without
-it, pVisor drops the temporary copy-on-write stage when the Job ends. The selected host, container, or VM provider records its effective
+Use `--stage` when filesystem changes must remain available for review. Ordinary
+host Jobs without it write through to the workspace; `--safe` creates a temporary
+stage that pVisor drops when the Job ends. The selected host, container, or VM provider records its effective
 capabilities and limitations in the Run Bundle.
 
 Common controls are grouped by purpose:
 
 | Purpose | Options | Result |
 | --- | --- | --- |
-| Filesystem | `--stage`, `--mount SOURCE[:TARGET]:read\|stage\|write`, `--access PATH-GLOB:deny\|read` | keep a copy-on-write view and declare path access |
+| Filesystem | `--safe`, `--stage`, `--mount SOURCE[:TARGET]:read\|stage\|write`, `--access PATH-GLOB:deny\|ask\|read` | stage changes when requested and declare path access |
 | Runtime | `--executor host\|container\|vm`, `--rootfs`, `--container-image` | select the execution provider and root filesystem |
 | Network | `--overlaynet-deny-all`, `--overlaynet-allow`, `--overlaynet-limit` | request deny, allowlist, or rate-limit policy |
 | Gateway | `--gateway-mode`, `--gateway-route`, `--gateway-level` | route and optionally capture model traffic |

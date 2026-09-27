@@ -67,16 +67,17 @@ pvisor apply last --path hello.txt   # or: pvisor drop last
 Run this from your project directory after completing the platform setup in
 the installation guide. Use a fresh stage directory outside the project for
 each Job. Replace the command after `--` with your script or installed Agent CLI.
-For Codex, review the [current state-staging limitation](docs/src/en/reference/cli.md)
-before relying on project writes being staged:
+For Codex, `--safe` stages its home state separately from project files; see
+the [CLI reference](docs/src/en/reference/cli.md) for what each stage retains:
 
 ```bash
-pvisor run --stage ../agent-stage-001 -- codex
+pvisor run --safe --stage ../agent-stage-001 -- codex
 pvisor status --review last
 ```
 
-The workspace uses a copy-on-write view by default. `--stage` retains its
-changeset for review; an omitted stage is temporary and discarded when the Job ends.
+Ordinary host Jobs write through to the workspace. `--safe` stages workspace
+and home changes and discards its temporary stage when the Job ends; `--stage`
+retains a changeset for review.
 Explicit writable mounts and application state outside the workspace can still
 write through to the host. The exact boundary is
 platform-dependent and recorded with the Job—consult the

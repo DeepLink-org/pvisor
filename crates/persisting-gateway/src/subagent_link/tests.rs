@@ -98,11 +98,11 @@ fn extracts_spawn_hints_from_agent_tool_block() {
 fn match_spawns_by_doc_target_when_subagents_registered_first() {
     let mut registry = SubagentRegistry::default();
     let run_key = "run-20260524-021032";
-    let doc = "docs/src/design/cli-pvisor.md";
+    let doc = "docs/src/zh/design/cli.md";
     let sub_body = json!({
         "messages": [{
             "role": "user",
-            "content": format!("Review the Chinese design document at /Users/reiase/workspace/Persisting/{doc}")
+            "content": format!("Review the Chinese design document at /home/user/project/{doc}")
         }]
     });
     let sub_route = CaptureRoute {
@@ -119,7 +119,7 @@ fn match_spawns_by_doc_target_when_subagents_registered_first() {
 ```tool:Agent
 {{
   "description": "Review cli-capture design doc",
-  "prompt": "Review the Chinese design document at /Users/reiase/workspace/Persisting/{doc}",
+  "prompt": "Review the Chinese design document at /home/user/project/{doc}",
   "subagent_type": "general-purpose"
 }}
 ```"#

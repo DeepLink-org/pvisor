@@ -8,7 +8,8 @@ scripts, and automation commands; describe Agent-specific integrations as such.
 Use `pvisor` for the Python distribution, import package, and wheel filename
 prefix. Keep Rust crate names, `PERSISTING_*` environment variables, and existing
 repository/deployment URLs accurate until they are migrated. Separate requested policy, installed controls, and observed
-results; describe the default temporary filesystem stage and its platform-dependent boundary.
+results; distinguish ordinary host write-through from `--safe` staging and
+describe each executor's platform-dependent boundary.
 
 The site uses Zensical 0.0.61. English and Chinese Markdown live under
 `docs/src/en/` and `docs/src/zh/`, with matching relative paths.
@@ -38,7 +39,7 @@ CI uses the same bilingual build and page checks before uploading `docs/site`.
 
 Both locales use the same six directories:
 
-- `start/`: product scope, installation and the first reproducible Run.
+- `start/`: product scope, installation and the first reproducible Job.
 - `guides/`: tasks, commands, expected results and troubleshooting.
 - `concepts/`: terminology, evidence and capability limits.
 - `reference/`: CLI options and concrete cases.

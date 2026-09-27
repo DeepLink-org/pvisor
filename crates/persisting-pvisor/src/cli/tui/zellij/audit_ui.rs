@@ -321,6 +321,36 @@ mod tests {
         assert_eq!(worker.join().unwrap(), AuditDecision::Deny);
     }
 
+    #[test]
+    fn malformed_prompts_are_denied_and_pending_prompts_close_with_the_ui() {
+        let directory = tempfile::tempdir().unwrap();
+        let path = directory.path().join("audit.sock");
+        let mut server = AuditServer::bind(&path).unwrap();
+
+        let mut malformed = UnixStream::connect(&path).unwrap();
+        malformed.write_all(b"not json\n").unwrap();
+        server.poll().unwrap();
+        let mut reply = String::new();
+        BufReader::new(malformed).read_line(&mut reply).unwrap();
+        assert_eq!(
+            serde_json::from_str::<AuditDecision>(&reply).unwrap(),
+            AuditDecision::Deny
+        );
+        assert!(server.active().is_none());
+
+        let mut pending = UnixStream::connect(&path).unwrap();
+        serde_json::to_writer(&mut pending, &file("workspace/.env")).unwrap();
+        pending.write_all(b"\n").unwrap();
+        server.poll().unwrap();
+        assert!(server.active().is_some());
+        drop(server);
+        pending
+            .set_read_timeout(Some(std::time::Duration::from_secs(1)))
+            .unwrap();
+        let mut byte = [0];
+        assert_eq!(pending.read(&mut byte).unwrap(), 0);
+    }
+
     fn file(target: &str) -> AuditRequest {
         AuditRequest {
             kind: AuditKind::File,
@@ -389,8 +419,8 @@ mod tests {
     }
 
     #[test]
-    fn network_domain_choice_keeps_port_and_does_not_match_sibling_hosts() {
-        let request = network("api.example.com", 443);
+    fn persisted_network_decisions_keep_domain_port_transport_and_order() {
+        let request = network("API.Example.COM.", 443);
         let policy = SessionPolicy::default()
             .with_decision(&request, Scope::Domain, AuditDecision::Allow)
             .unwrap();
@@ -400,7 +430,52 @@ mod tests {
         );
         assert_eq!(policy.resolve(&network("other.example.com", 443)), None);
         assert_eq!(policy.resolve(&network("api.example.com", 80)), None);
+        let mut https = network("api.example.com", 443);
+        https.transport = Some(NetworkTransport::Https);
+        assert_eq!(policy.resolve(&https), None);
+
+        let policy = policy
+            .with_decision(
+                &network("sub.api.example.com", 443),
+                Scope::Exact,
+                AuditDecision::Deny,
+            )
+            .unwrap();
+        let storage = tempfile::tempdir().unwrap();
+        policy.persist(storage.path()).unwrap();
+        let restored = SessionPolicy::load(storage.path()).unwrap();
+        assert_eq!(
+            restored.resolve(&network("SUB.API.EXAMPLE.COM.", 443)),
+            Some((AuditDecision::Deny, Scope::Exact))
+        );
+        assert_eq!(
+            restored.resolve(&network("other.api.example.com", 443)),
+            Some((AuditDecision::Allow, Scope::Domain))
+        );
         assert_eq!(choice(&network("127.0.0.1", 443), b'2'), None);
         assert_eq!(choice(&file("README"), b'3'), None);
+    }
+
+    #[test]
+    fn stored_policy_rejects_invalid_scope_and_unknown_version() {
+        let storage = tempfile::tempdir().unwrap();
+        let path = storage.path().join(POLICY_FILE);
+        for document in [
+            serde_json::json!({"schema_version": 2, "rules": []}),
+            serde_json::json!({
+                "schema_version": 1,
+                "rules": [{
+                    "kind": "file",
+                    "scope": "domain",
+                    "value": "example.com",
+                    "port": null,
+                    "transport": null,
+                    "decision": "allow"
+                }]
+            }),
+        ] {
+            std::fs::write(&path, serde_json::to_vec(&document).unwrap()).unwrap();
+            assert!(SessionPolicy::load(storage.path()).is_err());
+        }
     }
 }

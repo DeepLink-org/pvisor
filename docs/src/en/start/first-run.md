@@ -36,10 +36,10 @@ The base project now contains `hello from the stage`. To reject an unapplied sta
 
 ## 4. Use your own command
 
-From a real project, replace the shell example with your script or automation command. An installed Agent CLI uses the same entry point; check the [Codex state caveat](../reference/cli.md) before relying on both its project and account state being staged:
+From a real project, replace the shell example with your script or automation command. An installed Agent CLI uses the same entry point. For Codex, `--safe` stages home state separately from project files; see the [CLI reference](../reference/cli.md):
 
 ```bash
-pvisor run --stage ../agent-stage-001 -- codex
+pvisor run --safe --stage ../agent-stage-001 -- codex
 pvisor status --review last
 ```
 

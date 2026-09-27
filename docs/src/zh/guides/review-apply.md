@@ -3,7 +3,7 @@
 在项目目录中启动暂存运行。把暂存目录放在项目外，每次 Run 使用新目录：
 
 ```bash
-pvisor run --stage ../stage-001 -- codex
+pvisor run --safe --stage ../stage-001 -- codex
 pvisor status --review last
 pvisor inspect last -- git status --short
 ```
