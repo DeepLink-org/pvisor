@@ -111,9 +111,10 @@ test-isolation:
 smoke: build
     #!/usr/bin/env bash
     set -euo pipefail
-    for command in run status review; do
+    for command in run status inspect apply drop; do
       "{{ target_dir }}/debug/pvisor" "$command" --help >/dev/null
     done
+    "{{ target_dir }}/debug/pvisor" status --help | grep -Fq -- '--review'
 
 # Run all examples, or pass scenario directory names to select a subset.
 examples *scenarios: (build "release")

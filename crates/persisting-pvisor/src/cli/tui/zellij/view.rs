@@ -212,32 +212,86 @@ fn panel_lines(snapshot: &Snapshot, panel: Panel, started: Instant, width: usize
             ];
             if let Some(filesystem) = &snapshot.filesystem {
                 lines.push(format!(
-                    "{} paths   {} overflow",
+                    "{} paths   {} observations omitted",
                     filesystem.paths.len(),
                     filesystem.overflow_hits
                 ));
-                for (path, operations) in &filesystem.paths {
-                    let count: u64 = operations.values().map(|item| item.effects).sum();
-                    lines.push(format!("{count:>3}  {path}"));
+                lines.push(
+                    "Observed by OverlayFS; paths outside this boundary are not counted".into(),
+                );
+                lines.push(String::new());
+                let mut paths = filesystem.paths.iter().collect::<Vec<_>>();
+                paths.sort_by(|left, right| {
+                    let priority = |operations: &std::collections::BTreeMap<
+                        _,
+                        persisting_control::ir::run::PathOperationCounters,
+                    >| {
+                        operations.values().fold((0u64, 0u64, 0u64), |sum, counts| {
+                            (
+                                sum.0 + counts.denied,
+                                sum.1 + counts.effects,
+                                sum.2 + counts.hits,
+                            )
+                        })
+                    };
+                    priority(right.1)
+                        .cmp(&priority(left.1))
+                        .then_with(|| left.0.cmp(right.0))
+                });
+                for (path, operations) in paths {
+                    for (operation, counts) in operations {
+                        lines.push(format!(
+                            "{path}  {operation}: {} hits, {} denied, {} effects, {} failed",
+                            counts.hits, counts.denied, counts.effects, counts.failed
+                        ));
+                    }
                 }
             }
             lines
         }
-        Panel::Network => vec![
-            format!("Allowed     {allowed}"),
-            format!("Denied      {net_denied}"),
-            format!("Failed      {net_failed}"),
-            String::new(),
-            "BOUNDARY".into(),
-            record
-                .and_then(|run| run.network_interception.as_ref())
-                .map_or("pending".into(), |value| {
-                    format!("{:?} / {:?}", value.driver, value.strength)
-                }),
-            String::new(),
-            "POLICY".into(),
-            record.map_or("pending".into(), |run| run.network.to_string()),
-        ],
+        Panel::Network => {
+            let mut lines = vec![
+                format!("Allowed     {allowed}"),
+                format!("Denied      {net_denied}"),
+                format!("Failed      {net_failed}"),
+                String::new(),
+                "BOUNDARY".into(),
+                record
+                    .and_then(|run| run.network_interception.as_ref())
+                    .map_or("pending".into(), |value| {
+                        format!("{:?} / {:?}", value.driver, value.strength)
+                    }),
+                String::new(),
+                "POLICY".into(),
+                record.map_or("pending".into(), |run| run.network.to_string()),
+                String::new(),
+                "DESTINATIONS REACHING OVERLAYNET".into(),
+            ];
+            if let Some(network) = snapshot.network.as_ref().and_then(|value| {
+                serde_json::from_value::<persisting_overlaynet::InterceptionSnapshot>(value.clone())
+                    .ok()
+            }) {
+                let mut targets = network.targets.iter().collect::<Vec<_>>();
+                targets.sort_by(|left, right| {
+                    (right.1.denied, right.1.failed, right.1.allowed)
+                        .cmp(&(left.1.denied, left.1.failed, left.1.allowed))
+                        .then_with(|| left.0.cmp(right.0))
+                });
+                for (target, counts) in targets {
+                    lines.push(format!(
+                        "{target}: allow {}  deny {}  fail {}",
+                        counts.allowed, counts.denied, counts.failed
+                    ));
+                }
+                if network.target_overflow > 0 {
+                    lines.push(format!(
+                        "{} events omitted by destination limit",
+                        network.target_overflow
+                    ));
+                }
+            }
+            lines
+        }
         Panel::Run => vec![
             "JOB ID".into(),
             record.map_or("pending".into(), |run| run.run_id.clone()),
@@ -580,6 +634,7 @@ pub(super) fn render(
 mod tests {
     use super::*;
     use persisting_control::audit::{AuditKind, AuditRequest};
+    use persisting_control::ir::run::PathOperationCounters;
 
     fn size(cols: u16, rows: u16) -> libc::winsize {
         libc::winsize {
@@ -588,6 +643,38 @@ mod tests {
             ws_xpixel: 0,
             ws_ypixel: 0,
         }
+    }
+
+    #[test]
+    fn review_panels_show_denied_file_and_network_targets() {
+        let mut snapshot = Snapshot::default();
+        let mut filesystem = persisting_control::ir::run::FilesystemObservation::default();
+        filesystem.paths.insert(
+            "secrets/key.pem".into(),
+            std::collections::BTreeMap::from([(
+                "open".into(),
+                PathOperationCounters {
+                    hits: 1,
+                    denied: 1,
+                    ..PathOperationCounters::default()
+                },
+            )]),
+        );
+        snapshot.filesystem = Some(filesystem);
+        snapshot.network = Some(serde_json::json!({
+            "policy_denied": 1,
+            "targets": {"TCP unexpected.example:443": {"denied": 1}}
+        }));
+        let files = panel_lines(&snapshot, Panel::Files, Instant::now(), 80).join("\n");
+        let network = panel_lines(&snapshot, Panel::Network, Instant::now(), 80).join("\n");
+        assert!(files.contains("secrets/key.pem  open: 1 hits, 1 denied"));
+        assert!(network.contains("TCP unexpected.example:443: allow 0  deny 1"));
+
+        snapshot.network = Some(serde_json::json!({
+            "tcp_flows_denied": 1,
+            "tcp_connect_failures": 2
+        }));
+        assert_eq!(snapshot.network_totals(), (0, 1, 2));
     }
 
     #[test]

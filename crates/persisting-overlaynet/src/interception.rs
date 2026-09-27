@@ -4,8 +4,14 @@
 //! only an enforcement guarantee when the active driver is non-bypassable.
 
 use serde::{Deserialize, Serialize};
-use std::sync::Arc;
+use std::collections::BTreeMap;
+use std::net::IpAddr;
 use std::sync::atomic::{AtomicU64, Ordering};
+use std::sync::{Arc, Mutex};
+
+use persisting_control::NetworkTransport;
+
+const MAX_TARGETS: usize = 256;
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(rename_all = "kebab-case")]
@@ -87,6 +93,31 @@ pub struct InterceptionSnapshot {
     pub unsupported_packets: u64,
     pub active_tcp_flows: u64,
     pub peak_tcp_flows: u64,
+    /// Bounded decisions for destinations that reached this driver. A proxy
+    /// cannot account for traffic that bypassed it.
+    pub targets: BTreeMap<String, TargetCounters>,
+    pub target_overflow: u64,
+}
+
+#[derive(Debug, Clone, Default, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(default)]
+pub struct TargetCounters {
+    pub allowed: u64,
+    pub denied: u64,
+    pub failed: u64,
+}
+
+#[derive(Default)]
+struct TargetObservations {
+    targets: BTreeMap<String, TargetCounters>,
+    overflow: u64,
+}
+
+#[derive(Clone, Copy)]
+enum TargetOutcome {
+    Allowed,
+    Denied,
+    Failed,
 }
 
 #[derive(Default)]
@@ -108,9 +139,10 @@ struct Counters {
     unsupported_packets: AtomicU64,
     active_tcp_flows: AtomicU64,
     peak_tcp_flows: AtomicU64,
+    targets: Mutex<TargetObservations>,
 }
 
-/// Cloneable, lock-free counters for the traffic that reached OverlayNet.
+/// Cloneable counters for the traffic that reached OverlayNet.
 ///
 /// These counters measure intercepted traffic, not traffic that bypassed a
 /// cooperative driver. The accompanying [`InterceptionProfile`] carries that
@@ -122,6 +154,11 @@ pub struct InterceptionMetrics {
 
 impl InterceptionMetrics {
     pub fn snapshot(&self) -> InterceptionSnapshot {
+        let targets = self
+            .counters
+            .targets
+            .lock()
+            .unwrap_or_else(|poisoned| poisoned.into_inner());
         InterceptionSnapshot {
             requests_seen: self.counters.requests_seen.load(Ordering::Relaxed),
             policy_allowed: self.counters.policy_allowed.load(Ordering::Relaxed),
@@ -140,7 +177,77 @@ impl InterceptionMetrics {
             unsupported_packets: self.counters.unsupported_packets.load(Ordering::Relaxed),
             active_tcp_flows: self.counters.active_tcp_flows.load(Ordering::Relaxed),
             peak_tcp_flows: self.counters.peak_tcp_flows.load(Ordering::Relaxed),
+            targets: targets.targets.clone(),
+            target_overflow: targets.overflow,
         }
+    }
+
+    fn observe_target(
+        &self,
+        host: &str,
+        port: u16,
+        transport: NetworkTransport,
+        outcome: TargetOutcome,
+    ) {
+        let host = host.trim_end_matches('.').to_ascii_lowercase();
+        let mut observed = self
+            .counters
+            .targets
+            .lock()
+            .unwrap_or_else(|poisoned| poisoned.into_inner());
+        if host.is_empty() || host.len() > 255 {
+            observed.overflow = observed.overflow.saturating_add(1);
+            return;
+        }
+        let authority = if host
+            .parse::<IpAddr>()
+            .is_ok_and(|address| address.is_ipv6())
+        {
+            format!("[{host}]:{port}")
+        } else {
+            format!("{host}:{port}")
+        };
+        let transport = match transport {
+            NetworkTransport::Http => "HTTP",
+            NetworkTransport::Https => "HTTPS",
+            NetworkTransport::TcpTunnel => "TCP",
+        };
+        let target = format!("{transport} {authority}");
+        if !observed.targets.contains_key(&target) && observed.targets.len() >= MAX_TARGETS {
+            if matches!(outcome, TargetOutcome::Denied)
+                && let Some(displaced) = observed
+                    .targets
+                    .iter()
+                    .find(|(_, counts)| counts.denied == 0)
+                    .map(|(name, _)| name.clone())
+                && let Some(counts) = observed.targets.remove(&displaced)
+            {
+                observed.overflow = observed
+                    .overflow
+                    .saturating_add(counts.allowed.saturating_add(counts.failed));
+            } else {
+                observed.overflow = observed.overflow.saturating_add(1);
+                return;
+            }
+        }
+        let counters = observed.targets.entry(target).or_default();
+        match outcome {
+            TargetOutcome::Allowed => counters.allowed = counters.allowed.saturating_add(1),
+            TargetOutcome::Denied => counters.denied = counters.denied.saturating_add(1),
+            TargetOutcome::Failed => counters.failed = counters.failed.saturating_add(1),
+        }
+    }
+
+    pub(crate) fn target_allowed(&self, host: &str, port: u16, transport: NetworkTransport) {
+        self.observe_target(host, port, transport, TargetOutcome::Allowed);
+    }
+
+    pub(crate) fn target_denied(&self, host: &str, port: u16, transport: NetworkTransport) {
+        self.observe_target(host, port, transport, TargetOutcome::Denied);
+    }
+
+    pub(crate) fn target_failed(&self, host: &str, port: u16, transport: NetworkTransport) {
+        self.observe_target(host, port, transport, TargetOutcome::Failed);
     }
 
     pub(crate) fn request_seen(&self) {
@@ -333,5 +440,41 @@ mod tests {
         assert_eq!(snapshot.requests_seen, 80_000);
         assert_eq!(snapshot.policy_allowed, 80_000);
         assert_eq!(snapshot.policy_denied, 0);
+    }
+
+    #[test]
+    fn target_evidence_normalizes_names_and_reports_capture_limit() {
+        let metrics = InterceptionMetrics::default();
+        metrics.target_denied("Example.COM.", 443, NetworkTransport::TcpTunnel);
+        metrics.target_allowed("example.com", 443, NetworkTransport::TcpTunnel);
+        for index in 0..MAX_TARGETS {
+            metrics.target_denied(&format!("host-{index}.example"), 80, NetworkTransport::Http);
+        }
+        let snapshot = metrics.snapshot();
+        assert_eq!(snapshot.targets.len(), MAX_TARGETS);
+        assert_eq!(snapshot.target_overflow, 1);
+        assert_eq!(snapshot.targets["TCP example.com:443"].denied, 1);
+        assert_eq!(snapshot.targets["TCP example.com:443"].allowed, 1);
+    }
+
+    #[test]
+    fn old_interception_snapshot_without_targets_remains_readable() {
+        let snapshot: InterceptionSnapshot =
+            serde_json::from_str(r#"{"policy_denied":2}"#).unwrap();
+        assert_eq!(snapshot.policy_denied, 2);
+        assert!(snapshot.targets.is_empty());
+    }
+
+    #[test]
+    fn denied_destination_displaces_allowed_only_entry_at_limit() {
+        let metrics = InterceptionMetrics::default();
+        for index in 0..MAX_TARGETS {
+            metrics.target_allowed(&format!("host-{index}.example"), 80, NetworkTransport::Http);
+        }
+        metrics.target_denied("blocked.example", 443, NetworkTransport::TcpTunnel);
+        let snapshot = metrics.snapshot();
+        assert_eq!(snapshot.targets.len(), MAX_TARGETS);
+        assert_eq!(snapshot.targets["TCP blocked.example:443"].denied, 1);
+        assert_eq!(snapshot.target_overflow, 1);
     }
 }

@@ -25,6 +25,8 @@ pvisor status --review last
 
 此时原项目中没有 `hello.txt`，但审查结果中可以看到它。除了文件列表，也要阅读实际隔离能力和警告。如果暂存挂载失败，应先解决平台配置问题。
 
+审查输出的 **File access observations** 会列出到达 OverlayFS 的路径、操作和结果，包括读取、拒绝与写入效果；**Network access observations** 会按目标列出到达 OverlayNet 的策略允许、拒绝和连接失败。运行中的 Job 可用 `pvisor status last` 查看摘要，TUI 的 Files/Network 面板可查看明细。`--json` 保留完整的有界记录。普通 host 代理是协作式的，因此这些网络记录只证明经过代理的请求；未出现的目标不能据此判定为从未访问。
+
 ## 3. 接受改动
 
 ```bash

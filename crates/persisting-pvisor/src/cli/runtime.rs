@@ -3,13 +3,15 @@ use std::os::unix::fs::MetadataExt;
 use std::path::{Path, PathBuf};
 use std::process::Command;
 
+#[cfg(target_os = "linux")]
+use crate::runtime::LEASE_FILENAME;
 use anyhow::{Context, bail};
 use clap::Args;
 
 use crate::runtime::{
-    ApplySelection, LEASE_FILENAME, OverlayState, ReadOnlyOverlayMount, RunLease, RunRecord,
-    apply_overlay_selected, control_mount_inspect, control_overlay_status, control_ping,
-    control_unmount_inspect, discard_overlay, is_live, load_apply_records,
+    ApplySelection, OverlayState, ReadOnlyOverlayMount, RunLease, RunRecord,
+    apply_overlay_selected, control_mount_inspect, control_observations, control_overlay_status,
+    control_ping, control_unmount_inspect, discard_overlay, is_live, load_apply_records,
     mount_overlay_record_read_only, overlay_status, resolve_run,
 };
 
@@ -120,6 +122,29 @@ pub fn status(args: StatusArgs) -> anyhow::Result<()> {
             }
         })
         .transpose()?;
+    let observations = if live {
+        control_observations(&record.stage_dir()).ok()
+    } else {
+        None
+    };
+    let file_observed = observations
+        .as_ref()
+        .and_then(|value| value.get("filesystem"))
+        .and_then(|value| {
+            serde_json::from_value::<persisting_control::ir::run::FilesystemObservation>(
+                value.clone(),
+            )
+            .ok()
+        })
+        .or_else(|| record.filesystem_observation.clone());
+    let net_observed = observations
+        .as_ref()
+        .and_then(|value| value.get("network"))
+        .and_then(|value| {
+            serde_json::from_value::<persisting_overlaynet::InterceptionSnapshot>(value.clone())
+                .ok()
+        })
+        .or_else(|| record.network_interception_metrics.clone());
     if args.json {
         println!(
             "{}",
@@ -127,6 +152,10 @@ pub fn status(args: StatusArgs) -> anyhow::Result<()> {
                 "run": record,
                 "live": live,
                 "apply_history": apply_history,
+                "observations": {
+                    "filesystem": file_observed,
+                    "network": net_observed,
+                },
                 "filesystem": fs.as_ref().map(|status| serde_json::json!({
                     "state": record.overlay.as_ref().map(|overlay| overlay.state),
                     "changed_files": status.changed_files,
@@ -171,6 +200,47 @@ pub fn status(args: StatusArgs) -> anyhow::Result<()> {
             interception.strength,
             interception.is_enforcing()
         );
+    }
+    if let Some(observed) = &file_observed {
+        let (hits, denied) = observed
+            .paths
+            .values()
+            .flat_map(|operations| operations.values())
+            .fold((0u64, 0u64), |sum, counts| {
+                (sum.0 + counts.hits, sum.1 + counts.denied)
+            });
+        println!(
+            "file accesses observed: {hits} operations, {denied} denied across {} paths ({} omitted)",
+            observed.paths.len(),
+            observed.overflow_hits
+        );
+        for (path, operations) in observed
+            .paths
+            .iter()
+            .filter(|(_, operations)| operations.values().any(|counts| counts.denied > 0))
+            .take(5)
+        {
+            let denied: u64 = operations.values().map(|counts| counts.denied).sum();
+            println!("  denied {denied}: {path}");
+        }
+    }
+    if let Some(observed) = &net_observed {
+        println!(
+            "network accesses observed: {} policy allowed, {} denied, {} transport failures across {} destinations ({} omitted)",
+            observed.policy_allowed,
+            observed.policy_denied + observed.tcp_flows_denied,
+            observed.tcp_connect_failures + observed.failures,
+            observed.targets.len(),
+            observed.target_overflow
+        );
+        for (target, counts) in observed
+            .targets
+            .iter()
+            .filter(|(_, counts)| counts.denied > 0)
+            .take(5)
+        {
+            println!("  denied {}: {target}", counts.denied);
+        }
     }
     println!(
         "gateway: {}",

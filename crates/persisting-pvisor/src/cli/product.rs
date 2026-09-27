@@ -122,9 +122,33 @@ pub fn review(args: ReviewArgs) -> anyhow::Result<()> {
     }
     if let Some(metrics) = &bundle.network.intercepted {
         println!(
-            "  intercepted: {} requests ({} allowed, {} denied, {} failures)",
-            metrics.requests_seen, metrics.policy_allowed, metrics.policy_denied, metrics.failures
+            "  observed: {} proxy requests; {} allowed, {} denied, {} failures; {} VM TCP flows",
+            metrics.requests_seen,
+            metrics.policy_allowed,
+            metrics.policy_denied + metrics.tcp_flows_denied,
+            metrics.failures + metrics.tcp_connect_failures,
+            metrics.tcp_flows_opened
         );
+        println!("\nNetwork access observations (only traffic reaching OverlayNet)");
+        let mut targets = metrics.targets.iter().collect::<Vec<_>>();
+        targets.sort_by(|left, right| {
+            (right.1.denied, right.1.failed, right.1.allowed)
+                .cmp(&(left.1.denied, left.1.failed, left.1.allowed))
+                .then_with(|| left.0.cmp(right.0))
+        });
+        for (target, counts) in targets.iter().take(REVIEW_PATH_LIMIT) {
+            println!(
+                "  {target}: policy-allowed={} denied={} failed={}",
+                counts.allowed, counts.denied, counts.failed
+            );
+        }
+        if metrics.target_overflow > 0 || targets.len() > REVIEW_PATH_LIMIT {
+            println!(
+                "  {} destinations hidden by display limit; {} events omitted by capture limit; use --json for retained details",
+                targets.len().saturating_sub(REVIEW_PATH_LIMIT),
+                metrics.target_overflow
+            );
+        }
     }
 
     if let Some(observed) = bundle
@@ -132,9 +156,25 @@ pub fn review(args: ReviewArgs) -> anyhow::Result<()> {
         .as_ref()
         .and_then(|observation| observation.filesystem.as_ref())
     {
-        println!("\nFile access observations");
-        for (path, operations) in observed.paths.iter().take(REVIEW_PATH_LIMIT) {
-            for (operation, counts) in operations {
+        println!("\nFile access observations (only operations reaching OverlayFS)");
+        let mut paths = observed.paths.iter().collect::<Vec<_>>();
+        paths.sort_by(|left, right| {
+            let priority =
+                |operations: &BTreeMap<_, persisting_control::ir::run::PathOperationCounters>| {
+                    operations.values().fold((0u64, 0u64, 0u64), |sum, counts| {
+                        (
+                            sum.0 + counts.denied,
+                            sum.1 + counts.effects,
+                            sum.2 + counts.hits,
+                        )
+                    })
+                };
+            priority(right.1)
+                .cmp(&priority(left.1))
+                .then_with(|| left.0.cmp(right.0))
+        });
+        for (path, operations) in paths.iter().take(REVIEW_PATH_LIMIT) {
+            for (operation, counts) in operations.iter() {
                 println!(
                     "  {} {}: hits={} succeeded={} denied={} failed={} effects={} uncertain_effects={}",
                     path,

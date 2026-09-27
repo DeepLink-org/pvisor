@@ -17,7 +17,7 @@
 | 想了解 host 默认隔离 | D02–D03 |
 | 使用 VM、宿主 rootfs 或 OCI 镜像 | E01–E06 |
 | 使用原生 OCI 容器 | F01–F04 |
-| 配置网络代理或禁止网络 | G01–G06 |
+| 配置网络代理或禁止网络 | G01–G07 |
 | 接入 Gateway 或记录轨迹 | H01–H02 |
 | 从配置文件或 RunSpec 执行 | I01–I03 |
 | 参考多能力组合 | J01–J03 |
@@ -684,6 +684,7 @@ D01 讲视图层组合，D02/D03 讲 host executor，D04–D06 讲拒绝、显�
   ```bash
   stdout_has 'pVisor file access denied'
   bundle_expect filesystem.access_policy.deny.0 'private/**'
+  bundle_contains run_observation.filesystem.paths private/token
   test "$(cat private/token)" = secret
   ```
 
@@ -1287,6 +1288,33 @@ D01 讲视图层组合，D02/D03 讲 host executor，D04–D06 讲拒绝、显�
 
   ```bash
   stdout_has "OverlayNet policy options require --overlaynet auto or proxy"
+  ```
+
+  </details>
+
+- [ ] **G07：审查被代理拒绝的具体目标**
+
+  用途：通过 pVisor 注入的代理访问一个明确拒绝的域名，确认 Job 记录的是具体目标和拒绝次数，而不只是网络失败总数。请求在策略层被拒绝，不依赖该域名真实可访问。
+
+  准备：安装 curl。
+
+  预期：curl 请求失败；`status --review` 的 Network access observations 可指出 `blocked.example:80` 被拒绝。host proxy 是协作式边界，本例只证明经过代理的请求被拦截。
+
+  <!-- pvisor-case: expect=nonzero requires=curl -->
+
+  ```bash
+  pvisor --overlaynet-deny blocked.example -- /bin/sh -c \
+    'curl --fail --silent --show-error --noproxy "" -x "$http_proxy" --max-time 2 http://blocked.example/'
+  ```
+
+  <details>
+  <summary>自动回归断言（由脚本执行）</summary>
+
+  <!-- pvisor-assert -->
+
+  ```bash
+  bundle_contains network.intercepted.targets 'HTTP blocked.example:80'
+  bundle_contains network.intercepted.targets '"denied": 1'
   ```
 
   </details>

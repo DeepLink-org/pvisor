@@ -191,6 +191,7 @@ where
             }
         };
         let host = crate::policy::host_from_authority(&target.host);
+        let port = target.port;
         let authorized = match authorize(
             state,
             &context,
@@ -203,26 +204,45 @@ where
             Ok(target) => target,
             Err(TargetAuthorizationError::Denied(reason)) => {
                 state.interception_metrics.policy_denied();
+                state.interception_metrics.target_denied(
+                    &host,
+                    target.port,
+                    NetworkTransport::TcpTunnel,
+                );
                 state.sink.on_denied(&context, &host, &reason);
                 let (status, message) = forbidden_response(&host, &reason);
                 return Ok((status, message).into_response());
             }
-            Err(TargetAuthorizationError::Resolve(error)) => return Err(error),
+            Err(TargetAuthorizationError::Resolve(error)) => {
+                state.interception_metrics.target_failed(
+                    &host,
+                    target.port,
+                    NetworkTransport::TcpTunnel,
+                );
+                return Err(error);
+            }
         };
         state.interception_metrics.policy_allowed();
+        state
+            .interception_metrics
+            .target_allowed(&host, target.port, NetworkTransport::TcpTunnel);
         state.sink.on_dispatch(&context, &request, "connect");
         let bandwidth =
             bandwidth_session(state, &context, &host, Some(target.port), Some(&authorized)).await;
-        let response =
-            match handle_connect_authorized(request, target, &authorized, bandwidth).await {
-                Ok(response) => response,
-                Err(error) => {
-                    state
-                        .sink
-                        .on_proxy_error(&context, &authority, &format!("{error:#}"));
-                    return Err(error);
-                }
-            };
+        let response = match handle_connect_authorized(request, target, &authorized, bandwidth)
+            .await
+        {
+            Ok(response) => response,
+            Err(error) => {
+                state
+                    .interception_metrics
+                    .target_failed(&host, port, NetworkTransport::TcpTunnel);
+                state
+                    .sink
+                    .on_proxy_error(&context, &authority, &format!("{error:#}"));
+                return Err(error);
+            }
+        };
         state
             .sink
             .on_proxy_result(&context, &authority, response.status());
@@ -237,28 +257,51 @@ where
         } else {
             NetworkTransport::Http
         };
-        let port = request.uri().port_u16().or(match transport {
-            NetworkTransport::Https => Some(443),
-            NetworkTransport::Http => Some(80),
-            NetworkTransport::TcpTunnel => None,
-        });
-        let authorized = match authorize(state, &context, &host, port, transport).await {
+        let port = request
+            .uri()
+            .port_u16()
+            .unwrap_or(if transport == NetworkTransport::Https {
+                443
+            } else {
+                80
+            });
+        let authorized = match authorize(state, &context, &host, Some(port), transport).await {
             Ok(target) => target,
             Err(TargetAuthorizationError::Denied(reason)) => {
                 state.interception_metrics.policy_denied();
+                state
+                    .interception_metrics
+                    .target_denied(&host, port, transport);
                 state.sink.on_denied(&context, &host, &reason);
                 let (status, message) = forbidden_response(&host, &reason);
                 return Ok((status, message).into_response());
             }
-            Err(TargetAuthorizationError::Resolve(error)) => return Err(error),
+            Err(TargetAuthorizationError::Resolve(error)) => {
+                state
+                    .interception_metrics
+                    .target_failed(&host, port, transport);
+                return Err(error);
+            }
         };
         state.interception_metrics.policy_allowed();
-        let bandwidth = bandwidth_session(state, &context, &host, port, Some(&authorized)).await;
+        state
+            .interception_metrics
+            .target_allowed(&host, port, transport);
+        let bandwidth =
+            bandwidth_session(state, &context, &host, Some(port), Some(&authorized)).await;
         if state.sink.accepts(&request) {
             state.interception_metrics.sink_request();
             state.sink.on_dispatch(&context, &request, "sink");
             let request = throttle_request(request, bandwidth.clone());
-            let response = state.sink.handle(request, peer, &context).await?;
+            let response = state
+                .sink
+                .handle(request, peer, &context)
+                .await
+                .inspect_err(|_| {
+                    state
+                        .interception_metrics
+                        .target_failed(&host, port, transport);
+                })?;
             return Ok(throttle_response(response, bandwidth));
         }
         state.sink.on_dispatch(&context, &request, "forward");
@@ -266,6 +309,9 @@ where
         let response = match transparent_forward_authorized(request, &authorized, bandwidth).await {
             Ok(response) => response.into_response(),
             Err(error) => {
+                state
+                    .interception_metrics
+                    .target_failed(&host, port, transport);
                 state
                     .sink
                     .on_proxy_error(&context, &target, &format!("{error:#}"));
@@ -493,6 +539,7 @@ mod tests {
             assert_eq!(snapshot.connect_requests, 1);
             assert_eq!(snapshot.policy_denied, 1);
             assert_eq!(snapshot.policy_allowed, 0);
+            assert_eq!(snapshot.targets["TCP example.com:443"].denied, 1);
         });
     }
 

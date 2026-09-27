@@ -196,8 +196,8 @@ impl Snapshot {
         };
         (
             number("policy_allowed"),
-            number("policy_denied"),
-            number("failures"),
+            number("policy_denied") + number("tcp_flows_denied"),
+            number("failures") + number("tcp_connect_failures"),
         )
     }
 }
@@ -308,7 +308,7 @@ pub(crate) fn run(args: Vec<OsString>, audit_enabled: bool) -> Result<i32> {
     let mut layout = view::Layout::new(size, &state);
     let mut master = -1;
     let mut slave = -1;
-    let pty_size = libc::winsize {
+    let mut pty_size = libc::winsize {
         ws_row: layout.agent_rows,
         ws_col: layout.agent_cols,
         ws_xpixel: 0,
@@ -319,8 +319,8 @@ pub(crate) fn run(args: Vec<OsString>, audit_enabled: bool) -> Result<i32> {
             &mut master,
             &mut slave,
             std::ptr::null_mut(),
-            std::ptr::null(),
-            &pty_size,
+            std::ptr::null_mut(),
+            &raw mut pty_size,
         )
     } != 0
     {
@@ -342,7 +342,11 @@ pub(crate) fn run(args: Vec<OsString>, audit_enabled: bool) -> Result<i32> {
     }
     unsafe {
         child.pre_exec(|| {
-            if libc::setsid() < 0 || libc::ioctl(libc::STDIN_FILENO, libc::TIOCSCTTY, 0) < 0 {
+            #[cfg(target_os = "linux")]
+            let tiocsctty = libc::TIOCSCTTY;
+            #[cfg(not(target_os = "linux"))]
+            let tiocsctty: libc::c_ulong = libc::TIOCSCTTY.into();
+            if libc::setsid() < 0 || libc::ioctl(libc::STDIN_FILENO, tiocsctty, 0) < 0 {
                 return Err(std::io::Error::last_os_error());
             }
             Ok(())

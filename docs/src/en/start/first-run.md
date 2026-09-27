@@ -25,6 +25,8 @@ pvisor status --review last
 
 `hello.txt` is absent from the base project and appears in the review. Read the reported isolation warnings as well as the file list. If the stage cannot be mounted, fix the platform setup before continuing.
 
+**File access observations** in the review show paths, operations, and outcomes that reached OverlayFS, including reads, denials, and write effects. **Network access observations** list policy decisions and connection failures by destination for traffic that reached OverlayNet. While a Job is running, `pvisor status last` shows a summary and the TUI Files/Network panels show details. `--json` retains the full bounded record. The ordinary host proxy is cooperative, so its network observations prove only requests sent through that proxy; an absent destination does not prove it was never accessed.
+
 ## 3. Accept the change
 
 ```bash
