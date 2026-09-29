@@ -20,7 +20,10 @@ pub struct RunConfig {
     pub container: ContainerSettings,
     #[serde(alias = "kvm")]
     pub vm: VmSettings,
-    /// Transactional filesystem configuration. Absence means host filesystem access.
+    /// Process filesystem access policy. This is independent from OverlayFS
+    /// change staging and from OverlayNet network policy.
+    pub filesystem: FilesystemMode,
+    /// Transactional OverlayFS configuration. Absence means no staged OverlayFS view.
     pub overlayfs: Option<OverlayFsSettings>,
     pub overlaynet: OverlayNetSettings,
     pub gateway: GatewaySettings,
@@ -162,8 +165,10 @@ pub struct VmSettings {
     pub image_store: Option<PathBuf>,
     /// Reject apply operations that would mutate the configured rootfs lower.
     pub rootfs_immutable: bool,
-    /// Optional directory containing libkrunfw. Packaged builds discover it
-    /// next to pVisor; source builds use a verified per-user download cache.
+    /// Optional directory containing libkrunfw. Packaged glibc/macOS builds
+    /// discover it next to pVisor; source builds use a verified per-user
+    /// download cache. The x86_64 Linux musl build embeds the kernel bundle
+    /// and rejects this setting.
     pub library_dir: Option<PathBuf>,
     pub memory_mib: u32,
     pub cpus: u16,
@@ -217,6 +222,18 @@ pub enum RunPolicy {
     #[default]
     Observe,
     Enforce,
+}
+
+/// Whether a host process receives pVisor's synthetic-root/Landlock or
+/// Seatbelt filesystem access restrictions.
+#[derive(Debug, Clone, Copy, Default, Deserialize, Serialize, PartialEq, Eq, clap::ValueEnum)]
+#[serde(rename_all = "kebab-case")]
+pub enum FilesystemMode {
+    /// Preserve the host process filesystem view and permissions.
+    #[default]
+    Host,
+    /// Restrict filesystem access to pVisor-declared roots.
+    Sandbox,
 }
 
 #[derive(Debug, Clone, Deserialize, Serialize)]
@@ -448,6 +465,8 @@ mod tests {
     fn run_config_toml_roundtrip() {
         let config: RunConfig = toml::from_str(
             r#"
+filesystem = "sandbox"
+
 [run]
 executor = "container"
 command = ["codex"]
@@ -488,6 +507,7 @@ upstream = "https://api.openai.com/v1"
 "#,
         )
         .unwrap();
+        assert_eq!(config.filesystem, FilesystemMode::Sandbox);
         assert_eq!(
             config
                 .overlayfs

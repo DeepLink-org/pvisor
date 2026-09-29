@@ -37,6 +37,7 @@ use std::os::fd::{BorrowedFd, FromRawFd, RawFd};
 use std::path::PathBuf;
 use std::slice;
 use std::sync::atomic::{AtomicI32, Ordering};
+#[cfg(not(target_env = "musl"))]
 use std::sync::LazyLock;
 use std::sync::Mutex;
 use utils::eventfd::EventFd;
@@ -75,11 +76,23 @@ const KRUN_SUCCESS: i32 = 0;
 const MAX_ARGS: usize = 4096;
 
 // krunfw library name for each context
-#[cfg(all(target_os = "linux", not(feature = "tee")))]
+#[cfg(all(
+    target_os = "linux",
+    not(target_env = "musl"),
+    not(feature = "tee")
+))]
 const KRUNFW_NAME: &str = "libkrunfw.so.5";
-#[cfg(all(target_os = "linux", feature = "amd-sev"))]
+#[cfg(all(
+    target_os = "linux",
+    not(target_env = "musl"),
+    feature = "amd-sev"
+))]
 const KRUNFW_NAME: &str = "libkrunfw-sev.so.5";
-#[cfg(all(target_os = "linux", feature = "tdx"))]
+#[cfg(all(
+    target_os = "linux",
+    not(target_env = "musl"),
+    feature = "tdx"
+))]
 const KRUNFW_NAME: &str = "libkrunfw-tdx.so.5";
 #[cfg(target_os = "macos")]
 const KRUNFW_NAME: &str = "libkrunfw.5.dylib";
@@ -113,9 +126,11 @@ fn init_virtual_entry() -> VirtualDirEntry {
     }
 }
 
+#[cfg(not(target_env = "musl"))]
 static KRUNFW: LazyLock<Option<libloading::Library>> =
     LazyLock::new(|| unsafe { libloading::Library::new(KRUNFW_NAME).ok() });
 
+#[cfg(not(target_env = "musl"))]
 pub struct KrunfwBindings {
     get_kernel: libloading::Symbol<
         'static,
@@ -127,6 +142,7 @@ pub struct KrunfwBindings {
     get_qboot: libloading::Symbol<'static, unsafe extern "C" fn(*mut size_t) -> *mut c_char>,
 }
 
+#[cfg(not(target_env = "musl"))]
 impl KrunfwBindings {
     fn load_bindings() -> Result<KrunfwBindings, libloading::Error> {
         let krunfw = match KRUNFW.as_ref() {
@@ -149,6 +165,27 @@ impl KrunfwBindings {
     }
 }
 
+/// A page-aligned copy of a kernel bundle supplied by the application.
+///
+/// Static musl builds cannot use libloading to discover libkrunfw at runtime.
+/// Keeping the mapping in the context makes the pointer stored in
+/// `KernelBundle` valid until the VMM has consumed it.
+struct EmbeddedKernelMapping {
+    address: *mut libc::c_void,
+    mapped_size: usize,
+}
+
+unsafe impl Send for EmbeddedKernelMapping {}
+
+impl Drop for EmbeddedKernelMapping {
+    fn drop(&mut self) {
+        // SAFETY: the mapping was created by mmap with this exact size.
+        unsafe {
+            libc::munmap(self.address, self.mapped_size);
+        }
+    }
+}
+
 #[derive(Clone)]
 #[cfg(feature = "net")]
 enum LegacyNetworkConfig {
@@ -158,7 +195,9 @@ enum LegacyNetworkConfig {
 
 #[derive(Default)]
 struct ContextConfig {
+    #[cfg(not(target_env = "musl"))]
     krunfw: Option<KrunfwBindings>,
+    embedded_kernel: Option<EmbeddedKernelMapping>,
     vmr: VmResources,
     workdir: Option<String>,
     exec_path: Option<String>,
@@ -552,7 +591,9 @@ pub extern "C" fn krun_create_ctx() -> i32 {
 
     let ctx_cfg = {
         ContextConfig {
+            #[cfg(not(target_env = "musl"))]
             krunfw: KrunfwBindings::new(),
+            embedded_kernel: None,
             shutdown_efd,
             ..Default::default()
         }
@@ -574,6 +615,76 @@ pub extern "C" fn krun_free_ctx(ctx_id: u32) -> i32 {
         Some(_) => KRUN_SUCCESS,
         None => -libc::ENOENT,
     }
+}
+
+/// Install a kernel bundle that is already present in the caller's address
+/// space. This is used by static Linux builds, where loading libkrunfw with
+/// `dlopen` is unavailable. The bytes are copied into a page-aligned mapping
+/// owned by the context before the VMM starts.
+#[allow(clippy::missing_safety_doc)]
+#[no_mangle]
+pub unsafe extern "C" fn krun_set_embedded_kernel(
+    ctx_id: u32,
+    kernel: *const u8,
+    kernel_size: usize,
+    guest_addr: u64,
+    entry_addr: u64,
+) -> i32 {
+    if kernel.is_null() || kernel_size == 0 {
+        return -libc::EINVAL;
+    }
+
+    // SAFETY: the caller promises that `kernel` points to `kernel_size` bytes.
+    let bytes = unsafe { std::slice::from_raw_parts(kernel, kernel_size) };
+    let page_size = unsafe { libc::sysconf(libc::_SC_PAGESIZE) as usize };
+    if page_size == 0 || !page_size.is_power_of_two() {
+        return -libc::EINVAL;
+    }
+    let mapped_size = match kernel_size.checked_add(page_size - 1) {
+        Some(size) => size & !(page_size - 1),
+        None => return -libc::EOVERFLOW,
+    };
+    // SAFETY: anonymous private memory is owned by this context after this
+    // call and is released by EmbeddedKernelMapping::drop.
+    let address = unsafe {
+        libc::mmap(
+            std::ptr::null_mut(),
+            mapped_size,
+            libc::PROT_READ | libc::PROT_WRITE,
+            libc::MAP_PRIVATE | libc::MAP_ANONYMOUS,
+            -1,
+            0,
+        )
+    };
+    if address == libc::MAP_FAILED {
+        return -libc::ENOMEM;
+    }
+    // Keep the mapping writable: KVM exposes this host memory directly as
+    // guest RAM, and early kernel boot may write its own data sections.
+    unsafe {
+        std::ptr::copy_nonoverlapping(bytes.as_ptr(), address.cast::<u8>(), kernel_size);
+    }
+
+    let bundle = KernelBundle {
+        host_addr: address as u64,
+        guest_addr,
+        entry_addr,
+        size: kernel_size,
+    };
+    let mut contexts = CTX_MAP.lock().unwrap();
+    let Some(context) = contexts.get_mut(&ctx_id) else {
+        unsafe { libc::munmap(address, mapped_size) };
+        return -libc::ENOENT;
+    };
+    if context.vmr.set_kernel_bundle(bundle).is_err() {
+        unsafe { libc::munmap(address, mapped_size) };
+        return -libc::EINVAL;
+    }
+    context.embedded_kernel = Some(EmbeddedKernelMapping {
+        address,
+        mapped_size,
+    });
+    KRUN_SUCCESS
 }
 
 #[no_mangle]
@@ -2375,6 +2486,7 @@ pub unsafe extern "C" fn krun_set_firmware(ctx_id: u32, c_firmware_path: *const 
     KRUN_SUCCESS
 }
 
+#[cfg(not(target_env = "musl"))]
 unsafe fn load_krunfw_payload(
     krunfw: &KrunfwBindings,
     vmr: &mut VmResources,
@@ -2986,6 +3098,7 @@ pub extern "C" fn krun_start_enter(ctx_id: u32) -> i32 {
         None => return -libc::ENOENT,
     };
 
+    #[cfg(not(target_env = "musl"))]
     if ctx_cfg.vmr.external_kernel.is_none()
         && ctx_cfg.vmr.kernel_bundle.is_none()
         && ctx_cfg.vmr.firmware_config.is_none()
@@ -3000,6 +3113,16 @@ pub extern "C" fn krun_start_enter(ctx_id: u32) -> i32 {
             eprintln!("Couldn't find or load {KRUNFW_NAME}");
             return -libc::ENOENT;
         }
+    }
+
+    #[cfg(target_env = "musl")]
+    if ctx_cfg.vmr.external_kernel.is_none()
+        && ctx_cfg.vmr.kernel_bundle.is_none()
+        && ctx_cfg.vmr.firmware_config.is_none()
+        && cfg!(not(feature = "efi"))
+    {
+        eprintln!("No embedded kernel bundle was configured for this static build");
+        return -libc::ENOENT;
     }
 
     #[cfg(feature = "blk")]

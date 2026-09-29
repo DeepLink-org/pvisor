@@ -53,8 +53,9 @@ pvisor run --stage ../stage-001 -- codex
 pvisor review last
 ```
 
-Host execution uses safe-best-effort isolation by default. `--stage <PATH>` opts
-into an OverlayFS stage for the current workspace, creates an independent Run
+Host execution preserves the host filesystem view by default. `--filesystem sandbox`
+opts into pVisor's synthetic-root/Landlock or Seatbelt filesystem access policy.
+`--stage <PATH>` independently opts into an OverlayFS stage for the current workspace, creates an independent Run
 and writable stage at the supplied path,
 retains changes for manual review, and writes `run-bundle.json` with mode `0600`.
 
@@ -64,16 +65,15 @@ VM executors all request Network and Subprocess enforcement, and none claim
 Subprocess — so `--strict` currently exits with `UnsupportedPolicy` on those
 paths. Use it to verify fail-closed behavior, not as a “stronger sandbox is
 ready” switch.
-On Linux, the default host executor self-executes through pVisor's rootless
-launcher before the async runtime reaches the Agent. User/mount/PID namespaces,
-an in-namespace PID 1 descendant reaper,
-minimal bind-projected root plus `chroot`, a kernel-negotiated Landlock ABI v1-v3 policy, closed
-inherited descriptors, `no_new_privs`, and an empty capability set make
-workspace containment non-bypassable for the Agent process tree.
-`--overlaynet-deny-all` adds a private network namespace; the
-public/allowlist proxy modes remain cooperative. On macOS the default safe
-host executor installs a generated Seatbelt policy that makes staged writes
-non-bypassable. For deny-all Runs it blocks IP and ambient host Unix sockets,
+On Linux, `--filesystem sandbox` uses pVisor's rootless launcher with
+user/mount/PID namespaces, a minimal bind-projected root, `chroot`, and a
+kernel-negotiated Landlock policy. `--overlaynet-deny-all` independently adds a
+private network namespace; the
+public/allowlist proxy modes remain cooperative. On macOS the host executor
+installs a generated Seatbelt policy only when filesystem sandboxing or network
+isolation is requested; filesystem policy remains independent from network
+policy. Staged writes are non-bypassable. For deny-all Runs it blocks IP and
+ambient host Unix sockets,
 while retaining the exact AgentCtl and Run-local IPC. Reads and selective
 network policy remain ambient/cooperative and are labeled separately in the
 Bundle. Native OCI and libkrun executors retain the same outer Run, OverlayFS,
@@ -249,6 +249,9 @@ source of truth.
 The equivalent TOML is:
 
 ```toml
+# host (default) or sandbox; independent from OverlayNet and OverlayFS staging
+filesystem = "host"
+
 [run]
 agent = "codex"
 executor = "container"

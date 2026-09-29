@@ -30,13 +30,13 @@ fn cvt(rc: libc::c_int) -> io::Result<()> {
 fn timespec(time: SystemTime) -> libc::timespec {
     match time.duration_since(UNIX_EPOCH) {
         Ok(value) => libc::timespec {
-            tv_sec: value.as_secs() as libc::time_t,
+            tv_sec: value.as_secs() as i64 as _,
             tv_nsec: value.subsec_nanos() as libc::c_long,
         },
         Err(value) => {
             let value = value.duration();
             libc::timespec {
-                tv_sec: -(value.as_secs() as libc::time_t) - 1,
+                tv_sec: (-(value.as_secs() as i64) - 1) as _,
                 tv_nsec: 1_000_000_000 - value.subsec_nanos() as libc::c_long,
             }
         }

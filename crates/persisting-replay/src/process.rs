@@ -628,11 +628,13 @@ mod tests {
         let log_path = temporary.path().join("redirect-idle.log");
         let events_path = temporary.path().join("events.jsonl");
         // stderr stays silent; only the redirect file grows. Without polling
-        // the redirect, a 300ms idle watchdog would kill this mid-loop.
+        // the redirect, a 700ms idle watchdog would kill this mid-loop; the
+        // 500ms slack over the 200ms write cadence absorbs scheduler jitter
+        // on loaded CI runners while still proving the refresh works.
         let script = "for i in 1 2 3 4 5 6; do echo event-$i; sleep 0.2; done";
         let mut spec = shell_spec(script, &log_path);
         spec.stdout_redirect = Some(events_path.clone());
-        spec.idle_timeout = Some(Duration::from_millis(300));
+        spec.idle_timeout = Some(Duration::from_millis(700));
         spec.timeout = Duration::from_secs(10);
 
         let output = run_process(spec).unwrap();

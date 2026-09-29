@@ -31,9 +31,10 @@ jobs:
       - uses: Swatinem/rust-cache@v2
         with:
           shared-key: ci-clippy
-      - uses: taiki-e/install-action@v2
-        with:
-          tool: actionlint@1.7.7
+      - name: Install actionlint
+        run: |
+          go install github.com/rhysd/actionlint/cmd/actionlint@v1.7.7
+          echo "$(go env GOPATH)/bin" >> "$GITHUB_PATH"
       - run: actionlint
       - run: just fmt-rust --check
       - run: just lint-rust

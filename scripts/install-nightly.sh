@@ -39,7 +39,13 @@ api="https://api.github.com/repos/${REPO}/releases/tags/${TAG}"
 
 echo "Fetching nightly release assets from ${REPO} (tag=${TAG})..." >&2
 
-url="$("$PYTHON" - "$api" "$platform_re" "$REPO" "$TAG" <<'PY'
+# Write the asset picker to a helper file instead of embedding a here-document
+# inside a command substitution: bash 5.2 mis-parses long heredocs whose body
+# contains a line beginning with the delimiter (for example `PY3_RE`) in that
+# position.
+asset_helper="$(mktemp)"
+trap 'rm -f "$asset_helper"' EXIT
+cat > "$asset_helper" <<'PY'
 import json
 import re
 import sys
@@ -51,7 +57,7 @@ platform_re = re.compile(platform_pattern)
 
 # Wheels contain native CLIs but only pure Python modules, so one py3-none wheel
 # is published per supported OS/architecture.
-PY3_RE = re.compile(r"-py3-none-")
+WHEEL_RE = re.compile(r"-py3-none-")
 
 req = urllib.request.Request(api, headers={"Accept": "application/vnd.github+json"})
 try:
@@ -69,7 +75,7 @@ for asset in data.get("assets", []):
     name = asset.get("name", "")
     if not name.endswith(".whl") or not name.startswith("pvisor-"):
         continue
-    if not PY3_RE.search(name):
+    if not WHEEL_RE.search(name):
         continue
     if platform_re.search(name):
         print(asset["browser_download_url"])
@@ -80,7 +86,8 @@ else:
         f"check https://github.com/{repo}/releases/tag/{tag}"
     )
 PY
-)"
+
+url="$("$PYTHON" - "$api" "$platform_re" "$REPO" "$TAG" < "$asset_helper")"
 
 echo "Installing ${url}" >&2
 "$PYTHON" -m pip install --upgrade pip

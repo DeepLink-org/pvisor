@@ -3,8 +3,15 @@ fn main() {
     // When fuser MSRV is updated to v1.77 or above, we should switch from 'cargo:' to 'cargo::' syntax.
     println!("cargo:rustc-check-cfg=cfg(fuser_mount_impl, values(\"pure-rust\", \"libfuse2\", \"libfuse3\"))");
 
-    #[cfg(all(not(feature = "libfuse"), not(target_os = "linux")))]
-    unimplemented!("Building without libfuse is only supported on Linux");
+    // Build scripts are compiled for the host, so `cfg(target_os)` describes
+    // the host rather than the target being compiled.  Use Cargo's target
+    // environment variable here so cross-compiling the pure-Rust Linux
+    // implementation from macOS (or another host) works correctly.
+    if cfg!(not(feature = "libfuse"))
+        && std::env::var("CARGO_CFG_TARGET_OS").as_deref() != Ok("linux")
+    {
+        unimplemented!("Building without libfuse is only supported on Linux");
+    }
 
     #[cfg(not(feature = "libfuse"))]
     {

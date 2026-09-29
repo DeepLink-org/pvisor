@@ -16,7 +16,7 @@
 pvisor run --executor host --stage ../stage-host -- /bin/sh
 ```
 
-工作目录是受管理的写时复制视图。没有 OverlayFS 选项时，host 命令可以直接写入项目。safe-best-effort 隔离会报告不支持的控制，不代表各平台具有相同保证。
+Host 默认保留宿主文件系统视图。需要限制路径访问时使用 `--filesystem sandbox`，需要可审查的写时复制工作区时使用 `--stage PATH`，需要拒绝所有网络时使用 `--overlaynet-deny-all`。这些设置相互独立，网络参数不会启用文件系统限制。
 
 ## Linux 容器
 

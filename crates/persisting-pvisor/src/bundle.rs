@@ -210,12 +210,10 @@ impl RunBundle {
         let network_non_bypassable = !sandbox_setup_failed
             && enforcement
                 .is_some_and(|evidence| evidence.is_enforced(CapabilityDimension::Network));
-        let filesystem_read_non_bypassable = filesystem.is_some()
-            && !sandbox_setup_failed
+        let filesystem_read_non_bypassable = !sandbox_setup_failed
             && enforcement
                 .is_some_and(|evidence| evidence.is_enforced(CapabilityDimension::FilesystemRead));
-        let filesystem_write_non_bypassable = filesystem.is_some()
-            && !sandbox_setup_failed
+        let filesystem_write_non_bypassable = !sandbox_setup_failed
             && enforcement
                 .is_some_and(|evidence| evidence.is_enforced(CapabilityDimension::FilesystemWrite));
         let filesystem_non_bypassable =
@@ -236,16 +234,35 @@ impl RunBundle {
                 );
             }
             if rootless_process && !sandbox_setup_failed {
-                safety_warnings.push(
-                    "filesystem access and process-tree cleanup are kernel-enforced; the host kernel and syscall surface remain shared"
-                        .into(),
-                );
+                if enforcement.is_some_and(|evidence| {
+                    evidence.is_enforced(CapabilityDimension::FilesystemRead)
+                        || evidence.is_enforced(CapabilityDimension::FilesystemWrite)
+                }) {
+                    safety_warnings.push(
+                        "filesystem access and process-tree cleanup are kernel-enforced; the host kernel and syscall surface remain shared"
+                            .into(),
+                    );
+                } else {
+                    safety_warnings.push(
+                        "process-tree cleanup and selected network boundaries are kernel-enforced; filesystem access remains host-visible"
+                            .into(),
+                    );
+                }
             }
             if seatbelt_process && !sandbox_setup_failed {
-                safety_warnings.push(
-                    "filesystem writes are Seatbelt-enforced; reads, the host PID namespace, syscall surface, and resource limits remain shared"
-                        .into(),
-                );
+                if enforcement.is_some_and(|evidence| {
+                    evidence.is_enforced(CapabilityDimension::FilesystemWrite)
+                }) {
+                    safety_warnings.push(
+                        "filesystem writes are Seatbelt-enforced; reads, the host PID namespace, syscall surface, and resource limits remain shared"
+                            .into(),
+                    );
+                } else {
+                    safety_warnings.push(
+                        "selected network boundaries are Seatbelt-enforced; filesystem writes remain host-visible"
+                            .into(),
+                    );
+                }
             }
             if virtual_machine {
                 safety_warnings.push(
@@ -415,9 +432,9 @@ fn resource_summary(record: &RunRecord, result: &RunResult) -> ResourceSummary {
 
 #[cfg(unix)]
 fn effective_native_limits(requested: &ResourceLimits) -> ResourceLimits {
-    #[cfg(target_os = "linux")]
+    #[cfg(all(target_os = "linux", not(target_env = "musl")))]
     type RlimitResource = libc::__rlimit_resource_t;
-    #[cfg(not(target_os = "linux"))]
+    #[cfg(any(not(target_os = "linux"), target_env = "musl"))]
     type RlimitResource = libc::c_int;
 
     fn clamp(resource: RlimitResource, requested: Option<u64>) -> Option<u64> {
@@ -642,6 +659,11 @@ mod tests {
         let intercepted_vm = RunBundle::capture(&record, &result, agentctl.clone(), true).unwrap();
         assert!(intercepted_vm.safety.filesystem_non_bypassable);
         assert!(intercepted_vm.safety.network_non_bypassable);
+        let mut vm_without_stage = record.clone();
+        vm_without_stage.overlay = None;
+        let vm_without_stage =
+            RunBundle::capture(&vm_without_stage, &result, agentctl.clone(), true).unwrap();
+        assert!(vm_without_stage.safety.filesystem_non_bypassable);
 
         record.executor = Some(ExecutorDescriptor {
             name: "local-rootless-v1".into(),

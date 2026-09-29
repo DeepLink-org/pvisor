@@ -115,11 +115,17 @@ pub fn review(args: ReviewArgs) -> anyhow::Result<()> {
             .as_ref()
             .map(|executor| executor.isolation)
         {
+            Some(persisting_control::IsolationKind::RootlessProcess)
+                if bundle.safety.filesystem_non_bypassable =>
+                "rootless user namespace + Landlock",
             Some(persisting_control::IsolationKind::RootlessProcess) => {
-                "rootless user namespace + Landlock"
+                "rootless user namespace + network namespace"
             }
+            Some(persisting_control::IsolationKind::SandboxedProcess)
+                if bundle.safety.filesystem_write_non_bypassable =>
+                "macOS Seatbelt filesystem policy",
             Some(persisting_control::IsolationKind::SandboxedProcess) => {
-                "macOS Seatbelt process sandbox"
+                "macOS Seatbelt network policy"
             }
             Some(persisting_control::IsolationKind::Container) => {
                 "OCI container with injected pVisor"
