@@ -112,8 +112,5 @@ pub(super) fn write_frame(stream: &mut impl Write, value: &impl Serialize) -> an
 }
 
 pub(super) fn hash(bytes: &[u8]) -> String {
-    format!(
-        "sha256:{}",
-        crate::image::oci::encode_hex(&Sha256::digest(bytes))
-    )
+    format!("sha256:{}", crate::util::encode_hex(&Sha256::digest(bytes)))
 }

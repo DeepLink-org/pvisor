@@ -9,7 +9,6 @@ pub(crate) const RESULT_FILENAME: &str = "run-result.json";
 #[derive(Debug, serde::Serialize, serde::Deserialize)]
 pub(crate) struct DelegatedRunOutput {
     pub(crate) result: RunResult,
-    #[serde(alias = "agentctl")]
     pub(crate) agentctl: crate::AgentCtlSnapshot,
 }
 
@@ -20,12 +19,7 @@ pub(crate) struct DelegatedRunFiles {
 }
 
 impl DelegatedRunFiles {
-    #[cfg(test)]
-    pub(crate) fn new(spec: &RunSpec) -> anyhow::Result<Self> {
-        Self::new_with_stdio(spec, false)
-    }
-
-    /// Create delegated files while forcing the injected pVisor to use pipes.
+    /// Create delegated files, optionally capturing the injected pVisor's output.
     /// The outer transport owns the real terminal; inheriting it in the nested
     /// process makes rootless OCI runs attempt tty process-group operations.
     pub(crate) fn new_with_stdio(spec: &RunSpec, capture: bool) -> anyhow::Result<Self> {
@@ -37,9 +31,9 @@ impl DelegatedRunFiles {
         let mut delegated = spec.clone();
         delegated.metadata.remove("pvisor.executor");
         let RunInvocation::Process(process) = &mut delegated.invocation;
-        process.env.retain(|key, _| {
-            !key.starts_with("PERSISTING_AGENTCTL_") && !key.starts_with("PERSISTING_AGENTCTL_")
-        });
+        process
+            .env
+            .retain(|key, _| !key.starts_with("PERSISTING_AGENTCTL_"));
         if capture {
             // pVisor v1 does not support captured stdin. Null stdin also
             // prevents the nested host executor from attempting tty control.
@@ -105,7 +99,7 @@ mod tests {
     use super::*;
 
     #[test]
-    fn delegated_spec_drops_host_agentctl_and_normalizes_result_identity() {
+    fn delegated_spec_drops_host_agentctl() {
         let mut spec = RunSpec::process("run-one", "agent", "true");
         let RunInvocation::Process(process) = &mut spec.invocation;
         process.env.insert(
@@ -113,7 +107,7 @@ mod tests {
             "/tmp/host.sock".into(),
         );
         process.env.insert("KEEP".into(), "yes".into());
-        let files = DelegatedRunFiles::new(&spec).unwrap();
+        let files = DelegatedRunFiles::new_with_stdio(&spec, false).unwrap();
         let delegated: RunSpec =
             serde_json::from_slice(&std::fs::read(&files.spec_path).unwrap()).unwrap();
         let RunInvocation::Process(process) = delegated.invocation;

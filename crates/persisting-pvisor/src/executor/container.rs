@@ -736,7 +736,7 @@ mod tests {
         let RunInvocation::Process(invocation) = &mut spec.invocation;
         invocation.cwd = Some(cwd.display().to_string());
         invocation.inherit_env = false;
-        let files = DelegatedRunFiles::new(&spec).unwrap();
+        let files = DelegatedRunFiles::new_with_stdio(&spec, false).unwrap();
         let command = executor
             .build_command(
                 &spec,

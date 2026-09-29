@@ -143,7 +143,7 @@ fn verify_archive(archive: &[u8], expected: &str) -> anyhow::Result<()> {
         "libkrunfw archive exceeds {} bytes",
         MAX_ARCHIVE_BYTES
     );
-    let actual = encode_hex(&Sha256::digest(archive));
+    let actual = crate::util::encode_hex(&Sha256::digest(archive));
     anyhow::ensure!(
         actual == expected,
         "libkrunfw archive digest mismatch: expected {expected}, got {actual}"
@@ -228,16 +228,6 @@ fn build_platform_firmware(source: &Path, destination: &Path) -> anyhow::Result<
 fn build_platform_firmware(source: &Path, destination: &Path) -> anyhow::Result<()> {
     fs::copy(source, destination)?;
     Ok(())
-}
-
-fn encode_hex(bytes: &[u8]) -> String {
-    const HEX: &[u8; 16] = b"0123456789abcdef";
-    let mut output = String::with_capacity(bytes.len() * 2);
-    for byte in bytes {
-        output.push(HEX[(byte >> 4) as usize] as char);
-        output.push(HEX[(byte & 0x0f) as usize] as char);
-    }
-    output
 }
 
 #[cfg(test)]
