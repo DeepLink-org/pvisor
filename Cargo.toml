@@ -72,6 +72,7 @@ tokio = { version = "1", default-features = false }
 tokio-stream = "0.1"
 tokio-util = { version = "0.7", default-features = false }
 toml = "0.8"
+toml_edit = "0.22"
 tracing = "0.1"
 url = "2"
 uuid = "1"

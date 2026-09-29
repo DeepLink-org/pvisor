@@ -146,7 +146,7 @@ pub struct RunArgs {
     #[arg(long)]
     tui: bool,
     /// Ask on `ask` file rules and unlisted proxy destinations; implies --tui and --safe.
-    #[arg(long)]
+    #[arg(long = "ask")]
     audit: bool,
     /// Prepared JSON RunSpec for delegated execution; requires --result-file and the host executor.
     #[arg(long, value_name = "FILE")]
@@ -163,9 +163,7 @@ pub struct RunArgs {
     #[arg(long, value_name = "FILE")]
     result_file: Option<PathBuf>,
 
-    /// Persistent changeset directory for reviewable staged writes. Plain runs
-    /// without staging write the workspace directly; --safe/--audit stage by
-    /// default in a temporary stage that is dropped at exit.
+    /// Changeset directory; defaults to persistent Job storage for review and apply/drop.
     #[arg(long, value_name = "PATH")]
     stage: Option<PathBuf>,
 
@@ -416,6 +414,7 @@ enum FilesystemLevel {
     Deny,
     Ask,
     Read,
+    Warn,
     Stage,
     Write,
 }
@@ -430,12 +429,10 @@ impl FromStr for FilesystemAccessArg {
         let level = match level {
             "deny" => FilesystemLevel::Deny,
             "ask" => FilesystemLevel::Ask,
-            "read" => FilesystemLevel::Read,
-            "stage" => FilesystemLevel::Stage,
-            "write" => FilesystemLevel::Write,
+            "warn" => FilesystemLevel::Warn,
             _ => {
                 return Err(format!(
-                    "invalid access level `{level}`; use deny, ask, read, stage, or write"
+                    "invalid access level `{level}`; use deny, ask, or warn; read-only sharing uses --mount PATH:read"
                 ));
             }
         };
@@ -454,10 +451,13 @@ struct OverlayFsOverrides {
     /// Host path mount: SOURCE[:TARGET]:ACCESS. ACCESS is read, stage, or write.
     #[arg(long = "mount", value_name = "SOURCE[:TARGET]:ACCESS")]
     mounts: Vec<FilesystemMountArg>,
-    /// Agent-visible path policy: PATH-GLOB:LEVEL. LEVEL is deny, ask, or read; ask opens the audit TUI.
+    /// Append an overlay-relative rule: PATH-GLOB:deny|ask|warn; ask opens permission prompts.
     /// Use `--mount` when a path must be staged or writable.
     #[arg(long = "access", value_name = "PATH-GLOB:LEVEL")]
     access: Vec<FilesystemAccessArg>,
+    /// Explicitly remove default/config file rules before adding --access rules.
+    #[arg(long)]
+    clear_access: bool,
     /// Changeset upper-layer backend: `directory` writes plain files, `jujutsu`
     /// stores content-addressed snapshots in a shared repository.
     #[arg(long = "overlayfs-backend", value_enum)]
@@ -798,77 +798,11 @@ pub async fn run(mut args: RunArgs) -> anyhow::Result<i32> {
     let run_id = format!("run-{}", uuid::Uuid::new_v4());
     let mut config = load_run_config(&args, personal_config_root().as_deref(), true)?;
     apply_run_options(&mut config, args.clone())?;
-    let stage_limit = config
-        .overlayfs
-        .as_ref()
-        .and_then(|overlay| overlay.stage_size_bytes);
-    let cleanup_stage = ensure_default_stage(&mut config, &args, &run_id);
-    let effective_stage = config
-        .overlayfs
-        .as_ref()
-        .and_then(|overlay| overlay.stage.clone());
+    normalize_filesystem_config(&mut config)?;
     if args.run.safe || args.audit {
         warn_safe_preset(&config, &args);
     }
-    let mut result =
-        execute_config(config, run_id.clone(), args.run.safe || args.audit, None).await;
-    if result.is_ok()
-        && let Some(limit) = stage_limit
-        && let Some(path) = effective_stage
-        && path.exists()
-    {
-        match directory_size_bytes(&path) {
-            Ok(actual) if actual > limit => {
-                result = Err(anyhow::anyhow!(
-                    "stage size limit exceeded: {} uses {} bytes (limit {})",
-                    path.display(),
-                    actual,
-                    limit
-                ));
-            }
-            Err(error) => {
-                result = Err(error).context("measure OverlayFS stage size");
-            }
-            _ => {}
-        }
-    }
-    if let Some(path) = cleanup_stage
-        && path.exists()
-        && let Err(error) = std::fs::remove_dir_all(&path)
-    {
-        if result.is_ok() {
-            return Err(error)
-                .with_context(|| format!("remove temporary stage {}", path.display()));
-        }
-        run_log!(
-            "pVisor warning: failed to remove temporary stage {}: {error}",
-            path.display()
-        );
-    }
-    result
-}
-
-fn ensure_default_stage(config: &mut RunConfig, args: &RunArgs, run_id: &str) -> Option<PathBuf> {
-    if !args.run.safe && !args.audit {
-        return None;
-    }
-    let existing = args.stage.clone().or_else(|| {
-        config
-            .overlayfs
-            .as_ref()
-            .and_then(|filesystem| filesystem.stage.clone())
-    });
-    let temporary = existing
-        .is_none()
-        .then(|| std::env::temp_dir().join(format!("pvisor-stage-{run_id}")));
-    let stage = existing
-        .or_else(|| temporary.clone())
-        .expect("safe stage selected");
-    config
-        .overlayfs
-        .get_or_insert_with(OverlayFsSettings::default)
-        .stage = Some(stage);
-    temporary
+    execute_config(config, run_id, args.run.safe || args.audit, None).await
 }
 
 fn directory_size_bytes(root: &Path) -> anyhow::Result<u64> {
@@ -900,7 +834,7 @@ fn directory_size_bytes(root: &Path) -> anyhow::Result<u64> {
 async fn run_prepared_spec(args: RunArgs) -> anyhow::Result<i32> {
     anyhow::ensure!(
         !args.run.safe && !args.audit,
-        "--safe/--audit cannot modify a prepared JSON RunSpec"
+        "--safe/--ask cannot modify a prepared JSON RunSpec"
     );
     anyhow::ensure!(
         args.command.is_empty(),
@@ -1229,6 +1163,7 @@ async fn execute_config(
 ) -> anyhow::Result<i32> {
     normalize_filesystem_config(&mut config)?;
     resolve_default_vm_rootfs(&mut config)?;
+    let mut _image_mount: Option<crate::cache::LazyMount> = None;
     let prepared_image = if config.run.executor == RunExecutorKind::Vm && config.vm.rootfs.is_none()
     {
         let image = config
@@ -1238,11 +1173,11 @@ async fn execute_config(
             .context("VM image must be explicitly configured")?;
         let store = config.vm.image_store.clone();
         run_log!("pVisor image: resolving {image}");
-        let prepared = tokio::task::spawn_blocking(move || {
-            crate::oci::ImageStore::new(store)?.prepare(&image)
-        })
-        .await
-        .context("OCI image preparation task failed")??;
+        let (prepared, mount) =
+            tokio::task::spawn_blocking(move || crate::cache::prepare_image(&image, store))
+                .await
+                .context("OCI image preparation task failed")??;
+        _image_mount = mount;
         run_log!(
             "pVisor image: {} ({})",
             prepared.digest,
@@ -1810,20 +1745,26 @@ fn normalize_filesystem_config(config: &mut RunConfig) -> anyhow::Result<()> {
             }
         }
         match mount.access {
-            FilesystemAccessLevel::Deny | FilesystemAccessLevel::Ask => anyhow::bail!(
-                "filesystem mount access `deny` or `ask` is invalid; use an access rule instead"
+            FilesystemAccessLevel::Deny
+            | FilesystemAccessLevel::Ask
+            | FilesystemAccessLevel::Warn => anyhow::bail!(
+                "filesystem mounts require read, stage, or write; use --access for deny, ask, or warn"
             ),
-            FilesystemAccessLevel::Read | FilesystemAccessLevel::Stage => {
+            FilesystemAccessLevel::Stage => {
                 filesystem.compose.push(mount.source);
             }
-            FilesystemAccessLevel::Write => {
+            FilesystemAccessLevel::Read | FilesystemAccessLevel::Write => {
                 anyhow::ensure!(
                     target == mount.source,
-                    "write mounts require target to equal source"
+                    "read/write shares require target to equal source"
                 );
                 config.run.filesystem.push(FilesystemCapability {
                     path: mount.source.display().to_string(),
-                    access: FilesystemAccess::ReadWrite,
+                    access: if mount.access == FilesystemAccessLevel::Read {
+                        FilesystemAccess::Read
+                    } else {
+                        FilesystemAccess::ReadWrite
+                    },
                 });
             }
         }
@@ -1851,7 +1792,7 @@ fn normalize_filesystem_config(config: &mut RunConfig) -> anyhow::Result<()> {
                     filesystem.access_policy.warn().to_vec(),
                 )?;
             }
-            FilesystemAccessLevel::Read => {
+            FilesystemAccessLevel::Warn => {
                 let mut warn = filesystem.access_policy.warn().to_vec();
                 warn.push(normalize_policy_glob(&rule.path));
                 filesystem.access_policy = persisting_control::FileAccessPolicy::new_with_ask(
@@ -1860,8 +1801,10 @@ fn normalize_filesystem_config(config: &mut RunConfig) -> anyhow::Result<()> {
                     warn,
                 )?;
             }
-            FilesystemAccessLevel::Stage | FilesystemAccessLevel::Write => anyhow::bail!(
-                "filesystem access rules can only reduce access; use a mount for stage or write"
+            FilesystemAccessLevel::Read
+            | FilesystemAccessLevel::Stage
+            | FilesystemAccessLevel::Write => anyhow::bail!(
+                "filesystem access rules use deny, ask, or warn; use --mount for read, stage, or write"
             ),
         }
     }
@@ -1950,22 +1893,6 @@ fn free_loopback_address() -> anyhow::Result<String> {
 /// Resolve ordinary defaults/config, then the opt-in preset, then explicit CLI values.
 fn apply_run_options(config: &mut RunConfig, args: RunArgs) -> anyhow::Result<()> {
     if args.run.safe || args.audit {
-        let configured_ask = if args.audit {
-            config
-                .overlayfs
-                .as_ref()
-                .map(|filesystem| {
-                    filesystem
-                        .access
-                        .iter()
-                        .filter(|rule| rule.level == FilesystemAccessLevel::Ask)
-                        .cloned()
-                        .collect::<Vec<_>>()
-                })
-                .unwrap_or_default()
-        } else {
-            Vec::new()
-        };
         // Resolve the actual command/executor/routes first, without mistaking --name for an Agent.
         let mut requested = config.clone();
         apply_cli(&mut requested, args.clone())?;
@@ -1985,9 +1912,6 @@ fn apply_run_options(config: &mut RunConfig, args: RunArgs) -> anyhow::Result<()
         // installs the synthetic root/Landlock or Seatbelt write controls.
         // An explicit --filesystem value in `args` still wins below.
         config.filesystem = FilesystemMode::Sandbox;
-        if let Some(filesystem) = config.overlayfs.as_mut() {
-            filesystem.access.extend(configured_ask);
-        }
     }
     apply_cli(config, args.clone())?;
     apply_safe_defaults(config)?;
@@ -2242,6 +2166,7 @@ fn apply_cli(config: &mut RunConfig, args: RunArgs) -> anyhow::Result<()> {
 
     let enables_overlayfs = !args.overlayfs.mounts.is_empty()
         || !args.overlayfs.access.is_empty()
+        || args.overlayfs.clear_access
         || args.overlayfs.backend.is_some()
         || args.overlayfs.max_size.is_some()
         || args.stage.is_some();
@@ -2249,23 +2174,26 @@ fn apply_cli(config: &mut RunConfig, args: RunArgs) -> anyhow::Result<()> {
         let overlayfs = config
             .overlayfs
             .get_or_insert_with(OverlayFsSettings::default);
-        if !args.overlayfs.access.is_empty() {
+        if args.overlayfs.clear_access {
             overlayfs.access_policy = Default::default();
-            overlayfs.access = args
-                .overlayfs
+            overlayfs.access.clear();
+        }
+        if !args.overlayfs.access.is_empty() {
+            overlayfs
                 .access
-                .into_iter()
-                .map(|access| crate::config::FilesystemAccessRule {
-                    path: access.path,
-                    level: match access.level {
-                        FilesystemLevel::Deny => FilesystemAccessLevel::Deny,
-                        FilesystemLevel::Ask => FilesystemAccessLevel::Ask,
-                        FilesystemLevel::Read => FilesystemAccessLevel::Read,
-                        FilesystemLevel::Stage => FilesystemAccessLevel::Stage,
-                        FilesystemLevel::Write => FilesystemAccessLevel::Write,
-                    },
-                })
-                .collect();
+                .extend(args.overlayfs.access.into_iter().map(|access| {
+                    crate::config::FilesystemAccessRule {
+                        path: access.path,
+                        level: match access.level {
+                            FilesystemLevel::Deny => FilesystemAccessLevel::Deny,
+                            FilesystemLevel::Ask => FilesystemAccessLevel::Ask,
+                            FilesystemLevel::Read => FilesystemAccessLevel::Read,
+                            FilesystemLevel::Warn => FilesystemAccessLevel::Warn,
+                            FilesystemLevel::Stage => FilesystemAccessLevel::Stage,
+                            FilesystemLevel::Write => FilesystemAccessLevel::Write,
+                        },
+                    }
+                }));
         }
         if !args.overlayfs.mounts.is_empty() {
             overlayfs.compose.clear();
@@ -2280,6 +2208,7 @@ fn apply_cli(config: &mut RunConfig, args: RunArgs) -> anyhow::Result<()> {
                         FilesystemLevel::Deny => FilesystemAccessLevel::Deny,
                         FilesystemLevel::Ask => FilesystemAccessLevel::Ask,
                         FilesystemLevel::Read => FilesystemAccessLevel::Read,
+                        FilesystemLevel::Warn => FilesystemAccessLevel::Warn,
                         FilesystemLevel::Stage => FilesystemAccessLevel::Stage,
                         FilesystemLevel::Write => FilesystemAccessLevel::Write,
                     },
@@ -2449,6 +2378,14 @@ fn validate_vm_rootfs_platform(config: &RunConfig) -> anyhow::Result<()> {
 }
 
 fn validate(config: &RunConfig, safe: bool) -> anyhow::Result<()> {
+    anyhow::ensure!(
+        safe || !config
+            .run
+            .filesystem
+            .iter()
+            .any(|grant| grant.access == FilesystemAccess::Read),
+        "read-only shares require --safe or --ask"
+    );
     if let Some(filesystem) = &config.overlayfs {
         anyhow::ensure!(
             filesystem.compose.is_empty() || filesystem.commit != OverlayFsCommit::Apply,
@@ -2901,36 +2838,75 @@ mod tests {
     }
 
     #[test]
-    fn safe_and_audit_runs_create_an_implicit_workspace_stage() {
-        let mut normal = RunConfig::default();
-        let normal_args = preset_args(&["--", "bash"]);
-        assert!(ensure_default_stage(&mut normal, &normal_args, "normal").is_none());
-        assert!(normal.overlayfs.is_none(), "stage is opt-in");
-        assert_eq!(normal.filesystem, FilesystemMode::Host);
+    fn safe_and_ask_runs_use_persistent_job_storage() {
+        let temporary = tempfile::tempdir().unwrap();
+        let workspace = temporary.path().join("workspace");
+        let storage = temporary.path().join("job");
+        std::fs::create_dir(&workspace).unwrap();
+        for flag in ["--safe", "--ask"] {
+            let mut config = RunConfig::default();
+            apply_run_options(&mut config, preset_args(&[flag, "--", "bash"])).unwrap();
+            normalize_filesystem_config(&mut config).unwrap();
+            let overlay = resolve_overlay(&config, &workspace, &storage, "job")
+                .unwrap()
+                .unwrap();
+            assert_eq!(overlay.stage_dir, Some(storage.canonicalize().unwrap()));
+            assert!(!overlay.auto_discard);
+            assert!(
+                config
+                    .overlayfs
+                    .unwrap()
+                    .access_policy
+                    .denied(Path::new(".ssh/key"))
+            );
+        }
+    }
 
-        let mut safe = RunConfig::default();
-        let safe_args = preset_args(&["--safe", "--", "bash"]);
-        let temporary = ensure_default_stage(&mut safe, &safe_args, "safe").unwrap();
-        assert_eq!(safe.overlayfs.unwrap().stage, Some(temporary));
+    #[test]
+    fn ask_enables_permission_prompts_not_an_agent_command() {
+        let args = preset_args(&["--tui", "--ask", "--", "bash"]);
+        assert!(args.audit_requested().unwrap());
+        assert!(args.audit);
+        assert_eq!(args.command, ["bash"]);
+    }
 
-        let mut audit = RunConfig::default();
-        let audit_args = preset_args(&["--audit", "--", "codex"]);
-        assert!(audit_args.tui_requested());
-        assert!(audit_args.wants_tui(true));
-        let temporary = ensure_default_stage(&mut audit, &audit_args, "audit").unwrap();
-        assert_eq!(audit.overlayfs.unwrap().stage, Some(temporary));
+    #[test]
+    fn replacing_file_defaults_requires_an_explicit_clear() {
         let mut config = RunConfig::default();
-        apply_run_options(&mut config, audit_args).unwrap();
-        assert_eq!(config.overlaynet.policy, OverlayNetPolicy::Allowlist);
+        apply_run_options(
+            &mut config,
+            preset_args(&[
+                "--ask",
+                "--clear-access",
+                "--access",
+                "custom:ask",
+                "--",
+                "bash",
+            ]),
+        )
+        .unwrap();
         normalize_filesystem_config(&mut config).unwrap();
-        assert!(!config.overlayfs.unwrap().access_policy.ask().is_empty());
+        let policy = &config.overlayfs.unwrap().access_policy;
+        assert_eq!(policy.ask(), ["custom"]);
+        assert!(policy.deny().is_empty());
+        assert!("secret:read".parse::<FilesystemAccessArg>().is_err());
+        assert!("secret:warn".parse::<FilesystemAccessArg>().is_ok());
+    }
 
-        let mut retained = RunConfig::default();
-        let directory = tempfile::tempdir().unwrap();
-        let stage = directory.path().join("retained-stage");
-        let args = preset_args(&["--safe", "--stage", stage.to_str().unwrap(), "--", "bash"]);
-        assert!(ensure_default_stage(&mut retained, &args, "retained").is_none());
-        assert_eq!(retained.overlayfs.unwrap().stage, Some(stage));
+    #[test]
+    fn read_shares_are_read_only_capabilities_not_overlay_layers() {
+        let mut config = RunConfig::default();
+        apply_run_options(
+            &mut config,
+            preset_args(&["--safe", "--mount", "/reference:read", "--", "bash"]),
+        )
+        .unwrap();
+        normalize_filesystem_config(&mut config).unwrap();
+        assert!(config.overlayfs.as_ref().unwrap().compose.is_empty());
+        assert_eq!(config.run.filesystem[0].access, FilesystemAccess::Read);
+        assert_eq!(config.run.filesystem[0].path, "/reference");
+        assert!(validate(&config, false).is_err());
+        assert!(validate(&config, true).is_ok());
     }
 
     #[test]
@@ -3156,14 +3132,14 @@ path = "configured-secret"
 level = "deny"
 [[overlayfs.access]]
 path = "configured-warning"
-level = "read"
+level = "warn"
 "#;
         let mut config: RunConfig = toml::from_str(source).unwrap();
         apply_run_options(&mut config, preset_args(&["--safe", "--", "codex"])).unwrap();
         normalize_filesystem_config(&mut config).unwrap();
         let policy = &config.overlayfs.as_ref().unwrap().access_policy;
         assert!(policy.deny().contains(&"**/.ssh".into()));
-        assert!(!policy.deny().contains(&"configured-secret".into()));
+        assert!(policy.deny().contains(&"configured-secret".into()));
 
         let mut config: RunConfig = toml::from_str(source).unwrap();
         apply_run_options(
@@ -3171,7 +3147,7 @@ level = "read"
             preset_args(&[
                 "--safe",
                 "--access",
-                "custom/*.pem:read",
+                "custom/*.pem:warn",
                 "--access",
                 "private/**:deny",
                 "--",
@@ -3181,8 +3157,9 @@ level = "read"
         .unwrap();
         normalize_filesystem_config(&mut config).unwrap();
         let policy = &config.overlayfs.as_ref().unwrap().access_policy;
-        assert_eq!(policy.deny(), ["private/**"]);
-        assert_eq!(policy.warn(), ["custom/*.pem"]);
+        assert!(policy.deny().contains(&"private/**".into()));
+        assert!(policy.denied(Path::new(".ssh/key")));
+        assert!(policy.warn().contains(&"custom/*.pem".into()));
         let overlay = resolve_overlay(
             &config,
             Path::new("."),
@@ -3204,12 +3181,14 @@ level = "read"
         let mut config = RunConfig::default();
         apply_run_options(
             &mut config,
-            preset_args(&["--audit", "--access", "secrets/*.pem:ask", "--", "codex"]),
+            preset_args(&["--ask", "--access", "secrets/*.pem:ask", "--", "codex"]),
         )
         .unwrap();
         normalize_filesystem_config(&mut config).unwrap();
         let policy = &config.overlayfs.as_ref().unwrap().access_policy;
-        assert_eq!(policy.ask(), ["secrets/*.pem"]);
+        assert!(policy.ask().contains(&"secrets/*.pem".into()));
+        assert!(policy.ask().contains(&"**/.env".into()));
+        assert!(policy.denied(Path::new(".ssh/key")));
         assert!(policy.warn().is_empty());
     }
 

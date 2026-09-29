@@ -104,6 +104,8 @@ fn safe_profile_stages_reviews_and_applies_on_macos() {
     let outside = temporary.path().join("outside.txt");
     let outside_secret = temporary.path().join("outside-secret.txt");
     fs::create_dir(&workspace).unwrap();
+    fs::create_dir(workspace.join("existing")).unwrap();
+    fs::write(workspace.join("existing/from-cwd.txt"), "cwd-lower").unwrap();
     fs::write(&outside_secret, "read-compatible").unwrap();
 
     let mut command = Command::new(env!("CARGO_BIN_EXE_pvisor"));
@@ -117,6 +119,7 @@ fn safe_profile_stages_reviews_and_applies_on_macos() {
             "/bin/sh",
             "-c",
             r#"
+                test "$(cat existing/from-cwd.txt)" = cwd-lower || exit 37
                 test "$PERSISTING_SANDBOX_FILESYSTEM" = seatbelt-write || exit 38
                 test "$PERSISTING_SANDBOX_NETWORK" = ambient || exit 39
                 test "$(cat "$2")" = read-compatible || exit 40
@@ -473,4 +476,113 @@ print('required-sandbox-ok')
             .contains("required-sandbox-ok")
     );
     assert!(!workspace.join("result.txt").exists());
+}
+
+#[test]
+fn ask_preserves_default_rules_read_only_shares_and_job_changes() {
+    use std::io::{BufRead, BufReader, Write};
+    use std::process::Stdio;
+    use std::time::{Duration, Instant};
+    if !macfuse_is_installed() {
+        return;
+    }
+    let temp = tempfile::Builder::new()
+        .prefix("pvask")
+        .tempdir_in("/tmp")
+        .unwrap();
+    let workspace = temp.path().join("workspace");
+    let reference = temp.path().join("reference");
+    let runs = temp.path().join("runs");
+    fs::create_dir_all(workspace.join(".ssh")).unwrap();
+    fs::create_dir(&reference).unwrap();
+    fs::write(workspace.join(".env"), "secret").unwrap();
+    fs::write(workspace.join(".ssh/key"), "private key").unwrap();
+    fs::write(reference.join("reference.txt"), "reference").unwrap();
+    let socket = temp.path().join("ask.sock");
+    let listener = UnixListener::bind(&socket).unwrap();
+    listener.set_nonblocking(true).unwrap();
+    let log = temp.path().join("log");
+    fs::write(&log, "").unwrap();
+    let mut child = Command::new(env!("CARGO_BIN_EXE_pvisor"))
+        .current_dir(&workspace)
+        .env("PERSISTING_RUN_HOME", &runs)
+        .env("PVISOR_UI_CHILD", "1")
+        .env("PVISOR_UI_STAGE_FILE", temp.path().join("stage"))
+        .env("PVISOR_UI_LOG_FILE", &log)
+        .env("PVISOR_UI_AUDIT_SOCKET", &socket)
+        .args(["--ask", "--no-config", "--access", "custom:ask", "--mount"])
+        .arg(format!("{}:read", reference.display()))
+        .args([
+            "--",
+            "/bin/sh",
+            "-c",
+            r#"
+            if cat .env; then exit 11; fi
+            if cat .ssh/key; then exit 12; fi
+            test "$(cat "$1/reference.txt")" = reference || exit 13
+            if echo changed > "$1/reference.txt"; then exit 14; fi
+            if rm "$1/reference.txt"; then exit 15; fi
+            printf retained > result.txt
+        "#,
+            "sh",
+        ])
+        .arg(&reference)
+        .stdout(Stdio::piped())
+        .stderr(Stdio::piped())
+        .spawn()
+        .unwrap();
+    let deadline = Instant::now() + Duration::from_secs(40);
+    let mut asked = Vec::new();
+    while child.try_wait().unwrap().is_none() {
+        if Instant::now() > deadline {
+            child.kill().unwrap();
+            panic!("ask test timed out");
+        }
+        match listener.accept() {
+            Ok((mut stream, _)) => {
+                stream
+                    .set_read_timeout(Some(Duration::from_secs(2)))
+                    .unwrap();
+                let mut line = String::new();
+                BufReader::new(&stream).read_line(&mut line).unwrap();
+                let request: persisting_control::audit::AuditRequest =
+                    serde_json::from_str(&line).unwrap();
+                asked.push(request.target);
+                stream.write_all(b"\"deny\"\n").unwrap();
+            }
+            Err(e) if e.kind() == std::io::ErrorKind::WouldBlock => {
+                std::thread::sleep(Duration::from_millis(10))
+            }
+            Err(e) => panic!("{e}"),
+        }
+    }
+    let output = child.wait_with_output().unwrap();
+    assert!(
+        output.status.success(),
+        "{}\n{}",
+        String::from_utf8_lossy(&output.stderr),
+        fs::read_to_string(&log).unwrap()
+    );
+    assert!(asked.iter().any(|path| path == ".env"));
+    assert!(!workspace.join("result.txt").exists());
+    assert_eq!(
+        fs::read_to_string(reference.join("reference.txt")).unwrap(),
+        "reference"
+    );
+    let job = only_run(&runs);
+    assert!(RunBundle::read(&job).unwrap().filesystem.is_some());
+    let output = Command::new(env!("CARGO_BIN_EXE_pvisor"))
+        .arg("apply")
+        .arg(&job)
+        .output()
+        .unwrap();
+    assert!(
+        output.status.success(),
+        "{}",
+        String::from_utf8_lossy(&output.stderr)
+    );
+    assert_eq!(
+        fs::read_to_string(workspace.join("result.txt")).unwrap(),
+        "retained"
+    );
 }

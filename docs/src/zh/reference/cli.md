@@ -30,8 +30,9 @@ pvisor apply last --path src
 pvisor run --tui -- bash
 ```
 
-默认键盘输入交给 shell 或 Agent，终端始终保持完整宽度。底栏显示 Job 状态、运行时间、
-文件与网络计数、日志数量和 `Ctrl-]` 引导提示；按下引导键后，同一行切换为完整快捷键。
+默认键盘输入交给 shell 或 Agent，终端始终保持完整宽度。顶部显示工作目录及文件、网络边界；
+底栏显示运行状态、时间和非零的访问异常，授权等待会突出提示。详细计数保留在面板中。
+按 `Ctrl-]` 打开菜单，同一行切换为快捷键。
 pVisor 自身的启动信息显示在
 Log 面板，不混入 Agent 终端。按 `Ctrl-]` 进入命令模式，再按 `r`、`f`、`n`、
 `u`、`l`、`p` 打开概览、文件、网络、Job、Log 或 Permissions 面板，按 `?` 查看按键帮助。在面板中用
@@ -42,31 +43,41 @@ Tab 或 `1`–`6` 切换视图，用 `j`/`k` 滚动，按 Esc 或 `Ctrl-]` 返�
 
 ### 文件系统参数
 
-普通 host Job 默认将工作区写入直接透传到 lower。`--safe` 会为工作区创建临时
-changeset，Job 结束后自动丢弃；指定 `--stage PATH` 则保留 changeset，
-由 `status --review`、`apply` 或 `drop` 手动处理。
+macOS 的 macFUSE 临时工作区默认以启动 pVisor 时的当前目录作为 lower；
+`/Volumes/pvisor-*` 是合并视图的挂载点，包含当前目录已有的文件。
+显式配置工作目录或 OverlayFS base 时，以显式配置为准。
+
+
+普通 host Job 默认将工作区写入直接透传到 lower。`--safe` 和 `--ask` 默认将工作区
+改动保留在 Job 存储中，退出后用 `status --review`、`apply` 或 `drop` 手动处理。
+`--stage PATH` 仅用于指定存储位置，不再是保留改动的前提。
 
 ```bash
 pvisor run --stage ./run-stage -- codex
-pvisor run --mount /opt/zcode:read --mount /var/lib/zcode:write -- zcode
+pvisor run --safe --mount /opt/zcode:read --mount /var/lib/zcode:write -- zcode
 pvisor run --access '/workspace/**/.ssh:deny' -- zcode
 pvisor run --access '.env:ask' -- codex
 ```
 
-`--mount SOURCE[:TARGET]:ACCESS` 支持 `read`、`stage` 和 `write`；省略 target 时使用
-source。`write` 直接修改宿主机；`read` 与 `stage` 当前都成为写时复制视图的底层，
-因此 `read` 目前不是强制只读边界。`--access PATH-GLOB:LEVEL` 支持 `deny`、`ask`
-和 `read`；`deny` 阻止访问，`ask` 暂停命中的文件操作并询问用户，`read` 当前仅记录
-访问警告，不阻止写入。这里的访问级别是文件审计规则；`stage` 和 `write` 用于
-`--mount`，不作为 `--access` 的级别。
+`--mount SOURCE:read` 向 host executor 授予原绝对路径的只读访问，要求 `--safe` 或 `--ask`；
+`SOURCE:write` 直接修改宿主机。两者不支持改写 TARGET，不能与工作区、Job 存储或可写运行时路径重叠；
+Linux 的私有 `/tmp` 内不能使用只读共享。显式共享不经过工作区 OverlayFS 的 ask 规则。
+`--mount SOURCE[:TARGET]:stage` 则把 SOURCE 加入工作区写时复制视图的底层，并非独立目录挂载。
+`--access PATH-GLOB:deny|ask|warn` 默认累加配置、预设和 CLI 规则：deny 拒绝、ask 询问、warn 放行并警告。
+清空配置与默认文件保护必须显式使用 `--clear-access`；之后再加入 CLI 规则。deny > ask > warn。
+原先表示警告的 `:read` 已拒绝，改用 `:warn`；真正只读请用 `--mount PATH:read`。
 
-指定 `--access ...:ask` 会自动启用审计 TUI 和 safe 暂存视图，无需另加 `--audit`
-或 `--tui`。弹窗可按 `1` 仅允许此文件、`2` 允许同级目录、`3` 允许相同后缀；
-`d` 拒绝此次目标。对于未列入规则的代理网络目标，`--audit` 的弹窗可按 `1` 仅允许
+使用 `pvisor --ask -- bash` 可在命中 `ask` 文件规则或访问未列入规则的代理网络目标时询问权限；
+`--ask` 同时启用 `--tui` 和 `--safe`。
+指定 `--access ...:ask` 会自动启用审计 TUI 和 safe 暂存视图，无需另加 `--ask`
+或 `--tui`。弹窗用 Tab 或上下方向键切换范围、保存期限和按钮，左右方向键选择，Enter 在按钮上确认；默认选中拒绝按钮。可按 `1` 选择仅此文件、`2` 允许同级目录、`3` 允许相同后缀；
+`d` 拒绝此次目标。对于未列入规则的代理网络目标，`--ask` 的弹窗可按 `1` 仅允许
 此目标，或按 `2` 允许当前域名及其子域名；两种选择都限定在当前端口和传输协议，
 IP 地址不能使用域名范围。明确的 `deny` 规则仍然直接拒绝，不进入询问弹窗。
 选择会写入当前 Job 目录的 `audit-policy.json`，之后命中相同范围时自动应用；
-每次决策记录在 `audit.jsonl`。使用 `--stage PATH` 可在 Job 结束后保留这些记录。
+每次决策记录在 `audit.jsonl`。已保存决定只用于命中 ask 的访问，不能覆盖静态 deny 或外层沙箱。
+在 Permissions 面板用 `j`/`k` 选择决定，按两次 `x` 移除；之后回到更宽范围规则或重新询问。
+移除不会关闭已经打开的文件句柄；其他已运行的 TUI 在下次启动时加载更新。这些记录默认在 Job 结束后保留，`--stage PATH` 可指定位置。
 代理网络审计属于协作式边界：未经过代理的直接连接不会触发此弹窗。
 
 ```text
@@ -90,9 +101,11 @@ pvisor status --review last
 ```
 
 默认 host 执行保留宿主机文件系统视图；`--filesystem sandbox` 才启用 pVisor 的
-synthetic-root/Landlock 或 Seatbelt 文件系统访问策略。`--stage <PATH>` 独立启用当前目录的
-OverlayFS stage，在显式 `--stage` 路径创建独立
-Run 和可写 stage，保留改动供人工审查，并以 `0600` 写入 `run-bundle.json`。
+synthetic-root/Landlock 或 Seatbelt 文件系统访问策略。
+`--safe` 默认暂存工作区，并给 HOME（包括在 shell 内启动的 Codex）提供独立的写时复制视图。
+没有 `--stage` 时，changeset 和 Run Bundle 默认保留在 Job 存储中，退出后可 review/apply/drop。
+显式 `--stage <PATH>` 会保留 Job 和可写 stage，
+改动可供人工审查，并以 `0600` 写入 `run-bundle.json`。
 
 `--strict` 要求每个被请求的 capability 维度都有不可绕过的 enforcement 证据，
 否则在 Agent 启动前失败关闭。当前 host / container / VM 都会请求 Network 与
@@ -257,15 +270,13 @@ cooperative 的，直接 socket 仍可能绕过代理。需要不可绕过边界
 ## 文件访问规则
 
 ```bash
-pvisor run --mount /opt/tool:read --access '**/.ssh:deny' --access '**/.env*:read' -- my-agent
+pvisor run --safe --mount /opt/tool:read --access '**/.ssh:deny' --access '**/.env*:warn' -- my-agent
 ```
 
-`--mount SOURCE[:TARGET]:read|stage|write` 声明宿主路径；省略 TARGET 时等于 SOURCE。
-`write` 授予持久宿主写权限；`read` 和 `stage` 当前都进入写时复制视图的底层，
-所以 `read` 挂载并非该路径的强制只读边界。当前一次 Run 仅接受一个与 SOURCE 不同的
-TARGET；`write` 要求 TARGET 等于 SOURCE。
-`--access PATH-GLOB:deny|read` 在视图内加规则：`deny` 隐藏并阻止匹配路径，
-`read` 当前对应访问警告，并不阻止写入。访问规则不能提升到 `stage` 或 `write`。
+`--mount SOURCE:read|write` 是 host executor 的显式共享，分别授予只读或持久写入权限；
+只读共享要求 `--safe` 或 `--ask`。`--mount SOURCE[:TARGET]:stage` 是工作区视图的底层组合。
+`--access PATH-GLOB:deny|ask|warn` 追加文件规则，不会替换默认保护；`--clear-access` 才会显式清空。
+`warn` 仅告警，不是只读；文件询问授权包含视图内的检查、读取、修改和删除。
 
 规则相对于挂载根目录匹配：`*` 不跨目录，`**` 可跨目录，匹配目录时覆盖全部后代。
 为防止大小写不敏感文件系统上的别名绕过，匹配不区分大小写；绝对路径、空规则及 `.`/`..`
@@ -285,10 +296,10 @@ TOML 中对应：
 [filesystem]
 stage = "../stage-001"
 backend = "directory"
-mount = [{ source = "/opt/tool", access = "read" }]
+mount = [{ source = "/opt/tool", access = "stage" }]
 access = [
   { path = "**/.ssh", level = "deny" },
-  { path = "**/.env", level = "read" },
+  { path = "**/.env", level = "warn" },
 ]
 ```
 
@@ -397,7 +408,7 @@ pVisor Gateway、模型流量 capture store 或 Claude Resume Transport 审计�
 pvisor run \
   --name my-agent \
   --stage ../stage-001 \
-  --mount /opt/tool:read \
+  --mount /opt/tool:stage \
   --access '**/.ssh:deny' \
   --overlayfs-backend directory \
   --overlaynet-allow api.openai.com:443 \
@@ -431,7 +442,7 @@ command = ["my-agent"]
 
 [filesystem]
 stage = "../stage-001"
-mount = [{ source = "/opt/tool", access = "read" }]
+mount = [{ source = "/opt/tool", access = "stage" }]
 access = [{ path = "**/.ssh", level = "deny" }]
 backend = "directory"
 
@@ -511,8 +522,8 @@ rootfs。
 `--executor` 时选择 VM executor。`--rootfs <PATH>` 使用准备好的目录，
 `--rootfs image=<PATH>` 使用 OCI 镜像或镜像路径；三者互斥，host rootfs 在
 macOS 上被拒绝。这是统一 rootfs 语法；
-`--mount SOURCE[:TARGET]:read|stage|write` 向 guest 提供额外宿主路径，当前工作区是隐式底层；
-省略 TARGET 时保持原路径。工作区改动进入配置的 stage，省略 `--stage` 则在 Run 退出时丢弃；
+`--mount SOURCE[:TARGET]:stage` 为 guest 工作区组合额外底层，当前工作区是隐式底层；
+read/write 显式宿主共享目前仅支持 host executor。工作区改动进入指定 stage 或默认 Job 存储，退出后保留；
 VM 根目录其他写入使用临时 upper，并在 VM 退出时丢弃。
 
 合并后的 rootfs 是 guest `/`，`/workspace` 成为 guest cwd。在 Linux 和
@@ -595,3 +606,17 @@ staging 数据，但保留紧凑的 Run/Overlay 元数据、apply ledger 和 cap
 - [审查并应用 Effect](../guides/review-apply.md)：过滤且可重复的 apply。
 - [网络控制](../guides/network.md) 与 [捕获轨迹](../guides/capture.md)：其他
   Effect 维度。
+
+### 共享镜像文件缓存
+
+`pvisor cache serve` 在前台提供 OCI 镜像文件服务；`cache prepare IMAGE`、
+`cache list DIGEST [PATH]`、`cache stat DIGEST PATH` 和 `cache read DIGEST PATH`
+通过 `PERSISTING_PVISOR_CACHE_SERVER` 访问它。默认使用用户缓存目录下的
+`persisting/pvisor/cache.sock` Unix socket。服务端可用 `--image-store DIR`
+指定已有 OCI store。文件读取支持分段和 SHA-256 校验。
+
+VM 镜像启动会自动探测默认 socket；服务可用时，将远程镜像挂为只读 FUSE lower，
+以 1 MiB 数据块按需读取并持久缓存。默认 socket 不存在或已失效时走本地 OCI 准备。
+显式指定服务端后连接失败会报错；`PERSISTING_PVISOR_CACHE_SERVER=off` 强制本地准备。
+显式 rootfs 目录和原生 container executor 保持原有行为。
+完整协议、限制和 SSH 远程访问方式见 [共享镜像缓存协议](../../../shared-image-cache.md)。

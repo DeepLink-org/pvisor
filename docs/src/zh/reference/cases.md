@@ -375,7 +375,7 @@ Linux host stage 示例需要可用的 user/mount namespace。VM 示例需要可
 
 ### C. Stage 与 whole-rootfs
 
-当你希望 Agent 可以自由修改文件、但不污染当前 workspace 时使用这一组。C01 是最常用的持久模式；C02 使用 `--safe` 自动创建并清理临时 stage，C03 演示对持久 stage 显式执行 `drop`。
+当你希望 Agent 可以自由修改文件、但不污染当前 workspace 时使用这一组。C01 是最常用的持久模式；C02 使用 `--safe` 自动选择并保留 stage，C03 演示对持久 stage 显式执行 `drop`。
 
 - [ ] **C01：持久 stage**
 
@@ -406,15 +406,15 @@ Linux host stage 示例需要可用的 user/mount namespace。VM 示例需要可
 
   </details>
 
-- [ ] **C02：自动临时 stage**
+- [ ] **C02：默认保留 stage**
 
   建议场景：适合隔离文件变更、保留 stage 或验证 whole-rootfs 的任务。
 
-  用途：运行一次不需要保留改动的任务。`--safe` 在没有指定 `--stage` 时自动创建系统临时 stage，退出后删除该目录。
+  用途：无需手写存储路径。`--safe` 在没有指定 `--stage` 时使用持久 Job 存储，退出后保留改动。
 
   准备：Linux user/mount namespace 或 macOS Seatbelt 可用。
 
-  预期：命令成功，日志中给出的临时存储目录已删除，原 workspace 也没有新建的文件。
+  预期：命令成功，日志中给出的存储目录及 Run Bundle 保留，原 workspace 没有新建的文件。
 
   ```bash
   pvisor --safe -- /bin/sh -c 'printf changed > result.txt'
@@ -428,7 +428,7 @@ Linux host stage 示例需要可用的 user/mount namespace。VM 示例需要可
   ```bash
   storage=$(dirname "$(grep -m1 '^Run Bundle: ' "$PVISOR_CASE_STDOUT" | cut -d' ' -f3-)")
   test -n "$storage"
-  test ! -e "$storage"
+  test -f "$storage/run-bundle.json"
   test ! -e result.txt
   ```
 
@@ -551,14 +551,20 @@ Linux host stage 示例需要可用的 user/mount namespace。VM 示例需要可
 ### D. OverlayFS 与 Host 安全边界
 
 D01 讲视图层组合，D02/D03 讲 host executor，D04–D06 讲拒绝、显式写入和交互授权。
-文件权限级别为 `deny`、`ask`、`read`、`stage`、`write`：`deny` 直接拒绝，
-`ask` 暂停命中的文件操作并询问用户，`read` 目前只记录访问警告；
-`stage` 和 `write` 用于 `--mount`，其中 `write` 直接写入宿主 lower。
-`--access PATH-GLOB:ask` 会自动启用审计 TUI 和 safe 暂存视图，无需另加 `--audit`。
+文件规则为 `deny`、`ask`、`warn`：分别表示拒绝、询问、放行并警告；默认累加。
+`--mount` 的 `read` 授予只读宿主共享（要求 host executor 加 `--safe`/`--ask`），
+`stage` 组合写时复制底层，`write` 直接写入宿主 lower。
+`--access PATH-GLOB:ask` 会自动启用审计 TUI 和 safe 暂存视图，无需另加 `--ask`。
 文件弹窗的 `1` 仅允许此文件，`2` 允许同级目录中的文件，`3` 允许相同后缀的文件；
 `d` 拒绝此目标。明确的 `deny` 规则仍直接拒绝，不弹窗。
-选择写入当前 Job 的 `audit-policy.json`，后续命中同一范围时自动应用；
-`audit.jsonl` 记录人工及自动决策。显式指定 `--stage PATH` 才能在 Job 结束后保留这些记录。
+弹窗默认仅对当前 session 生效；先按 `s`、`w`、`u`，分别选择 session、workspace、user，
+再按数字选择授权范围，按 Enter 确认；默认选中拒绝按钮，`d` 直接拒绝。session 规则写入当前 Job 的 `audit-policy.json`；
+workspace 和 user 规则写入 `~/.config/pvisor/config.toml` 的 `permissions` 部分
+（设置了绝对路径 `XDG_CONFIG_HOME` 时使用该目录）。workspace 按规范化后的工作目录区分。
+后续 TUI Job 加载这些规则，优先级为 session > workspace > user，同层最后匹配的规则生效。
+持久化文件路径使用原始绝对路径；用户级后缀规则可覆盖其他工作区，授权时应注意范围。
+可在 Permissions 面板查看规则，用 j/k 选择后按两次 x 移除决定；随后可能命中其他规则或重新询问。
+`audit.jsonl` 记录人工及自动决策和保存范围。Job 记录默认保留；`--stage PATH` 可指定位置。
 
 - [ ] **D01：高级 OverlayFS 组合**
 
@@ -719,9 +725,9 @@ D01 讲视图层组合，D02/D03 讲 host executor，D04–D06 讲拒绝、显�
 
 - [ ] **D06：`ask` 弹窗与当前 Job 的目录授权**
 
-  用途：用 `--access 'private/*.txt:ask'` 启动审计 TUI；第一次读取时按 `2` 授权同级目录，再读取另一文件，验证规则自动复用。
+  用途：用 `--access 'private/*.txt:ask'` 启动审计 TUI；第一次读取时按 `2`、Enter 授权同级目录，再读取另一文件，验证规则自动复用。
 
-  准备：Linux user/mount namespace 和 Python 3 可用。示例用伪终端自动输入 `2`；手工运行时在弹窗中按该键。
+  准备：Linux user/mount namespace 和 Python 3 可用。示例用伪终端自动输入 `2`、Enter；手工运行时在弹窗中选择后按 Enter 确认。
 
   预期：只出现一次文件授权弹窗，两个文件均可读取；`audit-policy.json` 保存目录规则，`audit.jsonl` 记录第二次自动允许。`--stage` 保留当前 Job 的审计记录，不会把选择变成全局配置。
 
@@ -756,7 +762,7 @@ D01 讲视图层组合，D02/D03 讲 host executor，D04–D06 讲拒绝、显�
               except OSError:
                   pass
           if not prompted and b'FILE ACCESS PAUSED' in screen:
-              os.write(master, b'2')
+              os.write(master, b'2\r')
               prompted = True
           ended, result = os.waitpid(pid, os.WNOHANG)
           if ended:
@@ -1124,9 +1130,9 @@ D01 讲视图层组合，D02/D03 讲 host executor，D04–D06 讲拒绝、显�
 ### G. OverlayNet
 
 这一组只讨论网络边界。proxy 适合需要 host Gateway 的协作式访问，VM auto 和 host deny-all 才适合需要更强网络边界的场景。
-使用 `--audit` 时，未列入规则的代理网络目标会暂停并弹窗：`1` 仅允许当前目标，
+使用 `--ask` 时，未列入规则的代理网络目标会暂停并弹窗：`1` 仅允许当前目标，
 `2` 允许当前主机名及其子域名，范围仍限于相同端口和传输协议；IP 地址没有域名选项，
-`d` 拒绝当前目标。选择同样只保存在当前 Job 的 `audit-policy.json` 中。
+`d` 拒绝当前目标。与文件授权一样，先按 `s` / `w` / `u` 选择 session / workspace / user 保存范围。
 显式拒绝规则不进入弹窗；未经代理的直接 socket 连接也不会触发此审计。
 
 - [ ] **G01：启用默认 proxy**

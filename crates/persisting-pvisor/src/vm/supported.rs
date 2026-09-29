@@ -372,6 +372,8 @@ impl RunExecutor for VmExecutor {
             BTreeMap::new()
         };
         for key in [
+            crate::cache::SERVER_ENV,
+            "PERSISTING_PVISOR_CACHE_TOKEN",
             crate::AGENTCTL_ENDPOINT_ENV,
             crate::AGENTCTL_TOKEN_ENV,
             crate::AGENTCTL_TRANSPORT_ENV,

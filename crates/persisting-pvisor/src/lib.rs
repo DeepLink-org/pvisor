@@ -6,6 +6,8 @@
 
 #![cfg_attr(all(target_os = "macos", target_arch = "x86_64"), allow(dead_code))]
 
+#[cfg(unix)]
+pub mod cache;
 pub mod cli;
 pub mod core;
 mod runtime;

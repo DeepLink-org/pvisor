@@ -26,6 +26,28 @@ use std::process::Stdio;
 use tokio::io::{AsyncRead, AsyncReadExt};
 use tokio::process::{Child, Command};
 
+#[cfg(any(target_os = "linux", target_os = "macos"))]
+fn check_read_only_grants(spec: &RunSpec, cwd: &Path, writable: &[PathBuf]) -> std::io::Result<()> {
+    for grant in spec
+        .capabilities
+        .filesystem
+        .iter()
+        .filter(|g| g.access == FilesystemAccess::Read)
+    {
+        let path = cwd.join(&grant.path).canonicalize()?;
+        for writable in writable {
+            let writable = writable.canonicalize()?;
+            if path.starts_with(&writable) || writable.starts_with(&path) {
+                return Err(std::io::Error::other(format!(
+                    "read-only share overlaps a writable runtime path: {}",
+                    path.display()
+                )));
+            }
+        }
+    }
+    Ok(())
+}
+
 #[cfg(target_os = "linux")]
 struct ResourceCgroup {
     path: PathBuf,
@@ -842,6 +864,8 @@ fn platform_launcher_command(
         }
     }
 
+    check_read_only_grants(spec, &cwd, &writable_paths)?;
+
     let network = network_isolation(spec)?;
     let (allowed_unix_sockets, local_socket_roots) = if network.is_loopback_only() {
         (
@@ -1112,6 +1136,8 @@ fn rootless_plan(
             }
         }
     }
+
+    check_read_only_grants(spec, &cwd, &read_write)?;
 
     read_only.sort_unstable();
     read_only.dedup();
@@ -1822,6 +1848,28 @@ mod tests {
                 );
             }
         }
+    }
+
+    #[cfg(any(target_os = "linux", target_os = "macos"))]
+    #[test]
+    fn read_only_grants_reject_writable_ancestors_and_symlink_aliases() {
+        let temp = tempfile::tempdir().unwrap();
+        let shared = temp.path().join("shared");
+        let separate = temp.path().join("separate");
+        std::fs::create_dir(&shared).unwrap();
+        std::fs::create_dir(&separate).unwrap();
+        let alias = temp.path().join("alias");
+        std::os::unix::fs::symlink(&shared, &alias).unwrap();
+        let mut spec = RunSpec::process("run", "agent", "/bin/true");
+        spec.capabilities
+            .filesystem
+            .push(persisting_control::FilesystemCapability {
+                path: alias.display().to_string(),
+                access: FilesystemAccess::Read,
+            });
+        assert!(check_read_only_grants(&spec, temp.path(), &[separate]).is_ok());
+        assert!(check_read_only_grants(&spec, temp.path(), &[shared]).is_err());
+        assert!(check_read_only_grants(&spec, temp.path(), &[temp.path().to_owned()]).is_err());
     }
 
     #[cfg(target_os = "linux")]

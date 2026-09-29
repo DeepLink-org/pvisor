@@ -311,6 +311,7 @@ pub enum FilesystemAccessLevel {
     Deny,
     Ask,
     Read,
+    Warn,
     Stage,
     Write,
 }

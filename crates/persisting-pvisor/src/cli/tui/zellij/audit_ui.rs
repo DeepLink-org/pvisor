@@ -9,7 +9,7 @@ use std::collections::VecDeque;
 use std::io::{BufRead, BufReader, Read, Write};
 use std::net::IpAddr;
 use std::os::unix::net::{UnixListener, UnixStream};
-use std::path::Path;
+use std::path::{Path, PathBuf};
 
 const POLICY_FILE: &str = "audit-policy.json";
 
@@ -152,11 +152,13 @@ impl SessionPolicy {
         let mut bytes = Vec::new();
         source.read_to_end(&mut bytes)?;
         let policy: Self = serde_json::from_slice(&bytes)?;
-        anyhow::ensure!(
-            policy.schema_version == 1,
-            "unsupported audit policy version"
-        );
-        for rule in &policy.rules {
+        policy.validate()?;
+        Ok(policy)
+    }
+
+    fn validate(&self) -> Result<()> {
+        anyhow::ensure!(self.schema_version == 1, "unsupported audit policy version");
+        for rule in &self.rules {
             let valid = match rule.kind {
                 AuditKind::File => {
                     matches!(rule.scope, Scope::Exact | Scope::Directory | Scope::Suffix)
@@ -175,7 +177,7 @@ impl SessionPolicy {
             };
             anyhow::ensure!(valid, "invalid session audit rule");
         }
-        Ok(policy)
+        Ok(())
     }
 
     pub fn persist(&self, storage: &Path) -> Result<()> {
@@ -203,12 +205,278 @@ impl SessionPolicy {
     ) -> Option<Self> {
         let rule = SessionRule::from_request(request, scope, decision)?;
         let mut next = self.clone();
+        next.rules.retain(|old| {
+            !(old.kind == rule.kind
+                && old.scope == rule.scope
+                && old.value == rule.value
+                && old.port == rule.port
+                && old.transport == rule.transport)
+        });
         next.rules.push(rule);
         Some(next)
     }
 
     pub fn rule_labels(&self) -> Vec<String> {
         self.rules.iter().map(SessionRule::label).collect()
+    }
+}
+
+#[derive(Debug, Default, Clone, Copy, PartialEq, Eq, Serialize)]
+#[serde(rename_all = "snake_case")]
+pub(super) enum Lifetime {
+    #[default]
+    Session,
+    Workspace,
+    User,
+}
+
+impl Lifetime {
+    pub fn label(self) -> &'static str {
+        match self {
+            Self::Session => "session",
+            Self::Workspace => "workspace",
+            Self::User => "user",
+        }
+    }
+
+    pub fn key(byte: u8) -> Option<Self> {
+        match byte {
+            b's' => Some(Self::Session),
+            b'w' => Some(Self::Workspace),
+            b'u' => Some(Self::User),
+            _ => None,
+        }
+    }
+}
+
+pub(super) fn permissions_config_path() -> Result<PathBuf> {
+    let root = std::env::var_os("XDG_CONFIG_HOME")
+        .map(PathBuf::from)
+        .filter(|path| path.is_absolute())
+        .or_else(|| dirs::home_dir().map(|home| home.join(".config")))
+        .context("personal configuration directory unavailable")?;
+    Ok(root.join("pvisor/config.toml"))
+}
+
+#[derive(Default, Serialize, Deserialize)]
+#[serde(default, deny_unknown_fields)]
+struct SavedPermissions {
+    user: SessionPolicy,
+    workspaces: std::collections::BTreeMap<String, SessionPolicy>,
+}
+
+impl SavedPermissions {
+    fn read(path: &Path) -> Result<(toml_edit::DocumentMut, Self)> {
+        let source = match std::fs::read_to_string(path) {
+            Ok(source) => source,
+            Err(error) if error.kind() == std::io::ErrorKind::NotFound => String::new(),
+            Err(error) => return Err(error.into()),
+        };
+        let doc = source.parse::<toml_edit::DocumentMut>()?;
+        let config: toml::Table = toml::from_str(&source)?;
+        let saved: Self = config
+            .get("permissions")
+            .cloned()
+            .map(toml::Value::try_into)
+            .transpose()?
+            .unwrap_or_default();
+        saved.user.validate()?;
+        for policy in saved.workspaces.values() {
+            policy.validate()?;
+        }
+        Ok((doc, saved))
+    }
+}
+
+pub(super) struct Permissions {
+    session: SessionPolicy,
+    saved: SavedPermissions,
+    config: PathBuf,
+    workspace: String,
+    file_root: PathBuf,
+}
+
+impl Permissions {
+    pub fn load(
+        storage: &Path,
+        workspace: &Path,
+        file_root: &Path,
+        config: PathBuf,
+    ) -> Result<Self> {
+        Ok(Self {
+            session: SessionPolicy::load(storage)?,
+            saved: SavedPermissions::read(&config)?.1,
+            config,
+            workspace: workspace
+                .canonicalize()?
+                .to_str()
+                .context("workspace must be UTF-8")?
+                .into(),
+            file_root: file_root.canonicalize()?,
+        })
+    }
+
+    // Ask paths are relative to the overlay target, not necessarily the cwd.
+    // Persist original absolute paths so a user rule cannot approve a same-named
+    // file in an unrelated workspace merely because its relative path matches.
+    fn persistent_request(&self, request: &AuditRequest) -> Result<AuditRequest> {
+        let mut request = request.clone();
+        if request.kind == AuditKind::File {
+            let path = Path::new(&request.target);
+            anyhow::ensure!(
+                !path
+                    .components()
+                    .any(|c| matches!(c, std::path::Component::ParentDir)),
+                "audit path contains parent traversal"
+            );
+            request.target = self
+                .file_root
+                .join(path)
+                .to_str()
+                .context("audit path must be UTF-8")?
+                .into();
+        }
+        Ok(request)
+    }
+
+    pub fn resolve(&self, request: &AuditRequest) -> Option<(AuditDecision, Scope, Lifetime)> {
+        if let Some((decision, scope)) = self.session.resolve(request) {
+            return Some((decision, scope, Lifetime::Session));
+        }
+        let request = self.persistent_request(request).ok()?;
+        if let Some((decision, scope)) = self
+            .saved
+            .workspaces
+            .get(&self.workspace)
+            .and_then(|p| p.resolve(&request))
+        {
+            return Some((decision, scope, Lifetime::Workspace));
+        }
+        self.saved
+            .user
+            .resolve(&request)
+            .map(|(d, s)| (d, s, Lifetime::User))
+    }
+
+    pub fn remember(
+        &mut self,
+        storage: &Path,
+        request: &AuditRequest,
+        scope: Scope,
+        decision: AuditDecision,
+        lifetime: Lifetime,
+    ) -> Result<()> {
+        if lifetime == Lifetime::Session {
+            let next = self
+                .session
+                .with_decision(request, scope, decision)
+                .context("invalid audit scope")?;
+            next.persist(storage)?;
+            self.session = next;
+            return Ok(());
+        }
+        let request = self.persistent_request(request)?;
+        self.update_saved(|saved, workspace| {
+            let policy = match lifetime {
+                Lifetime::Workspace => saved.workspaces.entry(workspace.into()).or_default(),
+                Lifetime::User => &mut saved.user,
+                Lifetime::Session => unreachable!(),
+            };
+            *policy = policy
+                .with_decision(&request, scope, decision)
+                .context("invalid audit scope")?;
+            Ok(())
+        })
+    }
+
+    fn update_saved(
+        &mut self,
+        update: impl FnOnce(&mut SavedPermissions, &str) -> Result<()>,
+    ) -> Result<()> {
+        let parent = self
+            .config
+            .parent()
+            .context("configuration path has no parent")?;
+        std::fs::create_dir_all(parent)?;
+        use std::os::unix::fs::OpenOptionsExt;
+        let lock = std::fs::OpenOptions::new()
+            .create(true)
+            .truncate(false)
+            .read(true)
+            .write(true)
+            .mode(0o600)
+            .custom_flags(libc::O_NOFOLLOW | libc::O_CLOEXEC)
+            .open(parent.join("permissions.lock"))?;
+        fs2::FileExt::lock_exclusive(&lock)?;
+        // Re-read under the lock: simultaneous TUIs must not overwrite each other.
+        let (mut doc, mut saved) = SavedPermissions::read(&self.config)?;
+        update(&mut saved, &self.workspace)?;
+        let encoded = toml::to_string(&saved)?.parse::<toml_edit::DocumentMut>()?;
+        doc["permissions"] = toml_edit::Item::Table(encoded.as_table().clone());
+        let mut file = tempfile::NamedTempFile::new_in(parent)?;
+        file.write_all(doc.to_string().as_bytes())?;
+        file.as_file().sync_all()?;
+        file.persist(&self.config)?;
+        std::fs::File::open(parent)?.sync_all()?;
+        self.saved = saved;
+        Ok(())
+    }
+
+    fn rule_entries(&self) -> Vec<(Lifetime, SessionRule)> {
+        [
+            (Lifetime::Session, Some(&self.session)),
+            (
+                Lifetime::Workspace,
+                self.saved.workspaces.get(&self.workspace),
+            ),
+            (Lifetime::User, Some(&self.saved.user)),
+        ]
+        .into_iter()
+        .flat_map(|(lifetime, policy)| {
+            policy
+                .into_iter()
+                .flat_map(move |p| p.rules.iter().rev().cloned().map(move |r| (lifetime, r)))
+        })
+        .collect()
+    }
+
+    pub fn rule_labels(&self) -> Vec<String> {
+        self.rule_entries()
+            .iter()
+            .map(|(lifetime, rule)| format!("[{}] {}", lifetime.label(), rule.label()))
+            .collect()
+    }
+
+    /// Remove the selected decision, not whatever occupies its index after another writer saves.
+    pub fn forget(&mut self, storage: &Path, index: usize) -> Result<()> {
+        let (lifetime, rule) = self
+            .rule_entries()
+            .get(index)
+            .cloned()
+            .context("no decision selected")?;
+        if lifetime == Lifetime::Session {
+            let mut next = self.session.clone();
+            next.rules.retain(|r| r != &rule);
+            next.persist(storage)?;
+            self.session = next;
+            return Ok(());
+        }
+        self.update_saved(|saved, workspace| {
+            let policy = match lifetime {
+                Lifetime::Workspace => saved.workspaces.get_mut(workspace),
+                Lifetime::User => Some(&mut saved.user),
+                Lifetime::Session => unreachable!(),
+            };
+            if let Some(policy) = policy {
+                policy.rules.retain(|r| r != &rule);
+            }
+            Ok(())
+        })
+    }
+
+    pub fn display_request(&self, request: &AuditRequest) -> AuditRequest {
+        self.persistent_request(request)
+            .unwrap_or_else(|_| request.clone())
     }
 }
 
@@ -223,6 +491,95 @@ pub(super) fn choice(request: &AuditRequest, byte: u8) -> Option<(Scope, AuditDe
     };
     SessionRule::from_request(request, scope, AuditDecision::Allow)
         .map(|_| (scope, AuditDecision::Allow))
+}
+
+#[derive(Default)]
+pub(super) struct Prompt {
+    pub lifetime: Lifetime,
+    pub scope: Option<Scope>,
+    pub focus: u8,
+    escape: u8,
+}
+
+impl Prompt {
+    pub fn input(&mut self, request: &AuditRequest, byte: u8) -> Option<(Scope, AuditDecision)> {
+        // Consume complete cursor sequences, even when reads split their bytes.
+        if self.escape != 0 {
+            if self.escape == 1 && matches!(byte, b'[' | b'O') {
+                self.escape = 2;
+                return None;
+            }
+            let cursor = self.escape == 2;
+            self.escape = 0;
+            if cursor {
+                match byte {
+                    b'A' => self.focus = (self.focus + 2) % 3,
+                    b'B' => self.focus = (self.focus + 1) % 3,
+                    b'C' | b'D' => {
+                        let step = if byte == b'C' { 1 } else { -1 };
+                        match self.focus {
+                            0 => {
+                                let scopes: Vec<_> = (*b"123")
+                                    .into_iter()
+                                    .filter_map(|key| choice(request, key).map(|v| v.0))
+                                    .collect();
+                                let index = scopes
+                                    .iter()
+                                    .position(|s| Some(*s) == self.scope)
+                                    .unwrap_or(0);
+                                self.scope = Some(
+                                    scopes[(index as isize + step).rem_euclid(scopes.len() as isize)
+                                        as usize],
+                                );
+                            }
+                            1 => {
+                                let index = match self.lifetime {
+                                    Lifetime::Session => 0,
+                                    Lifetime::Workspace => 1,
+                                    Lifetime::User => 2,
+                                };
+                                self.lifetime =
+                                    [Lifetime::Session, Lifetime::Workspace, Lifetime::User]
+                                        [(index + step).rem_euclid(3) as usize];
+                            }
+                            _ => {
+                                self.scope = if self.scope.is_some() {
+                                    None
+                                } else {
+                                    Some(Scope::Exact)
+                                }
+                            }
+                        }
+                    }
+                    _ => {}
+                }
+                return None;
+            }
+        }
+        match byte {
+            0x1b => {
+                self.escape = 1;
+            }
+            b'\t' => self.focus = (self.focus + 1) % 3,
+            b'\r' | b'\n' if self.focus != 2 => self.focus += 1,
+            b'\r' | b'\n' => {
+                return Some(self.scope.map_or((Scope::Exact, AuditDecision::Deny), |s| {
+                    (s, AuditDecision::Allow)
+                }));
+            }
+            b'd' | b'D' => return Some((Scope::Exact, AuditDecision::Deny)),
+            _ => {
+                if let Some(lifetime) = Lifetime::key(byte) {
+                    self.lifetime = lifetime;
+                }
+                if let Some((scope, AuditDecision::Allow)) = choice(request, byte) {
+                    self.scope = Some(scope);
+                    self.focus = 2;
+                }
+            }
+        }
+        None
+    }
 }
 
 struct Pending {
@@ -352,6 +709,35 @@ mod tests {
         assert_eq!(pending.read(&mut byte).unwrap(), 0);
     }
 
+    #[test]
+    fn prompt_navigation_never_grants_without_confirming_the_button() {
+        let request = file("private/one.txt");
+        let mut prompt = Prompt::default();
+        for byte in b"\x1b[C\t\x1b[C" {
+            assert_eq!(prompt.input(&request, *byte), None);
+        }
+        assert_eq!(prompt.scope, Some(Scope::Directory));
+        assert_eq!(prompt.lifetime, Lifetime::Workspace);
+        assert_eq!(prompt.input(&request, b'\t'), None);
+        assert_eq!(
+            prompt.input(&request, b'\r'),
+            Some((Scope::Directory, AuditDecision::Allow))
+        );
+        let mut prompt = Prompt::default();
+        for byte in b"\t\t" {
+            assert_eq!(prompt.input(&request, *byte), None);
+        }
+        assert_eq!(
+            prompt.input(&request, b'\r'),
+            Some((Scope::Exact, AuditDecision::Deny))
+        );
+        assert_eq!(prompt.input(&request, b'2'), None);
+        assert_eq!(
+            prompt.input(&request, b'\r'),
+            Some((Scope::Directory, AuditDecision::Allow))
+        );
+    }
+
     fn file(target: &str) -> AuditRequest {
         AuditRequest {
             kind: AuditKind::File,
@@ -372,6 +758,219 @@ mod tests {
             port: Some(port),
             transport: Some(NetworkTransport::TcpTunnel),
         }
+    }
+
+    #[test]
+    fn persistent_permissions_isolate_workspaces_and_keep_user_paths_absolute() {
+        let temp = tempfile::tempdir().unwrap();
+        let a = temp.path().join("a");
+        let b = temp.path().join("b");
+        let first = temp.path().join("first");
+        let second = temp.path().join("second");
+        for path in [&a, &b, &first, &second] {
+            std::fs::create_dir(path).unwrap();
+        }
+        let config = temp.path().join("config.toml");
+        std::fs::write(
+            &config,
+            "# keep my settings\n[run]\nname = 'example' # keep this too\n",
+        )
+        .unwrap();
+        let mut policy = Permissions::load(&first, &a, &a, config.clone()).unwrap();
+        policy
+            .remember(
+                &first,
+                &file("private/key.txt"),
+                Scope::Directory,
+                AuditDecision::Allow,
+                Lifetime::Workspace,
+            )
+            .unwrap();
+        policy
+            .remember(
+                &first,
+                &file("user.txt"),
+                Scope::Exact,
+                AuditDecision::Allow,
+                Lifetime::User,
+            )
+            .unwrap();
+        policy
+            .remember(
+                &first,
+                &file("session.txt"),
+                Scope::Exact,
+                AuditDecision::Allow,
+                Lifetime::Session,
+            )
+            .unwrap();
+        let same = Permissions::load(&second, &a, &a, config.clone()).unwrap();
+        assert_eq!(
+            same.resolve(&file("private/next.txt")),
+            Some((AuditDecision::Allow, Scope::Directory, Lifetime::Workspace))
+        );
+        assert!(same.resolve(&file("session.txt")).is_none());
+        let other = Permissions::load(&second, &b, &b, config.clone()).unwrap();
+        assert!(other.resolve(&file("private/next.txt")).is_none());
+        assert!(other.resolve(&file("user.txt")).is_none());
+        let absolute = a.canonicalize().unwrap().join("user.txt");
+        assert_eq!(
+            other.resolve(&file(absolute.to_str().unwrap())),
+            Some((AuditDecision::Allow, Scope::Exact, Lifetime::User))
+        );
+        let saved = std::fs::read_to_string(&config).unwrap();
+        assert!(saved.contains("# keep my settings"));
+        assert!(saved.contains("name = 'example' # keep this too"));
+        use std::os::unix::fs::PermissionsExt;
+        assert_eq!(
+            std::fs::metadata(config).unwrap().permissions().mode() & 0o777,
+            0o600
+        );
+    }
+
+    #[test]
+    fn persistent_permissions_merge_writers_and_prefer_narrower_lifetimes() {
+        let temp = tempfile::tempdir().unwrap();
+        let first = temp.path().join("first");
+        let second = temp.path().join("second");
+        std::fs::create_dir(&first).unwrap();
+        std::fs::create_dir(&second).unwrap();
+        let config = temp.path().join("config.toml");
+        let mut one = Permissions::load(&first, temp.path(), temp.path(), config.clone()).unwrap();
+        let mut two = Permissions::load(&second, temp.path(), temp.path(), config.clone()).unwrap();
+        one.remember(
+            &first,
+            &file("one.txt"),
+            Scope::Exact,
+            AuditDecision::Allow,
+            Lifetime::User,
+        )
+        .unwrap();
+        two.remember(
+            &second,
+            &file("two.txt"),
+            Scope::Exact,
+            AuditDecision::Allow,
+            Lifetime::Workspace,
+        )
+        .unwrap();
+        let mut loaded = Permissions::load(&first, temp.path(), temp.path(), config).unwrap();
+        assert!(loaded.resolve(&file("one.txt")).is_some());
+        assert!(loaded.resolve(&file("two.txt")).is_some());
+        loaded
+            .remember(
+                &first,
+                &file("one.txt"),
+                Scope::Exact,
+                AuditDecision::Deny,
+                Lifetime::Workspace,
+            )
+            .unwrap();
+        assert_eq!(
+            loaded.resolve(&file("one.txt")).unwrap().0,
+            AuditDecision::Deny
+        );
+        loaded
+            .remember(
+                &first,
+                &file("one.txt"),
+                Scope::Exact,
+                AuditDecision::Allow,
+                Lifetime::Session,
+            )
+            .unwrap();
+        assert_eq!(
+            loaded.resolve(&file("one.txt")).unwrap().2,
+            Lifetime::Session
+        );
+        assert!(
+            loaded
+                .remember(
+                    &first,
+                    &file("../escape"),
+                    Scope::Exact,
+                    AuditDecision::Allow,
+                    Lifetime::User
+                )
+                .is_err()
+        );
+    }
+
+    #[test]
+    fn malformed_persistent_permissions_are_not_overwritten_or_applied() {
+        let temp = tempfile::tempdir().unwrap();
+        let config = temp.path().join("config.toml");
+        let mut policy =
+            Permissions::load(temp.path(), temp.path(), temp.path(), config.clone()).unwrap();
+        for bad in [
+            "[broken",
+            "[permissions.user]\nschema_version = 999\nrules = []\n",
+        ] {
+            std::fs::write(&config, bad).unwrap();
+            assert!(
+                Permissions::load(temp.path(), temp.path(), temp.path(), config.clone()).is_err()
+            );
+            assert!(
+                policy
+                    .remember(
+                        temp.path(),
+                        &file("secret"),
+                        Scope::Exact,
+                        AuditDecision::Allow,
+                        Lifetime::User
+                    )
+                    .is_err()
+            );
+            assert!(policy.resolve(&file("secret")).is_none());
+            assert_eq!(std::fs::read_to_string(&config).unwrap(), bad);
+        }
+    }
+
+    #[test]
+    fn forgetting_a_selected_decision_keeps_other_writers_and_scopes() {
+        let temp = tempfile::tempdir().unwrap();
+        let config = temp.path().join("config.toml");
+        let mut policy =
+            Permissions::load(temp.path(), temp.path(), temp.path(), config.clone()).unwrap();
+        for (target, lifetime) in [
+            ("session", Lifetime::Session),
+            ("workspace", Lifetime::Workspace),
+            ("user", Lifetime::User),
+        ] {
+            policy
+                .remember(
+                    temp.path(),
+                    &file(target),
+                    Scope::Exact,
+                    AuditDecision::Allow,
+                    lifetime,
+                )
+                .unwrap();
+        }
+        let mut other =
+            Permissions::load(temp.path(), temp.path(), temp.path(), config.clone()).unwrap();
+        other
+            .remember(
+                temp.path(),
+                &file("other"),
+                Scope::Exact,
+                AuditDecision::Allow,
+                Lifetime::User,
+            )
+            .unwrap();
+        policy.forget(temp.path(), 0).unwrap();
+        assert!(policy.resolve(&file("session")).is_none());
+        policy.forget(temp.path(), 0).unwrap();
+        assert!(policy.resolve(&file("workspace")).is_none());
+        let user = policy
+            .rule_entries()
+            .iter()
+            .position(|(_, r)| r.value.ends_with("/user"))
+            .unwrap();
+        policy.forget(temp.path(), user).unwrap();
+        let reloaded = Permissions::load(temp.path(), temp.path(), temp.path(), config).unwrap();
+        assert!(reloaded.resolve(&file("user")).is_none());
+        assert!(reloaded.resolve(&file("other")).is_some());
     }
 
     #[test]

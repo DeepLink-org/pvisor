@@ -41,7 +41,7 @@ pub struct PreparedImage {
 
 #[derive(Debug, Clone)]
 pub struct ImageStore {
-    root: PathBuf,
+    pub(crate) root: PathBuf,
     client: Client,
 }
 
@@ -77,6 +77,10 @@ struct ImageManifest {
 
 #[derive(Debug, Default, Deserialize)]
 struct ImageConfiguration {
+    #[serde(default)]
+    architecture: String,
+    #[serde(default)]
+    os: String,
     #[serde(default)]
     config: RuntimeConfiguration,
 }
@@ -124,6 +128,18 @@ impl ImageStore {
     }
 
     pub fn prepare(&self, image: &str) -> anyhow::Result<PreparedImage> {
+        self.prepare_for_architecture(image, host_architecture()?)
+    }
+
+    pub(crate) fn prepare_for_architecture(
+        &self,
+        image: &str,
+        architecture: &str,
+    ) -> anyhow::Result<PreparedImage> {
+        anyhow::ensure!(
+            matches!(architecture, "arm64" | "amd64"),
+            "unsupported image architecture {architecture}"
+        );
         let image_ref = ImageReference::parse(image)?;
         let mut registry = RegistryClient::new(&self.client, image_ref.clone());
         let (mut body, mut manifest_digest) = registry.fetch_manifest(&image_ref.reference)?;
@@ -131,7 +147,7 @@ impl ImageStore {
             .with_context(|| format!("decode OCI manifest for {image}"))?;
         if value.get("manifests").is_some() {
             let index: ImageIndex = serde_json::from_value(value)?;
-            let descriptor = select_platform(&index.manifests)?;
+            let descriptor = select_platform(&index.manifests, architecture)?;
             let fetched = registry.fetch_manifest(&descriptor.digest)?;
             body = fetched.0;
             manifest_digest = fetched.1;
@@ -143,6 +159,12 @@ impl ImageStore {
         let config: ImageConfiguration = serde_json::from_reader(File::open(config_path)?)
             .with_context(|| format!("decode image configuration for {image}"))?;
 
+        anyhow::ensure!(
+            config.os == "linux" && config.architecture == architecture,
+            "image platform is {}/{}, expected linux/{architecture}",
+            config.os,
+            config.architecture
+        );
         let digest_hex = digest_hex(&manifest_digest)?;
         let rootfs = self.root.join("rootfs-v3/sha256").join(digest_hex);
         let lock_path = self.root.join("locks").join(format!("{digest_hex}.lock"));
@@ -388,12 +410,18 @@ fn default_store_dir() -> anyhow::Result<PathBuf> {
         .join("persisting/pvisor/images"))
 }
 
-fn select_platform(manifests: &[Descriptor]) -> anyhow::Result<&Descriptor> {
-    let architecture = match std::env::consts::ARCH {
+fn host_architecture() -> anyhow::Result<&'static str> {
+    Ok(match std::env::consts::ARCH {
         "aarch64" => "arm64",
         "x86_64" => "amd64",
         other => bail!("libkrun OCI images are unsupported on host architecture {other}"),
-    };
+    })
+}
+
+fn select_platform<'a>(
+    manifests: &'a [Descriptor],
+    architecture: &str,
+) -> anyhow::Result<&'a Descriptor> {
     manifests
         .iter()
         .find(|descriptor| {
@@ -436,7 +464,7 @@ fn parse_bearer_challenge(value: &str) -> anyhow::Result<BTreeMap<String, String
     Ok(result)
 }
 
-fn digest_hex(digest: &str) -> anyhow::Result<&str> {
+pub(crate) fn digest_hex(digest: &str) -> anyhow::Result<&str> {
     let value = digest
         .strip_prefix("sha256:")
         .context("pVisor v1 only supports sha256 OCI digests")?;
@@ -478,7 +506,7 @@ fn verify_file_digest(expected: &str, path: &Path) -> anyhow::Result<()> {
     Ok(())
 }
 
-fn encode_hex(bytes: &[u8]) -> String {
+pub(crate) fn encode_hex(bytes: &[u8]) -> String {
     const HEX: &[u8; 16] = b"0123456789abcdef";
     let mut output = String::with_capacity(bytes.len() * 2);
     for byte in bytes {
@@ -782,6 +810,24 @@ mod tests {
                 .registry,
             "registry-1.docker.io"
         );
+    }
+
+    #[test]
+    fn platform_selection_uses_client_architecture() {
+        let descriptors: Vec<Descriptor> = serde_json::from_value(serde_json::json!([
+            {"digest": "amd", "platform": {"architecture": "amd64", "os": "linux"}},
+            {"digest": "arm", "platform": {"architecture": "arm64", "os": "linux", "variant": "v8"}}
+        ]))
+        .unwrap();
+        assert_eq!(
+            select_platform(&descriptors, "amd64").unwrap().digest,
+            "amd"
+        );
+        assert_eq!(
+            select_platform(&descriptors, "arm64").unwrap().digest,
+            "arm"
+        );
+        assert!(select_platform(&descriptors, "riscv64").is_err());
     }
 
     #[test]
