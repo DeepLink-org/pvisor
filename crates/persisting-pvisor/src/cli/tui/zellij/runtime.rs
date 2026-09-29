@@ -24,7 +24,6 @@ const STAGE_FILE: &str = "PVISOR_UI_STAGE_FILE";
 const LOG_FILE: &str = "PVISOR_UI_LOG_FILE";
 const AUDIT_SOCKET: &str = "PVISOR_UI_AUDIT_SOCKET";
 static CHILD_CONTEXT: OnceLock<Option<PathBuf>> = OnceLock::new();
-static LOG_CONTEXT: OnceLock<Option<PathBuf>> = OnceLock::new();
 
 pub(crate) fn init_child_context() {
     let path = if std::env::var_os(CHILD_MARKER).is_some() {
@@ -53,22 +52,12 @@ pub(crate) fn init_child_context() {
         persisting_control::audit::init(socket);
     }
     let _ = CHILD_CONTEXT.set(path);
-    crate::cache::progress::init_output(
+    crate::image::cache::progress::init_output(
         log_path
             .as_ref()
             .map(|path| path.with_extension("image.json")),
     );
-    let _ = LOG_CONTEXT.set(log_path);
-}
-
-pub(crate) fn diagnostic(args: std::fmt::Arguments<'_>) {
-    if let Some(Some(path)) = LOG_CONTEXT.get()
-        && let Ok(mut file) = OpenOptions::new().append(true).open(path)
-        && writeln!(file, "{args}").is_ok()
-    {
-        return;
-    }
-    eprintln!("{args}");
+    crate::diagnostics::init(log_path);
 }
 
 pub(crate) fn announce_stage(stage: &Path) {
@@ -132,7 +121,7 @@ impl Drop for ChildCleanup {
 
 #[derive(Default)]
 pub(super) struct Snapshot {
-    pub(super) image: Option<crate::cache::progress::ImageProgress>,
+    pub(super) image: Option<crate::image::cache::progress::ImageProgress>,
     pub(super) stage: Option<PathBuf>,
     pub(super) record: Option<RunRecord>,
     pub(super) filesystem: Option<FilesystemObservation>,
@@ -706,8 +695,8 @@ mod tests {
         let directory = tempfile::tempdir().unwrap();
         let log = directory.path().join("diagnostics.log");
         File::create(&log).unwrap();
-        LOG_CONTEXT.set(Some(log.clone())).unwrap();
-        let downloads = crate::cache::progress::Downloads::new("example:latest");
+        crate::diagnostics::init(Some(log.clone()));
+        let downloads = crate::image::cache::progress::Downloads::new("example:latest");
         downloads.received(b"transfer-log-test/file\nname", 10);
         downloads.received(b"transfer-log-test/file\nname", 20);
         let mut snapshot = Snapshot::default();

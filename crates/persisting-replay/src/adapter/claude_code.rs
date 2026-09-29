@@ -10,8 +10,8 @@ use super::{
     MAX_TOOL_OUTPUT_BYTES, RunContext, agent_command, check_boundary, sanitized_environment,
     with_boundary_user_prompt_metadata,
 };
-use crate::claude_bridge::ClaudeBridgeHandle;
-use crate::claude_resume::ResumeTransportManifest;
+use crate::bridge::claude::ClaudeBridgeHandle;
+use crate::bridge::claude_resume::ResumeTransportManifest;
 use crate::error::{ReplayError, ReplayErrorKind, ResultExt};
 use crate::io::{atomic_write, atomic_write_json, canonicalize, read_regular_file, sha256};
 use crate::journal::Journal;
@@ -2058,7 +2058,7 @@ mod tests {
         wildcard_match,
     };
     use crate::adapter::{RunContext, build_plan, run};
-    use crate::claude_resume::ResumeTransportManifest;
+    use crate::bridge::claude_resume::ResumeTransportManifest;
     use crate::journal::Journal;
     use crate::model::{
         AdapterPlan, AgentKind, FreshObservation, PlaybackRequest, ReplayMode, ToolCall,

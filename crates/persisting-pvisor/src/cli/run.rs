@@ -98,7 +98,7 @@ use super::trajectory::{JsonlEventSink, JsonlWriter, jsonl_capture_sink};
 macro_rules! run_log {
     ($($arg:tt)*) => {{
         #[cfg(unix)]
-        super::tui::diagnostic(format_args!($($arg)*));
+        crate::diagnostics::diagnostic(format_args!($($arg)*));
         #[cfg(not(unix))]
         eprintln!($($arg)*);
     }};
@@ -959,11 +959,11 @@ async fn run_prepared_spec(args: RunArgs) -> anyhow::Result<i32> {
             wait.await?
         }
     };
-    let output = crate::delegated::DelegatedRunOutput {
+    let output = crate::executor::delegated::DelegatedRunOutput {
         agentctl: agentctl.snapshot(),
         result,
     };
-    let write_result = crate::delegated::write_result(&result_path, &output)
+    let write_result = crate::executor::delegated::write_result(&result_path, &output)
         .with_context(|| format!("write delegated RunResult to {}", result_path.display()));
     let cleanup_result = stage_guard
         .as_mut()
@@ -1163,7 +1163,7 @@ async fn execute_config(
 ) -> anyhow::Result<i32> {
     normalize_filesystem_config(&mut config)?;
     resolve_default_vm_rootfs(&mut config)?;
-    let mut _image_mount: Option<crate::cache::LazyMount> = None;
+    let mut _image_mount: Option<crate::image::cache::LazyMount> = None;
     let prepared_image = if config.run.executor == RunExecutorKind::Vm && config.vm.rootfs.is_none()
     {
         let image = config
@@ -1174,7 +1174,7 @@ async fn execute_config(
         let store = config.vm.image_store.clone();
         run_log!("pVisor image: resolving {image}");
         let (prepared, mount) =
-            tokio::task::spawn_blocking(move || crate::cache::prepare_image(&image, store))
+            tokio::task::spawn_blocking(move || crate::image::cache::prepare_image(&image, store))
                 .await
                 .context("OCI image preparation task failed")??;
         _image_mount = mount;
@@ -1229,13 +1229,13 @@ async fn execute_config(
                 all(target_os = "linux", target_env = "musl", target_arch = "x86_64"),
                 all(target_os = "macos", target_arch = "x86_64")
             )))]
-            if config.vm.library_dir.is_none() && crate::vm::bundled_firmware_dir().is_none() {
+            if config.vm.library_dir.is_none() && crate::executor::vm::bundled_firmware_dir().is_none() {
                 run_log!(
                     "pVisor firmware: resolving libkrunfw {}",
-                    crate::firmware::VERSION
+                    crate::executor::vm::firmware::VERSION
                 );
                 let directory = tokio::task::spawn_blocking(|| {
-                    crate::firmware::FirmwareStore::new()?.prepare()
+                    crate::executor::vm::firmware::FirmwareStore::new()?.prepare()
                 })
                 .await
                 .context("libkrunfw preparation task failed")??;
@@ -1275,7 +1275,7 @@ async fn execute_config(
     #[cfg(target_os = "linux")]
     let rootless_probe = (config.run.executor == RunExecutorKind::Host).then(|| {
         tokio::task::spawn_blocking(move || {
-            crate::process::rootless_runtime_available(!filesystem_isolated)
+            crate::executor::process::rootless_runtime_available(!filesystem_isolated)
         })
     });
 
@@ -1504,8 +1504,10 @@ async fn execute_config(
         process.cwd = Some(workspace.display().to_string());
     }
     if safe {
-        spec.metadata
-            .insert(crate::sandbox::REQUIRED_SANDBOX_KEY.into(), true.into());
+        spec.metadata.insert(
+            crate::executor::sandbox::REQUIRED_SANDBOX_KEY.into(),
+            true.into(),
+        );
     }
     spec.runtime.timeout_ms = config.run.timeout_ms;
     spec.runtime.resource_limits = config.run.resource_limits.clone();
@@ -1579,7 +1581,7 @@ async fn execute_config(
 
     if safe {
         spec.metadata
-            .insert(crate::sandbox::LANDLOCK_SANDBOX_KEY.into(), true.into());
+            .insert(crate::executor::sandbox::LANDLOCK_SANDBOX_KEY.into(), true.into());
     }
     {
         let network_boundary = if config.run.executor == RunExecutorKind::Vm
@@ -3550,7 +3552,7 @@ sandbox = "required""#
         config.run.executor = RunExecutorKind::Vm;
         config.vm.rootfs = Some(temporary.path().to_path_buf());
         config.vm.library_dir = Some(temporary.path().to_path_buf());
-        std::fs::write(temporary.path().join(crate::vm::firmware_name()), []).unwrap();
+        std::fs::write(temporary.path().join(crate::executor::vm::firmware_name()), []).unwrap();
         config.overlayfs = Some(OverlayFsSettings {
             base: Some(temporary.path().to_path_buf()),
             ..OverlayFsSettings::default()

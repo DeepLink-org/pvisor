@@ -1,4 +1,13 @@
-use crate::event::RunEventPublisher;
+//! Executor contract, concrete backends, and their isolation helpers.
+
+pub(crate) mod artifact;
+pub(crate) mod container;
+pub(crate) mod delegated;
+pub(crate) mod process;
+pub mod sandbox;
+pub(crate) mod vm;
+
+use crate::runtime::event::RunEventPublisher;
 use async_trait::async_trait;
 use persisting_control::{
     AttemptId, ExecutorDescriptor, RunInvocation, RunResult, RunSpec, RunState, RunStatus,

@@ -215,10 +215,6 @@ impl SessionPolicy {
         next.rules.push(rule);
         Some(next)
     }
-
-    pub fn rule_labels(&self) -> Vec<String> {
-        self.rules.iter().map(SessionRule::label).collect()
-    }
 }
 
 #[derive(Debug, Default, Clone, Copy, PartialEq, Eq, Serialize)]

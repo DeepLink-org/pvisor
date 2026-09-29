@@ -208,15 +208,6 @@ impl UiState {
         self.mode == Mode::Agent
     }
 
-    pub fn hints(&self) -> String {
-        BINDINGS
-            .iter()
-            .filter(|binding| binding.mode == self.mode && !binding.hint.is_empty())
-            .map(|binding| binding.hint)
-            .collect::<Vec<_>>()
-            .join("  ")
-    }
-
     /// Shortcut tiles are selected from the same bindings that handle input.
     pub fn ribbon_hints(&self) -> Vec<&'static str> {
         match self.mode {
@@ -437,12 +428,12 @@ mod tests {
     #[test]
     fn displayed_hints_come_from_active_mode_bindings() {
         let mut state = UiState::default();
-        assert_eq!(state.hints(), "Ctrl-] Menu");
+        assert_eq!(state.ribbon_hints().join("  "), "Ctrl-] Menu");
         state.input(PREFIX);
-        assert!(state.hints().contains("r Review"));
-        assert!(!state.hints().contains("Tab View"));
+        assert!(state.ribbon_hints().join("  ").contains("r Review"));
+        assert!(!state.ribbon_hints().join("  ").contains("Tab View"));
         state.input(b'r');
-        assert!(state.hints().contains("Tab View"));
+        assert!(state.ribbon_hints().join("  ").contains("Tab View"));
     }
 
     #[test]

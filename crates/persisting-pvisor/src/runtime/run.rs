@@ -5,9 +5,9 @@
 
 use crate::TrajectoryEventSink;
 use crate::config::{GatewayDriverConfig, NetworkDriverConfig, PVisorConfig};
-use crate::event::{EventSink, NoopEventSink, RunEventPublisher};
+use crate::executor::process::ProcessExecutor;
 use crate::executor::{AttemptContext, RunExecutor};
-use crate::process::ProcessExecutor;
+use crate::runtime::event::{EventSink, NoopEventSink, RunEventPublisher};
 use crate::runtime::{
     AttemptTeardown, ImplantPlan, OverlayHint, RuntimeCapabilities, RuntimeSupervisor,
     RuntimeSupervisorBuilder,
@@ -131,7 +131,7 @@ impl RunHandle {
             .begin_checkpoint(checkpoint_id.to_owned(), Some(deadline))?;
         loop {
             if let Some(captured) = checkpoint.try_capture(|| {
-                crate::checkpoint::create_agent_quiesced_checkpoint(record, checkpoint_id)
+                crate::runtime::checkpoint::create_agent_quiesced_checkpoint(record, checkpoint_id)
             })? {
                 return Ok(captured);
             }
@@ -324,14 +324,15 @@ impl PVisor {
         }
         self.runtime.apply_network_capability(&mut spec);
         // Runtime preparation supplies this capability from the bound listener.
-        spec.metadata.remove(crate::sandbox::SANDBOX_PROXY_KEY);
+        spec.metadata
+            .remove(crate::executor::sandbox::SANDBOX_PROXY_KEY);
         let capability_enforcement = effective_capability_enforcement(
             &descriptor,
             &spec,
             self.runtime.proxy_network_is_configured(),
             vm_network_executor && self.runtime.vm_network_is_enforcing(),
         );
-        if crate::sandbox::sandbox_required(&spec) {
+        if crate::executor::sandbox::sandbox_required(&spec) {
             for dimension in [
                 CapabilityDimension::FilesystemRead,
                 CapabilityDimension::FilesystemWrite,
@@ -343,7 +344,7 @@ impl PVisor {
                     && !matches!(spec.capabilities.network, NetworkCapability::Deny);
                 let cooperative_rootless_chroot = cfg!(target_os = "linux")
                     && descriptor.isolation == IsolationKind::RootlessProcess
-                    && !crate::sandbox::landlock_required(&spec)
+                    && !crate::executor::sandbox::landlock_required(&spec)
                     && matches!(
                         dimension,
                         CapabilityDimension::FilesystemRead | CapabilityDimension::FilesystemWrite
@@ -759,7 +760,7 @@ fn effective_capability_enforcement(
             _ => {}
         }
     }
-    if crate::sandbox::sandbox_required(spec)
+    if crate::executor::sandbox::sandbox_required(spec)
         && descriptor.isolation == IsolationKind::SandboxedProcess
     {
         evidence.record(
@@ -1289,8 +1290,10 @@ mod tests {
     #[tokio::test]
     async fn required_sandbox_refuses_an_unsandboxed_executor_before_launch() {
         let mut spec = RunSpec::process("required-no-fallback", "test", "/bin/true");
-        spec.metadata
-            .insert(crate::sandbox::REQUIRED_SANDBOX_KEY.into(), true.into());
+        spec.metadata.insert(
+            crate::executor::sandbox::REQUIRED_SANDBOX_KEY.into(),
+            true.into(),
+        );
         let error = match PVisor::new().run(spec).await {
             Ok(_) => panic!("required sandbox silently fell back"),
             Err(error) => error,

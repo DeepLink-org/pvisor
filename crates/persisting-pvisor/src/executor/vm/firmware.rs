@@ -48,7 +48,7 @@ impl FirmwareStore {
     pub fn prepare(&self) -> anyhow::Result<PathBuf> {
         let platform = platform_name()?;
         let directory = self.root.join(VERSION).join(platform);
-        let firmware = directory.join(crate::vm::firmware_name());
+        let firmware = directory.join(crate::executor::vm::firmware_name());
         if firmware.is_file() {
             return Ok(directory);
         }
@@ -81,7 +81,7 @@ impl FirmwareStore {
             .tempdir_in(directory)?;
         let payload = temporary.path().join("kernel.c");
         extract_member(&archive, asset.archive_member, &payload)?;
-        let built = temporary.path().join(crate::vm::firmware_name());
+        let built = temporary.path().join(crate::executor::vm::firmware_name());
         build_platform_firmware(&payload, &built)?;
         let mut permissions = fs::metadata(&built)?.permissions();
         #[cfg(unix)]

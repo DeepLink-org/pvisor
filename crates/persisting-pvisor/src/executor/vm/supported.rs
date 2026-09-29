@@ -372,7 +372,7 @@ impl RunExecutor for VmExecutor {
             BTreeMap::new()
         };
         for key in [
-            crate::cache::SERVER_ENV,
+            crate::image::cache::SERVER_ENV,
             "PERSISTING_PVISOR_CACHE_TOKEN",
             crate::AGENTCTL_ENDPOINT_ENV,
             crate::AGENTCTL_TOKEN_ENV,
@@ -814,7 +814,11 @@ fn run_runner(spec: RunnerSpec) -> anyhow::Result<()> {
             read_write.extend(workspace.work.iter().cloned());
             read_write.extend(workspace.preimages.iter().cloned());
         }
-        crate::sandbox::restrict_krun_runner(read_only, read_write, spec.library_dir.clone())?;
+        crate::executor::sandbox::restrict_krun_runner(
+            read_only,
+            read_write,
+            spec.library_dir.clone(),
+        )?;
     }
     run_linked_krun(spec)
 }

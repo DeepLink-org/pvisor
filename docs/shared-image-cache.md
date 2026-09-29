@@ -6,6 +6,32 @@ on the server, then addressed by its resolved platform manifest SHA-256 digest.
 The existing store performs blob verification, layer application and whiteout
 handling. File queries do not contact the registry.
 
+## Code layout
+
+The implementation lives in `crates/persisting-pvisor/src/image/cache/`:
+
+```text
+cache/
+├── mod.rs              # Public entry points and module wiring
+├── cli.rs              # pvisor cache subcommands
+├── protocol.rs         # Request/response types, framing, content hash
+├── transport.rs        # Unix/TCP endpoints, streams, timeouts
+├── client.rs           # Service discovery and validated requests
+├── server.rs           # Authentication, worker queues, confined file access
+├── server/
+│   ├── metadata.rs     # Server-side metadata and directory LRU caches
+│   └── tests.rs        # Protocol, confinement, and client/server tests
+├── lazy.rs             # FUSE mounting, block and client metadata caches
+├── lazy/
+│   └── tests.rs        # Lazy filesystem and cache reuse tests
+└── progress.rs         # Image totals and loading/download progress
+```
+
+`image/oci.rs` owns registry resolution, prepared-image records, blob verification,
+and layer extraction. Both local loading and the cache server use `ImageStore`.
+External callers keep using the `cache` module's exported API; internal protocol
+and transport helpers stay private to the cache subsystem.
+
 ## Usage
 
 ```sh
@@ -14,6 +40,8 @@ pvisor cache serve
 
 # Terminal 2: use the same default socket
 pvisor cache prepare alpine:latest
+# Force a registry refresh even within the five-minute tag cache window:
+pvisor cache prepare alpine:latest --refresh
 # Copy the digest from the JSON result:
 pvisor cache list sha256:YOUR_MANIFEST_DIGEST
 pvisor cache stat sha256:YOUR_MANIFEST_DIGEST etc/os-release
@@ -33,7 +61,7 @@ existing OCI store. It does not auto-start.
 
 ## Automatic VM lazy loading
 
-When `pvisor --rootfs image=IMAGE -- COMMAND` prepares an OCI image for a VM,
+When `pvisor run --vm --rootfs image=IMAGE -- COMMAND` prepares an OCI image,
 it probes the default socket with a two-second `ping` handshake. A live compatible
 server selects lazy loading automatically; a missing socket or refused connection
 (stale socket) uses the existing local OCI preparation path. Authentication,
@@ -56,9 +84,14 @@ immutable; in-place edits below the root are not supported. Content is fetched i
 blocks into `<user-cache>/persisting/pvisor/blocks/<endpoint-hash>/<manifest-digest>/`,
 with per-file/per-block keys. On macOS, `<user-cache>` is `~/Library/Caches`;
 on Linux it is `$XDG_CACHE_HOME`, ordinarily `~/.cache`. This block cache is
-independent of `--image-store` and `PERSISTING_PVISOR_IMAGE_STORE`. Blocks are checksum-verified, published atomically and
-shared across local processes using file locks. Cache hits are verified before
-use; corrupted blocks are fetched again. No sparse placeholder files are exposed.
+independent of `--image-store` and `PERSISTING_PVISOR_IMAGE_STORE`. Small files occupy one unpadded block; large files fetch only accessed blocks.
+Each mount retains verified content in a file-keyed memory cache, capped at
+64 MiB and 4096 blocks with FIFO eviction. Hot reads copy only the requested
+slice and do not reopen or rehash the disk block. On a memory miss, disk blocks
+are verified again; disk corruption does not change bytes already verified and
+retained in memory. New blocks are checksum-verified, published atomically and
+shared across local processes using file locks; corrupt disk blocks are fetched
+again. No sparse placeholder files are exposed.
 Normal kernel readahead may fetch adjacent bytes, and copy-up may read a whole
 individual file. The client does not extract the full image.
 
@@ -72,7 +105,7 @@ The server still fully prepares an uncached image before answering `prepare`.
 This is client-side lazy loading, not lazy OCI layer extraction on the server.
 The FUSE adapter and existing virtio-fs worker currently process requests
 synchronously: a cache miss can delay unrelated filesystem requests. No explicit
-vCPU pause is used. Cache quotas/eviction, original OCI xattrs and asynchronous
+vCPU pause is used. Disk cache quotas/eviction, original OCI xattrs and asynchronous
 virtio-fs completions are not added by this implementation.
 
 The public Rust client is `persisting_pvisor::cache::CacheClient::from_env()`.
@@ -116,7 +149,8 @@ bars abbreviate them to `C / X / T`; Overview shows all three rows with exact
 byte counts. The Log panel records every
 verified block transfer with its file path, byte count and cumulative run totals.
 The status bar and Overview also show local cache reads: distinct file paths
-and cumulative verified block bytes, including repeated reads. These are separate
+and cumulative bytes served from verified disk or memory cache, including repeated
+reads. Only the requested slices count, not the whole 1 MiB blocks read internally. These are separate
 from downloads; they exclude reads satisfied by the host or guest kernel page
 cache. Each file's first local cache hit appears in Log as `no download`.
 Directory listings only fetch metadata and do not count as content reads. Image startup and I/O diagnostics
@@ -150,22 +184,35 @@ Paths and directory names are JSON arrays of Unix filename bytes, preserving
 non-UTF-8 filenames. Paths are relative to the image root; an empty path means
 the root directory. Absolute paths, parent traversal and NUL are rejected.
 Symlinks are returned as metadata, never followed by server path resolution.
-A future filesystem client must resolve guest symlinks within the guest tree.
+Guest filesystem traversal resolves symlinks within the guest tree.
 
 | `op` | Fields | Response `status` |
 | --- | --- | --- |
 | `ping` | none | `ready` (protocol v1) |
-| `prepare` | `image`, `architecture` (`amd64` or `arm64`) | `prepared`: `digest`, `architecture`, `env`, `entrypoint`, `cmd`, optional `totals` (`files`, `bytes`), optional `metadata_generation` |
-| `list` | `digest`, `path`, `offset` (entry index, start at 0) | `entries`: sorted `names` (up to 256), `next_offset` (null when done) |
+| `prepare` | `image`, `architecture` (`amd64` or `arm64`), optional `refresh` (default false) | `prepared`: `digest`, `architecture`, `env`, `entrypoint`, `cmd`, optional `totals` (`files`, `bytes`), optional `metadata_generation` |
+| `list` | `digest`, `path`, `offset` (entry index, start at 0) | `entries`: sorted `names`, optional aligned `metadata` array, `next_offset` (null when done) |
 | `stat` | `digest`, `path` | `metadata`: `kind`, `size`, `mode`, `uid`, `gid`, `inode`, `nlink`, `mtime`, `mtime_nsec`, `target` |
 | `read` | `digest`, `path`, `offset` (byte offset), `length` (1..1048576) | `data`: `length`, `sha256`, followed by raw bytes |
 
 `prepare` requests Linux images for the client's architecture, independent of
-the server architecture. It resolves mutable tags on each call; the returned
-platform manifest digest pins subsequent requests. Preparation can populate an
-uncached image and uses existing per-image extraction locks. It may still need
-the registry even when an extracted root already exists. `read`, `stat` and
+the server architecture. Successful prepared-image records are persisted under
+`<image-store>/metadata/prepared-v1/`, including the platform digest and launch
+configuration. Mutable tags reuse records for five minutes; immutable digest
+records do not expire while their extracted root exists. `cache prepare IMAGE
+--refresh` (protocol `refresh: true`) forces registry resolution. Failed refreshes
+return an error and preserve the previous record; registry requests have a
+10-second connect timeout and a 300-second total timeout. Expired tags do not silently
+fall back to stale data. Missing/corrupt records or missing roots are prepared
+again. A per-reference-and-architecture lock covers resolution and preparation,
+so concurrent requests recheck and reuse the first successful result. Preparation
+can populate an uncached image and retains the existing per-digest extraction lock. `read`, `stat` and
 `list` require an already prepared digest; they never implicitly pull an image.
+
+Directory pages include the same attributes as `stat`, avoiding a separate
+request per child. Pages contain at most 256 entries and shrink to fit the JSON
+frame limit, including long byte-array names and symlink targets. Names-only
+responses from older servers remain supported through individual `stat`
+requests. Persisted pages retain their attributes across mounts.
 
 `kind` is `file`, `directory`, `symlink` or `special`. `mode` includes Unix type
 and permission bits. `target` contains symlink bytes or null. Attributes reflect
@@ -190,13 +237,17 @@ zero-filled content. Error messages are explanatory, not machine-stable.
 
 The server shares in-memory caches for up to 4096 stat responses and 128 sorted
 directory indexes across requests. Directory pagination reuses the same index
-instead of rescanning and sorting on every page. Each cache clears at its entry
-ceiling and is rebuilt lazily after a server restart. These caches cover metadata,
-not mutable tag resolution; `prepare` still contacts the registry.
+instead of rescanning and sorting on every page. At capacity, LRU eviction removes
+one entry instead of clearing the cache. Filesystem I/O runs outside the cache
+lock; simultaneous misses may duplicate a read without blocking unrelated hits.
+These in-memory caches are rebuilt lazily after a server restart.
 
-The server has 16 workers and at most 16 queued connections. Excess connections
-are closed; clients may retry. Socket reads/writes have a 300-second inactivity
-timeout, and TCP connects have a 10-second timeout. Long-running preparation may
+The server has 16 request/file workers and at most 16 queued connections. Excess
+connections are closed; clients may retry. Authenticated prepare requests move
+to a separate pool of two workers with a 16-request queue; when full, the server
+returns an explicit busy error. Registry waits and extraction do not occupy file
+workers. Incoming request reads have a five-second inactivity timeout; response
+reads/writes retain a 300-second timeout, and TCP connects have a 10-second timeout. Long-running preparation may
 outlive a disconnected client; retrying is safe. Shutdown does not cancel
 individual OCI downloads gracefully. Registry download limits and cache eviction
 remain those of the existing image store; v1 adds neither quotas nor eviction.

@@ -8,8 +8,6 @@ pub mod runtime;
 mod trajectory;
 #[cfg(unix)]
 mod tui;
-#[cfg(unix)]
-pub(crate) use tui::diagnostic;
 
 use clap::{Parser, Subcommand};
 
@@ -51,7 +49,7 @@ enum Command {
     Run(Box<run::RunArgs>),
     /// Serve or query the shared OCI file cache.
     #[cfg(unix)]
-    Cache(crate::cache::CacheArgs),
+    Cache(crate::image::cache::CacheArgs),
     /// Apply selected staged changes from a stopped Job.
     Apply(runtime::ApplyArgs),
     /// Discard staged changes from a stopped Job.
@@ -98,7 +96,7 @@ pub fn main() -> anyhow::Result<()> {
     }
     match parsed.command {
         #[cfg(unix)]
-        Command::Cache(args) => crate::cache::run(args)?,
+        Command::Cache(args) => crate::image::cache::run(args)?,
         Command::Run(args) => {
             let code = tokio::runtime::Runtime::new()?.block_on(run::run(*args))?;
             if code != 0 {

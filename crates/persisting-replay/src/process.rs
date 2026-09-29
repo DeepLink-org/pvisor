@@ -12,7 +12,6 @@ use std::time::{Duration, Instant};
 
 use crate::error::{ReplayError, ReplayErrorKind, ResultExt};
 
-#[allow(dead_code)]
 pub(crate) struct ProcessSpec {
     pub command: Command,
     pub stdin: Option<Vec<u8>>,
@@ -38,13 +37,10 @@ pub(crate) struct ProcessSpec {
     pub log_path: PathBuf,
 }
 
-#[allow(dead_code)]
 pub(crate) struct ProcessOutput {
     pub status: ExitStatus,
     pub stdout_tail: Vec<u8>,
     pub stderr_tail: Vec<u8>,
-    pub stdout_bytes: u64,
-    pub stderr_bytes: u64,
     pub stdout_truncated: bool,
     pub stderr_truncated: bool,
     pub timed_out: bool,
@@ -58,7 +54,6 @@ struct StreamCapture {
     log_error: Option<io::Error>,
 }
 
-#[allow(dead_code)]
 pub(crate) fn run_process(mut spec: ProcessSpec) -> Result<ProcessOutput, ReplayError> {
     let log = owner_only_log(&spec.log_path)?;
     let log = Arc::new(Mutex::new(log));
@@ -271,8 +266,6 @@ pub(crate) fn run_process(mut spec: ProcessSpec) -> Result<ProcessOutput, Replay
         stderr_truncated: stderr.total > stderr.tail.len() as u64,
         stdout_tail: stdout.tail,
         stderr_tail: stderr.tail,
-        stdout_bytes: stdout.total,
-        stderr_bytes: stderr.total,
         timed_out,
         step_limited,
         background_cleanup,
@@ -540,7 +533,6 @@ mod tests {
         let output = run_process(shell_spec("yes x | head -c 8388608", &log_path)).unwrap();
 
         assert!(output.status.success());
-        assert_eq!(output.stdout_bytes, 8 * 1024 * 1024);
         assert!(output.stdout_truncated);
         assert_eq!(output.stdout_tail.len(), 64 * 1024);
         assert_eq!(std::fs::metadata(log_path).unwrap().len(), 8 * 1024 * 1024);

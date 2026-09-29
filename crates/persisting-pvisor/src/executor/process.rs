@@ -1,14 +1,14 @@
-use crate::executor::{AttemptContext, RunExecutor};
 #[cfg(any(target_os = "linux", target_os = "macos"))]
-use crate::sandbox::{INTERNAL_SANDBOX_ARG, NetworkIsolation};
+use crate::executor::sandbox::{INTERNAL_SANDBOX_ARG, NetworkIsolation};
 #[cfg(target_os = "macos")]
-use crate::sandbox::{
+use crate::executor::sandbox::{
     MACOS_SANDBOX_EXEC, SEATBELT_ATTESTATION, SeatbeltPlan, seatbelt_profile,
     seatbelt_profile_with_reads,
 };
 #[cfg(target_os = "linux")]
-use crate::sandbox::{ROOTLESS_ATTESTATION, SandboxPlan, landlock_runtime_available};
-use crate::sandbox::{SANDBOX_ARG0_ENV, SANDBOX_PLAN_ENV, SANDBOX_SETUP_FAILED_WARNING};
+use crate::executor::sandbox::{ROOTLESS_ATTESTATION, SandboxPlan, landlock_runtime_available};
+use crate::executor::sandbox::{SANDBOX_ARG0_ENV, SANDBOX_PLAN_ENV, SANDBOX_SETUP_FAILED_WARNING};
+use crate::executor::{AttemptContext, RunExecutor};
 use async_trait::async_trait;
 use persisting_control::{
     CapabilityDimension, CapabilityEnforcementEvidence, ExecutorDescriptor, ExecutorKind,
@@ -407,12 +407,12 @@ fn stdio(mode: StdioMode) -> Stdio {
 
 #[cfg(any(target_os = "linux", target_os = "macos"))]
 fn network_isolation(spec: &RunSpec) -> std::io::Result<NetworkIsolation> {
-    if crate::sandbox::sandbox_required(spec) {
+    if crate::executor::sandbox::sandbox_required(spec) {
         #[cfg(target_os = "macos")]
         {
             let proxy = spec
                 .metadata
-                .get(crate::sandbox::SANDBOX_PROXY_KEY)
+                .get(crate::executor::sandbox::SANDBOX_PROXY_KEY)
                 .and_then(serde_json::Value::as_str)
                 .map(str::parse::<std::net::SocketAddr>)
                 .transpose()
@@ -482,7 +482,7 @@ impl ProcessExecutor {
     /// Build a Linux rootless executor using `launcher` for the trusted
     /// namespace/Landlock setup stage.
     ///
-    /// The launcher must dispatch [`crate::sandbox::run_internal_if_requested`]
+    /// The launcher must dispatch [`crate::executor::sandbox::run_internal_if_requested`]
     /// before starting threads or an async runtime.  The `pvisor` binary is the
     /// canonical launcher and uses this path automatically for default host Runs.
     #[cfg(target_os = "linux")]
@@ -566,7 +566,7 @@ impl ProcessExecutor {
         // an OverlayFS merged root. The executable belongs to the host-process
         // executor and need not exist inside the projected lower filesystem.
         let program = resolve_host_program(&invocation.program);
-        if crate::sandbox::sandbox_required(spec) && !self.is_sandboxed() {
+        if crate::executor::sandbox::sandbox_required(spec) && !self.is_sandboxed() {
             return Err(std::io::Error::other(
                 "required sandbox cannot use an unsandboxed process executor",
             ));
@@ -622,7 +622,7 @@ impl ProcessExecutor {
             // A Run-owned temporary directory avoids granting the Agent the
             // shared /tmp or per-user Darwin temporary hierarchy.
             command.env("TMPDIR", scratch);
-            if crate::sandbox::sandbox_required(spec) {
+            if crate::executor::sandbox::sandbox_required(spec) {
                 command.env("HOME", scratch);
             }
         }
@@ -784,7 +784,7 @@ fn platform_launcher_command(
         .map(PathBuf::from)
         .unwrap_or(std::env::current_dir()?);
     let cwd = cwd.canonicalize()?;
-    let restrict_reads = crate::sandbox::sandbox_required(spec);
+    let restrict_reads = crate::executor::sandbox::sandbox_required(spec);
     let mut readable_paths = vec![program.clone(), launcher.canonicalize()?];
     let mut writable_paths = vec![
         cwd.clone(),
@@ -981,7 +981,7 @@ fn rootless_plan(
     push_existing(&mut read_only, Path::new("/dev/pts"));
     let hidden_paths = spec
         .metadata
-        .get(crate::sandbox::SANDBOX_HIDDEN_PATHS_KEY)
+        .get(crate::executor::sandbox::SANDBOX_HIDDEN_PATHS_KEY)
         .and_then(serde_json::Value::as_array)
         .into_iter()
         .flatten()
@@ -993,7 +993,7 @@ fn rootless_plan(
     // Run mounts private copy-on-write views of them at the same paths, so
     // programs launched later from a shell get the same protection as the
     // initial executable.
-    let safe = crate::sandbox::sandbox_required(spec);
+    let safe = crate::executor::sandbox::sandbox_required(spec);
     let mut staged_roots = Vec::new();
     for path in projected_state_roots(invocation) {
         if safe {
@@ -1088,7 +1088,7 @@ fn rootless_plan(
     let project_render_nodes = graphical_display
         && !spec
             .metadata
-            .get(crate::sandbox::SANDBOX_NO_GPU_KEY)
+            .get(crate::executor::sandbox::SANDBOX_NO_GPU_KEY)
             .and_then(serde_json::Value::as_bool)
             .unwrap_or(false);
     if project_render_nodes && let Ok(devices) = std::fs::read_dir("/dev/dri") {
@@ -1822,8 +1822,10 @@ mod tests {
         let executor =
             ProcessExecutor::seatbelt_with_launcher(std::env::current_exe().unwrap()).unwrap();
         for (safe, staged) in [(false, false), (false, true), (true, false), (true, true)] {
-            spec.metadata
-                .insert(crate::sandbox::REQUIRED_SANDBOX_KEY.into(), safe.into());
+            spec.metadata.insert(
+                crate::executor::sandbox::REQUIRED_SANDBOX_KEY.into(),
+                safe.into(),
+            );
             spec.metadata.insert(
                 "pvisor.runtime.implant".into(),
                 serde_json::json!({
@@ -1908,8 +1910,10 @@ mod tests {
         assert!(normal.read_write.contains(&home));
         assert!(normal.staged_roots.is_empty());
 
-        spec.metadata
-            .insert(crate::sandbox::REQUIRED_SANDBOX_KEY.into(), true.into());
+        spec.metadata.insert(
+            crate::executor::sandbox::REQUIRED_SANDBOX_KEY.into(),
+            true.into(),
+        );
         spec.metadata.insert(
             "pvisor.workspace".into(),
             workspace.display().to_string().into(),

@@ -58,7 +58,7 @@ pub(crate) fn apply_host_process_policy(spec: &mut RunSpec) -> anyhow::Result<()
     if let Some(helper) = &helper {
         let hidden_paths = spec
             .metadata
-            .entry(crate::sandbox::SANDBOX_HIDDEN_PATHS_KEY.into())
+            .entry(crate::executor::sandbox::SANDBOX_HIDDEN_PATHS_KEY.into())
             .or_insert_with(|| Value::Array(Vec::new()));
         if let Some(paths) = hidden_paths.as_array_mut() {
             let helper = Value::String(helper.display().to_string());
@@ -80,8 +80,10 @@ pub(crate) fn apply_host_process_policy(spec: &mut RunSpec) -> anyhow::Result<()
     // cannot be faithfully inferred from host mode bits (notably ACLs). Keep
     // Electron on its software-rendering path inside the rootless namespace.
     insert_switch(&mut process.args, "--disable-gpu");
-    spec.metadata
-        .insert(crate::sandbox::SANDBOX_NO_GPU_KEY.into(), Value::Bool(true));
+    spec.metadata.insert(
+        crate::executor::sandbox::SANDBOX_NO_GPU_KEY.into(),
+        Value::Bool(true),
+    );
     eprintln!(
         "pVisor ZCode policy: {}pVisor process isolation enabled; software GPU rendering enabled",
         if helper.is_some() {

@@ -1,6 +1,6 @@
 //! A read-only, demand-filled FUSE lower for the existing VM/OCI overlays.
 use super::{CacheClient, MAX_READ, Request as CacheRequest, Response, architecture, hash};
-use crate::oci::{ImageStore, PreparedImage};
+use crate::image::oci::{ImageStore, PreparedImage};
 use anyhow::{Context, ensure};
 use fs2::FileExt;
 use fuser::{
@@ -8,7 +8,8 @@ use fuser::{
     ReplyDirectory, ReplyEntry, ReplyOpen, ReplyStatfs, Request, Session,
 };
 use sha2::{Digest, Sha256};
-use std::collections::HashMap;
+use std::cell::RefCell;
+use std::collections::{HashMap, VecDeque};
 use std::ffi::{OsStr, OsString};
 use std::fs::{self, OpenOptions};
 use std::io::Write;
@@ -17,6 +18,7 @@ use std::os::unix::fs::OpenOptionsExt;
 #[cfg(target_os = "linux")]
 use std::os::unix::fs::PermissionsExt;
 use std::path::{Path, PathBuf};
+use std::sync::Arc;
 use std::time::{Duration, UNIX_EPOCH};
 
 const TTL: Duration = Duration::from_secs(3600);
@@ -30,7 +32,7 @@ impl Drop for LazyMount {
         if let Some(session) = self.session.take()
             && let Err(error) = session.unmount()
         {
-            crate::cli::diagnostic(format_args!(
+            crate::diagnostics::diagnostic(format_args!(
                 "unmount lazy image {}: {error}",
                 self.path.display()
             ));
@@ -55,7 +57,7 @@ pub(crate) fn prepare_image(
         ));
     };
     let downloads = super::progress::Downloads::new(image);
-    crate::cli::diagnostic(format_args!(
+    crate::diagnostics::diagnostic(format_args!(
         "pVisor image: lazy loading from {}",
         client.endpoint
     ));
@@ -64,6 +66,7 @@ pub(crate) fn prepare_image(
             client.request(CacheRequest::Prepare {
                 image: image.into(),
                 architecture: architecture().into(),
+                refresh: false,
             })
         })?;
     let Response::Prepared {
@@ -82,7 +85,7 @@ pub(crate) fn prepare_image(
         platform == architecture(),
         "cache returned the wrong image architecture"
     );
-    crate::oci::digest_hex(&digest)?;
+    crate::image::oci::digest_hex(&digest)?;
     let cache = dirs::cache_dir()
         .context("cannot find user cache directory")?
         .join("persisting/pvisor/blocks")
@@ -91,7 +94,7 @@ pub(crate) fn prepare_image(
     fs::create_dir_all(&cache)?;
     downloads.totals(totals);
     if let Some(totals) = totals {
-        crate::cli::diagnostic(format_args!(
+        crate::diagnostics::diagnostic(format_args!(
             "pVisor image: prepared {digest}; {} files, {:.1} MiB (contents fetched on demand)",
             totals.files,
             totals.bytes as f64 / (1024.0 * 1024.0)
@@ -176,10 +179,47 @@ struct Node {
     path: Vec<u8>,
     attr: FileAttr,
     target: Option<Vec<u8>>,
+    cache: PathBuf,
+}
+
+// File identity is the outer key; 1 MiB block indices only have meaning within it.
+#[derive(Default)]
+struct HotBlocks {
+    files: HashMap<u64, HashMap<u64, Arc<[u8]>>>,
+    order: VecDeque<(u64, u64)>,
+    bytes: usize,
+}
+impl HotBlocks {
+    const MAX_BYTES: usize = 64 * 1024 * 1024;
+    const MAX_ENTRIES: usize = 4096;
+
+    fn get(&self, file: u64, block: u64) -> Option<Arc<[u8]>> {
+        self.files.get(&file)?.get(&block).cloned()
+    }
+
+    fn insert(&mut self, file: u64, block: u64, bytes: Arc<[u8]>) {
+        if self.get(file, block).is_some() {
+            return;
+        }
+        // ponytail: bounded FIFO avoids per-read LRU maintenance; use LRU if
+        // eviction of frequently reused blocks becomes a measured bottleneck.
+        while self.bytes + bytes.len() > Self::MAX_BYTES || self.order.len() >= Self::MAX_ENTRIES {
+            let (file, block) = self.order.pop_front().unwrap();
+            let blocks = self.files.get_mut(&file).unwrap();
+            self.bytes -= blocks.remove(&block).unwrap().len();
+            if blocks.is_empty() {
+                self.files.remove(&file);
+            }
+        }
+        self.bytes += bytes.len();
+        self.files.entry(file).or_default().insert(block, bytes);
+        self.order.push_back((file, block));
+    }
 }
 
 struct RemoteFs {
     downloads: super::progress::Downloads,
+    hot: RefCell<HotBlocks>,
     client: CacheClient,
     digest: String,
     cache: PathBuf,
@@ -199,6 +239,7 @@ impl RemoteFs {
     ) -> anyhow::Result<Self> {
         let mut fs = Self {
             downloads: super::progress::Downloads::default(),
+            hot: RefCell::default(),
             client,
             digest,
             cache,
@@ -268,6 +309,13 @@ impl RemoteFs {
             digest: self.digest.clone(),
             path: path.clone(),
         })?;
+        self.insert_node(path, response)
+    }
+
+    fn insert_node(&mut self, path: Vec<u8>, response: Response) -> anyhow::Result<Node> {
+        if let Some(ino) = self.paths.get(&path) {
+            return self.node(*ino).cloned();
+        }
         let Response::Metadata {
             kind,
             size,
@@ -309,6 +357,7 @@ impl RemoteFs {
         }
         .context("remote timestamp overflow")?;
         let node = Node {
+            cache: self.cache.join(&hash(&path)[7..]),
             path: path.clone(),
             target,
             attr: FileAttr {
@@ -364,6 +413,9 @@ impl RemoteFs {
             path.push(b'/');
         }
         path.extend_from_slice(name);
+        if self.directories.contains_key(&parent.attr.ino) && !self.paths.contains_key(&path) {
+            return Err(std::io::Error::from(std::io::ErrorKind::NotFound).into());
+        }
         self.lookup_path(path)
     }
 
@@ -386,11 +438,42 @@ impl RemoteFs {
                     path: node.path.clone(),
                     offset,
                 })?;
-                let Response::Entries { names, next_offset } = response else {
+                let Response::Entries {
+                    names,
+                    metadata,
+                    next_offset,
+                } = response
+                else {
                     anyhow::bail!("expected cache directory response");
                 };
+                if let Some(attributes) = &metadata {
+                    ensure!(
+                        attributes.len() == names.len(),
+                        "directory metadata count mismatch"
+                    );
+                }
+                let mut attributes = metadata.map(Vec::into_iter);
                 for name in names {
-                    let child = self.child(ino, OsStr::from_bytes(&name))?;
+                    // Validate untrusted directory names before using them as paths.
+                    ensure!(
+                        !name.is_empty()
+                            && name != b"."
+                            && name != b".."
+                            && !name.contains(&b'/')
+                            && !name.contains(&0),
+                        "invalid remote filename"
+                    );
+                    let child = if let Some(attributes) = &mut attributes {
+                        let mut path = node.path.clone();
+                        if !path.is_empty() {
+                            path.push(b'/');
+                        }
+                        path.extend_from_slice(&name);
+                        self.insert_node(path, attributes.next().unwrap())?
+                    } else {
+                        // Older servers and persisted v1 pages contain names only.
+                        self.child(ino, OsStr::from_bytes(&name))?
+                    };
                     entries.push((child.attr.ino, child.attr.kind, OsString::from_vec(name)));
                 }
                 match next_offset {
@@ -406,9 +489,12 @@ impl RemoteFs {
         Ok(self.directories.get(&ino).unwrap())
     }
 
-    fn block(&self, node: &Node, index: u64) -> anyhow::Result<Vec<u8>> {
-        let directory = self.cache.join(&hash(&node.path)[7..]);
-        fs::create_dir_all(&directory)?;
+    fn block(&self, node: &Node, index: u64) -> anyhow::Result<(Arc<[u8]>, bool)> {
+        if let Some(bytes) = self.hot.borrow().get(node.attr.ino, index) {
+            return Ok((bytes, true));
+        }
+        let directory = &node.cache;
+        fs::create_dir_all(directory)?;
         let path = directory.join(index.to_string());
         let lock = OpenOptions::new()
             .read(true)
@@ -428,8 +514,11 @@ impl RemoteFs {
                 if bytes.len() == length + 32
                     && Sha256::digest(&bytes[32..]).as_slice() == &bytes[..32] =>
             {
-                self.downloads.cached(&node.path, length);
-                return Ok(bytes[32..].to_vec());
+                let body: Arc<[u8]> = bytes[32..].into();
+                self.hot
+                    .borrow_mut()
+                    .insert(node.attr.ino, index, body.clone());
+                return Ok((body, true));
             }
             Ok(_) => {
                 fs::remove_file(&path)?;
@@ -448,11 +537,15 @@ impl RemoteFs {
             "remote file returned a short block before EOF"
         );
         self.downloads.received(&node.path, body.len());
-        let mut temporary = tempfile::NamedTempFile::new_in(&directory)?;
+        let mut temporary = tempfile::NamedTempFile::new_in(directory)?;
         temporary.write_all(&Sha256::digest(&body))?;
         temporary.write_all(&body)?;
         temporary.persist(&path)?;
-        Ok(body)
+        let body: Arc<[u8]> = body.into();
+        self.hot
+            .borrow_mut()
+            .insert(node.attr.ino, index, body.clone());
+        Ok((body, false))
     }
 
     fn read_range(&self, ino: u64, offset: u64, size: u32) -> anyhow::Result<Vec<u8>> {
@@ -462,13 +555,16 @@ impl RemoteFs {
             "read requires a regular file"
         );
         let end = offset.saturating_add(size as u64).min(node.attr.size);
-        let mut result = Vec::new();
+        let mut result = Vec::with_capacity(end.saturating_sub(offset) as usize);
         let mut cursor = offset;
         while cursor < end {
-            let bytes = self.block(node, cursor / MAX_READ as u64)?;
+            let (bytes, cached) = self.block(node, cursor / MAX_READ as u64)?;
             let begin = (cursor % MAX_READ as u64) as usize;
             let count = (end - cursor).min((bytes.len() - begin) as u64) as usize;
             result.extend_from_slice(&bytes[begin..begin + count]);
+            if cached {
+                self.downloads.cached(&node.path, count);
+            }
             cursor += count as u64;
         }
         Ok(result)
@@ -488,7 +584,7 @@ fn errno(error: anyhow::Error) -> i32 {
         })
         .unwrap_or(libc::EIO);
     if code != libc::ENOENT {
-        crate::cli::diagnostic(format_args!("lazy image I/O: {error:#}"));
+        crate::diagnostics::diagnostic(format_args!("lazy image I/O: {error:#}"));
     }
     code
 }
@@ -585,286 +681,4 @@ impl Filesystem for RemoteFs {
 }
 
 #[cfg(test)]
-mod tests {
-    use super::*;
-    use crate::cache::{Envelope, handle, read_frame, write_frame};
-    use std::os::unix::net::UnixListener;
-    use std::sync::{
-        Arc,
-        atomic::{AtomicBool, AtomicUsize, Ordering},
-    };
-
-    struct Server {
-        stop: Arc<AtomicBool>,
-        worker: Option<std::thread::JoinHandle<()>>,
-        reads: Arc<AtomicUsize>,
-    }
-    impl Drop for Server {
-        fn drop(&mut self) {
-            self.stop.store(true, Ordering::Relaxed);
-            self.worker.take().unwrap().join().unwrap();
-        }
-    }
-    fn fixture() -> (tempfile::TempDir, Server, CacheClient, String) {
-        let temp = tempfile::tempdir().unwrap();
-        let store = ImageStore::new(Some(temp.path().join("store"))).unwrap();
-        let digest = format!("sha256:{}", "b".repeat(64));
-        let root = store.root.join("rootfs-v3/sha256").join(&digest[7..]);
-        fs::create_dir(&root).unwrap();
-        fs::write(root.join("large"), vec![42; 3 * MAX_READ as usize]).unwrap();
-        std::os::unix::fs::symlink("large", root.join("alias")).unwrap();
-        let socket = temp.path().join("s");
-        let listener = UnixListener::bind(&socket).unwrap();
-        listener.set_nonblocking(true).unwrap();
-        let stop = Arc::new(AtomicBool::new(false));
-        let reads = Arc::new(AtomicUsize::new(0));
-        let worker_stop = stop.clone();
-        let worker_reads = reads.clone();
-        let worker = std::thread::spawn(move || {
-            while !worker_stop.load(Ordering::Relaxed) {
-                let (mut socket, _) = match listener.accept() {
-                    Ok(s) => s,
-                    Err(e) if e.kind() == std::io::ErrorKind::WouldBlock => {
-                        std::thread::sleep(Duration::from_millis(1));
-                        continue;
-                    }
-                    Err(e) => panic!("{e}"),
-                };
-                socket.set_nonblocking(false).unwrap();
-                let envelope: Envelope = read_frame(&mut socket).unwrap();
-                if matches!(&envelope.request, CacheRequest::Read { .. }) {
-                    worker_reads.fetch_add(1, Ordering::Relaxed);
-                }
-                let (response, bytes) = handle(&store, envelope.request).unwrap_or_else(|e| {
-                    let code = if e
-                        .downcast_ref::<std::io::Error>()
-                        .is_some_and(|e| e.kind() == std::io::ErrorKind::NotFound)
-                    {
-                        "not_found"
-                    } else {
-                        "request_failed"
-                    };
-                    (
-                        Response::Error {
-                            code: code.into(),
-                            message: e.to_string(),
-                        },
-                        Vec::new(),
-                    )
-                });
-                write_frame(&mut socket, &response).unwrap();
-                socket.write_all(&bytes).unwrap();
-            }
-        });
-        let client = CacheClient::new(format!("unix://{}", socket.display()), None).unwrap();
-        (
-            temp,
-            Server {
-                stop,
-                reads,
-                worker: Some(worker),
-            },
-            client,
-            digest,
-        )
-    }
-
-    #[test]
-    fn persistent_metadata_survives_remount_and_rejects_corruption() {
-        let (temp, server, client, digest) = fixture();
-        let blocks = temp.path().join("blocks");
-        let metadata = temp.path().join("metadata");
-        let endpoint = client.endpoint.clone();
-        let mut cold = RemoteFs::new(
-            client,
-            digest.clone(),
-            blocks.clone(),
-            Some(metadata.clone()),
-        )
-        .unwrap();
-        let expected = cold.child(1, OsStr::new("large")).unwrap().attr.size;
-        let count = cold.entries(1).unwrap().len();
-        assert!(cold.child(1, OsStr::new("missing")).is_err());
-        drop(server);
-        let client = || CacheClient::new(endpoint.clone(), None).unwrap();
-        let mut warm = RemoteFs::new(
-            client(),
-            digest.clone(),
-            blocks.clone(),
-            Some(metadata.clone()),
-        )
-        .unwrap();
-        assert_eq!(
-            warm.child(1, OsStr::new("large")).unwrap().attr.size,
-            expected
-        );
-        assert_eq!(warm.entries(1).unwrap().len(), count);
-        let error = warm.child(1, OsStr::new("missing")).err().unwrap();
-        assert_eq!(
-            error.downcast_ref::<std::io::Error>().unwrap().kind(),
-            std::io::ErrorKind::NotFound
-        );
-        // A different generation cannot borrow entries from the old snapshot.
-        assert!(
-            RemoteFs::new(
-                client(),
-                digest.clone(),
-                blocks.clone(),
-                Some(temp.path().join("new-generation"))
-            )
-            .is_err()
-        );
-        let root = CacheRequest::Stat {
-            digest: digest.clone(),
-            path: vec![],
-        };
-        fs::write(
-            metadata.join(&hash(&serde_json::to_vec(&root).unwrap())[7..]),
-            b"corrupt",
-        )
-        .unwrap();
-        assert!(RemoteFs::new(client(), digest, blocks, Some(metadata)).is_err());
-    }
-
-    #[test]
-    fn reads_only_requested_blocks_and_reuses_verified_cache() {
-        let (temp, server, client, digest) = fixture();
-        let cache = temp.path().join("client");
-        let mut filesystem = RemoteFs::new(client, digest, cache, None).unwrap();
-        let file = filesystem.child(1, OsStr::new("large")).unwrap();
-        assert_eq!(filesystem.entries(1).unwrap().len(), 4);
-        assert_eq!(
-            server.reads.load(Ordering::Relaxed),
-            0,
-            "metadata must not download content"
-        );
-        let offset = MAX_READ as u64 - 4;
-        assert_eq!(
-            filesystem.read_range(file.attr.ino, offset, 16).unwrap(),
-            [42; 16]
-        );
-        assert_eq!(
-            server.reads.load(Ordering::Relaxed),
-            2,
-            "only two intersecting blocks are fetched"
-        );
-        assert_eq!(
-            filesystem.read_range(file.attr.ino, offset, 16).unwrap(),
-            [42; 16]
-        );
-        assert_eq!(server.reads.load(Ordering::Relaxed), 2);
-        let progress = filesystem.downloads.snapshot();
-        assert_eq!(progress.downloaded_files, 1);
-        assert_eq!(progress.downloaded_bytes, 2 * MAX_READ as u64);
-        let path = filesystem.cache.join(&hash(&file.path)[7..]).join("0");
-        fs::write(path, b"corrupt").unwrap();
-        assert_eq!(filesystem.read_range(file.attr.ino, 0, 1).unwrap(), [42]);
-        assert_eq!(
-            server.reads.load(Ordering::Relaxed),
-            3,
-            "corrupt cache must be replaced"
-        );
-        assert_eq!(filesystem.downloads.snapshot().downloaded_files, 1);
-        assert_eq!(
-            filesystem.downloads.snapshot().downloaded_bytes,
-            3 * MAX_READ as u64
-        );
-        let warm_client = CacheClient::new(filesystem.client.endpoint.clone(), None).unwrap();
-        let mut warm = RemoteFs::new(
-            warm_client,
-            filesystem.digest.clone(),
-            filesystem.cache.clone(),
-            None,
-        )
-        .unwrap();
-        let warm_file = warm.child(1, OsStr::new("large")).unwrap();
-        assert_eq!(
-            warm.read_range(warm_file.attr.ino, offset, 16).unwrap(),
-            [42; 16]
-        );
-        assert_eq!(warm.downloads.snapshot().downloaded_files, 0);
-        assert_eq!(warm.downloads.snapshot().downloaded_bytes, 0);
-        assert_eq!(warm.downloads.snapshot().cached_files, 1);
-        assert_eq!(warm.downloads.snapshot().cached_bytes, 2 * MAX_READ as u64);
-        warm.read_range(warm_file.attr.ino, offset, 16).unwrap();
-        assert_eq!(warm.downloads.snapshot().cached_files, 1);
-        assert_eq!(warm.downloads.snapshot().cached_bytes, 4 * MAX_READ as u64);
-        drop(server);
-        assert_eq!(filesystem.read_range(file.attr.ino, 0, 1).unwrap(), [42]);
-        assert!(
-            filesystem
-                .read_range(file.attr.ino, 2 * MAX_READ as u64, 1)
-                .is_err(),
-            "uncached data must fail, never become zeroes"
-        );
-    }
-
-    #[test]
-    #[ignore = "requires a working host FUSE installation"]
-    fn native_mount_reads_lazily_and_unmounts() {
-        use std::io::Read;
-        let (temp, server, client, digest) = fixture();
-        let filesystem = RemoteFs::new(client, digest, temp.path().join("client"), None).unwrap();
-        let mount = mount(filesystem, temp.path()).unwrap();
-        assert_eq!(
-            fs::metadata(mount.path.join("large")).unwrap().len(),
-            3 * MAX_READ as u64
-        );
-        assert_eq!(server.reads.load(Ordering::Relaxed), 0);
-        assert_eq!(
-            fs::read_link(mount.path.join("alias")).unwrap(),
-            Path::new("large")
-        );
-        #[cfg(target_os = "macos")]
-        {
-            use std::os::fd::AsRawFd;
-            let link = OpenOptions::new()
-                .read(true)
-                .custom_flags(libc::O_SYMLINK)
-                .open(mount.path.join("alias"))
-                .unwrap();
-            let mut path = [0u8; libc::PATH_MAX as usize];
-            assert_eq!(
-                unsafe { libc::fcntl(link.as_raw_fd(), libc::F_GETPATH, path.as_mut_ptr()) },
-                0
-            );
-        }
-        let mut file = std::fs::File::open(mount.path.join("large")).unwrap();
-        let mut bytes = [0u8; 16];
-        file.read_exact(&mut bytes).unwrap();
-        assert_eq!(bytes, [42; 16]);
-        assert!(server.reads.load(Ordering::Relaxed) < 3);
-        drop(file);
-        let path = mount.path.clone();
-        drop(mount);
-        #[cfg(target_os = "macos")]
-        assert!(!persisting_overlayfs::is_mountpoint(&path));
-        #[cfg(target_os = "linux")]
-        assert!(!path.exists());
-    }
-
-    #[test]
-    fn auto_probe_distinguishes_absence_from_explicit_failure() {
-        let temp = tempfile::tempdir().unwrap();
-        let address = format!("unix://{}", temp.path().join("missing").display());
-        assert!(
-            CacheClient::probe(address.clone(), None, false)
-                .unwrap()
-                .is_none()
-        );
-        assert!(CacheClient::probe(address, None, true).is_err());
-        let socket = temp.path().join("stale");
-        drop(UnixListener::bind(&socket).unwrap());
-        assert!(
-            CacheClient::probe(format!("unix://{}", socket.display()), None, false)
-                .unwrap()
-                .is_none()
-        );
-        let (_temp, _server, client, _) = fixture();
-        assert!(
-            CacheClient::probe(client.endpoint.clone(), None, false)
-                .unwrap()
-                .is_some()
-        );
-    }
-}
+mod tests;

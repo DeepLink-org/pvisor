@@ -692,4 +692,4 @@ lower with persistent 1 MiB block caching when a compatible server is available.
 A missing/stale default socket retains local OCI preparation. An explicitly
 configured server must work; `PERSISTING_PVISOR_CACHE_SERVER=off` forces local
 preparation. Explicit rootfs directories and native containers are unchanged.
-See the [protocol and remote-access guide](../../../shared-image-cache.md).
+See the [protocol and remote-access guide](https://github.com/DeepLink-org/Persisting/blob/main/docs/shared-image-cache.md).

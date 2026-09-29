@@ -2988,6 +2988,7 @@ dependencies = [
  "libc",
  "libkrun",
  "libloading",
+ "lru",
  "persisting-control",
  "persisting-gateway",
  "persisting-overlay-core",

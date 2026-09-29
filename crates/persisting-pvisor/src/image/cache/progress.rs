@@ -35,7 +35,7 @@ pub(super) fn loading<T>(
     label: &str,
     work: impl FnOnce() -> anyhow::Result<T>,
 ) -> anyhow::Result<T> {
-    crate::cli::diagnostic(format_args!("pVisor image: {label}"));
+    crate::diagnostics::diagnostic(format_args!("pVisor image: {label}"));
     let started = Instant::now();
     std::thread::scope(|scope| {
         let (done, wait) = mpsc::channel::<()>();
@@ -44,7 +44,7 @@ pub(super) fn loading<T>(
                 wait.recv_timeout(Duration::from_secs(5)),
                 Err(mpsc::RecvTimeoutError::Timeout)
             ) {
-                crate::cli::diagnostic(format_args!(
+                crate::diagnostics::diagnostic(format_args!(
                     "pVisor image: {label}; still waiting ({:.0}s elapsed)",
                     started.elapsed().as_secs_f64()
                 ));
@@ -53,11 +53,11 @@ pub(super) fn loading<T>(
         let result = work();
         drop(done);
         match &result {
-            Ok(_) => crate::cli::diagnostic(format_args!(
+            Ok(_) => crate::diagnostics::diagnostic(format_args!(
                 "pVisor image: {label}; done ({:.1}s)",
                 started.elapsed().as_secs_f64()
             )),
-            Err(error) => crate::cli::diagnostic(format_args!(
+            Err(error) => crate::diagnostics::diagnostic(format_args!(
                 "pVisor image: {label}; failed ({:.1}s): {error:#}",
                 started.elapsed().as_secs_f64()
             )),
@@ -96,7 +96,7 @@ impl Downloads {
         let mut snapshot = self.snapshot.borrow_mut();
         snapshot.downloaded_files += u64::from(first);
         snapshot.downloaded_bytes += bytes as u64;
-        crate::cli::diagnostic(format_args!(
+        crate::diagnostics::diagnostic(format_args!(
             "pVisor image: transferred {bytes} bytes from /{} (this run: {} bytes across {} files)",
             String::from_utf8_lossy(path).escape_debug(),
             snapshot.downloaded_bytes,
@@ -111,7 +111,7 @@ impl Downloads {
         snapshot.cached_files += u64::from(first);
         snapshot.cached_bytes += bytes as u64;
         if first {
-            crate::cli::diagnostic(format_args!(
+            crate::diagnostics::diagnostic(format_args!(
                 "pVisor image: cached /{} ({bytes} bytes read; no download)",
                 String::from_utf8_lossy(path).escape_debug(),
             ));
@@ -142,10 +142,10 @@ impl Downloads {
 }
 
 pub(super) fn image_totals(
-    store: &crate::oci::ImageStore,
+    store: &crate::image::oci::ImageStore,
     digest: &str,
 ) -> anyhow::Result<ImageTotals> {
-    let hex = crate::oci::digest_hex(digest)?;
+    let hex = crate::image::oci::digest_hex(digest)?;
     let record = store
         .root
         .join("metadata/sha256")

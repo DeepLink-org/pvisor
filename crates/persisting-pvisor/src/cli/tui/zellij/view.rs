@@ -1,6 +1,6 @@
 use super::input::{Panel, UiState};
 use super::runtime::Snapshot;
-use super::{LineStyle, border_glyphs, status_bar};
+use super::{border_glyphs, status_bar};
 use anyhow::Result;
 use std::io::Write;
 use std::time::Instant;
@@ -226,7 +226,7 @@ fn panel_lines(snapshot: &Snapshot, panel: Panel, started: Instant, width: usize
                         "Transferred", image.downloaded_files, image.downloaded_bytes
                     ),
                     format!("  {:<13} {:>10}  {:>16}", "Total", total_files, total_bytes),
-                    "  Cached: local block reads, including repeated reads".into(),
+                    "  Cached: bytes served from disk/memory cache, including repeats".into(),
                     "  Transferred: verified bytes received from the image server".into(),
                     "  Total: regular files and logical bytes in the whole image".into(),
                     "  Files are distinct paths; partial reads count; kernel cache hits excluded"
@@ -394,30 +394,14 @@ fn floating_panel(
 ) {
     let (x, y, width, height) = layout.floating_rect();
     let title = state.panel.title();
-    let horizontal = border_glyphs::horizontal(LineStyle::Single);
+    let horizontal = border_glyphs::HORIZONTAL;
     move_to(buf, y, x);
     buf.extend_from_slice(ACTIVE.as_bytes());
-    buf.extend_from_slice(
-        border_glyphs::corner(
-            border_glyphs::Corner::TopLeft,
-            LineStyle::Single,
-            LineStyle::Single,
-            true,
-        )
-        .as_bytes(),
-    );
+    buf.extend_from_slice(border_glyphs::TOP_LEFT.as_bytes());
     for _ in 0..width - 2 {
         buf.extend_from_slice(horizontal.as_bytes());
     }
-    buf.extend_from_slice(
-        border_glyphs::corner(
-            border_glyphs::Corner::TopRight,
-            LineStyle::Single,
-            LineStyle::Single,
-            true,
-        )
-        .as_bytes(),
-    );
+    buf.extend_from_slice(border_glyphs::TOP_RIGHT.as_bytes());
     move_to(buf, y, x + 2);
     print_clipped(buf, &format!(" pVisor Review · {title} "), width - 4);
 
@@ -446,12 +430,12 @@ fn floating_panel(
         let row = y + inner + 1;
         move_to(buf, row, x);
         buf.extend_from_slice(ACTIVE.as_bytes());
-        buf.extend_from_slice(border_glyphs::vertical(LineStyle::Single).as_bytes());
+        buf.extend_from_slice(border_glyphs::VERTICAL.as_bytes());
         buf.extend_from_slice(b"\x1b[48;2;15;19;16m");
         buf.extend_from_slice(" ".repeat((width - 2) as usize).as_bytes());
         move_to(buf, row, x + width - 1);
         buf.extend_from_slice(ACTIVE.as_bytes());
-        buf.extend_from_slice(border_glyphs::vertical(LineStyle::Single).as_bytes());
+        buf.extend_from_slice(border_glyphs::VERTICAL.as_bytes());
         move_to(buf, row, x + 2);
         buf.extend_from_slice(if inner == 0 {
             b"\x1b[48;2;15;19;16;38;2;167;230;54m"
@@ -471,27 +455,11 @@ fn floating_panel(
     }
     move_to(buf, y + height - 1, x);
     buf.extend_from_slice(ACTIVE.as_bytes());
-    buf.extend_from_slice(
-        border_glyphs::corner(
-            border_glyphs::Corner::BottomLeft,
-            LineStyle::Single,
-            LineStyle::Single,
-            true,
-        )
-        .as_bytes(),
-    );
+    buf.extend_from_slice(border_glyphs::BOTTOM_LEFT.as_bytes());
     for _ in 0..width - 2 {
         buf.extend_from_slice(horizontal.as_bytes());
     }
-    buf.extend_from_slice(
-        border_glyphs::corner(
-            border_glyphs::Corner::BottomRight,
-            LineStyle::Single,
-            LineStyle::Single,
-            true,
-        )
-        .as_bytes(),
-    );
+    buf.extend_from_slice(border_glyphs::BOTTOM_RIGHT.as_bytes());
     if state.panel != Panel::Permissions && !lines.is_empty() {
         move_to(buf, y + height - 1, x + 2);
         print_clipped(
@@ -759,28 +727,12 @@ pub(super) fn render(
 
     move_to(&mut buf, 2, 1);
     buf.extend_from_slice(ACTIVE.as_bytes());
-    buf.extend_from_slice(
-        border_glyphs::corner(
-            border_glyphs::Corner::TopLeft,
-            LineStyle::Single,
-            LineStyle::Single,
-            true,
-        )
-        .as_bytes(),
-    );
-    let horizontal = border_glyphs::horizontal(LineStyle::Single);
+    buf.extend_from_slice(border_glyphs::TOP_LEFT.as_bytes());
+    let horizontal = border_glyphs::HORIZONTAL;
     for _ in 0..layout.cols - 2 {
         buf.extend_from_slice(horizontal.as_bytes());
     }
-    buf.extend_from_slice(
-        border_glyphs::corner(
-            border_glyphs::Corner::TopRight,
-            LineStyle::Single,
-            LineStyle::Single,
-            true,
-        )
-        .as_bytes(),
-    );
+    buf.extend_from_slice(border_glyphs::TOP_RIGHT.as_bytes());
     move_to(&mut buf, 2, 3);
     print_clipped(
         &mut buf,
@@ -792,35 +744,19 @@ pub(super) fn render(
         let physical = row + 3;
         move_to(&mut buf, physical, 1);
         buf.extend_from_slice(ACTIVE.as_bytes());
-        buf.extend_from_slice(border_glyphs::vertical(LineStyle::Single).as_bytes());
+        buf.extend_from_slice(border_glyphs::VERTICAL.as_bytes());
         draw_agent_row(&mut buf, row, layout.agent_cols, screen);
         move_to(&mut buf, physical, layout.cols);
         buf.extend_from_slice(ACTIVE.as_bytes());
-        buf.extend_from_slice(border_glyphs::vertical(LineStyle::Single).as_bytes());
+        buf.extend_from_slice(border_glyphs::VERTICAL.as_bytes());
     }
     move_to(&mut buf, layout.rows - 1, 1);
     buf.extend_from_slice(ACTIVE.as_bytes());
-    buf.extend_from_slice(
-        border_glyphs::corner(
-            border_glyphs::Corner::BottomLeft,
-            LineStyle::Single,
-            LineStyle::Single,
-            true,
-        )
-        .as_bytes(),
-    );
+    buf.extend_from_slice(border_glyphs::BOTTOM_LEFT.as_bytes());
     for _ in 0..layout.cols - 2 {
         buf.extend_from_slice(horizontal.as_bytes());
     }
-    buf.extend_from_slice(
-        border_glyphs::corner(
-            border_glyphs::Corner::BottomRight,
-            LineStyle::Single,
-            LineStyle::Single,
-            true,
-        )
-        .as_bytes(),
-    );
+    buf.extend_from_slice(border_glyphs::BOTTOM_RIGHT.as_bytes());
     if state.panel_open() {
         floating_panel(&mut buf, layout, state, snapshot, started);
     }
@@ -904,7 +840,25 @@ mod tests {
             );
             assert_eq!(after.agent_rows, rows - 4);
             assert_eq!(after.agent_cols, cols - 2);
+            let mut rendered = Vec::new();
+            floating_panel(
+                &mut rendered,
+                after,
+                &mut state,
+                &Snapshot::default(),
+                Instant::now(),
+            );
+            let mut parser = vt100::Parser::new(rows, cols, 0);
+            parser.process(&rendered);
             let (x, y, width, height) = after.floating_rect();
+            for (row, col, glyph) in [
+                (y - 1, x - 1, "╭"),
+                (y - 1, x + width - 2, "╮"),
+                (y + height - 2, x - 1, "╰"),
+                (y + height - 2, x + width - 2, "╯"),
+            ] {
+                assert_eq!(parser.screen().cell(row, col).unwrap().contents(), glyph);
+            }
             assert!(x >= 2 && x + width <= cols);
             assert!(y >= 3 && y + height < after.rows);
             if cols == 156 {

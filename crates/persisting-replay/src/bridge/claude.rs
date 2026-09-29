@@ -15,7 +15,7 @@ use axum::routing::{get, post};
 use serde_json::{Map, Value, json};
 use tokio::sync::{Notify, oneshot};
 
-use crate::claude_resume::{ResumeTransportManifest, clean_resume_transport_envelope};
+use crate::bridge::claude_resume::{ResumeTransportManifest, clean_resume_transport_envelope};
 use crate::error::{ReplayError, ReplayErrorKind, ResultExt};
 
 const BRIDGE_VERSION: &str = "sandbox-replay-anthropic-openai-bridge/1";
