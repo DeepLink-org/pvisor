@@ -128,7 +128,7 @@ nextest 不运行 doctest；需要时使用 `cargo test --doc -p <package>`。
 
 | 工作流 | 触发条件与职责 |
 |---|---|
-| CI | 面向 `main` 的 push/PR：格式、Clippy、actionlint、Python 测试、基准工具测试、Rust 测试、文档用例与示例 |
+| CI | 面向 `main` 和 `develop` 的 push/PR：格式、Clippy、actionlint、Python 测试、基准工具测试、Rust 测试、文档用例与示例 |
 | Documentation | 文档变更：双语构建与链接检查；仅上游仓库的 `main` 部署 Pages |
 | pVisor Benchmark | 运行时、构建或基准变更：与 PR 基线或前一提交比较并上传报告 |
 | Nightly Build | 每日或在 `main` 手动触发：构建、校验双平台 wheel，更新 nightly release |

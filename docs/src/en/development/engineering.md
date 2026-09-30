@@ -133,7 +133,7 @@ for example `cargo nextest run --locked -p persisting-gateway --test llm_fixture
 
 | Workflow | Trigger and responsibility |
 |---|---|
-| CI | Push/PR to `main`: formatting, Clippy, actionlint, Python tests, benchmark harness tests, Rust tests, documented cases, and examples |
+| CI | Push/PR to `main` and `develop`: formatting, Clippy, actionlint, Python tests, benchmark harness tests, Rust tests, documented cases, and examples |
 | Documentation | Documentation changes: build both languages and check links; only the upstream `main` branch deploys Pages |
 | pVisor Benchmark | Runtime/build/benchmark changes: compare candidate with the PR base or previous commit and upload reports |
 | Nightly Build | Daily or manual on `main`: build and verify both platform wheels, then update the nightly release |
