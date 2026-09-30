@@ -160,7 +160,7 @@ pvisor run --safe --overlaynet-allow inference.example.com:443 -- zcode
 各 Agent 的补丁分别放在 `cli/run/safe/codex.rs`、`claude.rs`、`gemini.rs`、`zcode.rs`，
 公共部分只负责选择与组合。`--safe` 同时要求所选执行器落实隔离，也不选择 executor。
 优先级是 **显式 CLI > safe 预设 > 配置文件 > 普通默认值**。
-支持普通命令和 TOML `--spec`；已准备好的 JSON RunSpec 不接受该预设。
+支持普通命令和 TOML `--config`；已准备好的 JSON `--spec` 不接受该预设。
 
 `--safe` 直接要求落实文件读取、写入和网络隔离，不允许静默回退到普通 host 进程。
 不引入额外的 sandbox 命令行参数或配置项。`--strict` 仍是对全部请求能力的校验，
@@ -390,8 +390,8 @@ pVisor Gateway、模型流量 capture store 或 Claude Resume Transport 审计�
 当前没有对应的直接 CLI 开关。而且 `apply_safe_defaults` 当前会在未指定 `--safe` 的
 非 Codex CLI 命令上清除环境继承；直接 `zcode` 的 host 适配又会重新启用它。
 这些 CLI 路径上的 TOML `inherit_env` 目前不能按配置值生效。
-`--spec` 是可选且显式的；JSON 对象按准备好的 RunSpec 处理，否则按
-TOML RunConfig 处理。pVisor 不会发现隐藏的项目配置文件。
+`--config` 读取显式声明的 TOML `RunConfig`；`--spec` 要求准备好的 JSON
+`RunSpec` 用于委托执行，不能与其他 Run 覆盖项组合。pVisor 不会发现隐藏的项目配置文件。
 
 ```bash
 pvisor run \
@@ -399,7 +399,7 @@ pvisor run \
   --stage ../stage-001 \
   --mount /opt/tool:read \
   --access '**/.ssh:deny' \
-  --filesystem-backend directory \
+  --overlayfs-backend directory \
   --overlaynet-allow api.openai.com:443 \
   --overlaynet-deny 169.254.0.0/16 \
   --overlaynet-limit 10mbps \
@@ -463,11 +463,11 @@ api_key_env = "OPENAI_API_KEY"
 destination = "./capture"
 ```
 
-用 `pvisor run --spec run.toml` 运行。显式 CLI 标量替换 TOML 标量。网络和 Gateway
+用 `pvisor run --config run.toml` 运行。显式 CLI 标量替换 TOML 标量。网络和 Gateway
 列表选项替换配置中的完整列表；文件系统的 `--mount` 和 `--access` 追加到配置条目。
 `[filesystem]` 的序列化字段 `stage`、`mount`、`access`、`backend`、`max_size`
-分别对应 `--stage`、`--mount`、`--access`、`--filesystem-backend`、
-`--filesystem-max-size`。`--` 之后的命令替换 `run.command`。
+分别对应 `--stage`、`--mount`、`--access`、`--overlayfs-backend`、
+`--overlayfs-max-size`。`--` 之后的命令替换 `run.command`。
 大小限制在运行结束后检查，因此不限制 Agent 运行期间的峰值占用。
 
 `--container-image IMAGE` 自动选择原生 OCI container executor；

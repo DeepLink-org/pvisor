@@ -60,7 +60,7 @@ Both paths must already exist. The corresponding one-shot options are
 `--mount PATH:read` and `--mount PATH:write`. These settings currently support the
 host executor. JSON `--spec` uses its existing filesystem capabilities instead.
 Profiles are loaded from personal configuration, never from project files.
-`--no-config` disables a saved profile; it does not automatically discover the
+`--no-agent-defaults` disables a saved profile; it does not automatically discover the
 runtime permissions that profile supplied.
 
 ## BigModel Coding Plan capture

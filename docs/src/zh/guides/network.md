@@ -126,7 +126,7 @@ bytes_per_second = 250000
 运行：
 
 ```bash
-pvisor run --spec run.toml
+pvisor run --config run.toml
 ```
 
 transport 支持 `http`、`https` 和 `tcp_tunnel`。`ports` 或 `transports` 为空时，表示该

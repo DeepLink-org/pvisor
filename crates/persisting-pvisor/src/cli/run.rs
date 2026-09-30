@@ -148,19 +148,24 @@ pub struct RunArgs {
     /// Ask on `ask` file rules and unlisted proxy destinations; implies --tui and --safe.
     #[arg(long)]
     audit: bool,
-    /// TOML RunConfig or prepared JSON RunSpec; explicit CLI values replace matching fields.
+    /// Prepared JSON RunSpec for delegated execution; requires --result-file and the host executor.
     #[arg(long, value_name = "FILE")]
     spec: Option<PathBuf>,
+    /// TOML RunConfig layered beneath explicit CLI values; replaces personal Agent defaults.
+    #[arg(long, value_name = "FILE")]
+    config: Option<PathBuf>,
 
     /// Skip personal Agent defaults from $XDG_CONFIG_HOME/pvisor/agents/<program>.toml.
     #[arg(long)]
-    no_config: bool,
+    no_agent_defaults: bool,
 
-    /// Atomically write the delegated RunResult as JSON.
+    /// Atomically write the finalized RunResult as JSON before exit; required with --spec.
     #[arg(long, value_name = "FILE")]
     result_file: Option<PathBuf>,
 
-    /// Persistent changeset directory. Without this option, a temporary stage is dropped automatically.
+    /// Persistent changeset directory for reviewable staged writes. Plain runs
+    /// without staging write the workspace directly; --safe/--audit stage by
+    /// default in a temporary stage that is dropped at exit.
     #[arg(long, value_name = "PATH")]
     stage: Option<PathBuf>,
 
@@ -170,7 +175,7 @@ pub struct RunArgs {
     container: ContainerOverrides,
     #[command(flatten, next_help_heading = "VM executor options")]
     vm: VmOverrides,
-    #[command(flatten, next_help_heading = "Filesystem options")]
+    #[command(flatten, next_help_heading = "OverlayFS options")]
     overlayfs: OverlayFsOverrides,
     #[command(flatten, next_help_heading = "OverlayNet options")]
     overlaynet: OverlayNetOverrides,
@@ -202,9 +207,7 @@ impl RunArgs {
         if self.audit || self.cli_asks() {
             return Ok(true);
         }
-        if let Some(path) = self.spec.as_deref()
-            && spec_is_json(path)?
-        {
+        if self.spec.is_some() {
             return Ok(false);
         }
         let config = load_run_config(self, personal_config_root().as_deref(), false)?;
@@ -221,11 +224,8 @@ impl RunArgs {
     pub(super) fn wants_tui(&self, audit: bool) -> bool {
         (self.tui || audit)
             && self.result_file.is_none()
+            && self.spec.is_none()
             && self.run.stdio != Some(RunStdio::Capture)
-            && self
-                .spec
-                .as_ref()
-                .is_none_or(|path| path.extension().is_none_or(|ext| ext != "json"))
     }
 }
 
@@ -256,8 +256,10 @@ struct RunOverrides {
     /// Filesystem access policy; independent from OverlayNet and OverlayFS staging.
     #[arg(long, value_enum)]
     filesystem: Option<FilesystemMode>,
+    /// Fail the Job when it runs longer than DURATION (for example `30s` or `5m`).
     #[arg(long, value_name = "DURATION")]
     timeout: Option<DurationMs>,
+    /// Agent stdio: `inherit` keeps the terminal, `capture` records output into the Job record.
     #[arg(long, value_enum)]
     stdio: Option<RunStdio>,
     /// Fail before execution unless every requested capability has a non-bypassable boundary.
@@ -273,7 +275,8 @@ struct RunOverrides {
     #[arg(long, value_name = "NAME")]
     pass_env: Vec<String>,
     /// Clear environment names inherited from the TOML pass_env list before applying --pass-env.
-    #[arg(long)]
+    /// Emitted by the --safe preset; rarely needed by hand.
+    #[arg(long, hide = true)]
     clear_pass_env: bool,
     /// Maximum processes/threads admitted for the Job.
     #[arg(long, value_name = "COUNT")]
@@ -455,9 +458,13 @@ struct OverlayFsOverrides {
     /// Use `--mount` when a path must be staged or writable.
     #[arg(long = "access", value_name = "PATH-GLOB:LEVEL")]
     access: Vec<FilesystemAccessArg>,
-    #[arg(long = "filesystem-backend", value_enum)]
+    /// Changeset upper-layer backend: `directory` writes plain files, `jujutsu`
+    /// stores content-addressed snapshots in a shared repository.
+    #[arg(long = "overlayfs-backend", value_enum)]
     backend: Option<OverlayFsBackend>,
-    #[arg(long = "filesystem-max-size", value_name = "SIZE")]
+    /// Aggregate byte budget for the staged filesystem; the Job fails once the
+    /// stage exceeds it.
+    #[arg(long = "overlayfs-max-size", value_name = "SIZE")]
     max_size: Option<ByteSize>,
 }
 
@@ -642,12 +649,16 @@ struct GatewayOverrides {
     /// Adapt a supported client and enable Gateway capture.
     #[arg(long, value_enum)]
     gateway_profile: Option<GatewayProfile>,
+    /// Enable the in-process Gateway for LLM traffic capture, or disable it.
     #[arg(long, value_enum)]
     gateway_mode: Option<GatewayMode>,
+    /// Gateway admin API listen address.
     #[arg(long, value_name = "ADDR")]
     gateway_admin_listen: Option<String>,
+    /// Gateway capture detail level.
     #[arg(long, value_enum)]
     gateway_level: Option<GatewayLevel>,
+    /// Header name used to group Gateway requests into sessions.
     #[arg(long, value_name = "HEADER")]
     gateway_session_header: Option<String>,
     /// Enable or disable Gateway diagnostics.
@@ -715,11 +726,11 @@ fn load_run_config(
     root: Option<&Path>,
     diagnostic: bool,
 ) -> anyhow::Result<RunConfig> {
-    if let Some(path) = &args.spec {
+    if let Some(path) = &args.config {
         return RunConfig::from_file(path)
             .with_context(|| format!("load pVisor Run config {}", path.display()));
     }
-    if args.no_config {
+    if args.no_agent_defaults {
         return Ok(RunConfig::default());
     }
     let Some(name) = args
@@ -764,10 +775,22 @@ pub async fn run(mut args: RunArgs) -> anyhow::Result<i32> {
     if persisting_control::audit::configured() {
         args.audit = true;
     }
-    if let Some(path) = args.spec.as_deref()
-        && spec_is_json(path)?
-    {
+    anyhow::ensure!(
+        args.spec.is_none() || args.config.is_none(),
+        "--spec and --config are mutually exclusive"
+    );
+    if let Some(path) = args.spec.as_deref() {
+        anyhow::ensure!(
+            spec_is_json(path)?,
+            "--spec requires a prepared JSON RunSpec; use --config for TOML RunConfig files"
+        );
         return run_prepared_spec(args).await;
+    }
+    if let Some(path) = args.config.as_deref() {
+        anyhow::ensure!(
+            !spec_is_json(path)?,
+            "--config requires a TOML RunConfig; use --spec for prepared JSON RunSpecs"
+        );
     }
     // Host runs keep the best-effort lifecycle/evidence profile by default;
     // filesystem restrictions, staging, and network isolation remain opt-in.
@@ -2923,7 +2946,7 @@ mod tests {
             "[[overlayfs.access]]\npath = 'secrets/*.pem'\nlevel = 'ask'\n",
         )
         .unwrap();
-        let args = preset_args(&["--spec", spec.to_str().unwrap(), "--", "bash"]);
+        let args = preset_args(&["--config", spec.to_str().unwrap(), "--", "bash"]);
         assert!(args.audit_requested().unwrap());
         let mut config = load_run_config(&args, None, false).unwrap();
         let mut effective = args;
@@ -3710,7 +3733,7 @@ sandbox = "required""#
             "8",
             "--max-open-files",
             "32",
-            "--filesystem-max-size",
+            "--overlayfs-max-size",
             "2MiB",
             "--",
             "true",
@@ -3907,8 +3930,8 @@ sandbox = "required""#
             "--mount",
             "--access",
             "--stage",
-            "--filesystem-backend",
-            "--filesystem-max-size",
+            "--overlayfs-backend",
+            "--overlayfs-max-size",
         ] {
             assert!(help.contains(option), "missing {option}");
         }
@@ -4115,7 +4138,7 @@ sandbox = "required""#
             "run",
             "--stage",
             "/tmp/pvisor-stage",
-            "--filesystem-backend",
+            "--overlayfs-backend",
             "jujutsu",
             "--",
             "true",

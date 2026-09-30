@@ -391,7 +391,7 @@ def prepare_workspace(workspace: Path) -> None:
     (workspace / "pvisor.toml").write_text(
         f'[run]\ncommand = ["{true_program}"]\n', encoding="utf-8"
     )
-    (workspace / "spec-without-extension").write_text(
+    (workspace / "config-without-extension").write_text(
         f'[run]\ncommand = ["{true_program}"]\n', encoding="utf-8"
     )
     (workspace / "run-spec.json").write_text(

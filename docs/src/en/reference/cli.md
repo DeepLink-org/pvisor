@@ -414,9 +414,9 @@ but `run.inherit_env` currently has no direct CLI switch. Moreover,
 `apply_safe_defaults` currently clears environment inheritance for non-Codex
 CLI commands even without `--safe`; the ZCode host adapter re-enables it for
 direct `zcode`. Treat TOML `inherit_env` as ineffective on those CLI paths.
-`--spec` is optional and explicit; a
-file beginning with a JSON object is treated as a prepared RunSpec, otherwise
-it is read as TOML RunConfig. pVisor does not discover a hidden project file.
+`--config` reads an explicit TOML `RunConfig`; `--spec` requires a prepared
+JSON `RunSpec` for delegated execution and cannot be combined with other Run
+overrides. pVisor does not discover a hidden project file.
 
 ```bash
 pvisor run \
@@ -424,7 +424,7 @@ pvisor run \
   --stage ../stage-001 \
   --mount /opt/tool:read \
   --access '**/.ssh:deny' \
-  --filesystem-backend directory \
+  --overlayfs-backend directory \
   --overlaynet-allow api.openai.com:443 \
   --overlaynet-deny 169.254.0.0/16 \
   --overlaynet-limit 10mbps \
@@ -490,12 +490,12 @@ api_key_env = "OPENAI_API_KEY"
 destination = "./capture"
 ```
 
-Run it with `pvisor run --spec run.toml`. Explicit CLI scalars replace TOML
+Run it with `pvisor run --config run.toml`. Explicit CLI scalars replace TOML
 scalars. Network and Gateway list options replace their complete configured
 lists; filesystem `--mount` and `--access` entries are appended to configured
 entries. Every serialized `[filesystem]` field has a CLI form: `stage`, `mount`,
 `access`, `backend`, and `max_size` map to `--stage`, `--mount`, `--access`,
-`--filesystem-backend`, and `--filesystem-max-size`.
+`--overlayfs-backend`, and `--overlayfs-max-size`.
 The size limit is checked after execution, so it does not bound peak space used
 while the Agent is running.
 The command after `--` replaces `run.command`.
