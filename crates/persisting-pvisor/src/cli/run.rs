@@ -80,9 +80,10 @@ use persisting_overlaynet::{NetworkAccessRule, NetworkBandwidthLimit};
 use serde::Deserialize;
 
 use crate::config::{
-    ContainerMount, ContainerNetwork, ContainerPlatform, FilesystemAccessLevel, GatewayMode,
-    GatewayProfile, OverlayFsBackend, OverlayFsCommit, OverlayFsSettings, OverlayNetMode,
-    OverlayNetPolicy, OverlayNetSettings, RunConfig, RunExecutorKind, RunPolicy, RunStdio,
+    ContainerMount, ContainerNetwork, ContainerPlatform, FilesystemAccessLevel, FilesystemMode,
+    GatewayMode, GatewayProfile, OverlayFsBackend, OverlayFsCommit, OverlayFsSettings,
+    OverlayNetMode, OverlayNetPolicy, OverlayNetSettings, RunConfig, RunExecutorKind, RunPolicy,
+    RunStdio,
 };
 use crate::runtime::{RunLineage, default_run_home, resolve_run};
 use crate::{
@@ -105,20 +106,20 @@ macro_rules! run_log {
 
 #[cfg(target_os = "linux")]
 pub(super) const RUN_COMMAND_ABOUT: &str =
-    "Start one Agent Job with safe-best-effort host isolation by default";
+    "Start one Agent Job with independent filesystem, staging, and network policies";
 #[cfg(target_os = "linux")]
-pub(super) const RUN_COMMAND_LONG_ABOUT: &str = "Start one Agent Job under pVisor management. Host execution uses safe-best-effort isolation when supported by the system.";
+pub(super) const RUN_COMMAND_LONG_ABOUT: &str = "Start one Agent Job under pVisor management. Host execution preserves the host filesystem view by default; use --filesystem sandbox for filesystem access restrictions, --stage for change staging, and --overlaynet for network policy.";
 
 #[cfg(target_os = "macos")]
 pub(super) const RUN_COMMAND_ABOUT: &str =
-    "Start one Agent Job with safe-best-effort host isolation by default";
+    "Start one Agent Job with independent filesystem, staging, and network policies";
 #[cfg(target_os = "macos")]
 pub(super) const RUN_COMMAND_LONG_ABOUT: &str = MACOS_RUN_COMMAND_LONG_ABOUT;
 
 // Compile the macOS description in tests on every platform so Linux CI also
 // checks its safety disclosures instead of leaving them to the macOS shard.
 #[cfg(any(target_os = "macos", test))]
-const MACOS_RUN_COMMAND_LONG_ABOUT: &str = "Start one Agent Job under pVisor management. Host execution uses safe-best-effort isolation when supported by the system.\n\nOn macOS, staged workspace views use macFUSE and Seatbelt confines writes when available. Full-disk reads remain ambient; selective network policies remain cooperative. With --overlaynet-deny-all, Seatbelt blocks non-loopback IP traffic and ambient host Unix sockets while permitting loopback proxy access and Job-scoped Unix IPC.\n\nUnavailable isolation capabilities are reported as warnings in best-effort mode. With --strict, insufficient isolation guarantees cause the Job to fail before Agent execution.";
+const MACOS_RUN_COMMAND_LONG_ABOUT: &str = "Start one Agent Job under pVisor management. Host execution preserves the host filesystem view by default. Use --filesystem sandbox for filesystem access restrictions, --stage for change staging, and --overlaynet for network policy.\n\nOn macOS, staged workspace views use macFUSE when requested, and Seatbelt is used for requested filesystem sandboxing or deny-all network isolation. Full-disk reads remain ambient unless filesystem sandboxing is requested; selective network policies remain cooperative. With --overlaynet-deny-all, Seatbelt blocks non-loopback IP traffic and ambient host Unix sockets while permitting loopback proxy access and Job-scoped Unix IPC.\n\nUnavailable isolation capabilities are reported as warnings in best-effort mode. With --strict, insufficient isolation guarantees cause the Job to fail before Agent execution.";
 
 #[cfg(not(any(target_os = "linux", target_os = "macos")))]
 pub(super) const RUN_COMMAND_ABOUT: &str = "Start one Agent Job under pVisor management";
@@ -126,9 +127,9 @@ pub(super) const RUN_COMMAND_ABOUT: &str = "Start one Agent Job under pVisor man
 pub(super) const RUN_COMMAND_LONG_ABOUT: &str = RUN_COMMAND_ABOUT;
 
 #[cfg(target_os = "linux")]
-const EXECUTOR_HELP: &str = "Execution provider: host, container, or vm. `vm` uses the statically linked libkrun backend; host uses safe-best-effort isolation";
+const EXECUTOR_HELP: &str = "Execution provider: host, container, or vm. `vm` uses the statically linked libkrun backend; host supports optional filesystem and network isolation";
 #[cfg(target_os = "macos")]
-const EXECUTOR_HELP: &str = "Execution provider: host, container, or vm. `vm` uses the statically linked libkrun backend; host uses safe-best-effort isolation";
+const EXECUTOR_HELP: &str = "Execution provider: host, container, or vm. `vm` uses the statically linked libkrun backend; host supports optional filesystem and network isolation";
 #[cfg(not(any(target_os = "linux", target_os = "macos")))]
 const EXECUTOR_HELP: &str = "Execution provider for the Agent command";
 
@@ -147,19 +148,24 @@ pub struct RunArgs {
     /// Ask on `ask` file rules and unlisted proxy destinations; implies --tui and --safe.
     #[arg(long)]
     audit: bool,
-    /// TOML RunConfig or prepared JSON RunSpec; explicit CLI values replace matching fields.
+    /// Prepared JSON RunSpec for delegated execution; requires --result-file and the host executor.
     #[arg(long, value_name = "FILE")]
     spec: Option<PathBuf>,
+    /// TOML RunConfig layered beneath explicit CLI values; replaces personal Agent defaults.
+    #[arg(long, value_name = "FILE")]
+    config: Option<PathBuf>,
 
     /// Skip personal Agent defaults from $XDG_CONFIG_HOME/pvisor/agents/<program>.toml.
     #[arg(long)]
-    no_config: bool,
+    no_agent_defaults: bool,
 
-    /// Atomically write the delegated RunResult as JSON.
+    /// Atomically write the finalized RunResult as JSON before exit; required with --spec.
     #[arg(long, value_name = "FILE")]
     result_file: Option<PathBuf>,
 
-    /// Persistent changeset directory. Without this option, a temporary stage is dropped automatically.
+    /// Persistent changeset directory for reviewable staged writes. Plain runs
+    /// without staging write the workspace directly; --safe/--audit stage by
+    /// default in a temporary stage that is dropped at exit.
     #[arg(long, value_name = "PATH")]
     stage: Option<PathBuf>,
 
@@ -169,7 +175,7 @@ pub struct RunArgs {
     container: ContainerOverrides,
     #[command(flatten, next_help_heading = "VM executor options")]
     vm: VmOverrides,
-    #[command(flatten, next_help_heading = "Filesystem options")]
+    #[command(flatten, next_help_heading = "OverlayFS options")]
     overlayfs: OverlayFsOverrides,
     #[command(flatten, next_help_heading = "OverlayNet options")]
     overlaynet: OverlayNetOverrides,
@@ -201,13 +207,11 @@ impl RunArgs {
         if self.audit || self.cli_asks() {
             return Ok(true);
         }
-        if let Some(path) = self.spec.as_deref()
-            && spec_is_json(path)?
-        {
+        if self.spec.is_some() {
             return Ok(false);
         }
         let config = load_run_config(self, personal_config_root().as_deref(), false)?;
-        Ok(config.filesystem.as_ref().is_some_and(|filesystem| {
+        Ok(config.overlayfs.as_ref().is_some_and(|filesystem| {
             !filesystem.access_policy.ask().is_empty()
                 || filesystem
                     .access
@@ -220,11 +224,8 @@ impl RunArgs {
     pub(super) fn wants_tui(&self, audit: bool) -> bool {
         (self.tui || audit)
             && self.result_file.is_none()
+            && self.spec.is_none()
             && self.run.stdio != Some(RunStdio::Capture)
-            && self
-                .spec
-                .as_ref()
-                .is_none_or(|path| path.extension().is_none_or(|ext| ext != "json"))
     }
 }
 
@@ -252,8 +253,13 @@ struct RunOverrides {
     name: Option<String>,
     #[arg(long, value_enum, help = EXECUTOR_HELP)]
     executor: Option<RunExecutorKind>,
+    /// Filesystem access policy; independent from OverlayNet and OverlayFS staging.
+    #[arg(long, value_enum)]
+    filesystem: Option<FilesystemMode>,
+    /// Fail the Job when it runs longer than DURATION (for example `30s` or `5m`).
     #[arg(long, value_name = "DURATION")]
     timeout: Option<DurationMs>,
+    /// Agent stdio: `inherit` keeps the terminal, `capture` records output into the Job record.
     #[arg(long, value_enum)]
     stdio: Option<RunStdio>,
     /// Fail before execution unless every requested capability has a non-bypassable boundary.
@@ -269,7 +275,8 @@ struct RunOverrides {
     #[arg(long, value_name = "NAME")]
     pass_env: Vec<String>,
     /// Clear environment names inherited from the TOML pass_env list before applying --pass-env.
-    #[arg(long)]
+    /// Emitted by the --safe preset; rarely needed by hand.
+    #[arg(long, hide = true)]
     clear_pass_env: bool,
     /// Maximum processes/threads admitted for the Job.
     #[arg(long, value_name = "COUNT")]
@@ -451,9 +458,13 @@ struct OverlayFsOverrides {
     /// Use `--mount` when a path must be staged or writable.
     #[arg(long = "access", value_name = "PATH-GLOB:LEVEL")]
     access: Vec<FilesystemAccessArg>,
-    #[arg(long = "filesystem-backend", value_enum)]
+    /// Changeset upper-layer backend: `directory` writes plain files, `jujutsu`
+    /// stores content-addressed snapshots in a shared repository.
+    #[arg(long = "overlayfs-backend", value_enum)]
     backend: Option<OverlayFsBackend>,
-    #[arg(long = "filesystem-max-size", value_name = "SIZE")]
+    /// Aggregate byte budget for the staged filesystem; the Job fails once the
+    /// stage exceeds it.
+    #[arg(long = "overlayfs-max-size", value_name = "SIZE")]
     max_size: Option<ByteSize>,
 }
 
@@ -638,12 +649,16 @@ struct GatewayOverrides {
     /// Adapt a supported client and enable Gateway capture.
     #[arg(long, value_enum)]
     gateway_profile: Option<GatewayProfile>,
+    /// Enable the in-process Gateway for LLM traffic capture, or disable it.
     #[arg(long, value_enum)]
     gateway_mode: Option<GatewayMode>,
+    /// Gateway admin API listen address.
     #[arg(long, value_name = "ADDR")]
     gateway_admin_listen: Option<String>,
+    /// Gateway capture detail level.
     #[arg(long, value_enum)]
     gateway_level: Option<GatewayLevel>,
+    /// Header name used to group Gateway requests into sessions.
     #[arg(long, value_name = "HEADER")]
     gateway_session_header: Option<String>,
     /// Enable or disable Gateway diagnostics.
@@ -711,11 +726,11 @@ fn load_run_config(
     root: Option<&Path>,
     diagnostic: bool,
 ) -> anyhow::Result<RunConfig> {
-    if let Some(path) = &args.spec {
+    if let Some(path) = &args.config {
         return RunConfig::from_file(path)
             .with_context(|| format!("load pVisor Run config {}", path.display()));
     }
-    if args.no_config {
+    if args.no_agent_defaults {
         return Ok(RunConfig::default());
     }
     let Some(name) = args
@@ -760,21 +775,36 @@ pub async fn run(mut args: RunArgs) -> anyhow::Result<i32> {
     if persisting_control::audit::configured() {
         args.audit = true;
     }
-    if let Some(path) = args.spec.as_deref()
-        && spec_is_json(path)?
-    {
+    anyhow::ensure!(
+        args.spec.is_none() || args.config.is_none(),
+        "--spec and --config are mutually exclusive"
+    );
+    if let Some(path) = args.spec.as_deref() {
+        anyhow::ensure!(
+            spec_is_json(path)?,
+            "--spec requires a prepared JSON RunSpec; use --config for TOML RunConfig files"
+        );
         return run_prepared_spec(args).await;
     }
+    if let Some(path) = args.config.as_deref() {
+        anyhow::ensure!(
+            !spec_is_json(path)?,
+            "--config requires a TOML RunConfig; use --spec for prepared JSON RunSpecs"
+        );
+    }
+    // Host runs keep the best-effort lifecycle/evidence profile by default;
+    // filesystem restrictions, staging, and network isolation remain opt-in.
+    // `--safe`/`--audit` request the Agent-aware preset on top of that.
     let run_id = format!("run-{}", uuid::Uuid::new_v4());
     let mut config = load_run_config(&args, personal_config_root().as_deref(), true)?;
     apply_run_options(&mut config, args.clone())?;
     let stage_limit = config
-        .filesystem
+        .overlayfs
         .as_ref()
         .and_then(|overlay| overlay.stage_size_bytes);
     let cleanup_stage = ensure_default_stage(&mut config, &args, &run_id);
     let effective_stage = config
-        .filesystem
+        .overlayfs
         .as_ref()
         .and_then(|overlay| overlay.stage.clone());
     if args.run.safe || args.audit {
@@ -824,7 +854,7 @@ fn ensure_default_stage(config: &mut RunConfig, args: &RunArgs, run_id: &str) ->
     }
     let existing = args.stage.clone().or_else(|| {
         config
-            .filesystem
+            .overlayfs
             .as_ref()
             .and_then(|filesystem| filesystem.stage.clone())
     });
@@ -835,7 +865,7 @@ fn ensure_default_stage(config: &mut RunConfig, args: &RunArgs, run_id: &str) ->
         .or_else(|| temporary.clone())
         .expect("safe stage selected");
     config
-        .filesystem
+        .overlayfs
         .get_or_insert_with(OverlayFsSettings::default)
         .stage = Some(stage);
     temporary
@@ -931,7 +961,7 @@ async fn run_prepared_spec(args: RunArgs) -> anyhow::Result<i32> {
             "JSON --spec currently supports only the host executor"
         );
         anyhow::ensure!(
-            config.filesystem.as_ref().is_none_or(|overlay| {
+            config.overlayfs.as_ref().is_none_or(|overlay| {
                 overlay.base.is_none()
                     && overlay.target.is_none()
                     && overlay.merged_dir.is_none()
@@ -1136,7 +1166,7 @@ pub async fn fork(args: ForkArgs) -> anyhow::Result<i32> {
     let (agent, command) = fork_command(&source.agent, &source.command, args.command);
     config.run.agent = agent;
     config.run.command = command;
-    config.filesystem = Some(OverlayFsSettings {
+    config.overlayfs = Some(OverlayFsSettings {
         access_policy: checkpoint.access_policy.clone(),
         base: Some(checkpoint.target.clone()),
         target: None,
@@ -1161,7 +1191,7 @@ pub async fn fork(args: ForkArgs) -> anyhow::Result<i32> {
         let _ = std::fs::remove_dir_all(&stage);
         return Err(error);
     }
-    config.filesystem.as_mut().expect("configured above").stage = Some(stage);
+    config.overlayfs.as_mut().expect("configured above").stage = Some(stage);
     apply_safe_defaults(&mut config)?;
     execute_config(
         config,
@@ -1229,41 +1259,58 @@ async fn execute_config(
         None
     };
     if config.run.executor == RunExecutorKind::Vm {
-        let (rootfs, workspace) = resolve_vm_layout(&config)?;
-        config.vm.rootfs = Some(rootfs.clone());
-        config.run.workspace = Some(workspace.clone());
-        let has_guest_overlay = config
-            .filesystem
-            .as_ref()
-            .and_then(|overlay| overlay.target.as_ref())
-            .is_some();
-        if !has_guest_overlay {
-            let overlay = config
-                .filesystem
-                .get_or_insert_with(OverlayFsSettings::default);
-            // Keep the host workspace path stable inside the guest. The
-            // workspace is a separate virtio-fs mount; using the rootfs as its
-            // base would make `cwd` point at a path that does not exist in an
-            // image guest and would bypass workspace staging.
-            overlay.base = Some(workspace.clone());
-            overlay.target = Some(workspace.clone());
-            overlay.commit = OverlayFsCommit::Manual;
-        }
-        if config.vm.library_dir.is_none() && crate::vm::bundled_firmware_dir().is_none() {
-            run_log!(
-                "pVisor firmware: resolving libkrunfw {}",
-                crate::firmware::VERSION
+        #[cfg(all(target_os = "macos", target_arch = "x86_64"))]
+        anyhow::bail!(
+            "VM execution is unsupported on Intel macOS; use Linux x86_64 or Apple Silicon macOS"
+        );
+        #[cfg(not(all(target_os = "macos", target_arch = "x86_64")))]
+        {
+            let (rootfs, workspace) = resolve_vm_layout(&config)?;
+            config.vm.rootfs = Some(rootfs.clone());
+            config.run.workspace = Some(workspace.clone());
+            let has_guest_overlay = config
+                .overlayfs
+                .as_ref()
+                .and_then(|overlay| overlay.target.as_ref())
+                .is_some();
+            if !has_guest_overlay {
+                let overlay = config
+                    .overlayfs
+                    .get_or_insert_with(OverlayFsSettings::default);
+                // Keep the host workspace path stable inside the guest. The
+                // workspace is a separate virtio-fs mount; using the rootfs as its
+                // base would make `cwd` point at a path that does not exist in an
+                // image guest and would bypass workspace staging.
+                overlay.base = Some(workspace.clone());
+                overlay.target = Some(workspace.clone());
+                overlay.commit = OverlayFsCommit::Manual;
+            }
+            #[cfg(all(target_os = "linux", target_env = "musl", target_arch = "x86_64"))]
+            anyhow::ensure!(
+                config.vm.library_dir.is_none(),
+                "--vm-library-dir is unavailable in the static musl build; libkrun's kernel bundle is embedded"
             );
-            let directory =
-                tokio::task::spawn_blocking(|| crate::firmware::FirmwareStore::new()?.prepare())
-                    .await
-                    .context("libkrunfw preparation task failed")??;
-            run_log!("pVisor firmware: {}", directory.display());
-            config.vm.library_dir = Some(directory);
+            #[cfg(not(any(
+                all(target_os = "linux", target_env = "musl", target_arch = "x86_64"),
+                all(target_os = "macos", target_arch = "x86_64")
+            )))]
+            if config.vm.library_dir.is_none() && crate::vm::bundled_firmware_dir().is_none() {
+                run_log!(
+                    "pVisor firmware: resolving libkrunfw {}",
+                    crate::firmware::VERSION
+                );
+                let directory = tokio::task::spawn_blocking(|| {
+                    crate::firmware::FirmwareStore::new()?.prepare()
+                })
+                .await
+                .context("libkrunfw preparation task failed")??;
+                run_log!("pVisor firmware: {}", directory.display());
+                config.vm.library_dir = Some(directory);
+            }
         }
     } else {
         if let Some(base) = config
-            .filesystem
+            .overlayfs
             .as_ref()
             .and_then(|overlay| overlay.base.as_ref())
         {
@@ -1273,7 +1320,7 @@ async fn execute_config(
         }
         // On host/container runs the path is a real host mount point visible
         // to the Agent. VM runs keep `target` as the guest-visible path.
-        if let Some(overlay) = &mut config.filesystem {
+        if let Some(overlay) = &mut config.overlayfs {
             // The target is translated to a host merged mount below, after
             // the workspace has been canonicalized. A missing path means the
             // current workspace itself, preserving transparent cwd semantics.
@@ -1284,13 +1331,18 @@ async fn execute_config(
     }
     validate(&config, safe)?;
 
+    let filesystem_isolated = config.filesystem == FilesystemMode::Sandbox;
+
     // The rootless capability check launches `unshare`, but does not depend on
     // workspace, storage, OverlayFS, or Gateway configuration. Run it while
     // those independent inputs are resolved instead of blocking at executor
     // construction.
     #[cfg(target_os = "linux")]
-    let rootless_probe = (config.run.executor == RunExecutorKind::Host)
-        .then(|| tokio::task::spawn_blocking(crate::process::rootless_runtime_available));
+    let rootless_probe = (config.run.executor == RunExecutorKind::Host).then(|| {
+        tokio::task::spawn_blocking(move || {
+            crate::process::rootless_runtime_available(!filesystem_isolated)
+        })
+    });
 
     if config.overlaynet.mode == OverlayNetMode::Proxy && !safe {
         run_log!(
@@ -1323,7 +1375,7 @@ async fn execute_config(
     if config.run.executor == RunExecutorKind::Vm
         && config.vm.rootfs_immutable
         && config
-            .filesystem
+            .overlayfs
             .as_ref()
             .and_then(|overlay| overlay.target.as_ref())
             .is_none()
@@ -1332,6 +1384,8 @@ async fn execute_config(
         overlay.protect_target = true;
     }
     let overlay_enabled = overlay.is_some();
+    let network_namespace_required = config.run.executor == RunExecutorKind::Host
+        && config.overlaynet.policy == OverlayNetPolicy::Deny;
     let resolved_stage_for_limit = overlay.as_ref().and_then(|hint| hint.stage_dir.clone());
     let proxy = resolve_proxy(&config)?;
 
@@ -1382,28 +1436,17 @@ async fn execute_config(
 
     let executor: Arc<dyn RunExecutor> = match config.run.executor {
         #[cfg(target_os = "linux")]
-        RunExecutorKind::Host if safe => {
-            anyhow::ensure!(
-                rootless_available,
-                "required sandbox unavailable: Linux rootless namespaces must be enabled"
-            );
-            Arc::new(ProcessExecutor::rootless_with_launcher(
-                std::env::current_exe()?,
-            )?)
-        }
-        #[cfg(target_os = "macos")]
-        RunExecutorKind::Host if safe => Arc::new(ProcessExecutor::seatbelt_with_launcher(
-            std::env::current_exe()?,
-        )?),
-        #[cfg(not(any(target_os = "linux", target_os = "macos")))]
-        RunExecutorKind::Host if safe => {
-            bail!("required host sandbox is unsupported on this platform")
-        }
-        #[cfg(target_os = "linux")]
-        RunExecutorKind::Host => {
+        RunExecutorKind::Host if safe || filesystem_isolated || network_namespace_required => {
+            // The --safe/--audit preset demands its boundary; the independent
+            // --filesystem/--overlaynet policies stay best-effort and fall
+            // back to the host process with a warning.
             if rootless_available {
                 match ProcessExecutor::rootless_with_launcher(std::env::current_exe()?) {
                     Ok(executor) => Arc::new(executor),
+                    Err(error) if safe => {
+                        return Err(error)
+                            .context("required sandbox unavailable: Linux rootless launcher");
+                    }
                     Err(error) => {
                         run_log!(
                             "pVisor safe-best-effort: rootless launcher unavailable ({error}); falling back to host process"
@@ -1411,6 +1454,8 @@ async fn execute_config(
                         Arc::new(ProcessExecutor::default())
                     }
                 }
+            } else if safe {
+                bail!("required sandbox unavailable: Linux rootless namespaces must be enabled");
             } else {
                 run_log!(
                     "pVisor safe-best-effort: user/mount/PID namespaces unavailable; falling back to host process"
@@ -1419,9 +1464,13 @@ async fn execute_config(
             }
         }
         #[cfg(target_os = "macos")]
-        RunExecutorKind::Host => {
+        RunExecutorKind::Host if safe || filesystem_isolated || network_namespace_required => {
             match ProcessExecutor::seatbelt_with_launcher(std::env::current_exe()?) {
                 Ok(executor) => Arc::new(executor),
+                Err(error) if safe => {
+                    return Err(error)
+                        .context("required sandbox unavailable: macOS Seatbelt launcher");
+                }
                 Err(error) => {
                     run_log!(
                         "pVisor safe-best-effort: Seatbelt unavailable ({error}); falling back to host process"
@@ -1431,6 +1480,11 @@ async fn execute_config(
             }
         }
         #[cfg(not(any(target_os = "linux", target_os = "macos")))]
+        RunExecutorKind::Host if safe => {
+            bail!("required host sandbox is unsupported on this platform")
+        }
+        #[cfg(not(any(target_os = "linux", target_os = "macos")))]
+        RunExecutorKind::Host if filesystem_isolated => Arc::new(ProcessExecutor::default()),
         RunExecutorKind::Host => Arc::new(ProcessExecutor::default()),
         RunExecutorKind::Container => Arc::new(ContainerExecutor::new(config.container.clone())?),
         RunExecutorKind::Vm => Arc::new(VmExecutor::new(config.vm.clone())?),
@@ -1535,13 +1589,13 @@ async fn execute_config(
         "pvisor.stage".into(),
         serde_json::json!({
             "scope": "whole-rootfs",
-            "path": config.filesystem.as_ref().and_then(|overlay| overlay.stage.as_ref()).map(|path| path.display().to_string()),
-            "size_limit_bytes": config.filesystem.as_ref().and_then(|overlay| overlay.stage_size_bytes),
+            "path": config.overlayfs.as_ref().and_then(|overlay| overlay.stage.as_ref()).map(|path| path.display().to_string()),
+            "size_limit_bytes": config.overlayfs.as_ref().and_then(|overlay| overlay.stage_size_bytes),
         }),
     );
     if config.run.executor == RunExecutorKind::Vm {
         if let Some(target) = config
-            .filesystem
+            .overlayfs
             .as_ref()
             .and_then(|overlay| overlay.target.as_ref())
         {
@@ -1573,21 +1627,26 @@ async fn execute_config(
         spec.metadata
             .insert("pvisor.lineage".into(), serde_json::to_value(lineage)?);
     }
+    // CLI runs always carry the best-effort lifecycle/evidence profile;
+    // filesystem restrictions, staging, and network isolation remain opt-in.
     spec.metadata
         .insert("pvisor.safe".into(), serde_json::Value::Bool(true));
+    spec.metadata.insert(
+        "pvisor.filesystem.mode".into(),
+        serde_json::Value::String(
+            match config.filesystem {
+                FilesystemMode::Host => "host",
+                FilesystemMode::Sandbox => "sandbox",
+            }
+            .into(),
+        ),
+    );
 
     if safe {
         spec.metadata
             .insert(crate::sandbox::LANDLOCK_SANDBOX_KEY.into(), true.into());
-        #[cfg(target_os = "linux")]
-        run_log!(
-            "pVisor --safe: rootless chroot, staged state, and Landlock are enabled; host selective network policies use the supervisor proxy cooperatively"
-        );
-        #[cfg(target_os = "macos")]
-        run_log!(
-            "pVisor --safe: required sandbox with staged workspace; the macOS host executor uses Seatbelt read/write restrictions and allows IP traffic only through the supervisor proxy"
-        );
-    } else {
+    }
+    {
         let network_boundary = if config.run.executor == RunExecutorKind::Vm
             && config.overlaynet.mode == OverlayNetMode::Auto
         {
@@ -1604,27 +1663,50 @@ async fn execute_config(
         } else {
             "cooperative network review"
         };
-        if overlay_enabled {
-            run_log!("pVisor profile: staged workspace + {network_boundary}");
+        let filesystem_boundary = if filesystem_isolated {
+            "restricted filesystem access"
         } else {
-            run_log!("pVisor profile: writable lower + {network_boundary}");
-        }
+            "host filesystem access"
+        };
+        let staging = if overlay_enabled {
+            "staged workspace"
+        } else {
+            "workspace writes are direct"
+        };
+        run_log!("pVisor safe profile: {filesystem_boundary} + {staging} + {network_boundary}");
         run_log!("workspace: {}", workspace.display());
         run_log!("Job storage: {}", storage.display());
         match config.run.executor {
             RunExecutorKind::Host => {
                 #[cfg(target_os = "linux")]
-                run_log!(
-                    "boundary: rootless user/mount/PID namespaces + PID 1 reaper + synthetic root + Landlock filesystem; network remains cooperative unless explicitly denied"
-                );
+                {
+                    let process_boundary = if filesystem_isolated {
+                        "rootless user/mount/PID namespaces + PID 1 reaper"
+                    } else if network_namespace_required {
+                        "private network namespace + process supervisor"
+                    } else {
+                        "host process"
+                    };
+                    run_log!(
+                        "boundary: {process_boundary}; filesystem and network boundaries follow the selected policies"
+                    );
+                }
                 #[cfg(target_os = "macos")]
-                if overlay_enabled {
+                if filesystem_isolated && overlay_enabled {
                     run_log!(
                         "boundary: Seatbelt-enforced staged writes; reads and selective network policies remain ambient/cooperative"
                     );
+                } else if filesystem_isolated {
+                    run_log!(
+                        "boundary: Seatbelt-enforced filesystem writes; reads and selective network policies remain ambient/cooperative"
+                    );
+                } else if network_namespace_required {
+                    run_log!(
+                        "boundary: Seatbelt-enforced deny-all network; filesystem access remains host-visible"
+                    );
                 } else {
                     run_log!(
-                        "boundary: Seatbelt best-effort when available; workspace and projected HOME/CODEX_HOME/XDG state writes persist; reads and selective network policies remain ambient/cooperative"
+                        "boundary: host process; filesystem access and selective network policies remain host-visible/cooperative"
                     );
                 }
                 #[cfg(not(any(target_os = "linux", target_os = "macos")))]
@@ -1657,7 +1739,7 @@ async fn execute_config(
     }
     if result.state == RunState::Completed
         && let Some(limit) = config
-            .filesystem
+            .overlayfs
             .as_ref()
             .and_then(|overlay| overlay.stage_size_bytes)
         && let Some(path) = resolved_stage_for_limit
@@ -1711,7 +1793,7 @@ async fn execute_config(
 }
 
 fn normalize_filesystem_config(config: &mut RunConfig) -> anyhow::Result<()> {
-    let Some(filesystem) = config.filesystem.as_mut() else {
+    let Some(filesystem) = config.overlayfs.as_mut() else {
         return Ok(());
     };
     let mut mount_target: Option<PathBuf> = None;
@@ -1870,7 +1952,7 @@ fn apply_run_options(config: &mut RunConfig, args: RunArgs) -> anyhow::Result<()
     if args.run.safe || args.audit {
         let configured_ask = if args.audit {
             config
-                .filesystem
+                .overlayfs
                 .as_ref()
                 .map(|filesystem| {
                     filesystem
@@ -1899,7 +1981,11 @@ fn apply_run_options(config: &mut RunConfig, args: RunArgs) -> anyhow::Result<()
             unreachable!("safe patch is a Run command")
         };
         apply_cli(config, *patch)?;
-        if let Some(filesystem) = config.filesystem.as_mut() {
+        // The preset requests the sandboxed filesystem view so the launcher
+        // installs the synthetic root/Landlock or Seatbelt write controls.
+        // An explicit --filesystem value in `args` still wins below.
+        config.filesystem = FilesystemMode::Sandbox;
+        if let Some(filesystem) = config.overlayfs.as_mut() {
             filesystem.access.extend(configured_ask);
         }
     }
@@ -1942,7 +2028,7 @@ fn warn_safe_preset(config: &RunConfig, args: &RunArgs) {
     run_log!(
         "pVisor --safe: OverlayFS denies private-key paths and asks or warns on sensitive paths according to the effective rules. Glob rules cover the overlay view; required sandbox restricts access outside that view. Explicit shares, renamed copies and embedded secrets need separate rules. No bulk-read or tool-call attribution monitoring."
     );
-    if let Some(overlay) = &config.filesystem {
+    if let Some(overlay) = &config.overlayfs {
         run_log!(
             "pVisor --safe: file deny={:?}, ask={:?}, warn={:?}",
             overlay.access_policy.deny(),
@@ -1952,7 +2038,7 @@ fn warn_safe_preset(config: &RunConfig, args: &RunArgs) {
     }
     if !config.container.mounts.is_empty()
         || config
-            .filesystem
+            .overlayfs
             .as_ref()
             .is_some_and(|overlay| !overlay.compose.is_empty())
     {
@@ -1981,7 +2067,7 @@ fn warn_safe_preset(config: &RunConfig, args: &RunArgs) {
 fn apply_cli(config: &mut RunConfig, args: RunArgs) -> anyhow::Result<()> {
     if let Some(path) = args.stage.clone() {
         config
-            .filesystem
+            .overlayfs
             .get_or_insert_with(OverlayFsSettings::default)
             .stage = Some(path);
     }
@@ -2038,6 +2124,9 @@ fn apply_cli(config: &mut RunConfig, args: RunArgs) -> anyhow::Result<()> {
     }
     if let Some(value) = explicit_executor {
         config.run.executor = value;
+    }
+    if let Some(value) = args.run.filesystem {
+        config.filesystem = value;
     }
     if args.vm.vm {
         config.run.executor = RunExecutorKind::Vm;
@@ -2158,7 +2247,7 @@ fn apply_cli(config: &mut RunConfig, args: RunArgs) -> anyhow::Result<()> {
         || args.stage.is_some();
     if enables_overlayfs {
         let overlayfs = config
-            .filesystem
+            .overlayfs
             .get_or_insert_with(OverlayFsSettings::default);
         if !args.overlayfs.access.is_empty() {
             overlayfs.access_policy = Default::default();
@@ -2360,7 +2449,7 @@ fn validate_vm_rootfs_platform(config: &RunConfig) -> anyhow::Result<()> {
 }
 
 fn validate(config: &RunConfig, safe: bool) -> anyhow::Result<()> {
-    if let Some(filesystem) = &config.filesystem {
+    if let Some(filesystem) = &config.overlayfs {
         anyhow::ensure!(
             filesystem.compose.is_empty() || filesystem.commit != OverlayFsCommit::Apply,
             "composed filesystem layers cannot be combined with automatic apply"
@@ -2421,7 +2510,7 @@ fn validate(config: &RunConfig, safe: bool) -> anyhow::Result<()> {
         bail!("missing Agent command; pass it after `--` or set run.command");
     }
     let overlay_path = config
-        .filesystem
+        .overlayfs
         .as_ref()
         .and_then(|overlay| overlay.target.as_deref().or(overlay.merged_dir.as_deref()));
     if let Some(path) = overlay_path {
@@ -2454,7 +2543,7 @@ fn validate(config: &RunConfig, safe: bool) -> anyhow::Result<()> {
         if overlay_path.is_none() {
             anyhow::ensure!(
                 config
-                    .filesystem
+                    .overlayfs
                     .as_ref()
                     .and_then(|overlay| overlay.base.as_deref())
                     == Some(rootfs),
@@ -2520,6 +2609,7 @@ fn resolve_workspace(workspace: &Path) -> anyhow::Result<PathBuf> {
     Ok(workspace)
 }
 
+#[cfg_attr(all(target_os = "macos", target_arch = "x86_64"), allow(dead_code))]
 fn resolve_vm_layout(config: &RunConfig) -> anyhow::Result<(PathBuf, PathBuf)> {
     let rootfs = config
         .vm
@@ -2528,7 +2618,7 @@ fn resolve_vm_layout(config: &RunConfig) -> anyhow::Result<(PathBuf, PathBuf)> {
         .context("VM execution requires vm.rootfs or --rootfs <PATH>")?;
     let rootfs = resolve_directory(rootfs, "libkrun rootfs")?;
     let workspace = config
-        .filesystem
+        .overlayfs
         .as_ref()
         .filter(|overlay| overlay.target.is_some())
         .and_then(|overlay| overlay.base.clone())
@@ -2552,7 +2642,7 @@ fn select_run_storage(
     run_id: &str,
 ) -> anyhow::Result<PathBuf> {
     if let Some(stage) = config
-        .filesystem
+        .overlayfs
         .as_ref()
         .and_then(|overlay| overlay.stage.clone())
     {
@@ -2565,7 +2655,7 @@ fn select_run_storage(
         std::env::current_dir()?.join(run_home)
     };
     let preferred = run_home.join(run_id);
-    let Some(overlayfs) = &config.filesystem else {
+    let Some(overlayfs) = &config.overlayfs else {
         return Ok(preferred);
     };
     let mut read_only_layers = Vec::with_capacity(overlayfs.compose.len() + 1);
@@ -2604,7 +2694,7 @@ fn resolve_overlay(
     storage: &Path,
     run_id: &str,
 ) -> anyhow::Result<Option<OverlayHint>> {
-    let Some(overlayfs) = &config.filesystem else {
+    let Some(overlayfs) = &config.overlayfs else {
         return Ok(None);
     };
     let base = resolve_directory(
@@ -2748,7 +2838,7 @@ fn resolve_filesystem_grants(
             );
             anyhow::ensure!(
                 (config
-                    .filesystem
+                    .overlayfs
                     .as_ref()
                     .is_some_and(|filesystem| filesystem.base.as_ref() == Some(&path)))
                     || (!paths_overlap(&path, workspace) && !paths_overlap(&path, storage)),
@@ -2815,31 +2905,32 @@ mod tests {
         let mut normal = RunConfig::default();
         let normal_args = preset_args(&["--", "bash"]);
         assert!(ensure_default_stage(&mut normal, &normal_args, "normal").is_none());
-        assert!(normal.filesystem.is_none());
+        assert!(normal.overlayfs.is_none(), "stage is opt-in");
+        assert_eq!(normal.filesystem, FilesystemMode::Host);
 
         let mut safe = RunConfig::default();
         let safe_args = preset_args(&["--safe", "--", "bash"]);
         let temporary = ensure_default_stage(&mut safe, &safe_args, "safe").unwrap();
-        assert_eq!(safe.filesystem.unwrap().stage, Some(temporary));
+        assert_eq!(safe.overlayfs.unwrap().stage, Some(temporary));
 
         let mut audit = RunConfig::default();
         let audit_args = preset_args(&["--audit", "--", "codex"]);
         assert!(audit_args.tui_requested());
         assert!(audit_args.wants_tui(true));
         let temporary = ensure_default_stage(&mut audit, &audit_args, "audit").unwrap();
-        assert_eq!(audit.filesystem.unwrap().stage, Some(temporary));
+        assert_eq!(audit.overlayfs.unwrap().stage, Some(temporary));
         let mut config = RunConfig::default();
         apply_run_options(&mut config, audit_args).unwrap();
         assert_eq!(config.overlaynet.policy, OverlayNetPolicy::Allowlist);
         normalize_filesystem_config(&mut config).unwrap();
-        assert!(!config.filesystem.unwrap().access_policy.ask().is_empty());
+        assert!(!config.overlayfs.unwrap().access_policy.ask().is_empty());
 
         let mut retained = RunConfig::default();
         let directory = tempfile::tempdir().unwrap();
         let stage = directory.path().join("retained-stage");
         let args = preset_args(&["--safe", "--stage", stage.to_str().unwrap(), "--", "bash"]);
         assert!(ensure_default_stage(&mut retained, &args, "retained").is_none());
-        assert_eq!(retained.filesystem.unwrap().stage, Some(stage));
+        assert_eq!(retained.overlayfs.unwrap().stage, Some(stage));
     }
 
     #[test]
@@ -2852,10 +2943,10 @@ mod tests {
         let spec = directory.path().join("run.toml");
         std::fs::write(
             &spec,
-            "[[filesystem.access]]\npath = 'secrets/*.pem'\nlevel = 'ask'\n",
+            "[[overlayfs.access]]\npath = 'secrets/*.pem'\nlevel = 'ask'\n",
         )
         .unwrap();
-        let args = preset_args(&["--spec", spec.to_str().unwrap(), "--", "bash"]);
+        let args = preset_args(&["--config", spec.to_str().unwrap(), "--", "bash"]);
         assert!(args.audit_requested().unwrap());
         let mut config = load_run_config(&args, None, false).unwrap();
         let mut effective = args;
@@ -2864,12 +2955,28 @@ mod tests {
         normalize_filesystem_config(&mut config).unwrap();
         assert!(
             config
-                .filesystem
+                .overlayfs
                 .unwrap()
                 .access_policy
                 .ask()
                 .contains(&"secrets/*.pem".into())
         );
+    }
+
+    #[test]
+    fn safe_preset_requests_the_sandboxed_filesystem_view() {
+        let mut config = RunConfig::default();
+        apply_run_options(&mut config, preset_args(&["--safe", "--", "codex"])).unwrap();
+        assert_eq!(config.filesystem, FilesystemMode::Sandbox);
+
+        // An explicit --filesystem value still wins over the preset.
+        let mut config = RunConfig::default();
+        apply_run_options(
+            &mut config,
+            preset_args(&["--safe", "--filesystem", "host", "--", "codex"]),
+        )
+        .unwrap();
+        assert_eq!(config.filesystem, FilesystemMode::Host);
     }
 
     #[test]
@@ -2980,8 +3087,8 @@ pass_env = ["CONFIG_SECRET"]
 [overlaynet]
 mode = "off"
 policy = "public"
-[filesystem]
-[[filesystem.mount]]
+[overlayfs]
+[[overlayfs.mount]]
 source = "/configured/share"
 access = "read"
 "#;
@@ -2993,11 +3100,11 @@ access = "read"
         assert_eq!(config.overlaynet.mode, OverlayNetMode::Auto);
         assert_eq!(config.overlaynet.rules[0].host, "api.anthropic.com");
         assert_eq!(
-            config.filesystem.as_ref().unwrap().mount[0].source,
+            config.overlayfs.as_ref().unwrap().mount[0].source,
             PathBuf::from("/configured/share")
         );
         assert_eq!(
-            config.filesystem.as_ref().unwrap().commit,
+            config.overlayfs.as_ref().unwrap().commit,
             OverlayFsCommit::Manual
         );
 
@@ -3027,7 +3134,7 @@ access = "read"
         assert_eq!(config.overlaynet.rules[0].host, "inference.example");
         assert_eq!(config.overlaynet.rules[0].ports, [8443]);
         assert_eq!(
-            config.filesystem.as_ref().unwrap().mount[0].source,
+            config.overlayfs.as_ref().unwrap().mount[0].source,
             PathBuf::from("/explicit/share")
         );
 
@@ -3036,7 +3143,7 @@ access = "read"
         assert_eq!(config.overlaynet.mode, OverlayNetMode::Off);
         assert_eq!(config.run.pass_env, ["CONFIG_SECRET"]);
         assert_eq!(
-            config.filesystem.as_ref().unwrap().mount[0].source,
+            config.overlayfs.as_ref().unwrap().mount[0].source,
             PathBuf::from("/configured/share")
         );
     }
@@ -3044,17 +3151,17 @@ access = "read"
     #[test]
     fn file_access_rules_follow_cli_safe_config_priority() {
         let source = r#"
-[[filesystem.access]]
+[[overlayfs.access]]
 path = "configured-secret"
 level = "deny"
-[[filesystem.access]]
+[[overlayfs.access]]
 path = "configured-warning"
 level = "read"
 "#;
         let mut config: RunConfig = toml::from_str(source).unwrap();
         apply_run_options(&mut config, preset_args(&["--safe", "--", "codex"])).unwrap();
         normalize_filesystem_config(&mut config).unwrap();
-        let policy = &config.filesystem.as_ref().unwrap().access_policy;
+        let policy = &config.overlayfs.as_ref().unwrap().access_policy;
         assert!(policy.deny().contains(&"**/.ssh".into()));
         assert!(!policy.deny().contains(&"configured-secret".into()));
 
@@ -3073,7 +3180,7 @@ level = "read"
         )
         .unwrap();
         normalize_filesystem_config(&mut config).unwrap();
-        let policy = &config.filesystem.as_ref().unwrap().access_policy;
+        let policy = &config.overlayfs.as_ref().unwrap().access_policy;
         assert_eq!(policy.deny(), ["private/**"]);
         assert_eq!(policy.warn(), ["custom/*.pem"]);
         let overlay = resolve_overlay(
@@ -3101,7 +3208,7 @@ level = "read"
         )
         .unwrap();
         normalize_filesystem_config(&mut config).unwrap();
-        let policy = &config.filesystem.as_ref().unwrap().access_policy;
+        let policy = &config.overlayfs.as_ref().unwrap().access_policy;
         assert_eq!(policy.ask(), ["secrets/*.pem"]);
         assert!(policy.warn().is_empty());
     }
@@ -3187,6 +3294,40 @@ sandbox = "required""#
             )
             .is_err()
         );
+    }
+
+    #[test]
+    fn filesystem_policy_is_independent_from_overlaynet() {
+        let crate::cli::Command::Run(args) = Cli::try_parse_from([
+            "pvisor",
+            "run",
+            "--overlaynet-deny-all",
+            "--filesystem",
+            "sandbox",
+            "--",
+            "true",
+        ])
+        .unwrap()
+        .command
+        else {
+            unreachable!()
+        };
+        let mut config = RunConfig::default();
+        apply_cli(&mut config, *args).unwrap();
+        assert_eq!(config.filesystem, FilesystemMode::Sandbox);
+        assert_eq!(config.overlaynet.policy, OverlayNetPolicy::Deny);
+
+        let crate::cli::Command::Run(args) =
+            Cli::try_parse_from(["pvisor", "run", "--overlaynet-deny-all", "--", "true"])
+                .unwrap()
+                .command
+        else {
+            unreachable!()
+        };
+        let mut config = RunConfig::default();
+        apply_cli(&mut config, *args).unwrap();
+        assert_eq!(config.filesystem, FilesystemMode::Host);
+        assert_eq!(config.overlaynet.policy, OverlayNetPolicy::Deny);
     }
 
     #[test]
@@ -3421,6 +3562,7 @@ sandbox = "required""#
         assert!(error.to_string().contains("requires --executor vm"));
     }
 
+    #[cfg(not(all(target_os = "macos", target_arch = "x86_64")))]
     #[test]
     fn vm_rejects_the_host_only_explicit_proxy_mode() {
         let temporary = tempfile::tempdir().unwrap();
@@ -3430,7 +3572,7 @@ sandbox = "required""#
         config.vm.rootfs = Some(temporary.path().to_path_buf());
         config.vm.library_dir = Some(temporary.path().to_path_buf());
         std::fs::write(temporary.path().join(crate::vm::firmware_name()), []).unwrap();
-        config.filesystem = Some(OverlayFsSettings {
+        config.overlayfs = Some(OverlayFsSettings {
             base: Some(temporary.path().to_path_buf()),
             ..OverlayFsSettings::default()
         });
@@ -3472,7 +3614,7 @@ sandbox = "required""#
         std::fs::create_dir(&project).unwrap();
         let mut config = RunConfig::default();
         config.vm.rootfs = Some(rootfs.clone());
-        config.filesystem = Some(OverlayFsSettings {
+        config.overlayfs = Some(OverlayFsSettings {
             base: Some(project.clone()),
             target: Some("/work/project".into()),
             ..OverlayFsSettings::default()
@@ -3482,11 +3624,12 @@ sandbox = "required""#
         assert_eq!(resolved_workspace, project.canonicalize().unwrap());
     }
 
+    #[cfg(not(all(target_os = "macos", target_arch = "x86_64")))]
     #[test]
     fn overlayfs_path_is_valid_for_vm_executor() {
         let mut config = RunConfig::default();
         config.run.command = vec!["true".into()];
-        config.filesystem = Some(OverlayFsSettings {
+        config.overlayfs = Some(OverlayFsSettings {
             base: Some("/tmp/project".into()),
             target: Some("/workspace".into()),
             ..OverlayFsSettings::default()
@@ -3518,7 +3661,7 @@ sandbox = "required""#
         let mut config = RunConfig::default();
         apply_cli(&mut config, *args).unwrap();
         assert_eq!(config.run.executor, RunExecutorKind::Vm);
-        let overlay = config.filesystem.unwrap();
+        let overlay = config.overlayfs.unwrap();
         assert_eq!(overlay.mount[0].source, PathBuf::from("/tmp/project"));
         assert_eq!(overlay.mount[0].target, Some(PathBuf::from("/tmp/project")));
         assert_eq!(overlay.stage.as_deref(), Some(Path::new("/tmp/stage")));
@@ -3590,7 +3733,7 @@ sandbox = "required""#
             "8",
             "--max-open-files",
             "32",
-            "--filesystem-max-size",
+            "--overlayfs-max-size",
             "2MiB",
             "--",
             "true",
@@ -3610,7 +3753,7 @@ sandbox = "required""#
         assert_eq!(config.run.resource_limits.open_files, Some(32));
         assert_eq!(
             config
-                .filesystem
+                .overlayfs
                 .as_ref()
                 .and_then(|overlay| overlay.stage_size_bytes),
             Some(2 * 1024 * 1024)
@@ -3741,7 +3884,7 @@ sandbox = "required""#
         // Terminal wrapping must not affect checks of the safety description.
         let help = help.split_whitespace().collect::<Vec<_>>().join(" ");
         for disclosure in [
-            "safe-best-effort",
+            "filesystem sandbox",
             "macFUSE",
             "Seatbelt",
             "Full-disk reads remain ambient",
@@ -3767,8 +3910,8 @@ sandbox = "required""#
 
         #[cfg(target_os = "linux")]
         {
-            assert!(help.contains("safe-best-effort"));
-            assert!(help.contains("Host execution uses safe-best-effort isolation"));
+            assert!(help.contains("host filesystem view by default"));
+            assert!(help.contains("--filesystem sandbox"));
         }
         #[cfg(target_os = "macos")]
         {
@@ -3787,8 +3930,8 @@ sandbox = "required""#
             "--mount",
             "--access",
             "--stage",
-            "--filesystem-backend",
-            "--filesystem-max-size",
+            "--overlayfs-backend",
+            "--overlayfs-max-size",
         ] {
             assert!(help.contains(option), "missing {option}");
         }
@@ -3995,7 +4138,7 @@ sandbox = "required""#
             "run",
             "--stage",
             "/tmp/pvisor-stage",
-            "--filesystem-backend",
+            "--overlayfs-backend",
             "jujutsu",
             "--",
             "true",
@@ -4007,7 +4150,7 @@ sandbox = "required""#
         };
         let mut config = RunConfig::default();
         apply_cli(&mut config, *args).unwrap();
-        let overlayfs = config.filesystem.expect("OverlayFS should be enabled");
+        let overlayfs = config.overlayfs.expect("OverlayFS should be enabled");
         assert_eq!(overlayfs.backend, OverlayFsBackend::Jujutsu);
         assert_eq!(
             overlayfs.stage.as_deref(),
@@ -4025,7 +4168,7 @@ sandbox = "required""#
         std::fs::create_dir_all(&compose).unwrap();
         std::fs::create_dir_all(&storage).unwrap();
         let config = RunConfig {
-            filesystem: Some(OverlayFsSettings {
+            overlayfs: Some(OverlayFsSettings {
                 compose: vec![compose.clone()],
                 ..OverlayFsSettings::default()
             }),
@@ -4059,7 +4202,7 @@ sandbox = "required""#
             std::fs::create_dir_all(path).unwrap();
         }
         let config = RunConfig {
-            filesystem: Some(OverlayFsSettings {
+            overlayfs: Some(OverlayFsSettings {
                 compose: vec![bottom.clone(), top.clone()],
                 ..OverlayFsSettings::default()
             }),
@@ -4097,7 +4240,7 @@ sandbox = "required""#
             ),
         ] {
             let config = RunConfig {
-                filesystem: Some(OverlayFsSettings {
+                overlayfs: Some(OverlayFsSettings {
                     base: Some(base),
                     compose: layers,
                     stage: Some(stage),
@@ -4109,7 +4252,7 @@ sandbox = "required""#
         }
 
         let config = RunConfig {
-            filesystem: Some(OverlayFsSettings {
+            overlayfs: Some(OverlayFsSettings {
                 base: Some(workspace.clone()),
                 stage: Some(temporary.path().to_path_buf()),
                 ..OverlayFsSettings::default()
@@ -4126,7 +4269,7 @@ sandbox = "required""#
                 command: vec!["true".into()],
                 ..crate::config::RunSettings::default()
             },
-            filesystem: Some(OverlayFsSettings {
+            overlayfs: Some(OverlayFsSettings {
                 compose: vec!["/tmp/layer".into()],
                 commit: OverlayFsCommit::Apply,
                 ..OverlayFsSettings::default()
@@ -4159,7 +4302,7 @@ sandbox = "required""#
             unreachable!()
         };
         let mut config = RunConfig {
-            filesystem: Some(OverlayFsSettings {
+            overlayfs: Some(OverlayFsSettings {
                 mount: vec![FilesystemMount {
                     source: "/tmp/old".into(),
                     target: Some("/tmp/old".into()),
@@ -4170,7 +4313,7 @@ sandbox = "required""#
             ..RunConfig::default()
         };
         apply_cli(&mut config, *args).unwrap();
-        let mounts = config.filesystem.unwrap().mount;
+        let mounts = config.overlayfs.unwrap().mount;
         assert_eq!(mounts[0].source, PathBuf::from("/tmp/first"));
         assert_eq!(mounts[1].source, PathBuf::from("/tmp/second"));
     }

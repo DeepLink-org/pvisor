@@ -13,14 +13,15 @@ use clap::{Parser, Subcommand};
 
 #[cfg(target_os = "linux")]
 const ROOT_ABOUT: &str =
-    "Manage Agent Jobs with rootless Linux sandboxing and reviewable workspaces";
+    "Manage Agent Jobs with independent filesystem, network, and staging policies";
 #[cfg(target_os = "linux")]
-const ROOT_LONG_ABOUT: &str = "pVisor manages Jobs: `run` starts one, and `status`, `kill`, `inspect`, `fork`, `apply`, and `drop` act on it. `env` supplies reusable environments; `replay` starts a Job from a trajectory.\n\nOn Linux, ordinary host Jobs use rootless isolation when available and write through projected host paths. `--safe` requires rootless namespaces and Landlock, stages the workspace and writable home state, and never writes those lower paths directly. Add `--overlaynet-deny-all` to isolate direct network sockets in a private network namespace.";
+const ROOT_LONG_ABOUT: &str = "pVisor manages Jobs: `run` starts one, and `status`, `kill`, `inspect`, `fork`, `apply`, and `drop` act on it. `env` supplies reusable environments; `replay` starts a Job from a trajectory.\n\nHost execution preserves the host filesystem view by default. Use `--filesystem sandbox` for synthetic-root/Landlock restrictions, `--stage` for independent workspace staging, and `--overlaynet` for network policy. On Linux, `--overlaynet-deny-all` uses a private network namespace without enabling filesystem restrictions.";
 
 #[cfg(target_os = "macos")]
-const ROOT_ABOUT: &str = "Manage Agent Jobs with Seatbelt isolation and reviewable workspaces";
+const ROOT_ABOUT: &str =
+    "Manage Agent Jobs with independent filesystem, network, and staging policies";
 #[cfg(target_os = "macos")]
-const ROOT_LONG_ABOUT: &str = "pVisor manages Jobs: `run` starts one, and `status`, `kill`, `inspect`, `fork`, `apply`, and `drop` act on it. `env` supplies reusable environments; `replay` starts a Job from a trajectory.\n\nOn macOS, host Jobs use safe-best-effort macFUSE workspace views and Seatbelt confinement when supported. Full-disk reads remain available for local toolchain compatibility. `--overlaynet-deny-all` also blocks non-loopback IP and ambient host Unix sockets while retaining loopback proxy access and Job-local IPC.";
+const ROOT_LONG_ABOUT: &str = "pVisor manages Jobs: `run` starts one, and `status`, `kill`, `inspect`, `fork`, `apply`, and `drop` act on it. `env` supplies reusable environments; `replay` starts a Job from a trajectory.\n\nHost execution preserves the host filesystem view by default. Use `--filesystem sandbox` for Seatbelt filesystem restrictions, `--stage` for independent workspace staging (macFUSE may be required), and `--overlaynet` for network policy. Full-disk reads remain available and ambient unless filesystem sandboxing is requested. `--overlaynet-deny-all` blocks non-loopback IP and ambient host Unix sockets while retaining loopback proxy access and Job-local IPC.";
 
 #[cfg(not(any(target_os = "linux", target_os = "macos")))]
 const ROOT_ABOUT: &str = "Manage Agent Jobs with staged, reviewable workspaces";
@@ -291,10 +292,11 @@ mod tests {
 
         #[cfg(target_os = "linux")]
         {
-            assert!(help.contains("safe-best-effort"));
-            assert!(help.contains("rootless isolation"));
-            assert!(help.contains("namespace"));
-            assert!(help.contains("Landlock"));
+            let normalized = help.split_whitespace().collect::<Vec<_>>().join(" ");
+            assert!(normalized.contains("host filesystem view by default"));
+            assert!(normalized.contains("--filesystem sandbox"));
+            assert!(normalized.contains("namespace"));
+            assert!(normalized.contains("Landlock"));
         }
         #[cfg(target_os = "macos")]
         {

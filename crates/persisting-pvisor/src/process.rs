@@ -8,7 +8,7 @@ use crate::sandbox::{
 };
 #[cfg(target_os = "linux")]
 use crate::sandbox::{ROOTLESS_ATTESTATION, SandboxPlan, landlock_runtime_available};
-use crate::sandbox::{SANDBOX_PLAN_ENV, SANDBOX_SETUP_FAILED_WARNING};
+use crate::sandbox::{SANDBOX_ARG0_ENV, SANDBOX_PLAN_ENV, SANDBOX_SETUP_FAILED_WARNING};
 use async_trait::async_trait;
 use persisting_control::{
     CapabilityDimension, CapabilityEnforcementEvidence, ExecutorDescriptor, ExecutorKind,
@@ -418,6 +418,19 @@ fn network_isolation(spec: &RunSpec) -> std::io::Result<NetworkIsolation> {
     }
 }
 
+#[cfg(any(target_os = "linux", target_os = "macos"))]
+fn filesystem_isolation(spec: &RunSpec) -> bool {
+    // Library users that construct a rootless executor directly retain the
+    // historical restricted default. CLI runs set this marker explicitly so
+    // filesystem access can be configured independently from networking.
+    !matches!(
+        spec.metadata
+            .get("pvisor.filesystem.mode")
+            .and_then(serde_json::Value::as_str),
+        Some("host")
+    )
+}
+
 fn resolve_host_program(program: &str) -> std::path::PathBuf {
     if program.contains(std::path::MAIN_SEPARATOR) {
         return program.into();
@@ -572,6 +585,13 @@ impl ProcessExecutor {
         command.envs(&invocation.env);
         // This is a reserved supervisor-to-launcher capability. Apply it last
         // so an untrusted Run environment cannot remove or replace the policy.
+        if sandbox_plan.is_some() {
+            // The launcher canonicalizes the executable so it can project the
+            // real inode into a synthetic root. Preserve the caller's original
+            // argv[0] separately: Alpine's /bin commands are often BusyBox
+            // symlinks, and BusyBox chooses its applet from that basename.
+            command.env(SANDBOX_ARG0_ENV, &invocation.program);
+        }
         if let Some(sandbox_plan) = sandbox_plan {
             command.env(SANDBOX_PLAN_ENV, sandbox_plan);
         }
@@ -593,19 +613,25 @@ impl ProcessExecutor {
 /// probe safe in a multithreaded Tokio process and distinguishes an unavailable
 /// host capability from a later Agent failure.
 #[cfg(target_os = "linux")]
-pub(crate) fn rootless_runtime_available() -> bool {
-    landlock_runtime_available() && rootless_namespaces_available()
-}
-
-#[cfg(target_os = "linux")]
-pub(crate) fn rootless_namespaces_available() -> bool {
-    StdCommand::new("unshare")
-        .args(["--user", "--mount", "--pid", "--fork", "true"])
-        .stdin(Stdio::null())
-        .stdout(Stdio::null())
-        .stderr(Stdio::null())
-        .status()
-        .is_ok_and(|status| status.success())
+pub(crate) fn rootless_runtime_available(preserve_host_filesystem: bool) -> bool {
+    let probe = |args: &[&str]| {
+        StdCommand::new("unshare")
+            .args(args)
+            .stdin(Stdio::null())
+            .stdout(Stdio::null())
+            .stderr(Stdio::null())
+            .status()
+            .is_ok_and(|status| status.success())
+    };
+    if preserve_host_filesystem {
+        // Network-only Runs still use a user namespace so the Agent cannot
+        // create another namespace and escape deny-all. Landlock is omitted
+        // at runtime, so it must not be a prerequisite for this probe.
+        probe(["--user", "--mount", "--net", "--fork", "true"].as_slice())
+    } else {
+        landlock_runtime_available()
+            && probe(["--user", "--mount", "--pid", "--fork", "true"].as_slice())
+    }
 }
 
 #[cfg(unix)]
@@ -685,6 +711,7 @@ fn platform_launcher_command(
     })?;
     let mut sandbox_root = SandboxResources::create()?;
     let network = network_isolation(spec)?;
+    let filesystem_isolated = filesystem_isolation(spec);
     let plan = rootless_plan(
         spec,
         invocation,
@@ -698,6 +725,7 @@ fn platform_launcher_command(
             .expect("created rootless attestation")
             .to_owned(),
         network,
+        filesystem_isolated,
     )?;
     let encoded = serde_json::to_vec(&plan).map_err(std::io::Error::other)?;
     let plan_path = sandbox_root
@@ -727,6 +755,7 @@ fn platform_launcher_command(
         )
     })?;
     let resources = SandboxResources::create()?;
+    let filesystem_isolated = filesystem_isolation(spec);
     let cwd = invocation
         .cwd
         .as_deref()
@@ -760,49 +789,56 @@ fn platform_launcher_command(
     for path in ["/dev/null", "/dev/zero", "/dev/tty", "/dev/fd"] {
         push_existing(&mut writable_paths, Path::new(path));
     }
-    // Runtime locations are readable (never writable) in the required profile.
-    for path in [
-        "/System/Library",
-        "/System/Cryptexes/OS",
-        "/usr",
-        "/bin",
-        "/sbin",
-        "/Library/Apple",
-        "/Library/Developer",
-        "/Library/Frameworks",
-        "/opt/homebrew",
-        "/private/var/db/dyld",
-        "/private/var/db/timezone",
-        "/private/etc/localtime",
-        "/private/etc/hosts",
-        "/private/etc/resolv.conf",
-        "/private/etc/services",
-        "/private/etc/protocols",
-        "/private/etc/ssl",
-        "/dev/urandom",
-        "/dev/random",
-    ] {
-        push_existing(&mut readable_paths, Path::new(path));
-    }
-    for capability in &spec.capabilities.filesystem {
-        let path = PathBuf::from(&capability.path);
-        let path = if path.is_absolute() {
-            path
-        } else {
-            cwd.join(path)
-        };
-        if !path.exists() {
-            return Err(std::io::Error::new(
-                std::io::ErrorKind::NotFound,
-                format!(
-                    "filesystem capability path does not exist: {}",
-                    path.display()
-                ),
-            ));
+    if restrict_reads {
+        // Runtime locations are readable (never writable) in the required profile.
+        for path in [
+            "/System/Library",
+            "/System/Cryptexes/OS",
+            "/usr",
+            "/bin",
+            "/sbin",
+            "/Library/Apple",
+            "/Library/Developer",
+            "/Library/Frameworks",
+            "/opt/homebrew",
+            "/private/var/db/dyld",
+            "/private/var/db/timezone",
+            "/private/etc/localtime",
+            "/private/etc/hosts",
+            "/private/etc/resolv.conf",
+            "/private/etc/services",
+            "/private/etc/protocols",
+            "/private/etc/ssl",
+            "/dev/urandom",
+            "/dev/random",
+        ] {
+            push_existing(&mut readable_paths, Path::new(path));
         }
-        match capability.access {
-            FilesystemAccess::Read => readable_paths.push(path),
-            FilesystemAccess::ReadWrite => writable_paths.push(path),
+    }
+    if filesystem_isolated || restrict_reads {
+        for capability in &spec.capabilities.filesystem {
+            let path = PathBuf::from(&capability.path);
+            let path = if path.is_absolute() {
+                path
+            } else {
+                cwd.join(path)
+            };
+            if !path.exists() {
+                return Err(std::io::Error::new(
+                    std::io::ErrorKind::NotFound,
+                    format!(
+                        "filesystem capability path does not exist: {}",
+                        path.display()
+                    ),
+                ));
+            }
+            match capability.access {
+                // Read grants only matter once reads are restricted; ambient
+                // reads stay available when only writes are isolated.
+                FilesystemAccess::Read if restrict_reads => readable_paths.push(path),
+                FilesystemAccess::Read => {}
+                FilesystemAccess::ReadWrite => writable_paths.push(path),
+            }
         }
     }
 
@@ -836,6 +872,7 @@ fn platform_launcher_command(
             &allowed_unix_sockets,
             &local_socket_roots,
             network,
+            filesystem_isolated,
         )?
     } else {
         seatbelt_profile(
@@ -843,6 +880,7 @@ fn platform_launcher_command(
             &allowed_unix_sockets,
             &local_socket_roots,
             network,
+            filesystem_isolated,
         )?
     };
     let plan = SeatbeltPlan {
@@ -852,6 +890,7 @@ fn platform_launcher_command(
             .expect("created Seatbelt attestation")
             .to_owned(),
         network,
+        filesystem_isolated,
     };
     let encoded = serde_json::to_string(&plan).map_err(std::io::Error::other)?;
 
@@ -900,6 +939,7 @@ fn rootless_plan(
     root: PathBuf,
     attestation: PathBuf,
     network: NetworkIsolation,
+    filesystem_isolated: bool,
 ) -> std::io::Result<SandboxPlan> {
     let cwd = invocation
         .cwd
@@ -1049,25 +1089,27 @@ fn rootless_plan(
         }
     }
 
-    for capability in &spec.capabilities.filesystem {
-        let path = PathBuf::from(&capability.path);
-        let path = if path.is_absolute() {
-            path
-        } else {
-            cwd.join(path)
-        };
-        if !path.exists() {
-            return Err(std::io::Error::new(
-                std::io::ErrorKind::NotFound,
-                format!(
-                    "filesystem capability path does not exist: {}",
-                    path.display()
-                ),
-            ));
-        }
-        match capability.access {
-            FilesystemAccess::Read => push_existing(&mut read_only, &path),
-            FilesystemAccess::ReadWrite => push_existing(&mut read_write, &path),
+    if filesystem_isolated {
+        for capability in &spec.capabilities.filesystem {
+            let path = PathBuf::from(&capability.path);
+            let path = if path.is_absolute() {
+                path
+            } else {
+                cwd.join(path)
+            };
+            if !path.exists() {
+                return Err(std::io::Error::new(
+                    std::io::ErrorKind::NotFound,
+                    format!(
+                        "filesystem capability path does not exist: {}",
+                        path.display()
+                    ),
+                ));
+            }
+            match capability.access {
+                FilesystemAccess::Read => push_existing(&mut read_only, &path),
+                FilesystemAccess::ReadWrite => push_existing(&mut read_write, &path),
+            }
         }
     }
 
@@ -1088,9 +1130,7 @@ fn rootless_plan(
         staged_workspace,
         staged_workspace_source,
         network,
-        // Both ordinary and safe host runs install Landlock. The safe profile
-        // also binds staged views over the workspace and state roots.
-        landlock: true,
+        filesystem_isolated,
         process_limit: spec.runtime.resource_limits.processes,
     })
 }
@@ -1877,6 +1917,76 @@ mod tests {
         let plan: SandboxPlan = serde_json::from_str(&encoded).unwrap();
         assert_eq!(plan.cwd, temporary.path().canonicalize().unwrap());
         assert_ne!(encoded, r#"{"read_write":["/"]}"#);
+    }
+
+    #[cfg(target_os = "linux")]
+    #[test]
+    fn rootless_plan_can_keep_host_filesystem_access_for_network_only_runs() {
+        let temporary = tempfile::tempdir().unwrap();
+        let mut spec = RunSpec::process("run", "agent", "/bin/true");
+        spec.metadata.insert(
+            "pvisor.filesystem.mode".into(),
+            serde_json::Value::String("host".into()),
+        );
+        {
+            let RunInvocation::Process(invocation) = &mut spec.invocation;
+            invocation.cwd = Some(temporary.path().display().to_string());
+        }
+
+        let executor =
+            ProcessExecutor::rootless_with_launcher(std::env::current_exe().unwrap()).unwrap();
+        let RunInvocation::Process(invocation) = &spec.invocation;
+        let command = executor.spawn_command(&spec, invocation).unwrap();
+        let encoded = command
+            .command
+            .as_std()
+            .get_envs()
+            .find_map(|(key, value)| {
+                (key == SANDBOX_PLAN_ENV).then(|| value.unwrap().to_string_lossy().into_owned())
+            })
+            .unwrap();
+        let plan: SandboxPlan = serde_json::from_str(&encoded).unwrap();
+        assert!(!plan.filesystem_isolated);
+    }
+
+    #[cfg(any(target_os = "linux", target_os = "macos"))]
+    #[test]
+    fn sandbox_launcher_preserves_symlink_argv0_with_an_untrusted_environment() {
+        let temporary = tempfile::tempdir().unwrap();
+        let alias = temporary.path().join("sh");
+        std::os::unix::fs::symlink("/bin/sh", &alias).unwrap();
+        let mut spec = RunSpec::process("run", "agent", alias.to_str().unwrap());
+        {
+            let RunInvocation::Process(invocation) = &mut spec.invocation;
+            invocation.args = vec!["-c".into(), "exit 0".into()];
+            invocation.cwd = Some(temporary.path().display().to_string());
+            invocation.inherit_env = false;
+            invocation
+                .env
+                .insert(SANDBOX_ARG0_ENV.into(), "wrong-applet".into());
+        }
+
+        #[cfg(target_os = "linux")]
+        let executor =
+            ProcessExecutor::rootless_with_launcher(std::env::current_exe().unwrap()).unwrap();
+        #[cfg(target_os = "macos")]
+        let executor =
+            ProcessExecutor::seatbelt_with_launcher(std::env::current_exe().unwrap()).unwrap();
+        let RunInvocation::Process(invocation) = &spec.invocation;
+        let prepared = executor.spawn_command(&spec, invocation).unwrap();
+        let command = prepared.command.as_std();
+        let arg0 = command
+            .get_envs()
+            .find_map(|(key, value)| (key == SANDBOX_ARG0_ENV).then(|| value.unwrap()))
+            .expect("trusted launcher argv[0] must survive the run environment");
+        assert_eq!(arg0, alias.as_os_str());
+        let arguments = command.get_args().collect::<Vec<_>>();
+        assert_eq!(
+            arguments[arguments.len() - 3],
+            alias.canonicalize().unwrap()
+        );
+        assert_eq!(arguments[arguments.len() - 2], "-c");
+        assert_eq!(arguments[arguments.len() - 1], "exit 0");
     }
 
     #[cfg(not(target_os = "linux"))]

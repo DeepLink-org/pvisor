@@ -2986,6 +2986,7 @@ dependencies = [
  "globset",
  "libc",
  "libkrun",
+ "libloading",
  "persisting-control",
  "persisting-gateway",
  "persisting-overlay-core",

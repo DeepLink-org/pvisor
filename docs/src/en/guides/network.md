@@ -138,7 +138,7 @@ bytes_per_second = 250000
 Run it with:
 
 ```bash
-pvisor run --spec run.toml
+pvisor run --config run.toml
 ```
 
 Supported transport values are `http`, `https`, and `tcp_tunnel`. Empty

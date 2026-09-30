@@ -139,7 +139,7 @@ fn toml_and_cli_share_one_run_configuration() {
     std::fs::write(&config_path, toml::to_string_pretty(&config).unwrap()).unwrap();
 
     let output = Command::new(env!("CARGO_BIN_EXE_pvisor"))
-        .args(["run", "--spec"])
+        .args(["run", "--config"])
         .arg(&config_path)
         .args(["--name", "from-cli", "--", "/usr/bin/true"])
         .current_dir(&workspace)
@@ -423,7 +423,9 @@ exec "$PERSISTING_TEST_PVISOR" run --executor host --stdio capture \
 #[test]
 fn every_public_run_option_is_accepted_by_the_real_cli_parser() {
     let cases: &[&[&str]] = &[
-        &["--spec", "config.toml"],
+        &["--config", "config.toml"],
+        &["--spec", "run-spec.json"],
+        &["--no-agent-defaults"],
         &["--result-file", "result.json"],
         &["--stage", "runs/task"],
         &["--stage", "drop"],
@@ -451,7 +453,7 @@ fn every_public_run_option_is_accepted_by_the_real_cli_parser() {
         &["--max-cpu-time", "5s"],
         &["--max-open-files", "32"],
         &["--max-file-size", "1MiB"],
-        &["--filesystem-max-size", "2GiB"],
+        &["--overlayfs-max-size", "2GiB"],
         &["--container-runtime", "runc"],
         &["--container-image", "alpine:latest"],
         &["--container-rootfs", "/tmp/rootfs"],
@@ -464,7 +466,7 @@ fn every_public_run_option_is_accepted_by_the_real_cli_parser() {
         &["--container-mount", "source=\"/tmp\",target=\"/workspace\""],
         &["--mount", "/tmp/lower:read"],
         &["--access", "**/.ssh:deny"],
-        &["--filesystem-backend", "directory"],
+        &["--overlayfs-backend", "directory"],
         &["--overlaynet", "proxy"],
         &["--overlaynet", "auto"],
         &["--overlaynet"],
@@ -533,8 +535,10 @@ fn removed_run_options_stay_off_the_cli_surface() {
     let advertised = advertised_run_options();
     for option in [
         "--workspace",
-        "--config",
         "--run-spec",
+        "--no-config",
+        "--filesystem-backend",
+        "--filesystem-max-size",
         "--run-home",
         "--agent",
         "--host-rootfs",

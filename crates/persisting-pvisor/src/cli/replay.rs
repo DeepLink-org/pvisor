@@ -351,7 +351,7 @@ fn run_managed(config: &ReplayToml) -> Result<i32, ReplayError> {
                 )));
             }
         };
-        outer.filesystem = Some(overlay);
+        outer.overlayfs = Some(overlay);
     }
     if let Some(mode) = config.overlaynet.mode.as_deref() {
         outer.overlaynet.mode = match mode {

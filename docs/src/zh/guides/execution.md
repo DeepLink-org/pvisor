@@ -16,7 +16,7 @@
 pvisor run --executor host --stage ../stage-host -- /bin/sh
 ```
 
-工作目录在沙箱内保持原路径。普通运行直接写入 lower；`--safe` 使用写时复制视图，省略 `--stage` 时在 Run 结束后丢弃该视图。显式可写挂载及工作区外的应用状态仍可能直接写入宿主。safe-best-effort 隔离会报告不支持的控制，不代表各平台具有相同保证。
+Host 默认保留宿主文件系统视图。需要限制路径访问时使用 `--filesystem sandbox`，需要可审查的写时复制工作区时使用 `--stage PATH`，需要拒绝所有网络时使用 `--overlaynet-deny-all`。这些设置相互独立，网络参数不会启用文件系统限制。
 
 ## Linux 容器
 

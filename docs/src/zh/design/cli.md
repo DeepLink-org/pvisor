@@ -28,7 +28,7 @@ Run Bundle 中分别记录实际 capability 与限制。
 | Network | `--overlaynet-deny-all`、`--overlaynet-allow`、`--overlaynet-limit` | 请求 deny、allowlist 或限速策略 |
 | Gateway | `--gateway-mode`、`--gateway-route`、`--gateway-level` | 配置路由，并按需捕获模型流量 |
 | Limits | `--timeout`、`--memory`、`--max-processes`、`--max-open-files` | 在 Provider 支持时限制 Attempt |
-| Configuration | `--spec`、`--name`、`--pass-env` | 提供 RunSpec、身份和显式环境变量 |
+| Configuration | `--config`、`--spec`、`--name`、`--pass-env` | 提供 RunConfig 或准备好的 RunSpec、身份和显式环境变量 |
 
 Provider 选择不会改变 Run 契约，只会改变各 capability 维度的 enforcement 机制；最终
 Evidence 会分维度记录。
@@ -80,7 +80,7 @@ Environment 是持久 stage，不是常驻 VM。`start` 与 `stop` 控制是否�
 
 ## 配置优先级
 
-`--spec` 接受 TOML `RunConfig` 或准备好的 JSON `RunSpec`。显式 scalar 选项覆盖文件值；
+`--config` 接受 TOML `RunConfig`，`--spec` 接受准备好的 JSON `RunSpec`。显式 scalar 选项覆盖文件值；
 重复的 list 选项替换整个列表；`--` 后的命令替换 `run.command`。`--container-image` 与
 `--rootfs` 可以推断匹配的 executor；自动化场景仍建议显式指定 `--executor`。
 

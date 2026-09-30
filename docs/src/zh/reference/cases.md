@@ -357,7 +357,7 @@ Linux host stage 示例需要可用的 user/mount namespace。VM 示例需要可
   预期：stage 成功建立并保存在指定路径。此例只验证参数可用和目录建立；当前产物未记录该上限，也未在此例中尝试写满 stage。
 
   ```bash
-  pvisor --stage /tmp/pvisor-cases/limited-stage --filesystem-max-size 1GiB -- /bin/true
+  pvisor --stage /tmp/pvisor-cases/limited-stage --overlayfs-max-size 1GiB -- /bin/true
   ```
 
   <details>
@@ -576,7 +576,7 @@ D01 讲视图层组合，D02/D03 讲 host executor，D04–D06 讲拒绝、显�
     --stage /tmp/pvisor-cases/composed-stage \
     --mount "/tmp/pvisor-cases/base:$PWD/view:stage" \
     --mount "/tmp/pvisor-cases/layer:$PWD/view:stage" \
-    --filesystem-backend directory \
+    --overlayfs-backend directory \
     -- /bin/true
   ```
 
@@ -738,7 +738,7 @@ D01 讲视图层组合，D02/D03 讲 host executor，D04–D06 讲拒绝、显�
   if pid == 0:
       os.environ['TERM'] = 'xterm-256color'
       os.execvp('pvisor', [
-          'pvisor', '--no-config', '--stage', '/tmp/pvisor-cases/ask-stage',
+          'pvisor', '--no-agent-defaults', '--stage', '/tmp/pvisor-cases/ask-stage',
           '--access', 'private/*.txt:ask', '--', '/bin/sh', '-c',
           'cat private/one.txt; sleep 1; cat private/two.txt',
       ])
@@ -1391,12 +1391,12 @@ D01 讲视图层组合，D02/D03 讲 host executor，D04–D06 讲拒绝、显�
 
   建议场景：适合从 TOML/JSON 文件或控制面执行 RunSpec 的任务。
 
-  用途：把命令写进 TOML 后通过 `--spec` 运行。手工执行前创建 `pvisor.toml`，内容为 `[run]` 下的 `command = ["/bin/true"]`；脚本会预置此文件。
+  用途：把命令写进 TOML 后通过 `--config` 运行。手工执行前创建 `pvisor.toml`，内容为 `[run]` 下的 `command = ["/bin/true"]`；脚本会预置此文件。
 
   预期：命令来自配置文件，无需在 CLI 重复；运行正常结束。
 
   ```bash
-  pvisor --spec ./pvisor.toml
+  pvisor --config ./pvisor.toml
   ```
 
   <details>
@@ -1442,12 +1442,12 @@ D01 讲视图层组合，D02/D03 讲 host executor，D04–D06 讲拒绝、显�
 
   建议场景：适合从 TOML/JSON 文件或控制面执行 RunSpec 的任务。
 
-  用途：验证 spec 的识别不依赖扩展名。手工执行时把 I01 的 TOML 内容保存成 `spec-without-extension`；脚本会预置该文件。
+  用途：验证配置的识别不依赖扩展名。手工执行时把 I01 的 TOML 内容保存成 `config-without-extension`；脚本会预置该文件。
 
-  预期：按内容识别 TOML 并完成运行，不要求文件名以 `.toml` 结尾。
+  预期：`--config` 正常读取 TOML 并完成运行，不要求文件名以 `.toml` 结尾。
 
   ```bash
-  pvisor --spec ./spec-without-extension
+  pvisor --config ./config-without-extension
   ```
 
   <details>
@@ -1483,7 +1483,7 @@ D01 讲视图层组合，D02/D03 讲 host executor，D04–D06 讲拒绝、显�
     --record-destination /tmp/pvisor-cases/host-full/trajectory/events.jsonl \
     --memory 512MiB \
     --max-processes 64 \
-    --filesystem-max-size 2GiB \
+    --overlayfs-max-size 2GiB \
     --max-cpu-time 30s \
     -- /bin/sh -c 'pwd; printf changed > result.txt'
   ```

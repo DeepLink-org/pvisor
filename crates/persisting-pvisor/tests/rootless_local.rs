@@ -53,13 +53,18 @@ fn setup_failure(root: &Path) -> Option<String> {
 }
 
 fn user_namespaces_are_unavailable(stderr: &str) -> bool {
-    const CONTEXT: &str = "initialize rootless user and mount namespaces: ";
+    const CONTEXTS: &[&str] = &[
+        "initialize rootless namespaces: ",
+        "initialize rootless user and mount namespaces: ",
+    ];
     stderr.lines().any(|line| {
-        let Some((_, error)) = line.split_once(CONTEXT) else {
-            return false;
-        };
-        error == "unshare user namespace: Operation not permitted (os error 1)"
-            || error == "unshare user namespace: Permission denied (os error 13)"
+        CONTEXTS.iter().any(|context| {
+            let Some((_, error)) = line.split_once(context) else {
+                return false;
+            };
+            error == "unshare user namespace: Operation not permitted (os error 1)"
+                || error == "unshare user namespace: Permission denied (os error 13)"
+        })
     })
 }
 
@@ -239,6 +244,8 @@ printf '%s:%s:%s\n' "$PERSISTING_SANDBOX_FILESYSTEM" "$PERSISTING_SANDBOX_LANDLO
             "capture",
             "--stage",
             temporary.path().join("stage").to_str().unwrap(),
+            "--filesystem",
+            "sandbox",
             "--pass-env",
             "OUTSIDE_SECRET",
             "--pass-env",
@@ -343,6 +350,8 @@ printf metadata-denied
             "capture",
             "--stage",
             temporary.path().join("stage").to_str().unwrap(),
+            "--filesystem",
+            "sandbox",
             "--pass-env",
             "OUTSIDE_FILE",
             "--pass-env",
@@ -504,7 +513,14 @@ fn safe_apply_refuses_to_overwrite_a_concurrently_changed_target() {
 
     let output = Command::new(env!("CARGO_BIN_EXE_pvisor"))
         .env("PERSISTING_RUN_HOME", &run_home)
-        .args(["run", "--safe", "--stdio", "capture", "--stage"])
+        .args([
+            "run",
+            "--stdio",
+            "capture",
+            "--filesystem",
+            "sandbox",
+            "--stage",
+        ])
         .arg(temporary.path().join("stage"))
         .current_dir(&workspace)
         .args(["--", "/bin/sh", "-c", "printf staged > value.txt"])
@@ -589,6 +605,8 @@ fn safe_launcher_closes_inherited_host_file_descriptors() {
             "capture",
             "--stage",
             temporary.path().join("stage").to_str().unwrap(),
+            "--filesystem",
+            "sandbox",
             "--overlaynet-deny-all",
             "--pass-env",
             "PERSISTING_LEAKED_FD",
@@ -662,6 +680,7 @@ fn denied_network_uses_a_private_network_namespace() {
     let temporary = tempfile::tempdir().unwrap();
     let workspace = temporary.path().join("workspace");
     let run_home = temporary.path().join("runs");
+    let host_write = temporary.path().join("host-visible.txt");
     fs::create_dir_all(&workspace).unwrap();
     let listener = TcpListener::bind("127.0.0.1:0").unwrap();
     let host_port = listener.local_addr().unwrap().port().to_string();
@@ -669,6 +688,8 @@ fn denied_network_uses_a_private_network_namespace() {
     let script = r#"
 set -eu
 test "$PERSISTING_SANDBOX_NETWORK" = deny
+test "$PERSISTING_SANDBOX_FILESYSTEM" = host
+printf 'host-visible' > "$HOST_WRITE"
 if exec 3<>"/dev/tcp/127.0.0.1/${HOST_PORT}"; then
   echo 'host listener unexpectedly reachable' >&2
   exit 50
@@ -687,8 +708,11 @@ printf 'network:%s\n' "$PERSISTING_SANDBOX_NETWORK"
             "--overlaynet-deny-all",
             "--pass-env",
             "HOST_PORT",
+            "--pass-env",
+            "HOST_WRITE",
         ])
         .current_dir(&workspace)
+        .env("HOST_WRITE", &host_write)
         .args(["--", "/bin/bash", "-c", script])
         .output()
         .unwrap();
@@ -702,6 +726,7 @@ printf 'network:%s\n' "$PERSISTING_SANDBOX_NETWORK"
         String::from_utf8_lossy(&output.stdout),
         String::from_utf8_lossy(&output.stderr)
     );
+    assert_eq!(fs::read_to_string(&host_write).unwrap(), "host-visible");
 
     let run = only_run(&stage_root(&run_home));
     let bundle = RunBundle::read(&run).unwrap();
@@ -743,7 +768,14 @@ fn synthetic_root_hides_ungranted_host_unix_sockets() {
         .env("PERSISTING_RUN_HOME", &run_home)
         .env("PERSISTING_SOCKET_PROBE", &host_socket)
         .env("SSH_AUTH_SOCK", &host_socket)
-        .args(["run", "--safe", "--stdio", "capture", "--stage"])
+        .args([
+            "run",
+            "--stdio",
+            "capture",
+            "--filesystem",
+            "sandbox",
+            "--stage",
+        ])
         .arg(temporary.path().join("stage"))
         .current_dir(&workspace)
         .arg("--")
@@ -783,7 +815,14 @@ fn safe_run_reaps_setsid_double_fork_descendants_after_success() {
 
     let output = Command::new(env!("CARGO_BIN_EXE_pvisor"))
         .env("PERSISTING_RUN_HOME", &run_home)
-        .args(["run", "--safe", "--stdio", "capture", "--stage"])
+        .args([
+            "run",
+            "--stdio",
+            "capture",
+            "--filesystem",
+            "sandbox",
+            "--stage",
+        ])
         .arg(temporary.path().join("stage"))
         .current_dir(&workspace)
         .arg("--")

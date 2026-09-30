@@ -74,14 +74,11 @@ pvisor run --safe --stage ../stage-001 -- codex
 pvisor status --review last
 ```
 
-Host execution uses best-effort rootless isolation by default and writes through
-projected lower paths. `--safe` stages workspace writes and keeps writable home
-state in a private copy-on-write view, including Codex launched from a shell.
-`--stage <PATH>` retains the workspace stage for manual review;
-otherwise pVisor removes the temporary stage when the Job ends. The Job writes
-`run-bundle.json` with mode `0600` inside the stage. In the current
-implementation, auto-dropping a temporary stage also removes its Run Bundle;
-use an explicit stage when the record must remain inspectable.
+Host execution preserves the host filesystem view by default. `--filesystem sandbox`
+opts into pVisor's synthetic-root/Landlock or Seatbelt filesystem access policy.
+`--stage <PATH>` independently opts into an OverlayFS stage for the current workspace, creates an independent Run
+and writable stage at the supplied path,
+retains changes for manual review, and writes `run-bundle.json` with mode `0600`.
 
 `--strict` fails closed before command start unless every requested capability
 dimension has non-bypassable enforcement evidence. Today host, container, and
@@ -89,18 +86,15 @@ VM executors all request Network and Subprocess enforcement, and none claim
 Subprocess — so `--strict` currently exits with `UnsupportedPolicy` on those
 paths. Use it to verify fail-closed behavior, not as a “stronger sandbox is
 ready” switch.
-On Linux, the default host executor self-executes through pVisor's rootless
-launcher before the async runtime reaches the Agent. User/mount/PID namespaces,
-an in-namespace PID 1 descendant reaper, minimal bind-projected root plus
-`chroot`, closed inherited descriptors, and an empty capability set provide a
-compatibility boundary. Ordinary host Jobs permit writes through projected
-lower paths. `--safe` requires Landlock and stages home state in a private
-copy-on-write overlay; those state changes are discarded after the Job.
-`--strict` additionally validates all requested capabilities.
-`--overlaynet-deny-all` adds a private network namespace; the
-public/allowlist proxy modes remain cooperative. On macOS the default safe
-host executor installs a generated Seatbelt policy that makes staged writes
-non-bypassable. For deny-all Runs it blocks IP and ambient host Unix sockets,
+On Linux, `--filesystem sandbox` uses pVisor's rootless launcher with
+user/mount/PID namespaces, a minimal bind-projected root, `chroot`, and a
+kernel-negotiated Landlock policy. `--overlaynet-deny-all` independently adds a
+private network namespace; the
+public/allowlist proxy modes remain cooperative. On macOS the host executor
+installs a generated Seatbelt policy only when filesystem sandboxing or network
+isolation is requested; filesystem policy remains independent from network
+policy. Staged writes are non-bypassable. For deny-all Runs it blocks IP and
+ambient host Unix sockets,
 while retaining the exact AgentCtl and Run-local IPC. Reads and selective
 network policy remain ambient/cooperative and are labeled separately in the
 Bundle. Native OCI and libkrun executors retain the same outer Run, OverlayFS,
@@ -420,9 +414,9 @@ but `run.inherit_env` currently has no direct CLI switch. Moreover,
 `apply_safe_defaults` currently clears environment inheritance for non-Codex
 CLI commands even without `--safe`; the ZCode host adapter re-enables it for
 direct `zcode`. Treat TOML `inherit_env` as ineffective on those CLI paths.
-`--spec` is optional and explicit; a
-file beginning with a JSON object is treated as a prepared RunSpec, otherwise
-it is read as TOML RunConfig. pVisor does not discover a hidden project file.
+`--config` reads an explicit TOML `RunConfig`; `--spec` requires a prepared
+JSON `RunSpec` for delegated execution and cannot be combined with other Run
+overrides. pVisor does not discover a hidden project file.
 
 ```bash
 pvisor run \
@@ -430,7 +424,7 @@ pvisor run \
   --stage ../stage-001 \
   --mount /opt/tool:read \
   --access '**/.ssh:deny' \
-  --filesystem-backend directory \
+  --overlayfs-backend directory \
   --overlaynet-allow api.openai.com:443 \
   --overlaynet-deny 169.254.0.0/16 \
   --overlaynet-limit 10mbps \
@@ -454,6 +448,9 @@ source of truth.
 The equivalent TOML is:
 
 ```toml
+# host (default) or sandbox; independent from OverlayNet and OverlayFS staging
+filesystem = "host"
+
 [run]
 agent = "my-agent"
 executor = "host"
@@ -493,12 +490,12 @@ api_key_env = "OPENAI_API_KEY"
 destination = "./capture"
 ```
 
-Run it with `pvisor run --spec run.toml`. Explicit CLI scalars replace TOML
+Run it with `pvisor run --config run.toml`. Explicit CLI scalars replace TOML
 scalars. Network and Gateway list options replace their complete configured
 lists; filesystem `--mount` and `--access` entries are appended to configured
 entries. Every serialized `[filesystem]` field has a CLI form: `stage`, `mount`,
 `access`, `backend`, and `max_size` map to `--stage`, `--mount`, `--access`,
-`--filesystem-backend`, and `--filesystem-max-size`.
+`--overlayfs-backend`, and `--overlayfs-max-size`.
 The size limit is checked after execution, so it does not bound peak space used
 while the Agent is running.
 The command after `--` replaces `run.command`.

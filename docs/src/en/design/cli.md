@@ -31,7 +31,7 @@ Common controls are grouped by purpose:
 | Network | `--overlaynet-deny-all`, `--overlaynet-allow`, `--overlaynet-limit` | request deny, allowlist, or rate-limit policy |
 | Gateway | `--gateway-mode`, `--gateway-route`, `--gateway-level` | route and optionally capture model traffic |
 | Limits | `--timeout`, `--memory`, `--max-processes`, `--max-open-files` | constrain the Attempt where the provider supports it |
-| Configuration | `--spec`, `--name`, `--pass-env` | provide a prepared RunSpec, identity, and explicit environment |
+| Configuration | `--config`, `--spec`, `--name`, `--pass-env` | provide a RunConfig or prepared RunSpec, identity, and explicit environment |
 
 Provider selection does not change the Run contract. It changes the mechanism
 used to enforce each capability dimension, and the resulting evidence is
@@ -90,8 +90,8 @@ generation after a decision.
 
 ## Configuration precedence
 
-`--spec` accepts TOML `RunConfig` or prepared JSON `RunSpec`. Explicit scalar
-options override file values. Repeated list options replace the complete list,
+`--config` accepts a TOML `RunConfig` and `--spec` a prepared JSON `RunSpec`.
+Explicit scalar options override file values. Repeated list options replace the complete list,
 and the command after `--` replaces `run.command`. `--container-image` and
 `--rootfs` may infer the matching executor; an explicit `--executor` remains
 clearer in automation.
