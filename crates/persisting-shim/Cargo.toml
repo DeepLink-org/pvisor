@@ -1,0 +1,40 @@
+[package]
+name = "persisting-shim"
+description = "containerd Runtime v2 shim for pVisor (binary: containerd-shim-pvisor-v2)"
+
+version.workspace = true
+edition.workspace = true
+authors.workspace = true
+license.workspace = true
+
+[lib]
+name = "persisting_shim"
+path = "src/lib.rs"
+
+[[bin]]
+name = "containerd-shim-pvisor-v2"
+path = "src/main.rs"
+
+[dependencies]
+anyhow = { workspace = true }
+libc = { workspace = true }
+log = { workspace = true }
+oci-spec = { workspace = true }
+serde = { workspace = true, features = ["derive"] }
+serde_json = { workspace = true }
+thiserror = { workspace = true }
+
+[target.'cfg(target_os = "linux")'.dependencies]
+async-trait = { workspace = true }
+containerd-shim = { workspace = true, features = ["async"] }
+containerd-shim-protos = { workspace = true, features = ["sandbox"] }
+libkrun = { workspace = true, optional = true }
+tokio = { workspace = true, features = ["macros", "rt", "sync", "time"] }
+
+[features]
+# libkrun microVM executor. Off by default: linking libkrun requires the
+# vendored VMM toolchain and a libkrunfw kernel on the host.
+vm = ["libkrun"]
+
+[dev-dependencies]
+tempfile = { workspace = true }

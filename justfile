@@ -83,7 +83,7 @@ test *packages:
     just test-rust "$@"
     if [[ $# -eq 0 ]]; then just test-py; fi
 
-# Debug nextest; accepts Cargo names and pvisor/control/agentctl/capture aliases.
+# Debug nextest; accepts Cargo names and pvisor/control/agentctl/capture/shim aliases.
 test-rust *packages:
     #!/usr/bin/env bash
     set -euo pipefail
@@ -93,11 +93,22 @@ test-rust *packages:
         pvisor) package=persisting-pvisor ;;
         control|agentctl) package=persisting-control ;;
         capture) package=persisting-gateway ;;
+        shim) package=persisting-shim ;;
       esac
       args+=(-p "$package")
     done
     if [[ $# -eq 0 ]]; then args+=(--workspace); fi
     cargo nextest run --locked "${args[@]}"
+
+# Cross-check the containerd shim for Linux; full builds need a Linux host.
+shim-check:
+    cargo check --locked -p persisting-shim --target x86_64-unknown-linux-gnu
+    cargo clippy --locked -p persisting-shim --all-targets --target x86_64-unknown-linux-gnu -- -D warnings
+
+# Build the static musl shim with the libkrun VM executor (needs zigbuild).
+shim-vm-build:
+    cargo zigbuild --locked --target x86_64-unknown-linux-musl --target-dir target \
+        -p persisting-shim --features vm --bin containerd-shim-pvisor-v2
 
 # Python tests; append pytest options such as -v or -k packaging.
 test-py *args:
