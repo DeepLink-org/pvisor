@@ -2,6 +2,7 @@
 
 use crate::config::VmSettings;
 use crate::executor::{AttemptContext, RunExecutor};
+use crate::util::write_private_json;
 use anyhow::Context as _;
 use async_trait::async_trait;
 use persisting_control::{
@@ -1102,12 +1103,6 @@ async fn join_capture(
     }
 }
 
-fn write_private_json(path: &Path, value: &impl Serialize) -> anyhow::Result<()> {
-    use std::os::unix::fs::PermissionsExt;
-    std::fs::write(path, serde_json::to_vec(value)?)?;
-    std::fs::set_permissions(path, std::fs::Permissions::from_mode(0o600))?;
-    Ok(())
-}
 
 fn failed_to_start(
     spec: &persisting_control::RunSpec,

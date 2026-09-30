@@ -963,7 +963,7 @@ async fn run_prepared_spec(args: RunArgs) -> anyhow::Result<i32> {
         agentctl: agentctl.snapshot(),
         result,
     };
-    let write_result = crate::executor::delegated::write_result(&result_path, &output)
+    let write_result = crate::util::write_private_json(&result_path, &output)
         .with_context(|| format!("write delegated RunResult to {}", result_path.display()));
     let cleanup_result = stage_guard
         .as_mut()

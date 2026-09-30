@@ -1677,6 +1677,21 @@ mod tests {
 
     #[test]
     fn seatbelt_proxy_allows_only_its_tcp_endpoint() {
+        // /usr/bin/python3 is an Xcode launcher on some runners. Resolve its
+        // interpreter and runtime before entering the network test's sandbox.
+        let python = std::process::Command::new("/usr/bin/python3")
+            .args([
+                "-c",
+                "import json, sys; print(json.dumps([sys.executable, sys.base_prefix]))",
+            ])
+            .output()
+            .unwrap();
+        assert!(
+            python.status.success(),
+            "{}",
+            String::from_utf8_lossy(&python.stderr)
+        );
+        let [interpreter, runtime]: [PathBuf; 2] = serde_json::from_slice(&python.stdout).unwrap();
         let temp = tempfile::tempdir().unwrap();
         let proxy = std::net::TcpListener::bind("127.0.0.1:0").unwrap();
         let other = std::net::TcpListener::bind("127.0.0.1:0").unwrap();
@@ -1688,7 +1703,8 @@ mod tests {
             Some(&[
                 PathBuf::from("/System"),
                 PathBuf::from("/usr"),
-                PathBuf::from("/Library/Developer"),
+                interpreter.clone(),
+                runtime,
                 PathBuf::from("/private/etc"),
                 PathBuf::from("/dev"),
             ]),
@@ -1704,8 +1720,10 @@ mod tests {
             command.arg("-D").arg(format!("{key}={}", value.display()));
         }
         let output = command
+            // Prove the sandboxed invocation no longer needs xcrun selection.
+            .env("DEVELOPER_DIR", temp.path().join("no-developer-tools"))
+            .arg(&interpreter)
             .args([
-                "/usr/bin/python3",
                 "-c",
                 r#"
 import errno, socket, sys

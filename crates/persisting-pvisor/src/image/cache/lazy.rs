@@ -336,6 +336,8 @@ impl RemoteFs {
         }
         let ino = self.next_inode;
         self.next_inode += 1;
+        // libc mode constants are u16 on macOS and u32 on Linux.
+        #[allow(clippy::unnecessary_cast)]
         let kind = match kind.as_str() {
             "directory" => FileType::Directory,
             "file" => FileType::RegularFile,

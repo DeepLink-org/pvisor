@@ -1,7 +1,8 @@
 //! Files and result hand-off for a pVisor delegated through Docker or KVM.
 
+use crate::util::write_private_json;
 use persisting_control::{AttemptId, RunInvocation, RunResult, RunSpec};
-use std::path::{Path, PathBuf};
+use std::path::PathBuf;
 
 pub(crate) const SPEC_FILENAME: &str = "run-spec.json";
 pub(crate) const RESULT_FILENAME: &str = "run-result.json";
@@ -64,34 +65,6 @@ impl DelegatedRunFiles {
         output.agentctl.attempt_id = attempt_id.to_string();
         Ok(output)
     }
-}
-
-pub(crate) fn write_result(path: &Path, output: &DelegatedRunOutput) -> anyhow::Result<()> {
-    let parent = path
-        .parent()
-        .ok_or_else(|| anyhow::anyhow!("result path has no parent: {}", path.display()))?;
-    std::fs::create_dir_all(parent)?;
-    let temporary = parent.join(format!(
-        ".{}.{}.tmp",
-        path.file_name()
-            .and_then(|name| name.to_str())
-            .unwrap_or("run-result"),
-        uuid::Uuid::new_v4().simple()
-    ));
-    write_private_json(&temporary, output)?;
-    std::fs::rename(temporary, path)?;
-    Ok(())
-}
-
-fn write_private_json(path: &Path, value: &impl serde::Serialize) -> anyhow::Result<()> {
-    let body = serde_json::to_vec_pretty(value)?;
-    std::fs::write(path, body)?;
-    #[cfg(unix)]
-    {
-        use std::os::unix::fs::PermissionsExt;
-        std::fs::set_permissions(path, std::fs::Permissions::from_mode(0o600))?;
-    }
-    Ok(())
 }
 
 #[cfg(test)]
