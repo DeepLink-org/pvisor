@@ -113,14 +113,7 @@ impl RunHandle {
         checkpoint_id: &str,
         timeout: std::time::Duration,
     ) -> anyhow::Result<crate::LogicalCheckpoint> {
-        anyhow::ensure!(
-            !checkpoint_id.trim().is_empty()
-                && checkpoint_id != "."
-                && checkpoint_id != ".."
-                && !checkpoint_id.contains('/')
-                && !checkpoint_id.contains('\\'),
-            "checkpoint id must be one non-empty path-safe segment"
-        );
+        super::checkpoint::validate_checkpoint_id(checkpoint_id)?;
         let record = self
             .checkpoint_record
             .as_ref()

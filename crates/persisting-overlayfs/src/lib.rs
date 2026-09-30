@@ -6,38 +6,19 @@
 
 mod fs;
 mod observation;
-pub use observation::FsMetrics;
-#[cfg(feature = "jujutsu")]
-mod jj_backend;
-#[cfg(not(feature = "jujutsu"))]
-#[path = "jj_disabled.rs"]
-mod jj_backend;
-
 use anyhow::{Context, Result, bail};
 use fs::OverlayFs;
 use fuser::{BackgroundSession, MountOption, Session};
-use jj_backend::JujutsuWorkspace;
-pub use jj_backend::{jujutsu_upper_dir, prepare_jujutsu_upper, snapshot_jujutsu_upper};
+pub use observation::FsMetrics;
 use std::os::unix::fs::MetadataExt;
 use std::path::{Path, PathBuf};
 use std::time::Duration;
 
 #[derive(Clone, Debug)]
-pub enum UpperBackend {
-    Directory {
-        upper_dir: PathBuf,
-        work_dir: Option<PathBuf>,
-    },
-    Jujutsu {
-        store_path: PathBuf,
-        workspace: String,
-    },
-}
-
-#[derive(Clone, Debug)]
 pub struct OverlayMountConfig {
     pub lower_dirs: Vec<PathBuf>,
-    pub upper: UpperBackend,
+    pub upper_dir: PathBuf,
+    pub work_dir: Option<PathBuf>,
     pub mountpoint: PathBuf,
     pub allow_other: bool,
     pub allow_root: bool,
@@ -67,10 +48,8 @@ impl OverlayMountConfig {
     ) -> Self {
         Self {
             lower_dirs,
-            upper: UpperBackend::Directory {
-                upper_dir,
-                work_dir,
-            },
+            upper_dir,
+            work_dir,
             mountpoint,
             allow_other: false,
             allow_root: false,
@@ -85,26 +64,11 @@ impl OverlayMountConfig {
             observation: None,
         }
     }
-
-    pub fn new_jujutsu(
-        lower_dirs: Vec<PathBuf>,
-        store_path: PathBuf,
-        workspace: String,
-        mountpoint: PathBuf,
-    ) -> Self {
-        let mut config = Self::new(lower_dirs, PathBuf::new(), None, mountpoint);
-        config.upper = UpperBackend::Jujutsu {
-            store_path,
-            workspace,
-        };
-        config
-    }
 }
 
 #[derive(Debug)]
 pub struct OverlaySession {
     background: Option<BackgroundSession>,
-    jujutsu: Option<JujutsuWorkspace>,
     mountpoint: PathBuf,
 }
 
@@ -139,11 +103,6 @@ impl OverlaySession {
                 bail!("FUSE mount did not detach: {}", self.mountpoint.display());
             }
         }
-        if let Some(workspace) = self.jujutsu.take() {
-            workspace
-                .snapshot()
-                .context("snapshot Jujutsu overlay workspace")?;
-        }
         Ok(())
     }
 }
@@ -157,14 +116,13 @@ impl Drop for OverlaySession {
 pub fn mount(config: OverlayMountConfig) -> Result<OverlaySession> {
     #[cfg(target_os = "macos")]
     check_fskit_version(&config)?;
-    let (filesystem, mountpoint, options, jujutsu) = prepare(config)?;
+    let (filesystem, mountpoint, options) = prepare(config)?;
     let session = Session::new(filesystem, &mountpoint, &options)
         .with_context(|| format!("mount {}", mountpoint.display()))?;
     let background = BackgroundSession::new(session).context("start FUSE request loop")?;
     log::info!("persisting-overlayfs mounted at {}", mountpoint.display());
     Ok(OverlaySession {
         background: Some(background),
-        jujutsu,
         mountpoint,
     })
 }
@@ -172,16 +130,11 @@ pub fn mount(config: OverlayMountConfig) -> Result<OverlaySession> {
 pub fn run_foreground(config: OverlayMountConfig) -> Result<()> {
     #[cfg(target_os = "macos")]
     check_fskit_version(&config)?;
-    let (filesystem, mountpoint, options, jujutsu) = prepare(config)?;
+    let (filesystem, mountpoint, options) = prepare(config)?;
     log::info!("persisting-overlayfs mounted at {}", mountpoint.display());
     let mut session = Session::new(filesystem, &mountpoint, &options)
         .with_context(|| format!("mount {}", mountpoint.display()))?;
     session.run().context("FUSE session")?;
-    if let Some(workspace) = jujutsu {
-        workspace
-            .snapshot()
-            .context("snapshot Jujutsu overlay workspace")?;
-    }
     Ok(())
 }
 
@@ -218,33 +171,15 @@ fn require_fskit_version(version: &str) -> Result<()> {
     Ok(())
 }
 
-fn prepare(
-    mut config: OverlayMountConfig,
-) -> Result<(
-    OverlayFs,
-    PathBuf,
-    Vec<MountOption>,
-    Option<JujutsuWorkspace>,
-)> {
+fn prepare(mut config: OverlayMountConfig) -> Result<(OverlayFs, PathBuf, Vec<MountOption>)> {
     if config.lower_dirs.is_empty() {
         bail!("lowerdir must list at least one path");
     }
-    match &config.upper {
-        UpperBackend::Directory {
-            upper_dir,
-            work_dir,
-        } => {
-            std::fs::create_dir_all(upper_dir)
-                .with_context(|| format!("create upperdir {}", upper_dir.display()))?;
-            if let Some(work) = work_dir {
-                std::fs::create_dir_all(work)
-                    .with_context(|| format!("create workdir {}", work.display()))?;
-            }
-        }
-        UpperBackend::Jujutsu { store_path, .. } => {
-            std::fs::create_dir_all(store_path)
-                .with_context(|| format!("create Jujutsu store {}", store_path.display()))?;
-        }
+    std::fs::create_dir_all(&config.upper_dir)
+        .with_context(|| format!("create upperdir {}", config.upper_dir.display()))?;
+    if let Some(work) = &config.work_dir {
+        std::fs::create_dir_all(work)
+            .with_context(|| format!("create workdir {}", work.display()))?;
     }
     let fskit = config.backend.as_deref() == Some("fskit");
     if let Some(backend) = &config.backend
@@ -262,25 +197,12 @@ fn prepare(
             .with_context(|| format!("create mountpoint {}", config.mountpoint.display()))?;
     }
 
-    config.upper = match config.upper {
-        UpperBackend::Directory {
-            upper_dir,
-            work_dir,
-        } => UpperBackend::Directory {
-            upper_dir: std::fs::canonicalize(upper_dir)?,
-            work_dir: work_dir
-                .map(std::fs::canonicalize)
-                .transpose()
-                .context("canonicalize workdir")?,
-        },
-        UpperBackend::Jujutsu {
-            store_path,
-            workspace,
-        } => UpperBackend::Jujutsu {
-            store_path: std::fs::canonicalize(store_path)?,
-            workspace,
-        },
-    };
+    config.upper_dir = std::fs::canonicalize(config.upper_dir)?;
+    config.work_dir = config
+        .work_dir
+        .map(std::fs::canonicalize)
+        .transpose()
+        .context("canonicalize workdir")?;
     config.lower_dirs = config
         .lower_dirs
         .into_iter()
@@ -317,16 +239,9 @@ fn prepare(
         if !lower.is_dir() {
             bail!("lowerdir is not a directory: {}", lower.display());
         }
-        let upper_overlaps = match &config.upper {
-            UpperBackend::Directory { upper_dir, .. } => {
-                (upper_dir.starts_with(lower) && !hidden_from_lower(lower, upper_dir))
-                    || lower.starts_with(upper_dir)
-            }
-            UpperBackend::Jujutsu { store_path, .. } => {
-                (store_path.starts_with(lower) && !hidden_from_lower(lower, store_path))
-                    || lower.starts_with(store_path)
-            }
-        };
+        let upper_dir = &config.upper_dir;
+        let upper_overlaps = (upper_dir.starts_with(lower) && !hidden_from_lower(lower, upper_dir))
+            || lower.starts_with(upper_dir);
         let mount_overlaps = (mountpoint.starts_with(lower)
             && !hidden_from_lower(lower, &mountpoint))
             || lower.starts_with(&mountpoint);
@@ -337,11 +252,9 @@ fn prepare(
             );
         }
     }
-    if let UpperBackend::Directory {
-        upper_dir,
-        work_dir,
-    } = &config.upper
     {
+        let upper_dir = &config.upper_dir;
+        let work_dir = &config.work_dir;
         if mountpoint.starts_with(upper_dir) || upper_dir.starts_with(&mountpoint) {
             bail!("upperdir and mountpoint must not overlap");
         }
@@ -368,47 +281,16 @@ fn prepare(
         }
     }
 
-    let mut jujutsu = None;
-    let preimage_dir = config.preimage_dir;
-    let filesystem = match config.upper {
-        UpperBackend::Directory {
-            upper_dir,
-            work_dir,
-        } => {
-            if config.excluded_paths.is_empty() && preimage_dir.is_none() {
-                OverlayFs::new(config.lower_dirs, upper_dir, work_dir)?
-            } else {
-                OverlayFs::new_with_exclusions_and_preimages(
-                    config.lower_dirs,
-                    upper_dir,
-                    work_dir,
-                    config.excluded_paths,
-                    preimage_dir,
-                )?
-            }
-        }
-        UpperBackend::Jujutsu {
-            store_path,
-            workspace,
-        } => {
-            let workspace = JujutsuWorkspace::open(store_path, workspace, config.read_only)?;
-            let upper_dir = workspace.upper_dir().to_path_buf();
-            let filesystem = if config.excluded_paths.is_empty() && preimage_dir.is_none() {
-                OverlayFs::new(config.lower_dirs, upper_dir, None)?
-            } else {
-                OverlayFs::new_with_exclusions_and_preimages(
-                    config.lower_dirs,
-                    upper_dir,
-                    None,
-                    config.excluded_paths,
-                    preimage_dir,
-                )?
-            };
-            if !config.read_only {
-                jujutsu = Some(workspace);
-            }
-            filesystem
-        }
+    let filesystem = if config.excluded_paths.is_empty() && config.preimage_dir.is_none() {
+        OverlayFs::new(config.lower_dirs, config.upper_dir, config.work_dir)?
+    } else {
+        OverlayFs::new_with_exclusions_and_preimages(
+            config.lower_dirs,
+            config.upper_dir,
+            config.work_dir,
+            config.excluded_paths,
+            config.preimage_dir,
+        )?
     }
     .with_private_root(fskit && !config.allow_other)
     .with_read_only(config.read_only)
@@ -436,7 +318,7 @@ fn prepare(
     if config.read_only {
         options.push(MountOption::RO);
     }
-    Ok((filesystem, mountpoint, options, jujutsu))
+    Ok((filesystem, mountpoint, options))
 }
 
 /// Check the mount table without issuing requests to an unresponsive FSKit server.
@@ -504,16 +386,13 @@ mod mount_config_tests {
     }
 
     #[test]
-    fn platform_default_backend_applies_to_directory_and_jujutsu_mounts() {
+    fn platform_default_backend_applies_to_mounts() {
         let expected = if cfg!(target_os = "macos") {
             Some("fskit")
         } else {
             None
         };
         let directory = OverlayMountConfig::new(vec![], "upper".into(), None, "merged".into());
-        let jujutsu =
-            OverlayMountConfig::new_jujutsu(vec![], "store".into(), "test".into(), "merged".into());
         assert_eq!(directory.backend.as_deref(), expected);
-        assert_eq!(jujutsu.backend.as_deref(), expected);
     }
 }

@@ -19,14 +19,11 @@ pub use persisting_control::overlay::{
     ChangeKind, OverlayRecord, OverlayState, OverlayStatus, OverlayUpper,
 };
 use persisting_control::overlay::{PathFingerprint, PathPreimage};
-use persisting_gateway::config::{OverlayBackend, OverlayConfig};
+use persisting_gateway::config::OverlayConfig;
 use persisting_overlay_core::{
     fingerprint_at, load_preimages, preimage_journal_is_complete, remove_preimages,
 };
-use persisting_overlayfs::{
-    OverlayMountConfig, OverlaySession, jujutsu_upper_dir, mount as mount_embedded_overlay,
-    snapshot_jujutsu_upper,
-};
+use persisting_overlayfs::{OverlayMountConfig, OverlaySession, mount as mount_embedded_overlay};
 use serde::{Deserialize, Serialize};
 use sha2::{Digest, Sha256};
 use std::collections::{BTreeSet, HashMap};
@@ -69,8 +66,6 @@ pub enum OverlayError {
     InvalidState(String),
     #[error("overlay metadata update failed: {0}")]
     Persist(String),
-    #[error("overlay finalization failed: {0}")]
-    Finalize(String),
     #[error("io: {0}")]
     Io(#[from] std::io::Error),
 }
@@ -238,21 +233,6 @@ pub fn resolve_overlay_workspace(
     if !cfg.enabled && cfg.target.is_none() && cfg.lower_dirs.is_empty() {
         return Ok(None);
     }
-    match cfg.backend {
-        OverlayBackend::Directory
-            if cfg.jujutsu_store_path.is_some() || cfg.jujutsu_workspace.is_some() =>
-        {
-            return Err(OverlayError::InvalidConfig(
-                "directory cannot be combined with Jujutsu options".into(),
-            ));
-        }
-        OverlayBackend::Jujutsu if cfg.upper_dir.is_some() || cfg.work_dir.is_some() => {
-            return Err(OverlayError::InvalidConfig(
-                "jujutsu cannot be combined with upper_dir or work_dir".into(),
-            ));
-        }
-        _ => {}
-    }
 
     let resolve = |p: &str| -> PathBuf {
         let path = PathBuf::from(p);
@@ -277,37 +257,17 @@ pub fn resolve_overlay_workspace(
         .map(resolve)
         .unwrap_or_else(|| storage.join(".overlay").join(session_id));
 
-    let upper = match cfg.backend {
-        OverlayBackend::Directory => OverlayUpper::Directory {
-            upper_dir: cfg
-                .upper_dir
-                .as_deref()
-                .map(resolve)
-                .unwrap_or_else(|| stage_dir.join("upper")),
-            work_dir: cfg
-                .work_dir
-                .as_deref()
-                .map(resolve)
-                .unwrap_or_else(|| stage_dir.join("work")),
-        },
-        OverlayBackend::Jujutsu => {
-            let store_path = cfg
-                .jujutsu_store_path
-                .as_deref()
-                .map(resolve)
-                .unwrap_or_else(|| storage.join(".overlay").join("jujutsu"));
-            let workspace = cfg
-                .jujutsu_workspace
-                .clone()
-                .unwrap_or_else(|| session_id.to_owned());
-            let upper_dir = jujutsu_upper_dir(&store_path, &workspace)
-                .map_err(|error| OverlayError::InvalidConfig(error.to_string()))?;
-            OverlayUpper::Jujutsu {
-                store_path,
-                workspace,
-                upper_dir,
-            }
-        }
+    let upper = OverlayUpper {
+        upper_dir: cfg
+            .upper_dir
+            .as_deref()
+            .map(resolve)
+            .unwrap_or_else(|| stage_dir.join("upper")),
+        work_dir: cfg
+            .work_dir
+            .as_deref()
+            .map(resolve)
+            .unwrap_or_else(|| stage_dir.join("work")),
     };
     let resolved_lowers = cfg
         .lower_dirs
@@ -330,16 +290,8 @@ pub fn resolve_overlay_workspace(
     });
 
     let mut backing_paths = vec![stage_dir.clone(), merged.clone()];
-    match &upper {
-        OverlayUpper::Directory {
-            upper_dir,
-            work_dir,
-        } => {
-            backing_paths.push(upper_dir.clone());
-            backing_paths.push(work_dir.clone());
-        }
-        OverlayUpper::Jujutsu { store_path, .. } => backing_paths.push(store_path.clone()),
-    }
+    backing_paths.push(upper.upper_dir.clone());
+    backing_paths.push(upper.work_dir.clone());
     backing_paths.extend(resolved_lowers);
     let mut excluded_paths = backing_paths
         .into_iter()
@@ -380,35 +332,13 @@ pub fn resolve_overlay_workspace(
 
 /// Build an [`OverlayHint`] from a resolved record + full lower stack.
 pub fn hint_from_record(record: &OverlayRecord, lower_dirs: Vec<PathBuf>) -> OverlayHint {
-    let (upper_dir, work_dir, jujutsu_store_path, jujutsu_workspace) = match &record.upper {
-        OverlayUpper::Directory {
-            upper_dir,
-            work_dir,
-        } => (Some(upper_dir.clone()), Some(work_dir.clone()), None, None),
-        OverlayUpper::Jujutsu {
-            store_path,
-            workspace,
-            ..
-        } => (
-            None,
-            None,
-            Some(store_path.clone()),
-            Some(workspace.clone()),
-        ),
-    };
     OverlayHint {
         access_policy: record.access_policy.clone(),
         lower_dirs,
         stage_dir: Some(record.stage_dir.clone()),
-        upper_dir,
-        work_dir,
-        jujutsu_store_path,
-        jujutsu_workspace,
+        upper_dir: Some(record.upper.upper_dir.clone()),
+        work_dir: Some(record.upper.work_dir.clone()),
         merged_dir: Some(record.merged_dir.clone()),
-        backend: match &record.upper {
-            OverlayUpper::Directory { .. } => OverlayBackend::Directory,
-            OverlayUpper::Jujutsu { .. } => OverlayBackend::Jujutsu,
-        },
         auto_apply: record.auto_apply,
         auto_discard: record.auto_discard,
         protect_target: record.protect_target,
@@ -524,43 +454,17 @@ pub(crate) fn mount_overlay_record_observed(
         create_dir_all_durable(dir)
             .map_err(|error| OverlayError::Prepare(io::Error::other(error)))?;
     }
-    match &record.upper {
-        OverlayUpper::Directory {
-            upper_dir,
-            work_dir,
-        } => {
-            create_dir_all_durable(upper_dir)
-                .map_err(|error| OverlayError::Prepare(io::Error::other(error)))?;
-            create_dir_all_durable(work_dir)
-                .map_err(|error| OverlayError::Prepare(io::Error::other(error)))?;
-        }
-        OverlayUpper::Jujutsu { store_path, .. } => {
-            create_dir_all_durable(store_path)
-                .map_err(|error| OverlayError::Prepare(io::Error::other(error)))?;
-        }
-    }
+    create_dir_all_durable(&record.upper.upper_dir)
+        .map_err(|error| OverlayError::Prepare(io::Error::other(error)))?;
+    create_dir_all_durable(&record.upper.work_dir)
+        .map_err(|error| OverlayError::Prepare(io::Error::other(error)))?;
 
-    let mut config = match &record.upper {
-        OverlayUpper::Directory {
-            upper_dir,
-            work_dir,
-        } => OverlayMountConfig::new(
-            lower_dirs.to_vec(),
-            upper_dir.clone(),
-            Some(work_dir.clone()),
-            record.merged_dir.clone(),
-        ),
-        OverlayUpper::Jujutsu {
-            store_path,
-            workspace,
-            ..
-        } => OverlayMountConfig::new_jujutsu(
-            lower_dirs.to_vec(),
-            store_path.clone(),
-            workspace.clone(),
-            record.merged_dir.clone(),
-        ),
-    };
+    let mut config = OverlayMountConfig::new(
+        lower_dirs.to_vec(),
+        record.upper.upper_dir.clone(),
+        Some(record.upper.work_dir.clone()),
+        record.merged_dir.clone(),
+    );
     config.fsname = format!("pvisor-{}", record.id);
     config.excluded_paths = record.excluded_paths.clone();
     config.access_policy = record.access_policy.clone();
@@ -594,29 +498,11 @@ pub(crate) fn prepare_overlay_record_mountless(
     }
     create_dir_all_durable(&record.stage_dir.join("preimages/entries"))
         .map_err(|error| OverlayError::Prepare(io::Error::other(error)))?;
-    match &record.upper {
-        OverlayUpper::Directory {
-            upper_dir,
-            work_dir,
-        } => {
-            create_dir_all_durable(upper_dir)
-                .map_err(|error| OverlayError::Prepare(io::Error::other(error)))?;
-            create_dir_all_durable(work_dir)
-                .map_err(|error| OverlayError::Prepare(io::Error::other(error)))?;
-        }
-        OverlayUpper::Jujutsu {
-            store_path,
-            workspace,
-            upper_dir,
-        } => {
-            create_dir_all_durable(store_path)
-                .map_err(|error| OverlayError::Prepare(io::Error::other(error)))?;
-            persisting_overlayfs::prepare_jujutsu_upper(store_path, workspace)
-                .map_err(OverlayError::Prepare)?;
-            create_dir_all_durable(upper_dir)
-                .map_err(|error| OverlayError::Prepare(io::Error::other(error)))?;
-        }
-    }
+    create_dir_all_durable(&record.upper.upper_dir)
+        .map_err(|error| OverlayError::Prepare(io::Error::other(error)))?;
+    create_dir_all_durable(&record.upper.work_dir)
+        .map_err(|error| OverlayError::Prepare(io::Error::other(error)))?;
+
     let mut record = record.clone();
     record.state = OverlayState::Active;
     write_overlay_record(&record)?;
@@ -626,14 +512,6 @@ pub(crate) fn prepare_overlay_record_mountless(
 pub(crate) fn stage_overlay_record(record: &mut OverlayRecord) -> anyhow::Result<()> {
     if record.state == OverlayState::Active {
         record.state = OverlayState::Staged;
-        if let OverlayUpper::Jujutsu {
-            store_path,
-            workspace,
-            ..
-        } = &record.upper
-        {
-            snapshot_jujutsu_upper(store_path, workspace)?;
-        }
         write_overlay_record(record)?;
     }
     Ok(())
@@ -651,27 +529,12 @@ pub fn mount_overlay_record_read_only(
         return Err(OverlayError::MissingTarget);
     }
     let mountpoint = host_mountpoint(mountpoint);
-    let mut config = match &record.upper {
-        OverlayUpper::Directory {
-            upper_dir,
-            work_dir,
-        } => OverlayMountConfig::new(
-            lower_dirs.to_vec(),
-            upper_dir.clone(),
-            Some(work_dir.clone()),
-            mountpoint.to_path_buf(),
-        ),
-        OverlayUpper::Jujutsu {
-            store_path,
-            workspace,
-            ..
-        } => OverlayMountConfig::new_jujutsu(
-            lower_dirs.to_vec(),
-            store_path.clone(),
-            workspace.clone(),
-            mountpoint.to_path_buf(),
-        ),
-    };
+    let mut config = OverlayMountConfig::new(
+        lower_dirs.to_vec(),
+        record.upper.upper_dir.clone(),
+        Some(record.upper.work_dir.clone()),
+        mountpoint.to_path_buf(),
+    );
     config.fsname = format!("pvisor-inspect-{}", record.id);
     config.excluded_paths = record.excluded_paths.clone();
     for lower in lower_dirs {
@@ -725,11 +588,7 @@ pub fn load_overlay_record(stage_dir: &Path) -> Result<OverlayRecord, OverlayErr
 }
 
 pub fn overlay_status(record: &OverlayRecord) -> Result<OverlayStatus, OverlayError> {
-    let upper_dir = match &record.upper {
-        OverlayUpper::Directory { upper_dir, .. } | OverlayUpper::Jujutsu { upper_dir, .. } => {
-            upper_dir
-        }
-    };
+    let upper_dir = record.upper.path();
     let mut changed = 0usize;
     let mut whiteouts = 0usize;
     let mut sample = Vec::new();
@@ -846,15 +705,21 @@ pub fn snapshot_overlay_upper(
 
 /// Restore a raw upper snapshot into a directory upper.
 pub fn restore_overlay_upper(source: &Path, destination: &Path) -> Result<(), OverlayError> {
+    if !source.is_dir() {
+        return Err(OverlayError::InvalidConfig(format!(
+            "snapshot source is not a directory: {}",
+            source.display()
+        )));
+    }
     if path_exists(destination) {
         remove_path(destination)?;
     }
     fs::create_dir_all(destination)?;
-    if !source.is_dir() {
-        return Ok(());
-    }
     let mut hard_links = HashMap::new();
-    snapshot_directory_raw(source, destination, &mut hard_links, &|| false)?;
+    snapshot_directory_raw(source, destination, &mut hard_links)?;
+    if let Some(parent) = destination.parent() {
+        File::open(parent)?.sync_all()?;
+    }
     Ok(())
 }
 
@@ -1404,16 +1269,6 @@ fn complete_target_applied(
         prune_selected_upper(&upper_dir, selected_paths)?;
     }
 
-    if let OverlayUpper::Jujutsu {
-        store_path,
-        workspace,
-        ..
-    } = &record.upper
-    {
-        snapshot_jujutsu_upper(store_path, workspace)
-            .map_err(|error| OverlayError::Finalize(error.to_string()))?;
-    }
-
     let remaining = overlay_changes(record, lower_dirs)?;
     if remaining.is_empty() {
         cleanup_terminal_overlay_data(record)?;
@@ -1443,19 +1298,6 @@ pub fn discard_overlay(record: &mut OverlayRecord) -> Result<(), OverlayError> {
         }
         OverlayState::Active | OverlayState::Staged => {}
     }
-    match &record.upper {
-        OverlayUpper::Directory { .. } => {}
-        OverlayUpper::Jujutsu {
-            store_path,
-            workspace,
-            upper_dir,
-        } => {
-            clear_path(upper_dir)?;
-            snapshot_jujutsu_upper(store_path, workspace)
-                .map_err(|error| OverlayError::Finalize(error.to_string()))?;
-            clear_path(upper_dir)?;
-        }
-    }
     cleanup_terminal_overlay_data(record)?;
     record.state = OverlayState::Discarded;
     write_overlay_record(record)?;
@@ -1463,16 +1305,8 @@ pub fn discard_overlay(record: &mut OverlayRecord) -> Result<(), OverlayError> {
 }
 
 fn cleanup_terminal_overlay_data(record: &OverlayRecord) -> Result<(), OverlayError> {
-    match &record.upper {
-        OverlayUpper::Directory {
-            upper_dir,
-            work_dir,
-        } => {
-            clear_path(upper_dir)?;
-            clear_path(work_dir)?;
-        }
-        OverlayUpper::Jujutsu { upper_dir, .. } => clear_path(upper_dir)?,
-    }
+    clear_path(&record.upper.upper_dir)?;
+    clear_path(&record.upper.work_dir)?;
 
     // Never recursively remove a mountpoint: after a clean teardown this is
     // either absent or an empty placeholder. A non-empty directory is retained
@@ -1855,27 +1689,18 @@ fn snapshot_directory_raw(
     source: &Path,
     destination: &Path,
     hard_links: &mut HashMap<(u64, u64), PathBuf>,
-    cancelled: &dyn Fn() -> bool,
 ) -> Result<(), OverlayError> {
-    if cancelled() {
-        return Err(io::Error::new(io::ErrorKind::Interrupted, "materialization cancelled").into());
-    }
     ensure_directory(destination)?;
     for entry in fs::read_dir(source)? {
-        if cancelled() {
-            return Err(
-                io::Error::new(io::ErrorKind::Interrupted, "materialization cancelled").into(),
-            );
-        }
         let entry = entry?;
         snapshot_entry_raw(
             &entry.path(),
             &destination.join(entry.file_name()),
             hard_links,
-            cancelled,
         )?;
     }
     copy_snapshot_metadata(source, destination)?;
+    File::open(destination)?.sync_all()?;
     Ok(())
 }
 
@@ -1883,15 +1708,11 @@ fn snapshot_entry_raw(
     source: &Path,
     destination: &Path,
     hard_links: &mut HashMap<(u64, u64), PathBuf>,
-    cancelled: &dyn Fn() -> bool,
 ) -> Result<(), OverlayError> {
-    if cancelled() {
-        return Err(io::Error::new(io::ErrorKind::Interrupted, "materialization cancelled").into());
-    }
     let metadata = fs::symlink_metadata(source)?;
     let kind = metadata.file_type();
     if kind.is_dir() {
-        return snapshot_directory_raw(source, destination, hard_links, cancelled);
+        return snapshot_directory_raw(source, destination, hard_links);
     }
     if let Some(parent) = destination.parent() {
         fs::create_dir_all(parent)?;
@@ -1926,6 +1747,9 @@ fn snapshot_entry_raw(
         }
     }
     copy_snapshot_metadata(source, destination)?;
+    if kind.is_file() {
+        File::open(destination)?.sync_all()?;
+    }
     Ok(())
 }
 
@@ -2318,25 +2142,11 @@ mod tests {
         assert_eq!(rec.stage_dir, PathBuf::from("/tmp/store/.overlay/run-1"));
         assert_eq!(
             rec.upper,
-            OverlayUpper::Directory {
+            OverlayUpper {
                 upper_dir: PathBuf::from("/tmp/store/.overlay/run-1/upper"),
                 work_dir: PathBuf::from("/tmp/store/.overlay/run-1/work")
             }
         );
-    }
-
-    #[test]
-    fn resolve_rejects_parallel_upper_backends() {
-        let cfg = OverlayConfig {
-            enabled: true,
-            target: Some("/proj".into()),
-            jujutsu_store_path: Some("/shared/jj".into()),
-            ..OverlayConfig::default()
-        };
-        assert!(matches!(
-            resolve_overlay_workspace(&cfg, Path::new("/tmp/store"), "run-1"),
-            Err(OverlayError::InvalidConfig(_))
-        ));
     }
 
     #[test]
@@ -2390,7 +2200,7 @@ mod tests {
             id: "mountless".into(),
             generation: 0,
             target: lower.clone(),
-            upper: OverlayUpper::Directory {
+            upper: OverlayUpper {
                 upper_dir: stage.join("upper"),
                 work_dir: stage.join("work"),
             },
@@ -2411,44 +2221,6 @@ mod tests {
             load_overlay_record(&stage).unwrap().state,
             OverlayState::Active
         );
-    }
-
-    #[test]
-    fn jujutsu_sessions_share_store_but_get_distinct_workspaces() {
-        let storage = Path::new("/tmp/store");
-        let cfg = OverlayConfig {
-            enabled: true,
-            target: Some("/proj".into()),
-            backend: OverlayBackend::Jujutsu,
-            ..OverlayConfig::default()
-        };
-        let first = resolve_overlay_workspace(&cfg, storage, "fork-a")
-            .unwrap()
-            .unwrap();
-        let second = resolve_overlay_workspace(&cfg, storage, "fork-b")
-            .unwrap()
-            .unwrap();
-        let OverlayUpper::Jujutsu {
-            store_path: first_store,
-            workspace: first_workspace,
-            upper_dir: first_upper,
-        } = first.upper
-        else {
-            panic!("expected Jujutsu upper")
-        };
-        let OverlayUpper::Jujutsu {
-            store_path: second_store,
-            workspace: second_workspace,
-            upper_dir: second_upper,
-        } = second.upper
-        else {
-            panic!("expected Jujutsu upper")
-        };
-        assert_eq!(first_store, second_store);
-        assert_eq!(first_store, PathBuf::from("/tmp/store/.overlay/jujutsu"));
-        assert_eq!(first_workspace, "fork-a");
-        assert_eq!(second_workspace, "fork-b");
-        assert_ne!(first_upper, second_upper);
     }
 
     #[test]
@@ -2540,7 +2312,7 @@ mod tests {
             id: "embedded-e2e".into(),
             generation: 0,
             target: lower.clone(),
-            upper: OverlayUpper::Directory {
+            upper: OverlayUpper {
                 upper_dir: upper.clone(),
                 work_dir: work,
             },
@@ -2617,7 +2389,7 @@ mod tests {
             id: "t".into(),
             generation: 0,
             target: target.clone(),
-            upper: OverlayUpper::Directory {
+            upper: OverlayUpper {
                 upper_dir: upper.clone(),
                 work_dir: work.clone(),
             },
@@ -2671,7 +2443,7 @@ mod tests {
             generation: 0,
             id: "selective".into(),
             target: target.clone(),
-            upper: OverlayUpper::Directory {
+            upper: OverlayUpper {
                 upper_dir: upper.clone(),
                 work_dir: stage.join("work"),
             },
@@ -2801,7 +2573,7 @@ mod tests {
                 id: operation.into(),
                 generation: 0,
                 target: target.clone(),
-                upper: OverlayUpper::Directory {
+                upper: OverlayUpper {
                     upper_dir: upper.clone(),
                     work_dir: stage.join("work"),
                 },
@@ -2882,7 +2654,7 @@ mod tests {
                 generation: 0,
                 id: format!("recover-{target_already_mutated}"),
                 target: target.clone(),
-                upper: OverlayUpper::Directory {
+                upper: OverlayUpper {
                     upper_dir: upper.clone(),
                     work_dir: stage.join("work"),
                 },
@@ -2973,7 +2745,7 @@ mod tests {
             generation: 0,
             id: "conflicting-apply".into(),
             target: target.clone(),
-            upper: OverlayUpper::Directory {
+            upper: OverlayUpper {
                 upper_dir: upper.clone(),
                 work_dir: work,
             },
@@ -3009,7 +2781,7 @@ mod tests {
             generation: 0,
             id: "opaque-recovery".into(),
             target: target.clone(),
-            upper: OverlayUpper::Directory {
+            upper: OverlayUpper {
                 upper_dir: upper.clone(),
                 work_dir: stage.join("work"),
             },
@@ -3086,7 +2858,7 @@ mod tests {
             generation: 0,
             id: "glob".into(),
             target: target.clone(),
-            upper: OverlayUpper::Directory {
+            upper: OverlayUpper {
                 upper_dir: upper.clone(),
                 work_dir: stage.join("work"),
             },
@@ -3137,7 +2909,7 @@ mod tests {
             generation: 0,
             id: "opaque-select".into(),
             target: target.clone(),
-            upper: OverlayUpper::Directory {
+            upper: OverlayUpper {
                 upper_dir: upper,
                 work_dir: stage.join("work"),
             },
@@ -3189,7 +2961,7 @@ mod tests {
             generation: 0,
             id: "hard-links".into(),
             target: target.clone(),
-            upper: OverlayUpper::Directory {
+            upper: OverlayUpper {
                 upper_dir: upper,
                 work_dir: stage.join("work"),
             },
@@ -3233,7 +3005,7 @@ mod tests {
             generation: 0,
             id: "invalid-selection".into(),
             target: target.clone(),
-            upper: OverlayUpper::Directory {
+            upper: OverlayUpper {
                 upper_dir: upper,
                 work_dir: tmp.path().join("work"),
             },
@@ -3276,7 +3048,7 @@ mod tests {
             generation: 0,
             id: "changes".into(),
             target: target.clone(),
-            upper: OverlayUpper::Directory {
+            upper: OverlayUpper {
                 upper_dir: upper,
                 work_dir: tmp.path().join("work"),
             },
@@ -3324,7 +3096,7 @@ mod tests {
             generation: 0,
             id: "immutable".into(),
             target: target.clone(),
-            upper: OverlayUpper::Directory {
+            upper: OverlayUpper {
                 upper_dir: upper,
                 work_dir: tmp.path().join("work"),
             },
@@ -3385,7 +3157,7 @@ mod tests {
             generation: 0,
             id: "t".into(),
             target: tmp.path().join("target"),
-            upper: OverlayUpper::Directory {
+            upper: OverlayUpper {
                 upper_dir: upper,
                 work_dir: tmp.path().join("work"),
             },
@@ -3412,7 +3184,7 @@ mod tests {
             id: "t".into(),
             generation: 0,
             target: tmp.path().join("target"),
-            upper: OverlayUpper::Directory {
+            upper: OverlayUpper {
                 upper_dir: upper.clone(),
                 work_dir: tmp.path().join("work"),
             },
@@ -3442,7 +3214,7 @@ mod tests {
             id: "applied-run".into(),
             generation: 0,
             target: applied_target,
-            upper: OverlayUpper::Directory {
+            upper: OverlayUpper {
                 upper_dir: applied_upper,
                 work_dir: applied_root.path().join("work"),
             },
@@ -3472,7 +3244,7 @@ mod tests {
             id: "dropped-run".into(),
             generation: 0,
             target: dropped_root.path().join("target"),
-            upper: OverlayUpper::Directory {
+            upper: OverlayUpper {
                 upper_dir: dropped_upper,
                 work_dir: dropped_root.path().join("work"),
             },

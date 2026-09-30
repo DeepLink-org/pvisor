@@ -5,17 +5,17 @@ use crate::config::{ContainerMount, ContainerPlatform, ContainerSettings};
 use crate::executor::artifact::resolve_pvisor_binary;
 use crate::executor::delegated::{DelegatedRunFiles, RESULT_FILENAME, SPEC_FILENAME};
 use crate::executor::{AttemptContext, RunExecutor};
+use crate::executor::{join_capture, read_limited, stdio};
 use async_trait::async_trait;
 use persisting_control::{
     ExecutorDescriptor, ExecutorKind, IsolationKind, ProcessOutput, RunFailure, RunFailureKind,
-    RunInvocation, RunResult, RunSpec, RunState, StdioMode,
+    RunInvocation, RunResult, RunSpec, RunState,
 };
 use std::collections::BTreeMap;
 use std::fs;
 use std::path::{Path, PathBuf};
 use std::process::Stdio;
 use std::time::Duration;
-use tokio::io::{AsyncRead, AsyncReadExt};
 use tokio::process::{Child, Command};
 
 const CAPTURE_CONFIG_ENV: &str = "PERSISTING_CAPTURE_CONFIG";
@@ -25,12 +25,6 @@ const GUEST_CONTROL_DIR: &str = "/run/persisting";
 #[derive(Debug, Clone)]
 pub struct ContainerExecutor {
     settings: ContainerSettings,
-}
-
-#[derive(Debug)]
-struct Captured {
-    text: String,
-    truncated: bool,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -654,45 +648,6 @@ fn container_name(run_id: &str, attempt_id: &str) -> String {
         .rev()
         .collect::<String>();
     format!("pvisor-{run}-{suffix}")
-}
-
-fn stdio(mode: StdioMode) -> Stdio {
-    match mode {
-        StdioMode::Inherit => Stdio::inherit(),
-        StdioMode::Capture => Stdio::piped(),
-        StdioMode::Null => Stdio::null(),
-    }
-}
-
-async fn read_limited<R: AsyncRead + Unpin>(
-    mut reader: R,
-    limit: usize,
-) -> std::io::Result<Captured> {
-    let mut retained = Vec::with_capacity(limit.min(8192));
-    let mut buffer = [0_u8; 8192];
-    let mut truncated = false;
-    loop {
-        let read = reader.read(&mut buffer).await?;
-        if read == 0 {
-            break;
-        }
-        let keep = limit.saturating_sub(retained.len()).min(read);
-        retained.extend_from_slice(&buffer[..keep]);
-        truncated |= keep < read;
-    }
-    Ok(Captured {
-        text: String::from_utf8_lossy(&retained).into_owned(),
-        truncated,
-    })
-}
-
-async fn join_capture(
-    task: Option<tokio::task::JoinHandle<std::io::Result<Captured>>>,
-) -> Option<Captured> {
-    match task {
-        Some(task) => task.await.ok().and_then(Result::ok),
-        None => None,
-    }
 }
 
 #[cfg(test)]

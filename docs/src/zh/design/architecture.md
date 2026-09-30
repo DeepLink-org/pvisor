@@ -9,7 +9,7 @@ PolicyVisor（pVisor）通过能力准入、执行器、运行时控制和执行
 | `persisting-pvisor` | CLI、准入、Attempt 生命周期、执行器、Run Bundle、审查／应用／检查点 |
 | `persisting-control` | 运行与 Overlay 契约、能力策略、控制消息与客户端、共享事件记录 |
 | `persisting-overlay-core` | 共享写时复制语义与首次修改时的文件指纹 |
-| `persisting-overlayfs` | 宿主 FUSE 适配器与可选 Jujutsu 后端 |
+| `persisting-overlayfs` | 宿主 FUSE 适配器 |
 | `persisting-overlaynet` | 网络授权、解析、代理转发与 VM 网络接入 |
 | `persisting-gateway` | 模型路由、协议转换与捕获 |
 | `persisting-replay` | Agent 原生轨迹的回放与续跑适配 |

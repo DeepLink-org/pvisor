@@ -295,7 +295,6 @@ TOML 中对应：
 ```toml
 [filesystem]
 stage = "../stage-001"
-backend = "directory"
 mount = [{ source = "/opt/tool", access = "stage" }]
 access = [
   { path = "**/.ssh", level = "deny" },
@@ -410,7 +409,6 @@ pvisor run \
   --stage ../stage-001 \
   --mount /opt/tool:stage \
   --access '**/.ssh:deny' \
-  --overlayfs-backend directory \
   --overlaynet-allow api.openai.com:443 \
   --overlaynet-deny 169.254.0.0/16 \
   --overlaynet-limit 10mbps \
@@ -444,7 +442,6 @@ command = ["my-agent"]
 stage = "../stage-001"
 mount = [{ source = "/opt/tool", access = "stage" }]
 access = [{ path = "**/.ssh", level = "deny" }]
-backend = "directory"
 
 [overlaynet]
 mode = "proxy"
@@ -476,8 +473,8 @@ destination = "./capture"
 
 用 `pvisor run --config run.toml` 运行。显式 CLI 标量替换 TOML 标量。网络和 Gateway
 列表选项替换配置中的完整列表；文件系统的 `--mount` 和 `--access` 追加到配置条目。
-`[filesystem]` 的序列化字段 `stage`、`mount`、`access`、`backend`、`max_size`
-分别对应 `--stage`、`--mount`、`--access`、`--overlayfs-backend`、
+`[filesystem]` 的序列化字段 `stage`、`mount`、`access`、`max_size`
+分别对应 `--stage`、`--mount`、`--access`、
 `--overlayfs-max-size`。`--` 之后的命令替换 `run.command`。
 大小限制在运行结束后检查，因此不限制 Agent 运行期间的峰值占用。
 
@@ -566,7 +563,7 @@ project/                         # reusable workspace / default base
     ├── run.json
     ├── run-bundle.json          # mode 0600; outcome + safety + changes + effects
     ├── overlay.json             # when OverlayFS is enabled
-    ├── upper/                   # or a Run-named Jujutsu workspace upper
+    ├── upper/
     ├── merged/
     ├── checkpoints/
     ├── lease.lock

@@ -73,17 +73,15 @@ use persisting_control::{
     FilesystemAccess, FilesystemCapability, PolicyMode, RunInvocation, RunSpec, RunState, StdioMode,
 };
 use persisting_gateway::config::{
-    CaptureLevel, ModelRoute, NetworkConfig, NetworkMode, OverlayBackend, OverlayConfig,
-    ProxyConfig,
+    CaptureLevel, ModelRoute, NetworkConfig, NetworkMode, OverlayConfig, ProxyConfig,
 };
 use persisting_overlaynet::{NetworkAccessRule, NetworkBandwidthLimit};
 use serde::Deserialize;
 
 use crate::config::{
     ContainerMount, ContainerNetwork, ContainerPlatform, FilesystemAccessLevel, FilesystemMode,
-    GatewayMode, GatewayProfile, OverlayFsBackend, OverlayFsCommit, OverlayFsSettings,
-    OverlayNetMode, OverlayNetPolicy, OverlayNetSettings, RunConfig, RunExecutorKind, RunPolicy,
-    RunStdio,
+    GatewayMode, GatewayProfile, OverlayFsCommit, OverlayFsSettings, OverlayNetMode,
+    OverlayNetPolicy, OverlayNetSettings, RunConfig, RunExecutorKind, RunPolicy, RunStdio,
 };
 use crate::runtime::{RunLineage, default_run_home, resolve_run};
 use crate::{
@@ -458,10 +456,6 @@ struct OverlayFsOverrides {
     /// Explicitly remove default/config file rules before adding --access rules.
     #[arg(long)]
     clear_access: bool,
-    /// Changeset upper-layer backend: `directory` writes plain files, `jujutsu`
-    /// stores content-addressed snapshots in a shared repository.
-    #[arg(long = "overlayfs-backend", value_enum)]
-    backend: Option<OverlayFsBackend>,
     /// Aggregate byte budget for the staged filesystem; the Job fails once the
     /// stage exceeds it.
     #[arg(long = "overlayfs-max-size", value_name = "SIZE")]
@@ -901,7 +895,6 @@ async fn run_prepared_spec(args: RunArgs) -> anyhow::Result<i32> {
                     && overlay.merged_dir.is_none()
                     && overlay.compose.is_empty()
                     && overlay.access_policy == Default::default()
-                    && overlay.backend == OverlayFsBackend::Directory
                     && overlay.commit == OverlayFsCommit::Manual
                     && overlay.stage.as_deref() == Some(stage_path.as_path())
             }),
@@ -1063,14 +1056,7 @@ pub async fn fork(args: ForkArgs) -> anyhow::Result<i32> {
     let source = resolve_run(Some(&args.source), &storage)?;
     let checkpoint = match args.checkpoint.as_deref() {
         Some(id) => {
-            anyhow::ensure!(
-                !id.trim().is_empty()
-                    && id != "."
-                    && id != ".."
-                    && !id.contains('/')
-                    && !id.contains('\\'),
-                "checkpoint id must be one non-empty path-safe segment"
-            );
+            crate::runtime::checkpoint::validate_checkpoint_id(id)?;
             LogicalCheckpoint::read(&source.stage_dir().join(crate::CHECKPOINTS_DIR).join(id))?
         }
         None => create_logical_checkpoint(&source, None)?,
@@ -1115,13 +1101,12 @@ pub async fn fork(args: ForkArgs) -> anyhow::Result<i32> {
         stage_size_bytes: None,
         mount: Vec::new(),
         access: Vec::new(),
-        backend: OverlayFsBackend::Directory,
         commit: OverlayFsCommit::Manual,
     });
     let stage = select_run_storage(&config, &fork_workspace, &run_id)?;
     std::fs::create_dir_all(&stage)?;
     let upper = stage.join("upper");
-    if let Err(error) = restore_logical_checkpoint(&checkpoint, &upper) {
+    if let Err(error) = restore_logical_checkpoint(&checkpoint, &upper, &stage.join("preimages")) {
         let _ = std::fs::remove_dir_all(&stage);
         return Err(error);
     }
@@ -1301,7 +1286,7 @@ async fn execute_config(
         .unwrap_or(std::env::current_dir()?);
     let workspace = resolve_workspace(&workspace)?;
     let storage = resolve_run_storage(&select_run_storage(&config, &workspace, &run_id)?)?;
-    let mut overlay = resolve_overlay(&config, &workspace, &storage, &run_id)?;
+    let mut overlay = resolve_overlay(&config, &workspace, &storage)?;
     #[cfg(unix)]
     super::tui::announce_stage(
         overlay
@@ -2173,7 +2158,6 @@ fn apply_cli(config: &mut RunConfig, args: RunArgs) -> anyhow::Result<()> {
     let enables_overlayfs = !args.overlayfs.mounts.is_empty()
         || !args.overlayfs.access.is_empty()
         || args.overlayfs.clear_access
-        || args.overlayfs.backend.is_some()
         || args.overlayfs.max_size.is_some()
         || args.stage.is_some();
     if enables_overlayfs {
@@ -2220,9 +2204,6 @@ fn apply_cli(config: &mut RunConfig, args: RunArgs) -> anyhow::Result<()> {
                     },
                 })
                 .collect();
-        }
-        if let Some(value) = args.overlayfs.backend {
-            overlayfs.backend = value;
         }
         if let Some(value) = args.overlayfs.max_size {
             overlayfs.stage_size_bytes = Some(value.0);
@@ -2635,7 +2616,6 @@ fn resolve_overlay(
     config: &RunConfig,
     workspace: &Path,
     storage: &Path,
-    run_id: &str,
 ) -> anyhow::Result<Option<OverlayHint>> {
     let Some(overlayfs) = &config.overlayfs else {
         return Ok(None);
@@ -2686,14 +2666,6 @@ fn resolve_overlay(
         lower_dirs: compose,
         stage_dir: Some(stage.clone()),
         merged_dir,
-        backend: match overlayfs.backend {
-            OverlayFsBackend::Directory => OverlayBackend::Directory,
-            OverlayFsBackend::Jujutsu => OverlayBackend::Jujutsu,
-        },
-        jujutsu_store_path: (overlayfs.backend == OverlayFsBackend::Jujutsu)
-            .then(|| stage.join("jujutsu")),
-        jujutsu_workspace: (overlayfs.backend == OverlayFsBackend::Jujutsu)
-            .then(|| run_id.to_owned()),
         auto_apply: overlayfs.commit == OverlayFsCommit::Apply,
         auto_discard: overlayfs.commit == OverlayFsCommit::Drop,
         ..OverlayHint::default()
@@ -2853,7 +2825,7 @@ mod tests {
             let mut config = RunConfig::default();
             apply_run_options(&mut config, preset_args(&[flag, "--", "bash"])).unwrap();
             normalize_filesystem_config(&mut config).unwrap();
-            let overlay = resolve_overlay(&config, &workspace, &storage, "job")
+            let overlay = resolve_overlay(&config, &workspace, &storage)
                 .unwrap()
                 .unwrap();
             assert_eq!(overlay.stage_dir, Some(storage.canonicalize().unwrap()));
@@ -3170,7 +3142,6 @@ level = "warn"
             &config,
             Path::new("."),
             &tempfile::tempdir().unwrap().path().join("stage"),
-            "test",
         )
         .unwrap()
         .unwrap();
@@ -3915,13 +3886,7 @@ sandbox = "required""#
     fn help_exposes_compositional_overlayfs_without_a_mode_switch() {
         let error = Cli::try_parse_from(["pvisor", "run", "--help"]).unwrap_err();
         let help = error.to_string();
-        for option in [
-            "--mount",
-            "--access",
-            "--stage",
-            "--overlayfs-backend",
-            "--overlayfs-max-size",
-        ] {
+        for option in ["--mount", "--access", "--stage", "--overlayfs-max-size"] {
             assert!(help.contains(option), "missing {option}");
         }
         for obsolete in ["--overlayfs-mode", "--overlayfs-lower"] {
@@ -4127,8 +4092,6 @@ sandbox = "required""#
             "run",
             "--stage",
             "/tmp/pvisor-stage",
-            "--overlayfs-backend",
-            "jujutsu",
             "--",
             "true",
         ])
@@ -4140,7 +4103,6 @@ sandbox = "required""#
         let mut config = RunConfig::default();
         apply_cli(&mut config, *args).unwrap();
         let overlayfs = config.overlayfs.expect("OverlayFS should be enabled");
-        assert_eq!(overlayfs.backend, OverlayFsBackend::Jujutsu);
         assert_eq!(
             overlayfs.stage.as_deref(),
             Some(Path::new("/tmp/pvisor-stage"))
@@ -4164,7 +4126,7 @@ sandbox = "required""#
             ..RunConfig::default()
         };
 
-        let hint = resolve_overlay(&config, &workspace, &storage, "run-test")
+        let hint = resolve_overlay(&config, &workspace, &storage)
             .unwrap()
             .unwrap();
         assert_eq!(
@@ -4197,7 +4159,7 @@ sandbox = "required""#
             }),
             ..RunConfig::default()
         };
-        let hint = resolve_overlay(&config, &workspace, &storage, "run-test")
+        let hint = resolve_overlay(&config, &workspace, &storage)
             .unwrap()
             .unwrap();
         assert_eq!(
@@ -4237,7 +4199,7 @@ sandbox = "required""#
                 }),
                 ..RunConfig::default()
             };
-            assert!(resolve_overlay(&config, &workspace, &storage, "run-test").is_ok());
+            assert!(resolve_overlay(&config, &workspace, &storage).is_ok());
         }
 
         let config = RunConfig {
@@ -4248,7 +4210,7 @@ sandbox = "required""#
             }),
             ..RunConfig::default()
         };
-        assert!(resolve_overlay(&config, &workspace, &storage, "run-test").is_err());
+        assert!(resolve_overlay(&config, &workspace, &storage).is_err());
     }
 
     #[test]

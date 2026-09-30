@@ -9,7 +9,7 @@ PolicyVisor (pVisor) combines capability admission, executors, runtime controls,
 | `persisting-pvisor` | CLI, admission, Attempt lifecycle, executors, Run Bundle, review/apply/checkpoint |
 | `persisting-control` | Run/Overlay contracts, capability policy, control messages/client, and shared event records |
 | `persisting-overlay-core` | Shared copy-on-write semantics and first-touch file fingerprints |
-| `persisting-overlayfs` | Host FUSE adapter and optional Jujutsu backend |
+| `persisting-overlayfs` | Host FUSE adapter |
 | `persisting-overlaynet` | Network authorization, resolution, proxy forwarding and VM network attachment |
 | `persisting-gateway` | Model routing, protocol conversion and capture |
 | `persisting-replay` | Agent-native trajectory replay and continuation adapters |

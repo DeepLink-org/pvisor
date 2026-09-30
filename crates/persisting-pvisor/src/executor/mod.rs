@@ -9,11 +9,14 @@ pub(crate) mod vm;
 
 use crate::runtime::event::RunEventPublisher;
 use async_trait::async_trait;
+use persisting_control::StdioMode;
 use persisting_control::{
     AttemptId, ExecutorDescriptor, RunInvocation, RunResult, RunSpec, RunState, RunStatus,
 };
 use serde_json::json;
+use std::process::Stdio;
 use std::sync::Arc;
+use tokio::io::{AsyncRead, AsyncReadExt};
 use tokio::sync::watch;
 use tokio_util::sync::CancellationToken;
 
@@ -140,4 +143,72 @@ pub trait RunExecutor: Send + Sync {
         false
     }
     async fn execute(&self, context: AttemptContext) -> RunResult;
+}
+
+#[derive(Debug)]
+pub(crate) struct Captured {
+    pub text: String,
+    pub truncated: bool,
+}
+
+pub(crate) fn stdio(mode: StdioMode) -> Stdio {
+    match mode {
+        StdioMode::Inherit => Stdio::inherit(),
+        StdioMode::Capture => Stdio::piped(),
+        StdioMode::Null => Stdio::null(),
+    }
+}
+
+pub(crate) async fn read_limited<R: AsyncRead + Unpin>(
+    mut reader: R,
+    limit: usize,
+) -> std::io::Result<Captured> {
+    let mut retained = Vec::with_capacity(limit.min(8192));
+    let mut buffer = [0_u8; 8192];
+    let mut truncated = false;
+    loop {
+        let read = reader.read(&mut buffer).await?;
+        if read == 0 {
+            break;
+        }
+        let keep = limit.saturating_sub(retained.len()).min(read);
+        retained.extend_from_slice(&buffer[..keep]);
+        truncated |= keep < read;
+    }
+    Ok(Captured {
+        text: String::from_utf8_lossy(&retained).into_owned(),
+        truncated,
+    })
+}
+
+pub(crate) async fn join_capture(
+    task: Option<tokio::task::JoinHandle<std::io::Result<Captured>>>,
+) -> Option<Captured> {
+    match task {
+        Some(task) => task.await.ok().and_then(Result::ok),
+        None => None,
+    }
+}
+
+#[cfg(test)]
+mod output_tests {
+    use super::*;
+    use tokio::io::AsyncWriteExt;
+
+    #[tokio::test]
+    async fn bounded_capture_drains_output_after_the_limit() {
+        let (reader, mut writer) = tokio::io::duplex(16);
+        let writer = tokio::spawn(async move { writer.write_all(&[b'x'; 32768]).await.unwrap() });
+        let captured =
+            tokio::time::timeout(std::time::Duration::from_secs(2), read_limited(reader, 8))
+                .await
+                .unwrap()
+                .unwrap();
+        writer.await.unwrap();
+        assert_eq!(captured.text, "xxxxxxxx");
+        assert!(captured.truncated);
+        let captured = read_limited(&b"ok"[..], 8).await.unwrap();
+        assert_eq!(captured.text, "ok");
+        assert!(!captured.truncated);
+    }
 }

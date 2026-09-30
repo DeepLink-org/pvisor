@@ -8,7 +8,7 @@ use crate::executor::sandbox::{
 #[cfg(target_os = "linux")]
 use crate::executor::sandbox::{ROOTLESS_ATTESTATION, SandboxPlan, landlock_runtime_available};
 use crate::executor::sandbox::{SANDBOX_ARG0_ENV, SANDBOX_PLAN_ENV, SANDBOX_SETUP_FAILED_WARNING};
-use crate::executor::{AttemptContext, RunExecutor};
+use crate::executor::{AttemptContext, Captured, RunExecutor, stdio};
 use async_trait::async_trait;
 use persisting_control::{
     CapabilityDimension, CapabilityEnforcementEvidence, ExecutorDescriptor, ExecutorKind,
@@ -22,7 +22,6 @@ use std::path::Path;
 use std::path::PathBuf;
 #[cfg(target_os = "linux")]
 use std::process::Command as StdCommand;
-use std::process::Stdio;
 use tokio::io::{AsyncRead, AsyncReadExt};
 use tokio::process::{Child, Command};
 
@@ -360,12 +359,6 @@ impl Drop for SandboxResources {
     }
 }
 
-#[derive(Debug)]
-struct Captured {
-    text: String,
-    truncated: bool,
-}
-
 async fn read_limited<R: AsyncRead + Unpin>(
     mut reader: R,
     limit: usize,
@@ -395,14 +388,6 @@ async fn read_limited<R: AsyncRead + Unpin>(
         text: String::from_utf8_lossy(&retained).into_owned(),
         truncated,
     })
-}
-
-fn stdio(mode: StdioMode) -> Stdio {
-    match mode {
-        StdioMode::Inherit => Stdio::inherit(),
-        StdioMode::Capture => Stdio::piped(),
-        StdioMode::Null => Stdio::null(),
-    }
 }
 
 #[cfg(any(target_os = "linux", target_os = "macos"))]
@@ -1639,6 +1624,7 @@ impl RunExecutor for ProcessExecutor {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use std::process::Stdio;
 
     #[cfg(unix)]
     #[tokio::test]

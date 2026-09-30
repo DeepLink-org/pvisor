@@ -13,7 +13,7 @@ Cargo workspace 按产品职责划分。Python `pvisor/` 只负责启动随包�
 | `crates/persisting-control/` | 共享契约、策略、AgentCtl 消息、IR 和事件 schema |
 | `crates/persisting-gateway/` | Agent 协议转发、转换、采集与投影 |
 | `crates/persisting-overlay-core/` | 不依赖 FUSE 的 OverlayFS 操作和文件访问控制 |
-| `crates/persisting-overlayfs/` | FUSE 适配、挂载及可选的 Jujutsu 上层存储 |
+| `crates/persisting-overlayfs/` | FUSE 适配及挂载 |
 | `crates/persisting-overlaynet/` | 出站策略、HTTP 代理和 VM virtio-net 数据通路 |
 | `crates/persisting-replay/` | 回放规划、原生 Agent 适配器和续跑协议桥 |
 | `pvisor/`、`setup.py`、`scripts/packaging/` | Python 启动器和 wheel 打包 |

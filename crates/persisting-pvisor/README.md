@@ -33,9 +33,6 @@ temporary stage that is removed at Job exit unless `--stage PATH` retains it;
 removing that stage also removes its Run Bundle.
 Capture is a Gateway capability, not a second product.
 
-The default build excludes Jujutsu. Use `jujutsu-overlay` for the Jujutsu upper
-backend. Default features are empty.
-
 ## Develop
 
 ```bash

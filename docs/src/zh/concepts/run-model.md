@@ -29,6 +29,6 @@ Fork 根据逻辑检查点创建带有来源关系的新 Run，不会恢复原�
 
 ## Checkpoint：文件系统快照
 
-`fork` 命令对已停止的暂存 Run 的 upper 层创建快照。嵌入式 API 还支持 AgentCtl 协作静默点。检查点保留暂存文件和来源关系，不保存进程内存、外部服务状态，也不冻结所有 lower 层。
+`fork` 命令对已停止的暂存 Run 的 upper 层创建快照。嵌入式 API 还支持 AgentCtl 协作静默点。检查点保留暂存文件、首次修改时的冲突基线和来源关系，不保存进程内存、外部服务状态，也不冻结所有 lower 层。快照内容同步落盘后才发布 manifest。嵌入式调用方通过 `restore_logical_checkpoint(checkpoint, destination_upper, destination_preimages)` 同时恢复文件和冲突基线。
 
 操作步骤见[审查与应用](../guides/review-apply.md)，执行保证见[能力与证据](capabilities-and-evidence.md)。

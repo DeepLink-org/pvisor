@@ -4,22 +4,22 @@ use crate::runtime::{
     OverlayState, RunRecord, is_live, restore_overlay_upper, snapshot_overlay_upper,
 };
 use crate::unix_now_ms;
-use crate::util::{atomic_write, create_dir_all_durable};
+use crate::util::{create_dir_all_durable, sync_directory, write_private_json};
 use serde::{Deserialize, Serialize};
 use std::fs;
-use std::os::unix::fs::PermissionsExt;
+use std::os::unix::fs::DirBuilderExt;
 use std::path::{Path, PathBuf};
 
 pub const CHECKPOINTS_DIR: &str = "checkpoints";
 const CHECKPOINT_FILENAME: &str = "checkpoint.json";
-const CHECKPOINT_SCHEMA_VERSION: u32 = 1;
+const CHECKPOINT_SCHEMA_VERSION: u32 = 2;
 
 #[derive(Debug, Clone, Copy, Serialize, Deserialize, PartialEq, Eq)]
 #[serde(rename_all = "snake_case")]
 pub enum CheckpointConsistency {
     /// The process tree was no longer running when the filesystem was copied.
     Stopped,
-    /// Reserved for a live AgentCtl cooperative quiescence barrier.
+    /// Captured at a live AgentCtl cooperative quiescence barrier.
     AgentQuiesced,
 }
 
@@ -32,6 +32,7 @@ pub struct LogicalCheckpoint {
     pub consistency: CheckpointConsistency,
     pub source_stage: PathBuf,
     pub upper_snapshot: PathBuf,
+    pub preimages_snapshot: PathBuf,
     pub target: PathBuf,
     #[serde(default)]
     pub lower_dirs: Vec<PathBuf>,
@@ -118,79 +119,89 @@ fn create_checkpoint(
         .stage_dir()
         .join(CHECKPOINTS_DIR)
         .join(&checkpoint_id);
-    anyhow::ensure!(
-        !root.exists(),
-        "logical checkpoint already exists: {}",
-        root.display()
-    );
-    create_dir_all_durable(&root)?;
-    fs::set_permissions(&root, fs::Permissions::from_mode(0o700))?;
-    let upper_snapshot = root.join("upper");
-    if let Err(error) = snapshot_overlay_upper(overlay, &upper_snapshot) {
-        let _ = fs::remove_dir_all(&root);
-        return Err(error.into());
-    }
-    let checkpoint = LogicalCheckpoint {
-        schema_version: CHECKPOINT_SCHEMA_VERSION,
-        checkpoint_id,
-        run_id: record.run_id.clone(),
-        created_at_unix_ms: unix_now_ms(),
-        consistency,
-        source_stage: record.stage_dir(),
-        upper_snapshot,
-        target: overlay.target.clone(),
-        lower_dirs: if record.overlay_lowers.is_empty() {
-            vec![overlay.target.clone()]
+    let parent = root.parent().expect("checkpoint has a parent");
+    create_dir_all_durable(parent)?;
+    fs::DirBuilder::new().mode(0o700).create(&root)?;
+    let result = (|| -> anyhow::Result<LogicalCheckpoint> {
+        sync_directory(parent)?;
+        let upper_snapshot = root.join("upper");
+        snapshot_overlay_upper(overlay, &upper_snapshot)?;
+        let preimages_snapshot = root.join("preimages");
+        let journal = record.stage_dir().join("preimages");
+        if journal.is_dir() {
+            restore_overlay_upper(&journal, &preimages_snapshot)?;
         } else {
-            record.overlay_lowers.clone()
-        },
-        protect_target: overlay.protect_target,
-        access_policy: overlay.access_policy.clone(),
-    };
-    atomic_write(
-        &root.join(CHECKPOINT_FILENAME),
-        &serde_json::to_vec_pretty(&checkpoint)?,
-        0o600,
-    )?;
-    Ok(checkpoint)
+            create_dir_all_durable(&preimages_snapshot)?;
+        }
+        let checkpoint = LogicalCheckpoint {
+            schema_version: CHECKPOINT_SCHEMA_VERSION,
+            checkpoint_id,
+            run_id: record.run_id.clone(),
+            created_at_unix_ms: unix_now_ms(),
+            consistency,
+            source_stage: record.stage_dir(),
+            upper_snapshot,
+            preimages_snapshot,
+            target: overlay.target.clone(),
+            lower_dirs: if record.overlay_lowers.is_empty() {
+                vec![overlay.target.clone()]
+            } else {
+                record.overlay_lowers.clone()
+            },
+            protect_target: overlay.protect_target,
+            access_policy: overlay.access_policy.clone(),
+        };
+        write_private_json(&root.join(CHECKPOINT_FILENAME), &checkpoint)?;
+        Ok(checkpoint)
+    })();
+    if result.is_err() {
+        let _ = fs::remove_dir_all(&root);
+    }
+    result
 }
 
 pub fn latest_logical_checkpoint(record: &RunRecord) -> anyhow::Result<LogicalCheckpoint> {
     let root = record.stage_dir().join(CHECKPOINTS_DIR);
-    let mut checkpoints = if root.is_dir() {
+    let checkpoints = if root.is_dir() {
         fs::read_dir(root)?
             .filter_map(Result::ok)
             .filter_map(|entry| LogicalCheckpoint::read(&entry.path()).ok())
             .filter(|checkpoint| checkpoint.run_id == record.run_id)
-            .collect::<Vec<_>>()
+            .max_by_key(|checkpoint| checkpoint.created_at_unix_ms)
     } else {
-        Vec::new()
+        None
     };
-    checkpoints.sort_by_key(|checkpoint| std::cmp::Reverse(checkpoint.created_at_unix_ms));
-    checkpoints
-        .into_iter()
-        .next()
-        .ok_or_else(|| anyhow::anyhow!("Run {} has no logical checkpoints", record.run_id))
+    checkpoints.ok_or_else(|| anyhow::anyhow!("Run {} has no logical checkpoints", record.run_id))
 }
 
 pub fn restore_logical_checkpoint(
     checkpoint: &LogicalCheckpoint,
     destination_upper: &Path,
+    destination_preimages: &Path,
 ) -> anyhow::Result<()> {
+    let sources = [&checkpoint.upper_snapshot, &checkpoint.preimages_snapshot];
+    let sources = sources
+        .map(|source| source.canonicalize())
+        .into_iter()
+        .collect::<std::io::Result<Vec<_>>>()?;
     anyhow::ensure!(
-        checkpoint.upper_snapshot.is_dir(),
-        "logical checkpoint upper is missing: {}",
-        checkpoint.upper_snapshot.display()
+        sources.iter().all(|source| source.is_dir()),
+        "checkpoint snapshots must be directories"
     );
-    let source = checkpoint.upper_snapshot.canonicalize()?;
-    let destination = absolute_candidate(destination_upper)?;
+    let destinations = [
+        absolute_candidate(destination_upper)?,
+        absolute_candidate(destination_preimages)?,
+    ];
+    let overlaps = |left: &Path, right: &Path| left.starts_with(right) || right.starts_with(left);
     anyhow::ensure!(
-        !source.starts_with(&destination) && !destination.starts_with(&source),
-        "checkpoint source and fork upper must not overlap: source={}, destination={}",
-        source.display(),
-        destination.display()
+        !overlaps(&destinations[0], &destinations[1])
+            && sources.iter().all(|source| destinations
+                .iter()
+                .all(|destination| !overlaps(source, destination))),
+        "checkpoint sources and restore destinations must not overlap"
     );
-    restore_overlay_upper(&checkpoint.upper_snapshot, destination_upper)?;
+    restore_overlay_upper(&sources[0], &destinations[0])?;
+    restore_overlay_upper(&sources[1], &destinations[1])?;
     Ok(())
 }
 
@@ -213,11 +224,15 @@ fn absolute_candidate(path: &Path) -> anyhow::Result<PathBuf> {
     Ok(parent.join(name))
 }
 
-fn validate_checkpoint_id(id: &str) -> anyhow::Result<()> {
+pub(crate) fn validate_checkpoint_id(id: &str) -> anyhow::Result<()> {
     let trimmed = id.trim();
     anyhow::ensure!(!trimmed.is_empty(), "checkpoint id cannot be empty");
     anyhow::ensure!(
-        trimmed != "." && trimmed != ".." && !trimmed.contains('/') && !trimmed.contains('\\'),
+        trimmed != "."
+            && trimmed != ".."
+            && !trimmed.contains('/')
+            && !trimmed.contains('\\')
+            && !id.contains('\0'),
         "checkpoint id must be one path-safe segment"
     );
     Ok(())
@@ -262,7 +277,7 @@ mod tests {
                 id: "run-source".into(),
                 generation: 0,
                 target: target.clone(),
-                upper: OverlayUpper::Directory {
+                upper: OverlayUpper {
                     upper_dir: upper,
                     work_dir: root.join("work"),
                 },
@@ -307,7 +322,12 @@ mod tests {
             checkpoint.access_policy
         );
         let restored = temp.path().join("restored");
-        restore_logical_checkpoint(&checkpoint, &restored).unwrap();
+        restore_logical_checkpoint(
+            &checkpoint,
+            &restored,
+            &temp.path().join("restored-preimages"),
+        )
+        .unwrap();
 
         assert_eq!(fs::read(restored.join("one")).unwrap(), b"value");
         assert_eq!(
@@ -329,5 +349,54 @@ mod tests {
         let temp = tempfile::tempdir().unwrap();
         let record = stopped_record(temp.path());
         assert!(create_logical_checkpoint(&record, Some("../escape")).is_err());
+    }
+
+    #[test]
+    fn fork_preserves_conflict_baselines_and_validates_before_replacing() {
+        use persisting_overlay_core::{OverlayCore, load_preimages, preimage_journal_is_complete};
+        let temp = tempfile::tempdir().unwrap();
+        let mut parent = stopped_record(temp.path());
+        let overlay = parent.overlay.as_ref().unwrap();
+        let target = overlay.target.clone();
+        let upper = overlay.upper.path().to_path_buf();
+        fs::write(target.join("value"), b"original").unwrap();
+        let core = OverlayCore::new_with_exclusions_and_preimages(
+            vec![target.clone()],
+            upper.clone(),
+            Some(temp.path().join("work")),
+            vec![],
+            Some(temp.path().join("preimages")),
+        )
+        .unwrap();
+        core.copy_up(Path::new("value")).unwrap();
+        fs::write(upper.join("value"), b"staged").unwrap();
+        let checkpoint = create_logical_checkpoint(&parent, Some("baseline")).unwrap();
+        assert!(create_logical_checkpoint(&parent, Some("baseline")).is_err());
+        fs::write(target.join("value"), b"external-edit").unwrap();
+        assert!(crate::runtime::apply_overlay(parent.overlay.as_mut().unwrap()).is_err());
+        let stage = temp.path().join("child");
+        fs::create_dir(&stage).unwrap();
+        let upper = stage.join("upper");
+        let journal = stage.join("preimages");
+        restore_logical_checkpoint(&checkpoint, &upper, &journal).unwrap();
+        assert!(preimage_journal_is_complete(&journal));
+        assert_eq!(
+            load_preimages(&journal).unwrap(),
+            load_preimages(&checkpoint.preimages_snapshot).unwrap()
+        );
+        let mut child = parent.overlay.unwrap();
+        child.id = "child".into();
+        child.stage_dir = stage.clone();
+        child.upper = OverlayUpper {
+            upper_dir: upper.clone(),
+            work_dir: stage.join("work"),
+        };
+        assert!(crate::runtime::apply_overlay(&mut child).is_err());
+        assert_eq!(fs::read(target.join("value")).unwrap(), b"external-edit");
+        assert!(restore_logical_checkpoint(&checkpoint, &upper, &upper.join("nested")).is_err());
+        assert_eq!(fs::read(upper.join("value")).unwrap(), b"staged");
+        fs::remove_dir_all(&checkpoint.preimages_snapshot).unwrap();
+        assert!(restore_logical_checkpoint(&checkpoint, &upper, &journal).is_err());
+        assert_eq!(fs::read(upper.join("value")).unwrap(), b"staged");
     }
 }

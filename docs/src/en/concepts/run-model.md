@@ -30,6 +30,6 @@ Network requests and external service mutations are also consequences, but files
 
 ## Checkpoint: a filesystem snapshot
 
-The `fork` command snapshots the upper layer of a stopped staged Run. The embedded API also supports cooperative AgentCtl quiescence. A checkpoint preserves staged files and lineage, not process memory, external services, or an immutable copy of every lower layer.
+The `fork` command snapshots the upper layer of a stopped staged Run. The embedded API also supports cooperative AgentCtl quiescence. A checkpoint preserves staged files, first-touch conflict baselines, and lineage, not process memory, external services, or an immutable copy of every lower layer. Snapshot contents are synced before the manifest is published. Embedded callers restore both directories with `restore_logical_checkpoint(checkpoint, destination_upper, destination_preimages)`.
 
 Read [review and apply](../guides/review-apply.md) for the operational workflow and [capabilities and evidence](capabilities-and-evidence.md) for execution guarantees.

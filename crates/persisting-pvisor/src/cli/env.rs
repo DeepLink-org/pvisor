@@ -5,8 +5,7 @@ use std::path::PathBuf;
 use std::process::Command;
 
 use anyhow::{Context, Result, bail};
-use clap::{Args, Subcommand, ValueEnum};
-use persisting_overlayfs::jujutsu_upper_dir;
+use clap::{Args, Subcommand};
 
 use crate::runtime::{
     ApplySelection, OverlayRecord, OverlayState, OverlayUpper, RunLease, RunRecord, all_runs,
@@ -46,13 +45,6 @@ enum EnvCommand {
     Delete(DeleteArgs),
 }
 
-#[derive(Debug, Clone, Copy, Default, ValueEnum)]
-enum EnvBackend {
-    #[default]
-    Directory,
-    Jujutsu,
-}
-
 #[derive(Debug, Args)]
 struct CreateArgs {
     /// Stable environment name.
@@ -63,11 +55,6 @@ struct CreateArgs {
     /// Root containing all pVisor environments.
     #[arg(long, value_name = "DIR", env = "PERSISTING_ENV_HOME")]
     root: Option<PathBuf>,
-    #[arg(long, value_enum, default_value_t = EnvBackend::Directory)]
-    backend: EnvBackend,
-    /// Shared Jujutsu store (defaults to `<env-root>/.jujutsu`).
-    #[arg(long, value_name = "DIR")]
-    jujutsu_store: Option<PathBuf>,
     #[arg(long, default_value = "agent")]
     agent: String,
 }
@@ -184,21 +171,13 @@ fn create(args: CreateArgs) -> Result<i32> {
         target.display()
     );
     fs::create_dir_all(&stage)?;
-    let jujutsu_store = args.jujutsu_store.unwrap_or_else(|| root.join(".jujutsu"));
     let overlay = OverlayRecord {
         id: args.name.clone(),
         generation: 0,
         target: target.clone(),
-        upper: match args.backend {
-            EnvBackend::Directory => OverlayUpper::Directory {
-                upper_dir: stage.join("upper"),
-                work_dir: stage.join("work"),
-            },
-            EnvBackend::Jujutsu => OverlayUpper::Jujutsu {
-                upper_dir: jujutsu_upper_dir(&jujutsu_store, &args.name)?,
-                store_path: jujutsu_store,
-                workspace: args.name.clone(),
-            },
+        upper: OverlayUpper {
+            upper_dir: stage.join("upper"),
+            work_dir: stage.join("work"),
         },
         merged_dir: stage.join("merged"),
         stage_dir: stage.clone(),
@@ -561,8 +540,6 @@ mod tests {
             name: "demo".into(),
             target,
             root: Some(root.clone()),
-            backend: EnvBackend::Directory,
-            jujutsu_store: None,
             agent: "test".into(),
         })?;
         let select = SelectArgs {
@@ -597,8 +574,6 @@ mod tests {
             name: "demo".into(),
             target: target.clone(),
             root: Some(root.clone()),
-            backend: EnvBackend::Directory,
-            jujutsu_store: None,
             agent: "test".into(),
         })?;
         let select = SelectArgs {
@@ -607,9 +582,7 @@ mod tests {
         };
         let record = selected(&select)?;
         let overlay = record.overlay.context("overlay")?;
-        let OverlayUpper::Directory { upper_dir, .. } = &overlay.upper else {
-            unreachable!("directory fixture")
-        };
+        let OverlayUpper { upper_dir, .. } = &overlay.upper;
         fs::create_dir_all(upper_dir)?;
         fs::write(upper_dir.join("committed.txt"), b"value")?;
         fs::write(upper_dir.join("later.txt"), b"later")?;
@@ -643,9 +616,7 @@ mod tests {
         assert_eq!(after_apply.state, OverlayState::Staged);
         assert_eq!(after_apply.generation, 1);
 
-        let OverlayUpper::Directory { upper_dir, .. } = &after_apply.upper else {
-            unreachable!("directory fixture")
-        };
+        let OverlayUpper { upper_dir, .. } = &after_apply.upper;
         fs::create_dir_all(upper_dir)?;
         fs::write(upper_dir.join("discarded.txt"), b"value")?;
         drop_changes(select.clone())?;
@@ -673,8 +644,6 @@ mod tests {
             name: "recover".into(),
             target,
             root: Some(root.clone()),
-            backend: EnvBackend::Directory,
-            jujutsu_store: None,
             agent: "test".into(),
         })?;
         let select = SelectArgs {

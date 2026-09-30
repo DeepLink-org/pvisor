@@ -13,10 +13,9 @@ use persisting_replay::{
 use serde_json::json;
 
 use crate::config::{
-    OverlayFsBackend as PVisorOverlayFsBackend, OverlayFsCommit as PVisorOverlayFsCommit,
-    OverlayFsSettings, OverlayNetMode as PVisorOverlayNetMode,
-    OverlayNetPolicy as PVisorOverlayNetPolicy, RunConfig as PVisorRunConfig, RunExecutorKind,
-    RunPolicy,
+    OverlayFsCommit as PVisorOverlayFsCommit, OverlayFsSettings,
+    OverlayNetMode as PVisorOverlayNetMode, OverlayNetPolicy as PVisorOverlayNetPolicy,
+    RunConfig as PVisorRunConfig, RunExecutorKind, RunPolicy,
 };
 
 #[derive(Debug, Clone, Args)]
@@ -133,10 +132,6 @@ pub struct ReplayArgs {
     #[arg(long, value_name = "DIR")]
     overlayfs_compose: Vec<PathBuf>,
 
-    /// Outer OverlayFS backend: directory or jujutsu.
-    #[arg(long, value_name = "BACKEND")]
-    overlayfs_backend: Option<String>,
-
     /// Outer OverlayFS commit behavior: manual, apply, or drop.
     #[arg(long, value_name = "MODE")]
     overlayfs_commit: Option<String>,
@@ -217,7 +212,6 @@ fn needs_managed_run(config: &ReplayToml) -> bool {
         || !config.run.pass_env.is_empty()
         || config.overlayfs.path.is_some()
         || !config.overlayfs.compose.is_empty()
-        || config.overlayfs.backend.is_some()
         || config.overlayfs.commit.is_some()
         || config.overlaynet.mode.is_some()
         || config.overlaynet.policy.is_some()
@@ -232,7 +226,6 @@ fn direct_managed_requested(args: &ReplayArgs) -> bool {
         || !args.pass_env.is_empty()
         || args.overlayfs_path.is_some()
         || !args.overlayfs_compose.is_empty()
-        || args.overlayfs_backend.is_some()
         || args.overlayfs_commit.is_some()
         || args.overlaynet.is_some()
         || args.overlaynet_policy.is_some()
@@ -282,7 +275,6 @@ fn direct_managed_config(args: &ReplayArgs) -> Result<ReplayToml, ReplayError> {
         overlayfs: ReplayOverlayFsConfig {
             path: args.overlayfs_path.clone(),
             compose: args.overlayfs_compose.clone(),
-            backend: args.overlayfs_backend.clone(),
             commit: args.overlayfs_commit.clone(),
         },
         overlaynet: ReplayOverlayNetConfig {
@@ -324,22 +316,12 @@ fn run_managed(config: &ReplayToml) -> Result<i32, ReplayError> {
 
     if config.overlayfs.path.is_some()
         || !config.overlayfs.compose.is_empty()
-        || config.overlayfs.backend.is_some()
         || config.overlayfs.commit.is_some()
     {
         let mut overlay = OverlayFsSettings {
             target: config.overlayfs.path.clone(),
             compose: config.overlayfs.compose.clone(),
             ..OverlayFsSettings::default()
-        };
-        overlay.backend = match config.overlayfs.backend.as_deref().unwrap_or("directory") {
-            "directory" => PVisorOverlayFsBackend::Directory,
-            "jujutsu" => PVisorOverlayFsBackend::Jujutsu,
-            other => {
-                return Err(ReplayError::configuration(format!(
-                    "unsupported overlayfs.backend {other:?}"
-                )));
-            }
         };
         overlay.commit = match config.overlayfs.commit.as_deref().unwrap_or("manual") {
             "manual" => PVisorOverlayFsCommit::Manual,
@@ -568,7 +550,6 @@ fn reject_direct(args: &ReplayArgs) -> Result<(), ReplayError> {
         || !args.pass_env.is_empty()
         || args.overlayfs_path.is_some()
         || !args.overlayfs_compose.is_empty()
-        || args.overlayfs_backend.is_some()
         || args.overlayfs_commit.is_some()
         || args.overlaynet.is_some()
         || args.overlaynet_policy.is_some();
@@ -639,7 +620,6 @@ pass_env = ["OPENAI_BASE_URL", "OPENAI_API_KEY", "MODEL_NAME"]
 [overlayfs]
 path = "/workspace"
 compose = ["/workspace"]
-backend = "directory"
 commit = "manual"
 
 [overlaynet]

@@ -632,32 +632,10 @@ pub(crate) fn prepare_overlay_attempt(
     if vm_network.is_some() {
         mark_vm_network(&mut plan);
     }
-    match &overlay_record.upper {
-        super::overlay::OverlayUpper::Directory { upper_dir, .. } => {
-            plan.env.insert(
-                "PERSISTING_OVERLAY_UPPER".into(),
-                upper_dir.display().to_string(),
-            );
-        }
-        super::overlay::OverlayUpper::Jujutsu {
-            store_path,
-            workspace,
-            upper_dir,
-        } => {
-            plan.env.insert(
-                "PERSISTING_OVERLAY_UPPER".into(),
-                upper_dir.display().to_string(),
-            );
-            plan.env.insert(
-                "PERSISTING_OVERLAY_JUJUTSU_STORE".into(),
-                store_path.display().to_string(),
-            );
-            plan.env.insert(
-                "PERSISTING_OVERLAY_JUJUTSU_WORKSPACE".into(),
-                workspace.clone(),
-            );
-        }
-    }
+    plan.env.insert(
+        "PERSISTING_OVERLAY_UPPER".into(),
+        overlay_record.upper.path().display().to_string(),
+    );
     let RunInvocation::Process(ref mut process) = spec.invocation;
     apply_implant(process, &plan);
     run_record.environment.runtime_injected_keys = plan.env.keys().cloned().collect();
@@ -986,7 +964,6 @@ fn apply_overlay_override(
     overlay_cfg: &mut persisting_gateway::config::OverlayConfig,
     overlay_override: &OverlayHint,
 ) {
-    overlay_cfg.backend = overlay_override.backend;
     if overlay_override != &OverlayHint::default() {
         overlay_cfg.access_policy = overlay_override.access_policy.clone();
     }
@@ -1003,24 +980,9 @@ fn apply_overlay_override(
     }
     if let Some(upper) = &overlay_override.upper_dir {
         overlay_cfg.upper_dir = Some(upper.display().to_string());
-        overlay_cfg.backend = persisting_gateway::config::OverlayBackend::Directory;
-        overlay_cfg.jujutsu_store_path = None;
-        overlay_cfg.jujutsu_workspace = None;
     }
     if let Some(work) = &overlay_override.work_dir {
         overlay_cfg.work_dir = Some(work.display().to_string());
-        overlay_cfg.backend = persisting_gateway::config::OverlayBackend::Directory;
-        overlay_cfg.jujutsu_store_path = None;
-        overlay_cfg.jujutsu_workspace = None;
-    }
-    if let Some(store) = &overlay_override.jujutsu_store_path {
-        overlay_cfg.jujutsu_store_path = Some(store.display().to_string());
-        overlay_cfg.backend = persisting_gateway::config::OverlayBackend::Jujutsu;
-        overlay_cfg.upper_dir = None;
-        overlay_cfg.work_dir = None;
-    }
-    if let Some(workspace) = &overlay_override.jujutsu_workspace {
-        overlay_cfg.jujutsu_workspace = Some(workspace.clone());
     }
     if !overlay_override.lower_dirs.is_empty() {
         // The final lower is the base/apply target; preceding entries are
@@ -1117,13 +1079,8 @@ fn inject_krun_overlay_metadata(
     let Some(record) = record else {
         return;
     };
-    let (upper, work) = match &record.upper {
-        super::overlay::OverlayUpper::Directory {
-            upper_dir,
-            work_dir,
-        } => (upper_dir.clone(), Some(work_dir.clone())),
-        super::overlay::OverlayUpper::Jujutsu { upper_dir, .. } => (upper_dir.clone(), None),
-    };
+    let upper = &record.upper.upper_dir;
+    let work = &record.upper.work_dir;
     spec.metadata.insert(
         "pvisor.vm.workspace_overlay".into(),
         serde_json::json!({
@@ -1305,32 +1262,10 @@ fn enrich_with_session(
             "PERSISTING_OVERLAY_TARGET".into(),
             rec.target.display().to_string(),
         );
-        match &rec.upper {
-            super::overlay::OverlayUpper::Directory { upper_dir, .. } => {
-                plan.env.insert(
-                    "PERSISTING_OVERLAY_UPPER".into(),
-                    upper_dir.display().to_string(),
-                );
-            }
-            super::overlay::OverlayUpper::Jujutsu {
-                store_path,
-                workspace,
-                upper_dir,
-            } => {
-                plan.env.insert(
-                    "PERSISTING_OVERLAY_UPPER".into(),
-                    upper_dir.display().to_string(),
-                );
-                plan.env.insert(
-                    "PERSISTING_OVERLAY_JUJUTSU_STORE".into(),
-                    store_path.display().to_string(),
-                );
-                plan.env.insert(
-                    "PERSISTING_OVERLAY_JUJUTSU_WORKSPACE".into(),
-                    workspace.clone(),
-                );
-            }
-        }
+        plan.env.insert(
+            "PERSISTING_OVERLAY_UPPER".into(),
+            rec.upper.path().display().to_string(),
+        );
         plan.env.insert(
             "PERSISTING_OVERLAY_STAGE".into(),
             rec.stage_dir.display().to_string(),

@@ -332,7 +332,6 @@ cannot identify every private key; add rules for custom names.
 ```toml
 [filesystem]
 stage = "../stage-001"
-backend = "directory"
 mount = [{ source = "/opt/tool", access = "stage" }]
 access = [
   { path = "**/.ssh", level = "deny" },
@@ -463,7 +462,6 @@ pvisor run \
   --stage ../stage-001 \
   --mount /opt/tool:stage \
   --access '**/.ssh:deny' \
-  --overlayfs-backend directory \
   --overlaynet-allow api.openai.com:443 \
   --overlaynet-deny 169.254.0.0/16 \
   --overlaynet-limit 10mbps \
@@ -499,7 +497,6 @@ command = ["my-agent"]
 stage = "../stage-001"
 mount = [{ source = "/opt/tool", access = "stage" }]
 access = [{ path = "**/.ssh", level = "deny" }]
-backend = "directory"
 
 [overlaynet]
 mode = "proxy"
@@ -533,8 +530,8 @@ Run it with `pvisor run --config run.toml`. Explicit CLI scalars replace TOML
 scalars. Network and Gateway list options replace their complete configured
 lists; filesystem `--mount` and `--access` entries are appended to configured
 entries. Every serialized `[filesystem]` field has a CLI form: `stage`, `mount`,
-`access`, `backend`, and `max_size` map to `--stage`, `--mount`, `--access`,
-`--overlayfs-backend`, and `--overlayfs-max-size`.
+`access`, and `max_size` map to `--stage`, `--mount`, `--access`,
+and `--overlayfs-max-size`.
 The size limit is checked after execution, so it does not bound peak space used
 while the Agent is running.
 The command after `--` replaces `run.command`.
@@ -635,7 +632,7 @@ project/                         # reusable workspace / default base
     ├── run.json
     ├── run-bundle.json          # mode 0600; outcome + safety + changes + effects
     ├── overlay.json             # when OverlayFS is enabled
-    ├── upper/                   # or a Run-named Jujutsu workspace upper
+    ├── upper/
     ├── merged/
     ├── checkpoints/
     ├── lease.lock

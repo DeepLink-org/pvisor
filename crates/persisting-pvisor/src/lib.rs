@@ -24,10 +24,9 @@ mod util;
 
 pub use config::{
     ContainerMount, ContainerNetwork, ContainerPlatform, ContainerSettings, FilesystemMode,
-    GatewayDriverConfig, GatewayMode, GatewaySettings, NetworkDriverConfig, OverlayFsBackend,
-    OverlayFsCommit, OverlayFsSettings, OverlayNetMode, OverlayNetPolicy, OverlayNetSettings,
-    PVisorConfig, RecordSettings, RunConfig, RunExecutorKind, RunPolicy, RunSettings, RunStdio,
-    VmSettings,
+    GatewayDriverConfig, GatewayMode, GatewaySettings, NetworkDriverConfig, OverlayFsCommit,
+    OverlayFsSettings, OverlayNetMode, OverlayNetPolicy, OverlayNetSettings, PVisorConfig,
+    RecordSettings, RunConfig, RunExecutorKind, RunPolicy, RunSettings, RunStdio, VmSettings,
 };
 pub use executor::container::ContainerExecutor;
 pub use executor::process::ProcessExecutor;
