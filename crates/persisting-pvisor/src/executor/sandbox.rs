@@ -652,9 +652,8 @@ pub(crate) fn seatbelt_profile_with_reads(
         // Deny by default for a network-isolated Run. The allowlist below is
         // intentionally small and mirrors the system services required by
         // shells, language runtimes, PTYs, and read-only preferences. Socket
-        // operations are admitted only so the filtered denies below can retain
-        // Run-local Unix IPC while rejecting non-loopback IP and ambient host
-        // Unix sockets.
+        // binds/listeners are allowed for Unix IPC; outbound connections require
+        // an explicit loopback or Unix-path grant below.
         let mut profile = String::from(
             "(version 1)\n\
              (deny default)\n\
@@ -682,7 +681,7 @@ pub(crate) fn seatbelt_profile_with_reads(
                (global-name \"com.apple.PowerManagement.control\"))\n\
              (allow file-ioctl (regex #\"^/dev/ttys[0-9]+$\"))\n\
              (allow system-socket (socket-domain AF_UNIX))\n\
-             (allow network*)\n\
+             (allow network-bind network-inbound (local unix-socket))\n\
              (deny network-bind (local ip))\n\
              (deny network-inbound (local ip))\n\
              (deny network-outbound\n\
@@ -764,20 +763,18 @@ pub(crate) fn seatbelt_profile_with_reads(
         } else {
             profile.push_str("(allow file-write*)\n");
         }
-        profile.push_str("(deny network-outbound\n  (require-all\n    (remote unix-socket)\n");
+        // Keep Unix-path grants positive and separate from IP rules. A negated
+        // Unix-path deny can also reject permitted TCP connections on macOS.
         for index in 0..allowed_unix_sockets.len() {
             profile.push_str(&format!(
-                "    (require-not (remote unix-socket\n\
-                       (literal (param \"PVISOR_UNIX_SOCKET_{index}\"))))\n"
+                "(allow network-outbound (remote unix-socket (literal (param \"PVISOR_UNIX_SOCKET_{index}\"))))\n"
             ));
         }
         for index in 0..local_socket_roots.len() {
             profile.push_str(&format!(
-                "    (require-not (remote unix-socket\n\
-                       (subpath (param \"PVISOR_SOCKET_ROOT_{index}\"))))\n"
+                "(allow network-outbound (remote unix-socket (subpath (param \"PVISOR_SOCKET_ROOT_{index}\"))))\n"
             ));
         }
-        profile.push_str("  )\n)\n");
         return Ok((profile, parameters));
     }
 
@@ -1696,42 +1693,54 @@ mod tests {
             String::from_utf8_lossy(&python.stderr)
         );
         let [interpreter, runtime]: [PathBuf; 2] = serde_json::from_slice(&python.stdout).unwrap();
-        let temp = tempfile::tempdir().unwrap();
-        let proxy = std::net::TcpListener::bind("127.0.0.1:0").unwrap();
-        let other = std::net::TcpListener::bind("127.0.0.1:0").unwrap();
-        let endpoint = proxy.local_addr().unwrap();
-        let socket_path = temp.path().join("agentctl.sock");
-        let _unix = std::os::unix::net::UnixListener::bind(&socket_path).unwrap();
-        let (profile, params) = seatbelt_profile_with_reads(
-            &[temp.path().to_owned()],
-            Some(&[
-                PathBuf::from("/System"),
-                PathBuf::from("/usr"),
-                interpreter.clone(),
-                runtime,
-                PathBuf::from("/private/etc"),
-                PathBuf::from("/dev"),
-            ]),
-            &[socket_path],
-            &[temp.path().to_owned()],
-            NetworkIsolation::ProxyOnly(Some(endpoint)),
-            true,
-        )
-        .unwrap();
-        let mut command = std::process::Command::new(MACOS_SANDBOX_EXEC);
-        command.current_dir(temp.path()).arg("-p").arg(&profile);
-        for (key, value) in params {
-            command.arg("-D").arg(format!("{key}={}", value.display()));
-        }
-        let output = command
-            // Prove the sandboxed invocation no longer needs xcrun selection.
-            .env("DEVELOPER_DIR", temp.path().join("no-developer-tools"))
-            .arg(&interpreter)
-            .args([
-                "-c",
-                r#"
+        // The old mixed deny policy failed intermittently across ephemeral ports.
+        for _ in 0..16 {
+            let temp = tempfile::tempdir().unwrap();
+            let proxy = std::net::TcpListener::bind("127.0.0.1:0").unwrap();
+            let other = std::net::TcpListener::bind("127.0.0.1:0").unwrap();
+            let endpoint = proxy.local_addr().unwrap();
+            let socket_path = temp.path().join("agentctl.sock");
+            let _unix = std::os::unix::net::UnixListener::bind(&socket_path).unwrap();
+            let local_root = temp.path().join("ipc");
+            std::fs::create_dir(&local_root).unwrap();
+            let local_socket = local_root.join("local.sock");
+            let denied_socket = temp.path().join("denied.sock");
+            let _local = std::os::unix::net::UnixListener::bind(&local_socket).unwrap();
+            let _denied = std::os::unix::net::UnixListener::bind(&denied_socket).unwrap();
+            let (profile, params) = seatbelt_profile_with_reads(
+                &[temp.path().to_owned()],
+                Some(&[
+                    PathBuf::from("/System"),
+                    PathBuf::from("/usr"),
+                    interpreter.clone(),
+                    runtime.clone(),
+                    PathBuf::from("/private/etc"),
+                    PathBuf::from("/dev"),
+                ]),
+                std::slice::from_ref(&socket_path),
+                &[local_root],
+                NetworkIsolation::ProxyOnly(Some(endpoint)),
+                true,
+            )
+            .unwrap();
+            let mut command = std::process::Command::new(MACOS_SANDBOX_EXEC);
+            command.current_dir(temp.path()).arg("-p").arg(&profile);
+            for (key, value) in params {
+                command.arg("-D").arg(format!("{key}={}", value.display()));
+            }
+            let output = command
+                // Prove the sandboxed invocation no longer needs xcrun selection.
+                .env("DEVELOPER_DIR", temp.path().join("no-developer-tools"))
+                .arg(&interpreter)
+                .args([
+                    "-c",
+                    r#"
 import errno, socket, sys
-allowed, denied = map(int, sys.argv[1:])
+allowed, denied = map(int, sys.argv[1:3])
+for path in sys.argv[3:5]:
+    with socket.socket(socket.AF_UNIX) as s: s.connect(path)
+with socket.socket(socket.AF_UNIX) as s:
+    assert s.connect_ex(sys.argv[5]) in (errno.EACCES, errno.EPERM)
 for kind, port in [(socket.SOCK_STREAM, denied), (socket.SOCK_DGRAM, allowed)]:
     with socket.socket(socket.AF_INET, kind) as s:
         assert s.connect_ex(('127.0.0.1', port)) in (errno.EACCES, errno.EPERM)
@@ -1747,16 +1756,21 @@ for source in ['0.0.0.0', '127.0.0.1']:
                                   source_address=(source, 0)): pass
 
 "#,
-            ])
-            .arg(endpoint.port().to_string())
-            .arg(other.local_addr().unwrap().port().to_string())
-            .output()
-            .unwrap();
-        assert!(
-            output.status.success(),
-            "{}",
-            String::from_utf8_lossy(&output.stderr)
-        );
+                ])
+                .arg(endpoint.port().to_string())
+                .arg(other.local_addr().unwrap().port().to_string())
+                .arg(&socket_path)
+                .arg(&local_socket)
+                .arg(&denied_socket)
+                .output()
+                .unwrap();
+            assert!(
+                output.status.success(),
+                "proxy={endpoint}, interpreter={}, profile={profile}\n{}",
+                interpreter.display(),
+                String::from_utf8_lossy(&output.stderr)
+            );
+        }
     }
 
     #[test]
