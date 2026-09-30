@@ -1,6 +1,7 @@
 //! Task lifecycle bookkeeping shared by the task service and the exit
 //! watcher. Pure data manipulation so transitions stay unit-testable.
 
+use std::collections::HashMap;
 use std::path::PathBuf;
 use std::time::SystemTime;
 
@@ -17,8 +18,69 @@ pub struct ExitInfo {
     pub exited_at: SystemTime,
 }
 
-/// One tracked task (container or exec id). For M1 only init processes are
-/// tracked; exec ids arrive with M2.
+/// Which process inside a task an exit belongs to.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub enum ExitTarget {
+    Init,
+    Exec(String),
+}
+
+/// One `exec`-added process of a task.
+#[derive(Clone, Debug)]
+pub struct ExecEntry {
+    pub exec_id: String,
+    pub stdin: Option<String>,
+    pub stdout: Option<String>,
+    pub stderr: Option<String>,
+    pub terminal: bool,
+    pub pid: Option<u32>,
+    pub status: TaskStatus,
+    pub exit: Option<ExitInfo>,
+}
+
+impl ExecEntry {
+    pub fn new(
+        exec_id: &str,
+        stdin: Option<String>,
+        stdout: Option<String>,
+        stderr: Option<String>,
+        terminal: bool,
+        pid: Option<u32>,
+    ) -> Self {
+        ExecEntry {
+            exec_id: exec_id.to_string(),
+            stdin,
+            stdout,
+            stderr,
+            terminal,
+            pid,
+            status: TaskStatus::Created,
+            exit: None,
+        }
+    }
+
+    /// Transition Created -> Running.
+    pub fn mark_started(&mut self, pid: u32) -> bool {
+        if self.status != TaskStatus::Created {
+            return false;
+        }
+        self.status = TaskStatus::Running;
+        self.pid = Some(pid);
+        true
+    }
+
+    /// Record the process exit; repeated notifications are no-ops.
+    pub fn mark_exited(&mut self, status: u32, exited_at: SystemTime) -> bool {
+        if self.status == TaskStatus::Stopped {
+            return false;
+        }
+        self.status = TaskStatus::Stopped;
+        self.exit = Some(ExitInfo { status, exited_at });
+        true
+    }
+}
+
+/// One tracked task (container init process plus its exec processes).
 #[derive(Clone, Debug)]
 pub struct TaskEntry {
     pub id: String,
@@ -30,6 +92,7 @@ pub struct TaskEntry {
     pub pid: Option<u32>,
     pub status: TaskStatus,
     pub exit: Option<ExitInfo>,
+    pub execs: HashMap<String, ExecEntry>,
 }
 
 impl TaskEntry {
@@ -53,6 +116,7 @@ impl TaskEntry {
             pid,
             status: TaskStatus::Created,
             exit: None,
+            execs: HashMap::new(),
         }
     }
 
@@ -66,10 +130,10 @@ impl TaskEntry {
         true
     }
 
-    /// Record the process exit. Transitions from Created (killed before
-    /// start) and Running are both legal; repeated notifications are no-ops.
+    /// Record the init process exit. Transitions from Created (killed
+    /// before start) and Running are both legal; repeats are no-ops.
     pub fn mark_exited(&mut self, status: u32, exited_at: SystemTime) -> bool {
-        if matches!(self.status, TaskStatus::Stopped) {
+        if self.status == TaskStatus::Stopped {
             return false;
         }
         self.status = TaskStatus::Stopped;
@@ -80,6 +144,34 @@ impl TaskEntry {
     /// True once the task may be deleted per the task v2 protocol.
     pub fn can_delete(&self) -> bool {
         self.status == TaskStatus::Stopped
+    }
+
+    /// Register an exec process; false when the exec id already exists.
+    pub fn add_exec(&mut self, exec: ExecEntry) -> bool {
+        if self.execs.contains_key(&exec.exec_id) {
+            return false;
+        }
+        self.execs.insert(exec.exec_id.clone(), exec);
+        true
+    }
+
+    /// Record an exit for whichever process (init or exec) owns `pid`.
+    /// Returns what got transitioned, if anything.
+    pub fn record_exit_by_pid(
+        &mut self,
+        pid: u32,
+        status: u32,
+        exited_at: SystemTime,
+    ) -> Option<ExitTarget> {
+        if self.pid == Some(pid) && self.mark_exited(status, exited_at) {
+            return Some(ExitTarget::Init);
+        }
+        for (exec_id, exec) in self.execs.iter_mut() {
+            if exec.pid == Some(pid) && exec.mark_exited(status, exited_at) {
+                return Some(ExitTarget::Exec(exec_id.clone()));
+            }
+        }
+        None
     }
 }
 
@@ -139,5 +231,63 @@ mod tests {
         assert!(!task.can_delete());
         task.mark_exited(0, SystemTime::now());
         assert!(task.can_delete());
+    }
+
+    fn task_with_execs() -> TaskEntry {
+        let mut task = entry();
+        task.mark_started(10);
+        assert!(task.add_exec(ExecEntry::new("e1", None, None, None, false, Some(11),)));
+        task
+    }
+
+    #[test]
+    fn exec_ids_cannot_collide() {
+        let mut task = task_with_execs();
+        assert!(!task.add_exec(ExecEntry::new("e1", None, None, None, false, Some(12),)));
+        assert_eq!(task.execs.len(), 1);
+        assert!(task.add_exec(ExecEntry::new("e2", None, None, None, false, Some(13),)));
+    }
+
+    #[test]
+    fn exec_lifecycle_transitions() {
+        let mut task = task_with_execs();
+        let exec = task.execs.get_mut("e1").expect("exec exists");
+        assert!(exec.mark_started(11));
+        assert!(!exec.mark_started(99));
+        let at = SystemTime::now();
+        assert!(exec.mark_exited(4, at));
+        assert!(!exec.mark_exited(4, at));
+        assert_eq!(exec.exit.map(|e| e.status), Some(4));
+    }
+
+    #[test]
+    fn exits_are_attributed_by_pid() {
+        let mut task = task_with_execs();
+        task.execs.get_mut("e1").expect("exec").mark_started(11);
+        let at = SystemTime::now();
+
+        assert_eq!(
+            task.record_exit_by_pid(11, 5, at),
+            Some(ExitTarget::Exec("e1".to_string()))
+        );
+        // Repeated notification for the same pid is a no-op.
+        assert_eq!(task.record_exit_by_pid(11, 5, at), None);
+        assert_eq!(task.record_exit_by_pid(10, 0, at), Some(ExitTarget::Init));
+        // Unknown pids are ignored.
+        assert_eq!(task.record_exit_by_pid(404, 0, at), None);
+    }
+
+    #[test]
+    fn init_pid_wins_when_pids_collide() {
+        // Pids are unique per process, so this cannot happen in practice;
+        // the mapping still stays deterministic.
+        let mut task = task_with_execs();
+        let init_pid = task.pid.unwrap_or(0);
+        task.execs.get_mut("e1").expect("exec").pid = Some(init_pid);
+        let at = SystemTime::now();
+        assert_eq!(
+            task.record_exit_by_pid(init_pid, 2, at),
+            Some(ExitTarget::Init)
+        );
     }
 }

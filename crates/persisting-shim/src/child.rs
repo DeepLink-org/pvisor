@@ -1,28 +1,37 @@
-//! The container init pipeline.
+//! The container process pipeline.
 //!
-//! `Create` re-executes the shim binary in internal mode (house "self-exec"
-//! pattern, cf. pvisor's INTERNAL_SANDBOX_ARG). The internal process (A)
-//! enters the configured namespaces, mounts the rootfs, forks the init
-//! process (G), and relays G's readiness back over a pipe. G finishes its
-//! setup (procfs, stdio, pivot_root), signals readiness, then blocks until
-//! `Start` writes one byte into the start pipe before applying the process
-//! identity and exec'ing the workload.
+//! Both the init process and exec processes follow the same shape (house
+//! "self-exec" pattern, cf. pvisor's INTERNAL_SANDBOX_ARG):
 //!
-//! File-descriptor inheritance (all pipes are non-CLOEXEC so they survive
-//! the exec into A):
+//! - **init**: `Create` re-executes the shim binary as the internal parent
+//!   (A). A enters the configured namespaces, mounts the rootfs, forks the
+//!   init process (G), and relays G's readiness over a pipe. G mounts
+//!   procfs, pivots into the container root, wires the inherited IO fds,
+//!   signals readiness, and blocks on the start pipe until `Start`.
+//! - **exec**: `Exec` re-executes as the exec parent (E). E joins the init
+//!   process's namespaces (`/proc/<init-pid>/ns/*`), forks the exec process
+//!   (F), which wires the same inherited IO fds and blocks until
+//!   `Start(exec_id)`.
+//!
+//! After the start byte both paths run the shared tail: apply uid/gid/
+//! capabilities/rlimits, `chdir`, `execve`.
+//!
+//! File-descriptor inheritance (pipes are non-CLOEXEC so they survive the
+//! exec into A/E):
 //!
 //! ```text
-//!   pipe        shim                A (internal parent)     G (init)
+//!   pipe        shim                A/E (internal parent)   G/F (process)
 //!   ready       read end            write end -> relay      closed
 //!   start       write end           closed after fork       read end, blocks
 //!   fork report closed              read end                write end
 //! ```
-//! G additionally closes every other inherited fd before exec so the
-//! workload sees only its stdio.
+//! The workload-facing stdio descriptors are opened by the shim
+//! ([`crate::fifo::ContainerIo`]) and travel the same way; each child closes
+//! every other inherited fd before exec so the workload only sees stdio.
 
 use std::fs;
 use std::io::{BufRead, BufReader, Write};
-use std::os::fd::{AsRawFd, FromRawFd, RawFd};
+use std::os::fd::{FromRawFd, RawFd};
 use std::path::Path;
 use std::process::{Command, Stdio};
 
@@ -32,20 +41,28 @@ use serde::{Deserialize, Serialize};
 
 use crate::caps;
 use crate::cgroup;
-use crate::fifo;
 use crate::mount;
-use crate::plan::{CgroupPlan, ContainerPlan, IdMappingPlan, NamespaceKind};
+use crate::plan::{CgroupPlan, ContainerPlan, ExecPlan, IdMappingPlan, NamespaceKind, ProcessPlan};
 
 /// CLI argument that turns the shim binary into the internal init parent.
 pub const INTERNAL_INIT_ARG: &str = "--pvisor-shim-internal-init";
+/// CLI argument that turns the shim binary into the internal exec parent.
+pub const INTERNAL_EXEC_ARG: &str = "--pvisor-shim-internal-exec";
 /// Path of the serialized [`ContainerPlan`].
 pub const ENV_PLAN: &str = "PVISOR_SHIM_INIT_PLAN";
-/// Write end of the ready pipe (A reports to the shim).
+/// Path of the serialized [`ExecPlan`].
+pub const ENV_EXEC_PLAN: &str = "PVISOR_SHIM_EXEC_PLAN";
+/// Write end of the ready pipe (A/E reports to the shim).
 pub const ENV_READY_FD: &str = "PVISOR_SHIM_INIT_READY_FD";
-/// Read end of the start pipe (G waits for one byte).
+/// Read end of the start pipe (G/F waits for one byte).
 pub const ENV_START_FD: &str = "PVISOR_SHIM_INIT_START_FD";
-/// Write end of the fork report pipe (G reports setup to A).
+/// Write end of the fork report pipe (G/F reports setup to A/E).
 pub const ENV_FORK_REPORT_FD: &str = "PVISOR_SHIM_INIT_FORK_REPORT_FD";
+/// Workload stdio descriptors handed over by the shim.
+pub const ENV_STDIO_IN: &str = "PVISOR_SHIM_STDIO_IN";
+pub const ENV_STDIO_OUT: &str = "PVISOR_SHIM_STDIO_OUT";
+pub const ENV_STDIO_ERR: &str = "PVISOR_SHIM_STDIO_ERR";
+pub const ENV_STDIO_TERMINAL: &str = "PVISOR_SHIM_STDIO_TERMINAL";
 
 /// Message exchanged over the ready/fork-report pipes, one JSON line.
 #[derive(Clone, Debug, Serialize, Deserialize)]
@@ -66,28 +83,28 @@ impl InitReport {
     }
 }
 
-/// Host-side state kept by the task service between Create and Start.
-pub struct InitChild {
-    /// PID of the init process (G), set once A reports readiness.
+/// Host-side state kept by the task service between Create/Exec and Start.
+pub struct InternalChild {
+    /// PID of the workload process, set once the parent reports readiness.
     pub pid: Option<u32>,
     /// Write end of the start pipe; held until Start (or cleanup).
     start_fd: RawFd,
 }
 
-impl InitChild {
-    /// Signal G to exec; consumes the start pipe write end.
+impl InternalChild {
+    /// Signal the child to exec; consumes the start pipe write end.
     pub fn start(&mut self) -> Result<()> {
         let byte = b"s";
         let written = unsafe { libc::write(self.start_fd, byte.as_ptr().cast(), byte.len()) };
         self.close_start();
         if written < 0 {
             return Err(std::io::Error::last_os_error())
-                .context("write start pipe (init process may have exited)");
+                .context("write start pipe (process may have exited)");
         }
         Ok(())
     }
 
-    /// Release the start pipe write end; G sees EOF and exits.
+    /// Release the start pipe write end; the child sees EOF and exits.
     pub fn close_start(&mut self) {
         if self.start_fd >= 0 {
             unsafe { libc::close(self.start_fd) };
@@ -96,7 +113,7 @@ impl InitChild {
     }
 }
 
-impl Drop for InitChild {
+impl Drop for InternalChild {
     fn drop(&mut self) {
         self.close_start();
     }
@@ -110,34 +127,75 @@ fn make_pipe() -> Result<(RawFd, RawFd)> {
     Ok((fds[0], fds[1]))
 }
 
-/// Re-exec the shim binary as the init parent (A) and wait for its relay.
+/// The stdio descriptors the shim handed over, parsed back in the child.
+#[derive(Clone, Copy, Debug)]
+pub struct StdioFds {
+    pub stdin: RawFd,
+    pub stdout: RawFd,
+    pub stderr: RawFd,
+    pub terminal: bool,
+}
+
+impl StdioFds {
+    fn from_env() -> Result<Self> {
+        let stdin = fd_from_env(ENV_STDIO_IN)?;
+        let stdout = fd_from_env(ENV_STDIO_OUT)?;
+        let stderr = fd_from_env(ENV_STDIO_ERR)?;
+        let terminal = std::env::var(ENV_STDIO_TERMINAL).as_deref() == Ok("1");
+        Ok(StdioFds {
+            stdin,
+            stdout,
+            stderr,
+            terminal,
+        })
+    }
+}
+
+/// Re-exec the shim binary as an internal parent and wait for its relay.
 ///
-/// Blocks until G signals readiness, so call from a blocking context.
-pub fn spawn_init_child(plan: &ContainerPlan) -> Result<InitChild> {
-    let plan_path = plan.bundle.join("pvisor-plan.json");
-    fs::write(
-        &plan_path,
-        serde_json::to_vec(plan).context("serialize plan")?,
-    )
-    .with_context(|| format!("write {}", plan_path.display()))?;
+/// `stdio` are the shim-opened workload descriptors (passed through env);
+/// `plan_bytes` is the serialized plan written to `plan_path`. Blocks until
+/// the workload process signals readiness, so call from a blocking context.
+pub fn spawn_internal(
+    arg: &str,
+    plan_path: &Path,
+    plan_bytes: &[u8],
+    stdio: Option<StdioFds>,
+) -> Result<InternalChild> {
+    fs::write(plan_path, plan_bytes).with_context(|| format!("write {}", plan_path.display()))?;
 
     let (ready_r, ready_w) = make_pipe()?;
     let (start_r, start_w) = make_pipe()?;
     let (fork_r, fork_w) = make_pipe()?;
 
     let exe = std::env::current_exe().context("current exe")?;
-    let mut child = Command::new(exe)
-        .arg(INTERNAL_INIT_ARG)
-        .env(ENV_PLAN, &plan_path)
+    let mut command = Command::new(exe);
+    command
+        .arg(arg)
         .env(ENV_READY_FD, ready_w.to_string())
         .env(ENV_START_FD, start_r.to_string())
-        .env(ENV_FORK_REPORT_FD, fork_w.to_string())
+        .env(ENV_FORK_REPORT_FD, fork_w.to_string());
+    let plan_env = if arg == INTERNAL_EXEC_ARG {
+        ENV_EXEC_PLAN
+    } else {
+        ENV_PLAN
+    };
+    command.env(plan_env, plan_path);
+    if let Some(stdio) = stdio {
+        command
+            .env(ENV_STDIO_IN, stdio.stdin.to_string())
+            .env(ENV_STDIO_OUT, stdio.stdout.to_string())
+            .env(ENV_STDIO_ERR, stdio.stderr.to_string())
+            .env(ENV_STDIO_TERMINAL, if stdio.terminal { "1" } else { "0" });
+    }
+    let mut child = command
         .stdin(Stdio::null())
         .stdout(Stdio::null())
         .spawn()
-        .context("spawn internal init process")?;
+        .context("spawn internal process")?;
 
-    // A inherited every end; drop the copies this process must not hold.
+    // The internal parent inherited every end; drop the copies this
+    // process must not hold.
     for fd in [ready_w, start_r, fork_r, fork_w] {
         unsafe { libc::close(fd) };
     }
@@ -150,25 +208,29 @@ pub fn spawn_init_child(plan: &ContainerPlan) -> Result<InitChild> {
     let _ = child.wait();
 
     match InitReport::parse(&line)? {
-        InitReport::Ok { pid } => Ok(InitChild {
+        InitReport::Ok { pid } => Ok(InternalChild {
             pid: Some(pid),
             start_fd: start_w,
         }),
         InitReport::Error { context, errno } => {
             unsafe { libc::close(start_w) };
-            anyhow::bail!("init child setup failed: {context} (errno {errno})");
+            anyhow::bail!("internal process setup failed: {context} (errno {errno})");
         }
     }
 }
 
-/// Entry point of the internal init parent (A). Returns Ok(false) when the
-/// binary was not invoked in internal mode; otherwise never returns.
+/// Entry point of the internal parents. Returns Ok(false) when the binary
+/// was not invoked in internal mode; otherwise never returns.
 pub fn run_internal_if_requested() -> Result<bool> {
     let args: Vec<String> = std::env::args().collect();
-    if !args.iter().any(|arg| arg == INTERNAL_INIT_ARG) {
+    let (mode_arg, main) = if args.iter().any(|arg| arg == INTERNAL_INIT_ARG) {
+        (INTERNAL_INIT_ARG, init_parent_main as fn() -> Result<()>)
+    } else if args.iter().any(|arg| arg == INTERNAL_EXEC_ARG) {
+        (INTERNAL_EXEC_ARG, exec_parent_main as fn() -> Result<()>)
+    } else {
         return Ok(false);
-    }
-    let exit_code = match init_parent_main() {
+    };
+    let exit_code = match main() {
         Ok(()) => 0,
         Err(error) => {
             let report = InitReport::Error {
@@ -183,7 +245,7 @@ pub fn run_internal_if_requested() -> Result<bool> {
                     .is_ok();
             }
             if !delivered {
-                eprintln!("pvisor shim init failed: {error:#}");
+                eprintln!("pvisor shim internal ({mode_arg}) failed: {error:#}");
             }
             1
         }
@@ -204,12 +266,14 @@ fn ready_pipe_from_env() -> Option<fs::File> {
         .map(|fd| unsafe { fs::File::from_raw_fd(fd) })
 }
 
-fn init_parent_main() -> Result<()> {
-    let plan_path = std::env::var(ENV_PLAN).context("missing plan path")?;
-    let plan: ContainerPlan =
-        serde_json::from_slice(&fs::read(&plan_path).with_context(|| format!("read {plan_path}"))?)
-            .context("parse plan")?;
+fn read_plan<T: for<'de> Deserialize<'de>>(env: &str) -> Result<T> {
+    let plan_path = std::env::var(env).with_context(|| format!("missing {env}"))?;
+    serde_json::from_slice(&fs::read(&plan_path).with_context(|| format!("read {plan_path}"))?)
+        .with_context(|| format!("parse {plan_path}"))
+}
 
+fn init_parent_main() -> Result<()> {
+    let plan: ContainerPlan = read_plan(ENV_PLAN)?;
     let start_fd = fd_from_env(ENV_START_FD)?;
     let fork_report_fd = fd_from_env(ENV_FORK_REPORT_FD)?;
 
@@ -239,7 +303,6 @@ fn init_parent_main() -> Result<()> {
         return Err(std::io::Error::last_os_error()).context("fork init process");
     }
     if g_pid == 0 {
-        // G inherits A's fds; it keeps only start_r and fork_w (plus stdio).
         init_process_main(&plan, start_fd, fork_report_fd);
     }
     let g_pid = g_pid as u32;
@@ -254,21 +317,47 @@ fn init_parent_main() -> Result<()> {
         warn!("cgroup setup skipped: {error:#}");
     }
 
-    // Relay G's setup report to the shim.
+    relay_fork_report(fork_report_fd, g_pid)
+}
+
+/// E: join the init process's namespaces, then fork the exec process.
+fn exec_parent_main() -> Result<()> {
+    let plan: ExecPlan = read_plan(ENV_EXEC_PLAN)?;
+    let start_fd = fd_from_env(ENV_START_FD)?;
+    let fork_report_fd = fd_from_env(ENV_FORK_REPORT_FD)?;
+
+    join_init_namespaces(plan.init_pid)?;
+
+    let f_pid = unsafe { libc::fork() };
+    if f_pid < 0 {
+        return Err(std::io::Error::last_os_error()).context("fork exec process");
+    }
+    if f_pid == 0 {
+        exec_process_main(&plan, start_fd, fork_report_fd);
+    }
+    let f_pid = f_pid as u32;
+
+    // E no longer needs the start pipe at all.
+    unsafe { libc::close(start_fd) };
+    relay_fork_report(fork_report_fd, f_pid)
+}
+
+/// Read the child's fork report and relay it to the shim's ready pipe.
+fn relay_fork_report(fork_report_fd: RawFd, child_pid: u32) -> Result<()> {
     let mut line = String::new();
     {
         let mut reader = BufReader::new(unsafe { fs::File::from_raw_fd(fork_report_fd) });
         reader.read_line(&mut line).context("read fork report")?;
     }
     let relayed = match InitReport::parse(&line)? {
-        InitReport::Ok { .. } => InitReport::Ok { pid: g_pid },
+        InitReport::Ok { .. } => InitReport::Ok { pid: child_pid },
         error @ InitReport::Error { .. } => error,
     };
     let mut ready = ready_pipe_from_env().context("ready pipe")?;
     ready
         .write_all(&relayed.line()?)
         .and_then(|()| ready.flush())
-        .context("relay init report")?;
+        .context("relay fork report")?;
     Ok(())
 }
 
@@ -292,21 +381,55 @@ fn join_namespace_paths(plan: &ContainerPlan) -> Result<()> {
         let Some(path) = namespace.path.as_deref() else {
             continue;
         };
-        let name = namespace.kind.proc_ns_name();
-        let path_display = path.display().to_string();
-        let cpath = std::ffi::CString::new(path_display.as_str())
-            .with_context(|| format!("namespace path {path_display} has NUL"))?;
-        let fd = unsafe { libc::open(cpath.as_ptr(), libc::O_RDONLY | libc::O_CLOEXEC) };
-        if fd < 0 {
-            return Err(std::io::Error::last_os_error())
-                .with_context(|| format!("open {name} namespace at {path_display}"));
+        setns_by_path(&path.display().to_string(), namespace.kind)?;
+    }
+    Ok(())
+}
+
+/// Join every namespace of the init process we can address, in the order
+/// the kernel expects (user namespace first, pid last — pid membership only
+/// applies to children, which is why the exec process forks afterwards).
+fn join_init_namespaces(init_pid: u32) -> Result<()> {
+    let order = [
+        NamespaceKind::User,
+        NamespaceKind::Ipc,
+        NamespaceKind::Uts,
+        NamespaceKind::Network,
+        NamespaceKind::Mount,
+        NamespaceKind::Pid,
+    ];
+    let mut joined = 0;
+    for kind in order {
+        let path = format!("/proc/{init_pid}/ns/{}", kind.proc_ns_name());
+        if setns_by_path(&path, kind).is_ok() {
+            joined += 1;
+        } else {
+            warn!(
+                "exec cannot join {} namespace of pid {init_pid}",
+                kind.proc_ns_name()
+            );
         }
-        let ret = unsafe { libc::setns(fd, namespace.kind.clone_flag()) };
-        unsafe { libc::close(fd) };
-        if ret != 0 {
-            return Err(std::io::Error::last_os_error())
-                .with_context(|| format!("setns {name} namespace at {path_display}"));
-        }
+    }
+    if joined == 0 {
+        anyhow::bail!("could not join any namespace of pid {init_pid}");
+    }
+    Ok(())
+}
+
+fn setns_by_path(path: &str, kind: NamespaceKind) -> Result<()> {
+    let name = kind.proc_ns_name();
+    let cpath =
+        std::ffi::CString::new(path).with_context(|| format!("namespace path {path} has NUL"))?;
+    let fd = unsafe { libc::open(cpath.as_ptr(), libc::O_RDONLY | libc::O_CLOEXEC) };
+    if fd < 0 {
+        return Err(std::io::Error::last_os_error())
+            .with_context(|| format!("open {name} namespace at {path}"));
+    }
+    let ret = unsafe { libc::setns(fd, kind.clone_flag()) };
+    unsafe { libc::close(fd) };
+    if ret != 0 {
+        return Err(std::io::Error::last_os_error())
+            .with_context(|| format!("setns {name} namespace at {path}"));
     }
     Ok(())
 }
@@ -362,7 +485,7 @@ fn attach_cgroup(plan: &CgroupPlan, pid: u32) -> Result<()> {
     Ok(())
 }
 
-/// G: finish setup, report readiness, wait for start, then exec.
+/// G: finish the container setup, report readiness, wait for start, exec.
 ///
 /// Runs in the forked child of A; never returns.
 fn init_process_main(plan: &ContainerPlan, start_fd: RawFd, fork_report_fd: RawFd) -> ! {
@@ -374,20 +497,22 @@ fn init_process_main(plan: &ContainerPlan, start_fd: RawFd, fork_report_fd: RawF
         std::process::exit(1);
     };
 
-    // Close everything inherited from the shim except the two pipes G owns.
-    close_inherited_fds(&[0, 1, 2, start_fd, fork_report_fd]);
+    let stdio = StdioFds::from_env().unwrap_or_else(|error| fail(format!("{error:#}")));
+    close_inherited_fds(&[
+        0,
+        1,
+        2,
+        start_fd,
+        fork_report_fd,
+        stdio.stdin,
+        stdio.stdout,
+        stdio.stderr,
+    ]);
 
     // procfs must be mounted by a member of the new pid namespace, i.e. G.
     if let Err(error) = mount::mount_proc(&plan.rootfs) {
         fail(format!("{error:#}"));
     }
-
-    // Open IO by host paths while they are still reachable.
-    let io_files = match open_stdio(plan) {
-        Ok(files) => files,
-        Err(error) => fail(format!("{error:#}")),
-    };
-
     if let Err(error) = mount::pivot_root(&plan.rootfs) {
         fail(format!("{error:#}"));
     }
@@ -397,30 +522,61 @@ fn init_process_main(plan: &ContainerPlan, start_fd: RawFd, fork_report_fd: RawF
         warn!("root read-only remount failed: {error:#}");
     }
 
+    finish_process(&plan.process, stdio, start_fd, fork_report_fd)
+}
+
+/// F: wire the inherited IO, report readiness, wait for start, exec.
+///
+/// Runs in the forked child of E, already inside the container namespaces;
+/// never returns.
+fn exec_process_main(plan: &ExecPlan, start_fd: RawFd, fork_report_fd: RawFd) -> ! {
+    let fail = |context: String| -> ! {
+        let report = InitReport::Error { context, errno: 1 };
+        let mut file = unsafe { fs::File::from_raw_fd(fork_report_fd) };
+        let _ = file.write_all(&report.line().unwrap_or_default());
+        let _ = file.flush();
+        std::process::exit(1);
+    };
+
+    let stdio = StdioFds::from_env().unwrap_or_else(|error| fail(format!("{error:#}")));
+    close_inherited_fds(&[
+        0,
+        1,
+        2,
+        start_fd,
+        fork_report_fd,
+        stdio.stdin,
+        stdio.stdout,
+        stdio.stderr,
+    ]);
+
+    finish_process(&plan.process, stdio, start_fd, fork_report_fd)
+}
+
+/// Shared tail of init and exec processes: stdio, session setup, the
+/// start-gate, process identity, and exec.
+fn finish_process(
+    process: &ProcessPlan,
+    stdio: StdioFds,
+    start_fd: RawFd,
+    fork_report_fd: RawFd,
+) -> ! {
     // Detach into a session/process group so signals addressed to the task
     // reach the workload; terminals also claim a controlling tty.
     unsafe {
-        if plan.io.terminal {
+        if stdio.terminal {
             libc::setsid();
-            let ret = libc::ioctl(io_files.1.as_raw_fd(), libc::TIOCSCTTY, 0);
+            let ret = libc::ioctl(stdio.stdin, libc::TIOCSCTTY, 0);
             if ret != 0 {
                 warn!("TIOCSCTTY failed: {}", std::io::Error::last_os_error());
             }
         } else {
             libc::setpgid(0, 0);
         }
+        libc::dup2(stdio.stdin, libc::STDIN_FILENO);
+        libc::dup2(stdio.stdout, libc::STDOUT_FILENO);
+        libc::dup2(stdio.stderr, libc::STDERR_FILENO);
     }
-
-    // Wire the opened fds onto 0/1/2 (dup2 clears CLOEXEC on the targets).
-    let (stdin, stdout, stderr) = io_files;
-    unsafe {
-        libc::dup2(stdin.as_raw_fd(), libc::STDIN_FILENO);
-        libc::dup2(stdout.as_raw_fd(), libc::STDOUT_FILENO);
-        libc::dup2(stderr.as_raw_fd(), libc::STDERR_FILENO);
-    }
-    drop(stdin);
-    drop(stdout);
-    drop(stderr);
 
     // Signal readiness, then stop holding the report pipe open.
     {
@@ -440,18 +596,18 @@ fn init_process_main(plan: &ContainerPlan, start_fd: RawFd, fork_report_fd: RawF
         std::process::exit(255);
     }
 
-    if let Err(error) = apply_process_identity(plan) {
+    if let Err(error) = apply_process_identity(process) {
         eprintln!("pvisor shim: {error:#}");
         std::process::exit(crate::EXEC_FAILURE_EXIT_CODE);
     }
-    if let Err(error) = exec_process(plan) {
+    if let Err(error) = exec_process(process) {
         eprintln!("pvisor shim: exec failed: {error:#}");
         std::process::exit(crate::EXEC_FAILURE_EXIT_CODE);
     }
     unreachable!("exec never returns on success")
 }
 
-/// Close every open fd except the listed ones (and log failures).
+/// Close every open fd except the listed ones.
 fn close_inherited_fds(keep: &[RawFd]) {
     let Ok(entries) = fs::read_dir("/proc/self/fd") else {
         warn!("cannot enumerate /proc/self/fd to close inherited fds");
@@ -469,34 +625,10 @@ fn close_inherited_fds(keep: &[RawFd]) {
     }
 }
 
-type StdioFile = fs::File;
+fn apply_process_identity(process: &ProcessPlan) -> Result<()> {
+    let user = &process.user;
 
-fn open_stdio(plan: &ContainerPlan) -> Result<(StdioFile, StdioFile, StdioFile)> {
-    let io = &plan.io;
-    if io.terminal {
-        let console_socket = io
-            .stdout
-            .as_deref()
-            .context("terminal task without console socket")?;
-        let (master, slave) = fifo::open_pty(0, 0)?;
-        fifo::send_console_master(console_socket, &master)?;
-        drop(master);
-        return Ok((slave.try_clone()?, slave.try_clone()?, slave));
-    }
-    let stdin = fifo::open_stdin(io.stdin.as_deref())?;
-    let stdout = fifo::open_output("stdout", io.stdout.as_deref())?;
-    let stderr = if io.stderr.as_deref() == io.stdout.as_deref() {
-        stdout.try_clone()?
-    } else {
-        fifo::open_output("stderr", io.stderr.as_deref())?
-    };
-    Ok((stdin, stdout, stderr))
-}
-
-fn apply_process_identity(plan: &ContainerPlan) -> Result<()> {
-    let user = &plan.process.user;
-
-    for rlimit in &plan.process.rlimits {
+    for rlimit in &process.rlimits {
         apply_rlimit(rlimit.typ.as_str(), rlimit.soft, rlimit.hard)?;
     }
 
@@ -511,12 +643,12 @@ fn apply_process_identity(plan: &ContainerPlan) -> Result<()> {
         libc::setresuid(user.uid, user.uid, user.uid);
     }
 
-    apply_capabilities(&plan.process.capabilities)?;
+    apply_capabilities(&process.capabilities)?;
 
     if let Some(umask) = user.umask {
         unsafe { libc::umask(umask) };
     }
-    if plan.process.no_new_privileges
+    if process.no_new_privileges
         && unsafe { libc::prctl(libc::PR_SET_NO_NEW_PRIVS, 1, 0, 0, 0) } != 0
     {
         return Err(std::io::Error::last_os_error()).context("PR_SET_NO_NEW_PRIVS");
@@ -628,23 +760,21 @@ fn apply_capabilities(plan: &crate::plan::CapabilityPlan) -> Result<()> {
     Ok(())
 }
 
-fn exec_process(plan: &ContainerPlan) -> Result<()> {
-    let argv: Vec<std::ffi::CString> = plan
-        .process
+fn exec_process(process: &ProcessPlan) -> Result<()> {
+    let argv: Vec<std::ffi::CString> = process
         .argv
         .iter()
         .map(|arg| std::ffi::CString::new(arg.as_str()))
         .collect::<std::result::Result<_, _>>()
         .context("argv contains NUL")?;
-    let envp: Vec<std::ffi::CString> = plan
-        .process
+    let envp: Vec<std::ffi::CString> = process
         .env
         .iter()
         .map(|entry| std::ffi::CString::new(entry.as_str()))
         .collect::<std::result::Result<_, _>>()
         .context("env contains NUL")?;
 
-    let cwd = Path::new(&plan.process.cwd);
+    let cwd = Path::new(&process.cwd);
     if let Err(error) = std::env::set_current_dir(cwd) {
         fs::create_dir_all(cwd)
             .and_then(|()| std::env::set_current_dir(cwd))
@@ -657,7 +787,7 @@ fn exec_process(plan: &ContainerPlan) -> Result<()> {
     let mut envp_ptrs: Vec<*const libc::c_char> = envp.iter().map(|entry| entry.as_ptr()).collect();
     envp_ptrs.push(std::ptr::null());
     debug!(
-        "executing init process {} in {}",
+        "executing process {} in {}",
         program.to_string_lossy(),
         cwd.display()
     );

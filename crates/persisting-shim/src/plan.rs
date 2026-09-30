@@ -348,38 +348,14 @@ fn plan_namespaces(
 ///
 /// `rootfs_mounts` are the converted `CreateTaskRequest.rootfs` entries;
 /// conversion from protobuf stays on the Linux side.
-pub fn build_plan(
-    spec: &Spec,
-    id: &str,
-    bundle: &Path,
-    rootfs_mounts: Vec<MountPlan>,
-    io: IoPlan,
-) -> Result<ContainerPlan, PlanError> {
-    let process = spec.process().as_ref().ok_or(PlanError::MissingProcess)?;
+/// Extract the process execution details from an OCI process section.
+///
+/// Shared by the init container (`config.json`) and exec processes (the
+/// `ExecProcessRequest` spec).
+pub fn process_plan_from(process: &oci_spec::runtime::Process) -> Result<ProcessPlan, PlanError> {
     let argv = process.args().clone().ok_or(PlanError::MissingArgs)?;
     if argv.is_empty() {
         return Err(PlanError::MissingArgs);
-    }
-
-    let mut warnings = Vec::new();
-    if spec
-        .linux()
-        .as_ref()
-        .and_then(|linux| linux.seccomp().as_ref())
-        .is_some()
-    {
-        warnings.push("seccomp profile ignored (M1 limitation)".to_string());
-    }
-    if spec.hooks().is_some() {
-        warnings.push("OCI hooks ignored (M1 limitation)".to_string());
-    }
-    if spec
-        .linux()
-        .as_ref()
-        .and_then(|linux| linux.masked_paths().clone())
-        .is_some_and(|masked| !masked.is_empty())
-    {
-        warnings.push("maskedPaths ignored (M1 limitation)".to_string());
     }
 
     let user_spec = process.user();
@@ -414,7 +390,7 @@ pub fn build_plan(
         })
         .collect();
 
-    let process_plan = ProcessPlan {
+    Ok(ProcessPlan {
         argv,
         env: process.env().clone().unwrap_or_default(),
         cwd: normalize_cwd(process.cwd()),
@@ -422,7 +398,67 @@ pub fn build_plan(
         capabilities,
         rlimits,
         no_new_privileges: process.no_new_privileges().unwrap_or(false),
-    };
+    })
+}
+
+/// Plan for one exec process inside a running container.
+#[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
+pub struct ExecPlan {
+    pub container_id: String,
+    pub exec_id: String,
+    /// Init process pid; the exec child joins its namespaces.
+    pub init_pid: u32,
+    pub process: ProcessPlan,
+    pub io: IoPlan,
+}
+
+/// Build an exec plan from the OCI process spec of the exec request.
+pub fn build_exec_plan(
+    process: &oci_spec::runtime::Process,
+    container_id: &str,
+    exec_id: &str,
+    init_pid: u32,
+    io: IoPlan,
+) -> Result<ExecPlan, PlanError> {
+    Ok(ExecPlan {
+        container_id: container_id.to_string(),
+        exec_id: exec_id.to_string(),
+        init_pid,
+        process: process_plan_from(process)?,
+        io,
+    })
+}
+
+pub fn build_plan(
+    spec: &Spec,
+    id: &str,
+    bundle: &Path,
+    rootfs_mounts: Vec<MountPlan>,
+    io: IoPlan,
+) -> Result<ContainerPlan, PlanError> {
+    let process = spec.process().as_ref().ok_or(PlanError::MissingProcess)?;
+    let process_plan = process_plan_from(process)?;
+
+    let mut warnings = Vec::new();
+    if spec
+        .linux()
+        .as_ref()
+        .and_then(|linux| linux.seccomp().as_ref())
+        .is_some()
+    {
+        warnings.push("seccomp profile ignored (M1 limitation)".to_string());
+    }
+    if spec.hooks().is_some() {
+        warnings.push("OCI hooks ignored (M1 limitation)".to_string());
+    }
+    if spec
+        .linux()
+        .as_ref()
+        .and_then(|linux| linux.masked_paths().clone())
+        .is_some_and(|masked| !masked.is_empty())
+    {
+        warnings.push("maskedPaths ignored (M1 limitation)".to_string());
+    }
 
     let namespaces = plan_namespaces(spec, &mut warnings)?;
 
@@ -643,6 +679,43 @@ mod tests {
         assert_eq!(plan.mounts[0].fs_type, "proc");
         assert!(plan.warnings.iter().any(|w| w.contains("ceph")));
         assert!(plan.warnings.iter().any(|w| w.contains("seccomp")));
+    }
+
+    #[test]
+    fn exec_plan_reuses_the_process_extraction() {
+        let process: oci_spec::runtime::Process = serde_json::from_str(
+            r#"{"args":["/bin/ls","-l"],"cwd":"/tmp","user":{"uid":0,"gid":0},"env":["FOO=bar"]}"#,
+        )
+        .expect("parse process");
+        let plan = build_exec_plan(
+            &process,
+            "c1",
+            "e1",
+            4242,
+            IoPlan {
+                terminal: false,
+                stdin: Some("/bundle/stdin".to_string()),
+                stdout: Some("/bundle/stdout".to_string()),
+                stderr: Some("/bundle/stderr".to_string()),
+            },
+        )
+        .expect("exec plan");
+        assert_eq!(plan.init_pid, 4242);
+        assert_eq!(
+            plan.process.argv,
+            vec!["/bin/ls".to_string(), "-l".to_string()]
+        );
+        assert_eq!(plan.process.cwd, PathBuf::from("/tmp"));
+        assert_eq!(plan.process.env, vec!["FOO=bar".to_string()]);
+
+        let no_args = serde_json::from_str::<oci_spec::runtime::Process>(
+            r#"{"cwd":"/","user":{"uid":0,"gid":0}}"#,
+        )
+        .expect("parse process");
+        assert!(matches!(
+            build_exec_plan(&no_args, "c1", "e1", 1, IoPlan::default()),
+            Err(PlanError::MissingArgs)
+        ));
     }
 
     #[test]

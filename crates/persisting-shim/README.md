@@ -5,13 +5,15 @@ registered under the runtime type `io.containerd.pvisor.v2` (the binary name
 follows containerd's discovery rule: dots become dashes, last two
 components, `containerd-shim` prefix).
 
-This is **M1 scope**: the host process path. The shim implements the
-lifecycle every caller needs (`create`/`start`/`kill`/`wait`/`delete`/
-`state`/`pids`/`connect`/`shutdown`), bundle FIFO stdio, console sockets
-(`docker run -t`), task events, and a cgroup v2 subset (pids/memory/cpu).
-Exec, stats, pty resize, pause/resume, checkpointing, and the pod-level
-Sandbox API are not implemented yet — the generated ttrpc trait defaults
-report them as unsupported, which containerd tolerates.
+This is **M2 scope**: the host process path with full task IO. The shim
+implements the lifecycle every caller needs (`create`/`start`/`kill`/
+`wait`/`delete`/`state`/`pids`/`connect`/`shutdown`), exec into running
+tasks (`Exec` -> `Start(exec_id)` with `TaskExecAdded`/`TaskExecStarted`
+events), shim-owned FIFO/PTY IO with `CloseIO` (stdin keepalive, so
+`docker run -i` sees EOF) and `ResizePty`, task events, and a cgroup v2
+subset (pids/memory/cpu). Stats, pause/resume, checkpointing, and the
+pod-level Sandbox API are not implemented yet — the generated ttrpc trait
+defaults report them as unsupported, which containerd tolerates.
 
 ## Registering the runtime
 
@@ -77,16 +79,15 @@ containerd ──ttrpc── PvisorTask (Task service)
   `TaskCreate/TaskStart/TaskExit/TaskDelete` events through the containerd
   event publisher.
 
-## M1 limitations (deliberate)
+## M2 limitations (deliberate)
 
-- No `exec`/`attach` into a running task (M2; needs the guest agent for VM
-  workloads). `kubectl exec` / `docker exec` will fail against this runtime.
+- Exec joins the init process's namespaces via `setns`; it needs `CAP_SYS_ADMIN`
+  (rootful containerd). Rootless exec is not supported yet.
 - Pod-level Sandbox API and per-pod VMs are M3/M4 (Kata-style); today each
   task runs in its own namespace set on the host.
 - Seccomp profiles, OCI hooks, maskedPaths/readonlyPaths, device cgroups,
   and systemd cgroup delegation are ignored (logged as warnings).
-- Rootful containerd is the tested path; rootless user namespaces work with
-  explicit uid/gid mappings.
+- Stats, pause/resume, and checkpointing are unimplemented.
 
 ## Developing
 
@@ -118,6 +119,9 @@ sudo ctr run --runtime io.containerd.pvisor.v2 -t --rm \
 Expected: the container prints `hello from pvisor`, the task exits with
 status 0, and `journalctl -u containerd` shows the four task events.
 With Docker ≥ 23: `docker run --rm --runtime=io.containerd.pvisor.v2
-busybox echo hello` (registration optional, see above).
+busybox echo hello` (registration optional, see above); interactive and
+exec flows are the M2 additions to try: `docker run -it --rm
+--runtime=io.containerd.pvisor.v2 busybox sh`, `docker exec <id> ls /`,
+and `echo hi | docker run -i --rm --runtime=io.containerd.pvisor.v2 busybox cat`.
 
 [containerd Runtime v2]: https://github.com/containerd/containerd/blob/main/docs/runtime-v2.md
