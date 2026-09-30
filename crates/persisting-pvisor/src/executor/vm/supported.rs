@@ -2,22 +2,21 @@
 
 use crate::config::VmSettings;
 use crate::executor::{AttemptContext, RunExecutor};
+use crate::executor::{join_capture, read_limited, stdio};
 use crate::util::write_private_json;
 use anyhow::Context as _;
 use async_trait::async_trait;
 use persisting_control::{
     CapabilityDimension, CapabilityEnforcementEvidence, ExecutorDescriptor, ExecutorKind,
     IsolationKind, ProcessOutput, ResourceLimits, RunFailure, RunFailureKind, RunInvocation,
-    RunResult, RunState, StdioMode,
+    RunResult, RunState,
 };
 use serde::{Deserialize, Serialize};
 use std::collections::BTreeMap;
 use std::ffi::CString;
 use std::os::fd::{AsRawFd, RawFd};
 use std::path::{Path, PathBuf};
-use std::process::Stdio;
 use std::time::Duration;
-use tokio::io::{AsyncRead, AsyncReadExt};
 use tokio::process::Command;
 
 const RUNNER_SPEC_ENV: &str = "PERSISTING_KRUN_RUNNER_SPEC";
@@ -58,12 +57,6 @@ mod embedded_kernel {
 #[derive(Debug, Clone)]
 pub struct VmExecutor {
     settings: VmSettings,
-}
-
-#[derive(Debug)]
-struct Captured {
-    text: String,
-    truncated: bool,
 }
 
 #[derive(Debug, Serialize, Deserialize)]
@@ -1062,45 +1055,6 @@ fn shell_quote(value: &str) -> anyhow::Result<String> {
         "guest command and environment cannot contain NUL bytes"
     );
     Ok(format!("'{}'", value.replace('\'', "'\"'\"'")))
-}
-
-fn stdio(mode: StdioMode) -> Stdio {
-    match mode {
-        StdioMode::Inherit => Stdio::inherit(),
-        StdioMode::Capture => Stdio::piped(),
-        StdioMode::Null => Stdio::null(),
-    }
-}
-
-async fn read_limited<R: AsyncRead + Unpin>(
-    mut reader: R,
-    limit: usize,
-) -> std::io::Result<Captured> {
-    let mut retained = Vec::with_capacity(limit.min(8192));
-    let mut buffer = [0_u8; 8192];
-    let mut truncated = false;
-    loop {
-        let read = reader.read(&mut buffer).await?;
-        if read == 0 {
-            break;
-        }
-        let keep = limit.saturating_sub(retained.len()).min(read);
-        retained.extend_from_slice(&buffer[..keep]);
-        truncated |= keep < read;
-    }
-    Ok(Captured {
-        text: String::from_utf8_lossy(&retained).into_owned(),
-        truncated,
-    })
-}
-
-async fn join_capture(
-    task: Option<tokio::task::JoinHandle<std::io::Result<Captured>>>,
-) -> Option<Captured> {
-    match task {
-        Some(task) => task.await.ok().and_then(Result::ok),
-        None => None,
-    }
 }
 
 fn failed_to_start(

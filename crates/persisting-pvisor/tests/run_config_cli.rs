@@ -466,7 +466,6 @@ fn every_public_run_option_is_accepted_by_the_real_cli_parser() {
         &["--container-mount", "source=\"/tmp\",target=\"/workspace\""],
         &["--mount", "/tmp/lower:read"],
         &["--access", "**/.ssh:deny"],
-        &["--overlayfs-backend", "directory"],
         &["--overlaynet", "proxy"],
         &["--overlaynet", "auto"],
         &["--overlaynet"],

@@ -1,4 +1,4 @@
-//! Files and result hand-off for a pVisor delegated through Docker or KVM.
+//! Files and result hand-off for a pVisor delegated through an OCI container or libkrun VM.
 
 use crate::util::write_private_json;
 use persisting_control::{AttemptId, RunInvocation, RunResult, RunSpec};

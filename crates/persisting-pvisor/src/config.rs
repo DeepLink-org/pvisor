@@ -266,7 +266,6 @@ pub struct OverlayFsSettings {
     /// Aggregate byte budget for the whole staged filesystem.
     #[serde(rename = "max_size")]
     pub stage_size_bytes: Option<u64>,
-    pub backend: OverlayFsBackend,
     #[serde(skip)]
     pub commit: OverlayFsCommit,
 }
@@ -283,7 +282,6 @@ impl Default for OverlayFsSettings {
             compose: Vec::new(),
             stage: None,
             stage_size_bytes: None,
-            backend: OverlayFsBackend::Directory,
             commit: OverlayFsCommit::Manual,
         }
     }
@@ -314,14 +312,6 @@ pub enum FilesystemAccessLevel {
     Warn,
     Stage,
     Write,
-}
-
-#[derive(Debug, Clone, Copy, Default, Deserialize, Serialize, PartialEq, Eq, clap::ValueEnum)]
-#[serde(rename_all = "kebab-case")]
-pub enum OverlayFsBackend {
-    #[default]
-    Directory,
-    Jujutsu,
 }
 
 #[derive(Debug, Clone, Copy, Default, Deserialize, Serialize, PartialEq, Eq, clap::ValueEnum)]

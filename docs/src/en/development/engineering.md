@@ -14,7 +14,7 @@ package launches the packaged Rust binary; it is not a second runtime.
 | `crates/persisting-control/` | Shared contracts, policies, AgentCtl messages, IR and event schemas |
 | `crates/persisting-gateway/` | Agent protocol forwarding, conversion, capture and projection |
 | `crates/persisting-overlay-core/` | FUSE-independent overlay operations and file access enforcement |
-| `crates/persisting-overlayfs/` | FUSE adapter, mounts and optional Jujutsu upper storage |
+| `crates/persisting-overlayfs/` | FUSE adapter and mounts |
 | `crates/persisting-overlaynet/` | Egress policy, HTTP proxy and VM virtio-net data plane |
 | `crates/persisting-replay/` | Replay planning, native agent adapters and continuation bridges |
 | `pvisor/`, `setup.py`, `scripts/packaging/` | Python launcher and wheel assembly |

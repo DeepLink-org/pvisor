@@ -49,11 +49,15 @@ fn inspection_observations_are_only_emitted_when_present() {
 fn legacy_overlay_and_apply_records_keep_defaults() {
     let overlay: OverlayRecord = serde_json::from_value(json!({
         "id": "overlay-1", "target": "/target",
-        "upper": {"kind": "directory", "upper_dir": "/stage/upper", "work_dir": "/stage/work"},
+        "upper": { "upper_dir": "/stage/upper", "work_dir": "/stage/work"},
         "merged_dir": "/stage/merged", "stage_dir": "/stage",
         "auto_apply": false, "state": "staged"
     }))
     .unwrap();
+    assert_eq!(
+        serde_json::to_value(&overlay.upper).unwrap(),
+        json!({"upper_dir": "/stage/upper", "work_dir": "/stage/work"})
+    );
     assert_eq!(overlay.generation, 0);
     assert_eq!(overlay.state, OverlayState::Staged);
     assert!(overlay.excluded_paths.is_empty());

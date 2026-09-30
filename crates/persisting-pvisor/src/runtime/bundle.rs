@@ -4,7 +4,7 @@ use crate::executor::sandbox::SANDBOX_SETUP_FAILED_WARNING;
 use crate::runtime::{
     ChangeEntry, OverlayState, RunLineage, RunRecord, overlay_changes, overlay_status,
 };
-use crate::util::{atomic_write, sync_directory};
+use crate::util::sync_directory;
 use crate::{AgentCtlSnapshot, unix_now_ms};
 use persisting_control::{
     ArtifactRef, CapabilityDimension, ExecutorDescriptor, IsolationKind, ProcessOutput,
@@ -367,7 +367,7 @@ impl RunBundle {
 
     pub fn write(&self, stage_dir: &Path) -> anyhow::Result<PathBuf> {
         let path = Self::path(stage_dir);
-        atomic_write(&path, &serde_json::to_vec_pretty(self)?, 0o600)?;
+        crate::util::write_private_json(&path, self)?;
         Ok(path)
     }
 
@@ -589,7 +589,7 @@ mod tests {
                 id: "run-1".into(),
                 generation: 0,
                 target: temp.path().join("target"),
-                upper: OverlayUpper::Directory {
+                upper: OverlayUpper {
                     upper_dir: upper,
                     work_dir: temp.path().join("work"),
                 },

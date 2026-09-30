@@ -582,7 +582,6 @@ workspace 和 user 规则写入 `~/.config/pvisor/config.toml` 的 `permissions`
     --stage /tmp/pvisor-cases/composed-stage \
     --mount "/tmp/pvisor-cases/base:$PWD/view:stage" \
     --mount "/tmp/pvisor-cases/layer:$PWD/view:stage" \
-    --overlayfs-backend directory \
     -- /bin/true
   ```
 

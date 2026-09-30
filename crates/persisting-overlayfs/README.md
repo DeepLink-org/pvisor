@@ -3,7 +3,7 @@
 **Cross-platform FUSE overlay for pVisor staging (macFUSE / libfuse).**
 
 Owns the unprivileged, in-process FUSE overlay: ordered multi-`lowerdir` merge,
-directory or Jujutsu upper, portable `.wh.*` whiteouts, and the optional
+directory upper, portable `.wh.*` whiteouts, and the optional
 standalone `persisting-overlayfs` diagnostic CLI.
 
 Does not own review, apply, drop, or Run lifecycle.

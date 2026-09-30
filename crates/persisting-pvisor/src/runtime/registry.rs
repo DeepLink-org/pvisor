@@ -1,8 +1,8 @@
 //! Durable Run identity, project association, and liveness metadata.
 
 use super::overlay::{
-    OverlayRecord, OverlayUpper, ReadOnlyOverlayMount, load_overlay_record,
-    mount_overlay_record_read_only, overlay_status,
+    OverlayRecord, ReadOnlyOverlayMount, load_overlay_record, mount_overlay_record_read_only,
+    overlay_status,
 };
 use crate::util::{atomic_write, create_dir_all_durable};
 use anyhow::Context;
@@ -111,11 +111,14 @@ impl RunRecord {
     pub fn write(&self) -> anyhow::Result<()> {
         let stage = self.stage_dir();
         let path = stage.join(RUN_META_FILENAME);
-        atomic_write(&path, &serde_json::to_vec_pretty(self)?, 0o600)?;
+        crate::util::write_private_json(&path, self)?;
 
         let index_dir = self.storage.join(".pvisor").join("runs");
         atomic_write(
-            &index_dir.join(format!("{}.json", encode_id(&self.run_id))),
+            &index_dir.join(format!(
+                "{}.json",
+                crate::util::encode_hex(self.run_id.as_bytes())
+            )),
             &serde_json::to_vec_pretty(&RunIndex {
                 run_id: self.run_id.clone(),
                 stage_dir: stage,
@@ -131,11 +134,10 @@ impl RunRecord {
     }
 
     pub fn remove_index(&self) -> anyhow::Result<()> {
-        let path = self
-            .storage
-            .join(".pvisor")
-            .join("runs")
-            .join(format!("{}.json", encode_id(&self.run_id)));
+        let path = self.storage.join(".pvisor").join("runs").join(format!(
+            "{}.json",
+            crate::util::encode_hex(self.run_id.as_bytes())
+        ));
         match fs::remove_file(path) {
             Ok(()) => Ok(()),
             Err(error) if error.kind() == std::io::ErrorKind::NotFound => Ok(()),
@@ -458,7 +460,7 @@ pub fn resolve_run(selector: Option<&Path>, storage: &Path) -> anyhow::Result<Ru
         let index = storage
             .join(".pvisor")
             .join("runs")
-            .join(format!("{}.json", encode_id(&id)));
+            .join(format!("{}.json", crate::util::encode_hex(id.as_bytes())));
         if index.exists() {
             let index: RunIndex = serde_json::from_slice(&fs::read(index)?)?;
             return RunRecord::read(&index.stage_dir);
@@ -595,19 +597,7 @@ fn resolve_path(path: &Path) -> anyhow::Result<RunRecord> {
                 if record.overlay.as_ref().is_some_and(|overlay| {
                     path_within(&absolute, &overlay.target)
                         || path_within(&absolute, &overlay.merged_dir)
-                        || match &overlay.upper {
-                            OverlayUpper::Directory { upper_dir, .. } => {
-                                path_within(&absolute, upper_dir)
-                            }
-                            OverlayUpper::Jujutsu {
-                                store_path,
-                                upper_dir,
-                                ..
-                            } => {
-                                path_within(&absolute, upper_dir)
-                                    || path_within(&absolute, store_path)
-                            }
-                        }
+                        || path_within(&absolute, overlay.upper.path())
                 }) {
                     return Ok(record);
                 }
@@ -654,18 +644,10 @@ fn latest_run(storage: &Path) -> anyhow::Result<RunRecord> {
         .ok_or_else(|| anyhow::anyhow!("no pVisor Runs found under {}", storage.display()))
 }
 
-fn encode_id(id: &str) -> String {
-    let mut encoded = String::with_capacity(id.len() * 2);
-    for byte in id.as_bytes() {
-        use std::fmt::Write;
-        let _ = write!(encoded, "{byte:02x}");
-    }
-    encoded
-}
-
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::runtime::OverlayUpper;
 
     fn record(storage: &Path, stage: &Path, upper: &Path) -> RunRecord {
         RunRecord {
@@ -696,7 +678,7 @@ mod tests {
                 id: "session-test".into(),
                 generation: 0,
                 target: storage.join("target"),
-                upper: OverlayUpper::Directory {
+                upper: OverlayUpper {
                     upper_dir: upper.to_path_buf(),
                     work_dir: stage.join("work"),
                 },

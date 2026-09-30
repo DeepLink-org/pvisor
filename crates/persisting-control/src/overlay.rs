@@ -63,25 +63,14 @@ pub struct OverlayRecord {
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
-#[serde(tag = "kind", rename_all = "snake_case")]
-pub enum OverlayUpper {
-    Directory {
-        upper_dir: PathBuf,
-        work_dir: PathBuf,
-    },
-    Jujutsu {
-        store_path: PathBuf,
-        workspace: String,
-        upper_dir: PathBuf,
-    },
+pub struct OverlayUpper {
+    pub upper_dir: PathBuf,
+    pub work_dir: PathBuf,
 }
 
 impl OverlayUpper {
     pub fn path(&self) -> &Path {
-        match self {
-            Self::Directory { upper_dir, .. } => upper_dir,
-            Self::Jujutsu { upper_dir, .. } => upper_dir,
-        }
+        &self.upper_dir
     }
 }
 

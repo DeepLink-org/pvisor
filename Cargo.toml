@@ -44,7 +44,6 @@ http-body-util = "0.1"
 hyper = "1"
 hyper-util = { version = "0.1", default-features = false }
 ipnet = "2"
-jj-lib = "0.43.0"
 libc = "0.2"
 libloading = "0.8"
 libkrun = "=1.19.3"
@@ -55,7 +54,6 @@ persisting-overlayfs = { path = "crates/persisting-overlayfs", default-features 
 persisting-overlay-core = { path = "crates/persisting-overlay-core" }
 persisting-overlaynet = { path = "crates/persisting-overlaynet" }
 persisting-replay = { path = "crates/persisting-replay" }
-pollster = "0.4"
 pulsing-actor = { version = "0.1.2", default-features = false }
 proptest = "1"
 regex = "1"

@@ -2,8 +2,6 @@ use serde_json::json;
 use std::collections::BTreeMap;
 use std::path::PathBuf;
 
-use persisting_gateway::config::OverlayBackend;
-
 /// Optional in-process FUSE overlay root for one Attempt.
 #[derive(Debug, Clone, Default, PartialEq, Eq)]
 pub struct OverlayHint {
@@ -16,14 +14,8 @@ pub struct OverlayHint {
     pub upper_dir: Option<PathBuf>,
     /// Work directory required by overlay implementations.
     pub work_dir: Option<PathBuf>,
-    /// Shared Jujutsu repository root for all OverlayFS forks.
-    pub jujutsu_store_path: Option<PathBuf>,
-    /// Jujutsu workspace/fork name within the shared repository.
-    pub jujutsu_workspace: Option<String>,
     /// Merged mount point visible to the Agent as cwd/root when set.
     pub merged_dir: Option<PathBuf>,
-    /// Writable staging representation.
-    pub backend: OverlayBackend,
     /// Apply staged changes when the Run exits successfully or unsuccessfully.
     pub auto_apply: bool,
     /// Discard staged changes when the Run exits.

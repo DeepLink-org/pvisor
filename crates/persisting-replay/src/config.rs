@@ -69,7 +69,6 @@ pub struct OverlayFsConfig {
     /// Host layers composed in declaration order.
     #[serde(default)]
     pub compose: Vec<PathBuf>,
-    pub backend: Option<String>,
     pub commit: Option<String>,
 }
 
