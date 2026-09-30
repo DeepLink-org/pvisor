@@ -112,7 +112,14 @@ fn safe_profile_stages_reviews_and_applies_on_macos() {
     command
         .env("PERSISTING_RUN_HOME", &run_home)
         .current_dir(&workspace)
-        .args(["run", "--stdio", "capture", "--stage"])
+        .args([
+            "run",
+            "--filesystem",
+            "sandbox",
+            "--stdio",
+            "capture",
+            "--stage",
+        ])
         .arg(run_home.join("stage"))
         .args([
             "--",
@@ -264,6 +271,8 @@ fn deny_all_blocks_ip_and_host_unix_sockets_on_macos() {
         .args([
             "run",
             "--overlaynet-deny-all",
+            "--filesystem",
+            "sandbox",
             "--stdio",
             "capture",
             "--stage",
@@ -510,7 +519,13 @@ fn ask_preserves_default_rules_read_only_shares_and_job_changes() {
         .env("PVISOR_UI_STAGE_FILE", temp.path().join("stage"))
         .env("PVISOR_UI_LOG_FILE", &log)
         .env("PVISOR_UI_AUDIT_SOCKET", &socket)
-        .args(["--ask", "--no-config", "--access", "custom:ask", "--mount"])
+        .args([
+            "--ask",
+            "--no-agent-defaults",
+            "--access",
+            "custom:ask",
+            "--mount",
+        ])
         .arg(format!("{}:read", reference.display()))
         .args([
             "--",

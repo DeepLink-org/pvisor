@@ -1103,7 +1103,6 @@ async fn join_capture(
     }
 }
 
-
 fn failed_to_start(
     spec: &persisting_control::RunSpec,
     attempt_id: &persisting_control::AttemptId,

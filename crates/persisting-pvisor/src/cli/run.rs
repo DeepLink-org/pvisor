@@ -794,7 +794,7 @@ pub async fn run(mut args: RunArgs) -> anyhow::Result<i32> {
     }
     // Host runs keep the best-effort lifecycle/evidence profile by default;
     // filesystem restrictions, staging, and network isolation remain opt-in.
-    // `--safe`/`--audit` request the Agent-aware preset on top of that.
+    // `--safe`/`--ask` request the Agent-aware preset on top of that.
     let run_id = format!("run-{}", uuid::Uuid::new_v4());
     let mut config = load_run_config(&args, personal_config_root().as_deref(), true)?;
     apply_run_options(&mut config, args.clone())?;
@@ -1229,7 +1229,9 @@ async fn execute_config(
                 all(target_os = "linux", target_env = "musl", target_arch = "x86_64"),
                 all(target_os = "macos", target_arch = "x86_64")
             )))]
-            if config.vm.library_dir.is_none() && crate::executor::vm::bundled_firmware_dir().is_none() {
+            if config.vm.library_dir.is_none()
+                && crate::executor::vm::bundled_firmware_dir().is_none()
+            {
                 run_log!(
                     "pVisor firmware: resolving libkrunfw {}",
                     crate::executor::vm::firmware::VERSION
@@ -1372,7 +1374,7 @@ async fn execute_config(
     let executor: Arc<dyn RunExecutor> = match config.run.executor {
         #[cfg(target_os = "linux")]
         RunExecutorKind::Host if safe || filesystem_isolated || network_namespace_required => {
-            // The --safe/--audit preset demands its boundary; the independent
+            // The --safe/--ask preset demands its boundary; the independent
             // --filesystem/--overlaynet policies stay best-effort and fall
             // back to the host process with a warning.
             if rootless_available {
@@ -1580,8 +1582,10 @@ async fn execute_config(
     );
 
     if safe {
-        spec.metadata
-            .insert(crate::executor::sandbox::LANDLOCK_SANDBOX_KEY.into(), true.into());
+        spec.metadata.insert(
+            crate::executor::sandbox::LANDLOCK_SANDBOX_KEY.into(),
+            true.into(),
+        );
     }
     {
         let network_boundary = if config.run.executor == RunExecutorKind::Vm
@@ -3552,7 +3556,11 @@ sandbox = "required""#
         config.run.executor = RunExecutorKind::Vm;
         config.vm.rootfs = Some(temporary.path().to_path_buf());
         config.vm.library_dir = Some(temporary.path().to_path_buf());
-        std::fs::write(temporary.path().join(crate::executor::vm::firmware_name()), []).unwrap();
+        std::fs::write(
+            temporary.path().join(crate::executor::vm::firmware_name()),
+            [],
+        )
+        .unwrap();
         config.overlayfs = Some(OverlayFsSettings {
             base: Some(temporary.path().to_path_buf()),
             ..OverlayFsSettings::default()
