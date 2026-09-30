@@ -12,6 +12,7 @@ members = [
     "crates/persisting-gateway",
     "crates/persisting-pvisor",
     "crates/persisting-replay",
+    "crates/persisting-shim",
     "crates/persisting-overlayfs",
     "crates/persisting-overlay-core",
     "crates/persisting-overlaynet",
@@ -25,6 +26,9 @@ default-members = [
 [workspace.dependencies]
 anyhow = "1"
 async-trait = "0.1"
+containerd-shim = "0.11"
+containerd-shim-protos = "0.11"
+oci-spec = "0.10"
 axum = { version = "0.8", default-features = false }
 base64 = "0.22"
 blake3 = "1"
