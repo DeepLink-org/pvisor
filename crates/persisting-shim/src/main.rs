@@ -4,6 +4,10 @@ fn main() {
         // The shim binary is also the container init parent: when containerd
         // asks it to create a task it re-executes itself in internal mode
         // (house "self-exec" pattern, cf. pvisor's INTERNAL_SANDBOX_ARG).
+        if let Err(error) = persisting_shim::agent::run_guest_agent_if_requested() {
+            eprintln!("pvisor shim guest agent failed: {error:#}");
+            std::process::exit(1);
+        }
         if let Err(error) = persisting_shim::child::run_internal_if_requested() {
             eprintln!("pvisor shim internal init failed: {error:#}");
             std::process::exit(1);

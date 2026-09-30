@@ -47,10 +47,18 @@ use containerd_shim_protos::topics::{
 };
 use containerd_shim_protos::ttrpc::{self, Code, context::Context, get_status};
 use log::{info, warn};
+#[cfg(feature = "vm")]
+use std::os::fd::AsRawFd;
+#[cfg(feature = "vm")]
+use tokio::sync::mpsc;
 use tokio::sync::watch;
 
+#[cfg(feature = "vm")]
+use crate::agent::{Channel, Control, FrameReader, FrameWriter};
 use crate::child::{self, InternalChild, StdioFds};
 use crate::fifo::ContainerIo;
+#[cfg(feature = "vm")]
+use crate::plan::ExecPlan;
 use crate::plan::{IoPlan, MountPlan, build_exec_plan, build_plan, build_sandbox_plan};
 use crate::spec::load_bundle_spec;
 use crate::state::{ExecEntry, ExitInfo, ExitTarget, TaskEntry, TaskStatus};
@@ -60,6 +68,8 @@ use crate::state::{ExecEntry, ExitInfo, ExitTarget, TaskEntry, TaskStatus};
 struct LiveExec {
     exit_tx: watch::Sender<Option<ExitInfo>>,
     internal: Option<InternalChild>,
+    /// VM execs: the agent socket fd; shutting it down is the kill.
+    vm_sock: Option<i32>,
     io: ContainerIo,
 }
 
@@ -71,6 +81,8 @@ struct LiveTask {
     internal: Option<InternalChild>,
     io: ContainerIo,
     execs: HashMap<String, LiveExec>,
+    /// Task runs in a libkrun VM: exec goes through the guest agent.
+    vm: bool,
 }
 
 /// The pod sandbox served by this shim instance: the holder process (the
@@ -175,6 +187,9 @@ impl PvisorTask {
         if let Some(mut internal) = live_exec.internal.take() {
             internal.close_start();
         }
+        if let Some(sock_fd) = live_exec.vm_sock.take() {
+            unsafe { libc::close(sock_fd) };
+        }
         let _ = std::fs::remove_file(bundle.join(format!("pvisor-exec-{exec_id}.json")));
 
         let mut response = DeleteResponse::new();
@@ -190,6 +205,257 @@ impl PvisorTask {
         event.set_exited_at(response.exited_at.clone().into_option().unwrap_or_default());
         self.publish(TASK_DELETE_EVENT_TOPIC, Box::new(event)).await;
         Ok(response)
+    }
+}
+
+#[cfg(feature = "vm")]
+impl PvisorTask {
+    /// Exec inside a libkrun VM task: connect to the guest agent over the
+    /// bundle's agent socket, run the process there, and relay its IO.
+    async fn exec_in_vm(
+        &self,
+        req: ExecProcessRequest,
+        bundle: PathBuf,
+        _init_pid: u32,
+    ) -> ttrpc::Result<Empty> {
+        if !cfg!(feature = "vm") {
+            return Err(rpc_error(
+                Code::UNIMPLEMENTED,
+                "exec in VMs requires building the shim with --features vm",
+            ));
+        }
+        if req.terminal {
+            return Err(rpc_error(
+                Code::UNIMPLEMENTED,
+                "tty exec in VMs is not supported yet",
+            ));
+        }
+        let process: oci_spec::runtime::Process = serde_json::from_slice(&req.spec().value)
+            .map_err(|error| {
+                rpc_error(
+                    Code::INVALID_ARGUMENT,
+                    format!("invalid exec process spec: {error}"),
+                )
+            })?;
+        let io = io_plan_from(false, &req.stdin, &req.stdout, &req.stderr);
+        let plan = build_exec_plan(&process, &req.id, &req.exec_id, 0, io)
+            .map_err(|error| rpc_error(Code::INVALID_ARGUMENT, error.to_string()))?;
+
+        let mut owned_io = ContainerIo::open(&plan.io)
+            .map_err(|error| rpc_error(Code::INTERNAL, format!("open exec io: {error:#}")))?;
+        let Some((stdin, stdout, stderr)) = owned_io.take_child_fds() else {
+            return Err(rpc_error(Code::INTERNAL, "exec io without child fds"));
+        };
+
+        let socket_path = bundle.join("pvisor-agent.sock");
+        let (pid, stream) = tokio::task::spawn_blocking({
+            let plan = plan.clone();
+            let socket_path = socket_path.clone();
+            move || vm_exec_connect_and_start(&socket_path, &plan)
+        })
+        .await
+        .map_err(|error| rpc_error(Code::INTERNAL, format!("vm exec join: {error}")))?
+        .map_err(|error| rpc_error(Code::INTERNAL, format!("{error:#}")))?;
+        let sock_fd = stream.as_raw_fd();
+
+        // The guest process starts immediately (containerd's Start call for
+        // VM execs just returns the pid we already know).
+        let exec_entry = ExecEntry::new(
+            &req.exec_id,
+            plan.io.stdin.clone(),
+            plan.io.stdout.clone(),
+            plan.io.stderr.clone(),
+            false,
+            Some(pid),
+        );
+        let (exit_tx, _) = watch::channel(None);
+        let (events_tx, mut events_rx) = mpsc::unbounded_channel::<u32>();
+        {
+            let mut tasks = self.inner.tasks.lock().expect("tasks mutex");
+            let live = tasks.get_mut(&req.id).ok_or_else(|| not_found(&req.id))?;
+            if !live.entry.add_exec(exec_entry) {
+                return Err(rpc_error(
+                    Code::ALREADY_EXISTS,
+                    format!("exec {} already exists", req.exec_id),
+                ));
+            }
+            live.execs.insert(
+                req.exec_id.clone(),
+                LiveExec {
+                    exit_tx,
+                    internal: None,
+                    vm_sock: Some(sock_fd),
+                    io: owned_io,
+                },
+            );
+        }
+
+        // Relay the exec IO and bridge the guest exit into the task state.
+        {
+            let inner = self.inner.clone();
+            let container_id = req.id.clone();
+            let exec_id = req.exec_id.clone();
+            tokio::spawn(async move {
+                while let Some(status) = events_rx.recv().await {
+                    vm_exec_exited(&inner, &container_id, &exec_id, pid, status).await;
+                }
+            });
+        }
+        spawn_vm_exec_relay(stream, stdin, stdout, stderr, events_tx);
+
+        let mut event = TaskExecAdded::new();
+        event.set_container_id(req.id.clone());
+        event.set_exec_id(req.exec_id.clone());
+        self.publish(TASK_EXEC_ADDED_EVENT_TOPIC, Box::new(event))
+            .await;
+        Ok(Empty::new())
+    }
+}
+
+/// Connect to the agent socket (retrying while the VM boots), send the exec
+/// request, and return the guest pid plus the live connection.
+#[cfg(feature = "vm")]
+fn vm_exec_connect_and_start(
+    socket_path: &std::path::Path,
+    plan: &ExecPlan,
+) -> Result<(u32, std::os::unix::net::UnixStream)> {
+    let mut stream = None;
+    for _ in 0..300 {
+        match std::os::unix::net::UnixStream::connect(socket_path) {
+            Ok(connection) => {
+                stream = Some(connection);
+                break;
+            }
+            Err(_) => std::thread::sleep(std::time::Duration::from_millis(100)),
+        }
+    }
+    let mut stream = stream.context("agent socket never came up")?;
+
+    let mut writer = FrameWriter::new(stream.try_clone()?);
+    writer.write_control(&Control::ExecStart {
+        argv: plan.process.argv.clone(),
+        env: plan.process.env.clone(),
+        cwd: plan.process.cwd.to_string_lossy().to_string(),
+    })?;
+    let message = FrameReader::new(&mut stream)
+        .read_control()?
+        .context("agent closed before starting the process")?;
+    match message {
+        Control::Started { pid } => Ok((pid, stream)),
+        Control::Error { message } => anyhow::bail!("guest agent: {message}"),
+        other => anyhow::bail!("unexpected agent reply: {other:?}"),
+    }
+}
+
+/// Pump the exec IO between the task FIFOs and the agent connection; the
+/// exit status (or 137 for a dropped connection, i.e. a kill) flows back
+/// through `events`.
+#[cfg(feature = "vm")]
+fn spawn_vm_exec_relay(
+    stream: std::os::unix::net::UnixStream,
+    stdin: std::fs::File,
+    stdout: std::fs::File,
+    stderr: std::fs::File,
+    events: mpsc::UnboundedSender<u32>,
+) {
+    use std::io::{Read, Write};
+
+    let writer = stream.try_clone().expect("clone agent stream");
+    std::thread::spawn(move || {
+        let mut stdin = stdin;
+        let mut writer = FrameWriter::new(writer);
+        let mut buffer = [0u8; 8192];
+        loop {
+            match stdin.read(&mut buffer) {
+                Ok(0) | Err(_) => {
+                    let _ = writer.write_frame(Channel::Stdin, b"");
+                    break;
+                }
+                Ok(n) => {
+                    if writer.write_frame(Channel::Stdin, &buffer[..n]).is_err() {
+                        break;
+                    }
+                }
+            }
+        }
+    });
+
+    std::thread::spawn(move || {
+        let mut stdout = stdout;
+        let mut stderr = stderr;
+        let mut reader = FrameReader::new(stream);
+        let status = loop {
+            match reader.read_frame() {
+                Ok(Some(frame)) => match frame.channel {
+                    Channel::Stdout => {
+                        if stdout.write_all(&frame.payload).is_err() {
+                            break 255;
+                        }
+                    }
+                    Channel::Stderr => {
+                        if stderr.write_all(&frame.payload).is_err() {
+                            break 255;
+                        }
+                    }
+                    Channel::Stdin => {}
+                    Channel::Control => {
+                        if let Control::Exited { status } = serde_json::from_slice(&frame.payload)
+                            .unwrap_or(Control::Error {
+                                message: "bad exit frame".to_string(),
+                            })
+                        {
+                            break status;
+                        }
+                    }
+                },
+                // Socket dropped without an exit frame: killed or crashed.
+                Ok(None) => break 137,
+                Err(_) => break 137,
+            }
+        };
+        let _ = events.send(status);
+    });
+}
+
+/// Record a VM exec exit (guest pid, never matched against host pids) and
+/// publish the TaskExit event.
+#[cfg(feature = "vm")]
+async fn vm_exec_exited(
+    inner: &Arc<TaskInner>,
+    container_id: &str,
+    exec_id: &str,
+    pid: u32,
+    status: u32,
+) {
+    let notified = {
+        let mut tasks = inner.tasks.lock().expect("tasks mutex");
+        let Some(live) = tasks.get_mut(container_id) else {
+            return;
+        };
+        if !live
+            .entry
+            .record_exec_exit(exec_id, status, SystemTime::now())
+        {
+            return;
+        }
+        live.execs.get(exec_id).map(|exec| {
+            exec.exit_tx.send(Some(ExitInfo {
+                status,
+                exited_at: SystemTime::now(),
+            }))
+        })
+    };
+    if notified.is_some() {
+        let mut event = TaskExit::new();
+        event.set_container_id(container_id.to_string());
+        event.set_id(exec_id.to_string());
+        event.set_pid(pid);
+        event.set_exit_status(status);
+        event.set_exited_at(timestamp_from(SystemTime::now()));
+        let task = PvisorTask {
+            inner: inner.clone(),
+        };
+        task.publish(TASK_EXIT_EVENT_TOPIC, Box::new(event)).await;
     }
 }
 
@@ -217,6 +483,12 @@ fn status_to_api(status: TaskStatus) -> Status {
         TaskStatus::Running => Status::RUNNING,
         TaskStatus::Stopped => Status::STOPPED,
     }
+}
+
+fn start_response(pid: u32) -> StartResponse {
+    let mut response = StartResponse::new();
+    response.set_pid(pid);
+    response
 }
 
 fn non_empty(value: &str) -> Option<String> {
@@ -357,6 +629,35 @@ impl Task for PvisorTask {
         let plan_bytes = serde_json::to_vec(&plan)
             .map_err(|error| rpc_error(Code::INTERNAL, format!("{error}")))?;
 
+        // `io.pvisor.executor=vm` routes the task to the libkrun runner;
+        // everything else (lifecycle, events, kill, wait) is identical.
+        let wants_vm = plan.wants_vm();
+        let runner_arg = if wants_vm {
+            if !cfg!(feature = "vm") {
+                return Err(rpc_error(
+                    Code::UNIMPLEMENTED,
+                    "io.pvisor.executor=vm requires building the shim with --features vm",
+                ));
+            }
+            #[cfg(feature = "vm")]
+            {
+                child::INTERNAL_VM_ARG
+            }
+            #[cfg(not(feature = "vm"))]
+            {
+                unreachable!("checked the vm feature above")
+            }
+        } else {
+            child::INTERNAL_INIT_ARG
+        };
+        if wants_vm && !plan.mounts.is_empty() {
+            warn!(
+                "task {}: {} spec mounts are not mapped into VMs yet",
+                req.id,
+                plan.mounts.len()
+            );
+        }
+
         // Containers created while this shim's sandbox runs join the pod's
         // shared namespaces unless their spec overrides them.
         let sandbox_pid = self
@@ -371,7 +672,7 @@ impl Task for PvisorTask {
             let plan_path = plan_path.clone();
             move || {
                 child::spawn_internal(
-                    child::INTERNAL_INIT_ARG,
+                    runner_arg,
                     &plan_path,
                     &plan_bytes,
                     Some(stdio),
@@ -404,6 +705,7 @@ impl Task for PvisorTask {
                 internal: Some(internal),
                 io: owned_io,
                 execs: HashMap::new(),
+                vm: wants_vm,
             },
         );
 
@@ -423,6 +725,16 @@ impl Task for PvisorTask {
             let mut tasks = self.inner.tasks.lock().expect("tasks mutex");
             let live = tasks.get_mut(&req.id).ok_or_else(|| not_found(&req.id))?;
             if !req.exec_id.is_empty() {
+                // VM execs run from the moment Exec returns (the guest agent
+                // has no two-phase gate); Start just reports the pid.
+                let entry = live
+                    .entry
+                    .execs
+                    .get(&req.exec_id)
+                    .ok_or_else(|| not_found(&req.exec_id))?;
+                if entry.status == TaskStatus::Running && entry.pid.is_some() {
+                    return Ok(start_response(entry.pid.unwrap_or(0)));
+                }
                 let mut internal = live
                     .execs
                     .get_mut(&req.exec_id)
@@ -567,7 +879,7 @@ impl Task for PvisorTask {
                 "exec process spec required",
             ));
         }
-        let (bundle, init_pid) = {
+        let (bundle, init_pid, is_vm) = {
             let tasks = self.inner.tasks.lock().expect("tasks mutex");
             let live = tasks.get(&req.id).ok_or_else(|| not_found(&req.id))?;
             if live.entry.status != TaskStatus::Running {
@@ -582,8 +894,26 @@ impl Task for PvisorTask {
                     format!("exec {} already exists", req.exec_id),
                 ));
             }
-            (live.entry.bundle.clone(), live.entry.pid.unwrap_or(0))
+            (
+                live.entry.bundle.clone(),
+                live.entry.pid.unwrap_or(0),
+                live.vm,
+            )
         };
+
+        if is_vm {
+            #[cfg(feature = "vm")]
+            {
+                return self.exec_in_vm(req, bundle, init_pid).await;
+            }
+            #[cfg(not(feature = "vm"))]
+            {
+                return Err(rpc_error(
+                    Code::UNIMPLEMENTED,
+                    "exec in VMs requires building the shim with --features vm",
+                ));
+            }
+        }
 
         // The Any payload carries the JSON-encoded OCI process spec.
         let process: oci_spec::runtime::Process = serde_json::from_slice(&req.spec().value)
@@ -645,6 +975,7 @@ impl Task for PvisorTask {
                 LiveExec {
                     exit_tx,
                     internal: Some(internal),
+                    vm_sock: None,
                     io: owned_io,
                 },
             );
@@ -666,19 +997,30 @@ impl Task for PvisorTask {
                 format!("invalid signal {}", req.signal),
             ));
         }
-        let pid = {
+        let (pid, vm_sock) = {
             let tasks = self.inner.tasks.lock().expect("tasks mutex");
             let live = tasks.get(&req.id).ok_or_else(|| not_found(&req.id))?;
             if req.exec_id.is_empty() {
-                live.entry.pid
+                (live.entry.pid, None)
             } else {
-                live.entry
+                let exec = live
+                    .entry
                     .execs
                     .get(&req.exec_id)
-                    .ok_or_else(|| not_found(&req.exec_id))?
-                    .pid
+                    .ok_or_else(|| not_found(&req.exec_id))?;
+                (
+                    exec.pid,
+                    live.execs.get(&req.exec_id).and_then(|exec| exec.vm_sock),
+                )
             }
         };
+        if let Some(sock_fd) = vm_sock {
+            // VM exec kill: dropping the agent connection makes the guest
+            // agent SIGKILL the process (guest pids must never be signaled
+            // on the host).
+            unsafe { libc::shutdown(sock_fd, libc::SHUT_RDWR) };
+            return Ok(Empty::new());
+        }
         let Some(pid) = pid else {
             return Ok(Empty::new());
         };

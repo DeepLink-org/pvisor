@@ -101,10 +101,27 @@ cargo build -p persisting-shim --features vm
 ```
 
 Host requirements: `/dev/kvm` and `libkrunfw` on the library path.
-Not mapped into VMs yet (logged as warnings): spec bind mounts, cgroup
-limits (the VM shape is the resource boundary), and exec into a VM task —
-exec needs the guest agent (vsock + init blob evolution, planned with the
-pod-level Sandbox API).
+Not mapped into VMs yet (logged as warnings): spec bind mounts and cgroup
+limits (the VM shape is the resource boundary).
+
+## Guest agent and exec-in-VM (M5, feature `vm`)
+
+VM tasks boot the shim binary itself as a guest agent: at boot the
+(statically linked) binary is copied into the rootfs and the guest init
+helper starts it (`io.pvisor.vm.agent=off` disables it). The agent listens
+on vsock port 0x7076; libkrun proxies host connections from
+`<bundle>/pvisor-agent.sock` into the guest (so `docker exec` /
+`kubectl exec` work on VM tasks):
+
+- one agent connection per exec; frames are `[channel][length][payload]`
+  with JSON control messages (`exec_start`/`started`/`exited`)
+- the guest process starts at `Exec` time (containerd's `Start` reports
+  the pid; there is no two-phase gate across the VM boundary)
+- killing an exec drops the connection; the agent SIGKILLs the process
+- tty exec in VMs is not supported yet
+
+Pod-level VM sandboxes (per-container rootfs and namespaces inside one VM
+per pod, TC/TAP pod networking) remain the open item for the VM path.
 
 ## M4 status
 
@@ -124,7 +141,7 @@ lands (M5); per-container VMs via `io.pvisor.executor=vm` keep working.
 - Seccomp profiles, OCI hooks, maskedPaths/readonlyPaths, device cgroups,
   and systemd cgroup delegation are ignored (logged as warnings).
 - Stats, pause/resume, and checkpointing are unimplemented.
-- VM exec requires the guest agent (see above).
+- VM exec: no tty, and the process starts at `Exec` time (see above).
 
 ## Developing
 

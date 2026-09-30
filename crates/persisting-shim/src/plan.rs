@@ -496,6 +496,15 @@ fn sh_quote(value: &str) -> String {
     format!("'{}'", value.replace('\'', "'\\''"))
 }
 
+/// True unless `io.pvisor.vm.agent=off`: VMs boot the guest agent so exec
+/// works (the shim binary is copied into the rootfs at boot).
+pub fn vm_agent_enabled(annotations: &HashMap<String, String>) -> bool {
+    annotations
+        .get(format!("{ANNOTATION_PREFIX}vm.agent").as_str())
+        .map(|value| value != "off")
+        .unwrap_or(true)
+}
+
 /// Render the helper script the guest init executes.
 ///
 /// `krun_set_exec` collapses argv/envp into strings the guest init re-splits,
@@ -503,7 +512,21 @@ fn sh_quote(value: &str) -> String {
 /// script sidesteps that (the same pattern pVisor's VM executor uses), and
 /// carries the working directory and a clean environment in one place.
 pub fn render_guest_init_script(process: &ProcessPlan) -> String {
+    render_guest_init_script_with(process, false)
+}
+
+/// [`render_guest_init_script`] with control over the guest agent: when
+/// enabled the script starts the agent (copied into the rootfs at boot)
+/// before exec'ing the workload.
+pub fn render_guest_init_script_with(process: &ProcessPlan, agent: bool) -> String {
     let mut script = String::from("#!/bin/sh\n");
+    if agent {
+        script.push_str(&format!(
+            "{path} {arg} >/dev/null 2>&1 &\n",
+            path = crate::agent::AGENT_GUEST_PATH,
+            arg = crate::agent::AGENT_ARG
+        ));
+    }
     if process.cwd != Path::new("/") {
         script.push_str(&format!(
             "cd {} || exit 127\n",
@@ -897,6 +920,43 @@ mod tests {
             script.contains(&format!(" {expected_arg}\n")),
             "script did not contain {expected_arg}: {script}"
         );
+    }
+
+    #[test]
+    fn guest_init_script_starts_the_agent_when_enabled() {
+        let process = ProcessPlan {
+            argv: vec!["/bin/true".to_string()],
+            env: vec![],
+            cwd: PathBuf::from("/"),
+            user: UserPlan::default(),
+            capabilities: CapabilityPlan::default(),
+            rlimits: vec![],
+            no_new_privileges: false,
+        };
+        let plain = render_guest_init_script_with(&process, false);
+        assert!(!plain.contains(crate::agent::AGENT_GUEST_PATH));
+        let with_agent = render_guest_init_script_with(&process, true);
+        assert!(with_agent.contains(&format!(
+            "{} {} >/dev/null 2>&1 &",
+            crate::agent::AGENT_GUEST_PATH,
+            crate::agent::AGENT_ARG
+        )));
+        // The agent line comes before the exec tail.
+        let agent_at = with_agent
+            .find(crate::agent::AGENT_GUEST_PATH)
+            .expect("agent line");
+        let exec_at = with_agent.find("exec env -i").expect("exec line");
+        assert!(agent_at < exec_at);
+    }
+
+    #[test]
+    fn vm_agent_annotation_controls_the_agent() {
+        let mut annotations = HashMap::new();
+        assert!(vm_agent_enabled(&annotations));
+        annotations.insert("io.pvisor.vm.agent".to_string(), "off".to_string());
+        assert!(!vm_agent_enabled(&annotations));
+        annotations.insert("io.pvisor.vm.agent".to_string(), "on".to_string());
+        assert!(vm_agent_enabled(&annotations));
     }
 
     #[test]

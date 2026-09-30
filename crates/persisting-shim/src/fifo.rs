@@ -244,6 +244,12 @@ impl ContainerIo {
         self.stderr = None;
     }
 
+    /// Take the workload-facing descriptors out (VM exec relays: no child
+    /// process inherits them, the shim pumps the streams itself).
+    pub fn take_child_fds(&mut self) -> Option<(File, File, File)> {
+        Some((self.stdin.take()?, self.stdout.take()?, self.stderr.take()?))
+    }
+
     /// CloseIO: release the shim-held stdin keepalive so the workload can
     /// see EOF. Idempotent.
     pub fn close_stdin(&mut self) {

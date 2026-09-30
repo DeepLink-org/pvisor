@@ -13,10 +13,12 @@
 //! requirement as `/dev/kvm`). `krun_start_enter` blocks until the guest
 //! init exits and returns its exit code.
 
-use crate::plan::{ContainerPlan, guest_init_script_path, render_guest_init_script};
+use crate::agent::{AGENT_GUEST_PATH, AGENT_VSOCK_PORT};
+use crate::plan::{
+    ContainerPlan, guest_init_script_path, render_guest_init_script_with, vm_agent_enabled,
+};
 use anyhow::{Context, Result};
 use std::ffi::CString;
-use std::io::Write;
 use std::os::unix::fs::PermissionsExt;
 use std::path::Path;
 
@@ -27,8 +29,20 @@ pub fn boot_vm(plan: &ContainerPlan) -> Result<i32> {
 
     let script_guest = guest_init_script_path(&plan.id);
     let host_script = plan.rootfs.join(script_guest.trim_start_matches('/'));
-    write_executable(&host_script, &render_guest_init_script(&plan.process))
-        .with_context(|| format!("write guest init helper {}", host_script.display()))?;
+    let agent = vm_agent_enabled(&plan.annotations);
+    write_executable(
+        &host_script,
+        &render_guest_init_script_with(&plan.process, agent),
+    )
+    .with_context(|| format!("write guest init helper {}", host_script.display()))?;
+    if agent {
+        // The static musl shim binary doubles as the guest agent: copy it
+        // into the rootfs so exec works without image requirements.
+        let agent_host = plan.rootfs.join(AGENT_GUEST_PATH.trim_start_matches('/'));
+        std::fs::copy(std::env::current_exe().context("current exe")?, &agent_host)
+            .with_context(|| format!("copy agent to {}", agent_host.display()))?;
+        make_executable(&agent_host)?;
+    }
 
     let ctx = krun::krun_create_ctx();
     if ctx < 0 {
@@ -56,6 +70,13 @@ pub fn boot_vm(plan: &ContainerPlan) -> Result<i32> {
         "krun_disable_implicit_vsock",
     )?;
     krun_check(krun::krun_add_vsock(ctx, 0), "krun_add_vsock")?;
+    // The agent vsock port: libkrun listens on a unix socket in the bundle
+    // and proxies host connections into the guest listener.
+    let agent_socket = path_cstring(&plan.bundle.join("pvisor-agent.sock"))?;
+    krun_check(
+        unsafe { krun::krun_add_vsock_port2(ctx, AGENT_VSOCK_PORT, agent_socket.as_ptr(), true) },
+        "krun_add_vsock_port2",
+    )?;
 
     let workdir = cstring("/")?;
     krun_check(
@@ -80,11 +101,14 @@ pub fn boot_vm(plan: &ContainerPlan) -> Result<i32> {
 }
 
 fn write_executable(path: &Path, content: &str) -> Result<()> {
-    let mut file = std::fs::File::create(path)?;
-    file.write_all(content.as_bytes())?;
-    let mut permissions = file.metadata()?.permissions();
+    std::fs::write(path, content)?;
+    make_executable(path)
+}
+
+fn make_executable(path: &Path) -> Result<()> {
+    let mut permissions = std::fs::metadata(path)?.permissions();
     permissions.set_mode(0o755);
-    file.set_permissions(permissions)?;
+    std::fs::set_permissions(path, permissions)?;
     Ok(())
 }
 

@@ -155,6 +155,14 @@ impl TaskEntry {
         true
     }
 
+    /// Record an exec exit by id (VM execs report guest pids that must not
+    /// be matched against host pids).
+    pub fn record_exec_exit(&mut self, exec_id: &str, status: u32, exited_at: SystemTime) -> bool {
+        self.execs
+            .get_mut(exec_id)
+            .is_some_and(|exec| exec.mark_exited(status, exited_at))
+    }
+
     /// Record an exit for whichever process (init or exec) owns `pid`.
     /// Returns what got transitioned, if anything.
     pub fn record_exit_by_pid(
