@@ -21,7 +21,7 @@ use persisting_control::{FilesystemAccess, NetworkCapability};
 use std::path::Path;
 use std::path::PathBuf;
 #[cfg(target_os = "linux")]
-use std::process::Command as StdCommand;
+use std::process::{Command as StdCommand, Stdio};
 use tokio::io::{AsyncRead, AsyncReadExt};
 use tokio::process::{Child, Command};
 

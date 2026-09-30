@@ -373,7 +373,7 @@ mod tests {
         let checkpoint = create_logical_checkpoint(&parent, Some("baseline")).unwrap();
         assert!(create_logical_checkpoint(&parent, Some("baseline")).is_err());
         fs::write(target.join("value"), b"external-edit").unwrap();
-        assert!(crate::runtime::apply_overlay(parent.overlay.as_mut().unwrap()).is_err());
+        assert!(crate::runtime::overlay::apply_overlay(parent.overlay.as_mut().unwrap()).is_err());
         let stage = temp.path().join("child");
         fs::create_dir(&stage).unwrap();
         let upper = stage.join("upper");
@@ -391,7 +391,7 @@ mod tests {
             upper_dir: upper.clone(),
             work_dir: stage.join("work"),
         };
-        assert!(crate::runtime::apply_overlay(&mut child).is_err());
+        assert!(crate::runtime::overlay::apply_overlay(&mut child).is_err());
         assert_eq!(fs::read(target.join("value")).unwrap(), b"external-edit");
         assert!(restore_logical_checkpoint(&checkpoint, &upper, &upper.join("nested")).is_err());
         assert_eq!(fs::read(upper.join("value")).unwrap(), b"staged");
