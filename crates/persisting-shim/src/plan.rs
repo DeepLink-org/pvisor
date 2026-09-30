@@ -8,6 +8,7 @@
 use std::collections::HashMap;
 use std::path::{Path, PathBuf};
 
+use crate::spec::ANNOTATION_PREFIX;
 use oci_spec::runtime::{LinuxNamespaceType, Spec};
 use serde::{Deserialize, Serialize};
 use thiserror::Error;
@@ -401,6 +402,92 @@ pub fn process_plan_from(process: &oci_spec::runtime::Process) -> Result<Process
     })
 }
 
+/// Resource shape for the libkrun microVM executor, derived from
+/// `io.pvisor.vm.*` annotations.
+#[derive(Clone, Copy, Debug, PartialEq, Eq, Serialize, Deserialize)]
+pub struct VmConfig {
+    pub cpus: u8,
+    pub ram_mib: u32,
+}
+
+impl Default for VmConfig {
+    fn default() -> Self {
+        VmConfig {
+            cpus: 2,
+            ram_mib: 512,
+        }
+    }
+}
+
+impl ContainerPlan {
+    /// True when the bundle asks for the libkrun VM executor via the
+    /// `io.pvisor.executor` annotation (`host` keeps the default).
+    pub fn wants_vm(&self) -> bool {
+        self.annotations
+            .get(format!("{ANNOTATION_PREFIX}executor").as_str())
+            .is_some_and(|value| value == "vm")
+    }
+
+    /// VM shape from `io.pvisor.vm.cpus` / `io.pvisor.vm.memory-mib`.
+    pub fn vm_config(&self) -> VmConfig {
+        let mut config = VmConfig::default();
+        if let Some(cpus) = self
+            .annotations
+            .get(format!("{ANNOTATION_PREFIX}vm.cpus").as_str())
+            .and_then(|value| value.parse::<u8>().ok())
+            .filter(|cpus| *cpus > 0)
+        {
+            config.cpus = cpus;
+        }
+        if let Some(ram) = self
+            .annotations
+            .get(format!("{ANNOTATION_PREFIX}vm.memory-mib").as_str())
+            .and_then(|value| value.parse::<u32>().ok())
+            .filter(|ram| *ram > 0)
+        {
+            config.ram_mib = ram;
+        }
+        config
+    }
+}
+
+/// Shell-quote one word for the guest init helper (`/bin/sh` semantics).
+fn sh_quote(value: &str) -> String {
+    format!("'{}'", value.replace('\'', "'\\''"))
+}
+
+/// Render the helper script the guest init executes.
+///
+/// `krun_set_exec` collapses argv/envp into strings the guest init re-splits,
+/// so arguments or values containing spaces would be mangled. A generated
+/// script sidesteps that (the same pattern pVisor's VM executor uses), and
+/// carries the working directory and a clean environment in one place.
+pub fn render_guest_init_script(process: &ProcessPlan) -> String {
+    let mut script = String::from("#!/bin/sh\n");
+    if process.cwd != Path::new("/") {
+        script.push_str(&format!(
+            "cd {} || exit 127\n",
+            sh_quote(&process.cwd.to_string_lossy())
+        ));
+    }
+    script.push_str("exec env -i");
+    for entry in &process.env {
+        script.push(' ');
+        script.push_str(&sh_quote(entry));
+    }
+    for arg in &process.argv {
+        script.push(' ');
+        script.push_str(&sh_quote(arg));
+    }
+    script.push('\n');
+    script
+}
+
+/// Path of the generated guest init helper inside the container rootfs.
+pub fn guest_init_script_path(id: &str) -> String {
+    format!("/.pvisor-shim-init-{id}.sh")
+}
+
 /// Plan for one exec process inside a running container.
 #[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
 pub struct ExecPlan {
@@ -679,6 +766,71 @@ mod tests {
         assert_eq!(plan.mounts[0].fs_type, "proc");
         assert!(plan.warnings.iter().any(|w| w.contains("ceph")));
         assert!(plan.warnings.iter().any(|w| w.contains("seccomp")));
+    }
+
+    #[test]
+    fn vm_executor_is_annotation_driven() {
+        let base = minimal_spec();
+        let plan =
+            build_plan(&base, "c1", Path::new("/b"), vec![], IoPlan::default()).expect("plan");
+        assert!(!plan.wants_vm());
+        assert_eq!(plan.vm_config(), VmConfig::default());
+
+        let mut vm_spec = minimal_spec();
+        vm_spec
+            .annotations_mut()
+            .get_or_insert_with(Default::default)
+            .insert("io.pvisor.executor".to_string(), "vm".to_string());
+        vm_spec
+            .annotations_mut()
+            .get_or_insert_with(Default::default)
+            .insert("io.pvisor.vm.cpus".to_string(), "4".to_string());
+        vm_spec
+            .annotations_mut()
+            .get_or_insert_with(Default::default)
+            .insert("io.pvisor.vm.memory-mib".to_string(), "1024".to_string());
+        let plan =
+            build_plan(&vm_spec, "c1", Path::new("/b"), vec![], IoPlan::default()).expect("plan");
+        assert!(plan.wants_vm());
+        assert_eq!(
+            plan.vm_config(),
+            VmConfig {
+                cpus: 4,
+                ram_mib: 1024
+            }
+        );
+    }
+
+    #[test]
+    fn guest_init_script_quotes_everything() {
+        let process = ProcessPlan {
+            argv: vec![
+                "/bin/sh".to_string(),
+                "-c".to_string(),
+                "echo 'hi there'".to_string(),
+            ],
+            env: vec!["GREETING=hello world".to_string()],
+            cwd: PathBuf::from("/work dir"),
+            user: UserPlan::default(),
+            capabilities: CapabilityPlan::default(),
+            rlimits: vec![],
+            no_new_privileges: false,
+        };
+        let script = render_guest_init_script(&process);
+        assert!(script.starts_with("#!/bin/sh\n"));
+        assert!(script.contains("cd '/work dir' || exit 127"));
+        assert!(script.contains("exec env -i 'GREETING=hello world'"));
+        // The inner single quotes of the argument survive shell quoting.
+        let expected_arg = format!("'{}'", "echo 'hi there'".replace('\'', "'\\''"));
+        assert!(
+            script.contains(&format!(" {expected_arg}\n")),
+            "script did not contain {expected_arg}: {script}"
+        );
+    }
+
+    #[test]
+    fn guest_script_path_is_unique_per_task() {
+        assert_eq!(guest_init_script_path("abc"), "/.pvisor-shim-init-abc.sh");
     }
 
     #[test]

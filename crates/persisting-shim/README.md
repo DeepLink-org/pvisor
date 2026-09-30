@@ -79,6 +79,28 @@ containerd ──ttrpc── PvisorTask (Task service)
   `TaskCreate/TaskStart/TaskExit/TaskDelete` events through the containerd
   event publisher.
 
+## VM executor (M3, feature `vm`)
+
+Bundles annotated with `"io.pvisor.executor": "vm"` run in a libkrun
+microVM instead of host namespaces: one VM per task, rootfs shared
+read-write over virtio-fs (`/dev/root`), stdio over the virtio-console, VM
+shape via `io.pvisor.vm.cpus` / `io.pvisor.vm.memory-mib` (default 2 vCPU /
+512 MiB). Kill signals the VM runner (destroying the VM); the guest exit
+code propagates through the task exit status. The implicit vsock is
+disabled, mirroring pVisor's VM executor posture.
+
+Build with the feature (Linux host, or cross via `just shim-vm-build`):
+
+```bash
+cargo build -p persisting-shim --features vm
+```
+
+Host requirements: `/dev/kvm` and `libkrunfw` on the library path.
+Not mapped into VMs yet (logged as warnings): spec bind mounts, cgroup
+limits (the VM shape is the resource boundary), and exec into a VM task —
+exec needs the guest agent (vsock + init blob evolution, planned with the
+pod-level Sandbox API).
+
 ## M2 limitations (deliberate)
 
 - Exec joins the init process's namespaces via `setns`; it needs `CAP_SYS_ADMIN`
@@ -88,6 +110,7 @@ containerd ──ttrpc── PvisorTask (Task service)
 - Seccomp profiles, OCI hooks, maskedPaths/readonlyPaths, device cgroups,
   and systemd cgroup delegation are ignored (logged as warnings).
 - Stats, pause/resume, and checkpointing are unimplemented.
+- VM exec requires the guest agent (see above).
 
 ## Developing
 

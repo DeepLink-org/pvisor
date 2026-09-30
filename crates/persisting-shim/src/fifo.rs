@@ -142,11 +142,11 @@ fn send_fd_once(socket_path: &str, master: &File) -> Result<()> {
         header.msg_iov = &mut payload;
         header.msg_iovlen = 1;
         header.msg_control = control.as_mut_ptr().cast();
-        header.msg_controllen = control.len();
+        header.msg_controllen = control.len() as _;
         let cmsg = libc::CMSG_FIRSTHDR(&header);
         (*cmsg).cmsg_level = libc::SOL_SOCKET;
         (*cmsg).cmsg_type = libc::SCM_RIGHTS;
-        (*cmsg).cmsg_len = libc::CMSG_LEN(std::mem::size_of::<libc::c_int>() as u32) as usize;
+        (*cmsg).cmsg_len = libc::CMSG_LEN(std::mem::size_of::<libc::c_int>() as u32) as _;
         (*(libc::CMSG_DATA(cmsg) as *mut libc::c_int)) = fd;
         libc::sendmsg(stream.as_raw_fd(), &header, 0)
     };

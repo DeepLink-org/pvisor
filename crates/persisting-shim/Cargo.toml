@@ -28,7 +28,13 @@ thiserror = { workspace = true }
 async-trait = { workspace = true }
 containerd-shim = { workspace = true, features = ["async"] }
 containerd-shim-protos = { workspace = true }
+libkrun = { workspace = true, optional = true }
 tokio = { workspace = true, features = ["macros", "rt", "sync", "time"] }
+
+[features]
+# libkrun microVM executor. Off by default: linking libkrun requires the
+# vendored VMM toolchain and a libkrunfw kernel on the host.
+vm = ["libkrun"]
 
 [dev-dependencies]
 tempfile = { workspace = true }

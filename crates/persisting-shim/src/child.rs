@@ -48,6 +48,9 @@ use crate::plan::{CgroupPlan, ContainerPlan, ExecPlan, IdMappingPlan, NamespaceK
 pub const INTERNAL_INIT_ARG: &str = "--pvisor-shim-internal-init";
 /// CLI argument that turns the shim binary into the internal exec parent.
 pub const INTERNAL_EXEC_ARG: &str = "--pvisor-shim-internal-exec";
+/// CLI argument that turns the shim binary into the internal VM runner.
+#[cfg(feature = "vm")]
+pub const INTERNAL_VM_ARG: &str = "--pvisor-shim-internal-vm";
 /// Path of the serialized [`ContainerPlan`].
 pub const ENV_PLAN: &str = "PVISOR_SHIM_INIT_PLAN";
 /// Path of the serialized [`ExecPlan`].
@@ -223,6 +226,10 @@ pub fn spawn_internal(
 /// was not invoked in internal mode; otherwise never returns.
 pub fn run_internal_if_requested() -> Result<bool> {
     let args: Vec<String> = std::env::args().collect();
+    #[cfg(feature = "vm")]
+    if args.iter().any(|arg| arg == INTERNAL_VM_ARG) {
+        return run_vm_runner_requested();
+    }
     let (mode_arg, main) = if args.iter().any(|arg| arg == INTERNAL_INIT_ARG) {
         (INTERNAL_INIT_ARG, init_parent_main as fn() -> Result<()>)
     } else if args.iter().any(|arg| arg == INTERNAL_EXEC_ARG) {
@@ -318,6 +325,83 @@ fn init_parent_main() -> Result<()> {
     }
 
     relay_fork_report(fork_report_fd, g_pid)
+}
+
+/// VM runner: wait for Start, then boot the VM and exit with its code.
+/// Returns Ok(false) only if the process was not invoked in VM mode.
+#[cfg(feature = "vm")]
+fn run_vm_runner_requested() -> Result<bool> {
+    let exit_code = match vm_runner_main() {
+        Ok(code) => code,
+        Err(error) => {
+            // Best effort: surface the failure through the ready pipe so
+            // Create fails cleanly instead of hanging.
+            let report = InitReport::Error {
+                context: format!("{error:#}"),
+                errno: 1,
+            };
+            let mut delivered = false;
+            if let Some(mut file) = ready_pipe_from_env() {
+                delivered = file
+                    .write_all(&report.line().unwrap_or_default())
+                    .and_then(|()| file.flush())
+                    .is_ok();
+            }
+            if !delivered {
+                eprintln!("pvisor shim VM runner failed: {error:#}");
+            }
+            1
+        }
+    };
+    std::process::exit(exit_code);
+}
+
+/// The VM is the isolation boundary: no container namespaces here. A
+/// private mount namespace keeps the snapshotter materialization off the
+/// host while the in-process virtio-fs still serves it to the guest.
+#[cfg(feature = "vm")]
+fn vm_runner_main() -> Result<i32> {
+    let plan: ContainerPlan = read_plan(ENV_PLAN)?;
+    let start_fd = fd_from_env(ENV_START_FD)?;
+
+    if unsafe { libc::unshare(libc::CLONE_NEWNS) } != 0 {
+        return Err(std::io::Error::last_os_error()).context("unshare(CLONE_NEWNS)");
+    }
+    mount::make_mounts_private()?;
+    // Spec mounts (proc/sysfs/...) are guest-kernel business in a VM; only
+    // the snapshotter rootfs entries need materializing.
+    mount::apply_mounts(&plan.rootfs_mounts, &plan.rootfs)?;
+
+    // Readiness: this process is the task pid from containerd's point of
+    // view, and it stays alive for the whole VM lifetime.
+    {
+        let mut ready = ready_pipe_from_env().context("ready pipe")?;
+        let message = InitReport::Ok {
+            pid: std::process::id(),
+        };
+        ready
+            .write_all(&message.line()?)
+            .and_then(|()| ready.flush())
+            .context("report VM readiness")?;
+    }
+
+    // Wait for Start (one byte). EOF means the shim gave up on this task.
+    let mut byte = [0u8; 1];
+    let read = unsafe { libc::read(start_fd, byte.as_mut_ptr().cast(), 1) };
+    unsafe { libc::close(start_fd) };
+    if read <= 0 {
+        return Ok(255);
+    }
+
+    // The virtio-console host side is wired to this process's stdio.
+    let stdio = StdioFds::from_env()?;
+    unsafe {
+        libc::dup2(stdio.stdin, libc::STDIN_FILENO);
+        libc::dup2(stdio.stdout, libc::STDOUT_FILENO);
+        libc::dup2(stdio.stderr, libc::STDERR_FILENO);
+    }
+
+    crate::vm::boot_vm(&plan)
 }
 
 /// E: join the init process's namespaces, then fork the exec process.

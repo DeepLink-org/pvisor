@@ -105,6 +105,11 @@ shim-check:
     cargo check --locked -p persisting-shim --target x86_64-unknown-linux-gnu
     cargo clippy --locked -p persisting-shim --all-targets --target x86_64-unknown-linux-gnu -- -D warnings
 
+# Build the static musl shim with the libkrun VM executor (needs zigbuild).
+shim-vm-build:
+    cargo zigbuild --locked --target x86_64-unknown-linux-musl --target-dir target \
+        -p persisting-shim --features vm --bin containerd-shim-pvisor-v2
+
 # Python tests; append pytest options such as -v or -k packaging.
 test-py *args:
     uv run --extra dev pytest tests/ -q "$@"

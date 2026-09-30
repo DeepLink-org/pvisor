@@ -20,6 +20,8 @@ pub mod fifo;
 pub mod mount;
 #[cfg(target_os = "linux")]
 pub mod service;
+#[cfg(all(target_os = "linux", feature = "vm"))]
+pub mod vm;
 
 /// Runtime type under which containerd discovers this shim.
 pub const RUNTIME_TYPE: &str = "io.containerd.pvisor.v2";
