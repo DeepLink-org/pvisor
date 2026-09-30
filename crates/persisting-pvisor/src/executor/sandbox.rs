@@ -722,14 +722,18 @@ pub(crate) fn seatbelt_profile_with_reads(
             profile.push_str(")\n");
         }
         if let NetworkIsolation::ProxyOnly(endpoint) = network {
-            // connect() may implicitly bind an ephemeral local port. Restrict
-            // peers and deny inbound connections instead of denying that bind.
-            profile = profile.replace("(deny network-bind (local ip))", "");
             // Deny all IP except the allocated loopback TCP proxy port; unrelated localhost
             // services must not become alternate egress paths.
             profile = profile.replace("(allow network-outbound (remote ip \"localhost:*\"))", "");
             match endpoint {
                 Some(endpoint) if endpoint.ip().is_loopback() && endpoint.port() != 0 => {
+                    // A missing bind rule inherits the network-inbound denial.
+                    // TCP connect may implicitly bind: permit that operation,
+                    // while listen and outbound peers remain restricted.
+                    profile = profile.replace(
+                        "(deny network-bind (local ip))",
+                        "(allow network-bind (local tcp))",
+                    );
                     profile = profile.replace(
                         "(remote ip \"localhost:*\")",
                         &format!("(remote tcp \"localhost:{}\")", endpoint.port()),
@@ -1731,13 +1735,17 @@ allowed, denied = map(int, sys.argv[1:])
 for kind, port in [(socket.SOCK_STREAM, denied), (socket.SOCK_DGRAM, allowed)]:
     with socket.socket(socket.AF_INET, kind) as s:
         assert s.connect_ex(('127.0.0.1', port)) in (errno.EACCES, errno.EPERM)
-try:
-    with socket.socket() as s:
-        s.bind(('127.0.0.1', 0))
-        s.listen(1)
-except PermissionError: pass
-else: raise AssertionError('listener escaped')
+with socket.socket() as s:
+    s.bind(('127.0.0.1', 0))
+    try: s.listen(1)
+    except PermissionError: pass
+    else: raise AssertionError('listener escaped')
 with socket.create_connection(('127.0.0.1', allowed), timeout=1): pass
+# Exercise the local bind explicitly: connect() can also perform it implicitly.
+for source in ['0.0.0.0', '127.0.0.1']:
+    with socket.create_connection(('127.0.0.1', allowed), timeout=1,
+                                  source_address=(source, 0)): pass
+
 "#,
             ])
             .arg(endpoint.port().to_string())
