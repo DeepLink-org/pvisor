@@ -61,6 +61,8 @@ pub const ENV_READY_FD: &str = "PVISOR_SHIM_INIT_READY_FD";
 pub const ENV_START_FD: &str = "PVISOR_SHIM_INIT_START_FD";
 /// Write end of the fork report pipe (G/F reports setup to A/E).
 pub const ENV_FORK_REPORT_FD: &str = "PVISOR_SHIM_INIT_FORK_REPORT_FD";
+/// Read end of the fork report pipe (A/E relays it to the shim).
+pub const ENV_FORK_REPORT_READ_FD: &str = "PVISOR_SHIM_FORK_REPORT_READ_FD";
 /// CLI argument that turns the shim binary into the pod sandbox holder.
 pub const INTERNAL_SANDBOX_ARG: &str = "--pvisor-shim-internal-sandbox";
 /// Path of the serialized [`crate::plan::SandboxPlan`].
@@ -181,6 +183,20 @@ pub fn spawn_internal(
     stdio: Option<StdioFds>,
     sandbox_pid: Option<u32>,
 ) -> Result<InternalChild> {
+    spawn_internal_opts(arg, plan_path, plan_bytes, stdio, sandbox_pid, true)
+}
+
+/// [`spawn_internal`] with control over waiting for the internal parent to
+/// exit: the sandbox holder IS the parent and stays alive, so it must be
+/// spawned detached.
+pub fn spawn_internal_opts(
+    arg: &str,
+    plan_path: &Path,
+    plan_bytes: &[u8],
+    stdio: Option<StdioFds>,
+    sandbox_pid: Option<u32>,
+    wait_parent_exit: bool,
+) -> Result<InternalChild> {
     fs::write(plan_path, plan_bytes).with_context(|| format!("write {}", plan_path.display()))?;
 
     let (ready_r, ready_w) = make_pipe()?;
@@ -193,9 +209,12 @@ pub fn spawn_internal(
         .arg(arg)
         .env(ENV_READY_FD, ready_w.to_string())
         .env(ENV_START_FD, start_r.to_string())
-        .env(ENV_FORK_REPORT_FD, fork_w.to_string());
+        .env(ENV_FORK_REPORT_FD, fork_w.to_string())
+        .env(ENV_FORK_REPORT_READ_FD, fork_r.to_string());
     let plan_env = if arg == INTERNAL_EXEC_ARG {
         ENV_EXEC_PLAN
+    } else if arg == INTERNAL_SANDBOX_ARG {
+        ENV_SANDBOX_PLAN
     } else {
         ENV_PLAN
     };
@@ -227,7 +246,13 @@ pub fn spawn_internal(
         let mut reader = BufReader::new(unsafe { fs::File::from_raw_fd(ready_r) });
         reader.read_line(&mut line).context("read init report")?;
     }
-    let _ = child.wait();
+    if wait_parent_exit {
+        let _ = child.wait();
+    } else {
+        // Detached: the parent stays alive; dropping the handle leaks it
+        // into init (the shim is a subreaper, so reaping still works).
+        std::mem::forget(child);
+    }
 
     match InitReport::parse(&line)? {
         InitReport::Ok { pid } => Ok(InternalChild {
@@ -341,8 +366,10 @@ fn init_parent_main() -> Result<()> {
     }
     let g_pid = g_pid as u32;
 
-    // A no longer needs the start pipe at all.
+    // A no longer needs the start pipe or the report write end (G holds
+    // the only copy, so its exit closes the pipe).
     unsafe { libc::close(start_fd) };
+    unsafe { libc::close(fork_report_fd) };
 
     // Cgroup bookkeeping with host paths still visible.
     if let Some(cgroup_plan) = plan.cgroup.as_ref()
@@ -537,16 +564,21 @@ fn exec_parent_main() -> Result<()> {
     }
     let f_pid = f_pid as u32;
 
-    // E no longer needs the start pipe at all.
+    // E no longer needs the start pipe or the report write end (F holds
+    // the only copy).
     unsafe { libc::close(start_fd) };
+    unsafe { libc::close(fork_report_fd) };
     relay_fork_report(fork_report_fd, f_pid)
 }
 
 /// Read the child's fork report and relay it to the shim's ready pipe.
-fn relay_fork_report(fork_report_fd: RawFd, child_pid: u32) -> Result<()> {
+fn relay_fork_report(_write_end: RawFd, child_pid: u32) -> Result<()> {
+    // Read from the pipe's read end; the env var carries it explicitly
+    // because fd numbers are all the parent has after the self-exec.
+    let read_end = fd_from_env(ENV_FORK_REPORT_READ_FD).context("fork report read end")?;
     let mut line = String::new();
     {
-        let mut reader = BufReader::new(unsafe { fs::File::from_raw_fd(fork_report_fd) });
+        let mut reader = BufReader::new(unsafe { fs::File::from_raw_fd(read_end) });
         reader.read_line(&mut line).context("read fork report")?;
     }
     let relayed = match InitReport::parse(&line)? {
@@ -989,6 +1021,32 @@ fn apply_capabilities(plan: &crate::plan::CapabilityPlan) -> Result<()> {
     Ok(())
 }
 
+/// Resolve `argv[0]` the way runc does: keep paths as-is, look bare names
+/// up in PATH (from the process env), fall back to the name itself.
+fn resolve_program(argv0: &std::ffi::CString, env: &[String]) -> std::ffi::CString {
+    let raw = argv0.to_string_lossy();
+    if raw.contains('/') || raw.is_empty() {
+        return argv0.clone();
+    }
+    let default_path = "/usr/local/sbin:/usr/local/bin:/usr/sbin:/usr/bin:/sbin:/bin";
+    let path = env
+        .iter()
+        .find_map(|entry| entry.strip_prefix("PATH="))
+        .unwrap_or(default_path);
+    for dir in path.split(':') {
+        if dir.is_empty() {
+            continue;
+        }
+        let Ok(candidate) = std::ffi::CString::new(format!("{dir}/{raw}")) else {
+            continue;
+        };
+        if unsafe { libc::access(candidate.as_ptr(), libc::X_OK) } == 0 {
+            return candidate;
+        }
+    }
+    argv0.clone()
+}
+
 fn exec_process(process: &ProcessPlan) -> Result<()> {
     let argv: Vec<std::ffi::CString> = process
         .argv
@@ -1010,7 +1068,9 @@ fn exec_process(process: &ProcessPlan) -> Result<()> {
             .with_context(|| format!("enter cwd {} ({error})", cwd.display()))?;
     }
 
-    let program = argv[0].clone();
+    // OCI runtimes resolve a bare argv[0] against PATH from the process
+    // environment (ctr and CRI both send names like "echo").
+    let program = resolve_program(&argv[0], &process.env);
     let mut argv_ptrs: Vec<*const libc::c_char> = argv.iter().map(|arg| arg.as_ptr()).collect();
     argv_ptrs.push(std::ptr::null());
     let mut envp_ptrs: Vec<*const libc::c_char> = envp.iter().map(|entry| entry.as_ptr()).collect();

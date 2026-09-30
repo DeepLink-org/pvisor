@@ -18,12 +18,31 @@ use log::warn;
 
 use crate::plan::IoPlan;
 
+/// Open a FIFO read-write (never blocks, never EOFs); /dev/null fallback.
+unsafe fn open_fifo_fifo_or_null(path: Option<&str>) -> Result<File> {
+    match path {
+        None => File::open("/dev/null").context("open /dev/null"),
+        Some(path) => unsafe { open_fifo(path, libc::O_RDWR) },
+    }
+}
+
 fn cstr(path: &str) -> std::ffi::CString {
     std::ffi::CString::new(path).expect("path has no interior NUL")
 }
 
 unsafe fn file_from_raw(fd: libc::c_int) -> File {
     unsafe { File::from_raw_fd(fd) }
+}
+
+/// Clear FD_CLOEXEC: `File::try_clone` uses F_DUPFD_CLOEXEC on Linux, but
+/// the workload stdio descriptors must survive the self-exec into the
+/// internal parents.
+fn pass_to_child(file: &File) -> Result<File> {
+    let clone = file.try_clone().context("dup descriptor")?;
+    unsafe {
+        libc::fcntl(clone.as_raw_fd(), libc::F_SETFD, 0);
+    }
+    Ok(clone)
 }
 
 /// Open a FIFO without `O_CLOEXEC` so the descriptor survives into the
@@ -172,10 +191,29 @@ pub struct ContainerIo {
 }
 
 impl ContainerIo {
-    /// Open the IO described by `io`; for terminal tasks `io.stdout` is the
-    /// console socket path (containerd convention) and receives the PTY
-    /// master.
+    /// Open the IO described by `io`.
+    ///
+    /// Terminal tasks come in two flavors: ctr passes the console socket in
+    /// `io.stdout` (handed the PTY master via SCM_RIGHTS); docker passes
+    /// ordinary FIFO paths and expects the runtime to provide PTY semantics
+    /// through them. The second flavor gets a shim-side PTY whose master is
+    /// relayed against the FIFOs.
     pub fn open(io: &IoPlan) -> Result<ContainerIo> {
+        let console_socket = io
+            .stdout
+            .as_deref()
+            .map(|path| {
+                std::fs::metadata(path)
+                    .map(|meta| {
+                        use std::os::unix::fs::FileTypeExt;
+                        meta.file_type().is_socket()
+                    })
+                    .unwrap_or(false)
+            })
+            .unwrap_or(false);
+        if io.terminal && !console_socket {
+            return ContainerIo::open_pty_over_fifos(io);
+        }
         if io.terminal {
             let console_socket = io
                 .stdout
@@ -184,12 +222,13 @@ impl ContainerIo {
             let (master, slave) = open_pty(0, 0)?;
             send_console_master(console_socket, &master)?;
             let keepalive_master = master.try_clone().context("dup pty master")?;
-            let stdin = slave.try_clone().context("dup pty slave")?;
-            let stderr = slave.try_clone().context("dup pty slave")?;
+            let stdin = pass_to_child(&slave)?;
+            let stdout = pass_to_child(&slave)?;
+            let stderr = pass_to_child(&slave)?;
             return Ok(ContainerIo {
                 stdin: Some(stdin),
                 stdin_keepalive: None,
-                stdout: Some(slave),
+                stdout: Some(stdout),
                 stderr: Some(stderr),
                 master: Some(keepalive_master),
                 terminal: true,
@@ -215,6 +254,60 @@ impl ContainerIo {
             stderr: Some(stderr),
             master: None,
             terminal: false,
+        })
+    }
+
+    /// docker-style terminal IO: a shim-owned PTY relayed against the task
+    /// FIFOs (stdin -> master, master -> stdout; a PTY merges stderr).
+    fn open_pty_over_fifos(io: &IoPlan) -> Result<ContainerIo> {
+        let (master, slave) = open_pty(0, 0)?;
+        let stdin_reader = unsafe { open_fifo_fifo_or_null(io.stdin.as_deref())? };
+        let stdout_fifo = open_output("stdout", io.stdout.as_deref())?;
+
+        let mut master_in = master.try_clone().context("dup pty master")?;
+        let mut master_out = master.try_clone().context("dup pty master")?;
+        let mut fifo_out = stdout_fifo.try_clone().context("dup stdout fifo")?;
+        let mut fifo_in = stdin_reader.try_clone().context("dup stdin fifo")?;
+
+        std::thread::spawn(move || {
+            use std::io::{Read, Write};
+            let mut buffer = [0u8; 4096];
+            loop {
+                match fifo_in.read(&mut buffer) {
+                    Ok(0) | Err(_) => break,
+                    Ok(n) => {
+                        if master_in.write_all(&buffer[..n]).is_err() {
+                            break;
+                        }
+                    }
+                }
+            }
+        });
+        std::thread::spawn(move || {
+            use std::io::{Read, Write};
+            let mut buffer = [0u8; 4096];
+            loop {
+                match master_out.read(&mut buffer) {
+                    Ok(0) | Err(_) => break,
+                    Ok(n) => {
+                        if fifo_out.write_all(&buffer[..n]).is_err() {
+                            break;
+                        }
+                    }
+                }
+            }
+        });
+
+        let stdin = pass_to_child(&slave)?;
+        let stdout = pass_to_child(&slave)?;
+        let stderr = pass_to_child(&slave)?;
+        Ok(ContainerIo {
+            stdin: Some(stdin),
+            stdin_keepalive: None,
+            stdout: Some(stdout),
+            stderr: Some(stderr),
+            master: Some(master),
+            terminal: true,
         })
     }
 

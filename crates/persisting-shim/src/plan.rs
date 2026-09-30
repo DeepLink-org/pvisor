@@ -19,8 +19,6 @@ pub enum PlanError {
     MissingProcess,
     #[error("bundle process section has no args")]
     MissingArgs,
-    #[error("namespace {kind} cannot be joined via a path (M1 limitation)")]
-    UnsupportedJoinNamespace { kind: &'static str },
     #[error("namespace type {0} is not supported (M1 limitation)")]
     UnsupportedNamespaceType(String),
 }
@@ -324,13 +322,13 @@ fn plan_namespaces(
                 continue;
             }
         };
-        let path = namespace.path().clone();
-        if path.is_some() && matches!(kind, NamespaceKind::Mount | NamespaceKind::Pid) {
-            return Err(PlanError::UnsupportedJoinNamespace {
-                kind: kind.proc_ns_name(),
-            });
-        }
-        out.push(NamespacePlan { kind, path });
+        // Namespace paths (CRI pod containers point at the sandbox's
+        // namespaces) are joined via setns in the internal parent; a pid
+        // namespace join takes effect for the forked init child.
+        out.push(NamespacePlan {
+            kind,
+            path: namespace.path().clone(),
+        });
     }
     // The container always gets a private mount namespace for its rootfs.
     if !out.iter().any(|ns| ns.kind == NamespaceKind::Mount) {
@@ -415,22 +413,25 @@ pub struct SandboxPlan {
     pub share_pid_namespace: bool,
 }
 
-/// Derive the sandbox holder plan from the sandbox OCI spec plus the
-/// CreateSandboxRequest fields.
-pub fn build_sandbox_plan(spec: &Spec, sandbox_id: &str, netns_path: Option<&str>) -> SandboxPlan {
-    let namespaces = spec
-        .linux()
-        .as_ref()
-        .and_then(|linux| linux.namespaces().clone())
-        .unwrap_or_default();
-    let has = |kind: oci_spec::runtime::LinuxNamespaceType| {
-        namespaces.iter().any(|namespace| namespace.typ() == kind)
-    };
+/// Derive the sandbox holder plan from the CreateSandboxRequest fields.
+///
+/// The sandboxer contract carries no OCI spec — the sandbox shape is the
+/// shim's own decision. The hostname falls back to the sandbox id prefix
+/// (k8s pods surface the pod name via annotations).
+pub fn build_sandbox_plan(
+    sandbox_id: &str,
+    netns_path: Option<&str>,
+    annotations: &HashMap<String, String>,
+) -> SandboxPlan {
+    let hostname = annotations
+        .get("io.kubernetes.pod.name")
+        .cloned()
+        .or_else(|| sandbox_id.get(..12).map(str::to_string));
     SandboxPlan {
         sandbox_id: sandbox_id.to_string(),
-        hostname: spec.hostname().clone(),
+        hostname,
         netns_path: netns_path.map(str::to_string),
-        share_pid_namespace: has(oci_spec::runtime::LinuxNamespaceType::Pid),
+        share_pid_namespace: false,
     }
 }
 
@@ -763,13 +764,24 @@ mod tests {
     }
 
     #[test]
-    fn join_by_path_is_rejected_for_mount_and_pid_namespaces() {
+    fn namespace_paths_join_the_sandbox() {
         let spec = spec_from_json(
-            r#"{"ociVersion":"1.0.2","process":{"args":["/bin/sh"],"cwd":"/","user":{"uid":0,"gid":0}},"linux":{"namespaces":[{"type":"mount","path":"/proc/1/ns/mnt"}]}}"#,
+            r#"{"ociVersion":"1.0.2","process":{"args":["/bin/sh"],"cwd":"/","user":{"uid":0,"gid":0}},"linux":{"namespaces":[{"type":"pid","path":"/proc/123/ns/pid"},{"type":"mount","path":"/proc/123/ns/mnt"}]}}"#,
         );
-        let error = build_plan(&spec, "c1", Path::new("/b"), vec![], IoPlan::default())
-            .expect_err("join mnt must fail");
-        assert!(error.to_string().contains("mnt"));
+        let plan =
+            build_plan(&spec, "c1", Path::new("/b"), vec![], IoPlan::default()).expect("plan");
+        let pid = plan
+            .namespaces
+            .iter()
+            .find(|ns| ns.kind == NamespaceKind::Pid)
+            .expect("pid ns");
+        assert_eq!(pid.path.as_deref(), Some(Path::new("/proc/123/ns/pid")));
+        let mount = plan
+            .namespaces
+            .iter()
+            .find(|ns| ns.kind == NamespaceKind::Mount)
+            .expect("mount ns");
+        assert_eq!(mount.path.as_deref(), Some(Path::new("/proc/123/ns/mnt")));
     }
 
     #[test]
@@ -833,18 +845,17 @@ mod tests {
 
     #[test]
     fn sandbox_plan_derives_holder_semantics() {
-        let spec = spec_from_json(
-            r#"{"ociVersion":"1.0.2","hostname":"pod-1","process":{"args":["/pause"],"cwd":"/","user":{"uid":0,"gid":0}},"linux":{"namespaces":[{"type":"ipc"},{"type":"uts"}]}}"#,
-        );
-        let plan = build_sandbox_plan(&spec, "sbx1", Some("/var/run/netns/n1"));
-        assert_eq!(plan.hostname.as_deref(), Some("pod-1"));
+        let mut annotations = HashMap::new();
+        annotations.insert("io.kubernetes.pod.name".to_string(), "my-pod".to_string());
+        let plan = build_sandbox_plan("sbx1", Some("/var/run/netns/n1"), &annotations);
+        assert_eq!(plan.hostname.as_deref(), Some("my-pod"));
         assert_eq!(plan.netns_path.as_deref(), Some("/var/run/netns/n1"));
         assert!(!plan.share_pid_namespace);
 
-        let shared = spec_from_json(
-            r#"{"ociVersion":"1.0.2","process":{"args":["/pause"],"cwd":"/","user":{"uid":0,"gid":0}},"linux":{"namespaces":[{"type":"pid"}]}}"#,
-        );
-        assert!(build_sandbox_plan(&shared, "sbx2", None).share_pid_namespace);
+        // Without a pod annotation the hostname falls back to the id prefix.
+        let fallback = build_sandbox_plan("abcdef1234567890", None, &HashMap::new());
+        assert_eq!(fallback.hostname.as_deref(), Some("abcdef123456"));
+        assert!(fallback.netns_path.is_none());
     }
 
     #[test]

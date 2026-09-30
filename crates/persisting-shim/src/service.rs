@@ -565,8 +565,15 @@ async fn run_exit_watcher(inner: Arc<TaskInner>, mut subscription: Subscription)
             continue;
         };
         let mut event = TaskExit::new();
-        event.set_container_id(container_id);
-        event.set_id(exec_id);
+        event.set_container_id(container_id.clone());
+        // The runtime contract (and moby's EventExit handling) expects the
+        // init process's exit to carry the container id, not an empty exec
+        // id — empty is treated as an unknown exec (exit 127).
+        event.set_id(if exec_id.is_empty() {
+            container_id.clone()
+        } else {
+            exec_id
+        });
         event.set_pid(pid as u32);
         event.set_exit_status(exit.status);
         event.set_exited_at(timestamp_from(exit.exited_at));
@@ -1152,7 +1159,13 @@ impl Task for PvisorTask {
         let task_count = self.inner.tasks.lock().expect("tasks mutex").len();
         if task_count == 0 {
             info!("shim shutdown requested with no live tasks");
-            self.inner.exit.signal();
+            // Signal asynchronously so this (and any concurrent Delete)
+            // response flushes before the server tears connections down.
+            let exit = self.inner.exit.clone();
+            tokio::spawn(async move {
+                tokio::time::sleep(std::time::Duration::from_millis(200)).await;
+                exit.signal();
+            });
         } else {
             info!("shim shutdown deferred: {task_count} task(s) still tracked");
         }
@@ -1189,23 +1202,15 @@ impl Sandbox for PvisorSandbox {
             ));
         }
 
-        // The sandbox OCI spec lives in the bundle like any container.
+        // The sandboxer contract carries no OCI spec; the bundle is only a
+        // scratch directory for the holder plan.
         let bundle = PvisorTask::resolve_bundle(&req.bundle_path)
             .map_err(|error| rpc_error(Code::INVALID_ARGUMENT, format!("{error:#}")))?;
-        let spec = load_bundle_spec(&bundle)
-            .map_err(|error| rpc_error(Code::INVALID_ARGUMENT, format!("{error:#}")))?;
-        if crate::spec::pvisor_annotation(&spec, "executor") == Some("vm") {
-            return Err(rpc_error(
-                Code::UNIMPLEMENTED,
-                "pod-level VM sandboxes arrive with the guest agent; use per-container \
-                 io.pvisor.executor=vm meanwhile",
-            ));
-        }
 
         let plan = build_sandbox_plan(
-            &spec,
             &req.sandbox_id,
             non_empty(&req.netns_path).as_deref(),
+            &req.annotations,
         );
         let plan_path = bundle.join("pvisor-sandbox.json");
         let plan_bytes = serde_json::to_vec(&plan).map_err(|error| {
@@ -1215,12 +1220,13 @@ impl Sandbox for PvisorSandbox {
         let internal = tokio::task::spawn_blocking({
             let plan_path = plan_path.clone();
             move || {
-                child::spawn_internal(
+                child::spawn_internal_opts(
                     child::INTERNAL_SANDBOX_ARG,
                     &plan_path,
                     &plan_bytes,
                     None,
                     None,
+                    false,
                 )
             }
         })
@@ -1508,6 +1514,20 @@ async fn bootstrap() -> containerd_shim::Result<()> {
 
     let os_args: Vec<_> = std::env::args_os().collect();
     let flags = containerd_shim::parse(&os_args[1..])?;
+
+    // `-info`: containerd introspects the runtime; answer with a minimal
+    // RuntimeInfo and exit.
+    if flags.info {
+        use containerd_shim_protos::protobuf::Message;
+        let mut info = containerd_shim_protos::types::introspection::RuntimeInfo::new();
+        info.set_name(crate::RUNTIME_TYPE.to_string());
+        info.mut_version().version = env!("CARGO_PKG_VERSION").to_string();
+        let bytes = info
+            .write_to_bytes()
+            .map_err(containerd_shim::Error::Protobuf)?;
+        std::io::Write::write_all(&mut std::io::stdout(), &bytes).map_err(io_error)?;
+        return Ok(());
+    }
     let ttrpc_address = std::env::var("TTRPC_ADDRESS")?;
 
     // The framework's reaper relies on the shim being a child subreaper and
@@ -1531,6 +1551,18 @@ async fn bootstrap() -> containerd_shim::Result<()> {
                 namespace: flags.namespace,
                 debug: flags.debug,
             };
+            // containerd >= 2.3 sends BootstrapParams on stdin; the
+            // framework's spawn() would try to parse it as legacy runc
+            // options and fail. Drain it — pVisor takes no runc options.
+            tokio::task::spawn_blocking(|| {
+                let mut stdin = std::io::stdin();
+                let mut sink = Vec::new();
+                let _ = std::io::Read::read_to_end(&mut stdin, &mut sink);
+            })
+            .await
+            .map_err(|error| {
+                containerd_shim::Error::InvalidArgument(format!("drain stdin: {error}"))
+            })?;
             let address = shim.start_shim(opts).await?;
             let mut stdout = tokio::io::stdout();
             stdout
