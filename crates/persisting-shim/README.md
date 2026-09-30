@@ -26,10 +26,15 @@ version = 2
 
 [plugins."io.containerd.grpc.v1.cri".containerd.runtimes.pvisor]
   runtime_type = "io.containerd.pvisor.v2"
+  sandboxer = "shim"
 ```
 
 with `containerd-shim-pvisor-v2` on the `PATH` of the containerd process.
-Kubernetes Pods then select it through a RuntimeClass:
+`sandboxer = "shim"` activates the pod-level Sandbox API: one shim instance
+per pod, the shim replaces the pause container with a namespace holder, and
+the pod's containers share its uts/ipc/network namespaces (the CNI pod
+netns is joined directly, so pod IP semantics hold). Kubernetes Pods select
+the runtime through a RuntimeClass:
 
 ```yaml
 apiVersion: node.k8s.io/v1
@@ -100,6 +105,15 @@ Not mapped into VMs yet (logged as warnings): spec bind mounts, cgroup
 limits (the VM shape is the resource boundary), and exec into a VM task —
 exec needs the guest agent (vsock + init blob evolution, planned with the
 pod-level Sandbox API).
+
+## M4 status
+
+Pod-level sandboxes are in (host path): Create/Start/Wait/Stop/Shutdown/
+Platform/Ping/Status on the Sandbox service, a holder process that owns the
+pod namespaces (pause replacement, including shareProcessNamespace pods),
+and containers that join the shared namespaces unless their spec overrides
+them. Pod-level **VM** sandboxes return a clear error until the guest agent
+lands (M5); per-container VMs via `io.pvisor.executor=vm` keep working.
 
 ## M2 limitations (deliberate)
 

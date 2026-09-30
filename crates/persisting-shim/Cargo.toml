@@ -27,7 +27,7 @@ thiserror = { workspace = true }
 [target.'cfg(target_os = "linux")'.dependencies]
 async-trait = { workspace = true }
 containerd-shim = { workspace = true, features = ["async"] }
-containerd-shim-protos = { workspace = true }
+containerd-shim-protos = { workspace = true, features = ["sandbox"] }
 libkrun = { workspace = true, optional = true }
 tokio = { workspace = true, features = ["macros", "rt", "sync", "time"] }
 

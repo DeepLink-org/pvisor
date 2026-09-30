@@ -1,7 +1,8 @@
 //! The task service (ttrpc `containerd.task.v2.Task`) and the shim
 //! bootstrap (`containerd_shim::Shim`) for `io.containerd.pvisor.v2`.
 //!
-//! M2 scope: the host process path with full task IO ownership — create/
+//! M4 scope: pod-level sandboxes (Sandbox API, sandboxer = "shim") plus the
+//! host process path with full task IO ownership — create/
 //! start/kill/wait/delete/state/pids/connect/shutdown for init processes,
 //! exec (`Exec` -> `Start(exec_id)` -> `Wait`/`Kill`/`Delete` with
 //! `TaskExecAdded`/`TaskExecStarted` events), `CloseIO` (stdin keepalive)
@@ -30,8 +31,15 @@ use containerd_shim_protos::api::{
 use containerd_shim_protos::events::task::{
     TaskCreate, TaskDelete, TaskExecAdded, TaskExecStarted, TaskExit, TaskStart,
 };
-use containerd_shim_protos::protobuf::MessageDyn;
 use containerd_shim_protos::protobuf::well_known_types::timestamp::Timestamp;
+use containerd_shim_protos::protobuf::{Message, MessageDyn};
+use containerd_shim_protos::sandbox_api::{
+    CreateSandboxRequest, CreateSandboxResponse, PingRequest, PingResponse, PlatformRequest,
+    PlatformResponse, SandboxStatusRequest, SandboxStatusResponse, ShutdownSandboxRequest,
+    ShutdownSandboxResponse, StartSandboxRequest, StartSandboxResponse, StopSandboxRequest,
+    StopSandboxResponse, WaitSandboxRequest, WaitSandboxResponse,
+};
+use containerd_shim_protos::sandbox_async::Sandbox;
 use containerd_shim_protos::shim_async::Task;
 use containerd_shim_protos::topics::{
     TASK_CREATE_EVENT_TOPIC, TASK_DELETE_EVENT_TOPIC, TASK_EXEC_ADDED_EVENT_TOPIC,
@@ -43,7 +51,7 @@ use tokio::sync::watch;
 
 use crate::child::{self, InternalChild, StdioFds};
 use crate::fifo::ContainerIo;
-use crate::plan::{IoPlan, MountPlan, build_exec_plan, build_plan};
+use crate::plan::{IoPlan, MountPlan, build_exec_plan, build_plan, build_sandbox_plan};
 use crate::spec::load_bundle_spec;
 use crate::state::{ExecEntry, ExitInfo, ExitTarget, TaskEntry, TaskStatus};
 
@@ -65,10 +73,19 @@ struct LiveTask {
     execs: HashMap<String, LiveExec>,
 }
 
+/// The pod sandbox served by this shim instance: the holder process (the
+/// pause-container replacement) and its lifecycle.
+struct SandboxState {
+    id: String,
+    internal: InternalChild,
+    exit_tx: watch::Sender<Option<ExitInfo>>,
+}
+
 struct TaskInner {
     namespace: String,
     publisher: containerd_shim::asynchronous::publisher::RemotePublisher,
     tasks: Mutex<HashMap<String, LiveTask>>,
+    sandbox: Mutex<Option<SandboxState>>,
     exit: Arc<ExitSignal>,
 }
 
@@ -261,6 +278,17 @@ async fn run_exit_watcher(inner: Arc<TaskInner>, mut subscription: Subscription)
             }
             found
         };
+        // The sandbox holder exiting outside any task still needs to wake
+        // WaitSandbox; it produces no task event.
+        if notified.is_none() {
+            let sandbox = inner.sandbox.lock().expect("sandbox mutex");
+            if let Some(sandbox) = sandbox.as_ref()
+                && sandbox.internal.pid == Some(pid as u32)
+            {
+                let _ = sandbox.exit_tx.send(Some(exit));
+            }
+            continue;
+        }
         let Some((container_id, exec_id)) = notified else {
             continue;
         };
@@ -329,6 +357,16 @@ impl Task for PvisorTask {
         let plan_bytes = serde_json::to_vec(&plan)
             .map_err(|error| rpc_error(Code::INTERNAL, format!("{error}")))?;
 
+        // Containers created while this shim's sandbox runs join the pod's
+        // shared namespaces unless their spec overrides them.
+        let sandbox_pid = self
+            .inner
+            .sandbox
+            .lock()
+            .expect("sandbox mutex")
+            .as_ref()
+            .and_then(|sandbox| sandbox.internal.pid);
+
         let internal = tokio::task::spawn_blocking({
             let plan_path = plan_path.clone();
             move || {
@@ -337,6 +375,7 @@ impl Task for PvisorTask {
                     &plan_path,
                     &plan_bytes,
                     Some(stdio),
+                    sandbox_pid,
                 )
             }
         })
@@ -573,6 +612,7 @@ impl Task for PvisorTask {
                     &plan_path,
                     &plan_bytes,
                     Some(stdio),
+                    None,
                 )
             }
         })
@@ -778,6 +818,263 @@ impl Task for PvisorTask {
     }
 }
 
+/// The pod sandbox service (`containerd.runtime.sandbox.v1.Sandbox`),
+/// served on the same ttrpc socket as the task service.
+pub struct PvisorSandbox {
+    inner: Arc<TaskInner>,
+}
+
+#[async_trait]
+impl Sandbox for PvisorSandbox {
+    async fn create_sandbox(
+        &self,
+        _ctx: &TtrpcContext,
+        req: CreateSandboxRequest,
+    ) -> ttrpc::Result<CreateSandboxResponse> {
+        if req.sandbox_id.is_empty() {
+            return Err(rpc_error(Code::INVALID_ARGUMENT, "sandbox id required"));
+        }
+        if req.bundle_path.is_empty() {
+            return Err(rpc_error(
+                Code::INVALID_ARGUMENT,
+                "sandbox bundle path required",
+            ));
+        }
+        if self.inner.sandbox.lock().expect("sandbox mutex").is_some() {
+            return Err(rpc_error(
+                Code::ALREADY_EXISTS,
+                format!("sandbox {} already exists", req.sandbox_id),
+            ));
+        }
+
+        // The sandbox OCI spec lives in the bundle like any container.
+        let bundle = PvisorTask::resolve_bundle(&req.bundle_path)
+            .map_err(|error| rpc_error(Code::INVALID_ARGUMENT, format!("{error:#}")))?;
+        let spec = load_bundle_spec(&bundle)
+            .map_err(|error| rpc_error(Code::INVALID_ARGUMENT, format!("{error:#}")))?;
+        if crate::spec::pvisor_annotation(&spec, "executor") == Some("vm") {
+            return Err(rpc_error(
+                Code::UNIMPLEMENTED,
+                "pod-level VM sandboxes arrive with the guest agent; use per-container \
+                 io.pvisor.executor=vm meanwhile",
+            ));
+        }
+
+        let plan = build_sandbox_plan(
+            &spec,
+            &req.sandbox_id,
+            non_empty(&req.netns_path).as_deref(),
+        );
+        let plan_path = bundle.join("pvisor-sandbox.json");
+        let plan_bytes = serde_json::to_vec(&plan).map_err(|error| {
+            rpc_error(Code::INTERNAL, format!("serialize sandbox plan: {error}"))
+        })?;
+
+        let internal = tokio::task::spawn_blocking({
+            let plan_path = plan_path.clone();
+            move || {
+                child::spawn_internal(
+                    child::INTERNAL_SANDBOX_ARG,
+                    &plan_path,
+                    &plan_bytes,
+                    None,
+                    None,
+                )
+            }
+        })
+        .await
+        .map_err(|error| rpc_error(Code::INTERNAL, format!("sandbox join: {error}")))?
+        .map_err(|error| rpc_error(Code::INTERNAL, format!("{error:#}")))?;
+
+        info!(
+            "sandbox {} holder ready (pid {:?})",
+            req.sandbox_id, internal.pid
+        );
+        let (exit_tx, _) = watch::channel(None);
+        *self.inner.sandbox.lock().expect("sandbox mutex") = Some(SandboxState {
+            id: req.sandbox_id.clone(),
+            internal,
+            exit_tx,
+        });
+        Ok(CreateSandboxResponse::new())
+    }
+
+    async fn start_sandbox(
+        &self,
+        _ctx: &TtrpcContext,
+        req: StartSandboxRequest,
+    ) -> ttrpc::Result<StartSandboxResponse> {
+        let mut sandbox = self.inner.sandbox.lock().expect("sandbox mutex");
+        let Some(state) = sandbox.as_mut() else {
+            return Err(rpc_error(Code::NOT_FOUND, "no sandbox on this shim"));
+        };
+        if state.id != req.sandbox_id {
+            return Err(rpc_error(
+                Code::INVALID_ARGUMENT,
+                format!("sandbox id mismatch: {} != {}", state.id, req.sandbox_id),
+            ));
+        }
+        let mut internal = std::mem::replace(&mut state.internal, child::InternalChild::exited());
+        internal
+            .start()
+            .map_err(|error| rpc_error(Code::INTERNAL, format!("{error:#}")))?;
+        state.internal = internal;
+        let mut response = StartSandboxResponse::new();
+        response.set_pid(state.internal.pid.unwrap_or(0));
+        Ok(response)
+    }
+
+    async fn wait_sandbox(
+        &self,
+        _ctx: &TtrpcContext,
+        req: WaitSandboxRequest,
+    ) -> ttrpc::Result<WaitSandboxResponse> {
+        let mut receiver = {
+            let sandbox = self.inner.sandbox.lock().expect("sandbox mutex");
+            let Some(state) = sandbox.as_ref() else {
+                return Err(rpc_error(Code::NOT_FOUND, "no sandbox on this shim"));
+            };
+            if state.id != req.sandbox_id {
+                return Err(rpc_error(Code::INVALID_ARGUMENT, "sandbox id mismatch"));
+            }
+            state.exit_tx.subscribe()
+        };
+        loop {
+            if let Some(exit) = receiver.borrow().as_ref() {
+                let mut response = WaitSandboxResponse::new();
+                response.set_exit_status(exit.status);
+                response.set_exited_at(timestamp_from(exit.exited_at));
+                return Ok(response);
+            }
+            if receiver.changed().await.is_err() {
+                return Err(rpc_error(Code::NOT_FOUND, "sandbox gone while waiting"));
+            }
+        }
+    }
+
+    async fn stop_sandbox(
+        &self,
+        _ctx: &TtrpcContext,
+        req: StopSandboxRequest,
+    ) -> ttrpc::Result<StopSandboxResponse> {
+        let pid = {
+            let sandbox = self.inner.sandbox.lock().expect("sandbox mutex");
+            sandbox
+                .as_ref()
+                .filter(|state| state.id == req.sandbox_id)
+                .and_then(|state| state.internal.pid)
+        };
+        if let Some(pid) = pid
+            && unsafe { libc::kill(pid as i32, libc::SIGTERM) } != 0
+        {
+            let error = std::io::Error::last_os_error();
+            if error.raw_os_error() != Some(libc::ESRCH) {
+                return Err(rpc_error(
+                    Code::INTERNAL,
+                    format!("stop sandbox holder {pid}: {error}"),
+                ));
+            }
+        }
+        Ok(StopSandboxResponse::new())
+    }
+
+    async fn shutdown_sandbox(
+        &self,
+        _ctx: &TtrpcContext,
+        req: ShutdownSandboxRequest,
+    ) -> ttrpc::Result<ShutdownSandboxResponse> {
+        let state = {
+            let mut sandbox = self.inner.sandbox.lock().expect("sandbox mutex");
+            sandbox.take().filter(|state| state.id == req.sandbox_id)
+        };
+        let Some(mut state) = state else {
+            return Err(rpc_error(Code::NOT_FOUND, "no sandbox on this shim"));
+        };
+        if let Some(pid) = state.internal.pid
+            && unsafe { libc::kill(pid as i32, libc::SIGKILL) } != 0
+        {
+            let error = std::io::Error::last_os_error();
+            if error.raw_os_error() != Some(libc::ESRCH) {
+                warn!("kill sandbox holder {pid}: {error}");
+            }
+        }
+        state.internal.close_start();
+        let task_count = self.inner.tasks.lock().expect("tasks mutex").len();
+        if task_count == 0 {
+            info!("sandbox {} shut down with no live tasks", req.sandbox_id);
+            self.inner.exit.signal();
+        } else {
+            info!(
+                "sandbox {} holder down; {task_count} task(s) remain until TaskService.Shutdown",
+                req.sandbox_id
+            );
+        }
+        Ok(ShutdownSandboxResponse::new())
+    }
+
+    async fn platform(
+        &self,
+        _ctx: &TtrpcContext,
+        _req: PlatformRequest,
+    ) -> ttrpc::Result<PlatformResponse> {
+        let mut platform = containerd_shim_protos::types::platform::Platform::new();
+        platform.set_os(std::env::consts::OS.to_string());
+        platform.set_architecture(arch_to_containerd(std::env::consts::ARCH));
+        let mut response = PlatformResponse::new();
+        response.set_platform(platform);
+        Ok(response)
+    }
+
+    async fn ping_sandbox(
+        &self,
+        _ctx: &TtrpcContext,
+        _req: PingRequest,
+    ) -> ttrpc::Result<PingResponse> {
+        Ok(PingResponse::new())
+    }
+
+    async fn sandbox_status(
+        &self,
+        _ctx: &TtrpcContext,
+        req: SandboxStatusRequest,
+    ) -> ttrpc::Result<SandboxStatusResponse> {
+        let sandbox = self.inner.sandbox.lock().expect("sandbox mutex");
+        let Some(state) = sandbox.as_ref() else {
+            return Err(rpc_error(Code::NOT_FOUND, "no sandbox on this shim"));
+        };
+        let _ = req;
+        let mut response = SandboxStatusResponse::new();
+        response.set_sandbox_id(state.id.clone());
+        response.set_pid(state.internal.pid.unwrap_or(0));
+        Ok(response)
+    }
+}
+
+fn io_error(err: std::io::Error) -> containerd_shim::Error {
+    containerd_shim::Error::IoError {
+        context: "shim bootstrap io".to_string(),
+        err,
+    }
+}
+
+/// Normalize a socket address to the filesystem path to bind. Prefixed
+/// forms (`unix://`, abstract ` `) degrade to their path component.
+fn sock_path(address: &str) -> String {
+    let trimmed = address
+        .strip_prefix("unix://")
+        .or_else(|| address.strip_prefix("unix:"))
+        .unwrap_or(address);
+    trimmed.trim_start_matches('\0').to_string()
+}
+
+fn arch_to_containerd(arch: &str) -> String {
+    match arch {
+        "x86_64" => "amd64".to_string(),
+        "aarch64" => "arm64".to_string(),
+        other => other.to_string(),
+    }
+}
+
 /// Shim bootstrap: containerd's `start`/`delete` CLI actions plus task
 /// service construction.
 pub struct PvisorShim {
@@ -821,22 +1118,25 @@ impl Shim for PvisorShim {
         &self,
         publisher: containerd_shim::asynchronous::publisher::RemotePublisher,
     ) -> Self::T {
-        let inner = Arc::new(TaskInner {
+        // The bootstrap owns watcher setup (it registers two services on
+        // one inner); the trait method stays for API compatibility.
+        let inner = self.build_inner(publisher);
+        PvisorTask { inner }
+    }
+}
+
+impl PvisorShim {
+    fn build_inner(
+        &self,
+        publisher: containerd_shim::asynchronous::publisher::RemotePublisher,
+    ) -> Arc<TaskInner> {
+        Arc::new(TaskInner {
             namespace: self.namespace.clone(),
             publisher,
             tasks: Mutex::new(HashMap::new()),
+            sandbox: Mutex::new(None),
             exit: self.exit.clone(),
-        });
-        match monitor_subscribe(Topic::Pid).await {
-            Ok(subscription) => {
-                let watcher_inner = inner.clone();
-                tokio::spawn(async move {
-                    run_exit_watcher(watcher_inner, subscription).await;
-                });
-            }
-            Err(error) => warn!("exit monitor unavailable: {error}"),
-        }
-        PvisorTask { inner }
+        })
     }
 }
 
@@ -847,6 +1147,165 @@ pub fn shim_main() {
         .build()
         .expect("tokio runtime");
     runtime.block_on(async move {
-        containerd_shim::run::<PvisorShim>(crate::RUNTIME_TYPE, None).await;
+        if let Err(error) = bootstrap().await {
+            eprintln!("{}: {error:?}", crate::RUNTIME_TYPE);
+            std::process::exit(1);
+        }
     });
+}
+
+/// The shim bootstrap, modeled on `containerd_shim::run` (Apache-2.0,
+/// containerd authors) but registering both the task service and the
+/// sandbox service on the same ttrpc socket — required for
+/// `sandboxer = "shim"`.
+async fn bootstrap() -> containerd_shim::Result<()> {
+    use containerd_shim::StartOpts;
+    use containerd_shim_protos::ttrpc::r#async::Server;
+    use containerd_shim_protos::ttrpc::r#async::transport::Listener;
+    use tokio::io::AsyncWriteExt;
+
+    let os_args: Vec<_> = std::env::args_os().collect();
+    let flags = containerd_shim::parse(&os_args[1..])?;
+    let ttrpc_address = std::env::var("TTRPC_ADDRESS")?;
+
+    // The framework's reaper relies on the shim being a child subreaper and
+    // on SIGCHLD draining into the exit monitor.
+    if unsafe { libc::prctl(libc::PR_SET_CHILD_SUBREAPER, 1, 0, 0, 0) } != 0 {
+        return Err(containerd_shim::Error::IoError {
+            context: "set child subreaper".to_string(),
+            err: std::io::Error::last_os_error(),
+        });
+    }
+
+    let mut shim = PvisorShim::new(crate::RUNTIME_TYPE, &flags, &mut Config::default()).await;
+
+    match flags.action.as_str() {
+        "start" => {
+            let opts = StartOpts {
+                id: flags.id,
+                publish_binary: flags.publish_binary,
+                address: flags.address,
+                ttrpc_address,
+                namespace: flags.namespace,
+                debug: flags.debug,
+            };
+            let address = shim.start_shim(opts).await?;
+            let mut stdout = tokio::io::stdout();
+            stdout
+                .write_all(address.as_bytes())
+                .await
+                .map_err(io_error)?;
+            stdout.flush().await.map_err(io_error)?;
+            Ok(())
+        }
+        "delete" => {
+            let response = shim.delete_shim().await?;
+            let bytes = response
+                .write_to_bytes()
+                .map_err(containerd_shim::Error::Protobuf)?;
+            tokio::io::stdout()
+                .write_all(&bytes)
+                .await
+                .map_err(io_error)?;
+            Ok(())
+        }
+        _ => {
+            if flags.socket.is_empty() {
+                return Err(containerd_shim::Error::InvalidArgument(
+                    "shim socket cannot be empty".to_string(),
+                ));
+            }
+            containerd_shim::logger::init(flags.debug, "info", &flags.namespace, &flags.id)?;
+
+            let publisher =
+                containerd_shim::asynchronous::publisher::RemotePublisher::new(&ttrpc_address)
+                    .await?;
+            let inner = shim.build_inner(publisher);
+            match monitor_subscribe(Topic::Pid).await {
+                Ok(subscription) => {
+                    let watcher_inner = inner.clone();
+                    tokio::spawn(async move {
+                        run_exit_watcher(watcher_inner, subscription).await;
+                    });
+                }
+                Err(error) => warn!("exit monitor unavailable: {error}"),
+            }
+
+            let task_service = PvisorTask {
+                inner: inner.clone(),
+            };
+            let sandbox_service = PvisorSandbox { inner };
+            let task_methods =
+                containerd_shim_protos::shim_async::create_task(std::sync::Arc::new(task_service));
+            let sandbox_methods = containerd_shim_protos::sandbox_async::create_sandbox(
+                std::sync::Arc::new(sandbox_service),
+            );
+
+            let path = sock_path(&flags.socket);
+            if let Some(parent) = std::path::Path::new(&path).parent() {
+                std::fs::create_dir_all(parent).map_err(io_error)?;
+            }
+            let listener = std::os::unix::net::UnixListener::bind(&path).map_err(io_error)?;
+            let listener =
+                Listener::try_from(listener).map_err(|e| containerd_shim::Error::IoError {
+                    context: format!("creating ttrpc listener {path}"),
+                    err: e,
+                })?;
+            let mut server = Server::new().add_listener(listener);
+            server = server.register_service(task_methods);
+            server = server.register_service(sandbox_methods);
+            server
+                .start()
+                .await
+                .map_err(containerd_shim::Error::Ttrpc)?;
+            // containerd occasionally reads an empty stdout without flush.
+            unsafe {
+                libc::dup2(libc::STDERR_FILENO, libc::STDOUT_FILENO);
+            }
+            std::fs::write("address", &flags.socket).map_err(io_error)?;
+
+            info!("shim serving task + sandbox services on {}", flags.socket);
+            tokio::spawn(async move {
+                reap_children_loop().await;
+            });
+            shim.wait().await;
+            info!("shutting down shim instance");
+            server.shutdown().await.unwrap_or_default();
+            let _ = std::fs::remove_file(&path);
+            let _ = std::fs::remove_file("address");
+            Ok(())
+        }
+    }
+}
+
+/// Drain exited children into the framework exit monitor (the SIGCHLD
+/// counterpart of `containerd_shim`'s signal handler).
+async fn reap_children_loop() {
+    use tokio::signal::unix::{SignalKind, signal};
+    let mut sigchld = signal(SignalKind::from_raw(libc::SIGCHLD)).expect("install SIGCHLD handler");
+    loop {
+        if sigchld.recv().await.is_none() {
+            return;
+        }
+        loop {
+            let mut status: libc::c_int = 0;
+            let pid = unsafe { libc::waitpid(-1, &mut status, libc::WNOHANG) };
+            if pid > 0 {
+                let code = if libc::WIFEXITED(status) {
+                    libc::WEXITSTATUS(status)
+                } else if libc::WIFSIGNALED(status) {
+                    128 + libc::WTERMSIG(status)
+                } else {
+                    continue;
+                };
+                if let Err(error) =
+                    containerd_shim::asynchronous::monitor::monitor_notify_by_pid(pid, code).await
+                {
+                    warn!("failed to forward exit of {pid}: {error}");
+                }
+            } else {
+                break;
+            }
+        }
+    }
 }

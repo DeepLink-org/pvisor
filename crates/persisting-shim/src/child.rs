@@ -61,6 +61,12 @@ pub const ENV_READY_FD: &str = "PVISOR_SHIM_INIT_READY_FD";
 pub const ENV_START_FD: &str = "PVISOR_SHIM_INIT_START_FD";
 /// Write end of the fork report pipe (G/F reports setup to A/E).
 pub const ENV_FORK_REPORT_FD: &str = "PVISOR_SHIM_INIT_FORK_REPORT_FD";
+/// CLI argument that turns the shim binary into the pod sandbox holder.
+pub const INTERNAL_SANDBOX_ARG: &str = "--pvisor-shim-internal-sandbox";
+/// Path of the serialized [`crate::plan::SandboxPlan`].
+pub const ENV_SANDBOX_PLAN: &str = "PVISOR_SHIM_SANDBOX_PLAN";
+/// Pid of the pod sandbox holder; container runners join its namespaces.
+pub const ENV_SANDBOX_PID: &str = "PVISOR_SHIM_SANDBOX_PID";
 /// Workload stdio descriptors handed over by the shim.
 pub const ENV_STDIO_IN: &str = "PVISOR_SHIM_STDIO_IN";
 pub const ENV_STDIO_OUT: &str = "PVISOR_SHIM_STDIO_OUT";
@@ -95,6 +101,15 @@ pub struct InternalChild {
 }
 
 impl InternalChild {
+    /// An internal child with nothing left to release; useful as a
+    /// placeholder when moving the real one out of a slot.
+    pub fn exited() -> Self {
+        InternalChild {
+            pid: None,
+            start_fd: -1,
+        }
+    }
+
     /// Signal the child to exec; consumes the start pipe write end.
     pub fn start(&mut self) -> Result<()> {
         let byte = b"s";
@@ -164,6 +179,7 @@ pub fn spawn_internal(
     plan_path: &Path,
     plan_bytes: &[u8],
     stdio: Option<StdioFds>,
+    sandbox_pid: Option<u32>,
 ) -> Result<InternalChild> {
     fs::write(plan_path, plan_bytes).with_context(|| format!("write {}", plan_path.display()))?;
 
@@ -184,6 +200,9 @@ pub fn spawn_internal(
         ENV_PLAN
     };
     command.env(plan_env, plan_path);
+    if let Some(pid) = sandbox_pid {
+        command.env(ENV_SANDBOX_PID, pid.to_string());
+    }
     if let Some(stdio) = stdio {
         command
             .env(ENV_STDIO_IN, stdio.stdin.to_string())
@@ -229,6 +248,9 @@ pub fn run_internal_if_requested() -> Result<bool> {
     #[cfg(feature = "vm")]
     if args.iter().any(|arg| arg == INTERNAL_VM_ARG) {
         return run_vm_runner_requested();
+    }
+    if args.iter().any(|arg| arg == INTERNAL_SANDBOX_ARG) {
+        return run_sandbox_holder_requested();
     }
     let (mode_arg, main) = if args.iter().any(|arg| arg == INTERNAL_INIT_ARG) {
         (INTERNAL_INIT_ARG, init_parent_main as fn() -> Result<()>)
@@ -287,6 +309,11 @@ fn init_parent_main() -> Result<()> {
     // Namespace entry order matters: join existing namespaces (CRI sandbox
     // network et al.) before unsharing the private ones.
     join_namespace_paths(&plan)?;
+    // Containers of a pod join the sandbox holder's shared namespaces for
+    // anything their own spec does not configure explicitly.
+    if let Some(sandbox_pid) = sandbox_pid_from_env() {
+        join_sandbox_namespaces(&plan, sandbox_pid);
+    }
     let unshare_flags = collect_unshare_flags(&plan);
     if unshare_flags != 0 && unsafe { libc::unshare(unshare_flags) } != 0 {
         return Err(std::io::Error::last_os_error())
@@ -404,6 +431,95 @@ fn vm_runner_main() -> Result<i32> {
     crate::vm::boot_vm(&plan)
 }
 
+/// Sandbox holder entry; never returns when invoked in holder mode.
+fn run_sandbox_holder_requested() -> Result<bool> {
+    let exit_code = match sandbox_holder_main() {
+        Ok(()) => 0,
+        Err(error) => {
+            let report = InitReport::Error {
+                context: format!("{error:#}"),
+                errno: 1,
+            };
+            let mut delivered = false;
+            if let Some(mut file) = ready_pipe_from_env() {
+                delivered = file
+                    .write_all(&report.line().unwrap_or_default())
+                    .and_then(|()| file.flush())
+                    .is_ok();
+            }
+            if !delivered {
+                eprintln!("pvisor shim sandbox holder failed: {error:#}");
+            }
+            1
+        }
+    };
+    std::process::exit(exit_code);
+}
+
+/// The sandbox holder replaces CRI's pause container: it owns the pod
+/// namespaces (uts/ipc always new, network joined or new, pid new only for
+/// shareProcessNamespace pods) and lives until ShutdownSandbox.
+fn sandbox_holder_main() -> Result<()> {
+    let plan: crate::plan::SandboxPlan = read_plan(ENV_SANDBOX_PLAN)?;
+    let start_fd = fd_from_env(ENV_START_FD)?;
+
+    if let Some(netns) = plan.netns_path.as_deref() {
+        setns_by_path(netns, NamespaceKind::Network).context("join sandbox network namespace")?;
+    }
+    let mut flags = libc::CLONE_NEWUTS | libc::CLONE_NEWIPC;
+    if plan.share_pid_namespace {
+        flags |= libc::CLONE_NEWPID;
+    }
+    if unsafe { libc::unshare(flags) } != 0 {
+        return Err(std::io::Error::last_os_error()).context("unshare sandbox namespaces");
+    }
+    if let Some(hostname) = plan.hostname.as_deref()
+        && unsafe { libc::sethostname(hostname.as_ptr().cast(), hostname.len()) } != 0
+    {
+        return Err(std::io::Error::last_os_error()).context(format!("sethostname {hostname}"));
+    }
+
+    // A pid namespace only exists while a member runs; with pid sharing the
+    // joinable owner is a sleeper child inside the namespace.
+    let mut reported_pid = std::process::id();
+    if plan.share_pid_namespace {
+        let sleeper = unsafe { libc::fork() };
+        if sleeper < 0 {
+            return Err(std::io::Error::last_os_error()).context("fork sandbox sleeper");
+        }
+        if sleeper == 0 {
+            pause_forever();
+        }
+        reported_pid = sleeper as u32;
+    }
+
+    {
+        let mut ready = ready_pipe_from_env().context("ready pipe")?;
+        let message = InitReport::Ok { pid: reported_pid };
+        ready
+            .write_all(&message.line()?)
+            .and_then(|()| ready.flush())
+            .context("report sandbox readiness")?;
+    }
+
+    let mut byte = [0u8; 1];
+    let read = unsafe { libc::read(start_fd, byte.as_mut_ptr().cast(), 1) };
+    unsafe { libc::close(start_fd) };
+    if read <= 0 {
+        return Ok(());
+    }
+    pause_forever()
+}
+
+/// Sleep until a signal arrives; used by the sandbox holder and sleeper.
+fn pause_forever() -> ! {
+    loop {
+        // Signal-driven exit: any delivered signal terminates the default
+        // disposition, so the sleep only ever returns on EINTR.
+        std::thread::sleep(std::time::Duration::from_secs(3600));
+    }
+}
+
 /// E: join the init process's namespaces, then fork the exec process.
 fn exec_parent_main() -> Result<()> {
     let plan: ExecPlan = read_plan(ENV_EXEC_PLAN)?;
@@ -443,6 +559,35 @@ fn relay_fork_report(fork_report_fd: RawFd, child_pid: u32) -> Result<()> {
         .and_then(|()| ready.flush())
         .context("relay fork report")?;
     Ok(())
+}
+
+/// The kinds a pod shares through the sandbox holder.
+const SANDBOX_SHARED_KINDS: [NamespaceKind; 3] = [
+    NamespaceKind::Uts,
+    NamespaceKind::Ipc,
+    NamespaceKind::Network,
+];
+
+fn sandbox_pid_from_env() -> Option<u32> {
+    std::env::var(ENV_SANDBOX_PID).ok()?.parse().ok()
+}
+
+/// Join the holder's shared namespaces for kinds the container spec leaves
+/// unconfigured; failures fall back to a fresh namespace (logged).
+fn join_sandbox_namespaces(plan: &ContainerPlan, sandbox_pid: u32) {
+    for kind in SANDBOX_SHARED_KINDS {
+        if plan.has_namespace(kind) {
+            continue;
+        }
+        let path = format!("/proc/{sandbox_pid}/ns/{}", kind.proc_ns_name());
+        match setns_by_path(&path, kind) {
+            Ok(()) => {}
+            Err(error) => warn!(
+                "cannot join sandbox {} namespace of pid {sandbox_pid}: {error:#}",
+                kind.proc_ns_name()
+            ),
+        }
+    }
 }
 
 fn collect_unshare_flags(plan: &ContainerPlan) -> libc::c_int {

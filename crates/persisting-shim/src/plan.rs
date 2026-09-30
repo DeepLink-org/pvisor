@@ -402,6 +402,38 @@ pub fn process_plan_from(process: &oci_spec::runtime::Process) -> Result<Process
     })
 }
 
+/// Plan for the pod sandbox holder (the pause-container replacement).
+#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
+pub struct SandboxPlan {
+    pub sandbox_id: String,
+    pub hostname: Option<String>,
+    /// Network namespace to join (the CRI pod netns); when unset the holder
+    /// creates a fresh one.
+    pub netns_path: Option<String>,
+    /// True for shareProcessNamespace pods: the holder owns a pid namespace
+    /// that member containers join.
+    pub share_pid_namespace: bool,
+}
+
+/// Derive the sandbox holder plan from the sandbox OCI spec plus the
+/// CreateSandboxRequest fields.
+pub fn build_sandbox_plan(spec: &Spec, sandbox_id: &str, netns_path: Option<&str>) -> SandboxPlan {
+    let namespaces = spec
+        .linux()
+        .as_ref()
+        .and_then(|linux| linux.namespaces().clone())
+        .unwrap_or_default();
+    let has = |kind: oci_spec::runtime::LinuxNamespaceType| {
+        namespaces.iter().any(|namespace| namespace.typ() == kind)
+    };
+    SandboxPlan {
+        sandbox_id: sandbox_id.to_string(),
+        hostname: spec.hostname().clone(),
+        netns_path: netns_path.map(str::to_string),
+        share_pid_namespace: has(oci_spec::runtime::LinuxNamespaceType::Pid),
+    }
+}
+
 /// Resource shape for the libkrun microVM executor, derived from
 /// `io.pvisor.vm.*` annotations.
 #[derive(Clone, Copy, Debug, PartialEq, Eq, Serialize, Deserialize)]
@@ -420,6 +452,14 @@ impl Default for VmConfig {
 }
 
 impl ContainerPlan {
+    /// True when the spec configures this namespace kind at all (created
+    /// or joined); sandbox sharing only fills in the kinds it leaves out.
+    pub fn has_namespace(&self, kind: NamespaceKind) -> bool {
+        self.namespaces
+            .iter()
+            .any(|namespace| namespace.kind == kind)
+    }
+
     /// True when the bundle asks for the libkrun VM executor via the
     /// `io.pvisor.executor` annotation (`host` keeps the default).
     pub fn wants_vm(&self) -> bool {
@@ -766,6 +806,37 @@ mod tests {
         assert_eq!(plan.mounts[0].fs_type, "proc");
         assert!(plan.warnings.iter().any(|w| w.contains("ceph")));
         assert!(plan.warnings.iter().any(|w| w.contains("seccomp")));
+    }
+
+    #[test]
+    fn sandbox_plan_derives_holder_semantics() {
+        let spec = spec_from_json(
+            r#"{"ociVersion":"1.0.2","hostname":"pod-1","process":{"args":["/pause"],"cwd":"/","user":{"uid":0,"gid":0}},"linux":{"namespaces":[{"type":"ipc"},{"type":"uts"}]}}"#,
+        );
+        let plan = build_sandbox_plan(&spec, "sbx1", Some("/var/run/netns/n1"));
+        assert_eq!(plan.hostname.as_deref(), Some("pod-1"));
+        assert_eq!(plan.netns_path.as_deref(), Some("/var/run/netns/n1"));
+        assert!(!plan.share_pid_namespace);
+
+        let shared = spec_from_json(
+            r#"{"ociVersion":"1.0.2","process":{"args":["/pause"],"cwd":"/","user":{"uid":0,"gid":0}},"linux":{"namespaces":[{"type":"pid"}]}}"#,
+        );
+        assert!(build_sandbox_plan(&shared, "sbx2", None).share_pid_namespace);
+    }
+
+    #[test]
+    fn has_namespace_reflects_spec_configuration() {
+        let spec = spec_from_json(
+            r#"{"ociVersion":"1.0.2","process":{"args":["/bin/sh"],"cwd":"/","user":{"uid":0,"gid":0}},"linux":{"namespaces":[{"type":"pid"},{"type":"network","path":"/var/run/netns/n1"}]}}"#,
+        );
+        let plan =
+            build_plan(&spec, "c1", Path::new("/b"), vec![], IoPlan::default()).expect("plan");
+        assert!(plan.has_namespace(NamespaceKind::Pid));
+        assert!(plan.has_namespace(NamespaceKind::Network));
+        assert!(!plan.has_namespace(NamespaceKind::Uts));
+        assert!(!plan.has_namespace(NamespaceKind::Ipc));
+        // The planner always inserts a private mount namespace.
+        assert!(plan.has_namespace(NamespaceKind::Mount));
     }
 
     #[test]
