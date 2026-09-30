@@ -139,6 +139,9 @@ package = "krun-utils"
 version = "=0.1.0-1.19.3"
 package = "krun-vmm"
 
+[target.'cfg(not(target_env = "musl"))'.dependencies.libloading]
+version = "0.8"
+
 [target.'cfg(target_os = "linux")'.dependencies.aws-nitro]
 version = "=0.1.0-1.19.3"
 optional = true

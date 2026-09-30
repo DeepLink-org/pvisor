@@ -16,7 +16,7 @@ The command must exist in the selected environment. An Ubuntu image does not inc
 pvisor run --executor host --stage ../stage-host -- /bin/sh
 ```
 
-The working directory keeps its original path inside the sandbox. Ordinary Runs write through to the lower workspace; `--safe` uses a copy-on-write view that pVisor discards at Run exit unless `--stage` is specified. Explicit writable mounts and application state outside the workspace can still persist immediately. Safe-best-effort isolation reports unsupported controls; it is not a uniform guarantee across platforms.
+Host execution preserves the host filesystem view by default. Use `--filesystem sandbox` for path access restrictions, `--stage PATH` for a reviewable copy-on-write workspace, and `--overlaynet-deny-all` for deny-all network policy. These settings are independent; a network option does not enable filesystem restrictions.
 
 ## Linux container
 

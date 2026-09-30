@@ -24,7 +24,7 @@ fn only_run(root: &Path) -> PathBuf {
 }
 
 #[test]
-fn ordinary_run_can_write_home_aliases_and_sqlite_state() {
+fn sandbox_run_can_write_home_aliases_and_sqlite_state() {
     let temp = tempfile::Builder::new()
         .prefix("pvstate")
         .tempdir_in("/tmp")
@@ -46,6 +46,8 @@ fn ordinary_run_can_write_home_aliases_and_sqlite_state() {
             "run",
             "--stdio",
             "capture",
+            "--filesystem",
+            "sandbox",
             "--",
             "/usr/bin/python3",
             "-c",

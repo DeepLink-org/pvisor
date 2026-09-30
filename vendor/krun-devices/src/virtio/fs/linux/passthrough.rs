@@ -195,20 +195,65 @@ fn stat(f: &File) -> io::Result<libc::stat64> {
     }
 }
 
+// Linux exposes the statx ABI through libc on glibc targets, but musl's libc
+// bindings do not consistently expose it for every supported version.  Keep a
+// local definition of the ABI and invoke the syscall directly so this code is
+// independent of the C library's headers.
+#[repr(C)]
+#[derive(Clone, Copy, Debug, Default)]
+struct LinuxStatxTimestamp {
+    tv_sec: i64,
+    tv_nsec: u32,
+    _reserved: i32,
+}
+
+#[repr(C)]
+#[derive(Clone, Copy, Debug, Default)]
+struct LinuxStatx {
+    stx_mask: u32,
+    stx_blksize: u32,
+    stx_attributes: u64,
+    stx_nlink: u32,
+    stx_uid: u32,
+    stx_gid: u32,
+    stx_mode: u16,
+    _spare0: u16,
+    stx_ino: u64,
+    stx_size: u64,
+    stx_blocks: u64,
+    stx_attributes_mask: u64,
+    stx_atime: LinuxStatxTimestamp,
+    stx_btime: LinuxStatxTimestamp,
+    stx_ctime: LinuxStatxTimestamp,
+    stx_mtime: LinuxStatxTimestamp,
+    stx_rdev_major: u32,
+    stx_rdev_minor: u32,
+    stx_dev_major: u32,
+    stx_dev_minor: u32,
+    stx_mnt_id: u64,
+    stx_dio_mem_align: u32,
+    stx_dio_offset_align: u32,
+    _spare3: [u64; 12],
+}
+
+const STATX_BASIC_STATS: u32 = 0x0000_07ff;
+const STATX_MNT_ID: u32 = 0x0000_1000;
+
 fn statx(f: &File) -> io::Result<(libc::stat64, u64)> {
-    let mut stx = MaybeUninit::<libc::statx>::zeroed();
+    let mut stx = MaybeUninit::<LinuxStatx>::zeroed();
 
     // Safe because this is a constant value and a valid C string.
     let pathname = unsafe { CStr::from_bytes_with_nul_unchecked(EMPTY_CSTR) };
 
-    // Safe because the kernel will only write data in `st` and we check the return
+    // Safe because the kernel will only write data in `stx` and we check the return
     // value.
     let res = unsafe {
-        libc::statx(
+        libc::syscall(
+            libc::SYS_statx,
             f.as_raw_fd(),
             pathname.as_ptr(),
             libc::AT_EMPTY_PATH | libc::AT_SYMLINK_NOFOLLOW,
-            libc::STATX_BASIC_STATS | libc::STATX_MNT_ID,
+            STATX_BASIC_STATS | STATX_MNT_ID,
             stx.as_mut_ptr(),
         )
     };
