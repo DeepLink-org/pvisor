@@ -1904,6 +1904,7 @@ mod tests {
             temporary.path().join("root"),
             temporary.path().join("attestation"),
             NetworkIsolation::Ambient,
+            true,
         )
         .unwrap();
         assert!(normal.read_write.contains(&PathBuf::from("/")));
@@ -1930,13 +1931,14 @@ mod tests {
             temporary.path().join("root"),
             temporary.path().join("attestation"),
             NetworkIsolation::Ambient,
+            true,
         )
         .unwrap();
         assert!(!safe.read_write.contains(&PathBuf::from("/")));
         assert_eq!(safe.staged_roots, vec![home]);
         assert_eq!(safe.staged_workspace, Some(workspace));
         assert_eq!(safe.staged_workspace_source, Some(merged));
-        assert!(safe.landlock);
+        assert!(safe.filesystem_isolated);
     }
 
     #[cfg(target_os = "linux")]
@@ -1989,7 +1991,7 @@ mod tests {
             ProcessExecutor::rootless_with_launcher(std::env::current_exe().unwrap()).unwrap();
         let RunInvocation::Process(invocation) = &spec.invocation;
         let command = executor.spawn_command(&spec, invocation).unwrap();
-        let encoded = command
+        let plan_path = command
             .command
             .as_std()
             .get_envs()
@@ -1997,6 +1999,7 @@ mod tests {
                 (key == SANDBOX_PLAN_ENV).then(|| value.unwrap().to_string_lossy().into_owned())
             })
             .unwrap();
+        let encoded = std::fs::read_to_string(plan_path).unwrap();
         let plan: SandboxPlan = serde_json::from_str(&encoded).unwrap();
         assert!(!plan.filesystem_isolated);
     }
