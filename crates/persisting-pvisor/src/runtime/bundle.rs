@@ -1,9 +1,9 @@
 //! Durable, versioned summary of one pVisor Run.
 
+use crate::executor::sandbox::SANDBOX_SETUP_FAILED_WARNING;
 use crate::runtime::{
     ChangeEntry, OverlayState, RunLineage, RunRecord, overlay_changes, overlay_status,
 };
-use crate::sandbox::SANDBOX_SETUP_FAILED_WARNING;
 use crate::util::{atomic_write, sync_directory};
 use crate::{AgentCtlSnapshot, unix_now_ms};
 use persisting_control::{

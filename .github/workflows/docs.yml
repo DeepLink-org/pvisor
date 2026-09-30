@@ -2,10 +2,10 @@ name: Documentation
 
 on:
   push:
-    branches: [main]
+    branches: [main, develop]
     paths: ['docs/**', 'scripts/*docs*.py', 'justfile', '.github/workflows/docs.yml']
   pull_request:
-    branches: [main]
+    branches: [main, develop]
     paths: ['docs/**', 'scripts/*docs*.py', 'justfile', '.github/workflows/docs.yml']
   workflow_dispatch:
 

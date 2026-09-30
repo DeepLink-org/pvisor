@@ -9,10 +9,10 @@
 
 use std::collections::BTreeSet;
 
+use crate::io::sha256;
 use anyhow::{Context, Result, ensure};
 use serde::{Deserialize, Serialize};
 use serde_json::{Map, Value, json};
-use sha2::{Digest, Sha256};
 
 pub const TRANSPORT_SCHEMA_VERSION: &str = "sandbox-playback.claude-resume-transport/v1";
 pub const PROFILE_ID: &str = "claude-code/2.1.220/native-resume-v1";
@@ -206,7 +206,7 @@ pub fn canonical_messages_sha256(messages: &[Value]) -> Result<String> {
         messages.iter().all(Value::is_object),
         "messages must be a list of JSON objects"
     );
-    Ok(sha256_hex(
+    Ok(sha256(
         canonical_json(&Value::Array(messages.to_vec())).as_bytes(),
     ))
 }
@@ -223,7 +223,7 @@ pub fn canonical_observation_sha256(tool_result_block: &Value) -> Result<String>
             .and_then(Value::as_bool)
             .unwrap_or(false),
     });
-    Ok(sha256_hex(canonical_json(&value).as_bytes()))
+    Ok(sha256(canonical_json(&value).as_bytes()))
 }
 
 /// Validate and remove exactly one Claude Code resume envelope.
@@ -605,13 +605,6 @@ fn valid_sha256(value: &str) -> bool {
         && value
             .bytes()
             .all(|byte| byte.is_ascii_digit() || (b'a'..=b'f').contains(&byte))
-}
-
-fn sha256_hex(value: &[u8]) -> String {
-    Sha256::digest(value)
-        .iter()
-        .map(|byte| format!("{byte:02x}"))
-        .collect()
 }
 
 /// Render JSON with recursively sorted object keys, compact separators and

@@ -47,6 +47,9 @@ enum Command {
         long_about = run::RUN_COMMAND_LONG_ABOUT
     )]
     Run(Box<run::RunArgs>),
+    /// Serve or query the shared OCI file cache.
+    #[cfg(unix)]
+    Cache(crate::image::cache::CacheArgs),
     /// Apply selected staged changes from a stopped Job.
     Apply(runtime::ApplyArgs),
     /// Discard staged changes from a stopped Job.
@@ -78,11 +81,11 @@ pub fn main() -> anyhow::Result<()> {
         if run.tui_requested() || audit {
             anyhow::ensure!(
                 run.wants_tui(audit),
-                "--tui/--audit requires inherited stdio and a normal Job"
+                "--tui/--ask requires inherited stdio and a normal Job"
             );
             anyhow::ensure!(
                 tui::available(),
-                "--tui/--audit requires an interactive terminal"
+                "--tui/--ask requires an interactive terminal"
             );
             let code = tui::run(args, audit)?;
             if code != 0 {
@@ -92,6 +95,8 @@ pub fn main() -> anyhow::Result<()> {
         }
     }
     match parsed.command {
+        #[cfg(unix)]
+        Command::Cache(args) => crate::image::cache::run(args)?,
         Command::Run(args) => {
             let code = tokio::runtime::Runtime::new()?.block_on(run::run(*args))?;
             if code != 0 {
@@ -138,6 +143,7 @@ fn normalize_default_run(mut args: Vec<std::ffi::OsString>) -> Vec<std::ffi::OsS
         "run",
         "replay",
         "env",
+        "cache",
         "status",
         "kill",
         "inspect",
@@ -164,6 +170,9 @@ mod tests {
     fn standalone_cli_is_small_and_run_can_be_explicit() {
         for args in [
             vec!["pvisor", "status"],
+            vec!["pvisor", "cache", "serve"],
+            vec!["pvisor", "cache", "prepare", "alpine:latest"],
+            vec!["pvisor", "cache", "list", "sha256:example"],
             vec!["pvisor", "inspect", "run-1", "--", "rg", "TODO"],
             vec!["pvisor", "status", "run-1", "--review"],
             vec!["pvisor", "kill", "run-1"],
@@ -267,6 +276,13 @@ mod tests {
         assert!(help.contains("--boundary-user-prompt"));
         assert!(help.contains("after the replayed boundary observation"));
         assert!(help.contains("including the replayed prefix and any live continuation"));
+    }
+
+    #[test]
+    fn cache_is_not_rewritten_to_run() {
+        let args = normalize_default_run(vec!["pvisor".into(), "cache".into(), "serve".into()]);
+        assert_eq!(args[1], "cache");
+        Cli::try_parse_from(args).unwrap();
     }
 
     #[test]

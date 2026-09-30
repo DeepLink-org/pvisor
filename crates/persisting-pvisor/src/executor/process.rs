@@ -1,14 +1,14 @@
-use crate::executor::{AttemptContext, RunExecutor};
 #[cfg(any(target_os = "linux", target_os = "macos"))]
-use crate::sandbox::{INTERNAL_SANDBOX_ARG, NetworkIsolation};
+use crate::executor::sandbox::{INTERNAL_SANDBOX_ARG, NetworkIsolation};
 #[cfg(target_os = "macos")]
-use crate::sandbox::{
+use crate::executor::sandbox::{
     MACOS_SANDBOX_EXEC, SEATBELT_ATTESTATION, SeatbeltPlan, seatbelt_profile,
     seatbelt_profile_with_reads,
 };
 #[cfg(target_os = "linux")]
-use crate::sandbox::{ROOTLESS_ATTESTATION, SandboxPlan, landlock_runtime_available};
-use crate::sandbox::{SANDBOX_ARG0_ENV, SANDBOX_PLAN_ENV, SANDBOX_SETUP_FAILED_WARNING};
+use crate::executor::sandbox::{ROOTLESS_ATTESTATION, SandboxPlan, landlock_runtime_available};
+use crate::executor::sandbox::{SANDBOX_ARG0_ENV, SANDBOX_PLAN_ENV, SANDBOX_SETUP_FAILED_WARNING};
+use crate::executor::{AttemptContext, RunExecutor};
 use async_trait::async_trait;
 use persisting_control::{
     CapabilityDimension, CapabilityEnforcementEvidence, ExecutorDescriptor, ExecutorKind,
@@ -25,6 +25,28 @@ use std::process::Command as StdCommand;
 use std::process::Stdio;
 use tokio::io::{AsyncRead, AsyncReadExt};
 use tokio::process::{Child, Command};
+
+#[cfg(any(target_os = "linux", target_os = "macos"))]
+fn check_read_only_grants(spec: &RunSpec, cwd: &Path, writable: &[PathBuf]) -> std::io::Result<()> {
+    for grant in spec
+        .capabilities
+        .filesystem
+        .iter()
+        .filter(|g| g.access == FilesystemAccess::Read)
+    {
+        let path = cwd.join(&grant.path).canonicalize()?;
+        for writable in writable {
+            let writable = writable.canonicalize()?;
+            if path.starts_with(&writable) || writable.starts_with(&path) {
+                return Err(std::io::Error::other(format!(
+                    "read-only share overlaps a writable runtime path: {}",
+                    path.display()
+                )));
+            }
+        }
+    }
+    Ok(())
+}
 
 #[cfg(target_os = "linux")]
 struct ResourceCgroup {
@@ -385,12 +407,12 @@ fn stdio(mode: StdioMode) -> Stdio {
 
 #[cfg(any(target_os = "linux", target_os = "macos"))]
 fn network_isolation(spec: &RunSpec) -> std::io::Result<NetworkIsolation> {
-    if crate::sandbox::sandbox_required(spec) {
+    if crate::executor::sandbox::sandbox_required(spec) {
         #[cfg(target_os = "macos")]
         {
             let proxy = spec
                 .metadata
-                .get(crate::sandbox::SANDBOX_PROXY_KEY)
+                .get(crate::executor::sandbox::SANDBOX_PROXY_KEY)
                 .and_then(serde_json::Value::as_str)
                 .map(str::parse::<std::net::SocketAddr>)
                 .transpose()
@@ -460,7 +482,7 @@ impl ProcessExecutor {
     /// Build a Linux rootless executor using `launcher` for the trusted
     /// namespace/Landlock setup stage.
     ///
-    /// The launcher must dispatch [`crate::sandbox::run_internal_if_requested`]
+    /// The launcher must dispatch [`crate::executor::sandbox::run_internal_if_requested`]
     /// before starting threads or an async runtime.  The `pvisor` binary is the
     /// canonical launcher and uses this path automatically for default host Runs.
     #[cfg(target_os = "linux")]
@@ -544,7 +566,7 @@ impl ProcessExecutor {
         // an OverlayFS merged root. The executable belongs to the host-process
         // executor and need not exist inside the projected lower filesystem.
         let program = resolve_host_program(&invocation.program);
-        if crate::sandbox::sandbox_required(spec) && !self.is_sandboxed() {
+        if crate::executor::sandbox::sandbox_required(spec) && !self.is_sandboxed() {
             return Err(std::io::Error::other(
                 "required sandbox cannot use an unsandboxed process executor",
             ));
@@ -600,7 +622,7 @@ impl ProcessExecutor {
             // A Run-owned temporary directory avoids granting the Agent the
             // shared /tmp or per-user Darwin temporary hierarchy.
             command.env("TMPDIR", scratch);
-            if crate::sandbox::sandbox_required(spec) {
+            if crate::executor::sandbox::sandbox_required(spec) {
                 command.env("HOME", scratch);
             }
         }
@@ -762,7 +784,7 @@ fn platform_launcher_command(
         .map(PathBuf::from)
         .unwrap_or(std::env::current_dir()?);
     let cwd = cwd.canonicalize()?;
-    let restrict_reads = crate::sandbox::sandbox_required(spec);
+    let restrict_reads = crate::executor::sandbox::sandbox_required(spec);
     let mut readable_paths = vec![program.clone(), launcher.canonicalize()?];
     let mut writable_paths = vec![
         cwd.clone(),
@@ -841,6 +863,8 @@ fn platform_launcher_command(
             }
         }
     }
+
+    check_read_only_grants(spec, &cwd, &writable_paths)?;
 
     let network = network_isolation(spec)?;
     let (allowed_unix_sockets, local_socket_roots) = if network.is_loopback_only() {
@@ -957,7 +981,7 @@ fn rootless_plan(
     push_existing(&mut read_only, Path::new("/dev/pts"));
     let hidden_paths = spec
         .metadata
-        .get(crate::sandbox::SANDBOX_HIDDEN_PATHS_KEY)
+        .get(crate::executor::sandbox::SANDBOX_HIDDEN_PATHS_KEY)
         .and_then(serde_json::Value::as_array)
         .into_iter()
         .flatten()
@@ -969,7 +993,7 @@ fn rootless_plan(
     // Run mounts private copy-on-write views of them at the same paths, so
     // programs launched later from a shell get the same protection as the
     // initial executable.
-    let safe = crate::sandbox::sandbox_required(spec);
+    let safe = crate::executor::sandbox::sandbox_required(spec);
     let mut staged_roots = Vec::new();
     for path in projected_state_roots(invocation) {
         if safe {
@@ -1064,7 +1088,7 @@ fn rootless_plan(
     let project_render_nodes = graphical_display
         && !spec
             .metadata
-            .get(crate::sandbox::SANDBOX_NO_GPU_KEY)
+            .get(crate::executor::sandbox::SANDBOX_NO_GPU_KEY)
             .and_then(serde_json::Value::as_bool)
             .unwrap_or(false);
     if project_render_nodes && let Ok(devices) = std::fs::read_dir("/dev/dri") {
@@ -1112,6 +1136,8 @@ fn rootless_plan(
             }
         }
     }
+
+    check_read_only_grants(spec, &cwd, &read_write)?;
 
     read_only.sort_unstable();
     read_only.dedup();
@@ -1796,8 +1822,10 @@ mod tests {
         let executor =
             ProcessExecutor::seatbelt_with_launcher(std::env::current_exe().unwrap()).unwrap();
         for (safe, staged) in [(false, false), (false, true), (true, false), (true, true)] {
-            spec.metadata
-                .insert(crate::sandbox::REQUIRED_SANDBOX_KEY.into(), safe.into());
+            spec.metadata.insert(
+                crate::executor::sandbox::REQUIRED_SANDBOX_KEY.into(),
+                safe.into(),
+            );
             spec.metadata.insert(
                 "pvisor.runtime.implant".into(),
                 serde_json::json!({
@@ -1822,6 +1850,28 @@ mod tests {
                 );
             }
         }
+    }
+
+    #[cfg(any(target_os = "linux", target_os = "macos"))]
+    #[test]
+    fn read_only_grants_reject_writable_ancestors_and_symlink_aliases() {
+        let temp = tempfile::tempdir().unwrap();
+        let shared = temp.path().join("shared");
+        let separate = temp.path().join("separate");
+        std::fs::create_dir(&shared).unwrap();
+        std::fs::create_dir(&separate).unwrap();
+        let alias = temp.path().join("alias");
+        std::os::unix::fs::symlink(&shared, &alias).unwrap();
+        let mut spec = RunSpec::process("run", "agent", "/bin/true");
+        spec.capabilities
+            .filesystem
+            .push(persisting_control::FilesystemCapability {
+                path: alias.display().to_string(),
+                access: FilesystemAccess::Read,
+            });
+        assert!(check_read_only_grants(&spec, temp.path(), &[separate]).is_ok());
+        assert!(check_read_only_grants(&spec, temp.path(), &[shared]).is_err());
+        assert!(check_read_only_grants(&spec, temp.path(), &[temp.path().to_owned()]).is_err());
     }
 
     #[cfg(target_os = "linux")]
@@ -1854,14 +1904,17 @@ mod tests {
             temporary.path().join("root"),
             temporary.path().join("attestation"),
             NetworkIsolation::Ambient,
+            true,
         )
         .unwrap();
         assert!(normal.read_write.contains(&PathBuf::from("/")));
         assert!(normal.read_write.contains(&home));
         assert!(normal.staged_roots.is_empty());
 
-        spec.metadata
-            .insert(crate::sandbox::REQUIRED_SANDBOX_KEY.into(), true.into());
+        spec.metadata.insert(
+            crate::executor::sandbox::REQUIRED_SANDBOX_KEY.into(),
+            true.into(),
+        );
         spec.metadata.insert(
             "pvisor.workspace".into(),
             workspace.display().to_string().into(),
@@ -1878,13 +1931,14 @@ mod tests {
             temporary.path().join("root"),
             temporary.path().join("attestation"),
             NetworkIsolation::Ambient,
+            true,
         )
         .unwrap();
         assert!(!safe.read_write.contains(&PathBuf::from("/")));
         assert_eq!(safe.staged_roots, vec![home]);
         assert_eq!(safe.staged_workspace, Some(workspace));
         assert_eq!(safe.staged_workspace_source, Some(merged));
-        assert!(safe.landlock);
+        assert!(safe.filesystem_isolated);
     }
 
     #[cfg(target_os = "linux")]
@@ -1937,7 +1991,7 @@ mod tests {
             ProcessExecutor::rootless_with_launcher(std::env::current_exe().unwrap()).unwrap();
         let RunInvocation::Process(invocation) = &spec.invocation;
         let command = executor.spawn_command(&spec, invocation).unwrap();
-        let encoded = command
+        let plan_path = command
             .command
             .as_std()
             .get_envs()
@@ -1945,6 +1999,7 @@ mod tests {
                 (key == SANDBOX_PLAN_ENV).then(|| value.unwrap().to_string_lossy().into_owned())
             })
             .unwrap();
+        let encoded = std::fs::read_to_string(plan_path).unwrap();
         let plan: SandboxPlan = serde_json::from_str(&encoded).unwrap();
         assert!(!plan.filesystem_isolated);
     }

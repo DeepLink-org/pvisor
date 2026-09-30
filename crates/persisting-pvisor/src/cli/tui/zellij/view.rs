@@ -1,10 +1,10 @@
 use super::input::{Panel, UiState};
 use super::runtime::Snapshot;
-use super::{LineStyle, border_glyphs, status_bar};
+use super::{border_glyphs, status_bar};
 use anyhow::Result;
 use std::io::Write;
 use std::time::Instant;
-use unicode_width::{UnicodeWidthChar, UnicodeWidthStr};
+use unicode_width::UnicodeWidthChar;
 use vt100::{Cell, Color, Screen};
 
 const BAR: &str = "\x1b[48;2;33;36;37;38;2;220;224;220m";
@@ -181,30 +181,63 @@ fn panel_lines(snapshot: &Snapshot, panel: Panel, started: Instant, width: usize
     let (allowed, net_denied, net_failed) = snapshot.network_totals();
     let record = snapshot.record.as_ref();
     match panel {
-        Panel::Overview => vec![
-            format!(
-                "State       {}",
-                record.map_or("starting", |run| run.state.as_str())
-            ),
-            format!("Elapsed     {}s", started.elapsed().as_secs()),
-            format!(
-                "Agent       {}",
-                record.map_or("pending", |run| run.agent.as_str())
-            ),
-            String::new(),
-            "FILESYSTEM".into(),
-            format!("  {effects} effects   {denied} denied"),
-            format!("  {hits} hits      {failed} failed"),
-            String::new(),
-            "NETWORK".into(),
-            format!("  {allowed} allowed   {net_denied} denied"),
-            format!("  {net_failed} failed"),
-            String::new(),
-            "WORKSPACE".into(),
-            record
-                .and_then(|run| run.workspace.as_ref())
-                .map_or("pending".into(), |path| path.display().to_string()),
-        ],
+        Panel::Overview => {
+            let mut lines = vec![
+                format!(
+                    "State       {}",
+                    record.map_or("starting", |run| run.state.as_str())
+                ),
+                format!("Elapsed     {}s", started.elapsed().as_secs()),
+                format!(
+                    "Agent       {}",
+                    record.map_or("pending", |run| run.agent.as_str())
+                ),
+                String::new(),
+                "FILESYSTEM".into(),
+                format!("  {effects} effects   {denied} denied"),
+                format!("  {hits} hits      {failed} failed"),
+                String::new(),
+                "NETWORK".into(),
+                format!("  {allowed} allowed   {net_denied} denied"),
+                format!("  {net_failed} failed"),
+                String::new(),
+                "WORKSPACE".into(),
+                record
+                    .and_then(|run| run.workspace.as_ref())
+                    .map_or("pending".into(), |path| path.display().to_string()),
+            ];
+            if let Some(image) = &snapshot.image {
+                let total_files = image
+                    .totals
+                    .map_or_else(|| "?".into(), |t| t.files.to_string());
+                let total_bytes = image
+                    .totals
+                    .map_or_else(|| "?".into(), |t| t.bytes.to_string());
+                let mut image_lines = vec![
+                    "IMAGE CONTENT (this run)".into(),
+                    image.image.clone(),
+                    format!("  {:<13} {:>10}  {:>16}", "", "Files", "Bytes"),
+                    format!(
+                        "  {:<13} {:>10}  {:>16}",
+                        "Cached", image.cached_files, image.cached_bytes
+                    ),
+                    format!(
+                        "  {:<13} {:>10}  {:>16}",
+                        "Transferred", image.downloaded_files, image.downloaded_bytes
+                    ),
+                    format!("  {:<13} {:>10}  {:>16}", "Total", total_files, total_bytes),
+                    "  Cached: bytes served from disk/memory cache, including repeats".into(),
+                    "  Transferred: verified bytes received from the image server".into(),
+                    "  Total: regular files and logical bytes in the whole image".into(),
+                    "  Files are distinct paths; partial reads count; kernel cache hits excluded"
+                        .into(),
+                    String::new(),
+                ];
+                image_lines.extend(lines.drain(4..));
+                lines.extend(image_lines);
+            }
+            lines
+        }
         Panel::Files => {
             let mut lines = vec![
                 format!("{effects} effects   {denied} denied   {failed} failed"),
@@ -312,59 +345,63 @@ fn panel_lines(snapshot: &Snapshot, panel: Panel, started: Instant, width: usize
                 wrap_log_lines(&snapshot.log, width)
             }
         }
-        Panel::Permissions => {
-            let mut lines = vec!["SESSION PERMISSIONS".into(), String::new()];
-            if let Some(record) = snapshot.record.as_ref() {
-                lines.push(format!(
-                    "Stored at {}/audit-policy.json",
-                    record.storage.display()
-                ));
-                lines.push(String::new());
-            }
-            if snapshot.audit_rules.is_empty() {
-                lines.push("No decisions yet. Ask rules pause the matching access.".into());
-            } else {
-                lines.extend(snapshot.audit_rules.iter().cloned());
-            }
-            lines
-        }
+        Panel::Permissions => permission_lines(snapshot, 0, false),
         Panel::Keys => super::input::help_lines(),
     }
+}
+
+fn permission_lines(snapshot: &Snapshot, selected: usize, confirm: bool) -> Vec<String> {
+    let mut lines = vec![
+        if confirm {
+            "Press x again to forget; broader rules may apply."
+        } else {
+            "j/k Select decision   x Forget (asks for confirmation)"
+        }
+        .into(),
+        "Saved decisions apply to ask rules; explicit deny wins.".into(),
+    ];
+    if let Some(overlay) = snapshot.record.as_ref().and_then(|r| r.overlay.as_ref()) {
+        lines.push(format!(
+            "File rules: {} deny / {} ask / {} warn",
+            overlay.access_policy.deny().len(),
+            overlay.access_policy.ask().len(),
+            overlay.access_policy.warn().len()
+        ));
+        lines.push(format!("Rule root: {}", overlay.target.display()));
+    }
+    lines.push("DECISIONS (session > workspace > user)".into());
+    if snapshot.audit_rules.is_empty() {
+        lines.push("No saved decisions. Matching sensitive files still ask.".into());
+    } else {
+        lines.extend(
+            snapshot
+                .audit_rules
+                .iter()
+                .enumerate()
+                .skip(selected)
+                .map(|(i, line)| format!("{} {line}", if i == selected { ">" } else { " " })),
+        );
+    }
+    lines
 }
 
 fn floating_panel(
     buf: &mut Vec<u8>,
     layout: Layout,
-    state: &UiState,
+    state: &mut UiState,
     snapshot: &Snapshot,
     started: Instant,
 ) {
     let (x, y, width, height) = layout.floating_rect();
     let title = state.panel.title();
-    let horizontal = border_glyphs::horizontal(LineStyle::Single);
+    let horizontal = border_glyphs::HORIZONTAL;
     move_to(buf, y, x);
     buf.extend_from_slice(ACTIVE.as_bytes());
-    buf.extend_from_slice(
-        border_glyphs::corner(
-            border_glyphs::Corner::TopLeft,
-            LineStyle::Single,
-            LineStyle::Single,
-            true,
-        )
-        .as_bytes(),
-    );
+    buf.extend_from_slice(border_glyphs::TOP_LEFT.as_bytes());
     for _ in 0..width - 2 {
         buf.extend_from_slice(horizontal.as_bytes());
     }
-    buf.extend_from_slice(
-        border_glyphs::corner(
-            border_glyphs::Corner::TopRight,
-            LineStyle::Single,
-            LineStyle::Single,
-            true,
-        )
-        .as_bytes(),
-    );
+    buf.extend_from_slice(border_glyphs::TOP_RIGHT.as_bytes());
     move_to(buf, y, x + 2);
     print_clipped(buf, &format!(" pVisor Review · {title} "), width - 4);
 
@@ -373,17 +410,32 @@ fn floating_panel(
     } else {
         "1 Overview   2 Files   3 Network   4 Job   5 Log   6 Permissions"
     };
-    let lines = panel_lines(snapshot, state.panel, started, (width - 4) as usize);
+    let lines = if state.panel == Panel::Permissions {
+        permission_lines(snapshot, state.permission, state.forget_pending)
+    } else {
+        panel_lines(snapshot, state.panel, started, (width - 4) as usize)
+    };
+    let lines = wrap_log_lines(&lines, usize::from(width.saturating_sub(4)).max(1));
+    state.page_rows = usize::from(height.saturating_sub(4)).max(1);
+    state.max_scroll = lines.len().saturating_sub(state.page_rows);
+    if state.panel == Panel::Permissions {
+        state.max_scroll = snapshot.audit_rules.len().saturating_sub(1);
+        state.scroll = 0;
+    } else {
+        state.scroll = state.scroll.min(state.max_scroll);
+    }
+    let first = state.scroll;
+    let last = (first + state.page_rows).min(lines.len());
     for inner in 0..height - 2 {
         let row = y + inner + 1;
         move_to(buf, row, x);
         buf.extend_from_slice(ACTIVE.as_bytes());
-        buf.extend_from_slice(border_glyphs::vertical(LineStyle::Single).as_bytes());
+        buf.extend_from_slice(border_glyphs::VERTICAL.as_bytes());
         buf.extend_from_slice(b"\x1b[48;2;15;19;16m");
         buf.extend_from_slice(" ".repeat((width - 2) as usize).as_bytes());
         move_to(buf, row, x + width - 1);
         buf.extend_from_slice(ACTIVE.as_bytes());
-        buf.extend_from_slice(border_glyphs::vertical(LineStyle::Single).as_bytes());
+        buf.extend_from_slice(border_glyphs::VERTICAL.as_bytes());
         move_to(buf, row, x + 2);
         buf.extend_from_slice(if inner == 0 {
             b"\x1b[48;2;15;19;16;38;2;167;230;54m"
@@ -403,98 +455,242 @@ fn floating_panel(
     }
     move_to(buf, y + height - 1, x);
     buf.extend_from_slice(ACTIVE.as_bytes());
-    buf.extend_from_slice(
-        border_glyphs::corner(
-            border_glyphs::Corner::BottomLeft,
-            LineStyle::Single,
-            LineStyle::Single,
-            true,
-        )
-        .as_bytes(),
-    );
+    buf.extend_from_slice(border_glyphs::BOTTOM_LEFT.as_bytes());
     for _ in 0..width - 2 {
         buf.extend_from_slice(horizontal.as_bytes());
     }
-    buf.extend_from_slice(
-        border_glyphs::corner(
-            border_glyphs::Corner::BottomRight,
-            LineStyle::Single,
-            LineStyle::Single,
-            true,
-        )
-        .as_bytes(),
-    );
+    buf.extend_from_slice(border_glyphs::BOTTOM_RIGHT.as_bytes());
+    if state.panel != Panel::Permissions && !lines.is_empty() {
+        move_to(buf, y + height - 1, x + 2);
+        print_clipped(
+            buf,
+            &format!(
+                " {}–{} / {}  ↑↓ Scroll · PgUp/PgDn · Home/End ",
+                first + 1,
+                last,
+                lines.len()
+            ),
+            width - 4,
+        );
+    }
     buf.extend_from_slice(b"\x1b[0m");
+}
+
+fn boundary_label(snapshot: &Snapshot) -> String {
+    let Some(run) = &snapshot.record else {
+        return "Preparing runtime…".into();
+    };
+    let files = match &run.overlay {
+        None => "Files: host paths",
+        Some(overlay) if overlay.auto_apply => "Files: overlay (auto-apply)",
+        Some(overlay) if overlay.auto_discard => "Files: overlay (discard on exit)",
+        Some(_) => "Files: overlay (review to apply)",
+    };
+    let network = match &run.network_interception {
+        Some(profile) if profile.is_enforcing() => "Net: enforced interception",
+        Some(_) => "Net: cooperative proxy",
+        None => "Net: see Review for policy",
+    };
+    format!("{files}  |  {network}")
 }
 
 fn audit_dialog(
     buf: &mut Vec<u8>,
     layout: Layout,
     request: &persisting_control::audit::AuditRequest,
+    prompt: &super::audit_ui::Prompt,
 ) {
+    use super::audit_ui::{Lifetime, Scope, choice};
+    use persisting_control::audit::AuditKind;
+    const BODY: &str = "\x1b[0;48;2;28;32;40;38;2;232;235;240m";
+    const AMBER: &str = "\x1b[0;48;2;28;32;40;38;2;255;190;80m";
+    const SELECTED: &str = "\x1b[1;48;2;255;190;80;38;2;24;28;34m";
     let width = layout.cols.saturating_sub(4).clamp(10, 88);
-    let height = layout.agent_rows.clamp(4, 12);
+    let height = layout.rows.saturating_sub(2).min(16);
     let x = (layout.cols - width) / 2 + 1;
-    let y = 3 + (layout.agent_rows - height) / 2;
+    let y = (layout.rows - height) / 2 + 1;
     let title = match request.kind {
-        persisting_control::audit::AuditKind::File => "FILE ACCESS PAUSED",
-        persisting_control::audit::AuditKind::Network => "NETWORK ACCESS PAUSED",
+        AuditKind::File => " FILE ACCESS PAUSED ",
+        AuditKind::Network => " NETWORK ACCESS PAUSED ",
     };
-    let mut lines = wrap_log_lines(
-        std::slice::from_ref(&request.target),
-        usize::from(width.saturating_sub(4)),
-    );
-    lines.push(String::new());
-    lines.extend(wrap_log_lines(
-        std::slice::from_ref(&request.reason),
-        usize::from(width.saturating_sub(4)),
-    ));
     for row in 0..height {
         move_to(buf, y + row, x);
-        buf.extend_from_slice(ACTIVE.as_bytes());
+        buf.extend_from_slice(AMBER.as_bytes());
         let (left, right) = if row == 0 {
-            ("┌", "┐")
+            ("╭", "╮")
         } else if row == height - 1 {
-            ("└", "┘")
+            ("╰", "╯")
         } else {
             ("│", "│")
         };
-        buf.extend_from_slice(left.as_bytes());
-        if row == 0 || row == height - 1 {
-            buf.extend_from_slice("─".repeat((width - 2) as usize).as_bytes());
-        } else {
-            buf.extend_from_slice(b"\x1b[48;2;15;19;16m");
-            buf.extend_from_slice(" ".repeat((width - 2) as usize).as_bytes());
-        }
-        move_to(buf, y + row, x + width - 1);
-        buf.extend_from_slice(ACTIVE.as_bytes());
-        buf.extend_from_slice(right.as_bytes());
-        if row == 0 {
-            move_to(buf, y, x + 2);
-            buf.extend_from_slice(b"\x1b[38;2;167;230;54m");
-            print_clipped(buf, &format!(" {title} "), width - 4);
-        } else if row > 0 && row < height - 1 {
-            move_to(buf, y + row, x + 2);
-            buf.extend_from_slice(b"\x1b[48;2;15;19;16;38;2;220;224;220m");
-            let line = if row == height - 2 {
-                match request.kind {
-                    persisting_control::audit::AuditKind::File if width < 55 => {
-                        "1 File  2 Dir  3 Ext  d Deny"
-                    }
-                    persisting_control::audit::AuditKind::File => {
-                        "1 This file   2 Same directory   3 Same suffix   d Deny"
-                    }
-                    persisting_control::audit::AuditKind::Network if width < 55 => {
-                        "1 Target  2 Domain  d Deny"
-                    }
-                    persisting_control::audit::AuditKind::Network => {
-                        "1 This target   2 Host and subdomains (same port)   d Deny"
-                    }
-                }
+        write!(
+            buf,
+            "{left}{}{right}",
+            if row == 0 || row == height - 1 {
+                "─"
             } else {
-                lines.get((row - 1) as usize).map_or("", String::as_str)
+                " "
+            }
+            .repeat((width - 2) as usize)
+        )
+        .unwrap();
+    }
+    let mut line = |row: u16, text: &str, style: &str| {
+        move_to(buf, y + row, x + 2);
+        buf.extend_from_slice(style.as_bytes());
+        print_clipped(buf, text, width - 4);
+    };
+    line(0, title, SELECTED);
+    if height < 14 || width < 56 {
+        line(1, "Resize to review access", BODY);
+        line(height - 2, "[ d Deny ]", SELECTED);
+        return;
+    }
+    line(
+        1,
+        if request.kind == AuditKind::File {
+            "Allow file access (not just reading)"
+        } else {
+            "This connection needs your permission"
+        },
+        BODY,
+    );
+    let target = wrap_log_lines(std::slice::from_ref(&request.target), (width - 4) as usize);
+    for (index, text) in target.iter().take(2).enumerate() {
+        line(2 + index as u16, text, AMBER);
+    }
+    line(
+        4,
+        if request.reason == "not-in-allowlist" {
+            "No matching permission has been saved."
+        } else {
+            &request.reason
+        },
+        BODY,
+    );
+    line(
+        5,
+        if request.kind == AuditKind::Network {
+            "Limited to this port and transport."
+        } else {
+            "Includes inspect, read, change, and delete in the view."
+        },
+        BODY,
+    );
+    line(
+        6,
+        if prompt.focus == 0 {
+            "> ALLOW ACCESS TO   (Left / Right)"
+        } else {
+            "  ALLOW ACCESS TO"
+        },
+        AMBER,
+    );
+    line(
+        8,
+        if prompt.focus == 1 {
+            "> REMEMBER FOR      (Left / Right)"
+        } else {
+            "  REMEMBER FOR"
+        },
+        AMBER,
+    );
+    let broad = prompt.lifetime == Lifetime::User && prompt.scope == Some(Scope::Suffix);
+    line(
+        10,
+        if broad {
+            "All workspaces: files with this suffix will be allowed."
+        } else if prompt.lifetime == Lifetime::User {
+            "Saved for this user, available across workspaces."
+        } else if prompt.lifetime == Lifetime::Workspace {
+            "Saved for future sessions in this workspace."
+        } else {
+            "Applies only to this session."
+        },
+        BODY,
+    );
+    line(
+        height - 2,
+        "Tab / Up / Down Move   Enter Confirm   d Deny",
+        BODY,
+    );
+    let scope_options = match request.kind {
+        AuditKind::File => [
+            (b'1', "This file"),
+            (b'2', "Same folder"),
+            (b'3', "Same suffix"),
+        ]
+        .to_vec(),
+        AuditKind::Network => [(b'1', "This target"), (b'2', "Host + subdomains")].to_vec(),
+    };
+    for (row, options, focus) in [
+        (
+            7,
+            scope_options
+                .into_iter()
+                .filter_map(|(key, label)| {
+                    choice(request, key).map(|(scope, _)| {
+                        (
+                            format!("{} {label}", key as char),
+                            prompt.scope.unwrap_or(Scope::Exact) == scope,
+                        )
+                    })
+                })
+                .collect::<Vec<_>>(),
+            0,
+        ),
+        (
+            9,
+            [
+                ("s Session", Lifetime::Session),
+                ("w Workspace", Lifetime::Workspace),
+                ("u User", Lifetime::User),
+            ]
+            .into_iter()
+            .map(|(label, lifetime)| (label.to_string(), lifetime == prompt.lifetime))
+            .collect(),
+            1,
+        ),
+        (
+            height - 3,
+            vec![
+                ("Deny".into(), prompt.scope.is_none()),
+                ("Allow & remember".into(), prompt.scope.is_some()),
+            ],
+            2,
+        ),
+    ] {
+        move_to(buf, y + row, x + 2);
+        let mut remaining = width - 4;
+        for (label, selected) in options {
+            let label = if width < 72 {
+                label
+                    .replace("This file", "File")
+                    .replace("Same folder", "Folder")
+                    .replace("Same suffix", "Suffix")
+                    .replace("This target", "Target")
+                    .replace("Host + subdomains", "Subdomains")
+            } else {
+                label
             };
-            print_clipped(buf, line, width - 4);
+            let text = format!(
+                "{}[{} {}] ",
+                if prompt.focus == focus && selected {
+                    ">"
+                } else {
+                    " "
+                },
+                if selected { "●" } else { "○" },
+                label
+            );
+            buf.extend_from_slice(if selected {
+                SELECTED.as_bytes()
+            } else {
+                BODY.as_bytes()
+            });
+            print_clipped(buf, &text, remaining);
+            remaining = remaining
+                .saturating_sub(unicode_width::UnicodeWidthStr::width(text.as_str()) as u16);
         }
     }
     buf.extend_from_slice(b"\x1b[0m");
@@ -503,7 +699,7 @@ fn audit_dialog(
 pub(super) fn render(
     stdout: &mut impl Write,
     layout: Layout,
-    state: &UiState,
+    state: &mut UiState,
     screen: &Screen,
     snapshot: &Snapshot,
     started: Instant,
@@ -518,60 +714,29 @@ pub(super) fn render(
         .record
         .as_ref()
         .and_then(|run| run.workspace.as_ref())
-        .and_then(|path| path.file_name())
-        .and_then(|name| name.to_str())
-        .unwrap_or("workspace");
-    let mut session = format!(
-        " pVisor ({}) ",
-        workspace.chars().take(16).collect::<String>()
-    );
-    if UnicodeWidthStr::width(session.as_str()) + 11 > usize::from(layout.cols) {
-        session = " pVisor ".into();
-    }
-    bar_line(&mut buf, 1, layout.cols, &session);
-    move_to(
+        .map_or_else(
+            || "Loading workspace…".into(),
+            |path| path.display().to_string(),
+        );
+    bar_line(
         &mut buf,
         1,
-        UnicodeWidthStr::width(session.as_str()) as u16 + 1,
+        layout.cols,
+        &format!(" pVisor  |  {agent}  |  {workspace}"),
     );
-    buf.extend_from_slice(b"\x1b[48;2;167;230;54;38;2;18;22;17;1m");
-    print_clipped(
-        &mut buf,
-        " ❯ Job #1 ",
-        layout
-            .cols
-            .saturating_sub(UnicodeWidthStr::width(session.as_str()) as u16),
-    );
-    buf.extend_from_slice(b"\x1b[0m");
 
     move_to(&mut buf, 2, 1);
     buf.extend_from_slice(ACTIVE.as_bytes());
-    buf.extend_from_slice(
-        border_glyphs::corner(
-            border_glyphs::Corner::TopLeft,
-            LineStyle::Single,
-            LineStyle::Single,
-            true,
-        )
-        .as_bytes(),
-    );
-    let horizontal = border_glyphs::horizontal(LineStyle::Single);
+    buf.extend_from_slice(border_glyphs::TOP_LEFT.as_bytes());
+    let horizontal = border_glyphs::HORIZONTAL;
     for _ in 0..layout.cols - 2 {
         buf.extend_from_slice(horizontal.as_bytes());
     }
-    buf.extend_from_slice(
-        border_glyphs::corner(
-            border_glyphs::Corner::TopRight,
-            LineStyle::Single,
-            LineStyle::Single,
-            true,
-        )
-        .as_bytes(),
-    );
+    buf.extend_from_slice(border_glyphs::TOP_RIGHT.as_bytes());
     move_to(&mut buf, 2, 3);
     print_clipped(
         &mut buf,
-        &format!(" {agent} "),
+        &format!(" {} ", boundary_label(snapshot)),
         layout.cols.saturating_sub(6),
     );
 
@@ -579,40 +744,24 @@ pub(super) fn render(
         let physical = row + 3;
         move_to(&mut buf, physical, 1);
         buf.extend_from_slice(ACTIVE.as_bytes());
-        buf.extend_from_slice(border_glyphs::vertical(LineStyle::Single).as_bytes());
+        buf.extend_from_slice(border_glyphs::VERTICAL.as_bytes());
         draw_agent_row(&mut buf, row, layout.agent_cols, screen);
         move_to(&mut buf, physical, layout.cols);
         buf.extend_from_slice(ACTIVE.as_bytes());
-        buf.extend_from_slice(border_glyphs::vertical(LineStyle::Single).as_bytes());
+        buf.extend_from_slice(border_glyphs::VERTICAL.as_bytes());
     }
     move_to(&mut buf, layout.rows - 1, 1);
     buf.extend_from_slice(ACTIVE.as_bytes());
-    buf.extend_from_slice(
-        border_glyphs::corner(
-            border_glyphs::Corner::BottomLeft,
-            LineStyle::Single,
-            LineStyle::Single,
-            true,
-        )
-        .as_bytes(),
-    );
+    buf.extend_from_slice(border_glyphs::BOTTOM_LEFT.as_bytes());
     for _ in 0..layout.cols - 2 {
         buf.extend_from_slice(horizontal.as_bytes());
     }
-    buf.extend_from_slice(
-        border_glyphs::corner(
-            border_glyphs::Corner::BottomRight,
-            LineStyle::Single,
-            LineStyle::Single,
-            true,
-        )
-        .as_bytes(),
-    );
+    buf.extend_from_slice(border_glyphs::BOTTOM_RIGHT.as_bytes());
     if state.panel_open() {
         floating_panel(&mut buf, layout, state, snapshot, started);
     }
     if let Some(request) = &snapshot.audit {
-        audit_dialog(&mut buf, layout, request);
+        audit_dialog(&mut buf, layout, request, &snapshot.audit_prompt);
     }
     status_bar::render(&mut buf, layout.cols, layout.rows, state, snapshot, started);
     if state.agent_input_active() && snapshot.audit.is_none() && !screen.hide_cursor() {
@@ -691,7 +840,25 @@ mod tests {
             );
             assert_eq!(after.agent_rows, rows - 4);
             assert_eq!(after.agent_cols, cols - 2);
+            let mut rendered = Vec::new();
+            floating_panel(
+                &mut rendered,
+                after,
+                &mut state,
+                &Snapshot::default(),
+                Instant::now(),
+            );
+            let mut parser = vt100::Parser::new(rows, cols, 0);
+            parser.process(&rendered);
             let (x, y, width, height) = after.floating_rect();
+            for (row, col, glyph) in [
+                (y - 1, x - 1, "╭"),
+                (y - 1, x + width - 2, "╮"),
+                (y + height - 2, x - 1, "╰"),
+                (y + height - 2, x + width - 2, "╯"),
+            ] {
+                assert_eq!(parser.screen().cell(row, col).unwrap().contents(), glyph);
+            }
             assert!(x >= 2 && x + width <= cols);
             assert!(y >= 3 && y + height < after.rows);
             if cols == 156 {
@@ -720,7 +887,7 @@ mod tests {
         render(
             &mut output,
             layout,
-            &UiState::default(),
+            &mut UiState::default(),
             screen.screen(),
             &snapshot,
             Instant::now(),
@@ -730,8 +897,36 @@ mod tests {
         assert!(output.contains("NETWORK ACCESS PAUSED"));
         assert!(output.contains("unexpected.example:443"));
         assert!(output.contains("1 This target"));
-        assert!(output.contains("2 Host and subdomains"));
+        assert!(output.contains("2 Host + subdomains"));
+        assert!(output.contains("s Session"));
+        assert!(output.contains("● Deny"));
+        assert!(output.contains("Enter Confirm"));
+        assert!(output.contains("w Workspace"));
+        assert!(output.contains("u User"));
         assert!(!output.contains("\x1b[?25h"));
+        let mut terminal = vt100::Parser::new(24, 80, 0);
+        terminal.process(output.as_bytes());
+        assert!(terminal.screen().contents().contains("Enter Confirm"));
+        for (cols, rows) in [(30, 8), (60, 14), (120, 30)] {
+            let layout = Layout::new(size(cols, rows), &UiState::default());
+            let mut bytes = Vec::new();
+            render(
+                &mut bytes,
+                layout,
+                &mut UiState::default(),
+                screen.screen(),
+                &snapshot,
+                Instant::now(),
+            )
+            .unwrap();
+            let mut terminal = vt100::Parser::new(rows, cols, 0);
+            terminal.process(&bytes);
+            let content = terminal.screen().contents();
+            assert!(content.contains("Deny"), "{cols}x{rows}: {content}");
+            if cols == 30 {
+                assert!(content.contains("Resize to review"));
+            }
+        }
     }
 
     #[test]
@@ -744,7 +939,48 @@ mod tests {
         assert_eq!(state.input(b'f'), None);
         assert_eq!(state.panel, Panel::Files);
         assert_eq!(state.input(0x1b), None);
+        state.expire_escape(Instant::now() + std::time::Duration::from_millis(200));
         assert_eq!(state.input(b'x'), Some(b'x'));
+    }
+
+    #[test]
+    fn review_scroll_reaches_last_line_and_clamps_after_resize() {
+        let mut state = UiState::default();
+        state.input(0x1d);
+        state.input(b'l');
+        let snapshot = Snapshot {
+            log: (0..100).map(|i| format!("entry-{i:03}")).collect(),
+            ..Snapshot::default()
+        };
+        let layout = Layout::new(size(80, 24), &state);
+        let mut bytes = Vec::new();
+        floating_panel(&mut bytes, layout, &mut state, &snapshot, Instant::now());
+        for byte in b"\x1b[F" {
+            state.input(*byte);
+        }
+        bytes.clear();
+        floating_panel(&mut bytes, layout, &mut state, &snapshot, Instant::now());
+        let mut terminal = vt100::Parser::new(24, 80, 0);
+        terminal.process(&bytes);
+        let content = terminal.screen().contents();
+        assert!(content.contains("entry-099"), "{content}");
+        assert!(content.contains("/ 100"));
+        assert!(!content.contains("entry-000"));
+        let layout = Layout::new(size(120, 60), &state);
+        floating_panel(
+            &mut Vec::new(),
+            layout,
+            &mut state,
+            &snapshot,
+            Instant::now(),
+        );
+        assert_eq!(state.scroll, state.max_scroll);
+        let short = Snapshot {
+            log: vec!["only line".into()],
+            ..Snapshot::default()
+        };
+        floating_panel(&mut Vec::new(), layout, &mut state, &short, Instant::now());
+        assert_eq!(state.scroll, 0);
     }
 
     #[test]

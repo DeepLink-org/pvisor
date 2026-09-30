@@ -364,7 +364,7 @@ pub(crate) fn prepare_attempt(
     )?;
 
     spec.metadata.insert(
-        crate::sandbox::SANDBOX_PROXY_KEY.into(),
+        crate::executor::sandbox::SANDBOX_PROXY_KEY.into(),
         gateway.listen.clone().into(),
     );
 
@@ -1385,7 +1385,7 @@ fn overlay_cwd(
 ) -> Option<PathBuf> {
     // Only Linux binds the merged view over the original path in a private root.
     if cfg!(target_os = "linux")
-        && crate::sandbox::sandbox_required(spec)
+        && crate::executor::sandbox::sandbox_required(spec)
         && !uses_krun_executor(spec)
         && overlay.merged_dir.is_some()
         && let Some(record) = record
@@ -1427,8 +1427,10 @@ mod tests {
     #[test]
     fn safe_overlay_cwd_uses_original_path_only_on_linux() {
         let mut spec = RunSpec::process("run-1", "agent", "sh");
-        spec.metadata
-            .insert(crate::sandbox::REQUIRED_SANDBOX_KEY.into(), true.into());
+        spec.metadata.insert(
+            crate::executor::sandbox::REQUIRED_SANDBOX_KEY.into(),
+            true.into(),
+        );
         let config = persisting_gateway::config::OverlayConfig {
             enabled: true,
             target: Some("/workspace".into()),

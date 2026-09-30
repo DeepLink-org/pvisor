@@ -15,6 +15,7 @@ use std::time::Duration;
 
 use persisting_overlay_core::OverlayCore;
 
+use super::super::linux_errno::linux_error;
 use super::bindings;
 use super::filesystem::{
     Context, DirEntry, Entry, Extensions, FileSystem, FsOptions, GetxattrReply, ListxattrReply,
@@ -44,6 +45,7 @@ struct Layer(usize);
 
 #[derive(Debug)]
 struct FileHandle {
+    overlay_inode: u64,
     layer: Layer,
     inode: u64,
     handle: u64,
@@ -145,6 +147,7 @@ impl OverlayFs {
 
     fn child(&self, parent: u64, name: &CStr) -> io::Result<PathBuf> {
         OverlayCore::child(&self.path(parent)?, OsStr::from_bytes(name.to_bytes()))
+            .map_err(linux_error)
     }
 
     fn allocate_inode(&self, path: PathBuf) -> u64 {
@@ -248,13 +251,15 @@ impl OverlayFs {
     }
 
     fn writable_inner(&self, ctx: Context, path: &Path) -> io::Result<u64> {
-        self.core.copy_up(path)?;
+        // OverlayCore reports host errno; passthrough already reports Linux
+        // errno. Convert only at the core boundary, never the whole request.
+        self.core.copy_up(path).map_err(linux_error)?;
         self.inner_inode(Layer(0), path, ctx)
     }
 
     fn upper_parent(&self, ctx: Context, path: &Path) -> io::Result<(u64, CString)> {
-        self.core.clear_whiteout(path)?;
-        self.core.ensure_upper_parents(path)?;
+        self.core.clear_whiteout(path).map_err(linux_error)?;
+        self.core.ensure_upper_parents(path).map_err(linux_error)?;
         let parent = path.parent().unwrap_or_else(|| Path::new(""));
         let name = path
             .file_name()
@@ -318,7 +323,7 @@ impl FileSystem for OverlayFs {
             .lock()
             .map_err(|_| io::Error::from_raw_os_error(libc::EIO))?;
         let path = self.child(parent, name)?;
-        self.core.metadata(&path)?;
+        self.core.metadata(&path).map_err(linux_error)?;
         let inode = self.allocate_inode(path.clone());
         self.entry(ctx, &path, inode)
     }
@@ -327,12 +332,34 @@ impl FileSystem for OverlayFs {
         &self,
         ctx: Context,
         inode: u64,
-        _handle: Option<u64>,
+        handle: Option<u64>,
     ) -> io::Result<(bindings::stat64, Duration)> {
         let _operation = self
             .operation_lock
             .lock()
             .map_err(|_| io::Error::from_raw_os_error(libc::EIO))?;
+        // GETATTR may omit FH (e.g. stat through /proc/self/fd). An unlinked
+        // inode still belongs to its open file, even after its path is gone.
+        let handle = handle.or_else(|| {
+            if self.path(inode).is_ok() {
+                return None;
+            }
+            // ponytail: scan open handles only for detached inodes; index by
+            // inode if workloads with many deleted-open files make this costly.
+            self.handles.lock().unwrap().iter().find_map(|(id, h)| {
+                matches!(h, Handle::File(h) if h.overlay_inode == inode).then_some(*id)
+            })
+        });
+        if let Some(handle) = handle {
+            return self.with_file_handle(handle, |fs, h| {
+                if h.overlay_inode != inode {
+                    return Err(io::Error::from_raw_os_error(libc::EBADF));
+                }
+                let (mut attr, timeout) = fs.getattr(ctx, h.inode, Some(h.handle))?;
+                attr.st_ino = inode as _;
+                Ok((attr, timeout))
+            });
+        }
         let entry = self.entry(ctx, &self.path(inode)?, inode)?;
         Ok((entry.attr, entry.attr_timeout))
     }
@@ -454,7 +481,7 @@ impl FileSystem for OverlayFs {
             .lock()
             .map_err(|_| io::Error::from_raw_os_error(libc::EIO))?;
         let path = self.child(parent, name)?;
-        self.core.remove(&path, false)?;
+        self.core.remove(&path, false).map_err(linux_error)?;
         self.remove_path(&path);
         Ok(())
     }
@@ -465,7 +492,7 @@ impl FileSystem for OverlayFs {
             .lock()
             .map_err(|_| io::Error::from_raw_os_error(libc::EIO))?;
         let path = self.child(parent, name)?;
-        self.core.remove(&path, true)?;
+        self.core.remove(&path, true).map_err(linux_error)?;
         self.remove_path(&path);
         Ok(())
     }
@@ -486,10 +513,10 @@ impl FileSystem for OverlayFs {
         let old = self.child(olddir, oldname)?;
         let new = self.child(newdir, newname)?;
         match flags {
-            0 => self.core.rename(&old, &new, false)?,
-            RENAME_NOREPLACE => self.core.rename(&old, &new, true)?,
-            RENAME_EXCHANGE => self.core.exchange(&old, &new)?,
-            _ => return Err(io::Error::from_raw_os_error(libc::ENOTSUP)),
+            0 => self.core.rename(&old, &new, false).map_err(linux_error)?,
+            RENAME_NOREPLACE => self.core.rename(&old, &new, true).map_err(linux_error)?,
+            RENAME_EXCHANGE => self.core.exchange(&old, &new).map_err(linux_error)?,
+            _ => return Err(linux_error(io::Error::from_raw_os_error(libc::ENOTSUP))),
         }
         if flags == RENAME_EXCHANGE {
             let marker = PathBuf::from(format!(".pvisor-exchange-{}", self.inode_alloc.next()));
@@ -510,7 +537,9 @@ impl FileSystem for OverlayFs {
             .map_err(|_| io::Error::from_raw_os_error(libc::EIO))?;
         let source = self.path(inode)?;
         let destination = self.child(newparent, newname)?;
-        self.core.hard_link(&source, &destination)?;
+        self.core
+            .hard_link(&source, &destination)
+            .map_err(linux_error)?;
         let new_inode = self.allocate_inode(destination.clone());
         self.entry(ctx, &destination, new_inode)
     }
@@ -529,13 +558,19 @@ impl FileSystem for OverlayFs {
         let path = self.path(inode)?;
         // Symlinks are resolved by the guest through overlay lookups, never by
         // the passthrough layer against an unfiltered lower directory.
-        if self.core.metadata(&path)?.file_type().is_symlink() {
-            return Err(io::Error::from_raw_os_error(libc::ELOOP));
+        if self
+            .core
+            .metadata(&path)
+            .map_err(linux_error)?
+            .file_type()
+            .is_symlink()
+        {
+            return Err(linux_error(io::Error::from_raw_os_error(libc::ELOOP)));
         }
         let writing = flags as i32 & libc::O_ACCMODE != libc::O_RDONLY
             || flags as i32 & (libc::O_APPEND | libc::O_TRUNC) != 0;
         let layer = if writing {
-            self.core.copy_up(&path)?;
+            self.core.copy_up(&path).map_err(linux_error)?;
             Layer(0)
         } else {
             self.layer(&path)?
@@ -544,6 +579,7 @@ impl FileSystem for OverlayFs {
         let (handle, options) = self.layers[layer.0].open(ctx, inner, kill_priv, flags)?;
         let handle = handle.ok_or_else(|| io::Error::from_raw_os_error(libc::EIO))?;
         let id = self.allocate_handle(Handle::File(FileHandle {
+            overlay_inode: inode,
             layer,
             inode: inner,
             handle,
@@ -587,6 +623,7 @@ impl FileSystem for OverlayFs {
         entry.attr.st_ino = inode as _;
         let handle = handle.ok_or_else(|| io::Error::from_raw_os_error(libc::EIO))?;
         let id = self.allocate_handle(Handle::File(FileHandle {
+            overlay_inode: inode,
             layer: Layer(0),
             inode: inner_inode,
             handle,
@@ -786,8 +823,8 @@ impl FileSystem for OverlayFs {
             .map_err(|_| io::Error::from_raw_os_error(libc::EIO))?;
         let path = self.path(inode)?;
         let mut items = Vec::new();
-        for name in self.core.list_names(&path)? {
-            let child = OverlayCore::child(&path, &name)?;
+        for name in self.core.list_names(&path).map_err(linux_error)? {
+            let child = OverlayCore::child(&path, &name).map_err(linux_error)?;
             let child_inode = self.allocate_inode(child.clone());
             let entry = self.entry(ctx, &child, child_inode)?;
             items.push(DirectoryItem {
@@ -1001,6 +1038,26 @@ mod tests {
             gid: 0,
             pid: 1,
         };
+        // Linux ENOTEMPTY is 39; macOS 66 would become EREMOTE in the guest,
+        // preventing dpkg from falling back to recursive directory cleanup.
+        std::fs::create_dir(lower.join("directory")).unwrap();
+        std::fs::write(lower.join("directory/file"), b"data").unwrap();
+        for copy_up in [false, true] {
+            if copy_up {
+                fs.core.copy_up(Path::new("directory")).unwrap();
+            }
+            assert_eq!(
+                fs.rmdir(ctx, fuse::ROOT_ID, c"directory")
+                    .unwrap_err()
+                    .raw_os_error(),
+                Some(39),
+            );
+        }
+        let directory = fs.lookup(ctx, fuse::ROOT_ID, c"directory").unwrap();
+        fs.unlink(ctx, directory.inode, c"file").unwrap();
+        fs.rmdir(ctx, fuse::ROOT_ID, c"directory").unwrap();
+        assert!(fs.lookup(ctx, fuse::ROOT_ID, c"directory").is_err());
+
         let original = CString::new("original").unwrap();
         fs.lookup(ctx, fuse::ROOT_ID, &original).unwrap();
         fs.unlink(ctx, fuse::ROOT_ID, &original).unwrap();
@@ -1032,6 +1089,94 @@ mod tests {
         .unwrap();
         assert!(upper.join("created").is_file());
         assert!(!lower.join("created").exists());
+    }
+
+    #[test]
+    fn getattr_keeps_open_file_identity_after_unlink_or_replacement() {
+        for rename in [false, true] {
+            let temp = tempfile::tempdir().unwrap();
+            let lower = temp.path().join("lower");
+            let upper = temp.path().join("upper");
+            std::fs::create_dir(&lower).unwrap();
+            let fs = OverlayFs::new(
+                Config {
+                    lower_dirs: vec![lower.to_string_lossy().into_owned()],
+                    upper_dir: upper.to_string_lossy().into_owned(),
+                    work_dir: None,
+                    preimage_dir: None,
+                    excluded_paths: vec![],
+                    access_policy: Default::default(),
+                    semantics: passthrough::PermissionSemantics::LinuxComplete,
+                },
+                Arc::new(InodeAllocator::new()),
+            )
+            .unwrap();
+            fs.init(FsOptions::empty()).unwrap();
+            let ctx = Context {
+                uid: 0,
+                gid: 0,
+                pid: 1,
+            };
+            let (entry, handle, _) = fs
+                .create(
+                    ctx,
+                    fuse::ROOT_ID,
+                    c"temporary",
+                    libc::S_IFREG as u32 | 0o600,
+                    false,
+                    libc::O_RDWR as u32,
+                    0,
+                    Extensions::default(),
+                )
+                .unwrap();
+            std::fs::write(upper.join("temporary"), b"original").unwrap();
+            assert_eq!(fs.getattr(ctx, entry.inode, handle).unwrap().0.st_size, 8);
+            if rename {
+                std::fs::write(upper.join("replacement"), b"new").unwrap();
+                fs.rename(
+                    ctx,
+                    fuse::ROOT_ID,
+                    c"replacement",
+                    fuse::ROOT_ID,
+                    c"temporary",
+                    0,
+                )
+                .unwrap();
+            } else {
+                fs.unlink(ctx, fuse::ROOT_ID, c"temporary").unwrap();
+                assert!(fs.lookup(ctx, fuse::ROOT_ID, c"temporary").is_err());
+            }
+            for fh in [handle, None] {
+                let (attr, _) = fs.getattr(ctx, entry.inode, fh).unwrap();
+                assert_eq!(attr.st_size, 8);
+                assert_eq!(attr.st_ino, entry.inode);
+                assert_eq!(attr.st_nlink, 0);
+            }
+            if !rename {
+                std::fs::write(upper.join("temporary"), b"new").unwrap();
+            }
+            let replacement = fs.lookup(ctx, fuse::ROOT_ID, c"temporary").unwrap();
+            assert_ne!(replacement.inode, entry.inode);
+            assert_eq!(replacement.attr.st_size, 3);
+            assert_eq!(fs.getattr(ctx, entry.inode, None).unwrap().0.st_size, 8);
+            assert_eq!(
+                fs.getattr(ctx, replacement.inode, handle)
+                    .unwrap_err()
+                    .raw_os_error(),
+                Some(libc::EBADF)
+            );
+            fs.release(
+                ctx,
+                entry.inode,
+                libc::O_RDWR as u32,
+                handle.unwrap(),
+                false,
+                false,
+                None,
+            )
+            .unwrap();
+            assert!(fs.getattr(ctx, entry.inode, handle).is_err());
+        }
     }
 
     #[test]

@@ -26,7 +26,7 @@ pub(super) fn patch(audit: bool) -> Vec<String> {
     ] {
         args.extend([
             "--access".into(),
-            format!("{pattern}:{}", if audit { "ask" } else { "read" }),
+            format!("{pattern}:{}", if audit { "ask" } else { "warn" }),
         ]);
     }
     args

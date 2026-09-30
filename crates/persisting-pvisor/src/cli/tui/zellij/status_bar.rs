@@ -17,8 +17,8 @@ const LIGHT: Rgb = (224, 230, 221);
 const AMBER: Rgb = (255, 174, 102);
 const RED: Rgb = (255, 111, 111);
 const DARK: Rgb = (18, 23, 19);
-const ARROW: &str = "";
-const LEFT_ARROW: &str = "";
+const ARROW: &str = " ";
+const LEFT_ARROW: &str = " ";
 
 fn move_to(buf: &mut Vec<u8>, row: u16, col: u16) {
     write!(buf, "\x1b[{row};{col}H").unwrap();
@@ -60,33 +60,80 @@ fn elapsed(started: Instant) -> String {
     }
 }
 
-fn metrics(snapshot: &Snapshot, elapsed: &str, available: usize) -> String {
-    let (hits, effects, denied, failed) = snapshot.file_totals();
-    let (allowed, net_denied, net_failed) = snapshot.network_totals();
-    let logs = snapshot.log.len();
-    let candidates = [
-        format!(
-            " {elapsed}  │  FILES {hits} hits · {effects} effects · {denied} denied · {failed} failed  │  NET {allowed} allowed · {net_denied} denied · {net_failed} failed  │  LOG {logs}"
-        ),
-        format!(
-            " {elapsed} │ FILES {effects} eff/{denied} deny/{failed} fail │ NET {allowed} ok/{net_denied} deny/{net_failed} fail │ LOG {logs}"
-        ),
-        format!(
-            " {elapsed} │ F {effects}e/{denied}d/{failed}f │ N {allowed}a/{net_denied}d/{net_failed}f │ L {logs}"
-        ),
-        format!(" {elapsed} F{effects}/{denied} N{allowed}/{net_denied} L{logs}"),
-    ];
-    candidates
-        .into_iter()
-        .find(|candidate| UnicodeWidthStr::width(candidate.as_str()) <= available)
-        .unwrap_or_else(|| {
-            let fallback = format!(" {elapsed}");
-            if UnicodeWidthStr::width(fallback.as_str()) <= available {
-                fallback
+pub(super) fn format_bytes(bytes: u64) -> String {
+    let mut value = bytes as f64;
+    for unit in ["B", "KiB", "MiB", "GiB", "TiB"] {
+        if value < 1024.0 || unit == "TiB" {
+            return if unit == "B" {
+                format!("{bytes}B")
             } else {
-                String::new()
-            }
-        })
+                format!("{value:.1}{unit}")
+            };
+        }
+        value /= 1024.0;
+    }
+    unreachable!()
+}
+
+fn image_summary(
+    image: &crate::image::cache::progress::ImageProgress,
+    available: usize,
+) -> Option<String> {
+    let files = image
+        .totals
+        .map_or_else(|| "?".into(), |total| total.files.to_string());
+    let total = image
+        .totals
+        .map_or_else(|| "?".into(), |total| format_bytes(total.bytes));
+    let bytes = format_bytes(image.downloaded_bytes);
+    let cached = format_bytes(image.cached_bytes);
+    let downloaded_files = image.downloaded_files;
+    let cached_files = image.cached_files;
+    [
+        format!(" Cached {cached_files} files {cached} | Transferred {downloaded_files} files {bytes} | Total {files} files {total}"),
+        format!(" Cached {cached_files}/{cached} | Transferred {downloaded_files}/{bytes} | Total {files}/{total}"),
+        format!(" C:{cached_files}/{} X:{downloaded_files}/{} T:{files}/{}", cached.replace("iB", ""), bytes.replace("iB", ""), total.replace("iB", "")),
+    ]
+    .into_iter()
+    .find(|text| text.width() <= available)
+}
+
+fn metrics(snapshot: &Snapshot, elapsed: &str, available: usize) -> String {
+    let (_, _, denied, failed) = snapshot.file_totals();
+    let (_, net_denied, net_failed) = snapshot.network_totals();
+    let mut parts = if let Some(image) = snapshot
+        .image
+        .as_ref()
+        .and_then(|image| image_summary(image, available))
+    {
+        vec![image, elapsed.to_string()]
+    } else {
+        vec![format!(" {elapsed}")]
+    };
+    if snapshot.audit.is_some() {
+        parts.push("Waiting for permission".into());
+    }
+    let paths = snapshot.filesystem.as_ref().map_or(0, |fs| {
+        fs.paths
+            .values()
+            .filter(|ops| ops.values().any(|c| c.effects > 0))
+            .count()
+    });
+    if paths > 0 {
+        parts.push(format!("{paths} touched paths"));
+    }
+    if denied + net_denied > 0 {
+        parts.push(format!("{} denied", denied + net_denied));
+    }
+    if failed + net_failed > 0 {
+        parts.push(format!("{} failed", failed + net_failed));
+    }
+    while parts.join("  |  ").width() > available {
+        if parts.pop().is_none() {
+            break;
+        }
+    }
+    parts.join("  |  ")
 }
 
 fn state_color(state: &str) -> Rgb {
@@ -114,7 +161,11 @@ fn render_metrics(buf: &mut Vec<u8>, row: u16, cols: u16, snapshot: &Snapshot, s
     buf.extend_from_slice(chip.as_bytes());
     style(buf, color, BASE, false);
     buf.extend_from_slice(ARROW.as_bytes());
-    let hint = " Ctrl-]  MENU ";
+    let hint = if cols >= 100 {
+        " Ctrl-]  Files / Permissions / Log "
+    } else {
+        " Ctrl-] Menu "
+    };
     let hint_width = UnicodeWidthStr::width(hint) + 1;
     let remaining = usize::from(cols).saturating_sub(chip_width + 1 + hint_width + 1);
     let summary = metrics(snapshot, &elapsed(started), remaining);
@@ -123,7 +174,7 @@ fn render_metrics(buf: &mut Vec<u8>, row: u16, cols: u16, snapshot: &Snapshot, s
     move_to(buf, row, cols - hint_width as u16 + 1);
     style(buf, TILE_A, BASE, false);
     buf.extend_from_slice(LEFT_ARROW.as_bytes());
-    style(buf, DARK, TILE_A, true);
+    style(buf, LIGHT, TILE_A, true);
     buf.extend_from_slice(hint.as_bytes());
     buf.extend_from_slice(b"\x1b[0m");
 }
@@ -233,14 +284,45 @@ mod tests {
     fn metrics_choose_readable_detail_for_terminal_width() {
         let snapshot = Snapshot::default();
         let wide = metrics(&snapshot, "01:23", 140);
-        assert!(wide.contains("hits"));
-        assert!(wide.contains("failed"));
+        assert_eq!(wide, " 01:23");
         let medium = metrics(&snapshot, "01:23", 70);
-        assert!(medium.contains("FILES"));
-        assert!(medium.contains("NET"));
-        assert!(medium.contains("LOG"));
+        assert_eq!(medium, " 01:23");
         let narrow = metrics(&snapshot, "01:23", 27);
         assert!(UnicodeWidthStr::width(narrow.as_str()) <= 27);
+    }
+
+    #[test]
+    fn image_metrics_fit_and_keep_unknown_totals_distinct_from_zero() {
+        let mut snapshot = Snapshot {
+            image: Some(crate::image::cache::progress::ImageProgress {
+                cached_files: 12,
+                cached_bytes: 6 * 1024 * 1024,
+                downloaded_files: 27,
+                downloaded_bytes: 4 * 1024 * 1024,
+                totals: Some(crate::image::cache::ImageTotals {
+                    files: 1234,
+                    bytes: 80 * 1024 * 1024,
+                }),
+                ..Default::default()
+            }),
+            ..Default::default()
+        };
+        for width in [40, 55, 100, 160] {
+            let text = metrics(&snapshot, "01:23", width);
+            assert!(text.width() <= width);
+            for value in ["12", "6.0", "27", "4.0", "1234", "80.0"] {
+                assert!(text.contains(value), "{text}");
+            }
+        }
+        let wide = metrics(&snapshot, "01:23", 160);
+        assert!(wide.contains("Cached 12 files 6.0MiB"));
+        assert!(wide.contains("Transferred 27 files 4.0MiB"));
+        assert!(wide.contains("Total 1234 files 80.0MiB"));
+        snapshot.image.as_mut().unwrap().downloaded_files = 0;
+        snapshot.image.as_mut().unwrap().downloaded_bytes = 0;
+        assert!(metrics(&snapshot, "01:23", 160).contains("Transferred 0 files 0B"));
+        snapshot.image.as_mut().unwrap().totals = None;
+        assert!(metrics(&snapshot, "01:23", 160).contains("Total ? files ?"));
     }
 
     #[test]

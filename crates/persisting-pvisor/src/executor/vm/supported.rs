@@ -2,6 +2,7 @@
 
 use crate::config::VmSettings;
 use crate::executor::{AttemptContext, RunExecutor};
+use crate::util::write_private_json;
 use anyhow::Context as _;
 use async_trait::async_trait;
 use persisting_control::{
@@ -372,6 +373,8 @@ impl RunExecutor for VmExecutor {
             BTreeMap::new()
         };
         for key in [
+            crate::image::cache::SERVER_ENV,
+            "PERSISTING_PVISOR_CACHE_TOKEN",
             crate::AGENTCTL_ENDPOINT_ENV,
             crate::AGENTCTL_TOKEN_ENV,
             crate::AGENTCTL_TRANSPORT_ENV,
@@ -812,7 +815,11 @@ fn run_runner(spec: RunnerSpec) -> anyhow::Result<()> {
             read_write.extend(workspace.work.iter().cloned());
             read_write.extend(workspace.preimages.iter().cloned());
         }
-        crate::sandbox::restrict_krun_runner(read_only, read_write, spec.library_dir.clone())?;
+        crate::executor::sandbox::restrict_krun_runner(
+            read_only,
+            read_write,
+            spec.library_dir.clone(),
+        )?;
     }
     run_linked_krun(spec)
 }
@@ -1094,13 +1101,6 @@ async fn join_capture(
         Some(task) => task.await.ok().and_then(Result::ok),
         None => None,
     }
-}
-
-fn write_private_json(path: &Path, value: &impl Serialize) -> anyhow::Result<()> {
-    use std::os::unix::fs::PermissionsExt;
-    std::fs::write(path, serde_json::to_vec(value)?)?;
-    std::fs::set_permissions(path, std::fs::Permissions::from_mode(0o600))?;
-    Ok(())
 }
 
 fn failed_to_start(

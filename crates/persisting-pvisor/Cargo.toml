@@ -22,6 +22,7 @@ flate2.workspace = true
 fs2.workspace = true
 globset.workspace = true
 libc.workspace = true
+lru = "0.12.5"
 persisting-control.workspace = true
 persisting-gateway = { workspace = true, default-features = false }
 persisting-overlaynet.workspace = true
@@ -34,6 +35,7 @@ sha2.workspace = true
 tar.workspace = true
 thiserror.workspace = true
 toml.workspace = true
+toml_edit.workspace = true
 tempfile.workspace = true
 tokio = { workspace = true, features = ["io-util", "macros", "process", "rt-multi-thread", "signal", "sync", "time", "net"] }
 tokio-util = { workspace = true, features = ["rt"] }
@@ -56,3 +58,9 @@ proptest.workspace = true
 
 [build-dependencies]
 libloading.workspace = true
+
+[target.'cfg(target_os = "macos")'.dependencies]
+fuser = { workspace = true, features = ["abi-7-19", "libfuse", "macfuse-5"] }
+
+[target.'cfg(target_os = "linux")'.dependencies]
+fuser = { workspace = true, default-features = false, features = ["abi-7-31"] }

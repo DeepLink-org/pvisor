@@ -1,7 +1,7 @@
 //! PTY ownership and event loop for the native pane UI.
 
 use super::{
-    audit_ui::{self, AuditServer, Scope, SessionPolicy},
+    audit_ui::{self, AuditServer, Lifetime, Permissions, Prompt, Scope},
     input, view,
 };
 use crate::runtime::{RunRecord, control_observations};
@@ -24,7 +24,6 @@ const STAGE_FILE: &str = "PVISOR_UI_STAGE_FILE";
 const LOG_FILE: &str = "PVISOR_UI_LOG_FILE";
 const AUDIT_SOCKET: &str = "PVISOR_UI_AUDIT_SOCKET";
 static CHILD_CONTEXT: OnceLock<Option<PathBuf>> = OnceLock::new();
-static LOG_CONTEXT: OnceLock<Option<PathBuf>> = OnceLock::new();
 
 pub(crate) fn init_child_context() {
     let path = if std::env::var_os(CHILD_MARKER).is_some() {
@@ -53,17 +52,12 @@ pub(crate) fn init_child_context() {
         persisting_control::audit::init(socket);
     }
     let _ = CHILD_CONTEXT.set(path);
-    let _ = LOG_CONTEXT.set(log_path);
-}
-
-pub(crate) fn diagnostic(args: std::fmt::Arguments<'_>) {
-    if let Some(Some(path)) = LOG_CONTEXT.get()
-        && let Ok(mut file) = OpenOptions::new().append(true).open(path)
-        && writeln!(file, "{args}").is_ok()
-    {
-        return;
-    }
-    eprintln!("{args}");
+    crate::image::cache::progress::init_output(
+        log_path
+            .as_ref()
+            .map(|path| path.with_extension("image.json")),
+    );
+    crate::diagnostics::init(log_path);
 }
 
 pub(crate) fn announce_stage(stage: &Path) {
@@ -127,6 +121,7 @@ impl Drop for ChildCleanup {
 
 #[derive(Default)]
 pub(super) struct Snapshot {
+    pub(super) image: Option<crate::image::cache::progress::ImageProgress>,
     pub(super) stage: Option<PathBuf>,
     pub(super) record: Option<RunRecord>,
     pub(super) filesystem: Option<FilesystemObservation>,
@@ -134,10 +129,16 @@ pub(super) struct Snapshot {
     pub(super) log: Vec<String>,
     pub(super) audit: Option<AuditRequest>,
     pub(super) audit_rules: Vec<String>,
+    pub(super) audit_prompt: Prompt,
 }
 
 impl Snapshot {
     fn refresh(&mut self, stage_file: &Path, log_file: &Path) {
+        if let Ok(bytes) = std::fs::read(log_file.with_extension("image.json"))
+            && let Ok(image) = serde_json::from_slice(&bytes)
+        {
+            self.image = Some(image);
+        }
         if let Ok(contents) = std::fs::read_to_string(log_file) {
             self.log = contents.lines().map(str::to_owned).collect();
         }
@@ -229,6 +230,7 @@ fn persist_audit_decision(
     decision: AuditDecision,
     scope: Scope,
     automatic: bool,
+    lifetime: Lifetime,
 ) -> Result<()> {
     let mut file = OpenOptions::new()
         .create(true)
@@ -252,6 +254,7 @@ fn persist_audit_decision(
             "decision": decision,
             "scope": scope,
             "automatic": automatic,
+            "lifetime": lifetime,
         }),
     )?;
     file.write_all(b"\n")?;
@@ -363,9 +366,9 @@ pub(crate) fn run(args: Vec<OsString>, audit_enabled: bool) -> Result<i32> {
     stdout.flush()?;
     let mut parser = vt100::Parser::new(layout.agent_rows, layout.agent_cols, 2000);
     let mut input_modes = HostInputModes::default();
+    let mut review_mouse = false;
     let mut snapshot = Snapshot::default();
-    let mut audit_policy = SessionPolicy::default();
-    let mut audit_policy_loaded = false;
+    let mut audit_policy: Option<Permissions> = None;
     let started = Instant::now();
     let mut last_draw = Instant::now() - Duration::from_secs(1);
     let mut last_refresh = Instant::now() - Duration::from_secs(1);
@@ -381,28 +384,59 @@ pub(crate) fn run(args: Vec<OsString>, audit_enabled: bool) -> Result<i32> {
             dirty = true;
         }
         if audit.is_some()
-            && !audit_policy_loaded
+            && audit_policy.is_none()
             && let Some(record) = snapshot.record.as_ref()
         {
-            audit_policy =
-                SessionPolicy::load(&record.storage).context("load Job session audit policy")?;
-            audit_policy_loaded = true;
+            let workspace = record.workspace.clone().unwrap_or(std::env::current_dir()?);
+            let file_root = record
+                .overlay
+                .as_ref()
+                .map(|o| o.target.as_path())
+                .unwrap_or(&workspace);
+            audit_policy = Some(
+                Permissions::load(
+                    &record.storage,
+                    &workspace,
+                    file_root,
+                    audit_ui::permissions_config_path()?,
+                )
+                .context("load audit permissions")?,
+            );
         }
         if let Some(server) = audit.as_mut() {
             while let Some(request) = server.active().cloned() {
-                let Some((decision, scope)) = audit_policy.resolve(&request) else {
+                let Some((decision, scope, lifetime)) =
+                    audit_policy.as_ref().and_then(|p| p.resolve(&request))
+                else {
                     break;
                 };
                 if let Some(record) = snapshot.record.as_ref() {
-                    let _ =
-                        persist_audit_decision(&record.storage, &request, decision, scope, true);
+                    let _ = persist_audit_decision(
+                        &record.storage,
+                        &request,
+                        decision,
+                        scope,
+                        true,
+                        lifetime,
+                    );
                 }
                 let _ = server.decide(decision);
+                snapshot.audit_prompt = Prompt::default();
                 dirty = true;
             }
         }
-        snapshot.audit_rules = audit_policy.rule_labels();
-        snapshot.audit = audit.as_ref().and_then(AuditServer::active).cloned();
+        snapshot.audit_rules = audit_policy
+            .as_ref()
+            .map(Permissions::rule_labels)
+            .unwrap_or_default();
+        snapshot.audit = audit.as_ref().and_then(AuditServer::active).map(|r| {
+            audit_policy
+                .as_ref()
+                .map_or_else(|| r.clone(), |p| p.display_request(r))
+        });
+        state.permission = state
+            .permission
+            .min(snapshot.audit_rules.len().saturating_sub(1));
         let next_size = terminal_size();
         if next_size.ws_row != size.ws_row || next_size.ws_col != size.ws_col {
             size = next_size;
@@ -418,11 +452,22 @@ pub(crate) fn run(args: Vec<OsString>, audit_enabled: bool) -> Result<i32> {
             last_refresh = Instant::now();
             dirty = true;
         }
+        dirty |= state.expire_escape(Instant::now());
+        let mouse = state.panel_open() && snapshot.audit.is_none();
+        if mouse != review_mouse {
+            stdout.write_all(if mouse {
+                b"\x1b[?1000h\x1b[?1006h"
+            } else {
+                b"\x1b[?1000l\x1b[?1006l"
+            })?;
+            review_mouse = mouse;
+            dirty = true;
+        }
         if dirty || last_draw.elapsed() >= Duration::from_secs(1) {
             view::render(
                 &mut stdout,
                 layout,
-                &state,
+                &mut state,
                 parser.screen(),
                 &snapshot,
                 started,
@@ -488,29 +533,32 @@ pub(crate) fn run(args: Vec<OsString>, audit_enabled: bool) -> Result<i32> {
                 if let Some(server) = audit.as_mut()
                     && server.active().is_some()
                 {
+                    if (size.ws_col < 60 || size.ws_row < 16)
+                        && !matches!(*byte, b'd' | b'D' | 0x1b)
+                    {
+                        continue;
+                    }
                     if let Some((scope, decision)) = server
                         .active()
-                        .and_then(|request| audit_ui::choice(request, *byte))
+                        .and_then(|request| snapshot.audit_prompt.input(request, *byte))
                         && let Some(request) = server.active().cloned()
                     {
-                        let next = audit_policy.with_decision(&request, scope, decision);
+                        let lifetime = snapshot.audit_prompt.lifetime;
                         let save = snapshot
                             .record
                             .as_ref()
                             .ok_or_else(|| anyhow::anyhow!("Job record is not ready"))
                             .and_then(|record| {
-                                next.as_ref()
-                                    .ok_or_else(|| anyhow::anyhow!("invalid audit scope"))?
-                                    .persist(&record.storage)
+                                audit_policy
+                                    .as_mut()
+                                    .context("audit permissions are not loaded")?
+                                    .remember(&record.storage, &request, scope, decision, lifetime)
                             });
                         let actual = if save.is_ok() {
                             decision
                         } else {
                             AuditDecision::Deny
                         };
-                        if let (Ok(()), Some(next)) = (&save, next) {
-                            audit_policy = next;
-                        }
                         let _ = server.decide(actual);
                         let mut file = OpenOptions::new().append(true).open(&log_file)?;
                         if let Err(error) = save {
@@ -523,6 +571,7 @@ pub(crate) fn run(args: Vec<OsString>, audit_enabled: bool) -> Result<i32> {
                                 actual,
                                 scope,
                                 false,
+                                lifetime,
                             )
                         {
                             writeln!(file, "audit journal unavailable: {error:#}")?;
@@ -532,9 +581,40 @@ pub(crate) fn run(args: Vec<OsString>, audit_enabled: bool) -> Result<i32> {
                             "audit {:?} {:?}: {:?} {:?} ({:?})",
                             actual, scope, request.kind, request.target, request.reason
                         )?;
-                        snapshot.audit_rules = audit_policy.rule_labels();
+                        snapshot.audit_rules = audit_policy
+                            .as_ref()
+                            .map(Permissions::rule_labels)
+                            .unwrap_or_default();
                         snapshot.audit = server.active().cloned();
+                        snapshot.audit_prompt = Prompt::default();
                     }
+                    dirty = true;
+                    continue;
+                }
+                if state.panel_open() && state.panel == input::Panel::Permissions && *byte == b'x' {
+                    if state.forget_pending {
+                        let result = snapshot
+                            .record
+                            .as_ref()
+                            .context("Job record is not ready")
+                            .and_then(|record| {
+                                audit_policy
+                                    .as_mut()
+                                    .context("Permissions are not loaded")?
+                                    .forget(&record.storage, state.permission)
+                            });
+                        if let Err(error) = result {
+                            writeln!(
+                                OpenOptions::new().append(true).open(&log_file)?,
+                                "Cannot forget permission: {error:#}"
+                            )?;
+                        }
+                        snapshot.audit_rules = audit_policy
+                            .as_ref()
+                            .map(Permissions::rule_labels)
+                            .unwrap_or_default();
+                    }
+                    state.forget_pending = !state.forget_pending;
                     dirty = true;
                     continue;
                 }
@@ -556,22 +636,121 @@ pub(crate) fn run(args: Vec<OsString>, audit_enabled: bool) -> Result<i32> {
         }
     }
     let status = exited.unwrap_or(child.0.wait()?);
+    snapshot.refresh(&stage_file, &log_file);
     // Leave the outer alternate screen before printing the persistent review
     // location: the Run pane itself disappears with the TUI.
-    let review_path = snapshot.stage.clone();
     drop(stdout);
     drop(terminal);
-    if let Some(path) = review_path {
-        eprintln!("Review: pvisor status --review {}", path.display());
-    }
+    write_exit_report(
+        &mut std::io::stderr().lock(),
+        status,
+        &snapshot,
+        parser.screen(),
+    )?;
     Ok(status
         .code()
         .unwrap_or_else(|| 128 + status.signal().unwrap_or(1)))
 }
 
+fn write_exit_report(
+    output: &mut impl Write,
+    status: std::process::ExitStatus,
+    snapshot: &Snapshot,
+    screen: &vt100::Screen,
+) -> std::io::Result<()> {
+    if !status.success() {
+        for line in &snapshot.log {
+            writeln!(output, "{line}")?;
+        }
+        let contents = screen.contents();
+        if !contents.trim().is_empty() {
+            writeln!(output, "{contents}")?;
+        }
+        writeln!(output, "pVisor Job failed: {status}")?;
+    }
+    if let Some(path) = &snapshot.stage {
+        writeln!(output, "Review: pvisor status --review {}", path.display())?;
+        if snapshot.record.as_ref().is_some_and(|r| {
+            r.overlay
+                .as_ref()
+                .is_some_and(|o| !o.auto_discard && !o.auto_apply)
+        }) {
+            writeln!(
+                output,
+                "Changes retained. Apply: pvisor apply {} | Discard: pvisor drop {}",
+                path.display(),
+                path.display()
+            )?;
+        }
+    }
+    Ok(())
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn image_transfers_reach_log_panel_without_throttling() {
+        let directory = tempfile::tempdir().unwrap();
+        let log = directory.path().join("diagnostics.log");
+        File::create(&log).unwrap();
+        crate::diagnostics::init(Some(log.clone()));
+        let downloads = crate::image::cache::progress::Downloads::new("example:latest");
+        downloads.received(b"transfer-log-test/file\nname", 10);
+        downloads.received(b"transfer-log-test/file\nname", 20);
+        let mut snapshot = Snapshot::default();
+        snapshot.refresh(&directory.path().join("missing"), &log);
+        let transfers: Vec<_> = snapshot
+            .log
+            .iter()
+            .filter(|line| line.contains("transfer-log-test"))
+            .collect();
+        assert_eq!(transfers.len(), 2);
+        assert!(transfers[0].contains("transferred 10 bytes from /transfer-log-test/file\\nname"));
+        assert!(transfers[1].contains("this run: 30 bytes across 1 files"));
+    }
+
+    #[test]
+    fn image_progress_is_visible_before_stage_is_announced() {
+        let directory = tempfile::tempdir().unwrap();
+        let log = directory.path().join("diagnostics.log");
+        let path = log.with_extension("image.json");
+        std::fs::write(&path, br#"{"image":"ubuntu:latest","totals":{"files":100,"bytes":2000},"downloaded_files":2,"downloaded_bytes":10}"#).unwrap();
+        let mut snapshot = Snapshot::default();
+        snapshot.refresh(&directory.path().join("missing"), &log);
+        assert!(snapshot.stage.is_none());
+        assert_eq!(snapshot.image.as_ref().unwrap().downloaded_files, 2);
+        std::fs::write(&path, b"invalid").unwrap();
+        snapshot.refresh(&directory.path().join("missing"), &log);
+        assert_eq!(snapshot.image.as_ref().unwrap().downloaded_bytes, 10);
+    }
+
+    #[test]
+    fn fast_failure_preserves_diagnostics_and_review_location() {
+        let temporary = tempfile::tempdir().unwrap();
+        let stage_file = temporary.path().join("stage");
+        let log_file = temporary.path().join("diagnostics.log");
+        std::fs::write(&stage_file, b"/missing/run").unwrap();
+        std::fs::write(&log_file, b"resolve Agent executable: missing\n").unwrap();
+        let mut snapshot = Snapshot::default();
+        snapshot.refresh(&stage_file, &log_file);
+        let mut parser = vt100::Parser::new(24, 80, 0);
+        parser.process(b"Error: startup failed\r\n");
+        let mut output = Vec::new();
+        write_exit_report(
+            &mut output,
+            std::process::ExitStatus::from_raw(1 << 8),
+            &snapshot,
+            parser.screen(),
+        )
+        .unwrap();
+        let output = String::from_utf8(output).unwrap();
+        assert!(output.contains("resolve Agent executable: missing"));
+        assert!(output.contains("Error: startup failed"));
+        assert!(output.contains("pVisor Job failed: exit status: 1"));
+        assert!(output.contains("Review: pvisor status --review /missing/run"));
+    }
 
     #[test]
     fn bracketed_paste_follows_agent_focus() {

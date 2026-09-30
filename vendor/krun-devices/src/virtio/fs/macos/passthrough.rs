@@ -49,6 +49,9 @@ struct InodeAltKey {
 }
 
 struct InodeData {
+    // Filesystems such as FSKit do not support /.vol inode paths. Pin the
+    // object and ask F_GETPATH for its current name, including after renames.
+    path_fd: Option<File>,
     inode: Inode,
     ino: u64,
     dev: i32,
@@ -153,6 +156,14 @@ struct HandleData {
     inode: Inode,
     file: RwLock<File>,
     dirstream: Mutex<DirStream>,
+}
+
+fn descriptor_path(file: &File) -> io::Result<CString> {
+    let mut path = [0u8; libc::PATH_MAX as usize];
+    if unsafe { libc::fcntl(file.as_raw_fd(), libc::F_GETPATH, path.as_mut_ptr()) } < 0 {
+        return Err(linux_error(io::Error::last_os_error()));
+    }
+    CStr::from_bytes_until_nul(&path).map(CStr::to_owned).map_err(|_| einval())
 }
 
 fn ebadf() -> io::Error {
@@ -642,6 +653,7 @@ impl Default for Config {
 /// directory ends up as the root of the file system process. One way to accomplish this is via a
 /// combination of mount namespaces and the pivot_root system call.
 pub struct PassthroughFs {
+    fd_paths: bool,
     inodes: RwLock<MultikeyBTreeMap<Inode, InodeAltKey, Arc<InodeData>>>,
     inode_alloc: Arc<InodeAllocator>,
 
@@ -673,9 +685,20 @@ impl PassthroughFs {
             return Err(linux_error(io::Error::last_os_error()));
         }
 
+        let mut stat = MaybeUninit::<libc::stat>::zeroed();
+        let fd_paths = unsafe {
+            if libc::fstat(fd, stat.as_mut_ptr()) == 0 {
+                let stat = stat.assume_init();
+                let path = CString::new(format!("/.vol/{}/{}", stat.st_dev, stat.st_ino)).unwrap();
+                libc::access(path.as_ptr(), libc::F_OK) != 0
+            } else {
+                false
+            }
+        };
         unsafe { libc::close(fd) };
 
         Ok(PassthroughFs {
+            fd_paths,
             inodes: RwLock::new(MultikeyBTreeMap::new()),
             inode_alloc,
 
@@ -711,7 +734,10 @@ impl PassthroughFs {
             }
         }
 
-        Ok(InodeHandle::Path(cstr))
+        Ok(InodeHandle::Path(match &data.path_fd {
+            Some(fd) => descriptor_path(fd)?,
+            None => cstr,
+        }))
     }
 
     fn name_to_path(&self, parent: Inode, name: &CStr) -> io::Result<CString> {
@@ -727,6 +753,13 @@ impl PassthroughFs {
             .get(&parent)
             .cloned()
             .ok_or_else(ebadf)?;
+
+        if let Some(fd) = &data.path_fd {
+            let mut bytes = descriptor_path(fd)?.into_bytes();
+            bytes.push(b'/');
+            bytes.extend_from_slice(name.to_bytes());
+            return CString::new(bytes).map_err(|_| einval());
+        }
 
         let cstr = CString::new(format!(
             "/.vol/{}/{}/{}",
@@ -1315,6 +1348,7 @@ impl FileSystem for PassthroughFs {
                 dev: st.st_dev,
             },
             Arc::new(InodeData {
+                path_fd: if self.fd_paths { Some(f.try_clone()?) } else { None },
                 inode: fuse::ROOT_ID,
                 ino: st.st_ino,
                 dev: st.st_dev,
@@ -1408,6 +1442,11 @@ impl FileSystem for PassthroughFs {
                     dev: st.st_dev,
                 },
                 Arc::new(InodeData {
+                    path_fd: if self.fd_paths {
+                        let fd = unsafe { libc::open(c_path.as_ptr(), libc::O_EVTONLY | libc::O_SYMLINK | libc::O_CLOEXEC) };
+                        if fd < 0 { return Err(linux_error(io::Error::last_os_error())); }
+                        Some(unsafe { File::from_raw_fd(fd) })
+                    } else { None },
                     inode,
                     ino: st.st_ino,
                     dev: st.st_dev,
@@ -1752,8 +1791,21 @@ impl FileSystem for PassthroughFs {
         &self,
         ctx: Context,
         inode: Inode,
-        _handle: Option<Handle>,
+        handle: Option<Handle>,
     ) -> io::Result<(bindings::stat64, Duration)> {
+        if let Some(handle) = handle {
+            let hd = self
+                .handles
+                .read()
+                .unwrap()
+                .get(&handle)
+                .filter(|hd| hd.inode == inode)
+                .cloned()
+                .ok_or_else(ebadf)?;
+            let file = hd.file.read().unwrap();
+            let st = fstat(&ctx, self.cfg.semantics, file.as_raw_fd(), false)?;
+            return Ok((st, self.cfg.attr_timeout));
+        }
         self.do_getattr(&ctx, inode)
     }
 
@@ -2759,5 +2811,30 @@ impl FileSystem for PassthroughFs {
         }
 
         Ok(())
+    }
+}
+
+#[cfg(test)]
+mod path_handle_tests {
+    use super::*;
+
+    #[test]
+    fn descriptor_paths_follow_renames_without_volfs() {
+        let root = tempfile::tempdir().unwrap();
+        std::fs::write(root.path().join("file"), b"data").unwrap();
+        let mut filesystem = PassthroughFs::new(
+            Config { root_dir: root.path().to_string_lossy().into_owned(), ..Default::default() },
+            Arc::new(InodeAllocator::new()),
+        ).unwrap();
+        filesystem.fd_paths = true; // Exercise the FSKit path on any host volume.
+        filesystem.init(FsOptions::empty()).unwrap();
+        let ctx = Context { uid: 0, gid: 0, pid: 0 };
+        let entry = filesystem.lookup(ctx, fuse::ROOT_ID, c"file").unwrap();
+        std::fs::rename(root.path().join("file"), root.path().join("renamed")).unwrap();
+        let InodeHandle::Path(path) = filesystem.inode_to_handle(entry.inode, false).unwrap() else {
+            panic!("expected current descriptor path");
+        };
+        assert!(path.to_bytes().ends_with(b"/renamed"));
+        assert_eq!(filesystem.do_getattr(&ctx, entry.inode).unwrap().0.st_size, 4);
     }
 }

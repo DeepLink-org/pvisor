@@ -1,6 +1,8 @@
 //! Mode-scoped key bindings following Zellij's input-mode/action pattern.
 //! pVisor binds only keys it implements; Agent mode forwards everything else.
 
+use std::time::{Duration, Instant};
+
 const PREFIX: u8 = 0x1d; // Ctrl-]
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
@@ -63,6 +65,10 @@ enum Action {
     NextPanel,
     ScrollUp,
     ScrollDown,
+    PageUp,
+    PageDown,
+    First,
+    Last,
     SendPrefix,
 }
 
@@ -116,7 +122,11 @@ const BINDINGS: &[Binding] = &[
     bind!(Command, b'5', Action::Open(Panel::Log), ""),
     bind!(Command, b'6', Action::Open(Panel::Permissions), ""),
     bind!(Panel, b'\t', Action::NextPanel, "Tab View"),
-    bind!(Panel, b'j', Action::ScrollDown, "j/k Scroll"),
+    bind!(Panel, b'j', Action::ScrollDown, "↑/↓/Wheel Scroll"),
+    bind!(Panel, 0x02, Action::PageUp, "PgUp/PgDn Page"),
+    bind!(Panel, 0x06, Action::PageDown, ""),
+    bind!(Panel, b'g', Action::First, "Home/End Jump"),
+    bind!(Panel, b'G', Action::Last, ""),
     bind!(Panel, b'k', Action::ScrollUp, ""),
     bind!(Panel, b'1', Action::Open(Panel::Overview), "1-6 Select"),
     bind!(Panel, b'2', Action::Open(Panel::Files), ""),
@@ -165,6 +175,12 @@ pub(super) struct UiState {
     pub mode: Mode,
     pub panel: Panel,
     pub scroll: usize,
+    pub page_rows: usize,
+    pub max_scroll: usize,
+    pub escape: Vec<u8>,
+    pub escape_started: Option<Instant>,
+    pub permission: usize,
+    pub forget_pending: bool,
 }
 
 impl Default for UiState {
@@ -173,6 +189,12 @@ impl Default for UiState {
             mode: Mode::Agent,
             panel: Panel::Overview,
             scroll: 0,
+            page_rows: 1,
+            max_scroll: usize::MAX,
+            escape: Vec::new(),
+            escape_started: None,
+            permission: 0,
+            forget_pending: false,
         }
     }
 }
@@ -184,15 +206,6 @@ impl UiState {
 
     pub fn agent_input_active(&self) -> bool {
         self.mode == Mode::Agent
-    }
-
-    pub fn hints(&self) -> String {
-        BINDINGS
-            .iter()
-            .filter(|binding| binding.mode == self.mode && !binding.hint.is_empty())
-            .map(|binding| binding.hint)
-            .collect::<Vec<_>>()
-            .join("  ")
     }
 
     /// Shortcut tiles are selected from the same bindings that handle input.
@@ -228,8 +241,83 @@ impl UiState {
         }
     }
 
+    // Escape sequences can arrive in separate stdin reads. A lone Esc closes
+    // Review only after a short timeout; arrow/mouse bytes never reach the PTY.
+    pub fn expire_escape(&mut self, now: Instant) -> bool {
+        if self
+            .escape_started
+            .is_some_and(|at| now.duration_since(at) >= Duration::from_millis(150))
+        {
+            if self.escape == [0x1b] {
+                self.mode = Mode::Agent;
+            }
+            self.escape.clear();
+            self.escape_started = None;
+            return true;
+        }
+        false
+    }
+
+    fn navigation(&mut self, action: Action) {
+        let offset = if self.panel == Panel::Permissions {
+            &mut self.permission
+        } else {
+            &mut self.scroll
+        };
+        *offset = match action {
+            Action::ScrollUp => offset.saturating_sub(1),
+            Action::ScrollDown => offset.saturating_add(1),
+            Action::PageUp => offset.saturating_sub(self.page_rows),
+            Action::PageDown => offset.saturating_add(self.page_rows),
+            Action::First => 0,
+            Action::Last => self.max_scroll,
+            _ => return,
+        };
+        if self.panel != Panel::Permissions {
+            *offset = (*offset).min(self.max_scroll);
+        }
+    }
+
     /// Returns a byte for the Agent PTY, or consumes it as a UI binding.
     pub fn input(&mut self, byte: u8) -> Option<u8> {
+        self.forget_pending = false;
+        if self.panel_open() && (byte == 0x1b || !self.escape.is_empty()) {
+            if self.escape.is_empty() {
+                self.escape_started = Some(Instant::now());
+            }
+            self.escape.push(byte);
+            if self.escape.len() == 1 || (self.escape.len() == 2 && matches!(byte, b'[' | b'O')) {
+                return None;
+            }
+            if self.escape.len() > 32 || (self.escape.len() == 2 && !matches!(byte, b'[' | b'O')) {
+                self.escape.clear();
+                self.escape_started = None;
+                return None;
+            }
+            if (0x40..=0x7e).contains(&byte) {
+                let action = match self.escape.as_slice() {
+                    b"\x1b[A" | b"\x1bOA" => Some(Action::ScrollUp),
+                    b"\x1b[B" | b"\x1bOB" => Some(Action::ScrollDown),
+                    b"\x1b[5~" => Some(Action::PageUp),
+                    b"\x1b[6~" => Some(Action::PageDown),
+                    b"\x1b[H" | b"\x1bOH" | b"\x1b[1~" | b"\x1b[7~" => Some(Action::First),
+                    b"\x1b[F" | b"\x1bOF" | b"\x1b[4~" | b"\x1b[8~" => Some(Action::Last),
+                    mouse if mouse.starts_with(b"\x1b[<64;") && byte == b'M' => {
+                        Some(Action::ScrollUp)
+                    }
+                    mouse if mouse.starts_with(b"\x1b[<65;") && byte == b'M' => {
+                        Some(Action::ScrollDown)
+                    }
+                    _ => None,
+                };
+                self.escape.clear();
+                self.escape_started = None;
+                if let Some(action) = action {
+                    self.navigation(action);
+                }
+            }
+            return None;
+        }
         let Some(binding) = BINDINGS
             .iter()
             .find(|binding| binding.mode == self.mode && binding.key == byte)
@@ -247,8 +335,12 @@ impl UiState {
                 self.panel = self.panel.next();
                 self.scroll = 0;
             }
-            Action::ScrollUp => self.scroll = self.scroll.saturating_sub(1),
-            Action::ScrollDown => self.scroll = self.scroll.saturating_add(1),
+            action @ (Action::ScrollUp
+            | Action::ScrollDown
+            | Action::PageUp
+            | Action::PageDown
+            | Action::First
+            | Action::Last) => self.navigation(action),
             Action::SendPrefix => {
                 self.mode = Mode::Agent;
                 return Some(PREFIX);
@@ -261,6 +353,39 @@ impl UiState {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn review_navigation_consumes_sequences_and_obeys_viewport_bounds() {
+        let mut state = UiState::default();
+        state.input(PREFIX);
+        state.input(b'l');
+        state.page_rows = 10;
+        state.max_scroll = 23;
+        for (sequence, expected) in [
+            (b"\x1b[B".as_slice(), 1),
+            (b"\x1b[6~".as_slice(), 11),
+            (b"\x1b[F".as_slice(), 23),
+            (b"j".as_slice(), 23),
+            (b"\x1b[5~".as_slice(), 13),
+            (b"\x1b[<64;30;12M".as_slice(), 12),
+            (b"\x1b[<65;30;12M".as_slice(), 13),
+            (b"\x1b[H".as_slice(), 0),
+            (b"\x1b[A".as_slice(), 0),
+            (b"\x1b[99~".as_slice(), 0),
+        ] {
+            for byte in sequence {
+                assert_eq!(state.input(*byte), None);
+            }
+            assert_eq!(state.scroll, expected);
+            assert_eq!(state.mode, Mode::Panel);
+        }
+        state.input(0x1b);
+        assert!(!state.expire_escape(Instant::now()));
+        assert!(state.expire_escape(Instant::now() + Duration::from_millis(200)));
+        for byte in b"\x1b[B" {
+            assert_eq!(state.input(*byte), Some(*byte));
+        }
+    }
 
     #[test]
     fn bindings_are_unique_within_each_mode() {
@@ -287,6 +412,7 @@ mod tests {
         assert_eq!(state.input(b'j'), None);
         assert_eq!(state.scroll, 1);
         assert_eq!(state.input(0x1b), None);
+        state.expire_escape(Instant::now() + Duration::from_millis(200));
         assert_eq!(state.mode, Mode::Agent);
         assert_eq!(state.input(b'f'), Some(b'f'));
     }
@@ -302,12 +428,12 @@ mod tests {
     #[test]
     fn displayed_hints_come_from_active_mode_bindings() {
         let mut state = UiState::default();
-        assert_eq!(state.hints(), "Ctrl-] Menu");
+        assert_eq!(state.ribbon_hints().join("  "), "Ctrl-] Menu");
         state.input(PREFIX);
-        assert!(state.hints().contains("r Review"));
-        assert!(!state.hints().contains("Tab View"));
+        assert!(state.ribbon_hints().join("  ").contains("r Review"));
+        assert!(!state.ribbon_hints().join("  ").contains("Tab View"));
         state.input(b'r');
-        assert!(state.hints().contains("Tab View"));
+        assert!(state.ribbon_hints().join("  ").contains("Tab View"));
     }
 
     #[test]
@@ -321,6 +447,7 @@ mod tests {
         assert_eq!(state.input(b'5'), None);
         assert_eq!(state.panel, Panel::Log);
         assert_eq!(state.input(0x1b), None);
+        state.expire_escape(Instant::now() + Duration::from_millis(200));
         assert_eq!(state.input(b'l'), Some(b'l'));
     }
 }

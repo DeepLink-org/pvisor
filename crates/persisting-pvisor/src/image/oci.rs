@@ -15,6 +15,7 @@ use std::collections::BTreeMap;
 use std::fs::{self, File, OpenOptions};
 use std::io::{Read, Write};
 use std::path::{Component, Path, PathBuf};
+use std::time::{Duration, SystemTime, UNIX_EPOCH};
 
 const MANIFEST_ACCEPT: &str = concat!(
     "application/vnd.oci.image.index.v1+json, ",
@@ -30,8 +31,9 @@ struct ImageReference {
     reference: String,
 }
 
-#[derive(Debug, Clone)]
+#[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct PreparedImage {
+    #[serde(skip)]
     pub rootfs: PathBuf,
     pub digest: String,
     pub env: BTreeMap<String, String>,
@@ -41,7 +43,7 @@ pub struct PreparedImage {
 
 #[derive(Debug, Clone)]
 pub struct ImageStore {
-    root: PathBuf,
+    pub(crate) root: PathBuf,
     client: Client,
 }
 
@@ -78,6 +80,10 @@ struct ImageManifest {
 #[derive(Debug, Default, Deserialize)]
 struct ImageConfiguration {
     #[serde(default)]
+    architecture: String,
+    #[serde(default)]
+    os: String,
+    #[serde(default)]
     config: RuntimeConfiguration,
 }
 
@@ -106,6 +112,14 @@ struct RootfsMetadata<'a> {
     manifest_digest: &'a str,
 }
 
+const TAG_CACHE_TTL: Duration = Duration::from_secs(5 * 60);
+
+#[derive(Serialize, Deserialize)]
+struct PreparedRecord {
+    checked_at: u64,
+    prepared: PreparedImage,
+}
+
 impl ImageStore {
     pub fn new(root: Option<PathBuf>) -> anyhow::Result<Self> {
         let root = match root {
@@ -117,6 +131,8 @@ impl ImageStore {
         fs::create_dir_all(root.join("metadata/sha256"))?;
         fs::create_dir_all(root.join("locks"))?;
         let client = Client::builder()
+            .connect_timeout(Duration::from_secs(10))
+            .timeout(Duration::from_secs(300))
             .user_agent(concat!("pvisor/", env!("CARGO_PKG_VERSION")))
             .build()
             .context("build OCI registry client")?;
@@ -124,14 +140,133 @@ impl ImageStore {
     }
 
     pub fn prepare(&self, image: &str) -> anyhow::Result<PreparedImage> {
+        self.prepare_for_architecture(image, host_architecture()?)
+    }
+
+    pub(crate) fn prepare_for_architecture(
+        &self,
+        image: &str,
+        architecture: &str,
+    ) -> anyhow::Result<PreparedImage> {
+        self.prepare_with_refresh(image, architecture, false)
+    }
+
+    pub(crate) fn prepare_with_refresh(
+        &self,
+        image: &str,
+        architecture: &str,
+        refresh: bool,
+    ) -> anyhow::Result<PreparedImage> {
+        anyhow::ensure!(
+            matches!(architecture, "arm64" | "amd64"),
+            "unsupported image architecture {architecture}"
+        );
         let image_ref = ImageReference::parse(image)?;
+        self.with_prepared_cache(image_ref.clone(), architecture, refresh, || {
+            self.resolve_and_prepare(image, architecture, image_ref)
+        })
+    }
+
+    fn with_prepared_cache(
+        &self,
+        image_ref: ImageReference,
+        architecture: &str,
+        refresh: bool,
+        prepare: impl FnOnce() -> anyhow::Result<PreparedImage>,
+    ) -> anyhow::Result<PreparedImage> {
+        let record = self.prepared_record_path(&image_ref, architecture)?;
+        // Lock before contacting the registry, then recheck the record. Separate
+        // processes preparing the same reference share the completed result too.
+        let lock = OpenOptions::new()
+            .create(true)
+            .truncate(false)
+            .read(true)
+            .write(true)
+            .open(self.root.join("locks").join(format!(
+                "prepare-{}.lock",
+                record.file_stem().unwrap().to_string_lossy()
+            )))?;
+        lock.lock_exclusive()?;
+        if !refresh
+            && let Some(prepared) =
+                self.cached_prepared(&record, &image_ref.reference, SystemTime::now())
+        {
+            return Ok(prepared);
+        }
+        let prepared = prepare()?;
+        let record_data = PreparedRecord {
+            checked_at: SystemTime::now().duration_since(UNIX_EPOCH)?.as_secs(),
+            prepared: prepared.clone(),
+        };
+        let bytes = serde_json::to_vec(&record_data)?;
+        fs::create_dir_all(record.parent().unwrap())?;
+        crate::util::atomic_write(&record, &bytes, 0o600)?;
+        // Also make the returned platform digest immediately usable offline.
+        let pinned = ImageReference {
+            reference: prepared.digest.clone(),
+            ..image_ref
+        };
+        crate::util::atomic_write(
+            &self.prepared_record_path(&pinned, architecture)?,
+            &bytes,
+            0o600,
+        )?;
+        Ok(prepared)
+    }
+
+    fn prepared_record_path(
+        &self,
+        image: &ImageReference,
+        architecture: &str,
+    ) -> anyhow::Result<PathBuf> {
+        let key = serde_json::to_vec(&(
+            &image.registry,
+            &image.repository,
+            &image.reference,
+            architecture,
+        ))?;
+        Ok(self.root.join("metadata/prepared-v1").join(format!(
+            "{}.json",
+            crate::util::encode_hex(&Sha256::digest(&key))
+        )))
+    }
+
+    fn cached_prepared(
+        &self,
+        path: &Path,
+        reference: &str,
+        now: SystemTime,
+    ) -> Option<PreparedImage> {
+        let mut record: PreparedRecord = serde_json::from_slice(&fs::read(path).ok()?).ok()?;
+        if !reference.starts_with("sha256:") {
+            let checked = UNIX_EPOCH.checked_add(Duration::from_secs(record.checked_at))?;
+            if now.duration_since(checked).ok()? >= TAG_CACHE_TTL {
+                return None;
+            }
+        }
+        record.prepared.rootfs = self
+            .root
+            .join("rootfs-v3/sha256")
+            .join(digest_hex(&record.prepared.digest).ok()?);
+        fs::symlink_metadata(&record.prepared.rootfs)
+            .ok()?
+            .is_dir()
+            .then_some(record.prepared)
+    }
+
+    fn resolve_and_prepare(
+        &self,
+        image: &str,
+        architecture: &str,
+        image_ref: ImageReference,
+    ) -> anyhow::Result<PreparedImage> {
         let mut registry = RegistryClient::new(&self.client, image_ref.clone());
         let (mut body, mut manifest_digest) = registry.fetch_manifest(&image_ref.reference)?;
         let value: serde_json::Value = serde_json::from_slice(&body)
             .with_context(|| format!("decode OCI manifest for {image}"))?;
         if value.get("manifests").is_some() {
             let index: ImageIndex = serde_json::from_value(value)?;
-            let descriptor = select_platform(&index.manifests)?;
+            let descriptor = select_platform(&index.manifests, architecture)?;
             let fetched = registry.fetch_manifest(&descriptor.digest)?;
             body = fetched.0;
             manifest_digest = fetched.1;
@@ -143,6 +278,12 @@ impl ImageStore {
         let config: ImageConfiguration = serde_json::from_reader(File::open(config_path)?)
             .with_context(|| format!("decode image configuration for {image}"))?;
 
+        anyhow::ensure!(
+            config.os == "linux" && config.architecture == architecture,
+            "image platform is {}/{}, expected linux/{architecture}",
+            config.os,
+            config.architecture
+        );
         let digest_hex = digest_hex(&manifest_digest)?;
         let rootfs = self.root.join("rootfs-v3/sha256").join(digest_hex);
         let lock_path = self.root.join("locks").join(format!("{digest_hex}.lock"));
@@ -224,7 +365,7 @@ impl ImageStore {
             temporary.write_all(&buffer[..read])?;
             size += read as u64;
         }
-        let actual = format!("sha256:{}", encode_hex(&hasher.finalize()));
+        let actual = format!("sha256:{}", crate::util::encode_hex(&hasher.finalize()));
         anyhow::ensure!(
             actual == descriptor.digest,
             "OCI blob digest mismatch: expected {}, got {actual}",
@@ -266,7 +407,7 @@ impl<'a> RegistryClient<'a> {
         let mut response = self.get(&path, Some(MANIFEST_ACCEPT))?;
         let mut body = Vec::new();
         response.read_to_end(&mut body)?;
-        let digest = format!("sha256:{}", encode_hex(&Sha256::digest(&body)));
+        let digest = format!("sha256:{}", crate::util::encode_hex(&Sha256::digest(&body)));
         if reference.starts_with("sha256:") {
             verify_digest(reference, &body)?;
         }
@@ -388,12 +529,18 @@ fn default_store_dir() -> anyhow::Result<PathBuf> {
         .join("persisting/pvisor/images"))
 }
 
-fn select_platform(manifests: &[Descriptor]) -> anyhow::Result<&Descriptor> {
-    let architecture = match std::env::consts::ARCH {
+fn host_architecture() -> anyhow::Result<&'static str> {
+    Ok(match std::env::consts::ARCH {
         "aarch64" => "arm64",
         "x86_64" => "amd64",
         other => bail!("libkrun OCI images are unsupported on host architecture {other}"),
-    };
+    })
+}
+
+fn select_platform<'a>(
+    manifests: &'a [Descriptor],
+    architecture: &str,
+) -> anyhow::Result<&'a Descriptor> {
     manifests
         .iter()
         .find(|descriptor| {
@@ -436,7 +583,7 @@ fn parse_bearer_challenge(value: &str) -> anyhow::Result<BTreeMap<String, String
     Ok(result)
 }
 
-fn digest_hex(digest: &str) -> anyhow::Result<&str> {
+pub(crate) fn digest_hex(digest: &str) -> anyhow::Result<&str> {
     let value = digest
         .strip_prefix("sha256:")
         .context("pVisor v1 only supports sha256 OCI digests")?;
@@ -449,7 +596,7 @@ fn digest_hex(digest: &str) -> anyhow::Result<&str> {
 
 fn verify_digest(expected: &str, body: &[u8]) -> anyhow::Result<()> {
     digest_hex(expected)?;
-    let actual = format!("sha256:{}", encode_hex(&Sha256::digest(body)));
+    let actual = format!("sha256:{}", crate::util::encode_hex(&Sha256::digest(body)));
     anyhow::ensure!(
         actual == expected,
         "digest mismatch: expected {expected}, got {actual}"
@@ -469,23 +616,13 @@ fn verify_file_digest(expected: &str, path: &Path) -> anyhow::Result<()> {
         }
         hasher.update(&buffer[..read]);
     }
-    let actual = format!("sha256:{}", encode_hex(&hasher.finalize()));
+    let actual = format!("sha256:{}", crate::util::encode_hex(&hasher.finalize()));
     anyhow::ensure!(
         actual == expected,
         "cached OCI blob {} is corrupt",
         path.display()
     );
     Ok(())
-}
-
-fn encode_hex(bytes: &[u8]) -> String {
-    const HEX: &[u8; 16] = b"0123456789abcdef";
-    let mut output = String::with_capacity(bytes.len() * 2);
-    for byte in bytes {
-        output.push(HEX[(byte >> 4) as usize] as char);
-        output.push(HEX[(byte & 0x0f) as usize] as char);
-    }
-    output
 }
 
 fn apply_layer(blob: &Path, media_type: &str, rootfs: &Path) -> anyhow::Result<()> {
@@ -759,6 +896,95 @@ mod tests {
     use super::*;
 
     #[test]
+    fn prepared_cache_coalesces_requests_and_honors_refresh_expiry_and_architecture() {
+        use std::sync::{
+            Barrier,
+            atomic::{AtomicUsize, Ordering},
+        };
+        let temp = tempfile::tempdir().unwrap();
+        let store = ImageStore::new(Some(temp.path().into())).unwrap();
+        let image = ImageReference::parse("ubuntu:latest").unwrap();
+        let digest = format!("sha256:{}", "a".repeat(64));
+        let root = store.root.join("rootfs-v3/sha256").join(&digest[7..]);
+        fs::create_dir(&root).unwrap();
+        let calls = AtomicUsize::new(0);
+        let prepare = || {
+            calls.fetch_add(1, Ordering::SeqCst);
+            Ok(PreparedImage {
+                rootfs: root.clone(),
+                digest: digest.clone(),
+                env: BTreeMap::new(),
+                entrypoint: vec![],
+                cmd: vec!["bash".into()],
+            })
+        };
+        let barrier = Barrier::new(8);
+        std::thread::scope(|scope| {
+            for _ in 0..8 {
+                scope.spawn(|| {
+                    barrier.wait();
+                    let result = store
+                        .with_prepared_cache(image.clone(), "arm64", false, prepare)
+                        .unwrap();
+                    assert_eq!(result.digest, digest);
+                });
+            }
+        });
+        assert_eq!(calls.load(Ordering::SeqCst), 1);
+        // The public entry point and a fresh store instance reuse the disk record.
+        let reopened = ImageStore::new(Some(temp.path().into())).unwrap();
+        assert_eq!(
+            reopened
+                .prepare_for_architecture("docker.io/library/ubuntu:latest", "arm64")
+                .unwrap()
+                .cmd,
+            ["bash"]
+        );
+        store
+            .with_prepared_cache(image.clone(), "arm64", true, prepare)
+            .unwrap();
+        assert_eq!(calls.load(Ordering::SeqCst), 2);
+        let record = store.prepared_record_path(&image, "arm64").unwrap();
+        let bytes = fs::read(&record).unwrap();
+        let saved: PreparedRecord = serde_json::from_slice(&bytes).unwrap();
+        let checked = UNIX_EPOCH + Duration::from_secs(saved.checked_at);
+        assert!(
+            store
+                .cached_prepared(&record, "latest", checked + TAG_CACHE_TTL)
+                .is_none()
+        );
+        let pinned = ImageReference {
+            reference: digest.clone(),
+            ..image.clone()
+        };
+        let pin_record = store.prepared_record_path(&pinned, "arm64").unwrap();
+        assert!(
+            store
+                .cached_prepared(&pin_record, &digest, checked + TAG_CACHE_TTL * 100)
+                .is_some()
+        );
+        assert_ne!(record, store.prepared_record_path(&image, "amd64").unwrap());
+        // Failed refreshes preserve the last successful record, but return errors.
+        assert!(
+            store
+                .with_prepared_cache(image.clone(), "arm64", true, || anyhow::bail!("offline"))
+                .is_err()
+        );
+        assert_eq!(fs::read(&record).unwrap(), bytes);
+        fs::write(&record, b"corrupt").unwrap();
+        store
+            .with_prepared_cache(image, "arm64", false, prepare)
+            .unwrap();
+        assert_eq!(calls.load(Ordering::SeqCst), 3);
+        fs::remove_dir(&root).unwrap();
+        assert!(
+            store
+                .cached_prepared(&pin_record, &digest, checked)
+                .is_none()
+        );
+    }
+
+    #[test]
     fn parses_docker_style_references() {
         assert_eq!(
             ImageReference::parse("ubuntu").unwrap(),
@@ -782,6 +1008,24 @@ mod tests {
                 .registry,
             "registry-1.docker.io"
         );
+    }
+
+    #[test]
+    fn platform_selection_uses_client_architecture() {
+        let descriptors: Vec<Descriptor> = serde_json::from_value(serde_json::json!([
+            {"digest": "amd", "platform": {"architecture": "amd64", "os": "linux"}},
+            {"digest": "arm", "platform": {"architecture": "arm64", "os": "linux", "variant": "v8"}}
+        ]))
+        .unwrap();
+        assert_eq!(
+            select_platform(&descriptors, "amd64").unwrap().digest,
+            "amd"
+        );
+        assert_eq!(
+            select_platform(&descriptors, "arm64").unwrap().digest,
+            "arm"
+        );
+        assert!(select_platform(&descriptors, "riscv64").is_err());
     }
 
     #[test]

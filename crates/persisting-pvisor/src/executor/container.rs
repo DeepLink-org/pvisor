@@ -1,9 +1,9 @@
 //! Native OCI runtime transport. pVisor materializes an OCI bundle and invokes
 //! runc/crun; no Docker or Podman daemon is required.
 
-use crate::artifact::resolve_pvisor_binary;
 use crate::config::{ContainerMount, ContainerPlatform, ContainerSettings};
-use crate::delegated::{DelegatedRunFiles, RESULT_FILENAME, SPEC_FILENAME};
+use crate::executor::artifact::resolve_pvisor_binary;
+use crate::executor::delegated::{DelegatedRunFiles, RESULT_FILENAME, SPEC_FILENAME};
 use crate::executor::{AttemptContext, RunExecutor};
 use async_trait::async_trait;
 use persisting_control::{
@@ -358,7 +358,7 @@ impl RunExecutor for ContainerExecutor {
                 );
                 let image = executor.settings.image.clone();
                 let prepared = tokio::task::spawn_blocking(move || {
-                    crate::oci::ImageStore::new(None)?.prepare(&image)
+                    crate::image::oci::ImageStore::new(None)?.prepare(&image)
                 })
                 .await??;
                 executor.settings.rootfs = Some(prepared.rootfs);
@@ -736,7 +736,7 @@ mod tests {
         let RunInvocation::Process(invocation) = &mut spec.invocation;
         invocation.cwd = Some(cwd.display().to_string());
         invocation.inherit_env = false;
-        let files = DelegatedRunFiles::new(&spec).unwrap();
+        let files = DelegatedRunFiles::new_with_stdio(&spec, false).unwrap();
         let command = executor
             .build_command(
                 &spec,

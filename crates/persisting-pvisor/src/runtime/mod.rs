@@ -1,13 +1,18 @@
-//! Attempt preparation for pVisor-owned runtime drivers.
+//! Run lifecycle, durable records, and pVisor-owned runtime driver coordination.
 //!
 //! pVisor assembles the optional Gateway/OverlayNet driver, network policy, and
 //! embedded OverlayFS before the Agent process starts.
 
+pub(crate) mod agentctl;
 mod attempt;
+pub(crate) mod bundle;
+pub(crate) mod checkpoint;
+pub(crate) mod event;
 mod implant;
 mod overlay;
 pub(crate) mod plan;
 mod registry;
+pub(crate) mod run;
 mod supervisor;
 pub(crate) mod zcode;
 

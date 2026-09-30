@@ -10,5 +10,5 @@ These files are original pVisor code except for the adapted border glyphs below.
 [`zellij-server/src/ui/border_glyphs.rs`](https://github.com/zellij-org/zellij/blob/fc400dfef9ee79ca1412831f73d1f3c79699ea3f/zellij-server/src/ui/border_glyphs.rs)
 at commit `fc400dfef9ee79ca1412831f73d1f3c79699ea3f`.
 
-Changes: imports and boundary/line-style types were localized for pVisor.
+Only the rounded single-line glyphs used by pVisor are retained.
 The original copyright and MIT permission notice are in [LICENSE.md](LICENSE.md).

@@ -40,15 +40,45 @@ pvisor run --tui -- bash
 ```
 
 The shell or Agent keeps the terminal width and receives keyboard input by
-default. The bottom bar shows Job state, elapsed time, filesystem and network
-counts, log count, and the `Ctrl-]` command hint. Pressing the prefix replaces
+default. The header shows the workspace and file/network boundaries. The bottom
+bar shows state, elapsed time, pending authorization and nonzero activity or
+errors; detailed counters remain in the panels. `Ctrl-]` opens the menu. Pressing the prefix replaces
 the same bar with the available shortcuts. pVisor's own startup
 diagnostics appear in the Log panel instead of
 the Agent terminal. Press `Ctrl-]` to enter command mode, then `r`, `f`, `n`,
-`u`, or `l` to open the Overview, Files, Network, Job, or Log panel. Press `?`
-for key help. In a panel, use Tab or `1`–`5` to switch views, `j`/`k` to scroll,
+`u`, `l`, or `p` to open the Overview, Files, Network, Job, Log, or Permissions panel. Press `?`
+for key help. In a panel, use Tab or `1`–`6` to switch views, `j`/`k` to scroll,
 and Esc or `Ctrl-]` to return to the Agent. Press `Ctrl-]` twice to send a
 literal Ctrl-] to the Agent.
+
+Use `pvisor --ask -- bash` to ask before accessing files covered by `ask`
+rules or unlisted proxy destinations; `--ask` also enables `--tui` and `--safe`.
+File approval covers inspection, reading, modification, and deletion in the
+allowed view, not read-only access. Saved decisions are consulted only for
+matching ask rules, and cannot override explicit deny or sandbox boundaries.
+Ask prompts build reusable permissions as you work. `--access 'private/*:ask'`
+automatically opens the audit TUI. In a prompt, choose where to remember the
+answer with `s` (session, the default), `w` (workspace), or `u` (user), then
+press `1` to select the exact target and Enter to confirm, or `d` to deny it.
+Use Tab or Up/Down to move between scope, lifetime and action buttons;
+Left/Right changes the selection. Enter on an action button confirms it.
+Deny is selected by default; `d` denies immediately. Selection alone never grants access. For files, `2` allows
+files in the same directory and `3` allows the same suffix. For network
+requests, `2` allows the hostname and its subdomains on the same port and
+transport.
+
+Session rules live in the Job's `audit-policy.json`. Workspace and user rules
+live under `permissions` in `~/.config/pvisor/config.toml` (or
+`$XDG_CONFIG_HOME/pvisor/config.toml` when set to an absolute directory), and
+load when a new TUI Job starts. Workspace rules use the canonical workspace
+path. Precedence is session > workspace > user, with the last matching rule
+winning within each scope. Explicit deny policies still take precedence over
+ask approvals. Persistent file rules use original absolute paths; user-wide
+suffix grants can match files across workspaces. Review rules in Permissions;
+use `j`/`k` to select a saved decision and `x`, then `x` again, to forget it.
+Removing a decision restores matching broader rules or a new prompt; it does
+not close existing file handles. Other running TUIs reload on their next launch.
+Other configuration settings and comments are preserved when saving.
 
 The reference that follows is organized by lifecycle. Options that affect the
 same Job are intentionally described together so that a copied command has a
@@ -76,9 +106,11 @@ pvisor status --review last
 
 Host execution preserves the host filesystem view by default. `--filesystem sandbox`
 opts into pVisor's synthetic-root/Landlock or Seatbelt filesystem access policy.
-`--stage <PATH>` independently opts into an OverlayFS stage for the current workspace, creates an independent Run
-and writable stage at the supplied path,
-retains changes for manual review, and writes `run-bundle.json` with mode `0600`.
+`--safe` stages workspace writes and keeps writable home
+state in a private copy-on-write view, including Codex launched from a shell.
+`--safe` and `--ask` retain workspace changes and `run-bundle.json` in Job
+storage by default. Use `status --review`, `apply`, or `drop` after exit.
+`--stage <PATH>` chooses another storage directory; it is not required to retain changes.
 
 `--strict` fails closed before command start unless every requested capability
 dimension has non-bypassable enforcement evidence. Today host, container, and
@@ -265,18 +297,25 @@ Bulk-read and tool-call attribution monitoring are not provided. Additional shar
 ## File access rules
 
 ```bash
-pvisor run --mount /opt/tool:read --access '**/.ssh:deny' --access '**/.env*:read' -- my-agent
+pvisor run --safe --mount /opt/tool:read --access '**/.ssh:deny' --access '**/.env*:warn' -- my-agent
 ```
 
-`--mount SOURCE[:TARGET]:read|stage|write` declares a host path. When TARGET is omitted,
-it equals SOURCE. `write` adds a direct persistent host write grant; `read` and
-`stage` currently both become lower layers of the copy-on-write view. A `read`
-mount is therefore **not** an enforced read-only boundary for that path. The
-current overlay accepts only one nonidentity TARGET for a Run; `write` requires
-TARGET to equal SOURCE.
-`--access PATH-GLOB:deny|read` defines overlay rules. `deny` hides a matching
-path and blocks access. `read` currently maps to a warning on access; it does
-not block writes. Rules cannot raise access to `stage` or `write`.
+`--mount SOURCE:read` grants a host executor read-only access to that absolute
+path, and requires `--safe` or `--ask`. `SOURCE:write` grants direct persistent
+host writes. Both keep the original path, cannot be remapped, and must not
+overlap the workspace, Job storage, or writable runtime paths. Read-only
+shares under the private `/tmp` are unsupported on Linux. These explicit
+shares are outside overlay-relative ask rules.
+`--mount SOURCE[:TARGET]:stage` adds a copy-on-write lower layer to the workspace
+view; it is not an independent directory mount. A Run accepts only one
+nonidentity TARGET for this view. Use stage layers for VM composition;
+read/write host grants are not supported by the VM or container executor.
+`--access PATH-GLOB:deny|ask|warn` adds overlay rules: deny blocks access, ask
+pauses matching access for approval, and warn allows access with a diagnostic.
+The former `:read` warning spelling is rejected; use `:warn` or a read-only share.
+Rules accumulate across config, presets, and CLI. `--clear-access` explicitly
+removes config and preset file rules before applying CLI rules. It removes the
+default sensitive-file protection too. Precedence is deny > ask > warn.
 
 Globs are relative to the mount root: `*` stays within one component, `**`
 crosses directories, and a matching directory covers all descendants. Matching
@@ -294,10 +333,10 @@ cannot identify every private key; add rules for custom names.
 [filesystem]
 stage = "../stage-001"
 backend = "directory"
-mount = [{ source = "/opt/tool", access = "read" }]
+mount = [{ source = "/opt/tool", access = "stage" }]
 access = [
   { path = "**/.ssh", level = "deny" },
-  { path = "**/.env", level = "read" },
+  { path = "**/.env", level = "warn" },
 ]
 ```
 
@@ -422,7 +461,7 @@ overrides. pVisor does not discover a hidden project file.
 pvisor run \
   --name my-agent \
   --stage ../stage-001 \
-  --mount /opt/tool:read \
+  --mount /opt/tool:stage \
   --access '**/.ssh:deny' \
   --overlayfs-backend directory \
   --overlaynet-allow api.openai.com:443 \
@@ -458,7 +497,7 @@ command = ["my-agent"]
 
 [filesystem]
 stage = "../stage-001"
-mount = [{ source = "/opt/tool", access = "read" }]
+mount = [{ source = "/opt/tool", access = "stage" }]
 access = [{ path = "**/.ssh", level = "deny" }]
 backend = "directory"
 
@@ -543,10 +582,9 @@ On Linux, `--rootfs host` selects the host `/` as the VM rootfs lower and
 selects the VM executor when `--executor` is omitted. `--rootfs <PATH>` selects
 a prepared directory and `--rootfs image=<PATH>` selects an OCI image or image
 path. These forms are mutually exclusive, and host rootfs is rejected on macOS.
-Use `--mount SOURCE[:TARGET]:read|stage|write` for additional host paths in the
-guest; the current workspace is the implicit bottom layer. Omitting TARGET
-preserves the source path. Workspace changes use the configured stage, or a
-temporary stage that is discarded at Run exit. Writes elsewhere in the VM root
+Use `--mount SOURCE[:TARGET]:stage` for additional lower layers in the guest
+workspace view; the current workspace is the implicit bottom layer. Workspace
+changes are retained in the configured stage or default Job storage. Writes elsewhere in the VM root
 use a temporary upper and are discarded when the VM exits.
 
 The merged rootfs is guest `/`, and `/workspace` becomes the guest cwd. On both
@@ -639,3 +677,19 @@ retains compact Run/Overlay metadata, the apply ledger, and capture artifacts.
 - [Execution environments](../guides/execution.md) for choosing a provider.
 - [Review and apply changes](../guides/review-apply.md) for filtered, repeatable apply.
 - [Network control](../guides/network.md) and [capture](../guides/capture.md) for other Effect dimensions.
+
+### Shared image file cache
+
+`pvisor cache serve` runs the OCI file service in the foreground. Use
+`cache prepare IMAGE`, `cache list DIGEST [PATH]`, `cache stat DIGEST PATH`, and
+`cache read DIGEST PATH` to query it. `PERSISTING_PVISOR_CACHE_SERVER` selects the
+endpoint; the default is `persisting/pvisor/cache.sock` under the user's cache
+directory. The server accepts `--image-store DIR` for an existing OCI store.
+Reads support byte ranges and SHA-256 transfer verification.
+
+VM image runs automatically probe the default socket and use a read-only FUSE
+lower with persistent 1 MiB block caching when a compatible server is available.
+A missing/stale default socket retains local OCI preparation. An explicitly
+configured server must work; `PERSISTING_PVISOR_CACHE_SERVER=off` forces local
+preparation. Explicit rootfs directories and native containers are unchanged.
+See the [protocol and remote-access guide](https://github.com/DeepLink-org/Persisting/blob/main/docs/shared-image-cache.md).

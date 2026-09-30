@@ -9,6 +9,7 @@ use std::collections::{HashMap, VecDeque};
 use std::io;
 use std::net::{IpAddr, Ipv4Addr, SocketAddr};
 use std::os::unix::net::UnixStream as StdUnixStream;
+use std::sync::Arc;
 use std::thread;
 use std::time::Duration as StdDuration;
 
@@ -26,7 +27,7 @@ use smoltcp::wire::{
 };
 use tokio::io::{AsyncReadExt, AsyncWriteExt};
 use tokio::net::{TcpStream, UnixStream};
-use tokio::sync::{mpsc, oneshot};
+use tokio::sync::{OwnedSemaphorePermit, Semaphore, mpsc, oneshot};
 use tokio::task::JoinHandle;
 
 use crate::egress::{
@@ -188,7 +189,7 @@ struct Flow {
     phase: FlowPhase,
     upstream: Option<mpsc::Sender<Vec<u8>>>,
     upstream_task: Option<JoinHandle<()>>,
-    inbound: VecDeque<Vec<u8>>,
+    inbound: VecDeque<(Vec<u8>, Option<OwnedSemaphorePermit>)>,
     inbound_offset: usize,
     dns_input: Vec<u8>,
     remote_eof: bool,
@@ -203,6 +204,7 @@ enum FlowEvent {
     Data {
         key: FlowKey,
         bytes: Vec<u8>,
+        permit: OwnedSemaphorePermit,
     },
     Uploaded {
         key: FlowKey,
@@ -561,7 +563,7 @@ fn drive_dns_tcp(
         let mut framed = Vec::with_capacity(response.len() + 2);
         framed.extend_from_slice(&(response.len() as u16).to_be_bytes());
         framed.extend_from_slice(&response);
-        flow.inbound.push_back(framed);
+        flow.inbound.push_back((framed, None));
     }
     flush_inbound(socket, flow);
     if !socket.may_recv() && flow.inbound.is_empty() && socket.may_send() {
@@ -571,7 +573,7 @@ fn drive_dns_tcp(
 
 fn flush_inbound(socket: &mut tcp::Socket<'_>, flow: &mut Flow) {
     while socket.can_send() {
-        let Some(front) = flow.inbound.front() else {
+        let Some((front, _permit)) = flow.inbound.front() else {
             break;
         };
         match socket.send_slice(&front[flow.inbound_offset..]) {
@@ -702,7 +704,11 @@ async fn bridge_upstream(
     };
     let download = async {
         let mut buffer = vec![0; 16 * 1024];
+        let credits = Arc::new(Semaphore::new(FLOW_BUFFER_CHUNKS));
         loop {
+            // Bound each flow across both the shared event channel and inbound
+            // queue. Reading resumes only after the guest socket accepts data.
+            let permit = credits.clone().acquire_owned().await.unwrap();
             let length = read.read(&mut buffer).await?;
             if length == 0 {
                 let _ = events.send(FlowEvent::RemoteEof(key)).await;
@@ -713,6 +719,7 @@ async fn bridge_upstream(
                 .send(FlowEvent::Data {
                     key,
                     bytes: buffer[..length].to_vec(),
+                    permit,
                 })
                 .await
                 .is_err()
@@ -758,21 +765,10 @@ fn apply_flow_event(
                 }
             }
         }
-        FlowEvent::Data { key, bytes } => {
+        FlowEvent::Data { key, bytes, permit } => {
             if let Some(flow) = flows.get_mut(&key) {
-                let queued = flow
-                    .inbound
-                    .iter()
-                    .map(Vec::len)
-                    .sum::<usize>()
-                    .saturating_sub(flow.inbound_offset);
-                if queued.saturating_add(bytes.len()) > TCP_BUFFER_BYTES {
-                    sockets.get_mut::<tcp::Socket>(flow.handle).abort();
-                    metrics.tcp_connect_failure();
-                } else {
-                    metrics.host_to_guest(bytes.len());
-                    flow.inbound.push_back(bytes);
-                }
+                metrics.host_to_guest(bytes.len());
+                flow.inbound.push_back((bytes, Some(permit)));
             }
         }
         FlowEvent::Uploaded { key, bytes } => {
@@ -1243,6 +1239,74 @@ impl TxToken for FrameTxToken<'_> {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[tokio::test]
+    async fn slow_guest_backpressures_large_download_without_losing_data() {
+        tokio::time::timeout(StdDuration::from_secs(10), async {
+            let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
+            let stream = TcpStream::connect(listener.local_addr().unwrap())
+                .await
+                .unwrap();
+            let (mut server, _) = listener.accept().await.unwrap();
+            let payload: Vec<u8> = (0..1024 * 1024).map(|i| (i % 251) as u8).collect();
+            let expected = payload.clone();
+            let server_task = tokio::spawn(async move {
+                server.write_all(&payload).await.unwrap();
+                server.shutdown().await.unwrap();
+            });
+            let key = FlowKey {
+                guest_port: 49152,
+                destination_addr: Ipv4Addr::new(198, 18, 0, 1),
+                destination_port: 80,
+            };
+            let (sender, outbound) = mpsc::channel(FLOW_BUFFER_CHUNKS);
+            let (events, mut received) = mpsc::channel(TCP_CHANNEL_DEPTH);
+            let bridge = tokio::spawn(bridge_upstream(
+                key,
+                stream,
+                outbound,
+                Default::default(),
+                events,
+            ));
+            drop(sender);
+            let mut bytes = Vec::new();
+            let mut held = Vec::new();
+            for _ in 0..FLOW_BUFFER_CHUNKS {
+                match received.recv().await.unwrap() {
+                    FlowEvent::Data {
+                        bytes: chunk,
+                        permit,
+                        ..
+                    } => {
+                        bytes.extend(chunk);
+                        held.push(permit);
+                    }
+                    _ => panic!("expected download data"),
+                }
+            }
+            assert!(bytes.len() <= TCP_BUFFER_BYTES);
+            // A stalled guest must stop this flow's reader, not abort the TCP
+            // connection or keep filling the shared event channel.
+            assert!(
+                tokio::time::timeout(StdDuration::from_millis(50), received.recv())
+                    .await
+                    .is_err()
+            );
+            drop(held);
+            loop {
+                match received.recv().await.unwrap() {
+                    FlowEvent::Data { bytes: chunk, .. } => bytes.extend(chunk),
+                    FlowEvent::RemoteEof(_) => break,
+                    _ => panic!("download failed while guest resumed"),
+                }
+            }
+            assert_eq!(bytes, expected);
+            bridge.await.unwrap();
+            server_task.await.unwrap();
+        })
+        .await
+        .expect("download stalled after guest resumed");
+    }
 
     #[test]
     fn denied_vm_flow_records_its_destination() {
