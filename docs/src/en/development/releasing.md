@@ -67,9 +67,10 @@ Linux x86_64 and Apple Silicon macOS unless `PERSISTING_LIBKRUNFW_PATH` points
 at an existing payload. Local wheel builds must use one of those supported
 paths; a missing payload is a build error rather than an incomplete wheel.
 
-Linux wheels use the manylinux_2_28 / glibc 2.28 tag. Current rustc libstd
-and libkrun's virtiofs passthrough need `statx` and `copy_file_range`, which
-are not available on manylinux2014.
+Linux CLI builds use `x86_64-unknown-linux-musl` with static linking and an
+embedded libkrunfw kernel; no firmware shared library is shipped. Wheels retain
+the manylinux_2_28 tag for glibc Python installers. The build requires Zig,
+cargo-zigbuild, and the Rust musl target; firmware is loaded only at build time.
 
 Every wheel is checked for its component set and install-time CLI smoke tests.
 The release-set check then requires exactly one supported wheel per platform,

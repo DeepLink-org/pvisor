@@ -31,7 +31,6 @@ jobs:
       - uses: ./.github/actions/setup-build-env
         with:
           rust: "true"
-          install-zig: "true"
       - uses: Swatinem/rust-cache@v2
 
       - name: Apply nightly local version (PEP 440)

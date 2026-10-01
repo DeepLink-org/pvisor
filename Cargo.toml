@@ -9,8 +9,10 @@ description = "Reviewable Agent execution boundary"
 resolver = "3"
 members = [
     "crates/persisting-control",
+    "crates/persisting-journal",
     "crates/persisting-gateway",
     "crates/persisting-pvisor",
+    "crates/persisting-guest",
     "crates/persisting-replay",
     "crates/persisting-shim",
     "crates/persisting-overlayfs",
@@ -52,6 +54,8 @@ libc = "0.2"
 libloading = "0.8"
 libkrun = "=1.19.3"
 log = "0.4"
+persisting-guest = { path = "crates/persisting-guest" }
+persisting-journal = { path = "crates/persisting-journal" }
 persisting-control = { path = "crates/persisting-control" }
 persisting-gateway = { path = "crates/persisting-gateway", default-features = false }
 persisting-overlayfs = { path = "crates/persisting-overlayfs", default-features = false }
@@ -129,6 +133,5 @@ strip = "none"
 [patch.crates-io]
 fuser = { path = "vendor/fuser" }
 libkrun = { path = "vendor/libkrun" }
-krun-init-blob = { path = "vendor/krun-init-blob" }
 krun-vmm = { path = "vendor/krun-vmm" }
 krun-devices = { path = "vendor/krun-devices" }

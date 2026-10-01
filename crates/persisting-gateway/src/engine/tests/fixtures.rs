@@ -6,13 +6,13 @@ use crate::config::CaptureLevel;
 use crate::engine::{CallContext, CaptureEngine};
 use crate::protocol::ProtocolKind;
 use crate::provider::ProviderKind;
-use crate::record::EventRecord;
+use crate::record::CaptureRecord;
 use crate::session::index::SessionIndexStore;
 use crate::session::storage::CaptureRoute;
-use crate::sink::CaptureEventSink;
+use crate::sink::CaptureEventObserver;
 
 pub(crate) struct RecordingSink {
-    records: Mutex<Vec<EventRecord>>,
+    records: Mutex<Vec<CaptureRecord>>,
     next_seq: Mutex<HashMap<String, u64>>,
 }
 
@@ -24,36 +24,22 @@ impl RecordingSink {
         })
     }
 
-    pub(crate) fn drain(&self) -> Vec<EventRecord> {
+    pub(crate) fn drain(&self) -> Vec<CaptureRecord> {
         self.records.lock().unwrap().drain(..).collect()
     }
 }
 
-impl CaptureEventSink for RecordingSink {
-    fn append(
-        &self,
-        route: &CaptureRoute,
-        _agent_id: &str,
-        record: &mut EventRecord,
-    ) -> anyhow::Result<()> {
+impl CaptureEventObserver for RecordingSink {
+    fn observe(&self, event: &persisting_control::trace::Event) -> anyhow::Result<()> {
         let mut guard = self.next_seq.lock().unwrap();
-        let seq = guard.entry(route.seq_key()).or_insert(0);
-        record.seq = *seq;
-        *seq += 1;
-        drop(guard);
-        self.records.lock().unwrap().push(record.clone());
+        let data = crate::record::capture_observation(event)?;
+        let next = guard.entry(data.story.route.seq_key()).or_insert(0);
+        self.records
+            .lock()
+            .unwrap()
+            .push(CaptureRecord::from_event(event, *next)?);
+        *next += 1;
         Ok(())
-    }
-
-    fn peek_next_seq(&self, route: &CaptureRoute) -> Option<u64> {
-        Some(
-            self.next_seq
-                .lock()
-                .unwrap()
-                .get(&route.seq_key())
-                .copied()
-                .unwrap_or(0),
-        )
     }
 }
 

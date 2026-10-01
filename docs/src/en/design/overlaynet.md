@@ -29,6 +29,15 @@ real final address, IP/CIDR policy cannot inspect the endpoint behind that
 alias. Deployments that require final-address policy should use a resolver
 that exposes concrete addresses.
 
+TCP CONNECT through an ambient HTTP proxy uses only policy-authorized IP
+addresses; the proxy does not resolve the logical target again. Absolute-URI
+HTTP forwarding uses a direct pinned connection and ignores ambient proxies.
+
+Public mode permits host loopback and RFC1918 destinations. A guest can reach
+host/LAN services unless policy denies them; use an allowlist or explicit deny
+rules for `127.0.0.0/8`, `10.0.0.0/8`, `172.16.0.0/12`, and `192.168.0.0/16`
+when those services are outside the intended boundary.
+
 The MVP intentionally fails closed for general UDP, IPv6, ICMP, QUIC, inbound
 connections, virtual/link-local/multicast/broadcast destinations, and exhausted
 flow/DNS capacity. Explicit Gateway capture is an internal virtual-router route;

@@ -4,7 +4,9 @@
 //! behavior belongs in the producer crate; this suite verifies that any
 //! producer can serialize, validate, and round-trip the shared envelope.
 
-use persisting_control::{EventIdentity, EventRecord, EventValidationError};
+use persisting_control::legacy_events::{
+    EventValidationError, LegacyEventIdentity, LegacyEventRecord,
+};
 use proptest::prelude::*;
 use serde_json::Value;
 
@@ -52,9 +54,9 @@ prop_compose! {
         branch in optional_string(),
         parent_call_id in optional_string(),
         payload in payload(),
-    ) -> EventRecord {
-        EventRecord {
-            identity: EventIdentity {
+    ) -> LegacyEventRecord {
+        LegacyEventRecord {
+            identity: LegacyEventIdentity {
                 event_id,
                 run_id,
                 attempt_id,
@@ -88,11 +90,11 @@ proptest! {
     fn event_record_json_roundtrip_preserves_the_flattened_contract(
         record in event_record_strategy()
     ) {
-        let encoded = serde_json::to_value(&record).expect("serialize EventRecord");
+        let encoded = serde_json::to_value(&record).expect("serialize LegacyEventRecord");
         prop_assert!(encoded.get("identity").is_none());
 
-        let decoded: EventRecord =
-            serde_json::from_value(encoded).expect("deserialize EventRecord");
+        let decoded: LegacyEventRecord =
+            serde_json::from_value(encoded).expect("deserialize LegacyEventRecord");
         prop_assert_eq!(decoded, record);
     }
 

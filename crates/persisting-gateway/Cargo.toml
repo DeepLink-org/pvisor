@@ -34,6 +34,8 @@ dashmap.workspace = true
 blake3.workspace = true
 hostname.workspace = true
 persisting-control.workspace = true
+persisting-journal.workspace = true
+uuid = { workspace = true, features = ["v4"] }
 persisting-overlaynet.workspace = true
 
 [dev-dependencies]

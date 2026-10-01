@@ -35,20 +35,21 @@ pub(crate) async fn handle_connect_authorized(
     // request and response bodies, so it must be bridged as a duplex stream.
     if req.version() == axum::http::Version::HTTP_2 {
         let (_parts, body) = req.into_parts();
-        let destination = match connect_via_ambient_http_proxy(&target.host, target.port).await {
-            Some(Ok(stream)) => stream,
-            Some(Err(error)) => {
-                return Err(anyhow::anyhow!(
-                    "CONNECT to {} through the host proxy failed: {error}",
-                    target.authority
-                ));
-            }
-            None => connect_tcp_addresses(&authorized.addresses, &target.host, target.port)
-                .await
-                .map_err(|error| {
-                    anyhow::anyhow!("CONNECT to {} failed: {error}", target.authority)
-                })?,
-        };
+        let destination =
+            match connect_via_ambient_http_proxy(&target.host, &authorized.addresses).await {
+                Some(Ok(stream)) => stream,
+                Some(Err(error)) => {
+                    return Err(anyhow::anyhow!(
+                        "CONNECT to {} through the host proxy failed: {error}",
+                        target.authority
+                    ));
+                }
+                None => connect_tcp_addresses(&authorized.addresses, &target.host, target.port)
+                    .await
+                    .map_err(|error| {
+                        anyhow::anyhow!("CONNECT to {} failed: {error}", target.authority)
+                    })?,
+            };
         let (destination_read, mut destination_write) = destination.into_split();
         let mut upload = body.into_data_stream();
         let upload_bandwidth = bandwidth.clone();
@@ -90,7 +91,9 @@ pub(crate) async fn handle_connect_authorized(
     let on_upgrade: OnUpgrade = hyper::upgrade::on(req);
     // Establish the upstream before reporting success. Returning 200 first
     // makes a refused or unroutable destination look like an accepted tunnel.
-    let mut destination = match connect_via_ambient_http_proxy(&target.host, target.port).await {
+    let mut destination = match connect_via_ambient_http_proxy(&target.host, &authorized.addresses)
+        .await
+    {
         Some(Ok(stream)) => stream,
         Some(Err(error)) => {
             return Err(anyhow::anyhow!(
@@ -176,15 +179,13 @@ pub(crate) async fn transparent_forward_authorized(
     let (parts, body) = req.into_parts();
     let url = parts.uri.to_string();
 
+    // reqwest's proxy route resolves the target upstream and bypasses
+    // resolve_to_addrs. Use its direct route to preserve authorized IPs.
     let mut client = reqwest::Client::builder()
+        .no_proxy()
         .redirect(reqwest::redirect::Policy::none())
         .connect_timeout(CONNECT_TIMEOUT)
         .timeout(Duration::from_secs(600));
-    if let Some(proxy) = ambient_upstream_proxy() {
-        client = client.proxy(reqwest::Proxy::all(&proxy).map_err(|error| {
-            anyhow::anyhow!("configure ambient upstream proxy {proxy}: {error}")
-        })?);
-    }
     if target.host.parse::<std::net::IpAddr>().is_err() {
         client = client.resolve_to_addrs(&target.host, &target.addresses);
     }
@@ -233,22 +234,6 @@ pub(crate) async fn transparent_forward_authorized(
     builder
         .body(Body::from_stream(download))
         .map_err(|error| anyhow::anyhow!("build response: {error}"))
-}
-
-fn ambient_upstream_proxy() -> Option<String> {
-    [
-        "HTTPS_PROXY",
-        "https_proxy",
-        "HTTP_PROXY",
-        "http_proxy",
-        "ALL_PROXY",
-        "all_proxy",
-    ]
-    .into_iter()
-    .filter_map(|key| std::env::var(key).ok())
-    .find(|value| {
-        !value.is_empty() && !value.contains("127.0.0.1:492") && !value.contains("127.0.0.1:493")
-    })
 }
 
 async fn copy_limited<R, W>(

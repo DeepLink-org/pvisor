@@ -265,6 +265,25 @@ fn agent_status_for_outcome(mode: ReplayMode, outcome: &ReplayOutcome) -> AgentS
     }
 }
 
+fn completed_tool_calls(path: &Path) -> usize {
+    let mut completed = BTreeSet::new();
+    let Ok(events) = crate::journal::read_observations(path) else {
+        return 0;
+    };
+    for event in events {
+        match event["event"].as_str() {
+            Some("run_started") => completed.clear(),
+            Some("tool_finished") => {
+                if let Some(call_id) = event["call_id"].as_str() {
+                    completed.insert(call_id.to_owned());
+                }
+            }
+            _ => {}
+        }
+    }
+    completed.len()
+}
+
 fn failure_result(
     request: &PlaybackRequest,
     launch: Option<&LaunchSpec>,
@@ -288,7 +307,7 @@ fn failure_result(
         } else {
             ReplayPhase::Prepared
         },
-        quality: ReplayQuality::Verified,
+        quality: ReplayQuality::Degraded,
         agent_status: if request.mode == ReplayMode::ReplayAndContinue && replay_completed {
             AgentStatus::Failed
         } else {
@@ -297,7 +316,7 @@ fn failure_result(
         run_id,
         agent: agent_result(request, launch),
         after_step: plan.after_step(),
-        replayed_tool_calls: 0,
+        replayed_tool_calls: completed_tool_calls(&state_dir.join("replay-events.jsonl")),
         prefix_model_turns: plan.prefix_model_turns(),
         continued_steps: 0,
         state_dir,
@@ -308,7 +327,7 @@ fn failure_result(
             message: error.to_string(),
         }),
         retryable: error.kind.retryable(),
-        metadata: Value::Null,
+        metadata: json!({ "replayed_tool_calls_complete": false }),
     }
 }
 
@@ -737,6 +756,14 @@ fn artifact(role: &str, format: &str, path: std::path::PathBuf) -> Artifact {
 
 #[cfg(test)]
 mod tests {
+    #[test]
+    fn failed_replay_counts_completed_tools_in_current_run() {
+        let temporary = tempfile::tempdir().unwrap();
+        let path = temporary.path().join("replay-events.jsonl");
+        fs::write(&path, "{\"event\":\"tool_finished\",\"call_id\":\"old\"}\n{\"event\":\"run_started\"}\n{\"event\":\"tool_finished\",\"call_id\":\"one\"}\n{\"event\":\"tool_started\",\"call_id\":\"uncertain\"}\n").unwrap();
+        assert_eq!(completed_tool_calls(&path), 1);
+    }
+
     use super::*;
     use std::collections::BTreeMap;
 

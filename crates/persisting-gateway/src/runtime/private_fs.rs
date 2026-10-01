@@ -22,11 +22,6 @@ pub(crate) fn open_private_append_file(path: &Path) -> Result<fs::File> {
     open_private_file(path, true)
 }
 
-/// Open and truncate a runtime-state file while preserving private ownership.
-pub(crate) fn open_private_truncate_file(path: &Path) -> Result<fs::File> {
-    open_private_file(path, false)
-}
-
 fn open_private_file(path: &Path, append: bool) -> Result<fs::File> {
     let parent = path
         .parent()

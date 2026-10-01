@@ -451,7 +451,7 @@ fn openhands_zero_exit_fatal_status_is_a_failed_result_with_trajectory() {
     assert!(report.result.output_dir.join("result.json").is_file());
     let journal = fs::read_to_string(report.result.output_dir.join("replay-events.jsonl")).unwrap();
     let terminal: Value = serde_json::from_str(journal.lines().last().unwrap()).unwrap();
-    assert_eq!(terminal["event"], "run_failed");
+    assert_eq!(terminal["event"]["data"]["name"], "run_failed");
     assert!(report.result.artifacts.iter().any(|artifact| {
         artifact.role == "continued_native_trajectory" && artifact.path.is_file()
     }));

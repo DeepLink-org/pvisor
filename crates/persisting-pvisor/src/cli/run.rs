@@ -90,7 +90,7 @@ use crate::{
     create_logical_checkpoint, restore_logical_checkpoint,
 };
 
-use super::trajectory::{JsonlEventSink, JsonlWriter, jsonl_capture_sink};
+use super::trajectory::{JournalRecording, journal_capture_observer};
 
 // Keep pVisor diagnostics separate from the Agent PTY in TUI runs.
 macro_rules! run_log {
@@ -668,7 +668,7 @@ struct GatewayOverrides {
 
 #[derive(Debug, Clone, Default, Args)]
 struct RecordOverrides {
-    /// Local directory or file for EventRecord JSONL.
+    /// Local directory or file for Trace Event journal.
     #[arg(long, value_name = "PATH")]
     record_destination: Option<PathBuf>,
 }
@@ -1335,18 +1335,20 @@ async fn execute_config(
                 .destination
                 .clone()
                 .unwrap_or_else(|| storage.join(".capture"));
-            let writer = JsonlWriter::open(&destination).with_context(|| {
-                format!("open JSONL recording destination {}", destination.display())
+            let writer = JournalRecording::open(&destination).with_context(|| {
+                format!("open trace journal destination {}", destination.display())
             })?;
-            let sink = jsonl_capture_sink(&writer, &config.run.agent);
-            let event_sink =
-                Arc::new(JsonlEventSink::new(writer.clone())) as Arc<dyn crate::EventSink>;
+            let sink = journal_capture_observer(&writer);
+            let event_sink = Arc::new(writer.journal.clone()) as Arc<dyn crate::EventSink>;
             json_writer = Some(writer);
             (sink, event_sink)
         } else {
+            let journal = crate::trace::Journal::memory();
             (
-                Arc::new(persisting_gateway::sink::SeqOnlySink::new()),
-                Arc::new(crate::NoopEventSink),
+                Arc::new(persisting_gateway::sink::JournalObserver {
+                    journal: journal.clone(),
+                }),
+                Arc::new(journal),
             )
         };
 

@@ -405,12 +405,9 @@ impl Subscriber for Vmm {
         if source == self.exit_evt.as_raw_fd() && event_set == EventSet::IN {
             let _ = self.exit_evt.read();
             // Query each vcpu for the exit_code.
-            // If the exit_code can't be found on any vcpu, it means that the exit signal
-            // has been issued by the i8042 controller in which case we exit with
-            // FC_EXIT_CODE_OK.
-            //
             // The exit code set up by the guest takes preference over the one reported
-            // by either a vcpu or the i8042 controller.
+            // by either a vcpu or the i8042 controller. An unexplained successful
+            // VM shutdown is a bootstrap failure, never a successful workload.
             let vcpu_exit_code = self
                 .vcpus_handles
                 .iter()
@@ -420,13 +417,7 @@ impl Subscriber for Vmm {
                 })
                 .unwrap_or(FC_EXIT_CODE_OK);
             let vmm_exit_code = self.exit_code.load(Ordering::SeqCst);
-            let exit_code = if vmm_exit_code != i32::MAX {
-                debug!("using vmm exit code: {vmm_exit_code}");
-                vmm_exit_code
-            } else {
-                debug!("using vcpu exit code: {vcpu_exit_code}");
-                vcpu_exit_code as i32
-            };
+            let exit_code = shutdown_exit_code(vmm_exit_code, vcpu_exit_code);
             self.stop(exit_code);
         } else {
             error!("Spurious EventManager event for handler: Vmm");
@@ -438,5 +429,27 @@ impl Subscriber for Vmm {
             EventSet::IN,
             self.exit_evt.as_raw_fd() as u64,
         )]
+    }
+}
+
+// Guest status wins; a shutdown without workload status must never report success.
+fn shutdown_exit_code(guest: i32, vcpu: u8) -> i32 {
+    if guest != i32::MAX {
+        guest
+    } else if vcpu == FC_EXIT_CODE_OK {
+        125
+    } else {
+        vcpu as i32
+    }
+}
+
+#[cfg(test)]
+mod guest_exit_tests {
+    #[test]
+    fn shutdown_requires_workload_status_to_report_success() {
+        assert_eq!(super::shutdown_exit_code(0, 1), 0);
+        assert_eq!(super::shutdown_exit_code(7, 0), 7);
+        assert_eq!(super::shutdown_exit_code(i32::MAX, 0), 125);
+        assert_eq!(super::shutdown_exit_code(i32::MAX, 1), 1);
     }
 }

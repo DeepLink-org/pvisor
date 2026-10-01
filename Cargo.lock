@@ -1989,10 +1989,6 @@ dependencies = [
 ]
 
 [[package]]
-name = "krun-init-blob"
-version = "0.1.0-1.19.3"
-
-[[package]]
 name = "krun-kernel"
 version = "0.1.0-1.19.3"
 source = "registry+https://github.com/rust-lang/crates.io-index"
@@ -2109,7 +2105,6 @@ dependencies = [
  "env_logger",
  "krun-devices",
  "krun-hvf",
- "krun-init-blob",
  "krun-polly",
  "krun-utils",
  "krun-vmm",
@@ -2549,6 +2544,7 @@ dependencies = [
  "futures-util",
  "hostname",
  "persisting-control",
+ "persisting-journal",
  "persisting-overlaynet",
  "proptest",
  "pulsing-actor",
@@ -2563,6 +2559,33 @@ dependencies = [
  "toml",
  "tracing",
  "url",
+ "uuid",
+]
+
+[[package]]
+name = "persisting-guest"
+version = "0.3.0"
+dependencies = [
+ "libc",
+ "serde",
+ "serde_json",
+]
+
+[[package]]
+name = "persisting-journal"
+version = "0.3.0"
+dependencies = [
+ "anyhow",
+ "fs2",
+ "libc",
+ "persisting-control",
+ "serde",
+ "serde_json",
+ "sha2 0.11.0",
+ "tempfile",
+ "thiserror 2.0.18",
+ "tokio",
+ "uuid",
 ]
 
 [[package]]
@@ -2634,6 +2657,8 @@ dependencies = [
  "lru",
  "persisting-control",
  "persisting-gateway",
+ "persisting-guest",
+ "persisting-journal",
  "persisting-overlay-core",
  "persisting-overlayfs",
  "persisting-overlaynet",
@@ -2666,6 +2691,8 @@ dependencies = [
  "chrono",
  "fs2",
  "libc",
+ "persisting-control",
+ "persisting-journal",
  "reqwest",
  "serde",
  "serde_json",
@@ -2686,8 +2713,10 @@ dependencies = [
  "containerd-shim-protos",
  "libc",
  "libkrun",
+ "libloading",
  "log",
  "oci-spec 0.10.0",
+ "persisting-guest",
  "serde",
  "serde_json",
  "tempfile",

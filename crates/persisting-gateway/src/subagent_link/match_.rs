@@ -6,7 +6,7 @@ use bytes::Bytes;
 use serde_json::{Value, json};
 
 use crate::dialogue_extract::extract_user_message_from_request_body;
-use crate::record::EventRecord;
+use crate::record::CaptureRecord;
 
 use super::types::{AgentEntry, SpawnHint, SpawnLink};
 
@@ -105,7 +105,7 @@ pub(crate) fn merge_spawn_hints(into: &mut Vec<SpawnHint>, new_hints: &[SpawnHin
     }
 }
 
-pub(crate) fn apply_spawn_links(rec: &mut EventRecord, links: &[SpawnLink]) {
+pub(crate) fn apply_spawn_links(rec: &mut CaptureRecord, links: &[SpawnLink]) {
     if links.is_empty() {
         return;
     }
@@ -119,7 +119,7 @@ pub(crate) fn apply_spawn_links(rec: &mut EventRecord, links: &[SpawnLink]) {
     merge_string_array_payload(rec, "subagent_trajectories", &paths);
 }
 
-pub(crate) fn merge_string_array_payload(rec: &mut EventRecord, key: &str, values: &[String]) {
+pub(crate) fn merge_string_array_payload(rec: &mut CaptureRecord, key: &str, values: &[String]) {
     let mut set = HashSet::new();
     if let Some(existing) = rec.payload.get(key).and_then(|v| v.as_array()) {
         for v in existing {

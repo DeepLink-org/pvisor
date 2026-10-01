@@ -23,23 +23,22 @@ child, waits for the child, flushes capture, and stops the Gateway. Each Run
 writes all metadata, trajectory, and optional filesystem state into the Run
 record directory (or the explicit `--stage` directory).
 
-Set `--record-destination ./capture` to write EventRecord JSONL to the specified
+Set `--record-destination ./capture` to write Trace Event journal to the specified
 directory. `--gateway-stream-markdown` is a compatibility flag; the current
 story actor does not produce a Markdown projection.
 
-### Event timestamps
+### Event timestamps and ordering
 
-Every newly persisted `EventRecord` carries both wall-clock fields:
+The default file is `events.trace.jsonl`: a `pvisor.trace/3` header followed by
+records pairing an immutable `Event` with `{journal, offset}`. Observation time
+is `event.observed_at_unix_ms`; it does not establish cross-producer order.
+Causal links use `event.caused_by`.
 
-- `timestamp`: an RFC3339 UTC timestamp;
-- `timestamp_unix_ms`: the same observation time as Unix milliseconds.
-
-Gateway timestamps request events when the request is accepted and response
-events when the response is captured. The final Gateway capture sink also
-backfills both fields for records from older producers, while pVisor runtime
-events generate the pair together. The two values must agree within one
-millisecond. Interpret `seq` within its producer/session scope and preserve Run, Attempt
-and session identities. Timestamps are for correlation, not a global order.
+Gateway content is in `event.data.payload.content`, with story/session routing
+in `event.data.payload.story` and call IDs in `event.data.payload.correlation`.
+Run and the embedded Gateway share one journal. Queue acceptance is not durable
+acceptance; a `LocalSync` receipt follows filesystem synchronization. Historical
+JSONL is read-only compatibility input, and new facts are never mixed into it.
 
 Clients must use an injected proxy or base URL to be observed. Direct sockets
 can bypass the explicit proxy unless the selected executor provides an enforced

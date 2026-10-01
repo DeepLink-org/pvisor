@@ -25,7 +25,7 @@ def run_task(tmp_path):
         "name, args = Path(sys.argv[0]).name, sys.argv[1:]\n"
         "with open(os.environ['JUST_TEST_LOG'], 'a') as log:\n"
         "    log.write(json.dumps([name, *args]) + '\\n')\n"
-        "if name == 'cargo' and args[0] == 'build':\n"
+        "if name == 'python3' and args[0] == 'scripts/build-pvisor.py':\n"
         "    profile = args[args.index('--profile') + 1]\n"
         "    target = Path(args[args.index('--target-dir') + 1])\n"
         "    binary = target / ('debug' if profile == 'dev' else profile) / 'pvisor'\n"
@@ -86,7 +86,7 @@ def test_ci_checks_format_without_rewriting(run_task):
     assert all(
         "--check" in command for command in commands if "fmt" in command or "format" in command
     )
-    assert any(command[:2] == ["cargo", "build"] for command in commands)
+    assert any(command[:2] == ["python3", "scripts/build-pvisor.py"] for command in commands)
 
 
 def test_cases_preserve_shell_characters_in_arguments(run_task, tmp_path):

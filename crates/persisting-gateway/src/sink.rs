@@ -1,200 +1,67 @@
-//! Gateway event sink: append captured trajectory records per session.
-//!
-//! **Proxy capture path:** the internal `StoryActor` is the sole writer — it calls
-//! [`CaptureEventSink::append`] on `PersistRecord` (and uses [`CaptureEventSink::peek_next_seq`] for streaming drafts).
-//! The internal `CapturePreparer` only builds records and story commands.
-//! Session lifecycle records may still append via [`super::lifecycle`].
-
-use std::collections::HashMap;
-use std::sync::{Arc, Mutex};
-
-use anyhow::Result;
-use serde_json::Value;
-
-use super::record::{EventRecord, ensure_timestamp, now_rfc3339};
+//! Post-commit capture observers. Journal is the only fact store.
+use super::record::{CaptureRecord, now_rfc3339};
 use crate::Call;
 use crate::config::CaptureLevel;
-use crate::session::storage::CaptureRoute;
+use anyhow::Result;
+use persisting_control::trace::Event;
+use persisting_journal::Journal;
+use serde_json::Value;
+use std::sync::Arc;
 
-pub trait CaptureEventSink: Send + Sync {
-    /// Assign session-local `seq` on `record`, then persist. Mutates `record.seq` in place.
-    fn append(&self, route: &CaptureRoute, agent_id: &str, record: &mut EventRecord) -> Result<()>;
-
-    /// Next `seq` that [`Self::append`] would assign (does not increment).
-    /// Returns `None` when the sink cannot predict seq (draft markdown preview unsupported).
-    fn peek_next_seq(&self, route: &CaptureRoute) -> Option<u64> {
-        let _ = route;
+pub trait CaptureEventObserver: Send + Sync {
+    fn observe(&self, event: &Event) -> Result<()>;
+    /// Share the owner's journal, e.g. Gateway and Run within one recording.
+    fn journal(&self) -> Option<Journal> {
         None
     }
 }
 
-/// Assigns monotonic `seq` per storage target without persisting (`-f md` capture path).
-pub struct SeqOnlySink {
-    next_seq: Mutex<HashMap<String, u64>>,
+pub struct JournalObserver {
+    pub journal: Journal,
 }
-
-impl Default for SeqOnlySink {
-    fn default() -> Self {
-        Self::new()
-    }
-}
-
-impl SeqOnlySink {
-    pub fn new() -> Self {
-        Self {
-            next_seq: Mutex::new(HashMap::new()),
-        }
-    }
-
-    fn assign_seq(&self, route: &CaptureRoute, record: &mut EventRecord) {
-        let mut guard = self.next_seq.lock().unwrap();
-        let seq = guard.entry(route.seq_key()).or_insert(0);
-        record.seq = *seq;
-        *seq += 1;
-        record.session_id = Some(route.session_id.clone());
-        record.subagent_id = route.subagent_id.clone();
-    }
-}
-
-impl CaptureEventSink for SeqOnlySink {
-    fn append(
-        &self,
-        route: &CaptureRoute,
-        _agent_id: &str,
-        record: &mut EventRecord,
-    ) -> Result<()> {
-        ensure_timestamp(record);
-        self.assign_seq(route, record);
+impl CaptureEventObserver for JournalObserver {
+    fn observe(&self, _event: &Event) -> Result<()> {
         Ok(())
     }
-
-    fn peek_next_seq(&self, route: &CaptureRoute) -> Option<u64> {
-        Some(
-            self.next_seq
-                .lock()
-                .unwrap()
-                .get(&route.seq_key())
-                .copied()
-                .unwrap_or(0),
-        )
+    fn journal(&self) -> Option<Journal> {
+        Some(self.journal.clone())
     }
 }
 
-/// Assigns monotonic `seq` per storage target and forwards typed records.
-pub struct CallbackSink {
-    agent_id: String,
-    next_seq: Mutex<HashMap<String, Arc<Mutex<u64>>>>,
-    #[allow(clippy::type_complexity)]
-    callback: Box<dyn Fn(&CaptureRoute, &str, EventRecord) -> Result<()> + Send + Sync>,
+pub struct NoopCaptureObserver;
+impl NoopCaptureObserver {
+    pub fn new() -> Self {
+        Self
+    }
+}
+impl Default for NoopCaptureObserver {
+    fn default() -> Self {
+        Self
+    }
+}
+impl CaptureEventObserver for NoopCaptureObserver {
+    fn observe(&self, _event: &Event) -> Result<()> {
+        Ok(())
+    }
 }
 
-impl CallbackSink {
-    pub fn new<F>(agent_id: impl Into<String>, callback: F) -> Self
+pub struct CallbackObserver {
+    #[allow(clippy::type_complexity)]
+    callback: Arc<dyn Fn(&Event) -> Result<()> + Send + Sync>,
+}
+impl CallbackObserver {
+    pub fn new<F>(callback: F) -> Self
     where
-        F: Fn(&CaptureRoute, &str, EventRecord) -> Result<()> + Send + Sync + 'static,
+        F: Fn(&Event) -> Result<()> + Send + Sync + 'static,
     {
         Self {
-            agent_id: agent_id.into(),
-            next_seq: Mutex::new(HashMap::new()),
-            callback: Box::new(callback),
+            callback: Arc::new(callback),
         }
     }
 }
-
-impl CaptureEventSink for CallbackSink {
-    fn append(&self, route: &CaptureRoute, agent_id: &str, record: &mut EventRecord) -> Result<()> {
-        ensure_timestamp(record);
-        let sequence = {
-            let mut guard = self.next_seq.lock().unwrap();
-            Arc::clone(
-                guard
-                    .entry(route.seq_key())
-                    .or_insert_with(|| Arc::new(Mutex::new(0))),
-            )
-        };
-        // Serialize one storage target through persistence. The sequence is
-        // advanced only after the callback accepts the record, so a rejected
-        // append can be retried without leaving a permanent gap.
-        let mut next_seq = sequence.lock().unwrap();
-        record.seq = *next_seq;
-        let following_seq = next_seq
-            .checked_add(1)
-            .ok_or_else(|| anyhow::anyhow!("capture sequence exhausted for {}", route.seq_key()))?;
-        record.session_id = Some(route.session_id.clone());
-        record.subagent_id = route.subagent_id.clone();
-        let aid = if agent_id.is_empty() {
-            self.agent_id.as_str()
-        } else {
-            agent_id
-        };
-        (self.callback)(route, aid, record.clone())?;
-        *next_seq = following_seq;
-        Ok(())
-    }
-
-    fn peek_next_seq(&self, route: &CaptureRoute) -> Option<u64> {
-        let sequence = self.next_seq.lock().unwrap().get(&route.seq_key()).cloned();
-        Some(sequence.map_or(0, |sequence| *sequence.lock().unwrap()))
-    }
-}
-
-#[cfg(test)]
-mod sequence_tests {
-    use std::sync::atomic::{AtomicUsize, Ordering};
-
-    use super::*;
-
-    fn record() -> EventRecord {
-        EventRecord {
-            identity: Default::default(),
-            seq: 99,
-            source: "test".into(),
-            kind: "test".into(),
-            timestamp: None,
-            session_id: None,
-            agent_id: None,
-            parent_uuid: None,
-            trace_id: None,
-            call_id: None,
-            subagent_id: None,
-            parent_agent_id: None,
-            branch: None,
-            parent_call_id: None,
-            payload: Value::Null,
-        }
-    }
-
-    #[test]
-    fn callback_rejection_does_not_advance_sequence() {
-        let attempts = Arc::new(AtomicUsize::new(0));
-        let observed = Arc::new(Mutex::new(Vec::new()));
-        let sink = CallbackSink::new("agent", {
-            let attempts = Arc::clone(&attempts);
-            let observed = Arc::clone(&observed);
-            move |_, _, record| {
-                observed.lock().unwrap().push(record.seq);
-                if attempts.fetch_add(1, Ordering::SeqCst) == 0 {
-                    anyhow::bail!("reject first append");
-                }
-                Ok(())
-            }
-        });
-        let route = CaptureRoute {
-            root_session: Some("run".into()),
-            session_id: "session".into(),
-            storage_session_id: "session".into(),
-            subagent_id: None,
-        };
-
-        let mut first = record();
-        assert!(sink.append(&route, "agent", &mut first).is_err());
-        assert_eq!(sink.peek_next_seq(&route), Some(0));
-
-        let mut retry = record();
-        sink.append(&route, "agent", &mut retry).unwrap();
-        assert_eq!(retry.seq, 0);
-        assert_eq!(sink.peek_next_seq(&route), Some(1));
-        assert_eq!(*observed.lock().unwrap(), vec![0, 0]);
+impl CaptureEventObserver for CallbackObserver {
+    fn observe(&self, event: &Event) -> Result<()> {
+        (self.callback)(event)
     }
 }
 
@@ -523,8 +390,37 @@ pub fn redact_sensitive_body(value: &Value) -> Value {
                 .collect(),
         ),
         Value::Array(values) => Value::Array(values.iter().map(redact_sensitive_body).collect()),
+        Value::String(text) => Value::String(redact_sensitive_wire_text(text)),
         _ => value.clone(),
     }
+}
+
+/// Apply the same credential floor to JSON and SSE encoded as wire text.
+/// Unchanged bodies retain their exact bytes and SSE framing.
+pub(crate) fn redact_sensitive_wire_text(text: &str) -> String {
+    if let Ok(value) = serde_json::from_str::<Value>(text) {
+        let redacted = redact_sensitive_body(&value);
+        if value != redacted {
+            return redacted.to_string();
+        }
+        return text.to_owned();
+    }
+    text.split_inclusive('\n')
+        .map(|line| {
+            let body = line.trim_end_matches(['\r', '\n']);
+            let Some(data) = body.strip_prefix("data:") else {
+                return line.to_owned();
+            };
+            let Ok(value) = serde_json::from_str::<Value>(data.trim()) else {
+                return line.to_owned();
+            };
+            let redacted = redact_sensitive_body(&value);
+            if value == redacted {
+                return line.to_owned();
+            }
+            format!("data: {redacted}{}", &line[body.len()..])
+        })
+        .collect()
 }
 
 /// Persist HTTP headers onto an event payload (flat `headers` + nested `http.headers`).
@@ -568,7 +464,7 @@ fn stamp_request_payload(payload: &mut Value, body_json: Option<&Value>) {
     }
 }
 
-fn attach_call_context(rec: &mut EventRecord, call: &Call) {
+fn attach_call_context(rec: &mut CaptureRecord, call: &Call) {
     rec.trace_id = Some(call.trace_id.clone());
     rec.call_id = Some(call.call_id.clone());
 }
@@ -587,7 +483,7 @@ pub fn llm_request_summary_record(
     call: &Call,
     level: CaptureLevel,
     body_json: Option<&Value>,
-) -> EventRecord {
+) -> CaptureRecord {
     let mut payload = serde_json::json!({
         "model": model,
         "path": path,
@@ -606,13 +502,13 @@ pub fn llm_request_summary_record(
     if let Some(body) = body_json {
         stamp_request_payload(&mut payload, Some(body));
         if level.includes_full_body() {
-            payload["body"] = body.clone();
+            payload["body"] = redact_sensitive_body(body);
         }
     }
-    let mut rec = EventRecord {
-        identity: persisting_control::EventIdentity::default(),
-        seq: 0,
-        source: "persisting-proxy".to_string(),
+    let mut rec = CaptureRecord {
+        event_id: None,
+        observed_at_unix_ms: None,
+
         kind: "llm.request".to_string(),
         timestamp: Some(call.started_at.clone()),
         session_id,
@@ -638,11 +534,11 @@ pub fn llm_request_record(
     model: &str,
     path: &str,
     body: &serde_json::Value,
-) -> EventRecord {
-    EventRecord {
-        identity: persisting_control::EventIdentity::default(),
-        seq: 0,
-        source: "persisting-proxy".to_string(),
+) -> CaptureRecord {
+    CaptureRecord {
+        event_id: None,
+        observed_at_unix_ms: None,
+
         kind: "llm.request".to_string(),
         timestamp: Some(now_rfc3339()),
         session_id,
@@ -669,11 +565,11 @@ pub fn llm_response_record(
     body: &serde_json::Value,
     streaming: bool,
     call: &Call,
-) -> EventRecord {
-    let mut rec = EventRecord {
-        identity: persisting_control::EventIdentity::default(),
-        seq: 0,
-        source: "persisting-proxy".to_string(),
+) -> CaptureRecord {
+    let mut rec = CaptureRecord {
+        event_id: None,
+        observed_at_unix_ms: None,
+
         kind: if streaming {
             "llm.response.stream".to_string()
         } else {
@@ -708,8 +604,8 @@ pub fn llm_response_record_with_content(
     assistant_content: Option<String>,
     call: &Call,
     level: CaptureLevel,
-) -> EventRecord {
-    let mut payload = payload.clone();
+) -> CaptureRecord {
+    let mut payload = redact_sensitive_body(payload);
     payload["status"] = serde_json::json!(status);
     if level.includes_assistant_text()
         && let Some(content) = assistant_content.filter(|s| !s.is_empty())
@@ -721,10 +617,10 @@ pub fn llm_response_record_with_content(
     } else {
         "llm.response"
     };
-    let mut rec = EventRecord {
-        identity: persisting_control::EventIdentity::default(),
-        seq: 0,
-        source: "persisting-proxy".to_string(),
+    let mut rec = CaptureRecord {
+        event_id: None,
+        observed_at_unix_ms: None,
+
         kind: kind.to_string(),
         timestamp: Some(now_rfc3339()),
         session_id,
@@ -744,6 +640,20 @@ pub fn llm_response_record_with_content(
 
 #[cfg(test)]
 mod header_tests {
+    #[test]
+    fn encoded_json_and_sse_credentials_are_redacted_without_changing_other_wire_text() {
+        let wire = "event: message\r\ndata: {\"api_key\":\"never-record-this\",\"content\":\"ok\"}\r\n\r\ndata: [DONE]\n";
+        let redacted = super::redact_sensitive_wire_text(wire);
+        assert!(!redacted.contains("never-record-this"));
+        assert!(redacted.contains("<redacted>"));
+        assert!(redacted.starts_with("event: message\r\n"));
+        assert!(redacted.ends_with("\r\n\r\ndata: [DONE]\n"));
+        let harmless = "data: { \"content\": \"hello\" }\n\n";
+        assert_eq!(super::redact_sensitive_wire_text(harmless), harmless);
+        let json = "{\"access_token\":\"secret\"}";
+        assert!(!super::redact_sensitive_wire_text(json).contains("secret"));
+    }
+
     use super::{attach_recorded_headers, redact_sensitive_headers, redact_sensitive_url};
     use serde_json::json;
 

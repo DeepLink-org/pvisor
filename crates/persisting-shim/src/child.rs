@@ -337,7 +337,7 @@ fn init_parent_main() -> Result<()> {
     // Containers of a pod join the sandbox holder's shared namespaces for
     // anything their own spec does not configure explicitly.
     if let Some(sandbox_pid) = sandbox_pid_from_env() {
-        join_sandbox_namespaces(&plan, sandbox_pid);
+        join_sandbox_namespaces(&plan, sandbox_pid)?;
     }
     let unshare_flags = collect_unshare_flags(&plan);
     if unshare_flags != 0 && unsafe { libc::unshare(unshare_flags) } != 0 {
@@ -605,25 +605,28 @@ fn sandbox_pid_from_env() -> Option<u32> {
 }
 
 /// Join the holder's shared namespaces for kinds the container spec leaves
-/// unconfigured; failures fall back to a fresh namespace (logged).
-fn join_sandbox_namespaces(plan: &ContainerPlan, sandbox_pid: u32) {
+/// unconfigured. Failure aborts startup rather than retaining host membership.
+fn join_sandbox_namespaces(plan: &ContainerPlan, sandbox_pid: u32) -> Result<()> {
     for kind in SANDBOX_SHARED_KINDS {
         if plan.has_namespace(kind) {
             continue;
         }
         let path = format!("/proc/{sandbox_pid}/ns/{}", kind.proc_ns_name());
-        match setns_by_path(&path, kind) {
-            Ok(()) => {}
-            Err(error) => warn!(
-                "cannot join sandbox {} namespace of pid {sandbox_pid}: {error:#}",
-                kind.proc_ns_name()
-            ),
-        }
+        setns_by_path(&path, kind)?;
     }
+    Ok(())
 }
 
 fn collect_unshare_flags(plan: &ContainerPlan) -> libc::c_int {
-    let mut flags = libc::CLONE_NEWNS;
+    let mut flags = if plan
+        .namespaces
+        .iter()
+        .any(|namespace| namespace.kind == NamespaceKind::Mount && namespace.path.is_some())
+    {
+        0
+    } else {
+        libc::CLONE_NEWNS
+    };
     for namespace in &plan.namespaces {
         if namespace.path.is_some() {
             continue;
@@ -659,26 +662,24 @@ fn join_init_namespaces(init_pid: u32) -> Result<()> {
         NamespaceKind::Mount,
         NamespaceKind::Pid,
     ];
-    let mut joined = 0;
     for kind in order {
         let path = format!("/proc/{init_pid}/ns/{}", kind.proc_ns_name());
-        if setns_by_path(&path, kind).is_ok() {
-            joined += 1;
-        } else {
-            warn!(
-                "exec cannot join {} namespace of pid {init_pid}",
-                kind.proc_ns_name()
-            );
-        }
-    }
-    if joined == 0 {
-        anyhow::bail!("could not join any namespace of pid {init_pid}");
+        setns_by_path(&path, kind)?;
     }
     Ok(())
 }
 
 fn setns_by_path(path: &str, kind: NamespaceKind) -> Result<()> {
+    use std::os::unix::fs::MetadataExt;
+
     let name = kind.proc_ns_name();
+    let current = fs::metadata(format!("/proc/self/ns/{name}"))?;
+    let target = fs::metadata(path)?;
+    // Joining the current user namespace is rejected by Linux; it already
+    // satisfies the request and must not hide failures for other namespaces.
+    if current.dev() == target.dev() && current.ino() == target.ino() {
+        return Ok(());
+    }
     let cpath =
         std::ffi::CString::new(path).with_context(|| format!("namespace path {path} has NUL"))?;
     let fd = unsafe { libc::open(cpath.as_ptr(), libc::O_RDONLY | libc::O_CLOEXEC) };
@@ -780,7 +781,7 @@ fn init_process_main(plan: &ContainerPlan, start_fd: RawFd, fork_report_fd: RawF
     if plan.root_readonly
         && let Err(error) = mount::remount_root_readonly()
     {
-        warn!("root read-only remount failed: {error:#}");
+        fail(format!("root read-only remount failed: {error:#}"));
     }
 
     finish_process(&plan.process, stdio, start_fd, fork_report_fd)
@@ -893,15 +894,28 @@ fn apply_process_identity(process: &ProcessPlan) -> Result<()> {
         apply_rlimit(rlimit.typ.as_str(), rlimit.soft, rlimit.hard)?;
     }
 
+    // Rootless user namespaces explicitly disable setgroups before writing
+    // gid_map. They cannot request supplementary groups; do not mistake that
+    // kernel restriction for a failed identity transition.
+    let setgroups_denied =
+        fs::read_to_string("/proc/self/setgroups").is_ok_and(|value| value.trim() == "deny");
+    anyhow::ensure!(
+        !setgroups_denied || user.additional_gids.is_empty(),
+        "supplementary groups are disabled in this user namespace"
+    );
     // SAFETY: identity syscalls in the forked, single-threaded child.
     unsafe {
-        if user.additional_gids.is_empty() {
-            libc::setgroups(0, std::ptr::null());
-        } else {
-            libc::setgroups(user.additional_gids.len(), user.additional_gids.as_ptr());
+        if !setgroups_denied
+            && libc::setgroups(user.additional_gids.len(), user.additional_gids.as_ptr()) != 0
+        {
+            return Err(std::io::Error::last_os_error()).context("setgroups");
         }
-        libc::setresgid(user.gid, user.gid, user.gid);
-        libc::setresuid(user.uid, user.uid, user.uid);
+        if libc::setresgid(user.gid, user.gid, user.gid) != 0 {
+            return Err(std::io::Error::last_os_error()).context("setresgid");
+        }
+        if libc::setresuid(user.uid, user.uid, user.uid) != 0 {
+            return Err(std::io::Error::last_os_error()).context("setresuid");
+        }
     }
 
     apply_capabilities(&process.capabilities)?;
@@ -1085,4 +1099,70 @@ fn exec_process(process: &ProcessPlan) -> Result<()> {
             .with_context(|| format!("execve {}", program.to_string_lossy()));
     }
     Ok(())
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::plan::{IoPlan, NamespacePlan};
+
+    #[test]
+    fn joining_a_mount_namespace_does_not_immediately_unshare_it() {
+        let spec = serde_json::from_str(r#"{"ociVersion":"1.0.2","process":{"args":["true"],"cwd":"/","user":{"uid":0,"gid":0}}}"#).unwrap();
+        let mut plan = crate::plan::build_plan(
+            &spec,
+            "test",
+            Path::new("/bundle"),
+            Vec::new(),
+            IoPlan::default(),
+        )
+        .unwrap();
+        assert_ne!(collect_unshare_flags(&plan) & libc::CLONE_NEWNS, 0);
+        plan.namespaces.push(NamespacePlan {
+            kind: NamespaceKind::Mount,
+            path: Some("/proc/self/ns/mnt".into()),
+        });
+        assert_eq!(collect_unshare_flags(&plan) & libc::CLONE_NEWNS, 0);
+    }
+
+    #[test]
+    fn same_namespace_is_satisfied_but_missing_namespace_fails() {
+        setns_by_path("/proc/self/ns/user", NamespaceKind::User).unwrap();
+        assert!(join_init_namespaces(u32::MAX).is_err());
+    }
+
+    #[test]
+    fn failed_identity_syscall_is_not_ignored() {
+        const CHILD_KEY: &str = "PVISOR_TEST_IDENTITY_CHILD";
+        if std::env::var_os(CHILD_KEY).is_none() {
+            let output = Command::new(std::env::current_exe().unwrap())
+                .args([
+                    "--exact",
+                    "child::tests::failed_identity_syscall_is_not_ignored",
+                    "--nocapture",
+                ])
+                .env(CHILD_KEY, "1")
+                .output()
+                .unwrap();
+            assert!(
+                output.status.success(),
+                "{}",
+                String::from_utf8_lossy(&output.stderr)
+            );
+            return;
+        }
+        // Isolate capability changes in a subprocess, even when tests run as root.
+        apply_capabilities(&crate::plan::CapabilityPlan::default()).unwrap();
+        let spec = serde_json::from_str(r#"{"ociVersion":"1.0.2","process":{"args":["true"],"cwd":"/","user":{"uid":0,"gid":0}}}"#).unwrap();
+        let mut plan = crate::plan::build_plan(
+            &spec,
+            "test",
+            Path::new("/bundle"),
+            Vec::new(),
+            IoPlan::default(),
+        )
+        .unwrap();
+        plan.process.user.gid = unsafe { libc::getegid() }.wrapping_add(1);
+        assert!(apply_process_identity(&plan.process).is_err());
+    }
 }

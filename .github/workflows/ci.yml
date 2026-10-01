@@ -61,29 +61,28 @@ jobs:
             os: ubuntu-latest
             shard: core
             packages: >-
+              persisting-guest
               persisting-control
               persisting-overlay-core
               persisting-overlayfs
               persisting-overlaynet
               persisting-replay
             prepare_pvisor: false
-            install_zig: false
           - platform: Linux
             os: ubuntu-latest
             shard: gateway
             packages: persisting-gateway
             prepare_pvisor: false
-            install_zig: false
           - platform: Linux
             os: ubuntu-latest
             shard: pvisor
             packages: persisting-pvisor
             prepare_pvisor: true
-            install_zig: false
           - platform: macOS
             os: macos-latest
             shard: workspace
             packages: >-
+              persisting-guest
               persisting-control
               persisting-gateway
               persisting-overlay-core
@@ -92,7 +91,6 @@ jobs:
               persisting-pvisor
               persisting-replay
             prepare_pvisor: true
-            install_zig: true
     steps:
       - uses: actions/checkout@v4
 
@@ -101,7 +99,6 @@ jobs:
         with:
           rust: "true"
           install-nextest: "true"
-          install-zig: "${{ matrix.install_zig }}"
 
       - uses: Swatinem/rust-cache@v2
         with:

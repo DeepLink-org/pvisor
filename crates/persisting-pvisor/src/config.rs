@@ -27,7 +27,7 @@ pub struct RunConfig {
     pub overlayfs: Option<OverlayFsSettings>,
     pub overlaynet: OverlayNetSettings,
     pub gateway: GatewaySettings,
-    /// Durable EventRecord JSONL recording.
+    /// Durable Trace Event journal recording.
     pub record: RecordSettings,
 }
 
@@ -431,7 +431,7 @@ impl GatewayProfile {
 #[derive(Debug, Clone, Default, Deserialize, Serialize)]
 #[serde(default, deny_unknown_fields)]
 pub struct RecordSettings {
-    /// Local directory or file for EventRecord JSONL.
+    /// Local directory or file for Trace Event journal.
     pub destination: Option<PathBuf>,
 }
 

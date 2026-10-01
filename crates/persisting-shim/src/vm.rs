@@ -4,37 +4,31 @@
 //! snapshotter mounts by the internal VM runner) is shared read-write over
 //! virtio-fs as `/dev/root`, the workload stdio rides the virtio-console
 //! (wired to the task FIFOs/PTY by the runner), and the workload itself is
-//! started through a generated helper script — `krun_set_exec` serializes
-//! argv through the kernel command line without escaping, so only the
-//! quote-free helper path crosses that boundary (the same pattern pVisor's
-//! VM executor uses).
+//! started directly by the Rust guest supervisor from a shared launch config.
 //!
-//! The guest kernel comes from libkrunfw on the host (same deployment
-//! requirement as `/dev/kvm`). `krun_start_enter` blocks until the guest
-//! init exits and returns its exit code.
+//! Static musl builds embed the guest kernel; other builds load libkrunfw
+//! from the host. `krun_start_enter` enters the VMM and terminates the runner
+//! with the workload exit code reported by the guest.
 
 use crate::agent::{AGENT_GUEST_PATH, AGENT_VSOCK_PORT};
-use crate::plan::{
-    ContainerPlan, guest_init_script_path, render_guest_init_script_with, vm_agent_enabled,
-};
+use crate::plan::{ContainerPlan, guest_config, vm_agent_enabled};
 use anyhow::{Context, Result};
 use std::ffi::CString;
 use std::os::unix::fs::PermissionsExt;
 use std::path::Path;
 
-/// Write the guest init helper into the container rootfs and boot the VM.
+#[cfg(target_env = "musl")]
+mod embedded_kernel {
+    include!(concat!(env!("OUT_DIR"), "/embedded_kernel.rs"));
+}
+
+/// Configure the Rust guest supervisor and boot the VM.
 /// Returns the guest exit code.
 pub fn boot_vm(plan: &ContainerPlan) -> Result<i32> {
     let config = plan.vm_config();
 
-    let script_guest = guest_init_script_path(&plan.id);
-    let host_script = plan.rootfs.join(script_guest.trim_start_matches('/'));
     let agent = vm_agent_enabled(&plan.annotations);
-    write_executable(
-        &host_script,
-        &render_guest_init_script_with(&plan.process, agent),
-    )
-    .with_context(|| format!("write guest init helper {}", host_script.display()))?;
+    let guest_config = serde_json::to_vec(&guest_config(&plan.process, agent)?)?;
     if agent {
         // The static musl shim binary doubles as the guest agent: copy it
         // into the rootfs so exec works without image requirements.
@@ -55,11 +49,40 @@ pub fn boot_vm(plan: &ContainerPlan) -> Result<i32> {
         "krun_set_vm_config",
     )?;
 
+    #[cfg(target_env = "musl")]
+    krun_check(
+        unsafe {
+            krun::krun_set_embedded_kernel(
+                ctx,
+                embedded_kernel::KERNEL.as_ptr(),
+                embedded_kernel::KERNEL.len(),
+                embedded_kernel::GUEST_ADDR,
+                embedded_kernel::ENTRY_ADDR,
+            )
+        },
+        "krun_set_embedded_kernel",
+    )?;
+
     let tag = cstring("/dev/root")?;
     let root = path_cstring(&plan.rootfs)?;
     krun_check(
         unsafe { krun::krun_add_virtiofs(ctx, tag.as_ptr(), root.as_ptr()) },
         "krun_add_virtiofs",
+    )?;
+
+    krun_check(
+        unsafe {
+            krun::krun_fs_add_overlay_file(
+                ctx,
+                c"/dev/root".as_ptr(),
+                c"/.pvisor-guest.json".as_ptr(),
+                guest_config.as_ptr(),
+                guest_config.len(),
+                0o400,
+                true,
+            )
+        },
+        "krun_fs_add_overlay_file(guest config)",
     )?;
 
     // Contexts start with an implicit vsock whose heuristics could let guest
@@ -78,31 +101,11 @@ pub fn boot_vm(plan: &ContainerPlan) -> Result<i32> {
         "krun_add_vsock_port2",
     )?;
 
-    let workdir = cstring("/")?;
-    krun_check(
-        unsafe { krun::krun_set_workdir(ctx, workdir.as_ptr()) },
-        "krun_set_workdir",
-    )?;
-
-    // Empty argv/envp: everything argument-shaped lives in the helper.
-    let program = cstring(&script_guest)?;
-    let argv = [std::ptr::null::<libc::c_char>()];
-    let envp = [std::ptr::null::<libc::c_char>()];
-    krun_check(
-        unsafe { krun::krun_set_exec(ctx, program.as_ptr(), argv.as_ptr(), envp.as_ptr()) },
-        "krun_set_exec",
-    )?;
-
     let code = krun::krun_start_enter(ctx);
     if code < 0 {
         anyhow::bail!("krun_start_enter failed with errno {}", -code);
     }
     Ok(code)
-}
-
-fn write_executable(path: &Path, content: &str) -> Result<()> {
-    std::fs::write(path, content)?;
-    make_executable(path)
 }
 
 fn make_executable(path: &Path) -> Result<()> {

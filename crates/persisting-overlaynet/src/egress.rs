@@ -147,9 +147,10 @@ pub(crate) async fn connect_tcp_addresses(
 /// Preserve the host's configured HTTP proxy as the upstream route for
 /// pVisor-managed TCP tunnels. The guest still connects to the logical target
 /// and policy is checked against that target before this helper is called.
+/// CONNECT uses pinned authorized IPs so upstream DNS cannot widen the policy.
 pub(crate) async fn connect_via_ambient_http_proxy(
     host: &str,
-    port: u16,
+    addresses: &[SocketAddr],
 ) -> Option<std::io::Result<TcpStream>> {
     // A host proxy cannot reach this machine's loopback service reliably, and
     // may acknowledge CONNECT before it has connected to the destination.
@@ -160,7 +161,7 @@ pub(crate) async fn connect_via_ambient_http_proxy(
         .into_iter()
         .filter_map(|key| std::env::var(key).ok())
         .find(|value| value.starts_with("http://") && !is_pvisor_loopback_proxy(value))?;
-    Some(connect_via_http_proxy(&proxy, host, port).await)
+    Some(connect_via_http_proxy_addresses(&proxy, addresses).await)
 }
 
 fn is_loopback_destination(host: &str) -> bool {
@@ -179,6 +180,23 @@ fn is_pvisor_loopback_proxy(value: &str) -> bool {
         || authority.starts_with("127.0.0.1:493")
         || authority.starts_with("[::1]:492")
         || authority.starts_with("[::1]:493")
+}
+
+async fn connect_via_http_proxy_addresses(
+    proxy: &str,
+    addresses: &[SocketAddr],
+) -> std::io::Result<TcpStream> {
+    let mut last_error = std::io::Error::new(
+        std::io::ErrorKind::AddrNotAvailable,
+        "no authorized address",
+    );
+    for address in addresses {
+        match connect_via_http_proxy(proxy, &address.ip().to_string(), address.port()).await {
+            Ok(stream) => return Ok(stream),
+            Err(error) => last_error = error,
+        }
+    }
+    Err(last_error)
 }
 
 async fn connect_via_http_proxy(proxy: &str, host: &str, port: u16) -> std::io::Result<TcpStream> {
@@ -223,6 +241,31 @@ async fn connect_via_http_proxy(proxy: &str, host: &str, port: u16) -> std::io::
 
 #[cfg(test)]
 mod tests {
+
+    #[tokio::test]
+    async fn proxy_connect_uses_authorized_address_not_upstream_dns() {
+        use tokio::io::{AsyncReadExt, AsyncWriteExt};
+        let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
+        let proxy = format!("http://{}", listener.local_addr().unwrap());
+        let server = tokio::spawn(async move {
+            let (mut stream, _) = listener.accept().await.unwrap();
+            let mut bytes = Vec::new();
+            while !bytes.ends_with(b"\r\n\r\n") {
+                bytes.push(stream.read_u8().await.unwrap());
+            }
+            assert!(
+                String::from_utf8(bytes)
+                    .unwrap()
+                    .starts_with("CONNECT 203.0.113.9:443 HTTP/1.1\r\n")
+            );
+            stream.write_all(b"HTTP/1.1 200 OK\r\n\r\n").await.unwrap();
+        });
+        super::connect_via_http_proxy_addresses(&proxy, &["203.0.113.9:443".parse().unwrap()])
+            .await
+            .unwrap();
+        server.await.unwrap();
+    }
+
     use super::is_loopback_destination;
 
     #[test]

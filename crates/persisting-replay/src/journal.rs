@@ -1,47 +1,73 @@
+//! Replay safety observations use the shared fact journal.
+use crate::error::{ReplayError, ReplayErrorKind, ResultExt};
+use fs2::FileExt;
+use persisting_control::trace::Fact;
+use persisting_journal::{Journal as FactJournal, Trace};
+use serde_json::{Map, Value};
 use std::collections::BTreeSet;
 use std::fs::{self, File, OpenOptions};
-use std::io::{BufRead, BufReader, Write};
+use std::io::{BufRead, BufReader};
 use std::path::{Path, PathBuf};
 
-use fs2::FileExt;
-use serde_json::{Map, Value};
-
-use crate::error::{ReplayError, ReplayErrorKind, ResultExt};
-
 pub struct Journal {
-    lock: File,
-    file: File,
+    _lock: File,
+    trace: Trace,
+    cause: Option<String>,
     pub path: PathBuf,
 }
-
 impl Journal {
     pub fn open(state_dir: &Path) -> Result<Self, ReplayError> {
-        fs::create_dir_all(state_dir).replay_context(
-            ReplayErrorKind::Executor,
-            format!("create replay state {}", state_dir.display()),
-        )?;
-        let lock_path = state_dir.join("run.lock");
+        fs::create_dir_all(state_dir)
+            .replay_context(ReplayErrorKind::Executor, "create replay state")?;
         let lock = OpenOptions::new()
             .create(true)
             .truncate(false)
             .read(true)
             .write(true)
-            .open(&lock_path)
-            .replay_context(
-                ReplayErrorKind::Executor,
-                format!("open {}", lock_path.display()),
-            )?;
-        lock.try_lock_exclusive().map_err(|error| {
+            .open(state_dir.join("run.lock"))
+            .replay_context(ReplayErrorKind::Executor, "open replay lock")?;
+        lock.try_lock_exclusive().map_err(|e| {
             ReplayError::new(
                 ReplayErrorKind::AmbiguousExecution,
-                format!(
-                    "another replay process owns {}: {error}",
-                    lock_path.display()
-                ),
+                format!("another replay process owns state: {e}"),
             )
         })?;
         let path = state_dir.join("replay-events.jsonl");
-        if let Some(call_id) = Self::find_ambiguous(&path)? {
+        // Open/recover first so an incomplete tail does not prevent recovery.
+        // Historical JSONL is inspected read-only before requiring fresh state.
+        if path.exists() {
+            let first = BufReader::new(
+                File::open(&path)
+                    .replay_context(ReplayErrorKind::Executor, "inspect replay journal")?,
+            )
+            .lines()
+            .next();
+            if let Some(Ok(line)) = first {
+                let header: Value = serde_json::from_str(&line)
+                    .replay_context(ReplayErrorKind::Executor, "inspect replay format")?;
+                if header.get("format").is_none()
+                    && let Some(call_id) = Self::find_ambiguous(&path)?
+                {
+                    return Err(ReplayError::new(
+                        ReplayErrorKind::AmbiguousExecution,
+                        format!(
+                            "historical state contains uncertain started tool call {call_id:?}; use a new sandbox and run-id"
+                        ),
+                    ));
+                }
+            }
+        }
+        let journal = FactJournal::open(&path).replay_context(
+            ReplayErrorKind::Executor,
+            "open replay fact journal; historical JSONL requires a new state directory",
+        )?;
+        let events = journal
+            .records()
+            .replay_context(ReplayErrorKind::AmbiguousExecution, "recover replay facts")?
+            .into_iter()
+            .map(|record| observation(record.event))
+            .collect::<Result<Vec<_>, _>>()?;
+        if let Some(call_id) = ambiguous(events.into_iter().flatten()) {
             return Err(ReplayError::new(
                 ReplayErrorKind::AmbiguousExecution,
                 format!(
@@ -49,74 +75,125 @@ impl Journal {
                 ),
             ));
         }
-        let file = OpenOptions::new()
-            .create(true)
-            .append(true)
-            .open(&path)
-            .replay_context(
-                ReplayErrorKind::Executor,
-                format!("open {}", path.display()),
-            )?;
-        Ok(Self { lock, file, path })
+        Ok(Self {
+            _lock: lock,
+            trace: Trace::new(journal, "persisting-replay"),
+            cause: None,
+            path,
+        })
     }
-
     pub fn append(
         &mut self,
-        event: &str,
+        name: &str,
         fields: impl IntoIterator<Item = (String, Value)>,
     ) -> Result<(), ReplayError> {
-        let mut object = Map::new();
-        object.insert("event".into(), Value::String(event.into()));
-        object.insert(
-            "timestamp_ns".into(),
-            Value::Number(
-                chrono::Utc::now()
-                    .timestamp_nanos_opt()
-                    .unwrap_or_default()
-                    .into(),
-            ),
+        let payload = Value::Object(fields.into_iter().collect::<Map<_, _>>());
+        let event = self.trace.event(
+            vec!["replay".into(), self.trace.id.clone()],
+            None,
+            None,
+            self.cause.iter().cloned().collect(),
+            Fact::Observation {
+                domain: "replay".into(),
+                name: name.into(),
+                version: 1,
+                payload,
+            },
         );
-        object.extend(fields);
-        serde_json::to_writer(&mut self.file, &Value::Object(object))
-            .replay_context(ReplayErrorKind::Executor, "append replay journal")?;
-        self.file
-            .write_all(b"\n")
-            .and_then(|_| self.file.sync_data())
-            .replay_context(ReplayErrorKind::Executor, "flush replay journal")
+        let receipt = self
+            .trace
+            .journal
+            .append(event)
+            .replay_context(ReplayErrorKind::Executor, "commit replay fact")?;
+        self.cause = Some(receipt.event);
+        Ok(())
     }
-
     pub fn find_ambiguous(path: &Path) -> Result<Option<String>, ReplayError> {
-        if !path.exists() {
-            return Ok(None);
-        }
-        let file = File::open(path).replay_context(
-            ReplayErrorKind::AmbiguousExecution,
-            format!("read {}", path.display()),
-        )?;
-        let mut started_since_terminal = BTreeSet::new();
-        for line in BufReader::new(file).lines() {
-            let line =
-                line.replay_context(ReplayErrorKind::AmbiguousExecution, "read replay journal")?;
-            let event: Value = serde_json::from_str(&line)
-                .replay_context(ReplayErrorKind::AmbiguousExecution, "parse replay journal")?;
-            match event.get("event").and_then(Value::as_str) {
-                Some("tool_started") => {
-                    if let Some(call_id) = event.get("call_id").and_then(Value::as_str) {
-                        started_since_terminal.insert(call_id.to_owned());
-                    }
-                }
-                Some("run_finished" | "run_failed") => started_since_terminal.clear(),
-                _ => {}
-            }
-        }
-        Ok(started_since_terminal.into_iter().next())
+        Ok(ambiguous(read_observations(path)?))
     }
 }
 
-impl Drop for Journal {
-    fn drop(&mut self) {
-        let _ = self.file.sync_data();
-        let _ = FileExt::unlock(&self.lock);
+fn ambiguous(events: impl IntoIterator<Item = Value>) -> Option<String> {
+    let mut started = BTreeSet::new();
+    for event in events {
+        match event["event"].as_str() {
+            Some("tool_started") => {
+                if let Some(call_id) = event["call_id"].as_str() {
+                    started.insert(call_id.to_owned());
+                }
+            }
+            Some("run_finished" | "run_failed") => started.clear(),
+            _ => {}
+        }
+    }
+    started.into_iter().next()
+}
+fn observation(event: persisting_control::trace::Event) -> Result<Option<Value>, ReplayError> {
+    if let Fact::Observation {
+        domain,
+        name,
+        version,
+        mut payload,
+    } = event.data
+        && domain == "replay"
+    {
+        if version != 1 {
+            return Err(ReplayError::new(
+                ReplayErrorKind::AmbiguousExecution,
+                "unsupported replay observation version",
+            ));
+        }
+        payload["event"] = Value::String(name);
+        return Ok(Some(payload));
+    }
+    Ok(None)
+}
+
+/// Read-only historical compatibility; all new writes use Event and FactJournal.
+pub(crate) fn read_observations(path: &Path) -> Result<Vec<Value>, ReplayError> {
+    if !path.exists() {
+        return Ok(vec![]);
+    }
+    let file = File::open(path)
+        .replay_context(ReplayErrorKind::AmbiguousExecution, "read replay facts")?;
+    let mut lines = BufReader::new(file).lines();
+    let Some(first) = lines.next() else {
+        return Ok(vec![]);
+    };
+    let first = first.replay_context(ReplayErrorKind::AmbiguousExecution, "read replay header")?;
+    let header: Value = serde_json::from_str(&first)
+        .replay_context(ReplayErrorKind::AmbiguousExecution, "parse replay header")?;
+    if header.get("format").is_some() {
+        // The owning handle may still be open during failure reporting. Decode
+        // complete records for diagnostics; admission uses the validating reader.
+        let mut out = vec![];
+        for line in lines {
+            let line =
+                line.replay_context(ReplayErrorKind::AmbiguousExecution, "read replay fact")?;
+            let record: persisting_control::trace::Record = serde_json::from_str(&line)
+                .replay_context(ReplayErrorKind::AmbiguousExecution, "decode replay fact")?;
+            record
+                .event
+                .validate()
+                .replay_context(ReplayErrorKind::AmbiguousExecution, "validate replay fact")?;
+            if let Some(value) = observation(record.event)? {
+                out.push(value);
+            }
+        }
+        Ok(out)
+    } else {
+        let mut out = vec![header];
+        for line in lines {
+            let line = line.replay_context(
+                ReplayErrorKind::AmbiguousExecution,
+                "read historical replay record",
+            )?;
+            out.push(serde_json::from_str(&line).replay_context(
+                ReplayErrorKind::AmbiguousExecution,
+                "parse historical replay record",
+            )?);
+        }
+        Ok(out)
     }
 }
 

@@ -763,12 +763,12 @@ forward = "echo-upstream"
         .unwrap();
         let records = Arc::new(Mutex::new(Vec::new()));
         let callback_records = Arc::clone(&records);
-        let sink: Arc<dyn crate::sink::CaptureEventSink> = Arc::new(
-            crate::sink::CallbackSink::new("echo-test", move |_, _, record| {
+        let sink: Arc<dyn crate::sink::CaptureEventObserver> =
+            Arc::new(crate::sink::CallbackObserver::new(move |event| {
+                let record = crate::record::CaptureRecord::from_event(event, 0)?;
                 callback_records.lock().unwrap().push(record);
                 Ok(())
-            }),
-        );
+            }));
         let state = tempfile::tempdir().unwrap();
         let (gateway_stop, gateway_stop_rx) = tokio::sync::oneshot::channel();
         let gateway = tokio::spawn(crate::serve_with_listeners_and_shutdown(

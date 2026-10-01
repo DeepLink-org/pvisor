@@ -130,7 +130,7 @@ pub(super) async fn llm_capture(
             .ensure(state.storage.as_path(), &agent_id, &capture_route, peer);
 
     // Understand the untouched client request once. Routing, rendering, and live capture below
-    // share this typed value; WAL retains the pre-rewrite JSON for crash replay.
+    // share this typed value; Journal retains captured facts for projection recovery.
     let mut parsed_request = understand_request(protocol, &body_bytes).ok();
     let stream_request = parsed_request
         .as_ref()

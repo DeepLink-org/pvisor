@@ -1,24 +1,17 @@
 use std::sync::Arc;
 
-use crate::dead_letter::read_dead_letter_entries;
+use crate::dead_letter::read_trajectory_dead_letter_entries;
 use crate::engine::{CaptureEngine, Event, RequestEvent};
-use crate::record::EventRecord;
 use crate::session::index::SessionIndexStore;
-use crate::session::storage::CaptureRoute;
-use crate::sink::CaptureEventSink;
+use crate::sink::CaptureEventObserver;
 
 use super::fixtures::test_context;
 
 struct FailingSink;
 
-impl CaptureEventSink for FailingSink {
-    fn append(
-        &self,
-        _route: &CaptureRoute,
-        _agent_id: &str,
-        _record: &mut EventRecord,
-    ) -> anyhow::Result<()> {
-        Err(anyhow::anyhow!("sink unavailable"))
+impl CaptureEventObserver for FailingSink {
+    fn observe(&self, _event: &persisting_control::trace::Event) -> anyhow::Result<()> {
+        anyhow::bail!("observer unavailable")
     }
 }
 
@@ -43,25 +36,25 @@ async fn session_sink_failure_writes_dead_letter_with_record() {
         model_rewritten: false,
         headers: vec![],
     });
-    assert!(engine.apply(&ctx, event).await.is_err());
+    engine.apply(&ctx, event).await.unwrap();
     engine.flush().await.unwrap();
-    let entries = read_dead_letter_entries(dir.path()).unwrap();
+    let entries = read_trajectory_dead_letter_entries(dir.path()).unwrap();
     assert_eq!(entries.len(), 1);
-    assert!(entries[0].error.contains("sink unavailable"));
-    assert!(entries[0].prepared_record_json.is_some());
+    assert!(entries[0].error.contains("observer unavailable"));
+    assert_eq!(entries[0].records[0].name(), "llm.request");
     let story = engine.story_snapshot(&ctx.story).await.unwrap();
     assert!(
-        story.turns.is_empty(),
-        "failed canonical append must not advance the story read model"
+        !story.turns.is_empty(),
+        "failed observer must not undo a committed fact"
     );
 }
 
 #[tokio::test]
-async fn failed_durable_sink_keeps_wal_event_pending_after_shutdown() {
+async fn observer_failure_does_not_erase_committed_facts() {
     let dir = tempfile::tempdir().unwrap();
     let storage = Arc::new(dir.path().to_path_buf());
     let index = SessionIndexStore::open(dir.path()).unwrap().clone_handle();
-    let engine = CaptureEngine::new(Arc::new(FailingSink), index, storage.clone(), false)
+    let engine = CaptureEngine::new(Arc::new(FailingSink), index, storage, false)
         .await
         .unwrap();
     engine.spawn_apply(
@@ -78,13 +71,9 @@ async fn failed_durable_sink_keeps_wal_event_pending_after_shutdown() {
             headers: vec![],
         }),
     );
-
-    engine.flush().await.unwrap();
-    assert_eq!(crate::engine::wal::replay_pending(dir.path()).len(), 1);
     engine.shutdown().await.unwrap();
-    assert_eq!(
-        crate::engine::wal::replay_pending(dir.path()).len(),
-        1,
-        "clean shutdown must not erase an event rejected by the durable sink"
-    );
+    let records =
+        persisting_journal::Journal::read(&dir.path().join(".capture/events.trace.jsonl")).unwrap();
+    assert_eq!(records.len(), 1);
+    assert_eq!(records[0].event.name(), "llm.request");
 }

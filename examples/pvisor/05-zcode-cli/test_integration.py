@@ -206,18 +206,18 @@ def verify_write(work, decision="apply"):
     counts = bundle["network"]["intercepted"]
     assert counts["sink_requests"] == counts["requests_seen"] == 2
     assert counts["failures"] == 0
-    events = [
-        json.loads(line) for line in (stage / ".capture/events.jsonl").read_text().splitlines()
-    ]
-    llm = [event for event in events if event["kind"].startswith("llm.")]
-    assert [event["kind"] for event in llm] == [
+    rows = (stage / ".capture/events.trace.jsonl").read_text().splitlines()
+    events = [json.loads(line)["event"] for line in rows[1:]]
+    llm = [event for event in events if event["data"].get("name", "").startswith("llm.")]
+    assert [event["data"]["name"] for event in llm] == [
         "llm.request",
         "llm.response.stream",
     ] * 2
-    assert llm[0]["call_id"] == llm[1]["call_id"]
-    assert llm[2]["call_id"] == llm[3]["call_id"] != llm[0]["call_id"]
-    assert "Write" in llm[1]["payload"]["assistant_content"]
-    assert llm[3]["payload"]["assistant_content"] == "PVISOR_ZCODE_OK"
+    calls = [event["data"]["payload"]["correlation"]["call_id"] for event in llm]
+    assert calls[0] == calls[1]
+    assert calls[2] == calls[3] != calls[0]
+    assert "Write" in llm[1]["data"]["payload"]["content"]["assistant_content"]
+    assert llm[3]["data"]["payload"]["content"]["assistant_content"] == "PVISOR_ZCODE_OK"
 
     if decision == "drop":
         subprocess.run([PVISOR, "drop", str(stage)], check=True)

@@ -661,7 +661,7 @@ async fn connect_vm_egress(
     if addresses.is_empty() {
         return Err(EgressError::Denied(DenyReason::ResolvedAddressNotAllowed));
     }
-    let stream = match connect_via_ambient_http_proxy(host, port).await {
+    let stream = match connect_via_ambient_http_proxy(host, &addresses).await {
         Some(Ok(stream)) => stream,
         Some(Err(source)) => {
             return Err(EgressError::Connect {

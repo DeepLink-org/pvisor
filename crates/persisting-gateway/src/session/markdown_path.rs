@@ -26,10 +26,13 @@ pub fn is_subagent_session_storage_key(session_key: &str) -> bool {
         })
 }
 
-fn session_filename_stem(session_id: &str) -> String {
+pub(crate) fn session_filename_stem(session_id: &str) -> String {
     let trimmed = session_id.trim();
     if trimmed.is_empty() {
         return "session".to_string();
+    }
+    if matches!(trimmed, "." | "..") {
+        return trimmed.bytes().map(|_| "~2E").collect();
     }
 
     let mut encoded = String::with_capacity(trimmed.len().min(SESSION_FILENAME_MAX_LEN));

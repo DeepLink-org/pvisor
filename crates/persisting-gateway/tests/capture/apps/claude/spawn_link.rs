@@ -2,7 +2,7 @@
 
 use axum::http::HeaderMap;
 use persisting_gateway::projection::dialogue::skip_markdown_block;
-use persisting_gateway::record::EventRecord;
+use persisting_gateway::record::CaptureRecord;
 use persisting_gateway::session::storage::CaptureRoute;
 use persisting_gateway::subagent_link::{
     SubagentRegistry, enrich_record, extract_spawn_hints_from_assistant,
@@ -54,10 +54,10 @@ fn matches_spawn_hint_to_registered_subagent_by_doc_target() {
     let assistant = r#"```tool:Agent
 {"description":"Review capture command design","subagent_type":"Explore","prompt":"Review docs/src/design/cli-pvisor.md"}
 ```"#;
-    let mut rec = EventRecord {
-        identity: Default::default(),
-        seq: 0,
-        source: "persisting-proxy".into(),
+    let mut rec = CaptureRecord {
+        event_id: None,
+        observed_at_unix_ms: None,
+
         kind: "llm.response.stream".into(),
         timestamp: None,
         session_id: Some(super::support::CLAUDE_SESSION.into()),
@@ -124,10 +124,10 @@ fn ignores_documentation_cli_agent_id_flag() {
 
 #[test]
 fn spawn_link_records_are_never_skipped_in_markdown() {
-    let rec = EventRecord {
-        identity: Default::default(),
-        seq: 7,
-        source: "persisting-proxy".into(),
+    let rec = CaptureRecord {
+        event_id: None,
+        observed_at_unix_ms: None,
+
         kind: "llm.spawn_link".into(),
         timestamp: None,
         session_id: None,

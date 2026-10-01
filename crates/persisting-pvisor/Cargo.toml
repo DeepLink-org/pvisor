@@ -12,6 +12,7 @@ build = "build.rs"
 default = []
 
 [dependencies]
+persisting-guest.workspace = true
 anyhow.workspace = true
 async-trait.workspace = true
 chrono.workspace = true
@@ -23,6 +24,7 @@ globset.workspace = true
 libc.workspace = true
 lru = "0.12.5"
 persisting-control.workspace = true
+persisting-journal.workspace = true
 persisting-gateway = { workspace = true, default-features = false }
 persisting-overlaynet.workspace = true
 persisting-overlayfs = { workspace = true, default-features = false }

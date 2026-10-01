@@ -90,7 +90,7 @@ fn parse_options(raw: &str) -> Result<MountOpts> {
                 "nodefault_permissions" => default_permissions = false,
                 "ro" => read_only = true,
                 "rw" => read_only = false,
-                _ => log::debug!("ignoring unsupported mount option: {part}"),
+                _ => bail!("unsupported mount option: {part}"),
             }
             continue;
         };
@@ -109,7 +109,7 @@ fn parse_options(raw: &str) -> Result<MountOpts> {
             "fsname" => fsname = v.to_string(),
             "backend" if matches!(v, "kernel" | "fskit") => backend = Some(v.to_string()),
             "backend" => bail!("unsupported macFUSE backend: {v}"),
-            _ => log::debug!("ignoring unsupported mount option: {part}"),
+            _ => bail!("unsupported mount option: {part}"),
         }
     }
     let lowerdir = lowerdir.context("missing lowerdir=")?;
@@ -160,6 +160,14 @@ fn main() -> Result<()> {
 
 #[cfg(test)]
 mod tests {
+
+    #[test]
+    fn unknown_mount_options_fail_closed() {
+        for option in ["read_only", "allow_others", "deny=/private"] {
+            assert!(parse_options(&format!("lowerdir=/lower,upperdir=/upper,{option}")).is_err());
+        }
+    }
+
     use super::*;
 
     #[test]

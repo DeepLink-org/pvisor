@@ -27,6 +27,11 @@ The current run path creates one Attempt. Host execution drains bounded output a
 
 ## Run IR and observations
 
+`RunStatus.attempt.executor` describes the admission-time control plan; it is not
+proof that setup has completed. `PVisor::capabilities()` reports host mechanisms,
+not a particular Run's installed controls. Final Bundle safety fields account
+for sandbox setup failures and runtime observations.
+
 Admission resolves the executor, application policy and network configuration before compiling an immutable `RunPlan` from the effective `RunSpec`. Its `run.execute` IR request and ordered VM/Overlay context rewrites describe placement. Each filesystem, network and environment rule has a stable ID within the Run, a target, an action and the actual enforcement evidence for its dimension. Embedders can call `PVisor::resolve_run_plan` to inspect the same plan without starting an Attempt.
 
 Run events carry IR request, rewrite and completion facts. `run.json` and the Run Bundle retain the plan. IR is the internal framework for rewrites and effect accounting; it adds no CLI entry point. The FUSE filesystem view counts hits, successes, denials, other failures, successful mutating operations, failed mutating operations with uncertain effects, and read/write bytes by mount-relative path and operation. Matched deny/warn rules and the stage rule receive counters too. The path table retains at most 8192 distinct paths and counts further hits in `overflow_hits`. These are operations reaching FUSE, not unique files or the final filesystem diff; OverlayFS diff remains the source for final changes.
@@ -45,9 +50,9 @@ Individual file replacements use temporary files and rename. A whole batch is no
 
 ## Records and capture
 
-`run.json` is the local Run record. `run-bundle.json` summarizes the result, controls, artifacts and filesystem/network evidence. These are distinct from optional EventRecord JSONL containing lifecycle and Gateway events.
+`run.json` is the local Run record. `run-bundle.json` summarizes the result, controls, artifacts and filesystem/network evidence. These are distinct from optional Trace Event journals containing lifecycle and Gateway events.
 
-Gateway uses bounded apply queues and a best-effort asynchronous WAL. Queue acceptance is not a synchronous durable commit. Capture and protocol conversion must not be described as proof that all network traffic was intercepted.
+Gateway uses bounded apply queues and the shared fact Journal. Queue acceptance is not a durable commit; committed events rebuild projections after restart. Capture and protocol conversion must not be described as proof that all network traffic was intercepted.
 
 ## Extension points and limits
 

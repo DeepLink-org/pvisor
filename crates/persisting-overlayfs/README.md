@@ -41,7 +41,7 @@ Linux: FUSE3 development packages, for example `libfuse3-dev`.
 ### Build and test
 
 ```bash
-cargo build -p persisting-pvisor --bin pvisor --release
+just build release
 just test persisting-overlayfs
 ```
 
@@ -50,8 +50,8 @@ binary. The standalone CLI is optional and intended for diagnostics or manual
 mounts:
 
 ```bash
-cargo build -p persisting-overlayfs --release
-# → target/release/persisting-overlayfs
+cargo zigbuild -p persisting-overlayfs --release --target x86_64-unknown-linux-musl
+# → target/x86_64-unknown-linux-musl/release/persisting-overlayfs (Linux)
 ```
 
 ## Links

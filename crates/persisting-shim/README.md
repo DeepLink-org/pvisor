@@ -97,10 +97,12 @@ disabled, mirroring pVisor's VM executor posture.
 Build with the feature (Linux host, or cross via `just shim-vm-build`):
 
 ```bash
-cargo build -p persisting-shim --features vm
+just shim-vm-build
 ```
 
-Host requirements: `/dev/kvm` and `libkrunfw` on the library path.
+Host requirement: `/dev/kvm`. The static musl binary embeds its libkrunfw kernel.
+Cross-builds need `PERSISTING_KRUNFW_KERNEL_BUNDLE` pointing to extracted
+`kernel.bin` and `kernel.json`; native Linux builds prepare firmware automatically.
 Not mapped into VMs yet (logged as warnings): spec bind mounts and cgroup
 limits (the VM shape is the resource boundary).
 
@@ -155,7 +157,7 @@ just test shim          # or: cargo nextest run -p persisting-shim
 The syscall paths compile-check cross-platform; full builds need Linux:
 
 ```bash
-just shim-check         # cargo check + clippy for x86_64-unknown-linux-gnu
+just shim-check         # cargo check + clippy for x86_64-unknown-linux-musl
 ```
 
 ## Linux acceptance smoke test
@@ -163,8 +165,8 @@ just shim-check         # cargo check + clippy for x86_64-unknown-linux-gnu
 On a Linux host with containerd ≥ 1.7:
 
 ```bash
-cargo build --release -p persisting-shim
-sudo install -m755 target/release/containerd-shim-pvisor-v2 /usr/local/bin/
+cargo zigbuild --release -p persisting-shim --target x86_64-unknown-linux-musl
+sudo install -m755 target/x86_64-unknown-linux-musl/release/containerd-shim-pvisor-v2 /usr/local/bin/
 sudo systemctl restart containerd
 sudo ctr run --runtime io.containerd.pvisor.v2 -t --rm \
   docker.io/library/busybox:latest pvisor-smoke echo hello from pvisor

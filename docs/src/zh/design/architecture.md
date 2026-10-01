@@ -45,9 +45,9 @@ OverlayCore 在首次修改时记录目标的原始状态。Apply 将选择扩�
 
 ## 运行记录与捕获
 
-`run.json` 是本地 Run 记录，`run-bundle.json` 汇总结果、控制、产物及文件系统／网络证据。可选的 EventRecord JSONL 保存生命周期和 Gateway 事件，与 Bundle 的内容范围不同。
+`run.json` 是本地 Run 记录，`run-bundle.json` 汇总结果、控制、产物及文件系统／网络证据。可选的 Trace Event journal 保存生命周期和 Gateway 事件，与 Bundle 的内容范围不同。
 
-Gateway 使用有界应用队列和尽力而为的异步 WAL。进入队列不等于已同步持久化。捕获和协议转换也不能证明全部网络流量都经过了拦截。
+Gateway 使用有界应用队列和共享事实 Journal。进入队列不等于持久化；重启从已提交事实重建投影。捕获和协议转换也不能证明全部网络流量都经过了拦截。
 
 ## 扩展点与限制
 

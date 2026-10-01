@@ -10,6 +10,7 @@
 # See Cargo.toml.orig for the original contents.
 
 [package]
+build = "build.rs"
 edition = "2021"
 name = "libkrun"
 version = "1.19.3"
@@ -53,7 +54,7 @@ gpu = [
     "devices/gpu",
     "krun_display",
 ]
-init-blob = ["dep:init-blob"]
+init-blob = []
 input = [
     "krun_input",
     "vmm/input",
@@ -94,11 +95,6 @@ package = "krun-devices"
 
 [dependencies.env_logger]
 version = "0.11"
-
-[dependencies.init-blob]
-version = "=0.1.0-1.19.3"
-optional = true
-package = "krun-init-blob"
 
 [dependencies.krun_display]
 version = "0.1.0"

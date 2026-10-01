@@ -11,15 +11,19 @@ Agent → 注入的代理或 base URL → OverlayNet HTTP 路径
 
 协议适配器把支持的请求和响应转换为 `persisting-control` 共享事件词汇。引擎携带 Run、Attempt、agent、session 和 story 身份。每个 story 的 actor 串行写入 sink，并在追加成功后更新内存中的轮次索引。
 
-公开的捕获输出是 EventRecord JSONL。story actor 当前忽略草稿命令。`--gateway-stream-markdown` 为兼容旧调用保留，不会生成实时 Markdown 投影；需要展示层时，应从持久事件派生。
+公开捕获输出使用 `trace::Event` 与共享 Journal。可变 capture 输入只用于对话投影，
+不是第二套正式事件信封。草稿不进入事实日志，Markdown 参数仍仅作兼容。
 
 ## 顺序与持久化
 
-序号属于对应生产者或 session 的顺序范围。合并事件流时应保留身份字段；时间戳和孤立的 `seq` 都不能定义全局顺序。`timestamp` 与 `timestamp_unix_ms` 是同一观察时间的两种表达。
+Journal 位置表示提交顺序；稳定事件 ID 支持幂等重试，因果引用表示已知依赖。
+Run 与内嵌 Gateway 共用 Journal。story actor 先提交事实，再更新 Story、SessionIndex
+和通知观察者；观察者失败不撤销已提交事实。
 
-capture engine 使用有界异步 WAL 提交队列，由后台成组提交。进入队列不等于已同步持久化。恢复可重放已落盘但尚未确认的工作；进程在排队记录落盘前突然退出，仍可能丢失该记录。正常关闭会刷新待处理工作。判断记录是否完整时，需要检查捕获错误和死信。
-
-sink 追加可能在写入部分字节后失败。除非 sink 能证明完全拒绝，该错误的结果应视为未知；把所有 I/O 错误都视为干净拒绝会导致不安全的重试。运行时 JSONL 使用仅所有者可读写的权限，重新打开已有文件时也会收紧权限。
+命令 WAL 已删除。启动时从已提交事实重建投影，不重放 HTTP 请求、不重复通知观察者，
+也不重写日志。有界输入队列仍是尽力而为的，只有 Journal 回执证明持久化。
+flush 报告拒绝或失败的工作，shutdown 等待消费者释放 Journal。非空历史 WAL 会阻止
+启动，要求先用旧版本排空，避免迁移时静默丢失数据。
 
 ## 观察边界
 
@@ -32,7 +36,7 @@ sink 追加可能在写入部分字节后失败。除非 sink 能证明完全拒
 | 组件 | 源码区域 | 职责 |
 | --- | --- | --- |
 | 协议解析与转发 | `persisting-gateway` | 模型协议转换与调用观察 |
-| 引擎与 story actor | `persisting-gateway/src/engine` | 身份、顺序、WAL、追加和轮次状态 |
+| 引擎与 story actor | `persisting-gateway/src/engine` | Journal 提交、因果身份和轮次投影 |
 | 事件词汇 | `persisting-control` | 共享序列化记录和 sink 契约 |
 | 运行时集成 | `persisting-pvisor` | Run 生命周期、路由配置、事件 sink 和关闭 |
 | 网络路径 | `persisting-overlaynet` | 代理传输和策略接入 |

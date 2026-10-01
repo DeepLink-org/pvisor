@@ -8,7 +8,7 @@ use std::time::Duration;
 use anyhow::{Context, Result};
 
 use crate::config::ProxyConfig;
-use crate::sink::CaptureEventSink;
+use crate::sink::CaptureEventObserver;
 use persisting_control::{ControlController, PolicyControlController};
 use persisting_overlaynet::{BandwidthRegistry, InterceptionMetrics, InterceptionSnapshot};
 use tokio::sync::oneshot;
@@ -48,7 +48,7 @@ impl InProcessCapture {
     pub fn start(
         config: ProxyConfig,
         storage: PathBuf,
-        sink: Arc<dyn CaptureEventSink>,
+        sink: Arc<dyn CaptureEventObserver>,
         stream_markdown: bool,
     ) -> Result<Self> {
         Self::start_with_runtime(
@@ -63,7 +63,7 @@ impl InProcessCapture {
     pub fn start_with_runtime(
         config: ProxyConfig,
         storage: PathBuf,
-        sink: Arc<dyn CaptureEventSink>,
+        sink: Arc<dyn CaptureEventObserver>,
         stream_markdown: bool,
         runtime: InProcessRuntime,
     ) -> Result<Self> {
@@ -123,7 +123,7 @@ impl InProcessCapture {
     pub fn start_with_control(
         config: ProxyConfig,
         storage: PathBuf,
-        sink: Arc<dyn CaptureEventSink>,
+        sink: Arc<dyn CaptureEventObserver>,
         stream_markdown: bool,
         controller: Arc<dyn ControlController>,
     ) -> Result<Self> {
@@ -180,7 +180,7 @@ mod tests {
         let error = InProcessCapture::start(
             config,
             storage.path().to_path_buf(),
-            Arc::new(crate::sink::SeqOnlySink::new()),
+            Arc::new(crate::sink::NoopCaptureObserver::new()),
             false,
         )
         .err()

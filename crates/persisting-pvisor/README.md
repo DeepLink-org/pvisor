@@ -42,18 +42,18 @@ just test persisting-pvisor
 just examples
 ```
 
-```bash
-cargo build --locked -p persisting-pvisor --bin pvisor --release
-```
-
 On macOS, source builds that use HVF must be signed. `just build release` does this;
 the equivalent entitlements file is `macos-hypervisor.entitlements`. Building
-from source on macOS also requires Zig (`brew install zig`) to cross-compile
-libkrun's embedded Linux guest init.
+the embedded `persisting-guest` supervisor is built as a static Linux musl ELF
+with Rust's bundled linker. It launches workloads directly, without a shell helper,
+and reports their exit codes through libkrun's root filesystem ioctl.
 
 The vendored libkrun is built only as an `rlib` and statically linked into
 `pvisor`; no `libkrun.so` or `libkrun.dylib` is required. The separate guest
-kernel payload, `libkrunfw.so.5` / `libkrunfw.5.dylib`, is still loaded at runtime.
+kernel is embedded in Linux static musl builds; macOS loads `libkrunfw.5.dylib`
+at runtime. Linux source builds require Zig, `cargo-zigbuild`, and
+`rustup target add x86_64-unknown-linux-musl`. Use `just build` so target
+selection and kernel preparation match release builds.
 
 ## Links
 

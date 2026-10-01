@@ -39,6 +39,7 @@ pub struct InterceptionProfile {
     pub http: bool,
     pub tcp_connect: bool,
     pub dns: bool,
+    /// General UDP forwarding; local DNS/DHCP responders are not UDP egress.
     pub udp: bool,
     pub inherited_by_children: bool,
 }

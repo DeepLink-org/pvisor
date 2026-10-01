@@ -187,6 +187,7 @@ pub struct RunControlServer {
     join: Option<JoinHandle<()>>,
     socket_path: PathBuf,
     locator_path: PathBuf,
+    _socket_dir: tempfile::TempDir,
 }
 
 impl RunControlServer {
@@ -214,8 +215,10 @@ impl RunControlServer {
         // macOS sockaddr_un paths are short. Bind in the fixed, short `/tmp`
         // directory rather than `std::env::temp_dir()` (which can point at a deep
         // per-user path) and expose a stable stage-local symlink for discovery.
-        let socket_path =
-            Path::new("/tmp").join(format!("pvisor-{}.sock", uuid::Uuid::new_v4().simple()));
+        let socket_dir = tempfile::Builder::new()
+            .prefix("pvisor-")
+            .tempdir_in("/tmp")?;
+        let socket_path = socket_dir.path().join("control.sock");
         let listener = std::os::unix::net::UnixListener::bind(&socket_path)?;
         fs::set_permissions(&socket_path, fs::Permissions::from_mode(0o600))?;
         std::os::unix::fs::symlink(&socket_path, &locator_path)?;
@@ -252,6 +255,7 @@ impl RunControlServer {
             join: Some(join),
             socket_path,
             locator_path,
+            _socket_dir: socket_dir,
         }))
     }
 }

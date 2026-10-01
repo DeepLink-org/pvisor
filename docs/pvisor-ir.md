@@ -1,4 +1,4 @@
-# pVisor IR v3 与 Trace v3
+# pVisor IR v4 与 Trace v3
 
 IR 表示一个尚未执行的操作及其上下文链。适配器把截获的调用构造成表达式，策略改写
 后缀，后端执行整个表达式，trace 保存请求、推导过程与结果。
@@ -34,15 +34,15 @@ fs.read("input", offset: 0, length: 5) |> remote("node-a") |> mock(bytes([104,10
 fs.write("output", offset: 0, data: bytes([104,105])) |> deny("read-only")
 ```
 
-- 操作：`fs.read(file, offset: u64, length: u64)`、`fs.write(file, offset: u64, data: bytes([...]))`。
+- 操作：`fs.read(file, offset: u64, length: u64)`、`fs.write(file, offset: u64, data: bytes([...]))`、`run.execute(run_id)`。
 - 包裹：`vm(name)`、`remote(name)`、`overlay(name)`、`mock(value)`、`deny(reason)`。
-- 值：字节数组或 u64；字符串使用 JSON 转义，字节范围为 0–255。
+- 值：字节数组、u64 或 Run 结果（state、exit_code）；字符串使用 JSON 转义，字节范围为 0–255。
 - 命名实参顺序任意；规范输出固定顺序，重复、缺失或未知实参报错。
 - 允许空白、换行及 `//` 注释；规范输出为单行表达式，不保留注释。
 - 最多 32 层上下文，文本与结构化表达式各限 1 MiB；文件范围不允许溢出。
 - mock/deny 只能位于最外层，直接返回结果，内部操作与上下文不执行。mock 必须符合原语结果契约。
 
-文本是一个表达式，不含版本头、函数、变量绑定或控制流。结构化 JSON 的 `version` 为 3；
+文本是一个表达式，不含版本头、函数、变量绑定或控制流。结构化 JSON 的 `version` 为 4；
 `Expression::from_str`、`to_text` 和 serde JSON 表示可往返相同结构。
 多个实际调用分别产生请求，通过事件身份与因果引用连接。
 
@@ -126,6 +126,9 @@ just test persisting-pvisor
 python3 docs/pvisor-algebra-check.py
 ```
 
-现有 `persisting_control::events` v1 及 FUSE/Gateway 等生产入口尚未迁移。
-新 IR/Trace 使用 v3，旧草稿程序和 journal 不混读。回放测试重建改写过程并核对记录结果；
+生产 Run 入口已编译 RunPlan，并将请求、实际计划改写、派发和完成写成独立 Trace v3 事实。
+Gateway 捕获和 replay 使用同一 Event 信封及 Journal；文件系统与网络汇总使用领域 Observation，
+不宣称每个 FUSE 操作或网络包都已接入 Core。旧 EventRecord 仅保留历史读取，命令 WAL 已退场。
+正式日志与旧 JSONL 不混写；参见 [事件契约](event-contract-v3.md) 的接入与迁移说明。
+IR 使用 v4（增加 `run.execute`），Trace/Event 使用 v3；旧草稿程序和 journal 不混读。回放测试重建改写过程并核对记录结果；
 真实副作用回放须由后续适配器提供资源初态与必要输入。

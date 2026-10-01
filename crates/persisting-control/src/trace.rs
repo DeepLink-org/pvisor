@@ -98,6 +98,24 @@ impl Fact {
     }
 }
 impl Event {
+    /// Domain observation name; execution phases use their fact name.
+    pub fn name(&self) -> &str {
+        match &self.data {
+            Fact::Observation { name, .. } => name,
+            Fact::Context { .. } => "context",
+            Fact::Requested { .. } => "requested",
+            Fact::Rewritten { .. } => "rewritten",
+            Fact::Dispatched { .. } => "dispatched",
+            Fact::Completed { .. } => "completed",
+        }
+    }
+    pub fn observation_payload(&self) -> Option<&Value> {
+        match &self.data {
+            Fact::Observation { payload, .. } => Some(payload),
+            _ => None,
+        }
+    }
+
     pub fn validate(&self) -> Result<()> {
         ensure!(self.version == VERSION, "unsupported trace event version");
         for id in [&self.id, &self.trace_id, &self.producer] {

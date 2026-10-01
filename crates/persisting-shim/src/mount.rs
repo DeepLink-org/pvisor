@@ -55,9 +55,7 @@ pub fn parse_mount_options(options: &[String]) -> ParsedMountOptions {
 mod linux {
     use crate::plan::MountPlan;
     use anyhow::{Context, Result};
-    use log::warn;
     use std::fs;
-    use std::os::fd::AsRawFd;
     use std::os::unix::ffi::OsStrExt;
     use std::path::Path;
 
@@ -184,10 +182,7 @@ mod linux {
                 )
                 .with_context(|| format!("{} mount at {}", mount_plan.fs_type, target.display()))?;
             }
-            other => warn!(
-                "skipping unsupported mount type {other} at {}",
-                target.display()
-            ),
+            other => anyhow::bail!("unsupported mount type {other} at {}", target.display()),
         }
         Ok(())
     }
@@ -200,14 +195,7 @@ mod linux {
             if !mount_plan.from_request && mount_plan.fs_type == "proc" {
                 continue;
             }
-            if let Err(error) = apply_one(mount_plan, rootfs) {
-                // Request mounts are fatal: without the snapshotter rootfs
-                // there is nothing to run on. Spec mounts degrade loudly.
-                if mount_plan.from_request {
-                    return Err(error);
-                }
-                warn!("spec mount failed: {error:#}");
-            }
+            apply_one(mount_plan, rootfs)?;
         }
         Ok(())
     }
@@ -230,8 +218,6 @@ mod linux {
     /// `pivot_root(".", ".")` dance: move the new root over `/`, detach the
     /// old root, and land in the new root.
     pub fn pivot_root(new_root: &Path) -> Result<()> {
-        use std::os::unix::fs::OpenOptionsExt;
-
         std::env::set_current_dir(new_root).context("chdir new root")?;
         // Bind the new root onto itself so pivot_root has a parent to move.
         mount(
@@ -250,21 +236,7 @@ mod linux {
             )
         };
         if ret != 0 {
-            let error = std::io::Error::last_os_error();
-            // Fall back to chroot when pivot_root is unavailable (very old
-            // kernels or restricted sandboxes).
-            warn!("pivot_root failed ({error}), falling back to chroot");
-            let root = std::fs::OpenOptions::new()
-                .read(true)
-                .custom_flags(libc::O_DIRECTORY)
-                .open(new_root)
-                .context("open new root before chroot")?;
-            if unsafe { libc::fchdir(root.as_raw_fd()) } != 0 {
-                return Err(std::io::Error::last_os_error()).context("fchdir before chroot");
-            }
-            if unsafe { libc::chroot(cstr(Path::new(".")).as_ptr()) } != 0 {
-                return Err(std::io::Error::last_os_error()).context("chroot fallback");
-            }
+            return Err(std::io::Error::last_os_error()).context("pivot_root");
         } else {
             // The old root is now mounted on top of ".".
             let ret = unsafe { libc::umount2(cstr(Path::new(".")).as_ptr(), libc::MNT_DETACH) };

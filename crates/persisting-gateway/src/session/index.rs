@@ -110,6 +110,67 @@ pub struct SessionIndexHandle {
 }
 
 impl SessionIndexHandle {
+    pub fn rebuild_from_events(&self, records: &[persisting_control::trace::Record]) -> Result<()> {
+        self.inner.write().unwrap().sessions.clear();
+        self.mark_dirty();
+        for record in records {
+            self.observe_event(&record.event)?;
+        }
+        Ok(())
+    }
+    pub fn observe_event(&self, event: &persisting_control::trace::Event) -> Result<()> {
+        if !crate::record::is_capture_event(event) {
+            return Ok(());
+        }
+        let data = crate::record::capture_observation(event)?;
+        let text = |key: &str| data.content.get(key).and_then(|v| v.as_str()).unwrap_or("");
+        let provider = ProviderKind::parse(text("provider"));
+        if event.name() == "llm.request" {
+            self.record_request(
+                &data.story.agent_id,
+                &data.story.route.session_id,
+                provider,
+                text("protocol"),
+                text("model"),
+            );
+        } else if matches!(event.name(), "llm.response" | "llm.response.stream") {
+            let usage = data
+                .content
+                .get("usage")
+                .cloned()
+                .map(serde_json::from_value)
+                .transpose()?
+                .unwrap_or_default();
+            let cost = data
+                .content
+                .get("estimated_cost_usd")
+                .and_then(|v| v.as_f64())
+                .unwrap_or(0.0);
+            self.record_response(
+                &data.story.agent_id,
+                &data.story.route.session_id,
+                provider,
+                text("model"),
+                &usage,
+                cost,
+            );
+        }
+        if let Some(time) =
+            chrono::DateTime::from_timestamp_millis(event.observed_at_unix_ms as i64)
+        {
+            let mut guard = self.inner.write().unwrap();
+            if let Some(session) = guard.sessions.iter_mut().find(|s| {
+                s.agent_id == data.story.agent_id && s.session_id == data.story.route.session_id
+            }) {
+                if session.request_count == 1 && event.name() == "llm.request" {
+                    session.first_seen = time;
+                }
+                session.last_seen = time;
+            }
+        }
+        Ok(())
+    }
+
     fn mark_dirty(&self) {
         self.dirty.store(true, Ordering::Release);
     }

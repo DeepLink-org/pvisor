@@ -1,12 +1,40 @@
-//! Capture-side behavior over the shared
-//! [`EventRecord`](persisting_control::EventRecord) schema.
+//! Mutable dialogue projection inputs and versioned capture observations.
 
+use serde::{Deserialize, Serialize};
 use serde_json::Value;
 
 use super::dialogue_extract::{extract_assistant_text_from_json, extract_assistant_turn_from_sse};
 use crate::protocol::ProtocolKind;
 
-pub use persisting_control::EventRecord;
+/// Mutable Gateway projection input. Never append this structure to a fact log.
+///
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+pub struct CaptureRecord {
+    pub event_id: Option<String>,
+    pub observed_at_unix_ms: Option<u64>,
+    pub kind: String,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub timestamp: Option<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub session_id: Option<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub agent_id: Option<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub parent_uuid: Option<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub trace_id: Option<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub call_id: Option<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub subagent_id: Option<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub parent_agent_id: Option<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub branch: Option<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub parent_call_id: Option<String>,
+    pub payload: Value,
+}
 
 pub use persisting_control::unix_now_ms;
 
@@ -17,18 +45,13 @@ pub fn unix_ms_from_rfc3339(timestamp: &str) -> Option<u64> {
         .map(|value| value.timestamp_millis().max(0) as u64)
 }
 
-/// Make the shared wall-clock fields complete before an event is persisted.
-///
-/// Gateway producers historically populated the RFC3339 `timestamp` field but
-/// left the canonical `timestamp_unix_ms` identity field empty.  The sink is
-/// the last common boundary for all Gateway records, so it is the right place
-/// to backfill both fields without changing event ordering (`seq`).
-pub(crate) fn ensure_timestamp(record: &mut EventRecord) {
+/// Fix the observation time before delivery to actors.
+pub(crate) fn ensure_timestamp(record: &mut CaptureRecord) {
     if record.timestamp.is_none() {
         record.timestamp = Some(now_rfc3339());
     }
-    if record.identity.timestamp_unix_ms.is_none() {
-        record.identity.timestamp_unix_ms = record
+    if record.observed_at_unix_ms.is_none() {
+        record.observed_at_unix_ms = record
             .timestamp
             .as_deref()
             .and_then(unix_ms_from_rfc3339)
@@ -38,9 +61,8 @@ pub(crate) fn ensure_timestamp(record: &mut EventRecord) {
 
 /// Capture-only interpretation of raw proxy payloads.
 ///
-/// The record schema belongs to the shared events contract; SSE and provider
-/// payload extraction remain producer concerns and are extension behavior.
-pub trait EventRecordExt {
+/// SSE and provider extraction belong to this dialogue projection, not the event envelope.
+pub trait CaptureRecordExt {
     /// Internal traffic (e.g. `count_tokens`) — not a dialogue turn.
     fn is_internal_llm_request(&self) -> bool;
 
@@ -51,7 +73,7 @@ pub trait EventRecordExt {
     fn visible_assistant_text(&self) -> Option<String>;
 }
 
-impl EventRecordExt for EventRecord {
+impl CaptureRecordExt for CaptureRecord {
     fn is_internal_llm_request(&self) -> bool {
         if self.kind != "llm.request" {
             return false;
@@ -172,12 +194,138 @@ pub fn now_rfc3339() -> String {
     chrono::Utc::now().to_rfc3339()
 }
 
+/// Versioned domain payload. The event envelope owns identity, time and order.
+#[derive(Debug, Clone, serde::Serialize, serde::Deserialize)]
+#[serde(deny_unknown_fields)]
+pub struct CaptureObservation {
+    pub story: crate::engine::StoryContext,
+    pub correlation: CaptureCorrelation,
+    pub content: Value,
+}
+#[derive(Debug, Clone, Default, serde::Serialize, serde::Deserialize)]
+#[serde(deny_unknown_fields)]
+pub struct CaptureCorrelation {
+    pub call_id: Option<String>,
+    pub trace_id: Option<String>,
+    pub parent_uuid: Option<String>,
+    pub parent_agent_id: Option<String>,
+    pub branch: Option<String>,
+    pub parent_call_id: Option<String>,
+}
+
+impl CaptureRecord {
+    pub fn into_event(
+        mut self,
+        story: crate::engine::StoryContext,
+    ) -> anyhow::Result<persisting_control::trace::Event> {
+        use persisting_control::trace::{Fact, Granularity, Level, VERSION};
+        ensure_timestamp(&mut self);
+        let id = self
+            .event_id
+            .unwrap_or_else(|| uuid::Uuid::new_v4().to_string());
+        let trace_id = story
+            .run_id
+            .as_ref()
+            .map(|id| id.as_str().to_string())
+            .unwrap_or_else(|| story.story_id.as_str().to_string());
+        let scope = vec!["capture".into(), story.story_id.as_str().to_string()];
+        let (domain, name) = self
+            .kind
+            .split_once('.')
+            .unwrap_or(("gateway", self.kind.as_str()));
+        let data = CaptureObservation {
+            story,
+            correlation: CaptureCorrelation {
+                call_id: self.call_id,
+                trace_id: self.trace_id,
+                parent_uuid: self.parent_uuid,
+                parent_agent_id: self.parent_agent_id,
+                branch: self.branch,
+                parent_call_id: self.parent_call_id,
+            },
+            content: crate::sink::redact_sensitive_body(&self.payload),
+        };
+        let event = persisting_control::trace::Event {
+            version: VERSION,
+            id,
+            trace_id,
+            producer: "persisting-gateway".into(),
+            observed_at_unix_ms: self.observed_at_unix_ms.expect("ensured time"),
+            scope,
+            context: None,
+            operation: None,
+            caused_by: vec![],
+            level: Level::Info,
+            granularity: Granularity::Operation,
+            data: Fact::Observation {
+                domain: domain.into(),
+                name: format!("{domain}.{name}"),
+                version: 1,
+                payload: serde_json::to_value(data)?,
+            },
+        };
+        event.validate()?;
+        Ok(event)
+    }
+    /// Reconstruct mutable dialogue input from a committed domain observation.
+    pub fn from_event(
+        event: &persisting_control::trace::Event,
+        _offset: u64,
+    ) -> anyhow::Result<Self> {
+        let persisting_control::trace::Fact::Observation {
+            version: 1,
+            payload,
+            ..
+        } = &event.data
+        else {
+            anyhow::bail!("not a capture observation");
+        };
+        let data: CaptureObservation = serde_json::from_value(payload.clone())?;
+        Ok(Self {
+            event_id: Some(event.id.clone()),
+            observed_at_unix_ms: Some(event.observed_at_unix_ms),
+            kind: event.name().to_string(),
+            timestamp: chrono::DateTime::from_timestamp_millis(event.observed_at_unix_ms as i64)
+                .map(|t| t.to_rfc3339()),
+            session_id: Some(data.story.route.session_id),
+            agent_id: Some(data.story.agent_id),
+            subagent_id: data.story.route.subagent_id,
+            trace_id: data.correlation.trace_id,
+            call_id: data.correlation.call_id,
+            parent_uuid: data.correlation.parent_uuid,
+            parent_agent_id: data.correlation.parent_agent_id,
+            branch: data.correlation.branch,
+            parent_call_id: data.correlation.parent_call_id,
+            payload: data.content,
+        })
+    }
+}
+
+pub fn is_capture_event(event: &persisting_control::trace::Event) -> bool {
+    event.producer == "persisting-gateway" && event.scope.first().is_some_and(|s| s == "capture")
+}
+
+pub fn capture_observation(
+    event: &persisting_control::trace::Event,
+) -> anyhow::Result<CaptureObservation> {
+    anyhow::ensure!(is_capture_event(event), "not a capture fact");
+    let persisting_control::trace::Fact::Observation {
+        version: 1,
+        payload,
+        ..
+    } = &event.data
+    else {
+        anyhow::bail!("unsupported capture observation version");
+    };
+    Ok(serde_json::from_value(payload.clone())?)
+}
+
 #[cfg(test)]
 mod timestamp_tests {
     use proptest::prelude::*;
     use serde_json::Value;
 
-    use super::{EventRecord, ensure_timestamp, unix_ms_from_rfc3339};
+    use super::{CaptureRecord, ensure_timestamp, unix_ms_from_rfc3339};
 
     #[test]
     fn parses_rfc3339_to_unix_milliseconds() {
@@ -189,10 +337,10 @@ mod timestamp_tests {
 
     #[test]
     fn ensure_timestamp_backfills_both_wire_fields() {
-        let mut record = EventRecord {
-            identity: Default::default(),
-            seq: 0,
-            source: "persisting-proxy".into(),
+        let mut record = CaptureRecord {
+            event_id: None,
+            observed_at_unix_ms: None,
+
             kind: "llm.request".into(),
             timestamp: None,
             session_id: None,
@@ -208,7 +356,7 @@ mod timestamp_tests {
         };
         ensure_timestamp(&mut record);
         assert!(record.timestamp.is_some());
-        assert!(record.identity.timestamp_unix_ms.is_some());
+        assert!(record.observed_at_unix_ms.is_some());
     }
 
     proptest! {
@@ -219,10 +367,10 @@ mod timestamp_tests {
             let timestamp = chrono::DateTime::from_timestamp_millis(milliseconds as i64)
                 .expect("generated timestamp is representable")
                 .to_rfc3339();
-            let mut record = EventRecord {
-                identity: Default::default(),
-                seq: 0,
-                source: "persisting-proxy".into(),
+            let mut record = CaptureRecord {
+                event_id: None,
+            observed_at_unix_ms: None,
+
                 kind: "llm.request".into(),
                 timestamp: Some(timestamp.clone()),
                 session_id: None,
@@ -242,7 +390,7 @@ mod timestamp_tests {
             ensure_timestamp(&mut record);
 
             prop_assert_eq!(record.timestamp.as_deref(), Some(timestamp.as_str()));
-            prop_assert_eq!(record.identity.timestamp_unix_ms, Some(milliseconds));
+            prop_assert_eq!(record.observed_at_unix_ms, Some(milliseconds));
             prop_assert_eq!(record, first);
         }
     }
@@ -281,10 +429,10 @@ mod tests {
 
     #[test]
     fn visible_user_prefers_user_content_field() {
-        let rec = EventRecord {
-            identity: Default::default(),
-            seq: 0,
-            source: "test".into(),
+        let rec = CaptureRecord {
+            event_id: None,
+            observed_at_unix_ms: None,
+
             kind: "llm.request".into(),
             timestamp: None,
             session_id: None,

@@ -11,15 +11,24 @@ Agent → injected proxy/base URL → OverlayNet HTTP path
 
 The protocol adapters turn supported requests and responses into the shared `persisting-control` record vocabulary. The engine carries Run, Attempt, agent, session and story identities. A per-story actor serializes sink writes and updates the in-memory turn index after an append succeeds.
 
-The public capture output is EventRecord JSONL. Draft commands are currently ignored by the story actor. `--gateway-stream-markdown` is retained for compatibility but does not produce a live Markdown projection. Build derived views from the persisted records instead of relying on that flag.
+The public capture output uses `trace::Event` and the shared Journal. Mutable
+capture inputs are dialogue projection data, not a second event envelope.
+Draft commands remain excluded from the fact log; the Markdown flag remains a
+compatibility option.
 
 ## Ordering and persistence
 
-Sequence numbers belong to their producer/session ordering scope. Preserve identity fields when combining streams; neither wall-clock timestamps nor a bare `seq` value defines a global order. `timestamp` and `timestamp_unix_ms` express the same observation time in two formats.
+Journal positions describe commit order. Stable event IDs survive retries;
+causal links describe known dependencies. Run and embedded Gateway share a
+journal. A per-story actor commits a fact before updating Story and SessionIndex
+or notifying observers. Observer failure does not undo a committed fact.
 
-The capture engine has a bounded, asynchronous WAL submission path with background group commit. Queue acceptance is not a synchronous durable commit. Recovery can replay persisted, unacknowledged work; abrupt termination before a queued record reaches disk can still lose that record. Graceful shutdown flushes pending work. Inspect capture errors and dead letters when assessing completeness.
-
-A sink append may fail after writing some bytes. Such an error has an unknown outcome unless the sink can prove rejection; treating every I/O error as a clean rejection can cause unsafe retries. Runtime JSONL files use owner-only permissions, including when reopening an existing file.
+The command WAL has been removed. Startup rebuilds projections from committed
+facts without replaying HTTP requests, notifying observers again, or rewriting
+the log. The bounded input queue remains best-effort: only a Journal receipt
+proves persistence. Flush reports rejected or failed work, and shutdown waits
+for consumers to release the journal. A nonempty historical WAL blocks startup
+until drained with the previous version.
 
 ## Observation boundary
 
@@ -32,7 +41,7 @@ Capture levels select how much payload is retained. Full payloads can include us
 | Component | Source area | Responsibility |
 | --- | --- | --- |
 | Protocol decoding and forwarding | `persisting-gateway` | Translate model protocols and observe calls |
-| Engine and story actors | `persisting-gateway/src/engine` | Identity, ordering, WAL, append and turn state |
+| Engine and story actors | `persisting-gateway/src/engine` | Journal commits, causal identity and turn projections |
 | Event vocabulary | `persisting-control` | Shared serializable records and sink contract |
 | Runtime integration | `persisting-pvisor` | Run lifecycle, route setup, event sink and shutdown |
 | Network path | `persisting-overlaynet` | Proxy transport and policy hooks |

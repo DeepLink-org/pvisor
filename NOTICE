@@ -29,7 +29,8 @@ https://github.com/containers/libkrun
 
 Copyright Red Hat, Inc. and the upstream authors and contributors. They are
 distributed under the Apache License, Version 2.0. Persisting's modifications
-add the mountless copy-on-write virtio-fs backend used by pVisor.
+add the mountless copy-on-write virtio-fs backend used by pVisor and embed
+the first-party Rust guest supervisor from `crates/persisting-guest`.
 
 agentgateway test fixtures
 --------------------------

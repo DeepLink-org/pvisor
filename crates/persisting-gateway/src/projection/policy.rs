@@ -1,9 +1,9 @@
-//! Markdown eligibility rules for [`EventRecord`] (storage layer only).
+//! Markdown eligibility rules for [`CaptureRecord`] (storage layer only).
 
 use crate::dialogue_extract::is_subagent_shape_payload;
-use crate::record::{EventRecord, EventRecordExt};
+use crate::record::{CaptureRecord, CaptureRecordExt};
 
-pub fn should_skip_record(rec: &EventRecord) -> bool {
+pub fn should_skip_record(rec: &CaptureRecord) -> bool {
     match rec.kind.as_str() {
         "llm.request" => {
             if rec.is_internal_llm_request() {
@@ -27,14 +27,14 @@ pub fn should_skip_record(rec: &EventRecord) -> bool {
     }
 }
 
-pub fn should_refresh_frontmatter(rec: &EventRecord) -> bool {
+pub fn should_refresh_frontmatter(rec: &CaptureRecord) -> bool {
     matches!(
         rec.kind.as_str(),
         "llm.request" | "llm.response" | "llm.response.stream"
     )
 }
 
-fn should_skip_main_flash_companion_request(rec: &EventRecord) -> bool {
+fn should_skip_main_flash_companion_request(rec: &CaptureRecord) -> bool {
     if rec.subagent_id.is_some() {
         return false;
     }

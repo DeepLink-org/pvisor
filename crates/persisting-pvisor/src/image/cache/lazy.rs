@@ -224,6 +224,8 @@ struct RemoteFs {
     digest: String,
     cache: PathBuf,
     metadata_cache: Option<PathBuf>,
+    // ponytail: metadata is retained for one immutable image (bounded by its
+    // entries); add reference-counted eviction if large images exceed memory.
     nodes: HashMap<u64, Node>,
     paths: HashMap<Vec<u8>, u64>,
     objects: HashMap<u64, u64>,
@@ -498,6 +500,8 @@ impl RemoteFs {
         let directory = &node.cache;
         fs::create_dir_all(directory)?;
         let path = directory.join(index.to_string());
+        // Persistent lock inodes prevent unlink/reopen from splitting flock
+        // ownership. Remove them only when evicting an unused cache directory.
         let lock = OpenOptions::new()
             .read(true)
             .write(true)

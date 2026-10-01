@@ -12,10 +12,9 @@ pub const SESSION_PROXY_FILENAME: &str = "proxy.toml";
 pub const LEGACY_SESSION_PROXY_FILENAME: &str = "proxy.yaml";
 
 pub fn session_dir(storage: &Path, session_id: &str) -> PathBuf {
-    storage
-        .join(".capture")
-        .join("sessions")
-        .join(session_id.trim())
+    storage.join(".capture").join("sessions").join(
+        crate::session::markdown_path::session_filename_stem(session_id),
+    )
 }
 
 pub fn session_proxy_config_path(storage: &Path, session_id: &str) -> PathBuf {

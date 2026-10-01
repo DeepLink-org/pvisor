@@ -139,17 +139,19 @@ core、Gateway、pVisor 分片，macOS 对同一组包只跑一遍。独立 Linu
 必须具备 user namespace 和 FUSE，不允许跳过隔离检查。文件系统示例与文档用例共用该任务的
 release 构建和隔离环境。网络/Gateway 示例在单独任务运行。
 
-共享 action 默认只安装 Python、uv 和 just；Rust、nextest、macOS Zig 按需启用。
+共享 action 默认只安装 Python、uv 和 just；Rust、nextest 和 guest Rust target 按需启用。
 双平台 wheel 矩阵集中在一个可复用工作流中。PR 文档构建不会取消 Pages 部署。
 
 ## 构建环境
 
 仓库使用 `rust-toolchain.toml` 中的 stable 工具链、默认 LLVM backend 和平台 linker。
-请安装 nextest `0.9.137`，或使用仓库 CI setup action。macOS VM 构建还需要 Zig。
+请安装 nextest `0.9.137`，或使用仓库 CI setup action。guest supervisor 使用 Rust 自带 linker 构建成静态 Linux musl ELF；macOS VM 构建不再需要 Zig。
 
 `CARGO_TARGET_DIR` 指定原生构建目录，构建、安装、smoke、示例和场景任务共用此位置。
 wheel 使用全新的暂存目录进行验证，避免误把 `dist/` 中的旧包当作本次产物。
-Linux 发布 wheel 使用 manylinux_2_28（glibc 2.28）。
+Linux CLI 全静态链接 musl 并内嵌 VM 内核。构建需要 Zig、cargo-zigbuild 和
+`rustup target add x86_64-unknown-linux-musl`。Linux wheel 保留 manylinux_2_28
+标签以支持 glibc Python 安装器。
 
 文档任务通过 uv 隔离环境使用与 CI 相同的锁定版 Zensical，不再要求单独维护文档虚拟环境。
 

@@ -39,7 +39,7 @@ pvisor run --executor vm --rootfs image=ubuntu:24.04 \
 
 On Linux, `--rootfs host` can expose the host root as a lower layer to a separate guest kernel. This exposes host contents for reading. Declare any additional workspace share with `--mount`; use this layout only for same-owner local work.
 
-Linux needs accessible `/dev/kvm`. On macOS, `just build release` builds and signs the binary with the Hypervisor entitlement; source builds also need Zig. VM networking supports policy-controlled IPv4 TCP, DHCP and synthetic DNS; UDP application traffic, IPv6, QUIC and inbound connections are outside the current network surface.
+Linux needs accessible `/dev/kvm`. On macOS, `just build release` builds and signs the binary with the Hypervisor entitlement. The static Rust guest supervisor uses Rust’s bundled linker. VM networking supports policy-controlled IPv4 TCP, fixed guest addressing and synthetic DNS; UDP application traffic, IPv6, QUIC and inbound connections are outside the current network surface.
 
 ## Filesystem access and decisions
 

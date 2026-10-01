@@ -4,7 +4,7 @@
 
 This dependency-light crate supplies the contracts shared by pVisor, Gateway,
 OverlayFS, and OverlayNet. It owns value types, policy decisions, the AgentCtl wire
-protocol/client, and the EventRecord envelope. Runtime servers, executors, and
+protocol/client, and the trace::Event envelope. Runtime servers, executors, and
 storage implementations stay in their respective components.
 
 Add a type here only when it defines an existing cross-component message or

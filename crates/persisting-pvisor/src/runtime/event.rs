@@ -1,212 +1,255 @@
 use anyhow::Result;
 use async_trait::async_trait;
+use persisting_control::trace::{Event, Fact, Receipt};
 use persisting_control::{AttemptId, RunId};
-use persisting_control::{EventIdentity, EventRecord};
+use persisting_journal::{AppendError, Journal, Trace};
 use serde_json::Value;
-use std::sync::{Arc, Mutex};
-use tokio::sync::Mutex as AsyncMutex;
-use tokio::sync::broadcast;
+use std::sync::Arc;
+use tokio::sync::{Mutex, broadcast};
 
-/// Whether an append error proves that the event was not persisted.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum EventAppendErrorKind {
-    /// The sink guarantees that this event was not committed.
     Rejected,
-    /// The caller cannot know whether the sink committed the event.
     Unknown,
 }
 
 #[async_trait]
 pub trait EventSink: Send + Sync {
-    async fn append(&self, event: &EventRecord) -> Result<()>;
-
-    /// Errors are ambiguous by default. A sink may opt into `Rejected` only
-    /// when it can prove the append had no durable effect.
-    fn classify_append_error(&self, _error: &anyhow::Error) -> EventAppendErrorKind {
-        EventAppendErrorKind::Unknown
+    async fn append(&self, event: &Event) -> Result<Receipt>;
+    fn journal(&self) -> Option<Journal> {
+        None
+    }
+    fn classify_append_error(&self, error: &anyhow::Error) -> EventAppendErrorKind {
+        match error.downcast_ref::<AppendError>() {
+            Some(AppendError::Rejected(_)) => EventAppendErrorKind::Rejected,
+            _ => EventAppendErrorKind::Unknown,
+        }
     }
 }
 
-#[derive(Debug, Default)]
-pub struct NoopEventSink;
+#[async_trait]
+impl EventSink for Journal {
+    fn journal(&self) -> Option<Journal> {
+        Some(self.clone())
+    }
+    async fn append(&self, event: &Event) -> Result<Receipt> {
+        Ok(self.append_async(event.clone()).await?)
+    }
+}
 
+/// Recording disabled: events still pass validation and receive volatile receipts.
+#[derive(Default)]
+pub struct NoopEventSink {
+    journal: Journal,
+}
 #[async_trait]
 impl EventSink for NoopEventSink {
-    async fn append(&self, _event: &EventRecord) -> Result<()> {
-        Ok(())
+    fn journal(&self) -> Option<Journal> {
+        Some(self.journal.clone())
+    }
+    async fn append(&self, event: &Event) -> Result<Receipt> {
+        Ok(self.journal.append_async(event.clone()).await?)
     }
 }
 
-/// In-memory sink intended for embedding, tests, and early integrations.
-#[derive(Debug, Default)]
+#[derive(Default)]
 pub struct MemoryEventSink {
-    events: Mutex<Vec<EventRecord>>,
+    journal: Journal,
 }
-
 impl MemoryEventSink {
-    pub fn events(&self) -> Vec<EventRecord> {
-        self.events
-            .lock()
-            .unwrap_or_else(|poisoned| poisoned.into_inner())
-            .clone()
+    pub fn events(&self) -> Vec<Event> {
+        self.journal
+            .records()
+            .expect("memory journal")
+            .into_iter()
+            .map(|r| r.event)
+            .collect()
     }
 }
-
 #[async_trait]
 impl EventSink for MemoryEventSink {
-    async fn append(&self, event: &EventRecord) -> Result<()> {
-        self.events
-            .lock()
-            .unwrap_or_else(|poisoned| poisoned.into_inner())
-            .push(event.clone());
-        Ok(())
+    fn journal(&self) -> Option<Journal> {
+        Some(self.journal.clone())
+    }
+    async fn append(&self, event: &Event) -> Result<Receipt> {
+        Ok(self.journal.append_async(event.clone()).await?)
     }
 }
 
-/// Assigns one monotonic event sequence to an Attempt and fans events out to
-/// the canonical sink plus live subscribers.
+/// One ordered producer; positions and durability belong to the fact journal.
 #[derive(Clone)]
 pub struct RunEventPublisher {
-    run_id: RunId,
-    attempt_id: AttemptId,
-    producer: String,
-    next_seq: Arc<AsyncMutex<u64>>,
+    trace: Trace,
+    scope: Vec<String>,
+    context_id: String,
+    operation_id: String,
+    cause: Arc<Mutex<Option<String>>>,
     sink: Arc<dyn EventSink>,
-    live: broadcast::Sender<EventRecord>,
+    live: broadcast::Sender<Event>,
 }
-
 impl RunEventPublisher {
     pub(crate) fn new(
         run_id: RunId,
         attempt_id: AttemptId,
         producer: impl Into<String>,
         sink: Arc<dyn EventSink>,
-        live: broadcast::Sender<EventRecord>,
+        live: broadcast::Sender<Event>,
     ) -> Self {
+        let mut trace = Trace::new(Journal::memory(), producer);
+        trace.id = run_id.to_string();
         Self {
-            run_id,
-            attempt_id,
-            producer: producer.into(),
-            next_seq: Arc::new(AsyncMutex::new(0)),
+            trace,
+            scope: vec![
+                "run".into(),
+                run_id.to_string(),
+                "attempt".into(),
+                attempt_id.to_string(),
+            ],
+            context_id: uuid::Uuid::new_v4().to_string(),
+            operation_id: uuid::Uuid::new_v4().to_string(),
+            cause: Arc::new(Mutex::new(None)),
             sink,
             live,
         }
     }
-
-    pub fn subscribe(&self) -> broadcast::Receiver<EventRecord> {
-        self.live.subscribe()
+    pub fn subscribe(&self) -> super::run::RunEventStream {
+        let receiver = match self.sink.journal() {
+            Some(journal) => journal.subscribe(),
+            None => self.live.subscribe(),
+        };
+        super::run::RunEventStream {
+            trace_id: self.trace.id.clone(),
+            receiver,
+        }
     }
-
     pub(crate) fn classify_append_error(&self, error: &anyhow::Error) -> EventAppendErrorKind {
         self.sink.classify_append_error(error)
     }
-
     pub async fn publish(
         &self,
         kind: impl Into<String>,
         source: impl Into<String>,
         payload: Value,
-    ) -> Result<EventRecord> {
-        // Persistence and sequence assignment form one per-Attempt critical
-        // section. A definitely rejected append reuses its sequence; an
-        // ambiguous failure consumes it because the sink may have committed.
-        let mut next_seq = self.next_seq.lock().await;
-        let seq = *next_seq;
-        let following_seq = seq.checked_add(1).ok_or_else(|| {
-            anyhow::anyhow!("event sequence exhausted for Attempt {}", self.attempt_id)
-        })?;
-        let (timestamp, timestamp_unix_ms) = crate::util::now_rfc3339_and_unix_ms();
-        let event = EventRecord {
-            identity: EventIdentity {
-                event_id: Some(format!("event-{}", uuid::Uuid::new_v4())),
-                run_id: Some(self.run_id.to_string()),
-                attempt_id: Some(self.attempt_id.to_string()),
-                timestamp_unix_ms: Some(timestamp_unix_ms),
-                producer: Some(self.producer.clone()),
-                ..EventIdentity::default()
+    ) -> Result<Event> {
+        let mut cause = self.cause.lock().await;
+        let event = self.trace.event(
+            self.scope.clone(),
+            None,
+            None,
+            cause.iter().cloned().collect(),
+            Fact::Observation {
+                domain: source.into(),
+                name: kind.into(),
+                version: 1,
+                payload,
             },
-            seq,
-            kind: kind.into(),
-            source: source.into(),
-            timestamp: Some(timestamp),
-            session_id: None,
-            agent_id: None,
-            parent_uuid: None,
-            trace_id: None,
-            call_id: None,
-            subagent_id: None,
-            parent_agent_id: None,
-            branch: None,
-            parent_call_id: None,
-            payload,
-        };
-        if let Err(error) = self.sink.append(&event).await {
-            if self.sink.classify_append_error(&error) == EventAppendErrorKind::Unknown {
-                *next_seq = following_seq;
-            }
-            return Err(error);
+        );
+        let receipt = self.sink.append(&event).await?;
+        anyhow::ensure!(
+            receipt.event == event.id,
+            "sink returned a receipt for a different event"
+        );
+        *cause = Some(event.id.clone());
+        if self.sink.journal().is_none() {
+            let _ = self.live.send(event.clone());
         }
-        *next_seq = following_seq;
-        drop(next_seq);
-        // Live observers only see events accepted by the canonical sink.
-        let _ = self.live.send(event.clone());
         Ok(event)
+    }
+    pub async fn publish_fact(&self, data: Fact) -> Result<Event> {
+        let mut cause = self.cause.lock().await;
+        let operation = if matches!(data, Fact::Context { .. }) {
+            None
+        } else {
+            Some(self.operation_id.clone())
+        };
+        let event = self.trace.event(
+            self.scope.clone(),
+            Some(self.context_id.clone()),
+            operation,
+            cause.iter().cloned().collect(),
+            data,
+        );
+        let receipt = self.sink.append(&event).await?;
+        anyhow::ensure!(
+            receipt.event == event.id,
+            "sink returned an unrelated receipt"
+        );
+        *cause = Some(event.id.clone());
+        if self.sink.journal().is_none() {
+            let _ = self.live.send(event.clone());
+        }
+        Ok(event)
+    }
+    pub async fn begin_execution(
+        &self,
+        plan: &persisting_control::ir::run::RunPlan,
+        backend: &str,
+    ) -> Result<()> {
+        let mut context = plan.context.clone();
+        context.scope = self.scope.clone();
+        self.publish_fact(Fact::Context {
+            definition: context,
+        })
+        .await?;
+        self.publish_fact(Fact::Requested {
+            request: plan.request.clone(),
+        })
+        .await?;
+        let mut before = plan.request.clone();
+        for (pass, rule) in plan.rewrites.iter().enumerate() {
+            let after = rule.apply(&before)?;
+            self.publish_fact(Fact::Rewritten {
+                rule: rule.clone(),
+                pass,
+                before,
+                after: after.clone(),
+            })
+            .await?;
+            before = after;
+        }
+        self.publish_fact(Fact::Dispatched {
+            backend: backend.to_string(),
+            expression: plan.expression.clone(),
+        })
+        .await?;
+        Ok(())
     }
 }
 
 #[cfg(test)]
 mod tests {
     use super::*;
-
-    struct FailFirstSink {
-        kind: EventAppendErrorKind,
-        sequences: Mutex<Vec<u64>>,
-    }
-
-    #[async_trait]
-    impl EventSink for FailFirstSink {
-        async fn append(&self, event: &EventRecord) -> Result<()> {
-            let mut sequences = self.sequences.lock().unwrap();
-            sequences.push(event.seq);
-            if sequences.len() == 1 {
-                anyhow::bail!("first append failed");
-            }
-            Ok(())
-        }
-
-        fn classify_append_error(&self, _error: &anyhow::Error) -> EventAppendErrorKind {
-            self.kind
-        }
-    }
-
-    fn publisher(sink: Arc<dyn EventSink>) -> RunEventPublisher {
+    #[tokio::test]
+    async fn run_subscription_includes_gateway_but_filters_other_runs_and_retries() {
+        let journal = Journal::memory();
         let (live, _) = broadcast::channel(4);
-        RunEventPublisher::new("run".into(), "attempt".into(), "test", sink, live)
-    }
-
-    #[tokio::test]
-    async fn rejected_append_reuses_sequence() {
-        let sink = Arc::new(FailFirstSink {
-            kind: EventAppendErrorKind::Rejected,
-            sequences: Mutex::new(Vec::new()),
-        });
-        let events = publisher(sink.clone());
-        assert!(events.publish("first", "test", Value::Null).await.is_err());
-        let accepted = events.publish("retry", "test", Value::Null).await.unwrap();
-        assert_eq!(accepted.seq, 0);
-        assert_eq!(*sink.sequences.lock().unwrap(), vec![0, 0]);
-    }
-
-    #[tokio::test]
-    async fn ambiguous_append_consumes_sequence() {
-        let sink = Arc::new(FailFirstSink {
-            kind: EventAppendErrorKind::Unknown,
-            sequences: Mutex::new(Vec::new()),
-        });
-        let events = publisher(sink.clone());
-        assert!(events.publish("first", "test", Value::Null).await.is_err());
-        let accepted = events.publish("retry", "test", Value::Null).await.unwrap();
-        assert_eq!(accepted.seq, 1);
-        assert_eq!(*sink.sequences.lock().unwrap(), vec![0, 1]);
+        let publisher = RunEventPublisher::new(
+            "run".into(),
+            "attempt".into(),
+            "runtime",
+            Arc::new(journal.clone()),
+            live,
+        );
+        let mut stream = publisher.subscribe();
+        let mut trace = Trace::new(journal.clone(), "persisting-gateway");
+        let fact = Fact::Observation {
+            domain: "llm".into(),
+            name: "llm.request".into(),
+            version: 1,
+            payload: Value::Null,
+        };
+        trace.id = "other-run".into();
+        journal
+            .append(trace.event(vec!["capture".into()], None, None, vec![], fact.clone()))
+            .unwrap();
+        trace.id = "run".into();
+        let event = trace.event(vec!["capture".into()], None, None, vec![], fact);
+        journal.append(event.clone()).unwrap();
+        journal.append(event.clone()).unwrap();
+        assert_eq!(stream.recv().await.unwrap(), event);
+        assert!(matches!(
+            stream.try_recv(),
+            Err(broadcast::error::TryRecvError::Empty)
+        ));
     }
 }

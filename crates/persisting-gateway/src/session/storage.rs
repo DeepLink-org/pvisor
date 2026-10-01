@@ -16,7 +16,7 @@ pub struct CaptureRoute {
     /// Run directory name under `{storage}/{agent_id}/` (capture run or daily serve bucket).
     pub root_session: Option<String>,
     /// Logical session from request headers (stored on
-    /// [`EventRecord`](crate::record::EventRecord)).
+    /// [`CaptureRecord`](crate::record::CaptureRecord)).
     pub session_id: String,
     /// Markdown filename stem and event-log key (`{storage_session_id}.md`).
     pub storage_session_id: String,
@@ -143,11 +143,14 @@ fn is_subagent_request_body(body: &Bytes) -> bool {
 
 /// Run directory under `{storage}/{agent_id}/…` (all sessions in one capture run share this dir).
 pub fn trajectory_run_dir(storage: &Path, agent_id: &str, route: &CaptureRoute) -> PathBuf {
-    let base = storage.join(agent_id);
-    match &route.root_session {
-        Some(root) => base.join(root),
-        None => base.join(&route.storage_session_id),
-    }
+    use super::markdown_path::session_filename_stem;
+
+    let base = storage.join(session_filename_stem(agent_id));
+    let session = route
+        .root_session
+        .as_deref()
+        .unwrap_or(&route.storage_session_id);
+    base.join(session_filename_stem(session))
 }
 
 /// Full path to the session markdown file (`{run_dir}/{storage_session_id}.md`).
@@ -166,6 +169,34 @@ pub fn route_config_key(route: &CaptureRoute) -> &str {
 
 #[cfg(test)]
 mod tests {
+
+    #[test]
+    fn untrusted_route_identifiers_stay_under_storage() {
+        let storage = Path::new("/capture");
+        for key in ["../outside", "/tmp/outside", ".", "..", "a/b", "a\\b"] {
+            let route = CaptureRoute {
+                root_session: Some(key.into()),
+                session_id: key.into(),
+                storage_session_id: key.into(),
+                subagent_id: None,
+            };
+            let run = trajectory_run_dir(storage, "../agent", &route);
+            let relative = run.strip_prefix(storage).unwrap();
+            assert_eq!(relative.components().count(), 2);
+            assert!(
+                relative
+                    .components()
+                    .all(|component| matches!(component, std::path::Component::Normal(_)))
+            );
+            assert_eq!(
+                run,
+                super::super::client::session_client_meta_path(storage, "../agent", key)
+                    .parent()
+                    .unwrap()
+            );
+        }
+    }
+
     use super::*;
     use axum::http::HeaderValue;
     use axum::http::header::HeaderName;

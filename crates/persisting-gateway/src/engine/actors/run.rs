@@ -5,7 +5,7 @@ use std::collections::HashMap;
 use pulsing_actor::prelude::*;
 
 use crate::engine::story::{RunId, StoryId};
-use crate::record::EventRecord;
+use crate::record::CaptureRecord;
 use crate::subagent_link::{SubagentRegistry, enrich_record, main_route_for_backfill};
 
 use super::super::wire::{RunCommand, RunReply, headers_to_header_map};
@@ -76,7 +76,7 @@ impl Actor for RunActor {
                 if let Some(ref sid) = story_id {
                     self.track_story(run_id.as_ref(), sid);
                 }
-                let mut record: EventRecord =
+                let mut record: CaptureRecord =
                     serde_json::from_slice(&record_bytes).map_err(|e| {
                         pulsing_actor::error::PulsingError::from(
                             pulsing_actor::error::RuntimeError::Serialization(e.to_string()),

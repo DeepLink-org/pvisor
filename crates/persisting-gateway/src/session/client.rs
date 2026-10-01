@@ -49,8 +49,8 @@ struct SessionMetaFile {
 
 pub fn session_client_meta_path(storage: &Path, agent_id: &str, session_id: &str) -> PathBuf {
     storage
-        .join(agent_id)
-        .join(session_id)
+        .join(super::markdown_path::session_filename_stem(agent_id))
+        .join(super::markdown_path::session_filename_stem(session_id))
         .join(SESSION_CLIENT_META_FILENAME)
 }
 

@@ -4,7 +4,7 @@ use sha2::{Digest, Sha256};
 use std::collections::{BTreeSet, HashMap};
 use std::ffi::{OsStr, OsString};
 use std::fs::{self, File, Metadata, OpenOptions};
-use std::io::{self, Write};
+use std::io::{self, Read, Write};
 use std::os::unix::ffi::{OsStrExt, OsStringExt};
 use std::os::unix::fs::{MetadataExt, OpenOptionsExt, PermissionsExt};
 use std::path::{Component, Path, PathBuf};
@@ -98,8 +98,22 @@ pub fn fingerprint_at(root: &Path, rel: &Path) -> io::Result<PathFingerprint> {
     };
     let kind = metadata.file_type();
     if kind.is_file() {
+        let mut digest = Sha256::new();
+        let mut file = File::open(&path)?;
+        let mut buffer = [0u8; 64 * 1024];
+        loop {
+            let read = file.read(&mut buffer)?;
+            if read == 0 {
+                break;
+            }
+            digest.update(&buffer[..read]);
+        }
         return Ok(PathFingerprint::File {
-            sha256: sha256_hex(&fs::read(&path)?),
+            sha256: digest
+                .finalize()
+                .iter()
+                .map(|byte| format!("{byte:02x}"))
+                .collect(),
             mode: metadata.mode(),
             uid: metadata.uid(),
             gid: metadata.gid(),
@@ -292,6 +306,8 @@ impl OverlayCore {
             Err(error) if error.kind() == io::ErrorKind::NotFound => {}
             Err(error) => return Err(error),
         }
+        // The last lower is the apply destination's baseline; composed layers
+        // above it affect the visible view, not the target conflict preimage.
         let target = self.lowers.last().ok_or_else(|| error(libc::EINVAL))?;
         let preimage = PathPreimage {
             path: path_bytes.to_vec(),
@@ -1110,6 +1126,45 @@ impl OverlayCore {
 
 #[cfg(test)]
 mod tests {
+
+    #[test]
+    fn composed_lower_preimage_tracks_apply_target_not_visible_layer() {
+        let temporary = tempfile::tempdir().unwrap();
+        let top = temporary.path().join("top");
+        let target = temporary.path().join("target");
+        let upper = temporary.path().join("upper");
+        let journal = temporary.path().join("preimages");
+        fs::create_dir(&top).unwrap();
+        fs::create_dir(&target).unwrap();
+        fs::write(top.join("value"), b"composed").unwrap();
+        fs::write(target.join("value"), b"original target").unwrap();
+        let expected = fingerprint_at(&target, Path::new("value")).unwrap();
+        let core = OverlayCore::new_with_exclusions_and_preimages(
+            vec![top, target],
+            upper.clone(),
+            None,
+            Vec::new(),
+            Some(journal.clone()),
+        )
+        .unwrap();
+        core.copy_up(Path::new("value")).unwrap();
+        assert_eq!(fs::read(upper.join("value")).unwrap(), b"composed");
+        assert_eq!(load_preimages(&journal).unwrap()[0].state, expected);
+    }
+
+    #[test]
+    fn file_fingerprint_hashes_across_buffer_boundaries() {
+        let temporary = tempfile::tempdir().unwrap();
+        let content = vec![b'x'; 128 * 1024 + 3];
+        fs::write(temporary.path().join("large"), &content).unwrap();
+        let PathFingerprint::File { sha256, .. } =
+            fingerprint_at(temporary.path(), Path::new("large")).unwrap()
+        else {
+            panic!("expected file");
+        };
+        assert_eq!(sha256, sha256_hex(&content));
+    }
+
     use super::*;
     use std::io::{Read, Write};
     use tempfile::TempDir;

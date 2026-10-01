@@ -3,7 +3,7 @@
 use serde::{Deserialize, Serialize};
 use serde_json::{Value, json};
 
-use super::record::{EventRecord, now_rfc3339};
+use super::record::{CaptureRecord, now_rfc3339};
 use crate::session::storage::CaptureRoute;
 
 pub const SESSION_STARTED: &str = "session.started";
@@ -57,7 +57,7 @@ pub fn session_started_record(
     mode: CaptureMode,
     listen: Option<&str>,
     command: Option<&str>,
-) -> EventRecord {
+) -> CaptureRecord {
     lifecycle_record(
         SESSION_STARTED,
         session_id,
@@ -84,7 +84,7 @@ pub fn session_ended_record(
     reason: &str,
     exit_code: Option<i32>,
     duration_ms: Option<u64>,
-) -> EventRecord {
+) -> CaptureRecord {
     lifecycle_record(
         SESSION_ENDED,
         session_id,
@@ -111,7 +111,7 @@ pub fn session_state_record(
     from: &str,
     to: &str,
     reason: Option<&str>,
-) -> EventRecord {
+) -> CaptureRecord {
     lifecycle_record(
         SESSION_STATE,
         session_id,
@@ -136,11 +136,11 @@ fn lifecycle_record(
     session_id: Option<String>,
     agent_id: Option<String>,
     payload: SessionLifecyclePayload,
-) -> EventRecord {
-    EventRecord {
-        identity: persisting_control::EventIdentity::default(),
-        seq: 0,
-        source: "persisting-gateway".into(),
+) -> CaptureRecord {
+    CaptureRecord {
+        event_id: None,
+        observed_at_unix_ms: None,
+
         kind: kind.into(),
         timestamp: Some(now_rfc3339()),
         session_id,
@@ -177,11 +177,19 @@ pub fn root_session_route(root_session: &str) -> CaptureRoute {
 }
 
 pub fn append_lifecycle(
-    sink: &dyn super::sink::CaptureEventSink,
+    sink: &dyn super::sink::CaptureEventObserver,
     route: &CaptureRoute,
     agent_id: &str,
-    mut record: EventRecord,
+    record: CaptureRecord,
 ) -> anyhow::Result<()> {
-    sink.append(route, agent_id, &mut record)?;
+    let event = record.into_event(crate::engine::StoryContext::from_route(
+        route.clone(),
+        agent_id,
+    ))?;
+    let journal = sink
+        .journal()
+        .ok_or_else(|| anyhow::anyhow!("lifecycle observer must provide the recording journal"))?;
+    journal.append(event.clone())?;
+    sink.observe(&event)?;
     Ok(())
 }

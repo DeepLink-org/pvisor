@@ -71,15 +71,8 @@ impl Drop for RejectedEventWriter {
 }
 
 enum ApplyJob {
-    Capture {
-        ctx: Arc<CallContext>,
-        event: Event,
-        /// WAL sequence to ack only after the canonical sink confirms success.
-        wal_seq: Option<u64>,
-    },
-    Barrier {
-        ack: oneshot::Sender<()>,
-    },
+    Capture { ctx: Arc<CallContext>, event: Event },
+    Barrier { ack: oneshot::Sender<()> },
 }
 
 /// Serializes `apply` calls per story while keeping the proxy non-blocking.
@@ -88,6 +81,8 @@ pub(crate) struct ApplyDispatcher {
     inner: Arc<CaptureRuntimeInner>,
     queues: Arc<DashMap<String, mpsc::Sender<ApplyJob>>>,
     rejected: Arc<RejectedEventWriter>,
+    workers: Arc<std::sync::Mutex<Vec<tokio::task::JoinHandle<()>>>>,
+    failure: Arc<Mutex<Option<String>>>,
 }
 
 impl ApplyDispatcher {
@@ -99,10 +94,12 @@ impl ApplyDispatcher {
             inner,
             queues: Arc::new(DashMap::new()),
             rejected,
+            workers: Default::default(),
+            failure: Default::default(),
         }
     }
 
-    pub(crate) fn enqueue(&self, ctx: Arc<CallContext>, event: Event, wal_seq: Option<u64>) {
+    pub(crate) fn enqueue(&self, ctx: Arc<CallContext>, event: Event) {
         let story_id = ctx.story_id().as_str().to_string();
         let tx = self
             .queues
@@ -110,11 +107,7 @@ impl ApplyDispatcher {
             .or_insert_with(|| self.spawn_consumer())
             .clone();
 
-        let job = ApplyJob::Capture {
-            ctx,
-            event,
-            wal_seq,
-        };
+        let job = ApplyJob::Capture { ctx, event };
         if let Err(e) = tx.try_send(job) {
             self.record_rejected_job(e.into_inner());
         }
@@ -135,30 +128,39 @@ impl ApplyDispatcher {
             done.await
                 .map_err(|_| anyhow::anyhow!("apply queue barrier dropped"))?;
         }
+        if let Some(error) = self.failure.lock().unwrap().as_ref() {
+            anyhow::bail!("capture has uncommitted events: {error}");
+        }
         Ok(())
+    }
+
+    pub(crate) async fn shutdown(&self) -> anyhow::Result<()> {
+        let flushed = self.flush().await;
+        self.queues.clear();
+        let workers = std::mem::take(&mut *self.workers.lock().unwrap());
+        let mut joined = Ok(());
+        for worker in workers {
+            if let Err(error) = worker.await {
+                joined = Err(anyhow::Error::from(error));
+            }
+        }
+        flushed?;
+        joined
     }
 
     fn spawn_consumer(&self) -> mpsc::Sender<ApplyJob> {
         let (tx, mut rx) = mpsc::channel::<ApplyJob>(APPLY_QUEUE_CAPACITY);
         let inner = Arc::clone(&self.inner);
-        tokio::spawn(async move {
+        let failure = self.failure.clone();
+        let worker = tokio::spawn(async move {
             while let Some(job) = rx.recv().await {
                 match job {
-                    ApplyJob::Capture {
-                        ctx,
-                        event,
-                        wal_seq,
-                    } => {
+                    ApplyJob::Capture { ctx, event } => {
                         match inner.apply(&ctx, event).await {
-                            Ok(()) => {
-                                if let Some(seq) = wal_seq {
-                                    inner.wal.ack(seq);
-                                }
-                            }
+                            Ok(()) => {}
                             Err(e) => {
-                                // Keep the WAL entry pending. The dead letter is an
-                                // operator diagnostic, not a durable-store substitute;
-                                // restart replay may recover a transient sink failure.
+                                failure.lock().unwrap().get_or_insert_with(|| e.to_string());
+                                // A diagnostic cannot substitute for a Journal receipt.
                                 tracing::warn!(
                                     target: "persisting_gateway",
                                     "capture apply: {e:#}"
@@ -172,21 +174,20 @@ impl ApplyDispatcher {
                 }
             }
         });
+        self.workers.lock().unwrap().push(worker);
         tx
     }
 
     fn record_rejected_job(&self, job: ApplyJob) {
-        let ApplyJob::Capture {
-            ctx,
-            event,
-            wal_seq: _,
-        } = job
-        else {
+        let ApplyJob::Capture { ctx, event } = job else {
             return;
         };
+        self.failure
+            .lock()
+            .unwrap()
+            .get_or_insert_with(|| "capture apply queue rejected job".to_string());
         self.rejected.try_record(Arc::clone(&ctx), event);
-        // A rejected queue job never reached the durable sink, so its WAL row
-        // deliberately remains pending for restart replay.
+        // Rejected jobs have no durable receipt and are reported as capture gaps.
         tracing::warn!(
             target: "persisting_gateway",
             story_id = %ctx.story_id().as_str(),
@@ -197,7 +198,6 @@ impl ApplyDispatcher {
 
 #[cfg(test)]
 mod tests {
-    use std::collections::HashMap;
     use std::sync::{Arc, Mutex};
 
     use super::*;
@@ -207,25 +207,19 @@ mod tests {
     use crate::engine::{CompleteEvent, Event, RequestEvent};
     use crate::protocol::ProtocolKind;
     use crate::provider::ProviderKind;
-    use crate::record::EventRecord;
+    use crate::record::CaptureRecord;
     use crate::session::index::SessionIndexStore;
     use crate::session::storage::CaptureRoute;
-    use crate::sink::CaptureEventSink;
+    use crate::sink::CaptureEventObserver;
 
     struct OrderRecordingSink {
         order: Mutex<Vec<String>>,
-        next_seq: Mutex<HashMap<String, u64>>,
     }
 
     struct SlowSink;
 
-    impl CaptureEventSink for SlowSink {
-        fn append(
-            &self,
-            _route: &CaptureRoute,
-            _agent_id: &str,
-            _record: &mut EventRecord,
-        ) -> anyhow::Result<()> {
+    impl CaptureEventObserver for SlowSink {
+        fn observe(&self, _event: &persisting_control::trace::Event) -> anyhow::Result<()> {
             std::thread::sleep(std::time::Duration::from_millis(400));
             Ok(())
         }
@@ -235,7 +229,6 @@ mod tests {
         fn new() -> Arc<Self> {
             Arc::new(Self {
                 order: Mutex::new(Vec::new()),
-                next_seq: Mutex::new(HashMap::new()),
             })
         }
 
@@ -244,35 +237,15 @@ mod tests {
         }
     }
 
-    impl CaptureEventSink for OrderRecordingSink {
-        fn append(
-            &self,
-            route: &CaptureRoute,
-            _agent_id: &str,
-            record: &mut EventRecord,
-        ) -> anyhow::Result<()> {
-            let mut guard = self.next_seq.lock().unwrap();
-            let seq = guard.entry(route.seq_key()).or_insert(0);
-            record.seq = *seq;
-            *seq += 1;
-            drop(guard);
+    impl CaptureEventObserver for OrderRecordingSink {
+        fn observe(&self, event: &persisting_control::trace::Event) -> anyhow::Result<()> {
+            let record = CaptureRecord::from_event(event, 0)?;
             self.order.lock().unwrap().push(format!(
                 "{}:{}",
                 record.kind,
                 record.call_id.as_deref().unwrap_or("")
             ));
             Ok(())
-        }
-
-        fn peek_next_seq(&self, route: &CaptureRoute) -> Option<u64> {
-            Some(
-                self.next_seq
-                    .lock()
-                    .unwrap()
-                    .get(&route.seq_key())
-                    .copied()
-                    .unwrap_or(0),
-            )
         }
     }
 

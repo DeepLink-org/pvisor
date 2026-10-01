@@ -7,9 +7,9 @@
 #[cfg(unix)]
 pub mod audit;
 pub mod client;
-pub mod events;
 mod file_access;
 pub mod ir;
+pub mod legacy_events;
 pub mod overlay;
 pub mod policy;
 pub mod protocol;
@@ -18,8 +18,8 @@ mod time;
 pub mod trace;
 
 pub use client::{AgentCtlClient, AgentCtlClientConfig, AgentCtlResponseError};
-pub use events::{EventIdentity, EventRecord, EventValidationError, unix_now_ms};
 pub use overlay::*;
 pub use policy::*;
 pub use protocol::*;
 pub use runtime::*;
+pub use time::unix_now_ms;

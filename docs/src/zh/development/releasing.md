@@ -62,9 +62,9 @@ Silicon macOS），除非 `PERSISTING_LIBKRUNFW_PATH` 指向已有 payload。本
 wheel 构建必须走这些受支持路径之一；缺少 payload 是构建错误，而不是不完整
 的 wheel。
 
-Linux wheel 使用 manylinux_2_28 / glibc 2.28 标签。当前 rustc libstd 和
-libkrun 的 virtiofs passthrough 需要 `statx` 与 `copy_file_range`，
-manylinux2014 上没有这些符号。
+Linux CLI 使用 `x86_64-unknown-linux-musl` 全静态链接，并内嵌 libkrunfw 内核，
+不再随 wheel 分发固件共享库。wheel 保留 manylinux_2_28 标签以支持 glibc Python
+安装器。构建需要 Zig、cargo-zigbuild 和 Rust musl target；固件只在构建时加载。
 
 每个 wheel 都会检查组件集和安装时 CLI smoke test。发布集检查随后要求每个
 平台恰好一个受支持 wheel、版本匹配、包元数据有效，以及发布前产物大小有界。

@@ -166,9 +166,7 @@ pvisor replay --help
 ~~~bash
 git clone https://github.com/DeepLink-org/Persisting.git
 cd Persisting
-cargo install --locked \
-  --path crates/persisting-pvisor \
-  --bin pvisor
+just install-cli
 
 export PATH="${CARGO_HOME:-$HOME/.cargo}/bin:$PATH"
 pvisor replay --help
@@ -177,7 +175,7 @@ pvisor replay --help
 开发时也可以不安装，直接构建并使用仓库内二进制：
 
 ~~~bash
-cargo build --release -p persisting-pvisor --bin pvisor
+just build release
 ./target/release/pvisor replay --help
 ~~~
 

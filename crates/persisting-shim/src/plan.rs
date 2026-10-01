@@ -21,6 +21,8 @@ pub enum PlanError {
     MissingArgs,
     #[error("namespace type {0} is not supported (M1 limitation)")]
     UnsupportedNamespaceType(String),
+    #[error("unsupported mount type {0} at {1}")]
+    UnsupportedMountType(String, String),
 }
 
 /// Namespace kinds the init child knows how to create or join.
@@ -492,11 +494,6 @@ impl ContainerPlan {
     }
 }
 
-/// Shell-quote one word for the guest init helper (`/bin/sh` semantics).
-fn sh_quote(value: &str) -> String {
-    format!("'{}'", value.replace('\'', "'\\''"))
-}
-
 /// True unless `io.pvisor.vm.agent=off`: VMs boot the guest agent so exec
 /// works (the shim binary is copied into the rootfs at boot).
 pub fn vm_agent_enabled(annotations: &HashMap<String, String>) -> bool {
@@ -506,50 +503,40 @@ pub fn vm_agent_enabled(annotations: &HashMap<String, String>) -> bool {
         .unwrap_or(true)
 }
 
-/// Render the helper script the guest init executes.
-///
-/// `krun_set_exec` collapses argv/envp into strings the guest init re-splits,
-/// so arguments or values containing spaces would be mangled. A generated
-/// script sidesteps that (the same pattern pVisor's VM executor uses), and
-/// carries the working directory and a clean environment in one place.
-pub fn render_guest_init_script(process: &ProcessPlan) -> String {
-    render_guest_init_script_with(process, false)
-}
-
-/// [`render_guest_init_script`] with control over the guest agent: when
-/// enabled the script starts the agent (copied into the rootfs at boot)
-/// before exec'ing the workload.
-pub fn render_guest_init_script_with(process: &ProcessPlan, agent: bool) -> String {
-    let mut script = String::from("#!/bin/sh\n");
-    if agent {
-        script.push_str(&format!(
-            "{path} {arg} >/dev/null 2>&1 &\n",
-            path = crate::agent::AGENT_GUEST_PATH,
-            arg = crate::agent::AGENT_ARG
-        ));
-    }
-    if process.cwd != Path::new("/") {
-        script.push_str(&format!(
-            "cd {} || exit 127\n",
-            sh_quote(&process.cwd.to_string_lossy())
-        ));
-    }
-    script.push_str("exec env -i");
-    for entry in &process.env {
-        script.push(' ');
-        script.push_str(&sh_quote(entry));
-    }
-    for arg in &process.argv {
-        script.push(' ');
-        script.push_str(&sh_quote(arg));
-    }
-    script.push('\n');
-    script
-}
-
-/// Path of the generated guest init helper inside the container rootfs.
-pub fn guest_init_script_path(id: &str) -> String {
-    format!("/.pvisor-shim-init-{id}.sh")
+/// Build the same launch contract used by pVisor's VM executor.
+pub fn guest_config(
+    process: &ProcessPlan,
+    agent: bool,
+) -> anyhow::Result<persisting_guest::GuestConfig> {
+    let env = process
+        .env
+        .iter()
+        .map(|entry| {
+            let (key, value) = entry
+                .split_once('=')
+                .ok_or_else(|| anyhow::anyhow!("invalid environment entry {entry:?}"))?;
+            Ok((key.to_owned(), value.to_owned()))
+        })
+        .collect::<anyhow::Result<_>>()?;
+    let config = persisting_guest::GuestConfig {
+        argv: process.argv.clone(),
+        env,
+        cwd: process.cwd.clone(),
+        limits: process
+            .rlimits
+            .iter()
+            .map(|limit| (limit.typ.clone(), (limit.soft, limit.hard)))
+            .collect(),
+        agent: agent.then(|| {
+            vec![
+                crate::agent::AGENT_GUEST_PATH.into(),
+                crate::agent::AGENT_ARG.into(),
+            ]
+        }),
+        ..Default::default()
+    };
+    config.command()?;
+    Ok(config)
 }
 
 /// Plan for one exec process inside a running container.
@@ -635,11 +622,10 @@ pub fn build_plan(
     for mount in spec.mounts().clone().unwrap_or_default() {
         let fs_type = mount.typ().clone().unwrap_or_else(|| "bind".to_string());
         if !SUPPORTED_MOUNT_TYPES.contains(&fs_type.as_str()) {
-            warnings.push(format!(
-                "mount of type {fs_type} at {} skipped (M1 limitation)",
-                mount.destination().display()
+            return Err(PlanError::UnsupportedMountType(
+                fs_type,
+                mount.destination().display().to_string(),
             ));
-            continue;
         }
         mounts.push(MountPlan {
             destination: normalize_absolute(&Path::new("/").join(mount.destination())),
@@ -831,16 +817,13 @@ mod tests {
     }
 
     #[test]
-    fn unsupported_mounts_and_seccomp_land_in_warnings() {
+    fn unsupported_mounts_are_rejected() {
         let spec = spec_from_json(
             r#"{"ociVersion":"1.0.2","process":{"args":["/bin/sh"],"cwd":"/","user":{"uid":0,"gid":0}},"mounts":[{"destination":"/data","type":"ceph","source":"mon1:/"},{"destination":"/proc","type":"proc"}],"linux":{"seccomp":{"defaultAction":"SCMP_ACT_ERRNO"}}}"#,
         );
-        let plan =
-            build_plan(&spec, "c1", Path::new("/b"), vec![], IoPlan::default()).expect("plan");
-        assert_eq!(plan.mounts.len(), 1);
-        assert_eq!(plan.mounts[0].fs_type, "proc");
-        assert!(plan.warnings.iter().any(|w| w.contains("ceph")));
-        assert!(plan.warnings.iter().any(|w| w.contains("seccomp")));
+        let error =
+            build_plan(&spec, "c1", Path::new("/b"), vec![], IoPlan::default()).unwrap_err();
+        assert!(error.to_string().contains("unsupported mount type ceph"));
     }
 
     #[test]
@@ -907,57 +890,29 @@ mod tests {
     }
 
     #[test]
-    fn guest_init_script_quotes_everything() {
+    fn guest_config_preserves_arguments_environment_and_agent() {
         let process = ProcessPlan {
-            argv: vec![
-                "/bin/sh".to_string(),
-                "-c".to_string(),
-                "echo 'hi there'".to_string(),
-            ],
-            env: vec!["GREETING=hello world".to_string()],
+            argv: vec!["/bin/sh".into(), "-c".into(), "echo 'hi there'".into()],
+            env: vec!["GREETING=hello world".into()],
             cwd: PathBuf::from("/work dir"),
             user: UserPlan::default(),
             capabilities: CapabilityPlan::default(),
-            rlimits: vec![],
+            rlimits: vec![RlimitPlan {
+                typ: "RLIMIT_NOFILE".into(),
+                soft: 32,
+                hard: 64,
+            }],
             no_new_privileges: false,
         };
-        let script = render_guest_init_script(&process);
-        assert!(script.starts_with("#!/bin/sh\n"));
-        assert!(script.contains("cd '/work dir' || exit 127"));
-        assert!(script.contains("exec env -i 'GREETING=hello world'"));
-        // The inner single quotes of the argument survive shell quoting.
-        let expected_arg = format!("'{}'", "echo 'hi there'".replace('\'', "'\\''"));
-        assert!(
-            script.contains(&format!(" {expected_arg}\n")),
-            "script did not contain {expected_arg}: {script}"
+        let config = guest_config(&process, true).unwrap();
+        assert_eq!(config.argv, process.argv);
+        assert_eq!(config.env["GREETING"], "hello world");
+        assert_eq!(config.limits["RLIMIT_NOFILE"], (32, 64));
+        assert_eq!(
+            config.agent.unwrap(),
+            [crate::agent::AGENT_GUEST_PATH, crate::agent::AGENT_ARG]
         );
-    }
-
-    #[test]
-    fn guest_init_script_starts_the_agent_when_enabled() {
-        let process = ProcessPlan {
-            argv: vec!["/bin/true".to_string()],
-            env: vec![],
-            cwd: PathBuf::from("/"),
-            user: UserPlan::default(),
-            capabilities: CapabilityPlan::default(),
-            rlimits: vec![],
-            no_new_privileges: false,
-        };
-        let plain = render_guest_init_script_with(&process, false);
-        assert!(!plain.contains(crate::agent::AGENT_GUEST_PATH));
-        let with_agent = render_guest_init_script_with(&process, true);
-        assert!(with_agent.contains(&format!(
-            "{} {} >/dev/null 2>&1 &",
-            crate::agent::AGENT_GUEST_PATH,
-            crate::agent::AGENT_ARG
-        )));
-        // The agent line comes before the exec tail.
-        let agent_at = with_agent
-            .find(crate::agent::AGENT_GUEST_PATH)
-            .expect("agent line");
-        let exec_at = with_agent.find("exec env -i").expect("exec line");
-        assert!(agent_at < exec_at);
+        assert!(guest_config(&process, false).unwrap().agent.is_none());
     }
 
     #[test]
@@ -968,11 +923,6 @@ mod tests {
         assert!(!vm_agent_enabled(&annotations));
         annotations.insert("io.pvisor.vm.agent".to_string(), "on".to_string());
         assert!(vm_agent_enabled(&annotations));
-    }
-
-    #[test]
-    fn guest_script_path_is_unique_per_task() {
-        assert_eq!(guest_init_script_path("abc"), "/.pvisor-shim-init-abc.sh");
     }
 
     #[test]

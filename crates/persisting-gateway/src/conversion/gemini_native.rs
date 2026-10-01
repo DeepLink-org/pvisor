@@ -1,7 +1,7 @@
 //! OpenAI Chat Completions ↔ Gemini native `generateContent` wire format.
 //!
 //! Adapted from agentgateway's `conversion::vertex_gemini` contract. This module intentionally
-//! contains no Google SDK or control-plane dependency; Gateway routing, auth, capture and WAL stay
+//! contains no Google SDK or control-plane dependency; Gateway routing, auth, capture and Journal commits stay
 //! outside the protocol adapter.
 
 use std::collections::HashMap;

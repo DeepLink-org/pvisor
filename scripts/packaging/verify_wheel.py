@@ -5,7 +5,6 @@ from __future__ import annotations
 
 import argparse
 import os
-import re
 import subprocess
 import sys
 import tempfile
@@ -16,34 +15,20 @@ from pathlib import Path
 
 EXPECTED_BINARIES = ("pvisor",)
 FIRMWARE_NAMES = ("libkrunfw.so.5", "libkrunfw.5.dylib")
-MANYLINUX_MAX_GLIBC = (2, 28, 0)
-_GLIBC_NEED = re.compile(r"GLIBC_(\d+)\.(\d+)(?:\.(\d+))?")
 
 
-def glibc_requirement(symbols: str) -> tuple[int, int, int] | None:
-    versions = [
-        (int(match.group(1)), int(match.group(2)), int(match.group(3) or 0))
-        for match in _GLIBC_NEED.finditer(symbols)
-    ]
-    return max(versions) if versions else None
-
-
-def _assert_manylinux_glibc(name: str, executable: Path) -> None:
-    symbols = _run(["readelf", "-W", "--dyn-syms", str(executable)])
-    required = glibc_requirement(symbols)
-    if required is None:
-        return
-    if required > MANYLINUX_MAX_GLIBC:
-        pretty = ".".join(str(part) for part in required)
-        ceiling = ".".join(str(part) for part in MANYLINUX_MAX_GLIBC)
+def _assert_static_linux(name: str, executable: Path) -> None:
+    headers = _run(["readelf", "-W", "-l", str(executable)])
+    dynamic = _run(["readelf", "-W", "-d", str(executable)])
+    if "INTERP" in headers or "(NEEDED)" in dynamic:
         raise RuntimeError(
-            f"{name} requires GLIBC {pretty}, which exceeds manylinux_2_28 ({ceiling})"
+            f"{name} must be fully static: found an ELF interpreter or shared library"
         )
 
 
 def _wheel_contents(
     wheel: Path,
-) -> tuple[str, dict[str, zipfile.ZipInfo], zipfile.ZipInfo]:
+) -> tuple[str, dict[str, zipfile.ZipInfo], zipfile.ZipInfo | None]:
     with zipfile.ZipFile(wheel) as archive:
         metadata_names = [
             name for name in archive.namelist() if name.endswith(".dist-info/METADATA")
@@ -76,9 +61,12 @@ def _wheel_contents(
             if ".data/scripts/" in info.filename
             and info.filename.rsplit("/", 1)[-1] in FIRMWARE_NAMES
         ]
-        if len(firmware) != 1:
-            raise RuntimeError(f"expected one libkrunfw payload, found {len(firmware)}")
-        return version, scripts, firmware[0]
+        expected_firmware = 1 if "macosx" in wheel.name.lower() else 0
+        if len(firmware) != expected_firmware:
+            raise RuntimeError(
+                f"expected {expected_firmware} libkrunfw payloads, found {len(firmware)}"
+            )
+        return version, scripts, firmware[0] if firmware else None
 
 
 def _run(command: list[str], *, env: dict[str, str] | None = None) -> str:
@@ -101,7 +89,7 @@ def _installed_script_dir(environment: Path) -> Path:
 def verify_native_payloads(
     wheel: Path,
     scripts: dict[str, zipfile.ZipInfo],
-    firmware: zipfile.ZipInfo,
+    firmware: zipfile.ZipInfo | None,
 ) -> None:
     wheel_name = wheel.name.lower()
     expected_arches: tuple[str, ...]
@@ -115,14 +103,15 @@ def verify_native_payloads(
     with tempfile.TemporaryDirectory(prefix="pvisor-wheel-native-") as temporary:
         root = Path(temporary)
         with zipfile.ZipFile(wheel) as archive:
-            firmware_path = root / Path(firmware.filename).name
-            firmware_path.write_bytes(archive.read(firmware))
-            firmware_description = _run(["file", str(firmware_path)]).lower()
-            if not any(arch in firmware_description for arch in expected_arches):
-                raise RuntimeError(
-                    f"libkrunfw architecture does not match {wheel.name}: "
-                    f"{firmware_description.strip()}"
-                )
+            if firmware is not None:
+                firmware_path = root / Path(firmware.filename).name
+                firmware_path.write_bytes(archive.read(firmware))
+                firmware_description = _run(["file", str(firmware_path)]).lower()
+                if not any(arch in firmware_description for arch in expected_arches):
+                    raise RuntimeError(
+                        f"libkrunfw architecture does not match {wheel.name}: "
+                        f"{firmware_description.strip()}"
+                    )
             for name, info in scripts.items():
                 executable = root / name
                 executable.write_bytes(archive.read(info))
@@ -148,13 +137,7 @@ def verify_native_payloads(
                                 "pvisor is missing the Hypervisor.framework entitlement"
                             )
                 elif sys.platform == "linux" and "linux" in wheel_name:
-                    dependencies = _run(["ldd", str(executable)])
-                    if "not found" in dependencies:
-                        raise RuntimeError(f"{name} has unresolved dependencies:\n{dependencies}")
-                    if name == "pvisor" and "libkrun" in dependencies:
-                        raise RuntimeError("pvisor dynamically links libkrun")
-                    if "manylinux" in wheel_name:
-                        _assert_manylinux_glibc(name, executable)
+                    _assert_static_linux(name, executable)
 
 
 def install_smoke(wheel: Path, version: str) -> None:
@@ -205,7 +188,7 @@ def main() -> None:
 
     version, scripts, firmware = _wheel_contents(wheel)
     verify_native_payloads(wheel, scripts, firmware)
-    print(f"wheel={wheel.name} version={version} scripts={','.join(sorted(scripts))} static=PASS")
+    print(f"wheel={wheel.name} version={version} scripts={','.join(sorted(scripts))} native=PASS")
     if args.install_smoke:
         install_smoke(wheel, version)
         print("install=PASS versions=PASS dispatch=PASS")

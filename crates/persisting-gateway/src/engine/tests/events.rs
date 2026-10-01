@@ -142,3 +142,57 @@ async fn draft_event_does_not_append_to_sink() {
     flush_engine(&engine).await;
     assert!(sink.drain().is_empty());
 }
+
+#[tokio::test]
+async fn full_capture_redacts_flat_and_wire_request_response_bodies() {
+    let sink = RecordingSink::new();
+    let dir = tempfile::tempdir().unwrap();
+    let engine = test_engine(sink.clone(), dir.path(), false).await;
+    let mut ctx = test_context();
+    ctx.level = crate::config::CaptureLevel::Full;
+    let body =
+        serde_json::json!({"model":"deepseek-chat", "api_key":"never-record-this", "messages":[]});
+    engine
+        .apply(
+            &ctx,
+            Event::Request(RequestEvent {
+                path: "/v1/chat/completions".into(),
+                method: "POST".into(),
+                url: None,
+                body_bytes: 0,
+                user_content: None,
+                body_json: Some(body.clone()),
+                semantic: None,
+                model_rewritten: false,
+                headers: vec![],
+            }),
+        )
+        .await
+        .unwrap();
+    engine
+        .apply(
+            &ctx,
+            Event::ResponseComplete(CompleteEvent {
+                status: 200,
+                resp_bytes: Bytes::from(body.to_string()),
+                streaming: false,
+                stream_metrics: None,
+                assistant_content: None,
+                semantic: None,
+                headers: vec![],
+            }),
+        )
+        .await
+        .unwrap();
+    flush_engine(&engine).await;
+    let records = sink.drain();
+    assert_eq!(records.len(), 2);
+    for record in &records {
+        assert_eq!(record.payload["body"]["api_key"], "<redacted>");
+        assert!(
+            !serde_json::to_string(record)
+                .unwrap()
+                .contains("never-record-this")
+        );
+    }
+}

@@ -17,20 +17,19 @@ pvisor run \
 ```
 
 pVisor 启动内嵌 Gateway、向子进程注入代理或 base URL、等待执行、排空捕获并停止
-Gateway。使用 `--record-destination ./capture` 将 EventRecord JSONL 写入指定目录。
+Gateway。使用 `--record-destination ./capture` 将 Trace Event journal 写入指定目录。
 `--gateway-stream-markdown` 仅保留兼容参数，当前不生成 Markdown 投影。
 
-### 事件时间戳
+### 事件时间戳与顺序
 
-每条新落盘的 `EventRecord` 都包含两种对应的墙上时钟字段：
+默认输出为 `events.trace.jsonl`：先写 `pvisor.trace/3` 文件头，再写包含 Event 与
+`{journal, offset}` 的记录。观测时间为 `event.observed_at_unix_ms`，跨生产者因果使用
+`event.caused_by`，不能从时间戳推导。
 
-- `timestamp`：RFC3339 UTC 时间；
-- `timestamp_unix_ms`：同一观测时刻的 Unix 毫秒值。
-
-Gateway 在接受请求和捕获响应时分别记录时间；最终 Gateway capture sink 还会为旧
-producer 生成的记录兜底补齐这两个字段，pVisor runtime 事件则在生成时同时写入这对值。
-两个时间字段应在一毫秒内一致。`seq` 应在生产者/session 范围内解释，
-合并时保留 Run、Attempt 和 session 身份；时间戳不是全局排序依据。
+Gateway 内容位于 `event.data.payload.content`，story/session 路由位于
+`event.data.payload.story`，call 关联位于 `event.data.payload.correlation`。
+Run 与内嵌 Gateway 共用 Journal。进入队列不等于持久化；同步文件后才返回 LocalSync。
+旧 JSONL 仅作兼容读取，不与新事实混写。
 
 客户端只有使用注入的代理或 base URL 才能被观察；直接 socket 是否受限取决于 executor，
 实际隔离边界以 Run Bundle 为准。

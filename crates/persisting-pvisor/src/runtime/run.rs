@@ -15,7 +15,9 @@ use crate::runtime::{
 use crate::util::unix_now_ms;
 use crate::{AGENTCTL_VERSION, AgentCtlServer};
 use persisting_control::ControlController;
-use persisting_control::EventRecord;
+use persisting_control::trace::Event;
+#[cfg(test)]
+use persisting_control::trace::Receipt;
 use persisting_control::{
     AttemptId, AttemptInfo, CapabilityDimension, CapabilityEnforcementEvidence, EnforcementLevel,
     ExecutorDescriptor, IsolationKind, NetworkCapability, PolicyMode, RUNTIME_SCHEMA_VERSION,
@@ -50,7 +52,29 @@ pub enum PVisorError {
     Join(#[from] tokio::task::JoinError),
 }
 
-pub type RunEventStream = broadcast::Receiver<EventRecord>;
+/// Run-filtered post-commit events, including its embedded Gateway observations.
+pub struct RunEventStream {
+    pub(crate) trace_id: String,
+    pub(crate) receiver: broadcast::Receiver<Event>,
+}
+impl RunEventStream {
+    pub async fn recv(&mut self) -> Result<Event, broadcast::error::RecvError> {
+        loop {
+            let event = self.receiver.recv().await?;
+            if event.trace_id == self.trace_id {
+                return Ok(event);
+            }
+        }
+    }
+    pub fn try_recv(&mut self) -> Result<Event, broadcast::error::TryRecvError> {
+        loop {
+            let event = self.receiver.try_recv()?;
+            if event.trace_id == self.trace_id {
+                return Ok(event);
+            }
+        }
+    }
+}
 
 /// Cloneable, provider-independent cancellation capability for an in-flight Run.
 #[derive(Clone)]
@@ -229,14 +253,19 @@ impl PVisorBuilder {
     }
 
     pub fn build(self) -> PVisor {
+        let event_sink = self
+            .event_sink
+            .unwrap_or_else(|| Arc::new(NoopEventSink::default()) as Arc<dyn EventSink>);
+        let runtime = match event_sink.journal() {
+            Some(journal) => self.runtime.journal(journal),
+            None => self.runtime,
+        };
         PVisor {
             executors: Arc::new(self.executors.unwrap_or_else(|| {
                 vec![Arc::new(ProcessExecutor::default()) as Arc<dyn RunExecutor>]
             })),
-            event_sink: self
-                .event_sink
-                .unwrap_or_else(|| Arc::new(NoopEventSink) as Arc<dyn EventSink>),
-            runtime: self.runtime.build(),
+            event_sink,
+            runtime: runtime.build(),
         }
     }
 }
@@ -503,39 +532,26 @@ impl PVisor {
             Arc::clone(&self.event_sink),
             live_tx,
         );
-        if let Err(error) = events
-            .publish(
-                "run.created",
-                "runtime",
-                json!({
-                    "agent": spec.agent,
-                    "task_id": spec.task_id,
-                    "executor": descriptor,
-                    "policy_mode": spec.runtime.policy_mode,
-                    "capture_session": session.as_ref().map(|session| session.root_session()),
-                    "agentctl_version": AGENTCTL_VERSION,
-                    "ir_request": persisting_control::trace::Fact::Requested {
-                        request: run_plan.request.clone(),
-                    },
-                    "ir_rewrites": run_plan.rewrites.iter().enumerate().scan(
-                        run_plan.request.clone(),
-                        |before, (pass, rule)| {
-                            let after = rule.apply(before).ok()?;
-                            let fact = persisting_control::trace::Fact::Rewritten {
-                                rule: rule.clone(), pass, before: before.clone(), after: after.clone(),
-                            };
-                            *before = after;
-                            Some(fact)
-                        }
-                    ).collect::<Vec<_>>(),
-                    "ir_dispatch": persisting_control::trace::Fact::Dispatched {
-                        backend: descriptor.name.clone(),
-                        expression: run_plan.expression.clone(),
-                    },
-                }),
-            )
-            .await
-        {
+        let creation = async {
+            events
+                .publish(
+                    "run.created",
+                    "runtime",
+                    json!({
+                        "agent": spec.agent,
+                        "task_id": spec.task_id,
+                        "executor": descriptor,
+                        "policy_mode": spec.runtime.policy_mode,
+                        "capture_session": session.as_ref().map(|session| session.root_session()),
+                        "agentctl_version": AGENTCTL_VERSION,
+                    }),
+                )
+                .await?;
+            events.begin_execution(&run_plan, &descriptor.name).await?;
+            Ok::<_, anyhow::Error>(())
+        }
+        .await;
+        if let Err(error) = creation {
             if let Some(session) = session.take()
                 && let Err(cleanup_error) = session.abort_startup(
                     &attempt_id,
@@ -623,6 +639,41 @@ impl PVisor {
                     .as_ref()
                     .and_then(|teardown| teardown.run_record().filesystem_observation.as_ref()),
             );
+            if let Some(filesystem) = &run_observation.filesystem
+                && let Err(error) = context
+                    .events()
+                    .publish("filesystem.observed", "filesystem", json!(filesystem))
+                    .await
+            {
+                result
+                    .warnings
+                    .push(format!("filesystem observation audit gap: {error:#}"));
+            }
+            if let Some(network) = teardown
+                .as_ref()
+                .and_then(|t| t.run_record().network_interception_metrics.as_ref())
+                && let Err(error) = context
+                    .events()
+                    .publish("network.observed", "network", json!(network))
+                    .await
+            {
+                result
+                    .warnings
+                    .push(format!("network observation audit gap: {error:#}"));
+            }
+            if let Err(error) = context
+                .events()
+                .publish_fact(persisting_control::trace::Fact::Completed {
+                    expression: run_plan.expression.clone(),
+                    outcome: run_observation.outcome.clone(),
+                    origin: persisting_control::trace::Origin::Backend,
+                })
+                .await
+            {
+                result
+                    .warnings
+                    .push(format!("execution completion audit gap: {error:#}"));
+            }
             if let Err(error) = context
                 .events()
                 .publish(
@@ -782,7 +833,7 @@ fn effective_capability_enforcement(
 
 fn terminal_payload(
     result: &RunResult,
-    plan: &persisting_control::ir::run::RunPlan,
+    _plan: &persisting_control::ir::run::RunPlan,
     observation: &persisting_control::ir::run::RunObservation,
 ) -> serde_json::Value {
     json!({
@@ -792,11 +843,6 @@ fn terminal_payload(
         "failure": result.failure,
         "started_at_unix_ms": result.started_at_unix_ms,
         "finished_at_unix_ms": result.finished_at_unix_ms,
-        "ir_fact": persisting_control::trace::Fact::Completed {
-            expression: plan.expression.clone(),
-            outcome: observation.outcome.clone(),
-            origin: persisting_control::trace::Origin::Backend,
-        },
         "rule_observations": observation.rules,
     })
 }
@@ -947,12 +993,12 @@ mod tests {
 
     #[async_trait]
     impl EventSink for RejectCompletedSink {
-        async fn append(&self, event: &EventRecord) -> anyhow::Result<()> {
-            if event.kind == "run.completed" {
+        async fn append(&self, event: &Event) -> anyhow::Result<Receipt> {
+            if event.name() == "run.completed" {
                 anyhow::bail!("simulated terminal commit failure");
             }
-            self.kinds.lock().unwrap().push(event.kind.clone());
-            Ok(())
+            self.kinds.lock().unwrap().push(event.name().to_string());
+            Ok(crate::trace::Journal::memory().append(event.clone())?)
         }
 
         fn classify_append_error(&self, _error: &anyhow::Error) -> crate::EventAppendErrorKind {
@@ -967,12 +1013,12 @@ mod tests {
 
     #[async_trait]
     impl EventSink for CommitThenLoseAcknowledgementSink {
-        async fn append(&self, event: &EventRecord) -> anyhow::Result<()> {
-            self.kinds.lock().unwrap().push(event.kind.clone());
-            if event.kind == "run.completed" {
+        async fn append(&self, event: &Event) -> anyhow::Result<Receipt> {
+            self.kinds.lock().unwrap().push(event.name().to_string());
+            if event.name() == "run.completed" {
                 anyhow::bail!("simulated acknowledgement loss after commit");
             }
-            Ok(())
+            Ok(crate::trace::Journal::memory().append(event.clone())?)
         }
     }
 
@@ -980,14 +1026,14 @@ mod tests {
 
     #[async_trait]
     impl EventSink for RejectAllTerminalEventsSink {
-        async fn append(&self, event: &EventRecord) -> anyhow::Result<()> {
+        async fn append(&self, event: &Event) -> anyhow::Result<Receipt> {
             if matches!(
-                event.kind.as_str(),
+                event.name(),
                 "run.completed" | "run.cancelled" | "run.failed"
             ) {
                 anyhow::bail!("simulated terminal rejection");
             }
-            Ok(())
+            Ok(crate::trace::Journal::memory().append(event.clone())?)
         }
 
         fn classify_append_error(&self, _error: &anyhow::Error) -> crate::EventAppendErrorKind {
@@ -999,11 +1045,11 @@ mod tests {
 
     #[async_trait]
     impl EventSink for RejectCreatedSink {
-        async fn append(&self, event: &EventRecord) -> anyhow::Result<()> {
-            if event.kind == "run.created" {
+        async fn append(&self, event: &Event) -> anyhow::Result<Receipt> {
+            if event.name() == "run.created" {
                 anyhow::bail!("simulated creation rejection");
             }
-            Ok(())
+            Ok(crate::trace::Journal::memory().append(event.clone())?)
         }
 
         fn classify_append_error(&self, _error: &anyhow::Error) -> crate::EventAppendErrorKind {
@@ -1069,12 +1115,36 @@ mod tests {
 
         let emitted = sink.events();
         assert!(emitted.iter().all(|event| {
-            event.identity.event_id.is_some()
-                && event.identity.run_id.as_deref() == Some("run-success")
-                && event.identity.attempt_id.is_some()
-                && event.identity.producer.as_deref() == Some("persisting-pvisor")
+            !event.id.is_empty()
+                && event.trace_id == "run-success"
+                && event.scope.len() == 4
+                && event.producer == "persisting-pvisor"
         }));
-        let kinds: Vec<_> = emitted.into_iter().map(|event| event.kind).collect();
+        let phases: Vec<_> = emitted
+            .iter()
+            .filter(|event| event.operation.is_some())
+            .collect();
+        assert!(phases.iter().any(|event| matches!(
+            event.data,
+            persisting_control::trace::Fact::Requested { .. }
+        )));
+        assert!(matches!(
+            phases.last().unwrap().data,
+            persisting_control::trace::Fact::Completed { .. }
+        ));
+        assert!(
+            phases
+                .iter()
+                .all(|event| event.operation == phases[0].operation
+                    && event.context == phases[0].context)
+        );
+        for pair in emitted.windows(2) {
+            assert_eq!(pair[1].caused_by, vec![pair[0].id.clone()]);
+        }
+        let kinds: Vec<_> = emitted
+            .into_iter()
+            .map(|event| event.name().to_string())
+            .collect();
         assert_eq!(kinds.first().map(String::as_str), Some("run.created"));
         assert_eq!(kinds.last().map(String::as_str), Some("run.completed"));
         assert!(kinds.iter().any(|kind| kind == "run.state_changed"));
@@ -1214,7 +1284,7 @@ mod tests {
         let terminal_kinds = sink
             .events()
             .into_iter()
-            .map(|event| event.kind)
+            .map(|event| event.name().to_string())
             .filter(|kind| {
                 matches!(
                     kind.as_str(),

@@ -39,7 +39,7 @@ pvisor run --executor vm --rootfs image=ubuntu:24.04 \
 
 Linux 上的 `--rootfs host` 可将宿主根目录作为只读底层提供给独立客户机内核。这会暴露宿主内容供读取。应通过 `--mount` 显式声明需要暴露的路径。
 
-Linux 需要可访问的 `/dev/kvm`。macOS 上用 `just build release` 构建并签署 Hypervisor entitlement；源码构建还需要 Zig。VM 网络支持策略控制的 IPv4 TCP、DHCP 和合成 DNS；应用 UDP 流量、IPv6、QUIC 和入站连接不在当前支持范围内。
+Linux 需要可访问的 `/dev/kvm`。macOS 上用 `just build release` 构建并签署 Hypervisor entitlement。静态 Rust guest supervisor 使用 Rust 自带 linker。VM 网络支持策略控制的 IPv4 TCP、固定 guest 地址和合成 DNS；应用 UDP 流量、IPv6、QUIC 和入站连接不在当前支持范围内。
 
 ## 组合底层与提交方式
 

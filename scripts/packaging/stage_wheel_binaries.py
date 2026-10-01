@@ -23,7 +23,7 @@ ROOT = Path(__file__).resolve().parents[2]
 WHEEL_DATA = ROOT / "target" / "wheel-data"
 EXPECTED_BINARIES = ("pvisor",)
 SUPPORTED_TARGETS = {
-    "x86_64-unknown-linux-gnu",
+    "x86_64-unknown-linux-musl",
     "aarch64-apple-darwin",
 }
 MACOS_ENTITLEMENTS = ROOT / "crates" / "persisting-pvisor" / "macos-hypervisor.entitlements"
@@ -31,7 +31,7 @@ LIBKRUNFW_VERSION = "5.5.0"
 MACOS_DEPLOYMENT_TARGET = "11.0"
 LIBKRUNFW_RELEASE = f"https://github.com/libkrun/libkrunfw/releases/download/v{LIBKRUNFW_VERSION}"
 LIBKRUNFW_ARCHIVES = {
-    "x86_64-unknown-linux-gnu": (
+    "x86_64-unknown-linux-musl": (
         "libkrunfw-x86_64.tgz",
         "c169206b01c89fbe134f1728bf4f988702bc7f73b4cf73e6fdece447d6fceca1",
         "lib64/libkrunfw.so.5.5.0",
@@ -90,7 +90,7 @@ def _normalize_target(target: str | None) -> str | None:
     if target is None:
         machine = platform.machine().lower()
         if sys.platform == "linux" and machine in {"x86_64", "amd64"}:
-            return None
+            return "x86_64-unknown-linux-musl"
         if sys.platform == "darwin" and machine in {"arm64", "aarch64"}:
             return None
         raise RuntimeError(
@@ -98,10 +98,10 @@ def _normalize_target(target: str | None) -> str | None:
         )
 
     aliases = {
-        "x86_64": "x86_64-unknown-linux-gnu",
+        "x86_64": "x86_64-unknown-linux-musl",
         "aarch64": "aarch64-apple-darwin"
         if sys.platform == "darwin"
-        else "aarch64-unknown-linux-gnu",
+        else "aarch64-unknown-linux-musl",
         "arm64": "aarch64-apple-darwin",
     }
     normalized = aliases.get(target, target)
@@ -132,20 +132,27 @@ def options_from_build_backend(
     )
 
 
-def _cargo_command(options: BuildOptions) -> list[str]:
+def _cargo_command(options: BuildOptions, *, shim_vm: bool = False) -> list[str]:
+    target = (
+        _normalize_target(options.target)
+        if options.target is not None or sys.platform == "linux"
+        else None
+    )
     command = [
         "cargo",
-        "build",
+        "zigbuild" if target == "x86_64-unknown-linux-musl" else "build",
         "--profile",
         options.profile,
         "--message-format=json-render-diagnostics",
         "-p",
-        "persisting-pvisor",
+        "persisting-shim" if shim_vm else "persisting-pvisor",
         "--bin",
-        "pvisor",
+        "containerd-shim-pvisor-v2" if shim_vm else "pvisor",
     ]
-    if options.target is not None:
-        command.extend(("--target", options.target))
+    if shim_vm:
+        command.extend(("--features", "vm"))
+    if target is not None:
+        command.extend(("--target", target))
     if options.target_dir is not None:
         command.extend(("--target-dir", options.target_dir))
     if options.frozen:
@@ -159,12 +166,20 @@ def _cargo_command(options: BuildOptions) -> list[str]:
     return command
 
 
-def _build(options: BuildOptions) -> dict[str, Path]:
-    command = _cargo_command(options)
-    print(f"Building wheel CLI component set: {shlex.join(command)}", file=sys.stderr)
+def _build(options: BuildOptions, *, shim_vm: bool = False) -> dict[str, Path]:
+    command = _cargo_command(options, shim_vm=shim_vm)
+    expected = ("containerd-shim-pvisor-v2",) if shim_vm else EXPECTED_BINARIES
+    print(f"Building native CLI: {shlex.join(command)}", file=sys.stderr)
+    build_env = os.environ.copy()
+    if command[1] == "zigbuild":
+        if not build_env.get("PERSISTING_KRUNFW_KERNEL_BUNDLE") and not build_env.get(
+            "PERSISTING_KRUNFW_PATH"
+        ):
+            build_env["PERSISTING_KRUNFW_PATH"] = str(_firmware_source(options)[0])
     process = subprocess.Popen(
         command,
         cwd=ROOT,
+        env=build_env,
         stdout=subprocess.PIPE,
         text=True,
     )
@@ -185,13 +200,13 @@ def _build(options: BuildOptions) -> dict[str, Path]:
         executable = message.get("executable")
         name = message.get("target", {}).get("name")
         kinds = message.get("target", {}).get("kind", [])
-        if executable and name in EXPECTED_BINARIES and "bin" in kinds:
+        if executable and name in expected and "bin" in kinds:
             artifacts[name] = Path(executable)
 
     return_code = process.wait()
     if return_code != 0:
         raise subprocess.CalledProcessError(return_code, command)
-    missing = sorted(set(EXPECTED_BINARIES) - artifacts.keys())
+    missing = sorted(set(expected) - artifacts.keys())
     if missing:
         raise RuntimeError(f"Cargo did not report expected wheel binaries: {', '.join(missing)}")
     return artifacts
@@ -221,7 +236,7 @@ def _host_target() -> str:
     if sys.platform == "darwin" and platform.machine().lower() in {"arm64", "aarch64"}:
         return "aarch64-apple-darwin"
     if sys.platform == "linux" and platform.machine().lower() in {"x86_64", "amd64"}:
-        return "x86_64-unknown-linux-gnu"
+        return "x86_64-unknown-linux-musl"
     raise RuntimeError(
         f"automatic libkrunfw preparation is unsupported on {sys.platform}/{platform.machine()}"
     )
@@ -305,7 +320,7 @@ def _sign_macos_pvisor(path: Path) -> None:
 
 def stage_wheel_binaries(options: BuildOptions) -> Path:
     """Build the host CLI and atomically replace the wheel scripts directory."""
-    firmware = _firmware_source(options) if options.bundle_firmware else None
+    firmware = _firmware_source(options) if options.bundle_firmware and _is_macos(options) else None
     artifacts = _build(options)
     ensure_wheel_data_directory()
     staged = WHEEL_DATA / f".scripts-{os.getpid()}"
@@ -337,6 +352,13 @@ def stage_wheel_binaries(options: BuildOptions) -> Path:
             print(
                 f"Staged libkrunfw: {firmware_source} -> {firmware_destination}",
                 file=sys.stderr,
+            )
+        if options.bundle_firmware and not _is_macos(options):
+            (staged / "libkrunfw.SOURCE").write_text(
+                f"Embedded libkrunfw {LIBKRUNFW_VERSION} kernel\n"
+                f"source: {LIBKRUNFW_RELEASE}/libkrunfw-x86_64.tgz\n"
+                "licenses: GPL-2.0-only (Linux kernel), LGPL-2.1-only (library)\n",
+                encoding="utf-8",
             )
         if _is_macos(options):
             _sign_macos_pvisor(staged / "pvisor")

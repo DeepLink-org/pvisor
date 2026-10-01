@@ -39,12 +39,15 @@ build-frontend = "build"
 archs = ["x86_64"]
 manylinux-x86_64-image = "manylinux_2_28"
 before-all = [
-    "yum install -y curl glibc-static",
+    "yum install -y curl",
+    "/opt/python/cp312-cp312/bin/python -m pip install ziglang==0.13.0",
+    "ln -sf $(/opt/python/cp312-cp312/bin/python -c 'import pathlib, ziglang; print(pathlib.Path(ziglang.__file__).parent / \"zig\")') /usr/local/bin/zig",
     "curl --proto '=https' --tlsv1.2 -sSf https://sh.rustup.rs | sh -s -- -y --profile minimal --default-toolchain stable",
+    "$HOME/.cargo/bin/rustup target add x86_64-unknown-linux-musl",
+    "$HOME/.cargo/bin/cargo install cargo-zigbuild --locked",
 ]
-# rustc libstd and libkrun's virtiofs passthrough need statx (glibc 2.28)
-# and copy_file_range (glibc 2.27). Targeting glibc 2.17 cannot satisfy
-# those refs, so the wheel tag is manylinux_2_28.
+# Static musl CLI, with its kernel embedded. Keep the manylinux wheel tag
+# for glibc Python installers; the CLI has no glibc runtime dependency.
 environment = { PATH = "$HOME/.cargo/bin:$PATH" }
 
 [tool.cibuildwheel.macos]

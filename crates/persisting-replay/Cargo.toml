@@ -8,6 +8,8 @@ description = "Agent-native sandbox replay and continuation for pVisor"
 
 [dependencies]
 anyhow.workspace = true
+persisting-control.workspace = true
+persisting-journal.workspace = true
 chrono.workspace = true
 fs2.workspace = true
 libc.workspace = true

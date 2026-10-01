@@ -17,7 +17,7 @@ use crate::engine::CaptureEngine;
 use crate::runtime::debug::{self, is_debug_enabled};
 use crate::session::client::SessionClientRegistry;
 use crate::session::index::SessionIndexStore;
-use crate::sink::CaptureEventSink;
+use crate::sink::CaptureEventObserver;
 
 #[derive(Clone)]
 pub(crate) struct GatewayState {
@@ -46,7 +46,7 @@ pub(crate) struct GatewayRuntimeControl {
 pub async fn serve(
     config: ProxyConfig,
     storage: impl AsRef<Path>,
-    sink: Arc<dyn CaptureEventSink>,
+    sink: Arc<dyn CaptureEventObserver>,
     stream_markdown: bool,
 ) -> anyhow::Result<()> {
     serve_with_shutdown(
@@ -63,7 +63,7 @@ pub async fn serve(
 pub async fn serve_with_shutdown(
     config: ProxyConfig,
     storage: impl AsRef<Path>,
-    sink: Arc<dyn CaptureEventSink>,
+    sink: Arc<dyn CaptureEventObserver>,
     stream_markdown: bool,
     shutdown: impl std::future::Future<Output = ()> + Send + 'static,
 ) -> anyhow::Result<()> {
@@ -73,7 +73,7 @@ pub async fn serve_with_shutdown(
 pub async fn serve_with_shutdown_and_ready(
     config: ProxyConfig,
     storage: impl AsRef<Path>,
-    sink: Arc<dyn CaptureEventSink>,
+    sink: Arc<dyn CaptureEventObserver>,
     stream_markdown: bool,
     ready: Option<tokio::sync::oneshot::Sender<()>>,
     shutdown: impl std::future::Future<Output = ()> + Send + 'static,
@@ -98,7 +98,7 @@ pub async fn serve_with_shutdown_and_ready(
 pub async fn serve_with_listeners_and_shutdown(
     mut config: ProxyConfig,
     storage: impl AsRef<Path>,
-    sink: Arc<dyn CaptureEventSink>,
+    sink: Arc<dyn CaptureEventObserver>,
     stream_markdown: bool,
     listener: tokio::net::TcpListener,
     admin_listener: tokio::net::TcpListener,
@@ -140,7 +140,7 @@ pub async fn serve_with_listeners_and_shutdown(
 pub async fn serve_with_runtime_control(
     config: ProxyConfig,
     storage: impl AsRef<Path>,
-    sink: Arc<dyn CaptureEventSink>,
+    sink: Arc<dyn CaptureEventObserver>,
     stream_markdown: bool,
     control_controller: Arc<dyn ControlController>,
     ready: Option<tokio::sync::oneshot::Sender<()>>,
@@ -171,7 +171,7 @@ pub async fn serve_with_runtime_control(
 pub(crate) async fn serve_with_runtime_control_and_metrics(
     config: ProxyConfig,
     storage: impl AsRef<Path>,
-    sink: Arc<dyn CaptureEventSink>,
+    sink: Arc<dyn CaptureEventObserver>,
     stream_markdown: bool,
     runtime_control: GatewayRuntimeControl,
     ready: Option<Box<dyn FnOnce() + Send>>,
@@ -211,7 +211,7 @@ pub(crate) async fn serve_with_runtime_control_and_metrics(
 async fn serve_with_bound_listeners(
     config: ProxyConfig,
     storage: impl AsRef<Path>,
-    sink: Arc<dyn CaptureEventSink>,
+    sink: Arc<dyn CaptureEventObserver>,
     stream_markdown: bool,
     runtime_control: GatewayRuntimeControl,
     listener: tokio::net::TcpListener,

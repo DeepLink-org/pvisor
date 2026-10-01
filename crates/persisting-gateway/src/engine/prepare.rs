@@ -22,7 +22,6 @@ use crate::usage::{
 
 /// Index + config for the prepare phase (run actor accessed via wire client, not held here).
 pub(crate) struct CapturePreparer {
-    pub index: crate::session::index::SessionIndexHandle,
     pub storage: std::sync::Arc<std::path::PathBuf>,
     pub stream_markdown: bool,
 }
@@ -55,17 +54,8 @@ impl CapturePreparer {
         ctx: &CallContext,
         event: RequestEvent,
     ) -> Result<PreparedCapture> {
-        self.index.record_request(
-            ctx.agent_id(),
-            &ctx.route().session_id,
-            ctx.provider,
-            ctx.protocol.as_str(),
-            &ctx.client_model,
-        );
-        // Session index is flushed in batch via CaptureEngine::flush / shutdown.
-
         // Runtime requests already carry the once-parsed semantic payload. The
-        // fallback keeps WAL rows written by older binaries replayable.
+        // fallback keeps historical capture inputs replayable.
         let semantic = event.semantic.clone().or_else(|| {
             event.body_json.as_ref().and_then(|body| {
                 crate::understanding::understand_request_value(ctx.protocol, body)
@@ -184,15 +174,6 @@ impl CapturePreparer {
         };
 
         let cost = estimate_cost_usd(&ctx.upstream_model, ctx.provider, &usage);
-        self.index.record_response(
-            ctx.agent_id(),
-            &ctx.route().session_id,
-            ctx.provider,
-            &ctx.client_model,
-            &usage,
-            cost,
-        );
-
         if ctx.debug_on {
             debug::log_llm_response(
                 self.storage.as_path(),
@@ -216,7 +197,7 @@ impl CapturePreparer {
             resp_payload["forward_to"] = Value::String(ctx.upstream_model.clone());
         }
         if ctx.level.includes_full_body() {
-            resp_payload["body"] = resp_json.clone();
+            resp_payload["body"] = crate::sink::redact_sensitive_body(&resp_json);
         }
         if let Some(m) = event.stream_metrics.as_ref() {
             if let Some(ttft) = m.ttft_ms {
@@ -246,7 +227,7 @@ impl CapturePreparer {
         };
 
         // Live responses carry the exact once-parsed semantic value used by the
-        // client renderer. The fallback is reserved for WAL/dead-letter replay.
+        // client renderer. The fallback is reserved for dead-letter import.
         let semantic_response = event.semantic.or_else(|| {
             if event.streaming {
                 Some(std::sync::Arc::new(
@@ -321,10 +302,10 @@ impl CapturePreparer {
         ctx: &CallContext,
         event: CancelEvent,
     ) -> Result<PreparedCapture> {
-        let rec = crate::record::EventRecord {
-            identity: persisting_control::EventIdentity::default(),
-            seq: 0,
-            source: "capture".into(),
+        let rec = crate::record::CaptureRecord {
+            event_id: None,
+            observed_at_unix_ms: None,
+
             kind: "llm.call.cancelled".into(),
             timestamp: Some(crate::record::now_rfc3339()),
             session_id: Some(ctx.route().session_id.clone()),

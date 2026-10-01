@@ -193,3 +193,28 @@ measure all involved processes in a dedicated cgroup instead.
 
 - [pVisor design](../../docs/src/en/design/index.md)
 - [`persisting-pvisor`](../../crates/persisting-pvisor/README.md)
+
+## Guest init comparison (Apple Silicon)
+
+`guest_init.py` embeds the old C init and the Rust guest in the same signed
+libkrun runner, using release host libraries. It creates a fresh 1-vCPU,
+128-MiB VM for every sample and interleaves both variants. Readiness ends at a
+common payload's stdout marker; completion includes sync/reboot and VMM exit.
+The payload stays alive for 20 ms after the marker so stdout can drain before
+the VMM exits. Readiness excludes this delay; completion includes it.
+Neither interval includes CLI preparation, image extraction, helper preparation,
+or Run Bundle persistence. The C workspace case reconstructs the old shell
+chain, using Alpine's `/bin/mount` BusyBox applet rather than a renamed copy.
+
+Provide a prepared Alpine aarch64 rootfs, a static aarch64 C init, and firmware:
+
+```bash
+python3 benchmark/pvisor/guest_init.py \
+  --c-init target/guest-init-benchmark/c-init \
+  --rootfs target/guest-init-benchmark/rootfs \
+  --firmware target/libkrunfw/5.5.0-aarch64-apple-darwin-macos11.0/libkrunfw.5.dylib \
+  --iterations 100 --warmup 10 --output target/guest-init-benchmark/release
+```
+
+Setup/build time is excluded. `results.json` contains every sample, medians,
+p95, and hashes of the runner, both init binaries, firmware, and payload.

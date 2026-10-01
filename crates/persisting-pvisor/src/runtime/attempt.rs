@@ -21,7 +21,7 @@ use persisting_gateway::lifecycle::{
 use persisting_gateway::runtime::in_process::{InProcessCapture, InProcessRuntime};
 use persisting_gateway::runtime::run_config::snapshot_proxy_config;
 use persisting_gateway::runtime::run_env::write_run_session;
-use persisting_gateway::sink::SeqOnlySink;
+use persisting_gateway::sink::JournalObserver;
 use persisting_overlaynet::{
     BandwidthRegistry, EgressContext, EgressRuntime, InterceptionMetrics, NetworkConfig,
     NetworkPolicy,
@@ -64,7 +64,11 @@ impl AttemptSession {
             .map(|_| self.run_record.clone())
     }
 
-    pub(crate) fn teardown(mut self, exit_code: Option<i32>) -> AttemptTeardown {
+    pub(crate) fn teardown(self, exit_code: Option<i32>) -> AttemptTeardown {
+        self.teardown_inner(exit_code, true)
+    }
+
+    fn teardown_inner(mut self, exit_code: Option<i32>, allow_apply: bool) -> AttemptTeardown {
         let mut errors = Vec::new();
         let duration_ms = self.started_at.elapsed().as_millis() as u64;
         if let Some(sink) = &self.sink
@@ -106,33 +110,10 @@ impl AttemptSession {
             record
         };
 
-        if let Some(ref mut rec) = record {
-            if rec.auto_discard {
-                if let Err(err) = discard_overlay(rec) {
-                    errors.push(format!("discard OverlayFS staging: {err:#}"));
-                }
-            } else if rec.auto_apply && overlay_unmounted {
-                if let Err(err) = apply_overlay(rec) {
-                    errors.push(format!("apply OverlayFS staging: {err:#}"));
-                } else {
-                    tracing::info!(
-                        id = %rec.id,
-                        target = %rec.target.display(),
-                        "overlay auto-applied onto target"
-                    );
-                }
-            } else {
-                tracing::info!(
-                    id = %rec.id,
-                    stage = %rec.stage_dir.display(),
-                    target = %rec.target.display(),
-                    "overlay staged — review then: \
-                     `pvisor status {}` then `pvisor apply {}` or `pvisor drop {}`",
-                    rec.id,
-                    rec.id,
-                    rec.id,
-                );
-            }
+        if let Some(ref mut rec) = record
+            && let Err(err) = finalize_overlay(rec, overlay_unmounted, allow_apply)
+        {
+            errors.push(format!("finalize OverlayFS staging: {err:#}"));
         }
         self.overlay_record = record;
         if let Some(metrics) = &self.fs_metrics {
@@ -187,7 +168,7 @@ impl AttemptSession {
     ) -> anyhow::Result<()> {
         let run_id = persisting_control::RunId::new(self.run_record.run_id.clone());
         let started_at_unix_ms = self.run_record.started_at_unix_ms;
-        let mut teardown = self.teardown(None);
+        let mut teardown = self.teardown_inner(None, false);
         let mut warnings = Vec::new();
         if let Some(error) = teardown.error_message() {
             warnings.push(format!("attempt teardown after startup failure: {error}"));
@@ -222,6 +203,24 @@ impl AttemptSession {
         .write(&teardown.run_record().stage_dir())?;
         Ok(())
     }
+}
+
+// Never mutate backing data while an overlay may still be mounted. Startup
+// failures retain auto-apply effects for review because execution never began.
+fn finalize_overlay(
+    record: &mut OverlayRecord,
+    unmounted: bool,
+    allow_apply: bool,
+) -> anyhow::Result<()> {
+    if !unmounted {
+        return Ok(());
+    }
+    if record.auto_discard {
+        discard_overlay(record)?;
+    } else if record.auto_apply && allow_apply {
+        apply_overlay(record)?;
+    }
+    Ok(())
 }
 
 pub(crate) struct AttemptTeardown {
@@ -343,9 +342,11 @@ pub(crate) fn prepare_attempt(
         .canonicalize()
         .unwrap_or_else(|_| opts.capture_storage.to_path_buf());
 
-    let sink = opts
-        .sink
-        .unwrap_or_else(|| Arc::new(SeqOnlySink::new()) as Arc<dyn TrajectoryEventSink>);
+    let sink = opts.sink.unwrap_or_else(|| {
+        Arc::new(JournalObserver {
+            journal: crate::trace::Journal::memory(),
+        }) as Arc<dyn TrajectoryEventSink>
+    });
 
     let network_metrics = InterceptionMetrics::default();
     let bandwidth_registry = BandwidthRegistry::default();
@@ -1356,6 +1357,38 @@ pub(crate) fn apply_implant(process: &mut ProcessInvocation, plan: &ImplantPlan)
 
 #[cfg(test)]
 mod tests {
+
+    #[test]
+    fn finalization_retains_backing_on_unmount_or_startup_failure() {
+        let temporary = tempfile::tempdir().unwrap();
+        let target = temporary.path().join("target");
+        let stage = temporary.path().join("stage");
+        let config = persisting_gateway::config::OverlayConfig {
+            enabled: true,
+            target: Some(target.display().to_string()),
+            stage_dir: Some(stage.display().to_string()),
+            ..Default::default()
+        };
+        let record = super::resolve_overlay_workspace(&config, temporary.path(), "run-1")
+            .unwrap()
+            .unwrap();
+        let mut record =
+            super::prepare_overlay_record_mountless(&record, std::slice::from_ref(&target))
+                .unwrap();
+        std::fs::write(record.upper.path().join("value"), b"staged").unwrap();
+        record.auto_discard = true;
+        super::finalize_overlay(&mut record, false, true).unwrap();
+        assert!(record.upper.path().join("value").exists());
+        record.auto_discard = false;
+        record.auto_apply = true;
+        super::finalize_overlay(&mut record, true, false).unwrap();
+        assert!(!target.join("value").exists());
+        assert!(record.upper.path().join("value").exists());
+        record.auto_discard = true;
+        super::finalize_overlay(&mut record, true, false).unwrap();
+        assert!(!record.upper.path().exists());
+    }
+
     use super::rewrite_vm_gateway_implant;
     use persisting_control::{RunInvocation, RunSpec};
 

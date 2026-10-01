@@ -89,11 +89,8 @@ pvisor run --executor vm --rootfs image=ubuntu:24.04 -- /bin/echo hello
 不拉取镜像；macOS 上需要显式指定 Linux rootfs 或镜像。
 `--image-store DIR` 修改本地内容寻址缓存，
 `--mount SOURCE[:TARGET]:ACCESS` 暴露宿主路径，`--rootfs DIR` 指向预先准备的 Linux rootfs。
-Linux 使用 KVM；Apple Silicon macOS 使用 HVF。从源码在 macOS 构建 VM 支持还需要 Zig：
-
-```bash
-brew install zig
-```
+Linux 使用 KVM；Apple Silicon macOS 使用 HVF。guest supervisor 是静态 musl Rust ELF，
+由 Rust 自带 linker 构建，macOS 不再需要 C 交叉编译器。
 
 把这些选项当作独立的平台步骤。先完成 staged host workflow，再用已有 Run Bundle 对比不同
 执行环境的边界。

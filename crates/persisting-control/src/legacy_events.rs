@@ -1,7 +1,5 @@
-//! Storage-independent runtime event contracts shared by Persisting components.
-//!
-//! Producers such as pVisor and Gateway emit these records. Consumers decide
-//! how to persist, query, and project them.
+//! Historical v1 JSONL compatibility only. New producers use trace::Event.
+//! These types must never be used for new fact-log writes.
 
 use serde::{Deserialize, Serialize};
 use serde_json::Value;
@@ -10,10 +8,10 @@ pub use crate::time::unix_now_ms;
 
 /// Runtime identity shared by lifecycle and trajectory events.
 ///
-/// The fields are flattened into [`EventRecord`] on the wire. A storage
+/// The fields are flattened into [`LegacyEventRecord`] on the wire. A storage
 /// adapter may fill missing routing identities, but must reject conflicts.
 #[derive(Debug, Clone, Default, PartialEq, Eq, Serialize, Deserialize)]
-pub struct EventIdentity {
+pub struct LegacyEventIdentity {
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub event_id: Option<String>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
@@ -30,15 +28,15 @@ pub struct EventIdentity {
     pub producer: Option<String>,
 }
 
-/// Canonical storage-independent Agent runtime event.
+/// Historical runtime event. Missing evidence stays unknown when projecting it.
 ///
 /// `seq` orders events within the producer's scope: pVisor lifecycle events use
 /// an Attempt, while Gateway capture uses a session/storage target. Preserve
 /// routing identities when combining streams; timestamps do not define order.
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
-pub struct EventRecord {
+pub struct LegacyEventRecord {
     #[serde(flatten)]
-    pub identity: EventIdentity,
+    pub identity: LegacyEventIdentity,
     pub seq: u64,
     pub source: String,
     pub kind: String,
@@ -65,7 +63,7 @@ pub struct EventRecord {
     pub payload: Value,
 }
 
-impl EventRecord {
+impl LegacyEventRecord {
     /// Validate the stable event envelope independently of any storage engine.
     pub fn validate(&self) -> Result<(), EventValidationError> {
         if self.source.trim().is_empty() {
@@ -92,11 +90,11 @@ mod tests {
 
     #[test]
     fn identity_is_flattened_and_wire_compatible() {
-        let record = EventRecord {
-            identity: EventIdentity {
+        let record = LegacyEventRecord {
+            identity: LegacyEventIdentity {
                 event_id: Some("event-1".into()),
                 run_id: Some("run-1".into()),
-                ..EventIdentity::default()
+                ..LegacyEventIdentity::default()
             },
             seq: 0,
             source: "runtime".into(),
@@ -122,7 +120,7 @@ mod tests {
 
     #[test]
     fn validates_required_routing_fields() {
-        let mut record: EventRecord = serde_json::from_value(serde_json::json!({
+        let mut record: LegacyEventRecord = serde_json::from_value(serde_json::json!({
             "seq": 0,
             "source": "runtime",
             "kind": "run.created",

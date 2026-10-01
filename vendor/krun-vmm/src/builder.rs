@@ -948,7 +948,7 @@ pub fn build_microvm(
         )?;
     }
 
-    // We use this atomic to record the exit code set by init/init.c in the VM.
+    // We use this atomic to record the exit code set by the guest supervisor in the VM.
     let exit_code = Arc::new(AtomicI32::new(i32::MAX));
 
     let mut vmm = Vmm {

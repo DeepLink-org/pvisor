@@ -171,12 +171,12 @@ pub struct TrajectoryDeadLetterEntry {
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub root_session: Option<String>,
     #[serde(default)]
-    pub records: Vec<persisting_control::EventRecord>,
+    pub records: Vec<persisting_control::trace::Event>,
     pub error: String,
 }
 
 impl TrajectoryDeadLetterEntry {
-    pub fn decoded_records(&self) -> Result<Vec<persisting_control::EventRecord>> {
+    pub fn decoded_records(&self) -> Result<Vec<persisting_control::trace::Event>> {
         Ok(self.records.clone())
     }
 }
@@ -186,7 +186,7 @@ pub fn append_trajectory_dead_letter(
     agent_id: &str,
     session_id: &str,
     root_session: Option<&str>,
-    records: &[persisting_control::EventRecord],
+    records: &[persisting_control::trace::Event],
     error: &str,
 ) -> Result<()> {
     let entry = TrajectoryDeadLetterEntry {
@@ -369,7 +369,7 @@ impl SerializableEvent {
                 body_bytes: *body_bytes,
                 user_content: user_content.clone(),
                 body_json: body_json.clone(),
-                // WAL/dead-letter rows retain one source of truth: the exact
+                // Dead-letter diagnostics retain the exact
                 // client JSON. Replay reconstructs the typed request in prepare.
                 semantic: None,
                 model_rewritten: *model_rewritten,
@@ -413,7 +413,7 @@ impl SerializableEvent {
 
 fn resp_to_payload(bytes: &Bytes) -> RespPayload {
     if let Ok(s) = std::str::from_utf8(bytes) {
-        RespPayload::Text(s.to_string())
+        RespPayload::Text(crate::sink::redact_sensitive_wire_text(s))
     } else {
         RespPayload::Bytes(bytes.to_vec())
     }
@@ -610,10 +610,10 @@ mod tests {
             "agent",
             "sess",
             Some("run-1"),
-            &[persisting_control::EventRecord {
-                identity: Default::default(),
-                seq: 1,
-                source: "test".into(),
+            &[crate::record::CaptureRecord {
+                event_id: None,
+                observed_at_unix_ms: None,
+
                 kind: "note".into(),
                 timestamp: None,
                 session_id: Some("sess".into()),
@@ -626,7 +626,17 @@ mod tests {
                 branch: None,
                 parent_call_id: None,
                 payload: serde_json::json!({"content":"retry"}),
-            }],
+            }
+            .into_event(crate::engine::StoryContext::from_route(
+                crate::session::storage::CaptureRoute {
+                    root_session: None,
+                    session_id: "s".into(),
+                    storage_session_id: "s".into(),
+                    subagent_id: None,
+                },
+                "a",
+            ))
+            .unwrap()],
             "engine invoke failed",
         )
         .unwrap();

@@ -17,7 +17,7 @@ build profile="debug":
       release) cargo_profile=release ;;
       *) echo "expected debug or release, got: $1" >&2; exit 2 ;;
     esac
-    cargo build --locked --profile "$cargo_profile" --target-dir "{{ target_dir }}" -p persisting-pvisor --bin pvisor
+    python3 scripts/build-pvisor.py --profile "$cargo_profile" --target-dir "{{ target_dir }}"
     binary="{{ target_dir }}/$1/pvisor"
     test -x "$binary"
     if [[ "$(uname -s)" == Darwin ]]; then
@@ -102,13 +102,12 @@ test-rust *packages:
 
 # Cross-check the containerd shim for Linux; full builds need a Linux host.
 shim-check:
-    cargo check --locked -p persisting-shim --target x86_64-unknown-linux-gnu
-    cargo clippy --locked -p persisting-shim --all-targets --target x86_64-unknown-linux-gnu -- -D warnings
+    cargo check --locked -p persisting-shim --target x86_64-unknown-linux-musl
+    cargo clippy --locked -p persisting-shim --all-targets --target x86_64-unknown-linux-musl -- -D warnings
 
 # Build the static musl shim with the libkrun VM executor (needs zigbuild).
 shim-vm-build:
-    cargo zigbuild --locked --target x86_64-unknown-linux-musl --target-dir target \
-        -p persisting-shim --features vm --bin containerd-shim-pvisor-v2
+    python3 scripts/build-pvisor.py --shim-vm --profile dev --target-dir "{{ target_dir }}"
 
 # Python tests; append pytest options such as -v or -k packaging.
 test-py *args:

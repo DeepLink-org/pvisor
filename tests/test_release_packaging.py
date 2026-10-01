@@ -64,7 +64,7 @@ def test_python_wheel_uses_setuptools_and_platform_builds() -> None:
     assert 'manylinux-x86_64-image = "manylinux_2_28"' in contents
     assert 'archs = ["arm64"]' in contents
     assert "PERSISTING_CARGO_ZIGBUILD" not in contents
-    assert "cargo-zigbuild" not in contents
+    assert "cargo-zigbuild" in contents
 
 
 def test_platform_wheels_use_cibuildwheel() -> None:
@@ -320,6 +320,7 @@ def test_release_staging_resolves_firmware_before_build(
         events.append("build")
         raise AssertionError("Cargo must not run before firmware is ready")
 
+    monkeypatch.setattr(wheel_stage, "_is_macos", lambda _options: True)
     monkeypatch.setattr(wheel_stage, "_firmware_source", missing_firmware)
     monkeypatch.setattr(wheel_stage, "_build", unexpected_build)
 
@@ -362,27 +363,75 @@ def test_firmware_source_fetches_when_path_is_not_configured(
     assert name == firmware.name
 
 
-def test_cargo_command_uses_plain_build_by_default() -> None:
+def test_cargo_command_selects_static_musl_on_linux(monkeypatch):
+    monkeypatch.setattr(wheel_stage.sys, "platform", "linux")
+    monkeypatch.setattr(wheel_stage.platform, "machine", lambda: "x86_64")
     command = wheel_stage._cargo_command(wheel_stage.BuildOptions())
-
-    assert command[:2] == ["cargo", "build"]
-    assert "--target" not in command
-
-
-def test_manylinux_glibc_requirement_accepts_2_28() -> None:
-    symbols = """
-    0000000000000000  0 FUNC    GLOBAL DEFAULT  UND memcpy@GLIBC_2.2.5
-    0000000000000000  0 FUNC    GLOBAL DEFAULT  UND copy_file_range@GLIBC_2.27
-    0000000000000000  0 FUNC    GLOBAL DEFAULT  UND statx@GLIBC_2.28
-    """
-    assert wheel_verify.glibc_requirement(symbols) == (2, 28, 0)
-    assert wheel_verify.glibc_requirement(symbols) <= wheel_verify.MANYLINUX_MAX_GLIBC
+    assert command[:2] == ["cargo", "zigbuild"]
+    assert command[command.index("--target") + 1] == "x86_64-unknown-linux-musl"
+    with pytest.raises(RuntimeError, match="unsupported wheel target"):
+        wheel_stage._normalize_target("x86_64-unknown-linux-gnu")
 
 
-def test_manylinux_glibc_requirement_detects_newer_than_2_28() -> None:
-    symbols = """
-    0000000000000000  0 FUNC    GLOBAL DEFAULT  UND statx@GLIBC_2.28
-    0000000000000000  0 FUNC    GLOBAL DEFAULT  UND fchmodat2@GLIBC_2.38
-    """
-    assert wheel_verify.glibc_requirement(symbols) == (2, 38, 0)
-    assert wheel_verify.glibc_requirement(symbols) > wheel_verify.MANYLINUX_MAX_GLIBC
+@pytest.mark.parametrize(
+    "headers,dynamic",
+    [
+        ("INTERP", ""),
+        ("LOAD", "(NEEDED) Shared library: [libc.so.6]"),
+    ],
+)
+def test_static_linux_rejects_dynamic_dependencies(monkeypatch, headers, dynamic):
+    monkeypatch.setattr(
+        wheel_verify, "_run", lambda command: headers if "-l" in command else dynamic
+    )
+    with pytest.raises(RuntimeError, match="fully static"):
+        wheel_verify._assert_static_linux("pvisor", Path("pvisor"))
+
+
+def test_static_linux_accepts_static_pie(monkeypatch):
+    monkeypatch.setattr(
+        wheel_verify, "_run", lambda command: "LOAD DYNAMIC" if "-l" in command else "(RELACOUNT)"
+    )
+    wheel_verify._assert_static_linux("pvisor", Path("pvisor"))
+
+
+def test_linux_wheel_embeds_firmware(monkeypatch, tmp_path):
+    artifact = tmp_path / "pvisor"
+    artifact.write_bytes(b"static pvisor with embedded kernel")
+    monkeypatch.setattr(wheel_stage, "WHEEL_DATA", tmp_path / "wheel-data")
+    monkeypatch.setattr(wheel_stage, "_build", lambda options: {"pvisor": artifact})
+    scripts = wheel_stage.stage_wheel_binaries(
+        wheel_stage.BuildOptions(target="x86_64-unknown-linux-musl")
+    )
+    assert {p.name for p in scripts.iterdir()} == {"pvisor", "libkrunfw.SOURCE"}
+
+
+def test_shim_vm_build_uses_static_musl():
+    command = wheel_stage._cargo_command(
+        wheel_stage.BuildOptions(target="x86_64-unknown-linux-musl"), shim_vm=True
+    )
+    assert command[:2] == ["cargo", "zigbuild"]
+    assert command[command.index("-p") + 1] == "persisting-shim"
+    assert command[command.index("--features") + 1] == "vm"
+
+
+def test_linux_wheel_requires_no_firmware_shared_library(tmp_path):
+    wheel = tmp_path / "pvisor-1.2.3-py3-none-manylinux_2_28_x86_64.whl"
+    _write_wheel(wheel, "1.2.3")
+    with zipfile.ZipFile(wheel, "a") as archive:
+        binary = zipfile.ZipInfo("pvisor-1.2.3.data/scripts/pvisor")
+        binary.external_attr = 0o100755 << 16
+        archive.writestr(binary, b"static ELF")
+    version, scripts, firmware = wheel_verify._wheel_contents(wheel)
+    assert version == "1.2.3" and set(scripts) == {"pvisor"} and firmware is None
+    with zipfile.ZipFile(wheel, "a") as archive:
+        archive.writestr("pvisor-1.2.3.data/scripts/libkrunfw.so.5", b"shared library")
+    with pytest.raises(RuntimeError, match="expected 0 libkrunfw"):
+        wheel_verify._wheel_contents(wheel)
+
+
+def test_native_macos_build_keeps_host_target(monkeypatch):
+    monkeypatch.setattr(wheel_stage.sys, "platform", "darwin")
+    monkeypatch.setattr(wheel_stage.platform, "machine", lambda: "x86_64")
+    command = wheel_stage._cargo_command(wheel_stage.BuildOptions())
+    assert command[:2] == ["cargo", "build"] and "--target" not in command

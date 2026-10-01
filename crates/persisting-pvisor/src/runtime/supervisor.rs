@@ -11,7 +11,7 @@ use persisting_gateway::config::ProxyConfig;
 use std::path::PathBuf;
 use std::sync::Arc;
 
-/// Runtime features and strong capability enforcement available for one Attempt.
+/// Runtime mechanisms available on this host, not the installed controls for a Run.
 ///
 /// `network` and `filesystem` report non-bypassable policy enforcement, not
 /// proxy injection or a staged filesystem projection.
@@ -123,7 +123,31 @@ impl std::fmt::Debug for RuntimeSupervisorBuilder {
     }
 }
 
+struct SharedJournalObserver {
+    journal: crate::trace::Journal,
+    observer: Option<Arc<dyn TrajectoryEventSink>>,
+}
+impl persisting_gateway::sink::CaptureEventObserver for SharedJournalObserver {
+    fn observe(&self, event: &persisting_control::trace::Event) -> anyhow::Result<()> {
+        match &self.observer {
+            Some(observer) => observer.observe(event),
+            None => Ok(()),
+        }
+    }
+    fn journal(&self) -> Option<crate::trace::Journal> {
+        Some(self.journal.clone())
+    }
+}
+
 impl RuntimeSupervisorBuilder {
+    pub(crate) fn journal(mut self, journal: crate::trace::Journal) -> Self {
+        self.sink = Some(Arc::new(SharedJournalObserver {
+            journal,
+            observer: self.sink.take(),
+        }));
+        self
+    }
+
     pub fn new() -> Self {
         Self::default()
     }

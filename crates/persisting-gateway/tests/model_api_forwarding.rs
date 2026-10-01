@@ -11,7 +11,7 @@ use axum::response::Response;
 use axum::routing::post;
 use persisting_gateway::config::ProxyConfig;
 use persisting_gateway::serve_with_listeners_and_shutdown;
-use persisting_gateway::sink::SeqOnlySink;
+use persisting_gateway::sink::NoopCaptureObserver;
 use serde_json::{Value, json};
 use tokio::sync::oneshot;
 
@@ -488,7 +488,8 @@ upstream = {upstream:?}
     .expect("Gateway config");
     let storage = tempfile::tempdir().expect("Gateway state directory");
     let storage_path = storage.path().to_path_buf();
-    let sink: Arc<dyn persisting_gateway::sink::CaptureEventSink> = Arc::new(SeqOnlySink::new());
+    let sink: Arc<dyn persisting_gateway::sink::CaptureEventObserver> =
+        Arc::new(NoopCaptureObserver::new());
     let (stop_tx, stop_rx) = oneshot::channel();
     let task = tokio::spawn(async move {
         serve_with_listeners_and_shutdown(

@@ -14,7 +14,7 @@ use persisting_control::{
 };
 use persisting_gateway::config::ProxyConfig;
 use persisting_gateway::runtime::in_process::{InProcessCapture, InProcessRuntime};
-use persisting_gateway::sink::SeqOnlySink;
+use persisting_gateway::sink::NoopCaptureObserver;
 use persisting_gateway::{serve_with_runtime_control, serve_with_shutdown_and_ready};
 use tokio::sync::oneshot;
 
@@ -248,7 +248,8 @@ async fn spawn_proxy(toml: &str) -> (String, tempfile::TempDir, oneshot::Sender<
     let (ready_tx, ready_rx) = oneshot::channel();
     let (stop_tx, stop_rx) = oneshot::channel::<()>();
     let storage = tmp.path().to_path_buf();
-    let sink: Arc<dyn persisting_gateway::sink::CaptureEventSink> = Arc::new(SeqOnlySink::new());
+    let sink: Arc<dyn persisting_gateway::sink::CaptureEventObserver> =
+        Arc::new(NoopCaptureObserver::new());
     tokio::spawn(async move {
         let _ =
             serve_with_shutdown_and_ready(cfg, storage, sink, false, Some(ready_tx), async move {
@@ -274,7 +275,8 @@ async fn spawn_proxy_with_controller(
     let (ready_tx, ready_rx) = oneshot::channel();
     let (stop_tx, stop_rx) = oneshot::channel::<()>();
     let storage = tmp.path().to_path_buf();
-    let sink: Arc<dyn persisting_gateway::sink::CaptureEventSink> = Arc::new(SeqOnlySink::new());
+    let sink: Arc<dyn persisting_gateway::sink::CaptureEventObserver> =
+        Arc::new(NoopCaptureObserver::new());
     tokio::spawn(async move {
         let _ = serve_with_runtime_control(
             cfg,
@@ -1037,7 +1039,7 @@ allowed_hosts = ["127.0.0.1"]
     let proxy = InProcessCapture::start_with_runtime(
         config,
         storage.path().to_path_buf(),
-        Arc::new(SeqOnlySink::new()),
+        Arc::new(NoopCaptureObserver::new()),
         false,
         InProcessRuntime {
             gateway_enabled: false,

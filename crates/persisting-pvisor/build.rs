@@ -6,6 +6,12 @@ fn main() {
     println!("cargo:rerun-if-env-changed=PERSISTING_KRUNFW_PATH");
     println!("cargo:rerun-if-env-changed=PERSISTING_KRUNFW_KERNEL_BUNDLE");
 
+    if env::var("CARGO_PKG_NAME").as_deref() == Ok("persisting-shim")
+        && env::var_os("CARGO_FEATURE_VM").is_none()
+    {
+        return;
+    }
+
     if env::var("TARGET").as_deref() != Ok("x86_64-unknown-linux-musl") {
         return;
     }

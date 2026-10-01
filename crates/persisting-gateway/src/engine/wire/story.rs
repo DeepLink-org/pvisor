@@ -40,12 +40,17 @@ impl StoryScope {
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub(crate) enum StoryCommand {
     /// Append one record to the event sink and sync live markdown.
-    PersistRecord {
+    Restore {
         scope: StoryScope,
-        /// JSON-encoded [`crate::record::EventRecord`].
         record_bytes: Vec<u8>,
     },
-    /// Upsert streaming assistant draft in live markdown only (no sink append).
+    PersistRecord {
+        scope: StoryScope,
+        /// JSON-encoded [`crate::record::CaptureRecord`].
+        record_bytes: Vec<u8>,
+    },
+    /// Legacy projection command, retained for wire compatibility. Canonical
+    /// event capture currently ignores drafts; no live markdown writer is installed.
     UpsertDraft {
         scope: StoryScope,
         draft_bytes: Vec<u8>,
@@ -73,6 +78,7 @@ pub(crate) enum StoryReply {
 
 impl StoryCommand {
     pub fn persist_record(scope: StoryScope, record_bytes: Vec<u8>) -> Self {
+        let record_bytes = stamp_record(record_bytes);
         Self::PersistRecord {
             scope,
             record_bytes,
@@ -96,7 +102,8 @@ impl StoryCommand {
 
     pub fn scope(&self) -> &StoryScope {
         match self {
-            Self::PersistRecord { scope, .. }
+            Self::Restore { scope, .. }
+            | Self::PersistRecord { scope, .. }
             | Self::UpsertDraft { scope, .. }
             | Self::Snapshot { scope } => scope,
             Self::Flush | Self::LocalSnapshot => panic!("command has no scope"),
@@ -109,6 +116,19 @@ impl StoryCommand {
 pub(crate) struct DraftPayload {
     pub record_bytes: Vec<u8>,
     pub assistant_content: String,
+}
+
+fn stamp_record(bytes: Vec<u8>) -> Vec<u8> {
+    // Inputs originate from typed constructors; invalid wire data is left for
+    // the receiving actor to reject, rather than panic at this boundary.
+    let Ok(mut record) = serde_json::from_slice::<crate::record::CaptureRecord>(&bytes) else {
+        return bytes;
+    };
+    crate::record::ensure_timestamp(&mut record);
+    if record.event_id.is_none() {
+        record.event_id = Some(uuid::Uuid::new_v4().to_string());
+    }
+    serde_json::to_vec(&record).unwrap_or(bytes)
 }
 
 #[cfg(test)]

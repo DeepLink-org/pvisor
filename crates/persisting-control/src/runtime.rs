@@ -678,6 +678,8 @@ pub struct AttemptInfo {
     #[serde(default)]
     pub lease_epoch: u64,
     pub number: u32,
+    /// Admission-time executor/control plan. This is not runtime attestation;
+    /// final Run Bundle evidence accounts for setup failures and observations.
     pub executor: ExecutorDescriptor,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub started_at_unix_ms: Option<u64>,

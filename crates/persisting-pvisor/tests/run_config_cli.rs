@@ -554,3 +554,33 @@ fn removed_run_options_stay_off_the_cli_surface() {
         );
     }
 }
+
+#[test]
+fn recording_uses_one_fact_journal_with_execution_phases() {
+    let dir = tempfile::tempdir().unwrap();
+    let recording = dir.path().join("recording");
+    let output = Command::new(env!("CARGO_BIN_EXE_pvisor"))
+        .args(["run", "--record-destination"])
+        .arg(&recording)
+        .args(["--", "/bin/sh", "-c", "exit 0"])
+        .current_dir(dir.path())
+        .env("PERSISTING_RUN_HOME", dir.path().join("runs"))
+        .output()
+        .unwrap();
+    assert!(
+        output.status.success(),
+        "{}",
+        String::from_utf8_lossy(&output.stderr)
+    );
+    let records = persisting_journal::Journal::read(&recording.join("events.trace.jsonl")).unwrap();
+    assert!(records.iter().any(|r| matches!(
+        r.event.data,
+        persisting_control::trace::Fact::Requested { .. }
+    )));
+    assert!(records.iter().any(|r| matches!(
+        r.event.data,
+        persisting_control::trace::Fact::Completed { .. }
+    )));
+    assert!(!recording.join("events.jsonl").exists());
+    assert!(!recording.join("events.wal.jsonl").exists());
+}

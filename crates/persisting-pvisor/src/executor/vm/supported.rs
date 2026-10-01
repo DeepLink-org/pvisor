@@ -23,7 +23,6 @@ const RUNNER_SPEC_ENV: &str = "PERSISTING_KRUN_RUNNER_SPEC";
 const WORKSPACE_TAG: &str = "pvisor-workspace";
 const NETWORK_FD_ENV: &str = "PERSISTING_KRUN_NETWORK_FD";
 const NETWORK_CHILD_FD: RawFd = 198;
-const NET_FLAG_DHCP_CLIENT: u32 = 1 << 1;
 
 #[cfg(all(target_os = "linux", target_arch = "x86_64"))]
 fn needs_krun_enomem_workaround() -> bool {
@@ -64,8 +63,7 @@ struct RunnerSpec {
     root: OverlayDeviceSpec,
     workspace: Option<OverlayDeviceSpec>,
     workspace_target: Option<PathBuf>,
-    mount_helper: Option<PathBuf>,
-    guest: GuestSpec,
+    guest: persisting_guest::GuestConfig,
     cpus: u8,
     memory_mib: u32,
     library_dir: Option<PathBuf>,
@@ -153,14 +151,6 @@ fn protect_overlay_backing(
         }
     }
     Ok(())
-}
-
-#[derive(Debug, Serialize, Deserialize)]
-struct GuestSpec {
-    program: String,
-    args: Vec<String>,
-    env: BTreeMap<String, String>,
-    cwd: PathBuf,
 }
 
 impl VmExecutor {
@@ -536,58 +526,18 @@ impl RunExecutor for VmExecutor {
                 }
             }
         }
-        let guest = GuestSpec {
-            program: invocation.program.clone(),
-            args: invocation.args.clone(),
+        let guest = guest_config(
+            &invocation.program,
+            &invocation.args,
             env,
-            cwd: guest_cwd,
-        };
-        let mount_helper_guest = if workspace_target.is_some() {
-            let source = match guest_mount_program(&root) {
-                Some(path) => path,
-                None => {
-                    return failed_to_start(
-                        &spec,
-                        context.attempt_id(),
-                        started_at,
-                        format!(
-                            "libkrun guest rootfs does not contain mount: {}",
-                            root.display()
-                        ),
-                    );
-                }
-            };
-            let name = format!(".pvisor-mount-{}", uuid::Uuid::new_v4().simple());
-            let host = root_overlay.upper.join(&name);
-            if let Err(error) = copy_guest_mount_program(&source, &host) {
-                return failed_to_start(
-                    &spec,
-                    context.attempt_id(),
-                    started_at,
-                    format!("prepare guest mount helper: {error:#}"),
-                );
-            }
-            Some(Path::new("/").join(name))
-        } else {
-            None
-        };
-        let helper_name = format!(".pvisor-exec-{}.sh", uuid::Uuid::new_v4().simple());
-        let helper_host = root_overlay.upper.join(&helper_name);
-        if let Err(error) = write_guest_helper(
-            &helper_host,
-            workspace_target.as_deref(),
-            mount_helper_guest.as_deref(),
-            &guest,
+            guest_cwd,
+            workspace_target.clone(),
             &spec.runtime.resource_limits,
-        ) {
-            return failed_to_start(
-                &spec,
-                context.attempt_id(),
-                started_at,
-                format!("create guest execution helper: {error:#}"),
-            );
+            vm_network_enabled,
+        );
+        if let Err(error) = guest.command() {
+            return failed_to_start(&spec, context.attempt_id(), started_at, error.to_string());
         }
-        let helper_guest = Path::new("/").join(helper_name);
         let requested_memory_mib = spec
             .runtime
             .resource_limits
@@ -598,7 +548,6 @@ impl RunExecutor for VmExecutor {
             root: root_overlay,
             workspace,
             workspace_target: workspace_target.clone(),
-            mount_helper: Some(helper_guest),
             guest,
             cpus: self.settings.cpus as u8,
             memory_mib: requested_memory_mib
@@ -734,18 +683,7 @@ impl RunExecutor for VmExecutor {
                     retryable: false,
                 }),
             ),
-            End::Exited(Ok(status)) if status.code().is_some() => {
-                (RunState::Completed, status.code(), None)
-            }
-            End::Exited(Ok(status)) => (
-                RunState::Failed,
-                None,
-                Some(RunFailure {
-                    kind: RunFailureKind::Infrastructure,
-                    message: format!("libkrun runner terminated by {status}"),
-                    retryable: false,
-                }),
-            ),
+            End::Exited(Ok(status)) => guest_exit_outcome(status),
             End::Exited(Err(error)) => (
                 RunState::Failed,
                 None,
@@ -785,6 +723,28 @@ impl RunExecutor for VmExecutor {
     }
 }
 
+fn guest_exit_outcome(
+    status: std::process::ExitStatus,
+) -> (RunState, Option<i32>, Option<RunFailure>) {
+    if status.success() {
+        return (RunState::Completed, status.code(), None);
+    }
+    let kind = if status.code().is_some() {
+        RunFailureKind::ProcessExit
+    } else {
+        RunFailureKind::Infrastructure
+    };
+    (
+        RunState::Failed,
+        status.code(),
+        Some(RunFailure {
+            kind,
+            message: format!("libkrun guest exited with {status}"),
+            retryable: false,
+        }),
+    )
+}
+
 /// Handle the self-exec libkrun runner.
 /// Returns `true` when the current process was consumed by an internal mode.
 pub fn run_internal_if_requested() -> anyhow::Result<bool> {
@@ -822,22 +782,7 @@ fn run_linked_krun(spec: RunnerSpec) -> anyhow::Result<()> {
         check_krun(krun::krun_set_log_level(5), "krun_set_log_level")?;
     }
     let workspace_tag = CString::new(WORKSPACE_TAG)?;
-    let helper = spec
-        .mount_helper
-        .as_deref()
-        .ok_or_else(|| anyhow::anyhow!("libkrun guest execution helper is missing"))?;
-    let program = path_cstring(helper)?;
-    let workdir = CString::new("/")?;
-    // libkrun 1.19 serializes argv and env through the kernel command line
-    // without escaping embedded quotes. The helper contains the exact
-    // invocation instead, so only its quote-free path crosses that boundary.
-    let argv = Vec::<CString>::new();
-    let mut argv_ptrs = argv.iter().map(|value| value.as_ptr()).collect::<Vec<_>>();
-    argv_ptrs.push(std::ptr::null());
-    let env = Vec::<CString>::new();
-    let mut env_ptrs = env.iter().map(|value| value.as_ptr()).collect::<Vec<_>>();
-    env_ptrs.push(std::ptr::null());
-
+    let guest_config = serde_json::to_vec(&spec.guest)?;
     let ctx = check_ctx(krun::krun_create_ctx(), "krun_create_ctx")?;
     check_krun(
         krun::krun_set_vm_config(ctx, spec.cpus, spec.memory_mib),
@@ -857,6 +802,20 @@ fn run_linked_krun(spec: RunnerSpec) -> anyhow::Result<()> {
         "krun_set_embedded_kernel",
     )?;
     add_krun_overlay(ctx, "/dev/root", &spec.root, 1 << 29)?;
+    check_krun(
+        unsafe {
+            krun::krun_fs_add_overlay_file(
+                ctx,
+                c"/dev/root".as_ptr(),
+                c"/.pvisor-guest.json".as_ptr(),
+                guest_config.as_ptr(),
+                guest_config.len(),
+                0o400,
+                true,
+            )
+        },
+        "krun_fs_add_overlay_file(guest config)",
+    )?;
     if let Some(workspace) = &spec.workspace {
         add_krun_overlay(ctx, workspace_tag.to_str()?, workspace, 0)?;
     }
@@ -874,7 +833,7 @@ fn run_linked_krun(spec: RunnerSpec) -> anyhow::Result<()> {
                     fd,
                     persisting_overlaynet::vm::VM_MAC.as_ptr(),
                     0,
-                    NET_FLAG_DHCP_CLIENT,
+                    0,
                 )
             },
             "krun_add_net_unixstream",
@@ -888,16 +847,6 @@ fn run_linked_krun(spec: RunnerSpec) -> anyhow::Result<()> {
         "krun_disable_implicit_vsock",
     )?;
     check_krun(krun::krun_add_vsock(ctx, 0), "krun_add_vsock")?;
-    check_krun(
-        unsafe { krun::krun_set_workdir(ctx, workdir.as_ptr()) },
-        "krun_set_workdir",
-    )?;
-    check_krun(
-        unsafe {
-            krun::krun_set_exec(ctx, program.as_ptr(), argv_ptrs.as_ptr(), env_ptrs.as_ptr())
-        },
-        "krun_set_exec",
-    )?;
     let started = krun::krun_start_enter(ctx);
     #[cfg(target_os = "macos")]
     if started == -libc::EINVAL {
@@ -962,99 +911,44 @@ fn add_krun_overlay(
     )
 }
 
-fn write_guest_helper(
-    path: &Path,
-    workspace_target: Option<&Path>,
-    mount_helper: Option<&Path>,
-    guest: &GuestSpec,
+fn guest_config(
+    program: &str,
+    args: &[String],
+    env: BTreeMap<String, String>,
+    cwd: PathBuf,
+    workspace: Option<PathBuf>,
     limits: &ResourceLimits,
-) -> anyhow::Result<()> {
-    use std::os::unix::fs::PermissionsExt;
-
-    let mut script = String::from("#!/bin/sh\nset -eu\n");
-    if let Some(target) = workspace_target {
-        let mount_helper =
-            mount_helper.ok_or_else(|| anyhow::anyhow!("workspace mount helper is missing"))?;
-        script.push_str(&shell_quote(&mount_helper.to_string_lossy())?);
-        script.push_str(" -t virtiofs pvisor-workspace ");
-        script.push_str(&shell_quote(&target.to_string_lossy())?);
-        script.push('\n');
+    network: bool,
+) -> persisting_guest::GuestConfig {
+    let mut rlimits = BTreeMap::new();
+    for (name, value) in [
+        ("RLIMIT_AS", limits.memory_bytes),
+        ("RLIMIT_NPROC", limits.processes),
+        (
+            "RLIMIT_CPU",
+            limits.cpu_time_ms.map(|ms| ms.div_ceil(1_000)),
+        ),
+        ("RLIMIT_NOFILE", limits.open_files),
+        ("RLIMIT_FSIZE", limits.file_size_bytes),
+    ] {
+        if let Some(value) = value {
+            rlimits.insert(name.into(), (value, value));
+        }
     }
-    if let Some(bytes) = limits.memory_bytes {
-        script.push_str(&format!("ulimit -v {}\n", bytes.div_ceil(1024)));
+    persisting_guest::GuestConfig {
+        argv: std::iter::once(program.to_owned())
+            .chain(args.iter().cloned())
+            .collect(),
+        env,
+        cwd,
+        workspace,
+        limits: rlimits,
+        network: network.then(|| persisting_guest::NetworkConfig {
+            address: persisting_overlaynet::vm::GUEST_IPV4.octets(),
+            gateway: persisting_overlaynet::vm::ROUTER_IPV4.octets(),
+        }),
+        agent: None,
     }
-    if let Some(processes) = limits.processes {
-        script.push_str(&format!("ulimit -u {processes}\n"));
-    }
-    if let Some(milliseconds) = limits.cpu_time_ms {
-        script.push_str(&format!("ulimit -t {}\n", milliseconds.div_ceil(1_000)));
-    }
-    if let Some(open_files) = limits.open_files {
-        script.push_str(&format!("ulimit -n {open_files}\n"));
-    }
-    if let Some(bytes) = limits.file_size_bytes {
-        script.push_str(&format!("ulimit -f {}\n", bytes.div_ceil(512)));
-    }
-    // libkrun starts interactive guests on /dev/console. Its file descriptor
-    // accepts terminal I/O, but ttyname(3) cannot identify it as /dev/hvc0.
-    // Reopen only terminal-backed streams so redirected and captured I/O keep
-    // their separate virtio-console ports.
-    script.push_str("if [ -c /dev/hvc0 ]; then\n");
-    script.push_str("  if [ -t 0 ]; then exec 0</dev/hvc0; fi\n");
-    script.push_str("  if [ -t 1 ]; then exec 1>/dev/hvc0; fi\n");
-    script.push_str("  if [ -t 2 ]; then exec 2>/dev/hvc0; fi\n");
-    script.push_str("fi\n");
-    script.push_str("rm -f /init.krun \"$0\"");
-    if let Some(mount_helper) = mount_helper {
-        script.push(' ');
-        script.push_str(&shell_quote(&mount_helper.to_string_lossy())?);
-    }
-    script.push_str("\ncd ");
-    script.push_str(&shell_quote(&guest.cwd.to_string_lossy())?);
-    // The guest init may start the helper without PATH. Use the conventional
-    // absolute location so environment sanitization does not depend on it.
-    script.push_str("\nexec /usr/bin/env -i");
-    for (key, value) in &guest.env {
-        script.push(' ');
-        script.push_str(&shell_quote(&format!("{key}={value}"))?);
-    }
-    script.push(' ');
-    script.push_str(&shell_quote(&guest.program)?);
-    for argument in &guest.args {
-        script.push(' ');
-        script.push_str(&shell_quote(argument)?);
-    }
-    script.push('\n');
-    std::fs::write(path, script)?;
-    std::fs::set_permissions(path, std::fs::Permissions::from_mode(0o700))?;
-    Ok(())
-}
-
-fn guest_mount_program(root: &Path) -> Option<PathBuf> {
-    ["bin/mount", "usr/bin/mount", "sbin/mount", "usr/sbin/mount"]
-        .into_iter()
-        .map(|relative| root.join(relative))
-        .find(|path| path.is_file())
-}
-
-fn copy_guest_mount_program(source: &Path, destination: &Path) -> anyhow::Result<()> {
-    use std::os::unix::fs::PermissionsExt;
-
-    std::fs::copy(source, destination)?;
-    // Host distributions commonly install mount setuid-root. The rootless
-    // passthrough cannot preserve its owner, so executing that file would
-    // switch guest root to the mapped host uid. A private non-setuid copy
-    // keeps the already-root guest credentials and can perform the mount.
-    std::fs::set_permissions(destination, std::fs::Permissions::from_mode(0o700))?;
-    Ok(())
-}
-
-fn shell_quote(value: &str) -> anyhow::Result<String> {
-    anyhow::ensure!(
-        !value.as_bytes().contains(&0),
-        "guest command and environment cannot contain NUL bytes"
-    );
-    Ok(format!("'{}'", value.replace('\'', "'\"'\"'")))
 }
 
 fn failed_to_start(
@@ -1137,6 +1031,19 @@ fn check_krun(value: i32, operation: &str) -> anyhow::Result<()> {
 
 #[cfg(test)]
 mod tests {
+    #[test]
+    fn vm_nonzero_exit_is_failed() {
+        use std::os::unix::process::ExitStatusExt;
+        let (state, code, failure) = guest_exit_outcome(std::process::ExitStatus::from_raw(1 << 8));
+        assert_eq!(state, RunState::Failed);
+        assert_eq!(code, Some(1));
+        assert_eq!(failure.unwrap().kind, RunFailureKind::ProcessExit);
+        assert_eq!(
+            guest_exit_outcome(std::process::ExitStatus::from_raw(0)).0,
+            RunState::Completed
+        );
+    }
+
     use super::*;
 
     #[cfg(all(target_os = "linux", target_arch = "x86_64"))]
@@ -1205,84 +1112,24 @@ mod tests {
     }
 
     #[test]
-    fn guest_helper_preserves_quoted_arguments_and_environment() {
-        let temporary = tempfile::tempdir().unwrap();
-        let helper = temporary.path().join("guest-helper.sh");
-        let environment_value = "space ' single \" double\nnewline";
-        let argument_value = "argument ' with \" quotes";
-        let guest = GuestSpec {
-            program: "/bin/sh".into(),
-            args: vec![
-                "-c".into(),
-                "test -z \"${HOST_MARKER+x}\" || exit 41; printf '%s\\n%s' \"$COMPLEX\" \"$0\" > result".into(),
-                argument_value.into(),
-            ],
-            env: BTreeMap::from([("COMPLEX".into(), environment_value.into())]),
-            cwd: temporary.path().to_path_buf(),
-        };
-        write_guest_helper(&helper, None, None, &guest, &ResourceLimits::default()).unwrap();
-
-        let status = std::process::Command::new(&helper)
-            .env("HOST_MARKER", "must-not-leak")
-            .status()
-            .unwrap();
-        assert!(status.success());
-        assert_eq!(
-            std::fs::read_to_string(temporary.path().join("result")).unwrap(),
-            format!("{environment_value}\n{argument_value}")
-        );
-    }
-
-    #[test]
-    fn guest_helper_applies_open_file_limit_to_the_command() {
-        let temporary = tempfile::tempdir().unwrap();
-        let helper = temporary.path().join("guest-helper.sh");
-        let guest = GuestSpec {
-            program: "/bin/sh".into(),
-            args: vec!["-c".into(), "ulimit -n > limit.txt".into()],
-            env: BTreeMap::new(),
-            cwd: temporary.path().to_path_buf(),
-        };
-        write_guest_helper(
-            &helper,
+    fn guest_config_carries_limits_without_shell_unit_conversion() {
+        let config = guest_config(
+            "/bin/true",
+            &[],
+            BTreeMap::new(),
+            PathBuf::from("/"),
             None,
-            None,
-            &guest,
             &ResourceLimits {
                 open_files: Some(32),
+                memory_bytes: Some(4097),
+                cpu_time_ms: Some(1001),
                 ..ResourceLimits::default()
             },
-        )
-        .unwrap();
-        assert!(
-            std::process::Command::new(helper)
-                .status()
-                .unwrap()
-                .success()
+            true,
         );
-        assert_eq!(
-            std::fs::read_to_string(temporary.path().join("limit.txt"))
-                .unwrap()
-                .trim(),
-            "32"
-        );
-    }
-
-    #[test]
-    fn guest_mount_copy_strips_privilege_bits() {
-        use std::os::unix::fs::{MetadataExt, PermissionsExt};
-
-        let temporary = tempfile::tempdir().unwrap();
-        let source = temporary.path().join("mount");
-        let destination = temporary.path().join("mount-helper");
-        std::fs::write(&source, b"mount").unwrap();
-        std::fs::set_permissions(&source, std::fs::Permissions::from_mode(0o4755)).unwrap();
-
-        copy_guest_mount_program(&source, &destination).unwrap();
-
-        assert_eq!(
-            std::fs::metadata(destination).unwrap().mode() & 0o7777,
-            0o700
-        );
+        assert_eq!(config.limits["RLIMIT_NOFILE"], (32, 32));
+        assert_eq!(config.limits["RLIMIT_AS"], (4097, 4097));
+        assert_eq!(config.limits["RLIMIT_CPU"], (2, 2));
+        assert!(config.network.is_some());
     }
 }

@@ -147,19 +147,22 @@ documented cases share its release build and isolation prerequisites. Network
 and Gateway examples run in a separate job.
 
 The shared setup action installs Python, uv, and just. Jobs opt into Rust,
-nextest, and macOS Zig only as needed. Wheel platforms live in one reusable
+nextest, and the guest Rust target as needed. Linux Rust jobs also install cargo-zigbuild. Wheel platforms live in one reusable
 workflow. PR documentation builds cannot cancel a Pages deployment.
 
 ## Build environment
 
 The repository uses the stable toolchain from `rust-toolchain.toml`, the default
 LLVM backend, and the platform linker. Install nextest `0.9.137`, or use the
-repository CI setup action. macOS VM builds also require Zig.
+repository CI setup action. The guest supervisor is a static Linux musl Rust
+binary built with Rust’s bundled linker; macOS VM builds do not need Zig.
 
 `CARGO_TARGET_DIR` selects the native build directory. The build, install,
 smoke, example, and case tasks use the same location. Wheel verification uses a
 fresh staging directory, so an older wheel in `dist/` cannot satisfy the check.
-Linux release wheels use manylinux_2_28 (glibc 2.28).
+Linux CLI builds use static musl and embed the VM kernel. Install Zig,
+`cargo-zigbuild`, and `rustup target add x86_64-unknown-linux-musl`.
+Linux release wheels retain manylinux_2_28 for glibc Python installers.
 
 Documentation tasks use an isolated uv environment with the same pinned
 Zensical version as CI. They do not require a separate docs virtual environment.

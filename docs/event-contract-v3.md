@@ -100,9 +100,29 @@ Volatile/LocalSync。文件头为 `pvisor.trace/3`，旧草稿 journal 明确拒
 
 ## 6. 接入状态与检查
 
-新执行器及 journal 已实现这套定义；已有 `persisting_control::events` v1 记录和各驱动
-生产入口尚未迁移。不能以新 Event 的存在推断已有系统调用已获得新核心覆盖。
+生产 Run、Gateway 捕获和 replay 的新事件统一使用 `trace::Event`；事实持久化统一使用
+`persisting-journal::Journal`。pVisor 的 `trace` 模块重导出同一实现。Run 与内嵌 Gateway
+共享 Journal，正式输出文件默认叫 `events.trace.jsonl`，文件头仍为 `pvisor.trace/3`。
 
-运行 [IR 示例](pvisor-ir.md) 可生成文件读取及 mock 改写的真实 trace，并通过
-`Journal::read` 读取和校验。测试覆盖原请求保持、改写证据、派发链、结果类型、
-取消、审计缺口、提交幂等、并发位置、断尾恢复、完整损坏和因果环。
+Run 将 Context、Requested、Rewritten、Dispatched、Completed 写成独立的因果事实；
+生命周期、文件系统统计和网络统计使用领域 Observation。Gateway 使用带版本的
+CaptureObservation 载荷，保留 story 路由、call 关联和已脱敏内容，不构造虚假的 IR 操作。
+这不表示所有 FUSE 操作或网络包都已获得逐条 Core 覆盖。
+
+Gateway 的有界队列仅接受工作，不提供持久化承诺。Story 和 SessionIndex 在 Journal
+提交后更新；重启直接读取已提交事实重建投影，不重跑 HTTP 请求或准备命令。观察者是
+提交后的通知，观察者失败不能撤销事实或把成功提交报告为未提交。正常关闭等待消费者退出，
+提交失败或队列拒绝通过 flush/shutdown 报告。实时订阅同样来自提交后的 Journal 通知；
+滞后读者从 Journal 恢复，幂等重试不重复通知。
+
+旧 EventRecord 只存在于 `legacy_events` 的历史读取契约中，不再从 control 根模块导出。
+Gateway 的 `read_capture_records` 可读取关闭的正式 Journal 或旧 JSONL，返回展示投影，
+不补造缺失的执行/因果证据。旧命令 WAL 已删除；检测到非空历史 WAL 时启动拒绝，要求
+先用旧版本排空，避免静默丢失迁移前的待处理工作。正式日志不会在关闭时截空。
+
+单事件 1 MiB 的限制仍适用；超限事件明确拒绝，不能把拒绝视为已记录。分段、批量同步和
+大内容附件尚未引入。只有实际性能或容量需求出现时才扩展现有 Journal。
+
+运行 [IR 示例](pvisor-ir.md) 可生成文件读取及 mock 改写的真实 trace。
+测试覆盖提交幂等、并发位置、取消、断尾恢复、完整损坏、因果环、生产 Run 的执行事实链、
+Gateway 投影恢复、跨重启请求/响应关联和历史读取。

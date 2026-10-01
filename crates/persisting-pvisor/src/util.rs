@@ -7,43 +7,7 @@ use std::io::Write;
 use std::os::unix::fs::PermissionsExt;
 use std::path::Path;
 
-pub fn now_rfc3339_and_unix_ms() -> (String, u64) {
-    let now = chrono::Utc::now();
-    (now.to_rfc3339(), now.timestamp_millis().max(0) as u64)
-}
-
-pub(crate) fn sync_directory(path: &Path) -> anyhow::Result<()> {
-    fs::File::open(path)?
-        .sync_all()
-        .with_context(|| format!("sync directory {}", path.display()))
-}
-
-/// Create a directory tree and sync every newly created directory entry.
-pub(crate) fn create_dir_all_durable(path: &Path) -> anyhow::Result<()> {
-    let mut missing = Vec::new();
-    let mut cursor = path;
-    while !cursor.exists() {
-        missing.push(cursor.to_path_buf());
-        let Some(parent) = cursor.parent() else {
-            break;
-        };
-        if parent.as_os_str().is_empty() {
-            break;
-        }
-        cursor = parent;
-    }
-    fs::create_dir_all(path)
-        .with_context(|| format!("create directory tree {}", path.display()))?;
-    for directory in missing.iter().rev() {
-        let parent = directory
-            .parent()
-            .filter(|parent| !parent.as_os_str().is_empty())
-            .unwrap_or_else(|| Path::new("."));
-        sync_directory(parent)?;
-        sync_directory(directory)?;
-    }
-    Ok(())
-}
+pub(crate) use persisting_journal::{create_dir_all_durable, sync_directory};
 
 /// Atomically replace a file after syncing both its contents and parent directory.
 pub(crate) fn atomic_write(path: &Path, contents: &[u8], mode: u32) -> anyhow::Result<()> {

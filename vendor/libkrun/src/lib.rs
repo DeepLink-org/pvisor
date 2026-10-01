@@ -107,7 +107,7 @@ const INIT_PATH: &str = "/init.krun";
     feature = "init-blob",
     not(any(feature = "tee", feature = "aws-nitro"))
 ))]
-const DEFAULT_INIT_PAYLOAD: &[u8] = init_blob::INIT_BINARY;
+const DEFAULT_INIT_PAYLOAD: &[u8] = include_bytes!(env!("PERSISTING_GUEST_BINARY"));
 
 #[cfg(all(
     feature = "init-blob",
@@ -2671,7 +2671,7 @@ pub unsafe extern "C" fn krun_set_root_disk_remount(
             if !ctx_cfg.disable_implicit_init {
                 virtual_entries.push(init_virtual_entry());
             }
-            // init.c needs these directories as mount points before
+            // The guest supervisor needs these directories as mount points before
             // pivoting to the block device root.
             for name in ["dev", "proc", "sys", "newroot"] {
                 virtual_entries.push(VirtualDirEntry {

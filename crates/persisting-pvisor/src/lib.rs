@@ -2,7 +2,7 @@
 //!
 //! Hosts call [`PVisor::run`] directly; pVisor assembles execution, control,
 //! network, filesystem, and the optional internal Gateway driver. Durable
-//! EventRecord output uses local JSONL when recording is enabled.
+//! Trace Event output uses the shared Journal when recording is enabled.
 
 #![cfg_attr(all(target_os = "macos", target_arch = "x86_64"), allow(dead_code))]
 
@@ -40,7 +40,7 @@ pub use persisting_control::{
     ControlRequest, ControlState, ControlTransition, NetworkGuard, NetworkHostRule, NetworkRule,
     PolicyControlController, host_matches, is_public_egress_ip, normalize_host, parse_network_rule,
 };
-pub use persisting_gateway::sink::CaptureEventSink as TrajectoryEventSink;
+pub use persisting_gateway::sink::CaptureEventObserver as TrajectoryEventSink;
 pub use runtime::agentctl::{
     AGENTCTL_MAX_SESSIONS, AgentClientSnapshot, AgentCtlControl, AgentCtlServer, AgentCtlSnapshot,
 };
