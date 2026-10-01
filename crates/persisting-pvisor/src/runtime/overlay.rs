@@ -13,8 +13,8 @@
 //!
 use super::implant::OverlayHint;
 use crate::util::create_dir_all_durable;
+use persisting_control::overlay::OverlayConfig;
 pub use persisting_control::overlay::{OverlayRecord, OverlayState, OverlayUpper};
-use persisting_gateway::config::OverlayConfig;
 pub use persisting_overlay_core::apply::*;
 use persisting_overlayfs::{OverlayMountConfig, OverlaySession, mount as mount_embedded_overlay};
 use std::fs;

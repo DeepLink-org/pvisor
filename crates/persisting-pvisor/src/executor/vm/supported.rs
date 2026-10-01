@@ -1,7 +1,7 @@
 //! libkrun VM process isolation over a pVisor-provided root OverlayFS.
 
 use crate::config::VmSettings;
-use crate::executor::{ExecutorOutput, ExecutorSession, RunExecutor, SessionEnd as End};
+use crate::executor::{ExecutorOutput, RunExecutor, Session, SessionEnd as End};
 use crate::executor::{join_capture, read_limited, stdio};
 use crate::util::write_private_json;
 use anyhow::Context as _;
@@ -219,7 +219,7 @@ impl RunExecutor for VmExecutor {
         true
     }
 
-    async fn execute(&self, context: &ExecutorSession) -> ExecutorOutput {
+    async fn execute(&self, context: &Session) -> ExecutorOutput {
         let mut spec = context.spec().clone();
         context
             .transition(

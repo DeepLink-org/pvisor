@@ -59,8 +59,9 @@ jobs:
       - run: cargo clippy --manifest-path tools/semspec/Cargo.toml --all-targets --locked -- -D warnings
       - run: just test-semspec
       - run: just semspec lint
+      - run: just semspec --config semspec-doc.toml lint
       - run: just semspec --config tools/semspec/semantics/semspec.toml lint
-      # Human review must populate the ledger before enabling reviewed release gates.
+      # Human review must approve STAGE, its vocabulary and engine before enabling reviewed release gates.
 
   python:
     name: Python and benchmark checks
@@ -91,6 +92,7 @@ jobs:
               persisting-overlayfs
               persisting-overlaynet
               persisting-replay
+              persisting-tui
             prepare_pvisor: false
           - platform: Linux
             os: ubuntu-latest
@@ -115,6 +117,7 @@ jobs:
               persisting-overlaynet
               persisting-pvisor
               persisting-replay
+              persisting-tui
             prepare_pvisor: true
     steps:
       - uses: actions/checkout@v4
@@ -178,6 +181,15 @@ jobs:
           fi
           test -c /dev/fuse
           unshare --user --map-root-user --mount --net /bin/true
+
+      - name: Record isolated core budget
+        run: |
+          cargo build --release --locked -p persisting-pvisor --bin pvisor
+          python3 scripts/ci/check_core_budget.py target/release/pvisor --max-dependencies 230 --max-workspace-lines 44812 --max-control-items 262 > target/pvisor-core-budget.json
+      - uses: actions/upload-artifact@v4
+        with:
+          name: pvisor-core-budget-linux
+          path: target/pvisor-core-budget.json
 
       - name: Run strict pVisor isolation regressions
         env:

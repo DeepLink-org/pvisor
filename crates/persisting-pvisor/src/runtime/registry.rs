@@ -419,7 +419,7 @@ pub fn control_overlay_status(stage: &Path) -> anyhow::Result<ControlOverlayStat
         .context("control response missing OverlayFS status")
 }
 
-pub(crate) fn control_observations(stage: &Path) -> anyhow::Result<serde_json::Value> {
+pub fn control_observations(stage: &Path) -> anyhow::Result<serde_json::Value> {
     control_request(stage, &RunControlRequest::Observations)?
         .observations
         .context("control response missing observations")

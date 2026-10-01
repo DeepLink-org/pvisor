@@ -82,31 +82,33 @@ explicit decision about staged effects. Detailed provider behavior belongs to
 [execution environments](../guides/execution.md), while the complete option
 surface belongs to the [CLI reference](../reference/cli.md).
 
-## Core commands and executable extensions
+## Core commands and companion tools
 
-`run`, `status`, `kill`, `inspect`, `fork`, `apply`, and `drop` belong to the
-core `pvisor` executable: together they cover the Job lifecycle. Help and
-`extensions` introspection are built in too. A standalone core can execute,
-inspect and manage Jobs without installing companion command binaries.
-Session lifecycle and control/observation contracts remain shared library APIs.
+`pvisor` contains `run`, `status`, `kill`, `inspect`, `fork`, `apply`, and `drop`,
+plus help and `extensions`. The standalone core manages the full Job lifecycle.
 
-`cache`, `tui`, and `replay` are independent `pvisor-NAME` executables, each
-with its own argument parser and manifest. Build/install commands and wheels
-ship four executables: `pvisor`, `pvisor-cache`, `pvisor-tui`, `pvisor-replay`.
-`pvisor help NAME` supports core commands and extensions. Default execution
-(`pvisor -- COMMAND`) stays in the core; `run --tui` and interactive `--ask`
-delegate to `pvisor-tui`. New independent tools can extend the CLI without
-changing the core parser. `env` has been removed.
+`pvisor-tui` belongs to `persisting-tui`; `pvisor-replay` belongs to
+`persisting-replay`. They depend on the core, which does not depend on them.
+The cache frontend remains in the core package because executors still use OCI
+and lazy image caching. Wheels install all four executables together.
 
-Discovery searches the core executable directory before nonempty PATH entries.
-Core command names are reserved and cannot be overridden by an extension.
-Each executable extension embeds one inert JSON block:
-NUL + `PVISOR_COMMAND_MANIFEST_V1` + newline, JSON, then newline +
-`PVISOR_COMMAND_MANIFEST_END` + NUL. The manifest contains `schema_version`,
-`name`, `version`, `description` and `session_protocol`; both protocol versions
-currently equal 1. The name must match the executable suffix. JSON is limited
-to 4096 bytes and executables to 256 MiB. Discovery reads bytes and never executes
-a command; `--pvisor-manifest` is the extension's explicit JSON query interface.
-Dispatch preserves arguments, stdio, signals and exit status via Unix `exec`.
-Use `persisting_pvisor::command_manifest!` and `manifest_requested` in a Rust
-extension entry point to embed and serve this manifest.
+A static table defines the three first-party companion names and descriptions.
+Discovery checks only the core's installation directory, never PATH. It does
+not scan manifests, hash executables or pass launcher evidence. Installation
+directories and regular executable files must still be owned by the current
+user or root and must not be group/world writable; symlinks are rejected.
+Unix `exec` preserves arguments, stdio, signals and exit status. Companions
+cannot override core commands. `pvisor help NAME` supports companions;
+`run --tui` and interactive approvals delegate to the TUI.
+
+Default core builds omit Gateway. Enable capture with `--features gateway`;
+wheel builds enable this feature. Plain explicit proxy authorization and
+forwarding remain in OverlayNet. Requesting uncompiled capture or Gateway
+debug functionality reports an error.
+
+The lifecycle type is `Session`; `ExecutorSession` and `AttemptContext` aliases
+were removed. Use existing `RunHandle` status, cancellation, checkpoint and
+event APIs. There is no test-only Hook/Control protocol. AgentCtl retains
+workload cooperation. Terminal status follows driver teardown, durable results
+and terminal event commit. Unknown append outcomes still suppress conflicting
+replacement terminal events.

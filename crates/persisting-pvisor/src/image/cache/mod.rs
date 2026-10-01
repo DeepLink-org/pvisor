@@ -3,7 +3,7 @@
 
 mod cli;
 mod client;
-pub(crate) mod progress;
+pub mod progress;
 mod protocol;
 mod server;
 mod transport;

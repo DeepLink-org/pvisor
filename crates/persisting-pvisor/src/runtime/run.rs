@@ -3,8 +3,11 @@
 //! Callers configure a [`PVisor`] and invoke [`PVisor::run`]. CLI and other
 //! embedders talk to this API directly; there is no separate control-plane process.
 
+#[cfg(feature = "gateway")]
+use crate::GatewayDriverConfig;
+#[cfg(feature = "gateway")]
 use crate::TrajectoryEventSink;
-use crate::config::{GatewayDriverConfig, NetworkDriverConfig, PVisorConfig};
+use crate::config::{NetworkDriverConfig, PVisorConfig};
 use crate::executor::RunExecutor;
 use crate::executor::process::ProcessExecutor;
 use crate::runtime::event::{EventSink, NoopEventSink, RunEventPublisher};
@@ -99,60 +102,9 @@ pub struct RunHandle {
     pub(crate) agentctl: crate::AgentCtlControl,
     pub(crate) checkpoint_record: Option<crate::runtime::RunRecord>,
     pub(crate) join: JoinHandle<RunResult>,
-    pub(crate) observation: watch::Receiver<persisting_control::SessionObservation>,
 }
 
 impl RunHandle {
-    pub fn observe(&self) -> persisting_control::SessionObservation {
-        let mut observation = self.observation.borrow().clone();
-        observation.status = self.status();
-        observation
-    }
-
-    pub fn subscribe_observations(
-        &self,
-    ) -> watch::Receiver<persisting_control::SessionObservation> {
-        self.observation.clone()
-    }
-
-    pub async fn control(
-        &self,
-        request: persisting_control::SessionControlRequest,
-    ) -> anyhow::Result<persisting_control::SessionControlResponse> {
-        use persisting_control::{
-            SessionControlAction as Action, SessionControlResponse as Response,
-        };
-        anyhow::ensure!(
-            request.version == persisting_control::SESSION_PROTOCOL_VERSION,
-            "unsupported Session control version"
-        );
-        anyhow::ensure!(
-            request.session == self.observe().session,
-            "Session control identity mismatch"
-        );
-        match request.action {
-            Action::Status => Ok(Response::Status {
-                observation: Box::new(self.observe()),
-            }),
-            Action::Cancel => {
-                self.cancel();
-                Ok(Response::CancellationRequested)
-            }
-            Action::Checkpoint {
-                checkpoint_id,
-                timeout_ms,
-            } => {
-                anyhow::ensure!(!self.status().state.is_terminal(), "Session has finished");
-                let checkpoint = self
-                    .checkpoint(&checkpoint_id, std::time::Duration::from_millis(timeout_ms))
-                    .await?;
-                Ok(Response::Checkpoint {
-                    manifest: checkpoint.manifest_path(),
-                })
-            }
-        }
-    }
-
     pub fn run_id(&self) -> &persisting_control::RunId {
         &self.run_id
     }
@@ -226,7 +178,6 @@ pub struct PVisorBuilder {
     runtime: RuntimeSupervisorBuilder,
     event_sink: Option<Arc<dyn EventSink>>,
     executors: Option<Vec<Arc<dyn RunExecutor>>>,
-    extensions: Vec<Arc<dyn crate::SessionExtension>>,
 }
 
 impl std::fmt::Debug for PVisorBuilder {
@@ -249,6 +200,7 @@ impl PVisorBuilder {
 
     /// Apply the top-level pVisor configuration.
     pub fn config(mut self, config: PVisorConfig) -> Self {
+        #[cfg(feature = "gateway")]
         if let Some(gateway) = config.gateway {
             self.runtime = self.runtime.gateway(gateway);
         }
@@ -258,6 +210,7 @@ impl PVisorBuilder {
     }
 
     /// Enable pVisor's built-in Agent protocol Gateway driver.
+    #[cfg(feature = "gateway")]
     pub fn gateway(mut self, gateway: GatewayDriverConfig) -> Self {
         self.runtime = self.runtime.gateway(gateway);
         self
@@ -270,6 +223,7 @@ impl PVisorBuilder {
     }
 
     /// Inject the structured trajectory output port used by the Gateway driver.
+    #[cfg(feature = "gateway")]
     pub fn trajectory_sink(mut self, sink: Arc<dyn TrajectoryEventSink>) -> Self {
         self.runtime = self.runtime.trajectory_sink(sink);
         self
@@ -301,25 +255,22 @@ impl PVisorBuilder {
         self
     }
 
-    pub fn extension(mut self, extension: Arc<dyn crate::SessionExtension>) -> Self {
-        self.extensions.push(extension);
-        self
-    }
-
     pub fn build(self) -> PVisor {
         let event_sink = self
             .event_sink
             .unwrap_or_else(|| Arc::new(NoopEventSink::default()) as Arc<dyn EventSink>);
+        #[cfg(feature = "gateway")]
         let runtime = match event_sink.journal() {
             Some(journal) => self.runtime.journal(journal),
             None => self.runtime,
         };
+        #[cfg(not(feature = "gateway"))]
+        let runtime = self.runtime;
         PVisor {
             executors: Arc::new(self.executors.unwrap_or_else(|| {
                 vec![Arc::new(ProcessExecutor::default()) as Arc<dyn RunExecutor>]
             })),
             event_sink,
-            extensions: self.extensions,
             runtime: runtime.build(),
         }
     }
@@ -333,7 +284,6 @@ impl PVisorBuilder {
 pub struct PVisor {
     executors: Arc<Vec<Arc<dyn RunExecutor>>>,
     event_sink: Arc<dyn EventSink>,
-    extensions: Vec<Arc<dyn crate::SessionExtension>>,
     runtime: RuntimeSupervisor,
 }
 
@@ -523,7 +473,6 @@ impl PVisor {
             &self.runtime,
             Arc::clone(&self.event_sink),
             self.resolve_run(spec)?,
-            self.extensions.clone(),
         )
         .await
     }
@@ -657,151 +606,54 @@ fn validate_spec(spec: &RunSpec) -> Result<(), PVisorError> {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::{EventSink, ExecutorSession, MemoryEventSink};
+    use crate::{EventSink, MemoryEventSink, Session};
     use async_trait::async_trait;
     use persisting_control::{
         ExecutorKind, NetworkCapability, RunFailureKind, RunInvocation, RunState, StdioMode,
     };
     use std::sync::Mutex;
 
-    struct PhaseProbe {
-        phases: Mutex<Vec<persisting_control::SessionPhase>>,
-        reject: Option<persisting_control::SessionPhase>,
-    }
-
-    #[async_trait]
-    impl crate::SessionExtension for PhaseProbe {
-        async fn on_phase(
-            &self,
-            session: &crate::Session,
-            observation: &persisting_control::SessionObservation,
-        ) -> anyhow::Result<()> {
-            assert_eq!(session.identity(), observation.session);
-            assert!(!observation.status.state.is_terminal());
-            self.phases.lock().unwrap().push(observation.phase);
-            anyhow::ensure!(self.reject != Some(observation.phase), "probe veto");
-            Ok(())
-        }
-
-        fn finished(&self, session: &crate::Session, result: &RunResult) {
-            assert!(session.status().state.is_terminal());
-            assert_eq!(session.observation().result.unwrap().state, result.state);
-            self.phases
-                .lock()
-                .unwrap()
-                .push(persisting_control::SessionPhase::Finished);
-        }
-    }
-
     #[tokio::test]
-    async fn session_hooks_preserve_finalization_after_a_veto() {
-        use persisting_control::SessionPhase::*;
-        for reject in [
-            None,
-            Some(Preparing),
-            Some(Prepared),
-            Some(Executing),
-            Some(Executed),
-            Some(Finalizing),
-            Some(Committing),
-        ] {
-            let storage = tempfile::tempdir().unwrap();
-            let probe = Arc::new(PhaseProbe {
-                phases: Mutex::new(Vec::new()),
-                reject,
-            });
-            let runtime = PVisor::builder()
-                .storage(storage.path())
-                .extension(probe.clone())
-                .build();
-            let mut spec = RunSpec::process("session-hooks", "agent", "/bin/sh");
-            let RunInvocation::Process(process) = &mut spec.invocation;
-            process.args = vec!["-c".into(), "exit 0".into()];
-            let run = runtime.run(spec).await;
-            if matches!(reject, Some(Preparing | Prepared)) {
-                assert!(matches!(run, Err(PVisorError::Prepare(_))));
-                assert_eq!(
-                    *probe.phases.lock().unwrap(),
-                    if reject == Some(Preparing) {
-                        vec![Preparing, Finished]
-                    } else {
-                        vec![Preparing, Prepared, Finished]
-                    }
-                );
-            } else {
-                let handle = run.unwrap();
-                let observations = handle.subscribe_observations();
-                let result = handle.wait().await.unwrap();
-                assert_eq!(
-                    result.state,
-                    if reject.is_some() {
-                        RunState::Failed
-                    } else {
-                        RunState::Completed
-                    },
-                    "{result:?}"
-                );
-                assert_eq!(observations.borrow().phase, Finished);
-                assert_eq!(
-                    observations.borrow().result.as_ref().unwrap().state,
-                    result.state
-                );
-                assert_eq!(
-                    *probe.phases.lock().unwrap(),
-                    [
-                        Preparing, Prepared, Executing, Executed, Finalizing, Committing, Finished
-                    ]
-                );
-            }
-            if reject == Some(Preparing) {
-                assert!(!storage.path().join("run-bundle.json").exists());
-                continue;
-            }
-            let bundle = crate::RunBundle::read(storage.path()).unwrap();
-            assert_eq!(
-                bundle.run.state,
-                if reject.is_some() {
-                    RunState::Failed
-                } else {
-                    RunState::Completed
-                }
-            );
-            assert!(!storage.path().join("control.sock").exists());
-            let _lease = crate::runtime::RunLease::acquire(storage.path()).unwrap();
-        }
-    }
-
-    #[tokio::test]
-    async fn session_control_rejects_stale_identity_and_cancellation_is_observed() {
-        use persisting_control::{
-            SessionControlAction, SessionControlRequest, SessionControlResponse,
-        };
+    async fn cancellation_finishes_the_attempt() {
         let runtime = PVisor::builder().build();
-        let mut spec = RunSpec::process("session-control", "agent", "/bin/sh");
+        let mut spec = RunSpec::process("cancellation", "agent", "/bin/sh");
         let RunInvocation::Process(process) = &mut spec.invocation;
         process.args = vec!["-c".into(), "sleep 30".into()];
         let handle = runtime.run(spec).await.unwrap();
-        let request = SessionControlRequest {
-            version: persisting_control::SESSION_PROTOCOL_VERSION,
-            session: handle.observe().session,
-            action: SessionControlAction::Cancel,
-        };
-        let mut stale = request.clone();
-        stale.session.lease_epoch += 1;
-        assert!(handle.control(stale).await.is_err());
-        let mut unsupported = request.clone();
-        unsupported.version += 1;
-        assert!(handle.control(unsupported).await.is_err());
-        assert!(!handle.cancellation.is_cancelled());
-        assert!(matches!(
-            handle.control(request).await.unwrap(),
-            SessionControlResponse::CancellationRequested
-        ));
+        handle.cancel();
         let result = tokio::time::timeout(std::time::Duration::from_secs(5), handle.wait())
             .await
             .unwrap()
             .unwrap();
         assert_eq!(result.state, RunState::Cancelled);
+    }
+
+    #[tokio::test]
+    async fn plain_proxy_attempt_commits_results_and_releases_resources() {
+        let storage = tempfile::tempdir().unwrap();
+        let runtime = PVisor::builder()
+            .storage(storage.path())
+            .network(NetworkDriverConfig::new(
+                crate::OverlayNetMode::Proxy,
+                persisting_overlaynet::NetworkConfig {
+                    mode: persisting_overlaynet::NetworkMode::NoNetwork,
+                    ..Default::default()
+                },
+            ))
+            .build();
+        let mut spec = RunSpec::process("proxy-attempt", "agent", "/bin/sh");
+        let RunInvocation::Process(process) = &mut spec.invocation;
+        process.args = vec!["-c".into(), "test -n \"$HTTP_PROXY\"".into()];
+        let result = runtime.run(spec).await.unwrap().wait().await.unwrap();
+        assert_eq!(result.state, RunState::Completed, "{result:?}");
+        assert_eq!(
+            crate::RunBundle::read(storage.path()).unwrap().run.state,
+            RunState::Completed
+        );
+        let record = crate::RunRecord::read(storage.path()).unwrap();
+        assert!(record.network_interception_metrics.is_some());
+        assert!(!storage.path().join("control.sock").exists());
+        let _lease = crate::runtime::RunLease::acquire(storage.path()).unwrap();
     }
 
     #[test]
@@ -887,6 +739,51 @@ mod tests {
         }
     }
 
+    struct RejectCompletionFact(std::path::PathBuf);
+    #[async_trait]
+    impl EventSink for RejectCompletionFact {
+        async fn append(&self, event: &Event) -> anyhow::Result<Receipt> {
+            if event.name() == "completed" {
+                anyhow::bail!("completion audit unavailable");
+            }
+            if event.name() == "run.completed" {
+                let bundle = crate::RunBundle::read(&self.0)?;
+                anyhow::ensure!(
+                    bundle
+                        .run
+                        .warnings
+                        .iter()
+                        .any(|warning| warning.contains("execution completion audit gap")),
+                    "audit gap was not persisted before terminal publication"
+                );
+            }
+            Ok(crate::trace::Journal::memory().append(event.clone())?)
+        }
+    }
+
+    #[tokio::test]
+    async fn completion_audit_gap_is_durable_before_terminal_publication() {
+        let storage = tempfile::tempdir().unwrap();
+        let runtime = PVisor::builder()
+            .storage(storage.path())
+            .event_sink(Arc::new(RejectCompletionFact(storage.path().to_path_buf())))
+            .build();
+        let mut spec = RunSpec::process("audit-gap", "agent", "/bin/sh");
+        let RunInvocation::Process(process) = &mut spec.invocation;
+        process.args = vec!["-c".into(), "exit 0".into()];
+        let result = runtime.run(spec).await.unwrap().wait().await.unwrap();
+        assert_eq!(result.state, RunState::Completed);
+        assert!(
+            result
+                .warnings
+                .iter()
+                .any(|warning| warning.contains("execution completion audit gap"))
+        );
+        let bundle = crate::RunBundle::read(storage.path()).unwrap();
+        assert_eq!(bundle.run.state, result.state);
+        assert_eq!(bundle.run.warnings, result.warnings);
+    }
+
     struct RejectCreatedSink;
 
     #[async_trait]
@@ -951,7 +848,7 @@ mod tests {
         fn supports(&self, invocation: &RunInvocation) -> bool {
             ProcessExecutor::default().supports(invocation)
         }
-        async fn execute(&self, context: &ExecutorSession) -> crate::ExecutorOutput {
+        async fn execute(&self, context: &Session) -> crate::ExecutorOutput {
             let mut output = ProcessExecutor::default().execute(context).await;
             // Backends cannot publish a terminal state or declare a nonzero exit successful.
             context.transition(RunState::Completed, None).await;
@@ -991,7 +888,7 @@ mod tests {
         fn supports(&self, invocation: &RunInvocation) -> bool {
             ProcessExecutor::default().supports(invocation)
         }
-        async fn execute(&self, context: &ExecutorSession) -> crate::ExecutorOutput {
+        async fn execute(&self, context: &Session) -> crate::ExecutorOutput {
             ProcessExecutor::default().execute(context).await
         }
     }
@@ -1454,6 +1351,7 @@ mod tests {
     }
 
     #[tokio::test]
+    #[cfg(feature = "gateway")]
     async fn gateway_driver_does_not_elevate_host_process_enforcement() {
         let proxy = persisting_gateway::config::ProxyConfig::from_toml_str(
             r#"

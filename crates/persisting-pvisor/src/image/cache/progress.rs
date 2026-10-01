@@ -14,7 +14,7 @@ pub struct ImageTotals {
 }
 
 #[derive(Clone, Debug, Default, Serialize, Deserialize)]
-pub(crate) struct ImageProgress {
+pub struct ImageProgress {
     pub image: String,
     pub totals: Option<ImageTotals>,
     pub downloaded_files: u64,
@@ -67,7 +67,7 @@ pub(super) fn loading<T>(
 }
 
 #[derive(Default)]
-pub(crate) struct Downloads {
+pub struct Downloads {
     snapshot: RefCell<ImageProgress>,
     files: RefCell<HashSet<Vec<u8>>>,
     cached_files: RefCell<HashSet<Vec<u8>>>,

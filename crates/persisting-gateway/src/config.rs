@@ -37,50 +37,7 @@ pub struct ProxyConfig {
     pub models: Vec<ModelRoute>,
 }
 
-/// Filesystem overlay settings (same capture TOML; applied by pVisor).
-///
-/// Model: **target** (read-only base / apply destination) + **staging** (upper
-/// holds deltas). The Agent sees `merged`; changes do **not** touch `target`
-/// until an explicit runtime overlay is applied.
-#[derive(Debug, Clone, Default, Deserialize, Serialize, PartialEq, Eq)]
-#[serde(deny_unknown_fields)]
-pub struct OverlayConfig {
-    #[serde(default)]
-    pub access_policy: persisting_control::overlay::FileAccessPolicy,
-    /// When true, pVisor mounts its embedded OverlayFS for the Attempt.
-    #[serde(default)]
-    pub enabled: bool,
-    /// Target filesystem: primary lower layer and destination for `apply`.
-    /// Prefer this over listing the same path in `lower_dirs`.
-    #[serde(default)]
-    pub target: Option<String>,
-    /// Prevent explicit or automatic apply from modifying the lower target.
-    #[serde(default)]
-    pub protect_target: bool,
-    /// Read-only compose layers stacked above `target`, highest priority first.
-    #[serde(default)]
-    pub lower_dirs: Vec<String>,
-    /// Root for staging (`upper` / `work` / `merged`). Default:
-    /// `{capture_storage}/.overlay/{session_id}/`.
-    #[serde(default)]
-    pub stage_dir: Option<String>,
-    /// Writable upper directory (overrides `{stage_dir}/upper` when set).
-    #[serde(default)]
-    pub upper_dir: Option<String>,
-    /// Overlay work directory (overrides `{stage_dir}/work` when set).
-    #[serde(default)]
-    pub work_dir: Option<String>,
-    /// Merged mount point (overrides `{stage_dir}/merged` when set).
-    #[serde(default)]
-    pub merged_dir: Option<String>,
-    /// If true, apply staging onto `target` automatically when the Attempt ends.
-    /// Default false — review then `pvisor apply` or `pvisor drop`.
-    #[serde(default)]
-    pub auto_apply: bool,
-    /// If true, discard staging automatically when the Attempt ends.
-    #[serde(default)]
-    pub auto_discard: bool,
-}
+pub use persisting_control::overlay::OverlayConfig;
 
 fn default_admin_listen() -> String {
     "127.0.0.1:9876".to_string()
@@ -94,55 +51,7 @@ fn default_session_header() -> String {
     "x-persisting-session-id".to_string()
 }
 
-/// Controls how much request/response content is written to trajectory records.
-#[derive(Debug, Clone, Copy, Default, PartialEq, Eq, Deserialize, serde::Serialize)]
-#[serde(rename_all = "snake_case")]
-pub enum CaptureLevel {
-    /// Model, path, byte counts — no message text.
-    Summary,
-    /// User / assistant dialogue text (default).
-    #[default]
-    Dialogue,
-    /// Full parsed JSON bodies in `payload.body`.
-    Full,
-}
-
-impl CaptureLevel {
-    pub fn includes_user_text(self) -> bool {
-        !matches!(self, Self::Summary)
-    }
-
-    pub fn includes_assistant_text(self) -> bool {
-        !matches!(self, Self::Summary)
-    }
-
-    pub fn includes_full_body(self) -> bool {
-        matches!(self, Self::Full)
-    }
-}
-
-#[derive(Debug, Clone, Deserialize, Serialize)]
-#[serde(deny_unknown_fields)]
-pub struct ModelRoute {
-    /// Match pattern (exact, `prefix*`, `*suffix`, `*`) or target model id.
-    pub name: String,
-    /// `openai` | `anthropic` | `gemini` | `vertex` | `bedrock` | `azure` | `copilot` | `custom`
-    #[serde(default)]
-    pub provider: Option<String>,
-    /// OpenAI-compatible upstream base (include API prefix, e.g. `https://api.deepseek.com/v1`).
-    #[serde(default)]
-    pub upstream: Option<String>,
-    /// Anthropic-compatible upstream (e.g. `https://api.deepseek.com/anthropic/v1`). Falls back to `upstream`.
-    #[serde(default)]
-    pub upstream_anthropic: Option<String>,
-    #[serde(default)]
-    pub api_key_env: Option<String>,
-    #[serde(default)]
-    pub api_key: Option<String>,
-    /// Forward to another `models[].name` (exact id): use its upstream and rewrite request `model`.
-    #[serde(default)]
-    pub forward: Option<String>,
-}
+pub use persisting_control::gateway::{CaptureLevel, ModelRoute};
 
 impl ProxyConfig {
     pub fn from_toml_str(s: &str) -> anyhow::Result<Self> {
@@ -228,66 +137,66 @@ impl ProxyConfig {
     }
 }
 
-impl ModelRoute {
-    pub fn provider_kind(&self) -> ProviderKind {
-        self.provider
-            .as_deref()
-            .map(ProviderKind::parse)
-            .unwrap_or(ProviderKind::OpenAi)
+pub fn provider_kind(route: &ModelRoute) -> ProviderKind {
+    route
+        .provider
+        .as_deref()
+        .map(ProviderKind::parse)
+        .unwrap_or(ProviderKind::OpenAi)
+}
+
+/// Provider used for indexing / cost when protocol selects an Anthropic upstream.
+pub fn effective_provider(route: &ModelRoute, protocol: ProtocolKind) -> ProviderKind {
+    if protocol == ProtocolKind::Messages && route.upstream_anthropic.is_some() {
+        return ProviderKind::Anthropic;
     }
+    provider_kind(route)
+}
 
-    /// Provider used for indexing / cost when protocol selects an Anthropic upstream.
-    pub fn effective_provider(&self, protocol: ProtocolKind) -> ProviderKind {
-        if protocol == ProtocolKind::Messages && self.upstream_anthropic.is_some() {
-            return ProviderKind::Anthropic;
-        }
-        self.provider_kind()
+fn effective_upstream_base(route: &ModelRoute, protocol: ProtocolKind) -> anyhow::Result<&str> {
+    if protocol == ProtocolKind::Messages
+        && let Some(ref u) = route.upstream_anthropic
+    {
+        return Ok(u.as_str());
     }
+    route
+        .upstream
+        .as_deref()
+        .ok_or_else(|| anyhow::anyhow!("model `{}` has no upstream", route.name))
+}
 
-    fn effective_upstream_base(&self, protocol: ProtocolKind) -> anyhow::Result<&str> {
-        if protocol == ProtocolKind::Messages
-            && let Some(ref u) = self.upstream_anthropic
-        {
-            return Ok(u.as_str());
-        }
-        self.upstream
-            .as_deref()
-            .ok_or_else(|| anyhow::anyhow!("model `{}` has no upstream", self.name))
+pub fn resolve_upstream_url(
+    route: &ModelRoute,
+    incoming_path: &str,
+    protocol: ProtocolKind,
+) -> anyhow::Result<Url> {
+    let base_str = effective_upstream_base(route, protocol)?;
+    let mut base = Url::parse(base_str)
+        .map_err(|e| anyhow::anyhow!("invalid upstream for model {}: {e}", route.name))?;
+    let api_prefix = detect_incoming_api_prefix(incoming_path).to_string();
+    let suffix = strip_incoming_api_prefix(incoming_path, &api_prefix);
+    let base_path = base.path().trim_end_matches('/');
+
+    let final_path = if base_path.is_empty() || base_path == "/" {
+        join_api_path(&api_prefix, &suffix)
+    } else if base_includes_api_prefix(base_path, &api_prefix) {
+        join_api_path(base_path, &suffix)
+    } else {
+        join_api_path(&format!("{base_path}{api_prefix}"), &suffix)
+    };
+
+    base.set_path(&final_path);
+    Ok(base)
+}
+
+pub fn api_key_value(route: &ModelRoute) -> anyhow::Result<Option<String>> {
+    if let Some(ref k) = route.api_key {
+        return Ok(Some(k.clone()));
     }
-
-    pub fn resolve_upstream_url(
-        &self,
-        incoming_path: &str,
-        protocol: ProtocolKind,
-    ) -> anyhow::Result<Url> {
-        let base_str = self.effective_upstream_base(protocol)?;
-        let mut base = Url::parse(base_str)
-            .map_err(|e| anyhow::anyhow!("invalid upstream for model {}: {e}", self.name))?;
-        let api_prefix = detect_incoming_api_prefix(incoming_path).to_string();
-        let suffix = strip_incoming_api_prefix(incoming_path, &api_prefix);
-        let base_path = base.path().trim_end_matches('/');
-
-        let final_path = if base_path.is_empty() || base_path == "/" {
-            join_api_path(&api_prefix, &suffix)
-        } else if base_includes_api_prefix(base_path, &api_prefix) {
-            join_api_path(base_path, &suffix)
-        } else {
-            join_api_path(&format!("{base_path}{api_prefix}"), &suffix)
-        };
-
-        base.set_path(&final_path);
-        Ok(base)
+    if let Some(ref env) = route.api_key_env {
+        return Ok(lookup_env_var(env));
     }
-
-    pub fn api_key_value(&self) -> anyhow::Result<Option<String>> {
-        if let Some(ref k) = self.api_key {
-            return Ok(Some(k.clone()));
-        }
-        if let Some(ref env) = self.api_key_env {
-            return Ok(lookup_env_var(env));
-        }
-        Ok(None)
-    }
+    Ok(None)
 }
 
 /// Read an API-key env var plus known Claude Code / provider aliases.
@@ -392,13 +301,10 @@ mod tests {
     #[test]
     fn upstream_url_strips_duplicate_v1() {
         let r = route("http://127.0.0.1:19080/v1");
-        let url = r
-            .resolve_upstream_url("/v1/messages", ProtocolKind::Messages)
-            .unwrap();
+        let url = resolve_upstream_url(&r, "/v1/messages", ProtocolKind::Messages).unwrap();
         assert_eq!(url.as_str(), "http://127.0.0.1:19080/v1/messages");
 
-        let url = r
-            .resolve_upstream_url("/v1/chat/completions", ProtocolKind::ChatCompletions)
+        let url = resolve_upstream_url(&r, "/v1/chat/completions", ProtocolKind::ChatCompletions)
             .unwrap();
         assert_eq!(url.as_str(), "http://127.0.0.1:19080/v1/chat/completions");
     }
@@ -406,17 +312,14 @@ mod tests {
     #[test]
     fn upstream_url_anthropic_host_with_v1_in_upstream() {
         let r = route("https://api.anthropic.com/v1");
-        let url = r
-            .resolve_upstream_url("/v1/messages", ProtocolKind::Messages)
-            .unwrap();
+        let url = resolve_upstream_url(&r, "/v1/messages", ProtocolKind::Messages).unwrap();
         assert_eq!(url.as_str(), "https://api.anthropic.com/v1/messages");
     }
 
     #[test]
     fn upstream_url_when_base_already_has_prefix() {
         let r = route("https://api.openai.com/v1");
-        let url = r
-            .resolve_upstream_url("/v1/chat/completions", ProtocolKind::ChatCompletions)
+        let url = resolve_upstream_url(&r, "/v1/chat/completions", ProtocolKind::ChatCompletions)
             .unwrap();
         assert_eq!(url.as_str(), "https://api.openai.com/v1/chat/completions");
     }
@@ -424,12 +327,12 @@ mod tests {
     #[test]
     fn upstream_url_v1beta_prefix() {
         let r = route("https://generativelanguage.googleapis.com/v1beta");
-        let url = r
-            .resolve_upstream_url(
-                "/v1beta/models/gemini-pro:generateContent",
-                ProtocolKind::Unknown,
-            )
-            .unwrap();
+        let url = resolve_upstream_url(
+            &r,
+            "/v1beta/models/gemini-pro:generateContent",
+            ProtocolKind::Unknown,
+        )
+        .unwrap();
         assert_eq!(
             url.as_str(),
             "https://generativelanguage.googleapis.com/v1beta/models/gemini-pro:generateContent"
@@ -442,15 +345,12 @@ mod tests {
             "https://api.deepseek.com/v1",
             Some("https://api.deepseek.com/anthropic/v1"),
         );
-        let url = r
-            .resolve_upstream_url("/v1/messages", ProtocolKind::Messages)
-            .unwrap();
+        let url = resolve_upstream_url(&r, "/v1/messages", ProtocolKind::Messages).unwrap();
         assert_eq!(
             url.as_str(),
             "https://api.deepseek.com/anthropic/v1/messages"
         );
-        let url = r
-            .resolve_upstream_url("/v1/chat/completions", ProtocolKind::ChatCompletions)
+        let url = resolve_upstream_url(&r, "/v1/chat/completions", ProtocolKind::ChatCompletions)
             .unwrap();
         assert_eq!(url.as_str(), "https://api.deepseek.com/v1/chat/completions");
     }
@@ -462,11 +362,11 @@ mod tests {
             Some("https://api.deepseek.com/anthropic/v1"),
         );
         assert_eq!(
-            r.effective_provider(ProtocolKind::Messages),
+            effective_provider(&r, ProtocolKind::Messages),
             ProviderKind::Anthropic
         );
         assert_eq!(
-            r.effective_provider(ProtocolKind::ChatCompletions),
+            effective_provider(&r, ProtocolKind::ChatCompletions),
             ProviderKind::OpenAi
         );
     }

@@ -3,7 +3,6 @@
 
 from __future__ import annotations
 
-import argparse
 import hashlib
 import json
 import os
@@ -150,7 +149,7 @@ def _cargo_command(options: BuildOptions, *, shim_vm: bool = False) -> list[str]
     if shim_vm:
         command.extend(("--bin", "containerd-shim-pvisor-v2", "--features", "vm"))
     else:
-        command.append("--bins")
+        command.extend(("-p", "persisting-tui", "-p", "persisting-replay", "--bins", "--features", "persisting-pvisor/gateway"))
     if target is not None:
         command.extend(("--target", target))
     if options.target_dir is not None:
@@ -377,29 +376,3 @@ def stage_wheel_binaries(options: BuildOptions) -> Path:
         return scripts
     finally:
         shutil.rmtree(staged, ignore_errors=True)
-
-
-def main() -> None:
-    parser = argparse.ArgumentParser(description=__doc__)
-    parser.add_argument("--target")
-    parser.add_argument("--profile", default="release")
-    parser.add_argument("--target-dir")
-    parser.add_argument("--locked", action="store_true")
-    parser.add_argument("--frozen", action="store_true")
-    parser.add_argument("--offline", action="store_true")
-    parser.add_argument("--jobs")
-    args = parser.parse_args()
-    options = BuildOptions(
-        target=_normalize_target(args.target),
-        profile=args.profile,
-        target_dir=args.target_dir,
-        locked=args.locked,
-        frozen=args.frozen,
-        offline=args.offline,
-        jobs=args.jobs,
-    )
-    stage_wheel_binaries(options)
-
-
-if __name__ == "__main__":
-    main()

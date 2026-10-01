@@ -11,8 +11,10 @@ default-run = "pvisor"
 
 [features]
 default = []
+gateway = ["dep:persisting-gateway"]
 
 [dependencies]
+axum = { workspace = true, features = ["http1", "http2", "tokio"] }
 persisting-guest.workspace = true
 anyhow.workspace = true
 async-trait.workspace = true
@@ -24,14 +26,12 @@ fs2.workspace = true
 globset.workspace = true
 libc.workspace = true
 lru = "0.12.5"
-memchr = "2"
 persisting-control.workspace = true
 persisting-journal.workspace = true
-persisting-gateway = { workspace = true, default-features = false }
+persisting-gateway = { workspace = true, default-features = false, optional = true }
 persisting-overlaynet.workspace = true
 persisting-overlayfs = { workspace = true, default-features = false }
 persisting-overlay-core.workspace = true
-persisting-replay.workspace = true
 serde = { workspace = true, features = ["derive"] }
 serde_json.workspace = true
 sha2.workspace = true
@@ -44,8 +44,6 @@ tokio = { workspace = true, features = ["io-util", "macros", "process", "rt-mult
 tokio-util = { workspace = true, features = ["rt"] }
 tracing.workspace = true
 uuid = { workspace = true, features = ["v4"] }
-unicode-width = "0.2.2"
-vt100 = "0.16.2"
 zstd.workspace = true
 reqwest = { workspace = true, features = ["blocking", "json", "rustls-tls"] }
 

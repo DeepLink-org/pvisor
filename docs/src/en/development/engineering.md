@@ -17,6 +17,7 @@ package launches the packaged Rust binary; it is not a second runtime.
 | `crates/persisting-overlayfs/` | FUSE adapter and mounts |
 | `crates/persisting-overlaynet/` | Egress policy, HTTP proxy and VM virtio-net data plane |
 | `crates/persisting-guest/` | Linux PID 1 supervisor and the launch contract shared by VM executors |
+| `crates/persisting-tui/` | Standalone `pvisor-tui` terminal frontend |
 | `crates/persisting-replay/` | Replay planning, native agent adapters and continuation bridges |
 | `pvisor/`, `setup.py`, `scripts/packaging/` | Python launcher and wheel assembly |
 | `crates/*/tests/` | Rust integration tests; unit tests stay with their owning module |
@@ -29,13 +30,15 @@ package launches the packaged Rust binary; it is not a second runtime.
 The internal workspace dependencies are:
 
 ```text
-pvisor ──> control, gateway, overlaynet, overlayfs, overlay-core, replay, guest
+pvisor ──> control, journal, overlaynet, overlayfs, overlay-core, guest
+pvisor --features gateway ──> gateway
+tui, replay ──> pvisor
 gateway ──> control, overlaynet
 overlaynet ──> control
 overlayfs ──> control, overlay-core
 overlay-core ──> control, journal
 journal ──> control
-control, replay, guest ──> no other workspace crate
+control, guest ──> no other workspace crate
 ```
 
 ### pVisor source modules
@@ -44,13 +47,14 @@ control, replay, guest ──> no other workspace crate
 src/
 ├── lib.rs                 # Stable embedding exports
 ├── bin/pvisor.rs          # Binary entry point
-├── cli/                   # Arguments, commands, agent presets and terminal UI
+├── cli/                   # Arguments, commands and shared terminal helpers
+├── session/               # Attempt lifecycle and completion
+├── session.rs             # Session owner
 ├── config.rs              # Runtime and executor configuration
 ├── trace.rs               # Shared fact journal re-export
 ├── diagnostics.rs         # Shared host logs; frontend selects the destination
 ├── executor/
-│   ├── mod.rs             # RunExecutor and ExecutorSession
-│   ├── session.rs         # Session lifecycle and completion
+│   ├── mod.rs             # RunExecutor and Session
 │   ├── process.rs         # Host process executor
 │   ├── container.rs       # Container executor
 │   ├── sandbox.rs         # Host OS isolation and internal sandbox entry point
@@ -90,12 +94,26 @@ transport validation. Shared execution and journaling remain at the crate root.
 
 ### Boundaries to keep improving
 
-`ExecutorSession` owns Attempt lifecycle and terminal publication. Shared
+`Session` owns Attempt lifecycle and terminal publication. Shared
 network/file authorization lives in Control; overlay review/apply/recovery/drop
-lives in `persisting-overlay-core::apply`. Runtime overlay configuration still
-uses Gateway configuration types. Keep transport and mount ownership in drivers,
+lives in `persisting-overlay-core::apply`. Shared Overlay and model route configuration belongs to Control. Keep transport and mount ownership in drivers,
 and move shared semantics into their existing owner when changing behavior.
 
+
+## Core subtraction budget
+
+CI builds the default core in isolation before building the capture-enabled distribution.
+`scripts/ci/check_core_budget.py` rejects Gateway, replay, TUI and terminal dependencies
+in the default core and records the toolchain, dependency count, source lines, Control
+public declarations and binary bytes. Linux budgets are 230 dependencies, 44,812 workspace
+source lines and 262 Control public declarations; only lower these budgets. Binary size
+is initially recorded to establish a comparable platform baseline.
+
+The 2026-10-01 working-tree comparison reduced Rust from 102,305 to 101,824 lines (481 fewer).
+The default macOS arm64 core with rustc 1.98.0 has 226 dependencies and a 9,746,560-byte
+release binary. Closure source lines count `crates/*/src/**/*.rs`; public declarations
+are a syntax count, not a deduplicated exported API count. Moving TUI/replay does not
+count as deletion.
 
 ## Contributor commands
 
@@ -128,7 +146,7 @@ and move shared semantics into their existing owner when changing behavior.
 (Gateway). With arguments, `just test` runs only the selected Rust packages.
 Use `just test-rust` for CI shards that should not invoke Python tests.
 
-Default pytest discovery covers `tests/` and `benchmark/pvisor/`, including the finite algebra model checks.
+Default pytest discovery covers `tests/` and `benchmark/pvisor/`; Rust property tests in `persisting-control` verify IR algebra laws.
 Benchmark tests requiring `/proc` and Linux rootfs tools run only on Linux.
 Guest filesystem checks require root, Python, pytest and tar inside a Linux VM.
 From the repository directory, run `python3 -m pytest -q tests/test_vm_filesystem.py --guest-fs-dir /var/tmp --guest-fs-dir .`

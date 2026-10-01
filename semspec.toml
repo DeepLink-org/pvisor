@@ -1,10 +1,8 @@
 [project]
 name = "pVisor"
-spec_dirs = ["tests/semantics", "docs/src/zh/reference"]
+spec_dirs = ["tests/semantics"]
 ledger = "tests/semantics/REVIEWED.toml"
 approved_snapshots = "tests/semantics/.approved"
-# env was removed intentionally; these scenario IDs must never be reused.
-retired = ["S-DOC-053", "S-DOC-054"]
 
 [subject]
 bin = "target/debug/pvisor"
@@ -29,41 +27,3 @@ all = [
   { command_succeeds = ["unshare", "-Ur", "-m", "true"] },
   { command_succeeds = ["python3", "--version"] },
 ]
-
-# Prerequisites for the migrated DOC catalog. Unspecified platforms SKIP.
-[requirements.python3.macos]
-command_succeeds = ["python3", "--version"]
-[requirements.python3.linux]
-command_succeeds = ["python3", "--version"]
-
-[requirements.linux.linux]
-command_succeeds = ["/usr/bin/true"]
-
-[requirements.rootless.linux]
-command_succeeds = ["unshare", "--user", "--mount", "--pid", "--fork", "true"]
-
-[requirements.kvm.linux]
-path_exists = "/dev/kvm"
-
-[requirements.rootfs.linux]
-command_succeeds = ["bash", "-c", 'test -d "${PVISOR_CASE_ROOTFS:-/}"']
-
-[requirements.image.linux]
-command_succeeds = ["bash", "-c", 'test -n "${PVISOR_CASE_IMAGE:-ubuntu:latest}"']
-
-[requirements.agent.linux]
-command_succeeds = ["bash", "-c", 'test -n "${PVISOR_CASE_AGENT:-}"']
-
-[requirements.container.linux]
-command_succeeds = ["bash", "-c", 'if test -n "${PVISOR_CASE_CONTAINER_RUNTIME:-}"; then command -v "$PVISOR_CASE_CONTAINER_RUNTIME"; else command -v crun || command -v runc; fi']
-
-[requirements.container-runtime.linux]
-command_succeeds = ["bash", "-c", 'if test -n "${PVISOR_CASE_CONTAINER_RUNTIME:-}"; then command -v "$PVISOR_CASE_CONTAINER_RUNTIME"; else command -v crun || command -v runc; fi']
-
-[requirements.runc.linux]
-command_succeeds = ["bash", "-c", "command -v runc"]
-
-[requirements.curl.macos]
-command_succeeds = ["curl", "--version"]
-[requirements.curl.linux]
-command_succeeds = ["curl", "--version"]

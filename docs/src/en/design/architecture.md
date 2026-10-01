@@ -55,7 +55,7 @@ from backend outcomes.
 
 ## Session lifecycle and policy
 
-A core `Session` (`ExecutorSession` remains a compatibility alias) corresponds to one Attempt. It coordinates preparation,
+A core `Session` corresponds to one Attempt. It coordinates preparation,
 execution, cancellation/deadlines, driver teardown, evidence checks, durable
 Run Bundle updates, and terminal publication. Backends return `ExecutorOutput`
 with mandatory observations; they cannot set Run/Attempt identity or publish a
@@ -63,21 +63,11 @@ terminal state. Process and VM termination share the process-group cleanup
 algorithm; OCI uses its runtime kill API. A new Attempt gets new Session identity
 and approval cache keys.
 
-The Session owns prepared drivers and its AgentCtl server. Register trusted
-in-process extensions with `PVisorBuilder::extension`. Fixed hooks run in order:
-`Preparing → Prepared → Executing → Executed → Finalizing → Committing`.
-A hook error fails the Attempt, but cannot skip driver cleanup or result persistence;
-startup rejection aborts prepared resources. `finished` is a notification after
-terminal publication, with no authority to rewrite the outcome.
-
-Control owns the versioned `SessionIdentity`, `SessionControlRequest/Response`
-and `SessionObservation` contracts. `RunHandle::control` checks protocol version
-and exact Run/Attempt/lease identity before status, cancellation or checkpoint.
-Cancellation acknowledgement means requested, not terminated. `observe` and
-`subscribe_observations` expose current phase, status and final result; the watch
-stream coalesces updates. Use `subscribe_events` for ordered execution events.
-These are embeddable typed protocols; AgentCtl remains the separate cooperative
-workload protocol, and no additional remote control listener is introduced.
+The Session owns prepared drivers and its AgentCtl server. `RunHandle` provides
+status, cancellation, checkpoints and ordered event subscriptions. Cancellation
+requests termination; waiting for execution yields the final result. AgentCtl
+retains workload cooperation and quiesce/checkpoint duties. There is no separate
+Session control protocol or lifecycle hook interface.
 
 Control owns network configuration, compiled authorization and address
 classifiers, plus file policy compilation. Session, workspace, user and base network policies constrain access together:

@@ -76,7 +76,7 @@ pub(super) fn format_bytes(bytes: u64) -> String {
 }
 
 fn image_summary(
-    image: &crate::image::cache::progress::ImageProgress,
+    image: &persisting_pvisor::cache::progress::ImageProgress,
     available: usize,
 ) -> Option<String> {
     let files = image
@@ -294,12 +294,12 @@ mod tests {
     #[test]
     fn image_metrics_fit_and_keep_unknown_totals_distinct_from_zero() {
         let mut snapshot = Snapshot {
-            image: Some(crate::image::cache::progress::ImageProgress {
+            image: Some(persisting_pvisor::cache::progress::ImageProgress {
                 cached_files: 12,
                 cached_bytes: 6 * 1024 * 1024,
                 downloaded_files: 27,
                 downloaded_bytes: 4 * 1024 * 1024,
-                totals: Some(crate::image::cache::ImageTotals {
+                totals: Some(persisting_pvisor::cache::ImageTotals {
                     files: 1234,
                     bytes: 80 * 1024 * 1024,
                 }),

@@ -15,8 +15,6 @@ pub mod policy;
 pub mod protocol;
 pub mod runtime;
 pub mod session;
-pub mod session_protocol;
-pub use session_protocol::*;
 mod time;
 pub mod trace;
 
@@ -29,3 +27,5 @@ pub use time::unix_now_ms;
 
 pub use network::{NetworkConfig, NetworkMode, NetworkPolicy};
 pub use session::*;
+
+pub mod gateway;

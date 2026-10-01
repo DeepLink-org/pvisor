@@ -1,0 +1,28 @@
+[package]
+name = "persisting-tui"
+version.workspace = true
+edition.workspace = true
+authors.workspace = true
+license.workspace = true
+description = "Terminal frontend for pVisor Jobs"
+
+[[bin]]
+name = "pvisor-tui"
+path = "src/main.rs"
+
+[dependencies]
+dirs.workspace = true
+fs2.workspace = true
+toml.workspace = true
+toml_edit.workspace = true
+tempfile.workspace = true
+persisting-overlaynet.workspace = true
+anyhow.workspace = true
+clap = { workspace = true, features = ["derive"] }
+libc.workspace = true
+persisting-control.workspace = true
+persisting-pvisor = { path = "../persisting-pvisor" }
+serde = { workspace = true, features = ["derive"] }
+serde_json.workspace = true
+unicode-width = "0.2.2"
+vt100 = "0.16.2"

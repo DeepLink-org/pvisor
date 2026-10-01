@@ -135,7 +135,7 @@ examples *scenarios: (build "release")
 
 # Run DOC specifications and save JSON; select S-DOC IDs with --case.
 cases *args: (build "release")
-    cargo run --quiet --manifest-path tools/semspec/Cargo.toml --locked -- run docs/src/zh/reference/cases.md --domain DOC --subject-bin "{{ target_dir }}/release/pvisor" --format json --output "{{ target_dir }}/pvisor-case-report.json" "$@"
+    cargo run --quiet --manifest-path tools/semspec/Cargo.toml --locked -- --config semspec-doc.toml run docs/src/zh/reference/cases.md --domain DOC --subject-bin "{{ target_dir }}/release/pvisor" --format json --output "{{ target_dir }}/pvisor-case-report.json" "$@"
 
 # Measure process startup and Run Bundle access (smoke or nightly).
 benchmark suite="smoke" output="target/pvisor-benchmark/current" build_dir="target/pvisor-benchmark-build":
@@ -181,6 +181,6 @@ test-semspec *args:
 semspec *args:
     cargo run --quiet --manifest-path tools/semspec/Cargo.toml --locked -- "$@"
 
-# Verify public pVisor behavior in fresh temporary workspaces.
+# Verify the first review domain in fresh temporary workspaces. DOC remains in just cases.
 semantics *args: (build "debug")
-    cargo run --quiet --manifest-path tools/semspec/Cargo.toml --locked -- run --subject-bin "{{ target_dir }}/debug/pvisor" "$@"
+    cargo run --quiet --manifest-path tools/semspec/Cargo.toml --locked -- run --domain STAGE --subject-bin "{{ target_dir }}/debug/pvisor" "$@"

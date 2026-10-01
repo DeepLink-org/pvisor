@@ -28,18 +28,20 @@ just semspec revoke S-STAGE-001 --reviewer YOUR_NAME --reason '需要重新讨�
 
 仓库尚未指定语义审核人的 GitHub 身份；维护者应在 CODEOWNERS 中为规格、配置、
 词汇、引擎、REVIEWED.toml 和 .approved/ 指定真实人工审核者并开启分支保护。
-完整审核后再以 `review --strict` 和 `run --require-reviewed` 作为发布门禁。
+首轮人工审核仅覆盖 14 条 S-STAGE 及其词汇和引擎。
+完整审核后，以限定 STAGE 域的 `review --strict` 和 `run --require-reviewed` 作为发布门禁。
+DOC 继续由同一 runner 执行示例回归，不作为已审核的语义承诺；其 case 与断言保持原样。
 不要自动填充台账，也不要因为实现失败而削弱性质。删除已分配 case 时将 ID 放入
-semspec.toml 的 retired，禁止复用。引擎执行语义变化必须升级 ENGINE_SEMANTICS。
+相应配置文件的 retired，禁止复用。引擎执行语义变化必须升级 ENGINE_SEMANTICS。
 
 ## 文档场景迁移
 
 `docs/src/zh/reference/cases.md` 同时是用户文档和 DOC 规格源，覆盖原 A01–M02 中仍有效的 54 个场景，`just cases` 只运行 DOC 域。
-L01、L02 随 `env` 功能移除而退役，S-DOC-053、S-DOC-054 已登记在 retired 中。
+L01、L02 随 `env` 功能移除而退役，S-DOC-053、S-DOC-054 已登记在 semspec-doc.toml 的 retired 中。
 
 ```sh
-just semspec list --domain DOC
-just semspec run docs/src/zh/reference/cases.md --subject-bin target/release/pvisor
+just semspec --config semspec-doc.toml list --domain DOC
+just semspec --config semspec-doc.toml run docs/src/zh/reference/cases.md --subject-bin target/release/pvisor
 just cases --case S-DOC-001,S-DOC-012 --keep
 just cases
 ```

@@ -369,6 +369,8 @@ def test_cargo_command_selects_static_musl_on_linux(monkeypatch):
     monkeypatch.setattr(wheel_stage.sys, "platform", "linux")
     monkeypatch.setattr(wheel_stage.platform, "machine", lambda: "x86_64")
     command = wheel_stage._cargo_command(wheel_stage.BuildOptions())
+    assert {"persisting-pvisor", "persisting-tui", "persisting-replay"} <= set(command)
+    assert "persisting-pvisor/gateway" in command
     assert command[:2] == ["cargo", "zigbuild"]
     assert command[command.index("--target") + 1] == "x86_64-unknown-linux-musl"
     with pytest.raises(RuntimeError, match="unsupported wheel target"):

@@ -158,9 +158,9 @@ pvisor run --safe --overlaynet-allow inference.example.com:443 -- zcode
 ```
 
 `--safe` generates a command-line argument patch, parses it through the same CLI parser, and
-applies it before explicit user arguments. Each Agent owns a file under `cli/run/safe/`:
-`codex.rs`, `claude.rs`, `gemini.rs`, and `zcode.rs`. Shared code selects and combines patches;
-The flag also requires the selected executor to enforce isolation; it never chooses an executor.
+applies it before explicit user arguments. The preset is Agent-independent and does
+not infer network grants from executable names. It requires isolation from the
+selected executor and never selects an executor.
 Precedence is **explicit CLI > safe preset > configuration
 file > ordinary defaults**. Runs without `--safe` retain their existing behavior. The preset
 supports commands and TOML specs; prepared JSON RunSpecs reject it.
@@ -184,21 +184,9 @@ limits, separately.
 
 Sandbox setup failure stops execution. `--safe` cannot be combined with `--overlaynet off`.
 
-| Executed command | Default ordinary egress destination |
-| --- | --- |
-| `codex` | `api.openai.com:443`, `chatgpt.com:443`, `ab.chatgpt.com:443` |
-| `bash`, `sh`, `zsh`, `fish` | Same Codex destinations, for Codex started inside the shell |
-| `claude` | `api.anthropic.com:443` |
-| `gemini` | `generativelanguage.googleapis.com:443` |
-| `zcode` | `api.z.ai:443`, `open.bigmodel.cn:443` |
-| Other commands | Denied unless explicitly configured |
-
-Detection uses the executable filename, including absolute paths, rather than `--name`.
-These are standard API defaults; the preset does not inspect private Agent configuration or
-discover OAuth/custom provider endpoints. Unmatched destinations, including separate telemetry,
-upload, update and package download hosts, are denied by the policy. `--overlaynet-allow`
-replaces the preset grants; `--overlaynet-deny` adds denials. Configured deny rules and bandwidth
-limits are retained.
+Ordinary egress is denied by default. Grant destinations explicitly with
+`--overlaynet-allow HOST:PORT`. Existing denies and rate limits remain in force;
+Gateway capture uses explicitly configured routes.
 
 Without `--safe`, Codex state and project writes reach their host lower paths.
 With `--safe`, the workspace uses the reviewable Run stage and HOME (including
@@ -216,40 +204,10 @@ workspace stage, even under `--safe`. The policy is selected by the direct
 executable name, so shell wrappers do not receive it. Gateway profile
 `zcode-bigmodel` is a separate routing adapter.
 
-The ZCode preset targets **API keys with direct OpenAI-compatible endpoints**, based on the
-[official model configuration guide](https://zcode.z.ai/cn/docs/configuration). Coding Plan uses
-`https://api.z.ai/api/coding/paas/v4` or `https://open.bigmodel.cn/api/coding/paas/v4`;
-ordinary API access uses `/api/paas/v4` on those hosts. The policy restricts hosts and ports,
-not these paths. It does not grant `zcode.z.ai`, login hosts, object storage, plugin markets
-or update hosts.
-
-Source review is pinned to ZCode commit `872ad960de7ec172591f7e1952f7849229f94521`.
-Its [model routing code](https://github.com/zai-org/ZCode/blob/872ad960de7ec172591f7e1952f7849229f94521/apps/zcode-cli/packages/adapters/src/model/official-coding-plan-gateway.ts)
-rewrites both official Anthropic messages endpoints to `zcode.z.ai`; that route and account
-login flows needing business hosts are outside this preset. API-key login alone does not imply
-direct OpenAI-compatible access.
-Its [proxy resolver](https://github.com/zai-org/ZCode/blob/872ad960de7ec172591f7e1952f7849229f94521/apps/zcode-cli/packages/adapters/src/network/http-config.ts)
-requires an explicit proxy setting or `ZCODE_HTTP_PROXY` for model calls, ignoring ordinary
-`HTTP_PROXY`. Generic proxy variables alone do not make its model calls use the proxy;
-`--safe` on macOS blocks direct connections. Configure its dedicated proxy setting for
-connectivity, or select VM for transparent egress. Other APIs sharing an allowed host, including
-business APIs on `api.z.ai`, remain reachable.
-
-The [original 3.12.3 forensic report](https://blog.ferstar.org/posts/zcode-silent-workspace-snapshot-upload/)
-describes snapshot uploads to object storage after obtaining credentials from the business host;
-its update reports removal of that pipeline in 3.14.0. This is version-specific external evidence,
-not a finding about every release. The allowlist rejects ungranted upload destinations without
-enumerating buckets, but cannot prevent local reads, packaging or content sent in permitted model
-requests. This preset has not been validated against a live ZCode account.
-
-If the effective configuration enables Gateway capture with explicit routes, the preset denies
-ordinary egress and retains those Gateway routes. Gateway continues its existing forwarding
-behavior; it does not become an inference-path filter.
-
 The preset uses `--clear-pass-env` to clear configured `run.pass_env`.
 `--clear-pass-env` also works on its own; explicit `--pass-env NAME` grants
-are applied afterward. Direct `codex` runs inherit the host environment for
-account and routing discovery, including under `--safe`; see the limitations below.
+are applied afterward. All commands default to disabled host environment inheritance;
+pass credentials explicitly with `--pass-env NAME`.
 Explicit CLI options can restore or override these settings. `--safe` stages the
 workspace by default. Existing container mounts and filesystem layers are retained; the project base,
 rootfs and executor remain unchanged. Use `--pass-env` to deliver credentials explicitly, or let a configured

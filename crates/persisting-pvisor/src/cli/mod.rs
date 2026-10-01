@@ -2,17 +2,15 @@
 mod commands;
 pub mod extensions;
 mod product;
-mod replay;
 mod run;
 pub mod runtime;
 #[cfg(unix)]
-mod terminal;
+pub mod terminal;
 mod trajectory;
-#[cfg(unix)]
-mod tui;
 
 use clap::{CommandFactory, FromArgMatches, Parser, Subcommand};
-pub use commands::{cache_main, replay_main, tui_main};
+pub use commands::cache_main;
+pub use run::RunArgs;
 use std::ffi::OsString;
 
 #[derive(Debug, Parser)]
@@ -42,14 +40,14 @@ enum Command {
     Fork(run::ForkArgs),
     /// Open a read-only shell or run a command against a Job filesystem view.
     Inspect(runtime::InspectArgs),
-    /// List installed executable extensions and their manifests.
+    /// List installed executable extensions and their descriptions.
     Extensions,
     #[command(external_subcommand)]
     External(Vec<OsString>),
 }
 
 fn root_command() -> anyhow::Result<clap::Command> {
-    let mut command = Cli::command().after_help("Use pvisor -- COMMAND for default execution. Independent tools are discovered from pvisor-* manifests.");
+    let mut command = Cli::command().after_help("Use pvisor -- COMMAND for default execution. Independent tools are discovered from companion commands alongside pvisor.");
     for (_, manifest) in extensions::discover()? {
         command = command.subcommand(clap::Command::new(manifest.name).about(manifest.description));
     }
@@ -152,7 +150,7 @@ pub fn main() -> anyhow::Result<()> {
             serde_json::to_string_pretty(
                 &extensions::discover()?
                     .into_iter()
-                    .map(|(path, manifest)| serde_json::json!({"path":path,"manifest":manifest}))
+                    .map(|(path, manifest)| serde_json::json!({"path":path,"name":manifest.name,"description":manifest.description}))
                     .collect::<Vec<_>>()
             )?
         ),

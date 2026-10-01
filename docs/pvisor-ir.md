@@ -86,7 +86,7 @@ RunSpec → resolve_run → RunPlan → prepare → RunExecutor::execute → tea
 `resolve_run` 校验 RunSpec，选择支持 invocation 的执行器，合并应用及网络策略，
 检查所需执行边界，再编译计划。`PVisor::resolve_run_plan` 使用相同解析路径，供启动前审查。
 计划中的上下文只描述可信运行器已选择的 VM/Overlay 放置，不授予能力。
-执行器消费 AttemptContext 中的 RunSpec 与实际控制附件，不解释任意 Expression。
+执行器消费 Session 中的 RunSpec 与实际控制附件，不解释任意 Expression。
 
 执行前必要事实提交失败会阻止执行器运行。完成时 RunObservation 在生产构建中校验计划、
 原请求与派生操作的结果契约及计数一致性；无效观察导致 Run 失败，并以 Unknown 保存已知结果。
@@ -110,12 +110,11 @@ IR 文本或 JSON 可通过 `persisting_control::ir::Expression` 解析和校验
 | `persisting_pvisor::trace` | 单写入者 journal、提交回执及恢复 |
 
 测试覆盖解析往返、结构改写与规则证据，以及生产 Run 的准入拒绝、执行事实链、
-结果检查和 Journal 恢复。代数检查只验证结构规律，不代表通用表达式授权或真实驱动的执行证明。
+结果检查和 Journal 恢复。IR 属性测试验证结构规律，不代表通用表达式授权或真实驱动的执行证明。
 
 ```sh
 just test persisting-control
 just test persisting-pvisor
-just test-py tests/test_pvisor_algebra.py
 ```
 
 生产 Run 入口已编译 RunPlan，并将请求、实际计划改写、派发和完成写成独立 Trace v3 事实。

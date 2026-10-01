@@ -64,7 +64,7 @@ broken links, missing anchors and invalid redirect targets.
 - [pVisor core contract v3 (Chinese)](pvisor-algebra.md): the semantic baseline for
   the core → events/logging → module migration sequence. Defines operations,
   outcomes, contexts, rewrite evaluation and backend obligations, including a
-  file-range contract and [finite model checks](../tests/test_pvisor_algebra.py).
+  file-range contract and [Rust contract/property tests](../crates/persisting-control/tests/ir_contracts.rs).
   Runtime guarantees follow as each module adopts and tests these contracts.
 - [Operation-chain IR v3 and Trace v3 implementation (Chinese)](pvisor-ir.md): readable text,
   typed verification, ordered rewrites, backend contracts and durable trace facts.

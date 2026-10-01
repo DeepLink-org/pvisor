@@ -4,11 +4,11 @@ use super::{
     audit_ui::{self, AuditServer, Lifetime, Permissions, Prompt, Scope},
     input, view,
 };
-use crate::cli::terminal::{AUDIT_SOCKET, CHILD_MARKER, LOG_FILE, STAGE_FILE};
-use crate::runtime::{RunRecord, control_observations};
 use anyhow::{Context, Result};
 use persisting_control::audit::{AuditDecision, AuditRequest};
 use persisting_control::ir::run::FilesystemObservation;
+use persisting_pvisor::cli::terminal::{AUDIT_SOCKET, CHILD_MARKER, LOG_FILE, STAGE_FILE};
+use persisting_pvisor::{RunRecord, control_observations};
 use std::ffi::OsString;
 use std::fs::{File, OpenOptions};
 use std::io::{Read, Write};
@@ -62,7 +62,7 @@ impl Drop for ChildCleanup {
 
 #[derive(Default)]
 pub(super) struct Snapshot {
-    pub(super) image: Option<crate::image::cache::progress::ImageProgress>,
+    pub(super) image: Option<persisting_pvisor::cache::progress::ImageProgress>,
     pub(super) stage: Option<PathBuf>,
     pub(super) record: Option<RunRecord>,
     pub(super) filesystem: Option<FilesystemObservation>,
@@ -636,8 +636,8 @@ mod tests {
         let directory = tempfile::tempdir().unwrap();
         let log = directory.path().join("diagnostics.log");
         File::create(&log).unwrap();
-        crate::diagnostics::init(Some(log.clone()));
-        let downloads = crate::image::cache::progress::Downloads::new("example:latest");
+        persisting_pvisor::diagnostics::init(Some(log.clone()));
+        let downloads = persisting_pvisor::cache::progress::Downloads::new("example:latest");
         downloads.received(b"transfer-log-test/file\nname", 10);
         downloads.received(b"transfer-log-test/file\nname", 20);
         let mut snapshot = Snapshot::default();

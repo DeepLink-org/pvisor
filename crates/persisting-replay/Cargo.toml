@@ -7,6 +7,9 @@ license.workspace = true
 description = "Agent-native sandbox replay and continuation for pVisor"
 
 [dependencies]
+tempfile.workspace = true
+clap = { workspace = true, features = ["derive"] }
+persisting-pvisor = { path = "../persisting-pvisor" }
 anyhow.workspace = true
 persisting-control.workspace = true
 persisting-journal.workspace = true
@@ -24,4 +27,3 @@ uuid = { workspace = true, features = ["v4"] }
 
 [dev-dependencies]
 axum = { workspace = true, features = ["json"] }
-tempfile.workspace = true

@@ -1,52 +1,23 @@
-//! Discovery reads manifests without running executables; dispatch preserves argv and exit.
+//! First-party discovery is inert; dispatch preserves argv and exit.
 use std::{fs, os::unix::fs::PermissionsExt, process::Command};
-
-#[test]
-fn bundled_commands_embed_manifests_and_dispatch_help() {
-    for (name, binary) in [
-        ("cache", env!("CARGO_BIN_EXE_pvisor-cache")),
-        ("tui", env!("CARGO_BIN_EXE_pvisor-tui")),
-        ("replay", env!("CARGO_BIN_EXE_pvisor-replay")),
-    ] {
-        let bytes = fs::read(binary).unwrap();
-        let manifest = persisting_pvisor::cli::extensions::embedded_manifest(&bytes).unwrap();
-        assert_eq!(manifest.name, name);
-        let output = Command::new(binary)
-            .arg("--pvisor-manifest")
-            .output()
-            .unwrap();
-        assert!(output.status.success());
-        let queried: serde_json::Value = serde_json::from_slice(&output.stdout).unwrap();
-        assert_eq!(queried["name"], name);
-        let output = Command::new(env!("CARGO_BIN_EXE_pvisor"))
-            .args([name, "--help"])
-            .output()
-            .unwrap();
-        assert!(
-            output.status.success(),
-            "{}",
-            String::from_utf8_lossy(&output.stderr)
-        );
-        assert!(String::from_utf8_lossy(&output.stdout).contains(&format!("pvisor-{name}")));
-    }
-}
 
 #[test]
 fn discovery_is_inert_and_dispatch_preserves_arguments_and_exit() {
     let temporary = tempfile::tempdir().unwrap();
+    let kernel = temporary.path().join("pvisor");
+    fs::copy(env!("CARGO_BIN_EXE_pvisor"), &kernel).unwrap();
     let marker = temporary.path().join("executed");
-    let plugin = temporary.path().join("pvisor-probe");
-    let manifest = persisting_pvisor::command_manifest!("probe", "Inert discovery probe");
+    let plugin = temporary.path().join("pvisor-tui");
     fs::write(
         &plugin,
         format!(
-            "#!/bin/sh\n: > '{}'\nprintf '%s\\n' \"$@\"\nexit 42\n{manifest}",
+            "#!/bin/sh\n: > '{}'\nprintf '%s\\n' \"$@\"\nexit 42\n",
             marker.display()
         ),
     )
     .unwrap();
     fs::set_permissions(&plugin, fs::Permissions::from_mode(0o755)).unwrap();
-    let list = Command::new(env!("CARGO_BIN_EXE_pvisor"))
+    let list = Command::new(&kernel)
         .arg("extensions")
         .env("PATH", temporary.path())
         .output()
@@ -57,14 +28,10 @@ fn discovery_is_inert_and_dispatch_preserves_arguments_and_exit() {
         String::from_utf8_lossy(&list.stderr)
     );
     let entries: Vec<serde_json::Value> = serde_json::from_slice(&list.stdout).unwrap();
-    assert!(
-        entries
-            .iter()
-            .any(|entry| entry["manifest"]["name"] == "probe")
-    );
+    assert!(entries.iter().any(|entry| entry["name"] == "tui"));
     assert!(!marker.exists(), "discovery executed the extension");
-    let output = Command::new(env!("CARGO_BIN_EXE_pvisor"))
-        .args(["probe", "space argument", "--literal", ""])
+    let output = Command::new(&kernel)
+        .args(["tui", "space argument", "--literal", ""])
         .env("PATH", format!("{}:/bin", temporary.path().display()))
         .output()
         .unwrap();
@@ -93,7 +60,7 @@ fn kernel_help_discovers_commands_and_default_execution_dispatches_run() {
         String::from_utf8_lossy(&removed.stderr).contains("pvisor-env extension is not installed")
     );
     for name in [
-        "run", "cache", "apply", "drop", "status", "kill", "fork", "inspect", "tui", "replay",
+        "run", "cache", "apply", "drop", "status", "kill", "fork", "inspect",
     ] {
         assert!(help.contains(&format!("  {name} ")), "{help}");
     }
@@ -148,11 +115,10 @@ fn isolated_core_keeps_job_commands_and_runs_without_extensions() {
     );
     assert!(String::from_utf8_lossy(&output.stdout).contains("standalone-kernel"));
     let marker = temporary.path().join("shadowed");
-    let manifest = persisting_pvisor::command_manifest!("status", "Should not override the core");
     let plugin = temporary.path().join("pvisor-status");
     fs::write(
         &plugin,
-        format!("#!/bin/sh\n: > '{}'\nexit 42\n{manifest}", marker.display()),
+        format!("#!/bin/sh\n: > '{}'\nexit 42\n", marker.display()),
     )
     .unwrap();
     fs::set_permissions(&plugin, fs::Permissions::from_mode(0o755)).unwrap();
@@ -163,4 +129,35 @@ fn isolated_core_keeps_job_commands_and_runs_without_extensions() {
         .unwrap();
     assert!(output.status.success());
     assert!(!marker.exists(), "extension shadowed a core command");
+}
+
+#[test]
+fn path_cannot_supply_companions_and_unknown_commands_are_not_discovered() {
+    let installation = tempfile::tempdir().unwrap();
+    let untrusted = tempfile::tempdir().unwrap();
+    let kernel = installation.path().join("pvisor");
+    fs::copy(env!("CARGO_BIN_EXE_pvisor"), &kernel).unwrap();
+    for name in ["tui", "probe"] {
+        let path = untrusted.path().join(format!("pvisor-{name}"));
+        fs::write(&path, "#!/bin/sh\nexit 42\n").unwrap();
+        fs::set_permissions(&path, fs::Permissions::from_mode(0o755)).unwrap();
+        let output = Command::new(&kernel)
+            .args(["help", name])
+            .env("PATH", untrusted.path())
+            .output()
+            .unwrap();
+        assert!(!output.status.success());
+        assert!(String::from_utf8_lossy(&output.stderr).contains("extension is not installed"));
+    }
+    fs::copy(
+        untrusted.path().join("pvisor-probe"),
+        installation.path().join("pvisor-probe"),
+    )
+    .unwrap();
+    let output = Command::new(&kernel).arg("extensions").output().unwrap();
+    assert!(output.status.success());
+    assert_eq!(
+        serde_json::from_slice::<serde_json::Value>(&output.stdout).unwrap(),
+        serde_json::json!([])
+    );
 }

@@ -4,7 +4,7 @@
 use crate::config::{ContainerMount, ContainerPlatform, ContainerSettings};
 use crate::executor::artifact::resolve_pvisor_binary;
 use crate::executor::delegated::{DelegatedRunFiles, RESULT_FILENAME, SPEC_FILENAME};
-use crate::executor::{ExecutorOutput, ExecutorSession, RunExecutor, SessionEnd as End};
+use crate::executor::{ExecutorOutput, RunExecutor, Session, SessionEnd as End};
 use crate::executor::{join_capture, read_limited, stdio};
 use async_trait::async_trait;
 use persisting_control::{
@@ -327,7 +327,7 @@ impl RunExecutor for ContainerExecutor {
         matches!(invocation, RunInvocation::Process(_))
     }
 
-    async fn execute(&self, context: &ExecutorSession) -> ExecutorOutput {
+    async fn execute(&self, context: &Session) -> ExecutorOutput {
         let spec = context.spec().clone();
         context
             .transition(

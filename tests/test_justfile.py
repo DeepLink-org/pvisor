@@ -28,7 +28,7 @@ def run_task(tmp_path):
         "if name == 'python3' and args[0] == 'scripts/build-pvisor.py':\n"
         "    profile = args[args.index('--profile') + 1]\n"
         "    target = Path(args[args.index('--target-dir') + 1])\n"
-        f"    names = {sorted(path.stem for path in (ROOT / 'crates/persisting-pvisor/src/bin').glob('*.rs'))!r}\n"
+        "    names = ['pvisor', 'pvisor-cache', 'pvisor-tui', 'pvisor-replay']\n"
         "    for binary_name in names:\n"
         "        binary = target / ('debug' if profile == 'dev' else profile) / binary_name\n"
         "        binary.parent.mkdir(parents=True, exist_ok=True)\n"
@@ -113,6 +113,8 @@ def test_cases_preserve_shell_characters_in_arguments(run_task, tmp_path):
         "tools/semspec/Cargo.toml",
         "--locked",
         "--",
+        "--config",
+        "semspec-doc.toml",
         "run",
         "docs/src/zh/reference/cases.md",
         "--domain",

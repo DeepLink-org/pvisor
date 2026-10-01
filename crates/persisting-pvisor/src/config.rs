@@ -6,8 +6,10 @@
 
 use std::path::{Path, PathBuf};
 
+use persisting_control::gateway::{CaptureLevel, ModelRoute};
 use persisting_control::{FilesystemCapability, ResourceLimits};
-use persisting_gateway::config::{CaptureLevel, ModelRoute, ProxyConfig};
+#[cfg(feature = "gateway")]
+use persisting_gateway::config::ProxyConfig;
 use persisting_overlaynet::{NetworkAccessRule, NetworkBandwidthLimit};
 use serde::{Deserialize, Serialize};
 
@@ -538,6 +540,7 @@ pub struct RecordSettings {
 
 /// Resolved configuration for the internal OverlayNet + optional Gateway sink.
 #[derive(Debug, Clone)]
+#[cfg(feature = "gateway")]
 pub struct GatewayDriverConfig {
     pub proxy: ProxyConfig,
     pub output_dir: PathBuf,
@@ -551,6 +554,7 @@ pub struct GatewayDriverConfig {
 pub struct NetworkDriverConfig {
     pub mode: OverlayNetMode,
     pub network: persisting_overlaynet::NetworkConfig,
+    pub listen: String,
 }
 
 impl Default for NetworkDriverConfig {
@@ -558,16 +562,27 @@ impl Default for NetworkDriverConfig {
         Self {
             mode: OverlayNetMode::Auto,
             network: persisting_overlaynet::NetworkConfig::default(),
+            listen: "127.0.0.1:0".into(),
         }
     }
 }
 
 impl NetworkDriverConfig {
+    pub fn listen(mut self, listen: impl Into<String>) -> Self {
+        self.listen = listen.into();
+        self
+    }
+
     pub fn new(mode: OverlayNetMode, network: persisting_overlaynet::NetworkConfig) -> Self {
-        Self { mode, network }
+        Self {
+            mode,
+            network,
+            listen: "127.0.0.1:0".into(),
+        }
     }
 }
 
+#[cfg(feature = "gateway")]
 impl GatewayDriverConfig {
     pub fn new(proxy: ProxyConfig) -> Self {
         Self {
@@ -597,12 +612,14 @@ impl GatewayDriverConfig {
 /// Programmatic pVisor driver assembly configuration.
 #[derive(Debug, Clone, Default)]
 pub struct PVisorConfig {
+    #[cfg(feature = "gateway")]
     pub gateway: Option<GatewayDriverConfig>,
     pub network: NetworkDriverConfig,
     pub overlay: OverlayHint,
 }
 
 impl PVisorConfig {
+    #[cfg(feature = "gateway")]
     pub fn with_gateway(mut self, gateway: GatewayDriverConfig) -> Self {
         self.gateway = Some(gateway);
         self

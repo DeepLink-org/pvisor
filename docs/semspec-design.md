@@ -617,3 +617,12 @@ overlay-core 的 `create_symlink` 本身成功，错误出现在 FUSE 回复之�
    中引入 `only-on`？当前倾向拆分，让每条语义陈述都无条件成立。
 5. **当前实现**：独立的 `tools/semspec` Rust 工具；使用 `just test-semspec` 验证实现，
    `tests/semantics/stage-apply.md` 为按本文 §4 起草的未审核规格。
+
+## 文档规格变更的审核工作流
+
+`docs/src/zh/reference/cases.md` 是 DOC 规格源。修改场景中的语义、命令或断言，
+以及修改它依赖的词汇，都属于规格变更：先 `just semspec lint`，再运行受影响的
+case；digest 变化使已有批准变成 STALE，运行成功不会重新批准。
+人工审查新语义与差异后才更新批准台账和快照，再用 `--require-reviewed` 检查。
+AI 不得执行 approve/revoke，也不得编辑真实 REVIEWED.toml 或 .approved 快照。
+发布门禁必须要求真实人工批准，不能将 UNREVIEWED 或 STALE 当作批准通过。

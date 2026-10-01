@@ -22,7 +22,7 @@ pub(crate) struct AttemptAttachments {
     pub vm_network: Option<Arc<std::sync::Mutex<Option<crate::runtime::VmNetworkAttachment>>>>,
 }
 
-pub use crate::session::Session as ExecutorSession;
+pub(crate) use crate::session::Session;
 
 /// The production execution boundary: consumes the resolved RunSpec and controls.
 /// RunPlan IR is an audit projection, not an arbitrary-expression dispatch API.

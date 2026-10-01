@@ -145,8 +145,7 @@ pvisor run --safe --overlaynet-allow inference.example.com:443 -- zcode
 ```
 
 `--safe` 生成一组命令行参数补丁，经过同一个 CLI 解析器后应用，再应用用户显式参数。
-各 Agent 的补丁分别放在 `cli/run/safe/codex.rs`、`claude.rs`、`gemini.rs`、`zcode.rs`，
-公共部分只负责选择与组合。`--safe` 同时要求所选执行器落实隔离，也不选择 executor。
+预设与 Agent 无关，不根据可执行文件名自动放行目标。`--safe` 要求所选执行器落实隔离，不选择 executor。
 优先级是 **显式 CLI > safe 预设 > 配置文件 > 普通默认值**。
 支持普通命令和 TOML `--config`；已准备好的 JSON `--spec` 不接受该预设。
 
@@ -169,20 +168,8 @@ pvisor run --safe --overlaynet-allow inference.example.com:443 -- zcode
 隔离安装失败会停止运行。`--safe` 不能与 `--overlaynet off` 同时使用。
 
 
-| 实际执行的命令 | 默认允许的普通网络目标 |
-| --- | --- |
-| `codex` | `api.openai.com:443`、`chatgpt.com:443`、`ab.chatgpt.com:443` |
-| `bash`、`sh`、`zsh`、`fish` | 与 Codex 相同，供 shell 内启动的 Codex 使用 |
-| `claude` | `api.anthropic.com:443` |
-| `gemini` | `generativelanguage.googleapis.com:443` |
-| `zcode` | `api.z.ai:443`、`open.bigmodel.cn:443` |
-| 其他命令 | 默认拒绝；需显式声明目标或配置 Gateway |
-
-识别依据是命令的文件名，支持绝对路径，`--name` 只影响显示名称。
-这些是标准 API 服务预设，不会读取 Agent 私有配置或自动发现 OAuth、自定义供应商地址。
-未匹配目标（包括独立域名上的遥测、上传、更新和依赖下载）被策略拒绝。
-`--overlaynet-allow` 替换预设的允许目标；`--overlaynet-deny` 在允许列表上增加拒绝规则。
-已有配置中的拒绝规则和限速保留。
+普通网络默认拒绝。通过 `--overlaynet-allow HOST:PORT` 显式授权；
+已有拒绝规则和限速继续生效，Gateway capture 使用显式配置的路由。
 
 未使用 `--safe` 时，Codex 状态和项目写入会到达宿主 lower。使用 `--safe` 时，
 工作区进入可审查的 Run stage；HOME（及显式设置的 `CODEX_HOME`）使用单独的私有 stage。
@@ -196,40 +183,9 @@ HOME 状态改动在 Run 结束后丢弃，不包含在工作区 Run Bundle 中�
 策略按直接可执行文件名匹配，shell 包装器不会触发。`zcode-bigmodel` Gateway profile
 是独立的路由适配。
 
-ZCode 预设面向 **API Key + OpenAI 兼容协议直连**，依据
-[官方模型配置文档](https://zcode.z.ai/cn/docs/configuration)：Coding Plan 使用
-`https://api.z.ai/api/coding/paas/v4` 或 `https://open.bigmodel.cn/api/coding/paas/v4`；
-普通 API 使用对应域名的 `/api/paas/v4`。这里只放行域名和端口，不限制这些路径。
-不默认放行 `zcode.z.ai`、登录域名、对象存储、插件市场或更新地址。
-
-Linux host 的 `--safe` 会通过 supervisor loopback proxy 转发 ZCode 请求；该路径是
-cooperative 的，直接 socket 仍可能绕过代理。需要不可绕过边界时使用
-`pvisor --safe --vm -- zcode`。
-`zcode-bigmodel` Gateway profile 当前要求 host executor，因此可以在 Linux host 的
-`--safe` cooperative 模式下使用；如果需要 VM 的不可绕过网络边界，则该 profile 还需要
-补充 VM 侧的 provider catalog 注入支持。
-
-核对依据为 ZCode 官方源码提交 `872ad960de7ec172591f7e1952f7849229f94521`：
-[模型转发代码](https://github.com/zai-org/ZCode/blob/872ad960de7ec172591f7e1952f7849229f94521/apps/zcode-cli/packages/adapters/src/model/official-coding-plan-gateway.ts)
-会将两家官方 Anthropic messages 端点改发 `zcode.z.ai`，因此该路径和依赖业务域名的账号登录流程
-不在本预设的可用范围内；不要把“API Key 登录”直接等同于 OpenAI 协议直连。
-[代理解析代码](https://github.com/zai-org/ZCode/blob/872ad960de7ec172591f7e1952f7849229f94521/apps/zcode-cli/packages/adapters/src/network/http-config.ts)
-要求显式代理配置或 `ZCODE_HTTP_PROXY`，模型请求不会默认采用普通 `HTTP_PROXY`。
-仅注入通用代理变量不能让 ZCode 的模型请求使用代理；macOS required 会拒绝其直连，
-需要配置其专用代理入口才能联网，或显式使用 VM 的透明出口。
-同域名的其他 API（例如 `api.z.ai` 的业务接口）仍可访问，不能称为只允许推理。
-
-历史上传风险参考 [3.12.3 的原始取证报告](https://blog.ferstar.org/posts/zcode-silent-workspace-snapshot-upload/)：
-报告描述了业务域名获取凭证后向对象存储上传快照的链路，其后续更新称 3.14.0 已移除该链路。
-这是版本相关的外部取证，不能外推所有版本；上述白名单无需枚举存储桶即可拒绝未授权上传目标，
-但不会阻止本地读取、打包或通过已允许的模型请求传出内容。本预设未做真实账号联网验证。
-
-当最终配置启用 Gateway capture 且有明确路由时，预设拒绝普通出口，保留配置好的 Gateway
-通道。Gateway 自己仍按既有路由转发；这不提供推理 API 路径过滤。
-
 预设通过 `--clear-pass-env` 清空配置文件中的 `run.pass_env`；
 `--clear-pass-env` 也可单独使用，之后的显式 `--pass-env NAME` 仍然生效。
-直接运行 `codex` 时，为了发现账号和路由，即使带 `--safe` 也会继承宿主环境变量。
+所有命令默认关闭宿主环境继承；凭据通过显式 `--pass-env NAME` 授予。
 对应的显式 CLI 参数可以重新授予或覆盖。`--safe` 默认暂存工作区；
 已有容器挂载和文件系统底层仍保留；项目 base、rootfs、executor 不变。
 需要向 Agent 交付凭据时显式使用 `--pass-env`；使用已配置的 Gateway 可由可信侧持有上游 Key。

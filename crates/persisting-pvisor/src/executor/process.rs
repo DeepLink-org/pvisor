@@ -8,9 +8,7 @@ use crate::executor::sandbox::{
 #[cfg(target_os = "linux")]
 use crate::executor::sandbox::{ROOTLESS_ATTESTATION, SandboxPlan, landlock_runtime_available};
 use crate::executor::sandbox::{SANDBOX_ARG0_ENV, SANDBOX_PLAN_ENV, SANDBOX_SETUP_FAILED_WARNING};
-use crate::executor::{
-    Captured, ExecutorOutput, ExecutorSession, RunExecutor, SessionEnd as End, stdio,
-};
+use crate::executor::{Captured, ExecutorOutput, RunExecutor, Session, SessionEnd as End, stdio};
 use crate::session::lifecycle::terminate_process_tree;
 use async_trait::async_trait;
 use persisting_control::{
@@ -1372,7 +1370,7 @@ impl RunExecutor for ProcessExecutor {
         matches!(invocation, RunInvocation::Process(_))
     }
 
-    async fn execute(&self, context: &ExecutorSession) -> ExecutorOutput {
+    async fn execute(&self, context: &Session) -> ExecutorOutput {
         let spec = context.spec().clone();
         let RunInvocation::Process(invocation) = &spec.invocation;
         context

@@ -8,7 +8,7 @@ use std::sync::OnceLock;
 
 static LOG_CONTEXT: OnceLock<Option<PathBuf>> = OnceLock::new();
 
-pub(crate) fn init(path: Option<PathBuf>) {
+pub fn init(path: Option<PathBuf>) {
     let _ = LOG_CONTEXT.set(path);
 }
 

@@ -1,5 +1,7 @@
 //! LLM request/response capture handler (non-streaming path + upstream orchestration).
 
+use crate::config::{effective_provider, resolve_upstream_url};
+
 use std::sync::Arc;
 
 use anyhow::Context;
@@ -156,7 +158,7 @@ pub(super) async fn llm_capture(
     let upstream_model = resolved.upstream_model.clone();
     let bridge = ProtocolBridge::needed(protocol, route);
     let upstream_protocol = bridge.upstream_protocol(protocol);
-    let provider = route.effective_provider(upstream_protocol);
+    let provider = effective_provider(route, upstream_protocol);
 
     // Wrap once in Arc so the request, response (or stream draft), and final events
     // all share a single allocation; clones become refcount bumps.
@@ -215,7 +217,7 @@ pub(super) async fn llm_capture(
     )?;
 
     let upstream_path = bridge.upstream_path(&path, &upstream_model, stream_request)?;
-    let mut upstream_url = route.resolve_upstream_url(&upstream_path, upstream_protocol)?;
+    let mut upstream_url = resolve_upstream_url(route, &upstream_path, upstream_protocol)?;
     if bridge == ProtocolBridge::Passthrough {
         if let Some(q) = parts.uri.query() {
             upstream_url.set_query(Some(q));

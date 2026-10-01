@@ -12,7 +12,7 @@ use persisting_replay::{
 };
 use serde_json::json;
 
-use crate::config::{
+use persisting_pvisor::{
     OverlayFsCommit as PVisorOverlayFsCommit, OverlayFsSettings,
     OverlayNetMode as PVisorOverlayNetMode, OverlayNetPolicy as PVisorOverlayNetPolicy,
     RunConfig as PVisorRunConfig, RunExecutorKind, RunPolicy,
@@ -285,7 +285,7 @@ fn direct_managed_config(args: &ReplayArgs) -> Result<ReplayToml, ReplayError> {
 }
 
 fn run_managed(config: &ReplayToml) -> Result<i32, ReplayError> {
-    let executable = super::extensions::core_executable().map_err(|error| {
+    let executable = persisting_pvisor::cli::extensions::core_executable().map_err(|error| {
         ReplayError::configuration(format!("cannot resolve the pVisor executable: {error}"))
     })?;
     let mut outer = PVisorRunConfig::default();
@@ -590,6 +590,27 @@ fn failure_json(error: &ReplayError) -> serde_json::Value {
         "retryable": error.kind.retryable(),
     })
 }
+
+fn main() -> anyhow::Result<()> {
+    #[derive(clap::Parser)]
+    #[command(
+        name = "pvisor-replay",
+        version,
+        about = "Replay an agent-native trajectory"
+    )]
+    struct ReplayCli {
+        #[command(flatten)]
+        args: ReplayArgs,
+    }
+    use clap::Parser;
+    persisting_pvisor::cli::terminal::init_child_context();
+    let code = run(ReplayCli::parse().args);
+    if code != 0 {
+        std::process::exit(code);
+    }
+    Ok(())
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;

@@ -1,5 +1,7 @@
 //! LLM protocol conversion around Chat Completions and Gemini native generateContent.
 
+use crate::config::provider_kind;
+
 mod gemini_native;
 mod messages_completions;
 mod responses_completions;
@@ -49,7 +51,7 @@ pub enum ProtocolBridge {
 
 impl ProtocolBridge {
     pub fn needed(client: ProtocolKind, route: &ModelRoute) -> Self {
-        if route.provider_kind() == ProviderKind::Gemini {
+        if provider_kind(route) == ProviderKind::Gemini {
             return match client {
                 ProtocolKind::ChatCompletions => Self::CompletionsToGemini,
                 ProtocolKind::Messages => Self::MessagesToGemini,

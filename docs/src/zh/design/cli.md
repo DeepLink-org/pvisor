@@ -70,25 +70,25 @@ pvisor fork last -- codex
 公共工作流保持简单：启动 Job，检查 Evidence，然后明确决定 staged effect 的去向。Provider
 行为见[执行环境](../guides/execution.md)，完整选项见 [CLI 参考](../reference/cli.md)。
 
-## 核心命令与可执行扩展
+## 核心命令与伴随工具
 
-`run`、`status`、`kill`、`inspect`、`fork`、`apply`、`drop` 内置于 `pvisor`，
-共同覆盖完整的 Job 生命周期；帮助与 `extensions` 查询也由核心提供。
-只有核心二进制时也能执行、检查与管理 Job，不依赖伴随命令二进制。
-Session 生命周期及控制／观测协议仍是共享库 API。
+`pvisor` 内置 `run`、`status`、`kill`、`inspect`、`fork`、`apply`、`drop`，
+另提供帮助与 `extensions` 列表。单独安装核心即可管理完整 Job 生命周期。
 
-`cache`、`tui`、`replay` 保留为独立的 `pvisor-NAME` 扩展，各自拥有参数解析器和
-manifest。构建、安装和 wheel 交付四个二进制：`pvisor`、`pvisor-cache`、
-`pvisor-tui`、`pvisor-replay`。`pvisor help NAME` 支持核心命令和扩展。
-默认执行 `pvisor -- COMMAND` 在核心完成；`run --tui` 与交互式 `--ask` 转交 TUI。
-新的独立工具仍可通过可执行扩展加入 CLI，无需修改核心解析器；`env` 已移除。
+`pvisor-tui` 属于 `persisting-tui`，`pvisor-replay` 属于 `persisting-replay`；
+它们依赖核心，核心不依赖它们。`pvisor-cache` 前端仍在核心包中，因为 OCI 与懒加载缓存
+仍由执行器使用。wheel 安装四个二进制到同一目录。
 
-发现顺序为核心二进制所在目录、PATH 中的非空目录；扩展不能覆盖核心命令名。
-扩展在二进制中嵌入唯一 JSON 数据块：NUL + `PVISOR_COMMAND_MANIFEST_V1`
-+ 换行，随后 JSON，再以换行 + `PVISOR_COMMAND_MANIFEST_END` + NUL 结束。
-字段为 `schema_version`、`name`、`version`、`description`、`session_protocol`；
-两个协议版本目前均为 1，name 必须匹配文件名后缀。JSON 上限 4096 字节，
-可执行文件上限 256 MiB。发现时只读文件，不执行扩展；`--pvisor-manifest`
-是扩展显式提供的 JSON 查询接口。派发使用 Unix `exec`，保留 argv、stdio、
-信号与退出码。Rust 扩展可在入口使用 `persisting_pvisor::command_manifest!`
-与 `manifest_requested` 嵌入并提供 manifest。
+伴随命令的名称与描述来自静态表。只查核心同目录的三个第一方命令，不搜索 PATH，
+不扫描二进制 manifest，不计算文件摘要或传递启动器 evidence。
+安装目录与可执行文件仍须归当前用户或 root 所有，且不得 group/world 可写；拒绝符号链接。
+派发使用 Unix `exec`，保留参数、stdio、信号与退出码，伴随命令不能覆盖核心命令。
+`pvisor help NAME` 支持伴随工具；`run --tui` 和交互式审批转交 TUI。
+
+核心默认构建不包含 Gateway。启用捕获使用 `--features gateway`；wheel 构建启用该 feature。
+无捕获时，普通显式代理仍由 OverlayNet 授权与转发。请求未编译的捕获或 Gateway debug 能力会报错。
+
+生命周期只使用 `Session`；旧的 `ExecutorSession` 和 `AttemptContext` 别名已删除。
+使用现有 `RunHandle` 的状态、取消、checkpoint 和事件 API，不提供测试专用的 Hook/Control 协议。
+AgentCtl 保留工作负载协作职责。终态仍在驱动清理、结果持久化和终态事件提交后公布；
+追加结果不确定时，不发送冲突的替代终态事件。

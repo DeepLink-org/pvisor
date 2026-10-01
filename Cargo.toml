@@ -12,6 +12,7 @@ members = [
     "crates/persisting-journal",
     "crates/persisting-gateway",
     "crates/persisting-pvisor",
+    "crates/persisting-tui",
     "crates/persisting-guest",
     "crates/persisting-replay",
     "crates/persisting-shim",

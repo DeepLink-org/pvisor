@@ -16,6 +16,7 @@ Cargo workspace 按产品职责划分。Python `pvisor/` 只负责启动随包�
 | `crates/persisting-overlayfs/` | FUSE 适配及挂载 |
 | `crates/persisting-overlaynet/` | 出站策略、HTTP 代理和 VM virtio-net 数据通路 |
 | `crates/persisting-guest/` | Linux PID 1 supervisor，以及 VM 执行器共用的启动契约 |
+| `crates/persisting-tui/` | 独立终端前端 `pvisor-tui` |
 | `crates/persisting-replay/` | 回放规划、原生 Agent 适配器和续跑协议桥 |
 | `pvisor/`、`setup.py`、`scripts/packaging/` | Python 启动器和 wheel 打包 |
 | `crates/*/tests/` | Rust 集成测试；单元测试跟随所属模块 |
@@ -28,13 +29,15 @@ Cargo workspace 按产品职责划分。Python `pvisor/` 只负责启动随包�
 workspace 内的实际依赖关系：
 
 ```text
-pvisor ──> control, gateway, overlaynet, overlayfs, overlay-core, replay, guest
+pvisor ──> control, journal, overlaynet, overlayfs, overlay-core, guest
+pvisor --features gateway ──> gateway
+tui, replay ──> pvisor
 gateway ──> control, overlaynet
 overlaynet ──> control
 overlayfs ──> control, overlay-core
 overlay-core ──> control, journal
 journal ──> control
-control, replay, guest ──> 不依赖其他 workspace crate
+control, guest ──> 不依赖其他 workspace crate
 ```
 
 ### pVisor 源码模块
@@ -43,13 +46,14 @@ control, replay, guest ──> 不依赖其他 workspace crate
 src/
 ├── lib.rs                 # 稳定的嵌入接口导出
 ├── bin/pvisor.rs          # 二进制入口
-├── cli/                   # 参数、命令、Agent 预设和终端 UI
+├── cli/                   # 参数、命令和共享终端工具
+├── session/               # Attempt lifecycle and completion
+├── session.rs             # Session owner
 ├── config.rs              # 运行时与执行器配置
 ├── trace.rs               # 共享事实 Journal 重导出
 ├── diagnostics.rs         # 共享宿主日志，前端选择输出位置
 ├── executor/
-│   ├── mod.rs             # RunExecutor 和 ExecutorSession
-│   ├── session.rs         # Session lifecycle and completion
+│   ├── mod.rs             # RunExecutor 和 Session
 │   ├── process.rs         # 宿主进程执行器
 │   ├── container.rs       # 容器执行器
 │   ├── sandbox.rs         # 宿主 OS 隔离及内部 sandbox 入口
@@ -87,11 +91,23 @@ Claude、Codex、OpenCode 协议桥及 Claude resume transport 校验。
 
 ### 仍需逐步改善的边界
 
-`ExecutorSession` 负责 Attempt 生命周期和终态公布。共享网络与文件授权归 Control，
+`Session` 负责 Attempt 生命周期和终态公布。共享网络与文件授权归 Control，
 overlay 的 review/apply/recovery/drop 归 `persisting-overlay-core::apply`。
-运行时 Overlay 配置仍使用 Gateway 配置类型。传输与挂载所有权留在驱动中；
+共享 Overlay 与模型路由配置归 Control。传输与挂载所有权留在驱动中；
 修改行为时，把共享语义收敛到已有所有者。
 
+
+## 核心减法预算
+
+CI 先独立构建默认核心，再构建带捕获的分发包。`scripts/ci/check_core_budget.py`
+拒绝 Gateway、replay、TUI 及其终端依赖进入默认核心，并记录工具链、依赖数、源码行数、
+Control 公开声明数与二进制字节数。当前 Linux 上限为 230 个依赖、44,812 行 workspace
+源码和 262 个 Control 公开声明；后续只下调预算。二进制体积先记录同平台基线。
+
+2026-10-01 本次工作区对比：Rust 102,305 → 101,824 行，净减 481 行；
+默认核心在 macOS arm64 / rustc 1.98.0 下有 226 个依赖，release 二进制 9,746,560 字节。
+源码行数仅统计 `crates/*/src/**/*.rs` 的核心依赖闭包；公开声明数是脚本的语法计数，
+不等于去重后的导出 API 数。移动 TUI/replay 的行数不计作删除。
 
 ## 贡献者命令
 
@@ -124,7 +140,7 @@ overlay 的 review/apply/recovery/drop 归 `persisting-overlay-core::apply`。
 带参数的 `just test` 只运行指定 Rust 包的测试。CI 分片使用 `just test-rust`，
 不会额外触发 Python 测试。
 
-默认 pytest 收集 `tests/` 和 `benchmark/pvisor/`，包含有限代数模型检查。
+默认 pytest 收集 `tests/` 和 `benchmark/pvisor/`；IR 代数性质由 `persisting-control` 的 Rust 属性测试验证。
 benchmark 中依赖 `/proc` 和 Linux rootfs 工具的测试仅在 Linux 上运行。
 VM 文件系统检查在 Linux guest 内运行，需要 root、Python、pytest 和 tar；
 在仓库目录执行 `python3 -m pytest -q tests/test_vm_filesystem.py --guest-fs-dir /var/tmp --guest-fs-dir .`，

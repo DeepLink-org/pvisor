@@ -11,6 +11,7 @@ pub(crate) mod event;
 mod implant;
 mod overlay;
 pub(crate) mod plan;
+mod proxy;
 mod registry;
 pub(crate) mod run;
 mod supervisor;
@@ -47,7 +48,7 @@ pub use overlay::{
 pub use overlay::{OverlayRecord, OverlayUpper};
 #[cfg(target_os = "linux")]
 pub(crate) use registry::LEASE_FILENAME;
-pub(crate) use registry::control_observations;
+pub use registry::control_observations;
 pub use registry::{
     EnvironmentProjection, RunLease, RunLineage, RunRecord, control_mount_inspect,
     control_overlay_status, control_ping, control_unmount_inspect, default_run_home, is_live,

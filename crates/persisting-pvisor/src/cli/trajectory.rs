@@ -1,9 +1,6 @@
 //! One fact journal shared by Run and Gateway producers.
-use crate::TrajectoryEventSink;
-use persisting_gateway::sink::JournalObserver;
 use persisting_journal::Journal;
 use std::path::Path;
-use std::sync::Arc;
 
 #[derive(Clone)]
 pub struct JournalRecording {
@@ -24,9 +21,4 @@ impl JournalRecording {
     pub fn finish(self) -> anyhow::Result<()> {
         Ok(())
     }
-}
-pub fn journal_capture_observer(writer: &JournalRecording) -> Arc<dyn TrajectoryEventSink> {
-    Arc::new(JournalObserver {
-        journal: writer.journal.clone(),
-    })
 }

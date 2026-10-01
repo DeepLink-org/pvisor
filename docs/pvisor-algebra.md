@@ -1,9 +1,9 @@
 # pVisor IR 代数规范：操作项、上下文链与改写
 
-本页是结构语义与未来解释器的规范，不是生产执行保证。IR/Trace 数据结构已实现；
-唯一生产派发路径是 `PVisor::run(RunSpec) → RunExecutor::execute`。
-任意文件表达式、后缀解释、逐次改写授权及披露检查没有生产解释器。
-原有独立 Engine/Backend/Admission 已删除；实际边界见 [IR 实现](pvisor-ir.md)。
+本页是已删除通用解释器的历史设计档案，不是实现路线图或生产执行承诺。
+Engine/Backend/Admission 不再存在；生产路径为 `PVisor::run(RunSpec) → RunExecutor::execute`。
+当前 IR 只投影 RunPlan 与 Requested/Completed 事实，见 [IR 实现](pvisor-ir.md)。
+下面的任意文件表达式、文本语法与改写规则不要求恢复实现。
 
 ```text
 fs.read("file-17", offset: 0, length: 4096)
@@ -180,8 +180,8 @@ RunPlan 是既有 RunSpec 执行的计划与证据投影，不是第二个策略
 
 验证分为两层：
 
-- [有限代数检查](../tests/test_pvisor_algebra.py)：包裹恒等/结合、顺序敏感、原请求保持及改写复原。
-- Rust 测试：数据解析、结构改写、规则证据；生产 Run 准入、事件链、结果校验和 Journal 恢复。
+- [Rust 契约与属性测试](../crates/persisting-control/tests/ir_contracts.rs)：针对真实 IR 实现验证解析往返、上下文追加结合律、原请求保持、结构改写和规则证据。
+- 生产 Run 测试：准入、事件链、结果校验和 Journal 恢复。
 
 代数检查不能证明生产授权、任意后缀执行、VM/远端组合或披露安全。若将来开放通用
 Expression 执行入口，必须在唯一生产派发缝实施上述授权与结果约束，并以真实入口测试验证。

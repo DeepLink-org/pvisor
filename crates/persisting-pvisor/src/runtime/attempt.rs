@@ -7,20 +7,30 @@ use super::overlay::{
     resolve_overlay_workspace, stage_overlay_record,
 };
 use super::registry::{EnvironmentProjection, RunControlServer, RunLease, RunLineage, RunRecord};
+#[cfg(feature = "gateway")]
 use crate::TrajectoryEventSink;
 use anyhow::Context as _;
 use persisting_control::ControlController;
-use persisting_control::{NetworkCapability, ProcessInvocation, RunInvocation, RunSpec, RunState};
+#[cfg(feature = "gateway")]
+use persisting_control::NetworkCapability;
+use persisting_control::{ProcessInvocation, RunInvocation, RunSpec, RunState};
+#[cfg(feature = "gateway")]
 use persisting_gateway::config::ProxyConfig;
+#[cfg(feature = "gateway")]
 use persisting_gateway::injection::{
     client_gateway_config_args, proxy_environment_with_local_auth,
 };
+#[cfg(feature = "gateway")]
 use persisting_gateway::lifecycle::{
     CaptureMode, append_lifecycle, root_session_route, session_ended_record, session_started_record,
 };
+#[cfg(feature = "gateway")]
 use persisting_gateway::runtime::in_process::{InProcessCapture, InProcessRuntime};
+#[cfg(feature = "gateway")]
 use persisting_gateway::runtime::run_config::snapshot_proxy_config;
+#[cfg(feature = "gateway")]
 use persisting_gateway::runtime::run_env::write_run_session;
+#[cfg(feature = "gateway")]
 use persisting_gateway::sink::JournalObserver;
 use persisting_overlaynet::{
     BandwidthRegistry, EgressContext, EgressRuntime, InterceptionMetrics, NetworkConfig,
@@ -28,20 +38,26 @@ use persisting_overlaynet::{
 };
 use std::path::{Path, PathBuf};
 use std::sync::Arc;
+#[cfg(feature = "gateway")]
 use std::time::Instant;
 
 /// Live controls for one Attempt: capture proxy + optional overlay mount.
 pub(crate) struct AttemptSession {
+    proxy: Option<super::proxy::Proxy>,
     root_session: String,
+    #[cfg(feature = "gateway")]
     agent_id: String,
     /// Staging record retained after unmount (for apply / discard).
     overlay_record: Option<OverlayRecord>,
+    #[cfg(feature = "gateway")]
     gateway: Option<InProcessCapture>,
     vm_network: Option<Arc<std::sync::Mutex<Option<VmNetworkAttachment>>>>,
     network_metrics: Option<InterceptionMetrics>,
     fs_metrics: Option<persisting_overlayfs::FsMetrics>,
     overlay: Option<OverlayMount>,
+    #[cfg(feature = "gateway")]
     sink: Option<Arc<dyn TrajectoryEventSink>>,
+    #[cfg(feature = "gateway")]
     started_at: Instant,
     run_record: RunRecord,
     _control: Option<RunControlServer>,
@@ -49,6 +65,104 @@ pub(crate) struct AttemptSession {
 }
 
 impl AttemptSession {
+    pub(crate) fn start_proxy(
+        &mut self,
+        spec: &mut RunSpec,
+        network: &crate::NetworkDriverConfig,
+        controller: Arc<dyn ControlController>,
+        attempt_id: &persisting_control::AttemptId,
+    ) -> anyhow::Result<()> {
+        let metrics = InterceptionMetrics::default();
+        let proxy = super::proxy::Proxy::start(
+            &network.listen,
+            NetworkPolicy::compile(&network.network)?,
+            controller,
+            metrics.clone(),
+            spec.run_id.to_string(),
+            attempt_id.to_string(),
+        )?;
+        spec.metadata.insert(
+            crate::executor::sandbox::SANDBOX_PROXY_KEY.into(),
+            proxy.listen.clone().into(),
+        );
+        let mut plan = ImplantPlan {
+            overlay: self
+                .overlay_record
+                .as_ref()
+                .map(|record| hint_from_record(record, self.run_record.overlay_lowers.clone()))
+                .unwrap_or_default(),
+            ..Default::default()
+        };
+        let url = format!("http://{}", proxy.listen);
+        for key in [
+            "HTTP_PROXY",
+            "HTTPS_PROXY",
+            "ALL_PROXY",
+            "http_proxy",
+            "https_proxy",
+            "all_proxy",
+        ] {
+            plan.env.insert(key.into(), url.clone());
+        }
+        for key in ["NO_PROXY", "no_proxy"] {
+            plan.env
+                .insert(key.into(), "localhost,127.0.0.1,::1".into());
+        }
+        plan.env.insert(
+            "PERSISTING_OVERLAYNET_DRIVER".into(),
+            "explicit-proxy".into(),
+        );
+        plan.env.insert(
+            "PERSISTING_OVERLAYNET_STRENGTH".into(),
+            "cooperative".into(),
+        );
+        plan.notes.push(
+            "network interception: explicit proxy (cooperative; direct sockets remain ambient)"
+                .into(),
+        );
+        super::zcode::prepare(
+            spec,
+            &mut plan,
+            &proxy.listen,
+            &self.run_record.storage,
+            None,
+        )?;
+        let RunInvocation::Process(process) = &mut spec.invocation;
+        apply_implant(process, &plan);
+        super::zcode::apply_environment(process, &plan);
+        self.run_record.overlaynet_listen = Some(proxy.listen.clone());
+        self.run_record.network_interception =
+            Some(persisting_overlaynet::InterceptionProfile::explicit_proxy());
+        self.run_record.network_policy = Some(serde_json::to_value(&network.network)?);
+        self.run_record.environment.runtime_injected_keys = plan.env.keys().cloned().collect();
+        self.network_metrics = Some(metrics.clone());
+        self.proxy = Some(proxy);
+        self.run_record.write()?;
+        self._control.take();
+        self._control = RunControlServer::start_observed(
+            &self.run_record,
+            self.fs_metrics.clone(),
+            Some(metrics),
+        )?;
+        let metadata = spec
+            .metadata
+            .entry("pvisor.runtime.implant".into())
+            .or_insert_with(|| plan.as_metadata_json());
+        for key in ["env_keys", "notes"] {
+            if let Some(values) = metadata
+                .get_mut(key)
+                .and_then(serde_json::Value::as_array_mut)
+            {
+                for value in plan.as_metadata_json()[key].as_array().unwrap() {
+                    if !values.contains(value) {
+                        values.push(value.clone());
+                    }
+                }
+            }
+        }
+        Ok(())
+    }
+
     pub(crate) fn root_session(&self) -> &str {
         &self.root_session
     }
@@ -74,7 +188,16 @@ impl AttemptSession {
 
     fn teardown_inner(mut self, exit_code: Option<i32>, allow_apply: bool) -> AttemptTeardown {
         let mut errors = Vec::new();
+        if let Some(proxy) = self.proxy.take()
+            && let Err(error) = proxy.shutdown()
+        {
+            errors.push(format!("shutdown OverlayNet proxy: {error:#}"));
+        }
+        #[cfg(not(feature = "gateway"))]
+        let _ = exit_code;
+        #[cfg(feature = "gateway")]
         let duration_ms = self.started_at.elapsed().as_millis() as u64;
+        #[cfg(feature = "gateway")]
         if let Some(sink) = &self.sink
             && let Err(err) = append_lifecycle(
                 sink.as_ref(),
@@ -142,6 +265,7 @@ impl AttemptSession {
                 Err(_) => errors.push("shutdown VM OverlayNet: attachment lock poisoned".into()),
             }
         }
+        #[cfg(feature = "gateway")]
         if let Some(gateway) = self.gateway.take()
             && let Err(err) = gateway.shutdown()
         {
@@ -261,6 +385,7 @@ impl AttemptTeardown {
     }
 }
 
+#[cfg(feature = "gateway")]
 pub(crate) struct AttemptPrepareOpts<'a> {
     pub config: &'a ProxyConfig,
     /// Durable pVisor Run storage and default OverlayFS stage.
@@ -344,6 +469,7 @@ struct PreparedOverlay {
 }
 
 /// Start pVisor's configured Gateway and OverlayFS drivers, then enrich `spec`.
+#[cfg(feature = "gateway")]
 pub(crate) fn prepare_attempt(
     spec: &mut RunSpec,
     opts: AttemptPrepareOpts<'_>,
@@ -523,6 +649,7 @@ pub(crate) fn prepare_attempt(
     inject_krun_overlay_metadata(spec, &overlay_hint, overlay_record.as_ref());
 
     Ok(AttemptSession {
+        proxy: None,
         root_session,
         agent_id: config.agent_id.clone(),
         overlay_record,
@@ -532,6 +659,7 @@ pub(crate) fn prepare_attempt(
         fs_metrics,
         overlay: overlay_mount,
         sink: Some(sink),
+        #[cfg(feature = "gateway")]
         started_at: Instant::now(),
         run_record,
         _control: control,
@@ -549,7 +677,7 @@ pub(crate) fn prepare_overlay_attempt(
         .canonicalize()
         .unwrap_or_else(|_| opts.storage.to_path_buf());
     let root_session = spec.run_id.as_str().to_string();
-    let mut overlay_cfg = persisting_gateway::config::OverlayConfig::default();
+    let mut overlay_cfg = persisting_control::overlay::OverlayConfig::default();
     apply_overlay_override(&mut overlay_cfg, &opts.overlay);
     let prepared_overlay = prepare_overlay(
         &overlay_cfg,
@@ -667,15 +795,20 @@ pub(crate) fn prepare_overlay_attempt(
     inject_krun_overlay_metadata(spec, &plan.overlay, Some(&overlay_record));
 
     Ok(AttemptSession {
+        proxy: None,
         root_session,
+        #[cfg(feature = "gateway")]
         agent_id: spec.agent.name.clone(),
         overlay_record: Some(overlay_record),
+        #[cfg(feature = "gateway")]
         gateway: None,
         vm_network,
         network_metrics,
         fs_metrics,
         overlay: overlay_mount,
+        #[cfg(feature = "gateway")]
         sink: None,
+        #[cfg(feature = "gateway")]
         started_at: Instant::now(),
         run_record,
         _control: control,
@@ -771,15 +904,20 @@ pub(crate) fn prepare_storage_attempt(
         .insert("pvisor.runtime.implant".into(), plan.as_metadata_json());
 
     Ok(AttemptSession {
+        proxy: None,
         root_session,
+        #[cfg(feature = "gateway")]
         agent_id: spec.agent.name.clone(),
         overlay_record: None,
+        #[cfg(feature = "gateway")]
         gateway: None,
         vm_network,
         network_metrics,
         fs_metrics: None,
         overlay: None,
+        #[cfg(feature = "gateway")]
         sink: None,
+        #[cfg(feature = "gateway")]
         started_at: Instant::now(),
         run_record,
         _control: control,
@@ -857,6 +995,7 @@ fn prepare_vm_network(
     })
 }
 
+#[cfg(any(feature = "gateway", test))]
 fn rewrite_vm_gateway_implant(spec: &mut RunSpec, listen: &str) {
     let listen = listen.trim_end_matches('/');
     let listen_authority = listen
@@ -985,7 +1124,7 @@ fn executor_from_spec(spec: &RunSpec) -> Option<persisting_control::ExecutorPlan
 }
 
 fn apply_overlay_override(
-    overlay_cfg: &mut persisting_gateway::config::OverlayConfig,
+    overlay_cfg: &mut persisting_control::overlay::OverlayConfig,
     overlay_override: &OverlayHint,
 ) {
     if overlay_override != &OverlayHint::default() {
@@ -1030,7 +1169,7 @@ fn apply_overlay_override(
 }
 
 fn prepare_overlay(
-    overlay_cfg: &persisting_gateway::config::OverlayConfig,
+    overlay_cfg: &persisting_control::overlay::OverlayConfig,
     storage: &Path,
     root_session: &str,
     mountless: bool,
@@ -1118,6 +1257,7 @@ fn inject_krun_overlay_metadata(
     );
 }
 
+#[cfg(feature = "gateway")]
 struct SessionImplantOpts<'a> {
     listen: &'a str,
     root_session: &'a str,
@@ -1130,6 +1270,7 @@ struct SessionImplantOpts<'a> {
     local_gateway_auth: bool,
 }
 
+#[cfg(feature = "gateway")]
 fn enrich_with_session(
     spec: &mut RunSpec,
     opts: SessionImplantOpts<'_>,
@@ -1361,6 +1502,7 @@ fn overlay_cwd(
     overlay.merged_dir.clone().or_else(|| process_cwd(spec))
 }
 
+#[cfg(feature = "gateway")]
 fn inject_gateway_args(process: &mut ProcessInvocation, listen: &str) {
     let extra = client_gateway_config_args(&process.program, listen);
     if extra.is_empty() {
@@ -1393,7 +1535,7 @@ mod tests {
         let temporary = tempfile::tempdir().unwrap();
         let target = temporary.path().join("target");
         let stage = temporary.path().join("stage");
-        let config = persisting_gateway::config::OverlayConfig {
+        let config = persisting_control::overlay::OverlayConfig {
             enabled: true,
             target: Some(target.display().to_string()),
             stage_dir: Some(stage.display().to_string()),
@@ -1429,7 +1571,7 @@ mod tests {
             crate::executor::sandbox::REQUIRED_SANDBOX_KEY.into(),
             true.into(),
         );
-        let config = persisting_gateway::config::OverlayConfig {
+        let config = persisting_control::overlay::OverlayConfig {
             enabled: true,
             target: Some("/workspace".into()),
             stage_dir: Some("/stage".into()),
@@ -1459,7 +1601,7 @@ mod tests {
 
     #[test]
     fn absent_overlay_hint_preserves_configured_file_policy() {
-        let mut config = persisting_gateway::config::OverlayConfig {
+        let mut config = persisting_control::overlay::OverlayConfig {
             access_policy: persisting_control::FileAccessPolicy::new(
                 vec!["**/.ssh".into()],
                 vec![],

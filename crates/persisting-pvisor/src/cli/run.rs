@@ -69,13 +69,14 @@ use std::sync::Arc;
 
 use anyhow::{Context, bail};
 use clap::{Args, ValueEnum};
+use persisting_control::gateway::{CaptureLevel, ModelRoute};
 use persisting_control::{
     FilesystemAccess, FilesystemCapability, PolicyMode, RunInvocation, RunSpec, RunState, StdioMode,
 };
-use persisting_gateway::config::{
-    CaptureLevel, ModelRoute, NetworkConfig, NetworkMode, OverlayConfig, ProxyConfig,
-};
+#[cfg(feature = "gateway")]
+use persisting_gateway::config::{OverlayConfig, ProxyConfig};
 use persisting_overlaynet::{NetworkAccessRule, NetworkBandwidthLimit};
+use persisting_overlaynet::{NetworkConfig, NetworkMode};
 use serde::Deserialize;
 
 use crate::config::{
@@ -85,12 +86,14 @@ use crate::config::{
 };
 use crate::runtime::{RunLineage, default_run_home, resolve_run};
 use crate::{
-    ContainerExecutor, GatewayDriverConfig, LogicalCheckpoint, NetworkDriverConfig, OverlayHint,
-    PVisor, ProcessExecutor, RunBundle, RunExecutor, TrajectoryEventSink, VmExecutor,
-    create_logical_checkpoint, restore_logical_checkpoint,
+    ContainerExecutor, LogicalCheckpoint, NetworkDriverConfig, OverlayHint, PVisor,
+    ProcessExecutor, RunBundle, RunExecutor, VmExecutor, create_logical_checkpoint,
+    restore_logical_checkpoint,
 };
 
-use super::trajectory::{JournalRecording, journal_capture_observer};
+use super::trajectory::JournalRecording;
+#[cfg(feature = "gateway")]
+use crate::GatewayDriverConfig;
 
 // Keep pVisor diagnostics separate from the Agent PTY in TUI runs.
 macro_rules! run_log {
@@ -194,12 +197,12 @@ impl RunArgs {
     }
 
     #[cfg(unix)]
-    pub(super) fn tui_requested(&self) -> bool {
+    pub fn tui_requested(&self) -> bool {
         self.tui || self.audit || self.cli_asks()
     }
 
     #[cfg(unix)]
-    pub(super) fn audit_requested(&self) -> anyhow::Result<bool> {
+    pub fn audit_requested(&self) -> anyhow::Result<bool> {
         if self.audit || self.cli_asks() {
             return Ok(true);
         }
@@ -228,12 +231,12 @@ impl RunArgs {
     }
 
     #[cfg(unix)]
-    pub(super) fn enable_tui(&mut self) {
+    pub fn enable_tui(&mut self) {
         self.tui = true;
     }
 
     #[cfg(unix)]
-    pub(super) fn wants_tui(&self, audit: bool) -> bool {
+    pub fn wants_tui(&self, audit: bool) -> bool {
         (self.tui || audit)
             && self.result_file.is_none()
             && self.spec.is_none()
@@ -921,25 +924,31 @@ async fn run_prepared_spec(args: RunArgs) -> anyhow::Result<i32> {
             "JSON --spec does not accept recording overrides"
         );
         let storage = resolve_run_storage(&stage_path)?;
+        #[cfg(feature = "gateway")]
         let proxy = resolve_proxy(&config)?;
+        #[allow(unused_mut)]
         let mut builder = PVisor::builder()
             .storage(&storage)
             .executors(vec![Arc::new(ProcessExecutor::default())])
-            .network(NetworkDriverConfig::new(
-                config.overlaynet.mode,
-                NetworkConfig {
-                    capability: None,
-                    mode: match config.overlaynet.policy {
-                        OverlayNetPolicy::Public => NetworkMode::Public,
-                        OverlayNetPolicy::Deny => NetworkMode::NoNetwork,
-                        OverlayNetPolicy::Allowlist => NetworkMode::Allowlist,
+            .network(
+                NetworkDriverConfig::new(
+                    config.overlaynet.mode,
+                    NetworkConfig {
+                        capability: None,
+                        mode: match config.overlaynet.policy {
+                            OverlayNetPolicy::Public => NetworkMode::Public,
+                            OverlayNetPolicy::Deny => NetworkMode::NoNetwork,
+                            OverlayNetPolicy::Allowlist => NetworkMode::Allowlist,
+                        },
+                        allowed_hosts: config.overlaynet.allow.clone(),
+                        rules: config.overlaynet.rules.clone(),
+                        deny_rules: config.overlaynet.deny.clone(),
+                        limits: config.overlaynet.limits.clone(),
                     },
-                    allowed_hosts: config.overlaynet.allow.clone(),
-                    rules: config.overlaynet.rules.clone(),
-                    deny_rules: config.overlaynet.deny.clone(),
-                    limits: config.overlaynet.limits.clone(),
-                },
-            ));
+                )
+                .listen(&config.overlaynet.listen),
+            );
+        #[cfg(feature = "gateway")]
         if let Some(proxy) = proxy {
             builder = builder.gateway(
                 GatewayDriverConfig::new(proxy)
@@ -1346,8 +1355,10 @@ async fn execute_config(
     let network_namespace_required = config.run.executor == RunExecutorKind::Host
         && config.overlaynet.policy == OverlayNetPolicy::Deny;
     let resolved_stage_for_limit = overlay.as_ref().and_then(|hint| hint.stage_dir.clone());
+    #[cfg(feature = "gateway")]
     let proxy = resolve_proxy(&config)?;
 
+    #[cfg(feature = "gateway")]
     if config.gateway.debug {
         // `pvisor run` is a foreground CLI: mirror opted-in gateway/network
         // diagnostics to stderr as well as the Run log, so proxy failures can
@@ -1365,29 +1376,22 @@ async fn execute_config(
         bail!("--record-destination only accepts a local path; remote URIs are unsupported");
     }
     let mut json_writer = None;
-    let (sink, event_sink): (Arc<dyn TrajectoryEventSink>, Arc<dyn crate::EventSink>) =
-        if config.gateway.mode == GatewayMode::Capture || config.record.destination.is_some() {
-            let destination = config
-                .record
-                .destination
-                .clone()
-                .unwrap_or_else(|| storage.join(".capture"));
-            let writer = JournalRecording::open(&destination).with_context(|| {
-                format!("open trace journal destination {}", destination.display())
-            })?;
-            let sink = journal_capture_observer(&writer);
-            let event_sink = Arc::new(writer.journal.clone()) as Arc<dyn crate::EventSink>;
-            json_writer = Some(writer);
-            (sink, event_sink)
-        } else {
-            let journal = crate::trace::Journal::memory();
-            (
-                Arc::new(persisting_gateway::sink::JournalObserver {
-                    journal: journal.clone(),
-                }),
-                Arc::new(journal),
-            )
-        };
+    let event_sink: Arc<dyn crate::EventSink> = if config.gateway.mode == GatewayMode::Capture
+        || config.record.destination.is_some()
+    {
+        let destination = config
+            .record
+            .destination
+            .clone()
+            .unwrap_or_else(|| storage.join(".capture"));
+        let writer = JournalRecording::open(&destination)
+            .with_context(|| format!("open trace journal destination {}", destination.display()))?;
+        let event_sink = Arc::new(writer.journal.clone());
+        json_writer = Some(writer);
+        event_sink
+    } else {
+        Arc::new(crate::trace::Journal::memory())
+    };
 
     #[cfg(target_os = "linux")]
     let rootless_available = match rootless_probe {
@@ -1452,24 +1456,27 @@ async fn execute_config(
     };
     let mut builder = PVisor::builder()
         .storage(&storage)
-        .trajectory_sink(sink)
         .event_sink(event_sink)
         .executors(vec![executor])
-        .network(NetworkDriverConfig::new(
-            config.overlaynet.mode,
-            NetworkConfig {
-                capability: None,
-                mode: match config.overlaynet.policy {
-                    OverlayNetPolicy::Public => NetworkMode::Public,
-                    OverlayNetPolicy::Deny => NetworkMode::NoNetwork,
-                    OverlayNetPolicy::Allowlist => NetworkMode::Allowlist,
+        .network(
+            NetworkDriverConfig::new(
+                config.overlaynet.mode,
+                NetworkConfig {
+                    capability: None,
+                    mode: match config.overlaynet.policy {
+                        OverlayNetPolicy::Public => NetworkMode::Public,
+                        OverlayNetPolicy::Deny => NetworkMode::NoNetwork,
+                        OverlayNetPolicy::Allowlist => NetworkMode::Allowlist,
+                    },
+                    allowed_hosts: config.overlaynet.allow.clone(),
+                    rules: config.overlaynet.rules.clone(),
+                    deny_rules: config.overlaynet.deny.clone(),
+                    limits: config.overlaynet.limits.clone(),
                 },
-                allowed_hosts: config.overlaynet.allow.clone(),
-                rules: config.overlaynet.rules.clone(),
-                deny_rules: config.overlaynet.deny.clone(),
-                limits: config.overlaynet.limits.clone(),
-            },
-        ));
+            )
+            .listen(&config.overlaynet.listen),
+        );
+    #[cfg(feature = "gateway")]
     if let Some(proxy) = proxy {
         builder = builder.gateway(
             GatewayDriverConfig::new(proxy)
@@ -1885,20 +1892,6 @@ fn valid_environment_name(name: &str) -> bool {
 
 fn apply_safe_defaults(config: &mut RunConfig) -> anyhow::Result<()> {
     config.run.inherit_env = false;
-    // Codex uses several CODEX_* and provider variables for account/routing
-    // discovery. Safe mode keeps its filesystem state staged and network
-    // policy enforced, but must preserve the application's environment
-    // identity or it behaves like a different installation.
-    let is_codex = config
-        .run
-        .command
-        .first()
-        .and_then(|command| Path::new(command).file_name())
-        .and_then(|name| name.to_str())
-        == Some("codex");
-    if is_codex {
-        config.run.inherit_env = true;
-    }
     if config.overlaynet.listen == OverlayNetSettings::default().listen {
         config.overlaynet.listen = free_loopback_address()?;
     }
@@ -2407,6 +2400,11 @@ fn validate_vm_rootfs_platform(config: &RunConfig) -> anyhow::Result<()> {
 
 fn validate(config: &RunConfig, safe: bool) -> anyhow::Result<()> {
     anyhow::ensure!(
+        cfg!(feature = "gateway")
+            || (config.gateway.mode == GatewayMode::Off && !config.gateway.debug),
+        "Gateway capture/debug requires a build with the gateway feature"
+    );
+    anyhow::ensure!(
         safe || !config
             .run
             .filesystem
@@ -2713,15 +2711,14 @@ fn resolve_overlay(
     }))
 }
 
+#[cfg(feature = "gateway")]
 fn resolve_proxy(config: &RunConfig) -> anyhow::Result<Option<ProxyConfig>> {
     // VM Auto uses smoltcp directly. A loopback HTTP listener is still needed
     // only when the explicit Gateway capture sink is enabled.
     if config.run.executor == RunExecutorKind::Vm && config.gateway.mode == GatewayMode::Off {
         return Ok(None);
     }
-    if config.overlaynet.mode != OverlayNetMode::Proxy
-        && config.gateway.mode != GatewayMode::Capture
-    {
+    if config.gateway.mode != GatewayMode::Capture {
         return Ok(None);
     }
     let network = NetworkConfig {
@@ -2976,99 +2973,34 @@ mod tests {
     }
 
     #[test]
-    fn safe_preset_uses_command_not_label_and_keeps_executor_independent() {
-        for (command, hosts) in [
-            (
-                "/usr/local/bin/codex",
-                vec!["api.openai.com", "chatgpt.com", "ab.chatgpt.com"],
-            ),
-            ("claude", vec!["api.anthropic.com"]),
-            ("gemini", vec!["generativelanguage.googleapis.com"]),
-            ("/usr/local/bin/zcode", vec!["api.z.ai", "open.bigmodel.cn"]),
+    fn safe_preset_is_agent_independent_and_network_requires_explicit_grants() {
+        for program in [
+            "codex",
+            "claude",
+            "gemini",
+            "zcode",
+            "bash",
+            "unknown-agent",
         ] {
-            for executor in [
-                RunExecutorKind::Host,
-                RunExecutorKind::Container,
-                RunExecutorKind::Vm,
-            ] {
-                let mut config = RunConfig::default();
-                config.run.executor = executor;
-                apply_run_options(
-                    &mut config,
-                    preset_args(&["--safe", "--name", "zcode", "--", command]),
-                )
-                .unwrap();
-                assert_eq!(config.run.executor, executor);
-                assert_eq!(
-                    config.overlaynet.mode,
-                    if executor == RunExecutorKind::Vm {
-                        OverlayNetMode::Auto
-                    } else {
-                        OverlayNetMode::Proxy
-                    }
-                );
-                assert_eq!(config.overlaynet.policy, OverlayNetPolicy::Allowlist);
-                assert_eq!(config.overlaynet.rules.len(), hosts.len());
-                for (rule, host) in config.overlaynet.rules.iter().zip(&hosts) {
-                    assert_eq!(&rule.host, host);
-                    assert_eq!(rule.ports, [443]);
-                    assert!(!rule.allow_private_ips);
-                }
-            }
-        }
-        let mut config = RunConfig::default();
-        apply_run_options(
-            &mut config,
-            preset_args(&["--safe", "--name", "codex", "--", "unknown-agent"]),
-        )
-        .unwrap();
-        assert_eq!(config.overlaynet.policy, OverlayNetPolicy::Deny);
-        assert!(config.overlaynet.rules.is_empty());
-    }
-
-    #[test]
-    fn safe_preset_zcode_denies_non_api_destinations() {
-        use persisting_control::{
-            ControlController, ControlRequest, NetworkAccessRequest, NetworkGuard,
-            NetworkTransport, PolicyControlController,
-        };
-
-        let mut config = RunConfig::default();
-        config.overlaynet.allow = vec!["configured-upload.example".into()];
-        apply_run_options(&mut config, preset_args(&["--safe", "--", "zcode"])).unwrap();
-        let proxy = resolve_proxy(&config).unwrap().unwrap();
-        let guard = NetworkGuard::compile(
-            persisting_overlaynet::policy::network_capability(&proxy.network),
-            Vec::new(),
-        )
-        .unwrap();
-        for (host, port, allowed) in [
-            ("api.z.ai", 443, true),
-            ("open.bigmodel.cn", 443, true),
-            ("api.z.ai", 80, false),
-            ("open.bigmodel.cn", 8443, false),
-            ("zcode.z.ai", 443, false),
-            ("chat.z.ai", 443, false),
-            ("bigmodel.cn", 443, false),
-            ("zcode-prod.oss-cn-beijing.aliyuncs.com", 443, false),
-            ("telemetry.example", 443, false),
-            ("configured-upload.example", 443, false),
-            ("api.z.ai.example", 443, false),
-        ] {
-            let request = NetworkAccessRequest {
-                run_id: None,
-                attempt_id: None,
-                storyline_id: None,
-                host: host.into(),
-                port: Some(port),
-                transport: NetworkTransport::TcpTunnel,
-                resolved_ip: None,
-            };
-            let decision = PolicyControlController.authorize(ControlRequest::Network {
-                policy: &guard,
-                request: &request,
-            });
-            assert_eq!(decision.is_allowed(), allowed, "{host}:{port}");
+            let mut config = RunConfig::default();
+            apply_run_options(&mut config, preset_args(&["--safe", "--", program])).unwrap();
+            assert_eq!(config.overlaynet.policy, OverlayNetPolicy::Deny);
+            assert!(config.overlaynet.rules.is_empty());
+            assert!(!config.run.inherit_env);
+            assert_eq!(config.filesystem, FilesystemMode::Sandbox);
+            apply_run_options(
+                &mut config,
+                preset_args(&[
+                    "--safe",
+                    "--overlaynet-allow",
+                    "api.example.com:443",
+                    "--",
+                    program,
+                ]),
+            )
+            .unwrap();
+            assert_eq!(config.overlaynet.rules[0].host, "api.example.com");
+            assert_eq!(config.overlaynet.rules[0].ports, [443]);
         }
     }
 
@@ -3094,7 +3026,8 @@ access = "read"
         assert_eq!(config.run.timeout_ms, Some(1234));
         assert!(config.run.pass_env.is_empty());
         assert_eq!(config.overlaynet.mode, OverlayNetMode::Auto);
-        assert_eq!(config.overlaynet.rules[0].host, "api.anthropic.com");
+        assert_eq!(config.overlaynet.policy, OverlayNetPolicy::Deny);
+        assert!(config.overlaynet.rules.is_empty());
         assert_eq!(
             config.overlayfs.as_ref().unwrap().mount[0].source,
             PathBuf::from("/configured/share")
@@ -3247,12 +3180,15 @@ level = "warn"
         )
         .unwrap();
         assert_eq!(config.overlaynet.policy, OverlayNetPolicy::Deny);
-        let proxy = resolve_proxy(&config).unwrap().unwrap();
-        assert_eq!(
-            proxy.models[0].upstream.as_deref(),
-            Some("https://private.example/v1")
-        );
-        assert_eq!(proxy.network.mode, NetworkMode::NoNetwork);
+        #[cfg(feature = "gateway")]
+        {
+            let proxy = resolve_proxy(&config).unwrap().unwrap();
+            assert_eq!(
+                proxy.models[0].upstream.as_deref(),
+                Some("https://private.example/v1")
+            );
+            assert_eq!(proxy.network.mode, NetworkMode::NoNetwork);
+        }
     }
 
     #[test]
@@ -3449,6 +3385,27 @@ sandbox = "required""#
         assert_eq!(
             config.vm.rootfs.as_deref(),
             Some(Path::new("/prepared-root"))
+        );
+    }
+
+    #[cfg(not(feature = "gateway"))]
+    #[test]
+    fn unavailable_gateway_is_rejected_before_execution() {
+        let mut config = RunConfig::default();
+        config.gateway.mode = GatewayMode::Capture;
+        assert!(
+            validate(&config, false)
+                .unwrap_err()
+                .to_string()
+                .contains("gateway feature")
+        );
+        config.gateway.mode = GatewayMode::Off;
+        config.gateway.debug = true;
+        assert!(
+            validate(&config, false)
+                .unwrap_err()
+                .to_string()
+                .contains("gateway feature")
         );
     }
 
@@ -3671,7 +3628,7 @@ sandbox = "required""#
             preset_args(&["--safe", "--name", "other", "--", "/usr/bin/codex"]),
         )
         .unwrap();
-        assert!(codex.run.inherit_env);
+        assert!(!codex.run.inherit_env);
 
         let mut shell = RunConfig::default();
         apply_run_options(

@@ -237,3 +237,48 @@ pub enum PathFingerprint {
         rdev: u64,
     },
 }
+
+/// Filesystem overlay settings (same capture TOML; applied by pVisor).
+///
+/// Model: **target** (read-only base / apply destination) + **staging** (upper
+/// holds deltas). The Agent sees `merged`; changes do **not** touch `target`
+/// until an explicit runtime overlay is applied.
+#[derive(Debug, Clone, Default, Deserialize, Serialize, PartialEq, Eq)]
+#[serde(deny_unknown_fields)]
+pub struct OverlayConfig {
+    #[serde(default)]
+    pub access_policy: FileAccessPolicy,
+    /// When true, pVisor mounts its embedded OverlayFS for the Attempt.
+    #[serde(default)]
+    pub enabled: bool,
+    /// Target filesystem: primary lower layer and destination for `apply`.
+    /// Prefer this over listing the same path in `lower_dirs`.
+    #[serde(default)]
+    pub target: Option<String>,
+    /// Prevent explicit or automatic apply from modifying the lower target.
+    #[serde(default)]
+    pub protect_target: bool,
+    /// Read-only compose layers stacked above `target`, highest priority first.
+    #[serde(default)]
+    pub lower_dirs: Vec<String>,
+    /// Root for staging (`upper` / `work` / `merged`). Default:
+    /// `{capture_storage}/.overlay/{session_id}/`.
+    #[serde(default)]
+    pub stage_dir: Option<String>,
+    /// Writable upper directory (overrides `{stage_dir}/upper` when set).
+    #[serde(default)]
+    pub upper_dir: Option<String>,
+    /// Overlay work directory (overrides `{stage_dir}/work` when set).
+    #[serde(default)]
+    pub work_dir: Option<String>,
+    /// Merged mount point (overrides `{stage_dir}/merged` when set).
+    #[serde(default)]
+    pub merged_dir: Option<String>,
+    /// If true, apply staging onto `target` automatically when the Attempt ends.
+    /// Default false — review then `pvisor apply` or `pvisor drop`.
+    #[serde(default)]
+    pub auto_apply: bool,
+    /// If true, discard staging automatically when the Attempt ends.
+    #[serde(default)]
+    pub auto_discard: bool,
+}

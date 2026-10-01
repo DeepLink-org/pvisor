@@ -1,5 +1,7 @@
 //! Upstream API key resolution (OpenAI Bearer vs Anthropic x-api-key).
 
+use crate::config::{api_key_value, provider_kind};
+
 use axum::http::HeaderMap;
 use reqwest::RequestBuilder;
 
@@ -12,7 +14,7 @@ pub fn resolve_upstream_api_key(
     route: &ModelRoute,
     client_headers: &HeaderMap,
 ) -> anyhow::Result<(Option<String>, &'static str)> {
-    if let Some(k) = route.api_key_value()? {
+    if let Some(k) = api_key_value(route)? {
         let source = route
             .api_key_env
             .as_deref()
@@ -20,7 +22,7 @@ pub fn resolve_upstream_api_key(
             .unwrap_or("inline_api_key");
         return Ok((Some(k), source));
     }
-    let client_key = if route.provider_kind() == ProviderKind::Gemini {
+    let client_key = if provider_kind(route) == ProviderKind::Gemini {
         google_api_key(client_headers).or_else(|| client_auth_token(client_headers))
     } else {
         client_auth_token(client_headers)
@@ -45,7 +47,7 @@ pub fn apply_upstream_headers(
     route: &ModelRoute,
     protocol: ProtocolKind,
 ) -> anyhow::Result<RequestBuilder> {
-    let provider = route.provider_kind();
+    let provider = provider_kind(route);
     let anthropic_style = provider == ProviderKind::Anthropic || protocol == ProtocolKind::Messages;
 
     for (name, value) in client_headers.iter() {

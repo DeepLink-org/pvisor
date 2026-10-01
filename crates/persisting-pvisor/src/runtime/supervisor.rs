@@ -1,12 +1,18 @@
+#[cfg(feature = "gateway")]
+use super::attempt::{AttemptPrepareOpts, prepare_attempt};
 use super::attempt::{
-    AttemptPrepareOpts, AttemptSession, OverlayAttemptPrepareOpts, apply_implant, prepare_attempt,
-    prepare_overlay_attempt, prepare_storage_attempt,
+    AttemptSession, OverlayAttemptPrepareOpts, apply_implant, prepare_overlay_attempt,
+    prepare_storage_attempt,
 };
 use super::implant::{ImplantPlan, OverlayHint};
+#[cfg(feature = "gateway")]
+use crate::GatewayDriverConfig;
+#[cfg(feature = "gateway")]
 use crate::TrajectoryEventSink;
-use crate::{GatewayDriverConfig, NetworkDriverConfig, OverlayNetMode};
+use crate::{NetworkDriverConfig, OverlayNetMode};
 use persisting_control::{AttemptId, NetworkCapability, RunSpec};
 use persisting_control::{ControlController, PolicyControlController};
+#[cfg(feature = "gateway")]
 use persisting_gateway::config::ProxyConfig;
 use std::path::PathBuf;
 use std::sync::Arc;
@@ -33,16 +39,18 @@ impl Default for RuntimeCapabilities {
         let mut providers = vec![
             "local-process",
             "agentctl-unix-v1",
-            "in-process-capture",
             "overlaynet-explicit-proxy",
             "fs-overlay-staging",
         ];
+        if cfg!(feature = "gateway") {
+            providers.push("in-process-capture");
+        }
         if vm_network {
             providers.push("overlaynet-vm-smoltcp");
         }
         Self {
             agentctl: true,
-            gateway: true,
+            gateway: cfg!(feature = "gateway"),
             network: false,
             filesystem: false,
             providers,
@@ -103,11 +111,16 @@ fn network_config_from_capability(
 /// public configuration goes through [`crate::PVisorBuilder`].
 #[derive(Clone, Default)]
 pub struct RuntimeSupervisorBuilder {
+    #[cfg(feature = "gateway")]
     proxy: Option<ProxyConfig>,
+    #[cfg(feature = "gateway")]
     gateway_output_dir: Option<PathBuf>,
+    #[cfg(feature = "gateway")]
     gateway_enabled: bool,
     storage: Option<PathBuf>,
+    #[cfg(feature = "gateway")]
     stream_markdown: bool,
+    #[cfg(feature = "gateway")]
     sink: Option<Arc<dyn TrajectoryEventSink>>,
     overlay: OverlayHint,
     controller: Option<Arc<dyn ControlController>>,
@@ -117,21 +130,19 @@ pub struct RuntimeSupervisorBuilder {
 impl std::fmt::Debug for RuntimeSupervisorBuilder {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
         f.debug_struct("RuntimeSupervisorBuilder")
-            .field("proxy", &self.proxy.as_ref().map(|_| "<ProxyConfig>"))
-            .field("gateway_output_dir", &self.gateway_output_dir)
             .field("storage", &self.storage)
-            .field("stream_markdown", &self.stream_markdown)
-            .field("sink", &self.sink.as_ref().map(|_| "<TrajectoryEventSink>"))
             .field("overlay", &self.overlay)
             .field("network", &self.network)
             .finish_non_exhaustive()
     }
 }
 
+#[cfg(feature = "gateway")]
 struct SharedJournalObserver {
     journal: crate::trace::Journal,
     observer: Option<Arc<dyn TrajectoryEventSink>>,
 }
+#[cfg(feature = "gateway")]
 impl persisting_gateway::sink::CaptureEventObserver for SharedJournalObserver {
     fn observe(&self, event: &persisting_control::trace::Event) -> anyhow::Result<()> {
         match &self.observer {
@@ -145,6 +156,7 @@ impl persisting_gateway::sink::CaptureEventObserver for SharedJournalObserver {
 }
 
 impl RuntimeSupervisorBuilder {
+    #[cfg(feature = "gateway")]
     pub(crate) fn journal(mut self, journal: crate::trace::Journal) -> Self {
         self.sink = Some(Arc::new(SharedJournalObserver {
             journal,
@@ -157,6 +169,7 @@ impl RuntimeSupervisorBuilder {
         Self::default()
     }
 
+    #[cfg(feature = "gateway")]
     pub fn gateway(mut self, gateway: GatewayDriverConfig) -> Self {
         self.proxy = Some(gateway.proxy);
         self.gateway_output_dir = Some(gateway.output_dir);
@@ -170,6 +183,7 @@ impl RuntimeSupervisorBuilder {
         self
     }
 
+    #[cfg(feature = "gateway")]
     pub fn trajectory_sink(mut self, sink: Arc<dyn TrajectoryEventSink>) -> Self {
         self.sink = Some(sink);
         self
@@ -192,11 +206,16 @@ impl RuntimeSupervisorBuilder {
 
     pub fn build(self) -> RuntimeSupervisor {
         RuntimeSupervisor {
+            #[cfg(feature = "gateway")]
             proxy: self.proxy,
+            #[cfg(feature = "gateway")]
             gateway_output_dir: self.gateway_output_dir,
+            #[cfg(feature = "gateway")]
             gateway_enabled: self.gateway_enabled,
             storage: self.storage,
+            #[cfg(feature = "gateway")]
             stream_markdown: self.stream_markdown,
+            #[cfg(feature = "gateway")]
             sink: self.sink,
             overlay: self.overlay,
             controller: self
@@ -210,11 +229,16 @@ impl RuntimeSupervisorBuilder {
 /// Capture / network / overlay prepare options for one Attempt.
 #[derive(Clone)]
 pub struct RuntimeSupervisor {
+    #[cfg(feature = "gateway")]
     proxy: Option<ProxyConfig>,
+    #[cfg(feature = "gateway")]
     gateway_output_dir: Option<PathBuf>,
+    #[cfg(feature = "gateway")]
     gateway_enabled: bool,
     storage: Option<PathBuf>,
+    #[cfg(feature = "gateway")]
     stream_markdown: bool,
+    #[cfg(feature = "gateway")]
     sink: Option<Arc<dyn TrajectoryEventSink>>,
     overlay: OverlayHint,
     controller: Arc<dyn ControlController>,
@@ -247,7 +271,16 @@ impl RuntimeSupervisor {
         self.network
             .as_ref()
             .map(|network| network.network.clone())
-            .or_else(|| self.proxy.as_ref().map(|proxy| proxy.network.clone()))
+            .or({
+                #[cfg(feature = "gateway")]
+                {
+                    self.proxy.as_ref().map(|proxy| proxy.network.clone())
+                }
+                #[cfg(not(feature = "gateway"))]
+                {
+                    None
+                }
+            })
             .unwrap_or_else(|| network_config_from_capability(&spec.capabilities.network))
     }
 
@@ -260,7 +293,11 @@ impl RuntimeSupervisor {
     }
 
     pub(crate) fn proxy_network_is_configured(&self) -> bool {
-        self.proxy.is_some()
+        #[cfg(feature = "gateway")]
+        if self.proxy.is_some() {
+            return true;
+        }
+        self.network_mode() == OverlayNetMode::Proxy
     }
 
     pub(crate) fn apply_network_capability(&self, spec: &mut RunSpec) {
@@ -290,6 +327,60 @@ impl RuntimeSupervisor {
     pub fn prepare(
         &self,
         spec: &mut RunSpec,
+        limits: &[persisting_control::NetworkBandwidthLimit],
+        vm_executor: bool,
+        attempt_id: &AttemptId,
+    ) -> anyhow::Result<Option<AttemptSession>> {
+        let mut session = self.prepare_drivers(spec, limits, vm_executor, attempt_id)?;
+        if self.network_mode() == OverlayNetMode::Proxy {
+            #[cfg(feature = "gateway")]
+            if self.proxy.is_some() {
+                return Ok(session);
+            }
+            let mut network = self.network.clone().unwrap_or_default();
+            network.network = self.effective_network_config(spec);
+            network.network.limits.extend_from_slice(limits);
+            if session.is_none() {
+                let storage = self.storage.clone().unwrap_or_else(|| {
+                    super::registry::default_run_home().join(spec.run_id.as_str())
+                });
+                std::fs::create_dir_all(&storage)?;
+                session = Some(prepare_storage_attempt(spec, &storage, None)?);
+            }
+            let session_ref = session.as_mut().unwrap();
+            if let Err(error) =
+                session_ref.start_proxy(spec, &network, Arc::clone(&self.controller), attempt_id)
+            {
+                if let Some(session) = session.take() {
+                    // Startup failed before execution; release the owned drivers and durable lease.
+                    let snapshot = crate::AgentCtlSnapshot {
+                        run_id: spec.run_id.to_string(),
+                        attempt_id: attempt_id.to_string(),
+                        directive: persisting_control::AgentDirective::Continue,
+                        clients: Vec::new(),
+                    };
+                    if let Err(cleanup) = session.abort_startup(
+                        attempt_id,
+                        spec.lease_epoch,
+                        snapshot,
+                        spec.metadata
+                            .get("pvisor.safe")
+                            .and_then(serde_json::Value::as_bool)
+                            .unwrap_or(false),
+                        format!("OverlayNet proxy startup failed: {error:#}"),
+                    ) {
+                        tracing::warn!(%cleanup, "persist failed proxy startup");
+                    }
+                }
+                return Err(error);
+            }
+        }
+        Ok(session)
+    }
+
+    fn prepare_drivers(
+        &self,
+        spec: &mut RunSpec,
         supervisor_limits: &[persisting_control::NetworkBandwidthLimit],
         vm_executor: bool,
         attempt_id: &AttemptId,
@@ -309,11 +400,13 @@ impl RuntimeSupervisor {
                 "overlaynet mode `proxy` is only valid for host/container execution; use `auto` for VM smoltcp networking"
             );
         }
+        #[cfg(feature = "gateway")]
         if vm_executor && network_mode == OverlayNetMode::Off && self.proxy.is_some() {
             anyhow::bail!(
                 "overlaynet mode `off` makes the VM offline and cannot be combined with Gateway/proxy configuration"
             );
         }
+        #[cfg(feature = "gateway")]
         if let Some(proxy) = &self.proxy {
             let mut proxy = proxy.clone();
             // NetworkDriverConfig is the one Attempt policy source. ProxyConfig
@@ -340,10 +433,13 @@ impl RuntimeSupervisor {
                     config: &proxy,
                     storage: &storage,
                     capture_storage: &capture_storage,
+                    #[cfg(feature = "gateway")]
                     sink: self.sink.clone(),
+                    #[cfg(feature = "gateway")]
                     stream_markdown: self.stream_markdown,
                     overlay_override: overlay.clone(),
                     controller: Arc::clone(&self.controller),
+                    #[cfg(feature = "gateway")]
                     gateway_enabled: self.gateway_enabled,
                     vm_network,
                     attempt_id: attempt_id.as_str(),
@@ -421,7 +517,7 @@ impl RuntimeSupervisor {
         plan.env
             .insert("PERSISTING_AGENT".into(), spec.agent.name.clone());
 
-        if self.proxy.is_some() {
+        if self.proxy_network_is_configured() {
             plan.notes
                 .push("network: in-process OverlayNet proxy configured".into());
             plan.env.insert(
@@ -433,6 +529,7 @@ impl RuntimeSupervisor {
                 "cooperative".into(),
             );
         }
+        #[cfg(feature = "gateway")]
         if let Some(path) = &self.gateway_output_dir {
             plan.env.insert(
                 "PERSISTING_CAPTURE_STORAGE".into(),
@@ -526,8 +623,10 @@ impl RuntimeSupervisor {
 #[cfg(test)]
 mod tests {
     use super::*;
+    #[cfg(feature = "gateway")]
     use persisting_gateway::config::ProxyConfig;
 
+    #[cfg(feature = "gateway")]
     fn test_proxy() -> ProxyConfig {
         ProxyConfig::from_toml_str(
             r#"
@@ -551,6 +650,7 @@ models = []
     }
 
     #[test]
+    #[cfg(feature = "gateway")]
     fn explicit_network_config_is_the_attempt_policy_source() {
         let mut proxy = test_proxy();
         proxy.network.mode = persisting_overlaynet::NetworkMode::Public;
@@ -619,6 +719,7 @@ models = []
     }
 
     #[test]
+    #[cfg(feature = "gateway")]
     fn offline_vm_rejects_gateway_configuration() {
         let supervisor = RuntimeSupervisorBuilder::new()
             .network(NetworkDriverConfig::new(

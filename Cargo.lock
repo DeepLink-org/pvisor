@@ -2651,6 +2651,7 @@ version = "0.3.0"
 dependencies = [
  "anyhow",
  "async-trait",
+ "axum",
  "chrono",
  "clap",
  "dirs",
@@ -2662,7 +2663,6 @@ dependencies = [
  "libkrun",
  "libloading",
  "lru",
- "memchr",
  "persisting-control",
  "persisting-gateway",
  "persisting-guest",
@@ -2670,7 +2670,6 @@ dependencies = [
  "persisting-overlay-core",
  "persisting-overlayfs",
  "persisting-overlaynet",
- "persisting-replay",
  "proptest",
  "reqwest",
  "serde",
@@ -2684,9 +2683,7 @@ dependencies = [
  "toml",
  "toml_edit 0.22.27",
  "tracing",
- "unicode-width",
  "uuid",
- "vt100",
  "zstd",
 ]
 
@@ -2697,10 +2694,12 @@ dependencies = [
  "anyhow",
  "axum",
  "chrono",
+ "clap",
  "fs2",
  "libc",
  "persisting-control",
  "persisting-journal",
+ "persisting-pvisor",
  "reqwest",
  "serde",
  "serde_json",
@@ -2730,6 +2729,27 @@ dependencies = [
  "tempfile",
  "thiserror 2.0.18",
  "tokio",
+]
+
+[[package]]
+name = "persisting-tui"
+version = "0.3.0"
+dependencies = [
+ "anyhow",
+ "clap",
+ "dirs",
+ "fs2",
+ "libc",
+ "persisting-control",
+ "persisting-overlaynet",
+ "persisting-pvisor",
+ "serde",
+ "serde_json",
+ "tempfile",
+ "toml",
+ "toml_edit 0.22.27",
+ "unicode-width",
+ "vt100",
 ]
 
 [[package]]

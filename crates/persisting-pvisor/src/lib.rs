@@ -10,10 +10,11 @@ pub mod cli;
 mod runtime;
 pub mod session;
 pub mod trace;
-pub use session::{Session, SessionExtension};
+pub use session::Session;
 
 mod config;
-mod diagnostics;
+#[doc(hidden)]
+pub mod diagnostics;
 mod executor;
 mod image;
 
@@ -23,19 +24,19 @@ pub use executor::sandbox;
 pub use image::cache;
 mod util;
 
+#[cfg(feature = "gateway")]
+pub use config::GatewayDriverConfig;
 pub use config::{
     ContainerMount, ContainerNetwork, ContainerPlatform, ContainerSettings, FilesystemMode,
-    GatewayDriverConfig, GatewayMode, GatewaySettings, NetworkDriverConfig, OverlayFsCommit,
-    OverlayFsSettings, OverlayNetMode, OverlayNetPolicy, OverlayNetSettings, PVisorConfig,
-    RecordSettings, RunConfig, RunExecutorKind, RunPolicy, RunSettings, RunStdio, VmSettings,
+    GatewayMode, GatewaySettings, NetworkDriverConfig, OverlayFsCommit, OverlayFsSettings,
+    OverlayNetMode, OverlayNetPolicy, OverlayNetSettings, PVisorConfig, RecordSettings, RunConfig,
+    RunExecutorKind, RunPolicy, RunSettings, RunStdio, VmSettings,
 };
 pub use executor::container::ContainerExecutor;
 pub use executor::process::ProcessExecutor;
 pub use executor::vm::VmExecutor;
 pub use executor::vm::run_internal_if_requested as run_krun_internal_if_requested;
-pub use executor::{ExecutorOutput, ExecutorSession, RunExecutor};
-/// Compatibility name for the session passed to executor backends.
-pub type AttemptContext = ExecutorSession;
+pub use executor::{ExecutorOutput, RunExecutor};
 pub use persisting_control::{
     AGENTCTL_ENDPOINT_ENV, AGENTCTL_MAX_FRAME_BYTES, AGENTCTL_TOKEN_ENV, AGENTCTL_TRANSPORT_ENV,
     AGENTCTL_VERSION, AGENTCTL_VERSION_ENV, AgentDirective, AgentErrorCode, AgentRequest,
@@ -43,6 +44,7 @@ pub use persisting_control::{
     ControlRequest, ControlState, ControlTransition, NetworkGuard, NetworkHostRule, NetworkRule,
     PolicyControlController, host_matches, is_public_egress_ip, normalize_host, parse_network_rule,
 };
+#[cfg(feature = "gateway")]
 pub use persisting_gateway::sink::CaptureEventObserver as TrajectoryEventSink;
 pub use runtime::agentctl::{
     AGENTCTL_MAX_SESSIONS, AgentClientSnapshot, AgentCtlControl, AgentCtlServer, AgentCtlSnapshot,
@@ -66,3 +68,6 @@ pub use runtime::{
     RuntimeCapabilities,
 };
 pub use util::unix_now_ms;
+
+#[doc(hidden)]
+pub use runtime::{RunRecord, control_observations};

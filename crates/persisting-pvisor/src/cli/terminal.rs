@@ -2,13 +2,13 @@
 use std::path::{Path, PathBuf};
 use std::sync::OnceLock;
 
-pub(crate) const CHILD_MARKER: &str = "PVISOR_UI_CHILD";
-pub(crate) const STAGE_FILE: &str = "PVISOR_UI_STAGE_FILE";
-pub(crate) const LOG_FILE: &str = "PVISOR_UI_LOG_FILE";
-pub(crate) const AUDIT_SOCKET: &str = "PVISOR_UI_AUDIT_SOCKET";
+pub const CHILD_MARKER: &str = "PVISOR_UI_CHILD";
+pub const STAGE_FILE: &str = "PVISOR_UI_STAGE_FILE";
+pub const LOG_FILE: &str = "PVISOR_UI_LOG_FILE";
+pub const AUDIT_SOCKET: &str = "PVISOR_UI_AUDIT_SOCKET";
 static CHILD_CONTEXT: OnceLock<Option<PathBuf>> = OnceLock::new();
 
-pub(crate) fn init_child_context() {
+pub fn init_child_context() {
     let path = if std::env::var_os(CHILD_MARKER).is_some() {
         std::env::var_os(STAGE_FILE).map(PathBuf::from)
     } else {
@@ -43,13 +43,13 @@ pub(crate) fn init_child_context() {
     crate::diagnostics::init(log_path);
 }
 
-pub(crate) fn announce_stage(stage: &Path) {
+pub fn announce_stage(stage: &Path) {
     if let Some(Some(path)) = CHILD_CONTEXT.get() {
         let _ = std::fs::write(path, stage.as_os_str().as_encoded_bytes());
     }
 }
 
-pub(crate) fn available() -> bool {
+pub fn available() -> bool {
     CHILD_CONTEXT.get().is_some_and(Option::is_none)
         && unsafe {
             libc::isatty(libc::STDIN_FILENO) == 1 && libc::isatty(libc::STDOUT_FILENO) == 1
@@ -57,6 +57,6 @@ pub(crate) fn available() -> bool {
         && std::env::var("TERM").is_ok_and(|term| term != "dumb")
 }
 
-pub(crate) fn is_child() -> bool {
+pub fn is_child() -> bool {
     CHILD_CONTEXT.get().is_some_and(Option::is_some)
 }
