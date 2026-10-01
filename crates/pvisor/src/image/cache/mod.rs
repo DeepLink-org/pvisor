@@ -1,5 +1,5 @@
 //! Shared read-only OCI cache: CLI, client, wire protocol, and server.
-//! See docs/shared-image-cache.md for storage layout and lifecycle.
+//! See docs/src/zh/reference/shared-image-cache.md for storage layout and lifecycle.
 
 mod cli;
 mod client;

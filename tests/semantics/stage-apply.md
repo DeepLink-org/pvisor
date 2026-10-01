@@ -210,7 +210,7 @@ assert_unchanged workspace "$WS"; assert_unchanged outside "$CASE_ROOT/outside"
 
 ### S-STAGE-013：调用返回值与链接效果一致
 
-<!-- semantic-case: xfail-on=macos xfail-reason="macFUSE 创建链接返回 EPERM 但已有实际效果；docs/semspec-design.md §12" -->
+<!-- semantic-case: xfail-on=macos xfail-reason="macFUSE 创建链接返回 EPERM 但已有实际效果；tools/semspec/DESIGN.md §12" -->
 
 **语义**：创建链接的调用成功必须产生对应链接，失败则不得产生链接；返回值和可观察效果一致。
 

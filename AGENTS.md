@@ -20,7 +20,7 @@ required.
 
 ## Semantic preservation specifications
 
-Follow `docs/semspec-design.md` for semspec. AI may draft new cases, repair the
+Follow `tools/semspec/DESIGN.md` for semspec. AI may draft new cases, repair the
 subject implementation and maintain conventional runner tests. AI must not run
 `semspec approve`/`revoke`, edit real `REVIEWED.toml` ledgers or `.approved/`
 snapshots, or weaken existing claims/checks/xfail annotations to obtain PASS.

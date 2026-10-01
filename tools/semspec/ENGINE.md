@@ -4,7 +4,7 @@ Review the implementation as well as this contract before approving @engine.
 
 - Markdown h3 cases stop at the next h1/h2/h3, excluding headings in code fences.
   Each has a unique S-DOMAIN-NNN ID, nonempty 语义/违反示例 and exactly one bash check.
-- Digests follow docs/semspec-design.md §8: trim line-end whitespace, remove trailing
+- Digests follow DESIGN.md §8: trim line-end whitespace, remove trailing
   blank lines, append one LF, no Unicode normalization, SHA-256 domain separation.
   Case digests bind the complete case, sorted vocabulary digests and engine version.
   Executed checks and vocabulary use those same normalized bytes.

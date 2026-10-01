@@ -1,4 +1,4 @@
-# PolicyVisor（pVisor）：策略约束下的可审查执行
+# PolicyVisor（pVisor）：让自主 Agent 的执行可以规模化
 
 **问题：pVisor 的事务工作区、changeset、显式网络代理和 Gateway 能否用 `run.sh` 定量复现？可复现结论：四个场景分别断言 lower/upper、review/apply/drop、cooperative proxy 边界，以及 Gateway 捕获计数。**
 

@@ -1,7 +1,7 @@
 # semspec
 
 A standalone Rust CLI for human-reviewed, black-box semantic preservation tests.
-See [the design](../../docs/semspec-design.md) and the reviewable [engine contract](ENGINE.md).
+See [the design](DESIGN.md) and the reviewable [engine contract](ENGINE.md).
 It has no pVisor dependency. The core, runner and CLI are modules in one package.
 Requires Rust 1.89+, Unix and Bash. A specification is trusted executable code,
 not a security sandbox; passing checks do not establish complete semantic coverage.

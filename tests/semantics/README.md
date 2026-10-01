@@ -1,6 +1,6 @@
 # pVisor 语义规格
 
-`stage-apply.md` 是按 docs/semspec-design.md §12 起草的 14 条 Stage/Apply/Drop
+`stage-apply.md` 是按 tools/semspec/DESIGN.md §12 起草的 14 条 Stage/Apply/Drop
 规格，尚未人工审核。PASS 表示当前样例满足检查，不表示规格已被批准。
 
 ```sh

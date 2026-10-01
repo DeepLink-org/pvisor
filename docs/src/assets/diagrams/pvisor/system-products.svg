@@ -1,5 +1,5 @@
 <svg xmlns="http://www.w3.org/2000/svg" width="1400" height="620" viewBox="0 0 1400 620" role="img" aria-labelledby="title desc">
-  <title id="title">PolicyVisor: policy-governed, reviewable execution</title>
+  <title id="title">PolicyVisor: scaling autonomous agent execution</title>
   <desc id="desc">Agent CLIs, scripts, and automation commands run through capability admission and a selected executor. The Run Bundle records effective controls and outcomes. With staging enabled, file changes can be reviewed, selectively applied, or discarded. External side effects are not rolled back.</desc>
   <defs>
     <linearGradient id="bg" x1="0" y1="0" x2="1" y2="1"><stop stop-color="#08111f"/><stop offset="1" stop-color="#17233a"/></linearGradient>
@@ -18,7 +18,7 @@
   </defs>
   <rect width="1400" height="620" rx="28" fill="url(#bg)"/>
   <text x="52" y="62" class="title">PolicyVisor (pVisor)</text>
-  <text x="52" y="100" class="subtitle">Policy-governed, reviewable execution.</text>
+  <text x="52" y="100" class="subtitle">Scaling autonomous agent execution.</text>
   <rect x="52" y="134" width="1296" height="60" rx="16" class="card"/>
   <text x="700" y="172" text-anchor="middle" class="body">Your existing tools: Agent CLIs · scripts · automation commands</text>
 

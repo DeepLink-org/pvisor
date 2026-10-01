@@ -1,6 +1,7 @@
 # 命令与场景参考
 
 - [`pvisor` 命令参考](cli.md)
+- [共享镜像缓存协议](shared-image-cache.md)：OCI 镜像文件缓存的客户端／服务端协议与远程访问。
 - [可执行场景附录](cases.md)：按任务选择运行、暂存、权限、VM、容器、网络和回放场景。
 
 首次使用从 [第一个 Job](../start/first-run.md)开始。场景附录同时是 semspec 的 DOC 规格源，

@@ -1,5 +1,7 @@
-# Operation 与 Event
+# Operation 与 Event（遗留指针）
 
-核心设计已并入站点文档，唯一正文为 [Operation 与 Event](src/zh/design/operations-events.md)。
+此文件仅为旧链接保留，不再维护正文。唯一正文见
+[`docs/src/zh/design/operations-events.md`](src/zh/design/operations-events.md)。
 
-整体职责与执行路径见[核心架构](src/zh/design/architecture.md)，工程取舍见[核心设计原则](src/zh/design/principles.md)。
+整体职责与执行路径见 [`docs/src/zh/design/architecture.md`](src/zh/design/architecture.md)，
+工程取舍见 [`docs/src/zh/design/principles.md`](src/zh/design/principles.md)。

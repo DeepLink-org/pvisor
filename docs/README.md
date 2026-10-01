@@ -1,9 +1,11 @@
 # PolicyVisor Documentation
 
 Use **PolicyVisor** for the product name, **pVisor** for its short name, and
-`pvisor` for the CLI. The positioning is **Policy-governed, reviewable execution.**
-In Chinese, use **策略约束下的可审查执行。** The product covers Agent CLIs,
-scripts, and automation commands; describe Agent-specific integrations as such.
+`pvisor` for the CLI. The positioning is **scaling autonomous agent execution**;
+in Chinese, **让自主 Agent 的执行可以规模化**, with the day-one line
+**让 Agent 全自动执行，文件改动由你决定去留** / "run agents unattended, keep only
+the file changes you approve". The product covers Agent CLIs, scripts, and
+automation commands; describe Agent-specific integrations as such.
 
 Use `pvisor` for the Python distribution, import package, and wheel filename
 prefix. Use current Rust crate names, `PVISOR_*` environment variables, and
@@ -34,6 +36,16 @@ gradient, grid, brand contrast and homepage layout. Use native Markdown fences,
 `!!! note` / `!!! tip` callouts, and relative image paths.
 
 CI uses the same bilingual build and page checks before uploading `docs/site`.
+
+## Layout
+
+`docs/src/` is the published site source: `assets/`, `stylesheets/`, `index.md`,
+and the per-locale trees `zh/` (authoritative) and `en/` (entry pages only). The
+`docs/` root holds only site infrastructure — `zensical.toml`, `redirects.json`,
+`overrides/`, and this file. Keep each document next to what it serves: tool and
+specification documents live with their tool (for example `tools/semspec/DESIGN.md`),
+and user-facing protocol pages belong in the site's `reference/` tree, not at the
+`docs/` root. `docs/site/` is generated output; never edit it by hand.
 
 ## Information architecture
 

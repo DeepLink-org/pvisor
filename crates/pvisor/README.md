@@ -1,6 +1,6 @@
 # PolicyVisor (pVisor)
 
-**Policy-governed, reviewable execution.**
+**Scaling autonomous agent execution.**
 
 PolicyVisor (pVisor) manages execution for Agent CLIs, scripts, and automation
 commands. The **p** stands for **Policy**: connect requested capabilities,
