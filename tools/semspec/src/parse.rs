@@ -2,7 +2,7 @@ use crate::{
     model::{Annotation, Case, valid_case_id},
     seal::normalize,
 };
-use anyhow::{Context, Result, bail, ensure};
+use anyhow::{Context, Result, ensure};
 use pulldown_cmark::{CodeBlockKind, Event, HeadingLevel, Parser, Tag, TagEnd};
 use std::{collections::BTreeMap, path::Path};
 
@@ -134,7 +134,7 @@ fn parse_annotation(text: &str) -> Result<Annotation> {
             .split_once('=')
             .context("annotation must be key=value")?;
         ensure!(
-            ["requires", "xfail-on", "xfail-reason", "vocab"].contains(&key),
+            ["xfail-on", "xfail-reason", "vocab"].contains(&key),
             "unknown annotation {key}"
         );
         ensure!(
@@ -148,15 +148,10 @@ fn parse_annotation(text: &str) -> Result<Annotation> {
             .map(|v| v.split(',').map(str::to_owned).collect())
             .unwrap_or_default()
     };
-    let requires = split("requires");
     let xfail = split("xfail-on");
     let vocab = split("vocab");
     ensure!(
-        requires
-            .iter()
-            .chain(&xfail)
-            .chain(&vocab)
-            .all(|s| !s.is_empty()),
+        xfail.iter().chain(&vocab).all(|s| !s.is_empty()),
         "empty annotation list item"
     );
     let reason = entries.get("xfail-reason").cloned();
@@ -165,51 +160,21 @@ fn parse_annotation(text: &str) -> Result<Annotation> {
         "xfail-on and xfail-reason must appear together"
     );
     Ok(Annotation {
-        requires: requires.into_iter().collect(),
         xfail_on: xfail.into_iter().collect(),
         xfail_reason: reason,
         vocab: entries.contains_key("vocab").then_some(vocab),
     })
 }
-/// Audit-scope lint, not a sandbox. Dynamic shell programs remain trusted code.
+/// Use Bash's own syntax checker; specifications are trusted executable code.
 pub fn lint_bash(source: &str) -> Result<()> {
-    let mut parser = tree_sitter::Parser::new();
-    parser.set_language(&tree_sitter_bash::LANGUAGE.into())?;
-    let tree = parser.parse(source, None).context("Bash parser failed")?;
-    ensure!(!tree.root_node().has_error(), "invalid bash syntax");
-    fn visit(node: tree_sitter::Node<'_>, source: &str) -> Result<()> {
-        if node.kind() == "command"
-            && let Some(name) = node.child_by_field_name("name")
-        {
-            let name = shell_words::split(name.utf8_text(source.as_bytes())?)?;
-            let mut name = name.first().map(String::as_str).unwrap_or("");
-            if ["builtin", "command"].contains(&name) {
-                if let Some(argument) = node.child_by_field_name("argument") {
-                    let argument = shell_words::split(argument.utf8_text(source.as_bytes())?)?;
-                    if argument.first().is_some_and(|s| s == "source" || s == ".") {
-                        bail!("source/dot commands are outside sealed vocabulary");
-                    }
-                }
-                name = "";
-            }
-            ensure!(
-                name != "source" && name != ".",
-                "source/dot commands are outside sealed vocabulary"
-            );
-        }
-        if node.kind() == "variable_assignment"
-            && let Some(name) = node.child_by_field_name("name")
-        {
-            ensure!(
-                !name.utf8_text(source.as_bytes())?.starts_with("SEMSPEC_"),
-                "SEMSPEC_* variables are reserved"
-            );
-        }
-        let mut cursor = node.walk();
-        for child in node.named_children(&mut cursor) {
-            visit(child, source)?;
-        }
-        Ok(())
-    }
-    visit(tree.root_node(), source)
+    let output = std::process::Command::new("bash")
+        .args(["--noprofile", "--norc", "-n", "-c", source])
+        .output()
+        .context("launch Bash syntax checker")?;
+    ensure!(
+        output.status.success(),
+        "invalid bash syntax: {}",
+        String::from_utf8_lossy(&output.stderr)
+    );
+    Ok(())
 }

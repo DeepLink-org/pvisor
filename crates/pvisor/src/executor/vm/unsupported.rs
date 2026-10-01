@@ -7,7 +7,7 @@
 use crate::config::VmSettings;
 use crate::executor::{ExecutorOutput, RunExecutor, Session};
 use async_trait::async_trait;
-use pvisor_control::{
+use pvisor_core::{
     CapabilityEnforcementPlan, ExecutorKind, ExecutorPlan, IsolationKind, ProcessOutput,
     RunFailure, RunFailureKind, RunInvocation, RunState,
 };

@@ -15,7 +15,7 @@ path = "src/main.rs"
 anyhow.workspace = true
 libc.workspace = true
 pvisor-overlay-core.workspace = true
-pvisor-control.workspace = true
+pvisor-core.workspace = true
 log.workspace = true
 env_logger.workspace = true
 clap = { workspace = true, features = ["derive"] }

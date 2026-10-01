@@ -4,7 +4,7 @@
 
 Owns the proxy data plane: request classification, HTTP `CONNECT`,
 absolute-URI forwarding, access enforcement through
-[`pvisor-control`](../pvisor-control/README.md), request accounting,
+[`pvisor-core`](../pvisor-core/README.md), request accounting,
 shared proxy header safety, and dispatch to one caller-supplied `OverlaySink`.
 
 Also owns the libkrun VM driver: a non-bypassable virtio-net path whose
@@ -37,7 +37,7 @@ just test pvisor-overlaynet
 
 ## Links
 
-- [OverlayNet architecture](../../docs/src/en/design/overlaynet.md)
-- [Network control](../../docs/src/en/guides/network.md)
+- [OverlayNet architecture](../../docs/src/zh/design/overlaynet.md)
+- [Network control](../../docs/src/zh/guides/network.md)
 - [`pvisor-gateway`](../pvisor-gateway/README.md)
-- [`pvisor-control`](../pvisor-control/README.md)
+- [`pvisor-core`](../pvisor-core/README.md)

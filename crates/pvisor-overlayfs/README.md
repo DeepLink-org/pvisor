@@ -56,6 +56,6 @@ cargo zigbuild -p pvisor-overlayfs --release --target x86_64-unknown-linux-musl
 
 ## Links
 
-- [Isolation architecture](../../docs/src/en/design/isolation.md)
-- [Review and apply effects](../../docs/src/en/guides/review-apply.md)
+- [Isolation architecture](../../docs/src/zh/design/isolation.md)
+- [Review and apply effects](../../docs/src/zh/guides/review-apply.md)
 - [`pvisor`](../pvisor/README.md)

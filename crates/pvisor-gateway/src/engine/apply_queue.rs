@@ -219,7 +219,7 @@ mod tests {
     struct SlowSink;
 
     impl CaptureEventObserver for SlowSink {
-        fn observe(&self, _event: &pvisor_control::trace::Event) -> anyhow::Result<()> {
+        fn observe(&self, _event: &pvisor_core::event::Event) -> anyhow::Result<()> {
             std::thread::sleep(std::time::Duration::from_millis(400));
             Ok(())
         }
@@ -238,7 +238,7 @@ mod tests {
     }
 
     impl CaptureEventObserver for OrderRecordingSink {
-        fn observe(&self, event: &pvisor_control::trace::Event) -> anyhow::Result<()> {
+        fn observe(&self, event: &pvisor_core::event::Event) -> anyhow::Result<()> {
             let record = CaptureRecord::from_event(event, 0)?;
             self.order.lock().unwrap().push(format!(
                 "{}:{}",

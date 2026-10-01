@@ -1,13 +1,14 @@
-//! Project the admitted RunSpec and runtime boundary into an immutable RunPlan.
+//! Project the admitted RunSpec and runtime boundary into an immutable Operation.
 //! Execution and policy enforcement remain in the Run runtime and its drivers.
 
 use super::OverlayHint;
-use pvisor_control::{
+use pvisor_core::{
     CapabilityDimension, CapabilityEnforcementPlan, ExecutorKind, ExecutorPlan, FilesystemAccess,
     NetworkCapability, RunResult, RunSpec, RunState,
-    run_plan::{
-        Binding, Context, Failure, FilesystemObservation, Outcome, Placement, PlanRule,
-        RUN_PLAN_VERSION, RuleCounters, RunObservation, RunPlan, Value,
+    operation::{
+        Binding, Context, Failure, FilesystemObservation, OPERATION_VERSION, Operation,
+        OperationDecision, OperationKind, OperationObservation, Outcome, Placement, RuleCounters,
+        Value,
     },
 };
 use std::collections::BTreeMap;
@@ -17,7 +18,7 @@ pub(crate) fn compile(
     executor: &ExecutorPlan,
     evidence: &CapabilityEnforcementPlan,
     overlay: &OverlayHint,
-) -> anyhow::Result<RunPlan> {
+) -> anyhow::Result<Operation> {
     let mut placements = Vec::new();
     if executor.kind == ExecutorKind::VirtualMachine {
         placements.push(Placement::Vm {
@@ -48,7 +49,7 @@ pub(crate) fn compile(
     };
     let mut rules = Vec::new();
     let mut push = |id: String, dimension, target: String, action: &str| {
-        rules.push(PlanRule {
+        rules.push(OperationDecision {
             id,
             dimension,
             target,
@@ -191,7 +192,7 @@ pub(crate) fn compile(
         }
         _ => {}
     }
-    let pvisor_control::RunInvocation::Process(process) = &spec.invocation;
+    let pvisor_core::RunInvocation::Process(process) = &spec.invocation;
     push(
         "env.projection".into(),
         CapabilityDimension::Secrets,
@@ -210,9 +211,14 @@ pub(crate) fn compile(
             "project",
         );
     }
-    let plan = RunPlan {
-        version: RUN_PLAN_VERSION,
+    let plan = Operation {
+        version: OPERATION_VERSION,
         context,
+        kind: OperationKind::RunExecute {
+            program: process.program.clone(),
+            args: process.args.clone(),
+            cwd: process.cwd.clone(),
+        },
         run_id: spec.run_id.as_str().to_owned(),
         placements,
         rules,
@@ -222,11 +228,11 @@ pub(crate) fn compile(
 }
 
 pub(crate) fn observe(
-    plan: &RunPlan,
+    plan: &Operation,
     result: &RunResult,
     network: Option<&pvisor_overlaynet::InterceptionSnapshot>,
     filesystem: Option<&FilesystemObservation>,
-) -> anyhow::Result<RunObservation> {
+) -> anyhow::Result<OperationObservation> {
     let outcome = if result.state == RunState::Completed {
         Outcome::success(Value::Run {
             state: RunState::Completed,
@@ -297,7 +303,7 @@ pub(crate) fn observe(
             }
         }
     }
-    let observation = RunObservation {
+    let observation = OperationObservation {
         outcome,
         rules,
         filesystem: filesystem.cloned(),
@@ -314,7 +320,7 @@ mod tests {
     #[test]
     fn production_observation_rejects_invalid_filesystem_counts() {
         let spec = RunSpec::process("observation-check", "agent", "/bin/true");
-        let plan = PVisor::new().resolve_run_plan(spec).unwrap();
+        let plan = PVisor::new().resolve_operation(spec).unwrap();
         let result: RunResult = serde_json::from_value(serde_json::json!({
             "run_id": "observation-check", "attempt_id": "attempt",
             "state": "completed", "started_at_unix_ms": 0,
@@ -325,7 +331,7 @@ mod tests {
         let mut filesystem = FilesystemObservation::default();
         filesystem.paths.entry("file".into()).or_default().insert(
             "read".into(),
-            pvisor_control::run_plan::PathOperationCounters {
+            pvisor_core::operation::PathOperationCounters {
                 hits: 1,
                 ..Default::default()
             },

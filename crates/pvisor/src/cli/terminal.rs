@@ -32,7 +32,7 @@ pub fn init_child_context() {
         std::env::remove_var(AUDIT_SOCKET);
     }
     if let Some(socket) = audit_socket {
-        pvisor_control::audit::init(socket);
+        crate::runtime::audit::init(socket);
     }
     let _ = CHILD_CONTEXT.set(path);
     crate::image::cache::progress::init_output(

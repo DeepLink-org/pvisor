@@ -1,11 +1,11 @@
 //! Filesystem-neutral review, apply, conflict detection, recovery and drop.
 use crate::{fingerprint_at, load_preimages, preimage_journal_is_complete, remove_preimages};
 use globset::{GlobBuilder, GlobSet, GlobSetBuilder};
-pub use pvisor_control::overlay::{
+pub use pvisor_core::overlay::{
     ApplyOutcome, ApplyRecord, ApplyRecordState, ApplySelection, ChangeEntry, ChangeEntryType,
     ChangeKind, OverlayRecord, OverlayState, OverlayStatus, OverlayUpper,
 };
-use pvisor_control::overlay::{PathFingerprint, PathPreimage};
+use pvisor_core::overlay::{PathFingerprint, PathPreimage};
 use pvisor_journal::atomic_write;
 use serde::{Deserialize, Serialize};
 use sha2::{Digest, Sha256};
@@ -575,7 +575,7 @@ pub fn apply_overlay_selected(
         ApplyRecord {
             schema_version: APPLY_LEDGER_SCHEMA_VERSION,
             apply_id: apply_id.clone(),
-            created_at_unix_ms: pvisor_control::unix_now_ms(),
+            created_at_unix_ms: pvisor_core::unix_now_ms(),
             overlay_id: record.id.clone(),
             overlay_generation: record.generation,
             target: record.target.clone(),
@@ -2055,7 +2055,7 @@ mod tests {
                 ApplyRecord {
                     schema_version: APPLY_LEDGER_SCHEMA_VERSION,
                     apply_id: apply_id.clone(),
-                    created_at_unix_ms: pvisor_control::unix_now_ms(),
+                    created_at_unix_ms: pvisor_core::unix_now_ms(),
                     overlay_id: record.id.clone(),
                     overlay_generation: record.generation,
                     target: target.clone(),
@@ -2182,7 +2182,7 @@ mod tests {
             ApplyRecord {
                 schema_version: APPLY_LEDGER_SCHEMA_VERSION,
                 apply_id: apply_id.clone(),
-                created_at_unix_ms: pvisor_control::unix_now_ms(),
+                created_at_unix_ms: pvisor_core::unix_now_ms(),
                 overlay_id: record.id.clone(),
                 overlay_generation: record.generation,
                 target: target.clone(),

@@ -18,7 +18,6 @@ pub struct Case {
 }
 #[derive(Debug, Clone, Default, Serialize)]
 pub struct Annotation {
-    pub requires: BTreeSet<String>,
     pub xfail_on: BTreeSet<String>,
     pub xfail_reason: Option<String>,
     pub vocab: Option<Vec<String>>,
@@ -46,7 +45,6 @@ pub enum ReviewState {
     Reviewed { by: String, on: String },
     Unreviewed,
     Stale { approved: String },
-    Revoked { reason: String },
 }
 impl ReviewState {
     pub fn reviewed(&self) -> bool {
@@ -57,7 +55,6 @@ impl ReviewState {
             Self::Reviewed { .. } => "REVIEWED",
             Self::Unreviewed => "UNREVIEWED",
             Self::Stale { .. } => "STALE",
-            Self::Revoked { .. } => "REVOKED",
         }
     }
 }
@@ -69,7 +66,6 @@ pub enum Verdict {
         output_tail: String,
     },
     Skip {
-        requirement: String,
         reason: String,
     },
     #[serde(rename = "XFAIL")]

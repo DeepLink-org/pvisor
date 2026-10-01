@@ -69,8 +69,8 @@ use std::sync::Arc;
 
 use anyhow::{Context, bail};
 use clap::{Args, ValueEnum};
-use pvisor_control::gateway::{CaptureLevel, ModelRoute};
-use pvisor_control::{
+use pvisor_core::gateway::{CaptureLevel, ModelRoute};
+use pvisor_core::{
     FilesystemAccess, FilesystemCapability, PolicyMode, RunInvocation, RunSpec, RunState, StdioMode,
 };
 #[cfg(feature = "gateway")]
@@ -598,7 +598,7 @@ fn parse_overlaynet_target(value: &str) -> Result<NetworkAccessRule, String> {
     if port == Some(0) {
         return Err("OverlayNet target port must not be zero".into());
     }
-    pvisor_control::parse_network_rule(host).map_err(|error| error.to_string())?;
+    pvisor_core::parse_network_rule(host).map_err(|error| error.to_string())?;
     Ok(NetworkAccessRule {
         host: host.to_string(),
         ports: port.into_iter().collect(),
@@ -785,7 +785,7 @@ fn load_run_config(
 
 pub async fn run(mut args: RunArgs) -> anyhow::Result<i32> {
     #[cfg(unix)]
-    if pvisor_control::audit::configured() {
+    if pvisor_core::audit::configured() {
         args.audit = true;
     }
     anyhow::ensure!(
@@ -1104,7 +1104,7 @@ pub async fn fork(args: ForkArgs) -> anyhow::Result<i32> {
     if source
         .executor
         .as_ref()
-        .is_some_and(|executor| executor.isolation == pvisor_control::IsolationKind::VirtualMachine)
+        .is_some_and(|executor| executor.isolation == pvisor_core::IsolationKind::VirtualMachine)
     {
         config.run.executor = RunExecutorKind::Vm;
         config.vm.rootfs = Some(checkpoint.target.clone());
@@ -1818,7 +1818,7 @@ fn normalize_filesystem_config(config: &mut RunConfig) -> anyhow::Result<()> {
             FilesystemAccessLevel::Deny => {
                 let mut deny = filesystem.access_policy.deny().to_vec();
                 deny.push(normalize_policy_glob(&rule.path));
-                filesystem.access_policy = pvisor_control::FileAccessPolicy::new_with_ask(
+                filesystem.access_policy = pvisor_core::FileAccessPolicy::new_with_ask(
                     deny,
                     filesystem.access_policy.ask().to_vec(),
                     filesystem.access_policy.warn().to_vec(),
@@ -1827,7 +1827,7 @@ fn normalize_filesystem_config(config: &mut RunConfig) -> anyhow::Result<()> {
             FilesystemAccessLevel::Ask => {
                 let mut ask = filesystem.access_policy.ask().to_vec();
                 ask.push(normalize_policy_glob(&rule.path));
-                filesystem.access_policy = pvisor_control::FileAccessPolicy::new_with_ask(
+                filesystem.access_policy = pvisor_core::FileAccessPolicy::new_with_ask(
                     filesystem.access_policy.deny().to_vec(),
                     ask,
                     filesystem.access_policy.warn().to_vec(),
@@ -1836,7 +1836,7 @@ fn normalize_filesystem_config(config: &mut RunConfig) -> anyhow::Result<()> {
             FilesystemAccessLevel::Warn => {
                 let mut warn = filesystem.access_policy.warn().to_vec();
                 warn.push(normalize_policy_glob(&rule.path));
-                filesystem.access_policy = pvisor_control::FileAccessPolicy::new_with_ask(
+                filesystem.access_policy = pvisor_core::FileAccessPolicy::new_with_ask(
                     filesystem.access_policy.deny().to_vec(),
                     filesystem.access_policy.ask().to_vec(),
                     warn,

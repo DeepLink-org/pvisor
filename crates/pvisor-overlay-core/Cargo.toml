@@ -16,7 +16,7 @@ thiserror.workspace = true
 uuid = { workspace = true, features = ["v4"] }
 libc.workspace = true
 log.workspace = true
-pvisor-control.workspace = true
+pvisor-core.workspace = true
 serde_json.workspace = true
 sha2.workspace = true
 

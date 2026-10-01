@@ -1,7 +1,7 @@
 //! Bounded, per-path observations from operations that reached the FUSE view.
 
-use pvisor_control::overlay::FileAccessDecision;
-use pvisor_control::run_plan::{FilesystemObservation, PathOperationCounters};
+use pvisor_core::operation::{FilesystemObservation, PathOperationCounters};
+use pvisor_core::overlay::FileAccessDecision;
 use std::path::Path;
 use std::sync::{Arc, Mutex};
 

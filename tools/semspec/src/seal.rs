@@ -1,5 +1,5 @@
 use sha2::{Digest, Sha256};
-pub const ENGINE_SEMANTICS: &str = "1";
+pub const ENGINE_SEMANTICS: &str = "2";
 pub const ENGINE_TEXT: &str = include_str!("../ENGINE.md");
 pub fn normalize(text: &str) -> String {
     let mut lines: Vec<_> = text.lines().map(str::trim_end).collect();

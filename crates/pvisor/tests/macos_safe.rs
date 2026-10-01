@@ -1,7 +1,7 @@
 #![cfg(target_os = "macos")]
 
 use pvisor::RunBundle;
-use pvisor_control::IsolationKind;
+use pvisor_core::IsolationKind;
 use std::fs;
 use std::net::TcpListener;
 use std::os::unix::net::UnixListener;
@@ -560,7 +560,7 @@ fn ask_preserves_default_rules_read_only_shares_and_job_changes() {
                     .unwrap();
                 let mut line = String::new();
                 BufReader::new(&stream).read_line(&mut line).unwrap();
-                let request: pvisor_control::audit::AuditRequest =
+                let request: pvisor_core::audit::AuditRequest =
                     serde_json::from_str(&line).unwrap();
                 asked.push(request.target);
                 stream.write_all(b"\"deny\"\n").unwrap();

@@ -39,7 +39,7 @@ pub struct LogicalCheckpoint {
     #[serde(default)]
     pub protect_target: bool,
     #[serde(default)]
-    pub access_policy: pvisor_control::overlay::FileAccessPolicy,
+    pub access_policy: pvisor_core::overlay::FileAccessPolicy,
 }
 
 impl LogicalCheckpoint {
@@ -297,7 +297,7 @@ mod tests {
                 checkpoint_id: "parent-cp".into(),
             }),
             orchestration: Default::default(),
-            run_plan: None,
+            operation: None,
         }
     }
 
@@ -307,7 +307,7 @@ mod tests {
         let mut record = stopped_record(temp.path());
         record.overlay.as_mut().unwrap().protect_target = true;
         record.overlay.as_mut().unwrap().access_policy =
-            pvisor_control::FileAccessPolicy::new(vec!["**/.ssh".into()], vec![]).unwrap();
+            pvisor_core::FileAccessPolicy::new(vec!["**/.ssh".into()], vec![]).unwrap();
         let upper = record.overlay.as_ref().unwrap().upper.path();
         fs::write(upper.join("one"), b"value").unwrap();
         fs::hard_link(upper.join("one"), upper.join("two")).unwrap();

@@ -19,14 +19,14 @@ pub(crate) const SANDBOX_PROXY_KEY: &str = "pvisor.sandbox.proxy";
 pub(crate) const SANDBOX_HIDDEN_PATHS_KEY: &str = "pvisor.sandbox.hidden_paths";
 pub(crate) const SANDBOX_NO_GPU_KEY: &str = "pvisor.sandbox.no_gpu";
 
-pub(crate) fn sandbox_required(spec: &pvisor_control::RunSpec) -> bool {
+pub(crate) fn sandbox_required(spec: &pvisor_core::RunSpec) -> bool {
     spec.metadata
         .get(REQUIRED_SANDBOX_KEY)
         .and_then(serde_json::Value::as_bool)
         == Some(true)
 }
 
-pub(crate) fn landlock_required(spec: &pvisor_control::RunSpec) -> bool {
+pub(crate) fn landlock_required(spec: &pvisor_core::RunSpec) -> bool {
     spec.metadata
         .get(LANDLOCK_SANDBOX_KEY)
         .and_then(serde_json::Value::as_bool)

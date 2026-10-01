@@ -8,7 +8,7 @@ pvisor status --review last
 pvisor inspect last -- git status --short
 ```
 
-普通 host Run 省略 `--stage` 时直接写入 lower；`--safe` 会使用临时写时复制视图，并在 Run 结束后丢弃它。`status --review` 展示记录的证据和保留的改动；`inspect` 在只读视图中执行检查命令。`--safe` 会独立暂存 Codex 的 HOME 状态。
+`--safe` 无需指定路径也会保留工作区改动；这里用 `--stage` 选择明确位置。默认行为与 HOME 的独立生命周期见 [暂存与存储](../reference/cli.md#暂存与存储)。`status --review` 展示证据和改动；`inspect` 在只读视图中执行检查命令。
 
 ## 分批应用
 

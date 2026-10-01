@@ -4,7 +4,7 @@ use axum::{
     http::StatusCode,
     response::{IntoResponse, Response},
 };
-use pvisor_control::ControlController;
+use pvisor_core::ControlController;
 use pvisor_overlaynet::server::{OverlayRequestContext, OverlayServerState, OverlaySink};
 use pvisor_overlaynet::{BandwidthRegistry, InterceptionMetrics, NetworkPolicy};
 use std::{
@@ -129,7 +129,7 @@ mod tests {
         let proxy = Proxy::start(
             "127.0.0.1:0",
             policy.clone(),
-            Arc::new(pvisor_control::PolicyControlController),
+            Arc::new(pvisor_core::PolicyControlController),
             metrics,
             "run".into(),
             "attempt".into(),
@@ -150,7 +150,7 @@ mod tests {
             Proxy::start(
                 "invalid-listen",
                 policy,
-                Arc::new(pvisor_control::PolicyControlController),
+                Arc::new(pvisor_core::PolicyControlController),
                 InterceptionMetrics::default(),
                 "run".into(),
                 "attempt".into()

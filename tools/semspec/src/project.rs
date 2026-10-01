@@ -69,18 +69,6 @@ impl Project {
         ensure!(!cases.is_empty(), "no semantic cases found");
         for case in &cases {
             ensure!(ids.insert(case.id.clone()), "duplicate case {}", case.id);
-            ensure!(
-                !config.project.retired.contains(&case.id),
-                "retired case ID reused: {}",
-                case.id
-            );
-            for name in &case.annotation.requires {
-                ensure!(
-                    config.requirements.contains_key(name),
-                    "{}: unknown requirement {name}",
-                    case.id
-                );
-            }
             for platform in &case.annotation.xfail_on {
                 ensure!(
                     platform == "all" || config.platforms.contains_key(platform),
@@ -127,15 +115,6 @@ impl Project {
         } else {
             Ledger::default()
         };
-        for approval in &ledger.approval {
-            if crate::model::valid_case_id(&approval.item) && !ids.contains(&approval.item) {
-                ensure!(
-                    config.project.retired.contains(&approval.item),
-                    "deleted approved case must be retired: {}",
-                    approval.item
-                );
-            }
-        }
         Ok(Self {
             root,
             config,
@@ -204,13 +183,6 @@ impl Project {
             .chain(self.vocab.keys().map(|n| format!("@vocab:{n}")))
             .chain(self.cases.iter().map(|c| c.id.clone()))
             .collect()
-    }
-    pub fn snapshot_path(&self, item: &str) -> Result<PathBuf> {
-        self.item(item)?;
-        Ok(self
-            .root
-            .join(&self.config.project.approved_snapshots)
-            .join(format!("{item}.md")))
     }
 }
 fn load_vocab(path: &Path, vocab: &mut BTreeMap<String, Vocab>) -> Result<()> {

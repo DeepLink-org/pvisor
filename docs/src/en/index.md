@@ -6,5 +6,4 @@ hide:
   - navigation
   - toc
 ---
-
 # Policy-governed, reviewable execution.

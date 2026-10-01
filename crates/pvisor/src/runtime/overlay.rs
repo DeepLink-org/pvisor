@@ -13,8 +13,8 @@
 //!
 use super::implant::OverlayHint;
 use crate::util::create_dir_all_durable;
-use pvisor_control::overlay::OverlayConfig;
-pub use pvisor_control::overlay::{OverlayRecord, OverlayState, OverlayUpper};
+use pvisor_core::overlay::OverlayConfig;
+pub use pvisor_core::overlay::{OverlayRecord, OverlayState, OverlayUpper};
 pub use pvisor_overlay_core::apply::*;
 use pvisor_overlayfs::{OverlayMountConfig, OverlaySession, mount as mount_embedded_overlay};
 use std::fs;

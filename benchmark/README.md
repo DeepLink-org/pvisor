@@ -21,4 +21,4 @@ just benchmark-compare \
 
 ## Links
 
-- [pVisor design](../docs/src/en/design/index.md)
+- [pVisor design](../docs/src/zh/design/index.md)

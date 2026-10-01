@@ -83,7 +83,7 @@ VM 示例需要 Linux 和 `/dev/kvm`。OCI runtime 可执行文件存在不保�
 
 ### S-DOC-001：A01 省略 `run` 的最简调用
 
-<!-- semantic-case: requires=python3 vocab=core.sh,cases.sh,pvisor.sh -->
+<!-- semantic-case: vocab=core.sh,cases.sh,pvisor.sh -->
 
 建议场景：适合第一次使用 pVisor、确认命令和 Job 身份。
 
@@ -94,6 +94,7 @@ VM 示例需要 Linux 和 `/dev/kvm`。OCI runtime 可执行文件存在不保�
 **违反示例**：命令退出 0，但输出的是父目录，或默认启动了 stage。
 
 ```bash
+require_python3
 case_setup
 case_run success <<'CASE_COMMAND'
 pvisor -- /bin/pwd
@@ -108,7 +109,7 @@ bundle_expect network.policy.mode ambient
 
 ### S-DOC-002：A02 显式 `run` 与省略形式等价
 
-<!-- semantic-case: requires=python3 vocab=core.sh,cases.sh,pvisor.sh -->
+<!-- semantic-case: vocab=core.sh,cases.sh,pvisor.sh -->
 
 建议场景：适合第一次使用 pVisor、确认命令和 Job 身份。
 
@@ -119,6 +120,7 @@ bundle_expect network.policy.mode ambient
 **违反示例**：显式 run 与省略形式的工作目录输出不同。
 
 ```bash
+require_python3
 case_setup
 case_run success <<'CASE_COMMAND'
 pvisor -- /bin/pwd > implicit.txt
@@ -132,7 +134,7 @@ bundle_expect run.agent pwd
 
 ### S-DOC-003：A03 Job 名称和 stdio capture
 
-<!-- semantic-case: requires=python3 vocab=core.sh,cases.sh,pvisor.sh -->
+<!-- semantic-case: vocab=core.sh,cases.sh,pvisor.sh -->
 
 建议场景：适合第一次使用 pVisor、确认命令和 Job 身份。
 
@@ -143,6 +145,7 @@ bundle_expect run.agent pwd
 **违反示例**：Agent 名称丢失，或捕获的 hello 被标记为截断。
 
 ```bash
+require_python3
 case_setup
 case_run success <<'CASE_COMMAND'
 pvisor --name smoke --stdio capture -- /bin/sh -c 'printf hello'
@@ -155,7 +158,7 @@ bundle_expect run.output.stdout_truncated false
 
 ### S-DOC-004：A04 超时
 
-<!-- semantic-case: requires=python3 vocab=core.sh,cases.sh,pvisor.sh -->
+<!-- semantic-case: vocab=core.sh,cases.sh,pvisor.sh -->
 
 建议场景：适合第一次使用 pVisor、确认命令和 Job 身份。
 
@@ -166,6 +169,7 @@ bundle_expect run.output.stdout_truncated false
 **违反示例**：超时命令仍成功退出，或失败被记成可重试的普通 process_exit。
 
 ```bash
+require_python3
 case_setup
 case_run nonzero <<'CASE_COMMAND'
 pvisor --timeout 100ms -- /bin/sleep 10
@@ -178,7 +182,7 @@ bundle_expect run.failure.retryable false
 
 ### S-DOC-005：A05 严格执行模式拒绝 best-effort 边界
 
-<!-- semantic-case: requires=python3 vocab=core.sh,cases.sh,pvisor.sh -->
+<!-- semantic-case: vocab=core.sh,cases.sh,pvisor.sh -->
 
 建议场景：适合第一次使用 pVisor、确认命令和 Job 身份。
 
@@ -193,6 +197,7 @@ bundle_expect run.failure.retryable false
 **违反示例**：缺少请求能力的强制证据时仍启动 Agent，或拒绝时没有说明缺失的能力。
 
 ```bash
+require_python3
 case_setup
 case_run nonzero <<'CASE_COMMAND'
 pvisor --strict --overlaynet-deny-all -- "$CASE_TRUE"
@@ -203,7 +208,7 @@ stdout_has "lacks enforced evidence for requested capability dimensions"
 
 ### S-DOC-006：A06 显式环境投影
 
-<!-- semantic-case: requires=python3 vocab=core.sh,cases.sh,pvisor.sh -->
+<!-- semantic-case: vocab=core.sh,cases.sh,pvisor.sh -->
 
 建议场景：适合第一次使用 pVisor、确认命令和 Job 身份。
 
@@ -214,6 +219,7 @@ stdout_has "lacks enforced evidence for requested capability dimensions"
 **违反示例**：显式允许的变量未传给 Agent，或记录错误声明继承了整个宿主环境。
 
 ```bash
+require_python3
 case_setup
 case_run success <<'CASE_COMMAND'
 TEST_PVISOR_VALUE=visible pvisor --pass-env TEST_PVISOR_VALUE -- /usr/bin/env
@@ -226,7 +232,7 @@ bundle_expect environment.inherits_host false
 
 ### S-DOC-007：A07 默认写入直接到 workspace
 
-<!-- semantic-case: requires=python3 vocab=core.sh,cases.sh,pvisor.sh -->
+<!-- semantic-case: vocab=core.sh,cases.sh,pvisor.sh -->
 
 **语义**：命令退出后，`direct.txt` 直接出现在原 workspace，记录中没有 OverlayFS stage。
 
@@ -235,6 +241,7 @@ bundle_expect environment.inherits_host false
 **违反示例**：没有请求 stage 的 host 写入没有直接出现在工作区。
 
 ```bash
+require_python3
 case_setup
 case_run success <<'CASE_COMMAND'
 pvisor -- /bin/sh -c 'printf direct > direct.txt'
@@ -250,7 +257,7 @@ record_expect overlay null
 
 ### S-DOC-008：B01 组合使用所有资源限制
 
-<!-- semantic-case: requires=python3 vocab=core.sh,cases.sh,pvisor.sh -->
+<!-- semantic-case: vocab=core.sh,cases.sh,pvisor.sh -->
 
 建议场景：适合需要控制或验证资源限制的任务。
 
@@ -261,6 +268,7 @@ record_expect overlay null
 **违反示例**：限制参数被接受，但请求值记录错误，或缺少文件大小的生效值和 rlimit 机制。
 
 ```bash
+require_python3
 case_setup
 case_run success <<'CASE_COMMAND'
 pvisor \
@@ -283,7 +291,7 @@ bundle_contains resources.mechanisms rlimit
 
 ### S-DOC-009：B02 文件大小限制实际生效
 
-<!-- semantic-case: requires=python3 vocab=core.sh,cases.sh,pvisor.sh -->
+<!-- semantic-case: vocab=core.sh,cases.sh,pvisor.sh -->
 
 建议场景：适合需要控制或验证资源限制的任务。
 
@@ -294,6 +302,7 @@ bundle_contains resources.mechanisms rlimit
 **违反示例**：dd 成功写出 4KiB，或失败后文件仍超过 1024 字节。
 
 ```bash
+require_python3
 case_setup
 case_run nonzero <<'CASE_COMMAND'
 pvisor --max-file-size 1KiB -- /bin/sh -c 'dd if=/dev/zero of=large bs=4096 count=1'
@@ -307,7 +316,7 @@ test ! -f large || [ "$(wc -c < large)" -le 1024 ]
 
 ### S-DOC-010：B03 内存参数短别名
 
-<!-- semantic-case: requires=python3 vocab=core.sh,cases.sh,pvisor.sh -->
+<!-- semantic-case: vocab=core.sh,cases.sh,pvisor.sh -->
 
 建议场景：适合需要控制或验证资源限制的任务。
 
@@ -318,6 +327,7 @@ test ! -f large || [ "$(wc -c < large)" -le 1024 ]
 **违反示例**：--mem 256MiB 被解析成不同于 --memory 的请求值。
 
 ```bash
+require_python3
 case_setup
 case_run success <<'CASE_COMMAND'
 pvisor --mem 256MiB -- "$CASE_TRUE"
@@ -328,7 +338,7 @@ bundle_expect resources.requested.memory_bytes 268435456
 
 ### S-DOC-011：B04 Stage 总大小限制
 
-<!-- semantic-case: requires=python3,stage vocab=core.sh,cases.sh,pvisor.sh -->
+<!-- semantic-case: vocab=core.sh,cases.sh,pvisor.sh -->
 
 建议场景：适合需要控制或验证资源限制的任务。
 
@@ -341,6 +351,8 @@ bundle_expect resources.requested.memory_bytes 268435456
 **违反示例**：stage 命令成功退出，但文件系统状态未标为 staged，或存储路径不符。
 
 ```bash
+require_python3
+require_stage
 case_setup
 case_run success <<'CASE_COMMAND'
 pvisor --stage "$CASE_ROOT/limited-stage" --overlayfs-max-size 1GiB -- "$CASE_TRUE"
@@ -357,7 +369,7 @@ record_expect storage "$(realpath "$PVISOR_CASE_ROOT/limited-stage")"
 
 ### S-DOC-012：C01 持久 stage
 
-<!-- semantic-case: requires=python3,stage vocab=core.sh,cases.sh,pvisor.sh -->
+<!-- semantic-case: vocab=core.sh,cases.sh,pvisor.sh -->
 
 建议场景：适合隔离文件变更、保留 stage 或验证 whole-rootfs 的任务。
 
@@ -370,6 +382,8 @@ record_expect storage "$(realpath "$PVISOR_CASE_ROOT/limited-stage")"
 **违反示例**：result.txt 穿透到原工作区，或变更清单遗漏它。
 
 ```bash
+require_python3
+require_stage
 case_setup
 case_run success <<'CASE_COMMAND'
 pvisor --stage "$CASE_ROOT/stage-keep" -- /bin/sh -c 'printf changed > result.txt'
@@ -384,7 +398,7 @@ test -f "$PVISOR_CASE_ROOT/stage-keep/run-bundle.json"
 
 ### S-DOC-013：C02 默认保留 stage
 
-<!-- semantic-case: requires=python3,stage vocab=core.sh,cases.sh,pvisor.sh -->
+<!-- semantic-case: vocab=core.sh,cases.sh,pvisor.sh -->
 
 建议场景：适合隔离文件变更、保留 stage 或验证 whole-rootfs 的任务。
 
@@ -397,6 +411,8 @@ test -f "$PVISOR_CASE_ROOT/stage-keep/run-bundle.json"
 **违反示例**：日志中的 Run Bundle 路径在退出后消失，或 result.txt 出现在原工作区。
 
 ```bash
+require_python3
+require_stage
 case_setup
 case_run success <<'CASE_COMMAND'
 pvisor --safe -- /bin/sh -c 'printf changed > result.txt'
@@ -410,7 +426,7 @@ test ! -e result.txt
 
 ### S-DOC-014：C03 显式丢弃持久 stage 的改动
 
-<!-- semantic-case: requires=python3,stage vocab=core.sh,cases.sh,pvisor.sh -->
+<!-- semantic-case: vocab=core.sh,cases.sh,pvisor.sh -->
 
 建议场景：适合隔离文件变更、保留 stage 或验证 whole-rootfs 的任务。
 
@@ -423,6 +439,8 @@ test ! -e result.txt
 **违反示例**：drop 后记录仍标为 staged，或原工作区得到 result.txt。
 
 ```bash
+require_python3
+require_stage
 case_setup
 case_run success <<'CASE_COMMAND'
 pvisor --stage "$CASE_ROOT/stage-drop" -- /bin/sh -c 'printf changed > result.txt'
@@ -436,7 +454,7 @@ test -f "$PVISOR_CASE_ROOT/stage-drop/run-bundle.json"
 
 ### S-DOC-015：C04 显式 stage 保留已有目录内容
 
-<!-- semantic-case: requires=python3,stage vocab=core.sh,cases.sh,pvisor.sh -->
+<!-- semantic-case: vocab=core.sh,cases.sh,pvisor.sh -->
 
 建议场景：适合隔离文件变更、保留 stage 或验证 whole-rootfs 的任务。
 
@@ -447,6 +465,8 @@ test -f "$PVISOR_CASE_ROOT/stage-drop/run-bundle.json"
 **违反示例**：运行清理删除了指定 stage 目录中原有的 user-file。
 
 ```bash
+require_python3
+require_stage
 case_setup
 case_run success <<'CASE_COMMAND'
 mkdir -p "$CASE_ROOT/existing-stage"
@@ -460,7 +480,7 @@ test -f "$PVISOR_CASE_ROOT/existing-stage/run-bundle.json"
 
 ### S-DOC-016：C05 whole-rootfs 捕获与 tmpfs 隔离
 
-<!-- semantic-case: requires=python3,rootless vocab=core.sh,cases.sh,pvisor.sh -->
+<!-- semantic-case: vocab=core.sh,cases.sh,pvisor.sh -->
 
 建议场景：适合隔离文件变更、保留 stage 或验证 whole-rootfs 的任务。
 
@@ -473,6 +493,8 @@ test -f "$PVISOR_CASE_ROOT/existing-stage/run-bundle.json"
 **违反示例**：工作区写入未被暂存，或 sandbox 的 /tmp 写入出现在宿主 /tmp。
 
 ```bash
+require_python3
+require_rootless
 case_setup
 case_run success <<'CASE_COMMAND'
 pvisor --stage "$CASE_ROOT/root-stage" -- /bin/sh -c \
@@ -486,7 +508,7 @@ test ! -e "$CASE_TMP_PATH"
 
 ### S-DOC-017：C06 `--safe` 隔离 HOME 写入
 
-<!-- semantic-case: requires=python3,rootless vocab=core.sh,cases.sh,pvisor.sh -->
+<!-- semantic-case: vocab=core.sh,cases.sh,pvisor.sh -->
 
 准备：Linux user/mount namespace 可用。
 
@@ -497,6 +519,8 @@ test ! -e "$CASE_TMP_PATH"
 **违反示例**：--safe 把 HOME/state 写到了宿主 HOME，或 Agent 不能读取自己的写入。
 
 ```bash
+require_python3
+require_rootless
 case_setup
 case_run success <<'CASE_COMMAND'
 mkdir -p "$CASE_ROOT/home"
@@ -530,7 +554,7 @@ workspace 和 user 规则写入 `~/.config/pvisor/config.toml` 的 `permissions`
 
 ### S-DOC-018：D01 高级 OverlayFS 组合
 
-<!-- semantic-case: requires=python3,stage vocab=core.sh,cases.sh,pvisor.sh -->
+<!-- semantic-case: vocab=core.sh,cases.sh,pvisor.sh -->
 
 建议场景：适合检查 OverlayFS 视图和 host 安全边界。
 
@@ -543,6 +567,8 @@ workspace 和 user 规则写入 `~/.config/pvisor/config.toml` 的 `permissions`
 **违反示例**：记录中 lower 的 layer/base 顺序颠倒，或 workspace 快照目录缺失。
 
 ```bash
+require_python3
+require_stage
 case_setup
 case_run success <<'CASE_COMMAND'
 mkdir -p "$CASE_ROOT/base" "$CASE_ROOT/layer" "$PWD/view"
@@ -562,7 +588,7 @@ test -d "$(record_get overlay_lowers.2)"
 
 ### S-DOC-019：D02 显式 host executor
 
-<!-- semantic-case: requires=python3 vocab=core.sh,cases.sh,pvisor.sh -->
+<!-- semantic-case: vocab=core.sh,cases.sh,pvisor.sh -->
 
 建议场景：适合检查 OverlayFS 视图和 host 安全边界。
 
@@ -575,6 +601,7 @@ test -d "$(record_get overlay_lowers.2)"
 **违反示例**：显式 host 请求降级为 host_process，而记录仍被当作隔离成功。
 
 ```bash
+require_python3
 case_setup
 case_run success <<'CASE_COMMAND'
 pvisor --executor host -- "$CASE_TRUE"
@@ -591,7 +618,7 @@ bundle_expect safety.host_process false
 
 ### S-DOC-020：D03 host stage 隐藏原 workspace
 
-<!-- semantic-case: requires=python3,rootless vocab=core.sh,cases.sh,pvisor.sh -->
+<!-- semantic-case: vocab=core.sh,cases.sh,pvisor.sh -->
 
 建议场景：适合检查 OverlayFS 视图和 host 安全边界。
 
@@ -604,6 +631,8 @@ bundle_expect safety.host_process false
 **违反示例**：启用 host stage 后 procfs 的 cwd 仍暴露原工作区路径。
 
 ```bash
+require_python3
+require_rootless
 case_setup
 case_run success <<'CASE_COMMAND'
 pvisor --stage "$CASE_ROOT/host-stage" -- /bin/sh -c \
@@ -618,7 +647,7 @@ test "$(sed -n 3p views.txt)" = "$merged"
 
 ### S-DOC-021：D04 显式拒绝敏感路径读取
 
-<!-- semantic-case: requires=python3,rootless vocab=core.sh,cases.sh,pvisor.sh -->
+<!-- semantic-case: vocab=core.sh,cases.sh,pvisor.sh -->
 
 准备：Linux user/mount namespace 可用。
 
@@ -629,6 +658,8 @@ test "$(sed -n 3p views.txt)" = "$merged"
 **违反示例**：private/token 被允许读取，或拒绝后审查记录没有该目标。
 
 ```bash
+require_python3
+require_rootless
 case_setup
 case_run nonzero <<'CASE_COMMAND'
 mkdir -p private
@@ -645,7 +676,7 @@ test "$(cat private/token)" = secret
 
 ### S-DOC-022：D05 显式共享路径的直接写入
 
-<!-- semantic-case: requires=python3,rootless vocab=core.sh,cases.sh,pvisor.sh -->
+<!-- semantic-case: vocab=core.sh,cases.sh,pvisor.sh -->
 
 准备：Linux user/mount namespace 可用。
 
@@ -656,6 +687,8 @@ test "$(cat private/token)" = secret
 **违反示例**：明确授予 write 的共享路径没有获得 mounted 内容。
 
 ```bash
+require_python3
+require_rootless
 case_setup
 case_run success <<'CASE_COMMAND'
 mkdir -p "$CASE_ROOT/shared"
@@ -668,7 +701,7 @@ test "$(cat "$PVISOR_CASE_ROOT/shared/out")" = mounted
 
 ### S-DOC-023：D06 `ask` 弹窗与当前 Job 的目录授权
 
-<!-- semantic-case: requires=python3,rootless vocab=core.sh,cases.sh,pvisor.sh -->
+<!-- semantic-case: vocab=core.sh,cases.sh,pvisor.sh -->
 
 准备：Linux user/mount namespace 和 Python 3 可用。示例用伪终端自动输入 `2`、Enter；手工运行时在弹窗中选择后按 Enter 确认。
 
@@ -679,6 +712,8 @@ test "$(cat "$PVISOR_CASE_ROOT/shared/out")" = mounted
 **违反示例**：第二个同级文件再次弹窗，或目录授权被持久化为错误范围。
 
 ```bash
+require_python3
+require_rootless
 case_setup
 case_run success <<'CASE_COMMAND'
 mkdir -p private
@@ -752,7 +787,7 @@ test "$(cat private/two.txt)" = ASK_TWO
 
 ### S-DOC-024：E01 `--vm` 简写与 host rootfs
 
-<!-- semantic-case: requires=python3,linux,kvm vocab=core.sh,cases.sh,pvisor.sh -->
+<!-- semantic-case: vocab=core.sh,cases.sh,pvisor.sh -->
 
 建议场景：适合需要 VM guest kernel、独立 rootfs 或更强隔离的任务。
 
@@ -765,6 +800,9 @@ test "$(cat private/two.txt)" = ASK_TWO
 **违反示例**：VM 成功退出但 guest cwd 不同，或网络没有记录 vm-smoltcp 边界。
 
 ```bash
+require_python3
+require_linux
+require_kvm
 case_setup
 case_run success <<'CASE_COMMAND'
 pvisor --vm -- /bin/pwd > guest-cwd.txt
@@ -780,7 +818,7 @@ bundle_expect safety.network_non_bypassable true
 
 ### S-DOC-025：E02 显式 VM executor 与目录 rootfs
 
-<!-- semantic-case: requires=python3,linux,kvm,rootfs vocab=core.sh,cases.sh,pvisor.sh -->
+<!-- semantic-case: vocab=core.sh,cases.sh,pvisor.sh -->
 
 建议场景：适合需要 VM guest kernel、独立 rootfs 或更强隔离的任务。
 
@@ -793,6 +831,10 @@ bundle_expect safety.network_non_bypassable true
 **违反示例**：目录 rootfs 的 VM 返回宿主工作区之外的 cwd。
 
 ```bash
+require_python3
+require_linux
+require_kvm
+require_rootfs
 case_setup
 case_run success <<'CASE_COMMAND'
 pvisor --executor vm --rootfs "$CASE_ROOTFS" -- /bin/pwd > guest-cwd.txt
@@ -804,7 +846,7 @@ bundle_expect run.executor.isolation virtual_machine
 
 ### S-DOC-026：E03 image rootfs
 
-<!-- semantic-case: requires=python3,linux,kvm,image vocab=core.sh,cases.sh,pvisor.sh -->
+<!-- semantic-case: vocab=core.sh,cases.sh,pvisor.sh -->
 
 建议场景：适合需要 VM guest kernel、独立 rootfs 或更强隔离的任务。
 
@@ -817,6 +859,10 @@ bundle_expect run.executor.isolation virtual_machine
 **违反示例**：镜像 VM 返回错误 cwd，或运行结果不标为 virtual_machine。
 
 ```bash
+require_python3
+require_linux
+require_kvm
+require_image
 case_setup
 case_run success <<'CASE_COMMAND'
 pvisor --vm --rootfs "image=$CASE_IMAGE" -- /bin/pwd > guest-cwd.txt
@@ -828,7 +874,7 @@ bundle_expect run.executor.isolation virtual_machine
 
 ### S-DOC-027：E04 VM 资源配置
 
-<!-- semantic-case: requires=python3,linux,kvm,rootfs vocab=core.sh,cases.sh,pvisor.sh -->
+<!-- semantic-case: vocab=core.sh,cases.sh,pvisor.sh -->
 
 建议场景：适合需要 VM guest kernel、独立 rootfs 或更强隔离的任务。
 
@@ -841,6 +887,10 @@ bundle_expect run.executor.isolation virtual_machine
 **违反示例**：2GiB 的内存请求在产物中被记成其他值。
 
 ```bash
+require_python3
+require_linux
+require_kvm
+require_rootfs
 case_setup
 case_run success <<'CASE_COMMAND'
 pvisor --vm \
@@ -856,7 +906,7 @@ bundle_expect resources.requested.memory_bytes 2147483648
 
 ### S-DOC-028：E05 VM workspace 与 whole-rootfs stage 组合
 
-<!-- semantic-case: requires=python3,linux,kvm,image vocab=core.sh,cases.sh,pvisor.sh -->
+<!-- semantic-case: vocab=core.sh,cases.sh,pvisor.sh -->
 
 建议场景：适合需要 VM guest kernel、独立 rootfs 或更强隔离的任务。
 
@@ -869,6 +919,10 @@ bundle_expect resources.requested.memory_bytes 2147483648
 **违反示例**：VM stage 路径或 guest cwd 与请求不一致。
 
 ```bash
+require_python3
+require_linux
+require_kvm
+require_image
 case_setup
 case_run success <<'CASE_COMMAND'
 pvisor --vm \
@@ -884,7 +938,7 @@ record_expect storage "$PVISOR_CASE_ROOT/vm-stage"
 
 ### S-DOC-029：E06 拒绝 executor 冲突
 
-<!-- semantic-case: requires=python3 vocab=core.sh,cases.sh,pvisor.sh -->
+<!-- semantic-case: vocab=core.sh,cases.sh,pvisor.sh -->
 
 建议场景：适合需要 VM guest kernel、独立 rootfs 或更强隔离的任务。
 
@@ -895,6 +949,7 @@ record_expect storage "$PVISOR_CASE_ROOT/vm-stage"
 **违反示例**：--vm 与 --executor host 的冲突被忽略并启动了工作负载。
 
 ```bash
+require_python3
 case_setup
 case_run nonzero <<'CASE_COMMAND'
 pvisor --vm --executor host --rootfs host -- "$CASE_TRUE"
@@ -915,7 +970,7 @@ stdout_has "--vm cannot be combined with a non-vm --executor"
 
 ### S-DOC-030：F01 最小 container Job
 
-<!-- semantic-case: requires=python3,container vocab=core.sh,cases.sh,pvisor.sh -->
+<!-- semantic-case: vocab=core.sh,cases.sh,pvisor.sh -->
 
 建议场景：适合由 runc/crun 直接启动 OCI 容器的任务。
 
@@ -928,6 +983,8 @@ stdout_has "--vm cannot be combined with a non-vm --executor"
 **违反示例**：最小容器命令退出非零，或产物把 container 记为其他 executor。
 
 ```bash
+require_python3
+require_container
 case_setup
 case_run success <<'CASE_COMMAND'
 pvisor --container-runtime "$CASE_CONTAINER_RUNTIME" --container-image "$CASE_CONTAINER_IMAGE" -- "$CASE_TRUE"
@@ -940,7 +997,7 @@ bundle_expect run.exit_code 0
 
 ### S-DOC-031：F02 container rootfs 与隔离网络
 
-<!-- semantic-case: requires=python3,container vocab=core.sh,cases.sh,pvisor.sh -->
+<!-- semantic-case: vocab=core.sh,cases.sh,pvisor.sh -->
 
 建议场景：适合由 runc/crun 直接启动 OCI 容器的任务。
 
@@ -953,6 +1010,8 @@ bundle_expect run.exit_code 0
 **违反示例**：隔离网络配置使简单容器命令无法正常启动或完成。
 
 ```bash
+require_python3
+require_container
 case_setup
 case_run success <<'CASE_COMMAND'
 pvisor --container-runtime "$CASE_CONTAINER_RUNTIME" --container-image "$CASE_CONTAINER_IMAGE" \
@@ -966,7 +1025,7 @@ bundle_expect run.state completed
 
 ### S-DOC-032：F03 使用宿主 rootfs 的 OCI bundle
 
-<!-- semantic-case: requires=python3,container-runtime,linux vocab=core.sh,cases.sh,pvisor.sh -->
+<!-- semantic-case: vocab=core.sh,cases.sh,pvisor.sh -->
 
 建议场景：适合由 runc/crun 直接启动 OCI 容器的任务。
 
@@ -979,6 +1038,9 @@ bundle_expect run.state completed
 **违反示例**：宿主 rootfs 的 OCI bundle 没有作为 container 正常完成。
 
 ```bash
+require_python3
+require_container_runtime
+require_linux
 case_setup
 case_run success <<'CASE_COMMAND'
 pvisor --container-runtime "$CASE_CONTAINER_RUNTIME" --executor container \
@@ -993,7 +1055,7 @@ bundle_expect run.state completed
 
 ### S-DOC-033：F04 显式 OCI runtime 与高级 container 参数
 
-<!-- semantic-case: requires=python3,container,runc vocab=core.sh,cases.sh,pvisor.sh -->
+<!-- semantic-case: vocab=core.sh,cases.sh,pvisor.sh -->
 
 建议场景：适合由 runc/crun 直接启动 OCI 容器的任务。
 
@@ -1006,6 +1068,9 @@ bundle_expect run.state completed
 **违反示例**：高级 OCI 参数被接受但容器失败，或被错误记为其他 executor。
 
 ```bash
+require_python3
+require_container
+require_runc
 case_setup
 case_run success <<'CASE_COMMAND'
 pvisor --executor container \
@@ -1035,7 +1100,7 @@ bundle_expect run.state completed
 
 ### S-DOC-034：G01 启用默认 proxy
 
-<!-- semantic-case: requires=python3 vocab=core.sh,cases.sh,pvisor.sh -->
+<!-- semantic-case: vocab=core.sh,cases.sh,pvisor.sh -->
 
 建议场景：适合配置出站网络、代理访问或禁止网络的任务。
 
@@ -1046,6 +1111,7 @@ bundle_expect run.state completed
 **违反示例**：默认 proxy 请求没有记录 explicit-proxy/cooperative，或 capture 产物缺失。
 
 ```bash
+require_python3
 case_setup
 case_run success <<'CASE_COMMAND'
 pvisor --overlaynet -- "$CASE_TRUE"
@@ -1058,7 +1124,7 @@ bundle_contains artifacts capture
 
 ### S-DOC-035：G02 自定义 proxy 监听地址
 
-<!-- semantic-case: requires=python3 vocab=core.sh,cases.sh,pvisor.sh -->
+<!-- semantic-case: vocab=core.sh,cases.sh,pvisor.sh -->
 
 建议场景：适合配置出站网络、代理访问或禁止网络的任务。
 
@@ -1069,6 +1135,7 @@ bundle_contains artifacts capture
 **违反示例**：实际监听地址与所请求的 loopback 地址不一致。
 
 ```bash
+require_python3
 case_setup
 case_run success <<'CASE_COMMAND'
 pvisor --overlaynet-listen "$CASE_PROXY_LISTEN" -- "$CASE_TRUE"
@@ -1080,7 +1147,7 @@ bundle_expect network.interception.driver explicit-proxy
 
 ### S-DOC-036：G03 allow、deny 和带宽限制组合
 
-<!-- semantic-case: requires=python3 vocab=core.sh,cases.sh,pvisor.sh -->
+<!-- semantic-case: vocab=core.sh,cases.sh,pvisor.sh -->
 
 建议场景：适合配置出站网络、代理访问或禁止网络的任务。
 
@@ -1091,6 +1158,7 @@ bundle_expect network.interception.driver explicit-proxy
 **违反示例**：allow、deny 或带宽规则中的主机、端口、速率被丢失或改写。
 
 ```bash
+require_python3
 case_setup
 case_run success <<'CASE_COMMAND'
 pvisor --overlaynet-allow api.example.com:443 \
@@ -1109,7 +1177,7 @@ bundle_expect network.policy.limits.0.bytes_per_second 125000
 
 ### S-DOC-037：G04 deny-all 不可通过环境变量绕过
 
-<!-- semantic-case: requires=python3,curl vocab=core.sh,cases.sh,pvisor.sh -->
+<!-- semantic-case: vocab=core.sh,cases.sh,pvisor.sh -->
 
 建议场景：适合配置出站网络、代理访问或禁止网络的任务。
 
@@ -1122,6 +1190,8 @@ bundle_expect network.policy.limits.0.bytes_per_second 125000
 **违反示例**：清除代理环境变量后 curl 成功连到外网，或安全产物未声明强制边界。
 
 ```bash
+require_python3
+require_curl
 case_setup
 case_run nonzero <<'CASE_COMMAND'
 pvisor --overlaynet-deny-all -- /bin/sh -c \
@@ -1135,7 +1205,7 @@ bundle_expect run.state failed
 
 ### S-DOC-038：G05 VM OverlayNet auto
 
-<!-- semantic-case: requires=python3,linux,kvm,rootfs vocab=core.sh,cases.sh,pvisor.sh -->
+<!-- semantic-case: vocab=core.sh,cases.sh,pvisor.sh -->
 
 建议场景：适合配置出站网络、代理访问或禁止网络的任务。
 
@@ -1148,6 +1218,10 @@ bundle_expect run.state failed
 **违反示例**：VM 网络被记录为 cooperative proxy 而非 vm-smoltcp 强制边界。
 
 ```bash
+require_python3
+require_linux
+require_kvm
+require_rootfs
 case_setup
 case_run success <<'CASE_COMMAND'
 pvisor --vm --rootfs "$CASE_ROOTFS" -- "$CASE_TRUE"
@@ -1159,7 +1233,7 @@ bundle_expect network.interception.strength non-bypassable
 
 ### S-DOC-039：G06 关闭 OverlayNet 时拒绝策略参数
 
-<!-- semantic-case: requires=python3 vocab=core.sh,cases.sh,pvisor.sh -->
+<!-- semantic-case: vocab=core.sh,cases.sh,pvisor.sh -->
 
 建议场景：适合配置出站网络、代理访问或禁止网络的任务。
 
@@ -1170,6 +1244,7 @@ bundle_expect network.interception.strength non-bypassable
 **违反示例**：关闭 OverlayNet 后仍静默接受 allow 策略。
 
 ```bash
+require_python3
 case_setup
 case_run nonzero <<'CASE_COMMAND'
 pvisor --overlaynet off --overlaynet-allow example.com:443 -- "$CASE_TRUE"
@@ -1180,7 +1255,7 @@ stdout_has "OverlayNet policy options require --overlaynet auto or proxy"
 
 ### S-DOC-040：G07 审查被代理拒绝的具体目标
 
-<!-- semantic-case: requires=python3,curl vocab=core.sh,cases.sh,pvisor.sh -->
+<!-- semantic-case: vocab=core.sh,cases.sh,pvisor.sh -->
 
 准备：安装 curl。
 
@@ -1191,6 +1266,8 @@ stdout_has "OverlayNet policy options require --overlaynet auto or proxy"
 **违反示例**：请求失败，但审查记录没有 blocked.example:80 的具体拒绝目标和次数。
 
 ```bash
+require_python3
+require_curl
 case_setup
 case_run nonzero <<'CASE_COMMAND'
 pvisor --overlaynet-deny blocked.example -- /bin/sh -c \
@@ -1207,7 +1284,7 @@ bundle_contains network.intercepted.targets '"denied": 1'
 
 ### S-DOC-041：H01 Gateway capture 完整组合
 
-<!-- semantic-case: requires=python3,stage vocab=core.sh,cases.sh,pvisor.sh -->
+<!-- semantic-case: vocab=core.sh,cases.sh,pvisor.sh -->
 
 建议场景：适合接入 Gateway、模型路由或记录轨迹的任务。
 
@@ -1220,6 +1297,8 @@ bundle_contains network.intercepted.targets '"denied": 1'
 **违反示例**：Gateway/stage 未建立，或 gateway_listen 不是有效的 loopback 地址。
 
 ```bash
+require_python3
+require_stage
 case_setup
 case_run success <<'CASE_COMMAND'
 pvisor \
@@ -1241,7 +1320,7 @@ bundle_expect filesystem.state staged
 
 ### S-DOC-042：H02 JSON 记录
 
-<!-- semantic-case: requires=python3 vocab=core.sh,cases.sh,pvisor.sh -->
+<!-- semantic-case: vocab=core.sh,cases.sh,pvisor.sh -->
 
 建议场景：适合接入 Gateway、模型路由或记录轨迹的任务。
 
@@ -1252,6 +1331,7 @@ bundle_expect filesystem.state staged
 **违反示例**：事件文件为空，或首行不是 JSON 对象。
 
 ```bash
+require_python3
 case_setup
 case_run success <<'CASE_COMMAND'
 pvisor --record-destination "$CASE_ROOT/events.jsonl" -- "$CASE_TRUE"
@@ -1267,7 +1347,7 @@ head -n 1 "$PVISOR_CASE_ROOT/events.jsonl" | grep -q '^{'
 
 ### S-DOC-043：I01 TOML config
 
-<!-- semantic-case: requires=python3 vocab=core.sh,cases.sh,pvisor.sh -->
+<!-- semantic-case: vocab=core.sh,cases.sh,pvisor.sh -->
 
 建议场景：适合从 TOML/JSON 文件或控制面执行 RunSpec 的任务。
 
@@ -1278,6 +1358,7 @@ head -n 1 "$PVISOR_CASE_ROOT/events.jsonl" | grep -q '^{'
 **违反示例**：配置文件中的命令被忽略，运行名称或终态不符。
 
 ```bash
+require_python3
 case_setup
 case_run success <<'CASE_COMMAND'
 pvisor --config ./pvisor.toml
@@ -1289,7 +1370,7 @@ bundle_expect run.agent true
 
 ### S-DOC-044：I02 JSON RunSpec
 
-<!-- semantic-case: requires=python3 vocab=core.sh,cases.sh,pvisor.sh -->
+<!-- semantic-case: vocab=core.sh,cases.sh,pvisor.sh -->
 
 建议场景：适合从 TOML/JSON 文件或控制面执行 RunSpec 的任务。
 
@@ -1302,6 +1383,7 @@ bundle_expect run.agent true
 **违反示例**：委托运行没有生成结果文件，或被误记成隔离的普通 Job。
 
 ```bash
+require_python3
 case_setup
 case_run success <<'CASE_COMMAND'
 pvisor --spec ./run-spec.json --result-file ./run-result.json --stage ./delegated-stage
@@ -1314,7 +1396,7 @@ test -s run-result.json
 
 ### S-DOC-045：I03 无扩展名 spec
 
-<!-- semantic-case: requires=python3 vocab=core.sh,cases.sh,pvisor.sh -->
+<!-- semantic-case: vocab=core.sh,cases.sh,pvisor.sh -->
 
 建议场景：适合从 TOML/JSON 文件或控制面执行 RunSpec 的任务。
 
@@ -1325,6 +1407,7 @@ test -s run-result.json
 **违反示例**：相同 TOML 因文件没有扩展名而不能执行。
 
 ```bash
+require_python3
 case_setup
 case_run success <<'CASE_COMMAND'
 pvisor --config ./config-without-extension
@@ -1339,7 +1422,7 @@ bundle_expect run.state completed
 
 ### S-DOC-046：J01 host + persistent stage + deny-all + capture + limits
 
-<!-- semantic-case: requires=python3,stage vocab=core.sh,cases.sh,pvisor.sh -->
+<!-- semantic-case: vocab=core.sh,cases.sh,pvisor.sh -->
 
 建议场景：适合上线前验证多项能力组合的端到端任务。
 
@@ -1352,6 +1435,8 @@ bundle_expect run.state completed
 **违反示例**：多能力组合让 result.txt 穿透工作区，或轨迹、资源、网络证据缺失。
 
 ```bash
+require_python3
+require_stage
 case_setup
 case_run success <<'CASE_COMMAND'
 pvisor --name host-full \
@@ -1381,7 +1466,7 @@ test -s "$PVISOR_CASE_ROOT/host-full/trajectory/events.jsonl"
 
 ### S-DOC-047：J02 VM + image rootfs + stage + OverlayNet + Gateway
 
-<!-- semantic-case: requires=python3,linux,kvm,image,agent vocab=core.sh,cases.sh,pvisor.sh -->
+<!-- semantic-case: vocab=core.sh,cases.sh,pvisor.sh -->
 
 建议场景：适合上线前验证多项能力组合的端到端任务。
 
@@ -1394,6 +1479,11 @@ test -s "$PVISOR_CASE_ROOT/host-full/trajectory/events.jsonl"
 **违反示例**：组合 VM 没有保留 stage/trajectory，或丢失 4GiB 内存请求。
 
 ```bash
+require_python3
+require_linux
+require_kvm
+require_image
+require_agent
 case_setup
 case_run success <<'CASE_COMMAND'
 pvisor --name vm-full \
@@ -1420,7 +1510,7 @@ test -d "$PVISOR_CASE_ROOT/vm-full/trajectory"
 
 ### S-DOC-048：J03 Container + stage + read-only root + no network
 
-<!-- semantic-case: requires=python3,container vocab=core.sh,cases.sh,pvisor.sh -->
+<!-- semantic-case: vocab=core.sh,cases.sh,pvisor.sh -->
 
 建议场景：适合上线前验证多项能力组合的端到端任务。
 
@@ -1433,6 +1523,8 @@ test -d "$PVISOR_CASE_ROOT/vm-full/trajectory"
 **违反示例**：组合 container 没有正常结束并保留 stage。
 
 ```bash
+require_python3
+require_container
 case_setup
 case_run success <<'CASE_COMMAND'
 pvisor --container-runtime "$CASE_CONTAINER_RUNTIME" --name container-full \
@@ -1456,7 +1548,7 @@ Job 是面向用户的核心对象。以下命令都直接使用 Job 的 stage �
 
 ### S-DOC-049：K01 审查并只读查看暂存文件
 
-<!-- semantic-case: requires=python3,rootless vocab=core.sh,cases.sh,pvisor.sh -->
+<!-- semantic-case: vocab=core.sh,cases.sh,pvisor.sh -->
 
 准备：Linux user/mount namespace 可用。
 
@@ -1467,6 +1559,8 @@ Job 是面向用户的核心对象。以下命令都直接使用 Job 的 stage �
 **违反示例**：inspect 可以写暂存视图，或原工作区出现 note.txt。
 
 ```bash
+require_python3
+require_rootless
 case_setup
 case_run success <<'CASE_COMMAND'
 pvisor --stage "$CASE_ROOT/review-stage" -- /bin/sh -c 'printf staged > note.txt'
@@ -1484,7 +1578,7 @@ python3 -c 'import json; d=json.load(open("status.json")); assert d["filesystem"
 
 ### S-DOC-050：K02 选择性 apply 后丢弃剩余改动
 
-<!-- semantic-case: requires=python3,rootless vocab=core.sh,cases.sh,pvisor.sh -->
+<!-- semantic-case: vocab=core.sh,cases.sh,pvisor.sh -->
 
 准备：Linux user/mount namespace 可用。
 
@@ -1495,6 +1589,8 @@ python3 -c 'import json; d=json.load(open("status.json")); assert d["filesystem"
 **违反示例**：仅选 one.txt 却把 two.txt 一并落地，或剩余 stage 未被丢弃。
 
 ```bash
+require_python3
+require_rootless
 case_setup
 case_run success <<'CASE_COMMAND'
 pvisor --stage "$CASE_ROOT/partial-stage" -- /bin/sh -c \
@@ -1510,7 +1606,7 @@ record_expect overlay.state discarded "$PVISOR_CASE_ROOT/partial-stage"
 
 ### S-DOC-051：K03 从已停止 Job fork
 
-<!-- semantic-case: requires=python3,rootless vocab=core.sh,cases.sh,pvisor.sh -->
+<!-- semantic-case: vocab=core.sh,cases.sh,pvisor.sh -->
 
 准备：Linux user/mount namespace 可用。
 
@@ -1521,6 +1617,8 @@ record_expect overlay.state discarded "$PVISOR_CASE_ROOT/partial-stage"
 **违反示例**：fork 读不到源 Job 变更，或子 Job 写入穿透原工作区。
 
 ```bash
+require_python3
+require_rootless
 case_setup
 case_run success <<'CASE_COMMAND'
 pvisor --stage "$CASE_ROOT/source-stage" -- /bin/sh -c 'printf inherited > inherited.txt'
@@ -1537,7 +1635,7 @@ bundle_contains filesystem.changes child.txt "$PVISOR_CASE_RECORDS"
 
 ### S-DOC-052：K04 终止运行中的 Job
 
-<!-- semantic-case: requires=python3,rootless vocab=core.sh,cases.sh,pvisor.sh -->
+<!-- semantic-case: vocab=core.sh,cases.sh,pvisor.sh -->
 
 准备：Linux user/mount namespace 可用。
 
@@ -1548,6 +1646,8 @@ bundle_contains filesystem.changes child.txt "$PVISOR_CASE_RECORDS"
 **违反示例**：kill 后 Job 继续 live，或终态不是 cancelled。
 
 ```bash
+require_python3
+require_rootless
 case_setup
 case_run success <<'CASE_COMMAND'
 pvisor --stage "$CASE_ROOT/live-stage" -- /bin/sleep 30 > live.log 2>&1 &
@@ -1572,7 +1672,7 @@ python3 -c 'import json; d=json.load(open("stopped.json")); assert d["run"]["sta
 
 ### S-DOC-055：M01 离线准备回放前缀
 
-<!-- semantic-case: requires=python3 vocab=core.sh,cases.sh,pvisor.sh -->
+<!-- semantic-case: vocab=core.sh,cases.sh,pvisor.sh -->
 
 **语义**：输出结果的 phase 为 `prepared`，历史命令没有创建 `marker`。
 
@@ -1581,6 +1681,7 @@ python3 -c 'import json; d=json.load(open("stopped.json")); assert d["run"]["sta
 **违反示例**：prepare-only 执行了历史命令，创建 marker，或报告回放过工具调用。
 
 ```bash
+require_python3
 case_setup
 case_run success <<'CASE_COMMAND'
 cat > trajectory.json <<'JSON'
@@ -1598,7 +1699,7 @@ python3 -c 'import json; d=json.load(open("prepared.json")); assert d["phase"] =
 
 ### S-DOC-056：M02 TUI 保留命令输出并可打开 Log 面板
 
-<!-- semantic-case: requires=python3,linux vocab=core.sh,cases.sh,pvisor.sh -->
+<!-- semantic-case: vocab=core.sh,cases.sh,pvisor.sh -->
 
 准备：Linux 和 Python 3。
 
@@ -1609,6 +1710,8 @@ python3 -c 'import json; d=json.load(open("prepared.json")); assert d["phase"] =
 **违反示例**：TUI 丢失命令输出，或 Ctrl-] 后看不到底栏和 Log 面板。
 
 ```bash
+require_python3
+require_linux
 case_setup
 case_run success <<'CASE_COMMAND'
 python3 - <<'PY'

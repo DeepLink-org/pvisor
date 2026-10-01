@@ -110,7 +110,7 @@ pub struct SessionIndexHandle {
 }
 
 impl SessionIndexHandle {
-    pub fn rebuild_from_events(&self, records: &[pvisor_control::trace::Record]) -> Result<()> {
+    pub fn rebuild_from_events(&self, records: &[pvisor_core::event::Record]) -> Result<()> {
         self.inner.write().unwrap().sessions.clear();
         self.mark_dirty();
         for record in records {
@@ -118,7 +118,7 @@ impl SessionIndexHandle {
         }
         Ok(())
     }
-    pub fn observe_event(&self, event: &pvisor_control::trace::Event) -> Result<()> {
+    pub fn observe_event(&self, event: &pvisor_core::event::Event) -> Result<()> {
         if !crate::record::is_capture_event(event) {
             return Ok(());
         }

@@ -3,7 +3,7 @@
 
 use anyhow::{Context as _, Result, ensure};
 use fs2::FileExt;
-use pvisor_control::trace::{
+use pvisor_core::event::{
     Durability, Event, Fact, Granularity, Level, MAX_EVENT_BYTES, Position, Receipt, Record,
     VERSION,
 };
@@ -390,11 +390,11 @@ impl Trace {
         };
         let level = match &data {
             Fact::Completed {
-                outcome: pvisor_control::run_plan::Outcome::Error { failure },
+                outcome: pvisor_core::operation::Outcome::Error { failure },
                 ..
             } => match failure {
-                pvisor_control::run_plan::Failure::Denied { .. }
-                | pvisor_control::run_plan::Failure::Unsupported { .. } => Level::Warn,
+                pvisor_core::operation::Failure::Denied { .. }
+                | pvisor_core::operation::Failure::Unsupported { .. } => Level::Warn,
                 _ => Level::Error,
             },
             _ => Level::Info,
@@ -404,7 +404,7 @@ impl Trace {
             id: uuid::Uuid::new_v4().to_string(),
             trace_id: self.id.clone(),
             producer: self.producer.clone(),
-            observed_at_unix_ms: pvisor_control::unix_now_ms(),
+            observed_at_unix_ms: pvisor_core::unix_now_ms(),
             scope,
             context,
             operation,

@@ -1,4 +1,4 @@
-use pvisor_control::overlay::{
+use pvisor_core::overlay::{
     ApplyRecord, ApplyRecordState, OverlayRecord, OverlayState, PathPreimage, RunControlRequest,
     RunControlResponse,
 };

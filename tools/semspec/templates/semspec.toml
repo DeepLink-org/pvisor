@@ -2,8 +2,6 @@
 name = "example"
 spec_dirs = ["semantics"]
 ledger = "semantics/REVIEWED.toml"
-approved_snapshots = "semantics/.approved"
-retired = []
 
 [subject]
 bin = "/usr/bin/true"

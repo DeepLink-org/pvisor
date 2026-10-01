@@ -9,7 +9,7 @@ use std::net::IpAddr;
 use std::sync::atomic::{AtomicU64, Ordering};
 use std::sync::{Arc, Mutex};
 
-use pvisor_control::NetworkTransport;
+use pvisor_core::NetworkTransport;
 
 const MAX_TARGETS: usize = 256;
 

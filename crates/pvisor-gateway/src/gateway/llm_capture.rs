@@ -10,7 +10,7 @@ use axum::extract::Request;
 use axum::http::{Method, StatusCode};
 use axum::response::{IntoResponse, Response};
 use futures_util::StreamExt;
-use pvisor_control::{ModelCallRequest, RunId};
+use pvisor_core::{ModelCallRequest, RunId};
 use serde_json::Value;
 
 use super::auth::{apply_upstream_headers, resolve_upstream_api_key};
@@ -251,11 +251,11 @@ pub(super) async fn llm_capture(
         protocol: protocol.as_str().to_string(),
         upstream_host: upstream_url.host_str().unwrap_or_default().to_string(),
     };
-    let mut control = pvisor_control::ControlMachine::new();
+    let mut control = pvisor_core::ControlMachine::new();
     let control_transition = control
         .authorize(
             state.control_controller.as_ref(),
-            pvisor_control::ControlRequest::Model {
+            pvisor_core::ControlRequest::Model {
                 policy: &model_policy,
                 request: &model_request,
             },

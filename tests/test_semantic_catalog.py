@@ -93,7 +93,7 @@ record_expect overlay null
     assert proxy != gateway
 
 
-def test_migrated_catalog_retains_active_scenarios_and_registers_retired_ids():
+def test_migrated_catalog_retains_active_scenarios_and_bash_prerequisites():
     contents = (ROOT / "docs/src/zh/reference/cases.md").read_text()
     titles = re.findall(r"^### (S-DOC-\d{3})：([A-M]\d{2}) ", contents, re.MULTILINE)
     labels = [
@@ -118,7 +118,7 @@ def test_migrated_catalog_retains_active_scenarios_and_registers_retired_ids():
     assert contents.count("case_run success <<'CASE_COMMAND'") == 46
     assert contents.count("case_run nonzero <<'CASE_COMMAND'") == 8
     assert "xfail-on" not in contents
-    scripts = re.findall(r"^```bash\n(case_setup\n.*?)^```", contents, re.MULTILINE | re.DOTALL)
+    scripts = re.findall(r"^```bash\n((?:require_\w+\n)+case_setup\n.*?)^```", contents, re.MULTILINE | re.DOTALL)
     assert len(scripts) == 54
     assert all(
         "/tmp/pvisor-cases" not in script and "/path/to/" not in script for script in scripts
@@ -127,7 +127,9 @@ def test_migrated_catalog_retains_active_scenarios_and_registers_retired_ids():
     configuration = tomllib.loads((ROOT / "semspec-doc.toml").read_text())
     assert "docs/src/zh/reference" in configuration["project"]["spec_dirs"]
     assert not (ROOT / "tests/semantics/documented-cases.md").exists()
-    assert {"S-DOC-053", "S-DOC-054"} <= set(configuration["project"]["retired"])
+    assert "retired" not in configuration["project"]
+    assert "requirements" not in configuration
+    assert "requires=" not in contents
     assert not {"S-DOC-053", "S-DOC-054"} & {identifier for identifier, _ in titles}
 
 
@@ -137,3 +139,16 @@ def test_default_review_scope_is_stage_and_doc_regressions_remain_configured():
     assert stage["project"]["spec_dirs"] == ["tests/semantics"]
     assert doc["project"]["spec_dirs"] == ["docs/src/zh/reference"]
     assert stage["project"]["ledger"] == doc["project"]["ledger"]
+
+
+def test_bash_prerequisites_skip_without_turning_assertions_into_pass():
+    result = subprocess.run(
+        ["bash", "-euo", "pipefail", "-c",
+         'source "$1"; require_agent; echo reached', "prerequisite-test",
+         str(VOCAB / "pvisor.sh")],
+        env={**os.environ, "PVISOR_CASE_AGENT": ""},
+        capture_output=True, text=True, timeout=15,
+    )
+    assert result.returncode == 77
+    assert "SKIP:" in result.stderr
+    assert "reached" not in result.stdout

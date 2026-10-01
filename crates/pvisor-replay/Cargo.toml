@@ -11,7 +11,7 @@ tempfile.workspace = true
 clap = { workspace = true, features = ["derive"] }
 pvisor = { path = "../pvisor" }
 anyhow.workspace = true
-pvisor-control.workspace = true
+pvisor-core.workspace = true
 pvisor-journal.workspace = true
 chrono.workspace = true
 fs2.workspace = true

@@ -2,7 +2,7 @@
 
 use pvisor::RunBundle;
 use pvisor::sandbox::SANDBOX_SETUP_EXIT_CODE;
-use pvisor_control::{IsolationKind, RunFailureKind};
+use pvisor_core::{IsolationKind, RunFailureKind};
 use std::fs;
 use std::fs::OpenOptions;
 use std::net::{TcpListener, TcpStream};

@@ -2,7 +2,7 @@ use anyhow::{Context, Result, ensure};
 use clap::{Parser, Subcommand};
 use semspec::{
     helpers,
-    ledger::{Approval, Ledger, Revocation},
+    ledger::{Approval, Ledger},
     model::Verdict,
     project::{Project, atomic_write},
     runner,
@@ -38,9 +38,6 @@ enum Commands {
         #[arg(long)]
         strict: bool,
     },
-    Diff {
-        item: String,
-    },
     Run {
         /// Run cases from this Markdown file in the configured spec_dirs.
         spec: Option<PathBuf>,
@@ -68,14 +65,6 @@ enum Commands {
         reviewer: String,
         #[arg(long)]
         sign: Option<PathBuf>,
-    },
-    Revoke {
-        #[arg(required = true)]
-        items: Vec<String>,
-        #[arg(long)]
-        reviewer: String,
-        #[arg(long)]
-        reason: String,
     },
     Helper {
         #[command(subcommand)]
@@ -121,7 +110,7 @@ fn dispatch(cli: Cli) -> Result<i32> {
             init(&cli.config)?;
             return Ok(0);
         }
-        Commands::Approve { .. } | Commands::Revoke { .. } => {
+        Commands::Approve { .. } => {
             require_terminal(io::stdin().is_terminal(), io::stdout().is_terminal())?;
         }
         _ => {}
@@ -167,10 +156,6 @@ fn dispatch(cli: Cli) -> Result<i32> {
                 println!("{id:24} {:10} {}", item.review.label(), item.digest);
             }
             Ok(i32::from(strict && pending))
-        }
-        Commands::Diff { item } => {
-            show_diff(&project, &item)?;
-            Ok(0)
         }
         Commands::Run {
             spec,
@@ -249,58 +234,20 @@ fn dispatch(cli: Cli) -> Result<i32> {
             ensure!(!reviewer.trim().is_empty(), "reviewer required");
             for id in items {
                 let item = project.item(&id)?;
-                if matches!(item.review, semspec::model::ReviewState::Stale { .. }) {
-                    show_diff(&project, &id)?;
-                } else {
-                    show(&project, &id)?;
-                }
+                show(&project, &id)?;
                 println!("Digest: {}", item.digest);
                 if !confirm(&id, &reviewer)? {
                     continue;
                 }
-                edit_ledger(
-                    &mut project,
-                    |ledger| {
-                        ledger.approve(Approval {
-                            item: id.clone(),
-                            digest: item.digest.clone(),
-                            reviewer: reviewer.clone(),
-                            date: today(),
-                            signature: None,
-                        })
-                    },
-                    Some((&id, &item.text)),
-                )?;
-            }
-            Ok(0)
-        }
-        Commands::Revoke {
-            items,
-            reviewer,
-            reason,
-        } => {
-            ensure!(
-                !reviewer.trim().is_empty() && !reason.trim().is_empty(),
-                "reviewer/reason required"
-            );
-            for id in items {
-                show(&project, &id)?;
-                println!("Revoke reason: {reason}");
-                if !confirm(&id, &reviewer)? {
-                    continue;
-                }
-                edit_ledger(
-                    &mut project,
-                    |ledger| {
-                        ledger.revoke(Revocation {
-                            item: id.clone(),
-                            reviewer: reviewer.clone(),
-                            date: today(),
-                            reason: reason.clone(),
-                        })
-                    },
-                    None,
-                )?;
+                edit_ledger(&mut project, |ledger| {
+                    ledger.approve(Approval {
+                        item: id.clone(),
+                        digest: item.digest.clone(),
+                        reviewer: reviewer.clone(),
+                        date: today(),
+                        signature: None,
+                    })
+                })?;
             }
             Ok(0)
         }
@@ -316,7 +263,7 @@ fn today() -> String {
 fn require_terminal(input: bool, output: bool) -> Result<()> {
     ensure!(
         input && output,
-        "approve/revoke require an interactive terminal and human confirmation"
+        "approve requires an interactive terminal and human confirmation"
     );
     Ok(())
 }
@@ -338,30 +285,7 @@ fn show(project: &Project, id: &str) -> Result<()> {
     );
     Ok(())
 }
-fn show_diff(project: &Project, id: &str) -> Result<()> {
-    let item = project.item(id)?;
-    let path = project.snapshot_path(id)?;
-    if path.exists() {
-        let before = fs::read_to_string(path)?;
-        let diff = helpers::unified_diff(&before, &item.text);
-        if diff.is_empty() {
-            println!(
-                "No text difference; digest/review dependencies may differ: {}",
-                item.digest
-            );
-        } else {
-            print!("{diff}");
-        }
-    } else {
-        println!("No approved snapshot; current text:\n{}", item.text);
-    }
-    Ok(())
-}
-fn edit_ledger(
-    project: &mut Project,
-    edit: impl FnOnce(&mut Ledger),
-    snapshot: Option<(&str, &str)>,
-) -> Result<()> {
+fn edit_ledger(project: &mut Project, edit: impl FnOnce(&mut Ledger)) -> Result<()> {
     let path = project.root.join(&project.config.project.ledger);
     fs::create_dir_all(path.parent().unwrap())?;
     let lock_path = path.with_extension("toml.lock");
@@ -378,9 +302,6 @@ fn edit_ledger(
         Ledger::default()
     };
     edit(&mut ledger);
-    if let Some((id, text)) = snapshot {
-        atomic_write(&project.snapshot_path(id)?, text.as_bytes())?;
-    }
     atomic_write(&path, toml::to_string_pretty(&ledger)?.as_bytes())?;
     project.ledger = ledger;
     Ok(())

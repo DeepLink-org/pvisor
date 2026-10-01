@@ -1,5 +1,5 @@
 #!/usr/bin/env python3
-"""Build both native Zensical navigation trees into one bilingual site."""
+"""Build canonical Chinese docs and the smaller English entry points."""
 
 import json
 import os
@@ -17,43 +17,44 @@ def build() -> None:
     zensical = shutil.which("zensical") or str(Path(sys.executable).with_name("zensical"))
     subprocess.run([zensical, "build", "--strict"], cwd=DOCS, check=True)
     # Zensical has one canonical language/navigation per build. Reuse the same
-    # content and search index, rendering Chinese HTML with its native zh theme.
+    # content and search index, rendering English HTML with its native en theme.
     config = (DOCS / "zensical.toml").read_text()
     before, nav = config.split("nav = [", 1)
     nav, after = nav.split("\n[project.theme]", 1)
-    nav = nav.replace('"en/', '"zh/')
-    for en, zh in {
-        "Home": "首页",
-        "Get started": "开始使用",
-        "Concepts": "概念与边界",
-        "Guides": "任务指南",
-        "Design": "实现设计",
-        "Reference": "参考",
-        "Development": "参与开发",
-    }.items():
-        nav = nav.replace('"' + en + '"', '"' + zh + '"')
+    nav = '\n  { "Home" = "en/index.md" },\n  { "Get started" = ["en/start/index.md", "en/start/what-is-pvisor.md", "en/start/installation.md", "en/start/first-run.md"] },\n  { "CLI reference" = "en/reference/cli.md" },\n]\n'
     config = before + "nav = [" + nav + "\n[project.theme]" + after
-    config = config.replace('language = "en"', 'language = "zh"').replace(
-        'homepage = "en/"', 'homepage = "zh/"'
+    config = config.replace('language = "zh"', 'language = "en"').replace(
+        'homepage = "zh/"', 'homepage = "en/"'
     )
-    with tempfile.TemporaryDirectory(prefix=".zensical-zh-", dir=DOCS) as temp:
+    with tempfile.TemporaryDirectory(prefix=".zensical-en-", dir=DOCS) as temp:
         temp = Path(temp)
         config = config.replace('site_dir = "site"', f'site_dir = "{temp.name}/site"')
         config = config.replace("[project]\n", f'[project]\ncache_dir = "{temp.name}/cache"\n', 1)
         with tempfile.NamedTemporaryFile(
-            mode="w", suffix=".toml", prefix=".zensical-zh-", dir=DOCS
+            mode="w", suffix=".toml", prefix=".zensical-en-", dir=DOCS
         ) as config_file:
             config_file.write(config)
             config_file.flush()
             subprocess.run(
                 [zensical, "build", "--strict", "-f", config_file.name], cwd=DOCS, check=True
             )
-        shutil.copytree(temp / "site/zh", DOCS / "site/zh", dirs_exist_ok=True)
+        shutil.copytree(temp / "site/en", DOCS / "site/en", dirs_exist_ok=True)
     # Keep published article URLs usable after reorganizing the source tree.
-    for old, new in json.loads((DOCS / "redirects.json").read_text()).items():
+    redirects = json.loads((DOCS / "redirects.json").read_text())
+    # Former English translations now lead to the authoritative Chinese article.
+    for page in (DOCS / "src/zh").rglob("*.md"):
+        name = str(page.relative_to(DOCS / "src/zh"))
+        if not (DOCS / "src/en" / name).exists():
+            redirects.setdefault(name, name)
+    for old, new in redirects.items():
         for locale in ("en", "zh", ""):
             source = DOCS / "site" / locale / old.removesuffix(".md")
-            target = DOCS / "site" / (locale or "en") / new.removesuffix(".md")
+            target_locale = locale or "zh"
+            if not (DOCS / "src" / target_locale / new).exists():
+                target_locale = "zh"
+            if old == new and locale != "en":
+                continue
+            target = DOCS / "site" / target_locale / new.removesuffix(".md")
             source = source.parent if source.name == "index" else source
             target = target.parent if target.name == "index" else target
             source.mkdir(parents=True, exist_ok=True)

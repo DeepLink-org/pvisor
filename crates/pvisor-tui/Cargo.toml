@@ -20,7 +20,7 @@ pvisor-overlaynet.workspace = true
 anyhow.workspace = true
 clap = { workspace = true, features = ["derive"] }
 libc.workspace = true
-pvisor-control.workspace = true
+pvisor-core.workspace = true
 pvisor = { path = "../pvisor" }
 serde = { workspace = true, features = ["derive"] }
 serde_json.workspace = true

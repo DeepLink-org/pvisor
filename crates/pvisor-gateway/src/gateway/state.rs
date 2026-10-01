@@ -5,7 +5,7 @@ use std::sync::Arc;
 use std::sync::atomic::AtomicUsize;
 
 use anyhow::Context;
-use pvisor_control::{ControlController, PolicyControlController};
+use pvisor_core::{ControlController, PolicyControlController};
 use pvisor_overlaynet::{BandwidthRegistry, InterceptionMetrics};
 use tokio::task::JoinHandle;
 

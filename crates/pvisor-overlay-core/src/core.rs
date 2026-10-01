@@ -1,5 +1,5 @@
 use crate::sys;
-use pvisor_control::overlay::{PathFingerprint, PathPreimage};
+use pvisor_core::overlay::{PathFingerprint, PathPreimage};
 use sha2::{Digest, Sha256};
 use std::collections::{BTreeSet, HashMap};
 use std::ffi::{OsStr, OsString};

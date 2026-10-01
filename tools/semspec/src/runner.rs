@@ -1,5 +1,4 @@
 use crate::{
-    config::Probe,
     model::{Case, CaseResult, RunReport, Verdict},
     project::Project,
     seal::ENGINE_SEMANTICS,
@@ -109,24 +108,6 @@ fn run_case(
 ) -> Result<CaseResult> {
     let started = Instant::now();
     let review = project.item(&case.id)?.review;
-    for requirement in &case.annotation.requires {
-        let probe = project.config.requirements[requirement].get(platform);
-        let result = probe
-            .map(|p| check_probe(p, project))
-            .unwrap_or_else(|| Err(format!("not defined on {platform}")));
-        if let Err(reason) = result {
-            return Ok(CaseResult {
-                id: case.id.clone(),
-                verdict: Verdict::Skip {
-                    requirement: requirement.clone(),
-                    reason,
-                },
-                review,
-                duration_ms: started.elapsed().as_millis(),
-                workdir: None,
-            });
-        }
-    }
     let root = match tempfile::Builder::new()
         .prefix(&format!("semspec-{}-", case.id))
         .tempdir()
@@ -144,7 +125,7 @@ fn run_case(
             });
         }
     };
-    let execute = || -> Result<(bool, String)> {
+    let execute = || -> Result<(Option<i32>, String)> {
         let ws = root.path().join("ws");
         fs::create_dir(&ws)?;
         let mut script = String::from("set -euo pipefail\n");
@@ -181,18 +162,19 @@ fn run_case(
                 tail(&log)?
             )
         };
-        Ok((passed, detail))
+        Ok((if timed_out { None } else { status.code() }, detail))
     };
     let expected =
         case.annotation.xfail_on.contains(platform) || case.annotation.xfail_on.contains("all");
     let verdict = match execute() {
-        Ok((true, _)) if expected => Verdict::XPass,
-        Ok((true, _)) => Verdict::Pass,
-        Ok((false, output_tail)) if expected => Verdict::XFail {
+        Ok((Some(77), reason)) => Verdict::Skip { reason },
+        Ok((Some(0), _)) if expected => Verdict::XPass,
+        Ok((Some(0), _)) => Verdict::Pass,
+        Ok((_, output_tail)) if expected => Verdict::XFail {
             reason: case.annotation.xfail_reason.clone().unwrap(),
             output_tail,
         },
-        Ok((false, output_tail)) => Verdict::Fail { output_tail },
+        Ok((_, output_tail)) => Verdict::Fail { output_tail },
         Err(error) => Verdict::Error {
             message: format!("{error:#}"),
         },
@@ -209,53 +191,6 @@ fn run_case(
         duration_ms: started.elapsed().as_millis(),
         workdir,
     })
-}
-fn check_probe(probe: &Probe, project: &Project) -> Result<(), String> {
-    if let Some(path) = &probe.path_exists {
-        return if project.root.join(path).exists() {
-            Ok(())
-        } else {
-            Err(format!("{} does not exist", path.display()))
-        };
-    }
-    if let Some(argv) = &probe.command_succeeds {
-        let check = || -> Result<bool> {
-            let root = tempfile::tempdir()?;
-            let mut command = Command::new(&argv[0]);
-            command
-                .args(&argv[1..])
-                .current_dir(&project.root)
-                .envs(&project.config.subject.env);
-            let (status, timed_out) = execute_process(
-                command,
-                &root.path().join("probe.log"),
-                project.config.timeout()?.min(Duration::from_secs(15)),
-            )?;
-            Ok(status.success() && !timed_out)
-        };
-        return match check() {
-            Ok(true) => Ok(()),
-            Ok(false) => Err(format!("probe failed: {argv:?}")),
-            Err(e) => Err(format!("probe unavailable: {e:#}")),
-        };
-    }
-    if let Some(all) = &probe.all {
-        for p in all {
-            check_probe(p, project)?;
-        }
-        return Ok(());
-    }
-    if let Some(any) = &probe.any {
-        let mut errors = vec![];
-        for p in any {
-            match check_probe(p, project) {
-                Ok(()) => return Ok(()),
-                Err(e) => errors.push(e),
-            }
-        }
-        return Err(errors.join("; "));
-    }
-    Err("invalid probe".into())
 }
 #[cfg(unix)]
 struct Group(i32);
@@ -291,7 +226,7 @@ pub fn execute_process(
         .stdout(log.try_clone()?)
         .stderr(log)
         .process_group(0);
-    let mut child = command.spawn().context("launch interpreter/probe")?;
+    let mut child = command.spawn().context("launch interpreter")?;
     let group = Group(child.id() as i32);
     let deadline = Instant::now() + timeout;
     loop {

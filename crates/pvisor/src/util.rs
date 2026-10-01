@@ -1,6 +1,6 @@
 //! Shared helpers for pVisor.
 
-pub use pvisor_control::unix_now_ms;
+pub use pvisor_core::unix_now_ms;
 #[cfg(test)]
 use std::fs;
 use std::path::Path;

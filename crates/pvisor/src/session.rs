@@ -3,7 +3,7 @@ pub(crate) mod lifecycle;
 
 use crate::executor::AttemptAttachments;
 use crate::runtime::event::RunEventPublisher;
-use pvisor_control::{AttemptId, RunSpec, RunState, RunStatus};
+use pvisor_core::{AttemptId, RunSpec, RunState, RunStatus};
 use serde_json::json;
 use std::sync::Arc;
 use tokio::sync::watch;
@@ -13,7 +13,7 @@ use tokio_util::sync::CancellationToken;
 pub struct Session {
     pub(crate) spec: Arc<RunSpec>,
     pub(crate) created_at_unix_ms: u64,
-    pub(crate) network_policy: pvisor_control::NetworkPolicy,
+    pub(crate) network_policy: pvisor_core::NetworkPolicy,
     pub(crate) attempt_id: AttemptId,
     pub(crate) cancel: CancellationToken,
     pub(crate) status: watch::Sender<RunStatus>,
@@ -29,11 +29,11 @@ impl Session {
         &self.spec
     }
 
-    pub fn network_policy(&self) -> &pvisor_control::NetworkPolicy {
+    pub fn network_policy(&self) -> &pvisor_core::NetworkPolicy {
         &self.network_policy
     }
 
-    pub fn filesystem_policy(&self) -> Option<&pvisor_control::FileAccessPolicy> {
+    pub fn filesystem_policy(&self) -> Option<&pvisor_core::FileAccessPolicy> {
         self.attachments.filesystem.as_ref()
     }
 

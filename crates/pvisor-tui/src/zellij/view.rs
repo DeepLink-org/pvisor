@@ -257,7 +257,7 @@ fn panel_lines(snapshot: &Snapshot, panel: Panel, started: Instant, width: usize
                 paths.sort_by(|left, right| {
                     let priority = |operations: &std::collections::BTreeMap<
                         _,
-                        pvisor_control::run_plan::PathOperationCounters,
+                        pvisor_core::operation::PathOperationCounters,
                     >| {
                         operations.values().fold((0u64, 0u64, 0u64), |sum, counts| {
                             (
@@ -497,11 +497,11 @@ fn boundary_label(snapshot: &Snapshot) -> String {
 fn audit_dialog(
     buf: &mut Vec<u8>,
     layout: Layout,
-    request: &pvisor_control::audit::AuditRequest,
+    request: &pvisor_core::audit::AuditRequest,
     prompt: &super::audit_ui::Prompt,
 ) {
     use super::audit_ui::{Lifetime, Scope, choice};
-    use pvisor_control::audit::AuditKind;
+    use pvisor_core::audit::AuditKind;
     const BODY: &str = "\x1b[0;48;2;28;32;40;38;2;232;235;240m";
     const AMBER: &str = "\x1b[0;48;2;28;32;40;38;2;255;190;80m";
     const SELECTED: &str = "\x1b[1;48;2;255;190;80;38;2;24;28;34m";
@@ -782,8 +782,8 @@ pub(super) fn render(
 #[cfg(test)]
 mod tests {
     use super::*;
-    use pvisor_control::audit::{AuditKind, AuditRequest};
-    use pvisor_control::run_plan::PathOperationCounters;
+    use pvisor_core::audit::{AuditKind, AuditRequest};
+    use pvisor_core::operation::PathOperationCounters;
 
     fn size(cols: u16, rows: u16) -> libc::winsize {
         libc::winsize {
@@ -797,7 +797,7 @@ mod tests {
     #[test]
     fn review_panels_show_denied_file_and_network_targets() {
         let mut snapshot = Snapshot::default();
-        let mut filesystem = pvisor_control::run_plan::FilesystemObservation::default();
+        let mut filesystem = pvisor_core::operation::FilesystemObservation::default();
         filesystem.paths.insert(
             "secrets/key.pem".into(),
             std::collections::BTreeMap::from([(
@@ -879,7 +879,7 @@ mod tests {
                 reason: "not-in-allowlist".into(),
                 host: Some("unexpected.example".into()),
                 port: Some(443),
-                transport: Some(pvisor_control::NetworkTransport::TcpTunnel),
+                transport: Some(pvisor_core::NetworkTransport::TcpTunnel),
             }),
             ..Snapshot::default()
         };

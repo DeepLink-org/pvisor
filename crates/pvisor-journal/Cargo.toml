@@ -9,7 +9,7 @@ description = "Single-writer storage for pVisor trace facts"
 anyhow.workspace = true
 fs2.workspace = true
 libc.workspace = true
-pvisor-control.workspace = true
+pvisor-core.workspace = true
 serde = { workspace = true, features = ["derive"] }
 serde_json.workspace = true
 sha2.workspace = true

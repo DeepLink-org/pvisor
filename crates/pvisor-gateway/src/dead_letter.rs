@@ -171,12 +171,12 @@ pub struct TrajectoryDeadLetterEntry {
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub root_session: Option<String>,
     #[serde(default)]
-    pub records: Vec<pvisor_control::trace::Event>,
+    pub records: Vec<pvisor_core::event::Event>,
     pub error: String,
 }
 
 impl TrajectoryDeadLetterEntry {
-    pub fn decoded_records(&self) -> Result<Vec<pvisor_control::trace::Event>> {
+    pub fn decoded_records(&self) -> Result<Vec<pvisor_core::event::Event>> {
         Ok(self.records.clone())
     }
 }
@@ -186,7 +186,7 @@ pub fn append_trajectory_dead_letter(
     agent_id: &str,
     session_id: &str,
     root_session: Option<&str>,
-    records: &[pvisor_control::trace::Event],
+    records: &[pvisor_core::event::Event],
     error: &str,
 ) -> Result<()> {
     let entry = TrajectoryDeadLetterEntry {

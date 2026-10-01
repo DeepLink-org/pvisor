@@ -4,10 +4,20 @@ OverlayNet 让 pVisor 对网络出口执行允许、拒绝和限速规则。Host
 HTTP proxy；libkrun VM Run 使用进程内 smoltcp 数据面处理 IPv4 TCP 和 DNS。请结合
 [Capability 与 Evidence 模型](../concepts/capabilities-and-evidence.md)理解这些控制。
 
-!!! warning "安全边界取决于 driver"
-    Host/container 的显式 proxy 是 cooperative 的，程序可通过删除 proxy 变量或直接创建
-    socket 绕过。VM `auto` 的 virtio-net 终止于 pVisor，因此对整个 guest 进程树不可绕过。
-    VM MVP 只支持 IPv4 TCP 和 DNS；UDP、IPv6、ICMP、QUIC 与入站转发都会 fail closed。
+## 网络边界
+
+| 执行路径 | 控制范围 | 直接出口 |
+| --- | --- | --- |
+| 普通 host／container 显式代理 | 经过代理的 HTTP/HTTPS | 忽略代理、`NO_PROXY`、直接 socket 可绕过 |
+| Linux host deny-all | 私有 network namespace | 阻止直接 IP 出口；保留 Run 内必要通信 |
+| macOS host deny-all | Seatbelt socket 策略 | 阻止直接外部 IP 和 ambient Unix socket；保留声明的本地通信 |
+| macOS host `--safe` | Seatbelt 与分配的 loopback proxy | 直接外部连接被阻止；代理执行选择性规则 |
+| Linux host `--safe` 的选择性代理 | supervisor loopback proxy | 仍是协作式；需要强制网络边界时选择 VM 或 deny-all |
+| container `--container-network none` | OCI 网络隔离 | 离线；不能同时使用要求 host 网络的本地 proxy/Gateway |
+| VM `auto` | pVisor smoltcp IPv4 TCP/DNS 数据面 | guest 无直接网络旁路；不支持的 UDP、IPv6、ICMP、QUIC、入站转发失败关闭 |
+| VM `off` | 不配置 guest 网络 | 离线 |
+
+必须检查具体 Run 的观察证据。暂存文件不改变网络边界；捕获记录也不能证明所有流量都经过代理。
 
 ## 只允许声明的目标
 
@@ -43,7 +53,7 @@ pvisor run \
 |---|---|---|
 | 只允许指定目标 | `--overlaynet-allow TARGET` | 拒绝 |
 | 拒绝指定目标 | `--overlaynet-deny TARGET` | 允许 |
-| 拒绝全部被接管的出口 | `--overlaynet-deny-all` | 拒绝 |
+| 拒绝普通出口，边界见上表 | `--overlaynet-deny-all` | 拒绝 |
 | 限制带宽 | `--overlaynet-limit [TARGET=]RATE` | 不改变允许/拒绝动作 |
 
 allow、deny 和 limit 参数都可以重复。显式 deny 的优先级高于 allow。
@@ -59,15 +69,15 @@ pvisor run \
   -- agent-command
 ```
 
-### 拒绝全部代理流量
+### 拒绝普通出口
 
 ```bash
 pvisor run --overlaynet-deny-all -- agent-command
 ```
 
-对于 host/container Run，它会拒绝到达注入代理的 HTTP/HTTPS 请求，但不会禁用 direct
-socket，也不会阻止本地 Gateway route。对于 VM `auto`，同一策略会拒绝普通 guest TCP
-出口；启用 capture 时，内部 Gateway route 仍可用。
+Host Run 会安装上表中的 namespace／Seatbelt 网络边界；容器应使用
+`--container-network none` 阻断代理之外的连接。VM `auto` 拒绝普通 guest TCP 出口。
+deny-all 不阻止已配置的内部 Gateway 路由；需要完全离线时关闭 Gateway，并在 VM 上使用 `off`。
 
 `--overlaynet-deny-all` 不支持再叠加 allow 例外。如果目标是“默认全部拒绝，只允许少数
 地址”，不要先写 deny-all，直接声明允许的目标即可：
@@ -147,7 +157,7 @@ IP/CIDR 策略时，应使用能返回具体地址的 resolver。
 对应的小写形式和 `ALL_PROXY`。遵守这些设置的 HTTP 客户端会经过 OverlayNet；代理
 支持普通 HTTP 转发和 HTTPS `CONNECT` 隧道。
 
-以下路径不在这个 cooperative host/container 策略边界内：
+以下路径不在普通 cooperative host/container 代理策略边界内：
 
 - 客户端忽略或删除代理环境变量；
 - 目标被加入 `NO_PROXY`；
@@ -156,10 +166,10 @@ IP/CIDR 策略时，应使用能返回具体地址的 resolver。
 
 因此 host/container cooperative-proxy Run 会报告
 `safety.network_non_bypassable = false`。如果必须
-彻底阻止直接联网，使用 `pvisor -- --overlaynet-deny-all`：Linux 会创建私有
+阻止直接出口，使用 `pvisor run --overlaynet-deny-all -- COMMAND`：Linux 会创建私有
 network namespace；macOS 会用 Seatbelt 阻断非 loopback IP 与宿主 ambient Unix socket，同时保留
 loopback proxy、精确的 AgentCtl 和 Run 私有目录内 IPC。Container Run 也可以使用 `--container-network none`。
-两种本地 host 路径上的 selective allow/deny 仍是协作式。VM executor 默认使用
+普通 host 的 selective allow/deny 仍是协作式；macOS `--safe` 还限制直接连接，详见上表。VM executor 默认使用
 `[overlaynet] mode = "auto"`，guest 使用静态 IPv4 地址，由 smoltcp 提供合成 DNS 与受策略控制的 IPv4 TCP；
 `mode = "off"` 会让 VM 离线。Gateway capture 通过 guest 虚拟路由器暴露；container
 executor 使用进程内 proxy 时仍要求 `--container-network host`。
@@ -235,7 +245,7 @@ guest 网络旁路。
 | 现象 | 检查项 |
 |---|---|
 | 已允许的 hostname 解析到 loopback 或私网地址后仍被拒绝 | 使用显式 IP/CIDR，或仅在范围足够窄的结构化规则上设置 `allow_private_ips = true` |
-| 使用 `--overlaynet-deny-all` 后请求仍然成功 | 确认客户端遵守注入的 proxy，且没有使用 `NO_PROXY` 或 direct socket |
+| 使用 `--overlaynet-deny-all` 后请求仍然成功 | 检查 executor、实际安装的网络边界及内部 Gateway 路由；容器离线使用 `--container-network none` |
 | pVisor 无法绑定代理端口 | 使用 `--overlaynet-listen 127.0.0.1:19082` 选择一个空闲的非零端口 |
 | 容器无法连接代理 | 使用 `--container-network host` |
 | VM 的 `proxy` 模式被拒绝 | 使用 `auto` 选择 smoltcp，或使用 `off` 让 guest 离线 |

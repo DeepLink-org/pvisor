@@ -5,7 +5,7 @@ use std::path::PathBuf;
 /// Optional in-process FUSE overlay root for one Attempt.
 #[derive(Debug, Clone, Default, PartialEq, Eq)]
 pub struct OverlayHint {
-    pub access_policy: pvisor_control::overlay::FileAccessPolicy,
+    pub access_policy: pvisor_core::overlay::FileAccessPolicy,
     /// Shared read-only lower layers (host paths).
     pub lower_dirs: Vec<PathBuf>,
     /// Durable staging root containing upper storage and the merged mount.

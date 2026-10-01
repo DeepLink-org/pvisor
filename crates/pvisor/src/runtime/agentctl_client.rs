@@ -1,11 +1,11 @@
 //! Synchronous client for pVisor's cooperative, low-frequency AgentCtl protocol.
 
-use crate::{
+use anyhow::{Context, bail};
+use pvisor_core::{
     AGENTCTL_ENDPOINT_ENV, AGENTCTL_MAX_FRAME_BYTES, AGENTCTL_TOKEN_ENV, AGENTCTL_TRANSPORT_ENV,
     AGENTCTL_VERSION, AGENTCTL_VERSION_ENV, AgentDirective, AgentErrorCode, AgentRequest,
     AgentResponse, AgentState,
 };
-use anyhow::{Context, bail};
 use std::collections::BTreeMap;
 use std::fmt;
 use std::io::{BufRead, Read, Write};

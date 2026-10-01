@@ -3,7 +3,7 @@ use super::record::{CaptureRecord, now_rfc3339};
 use crate::Call;
 use crate::config::CaptureLevel;
 use anyhow::Result;
-use pvisor_control::trace::Event;
+use pvisor_core::event::Event;
 use pvisor_journal::Journal;
 use serde_json::Value;
 use std::sync::Arc;

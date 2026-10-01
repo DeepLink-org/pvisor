@@ -1,8 +1,5 @@
-use pvisor::AgentCtlServer;
-use pvisor_control::{
-    AgentCtlClient, AgentCtlClientConfig, AgentCtlResponseError, AgentDirective, AgentErrorCode,
-    AgentState, AttemptId, RunId,
-};
+use pvisor::{AgentCtlClient, AgentCtlClientConfig, AgentCtlResponseError, AgentCtlServer};
+use pvisor_core::{AgentDirective, AgentErrorCode, AgentState, AttemptId, RunId};
 use std::time::Duration;
 
 fn client(server: &AgentCtlServer, client_id: &str) -> AgentCtlClient {

@@ -62,16 +62,16 @@ selection and kernel preparation match release builds.
 
 ## Links
 
-- [RunPlan and Trace](../../docs/run-plan-trace.md): immutable execution plans,
+- [Operation and Trace](../../docs/operations-events.md): immutable execution plans,
   VM/Overlay placement, execution facts and boundary observations.
-- [The PolicyVisor model](../../docs/src/en/concepts/policyvisor.md)
+- [The PolicyVisor model](../../docs/src/zh/concepts/policyvisor.md)
 - [Get started](../../docs/src/en/start/first-run.md)
-- [Isolation architecture](../../docs/src/en/design/isolation.md)
-- [Gateway architecture](../../docs/src/en/design/gateway.md)
-- [OverlayNet architecture](../../docs/src/en/design/overlaynet.md)
+- [Isolation architecture](../../docs/src/zh/design/isolation.md)
+- [Gateway architecture](../../docs/src/zh/design/gateway.md)
+- [OverlayNet architecture](../../docs/src/zh/design/overlaynet.md)
 - [pVisor CLI](../../docs/src/en/reference/cli.md)
-- [System architecture](../../docs/src/en/design/architecture.md)
+- [System architecture](../../docs/src/zh/design/architecture.md)
 - [`pvisor-overlayfs`](../pvisor-overlayfs/README.md)
 - [`pvisor-overlaynet`](../pvisor-overlaynet/README.md)
 - [`pvisor-gateway`](../pvisor-gateway/README.md)
-- [`pvisor-control`](../pvisor-control/README.md)
+- [`pvisor-core`](../pvisor-core/README.md)

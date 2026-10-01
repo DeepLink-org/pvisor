@@ -1,11 +1,11 @@
 //! A job-local, fail-closed permission prompt channel to the owning TUI.
 
-use crate::NetworkTransport;
-use serde::{Deserialize, Serialize};
+use pvisor_core::audit::{AuditChannel, AuditDecision, AuditKind, AuditRequest};
 use std::collections::HashMap;
 use std::io::{BufRead, BufReader, Write};
 use std::os::unix::net::UnixStream;
 use std::path::PathBuf;
+use std::sync::Arc;
 use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::{Mutex, OnceLock};
 use std::time::{Duration, Instant};
@@ -15,45 +15,10 @@ static ARMED: AtomicBool = AtomicBool::new(false);
 static FILE_BURSTS: OnceLock<Mutex<HashMap<String, (Instant, AuditDecision)>>> = OnceLock::new();
 const FILE_BURST: Duration = Duration::from_millis(250);
 
-#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
-#[serde(rename_all = "snake_case")]
-pub enum AuditKind {
-    File,
-    Network,
-}
-
-#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
-pub struct AuditScope {
-    pub run_id: String,
-    pub attempt_id: String,
-    pub view: String,
-}
-
-#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
-pub struct AuditRequest {
-    #[serde(default, skip_serializing_if = "Option::is_none")]
-    pub scope: Option<AuditScope>,
-    pub kind: AuditKind,
-    pub target: String,
-    pub reason: String,
-    #[serde(default, skip_serializing_if = "Option::is_none")]
-    pub host: Option<String>,
-    #[serde(default, skip_serializing_if = "Option::is_none")]
-    pub port: Option<u16>,
-    #[serde(default, skip_serializing_if = "Option::is_none")]
-    pub transport: Option<NetworkTransport>,
-}
-
-#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
-#[serde(rename_all = "snake_case")]
-pub enum AuditDecision {
-    Allow,
-    Deny,
-}
-
 /// Called before the agent starts. The path is not projected into the agent.
 pub fn init(socket: PathBuf) {
     let _ = SOCKET.set(socket);
+    pvisor_core::audit::install(Arc::new(TuiAudit));
 }
 
 /// Start prompting only after the Job record exists and the Agent is ready.
@@ -67,23 +32,9 @@ pub fn enabled() -> bool {
     SOCKET.get().is_some() && ARMED.load(Ordering::Acquire)
 }
 
-pub fn configured() -> bool {
-    SOCKET.get().is_some()
-}
-
 /// Blocks the intercepted operation until the TUI answers. Any IPC failure denies.
 pub fn socket() -> Option<PathBuf> {
     SOCKET.get().cloned()
-}
-
-pub fn request(prompt: &AuditRequest) -> AuditDecision {
-    if !enabled() {
-        return AuditDecision::Deny;
-    }
-    let Some(socket) = SOCKET.get() else {
-        return AuditDecision::Deny;
-    };
-    request_at(socket, "standalone", prompt)
 }
 
 /// The caller supplies the immutable Session endpoint and cache namespace.
@@ -124,4 +75,70 @@ fn request_uncached(socket: &std::path::Path, prompt: &AuditRequest) -> AuditDec
         return AuditDecision::Deny;
     }
     serde_json::from_str(&line).unwrap_or(AuditDecision::Deny)
+}
+
+struct TuiAudit;
+impl AuditChannel for TuiAudit {
+    fn enabled(&self) -> bool {
+        enabled()
+    }
+    fn socket(&self) -> Option<PathBuf> {
+        socket()
+    }
+    fn request_at(
+        &self,
+        socket: &std::path::Path,
+        session: &str,
+        prompt: &AuditRequest,
+    ) -> AuditDecision {
+        request_at(socket, session, prompt)
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use std::path::Path;
+    #[cfg(unix)]
+    #[test]
+    fn approvals_are_bound_to_attempt_and_persisted_policies_enforce() {
+        use pvisor_core::FileAccessPolicy;
+        use std::io::{self, BufRead, BufReader, Write};
+        let socket = std::env::temp_dir().join(format!(
+            "pvisor-policy-{}-{}.sock",
+            std::process::id(),
+            std::time::SystemTime::now()
+                .duration_since(std::time::UNIX_EPOCH)
+                .unwrap()
+                .as_nanos()
+        ));
+        let listener = std::os::unix::net::UnixListener::bind(&socket).unwrap();
+        let server = std::thread::spawn(move || {
+            for decision in ["allow", "deny"] {
+                let (mut stream, _) = listener.accept().unwrap();
+                let mut line = String::new();
+                BufReader::new(&stream).read_line(&mut line).unwrap();
+                writeln!(stream, "\"{decision}\"").unwrap();
+            }
+        });
+        let mut policy =
+            FileAccessPolicy::new_with_ask(vec![], vec!["secret".into()], vec![]).unwrap();
+        init(socket.clone());
+        policy.bind_session("run", "attempt-one", "workspace");
+        let restored: FileAccessPolicy =
+            serde_json::from_value(serde_json::to_value(&policy).unwrap()).unwrap();
+        assert_eq!(restored.context().unwrap().attempt_id, "attempt-one");
+        assert!(restored.check(Path::new("secret")).is_ok());
+        policy.arm();
+        assert!(policy.check(Path::new("secret")).is_ok());
+        assert!(policy.check(Path::new("secret")).is_ok());
+        policy.bind_session("run", "attempt-two", "workspace");
+        policy.arm();
+        assert_eq!(
+            policy.check(Path::new("secret")).unwrap_err().kind(),
+            io::ErrorKind::PermissionDenied
+        );
+        server.join().unwrap();
+        std::fs::remove_file(socket).unwrap();
+    }
 }

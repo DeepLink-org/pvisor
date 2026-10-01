@@ -9,7 +9,7 @@ use axum::extract::Path;
 use axum::http::{HeaderMap, StatusCode, Uri};
 use axum::response::{IntoResponse, Response};
 use axum::routing::{get, post};
-use pvisor_control::{
+use pvisor_core::{
     ControlController, ControlReason, ControlRequest, ControlTransition, PolicyControlController,
 };
 use pvisor_gateway::config::ProxyConfig;
@@ -1339,7 +1339,7 @@ api_key = "gemini-secret"
 }
 
 #[tokio::test]
-async fn e2e_injected_pvisor_controller_denies_model_before_upstream() {
+async fn e2e_injected_pvisor_coreler_denies_model_before_upstream() {
     let (mock_port, mock_stop) = spawn_mock_http().await;
     let toml = format!(
         r#"

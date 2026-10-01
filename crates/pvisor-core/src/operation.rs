@@ -1,18 +1,18 @@
-//! Immutable Run execution plan and its boundary observations.
+//! Immutable Operation definition and its boundary observations.
 //! The runtime executes RunSpec; this schema describes placement and evidence.
-use crate::runtime::{CapabilityDimension, EnforcementPlan};
+use crate::execution::{CapabilityDimension, EnforcementPlan};
 use anyhow::{Result, ensure};
 use serde::{Deserialize, Serialize};
 use serde_json::Value as Json;
 use std::collections::{BTreeMap, BTreeSet};
 
-pub const RUN_PLAN_VERSION: u16 = 3;
+pub const OPERATION_VERSION: u16 = 1;
 
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 #[serde(rename_all = "snake_case")]
 pub enum Value {
     Run {
-        state: crate::runtime::RunState,
+        state: crate::execution::RunState,
         exit_code: Option<i32>,
     },
 }
@@ -115,7 +115,7 @@ pub enum Placement {
 
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 #[serde(deny_unknown_fields)]
-pub struct PlanRule {
+pub struct OperationDecision {
     pub id: String,
     pub dimension: CapabilityDimension,
     pub target: String,
@@ -124,38 +124,61 @@ pub struct PlanRule {
     pub enforcement_plan: EnforcementPlan,
 }
 
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(tag = "op", deny_unknown_fields)]
+pub enum OperationKind {
+    #[serde(rename = "run.execute")]
+    RunExecute {
+        program: String,
+        args: Vec<String>,
+        cwd: Option<String>,
+    },
+}
+impl OperationKind {
+    pub fn name(&self) -> &'static str {
+        "run.execute"
+    }
+    fn validate(&self) -> Result<()> {
+        let Self::RunExecute { program, .. } = self;
+        ensure!(!program.trim().is_empty(), "empty operation program");
+        Ok(())
+    }
+}
+
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 #[serde(deny_unknown_fields)]
-pub struct RunPlan {
+pub struct Operation {
     pub version: u16,
     pub context: Context,
     pub run_id: String,
+    pub kind: OperationKind,
     /// Selected placements, ordered inner-to-outer; these do not execute or grant authority.
     pub placements: Vec<Placement>,
-    pub rules: Vec<PlanRule>,
+    pub rules: Vec<OperationDecision>,
 }
 
-impl RunPlan {
+impl Operation {
     pub fn validate(&self) -> Result<()> {
         ensure!(
-            self.version == RUN_PLAN_VERSION,
-            "unsupported Run plan version"
+            self.version == OPERATION_VERSION,
+            "unsupported Operation version"
         );
         ensure!(!self.run_id.is_empty(), "empty Run identity");
+        self.kind.validate()?;
         self.context.validate()?;
         ensure!(self.placements.len() <= 32, "too many placements");
         for placement in &self.placements {
             let (Placement::Vm { name } | Placement::Overlay { name }) = placement;
             ensure!(!name.trim().is_empty(), "empty placement name");
         }
-        ensure!(self.rules.len() <= 1024, "too many Run plan rules");
+        ensure!(self.rules.len() <= 1024, "too many Operation rules");
         let mut ids = BTreeSet::new();
         for rule in &self.rules {
             symbol(&rule.id)?;
-            ensure!(ids.insert(&rule.id), "duplicate Run plan rule {}", rule.id);
+            ensure!(ids.insert(&rule.id), "duplicate Operation rule {}", rule.id);
             ensure!(
                 !rule.target.is_empty() && !rule.action.is_empty(),
-                "empty Run plan rule"
+                "empty Operation rule"
             );
         }
         Ok(())
@@ -205,15 +228,15 @@ pub struct FilesystemObservation {
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
 #[serde(deny_unknown_fields)]
-pub struct RunObservation {
+pub struct OperationObservation {
     pub outcome: Outcome,
     pub rules: BTreeMap<String, RuleCounters>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub filesystem: Option<FilesystemObservation>,
 }
 
-impl RunObservation {
-    pub fn validate(&self, plan: &RunPlan) -> Result<()> {
+impl OperationObservation {
+    pub fn validate(&self, plan: &Operation) -> Result<()> {
         plan.validate()?;
         self.outcome.validate()?;
         let ids: BTreeSet<_> = plan.rules.iter().map(|rule| rule.id.as_str()).collect();
@@ -223,7 +246,7 @@ impl RunObservation {
         );
         ensure!(
             self.rules.len() == ids.len(),
-            "observation omits a Run plan rule"
+            "observation omits a Operation rule"
         );
         if let Some(filesystem) = &self.filesystem {
             ensure!(filesystem.paths.len() <= 8192, "too many observed paths");

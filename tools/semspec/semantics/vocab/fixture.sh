@@ -6,8 +6,6 @@ fixture() {
 name = "fixture"
 spec_dirs = ["spec"]
 ledger = "REVIEWED.toml"
-approved_snapshots = ".approved"
-retired = []
 [subject]
 bin = "/usr/bin/true"
 language = "bash"
@@ -37,8 +35,10 @@ root = pathlib.Path(sys.argv[1])
 normalize = lambda s: ('\n'.join(line.rstrip() for line in s.splitlines()).rstrip('\n') + '\n').encode()
 sha = lambda b: 'sha256:' + hashlib.sha256(b).hexdigest()
 vocab = sha(b'semspec/vocab/v1\0fixture.sh\0' + normalize((root/'spec/vocab/fixture.sh').read_text()))
-case = sha(b'semspec/case/v1\0' + normalize((root/'spec/case.md').read_text()) + b'\0' + vocab.encode() + b'\0' + b'1')
+case = sha(b'semspec/case/v1\0' + normalize((root/'spec/case.md').read_text()) + b'\0' + vocab.encode() + b'\0' + b'2')
 (root/'REVIEWED.toml').write_text(f'format = 1\n[[approval]]\nitem = "S-FIXTURE-001"\ndigest = "{case}"\nreviewer = "simulated-fixture"\ndate = "2026-10-01"\n')
 PY
 }
 fixture_state() { "$SUBJECT_BIN" --config "$CASE_ROOT/project/semspec.toml" list; }
+
+require_python() { python3 --version >/dev/null 2>&1 || { echo 'SKIP: python3 unavailable' >&2; exit 77; }; }

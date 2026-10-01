@@ -438,50 +438,18 @@ impl FileAccessPolicy {
 mod tests {
     use super::*;
 
-    #[cfg(unix)]
     #[test]
-    fn approvals_are_bound_to_attempt_and_persisted_policies_enforce() {
-        use std::io::{BufRead, BufReader, Write};
-        let socket = std::env::temp_dir().join(format!(
-            "pvisor-policy-{}-{}.sock",
-            std::process::id(),
-            std::time::SystemTime::now()
-                .duration_since(std::time::UNIX_EPOCH)
-                .unwrap()
-                .as_nanos()
-        ));
-        let listener = std::os::unix::net::UnixListener::bind(&socket).unwrap();
-        let server = std::thread::spawn(move || {
-            for decision in ["allow", "deny"] {
-                let (mut stream, _) = listener.accept().unwrap();
-                let mut line = String::new();
-                BufReader::new(&stream).read_line(&mut line).unwrap();
-                writeln!(stream, "\"{decision}\"").unwrap();
-            }
-        });
+    fn persisted_policy_cannot_restore_preparation_bypass() {
         let mut policy =
             FileAccessPolicy::new_with_ask(vec![], vec!["secret".into()], vec![]).unwrap();
-        policy.bind_session("run", "attempt-one", "workspace");
-        policy.rules.context.as_mut().unwrap().audit_socket = Some(socket.clone());
+        policy.bind_session("run", "attempt", "workspace");
+        assert!(policy.check(Path::new("secret")).is_ok());
         let restored: FileAccessPolicy =
             serde_json::from_value(serde_json::to_value(&policy).unwrap()).unwrap();
-        assert!(
-            !restored
-                .context()
-                .unwrap()
-                .preparing
-                .load(Ordering::Acquire)
-        );
-        policy.arm();
-        assert!(policy.check(Path::new("secret")).is_ok());
-        assert!(policy.check(Path::new("secret")).is_ok());
-        policy.rules.context.as_mut().unwrap().attempt_id = "attempt-two".into();
         assert_eq!(
-            policy.check(Path::new("secret")).unwrap_err().kind(),
+            restored.check(Path::new("secret")).unwrap_err().kind(),
             io::ErrorKind::PermissionDenied
         );
-        server.join().unwrap();
-        std::fs::remove_file(socket).unwrap();
     }
 
     #[test]

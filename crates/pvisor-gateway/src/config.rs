@@ -37,7 +37,7 @@ pub struct ProxyConfig {
     pub models: Vec<ModelRoute>,
 }
 
-pub use pvisor_control::overlay::OverlayConfig;
+pub use pvisor_core::overlay::OverlayConfig;
 
 fn default_admin_listen() -> String {
     "127.0.0.1:9876".to_string()
@@ -51,7 +51,7 @@ fn default_session_header() -> String {
     "x-pvisor-session-id".to_string()
 }
 
-pub use pvisor_control::gateway::{CaptureLevel, ModelRoute};
+pub use pvisor_core::gateway::{CaptureLevel, ModelRoute};
 
 impl ProxyConfig {
     pub fn from_toml_str(s: &str) -> anyhow::Result<Self> {

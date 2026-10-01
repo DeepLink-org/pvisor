@@ -37,18 +37,23 @@ pub use executor::process::ProcessExecutor;
 pub use executor::vm::VmExecutor;
 pub use executor::vm::run_internal_if_requested as run_krun_internal_if_requested;
 pub use executor::{ExecutorOutput, RunExecutor};
-pub use pvisor_control::{
+pub use pvisor_core::{
     AGENTCTL_ENDPOINT_ENV, AGENTCTL_MAX_FRAME_BYTES, AGENTCTL_TOKEN_ENV, AGENTCTL_TRANSPORT_ENV,
     AGENTCTL_VERSION, AGENTCTL_VERSION_ENV, AgentDirective, AgentErrorCode, AgentRequest,
     AgentResponse, AgentState, ControlController, ControlEffect, ControlMachine, ControlReason,
     ControlRequest, ControlState, ControlTransition, NetworkGuard, NetworkHostRule, NetworkRule,
     PolicyControlController, host_matches, is_public_egress_ip, normalize_host, parse_network_rule,
 };
+pub use pvisor_core::{
+    Event, Fact, Operation, OperationDecision, OperationKind, OperationObservation, Outcome,
+    Placement,
+};
 #[cfg(feature = "gateway")]
 pub use pvisor_gateway::sink::CaptureEventObserver as TrajectoryEventSink;
 pub use runtime::agentctl::{
     AGENTCTL_MAX_SESSIONS, AgentClientSnapshot, AgentCtlControl, AgentCtlServer, AgentCtlSnapshot,
 };
+pub use runtime::agentctl_client::{AgentCtlClient, AgentCtlClientConfig, AgentCtlResponseError};
 pub use runtime::bundle::{
     BundleArtifact, BundleRun, FilesystemSummary, NetworkSummary, RUN_BUNDLE_FILENAME,
     RUN_BUNDLE_SCHEMA_VERSION, ResourceSummary, RunBundle, SafetySummary,

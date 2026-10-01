@@ -10,22 +10,22 @@ pub mod sandbox;
 pub(crate) mod vm;
 
 use async_trait::async_trait;
-use pvisor_control::StdioMode;
-use pvisor_control::{ExecutorPlan, RunInvocation};
+use pvisor_core::StdioMode;
+use pvisor_core::{ExecutorPlan, RunInvocation};
 use std::process::Stdio;
 use std::sync::Arc;
 use tokio::io::{AsyncRead, AsyncReadExt};
 
 #[derive(Clone, Default)]
 pub(crate) struct AttemptAttachments {
-    pub filesystem: Option<pvisor_control::FileAccessPolicy>,
+    pub filesystem: Option<pvisor_core::FileAccessPolicy>,
     pub vm_network: Option<Arc<std::sync::Mutex<Option<crate::runtime::VmNetworkAttachment>>>>,
 }
 
 pub(crate) use crate::session::Session;
 
 /// The production execution boundary: consumes the resolved RunSpec and controls.
-/// RunPlan is an audit projection, not an arbitrary-expression dispatch API.
+/// Operation is an audit projection, not an arbitrary-expression dispatch API.
 #[async_trait]
 pub trait RunExecutor: Send + Sync {
     fn descriptor(&self) -> ExecutorPlan;

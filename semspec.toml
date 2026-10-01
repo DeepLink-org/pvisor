@@ -2,7 +2,6 @@
 name = "pVisor"
 spec_dirs = ["tests/semantics"]
 ledger = "tests/semantics/REVIEWED.toml"
-approved_snapshots = "tests/semantics/.approved"
 
 [subject]
 bin = "target/debug/pvisor"
@@ -14,16 +13,3 @@ timeout = "180s"
 [platforms]
 macos = { os = "macos" }
 linux = { os = "linux" }
-
-[requirements.stage.macos]
-all = [
-  { path_exists = "/Library/Filesystems/macfuse.fs" },
-  { command_succeeds = ["python3", "--version"] },
-]
-
-[requirements.stage.linux]
-all = [
-  { path_exists = "/dev/fuse" },
-  { command_succeeds = ["unshare", "-Ur", "-m", "true"] },
-  { command_succeeds = ["python3", "--version"] },
-]

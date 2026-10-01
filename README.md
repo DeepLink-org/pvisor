@@ -25,9 +25,9 @@ act on it. On disk, Jobs retain the existing Run record and `run-*` IDs.
   other capability requirements for the task.
 - **Execute with evidence:** retain the command, outcome, installed controls,
   warnings, and observed effects in the Job's Run Bundle.
-- **Review staged changes:** pass `--stage PATH` to retain the copy-on-write
-  changeset, then apply selected paths or discard the remainder. Without it,
-  the temporary stage is discarded when the Job ends.
+- **Review staged changes:** use `--safe` to retain a copy-on-write workspace
+  in Job storage, or `--stage PATH` to stage it at a chosen location. Review
+  the changeset, then apply selected paths or discard the remainder.
 
 Host, container, and libkrun VM executors provide different boundaries. A
 requested policy is not proof of enforcement; inspect the evidence for the Job.
@@ -71,13 +71,14 @@ pvisor run --safe --stage ../agent-stage-001 -- codex
 pvisor status --review last
 ```
 
-Ordinary host Jobs write through to the workspace. `--safe` stages workspace
-and home changes and discards its temporary stage when the Job ends; `--stage`
-retains a changeset for review.
+Ordinary host Jobs write through to the workspace. `--safe` and `--ask` retain
+workspace changes in Job storage by default; `--stage PATH` selects another
+location. The private HOME stage is discarded at exit and is separate from
+the reviewable workspace. See the [storage rules](docs/src/en/reference/cli.md#staging-and-storage).
 Explicit writable mounts and application state outside the workspace can still
 write through to the host. The exact boundary is
 platform-dependent and recorded with the Job—consult the
-[execution guide](https://deeplink-org.github.io/pvisor/en/guides/execution/)
+[execution guide](https://deeplink-org.github.io/pvisor/zh/guides/execution/)
 before treating it as a security boundary.
 
 `apply` and `drop` govern staged files. They cannot undo remote API calls,
@@ -88,8 +89,8 @@ logical checkpoints preserve staged filesystem state, not process memory.
 
 | Capability | Status |
 |---|---|
-| Staged workspace review, selective apply, and logical checkpoints | Implemented with an explicit retained stage |
-| Run Bundle retained after an auto-dropped temporary stage | Not yet implemented; supply `--stage PATH` for durable audit |
+| Staged workspace review, selective apply, and logical checkpoints | Implemented; `--safe` retains workspace changes by default |
+| Run Bundle and stopped Job records | Retained in Job storage; inspect with `status --review` |
 | Gateway capture and cooperative proxy policy | Implemented |
 | Container/libkrun executors and transparent network boundaries | Platform-dependent; see the pVisor and OverlayNet docs |
 
@@ -97,8 +98,8 @@ logical checkpoints preserve staged filesystem state, not process memory.
 
 - [Choose a workflow](https://deeplink-org.github.io/pvisor/en/start/) — the path from install to a reviewed Job
 - [Your first Job](https://deeplink-org.github.io/pvisor/en/start/first-run/) — the run-review-apply loop
-- [PolicyVisor model](https://deeplink-org.github.io/pvisor/en/concepts/policyvisor/) — policy, controls, and evidence
-- [Project architecture](https://deeplink-org.github.io/pvisor/en/design/) — ownership and delivery boundaries
+- [PolicyVisor model](https://deeplink-org.github.io/pvisor/zh/concepts/policyvisor/) — policy, controls, and evidence
+- [Project architecture](https://deeplink-org.github.io/pvisor/zh/design/) — ownership and delivery boundaries
 - [中文文档](https://deeplink-org.github.io/pvisor/zh/start/) — 从安装到策略约束下的可审查执行
 
 ## License

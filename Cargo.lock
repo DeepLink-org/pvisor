@@ -2817,7 +2817,7 @@ dependencies = [
  "libloading",
  "lru",
  "proptest",
- "pvisor-control",
+ "pvisor-core",
  "pvisor-gateway",
  "pvisor-guest",
  "pvisor-journal",
@@ -2841,7 +2841,7 @@ dependencies = [
 ]
 
 [[package]]
-name = "pvisor-control"
+name = "pvisor-core"
 version = "0.3.0"
 dependencies = [
  "anyhow",
@@ -2871,7 +2871,7 @@ dependencies = [
  "hostname",
  "proptest",
  "pulsing-actor",
- "pvisor-control",
+ "pvisor-core",
  "pvisor-journal",
  "pvisor-overlaynet",
  "regex",
@@ -2904,7 +2904,7 @@ dependencies = [
  "anyhow",
  "fs2",
  "libc",
- "pvisor-control",
+ "pvisor-core",
  "serde",
  "serde_json",
  "sha2 0.11.0",
@@ -2923,7 +2923,7 @@ dependencies = [
  "globset",
  "libc",
  "log",
- "pvisor-control",
+ "pvisor-core",
  "pvisor-journal",
  "serde",
  "serde_json",
@@ -2943,7 +2943,7 @@ dependencies = [
  "fuser",
  "libc",
  "log",
- "pvisor-control",
+ "pvisor-core",
  "pvisor-overlay-core",
  "tempfile",
 ]
@@ -2961,7 +2961,7 @@ dependencies = [
  "hyper",
  "hyper-util",
  "proptest",
- "pvisor-control",
+ "pvisor-core",
  "reqwest",
  "serde",
  "serde_json",
@@ -2982,7 +2982,7 @@ dependencies = [
  "fs2",
  "libc",
  "pvisor",
- "pvisor-control",
+ "pvisor-core",
  "pvisor-journal",
  "reqwest",
  "serde",
@@ -3025,7 +3025,7 @@ dependencies = [
  "fs2",
  "libc",
  "pvisor",
- "pvisor-control",
+ "pvisor-core",
  "pvisor-overlaynet",
  "serde",
  "serde_json",

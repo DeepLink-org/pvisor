@@ -13,7 +13,7 @@ just semspec review --strict
 
 工作区、stage、个人配置和 Job 数据均位于临时 CASE_ROOT。失败保留现场，成功自动
 删除；`--keep` 保留所有现场。macOS 需要 macFUSE，Linux 需要 /dev/fuse 和 user/mount
-namespace；缺少条件报告 SKIP。清单词汇使用 python3 解析公开 status JSON。
+namespace；Bash 前提函数缺少条件时退出 77，报告 SKIP。清单词汇使用 python3 解析公开 status JSON。
 S-STAGE-013 的 macOS xfail 来自设计中的已知问题；修复后 XPASS 要求重新审核该注解。
 
 人工逐条检查陈述、违反示例及 Bash 检查，另行审核 core.sh、pvisor.sh 和引擎实现。
@@ -22,22 +22,20 @@ S-STAGE-013 的 macOS xfail 来自设计中的已知问题；修复后 XPASS 要
 ```sh
 just semspec show S-STAGE-001
 just semspec approve @engine @vocab:core.sh @vocab:pvisor.sh S-STAGE-001 --reviewer YOUR_NAME
-just semspec diff S-STAGE-001
-just semspec revoke S-STAGE-001 --reviewer YOUR_NAME --reason '需要重新讨论语义'
 ```
 
 仓库尚未指定语义审核人的 GitHub 身份；维护者应在 CODEOWNERS 中为规格、配置、
-词汇、引擎、REVIEWED.toml 和 .approved/ 指定真实人工审核者并开启分支保护。
+词汇、引擎和 REVIEWED.toml 指定真实人工审核者并开启分支保护。
 首轮人工审核仅覆盖 14 条 S-STAGE 及其词汇和引擎。
 完整审核后，以限定 STAGE 域的 `review --strict` 和 `run --require-reviewed` 作为发布门禁。
 DOC 继续由同一 runner 执行示例回归，不作为已审核的语义承诺；其 case 与断言保持原样。
-不要自动填充台账，也不要因为实现失败而削弱性质。删除已分配 case 时将 ID 放入
-相应配置文件的 retired，禁止复用。引擎执行语义变化必须升级 ENGINE_SEMANTICS。
+不要自动填充台账，也不要因为实现失败而削弱性质。已分配的 ID 不复用，
+差异和删除历史用 Git 审查，不维护独立退役清单。引擎执行语义变化必须升级 ENGINE_SEMANTICS。
 
 ## 文档场景迁移
 
 `docs/src/zh/reference/cases.md` 同时是用户文档和 DOC 规格源，覆盖原 A01–M02 中仍有效的 54 个场景，`just cases` 只运行 DOC 域。
-L01、L02 随 `env` 功能移除而退役，S-DOC-053、S-DOC-054 已登记在 semspec-doc.toml 的 retired 中。
+L01、L02 随 `env` 功能移除，S-DOC-053、S-DOC-054 的删除记录保留在 Git 中。
 
 ```sh
 just semspec --config semspec-doc.toml list --domain DOC
@@ -105,7 +103,7 @@ just cases
 | K02 | S-DOC-050 |
 | K03 | S-DOC-051 |
 | K04 | S-DOC-052 |
-| L01 | S-DOC-053 (retired: env removed) |
-| L02 | S-DOC-054 (retired: env removed) |
+| L01 | S-DOC-053 (env removed) |
+| L02 | S-DOC-054 (env removed) |
 | M01 | S-DOC-055 |
 | M02 | S-DOC-056 |

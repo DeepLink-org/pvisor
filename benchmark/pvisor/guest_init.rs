@@ -81,7 +81,7 @@ fn main() {
         let policy = NetworkPolicy::compile(&NetworkConfig::default()).unwrap();
         let egress = EgressRuntime::with_bandwidth_registry(
             policy,
-            Arc::new(pvisor_control::PolicyControlController),
+            Arc::new(pvisor_core::PolicyControlController),
             BandwidthRegistry::default(),
         );
         let config =

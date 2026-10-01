@@ -12,29 +12,18 @@ pub struct Approval {
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub signature: Option<String>,
 }
-#[derive(Debug, Clone, Serialize, Deserialize)]
-#[serde(deny_unknown_fields)]
-pub struct Revocation {
-    pub item: String,
-    pub reviewer: String,
-    pub date: String,
-    pub reason: String,
-}
 #[derive(Debug, Serialize, Deserialize)]
 #[serde(deny_unknown_fields)]
 pub struct Ledger {
     pub format: u32,
     #[serde(default)]
     pub approval: Vec<Approval>,
-    #[serde(default)]
-    pub revocation: Vec<Revocation>,
 }
 impl Default for Ledger {
     fn default() -> Self {
         Self {
             format: 1,
             approval: vec![],
-            revocation: vec![],
         }
     }
 }
@@ -66,13 +55,6 @@ impl Ledger {
                 "SSH signature verification requires semspec v0.2"
             );
         }
-        for r in &ledger.revocation {
-            ensure!(
-                valid_item(&r.item) && !r.reviewer.trim().is_empty() && !r.reason.trim().is_empty(),
-                "invalid revocation"
-            );
-            chrono::NaiveDate::parse_from_str(&r.date, "%Y-%m-%d")?;
-        }
         Ok(ledger)
     }
     pub fn state(&self, item: &str, current: &str) -> ReviewState {
@@ -88,21 +70,10 @@ impl Ledger {
                 }
             };
         }
-        self.revocation
-            .iter()
-            .rev()
-            .find(|r| r.item == item)
-            .map(|r| ReviewState::Revoked {
-                reason: r.reason.clone(),
-            })
-            .unwrap_or(ReviewState::Unreviewed)
+        ReviewState::Unreviewed
     }
     pub fn approve(&mut self, approval: Approval) {
         self.approval.retain(|a| a.item != approval.item);
         self.approval.push(approval);
-    }
-    pub fn revoke(&mut self, revocation: Revocation) {
-        self.approval.retain(|a| a.item != revocation.item);
-        self.revocation.push(revocation);
     }
 }

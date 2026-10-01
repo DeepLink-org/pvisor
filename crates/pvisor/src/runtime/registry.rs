@@ -17,9 +17,9 @@ use std::sync::atomic::{AtomicBool, Ordering};
 use std::thread::JoinHandle;
 use std::time::Duration;
 
-pub use pvisor_control::overlay::OverlayStatus as ControlOverlayStatus;
-use pvisor_control::overlay::{RunControlRequest, RunControlResponse};
-use pvisor_control::{ExecutorIdentity, ExecutorPlan, ResourceLimits};
+pub use pvisor_core::overlay::OverlayStatus as ControlOverlayStatus;
+use pvisor_core::overlay::{RunControlRequest, RunControlResponse};
+use pvisor_core::{ExecutorIdentity, ExecutorPlan, ResourceLimits};
 
 pub const RUN_META_FILENAME: &str = "run.json";
 pub const LEASE_FILENAME: &str = "lease.lock";
@@ -83,7 +83,7 @@ pub struct RunRecord {
     #[serde(default)]
     pub network_interception_metrics: Option<pvisor_overlaynet::InterceptionSnapshot>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
-    pub filesystem_observation: Option<pvisor_control::run_plan::FilesystemObservation>,
+    pub filesystem_observation: Option<pvisor_core::operation::FilesystemObservation>,
     pub gateway_listen: Option<String>,
     pub network: serde_json::Value,
     #[serde(default, skip_serializing_if = "Option::is_none")]
@@ -100,7 +100,7 @@ pub struct RunRecord {
     #[serde(default, skip_serializing_if = "std::collections::BTreeMap::is_empty")]
     pub orchestration: std::collections::BTreeMap<String, serde_json::Value>,
     #[serde(skip)]
-    pub run_plan: Option<pvisor_control::run_plan::RunPlan>,
+    pub operation: Option<pvisor_core::operation::Operation>,
 }
 
 impl RunRecord {
@@ -230,7 +230,7 @@ impl RunControlServer {
         let thread_stop = Arc::clone(&stop);
         let stage = record.stage_dir();
         let join = std::thread::Builder::new()
-            .name(format!("pvisor-control-{}", record.run_id))
+            .name(format!("pvisor-core-{}", record.run_id))
             .spawn(move || {
                 let mut mounts: HashMap<String, ReadOnlyOverlayMount> = HashMap::new();
                 while !thread_stop.load(Ordering::Acquire) {
@@ -699,7 +699,7 @@ mod tests {
             overlay_lowers: vec![storage.join("target")],
             lineage: None,
             orchestration: Default::default(),
-            run_plan: None,
+            operation: None,
         }
     }
 
@@ -716,7 +716,7 @@ mod tests {
 
         assert!(control_ping(&stage));
         let response = control_request(&stage, &RunControlRequest::OverlayStatus).unwrap();
-        let status: pvisor_control::overlay::OverlayStatus = response.overlay_status.unwrap();
+        let status: pvisor_core::overlay::OverlayStatus = response.overlay_status.unwrap();
         assert_eq!(status.changed_files, 1);
         assert_eq!(status.whiteouts, 1);
         assert!(status.sample_paths.contains(&"new.txt".to_string()));

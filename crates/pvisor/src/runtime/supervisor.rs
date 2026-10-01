@@ -10,8 +10,8 @@ use crate::GatewayDriverConfig;
 #[cfg(feature = "gateway")]
 use crate::TrajectoryEventSink;
 use crate::{NetworkDriverConfig, OverlayNetMode};
-use pvisor_control::{AttemptId, NetworkCapability, RunSpec};
-use pvisor_control::{ControlController, PolicyControlController};
+use pvisor_core::{AttemptId, NetworkCapability, RunSpec};
+use pvisor_core::{ControlController, PolicyControlController};
 #[cfg(feature = "gateway")]
 use pvisor_gateway::config::ProxyConfig;
 use std::path::PathBuf;
@@ -69,11 +69,11 @@ fn vm_network_supported() -> bool {
 fn network_config_from_capability(
     capability: &NetworkCapability,
 ) -> pvisor_overlaynet::NetworkConfig {
-    use pvisor_control::NetworkDefaultAction;
+    use pvisor_core::NetworkDefaultAction;
     use pvisor_overlaynet::NetworkMode;
 
     match capability {
-        NetworkCapability::Scoped { .. } => pvisor_control::NetworkConfig {
+        NetworkCapability::Scoped { .. } => pvisor_core::NetworkConfig {
             capability: Some(capability.clone()),
             ..Default::default()
         },
@@ -144,7 +144,7 @@ struct SharedJournalObserver {
 }
 #[cfg(feature = "gateway")]
 impl pvisor_gateway::sink::CaptureEventObserver for SharedJournalObserver {
-    fn observe(&self, event: &pvisor_control::trace::Event) -> anyhow::Result<()> {
+    fn observe(&self, event: &pvisor_core::event::Event) -> anyhow::Result<()> {
         match &self.observer {
             Some(observer) => observer.observe(event),
             None => Ok(()),
@@ -263,7 +263,7 @@ impl RuntimeSupervisor {
 
     fn effective_network_config(&self, spec: &RunSpec) -> pvisor_overlaynet::NetworkConfig {
         if matches!(spec.capabilities.network, NetworkCapability::Scoped { .. }) {
-            return pvisor_control::NetworkConfig {
+            return pvisor_core::NetworkConfig {
                 capability: Some(spec.capabilities.network.clone()),
                 ..Default::default()
             };
@@ -308,7 +308,7 @@ impl RuntimeSupervisor {
     fn vm_network_options(
         &self,
         mut network: pvisor_overlaynet::NetworkConfig,
-        supervisor_limits: &[pvisor_control::NetworkBandwidthLimit],
+        supervisor_limits: &[pvisor_core::NetworkBandwidthLimit],
         attempt_id: &AttemptId,
     ) -> super::attempt::VmNetworkPrepareOpts {
         network.limits.extend_from_slice(supervisor_limits);
@@ -327,7 +327,7 @@ impl RuntimeSupervisor {
     pub fn prepare(
         &self,
         spec: &mut RunSpec,
-        limits: &[pvisor_control::NetworkBandwidthLimit],
+        limits: &[pvisor_core::NetworkBandwidthLimit],
         vm_executor: bool,
         attempt_id: &AttemptId,
     ) -> anyhow::Result<Option<AttemptSession>> {
@@ -356,7 +356,7 @@ impl RuntimeSupervisor {
                     let snapshot = crate::AgentCtlSnapshot {
                         run_id: spec.run_id.to_string(),
                         attempt_id: attempt_id.to_string(),
-                        directive: pvisor_control::AgentDirective::Continue,
+                        directive: pvisor_core::AgentDirective::Continue,
                         clients: Vec::new(),
                     };
                     if let Err(cleanup) = session.abort_startup(
@@ -380,7 +380,7 @@ impl RuntimeSupervisor {
     fn prepare_drivers(
         &self,
         spec: &mut RunSpec,
-        supervisor_limits: &[pvisor_control::NetworkBandwidthLimit],
+        supervisor_limits: &[pvisor_core::NetworkBandwidthLimit],
         vm_executor: bool,
         attempt_id: &AttemptId,
     ) -> anyhow::Result<Option<AttemptSession>> {
@@ -496,7 +496,7 @@ impl RuntimeSupervisor {
     /// Build the implant plan and merge it into a process RunSpec (env markers only).
     pub fn enrich_spec(&self, spec: &mut RunSpec) -> ImplantPlan {
         let plan = self.plan_for(spec);
-        let pvisor_control::RunInvocation::Process(ref mut process) = spec.invocation;
+        let pvisor_core::RunInvocation::Process(ref mut process) = spec.invocation;
         apply_implant(process, &plan);
         spec.metadata
             .insert("pvisor.runtime.implant".into(), plan.as_metadata_json());
@@ -574,8 +574,8 @@ impl RuntimeSupervisor {
                 plan.env.insert(
                     "PVISOR_NETWORK_POLICY".into(),
                     match default_action {
-                        pvisor_control::NetworkDefaultAction::Allow => "default-allow",
-                        pvisor_control::NetworkDefaultAction::Deny => "default-deny",
+                        pvisor_core::NetworkDefaultAction::Allow => "default-allow",
+                        pvisor_core::NetworkDefaultAction::Deny => "default-deny",
                     }
                     .into(),
                 );
@@ -683,14 +683,14 @@ models = []
                 rules: Vec::new(),
             },
             NetworkCapability::Policy {
-                default_action: pvisor_control::NetworkDefaultAction::Deny,
-                allow: vec![pvisor_control::NetworkAccessRule {
+                default_action: pvisor_core::NetworkDefaultAction::Deny,
+                allow: vec![pvisor_core::NetworkAccessRule {
                     host: "api.example.com".into(),
                     ports: vec![443],
-                    transports: vec![pvisor_control::NetworkTransport::TcpTunnel],
+                    transports: vec![pvisor_core::NetworkTransport::TcpTunnel],
                     allow_private_ips: false,
                 }],
-                deny: vec![pvisor_control::NetworkAccessRule {
+                deny: vec![pvisor_core::NetworkAccessRule {
                     host: "metadata.internal".into(),
                     ports: Vec::new(),
                     transports: Vec::new(),

@@ -36,7 +36,7 @@ pub struct CaptureRecord {
     pub payload: Value,
 }
 
-pub use pvisor_control::unix_now_ms;
+pub use pvisor_core::unix_now_ms;
 
 /// Parse an RFC3339 event timestamp into Unix milliseconds.
 pub fn unix_ms_from_rfc3339(timestamp: &str) -> Option<u64> {
@@ -217,8 +217,8 @@ impl CaptureRecord {
     pub fn into_event(
         mut self,
         story: crate::engine::StoryContext,
-    ) -> anyhow::Result<pvisor_control::trace::Event> {
-        use pvisor_control::trace::{Fact, Granularity, Level, VERSION};
+    ) -> anyhow::Result<pvisor_core::event::Event> {
+        use pvisor_core::event::{Fact, Granularity, Level, VERSION};
         ensure_timestamp(&mut self);
         let id = self
             .event_id
@@ -245,7 +245,7 @@ impl CaptureRecord {
             },
             content: crate::sink::redact_sensitive_body(&self.payload),
         };
-        let event = pvisor_control::trace::Event {
+        let event = pvisor_core::event::Event {
             version: VERSION,
             id,
             trace_id,
@@ -268,8 +268,8 @@ impl CaptureRecord {
         Ok(event)
     }
     /// Reconstruct mutable dialogue input from a committed domain observation.
-    pub fn from_event(event: &pvisor_control::trace::Event, _offset: u64) -> anyhow::Result<Self> {
-        let pvisor_control::trace::Fact::Observation {
+    pub fn from_event(event: &pvisor_core::event::Event, _offset: u64) -> anyhow::Result<Self> {
+        let pvisor_core::event::Fact::Observation {
             version: 1,
             payload,
             ..
@@ -298,15 +298,15 @@ impl CaptureRecord {
     }
 }
 
-pub fn is_capture_event(event: &pvisor_control::trace::Event) -> bool {
+pub fn is_capture_event(event: &pvisor_core::event::Event) -> bool {
     event.producer == "pvisor-gateway" && event.scope.first().is_some_and(|s| s == "capture")
 }
 
 pub fn capture_observation(
-    event: &pvisor_control::trace::Event,
+    event: &pvisor_core::event::Event,
 ) -> anyhow::Result<CaptureObservation> {
     anyhow::ensure!(is_capture_event(event), "not a capture fact");
-    let pvisor_control::trace::Fact::Observation {
+    let pvisor_core::event::Fact::Observation {
         version: 1,
         payload,
         ..

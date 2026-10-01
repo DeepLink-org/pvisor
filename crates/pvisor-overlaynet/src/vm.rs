@@ -14,7 +14,7 @@ use std::thread;
 use std::time::Duration as StdDuration;
 
 use anyhow::Context as _;
-use pvisor_control::NetworkTransport;
+use pvisor_core::NetworkTransport;
 use smoltcp::iface::{Config as InterfaceConfig, Interface, SocketHandle, SocketSet};
 use smoltcp::phy::{Device, DeviceCapabilities, Medium, RxToken, TxToken};
 use smoltcp::socket::udp::UdpMetadata;
@@ -36,7 +36,7 @@ use crate::egress::{
 };
 use crate::interception::{InterceptionMetrics, InterceptionSnapshot};
 use crate::policy::DenyReason;
-use pvisor_control::is_host_connector_alias;
+use pvisor_core::is_host_connector_alias;
 
 pub const ROUTER_IPV4: Ipv4Addr = Ipv4Addr::new(192, 0, 2, 1);
 pub const GUEST_IPV4: Ipv4Addr = Ipv4Addr::new(192, 0, 2, 2);
@@ -1048,7 +1048,7 @@ fn synthetic_address(address: Ipv4Addr) -> bool {
 /// rebinding result. RFC1918 and loopback remain available intentionally for
 /// explicit host/LAN services; pVisor's own virtual and special-purpose ranges
 /// do not.
-use pvisor_control::forbidden_vm_egress_address as forbidden_host_address;
+use pvisor_core::forbidden_vm_egress_address as forbidden_host_address;
 
 fn blocked_literal_destination(address: Ipv4Addr) -> bool {
     forbidden_host_address(IpAddr::V4(address))

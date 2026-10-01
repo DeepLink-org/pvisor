@@ -4,13 +4,16 @@
 //! embedded OverlayFS before the Agent process starts.
 
 pub(crate) mod agentctl;
+pub(crate) mod agentctl_client;
 mod attempt;
+#[cfg(unix)]
+pub(crate) mod audit;
 pub(crate) mod bundle;
 pub(crate) mod checkpoint;
 pub(crate) mod event;
 mod implant;
+pub(crate) mod operation;
 mod overlay;
-pub(crate) mod plan;
 mod proxy;
 mod registry;
 pub(crate) mod run;
@@ -25,11 +28,11 @@ pub(crate) use supervisor::RuntimeSupervisorBuilder;
 /// Apply application-specific process compatibility policies before the
 /// Run's capabilities are validated and the executor prepares its sandbox.
 pub(crate) fn apply_process_policies(
-    spec: &mut pvisor_control::RunSpec,
-    executor: &pvisor_control::ExecutorPlan,
+    spec: &mut pvisor_core::RunSpec,
+    executor: &pvisor_core::ExecutorPlan,
 ) -> anyhow::Result<()> {
-    if executor.kind == pvisor_control::ExecutorKind::Process
-        && executor.isolation == pvisor_control::IsolationKind::RootlessProcess
+    if executor.kind == pvisor_core::ExecutorKind::Process
+        && executor.isolation == pvisor_core::IsolationKind::RootlessProcess
     {
         zcode::apply_host_process_policy(spec)?;
     }

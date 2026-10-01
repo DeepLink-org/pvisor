@@ -15,11 +15,11 @@ use crate::runtime::{
     ImplantPlan, OverlayHint, RuntimeCapabilities, RuntimeSupervisor, RuntimeSupervisorBuilder,
 };
 
-use pvisor_control::ControlController;
-use pvisor_control::trace::Event;
+use pvisor_core::ControlController;
+use pvisor_core::event::Event;
 #[cfg(test)]
-use pvisor_control::trace::Receipt;
-use pvisor_control::{
+use pvisor_core::event::Receipt;
+use pvisor_core::{
     AttemptId, CapabilityDimension, CapabilityEnforcementPlan, EnforcementPlanLevel, ExecutorPlan,
     IsolationKind, NetworkCapability, PolicyMode, RUNTIME_SCHEMA_VERSION, RunResult, RunSpec,
     RunStatus,
@@ -94,7 +94,7 @@ impl RunCancellation {
 
 /// Handle for one in-flight Run: status, cancel, wait, event subscribe.
 pub struct RunHandle {
-    pub(crate) run_id: pvisor_control::RunId,
+    pub(crate) run_id: pvisor_core::RunId,
     pub(crate) attempt_id: AttemptId,
     pub(crate) status: watch::Receiver<RunStatus>,
     pub(crate) cancellation: CancellationToken,
@@ -105,7 +105,7 @@ pub struct RunHandle {
 }
 
 impl RunHandle {
-    pub fn run_id(&self) -> &pvisor_control::RunId {
+    pub fn run_id(&self) -> &pvisor_core::RunId {
         &self.run_id
     }
 
@@ -292,8 +292,9 @@ pub(crate) struct ResolvedRun {
     pub(crate) executor: Arc<dyn RunExecutor>,
     pub(crate) descriptor: ExecutorPlan,
     pub(crate) vm_network_executor: bool,
-    pub(crate) plan: pvisor_control::run_plan::RunPlan,
-    pub(crate) network_policy: pvisor_control::NetworkPolicy,
+    pub(crate) operation: pvisor_core::operation::Operation,
+    pub(crate) requested_operation: pvisor_core::operation::Operation,
+    pub(crate) network_policy: pvisor_core::NetworkPolicy,
 }
 
 impl Default for PVisor {
@@ -320,17 +321,18 @@ impl PVisor {
         self.runtime.plan_for(spec)
     }
 
-    /// Resolve the same immutable Run IR used by execution, without starting
+    /// Resolve the same Operation used by execution, without starting
     /// an Attempt or mounting filesystems.
-    pub fn resolve_run_plan(
+    pub fn resolve_operation(
         &self,
         spec: RunSpec,
-    ) -> Result<pvisor_control::run_plan::RunPlan, PVisorError> {
-        Ok(self.resolve_run(spec)?.plan)
+    ) -> Result<pvisor_core::operation::Operation, PVisorError> {
+        Ok(self.resolve_run(spec)?.operation)
     }
 
     fn resolve_run(&self, mut spec: RunSpec) -> Result<ResolvedRun, PVisorError> {
         validate_spec(&spec)?;
+        let requested_spec = spec.clone();
         let executor = self
             .executors
             .iter()
@@ -340,10 +342,10 @@ impl PVisor {
         let mut descriptor = executor.descriptor();
         crate::runtime::apply_process_policies(&mut spec, &descriptor)
             .map_err(PVisorError::Prepare)?;
-        let vm_executor = descriptor.kind == pvisor_control::ExecutorKind::VirtualMachine;
+        let vm_executor = descriptor.kind == pvisor_core::ExecutorKind::VirtualMachine;
         let vm_network_executor = vm_executor && executor.supports_vm_network_attachment();
         if self.runtime.vm_network_is_requested()
-            && descriptor.isolation == pvisor_control::IsolationKind::VirtualMachine
+            && descriptor.isolation == pvisor_core::IsolationKind::VirtualMachine
             && !vm_network_executor
         {
             return Err(PVisorError::InvalidSpec(format!(
@@ -381,12 +383,11 @@ impl PVisor {
         }
         self.runtime.apply_network_capability(&mut spec);
         spec.capabilities.network = spec.policies.network(spec.capabilities.network.clone());
-        let network_policy =
-            pvisor_control::NetworkPolicy::compile(&pvisor_control::NetworkConfig {
-                capability: Some(spec.capabilities.network.clone()),
-                ..Default::default()
-            })
-            .map_err(PVisorError::Prepare)?;
+        let network_policy = pvisor_core::NetworkPolicy::compile(&pvisor_core::NetworkConfig {
+            capability: Some(spec.capabilities.network.clone()),
+            ..Default::default()
+        })
+        .map_err(PVisorError::Prepare)?;
         // Runtime preparation supplies this capability from the bound listener.
         spec.metadata
             .remove(crate::executor::sandbox::SANDBOX_PROXY_KEY);
@@ -438,16 +439,24 @@ impl PVisor {
                 });
             }
         }
-        let run_plan = crate::runtime::plan::compile(
+        let operation = crate::runtime::operation::compile(
             &spec,
             &descriptor,
             &capability_plan,
             self.runtime.overlay_hint(),
         )
         .map_err(PVisorError::Prepare)?;
+        let mut requested_operation = crate::runtime::operation::compile(
+            &requested_spec,
+            &descriptor,
+            &capability_plan,
+            self.runtime.overlay_hint(),
+        )
+        .map_err(PVisorError::Prepare)?;
+        requested_operation.placements.clear();
         spec.metadata.insert(
-            "pvisor.run_plan".into(),
-            serde_json::to_value(&run_plan).map_err(|error| PVisorError::Prepare(error.into()))?,
+            "pvisor.operation".into(),
+            serde_json::to_value(&operation).map_err(|error| PVisorError::Prepare(error.into()))?,
         );
         // Admission publishes only a plan; installed evidence comes from executors.
         descriptor.capability_plan = capability_plan.clone();
@@ -462,12 +471,13 @@ impl PVisor {
             executor,
             descriptor,
             vm_network_executor,
-            plan: run_plan,
+            operation,
+            requested_operation,
             network_policy,
         })
     }
 
-    /// Start one Run: resolve IR → prepare controls → execute → teardown.
+    /// Start one Run: resolve Operation → prepare controls → execute → teardown.
     pub async fn run(&self, spec: RunSpec) -> Result<RunHandle, PVisorError> {
         crate::Session::start(
             &self.runtime,
@@ -568,13 +578,13 @@ fn validate_spec(spec: &RunSpec) -> Result<(), PVisorError> {
             "agent.name must not be empty".into(),
         ));
     }
-    let pvisor_control::RunInvocation::Process(process) = &spec.invocation;
+    let pvisor_core::RunInvocation::Process(process) = &spec.invocation;
     if process.program.trim().is_empty() {
         return Err(PVisorError::InvalidSpec(
             "process program must not be empty".into(),
         ));
     }
-    if process.stdin == pvisor_control::StdioMode::Capture {
+    if process.stdin == pvisor_core::StdioMode::Capture {
         return Err(PVisorError::InvalidSpec(
             "captured stdin is not supported in pVisor v1".into(),
         ));
@@ -608,7 +618,7 @@ mod tests {
     use super::*;
     use crate::{EventSink, MemoryEventSink, Session};
     use async_trait::async_trait;
-    use pvisor_control::{
+    use pvisor_core::{
         ExecutorKind, NetworkCapability, RunFailureKind, RunInvocation, RunState, StdioMode,
     };
     use std::sync::Mutex;
@@ -631,7 +641,9 @@ mod tests {
     #[tokio::test]
     async fn plain_proxy_attempt_commits_results_and_releases_resources() {
         let storage = tempfile::tempdir().unwrap();
+        let sink = Arc::new(MemoryEventSink::default());
         let runtime = PVisor::builder()
+            .event_sink(sink.clone())
             .storage(storage.path())
             .network(NetworkDriverConfig::new(
                 crate::OverlayNetMode::Proxy,
@@ -644,12 +656,67 @@ mod tests {
         let mut spec = RunSpec::process("proxy-attempt", "agent", "/bin/sh");
         let RunInvocation::Process(process) = &mut spec.invocation;
         process.args = vec!["-c".into(), "test -n \"$HTTP_PROXY\"".into()];
+        let RunInvocation::Process(process) = &mut spec.invocation;
+        process
+            .env
+            .insert("PRIVATE_KEY".into(), "operation-secret-value".into());
         let result = runtime.run(spec).await.unwrap().wait().await.unwrap();
         assert_eq!(result.state, RunState::Completed, "{result:?}");
         assert_eq!(
             crate::RunBundle::read(storage.path()).unwrap().run.state,
             RunState::Completed
         );
+        let events = sink.events();
+        let phases = events
+            .iter()
+            .filter(|event| event.operation.is_some())
+            .collect::<Vec<_>>();
+        assert_eq!(
+            phases.iter().map(|event| event.name()).collect::<Vec<_>>(),
+            [
+                "requested",
+                "rewritten",
+                "placed",
+                "dispatched",
+                "completed"
+            ]
+        );
+        let pvisor_core::event::Fact::Requested {
+            operation: requested,
+        } = &phases[0].data
+        else {
+            panic!("requested");
+        };
+        let pvisor_core::event::Fact::Rewritten { before, after } = &phases[1].data else {
+            panic!("rewritten");
+        };
+        assert_eq!(requested, before);
+        assert_eq!(
+            requested
+                .rules
+                .iter()
+                .find(|rule| rule.id == "net.aggregate")
+                .unwrap()
+                .action,
+            "ambient"
+        );
+        assert_eq!(
+            after
+                .rules
+                .iter()
+                .find(|rule| rule.id == "net.aggregate")
+                .unwrap()
+                .action,
+            "deny"
+        );
+        assert!(
+            !serde_json::to_string(&events)
+                .unwrap()
+                .contains("operation-secret-value")
+        );
+        for pair in events.windows(2) {
+            assert_eq!(pair[1].caused_by, [pair[0].id.clone()]);
+        }
         let record = crate::RunRecord::read(storage.path()).unwrap();
         assert!(record.network_interception_metrics.is_some());
         assert!(!storage.path().join("control.sock").exists());
@@ -988,8 +1055,8 @@ mod tests {
         );
         assert!(sink.events().iter().any(|event| matches!(
             event.data,
-            pvisor_control::trace::Fact::Completed {
-                origin: pvisor_control::trace::Origin::Runtime,
+            pvisor_core::event::Fact::Completed {
+                origin: pvisor_core::event::Origin::Runtime,
                 ..
             }
         )));
@@ -1013,7 +1080,7 @@ mod tests {
         assert_eq!(result.output.stdout.as_deref(), Some("pvisor"));
         assert_eq!(
             result.executor_observations.origin,
-            pvisor_control::trace::Origin::Backend
+            pvisor_core::event::Origin::Backend
         );
 
         let emitted = sink.events();
@@ -1029,16 +1096,16 @@ mod tests {
             .collect();
         assert!(matches!(
             &phases[0].data,
-            pvisor_control::trace::Fact::Requested { plan }
-                if plan.run_id == "run-success" && plan.placements.is_empty()
+            pvisor_core::event::Fact::Requested { operation }
+                if operation.run_id == "run-success" && operation.placements.is_empty()
         ));
         assert!(matches!(
-            &phases[1].data,
-            pvisor_control::trace::Fact::Dispatched { run_id, .. } if run_id == "run-success"
+            &phases.iter().find(|event| event.name() == "dispatched").unwrap().data,
+            pvisor_core::event::Fact::Dispatched { run_id, .. } if run_id == "run-success"
         ));
         assert!(matches!(
             phases.last().unwrap().data,
-            pvisor_control::trace::Fact::Completed { .. }
+            pvisor_core::event::Fact::Completed { .. }
         ));
         assert!(
             phases
@@ -1344,7 +1411,7 @@ mod tests {
     fn ambient_network_requires_an_enforced_boundary() {
         let spec = RunSpec::process("run-ambient", "test-agent", "echo");
         assert_eq!(
-            pvisor_control::requested_enforcement_dimensions(
+            pvisor_core::requested_enforcement_dimensions(
                 &spec.capabilities,
                 &spec.runtime.resource_limits,
             ),

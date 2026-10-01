@@ -1,4 +1,4 @@
-{# Keep the native language control and link to the translated current page. #}
+{# English has entry points only; other articles lead to its homepage. #}
 {% set current = page.url if page else '' %}
 {% set suffix = current[3:] if current[:3] in ['en/', 'zh/'] else '' %}
 <div class="md-header__option">
@@ -10,7 +10,8 @@
       <ul class="md-select__list">
         {% for alt in config.extra.alternate %}
           <li class="md-select__item">
-            <a href="{{ (alt.lang ~ '/' ~ suffix) | url }}" hreflang="{{ alt.lang }}" lang="{{ alt.lang }}" class="md-select__link"{% if current[:2] == alt.lang %} aria-current="true"{% endif %}>{{ alt.name }}</a>
+            {% set target = suffix if alt.lang != 'en' or suffix in config.extra.english_pages else '' %}
+            <a href="{{ (alt.lang ~ '/' ~ target) | url }}" hreflang="{{ alt.lang }}" lang="{{ alt.lang }}" class="md-select__link"{% if current[:2] == alt.lang %} aria-current="true"{% endif %}>{{ alt.name }}</a>
           </li>
         {% endfor %}
       </ul>

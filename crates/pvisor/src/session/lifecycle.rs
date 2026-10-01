@@ -7,13 +7,13 @@ use crate::runtime::{
     event::{EventSink, RunEventPublisher},
 };
 use crate::{AGENTCTL_VERSION, AgentCtlServer};
-use pvisor_control::{AttemptInfo, RunInvocation, RunStatus};
+use pvisor_core::{AttemptInfo, RunInvocation, RunStatus};
 use tokio::sync::{broadcast, watch};
 use tokio_util::sync::CancellationToken;
 
 use crate::runtime::AttemptTeardown;
 use crate::util::unix_now_ms;
-use pvisor_control::{
+use pvisor_core::{
     ArtifactRef, AttemptId, ExecutorObservations, PolicyMode, ProcessOutput, RunFailure,
     RunFailureKind, RunResult, RunSpec, RunState,
 };
@@ -109,7 +109,8 @@ impl Session {
             executor,
             descriptor,
             vm_network_executor,
-            plan: run_plan,
+            operation,
+            requested_operation,
             network_policy,
         } = resolved;
         let attempt_id = AttemptId::new(format!("attempt-{}", uuid::Uuid::new_v4()));
@@ -211,7 +212,7 @@ impl Session {
                     }),
                 )
                 .await?;
-            events.begin_execution(&run_plan, &descriptor.name).await?;
+            events.begin_execution(&requested_operation, &operation, &descriptor.name).await?;
             Ok::<_, anyhow::Error>(())
         }
         .await;
@@ -224,7 +225,7 @@ impl Session {
         }
         let join = tokio::spawn(async move {
             context
-                .complete(executor, run_plan, safe_profile_requested)
+                .complete(executor, operation, safe_profile_requested)
                 .await
         });
 
@@ -266,7 +267,7 @@ impl Session {
     pub(crate) async fn complete(
         mut self,
         executor: Arc<dyn RunExecutor>,
-        run_plan: pvisor_control::run_plan::RunPlan,
+        operation: pvisor_core::operation::Operation,
         safe_profile_requested: bool,
     ) -> RunResult {
         let _server = self.server.take();
@@ -299,7 +300,7 @@ impl Session {
             .unwrap_or(self.created_at_unix_ms);
         let mut result = report.into_result(self.spec(), self.attempt_id(), started);
         let teardown = self.finalize(&mut result, invoked).await;
-        self.commit(&mut result, teardown, &run_plan, safe_profile_requested)
+        self.commit(&mut result, teardown, &operation, safe_profile_requested)
             .await;
         self.publish_finished(&result);
         result
@@ -362,7 +363,7 @@ impl Session {
         &self,
         result: &mut RunResult,
         mut teardown: Option<AttemptTeardown>,
-        run_plan: &pvisor_control::run_plan::RunPlan,
+        operation: &pvisor_core::operation::Operation,
         safe_profile_requested: bool,
     ) {
         result.finished_at_unix_ms = unix_now_ms();
@@ -370,8 +371,8 @@ impl Session {
             persist_result(teardown, result, &self.agentctl, safe_profile_requested);
         }
         let warnings_before_observation = result.warnings.len();
-        let run_observation = match crate::runtime::plan::observe(
-            run_plan,
+        let run_observation = match crate::runtime::operation::observe(
+            operation,
             result,
             teardown
                 .as_ref()
@@ -387,14 +388,14 @@ impl Session {
                     "filesystem": teardown.as_ref().and_then(|t| t.run_record().filesystem_observation.as_ref()),
                 });
                 fail_finalization(result, format!("invalid Run observation: {error:#}"));
-                pvisor_control::run_plan::RunObservation {
-                    outcome: pvisor_control::run_plan::Outcome::Error {
-                        failure: pvisor_control::run_plan::Failure::Unknown {
+                pvisor_core::operation::OperationObservation {
+                    outcome: pvisor_core::operation::Outcome::Error {
+                        failure: pvisor_core::operation::Failure::Unknown {
                             reason: error.to_string(),
                             known_effects,
                         },
                     },
-                    rules: run_plan
+                    rules: operation
                         .rules
                         .iter()
                         .map(|rule| (rule.id.clone(), Default::default()))
@@ -427,8 +428,8 @@ impl Session {
         }
         if let Err(error) = self
             .events()
-            .publish_fact(pvisor_control::trace::Fact::Completed {
-                run_id: run_plan.run_id.clone(),
+            .publish_fact(pvisor_core::event::Fact::Completed {
+                run_id: operation.run_id.clone(),
                 outcome: run_observation.outcome.clone(),
                 origin: result.executor_observations.origin,
             })
@@ -533,7 +534,7 @@ fn failed_output(message: String) -> ExecutorOutput {
 
 fn terminal_payload(
     result: &RunResult,
-    observation: &pvisor_control::run_plan::RunObservation,
+    observation: &pvisor_core::operation::OperationObservation,
 ) -> serde_json::Value {
     json!({
         "state": result.state,
@@ -570,7 +571,7 @@ fn persist_result(
 fn fail_finalization(result: &mut RunResult, message: String) {
     result.warnings.push(message.clone());
     result.state = RunState::Failed;
-    result.executor_observations.origin = pvisor_control::trace::Origin::Runtime;
+    result.executor_observations.origin = pvisor_core::event::Origin::Runtime;
     result.finished_at_unix_ms = unix_now_ms();
     result.failure = Some(RunFailure {
         kind: RunFailureKind::Infrastructure,

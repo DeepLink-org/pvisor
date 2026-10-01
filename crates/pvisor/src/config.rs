@@ -6,8 +6,8 @@
 
 use std::path::{Path, PathBuf};
 
-use pvisor_control::gateway::{CaptureLevel, ModelRoute};
-use pvisor_control::{FilesystemCapability, ResourceLimits};
+use pvisor_core::gateway::{CaptureLevel, ModelRoute};
+use pvisor_core::{FilesystemCapability, ResourceLimits};
 #[cfg(feature = "gateway")]
 use pvisor_gateway::config::ProxyConfig;
 use pvisor_overlaynet::{NetworkAccessRule, NetworkBandwidthLimit};
@@ -32,7 +32,7 @@ pub struct RunConfig {
     /// Durable Trace Event journal recording.
     pub record: RecordSettings,
     /// Session, workspace and user policy layers; resolved once per Attempt.
-    pub policies: pvisor_control::SessionPolicies,
+    pub policies: pvisor_core::SessionPolicies,
 }
 
 impl RunConfig {
@@ -41,7 +41,7 @@ impl RunConfig {
         workspace: &Path,
         user_root: Option<&Path>,
     ) -> anyhow::Result<()> {
-        fn load(root: &Path, directory_name: &str) -> anyhow::Result<pvisor_control::PolicyLayer> {
+        fn load(root: &Path, directory_name: &str) -> anyhow::Result<pvisor_core::PolicyLayer> {
             let path = root.join(directory_name).join("policy.toml");
             let name = std::ffi::CString::new(directory_name)?;
             use std::io::Read;
@@ -114,7 +114,7 @@ impl RunConfig {
                 .map_err(|error| anyhow::anyhow!("parse policy {}: {error}", path.display()))
         }
 
-        fn inherit(layer: &mut pvisor_control::PolicyLayer, defaults: pvisor_control::PolicyLayer) {
+        fn inherit(layer: &mut pvisor_core::PolicyLayer, defaults: pvisor_core::PolicyLayer) {
             if layer.network.is_none() {
                 layer.network = defaults.network;
             }
@@ -340,7 +340,7 @@ pub enum FilesystemMode {
 #[serde(default, deny_unknown_fields)]
 pub struct OverlayFsSettings {
     #[serde(skip)]
-    pub access_policy: pvisor_control::overlay::FileAccessPolicy,
+    pub access_policy: pvisor_core::overlay::FileAccessPolicy,
     /// New unified filesystem mounts. Runtime normalization converts these into executor capabilities.
     pub mount: Vec<FilesystemMount>,
     /// New unified Agent-visible access rules.
@@ -780,7 +780,7 @@ mod session_policy_tests {
         .unwrap();
         let mut config = RunConfig::default();
         config.policies.session.filesystem = Some(
-            pvisor_control::FileAccessPolicy::new_with_allow(
+            pvisor_core::FileAccessPolicy::new_with_allow(
                 vec![],
                 vec![],
                 vec![],
@@ -794,15 +794,15 @@ mod session_policy_tests {
         let policy = config.policies.filesystem(&Default::default());
         assert_eq!(
             policy.authorize(Path::new("secrets/session")),
-            pvisor_control::FileAccessDecision::Deny
+            pvisor_core::FileAccessDecision::Deny
         );
         assert_eq!(
             policy.authorize(Path::new("secrets/workspace")),
-            pvisor_control::FileAccessDecision::Deny
+            pvisor_core::FileAccessDecision::Deny
         );
         assert_eq!(
             policy.authorize(Path::new("secrets/other")),
-            pvisor_control::FileAccessDecision::Deny
+            pvisor_core::FileAccessDecision::Deny
         );
         std::fs::write(
             workspace.join(".pvisor/policy.toml"),

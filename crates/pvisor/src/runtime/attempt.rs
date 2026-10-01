@@ -10,10 +10,10 @@ use super::registry::{EnvironmentProjection, RunControlServer, RunLease, RunLine
 #[cfg(feature = "gateway")]
 use crate::TrajectoryEventSink;
 use anyhow::Context as _;
-use pvisor_control::ControlController;
+use pvisor_core::ControlController;
 #[cfg(feature = "gateway")]
-use pvisor_control::NetworkCapability;
-use pvisor_control::{ProcessInvocation, RunInvocation, RunSpec, RunState};
+use pvisor_core::NetworkCapability;
+use pvisor_core::{ProcessInvocation, RunInvocation, RunSpec, RunState};
 #[cfg(feature = "gateway")]
 use pvisor_gateway::config::ProxyConfig;
 #[cfg(feature = "gateway")]
@@ -68,7 +68,7 @@ impl AttemptSession {
         spec: &mut RunSpec,
         network: &crate::NetworkDriverConfig,
         controller: Arc<dyn ControlController>,
-        attempt_id: &pvisor_control::AttemptId,
+        attempt_id: &pvisor_core::AttemptId,
     ) -> anyhow::Result<()> {
         let metrics = InterceptionMetrics::default();
         let proxy = super::proxy::Proxy::start(
@@ -282,19 +282,19 @@ impl AttemptSession {
     /// instead of leaving a stale `running` record behind.
     pub(crate) fn abort_startup(
         self,
-        attempt_id: &pvisor_control::AttemptId,
+        attempt_id: &pvisor_core::AttemptId,
         agentctl: crate::AgentCtlSnapshot,
         safe_profile_requested: bool,
         message: String,
     ) -> anyhow::Result<()> {
-        let run_id = pvisor_control::RunId::new(self.run_record.run_id.clone());
+        let run_id = pvisor_core::RunId::new(self.run_record.run_id.clone());
         let started_at_unix_ms = self.run_record.started_at_unix_ms;
         let mut teardown = self.teardown_inner(None, false);
         let mut warnings = Vec::new();
         if let Some(error) = teardown.error_message() {
             warnings.push(format!("attempt teardown after startup failure: {error}"));
         }
-        let result = pvisor_control::RunResult {
+        let result = pvisor_core::RunResult {
             executor_observations: Default::default(),
             run_id,
             attempt_id: attempt_id.clone(),
@@ -302,8 +302,8 @@ impl AttemptSession {
             started_at_unix_ms,
             finished_at_unix_ms: crate::util::unix_now_ms(),
             exit_code: None,
-            failure: Some(pvisor_control::RunFailure {
-                kind: pvisor_control::RunFailureKind::Infrastructure,
+            failure: Some(pvisor_core::RunFailure {
+                kind: pvisor_core::RunFailureKind::Infrastructure,
                 message,
                 retryable: true,
             }),
@@ -353,7 +353,7 @@ impl AttemptTeardown {
 
     pub(crate) fn persist(
         &mut self,
-        result: &pvisor_control::RunResult,
+        result: &pvisor_core::RunResult,
         agentctl: crate::AgentCtlSnapshot,
         safe: bool,
     ) -> anyhow::Result<()> {
@@ -583,7 +583,7 @@ pub(crate) fn prepare_attempt(
         overlay_lowers,
         lineage: lineage_from_spec(spec),
         orchestration: orchestration_from_spec(spec),
-        run_plan: run_plan_from_spec(spec)?,
+        operation: operation_from_spec(spec)?,
     };
     run_record.write()?;
     let control = RunControlServer::start_observed(
@@ -628,7 +628,7 @@ pub(crate) fn prepare_attempt(
     run_record.environment.runtime_injected_keys = implant.env.keys().cloned().collect();
     run_record.write()?;
     #[cfg(unix)]
-    pvisor_control::audit::arm();
+    crate::runtime::audit::arm();
     // The Attempt listener is also the VM's explicit HTTP proxy endpoint.
     // Rewrite it for every VM OverlayNet run; gateway_enabled only controls
     // LLM capture, not proxy reachability. Without this, clients in the guest
@@ -667,7 +667,7 @@ pub(crate) fn prepare_overlay_attempt(
         .canonicalize()
         .unwrap_or_else(|_| opts.storage.to_path_buf());
     let root_session = spec.run_id.as_str().to_string();
-    let mut overlay_cfg = pvisor_control::overlay::OverlayConfig::default();
+    let mut overlay_cfg = pvisor_core::overlay::OverlayConfig::default();
     apply_overlay_override(&mut overlay_cfg, &opts.overlay);
     let prepared_overlay = prepare_overlay(
         &overlay_cfg,
@@ -733,7 +733,7 @@ pub(crate) fn prepare_overlay_attempt(
         overlay_lowers,
         lineage: lineage_from_spec(spec),
         orchestration: orchestration_from_spec(spec),
-        run_plan: run_plan_from_spec(spec)?,
+        operation: operation_from_spec(spec)?,
     };
     run_record.write()?;
     let control =
@@ -777,7 +777,7 @@ pub(crate) fn prepare_overlay_attempt(
     run_record.environment.runtime_injected_keys = plan.env.keys().cloned().collect();
     run_record.write()?;
     #[cfg(unix)]
-    pvisor_control::audit::arm();
+    crate::runtime::audit::arm();
     spec.metadata
         .insert("pvisor.runtime.implant".into(), plan.as_metadata_json());
     inject_krun_overlay_metadata(spec, &plan.overlay, Some(&overlay_record));
@@ -860,7 +860,7 @@ pub(crate) fn prepare_storage_attempt(
         overlay_lowers: Vec::new(),
         lineage: lineage_from_spec(spec),
         orchestration: orchestration_from_spec(spec),
-        run_plan: run_plan_from_spec(spec)?,
+        operation: operation_from_spec(spec)?,
     };
     run_record.write()?;
     let control = RunControlServer::start(&run_record)?;
@@ -885,7 +885,7 @@ pub(crate) fn prepare_storage_attempt(
     run_record.environment.runtime_injected_keys = plan.env.keys().cloned().collect();
     run_record.write()?;
     #[cfg(unix)]
-    pvisor_control::audit::arm();
+    crate::runtime::audit::arm();
     spec.metadata
         .insert("pvisor.runtime.implant".into(), plan.as_metadata_json());
 
@@ -1048,11 +1048,13 @@ fn orchestration_from_spec(
         .collect()
 }
 
-fn run_plan_from_spec(spec: &RunSpec) -> anyhow::Result<Option<pvisor_control::run_plan::RunPlan>> {
-    let Some(value) = spec.metadata.get("pvisor.run_plan") else {
+fn operation_from_spec(
+    spec: &RunSpec,
+) -> anyhow::Result<Option<pvisor_core::operation::Operation>> {
+    let Some(value) = spec.metadata.get("pvisor.operation") else {
         return Ok(None);
     };
-    let plan: pvisor_control::run_plan::RunPlan = serde_json::from_value(value.clone())?;
+    let plan: pvisor_core::operation::Operation = serde_json::from_value(value.clone())?;
     plan.validate()?;
     anyhow::ensure!(
         plan.run_id == spec.run_id.as_str(),
@@ -1096,7 +1098,7 @@ fn workspace_from_spec(spec: &RunSpec) -> Option<PathBuf> {
         .map(PathBuf::from)
 }
 
-fn executor_from_spec(spec: &RunSpec) -> Option<pvisor_control::ExecutorPlan> {
+fn executor_from_spec(spec: &RunSpec) -> Option<pvisor_core::ExecutorPlan> {
     spec.metadata
         .get("pvisor.executor")
         .cloned()
@@ -1104,7 +1106,7 @@ fn executor_from_spec(spec: &RunSpec) -> Option<pvisor_control::ExecutorPlan> {
 }
 
 fn apply_overlay_override(
-    overlay_cfg: &mut pvisor_control::overlay::OverlayConfig,
+    overlay_cfg: &mut pvisor_core::overlay::OverlayConfig,
     overlay_override: &OverlayHint,
 ) {
     if overlay_override != &OverlayHint::default() {
@@ -1149,7 +1151,7 @@ fn apply_overlay_override(
 }
 
 fn prepare_overlay(
-    overlay_cfg: &pvisor_control::overlay::OverlayConfig,
+    overlay_cfg: &pvisor_core::overlay::OverlayConfig,
     storage: &Path,
     root_session: &str,
     mountless: bool,
@@ -1371,8 +1373,8 @@ fn enrich_with_session(
             plan.env.insert(
                 "PVISOR_NETWORK_POLICY".into(),
                 match default_action {
-                    pvisor_control::NetworkDefaultAction::Allow => "default-allow",
-                    pvisor_control::NetworkDefaultAction::Deny => "default-deny",
+                    pvisor_core::NetworkDefaultAction::Allow => "default-allow",
+                    pvisor_core::NetworkDefaultAction::Deny => "default-deny",
                 }
                 .into(),
             );
@@ -1506,7 +1508,7 @@ mod tests {
         let temporary = tempfile::tempdir().unwrap();
         let target = temporary.path().join("target");
         let stage = temporary.path().join("stage");
-        let config = pvisor_control::overlay::OverlayConfig {
+        let config = pvisor_core::overlay::OverlayConfig {
             enabled: true,
             target: Some(target.display().to_string()),
             stage_dir: Some(stage.display().to_string()),
@@ -1533,7 +1535,7 @@ mod tests {
     }
 
     use super::rewrite_vm_gateway_implant;
-    use pvisor_control::{RunInvocation, RunSpec};
+    use pvisor_core::{RunInvocation, RunSpec};
 
     #[test]
     fn safe_overlay_cwd_uses_original_path_only_on_linux() {
@@ -1542,7 +1544,7 @@ mod tests {
             crate::executor::sandbox::REQUIRED_SANDBOX_KEY.into(),
             true.into(),
         );
-        let config = pvisor_control::overlay::OverlayConfig {
+        let config = pvisor_core::overlay::OverlayConfig {
             enabled: true,
             target: Some("/workspace".into()),
             stage_dir: Some("/stage".into()),
@@ -1572,8 +1574,8 @@ mod tests {
 
     #[test]
     fn absent_overlay_hint_preserves_configured_file_policy() {
-        let mut config = pvisor_control::overlay::OverlayConfig {
-            access_policy: pvisor_control::FileAccessPolicy::new(vec!["**/.ssh".into()], vec![])
+        let mut config = pvisor_core::overlay::OverlayConfig {
+            access_policy: pvisor_core::FileAccessPolicy::new(vec!["**/.ssh".into()], vec![])
                 .unwrap(),
             ..Default::default()
         };

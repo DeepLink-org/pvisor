@@ -112,7 +112,7 @@ def main():
         "-o",
         str(runner),
     ]
-    for name in ["krun", "pvisor_overlaynet", "pvisor_control"]:
+    for name in ["krun", "pvisor_overlaynet", "pvisor_core"]:
         command += ["--extern", f"{name}={libraries[name]}"]
     subprocess.run(command, env=compile_env, check=True)
     subprocess.run(

@@ -10,7 +10,7 @@ use super::fixtures::test_context;
 struct FailingSink;
 
 impl CaptureEventObserver for FailingSink {
-    fn observe(&self, _event: &pvisor_control::trace::Event) -> anyhow::Result<()> {
+    fn observe(&self, _event: &pvisor_core::event::Event) -> anyhow::Result<()> {
         anyhow::bail!("observer unavailable")
     }
 }

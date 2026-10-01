@@ -35,8 +35,8 @@ def check():
     source = ROOT.parent / "src"
     en = {p.relative_to(source / "en") for p in (source / "en").rglob("*.md")}
     zh = {p.relative_to(source / "zh") for p in (source / "zh").rglob("*.md")}
-    for missing in sorted(en ^ zh):
-        issues.append(f"locale page is not paired: {missing}")
+    for missing in sorted(en - zh):
+        issues.append(f"English entry has no canonical Chinese page: {missing}")
 
     def nav_pages(node):
         if isinstance(node, str):
@@ -55,13 +55,12 @@ def check():
             issues.append(f"navigation page missing: {page}")
     if len(navigation) != len(set(navigation)):
         issues.append("navigation lists the same article more than once")
-    for page in en:
-        if f"en/{page}" not in navigation:
-            issues.append(f"article missing from navigation: en/{page}")
+    for page in zh:
+        if f"zh/{page}" not in navigation:
+            issues.append(f"article missing from navigation: zh/{page}")
     for old, new in json.loads((ROOT.parent / "redirects.json").read_text()).items():
-        for locale in ("en", "zh"):
-            if not (source / locale / new).is_file():
-                issues.append(f"redirect target missing: {locale}/{old} -> {new}")
+        if not (source / "zh" / new).is_file():
+            issues.append(f"redirect target missing: {old} -> zh/{new}")
     for path, page in pages.items():
         rel = path.relative_to(ROOT)
         locale = rel.parts[0] if rel.parts[0] in ("en", "zh") else None
@@ -87,7 +86,12 @@ def check():
                 dest /= "index.html"
             if locale and "md-select__link" in classes and dest.is_relative_to(ROOT):
                 target_rel = dest.relative_to(ROOT)
-                if target_rel.parts[1:] != rel.parts[1:]:
+                suffix = "/".join(rel.parts[1:-1])
+                if suffix:
+                    suffix += "/"
+                translated = target_rel.parts[0] != "en" or suffix in config["project"]["extra"]["english_pages"]
+                expected = rel.parts[1:] if translated else ("index.html",)
+                if target_rel.parts[1:] != expected:
                     issues.append(f"{rel}: language selector loses current article: {href}")
             if not dest.exists():
                 issues.append(f"{rel}: missing {tag} {href}")

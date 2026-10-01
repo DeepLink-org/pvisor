@@ -65,7 +65,7 @@ fn unsupported_memory_limit_preserves_observed_file_size_limit() {
         !bundle
             .executor_observations
             .enforcement
-            .is_enforced(pvisor_control::CapabilityDimension::Resources)
+            .is_enforced(pvisor_core::CapabilityDimension::Resources)
     );
 }
 
@@ -133,9 +133,9 @@ fn safe_preset_reaches_the_run_and_reports_its_limits() {
     assert_eq!(bundle.network.policy["mode"], "allowlist");
     assert!(matches!(
         bundle.run.executor.unwrap().isolation,
-        pvisor_control::IsolationKind::HostProcess
-            | pvisor_control::IsolationKind::RootlessProcess
-            | pvisor_control::IsolationKind::SandboxedProcess
+        pvisor_core::IsolationKind::HostProcess
+            | pvisor_core::IsolationKind::RootlessProcess
+            | pvisor_core::IsolationKind::SandboxedProcess
     ));
 }
 
@@ -462,11 +462,11 @@ exec "$PVISOR_TEST_PVISOR" run --executor host --stdio capture \
 
     let run_dir = only_run_dir(&run_home);
     let bundle = RunBundle::read(&run_dir).unwrap();
-    assert_eq!(bundle.run.state, pvisor_control::RunState::Failed);
+    assert_eq!(bundle.run.state, pvisor_core::RunState::Failed);
     let failure_kind = bundle.run.failure.as_ref().map(|failure| failure.kind);
     assert_eq!(
         failure_kind,
-        Some(pvisor_control::RunFailureKind::DeadlineExceeded),
+        Some(pvisor_core::RunFailureKind::DeadlineExceeded),
         "expected a running agent to reach its deadline: {:?}",
         bundle.run.failure
     );
@@ -629,12 +629,12 @@ fn recording_uses_one_fact_journal_with_execution_phases() {
     assert!(
         records
             .iter()
-            .any(|r| matches!(r.event.data, pvisor_control::trace::Fact::Requested { .. }))
+            .any(|r| matches!(r.event.data, pvisor_core::event::Fact::Requested { .. }))
     );
     assert!(
         records
             .iter()
-            .any(|r| matches!(r.event.data, pvisor_control::trace::Fact::Completed { .. }))
+            .any(|r| matches!(r.event.data, pvisor_core::event::Fact::Completed { .. }))
     );
     assert!(!recording.join("events.jsonl").exists());
     assert!(!recording.join("events.wal.jsonl").exists());

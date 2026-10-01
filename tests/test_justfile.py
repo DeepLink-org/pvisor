@@ -69,7 +69,7 @@ def test_test_routes_packages_and_python(run_task):
             "run",
             "--locked",
             "-p",
-            "pvisor-control",
+            "pvisor-core",
             "-p",
             "pvisor-gateway",
             "-p",

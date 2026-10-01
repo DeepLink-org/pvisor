@@ -30,7 +30,7 @@ impl RecordingSink {
 }
 
 impl CaptureEventObserver for RecordingSink {
-    fn observe(&self, event: &pvisor_control::trace::Event) -> anyhow::Result<()> {
+    fn observe(&self, event: &pvisor_core::event::Event) -> anyhow::Result<()> {
         let mut guard = self.next_seq.lock().unwrap();
         let data = crate::record::capture_observation(event)?;
         let next = guard.entry(data.story.route.seq_key()).or_insert(0);

@@ -6,7 +6,7 @@ use crate::executor::{join_capture, read_limited, stdio};
 use crate::util::write_private_json;
 use anyhow::Context as _;
 use async_trait::async_trait;
-use pvisor_control::{
+use pvisor_core::{
     CapabilityDimension, CapabilityEnforcementEvidence, CapabilityEnforcementPlan, ExecutorKind,
     ExecutorObservations, ExecutorPlan, IsolationKind, ProcessOutput, ResourceLimits, RunFailure,
     RunFailureKind, RunInvocation, RunState,
@@ -79,7 +79,7 @@ struct OverlayDeviceSpec {
     #[serde(default)]
     excluded: Vec<PathBuf>,
     #[serde(default)]
-    access_policy: pvisor_control::overlay::FileAccessPolicy,
+    access_policy: pvisor_core::overlay::FileAccessPolicy,
 }
 
 /// A host-root VM must not reach the same workspace through its original lower
@@ -629,7 +629,7 @@ impl RunExecutor for VmExecutor {
             && std::fs::read(attestation.path())
                 .is_ok_and(|bytes| bytes == b"pvisor-vmm-installed-v1\n")
         {
-            executor_observations.origin = pvisor_control::trace::Origin::Backend;
+            executor_observations.origin = pvisor_core::event::Origin::Backend;
             executor_observations.enforcement = CapabilityEnforcementEvidence::default()
                 .enforced(
                     CapabilityDimension::FilesystemRead,
@@ -1014,7 +1014,7 @@ mod tests {
         for name in ["project[1]", "upper", "work", "root-upper"] {
             std::fs::create_dir(root.join(name)).unwrap();
         }
-        let policy = pvisor_control::overlay::FileAccessPolicy::new(
+        let policy = pvisor_core::overlay::FileAccessPolicy::new(
             vec!["private.key".into()],
             vec![".env".into()],
         )

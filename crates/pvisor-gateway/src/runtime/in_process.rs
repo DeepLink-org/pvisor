@@ -9,7 +9,7 @@ use anyhow::{Context, Result};
 
 use crate::config::ProxyConfig;
 use crate::sink::CaptureEventObserver;
-use pvisor_control::{ControlController, PolicyControlController};
+use pvisor_core::{ControlController, PolicyControlController};
 use pvisor_overlaynet::{BandwidthRegistry, InterceptionMetrics, InterceptionSnapshot};
 use tokio::sync::oneshot;
 

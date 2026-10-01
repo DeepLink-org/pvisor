@@ -1,7 +1,7 @@
 //! Replay safety observations use the shared fact journal.
 use crate::error::{ReplayError, ReplayErrorKind, ResultExt};
 use fs2::FileExt;
-use pvisor_control::trace::Fact;
+use pvisor_core::event::Fact;
 use pvisor_journal::{Journal as FactJournal, Trace};
 use serde_json::{Map, Value};
 use std::collections::BTreeSet;
@@ -104,7 +104,7 @@ fn ambiguous(events: impl IntoIterator<Item = Value>) -> Option<String> {
     }
     started.into_iter().next()
 }
-fn observation(event: pvisor_control::trace::Event) -> Result<Option<Value>, ReplayError> {
+fn observation(event: pvisor_core::event::Event) -> Result<Option<Value>, ReplayError> {
     if let Fact::Observation {
         domain,
         name,
@@ -139,7 +139,7 @@ pub(crate) fn read_observations(path: &Path) -> Result<Vec<Value>, ReplayError> 
     let first = first.replay_context(ReplayErrorKind::AmbiguousExecution, "read replay header")?;
     let header: Value = serde_json::from_str(&first)
         .replay_context(ReplayErrorKind::AmbiguousExecution, "parse replay header")?;
-    if header["format"] != format!("pvisor.trace/{}", pvisor_control::trace::VERSION)
+    if header["format"] != format!("pvisor.trace/{}", pvisor_core::event::VERSION)
         || header["journal"]
             .as_str()
             .is_none_or(|id| id.is_empty() || id.len() > 256)
@@ -154,7 +154,7 @@ pub(crate) fn read_observations(path: &Path) -> Result<Vec<Value>, ReplayError> 
     let mut out = vec![];
     for line in lines {
         let line = line.replay_context(ReplayErrorKind::AmbiguousExecution, "read replay fact")?;
-        let record: pvisor_control::trace::Record = serde_json::from_str(&line)
+        let record: pvisor_core::event::Record = serde_json::from_str(&line)
             .replay_context(ReplayErrorKind::AmbiguousExecution, "decode replay fact")?;
         record
             .event

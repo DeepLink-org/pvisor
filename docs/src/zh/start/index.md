@@ -2,7 +2,7 @@
 
 **PolicyVisor（pVisor）**为 Agent CLI、脚本和自动化命令提供策略约束下的可审查执行。它记录实际控制并暂存工作区改动；保留 stage 后可以先审查，再应用到项目。
 
-Python 包和 CLI 统一使用 `pvisor`，仓库链接继续使用现有的 `pVisor` 路径。
+Python 包和 CLI 统一使用 `pvisor`。
 
 ## 完成第一个闭环
 
@@ -11,7 +11,7 @@ Python 包和 CLI 统一使用 `pvisor`，仓库链接继续使用现有的 `pVi
 3. 把示例命令换成你的脚本、自动化命令或 Agent CLI。
 4. [审查并应用](../guides/review-apply.md)需要保留的改动。
 
-需要在运行结束后审查文件改动时，请显式使用 `--stage PATH`。省略时，pVisor 会丢弃临时 stage。文件暂存不会撤销网络请求或外部服务中的变更。
+使用 `--safe` 或 `--stage PATH` 暂存工作区改动，退出后再审查。默认行为及 HOME、VM 根目录的区别见 [暂存与存储](../reference/cli.md#暂存与存储)。文件暂存不会撤销网络请求或外部服务中的变更。
 
 ## 按问题查找
 

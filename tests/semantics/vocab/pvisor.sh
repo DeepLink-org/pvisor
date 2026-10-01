@@ -16,3 +16,32 @@ assert_changes() {
   review_changes "$1" > "$CASE_ROOT/actual.changes"
   "$SEMSPEC_BIN" helper diff "$CASE_ROOT/expected.changes" "$CASE_ROOT/actual.changes" || fail 'review differs from net changes'
 }
+
+# Environment prerequisites: exit 77 skips this check, never changes its assertions.
+skip() { printf 'SKIP: %s\n' "$*" >&2; exit 77; }
+require_python3() { python3 --version >/dev/null 2>&1 || skip 'python3 unavailable'; }
+require_linux() { [ "$(uname -s)" = Linux ] || skip 'Linux required'; }
+require_stage() {
+  require_python3
+  case "$(uname -s)" in
+    Darwin) [ -e /Library/Filesystems/macfuse.fs ] || skip 'macFUSE unavailable' ;;
+    Linux) [ -e /dev/fuse ] && unshare -Ur -m true || skip 'FUSE/user namespaces unavailable' ;;
+    *) skip 'stage unsupported on this OS' ;;
+  esac
+}
+require_rootless() { require_linux; unshare --user --mount --pid --fork true || skip 'user namespaces unavailable'; }
+require_kvm() { require_linux; [ -e /dev/kvm ] || skip '/dev/kvm unavailable'; }
+require_rootfs() { require_linux; [ -d "${PVISOR_CASE_ROOTFS:-/}" ] || skip 'rootfs unavailable'; }
+require_image() { require_linux; [ -n "${PVISOR_CASE_IMAGE:-ubuntu:latest}" ] || skip 'image unavailable'; }
+require_agent() { require_linux; [ -n "${PVISOR_CASE_AGENT:-}" ] || skip 'agent unavailable'; }
+require_container() {
+  require_linux
+  if [ -n "${PVISOR_CASE_CONTAINER_RUNTIME:-}" ]; then
+    command -v "$PVISOR_CASE_CONTAINER_RUNTIME" || skip 'container runtime unavailable'
+  else
+    command -v crun || command -v runc || skip 'container runtime unavailable'
+  fi
+}
+require_container_runtime() { require_container; }
+require_runc() { require_linux; command -v runc || skip 'runc unavailable'; }
+require_curl() { curl --version >/dev/null 2>&1 || skip 'curl unavailable'; }

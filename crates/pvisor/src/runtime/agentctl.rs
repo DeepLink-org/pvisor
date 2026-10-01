@@ -1,10 +1,10 @@
 //! Optional, cooperative Run-scoped AgentCtl channel owned by pVisor.
 
-pub use pvisor_control::{
+pub use pvisor_core::{
     AGENTCTL_MAX_FRAME_BYTES, AGENTCTL_VERSION, AgentDirective, AgentErrorCode, AgentRequest,
     AgentResponse, AgentState,
 };
-use pvisor_control::{AttemptId, RunId};
+use pvisor_core::{AttemptId, RunId};
 use serde::{Deserialize, Serialize};
 use std::collections::{BTreeMap, BTreeSet, HashMap};
 use std::fs;
@@ -416,18 +416,15 @@ impl AgentCtlServer {
     pub fn environment(&self) -> BTreeMap<String, String> {
         BTreeMap::from([
             (
-                pvisor_control::AGENTCTL_ENDPOINT_ENV.into(),
+                pvisor_core::AGENTCTL_ENDPOINT_ENV.into(),
                 self.socket_path.display().to_string(),
             ),
+            (pvisor_core::AGENTCTL_TOKEN_ENV.into(), self.token.clone()),
             (
-                pvisor_control::AGENTCTL_TOKEN_ENV.into(),
-                self.token.clone(),
-            ),
-            (
-                pvisor_control::AGENTCTL_VERSION_ENV.into(),
+                pvisor_core::AGENTCTL_VERSION_ENV.into(),
                 AGENTCTL_VERSION.to_string(),
             ),
-            (pvisor_control::AGENTCTL_TRANSPORT_ENV.into(), "unix".into()),
+            (pvisor_core::AGENTCTL_TRANSPORT_ENV.into(), "unix".into()),
         ])
     }
 }

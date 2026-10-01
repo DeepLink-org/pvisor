@@ -7,8 +7,8 @@ use std::net::IpAddr;
 use std::net::SocketAddr;
 use std::time::Duration;
 
-use pvisor_control::ControlController;
-use pvisor_control::NetworkAccessRequest;
+use pvisor_core::ControlController;
+use pvisor_core::NetworkAccessRequest;
 use tokio::net::lookup_host;
 use tokio::time::timeout;
 
@@ -28,7 +28,7 @@ pub(crate) enum TargetAuthorizationError {
     Resolve(anyhow::Error),
 }
 
-pub(crate) use pvisor_control::network::ResolvedAddressPolicy;
+pub(crate) use pvisor_core::network::ResolvedAddressPolicy;
 
 #[cfg(test)]
 pub(crate) async fn authorize_target(
@@ -56,19 +56,19 @@ pub(crate) async fn authorize_target_with_policy(
                     | DenyReason::NotInAllowlist
                     | DenyReason::PortNotAllowed
                     | DenyReason::TransportNotAllowed
-            ) && pvisor_control::audit::enabled()
+            ) && pvisor_core::audit::enabled()
             {
-                let prompt = pvisor_control::audit::AuditRequest {
+                let prompt = pvisor_core::audit::AuditRequest {
                     scope: request
                         .run_id
                         .as_ref()
                         .zip(request.attempt_id.as_ref())
-                        .map(|(run_id, attempt_id)| pvisor_control::audit::AuditScope {
+                        .map(|(run_id, attempt_id)| pvisor_core::audit::AuditScope {
                             run_id: run_id.to_string(),
                             attempt_id: attempt_id.to_string(),
                             view: "network".into(),
                         }),
-                    kind: pvisor_control::audit::AuditKind::Network,
+                    kind: pvisor_core::audit::AuditKind::Network,
                     target: format!(
                         "{}:{} ({:?})",
                         request.host,
@@ -81,10 +81,10 @@ pub(crate) async fn authorize_target_with_policy(
                     transport: Some(request.transport),
                 };
                 let decision =
-                    tokio::task::spawn_blocking(move || pvisor_control::audit::request(&prompt))
+                    tokio::task::spawn_blocking(move || pvisor_core::audit::request(&prompt))
                         .await
-                        .unwrap_or(pvisor_control::audit::AuditDecision::Deny);
-                if decision == pvisor_control::audit::AuditDecision::Allow {
+                        .unwrap_or(pvisor_core::audit::AuditDecision::Deny);
+                if decision == pvisor_core::audit::AuditDecision::Allow {
                     let grant = policy
                         .one_time_grant(&request)
                         .map_err(TargetAuthorizationError::Resolve)?;
@@ -178,17 +178,15 @@ fn authorize_resolved_target_with_policy(
 /// host DNS/TUN connectors. It is never a connector alias for an IP-literal
 /// request, so a guest cannot use this exception as direct egress.
 #[cfg(test)]
-use pvisor_control::is_host_connector_alias;
+use pvisor_core::is_host_connector_alias;
 
 #[cfg(test)]
 mod tests {
     use super::*;
     use crate::policy::{NetworkConfig, NetworkMode};
     use proptest::prelude::*;
-    use pvisor_control::{
-        ControlReason, ControlRequest, ControlTransition, PolicyControlController,
-    };
-    use pvisor_control::{NetworkAccessRule, NetworkTransport};
+    use pvisor_core::{ControlReason, ControlRequest, ControlTransition, PolicyControlController};
+    use pvisor_core::{NetworkAccessRule, NetworkTransport};
 
     fn request(host: &str) -> NetworkAccessRequest {
         NetworkAccessRequest {

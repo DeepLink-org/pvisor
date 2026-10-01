@@ -14,7 +14,7 @@ bytes.workspace = true
 futures-util = { workspace = true, features = ["async-await", "std"] }
 hyper.workspace = true
 hyper-util = { workspace = true, features = ["tokio"] }
-pvisor-control.workspace = true
+pvisor-core.workspace = true
 reqwest = { workspace = true, features = ["rustls-tls", "stream"] }
 serde = { workspace = true, features = ["derive"] }
 smoltcp = { workspace = true, features = ["std", "log", "medium-ethernet", "proto-ipv4", "proto-dhcpv4", "proto-dns", "socket-tcp", "socket-udp", "socket-tcp-pause-synack"] }

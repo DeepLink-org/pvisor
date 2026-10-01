@@ -7,7 +7,7 @@ use crate::executor::delegated::{DelegatedRunFiles, RESULT_FILENAME, SPEC_FILENA
 use crate::executor::{ExecutorOutput, RunExecutor, Session, SessionEnd as End};
 use crate::executor::{join_capture, read_limited, stdio};
 use async_trait::async_trait;
-use pvisor_control::{
+use pvisor_core::{
     ExecutorKind, ExecutorPlan, IsolationKind, ProcessOutput, RunFailure, RunFailureKind,
     RunInvocation, RunSpec, RunState,
 };
@@ -619,7 +619,7 @@ fn container_name(run_id: &str, attempt_id: &str) -> String {
 mod tests {
     use super::*;
     use crate::config::{ContainerNetwork, ContainerPlatform};
-    use pvisor_control::ResourceLimits;
+    use pvisor_core::ResourceLimits;
     use std::ffi::OsStr;
     #[cfg(unix)]
     use std::os::unix::fs::PermissionsExt;
@@ -646,7 +646,7 @@ mod tests {
             ..ContainerSettings::default()
         })
         .unwrap();
-        let mut spec = pvisor_control::RunSpec::process("run-one", "agent", "secret-agent");
+        let mut spec = pvisor_core::RunSpec::process("run-one", "agent", "secret-agent");
         spec.runtime.resource_limits = ResourceLimits {
             memory_bytes: Some(1_048_576),
             processes: Some(8),

@@ -5,7 +5,7 @@ use fuser::{
     ReplyDirectory, ReplyDirectoryPlus, ReplyEmpty, ReplyEntry, ReplyLseek, ReplyOpen, ReplyStatfs,
     ReplyWrite, ReplyXattr, Request, TimeOrNow,
 };
-use pvisor_control::overlay::FileAccessPolicy;
+use pvisor_core::overlay::FileAccessPolicy;
 use pvisor_overlay_core::{OverlayCore, sys};
 use std::collections::{BTreeSet, HashMap};
 use std::ffi::{OsStr, OsString};

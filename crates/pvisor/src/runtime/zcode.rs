@@ -4,7 +4,7 @@
 use std::path::Path;
 
 use anyhow::Context;
-use pvisor_control::{
+use pvisor_core::{
     FilesystemAccess, FilesystemCapability, ProcessInvocation, RunInvocation, RunSpec,
 };
 use serde_json::Value;

@@ -11,9 +11,9 @@
   protocol translation.
 - Added a deterministic ZCode CLI integration example covering staged writes,
   Gateway SSE capture, apply/drop, persistent state, and timeout cleanup.
-- Unified filesystem configuration around `--stage`, `--mount`, and `--access`;
-  runs without `--stage` now use a temporary changeset that is dropped
-  automatically.
+- Unified filesystem configuration around `--stage`, `--mount`, and `--access`.
+  Ordinary host Jobs write through; `--safe` and `--ask` retain workspace
+  changes in Job storage by default. `--stage` selects an explicit stage.
 
 Contributors: [zhaoyuuu0624](https://github.com/zhaoyuuu0624) (original
 ZCode CLI integration and Gateway response decoding contribution); pVisor

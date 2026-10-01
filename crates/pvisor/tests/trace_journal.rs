@@ -1,8 +1,8 @@
 use pvisor::trace::{AppendError, Journal, Trace};
-use pvisor_control::trace::{Durability, Fact};
+use pvisor_core::event::{Durability, Fact};
 use std::io::Write;
 
-fn event(trace: &Trace) -> pvisor_control::trace::Event {
+fn event(trace: &Trace) -> pvisor_core::event::Event {
     trace.event(
         vec!["runtime:test".into()],
         None,

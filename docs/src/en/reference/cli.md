@@ -7,7 +7,7 @@ subcommand. `replay` starts a Job from a trajectory. Existing Job IDs and on-dis
 and `Run Bundle` names.
 Full command examples for Host, OCI VM, and transparent host-rootfs VM
 are in
-[Run workloads with pVisor](../guides/execution.md).
+[Run workloads with pVisor](../../zh/guides/execution.md).
 
 ## Find the command you need
 
@@ -16,10 +16,10 @@ Use the smallest surface that matches your next decision:
 - **Run a command:** start with [`pvisor run`](../start/first-run.md), then use
   `status --review`, `inspect`, and `apply` to decide what reaches the project.
 - **Understand a boundary:** use `status` and `inspect`, then read the
-  [execution guide](../guides/execution.md) before changing providers.
+  [execution guide](../../zh/guides/execution.md) before changing providers.
 - **Continue a trajectory:** use `replay` only when you already have a
   supported trajectory and want a fresh sandbox; begin with the
-  [replay guide](../guides/sandbox-replay.md).
+  [replay guide](../../zh/guides/sandbox-replay.md).
 
 If this is your first command, do not start with the full option list below:
 
@@ -92,6 +92,25 @@ pvisor
 ├── inspect             open a read-only Job filesystem view
 └── replay              start a Job from an Agent trajectory
 ```
+
+## Staging and storage
+
+These are the CLI defaults. Explicit commit settings, writable shares, and
+application compatibility grants can change where writes go.
+
+| Mode or directory | Write destination | After exit |
+| --- | --- | --- |
+| Ordinary host without staging | Original workspace | Already written; `drop` cannot undo it |
+| `--safe` or `--ask` workspace | Copy-on-write stage in Job storage | Retained for `status --review`, `apply`, and `drop` |
+| Workspace with `--stage PATH` | Selected stage | Retained; the option also enables staging |
+| VM workspace | Selected stage or default Job storage | Retained |
+| Other VM rootfs writes | Private temporary upper | Discarded at VM exit |
+| `--safe` HOME / `CODEX_HOME` state | Separate private stage | Discarded at exit; excluded from the workspace Run Bundle |
+| `--mount SOURCE:write` | Host SOURCE | Written directly; outside workspace apply/drop |
+
+Job records and the Run Bundle live in run storage. `--stage PATH` selects a
+location; `--safe` and `--ask` retain workspace changes without it.
+File review cannot undo remote side effects.
 
 ## Safe first run
 
@@ -537,20 +556,18 @@ a hostile multi-tenant boundary despite the guest-kernel isolation.
 
 On host/container execution, the four visible OverlayNet policy flags and
 Gateway capture automatically enable the proxy driver. `--safe` stages the
-workspace by default; `--mount` adds explicit layers. An explicit `--stage`
-retains the filesystem state for review. When a stage is nested inside a base or compose layer, pVisor hides
+workspace by default; `--mount` adds explicit layers. See [staging and storage](#staging-and-storage)
+for write destinations. When a stage is nested inside a base or compose layer, pVisor hides
 that subtree from the merged view and rejects guest attempts to recreate it.
 libkrun Runs create no live host mountpoint, preventing host indexers from
 recursively entering `<stage>/merged`. The reverse topology, where a
 stage contains a lower layer, is rejected. Applying a composed Run is rejected
 until pVisor can materialize a complete merged-vs-base diff safely.
-On host/container execution, OverlayNet policy applies to traffic routed
-through the explicit proxy and does not claim non-bypassable host network
-isolation. On a libkrun VM, `auto` attaches non-bypassable smoltcp IPv4
-TCP/DNS; `off` leaves the guest offline. `--overlaynet-deny-all` supplies the
-same default-deny policy to the active driver. Host/container direct sockets
-remain ambient, while a VM Gateway route remains available through the guest's
-virtual router for configured model traffic.
+Selective host/container rules cover traffic routed through the explicit proxy.
+Host deny-all uses a namespace or Seatbelt to block direct egress; containers
+can use `--container-network none` for offline execution. VM `auto` uses
+smoltcp IPv4 TCP/DNS and `off` leaves the guest offline. VM deny-all still
+permits configured internal Gateway routes. See the [network boundaries](../../zh/guides/network.md#网络边界).
 
 ## Run project discovery
 
@@ -607,9 +624,9 @@ retains compact Run/Overlay metadata, the apply ledger, and capture artifacts.
 ## Related workflows
 
 - [Your first Job](../start/first-run.md) for the shortest complete loop.
-- [Execution environments](../guides/execution.md) for choosing a provider.
-- [Review and apply changes](../guides/review-apply.md) for filtered, repeatable apply.
-- [Network control](../guides/network.md) and [capture](../guides/capture.md) for other Effect dimensions.
+- [Execution environments](../../zh/guides/execution.md) for choosing a provider.
+- [Review and apply changes](../../zh/guides/review-apply.md) for filtered, repeatable apply.
+- [Network control](../../zh/guides/network.md) and [capture](../../zh/guides/capture.md) for other Effect dimensions.
 
 ### Shared image file cache
 

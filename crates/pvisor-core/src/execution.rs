@@ -700,13 +700,13 @@ impl CapabilityEnforcementPlan {
 #[derive(Debug, Clone, Serialize, Deserialize)]
 #[serde(deny_unknown_fields)]
 pub struct ExecutorObservations {
-    pub origin: crate::trace::Origin,
+    pub origin: crate::event::Origin,
     pub enforcement: CapabilityEnforcementEvidence,
 }
 impl Default for ExecutorObservations {
     fn default() -> Self {
         Self {
-            origin: crate::trace::Origin::Runtime,
+            origin: crate::event::Origin::Runtime,
             enforcement: Default::default(),
         }
     }

@@ -1,7 +1,7 @@
 use anyhow::Result;
 use async_trait::async_trait;
-use pvisor_control::trace::{Event, Fact, Receipt};
-use pvisor_control::{AttemptId, RunId};
+use pvisor_core::event::{Event, Fact, Receipt};
+use pvisor_core::{AttemptId, RunId};
 use pvisor_journal::{AppendError, Journal, Trace};
 use serde_json::Value;
 use std::sync::Arc;
@@ -182,20 +182,36 @@ impl RunEventPublisher {
     }
     pub async fn begin_execution(
         &self,
-        plan: &pvisor_control::run_plan::RunPlan,
+        requested: &pvisor_core::operation::Operation,
+        operation: &pvisor_core::operation::Operation,
         backend: &str,
     ) -> Result<()> {
-        let mut context = plan.context.clone();
+        let mut context = operation.context.clone();
         context.scope = self.scope.clone();
         self.publish_fact(Fact::Context {
             definition: context,
         })
         .await?;
-        self.publish_fact(Fact::Requested { plan: plan.clone() })
+        self.publish_fact(Fact::Requested {
+            operation: requested.clone(),
+        })
+        .await?;
+        let mut effective = operation.clone();
+        effective.placements.clear();
+        if requested != &effective {
+            self.publish_fact(Fact::Rewritten {
+                before: requested.clone(),
+                after: effective,
+            })
             .await?;
+        }
+        self.publish_fact(Fact::Placed {
+            operation: operation.clone(),
+        })
+        .await?;
         self.publish_fact(Fact::Dispatched {
             backend: backend.to_string(),
-            run_id: plan.run_id.clone(),
+            run_id: operation.run_id.clone(),
         })
         .await?;
         Ok(())

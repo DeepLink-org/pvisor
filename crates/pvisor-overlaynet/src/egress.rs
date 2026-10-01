@@ -9,7 +9,7 @@ use crate::policy::{DenyReason, NetworkPolicy};
 use crate::resolver::{
     ResolvedAddressPolicy, TargetAuthorizationError, authorize_target_with_policy,
 };
-use pvisor_control::{AttemptId, ControlController, NetworkAccessRequest, NetworkTransport, RunId};
+use pvisor_core::{AttemptId, ControlController, NetworkAccessRequest, NetworkTransport, RunId};
 use tokio::io::{AsyncReadExt, AsyncWriteExt};
 use tokio::net::TcpStream;
 use tokio::time::timeout;

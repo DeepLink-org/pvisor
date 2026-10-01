@@ -1,6 +1,6 @@
 # 选择执行环境
 
-按命令需要的内核和用户空间选择 executor。普通 host Run 默认直接写入工作区；`--safe` 暂存工作区写入。需要在运行后审查时用 `--stage PATH` 保留改动。
+按命令需要的内核和用户空间选择 executor。使用 `--safe` 或 `--stage PATH` 暂存工作区改动，运行后再审查；默认写入与清理规则见 [暂存与存储](../reference/cli.md#暂存与存储)。
 
 | Executor | 执行环境 | 前提 |
 | --- | --- | --- |
@@ -43,14 +43,14 @@ Linux 需要可访问的 `/dev/kvm`。macOS 上用 `just build release` 构建�
 
 ## 组合底层与提交方式
 
-`--mount SOURCE[:TARGET]:read|stage|write` 声明宿主路径；省略 target 时 target 等于 source。`read` 和 `stage` 当前都作为工作区视图的底层，`write` 授予直接写宿主路径的权限。`--access PATH-GLOB:deny|read` 在视图内应用规则：`deny` 隐藏匹配路径，`read` 当前仅记录访问警告，尚未强制只读。`--stage PATH` 指定持久 stage；`--safe` 未指定 stage 时使用临时 stage。
+`--mount SOURCE[:TARGET]:stage` 把宿主目录加入工作区视图的底层。
+`--mount SOURCE:read` 授予原绝对路径的只读访问，要求 host executor 和 `--safe/--ask`；
+`SOURCE:write` 授予直接写宿主路径的权限。read/write 不支持改写 TARGET，也不经过工作区的审批规则。
+重叠限制见 [文件系统参数](../reference/cli.md#文件系统参数)。
 
-| Stage 生命周期 | 行为 |
-| --- | --- |
-| `--stage PATH` | 保留改动，由 `status --review`、`apply` 或 `drop` 决定 |
-| 仅 `--safe`，未指定 `--stage` | 使用临时目录，Run 结束后自动丢弃 |
-| 普通 host Run，未指定 `--stage` | 直接写入 lower |
+`--access PATH-GLOB:deny|ask|warn` 在 OverlayFS 视图中拒绝、询问或放行并警告；
+只读共享使用 `--mount …:read`。`--stage PATH` 可指定暂存位置。
 
-需要根据审查结果决定是否接受改动时，显式指定 `--stage PATH`。宿主进程 Run 在完成或超时后清理进程组，并限制等待输出管道的时间；脱离该组的后代不能仅靠进程组清理来约束。
+宿主进程 Run 在完成或超时后清理进程组，并限制等待输出管道的时间；脱离该组的后代不能仅靠进程组清理来约束。
 
 继续阅读[审查并应用](review-apply.md)或[网络策略](network.md)。

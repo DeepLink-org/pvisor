@@ -2,8 +2,8 @@
 //! on its own Unix stream; closing the TUI makes the request fail closed.
 
 use anyhow::{Context, Result};
-use pvisor_control::NetworkTransport;
-use pvisor_control::audit::{AuditDecision, AuditKind, AuditRequest};
+use pvisor_core::NetworkTransport;
+use pvisor_core::audit::{AuditDecision, AuditKind, AuditRequest};
 use serde::{Deserialize, Serialize};
 use std::collections::VecDeque;
 use std::io::{BufRead, BufReader, Read, Write};
@@ -636,7 +636,7 @@ impl AuditServer {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use pvisor_control::audit::AuditKind;
+    use pvisor_core::audit::AuditKind;
 
     #[test]
     fn prompt_waits_for_a_decision_and_returns_it_to_the_blocked_operation() {

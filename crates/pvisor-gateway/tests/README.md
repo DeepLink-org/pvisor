@@ -34,4 +34,4 @@ cargo nextest run -p pvisor-gateway --test model_api_forwarding --locked
 ## Links
 
 - [`pvisor-gateway`](../README.md)
-- [Capture trajectories](../../../docs/src/en/guides/capture.md)
+- [Capture trajectories](../../../docs/src/zh/guides/capture.md)

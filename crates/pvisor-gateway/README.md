@@ -31,6 +31,6 @@ cargo nextest run --locked -p pvisor-gateway --test llm_fixtures --test ag_fixtu
 
 ## Links
 
-- [Gateway architecture](../../docs/src/en/design/gateway.md)
-- [Capture trajectories](../../docs/src/en/guides/capture.md)
+- [Gateway architecture](../../docs/src/zh/design/gateway.md)
+- [Capture trajectories](../../docs/src/zh/guides/capture.md)
 - [`pvisor-overlaynet`](../pvisor-overlaynet/README.md)

@@ -1,17 +1,23 @@
 use proptest::prelude::*;
-use pvisor_control::{
+use pvisor_core::{
     CapabilityDimension, EnforcementPlan, RunState,
-    run_plan::{
-        Context, Outcome, Placement, PlanRule, RUN_PLAN_VERSION, RunObservation, RunPlan, Value,
+    event::{Event, Fact, Granularity, Level, Origin, VERSION},
+    operation::{
+        Context, OPERATION_VERSION, Operation, OperationDecision, OperationKind,
+        OperationObservation, Outcome, Placement, Value,
     },
-    trace::{Event, Fact, Granularity, Level, Origin, VERSION},
 };
 use std::collections::BTreeMap;
 
-fn plan() -> RunPlan {
-    RunPlan {
-        version: RUN_PLAN_VERSION,
+fn plan() -> Operation {
+    Operation {
+        version: OPERATION_VERSION,
         run_id: "run-test".into(),
+        kind: OperationKind::RunExecute {
+            program: "/bin/true".into(),
+            args: vec![],
+            cwd: None,
+        },
         context: Context {
             revision: 0,
             principal: "agent".into(),
@@ -20,7 +26,7 @@ fn plan() -> RunPlan {
             bindings: BTreeMap::new(),
         },
         placements: vec![],
-        rules: vec![PlanRule {
+        rules: vec![OperationDecision {
             id: "run.execute".into(),
             dimension: CapabilityDimension::Subprocess,
             target: "run-test".into(),
@@ -52,14 +58,14 @@ fn removed_language_and_old_schemas_are_rejected() {
     let mut value = serde_json::to_value(plan()).unwrap();
     value["version"] = serde_json::json!(2);
     assert!(
-        serde_json::from_value::<RunPlan>(value.clone())
+        serde_json::from_value::<Operation>(value.clone())
             .unwrap()
             .validate()
             .is_err()
     );
-    value["version"] = serde_json::json!(RUN_PLAN_VERSION);
+    value["version"] = serde_json::json!(OPERATION_VERSION);
     value["rewrites"] = serde_json::json!([]);
-    assert!(serde_json::from_value::<RunPlan>(value).is_err());
+    assert!(serde_json::from_value::<Operation>(value).is_err());
     assert!(serde_json::from_str::<Fact>(r#"{"fact":"rewritten"}"#).is_err());
     assert!(serde_json::from_str::<Placement>(r#"{"placement":"mock","value":0}"#).is_err());
     assert!(serde_json::from_str::<Placement>(r#"{"placement":"deny","reason":"test"}"#).is_err());
@@ -67,10 +73,12 @@ fn removed_language_and_old_schemas_are_rejected() {
 }
 
 #[test]
-fn trace_retains_plan_dispatch_and_terminal_result_contracts() {
+fn events_retain_operation_dispatch_and_terminal_result_contracts() {
     let plan = plan();
     for fact in [
-        Fact::Requested { plan: plan.clone() },
+        Fact::Requested {
+            operation: plan.clone(),
+        },
         Fact::Dispatched {
             backend: "process".into(),
             run_id: plan.run_id.clone(),
@@ -92,13 +100,13 @@ fn trace_retains_plan_dispatch_and_terminal_result_contracts() {
             fact
         );
         fact.to_text().unwrap();
-        fact.version = 3;
+        fact.version = VERSION - 1;
         assert!(fact.validate().is_err());
         fact.version = VERSION;
         fact.context = None;
         assert!(fact.validate().is_err());
     }
-    let mut observation = RunObservation {
+    let mut observation = OperationObservation {
         outcome: Outcome::success(Value::Run {
             state: RunState::Running,
             exit_code: None,
@@ -118,15 +126,51 @@ fn trace_retains_plan_dispatch_and_terminal_result_contracts() {
 
 proptest! {
     #[test]
-    fn plan_json_preserves_identity_and_placement_order(run_id in ".{1,100}", names in prop::collection::vec("[a-z]{1,8}", 0..16)) {
+    fn operation_json_preserves_identity_and_placement_order(run_id in ".{1,100}", names in prop::collection::vec("[a-z]{1,8}", 0..16)) {
         let mut plan = plan();
         plan.run_id = run_id;
         plan.placements = names.into_iter().enumerate().map(|(index, name)|
             if index % 2 == 0 { Placement::Vm { name } } else { Placement::Overlay { name } }
         ).collect();
         plan.validate().unwrap();
-        let decoded: RunPlan = serde_json::from_slice(&serde_json::to_vec(&plan).unwrap()).unwrap();
+        let decoded: Operation = serde_json::from_slice(&serde_json::to_vec(&plan).unwrap()).unwrap();
         decoded.validate().unwrap();
         prop_assert_eq!(decoded, plan);
     }
+}
+
+#[test]
+fn rewrite_preserves_identity_and_placement_is_a_separate_fact() {
+    let before = plan();
+    let mut after = before.clone();
+    let OperationKind::RunExecute { args, .. } = &mut after.kind;
+    args.push("--adapted".into());
+    event(Fact::Rewritten {
+        before: before.clone(),
+        after: after.clone(),
+    })
+    .validate()
+    .unwrap();
+    after.run_id = "different".into();
+    assert!(
+        event(Fact::Rewritten {
+            before: before.clone(),
+            after: after.clone()
+        })
+        .validate()
+        .is_err()
+    );
+    after.run_id = before.run_id.clone();
+    after.placements.push(Placement::Overlay {
+        name: "stage".into(),
+    });
+    assert!(
+        event(Fact::Rewritten {
+            before,
+            after: after.clone()
+        })
+        .validate()
+        .is_err()
+    );
+    event(Fact::Placed { operation: after }).validate().unwrap();
 }

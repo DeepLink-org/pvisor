@@ -7,17 +7,17 @@ PolicyVisor（pVisor）通过能力准入、执行器、运行时控制和执行
 | Crate | 职责 |
 | --- | --- |
 | `pvisor` | CLI、准入、Attempt 生命周期、执行器、Run Bundle、审查／应用／检查点 |
-| `pvisor-control` | 运行与 Overlay 契约、能力策略、控制消息与客户端、共享事件记录 |
+| `pvisor-core` | Operation、Placement、结果、策略及对外交互与 Event 定义 |
 | `pvisor-overlay-core` | 写时复制、preimage、review/apply/recovery/drop 语义 |
 | `pvisor-overlayfs` | 宿主 FUSE 适配器 |
-| `pvisor-overlaynet` | 解析、代理转发与 VM 网络接入；消费 Control 策略 |
+| `pvisor-overlaynet` | 解析、代理转发与 VM 网络接入；消费 Core 策略 |
 | `pvisor-gateway` | 模型路由、协议转换与捕获 |
 | `pvisor-replay` | Agent 原生轨迹的回放与续跑适配 |
 
 ## 执行链路
 
 ```text
-CLI／配置 → RunSpec → 能力准入 → RunPlan → 准备运行时驱动
+CLI／配置 → RunSpec → 能力准入 → Operation → 准备运行时驱动
   → 执行器启动命令 → 退出／取消／超时 → 清理
   → 本地 Run 记录 + Run Bundle + 最终结果
   → 后续审查／应用／丢弃
@@ -25,15 +25,17 @@ CLI／配置 → RunSpec → 能力准入 → RunPlan → 准备运行时驱动
 
 当前每次运行创建一个 Attempt。宿主执行在主进程退出后清理进程组，并限时排空输出，超时和取消路径也遵循此规则。主动脱离进程组的后代不在进程组清理范围内；输出排空期限可以避免其继承的管道阻塞 Run 完成。更强的后代进程隔离取决于所选平台机制。
 
-## RunPlan 与观测
+## Operation 与观测
 
-准入阶段先解析执行器、应用应用程序策略和网络配置，再从有效 `RunSpec` 编译不可变的 `RunPlan`。计划使用 run_id 以及有序的 VM／Overlay 列表表示运行落点；每项文件、网络和环境规则带有稳定的 Run 内 ID、目标、动作及该维度的预期控制计划。嵌入调用方可以通过 `PVisor::resolve_run_plan` 在不启动 Attempt 的情况下读取同一份计划。
+`pvisor-core` 提供定义，`pvisor` 实现准入、策略改写、Placement 和执行。唯一生产操作是 `run.execute`，记录程序、参数和工作目录。准入保留原始与有效 Operation；事件依次描述 Requested、实际 Rewritten、Placed、Dispatched 和 Completed。改写保留前后快照，放置单独记录，不恢复通用解释器。`PVisor::resolve_operation` 可在执行前审查有效操作。
 
-运行事件携带不可变计划请求、派发和完成事实；Run Bundle 保留计划；`run.json` 只保留运行状态、执行器选择身份等运行事实。RunPlan 是运行计划与观测的数据 schema，不增加命令行入口。FUSE 文件视图按挂载相对路径和操作记录命中、成功、拒绝、其他失败、成功修改操作次数、失败修改操作可能留下副作用的次数和读写字节数；匹配到的 deny／warn 规则及 stage 规则也有计数。路径表最多保留 8192 个不同路径，其余命中计入 `overflow_hits`。这些是到达 FUSE 的操作计数，不代表唯一文件数或最终文件差异；最终变更仍以 OverlayFS diff 为准。
+外部观察 pVisor 得到 Event。共享操作身份和 caused_by 可以重建已观察到的操作过程；记录不承诺完整副作用重放、逐 syscall 中介或跨 Job 全局顺序。详见 [Operation 与 Event](../../../operations-events.md)。Run Bundle 保留有效操作与观察，`run.json` 保留运行状态和执行器身份。
+
+FUSE 文件视图按挂载相对路径和操作记录命中、成功、拒绝、其他失败、成功修改操作次数、失败修改操作可能留下副作用的次数和读写字节数；匹配到的 deny／warn 规则及 stage 规则也有计数。路径表最多保留 8192 个不同路径，其余命中计入 `overflow_hits`。这些是到达 FUSE 的操作计数，不代表唯一文件数或最终文件差异；最终变更仍以 OverlayFS diff 为准。
 
 Run Bundle 还记录经过 OverlayNet 的聚合放行、拒绝、失败及字节量。未经过 FUSE 的文件授权、未经过拦截器的网络流量没有可靠逐条计数，相应字段为 `null`，含义是未观测而不是零。宿主选择性代理只覆盖经过代理的流量，计数不能证明没有绕过代理的连接。
 
-唯一生产派发路径是 `PVisor::run(RunSpec) → Session → RunExecutor::execute`。RunPlan 描述放置与证据；
+唯一生产派发路径是 `PVisor::run(RunSpec) → Session → RunExecutor::execute`。Operation 描述放置与证据；
 执行与授权归现有运行器和驱动。
 
 `ExecutorPlan` 与 `CapabilityEnforcementPlan` 是准入计划类型，最高等级为 Planned，
@@ -55,7 +57,7 @@ Session 持有准备后的驱动与 AgentCtl server。`RunHandle` 提供状态�
 checkpoint 和有序事件订阅。取消只发出请求；等待执行结束后才有最终结果。
 AgentCtl 保留工作负载协作与 quiesce/checkpoint 职责；没有另一套 Session 控制协议或生命周期 Hook。
 
-Control 统一拥有网络配置、编译后的授权与地址分类，以及文件策略编译。
+Core 统一拥有网络配置、编译后的授权与地址分类，以及文件策略编译。
 Session、workspace、user 与执行器基础网络策略共同约束权限：所有网络层均须放行，
 任一层显式 deny 都拒绝。已声明的网络层省略 `default_action` 时默认 deny，
 未命中 allow 的目标不会退化为 Ambient；省略整个网络层才不增加约束。
@@ -72,7 +74,7 @@ Session、workspace、user 与执行器基础网络策略共同约束权限：�
 
 ## 文件应用
 
-`pvisor-control::overlay` 定义审查／应用记录、首次修改状态格式和本地 Run 检查消息。OverlayCore 负责文件指纹、日志、review/apply/recovery/drop；pVisor 处理请求并管理挂载。
+`pvisor-core::overlay` 定义审查／应用记录、首次修改状态格式和本地 Run 检查消息。OverlayCore 负责文件指纹、日志、review/apply/recovery/drop；pVisor 处理请求并管理挂载。
 
 OverlayCore 在首次修改时记录目标的原始状态。Apply 将选择扩展到必要的目录和硬链接成员，校验受影响的原始状态，写入持久化意图，更新目标，然后移除已经应用的 upper 条目。
 

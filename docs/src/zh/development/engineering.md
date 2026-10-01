@@ -10,7 +10,7 @@ Cargo workspace 按产品职责划分。Python `pvisor/` 只负责启动随包�
 | 目录 | 职责 |
 |---|---|
 | `crates/pvisor/` | CLI、运行编排、执行器、镜像准备和缓存服务 |
-| `crates/pvisor-control/` | 共享契约、策略、AgentCtl 消息、IR 和事件 schema |
+| `crates/pvisor-core/` | Operation、Placement、策略、对外交互和 Event 契约 |
 | `crates/pvisor-gateway/` | Agent 协议转发、转换、采集与投影 |
 | `crates/pvisor-overlay-core/` | 不依赖 FUSE 的 OverlayFS 操作和文件访问控制 |
 | `crates/pvisor-overlayfs/` | FUSE 适配及挂载 |
@@ -29,15 +29,15 @@ Cargo workspace 按产品职责划分。Python `pvisor/` 只负责启动随包�
 workspace 内的实际依赖关系：
 
 ```text
-pvisor ──> control, journal, overlaynet, overlayfs, overlay-core, guest
+pvisor ──> core, journal, overlaynet, overlayfs, overlay-core, guest
 pvisor --features gateway ──> gateway
 tui, replay ──> pvisor
-gateway ──> control, overlaynet
-overlaynet ──> control
-overlayfs ──> control, overlay-core
-overlay-core ──> control, journal
-journal ──> control
-control, guest ──> 不依赖其他 workspace crate
+gateway ──> core, overlaynet
+overlaynet ──> core
+overlayfs ──> core, overlay-core
+overlay-core ──> core, journal
+journal ──> core
+core, guest ──> 不依赖其他 workspace crate
 ```
 
 ### pVisor 源码模块
@@ -72,7 +72,7 @@ src/
 │   ├── registry.rs        # Run 身份、租约和本地控制端点
 │   ├── attempt.rs         # 每次尝试的驱动资源与清理
 │   ├── supervisor.rs      # 能力检查与驱动协调
-│   ├── plan.rs            # 类型化运行计划构造
+│   ├── operation.rs       # 操作与观察构造
 │   ├── implant.rs         # 运行环境注入
 │   ├── overlay.rs         # 暂存、审查、应用/丢弃和恢复
 │   └── zcode.rs           # 进程兼容策略
@@ -91,9 +91,9 @@ Claude、Codex、OpenCode 协议桥及 Claude resume transport 校验。
 
 ### 仍需逐步改善的边界
 
-`Session` 负责 Attempt 生命周期和终态公布。共享网络与文件授权归 Control，
+`Session` 负责 Attempt 生命周期和终态公布。共享网络与文件授权归 Core，
 overlay 的 review/apply/recovery/drop 归 `pvisor-overlay-core::apply`。
-共享 Overlay 与模型路由配置归 Control。传输与挂载所有权留在驱动中；
+共享 Overlay 与模型路由配置归 Core。传输与挂载所有权留在驱动中；
 修改行为时，把共享语义收敛到已有所有者。
 
 
@@ -101,8 +101,8 @@ overlay 的 review/apply/recovery/drop 归 `pvisor-overlay-core::apply`。
 
 CI 先独立构建默认核心，再构建带捕获的分发包。`scripts/ci/check_core_budget.py`
 拒绝 Gateway、replay、TUI 及其终端依赖进入默认核心，并记录工具链、依赖数、源码行数、
-Control 公开声明数与二进制字节数。当前 Linux 上限为 230 个依赖、44,267 行 workspace
-源码和 242 个 Control 公开声明；后续只下调预算。二进制体积先记录同平台基线。
+Core 公开声明数与二进制字节数。当前 Linux 上限为 230 个依赖、44,267 行 workspace
+源码和 242 个 Core 公开声明；后续只下调预算。二进制体积先记录同平台基线。
 
 2026-10-01 本次工作区对比：Rust 102,305 → 101,205 行，净减 1100 行；
 默认核心在 macOS arm64 / rustc 1.98.0 下有 226 个依赖，release 二进制 9,559,648 字节。
@@ -136,11 +136,11 @@ Control 公开声明数与二进制字节数。当前 Linux 上限为 230 个依
 | `just clean` | 清理构建产物，保留开发环境和本地 Run 记录 |
 
 `just test` 和 `just test-rust` 支持 Cargo 包名，以及 `pvisor`、`control`、
-`agentctl`（Control 的兼容别名）、`capture`（Gateway）这些简称。
+`agentctl`（Core 的兼容别名）、`capture`（Gateway）这些简称。
 带参数的 `just test` 只运行指定 Rust 包的测试。CI 分片使用 `just test-rust`，
 不会额外触发 Python 测试。
 
-默认 pytest 收集 `tests/` 和 `benchmark/pvisor/`；IR 代数性质由 `pvisor-control` 的 Rust 属性测试验证。
+默认 pytest 收集 `tests/` 和 `benchmark/pvisor/`；IR 代数性质由 `pvisor-core` 的 Rust 属性测试验证。
 benchmark 中依赖 `/proc` 和 Linux rootfs 工具的测试仅在 Linux 上运行。
 VM 文件系统检查在 Linux guest 内运行，需要 root、Python、pytest 和 tar；
 在仓库目录执行 `python3 -m pytest -q tests/test_vm_filesystem.py --guest-fs-dir /var/tmp --guest-fs-dir .`，

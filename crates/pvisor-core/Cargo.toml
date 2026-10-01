@@ -1,10 +1,10 @@
 [package]
-name = "pvisor-control"
+name = "pvisor-core"
 version.workspace = true
 edition.workspace = true
 authors.workspace = true
 license.workspace = true
-description = "Shared runtime contracts, policies, control messages, and event records"
+description = "Operation definitions, policies, outcomes, events and external interaction protocols"
 
 [dependencies]
 globset.workspace = true

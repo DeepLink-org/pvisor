@@ -11,13 +11,13 @@ use crate::executor::sandbox::{SANDBOX_ARG0_ENV, SANDBOX_PLAN_ENV, SANDBOX_SETUP
 use crate::executor::{Captured, ExecutorOutput, RunExecutor, Session, SessionEnd as End, stdio};
 use crate::session::lifecycle::terminate_process_tree;
 use async_trait::async_trait;
-use pvisor_control::{
+use pvisor_core::{
     CapabilityDimension, CapabilityEnforcementEvidence, CapabilityEnforcementPlan, ExecutorKind,
     ExecutorObservations, ExecutorPlan, IsolationKind, ProcessInvocation, ProcessOutput,
     ResourceLimits, RunFailure, RunFailureKind, RunInvocation, RunSpec, RunState, StdioMode,
 };
 #[cfg(any(target_os = "linux", target_os = "macos"))]
-use pvisor_control::{FilesystemAccess, NetworkCapability};
+use pvisor_core::{FilesystemAccess, NetworkCapability};
 #[cfg(any(target_os = "linux", target_os = "macos"))]
 use std::path::Path;
 use std::path::PathBuf;
@@ -335,7 +335,7 @@ impl SandboxResources {
             for mechanism in &control.mechanisms {
                 observed.record(
                     *dimension,
-                    pvisor_control::EnforcementLevel::Enforced,
+                    pvisor_core::EnforcementLevel::Enforced,
                     mechanism,
                 );
             }
@@ -1544,7 +1544,7 @@ impl RunExecutor for ProcessExecutor {
         let sandbox_setup_failed = self.is_sandboxed() && !sandbox_attested;
         let mut executor_observations = ExecutorObservations::default();
         if !sandbox_setup_failed {
-            executor_observations.origin = pvisor_control::trace::Origin::Backend;
+            executor_observations.origin = pvisor_core::event::Origin::Backend;
             executor_observations.enforcement = installed_controls.unwrap_or_default();
             // Report installed rlimits even when macOS cannot enforce requested memory.
             // The aggregate Resources evidence below still requires every requested limit.
@@ -1863,7 +1863,7 @@ mod tests {
         let mut spec = RunSpec::process("run", "agent", "/bin/true");
         spec.capabilities
             .filesystem
-            .push(pvisor_control::FilesystemCapability {
+            .push(pvisor_core::FilesystemCapability {
                 path: alias.display().to_string(),
                 access: FilesystemAccess::Read,
             });

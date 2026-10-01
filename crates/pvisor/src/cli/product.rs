@@ -102,22 +102,22 @@ pub fn review(args: ReviewArgs) -> anyhow::Result<()> {
             .as_ref()
             .map(|executor| executor.isolation)
         {
-            Some(pvisor_control::IsolationKind::RootlessProcess)
+            Some(pvisor_core::IsolationKind::RootlessProcess)
                 if bundle.safety.filesystem_non_bypassable =>
                 "rootless user namespace + Landlock",
-            Some(pvisor_control::IsolationKind::RootlessProcess) => {
+            Some(pvisor_core::IsolationKind::RootlessProcess) => {
                 "rootless user namespace + network namespace"
             }
-            Some(pvisor_control::IsolationKind::SandboxedProcess)
+            Some(pvisor_core::IsolationKind::SandboxedProcess)
                 if bundle.safety.filesystem_write_non_bypassable =>
                 "macOS Seatbelt filesystem policy",
-            Some(pvisor_control::IsolationKind::SandboxedProcess) => {
+            Some(pvisor_core::IsolationKind::SandboxedProcess) => {
                 "macOS Seatbelt network policy"
             }
-            Some(pvisor_control::IsolationKind::Container) => {
+            Some(pvisor_core::IsolationKind::Container) => {
                 "OCI container with injected pVisor"
             }
-            Some(pvisor_control::IsolationKind::VirtualMachine) => {
+            Some(pvisor_core::IsolationKind::VirtualMachine) => {
                 "libkrun/KVM guest over the pVisor root OverlayFS"
             }
             _ => "host process (not a host-isolation boundary)",
@@ -166,7 +166,7 @@ pub fn review(args: ReviewArgs) -> anyhow::Result<()> {
         let mut paths = observed.paths.iter().collect::<Vec<_>>();
         paths.sort_by(|left, right| {
             let priority =
-                |operations: &BTreeMap<_, pvisor_control::run_plan::PathOperationCounters>| {
+                |operations: &BTreeMap<_, pvisor_core::operation::PathOperationCounters>| {
                     operations.values().fold((0u64, 0u64, 0u64), |sum, counts| {
                         (
                             sum.0 + counts.denied,

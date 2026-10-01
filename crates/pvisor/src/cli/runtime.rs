@@ -131,7 +131,7 @@ pub fn status(args: StatusArgs) -> anyhow::Result<()> {
         .as_ref()
         .and_then(|value| value.get("filesystem"))
         .and_then(|value| {
-            serde_json::from_value::<pvisor_control::run_plan::FilesystemObservation>(value.clone())
+            serde_json::from_value::<pvisor_core::operation::FilesystemObservation>(value.clone())
                 .ok()
         })
         .or_else(|| record.filesystem_observation.clone());

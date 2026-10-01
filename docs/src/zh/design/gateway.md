@@ -9,7 +9,7 @@ Agent → 注入的代理或 base URL → OverlayNet HTTP 路径
       → 协议适配器 → capture engine → 按 story 串行处理的 actor → event sink
 ```
 
-协议适配器把支持的请求和响应转换为 `pvisor-control` 共享事件词汇。引擎携带 Run、Attempt、agent、session 和 story 身份。每个 story 的 actor 串行写入 sink，并在追加成功后更新内存中的轮次索引。
+协议适配器把支持的请求和响应转换为 `pvisor-core` 共享事件词汇。引擎携带 Run、Attempt、agent、session 和 story 身份。每个 story 的 actor 串行写入 sink，并在追加成功后更新内存中的轮次索引。
 
 公开捕获输出使用 `trace::Event` 与共享 Journal。可变 capture 输入只用于对话投影，
 不是第二套正式事件信封。草稿不进入事实日志，Markdown 参数仍仅作兼容。
@@ -37,7 +37,7 @@ flush 报告拒绝或失败的工作，shutdown 等待消费者释放 Journal。
 | --- | --- | --- |
 | 协议解析与转发 | `pvisor-gateway` | 模型协议转换与调用观察 |
 | 引擎与 story actor | `pvisor-gateway/src/engine` | Journal 提交、因果身份和轮次投影 |
-| 事件词汇 | `pvisor-control` | 共享序列化记录和 sink 契约 |
+| 事件词汇 | `pvisor-core` | 共享序列化记录和 sink 契约 |
 | 运行时集成 | `pvisor` | Run 生命周期、路由配置、事件 sink 和关闭 |
 | 网络路径 | `pvisor-overlaynet` | 代理传输和策略接入 |
 

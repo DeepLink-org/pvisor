@@ -1,11 +1,11 @@
 //! Events distinguish the immutable Run plan, execution dispatch and
 //! observed results. Event identity, operation identity and position are separate.
-use crate::run_plan::{Context, Outcome, RunPlan};
+use crate::operation::{Context, Operation, Outcome};
 use anyhow::{Result, ensure};
 use serde::{Deserialize, Serialize};
 use serde_json::Value;
 
-pub const VERSION: u16 = 4;
+pub const VERSION: u16 = 5;
 pub const MAX_EVENT_BYTES: usize = 1024 * 1024;
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(rename_all = "snake_case")]
@@ -47,7 +47,14 @@ pub enum Fact {
         definition: Context,
     },
     Requested {
-        plan: RunPlan,
+        operation: Operation,
+    },
+    Rewritten {
+        before: Operation,
+        after: Operation,
+    },
+    Placed {
+        operation: Operation,
     },
     Dispatched {
         backend: String,
@@ -78,7 +85,11 @@ impl Fact {
         match self {
             Self::Observation { domain, .. } => domain,
             Self::Context { .. } => "execution",
-            Self::Requested { .. } | Self::Dispatched { .. } | Self::Completed { .. } => "run",
+            Self::Requested { .. }
+            | Self::Rewritten { .. }
+            | Self::Placed { .. }
+            | Self::Dispatched { .. }
+            | Self::Completed { .. } => "run",
         }
     }
 }
@@ -89,6 +100,8 @@ impl Event {
             Fact::Observation { name, .. } => name,
             Fact::Context { .. } => "context",
             Fact::Requested { .. } => "requested",
+            Fact::Rewritten { .. } => "rewritten",
+            Fact::Placed { .. } => "placed",
             Fact::Dispatched { .. } => "dispatched",
             Fact::Completed { .. } => "completed",
         }
@@ -141,7 +154,19 @@ impl Event {
                     "invalid context fact"
                 );
             }
-            Fact::Requested { plan } => plan.validate()?,
+            Fact::Requested { operation } | Fact::Placed { operation } => operation.validate()?,
+            Fact::Rewritten { before, after } => {
+                before.validate()?;
+                after.validate()?;
+                ensure!(
+                    before.run_id == after.run_id && before.kind.name() == after.kind.name(),
+                    "rewrite changes operation identity or kind"
+                );
+                ensure!(
+                    before.placements == after.placements,
+                    "rewrite changes placement"
+                );
+            }
             Fact::Dispatched { backend, run_id } => {
                 ensure!(!backend.trim().is_empty(), "invalid backend");
                 ensure!(!run_id.is_empty(), "empty Run identity");
@@ -158,8 +183,8 @@ impl Event {
                 version,
                 ..
             } => {
-                crate::run_plan::symbol(domain)?;
-                crate::run_plan::symbol(name)?;
+                crate::operation::symbol(domain)?;
+                crate::operation::symbol(name)?;
                 ensure!(*version > 0, "invalid observation version");
             }
         }
@@ -186,7 +211,15 @@ impl Event {
                 serde_json::to_string(&definition.policy)?,
                 definition.revision
             ),
-            Fact::Requested { plan } => format!("requested {}", serde_json::to_string(plan)?),
+            Fact::Requested { operation } => {
+                format!("requested {}", serde_json::to_string(operation)?)
+            }
+            Fact::Rewritten { before, after } => format!(
+                "rewritten {} => {}",
+                serde_json::to_string(before)?,
+                serde_json::to_string(after)?
+            ),
+            Fact::Placed { operation } => format!("placed {}", serde_json::to_string(operation)?),
             Fact::Dispatched { backend, run_id } => format!(
                 "dispatched backend={} run={}",
                 serde_json::to_string(backend)?,

@@ -5,7 +5,7 @@ use crate::runtime::{
 };
 use crate::util::sync_directory;
 use crate::{AgentCtlSnapshot, unix_now_ms};
-use pvisor_control::{
+use pvisor_core::{
     ArtifactRef, CapabilityDimension, ExecutorIdentity, ExecutorObservations, ExecutorPlan,
     IsolationKind, ProcessOutput, ResourceLimits, RunFailure, RunResult, RunState,
 };
@@ -41,9 +41,9 @@ pub struct RunBundle {
     #[serde(default, skip_serializing_if = "std::collections::BTreeMap::is_empty")]
     pub orchestration: std::collections::BTreeMap<String, serde_json::Value>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
-    pub run_plan: Option<pvisor_control::run_plan::RunPlan>,
+    pub operation: Option<pvisor_core::operation::Operation>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
-    pub run_observation: Option<pvisor_control::run_plan::RunObservation>,
+    pub run_observation: Option<pvisor_core::operation::OperationObservation>,
     #[serde(default)]
     pub artifacts: Vec<BundleArtifact>,
 }
@@ -111,7 +111,7 @@ pub struct FilesystemSummary {
     #[serde(default)]
     pub excluded_paths: Vec<PathBuf>,
     #[serde(default)]
-    pub access_policy: pvisor_control::overlay::FileAccessPolicy,
+    pub access_policy: pvisor_core::overlay::FileAccessPolicy,
     /// Identity of the host root used as the immutable lower view.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub host_root_device: Option<u64>,
@@ -329,12 +329,12 @@ impl RunBundle {
             resources,
             agentctl,
             orchestration: record.orchestration.clone(),
-            run_plan: record.run_plan.clone(),
+            operation: record.operation.clone(),
             run_observation: record
-                .run_plan
+                .operation
                 .as_ref()
                 .map(|plan| {
-                    crate::runtime::plan::observe(
+                    crate::runtime::operation::observe(
                         plan,
                         result,
                         record.network_interception_metrics.as_ref(),
@@ -527,7 +527,7 @@ fn environment_summary(record: &RunRecord) -> crate::runtime::EnvironmentProject
 mod tests {
     use super::*;
     use crate::runtime::{OverlayRecord, OverlayUpper};
-    use pvisor_control::{AttemptId, CapabilityEnforcementEvidence, NetworkCapability, RunId};
+    use pvisor_core::{AttemptId, CapabilityEnforcementEvidence, NetworkCapability, RunId};
     use std::os::unix::fs::PermissionsExt;
 
     const V1_MINIMAL_FIXTURE: &[u8] = include_bytes!(concat!(
@@ -615,7 +615,7 @@ mod tests {
                 "pvisor.orchestration.job_id".into(),
                 serde_json::json!("job-1"),
             )]),
-            run_plan: None,
+            operation: None,
         };
         let mut result = RunResult {
             executor_observations: Default::default(),
@@ -662,7 +662,7 @@ mod tests {
         result.executor_observations = Default::default();
         record.executor = Some(ExecutorIdentity {
             name: "libkrun-root-overlay-v1".into(),
-            kind: pvisor_control::ExecutorKind::VirtualMachine,
+            kind: pvisor_core::ExecutorKind::VirtualMachine,
             isolation: IsolationKind::VirtualMachine,
         });
         record.network_interception = Some(InterceptionProfile::explicit_proxy());
@@ -671,9 +671,9 @@ mod tests {
         record.network_interception = Some(InterceptionProfile::vm_smoltcp());
         record.executor_plan = Some(ExecutorPlan {
             name: "planned-vm".into(),
-            kind: pvisor_control::ExecutorKind::VirtualMachine,
+            kind: pvisor_core::ExecutorKind::VirtualMachine,
             isolation: IsolationKind::VirtualMachine,
-            capability_plan: pvisor_control::CapabilityEnforcementPlan::default()
+            capability_plan: pvisor_core::CapabilityEnforcementPlan::default()
                 .planned(CapabilityDimension::FilesystemRead, "planned-read")
                 .planned(CapabilityDimension::FilesystemWrite, "planned-write")
                 .planned(CapabilityDimension::Network, "planned-network"),
@@ -682,7 +682,7 @@ mod tests {
         });
         let registry_json = serde_json::to_value(&record).unwrap();
         assert!(registry_json.get("executor_plan").is_none());
-        assert!(registry_json.get("run_plan").is_none());
+        assert!(registry_json.get("operation").is_none());
         assert!(registry_json["executor"].get("capability_plan").is_none());
 
         let label_only_vm = RunBundle::capture(&record, &result, agentctl.clone(), true).unwrap();
@@ -707,7 +707,7 @@ mod tests {
         result.executor_observations = Default::default();
         record.executor = Some(ExecutorIdentity {
             name: "local-rootless-v1".into(),
-            kind: pvisor_control::ExecutorKind::Process,
+            kind: pvisor_core::ExecutorKind::Process,
             isolation: IsolationKind::RootlessProcess,
         });
         record.network = serde_json::to_value(NetworkCapability::Deny).unwrap();
@@ -742,7 +742,7 @@ mod tests {
         result.executor_observations = Default::default();
         record.executor = Some(ExecutorIdentity {
             name: "local-seatbelt-v1".into(),
-            kind: pvisor_control::ExecutorKind::Process,
+            kind: pvisor_core::ExecutorKind::Process,
             isolation: IsolationKind::SandboxedProcess,
         });
         result.executor_observations.enforcement = CapabilityEnforcementEvidence::default()

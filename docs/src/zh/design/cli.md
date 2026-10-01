@@ -16,14 +16,14 @@ pvisor run -- codex
 ```
 
 `--stage PATH` 将 changeset 保留在指定目录。普通 host Job 省略时直接写入工作区；
-`--safe` 使用临时 stage，并在 Job 结束后自动丢弃。选中的 host、container 或 VM Provider 会在
+`--safe` 和 `--ask` 默认保留工作区暂存改动，生命周期见 [暂存与存储](../reference/cli.md#暂存与存储)。选中的 host、container 或 VM Provider 会在
 Run Bundle 中分别记录实际 capability 与限制。
 
 常用控制按目的分组：
 
 | 目的 | 选项 | 结果 |
 | --- | --- | --- |
-| Filesystem | `--safe`、`--stage`、`--mount SOURCE[:TARGET]:read\|stage\|write`、`--access PATH-GLOB:deny\|ask\|read` | 按需暂存改动并声明路径权限 |
+| Filesystem | `--safe`、`--stage`、`--mount SOURCE[:TARGET]:read\|stage\|write`、`--access PATH-GLOB:deny\|ask\|warn` | 按需暂存改动并声明路径权限 |
 | Runtime | `--executor host\|container\|vm`、`--rootfs`、`--container-image` | 选择执行 Provider 与 rootfs |
 | Network | `--overlaynet-deny-all`、`--overlaynet-allow`、`--overlaynet-limit` | 请求 deny、allowlist 或限速策略 |
 | Gateway | `--gateway-mode`、`--gateway-route`、`--gateway-level` | 配置路由，并按需捕获模型流量 |

@@ -21,8 +21,6 @@ shell-words = "1"
 similar = "2"
 tempfile = "3"
 toml = "0.8"
-tree-sitter = "0.25"
-tree-sitter-bash = "0.25"
 
 [profile.dev]
 debug = 0

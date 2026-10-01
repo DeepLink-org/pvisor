@@ -8,7 +8,7 @@ pub use core::{
     OPAQUE_NAME, OverlayCore, OverlayLayout, Resolved, WHITEOUT_PREFIX, fingerprint_at,
     load_preimages, preimage_journal_is_complete, remove_preimages,
 };
-pub use pvisor_control::overlay::FileAccessPolicy;
+pub use pvisor_core::overlay::FileAccessPolicy;
 
 // Preserve the existing import paths; the shared records are owned by Control.
-pub use pvisor_control::overlay::{PathFingerprint, PathPreimage};
+pub use pvisor_core::overlay::{PathFingerprint, PathPreimage};

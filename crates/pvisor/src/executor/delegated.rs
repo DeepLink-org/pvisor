@@ -1,7 +1,7 @@
 //! Files and result hand-off for a pVisor delegated through an OCI container or libkrun VM.
 
 use crate::util::write_private_json;
-use pvisor_control::{AttemptId, RunInvocation, RunResult, RunSpec};
+use pvisor_core::{AttemptId, RunInvocation, RunResult, RunSpec};
 use std::path::PathBuf;
 
 pub(crate) const SPEC_FILENAME: &str = "run-spec.json";
@@ -38,9 +38,9 @@ impl DelegatedRunFiles {
         if capture {
             // pVisor v1 does not support captured stdin. Null stdin also
             // prevents the nested host executor from attempting tty control.
-            process.stdin = pvisor_control::StdioMode::Null;
-            process.stdout = pvisor_control::StdioMode::Capture;
-            process.stderr = pvisor_control::StdioMode::Capture;
+            process.stdin = pvisor_core::StdioMode::Null;
+            process.stdout = pvisor_core::StdioMode::Capture;
+            process.stderr = pvisor_core::StdioMode::Capture;
         }
         write_private_json(&spec_path, &delegated)?;
         Ok(Self {
@@ -52,7 +52,7 @@ impl DelegatedRunFiles {
 
     pub(crate) fn read_result(
         &self,
-        run_id: &pvisor_control::RunId,
+        run_id: &pvisor_core::RunId,
         attempt_id: &AttemptId,
     ) -> anyhow::Result<DelegatedRunOutput> {
         let mut output: DelegatedRunOutput =

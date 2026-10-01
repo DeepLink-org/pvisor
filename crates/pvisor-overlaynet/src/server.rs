@@ -10,8 +10,8 @@ use axum::extract::{ConnectInfo, Request, State};
 use axum::http::{Method, StatusCode};
 use axum::response::{IntoResponse, Response};
 use axum::routing::any;
-use pvisor_control::ControlController;
-use pvisor_control::{NetworkAccessRequest, NetworkTransport, RunId};
+use pvisor_core::ControlController;
+use pvisor_core::{NetworkAccessRequest, NetworkTransport, RunId};
 
 use crate::bandwidth::{BandwidthRegistry, BandwidthSession, throttle_body};
 use crate::forward::{
@@ -380,7 +380,7 @@ where
         &context.policy,
         NetworkAccessRequest {
             run_id: context.run_id.clone().map(RunId),
-            attempt_id: context.attempt_id.clone().map(pvisor_control::AttemptId),
+            attempt_id: context.attempt_id.clone().map(pvisor_core::AttemptId),
             host: host.to_string(),
             port,
             transport,
@@ -412,7 +412,7 @@ impl Drop for ActiveRequestGuard {
 mod tests {
     use super::*;
     use crate::policy::{NetworkConfig, NetworkMode};
-    use pvisor_control::PolicyControlController;
+    use pvisor_core::PolicyControlController;
 
     #[derive(Clone)]
     struct EventSink;

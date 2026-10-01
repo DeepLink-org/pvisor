@@ -96,16 +96,18 @@ fn cli_runs_cases_and_keeps_review_separate_from_execution() {
             "true",
             "<!-- semantic-case: xfail-on=all xfail-reason='known bug' -->",
         )
-        + &case("005", "exit 1", "<!-- semantic-case: requires=absent -->");
+        + &case("005", "echo prerequisite missing >&2; exit 77", "")
+        + &case(
+            "006",
+            "exit 77",
+            "<!-- semantic-case: xfail-on=all xfail-reason='known bug' -->",
+        )
+        + &case(
+            "007",
+            "printf 'value=ok\\n' > library.sh\nsource library.sh\n[ \"$value\" = ok ]\nexpect_exit 77 bash -c 'exit 77'",
+            "",
+        );
     write_cases(root, &text);
-    let config_path = root.join("semspec.toml");
-    let mut config = fs::read_to_string(&config_path).unwrap();
-    config.push_str(&format!(
-        "\n[requirements.absent.{}]\npath_exists = '/does/not/exist'\n",
-        std::env::consts::OS
-    ));
-    // The default platform name is macos on macOS and linux on Linux.
-    fs::write(&config_path, config).unwrap();
     assert!(cli(root, &["lint"]).status.success());
     let (output, json) = run_json(root, &[]);
     assert_eq!(output.status.code(), Some(1));
@@ -115,11 +117,24 @@ fn cli_runs_cases_and_keeps_review_separate_from_execution() {
         .iter()
         .map(|r| r["verdict"]["verdict"].as_str().unwrap())
         .collect();
-    assert_eq!(verdicts, ["PASS", "FAIL", "XFAIL", "XPASS", "SKIP"]);
+    assert_eq!(
+        verdicts,
+        ["PASS", "FAIL", "XFAIL", "XPASS", "SKIP", "SKIP", "PASS"]
+    );
     assert_eq!(json["results"][0]["review"]["state"], "UNREVIEWED");
     assert!(json["results"][0]["workdir"].is_null());
     assert!(json["results"][1]["workdir"].is_string());
     assert!(json["results"][2]["workdir"].is_string());
+    assert!(
+        json["results"][4]["verdict"]["reason"]
+            .as_str()
+            .unwrap()
+            .contains("prerequisite missing")
+    );
+    clean_report(&json);
+    let (output, json) = run_json(root, &["--case", "S-TEST-006", "--require-reviewed"]);
+    assert_eq!(output.status.code(), Some(1));
+    assert_eq!(json["results"][0]["verdict"]["verdict"], "SKIP");
     clean_report(&json);
     let (output, json) = run_json(root, &["--case", "S-TEST-001", "--require-reviewed"]);
     assert_eq!(output.status.code(), Some(1));
@@ -184,7 +199,11 @@ fn timeout_cleans_descendants_and_retains_failure_log() {
     let root = dir.path();
     write_cases(
         root,
-        &case("001", "(sleep 1; printf escaped > escaped) &\nwait", ""),
+        &case(
+            "001",
+            "trap 'exit 77' TERM\n(sleep 1; printf escaped > escaped) &\nwait",
+            "",
+        ),
     );
     let path = root.join("semspec.toml");
     let config = fs::read_to_string(&path).unwrap().replace("180s", "50ms");
@@ -227,18 +246,11 @@ fn interpreter_launch_errors_are_not_expected_failures() {
 }
 
 #[test]
-fn duplicate_ids_and_retired_id_reuse_are_parse_errors() {
+fn duplicate_ids_are_parse_errors() {
     let dir = fixture();
     let root = dir.path();
     let text = case("001", "true", "");
     write_cases(root, &(text.clone() + &text));
-    assert_eq!(cli(root, &["lint"]).status.code(), Some(2));
-    write_cases(root, &text);
-    let path = root.join("semspec.toml");
-    let config = fs::read_to_string(&path)
-        .unwrap()
-        .replace("retired = []", "retired = ['S-TEST-001']");
-    fs::write(path, config).unwrap();
     assert_eq!(cli(root, &["lint"]).status.code(), Some(2));
 }
 

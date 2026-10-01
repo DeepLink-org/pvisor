@@ -11,8 +11,9 @@ repository/deployment URLs accurate until they are migrated. Separate requested 
 results; distinguish ordinary host write-through from `--safe` staging and
 describe each executor's platform-dependent boundary.
 
-The site uses Zensical 0.0.61. English and Chinese Markdown live under
-`docs/src/en/` and `docs/src/zh/`, with matching relative paths.
+The site uses Zensical 0.0.61. Chinese design, guides, concepts and reference pages under `docs/src/zh/` are
+authoritative. English under `docs/src/en/` contains only the homepage, getting
+started and CLI reference; link to Chinese for other subjects.
 
 ```bash
 just docs-serve         # build, watch, and serve on 127.0.0.1:3000
@@ -20,12 +21,11 @@ just docs-serve --port 3001
 just docs-build         # build docs/site and validate generated pages
 ```
 
-`scripts/build-docs.py` renders the English configuration, then renders Chinese
-pages with Zensical's native Chinese theme and a translated navigation tree.
-Both use `docs/zensical.toml` as the navigation source. The language selector
-uses relative links to the corresponding article, so local preview and the
-GitHub Pages `/pvisor/` deployment both work. Keep locale paths paired;
-`check-docs.py` checks their links, navigation and HTML language attributes.
+`scripts/build-docs.py` renders the canonical Chinese navigation and a smaller
+English navigation with each locale's native theme. The language selector opens
+the matching article when it exists, otherwise the English homepage. Former
+English article URLs redirect to the Chinese originals. `check-docs.py` validates
+links, navigation and HTML language attributes.
 
 `docs/overrides/home.html` overrides the native content block for the full-width
 homepage. The header, mobile drawer, sidebars and table of contents remain
@@ -37,7 +37,7 @@ CI uses the same bilingual build and page checks before uploading `docs/site`.
 
 ## Information architecture
 
-Both locales use the same six directories:
+The canonical Chinese documentation uses six directories:
 
 - `start/`: product scope, installation and the first reproducible Job.
 - `guides/`: tasks, commands, expected results and troubleshooting.
@@ -52,17 +52,17 @@ implemented behavior from design goals; describe a guarantee only with its
 executor and scope. Every example that reviews or applies changes must retain
 the stage explicitly with `--stage` outside the project.
 
-`zensical.toml` owns navigation. Add or move both language versions together.
+`zensical.toml` owns navigation. Maintain Chinese articles; translate only the English entry points.
 `redirects.json` maps old locale-relative Markdown paths to their replacements;
 the build emits redirects for English, Chinese, and the original unprefixed
 published URLs. Update incoming source links to canonical paths as well.
-The checker rejects unpaired pages, omitted or duplicate navigation entries,
+The checker rejects missing Chinese originals, omitted or duplicate navigation entries,
 broken links, missing anchors and invalid redirect targets.
 
 ## Design proposals
 
-- [RunPlan and Trace (Chinese)](run-plan-trace.md): immutable execution plans, direct
+- [Operation and Trace (Chinese)](operations-events.md): immutable execution plans, direct
   VM/Overlay placement, requested/dispatched/completed facts, and boundary observations.
-  [Rust contract tests](../crates/pvisor-control/tests/run_plan_contracts.rs) cover schema,
+  [Rust contract tests](../crates/pvisor-core/tests/operation_contracts.rs) cover schema,
   placement order, outcomes and version rejection; runtime and Journal tests verify
   the execution fact chain and durable records.

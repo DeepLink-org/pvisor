@@ -94,7 +94,7 @@ test-rust *packages:
     for package in "$@"; do
       case "$package" in
         pvisor) package=pvisor ;;
-        control|agentctl) package=pvisor-control ;;
+        core|control|agentctl) package=pvisor-core ;;
         capture) package=pvisor-gateway ;;
         shim) package=pvisor-shim ;;
       esac

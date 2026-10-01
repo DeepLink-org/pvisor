@@ -39,6 +39,23 @@ Tab 或 `1`–`6` 切换视图，用 `j`/`k` 滚动，按 Esc 或 `Ctrl-]` 返�
 
 下面的参考按 Job 生命周期组织；每组参数都配有验证下一步。
 
+### 暂存与存储
+
+下表描述默认 CLI 行为。显式配置的提交方式、可写共享和应用兼容策略可能改变写入去向。
+
+| 运行方式或目录 | 写入去向 | 退出后的处理 |
+| --- | --- | --- |
+| 普通 host，未启用暂存 | 原工作区 | 已写入宿主；不能用 `drop` 撤销 |
+| `--safe` 或 `--ask` 的工作区 | Job 存储中的写时复制 stage | 默认保留，供 `status --review`、`apply`、`drop` 使用 |
+| 显式 `--stage PATH` 的工作区 | 指定 stage | 默认保留；该选项也启用暂存 |
+| VM 工作区 | 指定 stage 或默认 Job 存储 | 默认保留 |
+| VM 根目录的其他写入 | 私有临时 upper | VM 退出后丢弃 |
+| `--safe` 的 HOME／`CODEX_HOME` 状态 | 独立私有 stage | 退出后丢弃，不进入工作区 Run Bundle |
+| 显式 `--mount SOURCE:write` | 宿主 SOURCE | 直接持久写入，不经工作区 apply/drop |
+
+Job 记录和 Run Bundle 保存在运行存储中。`--stage PATH` 选择位置，
+不是 `--safe/--ask` 保留工作区改动的前提。文件审查不覆盖已经发生的远程副作用。
+
 ### 文件系统参数
 
 macOS 的 macFUSE 临时工作区默认以启动 pVisor 时的当前目录作为 lower；
@@ -476,16 +493,15 @@ namespace 和 Landlock 约束 VMM。macOS VMM 仍拥有调用用户的 host 权�
 
 在 host/container 执行上，四个可见 OverlayNet 策略标志和 Gateway capture
 会自动启用代理 driver。`--safe` 默认暂存工作区，`--mount` 添加显式底层；
-指定 `--stage` 才保留文件系统改动供审查。当 stage 嵌在 base 或 compose 层内时，pVisor 从合并视图
+工作区写入去向见 [暂存与存储](#暂存与存储)。当 stage 嵌在 base 或 compose 层内时，pVisor 从合并视图
 隐藏该子树，并拒绝 guest 重建它。libkrun Run 不创建 live host mountpoint，
 防止 host indexer 递归进入 `<stage>/merged`。反向拓扑——stage 包含 lower
 层——会被拒绝。在 pVisor 能安全物化完整 merged-vs-base diff 之前，组合 Run
 拒绝随后的 `pvisor apply` 命令。
-在 host/container 执行上，OverlayNet 策略作用于经显式代理路由的流量，并不
-声称不可绕过的 host 网络隔离。在 libkrun VM 上，`auto` 挂上不可绕过的
-smoltcp IPv4 TCP/DNS；`off` 让 guest 离线。`--overlaynet-deny-all` 把同一
-default-deny 策略交给当前 driver。host/container 直接 socket 仍是 ambient，
-而 VM Gateway 路由仍可通过 guest 的 virtual router 用于已配置的模型流量。
+host/container 的选择性网络规则作用于经过显式代理的流量。host deny-all 使用
+namespace 或 Seatbelt 阻止直接出口；容器离线使用 `--container-network none`。
+在 libkrun VM 上，`auto` 使用 smoltcp IPv4 TCP/DNS，`off` 让 guest 离线；
+deny-all 仍允许已配置的内部 Gateway 路由。各路径的范围见 [网络边界](../guides/network.md#网络边界)。
 
 ## Run 项目发现
 
