@@ -118,7 +118,9 @@ def test_migrated_catalog_retains_active_scenarios_and_bash_prerequisites():
     assert contents.count("case_run success <<'CASE_COMMAND'") == 46
     assert contents.count("case_run nonzero <<'CASE_COMMAND'") == 8
     assert "xfail-on" not in contents
-    scripts = re.findall(r"^```bash\n((?:require_\w+\n)+case_setup\n.*?)^```", contents, re.MULTILINE | re.DOTALL)
+    scripts = re.findall(
+        r"^```bash\n((?:require_\w+\n)+case_setup\n.*?)^```", contents, re.MULTILINE | re.DOTALL
+    )
     assert len(scripts) == 54
     assert all(
         "/tmp/pvisor-cases" not in script and "/path/to/" not in script for script in scripts
@@ -143,11 +145,19 @@ def test_default_review_scope_is_stage_and_doc_regressions_remain_configured():
 
 def test_bash_prerequisites_skip_without_turning_assertions_into_pass():
     result = subprocess.run(
-        ["bash", "-euo", "pipefail", "-c",
-         'source "$1"; require_agent; echo reached', "prerequisite-test",
-         str(VOCAB / "pvisor.sh")],
+        [
+            "bash",
+            "-euo",
+            "pipefail",
+            "-c",
+            'source "$1"; require_agent; echo reached',
+            "prerequisite-test",
+            str(VOCAB / "pvisor.sh"),
+        ],
         env={**os.environ, "PVISOR_CASE_AGENT": ""},
-        capture_output=True, text=True, timeout=15,
+        capture_output=True,
+        text=True,
+        timeout=15,
     )
     assert result.returncode == 77
     assert "SKIP:" in result.stderr
