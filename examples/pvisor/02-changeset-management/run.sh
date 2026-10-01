@@ -11,8 +11,8 @@ pvisor_example_reset
 mkdir -p "$work_dir/base"
 printf 'original\n' >"$work_dir/base/existing.txt"
 base="$work_dir/base"
-apply_stage="$PERSISTING_RUN_HOME/run-apply"
-drop_stage="$PERSISTING_RUN_HOME/run-drop"
+apply_stage="$PVISOR_RUN_HOME/run-apply"
+drop_stage="$PVISOR_RUN_HOME/run-drop"
 
 # Review and apply the first Run, making its staged files visible on the host.
 (

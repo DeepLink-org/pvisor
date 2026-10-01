@@ -1,6 +1,6 @@
 # 复现 Run 生命周期
 
-[`examples/`](https://github.com/DeepLink-org/Persisting/tree/main/examples)
+[`examples/`](https://github.com/DeepLink-org/pvisor/tree/main/examples)
 按 pVisor CLI 组织。每个 `run.sh` 管理自己的 `.work/`，并报告持久输出。
 它们按文档顺序覆盖：先执行，再治理 Effect。
 

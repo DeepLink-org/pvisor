@@ -6,7 +6,7 @@ Event 是不可变的观测事实。它把 [IR 表达式](pvisor-algebra.md) 与
 
 ## 1. 公共信封
 
-`persisting_control::trace::Event` 包含以下字段：
+`pvisor_control::trace::Event` 包含以下字段：
 
 | 字段 | 契约 |
 |---|---|
@@ -101,7 +101,7 @@ Volatile/LocalSync。文件头为 `pvisor.trace/3`，旧草稿 journal 明确拒
 ## 6. 接入状态与检查
 
 生产 Run、Gateway 捕获和 replay 的新事件统一使用 `trace::Event`；事实持久化统一使用
-`persisting-journal::Journal`。pVisor 的 `trace` 模块重导出同一实现。Run 与内嵌 Gateway
+`pvisor-journal::Journal`。pVisor 的 `trace` 模块重导出同一实现。Run 与内嵌 Gateway
 共享 Journal，正式输出文件默认叫 `events.trace.jsonl`，文件头仍为 `pvisor.trace/3`。
 
 Run 将 Context、Requested、Rewritten、Dispatched、Completed 写成独立的因果事实；

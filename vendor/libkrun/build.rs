@@ -11,7 +11,7 @@ fn main() {
         .parent()
         .unwrap()
         .to_path_buf();
-    for source in ["Cargo.toml", "Cargo.lock", "crates/persisting-guest"] {
+    for source in ["Cargo.toml", "Cargo.lock", "crates/pvisor-guest"] {
         println!("cargo:rerun-if-changed={}", root.join(source).display());
     }
     let arch = env::var("CARGO_CFG_TARGET_ARCH").unwrap();
@@ -29,7 +29,7 @@ fn main() {
             "--locked",
             "--release",
             "-p",
-            "persisting-guest",
+            "pvisor-guest",
             "--bin",
             "pvisor-guest",
             "--target",
@@ -52,7 +52,7 @@ fn main() {
     let binary = target_dir.join(&target).join("release/pvisor-guest");
     println!("cargo:rerun-if-changed={}", binary.display());
     println!(
-        "cargo:rustc-env=PERSISTING_GUEST_BINARY={}",
+        "cargo:rustc-env=PVISOR_GUEST_BINARY={}",
         binary.display()
     );
 }

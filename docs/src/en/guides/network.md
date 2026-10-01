@@ -264,6 +264,6 @@ plane.
 | VM `proxy` mode is rejected | Use `auto` for the smoltcp driver, or `off` for an offline guest |
 
 For an offline runnable walkthrough, use
-[`examples/pvisor/03-network-isolation`](https://github.com/DeepLink-org/Persisting/tree/main/examples/pvisor/03-network-isolation).
+[`examples/pvisor/03-network-isolation`](https://github.com/DeepLink-org/pvisor/tree/main/examples/pvisor/03-network-isolation).
 For LLM request capture and model routing, continue with the
 [Capture guide](capture.md).

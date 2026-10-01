@@ -6,7 +6,7 @@ target/
 __pycache__/
 *.egg-info/
 .pytest_cache/
-.persisting/
+.pvisor/
 .venv/
 
 # Local review, benchmark, and runtime artifacts

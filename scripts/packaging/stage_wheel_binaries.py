@@ -25,7 +25,7 @@ SUPPORTED_TARGETS = {
     "x86_64-unknown-linux-musl",
     "aarch64-apple-darwin",
 }
-MACOS_ENTITLEMENTS = ROOT / "crates" / "persisting-pvisor" / "macos-hypervisor.entitlements"
+MACOS_ENTITLEMENTS = ROOT / "crates" / "pvisor" / "macos-hypervisor.entitlements"
 LIBKRUNFW_VERSION = "5.5.0"
 MACOS_DEPLOYMENT_TARGET = "11.0"
 LIBKRUNFW_RELEASE = f"https://github.com/libkrun/libkrunfw/releases/download/v{LIBKRUNFW_VERSION}"
@@ -144,12 +144,12 @@ def _cargo_command(options: BuildOptions, *, shim_vm: bool = False) -> list[str]
         options.profile,
         "--message-format=json-render-diagnostics",
         "-p",
-        "persisting-shim" if shim_vm else "persisting-pvisor",
+        "pvisor-shim" if shim_vm else "pvisor",
     ]
     if shim_vm:
         command.extend(("--bin", "containerd-shim-pvisor-v2", "--features", "vm"))
     else:
-        command.extend(("-p", "persisting-tui", "-p", "persisting-replay", "--bins", "--features", "persisting-pvisor/gateway"))
+        command.extend(("-p", "pvisor-tui", "-p", "pvisor-replay", "--bins", "--features", "pvisor/gateway"))
     if target is not None:
         command.extend(("--target", target))
     if options.target_dir is not None:
@@ -171,10 +171,10 @@ def _build(options: BuildOptions, *, shim_vm: bool = False) -> dict[str, Path]:
     print(f"Building native CLI: {shlex.join(command)}", file=sys.stderr)
     build_env = os.environ.copy()
     if command[1] == "zigbuild":
-        if not build_env.get("PERSISTING_KRUNFW_KERNEL_BUNDLE") and not build_env.get(
-            "PERSISTING_KRUNFW_PATH"
+        if not build_env.get("PVISOR_KRUNFW_KERNEL_BUNDLE") and not build_env.get(
+            "PVISOR_KRUNFW_PATH"
         ):
-            build_env["PERSISTING_KRUNFW_PATH"] = str(_firmware_source(options)[0])
+            build_env["PVISOR_KRUNFW_PATH"] = str(_firmware_source(options)[0])
     process = subprocess.Popen(
         command,
         cwd=ROOT,
@@ -219,7 +219,7 @@ def _is_macos(options: BuildOptions) -> bool:
 
 def _firmware_source(options: BuildOptions) -> tuple[Path, str]:
     name = "libkrunfw.5.dylib" if _is_macos(options) else "libkrunfw.so.5"
-    configured = os.getenv("PERSISTING_LIBKRUNFW_PATH")
+    configured = os.getenv("PVISOR_LIBKRUNFW_PATH")
     if configured:
         source = Path(configured).expanduser()
         if source.is_dir():

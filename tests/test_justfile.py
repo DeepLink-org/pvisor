@@ -61,7 +61,7 @@ def run_task(tmp_path):
 
 
 def test_test_routes_packages_and_python(run_task):
-    commands = run_task("test", "control", "capture", "persisting-overlay-core")
+    commands = run_task("test", "control", "capture", "pvisor-overlay-core")
     assert commands == [
         [
             "cargo",
@@ -69,11 +69,11 @@ def test_test_routes_packages_and_python(run_task):
             "run",
             "--locked",
             "-p",
-            "persisting-control",
+            "pvisor-control",
             "-p",
-            "persisting-gateway",
+            "pvisor-gateway",
             "-p",
-            "persisting-overlay-core",
+            "pvisor-overlay-core",
         ]
     ]
     commands = run_task("test")

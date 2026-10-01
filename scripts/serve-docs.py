@@ -15,7 +15,7 @@ class PreviewHandler(SimpleHTTPRequestHandler):
     """Serve GitHub Pages-prefixed links from the root local preview."""
 
     def _strip_deploy_prefix(self) -> None:
-        prefix = "/Persisting"
+        prefix = "/pvisor"
         if self.path == prefix or self.path.startswith(prefix + "/"):
             self.path = self.path[len(prefix):] or "/"
 

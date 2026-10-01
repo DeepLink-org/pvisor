@@ -21,7 +21,7 @@ Source distributions are not part of the published artifact set.
 2. In the PyPI publishing settings, add a pending Trusted Publisher:
    - PyPI project: `pvisor`
    - GitHub owner: `DeepLink-org`
-   - Repository: `Persisting`
+   - Repository: `pVisor`
    - Workflow: `release.yml`
    - Environment: `pypi`
 
@@ -29,7 +29,7 @@ No PyPI API token is stored in GitHub. The pending publisher can create the
 project during the first successful upload but does not reserve the name.
 
 The `pvisor` PyPI project needs its own Trusted Publisher configuration; the
-previous `persisting` project configuration does not transfer with the rename.
+previous `pvisor` project configuration does not transfer with the rename.
 Confirm publishing access to `pvisor` before pushing the first release tag.
 
 ## Prepare a release
@@ -63,7 +63,7 @@ marks the wheel platform-specific while keeping the Python and ABI tags
 `py3-none`.
 
 The packaging script fetches the pinned libkrun firmware archive for both
-Linux x86_64 and Apple Silicon macOS unless `PERSISTING_LIBKRUNFW_PATH` points
+Linux x86_64 and Apple Silicon macOS unless `PVISOR_LIBKRUNFW_PATH` points
 at an existing payload. Local wheel builds must use one of those supported
 paths; a missing payload is a build error rather than an incomplete wheel.
 
@@ -74,7 +74,7 @@ cargo-zigbuild, and the Rust musl target; firmware is loaded only at build time.
 
 Apple Silicon macOS builds use the native Darwin linker and package
 `libkrunfw.5.dylib`; the CLI is signed for HVF. Both platforms embed the Rust
-`persisting-guest` supervisor as a static Linux musl ELF, built automatically
+`pvisor-guest` supervisor as a static Linux musl ELF, built automatically
 with `rust-lld`. macOS requires the `aarch64-unknown-linux-musl` Rust stdlib
 but does not need Zig for guest compilation.
 

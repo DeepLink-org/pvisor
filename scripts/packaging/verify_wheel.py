@@ -159,7 +159,7 @@ def install_smoke(wheel: Path, version: str) -> None:
         )
 
         env = os.environ.copy()
-        env.pop("PERSISTING_PVISOR_BIN", None)
+        env.pop("PVISOR_BIN", None)
         env["PATH"] = os.pathsep.join((str(scripts), env.get("PATH", "")))
         for name in EXPECTED_BINARIES:
             executable = scripts / name

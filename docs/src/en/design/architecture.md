@@ -6,13 +6,13 @@ PolicyVisor (pVisor) combines capability admission, executors, runtime controls,
 
 | Crate | Responsibility |
 | --- | --- |
-| `persisting-pvisor` | CLI, admission, Attempt lifecycle, executors, Run Bundle, review/apply/checkpoint |
-| `persisting-control` | Run/Overlay contracts, capability policy, control messages/client, and shared event records |
-| `persisting-overlay-core` | Copy-on-write, preimages, review/apply/recovery/drop semantics |
-| `persisting-overlayfs` | Host FUSE adapter |
-| `persisting-overlaynet` | Resolution, proxy forwarding and VM network attachment; consumes Control policy |
-| `persisting-gateway` | Model routing, protocol conversion and capture |
-| `persisting-replay` | Agent-native trajectory replay and continuation adapters |
+| `pvisor` | CLI, admission, Attempt lifecycle, executors, Run Bundle, review/apply/checkpoint |
+| `pvisor-control` | Run/Overlay contracts, capability policy, control messages/client, and shared event records |
+| `pvisor-overlay-core` | Copy-on-write, preimages, review/apply/recovery/drop semantics |
+| `pvisor-overlayfs` | Host FUSE adapter |
+| `pvisor-overlaynet` | Resolution, proxy forwarding and VM network attachment; consumes Control policy |
+| `pvisor-gateway` | Model routing, protocol conversion and capture |
+| `pvisor-replay` | Agent-native trajectory replay and continuation adapters |
 
 ## Execution path
 
@@ -91,7 +91,7 @@ Policy file paths and TOML examples are in the [network guide](../guides/network
 
 ## Filesystem application
 
-`persisting-control::overlay` owns the review/apply records, first-touch state schema, and local Run inspection messages. OverlayCore owns fingerprints, journals, review/apply/recovery/drop; pVisor handles requests and owns mounts.
+`pvisor-control::overlay` owns the review/apply records, first-touch state schema, and local Run inspection messages. OverlayCore owns fingerprints, journals, review/apply/recovery/drop; pVisor handles requests and owns mounts.
 
 OverlayCore records the target's original state on first mutation. Apply closes a selection over required directories and hard-link siblings, validates affected preimages, writes a durable intent, updates the target, and then consumes applied upper entries.
 

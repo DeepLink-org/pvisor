@@ -9,15 +9,15 @@ Cargo workspace 按产品职责划分。Python `pvisor/` 只负责启动随包�
 
 | 目录 | 职责 |
 |---|---|
-| `crates/persisting-pvisor/` | CLI、运行编排、执行器、镜像准备和缓存服务 |
-| `crates/persisting-control/` | 共享契约、策略、AgentCtl 消息、IR 和事件 schema |
-| `crates/persisting-gateway/` | Agent 协议转发、转换、采集与投影 |
-| `crates/persisting-overlay-core/` | 不依赖 FUSE 的 OverlayFS 操作和文件访问控制 |
-| `crates/persisting-overlayfs/` | FUSE 适配及挂载 |
-| `crates/persisting-overlaynet/` | 出站策略、HTTP 代理和 VM virtio-net 数据通路 |
-| `crates/persisting-guest/` | Linux PID 1 supervisor，以及 VM 执行器共用的启动契约 |
-| `crates/persisting-tui/` | 独立终端前端 `pvisor-tui` |
-| `crates/persisting-replay/` | 回放规划、原生 Agent 适配器和续跑协议桥 |
+| `crates/pvisor/` | CLI、运行编排、执行器、镜像准备和缓存服务 |
+| `crates/pvisor-control/` | 共享契约、策略、AgentCtl 消息、IR 和事件 schema |
+| `crates/pvisor-gateway/` | Agent 协议转发、转换、采集与投影 |
+| `crates/pvisor-overlay-core/` | 不依赖 FUSE 的 OverlayFS 操作和文件访问控制 |
+| `crates/pvisor-overlayfs/` | FUSE 适配及挂载 |
+| `crates/pvisor-overlaynet/` | 出站策略、HTTP 代理和 VM virtio-net 数据通路 |
+| `crates/pvisor-guest/` | Linux PID 1 supervisor，以及 VM 执行器共用的启动契约 |
+| `crates/pvisor-tui/` | 独立终端前端 `pvisor-tui` |
+| `crates/pvisor-replay/` | 回放规划、原生 Agent 适配器和续跑协议桥 |
 | `pvisor/`、`setup.py`、`scripts/packaging/` | Python 启动器和 wheel 打包 |
 | `crates/*/tests/` | Rust 集成测试；单元测试跟随所属模块 |
 | `tests/` | Python 打包和仓库工作流测试 |
@@ -92,7 +92,7 @@ Claude、Codex、OpenCode 协议桥及 Claude resume transport 校验。
 ### 仍需逐步改善的边界
 
 `Session` 负责 Attempt 生命周期和终态公布。共享网络与文件授权归 Control，
-overlay 的 review/apply/recovery/drop 归 `persisting-overlay-core::apply`。
+overlay 的 review/apply/recovery/drop 归 `pvisor-overlay-core::apply`。
 共享 Overlay 与模型路由配置归 Control。传输与挂载所有权留在驱动中；
 修改行为时，把共享语义收敛到已有所有者。
 
@@ -140,14 +140,14 @@ Control 公开声明数与二进制字节数。当前 Linux 上限为 230 个依
 带参数的 `just test` 只运行指定 Rust 包的测试。CI 分片使用 `just test-rust`，
 不会额外触发 Python 测试。
 
-默认 pytest 收集 `tests/` 和 `benchmark/pvisor/`；IR 代数性质由 `persisting-control` 的 Rust 属性测试验证。
+默认 pytest 收集 `tests/` 和 `benchmark/pvisor/`；IR 代数性质由 `pvisor-control` 的 Rust 属性测试验证。
 benchmark 中依赖 `/proc` 和 Linux rootfs 工具的测试仅在 Linux 上运行。
 VM 文件系统检查在 Linux guest 内运行，需要 root、Python、pytest 和 tar；
 在仓库目录执行 `python3 -m pytest -q tests/test_vm_filesystem.py --guest-fs-dir /var/tmp --guest-fs-dir .`，
 分别检查 guest 根文件系统与挂载工作区。未指定目录时跳过，显式启用后检查失败会报错。
 
 需要指定 Rust 集成测试或过滤条件时，直接调用 nextest，例如：
-`cargo nextest run --locked -p persisting-gateway --test llm_fixtures`。
+`cargo nextest run --locked -p pvisor-gateway --test llm_fixtures`。
 nextest 不运行 doctest；需要时使用 `cargo test --doc -p <package>`。
 
 ## CI 分工
@@ -171,7 +171,7 @@ release 构建和隔离环境。网络/Gateway 示例在单独任务运行。
 
 ## VM guest 启动
 
-`persisting-guest` 同时提供共享的 `GuestConfig` 库和 `pvisor-guest` 可执行文件。
+`pvisor-guest` 同时提供共享的 `GuestConfig` 库和 `pvisor-guest` 可执行文件。
 构建 libkrun 的 `init-blob` feature 时，`vendor/libkrun/build.rs` 使用 Rust 自带
 `rust-lld`，按 VM 架构把 guest 编译成 release Linux musl ELF。
 独立的 `target/pvisor-guest/` 目录避免与外层 Cargo 构建争抢产物锁。

@@ -16,7 +16,7 @@ concurrency:
 jobs:
   validate:
     name: Validate release
-    if: github.repository == 'DeepLink-org/Persisting'
+    if: github.repository == 'DeepLink-org/pvisor'
     runs-on: ubuntu-latest
     timeout-minutes: 15
     outputs:

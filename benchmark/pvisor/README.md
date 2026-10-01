@@ -192,7 +192,7 @@ measure all involved processes in a dedicated cgroup instead.
 ## Links
 
 - [pVisor design](../../docs/src/en/design/index.md)
-- [`persisting-pvisor`](../../crates/persisting-pvisor/README.md)
+- [`pvisor`](../../crates/pvisor/README.md)
 
 ## Guest init comparison (Apple Silicon)
 

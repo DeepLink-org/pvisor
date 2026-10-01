@@ -92,8 +92,8 @@ package = "krun-input"
 [dependencies.libc]
 version = ">=0.2.39"
 
-[dependencies.persisting-overlay-core]
-path = "../../crates/persisting-overlay-core"
+[dependencies.pvisor-overlay-core]
+path = "../../crates/pvisor-overlay-core"
 
 [dependencies.libloading]
 version = "0.8"

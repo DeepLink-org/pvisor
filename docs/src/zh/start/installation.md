@@ -1,12 +1,8 @@
 # 安装指南
 
 PolicyVisor（pVisor）为 Agent CLI、脚本和自动化命令提供策略控制与可检查的执行记录。
-Python 包和 CLI 统一使用 `pvisor`。仓库链接、Rust crate 名称和
-`PERSISTING_*` 环境变量继续使用现有名称。
-
-如果之前安装了 `persisting`，请先执行 `python -m pip uninstall persisting`，
-再安装 `pvisor`（包括 nightly wheel）。两个发行包会安装到相同的 CLI 路径，
-不应在同一环境中并存。
+Python 包、CLI 和核心 Rust crate 统一使用 `pvisor`；其他 crate 使用 `pvisor-*`，
+环境变量使用 `PVISOR_*`。
 
 ## 1. 安装工具
 
@@ -57,14 +53,14 @@ libkrun VM executor 不需要 macFUSE。
 需要 `main` 最新构建时，可以使用 nightly wheel：
 
 ```bash
-curl -fsSL https://raw.githubusercontent.com/DeepLink-org/Persisting/main/scripts/install-nightly.sh | bash
+curl -fsSL https://raw.githubusercontent.com/DeepLink-org/pvisor/main/scripts/install-nightly.sh | bash
 ```
 
 本地开发时，从 checkout 安装 Python 包：
 
 ```bash
-git clone https://github.com/DeepLink-org/Persisting.git
-cd Persisting
+git clone https://github.com/DeepLink-org/pvisor.git
+cd pvisor
 pip install -e .
 ```
 
@@ -74,7 +70,7 @@ pip install -e .
 just install-cli
 ```
 
-只有在明确测试特定 pVisor 二进制时才设置 `PERSISTING_PVISOR_BIN`。排查 Provider 行为时，
+只有在明确测试特定 pVisor 二进制时才设置 `PVISOR_BIN`。排查 Provider 行为时，
 应尽量让 Python 包和 CLI 来自同一 revision。
 
 ## 4. 需要时启用 VM 或 OCI 执行

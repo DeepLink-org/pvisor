@@ -67,7 +67,7 @@ class StartupBenchmarkTests(unittest.TestCase):
             shim = scratch / "shim.py"
             shim.write_text(
                 "import json, os, pathlib, sys\n"
-                "root = pathlib.Path(os.environ['PERSISTING_RUN_HOME']) / 'run-test'\n"
+                "root = pathlib.Path(os.environ['PVISOR_RUN_HOME']) / 'run-test'\n"
                 "root.mkdir()\n"
                 "(root / 'run-bundle.json').write_text(json.dumps({'run': {"
                 "'state': 'completed', 'exit_code': 0, 'executor': "

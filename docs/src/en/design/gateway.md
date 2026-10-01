@@ -9,7 +9,7 @@ Agent → injected proxy/base URL → OverlayNet HTTP path
       → protocol adapters → capture engine → per-story actor → event sink
 ```
 
-The protocol adapters turn supported requests and responses into the shared `persisting-control` record vocabulary. The engine carries Run, Attempt, agent, session and story identities. A per-story actor serializes sink writes and updates the in-memory turn index after an append succeeds.
+The protocol adapters turn supported requests and responses into the shared `pvisor-control` record vocabulary. The engine carries Run, Attempt, agent, session and story identities. A per-story actor serializes sink writes and updates the in-memory turn index after an append succeeds.
 
 The public capture output uses `trace::Event` and the shared Journal. Mutable
 capture inputs are dialogue projection data, not a second event envelope.
@@ -40,10 +40,10 @@ Capture levels select how much payload is retained. Full payloads can include us
 
 | Component | Source area | Responsibility |
 | --- | --- | --- |
-| Protocol decoding and forwarding | `persisting-gateway` | Translate model protocols and observe calls |
-| Engine and story actors | `persisting-gateway/src/engine` | Journal commits, causal identity and turn projections |
-| Event vocabulary | `persisting-control` | Shared serializable records and sink contract |
-| Runtime integration | `persisting-pvisor` | Run lifecycle, route setup, event sink and shutdown |
-| Network path | `persisting-overlaynet` | Proxy transport and policy hooks |
+| Protocol decoding and forwarding | `pvisor-gateway` | Translate model protocols and observe calls |
+| Engine and story actors | `pvisor-gateway/src/engine` | Journal commits, causal identity and turn projections |
+| Event vocabulary | `pvisor-control` | Shared serializable records and sink contract |
+| Runtime integration | `pvisor` | Run lifecycle, route setup, event sink and shutdown |
+| Network path | `pvisor-overlaynet` | Proxy transport and policy hooks |
 
 Start with the [capture guide](../guides/capture.md). For network enforcement, see [OverlayNet](overlaynet.md); for execution records, see the [system architecture](architecture.md).

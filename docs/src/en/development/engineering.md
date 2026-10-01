@@ -10,15 +10,15 @@ package launches the packaged Rust binary; it is not a second runtime.
 
 | Location | Owns |
 |---|---|
-| `crates/persisting-pvisor/` | CLI, run orchestration, executors, image preparation and cache service |
-| `crates/persisting-control/` | Shared contracts, policies, AgentCtl messages, IR and event schemas |
-| `crates/persisting-gateway/` | Agent protocol forwarding, conversion, capture and projection |
-| `crates/persisting-overlay-core/` | FUSE-independent overlay operations and file access enforcement |
-| `crates/persisting-overlayfs/` | FUSE adapter and mounts |
-| `crates/persisting-overlaynet/` | Egress policy, HTTP proxy and VM virtio-net data plane |
-| `crates/persisting-guest/` | Linux PID 1 supervisor and the launch contract shared by VM executors |
-| `crates/persisting-tui/` | Standalone `pvisor-tui` terminal frontend |
-| `crates/persisting-replay/` | Replay planning, native agent adapters and continuation bridges |
+| `crates/pvisor/` | CLI, run orchestration, executors, image preparation and cache service |
+| `crates/pvisor-control/` | Shared contracts, policies, AgentCtl messages, IR and event schemas |
+| `crates/pvisor-gateway/` | Agent protocol forwarding, conversion, capture and projection |
+| `crates/pvisor-overlay-core/` | FUSE-independent overlay operations and file access enforcement |
+| `crates/pvisor-overlayfs/` | FUSE adapter and mounts |
+| `crates/pvisor-overlaynet/` | Egress policy, HTTP proxy and VM virtio-net data plane |
+| `crates/pvisor-guest/` | Linux PID 1 supervisor and the launch contract shared by VM executors |
+| `crates/pvisor-tui/` | Standalone `pvisor-tui` terminal frontend |
+| `crates/pvisor-replay/` | Replay planning, native agent adapters and continuation bridges |
 | `pvisor/`, `setup.py`, `scripts/packaging/` | Python launcher and wheel assembly |
 | `crates/*/tests/` | Rust integration tests; unit tests stay with their owning module |
 | `tests/` | Python packaging and repository workflow tests |
@@ -96,7 +96,7 @@ transport validation. Shared execution and journaling remain at the crate root.
 
 `Session` owns Attempt lifecycle and terminal publication. Shared
 network/file authorization lives in Control; overlay review/apply/recovery/drop
-lives in `persisting-overlay-core::apply`. Shared Overlay and model route configuration belongs to Control. Keep transport and mount ownership in drivers,
+lives in `pvisor-overlay-core::apply`. Shared Overlay and model route configuration belongs to Control. Keep transport and mount ownership in drivers,
 and move shared semantics into their existing owner when changing behavior.
 
 
@@ -146,7 +146,7 @@ count as deletion.
 (Gateway). With arguments, `just test` runs only the selected Rust packages.
 Use `just test-rust` for CI shards that should not invoke Python tests.
 
-Default pytest discovery covers `tests/` and `benchmark/pvisor/`; Rust property tests in `persisting-control` verify IR algebra laws.
+Default pytest discovery covers `tests/` and `benchmark/pvisor/`; Rust property tests in `pvisor-control` verify IR algebra laws.
 Benchmark tests requiring `/proc` and Linux rootfs tools run only on Linux.
 Guest filesystem checks require root, Python, pytest and tar inside a Linux VM.
 From the repository directory, run `python3 -m pytest -q tests/test_vm_filesystem.py --guest-fs-dir /var/tmp --guest-fs-dir .`
@@ -154,7 +154,7 @@ to check both the guest root filesystem and mounted workspace. Without directory
 once explicitly enabled, check failures are reported as errors.
 
 For individual Rust integration targets or filters, call nextest directly,
-for example `cargo nextest run --locked -p persisting-gateway --test llm_fixtures`.
+for example `cargo nextest run --locked -p pvisor-gateway --test llm_fixtures`.
 `cargo nextest` does not run doctests; use `cargo test --doc -p <package>` when needed.
 
 ## CI responsibilities
@@ -182,7 +182,7 @@ workflow. PR documentation builds cannot cancel a Pages deployment.
 
 ## VM guest bootstrap
 
-`persisting-guest` provides the shared `GuestConfig` library and the
+`pvisor-guest` provides the shared `GuestConfig` library and the
 `pvisor-guest` executable. When libkrun's `init-blob` feature is built,
 `vendor/libkrun/build.rs` compiles the executable in release mode for the VM
 architecture's Linux musl target, using Rust's bundled `rust-lld`. Its separate

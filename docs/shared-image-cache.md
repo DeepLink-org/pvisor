@@ -8,7 +8,7 @@ handling. File queries do not contact the registry.
 
 ## Code layout
 
-The implementation lives in `crates/persisting-pvisor/src/image/cache/`:
+The implementation lives in `crates/pvisor/src/image/cache/`:
 
 ```text
 cache/
@@ -48,15 +48,15 @@ pvisor cache stat sha256:YOUR_MANIFEST_DIGEST etc/os-release
 pvisor cache read sha256:YOUR_MANIFEST_DIGEST etc/os-release
 ```
 
-`PERSISTING_PVISOR_CACHE_SERVER` selects the endpoint for both clients and server.
+`PVISOR_CACHE_SERVER` selects the endpoint for both clients and server.
 `cache serve --listen` overrides it on the server. With no override the endpoint
-is `unix://<dirs::cache_dir()>/persisting/pvisor/cache.sock`:
+is `unix://<dirs::cache_dir()>/pvisor/cache.sock`:
 
-- macOS: `~/Library/Caches/persisting/pvisor/cache.sock`
-- Linux: `$XDG_CACHE_HOME/persisting/pvisor/cache.sock`, ordinarily
-  `~/.cache/persisting/pvisor/cache.sock`
+- macOS: `~/Library/Caches/pvisor/cache.sock`
+- Linux: `$XDG_CACHE_HOME/pvisor/cache.sock`, ordinarily
+  `~/.cache/pvisor/cache.sock`
 
-The server accepts `--image-store DIR` or `PERSISTING_PVISOR_IMAGE_STORE` for its
+The server accepts `--image-store DIR` or `PVISOR_IMAGE_STORE` for its
 existing OCI store. It does not auto-start.
 
 ## Automatic VM lazy loading
@@ -67,24 +67,24 @@ server selects lazy loading automatically; a missing socket or refused connectio
 (stale socket) uses the existing local OCI preparation path. Authentication,
 protocol and timeout errors are reported, not silently bypassed.
 
-An explicit `PERSISTING_PVISOR_CACHE_SERVER` requires that service to work.
-Set `PERSISTING_PVISOR_CACHE_SERVER=off` to force local preparation. Explicit
+An explicit `PVISOR_CACHE_SERVER` requires that service to work.
+Set `PVISOR_CACHE_SERVER=off` to force local preparation. Explicit
 rootfs directories and native container execution retain their existing behavior.
 
 The client mounts an immutable read-only FUSE lower (macFUSE FSKit on macOS;
 FUSE on Linux), retaining the existing VM writable upper. Metadata is fetched on demand and retained in memory during the mount. With a
 server that advertises `metadata_generation`, verified stat responses (including
 missing paths) and directory pages are also persisted under
-`<user-cache>/persisting/pvisor/metadata/v1/<endpoint-hash>/<manifest-digest>/<generation-hash>/`.
+`<user-cache>/pvisor/metadata/v1/<endpoint-hash>/<manifest-digest>/<generation-hash>/`.
 They survive VM exits; corrupt entries are fetched again. Older servers without
 a generation keep the previous in-memory-only behavior. Generation includes the
 server root directory identity and change time, so rebuilding the extracted root
 invalidates metadata containing old host inode numbers. Prepared roots must stay
 immutable; in-place edits below the root are not supported. Content is fetched in 1 MiB
-blocks into `<user-cache>/persisting/pvisor/blocks/<endpoint-hash>/<manifest-digest>/`,
+blocks into `<user-cache>/pvisor/blocks/<endpoint-hash>/<manifest-digest>/`,
 with per-file/per-block keys. On macOS, `<user-cache>` is `~/Library/Caches`;
 on Linux it is `$XDG_CACHE_HOME`, ordinarily `~/.cache`. This block cache is
-independent of `--image-store` and `PERSISTING_PVISOR_IMAGE_STORE`. Small files occupy one unpadded block; large files fetch only accessed blocks.
+independent of `--image-store` and `PVISOR_IMAGE_STORE`. Small files occupy one unpadded block; large files fetch only accessed blocks.
 Each mount retains verified content in a file-keyed memory cache, capped at
 64 MiB and 4096 blocks with FIFO eviction. Hot reads copy only the requested
 slice and do not reopen or rehash the disk block. On a memory miss, disk blocks
@@ -108,7 +108,7 @@ synchronously: a cache miss can delay unrelated filesystem requests. No explicit
 vCPU pause is used. Disk cache quotas/eviction, original OCI xattrs and asynchronous
 virtio-fs completions are not added by this implementation.
 
-The public Rust client is `persisting_pvisor::cache::CacheClient::from_env()`.
+The public Rust client is `pvisor::cache::CacheClient::from_env()`.
 It is blocking. `cache prepare/list/stat/read` continue to be explicit service
 commands and do not use the VM's local fallback policy.
 
@@ -122,15 +122,15 @@ For a remote server, use authenticated loopback TCP inside an SSH tunnel:
 
 ```sh
 # On the server: set a strong shared secret through your secret manager/shell.
-export PERSISTING_PVISOR_CACHE_TOKEN='YOUR_RANDOM_SECRET'
+export PVISOR_CACHE_TOKEN='YOUR_RANDOM_SECRET'
 pvisor cache serve --listen tcp://127.0.0.1:7447
 
 # On the client machine, keep this tunnel running:
 ssh -N -L 7447:127.0.0.1:7447 your-server
 
 # Client shell, using the same secret:
-export PERSISTING_PVISOR_CACHE_TOKEN='YOUR_RANDOM_SECRET'
-export PERSISTING_PVISOR_CACHE_SERVER=tcp://127.0.0.1:7447
+export PVISOR_CACHE_TOKEN='YOUR_RANDOM_SECRET'
+export PVISOR_CACHE_SERVER=tcp://127.0.0.1:7447
 pvisor cache prepare alpine:latest
 ```
 

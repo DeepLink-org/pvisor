@@ -85,39 +85,39 @@ jobs:
             os: ubuntu-latest
             shard: core
             packages: >-
-              persisting-journal
-              persisting-guest
-              persisting-control
-              persisting-overlay-core
-              persisting-overlayfs
-              persisting-overlaynet
-              persisting-replay
-              persisting-tui
+              pvisor-journal
+              pvisor-guest
+              pvisor-control
+              pvisor-overlay-core
+              pvisor-overlayfs
+              pvisor-overlaynet
+              pvisor-replay
+              pvisor-tui
             prepare_pvisor: false
           - platform: Linux
             os: ubuntu-latest
             shard: gateway
-            packages: persisting-gateway
+            packages: pvisor-gateway
             prepare_pvisor: false
           - platform: Linux
             os: ubuntu-latest
             shard: pvisor
-            packages: persisting-pvisor
+            packages: pvisor
             prepare_pvisor: true
           - platform: macOS
             os: macos-latest
             shard: workspace
             packages: >-
-              persisting-journal
-              persisting-guest
-              persisting-control
-              persisting-gateway
-              persisting-overlay-core
-              persisting-overlayfs
-              persisting-overlaynet
-              persisting-pvisor
-              persisting-replay
-              persisting-tui
+              pvisor-journal
+              pvisor-guest
+              pvisor-control
+              pvisor-gateway
+              pvisor-overlay-core
+              pvisor-overlayfs
+              pvisor-overlaynet
+              pvisor
+              pvisor-replay
+              pvisor-tui
             prepare_pvisor: true
     steps:
       - uses: actions/checkout@v4
@@ -141,13 +141,13 @@ jobs:
 
       - name: Test Journal without workspace feature unification
         if: matrix.shard == 'core'
-        run: just test persisting-journal
+        run: just test pvisor-journal
 
       - name: Run ${{ matrix.shard }} tests
         env:
           # GitHub-hosted Linux runners may disable unprivileged user
           # namespaces. The dedicated isolation job remains strict.
-          PERSISTING_TEST_ALLOW_NO_USERNS: "1"
+          PVISOR_TEST_ALLOW_NO_USERNS: "1"
         run: just test-rust ${{ matrix.packages }}
 
   pvisor-isolation-regression:
@@ -184,7 +184,7 @@ jobs:
 
       - name: Record isolated core budget
         run: |
-          cargo build --release --locked -p persisting-pvisor --bin pvisor
+          cargo build --release --locked -p pvisor --bin pvisor
           python3 scripts/ci/check_core_budget.py target/release/pvisor --max-dependencies 230 --max-workspace-lines 44919 --max-control-items 262 > target/pvisor-core-budget.json
       - uses: actions/upload-artifact@v4
         with:
@@ -193,7 +193,7 @@ jobs:
 
       - name: Run strict pVisor isolation regressions
         env:
-          PERSISTING_RUN_HOME: ${{ runner.temp }}/pvisor-isolation-runs
+          PVISOR_RUN_HOME: ${{ runner.temp }}/pvisor-isolation-runs
         run: just test-isolation
 
       - name: Run pVisor filesystem examples

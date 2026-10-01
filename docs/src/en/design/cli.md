@@ -87,8 +87,8 @@ surface belongs to the [CLI reference](../reference/cli.md).
 `pvisor` contains `run`, `status`, `kill`, `inspect`, `fork`, `apply`, and `drop`,
 plus help and `extensions`. The standalone core manages the full Job lifecycle.
 
-`pvisor-tui` belongs to `persisting-tui`; `pvisor-replay` belongs to
-`persisting-replay`. They depend on the core, which does not depend on them.
+`pvisor-tui` belongs to `pvisor-tui`; `pvisor-replay` belongs to
+`pvisor-replay`. They depend on the core, which does not depend on them.
 The cache frontend remains in the core package because executors still use OCI
 and lazy image caching. Wheels install all four executables together.
 

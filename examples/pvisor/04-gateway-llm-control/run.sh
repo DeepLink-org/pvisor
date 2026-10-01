@@ -17,7 +17,7 @@ sed \
   -e "s/127.0.0.1:19082/127.0.0.1:$admin_port/" \
   run.toml >"$work_dir/run.toml"
 
-export PERSISTING_RUN_HOME="$work_dir/runs"
+export PVISOR_RUN_HOME="$work_dir/runs"
 PYTHONDONTWRITEBYTECODE=1 MOCK_LLM_PORT="$mock_port" \
   python3 mock_llm.py >"$work_dir/mock.log" 2>&1 &
 mock_pid=$!
@@ -26,7 +26,7 @@ pvisor_wait_tcp "$mock_port"
 
 # Run the agent through pVisor's configured Gateway.
 "$pvisor_bin" run --config "$work_dir/run.toml" --stdio capture
-run_dir="$(find "$PERSISTING_RUN_HOME" -mindepth 1 -maxdepth 1 -type d -name 'run-*' -print -quit)"
+run_dir="$(find "$PVISOR_RUN_HOME" -mindepth 1 -maxdepth 1 -type d -name 'run-*' -print -quit)"
 test -n "$run_dir"
 
 # Print the upstream requests, Gateway counters, and captured conversation.

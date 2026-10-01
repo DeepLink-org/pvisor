@@ -2,7 +2,7 @@
 
 **PolicyVisor（pVisor）**为 Agent CLI、脚本和自动化命令提供策略约束下的可审查执行。它记录实际控制并暂存工作区改动；保留 stage 后可以先审查，再应用到项目。
 
-Python 包和 CLI 统一使用 `pvisor`，仓库链接继续使用现有的 `Persisting` 路径。
+Python 包和 CLI 统一使用 `pvisor`，仓库链接继续使用现有的 `pVisor` 路径。
 
 ## 完成第一个闭环
 

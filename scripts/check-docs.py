@@ -72,8 +72,8 @@ def check():
             if url.scheme or url.netloc:
                 continue
             target = unquote(url.path)
-            if target.startswith("/Persisting/"):
-                target = target[len("/Persisting") :]
+            if target.startswith("/pvisor/"):
+                target = target[len("/pvisor") :]
             dest = (
                 (
                     (ROOT / target.lstrip("/"))

@@ -96,25 +96,25 @@ RunSpec → resolve_run → RunPlan → prepare → RunExecutor::execute → tea
 每次候选改写授权、mock/deny 短路和通用披露检查均未接入生产，代数规范不证明这些已被实施。
 文件系统与网络控制由实际执行器、FUSE 和 OverlayNet 边界实施。
 
-IR 文本或 JSON 可通过 `persisting_control::ir::Expression` 解析和校验，但不会执行操作。
-关闭写入句柄后可用 `persisting_journal::Journal::read` 校验事实日志；
+IR 文本或 JSON 可通过 `pvisor_control::ir::Expression` 解析和校验，但不会执行操作。
+关闭写入句柄后可用 `pvisor_journal::Journal::read` 校验事实日志；
 `Event::to_text` 提供人读投影。
 
 ## 实现位置与验证
 
 | 模块 | 职责 |
 |---|---|
-| `persisting_control::ir` | 操作、包裹、规则、契约及文本编解码 |
-| `persisting_control::trace` | 公共事件、结构校验与可读投影 |
-| `persisting_pvisor::runtime` | RunSpec 准入、计划编译、执行器派发与收尾 |
-| `persisting_pvisor::trace` | 单写入者 journal、提交回执及恢复 |
+| `pvisor_control::ir` | 操作、包裹、规则、契约及文本编解码 |
+| `pvisor_control::trace` | 公共事件、结构校验与可读投影 |
+| `pvisor::runtime` | RunSpec 准入、计划编译、执行器派发与收尾 |
+| `pvisor::trace` | 单写入者 journal、提交回执及恢复 |
 
 测试覆盖解析往返、结构改写与规则证据，以及生产 Run 的准入拒绝、执行事实链、
 结果检查和 Journal 恢复。IR 属性测试验证结构规律，不代表通用表达式授权或真实驱动的执行证明。
 
 ```sh
-just test persisting-control
-just test persisting-pvisor
+just test pvisor-control
+just test pvisor
 ```
 
 生产 Run 入口已编译 RunPlan，并将请求、实际计划改写、派发和完成写成独立 Trace v3 事实。

@@ -241,6 +241,6 @@ guest 网络旁路。
 | VM 的 `proxy` 模式被拒绝 | 使用 `auto` 选择 smoltcp，或使用 `off` 让 guest 离线 |
 
 可以运行
-[`examples/pvisor/03-network-isolation`](https://github.com/DeepLink-org/Persisting/tree/main/examples/pvisor/03-network-isolation)
+[`examples/pvisor/03-network-isolation`](https://github.com/DeepLink-org/pvisor/tree/main/examples/pvisor/03-network-isolation)
 离线复现 allowlist、deny-all 和 direct-socket bypass。需要捕获 LLM 请求或配置模型路由时，
 继续阅读 [Capture 指南](capture.md)。

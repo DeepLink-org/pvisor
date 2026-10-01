@@ -24,7 +24,7 @@ pvisor run --overlaynet-deny-all -- \
 ```
 
 纯 OverlayNet 运行会将当前目录作为 Run 的项目关联路径；每次执行的 Run 记录和
-Bundle 则独立保存在 `PERSISTING_RUN_HOME` 下。
+Bundle 则独立保存在 `PVISOR_RUN_HOME` 下。
 
 `run.sh` 中的短 `bash -c` 只负责让 curl 显式读取 pVisor 注入的 `$HTTP_PROXY`。
 它把 allow、deny 和 direct 三次执行的 stdout、stderr 与退出码保存在工作目录中，便于

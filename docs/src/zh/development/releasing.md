@@ -19,14 +19,14 @@ PyPI。项目仍然以 Python wheel 交付，但不包含 PyO3 扩展，也不�
 2. 在 PyPI 发布设置中添加 pending Trusted Publisher：
    - PyPI project: `pvisor`
    - GitHub owner: `DeepLink-org`
-   - Repository: `Persisting`
+   - Repository: `pVisor`
    - Workflow: `release.yml`
    - Environment: `pypi`
 
 GitHub 中不存放 PyPI API token。pending publisher 可以在首次成功上传时
 创建项目，但不预留名称。
 
-PyPI 的 `pvisor` 项目需要独立配置 Trusted Publisher；旧 `persisting` 项目的
+PyPI 的 `pvisor` 项目需要独立配置 Trusted Publisher；旧 `pvisor` 项目的
 发布配置不会随改名自动迁移。首次推送发布 tag 前，确认具有 `pvisor` 的发布权限。
 
 ## 准备一次发布
@@ -58,7 +58,7 @@ CLI 并暂存 firmware。`setup.py` 把 wheel 标为
 平台相关，同时把 Python 与 ABI tag 保持为 `py3-none`。
 
 打包脚本会拉取 pinned 的 libkrun firmware 归档（Linux x86_64 与 Apple
-Silicon macOS），除非 `PERSISTING_LIBKRUNFW_PATH` 指向已有 payload。本地
+Silicon macOS），除非 `PVISOR_LIBKRUNFW_PATH` 指向已有 payload。本地
 wheel 构建必须走这些受支持路径之一；缺少 payload 是构建错误，而不是不完整
 的 wheel。
 

@@ -71,11 +71,11 @@ def prepare_rootfs(rootfs: Path, pvisor: Path) -> list[str]:
         target.parent.mkdir(parents=True, exist_ok=True)
         shutil.copy2(source, target, follow_symlinks=True)
         copied.append(str(source))
-    for name in ("dev", "proc", "sys", "tmp", "run", "opt/persisting", "etc"):
+    for name in ("dev", "proc", "sys", "tmp", "run", "opt/pvisor", "etc"):
         (rootfs / name).mkdir(parents=True, exist_ok=True)
     (rootfs / "etc/passwd").write_text("root:x:0:0:root:/root:/bin/sh\n")
     (rootfs / "etc/group").write_text("root:x:0:\n")
-    (rootfs / "opt/persisting/pvisor").touch()
+    (rootfs / "opt/pvisor").touch()
     env = tools[2]
     if env != Path("/usr/bin/env"):
         (rootfs / "usr/bin").mkdir(parents=True, exist_ok=True)

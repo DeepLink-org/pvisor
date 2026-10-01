@@ -1,6 +1,6 @@
 //! Portable copy-on-write overlay served directly over virtio-fs.
 //!
-//! The union semantics live in `persisting-overlay-core`; the existing
+//! The union semantics live in `pvisor-overlay-core`; the existing
 //! platform passthrough implementation is retained for Linux permission
 //! emulation and for the actual FUSE request I/O on each resolved layer.
 
@@ -13,7 +13,7 @@ use std::sync::atomic::{AtomicU64, Ordering};
 use std::sync::{Arc, Mutex};
 use std::time::Duration;
 
-use persisting_overlay_core::OverlayCore;
+use pvisor_overlay_core::OverlayCore;
 
 use super::super::linux_errno::linux_error;
 use super::bindings;
@@ -36,7 +36,7 @@ pub struct Config {
     pub work_dir: Option<String>,
     pub preimage_dir: Option<String>,
     pub excluded_paths: Vec<String>,
-    pub access_policy: persisting_overlay_core::FileAccessPolicy,
+    pub access_policy: pvisor_overlay_core::FileAccessPolicy,
     pub semantics: passthrough::PermissionSemantics,
 }
 
@@ -975,7 +975,7 @@ mod tests {
                 work_dir: None,
                 preimage_dir: None,
                 excluded_paths: vec![],
-                access_policy: persisting_overlay_core::FileAccessPolicy::new(
+                access_policy: pvisor_overlay_core::FileAccessPolicy::new(
                     vec!["private.key".into()],
                     vec![".env".into()],
                 )

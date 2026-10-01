@@ -10,10 +10,10 @@ authors = [
 ]
 
 [project.urls]
-Homepage = "https://deeplink-org.github.io/Persisting/"
-Documentation = "https://deeplink-org.github.io/Persisting/"
-Repository = "https://github.com/DeepLink-org/Persisting"
-Issues = "https://github.com/DeepLink-org/Persisting/issues"
+Homepage = "https://deeplink-org.github.io/pvisor/"
+Documentation = "https://deeplink-org.github.io/pvisor/"
+Repository = "https://github.com/DeepLink-org/pvisor"
+Issues = "https://github.com/DeepLink-org/pvisor/issues"
 
 [project.optional-dependencies]
 dev = [

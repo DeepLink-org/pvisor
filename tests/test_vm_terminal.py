@@ -37,7 +37,7 @@ def test_vm_bash_accepts_terminal_input(tmp_path, vm_bin, tui):
         stdin=slave,
         stdout=slave,
         stderr=slave,
-        env={**os.environ, "TERM": "xterm-256color", "PERSISTING_RUN_HOME": str(tmp_path / "runs")},
+        env={**os.environ, "TERM": "xterm-256color", "PVISOR_RUN_HOME": str(tmp_path / "runs")},
         preexec_fn=acquire_terminal,
     )
     os.close(slave)

@@ -243,7 +243,7 @@ def run_trial(
     (trial / "runs").mkdir()
     (trial / "config").mkdir()
     env = os.environ.copy()
-    env["PERSISTING_RUN_HOME"] = str(trial / "runs")
+    env["PVISOR_RUN_HOME"] = str(trial / "runs")
     env["XDG_CONFIG_HOME"] = str(trial / "config")
     command = expand_command(template, trial, workload)
     log = trial / "stderr.log"

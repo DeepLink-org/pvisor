@@ -164,8 +164,8 @@ pvisor replay --help
 如果需要测试尚未发布的 SandboxReplay 代码，可以在目标沙箱中从源码只安装 pVisor：
 
 ~~~bash
-git clone https://github.com/DeepLink-org/Persisting.git
-cd Persisting
+git clone https://github.com/DeepLink-org/pvisor.git
+cd pvisor
 just install-cli
 
 export PATH="${CARGO_HOME:-$HOME/.cargo}/bin:$PATH"

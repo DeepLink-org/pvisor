@@ -174,13 +174,13 @@ op=17 completed  ... => ok(bytes([...]))
 
 ## 6. 实现与验证
 
-数据契约位于 `persisting-control::ir`、`persisting-control::trace`，唯一事实日志位于
-`persisting-journal`。生产实现位于 `persisting-pvisor::runtime` 与 `executor`；
+数据契约位于 `pvisor-control::ir`、`pvisor-control::trace`，唯一事实日志位于
+`pvisor-journal`。生产实现位于 `pvisor::runtime` 与 `executor`；
 RunPlan 是既有 RunSpec 执行的计划与证据投影，不是第二个策略执行模型。
 
 验证分为两层：
 
-- [Rust 契约与属性测试](../crates/persisting-control/tests/ir_contracts.rs)：针对真实 IR 实现验证解析往返、上下文追加结合律、原请求保持、结构改写和规则证据。
+- [Rust 契约与属性测试](../crates/pvisor-control/tests/ir_contracts.rs)：针对真实 IR 实现验证解析往返、上下文追加结合律、原请求保持、结构改写和规则证据。
 - 生产 Run 测试：准入、事件链、结果校验和 Journal 恢复。
 
 代数检查不能证明生产授权、任意后缀执行、VM/远端组合或披露安全。若将来开放通用

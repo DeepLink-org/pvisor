@@ -1,5 +1,5 @@
 //! Paired init benchmark driver; built by guest_init.py against identical host crates.
-use persisting_overlaynet::{
+use pvisor_overlaynet::{
     BandwidthRegistry, EgressContext, EgressRuntime, NetworkConfig, NetworkPolicy,
 };
 use std::{ffi::CString, os::fd::AsRawFd, path::Path, sync::Arc};
@@ -81,19 +81,19 @@ fn main() {
         let policy = NetworkPolicy::compile(&NetworkConfig::default()).unwrap();
         let egress = EgressRuntime::with_bandwidth_registry(
             policy,
-            Arc::new(persisting_control::PolicyControlController),
+            Arc::new(pvisor_control::PolicyControlController),
             BandwidthRegistry::default(),
         );
         let config =
-            persisting_overlaynet::vm::VmNetworkConfig::new(egress, EgressContext::default());
-        let (backend, peer) = persisting_overlaynet::vm::VmNetwork::start(config).unwrap();
+            pvisor_overlaynet::vm::VmNetworkConfig::new(egress, EgressContext::default());
+        let (backend, peer) = pvisor_overlaynet::vm::VmNetwork::start(config).unwrap();
         unsafe {
             assert_eq!(
                 krun::krun_add_net_unixstream(
                     ctx,
                     std::ptr::null(),
                     peer.as_raw_fd(),
-                    persisting_overlaynet::vm::VM_MAC.as_ptr(),
+                    pvisor_overlaynet::vm::VM_MAC.as_ptr(),
                     0,
                     if old { 2 } else { 0 }
                 ),

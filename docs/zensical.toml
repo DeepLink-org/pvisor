@@ -1,12 +1,12 @@
 [project]
 site_name = "PolicyVisor"
 site_description = "Policy-governed, reviewable execution for Agents, scripts, and automation."
-site_url = "https://deeplink-org.github.io/Persisting/"
+site_url = "https://deeplink-org.github.io/pvisor/"
 docs_dir = "src"
 site_dir = "site"
 exclude_docs = ["installation.md", "stylesheets/reference-home.css"]
-repo_name = "DeepLink-org/Persisting"
-repo_url = "https://github.com/DeepLink-org/Persisting"
+repo_name = "DeepLink-org/pvisor"
+repo_url = "https://github.com/DeepLink-org/pvisor"
 extra_css = ["stylesheets/extra.css"]
 
 nav = [
@@ -51,8 +51,8 @@ accent = "custom"
 [project.extra]
 homepage = "en/"
 alternate = [
-  { name = "English", link = "/Persisting/en/", lang = "en" },
-  { name = "中文", link = "/Persisting/zh/", lang = "zh" },
+  { name = "English", link = "/pvisor/en/", lang = "en" },
+  { name = "中文", link = "/pvisor/zh/", lang = "zh" },
 ]
 
 [project.markdown_extensions]

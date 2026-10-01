@@ -72,7 +72,7 @@ def main():
             "--lib",
             "--locked",
             "-p",
-            "persisting-pvisor",
+            "pvisor",
             "--message-format=json",
         ],
         cwd=root,
@@ -112,7 +112,7 @@ def main():
         "-o",
         str(runner),
     ]
-    for name in ["krun", "persisting_overlaynet", "persisting_control"]:
+    for name in ["krun", "pvisor_overlaynet", "pvisor_control"]:
         command += ["--extern", f"{name}={libraries[name]}"]
     subprocess.run(command, env=compile_env, check=True)
     subprocess.run(
@@ -122,7 +122,7 @@ def main():
             "--sign",
             "-",
             "--entitlements",
-            str(root / "crates/persisting-pvisor/macos-hypervisor.entitlements"),
+            str(root / "crates/pvisor/macos-hypervisor.entitlements"),
             str(runner),
         ],
         check=True,

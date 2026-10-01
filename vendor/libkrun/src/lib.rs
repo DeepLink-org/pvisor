@@ -107,7 +107,7 @@ const INIT_PATH: &str = "/init.krun";
     feature = "init-blob",
     not(any(feature = "tee", feature = "aws-nitro"))
 ))]
-const DEFAULT_INIT_PAYLOAD: &[u8] = include_bytes!(env!("PERSISTING_GUEST_BINARY"));
+const DEFAULT_INIT_PAYLOAD: &[u8] = include_bytes!(env!("PVISOR_GUEST_BINARY"));
 
 #[cfg(all(
     feature = "init-blob",

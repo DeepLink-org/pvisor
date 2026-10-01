@@ -65,7 +65,7 @@ class BinaryScripts(Command):
 
 
 def wheel_scripts() -> list[str]:
-    if os.getenv("PERSISTING_SETUP_SKIP_NATIVE_SCRIPTS") == "1":
+    if os.getenv("PVISOR_SETUP_SKIP_NATIVE_SCRIPTS") == "1":
         return []
     if not WHEEL_SCRIPTS.is_dir():
         return []

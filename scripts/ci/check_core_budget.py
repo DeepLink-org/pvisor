@@ -14,11 +14,11 @@ parser.add_argument("--max-workspace-lines", type=int)
 parser.add_argument("--max-control-items", type=int)
 args = parser.parse_args()
 tree = subprocess.check_output(
-    ["cargo", "tree", "--locked", "-p", "persisting-pvisor", "--edges", "normal",
+    ["cargo", "tree", "--locked", "-p", "pvisor", "--edges", "normal",
      "--prefix", "none", "--format", "{p}"], text=True
 )
 packages = {" ".join(line.split()[:2]) for line in tree.splitlines() if line.strip()}
-forbidden = {"persisting-gateway", "persisting-replay", "persisting-tui", "vt100", "unicode-width"}
+forbidden = {"pvisor-gateway", "pvisor-replay", "pvisor-tui", "vt100", "unicode-width"}
 assert not forbidden & {package.split()[0] for package in packages}, "optional tools entered the core closure"
 names = {package.split()[0] for package in packages}
 workspace_lines = sum(
@@ -28,7 +28,7 @@ workspace_lines = sum(
 )
 public_item = re.compile(r"^\s*pub\s+(?:async\s+)?(?:struct|enum|trait|type|const|fn)\b", re.MULTILINE)
 control_items = sum(len(public_item.findall(source.read_text()))
-                    for source in Path("crates/persisting-control/src").rglob("*.rs"))
+                    for source in Path("crates/pvisor-control/src").rglob("*.rs"))
 metrics = {
     "rustc": subprocess.check_output(["rustc", "--version"], text=True).strip(),
     "dependencies": len(packages) - 1,

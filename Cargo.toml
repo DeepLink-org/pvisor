@@ -8,22 +8,22 @@ description = "Reviewable Agent execution boundary"
 [workspace]
 resolver = "3"
 members = [
-    "crates/persisting-control",
-    "crates/persisting-journal",
-    "crates/persisting-gateway",
-    "crates/persisting-pvisor",
-    "crates/persisting-tui",
-    "crates/persisting-guest",
-    "crates/persisting-replay",
-    "crates/persisting-shim",
-    "crates/persisting-overlayfs",
-    "crates/persisting-overlay-core",
-    "crates/persisting-overlaynet",
+    "crates/pvisor-control",
+    "crates/pvisor-journal",
+    "crates/pvisor-gateway",
+    "crates/pvisor",
+    "crates/pvisor-tui",
+    "crates/pvisor-guest",
+    "crates/pvisor-replay",
+    "crates/pvisor-shim",
+    "crates/pvisor-overlayfs",
+    "crates/pvisor-overlay-core",
+    "crates/pvisor-overlaynet",
 ]
 exclude = ["vendor/fuser", "vendor/libkrun", "vendor/krun-vmm", "vendor/krun-devices"]
 
 default-members = [
-    "crates/persisting-pvisor",
+    "crates/pvisor",
 ]
 
 [workspace.dependencies]
@@ -55,14 +55,14 @@ libc = "0.2"
 libloading = "0.8"
 libkrun = "=1.19.3"
 log = "0.4"
-persisting-guest = { path = "crates/persisting-guest" }
-persisting-journal = { path = "crates/persisting-journal" }
-persisting-control = { path = "crates/persisting-control" }
-persisting-gateway = { path = "crates/persisting-gateway", default-features = false }
-persisting-overlayfs = { path = "crates/persisting-overlayfs", default-features = false }
-persisting-overlay-core = { path = "crates/persisting-overlay-core" }
-persisting-overlaynet = { path = "crates/persisting-overlaynet" }
-persisting-replay = { path = "crates/persisting-replay" }
+pvisor-guest = { path = "crates/pvisor-guest" }
+pvisor-journal = { path = "crates/pvisor-journal" }
+pvisor-control = { path = "crates/pvisor-control" }
+pvisor-gateway = { path = "crates/pvisor-gateway", default-features = false }
+pvisor-overlayfs = { path = "crates/pvisor-overlayfs", default-features = false }
+pvisor-overlay-core = { path = "crates/pvisor-overlay-core" }
+pvisor-overlaynet = { path = "crates/pvisor-overlaynet" }
+pvisor-replay = { path = "crates/pvisor-replay" }
 pulsing-actor = { version = "0.1.2", default-features = false }
 proptest = "1"
 regex = "1"

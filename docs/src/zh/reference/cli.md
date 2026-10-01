@@ -497,7 +497,7 @@ default-deny 策略交给当前 driver。host/container 直接 socket 仍是 amb
 ```text
 project/                         # reusable workspace / default base
 
-~/.persisting/runs/
+~/.pvisor/runs/
 └── run-<uuid>/                  # one generated Run and default stage
     ├── run.json
     ├── run-bundle.json          # mode 0600; outcome + safety + changes + effects
@@ -547,12 +547,12 @@ staging 数据，但保留紧凑的 Run/Overlay 元数据、apply ledger 和 cap
 
 `pvisor cache serve` 在前台提供 OCI 镜像文件服务；`cache prepare IMAGE`、
 `cache list DIGEST [PATH]`、`cache stat DIGEST PATH` 和 `cache read DIGEST PATH`
-通过 `PERSISTING_PVISOR_CACHE_SERVER` 访问它。默认使用用户缓存目录下的
-`persisting/pvisor/cache.sock` Unix socket。服务端可用 `--image-store DIR`
+通过 `PVISOR_CACHE_SERVER` 访问它。默认使用用户缓存目录下的
+`pvisor/cache.sock` Unix socket。服务端可用 `--image-store DIR`
 指定已有 OCI store。文件读取支持分段和 SHA-256 校验。
 
 VM 镜像启动会自动探测默认 socket；服务可用时，将远程镜像挂为只读 FUSE lower，
 以 1 MiB 数据块按需读取并持久缓存。默认 socket 不存在或已失效时走本地 OCI 准备。
-显式指定服务端后连接失败会报错；`PERSISTING_PVISOR_CACHE_SERVER=off` 强制本地准备。
+显式指定服务端后连接失败会报错；`PVISOR_CACHE_SERVER=off` 强制本地准备。
 显式 rootfs 目录和原生 container executor 保持原有行为。
-完整协议、限制和 SSH 远程访问方式见 [共享镜像缓存协议](https://github.com/DeepLink-org/Persisting/blob/main/docs/shared-image-cache.md)。
+完整协议、限制和 SSH 远程访问方式见 [共享镜像缓存协议](https://github.com/DeepLink-org/pvisor/blob/main/docs/shared-image-cache.md)。

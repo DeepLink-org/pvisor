@@ -3,8 +3,8 @@
 **Policy-governed, reviewable execution.**  
 **策略约束下的可审查执行。**
 
-[![CI](https://github.com/DeepLink-org/Persisting/actions/workflows/ci.yml/badge.svg)](https://github.com/DeepLink-org/Persisting/actions/workflows/ci.yml)
-[![Documentation](https://img.shields.io/badge/docs-latest-blue)](https://deeplink-org.github.io/Persisting/)
+[![CI](https://github.com/DeepLink-org/pvisor/actions/workflows/ci.yml/badge.svg)](https://github.com/DeepLink-org/pvisor/actions/workflows/ci.yml)
+[![Documentation](https://img.shields.io/badge/docs-latest-blue)](https://deeplink-org.github.io/pvisor/)
 [![License: Apache-2.0](https://img.shields.io/badge/license-Apache--2.0-blue.svg)](LICENSE)
 
 **PolicyVisor**, abbreviated **pVisor**, is an execution layer for Agent CLIs,
@@ -17,7 +17,7 @@ runtime controls, and an inspectable execution record. `pvisor run` starts a
 Job; the flat `status`, `kill`, `inspect`, `fork`, `apply`, and `drop` commands
 act on it. On disk, Jobs retain the existing Run record and `run-*` IDs.
 
-![PolicyVisor execution and review workflow](docs/src/assets/diagrams/persisting/system-products.svg)
+![PolicyVisor execution and review workflow](docs/src/assets/diagrams/pvisor/system-products.svg)
 
 ## Define, execute, review
 
@@ -39,21 +39,17 @@ pip install pvisor
 pvisor --version
 ```
 
-PolicyVisor uses `pvisor` for both its Python package and CLI. Wheel filenames
-use `pvisor-<version>-py3-none-<platform>.whl`. Existing repository URLs,
-Rust crate names, and `PERSISTING_*` environment variables retain their current names.
-
-If you installed the earlier `persisting` distribution, uninstall it with
-`python -m pip uninstall persisting` before installing `pvisor`: both packages
-provide the same CLI path.
+PolicyVisor uses `pvisor` for its Python package, CLI and core Rust crate.
+Companion crates use `pvisor-*`; environment variables use `PVISOR_*`.
+Wheel filenames use `pvisor-<version>-py3-none-<platform>.whl`.
 
 The rolling nightly build installs the same command without a Rust toolchain:
 
 ```bash
-curl -fsSL https://raw.githubusercontent.com/DeepLink-org/Persisting/main/scripts/install-nightly.sh | bash
+curl -fsSL https://raw.githubusercontent.com/DeepLink-org/pvisor/main/scripts/install-nightly.sh | bash
 ```
 
-See the [installation guide](https://deeplink-org.github.io/Persisting/en/start/installation/)
+See the [installation guide](https://deeplink-org.github.io/pvisor/en/start/installation/)
 for platform requirements and executor setup.
 
 ## Run a command and review its changes
@@ -81,7 +77,7 @@ retains a changeset for review.
 Explicit writable mounts and application state outside the workspace can still
 write through to the host. The exact boundary is
 platform-dependent and recorded with the Job—consult the
-[execution guide](https://deeplink-org.github.io/Persisting/en/guides/execution/)
+[execution guide](https://deeplink-org.github.io/pvisor/en/guides/execution/)
 before treating it as a security boundary.
 
 `apply` and `drop` govern staged files. They cannot undo remote API calls,
@@ -99,11 +95,11 @@ logical checkpoints preserve staged filesystem state, not process memory.
 
 ## Documentation
 
-- [Choose a workflow](https://deeplink-org.github.io/Persisting/en/start/) — the path from install to a reviewed Job
-- [Your first Job](https://deeplink-org.github.io/Persisting/en/start/first-run/) — the run-review-apply loop
-- [PolicyVisor model](https://deeplink-org.github.io/Persisting/en/concepts/policyvisor/) — policy, controls, and evidence
-- [Project architecture](https://deeplink-org.github.io/Persisting/en/design/) — ownership and delivery boundaries
-- [中文文档](https://deeplink-org.github.io/Persisting/zh/start/) — 从安装到策略约束下的可审查执行
+- [Choose a workflow](https://deeplink-org.github.io/pvisor/en/start/) — the path from install to a reviewed Job
+- [Your first Job](https://deeplink-org.github.io/pvisor/en/start/first-run/) — the run-review-apply loop
+- [PolicyVisor model](https://deeplink-org.github.io/pvisor/en/concepts/policyvisor/) — policy, controls, and evidence
+- [Project architecture](https://deeplink-org.github.io/pvisor/en/design/) — ownership and delivery boundaries
+- [中文文档](https://deeplink-org.github.io/pvisor/zh/start/) — 从安装到策略约束下的可审查执行
 
 ## License
 

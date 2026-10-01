@@ -6,7 +6,7 @@ In Chinese, use **策略约束下的可审查执行。** The product covers Agen
 scripts, and automation commands; describe Agent-specific integrations as such.
 
 Use `pvisor` for the Python distribution, import package, and wheel filename
-prefix. Keep Rust crate names, `PERSISTING_*` environment variables, and existing
+prefix. Keep Rust crate names, `PVISOR_*` environment variables, and existing
 repository/deployment URLs accurate until they are migrated. Separate requested policy, installed controls, and observed
 results; distinguish ordinary host write-through from `--safe` staging and
 describe each executor's platform-dependent boundary.
@@ -24,7 +24,7 @@ just docs-build         # build docs/site and validate generated pages
 pages with Zensical's native Chinese theme and a translated navigation tree.
 Both use `docs/zensical.toml` as the navigation source. The language selector
 uses relative links to the corresponding article, so local preview and the
-GitHub Pages `/Persisting/` deployment both work. Keep locale paths paired;
+GitHub Pages `/pvisor/` deployment both work. Keep locale paths paired;
 `check-docs.py` checks their links, navigation and HTML language attributes.
 
 `docs/overrides/home.html` overrides the native content block for the full-width
@@ -64,7 +64,7 @@ broken links, missing anchors and invalid redirect targets.
 - [pVisor core contract v3 (Chinese)](pvisor-algebra.md): the semantic baseline for
   the core → events/logging → module migration sequence. Defines operations,
   outcomes, contexts, rewrite evaluation and backend obligations, including a
-  file-range contract and [Rust contract/property tests](../crates/persisting-control/tests/ir_contracts.rs).
+  file-range contract and [Rust contract/property tests](../crates/pvisor-control/tests/ir_contracts.rs).
   Runtime guarantees follow as each module adopts and tests these contracts.
 - [Operation-chain IR v3 and Trace v3 implementation (Chinese)](pvisor-ir.md): readable text,
   typed verification, ordered rewrites, backend contracts and durable trace facts.

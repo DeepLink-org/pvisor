@@ -63,7 +63,7 @@ def test_python_wheel_uses_setuptools_and_platform_builds() -> None:
     assert 'build = "cp312-*"' in contents
     assert 'manylinux-x86_64-image = "manylinux_2_28"' in contents
     assert 'archs = ["arm64"]' in contents
-    assert "PERSISTING_CARGO_ZIGBUILD" not in contents
+    assert "PVISOR_CARGO_ZIGBUILD" not in contents
     assert "cargo-zigbuild" in contents
 
 
@@ -162,7 +162,7 @@ def test_nightly_installer_selects_pvisor_wheel(tmp_path: Path, include_pvisor: 
         "elif sys.argv[1] == '-':\n"
         "    assets = [{'name': f'{name}-0.3.0-py3-none-{platform}.whl',\n"
         "               'browser_download_url': f'https://example.test/{name}-{platform}.whl'}\n"
-        f"              for name in {('persisting', 'pvisor') if include_pvisor else ('persisting',)!r}\n"
+        f"              for name in {('legacy-package', 'pvisor') if include_pvisor else ('legacy-package',)!r}\n"
         "              for platform in ('macosx_11_0_arm64', 'manylinux_2_28_x86_64')]\n"
         "    urllib.request.urlopen = lambda *a, **k: io.BytesIO(json.dumps({'assets': assets}).encode())\n"
         "    sys.argv = sys.argv[1:]\n"
@@ -190,11 +190,11 @@ def test_nightly_installer_selects_pvisor_wheel(tmp_path: Path, include_pvisor: 
     assert result.returncode == 0, result.stderr
     installs = (tmp_path / "pip.log").read_text()
     assert "https://example.test/pvisor-" in installs
-    assert "persisting" not in installs
+    assert "legacy-package" not in installs
     assert "pVisor 0.3.0" in result.stdout
 
 
-@pytest.mark.parametrize("name", ["persisting", "unrelated"])
+@pytest.mark.parametrize("name", ["legacy-package", "unrelated"])
 def test_release_artifacts_reject_wrong_distribution(tmp_path: Path, name: str) -> None:
     for platform in ("manylinux_2_28_x86_64", "macosx_11_0_arm64"):
         wheel = tmp_path / f"pvisor-1.2.3-py3-none-{platform}.whl"
@@ -338,7 +338,7 @@ def test_firmware_source_prefers_explicit_path(
 ) -> None:
     firmware = tmp_path / "libkrunfw.5.dylib"
     firmware.write_bytes(b"firmware")
-    monkeypatch.setenv("PERSISTING_LIBKRUNFW_PATH", str(tmp_path))
+    monkeypatch.setenv("PVISOR_LIBKRUNFW_PATH", str(tmp_path))
 
     source, name = wheel_stage._firmware_source(
         wheel_stage.BuildOptions(target="aarch64-apple-darwin")
@@ -354,7 +354,7 @@ def test_firmware_source_fetches_when_path_is_not_configured(
 ) -> None:
     firmware = tmp_path / "libkrunfw.5.dylib"
     firmware.write_bytes(b"firmware")
-    monkeypatch.delenv("PERSISTING_LIBKRUNFW_PATH", raising=False)
+    monkeypatch.delenv("PVISOR_LIBKRUNFW_PATH", raising=False)
     monkeypatch.setattr(wheel_stage, "_fetch_firmware", lambda _options, _name: firmware)
 
     source, name = wheel_stage._firmware_source(
@@ -369,8 +369,8 @@ def test_cargo_command_selects_static_musl_on_linux(monkeypatch):
     monkeypatch.setattr(wheel_stage.sys, "platform", "linux")
     monkeypatch.setattr(wheel_stage.platform, "machine", lambda: "x86_64")
     command = wheel_stage._cargo_command(wheel_stage.BuildOptions())
-    assert {"persisting-pvisor", "persisting-tui", "persisting-replay"} <= set(command)
-    assert "persisting-pvisor/gateway" in command
+    assert {"pvisor", "pvisor-tui", "pvisor-replay"} <= set(command)
+    assert "pvisor/gateway" in command
     assert command[:2] == ["cargo", "zigbuild"]
     assert command[command.index("--target") + 1] == "x86_64-unknown-linux-musl"
     with pytest.raises(RuntimeError, match="unsupported wheel target"):
@@ -415,7 +415,7 @@ def test_shim_vm_build_uses_static_musl():
         wheel_stage.BuildOptions(target="x86_64-unknown-linux-musl"), shim_vm=True
     )
     assert command[:2] == ["cargo", "zigbuild"]
-    assert command[command.index("-p") + 1] == "persisting-shim"
+    assert command[command.index("-p") + 1] == "pvisor-shim"
     assert command[command.index("--features") + 1] == "vm"
 
 

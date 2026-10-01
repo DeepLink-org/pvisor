@@ -17,15 +17,15 @@ def _stage(config_settings: Mapping[str, Any] | None, *, editable: bool) -> None
 
 
 def _without_native_scripts(hook, *args):
-    previous = os.environ.get("PERSISTING_SETUP_SKIP_NATIVE_SCRIPTS")
-    os.environ["PERSISTING_SETUP_SKIP_NATIVE_SCRIPTS"] = "1"
+    previous = os.environ.get("PVISOR_SETUP_SKIP_NATIVE_SCRIPTS")
+    os.environ["PVISOR_SETUP_SKIP_NATIVE_SCRIPTS"] = "1"
     try:
         return hook(*args)
     finally:
         if previous is None:
-            os.environ.pop("PERSISTING_SETUP_SKIP_NATIVE_SCRIPTS", None)
+            os.environ.pop("PVISOR_SETUP_SKIP_NATIVE_SCRIPTS", None)
         else:
-            os.environ["PERSISTING_SETUP_SKIP_NATIVE_SCRIPTS"] = previous
+            os.environ["PVISOR_SETUP_SKIP_NATIVE_SCRIPTS"] = previous
 
 
 def build_wheel(

@@ -34,7 +34,7 @@ jobs:
           path: docs/site
 
   deploy:
-    if: github.repository == 'DeepLink-org/Persisting' && github.ref == 'refs/heads/main' && github.event_name != 'pull_request'
+    if: github.repository == 'DeepLink-org/pvisor' && github.ref == 'refs/heads/main' && github.event_name != 'pull_request'
     needs: build
     concurrency:
       group: pages

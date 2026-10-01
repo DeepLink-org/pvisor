@@ -1969,7 +1969,7 @@ dependencies = [
  "log",
  "lru",
  "nix 0.30.1",
- "persisting-overlay-core",
+ "pvisor-overlay-core",
  "rand 0.9.4",
  "virtio-bindings",
  "vm-fdt",
@@ -2515,244 +2515,6 @@ source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "9b4f627cb1b25917193a259e49bdad08f671f8d9708acfd5fe0a8c1455d87220"
 
 [[package]]
-name = "persisting-control"
-version = "0.3.0"
-dependencies = [
- "anyhow",
- "globset",
- "ipnet",
- "proptest",
- "serde",
- "serde_json",
- "thiserror 2.0.18",
-]
-
-[[package]]
-name = "persisting-gateway"
-version = "0.3.0"
-dependencies = [
- "anyhow",
- "async-trait",
- "axum",
- "base64",
- "blake3",
- "bytes",
- "chrono",
- "dashmap",
- "dirs",
- "flate2",
- "futures-util",
- "hostname",
- "persisting-control",
- "persisting-journal",
- "persisting-overlaynet",
- "proptest",
- "pulsing-actor",
- "regex",
- "reqwest",
- "serde",
- "serde_json",
- "serde_yaml",
- "tempfile",
- "tokio",
- "tokio-stream",
- "toml",
- "tracing",
- "url",
- "uuid",
-]
-
-[[package]]
-name = "persisting-guest"
-version = "0.3.0"
-dependencies = [
- "libc",
- "serde",
- "serde_json",
-]
-
-[[package]]
-name = "persisting-journal"
-version = "0.3.0"
-dependencies = [
- "anyhow",
- "fs2",
- "libc",
- "persisting-control",
- "serde",
- "serde_json",
- "sha2 0.11.0",
- "tempfile",
- "thiserror 2.0.18",
- "tokio",
- "uuid",
-]
-
-[[package]]
-name = "persisting-overlay-core"
-version = "0.3.0"
-dependencies = [
- "anyhow",
- "fs2",
- "globset",
- "libc",
- "log",
- "persisting-control",
- "persisting-journal",
- "serde",
- "serde_json",
- "sha2 0.11.0",
- "tempfile",
- "thiserror 2.0.18",
- "uuid",
-]
-
-[[package]]
-name = "persisting-overlayfs"
-version = "0.3.0"
-dependencies = [
- "anyhow",
- "clap",
- "env_logger",
- "fuser",
- "libc",
- "log",
- "persisting-control",
- "persisting-overlay-core",
- "tempfile",
-]
-
-[[package]]
-name = "persisting-overlaynet"
-version = "0.3.0"
-dependencies = [
- "anyhow",
- "async-trait",
- "axum",
- "bytes",
- "futures-util",
- "http-body-util",
- "hyper",
- "hyper-util",
- "persisting-control",
- "proptest",
- "reqwest",
- "serde",
- "serde_json",
- "smoltcp",
- "thiserror 2.0.18",
- "tokio",
- "tracing",
-]
-
-[[package]]
-name = "persisting-pvisor"
-version = "0.3.0"
-dependencies = [
- "anyhow",
- "async-trait",
- "axum",
- "chrono",
- "clap",
- "dirs",
- "flate2",
- "fs2",
- "fuser",
- "globset",
- "libc",
- "libkrun",
- "libloading",
- "lru",
- "persisting-control",
- "persisting-gateway",
- "persisting-guest",
- "persisting-journal",
- "persisting-overlay-core",
- "persisting-overlayfs",
- "persisting-overlaynet",
- "proptest",
- "reqwest",
- "serde",
- "serde_json",
- "sha2 0.11.0",
- "tar",
- "tempfile",
- "thiserror 2.0.18",
- "tokio",
- "tokio-util",
- "toml",
- "toml_edit 0.22.27",
- "tracing",
- "uuid",
- "zstd",
-]
-
-[[package]]
-name = "persisting-replay"
-version = "0.3.0"
-dependencies = [
- "anyhow",
- "axum",
- "chrono",
- "clap",
- "fs2",
- "libc",
- "persisting-control",
- "persisting-journal",
- "persisting-pvisor",
- "reqwest",
- "serde",
- "serde_json",
- "sha2 0.11.0",
- "tempfile",
- "tokio",
- "toml",
- "uuid",
-]
-
-[[package]]
-name = "persisting-shim"
-version = "0.3.0"
-dependencies = [
- "anyhow",
- "async-trait",
- "containerd-shim",
- "containerd-shim-protos",
- "libc",
- "libkrun",
- "libloading",
- "log",
- "oci-spec 0.10.0",
- "persisting-guest",
- "serde",
- "serde_json",
- "tempfile",
- "thiserror 2.0.18",
- "tokio",
-]
-
-[[package]]
-name = "persisting-tui"
-version = "0.3.0"
-dependencies = [
- "anyhow",
- "clap",
- "dirs",
- "fs2",
- "libc",
- "persisting-control",
- "persisting-overlaynet",
- "persisting-pvisor",
- "serde",
- "serde_json",
- "tempfile",
- "toml",
- "toml_edit 0.22.27",
- "unicode-width",
- "vt100",
-]
-
-[[package]]
 name = "petgraph"
 version = "0.5.1"
 source = "registry+https://github.com/rust-lang/crates.io-index"
@@ -3034,6 +2796,244 @@ dependencies = [
  "tracing-opentelemetry",
  "tracing-subscriber",
  "uuid",
+]
+
+[[package]]
+name = "pvisor"
+version = "0.3.0"
+dependencies = [
+ "anyhow",
+ "async-trait",
+ "axum",
+ "chrono",
+ "clap",
+ "dirs",
+ "flate2",
+ "fs2",
+ "fuser",
+ "globset",
+ "libc",
+ "libkrun",
+ "libloading",
+ "lru",
+ "proptest",
+ "pvisor-control",
+ "pvisor-gateway",
+ "pvisor-guest",
+ "pvisor-journal",
+ "pvisor-overlay-core",
+ "pvisor-overlayfs",
+ "pvisor-overlaynet",
+ "reqwest",
+ "serde",
+ "serde_json",
+ "sha2 0.11.0",
+ "tar",
+ "tempfile",
+ "thiserror 2.0.18",
+ "tokio",
+ "tokio-util",
+ "toml",
+ "toml_edit 0.22.27",
+ "tracing",
+ "uuid",
+ "zstd",
+]
+
+[[package]]
+name = "pvisor-control"
+version = "0.3.0"
+dependencies = [
+ "anyhow",
+ "globset",
+ "ipnet",
+ "proptest",
+ "serde",
+ "serde_json",
+ "thiserror 2.0.18",
+]
+
+[[package]]
+name = "pvisor-gateway"
+version = "0.3.0"
+dependencies = [
+ "anyhow",
+ "async-trait",
+ "axum",
+ "base64",
+ "blake3",
+ "bytes",
+ "chrono",
+ "dashmap",
+ "dirs",
+ "flate2",
+ "futures-util",
+ "hostname",
+ "proptest",
+ "pulsing-actor",
+ "pvisor-control",
+ "pvisor-journal",
+ "pvisor-overlaynet",
+ "regex",
+ "reqwest",
+ "serde",
+ "serde_json",
+ "serde_yaml",
+ "tempfile",
+ "tokio",
+ "tokio-stream",
+ "toml",
+ "tracing",
+ "url",
+ "uuid",
+]
+
+[[package]]
+name = "pvisor-guest"
+version = "0.3.0"
+dependencies = [
+ "libc",
+ "serde",
+ "serde_json",
+]
+
+[[package]]
+name = "pvisor-journal"
+version = "0.3.0"
+dependencies = [
+ "anyhow",
+ "fs2",
+ "libc",
+ "pvisor-control",
+ "serde",
+ "serde_json",
+ "sha2 0.11.0",
+ "tempfile",
+ "thiserror 2.0.18",
+ "tokio",
+ "uuid",
+]
+
+[[package]]
+name = "pvisor-overlay-core"
+version = "0.3.0"
+dependencies = [
+ "anyhow",
+ "fs2",
+ "globset",
+ "libc",
+ "log",
+ "pvisor-control",
+ "pvisor-journal",
+ "serde",
+ "serde_json",
+ "sha2 0.11.0",
+ "tempfile",
+ "thiserror 2.0.18",
+ "uuid",
+]
+
+[[package]]
+name = "pvisor-overlayfs"
+version = "0.3.0"
+dependencies = [
+ "anyhow",
+ "clap",
+ "env_logger",
+ "fuser",
+ "libc",
+ "log",
+ "pvisor-control",
+ "pvisor-overlay-core",
+ "tempfile",
+]
+
+[[package]]
+name = "pvisor-overlaynet"
+version = "0.3.0"
+dependencies = [
+ "anyhow",
+ "async-trait",
+ "axum",
+ "bytes",
+ "futures-util",
+ "http-body-util",
+ "hyper",
+ "hyper-util",
+ "proptest",
+ "pvisor-control",
+ "reqwest",
+ "serde",
+ "serde_json",
+ "smoltcp",
+ "thiserror 2.0.18",
+ "tokio",
+ "tracing",
+]
+
+[[package]]
+name = "pvisor-replay"
+version = "0.3.0"
+dependencies = [
+ "anyhow",
+ "axum",
+ "chrono",
+ "clap",
+ "fs2",
+ "libc",
+ "pvisor",
+ "pvisor-control",
+ "pvisor-journal",
+ "reqwest",
+ "serde",
+ "serde_json",
+ "sha2 0.11.0",
+ "tempfile",
+ "tokio",
+ "toml",
+ "uuid",
+]
+
+[[package]]
+name = "pvisor-shim"
+version = "0.3.0"
+dependencies = [
+ "anyhow",
+ "async-trait",
+ "containerd-shim",
+ "containerd-shim-protos",
+ "libc",
+ "libkrun",
+ "libloading",
+ "log",
+ "oci-spec 0.10.0",
+ "pvisor-guest",
+ "serde",
+ "serde_json",
+ "tempfile",
+ "thiserror 2.0.18",
+ "tokio",
+]
+
+[[package]]
+name = "pvisor-tui"
+version = "0.3.0"
+dependencies = [
+ "anyhow",
+ "clap",
+ "dirs",
+ "fs2",
+ "libc",
+ "pvisor",
+ "pvisor-control",
+ "pvisor-overlaynet",
+ "serde",
+ "serde_json",
+ "tempfile",
+ "toml",
+ "toml_edit 0.22.27",
+ "unicode-width",
+ "vt100",
 ]
 
 [[package]]

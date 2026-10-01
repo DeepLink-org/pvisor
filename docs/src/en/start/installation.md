@@ -2,12 +2,8 @@
 
 PolicyVisor (pVisor) runs Agent CLIs, scripts, and automation commands with
 policy controls and an inspectable execution record. The CLI is `pvisor`;
-the Python package is also named `pvisor`. Existing repository URLs,
-crate names, and `PERSISTING_*` environment variables retain their current names.
-
-If you previously installed `persisting`, run `python -m pip uninstall persisting`
-before installing `pvisor` (including nightly wheels). Both distributions install
-the same CLI path, so they should not coexist in one environment.
+the Python package and core Rust crate are also named `pvisor`.
+Companion crates use `pvisor-*`; environment variables use `PVISOR_*`.
 
 ## 1. Install the tools
 
@@ -61,14 +57,14 @@ closed without falling back to a kernel backend or writing through. The libkrun 
 Use the nightly wheel when you need the latest build published from `main`:
 
 ```bash
-curl -fsSL https://raw.githubusercontent.com/DeepLink-org/Persisting/main/scripts/install-nightly.sh | bash
+curl -fsSL https://raw.githubusercontent.com/DeepLink-org/pvisor/main/scripts/install-nightly.sh | bash
 ```
 
 For local development, install the Python package from a checkout:
 
 ```bash
-git clone https://github.com/DeepLink-org/Persisting.git
-cd Persisting
+git clone https://github.com/DeepLink-org/pvisor.git
+cd pvisor
 pip install -e .
 ```
 
@@ -78,7 +74,7 @@ A source build of the CLI is also available:
 just install-cli
 ```
 
-Use `PERSISTING_PVISOR_BIN` only when you deliberately need to test a specific
+Use `PVISOR_BIN` only when you deliberately need to test a specific
 pVisor binary. Keep the Python package and CLI from the same revision when
 debugging provider behavior.
 
@@ -96,7 +92,7 @@ macOS requires an explicit Linux rootfs or image. `--image-store DIR` changes th
 local content-addressed cache, `--mount SOURCE[:TARGET]:ACCESS` exposes a path,
 and `--rootfs DIR` points to a prepared Linux rootfs. Linux hosts use KVM;
 Apple Silicon macOS hosts use HVF. Building the VM support from source on macOS
-uses the Rust `persisting-guest` supervisor; no C cross-compiler is needed.
+uses the Rust `pvisor-guest` supervisor; no C cross-compiler is needed.
 Source build prerequisites are listed in [Engineering notes](../development/engineering.md).
 
 Treat these options as a separate platform step. First complete the staged host

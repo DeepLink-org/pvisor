@@ -22,7 +22,7 @@ build profile="debug":
       binary="{{ target_dir }}/$1/$name"
       test -x "$binary"
       if [[ "$(uname -s)" == Darwin ]]; then
-        codesign --force --sign - --entitlements "{{ repo }}/crates/persisting-pvisor/macos-hypervisor.entitlements" "$binary"
+        codesign --force --sign - --entitlements "{{ repo }}/crates/pvisor/macos-hypervisor.entitlements" "$binary"
         codesign --verify --strict "$binary"
       fi
     done
@@ -58,7 +58,7 @@ wheel profile="release":
 
 # Check the product and its dependencies without producing a binary.
 check:
-    cargo check --locked -p persisting-pvisor
+    cargo check --locked -p pvisor
 
 # Format source files; use fmt-check for a read-only check.
 fmt: fmt-rust fmt-py
@@ -93,10 +93,10 @@ test-rust *packages:
     args=()
     for package in "$@"; do
       case "$package" in
-        pvisor) package=persisting-pvisor ;;
-        control|agentctl) package=persisting-control ;;
-        capture) package=persisting-gateway ;;
-        shim) package=persisting-shim ;;
+        pvisor) package=pvisor ;;
+        control|agentctl) package=pvisor-control ;;
+        capture) package=pvisor-gateway ;;
+        shim) package=pvisor-shim ;;
       esac
       args+=(-p "$package")
     done
@@ -105,8 +105,8 @@ test-rust *packages:
 
 # Cross-check the containerd shim for Linux; full builds need a Linux host.
 shim-check:
-    cargo check --locked -p persisting-shim --target x86_64-unknown-linux-musl
-    cargo clippy --locked -p persisting-shim --all-targets --target x86_64-unknown-linux-musl -- -D warnings
+    cargo check --locked -p pvisor-shim --target x86_64-unknown-linux-musl
+    cargo clippy --locked -p pvisor-shim --all-targets --target x86_64-unknown-linux-musl -- -D warnings
 
 # Build the static musl shim with the libkrun VM executor (needs zigbuild).
 shim-vm-build:
@@ -118,7 +118,7 @@ test-py *args:
 
 # Strict Linux rootless/FUSE regression: never skip missing user namespaces.
 test-isolation:
-    env -u PERSISTING_TEST_ALLOW_NO_USERNS cargo nextest run --locked -p persisting-pvisor --test rootless_local --test run_config_cli --no-capture
+    env -u PVISOR_TEST_ALLOW_NO_USERNS cargo nextest run --locked -p pvisor --test rootless_local --test run_config_cli --no-capture
 
 # Build the debug CLI and check its main command surfaces.
 smoke: build

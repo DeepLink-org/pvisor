@@ -1,6 +1,6 @@
 # Reproduce the Run lifecycle
 
-The [`examples/`](https://github.com/DeepLink-org/Persisting/tree/main/examples)
+The [`examples/`](https://github.com/DeepLink-org/pvisor/tree/main/examples)
 directory is organized by the pVisor CLI. Each `run.sh` manages its own `.work/`
 directory and reports durable outputs. Together they follow the documented
 sequence: execute, then govern effects.

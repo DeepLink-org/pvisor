@@ -1,0 +1,24 @@
+[package]
+name = "pvisor-overlay-core"
+version.workspace = true
+edition.workspace = true
+authors.workspace = true
+license.workspace = true
+description = "FUSE-neutral portable overlay filesystem core for pVisor"
+
+[dependencies]
+anyhow.workspace = true
+fs2.workspace = true
+globset.workspace = true
+pvisor-journal.workspace = true
+serde = { workspace = true, features = ["derive"] }
+thiserror.workspace = true
+uuid = { workspace = true, features = ["v4"] }
+libc.workspace = true
+log.workspace = true
+pvisor-control.workspace = true
+serde_json.workspace = true
+sha2.workspace = true
+
+[dev-dependencies]
+tempfile.workspace = true

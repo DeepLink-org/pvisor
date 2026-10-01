@@ -75,7 +75,7 @@ pvisor fork last -- codex
 `pvisor` 内置 `run`、`status`、`kill`、`inspect`、`fork`、`apply`、`drop`，
 另提供帮助与 `extensions` 列表。单独安装核心即可管理完整 Job 生命周期。
 
-`pvisor-tui` 属于 `persisting-tui`，`pvisor-replay` 属于 `persisting-replay`；
+`pvisor-tui` 属于 `pvisor-tui`，`pvisor-replay` 属于 `pvisor-replay`；
 它们依赖核心，核心不依赖它们。`pvisor-cache` 前端仍在核心包中，因为 OCI 与懒加载缓存
 仍由执行器使用。wheel 安装四个二进制到同一目录。
 

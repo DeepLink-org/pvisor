@@ -239,7 +239,7 @@ def benchmark(
         run_home = work / "runs"
         workspace.mkdir()
         run_env = os.environ.copy()
-        run_env["PERSISTING_RUN_HOME"] = str(run_home)
+        run_env["PVISOR_RUN_HOME"] = str(run_home)
 
         last_run: pathlib.Path | None = None
         for _ in range(config["warmups"]):

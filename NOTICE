@@ -1,9 +1,9 @@
-Persisting
+pVisor
 ==========
 
-Copyright 2026 Persisting contributors.
+Copyright 2026 pVisor contributors.
 
-Persisting first-party source code is licensed under the Apache License,
+pVisor first-party source code is licensed under the Apache License,
 Version 2.0. See the repository root `LICENSE` file.
 
 Third-party notices
@@ -28,21 +28,21 @@ modified copies of libkrun 1.19.3 and its VMM/device crates:
 https://github.com/containers/libkrun
 
 Copyright Red Hat, Inc. and the upstream authors and contributors. They are
-distributed under the Apache License, Version 2.0. Persisting's modifications
+distributed under the Apache License, Version 2.0. pVisor's modifications
 add the mountless copy-on-write virtio-fs backend used by pVisor and embed
-the first-party Rust guest supervisor from `crates/persisting-guest`.
+the first-party Rust guest supervisor from `crates/pvisor-guest`.
 
 agentgateway test fixtures
 --------------------------
 
-Regression fixtures under `crates/persisting-gateway/tests/fixtures/` may
+Regression fixtures under `crates/pvisor-gateway/tests/fixtures/` may
 include materials originally published under Apache-2.0 by the agentgateway
 project. Those files remain under their upstream Apache-2.0 terms as noted in
-`crates/persisting-gateway/tests/fixtures/README.md`.
+`crates/pvisor-gateway/tests/fixtures/README.md`.
 
 dldb
 ----
 
-The standalone Python package under `persisting/dldb` is distributed under
-its existing MIT license declaration and is excluded from the main Persisting
+The standalone Python package named `dldb` is distributed under
+its existing MIT license declaration and is excluded from the main pVisor
 Python wheel. Its package metadata identifies its original author.

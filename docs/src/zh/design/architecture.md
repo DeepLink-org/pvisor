@@ -6,13 +6,13 @@ PolicyVisor（pVisor）通过能力准入、执行器、运行时控制和执行
 
 | Crate | 职责 |
 | --- | --- |
-| `persisting-pvisor` | CLI、准入、Attempt 生命周期、执行器、Run Bundle、审查／应用／检查点 |
-| `persisting-control` | 运行与 Overlay 契约、能力策略、控制消息与客户端、共享事件记录 |
-| `persisting-overlay-core` | 写时复制、preimage、review/apply/recovery/drop 语义 |
-| `persisting-overlayfs` | 宿主 FUSE 适配器 |
-| `persisting-overlaynet` | 解析、代理转发与 VM 网络接入；消费 Control 策略 |
-| `persisting-gateway` | 模型路由、协议转换与捕获 |
-| `persisting-replay` | Agent 原生轨迹的回放与续跑适配 |
+| `pvisor` | CLI、准入、Attempt 生命周期、执行器、Run Bundle、审查／应用／检查点 |
+| `pvisor-control` | 运行与 Overlay 契约、能力策略、控制消息与客户端、共享事件记录 |
+| `pvisor-overlay-core` | 写时复制、preimage、review/apply/recovery/drop 语义 |
+| `pvisor-overlayfs` | 宿主 FUSE 适配器 |
+| `pvisor-overlaynet` | 解析、代理转发与 VM 网络接入；消费 Control 策略 |
+| `pvisor-gateway` | 模型路由、协议转换与捕获 |
+| `pvisor-replay` | Agent 原生轨迹的回放与续跑适配 |
 
 ## 执行链路
 
@@ -72,7 +72,7 @@ Session、workspace、user 与执行器基础网络策略共同约束权限：�
 
 ## 文件应用
 
-`persisting-control::overlay` 定义审查／应用记录、首次修改状态格式和本地 Run 检查消息。OverlayCore 负责文件指纹、日志、review/apply/recovery/drop；pVisor 处理请求并管理挂载。
+`pvisor-control::overlay` 定义审查／应用记录、首次修改状态格式和本地 Run 检查消息。OverlayCore 负责文件指纹、日志、review/apply/recovery/drop；pVisor 处理请求并管理挂载。
 
 OverlayCore 在首次修改时记录目标的原始状态。Apply 将选择扩展到必要的目录和硬链接成员，校验受影响的原始状态，写入持久化意图，更新目标，然后移除已经应用的 upper 条目。
 

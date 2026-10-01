@@ -22,7 +22,7 @@ class OneClickBenchmarkTests(unittest.TestCase):
             self.assertIn("/bin/sh", copied)
             self.assertTrue((rootfs / "bin/sh").is_file())
             self.assertTrue((rootfs / "usr/bin/sleep").is_file())
-            self.assertTrue((rootfs / "opt/persisting/pvisor").is_file())
+            self.assertTrue((rootfs / "opt/pvisor").is_file())
             self.assertFalse((rootfs / "etc/shadow").exists())
 
     def test_unavailable_vm_is_reported_while_direct_result_is_kept(self) -> None:

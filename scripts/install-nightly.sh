@@ -2,18 +2,18 @@
 # Install the latest pVisor nightly wheel from GitHub Releases (tag: nightly).
 #
 # Usage:
-#   curl -fsSL https://raw.githubusercontent.com/DeepLink-org/Persisting/main/scripts/install-nightly.sh | bash
-#   PERSISTING_GITHUB_REPO=DeepLink-org/Persisting PERSISTING_NIGHTLY_TAG=nightly ./scripts/install-nightly.sh
+#   curl -fsSL https://raw.githubusercontent.com/DeepLink-org/pvisor/main/scripts/install-nightly.sh | bash
+#   PVISOR_GITHUB_REPO=DeepLink-org/pvisor PVISOR_NIGHTLY_TAG=nightly ./scripts/install-nightly.sh
 #
 # Environment:
 #   PYTHON                   Python interpreter (default: python3)
-#   PERSISTING_GITHUB_REPO   owner/repo (default: DeepLink-org/Persisting)
-#   PERSISTING_NIGHTLY_TAG   release tag (default: nightly)
+#   PVISOR_GITHUB_REPO   owner/repo (default: DeepLink-org/pvisor)
+#   PVISOR_NIGHTLY_TAG   release tag (default: nightly)
 
 set -euo pipefail
 
-REPO="${PERSISTING_GITHUB_REPO:-DeepLink-org/Persisting}"
-TAG="${PERSISTING_NIGHTLY_TAG:-nightly}"
+REPO="${PVISOR_GITHUB_REPO:-DeepLink-org/pvisor}"
+TAG="${PVISOR_NIGHTLY_TAG:-nightly}"
 PYTHON="${PYTHON:-python3}"
 
 if ! command -v "$PYTHON" >/dev/null 2>&1; then
