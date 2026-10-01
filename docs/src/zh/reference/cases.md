@@ -25,8 +25,9 @@
 | 复用环境或准备轨迹回放 | L01–L02、M01 |
 | 验证终端界面与权限弹窗 | D06、M02 |
 
-每个场景都包含三层信息：命令是用户实际输入，正文说明适用场景和预期，
-折叠的断言是自动回归使用的实现检查。你可以只复制命令，也可以运行脚本做完整验证。
+每个场景保留用户命令、用途和预期；正式执行检查已迁入
+`tests/semantics/documented-cases.md`，使用 semspec 运行。原 A01–M02 文档编号
+保留用于查找，每个场景下方标有对应的 S-DOC ID。
 
 ## 如何使用
 
@@ -38,36 +39,40 @@ mkdir -p /tmp/pvisor-cases/workspace
 cd /tmp/pvisor-cases/workspace
 ```
 
-也可以让脚本逐条执行，并自动检查各例的结果：
+从仓库根目录运行自动检查：
 
 ```bash
-python3 scripts/run-pvisor-cases.py --list
-python3 scripts/run-pvisor-cases.py --pvisor target/release/pvisor --case A01,C01 --keep
-python3 scripts/run-pvisor-cases.py --pvisor target/release/pvisor --report target/pvisor-case-report.md
+just semspec list --domain DOC
+just cases --case S-DOC-001,S-DOC-012 --keep
+just cases
+just semspec show S-DOC-001
 ```
 
-脚本为每个 case 创建独立的临时 workspace，把文档中的 `/tmp/pvisor-cases`
-换成该 case 的目录。测试断言折叠在命令下方，由脚本执行，不需要手工复制。
-断言中的 `bundle_expect` 等函数由脚本提供，用于读取本次运行的
-`run-bundle.json` 和 `run.json`；它们不是 pVisor 命令。
+`just cases` 构建 release pVisor，运行全部 56 个 DOC 规格，输出 JSON 报告到
+`target/pvisor-case-report.json`。使用 S-DOC ID 选择 case；A01 对应 S-DOC-001，
+C01 对应 S-DOC-012。完整映射见 `tests/semantics/README.md`。也可以通过
+`just semspec run --domain DOC --subject-bin PATH` 使用已有二进制。
 
-case 注释中的 `requires` 描述运行环境；缺少前置条件时脚本将 case 标为 `SKIP`，并在
-`--run-unavailable` 下强制执行以便记录真实错误。`--keep` 保留现场；
-`--strict-skips` 可将跳过视为失败。Linux 未提供 rootfs 时，目录 rootfs case 使用宿主 `/` 进行 smoke test，
-这只能验证流程，不能代表独立的 guest rootfs，也不应作为生产隔离边界。
+每条规格把原来的命令、退出预期和全部断言放在同一个审核摘要内。预期非零退出必须
+实际发生并通过原断言，不作为 xfail。断言词汇来自 sealed `cases.sh`，读取当前 case
+的 `run-bundle.json`、`run.json` 和命令日志。pVisor 配置、Job 数据、环境存储及夹具都在
+临时 CASE_ROOT；失败保留现场，`--keep` 保留所有现场。缺少声明的前提条件报告 SKIP。
 
-| 测试资源 | 脚本配置 |
+新增规格保持 UNREVIEWED。检查成功不等于人工批准；人工完成规格、词汇和引擎审核后，
+才使用 `just cases --require-reviewed` 作为门禁。semspec 支持的选项以 `just semspec run --help`
+为准，旧 Python runner 的 `--list`、`--report`、`--run-unavailable` 和 `--strict-skips` 不再使用。
+
+| 测试资源 | 环境变量 |
 |---|---|
-| 已准备好的 Linux rootfs | `PVISOR_CASE_ROOTFS`，用于替换 `/path/to/rootfs`；未设置时 Linux 使用宿主 `/` |
-| VM 镜像引用 | `PVISOR_CASE_IMAGE`，用于替换 `/path/to/image`；未设置时使用 `ubuntu:latest` |
-| 容器镜像引用 | `PVISOR_CASE_CONTAINER_IMAGE`，用于替换 `alpine:latest`；未设置时使用 `ubuntu:latest`（与动态 pVisor ABI 兼容） |
-| OCI runtime | 安装 `crun`；F04 显式使用 `runc`，也需要安装它 |
-| 自定义 libkrunfw 目录 | `PVISOR_CASE_FIRMWARE`；未设置时脚本尝试查找本机缓存 |
-| VM 中要执行的 Agent | `PVISOR_CASE_AGENT`，用于替换 `/usr/local/bin/agent`；此路径必须在 guest 中也可执行 |
+| Linux rootfs | `PVISOR_CASE_ROOTFS`；Linux 未设置时使用宿主 `/`，仅验证流程，不代表独立 guest rootfs |
+| VM 镜像 | `PVISOR_CASE_IMAGE`；默认 `ubuntu:latest` |
+| 容器镜像 | `PVISOR_CASE_CONTAINER_IMAGE`；默认 `ubuntu:latest`，与动态 pVisor ABI 兼容 |
+| 自动选择的 OCI runtime | `PVISOR_CASE_CONTAINER_RUNTIME`；未设置时依次查找 crun/runc；F04 显式要求 runc |
+| VM 内 Agent | `PVISOR_CASE_AGENT`；需在 guest 中可执行 |
 
-Linux host stage 示例需要可用的 user/mount namespace。VM 示例需要可访问的
-`/dev/kvm`。容器需要本机 OCI runtime 具备实际启动容器的权限；
-装有 runtime 可执行文件本身并不保证权限齐备。
+Linux host stage 需要 user/mount namespace 和 FUSE，macOS stage 需要可用 macFUSE。
+VM 示例需要 Linux 和 `/dev/kvm`。OCI runtime 可执行文件存在不保证具备运行容器的权限。
+这些限制仍会由实际运行和断言检验，不自动当作测试通过。
 
 ## 可执行 Case
 
@@ -87,20 +92,7 @@ Linux host stage 示例需要可用的 user/mount namespace。VM 示例需要可
   pvisor -- /bin/pwd
   ```
 
-  <details>
-  <summary>自动回归断言（由脚本执行）</summary>
-
-  <!-- pvisor-assert -->
-
-  ```bash
-  stdout_has "$(cd "$PVISOR_CASE_WORKSPACE" && pwd -P)"
-  bundle_expect run.state completed
-  bundle_expect run.exit_code 0
-  bundle_expect run.agent pwd
-  bundle_expect network.policy.mode ambient
-  ```
-
-  </details>
+  自动检查见 `tests/semantics/documented-cases.md` 中的规格 `S-DOC-001`，命令为 `just cases --case S-DOC-001`。
 
 - [ ] **A02：显式 `run` 与省略形式等价**
 
@@ -115,18 +107,7 @@ Linux host stage 示例需要可用的 user/mount namespace。VM 示例需要可
   pvisor run -- /bin/pwd > explicit.txt
   ```
 
-  <details>
-  <summary>自动回归断言（由脚本执行）</summary>
-
-  <!-- pvisor-assert -->
-
-  ```bash
-  diff implicit.txt explicit.txt
-  test "$(cat implicit.txt)" = "$(cd "$PVISOR_CASE_WORKSPACE" && pwd -P)"
-  bundle_expect run.agent pwd
-  ```
-
-  </details>
+  自动检查见 `tests/semantics/documented-cases.md` 中的规格 `S-DOC-002`，命令为 `just cases --case S-DOC-002`。
 
 - [ ] **A03：Job 名称和 stdio capture**
 
@@ -140,18 +121,7 @@ Linux host stage 示例需要可用的 user/mount namespace。VM 示例需要可
   pvisor --name smoke --stdio capture -- /bin/sh -c 'printf hello'
   ```
 
-  <details>
-  <summary>自动回归断言（由脚本执行）</summary>
-
-  <!-- pvisor-assert -->
-
-  ```bash
-  bundle_expect run.agent smoke
-  bundle_expect run.output.stdout hello
-  bundle_expect run.output.stdout_truncated false
-  ```
-
-  </details>
+  自动检查见 `tests/semantics/documented-cases.md` 中的规格 `S-DOC-003`，命令为 `just cases --case S-DOC-003`。
 
 - [ ] **A04：超时**
 
@@ -161,24 +131,11 @@ Linux host stage 示例需要可用的 user/mount namespace。VM 示例需要可
 
   预期：pVisor 非零退出，运行结果的失败类型为 `deadline_exceeded`。
 
-  <!-- pvisor-case: expect=nonzero -->
-
   ```bash
   pvisor --timeout 100ms -- /bin/sleep 10
   ```
 
-  <details>
-  <summary>自动回归断言（由脚本执行）</summary>
-
-  <!-- pvisor-assert -->
-
-  ```bash
-  bundle_expect run.state failed
-  bundle_expect run.failure.kind deadline_exceeded
-  bundle_expect run.failure.retryable false
-  ```
-
-  </details>
+  自动检查见 `tests/semantics/documented-cases.md` 中的规格 `S-DOC-004`，命令为 `just cases --case S-DOC-004`。
 
 - [ ] **A05：严格执行模式拒绝 best-effort 边界**
 
@@ -192,22 +149,11 @@ Linux host stage 示例需要可用的 user/mount namespace。VM 示例需要可
   enforcement 证据而拒绝请求（`UnsupportedPolicy`）。此例验证 fail-closed，
   不代表 `--strict` 当前在任一 executor 上可达“更强沙箱已就绪”。
 
-  <!-- pvisor-case: expect=nonzero -->
-
   ```bash
   pvisor --strict --overlaynet-deny-all -- /bin/true
   ```
 
-  <details>
-  <summary>自动回归断言（由脚本执行）</summary>
-
-  <!-- pvisor-assert -->
-
-  ```bash
-  stdout_has "lacks enforced evidence for requested capability dimensions"
-  ```
-
-  </details>
+  自动检查见 `tests/semantics/documented-cases.md` 中的规格 `S-DOC-005`，命令为 `just cases --case S-DOC-005`。
 
 - [ ] **A06：显式环境投影**
 
@@ -221,18 +167,7 @@ Linux host stage 示例需要可用的 user/mount namespace。VM 示例需要可
   TEST_PVISOR_VALUE=visible pvisor --pass-env TEST_PVISOR_VALUE -- /usr/bin/env
   ```
 
-  <details>
-  <summary>自动回归断言（由脚本执行）</summary>
-
-  <!-- pvisor-assert -->
-
-  ```bash
-  stdout_has "TEST_PVISOR_VALUE=visible"
-  bundle_contains environment.projected_keys TEST_PVISOR_VALUE
-  bundle_expect environment.inherits_host false
-  ```
-
-  </details>
+  自动检查见 `tests/semantics/documented-cases.md` 中的规格 `S-DOC-006`，命令为 `just cases --case S-DOC-006`。
 
 - [ ] **A07：默认写入直接到 workspace**
 
@@ -244,17 +179,7 @@ Linux host stage 示例需要可用的 user/mount namespace。VM 示例需要可
   pvisor -- /bin/sh -c 'printf direct > direct.txt'
   ```
 
-  <details>
-  <summary>自动回归断言（由脚本执行）</summary>
-
-  <!-- pvisor-assert -->
-
-  ```bash
-  test "$(cat direct.txt)" = direct
-  record_expect overlay null
-  ```
-
-  </details>
+  自动检查见 `tests/semantics/documented-cases.md` 中的规格 `S-DOC-007`，命令为 `just cases --case S-DOC-007`。
 
 ### B. 资源限制
 
@@ -278,22 +203,7 @@ Linux host stage 示例需要可用的 user/mount namespace。VM 示例需要可
     -- /bin/true
   ```
 
-  <details>
-  <summary>自动回归断言（由脚本执行）</summary>
-
-  <!-- pvisor-assert -->
-
-  ```bash
-  bundle_expect resources.requested.memory_bytes 268435456
-  bundle_expect resources.requested.processes 32
-  bundle_expect resources.requested.cpu_time_ms 5000
-  bundle_expect resources.requested.open_files 128
-  bundle_expect resources.requested.file_size_bytes 1048576
-  bundle_expect resources.effective.file_size_bytes 1048576
-  bundle_contains resources.mechanisms rlimit
-  ```
-
-  </details>
+  自动检查见 `tests/semantics/documented-cases.md` 中的规格 `S-DOC-008`，命令为 `just cases --case S-DOC-008`。
 
 - [ ] **B02：文件大小限制实际生效**
 
@@ -303,25 +213,11 @@ Linux host stage 示例需要可用的 user/mount namespace。VM 示例需要可
 
   预期：写入命令失败，落盘文件如果存在，其大小不超过 1024 字节；运行结果记录进程退出失败。
 
-  <!-- pvisor-case: expect=nonzero -->
-
   ```bash
   pvisor --max-file-size 1KiB -- /bin/sh -c 'dd if=/dev/zero of=large bs=4096 count=1'
   ```
 
-  <details>
-  <summary>自动回归断言（由脚本执行）</summary>
-
-  <!-- pvisor-assert -->
-
-  ```bash
-  bundle_expect resources.requested.file_size_bytes 1024
-  bundle_expect run.state failed
-  bundle_expect run.failure.kind process_exit
-  test ! -f large || [ "$(wc -c < large)" -le 1024 ]
-  ```
-
-  </details>
+  自动检查见 `tests/semantics/documented-cases.md` 中的规格 `S-DOC-009`，命令为 `just cases --case S-DOC-009`。
 
 - [ ] **B03：内存参数短别名**
 
@@ -335,16 +231,7 @@ Linux host stage 示例需要可用的 user/mount namespace。VM 示例需要可
   pvisor --mem 256MiB -- /bin/true
   ```
 
-  <details>
-  <summary>自动回归断言（由脚本执行）</summary>
-
-  <!-- pvisor-assert -->
-
-  ```bash
-  bundle_expect resources.requested.memory_bytes 268435456
-  ```
-
-  </details>
+  自动检查见 `tests/semantics/documented-cases.md` 中的规格 `S-DOC-010`，命令为 `just cases --case S-DOC-010`。
 
 - [ ] **B04：Stage 总大小限制**
 
@@ -360,18 +247,7 @@ Linux host stage 示例需要可用的 user/mount namespace。VM 示例需要可
   pvisor --stage /tmp/pvisor-cases/limited-stage --overlayfs-max-size 1GiB -- /bin/true
   ```
 
-  <details>
-  <summary>自动回归断言（由脚本执行）</summary>
-
-  <!-- pvisor-assert -->
-
-  ```bash
-  bundle_expect filesystem.state staged
-  bundle_expect safety.filesystem_changes_staged true
-  record_expect storage "$(realpath "$PVISOR_CASE_ROOT/limited-stage")"
-  ```
-
-  </details>
+  自动检查见 `tests/semantics/documented-cases.md` 中的规格 `S-DOC-011`，命令为 `just cases --case S-DOC-011`。
 
 ### C. Stage 与 whole-rootfs
 
@@ -391,20 +267,7 @@ Linux host stage 示例需要可用的 user/mount namespace。VM 示例需要可
   pvisor --stage /tmp/pvisor-cases/stage-keep -- /bin/sh -c 'printf changed > result.txt'
   ```
 
-  <details>
-  <summary>自动回归断言（由脚本执行）</summary>
-
-  <!-- pvisor-assert -->
-
-  ```bash
-  bundle_expect filesystem.state staged
-  bundle_contains filesystem.changes result.txt
-  bundle_expect safety.filesystem_write_non_bypassable true
-  test ! -e result.txt
-  test -f "$PVISOR_CASE_ROOT/stage-keep/run-bundle.json"
-  ```
-
-  </details>
+  自动检查见 `tests/semantics/documented-cases.md` 中的规格 `S-DOC-012`，命令为 `just cases --case S-DOC-012`。
 
 - [ ] **C02：默认保留 stage**
 
@@ -420,19 +283,7 @@ Linux host stage 示例需要可用的 user/mount namespace。VM 示例需要可
   pvisor --safe -- /bin/sh -c 'printf changed > result.txt'
   ```
 
-  <details>
-  <summary>自动回归断言（由脚本执行）</summary>
-
-  <!-- pvisor-assert -->
-
-  ```bash
-  storage=$(dirname "$(grep -m1 '^Run Bundle: ' "$PVISOR_CASE_STDOUT" | cut -d' ' -f3-)")
-  test -n "$storage"
-  test -f "$storage/run-bundle.json"
-  test ! -e result.txt
-  ```
-
-  </details>
+  自动检查见 `tests/semantics/documented-cases.md` 中的规格 `S-DOC-013`，命令为 `just cases --case S-DOC-013`。
 
 - [ ] **C03：显式丢弃持久 stage 的改动**
 
@@ -449,18 +300,7 @@ Linux host stage 示例需要可用的 user/mount namespace。VM 示例需要可
   pvisor drop /tmp/pvisor-cases/stage-drop
   ```
 
-  <details>
-  <summary>自动回归断言（由脚本执行）</summary>
-
-  <!-- pvisor-assert -->
-
-  ```bash
-  record_expect overlay.state discarded "$PVISOR_CASE_ROOT/stage-drop"
-  test ! -e result.txt
-  test -f "$PVISOR_CASE_ROOT/stage-drop/run-bundle.json"
-  ```
-
-  </details>
+  自动检查见 `tests/semantics/documented-cases.md` 中的规格 `S-DOC-014`，命令为 `just cases --case S-DOC-014`。
 
 - [ ] **C04：显式 stage 保留已有目录内容**
 
@@ -476,17 +316,7 @@ Linux host stage 示例需要可用的 user/mount namespace。VM 示例需要可
   pvisor --stage /tmp/pvisor-cases/existing-stage -- /bin/true
   ```
 
-  <details>
-  <summary>自动回归断言（由脚本执行）</summary>
-
-  <!-- pvisor-assert -->
-
-  ```bash
-  test -f "$PVISOR_CASE_ROOT/existing-stage/user-file"
-  test -f "$PVISOR_CASE_ROOT/existing-stage/run-bundle.json"
-  ```
-
-  </details>
+  自动检查见 `tests/semantics/documented-cases.md` 中的规格 `S-DOC-015`，命令为 `just cases --case S-DOC-015`。
 
 - [ ] **C05：whole-rootfs 捕获与 tmpfs 隔离**
 
@@ -498,25 +328,12 @@ Linux host stage 示例需要可用的 user/mount namespace。VM 示例需要可
 
   预期：workspace 的改动出现在 stage，宿主 workspace 和宿主 `/tmp` 均不出现新文件。这里不验证 workspace 以外普通 rootfs 路径的持久化。
 
-  <!-- pvisor-case: requires=rootless -->
-
   ```bash
   pvisor --stage /tmp/pvisor-cases/root-stage -- /bin/sh -c \
     'printf workspace > ./workspace-change; printf tmp > /tmp/pvisor-root-change'
   ```
 
-  <details>
-  <summary>自动回归断言（由脚本执行）</summary>
-
-  <!-- pvisor-assert -->
-
-  ```bash
-  bundle_contains filesystem.changes workspace-change
-  test ! -e workspace-change
-  test ! -e /tmp/pvisor-root-change
-  ```
-
-  </details>
+  自动检查见 `tests/semantics/documented-cases.md` 中的规格 `S-DOC-016`，命令为 `just cases --case S-DOC-016`。
 
 - [ ] **C06：`--safe` 隔离 HOME 写入**
 
@@ -526,27 +343,13 @@ Linux host stage 示例需要可用的 user/mount namespace。VM 示例需要可
 
   预期：Agent 能在自己的 HOME 中读回刚写入的状态；宿主 HOME 没有该文件，workspace 的持久 stage 仍可审查。
 
-  <!-- pvisor-case: requires=rootless -->
-
   ```bash
   mkdir -p /tmp/pvisor-cases/home
   HOME=/tmp/pvisor-cases/home pvisor --safe --stage /tmp/pvisor-cases/safe-home -- \
     /bin/sh -c 'printf private > "$HOME/state"; cat "$HOME/state"'
   ```
 
-  <details>
-  <summary>自动回归断言（由脚本执行）</summary>
-
-  <!-- pvisor-assert -->
-
-  ```bash
-  stdout_has private
-  test ! -e "$PVISOR_CASE_ROOT/home/state"
-  bundle_expect filesystem.state staged "$PVISOR_CASE_ROOT/safe-home"
-  bundle_expect network.policy.mode allowlist "$PVISOR_CASE_ROOT/safe-home"
-  ```
-
-  </details>
+  自动检查见 `tests/semantics/documented-cases.md` 中的规格 `S-DOC-017`，命令为 `just cases --case S-DOC-017`。
 
 ### D. OverlayFS 与 Host 安全边界
 
@@ -585,20 +388,7 @@ workspace 和 user 规则写入 `~/.config/pvisor/config.toml` 的 `permissions`
     -- /bin/true
   ```
 
-  <details>
-  <summary>自动回归断言（由脚本执行）</summary>
-
-  <!-- pvisor-assert -->
-
-  ```bash
-  bundle_expect filesystem.state staged
-  record_expect overlay_lowers.0 "$(realpath "$PVISOR_CASE_ROOT/layer")"
-  record_expect overlay_lowers.1 "$(realpath "$PVISOR_CASE_ROOT/base")"
-  record_contains overlay_lowers.2 "$PVISOR_CASE_ROOT/composed-stage/.overlay-lowers/"
-  test -d "$(record_get overlay_lowers.2)"
-  ```
-
-  </details>
+  自动检查见 `tests/semantics/documented-cases.md` 中的规格 `S-DOC-018`，命令为 `just cases --case S-DOC-018`。
 
 - [ ] **D02：显式 host executor**
 
@@ -610,28 +400,11 @@ workspace 和 user 规则写入 `~/.config/pvisor/config.toml` 的 `permissions`
 
   预期：Linux 记录为 `rootless_process`，macOS 记录为 `sandboxed_process`；两者都不应降级为 host process。
 
-  <!-- pvisor-case -->
-
   ```bash
   pvisor --executor host -- /bin/true
   ```
 
-  <details>
-  <summary>自动回归断言（由脚本执行）</summary>
-
-  <!-- pvisor-assert -->
-
-  ```bash
-  bundle_expect run.executor.kind process
-  if [ "$(uname -s)" = "Darwin" ]; then
-    bundle_expect run.executor.isolation sandboxed_process
-  else
-    bundle_expect run.executor.isolation rootless_process
-  fi
-  bundle_expect safety.host_process false
-  ```
-
-  </details>
+  自动检查见 `tests/semantics/documented-cases.md` 中的规格 `S-DOC-019`，命令为 `just cases --case S-DOC-019`。
 
 - [ ] **D03：host stage 隐藏原 workspace**
 
@@ -643,26 +416,12 @@ workspace 和 user 规则写入 `~/.config/pvisor/config.toml` 的 `permissions`
 
   预期：cwd 指向 stage 的 merged 目录，输出中不出现原 workspace 路径。此例只检查路径显示，不证明所有原路径或继承 FD 访问都已被禁止。
 
-  <!-- pvisor-case: requires=rootless -->
-
   ```bash
   pvisor --stage /tmp/pvisor-cases/host-stage -- /bin/sh -c \
     'pwd; readlink /proc/self/root; readlink /proc/self/cwd' > views.txt
   ```
 
-  <details>
-  <summary>自动回归断言（由脚本执行）</summary>
-
-  <!-- pvisor-assert -->
-
-  ```bash
-  merged="$PVISOR_CASE_ROOT/host-stage/merged"
-  test "$(sed -n 1p views.txt)" = "$merged"
-  test "$(sed -n 3p views.txt)" = "$merged"
-  ! grep -Fq -- "$(cd "$PVISOR_CASE_WORKSPACE" && pwd -P)" views.txt
-  ```
-
-  </details>
+  自动检查见 `tests/semantics/documented-cases.md` 中的规格 `S-DOC-020`，命令为 `just cases --case S-DOC-020`。
 
 - [ ] **D04：显式拒绝敏感路径读取**
 
@@ -672,8 +431,6 @@ workspace 和 user 规则写入 `~/.config/pvisor/config.toml` 的 `permissions`
 
   预期：读取失败并记录拒绝规则；宿主文件保持原样。
 
-  <!-- pvisor-case: expect=nonzero requires=rootless -->
-
   ```bash
   mkdir -p private
   printf secret > private/token
@@ -681,19 +438,7 @@ workspace 和 user 规则写入 `~/.config/pvisor/config.toml` 的 `permissions`
     /bin/cat private/token
   ```
 
-  <details>
-  <summary>自动回归断言（由脚本执行）</summary>
-
-  <!-- pvisor-assert -->
-
-  ```bash
-  stdout_has 'pVisor file access denied'
-  bundle_expect filesystem.access_policy.deny.0 'private/**'
-  bundle_contains run_observation.filesystem.paths private/token
-  test "$(cat private/token)" = secret
-  ```
-
-  </details>
+  自动检查见 `tests/semantics/documented-cases.md` 中的规格 `S-DOC-021`，命令为 `just cases --case S-DOC-021`。
 
 - [ ] **D05：显式共享路径的直接写入**
 
@@ -703,24 +448,13 @@ workspace 和 user 规则写入 `~/.config/pvisor/config.toml` 的 `permissions`
 
   预期：共享目录的 `out` 直接写入宿主 lower；无需对它执行 `pvisor apply`。
 
-  <!-- pvisor-case: requires=rootless -->
-
   ```bash
   mkdir -p /tmp/pvisor-cases/shared
   pvisor --mount /tmp/pvisor-cases/shared:write -- \
     /bin/sh -c 'printf mounted > "$1"' sh /tmp/pvisor-cases/shared/out
   ```
 
-  <details>
-  <summary>自动回归断言（由脚本执行）</summary>
-
-  <!-- pvisor-assert -->
-
-  ```bash
-  test "$(cat "$PVISOR_CASE_ROOT/shared/out")" = mounted
-  ```
-
-  </details>
+  自动检查见 `tests/semantics/documented-cases.md` 中的规格 `S-DOC-022`，命令为 `just cases --case S-DOC-022`。
 
 - [ ] **D06：`ask` 弹窗与当前 Job 的目录授权**
 
@@ -729,8 +463,6 @@ workspace 和 user 规则写入 `~/.config/pvisor/config.toml` 的 `permissions`
   准备：Linux user/mount namespace 和 Python 3 可用。示例用伪终端自动输入 `2`、Enter；手工运行时在弹窗中选择后按 Enter 确认。
 
   预期：只出现一次文件授权弹窗，两个文件均可读取；`audit-policy.json` 保存目录规则，`audit.jsonl` 记录第二次自动允许。`--stage` 保留当前 Job 的审计记录，不会把选择变成全局配置。
-
-  <!-- pvisor-case: requires=rootless,python3 -->
 
   ```bash
   mkdir -p private
@@ -779,32 +511,7 @@ workspace 和 user 规则写入 `~/.config/pvisor/config.toml` 的 `permissions`
   PY
   ```
 
-  <details>
-  <summary>自动回归断言（由脚本执行）</summary>
-
-  <!-- pvisor-assert -->
-
-  ```bash
-  stdout_has 'ASK directory grant reused'
-  python3 - <<'PY'
-  import json
-  from pathlib import Path
-
-  stage = Path('/tmp/pvisor-cases/ask-stage')
-  policy = json.loads((stage / 'audit-policy.json').read_text())
-  assert any(rule['kind'] == 'file' and rule['scope'] == 'directory'
-             and rule['value'] == 'private' and rule['decision'] == 'allow'
-             for rule in policy['rules'])
-  decisions = [json.loads(line) for line in (stage / 'audit.jsonl').read_text().splitlines()]
-  assert any(item['request']['target'] == 'private/two.txt'
-             and item['decision'] == 'allow' and item['automatic']
-             for item in decisions)
-  PY
-  test "$(cat private/one.txt)" = ASK_ONE
-  test "$(cat private/two.txt)" = ASK_TWO
-  ```
-
-  </details>
+  自动检查见 `tests/semantics/documented-cases.md` 中的规格 `S-DOC-023`，命令为 `just cases --case S-DOC-023`。
 
 ### E. VM 与 rootfs
 
@@ -820,27 +527,11 @@ workspace 和 user 规则写入 `~/.config/pvisor/config.toml` 的 `permissions`
 
   预期：guest 输出与宿主 workspace 相同的绝对路径。运行结果标记为虚拟机，网络使用 pVisor 的 smoltcp 驱动。
 
-  <!-- pvisor-case: requires=linux,kvm -->
-
   ```bash
   pvisor --vm -- /bin/pwd > guest-cwd.txt
   ```
 
-  <details>
-  <summary>自动回归断言（由脚本执行）</summary>
-
-  <!-- pvisor-assert -->
-
-  ```bash
-  test "$(cat guest-cwd.txt)" = "$(cd "$PVISOR_CASE_WORKSPACE" && pwd -P)"
-  bundle_expect run.executor.kind virtual_machine
-  bundle_expect run.executor.isolation virtual_machine
-  bundle_expect network.interception.driver vm-smoltcp
-  bundle_expect network.interception.strength non-bypassable
-  bundle_expect safety.network_non_bypassable true
-  ```
-
-  </details>
+  自动检查见 `tests/semantics/documented-cases.md` 中的规格 `S-DOC-024`，命令为 `just cases --case S-DOC-024`。
 
 - [ ] **E02：显式 VM executor 与目录 rootfs**
 
@@ -852,23 +543,11 @@ workspace 和 user 规则写入 `~/.config/pvisor/config.toml` 的 `permissions`
 
   预期：虚拟机成功执行命令，guest cwd 与宿主 workspace 路径一致。
 
-  <!-- pvisor-case: requires=linux,kvm,rootfs -->
-
   ```bash
   pvisor --executor vm --rootfs /path/to/rootfs -- /bin/pwd > guest-cwd.txt
   ```
 
-  <details>
-  <summary>自动回归断言（由脚本执行）</summary>
-
-  <!-- pvisor-assert -->
-
-  ```bash
-  test "$(cat guest-cwd.txt)" = "$(cd "$PVISOR_CASE_WORKSPACE" && pwd -P)"
-  bundle_expect run.executor.isolation virtual_machine
-  ```
-
-  </details>
+  自动检查见 `tests/semantics/documented-cases.md` 中的规格 `S-DOC-025`，命令为 `just cases --case S-DOC-025`。
 
 - [ ] **E03：image rootfs**
 
@@ -880,23 +559,11 @@ workspace 和 user 规则写入 `~/.config/pvisor/config.toml` 的 `permissions`
 
   预期：镜像准备后启动 VM，guest 的工作目录与宿主 workspace 路径一致。
 
-  <!-- pvisor-case: requires=linux,kvm,image -->
-
   ```bash
   pvisor --vm --rootfs image=/path/to/image -- /bin/pwd > guest-cwd.txt
   ```
 
-  <details>
-  <summary>自动回归断言（由脚本执行）</summary>
-
-  <!-- pvisor-assert -->
-
-  ```bash
-  test "$(cat guest-cwd.txt)" = "$(cd "$PVISOR_CASE_WORKSPACE" && pwd -P)"
-  bundle_expect run.executor.isolation virtual_machine
-  ```
-
-  </details>
+  自动检查见 `tests/semantics/documented-cases.md` 中的规格 `S-DOC-026`，命令为 `just cases --case S-DOC-026`。
 
 - [ ] **E04：VM 资源配置**
 
@@ -908,8 +575,6 @@ workspace 和 user 规则写入 `~/.config/pvisor/config.toml` 的 `permissions`
 
   预期：VM 成功运行，内存请求记录为 2147483648 字节。CPU 数量未由本例断言核验。
 
-  <!-- pvisor-case: requires=linux,kvm,rootfs -->
-
   ```bash
   pvisor --vm \
     --rootfs /path/to/rootfs \
@@ -918,17 +583,7 @@ workspace 和 user 规则写入 `~/.config/pvisor/config.toml` 的 `permissions`
     -- /bin/true
   ```
 
-  <details>
-  <summary>自动回归断言（由脚本执行）</summary>
-
-  <!-- pvisor-assert -->
-
-  ```bash
-  bundle_expect run.executor.isolation virtual_machine
-  bundle_expect resources.requested.memory_bytes 2147483648
-  ```
-
-  </details>
+  自动检查见 `tests/semantics/documented-cases.md` 中的规格 `S-DOC-027`，命令为 `just cases --case S-DOC-027`。
 
 - [ ] **E05：VM workspace 与 whole-rootfs stage 组合**
 
@@ -940,8 +595,6 @@ workspace 和 user 规则写入 `~/.config/pvisor/config.toml` 的 `permissions`
 
   预期：guest cwd 保持一致，stage 保留在 `vm-stage`。本例只执行 `pwd`，验证路径和 stage 建立，不验证写入捕获。
 
-  <!-- pvisor-case: requires=linux,kvm,image -->
-
   ```bash
   pvisor --vm \
     --rootfs image=/path/to/image \
@@ -949,18 +602,7 @@ workspace 和 user 规则写入 `~/.config/pvisor/config.toml` 的 `permissions`
     -- /bin/pwd > guest-cwd.txt
   ```
 
-  <details>
-  <summary>自动回归断言（由脚本执行）</summary>
-
-  <!-- pvisor-assert -->
-
-  ```bash
-  test "$(cat guest-cwd.txt)" = "$(cd "$PVISOR_CASE_WORKSPACE" && pwd -P)"
-  bundle_expect filesystem.state staged
-  record_expect storage "$PVISOR_CASE_ROOT/vm-stage"
-  ```
-
-  </details>
+  自动检查见 `tests/semantics/documented-cases.md` 中的规格 `S-DOC-028`，命令为 `just cases --case S-DOC-028`。
 
 - [ ] **E06：拒绝 executor 冲突**
 
@@ -970,22 +612,11 @@ workspace 和 user 规则写入 `~/.config/pvisor/config.toml` 的 `permissions`
 
   预期：参数归一化阶段失败，错误信息明确指出 `--vm` 与非 VM executor 冲突。
 
-  <!-- pvisor-case: expect=nonzero -->
-
   ```bash
   pvisor --vm --executor host --rootfs host -- /bin/true
   ```
 
-  <details>
-  <summary>自动回归断言（由脚本执行）</summary>
-
-  <!-- pvisor-assert -->
-
-  ```bash
-  stdout_has "--vm cannot be combined with a non-vm --executor"
-  ```
-
-  </details>
+  自动检查见 `tests/semantics/documented-cases.md` 中的规格 `S-DOC-029`，命令为 `just cases --case S-DOC-029`。
 
 ### F. Container
 
@@ -1007,24 +638,11 @@ workspace 和 user 规则写入 `~/.config/pvisor/config.toml` 的 `permissions`
 
   预期：pVisor 准备 OCI bundle、注入自身并执行 `/bin/true`，运行结果记录为 container 且退出码为 0。
 
-  <!-- pvisor-case: requires=container -->
-
   ```bash
   pvisor --container-image alpine:latest -- /bin/true
   ```
 
-  <details>
-  <summary>自动回归断言（由脚本执行）</summary>
-
-  <!-- pvisor-assert -->
-
-  ```bash
-  bundle_expect run.executor.kind container
-  bundle_expect run.state completed
-  bundle_expect run.exit_code 0
-  ```
-
-  </details>
+  自动检查见 `tests/semantics/documented-cases.md` 中的规格 `S-DOC-030`，命令为 `just cases --case S-DOC-030`。
 
 - [ ] **F02：container rootfs 与隔离网络**
 
@@ -1036,25 +654,13 @@ workspace 和 user 规则写入 `~/.config/pvisor/config.toml` 的 `permissions`
 
   预期：容器中的 `/bin/true` 成功退出。此命令不发起网络请求，因此断言只检查启动成功，不验证网络是否能被绕过。
 
-  <!-- pvisor-case: requires=container -->
-
   ```bash
   pvisor --container-image alpine:latest \
     --container-network none \
     -- /bin/true
   ```
 
-  <details>
-  <summary>自动回归断言（由脚本执行）</summary>
-
-  <!-- pvisor-assert -->
-
-  ```bash
-  bundle_expect run.executor.kind container
-  bundle_expect run.state completed
-  ```
-
-  </details>
+  自动检查见 `tests/semantics/documented-cases.md` 中的规格 `S-DOC-031`，命令为 `just cases --case S-DOC-031`。
 
 - [ ] **F03：使用宿主 rootfs 的 OCI bundle**
 
@@ -1066,8 +672,6 @@ workspace 和 user 规则写入 `~/.config/pvisor/config.toml` 的 `permissions`
 
   预期：以指定目录作为容器根文件系统执行命令，不需要配置镜像仓库。使用专用测试 rootfs，不要把宿主 `/` 当作此例的测试目录。
 
-  <!-- pvisor-case: requires=container-runtime,linux -->
-
   ```bash
   pvisor --executor container \
     --rootfs host \
@@ -1075,17 +679,7 @@ workspace 和 user 规则写入 `~/.config/pvisor/config.toml` 的 `permissions`
     -- /bin/true
   ```
 
-  <details>
-  <summary>自动回归断言（由脚本执行）</summary>
-
-  <!-- pvisor-assert -->
-
-  ```bash
-  bundle_expect run.executor.kind container
-  bundle_expect run.state completed
-  ```
-
-  </details>
+  自动检查见 `tests/semantics/documented-cases.md` 中的规格 `S-DOC-032`，命令为 `just cases --case S-DOC-032`。
 
 - [ ] **F04：显式 OCI runtime 与高级 container 参数**
 
@@ -1096,8 +690,6 @@ workspace 和 user 规则写入 `~/.config/pvisor/config.toml` 的 `permissions`
   准备：OCI runtime 可运行，并为脚本设置 PVISOR_CASE_CONTAINER_IMAGE。
 
   预期：容器成功退出。`read_only=false` 使绑定目录可写，即使 rootfs 只读；`--container-workdir` 在 Run 没有 cwd 时才作为回退。此例仅检查组合启动，未分别检查用户身份和读写行为。
-
-  <!-- pvisor-case: requires=container -->
 
   ```bash
   pvisor --executor container \
@@ -1113,17 +705,7 @@ workspace 和 user 规则写入 `~/.config/pvisor/config.toml` 的 `permissions`
     -- /bin/true
   ```
 
-  <details>
-  <summary>自动回归断言（由脚本执行）</summary>
-
-  <!-- pvisor-assert -->
-
-  ```bash
-  bundle_expect run.executor.kind container
-  bundle_expect run.state completed
-  ```
-
-  </details>
+  自动检查见 `tests/semantics/documented-cases.md` 中的规格 `S-DOC-033`，命令为 `just cases --case S-DOC-033`。
 
 ### G. OverlayNet
 
@@ -1145,18 +727,7 @@ workspace 和 user 规则写入 `~/.config/pvisor/config.toml` 的 `permissions`
   pvisor --overlaynet -- /bin/true
   ```
 
-  <details>
-  <summary>自动回归断言（由脚本执行）</summary>
-
-  <!-- pvisor-assert -->
-
-  ```bash
-  bundle_expect network.interception.driver explicit-proxy
-  bundle_expect network.interception.strength cooperative
-  bundle_contains artifacts capture
-  ```
-
-  </details>
+  自动检查见 `tests/semantics/documented-cases.md` 中的规格 `S-DOC-034`，命令为 `just cases --case S-DOC-034`。
 
 - [ ] **G02：自定义 proxy 监听地址**
 
@@ -1170,17 +741,7 @@ workspace 和 user 规则写入 `~/.config/pvisor/config.toml` 的 `permissions`
   pvisor --overlaynet-listen 127.0.0.1:18080 -- /bin/true
   ```
 
-  <details>
-  <summary>自动回归断言（由脚本执行）</summary>
-
-  <!-- pvisor-assert -->
-
-  ```bash
-  record_expect overlaynet_listen 127.0.0.1:18080
-  bundle_expect network.interception.driver explicit-proxy
-  ```
-
-  </details>
+  自动检查见 `tests/semantics/documented-cases.md` 中的规格 `S-DOC-035`，命令为 `just cases --case S-DOC-035`。
 
 - [ ] **G03：allow、deny 和带宽限制组合**
 
@@ -1197,21 +758,7 @@ workspace 和 user 规则写入 `~/.config/pvisor/config.toml` 的 `permissions`
     -- /bin/true
   ```
 
-  <details>
-  <summary>自动回归断言（由脚本执行）</summary>
-
-  <!-- pvisor-assert -->
-
-  ```bash
-  bundle_expect network.policy.mode allowlist
-  bundle_expect network.policy.rules.0.host api.example.com
-  bundle_expect network.policy.rules.0.ports.0 443
-  bundle_expect network.policy.deny_rules.0.host 10.0.0.0/8
-  bundle_expect network.policy.limits.0.host api.example.com
-  bundle_expect network.policy.limits.0.bytes_per_second 125000
-  ```
-
-  </details>
+  自动检查见 `tests/semantics/documented-cases.md` 中的规格 `S-DOC-036`，命令为 `just cases --case S-DOC-036`。
 
 - [ ] **G04：deny-all 不可通过环境变量绕过**
 
@@ -1223,25 +770,12 @@ workspace 和 user 规则写入 `~/.config/pvisor/config.toml` 的 `permissions`
 
   预期：命令失败，结果记录 no-network 和不可绕过边界。外网自身不可用也会使 curl 失败，因此本例不能单独证明隔离有效。
 
-  <!-- pvisor-case: expect=nonzero requires=curl -->
-
   ```bash
   pvisor --overlaynet-deny-all -- /bin/sh -c \
     'unset HTTP_PROXY HTTPS_PROXY ALL_PROXY http_proxy https_proxy all_proxy; curl --max-time 2 https://example.com'
   ```
 
-  <details>
-  <summary>自动回归断言（由脚本执行）</summary>
-
-  <!-- pvisor-assert -->
-
-  ```bash
-  bundle_expect network.policy.mode no-network
-  bundle_expect safety.network_non_bypassable true
-  bundle_expect run.state failed
-  ```
-
-  </details>
+  自动检查见 `tests/semantics/documented-cases.md` 中的规格 `S-DOC-037`，命令为 `just cases --case S-DOC-037`。
 
 - [ ] **G05：VM OverlayNet auto**
 
@@ -1253,23 +787,11 @@ workspace 和 user 规则写入 `~/.config/pvisor/config.toml` 的 `permissions`
 
   预期：记录为 vm-smoltcp 和 non-bypassable，而不是 host 的协作式代理。
 
-  <!-- pvisor-case: requires=linux,kvm,rootfs -->
-
   ```bash
   pvisor --vm --rootfs /path/to/rootfs -- /bin/true
   ```
 
-  <details>
-  <summary>自动回归断言（由脚本执行）</summary>
-
-  <!-- pvisor-assert -->
-
-  ```bash
-  bundle_expect network.interception.driver vm-smoltcp
-  bundle_expect network.interception.strength non-bypassable
-  ```
-
-  </details>
+  自动检查见 `tests/semantics/documented-cases.md` 中的规格 `S-DOC-038`，命令为 `just cases --case S-DOC-038`。
 
 - [ ] **G06：关闭 OverlayNet 时拒绝策略参数**
 
@@ -1279,22 +801,11 @@ workspace 和 user 规则写入 `~/.config/pvisor/config.toml` 的 `permissions`
 
   预期：启动前失败，错误提示策略需要 `auto` 或 `proxy`。如果只想关闭 OverlayNet，请不要附带 allow/deny/limit。
 
-  <!-- pvisor-case: expect=nonzero -->
-
   ```bash
   pvisor --overlaynet off --overlaynet-allow example.com:443 -- /bin/true
   ```
 
-  <details>
-  <summary>自动回归断言（由脚本执行）</summary>
-
-  <!-- pvisor-assert -->
-
-  ```bash
-  stdout_has "OverlayNet policy options require --overlaynet auto or proxy"
-  ```
-
-  </details>
+  自动检查见 `tests/semantics/documented-cases.md` 中的规格 `S-DOC-039`，命令为 `just cases --case S-DOC-039`。
 
 - [ ] **G07：审查被代理拒绝的具体目标**
 
@@ -1304,24 +815,12 @@ workspace 和 user 规则写入 `~/.config/pvisor/config.toml` 的 `permissions`
 
   预期：curl 请求失败；`status --review` 的 Network access observations 可指出 `blocked.example:80` 被拒绝。host proxy 是协作式边界，本例只证明经过代理的请求被拦截。
 
-  <!-- pvisor-case: expect=nonzero requires=curl -->
-
   ```bash
   pvisor --overlaynet-deny blocked.example -- /bin/sh -c \
     'curl --fail --silent --show-error --noproxy "" -x "$http_proxy" --max-time 2 http://blocked.example/'
   ```
 
-  <details>
-  <summary>自动回归断言（由脚本执行）</summary>
-
-  <!-- pvisor-assert -->
-
-  ```bash
-  bundle_contains network.intercepted.targets 'HTTP blocked.example:80'
-  bundle_contains network.intercepted.targets '"denied": 1'
-  ```
-
-  </details>
+  自动检查见 `tests/semantics/documented-cases.md` 中的规格 `S-DOC-040`，命令为 `just cases --case S-DOC-040`。
 
 ### H. Gateway 与记录
 
@@ -1350,18 +849,7 @@ workspace 和 user 规则写入 `~/.config/pvisor/config.toml` 的 `permissions`
     -- /bin/true
   ```
 
-  <details>
-  <summary>自动回归断言（由脚本执行）</summary>
-
-  <!-- pvisor-assert -->
-
-  ```bash
-  record_get gateway_listen | grep -Eq '^127\.0\.0\.1:[0-9]+$'
-  bundle_expect network.interception.driver explicit-proxy
-  bundle_expect filesystem.state staged
-  ```
-
-  </details>
+  自动检查见 `tests/semantics/documented-cases.md` 中的规格 `S-DOC-041`，命令为 `just cases --case S-DOC-041`。
 
 - [ ] **H02：JSON 记录**
 
@@ -1375,17 +863,7 @@ workspace 和 user 规则写入 `~/.config/pvisor/config.toml` 的 `permissions`
   pvisor --record-destination /tmp/pvisor-cases/events.jsonl -- /bin/true
   ```
 
-  <details>
-  <summary>自动回归断言（由脚本执行）</summary>
-
-  <!-- pvisor-assert -->
-
-  ```bash
-  test -s "$PVISOR_CASE_ROOT/events.jsonl"
-  head -n 1 "$PVISOR_CASE_ROOT/events.jsonl" | grep -q '^{'
-  ```
-
-  </details>
+  自动检查见 `tests/semantics/documented-cases.md` 中的规格 `S-DOC-042`，命令为 `just cases --case S-DOC-042`。
 
 ### I. Spec 与控制面
 
@@ -1395,7 +873,7 @@ workspace 和 user 规则写入 `~/.config/pvisor/config.toml` 的 `permissions`
 
   建议场景：适合从 TOML/JSON 文件或控制面执行 RunSpec 的任务。
 
-  用途：把命令写进 TOML 后通过 `--config` 运行。手工执行前创建 `pvisor.toml`，内容为 `[run]` 下的 `command = ["/bin/true"]`；脚本会预置此文件。
+  用途：把命令写进 TOML 后通过 `--config` 运行。手工执行前创建 `pvisor.toml`，内容为 `[run]` 下的 `command = ["/bin/true"]`；semspec 夹具会预置此文件。
 
   预期：命令来自配置文件，无需在 CLI 重复；运行正常结束。
 
@@ -1403,23 +881,13 @@ workspace 和 user 规则写入 `~/.config/pvisor/config.toml` 的 `permissions`
   pvisor --config ./pvisor.toml
   ```
 
-  <details>
-  <summary>自动回归断言（由脚本执行）</summary>
-
-  <!-- pvisor-assert -->
-
-  ```bash
-  bundle_expect run.state completed
-  bundle_expect run.agent true
-  ```
-
-  </details>
+  自动检查见 `tests/semantics/documented-cases.md` 中的规格 `S-DOC-043`，命令为 `just cases --case S-DOC-043`。
 
 - [ ] **I02：JSON RunSpec**
 
   建议场景：适合从 TOML/JSON 文件或控制面执行 RunSpec 的任务。
 
-  用途：执行已准备好的 JSON RunSpec，并把结果原子写入指定文件。手工运行前准备包含 run_id、agent 和 process invocation 的 `run-spec.json`；脚本预置的是运行 `/bin/true` 的 `case-i02`。
+  用途：执行已准备好的 JSON RunSpec，并把结果原子写入指定文件。手工运行前准备包含 run_id、agent 和 process invocation 的 `run-spec.json`；semspec 夹具预置的是运行 `/bin/true` 的 `case-i02`。
 
   准备：Linux user/mount namespace 或 macOS Seatbelt 可用。
 
@@ -1429,24 +897,13 @@ workspace 和 user 规则写入 `~/.config/pvisor/config.toml` 的 `permissions`
   pvisor --spec ./run-spec.json --result-file ./run-result.json --stage ./delegated-stage
   ```
 
-  <details>
-  <summary>自动回归断言（由脚本执行）</summary>
-
-  <!-- pvisor-assert -->
-
-  ```bash
-  bundle_expect run.agent case-i02
-  bundle_expect run.executor.isolation host_process
-  test -s run-result.json
-  ```
-
-  </details>
+  自动检查见 `tests/semantics/documented-cases.md` 中的规格 `S-DOC-044`，命令为 `just cases --case S-DOC-044`。
 
 - [ ] **I03：无扩展名 spec**
 
   建议场景：适合从 TOML/JSON 文件或控制面执行 RunSpec 的任务。
 
-  用途：验证配置的识别不依赖扩展名。手工执行时把 I01 的 TOML 内容保存成 `config-without-extension`；脚本会预置该文件。
+  用途：验证配置的识别不依赖扩展名。手工执行时把 I01 的 TOML 内容保存成 `config-without-extension`；semspec 夹具会预置该文件。
 
   预期：`--config` 正常读取 TOML 并完成运行，不要求文件名以 `.toml` 结尾。
 
@@ -1454,16 +911,7 @@ workspace 和 user 规则写入 `~/.config/pvisor/config.toml` 的 `permissions`
   pvisor --config ./config-without-extension
   ```
 
-  <details>
-  <summary>自动回归断言（由脚本执行）</summary>
-
-  <!-- pvisor-assert -->
-
-  ```bash
-  bundle_expect run.state completed
-  ```
-
-  </details>
+  自动检查见 `tests/semantics/documented-cases.md` 中的规格 `S-DOC-045`，命令为 `just cases --case S-DOC-045`。
 
 ### J. 复杂组合
 
@@ -1492,26 +940,7 @@ workspace 和 user 规则写入 `~/.config/pvisor/config.toml` 的 `permissions`
     -- /bin/sh -c 'pwd; printf changed > result.txt'
   ```
 
-  <details>
-  <summary>自动回归断言（由脚本执行）</summary>
-
-  <!-- pvisor-assert -->
-
-  ```bash
-  bundle_expect run.agent host-full
-  test "$(bundle_get run.output.stdout)" = "$(record_get overlay.merged_dir)"
-  bundle_expect network.policy.mode no-network
-  bundle_expect safety.network_non_bypassable true
-  bundle_expect safety.filesystem_changes_staged true
-  bundle_contains filesystem.changes result.txt
-  bundle_expect resources.requested.memory_bytes 536870912
-  bundle_expect resources.requested.processes 64
-  bundle_expect resources.requested.cpu_time_ms 30000
-  test ! -e result.txt
-  test -s "$PVISOR_CASE_ROOT/host-full/trajectory/events.jsonl"
-  ```
-
-  </details>
+  自动检查见 `tests/semantics/documented-cases.md` 中的规格 `S-DOC-046`，命令为 `just cases --case S-DOC-046`。
 
 - [ ] **J02：VM + image rootfs + stage + OverlayNet + Gateway**
 
@@ -1522,8 +951,6 @@ workspace 和 user 规则写入 `~/.config/pvisor/config.toml` 的 `permissions`
   准备：Linux；可访问 /dev/kvm；为脚本设置 PVISOR_CASE_IMAGE；PVISOR_CASE_AGENT 指向 guest 中也可执行的 Agent。
 
   预期：VM 以请求的内存运行，保留 stage 和轨迹目录。是否产生模型对话取决于 Agent 是否真的调用 Gateway；当前断言不检查对话内容。
-
-  <!-- pvisor-case: requires=linux,kvm,image,agent -->
 
   ```bash
   pvisor --name vm-full \
@@ -1540,21 +967,7 @@ workspace 和 user 规则写入 `~/.config/pvisor/config.toml` 的 `permissions`
     -- /usr/local/bin/agent
   ```
 
-  <details>
-  <summary>自动回归断言（由脚本执行）</summary>
-
-  <!-- pvisor-assert -->
-
-  ```bash
-  bundle_expect run.agent vm-full
-  bundle_expect run.executor.isolation virtual_machine
-  bundle_expect network.interception.driver vm-smoltcp
-  bundle_expect filesystem.state staged
-  bundle_expect resources.requested.memory_bytes 4294967296
-  test -d "$PVISOR_CASE_ROOT/vm-full/trajectory"
-  ```
-
-  </details>
+  自动检查见 `tests/semantics/documented-cases.md` 中的规格 `S-DOC-047`，命令为 `just cases --case S-DOC-047`。
 
 - [ ] **J03：Container + stage + read-only root + no network**
 
@@ -1566,8 +979,6 @@ workspace 和 user 规则写入 `~/.config/pvisor/config.toml` 的 `permissions`
 
   预期：容器成功退出并留下 stage。命令为 `/bin/true`，不会生成文件变更或有意义的 stdout；本例不验证 stage 写入和网络阻断行为。
 
-  <!-- pvisor-case: requires=container -->
-
   ```bash
   pvisor --name container-full \
     --container-image alpine:latest \
@@ -1578,19 +989,7 @@ workspace 和 user 规则写入 `~/.config/pvisor/config.toml` 的 `permissions`
     -- /bin/true
   ```
 
-  <details>
-  <summary>自动回归断言（由脚本执行）</summary>
-
-  <!-- pvisor-assert -->
-
-  ```bash
-  bundle_expect run.agent container-full
-  bundle_expect run.executor.kind container
-  bundle_expect run.state completed
-  bundle_expect filesystem.state staged
-  ```
-
-  </details>
+  自动检查见 `tests/semantics/documented-cases.md` 中的规格 `S-DOC-048`，命令为 `just cases --case S-DOC-048`。
 
 ### K. Job 的审查与生命周期
 
@@ -1604,8 +1003,6 @@ Job 是面向用户的核心对象。以下命令都直接使用 Job 的 stage �
 
   预期：审查结果列出一个文件；只读视图能读到 `staged`，写入被拒绝，原 workspace 不变。
 
-  <!-- pvisor-case: requires=rootless -->
-
   ```bash
   pvisor --stage /tmp/pvisor-cases/review-stage -- /bin/sh -c 'printf staged > note.txt'
   pvisor status --review --json /tmp/pvisor-cases/review-stage > status.json
@@ -1615,18 +1012,7 @@ Job 是面向用户的核心对象。以下命令都直接使用 Job 的 stage �
   fi
   ```
 
-  <details>
-  <summary>自动回归断言（由脚本执行）</summary>
-
-  <!-- pvisor-assert -->
-
-  ```bash
-  stdout_has staged
-  test ! -e note.txt
-  python3 -c 'import json; d=json.load(open("status.json")); assert d["filesystem"]["changed_files"] == 1'
-  ```
-
-  </details>
+  自动检查见 `tests/semantics/documented-cases.md` 中的规格 `S-DOC-049`，命令为 `just cases --case S-DOC-049`。
 
 - [ ] **K02：选择性 apply 后丢弃剩余改动**
 
@@ -1636,8 +1022,6 @@ Job 是面向用户的核心对象。以下命令都直接使用 Job 的 stage �
 
   预期：原 workspace 仅出现 `one.txt`；`two.txt` 从未进入 lower。
 
-  <!-- pvisor-case: requires=rootless -->
-
   ```bash
   pvisor --stage /tmp/pvisor-cases/partial-stage -- /bin/sh -c \
     'printf one > one.txt; printf two > two.txt'
@@ -1645,18 +1029,7 @@ Job 是面向用户的核心对象。以下命令都直接使用 Job 的 stage �
   pvisor drop /tmp/pvisor-cases/partial-stage
   ```
 
-  <details>
-  <summary>自动回归断言（由脚本执行）</summary>
-
-  <!-- pvisor-assert -->
-
-  ```bash
-  test "$(cat one.txt)" = one
-  test ! -e two.txt
-  record_expect overlay.state discarded "$PVISOR_CASE_ROOT/partial-stage"
-  ```
-
-  </details>
+  自动检查见 `tests/semantics/documented-cases.md` 中的规格 `S-DOC-050`，命令为 `just cases --case S-DOC-050`。
 
 - [ ] **K03：从已停止 Job fork**
 
@@ -1666,28 +1039,13 @@ Job 是面向用户的核心对象。以下命令都直接使用 Job 的 stage �
 
   预期：子 Job 读到 `inherited`，但两个 Job 的变更都没有直接写入原 workspace。
 
-  <!-- pvisor-case: requires=rootless -->
-
   ```bash
   pvisor --stage /tmp/pvisor-cases/source-stage -- /bin/sh -c 'printf inherited > inherited.txt'
   pvisor fork /tmp/pvisor-cases/source-stage -- /bin/sh -c \
     'cat inherited.txt; printf child > child.txt' > child.out
   ```
 
-  <details>
-  <summary>自动回归断言（由脚本执行）</summary>
-
-  <!-- pvisor-assert -->
-
-  ```bash
-  test "$(cat child.out)" = inherited
-  test ! -e inherited.txt
-  test ! -e child.txt
-  bundle_contains filesystem.changes inherited.txt "$PVISOR_CASE_ROOT/source-stage"
-  bundle_contains filesystem.changes child.txt "$PVISOR_CASE_RECORDS"
-  ```
-
-  </details>
+  自动检查见 `tests/semantics/documented-cases.md` 中的规格 `S-DOC-051`，命令为 `just cases --case S-DOC-051`。
 
 - [ ] **K04：终止运行中的 Job**
 
@@ -1696,8 +1054,6 @@ Job 是面向用户的核心对象。以下命令都直接使用 Job 的 stage �
   准备：Linux user/mount namespace 可用。
 
   预期：Job 在睡眠结束前退出，`status --json` 报告 `cancelled`，不再处于 live 状态。
-
-  <!-- pvisor-case: requires=rootless -->
 
   ```bash
   pvisor --stage /tmp/pvisor-cases/live-stage -- /bin/sleep 30 > live.log 2>&1 &
@@ -1711,16 +1067,7 @@ Job 是面向用户的核心对象。以下命令都直接使用 Job 的 stage �
   pvisor status --json /tmp/pvisor-cases/live-stage > stopped.json
   ```
 
-  <details>
-  <summary>自动回归断言（由脚本执行）</summary>
-
-  <!-- pvisor-assert -->
-
-  ```bash
-  python3 -c 'import json; d=json.load(open("stopped.json")); assert d["run"]["state"] == "cancelled" and d["live"] is False'
-  ```
-
-  </details>
+  自动检查见 `tests/semantics/documented-cases.md` 中的规格 `S-DOC-052`，命令为 `just cases --case S-DOC-052`。
 
 ### L. 可复用环境
 
@@ -1734,8 +1081,6 @@ Job 是面向用户的核心对象。以下命令都直接使用 Job 的 stage �
 
   预期：两个后续命令都能读到 `staged`；原 workspace 始终没有 `env.txt`，丢弃后环境可继续使用。
 
-  <!-- pvisor-case: requires=rootless -->
-
   ```bash
   export PERSISTING_ENV_HOME=/tmp/pvisor-cases/envs
   pvisor env create dev
@@ -1746,18 +1091,7 @@ Job 是面向用户的核心对象。以下命令都直接使用 Job 的 stage �
   pvisor env status dev --json > env-status.json
   ```
 
-  <details>
-  <summary>自动回归断言（由脚本执行）</summary>
-
-  <!-- pvisor-assert -->
-
-  ```bash
-  stdout_has staged
-  test ! -e env.txt
-  python3 -c 'import json; d=json.load(open("env-status.json")); assert d["filesystem"]["changed_files"] == 0'
-  ```
-
-  </details>
+  自动检查见 `tests/semantics/documented-cases.md` 中的规格 `S-DOC-053`，命令为 `just cases --case S-DOC-053`。
 
 - [ ] **L02：环境提交后重置为空 stage**
 
@@ -1767,8 +1101,6 @@ Job 是面向用户的核心对象。以下命令都直接使用 Job 的 stage �
 
   预期：原 workspace 得到 `accepted.txt`；环境的新一代 stage 没有待提交文件。
 
-  <!-- pvisor-case: requires=rootless -->
-
   ```bash
   export PERSISTING_ENV_HOME=/tmp/pvisor-cases/envs
   pvisor env create dev
@@ -1777,17 +1109,7 @@ Job 是面向用户的核心对象。以下命令都直接使用 Job 的 stage �
   pvisor env status dev --json > env-status.json
   ```
 
-  <details>
-  <summary>自动回归断言（由脚本执行）</summary>
-
-  <!-- pvisor-assert -->
-
-  ```bash
-  test "$(cat accepted.txt)" = accepted
-  python3 -c 'import json; d=json.load(open("env-status.json")); assert d["filesystem"]["changed_files"] == 0 and d["run"]["overlay"]["generation"] == 1'
-  ```
-
-  </details>
+  自动检查见 `tests/semantics/documented-cases.md` 中的规格 `S-DOC-054`，命令为 `just cases --case S-DOC-054`。
 
 ### M. Replay 与交互终端
 
@@ -1807,17 +1129,7 @@ Job 是面向用户的核心对象。以下命令都直接使用 Job 的 stage �
     --output-dir /tmp/pvisor-cases/replay-output > prepared.json
   ```
 
-  <details>
-  <summary>自动回归断言（由脚本执行）</summary>
-
-  <!-- pvisor-assert -->
-
-  ```bash
-  test ! -e marker
-  python3 -c 'import json; d=json.load(open("prepared.json")); assert d["phase"] == "prepared" and d["replayed_tool_calls"] == 0'
-  ```
-
-  </details>
+  自动检查见 `tests/semantics/documented-cases.md` 中的规格 `S-DOC-055`，命令为 `just cases --case S-DOC-055`。
 
 - [ ] **M02：TUI 保留命令输出并可打开 Log 面板**
 
@@ -1826,8 +1138,6 @@ Job 是面向用户的核心对象。以下命令都直接使用 Job 的 stage �
   准备：Linux 和 Python 3。
 
   预期：子命令正常退出；屏幕流中出现命令输出、底栏引导和 Log 面板。
-
-  <!-- pvisor-case: requires=linux,python3 -->
 
   ```bash
   python3 - <<'PY'
@@ -1870,13 +1180,4 @@ Job 是面向用户的核心对象。以下命令都直接使用 Job 的 stage �
   PY
   ```
 
-  <details>
-  <summary>自动回归断言（由脚本执行）</summary>
-
-  <!-- pvisor-assert -->
-
-  ```bash
-  stdout_has 'TUI_READY status-bar log-panel'
-  ```
-
-  </details>
+  自动检查见 `tests/semantics/documented-cases.md` 中的规格 `S-DOC-056`，命令为 `just cases --case S-DOC-056`。

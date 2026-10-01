@@ -100,3 +100,24 @@ Keep the public workflow small: start a Job, inspect its evidence, then make an
 explicit decision about staged effects. Detailed provider behavior belongs to
 [execution environments](../guides/execution.md), while the complete option
 surface belongs to the [CLI reference](../reference/cli.md).
+
+## Executable extensions
+
+`pvisor tui` and `pvisor replay` dispatch to `pvisor-tui` and `pvisor-replay`.
+Build and install commands and wheels deliver all three executables together.
+`run --tui` and interactive `--ask` delegate to the TUI extension as well.
+`pvisor extensions` lists installed paths and manifests as JSON; root help lists
+available commands. New CLI features use `pvisor-NAME` executables rather than
+adding branches to the core command enum.
+
+Discovery searches the core executable directory before nonempty PATH entries.
+Built-in commands remain reserved. Each executable embeds one inert JSON block:
+NUL + `PVISOR_COMMAND_MANIFEST_V1` + newline, JSON, then newline +
+`PVISOR_COMMAND_MANIFEST_END` + NUL. The manifest contains `schema_version`,
+`name`, `version`, `description` and `session_protocol`; both protocol versions
+currently equal 1. The name must match the executable suffix. JSON is limited
+to 4096 bytes and executables to 256 MiB. Discovery reads bytes and never executes
+a command; `--pvisor-manifest` is the extension's explicit JSON query interface.
+Dispatch preserves arguments, stdio, signals and exit status via Unix `exec`.
+Use `persisting_pvisor::command_manifest!` and `manifest_requested` in a Rust
+extension entry point to embed and serve this manifest.

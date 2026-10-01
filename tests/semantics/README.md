@@ -31,3 +31,77 @@ just semspec revoke S-STAGE-001 --reviewer YOUR_NAME --reason '需要重新讨�
 完整审核后再以 `review --strict` 和 `run --require-reviewed` 作为发布门禁。
 不要自动填充台账，也不要因为实现失败而削弱性质。删除已分配 case 时将 ID 放入
 semspec.toml 的 retired，禁止复用。引擎执行语义变化必须升级 ENGINE_SEMANTICS。
+
+## 文档场景迁移
+
+`documented-cases.md` 是原 A01–M02 的 56 条规格，`just cases` 只运行 DOC 域。
+
+```sh
+just semspec list --domain DOC
+just cases --case S-DOC-001,S-DOC-012 --keep
+just cases
+```
+
+默认报告为 `target/pvisor-case-report.json`；自动 CI 选择的原场景集合保持不变。
+8 条预期非零退出检查仍须通过原断言，不标记 xfail。
+资源通过 `PVISOR_CASE_ROOTFS/IMAGE/CONTAINER_IMAGE/CONTAINER_RUNTIME/AGENT` 配置。
+命令、退出预期及原断言均在 case digest 中，夹具和 JSON 断言由 sealed `cases.sh` 提供。
+
+| 文档编号 | semspec ID |
+|---|---|
+| A01 | S-DOC-001 |
+| A02 | S-DOC-002 |
+| A03 | S-DOC-003 |
+| A04 | S-DOC-004 |
+| A05 | S-DOC-005 |
+| A06 | S-DOC-006 |
+| A07 | S-DOC-007 |
+| B01 | S-DOC-008 |
+| B02 | S-DOC-009 |
+| B03 | S-DOC-010 |
+| B04 | S-DOC-011 |
+| C01 | S-DOC-012 |
+| C02 | S-DOC-013 |
+| C03 | S-DOC-014 |
+| C04 | S-DOC-015 |
+| C05 | S-DOC-016 |
+| C06 | S-DOC-017 |
+| D01 | S-DOC-018 |
+| D02 | S-DOC-019 |
+| D03 | S-DOC-020 |
+| D04 | S-DOC-021 |
+| D05 | S-DOC-022 |
+| D06 | S-DOC-023 |
+| E01 | S-DOC-024 |
+| E02 | S-DOC-025 |
+| E03 | S-DOC-026 |
+| E04 | S-DOC-027 |
+| E05 | S-DOC-028 |
+| E06 | S-DOC-029 |
+| F01 | S-DOC-030 |
+| F02 | S-DOC-031 |
+| F03 | S-DOC-032 |
+| F04 | S-DOC-033 |
+| G01 | S-DOC-034 |
+| G02 | S-DOC-035 |
+| G03 | S-DOC-036 |
+| G04 | S-DOC-037 |
+| G05 | S-DOC-038 |
+| G06 | S-DOC-039 |
+| G07 | S-DOC-040 |
+| H01 | S-DOC-041 |
+| H02 | S-DOC-042 |
+| I01 | S-DOC-043 |
+| I02 | S-DOC-044 |
+| I03 | S-DOC-045 |
+| J01 | S-DOC-046 |
+| J02 | S-DOC-047 |
+| J03 | S-DOC-048 |
+| K01 | S-DOC-049 |
+| K02 | S-DOC-050 |
+| K03 | S-DOC-051 |
+| K04 | S-DOC-052 |
+| L01 | S-DOC-053 |
+| L02 | S-DOC-054 |
+| M01 | S-DOC-055 |
+| M02 | S-DOC-056 |

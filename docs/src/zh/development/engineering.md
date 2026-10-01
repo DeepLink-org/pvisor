@@ -109,7 +109,7 @@ overlay 的 review/apply/recovery/drop 归 `persisting-overlay-core::apply`。
 | `just test-isolation` | 运行严格的 Linux rootless/FUSE 回归，不跳过缺失的用户命名空间能力 |
 | `just smoke` | 构建 debug CLI 并检查主要命令入口 |
 | `just examples` | 构建 release CLI 并运行全部示例；追加场景名可选择子集 |
-| `just cases --case A01,A02` | 运行选定的文档场景 |
+| `just cases --case S-DOC-001,S-DOC-002` | 运行选定的文档场景 |
 | `just benchmark` / `just benchmark nightly` | 运行进程与 Run Bundle 基准 |
 | `just docs-build` | 构建双语文档并检查链接 |
 | `just docs-serve --port 3000` | 构建、监听并预览文档；重建后手动刷新浏览器 |

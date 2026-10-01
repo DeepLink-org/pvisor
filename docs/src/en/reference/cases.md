@@ -6,8 +6,8 @@ network policy, Gateway capture, and prepared RunSpecs.
 
 Use the catalog when you need a reproducible command or a regression target.
 Each case documents its prerequisites, command, expected result, and machine
-check. The checks are folded into the page so the same examples can be read by
-people and executed by `scripts/run-pvisor-cases.py`.
+check. The executable checks live in `tests/semantics/documented-cases.md` and run
+through semspec. The A01–M02 document labels remain in each semantic case title.
 
 ## Choose a case group
 
@@ -24,27 +24,30 @@ people and executed by `scripts/run-pvisor-cases.py`.
 
 ## Run the catalog
 
-From the repository root, list the available cases:
+From the repository root:
 
 ```bash
-python3 scripts/run-pvisor-cases.py --list
+just semspec list --domain DOC
+just cases --case S-DOC-001,S-DOC-012 --keep
+just cases
+just semspec show S-DOC-001
 ```
 
-Run selected cases or produce a report:
+`just cases` builds release pVisor, runs the 56 DOC specifications and writes
+`target/pvisor-case-report.json`. Select by S-DOC IDs: A01 is S-DOC-001, C01 is
+S-DOC-012. The complete mapping lives in `tests/semantics/README.md`. Use
+`just semspec run --domain DOC --subject-bin PATH` to test an existing binary.
 
-```bash
-python3 scripts/run-pvisor-cases.py \
-  --pvisor target/release/pvisor \
-  --case A01,C01 \
-  --keep
-python3 scripts/run-pvisor-cases.py \
-  --pvisor target/release/pvisor \
-  --report target/pvisor-case-report.md
-```
+Each specification preserves the command, expected exit status and original
+assertions. Expected nonzero exits remain explicit checks, never xfail. Sealed
+`cases.sh` provides isolated fixtures and Run Bundle/record/output assertions.
+Missing prerequisites produce SKIP; failures retain their temporary directories.
+Use `--keep` to retain every executed case. Rootfs, image, runtime and Agent
+settings still use the `PVISOR_CASE_*` resource variables described in the
+[Chinese catalog](../../zh/reference/cases.md).
 
-The runner creates an isolated workspace per case. Replace placeholder paths
-and images with local resources when a case requires a Linux rootfs, OCI runtime,
-VM image, or Agent executable. Missing prerequisites are reported as skips. Use `--strict-skips` to make them
-fail the run in CI.
-
-The complete command-by-command catalog is maintained in the [Chinese catalog](../../zh/reference/cases.md); the executable assertions below each example are language-neutral.
+The migrated specifications are UNREVIEWED. Passing checks do not constitute
+human approval. Enable `--require-reviewed` only after human review of cases,
+vocabulary and engine. Use `just semspec run --help` for supported options;
+the Python runner and its `--list`, `--report`, `--run-unavailable` and
+`--strict-skips` options have been removed.

@@ -8,7 +8,9 @@
 
 pub mod cli;
 mod runtime;
+pub mod session;
 pub mod trace;
+pub use session::{Session, SessionExtension};
 
 mod config;
 mod diagnostics;

@@ -113,7 +113,7 @@ and move shared semantics into their existing owner when changing behavior.
 | `just test-isolation` | Run strict Linux rootless/FUSE regressions without skipping unavailable user namespaces |
 | `just smoke` | Build the debug CLI and check its command surfaces |
 | `just examples` | Build the release CLI and run all examples; append scenario names to select a subset |
-| `just cases --case A01,A02` | Run selected documented cases |
+| `just cases --case S-DOC-001,S-DOC-002` | Run selected documented cases |
 | `just benchmark` / `just benchmark nightly` | Run the process and Run Bundle benchmark |
 | `just docs-build` | Build both documentation languages and validate links |
 | `just docs-serve --port 3000` | Build, watch, and serve documentation; refresh the browser after a rebuild |

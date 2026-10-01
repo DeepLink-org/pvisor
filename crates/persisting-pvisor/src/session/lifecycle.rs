@@ -1,5 +1,6 @@
 //! Executor reports and the single Attempt completion path.
-use super::{ExecutorSession, RunExecutor};
+use super::Session;
+use crate::executor::RunExecutor;
 use crate::runtime::run::{PVisorError, ResolvedRun, RunHandle};
 use crate::runtime::{
     RuntimeSupervisor,
@@ -10,7 +11,7 @@ use persisting_control::{AttemptInfo, RunInvocation, RunStatus};
 use tokio::sync::{broadcast, watch};
 use tokio_util::sync::CancellationToken;
 
-use crate::runtime::{AttemptSession, AttemptTeardown};
+use crate::runtime::AttemptTeardown;
 use crate::util::unix_now_ms;
 use persisting_control::{
     ArtifactRef, AttemptId, ExecutorObservations, PolicyMode, ProcessOutput, RunFailure,
@@ -19,7 +20,7 @@ use persisting_control::{
 use serde_json::json;
 use std::{collections::BTreeMap, sync::Arc};
 
-/// Backend report. Identity and terminal publication belong to ExecutorSession.
+/// Backend report. Identity and terminal publication belong to Session.
 /// No Default: every backend must explicitly report its observations.
 pub struct ExecutorOutput {
     pub state: RunState,
@@ -98,11 +99,12 @@ pub(crate) fn exit_outcome(
     )
 }
 
-impl ExecutorSession {
+impl Session {
     pub(crate) async fn start(
         runtime: &RuntimeSupervisor,
         event_sink: Arc<dyn EventSink>,
         resolved: ResolvedRun,
+        extensions: Vec<Arc<dyn crate::SessionExtension>>,
     ) -> Result<RunHandle, PVisorError> {
         let ResolvedRun {
             mut spec,
@@ -114,65 +116,26 @@ impl ExecutorSession {
         } = resolved;
         let attempt_id = AttemptId::new(format!("attempt-{}", uuid::Uuid::new_v4()));
         let cancellation = CancellationToken::new();
-        // AgentCtl only needs the Run and Attempt IDs. Bind its socket while
-        // the runtime prepares independent Gateway/OverlayFS drivers.
-        let agentctl_start = {
+        let agentctl_server = {
             let run_id = spec.run_id.clone();
             let attempt_id = attempt_id.clone();
             tokio::task::spawn_blocking(move || AgentCtlServer::start(&run_id, &attempt_id))
+                .await
+                .map_err(|error| PVisorError::AgentCtl(error.into()))?
+                .map_err(PVisorError::AgentCtl)?
         };
-        let prepared = runtime.prepare(&mut spec, &[], vm_network_executor, &attempt_id);
-        let mut session = match prepared {
-            Ok(session) => session,
-            Err(error) => {
-                // Do not leave a detached Run-scoped listener behind on failure.
-                let _ = agentctl_start.await;
-                return Err(PVisorError::Prepare(error));
-            }
-        };
-        let attachments = session
-            .as_ref()
-            .map(|session| session.attachments())
-            .unwrap_or_default();
-        let checkpoint_record = session
-            .as_ref()
-            .and_then(|session| session.checkpoint_record());
+        let agentctl = agentctl_server.control();
         let safe_profile_requested = spec
             .metadata
             .get("pvisor.safe")
             .and_then(serde_json::Value::as_bool)
             .unwrap_or(false);
-        let agentctl_server = match agentctl_start
-            .await
-            .map_err(anyhow::Error::from)
-            .and_then(|result| result)
-        {
-            Ok(server) => server,
-            Err(error) => {
-                if let Some(session) = session.take() {
-                    let snapshot = empty_agentctl_snapshot(&spec.run_id, &attempt_id);
-                    if let Err(cleanup_error) = session.abort_startup(
-                        &attempt_id,
-                        spec.lease_epoch,
-                        snapshot,
-                        safe_profile_requested,
-                        format!("AgentCtl setup failed: {error:#}"),
-                    ) {
-                        tracing::warn!(%cleanup_error, "persist pVisor startup failure");
-                    }
-                }
-                return Err(PVisorError::AgentCtl(error));
-            }
-        };
-        let agentctl = agentctl_server.control();
         let RunInvocation::Process(process) = &mut spec.invocation;
         process.env.extend(agentctl_server.environment());
         spec.metadata.insert(
             "pvisor.agentctl".into(),
             json!({
-                "version": AGENTCTL_VERSION,
-                "transport": "unix",
-                "endpoint": agentctl.endpoint(),
+                "version": AGENTCTL_VERSION, "transport": "unix", "endpoint": agentctl.endpoint(),
             }),
         );
 
@@ -192,7 +155,19 @@ impl ExecutorSession {
             updated_at_unix_ms: now,
             message: None,
         };
-        let (status_tx, status_rx) = watch::channel(initial);
+        let (status_tx, status_rx) = watch::channel(initial.clone());
+        let (observation_tx, observation_rx) =
+            watch::channel(persisting_control::SessionObservation {
+                version: persisting_control::SESSION_PROTOCOL_VERSION,
+                session: persisting_control::SessionIdentity {
+                    run_id: run_id.clone(),
+                    attempt_id: attempt_id.clone(),
+                    lease_epoch: spec.lease_epoch,
+                },
+                phase: persisting_control::SessionPhase::Preparing,
+                status: initial,
+                result: None,
+            });
         let (live_tx, _) = broadcast::channel(256);
         let events = RunEventPublisher::new(
             run_id.clone(),
@@ -201,17 +176,60 @@ impl ExecutorSession {
             event_sink,
             live_tx,
         );
+        let mut context = Session {
+            spec: Arc::new(spec),
+            created_at_unix_ms: now,
+            attempt_id: attempt_id.clone(),
+            cancel: cancellation.clone(),
+            status: status_tx,
+            events: events.clone(),
+            agentctl: agentctl.clone(),
+            attachments: Default::default(),
+            drivers: None,
+            server: Some(agentctl_server),
+            extensions,
+            observation: observation_tx,
+            network_policy,
+        };
+        let prepared = async {
+            context
+                .phase(persisting_control::SessionPhase::Preparing, None)
+                .await?;
+            context.drivers = runtime.prepare(
+                Arc::make_mut(&mut context.spec),
+                &[],
+                vm_network_executor,
+                &attempt_id,
+            )?;
+            context.attachments = context
+                .drivers
+                .as_ref()
+                .map(|session| session.attachments())
+                .unwrap_or_default();
+            context
+                .phase(persisting_control::SessionPhase::Prepared, None)
+                .await
+        }
+        .await;
+        if let Err(error) = prepared {
+            context.abort_startup(&error, safe_profile_requested);
+            return Err(PVisorError::Prepare(error));
+        }
+        let checkpoint_record = context
+            .drivers
+            .as_ref()
+            .and_then(|session| session.checkpoint_record());
         let creation = async {
             events
                 .publish(
                     "run.created",
                     "runtime",
                     json!({
-                        "agent": spec.agent,
-                        "task_id": spec.task_id,
+                        "agent": context.spec.agent,
+                        "task_id": context.spec.task_id,
                         "executor": descriptor,
-                        "policy_mode": spec.runtime.policy_mode,
-                        "capture_session": session.as_ref().map(|session| session.root_session()),
+                        "policy_mode": context.spec.runtime.policy_mode,
+                        "capture_session": context.drivers.as_ref().map(|session| session.root_session()),
                         "agentctl_version": AGENTCTL_VERSION,
                     }),
                 )
@@ -221,40 +239,15 @@ impl ExecutorSession {
         }
         .await;
         if let Err(error) = creation {
-            if let Some(session) = session.take()
-                && let Err(cleanup_error) = session.abort_startup(
-                    &attempt_id,
-                    spec.lease_epoch,
-                    agentctl.snapshot(),
-                    safe_profile_requested,
-                    format!("event sink rejected run creation: {error:#}"),
-                )
-            {
-                tracing::warn!(%cleanup_error, "persist pVisor startup failure");
-            }
+            context.abort_startup(
+                &anyhow::anyhow!("event sink rejected run creation: {error:#}"),
+                safe_profile_requested,
+            );
             return Err(PVisorError::EventSink(error));
         }
-
-        let context = ExecutorSession {
-            spec: Arc::new(spec),
-            created_at_unix_ms: now,
-            attempt_id: attempt_id.clone(),
-            cancel: cancellation.clone(),
-            status: status_tx,
-            events: events.clone(),
-            agentctl: agentctl.clone(),
-            attachments,
-            network_policy,
-        };
         let join = tokio::spawn(async move {
             context
-                .complete(
-                    executor,
-                    session,
-                    agentctl_server,
-                    run_plan,
-                    safe_profile_requested,
-                )
+                .complete(executor, run_plan, safe_profile_requested)
                 .await
         });
 
@@ -267,6 +260,7 @@ impl ExecutorSession {
             agentctl,
             checkpoint_record,
             join,
+            observation: observation_rx,
         })
     }
     /// All backends use the same exit/cancel/deadline ordering and cancellation transition.
@@ -294,20 +288,25 @@ impl ExecutorSession {
         end
     }
     pub(crate) async fn complete(
-        self,
+        mut self,
         executor: Arc<dyn RunExecutor>,
-        session: Option<AttemptSession>,
-        _agentctl_server: crate::AgentCtlServer,
         run_plan: persisting_control::ir::run::RunPlan,
         safe_profile_requested: bool,
     ) -> RunResult {
+        let _server = self.server.take();
         if let Some(policy) = &self.attachments.filesystem {
             policy.arm();
         }
         let bundle_agentctl = self.agentctl.clone();
         // Keep the Run-scoped endpoint alive until executor finalization finishes.
-        let invoked = !self.cancel.is_cancelled();
-        let report = if invoked {
+        let extension_error = self
+            .phase(persisting_control::SessionPhase::Executing, None)
+            .await
+            .err();
+        let invoked = extension_error.is_none() && !self.cancel.is_cancelled();
+        let report = if let Some(error) = extension_error {
+            failed_output(format!("Session extension rejected execution: {error:#}"))
+        } else if invoked {
             executor.execute(&self).await
         } else {
             ExecutorOutput {
@@ -372,12 +371,42 @@ impl ExecutorSession {
                 );
             }
         }
-        let mut teardown = session.map(|session| session.teardown(result.exit_code, invoked));
+        if let Err(error) = self
+            .phase(persisting_control::SessionPhase::Executed, Some(&result))
+            .await
+        {
+            fail_finalization(
+                &mut result,
+                format!("Session executed extension: {error:#}"),
+            );
+        }
+        if let Err(error) = self
+            .phase(persisting_control::SessionPhase::Finalizing, Some(&result))
+            .await
+        {
+            fail_finalization(
+                &mut result,
+                format!("Session finalizing extension: {error:#}"),
+            );
+        }
+        let mut teardown = self
+            .drivers
+            .take()
+            .map(|session| session.teardown(result.exit_code, invoked));
         if let Some(error) = teardown
             .as_ref()
             .and_then(|teardown| teardown.error_message())
         {
             fail_finalization(&mut result, format!("attempt teardown failed: {error}"));
+        }
+        if let Err(error) = self
+            .phase(persisting_control::SessionPhase::Committing, Some(&result))
+            .await
+        {
+            fail_finalization(
+                &mut result,
+                format!("Session committing extension: {error:#}"),
+            );
         }
         result.finished_at_unix_ms = unix_now_ms();
         if let Some(teardown) = teardown.as_mut()
@@ -533,7 +562,72 @@ impl ExecutorSession {
             result.failure.as_ref().map(|f| f.message.clone()),
             result.finished_at_unix_ms,
         );
+        self.observation
+            .send_replace(persisting_control::SessionObservation {
+                version: persisting_control::SESSION_PROTOCOL_VERSION,
+                session: self.identity(),
+                phase: persisting_control::SessionPhase::Finished,
+                status: self.status(),
+                result: Some(result.clone()),
+            });
+        for extension in &self.extensions {
+            extension.finished(&self, &result);
+        }
         result
+    }
+
+    fn abort_startup(&mut self, error: &anyhow::Error, safe: bool) {
+        if let Some(drivers) = self.drivers.take()
+            && let Err(cleanup_error) = drivers.abort_startup(
+                &self.attempt_id,
+                self.spec.lease_epoch,
+                self.agentctl.snapshot(),
+                safe,
+                format!("Session startup failed: {error:#}"),
+            )
+        {
+            tracing::warn!(%cleanup_error, "persist Session startup failure");
+        }
+        let result = failed_output(format!("Session startup failed: {error:#}")).into_result(
+            &self.spec,
+            &self.attempt_id,
+            self.created_at_unix_ms,
+        );
+        self.finish(
+            result.state,
+            Some(error.to_string()),
+            result.finished_at_unix_ms,
+        );
+        self.observation
+            .send_replace(persisting_control::SessionObservation {
+                version: persisting_control::SESSION_PROTOCOL_VERSION,
+                session: self.identity(),
+                phase: persisting_control::SessionPhase::Finished,
+                status: self.status(),
+                result: Some(result.clone()),
+            });
+        for extension in &self.extensions {
+            extension.finished(self, &result);
+        }
+    }
+}
+
+fn failed_output(message: String) -> ExecutorOutput {
+    ExecutorOutput {
+        state: RunState::Failed,
+        exit_code: None,
+        failure: Some(RunFailure {
+            kind: RunFailureKind::Infrastructure,
+            message,
+            retryable: false,
+        }),
+        output: Default::default(),
+        value: None,
+        metrics: Default::default(),
+        artifacts: Vec::new(),
+        event_stream_ref: None,
+        warnings: Vec::new(),
+        executor_observations: Default::default(),
     }
 }
 
@@ -625,16 +719,4 @@ pub(crate) async fn terminate_process_tree(
 
     let _ = child.kill().await;
     let _ = child.wait().await;
-}
-
-fn empty_agentctl_snapshot(
-    run_id: &persisting_control::RunId,
-    attempt_id: &AttemptId,
-) -> crate::AgentCtlSnapshot {
-    crate::AgentCtlSnapshot {
-        run_id: run_id.as_str().to_owned(),
-        attempt_id: attempt_id.as_str().to_owned(),
-        directive: crate::AgentDirective::Continue,
-        clients: Vec::new(),
-    }
 }

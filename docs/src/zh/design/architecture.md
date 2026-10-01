@@ -33,7 +33,7 @@ CLI／配置 → RunSpec → 能力准入 → RunPlan IR → 准备运行时驱�
 
 Run Bundle 还记录经过 OverlayNet 的聚合放行、拒绝、失败及字节量。未经过 FUSE 的文件授权、未经过拦截器的网络流量没有可靠逐条计数，相应字段为 `null`，含义是未观测而不是零。宿主选择性代理只覆盖经过代理的流量，计数不能证明没有绕过代理的连接。
 
-唯一生产派发路径是 `PVisor::run(RunSpec) → ExecutorSession → RunExecutor::execute`。RunPlan IR 描述放置与证据，
+唯一生产派发路径是 `PVisor::run(RunSpec) → Session → RunExecutor::execute`。RunPlan IR 描述放置与证据，
 不执行任意表达式，也不提供逐次改写授权或通用披露检查。独立的 Engine/Backend/Admission 解释器已删除。
 
 `ExecutorPlan` 与 `CapabilityEnforcementPlan` 是准入计划类型，最高等级为 Planned，
@@ -45,11 +45,24 @@ Completed 与终态事件的 origin 区分运行器失败和后端结果。
 
 ## Session 生命周期与策略
 
-一个 `ExecutorSession` 对应一次 Attempt，统一协调 prepare、执行、取消与超时、
+核心 `Session`（`ExecutorSession` 保留为兼容别名）对应一次 Attempt，统一协调 prepare、执行、取消与超时、
 驱动清理、证据检查、Run Bundle 持久化和终态公布。后端返回必须包含观测的
 `ExecutorOutput`，不能设置 Run/Attempt 身份或提前公布终态。Process 和 VM
 共用进程组终止算法；OCI 使用 runtime 的 kill API。新 Attempt 使用新的
 Session 身份和审批缓存键。
+
+Session 持有准备后的驱动与 AgentCtl server。通过 `PVisorBuilder::extension`
+注册可信的进程内扩展，固定点位依次为：
+`Preparing → Prepared → Executing → Executed → Finalizing → Committing`。
+扩展报错会让 Attempt 失败，但不能跳过驱动清理和结果持久化；启动阶段拒绝会
+撤销已准备资源。`finished` 在终态公布后通知，不能再改写执行结果。
+
+Control 拥有带版本的 `SessionIdentity`、`SessionControlRequest/Response`、
+`SessionObservation` 契约。`RunHandle::control` 校验协议版本和完整的
+Run／Attempt／lease 身份，再处理状态查询、取消、checkpoint。取消响应只表示
+请求已接受，不表示进程已经终止。`observe` 与 `subscribe_observations` 提供
+当前阶段、状态和最终结果；watch 会合并更新，完整有序事件使用 `subscribe_events`。
+这套类型协议用于嵌入式 API；AgentCtl 仍是独立的工作负载协作协议，没有新增远程监听器。
 
 Control 统一拥有网络配置、编译后的授权与地址分类，以及文件策略编译。
 Session、workspace、user 与执行器基础网络策略共同约束权限：所有网络层均须放行，

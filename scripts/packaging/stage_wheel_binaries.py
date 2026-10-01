@@ -21,7 +21,7 @@ from typing import Any, Mapping
 
 ROOT = Path(__file__).resolve().parents[2]
 WHEEL_DATA = ROOT / "target" / "wheel-data"
-EXPECTED_BINARIES = ("pvisor",)
+EXPECTED_BINARIES = ("pvisor", "pvisor-tui", "pvisor-replay")
 SUPPORTED_TARGETS = {
     "x86_64-unknown-linux-musl",
     "aarch64-apple-darwin",
@@ -146,11 +146,11 @@ def _cargo_command(options: BuildOptions, *, shim_vm: bool = False) -> list[str]
         "--message-format=json-render-diagnostics",
         "-p",
         "persisting-shim" if shim_vm else "persisting-pvisor",
-        "--bin",
-        "containerd-shim-pvisor-v2" if shim_vm else "pvisor",
     ]
     if shim_vm:
-        command.extend(("--features", "vm"))
+        command.extend(("--bin", "containerd-shim-pvisor-v2", "--features", "vm"))
+    else:
+        command.append("--bins")
     if target is not None:
         command.extend(("--target", target))
     if options.target_dir is not None:

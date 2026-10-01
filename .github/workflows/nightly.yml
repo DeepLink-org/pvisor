@@ -88,4 +88,4 @@ jobs:
             curl -fsSL https://raw.githubusercontent.com/${{ github.repository }}/main/scripts/install-nightly.sh | bash
             ```
 
-            The wheel includes the matched `pvisor` CLI. Built with local version `+${{ needs.meta.outputs.local_version }}` (base version from `pyproject.toml`).
+            The wheel includes the matched `pvisor`, `pvisor-tui`, and `pvisor-replay` executables. Built with local version `+${{ needs.meta.outputs.local_version }}` (base version from `pyproject.toml`).

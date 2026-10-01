@@ -209,3 +209,49 @@ fn duplicate_ids_and_retired_id_reuse_are_parse_errors() {
     fs::write(path, config).unwrap();
     assert_eq!(cli(root, &["lint"]).status.code(), Some(2));
 }
+
+#[test]
+fn sealed_vocabulary_order_is_deterministic_and_supports_source_return() {
+    let dir = fixture();
+    let root = dir.path();
+    write_cases(root, &case("001", "[ \"$value\" = z ]", ""));
+    fs::write(
+        root.join("semantics/vocab/a.sh"),
+        "value=a\nreturn 0\nvalue=wrong\n",
+    )
+    .unwrap();
+    fs::write(root.join("semantics/vocab/z.sh"), "value=z\n").unwrap();
+    let path = root.join("semspec.toml");
+    let config = fs::read_to_string(&path).unwrap().replace(
+        "vocab = [\"semantics/vocab/core.sh\"]",
+        "vocab = [\"semantics/vocab/z.sh\", \"semantics/vocab/a.sh\"]",
+    );
+    fs::write(&path, &config).unwrap();
+    let digest = Project::load(&path)
+        .unwrap()
+        .item("S-TEST-001")
+        .unwrap()
+        .digest;
+    let (output, json) = run_json(root, &[]);
+    assert_eq!(output.status.code(), Some(0));
+    clean_report(&json);
+    fs::write(
+        &path,
+        config.replace(
+            "[\"semantics/vocab/z.sh\", \"semantics/vocab/a.sh\"]",
+            "[\"semantics/vocab/a.sh\", \"semantics/vocab/z.sh\"]",
+        ),
+    )
+    .unwrap();
+    assert_eq!(
+        Project::load(&path)
+            .unwrap()
+            .item("S-TEST-001")
+            .unwrap()
+            .digest,
+        digest
+    );
+    let (output, json) = run_json(root, &[]);
+    assert_eq!(output.status.code(), Some(0));
+    clean_report(&json);
+}

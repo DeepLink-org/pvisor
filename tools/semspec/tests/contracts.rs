@@ -182,7 +182,8 @@ fn tree_state_tracks_full_bytes_modes_and_dangling_links() {
     fs::write(&path, b"a").unwrap();
     assert_ne!(before, helpers::tree_state(dir.path()).unwrap());
     let before = helpers::tree_state(dir.path()).unwrap();
-    fs::set_permissions(dir.path(), fs::Permissions::from_mode(0o755)).unwrap();
+    let mode = fs::metadata(dir.path()).unwrap().permissions().mode();
+    fs::set_permissions(dir.path(), fs::Permissions::from_mode(mode ^ 0o010)).unwrap();
     assert_ne!(before, helpers::tree_state(dir.path()).unwrap());
     let before = helpers::tree_state(dir.path()).unwrap();
     fs::set_permissions(&path, fs::Permissions::from_mode(0o700)).unwrap();

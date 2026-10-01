@@ -123,9 +123,13 @@ fn run_case(
         let ws = root.path().join("ws");
         fs::create_dir(&ws)?;
         let mut script = String::from("set -euo pipefail\n");
+        let vocab_dir = root.path().join("vocab");
+        fs::create_dir(&vocab_dir)?;
         for name in project.vocab_names(case) {
-            script.push_str(&project.vocab[&name].text);
-            script.push('\n');
+            let path = vocab_dir.join(&name);
+            fs::write(&path, &project.vocab[&name].text)?;
+            let quoted = shell_words::quote(path.to_str().context("vocabulary path must be UTF8")?);
+            script.push_str(&format!("builtin source {quoted}\n"));
         }
         script.push_str(&case.script);
         let script_path = root.path().join("check.bash");

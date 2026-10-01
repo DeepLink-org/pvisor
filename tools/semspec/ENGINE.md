@@ -11,8 +11,10 @@ Review the implementation as well as this contract before approving @engine.
 - Review is independent from verdict. Require-reviewed checks the case, all used
   vocabulary and engine, including SKIP/XFAIL. Revoking removes current approval;
   reapproval replaces it, preserving the revocation history.
-- Bash checks run with set -euo pipefail, inline reviewed vocabulary, null stdin,
+- Bash checks run with set -euo pipefail, sourced vocabulary, null stdin,
   inherited environment plus configured variables and reserved runner variables.
+  Vocabulary is copied from hashed bytes into the case directory and sourced in
+  filename order, independent of configuration order (digests bind the set).
   CASE_ROOT/ws is a fresh cwd. Snapshots/logs live outside ws. Direct source/dot
   commands and SEMSPEC_* assignments are rejected using a Bash syntax tree.
   This is an audit-scope guard, not a security sandbox; checks are trusted code.

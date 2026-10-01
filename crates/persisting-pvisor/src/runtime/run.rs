@@ -5,8 +5,8 @@
 
 use crate::TrajectoryEventSink;
 use crate::config::{GatewayDriverConfig, NetworkDriverConfig, PVisorConfig};
+use crate::executor::RunExecutor;
 use crate::executor::process::ProcessExecutor;
-use crate::executor::{ExecutorSession, RunExecutor};
 use crate::runtime::event::{EventSink, NoopEventSink, RunEventPublisher};
 use crate::runtime::{
     ImplantPlan, OverlayHint, RuntimeCapabilities, RuntimeSupervisor, RuntimeSupervisorBuilder,
@@ -99,9 +99,60 @@ pub struct RunHandle {
     pub(crate) agentctl: crate::AgentCtlControl,
     pub(crate) checkpoint_record: Option<crate::runtime::RunRecord>,
     pub(crate) join: JoinHandle<RunResult>,
+    pub(crate) observation: watch::Receiver<persisting_control::SessionObservation>,
 }
 
 impl RunHandle {
+    pub fn observe(&self) -> persisting_control::SessionObservation {
+        let mut observation = self.observation.borrow().clone();
+        observation.status = self.status();
+        observation
+    }
+
+    pub fn subscribe_observations(
+        &self,
+    ) -> watch::Receiver<persisting_control::SessionObservation> {
+        self.observation.clone()
+    }
+
+    pub async fn control(
+        &self,
+        request: persisting_control::SessionControlRequest,
+    ) -> anyhow::Result<persisting_control::SessionControlResponse> {
+        use persisting_control::{
+            SessionControlAction as Action, SessionControlResponse as Response,
+        };
+        anyhow::ensure!(
+            request.version == persisting_control::SESSION_PROTOCOL_VERSION,
+            "unsupported Session control version"
+        );
+        anyhow::ensure!(
+            request.session == self.observe().session,
+            "Session control identity mismatch"
+        );
+        match request.action {
+            Action::Status => Ok(Response::Status {
+                observation: Box::new(self.observe()),
+            }),
+            Action::Cancel => {
+                self.cancel();
+                Ok(Response::CancellationRequested)
+            }
+            Action::Checkpoint {
+                checkpoint_id,
+                timeout_ms,
+            } => {
+                anyhow::ensure!(!self.status().state.is_terminal(), "Session has finished");
+                let checkpoint = self
+                    .checkpoint(&checkpoint_id, std::time::Duration::from_millis(timeout_ms))
+                    .await?;
+                Ok(Response::Checkpoint {
+                    manifest: checkpoint.manifest_path(),
+                })
+            }
+        }
+    }
+
     pub fn run_id(&self) -> &persisting_control::RunId {
         &self.run_id
     }
@@ -175,6 +226,7 @@ pub struct PVisorBuilder {
     runtime: RuntimeSupervisorBuilder,
     event_sink: Option<Arc<dyn EventSink>>,
     executors: Option<Vec<Arc<dyn RunExecutor>>>,
+    extensions: Vec<Arc<dyn crate::SessionExtension>>,
 }
 
 impl std::fmt::Debug for PVisorBuilder {
@@ -249,6 +301,11 @@ impl PVisorBuilder {
         self
     }
 
+    pub fn extension(mut self, extension: Arc<dyn crate::SessionExtension>) -> Self {
+        self.extensions.push(extension);
+        self
+    }
+
     pub fn build(self) -> PVisor {
         let event_sink = self
             .event_sink
@@ -262,6 +319,7 @@ impl PVisorBuilder {
                 vec![Arc::new(ProcessExecutor::default()) as Arc<dyn RunExecutor>]
             })),
             event_sink,
+            extensions: self.extensions,
             runtime: runtime.build(),
         }
     }
@@ -275,6 +333,7 @@ impl PVisorBuilder {
 pub struct PVisor {
     executors: Arc<Vec<Arc<dyn RunExecutor>>>,
     event_sink: Arc<dyn EventSink>,
+    extensions: Vec<Arc<dyn crate::SessionExtension>>,
     runtime: RuntimeSupervisor,
 }
 
@@ -460,10 +519,11 @@ impl PVisor {
 
     /// Start one Run: resolve IR → prepare controls → execute → teardown.
     pub async fn run(&self, spec: RunSpec) -> Result<RunHandle, PVisorError> {
-        ExecutorSession::start(
+        crate::Session::start(
             &self.runtime,
             Arc::clone(&self.event_sink),
             self.resolve_run(spec)?,
+            self.extensions.clone(),
         )
         .await
     }
@@ -597,12 +657,152 @@ fn validate_spec(spec: &RunSpec) -> Result<(), PVisorError> {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::{EventSink, MemoryEventSink};
+    use crate::{EventSink, ExecutorSession, MemoryEventSink};
     use async_trait::async_trait;
     use persisting_control::{
         ExecutorKind, NetworkCapability, RunFailureKind, RunInvocation, RunState, StdioMode,
     };
     use std::sync::Mutex;
+
+    struct PhaseProbe {
+        phases: Mutex<Vec<persisting_control::SessionPhase>>,
+        reject: Option<persisting_control::SessionPhase>,
+    }
+
+    #[async_trait]
+    impl crate::SessionExtension for PhaseProbe {
+        async fn on_phase(
+            &self,
+            session: &crate::Session,
+            observation: &persisting_control::SessionObservation,
+        ) -> anyhow::Result<()> {
+            assert_eq!(session.identity(), observation.session);
+            assert!(!observation.status.state.is_terminal());
+            self.phases.lock().unwrap().push(observation.phase);
+            anyhow::ensure!(self.reject != Some(observation.phase), "probe veto");
+            Ok(())
+        }
+
+        fn finished(&self, session: &crate::Session, result: &RunResult) {
+            assert!(session.status().state.is_terminal());
+            assert_eq!(session.observation().result.unwrap().state, result.state);
+            self.phases
+                .lock()
+                .unwrap()
+                .push(persisting_control::SessionPhase::Finished);
+        }
+    }
+
+    #[tokio::test]
+    async fn session_hooks_preserve_finalization_after_a_veto() {
+        use persisting_control::SessionPhase::*;
+        for reject in [
+            None,
+            Some(Preparing),
+            Some(Prepared),
+            Some(Executing),
+            Some(Executed),
+            Some(Finalizing),
+            Some(Committing),
+        ] {
+            let storage = tempfile::tempdir().unwrap();
+            let probe = Arc::new(PhaseProbe {
+                phases: Mutex::new(Vec::new()),
+                reject,
+            });
+            let runtime = PVisor::builder()
+                .storage(storage.path())
+                .extension(probe.clone())
+                .build();
+            let mut spec = RunSpec::process("session-hooks", "agent", "/bin/sh");
+            let RunInvocation::Process(process) = &mut spec.invocation;
+            process.args = vec!["-c".into(), "exit 0".into()];
+            let run = runtime.run(spec).await;
+            if matches!(reject, Some(Preparing | Prepared)) {
+                assert!(matches!(run, Err(PVisorError::Prepare(_))));
+                assert_eq!(
+                    *probe.phases.lock().unwrap(),
+                    if reject == Some(Preparing) {
+                        vec![Preparing, Finished]
+                    } else {
+                        vec![Preparing, Prepared, Finished]
+                    }
+                );
+            } else {
+                let handle = run.unwrap();
+                let observations = handle.subscribe_observations();
+                let result = handle.wait().await.unwrap();
+                assert_eq!(
+                    result.state,
+                    if reject.is_some() {
+                        RunState::Failed
+                    } else {
+                        RunState::Completed
+                    },
+                    "{result:?}"
+                );
+                assert_eq!(observations.borrow().phase, Finished);
+                assert_eq!(
+                    observations.borrow().result.as_ref().unwrap().state,
+                    result.state
+                );
+                assert_eq!(
+                    *probe.phases.lock().unwrap(),
+                    [
+                        Preparing, Prepared, Executing, Executed, Finalizing, Committing, Finished
+                    ]
+                );
+            }
+            if reject == Some(Preparing) {
+                assert!(!storage.path().join("run-bundle.json").exists());
+                continue;
+            }
+            let bundle = crate::RunBundle::read(storage.path()).unwrap();
+            assert_eq!(
+                bundle.run.state,
+                if reject.is_some() {
+                    RunState::Failed
+                } else {
+                    RunState::Completed
+                }
+            );
+            assert!(!storage.path().join("control.sock").exists());
+            let _lease = crate::runtime::RunLease::acquire(storage.path()).unwrap();
+        }
+    }
+
+    #[tokio::test]
+    async fn session_control_rejects_stale_identity_and_cancellation_is_observed() {
+        use persisting_control::{
+            SessionControlAction, SessionControlRequest, SessionControlResponse,
+        };
+        let runtime = PVisor::builder().build();
+        let mut spec = RunSpec::process("session-control", "agent", "/bin/sh");
+        let RunInvocation::Process(process) = &mut spec.invocation;
+        process.args = vec!["-c".into(), "sleep 30".into()];
+        let handle = runtime.run(spec).await.unwrap();
+        let request = SessionControlRequest {
+            version: persisting_control::SESSION_PROTOCOL_VERSION,
+            session: handle.observe().session,
+            action: SessionControlAction::Cancel,
+        };
+        let mut stale = request.clone();
+        stale.session.lease_epoch += 1;
+        assert!(handle.control(stale).await.is_err());
+        let mut unsupported = request.clone();
+        unsupported.version += 1;
+        assert!(handle.control(unsupported).await.is_err());
+        assert!(!handle.cancellation.is_cancelled());
+        assert!(matches!(
+            handle.control(request).await.unwrap(),
+            SessionControlResponse::CancellationRequested
+        ));
+        let result = tokio::time::timeout(std::time::Duration::from_secs(5), handle.wait())
+            .await
+            .unwrap()
+            .unwrap();
+        assert_eq!(result.state, RunState::Cancelled);
+    }
 
     #[test]
     fn host_filesystem_mode_only_removes_local_process_filesystem_evidence() {

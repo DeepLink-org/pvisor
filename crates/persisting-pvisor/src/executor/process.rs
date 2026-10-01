@@ -8,10 +8,10 @@ use crate::executor::sandbox::{
 #[cfg(target_os = "linux")]
 use crate::executor::sandbox::{ROOTLESS_ATTESTATION, SandboxPlan, landlock_runtime_available};
 use crate::executor::sandbox::{SANDBOX_ARG0_ENV, SANDBOX_PLAN_ENV, SANDBOX_SETUP_FAILED_WARNING};
-use crate::executor::session::terminate_process_tree;
 use crate::executor::{
     Captured, ExecutorOutput, ExecutorSession, RunExecutor, SessionEnd as End, stdio,
 };
+use crate::session::lifecycle::terminate_process_tree;
 use async_trait::async_trait;
 use persisting_control::{
     CapabilityDimension, CapabilityEnforcementEvidence, CapabilityEnforcementPlan, ExecutorKind,

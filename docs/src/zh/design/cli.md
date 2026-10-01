@@ -86,3 +86,20 @@ Environment 是持久 stage，不是常驻 VM。`start` 与 `stop` 控制是否�
 
 公共工作流保持简单：启动 Job，检查 Evidence，然后明确决定 staged effect 的去向。Provider
 行为见[执行环境](../guides/execution.md)，完整选项见 [CLI 参考](../reference/cli.md)。
+
+## 可执行扩展
+
+`pvisor tui`、`pvisor replay` 分别派发到 `pvisor-tui`、`pvisor-replay`。
+构建、安装和 wheel 均一起交付三个二进制；`run --tui` 与交互式 `--ask`
+也转交 TUI 扩展。`pvisor extensions` 以 JSON 列出安装路径与 manifest，
+根命令帮助列出可用扩展。新增 CLI 功能优先使用 `pvisor-NAME` 可执行文件。
+
+发现顺序为核心二进制所在目录、PATH 中的非空目录；内置命令名保留。
+扩展在二进制中嵌入唯一 JSON 数据块：NUL + `PVISOR_COMMAND_MANIFEST_V1`
++ 换行，随后 JSON，再以换行 + `PVISOR_COMMAND_MANIFEST_END` + NUL 结束。
+字段为 `schema_version`、`name`、`version`、`description`、`session_protocol`；
+两个协议版本目前均为 1，name 必须匹配文件名后缀。JSON 上限 4096 字节，
+可执行文件上限 256 MiB。发现时只读文件，不执行扩展；`--pvisor-manifest`
+是扩展显式提供的 JSON 查询接口。派发使用 Unix `exec`，保留 argv、stdio、
+信号与退出码。Rust 扩展可在入口使用 `persisting_pvisor::command_manifest!`
+与 `manifest_requested` 嵌入并提供 manifest。

@@ -1,15 +1,19 @@
 //! Standalone `pvisor` command-line frontend.
 
 mod env;
+pub mod extensions;
 mod product;
 mod replay;
 mod run;
 pub mod runtime;
+#[cfg(unix)]
+mod terminal;
 mod trajectory;
 #[cfg(unix)]
 mod tui;
 
-use clap::{Parser, Subcommand};
+use clap::{CommandFactory, FromArgMatches, Parser, Subcommand};
+use std::ffi::OsString;
 
 #[cfg(target_os = "linux")]
 const ROOT_ABOUT: &str =
@@ -64,18 +68,39 @@ enum Command {
     Inspect(runtime::InspectArgs),
     /// Manage reusable execution environments for Jobs.
     Env(env::EnvArgs),
-    /// Start a Job by replaying an agent-native trajectory, then continue the Agent.
-    Replay(Box<replay::ReplayArgs>),
+    /// List installed executable extensions and their manifests.
+    Extensions,
+    #[command(external_subcommand)]
+    External(Vec<OsString>),
 }
 
 pub fn main() -> anyhow::Result<()> {
-    #[cfg(unix)]
-    tui::init_child_context();
     let args = normalize_default_run(std::env::args_os().collect());
-    let parsed = Cli::parse_from(args.clone());
+    if let Some(name) = args.get(1).and_then(|arg| arg.to_str())
+        && !extensions::BUILTINS.contains(&name)
+        && extensions::find(name)?.is_some()
+    {
+        return extensions::dispatch(name, &args[2..]);
+    }
+    #[cfg(unix)]
+    terminal::init_child_context();
+    let mut command = Cli::command();
+    if args
+        .get(1)
+        .is_some_and(|arg| arg == "--help" || arg == "-h" || arg == "help")
+    {
+        let installed = extensions::discover()?;
+        let help = installed
+            .iter()
+            .map(|(_, manifest)| format!("  {}  {}", manifest.name, manifest.description))
+            .collect::<Vec<_>>()
+            .join("\n");
+        command = command.after_help(format!("Installed extensions:\n{help}"));
+    }
+    let parsed = Cli::from_arg_matches(&command.get_matches_from(args.clone()))?;
     #[cfg(unix)]
     if let Command::Run(run) = &parsed.command
-        && !tui::is_child()
+        && !terminal::is_child()
     {
         let audit = run.audit_requested()?;
         if run.tui_requested() || audit {
@@ -84,14 +109,10 @@ pub fn main() -> anyhow::Result<()> {
                 "--tui/--ask requires inherited stdio and a normal Job"
             );
             anyhow::ensure!(
-                tui::available(),
+                terminal::available(),
                 "--tui/--ask requires an interactive terminal"
             );
-            let code = tui::run(args, audit)?;
-            if code != 0 {
-                std::process::exit(code);
-            }
-            return Ok(());
+            return extensions::dispatch("tui", &args[1..]);
         }
     }
     match parsed.command {
@@ -125,12 +146,79 @@ pub fn main() -> anyhow::Result<()> {
                 std::process::exit(code);
             }
         }
-        Command::Replay(args) => {
-            let code = replay::run(*args);
-            if code != 0 {
-                std::process::exit(code);
-            }
+        Command::Extensions => println!(
+            "{}",
+            serde_json::to_string_pretty(
+                &extensions::discover()?
+                    .into_iter()
+                    .map(|(path, manifest)| serde_json::json!({"path":path,"manifest":manifest}))
+                    .collect::<Vec<_>>()
+            )?
+        ),
+        Command::External(args) => {
+            let name = args[0]
+                .to_str()
+                .ok_or_else(|| anyhow::anyhow!("extension name must be UTF-8"))?;
+            extensions::dispatch(name, &args[1..])?;
         }
+    }
+    Ok(())
+}
+
+#[derive(Debug, Parser)]
+#[command(
+    name = "pvisor-replay",
+    version,
+    about = "Replay an agent-native trajectory"
+)]
+pub(crate) struct ReplayCli {
+    #[command(flatten)]
+    args: replay::ReplayArgs,
+}
+
+pub fn replay_main() -> anyhow::Result<()> {
+    #[cfg(unix)]
+    terminal::init_child_context();
+    let code = replay::run(ReplayCli::parse().args);
+    if code != 0 {
+        std::process::exit(code);
+    }
+    Ok(())
+}
+
+#[cfg(unix)]
+pub fn tui_main() -> anyhow::Result<()> {
+    #[derive(Parser)]
+    #[command(
+        name = "pvisor-tui",
+        version,
+        about = "Run a Job in an interactive terminal"
+    )]
+    struct TuiCli {
+        #[command(flatten)]
+        run: run::RunArgs,
+    }
+    terminal::init_child_context();
+    let mut args: Vec<_> = std::env::args_os().collect();
+    if args.get(1).is_some_and(|arg| arg == "run") {
+        args.remove(1);
+    }
+    let mut parsed = TuiCli::parse_from(&args);
+    parsed.run.enable_tui();
+    let audit = parsed.run.audit_requested()?;
+    anyhow::ensure!(
+        parsed.run.wants_tui(audit),
+        "TUI requires inherited stdio and a normal Job"
+    );
+    anyhow::ensure!(
+        terminal::available(),
+        "TUI requires an interactive terminal"
+    );
+    args[0] = extensions::core_executable()?.into_os_string();
+    args.insert(1, "run".into());
+    let code = tui::run(args, audit)?;
+    if code != 0 {
+        std::process::exit(code);
     }
     Ok(())
 }
@@ -142,6 +230,8 @@ fn normalize_default_run(mut args: Vec<std::ffi::OsString>) -> Vec<std::ffi::OsS
         "trace",
         "run",
         "replay",
+        "tui",
+        "extensions",
         "env",
         "cache",
         "status",
@@ -155,7 +245,11 @@ fn normalize_default_run(mut args: Vec<std::ffi::OsString>) -> Vec<std::ffi::OsS
         "help",
     ];
     if first.is_some_and(|value| {
-        !reserved.contains(&value) && value != "--help" && value != "-h" && value != "--version"
+        !reserved.contains(&value)
+            && extensions::find(value).is_ok_and(|found| found.is_none())
+            && value != "--help"
+            && value != "-h"
+            && value != "--version"
     }) {
         args.insert(1, "run".into());
     }
@@ -225,16 +319,20 @@ mod tests {
                 "/workspace",
             ],
         ] {
-            Cli::try_parse_from(args).expect("valid pvisor command");
+            if args.get(1) == Some(&"replay") {
+                ReplayCli::try_parse_from(std::iter::once(args[0]).chain(args.into_iter().skip(2)))
+                    .expect("valid replay command");
+            } else {
+                Cli::try_parse_from(args).expect("valid pvisor command");
+            }
         }
     }
 
     #[test]
     fn replay_modes_are_mutually_exclusive_cli_flags() {
         for mode in ["--prepare-only", "--replay-only"] {
-            Cli::try_parse_from([
-                "pvisor",
-                "replay",
+            ReplayCli::try_parse_from([
+                "pvisor-replay",
                 "--agent",
                 "claude-code",
                 "--trajectory",
@@ -246,9 +344,8 @@ mod tests {
             .expect("individual replay mode flag must be accepted");
         }
 
-        let error = Cli::try_parse_from([
-            "pvisor",
-            "replay",
+        let error = ReplayCli::try_parse_from([
+            "pvisor-replay",
             "--agent",
             "claude-code",
             "--trajectory",
@@ -264,7 +361,7 @@ mod tests {
 
     #[test]
     fn replay_help_describes_phase_modes() {
-        let help = Cli::try_parse_from(["pvisor", "replay", "--help"])
+        let help = ReplayCli::try_parse_from(["pvisor-replay", "--help"])
             .unwrap_err()
             .to_string();
 
@@ -298,7 +395,15 @@ mod tests {
             .to_string();
 
         for command in [
-            "run", "apply", "drop", "status", "kill", "fork", "inspect", "env", "replay",
+            "run",
+            "apply",
+            "drop",
+            "status",
+            "kill",
+            "fork",
+            "inspect",
+            "env",
+            "extensions",
         ] {
             assert!(help.contains(&format!("\n  {command} ")));
         }

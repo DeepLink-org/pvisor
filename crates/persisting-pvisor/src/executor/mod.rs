@@ -4,22 +4,17 @@ pub(crate) mod artifact;
 pub(crate) mod container;
 pub(crate) mod delegated;
 pub(crate) mod process;
-mod session;
-pub use session::ExecutorOutput;
-pub(crate) use session::{SessionEnd, exit_outcome};
+pub use crate::session::lifecycle::ExecutorOutput;
+pub(crate) use crate::session::lifecycle::{SessionEnd, exit_outcome};
 pub mod sandbox;
 pub(crate) mod vm;
 
-use crate::runtime::event::RunEventPublisher;
 use async_trait::async_trait;
 use persisting_control::StdioMode;
-use persisting_control::{AttemptId, ExecutorPlan, RunInvocation, RunSpec, RunState, RunStatus};
-use serde_json::json;
+use persisting_control::{ExecutorPlan, RunInvocation};
 use std::process::Stdio;
 use std::sync::Arc;
 use tokio::io::{AsyncRead, AsyncReadExt};
-use tokio::sync::watch;
-use tokio_util::sync::CancellationToken;
 
 #[derive(Clone, Default)]
 pub(crate) struct AttemptAttachments {
@@ -27,107 +22,7 @@ pub(crate) struct AttemptAttachments {
     pub vm_network: Option<Arc<std::sync::Mutex<Option<crate::runtime::VmNetworkAttachment>>>>,
 }
 
-/// Attempt-scoped execution identity, controls, policy and lifecycle owner.
-pub struct ExecutorSession {
-    spec: Arc<RunSpec>,
-    created_at_unix_ms: u64,
-    network_policy: persisting_control::NetworkPolicy,
-    attempt_id: AttemptId,
-    cancel: CancellationToken,
-    status: watch::Sender<RunStatus>,
-    events: RunEventPublisher,
-    agentctl: crate::AgentCtlControl,
-    attachments: AttemptAttachments,
-}
-
-impl ExecutorSession {
-    pub fn spec(&self) -> &RunSpec {
-        &self.spec
-    }
-
-    pub fn network_policy(&self) -> &persisting_control::NetworkPolicy {
-        &self.network_policy
-    }
-
-    pub fn filesystem_policy(&self) -> Option<&persisting_control::FileAccessPolicy> {
-        self.attachments.filesystem.as_ref()
-    }
-
-    pub fn attempt_id(&self) -> &AttemptId {
-        &self.attempt_id
-    }
-
-    pub fn cancellation(&self) -> CancellationToken {
-        self.cancel.clone()
-    }
-
-    pub(crate) fn take_vm_network(
-        &self,
-    ) -> anyhow::Result<Option<crate::runtime::VmNetworkAttachment>> {
-        let Some(attachment) = &self.attachments.vm_network else {
-            return Ok(None);
-        };
-        let mut attachment = attachment
-            .lock()
-            .map_err(|_| anyhow::anyhow!("VM network attachment lock poisoned"))?;
-        Ok(attachment.take())
-    }
-
-    pub fn status(&self) -> RunStatus {
-        self.status.borrow().clone()
-    }
-
-    fn events(&self) -> &RunEventPublisher {
-        &self.events
-    }
-
-    pub(crate) fn import_delegated_agentctl(&self, snapshot: crate::AgentCtlSnapshot) {
-        self.agentctl.import_delegated_snapshot(snapshot);
-    }
-
-    pub async fn transition(&self, state: RunState, message: impl Into<Option<String>>) {
-        // Terminal publication is reserved for Session completion after resource teardown.
-        if state.is_terminal() {
-            return;
-        }
-        let now = crate::util::unix_now_ms();
-        let message = message.into();
-        self.status.send_modify(|status| {
-            status.state = state;
-            status.updated_at_unix_ms = now;
-            status.message = message.clone();
-            if matches!(state, RunState::Starting | RunState::Running)
-                && status.attempt.started_at_unix_ms.is_none()
-            {
-                status.attempt.started_at_unix_ms = Some(now);
-            }
-            if state.is_terminal() {
-                status.attempt.finished_at_unix_ms = Some(now);
-            }
-        });
-        let _ = self
-            .events
-            .publish(
-                "run.state_changed",
-                "runtime",
-                json!({
-                    "state": state,
-                    "message": message,
-                }),
-            )
-            .await;
-    }
-
-    /// Make a terminal status visible after finalization and terminal-event commit.
-    pub(crate) fn finish(&self, state: RunState, message: Option<String>, now: u64) {
-        self.status.send_modify(|status| {
-            status.state = state;
-            status.updated_at_unix_ms = now;
-            status.message = message.clone();
-            status.attempt.finished_at_unix_ms = Some(now);
-        });
-    }
-}
+pub use crate::session::Session as ExecutorSession;
 
 /// The production execution boundary: consumes the resolved RunSpec and controls.
 /// RunPlan IR is an audit projection, not an arbitrary-expression dispatch API.
@@ -143,7 +38,7 @@ pub trait RunExecutor: Send + Sync {
     fn supports_vm_network_attachment(&self) -> bool {
         false
     }
-    async fn execute(&self, session: &ExecutorSession) -> ExecutorOutput;
+    async fn execute(&self, session: &crate::Session) -> ExecutorOutput;
 }
 
 #[derive(Debug)]

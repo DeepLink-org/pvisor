@@ -4,6 +4,7 @@ use super::{
     audit_ui::{self, AuditServer, Lifetime, Permissions, Prompt, Scope},
     input, view,
 };
+use crate::cli::terminal::{AUDIT_SOCKET, CHILD_MARKER, LOG_FILE, STAGE_FILE};
 use crate::runtime::{RunRecord, control_observations};
 use anyhow::{Context, Result};
 use persisting_control::audit::{AuditDecision, AuditRequest};
@@ -16,67 +17,7 @@ use std::os::unix::fs::OpenOptionsExt;
 use std::os::unix::process::{CommandExt, ExitStatusExt};
 use std::path::{Path, PathBuf};
 use std::process::{Command, Stdio};
-use std::sync::OnceLock;
 use std::time::{Duration, Instant};
-
-const CHILD_MARKER: &str = "PVISOR_UI_CHILD";
-const STAGE_FILE: &str = "PVISOR_UI_STAGE_FILE";
-const LOG_FILE: &str = "PVISOR_UI_LOG_FILE";
-const AUDIT_SOCKET: &str = "PVISOR_UI_AUDIT_SOCKET";
-static CHILD_CONTEXT: OnceLock<Option<PathBuf>> = OnceLock::new();
-
-pub(crate) fn init_child_context() {
-    let path = if std::env::var_os(CHILD_MARKER).is_some() {
-        std::env::var_os(STAGE_FILE).map(PathBuf::from)
-    } else {
-        None
-    };
-    let log_path = if path.is_some() {
-        std::env::var_os(LOG_FILE).map(PathBuf::from)
-    } else {
-        None
-    };
-    let audit_socket = if path.is_some() {
-        std::env::var_os(AUDIT_SOCKET).map(PathBuf::from)
-    } else {
-        None
-    };
-    // This runs before the Tokio runtime and any Agent environment is built.
-    unsafe {
-        std::env::remove_var(CHILD_MARKER);
-        std::env::remove_var(STAGE_FILE);
-        std::env::remove_var(LOG_FILE);
-        std::env::remove_var(AUDIT_SOCKET);
-    }
-    if let Some(socket) = audit_socket {
-        persisting_control::audit::init(socket);
-    }
-    let _ = CHILD_CONTEXT.set(path);
-    crate::image::cache::progress::init_output(
-        log_path
-            .as_ref()
-            .map(|path| path.with_extension("image.json")),
-    );
-    crate::diagnostics::init(log_path);
-}
-
-pub(crate) fn announce_stage(stage: &Path) {
-    if let Some(Some(path)) = CHILD_CONTEXT.get() {
-        let _ = std::fs::write(path, stage.as_os_str().as_encoded_bytes());
-    }
-}
-
-pub(crate) fn available() -> bool {
-    CHILD_CONTEXT.get().is_some_and(Option::is_none)
-        && unsafe {
-            libc::isatty(libc::STDIN_FILENO) == 1 && libc::isatty(libc::STDOUT_FILENO) == 1
-        }
-        && std::env::var("TERM").is_ok_and(|term| term != "dumb")
-}
-
-pub(crate) fn is_child() -> bool {
-    CHILD_CONTEXT.get().is_some_and(Option::is_some)
-}
 
 struct TerminalGuard {
     original: libc::termios,
@@ -331,7 +272,7 @@ pub(crate) fn run(args: Vec<OsString>, audit_enabled: bool) -> Result<i32> {
     }
     let master = unsafe { File::from_raw_fd(master) };
     let slave = unsafe { File::from_raw_fd(slave) };
-    let mut child = Command::new(std::env::current_exe()?);
+    let mut child = Command::new(&args[0]);
     child
         .args(&args[1..])
         .env(CHILD_MARKER, "1")

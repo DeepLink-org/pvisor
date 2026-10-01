@@ -32,7 +32,9 @@ install-cli: (build "release")
     set -euo pipefail
     install_root="${CARGO_INSTALL_ROOT:-${CARGO_HOME:-$HOME/.cargo}}"
     mkdir -p "$install_root/bin"
-    install -m 755 "{{ target_dir }}/release/pvisor" "$install_root/bin/pvisor"
+    for binary in pvisor pvisor-tui pvisor-replay; do
+      install -m 755 "{{ target_dir }}/release/$binary" "$install_root/bin/$binary"
+    done
 
 # Build and verify a fresh wheel before placing it in dist/ (release or debug).
 wheel profile="release":
@@ -121,7 +123,7 @@ test-isolation:
 smoke: build
     #!/usr/bin/env bash
     set -euo pipefail
-    for command in run status inspect apply drop; do
+    for command in run status inspect apply drop tui replay; do
       "{{ target_dir }}/debug/pvisor" "$command" --help >/dev/null
     done
     "{{ target_dir }}/debug/pvisor" status --help | grep -Fq -- '--review'
@@ -130,9 +132,9 @@ smoke: build
 examples *scenarios: (build "release")
     PVISOR_BIN="{{ target_dir }}/release/pvisor" bash examples/pvisor/test.sh "$@"
 
-# Run documented cases; accepts the case runner's options.
+# Run DOC specifications and save JSON; select S-DOC IDs with --case.
 cases *args: (build "release")
-    python3 scripts/run-pvisor-cases.py --pvisor "{{ target_dir }}/release/pvisor" --report target/pvisor-case-report.md "$@"
+    cargo run --quiet --manifest-path tools/semspec/Cargo.toml --locked -- run --domain DOC --subject-bin "{{ target_dir }}/release/pvisor" --format json --output "{{ target_dir }}/pvisor-case-report.json" "$@"
 
 # Measure process startup and Run Bundle access (smoke or nightly).
 benchmark suite="smoke" output="target/pvisor-benchmark/current" build_dir="target/pvisor-benchmark-build":

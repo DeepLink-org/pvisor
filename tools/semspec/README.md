@@ -43,7 +43,9 @@ PASS/SKIP/XFAIL exit 0; FAIL/XPASS or required pending review exit 1;
 usage/config/spec errors exit 2; ERROR verdicts exit 3. Each check has a fresh
 workspace and process group. Timeout sends TERM, then KILL after five seconds;
 ordinary exit also clears remaining group descendants. Do not detach processes.
-Checks and vocab run using the same normalized bytes that are hashed.
+Checks and vocab run using the same normalized bytes that are hashed. Vocabulary
+is sourced in filename order, so configuration reordering cannot silently change
+execution while preserving the digest.
 
 SSH signing, JUnit and parallel execution belong to v0.2 and are explicitly
 rejected by this version. Default Bash environment is inherited; use config
@@ -57,6 +59,7 @@ just test-semspec
 just semspec lint
 just semspec review --strict         # intentionally fails until human review
 just semantics --case S-STAGE-001
+just cases --case S-DOC-001,S-DOC-012 # migrated documented scenarios
 just semantics --require-reviewed --format json --output target/semantics.json
 just semspec --config tools/semspec/semantics/semspec.toml lint
 ```

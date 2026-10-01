@@ -2662,6 +2662,7 @@ dependencies = [
  "libkrun",
  "libloading",
  "lru",
+ "memchr",
  "persisting-control",
  "persisting-gateway",
  "persisting-guest",

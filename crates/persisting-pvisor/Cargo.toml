@@ -7,6 +7,7 @@ license = "Apache-2.0 AND MIT"
 description = "pVisor foreground Agent Run manager and portable execution runtime"
 readme = "README.md"
 build = "build.rs"
+default-run = "pvisor"
 
 [features]
 default = []
@@ -23,6 +24,7 @@ fs2.workspace = true
 globset.workspace = true
 libc.workspace = true
 lru = "0.12.5"
+memchr = "2"
 persisting-control.workspace = true
 persisting-journal.workspace = true
 persisting-gateway = { workspace = true, default-features = false }

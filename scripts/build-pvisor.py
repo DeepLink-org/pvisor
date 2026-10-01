@@ -18,19 +18,18 @@ def main() -> None:
     parser.add_argument("--target", default=os.getenv("CARGO_BUILD_TARGET"))
     parser.add_argument("--shim-vm", action="store_true")
     args = parser.parse_args()
-    name = "containerd-shim-pvisor-v2" if args.shim_vm else "pvisor"
     options = BuildOptions(
         target="x86_64-unknown-linux-musl" if args.shim_vm else args.target,
         profile=args.profile,
         target_dir=args.target_dir,
     )
-    source = _build(options, shim_vm=args.shim_vm)[name]
-    destination = (
-        Path(args.target_dir) / ("debug" if args.profile == "dev" else args.profile) / name
-    )
-    destination.parent.mkdir(parents=True, exist_ok=True)
-    if source.resolve() != destination.resolve():
-        shutil.copy2(source, destination)
+    for name, source in _build(options, shim_vm=args.shim_vm).items():
+        destination = (
+            Path(args.target_dir) / ("debug" if args.profile == "dev" else args.profile) / name
+        )
+        destination.parent.mkdir(parents=True, exist_ok=True)
+        if source.resolve() != destination.resolve():
+            shutil.copy2(source, destination)
 
 
 if __name__ == "__main__":

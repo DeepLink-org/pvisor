@@ -564,7 +564,7 @@ impl RunExecutor for VmExecutor {
             .wait_child(&mut child, spec.runtime.timeout_ms)
             .await;
         if matches!(end, End::Cancelled | End::Deadline) {
-            crate::executor::session::terminate_process_tree(
+            crate::session::lifecycle::terminate_process_tree(
                 &mut child,
                 process_group,
                 spec.runtime.termination_grace_ms,

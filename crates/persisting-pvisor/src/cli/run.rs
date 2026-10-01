@@ -228,6 +228,11 @@ impl RunArgs {
     }
 
     #[cfg(unix)]
+    pub(super) fn enable_tui(&mut self) {
+        self.tui = true;
+    }
+
+    #[cfg(unix)]
     pub(super) fn wants_tui(&self, audit: bool) -> bool {
         (self.tui || audit)
             && self.result_file.is_none()
@@ -1320,7 +1325,7 @@ async fn execute_config(
     }
     let mut overlay = resolve_overlay(&config, &workspace, &storage)?;
     #[cfg(unix)]
-    super::tui::announce_stage(
+    super::terminal::announce_stage(
         overlay
             .as_ref()
             .and_then(|hint| hint.stage_dir.as_deref())

@@ -145,14 +145,17 @@ impl Project {
         })
     }
     pub fn vocab_names(&self, case: &Case) -> Vec<String> {
-        case.annotation.vocab.clone().unwrap_or_else(|| {
+        let mut names: Vec<String> = case.annotation.vocab.clone().unwrap_or_else(|| {
             self.config
                 .subject
                 .vocab
                 .iter()
                 .map(|p| p.file_name().unwrap().to_str().unwrap().to_owned())
                 .collect()
-        })
+        });
+        // Digests bind a set: configuration ordering must not change execution.
+        names.sort();
+        names
     }
     pub fn case_digest(&self, case: &Case) -> String {
         seal::case_digest(

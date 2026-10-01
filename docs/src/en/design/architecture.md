@@ -38,7 +38,7 @@ Run events carry IR request, rewrite and completion facts. The Run Bundle retain
 
 The bundle also records aggregate OverlayNet allow, deny, failure and byte counters. Filesystem grants outside FUSE and network traffic outside an interceptor have no reliable per-rule counters, so their fields are `null`: unknown is not zero. A selective host proxy counts only traffic that reaches it and cannot prove that no connection bypassed it.
 
-The sole production dispatch path is `PVisor::run(RunSpec) → ExecutorSession → RunExecutor::execute`.
+The sole production dispatch path is `PVisor::run(RunSpec) → Session → RunExecutor::execute`.
 RunPlan IR describes placement and evidence; it does not execute arbitrary expressions or
 provide per-rewrite authorization and generic disclosure checks. The separate
 Engine/Backend/Admission interpreter has been removed.
@@ -55,13 +55,29 @@ from backend outcomes.
 
 ## Session lifecycle and policy
 
-An `ExecutorSession` corresponds to one Attempt. It coordinates preparation,
+A core `Session` (`ExecutorSession` remains a compatibility alias) corresponds to one Attempt. It coordinates preparation,
 execution, cancellation/deadlines, driver teardown, evidence checks, durable
 Run Bundle updates, and terminal publication. Backends return `ExecutorOutput`
 with mandatory observations; they cannot set Run/Attempt identity or publish a
 terminal state. Process and VM termination share the process-group cleanup
 algorithm; OCI uses its runtime kill API. A new Attempt gets new Session identity
 and approval cache keys.
+
+The Session owns prepared drivers and its AgentCtl server. Register trusted
+in-process extensions with `PVisorBuilder::extension`. Fixed hooks run in order:
+`Preparing → Prepared → Executing → Executed → Finalizing → Committing`.
+A hook error fails the Attempt, but cannot skip driver cleanup or result persistence;
+startup rejection aborts prepared resources. `finished` is a notification after
+terminal publication, with no authority to rewrite the outcome.
+
+Control owns the versioned `SessionIdentity`, `SessionControlRequest/Response`
+and `SessionObservation` contracts. `RunHandle::control` checks protocol version
+and exact Run/Attempt/lease identity before status, cancellation or checkpoint.
+Cancellation acknowledgement means requested, not terminated. `observe` and
+`subscribe_observations` expose current phase, status and final result; the watch
+stream coalesces updates. Use `subscribe_events` for ordered execution events.
+These are embeddable typed protocols; AgentCtl remains the separate cooperative
+workload protocol, and no additional remote control listener is introduced.
 
 Control owns network configuration, compiled authorization and address
 classifiers, plus file policy compilation. Session, workspace, user and base network policies constrain access together:

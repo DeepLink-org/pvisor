@@ -193,22 +193,22 @@ jobs:
       - name: Run documented cases
         run: |
           just cases \
-            --case A01,A02,A03,A04,A05,A06 \
-            --case B01,B02,B03,B04 \
-            --case C02,C03,C04 \
-            --case D01,D03 \
-            --case F01,F02,F03 \
-            --case G01,G02,G03,G06 \
-            --case H01,H02 \
-            --case I01,I02,I03 \
-            --case J03
+            --case S-DOC-001,S-DOC-002,S-DOC-003,S-DOC-004,S-DOC-005,S-DOC-006 \
+            --case S-DOC-008,S-DOC-009,S-DOC-010,S-DOC-011 \
+            --case S-DOC-013,S-DOC-014,S-DOC-015 \
+            --case S-DOC-018,S-DOC-020 \
+            --case S-DOC-030,S-DOC-031,S-DOC-032 \
+            --case S-DOC-034,S-DOC-035,S-DOC-036,S-DOC-039 \
+            --case S-DOC-041,S-DOC-042 \
+            --case S-DOC-043,S-DOC-044,S-DOC-045 \
+            --case S-DOC-048
 
       - name: Upload case report
         if: always()
         uses: actions/upload-artifact@v4
         with:
           name: pvisor-case-report
-          path: target/pvisor-case-report.md
+          path: target/pvisor-case-report.json
           if-no-files-found: ignore
 
   examples:

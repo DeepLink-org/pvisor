@@ -173,6 +173,8 @@ def test_nightly_installer_selects_pvisor_wheel(tmp_path: Path, include_pvisor: 
     executable = tmp_path / "pvisor"
     executable.write_text('#!/bin/sh\necho "pvisor 0.3.0"\n', encoding="utf-8")
     executable.chmod(0o755)
+    for name in wheel_stage.EXPECTED_BINARIES[1:]:
+        (tmp_path / name).symlink_to(executable)
     result = subprocess.run(
         ["bash", str(ROOT / "scripts/install-nightly.sh")],
         env={**os.environ, "PYTHON": str(interpreter)},
@@ -399,11 +401,11 @@ def test_linux_wheel_embeds_firmware(monkeypatch, tmp_path):
     artifact = tmp_path / "pvisor"
     artifact.write_bytes(b"static pvisor with embedded kernel")
     monkeypatch.setattr(wheel_stage, "WHEEL_DATA", tmp_path / "wheel-data")
-    monkeypatch.setattr(wheel_stage, "_build", lambda options: {"pvisor": artifact})
+    monkeypatch.setattr(wheel_stage, "_build", lambda options: dict.fromkeys(wheel_stage.EXPECTED_BINARIES, artifact))
     scripts = wheel_stage.stage_wheel_binaries(
         wheel_stage.BuildOptions(target="x86_64-unknown-linux-musl")
     )
-    assert {p.name for p in scripts.iterdir()} == {"pvisor", "libkrunfw.SOURCE"}
+    assert {p.name for p in scripts.iterdir()} == set(wheel_stage.EXPECTED_BINARIES) | {"libkrunfw.SOURCE"}
 
 
 def test_shim_vm_build_uses_static_musl():
@@ -419,11 +421,12 @@ def test_linux_wheel_requires_no_firmware_shared_library(tmp_path):
     wheel = tmp_path / "pvisor-1.2.3-py3-none-manylinux_2_28_x86_64.whl"
     _write_wheel(wheel, "1.2.3")
     with zipfile.ZipFile(wheel, "a") as archive:
-        binary = zipfile.ZipInfo("pvisor-1.2.3.data/scripts/pvisor")
-        binary.external_attr = 0o100755 << 16
-        archive.writestr(binary, b"static ELF")
+        for name in wheel_stage.EXPECTED_BINARIES:
+            binary = zipfile.ZipInfo(f"pvisor-1.2.3.data/scripts/{name}")
+            binary.external_attr = 0o100755 << 16
+            archive.writestr(binary, b"static ELF")
     version, scripts, firmware = wheel_verify._wheel_contents(wheel)
-    assert version == "1.2.3" and set(scripts) == {"pvisor"} and firmware is None
+    assert version == "1.2.3" and set(scripts) == set(wheel_stage.EXPECTED_BINARIES) and firmware is None
     with zipfile.ZipFile(wheel, "a") as archive:
         archive.writestr("pvisor-1.2.3.data/scripts/libkrunfw.so.5", b"shared library")
     with pytest.raises(RuntimeError, match="expected 0 libkrunfw"):
