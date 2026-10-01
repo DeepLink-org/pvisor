@@ -2,9 +2,9 @@
 
 覆盖冷启动、热启动延迟与常驻内存；对照组为裸进程、`docker run`、Firecracker，以及各 Agent 自带沙箱；工作负载为 `pvisor run -- true`，覆盖 host、host+stage、`--safe`、container、VM 五种配置。
 
-## 已迁移数据：guest init（Apple Silicon）
+## 已迁移数据：VM 执行器的 guest init 就绪延迟（Apple Silicon）
 
-来自 `benchmark/pvisor/README.md`。测量于 2026-10-01，Apple M4/HVF，libkrunfw 5.5.0，Alpine minirootfs 3.22.1 aarch64，10 warmup / 100 sample：
+这组数据只测量 VM 执行器内 guest init 到就绪的阶段，比较 C 与 Rust 两种 guest init 实现；它不是 pVisor 的端到端冷启动延迟，也不涉及 host 和 container 执行器。来自 `benchmark/pvisor/README.md`。测量于 2026-10-01，Apple M4/HVF，libkrunfw 5.5.0，Alpine minirootfs 3.22.1 aarch64，10 warmup / 100 sample：
 
 | 场景 | C ready p50 (ms) | Rust ready p50 (ms) | Rust ready p95 (ms) | p50 变化 |
 | --- | ---: | ---: | ---: | ---: |

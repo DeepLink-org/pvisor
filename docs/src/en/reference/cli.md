@@ -25,10 +25,14 @@ Use the smallest surface that matches your next decision:
 If this is your first command, do not start with the full option list below:
 
 ```bash
-pvisor run --stage ./runs/task-001 -- codex
+pvisor run --safe -- codex
 pvisor status --review last
 pvisor apply last --path src
 ```
+
+`last` resolves only Jobs in the default storage that belong to the current
+workspace. With `--stage PATH`, pass that path or the printed Job ID (`run-*`)
+to later commands.
 
 Add `--tui` for a Zellij-style terminal frame, bottom status bar, and floating
 review panel:
@@ -112,7 +116,7 @@ File review cannot undo remote side effects.
 ## Safe first run
 
 ```bash
-pvisor run --safe --stage ../stage-001 -- codex
+pvisor run --safe -- codex
 pvisor status --review last
 ```
 

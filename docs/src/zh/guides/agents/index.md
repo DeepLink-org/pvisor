@@ -1,22 +1,25 @@
 # 接入你的 Agent
 
-pVisor 用一个统一入口运行现有的 Agent CLI、脚本和自动化命令：
+pVisor 用一个统一入口运行现有的 Agent CLI、脚本和自动化命令，不需要修改 Agent：
 
 ```bash
-pvisor run --safe --stage ../stage-001 -- <agent-command>
+pvisor run --safe -- <agent-command>
+pvisor status --review last
+pvisor apply last --path src
 ```
 
-| Agent | 指南 | 状态 |
-| --- | --- | --- |
-| Claude Code | [claude-code.md](claude-code.md) | 新建 |
-| Codex CLI | [codex.md](codex.md) | 新建 |
-| Gemini CLI | [gemini-cli.md](gemini-cli.md) | 规划中 |
-| aider | [aider.md](aider.md) | 规划中 |
-| OpenCode | [opencode.md](opencode.md) | 规划中 |
-| 任意脚本 | [custom-scripts.md](custom-scripts.md) | 新建 |
+`--safe` 按可执行文件名匹配 Agent，自动放行它的模型 API 目标（HTTPS 443 端口），其他目标默认拒绝。
 
-兼容性由 Run Bundle 中的实际能力证据决定，而不是由 Agent 名称推定。
+| Agent | 命令名 | `--safe` 默认放行 | 指南 |
+| --- | --- | --- | --- |
+| Claude Code | `claude` | `api.anthropic.com` | [Claude Code](claude-code.md) |
+| Codex CLI | `codex` | `api.openai.com`、`chatgpt.com`、`ab.chatgpt.com` | [Codex CLI](codex.md) |
+| Gemini CLI | `gemini` | `generativelanguage.googleapis.com` | [Gemini CLI（规划中）](gemini-cli.md) |
+| ZCode | `zcode` | `api.z.ai`、`open.bigmodel.cn` | 见 [`--safe` 参数预设](../../reference/cli.md#safe-参数预设) |
+| aider | — | 无预设，需 `--overlaynet-allow` | [aider（规划中）](aider.md) |
+| OpenCode | — | 无预设，需 `--overlaynet-allow` | [OpenCode（规划中）](opencode.md) |
+| 任意脚本 | 任意 | 无；`bash`、`sh`、`zsh`、`fish` 沿用 Codex 的目标 | [任意脚本](custom-scripts.md) |
 
-!!! note "TODO"
-    补兼容矩阵：Agent 版本 × 注入方式（代理／base URL） × 已知限制。
+未知命令默认拒绝出站，用 `--overlaynet-allow HOST:PORT` 显式授权（会覆盖预设列表）。预设按**直接可执行文件名**匹配，shell 包装器不会触发 Agent 专属的适配。
 
+兼容性以 Run Bundle 中的实际能力证据为准，而不是由 Agent 名称推定。各 Agent 受支持的版本范围尚未系统测试，见[端到端任务（规划中）](../../benchmarks/agent-tasks.md)。

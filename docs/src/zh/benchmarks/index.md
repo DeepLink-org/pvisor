@@ -6,7 +6,8 @@
 
 | 指标 | 值 | 来源 |
 | --- | --- | --- |
-| 冷启动延迟（guest init，Apple M4/HVF） | p50 ≈ 105–119 ms | [启动延迟](startup.md) |
+| VM 执行器 guest 就绪延迟（仅 guest init 阶段，Apple M4/HVF） | p50 ≈ 114 ms（Rust init） | [启动延迟](startup.md) |
+| pVisor 端到端冷启动（host／container／VM） | 建设中 | [启动延迟](startup.md) |
 | 文件系统开销 | 建设中 | [文件系统开销（规划中）](filesystem.md) |
 | 端到端 Agent 任务开销 | 建设中 | [端到端任务（规划中）](agent-tasks.md) |
 

@@ -24,7 +24,7 @@
         <div class="pc-home-tabs"><span class="active">{% if zh %}以 Agent CLI 为例{% else %}Example: an Agent CLI{% endif %}</span></div>
         <div class="pc-home-terminal">
           <div class="pc-home-terminal-bar"><span class="dot red"></span><span class="dot yellow"></span><span class="dot green"></span></div>
-          <pre class="pc-home-terminal-body"><span class="pc-home-command-line"><span class="pc-home-prompt">$ </span>pip install pvisor</span><span class="pc-home-command-line"><span class="pc-home-prompt">$ </span>pvisor run --safe --stage ../stage-001 -- codex</span><span class="pc-home-command-line"><span class="pc-home-prompt">$ </span>pvisor status --review last</span><span class="pc-home-command-line"><span class="pc-home-prompt">$ </span>pvisor apply last --path src</span></pre>
+          <pre class="pc-home-terminal-body"><span class="pc-home-command-line"><span class="pc-home-prompt">$ </span>pip install pvisor</span><span class="pc-home-command-line"><span class="pc-home-prompt">$ </span>pvisor run --safe -- codex</span><span class="pc-home-command-line"><span class="pc-home-prompt">$ </span>pvisor status --review last</span><span class="pc-home-command-line"><span class="pc-home-prompt">$ </span>pvisor apply last --path src</span></pre>
         </div>
         <p>{% if zh %}安装包与 CLI 均为 <code>pvisor</code>。首次使用请先完成<a href="{{ prefix }}start/installation/">平台配置</a>。{% else %}The package and CLI are both <code>pvisor</code>. Complete the <a href="{{ prefix }}start/installation/">platform setup</a> before your first Run.{% endif %}</p>
       </div>
@@ -55,9 +55,11 @@
     <h2>{% if zh %}从你当前的问题开始{% else %}Start with the question you have.{% endif %}</h2>
     <div class="pc-home-mode-grid">
       <a class="pc-home-mode" href="{{ prefix }}start/first-run/"><strong>{% if zh %}快速开始{% else %}Get started{% endif %}</strong><span>{% if zh %}完成运行、审查与应用的第一个闭环。{% else %}Run your first workflow through to apply.{% endif %}</span></a>
-      <a class="pc-home-mode" href="{{ canonical }}concepts/"><strong>{% if zh %}概念与边界{% else %}Concepts{% endif %}</strong><span>{% if zh %}理解证据、边界与保证的范围。{% else %}Understand evidence, boundaries, and guarantees.{% endif %}</span></a>
-      <a class="pc-home-mode" href="{{ canonical }}design/"><strong>{% if zh %}系统设计{% else %}System design{% endif %}</strong><span>{% if zh %}架构、放置、隔离与契约。{% else %}Architecture, placement, isolation, and contracts.{% endif %}</span></a>
-      <a class="pc-home-mode" href="{{ canonical }}development/"><strong>{% if zh %}参与开发{% else %}Development{% endif %}</strong><span>{% if zh %}工程说明、示例与发布流程。{% else %}Engineering notes, examples, and releases.{% endif %}</span></a>
+      <a class="pc-home-mode" href="{{ canonical }}why/"><strong>{% if zh %}为什么是 pVisor{% else %}Why pVisor{% endif %}</strong><span>{% if zh %}愿景、信任阶梯、用例与现成方案对比。{% else %}Vision, trust ladder, use cases, and comparisons.{% endif %}</span></a>
+      <a class="pc-home-mode" href="{{ canonical }}security/"><strong>{% if zh %}安全{% else %}Security{% endif %}</strong><span>{% if zh %}威胁模型、执行器边界、已知限制与漏洞披露。{% else %}Threat model, executor boundaries, known limitations, and disclosure.{% endif %}</span></a>
+      <a class="pc-home-mode" href="{{ canonical }}benchmarks/"><strong>{% if zh %}基准与对比{% else %}Benchmarks{% endif %}</strong><span>{% if zh %}可复现的测量方法与已有数据。{% else %}Reproducible methods and current data.{% endif %}</span></a>
+      <a class="pc-home-mode" href="{{ canonical }}design/"><strong>{% if zh %}设计与研究{% else %}Design and research{% endif %}</strong><span>{% if zh %}架构、隔离、契约与研究方向。{% else %}Architecture, isolation, contracts, and research directions.{% endif %}</span></a>
+      <a class="pc-home-mode" href="{{ canonical }}community/"><strong>{% if zh %}社区{% else %}Community{% endif %}</strong><span>{% if zh %}贡献、测试、发布与路线图。{% else %}Contributing, testing, releases, and roadmap.{% endif %}</span></a>
     </div>
   </section>
   <footer class="pc-home-footer"><p>{% if zh %}开源 · Apache-2.0 · PolicyVisor{% else %}Open source · Apache-2.0 · PolicyVisor{% endif %}</p><p><a href="https://github.com/DeepLink-org/pvisor">GitHub</a></p></footer>

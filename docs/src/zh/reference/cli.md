@@ -16,10 +16,12 @@ Host、OCI VM 和透明 host-rootfs VM 的完整命令示例见
 第一次使用时，先复制最小闭环：
 
 ```bash
-pvisor run --stage ./runs/task-001 -- codex
+pvisor run --safe -- codex
 pvisor status --review last
 pvisor apply last --path src
 ```
+
+`last` 只解析默认存储中属于当前工作区的 Job；用 `--stage PATH` 时，后续命令传入该路径或 Job ID，见 [Job 与存储](../concepts/jobs.md)。
 
 加上 `--tui` 可显示类似 Zellij 的终端边框、底部状态栏和浮动审查面板：
 
@@ -107,7 +109,7 @@ pvisor
 ## 安全的第一次运行 {#安全的第一次运行}
 
 ```bash
-pvisor run --safe --stage ../stage-001 -- codex
+pvisor run --safe -- codex
 pvisor status --review last
 ```
 
@@ -149,7 +151,7 @@ checkpoint 的 Session 报告匹配的 quiesced 状态，快照 raw upper，再�
 要结束正在运行的 Job，使用 `pvisor kill JOB_ID`。它向 Job 的监督进程请求正常
 终止；用 `pvisor status JOB_ID` 查看最终状态。已停止的 Job 仍可审查并选择应用或丢弃。
 
-## `--safe` 参数预设
+## `--safe` 参数预设 {#safe-参数预设}
 
 ```bash
 pvisor run --safe -- claude
@@ -500,7 +502,7 @@ namespace 或 Seatbelt 阻止直接出口；容器离线使用 `--container-netw
 在 libkrun VM 上，`auto` 使用 smoltcp IPv4 TCP/DNS，`off` 让 guest 离线；
 deny-all 仍允许已配置的内部 Gateway 路由。各路径的范围见 [网络边界](../guides/policies/network.md)。
 
-## Run 项目发现
+## Run 项目发现 {#run-项目发现}
 
 当前目录是默认项目关联。`--mount` 指定额外宿主底层和可选的 Agent 可见路径。
 每个 Run 在 pVisor 默认记录根目录下获得独立目录。若该根会落在

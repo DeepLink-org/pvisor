@@ -41,12 +41,16 @@ When you do not need pVisor: if you just want a throwaway sandbox you can discar
 Today pVisor runs one Job at a time on your machine: let one agent finish unattended, then review every change and selectively apply. That level already carries the three properties the higher levels need—policy and evidence deciding what can skip review, up to post-hoc audit and many agents in parallel, and finally clustered execution.
 
 ```bash
-pvisor run --safe --stage ../task-stage -- codex
-pvisor status --review ../task-stage
-pvisor apply ../task-stage --all
+pvisor run --safe -- codex
+pvisor status --review last
+pvisor apply last --path src   # or: pvisor drop last
 ```
 
-`--safe` retains a staged workspace by default; `--stage PATH` selects its location.
+!!! tip "Try the demo that needs no API key"
+
+    [Your first run](first-run.md) uses a fake agent script that edits source, deletes a file, tries to read a sensitive path, and tries to reach the network. The review shows the changes and the blocked access, and you apply only `src`.
+
+`--safe` keeps workspace changes in Job storage, and `last` resolves the latest Job for the current workspace. With `--stage PATH`, pass that path instead of `last`.
 
 ## Scope
 

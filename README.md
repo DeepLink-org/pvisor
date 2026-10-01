@@ -93,9 +93,15 @@ is platform-dependent. See [capabilities and evidence](https://deeplink-org.gith
 
 - [Start here](https://deeplink-org.github.io/pvisor/en/start/) — the path from install to a reviewed run
 - [Your first run](https://deeplink-org.github.io/pvisor/en/start/first-run/) — the run-review-apply loop
+- [Why pVisor (中文)](https://deeplink-org.github.io/pvisor/zh/why/) — vision, trust ladder, use cases, and comparisons
 - [Capabilities and evidence (中文)](https://deeplink-org.github.io/pvisor/zh/concepts/capabilities-and-evidence/) — how far a guarantee goes
-- [Project architecture (中文)](https://deeplink-org.github.io/pvisor/zh/design/) — ownership and delivery boundaries
+- [Security (中文)](https://deeplink-org.github.io/pvisor/zh/security/) — threat model, executor boundaries, and known limitations
+- [Benchmarks (中文)](https://deeplink-org.github.io/pvisor/zh/benchmarks/) — methods and current data
+- [Design and research (中文)](https://deeplink-org.github.io/pvisor/zh/design/) — architecture, isolation, and research directions
+- [Community (中文)](https://deeplink-org.github.io/pvisor/zh/community/) — contributing, testing, and roadmap
 - [中文文档](https://deeplink-org.github.io/pvisor/zh/start/)
+
+Security issues: see [SECURITY.md](SECURITY.md). Contributions: see [CONTRIBUTING.md](CONTRIBUTING.md).
 
 ## License
 

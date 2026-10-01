@@ -1,8 +1,47 @@
 # 策略模型
 
-策略分层：请求 → 准入 → 有效约束 → 实际安装的控制 → 观察。user、workspace、session 与执行器基础策略共同约束权限；后面的 allow 不能覆盖前面的显式拒绝。`--safe` 要求落实隔离，`--strict` 校验全部请求维度。
+策略回答"这次执行被允许做什么"。pVisor 把它拆成几个阶段，每个阶段的结果都记录下来，避免把"请求了什么"误当成"实际做到了什么"：
 
-!!! note "TODO"
-    补请求／准入／降级的完整定义，字段见 reference/policy。
-    与 concepts/capabilities-and-evidence 去重。
+```text
+请求的权限 → 分层合并 → 准入（执行器能否提供） → 实际安装的控制 → 观察到的结果
+```
 
+## 请求从哪里来
+
+| 来源 | 位置 | 作用 |
+| --- | --- | --- |
+| 命令行 | `--access`、`--overlaynet-*`、`--pass-env` 等 | 本次运行 |
+| 预设 | `--safe`、`--ask` | 生成一组参数补丁 |
+| Run 配置 | `pvisor run --config run.toml` | 本次运行 |
+| Session 层 | Run TOML 中的 `[policies.session]` | 本次 Session |
+| 工作区层 | 工作区 `.pvisor/policy.toml` | 自动加载，只能收窄权限 |
+| 用户层 | `~/.config/pvisor/policy.toml`（`$XDG_CONFIG_HOME/pvisor/policy.toml`） | 用户默认值 |
+
+命令行参数的优先级是：**显式 CLI > `--safe` 预设 > 配置文件 > 普通默认值**。
+
+## 分层合并
+
+Session、工作区、用户和执行器基础策略共同约束权限，合并规则是"取最严格"：
+
+- **网络**：所有已声明的层都必须放行；任一层的显式 deny、端口或协议限制、解析地址安全检查失败都会拒绝请求；各层匹配的带宽限制全部叠加。省略 `default_action` 时默认拒绝未匹配的目标。
+- **文件**：跨层按 deny、ask、warn、allow 取最严格的决定；allow 不能覆盖其他层的限制。
+- **交互审批**不能覆盖显式 deny 或基础的全部拒绝。
+- 策略在一次 Attempt 内固定；修改策略文件只影响之后的 Session。
+
+策略文件必须归当前用户所有、不能被其他用户写入，不允许符号链接，大小不超过 1 MiB；不安全的文件会阻止启动。写法与示例见[网络策略](../guides/policies/network.md)和[文件策略](../guides/policies/files.md)。
+
+## 准入与降级
+
+执行器在启动前返回计划，说明每个能力维度它能提供到什么程度：`Unsupported`（不能提供）、`Cooperative`（依赖工作负载配合）、`Planned`（计划安装强制机制）。
+
+| 模式 | 必需控制无法满足时 |
+| --- | --- |
+| 普通运行 | 尽力而为，缺失的控制作为警告记录 |
+| `--safe` | 要求所选执行器落实文件读取、写入和网络隔离；做不到时拒绝启动，不静默回退到普通 host 进程 |
+| `--strict` | 要求每个请求的能力维度都有不可绕过的强制证据，否则在 Agent 启动前拒绝运行 |
+
+`--safe` 不替你选择执行器。当前没有执行器声称完整的子进程强制，所以 `--strict` 在所有执行器上都会拒绝运行，它用于验证失败关闭。
+
+## 实际控制与观察
+
+计划最高只能是 `Planned`。执行器收尾时返回实际安装的控制（`Unenforced`、`Cooperative`、`Enforced`），这才是强制力的证据。证据的口径和局限见[能力、证据与保证边界](capabilities-and-evidence.md)。
