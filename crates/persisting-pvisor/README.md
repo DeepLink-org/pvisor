@@ -43,9 +43,11 @@ just examples
 ```
 
 On macOS, source builds that use HVF must be signed. `just build release` does this;
-the equivalent entitlements file is `macos-hypervisor.entitlements`. Building
-the embedded `persisting-guest` supervisor is built as a static Linux musl ELF
-with Rust's bundled linker. It launches workloads directly, without a shell helper,
+the equivalent entitlements file is `macos-hypervisor.entitlements`. The embedded
+`persisting-guest` supervisor is built as a static Linux musl ELF
+with Rust's bundled linker. On Apple Silicon, install its stdlib once with
+`rustup target add aarch64-unknown-linux-musl`. It launches workloads directly,
+without a shell helper,
 and reports their exit codes through libkrun's root filesystem ioctl.
 
 The vendored libkrun is built only as an `rlib` and statically linked into

@@ -20,16 +20,6 @@ fn main() {
         "unsupported guest architecture {arch}"
     );
     let target = format!("{arch}-unknown-linux-musl");
-    let rustc = env::var_os("RUSTC").unwrap();
-    let sysroot = Command::new(&rustc)
-        .args(["--print", "sysroot"])
-        .output()
-        .unwrap();
-    assert!(sysroot.status.success(), "find Rust sysroot");
-    let linker = PathBuf::from(String::from_utf8(sysroot.stdout).unwrap().trim())
-        .join("lib/rustlib")
-        .join(env::var("HOST").unwrap())
-        .join("bin/rust-lld");
     // A separate target directory avoids the outer Cargo build's artifact lock.
     let target_dir = root.join("target/pvisor-guest");
     let status = Command::new(env::var_os("CARGO").unwrap())
@@ -48,10 +38,8 @@ fn main() {
         .arg("--target-dir")
         .arg(&target_dir)
         .arg("--config")
-        .arg(format!(
-            "target.{target}.linker={:?}",
-            linker.to_string_lossy()
-        ))
+        // rustc resolves rust-lld from its own toolchain, including on macOS.
+        .arg(format!("target.{target}.linker=\"rust-lld\""))
         .env_remove("CARGO_ENCODED_RUSTFLAGS")
         .env_remove("RUSTFLAGS")
         .env_remove("RUSTC_WORKSPACE_WRAPPER")

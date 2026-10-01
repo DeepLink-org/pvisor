@@ -49,6 +49,7 @@ jobs:
         uses: ./.github/actions/setup-build-env
         with:
           rust: "true"
+          static-musl: "true"
 
       - uses: Swatinem/rust-cache@v2
         with:

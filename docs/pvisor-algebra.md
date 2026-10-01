@@ -1,7 +1,9 @@
-# pVisor 核心：操作项、上下文链与改写
+# pVisor IR 代数规范：操作项、上下文链与改写
 
-核心契约 v3。pVisor 把进入受控边界的一次操作表示为一个操作项，策略改写它的上下文链，
-后端解释改写后的表达式，事件保留原请求、改写依据和实际结果。
+本页是结构语义与未来解释器的规范，不是生产执行保证。IR/Trace 数据结构已实现；
+唯一生产派发路径是 `PVisor::run(RunSpec) → RunExecutor::execute`。
+任意文件表达式、后缀解释、逐次改写授权及披露检查没有生产解释器。
+原有独立 Engine/Backend/Admission 已删除；实际边界见 [IR 实现](pvisor-ir.md)。
 
 ```text
 fs.read("file-17", offset: 0, length: 4096)
@@ -123,7 +125,7 @@ Agent 接口层的副作用是 ReadFile、WriteFile 等操作。pVisor 实现层
 远端连接、VM 暂停与恢复、资源释放及审计提交。内部动作由后端实现并记录观察，不必变成
 Agent 的操作项。
 
-Rust 后端边界为：
+若未来实现通用表达式解释器，其授权与执行边界应为：
 
 ```text
 authorize(trusted_context, expression) -> allowed | Failure
@@ -168,20 +170,18 @@ op=17 completed  ... => ok(bytes([...]))
 和必要顺序；日志本身不产生这些前提，也不应直接导致写入操作被重新执行。
 
 取消不会自动生成“失败且无效果”的结论。派发事实没有完成事实时，结果仍待确认。
-执行后日志失败也不能覆盖已知结果，调用方须检查 `Execution.audit_errors`。
+执行后日志失败也不能覆盖已知结果，生产 Run 调用方须检查 `RunResult.failure` 与 `warnings`。
 
 ## 6. 实现与验证
 
-核心代码位于 `persisting-control::ir`、`persisting-control::trace`、
-`persisting-pvisor::core` 和 `persisting-pvisor::trace`。当前执行原语仅为文件范围读写；
-VM、HTTP、网络与模型观察可先使用领域事件，执行原语按模块契约逐个加入。
-现有 FUSE、Gateway 等入口尚未迁移，新核心不会自动获得未接入操作的覆盖。
+数据契约位于 `persisting-control::ir`、`persisting-control::trace`，唯一事实日志位于
+`persisting-journal`。生产实现位于 `persisting-pvisor::runtime` 与 `executor`；
+RunPlan 是既有 RunSpec 执行的计划与证据投影，不是第二个策略执行模型。
 
 验证分为两层：
 
 - [有限代数检查](pvisor-algebra-check.py)：包裹恒等/结合、顺序敏感、原请求保持及改写复原。
-- Rust 契约与性质测试：实际解析往返、后缀改写、规则证据、授权、结果检查、取消、审计缺口
-  和 journal 持久化/恢复。测试后端验证包裹顺序；真实 VM/远端驱动的正确性须由驱动测试建立。
+- Rust 测试：数据解析、结构改写、规则证据；生产 Run 准入、事件链、结果校验和 Journal 恢复。
 
-这版不承诺普遍可逆、任意重排、完整 Agent 状态复现或性能提升。核心先固定小而可检查的
-请求、改写与观测边界，再以同一契约逐个接入真实后端。
+代数检查不能证明生产授权、任意后缀执行、VM/远端组合或披露安全。若将来开放通用
+Expression 执行入口，必须在唯一生产派发缝实施上述授权与结果约束，并以真实入口测试验证。

@@ -420,12 +420,9 @@ pvisor run \
   -- my-agent
 ```
 
-`--record-destination` 写入本地 EventRecord JSONL。本仓库不再附带单独的历史服务。
-
-所有新持久化的记录都同时包含 `timestamp`（RFC3339 UTC）和
-`timestamp_unix_ms`（Unix 毫秒）。它们描述同一观测时间，必须在一毫秒内
-一致。记录顺序仍由 `source + seq` 定义；时间戳是关联元数据，不是顺序的
-事实源。
+`--record-destination` 将 `trace::Event` 写入本地 Journal
+`events.trace.jsonl`，不支持旧 JSONL。Journal position 定义追加顺序，
+`caused_by` 定义因果关系；`observed_at_unix_ms` 是观测元数据，不是顺序事实源。
 
 等价 TOML 是：
 

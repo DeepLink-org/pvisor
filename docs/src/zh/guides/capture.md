@@ -29,7 +29,7 @@ Gateway。使用 `--record-destination ./capture` 将 Trace Event journal 写入
 Gateway 内容位于 `event.data.payload.content`，story/session 路由位于
 `event.data.payload.story`，call 关联位于 `event.data.payload.correlation`。
 Run 与内嵌 Gateway 共用 Journal。进入队列不等于持久化；同步文件后才返回 LocalSync。
-旧 JSONL 仅作兼容读取，不与新事实混写。
+只支持正式 Event Journal，旧 JSONL 不再兼容读取。
 
 客户端只有使用注入的代理或 base URL 才能被观察；直接 socket 是否受限取决于 executor，
 实际隔离边界以 Run Bundle 为准。

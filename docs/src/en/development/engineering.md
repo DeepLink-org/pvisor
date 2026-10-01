@@ -44,7 +44,7 @@ src/
 ├── bin/pvisor.rs          # Binary entry point
 ├── cli/                   # Arguments, commands, agent presets and terminal UI
 ├── config.rs              # Runtime and executor configuration
-├── core.rs, trace.rs       # Operation-chain execution and trace journal
+├── trace.rs               # Shared fact journal re-export
 ├── diagnostics.rs         # Shared host logs; frontend selects the destination
 ├── executor/
 │   ├── mod.rs             # RunExecutor and AttemptContext
@@ -147,7 +147,9 @@ documented cases share its release build and isolation prerequisites. Network
 and Gateway examples run in a separate job.
 
 The shared setup action installs Python, uv, and just. Jobs opt into Rust,
-nextest, and the guest Rust target as needed. Linux Rust jobs also install cargo-zigbuild. Wheel platforms live in one reusable
+nextest, and the guest Rust target as needed. Linux jobs building static CLI/shim
+binaries opt into `static-musl` for Zig and cargo-zigbuild; Rust checks and unit
+tests do not need those tools. Wheel platforms live in one reusable
 workflow. PR documentation builds cannot cancel a Pages deployment.
 
 ## Build environment
@@ -155,7 +157,11 @@ workflow. PR documentation builds cannot cancel a Pages deployment.
 The repository uses the stable toolchain from `rust-toolchain.toml`, the default
 LLVM backend, and the platform linker. Install nextest `0.9.137`, or use the
 repository CI setup action. The guest supervisor is a static Linux musl Rust
-binary built with Rust’s bundled linker; macOS VM builds do not need Zig.
+binary built with Rust’s bundled `rust-lld`; macOS VM builds do not need Zig.
+On Apple Silicon, install the guest stdlib once with
+`rustup target add aarch64-unknown-linux-musl`. CI installs only its host
+architecture’s guest target; the workspace toolchain does not download cross
+targets for unrelated crates.
 
 `CARGO_TARGET_DIR` selects the native build directory. The build, install,
 smoke, example, and case tasks use the same location. Wheel verification uses a

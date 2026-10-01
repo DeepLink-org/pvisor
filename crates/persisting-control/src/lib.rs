@@ -9,7 +9,6 @@ pub mod audit;
 pub mod client;
 mod file_access;
 pub mod ir;
-pub mod legacy_events;
 pub mod overlay;
 pub mod policy;
 pub mod protocol;

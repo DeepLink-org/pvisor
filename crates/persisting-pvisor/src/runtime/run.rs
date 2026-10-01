@@ -624,12 +624,7 @@ impl PVisor {
                     );
                 }
             }
-            let kind = match result.state {
-                RunState::Completed => "run.completed",
-                RunState::Cancelled => "run.cancelled",
-                _ => "run.failed",
-            };
-            let run_observation = crate::runtime::plan::observe(
+            let run_observation = match crate::runtime::plan::observe(
                 &run_plan,
                 &result,
                 teardown.as_ref().and_then(|teardown| {
@@ -638,7 +633,44 @@ impl PVisor {
                 teardown
                     .as_ref()
                     .and_then(|teardown| teardown.run_record().filesystem_observation.as_ref()),
-            );
+            ) {
+                Ok(observation) => observation,
+                Err(error) => {
+                    let known_effects = json!({
+                        "result": result,
+                        "filesystem": teardown.as_ref().and_then(|t| t.run_record().filesystem_observation.as_ref()),
+                    });
+                    fail_finalization(&mut result, format!("invalid Run observation: {error:#}"));
+                    if let Some(teardown) = teardown.as_mut() {
+                        persist_failed_local_state(
+                            teardown,
+                            &mut result,
+                            &bundle_agentctl,
+                            safe_profile_requested,
+                            false,
+                        );
+                    }
+                    persisting_control::ir::run::RunObservation {
+                        outcome: persisting_control::ir::Outcome::Error {
+                            failure: persisting_control::ir::Failure::Unknown {
+                                reason: error.to_string(),
+                                known_effects,
+                            },
+                        },
+                        rules: run_plan
+                            .rules
+                            .iter()
+                            .map(|rule| (rule.id.clone(), Default::default()))
+                            .collect(),
+                        filesystem: None,
+                    }
+                }
+            };
+            let kind = match result.state {
+                RunState::Completed => "run.completed",
+                RunState::Cancelled => "run.cancelled",
+                _ => "run.failed",
+            };
             if let Some(filesystem) = &run_observation.filesystem
                 && let Err(error) = context
                     .events()

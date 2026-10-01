@@ -38,6 +38,11 @@ Run events carry IR request, rewrite and completion facts. `run.json` and the Ru
 
 The bundle also records aggregate OverlayNet allow, deny, failure and byte counters. Filesystem grants outside FUSE and network traffic outside an interceptor have no reliable per-rule counters, so their fields are `null`: unknown is not zero. A selective host proxy counts only traffic that reaches it and cannot prove that no connection bypassed it.
 
+The sole production dispatch path is `PVisor::run(RunSpec) → RunExecutor::execute`.
+RunPlan IR describes placement and evidence; it does not execute arbitrary expressions or
+provide per-rewrite authorization and generic disclosure checks. The separate
+Engine/Backend/Admission interpreter has been removed.
+
 ## Filesystem application
 
 `persisting-control::overlay` owns the review/apply records, first-touch state schema, and local Run inspection messages. OverlayCore computes fingerprints and stores journals; pVisor handles requests and executes apply/discard.

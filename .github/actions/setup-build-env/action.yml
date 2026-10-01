@@ -7,6 +7,9 @@ inputs:
   components:
     description: Additional Rust components (comma-separated)
     default: ""
+  static-musl:
+    description: Install Linux tools for static CLI/shim builds (guest builds use Rust only)
+    default: "false"
   install-nextest:
     description: Install cargo-nextest
     default: "false"
@@ -38,16 +41,20 @@ runs:
       with:
         tool: cargo-nextest@0.9.137
 
-    - name: Install Apple Silicon guest Rust target
-      if: runner.os == 'macOS' && inputs.rust == 'true'
+    - name: Install guest Rust target
+      if: inputs.rust == 'true'
       shell: bash
-      run: rustup target add aarch64-unknown-linux-musl
+      run: |
+        case "$(uname -m)" in
+          arm64|aarch64) rustup target add aarch64-unknown-linux-musl ;;
+          x86_64) rustup target add x86_64-unknown-linux-musl ;;
+          *) echo "Unsupported guest architecture" >&2; exit 1 ;;
+        esac
 
     - name: Install Linux static musl build tools
-      if: runner.os == 'Linux' && inputs.rust == 'true'
+      if: runner.os == 'Linux' && inputs.static-musl == 'true'
       shell: bash
       run: |
         python -m pip install ziglang==0.13.0
         echo "$(python -c 'import pathlib, ziglang; print(pathlib.Path(ziglang.__file__).parent)')" >> "$GITHUB_PATH"
-        rustup target add x86_64-unknown-linux-musl
         cargo install cargo-zigbuild --locked

@@ -1,6 +1,6 @@
 # Event v3：请求、改写与结果
 
-Event 是不可变的观测事实。它把 [核心表达式](pvisor-algebra.md) 与执行过程连接起来：
+Event 是不可变的观测事实。它把 [IR 表达式](pvisor-algebra.md) 与执行过程连接起来：
 保留原请求，记录实际采用的规则和执行表达式，再记录结果。`fs.read(...)` 本身表示请求内容，
 事件阶段说明它被请求、改写、派发还是完成。
 
@@ -20,14 +20,14 @@ Event 是不可变的观测事实。它把 [核心表达式](pvisor-algebra.md) 
 | caused_by | 因果事实引用；允许缺失引用，拒绝自引用和已知因果环 |
 | level | Trace / Debug / Info / Warn / Error |
 | granularity | Milestone / Operation / Detail，与严重程度独立 |
-| data | 类型化的核心事实或带名字/版本的领域观察 |
+| data | 类型化的执行事实或带名字/版本的领域观察 |
 
 事件域由载荷决定。当前文件请求、派发与完成属于 filesystem，改写属于 policy，
 上下文定义属于 execution；Observation 自带领域，例如 http、network、vm、llm。
-相同组件可以产生不同域的事件。Core 的失败完成默认使用 Error，拒绝和不支持使用 Warn；
+相同组件可以产生不同域的事件。Completed 的失败结果默认使用 Error，拒绝和不支持使用 Warn；
 生产者可按已定义的领域契约设置观察的 level 与 granularity。
 
-## 2. 核心事实
+## 2. 执行事实
 
 | Fact | 载荷与含义 |
 |---|---|
@@ -42,12 +42,12 @@ Event 是不可变的观测事实。它把 [核心表达式](pvisor-algebra.md) 
 Append/SetContexts 保持原语和实参，Replace 明确记录操作替换。读取 Rewritten 时，校验器
 重新执行纯改写并要求 `rule.apply(before) == after`，因此伪造的后缀改写不能悄悄修改资源。
 
-Completed 的来源是 Backend、Policy、Replay 或 Runtime。运行器的 mock/deny 使用 Policy，
+Completed 的来源是 Backend、Policy、Replay 或 Runtime。实现 mock/deny 的处理器应使用 Policy（生产 Run 尚不支持），
 输入/准入等运行器决定使用 Runtime，实际后端返回使用 Backend。Replay 来源留给具有相应
 证据的回放生产者；普通执行器不会因为结果相同就宣称发生了回放。
 
 Completed 表示拟返回结果已确定。实际调用者是否收到结果，由接入方记录交付观察。
-披露检查拒绝时，先保存 `execution.delivery_denied`，其中保留已观察的结果，再记录拒绝。
+通用披露检查尚未接入生产；本契约不表示所有接入方均实施了披露授权。
 
 ## 3. 因果与 scope
 
@@ -82,8 +82,8 @@ op=17 completed  fs.read(...) |> remote("node-a") => ok(bytes([...]))
 ## 5. 取消、失败与提交
 
 取消、连接中断或缺失完成事件，都不能证明操作没有发生。执行结果未知时保留 Unknown
-及已知效果；不得把“日志未记录”解释成“没有执行”。确定的结果不因日志提交失败而改写，
-调用方通过 `Execution.audit_errors` 获取审计缺口。
+及已知效果；不得把“日志未记录”解释成“没有执行”。生产 Run 在 `RunResult.failure` 与
+`warnings` 中报告收尾或审计失败；已经记录的执行事实不会被回写。
 
 `Record` 将 Event 与独立的 `{ journal, offset }` 配对，提交回执包含 event ID、位置和
 Volatile/LocalSync。文件头为 `pvisor.trace/3`，旧草稿 journal 明确拒绝，不混写。
@@ -107,7 +107,7 @@ Volatile/LocalSync。文件头为 `pvisor.trace/3`，旧草稿 journal 明确拒
 Run 将 Context、Requested、Rewritten、Dispatched、Completed 写成独立的因果事实；
 生命周期、文件系统统计和网络统计使用领域 Observation。Gateway 使用带版本的
 CaptureObservation 载荷，保留 story 路由、call 关联和已脱敏内容，不构造虚假的 IR 操作。
-这不表示所有 FUSE 操作或网络包都已获得逐条 Core 覆盖。
+这不表示所有 FUSE 操作或网络包都已获得逐条 IR 执行事实覆盖。
 
 Gateway 的有界队列仅接受工作，不提供持久化承诺。Story 和 SessionIndex 在 Journal
 提交后更新；重启直接读取已提交事实重建投影，不重跑 HTTP 请求或准备命令。观察者是
@@ -115,14 +115,13 @@ Gateway 的有界队列仅接受工作，不提供持久化承诺。Story 和 Se
 提交失败或队列拒绝通过 flush/shutdown 报告。实时订阅同样来自提交后的 Journal 通知；
 滞后读者从 Journal 恢复，幂等重试不重复通知。
 
-旧 EventRecord 只存在于 `legacy_events` 的历史读取契约中，不再从 control 根模块导出。
-Gateway 的 `read_capture_records` 可读取关闭的正式 Journal 或旧 JSONL，返回展示投影，
-不补造缺失的执行/因果证据。旧命令 WAL 已删除；检测到非空历史 WAL 时启动拒绝，要求
-先用旧版本排空，避免静默丢失迁移前的待处理工作。正式日志不会在关闭时截空。
+EventRecord 已完全删除，不提供历史读取兼容。Gateway 的 `read_capture_records` 只读取
+关闭的正式 Journal，返回展示投影。旧命令 WAL 已删除；检测到非空历史 WAL 时启动拒绝，
+要求先用旧版本排空，避免静默丢失迁移前的待处理工作。正式日志不会在关闭时截空。
 
 单事件 1 MiB 的限制仍适用；超限事件明确拒绝，不能把拒绝视为已记录。分段、批量同步和
 大内容附件尚未引入。只有实际性能或容量需求出现时才扩展现有 Journal。
 
-运行 [IR 示例](pvisor-ir.md) 可生成文件读取及 mock 改写的真实 trace。
+生产 Run 的实际执行事实与证据边界见 [IR 实现](pvisor-ir.md)。
 测试覆盖提交幂等、并发位置、取消、断尾恢复、完整损坏、因果环、生产 Run 的执行事实链、
-Gateway 投影恢复、跨重启请求/响应关联和历史读取。
+Gateway 投影恢复、跨重启请求/响应关联和旧格式拒绝。

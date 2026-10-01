@@ -67,40 +67,13 @@ pub fn story_call_ids(story: &Story) -> BTreeSet<String> {
     ids
 }
 
-/// Read closed fact journals or historical v1 JSONL into dialogue projections.
-/// Historical input cannot supply missing execution facts or causal evidence.
+/// Read closed fact journals into dialogue projections.
 pub fn read_capture_records(path: &Path) -> Result<Vec<CaptureRecord>> {
-    use std::io::BufRead;
-    let first = std::io::BufReader::new(std::fs::File::open(path)?)
-        .lines()
-        .next()
-        .transpose()?;
-    let Some(first) = first else {
-        return Ok(vec![]);
-    };
-    let header: serde_json::Value = serde_json::from_str(&first)?;
-    if header.get("format").is_some() {
-        let mut out = vec![];
-        for record in persisting_journal::Journal::read(path)? {
-            if crate::record::is_capture_event(&record.event) {
-                out.push(CaptureRecord::from_event(
-                    &record.event,
-                    record.position.offset,
-                )?);
-            }
-        }
-        return Ok(out);
-    }
-    let mut out = vec![];
-    for line in std::io::BufReader::new(std::fs::File::open(path)?).lines() {
-        let legacy: persisting_control::legacy_events::LegacyEventRecord =
-            serde_json::from_str(&line?)?;
-        legacy.validate()?;
-        let mut projection = serde_json::to_value(&legacy)?;
-        projection["observed_at_unix_ms"] = projection["timestamp_unix_ms"].take();
-        out.push(serde_json::from_value(projection)?);
-    }
-    Ok(out)
+    persisting_journal::Journal::read(path)?
+        .into_iter()
+        .filter(|record| crate::record::is_capture_event(&record.event))
+        .map(|record| CaptureRecord::from_event(&record.event, record.position.offset))
+        .collect()
 }
 
 /// Count user-visible dialogue turns (Dialogue kind with user text).
@@ -315,17 +288,14 @@ mod tests {
 }
 
 #[cfg(test)]
-mod historical_tests {
+mod journal_tests {
     #[test]
-    fn historical_records_are_read_only_projection_inputs() {
+    fn legacy_jsonl_is_rejected() {
         let dir = tempfile::tempdir().unwrap();
         let path = dir.path().join("old.jsonl");
         let old = r#"{"seq":7,"source":"gateway","kind":"llm.request","timestamp_unix_ms":123,"payload":{"user_content":"old"}}"#;
         std::fs::write(&path, format!("{old}\n")).unwrap();
-        let records = super::read_capture_records(&path).unwrap();
-        assert_eq!(records.len(), 1);
-        assert_eq!(records[0].observed_at_unix_ms, Some(123));
-        assert!(records[0].event_id.is_none());
+        assert!(super::read_capture_records(&path).is_err());
         assert_eq!(std::fs::read_to_string(path).unwrap(), format!("{old}\n"));
     }
 }

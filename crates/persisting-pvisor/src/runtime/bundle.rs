@@ -349,14 +349,18 @@ impl RunBundle {
             agentctl,
             orchestration: record.orchestration.clone(),
             run_plan: record.run_plan.clone(),
-            run_observation: record.run_plan.as_ref().map(|plan| {
-                crate::runtime::plan::observe(
-                    plan,
-                    result,
-                    record.network_interception_metrics.as_ref(),
-                    record.filesystem_observation.as_ref(),
-                )
-            }),
+            run_observation: record
+                .run_plan
+                .as_ref()
+                .map(|plan| {
+                    crate::runtime::plan::observe(
+                        plan,
+                        result,
+                        record.network_interception_metrics.as_ref(),
+                        record.filesystem_observation.as_ref(),
+                    )
+                })
+                .transpose()?,
             artifacts,
         })
     }

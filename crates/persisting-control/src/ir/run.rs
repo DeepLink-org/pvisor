@@ -1,5 +1,5 @@
-//! Resolved Run policy and observations carried by the same IR as operations.
-//! A plan is immutable; observations never change the authority it declares.
+//! Audit projection of the effective RunSpec and its runtime observations.
+//! Plans describe placement and evidence; they do not execute policy or grant authority.
 
 use super::{Context, Expression, Operation, Outcome, Rule, symbol};
 use crate::runtime::{CapabilityDimension, EnforcementEvidence};
@@ -121,6 +121,7 @@ impl RunObservation {
     pub fn validate(&self, plan: &RunPlan) -> Result<()> {
         plan.validate()?;
         plan.expression.operation.check_outcome(&self.outcome)?;
+        plan.request.operation.check_outcome(&self.outcome)?;
         let ids: BTreeSet<_> = plan.rules.iter().map(|rule| rule.id.as_str()).collect();
         ensure!(
             self.rules.keys().all(|id| ids.contains(id.as_str())),

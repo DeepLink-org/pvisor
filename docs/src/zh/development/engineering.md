@@ -43,7 +43,7 @@ src/
 ├── bin/pvisor.rs          # 二进制入口
 ├── cli/                   # 参数、命令、Agent 预设和终端 UI
 ├── config.rs              # 运行时与执行器配置
-├── core.rs, trace.rs       # 操作链执行与 trace journal
+├── trace.rs               # 共享事实 Journal 重导出
 ├── diagnostics.rs         # 共享宿主日志，前端选择输出位置
 ├── executor/
 │   ├── mod.rs             # RunExecutor 和 AttemptContext
@@ -139,13 +139,16 @@ core、Gateway、pVisor 分片，macOS 对同一组包只跑一遍。独立 Linu
 必须具备 user namespace 和 FUSE，不允许跳过隔离检查。文件系统示例与文档用例共用该任务的
 release 构建和隔离环境。网络/Gateway 示例在单独任务运行。
 
-共享 action 默认只安装 Python、uv 和 just；Rust、nextest 和 guest Rust target 按需启用。
+共享 action 默认只安装 Python、uv 和 just；Rust、nextest 和 guest Rust target 按需启用。Linux 静态 CLI/shim 构建通过
+`static-musl` 启用 Zig 和 cargo-zigbuild；Rust 检查和单元测试不需要这两个工具。
 双平台 wheel 矩阵集中在一个可复用工作流中。PR 文档构建不会取消 Pages 部署。
 
 ## 构建环境
 
 仓库使用 `rust-toolchain.toml` 中的 stable 工具链、默认 LLVM backend 和平台 linker。
 请安装 nextest `0.9.137`，或使用仓库 CI setup action。guest supervisor 使用 Rust 自带 linker 构建成静态 Linux musl ELF；macOS VM 构建不再需要 Zig。
+Apple Silicon 上首次构建前执行 `rustup target add aarch64-unknown-linux-musl`。
+CI 仅安装当前架构的 guest target，工作区工具链不再为无关 crate 下载交叉编译 target。
 
 `CARGO_TARGET_DIR` 指定原生构建目录，构建、安装、smoke、示例和场景任务共用此位置。
 wheel 使用全新的暂存目录进行验证，避免误把 `dist/` 中的旧包当作本次产物。

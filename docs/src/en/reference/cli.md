@@ -473,14 +473,10 @@ pvisor run \
   -- my-agent
 ```
 
-`--record-destination` writes local EventRecord JSONL. This repository does not
-ship a separate history service.
-
-All newly persisted records contain both `timestamp` (RFC3339 UTC) and
-`timestamp_unix_ms` (Unix milliseconds). They describe the same observation
-time and must agree within one millisecond. Record ordering remains defined by
-`source + seq`; timestamps are correlation metadata rather than the ordering
-source of truth.
+`--record-destination` writes a local `trace::Event` Journal to
+`events.trace.jsonl`. Legacy JSONL is not supported. Journal positions define
+append order; `caused_by` defines causal links. `observed_at_unix_ms` is
+observation metadata, not an ordering source of truth.
 
 The equivalent TOML is:
 

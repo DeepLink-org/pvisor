@@ -760,7 +760,20 @@ mod tests {
     fn failed_replay_counts_completed_tools_in_current_run() {
         let temporary = tempfile::tempdir().unwrap();
         let path = temporary.path().join("replay-events.jsonl");
-        fs::write(&path, "{\"event\":\"tool_finished\",\"call_id\":\"old\"}\n{\"event\":\"run_started\"}\n{\"event\":\"tool_finished\",\"call_id\":\"one\"}\n{\"event\":\"tool_started\",\"call_id\":\"uncertain\"}\n").unwrap();
+        let mut journal = Journal::open(temporary.path()).unwrap();
+        for (name, call_id) in [
+            ("tool_finished", Some("old")),
+            ("run_started", None),
+            ("tool_finished", Some("one")),
+            ("tool_started", Some("uncertain")),
+        ] {
+            journal
+                .append(
+                    name,
+                    call_id.map(|id| ("call_id".into(), serde_json::json!(id))),
+                )
+                .unwrap();
+        }
         assert_eq!(completed_tool_calls(&path), 1);
     }
 

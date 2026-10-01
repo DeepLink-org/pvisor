@@ -1,4 +1,5 @@
-//! Compile the effective RunSpec and runtime boundary into immutable Run IR.
+//! Project the admitted RunSpec and runtime boundary into immutable Run IR.
+//! Execution and policy enforcement remain in the Run runtime and its drivers.
 
 use super::OverlayHint;
 use persisting_control::{
@@ -259,7 +260,7 @@ pub(crate) fn observe(
     result: &RunResult,
     network: Option<&persisting_overlaynet::InterceptionSnapshot>,
     filesystem: Option<&FilesystemObservation>,
-) -> RunObservation {
+) -> anyhow::Result<RunObservation> {
     let outcome = if result.state == RunState::Completed {
         Outcome::success(Value::Run {
             state: RunState::Completed,
@@ -335,6 +336,34 @@ pub(crate) fn observe(
         rules,
         filesystem: filesystem.cloned(),
     };
-    debug_assert!(observation.validate(plan).is_ok());
-    observation
+    observation.validate(plan)?;
+    Ok(observation)
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::PVisor;
+
+    #[test]
+    fn production_observation_rejects_invalid_filesystem_counts() {
+        let spec = RunSpec::process("observation-check", "agent", "/bin/true");
+        let plan = PVisor::new().resolve_run_plan(spec).unwrap();
+        let result: RunResult = serde_json::from_value(serde_json::json!({
+            "run_id": "observation-check", "attempt_id": "attempt",
+            "state": "completed", "started_at_unix_ms": 0,
+            "finished_at_unix_ms": 1, "exit_code": 0
+        }))
+        .unwrap();
+        assert!(observe(&plan, &result, None, None).is_ok());
+        let mut filesystem = FilesystemObservation::default();
+        filesystem.paths.entry("file".into()).or_default().insert(
+            "read".into(),
+            persisting_control::ir::run::PathOperationCounters {
+                hits: 1,
+                ..Default::default()
+            },
+        );
+        assert!(observe(&plan, &result, None, Some(&filesystem)).is_err());
+    }
 }

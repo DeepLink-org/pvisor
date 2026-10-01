@@ -1,7 +1,7 @@
 # pVisor IR v4 与 Trace v3
 
-IR 表示一个尚未执行的操作及其上下文链。适配器把截获的调用构造成表达式，策略改写
-后缀，后端执行整个表达式，trace 保存请求、推导过程与结果。
+IR 表示操作及其上下文链，是数据与证据契约。生产 Run 由 `RunSpec` 编译成
+`RunPlan`，记录 VM/Overlay 放置、策略规则及执行结果；它不是任意表达式的执行入口。
 
 ```text
 fs.read("input", offset: 0, length: 5) |> vm("sandbox") |> remote("node-a")
@@ -10,8 +10,8 @@ fs.read("input", offset: 0, length: 5) |> vm("sandbox") |> remote("node-a")
 这表示在 node-a 的 sandbox 中读取 input。后缀按内层到外层排列，等价于
 `remote(vm(read, "sandbox"), "node-a")`；构造或改写表达式不会触发读取。
 
-[核心契约](pvisor-algebra.md) 定义语义，[Event 契约](event-contract-v3.md) 定义记录。
-本页说明当前实现和核心接口。IR 在运行路径中用于改写与副作用归集，不提供独立的 `pvisor ir` 子命令。
+[代数规范](pvisor-algebra.md) 定义结构语义，[Event 契约](event-contract-v3.md) 定义记录。
+本页说明当前实现和生产接口。IR 在运行路径中用于计划表达与副作用归集，不提供独立的 `pvisor ir` 子命令。
 
 ## 数据结构与文本
 
@@ -40,7 +40,7 @@ fs.write("output", offset: 0, data: bytes([104,105])) |> deny("read-only")
 - 命名实参顺序任意；规范输出固定顺序，重复、缺失或未知实参报错。
 - 允许空白、换行及 `//` 注释；规范输出为单行表达式，不保留注释。
 - 最多 32 层上下文，文本与结构化表达式各限 1 MiB；文件范围不允许溢出。
-- mock/deny 只能位于最外层，直接返回结果，内部操作与上下文不执行。mock 必须符合原语结果契约。
+- mock/deny 只能位于最外层，mock 必须符合原语结果契约。这是结构校验，不表示生产入口支持执行这些处理器。
 
 文本是一个表达式，不含版本头、函数、变量绑定或控制流。结构化 JSON 的 `version` 为 4；
 `Expression::from_str`、`to_text` 和 serde JSON 表示可往返相同结构。
@@ -68,44 +68,37 @@ before: fs.read("input", offset: 0, length: 5)
 after:  fs.read("input", offset: 0, length: 5) |> remote("node-a")
 ```
 
-规则组织成有限的有序 pass，每个 pass 仅应用第一条匹配规则一次，再进入下一 pass。
-每一步作用于当前派生表达式，Requested 中的原请求始终保留。最多 32 个 pass、合计 1024 条规则。
+生产计划只按顺序追加由运行器生成的 VM/Overlay 放置层，不接受调用者提供的规则或后缀。
+Requested 中的原请求始终保留。通用有序 pass 属于代数规范，不存在第二个生产改写执行器。
 
 `Rule::apply` 是纯结构改写；规则不匹配、类型不兼容或产生无效上下文链都会报错。
 `Fact::Rewritten` 保存完整规则、pass、before 和 after，校验时重新应用规则核对结果。
 
 ## 执行与事件
 
-核心入口是 `Engine::run(&Context, &Expression)`：
+唯一生产派发入口是 `PVisor::run(RunSpec)`，执行器实现 `RunExecutor`：
 
 ```text
-Context → Requested → Rewritten* → Dispatched? → Completed
+RunSpec → resolve_run → RunPlan → prepare → RunExecutor::execute → teardown
+                          Context → Requested → Rewritten* → Dispatched → Completed
 ```
 
-准入检查覆盖原请求及自带后缀，每一步改写也单独授权。最外层 mock/deny 由核心处理，
-其余表达式交给后端。`Backend::authorize` 检查完整上下文链与资源能力；`execute` 解释
-全部层并返回 Outcome。不支持的嵌套必须明确拒绝，不能丢掉其中的层。
+`resolve_run` 校验 RunSpec，选择支持 invocation 的执行器，合并应用及网络策略，
+检查所需执行边界，再编译计划。`PVisor::resolve_run_plan` 使用相同解析路径，供启动前审查。
+计划中的上下文只描述可信运行器已选择的 VM/Overlay 放置，不授予能力。
+执行器消费 AttemptContext 中的 RunSpec 与实际控制附件，不解释任意 Expression。
 
-运行结果包含最终表达式、Outcome、operation ID 和 `audit_errors`。成功值必须同时满足
-原请求与派生操作的结果契约。执行前必要日志失败会阻止后续派发；执行后的审计失败通过
-`audit_errors` 返回，已知结果不会被覆盖。取消期间未记录 Completed 的操作仍待确认。
+执行前必要事实提交失败会阻止执行器运行。完成时 RunObservation 在生产构建中校验计划、
+原请求与派生操作的结果契约及计数一致性；无效观察导致 Run 失败，并以 Unknown 保存已知结果。
+执行后日志失败按 RunResult 的 failure/warnings 报告，不自动重试副作用。
 
-后端内部动作使用 `ExecutionContext` 关联 Observation，可记录 VM 暂停、网络传输等领域事件。
-当前文件原语的结果为 `Bytes` 和 `U64`，HTTP、网络、VM、模型等执行原语按各模块契约继续加入。
+不存在独立的 Engine、Backend 或 Admission API。一般文件表达式执行、调用者自带后缀、
+每次候选改写授权、mock/deny 短路和通用披露检查均未接入生产，代数规范不证明这些已被实施。
+文件系统与网络控制由实际执行器、FUSE 和 OverlayNet 边界实施。
 
-## 可运行示例
-
-[read.pv](../crates/persisting-control/examples/read.pv) 是一个单独的读取请求。
-[core_trace.rs](../crates/persisting-pvisor/examples/core_trace.rs) 将它绑定到示例拥有的临时文件，
-先真实读取 `hello`，再为同一个请求追加 mock，得到 `mock`；第二次不调用文件后端。
-
-```sh
-cargo run --locked -p persisting-pvisor --example core_trace -- /tmp/read.trace.jsonl
-```
-
-IR 文本或 JSON 由 `persisting_control::ir::Expression` 解析和校验。写入句柄关闭后，
-可在代码中通过 `persisting_pvisor::trace::Journal::read` 读取和校验 journal；
-记录中的事件可用 `Event::to_text` 展示为操作优先的管道行，也可序列化为 JSON。
+IR 文本或 JSON 可通过 `persisting_control::ir::Expression` 解析和校验，但不会执行操作。
+关闭写入句柄后可用 `persisting_journal::Journal::read` 校验事实日志；
+`Event::to_text` 提供人读投影。
 
 ## 实现位置与验证
 
@@ -113,12 +106,11 @@ IR 文本或 JSON 由 `persisting_control::ir::Expression` 解析和校验。写
 |---|---|
 | `persisting_control::ir` | 操作、包裹、规则、契约及文本编解码 |
 | `persisting_control::trace` | 公共事件、结构校验与可读投影 |
-| `persisting_pvisor::core` | 有限改写、授权、后端派发和完成记录 |
+| `persisting_pvisor::runtime` | RunSpec 准入、计划编译、执行器派发与收尾 |
 | `persisting_pvisor::trace` | 单写入者 journal、提交回执及恢复 |
 
-测试覆盖 Unicode/任意文本解析、JSON 往返、上下文顺序、原请求保持、规则证据、mock/deny
-短路、权限边界、结果约束、取消和日志恢复。模型后端测试证明传入的包裹顺序被保留，
-文件描述符示例验证真实读取；VM、远程和 OverlayFS 驱动仍需逐个接入和验证。
+测试覆盖解析往返、结构改写与规则证据，以及生产 Run 的准入拒绝、执行事实链、
+结果检查和 Journal 恢复。代数检查只验证结构规律，不代表通用表达式授权或真实驱动的执行证明。
 
 ```sh
 just test persisting-control
@@ -128,7 +120,7 @@ python3 docs/pvisor-algebra-check.py
 
 生产 Run 入口已编译 RunPlan，并将请求、实际计划改写、派发和完成写成独立 Trace v3 事实。
 Gateway 捕获和 replay 使用同一 Event 信封及 Journal；文件系统与网络汇总使用领域 Observation，
-不宣称每个 FUSE 操作或网络包都已接入 Core。旧 EventRecord 仅保留历史读取，命令 WAL 已退场。
+不宣称每个 FUSE 操作或网络包都有逐条 IR 执行事实。EventRecord 与命令 WAL 已退场，不提供历史读取兼容。
 正式日志与旧 JSONL 不混写；参见 [事件契约](event-contract-v3.md) 的接入与迁移说明。
 IR 使用 v4（增加 `run.execute`），Trace/Event 使用 v3；旧草稿程序和 journal 不混读。回放测试重建改写过程并核对记录结果；
 真实副作用回放须由后续适配器提供资源初态与必要输入。

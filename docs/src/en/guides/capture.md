@@ -37,8 +37,7 @@ Causal links use `event.caused_by`.
 Gateway content is in `event.data.payload.content`, with story/session routing
 in `event.data.payload.story` and call IDs in `event.data.payload.correlation`.
 Run and the embedded Gateway share one journal. Queue acceptance is not durable
-acceptance; a `LocalSync` receipt follows filesystem synchronization. Historical
-JSONL is read-only compatibility input, and new facts are never mixed into it.
+acceptance; a `LocalSync` receipt follows filesystem synchronization. Legacy JSONL is rejected; only formal Event journals are supported.
 
 Clients must use an injected proxy or base URL to be observed. Direct sockets
 can bypass the explicit proxy unless the selected executor provides an enforced

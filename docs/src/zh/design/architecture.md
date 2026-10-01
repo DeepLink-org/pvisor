@@ -29,9 +29,12 @@ CLI／配置 → RunSpec → 能力准入 → RunPlan IR → 准备运行时驱�
 
 准入阶段先解析执行器、应用应用程序策略和网络配置，再从有效 `RunSpec` 编译不可变的 `RunPlan`。计划使用 `run.execute` IR 请求以及有序的 VM／Overlay context rewrite 表示运行落点；每项文件、网络和环境规则带有稳定的 Run 内 ID、目标、动作及该维度的实际强制执行证据。嵌入调用方可以通过 `PVisor::resolve_run_plan` 在不启动 Attempt 的情况下读取同一份计划。
 
-运行事件携带 IR 请求、重写和完成事实；`run.json` 与 Run Bundle 保留计划。IR 是内部改写和副作用归集框架，不增加命令行入口。FUSE 文件视图按挂载相对路径和操作记录命中、成功、拒绝、其他失败、成功修改操作次数、失败修改操作可能留下副作用的次数和读写字节数；匹配到的 deny／warn 规则及 stage 规则也有计数。路径表最多保留 8192 个不同路径，其余命中计入 `overflow_hits`。这些是到达 FUSE 的操作计数，不代表唯一文件数或最终文件差异；最终变更仍以 OverlayFS diff 为准。
+运行事件携带 IR 请求、重写和完成事实；`run.json` 与 Run Bundle 保留计划。IR 是运行计划与观测的数据契约，不增加命令行入口。FUSE 文件视图按挂载相对路径和操作记录命中、成功、拒绝、其他失败、成功修改操作次数、失败修改操作可能留下副作用的次数和读写字节数；匹配到的 deny／warn 规则及 stage 规则也有计数。路径表最多保留 8192 个不同路径，其余命中计入 `overflow_hits`。这些是到达 FUSE 的操作计数，不代表唯一文件数或最终文件差异；最终变更仍以 OverlayFS diff 为准。
 
 Run Bundle 还记录经过 OverlayNet 的聚合放行、拒绝、失败及字节量。未经过 FUSE 的文件授权、未经过拦截器的网络流量没有可靠逐条计数，相应字段为 `null`，含义是未观测而不是零。宿主选择性代理只覆盖经过代理的流量，计数不能证明没有绕过代理的连接。
+
+唯一生产派发路径是 `PVisor::run(RunSpec) → RunExecutor::execute`。RunPlan IR 描述放置与证据，
+不执行任意表达式，也不提供逐次改写授权或通用披露检查。独立的 Engine/Backend/Admission 解释器已删除。
 
 ## 文件应用
 
