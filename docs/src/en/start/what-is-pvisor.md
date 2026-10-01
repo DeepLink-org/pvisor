@@ -38,7 +38,7 @@ When you do not need pVisor: if you just want a throwaway sandbox you can discar
 
 ## Where this stands today
 
-Today pVisor runs one Job at a time on your machine: let one agent finish unattended, then review every change and selectively apply. That level already carries the three properties the higher levels need—policy and evidence deciding what can skip review, up to post-hoc audit and many agents in parallel, and finally clustered execution. See the [roadmap](../../zh/development/roadmap.md) for the levels and the path.
+Today pVisor runs one Job at a time on your machine: let one agent finish unattended, then review every change and selectively apply. That level already carries the three properties the higher levels need—policy and evidence deciding what can skip review, up to post-hoc audit and many agents in parallel, and finally clustered execution.
 
 ```bash
 pvisor run --safe --stage ../task-stage -- codex

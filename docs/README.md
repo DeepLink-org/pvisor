@@ -55,7 +55,7 @@ The canonical Chinese documentation uses six directories:
 - `guides/`: tasks, commands, expected results and troubleshooting.
 - `concepts/`: terminology, evidence and capability limits.
 - `reference/`: CLI options and concrete cases.
-- `development/`: contributor setup, validation, release and roadmap.
+- `development/`: contributor setup, validation and release.
 - `design/`: current implementation ownership and mechanisms.
 
 Keep one canonical article per subject and link to it instead of repeating its

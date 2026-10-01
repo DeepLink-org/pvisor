@@ -5,7 +5,7 @@
   "pvisor/get-started.md": "start/first-run.md",
   "guides/using-pvisor.md": "guides/workflows.md",
   "why-pvisor.md": "start/what-is-pvisor.md",
-  "roadmap.md": "development/roadmap.md",
+  "roadmap.md": "development/index.md",
   "system-design/index.md": "design/index.md",
   "system-design/architecture.md": "design/architecture.md",
   "system-design/design-principles.md": "design/principles.md",
