@@ -19,15 +19,14 @@ PyPI。项目仍然以 Python wheel 交付，但不包含 PyO3 扩展，也不�
 2. 在 PyPI 发布设置中添加 pending Trusted Publisher：
    - PyPI project: `pvisor`
    - GitHub owner: `DeepLink-org`
-   - Repository: `pVisor`
+   - Repository: `pvisor`
    - Workflow: `release.yml`
    - Environment: `pypi`
 
 GitHub 中不存放 PyPI API token。pending publisher 可以在首次成功上传时
 创建项目，但不预留名称。
 
-PyPI 的 `pvisor` 项目需要独立配置 Trusted Publisher；旧 `pvisor` 项目的
-发布配置不会随改名自动迁移。首次推送发布 tag 前，确认具有 `pvisor` 的发布权限。
+首次推送发布 tag 前，确认 `pvisor` 的 Trusted Publisher 与当前仓库、工作流和 environment 匹配。
 
 ## 准备一次发布
 

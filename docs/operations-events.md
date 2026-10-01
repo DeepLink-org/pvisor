@@ -43,7 +43,7 @@ RunSpec → pvisor 准入／策略改写／Placement → Session → RunExecutor
 
 `OperationObservation` 校验终态、规则覆盖和计数一致性。`null` 表示无法观察，零表示已观察且没有命中。FUSE 路径表最多保留 8192 项，其他命中计入 overflow_hits；操作次数不替代最终 diff。网络统计只覆盖经过拦截器的流量。
 
-准入时的 `ExecutorPlan` 最高为 Planned；执行器返回的 `ExecutorObservations` 才能证明已安装的控制。Bundle schema 3 从观察集派生安全摘要。策略纯校验和公共协议留在 core；AgentCtl 客户端、权限询问 socket、生命周期和调度位于 pvisor；实际文件／网络拦截位于各驱动。
+准入时的 `ExecutorPlan` 最高为 Planned；执行器返回的 `ExecutorObservations` 才能证明已安装的控制。Bundle schema 4 从观察集派生安全摘要。策略纯校验和公共协议留在 core；AgentCtl 客户端、权限询问 socket、生命周期和调度位于 pvisor；实际文件／网络拦截位于各驱动。
 
 | 模块 | 职责 |
 |---|---|

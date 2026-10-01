@@ -15,7 +15,7 @@ use std::fs;
 use std::os::unix::fs::MetadataExt;
 use std::path::{Path, PathBuf};
 
-pub const RUN_BUNDLE_SCHEMA_VERSION: u32 = 3;
+pub const RUN_BUNDLE_SCHEMA_VERSION: u32 = 4;
 pub const RUN_BUNDLE_FILENAME: &str = "run-bundle.json";
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -546,7 +546,7 @@ mod tests {
     fn unsupported_bundle_schema_is_rejected() {
         let temp = tempfile::tempdir().unwrap();
         let mut fixture: serde_json::Value = serde_json::from_slice(V1_MINIMAL_FIXTURE).unwrap();
-        fixture["schema_version"] = serde_json::json!(999);
+        fixture["schema_version"] = serde_json::json!(RUN_BUNDLE_SCHEMA_VERSION - 1);
         fs::write(
             temp.path().join(RUN_BUNDLE_FILENAME),
             serde_json::to_vec_pretty(&fixture).unwrap(),
@@ -557,7 +557,7 @@ mod tests {
         assert!(
             error
                 .to_string()
-                .contains("unsupported Run Bundle schema 999")
+                .contains("unsupported Run Bundle schema 3")
         );
     }
 

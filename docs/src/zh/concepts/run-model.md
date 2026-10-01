@@ -11,7 +11,7 @@ Run 标识命令、配置与执行结果，其 ID 与操作系统 PID 无关。�
 
 ## Attempt：一次执行
 
-Attempt 标识由某个执行器完成的一次执行。当前 `PVisor::run` 每次调用创建一个 Attempt。契约中保留了 Attempt 和租约身份，但 pVisor 不会自动调度分布式重试。
+Attempt 标识由某个执行器完成的一次执行。当前 `PVisor::run` 每次调用创建一个 Attempt。运行器负责它的资源准备、取消、清理和终态公布。
 
 Fork 根据逻辑检查点创建带有来源关系的新 Run，不会恢复原进程。
 

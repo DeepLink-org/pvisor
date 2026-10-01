@@ -13,12 +13,21 @@ Run contract.
 It is not an Agent framework, an OCI runtime, or an operating system.
 
 OverlayFS, OverlayNet, Gateway, and AgentCtl are pVisor runtime drivers.
-The core `Session` owns each Attempt and exposes ordered lifecycle hooks and
-versioned control/observation contracts. Job lifecycle commands are built into `pvisor`. Cache, TUI and replay remain
-independent executable extensions discovered through embedded manifests.
+`pvisor-core` defines Operations, Events and cross-component contracts. This crate
+owns Session lifecycle, scheduling, policy adaptation and execution. Job lifecycle
+commands are built into `pvisor`; cache, TUI and replay are executable extensions
+found beside it.
 Guest injection uses the core `pvisor` execution runtime.
 
-![PolicyVisor architecture](../../docs/src/assets/diagrams/pvisor/agentvisor-architecture.svg)
+```mermaid
+flowchart TD
+    Entry[CLI / PVisor API] --> Session[Session: one Attempt]
+    Core[pvisor-core contracts and policies] -.-> Session
+    Session --> Executor[Host / OCI container / libkrun VM]
+    Session --> Drivers[OverlayFS / OverlayNet / optional Gateway]
+    Session --> Records[Run record / Run Bundle / optional Event Journal]
+    Records --> Review[status / inspect / apply / drop]
+```
 
 | Product area | Current responsibility |
 | --- | --- |
@@ -32,9 +41,10 @@ Guest injection uses the core `pvisor` execution runtime.
 
 With `--stage PATH`, the product loop is `RunSpec → admission → Attempt →
 RunResult + private Run Bundle + staged Effects → review/apply/drop`. Ordinary
-host Jobs without `--stage` write through to the workspace. `--safe` creates a
-temporary stage that is removed at Job exit unless `--stage PATH` retains it;
-removing that stage also removes its Run Bundle.
+host Jobs without staging write through to the workspace. `--safe` and `--ask`
+retain the workspace stage in Job storage by default; `--stage PATH` selects
+another location. HOME and VM rootfs writes have separate lifetimes; see
+[staging and storage](../../docs/src/en/reference/cli.md#staging-and-storage).
 Capture is a Gateway capability, not a second product.
 
 ## Develop
@@ -62,7 +72,7 @@ selection and kernel preparation match release builds.
 
 ## Links
 
-- [Operation and Trace](../../docs/operations-events.md): immutable execution plans,
+- [Operation and Event](../../docs/operations-events.md): immutable execution plans,
   VM/Overlay placement, execution facts and boundary observations.
 - [The PolicyVisor model](../../docs/src/zh/concepts/policyvisor.md)
 - [Get started](../../docs/src/en/start/first-run.md)

@@ -61,7 +61,7 @@ def run_task(tmp_path):
 
 
 def test_test_routes_packages_and_python(run_task):
-    commands = run_task("test", "control", "capture", "pvisor-overlay-core")
+    commands = run_task("test", "core", "capture", "pvisor-overlay-core")
     assert commands == [
         [
             "cargo",
@@ -147,8 +147,7 @@ def test_ci_and_task_reference_use_existing_recipes():
             r"^\s*(?:-\s*)?(?:run:\s*)?just[ \t]+([\w-]+)", path.read_text(), re.MULTILINE
         )
         assert set(calls) <= recipes, f"Unknown recipes in {path}: {set(calls) - recipes}"
-    for language in ("en", "zh"):
-        path = ROOT / f"docs/src/{language}/development/engineering.md"
+    for path in sorted((ROOT / "docs/src").glob("*/development/engineering.md")):
         calls = set(re.findall(r"`just ([\w-]+)", path.read_text()))
         assert calls, f"Missing task reference in {path}"
         assert calls <= recipes, f"Unknown recipes in {path}: {calls - recipes}"

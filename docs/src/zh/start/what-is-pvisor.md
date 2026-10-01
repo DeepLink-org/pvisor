@@ -2,7 +2,9 @@
 
 **PolicyVisor（pVisor）**为现有 Agent CLI、脚本和自动化命令提供**策略约束下的可审查执行**。你继续使用原来的工具，pVisor 负责能力准入、运行时控制、工作区暂存，以及本地执行记录。
 
-**p 代表 Policy**。一次 Run 将声明的权限、实际安装的控制和可供审查的执行结果关联起来。它们之间的关系见 [PolicyVisor 的设计思路](../concepts/policyvisor.md)。
+**p 代表 Policy**。你声明命令的权限，pVisor 根据执行器检查能力并安装控制，最后用执行记录和工作区差异支持审查。必要的控制不能满足时拒绝运行；允许的降级必须在证据中可见。
+
+如果你希望保留现有工具、检查它造成的文件改动、分批接受结果，并留下本地执行记录，可以使用 pVisor。需要分析模型流量时，再开启 Gateway 捕获。
 
 ```bash
 pvisor run --safe --stage ../task-stage -- codex

@@ -201,7 +201,7 @@ impl RunEventPublisher {
         if requested != &effective {
             self.publish_fact(Fact::Rewritten {
                 before: requested.clone(),
-                after: effective,
+                after: Box::new(effective),
             })
             .await?;
         }

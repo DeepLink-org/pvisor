@@ -39,7 +39,7 @@ Tab 或 `1`–`6` 切换视图，用 `j`/`k` 滚动，按 Esc 或 `Ctrl-]` 返�
 
 下面的参考按 Job 生命周期组织；每组参数都配有验证下一步。
 
-### 暂存与存储
+### 暂存与存储 {#暂存与存储}
 
 下表描述默认 CLI 行为。显式配置的提交方式、可写共享和应用兼容策略可能改变写入去向。
 
@@ -56,7 +56,7 @@ Tab 或 `1`–`6` 切换视图，用 `j`/`k` 滚动，按 Esc 或 `Ctrl-]` 返�
 Job 记录和 Run Bundle 保存在运行存储中。`--stage PATH` 选择位置，
 不是 `--safe/--ask` 保留工作区改动的前提。文件审查不覆盖已经发生的远程副作用。
 
-### 文件系统参数
+### 文件系统参数 {#文件系统参数}
 
 macOS 的 macFUSE 临时工作区默认以启动 pVisor 时的当前目录作为 lower；
 `/Volumes/pvisor-*` 是合并视图的挂载点，包含当前目录已有的文件。
@@ -501,7 +501,7 @@ namespace 和 Landlock 约束 VMM。macOS VMM 仍拥有调用用户的 host 权�
 host/container 的选择性网络规则作用于经过显式代理的流量。host deny-all 使用
 namespace 或 Seatbelt 阻止直接出口；容器离线使用 `--container-network none`。
 在 libkrun VM 上，`auto` 使用 smoltcp IPv4 TCP/DNS，`off` 让 guest 离线；
-deny-all 仍允许已配置的内部 Gateway 路由。各路径的范围见 [网络边界](../guides/network.md#网络边界)。
+deny-all 仍允许已配置的内部 Gateway 路由。各路径的范围见 [网络边界](../guides/network.md)。
 
 ## Run 项目发现
 

@@ -9,7 +9,7 @@
   "system-design/index.md": "design/index.md",
   "system-design/architecture.md": "design/architecture.md",
   "system-design/design-principles.md": "design/principles.md",
-  "system-design/local-to-fleet.md": "design/local-to-fleet.md",
+  "system-design/local-to-fleet.md": "design/architecture.md",
   "system-design/security-evidence.md": "concepts/security-evidence.md",
   "pvisor/concepts/capabilities-and-evidence.md": "concepts/capabilities-and-evidence.md",
   "pvisor/concepts/run-model.md": "concepts/run-model.md",
@@ -34,5 +34,6 @@
   "project/engineering.md": "development/engineering.md",
   "project/releasing.md": "development/releasing.md",
   "project/index.md": "development/index.md",
-  "concepts/agentvisor.md": "concepts/policyvisor.md"
+  "concepts/agentvisor.md": "concepts/policyvisor.md",
+  "design/local-to-fleet.md": "design/architecture.md"
 }

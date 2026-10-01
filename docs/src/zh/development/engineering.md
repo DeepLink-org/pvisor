@@ -23,7 +23,7 @@ Cargo workspace 按产品职责划分。Python `pvisor/` 只负责启动随包�
 | `tests/` | Python 打包和仓库工作流测试 |
 | `examples/`、`benchmark/` | 可运行的产品场景和性能测量 |
 | `scripts/ci/` | CI 检查及冒烟测试入口 |
-| `docs/src/en/`、`docs/src/zh/` | 成对维护的文档；`docs/site/` 是生成产物 |
+| `docs/src/zh/`、`docs/src/en/` | 中文为权威文档；英文维护首页、入门和 CLI 参考；`docs/site/` 是生成产物 |
 | `vendor/` | 有补丁的第三方依赖；产品编排逻辑放在 `crates/` |
 
 workspace 内的实际依赖关系：
@@ -66,10 +66,11 @@ src/
 ├── runtime/
 │   ├── run.rs             # PVisor API 和运行生命周期
 │   ├── agentctl.rs        # 每次运行的协作控制服务
+│   ├── agentctl_client.rs # 同步 AgentCtl 客户端
 │   ├── event.rs           # 运行事件发布
 │   ├── bundle.rs          # 持久化审查摘要
 │   ├── checkpoint.rs      # 逻辑检查点与恢复
-│   ├── registry.rs        # Run 身份、租约和本地控制端点
+│   ├── registry.rs        # Run 身份、存活锁和本地控制端点
 │   ├── attempt.rs         # 每次尝试的驱动资源与清理
 │   ├── supervisor.rs      # 能力检查与驱动协调
 │   ├── operation.rs       # 操作与观察构造
@@ -101,13 +102,8 @@ overlay 的 review/apply/recovery/drop 归 `pvisor-overlay-core::apply`。
 
 CI 先独立构建默认核心，再构建带捕获的分发包。`scripts/ci/check_core_budget.py`
 拒绝 Gateway、replay、TUI 及其终端依赖进入默认核心，并记录工具链、依赖数、源码行数、
-Core 公开声明数与二进制字节数。当前 Linux 上限为 230 个依赖、44,267 行 workspace
-源码和 242 个 Core 公开声明；后续只下调预算。二进制体积先记录同平台基线。
-
-2026-10-01 本次工作区对比：Rust 102,305 → 101,205 行，净减 1100 行；
-默认核心在 macOS arm64 / rustc 1.98.0 下有 226 个依赖，release 二进制 9,559,648 字节。
-源码行数仅统计 `crates/*/src/**/*.rs` 的核心依赖闭包；公开声明数是脚本的语法计数，
-不等于去重后的导出 API 数。移动 TUI/replay 的行数不计作删除。
+Core 公开声明数与二进制字节数。预算及统计口径由脚本维护；实测结果保存在 CI 报告中，
+比较时使用相同平台和工具链。
 
 ## 贡献者命令
 
@@ -120,7 +116,7 @@ Core 公开声明数与二进制字节数。当前 Linux 上限为 230 个依赖
 | `just fmt` / `just fmt-check` | 格式化 Rust/Python 源码，或仅检查格式 |
 | `just lint` | 运行 Clippy 和 Python 包 lint 检查 |
 | `just test` | 通过 nextest 跑工作区 Rust 测试，再跑 Python 测试 |
-| `just test control pvisor` | 测试指定 Rust 包，支持简称或 Cargo 包名 |
+| `just test core pvisor` | 测试指定 Rust 包，支持简称或 Cargo 包名 |
 | `just test-py -k packaging` | 将选项传给 pytest |
 | `just test-benchmark` | 用 pytest 单独运行 benchmark 工具测试；默认 Python 测试已包含这些检查 |
 | `just test-py --vm-bin target/release/pvisor` | 启用真实 VM 的普通终端和 TUI 交互回归 |
@@ -135,12 +131,12 @@ Core 公开声明数与二进制字节数。当前 Linux 上限为 230 个依赖
 | `just ci` | 检查格式、lint、测试并构建，不改写源码 |
 | `just clean` | 清理构建产物，保留开发环境和本地 Run 记录 |
 
-`just test` 和 `just test-rust` 支持 Cargo 包名，以及 `pvisor`、`control`、
-`agentctl`（Core 的兼容别名）、`capture`（Gateway）这些简称。
+`just test` 和 `just test-rust` 支持 Cargo 包名，以及 `pvisor`、`core`、
+`control`／`agentctl`（Core 的兼容别名）、`capture`（Gateway）这些简称。
 带参数的 `just test` 只运行指定 Rust 包的测试。CI 分片使用 `just test-rust`，
 不会额外触发 Python 测试。
 
-默认 pytest 收集 `tests/` 和 `benchmark/pvisor/`；IR 代数性质由 `pvisor-core` 的 Rust 属性测试验证。
+默认 pytest 收集 `tests/` 和 `benchmark/pvisor/`；共享 Operation 和 Overlay 契约由 `pvisor-core` 的 Rust 测试验证。
 benchmark 中依赖 `/proc` 和 Linux rootfs 工具的测试仅在 Linux 上运行。
 VM 文件系统检查在 Linux guest 内运行，需要 root、Python、pytest 和 tar；
 在仓库目录执行 `python3 -m pytest -q tests/test_vm_filesystem.py --guest-fs-dir /var/tmp --guest-fs-dir .`，
@@ -183,9 +179,8 @@ CLI 和 shim 注入 `/.pvisor-guest.json`，传递 argv、环境变量、cwd、�
 退出时先通过 libkrun 私有的根文件系统 ioctl `0x7602` 上报工作负载退出码，
 再 sync/reboot。非零退出码使 Attempt 失败；VM 正常关机但未上报退出码时按 125 失败。
 
-原来的 C init crate、C 交叉编译 wrapper 和生成的启动 shell helper 已删除；
-PID 1 职责和退出码通道仍然保留。启动性能实测及测量范围见
-`benchmark/pvisor/README.md` 的 “Guest init comparison (Apple Silicon)” 一节。
+启动性能实测及测量范围见
+[Guest init comparison](https://github.com/DeepLink-org/pvisor/blob/main/benchmark/pvisor/README.md#guest-init-comparison-apple-silicon)。
 
 ## 构建环境
 

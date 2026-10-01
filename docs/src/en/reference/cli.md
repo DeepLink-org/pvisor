@@ -567,7 +567,7 @@ Selective host/container rules cover traffic routed through the explicit proxy.
 Host deny-all uses a namespace or Seatbelt to block direct egress; containers
 can use `--container-network none` for offline execution. VM `auto` uses
 smoltcp IPv4 TCP/DNS and `off` leaves the guest offline. VM deny-all still
-permits configured internal Gateway routes. See the [network boundaries](../../zh/guides/network.md#网络边界).
+permits configured internal Gateway routes. See the [network boundaries](../../zh/guides/network.md).
 
 ## Run project discovery
 

@@ -32,8 +32,4 @@ pvisor run --filesystem sandbox --overlaynet-deny-all -- codex
 
 host/container 的选择性路由使用显式代理，忽略代理的客户端可以绕过它。宿主 deny-all 和 VM 网络采用不同的强制机制。VM 数据面支持 IPv4 TCP、guest 静态地址和合成 DNS；不支持的流量失败关闭。支持的协议和连接器限制见 [OverlayNet](overlaynet.md)。
 
-## 后续设计
-
-LiteBox、Firecracker、Virtualization.framework 执行和通用 host/container 透明拦截属于设计方向，不是当前可选择的生产后端。集群准入、证明和租户隔离需要独立实现及验收证据，不能从现有 Run 模型推导出这些能力。
-
 环境配置见[执行环境](../guides/execution.md)，证据解释见[安全与证据](../concepts/security-evidence.md)。

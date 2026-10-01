@@ -147,7 +147,7 @@ fn rewrite_preserves_identity_and_placement_is_a_separate_fact() {
     args.push("--adapted".into());
     event(Fact::Rewritten {
         before: before.clone(),
-        after: after.clone(),
+        after: Box::new(after.clone()),
     })
     .validate()
     .unwrap();
@@ -155,7 +155,7 @@ fn rewrite_preserves_identity_and_placement_is_a_separate_fact() {
     assert!(
         event(Fact::Rewritten {
             before: before.clone(),
-            after: after.clone()
+            after: Box::new(after.clone())
         })
         .validate()
         .is_err()
@@ -167,7 +167,7 @@ fn rewrite_preserves_identity_and_placement_is_a_separate_fact() {
     assert!(
         event(Fact::Rewritten {
             before,
-            after: after.clone()
+            after: Box::new(after.clone())
         })
         .validate()
         .is_err()

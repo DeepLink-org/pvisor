@@ -1,6 +1,6 @@
 # 架构
 
-PolicyVisor（pVisor）通过能力准入、执行器、运行时控制和执行记录，管理 Agent CLI、脚本和自动化命令。当前交付围绕本地 Run 及其可审查的结果展开，集群调度仍属于设计方向。
+PolicyVisor（pVisor）通过能力准入、执行器、运行时控制和执行记录，管理 Agent CLI、脚本和自动化命令。当前交付围绕本地 Job 及其可审查的结果展开。
 
 ## 组件职责
 
@@ -29,7 +29,7 @@ CLI／配置 → RunSpec → 能力准入 → Operation → 准备运行时驱�
 
 `pvisor-core` 提供定义，`pvisor` 实现准入、策略改写、Placement 和执行。唯一生产操作是 `run.execute`，记录程序、参数和工作目录。准入保留原始与有效 Operation；事件依次描述 Requested、实际 Rewritten、Placed、Dispatched 和 Completed。改写保留前后快照，放置单独记录，不恢复通用解释器。`PVisor::resolve_operation` 可在执行前审查有效操作。
 
-外部观察 pVisor 得到 Event。共享操作身份和 caused_by 可以重建已观察到的操作过程；记录不承诺完整副作用重放、逐 syscall 中介或跨 Job 全局顺序。详见 [Operation 与 Event](../../../operations-events.md)。Run Bundle 保留有效操作与观察，`run.json` 保留运行状态和执行器身份。
+外部观察 pVisor 得到 Event。共享操作身份和 caused_by 可以重建已观察到的操作过程；记录不承诺完整副作用重放、逐 syscall 中介或跨 Job 全局顺序。详见 [Operation 与 Event](https://github.com/deeplink-org/pvisor/blob/main/docs/operations-events.md)。Run Bundle 保留有效操作与观察，`run.json` 保留运行状态和执行器身份。
 
 FUSE 文件视图按挂载相对路径和操作记录命中、成功、拒绝、其他失败、成功修改操作次数、失败修改操作可能留下副作用的次数和读写字节数；匹配到的 deny／warn 规则及 stage 规则也有计数。路径表最多保留 8192 个不同路径，其余命中计入 `overflow_hits`。这些是到达 FUSE 的操作计数，不代表唯一文件数或最终文件差异；最终变更仍以 OverlayFS diff 为准。
 
@@ -40,7 +40,7 @@ Run Bundle 还记录经过 OverlayNet 的聚合放行、拒绝、失败及字节
 
 `ExecutorPlan` 与 `CapabilityEnforcementPlan` 是准入计划类型，最高等级为 Planned，
 不能表示 Enforced。执行器在收尾时依据受保护的 sandbox/VMM 安装回执返回控制观察集。
-Bundle schema 3 的 `executor_observations` 是唯一权威强制力证据，安全摘要只从它派生；
+Bundle schema 4 的 `executor_observations` 是唯一权威强制力证据，安全摘要只从它派生；
 metadata、隔离标签和 warning 字符串均不能生成或抹去证据。Enforce 模式缺少必需观察时失败。
 VM 启动被取消或信号中断且没有确认 runner 退出时，不声明 Enforced。
 Completed 与终态事件的 origin 区分运行器失败和后端结果。
@@ -90,4 +90,4 @@ Gateway 使用有界应用队列和共享事实 Journal。进入队列不等于�
 
 ## 扩展点与限制
 
-执行器和 sink 接口支持嵌入集成，不代表已实现自动重试调度、外部动作恰好一次执行、分布式事务或密码学节点证明。后续部署思路见[从本地到集群](local-to-fleet.md)，平台强制执行见[隔离设计](isolation.md)。
+执行器和 sink 接口供嵌入集成使用。运行器负责本地 Attempt；文件应用不提供远程副作用的事务或回滚。平台强制执行见[隔离设计](isolation.md)。

@@ -1,4 +1,4 @@
-//! Events distinguish the immutable Run plan, execution dispatch and
+//! Events describe requested Operations, actual rewrites, placements, dispatch and
 //! observed results. Event identity, operation identity and position are separate.
 use crate::operation::{Context, Operation, Outcome};
 use anyhow::{Result, ensure};
@@ -51,7 +51,7 @@ pub enum Fact {
     },
     Rewritten {
         before: Operation,
-        after: Operation,
+        after: Box<Operation>,
     },
     Placed {
         operation: Operation,

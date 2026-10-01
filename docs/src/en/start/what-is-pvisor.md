@@ -2,7 +2,9 @@
 
 **PolicyVisor (pVisor)** provides **policy-governed, reviewable execution** for existing Agent CLIs, scripts, and automation commands. You keep your tools; pVisor manages capability admission, runtime controls, workspace staging, and a local execution record.
 
-The **p** stands for **Policy**. A Run connects the authority you request with the controls actually installed and the effects available for review. See [the PolicyVisor model](../../zh/concepts/policyvisor.md) for how these fit together.
+The **p** stands for **Policy**. Declare the command's authority, check the selected executor's capabilities, then review its installed controls and workspace changes. Required controls must be supported; permitted degradation must appear in the evidence.
+
+Use pVisor to keep existing tools, inspect their file changes, accept selected batches, and retain a local execution record. Enable Gateway capture when you need model-traffic analysis.
 
 ```bash
 pvisor run --safe --stage ../task-stage -- codex

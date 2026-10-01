@@ -1,5 +1,5 @@
 //! Immutable Operation definition and its boundary observations.
-//! The runtime executes RunSpec; this schema describes placement and evidence.
+//! Core defines inputs, policy decisions, placements and outcomes; pvisor executes them.
 use crate::execution::{CapabilityDimension, EnforcementPlan};
 use anyhow::{Result, ensure};
 use serde::{Deserialize, Serialize};

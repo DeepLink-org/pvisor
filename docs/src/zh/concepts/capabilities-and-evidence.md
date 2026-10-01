@@ -1,33 +1,66 @@
-# Capability 与 Evidence
+# 能力、证据与保证边界
 
-Capability 是对某个资源和动作的有界权限。pVisor 按维度描述 capability，因为单一的
-`safe` 或 `sandboxed` 标签无法准确表达 Agent 环境。
+评估一次 Job 时，分别检查请求的权限、准入计划、实际安装的控制和观察到的结果。
+`--safe`、暂存目录或执行器名称都不能单独证明所有能力已经强制执行。
 
-| 维度 | 请求示例 | 应检查的 Evidence |
-| --- | --- | --- |
-| 文件读取 | 只读项目和工具链中的指定路径 | 可见 root 与实际安装的读取控制 |
-| 文件写入 | 只写 staged workspace | 写边界与 promotion 决策 |
-| 网络 | 只访问声明的目标 | 截获路径与抗绕过能力 |
-| 进程 | 启动受限子进程 | namespace/profile 与继承句柄 |
-| 凭据 | 传入显式凭据 | 交付与实际使用；不保证自动过期 |
-| 工具与模型 | 调用声明的 endpoint | 策略决策与路由记录 |
+## 按维度检查
 
-请求的权限与实际安装的 enforcement 是不同事实。必需维度无法满足时，admission 必须拒绝
-该 Provider。可选控制只有在 Run record 明确报告降级时才能弱化。
+| 维度 | 应检查的内容 |
+| --- | --- |
+| 文件读取 | 可见宿主路径、投影根目录及安装的读取控制 |
+| 文件写入 | 工作区 stage、直接可写共享与实际写边界 |
+| 网络 | 代理或 VM 数据路径、直接连接能否绕过、内部 Gateway 路由 |
+| 子进程 | 进程树约束、namespace/profile、继承句柄和清理范围 |
+| 凭据 | 环境变量投影与共享路径；不由此推导凭据使用或自动失效 |
+| 模型 | 声明的模型权限与实际路由策略 |
+| 工具 | 声明的工具权限及经过控制点的调用 |
+| 资源 | 请求的额度、执行器支持与实际安装的限制 |
 
-Evidence 依次回答四个强度不同的问题：
+一个维度的控制不会提升其他维度的保证。暂存文件不能证明网络已隔离，
+捕获到请求也不能证明不存在其他连接。文件写入去向见 [暂存与存储](../reference/cli.md#暂存与存储)。
 
-1. **Declared**：请求了什么策略？
-2. **Mediated**：哪些动作经过控制点？
-3. **Enforced**：在声明的 threat model 中阻断了哪些绕过路径？
-4. **Attested**：enforcement 是否绑定到这次 Run 和实际 Provider？
+## 计划和实际控制
 
-准入返回 `ExecutorPlan`，控制等级为 Unsupported、Cooperative 或 Planned，均不代表
-已实施。执行器在收尾时依据实际安装回执产出 `ExecutorObservations`；Run Bundle
-（schema 3）是强制力的唯一权威证据。`run.json` 保留运行事实和选择身份，不保存强制力
-描述符或准入计划。缺少观察契约的旧 Bundle 明确拒绝读取。
+准入返回 `ExecutorPlan`，其中控制计划等级为：
 
-具体执行的答案应从 Run Bundle 检查。返回 [pVisor 核心概念](index.md)，通过
-[网络指南](../guides/network.md)配置一个 capability 维度，或阅读
-[pVisor 隔离设计](../design/isolation.md)了解平台机制。执行、编排和历史之间的完整
-信任链见[安全与 Evidence](security-evidence.md)。
+- `Unsupported`：执行器不能提供该控制。
+- `Cooperative`：依赖工作负载遵守协议或代理设置。
+- `Planned`：执行器计划安装强制机制，尚不能当作已安装证据。
+
+执行器收尾返回 `ExecutorObservations`。实际控制等级为：
+
+- `Unenforced`：没有确认强制控制。
+- `Cooperative`：通过协作路径实施。
+- `Enforced`：实际安装的机制在其声明范围内提供强制边界。
+
+Run Bundle 的 `executor_observations` 是当前执行的强制力证据，安全摘要从它派生。
+隔离标签、配置、metadata 或警告字符串不能替代安装回执。`run.json` 保存运行事实
+和执行器选择身份，不保存强制力声明。缺少观察契约的旧 Bundle 拒绝读取。
+
+必需控制无法满足时拒绝执行；允许降级的模式必须记录缺失控制和警告。
+`--strict` 的当前限制见 [CLI 参考](../reference/cli.md#安全的第一次运行)。
+
+## 记录能说明什么
+
+```text
+请求的权限 → 准入计划 → 安装控制 → 执行与观察 → 终态结果和 Run Bundle
+```
+
+`status --review` 展示 Run Bundle 的控制、警告和暂存改动。文件观察只覆盖到达
+OverlayFS 的操作，网络观察只覆盖到达 OverlayNet 的流量。`null` 表示未观测，
+零表示已观测且没有命中；操作次数不能替代最终文件 diff。
+
+可选的 Event Journal 记录生命周期与 Gateway 实际发布的事实，通过身份和因果引用
+关联执行。它不包含完整 Bundle 的全部文件改动、输出、产物和控制清单；
+事件顺序不能当作跨 Job 的外部副作用顺序。具体契约见
+[Operation 与 Event](https://github.com/DeepLink-org/pvisor/blob/main/docs/operations-events.md)。
+
+## 保证范围
+
+普通 host/container 的选择性代理依赖客户端使用它；host deny-all、macOS safe
+和 VM 网络的机制另见 [网络边界](../guides/network.md#网络边界)。AgentCtl 是协作通道，
+自身不是隔离证据。平台机制及缺口见 [隔离设计](../design/isolation.md)。
+
+`apply` 和 `drop` 只管理暂存文件，不能撤销已应用批次、远程 API、数据库写入或消息。
+逻辑检查点保存暂存文件系统和协作静默点，不保存进程内存或外部服务状态。
+本地记录供审查和诊断使用，不提供密码学远程证明或敌对多租户保证。
