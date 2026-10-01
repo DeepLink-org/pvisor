@@ -106,6 +106,9 @@ overlay 的 review/apply/recovery/drop 归 `persisting-overlay-core::apply`。
 | `just test` | 通过 nextest 跑工作区 Rust 测试，再跑 Python 测试 |
 | `just test control pvisor` | 测试指定 Rust 包，支持简称或 Cargo 包名 |
 | `just test-py -k packaging` | 将选项传给 pytest |
+| `just test-benchmark` | 用 pytest 单独运行 benchmark 工具测试；默认 Python 测试已包含这些检查 |
+| `just test-py --vm-bin target/release/pvisor` | 启用真实 VM 的普通终端和 TUI 交互回归 |
+| `just test-py tests/test_zcode_integration.py --zcode-integration` | 显式运行需要 Linux rootless、FUSE3 和 zcode 的集成测试 |
 | `just test-isolation` | 运行严格的 Linux rootless/FUSE 回归，不跳过缺失的用户命名空间能力 |
 | `just smoke` | 构建 debug CLI 并检查主要命令入口 |
 | `just examples` | 构建 release CLI 并运行全部示例；追加场景名可选择子集 |
@@ -120,6 +123,12 @@ overlay 的 review/apply/recovery/drop 归 `persisting-overlay-core::apply`。
 `agentctl`（Control 的兼容别名）、`capture`（Gateway）这些简称。
 带参数的 `just test` 只运行指定 Rust 包的测试。CI 分片使用 `just test-rust`，
 不会额外触发 Python 测试。
+
+默认 pytest 收集 `tests/` 和 `benchmark/pvisor/`，包含有限代数模型检查。
+benchmark 中依赖 `/proc` 和 Linux rootfs 工具的测试仅在 Linux 上运行。
+VM 文件系统检查在 Linux guest 内运行，需要 root、Python、pytest 和 tar；
+在仓库目录执行 `python3 -m pytest -q tests/test_vm_filesystem.py --guest-fs-dir /var/tmp --guest-fs-dir .`，
+分别检查 guest 根文件系统与挂载工作区。未指定目录时跳过，显式启用后检查失败会报错。
 
 需要指定 Rust 集成测试或过滤条件时，直接调用 nextest，例如：
 `cargo nextest run --locked -p persisting-gateway --test llm_fixtures`。

@@ -71,7 +71,6 @@ jobs:
       - uses: ./.github/actions/setup-build-env
       - run: just lint-py
       - run: just test-py
-      - run: just test-benchmark
 
   rust-test:
     name: Rust Test / ${{ matrix.platform }} / ${{ matrix.shard }}

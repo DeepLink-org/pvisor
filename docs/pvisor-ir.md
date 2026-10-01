@@ -115,7 +115,7 @@ IR 文本或 JSON 可通过 `persisting_control::ir::Expression` 解析和校验
 ```sh
 just test persisting-control
 just test persisting-pvisor
-python3 docs/pvisor-algebra-check.py
+just test-py tests/test_pvisor_algebra.py
 ```
 
 生产 Run 入口已编译 RunPlan，并将请求、实际计划改写、派发和完成写成独立 Trace v3 事实。

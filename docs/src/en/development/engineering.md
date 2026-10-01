@@ -110,6 +110,9 @@ and move shared semantics into their existing owner when changing behavior.
 | `just test` | Run workspace Rust tests through nextest, then Python tests |
 | `just test control pvisor` | Test selected Rust packages, with short names or Cargo package names |
 | `just test-py -k packaging` | Forward options to pytest |
+| `just test-benchmark` | Run benchmark tool tests through pytest; the default Python suite includes them |
+| `just test-py --vm-bin target/release/pvisor` | Enable real VM terminal and TUI interaction regressions |
+| `just test-py tests/test_zcode_integration.py --zcode-integration` | Explicitly run integration requiring Linux rootless isolation, FUSE3 and zcode |
 | `just test-isolation` | Run strict Linux rootless/FUSE regressions without skipping unavailable user namespaces |
 | `just smoke` | Build the debug CLI and check its command surfaces |
 | `just examples` | Build the release CLI and run all examples; append scenario names to select a subset |
@@ -124,6 +127,13 @@ and move shared semantics into their existing owner when changing behavior.
 `pvisor`, `control`, `agentctl` (compatibility alias for Control), and `capture`
 (Gateway). With arguments, `just test` runs only the selected Rust packages.
 Use `just test-rust` for CI shards that should not invoke Python tests.
+
+Default pytest discovery covers `tests/` and `benchmark/pvisor/`, including the finite algebra model checks.
+Benchmark tests requiring `/proc` and Linux rootfs tools run only on Linux.
+Guest filesystem checks require root, Python, pytest and tar inside a Linux VM.
+From the repository directory, run `python3 -m pytest -q tests/test_vm_filesystem.py --guest-fs-dir /var/tmp --guest-fs-dir .`
+to check both the guest root filesystem and mounted workspace. Without directory options these tests skip;
+once explicitly enabled, check failures are reported as errors.
 
 For individual Rust integration targets or filters, call nextest directly,
 for example `cargo nextest run --locked -p persisting-gateway --test llm_fixtures`.

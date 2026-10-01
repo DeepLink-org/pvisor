@@ -78,13 +78,22 @@ def test_test_routes_packages_and_python(run_task):
     ]
     commands = run_task("test")
     assert commands[0] == ["cargo", "nextest", "run", "--locked", "--workspace"]
-    assert commands[1] == ["uv", "run", "--extra", "dev", "pytest", "tests/", "-q"]
+    assert commands[1] == ["uv", "run", "--extra", "dev", "pytest", "-q"]
 
 
 def test_ci_checks_format_without_rewriting(run_task):
     commands = run_task("ci")
     assert ["cargo", "fmt", "--all", "--", "--check"] in commands
-    assert ["uvx", "ruff", "format", "pvisor", "tests", "examples", "--check"] in commands
+    assert [
+        "uvx",
+        "ruff",
+        "format",
+        "pvisor",
+        "tests",
+        "examples",
+        "conftest.py",
+        "--check",
+    ] in commands
     assert all(
         "--check" in command for command in commands if "fmt" in command or "format" in command
     )

@@ -13,6 +13,7 @@ from pathlib import Path
 import run_all
 
 
+@unittest.skipUnless(sys.platform == "linux", "requires Linux rootfs tools and /proc")
 class OneClickBenchmarkTests(unittest.TestCase):
     def test_prepared_rootfs_contains_only_selected_programs_and_libraries(self) -> None:
         with tempfile.TemporaryDirectory() as directory:
@@ -54,7 +55,3 @@ class OneClickBenchmarkTests(unittest.TestCase):
             self.assertIn("direct", report["cases"])
             self.assertIn("vm", report["skipped_cases"])
             self.assertIn("Skipped cases", (output / "startup.md").read_text())
-
-
-if __name__ == "__main__":
-    unittest.main()

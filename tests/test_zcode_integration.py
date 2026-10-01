@@ -12,8 +12,10 @@ import tempfile
 import time
 from pathlib import Path
 
-EXAMPLE = Path(__file__).resolve().parent
-WORK = Path(os.environ.get("WORK_ROOT", EXAMPLE / ".work")).resolve()
+import pytest
+
+EXAMPLE = Path(__file__).resolve().parents[1] / "examples/pvisor/05-zcode-cli"
+WORK = None  # Assigned to pytest's isolated temporary directory before execution.
 PVISOR = os.environ.get("PVISOR_BIN", str(EXAMPLE.parents[2] / "target/release/pvisor"))
 
 
@@ -235,10 +237,12 @@ def verify_write(work, decision="apply"):
     assert not (base / ".zcode-state").exists()
 
 
-def main():
+def test_zcode_integration(tmp_path, request, monkeypatch):
+    if not request.config.getoption("--zcode-integration"):
+        pytest.skip("requires --zcode-integration, zcode and a built pvisor CLI")
     if sys.platform != "linux":
-        raise SystemExit("This integration requires Linux rootless isolation and /proc")
-    WORK.mkdir(parents=True, exist_ok=True)
+        pytest.fail("zcode integration requires Linux rootless isolation and /proc")
+    monkeypatch.setattr(sys.modules[__name__], "WORK", tmp_path)
     verify_normal_command()
     write = run_case("write", "60s")
     verify_write(write)
@@ -254,7 +258,3 @@ def main():
         "RESULT example=zcode-cli tool_write=1 sse_requests=2 applied=1 dropped=1 "
         "state_persisted=1 normal_command=1 normal_baseline=1 timeout=passed survivors=0"
     )
-
-
-if __name__ == "__main__":
-    main()

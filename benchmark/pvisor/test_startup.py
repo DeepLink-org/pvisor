@@ -41,6 +41,7 @@ class StartupBenchmarkTests(unittest.TestCase):
         self.assertEqual(compared["host_safe_net_deny_all"]["reference_case"], "host_safe")
         self.assertEqual(compared["host_safe_net_deny_all"]["paired_rss_delta_bytes_p50"], 25)
 
+    @unittest.skipUnless(sys.platform == "linux", "occupancy sampler requires /proc")
     def test_trial_measures_completion_and_resource_occupancy(self) -> None:
         with tempfile.TemporaryDirectory() as directory:
             scratch = Path(directory)
@@ -118,7 +119,3 @@ class StartupBenchmarkTests(unittest.TestCase):
             path.write_text(path.read_text().replace("{workload}", "true"))
             with self.assertRaisesRegex(ValueError, "workload"):
                 STARTUP.load_adapter(path)
-
-
-if __name__ == "__main__":
-    unittest.main()

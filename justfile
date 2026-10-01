@@ -3,7 +3,7 @@ set positional-arguments
 
 repo := justfile_directory()
 target_dir := absolute_path(env("CARGO_TARGET_DIR", repo / "target"))
-python_paths := "pvisor tests examples"
+python_paths := "pvisor tests examples conftest.py"
 
 default:
     @just --list --unsorted
@@ -114,7 +114,7 @@ shim-vm-build:
 
 # Python tests; append pytest options such as -v or -k packaging.
 test-py *args:
-    uv run --extra dev pytest tests/ -q "$@"
+    uv run --extra dev pytest -q "$@"
 
 # Strict Linux rootless/FUSE regression: never skip missing user namespaces.
 test-isolation:
@@ -153,10 +153,8 @@ benchmark-startup-raw *args:
 benchmark-compare candidate baseline="" output="target/pvisor-benchmark/comparison" threshold="15":
     bash benchmark/pvisor/run.sh compare --candidate "$1" --baseline "$2" --output "$3" --regression-threshold "$4"
 
-test-benchmark:
-    PYTHONDONTWRITEBYTECODE=1 python3 benchmark/pvisor/test_bench.py
-    PYTHONDONTWRITEBYTECODE=1 python3 benchmark/pvisor/test_startup.py
-    PYTHONDONTWRITEBYTECODE=1 python3 benchmark/pvisor/test_run_all.py
+test-benchmark *args:
+    just test-py benchmark/pvisor "$@"
 
 # Build both languages with the same pinned tool as CI, then validate links.
 docs-build:

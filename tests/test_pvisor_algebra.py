@@ -1,8 +1,9 @@
 #!/usr/bin/env python3
 """Finite checks of pvisor-algebra.md's structural laws, not a backend proof.
-Run: python3 docs/pvisor-algebra-check.py
+Run: just test-py tests/test_pvisor_algebra.py
 Rust property/contract tests validate the implementation itself.
 """
+
 from dataclasses import dataclass
 from itertools import product
 
@@ -18,20 +19,22 @@ def wrap(expression, contexts):
 
 
 def chains():
-    layers = (('vm', 'A'), ('remote', 'B'), ('overlay', 'C'))
+    layers = (("vm", "A"), ("remote", "B"), ("overlay", "C"))
     return [xs for n in range(3) for xs in product(layers, repeat=n)]
 
 
-def check():
-    expressions = [Expression(('fs.read', file, offset, length))
-                   for file, offset, length in product(('a', 'b'), (0, 1), (0, 1))]
+def test_structural_laws():
+    expressions = [
+        Expression(("fs.read", file, offset, length))
+        for file, offset, length in product(("a", "b"), (0, 1), (0, 1))
+    ]
     contexts = chains()
     for expression in expressions:
         assert wrap(expression, ()) == expression
         for a, b in product(contexts, repeat=2):
             assert wrap(wrap(expression, a), b) == wrap(expression, a + b)
             assert wrap(expression, a).operation == expression.operation
-        vm, remote = (('vm', 'A'),), (('remote', 'B'),)
+        vm, remote = (("vm", "A"),), (("remote", "B"),)
         assert wrap(expression, vm + remote) != wrap(expression, remote + vm)
         # The original request is retained; evidence reproduces each suffix change.
         history = []
@@ -47,8 +50,3 @@ def check():
             assert replayed == after
         assert replayed == current
         assert expression.contexts == ()
-    print('PASS: finite wrapper identity/associativity, order, immutable request and rewrite reconstruction')
-
-
-if __name__ == '__main__':
-    check()

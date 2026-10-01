@@ -53,7 +53,3 @@ class PVisorBenchmarkTests(unittest.TestCase):
         baseline["environment"]["suite"] = "nightly"
         with self.assertRaisesRegex(ValueError, "environment.suite"):
             BENCH.compare_reports(candidate, baseline, 15)
-
-
-if __name__ == "__main__":
-    unittest.main()

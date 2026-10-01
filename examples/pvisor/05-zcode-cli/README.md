@@ -128,7 +128,7 @@ bash examples/pvisor/test.sh 05-zcode-cli
 ```
 
 The deterministic integration test requires Linux rootless isolation and FUSE3,
-Python 3, jq, Bash, Node, and the installed `zcode` and updated `pvisor` commands.
+Python 3, uv, jq, Bash, Node, and the installed `zcode` and updated `pvisor` commands.
 It asserts actual filesystem enforcement instead of accepting a best-effort
 fallback. If the host restricts user namespaces through AppArmor, use an
 installation path already permitted by the administrator's policy.
@@ -139,8 +139,9 @@ in this integration script are Linux-only. Use the ordinary commands above
 for macOS interactive testing, then inspect the Run with `pvisor review` and
 choose `pvisor apply` or `pvisor drop`.
 
-Each scenario recreates its own subdirectory under `WORK_ROOT`; use it only
-for disposable data. Do not run tests concurrently against the same root.
+The tests run through pytest in an isolated temporary directory. To run them
+directly, use `just test-py tests/test_zcode_integration.py --zcode-integration`;
+`PVISOR_BIN` selects the CLI. `WORK_ROOT` still selects the workspace for example runs.
 The standard example runner still runs 01–04 unless 05 is selected explicitly.
 
 A normal `zcode` baseline first confirms immediate file writes. Isolated-run
