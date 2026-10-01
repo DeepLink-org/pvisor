@@ -176,7 +176,7 @@ network namespace; macOS blocks non-loopback IP and ambient host Unix sockets wi
 while retaining loopback proxy access and the exact AgentCtl and Run-local IPC. Container Runs can instead
 use `--container-network none`. Selective allow/deny rules remain cooperative
 on both native host paths. The VM executor defaults to `[overlaynet] mode =
-"auto"`, which supplies DHCP, synthetic DNS, and policy-controlled IPv4 TCP;
+"auto"`, which uses a static guest IPv4 address, synthetic DNS, and policy-controlled IPv4 TCP;
 `mode = "off"` leaves it offline. Gateway capture uses the guest virtual
 router. The container executor still requires `--container-network host` for
 the in-process proxy.

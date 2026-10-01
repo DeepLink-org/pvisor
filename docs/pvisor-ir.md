@@ -1,7 +1,7 @@
 # pVisor IR v4 与 Trace v3
 
 IR 表示操作及其上下文链，是数据与证据契约。生产 Run 由 `RunSpec` 编译成
-`RunPlan`，记录 VM/Overlay 放置、策略规则及执行结果；它不是任意表达式的执行入口。
+`RunPlan`，记录 VM/Overlay 放置、策略规则的预期控制及执行结果；它不是任意表达式的执行入口。
 
 ```text
 fs.read("input", offset: 0, length: 5) |> vm("sandbox") |> remote("node-a")
@@ -124,3 +124,8 @@ Gateway 捕获和 replay 使用同一 Event 信封及 Journal；文件系统与�
 正式日志与旧 JSONL 不混写；参见 [事件契约](event-contract-v3.md) 的接入与迁移说明。
 IR 使用 v4（增加 `run.execute`），Trace/Event 使用 v3；旧草稿程序和 journal 不混读。回放测试重建改写过程并核对记录结果；
 真实副作用回放须由后续适配器提供资源初态与必要输入。
+
+准入的执行器描述符为 `ExecutorPlan`，规则使用 `EnforcementPlan`（最高等级 Planned）。
+执行器收尾返回的 `ExecutorObservations` 才能包含 Enforced；Bundle schema 3 是强制力证据的
+唯一权威产物，`run.json` 不持久化计划或强制力声明。Completed 的 origin 来自实际结果来源，
+启动失败或运行器收尾失败使用 Runtime，而不是无条件 Backend。

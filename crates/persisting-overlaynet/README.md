@@ -8,8 +8,9 @@ absolute-URI forwarding, access enforcement through
 shared proxy header safety, and dispatch to one caller-supplied `OverlaySink`.
 
 Also owns the libkrun VM driver: a non-bypassable virtio-net path whose
-in-process smoltcp stack serves DHCP and synthetic DNS, then terminates and
-re-originates policy-authorized IPv4 TCP. Gateway capture is reachable through
+in-process smoltcp stack serves synthetic DNS, then terminates and
+re-originates policy-authorized IPv4 TCP. The Rust guest supervisor configures
+its static IPv4 address and route directly, without waiting for DHCP. Gateway capture is reachable through
 the guest's virtual router; Gateway and ordinary VM egress share the Attempt
 controller, metrics, and bandwidth buckets.
 

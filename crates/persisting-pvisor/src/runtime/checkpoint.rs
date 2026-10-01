@@ -259,6 +259,7 @@ mod tests {
             pid: 0,
             command: vec!["codex".into()],
             executor: None,
+            executor_plan: None,
             state: "completed".into(),
             started_at_unix_ms: 1,
             finished_at_unix_ms: Some(2),

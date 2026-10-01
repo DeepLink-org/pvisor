@@ -206,7 +206,39 @@ Neither interval includes CLI preparation, image extraction, helper preparation,
 or Run Bundle persistence. The C workspace case reconstructs the old shell
 chain, using Alpine's `/bin/mount` BusyBox applet rather than a renamed copy.
 
-Provide a prepared Alpine aarch64 rootfs, a static aarch64 C init, and firmware:
+Measured on 2026-10-01 with Apple M4/HVF, libkrunfw 5.5.0, Alpine
+minirootfs 3.22.1 aarch64, 10 warmups and 100 samples per variant:
+
+| Scenario | C ready p50 (ms) | Rust ready p50 (ms) | Rust ready p95 (ms) | Change in p50 |
+|---|---:|---:|---:|---:|
+| Direct command, network off | 105.27 | 114.57 | 116.63 | 8.83% slower |
+| Workspace, network off | 119.18 | 114.48 | 116.24 | 3.94% faster |
+| Workspace, network on | 119.46 | 114.81 | 116.33 | 3.89% faster |
+
+The workspace cases save about 4.7 ms by removing the helper process chain;
+replacing C with Rust alone does not improve the direct-command case. These
+results describe this HVF runner, not full CLI startup or Linux/KVM performance.
+The network case compares the old C DHCP setup with the Rust static address.
+
+Provide a prepared Alpine aarch64 rootfs and firmware. To reproduce the old
+C control without restoring its crate, extract the four sources from the
+migration's parent commit and compile them with Zig (only the historical
+benchmark control needs this C compiler):
+
+```bash
+mkdir -p target/guest-init-benchmark/c-src
+for file in init.c dhcp.c dhcp.h jsmn.h; do
+  git show "178445c^:vendor/krun-init-blob/init/$file" > "target/guest-init-benchmark/c-src/$file"
+done
+zig cc -target aarch64-linux-musl -O2 -static -Wall \
+  target/guest-init-benchmark/c-src/init.c \
+  target/guest-init-benchmark/c-src/dhcp.c \
+  -o target/guest-init-benchmark/c-init
+rustup target add aarch64-unknown-linux-musl
+```
+
+Then run the comparison:
+
 
 ```bash
 python3 benchmark/pvisor/guest_init.py \

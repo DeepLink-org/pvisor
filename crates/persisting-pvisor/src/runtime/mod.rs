@@ -25,7 +25,7 @@ pub(crate) use supervisor::RuntimeSupervisorBuilder;
 /// Run's capabilities are validated and the executor prepares its sandbox.
 pub(crate) fn apply_process_policies(
     spec: &mut persisting_control::RunSpec,
-    executor: &persisting_control::ExecutorDescriptor,
+    executor: &persisting_control::ExecutorPlan,
 ) -> anyhow::Result<()> {
     if executor.kind == persisting_control::ExecutorKind::Process
         && executor.isolation == persisting_control::IsolationKind::RootlessProcess

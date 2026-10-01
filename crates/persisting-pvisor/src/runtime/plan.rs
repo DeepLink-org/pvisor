@@ -3,8 +3,8 @@
 
 use super::OverlayHint;
 use persisting_control::{
-    CapabilityDimension, CapabilityEnforcementEvidence, ExecutorDescriptor, ExecutorKind,
-    FilesystemAccess, NetworkCapability, RunResult, RunSpec, RunState,
+    CapabilityDimension, CapabilityEnforcementPlan, ExecutorKind, ExecutorPlan, FilesystemAccess,
+    NetworkCapability, RunResult, RunSpec, RunState,
     ir::run::{
         FilesystemObservation, PlanRule, RUN_PLAN_VERSION, RuleCounters, RunObservation, RunPlan,
     },
@@ -17,8 +17,8 @@ use std::collections::BTreeMap;
 
 pub(crate) fn compile(
     spec: &RunSpec,
-    executor: &ExecutorDescriptor,
-    evidence: &CapabilityEnforcementEvidence,
+    executor: &ExecutorPlan,
+    evidence: &CapabilityEnforcementPlan,
     overlay: &OverlayHint,
 ) -> anyhow::Result<RunPlan> {
     let request = Expression::new(Operation::Run {
@@ -70,7 +70,7 @@ pub(crate) fn compile(
             dimension,
             target,
             action: action.into(),
-            enforcement: evidence
+            enforcement_plan: evidence
                 .dimensions
                 .get(&dimension)
                 .cloned()

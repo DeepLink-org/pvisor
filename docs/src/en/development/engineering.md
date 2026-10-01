@@ -16,6 +16,7 @@ package launches the packaged Rust binary; it is not a second runtime.
 | `crates/persisting-overlay-core/` | FUSE-independent overlay operations and file access enforcement |
 | `crates/persisting-overlayfs/` | FUSE adapter and mounts |
 | `crates/persisting-overlaynet/` | Egress policy, HTTP proxy and VM virtio-net data plane |
+| `crates/persisting-guest/` | Linux PID 1 supervisor and the launch contract shared by VM executors |
 | `crates/persisting-replay/` | Replay planning, native agent adapters and continuation bridges |
 | `pvisor/`, `setup.py`, `scripts/packaging/` | Python launcher and wheel assembly |
 | `crates/*/tests/` | Rust integration tests; unit tests stay with their owning module |
@@ -28,12 +29,12 @@ package launches the packaged Rust binary; it is not a second runtime.
 The internal workspace dependencies are:
 
 ```text
-pvisor ──> control, gateway, overlaynet, overlayfs, overlay-core, replay
+pvisor ──> control, gateway, overlaynet, overlayfs, overlay-core, replay, guest
 gateway ──> control, overlaynet
 overlaynet ──> control
 overlayfs ──> control, overlay-core
 overlay-core ──> control
-control, replay ──> no other workspace crate
+control, replay, guest ──> no other workspace crate
 ```
 
 ### pVisor source modules
@@ -152,6 +153,28 @@ binaries opt into `static-musl` for Zig and cargo-zigbuild; Rust checks and unit
 tests do not need those tools. Wheel platforms live in one reusable
 workflow. PR documentation builds cannot cancel a Pages deployment.
 
+## VM guest bootstrap
+
+`persisting-guest` provides the shared `GuestConfig` library and the
+`pvisor-guest` executable. When libkrun's `init-blob` feature is built,
+`vendor/libkrun/build.rs` compiles the executable in release mode for the VM
+architecture's Linux musl target, using Rust's bundled `rust-lld`. Its separate
+`target/pvisor-guest/` directory avoids the outer Cargo build's artifact lock.
+libkrun embeds the ELF and exposes it as `/init.krun`; it runs as guest PID 1.
+
+The CLI and shim inject `/.pvisor-guest.json` with argv, environment, cwd,
+workspace mount, limits, optional networking, and optional shim agent arguments.
+The supervisor initializes guest filesystems and console I/O, mounts the
+workspace, configures networking, launches the workload directly, and reaps
+children. It reports the workload exit status through libkrun's private root
+filesystem ioctl `0x7602` before sync/reboot. Nonzero workload exits fail the
+Attempt; an otherwise clean VM shutdown without a reported status fails with code 125.
+
+The former C init crate, C cross-compiler wrapper, and generated launch shell
+helpers have been removed. The PID 1 role and exit-status channel remain.
+For the measured startup comparison and its scope, see the
+`benchmark/pvisor/README.md`, “Guest init comparison (Apple Silicon)”.
+
 ## Build environment
 
 The repository uses the stable toolchain from `rust-toolchain.toml`, the default
@@ -162,6 +185,13 @@ On Apple Silicon, install the guest stdlib once with
 `rustup target add aarch64-unknown-linux-musl`. CI installs only its host
 architecture’s guest target; the workspace toolchain does not download cross
 targets for unrelated crates.
+
+| Artifact | Linux | Apple Silicon macOS |
+|---|---|---|
+| Host CLI | Static Linux musl ELF | Native Darwin executable, signed for HVF |
+| Embedded guest | Static Linux musl ELF | Static Linux musl ELF |
+| libkrun | Statically linked Rust library | Statically linked Rust library |
+| Guest kernel | Embedded at build time | Runtime `libkrunfw.5.dylib` |
 
 `CARGO_TARGET_DIR` selects the native build directory. The build, install,
 smoke, example, and case tasks use the same location. Wheel verification uses a

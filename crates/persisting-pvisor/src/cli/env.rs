@@ -199,6 +199,7 @@ fn create(args: CreateArgs) -> Result<i32> {
         pid: 0,
         command: Vec::new(),
         executor: None,
+        executor_plan: None,
         state: "ready".into(),
         started_at_unix_ms: now,
         finished_at_unix_ms: Some(now),

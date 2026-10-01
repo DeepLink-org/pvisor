@@ -7,9 +7,9 @@ use crate::util::write_private_json;
 use anyhow::Context as _;
 use async_trait::async_trait;
 use persisting_control::{
-    CapabilityDimension, CapabilityEnforcementEvidence, ExecutorDescriptor, ExecutorKind,
-    IsolationKind, ProcessOutput, ResourceLimits, RunFailure, RunFailureKind, RunInvocation,
-    RunResult, RunState,
+    CapabilityDimension, CapabilityEnforcementEvidence, CapabilityEnforcementPlan, ExecutorKind,
+    ExecutorObservations, ExecutorPlan, IsolationKind, ProcessOutput, ResourceLimits, RunFailure,
+    RunFailureKind, RunInvocation, RunResult, RunState,
 };
 use serde::{Deserialize, Serialize};
 use std::collections::BTreeMap;
@@ -60,6 +60,7 @@ pub struct VmExecutor {
 
 #[derive(Debug, Serialize, Deserialize)]
 struct RunnerSpec {
+    setup_attestation: PathBuf,
     root: OverlayDeviceSpec,
     workspace: Option<OverlayDeviceSpec>,
     workspace_target: Option<PathBuf>,
@@ -216,17 +217,17 @@ pub(crate) const fn firmware_name() -> &'static str {
 
 #[async_trait]
 impl RunExecutor for VmExecutor {
-    fn descriptor(&self) -> ExecutorDescriptor {
-        ExecutorDescriptor {
+    fn descriptor(&self) -> ExecutorPlan {
+        ExecutorPlan {
             name: "libkrun-root-overlay-v1".into(),
             kind: ExecutorKind::VirtualMachine,
             isolation: IsolationKind::VirtualMachine,
-            capability_enforcement: CapabilityEnforcementEvidence::default()
-                .enforced(
+            capability_plan: CapabilityEnforcementPlan::default()
+                .planned(
                     CapabilityDimension::FilesystemRead,
                     "libkrun-guest-kernel-virtiofs-root",
                 )
-                .enforced(
+                .planned(
                     CapabilityDimension::FilesystemWrite,
                     "libkrun-guest-kernel-virtiofs-overlay",
                 ),
@@ -544,7 +545,14 @@ impl RunExecutor for VmExecutor {
             .memory_bytes
             .map(|bytes| bytes.div_ceil(1024 * 1024).max(1))
             .and_then(|mib| u32::try_from(mib).ok());
+        let attestation = match tempfile::NamedTempFile::new_in(temporary.path()) {
+            Ok(file) => file,
+            Err(error) => {
+                return failed_to_start(&spec, context.attempt_id(), started_at, error.to_string());
+            }
+        };
         let runner = RunnerSpec {
+            setup_attestation: attestation.path().to_path_buf(),
             root: root_overlay,
             workspace,
             workspace_target: workspace_target.clone(),
@@ -672,6 +680,9 @@ impl RunExecutor for VmExecutor {
             output.stderr = Some(captured.text);
             output.stderr_truncated = captured.truncated;
         }
+        // Signals/cancellation can interrupt between configuring the VMM and
+        // entering it. Without a normal runner exit we leave enforcement unknown.
+        let runner_exited = matches!(&end, End::Exited(Ok(status)) if status.code().is_some());
         let (state, exit_code, failure) = match end {
             End::Cancelled => (RunState::Cancelled, None, None),
             End::Watchdog => (
@@ -694,6 +705,33 @@ impl RunExecutor for VmExecutor {
                 }),
             ),
         };
+        // The trusted runner writes only after all VMM devices and confinement
+        // controls install successfully. Failed entry clears the receipt.
+        let mut executor_observations = ExecutorObservations::default();
+        if runner_exited
+            && std::fs::read(attestation.path())
+                .is_ok_and(|bytes| bytes == b"pvisor-vmm-installed-v1\n")
+        {
+            executor_observations.origin = persisting_control::trace::Origin::Backend;
+            executor_observations.enforcement = CapabilityEnforcementEvidence::default()
+                .enforced(
+                    CapabilityDimension::FilesystemRead,
+                    "libkrun-configured-root-device",
+                )
+                .enforced(
+                    CapabilityDimension::FilesystemWrite,
+                    "libkrun-configured-overlay-device",
+                );
+            if vm_network
+                .as_ref()
+                .is_some_and(|network| network.is_enforcing())
+            {
+                executor_observations.enforcement = executor_observations.enforcement.enforced(
+                    CapabilityDimension::Network,
+                    "vm-smoltcp-installed-net-device",
+                );
+            }
+        }
         let mut warnings = Vec::new();
         if let Some(network) = vm_network.take()
             && let Err(error) = network.shutdown()
@@ -702,6 +740,7 @@ impl RunExecutor for VmExecutor {
             warnings.push(format!("failed to stop VM smoltcp backend: {error:#}"));
         }
         RunResult {
+            executor_observations,
             run_id: spec.run_id,
             attempt_id: context.attempt_id().clone(),
             lease_epoch: spec.lease_epoch,
@@ -757,6 +796,9 @@ pub fn run_internal_if_requested() -> anyhow::Result<bool> {
 }
 
 fn run_runner(spec: RunnerSpec) -> anyhow::Result<()> {
+    let attestation = std::fs::OpenOptions::new()
+        .write(true)
+        .open(&spec.setup_attestation)?;
     #[cfg(target_os = "linux")]
     {
         let mut read_only = spec.root.lowers.clone();
@@ -774,10 +816,11 @@ fn run_runner(spec: RunnerSpec) -> anyhow::Result<()> {
             spec.library_dir.clone(),
         )?;
     }
-    run_linked_krun(spec)
+    run_linked_krun(spec, attestation)
 }
 
-fn run_linked_krun(spec: RunnerSpec) -> anyhow::Result<()> {
+fn run_linked_krun(spec: RunnerSpec, mut attestation: std::fs::File) -> anyhow::Result<()> {
+    use std::io::Write;
     if std::env::var_os("PERSISTING_KRUN_LOG").is_some() {
         check_krun(krun::krun_set_log_level(5), "krun_set_log_level")?;
     }
@@ -847,7 +890,13 @@ fn run_linked_krun(spec: RunnerSpec) -> anyhow::Result<()> {
         "krun_disable_implicit_vsock",
     )?;
     check_krun(krun::krun_add_vsock(ctx, 0), "krun_add_vsock")?;
+    attestation.write_all(b"pvisor-vmm-installed-v1\n")?;
+    attestation.sync_data()?;
     let started = krun::krun_start_enter(ctx);
+    if started < 0 {
+        attestation.set_len(0)?;
+        attestation.sync_data()?;
+    }
     #[cfg(target_os = "macos")]
     if started == -libc::EINVAL {
         anyhow::bail!(
@@ -958,6 +1007,7 @@ fn failed_to_start(
     message: String,
 ) -> RunResult {
     RunResult {
+        executor_observations: Default::default(),
         run_id: spec.run_id.clone(),
         attempt_id: attempt_id.clone(),
         lease_epoch: spec.lease_epoch,

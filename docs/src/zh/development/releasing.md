@@ -66,6 +66,11 @@ Linux CLI 使用 `x86_64-unknown-linux-musl` 全静态链接，并内嵌 libkrun
 不再随 wheel 分发固件共享库。wheel 保留 manylinux_2_28 标签以支持 glibc Python
 安装器。构建需要 Zig、cargo-zigbuild 和 Rust musl target；固件只在构建时加载。
 
+Apple Silicon macOS 使用原生 Darwin linker 构建 CLI，签署 HVF entitlement，
+并打包 `libkrunfw.5.dylib`。两个平台都内嵌静态 Linux musl Rust guest，
+由 `rust-lld` 自动构建。macOS 需要 `aarch64-unknown-linux-musl` Rust stdlib，
+构建 guest 不需要 Zig。
+
 每个 wheel 都会检查组件集和安装时 CLI smoke test。发布集检查随后要求每个
 平台恰好一个受支持 wheel、版本匹配、包元数据有效，以及发布前产物大小有界。
 

@@ -2,12 +2,12 @@
 //! Plans describe placement and evidence; they do not execute policy or grant authority.
 
 use super::{Context, Expression, Operation, Outcome, Rule, symbol};
-use crate::runtime::{CapabilityDimension, EnforcementEvidence};
+use crate::runtime::{CapabilityDimension, EnforcementPlan};
 use anyhow::{Result, ensure};
 use serde::{Deserialize, Serialize};
 use std::collections::{BTreeMap, BTreeSet};
 
-pub const RUN_PLAN_VERSION: u16 = 1;
+pub const RUN_PLAN_VERSION: u16 = 2;
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
 #[serde(deny_unknown_fields)]
@@ -17,7 +17,7 @@ pub struct PlanRule {
     pub target: String,
     /// The effective access decision, such as deny, ask, read, stage or write.
     pub action: String,
-    pub enforcement: EnforcementEvidence,
+    pub enforcement_plan: EnforcementPlan,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]

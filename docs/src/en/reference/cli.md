@@ -584,11 +584,13 @@ The merged rootfs is guest `/`, and `/workspace` becomes the guest cwd. On both
 Linux and macOS, a vendored libkrun serves pVisor's rootfs and workspace
 copy-on-write unions directly over virtio-fs. The VMM never re-exports a host
 FUSE mount and does not materialize or reconcile either tree. Linux uses
-KVM and Apple Silicon macOS uses HVF through the same executor. libkrunfw is
-installed beside pVisor in wheels. Source builds otherwise download the pinned
-official release into a SHA-256-verified platform cache; on macOS `/usr/bin/cc`
-turns its prebuilt kernel bundle into the required dylib. A system directory can
-still be selected with `--vm-library-dir`. OverlayNet `auto` uses the
+KVM and Apple Silicon macOS uses HVF through the same executor. Linux static
+musl builds embed the guest kernel and require no firmware shared library at
+runtime; `--vm-library-dir` is rejected by these builds. macOS wheels install
+`libkrunfw.5.dylib` beside pVisor. macOS source runs otherwise download the pinned
+official release into a SHA-256-verified platform cache, where `/usr/bin/cc`
+turns its prebuilt kernel bundle into the required dylib. On macOS,
+`--vm-library-dir` selects an existing firmware directory. OverlayNet `auto` uses the
 non-bypassable VM smoltcp IPv4 TCP/DNS driver, while Gateway capture uses an
 internal route through the guest virtual router. Linux additionally confines
 the VMM with namespaces and Landlock. The macOS VMM still has the invoking

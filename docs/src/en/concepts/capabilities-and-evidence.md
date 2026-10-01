@@ -25,6 +25,13 @@ Evidence answers four progressively stronger questions:
 3. **Enforced** — which bypass paths were blocked for the stated threat model?
 4. **Attested** — is that enforcement bound to this exact Run and provider?
 
+Admission returns `ExecutorPlan` with `Unsupported`, `Cooperative`, or `Planned`
+controls. These are expectations, not enforcement evidence. The executor emits
+`ExecutorObservations` from actual setup receipts at teardown. Only the Run
+Bundle (schema 3) is authoritative for installed enforcement; `run.json` contains
+runtime facts and selection identity, without an enforcement descriptor or plan.
+Old bundles lacking this observation contract are rejected.
+
 The Run Bundle is the place to inspect the answer for a concrete execution.
 Return to [pVisor concepts](index.md), use the
 [network guide](../guides/network.md) to configure one capability dimension,

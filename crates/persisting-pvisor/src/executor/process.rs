@@ -11,9 +11,10 @@ use crate::executor::sandbox::{SANDBOX_ARG0_ENV, SANDBOX_PLAN_ENV, SANDBOX_SETUP
 use crate::executor::{AttemptContext, Captured, RunExecutor, stdio};
 use async_trait::async_trait;
 use persisting_control::{
-    CapabilityDimension, CapabilityEnforcementEvidence, ExecutorDescriptor, ExecutorKind,
-    IsolationKind, ProcessInvocation, ProcessOutput, ResourceLimits, RunFailure, RunFailureKind,
-    RunInvocation, RunResult, RunSpec, RunState, StdioMode,
+    CapabilityDimension, CapabilityEnforcementEvidence, CapabilityEnforcementPlan, ExecutorKind,
+    ExecutorObservations, ExecutorPlan, IsolationKind, ProcessInvocation, ProcessOutput,
+    ResourceLimits, RunFailure, RunFailureKind, RunInvocation, RunResult, RunSpec, RunState,
+    StdioMode,
 };
 #[cfg(any(target_os = "linux", target_os = "macos"))]
 use persisting_control::{FilesystemAccess, NetworkCapability};
@@ -212,12 +213,14 @@ enum SandboxResources {
     Linux {
         root: PathBuf,
         attestation: tempfile::NamedTempFile,
+        controls: CapabilityEnforcementPlan,
         plan: tempfile::NamedTempFile,
     },
     #[cfg(target_os = "macos")]
     MacOS {
         scratch: tempfile::TempDir,
         attestation: tempfile::NamedTempFile,
+        controls: CapabilityEnforcementPlan,
     },
 }
 
@@ -246,6 +249,7 @@ impl SandboxResources {
         Ok(Self::Linux {
             root: path,
             attestation,
+            controls: Default::default(),
             plan,
         })
     }
@@ -292,6 +296,7 @@ impl SandboxResources {
         Ok(Self::MacOS {
             scratch,
             attestation,
+            controls: Default::default(),
         })
     }
 
@@ -309,6 +314,30 @@ impl SandboxResources {
             Self::MacOS { attestation, .. } => Some(attestation.path()),
             Self::None => None,
         }
+    }
+
+    fn observed_controls(&mut self) -> Option<CapabilityEnforcementEvidence> {
+        if !self.setup_attested() {
+            return None;
+        }
+        let controls = match self {
+            Self::None => return Some(Default::default()),
+            #[cfg(target_os = "linux")]
+            Self::Linux { controls, .. } => controls,
+            #[cfg(target_os = "macos")]
+            Self::MacOS { controls, .. } => controls,
+        };
+        let mut observed = CapabilityEnforcementEvidence::default();
+        for (dimension, control) in &controls.dimensions {
+            for mechanism in &control.mechanisms {
+                observed.record(
+                    *dimension,
+                    persisting_control::EnforcementLevel::Enforced,
+                    mechanism,
+                );
+            }
+        }
+        Some(observed)
     }
 
     #[cfg(target_os = "macos")]
@@ -734,6 +763,19 @@ fn platform_launcher_command(
         network,
         filesystem_isolated,
     )?;
+    if let SandboxResources::Linux { controls, .. } = &mut sandbox_root {
+        if plan.filesystem_isolated {
+            *controls = controls
+                .clone()
+                .planned(CapabilityDimension::FilesystemRead, "linux-synthetic-root")
+                .planned(CapabilityDimension::FilesystemWrite, "linux-synthetic-root");
+        }
+        if plan.network.is_loopback_only() {
+            *controls = controls
+                .clone()
+                .planned(CapabilityDimension::Network, "linux-network-namespace");
+        }
+    }
     let encoded = serde_json::to_vec(&plan).map_err(std::io::Error::other)?;
     let plan_path = sandbox_root
         .write_plan(&encoded)?
@@ -761,7 +803,7 @@ fn platform_launcher_command(
             format!("resolve Agent executable {}: {error}", program.display()),
         )
     })?;
-    let resources = SandboxResources::create()?;
+    let mut resources = SandboxResources::create()?;
     let filesystem_isolated = filesystem_isolation(spec);
     let cwd = invocation
         .cwd
@@ -901,6 +943,26 @@ fn platform_launcher_command(
         network,
         filesystem_isolated,
     };
+    if let SandboxResources::MacOS { controls, .. } = &mut resources {
+        if plan.filesystem_isolated {
+            *controls = controls.clone().planned(
+                CapabilityDimension::FilesystemWrite,
+                "macos-seatbelt-write-policy",
+            );
+        }
+        if plan.restrict_reads {
+            *controls = controls.clone().planned(
+                CapabilityDimension::FilesystemRead,
+                "macos-seatbelt-read-policy",
+            );
+        }
+        if plan.network.is_loopback_only() {
+            *controls = controls.clone().planned(
+                CapabilityDimension::Network,
+                "macos-seatbelt-network-policy",
+            );
+        }
+    }
     let encoded = serde_json::to_string(&plan).map_err(std::io::Error::other)?;
 
     let mut command = Command::new(MACOS_SANDBOX_EXEC);
@@ -1300,7 +1362,7 @@ async fn terminate_process_tree(child: &mut Child, process_group: Option<u32>, g
 
 #[async_trait]
 impl RunExecutor for ProcessExecutor {
-    fn descriptor(&self) -> ExecutorDescriptor {
+    fn descriptor(&self) -> ExecutorPlan {
         let (name, isolation) = if self.is_rootless() {
             ("local-rootless-v1", IsolationKind::RootlessProcess)
         } else if self.is_seatbelt() {
@@ -1308,29 +1370,29 @@ impl RunExecutor for ProcessExecutor {
         } else {
             ("local-process-v1", IsolationKind::HostProcess)
         };
-        let mut capability_enforcement = CapabilityEnforcementEvidence::default()
-            .enforced(CapabilityDimension::Resources, "posix-rlimit");
+        let mut capability_plan = CapabilityEnforcementPlan::default()
+            .planned(CapabilityDimension::Resources, "posix-rlimit");
         if self.is_rootless() {
-            capability_enforcement = capability_enforcement
-                .enforced(
+            capability_plan = capability_plan
+                .planned(
                     CapabilityDimension::FilesystemRead,
                     "linux-synthetic-root-landlock",
                 )
-                .enforced(
+                .planned(
                     CapabilityDimension::FilesystemWrite,
                     "linux-synthetic-root-landlock",
                 );
         } else if self.is_seatbelt() {
-            capability_enforcement = capability_enforcement.enforced(
+            capability_plan = capability_plan.planned(
                 CapabilityDimension::FilesystemWrite,
                 "macos-seatbelt-write-policy",
             );
         }
-        ExecutorDescriptor {
+        ExecutorPlan {
             name: name.into(),
             kind: ExecutorKind::Process,
             isolation,
-            capability_enforcement,
+            capability_plan,
             supports_checkpoint: false,
             supports_migration: false,
         }
@@ -1355,6 +1417,7 @@ impl RunExecutor for ProcessExecutor {
             Ok(command) => command,
             Err(error) => {
                 return RunResult {
+                    executor_observations: Default::default(),
                     run_id: spec.run_id,
                     attempt_id: context.attempt_id().clone(),
                     lease_epoch: spec.lease_epoch,
@@ -1407,6 +1470,7 @@ impl RunExecutor for ProcessExecutor {
             Ok(child) => child,
             Err(error) => {
                 return RunResult {
+                    executor_observations: Default::default(),
                     run_id: spec.run_id,
                     attempt_id: context.attempt_id().clone(),
                     lease_epoch: spec.lease_epoch,
@@ -1440,6 +1504,7 @@ impl RunExecutor for ProcessExecutor {
                 )
                 .await;
                 return RunResult {
+                    executor_observations: Default::default(),
                     run_id: spec.run_id,
                     attempt_id: context.attempt_id().clone(),
                     lease_epoch: spec.lease_epoch,
@@ -1543,8 +1608,29 @@ impl RunExecutor for ProcessExecutor {
         }
 
         let finished_at = crate::util::unix_now_ms();
-        let sandbox_attested = resources.setup_attested();
+        let installed_controls = resources.observed_controls();
+        let sandbox_attested = installed_controls.is_some();
         let sandbox_setup_failed = self.is_sandboxed() && !sandbox_attested;
+        let mut executor_observations = ExecutorObservations::default();
+        if !sandbox_setup_failed {
+            executor_observations.origin = persisting_control::trace::Origin::Backend;
+            executor_observations.enforcement = installed_controls.unwrap_or_default();
+            if !spec.runtime.resource_limits.is_empty()
+                && !(cfg!(target_os = "macos")
+                    && spec.runtime.resource_limits.memory_bytes.is_some())
+            {
+                executor_observations.enforcement = executor_observations
+                    .enforcement
+                    .enforced(CapabilityDimension::Resources, "posix-rlimit");
+                #[cfg(target_os = "linux")]
+                if metrics.get("resource.cgroup_v2") == Some(&1.0) {
+                    executor_observations.enforcement = executor_observations
+                        .enforcement
+                        .enforced(CapabilityDimension::Resources, "linux-cgroup-v2");
+                }
+            }
+        }
+
         let (state, exit_code, failure) = if sandbox_setup_failed {
             (
                 RunState::Failed,
@@ -1598,6 +1684,7 @@ impl RunExecutor for ProcessExecutor {
         };
 
         RunResult {
+            executor_observations,
             run_id: spec.run_id,
             attempt_id: context.attempt_id().clone(),
             lease_epoch: spec.lease_epoch,
@@ -1710,18 +1797,18 @@ mod tests {
         assert_eq!(descriptor.isolation, IsolationKind::RootlessProcess);
         assert!(
             descriptor
-                .capability_enforcement
-                .is_enforced(CapabilityDimension::FilesystemRead)
+                .capability_plan
+                .is_planned(CapabilityDimension::FilesystemRead)
         );
         assert!(
             descriptor
-                .capability_enforcement
-                .is_enforced(CapabilityDimension::FilesystemWrite)
+                .capability_plan
+                .is_planned(CapabilityDimension::FilesystemWrite)
         );
         assert!(
             !descriptor
-                .capability_enforcement
-                .is_enforced(CapabilityDimension::Network)
+                .capability_plan
+                .is_planned(CapabilityDimension::Network)
         );
     }
 
@@ -1735,13 +1822,13 @@ mod tests {
         assert_eq!(descriptor.isolation, IsolationKind::SandboxedProcess);
         assert!(
             !descriptor
-                .capability_enforcement
-                .is_enforced(CapabilityDimension::FilesystemRead)
+                .capability_plan
+                .is_planned(CapabilityDimension::FilesystemRead)
         );
         assert!(
             descriptor
-                .capability_enforcement
-                .is_enforced(CapabilityDimension::FilesystemWrite)
+                .capability_plan
+                .is_planned(CapabilityDimension::FilesystemWrite)
         );
     }
 

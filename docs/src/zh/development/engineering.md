@@ -15,6 +15,7 @@ Cargo workspace 按产品职责划分。Python `pvisor/` 只负责启动随包�
 | `crates/persisting-overlay-core/` | 不依赖 FUSE 的 OverlayFS 操作和文件访问控制 |
 | `crates/persisting-overlayfs/` | FUSE 适配及挂载 |
 | `crates/persisting-overlaynet/` | 出站策略、HTTP 代理和 VM virtio-net 数据通路 |
+| `crates/persisting-guest/` | Linux PID 1 supervisor，以及 VM 执行器共用的启动契约 |
 | `crates/persisting-replay/` | 回放规划、原生 Agent 适配器和续跑协议桥 |
 | `pvisor/`、`setup.py`、`scripts/packaging/` | Python 启动器和 wheel 打包 |
 | `crates/*/tests/` | Rust 集成测试；单元测试跟随所属模块 |
@@ -27,12 +28,12 @@ Cargo workspace 按产品职责划分。Python `pvisor/` 只负责启动随包�
 workspace 内的实际依赖关系：
 
 ```text
-pvisor ──> control, gateway, overlaynet, overlayfs, overlay-core, replay
+pvisor ──> control, gateway, overlaynet, overlayfs, overlay-core, replay, guest
 gateway ──> control, overlaynet
 overlaynet ──> control
 overlayfs ──> control, overlay-core
 overlay-core ──> control
-control, replay ──> 不依赖其他 workspace crate
+control, replay, guest ──> 不依赖其他 workspace crate
 ```
 
 ### pVisor 源码模块
@@ -143,12 +144,37 @@ release 构建和隔离环境。网络/Gateway 示例在单独任务运行。
 `static-musl` 启用 Zig 和 cargo-zigbuild；Rust 检查和单元测试不需要这两个工具。
 双平台 wheel 矩阵集中在一个可复用工作流中。PR 文档构建不会取消 Pages 部署。
 
+## VM guest 启动
+
+`persisting-guest` 同时提供共享的 `GuestConfig` 库和 `pvisor-guest` 可执行文件。
+构建 libkrun 的 `init-blob` feature 时，`vendor/libkrun/build.rs` 使用 Rust 自带
+`rust-lld`，按 VM 架构把 guest 编译成 release Linux musl ELF。
+独立的 `target/pvisor-guest/` 目录避免与外层 Cargo 构建争抢产物锁。
+libkrun 内嵌该 ELF，暴露为 `/init.krun`，由它担任 guest PID 1。
+
+CLI 和 shim 注入 `/.pvisor-guest.json`，传递 argv、环境变量、cwd、工作区挂载、
+资源限制、可选网络配置和 shim agent 参数。supervisor 初始化 guest 文件系统和
+控制台 I/O，挂载工作区、配置网络、直接启动工作负载并回收子进程。
+退出时先通过 libkrun 私有的根文件系统 ioctl `0x7602` 上报工作负载退出码，
+再 sync/reboot。非零退出码使 Attempt 失败；VM 正常关机但未上报退出码时按 125 失败。
+
+原来的 C init crate、C 交叉编译 wrapper 和生成的启动 shell helper 已删除；
+PID 1 职责和退出码通道仍然保留。启动性能实测及测量范围见
+`benchmark/pvisor/README.md` 的 “Guest init comparison (Apple Silicon)” 一节。
+
 ## 构建环境
 
 仓库使用 `rust-toolchain.toml` 中的 stable 工具链、默认 LLVM backend 和平台 linker。
 请安装 nextest `0.9.137`，或使用仓库 CI setup action。guest supervisor 使用 Rust 自带 linker 构建成静态 Linux musl ELF；macOS VM 构建不再需要 Zig。
 Apple Silicon 上首次构建前执行 `rustup target add aarch64-unknown-linux-musl`。
 CI 仅安装当前架构的 guest target，工作区工具链不再为无关 crate 下载交叉编译 target。
+
+| 产物 | Linux | Apple Silicon macOS |
+|---|---|---|
+| 宿主 CLI | 静态 Linux musl ELF | 原生 Darwin 可执行文件，签署 HVF entitlement |
+| 内嵌 guest | 静态 Linux musl ELF | 静态 Linux musl ELF |
+| libkrun | 静态链接 Rust 库 | 静态链接 Rust 库 |
+| guest 内核 | 构建时内嵌 | 运行时加载 `libkrunfw.5.dylib` |
 
 `CARGO_TARGET_DIR` 指定原生构建目录，构建、安装、smoke、示例和场景任务共用此位置。
 wheel 使用全新的暂存目录进行验证，避免误把 `dist/` 中的旧包当作本次产物。

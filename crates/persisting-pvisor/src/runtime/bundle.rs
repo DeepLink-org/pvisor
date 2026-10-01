@@ -1,14 +1,13 @@
 //! Durable, versioned summary of one pVisor Run.
 
-use crate::executor::sandbox::SANDBOX_SETUP_FAILED_WARNING;
 use crate::runtime::{
     ChangeEntry, OverlayState, RunLineage, RunRecord, overlay_changes, overlay_status,
 };
 use crate::util::sync_directory;
 use crate::{AgentCtlSnapshot, unix_now_ms};
 use persisting_control::{
-    ArtifactRef, CapabilityDimension, ExecutorDescriptor, IsolationKind, ProcessOutput,
-    ResourceLimits, RunFailure, RunResult, RunState,
+    ArtifactRef, CapabilityDimension, ExecutorIdentity, ExecutorObservations, ExecutorPlan,
+    IsolationKind, ProcessOutput, ResourceLimits, RunFailure, RunResult, RunState,
 };
 use persisting_overlaynet::{InterceptionProfile, InterceptionSnapshot};
 use serde::{Deserialize, Serialize};
@@ -16,7 +15,7 @@ use std::fs;
 use std::os::unix::fs::MetadataExt;
 use std::path::{Path, PathBuf};
 
-pub const RUN_BUNDLE_SCHEMA_VERSION: u32 = 2;
+pub const RUN_BUNDLE_SCHEMA_VERSION: u32 = 3;
 pub const RUN_BUNDLE_FILENAME: &str = "run-bundle.json";
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -26,6 +25,10 @@ pub struct RunBundle {
     pub run: BundleRun,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub lineage: Option<RunLineage>,
+    /// Sole authoritative evidence: emitted by the executor at teardown.
+    pub executor_observations: ExecutorObservations,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub executor_plan: Option<ExecutorPlan>,
     pub safety: SafetySummary,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub filesystem: Option<FilesystemSummary>,
@@ -57,7 +60,7 @@ pub struct BundleRun {
     pub agent: String,
     pub command: Vec<String>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
-    pub executor: Option<ExecutorDescriptor>,
+    pub executor: Option<ExecutorIdentity>,
     pub state: RunState,
     pub started_at_unix_ms: u64,
     pub finished_at_unix_ms: u64,
@@ -202,27 +205,12 @@ impl RunBundle {
             .executor
             .as_ref()
             .is_some_and(|executor| executor.isolation == IsolationKind::VirtualMachine);
-        let sandbox_setup_failed = result
-            .warnings
-            .iter()
-            .any(|warning| warning == SANDBOX_SETUP_FAILED_WARNING);
-        // Safety claims come from the concrete per-Run enforcement evidence
-        // persisted in the effective executor descriptor. Isolation labels and
-        // requested policies are descriptive and must never manufacture a
-        // non-bypassable claim.
-        let enforcement = record
-            .executor
-            .as_ref()
-            .map(|executor| &executor.capability_enforcement);
-        let network_non_bypassable = !sandbox_setup_failed
-            && enforcement
-                .is_some_and(|evidence| evidence.is_enforced(CapabilityDimension::Network));
-        let filesystem_read_non_bypassable = !sandbox_setup_failed
-            && enforcement
-                .is_some_and(|evidence| evidence.is_enforced(CapabilityDimension::FilesystemRead));
-        let filesystem_write_non_bypassable = !sandbox_setup_failed
-            && enforcement
-                .is_some_and(|evidence| evidence.is_enforced(CapabilityDimension::FilesystemWrite));
+        let enforcement = &result.executor_observations.enforcement;
+        let network_non_bypassable = enforcement.is_enforced(CapabilityDimension::Network);
+        let filesystem_read_non_bypassable =
+            enforcement.is_enforced(CapabilityDimension::FilesystemRead);
+        let filesystem_write_non_bypassable =
+            enforcement.is_enforced(CapabilityDimension::FilesystemWrite);
         let filesystem_non_bypassable =
             filesystem_read_non_bypassable && filesystem_write_non_bypassable;
         let resources = resource_summary(record, result);
@@ -240,11 +228,10 @@ impl RunBundle {
                         .into(),
                 );
             }
-            if rootless_process && !sandbox_setup_failed {
-                if enforcement.is_some_and(|evidence| {
-                    evidence.is_enforced(CapabilityDimension::FilesystemRead)
-                        || evidence.is_enforced(CapabilityDimension::FilesystemWrite)
-                }) {
+            if rootless_process {
+                if enforcement.is_enforced(CapabilityDimension::FilesystemRead)
+                    || enforcement.is_enforced(CapabilityDimension::FilesystemWrite)
+                {
                     safety_warnings.push(
                         "filesystem access and process-tree cleanup are kernel-enforced; the host kernel and syscall surface remain shared"
                             .into(),
@@ -256,10 +243,8 @@ impl RunBundle {
                     );
                 }
             }
-            if seatbelt_process && !sandbox_setup_failed {
-                if enforcement.is_some_and(|evidence| {
-                    evidence.is_enforced(CapabilityDimension::FilesystemWrite)
-                }) {
+            if seatbelt_process {
+                if enforcement.is_enforced(CapabilityDimension::FilesystemWrite) {
                     safety_warnings.push(
                         "filesystem writes are Seatbelt-enforced; reads, the host PID namespace, syscall surface, and resource limits remain shared"
                             .into(),
@@ -274,12 +259,6 @@ impl RunBundle {
             if virtual_machine {
                 safety_warnings.push(
                     "the libkrun guest can read the complete configured rootfs and currently runs its workload as guest root"
-                        .into(),
-                );
-            }
-            if sandbox_setup_failed {
-                safety_warnings.push(
-                    "the local sandbox boundary failed before the Agent executable was started"
                         .into(),
                 );
             }
@@ -301,6 +280,8 @@ impl RunBundle {
         Ok(Self {
             schema_version: RUN_BUNDLE_SCHEMA_VERSION,
             generated_at_unix_ms: unix_now_ms(),
+            executor_observations: result.executor_observations.clone(),
+            executor_plan: record.executor_plan.clone(),
             run: BundleRun {
                 run_id: record.run_id.clone(),
                 parent_run_id: record.parent_run_id.clone(),
@@ -377,13 +358,14 @@ impl RunBundle {
 
     pub fn read(stage_dir: &Path) -> anyhow::Result<Self> {
         let path = Self::path(stage_dir);
-        let bundle: Self = serde_json::from_slice(&fs::read(&path)?)?;
+        let value: serde_json::Value = serde_json::from_slice(&fs::read(&path)?)?;
         anyhow::ensure!(
-            matches!(bundle.schema_version, 1 | RUN_BUNDLE_SCHEMA_VERSION),
-            "unsupported Run Bundle schema {}; expected 1 or {}",
-            bundle.schema_version,
+            value["schema_version"] == RUN_BUNDLE_SCHEMA_VERSION,
+            "unsupported Run Bundle schema {}; expected {}",
+            value["schema_version"],
             RUN_BUNDLE_SCHEMA_VERSION
         );
+        let bundle: Self = serde_json::from_value(value)?;
         Ok(bundle)
     }
 
@@ -402,14 +384,30 @@ fn resource_summary(record: &RunRecord, result: &RunResult) -> ResourceSummary {
     let mut effective = record.resource_limits.clone();
     let mut mechanisms = Vec::new();
     let mut limitations: Vec<String> = Vec::new();
+    if !result
+        .executor_observations
+        .enforcement
+        .is_enforced(CapabilityDimension::Resources)
+    {
+        return ResourceSummary {
+            requested: record.resource_limits.clone(),
+            effective: Default::default(),
+            mechanisms: Vec::new(),
+            limitations: vec!["executor did not observe installed resource controls".into()],
+        };
+    }
     if !record.resource_limits.is_empty() {
-        mechanisms.push("inherited POSIX rlimits".into());
+        mechanisms.extend(
+            result
+                .executor_observations
+                .enforcement
+                .evidence(CapabilityDimension::Resources)
+                .into_iter()
+                .flat_map(|evidence| evidence.mechanisms.clone()),
+        );
         match isolation {
-            Some(IsolationKind::Container) => {
-                mechanisms.push("OCI memory/pids controller flags".into());
-            }
+            Some(IsolationKind::Container) => {}
             Some(IsolationKind::VirtualMachine) => {
-                mechanisms.push("libkrun VM memory boundary".into());
                 if let Some(bytes) = result.metrics.get("resource.vm_memory_bytes") {
                     effective.memory_bytes = Some(*bytes as u64);
                 }
@@ -523,21 +521,10 @@ mod tests {
     ));
 
     #[test]
-    fn minimal_v1_bundle_fixture_decodes_agentctl() {
+    fn bundle_without_executor_observations_is_rejected() {
         let temp = tempfile::tempdir().unwrap();
         fs::write(temp.path().join(RUN_BUNDLE_FILENAME), V1_MINIMAL_FIXTURE).unwrap();
-
-        let bundle = RunBundle::read(temp.path()).unwrap();
-        assert_eq!(bundle.schema_version, 1);
-        assert_eq!(bundle.run.run_id, "run-v1-fixture");
-        assert_eq!(bundle.run.state, RunState::Completed);
-        assert_eq!(bundle.agentctl.run_id, "run-v1-fixture");
-        assert!(!bundle.safety.filesystem_read_non_bypassable);
-        assert!(!bundle.safety.filesystem_write_non_bypassable);
-
-        let normalized = serde_json::to_value(bundle).unwrap();
-        assert!(normalized.get("agentctl").is_some());
-        assert!(normalized.get("agent_abi").is_none());
+        assert!(RunBundle::read(temp.path()).is_err());
     }
 
     #[test]
@@ -575,6 +562,7 @@ mod tests {
             pid: 1,
             command: vec!["codex".into()],
             executor: None,
+            executor_plan: None,
             state: "completed".into(),
             started_at_unix_ms: 10,
             finished_at_unix_ms: Some(20),
@@ -614,7 +602,8 @@ mod tests {
             )]),
             run_plan: None,
         };
-        let result = RunResult {
+        let mut result = RunResult {
+            executor_observations: Default::default(),
             run_id: RunId::new("run-1"),
             attempt_id: AttemptId::new("attempt-1"),
             lease_epoch: 1,
@@ -656,29 +645,42 @@ mod tests {
                 .any(|key| key == "PERSISTING_AGENTCTL_VERSION")
         );
 
-        record.executor = Some(ExecutorDescriptor {
+        result.executor_observations = Default::default();
+        record.executor = Some(ExecutorIdentity {
             name: "libkrun-root-overlay-v1".into(),
             kind: persisting_control::ExecutorKind::VirtualMachine,
             isolation: IsolationKind::VirtualMachine,
-            capability_enforcement: Default::default(),
-            supports_checkpoint: true,
-            supports_migration: false,
         });
         record.network_interception = Some(InterceptionProfile::explicit_proxy());
         let cooperative_vm = RunBundle::capture(&record, &result, agentctl.clone(), true).unwrap();
         assert!(!cooperative_vm.safety.network_non_bypassable);
         record.network_interception = Some(InterceptionProfile::vm_smoltcp());
+        record.executor_plan = Some(ExecutorPlan {
+            name: "planned-vm".into(),
+            kind: persisting_control::ExecutorKind::VirtualMachine,
+            isolation: IsolationKind::VirtualMachine,
+            capability_plan: persisting_control::CapabilityEnforcementPlan::default()
+                .planned(CapabilityDimension::FilesystemRead, "planned-read")
+                .planned(CapabilityDimension::FilesystemWrite, "planned-write")
+                .planned(CapabilityDimension::Network, "planned-network"),
+            supports_checkpoint: false,
+            supports_migration: false,
+        });
+        let registry_json = serde_json::to_value(&record).unwrap();
+        assert!(registry_json.get("executor_plan").is_none());
+        assert!(registry_json.get("run_plan").is_none());
+        assert!(registry_json["executor"].get("capability_plan").is_none());
+
         let label_only_vm = RunBundle::capture(&record, &result, agentctl.clone(), true).unwrap();
         assert!(!label_only_vm.safety.filesystem_non_bypassable);
         assert!(!label_only_vm.safety.network_non_bypassable);
-        record.executor.as_mut().unwrap().capability_enforcement =
-            CapabilityEnforcementEvidence::default()
-                .enforced(CapabilityDimension::FilesystemRead, "test-vm-read-boundary")
-                .enforced(
-                    CapabilityDimension::FilesystemWrite,
-                    "test-vm-write-boundary",
-                )
-                .enforced(CapabilityDimension::Network, "test-vm-network-boundary");
+        result.executor_observations.enforcement = CapabilityEnforcementEvidence::default()
+            .enforced(CapabilityDimension::FilesystemRead, "test-vm-read-boundary")
+            .enforced(
+                CapabilityDimension::FilesystemWrite,
+                "test-vm-write-boundary",
+            )
+            .enforced(CapabilityDimension::Network, "test-vm-network-boundary");
         let intercepted_vm = RunBundle::capture(&record, &result, agentctl.clone(), true).unwrap();
         assert!(intercepted_vm.safety.filesystem_non_bypassable);
         assert!(intercepted_vm.safety.network_non_bypassable);
@@ -688,33 +690,30 @@ mod tests {
             RunBundle::capture(&vm_without_stage, &result, agentctl.clone(), true).unwrap();
         assert!(vm_without_stage.safety.filesystem_non_bypassable);
 
-        record.executor = Some(ExecutorDescriptor {
+        result.executor_observations = Default::default();
+        record.executor = Some(ExecutorIdentity {
             name: "local-rootless-v1".into(),
             kind: persisting_control::ExecutorKind::Process,
             isolation: IsolationKind::RootlessProcess,
-            capability_enforcement: Default::default(),
-            supports_checkpoint: false,
-            supports_migration: false,
         });
         record.network = serde_json::to_value(NetworkCapability::Deny).unwrap();
         let label_only_rootless =
             RunBundle::capture(&record, &result, agentctl.clone(), true).unwrap();
         assert!(!label_only_rootless.safety.filesystem_non_bypassable);
         assert!(!label_only_rootless.safety.network_non_bypassable);
-        record.executor.as_mut().unwrap().capability_enforcement =
-            CapabilityEnforcementEvidence::default()
-                .enforced(
-                    CapabilityDimension::FilesystemRead,
-                    "test-rootless-read-boundary",
-                )
-                .enforced(
-                    CapabilityDimension::FilesystemWrite,
-                    "test-rootless-write-boundary",
-                )
-                .enforced(
-                    CapabilityDimension::Network,
-                    "test-rootless-network-boundary",
-                );
+        result.executor_observations.enforcement = CapabilityEnforcementEvidence::default()
+            .enforced(
+                CapabilityDimension::FilesystemRead,
+                "test-rootless-read-boundary",
+            )
+            .enforced(
+                CapabilityDimension::FilesystemWrite,
+                "test-rootless-write-boundary",
+            )
+            .enforced(
+                CapabilityDimension::Network,
+                "test-rootless-network-boundary",
+            );
         let denied = RunBundle::capture(&record, &result, agentctl.clone(), true).unwrap();
         assert!(denied.safety.filesystem_non_bypassable);
         assert!(denied.safety.network_non_bypassable);
@@ -726,24 +725,22 @@ mod tests {
                 .all(|warning| !warning.contains("direct sockets may bypass"))
         );
 
-        record.executor = Some(ExecutorDescriptor {
+        result.executor_observations = Default::default();
+        record.executor = Some(ExecutorIdentity {
             name: "local-seatbelt-v1".into(),
             kind: persisting_control::ExecutorKind::Process,
             isolation: IsolationKind::SandboxedProcess,
-            capability_enforcement: Default::default(),
-            supports_checkpoint: false,
-            supports_migration: false,
         });
-        record.executor.as_mut().unwrap().capability_enforcement =
-            CapabilityEnforcementEvidence::default()
-                .enforced(
-                    CapabilityDimension::FilesystemWrite,
-                    "test-seatbelt-write-boundary",
-                )
-                .enforced(
-                    CapabilityDimension::Network,
-                    "test-seatbelt-network-boundary",
-                );
+        result.executor_observations.enforcement = CapabilityEnforcementEvidence::default()
+            .enforced(
+                CapabilityDimension::FilesystemWrite,
+                "test-seatbelt-write-boundary",
+            )
+            .enforced(
+                CapabilityDimension::Network,
+                "test-seatbelt-network-boundary",
+            );
+        result.warnings.push("sandbox_setup_failed".into());
         let seatbelt = RunBundle::capture(&record, &result, agentctl, true).unwrap();
         assert!(!seatbelt.safety.filesystem_non_bypassable);
         assert!(!seatbelt.safety.filesystem_read_non_bypassable);

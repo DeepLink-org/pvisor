@@ -30,7 +30,7 @@ pvisor run --filesystem sandbox --overlaynet-deny-all -- codex
 
 ## 网络边界
 
-host/container 的选择性路由使用显式代理，忽略代理的客户端可以绕过它。宿主 deny-all 和 VM 网络采用不同的强制机制。VM 数据面支持 IPv4 TCP、DHCP 和合成 DNS；不支持的流量失败关闭。支持的协议和连接器限制见 [OverlayNet](overlaynet.md)。
+host/container 的选择性路由使用显式代理，忽略代理的客户端可以绕过它。宿主 deny-all 和 VM 网络采用不同的强制机制。VM 数据面支持 IPv4 TCP、guest 静态地址和合成 DNS；不支持的流量失败关闭。支持的协议和连接器限制见 [OverlayNet](overlaynet.md)。
 
 ## 后续设计
 

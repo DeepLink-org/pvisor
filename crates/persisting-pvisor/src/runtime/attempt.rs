@@ -174,6 +174,7 @@ impl AttemptSession {
             warnings.push(format!("attempt teardown after startup failure: {error}"));
         }
         let result = persisting_control::RunResult {
+            executor_observations: Default::default(),
             run_id,
             attempt_id: attempt_id.clone(),
             lease_epoch,
@@ -281,9 +282,13 @@ pub(crate) struct VmNetworkPrepareOpts {
 pub(crate) struct VmNetworkAttachment {
     guest_stream: std::os::unix::net::UnixStream,
     backend: persisting_overlaynet::vm::VmNetwork,
+    enforcing: bool,
 }
 
 impl VmNetworkAttachment {
+    pub(crate) fn is_enforcing(&self) -> bool {
+        self.enforcing
+    }
     pub(crate) fn guest_stream(&self) -> &std::os::unix::net::UnixStream {
         &self.guest_stream
     }
@@ -294,6 +299,7 @@ impl VmNetworkAttachment {
         let Self {
             backend,
             guest_stream,
+            enforcing: _,
         } = self;
         drop(guest_stream);
         backend.shutdown()
@@ -426,7 +432,8 @@ pub(crate) fn prepare_attempt(
         agent: config.agent_id.clone(),
         pid: std::process::id(),
         command,
-        executor: executor_from_spec(spec),
+        executor: executor_from_spec(spec).as_ref().map(Into::into),
+        executor_plan: executor_from_spec(spec),
         state: "running".into(),
         started_at_unix_ms: crate::util::unix_now_ms(),
         finished_at_unix_ms: None,
@@ -575,7 +582,8 @@ pub(crate) fn prepare_overlay_attempt(
         agent: spec.agent.name.clone(),
         pid: std::process::id(),
         command,
-        executor: executor_from_spec(spec),
+        executor: executor_from_spec(spec).as_ref().map(Into::into),
+        executor_plan: executor_from_spec(spec),
         state: "running".into(),
         started_at_unix_ms: crate::util::unix_now_ms(),
         finished_at_unix_ms: None,
@@ -698,7 +706,8 @@ pub(crate) fn prepare_storage_attempt(
         agent: spec.agent.name.clone(),
         pid: std::process::id(),
         command,
-        executor: executor_from_spec(spec),
+        executor: executor_from_spec(spec).as_ref().map(Into::into),
+        executor_plan: executor_from_spec(spec),
         state: "running".into(),
         started_at_unix_ms: crate::util::unix_now_ms(),
         finished_at_unix_ms: None,
@@ -810,6 +819,9 @@ fn start_vm_network(
     Ok(Arc::new(std::sync::Mutex::new(Some(VmNetworkAttachment {
         guest_stream,
         backend,
+        enforcing: opts.network.mode != persisting_overlaynet::NetworkMode::Public
+            || !opts.network.deny_rules.is_empty()
+            || !opts.network.limits.is_empty(),
     }))))
 }
 
@@ -954,7 +966,7 @@ fn workspace_from_spec(spec: &RunSpec) -> Option<PathBuf> {
         .map(PathBuf::from)
 }
 
-fn executor_from_spec(spec: &RunSpec) -> Option<persisting_control::ExecutorDescriptor> {
+fn executor_from_spec(spec: &RunSpec) -> Option<persisting_control::ExecutorPlan> {
     spec.metadata
         .get("pvisor.executor")
         .cloned()

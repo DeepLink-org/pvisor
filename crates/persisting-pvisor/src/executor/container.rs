@@ -8,7 +8,7 @@ use crate::executor::{AttemptContext, RunExecutor};
 use crate::executor::{join_capture, read_limited, stdio};
 use async_trait::async_trait;
 use persisting_control::{
-    ExecutorDescriptor, ExecutorKind, IsolationKind, ProcessOutput, RunFailure, RunFailureKind,
+    ExecutorKind, ExecutorPlan, IsolationKind, ProcessOutput, RunFailure, RunFailureKind,
     RunInvocation, RunResult, RunSpec, RunState,
 };
 use std::collections::BTreeMap;
@@ -312,12 +312,12 @@ impl ContainerExecutor {
 
 #[async_trait]
 impl RunExecutor for ContainerExecutor {
-    fn descriptor(&self) -> ExecutorDescriptor {
-        ExecutorDescriptor {
+    fn descriptor(&self) -> ExecutorPlan {
+        ExecutorPlan {
             name: "oci-pvisor".into(),
             kind: ExecutorKind::Container,
             isolation: IsolationKind::Container,
-            capability_enforcement: Default::default(),
+            capability_plan: Default::default(),
             supports_checkpoint: false,
             supports_migration: false,
         }
@@ -493,6 +493,7 @@ impl RunExecutor for ContainerExecutor {
             ),
         };
         RunResult {
+            executor_observations: Default::default(),
             run_id: spec.run_id,
             attempt_id: context.attempt_id().clone(),
             lease_epoch: spec.lease_epoch,
@@ -518,6 +519,7 @@ fn failed_to_start(
     message: String,
 ) -> RunResult {
     RunResult {
+        executor_observations: Default::default(),
         run_id: spec.run_id.clone(),
         attempt_id: attempt_id.clone(),
         lease_epoch: spec.lease_epoch,
@@ -724,7 +726,7 @@ mod tests {
         assert_eq!(descriptor.name, "oci-pvisor");
         assert_eq!(descriptor.kind, ExecutorKind::Container);
         assert_eq!(descriptor.isolation, IsolationKind::Container);
-        assert!(descriptor.capability_enforcement.dimensions.is_empty());
+        assert!(descriptor.capability_plan.dimensions.is_empty());
     }
 
     #[test]

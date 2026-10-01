@@ -180,7 +180,10 @@ fn toml_and_cli_share_one_run_configuration() {
         String::from_utf8_lossy(&review.stderr)
     );
     let reviewed: serde_json::Value = serde_json::from_slice(&review.stdout).unwrap();
-    assert_eq!(reviewed["schema_version"], 2);
+    assert_eq!(
+        reviewed["schema_version"],
+        persisting_pvisor::RUN_BUNDLE_SCHEMA_VERSION
+    );
     assert_eq!(reviewed["run"]["agent"], "from-cli");
 }
 

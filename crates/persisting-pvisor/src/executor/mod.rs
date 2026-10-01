@@ -11,7 +11,7 @@ use crate::runtime::event::RunEventPublisher;
 use async_trait::async_trait;
 use persisting_control::StdioMode;
 use persisting_control::{
-    AttemptId, ExecutorDescriptor, RunInvocation, RunResult, RunSpec, RunState, RunStatus,
+    AttemptId, ExecutorPlan, RunInvocation, RunResult, RunSpec, RunState, RunStatus,
 };
 use serde_json::json;
 use std::process::Stdio;
@@ -134,7 +134,7 @@ impl AttemptContext {
 /// RunPlan IR is an audit projection, not an arbitrary-expression dispatch API.
 #[async_trait]
 pub trait RunExecutor: Send + Sync {
-    fn descriptor(&self) -> ExecutorDescriptor;
+    fn descriptor(&self) -> ExecutorPlan;
     fn supports(&self, invocation: &RunInvocation) -> bool;
     /// Whether this executor consumes pVisor's VM network attachment.
     ///

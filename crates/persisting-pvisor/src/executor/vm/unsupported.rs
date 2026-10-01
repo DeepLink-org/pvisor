@@ -8,7 +8,7 @@ use crate::config::VmSettings;
 use crate::executor::{AttemptContext, RunExecutor};
 use async_trait::async_trait;
 use persisting_control::{
-    CapabilityEnforcementEvidence, ExecutorDescriptor, ExecutorKind, IsolationKind, ProcessOutput,
+    CapabilityEnforcementPlan, ExecutorKind, ExecutorPlan, IsolationKind, ProcessOutput,
     RunFailure, RunFailureKind, RunInvocation, RunResult, RunState,
 };
 
@@ -32,12 +32,12 @@ impl VmExecutor {
 
 #[async_trait]
 impl RunExecutor for VmExecutor {
-    fn descriptor(&self) -> ExecutorDescriptor {
-        ExecutorDescriptor {
+    fn descriptor(&self) -> ExecutorPlan {
+        ExecutorPlan {
             name: "libkrun-root-overlay-v1".into(),
             kind: ExecutorKind::VirtualMachine,
             isolation: IsolationKind::VirtualMachine,
-            capability_enforcement: CapabilityEnforcementEvidence::default(),
+            capability_plan: CapabilityEnforcementPlan::default(),
             supports_checkpoint: false,
             supports_migration: false,
         }
@@ -50,6 +50,7 @@ impl RunExecutor for VmExecutor {
     async fn execute(&self, context: AttemptContext) -> RunResult {
         let spec = context.spec();
         RunResult {
+            executor_observations: Default::default(),
             run_id: spec.run_id.clone(),
             attempt_id: context.attempt_id().clone(),
             lease_epoch: spec.lease_epoch,

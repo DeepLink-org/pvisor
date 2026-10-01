@@ -30,7 +30,7 @@ The `fork` command requires a stopped Run and snapshots its upper layer. They do
 
 ## Network boundary
 
-Host/container selective routing uses an explicit proxy and can be bypassed by clients that ignore it. Deny-all host policies and VM networking use different enforcement mechanisms. The VM data plane supports IPv4 TCP with DHCP and synthetic DNS; unsupported traffic fails closed. See [OverlayNet](overlaynet.md) for supported protocols and connector limitations.
+Host/container selective routing uses an explicit proxy and can be bypassed by clients that ignore it. Deny-all host policies and VM networking use different enforcement mechanisms. The VM data plane supports IPv4 TCP with static guest addressing and synthetic DNS; unsupported traffic fails closed. See [OverlayNet](overlaynet.md) for supported protocols and connector limitations.
 
 ## Future designs
 

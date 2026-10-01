@@ -22,6 +22,11 @@ Evidence 依次回答四个强度不同的问题：
 3. **Enforced**：在声明的 threat model 中阻断了哪些绕过路径？
 4. **Attested**：enforcement 是否绑定到这次 Run 和实际 Provider？
 
+准入返回 `ExecutorPlan`，控制等级为 Unsupported、Cooperative 或 Planned，均不代表
+已实施。执行器在收尾时依据实际安装回执产出 `ExecutorObservations`；Run Bundle
+（schema 3）是强制力的唯一权威证据。`run.json` 保留运行事实和选择身份，不保存强制力
+描述符或准入计划。缺少观察契约的旧 Bundle 明确拒绝读取。
+
 具体执行的答案应从 Run Bundle 检查。返回 [pVisor 核心概念](index.md)，通过
 [网络指南](../guides/network.md)配置一个 capability 维度，或阅读
 [pVisor 隔离设计](../design/isolation.md)了解平台机制。执行、编排和历史之间的完整

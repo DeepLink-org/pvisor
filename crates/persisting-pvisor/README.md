@@ -47,8 +47,7 @@ the equivalent entitlements file is `macos-hypervisor.entitlements`. The embedde
 `persisting-guest` supervisor is built as a static Linux musl ELF
 with Rust's bundled linker. On Apple Silicon, install its stdlib once with
 `rustup target add aarch64-unknown-linux-musl`. It launches workloads directly,
-without a shell helper,
-and reports their exit codes through libkrun's root filesystem ioctl.
+without a shell helper, and reports their exit codes through libkrun's root filesystem ioctl.
 
 The vendored libkrun is built only as an `rlib` and statically linked into
 `pvisor`; no `libkrun.so` or `libkrun.dylib` is required. The separate guest

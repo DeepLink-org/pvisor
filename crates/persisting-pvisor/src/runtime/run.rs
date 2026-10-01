@@ -19,9 +19,9 @@ use persisting_control::trace::Event;
 #[cfg(test)]
 use persisting_control::trace::Receipt;
 use persisting_control::{
-    AttemptId, AttemptInfo, CapabilityDimension, CapabilityEnforcementEvidence, EnforcementLevel,
-    ExecutorDescriptor, IsolationKind, NetworkCapability, PolicyMode, RUNTIME_SCHEMA_VERSION,
-    RunFailure, RunFailureKind, RunInvocation, RunResult, RunSpec, RunState, RunStatus,
+    AttemptId, AttemptInfo, CapabilityDimension, CapabilityEnforcementPlan, EnforcementPlanLevel,
+    ExecutorPlan, IsolationKind, NetworkCapability, PolicyMode, RUNTIME_SCHEMA_VERSION, RunFailure,
+    RunFailureKind, RunInvocation, RunResult, RunSpec, RunState, RunStatus,
 };
 use serde_json::json;
 use std::sync::Arc;
@@ -284,7 +284,7 @@ pub struct PVisor {
 struct ResolvedRun {
     spec: RunSpec,
     executor: Arc<dyn RunExecutor>,
-    descriptor: ExecutorDescriptor,
+    descriptor: ExecutorPlan,
     vm_network_executor: bool,
     plan: persisting_control::ir::run::RunPlan,
 }
@@ -348,7 +348,7 @@ impl PVisor {
         // Runtime preparation supplies this capability from the bound listener.
         spec.metadata
             .remove(crate::executor::sandbox::SANDBOX_PROXY_KEY);
-        let capability_enforcement = effective_capability_enforcement(
+        let capability_plan = effective_capability_plan(
             &descriptor,
             &spec,
             self.runtime.proxy_network_is_configured(),
@@ -371,7 +371,7 @@ impl PVisor {
                         dimension,
                         CapabilityDimension::FilesystemRead | CapabilityDimension::FilesystemWrite
                     );
-                if !capability_enforcement.is_enforced(dimension)
+                if !capability_plan.is_planned(dimension)
                     && !cooperative_linux_proxy
                     && !cooperative_rootless_chroot
                 {
@@ -383,7 +383,7 @@ impl PVisor {
             }
         }
         if spec.runtime.policy_mode == PolicyMode::Enforce {
-            let missing = capability_enforcement
+            let missing = capability_plan
                 .missing_dimensions(&spec.capabilities, &spec.runtime.resource_limits);
             if !missing.is_empty() {
                 return Err(PVisorError::UnsupportedPolicy {
@@ -399,7 +399,7 @@ impl PVisor {
         let run_plan = crate::runtime::plan::compile(
             &spec,
             &descriptor,
-            &capability_enforcement,
+            &capability_plan,
             self.runtime.overlay_hint(),
         )
         .map_err(PVisorError::Prepare)?;
@@ -407,19 +407,12 @@ impl PVisor {
             "pvisor.ir.run_plan".into(),
             serde_json::to_value(&run_plan).map_err(|error| PVisorError::Prepare(error.into()))?,
         );
-        // Persist the effective, Run-specific evidence in Attempt status and
-        // Run Bundle descriptors, including enforcement supplied by drivers.
-        descriptor.capability_enforcement = capability_enforcement.clone();
+        // Admission publishes only a plan; installed evidence comes from executors.
+        descriptor.capability_plan = capability_plan.clone();
         spec.metadata.insert(
             "pvisor.executor".into(),
             serde_json::to_value(&descriptor).map_err(|error| {
                 PVisorError::InvalidSpec(format!("serialize executor descriptor: {error}"))
-            })?,
-        );
-        spec.metadata.insert(
-            "pvisor.capability_enforcement".into(),
-            serde_json::to_value(&capability_enforcement).map_err(|error| {
-                PVisorError::InvalidSpec(format!("serialize capability enforcement: {error}"))
             })?,
         );
         Ok(ResolvedRun {
@@ -582,6 +575,25 @@ impl PVisor {
             // The owning pVisor, not a pluggable executor, is authoritative for
             // the scheduling generation attached to this Attempt.
             result.lease_epoch = context.spec().lease_epoch;
+            if context.spec().runtime.policy_mode == PolicyMode::Enforce {
+                let missing = result.executor_observations.enforcement.missing_dimensions(
+                    &context.spec().capabilities,
+                    &context.spec().runtime.resource_limits,
+                );
+                if !missing.is_empty() {
+                    fail_finalization(
+                        &mut result,
+                        format!(
+                            "required controls lack executor observations: {}",
+                            missing
+                                .iter()
+                                .map(ToString::to_string)
+                                .collect::<Vec<_>>()
+                                .join(", "),
+                        ),
+                    );
+                }
+            }
             let mut teardown = session.map(|session| session.teardown(result.exit_code));
             if let Some(error) = teardown
                 .as_ref()
@@ -698,7 +710,7 @@ impl PVisor {
                 .publish_fact(persisting_control::trace::Fact::Completed {
                     expression: run_plan.expression.clone(),
                     outcome: run_observation.outcome.clone(),
-                    origin: persisting_control::trace::Origin::Backend,
+                    origin: result.executor_observations.origin,
                 })
                 .await
             {
@@ -791,13 +803,13 @@ fn empty_agentctl_snapshot(
     }
 }
 
-fn effective_capability_enforcement(
-    descriptor: &ExecutorDescriptor,
+fn effective_capability_plan(
+    descriptor: &ExecutorPlan,
     spec: &RunSpec,
     proxy_network_configured: bool,
     vm_network_enforcing: bool,
-) -> CapabilityEnforcementEvidence {
-    let mut evidence = descriptor.capability_enforcement.clone();
+) -> CapabilityEnforcementPlan {
+    let mut plan = descriptor.capability_plan.clone();
     if matches!(
         descriptor.isolation,
         IsolationKind::RootlessProcess | IsolationKind::SandboxedProcess
@@ -807,30 +819,27 @@ fn effective_capability_enforcement(
         .and_then(serde_json::Value::as_str)
         == Some("host")
     {
-        evidence
-            .dimensions
-            .remove(&CapabilityDimension::FilesystemRead);
-        evidence
-            .dimensions
+        plan.dimensions.remove(&CapabilityDimension::FilesystemRead);
+        plan.dimensions
             .remove(&CapabilityDimension::FilesystemWrite);
     }
     if proxy_network_configured {
-        evidence.record(
+        plan.record(
             CapabilityDimension::Network,
-            EnforcementLevel::Cooperative,
+            EnforcementPlanLevel::Cooperative,
             "explicit-proxy-environment",
         );
     }
     if matches!(spec.capabilities.network, NetworkCapability::Deny) {
         match descriptor.isolation {
-            IsolationKind::RootlessProcess => evidence.record(
+            IsolationKind::RootlessProcess => plan.record(
                 CapabilityDimension::Network,
-                EnforcementLevel::Enforced,
+                EnforcementPlanLevel::Planned,
                 "linux-network-namespace",
             ),
-            IsolationKind::SandboxedProcess => evidence.record(
+            IsolationKind::SandboxedProcess => plan.record(
                 CapabilityDimension::Network,
-                EnforcementLevel::Enforced,
+                EnforcementPlanLevel::Planned,
                 "macos-seatbelt-network-deny",
             ),
             _ => {}
@@ -839,28 +848,28 @@ fn effective_capability_enforcement(
     if crate::executor::sandbox::sandbox_required(spec)
         && descriptor.isolation == IsolationKind::SandboxedProcess
     {
-        evidence.record(
+        plan.record(
             CapabilityDimension::FilesystemRead,
-            EnforcementLevel::Enforced,
+            EnforcementPlanLevel::Planned,
             "macos-seatbelt-read-policy",
         );
         if proxy_network_configured || matches!(spec.capabilities.network, NetworkCapability::Deny)
         {
-            evidence.record(
+            plan.record(
                 CapabilityDimension::Network,
-                EnforcementLevel::Enforced,
+                EnforcementPlanLevel::Planned,
                 "macos-seatbelt-proxy-only",
             );
         }
     }
     if vm_network_enforcing {
-        evidence.record(
+        plan.record(
             CapabilityDimension::Network,
-            EnforcementLevel::Enforced,
+            EnforcementPlanLevel::Planned,
             "vm-smoltcp-network-boundary",
         );
     }
-    evidence
+    plan
 }
 
 fn terminal_payload(
@@ -870,6 +879,7 @@ fn terminal_payload(
 ) -> serde_json::Value {
     json!({
         "state": result.state,
+        "origin": result.executor_observations.origin,
         "lease_epoch": result.lease_epoch,
         "exit_code": result.exit_code,
         "failure": result.failure,
@@ -915,6 +925,7 @@ fn persist_failed_local_state(
 fn fail_finalization(result: &mut RunResult, message: String) {
     result.warnings.push(message.clone());
     result.state = RunState::Failed;
+    result.executor_observations.origin = persisting_control::trace::Origin::Runtime;
     result.finished_at_unix_ms = unix_now_ms();
     result.failure = Some(RunFailure {
         kind: RunFailureKind::Infrastructure,
@@ -991,13 +1002,13 @@ mod tests {
 
     #[test]
     fn host_filesystem_mode_only_removes_local_process_filesystem_evidence() {
-        let mut process = ExecutorDescriptor {
+        let mut process = ExecutorPlan {
             name: "local-rootless-v1".into(),
             kind: ExecutorKind::Process,
             isolation: IsolationKind::RootlessProcess,
-            capability_enforcement: CapabilityEnforcementEvidence::default()
-                .enforced(CapabilityDimension::FilesystemRead, "test-read")
-                .enforced(CapabilityDimension::FilesystemWrite, "test-write"),
+            capability_plan: CapabilityEnforcementPlan::default()
+                .planned(CapabilityDimension::FilesystemRead, "test-read")
+                .planned(CapabilityDimension::FilesystemWrite, "test-write"),
             supports_checkpoint: false,
             supports_migration: false,
         };
@@ -1006,16 +1017,15 @@ mod tests {
             "pvisor.filesystem.mode".into(),
             serde_json::Value::String("host".into()),
         );
-        let process_evidence =
-            effective_capability_enforcement(&process, &process_spec, false, false);
-        assert!(!process_evidence.is_enforced(CapabilityDimension::FilesystemRead));
-        assert!(!process_evidence.is_enforced(CapabilityDimension::FilesystemWrite));
+        let process_evidence = effective_capability_plan(&process, &process_spec, false, false);
+        assert!(!process_evidence.is_planned(CapabilityDimension::FilesystemRead));
+        assert!(!process_evidence.is_planned(CapabilityDimension::FilesystemWrite));
 
         process.isolation = IsolationKind::VirtualMachine;
         process.kind = ExecutorKind::VirtualMachine;
-        let vm_evidence = effective_capability_enforcement(&process, &process_spec, false, false);
-        assert!(vm_evidence.is_enforced(CapabilityDimension::FilesystemRead));
-        assert!(vm_evidence.is_enforced(CapabilityDimension::FilesystemWrite));
+        let vm_evidence = effective_capability_plan(&process, &process_spec, false, false);
+        assert!(vm_evidence.is_planned(CapabilityDimension::FilesystemRead));
+        assert!(vm_evidence.is_planned(CapabilityDimension::FilesystemWrite));
     }
 
     #[derive(Default)]
@@ -1128,6 +1138,95 @@ mod tests {
         let _lease = crate::runtime::RunLease::acquire(&storage).unwrap();
     }
 
+    struct PlannedNetworkExecutor;
+    #[async_trait]
+    impl RunExecutor for PlannedNetworkExecutor {
+        fn descriptor(&self) -> ExecutorPlan {
+            let mut plan = ProcessExecutor::default().descriptor();
+            plan.capability_plan = plan
+                .capability_plan
+                .planned(CapabilityDimension::Network, "uninstalled-test-control");
+            plan
+        }
+        fn supports(&self, invocation: &RunInvocation) -> bool {
+            ProcessExecutor::default().supports(invocation)
+        }
+        async fn execute(&self, context: AttemptContext) -> RunResult {
+            ProcessExecutor::default().execute(context).await
+        }
+    }
+
+    #[cfg(unix)]
+    #[tokio::test]
+    async fn enforcement_plan_never_substitutes_for_executor_observations() {
+        let storage = tempfile::tempdir().unwrap();
+        let runtime = PVisor::builder()
+            .storage(storage.path())
+            .executors(vec![Arc::new(PlannedNetworkExecutor)])
+            .build();
+        let mut spec = RunSpec::process("missing-proof", "agent", "/bin/true");
+        spec.runtime.policy_mode = PolicyMode::Enforce;
+        spec.capabilities.network = NetworkCapability::Deny;
+        spec.capabilities.allow_subprocess = true;
+        let result = runtime.run(spec).await.unwrap().wait().await.unwrap();
+        assert_eq!(result.state, RunState::Failed);
+        assert!(
+            result
+                .failure
+                .unwrap()
+                .message
+                .contains("lack executor observations")
+        );
+        let bundle = crate::RunBundle::read(storage.path()).unwrap();
+        assert!(!bundle.safety.network_non_bypassable);
+        assert!(
+            bundle
+                .executor_plan
+                .unwrap()
+                .capability_plan
+                .is_planned(CapabilityDimension::Network)
+        );
+        assert!(
+            !bundle
+                .executor_observations
+                .enforcement
+                .is_enforced(CapabilityDimension::Network)
+        );
+    }
+
+    #[cfg(unix)]
+    #[tokio::test]
+    async fn startup_failure_has_runtime_origin_and_no_enforced_claims() {
+        let sink = Arc::new(MemoryEventSink::default());
+        let runtime = PVisor::builder().event_sink(sink.clone()).build();
+        let result = runtime
+            .run(RunSpec::process(
+                "startup-observations",
+                "agent",
+                "/missing/pvisor-agent",
+            ))
+            .await
+            .unwrap()
+            .wait()
+            .await
+            .unwrap();
+        assert_eq!(result.state, RunState::Failed);
+        assert!(
+            result
+                .executor_observations
+                .enforcement
+                .dimensions
+                .is_empty()
+        );
+        assert!(sink.events().iter().any(|event| matches!(
+            event.data,
+            persisting_control::trace::Fact::Completed {
+                origin: persisting_control::trace::Origin::Runtime,
+                ..
+            }
+        )));
+    }
+
     #[cfg(unix)]
     #[tokio::test]
     async fn process_run_completes_and_emits_lifecycle() {
@@ -1144,6 +1243,10 @@ mod tests {
         let result = handle.wait().await.unwrap();
         assert_eq!(result.state, RunState::Completed);
         assert_eq!(result.output.stdout.as_deref(), Some("pvisor"));
+        assert_eq!(
+            result.executor_observations.origin,
+            persisting_control::trace::Origin::Backend
+        );
 
         let emitted = sink.events();
         assert!(emitted.iter().all(|event| {

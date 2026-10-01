@@ -109,8 +109,9 @@ limits (the VM shape is the resource boundary).
 ## Guest agent and exec-in-VM (M5, feature `vm`)
 
 VM tasks boot the shim binary itself as a guest agent: at boot the
-(statically linked) binary is copied into the rootfs and the guest init
-helper starts it (`io.pvisor.vm.agent=off` disables it). The agent listens
+(statically linked) binary is copied into the rootfs and the Rust
+`persisting-guest` supervisor starts it from `/.pvisor-guest.json`, without
+a shell helper (`io.pvisor.vm.agent=off` disables it). The agent listens
 on vsock port 0x7076; libkrun proxies host connections from
 `<bundle>/pvisor-agent.sock` into the guest (so `docker exec` /
 `kubectl exec` work on VM tasks):
@@ -162,7 +163,7 @@ just shim-check         # cargo check + clippy for x86_64-unknown-linux-musl
 
 ## Linux acceptance smoke test
 
-On a Linux host with containerd ≥ 1.7:
+On a Linux host with containerd ≥ 1.7, build the host-only shim:
 
 ```bash
 cargo zigbuild --release -p persisting-shim --target x86_64-unknown-linux-musl
@@ -171,6 +172,11 @@ sudo systemctl restart containerd
 sudo ctr run --runtime io.containerd.pvisor.v2 -t --rm \
   docker.io/library/busybox:latest pvisor-smoke echo hello from pvisor
 ```
+
+For VM support, replace the build command with
+`python3 scripts/build-pvisor.py --shim-vm --profile release` and install
+`target/release/containerd-shim-pvisor-v2`. This entry point prepares the
+embedded kernel and builds the Rust guest automatically.
 
 Expected: the container prints `hello from pvisor`, the task exits with
 status 0, and `journalctl -u containerd` shows the four task events.

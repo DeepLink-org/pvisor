@@ -12,8 +12,9 @@
 
 libkrun VM Attempt 在 `[overlaynet].mode = "auto"` 时使用 `vm-smoltcp`。
 guest virtio-net 设备通过 libkrun 带长度前缀的 UnixStream Ethernet 传输连到
-pVisor。pVisor 提供 DHCP（`192.0.2.1` 路由器、`192.0.2.2` guest）、合成 DNS
-（`198.18.0.0/15`，每个 Attempt 稳定）以及 IPv4 TCP。SYN 会在 smoltcp 中暂停，
+pVisor。Rust guest supervisor 直接配置 `192.0.2.2/24` 和路由器 `192.0.2.1`，
+不等待 DHCP。pVisor 提供合成 DNS（`198.18.0.0/15`，每个 Attempt 稳定）
+以及 IPv4 TCP。SYN 会在 smoltcp 中暂停，
 直到 hostname/IP、解析后的地址或 scoped host connector alias、端口以及注入的
 Control 策略全部授权，并且 host 连接成功。TSI 保持关闭，因此不存在绕过该
 data plane 的 guest 路径。

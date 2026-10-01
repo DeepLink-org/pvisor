@@ -557,8 +557,8 @@ impl EnforcementEvidence {
     }
 }
 
-/// Sparse, per-dimension enforcement evidence advertised by an executor and
-/// augmented by runtime drivers for a specific Run.
+/// Observed controls returned by an executor after setup and teardown.
+/// Admission plans must never be converted into this type.
 #[derive(Debug, Clone, Default, PartialEq, Eq, Serialize, Deserialize)]
 pub struct CapabilityEnforcementEvidence {
     #[serde(default, skip_serializing_if = "BTreeMap::is_empty")]
@@ -621,6 +621,120 @@ impl CapabilityEnforcementEvidence {
     }
 }
 
+/// Expected controls at admission. A plan is never proof of installation.
+#[derive(Debug, Clone, Copy, Default, PartialEq, Eq, PartialOrd, Ord, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum EnforcementPlanLevel {
+    #[default]
+    Unsupported,
+    Cooperative,
+    Planned,
+}
+
+#[derive(Debug, Clone, Default, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
+pub struct EnforcementPlan {
+    pub level: EnforcementPlanLevel,
+    #[serde(default)]
+    pub mechanisms: Vec<String>,
+}
+impl EnforcementPlan {
+    pub fn is_planned(&self) -> bool {
+        self.level == EnforcementPlanLevel::Planned
+    }
+}
+
+#[derive(Debug, Clone, Default, PartialEq, Eq, Serialize, Deserialize)]
+pub struct CapabilityEnforcementPlan {
+    #[serde(default, skip_serializing_if = "BTreeMap::is_empty")]
+    pub dimensions: BTreeMap<CapabilityDimension, EnforcementPlan>,
+}
+
+impl CapabilityEnforcementPlan {
+    pub fn record(
+        &mut self,
+        dimension: CapabilityDimension,
+        level: EnforcementPlanLevel,
+        mechanism: impl Into<String>,
+    ) {
+        let mechanism = mechanism.into();
+        let evidence = self.dimensions.entry(dimension).or_default();
+        if level > evidence.level {
+            evidence.level = level;
+        }
+        if !evidence.mechanisms.contains(&mechanism) {
+            evidence.mechanisms.push(mechanism);
+        }
+    }
+
+    pub fn planned(mut self, dimension: CapabilityDimension, mechanism: impl Into<String>) -> Self {
+        self.record(dimension, EnforcementPlanLevel::Planned, mechanism);
+        self
+    }
+
+    pub fn cooperative(
+        mut self,
+        dimension: CapabilityDimension,
+        mechanism: impl Into<String>,
+    ) -> Self {
+        self.record(dimension, EnforcementPlanLevel::Cooperative, mechanism);
+        self
+    }
+
+    pub fn plan(&self, dimension: CapabilityDimension) -> Option<&EnforcementPlan> {
+        self.dimensions.get(&dimension)
+    }
+
+    pub fn is_planned(&self, dimension: CapabilityDimension) -> bool {
+        self.plan(dimension)
+            .is_some_and(EnforcementPlan::is_planned)
+    }
+
+    pub fn missing_dimensions(
+        &self,
+        capabilities: &CapabilitySet,
+        resources: &ResourceLimits,
+    ) -> Vec<CapabilityDimension> {
+        requested_enforcement_dimensions(capabilities, resources)
+            .into_iter()
+            .filter(|dimension| !self.is_planned(*dimension))
+            .collect()
+    }
+}
+
+/// Executor-owned observations carried to the sole authoritative Run Bundle.
+#[derive(Debug, Clone, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
+pub struct ExecutorObservations {
+    pub origin: crate::trace::Origin,
+    pub enforcement: CapabilityEnforcementEvidence,
+}
+impl Default for ExecutorObservations {
+    fn default() -> Self {
+        Self {
+            origin: crate::trace::Origin::Runtime,
+            enforcement: Default::default(),
+        }
+    }
+}
+
+/// Selection identity recorded by the runtime; contains no enforcement claim.
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct ExecutorIdentity {
+    pub name: String,
+    pub kind: ExecutorKind,
+    pub isolation: IsolationKind,
+}
+impl From<&ExecutorPlan> for ExecutorIdentity {
+    fn from(plan: &ExecutorPlan) -> Self {
+        Self {
+            name: plan.name.clone(),
+            kind: plan.kind,
+            isolation: plan.isolation,
+        }
+    }
+}
+
 /// Dimensions that require non-bypassable evidence when `PolicyMode::Enforce`
 /// is selected. Network is always included because `Ambient` is explicitly an
 /// audit/compatibility mode, not an enforceable boundary.
@@ -661,13 +775,15 @@ pub fn requested_enforcement_dimensions(
     requested.into_iter().collect()
 }
 
+/// Admission-only executor plan. Installed controls are ExecutorObservations.
 #[derive(Debug, Clone, Serialize, Deserialize)]
-pub struct ExecutorDescriptor {
+#[serde(deny_unknown_fields)]
+pub struct ExecutorPlan {
     pub name: String,
     pub kind: ExecutorKind,
     pub isolation: IsolationKind,
     #[serde(default)]
-    pub capability_enforcement: CapabilityEnforcementEvidence,
+    pub capability_plan: CapabilityEnforcementPlan,
     pub supports_checkpoint: bool,
     pub supports_migration: bool,
 }
@@ -678,9 +794,8 @@ pub struct AttemptInfo {
     #[serde(default)]
     pub lease_epoch: u64,
     pub number: u32,
-    /// Admission-time executor/control plan. This is not runtime attestation;
-    /// final Run Bundle evidence accounts for setup failures and observations.
-    pub executor: ExecutorDescriptor,
+    /// Admission-time plan, never runtime enforcement evidence.
+    pub executor: ExecutorPlan,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub started_at_unix_ms: Option<u64>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
@@ -765,6 +880,8 @@ pub struct RunResult {
     pub event_stream_ref: Option<String>,
     #[serde(default)]
     pub warnings: Vec<String>,
+    #[serde(default)]
+    pub executor_observations: ExecutorObservations,
 }
 
 /// The current execution owner for one logical Run.
@@ -913,17 +1030,22 @@ mod tests {
     }
 
     #[test]
-    fn descriptor_without_new_evidence_field_remains_readable() {
-        let descriptor: ExecutorDescriptor = serde_json::from_value(serde_json::json!({
-            "name": "legacy",
-            "kind": "process",
-            "isolation": "host_process",
-            "enforces_capabilities": false,
-            "supports_checkpoint": false,
-            "supports_migration": false
-        }))
-        .unwrap();
-
-        assert!(descriptor.capability_enforcement.dimensions.is_empty());
+    fn executor_descriptor_cannot_claim_observed_enforcement() {
+        let descriptor = ExecutorPlan {
+            name: "process".into(),
+            kind: ExecutorKind::Process,
+            isolation: IsolationKind::HostProcess,
+            capability_plan: CapabilityEnforcementPlan::default()
+                .planned(CapabilityDimension::Resources, "posix-rlimit"),
+            supports_checkpoint: false,
+            supports_migration: false,
+        };
+        let mut json = serde_json::to_value(descriptor).unwrap();
+        assert_eq!(
+            json["capability_plan"]["dimensions"]["resources"]["level"],
+            "planned"
+        );
+        json["capability_plan"]["dimensions"]["resources"]["level"] = "enforced".into();
+        assert!(serde_json::from_value::<ExecutorPlan>(json).is_err());
     }
 }

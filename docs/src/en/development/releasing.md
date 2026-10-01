@@ -72,6 +72,12 @@ embedded libkrunfw kernel; no firmware shared library is shipped. Wheels retain
 the manylinux_2_28 tag for glibc Python installers. The build requires Zig,
 cargo-zigbuild, and the Rust musl target; firmware is loaded only at build time.
 
+Apple Silicon macOS builds use the native Darwin linker and package
+`libkrunfw.5.dylib`; the CLI is signed for HVF. Both platforms embed the Rust
+`persisting-guest` supervisor as a static Linux musl ELF, built automatically
+with `rust-lld`. macOS requires the `aarch64-unknown-linux-musl` Rust stdlib
+but does not need Zig for guest compilation.
+
 Every wheel is checked for its component set and install-time CLI smoke tests.
 The release-set check then requires exactly one supported wheel per platform,
 matching versions, valid package metadata, and bounded artifact size before

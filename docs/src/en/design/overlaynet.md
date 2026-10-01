@@ -14,9 +14,9 @@ gates. User policy procedures belong to the
 
 libkrun VM Attempts now use `vm-smoltcp` when `[overlaynet].mode = "auto"`.
 The guest virtio-net device connects to pVisor over libkrun's length-prefixed
-UnixStream Ethernet transport. pVisor serves DHCP (`192.0.2.1` router,
-`192.0.2.2` guest), synthetic DNS (`198.18.0.0/15`, stable per Attempt), and
-IPv4 TCP. A SYN remains paused in smoltcp until hostname/IP, resolved address
+UnixStream Ethernet transport. The Rust guest supervisor configures
+`192.0.2.2/24` with router `192.0.2.1` directly, without waiting for DHCP.
+pVisor serves synthetic DNS (`198.18.0.0/15`, stable per Attempt) and IPv4 TCP. A SYN remains paused in smoltcp until hostname/IP, resolved address
 or scoped host connector alias, port, and injected Control policy all authorize
 and the host connection succeeds. TSI stays disabled, so there is no guest
 path around this data plane.

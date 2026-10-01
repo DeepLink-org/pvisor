@@ -19,7 +19,7 @@ use std::time::Duration;
 
 pub use persisting_control::overlay::OverlayStatus as ControlOverlayStatus;
 use persisting_control::overlay::{RunControlRequest, RunControlResponse};
-use persisting_control::{ExecutorDescriptor, ResourceLimits};
+use persisting_control::{ExecutorIdentity, ExecutorPlan, ResourceLimits};
 
 pub const RUN_META_FILENAME: &str = "run.json";
 pub const LEASE_FILENAME: &str = "lease.lock";
@@ -65,7 +65,10 @@ pub struct RunRecord {
     pub pid: u32,
     pub command: Vec<String>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
-    pub executor: Option<ExecutorDescriptor>,
+    pub executor: Option<ExecutorIdentity>,
+    /// Admission-only data carried in memory to the authoritative Bundle.
+    #[serde(skip)]
+    pub executor_plan: Option<ExecutorPlan>,
     pub state: String,
     pub started_at_unix_ms: u64,
     pub finished_at_unix_ms: Option<u64>,
@@ -96,7 +99,7 @@ pub struct RunRecord {
     pub lineage: Option<RunLineage>,
     #[serde(default, skip_serializing_if = "std::collections::BTreeMap::is_empty")]
     pub orchestration: std::collections::BTreeMap<String, serde_json::Value>,
-    #[serde(default, skip_serializing_if = "Option::is_none")]
+    #[serde(skip)]
     pub run_plan: Option<persisting_control::ir::run::RunPlan>,
 }
 
@@ -664,6 +667,7 @@ mod tests {
             pid: 1,
             command: vec!["true".into()],
             executor: None,
+            executor_plan: None,
             state: "completed".into(),
             started_at_unix_ms: 1,
             finished_at_unix_ms: Some(2),
