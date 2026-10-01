@@ -39,16 +39,82 @@ impl RunConfig {
         workspace: &Path,
         user_root: Option<&Path>,
     ) -> anyhow::Result<()> {
-        fn load(path: &Path) -> anyhow::Result<persisting_control::PolicyLayer> {
-            match std::fs::read_to_string(path) {
-                Ok(source) => toml::from_str(&source)
-                    .map_err(|error| anyhow::anyhow!("parse policy {}: {error}", path.display())),
-                Err(error) if error.kind() == std::io::ErrorKind::NotFound => {
-                    Ok(Default::default())
+        fn load(
+            root: &Path,
+            directory_name: &str,
+        ) -> anyhow::Result<persisting_control::PolicyLayer> {
+            let path = root.join(directory_name).join("policy.toml");
+            let name = std::ffi::CString::new(directory_name)?;
+            use std::io::Read;
+            use std::os::fd::{AsRawFd, FromRawFd};
+            use std::os::unix::fs::MetadataExt;
+            const MAX_BYTES: u64 = 1024 * 1024;
+            let open = || -> std::io::Result<std::fs::File> {
+                // The supplied root is trusted; both policy path components are not.
+                let root = std::fs::File::open(root)?;
+                let fd = unsafe {
+                    libc::openat(
+                        root.as_raw_fd(),
+                        name.as_ptr(),
+                        libc::O_RDONLY | libc::O_DIRECTORY | libc::O_NOFOLLOW | libc::O_CLOEXEC,
+                    )
+                };
+                if fd < 0 {
+                    return Err(std::io::Error::last_os_error());
                 }
-                Err(error) => Err(error.into()),
-            }
+                let directory = unsafe { std::fs::File::from_raw_fd(fd) };
+                let metadata = directory.metadata()?;
+                if metadata.uid() != unsafe { libc::geteuid() } || metadata.mode() & 0o022 != 0 {
+                    return Err(std::io::Error::new(
+                        std::io::ErrorKind::PermissionDenied,
+                        "policy directory must be owned by the current user and not writable by others",
+                    ));
+                }
+                let fd = unsafe {
+                    libc::openat(
+                        directory.as_raw_fd(),
+                        c"policy.toml".as_ptr(),
+                        libc::O_RDONLY | libc::O_NOFOLLOW | libc::O_NONBLOCK | libc::O_CLOEXEC,
+                    )
+                };
+                if fd < 0 {
+                    return Err(std::io::Error::last_os_error());
+                }
+                Ok(unsafe { std::fs::File::from_raw_fd(fd) })
+            };
+            let file = match open() {
+                Ok(file) => file,
+                Err(error) if error.kind() == std::io::ErrorKind::NotFound => {
+                    return Ok(Default::default());
+                }
+                Err(error) => {
+                    return Err(anyhow::anyhow!("open policy {}: {error}", path.display()));
+                }
+            };
+            let metadata = file.metadata()?;
+            anyhow::ensure!(
+                metadata.is_file()
+                    && metadata.uid() == unsafe { libc::geteuid() }
+                    && metadata.mode() & 0o022 == 0,
+                "policy {} must be a regular file owned by the current user and not writable by others",
+                path.display()
+            );
+            anyhow::ensure!(
+                metadata.len() <= MAX_BYTES,
+                "policy {} exceeds {MAX_BYTES} bytes",
+                path.display()
+            );
+            let mut source = String::new();
+            file.take(MAX_BYTES + 1).read_to_string(&mut source)?;
+            anyhow::ensure!(
+                source.len() as u64 <= MAX_BYTES,
+                "policy {} exceeds {MAX_BYTES} bytes",
+                path.display()
+            );
+            toml::from_str(&source)
+                .map_err(|error| anyhow::anyhow!("parse policy {}: {error}", path.display()))
         }
+
         fn inherit(
             layer: &mut persisting_control::PolicyLayer,
             defaults: persisting_control::PolicyLayer,
@@ -60,15 +126,9 @@ impl RunConfig {
                 layer.filesystem = defaults.filesystem;
             }
         }
-        inherit(
-            &mut self.policies.workspace,
-            load(&workspace.join(".pvisor/policy.toml"))?,
-        );
+        inherit(&mut self.policies.workspace, load(workspace, ".pvisor")?);
         if let Some(root) = user_root {
-            inherit(
-                &mut self.policies.user,
-                load(&root.join("pvisor/policy.toml"))?,
-            );
+            inherit(&mut self.policies.user, load(root, "pvisor")?);
         }
         Ok(())
     }
@@ -723,11 +783,11 @@ mod session_policy_tests {
         let policy = config.policies.filesystem(&Default::default());
         assert_eq!(
             policy.authorize(Path::new("secrets/session")),
-            persisting_control::FileAccessDecision::Allow
+            persisting_control::FileAccessDecision::Deny
         );
         assert_eq!(
             policy.authorize(Path::new("secrets/workspace")),
-            persisting_control::FileAccessDecision::Allow
+            persisting_control::FileAccessDecision::Deny
         );
         assert_eq!(
             policy.authorize(Path::new("secrets/other")),
@@ -743,5 +803,38 @@ mod session_policy_tests {
                 .load_policy_defaults(&workspace, Some(&user))
                 .is_err()
         );
+    }
+    #[test]
+    fn policy_defaults_reject_symlinks_special_files_and_unbounded_input() {
+        use std::os::unix::fs::{PermissionsExt, symlink};
+        let root = tempfile::tempdir().unwrap();
+        let workspace = root.path().join("workspace");
+        let directory = workspace.join(".pvisor");
+        std::fs::create_dir_all(&directory).unwrap();
+        let path = directory.join("policy.toml");
+        let source = root.path().join("external.toml");
+        std::fs::write(&source, "[network]\nallow = [{ host = 'api.example' }]\n").unwrap();
+        let load = || RunConfig::default().load_policy_defaults(&workspace, None);
+        symlink(&source, &path).unwrap();
+        assert!(load().is_err());
+        std::fs::remove_file(&path).unwrap();
+        let name = std::ffi::CString::new(path.as_os_str().as_encoded_bytes()).unwrap();
+        assert_eq!(unsafe { libc::mkfifo(name.as_ptr(), 0o600) }, 0);
+        assert!(load().is_err());
+        std::fs::remove_file(&path).unwrap();
+        std::fs::File::create(&path)
+            .unwrap()
+            .set_len(1024 * 1024 + 1)
+            .unwrap();
+        assert!(load().is_err());
+        std::fs::copy(&source, &path).unwrap();
+        std::fs::set_permissions(&path, std::fs::Permissions::from_mode(0o666)).unwrap();
+        assert!(load().is_err());
+        std::fs::set_permissions(&path, std::fs::Permissions::from_mode(0o600)).unwrap();
+        assert!(load().is_ok());
+        std::fs::remove_file(&path).unwrap();
+        std::fs::remove_dir(&directory).unwrap();
+        symlink(root.path(), &directory).unwrap();
+        assert!(load().is_err());
     }
 }

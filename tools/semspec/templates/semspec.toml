@@ -1,0 +1,17 @@
+[project]
+name = "example"
+spec_dirs = ["semantics"]
+ledger = "semantics/REVIEWED.toml"
+approved_snapshots = "semantics/.approved"
+retired = []
+
+[subject]
+bin = "/usr/bin/true"
+language = "bash"
+vocab = ["semantics/vocab/core.sh"]
+env = {}
+timeout = "180s"
+
+[platforms]
+macos = { os = "macos" }
+linux = { os = "linux" }

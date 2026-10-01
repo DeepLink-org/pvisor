@@ -52,10 +52,13 @@ Completed 与终态事件的 origin 区分运行器失败和后端结果。
 Session 身份和审批缓存键。
 
 Control 统一拥有网络配置、编译后的授权与地址分类，以及文件策略编译。
-Session 策略按 `session > workspace > user` 选择首个匹配作用域；没有规则时
-向下查找，显式网络默认决策会结束查找。同层 deny 优先于 allow，文件规则按
- deny、ask、warn、allow 排序。显式 Session allow 可以覆盖低优先级 deny。
-选中 allow 后，端口、协议或解析 IP 校验失败不会回退到低优先级授权。
+Session、workspace、user 与执行器基础网络策略共同约束权限：所有网络层均须放行，
+任一层显式 deny 都拒绝。已声明的网络层省略 `default_action` 时默认 deny，
+未命中 allow 的目标不会退化为 Ambient；省略整个网络层才不增加约束。
+各层匹配的带宽限制全部叠加。文件规则跨层取最严格决策（deny、ask、warn、allow），
+因此仓库或 Session 的 allow 无法放宽用户拒绝或基础策略；端口、协议和解析 IP
+校验失败也不会被其他层授权覆盖。交互式网络审批可为单次目标扩展 allow，
+但仍不能覆盖任一层显式 deny、基础 deny-all 或解析地址安全检查。
 
 文件策略绑定 Run、Attempt、视图和审批端点。FUSE 和 virtio-fs 共用 OverlayCore
 的授权与写时复制实现；转换到 VM 根视图时保留策略作用域。`OverlayLayout`

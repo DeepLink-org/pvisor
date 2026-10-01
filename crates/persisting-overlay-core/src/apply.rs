@@ -11,7 +11,7 @@ use serde::{Deserialize, Serialize};
 use sha2::{Digest, Sha256};
 use std::os::unix::{
     ffi::OsStrExt,
-    fs::{MetadataExt, OpenOptionsExt, PermissionsExt},
+    fs::{DirBuilderExt, MetadataExt, OpenOptionsExt, PermissionsExt},
 };
 use std::{
     collections::{BTreeSet, HashMap},
@@ -79,17 +79,54 @@ impl TargetApplyLock {
             .join(format!("persisting-pvisor-apply-locks-{}", unsafe {
                 libc::geteuid()
             }));
-        fs::create_dir_all(&directory)?;
-        fs::set_permissions(&directory, fs::Permissions::from_mode(0o700))?;
-        let identity = fs::canonicalize(target).unwrap_or_else(|_| target.to_path_buf());
-        let path = directory.join(format!("{}.lock", path_digest(&identity)));
-        let file = fs::OpenOptions::new()
+        Self::acquire_in(target, &directory)
+    }
+
+    fn acquire_in(target: &Path, directory: &Path) -> Result<Self, OverlayError> {
+        match fs::DirBuilder::new().mode(0o700).create(directory) {
+            Ok(()) => {}
+            Err(error) if error.kind() == io::ErrorKind::AlreadyExists => {}
+            Err(error) => return Err(error.into()),
+        }
+        let directory = fs::OpenOptions::new()
             .read(true)
-            .write(true)
-            .create(true)
-            .truncate(false)
-            .mode(0o600)
-            .open(path)?;
+            .custom_flags(libc::O_DIRECTORY | libc::O_NOFOLLOW)
+            .open(directory)?;
+        let metadata = directory.metadata()?;
+        if metadata.uid() != unsafe { libc::geteuid() } || metadata.mode() & 0o077 != 0 {
+            return Err(OverlayError::Apply(
+                "apply lock directory must be private and owned by the current user".into(),
+            ));
+        }
+        let identity = fs::canonicalize(target).unwrap_or_else(|_| target.to_path_buf());
+        let name = CString::new(format!("{}.lock", path_digest(&identity))).unwrap();
+        use std::os::fd::{AsRawFd, FromRawFd};
+        let fd = unsafe {
+            libc::openat(
+                directory.as_raw_fd(),
+                name.as_ptr(),
+                libc::O_RDWR
+                    | libc::O_CREAT
+                    | libc::O_NOFOLLOW
+                    | libc::O_NONBLOCK
+                    | libc::O_CLOEXEC,
+                0o600,
+            )
+        };
+        if fd < 0 {
+            return Err(io::Error::last_os_error().into());
+        }
+        let file = unsafe { File::from_raw_fd(fd) };
+        let metadata = file.metadata()?;
+        if !metadata.is_file()
+            || metadata.uid() != unsafe { libc::geteuid() }
+            || metadata.mode() & 0o077 != 0
+            || metadata.nlink() != 1
+        {
+            return Err(OverlayError::Apply(
+                "apply lock must be a private, unaliased regular file".into(),
+            ));
+        }
         fs2::FileExt::lock_exclusive(&file)?;
         Ok(Self { file })
     }
@@ -561,7 +598,7 @@ pub fn apply_overlay_selected(
     )?;
     mark_apply_target_applied(record, &apply_id)?;
     let remaining = complete_target_applied(record, lower_dirs, &plan.selected_paths)?;
-    consume_applied_preimages(record, &plan.selected_paths)?;
+    consume_applied_preimages(record, &plan.selected_paths, &plan.selected)?;
     mark_apply_committed(record, &apply_id, remaining.len())?;
     Ok(ApplyOutcome {
         apply_id,
@@ -629,7 +666,7 @@ fn recover_pending_applies_locked(
             mark_apply_target_applied(record, &apply.apply_id)?;
         }
         let remaining = complete_target_applied(record, lower_dirs, &selected_paths)?;
-        consume_applied_preimages(record, &selected_paths)?;
+        consume_applied_preimages(record, &selected_paths, &apply.changes)?;
         mark_apply_committed(record, &apply.apply_id, remaining.len())?;
         recovered.push(apply.apply_id);
     }
@@ -639,15 +676,20 @@ fn recover_pending_applies_locked(
 fn consume_applied_preimages(
     record: &OverlayRecord,
     selected_paths: &BTreeSet<PathBuf>,
+    changes: &[ChangeEntry],
 ) -> Result<(), OverlayError> {
-    // A partially applied directory remains in upper for its pending children.
-    // Keep the post-apply baseline written before TargetApplied was committed.
-    let paths = selected_paths
-        .iter()
+    // Directory replacement consumes collapsed descendant baselines too.
+    // Retain rebased directories still needed by pending upper children.
+    let paths = load_preimages(&record.stage_dir.join("preimages"))?
+        .into_iter()
+        .map(|preimage| preimage.relative_path())
         .filter(|path| {
-            !fs::symlink_metadata(record.upper.path().join(path)).is_ok_and(|m| m.is_dir())
+            (selected_paths.contains(path)
+                || changes
+                    .iter()
+                    .any(|change| replaces_directory(change) && path.starts_with(&change.path)))
+                && !fs::symlink_metadata(record.upper.path().join(path)).is_ok_and(|m| m.is_dir())
         })
-        .cloned()
         .collect::<Vec<_>>();
     remove_preimages(&record.stage_dir.join("preimages"), &paths).map_err(OverlayError::Io)
 }
@@ -880,9 +922,15 @@ fn clear_path(path: &Path) -> Result<(), OverlayError> {
 
 #[cfg(test)]
 fn apply_upper_onto_target(upper: &Path, target: &Path) -> Result<(), OverlayError> {
-    ensure_directory(target)?;
+    let target = fs::canonicalize(target)?;
+    if !fs::symlink_metadata(&target)?.is_dir() {
+        return Err(OverlayError::Apply(
+            "apply target must be a real directory".into(),
+        ));
+    }
+
     let mut hard_links = HashMap::new();
-    apply_directory(upper, target, &mut hard_links, false)
+    apply_directory(upper, &target, &mut hard_links, false)
 }
 
 fn apply_selected_upper(
@@ -890,9 +938,15 @@ fn apply_selected_upper(
     target: &Path,
     selected: &BTreeSet<PathBuf>,
 ) -> Result<(), OverlayError> {
-    ensure_directory(target)?;
+    let target = fs::canonicalize(target)?;
+    if !fs::symlink_metadata(&target)?.is_dir() {
+        return Err(OverlayError::Apply(
+            "apply target must be a real directory".into(),
+        ));
+    }
+
     let mut hard_links = HashMap::new();
-    apply_selected_directory(upper, target, Path::new(""), selected, &mut hard_links)
+    apply_selected_directory(upper, &target, Path::new(""), selected, &mut hard_links)
 }
 
 fn apply_selected_directory(
@@ -1858,6 +1912,10 @@ mod tests {
             apply_selected_upper(&upper, &target, &plan.selected_paths).unwrap();
             recover_pending_applies(&mut record, std::slice::from_ref(&target)).unwrap();
             assert_eq!(record.state, OverlayState::Applied, "{operation}");
+            assert!(
+                load_preimages(&stage.join("preimages")).unwrap().is_empty(),
+                "{operation}"
+            );
             assert!(!target.join("dir/nested/file").exists());
             if operation == "rename" {
                 assert_eq!(
@@ -1866,6 +1924,98 @@ mod tests {
                 );
             }
         }
+    }
+
+    #[test]
+    fn applied_directory_descendants_can_be_modified_in_a_new_generation() {
+        let tmp = tempdir().unwrap();
+        let target = tmp.path().join("target");
+        let stage = tmp.path().join("stage");
+        let upper = stage.join("upper");
+        fs::create_dir_all(target.join("dir/nested")).unwrap();
+        fs::write(target.join("dir/nested/file"), b"original").unwrap();
+        let create_core = || {
+            crate::OverlayCore::new_with_exclusions_and_preimages(
+                vec![target.clone()],
+                upper.clone(),
+                Some(stage.join("work")),
+                Vec::new(),
+                Some(stage.join("preimages")),
+            )
+            .unwrap()
+        };
+        let core = create_core();
+        core.remove(Path::new("dir/nested/file"), false).unwrap();
+        core.remove(Path::new("dir/nested"), true).unwrap();
+        core.remove(Path::new("dir"), true).unwrap();
+        let mut record = OverlayRecord {
+            id: "reuse".into(),
+            generation: 0,
+            target: target.clone(),
+            upper: OverlayUpper {
+                upper_dir: upper.clone(),
+                work_dir: stage.join("work"),
+            },
+            merged_dir: stage.join("merged"),
+            stage_dir: stage.clone(),
+            excluded_paths: Vec::new(),
+            access_policy: Default::default(),
+            auto_apply: false,
+            auto_discard: false,
+            protect_target: false,
+            state: OverlayState::Staged,
+        };
+        apply_overlay(&mut record).unwrap();
+        drop(core);
+        fs::create_dir_all(target.join("dir/nested")).unwrap();
+        fs::write(target.join("dir/nested/file"), b"new-baseline").unwrap();
+        record.generation += 1;
+        record.state = OverlayState::Staged;
+        let core = create_core();
+        fs::write(
+            core.copy_up(Path::new("dir/nested/file")).unwrap(),
+            b"second-change",
+        )
+        .unwrap();
+        apply_overlay(&mut record).unwrap();
+        assert_eq!(
+            fs::read(target.join("dir/nested/file")).unwrap(),
+            b"second-change"
+        );
+    }
+
+    #[test]
+    fn apply_preserves_symlinked_target_roots_and_rejects_unsafe_locks() {
+        use std::os::unix::fs::symlink;
+        let tmp = tempdir().unwrap();
+        let target = tmp.path().join("target");
+        let alias = tmp.path().join("alias");
+        let upper = tmp.path().join("upper");
+        fs::create_dir(&target).unwrap();
+        fs::create_dir(&upper).unwrap();
+        fs::write(upper.join("file"), b"new").unwrap();
+        symlink(&target, &alias).unwrap();
+        apply_selected_upper(&upper, &alias, &BTreeSet::from([PathBuf::from("file")])).unwrap();
+        assert!(fs::symlink_metadata(&alias).unwrap().is_symlink());
+        assert_eq!(fs::read(target.join("file")).unwrap(), b"new");
+        let locks = tmp.path().join("locks");
+        symlink(&target, &locks).unwrap();
+        assert!(TargetApplyLock::acquire_in(&target, &locks).is_err());
+        fs::remove_file(&locks).unwrap();
+        fs::DirBuilder::new().mode(0o700).create(&locks).unwrap();
+        let lock = locks.join(format!(
+            "{}.lock",
+            path_digest(&target.canonicalize().unwrap())
+        ));
+        symlink(target.join("file"), &lock).unwrap();
+        assert!(TargetApplyLock::acquire_in(&target, &locks).is_err());
+        assert_eq!(fs::read(target.join("file")).unwrap(), b"new");
+        fs::remove_file(&lock).unwrap();
+        fs::write(&lock, b"").unwrap();
+        fs::set_permissions(&lock, fs::Permissions::from_mode(0o600)).unwrap();
+        assert!(TargetApplyLock::acquire_in(&target, &locks).is_ok());
+        fs::set_permissions(&locks, fs::Permissions::from_mode(0o777)).unwrap();
+        assert!(TargetApplyLock::acquire_in(&target, &locks).is_err());
     }
 
     #[test]

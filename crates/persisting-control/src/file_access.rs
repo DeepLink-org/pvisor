@@ -65,7 +65,7 @@ struct FileAccessRules {
     warn: Vec<String>,
 }
 
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord)]
 pub enum FileAccessDecision {
     Allow,
     Warn,
@@ -189,7 +189,7 @@ impl FileAccessPolicy {
         self.rules.context.as_ref()
     }
 
-    /// Translate this policy into another view without flattening scope precedence.
+    /// Translate this policy into another view without dropping scope restrictions.
     pub fn prefixed(&self, prefix: &str) -> io::Result<Self> {
         let raw_prefix = prefix;
         let prefix = globset::escape(prefix);
@@ -252,19 +252,6 @@ impl FileAccessPolicy {
         policy
     }
 
-    fn has_match(&self, path: &Path) -> bool {
-        self.rules
-            .layers
-            .iter()
-            .any(|(_, policy)| policy.has_match(path))
-            || path.ancestors().any(|path| {
-                self.deny.is_match(path)
-                    || self.ask.is_match(path)
-                    || self.warn.is_match(path)
-                    || self.allow.is_match(path)
-            })
-    }
-
     /// Stable rule IDs shared by authorization and the admitted plan.
     pub fn rules(&self) -> Vec<(String, String, &'static str)> {
         let mut rules = Vec::new();
@@ -317,11 +304,15 @@ impl FileAccessPolicy {
 
     /// Evaluate a mount-relative path without emitting diagnostics.
     pub fn authorize(&self, path: &Path) -> FileAccessDecision {
-        for (_, policy) in &self.rules.layers {
-            if policy.has_match(path) {
-                return policy.authorize(path);
-            }
-        }
+        self.rules
+            .layers
+            .iter()
+            .fold(self.local_decision(path), |decision, (_, policy)| {
+                decision.max(policy.authorize(path))
+            })
+    }
+
+    fn local_decision(&self, path: &Path) -> FileAccessDecision {
         if path.ancestors().any(|path| self.deny.is_match(path)) {
             FileAccessDecision::Deny
         } else if path.ancestors().any(|path| self.ask.is_match(path)) {
@@ -336,15 +327,25 @@ impl FileAccessPolicy {
     /// Stable IDs of the rules that actually matched this mount-relative path.
     /// Deny takes precedence over warn, just as it does in `authorize`.
     pub fn matched_rule_ids(&self, path: &Path) -> Vec<String> {
+        let decision = self.authorize(path);
+        let mut ids = Vec::new();
         for (scope, policy) in &self.rules.layers {
-            if policy.has_match(path) {
-                return policy
-                    .matched_rule_ids(path)
-                    .into_iter()
-                    .map(|id| format!("{scope:?}.{id}").to_lowercase())
-                    .collect();
+            if policy.authorize(path) == decision {
+                ids.extend(
+                    policy
+                        .matched_rule_ids(path)
+                        .into_iter()
+                        .map(|id| format!("{scope:?}.{id}").to_lowercase()),
+                );
             }
         }
+        if self.local_decision(path) == decision {
+            ids.extend(self.local_rule_ids(path));
+        }
+        ids
+    }
+
+    fn local_rule_ids(&self, path: &Path) -> Vec<String> {
         fn matches(set: &GlobSet, path: &Path) -> BTreeSet<usize> {
             path.ancestors()
                 .flat_map(|part| set.matches(part))

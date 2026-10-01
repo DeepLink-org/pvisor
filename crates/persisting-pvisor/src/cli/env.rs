@@ -494,6 +494,12 @@ fn reset_overlay_generation(mut overlay: OverlayRecord) -> Result<OverlayRecord>
         .generation
         .checked_add(1)
         .context("environment overlay generation overflow")?;
+    let preimages = overlay.stage_dir.join("preimages");
+    match fs::remove_dir_all(&preimages) {
+        Ok(()) => crate::util::sync_directory(&overlay.stage_dir)?,
+        Err(error) if error.kind() == std::io::ErrorKind::NotFound => {}
+        Err(error) => return Err(error.into()),
+    }
     overlay.state = OverlayState::Staged;
     write_overlay_record(&overlay)?;
     Ok(overlay)
@@ -620,11 +626,15 @@ mod tests {
         let OverlayUpper { upper_dir, .. } = &after_apply.upper;
         fs::create_dir_all(upper_dir)?;
         fs::write(upper_dir.join("discarded.txt"), b"value")?;
+        let preimages = after_apply.stage_dir.join("preimages");
+        fs::create_dir_all(preimages.join("entries"))?;
+        fs::write(preimages.join("entries/stale.json"), b"old generation")?;
         drop_changes(select.clone())?;
         assert!(!target.join("discarded.txt").exists());
         let after_drop = selected(&select)?.overlay.context("overlay")?;
         assert_eq!(after_drop.state, OverlayState::Staged);
         assert_eq!(after_drop.generation, 2);
+        assert!(!preimages.exists());
         Ok(())
     }
 

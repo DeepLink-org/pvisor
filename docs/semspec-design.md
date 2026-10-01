@@ -615,5 +615,6 @@ overlay-core 的 `create_symlink` 本身成功，错误出现在 FUSE 回复之�
    ID 登记为 retired？当前倾向前者，由台账的历史记录变更。
 4. **平台差异化语义**：同一性质在不同平台上的承诺不同时，是拆成两个 case，还是在注解
    中引入 `only-on`？当前倾向拆分，让每条语义陈述都无条件成立。
-5. **原型处理**：仓库中的 `scripts/run-semantic-tests.py` 是本设计的早期原型，Rust
-   版本可用之后删除，其中的 case 格式按本文 §4 迁移。
+5. **原型处理**：早期 `scripts/run-semantic-tests.py` 原型已由独立的
+   `tools/semspec` Rust 工具替代；使用 `just test-semspec` 验证实现，
+   `tests/semantics/stage-apply.md` 为按本文 §4 起草的未审核规格。

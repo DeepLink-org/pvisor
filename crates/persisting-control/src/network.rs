@@ -68,7 +68,6 @@ pub struct NetworkPolicy {
 struct CompiledBandwidthLimit {
     matcher: Option<AllowedEntry>,
     config: NetworkBandwidthLimit,
-    scope: Option<crate::PolicyScope>,
 }
 
 impl NetworkPolicy {
@@ -83,40 +82,27 @@ impl NetworkPolicy {
         // Gateway-owned upstream routes and the listener itself are not Agent
         // egress grants. Only explicit entries from `[network]` reach this guard.
         let guard = NetworkGuard::compile(capability, Vec::new())?;
-        fn limits_for(
-            capability: &NetworkCapability,
-        ) -> Vec<(Option<crate::PolicyScope>, NetworkBandwidthLimit)> {
+        fn limits_for(capability: &NetworkCapability) -> Vec<NetworkBandwidthLimit> {
             match capability {
-                NetworkCapability::Scoped { layers, fallback } => {
-                    let mut limits: Vec<_> = layers
-                        .iter()
-                        .flat_map(|(scope, layer)| {
-                            layer
-                                .limits
-                                .iter()
-                                .cloned()
-                                .map(|limit| (Some(*scope), limit))
-                        })
-                        .collect();
-                    limits.extend(limits_for(fallback));
-                    limits
-                }
-                NetworkCapability::Policy { limits, .. } => {
-                    limits.iter().cloned().map(|limit| (None, limit)).collect()
-                }
+                NetworkCapability::Scoped { layers, fallback } => layers
+                    .iter()
+                    .flat_map(|(_, layer)| layer.limits.iter().cloned())
+                    .chain(limits_for(fallback))
+                    .collect(),
+                NetworkCapability::Policy { limits, .. } => limits.clone(),
                 _ => Vec::new(),
             }
         }
         let mut declared = limits_for(guard.capability());
         // Standalone adapters may add transport-wide limits to the resolved policy.
         for limit in &network.limits {
-            if !declared.iter().any(|(_, existing)| existing == limit) {
-                declared.push((None, limit.clone()));
+            if !declared.contains(limit) {
+                declared.push(limit.clone());
             }
         }
         let limits = declared
             .iter()
-            .map(|(scope, config)| {
+            .map(|config| {
                 anyhow::ensure!(
                     config.bytes_per_second > 0,
                     "network bandwidth limit must be greater than zero"
@@ -133,7 +119,6 @@ impl NetworkPolicy {
                 Ok(CompiledBandwidthLimit {
                     matcher,
                     config: config.clone(),
-                    scope: *scope,
                 })
             })
             .collect::<anyhow::Result<Vec<_>>>()?;
@@ -215,26 +200,22 @@ impl NetworkPolicy {
                 allow_private_ips: false,
             };
             let mut layers = layers.clone();
-            if let Some(scope) = self.guard.selected(request).1 {
-                layers
-                    .iter_mut()
-                    .find(|(existing, _)| *existing == scope)
-                    .unwrap()
-                    .1
-                    .allow
-                    .push(grant);
-            } else {
-                layers.push((
-                    crate::PolicyScope::Session,
-                    crate::NetworkPolicyLayer {
-                        allow: vec![grant],
-                        ..Default::default()
-                    },
-                ));
+            for (_, layer) in &mut layers {
+                layer.allow.push(grant.clone());
+            }
+            let mut fallback = (**fallback).clone();
+            match &mut fallback {
+                NetworkCapability::Ambient => {}
+                NetworkCapability::AllowList { rules, .. } => rules.push(grant),
+                NetworkCapability::Policy { allow, .. } => allow.push(grant),
+                NetworkCapability::Deny => {
+                    anyhow::bail!("denied network cannot be extended by audit")
+                }
+                NetworkCapability::Scoped { .. } => unreachable!("compiled fallback is a leaf"),
             }
             source.capability = Some(NetworkCapability::Scoped {
                 layers,
-                fallback: fallback.clone(),
+                fallback: Box::new(fallback),
             });
             return Self::compile(&source);
         }
@@ -281,10 +262,8 @@ impl NetworkPolicy {
                     })
             })
             .collect();
-        let scope = matching.iter().filter_map(|limit| limit.scope).max();
         matching
             .into_iter()
-            .filter(|limit| limit.scope == scope)
             .map(|limit| limit.config.clone())
             .collect()
     }

@@ -189,32 +189,41 @@ These files contain `[network]` and/or `[filesystem]`. Run TOML can explicitly
 set `[policies.session]`, `[policies.workspace]` and `[policies.user]`; explicit
 network/file entries replace file defaults in that scope.
 
-For example, a user policy denies unmatched network targets and sensitive files:
+Policy directories and files must belong to the current user and must not be
+writable by others. Neither component may be a symlink. Files must be regular
+and at most 1 MiB. Missing files add no policy; unsafe paths, permissions, file
+types or invalid content prevent startup. Repository policies load automatically
+but can only narrow access.
+
+For example, a user policy allows an API and denies sensitive files:
 
 ```toml
 [network]
-default_action = "deny"
+allow = [{ host = "api.example.com", ports = [80, 443] }]
 
 [filesystem]
 deny = ["secrets/**"]
 ```
 
-A Run can grant a specific Session exception:
+A Run can further restrict access in its Session:
 
 ```toml
 [policies.session.network]
 allow = [{ host = "api.example.com", ports = [443] }]
 
 [policies.session.filesystem]
-allow = ["secrets/approved.txt"]
+deny = ["generated/private/**"]
 ```
 
-Lookup uses the first matching scope: Session, workspace, then user. Unmatched
-rules fall through; an explicit `default_action` stops lookup. Within a scope,
-deny wins. Session grants can override lower-scope denies, but do not bypass
-resolved-address safety checks. Filesystem patterns are relative to the staged
-workspace view. Policy inputs are frozen for the Attempt; editing a policy file
-affects subsequent Sessions.
+Every declared network layer and the base network policy must allow a request.
+Omitting `default_action` denies unmatched targets; deny-only or bandwidth-only
+layers should explicitly set `default_action = "allow"`. An explicit deny,
+port/transport constraint or resolved-address safety failure in any layer
+rejects the request. All matching bandwidth limits stack. Interactive approval
+cannot override explicit denies or base deny-all. File policies take the
+strictest decision across layers (deny, ask, warn, allow); an allow cannot
+weaken another layer. Filesystem patterns are relative to the staged workspace
+view. Policy inputs are frozen for the Attempt; edits affect subsequent Sessions.
 
 Network layers enable the explicit proxy for host/container `auto` mode; this
 remains cooperative. File layers create a staged workspace when none is

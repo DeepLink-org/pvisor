@@ -192,9 +192,22 @@ impl ControlController for PolicyControlController {
 }
 
 fn authorize_network(policy: &NetworkGuard, request: &NetworkAccessRequest) -> ControlTransition {
-    let policy = policy.selected(request).0;
     if policy.denied(request) {
         return ControlTransition::denied(ControlReason::ExplicitlyDenied);
+    }
+    if let Some(fallback) = &policy.fallback {
+        for (_, guard) in &policy.scopes {
+            let decision = authorize_network(guard, request);
+            if !decision.is_allowed() {
+                return decision;
+            }
+        }
+        let decision = authorize_network(fallback, request);
+        return if decision.is_allowed() && !policy.scopes.is_empty() {
+            ControlTransition::allowed(ControlReason::NetworkAllowList)
+        } else {
+            decision
+        };
     }
     if policy.is_trusted(&request.host) {
         return ControlTransition::allowed(ControlReason::TrustedLocal);
@@ -317,7 +330,7 @@ pub struct NetworkGuard {
     rules: Vec<NetworkRule>,
     deny_rules: Vec<NetworkRule>,
     trusted_hosts: Vec<String>,
-    scopes: Vec<(crate::PolicyScope, bool, NetworkGuard)>,
+    scopes: Vec<(crate::PolicyScope, NetworkGuard)>,
     fallback: Option<Box<NetworkGuard>>,
 }
 
@@ -343,10 +356,10 @@ impl NetworkGuard {
                         },
                         trusted_hosts.clone(),
                     )?;
-                    Ok((*scope, layer.default_action.is_some(), guard))
+                    Ok((*scope, guard))
                 })
                 .collect::<anyhow::Result<Vec<_>>>()?;
-            scopes.sort_by_key(|(scope, _, _)| std::cmp::Reverse(*scope));
+            scopes.sort_by_key(|(scope, _)| std::cmp::Reverse(*scope));
             anyhow::ensure!(
                 !scopes.windows(2).any(|pair| pair[0].0 == pair[1].0),
                 "network policy has duplicate scopes"
@@ -405,23 +418,6 @@ impl NetworkGuard {
         })
     }
 
-    /// Select on the logical host before checking port/transport/resolved-address safety.
-    /// A failed constraint in the selected scope must not fall through to a lower allow.
-    pub fn selected(&self, request: &NetworkAccessRequest) -> (&Self, Option<crate::PolicyScope>) {
-        for (scope, explicit_default, guard) in &self.scopes {
-            if *explicit_default
-                || host_matches(&request.host, &guard.rules)
-                || guard.denied(request)
-            {
-                return (guard, Some(*scope));
-            }
-        }
-        match &self.fallback {
-            Some(guard) => guard.selected(request),
-            None => (self, None),
-        }
-    }
-
     pub fn capability(&self) -> &NetworkCapability {
         &self.capability
     }
@@ -436,6 +432,11 @@ impl NetworkGuard {
 
     fn denied(&self, request: &NetworkAccessRequest) -> bool {
         evaluate_rules(&self.deny_rules, request, false).is_ok()
+            || self.scopes.iter().any(|(_, guard)| guard.denied(request))
+            || self
+                .fallback
+                .as_ref()
+                .is_some_and(|guard| guard.denied(request))
     }
 
     fn is_trusted(&self, host: &str) -> bool {

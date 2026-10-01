@@ -17,3 +17,12 @@ positionally, for example `just test persisting-control`. Short aliases are
 `pvisor`, `control` (`agentctl` remains an alias), and `capture` (Gateway). Use a direct `cargo test`
 invocation only when doctests or an explicitly documented special runner is
 required.
+
+## Semantic preservation specifications
+
+Follow `docs/semspec-design.md` for semspec. AI may draft new cases, repair the
+subject implementation and maintain conventional runner tests. AI must not run
+`semspec approve`/`revoke`, edit real `REVIEWED.toml` ledgers or `.approved/`
+snapshots, or weaken existing claims/checks/xfail annotations to obtain PASS.
+Use `just test-semspec` to validate the standalone runner and `just semspec lint`
+for specifications. Human approval is distinct from a passing test.

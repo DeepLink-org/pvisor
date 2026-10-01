@@ -64,12 +64,16 @@ algorithm; OCI uses its runtime kill API. A new Attempt gets new Session identit
 and approval cache keys.
 
 Control owns network configuration, compiled authorization and address
-classifiers, plus file policy compilation. Session policy precedence is
-`session > workspace > user`: the first matching scope decides. An absent rule
-falls through; an explicit network default ends lookup. Within a scope, deny
-wins over allow; file rules use deny, ask, warn, then allow. An explicit Session
-allow can override a lower-scope deny. A failed port, transport or resolved-IP
-constraint in a selected allow does not fall through to a lower grant.
+classifiers, plus file policy compilation. Session, workspace, user and base network policies constrain access together:
+all network layers must allow the request, and any explicit deny rejects it.
+A declared network layer defaults to deny when `default_action` is omitted;
+unmatched targets cannot fall through to Ambient. Omitting the entire layer
+adds no constraint. All matching bandwidth limits stack. File policies take
+the strictest decision across layers (deny, ask, warn, allow), so workspace or
+Session allows cannot widen user or base restrictions. Port, transport and
+resolved-IP failures cannot be overridden by another layer. Interactive network
+approval may extend allow rules for one target, but cannot override explicit
+denies, base deny-all or resolved-address safety checks.
 
 File policies are bound to Run, Attempt, view and approval endpoint. FUSE and
 virtio-fs use the same OverlayCore authorization and copy-on-write engine.

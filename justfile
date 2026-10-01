@@ -171,3 +171,15 @@ ci: fmt-check lint test build
 clean:
     cargo clean
     rm -rf build dist
+
+# Build/test the independent semantic specification tool without product dependencies.
+test-semspec *args:
+    cargo nextest run --manifest-path tools/semspec/Cargo.toml --locked "$@"
+
+# Semantic specification CLI; approvals are interactive, human-only actions.
+semspec *args:
+    cargo run --quiet --manifest-path tools/semspec/Cargo.toml --locked -- "$@"
+
+# Verify public pVisor behavior in fresh temporary workspaces.
+semantics *args: (build "debug")
+    cargo run --quiet --manifest-path tools/semspec/Cargo.toml --locked -- run --subject-bin "{{ target_dir }}/debug/pvisor" "$@"

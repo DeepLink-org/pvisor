@@ -172,30 +172,36 @@ CLI 从工作区 `.pvisor/policy.toml` 和用户
 `[policies.session]`、`[policies.workspace]`、`[policies.user]`；显式配置的
 network/filesystem 条目替换同层文件默认值。
 
-例如，用户策略拒绝未匹配的网络目标和敏感文件：
+策略目录和文件必须归当前用户所有且不能被其他用户写入；目录和文件均不允许
+符号链接，文件必须为不超过 1 MiB 的普通文件。缺失文件不增加策略；不安全的
+路径、权限、文件类型或无效内容会阻止启动。仓库策略自动加载，但只能收窄权限。
+
+例如，用户允许指定 API 并拒绝敏感文件：
 
 ```toml
 [network]
-default_action = "deny"
+allow = [{ host = "api.example.com", ports = [80, 443] }]
 
 [filesystem]
 deny = ["secrets/**"]
 ```
 
-Run 可在 Session 层添加明确的例外：
+Run 可在 Session 层进一步限制：
 
 ```toml
 [policies.session.network]
 allow = [{ host = "api.example.com", ports = [443] }]
 
 [policies.session.filesystem]
-allow = ["secrets/approved.txt"]
+deny = ["generated/private/**"]
 ```
 
-按 Session、workspace、user 顺序使用首个匹配作用域；未匹配时继续向下查找，
-显式 `default_action` 会结束查找。同层 deny 优先。Session 授权可覆盖低优先级
-拒绝，但不会绕过解析地址安全校验。文件 glob 相对于暂存工作区视图。
-策略在 Attempt 内固定；修改策略文件只影响后续 Session。
+所有已声明的网络层与基础网络策略均须放行。省略 `default_action` 默认拒绝
+未匹配目标；需要 deny-only 或带宽限制策略时应显式写 `default_action = "allow"`。
+任一层显式 deny、端口／协议限制或解析地址安全检查失败都会拒绝请求，各层
+匹配的带宽限制全部叠加。交互审批不能覆盖显式 deny 或基础 deny-all。
+文件策略跨层按 deny、ask、warn、allow 取最严格决策；allow 不能覆盖其他层限制。
+文件 glob 相对于暂存工作区视图。策略在 Attempt 内固定，修改文件只影响后续 Session。
 
 网络层策略会为 host/container 的 `auto` 启用显式 proxy，该边界仍是协作式。
 文件层策略在未配置暂存工作区时创建暂存视图。VM `auto` 使用不可绕过的网络
