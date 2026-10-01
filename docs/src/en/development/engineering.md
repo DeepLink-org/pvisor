@@ -105,11 +105,11 @@ and move shared semantics into their existing owner when changing behavior.
 CI builds the default core in isolation before building the capture-enabled distribution.
 `scripts/ci/check_core_budget.py` rejects Gateway, replay, TUI and terminal dependencies
 in the default core and records the toolchain, dependency count, source lines, Control
-public declarations and binary bytes. Linux budgets are 230 dependencies, 44,852 workspace
-source lines and 262 Control public declarations; only lower these budgets. Binary size
+public declarations and binary bytes. Linux budgets are 230 dependencies, 44,267 workspace
+source lines and 242 Control public declarations; only lower these budgets. Binary size
 is initially recorded to establish a comparable platform baseline.
 
-The 2026-10-01 working-tree comparison reduced Rust from 102,305 to 101,853 lines (452 fewer).
+The 2026-10-01 working-tree comparison reduced Rust from 102,305 to 101,205 lines (1100 fewer).
 The default macOS arm64 core with rustc 1.98.0 has 226 dependencies and a 9,657,184-byte
 release binary. Closure source lines count `crates/*/src/**/*.rs`; public declarations
 are a syntax count, not a deduplicated exported API count. Moving TUI/replay does not

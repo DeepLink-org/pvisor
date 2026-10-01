@@ -83,7 +83,7 @@ pub struct RunRecord {
     #[serde(default)]
     pub network_interception_metrics: Option<pvisor_overlaynet::InterceptionSnapshot>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
-    pub filesystem_observation: Option<pvisor_control::ir::run::FilesystemObservation>,
+    pub filesystem_observation: Option<pvisor_control::run_plan::FilesystemObservation>,
     pub gateway_listen: Option<String>,
     pub network: serde_json::Value,
     #[serde(default, skip_serializing_if = "Option::is_none")]
@@ -100,7 +100,7 @@ pub struct RunRecord {
     #[serde(default, skip_serializing_if = "std::collections::BTreeMap::is_empty")]
     pub orchestration: std::collections::BTreeMap<String, serde_json::Value>,
     #[serde(skip)]
-    pub run_plan: Option<pvisor_control::ir::run::RunPlan>,
+    pub run_plan: Option<pvisor_control::run_plan::RunPlan>,
 }
 
 impl RunRecord {

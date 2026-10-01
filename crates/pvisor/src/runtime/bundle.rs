@@ -41,9 +41,9 @@ pub struct RunBundle {
     #[serde(default, skip_serializing_if = "std::collections::BTreeMap::is_empty")]
     pub orchestration: std::collections::BTreeMap<String, serde_json::Value>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
-    pub run_plan: Option<pvisor_control::ir::run::RunPlan>,
+    pub run_plan: Option<pvisor_control::run_plan::RunPlan>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
-    pub run_observation: Option<pvisor_control::ir::run::RunObservation>,
+    pub run_observation: Option<pvisor_control::run_plan::RunObservation>,
     #[serde(default)]
     pub artifacts: Vec<BundleArtifact>,
 }

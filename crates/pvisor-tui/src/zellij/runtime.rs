@@ -8,7 +8,7 @@ use anyhow::{Context, Result};
 use pvisor::cli::terminal::{AUDIT_SOCKET, CHILD_MARKER, LOG_FILE, STAGE_FILE};
 use pvisor::{RunRecord, control_observations};
 use pvisor_control::audit::{AuditDecision, AuditRequest};
-use pvisor_control::ir::run::FilesystemObservation;
+use pvisor_control::run_plan::FilesystemObservation;
 use std::ffi::OsString;
 use std::fs::{File, OpenOptions};
 use std::io::{Read, Write};

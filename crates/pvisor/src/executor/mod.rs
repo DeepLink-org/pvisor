@@ -25,7 +25,7 @@ pub(crate) struct AttemptAttachments {
 pub(crate) use crate::session::Session;
 
 /// The production execution boundary: consumes the resolved RunSpec and controls.
-/// RunPlan IR is an audit projection, not an arbitrary-expression dispatch API.
+/// RunPlan is an audit projection, not an arbitrary-expression dispatch API.
 #[async_trait]
 pub trait RunExecutor: Send + Sync {
     fn descriptor(&self) -> ExecutorPlan;

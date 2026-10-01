@@ -22,7 +22,7 @@ Gateway。使用 `--record-destination ./capture` 将 Trace Event journal 写入
 
 ### 事件时间戳与顺序
 
-默认输出为 `events.trace.jsonl`：先写 `pvisor.trace/3` 文件头，再写包含 Event 与
+默认输出为 `events.trace.jsonl`：先写 `pvisor.trace/4` 文件头，再写包含 Event 与
 `{journal, offset}` 的记录。观测时间为 `event.observed_at_unix_ms`，跨生产者因果使用
 `event.caused_by`，不能从时间戳推导。
 

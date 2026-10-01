@@ -257,7 +257,7 @@ fn panel_lines(snapshot: &Snapshot, panel: Panel, started: Instant, width: usize
                 paths.sort_by(|left, right| {
                     let priority = |operations: &std::collections::BTreeMap<
                         _,
-                        pvisor_control::ir::run::PathOperationCounters,
+                        pvisor_control::run_plan::PathOperationCounters,
                     >| {
                         operations.values().fold((0u64, 0u64, 0u64), |sum, counts| {
                             (
@@ -783,7 +783,7 @@ pub(super) fn render(
 mod tests {
     use super::*;
     use pvisor_control::audit::{AuditKind, AuditRequest};
-    use pvisor_control::ir::run::PathOperationCounters;
+    use pvisor_control::run_plan::PathOperationCounters;
 
     fn size(cols: u16, rows: u16) -> libc::winsize {
         libc::winsize {
@@ -797,7 +797,7 @@ mod tests {
     #[test]
     fn review_panels_show_denied_file_and_network_targets() {
         let mut snapshot = Snapshot::default();
-        let mut filesystem = pvisor_control::ir::run::FilesystemObservation::default();
+        let mut filesystem = pvisor_control::run_plan::FilesystemObservation::default();
         filesystem.paths.insert(
             "secrets/key.pem".into(),
             std::collections::BTreeMap::from([(

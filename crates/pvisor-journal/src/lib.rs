@@ -3,9 +3,9 @@
 
 use anyhow::{Context as _, Result, ensure};
 use fs2::FileExt;
-use pvisor_control::{
-    ir::MAX_TEXT_BYTES,
-    trace::{Durability, Event, Fact, Granularity, Level, Position, Receipt, Record, VERSION},
+use pvisor_control::trace::{
+    Durability, Event, Fact, Granularity, Level, MAX_EVENT_BYTES, Position, Receipt, Record,
+    VERSION,
 };
 use serde::{Deserialize, Serialize};
 use sha2::{Digest, Sha256};
@@ -106,7 +106,7 @@ impl Journal {
         let (id, records) = if file.metadata()?.len() == 0 {
             let id = uuid::Uuid::new_v4().to_string();
             let header = Header {
-                format: "pvisor.trace/3".into(),
+                format: format!("pvisor.trace/{VERSION}"),
                 journal: id.clone(),
             };
             serde_json::to_writer(&mut file, &header)?;
@@ -273,9 +273,9 @@ fn scan(file: &mut File, repair_tail: bool) -> Result<(String, Vec<Record>)> {
     let mut line = Vec::new();
     read_line(&mut reader, &mut line)?;
     ensure!(line.last() == Some(&b'\n'), "incomplete trace header");
-    let header: Header = serde_json::from_slice(&line).context("not a v3 trace journal")?;
+    let header: Header = serde_json::from_slice(&line).context("not a trace journal")?;
     ensure!(
-        header.format == "pvisor.trace/3"
+        header.format == format!("pvisor.trace/{VERSION}")
             && !header.journal.is_empty()
             && header.journal.len() <= 256,
         "unsupported journal header"
@@ -321,10 +321,10 @@ fn scan(file: &mut File, repair_tail: bool) -> Result<(String, Vec<Record>)> {
 
 fn read_line(reader: &mut impl BufRead, bytes: &mut Vec<u8>) -> Result<usize> {
     let size = reader
-        .take((MAX_TEXT_BYTES + 4097) as u64)
+        .take((MAX_EVENT_BYTES + 4097) as u64)
         .read_until(b'\n', bytes)?;
     ensure!(
-        size <= MAX_TEXT_BYTES + 4096,
+        size <= MAX_EVENT_BYTES + 4096,
         "trace record exceeds size limit"
     );
     Ok(size)
@@ -385,17 +385,16 @@ impl Trace {
         data: Fact,
     ) -> Event {
         let granularity = match data {
-            Fact::Rewritten { .. } => Granularity::Milestone,
             Fact::Context { .. } => Granularity::Detail,
             _ => Granularity::Operation,
         };
         let level = match &data {
             Fact::Completed {
-                outcome: pvisor_control::ir::Outcome::Error { failure },
+                outcome: pvisor_control::run_plan::Outcome::Error { failure },
                 ..
             } => match failure {
-                pvisor_control::ir::Failure::Denied { .. }
-                | pvisor_control::ir::Failure::Unsupported { .. } => Level::Warn,
+                pvisor_control::run_plan::Failure::Denied { .. }
+                | pvisor_control::run_plan::Failure::Unsupported { .. } => Level::Warn,
                 _ => Level::Error,
             },
             _ => Level::Info,

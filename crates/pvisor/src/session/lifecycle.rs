@@ -268,7 +268,7 @@ impl Session {
     pub(crate) async fn complete(
         mut self,
         executor: Arc<dyn RunExecutor>,
-        run_plan: pvisor_control::ir::run::RunPlan,
+        run_plan: pvisor_control::run_plan::RunPlan,
         safe_profile_requested: bool,
     ) -> RunResult {
         let _server = self.server.take();
@@ -367,7 +367,7 @@ impl Session {
         &self,
         result: &mut RunResult,
         mut teardown: Option<AttemptTeardown>,
-        run_plan: &pvisor_control::ir::run::RunPlan,
+        run_plan: &pvisor_control::run_plan::RunPlan,
         safe_profile_requested: bool,
     ) {
         result.finished_at_unix_ms = unix_now_ms();
@@ -392,9 +392,9 @@ impl Session {
                     "filesystem": teardown.as_ref().and_then(|t| t.run_record().filesystem_observation.as_ref()),
                 });
                 fail_finalization(result, format!("invalid Run observation: {error:#}"));
-                pvisor_control::ir::run::RunObservation {
-                    outcome: pvisor_control::ir::Outcome::Error {
-                        failure: pvisor_control::ir::Failure::Unknown {
+                pvisor_control::run_plan::RunObservation {
+                    outcome: pvisor_control::run_plan::Outcome::Error {
+                        failure: pvisor_control::run_plan::Failure::Unknown {
                             reason: error.to_string(),
                             known_effects,
                         },
@@ -433,7 +433,7 @@ impl Session {
         if let Err(error) = self
             .events()
             .publish_fact(pvisor_control::trace::Fact::Completed {
-                expression: run_plan.expression.clone(),
+                run_id: run_plan.run_id.clone(),
                 outcome: run_observation.outcome.clone(),
                 origin: result.executor_observations.origin,
             })
@@ -539,7 +539,7 @@ fn failed_output(message: String) -> ExecutorOutput {
 
 fn terminal_payload(
     result: &RunResult,
-    observation: &pvisor_control::ir::run::RunObservation,
+    observation: &pvisor_control::run_plan::RunObservation,
 ) -> serde_json::Value {
     json!({
         "state": result.state,

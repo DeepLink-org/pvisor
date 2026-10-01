@@ -29,7 +29,7 @@ story actor does not produce a Markdown projection.
 
 ### Event timestamps and ordering
 
-The default file is `events.trace.jsonl`: a `pvisor.trace/3` header followed by
+The default file is `events.trace.jsonl`: a `pvisor.trace/4` header followed by
 records pairing an immutable `Event` with `{journal, offset}`. Observation time
 is `event.observed_at_unix_ms`; it does not establish cross-producer order.
 Causal links use `event.caused_by`.

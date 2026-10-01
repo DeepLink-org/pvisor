@@ -1,11 +1,12 @@
-//! Events distinguish the immutable request, derived execution expressions and
+//! Events distinguish the immutable Run plan, execution dispatch and
 //! observed results. Event identity, operation identity and position are separate.
-use crate::ir::{Context, Expression, MAX_TEXT_BYTES, Outcome, Rule};
+use crate::run_plan::{Context, Outcome, RunPlan};
 use anyhow::{Result, ensure};
 use serde::{Deserialize, Serialize};
 use serde_json::Value;
 
-pub const VERSION: u16 = 3;
+pub const VERSION: u16 = 4;
+pub const MAX_EVENT_BYTES: usize = 1024 * 1024;
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(rename_all = "snake_case")]
 pub enum Level {
@@ -46,20 +47,14 @@ pub enum Fact {
         definition: Context,
     },
     Requested {
-        request: Expression,
-    },
-    Rewritten {
-        rule: Rule,
-        pass: usize,
-        before: Expression,
-        after: Expression,
+        plan: RunPlan,
     },
     Dispatched {
         backend: String,
-        expression: Expression,
+        run_id: String,
     },
     Completed {
-        expression: Expression,
+        run_id: String,
         outcome: Outcome,
         origin: Origin,
     },
@@ -81,19 +76,9 @@ pub enum Origin {
 impl Fact {
     pub fn domain(&self) -> &str {
         match self {
-            Self::Rewritten { .. } => "policy",
             Self::Observation { domain, .. } => domain,
             Self::Context { .. } => "execution",
-            Self::Requested { request } => match request.operation.code() {
-                crate::ir::OpCode::Run => "run",
-                _ => "filesystem",
-            },
-            Self::Dispatched { expression, .. } | Self::Completed { expression, .. } => {
-                match expression.operation.code() {
-                    crate::ir::OpCode::Run => "run",
-                    _ => "filesystem",
-                }
-            }
+            Self::Requested { .. } | Self::Dispatched { .. } | Self::Completed { .. } => "run",
         }
     }
 }
@@ -104,7 +89,6 @@ impl Event {
             Fact::Observation { name, .. } => name,
             Fact::Context { .. } => "context",
             Fact::Requested { .. } => "requested",
-            Fact::Rewritten { .. } => "rewritten",
             Fact::Dispatched { .. } => "dispatched",
             Fact::Completed { .. } => "completed",
         }
@@ -157,33 +141,16 @@ impl Event {
                     "invalid context fact"
                 );
             }
-            Fact::Requested { request } => request.validate()?,
-            Fact::Rewritten {
-                rule,
-                pass,
-                before,
-                after,
-            } => {
-                ensure!(*pass < 32, "invalid rewrite pass");
-                ensure!(
-                    rule.apply(before)? == *after,
-                    "recorded rewrite does not follow its rule"
-                );
-            }
-            Fact::Dispatched {
-                backend,
-                expression,
-            } => {
+            Fact::Requested { plan } => plan.validate()?,
+            Fact::Dispatched { backend, run_id } => {
                 ensure!(!backend.trim().is_empty(), "invalid backend");
-                expression.validate()?;
+                ensure!(!run_id.is_empty(), "empty Run identity");
             }
             Fact::Completed {
-                expression,
-                outcome,
-                ..
+                run_id, outcome, ..
             } => {
-                expression.validate()?;
-                expression.operation.check_outcome(outcome)?;
+                ensure!(!run_id.is_empty(), "empty Run identity");
+                outcome.validate()?;
             }
             Fact::Observation {
                 domain,
@@ -191,8 +158,8 @@ impl Event {
                 version,
                 ..
             } => {
-                crate::ir::symbol(domain)?;
-                crate::ir::symbol(name)?;
+                crate::run_plan::symbol(domain)?;
+                crate::run_plan::symbol(name)?;
                 ensure!(*version > 0, "invalid observation version");
             }
         }
@@ -203,7 +170,7 @@ impl Event {
             );
         }
         ensure!(
-            serde_json::to_vec(self)?.len() <= MAX_TEXT_BYTES,
+            serde_json::to_vec(self)?.len() <= MAX_EVENT_BYTES,
             "event exceeds size limit"
         );
         Ok(())
@@ -219,29 +186,20 @@ impl Event {
                 serde_json::to_string(&definition.policy)?,
                 definition.revision
             ),
-            Fact::Requested { request } => format!("requested {request}"),
-            Fact::Rewritten {
-                rule,
-                pass,
-                before,
-                after,
-            } => format!(
-                "rewritten rule={}@{} pass={} [{before}] => [{after}]",
-                rule.id, rule.version, pass
-            ),
-            Fact::Dispatched {
-                backend,
-                expression,
-            } => format!(
-                "dispatched backend={} {expression}",
-                serde_json::to_string(backend)?
+            Fact::Requested { plan } => format!("requested {}", serde_json::to_string(plan)?),
+            Fact::Dispatched { backend, run_id } => format!(
+                "dispatched backend={} run={}",
+                serde_json::to_string(backend)?,
+                serde_json::to_string(run_id)?
             ),
             Fact::Completed {
-                expression,
+                run_id,
                 outcome,
                 origin,
             } => format!(
-                "completed {expression} => {outcome} origin={}",
+                "completed run={} => {} origin={}",
+                serde_json::to_string(run_id)?,
+                serde_json::to_string(outcome)?,
                 serde_json::to_string(origin)?
             ),
             Fact::Observation {

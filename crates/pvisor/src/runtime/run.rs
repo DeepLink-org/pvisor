@@ -292,7 +292,7 @@ pub(crate) struct ResolvedRun {
     pub(crate) executor: Arc<dyn RunExecutor>,
     pub(crate) descriptor: ExecutorPlan,
     pub(crate) vm_network_executor: bool,
-    pub(crate) plan: pvisor_control::ir::run::RunPlan,
+    pub(crate) plan: pvisor_control::run_plan::RunPlan,
     pub(crate) network_policy: pvisor_control::NetworkPolicy,
 }
 
@@ -325,7 +325,7 @@ impl PVisor {
     pub fn resolve_run_plan(
         &self,
         spec: RunSpec,
-    ) -> Result<pvisor_control::ir::run::RunPlan, PVisorError> {
+    ) -> Result<pvisor_control::run_plan::RunPlan, PVisorError> {
         Ok(self.resolve_run(spec)?.plan)
     }
 
@@ -446,7 +446,7 @@ impl PVisor {
         )
         .map_err(PVisorError::Prepare)?;
         spec.metadata.insert(
-            "pvisor.ir.run_plan".into(),
+            "pvisor.run_plan".into(),
             serde_json::to_value(&run_plan).map_err(|error| PVisorError::Prepare(error.into()))?,
         );
         // Admission publishes only a plan; installed evidence comes from executors.
@@ -1027,11 +1027,15 @@ mod tests {
             .iter()
             .filter(|event| event.operation.is_some())
             .collect();
-        assert!(
-            phases
-                .iter()
-                .any(|event| matches!(event.data, pvisor_control::trace::Fact::Requested { .. }))
-        );
+        assert!(matches!(
+            &phases[0].data,
+            pvisor_control::trace::Fact::Requested { plan }
+                if plan.run_id == "run-success" && plan.placements.is_empty()
+        ));
+        assert!(matches!(
+            &phases[1].data,
+            pvisor_control::trace::Fact::Dispatched { run_id, .. } if run_id == "run-success"
+        ));
         assert!(matches!(
             phases.last().unwrap().data,
             pvisor_control::trace::Fact::Completed { .. }

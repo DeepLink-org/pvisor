@@ -8,11 +8,11 @@
 pub mod audit;
 pub mod client;
 mod file_access;
-pub mod ir;
 pub mod network;
 pub mod overlay;
 pub mod policy;
 pub mod protocol;
+pub mod run_plan;
 pub mod runtime;
 pub mod session;
 mod time;

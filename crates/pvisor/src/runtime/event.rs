@@ -182,7 +182,7 @@ impl RunEventPublisher {
     }
     pub async fn begin_execution(
         &self,
-        plan: &pvisor_control::ir::run::RunPlan,
+        plan: &pvisor_control::run_plan::RunPlan,
         backend: &str,
     ) -> Result<()> {
         let mut context = plan.context.clone();
@@ -191,25 +191,11 @@ impl RunEventPublisher {
             definition: context,
         })
         .await?;
-        self.publish_fact(Fact::Requested {
-            request: plan.request.clone(),
-        })
-        .await?;
-        let mut before = plan.request.clone();
-        for (pass, rule) in plan.rewrites.iter().enumerate() {
-            let after = rule.apply(&before)?;
-            self.publish_fact(Fact::Rewritten {
-                rule: rule.clone(),
-                pass,
-                before,
-                after: after.clone(),
-            })
+        self.publish_fact(Fact::Requested { plan: plan.clone() })
             .await?;
-            before = after;
-        }
         self.publish_fact(Fact::Dispatched {
             backend: backend.to_string(),
-            expression: plan.expression.clone(),
+            run_id: plan.run_id.clone(),
         })
         .await?;
         Ok(())

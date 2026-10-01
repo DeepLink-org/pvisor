@@ -1051,14 +1051,14 @@ fn orchestration_from_spec(
         .collect()
 }
 
-fn run_plan_from_spec(spec: &RunSpec) -> anyhow::Result<Option<pvisor_control::ir::run::RunPlan>> {
-    let Some(value) = spec.metadata.get("pvisor.ir.run_plan") else {
+fn run_plan_from_spec(spec: &RunSpec) -> anyhow::Result<Option<pvisor_control::run_plan::RunPlan>> {
+    let Some(value) = spec.metadata.get("pvisor.run_plan") else {
         return Ok(None);
     };
-    let plan: pvisor_control::ir::run::RunPlan = serde_json::from_value(value.clone())?;
+    let plan: pvisor_control::run_plan::RunPlan = serde_json::from_value(value.clone())?;
     plan.validate()?;
     anyhow::ensure!(
-        plan.expression.operation.file() == spec.run_id.as_str(),
+        plan.run_id == spec.run_id.as_str(),
         "Run plan identity does not match the prepared Run"
     );
     Ok(Some(plan))

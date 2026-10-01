@@ -166,7 +166,7 @@ pub fn review(args: ReviewArgs) -> anyhow::Result<()> {
         let mut paths = observed.paths.iter().collect::<Vec<_>>();
         paths.sort_by(|left, right| {
             let priority =
-                |operations: &BTreeMap<_, pvisor_control::ir::run::PathOperationCounters>| {
+                |operations: &BTreeMap<_, pvisor_control::run_plan::PathOperationCounters>| {
                     operations.values().fold((0u64, 0u64, 0u64), |sum, counts| {
                         (
                             sum.0 + counts.denied,

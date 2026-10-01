@@ -139,7 +139,7 @@ pub(crate) fn read_observations(path: &Path) -> Result<Vec<Value>, ReplayError> 
     let first = first.replay_context(ReplayErrorKind::AmbiguousExecution, "read replay header")?;
     let header: Value = serde_json::from_str(&first)
         .replay_context(ReplayErrorKind::AmbiguousExecution, "parse replay header")?;
-    if header["format"] != "pvisor.trace/3"
+    if header["format"] != format!("pvisor.trace/{}", pvisor_control::trace::VERSION)
         || header["journal"]
             .as_str()
             .is_none_or(|id| id.is_empty() || id.len() > 256)

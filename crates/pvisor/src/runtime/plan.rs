@@ -1,16 +1,13 @@
-//! Project the admitted RunSpec and runtime boundary into immutable Run IR.
+//! Project the admitted RunSpec and runtime boundary into an immutable RunPlan.
 //! Execution and policy enforcement remain in the Run runtime and its drivers.
 
 use super::OverlayHint;
 use pvisor_control::{
     CapabilityDimension, CapabilityEnforcementPlan, ExecutorKind, ExecutorPlan, FilesystemAccess,
     NetworkCapability, RunResult, RunSpec, RunState,
-    ir::run::{
-        FilesystemObservation, PlanRule, RUN_PLAN_VERSION, RuleCounters, RunObservation, RunPlan,
-    },
-    ir::{
-        Binding, Context, Expression, Failure, Layer, OpCode, Operation, Outcome, Pattern, Rewrite,
-        Rule, Value,
+    run_plan::{
+        Binding, Context, Failure, FilesystemObservation, Outcome, Placement, PlanRule,
+        RUN_PLAN_VERSION, RuleCounters, RunObservation, RunPlan, Value,
     },
 };
 use std::collections::BTreeMap;
@@ -21,30 +18,16 @@ pub(crate) fn compile(
     evidence: &CapabilityEnforcementPlan,
     overlay: &OverlayHint,
 ) -> anyhow::Result<RunPlan> {
-    let request = Expression::new(Operation::Run {
-        run_id: spec.run_id.as_str().to_owned(),
-    });
-    let mut expression = request.clone();
-    let mut rewrites = Vec::new();
+    let mut placements = Vec::new();
     if executor.kind == ExecutorKind::VirtualMachine {
-        append_placement(
-            &mut expression,
-            &mut rewrites,
-            "placement.vm",
-            Layer::Vm {
-                name: executor.name.clone(),
-            },
-        )?;
+        placements.push(Placement::Vm {
+            name: executor.name.clone(),
+        });
     }
     if overlay.stage_dir.is_some() {
-        append_placement(
-            &mut expression,
-            &mut rewrites,
-            "placement.overlay",
-            Layer::Overlay {
-                name: "pvisor-stage".into(),
-            },
-        )?;
+        placements.push(Placement::Overlay {
+            name: "pvisor-stage".into(),
+        });
     }
     let mut bindings = BTreeMap::new();
     bindings.insert(
@@ -230,36 +213,12 @@ pub(crate) fn compile(
     let plan = RunPlan {
         version: RUN_PLAN_VERSION,
         context,
-        request,
-        rewrites,
-        expression,
+        run_id: spec.run_id.as_str().to_owned(),
+        placements,
         rules,
     };
     plan.validate()?;
     Ok(plan)
-}
-
-fn append_placement(
-    expression: &mut Expression,
-    rewrites: &mut Vec<Rule>,
-    id: &str,
-    layer: Layer,
-) -> anyhow::Result<()> {
-    let rule = Rule {
-        id: id.into(),
-        version: 1,
-        pattern: Pattern {
-            operation: OpCode::Run,
-            file: Some(expression.operation.file().into()),
-            contexts: Some(expression.contexts.clone()),
-        },
-        rewrite: Rewrite::Append {
-            contexts: vec![layer],
-        },
-    };
-    *expression = rule.apply(expression)?;
-    rewrites.push(rule);
-    Ok(())
 }
 
 pub(crate) fn observe(
@@ -366,7 +325,7 @@ mod tests {
         let mut filesystem = FilesystemObservation::default();
         filesystem.paths.entry("file".into()).or_default().insert(
             "read".into(),
-            pvisor_control::ir::run::PathOperationCounters {
+            pvisor_control::run_plan::PathOperationCounters {
                 hits: 1,
                 ..Default::default()
             },
