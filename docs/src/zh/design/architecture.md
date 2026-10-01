@@ -40,7 +40,7 @@ CLI／嵌入调用方
 
 ## 一个生命周期所有者
 
-对外的工作单元叫 Job；Run 是保留在 API 和磁盘格式中的内部记录；Attempt 是一次执行。当前每次 `PVisor::run` 创建一个 Attempt，由 pvisor 中的 `Session` 统一持有和管理。
+当前每次 `PVisor::run` 创建一个 Attempt，由 pvisor 中的 `Session` 统一持有和管理；Job、Run 与 Attempt 的身份区分见[执行模型](../concepts/run-model.md)。
 
 Session 负责驱动准备、AgentCtl server、取消与超时、执行后清理、观察检查、Bundle 保存及终态公布。执行器返回 `ExecutorOutput`，不自行分配 Job／Attempt 身份或公布终态。`RunHandle` 提供状态、取消、checkpoint 和事件订阅；取消请求不等于执行已经停止。
 
@@ -48,23 +48,15 @@ Process／VM 清理其受管理的进程组；容器使用 runtime 的终止接�
 
 ## Event 是观察接口
 
-```text
-Context → Requested → [Rewritten] → Placed → Dispatched → Completed
-```
-
-这条链描述操作事实；生命周期、文件、网络及 Gateway 还可发布领域 Observation。外部观察的是 Event，不需要依赖 Session 的内部字段。事件身份、操作身份和已知因果引用把同一次执行关联起来。具体字段、失败路径和记录边界见 [Operation 与 Event](operations-events.md)。
+外部观察的是 Event，不需要依赖 Session 的内部字段。事件链、身份、因果引用与记录边界见 [Operation 与 Event](operations-events.md)。
 
 当前实现先准备驱动，再提交启动事实，最后调用执行器。必要启动事实提交失败会阻止执行器派发并清理准备资源；这不代表准备阶段完全没有文件或 socket 副作用。
 
-同一生产者有序提交事实，Journal 位置表示提交顺序。pVisor 必须保持已知依赖：依赖前一步结果的处理不能提前执行。这个要求不意味着不同 Job 有全局副作用顺序，也不意味着时间戳能推导并发进程之间的因果。
-
 ## 策略、控制与证据
 
-策略决定允许怎样执行；准入计划说明执行器准备提供什么；执行后的观察说明实际安装了什么。三个层次分别记录，不能互相替代。
+策略、准入计划与执行后观察是三个独立层次，不能互相替代；`ExecutorPlan`／`ExecutorObservations` 的等级与证据口径见[能力与证据](../concepts/capabilities-and-evidence.md)。
 
 core 共享文件／网络策略求值。user、workspace、session 和执行器基础策略共同约束权限，后面的 allow 不能覆盖前面的显式拒绝。实际授权、拦截和控制安装由 pvisor 与驱动落实。
-
-`ExecutorPlan` 的最高控制等级为 Planned。执行器返回 `ExecutorObservations`，Bundle 的安全摘要从这些观察派生。Enforce 模式缺少必需控制证据时失败；metadata、执行器名称和捕获事件不能生成强制力证据。详细口径见[能力与证据](../concepts/capabilities-and-evidence.md)。
 
 ## 记录与文件应用
 
@@ -77,4 +69,4 @@ core 共享文件／网络策略求值。user、workspace、session 和执行器
 
 这些记录各有范围。Event 可以重建已观察到的操作过程，无法仅凭日志恢复全部外部状态。Agent 原生轨迹 replay 也不是任意副作用的确定性重放。
 
-暂存文件先审查再应用。OverlayCore 负责目标校验、持久化应用意图、更新及恢复；一个批次不是原子文件系统事务。`apply`、`drop` 和文件检查点不撤销远程 API 或数据库修改。操作流程见[审查与应用](../guides/review-apply.md)。
+暂存文件先审查再应用。OverlayCore 负责目标校验、持久化应用意图、更新及恢复；一个批次不是原子文件系统事务。`apply`、`drop` 与文件检查点的恢复范围及不能撤销的外部副作用见[能力与证据](../concepts/capabilities-and-evidence.md)，操作流程见[审查与应用](../guides/review-apply.md)。

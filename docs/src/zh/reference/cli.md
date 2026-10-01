@@ -1,8 +1,7 @@
 # `pvisor` 命令参考
 
-Job 是 pVisor 面向用户的核心对象：一次受管理的命令、执行证据以及暂存文件改动。
-`pvisor run` 创建 Job；其余扁平命令直接操作 Job，不新增 `job` 子命令。
-`replay` 从轨迹创建 Job。现有 Job ID 和磁盘记录仍保留
+Job 是 pVisor 面向用户的核心对象；`pvisor run` 创建 Job，其余扁平命令直接操作它，不新增 `job` 子命令，
+`replay` 从轨迹创建 Job。Job、Run 与 Attempt 的关系见[执行模型](../concepts/run-model.md)；现有 Job ID 和磁盘记录仍保留
 `run-*`、`Run Bundle` 等名称。
 Host、OCI VM 和透明 host-rootfs VM 的完整命令示例见
 [使用 pVisor 运行工作负载](../guides/execution.md)。

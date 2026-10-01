@@ -32,8 +32,8 @@ pvisor run --stage ./runs/task-001 -- AGENT_COMMAND
 
 ## 请求的 capability 没有被强制执行
 
-把请求参数理解为意图，而不是证据。打开 Run Bundle，查看实际 capability record 与对应机制。
-不同操作系统和 executor 的支持范围不同；例如 cooperative network proxy 不能保证所有
+把请求参数理解为意图，而不是证据；打开 Run Bundle，查看实际 capability record 与对应机制，证据口径见[能力与证据](../concepts/capabilities-and-evidence.md)。
+不同 executor 的支持范围不同，例如 cooperative network proxy 不能保证所有
 ambient connection 都被阻断。
 
 ## stage 为空或出现了错误文件

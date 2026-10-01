@@ -1,9 +1,10 @@
 # `pvisor` command reference
 
-The Job is pVisor's primary user-facing object: one managed command, its
-execution evidence, and any staged filesystem changes. `pvisor run` creates a
+The Job is pVisor's primary user-facing object. `pvisor run` creates a
 Job. The other flat commands act directly on that Job; there is no `job`
-subcommand. `replay` starts a Job from a trajectory. Existing Job IDs and on-disk records retain their `run-*`
+subcommand. `replay` starts a Job from a trajectory. See the
+[execution model](../../zh/concepts/run-model.md) for how Job, Run, and Attempt
+relate; existing Job IDs and on-disk records retain their `run-*`
 and `Run Bundle` names.
 Full command examples for Host, OCI VM, and transparent host-rootfs VM
 are in

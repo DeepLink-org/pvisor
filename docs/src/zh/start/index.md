@@ -11,7 +11,7 @@ Python 包和 CLI 统一使用 `pvisor`。
 3. 把示例命令换成你的脚本、自动化命令或 Agent CLI。
 4. [审查并应用](../guides/review-apply.md)需要保留的改动。
 
-使用 `--safe` 或 `--stage PATH` 暂存工作区改动，退出后再审查。默认行为及 HOME、VM 根目录的区别见 [暂存与存储](../reference/cli.md#暂存与存储)。文件暂存不会撤销网络请求或外部服务中的变更。
+使用 `--safe` 或 `--stage PATH` 暂存工作区改动，退出后再审查。默认行为及 HOME、VM 根目录的区别见 [暂存与存储](../reference/cli.md#暂存与存储)，暂存能覆盖和不能覆盖的范围见[能力与证据](../concepts/capabilities-and-evidence.md)。
 
 ## 按问题查找
 

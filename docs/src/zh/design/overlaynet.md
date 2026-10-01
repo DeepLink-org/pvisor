@@ -145,20 +145,13 @@ socket 面。除非未覆盖通道都被拒绝，它不被视为与 netns driver
 
 ## Capability 报告
 
-每个 Attempt 的选择决定是否挂上不可绕过 driver；runtime capability catalog
-另行通告 VM 网络支持。每次 Run 记录一份 `InterceptionProfile`，描述 driver、
-强度和协议覆盖：
+每次 Run 记录一份 `InterceptionProfile`，描述 driver、强度和协议覆盖：VM smoltcp、
+netns 或 seccomp 激活时为 `enforce`，仅有显式代理时为 `observe`。profile 随显式
+代理基础发成 `cooperative`，并发布 intercepted/allowed/denied/CONNECT/HTTP/sink/failure
+计数；这些计数只说明什么到达了 OverlayNet，不估计被绕过的流量。
 
-- 当 VM smoltcp、netns 或 seccomp 激活时为 `enforce`；
-- 仅有显式代理时为 `observe`。
-
-显式代理基础已经把该 profile 发成 `cooperative`，并发布
-intercepted/allowed/denied/CONNECT/HTTP/sink/failure 计数。这些计数证明什么
-到达了 OverlayNet；它们不估计被绕过的流量。
-
-诚实不变量得以保持：host `ProcessExecutor` 本身仍然从不声称网络
-enforcement；声称由当前 OverlayNet driver 做出，且只有在该 driver 已挂上时
-`PolicyMode::Enforce` 才可满足。
+host `ProcessExecutor` 本身从不声称网络 enforcement；声称由当前 OverlayNet driver
+做出，且只有在该 driver 已挂上时 `PolicyMode::Enforce` 才可满足。
 
 ## 配置
 

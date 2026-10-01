@@ -1,8 +1,6 @@
 # pVisor 命令模型
 
-Job 是 CLI 的核心对象：一次受管理的命令、执行证据和暂存改动。`pvisor run` 创建
-Job；`status`、`kill`、`inspect`、`fork`、`apply`、`drop` 直接操作 Job，
-命令保持扁平。`replay` 从已有轨迹创建 Job。
+Job 是 CLI 的核心对象，命令保持扁平：`pvisor run` 创建 Job，`status`、`kill`、`inspect`、`fork`、`apply`、`drop` 直接操作它，`replay` 从已有轨迹创建 Job；Job、Run 与 Attempt 的关系见[执行模型](../concepts/run-model.md)。
 内部仍用 Run 记录保存 Job，配置类型仍是 `RunConfig`；配置文件必须显式传入，
 不会被当作隐式项目策略。
 
@@ -52,7 +50,7 @@ pvisor apply last --all
 
 ## Checkpoint 与 Fork
 
-`fork` 默认先为已停止 Job 的文件系统创建逻辑检查点，再启动子 Job；检查点不保存进程内存：
+`fork` 默认先为已停止 Job 的文件系统创建逻辑检查点，再启动子 Job（检查点范围见[执行模型](../concepts/run-model.md)）：
 
 ```bash
 pvisor fork last -- codex
