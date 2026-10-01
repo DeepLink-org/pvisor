@@ -11,7 +11,7 @@ use axum::http::{Method, StatusCode};
 use axum::response::{IntoResponse, Response};
 use axum::routing::any;
 use pvisor_control::ControlController;
-use pvisor_control::{NetworkAccessRequest, NetworkTransport, RunId, StorylineId};
+use pvisor_control::{NetworkAccessRequest, NetworkTransport, RunId};
 
 use crate::bandwidth::{BandwidthRegistry, BandwidthSession, throttle_body};
 use crate::forward::{
@@ -26,7 +26,6 @@ pub struct OverlayRequestContext<T> {
     pub policy: NetworkPolicy,
     pub run_id: Option<String>,
     pub attempt_id: Option<String>,
-    pub storyline_id: Option<String>,
     pub session_id: String,
     pub sink: T,
 }
@@ -382,7 +381,6 @@ where
         NetworkAccessRequest {
             run_id: context.run_id.clone().map(RunId),
             attempt_id: context.attempt_id.clone().map(pvisor_control::AttemptId),
-            storyline_id: context.storyline_id.clone().map(StorylineId),
             host: host.to_string(),
             port,
             transport,
@@ -491,7 +489,6 @@ mod tests {
                 })?,
                 run_id: Some("run-1".into()),
                 attempt_id: Some("attempt-1".into()),
-                storyline_id: None,
                 session_id: "session-1".into(),
                 sink: (),
             })

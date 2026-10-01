@@ -1,9 +1,6 @@
 //! Stable value types shared by pVisor, Gateway, and storage contracts.
 //!
-//! The runtime and narrative dimensions are deliberately orthogonal:
-//!
-//! - one [`RunId`] may have multiple execution [`AttemptId`]s;
-//! - events may additionally belong to a [`StorylineId`], turn, and call.
+//! A local Run and its execution Attempt identify policy requests and results.
 
 use serde::{Deserialize, Serialize};
 use serde_json::Value;
@@ -54,7 +51,6 @@ macro_rules! string_id {
 
 string_id!(RunId);
 string_id!(AttemptId);
-string_id!(StorylineId);
 
 /// A versioned logical Agent reference. It describes identity, not placement.
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
@@ -82,10 +78,6 @@ pub struct RunSpec {
     #[serde(default = "runtime_schema_version")]
     pub schema_version: u32,
     pub run_id: RunId,
-    /// Monotonic ownership generation for durable fencing. Zero is reserved for
-    /// callers that do not use orchestration fencing.
-    #[serde(default)]
-    pub lease_epoch: u64,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub task_id: Option<String>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
@@ -113,7 +105,6 @@ impl RunSpec {
         Self {
             schema_version: RUNTIME_SCHEMA_VERSION,
             run_id: run_id.into(),
-            lease_epoch: 0,
             task_id: None,
             parent_run_id: None,
             agent: AgentRef::new(agent),
@@ -367,8 +358,6 @@ pub struct NetworkAccessRequest {
     pub run_id: Option<RunId>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub attempt_id: Option<AttemptId>,
-    #[serde(default, skip_serializing_if = "Option::is_none")]
-    pub storyline_id: Option<StorylineId>,
     pub host: String,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub port: Option<u16>,
@@ -395,8 +384,6 @@ pub struct ModelCallRequest {
     pub run_id: Option<RunId>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub attempt_id: Option<AttemptId>,
-    #[serde(default, skip_serializing_if = "Option::is_none")]
-    pub storyline_id: Option<StorylineId>,
     pub call_id: String,
     pub client_model: String,
     pub upstream_model: String,
@@ -798,8 +785,6 @@ pub struct ExecutorPlan {
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct AttemptInfo {
     pub attempt_id: AttemptId,
-    #[serde(default)]
-    pub lease_epoch: u64,
     pub number: u32,
     /// Admission-time plan, never runtime enforcement evidence.
     pub executor: ExecutorPlan,
@@ -865,8 +850,6 @@ pub struct ArtifactRef {
 pub struct RunResult {
     pub run_id: RunId,
     pub attempt_id: AttemptId,
-    #[serde(default)]
-    pub lease_epoch: u64,
     pub state: RunState,
     pub started_at_unix_ms: u64,
     pub finished_at_unix_ms: u64,
@@ -889,56 +872,6 @@ pub struct RunResult {
     pub warnings: Vec<String>,
     #[serde(default)]
     pub executor_observations: ExecutorObservations,
-}
-
-/// The current execution owner for one logical Run.
-#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
-pub struct RunLeaseRecord {
-    pub run_id: RunId,
-    #[serde(default, skip_serializing_if = "Option::is_none")]
-    pub task_id: Option<String>,
-    pub epoch: u64,
-    pub owner: String,
-    pub issued_at_unix_ms: u64,
-    pub expires_at_unix_ms: u64,
-    #[serde(default, skip_serializing_if = "Option::is_none")]
-    pub attempt_id: Option<AttemptId>,
-}
-
-/// Immutable terminal commit request. `result_digest` binds the commit to the
-/// durable completion record without embedding an arbitrarily large
-/// result in the control object.
-#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
-pub struct RunCommitRequest {
-    pub run_id: RunId,
-    #[serde(default, skip_serializing_if = "Option::is_none")]
-    pub task_id: Option<String>,
-    pub attempt_id: AttemptId,
-    pub lease_epoch: u64,
-    pub state: RunState,
-    #[serde(default, skip_serializing_if = "Option::is_none")]
-    pub event_high_watermark: Option<u64>,
-    pub result_digest: String,
-}
-
-/// The sole terminal result visible for a Run.
-#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
-pub struct RunCommit {
-    #[serde(flatten)]
-    pub request: RunCommitRequest,
-    pub committed_at_unix_ms: u64,
-}
-
-/// CAS-managed Run control record. Lease acquisition and terminal commit
-/// update this same object, closing the stale-lease/commit race.
-#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
-pub struct RunControlRecord {
-    pub revision: u64,
-    pub run_id: RunId,
-    #[serde(default, skip_serializing_if = "Option::is_none")]
-    pub lease: Option<RunLeaseRecord>,
-    #[serde(default, skip_serializing_if = "Option::is_none")]
-    pub commit: Option<RunCommit>,
 }
 
 #[cfg(test)]
@@ -964,6 +897,32 @@ mod tests {
             decoded.capabilities.network,
             NetworkCapability::AllowList { .. }
         ));
+    }
+
+    #[test]
+    fn local_request_and_result_wire_shapes_use_run_and_attempt_identity() {
+        let request = serde_json::json!({
+            "run_id": "local-run", "attempt_id": "local-attempt", "host": "api.example.com",
+            "port": 443, "transport": "https", "resolved_ip": "203.0.113.1"
+        });
+        let decoded: NetworkAccessRequest = serde_json::from_value(request.clone()).unwrap();
+        assert_eq!(serde_json::to_value(decoded).unwrap(), request);
+        let request = serde_json::json!({
+            "run_id": "local-run", "attempt_id": "local-attempt", "call_id": "call-1",
+            "client_model": "model", "upstream_model": "model", "provider": "provider",
+            "protocol": "openai", "upstream_host": "api.example.com"
+        });
+        let decoded: ModelCallRequest = serde_json::from_value(request.clone()).unwrap();
+        assert_eq!(serde_json::to_value(decoded).unwrap(), request);
+        let result = serde_json::json!({
+            "run_id": "local-run", "attempt_id": "local-attempt", "state": "completed",
+            "started_at_unix_ms": 1, "finished_at_unix_ms": 2,
+            "output": {"stdout_truncated": false, "stderr_truncated": false},
+            "metrics": {}, "artifacts": [], "warnings": [],
+            "executor_observations": {"origin": "backend", "enforcement": {"dimensions": {}}}
+        });
+        let decoded: RunResult = serde_json::from_value(result.clone()).unwrap();
+        assert_eq!(serde_json::to_value(decoded).unwrap(), result);
     }
 
     #[test]

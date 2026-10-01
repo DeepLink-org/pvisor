@@ -54,13 +54,11 @@ impl DelegatedRunFiles {
         &self,
         run_id: &pvisor_control::RunId,
         attempt_id: &AttemptId,
-        lease_epoch: u64,
     ) -> anyhow::Result<DelegatedRunOutput> {
         let mut output: DelegatedRunOutput =
             serde_json::from_slice(&std::fs::read(&self.result_path)?)?;
         output.result.run_id = run_id.clone();
         output.result.attempt_id = attempt_id.clone();
-        output.result.lease_epoch = lease_epoch;
         output.agentctl.run_id = run_id.to_string();
         output.agentctl.attempt_id = attempt_id.to_string();
         Ok(output)
@@ -70,6 +68,23 @@ impl DelegatedRunFiles {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn delegated_result_uses_the_owning_local_attempt_identity() {
+        let spec = RunSpec::process("outer-run", "agent", "/bin/sh");
+        let files = DelegatedRunFiles::new_with_stdio(&spec, false).unwrap();
+        let output = serde_json::json!({
+            "result": {"run_id":"inner-run", "attempt_id":"inner-attempt", "state":"completed", "started_at_unix_ms":1, "finished_at_unix_ms":2},
+            "agentctl": {"run_id":"inner-run", "attempt_id":"inner-attempt", "directive":"continue", "clients":[]}
+        });
+        write_private_json(&files.result_path, &output).unwrap();
+        let attempt_id = AttemptId::new("outer-attempt");
+        let output = files.read_result(&spec.run_id, &attempt_id).unwrap();
+        assert_eq!(output.result.run_id, spec.run_id);
+        assert_eq!(output.result.attempt_id, attempt_id);
+        assert_eq!(output.agentctl.run_id, "outer-run");
+        assert_eq!(output.agentctl.attempt_id, "outer-attempt");
+    }
 
     #[test]
     fn delegated_spec_drops_host_agentctl() {

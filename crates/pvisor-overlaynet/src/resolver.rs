@@ -194,7 +194,6 @@ mod tests {
         NetworkAccessRequest {
             run_id: None,
             attempt_id: None,
-            storyline_id: None,
             host: host.into(),
             port: Some(443),
             transport: NetworkTransport::TcpTunnel,

@@ -10,7 +10,7 @@ use axum::extract::Request;
 use axum::http::{Method, StatusCode};
 use axum::response::{IntoResponse, Response};
 use futures_util::StreamExt;
-use pvisor_control::{ModelCallRequest, RunId, StorylineId};
+use pvisor_control::{ModelCallRequest, RunId};
 use serde_json::Value;
 
 use super::auth::{apply_upstream_headers, resolve_upstream_api_key};
@@ -244,7 +244,6 @@ pub(super) async fn llm_capture(
     let model_request = ModelCallRequest {
         run_id: capture_route.root_session.clone().map(RunId::new),
         attempt_id: None,
-        storyline_id: Some(StorylineId::new(capture_route.session_id.clone())),
         call_id: call.call_id.clone(),
         client_model: client_model.clone(),
         upstream_model: upstream_model.clone(),
@@ -270,7 +269,6 @@ pub(super) async fn llm_capture(
         tracing::warn!(
             target: "pvisor_gateway",
             run_id = capture_route.root_session.as_deref().unwrap_or("-"),
-            storyline_id = %capture_route.session_id,
             call_id = %call.call_id,
             client_model = %client_model,
             upstream_model = %upstream_model,

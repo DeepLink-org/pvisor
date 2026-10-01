@@ -9,9 +9,7 @@ use crate::policy::{DenyReason, NetworkPolicy};
 use crate::resolver::{
     ResolvedAddressPolicy, TargetAuthorizationError, authorize_target_with_policy,
 };
-use pvisor_control::{
-    AttemptId, ControlController, NetworkAccessRequest, NetworkTransport, RunId, StorylineId,
-};
+use pvisor_control::{AttemptId, ControlController, NetworkAccessRequest, NetworkTransport, RunId};
 use tokio::io::{AsyncReadExt, AsyncWriteExt};
 use tokio::net::TcpStream;
 use tokio::time::timeout;
@@ -22,7 +20,6 @@ pub(crate) const CONNECT_TIMEOUT: Duration = Duration::from_secs(10);
 pub struct EgressContext {
     pub run_id: Option<String>,
     pub attempt_id: Option<String>,
-    pub storyline_id: Option<String>,
 }
 
 #[derive(Debug, thiserror::Error)]
@@ -84,7 +81,6 @@ impl EgressRuntime {
         let request = NetworkAccessRequest {
             run_id: context.run_id.clone().map(RunId),
             attempt_id: context.attempt_id.clone().map(AttemptId),
-            storyline_id: context.storyline_id.clone().map(StorylineId),
             host: host.to_owned(),
             port: Some(port),
             transport: NetworkTransport::TcpTunnel,

@@ -361,7 +361,6 @@ impl RuntimeSupervisor {
                     };
                     if let Err(cleanup) = session.abort_startup(
                         attempt_id,
-                        spec.lease_epoch,
                         snapshot,
                         spec.metadata
                             .get("pvisor.safe")

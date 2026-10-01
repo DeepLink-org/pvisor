@@ -28,7 +28,6 @@ impl OverlaySink for Sink {
             policy: self.policy.clone(),
             run_id: Some(self.run_id.clone()),
             attempt_id: Some(self.attempt_id.clone()),
-            storyline_id: None,
             session_id: self.run_id.clone(),
             sink: (),
         })

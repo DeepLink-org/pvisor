@@ -44,7 +44,6 @@ impl ExecutorOutput {
         RunResult {
             run_id: spec.run_id.clone(),
             attempt_id: attempt_id.clone(),
-            lease_epoch: spec.lease_epoch,
             state: self.state,
             started_at_unix_ms,
             finished_at_unix_ms: unix_now_ms(),
@@ -145,7 +144,6 @@ impl Session {
             state: RunState::Created,
             attempt: AttemptInfo {
                 attempt_id: attempt_id.clone(),
-                lease_epoch: spec.lease_epoch,
                 number: 0,
                 executor: descriptor.clone(),
                 started_at_unix_ms: None,
@@ -308,9 +306,6 @@ impl Session {
     }
 
     async fn finalize(&mut self, result: &mut RunResult, invoked: bool) -> Option<AttemptTeardown> {
-        // The owning pVisor, not a pluggable executor, is authoritative for
-        // the scheduling generation attached to this Attempt.
-        result.lease_epoch = self.spec().lease_epoch;
         if !result.state.is_terminal()
             || (result.state == RunState::Completed && result.failure.is_some())
         {
@@ -501,7 +496,6 @@ impl Session {
         if let Some(drivers) = self.drivers.take()
             && let Err(cleanup_error) = drivers.abort_startup(
                 &self.attempt_id,
-                self.spec.lease_epoch,
                 self.agentctl.snapshot(),
                 safe,
                 format!("Session startup failed: {error:#}"),
@@ -544,7 +538,6 @@ fn terminal_payload(
     json!({
         "state": result.state,
         "origin": result.executor_observations.origin,
-        "lease_epoch": result.lease_epoch,
         "exit_code": result.exit_code,
         "failure": result.failure,
         "started_at_unix_ms": result.started_at_unix_ms,

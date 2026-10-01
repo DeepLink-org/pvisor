@@ -1,6 +1,6 @@
 //! Filesystem-safe session markdown filenames.
 //!
-//! These helpers only name capture files. They are not a Storyline document model.
+//! These helpers only name capture files.
 
 use std::path::{Path, PathBuf};
 

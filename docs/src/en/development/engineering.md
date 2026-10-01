@@ -110,7 +110,7 @@ source lines and 242 Control public declarations; only lower these budgets. Bina
 is initially recorded to establish a comparable platform baseline.
 
 The 2026-10-01 working-tree comparison reduced Rust from 102,305 to 101,205 lines (1100 fewer).
-The default macOS arm64 core with rustc 1.98.0 has 226 dependencies and a 9,657,184-byte
+The default macOS arm64 core with rustc 1.98.0 has 226 dependencies and a 9,559,648-byte
 release binary. Closure source lines count `crates/*/src/**/*.rs`; public declarations
 are a syntax count, not a deduplicated exported API count. Moving TUI/replay does not
 count as deletion.

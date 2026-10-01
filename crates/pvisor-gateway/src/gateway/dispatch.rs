@@ -53,7 +53,6 @@ impl OverlaySink for GatewayState {
             policy: NetworkPolicy::from_config(config.as_ref())?,
             run_id: route.root_session,
             attempt_id: self.attempt_id.clone(),
-            storyline_id: Some(route.session_id.clone()),
             session_id: route.session_id,
             sink: GatewayRequestContext { config, debug_on },
         })

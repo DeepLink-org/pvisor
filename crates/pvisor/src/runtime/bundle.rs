@@ -621,7 +621,6 @@ mod tests {
             executor_observations: Default::default(),
             run_id: RunId::new("run-1"),
             attempt_id: AttemptId::new("attempt-1"),
-            lease_epoch: 1,
             state: RunState::Completed,
             started_at_unix_ms: 10,
             finished_at_unix_ms: 20,

@@ -18,7 +18,7 @@ or standalone service.
 This crate implements `pvisor-overlaynet::OverlaySink`. Protocol rendering
 and capture share one in-memory `LlmRequestEventPayload` (`llm/v1`). Provider
 wire formats are never chained through Chat Completions as an intermediate
-protocol. Storyline is a derived trajectory view and is not part of the online
+protocol. Derived trajectory views are not part of the online
 protocol-conversion path.
 
 ## Develop

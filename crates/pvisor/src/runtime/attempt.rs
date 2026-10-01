@@ -283,7 +283,6 @@ impl AttemptSession {
     pub(crate) fn abort_startup(
         self,
         attempt_id: &pvisor_control::AttemptId,
-        lease_epoch: u64,
         agentctl: crate::AgentCtlSnapshot,
         safe_profile_requested: bool,
         message: String,
@@ -299,7 +298,6 @@ impl AttemptSession {
             executor_observations: Default::default(),
             run_id,
             attempt_id: attempt_id.clone(),
-            lease_epoch,
             state: RunState::Failed,
             started_at_unix_ms,
             finished_at_unix_ms: crate::util::unix_now_ms(),
@@ -505,7 +503,7 @@ pub(crate) fn prepare_attempt(
     );
 
     // A Run has one top-level identity across pVisor and Gateway.
-    // Subagent sessions remain separate Storylines beneath this root.
+    // Subagent capture sessions remain separate beneath this root.
     let root_session = spec.run_id.as_str().to_string();
     write_run_session(&capture_storage, &root_session)?;
     let config_snapshot = snapshot_proxy_config(&capture_storage, &root_session, &config)?;
@@ -928,7 +926,6 @@ fn start_vm_network(
         EgressContext {
             run_id: Some(spec.run_id.as_str().to_owned()),
             attempt_id: Some(opts.attempt_id),
-            storyline_id: None,
         },
     );
     config.metrics = metrics;

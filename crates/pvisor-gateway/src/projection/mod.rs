@@ -1,7 +1,6 @@
 //! Capture eligibility filters.
 //!
-//! Storyline and AgenticMD projection are no longer part of this crate. Canonical
-//! events remain the capture contract.
+//! Canonical events remain the capture contract.
 
 mod policy;
 

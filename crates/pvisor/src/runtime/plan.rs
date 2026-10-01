@@ -35,12 +35,12 @@ pub(crate) fn compile(
         Binding {
             backend: executor.name.clone(),
             resource: spec.run_id.as_str().to_owned(),
-            generation: spec.lease_epoch,
+            generation: 0,
             contract: 1,
         },
     );
     let context = Context {
-        revision: spec.lease_epoch,
+        revision: 0,
         principal: spec.agent.name.clone(),
         scope: vec!["run".into(), spec.run_id.as_str().to_owned()],
         policy: format!("{:?}", spec.runtime.policy_mode).to_lowercase(),
