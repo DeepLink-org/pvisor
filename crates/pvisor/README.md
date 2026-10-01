@@ -72,7 +72,7 @@ selection and kernel preparation match release builds.
 
 ## Links
 
-- [Operation and Event](../../docs/operations-events.md): immutable execution plans,
+- [Operation and Event](../../docs/src/zh/design/operations-events.md): operation requests, actual rewrites,
   VM/Overlay placement, execution facts and boundary observations.
 - [The PolicyVisor model](../../docs/src/zh/start/what-is-pvisor.md)
 - [Get started](../../docs/src/en/start/first-run.md)

@@ -88,7 +88,6 @@ pvisor fork last -- codex
 核心默认构建不包含 Gateway。启用捕获使用 `--features gateway`；wheel 构建启用该 feature。
 无捕获时，普通显式代理仍由 OverlayNet 授权与转发。请求未编译的捕获或 Gateway debug 能力会报错。
 
-生命周期只使用 `Session`；旧的 `ExecutorSession` 和 `AttemptContext` 别名已删除。
-使用现有 `RunHandle` 的状态、取消、checkpoint 和事件 API，不提供测试专用的 Hook/Control 协议。
-AgentCtl 保留工作负载协作职责。终态仍在驱动清理、结果持久化和终态事件提交后公布；
-追加结果不确定时，不发送冲突的替代终态事件。
+嵌入调用方通过 `RunHandle` 查询状态、请求取消、创建 checkpoint 和订阅 Event。
+Attempt 生命周期由 Session 管理；AgentCtl 保留工作负载协作职责。
+具体执行与终态处理见[核心架构](architecture.md)，记录与失败语义见 [Operation 与 Event](operations-events.md)。

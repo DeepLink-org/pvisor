@@ -53,7 +53,7 @@ OverlayFS 的操作，网络观察只覆盖到达 OverlayNet 的流量。`null` 
 可选的 Event Journal 记录生命周期与 Gateway 实际发布的事实，通过身份和因果引用
 关联执行。它不包含完整 Bundle 的全部文件改动、输出、产物和控制清单；
 事件顺序不能当作跨 Job 的外部副作用顺序。具体契约见
-[Operation 与 Event](https://github.com/DeepLink-org/pvisor/blob/main/docs/operations-events.md)。
+[Operation 与 Event](../design/operations-events.md)。
 
 ## 保证范围
 

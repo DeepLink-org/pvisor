@@ -15,7 +15,7 @@ nav = [
   { "概念与边界" = ["zh/concepts/index.md", "zh/concepts/run-model.md", "zh/concepts/capabilities-and-evidence.md"] },
   { "参考" = ["zh/reference/index.md", "zh/reference/cli.md"] },
   { "参与开发" = ["zh/development/index.md", "zh/development/engineering.md", "zh/development/examples.md", "zh/development/releasing.md", "zh/development/roadmap.md"] },
-  { "实现设计" = ["zh/design/index.md", "zh/design/architecture.md", "zh/design/isolation.md", "zh/design/overlaynet.md", "zh/design/gateway.md", "zh/design/cli.md", "zh/design/principles.md"] },
+  { "实现设计" = ["zh/design/index.md", "zh/design/architecture.md", "zh/design/operations-events.md", "zh/design/isolation.md", "zh/design/overlaynet.md", "zh/design/gateway.md", "zh/design/cli.md", "zh/design/principles.md"] },
 ]
 
 [project.theme]

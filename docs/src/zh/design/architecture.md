@@ -1,93 +1,80 @@
-# 架构
+# 核心架构
 
-PolicyVisor（pVisor）通过能力准入、执行器、运行时控制和执行记录，管理 Agent CLI、脚本和自动化命令。当前交付围绕本地 Job 及其可审查的结果展开。
+pVisor 是 Operation 的处理核心：接收操作请求，根据策略决定如何处理和放置，调用实际执行机制，再通过 Event 描述发生了什么。
 
-## 组件职责
+这条主线分成两个职责：**core 提供定义，pvisor 提供实现。** 外部调用方提交执行请求，通过运行句柄控制一次执行，通过 Event 观察它的过程和结果。
 
-| Crate | 职责 |
+## 定义与实现
+
+| 所有者 | 职责 |
 | --- | --- |
-| `pvisor` | CLI、准入、Attempt 生命周期、执行器、Run Bundle、审查／应用／检查点 |
-| `pvisor-core` | Operation、Placement、结果、策略及对外交互与 Event 定义 |
-| `pvisor-overlay-core` | 写时复制、preimage、review/apply/recovery/drop 语义 |
-| `pvisor-overlayfs` | 宿主 FUSE 适配器 |
-| `pvisor-overlaynet` | 解析、代理转发与 VM 网络接入；消费 Core 策略 |
-| `pvisor-gateway` | 模型路由、协议转换与捕获 |
-| `pvisor-replay` | Agent 原生轨迹的回放与续跑适配 |
+| `pvisor-core` | Operation、策略决定、Placement、Outcome、Event，以及跨组件交互契约；共享纯校验与策略求值 |
+| `pvisor` | 请求解析、能力准入、实际策略改写、放置选择、调度、执行和 Attempt 生命周期 |
+| `pvisor-journal` | Event 提交、回执、去重、因果引用校验和恢复 |
+| `pvisor-overlay-core` | 文件授权接入、写时复制、preimage、review/apply/recovery/drop |
+| `pvisor-overlayfs` | 宿主 FUSE 挂载与文件操作接入 |
+| `pvisor-overlaynet` | 网络解析、代理转发和 VM 网络接入；落实 core 定义的策略 |
+| `pvisor-guest` | VM 内 PID 1 与命令启动契约 |
+| `pvisor-gateway` | 可选的模型协议路由、转换和调用观察 |
+| `pvisor-tui`、`pvisor-replay` | 依赖 pvisor 的终端前端与 Agent 轨迹回放工具 |
 
-## 执行链路
+core 不拥有执行循环，也不启动进程或打开控制 socket。pvisor 实现 AgentCtl 客户端／服务端和审批 socket；驱动实现各自的文件、网络与隔离边界。默认核心不依赖 Gateway、TUI 或 replay，捕获通过 `gateway` feature 启用。
+
+## 一条生产执行路径
 
 ```text
-CLI／配置 → RunSpec → 能力准入 → Operation → 准备运行时驱动
-  → 执行器启动命令 → 退出／取消／超时 → 清理
-  → 本地 Run 记录 + Run Bundle + 最终结果
-  → 后续审查／应用／丢弃
+CLI／嵌入调用方
+  → RunSpec
+  → pvisor：准入、策略改写、Placement → 有效 Operation
+  → Session：准备驱动与运行资源
+  → 提交启动事实
+  → RunExecutor::execute
+  → 清理、检查控制观察、保存结果、公布终态
 ```
 
-当前每次运行创建一个 Attempt。宿主执行在主进程退出后清理进程组，并限时排空输出，超时和取消路径也遵循此规则。主动脱离进程组的后代不在进程组清理范围内；输出排空期限可以避免其继承的管道阻塞 Run 完成。更强的后代进程隔离取决于所选平台机制。
+`RunSpec` 是调用方的执行配置输入；`Operation` 是结构化的操作描述。目前唯一生产操作是 `run.execute`，包含程序、参数和工作目录。执行器实际消费有效 RunSpec 及准备好的驱动附件。`PVisor::resolve_operation` 使用同一准入路径，供启动前审查，不能代替实际执行及安装证据。
 
-## Operation 与观测
+准入保留请求与有效操作的快照。实际策略变化记录为 Rewritten，选定的 VM／Overlay 放置记录为 Placed。拦截发生在实际驱动边界：文件操作进入 OverlayFS／OverlayCore，网络流量进入 OverlayNet。它们共享策略定义，但当前并没有将每个文件或网络操作都提升为独立的公共 Operation。
 
-`pvisor-core` 提供定义，`pvisor` 实现准入、策略改写、Placement 和执行。唯一生产操作是 `run.execute`，记录程序、参数和工作目录。准入保留原始与有效 Operation；事件依次描述 Requested、实际 Rewritten、Placed、Dispatched 和 Completed。改写保留前后快照，放置单独记录，不恢复通用解释器。`PVisor::resolve_operation` 可在执行前审查有效操作。
+例如，网络驱动把请求的 Ambient 能力收窄为 Deny：Requested 保留原始权限，Rewritten 保存收窄前后快照，Placed 描述最终放置，执行器按有效配置运行。这是实际策略处理的记录，不是通用规则解释器。
 
-外部观察 pVisor 得到 Event。共享操作身份和 caused_by 可以重建已观察到的操作过程；记录不承诺完整副作用重放、逐 syscall 中介或跨 Job 全局顺序。详见 [Operation 与 Event](https://github.com/deeplink-org/pvisor/blob/main/docs/operations-events.md)。Run Bundle 保留有效操作与观察，`run.json` 保留运行状态和执行器身份。
+## 一个生命周期所有者
 
-FUSE 文件视图按挂载相对路径和操作记录命中、成功、拒绝、其他失败、成功修改操作次数、失败修改操作可能留下副作用的次数和读写字节数；匹配到的 deny／warn 规则及 stage 规则也有计数。路径表最多保留 8192 个不同路径，其余命中计入 `overflow_hits`。这些是到达 FUSE 的操作计数，不代表唯一文件数或最终文件差异；最终变更仍以 OverlayFS diff 为准。
+对外的工作单元叫 Job；Run 是保留在 API 和磁盘格式中的内部记录；Attempt 是一次执行。当前每次 `PVisor::run` 创建一个 Attempt，由 pvisor 中的 `Session` 统一持有和管理。
 
-Run Bundle 还记录经过 OverlayNet 的聚合放行、拒绝、失败及字节量。未经过 FUSE 的文件授权、未经过拦截器的网络流量没有可靠逐条计数，相应字段为 `null`，含义是未观测而不是零。宿主选择性代理只覆盖经过代理的流量，计数不能证明没有绕过代理的连接。
+Session 负责驱动准备、AgentCtl server、取消与超时、执行后清理、观察检查、Bundle 保存及终态公布。执行器返回 `ExecutorOutput`，不自行分配 Job／Attempt 身份或公布终态。`RunHandle` 提供状态、取消、checkpoint 和事件订阅；取消请求不等于执行已经停止。
 
-唯一生产派发路径是 `PVisor::run(RunSpec) → Session → RunExecutor::execute`。Operation 描述放置与证据；
-执行与授权归现有运行器和驱动。
+Process／VM 清理其受管理的进程组；容器使用 runtime 的终止接口。进程组之外的后代和各平台隔离缺口见[隔离设计](isolation.md)。AgentCtl 只负责工作负载协作和 checkpoint 静默点，本身不是强制控制。
 
-`ExecutorPlan` 与 `CapabilityEnforcementPlan` 是准入计划类型，最高等级为 Planned，
-不能表示 Enforced。执行器在收尾时依据受保护的 sandbox/VMM 安装回执返回控制观察集。
-Bundle schema 4 的 `executor_observations` 是唯一权威强制力证据，安全摘要只从它派生；
-metadata、隔离标签和 warning 字符串均不能生成或抹去证据。Enforce 模式缺少必需观察时失败。
-VM 启动被取消或信号中断且没有确认 runner 退出时，不声明 Enforced。
-Completed 与终态事件的 origin 区分运行器失败和后端结果。
+## Event 是观察接口
 
-## Session 生命周期与策略
+```text
+Context → Requested → [Rewritten] → Placed → Dispatched → Completed
+```
 
-核心 `Session`对应一次 Attempt，统一协调 prepare、执行、取消与超时、
-驱动清理、证据检查、Run Bundle 持久化和终态公布。后端返回必须包含观测的
-`ExecutorOutput`，不能设置 Run/Attempt 身份或提前公布终态。Process 和 VM
-共用进程组终止算法；OCI 使用 runtime 的 kill API。新 Attempt 使用新的
-Session 身份和审批缓存键。
+这条链描述操作事实；生命周期、文件、网络及 Gateway 还可发布领域 Observation。外部观察的是 Event，不需要依赖 Session 的内部字段。事件身份、操作身份和已知因果引用把同一次执行关联起来。具体字段、失败路径和记录边界见 [Operation 与 Event](operations-events.md)。
 
-Session 持有准备后的驱动与 AgentCtl server。`RunHandle` 提供状态查询、取消、
-checkpoint 和有序事件订阅。取消只发出请求；等待执行结束后才有最终结果。
-AgentCtl 保留工作负载协作与 quiesce/checkpoint 职责；没有另一套 Session 控制协议或生命周期 Hook。
+当前实现先准备驱动，再提交启动事实，最后调用执行器。必要启动事实提交失败会阻止执行器派发并清理准备资源；这不代表准备阶段完全没有文件或 socket 副作用。
 
-Core 统一拥有网络配置、编译后的授权与地址分类，以及文件策略编译。
-Session、workspace、user 与执行器基础网络策略共同约束权限：所有网络层均须放行，
-任一层显式 deny 都拒绝。已声明的网络层省略 `default_action` 时默认 deny，
-未命中 allow 的目标不会退化为 Ambient；省略整个网络层才不增加约束。
-各层匹配的带宽限制全部叠加。文件规则跨层取最严格决策（deny、ask、warn、allow），
-因此仓库或 Session 的 allow 无法放宽用户拒绝或基础策略；端口、协议和解析 IP
-校验失败也不会被其他层授权覆盖。交互式网络审批可为单次目标扩展 allow，
-但仍不能覆盖任一层显式 deny、基础 deny-all 或解析地址安全检查。
+同一生产者有序提交事实，Journal 位置表示提交顺序。pVisor 必须保持已知依赖：依赖前一步结果的处理不能提前执行。这个要求不意味着不同 Job 有全局副作用顺序，也不意味着时间戳能推导并发进程之间的因果。
 
-文件策略绑定 Run、Attempt、视图和审批端点。FUSE 和 virtio-fs 共用 OverlayCore
-的授权与写时复制实现；转换到 VM 根视图时保留策略作用域。`OverlayLayout`
-在创建可写状态前校验 apply target 必须是最后一个 lower；apply 规划也检查同一约束。
+## 策略、控制与证据
 
-策略文件路径与 TOML 示例见[网络指南](../guides/network.md)。
+策略决定允许怎样执行；准入计划说明执行器准备提供什么；执行后的观察说明实际安装了什么。三个层次分别记录，不能互相替代。
 
-## 文件应用
+core 共享文件／网络策略求值。user、workspace、session 和执行器基础策略共同约束权限，后面的 allow 不能覆盖前面的显式拒绝。实际授权、拦截和控制安装由 pvisor 与驱动落实。
 
-`pvisor-core::overlay` 定义审查／应用记录、首次修改状态格式和本地 Run 检查消息。OverlayCore 负责文件指纹、日志、review/apply/recovery/drop；pVisor 处理请求并管理挂载。
+`ExecutorPlan` 的最高控制等级为 Planned。执行器返回 `ExecutorObservations`，Bundle 的安全摘要从这些观察派生。Enforce 模式缺少必需控制证据时失败；metadata、执行器名称和捕获事件不能生成强制力证据。详细口径见[能力与证据](../concepts/capabilities-and-evidence.md)。
 
-OverlayCore 在首次修改时记录目标的原始状态。Apply 将选择扩展到必要的目录和硬链接成员，校验受影响的原始状态，写入持久化意图，更新目标，然后移除已经应用的 upper 条目。
+## 记录与文件应用
 
-递归删除或替换目录时，除了目录本身，还校验已记录的后代。分批应用保留剩余子文件需要的目录新基线。恢复流程区分 `Prepared`、`TargetApplied` 和 `Committed`，避免把清理了一部分的 upper 当成新的改动。
+| 记录 | 回答的问题 |
+| --- | --- |
+| `run.json` | 这项 Job 的身份、状态、执行器及本地资源是什么？ |
+| Run Bundle | 结果、控制观察、产物及文件／网络摘要是什么？ |
+| Event Journal／Trace | 已发布了哪些事实，它们如何关联？ |
+| Overlay diff／preimage | 哪些文件仍待审查，应用时应检查什么原始状态？ |
 
-单文件替换使用临时文件与 rename。整个批次不是一次原子文件系统事务：中断后可能只有部分改动可见，需要恢复。目标锁只串行化 pVisor 的 apply，不会锁住编辑器或其他写入者；应用时应停止并发写入。
+这些记录各有范围。Event 可以重建已观察到的操作过程，无法仅凭日志恢复全部外部状态。Agent 原生轨迹 replay 也不是任意副作用的确定性重放。
 
-## 运行记录与捕获
-
-`run.json` 是本地 Run 记录，`run-bundle.json` 汇总结果、控制、产物及文件系统／网络证据。可选的 Trace Event journal 保存生命周期和 Gateway 事件，与 Bundle 的内容范围不同。
-
-Gateway 使用有界应用队列和共享事实 Journal。进入队列不等于持久化；重启从已提交事实重建投影。捕获和协议转换也不能证明全部网络流量都经过了拦截。
-
-## 扩展点与限制
-
-执行器和 sink 接口供嵌入集成使用。运行器负责本地 Attempt；文件应用不提供远程副作用的事务或回滚。平台强制执行见[隔离设计](isolation.md)。
+暂存文件先审查再应用。OverlayCore 负责目标校验、持久化应用意图、更新及恢复；一个批次不是原子文件系统事务。`apply`、`drop` 和文件检查点不撤销远程 API 或数据库修改。操作流程见[审查与应用](../guides/review-apply.md)。

@@ -16,11 +16,11 @@ pVisor。Rust guest supervisor 直接配置 `192.0.2.2/24` 和路由器 `192.0.2
 不等待 DHCP。pVisor 提供合成 DNS（`198.18.0.0/15`，每个 Attempt 稳定）
 以及 IPv4 TCP。SYN 会在 smoltcp 中暂停，
 直到 hostname/IP、解析后的地址或 scoped host connector alias、端口以及注入的
-Control 策略全部授权，并且 host 连接成功。TSI 保持关闭，因此不存在绕过该
+core 策略全部授权，并且 host 连接成功。TSI 保持关闭，因此不存在绕过该
 data plane 的 guest 路径。
 
 部分 host DNS/TUN connector 会为已授权 hostname 返回不透明的 `198.18.0.0/15`
-假 IP。VM connector 只有在逻辑 hostname 与端口通过策略和 Control 授权后才接受
+假 IP。VM connector 只有在逻辑 hostname 与端口通过策略和 core 授权后才接受
 该结果；同一范围内的 guest IP 字面量仍然被拦。因为 connector 隐藏了真实最终
 地址，IP/CIDR 策略无法检查该 alias 背后的端点。需要最终地址策略的部署应使用
 会暴露具体地址的 resolver。
@@ -223,5 +223,5 @@ transports = ["tcp_tunnel"]
 - [网络指南](../guides/network.md)：为一次 Run 配置并检查策略。
 - [隔离架构](isolation.md)：比较完整的 provider 边界。
 - [Gateway 架构](gateway.md)：网络层之上的模型路由与 capture。
-- [安全与 Evidence](../concepts/capabilities-and-evidence.md)：跨产品解读
+- [能力、证据与保证边界](../concepts/capabilities-and-evidence.md)：计划、实际控制和观察范围
   enforcement 声称。

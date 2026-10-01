@@ -1,9 +1,15 @@
-# Job、Run、Attempt 与 Effect
+# Job、Operation、Attempt 与 Event
 
 **Job** 是 CLI 中持久的一项工作。`pvisor run` 创建 Job；`status`、`kill`、
 `inspect`、`fork`、`apply`、`drop` 无需额外命令层级即可操作它。当前每个 Job
 对应一条内部 Run 记录。为保持兼容，磁盘上的 `run-*` ID、`run.json` 和 Run Bundle
 名称保持不变。
+
+## Operation：核心处理对象
+
+Job 描述用户的一项工作，Operation 描述 pVisor 要处理的操作。当前生产操作是 `run.execute`，包含程序、参数和工作目录，以及有效策略决定和 Placement。pvisor 负责准入、实际改写、调度和执行；core 提供这些定义。
+
+Event 是外部观察到的事实，Trace 是这些事实的记录。它们描述请求、实际改写、放置及结果，不等于操作本身，也不保证仅凭日志就能重放外部副作用。字段及因果关系见[Operation 与 Event](../design/operations-events.md)。
 
 ## Run：Job 的内部记录
 
@@ -11,7 +17,7 @@ Run 标识命令、配置与执行结果，其 ID 与操作系统 PID 无关。�
 
 ## Attempt：一次执行
 
-Attempt 标识由某个执行器完成的一次执行。当前 `PVisor::run` 每次调用创建一个 Attempt。运行器负责它的资源准备、取消、清理和终态公布。
+Attempt 标识由某个执行器完成的一次执行。当前 `PVisor::run` 每次调用创建一个 Attempt。pvisor 中的 Session 负责它的资源准备、取消、清理和终态公布；Session 是生命周期所有者。
 
 Fork 根据逻辑检查点创建带有来源关系的新 Run，不会恢复原进程。
 

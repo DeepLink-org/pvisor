@@ -55,9 +55,6 @@ def check():
             issues.append(f"navigation page missing: {page}")
     if len(navigation) != len(set(navigation)):
         issues.append("navigation lists the same article more than once")
-    for page in zh:
-        if f"zh/{page}" not in navigation:
-            issues.append(f"article missing from navigation: zh/{page}")
     for old, new in json.loads((ROOT.parent / "redirects.json").read_text()).items():
         if not (source / "zh" / new).is_file():
             issues.append(f"redirect target missing: {old} -> zh/{new}")

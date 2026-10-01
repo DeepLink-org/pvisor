@@ -96,6 +96,8 @@ logical checkpoints preserve staged filesystem state, not process memory.
 
 ## Documentation
 
+Core design: [Architecture](docs/src/zh/design/architecture.md) · [Operation and Event](docs/src/zh/design/operations-events.md).
+
 - [Choose a workflow](https://deeplink-org.github.io/pvisor/en/start/) — the path from install to a reviewed Job
 - [Your first Job](https://deeplink-org.github.io/pvisor/en/start/first-run/) — the run-review-apply loop
 - [PolicyVisor model](https://deeplink-org.github.io/pvisor/zh/start/what-is-pvisor/) — policy, controls, and evidence

@@ -52,10 +52,10 @@ just semspec show S-DOC-001
 `target/pvisor-case-report.json`。使用 S-DOC ID 选择 case；A01 对应 S-DOC-001，
 C01 对应 S-DOC-012。完整映射见 `tests/semantics/README.md`。也可以通过
 `just semspec run --domain DOC --subject-bin PATH` 使用已有二进制。
-L01、L02 随 `env` 功能移除而退役，S-DOC-053、S-DOC-054 已登记在 retired 中。
+L01、L02 和 S-DOC-053、S-DOC-054 随 `env` 功能移除；这些 ID 不再复用。
 
 每条规格把原来的命令、退出预期和全部断言放在同一个审核摘要内。预期非零退出必须
-实际发生并通过原断言，不作为 xfail。断言词汇来自 sealed `cases.sh`，读取当前 case
+实际发生并通过原断言，不作为 xfail。断言词汇来自参与审核摘要的 `cases.sh`，读取当前 case
 的 `run-bundle.json`、`run.json` 和命令日志。pVisor 配置、Job 数据及夹具都在
 临时 CASE_ROOT；失败保留现场，`--keep` 保留所有现场。缺少声明的前提条件报告 SKIP。
 

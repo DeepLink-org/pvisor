@@ -107,7 +107,7 @@ pvisor
 └── replay              从 Agent 轨迹创建 Job
 ```
 
-## 安全的第一次运行
+## 安全的第一次运行 {#安全的第一次运行}
 
 ```bash
 pvisor run --safe --stage ../stage-001 -- codex

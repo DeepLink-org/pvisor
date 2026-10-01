@@ -22,4 +22,4 @@ AgentCtl remains an optional authenticated cooperative protocol: Hello opens a S
 just test core
 ```
 
-[Operation and Event design](../../docs/operations-events.md) · [System architecture](../../docs/src/zh/design/architecture.md)
+[Operation and Event design](../../docs/src/zh/design/operations-events.md) · [System architecture](../../docs/src/zh/design/architecture.md)

@@ -4,7 +4,7 @@ OverlayNet 让 pVisor 对网络出口执行允许、拒绝和限速规则。Host
 HTTP proxy；libkrun VM Run 使用进程内 smoltcp 数据面处理 IPv4 TCP 和 DNS。请结合
 [Capability 与 Evidence 模型](../concepts/capabilities-and-evidence.md)理解这些控制。
 
-## 网络边界
+## 网络边界 {#网络边界}
 
 | 执行路径 | 控制范围 | 直接出口 |
 | --- | --- | --- |

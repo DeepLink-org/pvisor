@@ -6,8 +6,8 @@ In Chinese, use **策略约束下的可审查执行。** The product covers Agen
 scripts, and automation commands; describe Agent-specific integrations as such.
 
 Use `pvisor` for the Python distribution, import package, and wheel filename
-prefix. Keep Rust crate names, `PVISOR_*` environment variables, and existing
-repository/deployment URLs accurate until they are migrated. Separate requested policy, installed controls, and observed
+prefix. Use current Rust crate names, `PVISOR_*` environment variables, and
+repository/deployment URLs. Separate requested policy, installed controls, and observed
 results; distinguish ordinary host write-through from `--safe` staging and
 describe each executor's platform-dependent boundary.
 
@@ -44,25 +44,36 @@ The canonical Chinese documentation uses six directories:
 - `concepts/`: terminology, evidence and capability limits.
 - `reference/`: CLI options and concrete cases.
 - `development/`: contributor setup, validation, release and roadmap.
-- `design/`: implementation ownership, mechanisms and explicitly labeled future designs.
+- `design/`: current implementation ownership and mechanisms.
 
 Keep one canonical article per subject and link to it instead of repeating its
 contract. Start task guides with prerequisites and executable examples. Separate
 implemented behavior from design goals; describe a guarantee only with its
-executor and scope. Every example that reviews or applies changes must retain
-the stage explicitly with `--stage` outside the project.
+executor and scope. Review/apply examples must enable staging with `--safe`,
+`--ask` or `--stage`. If a path is specified, put it outside the project.
+
+The CLI reference owns staging/storage defaults and parameter grammar; the
+network guide owns the executor boundary matrix; the evidence page owns the
+meaning and limits of observations. Other articles link to these definitions.
+Implementation pages explain mechanisms and code ownership. Benchmarks keep
+dated samples and reproduction limits under `benchmark/`; speculative designs
+do not belong in the current product navigation or search index.
 
 `zensical.toml` owns navigation. Maintain Chinese articles; translate only the English entry points.
 `redirects.json` maps old locale-relative Markdown paths to their replacements;
 the build emits redirects for English, Chinese, and the original unprefixed
 published URLs. Update incoming source links to canonical paths as well.
-The checker rejects missing Chinese originals, omitted or duplicate navigation entries,
+The checker rejects missing Chinese originals, missing or duplicate navigation targets,
 broken links, missing anchors and invalid redirect targets.
+Use explicit heading IDs for links to translated sections, so wording changes do not break anchors.
+Appendices may be reached through an index without appearing in the main navigation.
+Keep semantic case IDs, assertions and annotations intact; passing a case does
+not authorize edits to human approval ledgers or snapshots.
 
-## Design proposals
+## Core design
 
-- [Operation and Trace (Chinese)](operations-events.md): immutable execution plans, direct
-  VM/Overlay placement, requested/dispatched/completed facts, and boundary observations.
-  [Rust contract tests](../crates/pvisor-core/tests/operation_contracts.rs) cover schema,
-  placement order, outcomes and version rejection; runtime and Journal tests verify
-  the execution fact chain and durable records.
+- [Core architecture](src/zh/design/architecture.md): core owns definitions; pvisor owns scheduling and execution; drivers implement actual boundaries.
+- [Operation and Event](src/zh/design/operations-events.md): requests, actual rewrites, Placement, outcomes, causal facts and reconstruction limits.
+- [Design principles](src/zh/design/principles.md): ownership, causality and evidence rules.
+
+These articles describe the current implementation. Keep field and sequencing contracts in the Operation/Event article rather than duplicating them in component guides.

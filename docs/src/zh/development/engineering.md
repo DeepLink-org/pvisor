@@ -47,13 +47,13 @@ src/
 ├── lib.rs                 # 稳定的嵌入接口导出
 ├── bin/pvisor.rs          # 二进制入口
 ├── cli/                   # 参数、命令和共享终端工具
-├── session/               # Attempt lifecycle and completion
-├── session.rs             # Session owner
+├── session/               # Attempt 生命周期与收尾
+├── session.rs             # Session 所有者
 ├── config.rs              # 运行时与执行器配置
 ├── trace.rs               # 共享事实 Journal 重导出
 ├── diagnostics.rs         # 共享宿主日志，前端选择输出位置
 ├── executor/
-│   ├── mod.rs             # RunExecutor 和 Session
+│   ├── mod.rs             # RunExecutor 和执行输出契约
 │   ├── process.rs         # 宿主进程执行器
 │   ├── container.rs       # 容器执行器
 │   ├── sandbox.rs         # 宿主 OS 隔离及内部 sandbox 入口
@@ -67,6 +67,7 @@ src/
 │   ├── run.rs             # PVisor API 和运行生命周期
 │   ├── agentctl.rs        # 每次运行的协作控制服务
 │   ├── agentctl_client.rs # 同步 AgentCtl 客户端
+│   ├── audit.rs           # 审批 socket 传输与缓存
 │   ├── event.rs           # 运行事件发布
 │   ├── bundle.rs          # 持久化审查摘要
 │   ├── checkpoint.rs      # 逻辑检查点与恢复
@@ -90,13 +91,12 @@ replay 中，`adapter/` 负责原生轨迹规划和 Agent 启动选择；`bridge
 Claude、Codex、OpenCode 协议桥及 Claude resume transport 校验。
 共享执行和 journal 仍在 crate 根目录。
 
-### 仍需逐步改善的边界
+### 核心实现边界
 
-`Session` 负责 Attempt 生命周期和终态公布。共享网络与文件授权归 Core，
-overlay 的 review/apply/recovery/drop 归 `pvisor-overlay-core::apply`。
-共享 Overlay 与模型路由配置归 Core。传输与挂载所有权留在驱动中；
-修改行为时，把共享语义收敛到已有所有者。
-
+core 定义 Operation、Event 和共享策略；pvisor 实现准入、实际改写、Placement 和调度。
+Session 统一拥有 Attempt 的资源与终态；执行器负责执行并返回观察，OverlayCore 负责文件应用与恢复。
+AgentCtl 与审批 socket 的实际 I/O 留在 pvisor。完整职责见[核心架构](../design/architecture.md)，
+字段和事件顺序见 [Operation 与 Event](../design/operations-events.md)。
 
 ## 核心减法预算
 

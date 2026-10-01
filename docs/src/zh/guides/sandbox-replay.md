@@ -244,7 +244,10 @@ replay journal 不记录提示词明文；Agent 原生的 prepared 或 continued
 
 无法重新生成的 Claude observation 默认失败，只有显式指定 `--allow-stale-observations` 才会复用并把质量标记为 `degraded`。
 
-`disable_thinking` 也可以通过 `--disable-thinking` 指定。只有显式提供 `--executor`、`--stage` 或 `--mount` 等运行参数，或在 TOML 中增加 `[run]`、`[filesystem]`、`[overlaynet]`，才会在回放外层创建受管的 `pvisor run`。
+`disable_thinking` 也可以通过 `--disable-thinking` 指定。
+Replay 伴随工具使用独立参数：`--safe`、`--executor`、`--overlayfs-path`、
+`--overlayfs-compose` 等外层运行选项，或 TOML 的 `[run]`、`[overlayfs]`、`[overlaynet]`
+会请求受管执行。其文件系统参数以 `pvisor replay --help` 为准，不能直接照搬 `run` 的 `--stage/--mount`。
 
 完整参数见 [`pvisor replay` 命令参考](../reference/cli.md#replay-an-agent-trajectory)。
 

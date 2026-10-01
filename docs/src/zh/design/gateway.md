@@ -37,8 +37,8 @@ flush 报告拒绝或失败的工作，shutdown 等待消费者释放 Journal。
 | --- | --- | --- |
 | 协议解析与转发 | `pvisor-gateway` | 模型协议转换与调用观察 |
 | 引擎与 story actor | `pvisor-gateway/src/engine` | Journal 提交、因果身份和轮次投影 |
-| 事件词汇 | `pvisor-core` | 共享序列化记录和 sink 契约 |
+| 事件词汇 | `pvisor-core` | 共享序列化记录；sink 实现与接入归运行组件 |
 | 运行时集成 | `pvisor` | Run 生命周期、路由配置、事件 sink 和关闭 |
 | 网络路径 | `pvisor-overlaynet` | 代理传输和策略接入 |
 
-使用方式见[捕获指南](../guides/capture.md)。网络强制控制见 [OverlayNet](overlaynet.md)，执行记录见[系统架构](architecture.md)。
+使用方式见[捕获指南](../guides/capture.md)。网络强制控制见 [OverlayNet](overlaynet.md)，事件契约见 [Operation 与 Event](operations-events.md)，组件归属见[核心架构](architecture.md)。
