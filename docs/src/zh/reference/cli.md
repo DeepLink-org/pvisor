@@ -145,7 +145,7 @@ pvisor run --safe --overlaynet-allow inference.example.com:443 -- zcode
 ```
 
 `--safe` 生成一组命令行参数补丁，经过同一个 CLI 解析器后应用，再应用用户显式参数。
-预设与 Agent 无关，不根据可执行文件名自动放行目标。`--safe` 要求所选执行器落实隔离，不选择 executor。
+预设按可执行文件名匹配 Agent，自动放行对应 API 的 HTTPS 目标。`--safe` 要求所选执行器落实隔离，不选择 executor。
 优先级是 **显式 CLI > safe 预设 > 配置文件 > 普通默认值**。
 支持普通命令和 TOML `--config`；已准备好的 JSON `--spec` 不接受该预设。
 
@@ -168,7 +168,16 @@ pvisor run --safe --overlaynet-allow inference.example.com:443 -- zcode
 隔离安装失败会停止运行。`--safe` 不能与 `--overlaynet off` 同时使用。
 
 
-普通网络默认拒绝。通过 `--overlaynet-allow HOST:PORT` 显式授权；
+预设仅自动放行下表中的 HTTPS 目标（443 端口），其他目标默认拒绝。
+
+| 命令 | 默认放行目标 |
+|---|---|
+| `codex`、`bash`、`sh`、`zsh`、`fish` | `api.openai.com`、`chatgpt.com`、`ab.chatgpt.com` |
+| `claude` | `api.anthropic.com` |
+| `gemini` | `generativelanguage.googleapis.com` |
+| `zcode` | `api.z.ai`、`open.bigmodel.cn` |
+
+未知命令默认拒绝出站。通过 `--overlaynet-allow HOST:PORT` 显式设置授权（覆盖预设列表）；
 已有拒绝规则和限速继续生效，Gateway capture 使用显式配置的路由。
 
 未使用 `--safe` 时，Codex 状态和项目写入会到达宿主 lower。使用 `--safe` 时，
@@ -185,7 +194,8 @@ HOME 状态改动在 Run 结束后丢弃，不包含在工作区 Run Bundle 中�
 
 预设通过 `--clear-pass-env` 清空配置文件中的 `run.pass_env`；
 `--clear-pass-env` 也可单独使用，之后的显式 `--pass-env NAME` 仍然生效。
-所有命令默认关闭宿主环境继承；凭据通过显式 `--pass-env NAME` 授予。
+直接运行 Codex 时保留宿主环境继承，以维持账号与路由配置；其他命令默认关闭继承，
+凭据通过显式 `--pass-env NAME` 授予（ZCode 的独立兼容策略见上文）。
 对应的显式 CLI 参数可以重新授予或覆盖。`--safe` 默认暂存工作区；
 已有容器挂载和文件系统底层仍保留；项目 base、rootfs、executor 不变。
 需要向 Agent 交付凭据时显式使用 `--pass-env`；使用已配置的 Gateway 可由可信侧持有上游 Key。

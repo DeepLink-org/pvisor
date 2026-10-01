@@ -1891,7 +1891,14 @@ fn valid_environment_name(name: &str) -> bool {
 }
 
 fn apply_safe_defaults(config: &mut RunConfig) -> anyhow::Result<()> {
-    config.run.inherit_env = false;
+    // Preserve Codex account/routing discovery through CODEX_* and provider variables.
+    config.run.inherit_env = config
+        .run
+        .command
+        .first()
+        .and_then(|command| Path::new(command).file_name())
+        .and_then(|name| name.to_str())
+        == Some("codex");
     if config.overlaynet.listen == OverlayNetSettings::default().listen {
         config.overlaynet.listen = free_loopback_address()?;
     }
@@ -2973,20 +2980,63 @@ mod tests {
     }
 
     #[test]
-    fn safe_preset_is_agent_independent_and_network_requires_explicit_grants() {
-        for program in [
-            "codex",
-            "claude",
-            "gemini",
-            "zcode",
-            "bash",
-            "unknown-agent",
+    fn safe_preset_restores_agent_api_grants_and_accepts_explicit_grants() {
+        for (program, hosts) in [
+            (
+                "codex",
+                vec!["api.openai.com", "chatgpt.com", "ab.chatgpt.com"],
+            ),
+            (
+                "/opt/bin/codex",
+                vec!["api.openai.com", "chatgpt.com", "ab.chatgpt.com"],
+            ),
+            (
+                "bash",
+                vec!["api.openai.com", "chatgpt.com", "ab.chatgpt.com"],
+            ),
+            (
+                "sh",
+                vec!["api.openai.com", "chatgpt.com", "ab.chatgpt.com"],
+            ),
+            (
+                "zsh",
+                vec!["api.openai.com", "chatgpt.com", "ab.chatgpt.com"],
+            ),
+            (
+                "fish",
+                vec!["api.openai.com", "chatgpt.com", "ab.chatgpt.com"],
+            ),
+            ("claude", vec!["api.anthropic.com"]),
+            ("gemini", vec!["generativelanguage.googleapis.com"]),
+            ("zcode", vec!["api.z.ai", "open.bigmodel.cn"]),
+            ("unknown-agent", vec![]),
         ] {
             let mut config = RunConfig::default();
             apply_run_options(&mut config, preset_args(&["--safe", "--", program])).unwrap();
-            assert_eq!(config.overlaynet.policy, OverlayNetPolicy::Deny);
-            assert!(config.overlaynet.rules.is_empty());
-            assert!(!config.run.inherit_env);
+            assert_eq!(
+                config.overlaynet.policy,
+                if hosts.is_empty() {
+                    OverlayNetPolicy::Deny
+                } else {
+                    OverlayNetPolicy::Allowlist
+                }
+            );
+            assert_eq!(
+                config
+                    .overlaynet
+                    .rules
+                    .iter()
+                    .map(|rule| rule.host.as_str())
+                    .collect::<Vec<_>>(),
+                hosts
+            );
+            assert!(
+                config
+                    .overlaynet
+                    .rules
+                    .iter()
+                    .all(|rule| rule.ports == [443])
+            );
             assert_eq!(config.filesystem, FilesystemMode::Sandbox);
             apply_run_options(
                 &mut config,
@@ -2999,8 +3049,13 @@ mod tests {
                 ]),
             )
             .unwrap();
-            assert_eq!(config.overlaynet.rules[0].host, "api.example.com");
-            assert_eq!(config.overlaynet.rules[0].ports, [443]);
+            assert!(
+                config
+                    .overlaynet
+                    .rules
+                    .iter()
+                    .any(|rule| rule.host == "api.example.com" && rule.ports == [443])
+            );
         }
     }
 
@@ -3026,8 +3081,8 @@ access = "read"
         assert_eq!(config.run.timeout_ms, Some(1234));
         assert!(config.run.pass_env.is_empty());
         assert_eq!(config.overlaynet.mode, OverlayNetMode::Auto);
-        assert_eq!(config.overlaynet.policy, OverlayNetPolicy::Deny);
-        assert!(config.overlaynet.rules.is_empty());
+        assert_eq!(config.overlaynet.policy, OverlayNetPolicy::Allowlist);
+        assert_eq!(config.overlaynet.rules[0].host, "api.anthropic.com");
         assert_eq!(
             config.overlayfs.as_ref().unwrap().mount[0].source,
             PathBuf::from("/configured/share")
@@ -3628,7 +3683,7 @@ sandbox = "required""#
             preset_args(&["--safe", "--name", "other", "--", "/usr/bin/codex"]),
         )
         .unwrap();
-        assert!(!codex.run.inherit_env);
+        assert!(codex.run.inherit_env);
 
         let mut shell = RunConfig::default();
         apply_run_options(

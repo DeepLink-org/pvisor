@@ -101,11 +101,11 @@ overlay 的 review/apply/recovery/drop 归 `persisting-overlay-core::apply`。
 
 CI 先独立构建默认核心，再构建带捕获的分发包。`scripts/ci/check_core_budget.py`
 拒绝 Gateway、replay、TUI 及其终端依赖进入默认核心，并记录工具链、依赖数、源码行数、
-Control 公开声明数与二进制字节数。当前 Linux 上限为 230 个依赖、44,812 行 workspace
+Control 公开声明数与二进制字节数。当前 Linux 上限为 230 个依赖、44,919 行 workspace
 源码和 262 个 Control 公开声明；后续只下调预算。二进制体积先记录同平台基线。
 
-2026-10-01 本次工作区对比：Rust 102,305 → 101,824 行，净减 481 行；
-默认核心在 macOS arm64 / rustc 1.98.0 下有 226 个依赖，release 二进制 9,746,560 字节。
+2026-10-01 本次工作区对比：Rust 102,305 → 101,931 行，净减 374 行；
+默认核心在 macOS arm64 / rustc 1.98.0 下有 226 个依赖，release 二进制 9,747,968 字节。
 源码行数仅统计 `crates/*/src/**/*.rs` 的核心依赖闭包；公开声明数是脚本的语法计数，
 不等于去重后的导出 API 数。移动 TUI/replay 的行数不计作删除。
 

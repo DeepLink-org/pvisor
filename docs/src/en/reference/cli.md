@@ -158,8 +158,7 @@ pvisor run --safe --overlaynet-allow inference.example.com:443 -- zcode
 ```
 
 `--safe` generates a command-line argument patch, parses it through the same CLI parser, and
-applies it before explicit user arguments. The preset is Agent-independent and does
-not infer network grants from executable names. It requires isolation from the
+applies it before explicit user arguments. The preset matches executable names to restore each Agent's default HTTPS API grants. It requires isolation from the
 selected executor and never selects an executor.
 Precedence is **explicit CLI > safe preset > configuration
 file > ordinary defaults**. Runs without `--safe` retain their existing behavior. The preset
@@ -184,7 +183,16 @@ limits, separately.
 
 Sandbox setup failure stops execution. `--safe` cannot be combined with `--overlaynet off`.
 
-Ordinary egress is denied by default. Grant destinations explicitly with
+Only the following HTTPS destinations (port 443) are granted by default.
+
+| Command | Default destinations |
+|---|---|
+| `codex`, `bash`, `sh`, `zsh`, `fish` | `api.openai.com`, `chatgpt.com`, `ab.chatgpt.com` |
+| `claude` | `api.anthropic.com` |
+| `gemini` | `generativelanguage.googleapis.com` |
+| `zcode` | `api.z.ai`, `open.bigmodel.cn` |
+
+Unknown commands deny ordinary egress. Override the preset destinations explicitly with
 `--overlaynet-allow HOST:PORT`. Existing denies and rate limits remain in force;
 Gateway capture uses explicitly configured routes.
 
@@ -206,8 +214,9 @@ executable name, so shell wrappers do not receive it. Gateway profile
 
 The preset uses `--clear-pass-env` to clear configured `run.pass_env`.
 `--clear-pass-env` also works on its own; explicit `--pass-env NAME` grants
-are applied afterward. All commands default to disabled host environment inheritance;
-pass credentials explicitly with `--pass-env NAME`.
+are applied afterward. Direct Codex commands inherit the host environment to preserve account and routing
+configuration. Other commands default to disabled inheritance; pass credentials with
+`--pass-env NAME` (see the independent ZCode compatibility policy above).
 Explicit CLI options can restore or override these settings. `--safe` stages the
 workspace by default. Existing container mounts and filesystem layers are retained; the project base,
 rootfs and executor remain unchanged. Use `--pass-env` to deliver credentials explicitly, or let a configured
