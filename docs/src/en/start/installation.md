@@ -5,6 +5,9 @@ policy controls and an inspectable execution record. The CLI is `pvisor`;
 the Python package and core Rust crate are also named `pvisor`.
 Companion crates use `pvisor-*`; environment variables use `PVISOR_*`.
 
+Update deployment environment variables to `PVISOR_*` when upgrading. Default local
+state uses `.pvisor` and the user cache uses `pvisor/`; existing data is not moved automatically.
+
 ## 1. Install the tools
 
 ```bash

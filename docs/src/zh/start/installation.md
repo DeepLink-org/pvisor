@@ -4,6 +4,9 @@ PolicyVisor（pVisor）为 Agent CLI、脚本和自动化命令提供策略控�
 Python 包、CLI 和核心 Rust crate 统一使用 `pvisor`；其他 crate 使用 `pvisor-*`，
 环境变量使用 `PVISOR_*`。
 
+升级时请同步更新部署中的 `PVISOR_*` 环境变量。默认本地状态目录使用 `.pvisor`，
+用户缓存使用 `pvisor/`；已有数据不会自动搬迁。
+
 ## 1. 安装工具
 
 ```bash
