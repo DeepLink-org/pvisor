@@ -14,8 +14,9 @@ It is not an Agent framework, an OCI runtime, or an operating system.
 
 OverlayFS, OverlayNet, Gateway, and AgentCtl are pVisor runtime drivers.
 The core `Session` owns each Attempt and exposes ordered lifecycle hooks and
-versioned control/observation contracts. `pvisor-tui` and `pvisor-replay` are
-executable CLI extensions discovered through embedded manifests.
+versioned control/observation contracts. Job lifecycle commands are built into `pvisor`. Cache, TUI and replay remain
+independent executable extensions discovered through embedded manifests.
+Guest injection uses the core `pvisor` execution runtime.
 
 ![PolicyVisor architecture](../../docs/src/assets/diagrams/pvisor/agentvisor-architecture.svg)
 

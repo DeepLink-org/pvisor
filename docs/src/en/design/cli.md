@@ -3,8 +3,7 @@
 The Job is the CLI's primary object: a managed command, its execution evidence,
 and any staged changes. `pvisor run` starts a Job; `status`, `kill`, `inspect`,
 `fork`, `apply`, and `drop` act on that Job directly. The commands stay flat.
-`env` manages reusable environments for Jobs, and `replay` creates a Job from
-an existing trajectory. Internally, a Job is stored as a Run record; `RunConfig`
+`replay` creates a Job from an existing trajectory. Internally, a Job is stored as a Run record; `RunConfig`
 remains the configuration type. A configuration file is an explicit input,
 never an implicit project policy.
 
@@ -70,24 +69,6 @@ pvisor fork last -- codex
 can use the cooperative AgentCtl protocol to quiesce participating sessions
 before checkpointing.
 
-## Reusable environments
-
-`env` gives a named stage a stable lifecycle across commands:
-
-```bash
-pvisor env create dev --target ./project
-pvisor env exec dev -- make test
-pvisor env shell dev
-pvisor env inspect dev -- git status --short
-pvisor env apply dev --path src
-pvisor env drop dev
-pvisor env delete dev --force
-```
-
-An environment is a persistent stage, not a resident VM. `start` and `stop`
-control whether new sessions are accepted. `apply` and `drop` advance the stage
-generation after a decision.
-
 ## Configuration precedence
 
 `--config` accepts a TOML `RunConfig` and `--spec` a prepared JSON `RunSpec`.
@@ -101,17 +82,25 @@ explicit decision about staged effects. Detailed provider behavior belongs to
 [execution environments](../guides/execution.md), while the complete option
 surface belongs to the [CLI reference](../reference/cli.md).
 
-## Executable extensions
+## Core commands and executable extensions
 
-`pvisor tui` and `pvisor replay` dispatch to `pvisor-tui` and `pvisor-replay`.
-Build and install commands and wheels deliver all three executables together.
-`run --tui` and interactive `--ask` delegate to the TUI extension as well.
-`pvisor extensions` lists installed paths and manifests as JSON; root help lists
-available commands. New CLI features use `pvisor-NAME` executables rather than
-adding branches to the core command enum.
+`run`, `status`, `kill`, `inspect`, `fork`, `apply`, and `drop` belong to the
+core `pvisor` executable: together they cover the Job lifecycle. Help and
+`extensions` introspection are built in too. A standalone core can execute,
+inspect and manage Jobs without installing companion command binaries.
+Session lifecycle and control/observation contracts remain shared library APIs.
+
+`cache`, `tui`, and `replay` are independent `pvisor-NAME` executables, each
+with its own argument parser and manifest. Build/install commands and wheels
+ship four executables: `pvisor`, `pvisor-cache`, `pvisor-tui`, `pvisor-replay`.
+`pvisor help NAME` supports core commands and extensions. Default execution
+(`pvisor -- COMMAND`) stays in the core; `run --tui` and interactive `--ask`
+delegate to `pvisor-tui`. New independent tools can extend the CLI without
+changing the core parser. `env` has been removed.
 
 Discovery searches the core executable directory before nonempty PATH entries.
-Built-in commands remain reserved. Each executable embeds one inert JSON block:
+Core command names are reserved and cannot be overridden by an extension.
+Each executable extension embeds one inert JSON block:
 NUL + `PVISOR_COMMAND_MANIFEST_V1` + newline, JSON, then newline +
 `PVISOR_COMMAND_MANIFEST_END` + NUL. The manifest contains `schema_version`,
 `name`, `version`, `description` and `session_protocol`; both protocol versions

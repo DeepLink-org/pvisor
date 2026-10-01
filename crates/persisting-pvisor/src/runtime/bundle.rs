@@ -388,6 +388,7 @@ fn resource_summary(record: &RunRecord, result: &RunResult) -> ResourceSummary {
         .executor_observations
         .enforcement
         .is_enforced(CapabilityDimension::Resources)
+        && result.metrics.get("resource.posix_rlimit") != Some(&1.0)
     {
         return ResourceSummary {
             requested: record.resource_limits.clone(),
@@ -405,6 +406,13 @@ fn resource_summary(record: &RunRecord, result: &RunResult) -> ResourceSummary {
                 .into_iter()
                 .flat_map(|evidence| evidence.mechanisms.clone()),
         );
+        if result.metrics.get("resource.posix_rlimit") == Some(&1.0)
+            && !mechanisms
+                .iter()
+                .any(|mechanism| mechanism == "posix-rlimit")
+        {
+            mechanisms.push("posix-rlimit".into());
+        }
         match isolation {
             Some(IsolationKind::Container) => {}
             Some(IsolationKind::VirtualMachine) => {
@@ -428,6 +436,10 @@ fn resource_summary(record: &RunRecord, result: &RunResult) -> ResourceSummary {
                 | Some(IsolationKind::SandboxedProcess)
         ) {
             effective = effective_native_limits(&record.resource_limits);
+            #[cfg(target_os = "macos")]
+            if record.resource_limits.memory_bytes.is_some() {
+                limitations.push("macOS does not enforce RLIMIT_AS memory limits".into());
+            }
         }
         if result.metrics.get("resource.cgroup_v2") == Some(&1.0) {
             mechanisms.push("Linux cgroup v2 memory/pids controller".into());
@@ -467,7 +479,10 @@ fn effective_native_limits(requested: &ResourceLimits) -> ResourceLimits {
         Some(requested.min(current.rlim_max))
     }
     ResourceLimits {
+        #[cfg(not(target_os = "macos"))]
         memory_bytes: clamp(libc::RLIMIT_AS, requested.memory_bytes),
+        #[cfg(target_os = "macos")]
+        memory_bytes: None,
         processes: clamp(libc::RLIMIT_NPROC, requested.processes),
         cpu_time_ms: clamp(
             libc::RLIMIT_CPU,

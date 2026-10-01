@@ -34,10 +34,12 @@ semspec.toml 的 retired，禁止复用。引擎执行语义变化必须升级 E
 
 ## 文档场景迁移
 
-`documented-cases.md` 是原 A01–M02 的 56 条规格，`just cases` 只运行 DOC 域。
+`docs/src/zh/reference/cases.md` 同时是用户文档和 DOC 规格源，覆盖原 A01–M02 中仍有效的 54 个场景，`just cases` 只运行 DOC 域。
+L01、L02 随 `env` 功能移除而退役，S-DOC-053、S-DOC-054 已登记在 retired 中。
 
 ```sh
 just semspec list --domain DOC
+just semspec run docs/src/zh/reference/cases.md --subject-bin target/release/pvisor
 just cases --case S-DOC-001,S-DOC-012 --keep
 just cases
 ```
@@ -101,7 +103,7 @@ just cases
 | K02 | S-DOC-050 |
 | K03 | S-DOC-051 |
 | K04 | S-DOC-052 |
-| L01 | S-DOC-053 |
-| L02 | S-DOC-054 |
+| L01 | S-DOC-053 (retired: env removed) |
+| L02 | S-DOC-054 (retired: env removed) |
 | M01 | S-DOC-055 |
 | M02 | S-DOC-056 |

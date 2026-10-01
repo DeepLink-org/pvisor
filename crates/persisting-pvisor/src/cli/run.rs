@@ -1937,7 +1937,7 @@ fn apply_run_options(config: &mut RunConfig, args: RunArgs) -> anyhow::Result<()
         )?
         .command
         else {
-            unreachable!("safe patch is a Run command")
+            unreachable!("expected run command")
         };
         apply_cli(config, *patch)?;
         // The preset requests the sandboxed filesystem view so the launcher
@@ -2852,7 +2852,7 @@ mod tests {
                 .unwrap()
                 .command
         else {
-            unreachable!()
+            unreachable!("expected run command")
         };
         *args
     }
@@ -3296,34 +3296,21 @@ sandbox = "required""#
 
     #[test]
     fn filesystem_policy_is_independent_from_overlaynet() {
-        let crate::cli::Command::Run(args) = Cli::try_parse_from([
-            "pvisor",
-            "run",
+        let args = preset_args(&[
             "--overlaynet-deny-all",
             "--filesystem",
             "sandbox",
             "--",
             "true",
-        ])
-        .unwrap()
-        .command
-        else {
-            unreachable!()
-        };
+        ]);
         let mut config = RunConfig::default();
-        apply_cli(&mut config, *args).unwrap();
+        apply_cli(&mut config, args).unwrap();
         assert_eq!(config.filesystem, FilesystemMode::Sandbox);
         assert_eq!(config.overlaynet.policy, OverlayNetPolicy::Deny);
 
-        let crate::cli::Command::Run(args) =
-            Cli::try_parse_from(["pvisor", "run", "--overlaynet-deny-all", "--", "true"])
-                .unwrap()
-                .command
-        else {
-            unreachable!()
-        };
+        let args = preset_args(&["--overlaynet-deny-all", "--", "true"]);
         let mut config = RunConfig::default();
-        apply_cli(&mut config, *args).unwrap();
+        apply_cli(&mut config, args).unwrap();
         assert_eq!(config.filesystem, FilesystemMode::Host);
         assert_eq!(config.overlaynet.policy, OverlayNetPolicy::Deny);
     }
@@ -3343,19 +3330,7 @@ sandbox = "required""#
 
     #[test]
     fn cli_record_destination_is_the_only_persistence_selection() {
-        let crate::cli::Command::Run(args) = Cli::try_parse_from([
-            "pvisor",
-            "run",
-            "--record-destination",
-            "/tmp/events",
-            "--",
-            "codex",
-        ])
-        .unwrap()
-        .command
-        else {
-            unreachable!()
-        };
+        let args = preset_args(&["--record-destination", "/tmp/events", "--", "codex"]);
         assert_eq!(
             args.record.record_destination.as_deref(),
             Some(std::path::Path::new("/tmp/events"))
@@ -3374,9 +3349,7 @@ sandbox = "required""#
 
     #[test]
     fn cli_selects_and_configures_container_executor() {
-        let crate::cli::Command::Run(args) = Cli::try_parse_from([
-            "pvisor",
-            "run",
+        let args = preset_args(&[
             "--container-runtime",
             "podman",
             "--container-image",
@@ -3392,14 +3365,9 @@ sandbox = "required""#
             r#"source="/tmp", target="/workspace", read_only=true"#,
             "--",
             "agent",
-        ])
-        .unwrap()
-        .command
-        else {
-            unreachable!()
-        };
+        ]);
         let mut config = RunConfig::default();
-        apply_cli(&mut config, *args).unwrap();
+        apply_cli(&mut config, args).unwrap();
         assert_eq!(config.run.executor, RunExecutorKind::Container);
         assert_eq!(config.container.runtime, Path::new("podman"));
         assert_eq!(config.container.image, "example/agent:latest");
@@ -3436,9 +3404,7 @@ sandbox = "required""#
         let temporary = tempfile::tempdir().unwrap();
         let libraries = temporary.path().join("lib");
         std::fs::create_dir(&libraries).unwrap();
-        let crate::cli::Command::Run(args) = Cli::try_parse_from([
-            "pvisor",
-            "run",
+        let args = preset_args(&[
             "--rootfs",
             temporary.path().to_str().unwrap(),
             "--vm-library-dir",
@@ -3449,14 +3415,9 @@ sandbox = "required""#
             "4",
             "--",
             "agent",
-        ])
-        .unwrap()
-        .command
-        else {
-            unreachable!()
-        };
+        ]);
         let mut config = RunConfig::default();
-        apply_cli(&mut config, *args).unwrap();
+        apply_cli(&mut config, args).unwrap();
         assert_eq!(config.run.executor, RunExecutorKind::Vm);
         assert_eq!(config.vm.rootfs.as_deref(), Some(temporary.path()));
         assert_eq!(config.vm.library_dir.as_deref(), Some(libraries.as_path()));
@@ -3493,15 +3454,9 @@ sandbox = "required""#
 
     #[test]
     fn host_rootfs_obeys_the_linux_vm_boundary() {
-        let crate::cli::Command::Run(args) =
-            Cli::try_parse_from(["pvisor", "run", "--rootfs", "host", "--", "/bin/true"])
-                .unwrap()
-                .command
-        else {
-            unreachable!()
-        };
+        let args = preset_args(&["--rootfs", "host", "--", "/bin/true"]);
         let mut config = RunConfig::default();
-        let result = apply_cli(&mut config, *args);
+        let result = apply_cli(&mut config, args);
 
         #[cfg(target_os = "linux")]
         {
@@ -3541,22 +3496,8 @@ sandbox = "required""#
     #[cfg(target_os = "linux")]
     #[test]
     fn host_rootfs_rejects_an_explicit_non_vm_executor() {
-        let crate::cli::Command::Run(args) = Cli::try_parse_from([
-            "pvisor",
-            "run",
-            "--executor",
-            "host",
-            "--rootfs",
-            "host",
-            "--",
-            "/bin/true",
-        ])
-        .unwrap()
-        .command
-        else {
-            unreachable!()
-        };
-        let error = apply_cli(&mut RunConfig::default(), *args).unwrap_err();
+        let args = preset_args(&["--executor", "host", "--rootfs", "host", "--", "/bin/true"]);
+        let error = apply_cli(&mut RunConfig::default(), args).unwrap_err();
         assert!(error.to_string().contains("requires --executor vm"));
     }
 
@@ -3585,9 +3526,7 @@ sandbox = "required""#
 
     #[test]
     fn explicit_off_is_not_overridden_by_vm_policy_flags() {
-        let crate::cli::Command::Run(args) = Cli::try_parse_from([
-            "pvisor",
-            "run",
+        let args = preset_args(&[
             "--executor",
             "vm",
             "--overlaynet",
@@ -3595,14 +3534,9 @@ sandbox = "required""#
             "--overlaynet-deny-all",
             "--",
             "true",
-        ])
-        .unwrap()
-        .command
-        else {
-            unreachable!()
-        };
+        ]);
         let mut config = RunConfig::default();
-        apply_cli(&mut config, *args).unwrap();
+        apply_cli(&mut config, args).unwrap();
         assert_eq!(config.overlaynet.mode, OverlayNetMode::Off);
         assert_eq!(config.overlaynet.policy, OverlayNetPolicy::Deny);
     }
@@ -3643,9 +3577,7 @@ sandbox = "required""#
 
     #[test]
     fn cli_exposes_overlay_path_and_ordered_compose_layers() {
-        let crate::cli::Command::Run(args) = Cli::try_parse_from([
-            "pvisor",
-            "run",
+        let args = preset_args(&[
             "--rootfs",
             "image=ubuntu:latest",
             "--mount",
@@ -3654,14 +3586,9 @@ sandbox = "required""#
             "/tmp/stage",
             "--",
             "/bin/true",
-        ])
-        .unwrap()
-        .command
-        else {
-            unreachable!()
-        };
+        ]);
         let mut config = RunConfig::default();
-        apply_cli(&mut config, *args).unwrap();
+        apply_cli(&mut config, args).unwrap();
         assert_eq!(config.run.executor, RunExecutorKind::Vm);
         let overlay = config.overlayfs.unwrap();
         assert_eq!(overlay.mount[0].source, PathBuf::from("/tmp/project"));
@@ -3671,23 +3598,16 @@ sandbox = "required""#
 
     #[test]
     fn image_selects_the_daemonless_vm_executor() {
-        let crate::cli::Command::Run(args) = Cli::try_parse_from([
-            "pvisor",
-            "run",
+        let args = preset_args(&[
             "--rootfs",
             "image=ubuntu:24.04",
             "--image-store",
             "/tmp/pvisor-images",
             "--",
             "/bin/true",
-        ])
-        .unwrap()
-        .command
-        else {
-            unreachable!()
-        };
+        ]);
         let mut config = RunConfig::default();
-        apply_cli(&mut config, *args).unwrap();
+        apply_cli(&mut config, args).unwrap();
         assert_eq!(config.run.executor, RunExecutorKind::Vm);
         assert_eq!(config.vm.image.as_deref(), Some("ubuntu:24.04"));
         assert_eq!(
@@ -3701,20 +3621,8 @@ sandbox = "required""#
     fn cli_lists_replace_config_lists() {
         let mut config = RunConfig::default();
         config.overlaynet.allow = vec!["old.example".into()];
-        let crate::cli::Command::Run(args) = Cli::try_parse_from([
-            "pvisor",
-            "run",
-            "--overlaynet-allow",
-            "new.example",
-            "--",
-            "true",
-        ])
-        .unwrap()
-        .command
-        else {
-            unreachable!()
-        };
-        apply_cli(&mut config, *args).unwrap();
+        let args = preset_args(&["--overlaynet-allow", "new.example", "--", "true"]);
+        apply_cli(&mut config, args).unwrap();
         assert!(config.overlaynet.allow.is_empty());
         assert_eq!(config.overlaynet.rules.len(), 1);
         assert_eq!(config.overlaynet.rules[0].host, "new.example");
@@ -3724,9 +3632,7 @@ sandbox = "required""#
 
     #[test]
     fn safe_defaults_disable_inheritance_and_cli_maps_resource_limits() {
-        let crate::cli::Command::Run(args) = Cli::try_parse_from([
-            "pvisor",
-            "run",
+        let args = preset_args(&[
             "--pass-env",
             "EXPLICIT_TOKEN",
             "--memory",
@@ -3739,14 +3645,9 @@ sandbox = "required""#
             "2MiB",
             "--",
             "true",
-        ])
-        .unwrap()
-        .command
-        else {
-            unreachable!()
-        };
+        ]);
         let mut config = RunConfig::default();
-        apply_cli(&mut config, *args).unwrap();
+        apply_cli(&mut config, args).unwrap();
         apply_safe_defaults(&mut config).unwrap();
         assert!(!config.run.inherit_env);
         assert_eq!(config.run.pass_env, ["EXPLICIT_TOKEN"]);
@@ -3792,9 +3693,7 @@ sandbox = "required""#
 
     #[test]
     fn simple_network_flags_repeat_and_infer_policy() {
-        let crate::cli::Command::Run(args) = Cli::try_parse_from([
-            "pvisor",
-            "run",
+        let args = preset_args(&[
             "--overlaynet-allow",
             "api.example.com:443",
             "--overlaynet-allow",
@@ -3809,14 +3708,9 @@ sandbox = "required""#
             "api.example.com:443=2mbps",
             "--",
             "true",
-        ])
-        .unwrap()
-        .command
-        else {
-            unreachable!()
-        };
+        ]);
         let mut config = RunConfig::default();
-        apply_cli(&mut config, *args).unwrap();
+        apply_cli(&mut config, args).unwrap();
 
         assert_eq!(config.overlaynet.mode, OverlayNetMode::Proxy);
         assert_eq!(config.overlaynet.policy, OverlayNetPolicy::Allowlist);
@@ -3837,15 +3731,9 @@ sandbox = "required""#
 
     #[test]
     fn overlaynet_without_value_defaults_to_proxy() {
-        let crate::cli::Command::Run(args) =
-            Cli::try_parse_from(["pvisor", "run", "--overlaynet", "--", "true"])
-                .unwrap()
-                .command
-        else {
-            unreachable!()
-        };
+        let args = preset_args(&["--overlaynet", "--", "true"]);
         let mut config = RunConfig::default();
-        apply_cli(&mut config, *args).unwrap();
+        apply_cli(&mut config, args).unwrap();
         assert_eq!(config.overlaynet.mode, OverlayNetMode::Proxy);
     }
 
@@ -3938,13 +3826,7 @@ sandbox = "required""#
 
     #[test]
     fn deny_all_is_discoverable_and_replaces_configured_policy_details() {
-        let crate::cli::Command::Run(args) =
-            Cli::try_parse_from(["pvisor", "run", "--overlaynet-deny-all", "--", "true"])
-                .unwrap()
-                .command
-        else {
-            unreachable!()
-        };
+        let args = preset_args(&["--overlaynet-deny-all", "--", "true"]);
         let mut config = RunConfig::default();
         config.overlaynet.allow = vec!["old.example".into()];
         config.overlaynet.deny = vec![NetworkAccessRule {
@@ -3959,7 +3841,7 @@ sandbox = "required""#
             bytes_per_second: 1_000,
         }];
 
-        apply_cli(&mut config, *args).unwrap();
+        apply_cli(&mut config, args).unwrap();
 
         assert_eq!(config.overlaynet.mode, OverlayNetMode::Proxy);
         assert_eq!(config.overlaynet.policy, OverlayNetPolicy::Deny);
@@ -3971,23 +3853,16 @@ sandbox = "required""#
 
     #[test]
     fn gateway_capture_enables_overlaynet_without_a_driver_flag() {
-        let crate::cli::Command::Run(args) = Cli::try_parse_from([
-            "pvisor",
-            "run",
+        let args = preset_args(&[
             "--gateway-mode",
             "capture",
             "--gateway-route",
             r#"name="openai", upstream="https://api.openai.com/v1""#,
             "--",
             "true",
-        ])
-        .unwrap()
-        .command
-        else {
-            unreachable!()
-        };
+        ]);
         let mut config = RunConfig::default();
-        apply_cli(&mut config, *args).unwrap();
+        apply_cli(&mut config, args).unwrap();
         assert_eq!(config.gateway.mode, GatewayMode::Capture);
         assert_eq!(config.overlaynet.mode, OverlayNetMode::Proxy);
     }
@@ -4108,20 +3983,13 @@ sandbox = "required""#
             transports: Vec::new(),
             allow_private_ips: false,
         }];
-        let crate::cli::Command::Run(args) = Cli::try_parse_from([
-            "pvisor",
-            "run",
+        let args = preset_args(&[
             "--overlaynet-rule",
             r#"host="new.example", ports=[443], transports=["tcp_tunnel"]"#,
             "--",
             "true",
-        ])
-        .unwrap()
-        .command
-        else {
-            unreachable!()
-        };
-        apply_cli(&mut config, *args).unwrap();
+        ]);
+        apply_cli(&mut config, args).unwrap();
         assert_eq!(config.overlaynet.rules.len(), 1);
         assert_eq!(config.overlaynet.rules[0].host, "new.example");
         assert_eq!(config.overlaynet.rules[0].ports, [443]);
@@ -4129,21 +3997,9 @@ sandbox = "required""#
 
     #[test]
     fn overlayfs_options_enable_the_driver_and_select_a_stage() {
-        let crate::cli::Command::Run(args) = Cli::try_parse_from([
-            "pvisor",
-            "run",
-            "--stage",
-            "/tmp/pvisor-stage",
-            "--",
-            "true",
-        ])
-        .unwrap()
-        .command
-        else {
-            unreachable!()
-        };
+        let args = preset_args(&["--stage", "/tmp/pvisor-stage", "--", "true"]);
         let mut config = RunConfig::default();
-        apply_cli(&mut config, *args).unwrap();
+        apply_cli(&mut config, args).unwrap();
         let overlayfs = config.overlayfs.expect("OverlayFS should be enabled");
         assert_eq!(
             overlayfs.stage.as_deref(),
@@ -4279,21 +4135,14 @@ sandbox = "required""#
 
     #[test]
     fn compose_replaces_configured_layers_and_enables_overlayfs() {
-        let crate::cli::Command::Run(args) = Cli::try_parse_from([
-            "pvisor",
-            "run",
+        let args = preset_args(&[
             "--mount",
             "/tmp/first:read",
             "--mount",
             "/tmp/second:read",
             "--",
             "true",
-        ])
-        .unwrap()
-        .command
-        else {
-            unreachable!()
-        };
+        ]);
         let mut config = RunConfig {
             overlayfs: Some(OverlayFsSettings {
                 mount: vec![FilesystemMount {
@@ -4305,7 +4154,7 @@ sandbox = "required""#
             }),
             ..RunConfig::default()
         };
-        apply_cli(&mut config, *args).unwrap();
+        apply_cli(&mut config, args).unwrap();
         let mounts = config.overlayfs.unwrap().mount;
         assert_eq!(mounts[0].source, PathBuf::from("/tmp/first"));
         assert_eq!(mounts[1].source, PathBuf::from("/tmp/second"));

@@ -3,8 +3,7 @@
 The Job is pVisor's primary user-facing object: one managed command, its
 execution evidence, and any staged filesystem changes. `pvisor run` creates a
 Job. The other flat commands act directly on that Job; there is no `job`
-subcommand. `env` provides reusable environments, and `replay` starts a Job
-from a trajectory. Existing Job IDs and on-disk records retain their `run-*`
+subcommand. `replay` starts a Job from a trajectory. Existing Job IDs and on-disk records retain their `run-*`
 and `Run Bundle` names.
 Full command examples for Host, OCI VM, and transparent host-rootfs VM
 are in
@@ -18,8 +17,6 @@ Use the smallest surface that matches your next decision:
   `status --review`, `inspect`, and `apply` to decide what reaches the project.
 - **Understand a boundary:** use `status` and `inspect`, then read the
   [execution guide](../guides/execution.md) before changing providers.
-- **Keep a workspace:** use `env create` and `env exec` for a reusable staged
-  environment; use `env apply` or `env drop` to close the loop.
 - **Continue a trajectory:** use `replay` only when you already have a
   supported trajectory and want a fresh sandbox; begin with the
   [replay guide](../guides/sandbox-replay.md).
@@ -93,7 +90,6 @@ pvisor
 ├── kill                request termination of a live Job
 ├── fork                start a child Job from a stopped Job
 ├── inspect             open a read-only Job filesystem view
-├── env                 manage reusable environments for Jobs
 └── replay              start a Job from an Agent trajectory
 ```
 
@@ -151,31 +147,6 @@ not process memory.
 To stop a running Job, use `pvisor kill JOB_ID`. It requests graceful
 termination from the Job supervisor; check `pvisor status JOB_ID` for the final
 state. A stopped Job can still be reviewed and applied or dropped.
-
-A durable environment has a stable name and a reusable OverlayFS upper:
-
-```bash
-pvisor env create dev --target ./project
-pvisor env exec dev -- make test
-pvisor env shell dev
-pvisor env inspect dev -- git status --short
-pvisor env stop dev
-pvisor env start dev
-pvisor env apply dev --path src   # commit the selection; the rest stays staged
-pvisor env apply dev --all        # commit remaining changes and reset to an empty stage
-pvisor env drop dev        # discard changes and reset to an empty stage
-pvisor env delete dev --force
-```
-
-Default metadata lives in `~/.persisting/envs` and can be overridden
-with `--root` or `PERSISTING_ENV_HOME`. `start` / `stop` control whether
-new sessions are accepted; they do not mean a resident VM. Each
-`exec` / `shell` mounts the same writable upper, so changes persist
-across commands. `inspect` uses a kernel-enforced read-only view.
-`apply --all` or `drop` do not flip a terminal Overlay back to `staged`
-in place; they create a monotonically increasing Overlay generation.
-After a command takes the environment lease it re-reads the generation
-so metadata from before the reset cannot overwrite the new stage.
 
 ## `--safe` parameter preset
 

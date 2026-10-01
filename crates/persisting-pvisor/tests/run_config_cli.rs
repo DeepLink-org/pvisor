@@ -20,6 +20,56 @@ fn only_run_dir(run_home: &std::path::Path) -> std::path::PathBuf {
 }
 
 #[test]
+#[cfg(target_os = "macos")]
+fn unsupported_memory_limit_preserves_observed_file_size_limit() {
+    let temporary = tempfile::tempdir().unwrap();
+    let runs = temporary.path().join("runs");
+    let output = Command::new(env!("CARGO_BIN_EXE_pvisor"))
+        .current_dir(temporary.path())
+        .env("PERSISTING_RUN_HOME", &runs)
+        .args([
+            "run",
+            "--memory",
+            "256MiB",
+            "--max-file-size",
+            "1MiB",
+            "--",
+            "/usr/bin/true",
+        ])
+        .output()
+        .unwrap();
+    assert!(
+        output.status.success(),
+        "{}",
+        String::from_utf8_lossy(&output.stderr)
+    );
+    let bundle = RunBundle::read(&only_run_dir(&runs)).unwrap();
+    assert_eq!(bundle.resources.requested.memory_bytes, Some(268435456));
+    assert_eq!(bundle.resources.effective.memory_bytes, None);
+    assert_eq!(bundle.resources.effective.file_size_bytes, Some(1048576));
+    assert!(
+        bundle
+            .resources
+            .mechanisms
+            .iter()
+            .any(|mechanism| mechanism == "posix-rlimit")
+    );
+    assert!(
+        bundle
+            .resources
+            .limitations
+            .iter()
+            .any(|limitation| limitation.contains("RLIMIT_AS"))
+    );
+    assert!(
+        !bundle
+            .executor_observations
+            .enforcement
+            .is_enforced(persisting_control::CapabilityDimension::Resources)
+    );
+}
+
+#[test]
 fn safe_preset_reaches_the_run_and_reports_its_limits() {
     #[cfg(target_os = "macos")]
     if !std::path::Path::new("/Library/Filesystems/macfuse.fs").is_dir() {

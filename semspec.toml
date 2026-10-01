@@ -1,9 +1,10 @@
 [project]
 name = "pVisor"
-spec_dirs = ["tests/semantics"]
+spec_dirs = ["tests/semantics", "docs/src/zh/reference"]
 ledger = "tests/semantics/REVIEWED.toml"
 approved_snapshots = "tests/semantics/.approved"
-retired = []
+# env was removed intentionally; these scenario IDs must never be reused.
+retired = ["S-DOC-053", "S-DOC-054"]
 
 [subject]
 bin = "target/debug/pvisor"

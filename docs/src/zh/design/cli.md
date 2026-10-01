@@ -2,7 +2,7 @@
 
 Job 是 CLI 的核心对象：一次受管理的命令、执行证据和暂存改动。`pvisor run` 创建
 Job；`status`、`kill`、`inspect`、`fork`、`apply`、`drop` 直接操作 Job，
-命令保持扁平。`env` 管理 Job 使用的可复用环境，`replay` 从已有轨迹创建 Job。
+命令保持扁平。`replay` 从已有轨迹创建 Job。
 内部仍用 Run 记录保存 Job，配置类型仍是 `RunConfig`；配置文件必须显式传入，
 不会被当作隐式项目策略。
 
@@ -61,23 +61,6 @@ pvisor fork last -- codex
 嵌入式调用方可使用协作式 AgentCtl 协议，让参与的 session
 先进入 quiesce，再保存检查点。
 
-## 可复用环境
-
-`env` 为具名 stage 提供跨命令的稳定生命周期：
-
-```bash
-pvisor env create dev --target ./project
-pvisor env exec dev -- make test
-pvisor env shell dev
-pvisor env inspect dev -- git status --short
-pvisor env apply dev --path src
-pvisor env drop dev
-pvisor env delete dev --force
-```
-
-Environment 是持久 stage，不是常驻 VM。`start` 与 `stop` 控制是否接受新的 session；
-`apply` 与 `drop` 完成决定后会推进 stage generation。
-
 ## 配置优先级
 
 `--config` 接受 TOML `RunConfig`，`--spec` 接受准备好的 JSON `RunSpec`。显式 scalar 选项覆盖文件值；
@@ -87,14 +70,20 @@ Environment 是持久 stage，不是常驻 VM。`start` 与 `stop` 控制是否�
 公共工作流保持简单：启动 Job，检查 Evidence，然后明确决定 staged effect 的去向。Provider
 行为见[执行环境](../guides/execution.md)，完整选项见 [CLI 参考](../reference/cli.md)。
 
-## 可执行扩展
+## 核心命令与可执行扩展
 
-`pvisor tui`、`pvisor replay` 分别派发到 `pvisor-tui`、`pvisor-replay`。
-构建、安装和 wheel 均一起交付三个二进制；`run --tui` 与交互式 `--ask`
-也转交 TUI 扩展。`pvisor extensions` 以 JSON 列出安装路径与 manifest，
-根命令帮助列出可用扩展。新增 CLI 功能优先使用 `pvisor-NAME` 可执行文件。
+`run`、`status`、`kill`、`inspect`、`fork`、`apply`、`drop` 内置于 `pvisor`，
+共同覆盖完整的 Job 生命周期；帮助与 `extensions` 查询也由核心提供。
+只有核心二进制时也能执行、检查与管理 Job，不依赖伴随命令二进制。
+Session 生命周期及控制／观测协议仍是共享库 API。
 
-发现顺序为核心二进制所在目录、PATH 中的非空目录；内置命令名保留。
+`cache`、`tui`、`replay` 保留为独立的 `pvisor-NAME` 扩展，各自拥有参数解析器和
+manifest。构建、安装和 wheel 交付四个二进制：`pvisor`、`pvisor-cache`、
+`pvisor-tui`、`pvisor-replay`。`pvisor help NAME` 支持核心命令和扩展。
+默认执行 `pvisor -- COMMAND` 在核心完成；`run --tui` 与交互式 `--ask` 转交 TUI。
+新的独立工具仍可通过可执行扩展加入 CLI，无需修改核心解析器；`env` 已移除。
+
+发现顺序为核心二进制所在目录、PATH 中的非空目录；扩展不能覆盖核心命令名。
 扩展在二进制中嵌入唯一 JSON 数据块：NUL + `PVISOR_COMMAND_MANIFEST_V1`
 + 换行，随后 JSON，再以换行 + `PVISOR_COMMAND_MANIFEST_END` + NUL 结束。
 字段为 `schema_version`、`name`、`version`、`description`、`session_protocol`；

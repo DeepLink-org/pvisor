@@ -65,10 +65,6 @@ impl Drop for ReadOnlyOverlayMount {
 }
 
 impl OverlayMount {
-    pub fn mountpoint(&self) -> &Path {
-        &self.record.merged_dir
-    }
-
     pub fn record(&self) -> &OverlayRecord {
         &self.record
     }
@@ -308,14 +304,6 @@ fn copy_tree(source: &Path, destination: &Path, excluded: &Path) -> std::io::Res
     }
     copy_host_metadata(source, destination)?;
     Ok(())
-}
-
-/// Mount the overlay in-process; pVisor becomes the FUSE userspace server.
-pub fn mount_overlay_record(
-    record: &OverlayRecord,
-    lower_dirs: &[PathBuf],
-) -> Result<OverlayMount, OverlayError> {
-    mount_overlay_record_observed(record, lower_dirs, None)
 }
 
 /// FSKit creates its own mount directory under /Volumes. Backing state stays in
@@ -743,7 +731,8 @@ mod tests {
             state: OverlayState::Staged,
         };
 
-        let mount = mount_overlay_record(&record, std::slice::from_ref(&lower)).unwrap();
+        let mount =
+            mount_overlay_record_observed(&record, std::slice::from_ref(&lower), None).unwrap();
         assert_eq!(fs::read(merged.join("lower-file")).unwrap(), b"lower");
         fs::write(merged.join("lower-file"), b"copied-up").unwrap();
         fs::remove_file(merged.join("deleted-file")).unwrap();

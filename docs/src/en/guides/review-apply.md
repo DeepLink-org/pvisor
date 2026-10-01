@@ -40,4 +40,4 @@ process memory or an immutable copy of every underlying host file.
 pvisor drop last
 ```
 
-Dropping discards the remaining staged changes. It cannot undo batches already applied, network calls, or other external effects. For a repeatable workspace across commands, see [`env` in the CLI reference](../reference/cli.md).
+Dropping discards the remaining staged changes. It cannot undo batches already applied, network calls, or other external effects.

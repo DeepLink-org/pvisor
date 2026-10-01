@@ -2,7 +2,7 @@
 
 Job 是 pVisor 面向用户的核心对象：一次受管理的命令、执行证据以及暂存文件改动。
 `pvisor run` 创建 Job；其余扁平命令直接操作 Job，不新增 `job` 子命令。
-`env` 提供可复用环境，`replay` 从轨迹创建 Job。现有 Job ID 和磁盘记录仍保留
+`replay` 从轨迹创建 Job。现有 Job ID 和磁盘记录仍保留
 `run-*`、`Run Bundle` 等名称。
 Host、OCI VM 和透明 host-rootfs VM 的完整命令示例见
 [使用 pVisor 运行工作负载](../guides/execution.md)。
@@ -12,8 +12,6 @@ Host、OCI VM 和透明 host-rootfs VM 的完整命令示例见
 - **运行命令：** 从[`pvisor run`](../start/first-run.md)开始，再用 `status --review`、
   `inspect` 和 `apply` 决定哪些修改进入项目。
 - **理解执行边界：** 使用 `status` 和 `inspect`，然后阅读[执行指南](../guides/execution.md)。
-- **保留工作区：** 用 `env create` 和 `env exec` 管理可复用的 staged environment，
-  用 `env apply` 或 `env drop` 收尾。
 - **继续轨迹：** 只有在已有受支持轨迹时才使用 `replay`，先阅读[回放指南](../guides/sandbox-replay.md)。
 
 第一次使用时，先复制最小闭环：
@@ -89,7 +87,6 @@ pvisor
 ├── kill                请求终止正在运行的 Job
 ├── fork                从已停止的 Job 创建子 Job
 ├── inspect             只读查看 Job 的文件系统
-├── env                 管理 Job 使用的可复用环境
 └── replay              从 Agent 轨迹创建 Job
 ```
 
@@ -137,28 +134,6 @@ checkpoint 的 Session 报告匹配的 quiesced 状态，快照 raw upper，再�
 
 要结束正在运行的 Job，使用 `pvisor kill JOB_ID`。它向 Job 的监督进程请求正常
 终止；用 `pvisor status JOB_ID` 查看最终状态。已停止的 Job 仍可审查并选择应用或丢弃。
-
-持久环境拥有稳定名称和可复用 OverlayFS upper：
-
-```bash
-pvisor env create dev --target ./project
-pvisor env exec dev -- make test
-pvisor env shell dev
-pvisor env inspect dev -- git status --short
-pvisor env stop dev
-pvisor env start dev
-pvisor env apply dev --path src   # 提交选中部分，其余继续 staged
-pvisor env apply dev --all        # 提交剩余修改并重置为空 stage
-pvisor env drop dev        # 丢弃修改并重置为空 stage
-pvisor env delete dev --force
-```
-
-默认元数据位于 `~/.persisting/envs`，可用 `--root` 或 `PERSISTING_ENV_HOME`
-覆盖。`start` / `stop` 控制是否接受新会话，并不表示常驻虚拟机；每次 `exec` / `shell`
-都会挂载同一个 writable upper，所以修改会跨命令保留。`inspect` 使用内核强制的只读视图。
-`apply --all` 或 `drop` 不会把 terminal Overlay 原地改回 `staged`；它们会创建单调递增的
-Overlay generation。命令取得环境 lease 后会重新读取 generation，避免用 reset 前的
-metadata 覆盖新 stage。
 
 ## `--safe` 参数预设
 

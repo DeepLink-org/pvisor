@@ -42,6 +42,8 @@ enum Commands {
         item: String,
     },
     Run {
+        /// Run cases from this Markdown file in the configured spec_dirs.
+        spec: Option<PathBuf>,
         #[arg(long, value_delimiter = ',')]
         case: Vec<String>,
         #[arg(long)]
@@ -171,6 +173,7 @@ fn dispatch(cli: Cli) -> Result<i32> {
             Ok(0)
         }
         Commands::Run {
+            spec,
             case,
             domain,
             subject_bin,
@@ -184,6 +187,7 @@ fn dispatch(cli: Cli) -> Result<i32> {
             let report = runner::run(
                 &project,
                 &runner::Options {
+                    spec,
                     subject: subject_bin,
                     keep,
                     case_ids: case,

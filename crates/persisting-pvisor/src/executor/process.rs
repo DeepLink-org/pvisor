@@ -1403,10 +1403,7 @@ impl RunExecutor for ProcessExecutor {
             }
         };
         let mut warnings = Vec::new();
-        #[cfg(target_os = "linux")]
         let mut metrics = std::collections::BTreeMap::new();
-        #[cfg(not(target_os = "linux"))]
-        let metrics = std::collections::BTreeMap::new();
         #[cfg(target_os = "linux")]
         let _resource_cgroup = match ResourceCgroup::prepare(&spec.runtime.resource_limits) {
             Ok(Some(cgroup)) => match cgroup.install(&mut command) {
@@ -1548,6 +1545,17 @@ impl RunExecutor for ProcessExecutor {
         if !sandbox_setup_failed {
             executor_observations.origin = persisting_control::trace::Origin::Backend;
             executor_observations.enforcement = installed_controls.unwrap_or_default();
+            // Report installed rlimits even when macOS cannot enforce requested memory.
+            // The aggregate Resources evidence below still requires every requested limit.
+            let limits = &spec.runtime.resource_limits;
+            if limits.processes.is_some()
+                || limits.cpu_time_ms.is_some()
+                || limits.open_files.is_some()
+                || limits.file_size_bytes.is_some()
+                || (limits.memory_bytes.is_some() && !cfg!(target_os = "macos"))
+            {
+                metrics.insert("resource.posix_rlimit".into(), 1.0);
+            }
             if !spec.runtime.resource_limits.is_empty()
                 && !(cfg!(target_os = "macos")
                     && spec.runtime.resource_limits.memory_bytes.is_some())

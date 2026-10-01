@@ -265,7 +265,7 @@ pub fn kill(args: KillArgs) -> anyhow::Result<()> {
     let record = selected(Some(&args.selector), &args.output_dir)?;
     anyhow::ensure!(
         record.executor.is_some(),
-        "{} is an environment, not a Job; use `pvisor env stop`",
+        "{} is a legacy environment record, not an executable Job",
         record.run_id
     );
     anyhow::ensure!(

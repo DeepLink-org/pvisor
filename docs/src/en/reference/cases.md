@@ -6,8 +6,9 @@ network policy, Gateway capture, and prepared RunSpecs.
 
 Use the catalog when you need a reproducible command or a regression target.
 Each case documents its prerequisites, command, expected result, and machine
-check. The executable checks live in `tests/semantics/documented-cases.md` and run
-through semspec. The A01–M02 document labels remain in each semantic case title.
+check. The [Chinese catalog](../../zh/reference/cases.md) contains both the
+documentation and executable checks; semspec reads it directly. The A01–M02
+document labels remain in each semantic case title.
 
 ## Choose a case group
 
@@ -28,15 +29,18 @@ From the repository root:
 
 ```bash
 just semspec list --domain DOC
+just semspec run docs/src/zh/reference/cases.md --subject-bin target/release/pvisor
 just cases --case S-DOC-001,S-DOC-012 --keep
 just cases
 just semspec show S-DOC-001
 ```
 
-`just cases` builds release pVisor, runs the 56 DOC specifications and writes
+`just cases` builds release pVisor, runs the 54 active DOC specifications and writes
 `target/pvisor-case-report.json`. Select by S-DOC IDs: A01 is S-DOC-001, C01 is
 S-DOC-012. The complete mapping lives in `tests/semantics/README.md`. Use
 `just semspec run --domain DOC --subject-bin PATH` to test an existing binary.
+L01 and L02 were retired with the removed `env` feature; S-DOC-053 and S-DOC-054
+remain reserved in `semspec.toml`.
 
 Each specification preserves the command, expected exit status and original
 assertions. Expected nonzero exits remain explicit checks, never xfail. Sealed

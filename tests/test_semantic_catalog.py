@@ -8,6 +8,7 @@ import subprocess
 from pathlib import Path
 
 import pytest
+import tomllib
 
 ROOT = Path(__file__).resolve().parents[1]
 VOCAB = ROOT / "tests/semantics/vocab"
@@ -94,8 +95,8 @@ bundle_path > "$CASE_ROOT/bundle-path"
     assert proxy != gateway
 
 
-def test_migrated_catalog_retains_all_documented_scenarios():
-    contents = (ROOT / "tests/semantics/documented-cases.md").read_text()
+def test_migrated_catalog_retains_active_scenarios_and_registers_retired_ids():
+    contents = (ROOT / "docs/src/zh/reference/cases.md").read_text()
     titles = re.findall(r"^### (S-DOC-\d{3})：([A-M]\d{2}) ", contents, re.MULTILINE)
     labels = [
         "A07",
@@ -109,16 +110,24 @@ def test_migrated_catalog_retains_all_documented_scenarios():
         "I03",
         "J03",
         "K04",
-        "L02",
         "M02",
     ]
     expected = [
         f"{label[0]}{number:02d}" for label in labels for number in range(1, int(label[1:]) + 1)
     ]
     assert [label for _, label in titles] == expected
-    assert len({identifier for identifier, _ in titles}) == 56
-    assert contents.count("case_run success <<'CASE_COMMAND'") == 48
+    assert len({identifier for identifier, _ in titles}) == 54
+    assert contents.count("case_run success <<'CASE_COMMAND'") == 46
     assert contents.count("case_run nonzero <<'CASE_COMMAND'") == 8
     assert "xfail-on" not in contents
-    assert "/tmp/pvisor-cases" not in contents
-    assert "/path/to/" not in contents
+    scripts = re.findall(r"^```bash\n(case_setup\n.*?)^```", contents, re.MULTILINE | re.DOTALL)
+    assert len(scripts) == 54
+    assert all(
+        "/tmp/pvisor-cases" not in script and "/path/to/" not in script for script in scripts
+    )
+
+    configuration = tomllib.loads((ROOT / "semspec.toml").read_text())
+    assert "docs/src/zh/reference" in configuration["project"]["spec_dirs"]
+    assert not (ROOT / "tests/semantics/documented-cases.md").exists()
+    assert {"S-DOC-053", "S-DOC-054"} <= set(configuration["project"]["retired"])
+    assert not {"S-DOC-053", "S-DOC-054"} & {identifier for identifier, _ in titles}

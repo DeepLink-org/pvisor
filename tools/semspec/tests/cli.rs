@@ -45,6 +45,38 @@ fn clean_report(json: &serde_json::Value) {
     }
 }
 #[test]
+fn run_selects_markdown_directly_and_intersects_case_selection() {
+    let dir = fixture();
+    let root = dir.path();
+    write_cases(root, &case("001", "true", ""));
+    let selected = root.join("semantics/selected cases.md");
+    fs::write(
+        &selected,
+        case("002", "true", "") + &case("003", "true", ""),
+    )
+    .unwrap();
+    let (output, json) = run_json(root, &["semantics/selected cases.md"]);
+    assert!(output.status.success());
+    let ids: Vec<_> = json["results"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .map(|result| result["id"].as_str().unwrap())
+        .collect();
+    assert_eq!(ids, ["S-TEST-002", "S-TEST-003"]);
+    let (output, json) = run_json(root, &[selected.to_str().unwrap(), "--case", "S-TEST-003"]);
+    assert!(output.status.success());
+    assert_eq!(json["results"].as_array().unwrap().len(), 1);
+    assert_eq!(json["results"][0]["id"], "S-TEST-003");
+    for args in [
+        vec!["run", "missing.md"],
+        vec!["run", "semspec.toml"],
+        vec!["run", "semantics/selected cases.md", "--case", "S-TEST-001"],
+    ] {
+        assert_eq!(cli(root, &args).status.code(), Some(2));
+    }
+}
+#[test]
 fn cli_runs_cases_and_keeps_review_separate_from_execution() {
     let dir = fixture();
     let root = dir.path();

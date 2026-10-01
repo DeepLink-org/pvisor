@@ -18,6 +18,7 @@ use std::{
 };
 
 pub struct Options {
+    pub spec: Option<PathBuf>,
     pub subject: Option<PathBuf>,
     pub keep: bool,
     pub case_ids: Vec<String>,
@@ -49,12 +50,36 @@ pub fn run(project: &Project, options: &Options) -> Result<RunReport> {
             "unknown domain {domain}"
         );
     }
+    let file_cases = if let Some(path) = &options.spec {
+        let path = path
+            .canonicalize()
+            .context("Markdown specification unavailable")?;
+        let ids: BTreeSet<_> = project
+            .cases
+            .iter()
+            .filter(|case| {
+                project.root.join(&case.file).canonicalize().ok().as_ref() == Some(&path)
+            })
+            .map(|case| case.id.as_str())
+            .collect();
+        ensure!(
+            !ids.is_empty(),
+            "Markdown file contains no cases in configured spec_dirs: {}",
+            path.display()
+        );
+        Some(ids)
+    } else {
+        None
+    };
     let cases: Vec<_> = project
         .cases
         .iter()
         .filter(|c| {
             (options.case_ids.is_empty() || options.case_ids.contains(&c.id))
                 && options.domain.as_ref().is_none_or(|d| c.domain == *d)
+                && file_cases
+                    .as_ref()
+                    .is_none_or(|ids| ids.contains(c.id.as_str()))
         })
         .collect();
     ensure!(!cases.is_empty(), "selection contains no cases");

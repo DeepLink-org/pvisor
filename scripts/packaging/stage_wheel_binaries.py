@@ -21,7 +21,7 @@ from typing import Any, Mapping
 
 ROOT = Path(__file__).resolve().parents[2]
 WHEEL_DATA = ROOT / "target" / "wheel-data"
-EXPECTED_BINARIES = ("pvisor", "pvisor-tui", "pvisor-replay")
+EXPECTED_BINARIES = ("pvisor", "pvisor-cache", "pvisor-tui", "pvisor-replay")
 SUPPORTED_TARGETS = {
     "x86_64-unknown-linux-musl",
     "aarch64-apple-darwin",
@@ -361,7 +361,8 @@ def stage_wheel_binaries(options: BuildOptions) -> Path:
                 encoding="utf-8",
             )
         if _is_macos(options):
-            _sign_macos_pvisor(staged / "pvisor")
+            for name in EXPECTED_BINARIES:
+                _sign_macos_pvisor(staged / name)
 
         scripts = WHEEL_DATA / "scripts"
         if scripts.exists():

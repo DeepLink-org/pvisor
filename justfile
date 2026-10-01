@@ -18,13 +18,14 @@ build profile="debug":
       *) echo "expected debug or release, got: $1" >&2; exit 2 ;;
     esac
     python3 scripts/build-pvisor.py --profile "$cargo_profile" --target-dir "{{ target_dir }}"
-    binary="{{ target_dir }}/$1/pvisor"
-    test -x "$binary"
-    if [[ "$(uname -s)" == Darwin ]]; then
-      codesign --force --sign - --entitlements "{{ repo }}/crates/persisting-pvisor/macos-hypervisor.entitlements" "$binary"
-      codesign --verify --strict "$binary"
-      codesign -d --entitlements :- "$binary" 2>&1 | grep -q com.apple.security.hypervisor
-    fi
+    for name in pvisor pvisor-cache pvisor-tui pvisor-replay; do
+      binary="{{ target_dir }}/$1/$name"
+      test -x "$binary"
+      if [[ "$(uname -s)" == Darwin ]]; then
+        codesign --force --sign - --entitlements "{{ repo }}/crates/persisting-pvisor/macos-hypervisor.entitlements" "$binary"
+        codesign --verify --strict "$binary"
+      fi
+    done
 
 # Install the signed release binary in CARGO_INSTALL_ROOT or ~/.cargo.
 install-cli: (build "release")
@@ -32,7 +33,7 @@ install-cli: (build "release")
     set -euo pipefail
     install_root="${CARGO_INSTALL_ROOT:-${CARGO_HOME:-$HOME/.cargo}}"
     mkdir -p "$install_root/bin"
-    for binary in pvisor pvisor-tui pvisor-replay; do
+    for binary in pvisor pvisor-cache pvisor-tui pvisor-replay; do
       install -m 755 "{{ target_dir }}/release/$binary" "$install_root/bin/$binary"
     done
 
@@ -134,7 +135,7 @@ examples *scenarios: (build "release")
 
 # Run DOC specifications and save JSON; select S-DOC IDs with --case.
 cases *args: (build "release")
-    cargo run --quiet --manifest-path tools/semspec/Cargo.toml --locked -- run --domain DOC --subject-bin "{{ target_dir }}/release/pvisor" --format json --output "{{ target_dir }}/pvisor-case-report.json" "$@"
+    cargo run --quiet --manifest-path tools/semspec/Cargo.toml --locked -- run docs/src/zh/reference/cases.md --domain DOC --subject-bin "{{ target_dir }}/release/pvisor" --format json --output "{{ target_dir }}/pvisor-case-report.json" "$@"
 
 # Measure process startup and Run Bundle access (smoke or nightly).
 benchmark suite="smoke" output="target/pvisor-benchmark/current" build_dir="target/pvisor-benchmark-build":

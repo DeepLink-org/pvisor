@@ -28,10 +28,12 @@ def run_task(tmp_path):
         "if name == 'python3' and args[0] == 'scripts/build-pvisor.py':\n"
         "    profile = args[args.index('--profile') + 1]\n"
         "    target = Path(args[args.index('--target-dir') + 1])\n"
-        "    binary = target / ('debug' if profile == 'dev' else profile) / 'pvisor'\n"
-        "    binary.parent.mkdir(parents=True, exist_ok=True)\n"
-        "    binary.write_text('#!/bin/sh\\nexit 0\\n')\n"
-        "    binary.chmod(0o755)\n"
+        f"    names = {sorted(path.stem for path in (ROOT / 'crates/persisting-pvisor/src/bin').glob('*.rs'))!r}\n"
+        "    for binary_name in names:\n"
+        "        binary = target / ('debug' if profile == 'dev' else profile) / binary_name\n"
+        "        binary.parent.mkdir(parents=True, exist_ok=True)\n"
+        "        binary.write_text('#!/bin/sh\\nexit 0\\n')\n"
+        "        binary.chmod(0o755)\n"
         "if name == 'codesign': print('com.apple.security.hypervisor')\n"
     )
     stub.chmod(0o755)
@@ -91,9 +93,34 @@ def test_ci_checks_format_without_rewriting(run_task):
 
 def test_cases_preserve_shell_characters_in_arguments(run_task, tmp_path):
     marker = tmp_path / "must-not-exist"
-    report = f"report with spaces $(touch {marker}).md"
-    commands = run_task("cases", "--report", report)
-    assert commands[-1][-2:] == ["--report", report]
+    selection = f"S-DOC-001,$(touch {marker})"
+    commands = run_task("cases", "--case", selection, "--keep", "--require-reviewed")
+    target = tmp_path / "target with spaces"
+    assert commands[-1] == [
+        "cargo",
+        "run",
+        "--quiet",
+        "--manifest-path",
+        "tools/semspec/Cargo.toml",
+        "--locked",
+        "--",
+        "run",
+        "docs/src/zh/reference/cases.md",
+        "--domain",
+        "DOC",
+        "--subject-bin",
+        str(target / "release/pvisor"),
+        "--format",
+        "json",
+        "--output",
+        str(target / "pvisor-case-report.json"),
+        "--case",
+        selection,
+        "--keep",
+        "--require-reviewed",
+    ]
+    assert commands[0][0:2] == ["python3", "scripts/build-pvisor.py"]
+    assert commands[0][commands[0].index("--profile") + 1] == "release"
     assert not marker.exists()
 
 

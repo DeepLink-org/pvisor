@@ -13,6 +13,7 @@ semspec lint
 semspec list
 semspec show S-EXAMPLE-001
 semspec run --format json --output report.json
+semspec run semantics/example.md     # select a Markdown file in spec_dirs
 semspec review --strict
 ```
 
@@ -37,7 +38,7 @@ repository permissions; TTY checks alone cannot authenticate a reviewer.
 Protect ledgers, snapshots, config, vocabulary and engine with repository review
 rules and a human CODEOWNER before making reviewed results a release gate.
 
-`run` supports case/domain selection, subject override, requirement probes,
+`run [FILE.md]` supports Markdown file/case/domain selection, subject override, requirement probes,
 timeouts, retained failure directories (including XFAIL), human/JSON reports and reviewed gating.
 PASS/SKIP/XFAIL exit 0; FAIL/XPASS or required pending review exit 1;
 usage/config/spec errors exit 2; ERROR verdicts exit 3. Each check has a fresh

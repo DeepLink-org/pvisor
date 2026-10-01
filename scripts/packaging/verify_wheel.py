@@ -13,7 +13,7 @@ import zipfile
 from email.parser import BytesParser
 from pathlib import Path
 
-EXPECTED_BINARIES = ("pvisor", "pvisor-tui", "pvisor-replay")
+EXPECTED_BINARIES = ("pvisor", "pvisor-cache", "pvisor-tui", "pvisor-replay")
 FIRMWARE_NAMES = ("libkrunfw.so.5", "libkrunfw.5.dylib")
 
 
@@ -134,7 +134,7 @@ def verify_native_payloads(
                         )
                         if "com.apple.security.hypervisor" not in entitlements:
                             raise RuntimeError(
-                                "pvisor is missing the Hypervisor.framework entitlement"
+                                f"{name} is missing the Hypervisor.framework entitlement"
                             )
                 elif sys.platform == "linux" and "linux" in wheel_name:
                     _assert_static_linux(name, executable)
@@ -175,7 +175,8 @@ def install_smoke(wheel: Path, version: str) -> None:
             _run([str(executable), "--help"], env=env)
 
         _run([str(scripts / "pvisor"), "run", "--help"], env=env)
-        for name in ("tui", "replay"):
+        for binary in EXPECTED_BINARIES[1:]:
+            name = binary.removeprefix("pvisor-")
             _run([str(scripts / "pvisor"), name, "--help"], env=env)
             _run([str(scripts / f"pvisor-{name}"), "--pvisor-manifest"], env=env)
 

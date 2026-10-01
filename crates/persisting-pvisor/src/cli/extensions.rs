@@ -9,14 +9,12 @@ const MAX_MANIFEST: usize = 4096;
 
 pub(crate) const BUILTINS: &[&str] = &[
     "run",
-    "cache",
     "apply",
     "drop",
     "status",
     "kill",
     "fork",
     "inspect",
-    "env",
     "extensions",
     "help",
 ];
@@ -190,9 +188,13 @@ pub fn core_executable() -> anyhow::Result<PathBuf> {
 }
 
 pub fn dispatch(name: &str, args: &[OsString]) -> anyhow::Result<()> {
-    use std::os::unix::process::CommandExt;
     let (path, _) =
         find(name)?.ok_or_else(|| anyhow::anyhow!("pvisor-{name} extension is not installed"))?;
+    execute(path, args)
+}
+
+pub(crate) fn execute(path: PathBuf, args: &[OsString]) -> anyhow::Result<()> {
+    use std::os::unix::process::CommandExt;
     Err(std::process::Command::new(path).args(args).exec().into())
 }
 
