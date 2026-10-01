@@ -74,7 +74,7 @@ selection and kernel preparation match release builds.
 
 - [Operation and Event](../../docs/operations-events.md): immutable execution plans,
   VM/Overlay placement, execution facts and boundary observations.
-- [The PolicyVisor model](../../docs/src/zh/concepts/policyvisor.md)
+- [The PolicyVisor model](../../docs/src/zh/start/what-is-pvisor.md)
 - [Get started](../../docs/src/en/start/first-run.md)
 - [Isolation architecture](../../docs/src/zh/design/isolation.md)
 - [Gateway architecture](../../docs/src/zh/design/gateway.md)

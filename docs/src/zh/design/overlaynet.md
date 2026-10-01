@@ -223,5 +223,5 @@ transports = ["tcp_tunnel"]
 - [网络指南](../guides/network.md)：为一次 Run 配置并检查策略。
 - [隔离架构](isolation.md)：比较完整的 provider 边界。
 - [Gateway 架构](gateway.md)：网络层之上的模型路由与 capture。
-- [安全与 Evidence](../concepts/security-evidence.md)：跨产品解读
+- [安全与 Evidence](../concepts/capabilities-and-evidence.md)：跨产品解读
   enforcement 声称。

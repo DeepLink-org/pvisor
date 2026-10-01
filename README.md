@@ -98,7 +98,7 @@ logical checkpoints preserve staged filesystem state, not process memory.
 
 - [Choose a workflow](https://deeplink-org.github.io/pvisor/en/start/) — the path from install to a reviewed Job
 - [Your first Job](https://deeplink-org.github.io/pvisor/en/start/first-run/) — the run-review-apply loop
-- [PolicyVisor model](https://deeplink-org.github.io/pvisor/zh/concepts/policyvisor/) — policy, controls, and evidence
+- [PolicyVisor model](https://deeplink-org.github.io/pvisor/zh/start/what-is-pvisor/) — policy, controls, and evidence
 - [Project architecture](https://deeplink-org.github.io/pvisor/zh/design/) — ownership and delivery boundaries
 - [中文文档](https://deeplink-org.github.io/pvisor/zh/start/) — 从安装到策略约束下的可审查执行
 

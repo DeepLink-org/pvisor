@@ -378,7 +378,7 @@ pvisor run \
   -- my-agent
 ```
 
-`--record-destination` 将 `trace::Event` 写入本地 Journal
+`--record-destination` 将 `pvisor_core::event::Event` 写入本地 Journal
 `events.trace.jsonl`，不支持旧 JSONL。Journal position 定义追加顺序，
 `caused_by` 定义因果关系；`observed_at_unix_ms` 是观测元数据，不是顺序事实源。
 

@@ -11,7 +11,7 @@ Agent → 注入的代理或 base URL → OverlayNet HTTP 路径
 
 协议适配器把支持的请求和响应转换为 `pvisor-core` 共享事件词汇。引擎携带 Run、Attempt、agent、session 和 story 身份。每个 story 的 actor 串行写入 sink，并在追加成功后更新内存中的轮次索引。
 
-公开捕获输出使用 `trace::Event` 与共享 Journal。可变 capture 输入只用于对话投影，
+公开捕获输出使用 `pvisor_core::event::Event` 与共享 Journal。可变 capture 输入只用于对话投影，
 不是第二套正式事件信封。草稿不进入事实日志，Markdown 参数仍仅作兼容。
 
 ## 顺序与持久化

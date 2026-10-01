@@ -1,7 +1,7 @@
 # pVisor benchmark
 
 **Measures the process-level cost of a minimal host Run and of reading its
-durable Run Bundle through `status --json` and `review --json`.**
+durable Run Bundle through `status --json` and `status --review --json`.**
 
 Owns the smoke / nightly suites and the `pvisor-benchmark/v1` report schema.
 Does not own Run lifecycle or isolation backends. Every sampled Run must finish

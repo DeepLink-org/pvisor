@@ -19,6 +19,11 @@ just benchmark-compare \
 三种隔离级别、进程选项及第三方实现的启动与资源占用对比，也见
 [`pvisor/`](pvisor/README.md#sandbox-startup-and-resource-occupancy)。
 
+## Replay 实验
+
+[Qwen3.6 SandboxReplay 实验记录](replay/qwen3.6-results.md)保留历史样本和逐题比较，
+与当前用户指南分开维护。报告列出尚缺的复现信息，不作为产品保证。
+
 ## Links
 
 - [pVisor design](../docs/src/zh/design/index.md)
