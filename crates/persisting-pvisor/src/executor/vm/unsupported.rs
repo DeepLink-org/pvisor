@@ -5,11 +5,11 @@
 //! their tests build on Intel macOS while producing a clear VM error.
 
 use crate::config::VmSettings;
-use crate::executor::{AttemptContext, RunExecutor};
+use crate::executor::{ExecutorOutput, ExecutorSession, RunExecutor};
 use async_trait::async_trait;
 use persisting_control::{
     CapabilityEnforcementPlan, ExecutorKind, ExecutorPlan, IsolationKind, ProcessOutput,
-    RunFailure, RunFailureKind, RunInvocation, RunResult, RunState,
+    RunFailure, RunFailureKind, RunInvocation, RunState,
 };
 
 const UNSUPPORTED_MESSAGE: &str =
@@ -47,16 +47,12 @@ impl RunExecutor for VmExecutor {
         matches!(invocation, RunInvocation::Process(_))
     }
 
-    async fn execute(&self, context: AttemptContext) -> RunResult {
-        let spec = context.spec();
-        RunResult {
+    async fn execute(&self, _context: &ExecutorSession) -> ExecutorOutput {
+        ExecutorOutput {
             executor_observations: Default::default(),
-            run_id: spec.run_id.clone(),
-            attempt_id: context.attempt_id().clone(),
-            lease_epoch: spec.lease_epoch,
+
             state: RunState::Failed,
-            started_at_unix_ms: crate::util::unix_now_ms(),
-            finished_at_unix_ms: crate::util::unix_now_ms(),
+
             exit_code: None,
             failure: Some(RunFailure {
                 kind: RunFailureKind::Spawn,

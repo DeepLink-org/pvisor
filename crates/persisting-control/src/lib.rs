@@ -9,10 +9,12 @@ pub mod audit;
 pub mod client;
 mod file_access;
 pub mod ir;
+pub mod network;
 pub mod overlay;
 pub mod policy;
 pub mod protocol;
 pub mod runtime;
+pub mod session;
 mod time;
 pub mod trace;
 
@@ -22,3 +24,6 @@ pub use policy::*;
 pub use protocol::*;
 pub use runtime::*;
 pub use time::unix_now_ms;
+
+pub use network::{NetworkConfig, NetworkMode, NetworkPolicy};
+pub use session::*;

@@ -31,7 +31,9 @@ pub use executor::container::ContainerExecutor;
 pub use executor::process::ProcessExecutor;
 pub use executor::vm::VmExecutor;
 pub use executor::vm::run_internal_if_requested as run_krun_internal_if_requested;
-pub use executor::{AttemptContext, RunExecutor};
+pub use executor::{ExecutorOutput, ExecutorSession, RunExecutor};
+/// Compatibility name for the session passed to executor backends.
+pub type AttemptContext = ExecutorSession;
 pub use persisting_control::{
     AGENTCTL_ENDPOINT_ENV, AGENTCTL_MAX_FRAME_BYTES, AGENTCTL_TOKEN_ENV, AGENTCTL_TRANSPORT_ENV,
     AGENTCTL_VERSION, AGENTCTL_VERSION_ENV, AgentDirective, AgentErrorCode, AgentRequest,

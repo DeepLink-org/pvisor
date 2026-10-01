@@ -8,13 +8,15 @@ use crate::executor::sandbox::{
 #[cfg(target_os = "linux")]
 use crate::executor::sandbox::{ROOTLESS_ATTESTATION, SandboxPlan, landlock_runtime_available};
 use crate::executor::sandbox::{SANDBOX_ARG0_ENV, SANDBOX_PLAN_ENV, SANDBOX_SETUP_FAILED_WARNING};
-use crate::executor::{AttemptContext, Captured, RunExecutor, stdio};
+use crate::executor::session::terminate_process_tree;
+use crate::executor::{
+    Captured, ExecutorOutput, ExecutorSession, RunExecutor, SessionEnd as End, stdio,
+};
 use async_trait::async_trait;
 use persisting_control::{
     CapabilityDimension, CapabilityEnforcementEvidence, CapabilityEnforcementPlan, ExecutorKind,
     ExecutorObservations, ExecutorPlan, IsolationKind, ProcessInvocation, ProcessOutput,
-    ResourceLimits, RunFailure, RunFailureKind, RunInvocation, RunResult, RunSpec, RunState,
-    StdioMode,
+    ResourceLimits, RunFailure, RunFailureKind, RunInvocation, RunSpec, RunState, StdioMode,
 };
 #[cfg(any(target_os = "linux", target_os = "macos"))]
 use persisting_control::{FilesystemAccess, NetworkCapability};
@@ -1325,41 +1327,6 @@ fn push_runtime_directory(paths: &mut Vec<PathBuf>, directory: &Path, hidden: &[
     }
 }
 
-async fn terminate_process_tree(child: &mut Child, process_group: Option<u32>, grace_ms: u64) {
-    #[cfg(unix)]
-    {
-        if let Some(pid) = process_group {
-            // The child is the leader of the process group configured above.
-            let process_group = -(pid as i32);
-            unsafe {
-                libc::kill(process_group, libc::SIGTERM);
-            }
-            let deadline = tokio::time::Instant::now() + std::time::Duration::from_millis(grace_ms);
-            loop {
-                // Reaping the leader does not mean its descendants have exited.
-                let _ = child.try_wait();
-                if unsafe { libc::kill(process_group, 0) } != 0
-                    && std::io::Error::last_os_error().raw_os_error() == Some(libc::ESRCH)
-                {
-                    break;
-                }
-                if tokio::time::Instant::now() >= deadline {
-                    unsafe {
-                        libc::kill(process_group, libc::SIGKILL);
-                    }
-                    break;
-                }
-                tokio::time::sleep(std::time::Duration::from_millis(5)).await;
-            }
-            let _ = child.wait().await;
-            return;
-        }
-    }
-
-    let _ = child.kill().await;
-    let _ = child.wait().await;
-}
-
 #[async_trait]
 impl RunExecutor for ProcessExecutor {
     fn descriptor(&self) -> ExecutorPlan {
@@ -1402,10 +1369,9 @@ impl RunExecutor for ProcessExecutor {
         matches!(invocation, RunInvocation::Process(_))
     }
 
-    async fn execute(&self, context: AttemptContext) -> RunResult {
+    async fn execute(&self, context: &ExecutorSession) -> ExecutorOutput {
         let spec = context.spec().clone();
         let RunInvocation::Process(invocation) = &spec.invocation;
-        let started_at = crate::util::unix_now_ms();
         context
             .transition(RunState::Starting, Some("spawning local process".into()))
             .await;
@@ -1416,14 +1382,11 @@ impl RunExecutor for ProcessExecutor {
         } = match self.spawn_command(&spec, invocation) {
             Ok(command) => command,
             Err(error) => {
-                return RunResult {
+                return ExecutorOutput {
                     executor_observations: Default::default(),
-                    run_id: spec.run_id,
-                    attempt_id: context.attempt_id().clone(),
-                    lease_epoch: spec.lease_epoch,
+
                     state: RunState::Failed,
-                    started_at_unix_ms: started_at,
-                    finished_at_unix_ms: crate::util::unix_now_ms(),
+
                     exit_code: None,
                     failure: Some(RunFailure {
                         kind: RunFailureKind::Spawn,
@@ -1469,14 +1432,11 @@ impl RunExecutor for ProcessExecutor {
         let mut child = match command.spawn() {
             Ok(child) => child,
             Err(error) => {
-                return RunResult {
+                return ExecutorOutput {
                     executor_observations: Default::default(),
-                    run_id: spec.run_id,
-                    attempt_id: context.attempt_id().clone(),
-                    lease_epoch: spec.lease_epoch,
+
                     state: RunState::Failed,
-                    started_at_unix_ms: started_at,
-                    finished_at_unix_ms: crate::util::unix_now_ms(),
+
                     exit_code: None,
                     failure: Some(RunFailure {
                         kind: RunFailureKind::Spawn,
@@ -1503,14 +1463,11 @@ impl RunExecutor for ProcessExecutor {
                     spec.runtime.termination_grace_ms,
                 )
                 .await;
-                return RunResult {
+                return ExecutorOutput {
                     executor_observations: Default::default(),
-                    run_id: spec.run_id,
-                    attempt_id: context.attempt_id().clone(),
-                    lease_epoch: spec.lease_epoch,
+
                     state: RunState::Failed,
-                    started_at_unix_ms: started_at,
-                    finished_at_unix_ms: crate::util::unix_now_ms(),
+
                     exit_code: None,
                     failure: Some(RunFailure {
                         kind: RunFailureKind::Infrastructure,
@@ -1541,33 +1498,10 @@ impl RunExecutor for ProcessExecutor {
 
         context.transition(RunState::Running, None).await;
 
-        enum End {
-            Exited(std::io::Result<std::process::ExitStatus>),
-            Cancelled,
-            Deadline,
-        }
+        let end = context
+            .wait_child(&mut child, spec.runtime.timeout_ms)
+            .await;
 
-        let cancellation = context.cancellation();
-        let end = if let Some(timeout_ms) = spec.runtime.timeout_ms {
-            tokio::select! {
-                biased;
-                status = child.wait() => End::Exited(status),
-                _ = cancellation.cancelled() => End::Cancelled,
-                _ = tokio::time::sleep(std::time::Duration::from_millis(timeout_ms)) => End::Deadline,
-            }
-        } else {
-            tokio::select! {
-                biased;
-                status = child.wait() => End::Exited(status),
-                _ = cancellation.cancelled() => End::Cancelled,
-            }
-        };
-
-        if matches!(end, End::Cancelled) {
-            context
-                .transition(RunState::Cancelling, Some("cancellation requested".into()))
-                .await;
-        }
         terminate_process_tree(&mut child, process_group, spec.runtime.termination_grace_ms).await;
 
         let capture = async {
@@ -1607,7 +1541,6 @@ impl RunExecutor for ProcessExecutor {
             output.stderr_truncated = captured.truncated;
         }
 
-        let finished_at = crate::util::unix_now_ms();
         let installed_controls = resources.observed_controls();
         let sandbox_attested = installed_controls.is_some();
         let sandbox_setup_failed = self.is_sandboxed() && !sandbox_attested;
@@ -1643,21 +1576,7 @@ impl RunExecutor for ProcessExecutor {
             )
         } else {
             match end {
-                End::Exited(Ok(status)) if status.success() => {
-                    (RunState::Completed, status.code(), None)
-                }
-                End::Exited(Ok(status)) => (
-                    RunState::Failed,
-                    status.code(),
-                    Some(RunFailure {
-                        kind: RunFailureKind::ProcessExit,
-                        message: match status.code() {
-                            Some(code) => format!("process exited with code {code}"),
-                            None => "process terminated without an exit code".into(),
-                        },
-                        retryable: false,
-                    }),
-                ),
+                End::Exited(Ok(status)) => crate::executor::exit_outcome(status),
                 End::Exited(Err(error)) => (
                     RunState::Failed,
                     None,
@@ -1683,14 +1602,11 @@ impl RunExecutor for ProcessExecutor {
             }
         };
 
-        RunResult {
+        ExecutorOutput {
             executor_observations,
-            run_id: spec.run_id,
-            attempt_id: context.attempt_id().clone(),
-            lease_epoch: spec.lease_epoch,
+
             state,
-            started_at_unix_ms: started_at,
-            finished_at_unix_ms: finished_at,
+
             exit_code,
             failure,
             output,

@@ -2,7 +2,9 @@
 //! only addresses that the connector is permitted to use.
 
 use std::collections::HashSet;
-use std::net::{IpAddr, SocketAddr};
+#[cfg(test)]
+use std::net::IpAddr;
+use std::net::SocketAddr;
 use std::time::Duration;
 
 use persisting_control::ControlController;
@@ -26,14 +28,7 @@ pub(crate) enum TargetAuthorizationError {
     Resolve(anyhow::Error),
 }
 
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
-pub(crate) enum ResolvedAddressPolicy {
-    #[cfg(test)]
-    Strict,
-    /// Accept an opaque address returned by a host fake-IP DNS/TUN connector.
-    /// The logical hostname is re-authorized and IP literals never qualify.
-    HostConnectorAliases,
-}
+pub(crate) use persisting_control::network::ResolvedAddressPolicy;
 
 #[cfg(test)]
 pub(crate) async fn authorize_target(
@@ -64,6 +59,17 @@ pub(crate) async fn authorize_target_with_policy(
             ) && persisting_control::audit::enabled()
             {
                 let prompt = persisting_control::audit::AuditRequest {
+                    scope: request
+                        .run_id
+                        .as_ref()
+                        .zip(request.attempt_id.as_ref())
+                        .map(
+                            |(run_id, attempt_id)| persisting_control::audit::AuditScope {
+                                run_id: run_id.to_string(),
+                                attempt_id: attempt_id.to_string(),
+                                view: "network".into(),
+                            },
+                        ),
                     kind: persisting_control::audit::AuditKind::Network,
                     target: format!(
                         "{}:{} ({:?})",
@@ -149,17 +155,8 @@ fn authorize_resolved_target_with_policy(
             continue;
         }
         request.resolved_ip = Some(address.ip());
-        let authorization = policy.authorize(controller, &request).or_else(|reason| {
-            if reason != DenyReason::ResolvedAddressNotAllowed
-                || resolved_address_policy != ResolvedAddressPolicy::HostConnectorAliases
-                || !is_host_connector_alias(&request.host, address.ip())
-            {
-                return Err(reason);
-            }
-            let mut logical_request = request.clone();
-            logical_request.resolved_ip = None;
-            policy.authorize(controller, &logical_request)
-        });
+        let authorization =
+            policy.authorize_resolved(controller, &request, resolved_address_policy);
         match authorization {
             Ok(()) => addresses.push(address),
             Err(reason) => denied = reason,
@@ -183,16 +180,8 @@ fn authorize_resolved_target_with_policy(
 /// The benchmarking range is commonly used as an opaque fake-IP namespace by
 /// host DNS/TUN connectors. It is never a connector alias for an IP-literal
 /// request, so a guest cannot use this exception as direct egress.
-pub(crate) fn is_host_connector_alias(host: &str, address: IpAddr) -> bool {
-    if host.parse::<IpAddr>().is_ok() {
-        return false;
-    }
-    let IpAddr::V4(address) = address else {
-        return false;
-    };
-    let octets = address.octets();
-    octets[0] == 198 && (octets[1] == 18 || octets[1] == 19)
-}
+#[cfg(test)]
+use persisting_control::is_host_connector_alias;
 
 #[cfg(test)]
 mod tests {

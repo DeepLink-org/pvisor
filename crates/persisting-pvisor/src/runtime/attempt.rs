@@ -55,6 +55,10 @@ impl AttemptSession {
 
     pub(crate) fn attachments(&self) -> crate::executor::AttemptAttachments {
         crate::executor::AttemptAttachments {
+            filesystem: self
+                .overlay_record
+                .as_ref()
+                .map(|record| record.access_policy.clone()),
             vm_network: self.vm_network.clone(),
         }
     }
@@ -64,8 +68,8 @@ impl AttemptSession {
             .map(|_| self.run_record.clone())
     }
 
-    pub(crate) fn teardown(self, exit_code: Option<i32>) -> AttemptTeardown {
-        self.teardown_inner(exit_code, true)
+    pub(crate) fn teardown(self, exit_code: Option<i32>, executed: bool) -> AttemptTeardown {
+        self.teardown_inner(exit_code, executed)
     }
 
     fn teardown_inner(mut self, exit_code: Option<i32>, allow_apply: bool) -> AttemptTeardown {
@@ -194,14 +198,7 @@ impl AttemptSession {
             event_stream_ref: None,
             warnings,
         };
-        teardown.commit_state(RunState::Failed)?;
-        crate::RunBundle::capture(
-            teardown.run_record(),
-            &result,
-            agentctl,
-            safe_profile_requested,
-        )?
-        .write(&teardown.run_record().stage_dir())?;
+        teardown.persist(&result, agentctl, safe_profile_requested)?;
         Ok(())
     }
 }
@@ -236,6 +233,20 @@ impl AttemptTeardown {
 
     pub(crate) fn error_message(&self) -> Option<String> {
         (!self.errors.is_empty()).then(|| self.errors.join("; "))
+    }
+
+    pub(crate) fn persist(
+        &mut self,
+        result: &persisting_control::RunResult,
+        agentctl: crate::AgentCtlSnapshot,
+        safe: bool,
+    ) -> anyhow::Result<()> {
+        self.commit_state(result.state)
+            .context("commit local Run record failed")?;
+        crate::RunBundle::capture(self.run_record(), result, agentctl, safe)?
+            .write(&self.run_record().stage_dir())
+            .context("write durable Run Bundle failed")?;
+        Ok(())
     }
 
     pub(crate) fn commit_state(&mut self, state: RunState) -> anyhow::Result<()> {
@@ -1195,6 +1206,13 @@ fn enrich_with_session(
     }
 
     match &spec.capabilities.network {
+        NetworkCapability::Scoped { .. } => {
+            plan.env
+                .insert("PERSISTING_NETWORK_POLICY".into(), "scoped".into());
+            plan.notes
+                .push("network: session > workspace > user policy".into());
+        }
+
         NetworkCapability::Ambient => {
             plan.env
                 .insert("PERSISTING_NETWORK_POLICY".into(), "ambient".into());

@@ -65,6 +65,10 @@ fn network_config_from_capability(
     use persisting_overlaynet::NetworkMode;
 
     match capability {
+        NetworkCapability::Scoped { .. } => persisting_control::NetworkConfig {
+            capability: Some(capability.clone()),
+            ..Default::default()
+        },
         NetworkCapability::Ambient => persisting_overlaynet::NetworkConfig::default(),
         NetworkCapability::Deny => persisting_overlaynet::NetworkConfig {
             mode: NetworkMode::NoNetwork,
@@ -82,6 +86,7 @@ fn network_config_from_capability(
             deny,
             limits,
         } => persisting_overlaynet::NetworkConfig {
+            capability: None,
             mode: match default_action {
                 NetworkDefaultAction::Allow => NetworkMode::Public,
                 NetworkDefaultAction::Deny => NetworkMode::Allowlist,
@@ -233,6 +238,12 @@ impl RuntimeSupervisor {
     }
 
     fn effective_network_config(&self, spec: &RunSpec) -> persisting_overlaynet::NetworkConfig {
+        if matches!(spec.capabilities.network, NetworkCapability::Scoped { .. }) {
+            return persisting_control::NetworkConfig {
+                capability: Some(spec.capabilities.network.clone()),
+                ..Default::default()
+            };
+        }
         self.network
             .as_ref()
             .map(|network| network.network.clone())
@@ -283,6 +294,13 @@ impl RuntimeSupervisor {
         vm_executor: bool,
         attempt_id: &AttemptId,
     ) -> anyhow::Result<Option<AttemptSession>> {
+        let mut overlay = OverlayHint {
+            access_policy: spec.policies.filesystem(&self.overlay.access_policy),
+            ..self.overlay.clone()
+        };
+        overlay
+            .access_policy
+            .bind_session(spec.run_id.as_str(), attempt_id.as_str(), "workspace");
         let network_mode = self.network_mode();
         let network = self.effective_network_config(spec);
         let vm_network = vm_executor && network_mode == OverlayNetMode::Auto;
@@ -324,7 +342,7 @@ impl RuntimeSupervisor {
                     capture_storage: &capture_storage,
                     sink: self.sink.clone(),
                     stream_markdown: self.stream_markdown,
-                    overlay_override: self.overlay.clone(),
+                    overlay_override: overlay.clone(),
                     controller: Arc::clone(&self.controller),
                     gateway_enabled: self.gateway_enabled,
                     vm_network,
@@ -348,7 +366,7 @@ impl RuntimeSupervisor {
                 spec,
                 OverlayAttemptPrepareOpts {
                     storage: &storage,
-                    overlay: self.overlay.clone(),
+                    overlay: overlay.clone(),
                     vm_network: vm_network
                         .then(|| self.vm_network_options(network, supervisor_limits, attempt_id)),
                 },
@@ -424,6 +442,13 @@ impl RuntimeSupervisor {
         }
 
         match &spec.capabilities.network {
+            NetworkCapability::Scoped { .. } => {
+                plan.env
+                    .insert("PERSISTING_NETWORK_POLICY".into(), "scoped".into());
+                plan.notes
+                    .push("network: session > workspace > user policy".into());
+            }
+
             NetworkCapability::Ambient => {
                 plan.env
                     .insert("PERSISTING_NETWORK_POLICY".into(), "ambient".into());

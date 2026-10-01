@@ -7,7 +7,7 @@
 use serde::{Deserialize, Serialize};
 use std::path::{Path, PathBuf};
 
-pub use crate::file_access::{FileAccessDecision, FileAccessPolicy};
+pub use crate::file_access::{FileAccessContext, FileAccessDecision, FileAccessPolicy};
 
 /// Local Run inspection request, encoded as one JSON line on `control.sock`.
 /// This endpoint is separate from the cooperative AgentCtl protocol.

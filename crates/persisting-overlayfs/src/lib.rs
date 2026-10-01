@@ -16,6 +16,7 @@ use std::time::Duration;
 
 #[derive(Clone, Debug)]
 pub struct OverlayMountConfig {
+    pub apply_target: Option<PathBuf>,
     pub lower_dirs: Vec<PathBuf>,
     pub upper_dir: PathBuf,
     pub work_dir: Option<PathBuf>,
@@ -47,6 +48,7 @@ impl OverlayMountConfig {
         mountpoint: PathBuf,
     ) -> Self {
         Self {
+            apply_target: lower_dirs.last().cloned(),
             lower_dirs,
             upper_dir,
             work_dir,
@@ -281,17 +283,19 @@ fn prepare(mut config: OverlayMountConfig) -> Result<(OverlayFs, PathBuf, Vec<Mo
         }
     }
 
-    let filesystem = if config.excluded_paths.is_empty() && config.preimage_dir.is_none() {
-        OverlayFs::new(config.lower_dirs, config.upper_dir, config.work_dir)?
-    } else {
-        OverlayFs::new_with_exclusions_and_preimages(
-            config.lower_dirs,
-            config.upper_dir,
-            config.work_dir,
-            config.excluded_paths,
-            config.preimage_dir,
-        )?
-    }
+    let target = config
+        .apply_target
+        .clone()
+        .or_else(|| config.lower_dirs.last().cloned())
+        .ok_or_else(|| anyhow::anyhow!("overlay has no apply target"))?;
+    let filesystem = OverlayFs::from_core(persisting_overlay_core::OverlayCore::new_for_target(
+        config.lower_dirs,
+        target,
+        config.upper_dir,
+        config.work_dir,
+        config.excluded_paths,
+        config.preimage_dir,
+    )?)?
     .with_private_root(fskit && !config.allow_other)
     .with_read_only(config.read_only)
     .with_access_policy(&config.access_policy)

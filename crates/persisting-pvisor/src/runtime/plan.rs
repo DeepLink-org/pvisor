@@ -111,34 +111,15 @@ pub(crate) fn compile(
             if writable { "write" } else { "read" },
         );
     }
-    for (index, path) in overlay.access_policy.deny().iter().enumerate() {
-        push(
-            format!("fs.deny.{index}"),
-            CapabilityDimension::FilesystemRead,
-            path.clone(),
-            "deny",
-        );
-    }
-    for (index, path) in overlay.access_policy.ask().iter().enumerate() {
-        push(
-            format!("fs.ask.{index}"),
-            CapabilityDimension::FilesystemRead,
-            path.clone(),
-            "ask",
-        );
-    }
-    for (index, path) in overlay.access_policy.warn().iter().enumerate() {
-        push(
-            format!("fs.warn.{index}"),
-            CapabilityDimension::FilesystemRead,
-            path.clone(),
-            "warn",
-        );
+    for (id, path, action) in spec.policies.filesystem(&overlay.access_policy).rules() {
+        push(id, CapabilityDimension::FilesystemRead, path, action);
     }
     let network_action = match &spec.capabilities.network {
         NetworkCapability::Ambient => "ambient",
         NetworkCapability::Deny => "deny",
-        NetworkCapability::AllowList { .. } | NetworkCapability::Policy { .. } => "policy",
+        NetworkCapability::AllowList { .. }
+        | NetworkCapability::Policy { .. }
+        | NetworkCapability::Scoped { .. } => "policy",
     };
     push(
         "net.aggregate".into(),
@@ -198,6 +179,32 @@ pub(crate) fn compile(
                     "limit",
                 );
             }
+        }
+        NetworkCapability::Scoped { layers, fallback } => {
+            push(
+                "net.scopes".into(),
+                CapabilityDimension::Network,
+                serde_json::to_string(&spec.capabilities.network)?,
+                "policy",
+            );
+            for (scope, layer) in layers {
+                for (action, entries) in [("allow", &layer.allow), ("deny", &layer.deny)] {
+                    for (index, rule) in entries.iter().enumerate() {
+                        push(
+                            format!("{scope:?}.net.{action}.rule.{index}").to_lowercase(),
+                            CapabilityDimension::Network,
+                            serde_json::to_string(rule)?,
+                            action,
+                        );
+                    }
+                }
+            }
+            push(
+                "net.fallback".into(),
+                CapabilityDimension::Network,
+                serde_json::to_string(fallback)?,
+                "policy",
+            );
         }
         _ => {}
     }

@@ -99,6 +99,8 @@ pub struct RunSpec {
     #[serde(default)]
     pub capabilities: CapabilitySet,
     #[serde(default)]
+    pub policies: crate::SessionPolicies,
+    #[serde(default)]
     pub metadata: BTreeMap<String, Value>,
 }
 
@@ -119,6 +121,7 @@ impl RunSpec {
             input: Value::Null,
             runtime: RuntimeConfig::default(),
             capabilities: CapabilitySet::default(),
+            policies: crate::SessionPolicies::default(),
             metadata: BTreeMap::new(),
         }
     }
@@ -295,6 +298,10 @@ pub enum FilesystemAccess {
 #[derive(Debug, Clone, Default, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(tag = "mode", rename_all = "snake_case")]
 pub enum NetworkCapability {
+    Scoped {
+        layers: Vec<(crate::PolicyScope, crate::NetworkPolicyLayer)>,
+        fallback: Box<NetworkCapability>,
+    },
     /// Use the executor's ambient network. Only valid for audit/compatibility runs.
     #[default]
     Ambient,

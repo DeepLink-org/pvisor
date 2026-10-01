@@ -1,7 +1,36 @@
 use globset::{GlobBuilder, GlobSet, GlobSetBuilder};
 use serde::{Deserialize, Serialize};
 use std::collections::BTreeSet;
-use std::{io, path::Path};
+use std::{
+    io,
+    path::{Path, PathBuf},
+    sync::{
+        Arc,
+        atomic::{AtomicBool, Ordering},
+    },
+};
+
+/// Identity and approval endpoint bound to one Session view.
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct FileAccessContext {
+    pub run_id: String,
+    pub attempt_id: String,
+    pub view: String,
+    pub audit_socket: Option<PathBuf>,
+    // Preparation happens before any workload can access the view. Deserialized
+    // policies always enforce; a persisted policy cannot restore preparation bypass.
+    #[serde(skip)]
+    preparing: Arc<AtomicBool>,
+}
+impl PartialEq for FileAccessContext {
+    fn eq(&self, other: &Self) -> bool {
+        self.run_id == other.run_id
+            && self.attempt_id == other.attempt_id
+            && self.view == other.view
+            && self.audit_socket == other.audit_socket
+    }
+}
+impl Eq for FileAccessContext {}
 
 /// Validated mount-relative rules and their compiled matchers.
 /// Precedence is deny, ask, warn/read, then ordinary access.
@@ -17,11 +46,19 @@ pub struct FileAccessPolicy {
     ask: GlobSet,
     #[serde(skip)]
     warn: GlobSet,
+    #[serde(skip)]
+    allow: GlobSet,
 }
 
 #[derive(Debug, Clone, Default, Serialize, Deserialize, PartialEq, Eq)]
 #[serde(default, deny_unknown_fields)]
 struct FileAccessRules {
+    #[serde(skip_serializing_if = "Option::is_none")]
+    context: Option<FileAccessContext>,
+    #[serde(skip_serializing_if = "Vec::is_empty")]
+    allow: Vec<String>,
+    #[serde(skip_serializing_if = "Vec::is_empty")]
+    layers: Vec<(crate::PolicyScope, FileAccessPolicy)>,
     deny: Vec<String>,
     #[serde(skip_serializing_if = "Vec::is_empty")]
     ask: Vec<String>,
@@ -48,7 +85,14 @@ impl TryFrom<FileAccessRules> for FileAccessPolicy {
     type Error = io::Error;
 
     fn try_from(rules: FileAccessRules) -> io::Result<Self> {
-        Self::new_with_ask(rules.deny, rules.ask, rules.warn)
+        let mut policy = Self::new_with_allow(rules.deny, rules.ask, rules.warn, rules.allow)?;
+        policy.rules.context = rules.context;
+        policy.rules.layers = rules.layers;
+        policy
+            .rules
+            .layers
+            .sort_by_key(|(scope, _)| std::cmp::Reverse(*scope));
+        Ok(policy)
     }
 }
 
@@ -61,6 +105,15 @@ impl FileAccessPolicy {
         deny: Vec<String>,
         ask: Vec<String>,
         warn: Vec<String>,
+    ) -> io::Result<Self> {
+        Self::new_with_allow(deny, ask, warn, Vec::new())
+    }
+
+    pub fn new_with_allow(
+        deny: Vec<String>,
+        ask: Vec<String>,
+        warn: Vec<String>,
+        allow: Vec<String>,
     ) -> io::Result<Self> {
         fn compile(patterns: &[String]) -> io::Result<GlobSet> {
             let mut builder = GlobSetBuilder::new();
@@ -95,8 +148,145 @@ impl FileAccessPolicy {
             deny: compile(&deny)?,
             ask: compile(&ask)?,
             warn: compile(&warn)?,
-            rules: FileAccessRules { deny, ask, warn },
+            allow: compile(&allow)?,
+            rules: FileAccessRules {
+                deny,
+                ask,
+                warn,
+                allow,
+                layers: Vec::new(),
+                context: None,
+            },
         })
+    }
+
+    pub fn bind_session(&mut self, run_id: &str, attempt_id: &str, view: &str) {
+        #[cfg(unix)]
+        let audit_socket = crate::audit::socket();
+        #[cfg(not(unix))]
+        let audit_socket = None;
+        self.rules.context = Some(FileAccessContext {
+            run_id: run_id.into(),
+            attempt_id: attempt_id.into(),
+            view: view.into(),
+            audit_socket,
+            preparing: Arc::new(AtomicBool::new(true)),
+        });
+    }
+    pub fn for_view(&self, view: &str) -> Self {
+        let mut policy = self.clone();
+        if let Some(context) = &mut policy.rules.context {
+            context.view = view.into();
+        }
+        policy
+    }
+    pub fn arm(&self) {
+        if let Some(context) = &self.rules.context {
+            context.preparing.store(false, Ordering::Release);
+        }
+    }
+    pub fn context(&self) -> Option<&FileAccessContext> {
+        self.rules.context.as_ref()
+    }
+
+    /// Translate this policy into another view without flattening scope precedence.
+    pub fn prefixed(&self, prefix: &str) -> io::Result<Self> {
+        let raw_prefix = prefix;
+        let prefix = globset::escape(prefix);
+        let translate = |rules: &[String]| {
+            rules
+                .iter()
+                .map(|rule| format!("{prefix}/{rule}"))
+                .collect()
+        };
+        let mut policy = Self::new_with_allow(
+            translate(&self.rules.deny),
+            translate(&self.rules.ask),
+            translate(&self.rules.warn),
+            translate(&self.rules.allow),
+        )?;
+        policy.rules.layers = self
+            .rules
+            .layers
+            .iter()
+            .map(|(scope, policy)| Ok((*scope, policy.prefixed(raw_prefix)?)))
+            .collect::<io::Result<_>>()?;
+        policy.rules.context = self.rules.context.clone();
+        Ok(policy)
+    }
+    /// Merge paths projected into the same view, preserving scope identity.
+    pub fn extend(&mut self, other: &Self) -> io::Result<()> {
+        let mut rules = self.rules.clone();
+        rules.deny.extend_from_slice(&other.rules.deny);
+        rules.ask.extend_from_slice(&other.rules.ask);
+        rules.warn.extend_from_slice(&other.rules.warn);
+        rules.allow.extend_from_slice(&other.rules.allow);
+        for (scope, policy) in &other.rules.layers {
+            if let Some((_, own)) = rules
+                .layers
+                .iter_mut()
+                .find(|(existing, _)| existing == scope)
+            {
+                own.extend(policy)?;
+            } else {
+                rules.layers.push((*scope, policy.clone()));
+            }
+        }
+        *self = rules.try_into()?;
+        Ok(())
+    }
+
+    pub fn layered<'a>(
+        layers: impl IntoIterator<Item = (crate::PolicyScope, &'a Self)>,
+        fallback: &Self,
+    ) -> Self {
+        let mut policy = fallback.clone();
+        policy.rules.layers = layers
+            .into_iter()
+            .map(|(scope, policy)| (scope, policy.clone()))
+            .collect();
+        policy
+            .rules
+            .layers
+            .sort_by_key(|(scope, _)| std::cmp::Reverse(*scope));
+        policy
+    }
+
+    fn has_match(&self, path: &Path) -> bool {
+        self.rules
+            .layers
+            .iter()
+            .any(|(_, policy)| policy.has_match(path))
+            || path.ancestors().any(|path| {
+                self.deny.is_match(path)
+                    || self.ask.is_match(path)
+                    || self.warn.is_match(path)
+                    || self.allow.is_match(path)
+            })
+    }
+
+    /// Stable rule IDs shared by authorization and the admitted plan.
+    pub fn rules(&self) -> Vec<(String, String, &'static str)> {
+        let mut rules = Vec::new();
+        for (scope, policy) in &self.rules.layers {
+            rules.extend(policy.rules().into_iter().map(|(id, path, action)| {
+                (format!("{scope:?}.{id}").to_lowercase(), path, action)
+            }));
+        }
+        for (action, paths) in [
+            ("deny", &self.rules.deny),
+            ("ask", &self.rules.ask),
+            ("warn", &self.rules.warn),
+            ("allow", &self.rules.allow),
+        ] {
+            rules.extend(
+                paths
+                    .iter()
+                    .enumerate()
+                    .map(|(index, path)| (format!("fs.{action}.{index}"), path.clone(), action)),
+            );
+        }
+        rules
     }
 
     pub fn deny(&self) -> &[String] {
@@ -112,16 +302,27 @@ impl FileAccessPolicy {
     }
 
     pub fn has_denials(&self) -> bool {
-        !self.deny.is_empty() || !self.ask.is_empty()
+        !self.deny.is_empty()
+            || !self.ask.is_empty()
+            || self
+                .rules
+                .layers
+                .iter()
+                .any(|(_, policy)| policy.has_denials())
     }
 
     pub fn denied(&self, path: &Path) -> bool {
-        path.ancestors().any(|path| self.deny.is_match(path))
+        self.authorize(path) == FileAccessDecision::Deny
     }
 
     /// Evaluate a mount-relative path without emitting diagnostics.
     pub fn authorize(&self, path: &Path) -> FileAccessDecision {
-        if self.denied(path) {
+        for (_, policy) in &self.rules.layers {
+            if policy.has_match(path) {
+                return policy.authorize(path);
+            }
+        }
+        if path.ancestors().any(|path| self.deny.is_match(path)) {
             FileAccessDecision::Deny
         } else if path.ancestors().any(|path| self.ask.is_match(path)) {
             FileAccessDecision::Ask
@@ -135,6 +336,15 @@ impl FileAccessPolicy {
     /// Stable IDs of the rules that actually matched this mount-relative path.
     /// Deny takes precedence over warn, just as it does in `authorize`.
     pub fn matched_rule_ids(&self, path: &Path) -> Vec<String> {
+        for (scope, policy) in &self.rules.layers {
+            if policy.has_match(path) {
+                return policy
+                    .matched_rule_ids(path)
+                    .into_iter()
+                    .map(|id| format!("{scope:?}.{id}").to_lowercase())
+                    .collect();
+            }
+        }
         fn matches(set: &GlobSet, path: &Path) -> BTreeSet<usize> {
             path.ancestors()
                 .flat_map(|part| set.matches(part))
@@ -154,8 +364,14 @@ impl FileAccessPolicy {
                 .map(|index| format!("fs.ask.{index}"))
                 .collect();
         }
-        matches(&self.warn, path)
-            .into_iter()
+        let warn = matches(&self.warn, path);
+        if warn.is_empty() {
+            return matches(&self.allow, path)
+                .into_iter()
+                .map(|index| format!("fs.allow.{index}"))
+                .collect();
+        }
+        warn.into_iter()
             .map(|index| format!("fs.warn.{index}"))
             .collect()
     }
@@ -169,14 +385,15 @@ impl FileAccessPolicy {
             }
             FileAccessDecision::Ask => {
                 #[cfg(unix)]
-                if crate::audit::configured() && !crate::audit::enabled() {
-                    // The supervisor may inspect the overlay while preparing
-                    // the Job, before the Agent exists to authorize.
-                    return Ok(());
-                }
-                #[cfg(unix)]
-                if crate::audit::enabled() {
-                    if crate::audit::request(&crate::audit::AuditRequest {
+                {
+                    let prompt = crate::audit::AuditRequest {
+                        scope: self.rules.context.as_ref().map(|context| {
+                            crate::audit::AuditScope {
+                                run_id: context.run_id.clone(),
+                                attempt_id: context.attempt_id.clone(),
+                                view: context.view.clone(),
+                            }
+                        }),
                         kind: crate::audit::AuditKind::File,
                         target: path.display().to_string(),
                         reason: format!(
@@ -186,11 +403,24 @@ impl FileAccessPolicy {
                         host: None,
                         port: None,
                         transport: None,
-                    }) != crate::audit::AuditDecision::Allow
-                    {
-                        return Err(io::ErrorKind::PermissionDenied.into());
+                    };
+                    let decision = if let Some(context) = &self.rules.context {
+                        if context.preparing.load(Ordering::Acquire) {
+                            return Ok(());
+                        }
+                        let Some(socket) = &context.audit_socket else {
+                            return Err(io::ErrorKind::PermissionDenied.into());
+                        };
+                        let key =
+                            format!("{}:{}:{}", context.run_id, context.attempt_id, context.view);
+                        crate::audit::request_at(socket, &key, &prompt)
+                    } else {
+                        // Standalone adapters retain their process-local approval channel.
+                        crate::audit::request(&prompt)
+                    };
+                    if decision == crate::audit::AuditDecision::Allow {
+                        return Ok(());
                     }
-                    return Ok(());
                 }
                 Err(io::ErrorKind::PermissionDenied.into())
             }
@@ -206,6 +436,52 @@ impl FileAccessPolicy {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[cfg(unix)]
+    #[test]
+    fn approvals_are_bound_to_attempt_and_persisted_policies_enforce() {
+        use std::io::{BufRead, BufReader, Write};
+        let socket = std::env::temp_dir().join(format!(
+            "pvisor-policy-{}-{}.sock",
+            std::process::id(),
+            std::time::SystemTime::now()
+                .duration_since(std::time::UNIX_EPOCH)
+                .unwrap()
+                .as_nanos()
+        ));
+        let listener = std::os::unix::net::UnixListener::bind(&socket).unwrap();
+        let server = std::thread::spawn(move || {
+            for decision in ["allow", "deny"] {
+                let (mut stream, _) = listener.accept().unwrap();
+                let mut line = String::new();
+                BufReader::new(&stream).read_line(&mut line).unwrap();
+                writeln!(stream, "\"{decision}\"").unwrap();
+            }
+        });
+        let mut policy =
+            FileAccessPolicy::new_with_ask(vec![], vec!["secret".into()], vec![]).unwrap();
+        policy.bind_session("run", "attempt-one", "workspace");
+        policy.rules.context.as_mut().unwrap().audit_socket = Some(socket.clone());
+        let restored: FileAccessPolicy =
+            serde_json::from_value(serde_json::to_value(&policy).unwrap()).unwrap();
+        assert!(
+            !restored
+                .context()
+                .unwrap()
+                .preparing
+                .load(Ordering::Acquire)
+        );
+        policy.arm();
+        assert!(policy.check(Path::new("secret")).is_ok());
+        assert!(policy.check(Path::new("secret")).is_ok());
+        policy.rules.context.as_mut().unwrap().attempt_id = "attempt-two".into();
+        assert_eq!(
+            policy.check(Path::new("secret")).unwrap_err().kind(),
+            io::ErrorKind::PermissionDenied
+        );
+        server.join().unwrap();
+        std::fs::remove_file(socket).unwrap();
+    }
 
     #[test]
     fn rules_validate_paths_match_components_and_deny_over_warn() {

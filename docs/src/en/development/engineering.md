@@ -33,7 +33,8 @@ pvisor ──> control, gateway, overlaynet, overlayfs, overlay-core, replay, gu
 gateway ──> control, overlaynet
 overlaynet ──> control
 overlayfs ──> control, overlay-core
-overlay-core ──> control
+overlay-core ──> control, journal
+journal ──> control
 control, replay, guest ──> no other workspace crate
 ```
 
@@ -48,7 +49,8 @@ src/
 ├── trace.rs               # Shared fact journal re-export
 ├── diagnostics.rs         # Shared host logs; frontend selects the destination
 ├── executor/
-│   ├── mod.rs             # RunExecutor and AttemptContext
+│   ├── mod.rs             # RunExecutor and ExecutorSession
+│   ├── session.rs         # Session lifecycle and completion
 │   ├── process.rs         # Host process executor
 │   ├── container.rs       # Container executor
 │   ├── sandbox.rs         # Host OS isolation and internal sandbox entry point
@@ -88,14 +90,11 @@ transport validation. Shared execution and journaling remain at the crate root.
 
 ### Boundaries to keep improving
 
-This organization does not claim strict one-way layering inside pVisor:
-`AttemptContext` still carries runtime-owned attachments, and runtime overlay
-configuration still uses Gateway configuration types. Those need contract
-changes, not just file moves. `cli/run.rs`, `runtime/overlay.rs`, and the larger
-agent adapters also mix several stages; split them around actual lifecycle or
-protocol boundaries when changing that behavior, rather than by line count.
-Do not add another crate solely to shorten these files. Keep public exports
-stable and run the affected package tests after internal moves.
+`ExecutorSession` owns Attempt lifecycle and terminal publication. Shared
+network/file authorization lives in Control; overlay review/apply/recovery/drop
+lives in `persisting-overlay-core::apply`. Runtime overlay configuration still
+uses Gateway configuration types. Keep transport and mount ownership in drivers,
+and move shared semantics into their existing owner when changing behavior.
 
 
 ## Contributor commands

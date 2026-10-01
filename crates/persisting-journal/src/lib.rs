@@ -454,6 +454,41 @@ pub fn create_dir_all_durable(path: &Path) -> anyhow::Result<()> {
     Ok(())
 }
 
+/// Atomically replace a file after syncing both its contents and parent directory.
+pub fn atomic_write(path: &Path, contents: &[u8], mode: u32) -> anyhow::Result<()> {
+    use anyhow::Context;
+    use std::fs;
+    let parent = path
+        .parent()
+        .ok_or_else(|| anyhow::anyhow!("{} has no parent directory", path.display()))?;
+    create_dir_all_durable(parent)?;
+
+    let file_name = path
+        .file_name()
+        .and_then(|name| name.to_str())
+        .unwrap_or("persisting");
+    let temporary = parent.join(format!(".{file_name}.{}.tmp", uuid::Uuid::new_v4()));
+    let result = (|| -> anyhow::Result<()> {
+        let mut file = OpenOptions::new()
+            .create_new(true)
+            .write(true)
+            .open(&temporary)
+            .with_context(|| format!("create temporary file {}", temporary.display()))?;
+        file.set_permissions(fs::Permissions::from_mode(mode))?;
+        file.write_all(contents)?;
+        file.sync_all()
+            .with_context(|| format!("sync temporary file {}", temporary.display()))?;
+        fs::rename(&temporary, path)
+            .with_context(|| format!("replace {} with {}", path.display(), temporary.display()))?;
+        sync_directory(parent)?;
+        Ok(())
+    })();
+    if result.is_err() {
+        let _ = fs::remove_file(&temporary);
+    }
+    result
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;

@@ -181,6 +181,48 @@ on both native host paths. The VM executor defaults to `[overlaynet] mode =
 router. The container executor still requires `--container-network host` for
 the in-process proxy.
 
+## Session, workspace and user policies
+
+The CLI reads workspace policy from `.pvisor/policy.toml` and user policy from
+`$XDG_CONFIG_HOME/pvisor/policy.toml` (default `~/.config/pvisor/policy.toml`).
+These files contain `[network]` and/or `[filesystem]`. Run TOML can explicitly
+set `[policies.session]`, `[policies.workspace]` and `[policies.user]`; explicit
+network/file entries replace file defaults in that scope.
+
+For example, a user policy denies unmatched network targets and sensitive files:
+
+```toml
+[network]
+default_action = "deny"
+
+[filesystem]
+deny = ["secrets/**"]
+```
+
+A Run can grant a specific Session exception:
+
+```toml
+[policies.session.network]
+allow = [{ host = "api.example.com", ports = [443] }]
+
+[policies.session.filesystem]
+allow = ["secrets/approved.txt"]
+```
+
+Lookup uses the first matching scope: Session, workspace, then user. Unmatched
+rules fall through; an explicit `default_action` stops lookup. Within a scope,
+deny wins. Session grants can override lower-scope denies, but do not bypass
+resolved-address safety checks. Filesystem patterns are relative to the staged
+workspace view. Policy inputs are frozen for the Attempt; editing a policy file
+affects subsequent Sessions.
+
+Network layers enable the explicit proxy for host/container `auto` mode; this
+remains cooperative. File layers create a staged workspace when none is
+configured. VM `auto` uses its non-bypassable network driver; `off` stays offline.
+
+The embedding API sets `RunSpec.policies` and must configure the corresponding
+OverlayFS view and network driver on `PVisorBuilder`; missing drivers are rejected.
+
 ## Review the result
 
 The current directory is the default reusable workspace. Each invocation keeps

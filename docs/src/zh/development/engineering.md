@@ -32,7 +32,8 @@ pvisor ──> control, gateway, overlaynet, overlayfs, overlay-core, replay, gu
 gateway ──> control, overlaynet
 overlaynet ──> control
 overlayfs ──> control, overlay-core
-overlay-core ──> control
+overlay-core ──> control, journal
+journal ──> control
 control, replay, guest ──> 不依赖其他 workspace crate
 ```
 
@@ -47,7 +48,8 @@ src/
 ├── trace.rs               # 共享事实 Journal 重导出
 ├── diagnostics.rs         # 共享宿主日志，前端选择输出位置
 ├── executor/
-│   ├── mod.rs             # RunExecutor 和 AttemptContext
+│   ├── mod.rs             # RunExecutor 和 ExecutorSession
+│   ├── session.rs         # Session lifecycle and completion
 │   ├── process.rs         # 宿主进程执行器
 │   ├── container.rs       # 容器执行器
 │   ├── sandbox.rs         # 宿主 OS 隔离及内部 sandbox 入口
@@ -85,12 +87,10 @@ Claude、Codex、OpenCode 协议桥及 Claude resume transport 校验。
 
 ### 仍需逐步改善的边界
 
-目录整理不代表 pVisor 内部已实现严格单向分层：`AttemptContext` 仍携带
-运行时资源附件，运行时 Overlay 配置仍使用 Gateway 的配置类型。这些需要
-修改契约，不能只靠移动文件解决。`cli/run.rs`、`runtime/overlay.rs` 和较大的
-Agent 适配器仍包含多个阶段；后续修改相关行为时，应按生命周期或协议边界
-拆分，而不是按行数切割。不要仅为缩短文件新增 crate；移动内部模块时保持
-对外导出稳定，并运行受影响包的测试。
+`ExecutorSession` 负责 Attempt 生命周期和终态公布。共享网络与文件授权归 Control，
+overlay 的 review/apply/recovery/drop 归 `persisting-overlay-core::apply`。
+运行时 Overlay 配置仍使用 Gateway 配置类型。传输与挂载所有权留在驱动中；
+修改行为时，把共享语义收敛到已有所有者。
 
 
 ## 贡献者命令

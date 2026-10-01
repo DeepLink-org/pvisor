@@ -29,9 +29,50 @@ pub struct RunConfig {
     pub gateway: GatewaySettings,
     /// Durable Trace Event journal recording.
     pub record: RecordSettings,
+    /// Session, workspace and user policy layers; resolved once per Attempt.
+    pub policies: persisting_control::SessionPolicies,
 }
 
 impl RunConfig {
+    pub fn load_policy_defaults(
+        &mut self,
+        workspace: &Path,
+        user_root: Option<&Path>,
+    ) -> anyhow::Result<()> {
+        fn load(path: &Path) -> anyhow::Result<persisting_control::PolicyLayer> {
+            match std::fs::read_to_string(path) {
+                Ok(source) => toml::from_str(&source)
+                    .map_err(|error| anyhow::anyhow!("parse policy {}: {error}", path.display())),
+                Err(error) if error.kind() == std::io::ErrorKind::NotFound => {
+                    Ok(Default::default())
+                }
+                Err(error) => Err(error.into()),
+            }
+        }
+        fn inherit(
+            layer: &mut persisting_control::PolicyLayer,
+            defaults: persisting_control::PolicyLayer,
+        ) {
+            if layer.network.is_none() {
+                layer.network = defaults.network;
+            }
+            if layer.filesystem.is_none() {
+                layer.filesystem = defaults.filesystem;
+            }
+        }
+        inherit(
+            &mut self.policies.workspace,
+            load(&workspace.join(".pvisor/policy.toml"))?,
+        );
+        if let Some(root) = user_root {
+            inherit(
+                &mut self.policies.user,
+                load(&root.join("pvisor/policy.toml"))?,
+            );
+        }
+        Ok(())
+    }
+
     pub fn from_file(path: &Path) -> anyhow::Result<Self> {
         let source = std::fs::read_to_string(path)?;
         Ok(toml::from_str(&source)?)
@@ -643,5 +684,64 @@ rootfs = "/opt/rootfs"
         .unwrap();
         assert_eq!(config.run.executor, RunExecutorKind::Vm);
         assert_eq!(config.vm.rootfs.as_deref(), Some(Path::new("/opt/rootfs")));
+    }
+}
+
+#[cfg(test)]
+mod session_policy_tests {
+    use super::*;
+    #[test]
+    fn policy_defaults_keep_explicit_scopes_and_reject_invalid_rules() {
+        let root = tempfile::tempdir().unwrap();
+        let workspace = root.path().join("workspace");
+        let user = root.path().join("user");
+        std::fs::create_dir_all(workspace.join(".pvisor")).unwrap();
+        std::fs::create_dir_all(user.join("pvisor")).unwrap();
+        std::fs::write(
+            user.join("pvisor/policy.toml"),
+            "[filesystem]\ndeny = ['secrets/**']\n",
+        )
+        .unwrap();
+        std::fs::write(
+            workspace.join(".pvisor/policy.toml"),
+            "[filesystem]\nallow = ['secrets/workspace']\n",
+        )
+        .unwrap();
+        let mut config = RunConfig::default();
+        config.policies.session.filesystem = Some(
+            persisting_control::FileAccessPolicy::new_with_allow(
+                vec![],
+                vec![],
+                vec![],
+                vec!["secrets/session".into()],
+            )
+            .unwrap(),
+        );
+        config
+            .load_policy_defaults(&workspace, Some(&user))
+            .unwrap();
+        let policy = config.policies.filesystem(&Default::default());
+        assert_eq!(
+            policy.authorize(Path::new("secrets/session")),
+            persisting_control::FileAccessDecision::Allow
+        );
+        assert_eq!(
+            policy.authorize(Path::new("secrets/workspace")),
+            persisting_control::FileAccessDecision::Allow
+        );
+        assert_eq!(
+            policy.authorize(Path::new("secrets/other")),
+            persisting_control::FileAccessDecision::Deny
+        );
+        std::fs::write(
+            workspace.join(".pvisor/policy.toml"),
+            "[filesystem]\ndeny = ['../bad']\n",
+        )
+        .unwrap();
+        assert!(
+            RunConfig::default()
+                .load_policy_defaults(&workspace, Some(&user))
+                .is_err()
+        );
     }
 }

@@ -1,46 +1,13 @@
 //! Shared helpers for pVisor.
 
-use anyhow::Context;
 pub use persisting_control::unix_now_ms;
-use std::fs::{self, OpenOptions};
-use std::io::Write;
-use std::os::unix::fs::PermissionsExt;
+#[cfg(test)]
+use std::fs;
 use std::path::Path;
 
 pub(crate) use persisting_journal::{create_dir_all_durable, sync_directory};
 
-/// Atomically replace a file after syncing both its contents and parent directory.
-pub(crate) fn atomic_write(path: &Path, contents: &[u8], mode: u32) -> anyhow::Result<()> {
-    let parent = path
-        .parent()
-        .ok_or_else(|| anyhow::anyhow!("{} has no parent directory", path.display()))?;
-    create_dir_all_durable(parent)?;
-
-    let file_name = path
-        .file_name()
-        .and_then(|name| name.to_str())
-        .unwrap_or("persisting");
-    let temporary = parent.join(format!(".{file_name}.{}.tmp", uuid::Uuid::new_v4()));
-    let result = (|| -> anyhow::Result<()> {
-        let mut file = OpenOptions::new()
-            .create_new(true)
-            .write(true)
-            .open(&temporary)
-            .with_context(|| format!("create temporary file {}", temporary.display()))?;
-        file.set_permissions(fs::Permissions::from_mode(mode))?;
-        file.write_all(contents)?;
-        file.sync_all()
-            .with_context(|| format!("sync temporary file {}", temporary.display()))?;
-        fs::rename(&temporary, path)
-            .with_context(|| format!("replace {} with {}", path.display(), temporary.display()))?;
-        sync_directory(parent)?;
-        Ok(())
-    })();
-    if result.is_err() {
-        let _ = fs::remove_file(&temporary);
-    }
-    result
-}
+pub(crate) use persisting_journal::atomic_write;
 
 /// Publish owner-only JSON using the same durable replacement as Run records.
 pub(crate) fn write_private_json(path: &Path, value: &impl serde::Serialize) -> anyhow::Result<()> {

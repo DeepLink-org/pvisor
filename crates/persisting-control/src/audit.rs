@@ -23,7 +23,16 @@ pub enum AuditKind {
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct AuditScope {
+    pub run_id: String,
+    pub attempt_id: String,
+    pub view: String,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub struct AuditRequest {
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub scope: Option<AuditScope>,
     pub kind: AuditKind,
     pub target: String,
     pub reason: String,
@@ -63,10 +72,22 @@ pub fn configured() -> bool {
 }
 
 /// Blocks the intercepted operation until the TUI answers. Any IPC failure denies.
+pub fn socket() -> Option<PathBuf> {
+    SOCKET.get().cloned()
+}
+
 pub fn request(prompt: &AuditRequest) -> AuditDecision {
-    // One FUSE read can invoke lookup, getattr, open and read. Treat those
-    // adjacent checks as one permission event, without granting the path for
-    // the rest of the Job. The mutex also coalesces concurrent checks.
+    if !enabled() {
+        return AuditDecision::Deny;
+    }
+    let Some(socket) = SOCKET.get() else {
+        return AuditDecision::Deny;
+    };
+    request_at(socket, "standalone", prompt)
+}
+
+/// The caller supplies the immutable Session endpoint and cache namespace.
+pub fn request_at(socket: &std::path::Path, session: &str, prompt: &AuditRequest) -> AuditDecision {
     if prompt.kind == AuditKind::File {
         let Ok(mut recent) = FILE_BURSTS
             .get_or_init(|| Mutex::new(HashMap::new()))
@@ -75,23 +96,23 @@ pub fn request(prompt: &AuditRequest) -> AuditDecision {
             return AuditDecision::Deny;
         };
         recent.retain(|_, (at, _)| at.elapsed() < FILE_BURST);
-        if let Some((_, decision)) = recent.get(&prompt.target) {
+        let key = format!(
+            "{}:{session}:{}:{}",
+            socket.display(),
+            prompt.target,
+            prompt.reason
+        );
+        if let Some((_, decision)) = recent.get(&key) {
             return *decision;
         }
-        let decision = request_uncached(prompt);
-        recent.insert(prompt.target.clone(), (Instant::now(), decision));
+        let decision = request_uncached(socket, prompt);
+        recent.insert(key, (Instant::now(), decision));
         return decision;
     }
-    request_uncached(prompt)
+    request_uncached(socket, prompt)
 }
 
-fn request_uncached(prompt: &AuditRequest) -> AuditDecision {
-    if !enabled() {
-        return AuditDecision::Deny;
-    }
-    let Some(socket) = SOCKET.get() else {
-        return AuditDecision::Deny;
-    };
+fn request_uncached(socket: &std::path::Path, prompt: &AuditRequest) -> AuditDecision {
     let Ok(mut stream) = UnixStream::connect(socket) else {
         return AuditDecision::Deny;
     };

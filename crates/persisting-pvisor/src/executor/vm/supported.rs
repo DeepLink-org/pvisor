@@ -1,7 +1,7 @@
 //! libkrun VM process isolation over a pVisor-provided root OverlayFS.
 
 use crate::config::VmSettings;
-use crate::executor::{AttemptContext, RunExecutor};
+use crate::executor::{ExecutorOutput, ExecutorSession, RunExecutor, SessionEnd as End};
 use crate::executor::{join_capture, read_limited, stdio};
 use crate::util::write_private_json;
 use anyhow::Context as _;
@@ -9,14 +9,13 @@ use async_trait::async_trait;
 use persisting_control::{
     CapabilityDimension, CapabilityEnforcementEvidence, CapabilityEnforcementPlan, ExecutorKind,
     ExecutorObservations, ExecutorPlan, IsolationKind, ProcessOutput, ResourceLimits, RunFailure,
-    RunFailureKind, RunInvocation, RunResult, RunState,
+    RunFailureKind, RunInvocation, RunState,
 };
 use serde::{Deserialize, Serialize};
 use std::collections::BTreeMap;
 use std::ffi::CString;
 use std::os::fd::{AsRawFd, RawFd};
 use std::path::{Path, PathBuf};
-use std::time::Duration;
 use tokio::process::Command;
 
 const RUNNER_SPEC_ENV: &str = "PERSISTING_KRUN_RUNNER_SPEC";
@@ -89,9 +88,7 @@ fn protect_overlay_backing(
     root: &mut OverlayDeviceSpec,
     workspace: Option<&OverlayDeviceSpec>,
 ) -> anyhow::Result<()> {
-    let mut deny = root.access_policy.deny().to_vec();
-    let mut ask = root.access_policy.ask().to_vec();
-    let mut warn = root.access_policy.warn().to_vec();
+    root.access_policy = root.access_policy.for_view("rootfs");
     let mut hidden = vec![root.upper.clone()];
     hidden.extend(root.work.iter().cloned());
     hidden.extend(root.preimages.iter().cloned());
@@ -107,37 +104,15 @@ fn protect_overlay_backing(
                     if relative.as_os_str().is_empty() {
                         continue;
                     }
-                    let prefix = globset::escape(
-                        relative
-                            .to_str()
-                            .ok_or_else(|| anyhow::anyhow!("file rule prefix must be UTF-8"))?,
-                    );
-                    deny.extend(
-                        workspace
-                            .access_policy
-                            .deny()
-                            .iter()
-                            .map(|glob| format!("{prefix}/{glob}")),
-                    );
-                    ask.extend(
-                        workspace
-                            .access_policy
-                            .ask()
-                            .iter()
-                            .map(|glob| format!("{prefix}/{glob}")),
-                    );
-                    warn.extend(
-                        workspace
-                            .access_policy
-                            .warn()
-                            .iter()
-                            .map(|glob| format!("{prefix}/{glob}")),
-                    );
+                    let prefix = relative
+                        .to_str()
+                        .ok_or_else(|| anyhow::anyhow!("file rule prefix must be UTF-8"))?;
+                    root.access_policy
+                        .extend(&workspace.access_policy.prefixed(prefix)?)?;
                 }
             }
         }
     }
-    root.access_policy = persisting_control::FileAccessPolicy::new_with_ask(deny, ask, warn)?;
     for lower in &root.lowers {
         let lower = lower.canonicalize()?;
         for path in &hidden {
@@ -244,10 +219,8 @@ impl RunExecutor for VmExecutor {
         true
     }
 
-    async fn execute(&self, context: AttemptContext) -> RunResult {
+    async fn execute(&self, context: &ExecutorSession) -> ExecutorOutput {
         let mut spec = context.spec().clone();
-        let started_at = crate::util::unix_now_ms();
-        let cancellation = context.cancellation();
         context
             .transition(
                 RunState::Starting,
@@ -259,9 +232,6 @@ impl RunExecutor for VmExecutor {
             all(target_os = "macos", target_arch = "aarch64")
         )) {
             return failed_to_start(
-                &spec,
-                context.attempt_id(),
-                started_at,
                 "libkrun execution requires Linux/KVM or Apple Silicon macOS/HVF".into(),
             );
         }
@@ -271,12 +241,9 @@ impl RunExecutor for VmExecutor {
             .write(true)
             .open("/dev/kvm")
         {
-            return failed_to_start(
-                &spec,
-                context.attempt_id(),
-                started_at,
-                format!("libkrun VM requires an accessible /dev/kvm: {error}"),
-            );
+            return failed_to_start(format!(
+                "libkrun VM requires an accessible /dev/kvm: {error}"
+            ));
         }
 
         let RunInvocation::Process(invocation) = &mut spec.invocation;
@@ -291,12 +258,10 @@ impl RunExecutor for VmExecutor {
             .clone()
             .expect("validated by VmExecutor::new");
         if !root.is_dir() {
-            return failed_to_start(
-                &spec,
-                context.attempt_id(),
-                started_at,
-                format!("prepared root OverlayFS is not mounted: {}", root.display()),
-            );
+            return failed_to_start(format!(
+                "prepared root OverlayFS is not mounted: {}",
+                root.display()
+            ));
         }
         let guest_cwd = spec
             .metadata
@@ -313,12 +278,9 @@ impl RunExecutor for VmExecutor {
         let configured_overlay = match workspace {
             Ok(workspace) => workspace,
             Err(error) => {
-                return failed_to_start(
-                    &spec,
-                    context.attempt_id(),
-                    started_at,
-                    format!("invalid libkrun workspace overlay metadata: {error}"),
-                );
+                return failed_to_start(format!(
+                    "invalid libkrun workspace overlay metadata: {error}"
+                ));
             }
         };
         let access_policy = configured_overlay
@@ -394,21 +356,19 @@ impl RunExecutor for VmExecutor {
         let temporary = match tempfile::Builder::new().prefix("pvisor-krun-").tempdir() {
             Ok(value) => value,
             Err(error) => {
-                return failed_to_start(&spec, context.attempt_id(), started_at, error.to_string());
+                return failed_to_start(error.to_string());
             }
         };
         let executable = match std::env::current_exe() {
             Ok(path) if path.is_absolute() => path,
             Ok(path) => {
-                return failed_to_start(
-                    &spec,
-                    context.attempt_id(),
-                    started_at,
-                    format!("pVisor executable is not absolute: {}", path.display()),
-                );
+                return failed_to_start(format!(
+                    "pVisor executable is not absolute: {}",
+                    path.display()
+                ));
             }
             Err(error) => {
-                return failed_to_start(&spec, context.attempt_id(), started_at, error.to_string());
+                return failed_to_start(error.to_string());
             }
         };
         let runner_root = root.clone();
@@ -417,12 +377,7 @@ impl RunExecutor for VmExecutor {
         if let Err(error) =
             std::fs::create_dir_all(&root_upper).and_then(|()| std::fs::create_dir_all(&root_work))
         {
-            return failed_to_start(
-                &spec,
-                context.attempt_id(),
-                started_at,
-                format!("prepare libkrun root overlay: {error}"),
-            );
+            return failed_to_start(format!("prepare libkrun root overlay: {error}"));
         }
         let mut root_overlay = if root_overlay.upper.as_os_str().is_empty() {
             OverlayDeviceSpec {
@@ -437,7 +392,7 @@ impl RunExecutor for VmExecutor {
             root_overlay
         };
         if let Err(error) = protect_overlay_backing(&mut root_overlay, workspace.as_ref()) {
-            return failed_to_start(&spec, context.attempt_id(), started_at, error.to_string());
+            return failed_to_start(error.to_string());
         }
         let vm_network_enabled = context
             .spec()
@@ -456,12 +411,7 @@ impl RunExecutor for VmExecutor {
                     )
                 })
             {
-                return failed_to_start(
-                    &spec,
-                    context.attempt_id(),
-                    started_at,
-                    format!("prepare VM synthetic resolver: {error}"),
-                );
+                return failed_to_start(format!("prepare VM synthetic resolver: {error}"));
             }
             root_overlay.lowers.insert(0, network_lower);
         }
@@ -472,9 +422,6 @@ impl RunExecutor for VmExecutor {
                 || workspace.work.as_ref().is_some_and(|work| !work.is_dir())
             {
                 return failed_to_start(
-                    &spec,
-                    context.attempt_id(),
-                    started_at,
                     "libkrun workspace overlay contains a missing backing directory".into(),
                 );
             }
@@ -484,46 +431,26 @@ impl RunExecutor for VmExecutor {
             let mountpoint = match guest_path_in_root(&runner_root, target) {
                 Ok(path) => path,
                 Err(error) => {
-                    return failed_to_start(
-                        &spec,
-                        context.attempt_id(),
-                        started_at,
-                        error.to_string(),
-                    );
+                    return failed_to_start(error.to_string());
                 }
             };
             match std::fs::symlink_metadata(&mountpoint) {
                 Ok(metadata) if metadata.file_type().is_symlink() || !metadata.is_dir() => {
-                    return failed_to_start(
-                        &spec,
-                        context.attempt_id(),
-                        started_at,
-                        format!(
-                            "guest overlay target must be a directory: {}",
-                            target.display()
-                        ),
-                    );
+                    return failed_to_start(format!(
+                        "guest overlay target must be a directory: {}",
+                        target.display()
+                    ));
                 }
                 Ok(_) => {}
                 Err(error) if error.kind() == std::io::ErrorKind::NotFound => {
                     let upper_mountpoint =
                         guest_path_in_root(&root_upper, target).expect("validated guest target");
                     if let Err(error) = std::fs::create_dir_all(&upper_mountpoint) {
-                        return failed_to_start(
-                            &spec,
-                            context.attempt_id(),
-                            started_at,
-                            format!("create guest overlay target: {error}"),
-                        );
+                        return failed_to_start(format!("create guest overlay target: {error}"));
                     }
                 }
                 Err(error) => {
-                    return failed_to_start(
-                        &spec,
-                        context.attempt_id(),
-                        started_at,
-                        error.to_string(),
-                    );
+                    return failed_to_start(error.to_string());
                 }
             }
         }
@@ -537,7 +464,7 @@ impl RunExecutor for VmExecutor {
             vm_network_enabled,
         );
         if let Err(error) = guest.command() {
-            return failed_to_start(&spec, context.attempt_id(), started_at, error.to_string());
+            return failed_to_start(error.to_string());
         }
         let requested_memory_mib = spec
             .runtime
@@ -548,7 +475,7 @@ impl RunExecutor for VmExecutor {
         let attestation = match tempfile::NamedTempFile::new_in(temporary.path()) {
             Ok(file) => file,
             Err(error) => {
-                return failed_to_start(&spec, context.attempt_id(), started_at, error.to_string());
+                return failed_to_start(error.to_string());
             }
         };
         let runner = RunnerSpec {
@@ -565,22 +492,17 @@ impl RunExecutor for VmExecutor {
         };
         let runner_path = temporary.path().join("runner.json");
         if let Err(error) = write_private_json(&runner_path, &runner) {
-            return failed_to_start(&spec, context.attempt_id(), started_at, error.to_string());
+            return failed_to_start(error.to_string());
         }
 
         let mut vm_network = match context.take_vm_network() {
             Ok(network) => network,
             Err(error) => {
-                return failed_to_start(&spec, context.attempt_id(), started_at, error.to_string());
+                return failed_to_start(error.to_string());
             }
         };
         if vm_network_enabled && vm_network.is_none() {
-            return failed_to_start(
-                &spec,
-                context.attempt_id(),
-                started_at,
-                "pVisor VM network attachment is missing".into(),
-            );
+            return failed_to_start("pVisor VM network attachment is missing".into());
         }
         let mut command = Command::new(executable);
         command
@@ -588,7 +510,8 @@ impl RunExecutor for VmExecutor {
             .stdin(stdio(invocation.stdin))
             .stdout(stdio(invocation.stdout))
             .stderr(stdio(invocation.stderr))
-            .kill_on_drop(true);
+            .kill_on_drop(true)
+            .process_group(0);
         if let Some(network) = &vm_network {
             let source_fd = network.guest_stream().as_raw_fd();
             command.env(NETWORK_FD_ENV, NETWORK_CHILD_FD.to_string());
@@ -623,9 +546,10 @@ impl RunExecutor for VmExecutor {
         let mut child = match command.spawn() {
             Ok(child) => child,
             Err(error) => {
-                return failed_to_start(&spec, context.attempt_id(), started_at, error.to_string());
+                return failed_to_start(error.to_string());
             }
         };
+        let process_group = child.id();
         let stdout_task = child.stdout.take().map(|stdout| {
             let limit = spec.runtime.max_output_bytes;
             tokio::spawn(async move { read_limited(stdout, limit).await })
@@ -636,38 +560,16 @@ impl RunExecutor for VmExecutor {
         });
         context.transition(RunState::Running, None).await;
 
-        enum End {
-            Exited(std::io::Result<std::process::ExitStatus>),
-            Cancelled,
-            Watchdog,
-        }
-        let watchdog_ms = spec.runtime.timeout_ms.map(|timeout| {
-            timeout
-                .saturating_add(spec.runtime.termination_grace_ms)
-                .saturating_add(10_000)
-        });
-        let end = if let Some(watchdog_ms) = watchdog_ms {
-            tokio::select! {
-                biased;
-                status = child.wait() => End::Exited(status),
-                _ = cancellation.cancelled() => End::Cancelled,
-                _ = tokio::time::sleep(Duration::from_millis(watchdog_ms)) => End::Watchdog,
-            }
-        } else {
-            tokio::select! {
-                biased;
-                status = child.wait() => End::Exited(status),
-                _ = cancellation.cancelled() => End::Cancelled,
-            }
-        };
-        if matches!(end, End::Cancelled | End::Watchdog) {
-            if matches!(end, End::Cancelled) {
-                context
-                    .transition(RunState::Cancelling, Some("cancellation requested".into()))
-                    .await;
-            }
-            let _ = child.kill().await;
-            let _ = child.wait().await;
+        let end = context
+            .wait_child(&mut child, spec.runtime.timeout_ms)
+            .await;
+        if matches!(end, End::Cancelled | End::Deadline) {
+            crate::executor::session::terminate_process_tree(
+                &mut child,
+                process_group,
+                spec.runtime.termination_grace_ms,
+            )
+            .await;
         }
         let transport_stdout = join_capture(stdout_task).await;
         let transport_stderr = join_capture(stderr_task).await;
@@ -682,10 +584,10 @@ impl RunExecutor for VmExecutor {
         }
         // Signals/cancellation can interrupt between configuring the VMM and
         // entering it. Without a normal runner exit we leave enforcement unknown.
-        let runner_exited = matches!(&end, End::Exited(Ok(status)) if status.code().is_some());
+        let runner_exited = matches!(&end, End::Exited(Ok(status)) if status.code().is_some_and(|code| code != 125));
         let (state, exit_code, failure) = match end {
             End::Cancelled => (RunState::Cancelled, None, None),
-            End::Watchdog => (
+            End::Deadline => (
                 RunState::Failed,
                 None,
                 Some(RunFailure {
@@ -739,14 +641,11 @@ impl RunExecutor for VmExecutor {
             tracing::warn!(%error, "failed to stop VM smoltcp backend");
             warnings.push(format!("failed to stop VM smoltcp backend: {error:#}"));
         }
-        RunResult {
+        ExecutorOutput {
             executor_observations,
-            run_id: spec.run_id,
-            attempt_id: context.attempt_id().clone(),
-            lease_epoch: spec.lease_epoch,
+
             state,
-            started_at_unix_ms: started_at,
-            finished_at_unix_ms: crate::util::unix_now_ms(),
+
             exit_code,
             failure,
             output,
@@ -765,20 +664,15 @@ impl RunExecutor for VmExecutor {
 fn guest_exit_outcome(
     status: std::process::ExitStatus,
 ) -> (RunState, Option<i32>, Option<RunFailure>) {
-    if status.success() {
-        return (RunState::Completed, status.code(), None);
+    if status.code().is_some() {
+        return crate::executor::exit_outcome(status);
     }
-    let kind = if status.code().is_some() {
-        RunFailureKind::ProcessExit
-    } else {
-        RunFailureKind::Infrastructure
-    };
     (
         RunState::Failed,
-        status.code(),
+        None,
         Some(RunFailure {
-            kind,
-            message: format!("libkrun guest exited with {status}"),
+            kind: RunFailureKind::Infrastructure,
+            message: format!("libkrun runner exited with {status}"),
             retryable: false,
         }),
     )
@@ -1000,20 +894,12 @@ fn guest_config(
     }
 }
 
-fn failed_to_start(
-    spec: &persisting_control::RunSpec,
-    attempt_id: &persisting_control::AttemptId,
-    started_at: u64,
-    message: String,
-) -> RunResult {
-    RunResult {
+fn failed_to_start(message: String) -> ExecutorOutput {
+    ExecutorOutput {
         executor_observations: Default::default(),
-        run_id: spec.run_id.clone(),
-        attempt_id: attempt_id.clone(),
-        lease_epoch: spec.lease_epoch,
+
         state: RunState::Failed,
-        started_at_unix_ms: started_at,
-        finished_at_unix_ms: crate::util::unix_now_ms(),
+
         exit_code: None,
         failure: Some(RunFailure {
             kind: RunFailureKind::Spawn,

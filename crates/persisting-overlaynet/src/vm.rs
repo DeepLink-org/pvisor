@@ -36,7 +36,7 @@ use crate::egress::{
 };
 use crate::interception::{InterceptionMetrics, InterceptionSnapshot};
 use crate::policy::DenyReason;
-use crate::resolver::is_host_connector_alias;
+use persisting_control::is_host_connector_alias;
 
 pub const ROUTER_IPV4: Ipv4Addr = Ipv4Addr::new(192, 0, 2, 1);
 pub const GUEST_IPV4: Ipv4Addr = Ipv4Addr::new(192, 0, 2, 2);
@@ -1048,23 +1048,7 @@ fn synthetic_address(address: Ipv4Addr) -> bool {
 /// rebinding result. RFC1918 and loopback remain available intentionally for
 /// explicit host/LAN services; pVisor's own virtual and special-purpose ranges
 /// do not.
-fn forbidden_host_address(address: IpAddr) -> bool {
-    let IpAddr::V4(address) = address else {
-        return true;
-    };
-    let [a, b, c, _] = address.octets();
-    address.is_unspecified()
-        || address.is_broadcast()
-        || address.is_multicast()
-        || address.is_link_local()
-        || a == 0
-        || a >= 224
-        || (a == 192 && b == 0 && c == 0)
-        || (a == 192 && b == 0 && c == 2)
-        || (a == 198 && (b == 18 || b == 19))
-        || (a == 198 && b == 51 && c == 100)
-        || (a == 203 && b == 0 && c == 113)
-}
+use persisting_control::forbidden_vm_egress_address as forbidden_host_address;
 
 fn blocked_literal_destination(address: Ipv4Addr) -> bool {
     forbidden_host_address(IpAddr::V4(address))

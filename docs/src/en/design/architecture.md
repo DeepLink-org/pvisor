@@ -8,9 +8,9 @@ PolicyVisor (pVisor) combines capability admission, executors, runtime controls,
 | --- | --- |
 | `persisting-pvisor` | CLI, admission, Attempt lifecycle, executors, Run Bundle, review/apply/checkpoint |
 | `persisting-control` | Run/Overlay contracts, capability policy, control messages/client, and shared event records |
-| `persisting-overlay-core` | Shared copy-on-write semantics and first-touch file fingerprints |
+| `persisting-overlay-core` | Copy-on-write, preimages, review/apply/recovery/drop semantics |
 | `persisting-overlayfs` | Host FUSE adapter |
-| `persisting-overlaynet` | Network authorization, resolution, proxy forwarding and VM network attachment |
+| `persisting-overlaynet` | Resolution, proxy forwarding and VM network attachment; consumes Control policy |
 | `persisting-gateway` | Model routing, protocol conversion and capture |
 | `persisting-replay` | Agent-native trajectory replay and continuation adapters |
 
@@ -38,7 +38,7 @@ Run events carry IR request, rewrite and completion facts. The Run Bundle retain
 
 The bundle also records aggregate OverlayNet allow, deny, failure and byte counters. Filesystem grants outside FUSE and network traffic outside an interceptor have no reliable per-rule counters, so their fields are `null`: unknown is not zero. A selective host proxy counts only traffic that reaches it and cannot prove that no connection bypassed it.
 
-The sole production dispatch path is `PVisor::run(RunSpec) → RunExecutor::execute`.
+The sole production dispatch path is `PVisor::run(RunSpec) → ExecutorSession → RunExecutor::execute`.
 RunPlan IR describes placement and evidence; it does not execute arbitrary expressions or
 provide per-rewrite authorization and generic disclosure checks. The separate
 Engine/Backend/Admission interpreter has been removed.
@@ -53,9 +53,35 @@ Cancelled/signalled VMM startup leaves enforcement unknown without a confirmed
 runner exit. Completed and terminal event origins distinguish runtime failures
 from backend outcomes.
 
+## Session lifecycle and policy
+
+An `ExecutorSession` corresponds to one Attempt. It coordinates preparation,
+execution, cancellation/deadlines, driver teardown, evidence checks, durable
+Run Bundle updates, and terminal publication. Backends return `ExecutorOutput`
+with mandatory observations; they cannot set Run/Attempt identity or publish a
+terminal state. Process and VM termination share the process-group cleanup
+algorithm; OCI uses its runtime kill API. A new Attempt gets new Session identity
+and approval cache keys.
+
+Control owns network configuration, compiled authorization and address
+classifiers, plus file policy compilation. Session policy precedence is
+`session > workspace > user`: the first matching scope decides. An absent rule
+falls through; an explicit network default ends lookup. Within a scope, deny
+wins over allow; file rules use deny, ask, warn, then allow. An explicit Session
+allow can override a lower-scope deny. A failed port, transport or resolved-IP
+constraint in a selected allow does not fall through to a lower grant.
+
+File policies are bound to Run, Attempt, view and approval endpoint. FUSE and
+virtio-fs use the same OverlayCore authorization and copy-on-write engine.
+Translation into the VM root view preserves policy scopes. `OverlayLayout`
+validates that the apply target is the last lower before creating writable
+state; apply planning validates the same relationship.
+
+Policy file paths and TOML examples are in the [network guide](../guides/network.md).
+
 ## Filesystem application
 
-`persisting-control::overlay` owns the review/apply records, first-touch state schema, and local Run inspection messages. OverlayCore computes fingerprints and stores journals; pVisor handles requests and executes apply/discard.
+`persisting-control::overlay` owns the review/apply records, first-touch state schema, and local Run inspection messages. OverlayCore owns fingerprints, journals, review/apply/recovery/drop; pVisor handles requests and owns mounts.
 
 OverlayCore records the target's original state on first mutation. Apply closes a selection over required directories and hard-link siblings, validates affected preimages, writes a durable intent, updates the target, and then consumes applied upper entries.
 

@@ -873,6 +873,7 @@ mod tests {
         let layout = Layout::new(size(80, 24), &UiState::default());
         let snapshot = Snapshot {
             audit: Some(AuditRequest {
+                scope: None,
                 kind: AuditKind::Network,
                 target: "unexpected.example:443".into(),
                 reason: "not-in-allowlist".into(),

@@ -646,6 +646,7 @@ mod tests {
         let worker = std::thread::spawn(move || {
             let mut stream = UnixStream::connect(path).unwrap();
             let request = AuditRequest {
+                scope: None,
                 kind: AuditKind::File,
                 target: "workspace/.env".into(),
                 reason: "sensitive file rule".into(),
@@ -736,6 +737,7 @@ mod tests {
 
     fn file(target: &str) -> AuditRequest {
         AuditRequest {
+            scope: None,
             kind: AuditKind::File,
             target: target.into(),
             reason: "ask".into(),
@@ -747,6 +749,7 @@ mod tests {
 
     fn network(host: &str, port: u16) -> AuditRequest {
         AuditRequest {
+            scope: None,
             kind: AuditKind::Network,
             target: format!("{host}:{port}"),
             reason: "unlisted".into(),

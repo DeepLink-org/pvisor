@@ -7,6 +7,13 @@ license.workspace = true
 description = "FUSE-neutral portable overlay filesystem core for pVisor"
 
 [dependencies]
+anyhow.workspace = true
+fs2.workspace = true
+globset.workspace = true
+persisting-journal.workspace = true
+serde = { workspace = true, features = ["derive"] }
+thiserror.workspace = true
+uuid = { workspace = true, features = ["v4"] }
 libc.workspace = true
 log.workspace = true
 persisting-control.workspace = true

@@ -2592,12 +2592,19 @@ dependencies = [
 name = "persisting-overlay-core"
 version = "0.3.0"
 dependencies = [
+ "anyhow",
+ "fs2",
+ "globset",
  "libc",
  "log",
  "persisting-control",
+ "persisting-journal",
+ "serde",
  "serde_json",
  "sha2 0.11.0",
  "tempfile",
+ "thiserror 2.0.18",
+ "uuid",
 ]
 
 [[package]]

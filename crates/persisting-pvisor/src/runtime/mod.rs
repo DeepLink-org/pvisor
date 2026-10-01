@@ -16,8 +16,8 @@ pub(crate) mod run;
 mod supervisor;
 pub(crate) mod zcode;
 
-pub(crate) use attempt::AttemptTeardown;
 pub(crate) use attempt::VmNetworkAttachment;
+pub(crate) use attempt::{AttemptSession, AttemptTeardown};
 pub(crate) use supervisor::RuntimeSupervisor;
 pub(crate) use supervisor::RuntimeSupervisorBuilder;
 

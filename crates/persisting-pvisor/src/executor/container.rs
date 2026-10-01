@@ -4,12 +4,12 @@
 use crate::config::{ContainerMount, ContainerPlatform, ContainerSettings};
 use crate::executor::artifact::resolve_pvisor_binary;
 use crate::executor::delegated::{DelegatedRunFiles, RESULT_FILENAME, SPEC_FILENAME};
-use crate::executor::{AttemptContext, RunExecutor};
+use crate::executor::{ExecutorOutput, ExecutorSession, RunExecutor, SessionEnd as End};
 use crate::executor::{join_capture, read_limited, stdio};
 use async_trait::async_trait;
 use persisting_control::{
     ExecutorKind, ExecutorPlan, IsolationKind, ProcessOutput, RunFailure, RunFailureKind,
-    RunInvocation, RunResult, RunSpec, RunState,
+    RunInvocation, RunSpec, RunState,
 };
 use std::collections::BTreeMap;
 use std::fs;
@@ -327,9 +327,8 @@ impl RunExecutor for ContainerExecutor {
         matches!(invocation, RunInvocation::Process(_))
     }
 
-    async fn execute(&self, context: AttemptContext) -> RunResult {
+    async fn execute(&self, context: &ExecutorSession) -> ExecutorOutput {
         let spec = context.spec().clone();
-        let started_at = crate::util::unix_now_ms();
         context
             .transition(
                 RunState::Starting,
@@ -370,14 +369,14 @@ impl RunExecutor for ContainerExecutor {
         let (files, mut command) = match prepared {
             Ok(prepared) => prepared,
             Err(error) => {
-                return failed_to_start(&spec, context.attempt_id(), started_at, error.to_string());
+                return failed_to_start(error.to_string());
             }
         };
         let name = container_name(spec.run_id.as_str(), context.attempt_id().as_str());
         let mut child = match command.spawn() {
             Ok(child) => child,
             Err(error) => {
-                return failed_to_start(&spec, context.attempt_id(), started_at, error.to_string());
+                return failed_to_start(error.to_string());
             }
         };
         let stdout_task = child.stdout.take().map(|stdout| {
@@ -390,45 +389,20 @@ impl RunExecutor for ContainerExecutor {
         });
         context.transition(RunState::Running, None).await;
 
-        enum End {
-            Exited(std::io::Result<std::process::ExitStatus>),
-            Cancelled,
-            Watchdog,
-        }
-        let cancellation = context.cancellation();
         let watchdog_ms = spec.runtime.timeout_ms.map(|timeout| {
             timeout
                 .saturating_add(spec.runtime.termination_grace_ms)
                 .saturating_add(10_000)
         });
-        let end = if let Some(watchdog_ms) = watchdog_ms {
-            tokio::select! {
-                biased;
-                status = child.wait() => End::Exited(status),
-                _ = cancellation.cancelled() => End::Cancelled,
-                _ = tokio::time::sleep(Duration::from_millis(watchdog_ms)) => End::Watchdog,
-            }
-        } else {
-            tokio::select! {
-                biased;
-                status = child.wait() => End::Exited(status),
-                _ = cancellation.cancelled() => End::Cancelled,
-            }
-        };
+        let end = context.wait_child(&mut child, watchdog_ms).await;
 
         let mut warnings = Vec::new();
-        if matches!(end, End::Cancelled | End::Watchdog) {
-            if matches!(end, End::Cancelled) {
-                context
-                    .transition(RunState::Cancelling, Some("cancellation requested".into()))
-                    .await;
-            }
-            if let Some(warning) = self
+        if matches!(end, End::Cancelled | End::Deadline)
+            && let Some(warning) = self
                 .terminate(&mut child, &name, spec.runtime.termination_grace_ms)
                 .await
-            {
-                warnings.push(warning);
-            }
+        {
+            warnings.push(warning);
         }
 
         let transport_stdout = join_capture(stdout_task).await;
@@ -438,7 +412,7 @@ impl RunExecutor for ContainerExecutor {
                 Ok(mut output) => {
                     context.import_delegated_agentctl(output.agentctl);
                     output.result.warnings.extend(warnings);
-                    return output.result;
+                    return output.result.into();
                 }
                 Err(error) => warnings.push(format!("decode delegated pVisor result: {error}")),
             }
@@ -455,7 +429,7 @@ impl RunExecutor for ContainerExecutor {
         }
         let (state, exit_code, failure) = match end {
             End::Cancelled => (RunState::Cancelled, None, None),
-            End::Watchdog => (
+            End::Deadline => (
                 RunState::Failed,
                 None,
                 Some(RunFailure {
@@ -492,14 +466,11 @@ impl RunExecutor for ContainerExecutor {
                 }),
             ),
         };
-        RunResult {
+        ExecutorOutput {
             executor_observations: Default::default(),
-            run_id: spec.run_id,
-            attempt_id: context.attempt_id().clone(),
-            lease_epoch: spec.lease_epoch,
+
             state,
-            started_at_unix_ms: started_at,
-            finished_at_unix_ms: crate::util::unix_now_ms(),
+
             exit_code,
             failure,
             output,
@@ -512,20 +483,12 @@ impl RunExecutor for ContainerExecutor {
     }
 }
 
-fn failed_to_start(
-    spec: &persisting_control::RunSpec,
-    attempt_id: &persisting_control::AttemptId,
-    started_at: u64,
-    message: String,
-) -> RunResult {
-    RunResult {
+fn failed_to_start(message: String) -> ExecutorOutput {
+    ExecutorOutput {
         executor_observations: Default::default(),
-        run_id: spec.run_id.clone(),
-        attempt_id: attempt_id.clone(),
-        lease_epoch: spec.lease_epoch,
+
         state: RunState::Failed,
-        started_at_unix_ms: started_at,
-        finished_at_unix_ms: crate::util::unix_now_ms(),
+
         exit_code: None,
         failure: Some(RunFailure {
             kind: RunFailureKind::Spawn,

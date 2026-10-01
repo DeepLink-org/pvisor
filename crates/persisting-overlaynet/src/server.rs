@@ -485,6 +485,7 @@ mod tests {
         ) -> anyhow::Result<OverlayRequestContext<Self::RequestContext>> {
             Ok(OverlayRequestContext {
                 policy: NetworkPolicy::compile(&NetworkConfig {
+                    capability: None,
                     mode: NetworkMode::NoNetwork,
                     allowed_hosts: Vec::new(),
                     rules: Vec::new(),

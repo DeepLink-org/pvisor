@@ -164,6 +164,46 @@ loopback proxy、精确的 AgentCtl 和 Run 私有目录内 IPC。Container Run 
 `mode = "off"` 会让 VM 离线。Gateway capture 通过 guest 虚拟路由器暴露；container
 executor 使用进程内 proxy 时仍要求 `--container-network host`。
 
+## Session、workspace 与 user 策略
+
+CLI 从工作区 `.pvisor/policy.toml` 和用户
+`$XDG_CONFIG_HOME/pvisor/policy.toml`（默认 `~/.config/pvisor/policy.toml`）
+读取策略，文件包含 `[network]` 和／或 `[filesystem]`。Run TOML 可显式设置
+`[policies.session]`、`[policies.workspace]`、`[policies.user]`；显式配置的
+network/filesystem 条目替换同层文件默认值。
+
+例如，用户策略拒绝未匹配的网络目标和敏感文件：
+
+```toml
+[network]
+default_action = "deny"
+
+[filesystem]
+deny = ["secrets/**"]
+```
+
+Run 可在 Session 层添加明确的例外：
+
+```toml
+[policies.session.network]
+allow = [{ host = "api.example.com", ports = [443] }]
+
+[policies.session.filesystem]
+allow = ["secrets/approved.txt"]
+```
+
+按 Session、workspace、user 顺序使用首个匹配作用域；未匹配时继续向下查找，
+显式 `default_action` 会结束查找。同层 deny 优先。Session 授权可覆盖低优先级
+拒绝，但不会绕过解析地址安全校验。文件 glob 相对于暂存工作区视图。
+策略在 Attempt 内固定；修改策略文件只影响后续 Session。
+
+网络层策略会为 host/container 的 `auto` 启用显式 proxy，该边界仍是协作式。
+文件层策略在未配置暂存工作区时创建暂存视图。VM `auto` 使用不可绕过的网络
+驱动；`off` 保持离线。
+
+嵌入 API 使用 `RunSpec.policies`，并须通过 `PVisorBuilder` 配置对应的
+OverlayFS 视图和网络驱动；缺少驱动时拒绝启动。
+
 ## 检查运行结果
 
 当前目录默认就是可重复使用的 workspace；每次调用都会在 pVisor 默认记录根目录下保留

@@ -4,15 +4,16 @@ pub(crate) mod artifact;
 pub(crate) mod container;
 pub(crate) mod delegated;
 pub(crate) mod process;
+mod session;
+pub use session::ExecutorOutput;
+pub(crate) use session::{SessionEnd, exit_outcome};
 pub mod sandbox;
 pub(crate) mod vm;
 
 use crate::runtime::event::RunEventPublisher;
 use async_trait::async_trait;
 use persisting_control::StdioMode;
-use persisting_control::{
-    AttemptId, ExecutorPlan, RunInvocation, RunResult, RunSpec, RunState, RunStatus,
-};
+use persisting_control::{AttemptId, ExecutorPlan, RunInvocation, RunSpec, RunState, RunStatus};
 use serde_json::json;
 use std::process::Stdio;
 use std::sync::Arc;
@@ -22,12 +23,15 @@ use tokio_util::sync::CancellationToken;
 
 #[derive(Clone, Default)]
 pub(crate) struct AttemptAttachments {
+    pub filesystem: Option<persisting_control::FileAccessPolicy>,
     pub vm_network: Option<Arc<std::sync::Mutex<Option<crate::runtime::VmNetworkAttachment>>>>,
 }
 
-#[derive(Clone)]
-pub struct AttemptContext {
+/// Attempt-scoped execution identity, controls, policy and lifecycle owner.
+pub struct ExecutorSession {
     spec: Arc<RunSpec>,
+    created_at_unix_ms: u64,
+    network_policy: persisting_control::NetworkPolicy,
     attempt_id: AttemptId,
     cancel: CancellationToken,
     status: watch::Sender<RunStatus>,
@@ -36,29 +40,17 @@ pub struct AttemptContext {
     attachments: AttemptAttachments,
 }
 
-impl AttemptContext {
-    pub(crate) fn new(
-        spec: Arc<RunSpec>,
-        attempt_id: AttemptId,
-        cancel: CancellationToken,
-        status: watch::Sender<RunStatus>,
-        events: RunEventPublisher,
-        agentctl: crate::AgentCtlControl,
-        attachments: AttemptAttachments,
-    ) -> Self {
-        Self {
-            spec,
-            attempt_id,
-            cancel,
-            status,
-            events,
-            agentctl,
-            attachments,
-        }
-    }
-
+impl ExecutorSession {
     pub fn spec(&self) -> &RunSpec {
         &self.spec
+    }
+
+    pub fn network_policy(&self) -> &persisting_control::NetworkPolicy {
+        &self.network_policy
+    }
+
+    pub fn filesystem_policy(&self) -> Option<&persisting_control::FileAccessPolicy> {
+        self.attachments.filesystem.as_ref()
     }
 
     pub fn attempt_id(&self) -> &AttemptId {
@@ -81,7 +73,11 @@ impl AttemptContext {
         Ok(attachment.take())
     }
 
-    pub fn events(&self) -> &RunEventPublisher {
+    pub fn status(&self) -> RunStatus {
+        self.status.borrow().clone()
+    }
+
+    fn events(&self) -> &RunEventPublisher {
         &self.events
     }
 
@@ -90,6 +86,10 @@ impl AttemptContext {
     }
 
     pub async fn transition(&self, state: RunState, message: impl Into<Option<String>>) {
+        // Terminal publication is reserved for Session completion after resource teardown.
+        if state.is_terminal() {
+            return;
+        }
         let now = crate::util::unix_now_ms();
         let message = message.into();
         self.status.send_modify(|status| {
@@ -119,8 +119,7 @@ impl AttemptContext {
     }
 
     /// Make a terminal status visible after finalization and terminal-event commit.
-    pub(crate) fn finish(&self, state: RunState, message: Option<String>) {
-        let now = crate::util::unix_now_ms();
+    pub(crate) fn finish(&self, state: RunState, message: Option<String>, now: u64) {
         self.status.send_modify(|status| {
             status.state = state;
             status.updated_at_unix_ms = now;
@@ -144,7 +143,7 @@ pub trait RunExecutor: Send + Sync {
     fn supports_vm_network_attachment(&self) -> bool {
         false
     }
-    async fn execute(&self, context: AttemptContext) -> RunResult;
+    async fn execute(&self, session: &ExecutorSession) -> ExecutorOutput;
 }
 
 #[derive(Debug)]

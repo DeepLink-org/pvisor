@@ -8,9 +8,9 @@ PolicyVisor（pVisor）通过能力准入、执行器、运行时控制和执行
 | --- | --- |
 | `persisting-pvisor` | CLI、准入、Attempt 生命周期、执行器、Run Bundle、审查／应用／检查点 |
 | `persisting-control` | 运行与 Overlay 契约、能力策略、控制消息与客户端、共享事件记录 |
-| `persisting-overlay-core` | 共享写时复制语义与首次修改时的文件指纹 |
+| `persisting-overlay-core` | 写时复制、preimage、review/apply/recovery/drop 语义 |
 | `persisting-overlayfs` | 宿主 FUSE 适配器 |
-| `persisting-overlaynet` | 网络授权、解析、代理转发与 VM 网络接入 |
+| `persisting-overlaynet` | 解析、代理转发与 VM 网络接入；消费 Control 策略 |
 | `persisting-gateway` | 模型路由、协议转换与捕获 |
 | `persisting-replay` | Agent 原生轨迹的回放与续跑适配 |
 
@@ -33,7 +33,7 @@ CLI／配置 → RunSpec → 能力准入 → RunPlan IR → 准备运行时驱�
 
 Run Bundle 还记录经过 OverlayNet 的聚合放行、拒绝、失败及字节量。未经过 FUSE 的文件授权、未经过拦截器的网络流量没有可靠逐条计数，相应字段为 `null`，含义是未观测而不是零。宿主选择性代理只覆盖经过代理的流量，计数不能证明没有绕过代理的连接。
 
-唯一生产派发路径是 `PVisor::run(RunSpec) → RunExecutor::execute`。RunPlan IR 描述放置与证据，
+唯一生产派发路径是 `PVisor::run(RunSpec) → ExecutorSession → RunExecutor::execute`。RunPlan IR 描述放置与证据，
 不执行任意表达式，也不提供逐次改写授权或通用披露检查。独立的 Engine/Backend/Admission 解释器已删除。
 
 `ExecutorPlan` 与 `CapabilityEnforcementPlan` 是准入计划类型，最高等级为 Planned，
@@ -43,9 +43,29 @@ metadata、隔离标签和 warning 字符串均不能生成或抹去证据。Enf
 VM 启动被取消或信号中断且没有确认 runner 退出时，不声明 Enforced。
 Completed 与终态事件的 origin 区分运行器失败和后端结果。
 
+## Session 生命周期与策略
+
+一个 `ExecutorSession` 对应一次 Attempt，统一协调 prepare、执行、取消与超时、
+驱动清理、证据检查、Run Bundle 持久化和终态公布。后端返回必须包含观测的
+`ExecutorOutput`，不能设置 Run/Attempt 身份或提前公布终态。Process 和 VM
+共用进程组终止算法；OCI 使用 runtime 的 kill API。新 Attempt 使用新的
+Session 身份和审批缓存键。
+
+Control 统一拥有网络配置、编译后的授权与地址分类，以及文件策略编译。
+Session 策略按 `session > workspace > user` 选择首个匹配作用域；没有规则时
+向下查找，显式网络默认决策会结束查找。同层 deny 优先于 allow，文件规则按
+ deny、ask、warn、allow 排序。显式 Session allow 可以覆盖低优先级 deny。
+选中 allow 后，端口、协议或解析 IP 校验失败不会回退到低优先级授权。
+
+文件策略绑定 Run、Attempt、视图和审批端点。FUSE 和 virtio-fs 共用 OverlayCore
+的授权与写时复制实现；转换到 VM 根视图时保留策略作用域。`OverlayLayout`
+在创建可写状态前校验 apply target 必须是最后一个 lower；apply 规划也检查同一约束。
+
+策略文件路径与 TOML 示例见[网络指南](../guides/network.md)。
+
 ## 文件应用
 
-`persisting-control::overlay` 定义审查／应用记录、首次修改状态格式和本地 Run 检查消息。OverlayCore 计算文件指纹并保存日志，pVisor 处理请求并执行应用／丢弃。
+`persisting-control::overlay` 定义审查／应用记录、首次修改状态格式和本地 Run 检查消息。OverlayCore 负责文件指纹、日志、review/apply/recovery/drop；pVisor 处理请求并管理挂载。
 
 OverlayCore 在首次修改时记录目标的原始状态。Apply 将选择扩展到必要的目录和硬链接成员，校验受影响的原始状态，写入持久化意图，更新目标，然后移除已经应用的 upper 条目。
 

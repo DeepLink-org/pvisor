@@ -192,6 +192,7 @@ impl ControlController for PolicyControlController {
 }
 
 fn authorize_network(policy: &NetworkGuard, request: &NetworkAccessRequest) -> ControlTransition {
+    let policy = policy.selected(request).0;
     if policy.denied(request) {
         return ControlTransition::denied(ControlReason::ExplicitlyDenied);
     }
@@ -199,6 +200,7 @@ fn authorize_network(policy: &NetworkGuard, request: &NetworkAccessRequest) -> C
         return ControlTransition::allowed(ControlReason::TrustedLocal);
     }
     match policy.capability() {
+        NetworkCapability::Scoped { .. } => unreachable!("selected guard is a leaf"),
         NetworkCapability::Ambient => ControlTransition::allowed(ControlReason::AmbientNetwork),
         NetworkCapability::Deny => ControlTransition::denied(ControlReason::NetworkDenied),
         NetworkCapability::AllowList { .. } => match policy.evaluate(request) {
@@ -222,7 +224,25 @@ fn authorize_network(policy: &NetworkGuard, request: &NetworkAccessRequest) -> C
         NetworkCapability::Policy {
             default_action: NetworkDefaultAction::Allow,
             ..
-        } => ControlTransition::allowed(ControlReason::AmbientNetwork),
+        } => {
+            if host_matches(&request.host, &policy.rules) {
+                match policy.evaluate(request) {
+                    Ok(()) => ControlTransition::allowed(ControlReason::NetworkAllowList),
+                    Err(NetworkMatchFailure::Port) => {
+                        ControlTransition::denied(ControlReason::PortNotAllowed)
+                    }
+                    Err(NetworkMatchFailure::Transport) => {
+                        ControlTransition::denied(ControlReason::TransportNotAllowed)
+                    }
+                    Err(NetworkMatchFailure::ResolvedAddress) => {
+                        ControlTransition::denied(ControlReason::ResolvedAddressNotAllowed)
+                    }
+                    _ => ControlTransition::denied(ControlReason::HostNotAllowed),
+                }
+            } else {
+                ControlTransition::allowed(ControlReason::AmbientNetwork)
+            }
+        }
         NetworkCapability::Policy {
             default_action: NetworkDefaultAction::Deny,
             ..
@@ -297,6 +317,8 @@ pub struct NetworkGuard {
     rules: Vec<NetworkRule>,
     deny_rules: Vec<NetworkRule>,
     trusted_hosts: Vec<String>,
+    scopes: Vec<(crate::PolicyScope, bool, NetworkGuard)>,
+    fallback: Option<Box<NetworkGuard>>,
 }
 
 impl NetworkGuard {
@@ -304,6 +326,45 @@ impl NetworkGuard {
         capability: NetworkCapability,
         trusted_hosts: impl IntoIterator<Item = String>,
     ) -> anyhow::Result<Self> {
+        let trusted_hosts: Vec<String> = trusted_hosts.into_iter().collect();
+        let (scopes, fallback) = if let NetworkCapability::Scoped { layers, fallback } = &capability
+        {
+            let mut scopes = layers
+                .iter()
+                .map(|(scope, layer)| {
+                    let guard = Self::compile(
+                        NetworkCapability::Policy {
+                            default_action: layer
+                                .default_action
+                                .unwrap_or(NetworkDefaultAction::Deny),
+                            allow: layer.allow.clone(),
+                            deny: layer.deny.clone(),
+                            limits: layer.limits.clone(),
+                        },
+                        trusted_hosts.clone(),
+                    )?;
+                    Ok((*scope, layer.default_action.is_some(), guard))
+                })
+                .collect::<anyhow::Result<Vec<_>>>()?;
+            scopes.sort_by_key(|(scope, _, _)| std::cmp::Reverse(*scope));
+            anyhow::ensure!(
+                !scopes.windows(2).any(|pair| pair[0].0 == pair[1].0),
+                "network policy has duplicate scopes"
+            );
+            anyhow::ensure!(
+                !matches!(**fallback, NetworkCapability::Scoped { .. }),
+                "network policy fallback must be a leaf"
+            );
+            (
+                scopes,
+                Some(Box::new(Self::compile(
+                    (**fallback).clone(),
+                    trusted_hosts.clone(),
+                )?)),
+            )
+        } else {
+            (Vec::new(), None)
+        };
         let rules = match &capability {
             NetworkCapability::AllowList { hosts, rules } => {
                 let mut compiled = hosts
@@ -332,6 +393,8 @@ impl NetworkGuard {
             _ => Vec::new(),
         };
         Ok(Self {
+            scopes,
+            fallback,
             capability,
             rules,
             deny_rules,
@@ -340,6 +403,23 @@ impl NetworkGuard {
                 .map(|host| normalize_host(&host))
                 .collect(),
         })
+    }
+
+    /// Select on the logical host before checking port/transport/resolved-address safety.
+    /// A failed constraint in the selected scope must not fall through to a lower allow.
+    pub fn selected(&self, request: &NetworkAccessRequest) -> (&Self, Option<crate::PolicyScope>) {
+        for (scope, explicit_default, guard) in &self.scopes {
+            if *explicit_default
+                || host_matches(&request.host, &guard.rules)
+                || guard.denied(request)
+            {
+                return (guard, Some(*scope));
+            }
+        }
+        match &self.fallback {
+            Some(guard) => guard.selected(request),
+            None => (self, None),
+        }
     }
 
     pub fn capability(&self) -> &NetworkCapability {
@@ -600,6 +680,35 @@ fn model_matches(pattern: &str, model: &str) -> bool {
         return !suffix.is_empty() && model.ends_with(suffix);
     }
     pattern == model
+}
+
+pub fn is_host_connector_alias(host: &str, address: IpAddr) -> bool {
+    if host.parse::<IpAddr>().is_ok() {
+        return false;
+    }
+    let IpAddr::V4(address) = address else {
+        return false;
+    };
+    let octets = address.octets();
+    octets[0] == 198 && (octets[1] == 18 || octets[1] == 19)
+}
+
+pub fn forbidden_vm_egress_address(address: IpAddr) -> bool {
+    let IpAddr::V4(address) = address else {
+        return true;
+    };
+    let [a, b, c, _] = address.octets();
+    address.is_unspecified()
+        || address.is_broadcast()
+        || address.is_multicast()
+        || address.is_link_local()
+        || a == 0
+        || a >= 224
+        || (a == 192 && b == 0 && c == 0)
+        || (a == 192 && b == 0 && c == 2)
+        || (a == 198 && (b == 18 || b == 19))
+        || (a == 198 && b == 51 && c == 100)
+        || (a == 203 && b == 0 && c == 113)
 }
 
 #[cfg(test)]

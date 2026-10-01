@@ -102,28 +102,13 @@ fn time_value(value: TimeOrNow) -> SystemTime {
 }
 
 impl OverlayFs {
+    #[cfg(test)]
     pub fn new(
         lowers: Vec<PathBuf>,
         upper: PathBuf,
         work: Option<PathBuf>,
     ) -> anyhow::Result<Self> {
         Self::from_core(OverlayCore::new(lowers, upper, work)?)
-    }
-
-    pub fn new_with_exclusions_and_preimages(
-        lowers: Vec<PathBuf>,
-        upper: PathBuf,
-        work: Option<PathBuf>,
-        excluded: Vec<PathBuf>,
-        preimage_dir: Option<PathBuf>,
-    ) -> anyhow::Result<Self> {
-        Self::from_core(OverlayCore::new_with_exclusions_and_preimages(
-            lowers,
-            upper,
-            work,
-            excluded,
-            preimage_dir,
-        )?)
     }
 
     pub fn with_access_policy(
@@ -207,7 +192,7 @@ impl OverlayFs {
         }
     }
 
-    fn from_core(core: OverlayCore) -> anyhow::Result<Self> {
+    pub(crate) fn from_core(core: OverlayCore) -> anyhow::Result<Self> {
         let mut root_paths = BTreeSet::new();
         root_paths.insert(PathBuf::new());
         let mut nodes = HashMap::new();

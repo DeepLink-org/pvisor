@@ -206,7 +206,18 @@ impl RunArgs {
         if self.spec.is_some() {
             return Ok(false);
         }
-        let config = load_run_config(self, personal_config_root().as_deref(), false)?;
+        let mut config = load_run_config(self, personal_config_root().as_deref(), false)?;
+        config
+            .load_policy_defaults(&std::env::current_dir()?, personal_config_root().as_deref())?;
+        if config
+            .policies
+            .filesystem(&Default::default())
+            .rules()
+            .iter()
+            .any(|(_, _, action)| *action == "ask")
+        {
+            return Ok(true);
+        }
         Ok(config.overlayfs.as_ref().is_some_and(|filesystem| {
             !filesystem.access_policy.ask().is_empty()
                 || filesystem
@@ -912,6 +923,7 @@ async fn run_prepared_spec(args: RunArgs) -> anyhow::Result<i32> {
             .network(NetworkDriverConfig::new(
                 config.overlaynet.mode,
                 NetworkConfig {
+                    capability: None,
                     mode: match config.overlaynet.policy {
                         OverlayNetPolicy::Public => NetworkMode::Public,
                         OverlayNetPolicy::Deny => NetworkMode::NoNetwork,
@@ -1286,6 +1298,26 @@ async fn execute_config(
         .unwrap_or(std::env::current_dir()?);
     let workspace = resolve_workspace(&workspace)?;
     let storage = resolve_run_storage(&select_run_storage(&config, &workspace, &run_id)?)?;
+    config.load_policy_defaults(&workspace, personal_config_root().as_deref())?;
+    if config
+        .policies
+        .scopes()
+        .iter()
+        .any(|(_, layer)| layer.filesystem.is_some())
+        && config.overlayfs.is_none()
+    {
+        config.overlayfs = Some(Default::default());
+    }
+    if config
+        .policies
+        .scopes()
+        .iter()
+        .any(|(_, layer)| layer.network.is_some())
+        && config.run.executor != RunExecutorKind::Vm
+        && config.overlaynet.mode == OverlayNetMode::Auto
+    {
+        config.overlaynet.mode = OverlayNetMode::Proxy;
+    }
     let mut overlay = resolve_overlay(&config, &workspace, &storage)?;
     #[cfg(unix)]
     super::tui::announce_stage(
@@ -1421,6 +1453,7 @@ async fn execute_config(
         .network(NetworkDriverConfig::new(
             config.overlaynet.mode,
             NetworkConfig {
+                capability: None,
                 mode: match config.overlaynet.policy {
                     OverlayNetPolicy::Public => NetworkMode::Public,
                     OverlayNetPolicy::Deny => NetworkMode::NoNetwork,
@@ -1451,6 +1484,7 @@ async fn execute_config(
         .split_first()
         .context("missing Agent command; pass it after `--` or set run.command")?;
     let mut spec = RunSpec::process(run_id.as_str(), &config.run.agent, program);
+    spec.policies = config.policies.clone();
     spec.capabilities.filesystem = resolve_filesystem_grants(&config, &workspace, &storage)?;
     if let Some(path) = &config.gateway.zcode_builtin_config {
         spec.metadata.insert(
@@ -2686,6 +2720,7 @@ fn resolve_proxy(config: &RunConfig) -> anyhow::Result<Option<ProxyConfig>> {
         return Ok(None);
     }
     let network = NetworkConfig {
+        capability: None,
         mode: match config.overlaynet.policy {
             OverlayNetPolicy::Public => NetworkMode::Public,
             OverlayNetPolicy::Deny => NetworkMode::NoNetwork,

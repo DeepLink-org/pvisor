@@ -16,7 +16,7 @@ pub const WHITEOUT_PREFIX: &str = ".wh.";
 pub const OPAQUE_NAME: &str = ".wh..wh..opq";
 const TEMP_PREFIX: &str = ".wh..persisting-copyup-";
 const PREIMAGE_COMPLETE_MARKER: &str = "complete-v1";
-const OPAQUE_XATTRS: [&str; 3] = [
+pub(crate) const OPAQUE_XATTRS: [&str; 3] = [
     "trusted.overlay.opaque",
     "user.overlay.opaque",
     "user.fuseoverlayfs.opaque",
@@ -30,9 +30,36 @@ pub struct Resolved {
     pub is_upper: bool,
 }
 
+/// Validated lower ordering and its explicit apply baseline.
+#[derive(Debug)]
+pub struct OverlayLayout {
+    lowers: Vec<PathBuf>,
+    target: PathBuf,
+}
+impl OverlayLayout {
+    pub fn new(lowers: Vec<PathBuf>, target: PathBuf) -> io::Result<Self> {
+        let last = lowers.last().ok_or_else(|| error(libc::EINVAL))?;
+        if fs::canonicalize(last)? != fs::canonicalize(&target)? {
+            return Err(error(libc::EINVAL));
+        }
+        for lower in &lowers {
+            if !lower.is_dir() {
+                return Err(error(libc::ENOTDIR));
+            }
+        }
+        Ok(Self { lowers, target })
+    }
+    pub fn lowers(&self) -> &[PathBuf] {
+        &self.lowers
+    }
+    pub fn target(&self) -> &Path {
+        &self.target
+    }
+}
+
 #[derive(Debug)]
 pub struct OverlayCore {
-    lowers: Vec<PathBuf>,
+    layout: OverlayLayout,
     upper: PathBuf,
     work: Option<PathBuf>,
     excluded: BTreeSet<PathBuf>,
@@ -211,14 +238,19 @@ impl OverlayCore {
         excluded: Vec<PathBuf>,
         preimage_dir: Option<PathBuf>,
     ) -> io::Result<Self> {
-        if lowers.is_empty() {
-            return Err(error(libc::EINVAL));
-        }
-        for lower in &lowers {
-            if !lower.is_dir() {
-                return Err(error(libc::ENOTDIR));
-            }
-        }
+        let target = lowers.last().ok_or_else(|| error(libc::EINVAL))?.clone();
+        Self::new_for_target(lowers, target, upper, work, excluded, preimage_dir)
+    }
+
+    pub fn new_for_target(
+        lowers: Vec<PathBuf>,
+        target: PathBuf,
+        upper: PathBuf,
+        work: Option<PathBuf>,
+        excluded: Vec<PathBuf>,
+        preimage_dir: Option<PathBuf>,
+    ) -> io::Result<Self> {
+        let layout = OverlayLayout::new(lowers, target)?;
         fs::create_dir_all(&upper)?;
         let upper_was_empty = fs::read_dir(&upper)?.next().is_none();
         if let Some(work) = &work {
@@ -270,7 +302,7 @@ impl OverlayCore {
             }
         }
         let core = Self {
-            lowers,
+            layout,
             upper,
             work,
             excluded,
@@ -280,7 +312,7 @@ impl OverlayCore {
             preimage_lock: Mutex::new(()),
         };
         if fs::read_dir(&core.upper)?.next().is_none()
-            && let Some(root) = core.lowers.first()
+            && let Some(root) = core.layout.lowers.first()
         {
             let metadata = fs::symlink_metadata(root)?;
             core.copy_metadata(root, &core.upper, &metadata)?;
@@ -306,9 +338,7 @@ impl OverlayCore {
             Err(error) if error.kind() == io::ErrorKind::NotFound => {}
             Err(error) => return Err(error),
         }
-        // The last lower is the apply destination's baseline; composed layers
-        // above it affect the visible view, not the target conflict preimage.
-        let target = self.lowers.last().ok_or_else(|| error(libc::EINVAL))?;
+        let target = self.layout.target();
         let preimage = PathPreimage {
             path: path_bytes.to_vec(),
             state: fingerprint_at(target, rel)?,
@@ -391,7 +421,7 @@ impl OverlayCore {
         self.require_visible(old)?;
         self.require_visible(new)?;
         let mut names = BTreeSet::new();
-        for root in std::iter::once(&self.upper).chain(&self.lowers) {
+        for root in std::iter::once(&self.upper).chain(&self.layout.lowers) {
             if old.ancestors().skip(1).any(|parent| {
                 fs::symlink_metadata(root.join(parent)).is_ok_and(|meta| !meta.is_dir())
             }) {
@@ -495,7 +525,7 @@ impl OverlayCore {
         if self.is_whiteouted(parent, name) || self.is_opaque(parent) {
             return None;
         }
-        self.lowers.iter().find_map(|lower| {
+        self.layout.lowers.iter().find_map(|lower| {
             let path = lower.join(rel);
             exists(&path).then_some(Resolved {
                 path,
@@ -542,7 +572,10 @@ impl OverlayCore {
         if self.require_visible(rel).is_err() {
             return false;
         }
-        self.lowers.iter().any(|lower| exists(&lower.join(rel)))
+        self.layout
+            .lowers
+            .iter()
+            .any(|lower| exists(&lower.join(rel)))
     }
 
     fn copy_metadata(
@@ -705,7 +738,7 @@ impl OverlayCore {
         }
         let mut names = BTreeSet::new();
         if !self.is_opaque(rel) {
-            for lower in &self.lowers {
+            for lower in &self.layout.lowers {
                 let directory = lower.join(rel);
                 let Ok(entries) = fs::read_dir(directory) else {
                     continue;
@@ -1126,6 +1159,38 @@ impl OverlayCore {
 
 #[cfg(test)]
 mod tests {
+    #[test]
+    fn layout_rejects_a_different_apply_baseline_before_creating_upper() {
+        let directory = tempfile::tempdir().unwrap();
+        let base = directory.path().join("base");
+        let layer = directory.path().join("layer");
+        std::fs::create_dir(&base).unwrap();
+        std::fs::create_dir(&layer).unwrap();
+        let upper = directory.path().join("upper");
+        assert!(
+            super::OverlayCore::new_for_target(
+                vec![layer.clone(), base.clone()],
+                layer,
+                upper.clone(),
+                None,
+                Vec::new(),
+                None
+            )
+            .is_err()
+        );
+        assert!(!upper.exists());
+        assert!(
+            super::OverlayCore::new_for_target(
+                vec![base.clone()],
+                base,
+                upper,
+                None,
+                Vec::new(),
+                None
+            )
+            .is_ok()
+        );
+    }
 
     #[test]
     fn composed_lower_preimage_tracks_apply_target_not_visible_layer() {

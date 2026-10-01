@@ -6,24 +6,21 @@
 use crate::TrajectoryEventSink;
 use crate::config::{GatewayDriverConfig, NetworkDriverConfig, PVisorConfig};
 use crate::executor::process::ProcessExecutor;
-use crate::executor::{AttemptContext, RunExecutor};
+use crate::executor::{ExecutorSession, RunExecutor};
 use crate::runtime::event::{EventSink, NoopEventSink, RunEventPublisher};
 use crate::runtime::{
-    AttemptTeardown, ImplantPlan, OverlayHint, RuntimeCapabilities, RuntimeSupervisor,
-    RuntimeSupervisorBuilder,
+    ImplantPlan, OverlayHint, RuntimeCapabilities, RuntimeSupervisor, RuntimeSupervisorBuilder,
 };
-use crate::util::unix_now_ms;
-use crate::{AGENTCTL_VERSION, AgentCtlServer};
+
 use persisting_control::ControlController;
 use persisting_control::trace::Event;
 #[cfg(test)]
 use persisting_control::trace::Receipt;
 use persisting_control::{
-    AttemptId, AttemptInfo, CapabilityDimension, CapabilityEnforcementPlan, EnforcementPlanLevel,
-    ExecutorPlan, IsolationKind, NetworkCapability, PolicyMode, RUNTIME_SCHEMA_VERSION, RunFailure,
-    RunFailureKind, RunInvocation, RunResult, RunSpec, RunState, RunStatus,
+    AttemptId, CapabilityDimension, CapabilityEnforcementPlan, EnforcementPlanLevel, ExecutorPlan,
+    IsolationKind, NetworkCapability, PolicyMode, RUNTIME_SCHEMA_VERSION, RunResult, RunSpec,
+    RunStatus,
 };
-use serde_json::json;
 use std::sync::Arc;
 use tokio::sync::{broadcast, watch};
 use tokio::task::JoinHandle;
@@ -94,14 +91,14 @@ impl RunCancellation {
 
 /// Handle for one in-flight Run: status, cancel, wait, event subscribe.
 pub struct RunHandle {
-    run_id: persisting_control::RunId,
-    attempt_id: AttemptId,
-    status: watch::Receiver<RunStatus>,
-    cancellation: CancellationToken,
-    events: RunEventPublisher,
-    agentctl: crate::AgentCtlControl,
-    checkpoint_record: Option<crate::runtime::RunRecord>,
-    join: JoinHandle<RunResult>,
+    pub(crate) run_id: persisting_control::RunId,
+    pub(crate) attempt_id: AttemptId,
+    pub(crate) status: watch::Receiver<RunStatus>,
+    pub(crate) cancellation: CancellationToken,
+    pub(crate) events: RunEventPublisher,
+    pub(crate) agentctl: crate::AgentCtlControl,
+    pub(crate) checkpoint_record: Option<crate::runtime::RunRecord>,
+    pub(crate) join: JoinHandle<RunResult>,
 }
 
 impl RunHandle {
@@ -281,12 +278,13 @@ pub struct PVisor {
     runtime: RuntimeSupervisor,
 }
 
-struct ResolvedRun {
-    spec: RunSpec,
-    executor: Arc<dyn RunExecutor>,
-    descriptor: ExecutorPlan,
-    vm_network_executor: bool,
-    plan: persisting_control::ir::run::RunPlan,
+pub(crate) struct ResolvedRun {
+    pub(crate) spec: RunSpec,
+    pub(crate) executor: Arc<dyn RunExecutor>,
+    pub(crate) descriptor: ExecutorPlan,
+    pub(crate) vm_network_executor: bool,
+    pub(crate) plan: persisting_control::ir::run::RunPlan,
+    pub(crate) network_policy: persisting_control::NetworkPolicy,
 }
 
 impl Default for PVisor {
@@ -344,7 +342,42 @@ impl PVisor {
                 descriptor.name
             )));
         }
+        let has_file_policy = spec
+            .policies
+            .scopes()
+            .iter()
+            .any(|(_, layer)| layer.filesystem.is_some());
+        let overlay = self.runtime.overlay_hint();
+        if has_file_policy
+            && overlay.lower_dirs.is_empty()
+            && overlay.stage_dir.is_none()
+            && overlay.upper_dir.is_none()
+            && overlay.merged_dir.is_none()
+        {
+            return Err(PVisorError::InvalidSpec(
+                "Session file policy requires a configured OverlayFS view".into(),
+            ));
+        }
+        if spec
+            .policies
+            .scopes()
+            .iter()
+            .any(|(_, layer)| layer.network.is_some())
+            && !vm_executor
+            && !self.runtime.proxy_network_is_configured()
+        {
+            return Err(PVisorError::InvalidSpec(
+                "Session network policy requires a configured network driver".into(),
+            ));
+        }
         self.runtime.apply_network_capability(&mut spec);
+        spec.capabilities.network = spec.policies.network(spec.capabilities.network.clone());
+        let network_policy =
+            persisting_control::NetworkPolicy::compile(&persisting_control::NetworkConfig {
+                capability: Some(spec.capabilities.network.clone()),
+                ..Default::default()
+            })
+            .map_err(PVisorError::Prepare)?;
         // Runtime preparation supplies this capability from the bound listener.
         spec.metadata
             .remove(crate::executor::sandbox::SANDBOX_PROXY_KEY);
@@ -421,385 +454,18 @@ impl PVisor {
             descriptor,
             vm_network_executor,
             plan: run_plan,
+            network_policy,
         })
     }
 
     /// Start one Run: resolve IR → prepare controls → execute → teardown.
     pub async fn run(&self, spec: RunSpec) -> Result<RunHandle, PVisorError> {
-        let ResolvedRun {
-            mut spec,
-            executor,
-            descriptor,
-            vm_network_executor,
-            plan: run_plan,
-        } = self.resolve_run(spec)?;
-        let attempt_id = AttemptId::new(format!("attempt-{}", uuid::Uuid::new_v4()));
-        let cancellation = CancellationToken::new();
-        // AgentCtl only needs the Run and Attempt IDs. Bind its socket while
-        // the runtime prepares independent Gateway/OverlayFS drivers.
-        let agentctl_start = {
-            let run_id = spec.run_id.clone();
-            let attempt_id = attempt_id.clone();
-            tokio::task::spawn_blocking(move || AgentCtlServer::start(&run_id, &attempt_id))
-        };
-        let prepared = self
-            .runtime
-            .prepare(&mut spec, &[], vm_network_executor, &attempt_id);
-        let mut session = match prepared {
-            Ok(session) => session,
-            Err(error) => {
-                // Do not leave a detached Run-scoped listener behind on failure.
-                let _ = agentctl_start.await;
-                return Err(PVisorError::Prepare(error));
-            }
-        };
-        let attachments = session
-            .as_ref()
-            .map(|session| session.attachments())
-            .unwrap_or_default();
-        let checkpoint_record = session
-            .as_ref()
-            .and_then(|session| session.checkpoint_record());
-        let safe_profile_requested = spec
-            .metadata
-            .get("pvisor.safe")
-            .and_then(serde_json::Value::as_bool)
-            .unwrap_or(false);
-        let agentctl_server = match agentctl_start
-            .await
-            .map_err(anyhow::Error::from)
-            .and_then(|result| result)
-        {
-            Ok(server) => server,
-            Err(error) => {
-                if let Some(session) = session.take() {
-                    let snapshot = empty_agentctl_snapshot(&spec.run_id, &attempt_id);
-                    if let Err(cleanup_error) = session.abort_startup(
-                        &attempt_id,
-                        spec.lease_epoch,
-                        snapshot,
-                        safe_profile_requested,
-                        format!("AgentCtl setup failed: {error:#}"),
-                    ) {
-                        tracing::warn!(%cleanup_error, "persist pVisor startup failure");
-                    }
-                }
-                return Err(PVisorError::AgentCtl(error));
-            }
-        };
-        let agentctl = agentctl_server.control();
-        let bundle_agentctl = agentctl.clone();
-        let RunInvocation::Process(process) = &mut spec.invocation;
-        process.env.extend(agentctl_server.environment());
-        spec.metadata.insert(
-            "pvisor.agentctl".into(),
-            json!({
-                "version": AGENTCTL_VERSION,
-                "transport": "unix",
-                "endpoint": agentctl.endpoint(),
-            }),
-        );
-
-        let run_id = spec.run_id.clone();
-        let now = unix_now_ms();
-        let initial = RunStatus {
-            run_id: run_id.clone(),
-            state: RunState::Created,
-            attempt: AttemptInfo {
-                attempt_id: attempt_id.clone(),
-                lease_epoch: spec.lease_epoch,
-                number: 0,
-                executor: descriptor.clone(),
-                started_at_unix_ms: None,
-                finished_at_unix_ms: None,
-            },
-            updated_at_unix_ms: now,
-            message: None,
-        };
-        let (status_tx, status_rx) = watch::channel(initial);
-        let (live_tx, _) = broadcast::channel(256);
-        let events = RunEventPublisher::new(
-            run_id.clone(),
-            attempt_id.clone(),
-            "persisting-pvisor",
+        ExecutorSession::start(
+            &self.runtime,
             Arc::clone(&self.event_sink),
-            live_tx,
-        );
-        let creation = async {
-            events
-                .publish(
-                    "run.created",
-                    "runtime",
-                    json!({
-                        "agent": spec.agent,
-                        "task_id": spec.task_id,
-                        "executor": descriptor,
-                        "policy_mode": spec.runtime.policy_mode,
-                        "capture_session": session.as_ref().map(|session| session.root_session()),
-                        "agentctl_version": AGENTCTL_VERSION,
-                    }),
-                )
-                .await?;
-            events.begin_execution(&run_plan, &descriptor.name).await?;
-            Ok::<_, anyhow::Error>(())
-        }
-        .await;
-        if let Err(error) = creation {
-            if let Some(session) = session.take()
-                && let Err(cleanup_error) = session.abort_startup(
-                    &attempt_id,
-                    spec.lease_epoch,
-                    agentctl.snapshot(),
-                    safe_profile_requested,
-                    format!("event sink rejected run creation: {error:#}"),
-                )
-            {
-                tracing::warn!(%cleanup_error, "persist pVisor startup failure");
-            }
-            return Err(PVisorError::EventSink(error));
-        }
-
-        let context = AttemptContext::new(
-            Arc::new(spec),
-            attempt_id.clone(),
-            cancellation.clone(),
-            status_tx,
-            events.clone(),
-            agentctl.clone(),
-            attachments,
-        );
-        let join = tokio::spawn(async move {
-            // Keep the Run-scoped endpoint alive until executor finalization finishes.
-            let _agentctl_server = agentctl_server;
-            let mut result = executor.execute(context.clone()).await;
-            // The owning pVisor, not a pluggable executor, is authoritative for
-            // the scheduling generation attached to this Attempt.
-            result.lease_epoch = context.spec().lease_epoch;
-            if context.spec().runtime.policy_mode == PolicyMode::Enforce {
-                let missing = result.executor_observations.enforcement.missing_dimensions(
-                    &context.spec().capabilities,
-                    &context.spec().runtime.resource_limits,
-                );
-                if !missing.is_empty() {
-                    fail_finalization(
-                        &mut result,
-                        format!(
-                            "required controls lack executor observations: {}",
-                            missing
-                                .iter()
-                                .map(ToString::to_string)
-                                .collect::<Vec<_>>()
-                                .join(", "),
-                        ),
-                    );
-                }
-            }
-            let mut teardown = session.map(|session| session.teardown(result.exit_code));
-            if let Some(error) = teardown
-                .as_ref()
-                .and_then(|teardown| teardown.error_message())
-            {
-                fail_finalization(&mut result, format!("attempt teardown failed: {error}"));
-            }
-            if let Some(teardown) = teardown.as_mut()
-                && let Err(error) = teardown.commit_state(result.state)
-            {
-                fail_finalization(
-                    &mut result,
-                    format!("commit local Run record failed: {error:#}"),
-                );
-                if let Err(error) = teardown.commit_state(RunState::Failed) {
-                    result.warnings.push(format!(
-                        "commit failed Run record after finalization error: {error:#}"
-                    ));
-                }
-            }
-            if let Some(teardown) = teardown.as_mut() {
-                let bundle_result = crate::RunBundle::capture(
-                    teardown.run_record(),
-                    &result,
-                    bundle_agentctl.snapshot(),
-                    safe_profile_requested,
-                )
-                .and_then(|bundle| bundle.write(&teardown.run_record().stage_dir()));
-                if let Err(error) = bundle_result {
-                    fail_finalization(
-                        &mut result,
-                        format!("write durable Run Bundle failed: {error:#}"),
-                    );
-                    persist_failed_local_state(
-                        teardown,
-                        &mut result,
-                        &bundle_agentctl,
-                        safe_profile_requested,
-                        false,
-                    );
-                }
-            }
-            let run_observation = match crate::runtime::plan::observe(
-                &run_plan,
-                &result,
-                teardown.as_ref().and_then(|teardown| {
-                    teardown.run_record().network_interception_metrics.as_ref()
-                }),
-                teardown
-                    .as_ref()
-                    .and_then(|teardown| teardown.run_record().filesystem_observation.as_ref()),
-            ) {
-                Ok(observation) => observation,
-                Err(error) => {
-                    let known_effects = json!({
-                        "result": result,
-                        "filesystem": teardown.as_ref().and_then(|t| t.run_record().filesystem_observation.as_ref()),
-                    });
-                    fail_finalization(&mut result, format!("invalid Run observation: {error:#}"));
-                    if let Some(teardown) = teardown.as_mut() {
-                        persist_failed_local_state(
-                            teardown,
-                            &mut result,
-                            &bundle_agentctl,
-                            safe_profile_requested,
-                            false,
-                        );
-                    }
-                    persisting_control::ir::run::RunObservation {
-                        outcome: persisting_control::ir::Outcome::Error {
-                            failure: persisting_control::ir::Failure::Unknown {
-                                reason: error.to_string(),
-                                known_effects,
-                            },
-                        },
-                        rules: run_plan
-                            .rules
-                            .iter()
-                            .map(|rule| (rule.id.clone(), Default::default()))
-                            .collect(),
-                        filesystem: None,
-                    }
-                }
-            };
-            let kind = match result.state {
-                RunState::Completed => "run.completed",
-                RunState::Cancelled => "run.cancelled",
-                _ => "run.failed",
-            };
-            if let Some(filesystem) = &run_observation.filesystem
-                && let Err(error) = context
-                    .events()
-                    .publish("filesystem.observed", "filesystem", json!(filesystem))
-                    .await
-            {
-                result
-                    .warnings
-                    .push(format!("filesystem observation audit gap: {error:#}"));
-            }
-            if let Some(network) = teardown
-                .as_ref()
-                .and_then(|t| t.run_record().network_interception_metrics.as_ref())
-                && let Err(error) = context
-                    .events()
-                    .publish("network.observed", "network", json!(network))
-                    .await
-            {
-                result
-                    .warnings
-                    .push(format!("network observation audit gap: {error:#}"));
-            }
-            if let Err(error) = context
-                .events()
-                .publish_fact(persisting_control::trace::Fact::Completed {
-                    expression: run_plan.expression.clone(),
-                    outcome: run_observation.outcome.clone(),
-                    origin: result.executor_observations.origin,
-                })
-                .await
-            {
-                result
-                    .warnings
-                    .push(format!("execution completion audit gap: {error:#}"));
-            }
-            if let Err(error) = context
-                .events()
-                .publish(
-                    kind,
-                    "runtime",
-                    terminal_payload(&result, &run_plan, &run_observation),
-                )
-                .await
-            {
-                let append_error_kind = context.events().classify_append_error(&error);
-                fail_finalization(
-                    &mut result,
-                    format!("terminal event sink failed: {error:#}"),
-                );
-                if append_error_kind == crate::EventAppendErrorKind::Unknown {
-                    result.warnings.push(
-                        "terminal event append outcome is unknown; a replacement terminal event was suppressed"
-                            .into(),
-                    );
-                }
-                if let Some(teardown) = teardown.as_mut() {
-                    persist_failed_local_state(
-                        teardown,
-                        &mut result,
-                        &bundle_agentctl,
-                        safe_profile_requested,
-                        true,
-                    );
-                }
-                if append_error_kind == crate::EventAppendErrorKind::Rejected
-                    && let Err(error) = context
-                        .events()
-                        .publish(
-                            "run.failed",
-                            "runtime",
-                            terminal_payload(&result, &run_plan, &run_observation),
-                        )
-                        .await
-                {
-                    result.warnings.push(format!(
-                        "publish finalization failure event failed: {error:#}"
-                    ));
-                    if let Some(teardown) = teardown.as_mut() {
-                        persist_failed_local_state(
-                            teardown,
-                            &mut result,
-                            &bundle_agentctl,
-                            safe_profile_requested,
-                            true,
-                        );
-                    }
-                }
-            }
-            context.finish(
-                result.state,
-                result.failure.as_ref().map(|f| f.message.clone()),
-            );
-            result
-        });
-
-        Ok(RunHandle {
-            run_id,
-            attempt_id,
-            status: status_rx,
-            cancellation,
-            events,
-            agentctl,
-            checkpoint_record,
-            join,
-        })
-    }
-}
-
-fn empty_agentctl_snapshot(
-    run_id: &persisting_control::RunId,
-    attempt_id: &AttemptId,
-) -> crate::AgentCtlSnapshot {
-    crate::AgentCtlSnapshot {
-        run_id: run_id.as_str().to_owned(),
-        attempt_id: attempt_id.as_str().to_owned(),
-        directive: crate::AgentDirective::Continue,
-        clients: Vec::new(),
+            self.resolve_run(spec)?,
+        )
+        .await
     }
 }
 
@@ -872,68 +538,6 @@ fn effective_capability_plan(
     plan
 }
 
-fn terminal_payload(
-    result: &RunResult,
-    _plan: &persisting_control::ir::run::RunPlan,
-    observation: &persisting_control::ir::run::RunObservation,
-) -> serde_json::Value {
-    json!({
-        "state": result.state,
-        "origin": result.executor_observations.origin,
-        "lease_epoch": result.lease_epoch,
-        "exit_code": result.exit_code,
-        "failure": result.failure,
-        "started_at_unix_ms": result.started_at_unix_ms,
-        "finished_at_unix_ms": result.finished_at_unix_ms,
-        "rule_observations": observation.rules,
-    })
-}
-
-fn persist_failed_local_state(
-    teardown: &mut AttemptTeardown,
-    result: &mut RunResult,
-    agentctl: &crate::AgentCtlControl,
-    safe_profile_requested: bool,
-    invalidate_stale_bundle: bool,
-) {
-    if let Err(error) = teardown.commit_state(RunState::Failed) {
-        result
-            .warnings
-            .push(format!("commit failed Run record: {error:#}"));
-    }
-    let bundle_result = crate::RunBundle::capture(
-        teardown.run_record(),
-        result,
-        agentctl.snapshot(),
-        safe_profile_requested,
-    )
-    .and_then(|bundle| bundle.write(&teardown.run_record().stage_dir()));
-    if let Err(error) = bundle_result {
-        result
-            .warnings
-            .push(format!("persist failed Run Bundle: {error:#}"));
-        if invalidate_stale_bundle
-            && let Err(error) = crate::RunBundle::invalidate(&teardown.run_record().stage_dir())
-        {
-            result
-                .warnings
-                .push(format!("invalidate stale Run Bundle: {error:#}"));
-        }
-    }
-}
-
-fn fail_finalization(result: &mut RunResult, message: String) {
-    result.warnings.push(message.clone());
-    result.state = RunState::Failed;
-    result.executor_observations.origin = persisting_control::trace::Origin::Runtime;
-    result.finished_at_unix_ms = unix_now_ms();
-    result.failure = Some(RunFailure {
-        kind: RunFailureKind::Infrastructure,
-        message,
-        retryable: true,
-    });
-}
-
 fn validate_spec(spec: &RunSpec) -> Result<(), PVisorError> {
     if spec.schema_version != RUNTIME_SCHEMA_VERSION {
         return Err(PVisorError::InvalidSpec(format!(
@@ -996,7 +600,7 @@ mod tests {
     use crate::{EventSink, MemoryEventSink};
     use async_trait::async_trait;
     use persisting_control::{
-        ExecutorKind, NetworkCapability, RunFailureKind, RunInvocation, StdioMode,
+        ExecutorKind, NetworkCapability, RunFailureKind, RunInvocation, RunState, StdioMode,
     };
     use std::sync::Mutex;
 
@@ -1138,6 +742,42 @@ mod tests {
         let _lease = crate::runtime::RunLease::acquire(&storage).unwrap();
     }
 
+    struct InconsistentExecutor;
+    #[async_trait]
+    impl RunExecutor for InconsistentExecutor {
+        fn descriptor(&self) -> ExecutorPlan {
+            ProcessExecutor::default().descriptor()
+        }
+        fn supports(&self, invocation: &RunInvocation) -> bool {
+            ProcessExecutor::default().supports(invocation)
+        }
+        async fn execute(&self, context: &ExecutorSession) -> crate::ExecutorOutput {
+            let mut output = ProcessExecutor::default().execute(context).await;
+            // Backends cannot publish a terminal state or declare a nonzero exit successful.
+            context.transition(RunState::Completed, None).await;
+            assert!(!context.status().state.is_terminal());
+            output.state = RunState::Completed;
+            output.exit_code = Some(7);
+            output.failure = None;
+            output
+        }
+    }
+    #[tokio::test]
+    async fn session_normalizes_exit_before_terminal_and_bundle_commit() {
+        let storage = tempfile::tempdir().unwrap();
+        let runtime = PVisor::builder()
+            .storage(storage.path())
+            .executors(vec![Arc::new(InconsistentExecutor)])
+            .build();
+        let spec = RunSpec::process("session-outcome", "agent", "/bin/true");
+        let result = runtime.run(spec).await.unwrap().wait().await.unwrap();
+        assert_eq!(result.state, RunState::Failed);
+        assert_eq!(result.exit_code, Some(7));
+        assert_eq!(result.failure.unwrap().kind, RunFailureKind::ProcessExit);
+        let bundle = crate::RunBundle::read(storage.path()).unwrap();
+        assert_eq!(bundle.run.state, RunState::Failed);
+    }
+
     struct PlannedNetworkExecutor;
     #[async_trait]
     impl RunExecutor for PlannedNetworkExecutor {
@@ -1151,9 +791,40 @@ mod tests {
         fn supports(&self, invocation: &RunInvocation) -> bool {
             ProcessExecutor::default().supports(invocation)
         }
-        async fn execute(&self, context: AttemptContext) -> RunResult {
+        async fn execute(&self, context: &ExecutorSession) -> crate::ExecutorOutput {
             ProcessExecutor::default().execute(context).await
         }
+    }
+
+    #[tokio::test]
+    async fn prestart_cancellation_skips_workload_and_keeps_unknown_evidence() {
+        let storage = tempfile::tempdir().unwrap();
+        let marker = storage.path().join("must-not-start");
+        let runtime = PVisor::builder()
+            .storage(storage.path())
+            .executors(vec![Arc::new(PlannedNetworkExecutor)])
+            .build();
+        let mut spec = RunSpec::process("cancel-session", "agent", "/bin/sh");
+        spec.runtime.policy_mode = PolicyMode::Enforce;
+        spec.capabilities.network = NetworkCapability::Deny;
+        spec.capabilities.allow_subprocess = true;
+        let RunInvocation::Process(process) = &mut spec.invocation;
+        process.args = vec!["-c".into(), format!("touch {}", marker.display())];
+        let handle = runtime.run(spec).await.unwrap();
+        handle.cancel();
+        let result = handle.wait().await.unwrap();
+        assert_eq!(result.state, RunState::Cancelled);
+        assert!(!marker.exists());
+        assert!(
+            !result
+                .executor_observations
+                .enforcement
+                .is_enforced(CapabilityDimension::Network)
+        );
+        assert_eq!(
+            crate::RunBundle::read(storage.path()).unwrap().run.state,
+            RunState::Cancelled
+        );
     }
 
     #[cfg(unix)]
