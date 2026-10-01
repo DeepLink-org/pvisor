@@ -207,6 +207,10 @@
   text-align: left;
 }
 
+.pc-home-cards.pc-cols-2 {
+  grid-template-columns: repeat(2, minmax(0, 1fr));
+}
+
 .pc-home-cards article,
 .pc-home-mode {
   padding: 22px;
@@ -307,6 +311,7 @@
 
 @media (max-width: 980px) {
   .pc-home-hero-grid, .pc-home-split, .pc-home-cards, .pc-home-mode-grid { grid-template-columns: minmax(0, 1fr); }
+  .pc-home-cards.pc-cols-2 { grid-template-columns: minmax(0, 1fr); }
   .pc-home-shot.secondary { position: static; width: 100%; margin-top: 14px; transform: none; }
 }
 

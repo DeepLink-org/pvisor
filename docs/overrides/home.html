@@ -11,9 +11,10 @@
     <div class="pc-home-hero-grid">
       <div class="pc-home-copy">
         <p class="pc-home-kicker">PolicyVisor · pVisor</p>
-        <h1>{% if zh %}让自主 agent 的执行可以规模化。{% else %}Scaling autonomous agent execution.{% endif %}</h1>
-        <p>{% if zh %}瓶颈不是算力，而是信任。pVisor 让执行边界可观测、记录可核对，从而抬高你愿意委托出去的自主。{% else %}The bottleneck is trust, not compute. pVisor makes execution boundaries observable and records checkable, raising the autonomy you are willing to delegate.{% endif %}</p>
-        <p>{% if zh %}支持宿主机、容器与 VM；每次 Run 的实际边界以能力证据为准，不由声明推定。{% else %}Host, container, and VM executors. Each Run's actual boundary is its capability evidence, not its declaration.{% endif %}</p>
+        <h1>{% if zh %}让自主 Agent 的执行可以规模化{% else %}Scaling autonomous agent execution{% endif %}</h1>
+        <p>{% if zh %}限制 Agent 自主性的不是算力，而是人的监督带宽：今天每一单位 Agent 工作，都要付出差不多同等的人工注意力。{% else %}The limit on agent autonomy is not compute but human supervision: today every unit of agent work costs roughly the same unit of human attention.{% endif %}</p>
+        <p>{% if zh %}pVisor 让每次执行都有界、可逆、可查，使监督可以被摊薄、抽样，直到交给机器——委托的规模由策略和证据决定，而不是由你盯着的时间。{% else %}pVisor makes each execution bounded, recoverable, and checkable, so supervision can be spread out, sampled, and eventually automated—scale is set by policy and evidence, not by the time you spend watching.{% endif %}</p>
+        <p>{% if zh %}今天：在本机放手运行 Claude Code、Codex 或任意命令，结束后审查改动和证据，只合入你要的部分。{% else %}Today: run Claude Code, Codex, or any command unattended on your machine, then review the changes and evidence and keep only what you want.{% endif %}</p>
         <div class="pc-home-actions">
           <a class="pc-home-btn primary" href="{{ prefix }}start/first-run/">{% if zh %}开始第一次运行{% else %}Start your first Run{% endif %}</a>
           <a class="pc-home-btn" href="{{ prefix }}start/what-is-pvisor/">{% if zh %}理解 PolicyVisor{% else %}Explore the model{% endif %}</a>
@@ -30,30 +31,30 @@
     </div>
   </section>
   <section class="pc-home-value">
-    <p class="pc-home-badge">{% if zh %}规模化的三根支柱{% else %}Three pillars for scale{% endif %}</p>
-    <h2>{% if zh %}边界、证据、兜底{% else %}Boundaries, evidence, and a fallback{% endif %}</h2>
-    <p class="pc-home-lede">{% if zh %}自主能扩到多大，取决于每一份信任有多可靠。pVisor 用可强制的边界建立信任，用可核对的记录证明信任，并在信任不足时提供审查兜底。{% else %}How far autonomy scales depends on how reliable each unit of trust is. pVisor establishes trust with enforceable boundaries, proves it with checkable records, and falls back to review when trust is short.{% endif %}</p>
+    <p class="pc-home-badge">{% if zh %}为什么能规模化{% else %}Why it can scale{% endif %}</p>
+    <h2>{% if zh %}有界、可逆、可查{% else %}Bounded, recoverable, checkable{% endif %}</h2>
+    <p class="pc-home-lede">{% if zh %}把监督成本与执行量脱钩，需要每次执行同时具备三种性质。{% else %}Decoupling supervision cost from execution volume takes three properties at once.{% endif %}</p>
     <div class="pc-home-cards">
-      <article><h3>{% if zh %}边界{% else %}Boundaries{% endif %}</h3><p>{% if zh %}选择执行器与能力要求，落实实际可强制的控制，并暴露不支持的缺口与降级。{% else %}Choose the executor and capability requirements. Install the controls that can be enforced, and surface the gaps and degradations that cannot.{% endif %}</p></article>
-      <article><h3>{% if zh %}证据{% else %}Evidence{% endif %}</h3><p>{% if zh %}每次 Run 产出可核对的记录：实际安装的控制、观察到的结果与警告。声明不当作证据。{% else %}Every Run produces a checkable record: the controls actually installed, the observed results, and the warnings. A declaration is not evidence.{% endif %}</p></article>
-      <article><h3>{% if zh %}兜底{% else %}Fallback{% endif %}</h3><p>{% if zh %}信任不足时，工作区先暂存、审查再应用；随信任上升，转向事后审计与更少的介入。{% else %}When trust is short, stage the workspace and review before applying. As trust grows, shift to post-hoc audit and less intervention.{% endif %}</p></article>
+      <article><h3>{% if zh %}有界{% else %}Bounded{% endif %}</h3><p>{% if zh %}出错的影响范围事先可知。选择执行器与能力要求，落实可强制的控制，并显式暴露不支持的缺口与降级。{% else %}The blast radius is known up front. Choose the executor and capability requirements, install the controls that can be enforced, and surface the gaps that cannot.{% endif %}</p></article>
+      <article><h3>{% if zh %}可逆{% else %}Recoverable{% endif %}</h3><p>{% if zh %}改动先进暂存区，应用前可选择性合入、丢弃或分叉。像审 PR 一样挑选要合入的路径。{% else %}Changes land in a stage and can be selectively merged, discarded, or forked before apply. Pick the paths to keep like a PR.{% endif %}</p></article>
+      <article><h3>{% if zh %}可查{% else %}Checkable{% endif %}</h3><p>{% if zh %}每次运行留下一份可核对的记录：实际生效的限制、被拦下的访问，以及可选的模型请求。{% else %}Every run leaves a checkable record: the limits actually in effect, the access that was blocked, and optional model requests.{% endif %}</p></article>
     </div>
   </section>
-  <section class="pc-home-split">
-    <div class="pc-home-split-copy">
-      <p class="pc-home-badge">{% if zh %}证据{% else %}Evidence{% endif %}</p>
-      <h2>{% if zh %}声明不等于证据{% else %}A declaration is not evidence.{% endif %}</h2>
-      <h3>{% if zh %}计划与实际控制{% else %}Plan versus installed control{% endif %}</h3>
-      <p>{% if zh %}准入计划说明执行器准备提供什么，最高只到 <code>Planned</code>。实际强制力只来自执行器收尾返回的观察集，安全摘要从它派生。{% else %}The admission plan states what an executor intends to provide, and never exceeds <code>Planned</code>. Actual enforcement comes only from the observations the executor returns at teardown, and the safety summary derives from them.{% endif %}</p>
-      <h3>{% if zh %}明确记录的范围{% else %}Know what the record covers{% endif %}</h3>
-      <p>{% if zh %}apply 与 drop 管理暂存文件，不能撤销外部 API 调用。观察只覆盖到达控制点的操作，<code>null</code> 表示未观测；捕获按需启用。{% else %}Apply and drop govern staged files; they cannot undo external API calls. Observations cover only operations that reach a control point, and <code>null</code> means unobserved. Capture is optional.{% endif %}</p>
+  <section class="pc-home-value">
+    <p class="pc-home-badge">{% if zh %}价值随规模展开{% else %}Value by scale{% endif %}</p>
+    <h2>{% if zh %}从一个 Agent 到一个平台{% else %}From one agent to a platform{% endif %}</h2>
+    <div class="pc-home-cards pc-cols-2">
+      <article><h3>{% if zh %}一个人 · 一个 Agent{% else %}One person, one agent{% endif %}</h3><p>{% if zh %}放手跑完，事后像审 PR 一样挑着合入。{% else %}Run it to completion, then review like a PR and keep only what you want.{% endif %}</p></article>
+      <article><h3>{% if zh %}一个人 · 多个 Agent（下一步）{% else %}One person, many agents (next){% endif %}</h3><p>{% if zh %}每个 Agent 各自隔离、各自留证据，可以批量审查，只合入需要的部分。{% else %}Each agent stays isolated and keeps its own evidence, so you can review in batches and merge only what is needed.{% endif %}</p></article>
+      <article><h3>{% if zh %}团队与平台（方向）{% else %}Team and platform (direction){% endif %}</h3><p>{% if zh %}集群化执行：跨节点调度、集中证据、事后审计，人只处理例外。{% else %}Clustered execution: cross-node scheduling, centralized evidence, post-hoc audit, humans handling only exceptions.{% endif %}</p></article>
+      <article><h3>{% if zh %}研究与训练（方向）{% else %}Research and training (direction){% endif %}</h3><p>{% if zh %}Agentic RL 与评测需要集群化、可记录、可分叉的批量执行基座，正是这三种性质的组合。{% else %}Agentic RL and evaluation need clustered, recorded, forkable batch execution—the same three properties.{% endif %}</p></article>
     </div>
   </section>
   <section class="pc-home-modes">
     <p class="pc-home-badge">{% if zh %}文档入口{% else %}Documentation{% endif %}</p>
     <h2>{% if zh %}从你当前的问题开始{% else %}Start with the question you have.{% endif %}</h2>
     <div class="pc-home-mode-grid">
-      <a class="pc-home-mode" href="{{ prefix }}start/what-is-pvisor/"><strong>{% if zh %}快速开始{% else %}Get started{% endif %}</strong><span>{% if zh %}完成运行、审查与应用的第一个闭环。{% else %}Run your first workflow through to apply.{% endif %}</span></a>
+      <a class="pc-home-mode" href="{{ prefix }}start/first-run/"><strong>{% if zh %}快速开始{% else %}Get started{% endif %}</strong><span>{% if zh %}完成运行、审查与应用的第一个闭环。{% else %}Run your first workflow through to apply.{% endif %}</span></a>
       <a class="pc-home-mode" href="{{ canonical }}concepts/"><strong>{% if zh %}概念与边界{% else %}Concepts{% endif %}</strong><span>{% if zh %}理解证据、边界与保证的范围。{% else %}Understand evidence, boundaries, and guarantees.{% endif %}</span></a>
       <a class="pc-home-mode" href="{{ canonical }}design/"><strong>{% if zh %}系统设计{% else %}System design{% endif %}</strong><span>{% if zh %}架构、放置、隔离与契约。{% else %}Architecture, placement, isolation, and contracts.{% endif %}</span></a>
       <a class="pc-home-mode" href="{{ canonical }}development/"><strong>{% if zh %}参与开发{% else %}Development{% endif %}</strong><span>{% if zh %}工程说明、示例与发布流程。{% else %}Engineering notes, examples, and releases.{% endif %}</span></a>

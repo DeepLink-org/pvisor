@@ -182,6 +182,11 @@ CLI 和 shim 注入 `/.pvisor-guest.json`，传递 argv、环境变量、cwd、�
 启动性能实测及测量范围见
 [Guest init comparison](https://github.com/DeepLink-org/pvisor/blob/main/benchmark/pvisor/README.md#guest-init-comparison-apple-silicon)。
 
+## 打包与命名
+
+Python 包、CLI 和核心 Rust crate 统一使用 `pvisor`；伴随 crate 使用 `pvisor-*`，
+环境变量使用 `PVISOR_*`。wheel 文件名形如 `pvisor-<version>-py3-none-<platform>.whl`。
+
 ## 构建环境
 
 仓库使用 `rust-toolchain.toml` 中的 stable 工具链、默认 LLVM backend 和平台 linker。

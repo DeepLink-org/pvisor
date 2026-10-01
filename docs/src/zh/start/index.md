@@ -1,6 +1,6 @@
 # 从这里开始
 
-**PolicyVisor（pVisor）**为 Agent CLI、脚本和自动化命令提供策略约束下的可审查执行。它记录实际控制并暂存工作区改动；保留 stage 后可以先审查，再应用到项目。
+**PolicyVisor（pVisor）** 让 Agent 全自动执行，文件改动由你决定去留。它运行你现有的 Agent CLI、脚本和自动化命令，并把每次运行实际生效的限制记录下来。
 
 Python 包和 CLI 统一使用 `pvisor`。
 
@@ -11,7 +11,7 @@ Python 包和 CLI 统一使用 `pvisor`。
 3. 把示例命令换成你的脚本、自动化命令或 Agent CLI。
 4. [审查并应用](../guides/review-apply.md)需要保留的改动。
 
-使用 `--safe` 或 `--stage PATH` 暂存工作区改动，退出后再审查。默认行为及 HOME、VM 根目录的区别见 [暂存与存储](../reference/cli.md#暂存与存储)，暂存能覆盖和不能覆盖的范围见[能力与证据](../concepts/capabilities-and-evidence.md)。
+使用 `--safe` 或 `--stage PATH` 暂存工作区改动，退出后再审查。默认行为及 HOME、VM 根目录的区别见 [暂存与存储](../reference/cli.md#暂存与存储)。
 
 ## 按问题查找
 

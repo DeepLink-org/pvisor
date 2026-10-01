@@ -481,15 +481,9 @@ pub fn resolve_run(selector: Option<&Path>, storage: &Path) -> anyhow::Result<Ru
         anyhow::bail!("pVisor Run not found: {}", selector.display());
     }
 
-    if let Ok(current) = std::env::current_dir() {
-        if let Ok(record) = resolve_path(&current) {
-            return Ok(record);
-        }
-        if let Ok(record) = latest_workspace_run(&current) {
-            return Ok(record);
-        }
-    }
-    latest_run(storage).or_else(|_| latest_default_run())
+    // No explicit selector means "the latest Run for this workspace", with the
+    // same safety as `last`: never silently return another workspace's Job.
+    resolve_last(storage, std::env::current_dir().ok().as_deref())
 }
 
 fn resolve_last(storage: &Path, current: Option<&Path>) -> anyhow::Result<RunRecord> {
@@ -500,6 +494,15 @@ fn resolve_last(storage: &Path, current: Option<&Path>) -> anyhow::Result<RunRec
         if let Ok(record) = latest_workspace_run(current) {
             return Ok(record);
         }
+        // Do not silently fall back to the newest Run from another workspace:
+        // `last` would then point `status`/`apply`/`drop` at an unrelated Job,
+        // and `apply` would write that Job's changes back into its own target.
+        anyhow::bail!(
+            "no pVisor Run found for the current workspace ({}); `last` resolves only \
+             Runs registered for this workspace. Pass the Job id or an explicit stage \
+             path, for example `pvisor status --review PATH`",
+            current.display()
+        );
     }
     latest_run(storage).or_else(|_| latest_default_run())
 }
@@ -808,5 +811,24 @@ mod tests {
         assert_eq!(resolve_path(&upper).unwrap().run_id, "run-test");
         assert_eq!(resolve_path(&storage).unwrap().run_id, "run-test");
         assert_eq!(resolve_last(&storage, None).unwrap().run_id, "run-test");
+    }
+
+    #[test]
+    fn last_does_not_fall_back_to_a_run_from_another_workspace() {
+        let temp = tempfile::tempdir().unwrap();
+        let storage = temp.path().join("store");
+        fs::create_dir_all(&storage).unwrap();
+        let workspace = temp.path().join("workspace");
+        fs::create_dir_all(&workspace).unwrap();
+
+        // No Run is registered for `workspace`; `last` must not silently return
+        // a Run that belongs to some other workspace.
+        let error = resolve_last(&storage, Some(&workspace))
+            .unwrap_err()
+            .to_string();
+        assert!(
+            error.contains("no pVisor Run found for the current workspace"),
+            "{error}"
+        );
     }
 }

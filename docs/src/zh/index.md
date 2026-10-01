@@ -1,9 +1,9 @@
 ---
 template: home.html
-title: 让自主 agent 的执行可以规模化。
-description: pVisor 抬高自主 agent 执行的信任瓶颈：边界可观测、记录可核对，使可委托的自主可以规模化。
+title: 让自主 Agent 的执行可以规模化
+description: 限制 Agent 自主性的不是算力，而是人的监督带宽。pVisor 让每次执行有界、可逆、可查，使监督可以摊薄、抽样，最终交给机器。
 hide:
   - navigation
   - toc
 ---
-# 让自主 agent 的执行可以规模化。
+# 让自主 Agent 的执行可以规模化

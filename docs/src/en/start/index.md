@@ -1,6 +1,6 @@
 # Start here
 
-**PolicyVisor (pVisor)** provides policy-governed, reviewable execution for Agent CLIs, scripts, and automation commands. It records effective controls and stages workspace changes; retain the stage to review and apply them.
+**PolicyVisor (pVisor)** runs agents unattended and keeps only the file changes you approve. It runs your existing Agent CLIs, scripts, and automation commands, and records what was actually in effect on each run.
 
 The Python package and CLI are both named `pvisor`.
 
@@ -13,8 +13,7 @@ The Python package and CLI are both named `pvisor`.
 
 Use `--safe` or `--stage PATH` to stage workspace changes for review after exit.
 See [staging and storage](../reference/cli.md#staging-and-storage) for defaults and
-the separate HOME and VM rootfs lifetimes. Filesystem staging does not undo
-network requests or changes to external services.
+the separate HOME and VM rootfs lifetimes.
 
 ## Find an answer
 
