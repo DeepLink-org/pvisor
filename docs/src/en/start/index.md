@@ -20,8 +20,8 @@ the separate HOME and VM rootfs lifetimes.
 | Question | Read |
 | --- | --- |
 | What does pVisor do? | [Product overview](what-is-pvisor.md) |
-| Where should the command run? | [Host, container, or VM](../../zh/guides/execution.md) |
+| Where should the command run? | [Host, container, or VM](../../zh/guides/executors/index.md) |
 | What is actually isolated? | [Capabilities and evidence](../../zh/concepts/capabilities-and-evidence.md) |
 | How do I record model traffic? | [Capture](../../zh/guides/capture.md) |
 | Which option do I need? | [CLI reference](../reference/cli.md) |
-| How do I build or contribute? | [Development](../../zh/development/index.md) |
+| How do I build or contribute? | [Development](../../zh/community/index.md) |

@@ -1,6 +1,6 @@
 # 选择执行环境
 
-按命令需要的内核和用户空间选择 executor。使用 `--safe` 或 `--stage PATH` 暂存工作区改动，运行后再审查；默认写入与清理规则见 [暂存与存储](../reference/cli.md#暂存与存储)。
+按命令需要的内核和用户空间选择 executor。使用 `--safe` 或 `--stage PATH` 暂存工作区改动，运行后再审查；默认写入与清理规则见 [暂存与存储](../../reference/cli.md#暂存与存储)。
 
 | Executor | 执行环境 | 前提 |
 | --- | --- | --- |
@@ -26,7 +26,7 @@ pvisor run --executor container \
   --stage ../stage-container -- /bin/sh
 ```
 
-此路径使用原生 OCI executor。额外挂载和注入的 pVisor 二进制配置见 [CLI 参考](../reference/cli.md)。Gateway 和显式 OverlayNet 代理当前要求容器使用 host 网络，因为注入的地址是宿主回环地址。
+此路径使用原生 OCI executor。额外挂载和注入的 pVisor 二进制配置见 [CLI 参考](../../reference/cli.md)。Gateway 和显式 OverlayNet 代理当前要求容器使用 host 网络，因为注入的地址是宿主回环地址。
 
 ## 使用 OCI 镜像的 VM
 
@@ -46,7 +46,7 @@ Linux 需要可访问的 `/dev/kvm`。macOS 上用 `just build release` 构建�
 `--mount SOURCE[:TARGET]:stage` 把宿主目录加入工作区视图的底层。
 `--mount SOURCE:read` 授予原绝对路径的只读访问，要求 host executor 和 `--safe/--ask`；
 `SOURCE:write` 授予直接写宿主路径的权限。read/write 不支持改写 TARGET，也不经过工作区的审批规则。
-重叠限制见 [文件系统参数](../reference/cli.md#文件系统参数)。
+重叠限制见 [文件系统参数](../../reference/cli.md#文件系统参数)。
 
 `--access PATH-GLOB:deny|ask|warn` 在 OverlayFS 视图中拒绝、询问或放行并警告；
 只读共享使用 `--mount …:read`。`--stage PATH` 可指定暂存位置。

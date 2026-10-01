@@ -2,7 +2,7 @@
 
 OverlayNet 让 pVisor 对网络出口执行允许、拒绝和限速规则。Host/container Run 使用进程内
 HTTP proxy；libkrun VM Run 使用进程内 smoltcp 数据面处理 IPv4 TCP 和 DNS。请结合
-[Capability 与 Evidence 模型](../concepts/capabilities-and-evidence.md)理解这些控制。
+[Capability 与 Evidence 模型](../../concepts/capabilities-and-evidence.md)理解这些控制。
 
 ## 网络边界 {#网络边界}
 
@@ -17,7 +17,7 @@ HTTP proxy；libkrun VM Run 使用进程内 smoltcp 数据面处理 IPv4 TCP 和
 | VM `auto` | pVisor smoltcp IPv4 TCP/DNS 数据面 | guest 无直接网络旁路；不支持的 UDP、IPv6、ICMP、QUIC、入站转发失败关闭 |
 | VM `off` | 不配置 guest 网络 | 离线 |
 
-必须检查具体 Run 的观察证据；暂存文件不改变网络边界，证据口径见[能力与证据](../concepts/capabilities-and-evidence.md)。
+必须检查具体 Run 的观察证据；暂存文件不改变网络边界，证据口径见[能力与证据](../../concepts/capabilities-and-evidence.md)。
 
 ## 只允许声明的目标
 

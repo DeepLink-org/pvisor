@@ -58,7 +58,7 @@ OverlayFS 的操作，网络观察只覆盖到达 OverlayNet 的流量。`null` 
 ## 保证范围
 
 普通 host/container 的选择性代理依赖客户端使用它；host deny-all、macOS safe
-和 VM 网络的机制另见 [网络边界](../guides/network.md#网络边界)。AgentCtl 是协作通道，
+和 VM 网络的机制另见 [网络边界](../guides/policies/network.md#网络边界)。AgentCtl 是协作通道，
 自身不是隔离证据。平台机制及缺口见 [隔离设计](../design/isolation.md)。
 
 `apply` 和 `drop` 只管理暂存文件，不能撤销已应用批次、远程 API、数据库写入或消息。

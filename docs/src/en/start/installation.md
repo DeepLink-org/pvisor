@@ -95,7 +95,7 @@ local content-addressed cache, `--mount SOURCE[:TARGET]:ACCESS` exposes a path,
 and `--rootfs DIR` points to a prepared Linux rootfs. Linux hosts use KVM;
 Apple Silicon macOS hosts use HVF. Building the VM support from source on macOS
 uses the Rust `pvisor-guest` supervisor; no C cross-compiler is needed.
-Source build prerequisites are listed in [Engineering notes](../../zh/development/engineering.md).
+Source build prerequisites are listed in [Engineering notes](../../zh/community/development.md).
 
 Treat these options as a separate platform step. First complete the staged host
 workflow so that you have a baseline Run Bundle to compare against.

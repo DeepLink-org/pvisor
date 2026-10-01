@@ -10,12 +10,41 @@ extra_css = ["stylesheets/extra.css"]
 
 nav = [
   { "首页" = "zh/index.md" },
-  { "开始使用" = ["zh/start/index.md", "zh/start/what-is-pvisor.md", "zh/start/installation.md", "zh/start/first-run.md"] },
-  { "任务指南" = ["zh/guides/index.md", "zh/guides/workflows.md", "zh/guides/review-apply.md", "zh/guides/execution.md", "zh/guides/network.md", "zh/guides/capture.md", "zh/guides/sandbox-replay.md", "zh/guides/troubleshooting.md"] },
-  { "概念与边界" = ["zh/concepts/index.md", "zh/concepts/run-model.md", "zh/concepts/capabilities-and-evidence.md"] },
-  { "参考" = ["zh/reference/index.md", "zh/reference/cli.md", "zh/reference/shared-image-cache.md"] },
-  { "参与开发" = ["zh/development/index.md", "zh/development/engineering.md", "zh/development/examples.md", "zh/development/releasing.md"] },
-  { "实现设计" = ["zh/design/index.md", "zh/design/architecture.md", "zh/design/operations-events.md", "zh/design/isolation.md", "zh/design/overlaynet.md", "zh/design/gateway.md", "zh/design/cli.md", "zh/design/principles.md"] },
+  { "为什么" = ["zh/why/index.md", "zh/why/trust-ladder.md", "zh/why/use-cases.md", "zh/why/comparisons.md", "zh/why/when-not-to-use.md", "zh/why/faq.md"] },
+  { "开始使用" = ["zh/start/index.md", "zh/start/what-is-pvisor.md", "zh/start/installation.md", "zh/start/first-run.md", "zh/start/next-steps.md"] },
+  { "指南" = [
+    "zh/guides/index.md",
+    { "接入你的 Agent" = ["zh/guides/agents/index.md", "zh/guides/agents/claude-code.md", "zh/guides/agents/codex.md", { "Gemini CLI（规划中）" = "zh/guides/agents/gemini-cli.md" }, { "aider（规划中）" = "zh/guides/agents/aider.md" }, { "OpenCode（规划中）" = "zh/guides/agents/opencode.md" }, "zh/guides/agents/custom-scripts.md"] },
+    "zh/guides/review-apply.md",
+    "zh/guides/fork-checkpoint.md",
+    { "策略" = ["zh/guides/policies/files.md", "zh/guides/policies/network.md", "zh/guides/policies/credentials.md"] },
+    { "执行器" = ["zh/guides/executors/index.md", "zh/guides/executors/host.md", "zh/guides/executors/container.md", "zh/guides/executors/vm.md"] },
+    "zh/guides/capture.md",
+    "zh/guides/replay.md",
+    { "在 CI 中运行（规划中）" = "zh/guides/ci.md" },
+    { "并行 Agent（规划中）" = "zh/guides/parallel-agents.md" },
+    { "RL rollout（规划中）" = "zh/guides/rl-rollouts.md" },
+    "zh/guides/troubleshooting.md"
+  ] },
+  { "概念" = ["zh/concepts/index.md", "zh/concepts/jobs.md", "zh/concepts/staging.md", "zh/concepts/capabilities-and-evidence.md", "zh/concepts/policy-model.md", "zh/concepts/glossary.md"] },
+  { "基准与对比" = [
+    "zh/benchmarks/index.md",
+    "zh/benchmarks/methodology.md",
+    "zh/benchmarks/startup.md",
+    { "文件系统开销（规划中）" = "zh/benchmarks/filesystem.md" },
+    { "网络开销（规划中）" = "zh/benchmarks/network.md" },
+    { "apply/drop 成本（规划中）" = "zh/benchmarks/apply.md" },
+    { "端到端任务（规划中）" = "zh/benchmarks/agent-tasks.md" },
+    { "监督成本（规划中）" = "zh/benchmarks/supervision-cost.md" },
+    { "并发密度（规划中）" = "zh/benchmarks/density.md" },
+    { "隔离有效性（规划中）" = "zh/benchmarks/isolation-tests.md" },
+    "zh/benchmarks/replay-fidelity.md",
+    { "对比" = [{ "Agent 自带沙箱（规划中）" = "zh/benchmarks/compare-agent-sandboxes.md" }, { "Docker / devcontainer（规划中）" = "zh/benchmarks/compare-containers.md" }, { "云端沙箱（规划中）" = "zh/benchmarks/compare-cloud-sandboxes.md" }, { "隔离基座（规划中）" = "zh/benchmarks/compare-runtimes.md" }, { "RL 基础设施（规划中）" = "zh/benchmarks/compare-rl-infra.md" }] }
+  ] },
+  { "安全" = ["zh/security/index.md", "zh/security/threat-model.md", "zh/security/executor-boundaries.md", "zh/security/hardening.md", "zh/security/known-limitations.md", "zh/security/disclosure.md", { "第三方审计（规划中）" = "zh/security/audits.md" }] },
+  { "参考" = ["zh/reference/index.md", "zh/reference/cli.md", "zh/reference/config.md", "zh/reference/policy.md", "zh/reference/run-bundle.md", "zh/reference/json-output.md", "zh/reference/env-vars.md", "zh/reference/exit-codes.md", "zh/reference/platforms.md", "zh/reference/stability.md", "zh/reference/cases.md", "zh/reference/shared-image-cache.md"] },
+  { "设计与研究" = ["zh/design/index.md", "zh/design/principles.md", "zh/design/architecture.md", "zh/design/execution-model.md", "zh/design/operations-events.md", "zh/design/isolation.md", "zh/design/overlayfs.md", "zh/design/overlaynet.md", "zh/design/gateway.md", "zh/design/journal.md", "zh/design/replay.md", "zh/design/cli.md", "zh/design/decisions/index.md", { "研究方向" = ["zh/design/research/index.md", { "集群化执行（规划中）" = "zh/design/research/cluster-execution.md" }, { "RL 执行基座（规划中）" = "zh/design/research/rl-execution-substrate.md" }, { "论文与报告（规划中）" = "zh/design/research/publications.md" }] }] },
+  { "社区" = ["zh/community/index.md", "zh/community/contributing.md", "zh/community/development.md", "zh/community/testing.md", "zh/community/examples.md", "zh/community/releasing.md", "zh/community/roadmap.md", "zh/community/changelog.md", "zh/community/code-of-conduct.md", { "治理（规划中）" = "zh/community/governance.md" }, { "使用者（规划中）" = "zh/community/adopters.md" }] },
 ]
 
 [project.theme]

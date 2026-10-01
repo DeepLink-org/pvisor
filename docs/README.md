@@ -49,14 +49,30 @@ and user-facing protocol pages belong in the site's `reference/` tree, not at th
 
 ## Information architecture
 
-The canonical Chinese documentation uses six directories:
+Value before mechanism, mechanism before implementation. The top-level order is
+why → start → guides → concepts → benchmarks → security → reference → design → community.
 
-- `start/`: product scope, installation and the first reproducible Job.
-- `guides/`: tasks, commands, expected results and troubleshooting.
-- `concepts/`: terminology, evidence and capability limits.
-- `reference/`: CLI options and concrete cases.
-- `development/`: contributor setup, validation and release.
-- `design/`: current implementation ownership and mechanisms.
+The canonical Chinese documentation uses these sections:
+
+- `why/`: the case for pVisor — vision, supervision-bandwidth argument, trust ladder, use cases, comparisons, when not to use.
+- `start/`: product scope, installation, the first reproducible Job, and where to go next.
+- `guides/`: tasks, commands and expected results, grouped by job (`agents/`, `policies/`, `executors/`).
+- `concepts/`: the user mental model — jobs, staging, evidence, policy, glossary.
+- `benchmarks/`: reproducible measurements and dated comparisons.
+- `security/`: what is protected, what is not, and how to report issues.
+- `reference/`: CLI, configuration, schemas and platform support matrices.
+- `design/`: implementation ownership, mechanisms, ADRs and research directions.
+- `community/`: contributing, development, testing, release, roadmap and policies.
+
+Readers and entry points:
+
+| Reader | Entry | Main path |
+| --- | --- | --- |
+| Developer using an agent | home | why → first run → connect your agent → review and merge |
+| Platform / DevOps | home → use cases | use cases → benchmarks → CI → configuration |
+| Security reviewer | security | threat model → executor boundaries → capabilities and evidence → disclosure |
+| Researcher (MLSys, agentic RL) | use cases → research | research/training use case → replay and fork → architecture → research directions |
+| Contributor | community | contributing → development → testing → architecture |
 
 Keep one canonical article per subject and link to it instead of repeating its
 contract. Start task guides with prerequisites and executable examples. Separate
@@ -65,11 +81,31 @@ executor and scope. Review/apply examples must enable staging with `--safe`,
 `--ask` or `--stage`. If a path is specified, put it outside the project.
 
 The CLI reference owns staging/storage defaults and parameter grammar; the
-network guide owns the executor boundary matrix; the evidence page owns the
-meaning and limits of observations. Other articles link to these definitions.
-Implementation pages explain mechanisms and code ownership. Benchmarks keep
-dated samples and reproduction limits under `benchmark/`; speculative designs
-do not belong in the current product navigation or search index.
+network policy guide owns the executor boundary matrix (summarized in
+`security/executor-boundaries`); the evidence page owns the meaning and limits of
+observations. Other articles link to these definitions. Implementation pages
+explain mechanisms and code ownership. Benchmark and comparison pages state
+method, environment and date, and keep dated samples under `benchmark/`.
+
+### Planned (TODO) pages
+
+A required page that has no data yet is created with a uniform template and
+front matter:
+
+```yaml
+---
+status: todo
+search:
+  exclude: true
+---
+```
+
+It carries a plain-language question, the required metric, controls, workload,
+environment, acceptance criteria, and a tracking issue. TODO pages may appear in
+the navigation with a “（规划中）” suffix, but they are excluded from search and
+are never linked as finished content — the enclosing index says “建设中” and
+links to the placeholder instead. Finish a page by removing `status: todo` and
+closing its issue.
 
 `zensical.toml` owns navigation. Maintain Chinese articles; translate only the English entry points.
 `redirects.json` maps old locale-relative Markdown paths to their replacements;

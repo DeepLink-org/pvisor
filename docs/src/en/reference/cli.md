@@ -3,12 +3,12 @@
 The Job is pVisor's primary user-facing object. `pvisor run` creates a
 Job. The other flat commands act directly on that Job; there is no `job`
 subcommand. `replay` starts a Job from a trajectory. See the
-[execution model](../../zh/concepts/run-model.md) for how Job, Run, and Attempt
+[execution model](../../zh/design/execution-model.md) for how Job, Run, and Attempt
 relate; existing Job IDs and on-disk records retain their `run-*`
 and `Run Bundle` names.
 Full command examples for Host, OCI VM, and transparent host-rootfs VM
 are in
-[Run workloads with pVisor](../../zh/guides/execution.md).
+[Run workloads with pVisor](../../zh/guides/executors/index.md).
 
 ## Find the command you need
 
@@ -17,10 +17,10 @@ Use the smallest surface that matches your next decision:
 - **Run a command:** start with [`pvisor run`](../start/first-run.md), then use
   `status --review`, `inspect`, and `apply` to decide what reaches the project.
 - **Understand a boundary:** use `status` and `inspect`, then read the
-  [execution guide](../../zh/guides/execution.md) before changing providers.
+  [execution guide](../../zh/guides/executors/index.md) before changing providers.
 - **Continue a trajectory:** use `replay` only when you already have a
   supported trajectory and want a fresh sandbox; begin with the
-  [replay guide](../../zh/guides/sandbox-replay.md).
+  [replay guide](../../zh/guides/replay.md).
 
 If this is your first command, do not start with the full option list below:
 
@@ -564,7 +564,7 @@ Selective host/container rules cover traffic routed through the explicit proxy.
 Host deny-all uses a namespace or Seatbelt to block direct egress; containers
 can use `--container-network none` for offline execution. VM `auto` uses
 smoltcp IPv4 TCP/DNS and `off` leaves the guest offline. VM deny-all still
-permits configured internal Gateway routes. See the [network boundaries](../../zh/guides/network.md).
+permits configured internal Gateway routes. See the [network boundaries](../../zh/guides/policies/network.md).
 
 ## Run project discovery
 

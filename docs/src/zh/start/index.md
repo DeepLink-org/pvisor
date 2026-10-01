@@ -18,8 +18,8 @@ Python 包和 CLI 统一使用 `pvisor`。
 | 问题 | 文档 |
 | --- | --- |
 | pVisor 能做什么？ | [产品概览](what-is-pvisor.md) |
-| 命令应该运行在哪里？ | [宿主机、容器与 VM](../guides/execution.md) |
+| 命令应该运行在哪里？ | [宿主机、容器与 VM](../guides/executors/index.md) |
 | 这次运行实际隔离了什么？ | [能力与证据](../concepts/capabilities-and-evidence.md) |
 | 如何记录模型请求？ | [流量捕获](../guides/capture.md) |
 | 需要使用哪个选项？ | [CLI 参考](../reference/cli.md) |
-| 如何构建和参与开发？ | [开发入口](../development/index.md) |
+| 如何构建和参与开发？ | [开发入口](../community/index.md) |

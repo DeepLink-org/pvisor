@@ -48,7 +48,7 @@ pvisor status --review ../stage-001
 
 **File access observations** list the paths and outcomes that reached OverlayFS: the write to `src/app.py`, the deletion of `src/legacy.txt`, the write to `scratch.txt`, and a denied read of `.ssh/id_rsa` (`denied=1`). **Network access observations** list the destinations and outcomes that reached OverlayNet: `example.com` was denied.
 
-One distinction matters. On an ordinary host the selective proxy is cooperative—only requests sent through it are recorded, and an absent destination is not proof it was never reached. A hard network boundary comes from `--overlaynet-deny-all`, an offline container, or a VM; see [network control](../../zh/guides/network.md).
+One distinction matters. On an ordinary host the selective proxy is cooperative—only requests sent through it are recorded, and an absent destination is not proof it was never reached. A hard network boundary comes from `--overlaynet-deny-all`, an offline container, or a VM; see [network control](../../zh/guides/policies/network.md).
 
 ## 5. Keep only what you want
 

@@ -90,7 +90,7 @@ pvisor run --executor vm --rootfs image=ubuntu:24.04 -- /bin/echo hello
 `--mount SOURCE[:TARGET]:ACCESS` 暴露宿主路径，`--rootfs DIR` 指向预先准备的 Linux rootfs。
 Linux 使用 KVM；Apple Silicon macOS 使用 HVF。guest supervisor 是静态 musl Rust ELF，
 由 Rust 自带 linker 构建，macOS 不再需要 C 交叉编译器。源码构建前的工具链准备见
-[工程说明](../development/engineering.md)。
+[工程说明](../community/development.md)。
 
 把这些选项当作独立的平台步骤。先完成 staged host workflow，再用已有 Run Bundle 对比不同
 执行环境的边界。

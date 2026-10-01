@@ -26,10 +26,10 @@ pvisor run --filesystem sandbox --overlaynet-deny-all -- codex
 
 宿主进程 executor 创建进程组，在完成或取消后向整组发送终止信号，并在宽限期后升级终止。后代持有输出管道时，读取等待也有时限。主动脱离进程组的进程需要更强的平台约束；进程组清理本身不是完整的后代隔离边界。
 
-`fork` 命令要求 Run 已停止；快照范围见[执行模型](../concepts/run-model.md)。嵌入式 AgentCtl 参与者可以配合静默协议，但这不会使任意子进程变成可检查点恢复的进程。
+`fork` 命令要求 Run 已停止；快照范围见[执行模型](../design/execution-model.md)。嵌入式 AgentCtl 参与者可以配合静默协议，但这不会使任意子进程变成可检查点恢复的进程。
 
 ## 网络边界
 
-各执行路径的控制范围、能否绕过以及 VM 数据面的协议覆盖见[网络边界](../guides/network.md#网络边界)，设计机制见 [OverlayNet](overlaynet.md)。
+各执行路径的控制范围、能否绕过以及 VM 数据面的协议覆盖见[网络边界](../guides/policies/network.md#网络边界)，设计机制见 [OverlayNet](overlaynet.md)。
 
-环境配置见[执行环境](../guides/execution.md)，证据解释见[能力与证据](../concepts/capabilities-and-evidence.md)。
+环境配置见[执行环境](../guides/executors/index.md)，证据解释见[能力与证据](../concepts/capabilities-and-evidence.md)。

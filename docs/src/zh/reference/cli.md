@@ -1,17 +1,17 @@
 # `pvisor` 命令参考
 
 Job 是 pVisor 面向用户的核心对象；`pvisor run` 创建 Job，其余扁平命令直接操作它，不新增 `job` 子命令，
-`replay` 从轨迹创建 Job。Job、Run 与 Attempt 的关系见[执行模型](../concepts/run-model.md)；现有 Job ID 和磁盘记录仍保留
+`replay` 从轨迹创建 Job。Job、Run 与 Attempt 的关系见[执行模型](../design/execution-model.md)；现有 Job ID 和磁盘记录仍保留
 `run-*`、`Run Bundle` 等名称。
 Host、OCI VM 和透明 host-rootfs VM 的完整命令示例见
-[使用 pVisor 运行工作负载](../guides/execution.md)。
+[使用 pVisor 运行工作负载](../guides/executors/index.md)。
 
 ## 按任务查找命令
 
 - **运行命令：** 从[`pvisor run`](../start/first-run.md)开始，再用 `status --review`、
   `inspect` 和 `apply` 决定哪些修改进入项目。
-- **理解执行边界：** 使用 `status` 和 `inspect`，然后阅读[执行指南](../guides/execution.md)。
-- **继续轨迹：** 只有在已有受支持轨迹时才使用 `replay`，先阅读[回放指南](../guides/sandbox-replay.md)。
+- **理解执行边界：** 使用 `status` 和 `inspect`，然后阅读[执行指南](../guides/executors/index.md)。
+- **继续轨迹：** 只有在已有受支持轨迹时才使用 `replay`，先阅读[回放指南](../guides/replay.md)。
 
 第一次使用时，先复制最小闭环：
 
@@ -498,7 +498,7 @@ namespace 和 Landlock 约束 VMM。macOS VMM 仍拥有调用用户的 host 权�
 host/container 的选择性网络规则作用于经过显式代理的流量。host deny-all 使用
 namespace 或 Seatbelt 阻止直接出口；容器离线使用 `--container-network none`。
 在 libkrun VM 上，`auto` 使用 smoltcp IPv4 TCP/DNS，`off` 让 guest 离线；
-deny-all 仍允许已配置的内部 Gateway 路由。各路径的范围见 [网络边界](../guides/network.md)。
+deny-all 仍允许已配置的内部 Gateway 路由。各路径的范围见 [网络边界](../guides/policies/network.md)。
 
 ## Run 项目发现
 

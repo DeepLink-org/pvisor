@@ -48,7 +48,7 @@ pvisor status --review ../stage-001
 
 **File access observations** 列出到达 OverlayFS 的路径与结果：`src/app.py` 的写入、`src/legacy.txt` 的删除、`scratch.txt` 的写入，以及 `.ssh/id_rsa` 读取被拒（`denied=1`）。**Network access observations** 列出到达 OverlayNet 的目标与结果：`example.com` 被拒。
 
-需要区分的是：普通 host 上的选择性代理是协作式的——只有经过代理的请求会被记录，未出现的目标不等于从未访问。强制网络边界由 `--overlaynet-deny-all`、容器离线模式或 VM 提供，见[网络控制](../guides/network.md)。
+需要区分的是：普通 host 上的选择性代理是协作式的——只有经过代理的请求会被记录，未出现的目标不等于从未访问。强制网络边界由 `--overlaynet-deny-all`、容器离线模式或 VM 提供，见[网络控制](../guides/policies/network.md)。
 
 ## 5. 只合入你要的部分
 

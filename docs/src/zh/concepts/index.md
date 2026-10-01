@@ -1,8 +1,11 @@
 # 概念与边界
 
-这些页面帮助你理解一次运行，不代替配置指南。建议从 `pvisor status --review` 中出现的术语开始。
+这些页面给出用户心智模型，不代替操作指南。
 
-- [Job、Operation、Attempt 与 Event](run-model.md)：工作单元、操作、执行身份和事实记录。
-- [能力、证据与保证边界](capabilities-and-evidence.md)：请求、计划、实际控制，以及 Bundle 和事件日志的范围。
+- [Job 与存储](jobs.md)：Job、Run ID 与 `last` 的解析规则。
+- [暂存与 apply 语义](staging.md)：事务、冲突拒绝、幂等与不可逆的部分。
+- [能力、证据与保证边界](capabilities-and-evidence.md)：请求、计划、实际控制与保证范围。
+- [策略模型](policy-model.md)：请求、准入、降级与预设。
+- [术语表](glossary.md)：统一术语。
 
-产品定位见 [PolicyVisor 是什么](../start/what-is-pvisor.md)。
+实现细节（Operation、Attempt、Session）见[设计与研究](../design/execution-model.md)。
