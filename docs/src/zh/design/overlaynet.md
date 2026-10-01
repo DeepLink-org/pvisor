@@ -1,11 +1,7 @@
 # OverlayNet 透明拦截
 
-本文负责拦截机制、强制缺口与验收门。用户策略流程属于
-[网络指南](../guides/network.md)；能力模型属于
-[Capability 与 Evidence](../concepts/capabilities-and-evidence.md)。
-
 !!! note "Target architecture"
-    文首描述的 libkrun VM driver 已经实现。Design A、Design B 以及交付计划第 1–5
+    libkrun VM driver 已经实现。Design A、Design B 以及交付计划第 1–5
     项描述的是目标 host/container 拦截与验收门，不是当前公开能力。
 
 ## 已实现的 VM driver
@@ -28,10 +24,10 @@ data plane 的 guest 路径。
 MVP 对通用 UDP、IPv6、ICMP、QUIC、入站连接、virtual/link-local/multicast/
 broadcast 目的地，以及耗尽的 flow/DNS 容量，刻意 fail closed。显式 Gateway
 capture 是内部 virtual-router 路由；所有普通出口共享同一策略和带宽注册表。
-下文描述的 host 与 container 透明拦截仍是后续工作。
+host 与 container 透明拦截仍是后续工作。
 
-> 状态：libkrun VM driver 已在 Linux 和 Apple Silicon macOS 上实现。本文后面
-> 描述的 host-process 透明 driver 仍是已接受的设计。Host/container 选择性
+> 状态：libkrun VM driver 已在 Linux 和 Apple Silicon macOS 上实现。host-process
+> 透明 driver 仍是已接受的设计。Host/container 选择性
 > 策略仍使用显式代理；host deny-all 保持现有平台 sandbox 行为。
 
 ## 问题
@@ -195,7 +191,7 @@ transports = ["tcp_tunnel"]
 
 ## 交付计划与验收门
 
-本文开头描述的 VM milestone 已经完成。下面剩余计划适用于透明 host/container
+VM milestone 已经完成。剩余计划适用于透明 host/container
 拦截。
 
 0. **显式代理基础（已实现）：** 诚实的 cooperative profile、拦截计数、严格
@@ -218,10 +214,3 @@ transports = ["tcp_tunnel"]
    暴露，并分别对 Python、Node、Rust、静态 Go 以及 fork 出的孙进程做
    proxy/netns/seccomp 模式 benchmark。
 
-## 相关文档
-
-- [网络指南](../guides/network.md)：为一次 Run 配置并检查策略。
-- [隔离架构](isolation.md)：比较完整的 provider 边界。
-- [Gateway 架构](gateway.md)：网络层之上的模型路由与 capture。
-- [能力、证据与保证边界](../concepts/capabilities-and-evidence.md)：计划、实际控制和观察范围
-  enforcement 声称。

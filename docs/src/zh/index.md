@@ -1,9 +1,9 @@
 ---
 template: home.html
-title: 策略约束下的可审查执行。
-description: PolicyVisor 管理 Agent、脚本与自动化命令，明确策略、记录实际控制，并支持暂存文件审查。
+title: 让自主 agent 的执行可以规模化。
+description: pVisor 抬高自主 agent 执行的信任瓶颈：边界可观测、记录可核对，使可委托的自主可以规模化。
 hide:
   - navigation
   - toc
 ---
-# 策略约束下的可审查执行。
+# 让自主 agent 的执行可以规模化。

@@ -2,7 +2,7 @@
 
 semspec 是独立的 Rust CLI：用 Markdown 陈述项目必须保持的行为，配一段黑盒
 Bash 检查。单元测试验证实现意图，语义规格验证产品承诺；PASS 不等于证明或人工批准。
-中文本文是设计的权威版本，实际工具在 `tools/semspec/`，单包内分模块实现。
+实际工具在 `tools/semspec/`，单包内分模块实现。
 
 ## 1. 目标与边界
 
@@ -210,7 +210,7 @@ S-REVIEW-004 涉及 approve 的拒绝路径，AI 不得执行；lint 和常规 r
 
 ## 12. pVisor 首个语义域：Stage / Apply / Drop
 
-第一版计划包含以下 case。下文的"现状"是 2026-10-01 在 macOS（macFUSE）上实测的结果；
+第一版计划包含以下 case。「现状」列是 2026-10-01 在 macOS（macFUSE）上实测的结果；
 正式语义以审核后的规格文本为准。
 
 | ID | 性质 | 现状 |

@@ -31,7 +31,7 @@ pip install pvisor
 
 !!! tip "从一次 Run 开始"
 
-    继续阅读[第一次运行](first-run.md)。审查 staged workspace 不需要另起一个历史服务。
+    审查 staged workspace 不需要另起一个历史服务。
 
 发布的 wheel 面向 Linux x86_64 和 macOS arm64。其他架构应先检查发布产物或准备源码构建。
 
@@ -94,9 +94,3 @@ Linux 使用 KVM；Apple Silicon macOS 使用 HVF。guest supervisor 是静态 m
 
 把这些选项当作独立的平台步骤。先完成 staged host workflow，再用已有 Run Bundle 对比不同
 执行环境的边界。
-
-## 5. 选择下一步
-
-- [第一次运行](first-run.md) —— 暂存、审查并选择性应用修改。
-- [选择工作流](index.md) —— 从安装到一次可审查 Run 的最短路径。
-- [执行环境](../guides/execution.md) —— 比较 host、OCI 与 VM 的边界。

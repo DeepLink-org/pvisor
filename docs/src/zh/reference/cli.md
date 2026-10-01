@@ -37,8 +37,6 @@ Log 面板，不混入 Agent 终端。按 `Ctrl-]` 进入命令模式，再按 `
 Tab 或 `1`–`6` 切换视图，用 `j`/`k` 滚动，按 Esc 或 `Ctrl-]` 返回 Agent。
 连续按两次 `Ctrl-]` 可将该按键原样发送给 Agent。
 
-下面的参考按 Job 生命周期组织；每组参数都配有验证下一步。
-
 ### 暂存与存储 {#暂存与存储}
 
 下表描述默认 CLI 行为。显式配置的提交方式、可写共享和应用兼容策略可能改变写入去向。
@@ -212,7 +210,7 @@ HOME 状态改动在 Run 结束后丢弃，不包含在工作区 Run Bundle 中�
 预设通过 `--clear-pass-env` 清空配置文件中的 `run.pass_env`；
 `--clear-pass-env` 也可单独使用，之后的显式 `--pass-env NAME` 仍然生效。
 直接运行 Codex 时保留宿主环境继承，以维持账号与路由配置；其他命令默认关闭继承，
-凭据通过显式 `--pass-env NAME` 授予（ZCode 的独立兼容策略见上文）。
+凭据通过显式 `--pass-env NAME` 授予。
 对应的显式 CLI 参数可以重新授予或覆盖。`--safe` 默认暂存工作区；
 已有容器挂载和文件系统底层仍保留；项目 base、rootfs、executor 不变。
 需要向 Agent 交付凭据时显式使用 `--pass-env`；使用已配置的 Gateway 可由可信侧持有上游 Key。
@@ -550,14 +548,6 @@ overlay 为每个被改写的目标路径记录 durable first-touch fingerprint�
 提交全部剩余改动或丢弃 stage 是终态；`drop` 不能撤销已 apply 的 batch，
 `apply` 也不能恢复已丢弃的改动。终态清理删除 `upper`、`work` 和其他一次性
 staging 数据，但保留紧凑的 Run/Overlay 元数据、apply ledger 和 capture 产物。
-
-## 相关工作流
-
-- [第一次运行](../start/first-run.md)：最短完整闭环。
-- [执行环境](../guides/execution.md)：选择 provider。
-- [审查并应用 Effect](../guides/review-apply.md)：过滤且可重复的 apply。
-- [网络控制](../guides/network.md) 与 [捕获轨迹](../guides/capture.md)：其他
-  Effect 维度。
 
 ### 共享镜像文件缓存
 

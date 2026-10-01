@@ -11,10 +11,9 @@
     <div class="pc-home-hero-grid">
       <div class="pc-home-copy">
         <p class="pc-home-kicker">PolicyVisor · pVisor</p>
-        <p>{% if zh %}设计、指南和参考文档以中文为权威版本；英文维护入门和 CLI 参考。{% else %}Design and guides are authoritative in Chinese. English covers getting started and the CLI.{% endif %}</p>
-        <h1>{% if zh %}策略约束下的可审查执行。{% else %}Policy-governed, reviewable execution.{% endif %}</h1>
-        <p>{% if zh %}运行现有 Agent、脚本与自动化命令。声明权限，检查实际控制，审查暂存改动，再决定哪些内容进入项目。{% else %}Run your existing Agents, scripts, and automation commands. Define their authority, inspect effective controls, and review staged changes before applying them.{% endif %}</p>
-        <p>{% if zh %}支持宿主机、容器和 VM；实际边界以每次 Run 的能力证据为准。{% else %}Use host, container, or VM execution. Check each Run's capability evidence for its actual boundary.{% endif %}</p>
+        <h1>{% if zh %}让自主 agent 的执行可以规模化。{% else %}Scaling autonomous agent execution.{% endif %}</h1>
+        <p>{% if zh %}瓶颈不是算力，而是信任。pVisor 让执行边界可观测、记录可核对，从而抬高你愿意委托出去的自主。{% else %}The bottleneck is trust, not compute. pVisor makes execution boundaries observable and records checkable, raising the autonomy you are willing to delegate.{% endif %}</p>
+        <p>{% if zh %}支持宿主机、容器与 VM；每次 Run 的实际边界以能力证据为准，不由声明推定。{% else %}Host, container, and VM executors. Each Run's actual boundary is its capability evidence, not its declaration.{% endif %}</p>
         <div class="pc-home-actions">
           <a class="pc-home-btn primary" href="{{ prefix }}start/first-run/">{% if zh %}开始第一次运行{% else %}Start your first Run{% endif %}</a>
           <a class="pc-home-btn" href="{{ prefix }}start/what-is-pvisor/">{% if zh %}理解 PolicyVisor{% else %}Explore the model{% endif %}</a>
@@ -24,39 +23,40 @@
         <div class="pc-home-tabs"><span class="active">{% if zh %}以 Agent CLI 为例{% else %}Example: an Agent CLI{% endif %}</span></div>
         <div class="pc-home-terminal">
           <div class="pc-home-terminal-bar"><span class="dot red"></span><span class="dot yellow"></span><span class="dot green"></span></div>
-          <pre class="pc-home-terminal-body"><span class="pc-home-command-line"><span class="pc-home-prompt">$ </span>pip install pvisor</span><span class="pc-home-command-line"><span class="pc-home-prompt">$ </span>pvisor run --stage ../stage-001 -- codex</span><span class="pc-home-command-line"><span class="pc-home-prompt">$ </span>pvisor status --review last</span><span class="pc-home-command-line"><span class="pc-home-prompt">$ </span>pvisor apply last --path src</span></pre>
+          <pre class="pc-home-terminal-body"><span class="pc-home-command-line"><span class="pc-home-prompt">$ </span>pip install pvisor</span><span class="pc-home-command-line"><span class="pc-home-prompt">$ </span>pvisor run --safe --stage ../stage-001 -- codex</span><span class="pc-home-command-line"><span class="pc-home-prompt">$ </span>pvisor status --review last</span><span class="pc-home-command-line"><span class="pc-home-prompt">$ </span>pvisor apply last --path src</span></pre>
         </div>
         <p>{% if zh %}安装包与 CLI 均为 <code>pvisor</code>。首次使用请先完成<a href="{{ prefix }}start/installation/">平台配置</a>。{% else %}The package and CLI are both <code>pvisor</code>. Complete the <a href="{{ prefix }}start/installation/">platform setup</a> before your first Run.{% endif %}</p>
       </div>
     </div>
   </section>
   <section class="pc-home-value">
-    <p class="pc-home-badge">{% if zh %}p 代表 Policy{% else %}p stands for Policy{% endif %}</p>
-    <h2>{% if zh %}从允许做什么，到实际做了什么{% else %}From declared authority to recorded outcomes.{% endif %}</h2>
-    <p class="pc-home-lede">{% if zh %}策略描述权限与约束，执行器提供实际控制，Run Bundle 保存可供审查的结果。{% else %}Policy describes permissions and constraints. The executor supplies the controls. The Run Bundle preserves the results for review.{% endif %}</p>
+    <p class="pc-home-badge">{% if zh %}规模化的三根支柱{% else %}Three pillars for scale{% endif %}</p>
+    <h2>{% if zh %}边界、证据、兜底{% else %}Boundaries, evidence, and a fallback{% endif %}</h2>
+    <p class="pc-home-lede">{% if zh %}自主能扩到多大，取决于每一份信任有多可靠。pVisor 用可强制的边界建立信任，用可核对的记录证明信任，并在信任不足时提供审查兜底。{% else %}How far autonomy scales depends on how reliable each unit of trust is. pVisor establishes trust with enforceable boundaries, proves it with checkable records, and falls back to review when trust is short.{% endif %}</p>
     <div class="pc-home-cards">
-      <article><h3>{% if zh %}声明策略{% else %}Define policy{% endif %}</h3><p>{% if zh %}选择执行器与能力要求，确认哪些控制得到支持、哪些存在限制。{% else %}Choose the executor and capability requirements. Inspect supported controls and their limits.{% endif %}</p></article>
-      <article><h3>{% if zh %}暂存改动{% else %}Stage changes{% endif %}</h3><p>{% if zh %}使用 --safe 或 --stage，让工作区文件改动在应用前保留在 Job 独占视图中。{% else %}Use --safe or --stage to keep workspace file changes in a Job-owned view until apply.{% endif %}</p></article>
-      <article><h3>{% if zh %}审查结果{% else %}Review results{% endif %}</h3><p>{% if zh %}查看文件差异、实际控制和警告，再选择应用或丢弃暂存改动。{% else %}Inspect file changes, effective controls, and warnings. Apply selected staged files or discard the remainder.{% endif %}</p></article>
+      <article><h3>{% if zh %}边界{% else %}Boundaries{% endif %}</h3><p>{% if zh %}选择执行器与能力要求，落实实际可强制的控制，并暴露不支持的缺口与降级。{% else %}Choose the executor and capability requirements. Install the controls that can be enforced, and surface the gaps and degradations that cannot.{% endif %}</p></article>
+      <article><h3>{% if zh %}证据{% else %}Evidence{% endif %}</h3><p>{% if zh %}每次 Run 产出可核对的记录：实际安装的控制、观察到的结果与警告。声明不当作证据。{% else %}Every Run produces a checkable record: the controls actually installed, the observed results, and the warnings. A declaration is not evidence.{% endif %}</p></article>
+      <article><h3>{% if zh %}兜底{% else %}Fallback{% endif %}</h3><p>{% if zh %}信任不足时，工作区先暂存、审查再应用；随信任上升，转向事后审计与更少的介入。{% else %}When trust is short, stage the workspace and review before applying. As trust grows, shift to post-hoc audit and less intervention.{% endif %}</p></article>
     </div>
   </section>
   <section class="pc-home-split">
     <div class="pc-home-split-copy">
-      <p class="pc-home-badge">{% if zh %}执行边界{% else %}Execution boundaries{% endif %}</p>
-      <h2>{% if zh %}每次执行，都有据可查{% else %}Keep the evidence with the Run.{% endif %}</h2>
-      <h3>{% if zh %}区分声明与实际控制{% else %}Inspect effective controls{% endif %}</h3>
-      <p>{% if zh %}声明的权限不等于已落实的隔离。检查所选执行器实际安装的机制、能力降级与警告。{% else %}Requested authority does not prove enforcement. Check the selected executor's installed mechanisms, capability degradation, and warnings.{% endif %}</p>
-      <h3>{% if zh %}明确审查的范围{% else %}Know what review covers{% endif %}</h3>
-      <p>{% if zh %}apply 和 drop 管理暂存文件，无法撤销外部 API 调用。模型流量捕获按需启用，检查点保存暂存文件状态。{% else %}Apply and drop govern staged files; they cannot undo external API calls. Model capture is optional, and checkpoints preserve staged filesystem state.{% endif %}</p>
+      <p class="pc-home-badge">{% if zh %}证据{% else %}Evidence{% endif %}</p>
+      <h2>{% if zh %}声明不等于证据{% else %}A declaration is not evidence.{% endif %}</h2>
+      <h3>{% if zh %}计划与实际控制{% else %}Plan versus installed control{% endif %}</h3>
+      <p>{% if zh %}准入计划说明执行器准备提供什么，最高只到 <code>Planned</code>。实际强制力只来自执行器收尾返回的观察集，安全摘要从它派生。{% else %}The admission plan states what an executor intends to provide, and never exceeds <code>Planned</code>. Actual enforcement comes only from the observations the executor returns at teardown, and the safety summary derives from them.{% endif %}</p>
+      <h3>{% if zh %}明确记录的范围{% else %}Know what the record covers{% endif %}</h3>
+      <p>{% if zh %}apply 与 drop 管理暂存文件，不能撤销外部 API 调用。观察只覆盖到达控制点的操作，<code>null</code> 表示未观测；捕获按需启用。{% else %}Apply and drop govern staged files; they cannot undo external API calls. Observations cover only operations that reach a control point, and <code>null</code> means unobserved. Capture is optional.{% endif %}</p>
     </div>
   </section>
   <section class="pc-home-modes">
     <p class="pc-home-badge">{% if zh %}文档入口{% else %}Documentation{% endif %}</p>
     <h2>{% if zh %}从你当前的问题开始{% else %}Start with the question you have.{% endif %}</h2>
     <div class="pc-home-mode-grid">
-      <a class="pc-home-mode" href="{{ prefix }}start/what-is-pvisor/"><strong>PolicyVisor</strong><span>{% if zh %}了解产品定位，完成运行、审查与应用。{% else %}Understand the product and the run, review, apply workflow.{% endif %}</span></a>
-      <a class="pc-home-mode" href="{{ canonical }}design/"><strong>{% if zh %}系统设计{% else %}System design{% endif %}</strong><span>{% if zh %}理解架构、边界和实际保证。{% else %}Understand architecture, boundaries, and guarantees.{% endif %}</span></a>
-      <a class="pc-home-mode" href="{{ canonical }}development/"><strong>{% if zh %}参与开发{% else %}Development{% endif %}</strong><span>{% if zh %}查看工程说明和示例。{% else %}Browse engineering notes and examples.{% endif %}</span></a>
+      <a class="pc-home-mode" href="{{ prefix }}start/what-is-pvisor/"><strong>{% if zh %}快速开始{% else %}Get started{% endif %}</strong><span>{% if zh %}完成运行、审查与应用的第一个闭环。{% else %}Run your first workflow through to apply.{% endif %}</span></a>
+      <a class="pc-home-mode" href="{{ canonical }}concepts/"><strong>{% if zh %}概念与边界{% else %}Concepts{% endif %}</strong><span>{% if zh %}理解证据、边界与保证的范围。{% else %}Understand evidence, boundaries, and guarantees.{% endif %}</span></a>
+      <a class="pc-home-mode" href="{{ canonical }}design/"><strong>{% if zh %}系统设计{% else %}System design{% endif %}</strong><span>{% if zh %}架构、放置、隔离与契约。{% else %}Architecture, placement, isolation, and contracts.{% endif %}</span></a>
+      <a class="pc-home-mode" href="{{ canonical }}development/"><strong>{% if zh %}参与开发{% else %}Development{% endif %}</strong><span>{% if zh %}工程说明、示例与发布流程。{% else %}Engineering notes, examples, and releases.{% endif %}</span></a>
     </div>
   </section>
   <footer class="pc-home-footer"><p>{% if zh %}开源 · Apache-2.0 · PolicyVisor{% else %}Open source · Apache-2.0 · PolicyVisor{% endif %}</p><p><a href="https://github.com/DeepLink-org/pvisor">GitHub</a></p></footer>

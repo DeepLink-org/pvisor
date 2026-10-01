@@ -77,10 +77,6 @@ Removing a decision restores matching broader rules or a new prompt; it does
 not close existing file handles. Other running TUIs reload on their next launch.
 Other configuration settings and comments are preserved when saving.
 
-The reference that follows is organized by lifecycle. Options that affect the
-same Job are intentionally described together so that a copied command has a
-clear verification step.
-
 ```text
 pvisor
 ├── run                 start a Job
@@ -620,13 +616,6 @@ Applying all remaining changes or dropping the stage is terminal; `drop` cannot
 undo already applied batches, and `apply` cannot recover discarded changes.
 Terminal cleanup removes `upper`, `work`, and other disposable staging data but
 retains compact Run/Overlay metadata, the apply ledger, and capture artifacts.
-
-## Related workflows
-
-- [Your first Job](../start/first-run.md) for the shortest complete loop.
-- [Execution environments](../../zh/guides/execution.md) for choosing a provider.
-- [Review and apply changes](../../zh/guides/review-apply.md) for filtered, repeatable apply.
-- [Network control](../../zh/guides/network.md) and [capture](../../zh/guides/capture.md) for other Effect dimensions.
 
 ### Shared image file cache
 

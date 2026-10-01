@@ -252,5 +252,4 @@ guest 网络旁路。
 
 可以运行
 [`examples/pvisor/03-network-isolation`](https://github.com/DeepLink-org/pvisor/tree/main/examples/pvisor/03-network-isolation)
-离线复现 allowlist、deny-all 和 direct-socket bypass。需要捕获 LLM 请求或配置模型路由时，
-继续阅读 [Capture 指南](capture.md)。
+离线复现 allowlist、deny-all 和 direct-socket bypass。

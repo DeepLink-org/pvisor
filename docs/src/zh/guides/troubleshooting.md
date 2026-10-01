@@ -36,8 +36,6 @@ pvisor run --stage ./runs/task-001 -- AGENT_COMMAND
 不同操作系统和 executor 的支持范围不同；例如 cooperative network proxy 不能保证所有
 ambient connection 都被阻断。
 
-继续阅读[Capabilities 与 Evidence](../concepts/capabilities-and-evidence.md)和[执行环境](execution.md)。
-
 ## stage 为空或出现了错误文件
 
 先检查命令工作目录和 stage 路径：

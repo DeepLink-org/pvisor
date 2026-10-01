@@ -1,9 +1,9 @@
 ---
 template: home.html
-title: Policy-governed, reviewable execution.
-description: PolicyVisor runs Agents, scripts, and automation with explicit policies, recorded controls, and staged file review.
+title: Scaling autonomous agent execution.
+description: pVisor raises the trust bottleneck on autonomous agent execution with observable boundaries and checkable records.
 hide:
   - navigation
   - toc
 ---
-# Policy-governed, reviewable execution.
+# Scaling autonomous agent execution.

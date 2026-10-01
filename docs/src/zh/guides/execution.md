@@ -52,5 +52,3 @@ Linux 需要可访问的 `/dev/kvm`。macOS 上用 `just build release` 构建�
 只读共享使用 `--mount …:read`。`--stage PATH` 可指定暂存位置。
 
 宿主进程 Run 在完成或超时后清理进程组，并限制等待输出管道的时间；脱离该组的后代不能仅靠进程组清理来约束。
-
-继续阅读[审查并应用](review-apply.md)或[网络策略](network.md)。

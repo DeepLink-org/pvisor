@@ -33,8 +33,7 @@ pip install pvisor
 
 !!! tip "Start with a Run"
 
-    Continue with [Your first Run](first-run.md). You do not need
-    a separate history service to review a staged workspace.
+    You do not need a separate history service to review a staged workspace.
 
 Published wheels target Linux x86_64 and macOS arm64. Check the release artifacts before choosing another architecture.
 
@@ -100,9 +99,3 @@ Source build prerequisites are listed in [Engineering notes](../../zh/developmen
 
 Treat these options as a separate platform step. First complete the staged host
 workflow so that you have a baseline Run Bundle to compare against.
-
-## 5. Choose the next step
-
-- [Your first Run](first-run.md) — stage, review, and selectively apply changes.
-- [Choose a workflow](index.md) — the shortest path from install to a reviewed Run.
-- [Execution environments](../../zh/guides/execution.md) — compare host, OCI, and VM boundaries.

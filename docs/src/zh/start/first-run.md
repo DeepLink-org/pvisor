@@ -46,5 +46,3 @@ pvisor status --review last
 ```
 
 审查后，再选择 `pvisor apply last --path PATH`、`--all` 或 `pvisor drop last`。同时处理多个项目或 Job 时，建议用命令输出的明确 Job ID（`run-*`）或暂存路径代替 `last`。
-
-继续阅读[审查与应用](../guides/review-apply.md)，了解分批处理、冲突和检查点。

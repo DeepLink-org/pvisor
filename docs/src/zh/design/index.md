@@ -1,7 +1,5 @@
 # 实现设计
 
-先读核心架构，再读 Operation／Event 契约，最后按需进入驱动机制。本节面向实现和嵌入集成。用户操作见[任务指南](../guides/index.md)，精确参数见[参考](../reference/index.md)。
-
 | 领域 | 文档 |
 | --- | --- |
 | 核心职责与执行路径 | [核心架构](architecture.md) |

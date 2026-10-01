@@ -46,5 +46,3 @@ pvisor status --review last
 ```
 
 Review first, then choose `pvisor apply last --path PATH`, `--all`, or `pvisor drop last`. When working across several projects or Jobs, use the explicit Job ID (`run-*`) or stage path printed by the command instead of `last`.
-
-Continue with [review and apply](../../zh/guides/review-apply.md) for batching, conflicts, and checkpoints.

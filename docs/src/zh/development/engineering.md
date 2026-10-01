@@ -23,7 +23,7 @@ Cargo workspace 按产品职责划分。Python `pvisor/` 只负责启动随包�
 | `tests/` | Python 打包和仓库工作流测试 |
 | `examples/`、`benchmark/` | 可运行的产品场景和性能测量 |
 | `scripts/ci/` | CI 检查及冒烟测试入口 |
-| `docs/src/zh/`、`docs/src/en/` | 中文为权威文档；英文维护首页、入门和 CLI 参考；`docs/site/` 是生成产物 |
+| `docs/src/zh/`、`docs/src/en/` | 文档源；`docs/site/` 是生成产物 |
 | `vendor/` | 有补丁的第三方依赖；产品编排逻辑放在 `crates/` |
 
 workspace 内的实际依赖关系：

@@ -83,9 +83,3 @@ Apple Silicon macOS 使用原生 Darwin linker 构建 CLI，签署 HVF entitleme
 Linux/macOS 构建矩阵、安装 smoke test 和完整产物集校验。
 Nightly 版本追加 `+g<run-number>.<commit>`，仅更新 GitHub 的 `nightly` release。
 稳定 tag 发布先上传 PyPI，再把同一组已校验 wheel 附加到 GitHub Release。
-
-## 相关文档
-
-- [安装指南](../start/installation.md) 描述面向消费者的安装路径与支持平台。
-- [工程说明](engineering.md) 把贡献者状态与公开产品契约分开。
-- [可复现示例](examples.md) 演练已安装产品的工作流。
