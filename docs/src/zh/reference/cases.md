@@ -61,7 +61,7 @@ L01、L02 随 `env` 功能移除而退役，S-DOC-053、S-DOC-054 已登记在 r
 
 新增规格保持 UNREVIEWED。检查成功不等于人工批准；人工完成规格、词汇和引擎审核后，
 才使用 `just cases --require-reviewed` 作为门禁。semspec 支持的选项以 `just semspec run --help`
-为准，旧 Python runner 的 `--list`、`--report`、`--run-unavailable` 和 `--strict-skips` 不再使用。
+为准。
 
 | 测试资源 | 环境变量 |
 |---|---|

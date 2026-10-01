@@ -550,6 +550,21 @@ impl RunExecutor for VmExecutor {
             }
         };
         let process_group = child.id();
+        let _foreground =
+            match crate::executor::process::ForegroundProcessGroup::give_to(&child, invocation) {
+                Ok(foreground) => foreground,
+                Err(error) => {
+                    crate::session::lifecycle::terminate_process_tree(
+                        &mut child,
+                        process_group,
+                        spec.runtime.termination_grace_ms,
+                    )
+                    .await;
+                    return failed_to_start(format!(
+                        "failed to give terminal to VM runner: {error}"
+                    ));
+                }
+            };
         let stdout_task = child.stdout.take().map(|stdout| {
             let limit = spec.runtime.max_output_bytes;
             tokio::spawn(async move { read_limited(stdout, limit).await })

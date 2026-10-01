@@ -132,14 +132,17 @@ impl Drop for ResourceCgroup {
 }
 
 #[cfg(unix)]
-struct ForegroundProcessGroup {
+pub(super) struct ForegroundProcessGroup {
     terminal_fd: libc::c_int,
     original_pgrp: libc::pid_t,
 }
 
 #[cfg(unix)]
 impl ForegroundProcessGroup {
-    fn give_to(child: &Child, invocation: &ProcessInvocation) -> std::io::Result<Option<Self>> {
+    pub(super) fn give_to(
+        child: &Child,
+        invocation: &ProcessInvocation,
+    ) -> std::io::Result<Option<Self>> {
         if invocation.stdin != StdioMode::Inherit
             || unsafe { libc::isatty(libc::STDIN_FILENO) } != 1
         {

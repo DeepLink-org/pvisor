@@ -38,7 +38,6 @@ case_run() {
   cat > "$CASE_ROOT/command.bash"
   # A separate Bash preserves errexit even when its exit status is inspected.
   bash -euo pipefail "$CASE_ROOT/command.bash" > "$PVISOR_CASE_STDOUT" 2>&1 || status=$?
-  export PVISOR_CASE_EXIT="$status"
   cat "$PVISOR_CASE_STDOUT"
   case "$expectation" in
     success) [ "$status" -eq 0 ] || fail "expected success, exit=$status" ;;
@@ -102,7 +101,7 @@ def render(value: object) -> str:
 
 def main(argv: list[str]) -> int:
     if len(argv) < 2 or argv[0] not in FAMILIES:
-        raise SystemExit("assert: usage: helper <bundle|record> <path|get|expect|contains> ...")
+        raise SystemExit("assert: usage: helper <bundle|record> <get|expect|contains> ...")
     filename = FAMILIES[argv[0]]
     command, arguments = argv[1], argv[2:]
     default_root = os.environ.get("PVISOR_CASE_ROOT", ".")
@@ -110,10 +109,6 @@ def main(argv: list[str]) -> int:
     def artifact(index: int) -> Path:
         root = Path(arguments[index] if len(arguments) > index else default_root)
         return newest(root, filename)
-
-    if command == "path":
-        print(artifact(0))
-        return 0
 
     if command == "get":
         if not arguments:
@@ -156,7 +151,6 @@ PYTHON
 }
 
 
-bundle_path() { _pvisor_helper bundle path "$@"; }
 bundle_get() { _pvisor_helper bundle get "$@"; }
 bundle_expect() { _pvisor_helper bundle expect "$@"; }
 bundle_contains() { _pvisor_helper bundle contains "$@"; }
@@ -166,12 +160,6 @@ record_contains() { _pvisor_helper record contains "$@"; }
 stdout_has() {
   if ! grep -Fq -- "$1" "$PVISOR_CASE_STDOUT"; then
     printf 'assert: command output does not contain %s\n' "$1" >&2
-    return 1
-  fi
-}
-stdout_matches() {
-  if ! grep -Eq -- "$1" "$PVISOR_CASE_STDOUT"; then
-    printf 'assert: command output does not match %s\n' "$1" >&2
     return 1
   fi
 }

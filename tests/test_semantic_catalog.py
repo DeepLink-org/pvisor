@@ -83,12 +83,10 @@ bundle_expect safety.enabled true
 bundle_expect changes.0.path note
 bundle_contains changes note
 record_expect overlay null
-bundle_path > "$CASE_ROOT/bundle-path"
 """
     result, root = run_vocab(tmp_path, script, subject)
     assert result.returncode == 0, result.stderr
     assert (root / "command.log").read_text() == "chosen subject\n"
-    assert Path((root / "bundle-path").read_text().strip()).is_file()
     spec = json.loads((root / "ws/run-spec.json").read_text())
     assert Path(spec["invocation"]["program"]).is_absolute()
     proxy, gateway = (root / "ports").read_text().split()

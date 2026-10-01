@@ -52,6 +52,4 @@ settings still use the `PVISOR_CASE_*` resource variables described in the
 
 The migrated specifications are UNREVIEWED. Passing checks do not constitute
 human approval. Enable `--require-reviewed` only after human review of cases,
-vocabulary and engine. Use `just semspec run --help` for supported options;
-the Python runner and its `--list`, `--report`, `--run-unavailable` and
-`--strict-skips` options have been removed.
+vocabulary and engine. Use `just semspec run --help` for supported options.
