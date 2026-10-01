@@ -919,7 +919,7 @@ mod tests {
             "started_at_unix_ms": 1, "finished_at_unix_ms": 2,
             "output": {"stdout_truncated": false, "stderr_truncated": false},
             "metrics": {}, "artifacts": [], "warnings": [],
-            "executor_observations": {"origin": "backend", "enforcement": {"dimensions": {}}}
+            "executor_observations": {"origin": "backend", "enforcement": {}}
         });
         let decoded: RunResult = serde_json::from_value(result.clone()).unwrap();
         assert_eq!(serde_json::to_value(decoded).unwrap(), result);

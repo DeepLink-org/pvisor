@@ -75,7 +75,7 @@ mod tests {
         let files = DelegatedRunFiles::new_with_stdio(&spec, false).unwrap();
         let output = serde_json::json!({
             "result": {"run_id":"inner-run", "attempt_id":"inner-attempt", "state":"completed", "started_at_unix_ms":1, "finished_at_unix_ms":2},
-            "agentctl": {"run_id":"inner-run", "attempt_id":"inner-attempt", "directive":"continue", "clients":[]}
+            "agentctl": {"run_id":"inner-run", "attempt_id":"inner-attempt", "directive":crate::AgentDirective::Continue, "clients":[]}
         });
         write_private_json(&files.result_path, &output).unwrap();
         let attempt_id = AttemptId::new("outer-attempt");
