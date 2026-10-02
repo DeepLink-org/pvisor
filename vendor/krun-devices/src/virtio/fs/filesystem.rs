@@ -1171,7 +1171,8 @@ pub trait FileSystem {
         out_size: u32,
         exit_code: &Arc<AtomicI32>,
     ) -> io::Result<Vec<u8>> {
-        Err(io::Error::from_raw_os_error(bindings::LINUX_ENOSYS))
+        // Unknown ioctl commands must use ENOTTY, including overlay backends.
+        Err(io::Error::from_raw_os_error(libc::ENOTTY))
     }
 
     /// TODO: support this

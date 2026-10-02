@@ -643,6 +643,40 @@ pub fn llm_response_record_with_content(
     rec
 }
 
+/// Retention applies to every persisted copy, including enrichment fields.
+pub(crate) fn retain_capture_content(payload: &mut Value, level: crate::config::CaptureLevel) {
+    let Some(object) = payload.as_object_mut() else {
+        return;
+    };
+    if !level.includes_full_body() {
+        for key in ["body", "llm_request", "llm_response", "spawn_hints"] {
+            object.remove(key);
+        }
+        if let Some(links) = object.get_mut("spawn_links").and_then(Value::as_array_mut) {
+            links.retain(Value::is_object);
+            for link in links {
+                if let Some(link) = link.as_object_mut() {
+                    link.retain(|key, _| {
+                        matches!(
+                            key.as_str(),
+                            "subagent_type" | "subagent_id" | "subagent_trajectory"
+                        )
+                    });
+                }
+            }
+        }
+        if let Some(http) = object.get_mut("http").and_then(Value::as_object_mut) {
+            for key in ["request_body", "response_body", "body_encoding"] {
+                http.remove(key);
+            }
+        }
+    }
+    if level == crate::config::CaptureLevel::Summary {
+        object.remove("user_content");
+        object.remove("assistant_content");
+    }
+}
+
 #[cfg(test)]
 mod header_tests {
 
@@ -804,39 +838,5 @@ mod header_tests {
         assert_eq!(payload["headers"]["authorization"], "<redacted>");
         assert_eq!(payload["headers_redacted"], true);
         assert_eq!(payload["http"]["headers"]["authorization"], "<redacted>");
-    }
-}
-
-/// Retention applies to every persisted copy, including enrichment fields.
-pub(crate) fn retain_capture_content(payload: &mut Value, level: crate::config::CaptureLevel) {
-    let Some(object) = payload.as_object_mut() else {
-        return;
-    };
-    if !level.includes_full_body() {
-        for key in ["body", "llm_request", "llm_response", "spawn_hints"] {
-            object.remove(key);
-        }
-        if let Some(links) = object.get_mut("spawn_links").and_then(Value::as_array_mut) {
-            links.retain(Value::is_object);
-            for link in links {
-                if let Some(link) = link.as_object_mut() {
-                    link.retain(|key, _| {
-                        matches!(
-                            key.as_str(),
-                            "subagent_type" | "subagent_id" | "subagent_trajectory"
-                        )
-                    });
-                }
-            }
-        }
-        if let Some(http) = object.get_mut("http").and_then(Value::as_object_mut) {
-            for key in ["request_body", "response_body", "body_encoding"] {
-                http.remove(key);
-            }
-        }
-    }
-    if level == crate::config::CaptureLevel::Summary {
-        object.remove("user_content");
-        object.remove("assistant_content");
     }
 }

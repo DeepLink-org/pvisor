@@ -9,9 +9,9 @@ use anyhow::{Context, bail};
 use clap::Args;
 
 use crate::runtime::{
-    ApplySelection, OverlayState, ReadOnlyOverlayMount, RunLease, RunRecord,
-    apply_overlay_selected, control_mount_inspect, control_observations, control_overlay_status,
-    control_ping, control_unmount_inspect, discard_overlay, is_live, load_apply_records,
+    ApplySelection, OverlayState, ReadOnlyOverlayMount, RunRecord, apply_overlay_selected,
+    control_mount_inspect, control_observations, control_overlay_status, control_ping,
+    control_unmount_inspect, discard_overlay, is_live, load_apply_records,
     mount_overlay_record_read_only, overlay_status, resolve_run,
 };
 
@@ -578,7 +578,7 @@ mod tests {
     #[test]
     fn process_must_hold_the_selected_run_lease() {
         let temporary = tempfile::tempdir().unwrap();
-        let lease = RunLease::acquire(temporary.path()).unwrap();
+        let lease = crate::runtime::RunLease::acquire(temporary.path()).unwrap();
         let path = temporary.path().join(LEASE_FILENAME);
         let pid = std::process::id() as libc::pid_t;
         assert!(pid_holds_lease(pid, &path).unwrap());

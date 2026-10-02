@@ -583,18 +583,11 @@ pub unsafe extern "C" fn krun_init_log(target: RawFd, level: u32, style: u32, op
 
 #[no_mangle]
 pub extern "C" fn krun_create_ctx() -> i32 {
-    let shutdown_efd = if cfg!(target_arch = "aarch64") && cfg!(target_os = "macos") {
-        Some(EventFd::new(utils::eventfd::EFD_NONBLOCK).unwrap())
-    } else {
-        None
-    };
-
     let ctx_cfg = {
         ContextConfig {
             #[cfg(not(target_env = "musl"))]
             krunfw: KrunfwBindings::new(),
             embedded_kernel: None,
-            shutdown_efd,
             ..Default::default()
         }
     };
@@ -2148,22 +2141,46 @@ pub unsafe extern "C" fn krun_set_snd_device(ctx_id: u32, enable: bool) -> i32 {
     KRUN_SUCCESS
 }
 
-#[allow(unused_assignments)]
+/// Enable orderly shutdown on demand and return a caller-owned descriptor.
+/// The caller must close it; closing it does not disable the context's device.
 #[no_mangle]
+#[cfg(all(target_arch = "aarch64", target_os = "macos"))]
 pub extern "C" fn krun_get_shutdown_eventfd(ctx_id: u32) -> i32 {
-    match CTX_MAP.lock().unwrap().entry(ctx_id) {
-        Entry::Occupied(mut ctx_cfg) => {
-            let cfg = ctx_cfg.get_mut();
-            if let Some(efd) = cfg.shutdown_efd.as_ref() {
-                #[cfg(target_os = "macos")]
-                return efd.get_write_fd();
-                #[cfg(target_os = "linux")]
-                return efd.as_raw_fd();
-            } else {
-                -libc::EINVAL
-            }
+    let mut contexts = CTX_MAP.lock().unwrap();
+    let Some(cfg) = contexts.get_mut(&ctx_id) else {
+        return -libc::ENOENT;
+    };
+    let new_event = if cfg.shutdown_efd.is_none() {
+        match EventFd::new(utils::eventfd::EFD_NONBLOCK) {
+            Ok(event) => Some(event),
+            Err(err) => return -err.raw_os_error().unwrap_or(libc::EIO),
         }
-        Entry::Vacant(_) => -libc::ENOENT,
+    } else {
+        None
+    };
+    let event = cfg.shutdown_efd.as_ref().or(new_event.as_ref()).unwrap();
+    // SAFETY: the event owns this descriptor under the context lock. fcntl
+    // duplicates it without borrowing ownership, and prevents exec leaks.
+    let fd = unsafe { libc::fcntl(event.get_write_fd(), libc::F_DUPFD_CLOEXEC, 0) };
+    if fd < 0 {
+        return -std::io::Error::last_os_error()
+            .raw_os_error()
+            .unwrap_or(libc::EIO);
+    }
+    if let Some(event) = new_event {
+        cfg.shutdown_efd = Some(event);
+    }
+    fd
+}
+
+// Retain the 1.x symbol and its previous unsupported-platform errors.
+#[no_mangle]
+#[cfg(not(all(target_arch = "aarch64", target_os = "macos")))]
+pub extern "C" fn krun_get_shutdown_eventfd(ctx_id: u32) -> i32 {
+    if CTX_MAP.lock().unwrap().contains_key(&ctx_id) {
+        -libc::EINVAL
+    } else {
+        -libc::ENOENT
     }
 }
 
@@ -3470,5 +3487,30 @@ mod test_disable_implicit_init {
             -libc::EINVAL
         );
         assert_eq!(krun_free_ctx(ctx), KRUN_SUCCESS);
+    }
+}
+
+#[cfg(all(test, target_arch = "aarch64", target_os = "macos"))]
+mod test_shutdown_eventfd {
+    use super::*;
+
+    #[test]
+    fn shutdown_is_opt_in_and_descriptors_have_independent_ownership() {
+        let ctx = krun_create_ctx() as u32;
+        assert!(CTX_MAP.lock().unwrap()[&ctx].shutdown_efd.is_none());
+        let first = krun_get_shutdown_eventfd(ctx);
+        let second = krun_get_shutdown_eventfd(ctx);
+        assert!(first >= 0 && second >= 0);
+        assert_ne!(first, second);
+        assert_eq!(
+            unsafe { libc::fcntl(first, libc::F_GETFD) } & libc::FD_CLOEXEC,
+            libc::FD_CLOEXEC
+        );
+        assert_eq!(unsafe { libc::close(first) }, 0);
+        assert!(unsafe { libc::fcntl(second, libc::F_GETFD) } >= 0);
+        assert!(CTX_MAP.lock().unwrap()[&ctx].shutdown_efd.is_some());
+        assert_eq!(krun_free_ctx(ctx), KRUN_SUCCESS);
+        assert!(unsafe { libc::fcntl(second, libc::F_GETFD) } >= 0);
+        assert_eq!(unsafe { libc::close(second) }, 0);
     }
 }

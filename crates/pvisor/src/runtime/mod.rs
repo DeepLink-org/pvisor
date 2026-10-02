@@ -51,9 +51,11 @@ pub use overlay::{
 pub use overlay::{OverlayRecord, OverlayUpper};
 #[cfg(target_os = "linux")]
 pub(crate) use registry::LEASE_FILENAME;
+#[cfg(test)]
+pub use registry::RunLease;
 pub use registry::control_observations;
 pub use registry::{
-    EnvironmentProjection, RunLease, RunLineage, RunRecord, RunRecordState, control_mount_inspect,
+    EnvironmentProjection, RunLineage, RunRecord, RunRecordState, control_mount_inspect,
     control_overlay_status, control_ping, control_unmount_inspect, default_run_home, is_live,
     resolve_run,
 };

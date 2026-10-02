@@ -139,7 +139,7 @@ impl CapturePreparer {
                 story_cmd: None,
             });
         }
-        let mut rec = llm_response_record_with_content(
+        let rec = llm_response_record_with_content(
             Some(ctx.route().session_id.clone()),
             Some(ctx.agent_id().to_string()),
             event.status,

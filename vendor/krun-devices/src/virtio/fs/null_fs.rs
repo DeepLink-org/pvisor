@@ -48,3 +48,34 @@ impl FileSystem for NullFs {
         Err(io::Error::from_raw_os_error(libc::ENOENT))
     }
 }
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::virtio::fs::augment_fs::AugmentFs;
+    use crate::virtio::fs::inode_alloc::InodeAllocator;
+    use std::sync::atomic::{AtomicI32, Ordering};
+    use std::sync::Arc;
+
+    #[test]
+    fn unsupported_ioctl_is_enotty_without_breaking_guest_exit_reporting() {
+        let fs = AugmentFs::new(NullFs, &InodeAllocator::new(), vec![]);
+        let ctx = Context {
+            uid: 0,
+            gid: 0,
+            pid: 1,
+        };
+        let exit = Arc::new(AtomicI32::new(-1));
+        // FS_IOC_GETFLAGS: Linux OverlayFS can probe lower file attributes.
+        let err = fs
+            .ioctl(ctx, fuse::ROOT_ID, 0, 0, 0x80086601, 0, 0, 8, &exit)
+            .unwrap_err();
+        assert_eq!(err.raw_os_error(), Some(libc::ENOTTY));
+        assert_eq!(exit.load(Ordering::SeqCst), -1);
+        assert!(fs
+            .ioctl(ctx, fuse::ROOT_ID, 0, 0, 0x7602, 17, 0, 0, &exit)
+            .unwrap()
+            .is_empty());
+        assert_eq!(exit.load(Ordering::SeqCst), 17);
+    }
+}

@@ -729,7 +729,7 @@ mod tests {
         fs::create_dir_all(&lower).unwrap();
         fs::write(lower.join("lower-file"), b"lower").unwrap();
         fs::write(lower.join("deleted-file"), b"delete me").unwrap();
-        let mut record = OverlayRecord {
+        let record = OverlayRecord {
             id: "embedded-e2e".into(),
             generation: 0,
             target: lower.clone(),

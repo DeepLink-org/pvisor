@@ -620,6 +620,8 @@ mod tests {
             )
             .await;
             assert_eq!(response.status(), StatusCode::BAD_GATEWAY);
+            assert_eq!(active.load(Ordering::Relaxed), 1);
+            drop(response);
             assert_eq!(active.load(Ordering::Relaxed), 0);
             assert_eq!(metrics.snapshot().requests_seen, 1);
             assert_eq!(metrics.snapshot().failures, 1);

@@ -35,7 +35,8 @@ async fn request_event_projects_original_body_and_typed_understanding() {
     let sink = RecordingSink::new();
     let dir = tempfile::tempdir().unwrap();
     let engine = test_engine(sink.clone(), dir.path(), false).await;
-    let ctx = test_context();
+    let mut ctx = test_context();
+    ctx.level = crate::config::CaptureLevel::Full;
     let original = serde_json::json!({
         "model": "deepseek-chat",
         "stream": true,
@@ -84,7 +85,8 @@ async fn response_event_appends_single_stream_record() {
     let sink = RecordingSink::new();
     let dir = tempfile::tempdir().unwrap();
     let engine = test_engine(sink.clone(), dir.path(), false).await;
-    let ctx = test_context();
+    let mut ctx = test_context();
+    ctx.level = crate::config::CaptureLevel::Full;
     engine
         .apply(
             &ctx,

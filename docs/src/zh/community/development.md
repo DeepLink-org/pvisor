@@ -210,3 +210,6 @@ Linux CLI 全静态链接 musl 并内嵌 VM 内核。构建需要 Zig、cargo-zi
 文档任务通过 uv 隔离环境使用与 CI 相同的锁定版 Zensical，不再要求单独维护文档虚拟环境。
 
 发布流程见[发布 PolicyVisor](releasing.md)，运行时要求见[可复现示例](examples.md)。
+
+
+Vendored libkrun 在 1.19.3 基线上选择性回移植上游改进。来源提交、本地适配与验收限制见[上游同步记录](../../../../vendor/libkrun/UPSTREAM.md)；版本号不代表已完整升级到 1.19.6 或 2.0。

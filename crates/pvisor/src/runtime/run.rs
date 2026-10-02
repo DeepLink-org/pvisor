@@ -1362,7 +1362,7 @@ mod tests {
         );
         assert_eq!(
             crate::runtime::RunRecord::read(&storage).unwrap().state,
-            "completed"
+            crate::runtime::RunRecordState::Completed
         );
     }
 

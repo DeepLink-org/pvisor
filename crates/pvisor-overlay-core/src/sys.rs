@@ -367,8 +367,8 @@ mod tests {
     fn negative_epoch_round_trips_integral_and_fractional_timestamps() {
         for (seconds, nanos) in [(-2, 0), (-2, 123_456_789), (0, 0)] {
             let value = timespec(unix_time(seconds, nanos));
-            assert_eq!(value.tv_sec as i64, seconds);
-            assert_eq!(value.tv_nsec as i64, nanos);
+            assert_eq!(value.tv_sec, seconds);
+            assert_eq!(value.tv_nsec, nanos);
         }
     }
 }

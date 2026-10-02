@@ -168,3 +168,6 @@ Use the stable toolchain from `rust-toolchain.toml`, default LLVM backend and pl
 Documentation tasks use an isolated uv environment with the same pinned Zensical as CI; no separate docs virtual environment is required.
 
 See [Release process](releasing.md) and [Reproducible examples](examples.md) for releases/runtime requirements.
+
+
+Vendored libkrun uses a 1.19.3 base with selected upstream backports. See the [upstream synchronization ledger](../../../../vendor/libkrun/UPSTREAM.md) for source commits, local adaptations and validation limits; the version number does not imply a complete 1.19.6 or 2.0 upgrade.

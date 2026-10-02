@@ -354,9 +354,17 @@ fn ag_completions_stream_matches_messages_golden() {
 #[test]
 fn ag_local_stream_head_fixture() {
     let raw = read_fixture("local/response/completions/stream_head.txt");
-    let out = completions_sse_to_messages(&raw, "claude-test");
+    let out = completions_sse_prefix_to_messages(&raw, "claude-test");
     assert!(out.contains("message_start"));
     assert!(out.contains("content_block_delta"));
+    let mut translator = StreamTranslator::new(
+        ProtocolBridge::MessagesToCompletions,
+        ProtocolKind::Messages,
+        "claude-test",
+    )
+    .unwrap();
+    translator.push_chunk(raw.as_bytes()).unwrap();
+    assert!(translator.finish_stream().is_err());
 }
 
 // --- capture: user dialogue matrix ---
@@ -459,7 +467,7 @@ fn ag_capture_assistant_sse_matrix() {
         }
         let raw = read_fixture(case.path);
         let sse = if case.translate_completions_to_messages {
-            completions_sse_to_messages(&raw, "claude-test")
+            completions_sse_prefix_to_messages(&raw, "claude-test")
         } else {
             raw
         };
@@ -486,11 +494,12 @@ fn ag_capture_assistant_from_completions_response() {
 #[test]
 fn ag_capture_assistant_from_stream_fixture() {
     let raw = read_fixture("local/response/completions/stream_head.txt");
-    let text = extract_assistant_turn_from_sse(&completions_sse_to_messages(&raw, "claude-test"));
+    let text =
+        extract_assistant_turn_from_sse(&completions_sse_prefix_to_messages(&raw, "claude-test"));
     assert!(text.contains("Hi"));
 }
 
-fn completions_sse_to_messages(raw: &str, model: &str) -> String {
+fn completions_sse_prefix_to_messages(raw: &str, model: &str) -> String {
     let mut translator = StreamTranslator::new(
         ProtocolBridge::MessagesToCompletions,
         ProtocolKind::Messages,
@@ -501,7 +510,8 @@ fn completions_sse_to_messages(raw: &str, model: &str) -> String {
     for chunk in raw.as_bytes().chunks(512) {
         output.extend_from_slice(&translator.push_chunk(chunk).unwrap());
     }
-    output.extend_from_slice(&translator.finish_stream().unwrap());
+    // Capture also consumes partial streams; EOF validation belongs to the
+    // complete-stream tests, not this prefix extraction helper.
     String::from_utf8(output).unwrap()
 }
 

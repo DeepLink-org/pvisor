@@ -62,7 +62,7 @@ fn completions_to_messages_fixture() {
 
 #[test]
 fn stream_translate_fixture() {
-    let raw = include_str!("fixtures/local/response/completions/stream_head.txt");
+    let raw = include_str!("fixtures/response/completions/stream.json");
     let mut translator = StreamTranslator::new(
         ProtocolBridge::MessagesToCompletions,
         ProtocolKind::Messages,

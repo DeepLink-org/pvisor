@@ -1,5 +1,7 @@
 //! Filesystem-neutral review, apply, conflict detection, recovery and drop.
-use crate::{fingerprint_at, load_preimages, preimage_journal_is_complete, remove_preimages};
+use crate::{
+    OverlayCore, fingerprint_at, load_preimages, preimage_journal_is_complete, remove_preimages,
+};
 use globset::{GlobBuilder, GlobSet, GlobSetBuilder};
 pub use pvisor_core::overlay::{
     ApplyOutcome, ApplyRecord, ApplyRecordState, ApplySelection, ChangeEntry, ChangeEntryType,
@@ -583,9 +585,10 @@ pub fn apply_overlay_selected(
         )));
     }
     if record.state == OverlayState::Discarded {
-        return Err(OverlayError::InvalidState(
-            "discarded overlays cannot recover pending applies".into(),
-        ));
+        return Err(OverlayError::InvalidState(format!(
+            "overlay {} was already dropped; apply cannot recover discarded changes",
+            record.id
+        )));
     }
     let _target_lock = TargetApplyLock::acquire(&record.target)?;
     recover_pending_applies_locked(record, lower_dirs)?;

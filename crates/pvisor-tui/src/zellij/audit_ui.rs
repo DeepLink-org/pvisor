@@ -6,7 +6,7 @@ use pvisor_core::NetworkTransport;
 use pvisor_core::audit::{AuditDecision, AuditKind, AuditRequest};
 use serde::{Deserialize, Serialize};
 use std::collections::VecDeque;
-use std::io::{BufRead, BufReader, Read, Write};
+use std::io::{Read, Write};
 use std::net::IpAddr;
 use std::os::unix::net::{UnixListener, UnixStream};
 use std::path::{Path, PathBuf};
@@ -680,6 +680,7 @@ impl AuditServer {
 mod tests {
     use super::*;
     use pvisor_core::audit::AuditKind;
+    use std::io::{BufRead, BufReader};
 
     #[test]
     fn view_identity_and_fragmented_socket_requests_are_isolated() {

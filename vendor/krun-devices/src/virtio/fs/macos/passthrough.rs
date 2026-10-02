@@ -37,6 +37,8 @@ use super::super::multikey::MultikeyBTreeMap;
 const XATTR_KEY: &[u8] = b"user.containers.override_stat\0";
 const SECURITY_CAPABILITY: &[u8] = b"security.capability\0";
 
+const MACOS_XATTR_PREFIX: &[u8] = b"com.apple.";
+
 const UID_MAX: u32 = u32::MAX - 1;
 
 type Inode = u64;
@@ -1234,8 +1236,8 @@ fn remove_security_capability(file: &InodeHandle) {
         },
     };
 
-    // ENODATA means the attribute didn't exist, which is fine
-    if ret != 0 && io::Error::last_os_error().raw_os_error() != Some(libc::ENODATA) {
+    // ENOATTR means the attribute didn't exist, which is fine
+    if ret != 0 && io::Error::last_os_error().raw_os_error() != Some(libc::ENOATTR) {
         warn!("Error removing security.capability from file");
     }
 }
@@ -1443,10 +1445,19 @@ impl FileSystem for PassthroughFs {
                 },
                 Arc::new(InodeData {
                     path_fd: if self.fd_paths {
-                        let fd = unsafe { libc::open(c_path.as_ptr(), libc::O_EVTONLY | libc::O_SYMLINK | libc::O_CLOEXEC) };
-                        if fd < 0 { return Err(linux_error(io::Error::last_os_error())); }
+                        let fd = unsafe {
+                            libc::open(
+                                c_path.as_ptr(),
+                                libc::O_EVTONLY | libc::O_SYMLINK | libc::O_CLOEXEC,
+                            )
+                        };
+                        if fd < 0 {
+                            return Err(linux_error(io::Error::last_os_error()));
+                        }
                         Some(unsafe { File::from_raw_fd(fd) })
-                    } else { None },
+                    } else {
+                        None
+                    },
                     inode,
                     ino: st.st_ino,
                     dev: st.st_dev,
@@ -2348,6 +2359,10 @@ impl FileSystem for PassthroughFs {
             return Err(linux_error(io::Error::from_raw_os_error(libc::EACCES)));
         }
 
+        if name.to_bytes().starts_with(MACOS_XATTR_PREFIX) {
+            return Err(linux_error(io::Error::from_raw_os_error(libc::EOPNOTSUPP)));
+        }
+
         let mut mflags: i32 = 0;
         if (flags as i32) & bindings::LINUX_XATTR_CREATE != 0 {
             mflags |= libc::XATTR_CREATE;
@@ -2402,6 +2417,10 @@ impl FileSystem for PassthroughFs {
 
         if name.to_bytes() == XATTR_KEY {
             return Err(linux_error(io::Error::from_raw_os_error(libc::EACCES)));
+        }
+
+        if name.to_bytes().starts_with(MACOS_XATTR_PREFIX) {
+            return Err(linux_error(io::Error::from_raw_os_error(libc::ENODATA)));
         }
 
         let mut buf = vec![0; size as usize];
@@ -2496,6 +2515,9 @@ impl FileSystem for PassthroughFs {
             for attr in buf.split(|c| *c == 0) {
                 if attr.starts_with(&XATTR_KEY[..XATTR_KEY.len() - 1]) {
                     clean_size -= XATTR_KEY.len();
+                } else if attr.starts_with(MACOS_XATTR_PREFIX) {
+                    // attr does not include the null terminator; add 1 for it.
+                    clean_size -= attr.len() + 1;
                 }
             }
 
@@ -2504,7 +2526,10 @@ impl FileSystem for PassthroughFs {
             let mut clean_buf = Vec::new();
 
             for attr in buf.split(|c| *c == 0) {
-                if attr.is_empty() || attr.starts_with(&XATTR_KEY[..XATTR_KEY.len() - 1]) {
+                if attr.is_empty()
+                    || attr.starts_with(&XATTR_KEY[..XATTR_KEY.len() - 1])
+                    || attr.starts_with(MACOS_XATTR_PREFIX)
+                {
                     continue;
                 }
 
@@ -2531,6 +2556,10 @@ impl FileSystem for PassthroughFs {
             return Err(linux_error(io::Error::from_raw_os_error(
                 bindings::LINUX_EACCES,
             )));
+        }
+
+        if name.to_bytes().starts_with(MACOS_XATTR_PREFIX) {
+            return Err(linux_error(io::Error::from_raw_os_error(libc::ENODATA)));
         }
 
         // Safe because this doesn't modify any memory and we check the return value.
@@ -2817,6 +2846,88 @@ impl FileSystem for PassthroughFs {
 #[cfg(test)]
 mod path_handle_tests {
     use super::*;
+
+    #[test]
+    fn macos_private_xattrs_are_consistently_hidden_from_linux_guests() {
+        let root = tempfile::tempdir().unwrap();
+        let file = File::create(root.path().join("file")).unwrap();
+        for name in [c"com.apple.pvisor-test", c"user.pvisor-visible"] {
+            assert_eq!(
+                unsafe {
+                    libc::fsetxattr(
+                        file.as_raw_fd(),
+                        name.as_ptr(),
+                        b"value".as_ptr().cast(),
+                        5,
+                        0,
+                        0,
+                    )
+                },
+                0
+            );
+        }
+        let fs = PassthroughFs::new(
+            Config {
+                root_dir: root.path().to_string_lossy().into_owned(),
+                ..Default::default()
+            },
+            Arc::new(InodeAllocator::new()),
+        )
+        .unwrap();
+        fs.init(FsOptions::empty()).unwrap();
+        let ctx = Context {
+            uid: 0,
+            gid: 0,
+            pid: 0,
+        };
+        let inode = fs.lookup(ctx, fuse::ROOT_ID, c"file").unwrap().inode;
+        let missing = linux_error(io::Error::from_raw_os_error(libc::ENODATA)).raw_os_error();
+        assert_eq!(
+            fs.getxattr(ctx, inode, c"com.apple.pvisor-test", 0)
+                .err()
+                .unwrap()
+                .raw_os_error(),
+            missing
+        );
+        assert_eq!(
+            fs.removexattr(ctx, inode, c"com.apple.pvisor-test")
+                .unwrap_err()
+                .raw_os_error(),
+            missing
+        );
+        assert_eq!(
+            fs.setxattr(ctx, inode, c"com.apple.pvisor-test", b"changed", 0)
+                .unwrap_err()
+                .raw_os_error(),
+            linux_error(io::Error::from_raw_os_error(libc::EOPNOTSUPP)).raw_os_error()
+        );
+        let ListxattrReply::Count(count) = fs.listxattr(ctx, inode, 0).unwrap() else {
+            panic!("expected size");
+        };
+        let ListxattrReply::Names(names) = fs.listxattr(ctx, inode, count).unwrap() else {
+            panic!("expected names");
+        };
+        assert_eq!(names.len(), count as usize);
+        assert!(names
+            .split(|byte| *byte == 0)
+            .any(|name| name == b"user.pvisor-visible"));
+        assert!(!names
+            .split(|byte| *byte == 0)
+            .any(|name| name.starts_with(b"com.apple.")));
+        assert_eq!(
+            unsafe {
+                libc::fgetxattr(
+                    file.as_raw_fd(),
+                    c"com.apple.pvisor-test".as_ptr(),
+                    std::ptr::null_mut(),
+                    0,
+                    0,
+                    0,
+                )
+            },
+            5
+        );
+    }
 
     #[test]
     fn descriptor_paths_follow_renames_without_volfs() {

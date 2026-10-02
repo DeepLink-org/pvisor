@@ -146,12 +146,14 @@ fn metadata_at(directory: &File, name: &[u8]) -> anyhow::Result<Response> {
     };
     #[cfg(target_os = "macos")]
     {
-        // Open relative to the confined parent, including symlinks themselves.
+        // O_SYMLINK opens the link itself on macOS. Combining it with
+        // O_NOFOLLOW instead rejects symlinks with ELOOP, breaking directory
+        // metadata listings. The parent remains confined by directory fds.
         let fd = unsafe {
             libc::openat(
                 directory.as_raw_fd(),
                 name.as_ptr(),
-                libc::O_SYMLINK | libc::O_NOFOLLOW | libc::O_CLOEXEC | libc::O_EVTONLY,
+                libc::O_SYMLINK | libc::O_CLOEXEC | libc::O_EVTONLY,
             )
         };
         if fd < 0 {
