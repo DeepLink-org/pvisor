@@ -14,7 +14,7 @@ nav = [
   { "开始使用" = ["zh/start/index.md", "zh/start/what-is-pvisor.md", "zh/start/installation.md", "zh/start/first-run.md", "zh/start/next-steps.md"] },
   { "指南" = [
     "zh/guides/index.md",
-    { "接入你的 Agent" = ["zh/guides/agents/index.md", "zh/guides/agents/claude-code.md", "zh/guides/agents/codex.md", { "Gemini CLI（规划中）" = "zh/guides/agents/gemini-cli.md" }, { "aider（规划中）" = "zh/guides/agents/aider.md" }, { "OpenCode（规划中）" = "zh/guides/agents/opencode.md" }, "zh/guides/agents/custom-scripts.md"] },
+    { "接入你的 Agent" = ["zh/guides/agents/index.md", "zh/guides/agents/claude-code.md", "zh/guides/agents/codex.md", { "Gemini CLI" = "zh/guides/agents/gemini-cli.md" }, { "aider" = "zh/guides/agents/aider.md" }, { "OpenCode" = "zh/guides/agents/opencode.md" }, "zh/guides/agents/custom-scripts.md"] },
     "zh/guides/review-apply.md",
     "zh/guides/fork-checkpoint.md",
     { "策略" = ["zh/guides/policies/files.md", "zh/guides/policies/network.md", "zh/guides/policies/credentials.md"] },

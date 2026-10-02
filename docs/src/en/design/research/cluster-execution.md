@@ -7,18 +7,18 @@ search:
 # Cluster execution (L3)
 
 !!! warning "Planned"
-    No results are available yet. This page records the requirements; contributions are welcome.
+    No results are available yet. The requirements are open for contributions.
 
 ## Question
 
-How do scheduling, centralized evidence, and delegation divide responsibility with Kubernetes/Ray?
+Where are the boundaries of cross-node scheduling, centralized evidence and batch delegation, and how does pVisor divide responsibility with Kubernetes/Ray?
 
 ## Requirements
 
-- Metrics: scheduling throughput, audit cost, cluster concurrency.
-- Controls: native Kubernetes/Ray scheduling.
-- Workload: batch agents on multiple nodes.
-- Environment: pinned scheduler versions.
+- Metrics: cross-node scheduling throughput, centralized-evidence audit cost, single-cluster concurrency limit.
+- Controls: native Kubernetes and Ray scheduling.
+- Workload: batch agent execution across multiple nodes.
+- Environment: multi-machine cluster; pinned scheduler versions.
 
 ## Acceptance criteria
 

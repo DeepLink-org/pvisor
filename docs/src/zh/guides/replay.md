@@ -1,7 +1,6 @@
 # SandboxReplay
 
-SandboxReplay 是 pVisor 的 Agent 轨迹回放能力。它面向用户已经创建好的新沙箱，重新执行原始轨迹中恢复边界之前的工具调用，用新沙箱产生的 observation 重建 Agent 原生上下文，然后从边界后继续运行。它会在
-[Run 与 Attempt 模型](../design/execution-model.md)中创建派生 Run。
+SandboxReplay 在用户已创建的新沙箱中回放 Agent 轨迹：重新执行恢复边界之前的工具调用，用新沙箱产生的 observation 重建 Agent 原生上下文，再从边界后继续运行。它在 [Run 与 Attempt 模型](../design/execution-model.md) 中创建派生 Run。
 
 ## 1. 基本概念
 

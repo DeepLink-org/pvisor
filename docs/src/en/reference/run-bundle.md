@@ -11,13 +11,13 @@ search:
 
 ## Question
 
-Which schema-4 fields are authoritative evidence, which are derived, and how do versions behave?
+Which fields does `run-bundle.json` (currently schema version 4) contain? Which are enforcement evidence, which are derived summaries, and how does cross-version compatibility work?
 
 ## Requirements
 
-- Publish generated JSON Schema.
-- Explain each field source, optionality, null versus zero.
-- Explain version changes and rejection of old Bundles lacking observations.
+- Generate a JSON Schema from the Bundle type definitions and publish it with each version.
+- Describe each top-level field: source (admission plan, executor observations, OverlayFS, OverlayNet, Gateway), whether it can be `null`, and the difference between `null` and zero.
+- State the schema version policy: when it is upgraded and whether old Bundles can be read (old Bundles that lack the observation contract are currently rejected).
 
 ## Acceptance criteria
 

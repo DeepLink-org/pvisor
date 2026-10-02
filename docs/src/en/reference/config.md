@@ -11,17 +11,17 @@ search:
 
 ## Question
 
-Which fields, types, defaults, CLI equivalents, and merge rules does RunConfig accept?
+Which fields does `pvisor run --config run.toml` accept, and what are each field's type, default, CLI equivalent, and override rule?
 
 ## Requirements
 
 - Automatically generate field tables from RunConfig serde definitions.
 - Include TOML path, type, default, CLI option, scalar/list merge behavior.
-- Identify values not honored on some CLI paths, such as run.inherit_env.
+- Identify values not honored on some CLI paths, such as `run.inherit_env`.
 
 ## Acceptance criteria
 
-- Generate at docs build or check against code in CI.
+- Generate at `just docs-build`, or check the generated result against the code in CI.
 - Cover `[run]`, top-level `filesystem`, `[overlayfs]`, `[overlaynet]`, `[gateway]`, `[record]`, `[policies.*]`, `[container]` and `[vm]`.
 
 ## Tracking
@@ -66,7 +66,7 @@ Proxy deny applies to traffic reaching the proxy; this example does not establis
 
 | TOML path | Type/default | CLI / purpose |
 | --- | --- | --- |
-| `filesystem` | `host` (default) / `sandbox` | `--filesystem`; top-level string, not a table |
+| `filesystem` | `host` (default) / `sandbox` | `--filesystem`; top-level string, not a `[filesystem]` table |
 | `run.executor` | `host` (default) / `container` / `vm` | `--executor` |
 | `run.command` | String array, empty | Command after `--`; required to execute |
 | `run.agent` | String, `agent` | `--name` |
@@ -77,7 +77,7 @@ Proxy deny applies to traffic reaching the proxy; this example does not establis
 | `run.resource_limits` | Optional integer budgets | `memory_bytes`, `processes`, `cpu_time_ms`, `open_files`, `file_size_bytes`; check effective evidence |
 | `overlayfs.stage` / `max_size` | Optional path / bytes | `--stage` / `--overlayfs-max-size`; an overlayfs table requests staging |
 | `overlayfs.mount` / `access` | Arrays of tables | `--mount` / `--access`; [file policy](../guides/policies/files.md) defines grammar |
-| `overlaynet` | Mode, policy, rules | Defaults: `auto`, `127.0.0.1:19081`, `public` |
+| `overlaynet` | Mode, policy and rules | `mode` defaults to `auto`, `listen` to `127.0.0.1:19081`, `policy` to `public` |
 | `gateway` | Optional capture/routes | Default mode `off`; capture requires Gateway feature |
 | `record.destination` | Optional path | `--record-destination`; file or directory |
 | `policies.session/workspace/user` | Policy layers | Strictest intersection |

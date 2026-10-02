@@ -1,28 +1,25 @@
 # `pvisor` command reference
 
-The Job is pVisor's primary user-facing object. `pvisor run` creates a
-Job. The other flat commands act directly on that Job; there is no `job`
-subcommand. `replay` starts a Job from a trajectory. See the
-[execution model](../design/execution-model.md) for how Job, Run, and Attempt
-relate; existing Job IDs and on-disk records retain their `run-*`
+Job is pVisor's primary user-facing object. `pvisor run` creates a Job; the other
+flat commands operate on it directly, without adding a `job` subcommand, and
+`replay` creates a Job from a trajectory. See the
+[execution model](../design/execution-model.md) for how Job, Run and Attempt
+relate; existing Job IDs and on-disk records keep their `run-*`
 and `Run Bundle` names.
-Full command examples for Host, OCI VM, and transparent host-rootfs VM
+Full command examples for Host, OCI VM and transparent host-rootfs VM
 are in
 [Run workloads with pVisor](../guides/executors/index.md).
 
 ## Find the command you need
 
-Use the smallest surface that matches your next decision:
-
 - **Run a command:** start with [`pvisor run`](../start/first-run.md), then use
-  `status --review`, `inspect`, and `apply` to decide what reaches the project.
-- **Understand a boundary:** use `status` and `inspect`, then read the
-  [execution guide](../guides/executors/index.md) before changing providers.
-- **Continue a trajectory:** use `replay` only when you already have a
-  supported trajectory and want a fresh sandbox; begin with the
-  [replay guide](../guides/replay.md).
+  `status --review`, `inspect` and `apply` to decide which changes reach the project.
+- **Understand the execution boundary:** use `status` and `inspect`, then read the
+  [executor guides](../guides/executors/index.md).
+- **Continue a trajectory:** use `replay` only when you already have a supported
+  trajectory, after reading the [replay guide](../guides/replay.md).
 
-If this is your first command, do not start with the full option list below:
+For your first run, copy the smallest loop:
 
 ```bash
 pvisor run --safe -- codex
@@ -30,57 +27,120 @@ pvisor status --review last
 pvisor apply last --path src
 ```
 
-`last` resolves only Jobs in the default storage that belong to the current
-workspace. With `--stage PATH`, pass that path or the printed Job ID (`run-*`)
-to later commands.
+`last` resolves only Jobs that belong to the current workspace in default
+storage. With `--stage PATH`, pass that path or the Job ID to later commands;
+see [Jobs and storage](../concepts/jobs.md).
 
-Add `--tui` for a Zellij-style terminal frame, bottom status bar, and floating
+Add `--tui` for a Zellij-style terminal frame, bottom status bar and floating
 review panel:
 
 ```bash
 pvisor run --tui -- bash
 ```
 
-The shell or Agent keeps the terminal width and receives keyboard input by
-default. The header shows the workspace and file/network boundaries. The bottom
-bar shows state, elapsed time, pending authorization and nonzero activity or
-errors; detailed counters remain in the panels. `Ctrl-]` opens the menu. Pressing the prefix replaces
-the same bar with the available shortcuts. pVisor's own startup
-diagnostics appear in the Log panel instead of
-the Agent terminal. Press `Ctrl-]` to enter command mode, then `r`, `f`, `n`,
-`u`, `l`, or `p` to open the Overview, Files, Network, Job, Log, or Permissions panel. Press `?`
-for key help. In a panel, use Tab or `1`–`6` to switch views, `j`/`k` to scroll,
-and Esc or `Ctrl-]` to return to the Agent. Press `Ctrl-]` twice to send a
-literal Ctrl-] to the Agent.
+Keyboard input goes to the shell or Agent by default, and the terminal always
+keeps its full width. The header shows the working directory and the file and
+network boundaries; the bottom bar shows run state, elapsed time and nonzero
+access anomalies, and highlights pending authorization. Detailed counters stay
+in the panels.
+Press `Ctrl-]` to open the menu, which replaces the same line with shortcuts.
+pVisor's own startup diagnostics appear in the
+Log panel rather than the Agent terminal. Press `Ctrl-]` to enter command mode,
+then `r`, `f`, `n`, `u`, `l` or `p` to open the Overview, Files, Network, Job,
+Log or Permissions panel, and `?` for key help. In a panel, switch views with
+Tab or `1`–`6`, scroll with `j`/`k`, and return to the Agent with Esc or
+`Ctrl-]`. Press `Ctrl-]` twice to send the key to the Agent literally.
 
-Use `pvisor --ask -- bash` to ask before accessing files covered by `ask`
-rules or unlisted proxy destinations; `--ask` also enables `--tui` and `--safe`.
-File approval covers inspection, reading, modification, and deletion in the
-allowed view, not read-only access. Saved decisions are consulted only for
-matching ask rules, and cannot override explicit deny or sandbox boundaries.
-Ask prompts build reusable permissions as you work. `--access 'private/*:ask'`
-automatically opens the audit TUI. In a prompt, choose where to remember the
-answer with `s` (session, the default), `w` (workspace), or `u` (user), then
-press `1` to select the exact target and Enter to confirm, or `d` to deny it.
-Use Tab or Up/Down to move between scope, lifetime and action buttons;
-Left/Right changes the selection. Enter on an action button confirms it.
-Deny is selected by default; `d` denies immediately. Selection alone never grants access. For files, `2` allows
-files in the same directory and `3` allows the same suffix. For network
-requests, `2` allows the hostname and its subdomains on the same port and
-transport.
+### Staging and storage {#暂存与存储}
 
-Session rules live in the Job's `audit-policy.json`. Workspace and user rules
-live under `permissions` in `~/.config/pvisor/config.toml` (or
-`$XDG_CONFIG_HOME/pvisor/config.toml` when set to an absolute directory), and
-load when a new TUI Job starts. Workspace rules use the canonical workspace
-path. Precedence is session > workspace > user, with the last matching rule
-winning within each scope. Explicit deny policies still take precedence over
-ask approvals. Persistent file rules use original absolute paths; user-wide
-suffix grants can match files across workspaces. Review rules in Permissions;
-use `j`/`k` to select a saved decision and `x`, then `x` again, to forget it.
-Removing a decision restores matching broader rules or a new prompt; it does
-not close existing file handles. Other running TUIs reload on their next launch.
-Other configuration settings and comments are preserved when saving.
+The table below describes the default CLI behavior. Explicit commit settings,
+writable shares and application-compatibility policies can change where writes go.
+
+| Mode or directory | Write destination | After exit |
+| --- | --- | --- |
+| Ordinary host, no staging | Original workspace | Written to the host; `drop` cannot undo it |
+| `--safe` or `--ask` workspace | Copy-on-write stage in Job storage | Retained for `status --review`, `apply` and `drop` |
+| Workspace with explicit `--stage PATH` | The named stage | Retained; the option also enables staging |
+| VM workspace | The named stage or default Job storage | Retained |
+| Other writes to the VM root | Private temporary upper | Discarded when the VM exits |
+| `--safe` HOME / `CODEX_HOME` state | Separate private stage | Discarded at exit; not part of the workspace Run Bundle |
+| Explicit `--mount SOURCE:write` | Host SOURCE | Written directly and persistently; bypasses workspace apply/drop |
+
+Job records and the Run Bundle are stored in run storage. `--stage PATH` chooses
+the location; it is not a prerequisite for `--safe`/`--ask` to retain workspace
+changes. File review does not undo remote side effects that already happened.
+
+### Filesystem parameters {#文件系统参数}
+
+A macFUSE temporary workspace on macOS uses the directory where pVisor was
+launched as its default lower; `/Volumes/pvisor-*` is the merged-view mount
+point and contains the files already present in that directory. An explicit
+working directory or OverlayFS base takes precedence.
+
+An ordinary host Job writes workspace changes through to the lower by default.
+`--safe` and `--ask` retain workspace changes in Job storage by default, to be
+handled later with `status --review`, `apply` or `drop`. `--stage PATH` only
+chooses the storage location and is no longer a prerequisite for retaining
+changes.
+
+```bash
+pvisor run --stage ../run-stage -- codex
+pvisor run --safe --mount /opt/zcode:read --mount /var/lib/zcode:write -- zcode
+pvisor run --access '**/.ssh:deny' -- zcode
+pvisor run --access '.env:ask' -- codex
+```
+
+`--mount SOURCE:read` grants a host executor read-only access at the original
+absolute path and requires `--safe` or `--ask`; `SOURCE:write` modifies host
+storage directly. Neither rewrites TARGET, and neither may overlap the
+workspace, Job storage or writable runtime paths; a read-only share cannot live
+under Linux's private `/tmp`. Explicit shares bypass the workspace OverlayFS ask
+rules.
+`--mount SOURCE[:TARGET]:stage` instead adds SOURCE as a lower layer of the
+workspace copy-on-write view; it is not an independent directory mount.
+`--access PATH-GLOB:deny|ask|warn` accumulates configuration, preset and CLI
+rules by default: deny refuses, ask prompts, and warn allows with a warning.
+Clearing configuration and default file protection requires an explicit
+`--clear-access` before adding CLI rules. deny > ask > warn.
+The former `:read` warning spelling is rejected; use `:warn`, or
+`--mount PATH:read` for true read-only access.
+
+Use `pvisor --ask -- bash` to ask before matching an `ask` file rule or reaching
+an unlisted proxy network destination; `--ask` also enables `--tui` and
+`--safe`. Specifying `--access ...:ask` automatically enables the audit TUI and
+the safe staging view, with no separate `--ask` or `--tui`.
+
+The prompt uses Tab or the up/down arrows to switch scope, retention and
+buttons, left/right to choose, and Enter to confirm on a button; the deny button
+is selected by default. Press `s`, `w` or `u` to pick the session, workspace or
+user scope. Press `1` to allow only this file, `2` to allow the containing
+directory, or `3` to allow the same suffix; press `d` to deny this target. For
+an unlisted proxy network destination, the `--ask` prompt can press `1` to allow
+only this target or `2` to allow the current domain and its subdomains; both
+choices are limited to the current port and transport, and an IP address cannot
+use domain scope. An explicit `deny` rule still refuses directly without opening
+the prompt.
+
+Session decisions are written to `audit-policy.json` in the current Job
+directory, and workspace and user decisions to the `permissions` section of
+`~/.config/pvisor/config.toml` (or the `pvisor/config.toml` under an absolute
+`XDG_CONFIG_HOME`). A decision is applied automatically when the same scope
+matches again, and every decision is recorded in `audit.jsonl`. The workspace is
+identified by its canonical working directory; a new TUI Job loads the rules
+with session > workspace > user precedence, and within a layer the last matching
+rule wins. Persisted file rules use original absolute paths, so a user-level
+suffix rule can cover other workspaces; saving preserves other configuration
+settings and comments. Saved decisions are used only for ask-matched access and
+cannot override a static deny or an outer sandbox.
+
+In the Permissions panel, select a decision with `j`/`k` and press `x` twice to
+remove it; the access then falls back to a broader rule or a new prompt. Removal
+does not close already-open file handles, and other running TUIs pick up the
+change on their next launch. These records are retained after the Job by
+default; `--stage PATH` chooses the location.
+
+Proxy network auditing is a cooperative boundary: direct connections that bypass
+the proxy do not trigger this prompt.
 
 ```text
 pvisor
@@ -94,44 +154,6 @@ pvisor
 └── replay              Create a Job from an agent trajectory
 ```
 
-### Filesystem parameters {#文件系统参数}
-
-The macFUSE merged mount at /Volumes/pvisor-* uses the current directory as its default lower unless an explicit base is configured. Ordinary host writes reach the workspace; safe/ask retain staging.
-
-```bash
-pvisor run --stage ../run-stage -- codex
-pvisor run --safe --mount /opt/zcode:read --mount /var/lib/zcode:write -- zcode
-pvisor run --access '**/.ssh:deny' -- zcode
-pvisor run --access '.env:ask' -- codex
-```
-
-`--mount SOURCE:read` grants read-only access at the original absolute path for host with `--safe` or `--ask`; `SOURCE:write` modifies host storage directly. Neither rewrites TARGET or may overlap the workspace, Job storage or writable runtime paths. Linux private `/tmp` cannot hold a read-only share. Explicit shares bypass workspace OverlayFS ask rules. `--mount SOURCE[:TARGET]:stage` composes a workspace lower rather than mounting an independent directory.
-
-`--access PATH-GLOB:deny|ask|warn` appends configuration, preset and CLI rules, with deny > ask > warn. Use `--clear-access` explicitly to clear defaults/configuration before adding CLI rules. The obsolete warning spelling `:read` is rejected; use `:warn`, or `--mount PATH:read` for actual read-only sharing. Proxy audit is cooperative: direct connections outside the proxy do not prompt.
-
-<a id="staging-and-storage"></a>
-
-## Staging and storage {#暂存与存储}
-
-These are the CLI defaults. Explicit commit settings, writable shares, and
-application compatibility grants can change where writes go.
-
-| Mode or directory | Write destination | After exit |
-| --- | --- | --- |
-| Ordinary host without staging | Original workspace | Already written; `drop` cannot undo it |
-| `--safe` or `--ask` workspace | Copy-on-write stage in Job storage | Retained for `status --review`, `apply`, and `drop` |
-| Workspace with `--stage PATH` | Selected stage | Retained; the option also enables staging |
-| VM workspace | Selected stage or default Job storage | Retained |
-| Other VM rootfs writes | Private temporary upper | Discarded at VM exit |
-| `--safe` HOME / `CODEX_HOME` state | Separate private stage | Discarded at exit; excluded from the workspace Run Bundle |
-| `--mount SOURCE:write` | Host SOURCE | Written directly; outside workspace apply/drop |
-
-Job records and the Run Bundle live in run storage. `--stage PATH` selects a
-location; `--safe` and `--ask` retain workspace changes without it.
-File review cannot undo remote side effects.
-
-<a id="safe-first-run"></a>
-
 ## Safe first run {#安全的第一次运行}
 
 ```bash
@@ -139,33 +161,31 @@ pvisor run --safe -- codex
 pvisor status --review last
 ```
 
-Host execution preserves the host filesystem view by default. `--filesystem sandbox`
-opts into pVisor's synthetic-root/Landlock or Seatbelt filesystem access policy.
-`--safe` stages workspace writes and keeps writable home
-state in a private copy-on-write view, including Codex launched from a shell.
-`--safe` and `--ask` retain workspace changes and `run-bundle.json` in Job
-storage by default. Use `status --review`, `apply`, or `drop` after exit.
-`--stage <PATH>` chooses another storage directory; it is not required to retain changes.
+Host execution preserves the host filesystem view by default; only
+`--filesystem sandbox` enables pVisor's synthetic-root/Landlock or Seatbelt
+filesystem access policy. `--safe` stages the workspace and gives HOME
+(including Codex launched from a shell) a separate copy-on-write view. Without
+`--stage`, the changeset and Run Bundle are retained in Job storage by default
+and can be reviewed, applied or dropped after exit. An explicit
+`--stage <PATH>` retains the Job and a writable stage, keeps the changes
+available for human review, and writes `run-bundle.json` with mode `0600`.
 
-`--strict` fails closed before command start unless every requested capability
-dimension has non-bypassable enforcement evidence. Today host, container, and
-VM executors all request Network and Subprocess enforcement, and none claim
-Subprocess — so `--strict` currently exits with `UnsupportedPolicy` on those
-paths. Use it to verify fail-closed behavior, not as a “stronger sandbox is
-ready” switch.
+`--strict` requires non-bypassable enforcement evidence for every requested
+capability dimension, and otherwise fails closed before the Agent starts. Today
+host, container and VM all request Network and Subprocess, and none claims
+Subprocess, so `--strict` exits with `UnsupportedPolicy` on those paths. Use the
+flag to verify fail-closed behavior, not to mean "a stronger sandbox is ready".
 On Linux, `--filesystem sandbox` uses pVisor's rootless launcher with
-user/mount/PID namespaces, a minimal bind-projected root, `chroot`, and a
+user/mount/PID namespaces, a minimal bind-projected root, `chroot` and a
 kernel-negotiated Landlock policy. `--overlaynet-deny-all` independently adds a
-private network namespace; the
-public/allowlist proxy modes remain cooperative. On macOS the host executor
-installs a generated Seatbelt policy only when filesystem sandboxing or network
-isolation is requested; filesystem policy remains independent from network
-policy. Staged writes are non-bypassable. For deny-all Runs it blocks IP and
-ambient host Unix sockets,
-while retaining the exact AgentCtl and Run-local IPC. Reads and selective
-network policy remain ambient/cooperative and are labeled separately in the
-Bundle. Native OCI and libkrun executors retain the same outer Run, OverlayFS,
-and AgentCtl state observation.
+private network namespace; public/allowlist proxy modes remain cooperative. On
+macOS, the host executor installs a generated Seatbelt policy only when
+filesystem sandbox or network isolation is requested; filesystem policy and
+network policy are independent. For a deny-all Run it blocks IP and ambient host
+Unix sockets while retaining the exact AgentCtl and Run-local IPC. Reads and
+selective network policy remain ambient/cooperative and are labeled separately
+in the Bundle. Native OCI and libkrun executors retain the same outer Run,
+OverlayFS and AgentCtl state observation.
 
 After completion:
 
@@ -175,19 +195,17 @@ pvisor fork last -- codex
 pvisor apply last --all # or: pvisor drop last
 ```
 
-`fork` snapshots the stopped Job's staged filesystem before starting the child.
-Pass `--checkpoint ID` to reuse an existing logical checkpoint. Embedded hosts can call
-`RunHandle::checkpoint`: pVisor publishes an AgentCtl quiesce directive,
-requires every Session frozen into the checkpoint to report the matching
-quiesced state, snapshots the raw upper, then publishes `continue`. Logical
-checkpoints preserve filesystem and cooperative client safe-point boundaries,
-not process memory.
+`fork` snapshots the stopped Job's staged filesystem before launching the child.
+Pass `--checkpoint ID` to reuse an existing logical checkpoint. Embedded hosts
+can call `RunHandle::checkpoint`: pVisor publishes an AgentCtl quiesce
+directive, requires every Session frozen into the checkpoint to report the
+matching quiesced state, snapshots the raw upper, then publishes `continue`.
+Logical checkpoints preserve filesystem and cooperative client safe-point
+boundaries, not process memory.
 
-To stop a running Job, use `pvisor kill JOB_ID`. It requests graceful
-termination from the Job supervisor; check `pvisor status JOB_ID` for the final
-state. A stopped Job can still be reviewed and applied or dropped.
-
-<a id="safe-parameter-preset"></a>
+To stop a running Job, use `pvisor kill JOB_ID`. It requests graceful termination
+from the Job supervisor; check `pvisor status JOB_ID` for the final state. A
+stopped Job can still be reviewed and applied or dropped.
 
 ## `--safe` parameter preset {#safe-参数预设}
 
@@ -198,33 +216,43 @@ pvisor run --safe -- zcode
 pvisor run --safe --overlaynet-allow inference.example.com:443 -- zcode
 ```
 
-`--safe` generates a command-line argument patch, parses it through the same CLI parser, and
-applies it before explicit user arguments. The preset matches executable names to restore each Agent's default HTTPS API grants. It requires isolation from the
-selected executor and never selects an executor.
-Precedence is **explicit CLI > safe preset > configuration
-file > ordinary defaults**. Runs without `--safe` retain their existing behavior. The preset
-supports commands and TOML specs; prepared JSON RunSpecs reject it.
+`--safe` generates a command-line argument patch, applies it through the same
+CLI parser, and then applies explicit user arguments. The preset matches agents
+by executable name and automatically grants the corresponding API's HTTPS
+destinations. `--safe` requires the selected executor to enforce isolation; it
+never selects an executor. Precedence is **explicit CLI > safe preset >
+configuration file > ordinary defaults**. It supports ordinary commands and
+TOML `--config`; a prepared JSON `--spec` rejects the preset.
 
-`--safe` directly requires filesystem read/write and network isolation, without falling
-back to a plain host process. There is no separate sandbox flag or configuration setting.
-`--strict` continues to validate all requested capability dimensions, including resource
-limits, separately.
+`--safe` directly requires file read, file write and network isolation
+enforcement, and does not allow a silent fallback to an ordinary host process.
+It adds no separate sandbox command-line option or configuration setting.
+`--strict` remains a check over all requested capabilities, including resource
+limits, and is distinct from this isolation requirement.
 
-- macOS host: Seatbelt confines reads/writes and allows only the allocated loopback TCP proxy
-  port, with necessary Run-local Unix IPC. Direct IP traffic and ambient host Unix sockets
-  are blocked. The Agent gets a temporary HOME; provide credentials explicitly or through
-  Gateway. System runtime files and path metadata needed for loading remain readable.
+- macOS host: Seatbelt enforces read/write scope and allows only connection to
+  pVisor's allocated loopback TCP proxy port; it blocks other direct IP egress
+  and ambient host Unix sockets, keeping only the Run-local IPC that is
+  required. The Agent uses a temporary HOME and cannot read the original home
+  directory directly; credentials must be passed explicitly or held by Gateway.
+  System runtime libraries and path metadata needed for startup remain readable.
 - Linux host: `--safe` requires rootless namespaces, a synthetic root, chroot,
-  Landlock, and copy-on-write home state. Selective egress and Gateway traffic use the supervisor loopback proxy
-  cooperatively; direct sockets may still bypass it. Select VM or deny-all when a non-bypassable
-  network boundary is required. The launcher projects the caller's HOME through a private stage;
-  overlay deny globs do not hide secrets at their original paths outside the overlay view.
-- VM: the existing `auto` network boundary is required. Safe never selects VM automatically.
-- Container: `--safe` is rejected until a complete enforcement boundary is available.
+  Landlock and a copy-on-write HOME view. Selective egress and Gateway traffic
+  are forwarded cooperatively through the supervisor loopback proxy, and direct
+  sockets may still bypass it; use a VM or deny-all when a non-bypassable network
+  boundary is required. The launcher projects the host HOME through a private
+  stage; overlay deny rules do not hide secret files at their original paths
+  outside the workspace view.
+- VM: requires the existing `auto` network boundary; safe does not select a VM
+  automatically.
+- container: currently lacks a complete enforcement boundary, so `--safe`
+  refuses to start.
 
-Sandbox setup failure stops execution. `--safe` cannot be combined with `--overlaynet off`.
+Isolation setup failure stops the run. `--safe` cannot be combined with
+`--overlaynet off`.
 
-Only the following HTTPS destinations (port 443) are granted by default.
+The preset grants only the HTTPS destinations (port 443) in the table below;
+other destinations are denied by default.
 
 | Command | Default destinations |
 |---|---|
@@ -233,45 +261,50 @@ Only the following HTTPS destinations (port 443) are granted by default.
 | `gemini` | `generativelanguage.googleapis.com` |
 | `zcode` | `api.z.ai`, `open.bigmodel.cn` |
 
-Unknown commands deny ordinary egress. Override the preset destinations explicitly with
-`--overlaynet-allow HOST:PORT`. Existing denies and rate limits remain in force;
-Gateway capture uses explicitly configured routes.
+Unknown commands deny ordinary egress. Set grants explicitly with
+`--overlaynet-allow HOST:PORT` (which replaces the preset list); existing deny
+rules and rate limits remain in force, and Gateway capture uses explicitly
+configured routes.
 
-Without `--safe`, Codex state and project writes reach their host lower paths.
-With `--safe`, the workspace uses the reviewable Run stage and HOME (including
-`CODEX_HOME` when set) uses a separate private stage. Home-state changes are
-discarded when the Run ends and are not part of the workspace Run Bundle.
+Without `--safe`, Codex state and project writes reach the host lower. With
+`--safe`, the workspace uses the reviewable Run stage and HOME (and an explicitly
+set `CODEX_HOME`) uses a separate private stage. HOME state changes are discarded
+when the Run ends and are not part of the workspace Run Bundle.
 
-Independently of `--safe`, direct `zcode` on the Linux rootless host executor
-receives a compatibility policy. It inherits the host environment and grants
+Independently of `--safe`, running `zcode` directly on a Linux rootless host
+applies a compatibility policy: it inherits the host environment and allows
 direct persistent writes to existing `~/.zcode`, `$XDG_CONFIG_HOME` (or
-`~/.config`), and `~/.local/share/applications`. If a bundled Chromium setuid
+`~/.config`) and `~/.local/share/applications`. When a bundled Chromium setuid
 helper is found, pVisor hides it and adds `--no-sandbox`; it also adds
-`--disable-gpu`. Chromium's own sandbox is therefore disabled on that path,
-while pVisor's outer rootless boundary remains. These state writes bypass the
-workspace stage, even under `--safe`. The policy is selected by the direct
-executable name, so shell wrappers do not receive it. Gateway profile
-`zcode-bigmodel` is a separate routing adapter.
+`--disable-gpu`. This path disables Chromium's own sandbox while retaining
+pVisor's outer rootless boundary. These application-state writes bypass the
+workspace stage, even with `--safe`. The policy matches the direct executable
+name, so shell wrappers do not trigger it. The `zcode-bigmodel` Gateway profile
+is a separate routing adapter.
 
-The preset uses `--clear-pass-env` to clear configured `run.pass_env`.
-`--clear-pass-env` also works on its own; explicit `--pass-env NAME` grants
-are applied afterward. Direct Codex commands inherit the host environment to preserve account and routing
-configuration. Other commands default to disabled inheritance; pass credentials with
-`--pass-env NAME` (see the independent ZCode compatibility policy above).
-Explicit CLI options can restore or override these settings. `--safe` stages the
-workspace by default. Existing container mounts and filesystem layers are retained; the project base,
-rootfs and executor remain unchanged. Use `--pass-env` to deliver credentials explicitly, or let a configured
-Gateway hold the upstream key on the trusted side.
+The preset uses `--clear-pass-env` to clear configured `run.pass_env`;
+`--clear-pass-env` also works on its own, and an explicit `--pass-env NAME`
+afterward still applies. Direct Codex commands keep host environment inheritance
+to preserve account and routing configuration; other commands disable
+inheritance by default and receive credentials through an explicit
+`--pass-env NAME`. Explicit CLI options can re-grant or override this. `--safe`
+stages the workspace by default; existing container mounts and filesystem lower
+layers are retained, and the project base, rootfs and executor are unchanged.
+Deliver credentials to the Agent with an explicit `--pass-env`, or let a
+configured Gateway hold the upstream key on the trusted side.
 
-Startup messages report the effective policy and overrides. Without `--safe`, host/container
-selective proxies remain bypassable. Hostname rules cannot
-distinguish inference from telemetry/upload APIs on the same host or detect data inside model
-requests. Glob rules cover the overlay view. On Linux, the projected HOME can
-expose sensitive files at their original paths despite those overlay rules;
-explicit shares need their own protection. Renamed copies, embedded secrets
-and Git history are not identified by filename rules.
-Bulk-read and tool-call attribution monitoring are not provided. Additional shares and
-`--rootfs host` expand the exposed data. `--safe` cannot be combined with disabling OverlayNet.
+Startup prints the effective policy and override notices. Note that:
+
+- Without `--safe`, host/container selective proxies remain bypassable.
+- Hostname rules cannot distinguish inference, telemetry and upload APIs under
+  the same hostname, or prevent content smuggled inside model requests.
+- Wildcard rules cover the OverlayFS view; on Linux the projected HOME may still
+  expose sensitive files at their original paths, and explicitly granted extra
+  paths need their own protection. Filename rules cannot recognize renamed
+  copies, secrets in source code or content in Git history, and there is no
+  bulk-read or tool-call attribution monitoring.
+- Expanding the share scope or choosing `--rootfs host` increases the accessible
+  data; `--safe` cannot be combined with disabling OverlayNet.
 
 ## File access rules
 
@@ -279,34 +312,34 @@ Bulk-read and tool-call attribution monitoring are not provided. Additional shar
 pvisor run --safe --mount /opt/tool:read --access '**/.ssh:deny' --access '**/.env*:warn' -- my-agent
 ```
 
-`--mount SOURCE:read` grants a host executor read-only access to that absolute
-path, and requires `--safe` or `--ask`. `SOURCE:write` grants direct persistent
-host writes. Both keep the original path, cannot be remapped, and must not
-overlap the workspace, Job storage, or writable runtime paths. Read-only
-shares under the private `/tmp` are unsupported on Linux. These explicit
-shares are outside overlay-relative ask rules.
-`--mount SOURCE[:TARGET]:stage` adds a copy-on-write lower layer to the workspace
-view; it is not an independent directory mount. A Run accepts only one
-nonidentity TARGET for this view. Use stage layers for VM composition;
-read/write host grants are not supported by the VM or container executor.
-`--access PATH-GLOB:deny|ask|warn` adds overlay rules: deny blocks access, ask
-pauses matching access for approval, and warn allows access with a diagnostic.
-The former `:read` warning spelling is rejected; use `:warn` or a read-only share.
-Rules accumulate across config, presets, and CLI. `--clear-access` explicitly
-removes config and preset file rules before applying CLI rules. It removes the
-default sensitive-file protection too. Precedence is deny > ask > warn.
+`--mount SOURCE:read|write` is a host executor's explicit share, granting
+read-only or persistent write access respectively; a read-only share requires
+`--safe` or `--ask`. `--mount SOURCE[:TARGET]:stage` composes a lower layer of
+the workspace view.
+`--access PATH-GLOB:deny|ask|warn` appends file rules and does not replace the
+default protections; only `--clear-access` clears them explicitly.
+`warn` only warns and is not read-only; file approval covers inspection,
+reading, modification and deletion within the view.
 
-Globs are relative to the mount root: `*` stays within one component, `**`
-crosses directories, and a matching directory covers all descendants. Matching
-is case-insensitive. Empty patterns, absolute paths and `.`/`..` components are
-rejected. Warnings print the path, never file contents, to supervisor stderr;
-they are access attempts, not exact read counts.
+Rules match relative to the mount root: `*` does not cross directories, `**` may
+cross directories, and matching a directory covers all of its descendants.
+To prevent alias bypasses on case-insensitive filesystems, matching is
+case-insensitive; absolute paths, empty rules and `.`/`..` path components are
+invalid. deny takes precedence over warn. A path that matches deny is hidden
+from directory enumeration, and access, creation and modification are refused;
+warn allows access and prints the path to the supervisor's stderr without
+printing file contents. A warning indicates a filesystem access attempt
+(including metadata access), not an exact count of content reads; kernel caching
+may coalesce accesses.
 
-Safe denies `.ssh` and `.gnupg` directories at any depth and files named `id_rsa`, `id_dsa`,
-`id_ecdsa`, `id_ecdsa_sk`, `id_ed25519`, or `id_ed25519_sk`. It warns on `.env`, `.env.*`,
-`*.pem`, `*.key`, `*.pub`, `*.p12`, `*.pfx`, `.aws/credentials`, `.netrc`, and `.npmrc`.
-Public keys inside `.ssh` are hidden with the directory; those outside only warn. These names
-cannot identify every private key; add rules for custom names.
+The default `--safe` deny covers `.ssh` and `.gnupg` directories at any level
+and the files `id_rsa`, `id_dsa`, `id_ecdsa`, `id_ecdsa_sk`, `id_ed25519` and
+`id_ed25519_sk`. The default warn covers `.env`, `.env.*`, `*.pem`, `*.key`,
+`*.pub`, `*.p12`, `*.pfx`, `.aws/credentials`, `.netrc` and `.npmrc`. Public
+keys inside `.ssh` are hidden with the directory; public keys outside only warn.
+This does not identify every private key; add rules for custom file names.
+
+In TOML:
 
 ```toml
 [overlayfs]
@@ -318,27 +351,28 @@ access = [
 ]
 ```
 
-Explicit CLI access entries are appended after configured and safe-preset
-entries. Deny takes precedence over warnings. Policies are recorded with the
-Run and its overlay artifacts.
+Explicit CLI access rules are appended after configuration and safe presets;
+deny takes precedence over warn. Rules are stored with the Run and overlay
+records.
 
-Host FUSE and VM virtio-fs share the checks. With any deny rule, this initial implementation
-conservatively rejects all multiply-linked regular files and new hard links to prevent alias
-bypasses. Directory moves, exchanges and removals check affected subtrees and reject operations
-that include denied files. Symlinks resolve through the mount namespace; file opens do not follow
-a final symlink into raw backing storage. VM root views also receive rules, with workspace
-original paths and overlay backing directories protected. Executor isolation is still required:
-ambient host reads, extra container shares and credentials outside the view remain separate
-concerns. Backing directories must be managed by a trusted supervisor; concurrent mutation by
-other host processes is outside this rule mechanism's guarantee.
-
-<a id="replay-an-agent-trajectory"></a>
+FUSE and VM virtio-fs share the rule checks. With deny enabled, this version
+conservatively refuses all multiply-linked regular files and new hard links to
+prevent alias reads; ordinary directory renames, exchanges and deletions check
+the affected subtree and refuse the operation when it includes a protected file.
+Symlinks are resolved by the mount namespace, and file opens do not follow a
+final symlink to the raw backing file. The VM applies rules to the root view as
+well and protects the workspace's original paths and the overlay backing
+directories. This does not replace executor isolation: host environment reads,
+extra container shares and credentials outside this view still require separate
+controls. Backing directories should be managed by a trusted supervisor; the
+rules do not promise to resist races from other host processes concurrently
+rewriting backing files.
 
 ## Replay an Agent trajectory {#replay-an-agent-trajectory}
 
 `pvisor replay` assumes the caller has normally created a fresh sandbox. It
 replays complete tool batches through `after_step`, rebuilds the selected
-Agent native context with fresh observations, and then starts the live Agent:
+Agent native context with fresh observations, then starts the live Agent:
 
 ```bash
 pvisor replay \
@@ -349,22 +383,22 @@ pvisor replay \
   --boundary-user-prompt 'Review the fresh observation before continuing.'
 ```
 
-OpenHands, mini-swe-agent, Pi agent, OpenCode, Codex, and SWE-agent use the model endpoint and
-credentials already present in their environment. Pi requires its exact
-`0.83.0` runtime and accepts native RPC event JSONL containing the core
-`read`, `bash`, `edit`, and `write` tools. Claude Code uses a temporary bridge owned
-by SandboxReplay because its native resume transport inserts wake-up messages.
-The bridge validates and removes that exact Resume Transport envelope before
-forwarding the model request. It does not enable pVisor Gateway, capture model
-traffic, or persist a bridge audit.
+OpenHands, mini-swe-agent, Pi agent, OpenCode, Codex and SWE-agent use the model
+endpoint and credentials already present in their environment. Pi requires the
+exact `0.83.0` runtime and accepts native RPC event JSONL containing the core
+`read`, `bash`, `edit` and `write` tools. Claude Code uses a temporary bridge
+owned by SandboxReplay because its native resume transport inserts wake-up
+messages. The bridge validates and removes that exact Resume Transport envelope
+before forwarding the model request. It does not enable pVisor Gateway, capture
+model traffic or persist a bridge audit.
 
 OpenCode requires the exact `1.17.7` runtime and its native
-`opencode run --format=json` event JSONL. Codex requires the exact `0.149.0`
+`opencode run --format=json` event JSONL; Codex requires the exact `0.149.0`
 runtime and Codex rollout `response_item` JSONL. Both rebuild the native prefix
 in the fresh sandbox and invoke their native resume command for continuation.
 Codex derives its native session ID from the trajectory's `session_meta`; the
-request `session_id` is only a model-router/Run key and cannot override it.
-Continuation fails closed when the native session is missing.
+request `session_id` is only a model-router/Run key and cannot override the
+native session. When the native session is missing, continuation fails closed.
 
 The equivalent strict replay TOML is:
 
@@ -403,28 +437,29 @@ observation and before the first live model inference. The TOML spelling is
 `replay.boundary_user_prompt`. It is ignored for inference in prepare-only and
 replay-only modes, and an omitted option preserves the unmodified replay
 boundary. Structured results and replay journals store only injection state,
-length, and a digest; Agent-native prepared or continued trajectories may
+length and a digest; Agent-native prepared or continued trajectories may
 contain the user message.
 
-The result schema is `sandbox-playback.result/v3`, with typed `phase`, `quality`,
-and `agent_status` fields plus state/output locations, artifacts, and an optional
-structured failure. Existing non-Claude callers that used `replay_only = true`
-only to construct a prefix must migrate to `prepare_only = true`.
+The result schema is `sandbox-playback.result/v3`, with typed `phase`, `quality`
+and `agent_status` fields plus state/output locations, artifacts and an optional
+structured failure. Non-Claude callers that used `replay_only = true` only to
+construct a prefix must migrate to `prepare_only = true`.
 
 `disable_thinking` belongs to `[replay]` and is also exposed as
 `--disable-thinking`. Claude Code's protocol bridge applies it to the upstream
 request; OpenCode omits its `--thinking` flag when it is set. It does not turn
-on Gateway capture. Optional `[run]`, `[overlayfs]`, and `[overlaynet]` sections
+on Gateway capture. Optional `[run]`, `[overlayfs]` and `[overlaynet]` sections
 create an outer managed `pvisor run`; they do not change the inner replay model
 path.
 
 By default, replay's internal state, WAL, manifest, fresh-observation
-comparisons, and native working files remain under
+comparisons and native working files remain under
 `/tmp/pvisor-sandbox-replay` and disappear with the sandbox. Replay does not
-enable pVisor Gateway, a model-traffic capture store, or a Claude Resume
+enable pVisor Gateway, a model-traffic capture store or a Claude Resume
 Transport audit. A caller that explicitly selects `--state-dir` or
 `--output-dir` owns those files. Use `--replay-only` to execute the prefix and
-stop before live inference, or `--prepare-only` to construct it without execution.
+stop before live inference, or `--prepare-only` to construct it without
+execution.
 
 ## One configuration model
 
@@ -435,7 +470,7 @@ CLI commands even without `--safe`; the ZCode host adapter re-enables it for
 direct `zcode`. Treat TOML `inherit_env` as ineffective on those CLI paths.
 `--config` reads an explicit TOML `RunConfig`; `--spec` requires a prepared
 JSON `RunSpec` for delegated execution and cannot be combined with other Run
-overrides. pVisor does not discover a hidden project file.
+overrides. pVisor does not discover a hidden project configuration file.
 
 ```bash
 pvisor run \
@@ -456,7 +491,7 @@ pvisor run \
 
 `--record-destination` writes a local `pvisor_core::event::Event` Journal to
 `events.trace.jsonl`. Legacy JSONL is not supported. Journal positions define
-append order; `caused_by` defines causal links. `observed_at_unix_ms` is
+append order and `caused_by` defines causal links; `observed_at_unix_ms` is
 observation metadata, not an ordering source of truth.
 
 The equivalent TOML is:
@@ -506,22 +541,25 @@ destination = "./capture"
 Run it with `pvisor run --config run.toml`. Explicit CLI scalars replace TOML
 scalars. Network and Gateway list options replace their complete configured
 lists; filesystem `--mount` and `--access` entries are appended to configured
-entries. Every serialized `[overlayfs]` field has a CLI form: `stage`, `mount`,
-`access`, and `max_size` map to `--stage`, `--mount`, `--access`,
-and `--overlayfs-max-size`.
+entries. The serialized `[overlayfs]` fields `stage`, `mount`, `access` and
+`max_size` map to `--stage`, `--mount`, `--access` and
+`--overlayfs-max-size`. The command after `--` replaces `run.command`.
 The size limit is checked after execution, so it does not bound peak space used
 while the Agent is running.
-The command after `--` replaces `run.command`.
 
-`--container-image IMAGE` selects the OCI container executor automatically;
-`--executor container` makes the choice explicit. The transport resolves a
-matching static `linux-amd64`/`linux-arm64` pVisor, mounts it into the image,
-overrides the entrypoint, and invokes the normal
-`pvisor run --executor host --spec ...` path. The workload command is carried
-inside the RunSpec rather than exposed in OCI runner argv. The injected
-pVisor creates its own AgentCtl and returns a typed RunResult. The final
-OverlayFS cwd and session Gateway configuration are mounted at stable paths.
-User mounts are repeatable TOML inline tables, for example:
+`--container-image IMAGE` selects the native OCI container executor
+automatically; `--executor container` makes the choice explicit. The transport
+generates a standard OCI bundle, resolves a matching static
+`linux-amd64`/`linux-arm64` pVisor, mounts it into the rootfs, sets the process
+args, and takes the normal `pvisor run --executor host --spec ...` path. The
+Agent command is carried inside the RunSpec rather than exposed in OCI runner
+argv. The injected pVisor creates its own AgentCtl and returns a typed
+RunResult. The final OverlayFS cwd and session Gateway configuration are mounted
+at stable paths.
+`--container-rootfs PATH` supplies an existing rootfs directly; otherwise pVisor
+prepares `--container-image` from its bundled OCI image store. The runtime must
+be `runc` or `crun`; Docker/Podman are no longer invoked. User mounts are
+repeatable TOML inline tables, for example:
 
 ```bash
 pvisor run \
@@ -535,74 +573,77 @@ pvisor run \
 ```
 
 The in-process Gateway and explicit OverlayNet proxy currently require
-`container.network = "host"`, because their injected addresses are host
-loopback endpoints. No-network mode is valid when these drivers are off; bridge currently requires external CNI and is rejected. The executor records container isolation but does not claim full
-capability enforcement.
+`container.network = "host"`, because their injected addresses are host loopback
+endpoints. `none` mode is valid when these drivers are off; `bridge` requires
+external CNI configuration and is currently rejected. The executor records
+container isolation but does not claim complete capability enforcement.
 
 `--executor vm` uses statically linked libkrun and its embedded init to boot a
 minimal Linux guest. `--rootfs image=IMAGE` selects this executor and pulls an
-OCI/Docker image directly, without invoking Docker, Podman, or Buildah. When no
-explicit rootfs or image is supplied, VM execution uses the host `/` through
-virtiofs and OverlayFS on Linux, preserving the host runtime, PATH, and HOME.
-On macOS, supply a Linux rootfs or image explicitly. Manifests
-and layer digests are verified, the host architecture selects `linux/arm64` or
-`linux/amd64`, and the unpacked rootfs becomes the immutable lower layer of a
-pVisor OverlayFS. `--image-store` overrides the platform cache directory.
-OCI cache targets are marked immutable, and this protection survives logical
-checkpoint/fork, so `pvisor apply` cannot mutate a rootfs shared by other Runs.
+OCI/Docker image directly, without invoking Docker, Podman or Buildah. When no
+explicit rootfs or image is supplied, Linux uses the host `/` through virtiofs
+and OverlayFS by default, preserving the host runtime, PATH and HOME without
+pulling an image. On macOS, supply a Linux rootfs or image explicitly.
+Manifests and layer digests are verified, the host architecture selects
+`linux/arm64` or `linux/amd64`, and the unpacked rootfs becomes the immutable
+lower layer of a pVisor OverlayFS. `--image-store` overrides the platform cache
+directory. OCI cache targets are marked immutable, and this protection survives
+logical checkpoint/fork, so `pvisor apply` cannot mutate a rootfs shared by
+other Runs.
 
 On Linux, `--rootfs host` selects the host `/` as the VM rootfs lower and
-selects the VM executor when `--executor` is omitted. `--rootfs <PATH>` selects
-a prepared directory and `--rootfs image=<PATH>` selects an OCI image or image
-path. These forms are mutually exclusive, and host rootfs is rejected on macOS.
-Use `--mount SOURCE[:TARGET]:stage` for additional lower layers in the guest
-workspace view; the current workspace is the implicit bottom layer. Workspace
-changes are retained in the configured stage or default Job storage. Writes elsewhere in the VM root
-use a temporary upper and are discarded when the VM exits.
+selects the VM executor when `--executor` is omitted. `--rootfs <PATH>` uses a
+prepared directory and `--rootfs image=<PATH>` uses an OCI image or image path;
+the three are mutually exclusive, and host rootfs is rejected on macOS. This is
+the unified rootfs syntax; `--mount SOURCE[:TARGET]:stage` composes extra lower
+layers for the guest workspace, and the current workspace is the implicit bottom
+layer. Read/write explicit host shares are currently supported only by the host
+executor. Workspace changes enter the named stage or default Job storage and are
+retained after exit; other writes to the VM root use a temporary upper and are
+discarded when the VM exits.
 
 The merged rootfs is guest `/`, and `/workspace` becomes the guest cwd. On both
 Linux and macOS, a vendored libkrun serves pVisor's rootfs and workspace
 copy-on-write unions directly over virtio-fs. The VMM never re-exports a host
-FUSE mount and does not materialize or reconcile either tree. Linux uses
-KVM and Apple Silicon macOS uses HVF through the same executor. Linux static
-musl builds embed the guest kernel and require no firmware shared library at
-runtime; `--vm-library-dir` is rejected by these builds. macOS wheels install
-`libkrunfw.5.dylib` beside pVisor. macOS source runs otherwise download the pinned
-official release into a SHA-256-verified platform cache, where `/usr/bin/cc`
-turns its prebuilt kernel bundle into the required dylib. On macOS,
-`--vm-library-dir` selects an existing firmware directory. OverlayNet `auto` uses the
-non-bypassable VM smoltcp IPv4 TCP/DNS driver, while Gateway capture uses an
-internal route through the guest virtual router. Linux additionally confines
-the VMM with namespaces and Landlock. The macOS VMM still has the invoking
-user's host permissions, so the first OCI-image version must not be treated as
-a hostile multi-tenant boundary despite the guest-kernel isolation.
+FUSE mount and does not materialize or reconcile either tree. Linux uses KVM and
+Apple Silicon macOS uses HVF through the same executor. Linux static musl builds
+embed the guest kernel and require no firmware shared library at runtime, and
+they reject `--vm-library-dir`. macOS wheels install `libkrunfw.5.dylib` beside
+pVisor; macOS source runs otherwise download the pinned official release into a
+SHA-256-verified platform cache, where `/usr/bin/cc` turns the prebuilt kernel
+bundle into the required dylib. On macOS, `--vm-library-dir` selects an existing
+firmware directory. OverlayNet `auto` uses the non-bypassable VM smoltcp IPv4
+TCP/DNS driver, while Gateway capture uses an internal route through the guest
+virtual router. Linux additionally confines the VMM with namespaces and
+Landlock. The macOS VMM still has the invoking user's host permissions, so
+despite the guest-kernel isolation the first OCI-image version must not be
+treated as a hostile multi-tenant boundary.
 
 On host/container execution, the four visible OverlayNet policy flags and
 Gateway capture automatically enable the proxy driver. `--safe` stages the
-workspace by default; `--mount` adds explicit layers. See [staging and storage](#staging-and-storage)
-for write destinations. When a stage is nested inside a base or compose layer, pVisor hides
-that subtree from the merged view and rejects guest attempts to recreate it.
-libkrun Runs create no live host mountpoint, preventing host indexers from
-recursively entering `<stage>/merged`. The reverse topology, where a
-stage contains a lower layer, is rejected. Applying a composed Run is rejected
-until pVisor can materialize a complete merged-vs-base diff safely.
-Selective host/container rules cover traffic routed through the explicit proxy.
-Host deny-all uses a namespace or Seatbelt to block direct egress; containers
-can use `--container-network none` for offline execution. VM `auto` uses
-smoltcp IPv4 TCP/DNS and `off` leaves the guest offline. VM deny-all still
-permits configured internal Gateway routes. See the [network boundaries](../guides/policies/network.md).
-
-<a id="run-project-discovery"></a>
-
-`--container-rootfs PATH` supplies a prepared container rootfs instead of an image.
+workspace by default and `--mount` adds explicit lower layers; see
+[Staging and storage](#暂存与存储) for write destinations. When a stage is nested
+inside a base or compose layer, pVisor hides that subtree from the merged view
+and rejects guest attempts to recreate it. libkrun Runs create no live host
+mountpoint, preventing host indexers from recursively entering `<stage>/merged`.
+The reverse topology, where a stage contains a lower layer, is rejected. Until
+pVisor can safely materialize a complete merged-vs-base diff, a composed Run
+rejects a subsequent `pvisor apply`. Selective host/container network rules
+apply to traffic through the explicit proxy. Host deny-all uses a namespace or
+Seatbelt to block direct egress; containers can use `--container-network none`
+for offline execution. On a libkrun VM, `auto` uses smoltcp IPv4 TCP/DNS and
+`off` leaves the guest offline; deny-all still permits configured internal
+Gateway routes. See [network boundaries](../guides/policies/network.md) for the
+scope of each path.
 
 ## Run project discovery {#run-项目发现}
 
 The current directory is the default project association. `--mount` identifies
-additional host layers and, when specified, their Agent-visible paths. Each Run receives an
-independent directory under pVisor's default records root. If that root would be inside
-the selected OverlayFS base or a compose layer, pVisor instead uses the system
-temporary Run root to keep the writable stage disjoint:
+additional host lower layers and, optionally, their Agent-visible paths. Each
+Run receives an independent directory under pVisor's default records root. If
+that root would fall inside the selected OverlayFS base or a compose layer,
+pVisor instead uses the system temporary Run root to keep the writable stage
+disjoint:
 
 ```text
 project/                         # reusable workspace / default base
@@ -645,21 +686,23 @@ commit with a same-directory atomic rename. The host filesystem still provides
 no single atomic commit point for an arbitrary multi-file batch.
 Applying all remaining changes or dropping the stage is terminal; `drop` cannot
 undo already applied batches, and `apply` cannot recover discarded changes.
-Terminal cleanup removes `upper`, `work`, and other disposable staging data but
-retains compact Run/Overlay metadata, the apply ledger, and capture artifacts.
+Terminal cleanup removes `upper`, `work` and other disposable staging data but
+retains compact Run/Overlay metadata, the apply ledger and capture artifacts.
 
 ### Shared image file cache
 
-`pvisor cache serve` runs the OCI file service in the foreground. Use
-`cache prepare IMAGE`, `cache list DIGEST [PATH]`, `cache stat DIGEST PATH`, and
-`cache read DIGEST PATH` to query it. `PVISOR_CACHE_SERVER` selects the
-endpoint; the default is `pvisor/cache.sock` under the user's cache
-directory. The server accepts `--image-store DIR` for an existing OCI store.
-Reads support byte ranges and SHA-256 transfer verification.
+`pvisor cache serve` runs the OCI file service in the foreground;
+`cache prepare IMAGE`, `cache list DIGEST [PATH]`, `cache stat DIGEST PATH` and
+`cache read DIGEST PATH` reach it through `PVISOR_CACHE_SERVER`. The default is
+the `pvisor/cache.sock` Unix socket under the user cache directory. The server
+accepts `--image-store DIR` to name an existing OCI store. File reads support
+ranges and SHA-256 verification.
 
-VM image runs automatically probe the default socket and use a read-only FUSE
-lower with persistent 1 MiB block caching when a compatible server is available.
-A missing/stale default socket retains local OCI preparation. An explicitly
-configured server must work; `PVISOR_CACHE_SERVER=off` forces local
-preparation. Explicit rootfs directories and native containers are unchanged.
-See the [protocol and remote-access guide](../reference/shared-image-cache.md).
+VM image runs automatically probe the default socket; when the service is
+available they mount the remote image as a read-only FUSE lower, fetch 1 MiB
+blocks on demand, and cache them persistently. A missing or stale default socket
+falls back to local OCI preparation. An explicitly configured server must work;
+`PVISOR_CACHE_SERVER=off` forces local preparation. Explicit rootfs directories
+and the native container executor keep their current behavior. See the
+[shared image cache protocol](shared-image-cache.md) for the full protocol,
+limits and SSH remote access.

@@ -15,8 +15,12 @@ What context, options, decisions, and consequences led to major choices?
 
 ## Requirements
 
-- ADR template: context, options, decision, consequences, status; NNNN-short-title.md.
-- Backfill: plans stop at Planned, observed enforcement only; optional Gateway/replay; `--safe` does not select/fall back; human semspec approval.
+- Create an ADR template (context, options, decision, consequences, status) and a numbering convention (`NNNN-short-title.md`).
+- Backfill the existing key decisions, for example:
+    - Admission plans stop at `Planned`; enforcement comes only from executor observations.
+    - Gateway and replay are separated from the core closure as optional features.
+    - `--safe` does not select an executor and refuses to start rather than degrading when it cannot enforce.
+    - The human approval process for semantic specifications.
 
 ## Acceptance criteria
 

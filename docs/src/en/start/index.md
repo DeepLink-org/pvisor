@@ -1,6 +1,8 @@
 # Start here
 
-**PolicyVisor (pVisor)** runs agents unattended and lets you keep only the file changes you approve. It runs your existing Agent CLI, script, or automation command and records the limits actually installed for each execution. The Python package and CLI are both named `pvisor`.
+**PolicyVisor (pVisor)** runs agents unattended and lets you keep only the file changes you approve. It runs your existing Agent CLI, script, or automation command and records the limits that actually applied to each execution.
+
+The Python package and CLI are both named `pvisor`.
 
 ## Complete your first loop
 

@@ -6,22 +6,25 @@ pvisor status --review last
 pvisor apply last --path src   # 或：pvisor drop last
 ```
 
-## What `--safe` mode does for Claude Code
+## What `--safe` does for Claude Code
 
-- **Network:** executable `claude` selects api.anthropic.com:443; other destinations deny.
-- **Workspace:** changes wait in staging until apply.
-- **HOME:** private stage; HOME writes are discarded after the Run, outside the workspace Bundle.
-- **Sensitive paths:** .ssh, .gnupg, and private-key names are rejected within the view.
+- **Network:** the preset matches the `claude` executable and allows only `api.anthropic.com:443`; other destinations are denied by default.
+- **Workspace:** changes go to the stage and are applied after review.
+- **HOME:** a separate private stage; state Claude Code writes under HOME is discarded when the Run ends and never enters the Run Bundle.
+- **Sensitive paths:** `.ssh`, `.gnupg`, and private-key files within the view are denied.
 
 ## Credentials
 
-`--safe` mode does not pass ambient credentials. Either explicitly pass ANTHROPIC_API_KEY or use a Gateway-held upstream key; see [credentials](../policies/credentials.md).
+`--safe` does not pass host environment credentials to the agent. Pick one:
 
-On macOS safe HOME is temporary and existing host login state is unavailable. Linux projects HOME through a private stage; agent writes do not reach host HOME. Use explicit credentials for stable authentication.
+- Deliver `ANTHROPIC_API_KEY` explicitly with `--pass-env ANTHROPIC_API_KEY`.
+- Configure a Gateway route so the trusted side holds the upstream key and the agent never sees it; see [credentials and environment](../policies/credentials.md).
+
+On macOS, `--safe` uses a temporary HOME, so any host-side logged-in session state is unavailable. On Linux, HOME is projected through a private stage, and state the agent writes does not return to the host.
 
 ## Additional destinations
 
-Dependency downloads or documentation may need extra grants. `--overlaynet-allow` replaces the preset list, so include the model API too:
+When the agent needs to install dependencies or reach a documentation site, add targets explicitly. `--overlaynet-allow` replaces the preset list, so list the model API alongside them:
 
 ```bash
 pvisor run --safe \
@@ -32,4 +35,4 @@ pvisor run --safe \
 
 ## Network strength
 
-macOS safe host blocks direct external connections. Linux selective host rules are cooperative; direct sockets may bypass them. Use a VM for mandatory selective enforcement; see [network boundaries](../policies/network.md#网络边界).
+On a macOS host, `--safe` blocks direct external connections. On a Linux host, selective rules run through a cooperative proxy and direct sockets can still bypass them. Use a VM when you need an unbypassable boundary; see [network boundaries](../policies/network.md#网络边界).

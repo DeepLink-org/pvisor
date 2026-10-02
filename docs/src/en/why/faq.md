@@ -1,37 +1,22 @@
 # FAQ
 
-## How does pVisor differ from agent sandboxes?
+**How does it differ from an agent-native sandbox?**
+An agent-native sandbox answers whether it can block something. On top of that, pVisor provides retrospective selective merging, conflict protection, and a checkable execution record, with consistent semantics across agents and executors. See [comparisons](comparisons.md).
 
-Beyond blocking actions, it answers what changed (staged manifest), what to keep (selective apply with conflict refusal), and what can be checked (installed controls and denied accesses). Claude Code, Codex, and scripts share the same semantics. See [comparisons](comparisons.md).
+**Does it slow agents down?**
+pVisor adds the cost of admission, file interception, and recording. Measured startup and filesystem overhead is in [benchmarks and comparisons](../benchmarks/index.md) (partly under construction).
 
-## How does it differ from Docker plus `git diff`?
+**Can it run in CI?**
+Yes. You can use it in a pipeline the L1 way today: let the agent finish, review, and merge only what you want. Policy- and evidence-driven exemption and clustering (L2/L3) are the direction; see [running agents in CI (planned)](../guides/ci.md).
 
-Docker isolates the environment and diff shows changes. Conflict protection, recoverable apply batches, installed-control evidence, and default sensitive-path protection need additional machinery. See [staging semantics](../concepts/staging.md).
+**Which agents are supported?**
+Any command can run; Claude Code, Codex, and others get presets matched by executable name. See [connecting your agent](../guides/agents/index.md).
 
-## Does it slow agents down?
+**Does data leave my machine?**
+pVisor itself does not collect or upload usage data. But an agent's calls to model APIs leave the machine anyway, and pVisor does not keep them local: under `--safe`, only that agent's model API allowlist is permitted and other egress follows policy. pVisor's own network behavior appears only when you explicitly enable Gateway capture or use a remote image cache service. See [security overview](../security/index.md).
 
-Only VM guest initialization currently has measured data: about 114 ms ready p50 on Apple M4/HVF. See [startup](../benchmarks/startup.md). Filesystem and end-to-end measurements remain in progress in [benchmarks](../benchmarks/index.md).
+**Why does `last` not find the Job I just ran?**
+With `--stage PATH`, the Job lives in the stage directory, while `last` searches default storage by workspace. Pass the path or Job ID explicitly. See [Jobs and storage](../concepts/jobs.md).
 
-## Which agents work?
-
-Any command can run. Claude Code, Codex, Gemini CLI, and ZCode have `--safe` model-API presets. Other commands deny outbound access by default and need explicit grants. See [agent integration](../guides/agents/index.md).
-
-## Does data leave my machine?
-
-pVisor does not collect or upload usage data. Bundles and capture remain local; image/firmware features download their inputs. Agent traffic follows your policy; `--safe` presets allow the corresponding model APIs. See [network policy](../guides/policies/network.md) and [threat model](../security/threat-model.md).
-
-## Can an agent read SSH private keys?
-
-`--safe` rejects `.ssh`, `.gnupg`, and common private-key names within the workspace view and gives the agent a private HOME. Executor boundaries govern other paths. Linux overlay rules alone do not hide secrets at original paths outside that view; use `--filesystem sandbox` or a VM for a stronger boundary. See [executor boundaries](../security/executor-boundaries.md).
-
-## Can external API calls be undone?
-
-No. `apply` and `drop` manage staged workspace files only. Remote calls, database writes, and messages are irreversible through them. See [staging](../concepts/staging.md#不可逆的部分).
-
-## Can it run in CI?
-
-Yes: `pvisor run` returns the workload exit code. The CI integration guide remains [planned](../guides/ci.md).
-
-## Why does `last` not find my Job?
-
-It searches default storage for the current workspace only. With `--stage PATH`, select the stage path or Job ID explicitly. See [Jobs and storage](../concepts/jobs.md).
+**Can staging undo external side effects?**
+No. Staging covers files only; external API calls, database writes, and sent messages are not rolled back by it. See [staging and apply semantics](../concepts/staging.md).

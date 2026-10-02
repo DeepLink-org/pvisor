@@ -7,7 +7,7 @@ search:
 # 机器可读输出
 
 !!! warning "规划中"
-    本页尚无完整参考。`status --review --json` 的用法示例见[网络策略](../guides/policies/network.md)的"检查运行结果"一节。
+    完整参考尚未完成；`status --review --json` 的用法示例见[网络策略](../guides/policies/network.md)的"检查运行结果"一节。
 
 ## 要回答的问题
 
@@ -55,4 +55,4 @@ jq '[.filesystem.changes[]? | select(.path != "src" and (.path | startswith("src
 
 网络计数的字段包括 `requests_seen`、`policy_allowed`、`policy_denied`、`failures`、`tcp_flows_opened`、`tcp_flows_denied` 与 `targets`。没有 `intercepted` 是未提供计数，不是“零流量”。文件访问拒绝需看 `run_observation.filesystem`；净改动需看 `filesystem.changes`，两者不能混用。
 
-安全判定需要同时检查 schema、必需字段、执行状态、能力观察与警告；不要用 `// false` 或空数组把未知状态变成通过。字段稳定性与完整 JSON Schema 仍待完成，见本页需求。
+安全判定需要同时检查 schema、必需字段、执行状态、能力观察与警告；不要用 `// false` 或空数组把未知状态变成通过。字段稳定性与完整 JSON Schema 仍待完成。

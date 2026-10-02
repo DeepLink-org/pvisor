@@ -15,8 +15,14 @@ ROOT = Path(__file__).resolve().parents[1] / "docs/site"
 FENCES = re.compile(r"(?m)^([ \t]*)(`{3,}|~{3,})([^\n]*)\n((?s:.*?))^\1\2[ \t]*$")
 
 
-def check_translations(docs=ROOT.parent, record=False):
-    """Pin reviewed pairs so a later one-language edit cannot pass unnoticed."""
+def check_translations(docs=ROOT.parent, record=False, strict=False):
+    """Pin reviewed pairs so a later one-language edit cannot pass unnoticed.
+
+    Structural disagreements (a missing page, divergent anchors, examples, IDs,
+    status or search exclusion) are always fatal. Pending revisions are a warning
+    by default so a local build and serve can run while the pairs are reviewed;
+    pass ``strict=True`` (CLI ``--require-recorded``) to make them fatal in CI.
+    """
     source = docs / "src"
     locales = {
         locale: {p.relative_to(source / locale) for p in (source / locale).rglob("*.md")}
@@ -42,6 +48,7 @@ def check_translations(docs=ROOT.parent, record=False):
             issues.append(f"{path}: translations disagree on executable examples")
         revisions[str(path)] = hashlib.sha256((zh + "\0" + en).encode()).hexdigest()
     manifest = docs / "translations.json"
+    pending = []
     if record:
         if issues:
             raise SystemExit("\n".join(issues))
@@ -50,9 +57,19 @@ def check_translations(docs=ROOT.parent, record=False):
         recorded = json.loads(manifest.read_text()) if manifest.exists() else {}
         for path in sorted(recorded.keys() | revisions.keys()):
             if recorded.get(path) != revisions.get(path):
-                issues.append(f"{path}: bilingual revision changed; review both languages and record translations")
+                pending.append(path)
     if issues:
         raise SystemExit("\n".join(issues))
+    if pending:
+        if strict:
+            raise SystemExit("\n".join(
+                f"{path}: bilingual revision changed; review both languages and record translations"
+                for path in pending
+            ))
+        print(
+            f"{len(pending)} bilingual pair(s) changed and await review; continuing. "
+            "After reviewing both languages run: python3 scripts/check-docs.py --record-translations"
+        )
     return len(revisions)
 
 
@@ -73,8 +90,8 @@ class Page(HTMLParser):
                 self.links.append((tag, attrs[key], attrs.get("class", "")))
 
 
-def check():
-    pairs = check_translations()
+def check(strict=False):
+    pairs = check_translations(strict=strict)
     paths = list(ROOT.rglob("*.html"))
     pages = {p.resolve(): Page(p) for p in paths}
     issues = []
@@ -169,7 +186,9 @@ def check():
 if __name__ == "__main__":
     if sys.argv[1:] == ["--record-translations"]:
         print(f"Recorded {check_translations(record=True)} reviewed bilingual pairs.")
+    elif sys.argv[1:] == ["--require-recorded"]:
+        check(strict=True)
     elif sys.argv[1:]:
-        raise SystemExit("usage: check-docs.py [--record-translations]")
+        raise SystemExit("usage: check-docs.py [--record-translations | --require-recorded]")
     else:
         check()

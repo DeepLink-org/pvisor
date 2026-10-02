@@ -49,16 +49,16 @@ for platform requirements and executor setup.
 ## Run it
 
 ```bash
-pvisor run --safe --stage ../stage-001 -- claude
-pvisor status --review ../stage-001
-pvisor apply ../stage-001 --path src   # or: pvisor drop ../stage-001
+pvisor run --safe -- claude
+pvisor status --review last
+pvisor apply last --path src   # or: pvisor drop last
 ```
 
 Replace the command after `--` with your script or installed Agent CLI. `--safe`
-retains workspace changes in Job storage for review; `--stage PATH` selects
-another location. With `--stage PATH`, address later commands with that path or
-the printed Job ID (`run-*`): `last` only resolves Runs in the default storage,
-so do not rely on it across projects.
+keeps workspace changes in Job storage for review, and `last` addresses the most
+recent Job in the default storage. To put the stage elsewhere, use `--stage PATH`
+and address later commands with that path or the printed Job ID (`run-*`) instead
+of `last`.
 
 ## Bounded, recoverable, checkable
 
@@ -70,35 +70,31 @@ so do not rely on it across projects.
 
 ## Where we are today
 
-| Level | How you intervene | Carried by | Status |
-|---|---|---|---|
-| L0 | Approve every command | one interactive session | Built into most agents |
-| L1 | Review every change after the fact | one Job at a time, on your machine | **pVisor today** |
-| L2 | Policy and evidence decide what can skip review; you spot-check | many Jobs, one pipeline | Next |
-| L3 | Post-hoc audit; humans handle exceptions | clustered execution: cross-node scheduling, centralized evidence | Direction |
+The vision is L3: post-hoc audit at cluster scale. Today pVisor runs one Job at a
+time on your machine—already bounded, recoverable, and checkable, the properties
+the higher levels build on. pVisor is the semantic layer for each execution; it
+does not replace schedulers like Kubernetes or Ray.
 
-The vision is L3. Today pVisor runs one Job at a time on your machine, already
-bounded, recoverable, and checkable—the properties the higher levels build on.
-pVisor is the semantic layer for each execution; it does not replace schedulers
-like Kubernetes or Ray.
+For the four levels, where pVisor places its bet, and the status of L2/L3, see the
+[trust ladder](https://deeplink-org.github.io/pvisor/en/why/trust-ladder/).
 
 ## Scope
 
 A declared policy is not proof of enforcement, and `apply`/`drop` govern staged
 files only, with no undo for remote API calls, database writes, or messages
 already sent. Host, container, and VM executors differ, and container/VM support
-is platform-dependent. See [capabilities and evidence](https://deeplink-org.github.io/pvisor/zh/concepts/capabilities-and-evidence/).
+is platform-dependent. See [capabilities and evidence](https://deeplink-org.github.io/pvisor/en/concepts/capabilities-and-evidence/).
 
 ## Documentation
 
 - [Start here](https://deeplink-org.github.io/pvisor/en/start/) — the path from install to a reviewed run
 - [Your first run](https://deeplink-org.github.io/pvisor/en/start/first-run/) — the run-review-apply loop
-- [Why pVisor (中文)](https://deeplink-org.github.io/pvisor/zh/why/) — vision, trust ladder, use cases, and comparisons
-- [Capabilities and evidence (中文)](https://deeplink-org.github.io/pvisor/zh/concepts/capabilities-and-evidence/) — how far a guarantee goes
-- [Security (中文)](https://deeplink-org.github.io/pvisor/zh/security/) — threat model, executor boundaries, and known limitations
-- [Benchmarks (中文)](https://deeplink-org.github.io/pvisor/zh/benchmarks/) — methods and current data
-- [Design and research (中文)](https://deeplink-org.github.io/pvisor/zh/design/) — architecture, isolation, and research directions
-- [Community (中文)](https://deeplink-org.github.io/pvisor/zh/community/) — contributing, testing, and roadmap
+- [Why pVisor](https://deeplink-org.github.io/pvisor/en/why/) — vision, trust ladder, use cases, and comparisons
+- [Capabilities and evidence](https://deeplink-org.github.io/pvisor/en/concepts/capabilities-and-evidence/) — how far a guarantee goes
+- [Security](https://deeplink-org.github.io/pvisor/en/security/) — threat model, executor boundaries, and known limitations
+- [Benchmarks](https://deeplink-org.github.io/pvisor/en/benchmarks/) — methods and current data
+- [Design and research](https://deeplink-org.github.io/pvisor/en/design/) — architecture, isolation, and research directions
+- [Community](https://deeplink-org.github.io/pvisor/en/community/) — contributing, testing, and roadmap
 - [中文文档](https://deeplink-org.github.io/pvisor/zh/start/)
 
 Security issues: see [SECURITY.md](SECURITY.md). Contributions: see [CONTRIBUTING.md](CONTRIBUTING.md).

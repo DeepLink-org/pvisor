@@ -1,11 +1,11 @@
 # 安装指南
 
-PolicyVisor（pVisor）为 Agent CLI、脚本和自动化命令提供策略控制与可检查的执行记录。
+装好 `pvisor` 后，你可以在策略边界内运行 Agent CLI、脚本和自动化命令，并拿到可检查的执行记录。
 Python 包、CLI 和核心 Rust crate 统一使用 `pvisor`；其他 crate 使用 `pvisor-*`，
 环境变量使用 `PVISOR_*`。
 
-升级时请同步更新部署中的 `PVISOR_*` 环境变量。默认本地状态目录使用 `.pvisor`，
-用户缓存使用 `pvisor/`；已有数据不会自动搬迁。
+升级时同步更新部署中的 `PVISOR_*`；本地状态默认写入 `.pvisor`，用户缓存写入 `pvisor/`，
+已有数据不会自动搬迁。
 
 ## 1. 安装工具
 
@@ -28,10 +28,6 @@ source .venv/bin/activate
 python -m pip install --upgrade pip
 pip install pvisor
 ```
-
-!!! tip "从一次 Run 开始"
-
-    审查 staged workspace 不需要另起一个历史服务。
 
 发布的 wheel 面向 Linux x86_64 和 macOS arm64。其他架构应先检查发布产物或准备源码构建。
 

@@ -61,7 +61,6 @@ macOS 的 macFUSE 临时工作区默认以启动 pVisor 时的当前目录作为
 `/Volumes/pvisor-*` 是合并视图的挂载点，包含当前目录已有的文件。
 显式配置工作目录或 OverlayFS base 时，以显式配置为准。
 
-
 普通 host Job 默认将工作区写入直接透传到 lower。`--safe` 和 `--ask` 默认将工作区
 改动保留在 Job 存储中，退出后用 `status --review`、`apply` 或 `drop` 手动处理。
 `--stage PATH` 仅用于指定存储位置，不再是保留改动的前提。
@@ -81,17 +80,14 @@ Linux 的私有 `/tmp` 内不能使用只读共享。显式共享不经过工作
 清空配置与默认文件保护必须显式使用 `--clear-access`；之后再加入 CLI 规则。deny > ask > warn。
 原先表示警告的 `:read` 已拒绝，改用 `:warn`；真正只读请用 `--mount PATH:read`。
 
-使用 `pvisor --ask -- bash` 可在命中 `ask` 文件规则或访问未列入规则的代理网络目标时询问权限；
-`--ask` 同时启用 `--tui` 和 `--safe`。
-指定 `--access ...:ask` 会自动启用审计 TUI 和 safe 暂存视图，无需另加 `--ask`
-或 `--tui`。弹窗用 Tab 或上下方向键切换范围、保存期限和按钮，左右方向键选择，Enter 在按钮上确认；默认选中拒绝按钮。可按 `1` 选择仅此文件、`2` 允许同级目录、`3` 允许相同后缀；
-`d` 拒绝此次目标。对于未列入规则的代理网络目标，`--ask` 的弹窗可按 `1` 仅允许
-此目标，或按 `2` 允许当前域名及其子域名；两种选择都限定在当前端口和传输协议，
-IP 地址不能使用域名范围。明确的 `deny` 规则仍然直接拒绝，不进入询问弹窗。
-选择会写入当前 Job 目录的 `audit-policy.json`，之后命中相同范围时自动应用；
-每次决策记录在 `audit.jsonl`。已保存决定只用于命中 ask 的访问，不能覆盖静态 deny 或外层沙箱。
-在 Permissions 面板用 `j`/`k` 选择决定，按两次 `x` 移除；之后回到更宽范围规则或重新询问。
-移除不会关闭已经打开的文件句柄；其他已运行的 TUI 在下次启动时加载更新。这些记录默认在 Job 结束后保留，`--stage PATH` 可指定位置。
+使用 `pvisor --ask -- bash` 可在命中 `ask` 文件规则或访问未列入规则的代理网络目标时询问权限；`--ask` 同时启用 `--tui` 和 `--safe`。指定 `--access ...:ask` 会自动启用审计 TUI 和 safe 暂存视图，无需另加 `--ask` 或 `--tui`。
+
+弹窗用 Tab 或上下方向键切换范围、保存期限和按钮，左右方向键选择，Enter 在按钮上确认；默认选中拒绝按钮；可用 `s`、`w`、`u` 快速选择 session、workspace 或 user 范围。可按 `1` 选择仅此文件、`2` 允许同级目录、`3` 允许相同后缀；`d` 拒绝此次目标。对于未列入规则的代理网络目标，`--ask` 的弹窗可按 `1` 仅允许此目标，或按 `2` 允许当前域名及其子域名；两种选择都限定在当前端口和传输协议，IP 地址不能使用域名范围。明确的 `deny` 规则仍然直接拒绝，不进入询问弹窗。
+
+Session 决定写入当前 Job 目录的 `audit-policy.json`，workspace 和 user 决定写入 `~/.config/pvisor/config.toml`（`XDG_CONFIG_HOME` 为绝对路径时用其下的 `pvisor/config.toml`）的 `permissions` 部分。选择之后命中相同范围时自动应用，每次决策记录在 `audit.jsonl`。workspace 以规范化工作目录标识；新的 TUI Job 启动时按 session > workspace > user 的优先级加载，同层内以最后匹配的规则为准。持久化的文件规则使用原始绝对路径，user 级后缀规则可能覆盖其他工作区；保存时保留其他配置项与注释。已保存决定只用于命中 ask 的访问，不能覆盖静态 deny 或外层沙箱。
+
+在 Permissions 面板用 `j`/`k` 选择决定，按两次 `x` 移除；之后回到更宽范围规则或重新询问。移除不会关闭已经打开的文件句柄；其他已运行的 TUI 在下次启动时加载更新。这些记录默认在 Job 结束后保留，`--stage PATH` 可指定位置。
+
 代理网络审计属于协作式边界：未经过代理的直接连接不会触发此弹窗。
 
 ```text
@@ -113,25 +109,11 @@ pvisor run --safe -- codex
 pvisor status --review last
 ```
 
-默认 host 执行保留宿主机文件系统视图；`--filesystem sandbox` 才启用 pVisor 的
-synthetic-root/Landlock 或 Seatbelt 文件系统访问策略。
-`--safe` 默认暂存工作区，并给 HOME（包括在 shell 内启动的 Codex）提供独立的写时复制视图。
-没有 `--stage` 时，changeset 和 Run Bundle 默认保留在 Job 存储中，退出后可 review/apply/drop。
-显式 `--stage <PATH>` 会保留 Job 和可写 stage，
-改动可供人工审查，并以 `0600` 写入 `run-bundle.json`。
+默认 host 执行保留宿主机文件系统视图；`--filesystem sandbox` 才启用 pVisor 的 synthetic-root/Landlock 或 Seatbelt 文件系统访问策略。`--safe` 默认暂存工作区，并给 HOME（包括在 shell 内启动的 Codex）提供独立的写时复制视图。没有 `--stage` 时，changeset 和 Run Bundle 默认保留在 Job 存储中，退出后可 review/apply/drop。显式 `--stage <PATH>` 会保留 Job 和可写 stage，改动可供人工审查，并以 `0600` 写入 `run-bundle.json`。
 
-`--strict` 要求每个被请求的 capability 维度都有不可绕过的 enforcement 证据，
-否则在 Agent 启动前失败关闭。当前 host / container / VM 都会请求 Network 与
-Subprocess，且无一 claim Subprocess，因此 `--strict` 在这些路径上会以
-`UnsupportedPolicy` 退出。该旗标用于验证 fail-closed，不表示「更强沙箱已就绪」。
-在 Linux 上，`--filesystem sandbox` 会使用 pVisor 的 rootless launcher，启用
-User/mount/PID namespace、最小 bind-projected root、`chroot` 和按内核协商的
-Landlock 策略。`--overlaynet-deny-all` 独立增加私有 network namespace；public/allowlist
-代理模式仍是协作式。在 macOS 上，host executor 只在请求文件系统 sandbox 或网络隔离时安装生成的
-Seatbelt 策略；文件系统策略与网络策略相互独立。对 deny-all Run，它拦截 IP 和
-ambient host Unix socket，同时保留精确的 AgentCtl 与 Run 本地 IPC。读取和
-选择性网络策略仍是 ambient/协作式，并在 Bundle 中单独标注。原生 OCI 和 libkrun
-executor保留同样的外层 Run、OverlayFS 和 AgentCtl 状态观察。
+`--strict` 要求每个被请求的 capability 维度都有不可绕过的 enforcement 证据，否则在 Agent 启动前失败关闭。当前 host / container / VM 都会请求 Network 与 Subprocess，且无一 claim Subprocess，因此 `--strict` 在这些路径上会以 `UnsupportedPolicy` 退出。该旗标用于验证 fail-closed，不表示「更强沙箱已就绪」。
+
+在 Linux 上，`--filesystem sandbox` 会使用 pVisor 的 rootless launcher，启用 User/mount/PID namespace、最小 bind-projected root、`chroot` 和按内核协商的 Landlock 策略。`--overlaynet-deny-all` 独立增加私有 network namespace；public/allowlist 代理模式仍是协作式。在 macOS 上，host executor 只在请求文件系统 sandbox 或网络隔离时安装生成的 Seatbelt 策略；文件系统策略与网络策略相互独立。对 deny-all Run，它拦截 IP 和 ambient host Unix socket，同时保留精确的 AgentCtl 与 Run 本地 IPC。读取和选择性网络策略仍是 ambient/协作式，并在 Bundle 中单独标注。原生 OCI 和 libkrun executor 保留同样的外层 Run、OverlayFS 和 AgentCtl 状态观察。
 
 完成后：
 
@@ -182,7 +164,6 @@ pvisor run --safe --overlaynet-allow inference.example.com:443 -- zcode
 - container：当前缺少完整强制边界，`--safe` 拒绝启动。
 
 隔离安装失败会停止运行。`--safe` 不能与 `--overlaynet off` 同时使用。
-
 
 预设仅自动放行下表中的 HTTPS 目标（443 端口），其他目标默认拒绝。
 

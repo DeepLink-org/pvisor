@@ -29,4 +29,4 @@ search:
 
 - 跟踪 issue：TODO
 - 负责人：TODO
-- 相关页面：community/index
+- 相关页面：[社区](index.md)

@@ -7,7 +7,7 @@ search:
 # 回放保真度
 
 !!! warning "规划中"
-    本页尚无符合[基准方法](methodology.md)的数据。现有的历史样本见 [Qwen3.6 实验记录](https://github.com/DeepLink-org/pvisor/blob/main/benchmark/replay/qwen3.6-results.md)：3 道题、5 个 Agent，运行日期、提交号和重复次数未完整登记，不作为兼容性或确定性保证。
+    尚无符合[基准方法](methodology.md)的数据。现有的历史样本见 [Qwen3.6 实验记录](https://github.com/DeepLink-org/pvisor/blob/main/benchmark/replay/qwen3.6-results.md)：3 道题、5 个 Agent，运行日期、提交号和重复次数未完整登记，不作为兼容性或确定性保证。
 
 ## 要回答的问题
 
@@ -23,7 +23,7 @@ search:
 ## 验收标准
 
 - 一条命令复现，报告使用 `pvisor-benchmark/v1` schema；
-- [回放设计（规划中）](../design/replay.md)引用本页数据。
+- [回放设计（规划中）](../design/replay.md)引用上述指标。
 
 ## 关联
 

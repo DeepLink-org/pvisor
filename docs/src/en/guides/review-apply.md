@@ -1,6 +1,6 @@
 # Review and apply changes
 
-Start a staged run from the project:
+Start a staged run from the project directory:
 
 ```bash
 pvisor run --safe -- codex
@@ -8,7 +8,9 @@ pvisor status --review last
 pvisor inspect last -- git status --short
 ```
 
-`--safe` preserves changes without an explicit path and last selects the current workspace's latest Job. With an explicit `--stage PATH`, use a fresh directory outside the project and select it by path rather than last; see [Jobs](../concepts/jobs.md). Review shows evidence and changes; inspect runs read-only checks.
+Without an explicit path, `--safe` keeps workspace changes in the Job store. To choose a location, pass `--stage PATH` with a fresh directory outside the project for each Run.
+
+`last` resolves the current workspace's most recent Job; after `--stage`, select that path instead of `last`. `status --review` shows evidence and changes, and `inspect` runs check commands in a read-only view. See [Jobs and storage](../concepts/jobs.md).
 
 ## Apply in batches
 
@@ -18,11 +20,13 @@ pvisor apply last --include 'tests/**' --exclude 'tests/generated/**'
 pvisor apply last --all
 ```
 
-Each successful batch writes to the original workspace and consumes selected changes only. Remaining changes can be applied later. Dependent opaque directories/hard-link groups must be selected together.
+Each successful batch writes to the original workspace and consumes only the changes you selected. The rest stay staged for a later apply. Opaque directories and hard-link groups that depend on each other must be selected together.
 
-Before writes, pVisor compares targets with recorded preimages, including descendants for recursive deletion/directory replacement. Conflicting external edits cause refusal. Stop other writers during apply: multi-file updates are not atomic against external editors. See [staging specifications](../concepts/staging.md).
+Before applying, pVisor compares each target with its recorded original state, including recorded subpaths for recursive deletion and directory replacement. If another process changes a file inside the overwrite scope, apply reports a conflict instead of overwriting the newer content.
 
-Apply ledger persists batch progress for forward recovery after interruption. Recovery accepts already-applied content only when it matches the expected result; other changes remain errors. Inspect conflicts and preserve external edits before retrying.
+Stop other writers during apply: these checks cannot make a multi-file update atomic against an external editor. See the semantics behind each guarantee in [staging and apply](../concepts/staging.md).
+
+`apply-ledger.json` persists batch progress so an interrupted apply can recover. Recovery accepts already-applied content only when it matches the expected result; any other target change is still an error. Inspect conflicts and keep external edits before retrying.
 
 ## Discard remaining changes
 
@@ -30,11 +34,11 @@ Apply ledger persists batch progress for forward recovery after interruption. Re
 pvisor drop last
 ```
 
-Drop removes unapplied staging only. It cannot undo applied batches, network calls, or other effects. [Fork a checkpoint](fork-checkpoint.md) before dropping if you want another attempt from this state.
+Drop removes only the staged changes that have not been applied. It cannot undo applied batches, network calls, or other external effects. To keep the current state and keep trying, see [checkpoints and forks](fork-checkpoint.md).
 
 ## Review order and expected results
 
-Confirm the Job stopped. Read outcome/exit code, installed file/network boundaries and warnings, denied/failed accesses, then net changes. Grants and captures do not replace mandatory-control evidence.
+Confirm the Job has stopped, then read in this order: outcome and exit code → actual file and network boundaries and warnings → denied or failed accesses → net file changes. Allow rules and captures do not replace mandatory-control evidence.
 
 ```bash
 pvisor status --review --diff ../stage-001
@@ -43,10 +47,10 @@ pvisor apply ../stage-001 --path src
 pvisor status --review ../stage-001
 ```
 
-After selective apply, host src contains selected changes and other paths remain in review. Change counts do not establish quality. Text diffs have total/per-file limits; inspect binary or truncated content separately.
+After a successful selective apply, the host `src` shows the selected changes and the other unapplied paths remain in the review list. `changed_files` alone does not tell you whether a change is any good; text diffs have a total-byte and per-file limit, so inspect binary or truncated content separately.
 
 ## Handling conflicts
 
-Keep both workspace and stage. Do not delete preimages or edit the ledger. Compare current host content, staged content, and task requirements. Resolve combined changes explicitly in a fresh Job or normal Git workflow before retrying; pVisor does not perform automatic three-way merges.
+When a conflict occurs, keep the current workspace and stage; do not delete the preimage or hand-edit the ledger. Compare the host's current files, the staged files, and the original task to decide what to keep. To combine changes from both sides, resolve them explicitly in a fresh Job or a normal Git workflow and then retry; pVisor never performs an automatic three-way merge.
 
-Record the decision before drop. Applied batches cannot be rolled back with drop; full apply/drop cleans temporary staging, so fork first if needed.
+Record your final decision before dropping. Applied batches cannot be rolled back by drop, and a full apply or drop cleans the one-time staging data, so fork first when you need another attempt.

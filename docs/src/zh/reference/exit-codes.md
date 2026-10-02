@@ -7,7 +7,7 @@ search:
 # 退出码与错误
 
 !!! warning "规划中"
-    本页尚无完整参考。已知行为：`pvisor run` 原样返回命令的退出码；`--strict` 在缺少强制证据时以 `UnsupportedPolicy` 拒绝运行。
+    完整参考尚未完成。已知行为：`pvisor run` 原样返回命令的退出码；`--strict` 在缺少强制证据时以 `UnsupportedPolicy` 拒绝运行。
 
 ## 要回答的问题
 

@@ -1,48 +1,39 @@
 # Trust ladder and scale
 
-Two axes describe pVisor's direction: **how humans intervene** determines how much can be delegated; **what carries execution** determines how much can run afterward.
+Autonomy is not reached in one step. It grows along two axes: **how humans intervene** (the trust axis) and **what carries execution** (the scale axis).
 
-| Level | Human intervention | Execution scale | Status |
+## Our claim
+
+**Relax trust through mechanisms: move review from the process to the results, and defer it to the end.**
+
+No per-command approval up front; during execution, boundaries and reversibility cap the cost of a mistake; after execution, process evidence and results are reviewed together, once. Supervision cost stops rising linearly with the number of steps, and that is what lets scale go up.
+
+## Why defer, not add more gates
+
+Process review does not amortize. Every extra step is another decision, and a human must be present throughout—how fast the agent runs depends on how closely you watch. That is today's ceiling.
+
+Deferred review does amortize. Results can be sampled, batched, and machine-checked; once process facts are recorded completely, they can be verified after the fact in one pass instead of being intercepted during execution.
+
+## Four levels are a reference; the choice is the last one
+
+The four levels describe when and how much a human intervenes. They are coordinates, not steps you must climb in order: the fork is between L0 (approve each command before it runs) and the rest; L1 through L3 all defer review, differing in how much the human steps back (from L2, policy and evidence carry exemption decisions) and in the scale they carry (one machine → a pipeline → a cluster).
+
+| Level | How humans intervene (trust axis) | What carries it (scale axis) | Status |
 | --- | --- | --- | --- |
-| L0 | Approve each command | One interactive session | Built into agents |
-| L1 | Run unattended, review every change afterward | Local, individual Jobs | **pVisor today** |
-| L2 | Policy and evidence determine exemptions; humans spot-check | Multiple local Jobs, one pipeline | Next |
-| L3 | Audit afterward; humans handle exceptions | Cluster scheduling and centralized evidence | Direction |
+| L0 | Approve each command before it runs | A single interactive session | Common in agents, now with model-assisted approval |
+| L1 | Review each change after the run | Local, individual Jobs | **pVisor today** |
+| L2 | Policy and evidence determine exemptions; humans spot-check | Multiple local Jobs / one pipeline | Next |
+| L3 | Audit afterward; humans handle exceptions only | Clustered: cross-node scheduling, centralized evidence | pVisor's scale target |
 
-Each level uses the same bounded, recoverable, checkable properties. Their reliability and machine usability distinguish the levels.
+L0 is already a commodity and not worth re-investing in. pVisor's choice is to do only the stage after execution: no process gating by default, but solid boundaries, reversibility, and evidence, so review moves to the end. When you really do want approval while it runs, `--ask` provides a runtime approval channel—an exception, not the main line.
 
-## L1: unattended execution, review afterward (today)
+## Process review does not disappear
 
-**Available:** staging and selective apply, conflict refusal, default sensitive-path protection, host/container/VM executors, evidence separating plans from installed controls, optional model capture, logical checkpoints and forks.
+Deferring is not abandoning. Evidence carries the process facts—what was read or written, what was blocked, where the network went—past the run, so process review and result review happen together in one deferred pass. The difference is that these facts are read after execution instead of being approved step by step during it.
 
-**Human work:** review each run and choose paths to apply.
+## Where we are today
 
-## L2: policy and evidence determine exemptions (next)
+What ships today is this stage at single-machine scale: individual Jobs on one machine—run unattended, then review changes and evidence afterward, and merge only what you want. L2's exemption decisions and L3's cluster scale are not here yet.
 
-**Entry criteria:**
-
-- Evidence reliable enough to assess allowed changes automatically, for example changes limited to `src/`, no denied accesses, and observed network destinations within policy.
-- Multiple local Jobs with individual isolation and evidence.
-- Batch review with human intervention for exceptions.
-
-**Gaps:** automated exemption rules, [concurrency density data (planned)](../benchmarks/density.md), batch review UI, and reduced review noise.
-
-## L3: audit afterward, execute across a cluster (direction)
-
-**Entry criteria:** centralized evidence storage/query, coordinated policy distribution, and placement across nodes.
-
-**Scheduler boundary:** pVisor defines staging, evidence, fork, and replay semantics. Kubernetes, Ray, or Slurm allocate nodes. The direction is a per-node execution layer and evidence aggregation rather than another scheduler.
-
-| Foundation | Missing piece |
-| --- | --- |
-| Host/container/VM abstraction | Remote executor or node agent |
-| Placement fields in Operation | Cross-node decisions and scheduler integration |
-| Host-independent Run Bundles and evidence | Central storage, queries, and audit |
-| Policy admission | Distribution and tenant isolation |
-| Capture, replay, and fork | Multi-tenant Gateway; cluster rollout fork/replay |
-
-See [cluster execution (planned)](../design/research/cluster-execution.md).
-
-## Measuring progress
-
-**Human supervision cost per unit of agent work** should fall from L1 to L3 without reducing task success. See [supervision cost (planned)](../benchmarks/supervision-cost.md).
+!!! note "Under construction"
+    The entry criteria and gap list for L2/L3 are not final. See the [roadmap](../community/roadmap.md) for progress, [concurrency density (planned)](../benchmarks/density.md) for the capacity rationale, and [cluster execution (planned)](../design/research/cluster-execution.md) for the cluster direction.

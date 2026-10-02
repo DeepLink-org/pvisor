@@ -1,6 +1,6 @@
 # 贡献指南
 
-本页是完整版；仓库根目录的 [`CONTRIBUTING.md`](https://github.com/DeepLink-org/pvisor/blob/main/CONTRIBUTING.md) 是它的英文摘要，两处修改需同步。
+这里是完整版；仓库根目录的 [`CONTRIBUTING.md`](https://github.com/DeepLink-org/pvisor/blob/main/CONTRIBUTING.md) 是它的英文摘要，两处修改需同步。
 
 ## 从哪里开始
 

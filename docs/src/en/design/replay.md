@@ -7,7 +7,7 @@ search:
 # Replay design
 
 !!! warning "Planned"
-    Implementation-owner review is pending. See [Replay guide](../guides/replay.md) for the existing contract.
+    Implementation-owner review is pending. See the [replay guide](../guides/replay.md) for how to run a replay.
 
 ## Question
 

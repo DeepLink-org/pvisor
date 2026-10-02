@@ -11,18 +11,18 @@ search:
 
 ## Question
 
-Which network/filesystem fields do policy.toml and policies.* accept, and what does `--safe` mode generate?
+Which `[network]` and `[filesystem]` fields do `policy.toml` and `[policies.*]` accept, what are the merge rules, and what rules does the `--safe` preset generate?
 
 ## Requirements
 
-- Generate fields, types, defaults, and ranges from policy types.
-- List complete presets per platform and command name.
-- Link merge rules to tests/specifications.
+- Generate field tables from policy type definitions: fields, types, defaults and ranges.
+- List the complete rules that the `--safe` preset generates per platform and per Agent command name.
+- State the merge rules for each layer and give the test or semantic specification for each rule.
 
 ## Acceptance criteria
 
-- Code-generated or CI-checked tables.
-- Safe table matches apply_safe_defaults.
+- The field table is code-generated or CI-checked.
+- The `--safe` preset table matches the `apply_safe_defaults` implementation.
 
 ## Tracking
 
@@ -53,10 +53,10 @@ warn = ["**/.env*"]
 | Rule `ports` | Port array, no zero; empty is unrestricted |
 | Rule `transports` | `http`, `https`, `tcp_tunnel`; empty is unrestricted |
 | Rule `allow_private_ips` | Default false; hostname resolution to private/loopback addresses is denied; explicit IP/CIDR semantics in [network guide](../guides/policies/network.md) |
-| `network.limits` | Optional host/port, required bytes-per-second rate; matching limits stack |
+| `network.limits` | `host` and `port` may be omitted; `bytes_per_second` is bytes per second; matching limits stack |
 | `filesystem.deny/ask/warn/allow` | Workspace-relative glob arrays; strictest decision; allow cannot override outer deny |
 
-Policy inputs must be regular files no larger than 1 MiB, owned by the current user, without symlink components or group/other write permission. Unsafe policy paths block startup.
+Policy files are not arbitrary trusted configuration: the directory and file must be owned by the current user, must not be group- or other-writable, and must be free of symlinks; the file must be a regular file no larger than 1 MiB. An unsafe policy blocks startup.
 
 ## From configuration to evidence
 

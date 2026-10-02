@@ -1,23 +1,23 @@
 # Security overview
 
-pVisor aims for **bounded, recoverable, checkable** execution: limit blast radius, discard file changes before apply, and honestly record installed controls. It provides neither cryptographic remote attestation nor hostile multi-tenant isolation.
+pVisor aims for **bounded, reversible, and auditable** execution: cap the blast radius of mistakes, let you discard file changes before apply, and record truthfully which controls actually took effect.
 
 ## At a glance
 
 | Protects | Does not protect |
 | --- | --- |
-| Staged workspace stays unchanged before apply; conflicts refuse overwrites | Prior remote APIs, database writes, messages |
-| `--safe` rejects .ssh/.gnupg/private-key names within the view | Outside-view/shared/renamed secrets, embedded keys, Git history |
-| VM auto, host `--overlaynet-deny-all`, container offline mandatory networking | Direct sockets or ignored proxies under cooperative networking |
-| Evidence separates request, plan, installation, observation | Kernel bugs, side channels, misuse of granted credentials |
+| Staged workspace: project files stay unchanged until apply, and conflicts refuse to overwrite your edits | External effects that already happened: remote API calls, database writes, sent messages |
+| Sensitive paths: the `--safe` preset rejects `.ssh`, `.gnupg`, and private-key files inside the view | Secrets outside the view, explicitly shared, or renamed; keys in source and Git history |
+| Mandatory network boundaries: VM `auto`, host `--overlaynet-deny-all`, container offline mode | Clients that ignore the proxy or open raw sockets under a cooperative proxy |
+| Honest evidence: separates the request, the plan, the installed controls, and the observation | Kernel bugs, side channels, misuse of explicitly granted credentials |
 
-The individual Run's evidence defines its boundary, not configuration or executor names.
+Each Run's actual boundary comes from its own capability evidence, not from configuration, preset names, or executor names.
 
-## Pages
+pVisor is neither cryptographic remote attestation nor hostile multi-tenant isolation.
 
-- [Threat model](threat-model.md): assets, adversaries, trust, exclusions.
-- [Executor boundaries](executor-boundaries.md): capability scope.
-- [Hardening](hardening.md): progressively narrower permissions.
-- [Known limitations](known-limitations.md): gaps and invariant issues.
-- [Disclosure](disclosure.md): private reporting and response targets.
-- [Audits (planned)](audits.md).
+- [Threat model](threat-model.md): assets, adversaries, trust boundaries, and out-of-scope threats.
+- [Executor boundaries](executor-boundaries.md): what host, container, and VM protect per capability.
+- [Hardening](hardening.md): progressively stricter configuration.
+- [Known limitations](known-limitations.md): known gaps and invariant problems.
+- [Vulnerability disclosure](disclosure.md): how to report privately, and response targets.
+- [Third-party audits (planned)](audits.md)

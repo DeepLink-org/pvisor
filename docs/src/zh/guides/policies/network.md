@@ -79,18 +79,9 @@ Host Run 会安装上表中的 namespace／Seatbelt 网络边界；容器应使�
 `--container-network none` 阻断代理之外的连接。VM `auto` 拒绝普通 guest TCP 出口。
 deny-all 不阻止已配置的内部 Gateway 路由；需要完全离线时关闭 Gateway，并在 VM 上使用 `off`。
 
-`--overlaynet-deny-all` 不支持再叠加 allow 例外。如果目标是“默认全部拒绝，只允许少数
-地址”，不要先写 deny-all，直接声明允许的目标即可：
-
-```bash
-pvisor run \
-  --overlaynet-allow api.openai.com:443 \
-  --overlaynet-allow pypi.org:443 \
-  -- agent-command
-```
-
-只要存在 `--overlaynet-allow`，pVisor 就会自动采用 allowlist 策略：匹配的目标允许，
-其余经过代理的目标默认拒绝。
+`--overlaynet-deny-all` 不支持再叠加 allow 例外。目标是“默认全部拒绝，只允许少数
+地址”时，直接声明允许的目标，不要先写 deny-all：只要出现 `--overlaynet-allow`，pVisor
+就采用 allowlist 策略，匹配的目标允许，其余经过代理的目标默认拒绝。
 
 ### 限制带宽
 
@@ -169,10 +160,10 @@ IP/CIDR 策略时，应使用能返回具体地址的 resolver。
 阻止直接出口，使用 `pvisor run --overlaynet-deny-all -- COMMAND`：Linux 会创建私有
 network namespace；macOS 会用 Seatbelt 阻断非 loopback IP 与宿主 ambient Unix socket，同时保留
 loopback proxy、精确的 AgentCtl 和 Run 私有目录内 IPC。Container Run 也可以使用 `--container-network none`。
-普通 host 的 selective allow/deny 仍是协作式；macOS `--safe` 还限制直接连接，详见上表。VM executor 默认使用
-`[overlaynet] mode = "auto"`，guest 使用静态 IPv4 地址，由 smoltcp 提供合成 DNS 与受策略控制的 IPv4 TCP；
-`mode = "off"` 会让 VM 离线。Gateway capture 通过 guest 虚拟路由器暴露；container
-executor 使用进程内 proxy 时仍要求 `--container-network host`。
+VM executor 默认使用 `[overlaynet] mode = "auto"`，guest 使用静态 IPv4 地址，由 smoltcp
+提供合成 DNS 与受策略控制的 IPv4 TCP；`mode = "off"` 会让 VM 离线。Gateway capture
+通过 guest 虚拟路由器暴露；container executor 使用进程内 proxy 时仍要求
+`--container-network host`。
 
 ## Session、workspace 与 user 策略
 

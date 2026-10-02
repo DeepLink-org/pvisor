@@ -35,8 +35,9 @@ def test_bilingual_docs_guard(tmp_path):
         with pytest.raises(SystemExit, match=message):
             check_translations(tmp_path, record=True)
     english.write_text(article + "\nUpdated prose\n")
+    assert check_translations(tmp_path) == 1  # pending revisions warn, not fail, locally
     with pytest.raises(SystemExit, match="bilingual revision changed"):
-        check_translations(tmp_path)
+        check_translations(tmp_path, strict=True)
     assert check_translations(tmp_path, record=True) == 1
     assert check_translations(tmp_path) == 1
 

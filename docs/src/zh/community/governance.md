@@ -29,4 +29,4 @@ search:
 
 - 跟踪 issue：TODO
 - 负责人：TODO
-- 相关页面：community/contributing
+- 相关页面：[贡献指南](contributing.md)

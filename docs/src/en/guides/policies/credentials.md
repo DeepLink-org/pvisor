@@ -1,31 +1,33 @@
 # Credentials and environment
 
-For most commands, credentials require explicit grants: pVisor projects a small baseline environment instead of ambient secrets.
+By default the agent cannot see your credentials: pVisor projects only a small set of necessary environment variables, and credentials require an explicit grant.
 
-## Projection
+## Environment projection
 
 | Case | Behavior |
 | --- | --- |
-| Most commands | No host inheritance; baseline HOME/PATH/LANG/SHELL/TERM/USER/LOGNAME, etc. |
-| Direct Codex without safe | Host inheritance for account/routing compatibility |
-| Direct zcode on Linux host | Compatibility policy inherits host environment |
-| --pass-env NAME | Explicitly grants the named variable |
-| --clear-pass-env | Clears configured pass_env; later explicit grants apply |
+| Most commands | Disables host environment inheritance and projects only necessary variables such as `HOME`, `PATH`, `LANG`, `SHELL`, `TERM`, `USER`, and `LOGNAME` |
+| Running Codex directly (without `--safe`) | Keeps host environment inheritance to preserve account and routing configuration |
+| Running `zcode` directly on a Linux host | Applies a compatibility policy that inherits the host environment |
+| Explicit `--pass-env NAME` | Hands the named variable to the agent |
+| `--clear-pass-env` | Clears `run.pass_env` from the config file; later `--pass-env` flags still apply |
 
-`--safe` clears configured pass_env; credentials need explicit CLI grants. `pvisor status --review`: Environment and resources shows projected names. Runtime PVISOR_RUN_ID/AGENTCTL variables and proxy upper/lowercase HTTP_PROXY/HTTPS_PROXY/ALL_PROXY are also injected.
+`--safe` clears `run.pass_env` from the config file, so under `--safe` credentials can only be delivered with an explicit `--pass-env` on the command line. The variables actually projected are listed in the Environment and resources section of `status --review`.
 
-## HOME and credential files
+pVisor also injects runtime variables such as `PVISOR_RUN_ID` and `PVISOR_AGENTCTL_*`; when a network proxy is enabled it injects `HTTP_PROXY`, `HTTPS_PROXY`, `ALL_PROXY`, and their lowercase forms.
 
-- Safe HOME/CODEX_HOME use private stages. macOS temporary HOME hides original HOME; Linux projects host HOME through a private stage. Writes are discarded after execution.
-- Sensitive names are rejected within the view; see [file policies](files.md).
-- Linux overlay deny does not hide secrets at original outside-view paths. Use `--filesystem sandbox`/VM for a stronger boundary.
+## HOME and local credential files
 
-## API key delivery
+- **`--safe`:** HOME (and an explicitly set `CODEX_HOME`) uses a separate private stage. On macOS the agent uses a temporary HOME and cannot read the original home directory directly; on Linux the launcher projects the host HOME through a private stage. HOME changes are discarded when the Run ends.
+- **`.ssh`, `.gnupg`, and private-key files within the view:** the `--safe` preset denies access; see [file policies](files.md).
+- **Linux note:** overlay deny rules do not hide secret files at original paths outside the workspace view; use `--filesystem sandbox` or a VM when you need a stronger guarantee.
 
-| Method | Configuration | Agent sees key? |
+## Two ways to deliver an API key
+
+| Method | How | Can the agent see the key? |
 | --- | --- | --- |
-| Environment | --pass-env OPENAI_API_KEY | Yes, and can use it arbitrarily |
-| Gateway | Route api_key_env references trusted-side variable | No; agent talks to Gateway |
+| Environment variable | `--pass-env OPENAI_API_KEY` | Yes, and it can use it however it likes |
+| Gateway-held | Configure a Gateway route with `api_key_env` pointing at a trusted-side variable | No; the agent only connects to the Gateway |
 
 ```bash
 pvisor run --safe \
@@ -35,8 +37,8 @@ pvisor run --safe \
   -- my-agent
 ```
 
-Prefer Gateway when you need the key retained on the trusted side and model requests recorded. See [capture](../capture.md).
+Prefer the Gateway: the key stays on the trusted side and model requests can still be recorded. See [Gateway capture](../capture.md) for configuration details.
 
-## Exclusions
+## Out of scope
 
-Granted credentials are not usage-tracked or automatically expired. See [threat model](../../security/threat-model.md).
+pVisor does not track how credentials handed to the agent through `--pass-env` are used, and it does not make them expire. See the [threat model](../../security/threat-model.md).

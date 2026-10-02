@@ -1,6 +1,6 @@
 # Logical checkpoints and forks
 
-Before applying all or dropping, fork the filesystem state into a new Job:
+Before you apply or drop all staged content, fork the current filesystem state into a new Job so the agent can continue a different way:
 
 ```bash
 pvisor fork last -- codex
@@ -8,21 +8,21 @@ pvisor fork last -- codex
 
 ## Behavior
 
-- Source must be stopped. Fork checkpoints staged files and starts a child Job.
-- Child records lineage; source changes remain independently reviewable/applicable/discardable.
-- `--checkpoint ID` selects an existing snapshot.
-- Without a new command, the child reuses the source command.
+- `fork` requires the source Job to be stopped. It first creates a logical checkpoint of the staged filesystem, then starts a child Job.
+- The child records its lineage from the source Job. The source's staged changes are untouched and can still be reviewed, applied, or dropped on their own.
+- `--checkpoint ID` reuses an existing logical checkpoint.
+- Without a command after `--`, the child reuses the source Job's command.
 
-## Checkpoint contents
+## What a checkpoint saves
 
 | Saved | Not saved |
 | --- | --- |
-| Staged workspace upper | Process memory/running state |
-| First-touch conflict preimages | External services and prior network effects |
-| Source lineage | Immutable copies of every host lower file |
+| The staged workspace upper | Process memory and running state |
+| The conflict preimages recorded at first modification | External service state and network calls that already happened |
+| Lineage from the source Job | Immutable copies of every host lower file |
 
-Fork restarts from file changes rather than restoring a process. Snapshot content is synced before manifest publication.
+Fork therefore means "start over from the same file changes", not a process-level snapshot restore. Snapshot content is flushed to disk before the manifest is published.
 
 ## Embedded API
 
-RunHandle::checkpoint uses AgentCtl quiesce directives and matching quiesced Session reports, snapshots upper, then publishes continue. Cooperative clients can freeze file state at a safe point; arbitrary subprocesses do not become restorable. restore_logical_checkpoint restores upper and preimages together. See [execution model](../design/execution-model.md).
+A host that embeds pVisor can call `RunHandle::checkpoint`: pVisor publishes a quiesce directive through AgentCtl, requires every Session included in the checkpoint to report a matching quiesced state, snapshots the upper, then publishes `continue`. This lets cooperating clients freeze file state at a safe point, but it does not turn arbitrary subprocesses into resumable processes. Restore with `restore_logical_checkpoint(checkpoint, destination_upper, destination_preimages)`, which restores files and conflict preimages together. See the [execution model](../design/execution-model.md) for the mechanism.

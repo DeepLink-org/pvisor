@@ -1,26 +1,26 @@
 # Choose an executor
 
-Choose by kernel and userspace requirements. Enable staging with `--safe` or an explicit `--stage PATH` and review afterward. Defaults are defined in [storage](../../reference/cli.md#暂存与存储).
+Choose an executor by the kernel and userspace your command needs. Stage workspace changes with `--safe` or an explicit `--stage PATH` and review them afterward; for the default write and cleanup rules see [Staging and storage](../../reference/cli.md#暂存与存储).
 
 | Executor | Environment | Prerequisites | Guide |
 | --- | --- | --- | --- |
-| host (default) | Host kernel and installed tools | Platform mounting support for staging; macFUSE on macOS | [Host](host.md) |
-| container | OCI userspace on Linux host kernel | Native crun/runc and matching Linux pVisor binary | [Container](container.md) |
-| vm | Linux guest kernel via libkrun | Linux KVM or Apple Silicon HVF; matching Linux rootfs | [VM](vm.md) |
+| `host` (default) | Host kernel and installed tools | Platform filesystem-mount support for staged runs; macFUSE on macOS | [host](host.md) |
+| `container` | OCI image userspace on the Linux host kernel | A native OCI runtime (`crun` or `runc`) and a matching Linux pVisor binary | [container](container.md) |
+| `vm` | Linux guest kernel provided by libkrun | Linux KVM or Apple Silicon HVF, plus a Linux rootfs matching the host architecture | [VM](vm.md) |
 
-Install the command inside the selected environment. A host-installed agent is not present automatically in an Ubuntu image. Inspect Bundle controls, warnings, and platform limits; see [boundaries](../../security/executor-boundaries.md).
+The command must be installed in the chosen environment: a host-installed agent is not present in an Ubuntu image. The controls actually installed, the warnings, and the platform limits are defined by the Run Bundle; for each executor's boundary on every capability dimension see [Executor boundaries](../../security/executor-boundaries.md).
 
 ## Choosing
 
-- Local tools and file review: host with `--safe` mode.
-- Mandatory networking: VM `--overlaynet auto` or host `--overlaynet-deny-all`.
-- Fixed Linux userspace: container or VM with an image.
-- Independent kernel: VM.
+- **Just want to review file changes with local tooling**: host with `--safe`.
+- **A mandatory network boundary**: VM (`--overlaynet auto`), or host with `--overlaynet-deny-all`.
+- **A fixed Linux userspace**: container or VM with an OCI image.
+- **An independent kernel**: VM.
 
-`--safe` does not select an executor. It requires the chosen executor to supply file/network isolation or rejects startup.
+`--safe` does not choose an executor for you; it requires the chosen executor to enforce file and network isolation, and it refuses to start instead of silently degrading.
 
-## Shared options
+## Options shared by every executor
 
-`--mount SOURCE[:TARGET]:stage` adds a host directory as a workspace lower layer. `SOURCE:read` grants read-only original-path access, requiring host plus `--safe`/`--ask`; `SOURCE:write` writes directly to host. Read/write cannot remap TARGET or use workspace approval rules. See [filesystem parameters](../../reference/cli.md#文件系统参数).
+`--mount SOURCE[:TARGET]:stage` adds a host directory as the workspace view's lower layer. `--mount SOURCE:read` grants read-only access at the original absolute path and requires the host executor with `--safe/--ask`; `SOURCE:write` grants direct write access to the host path. read/write cannot remap TARGET and do not go through the workspace's approval rules. See [Filesystem parameters](../../reference/cli.md#文件系统参数) for overlap limits.
 
-`--access PATH-GLOB:deny|ask|warn` controls the OverlayFS view; see [file policy](../policies/files.md). `--stage PATH` selects storage.
+`--access PATH-GLOB:deny|ask|warn` denies, asks, or allows with a warning in the OverlayFS view; see [File policies](../policies/files.md). `--stage PATH` selects the staging location.

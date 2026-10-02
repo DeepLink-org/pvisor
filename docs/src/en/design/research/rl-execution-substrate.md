@@ -7,11 +7,11 @@ search:
 # Agentic RL execution substrate
 
 !!! warning "Planned"
-    No results are available yet. This page records the requirements; contributions are welcome.
+    No results are available yet. The requirements are open for contributions.
 
 ## Question
 
-What is required for large-scale untrusted rollouts and evaluation?
+What does pVisor need to serve as a substrate for large-scale, untrusted Agentic RL rollouts and evaluation?
 
 ## Requirements
 

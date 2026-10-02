@@ -21,7 +21,7 @@ search:
 
 ## 验收标准
 
-- 仓库根目录新增 `CODE_OF_CONDUCT.md`，本页与其内容一致；
+- 仓库根目录新增 `CODE_OF_CONDUCT.md`，两者内容一致；
 - 举报渠道可用，并在[社区](index.md)页列出。
 
 ## 关联

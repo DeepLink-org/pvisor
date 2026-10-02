@@ -109,6 +109,20 @@ are never linked as finished content — the enclosing index says “建设中�
 links to the placeholder instead. Finish a page by removing `status: todo` and
 closing its issue.
 
+### Writing style
+
+Write for a developer who is deciding whether to adopt pVisor and then how to use
+it. The models are the uv, Ruff and Ray docs.
+
+- Lead with the outcome or the command, then explain. Short paragraphs, one idea each.
+- Second person, active voice. “Run this”, “pVisor refuses to overwrite your edit”.
+- Prefer a concrete example over an abstract description; show the command and what it does.
+- State a guarantee once, on the page that owns it, and link from elsewhere. Never open a page with a disclaimer, and never repeat a caveat in every paragraph.
+- No meta text: no “本文/本节/本页”, no “继续阅读”, no first line that restates the heading.
+- Name the mechanism when it matters; keep terms consistent with the glossary.
+- Tables for options, matrices and comparisons; code fences for anything runnable.
+- A page with no data yet says “建设中” and links to its TODO page instead of making an empty claim.
+
 `zensical.toml` owns navigation. Maintain paired Chinese and English articles.
 `redirects.json` maps old locale-relative Markdown paths to their replacements;
 the build emits redirects for English, Chinese, and the original unprefixed
@@ -137,13 +151,15 @@ just docs-build
 just test-py tests/test_docs.py
 ```
 
-`translations.json` stores a combined SHA-256 of each pair. Changed or missing
-articles fail the build until both versions are reviewed and recorded. Recording
-also checks executable examples, explicit IDs, status and search exclusion.
-These mechanical checks detect drift; they do not prove that translated prose
-has the same meaning. Review commands, numbers, versions, claims and limitations
-before recording. This revision file is not a semspec approval ledger and never
-replaces human semantic approval.
+`translations.json` stores a combined SHA-256 of each pair. Structural
+disagreements — a missing page, divergent anchors, executable examples, IDs,
+status or search exclusion — always fail the build. Changed but unrecorded pairs
+only warn locally, so you can build and review; CI runs
+`check-docs.py --require-recorded`, so a pull request still fails until both
+versions are reviewed and recorded. These mechanical checks detect drift; they
+do not prove that translated prose has the same meaning. Review commands, numbers,
+versions, claims and limitations before recording. This revision file is not a
+semspec approval ledger and never replaces human semantic approval.
 
 Navigation labels for English groups live in `EN_NAV_LABELS` in
 `scripts/build-docs.py`; ordinary article labels use translated page titles.

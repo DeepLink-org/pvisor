@@ -7,27 +7,27 @@ search:
 # Comparison: agent RL rollout infrastructure
 
 !!! warning "Planned"
-    No results are available yet. This page records the requirements; contributions are welcome.
+    No data yet. Below are the requirements; contributions are welcome.
 
 ## Question
 
-How does pVisor relate to existing RL rollout environments?
+How does this compare with existing RL rollout environments?
 
 ## Requirements
 
-- Metrics: isolation, trajectories, fork/replay, density, training integration.
-- Controls: OpenHands runtime, SWE-Gym-like environments, RL sandbox components.
-- Workload: batch rollouts with failure replay and checkpoint forks.
-- Environment: pinned model and tools.
+- Metric: isolation, trajectory recording, forking and replay, concurrency density, and how it integrates with the training framework.
+- Control group: the OpenHands runtime; SWE-Gym-like environments; RL frameworks' sandbox components.
+- Workload: batch rollouts with failure replay and checkpoint forking.
+- Environment: pinned model and tool versions.
 
 ## Acceptance criteria
 
-- Explain integration and boundaries.
-- Cite density and replay-fidelity data.
+- State the integration method and boundaries clearly.
+- Cite benchmarks/density and replay-fidelity data.
 - Provide a correction route.
 
 ## Tracking
 
-- Tracking issue: TODO (no issue has been assigned).
+- Tracking issue: TODO
 - Owner: TODO
-- Related: [Overview](../why/comparisons.md), [methodology](methodology.md)
+- Related: [comparisons](../why/comparisons.md), [methodology](methodology.md)

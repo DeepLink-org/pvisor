@@ -104,6 +104,15 @@ pub struct RunRecord {
 }
 
 impl RunRecord {
+    /// Read the authoritative record only after obtaining mutation ownership.
+    /// A selector's earlier snapshot is not safe input to apply/drop/recovery.
+    pub fn lock_current(&self) -> anyhow::Result<(Self, RunLease)> {
+        let stage = self.stage_dir();
+        let lease = RunLease::acquire(&stage)?;
+        let current = Self::read(&stage)?;
+        anyhow::ensure!(current.run_id == self.run_id, "Run identity changed while acquiring its lease");
+        Ok((current, lease))
+    }
     pub fn stage_dir(&self) -> PathBuf {
         self.overlay
             .as_ref()
@@ -161,6 +170,16 @@ pub struct RunLease {
 }
 
 impl RunLease {
+    /// Reserve a new Run's backing before any mount or metadata mutation.
+    /// Invalid existing metadata is an error, never permission to overwrite it.
+    pub fn acquire_new(stage_dir: &Path) -> anyhow::Result<Self> {
+        let lease = Self::acquire(stage_dir)?;
+        if stage_dir.join(RUN_META_FILENAME).try_exists()? {
+            let existing = RunRecord::read(stage_dir)?;
+            anyhow::bail!("Run storage {} already belongs to Run {}; choose unique storage", stage_dir.display(), existing.run_id);
+        }
+        Ok(lease)
+    }
     pub fn acquire(stage_dir: &Path) -> anyhow::Result<Self> {
         create_dir_all_durable(stage_dir)?;
         let file = OpenOptions::new()

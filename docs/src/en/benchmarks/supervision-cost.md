@@ -7,7 +7,7 @@ search:
 # Supervision cost (vision metric)
 
 !!! warning "Planned"
-    No results are available yet. This page records the requirements; contributions are welcome.
+    No data yet. Below are the requirements; contributions are welcome.
 
 ## Question
 
@@ -15,19 +15,19 @@ How much human intervention does each unit of agent work require?
 
 ## Requirements
 
-- Metrics: interventions and supervision time per task.
-- Controls: per-command approval, fully automatic execution plus post-hoc git diff.
-- Workload: fixed task set; at least 10 participants.
-- Environment: preregister the study protocol.
+- Metric: human interventions and supervision time per task.
+- Control group: per-command approval; fully automatic execution plus post-hoc git diff.
+- Workload: a user study on a fixed task set, with at least 10 participants.
+- Environment: preregistered protocol.
 
 ## Acceptance criteria
 
-- First measured data for this vision metric.
-- Publish protocol and raw data.
-- Explain limitations.
+- The first measured data for this vision metric.
+- Publish the protocol and raw data.
+- Explain the limitations.
 
 ## Tracking
 
-- Tracking issue: TODO (no issue has been assigned).
+- Tracking issue: TODO
 - Owner: TODO
-- Related: [Methodology](methodology.md), [limitations](../security/known-limitations.md)
+- Related: [methodology](methodology.md), [known limitations](../security/known-limitations.md)

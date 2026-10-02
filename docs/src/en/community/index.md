@@ -1,6 +1,6 @@
 # Community
 
-pVisor is an Apache-2.0 open source project. This section serves contributors and users.
+pVisor is an Apache-2.0 open source project.
 
 ## Communication channels
 

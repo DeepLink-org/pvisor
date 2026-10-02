@@ -69,4 +69,4 @@ Core shares file/network policy evaluation. User, workspace, session and executo
 
 Each record has its own scope. Events reconstruct observed operation history, not all external state. Native agent trajectory replay is also not deterministic replay of arbitrary effects.
 
-Review staged files before applying them. OverlayCore validates targets, persists apply intent, updates files and recovers. A batch is not an atomic filesystem transaction. See [Capabilities and evidence](../concepts/capabilities-and-evidence.md) for apply/drop/checkpoint recovery and irreversible effects; see [Review and apply](../guides/review-apply.md) for the workflow.
+Review staged files before applying them. OverlayCore validates targets, persists apply intent, updates files and recovers. A batch is not an atomic filesystem transaction. See [Capabilities and evidence](../concepts/capabilities-and-evidence.md) for `apply`/`drop`/checkpoint recovery and irreversible effects; see [Review and apply](../guides/review-apply.md) for the workflow.

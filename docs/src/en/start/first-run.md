@@ -1,6 +1,6 @@
 # Your first run
 
-This demo needs no agent account or API key. A script plays the agent: it edits source, deletes a file, adds another file, attempts to read a sensitive project path and access the internet. You then review and apply only the desired changes. Complete [installation](installation.md), including FUSE/macFUSE for staged host execution, first.
+This demo needs no agent account or API key. A script plays a "fake agent": it edits source, deletes a file, adds another file, attempts to read a sensitive project path and reach the internet. You then review the result and apply only the changes you want. Complete [installation](installation.md) first, including the FUSE/macFUSE setup that staged host execution needs.
 
 ## 1. Prepare a project
 
@@ -67,4 +67,4 @@ pvisor run --safe --stage ../agent-stage-001 -- codex
 pvisor status --review ../agent-stage-001
 ```
 
-Installed Agent CLIs use the same entry point. With `--stage PATH`, pass that path or the printed Job ID (`run-*`) to later commands. `last` searches default storage only; do not rely on it across projects.
+Installed Agent CLIs use the same entry point. With `--stage PATH`, pass that path or the printed Job ID (`run-*`) to later commands. `last` searches default storage only; do not rely on it when running projects in parallel.

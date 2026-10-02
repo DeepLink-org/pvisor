@@ -1,8 +1,8 @@
 # Capture agent trajectories
 
-Gateway capture is a Run driver, started/stopped by its Run. There is no independent Gateway command/daemon. [Evidence](../concepts/capabilities-and-evidence.md) explains what capture proves and what it does not enforce.
+Gateway capture is a Run driver: the Run starts and stops it, and there is no standalone Gateway command or daemon. [Capabilities and evidence](../concepts/capabilities-and-evidence.md) explains what capture can prove and what it does not enforce.
 
-[Install](../start/installation.md) pVisor, then configure the embedded Gateway:
+Install `pvisor` with the [installation guide](../start/installation.md). A real agent can be configured directly through `pvisor run`:
 
 ```bash
 export DEEPSEEK_API_KEY=sk-...
@@ -14,12 +14,12 @@ pvisor run \
   -- claude
 ```
 
-pVisor injects proxy/base URL configuration, waits for execution, drains capture, and stops Gateway. `--record-destination` writes a Trace Event Journal. `--gateway-stream-markdown` is compatibility-only and currently produces no Markdown projection.
+pVisor starts an embedded Gateway, injects proxy or base-URL configuration into the child process, waits for execution, drains capture, and stops the Gateway. Use `--record-destination ./capture` to write the Trace Event journal to a chosen directory. `--gateway-stream-markdown` is kept only for compatibility and currently produces no Markdown projection.
 
-### Event time and order
+### Event timestamps and order
 
-Default events.trace.jsonl begins with pvisor.trace/5, then records Event plus journal/offset. observed_at_unix_ms is observation time; caused_by encodes cross-producer causality, not inferred timestamps.
+The default output is `events.trace.jsonl`: it first writes a `pvisor.trace/5` header, then records containing an Event and its `{journal, offset}`. Observation time is `event.observed_at_unix_ms`; cross-producer causality uses `event.caused_by` and cannot be inferred from timestamps.
 
-Gateway content is in event.data.payload.content; story/session routing in story; call linkage in correlation. Run and Gateway share a Journal. Queue acceptance is not persistence; LocalSync follows file synchronization. Only formal Event Journals are supported; old JSONL is rejected.
+Gateway content lives in `event.data.payload.content`, story/session routing in `event.data.payload.story`, and call linkage in `event.data.payload.correlation`. A Run and its embedded Gateway share one Journal. Entering the queue is not persistence; `LocalSync` is returned only after the file is synchronized. Only formal Event Journals are supported; older JSONL is no longer read.
 
-Only clients using the injected proxy/base URL are observed. Direct-socket constraints depend on the executor; Bundle evidence defines isolation.
+A client is observable only when it uses the injected proxy or base URL. Whether a direct socket is restricted depends on the executor, and the Run Bundle defines the actual isolation boundary.

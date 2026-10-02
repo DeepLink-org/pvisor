@@ -1,7 +1,5 @@
 # 漏洞披露政策
 
-本页与仓库根目录的 [`SECURITY.md`](https://github.com/DeepLink-org/pvisor/blob/main/SECURITY.md) 内容一致；两处修改需同步。
-
 ## 如何报告
 
 **不要在公开 issue 中披露漏洞。** 请通过 GitHub 私密漏洞报告提交：
@@ -39,3 +37,5 @@
 ## 支持的版本
 
 安全修复针对最新发布版本和 `main` 分支。
+
+仓库根目录的 [`SECURITY.md`](https://github.com/DeepLink-org/pvisor/blob/main/SECURITY.md) 与这份政策内容一致；修改需同步两处。

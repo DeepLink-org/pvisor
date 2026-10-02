@@ -14,7 +14,7 @@
 
 方法、脚本与原始报告仍保留在 `benchmark/pvisor/`。
 
-!!! note "TODO"
-    补 host／host+stage／--safe／container 五组配置的冷启动、热启动与常驻内存。
-    补 p99 与样本数；结论只描述该 HVF runner，不外推到 Linux/KVM。
+!!! note "建设中"
+    host／host+stage／--safe／container／VM 五组配置的冷启动、热启动与常驻内存，以及 p99 与样本数，尚无数据；报告要求见[方法](methodology.md)。
+    结论只描述该 HVF runner，不外推到 Linux/KVM。
 

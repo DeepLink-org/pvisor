@@ -6,7 +6,7 @@ This is the full guide. The repository-root [`CONTRIBUTING.md`](https://github.c
 
 - **Report a bug or request a feature** through GitHub Issues. Do not report security issues publicly; follow the [Disclosure policy](../security/disclosure.md).
 - **Discuss substantial changes** in an issue before implementation.
-- **Claim documentation work**: pages marked “(planned)” in navigation are public requirements with questions and acceptance criteria.
+- **Claim documentation work**: pages marked “(planned)” in navigation are public requirement tickets; each states the questions it answers and its acceptance criteria, and you can claim them directly.
 
 ## Development loop
 

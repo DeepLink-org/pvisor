@@ -22,10 +22,10 @@ What conduct is expected, where should participants report problems, and how are
 ## Acceptance criteria
 
 - Add repository-root `CODE_OF_CONDUCT.md` and keep this page consistent;
-- Ensure the reporting channel works and is listed on [Community](index.md).
+- Ensure that the reporting channel works and is listed on [Community](index.md).
 
 ## Tracking
 
-- Tracking issue: TODO (no issue has been assigned).
+- Tracking issue: TODO
 - Owner: Maintainers
 - Related: [Governance and maintainers (planned)](governance.md)

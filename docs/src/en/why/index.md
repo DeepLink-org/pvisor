@@ -1,51 +1,36 @@
 # Why pVisor
 
-**The limit on agent autonomy is human supervision, not compute.**
+Give an agent a task, then walk away for two hours—few people dare to do that today. It is not that models fall short; it is that you cannot confirm what the agent did during those two hours.
 
-## Where supervision costs come from
+## The bottleneck is supervision, not compute
 
-Delegating work to an agent costs attention in one of three ways:
+How long an agent can run depends on how long you are willing to watch. Approve every command and human attention becomes the ceiling; go fully automatic and you must accept that it may corrupt files, read what it should not, and send requests where they should not go.
 
-| Approach | Human work | Cost grows with |
-| --- | --- | --- |
-| Approval beforehand | Confirm commands and file changes individually | Every execution step |
-| Investigation afterward | Read diffs and logs to find boundary violations | Change volume and uncertainty |
-| Cleanup after failure | Restore deletions, rotate leaked credentials, clean up effects | Blast radius |
-
-All three tend to require roughly the same unit of human attention for each unit of agent work. Supervision therefore grows linearly with execution volume, capping delegation regardless of model capability. Multiple unattended agents or team pipelines hit the same limit.
+Scale stalls here: **every unit of agent work requires roughly one unit of human attention**. As execution volume rises, supervision cost rises linearly, and autonomy is pressed down to human bandwidth.
 
 ## Decouple supervision from execution volume
 
-Each execution needs all three properties:
+To let go, every execution needs three things at once:
 
-| Property | Meaning | Supervision cost reduced |
+| Property | Meaning | What it means for you |
 | --- | --- | --- |
-| Bounded | Know the blast radius in advance | Per-command approval: worst cases already have a boundary |
-| Recoverable | Selectively apply, discard, or fork staged files | Cleanup: failed file results can be discarded |
-| Checkable | Leave evidence that can be checked | Investigation: sample results, eventually automate assessment |
+| Bounded | The blast radius of a mistake is known in advance | No need to approve every command |
+| Reversible | Changes can be selectively merged, discarded, or forked before they are applied | Failure is cheap, so you dare to let go |
+| Checkable | Execution leaves a record you can verify | Review can sample, or even be handed to a machine |
 
-A boundary without evidence still requires reading everything. Evidence without recovery may arrive too late. Recovery without a boundary leaves unstaged side effects uncontrolled.
+pVisor is the execution layer that gives every execution these three properties.
 
-## pVisor's role
+## What it is, and what it is not
 
-pVisor is the **execution layer** providing these properties:
+pVisor is the **semantic layer for each execution**: it defines boundaries, installs controls, and leaves evidence.
 
-- Beyond a sandbox boundary, it supplies staging, selective merging, and evidence of controls actually installed.
-- It defines execution semantics across host, container, and VM. Future integration with Kubernetes or Ray complements their scheduling.
-- Claude Code, Codex, and arbitrary scripts share one entry point and semantics.
+It is not a sandbox—the isolation substrate is provided by the executor (host namespaces/Seatbelt, containers, VMs). It is not a scheduler either—cross-node orchestration goes to Kubernetes and Ray, while pVisor provides consistent semantics and evidence for scheduled execution.
 
-Delegation can then depend on policy and evidence instead of time spent watching.
+## Today, and after
 
-## Today and the direction
+Today pVisor runs Job by Job on one machine: finish a task unattended, then afterward merge only the changes you want, as you would review a PR. This is L1, and it already has the three properties needed for higher levels of autonomy.
 
-Today pVisor delivers L1: one local agent finishes unattended; you review every change and merge selectively. Policy-based exemptions, multiple agents, and cluster execution build on the same properties; see the [trust ladder](trust-ladder.md).
+For how the four levels split, where pVisor places its bet, and the status of L2/L3, see [trust ladder and scale](trust-ladder.md); for usage at different scales see [use cases](use-cases.md).
 
-The progress metric is **human supervision cost per unit of agent work**: interventions and time spent. See the planned [supervision cost study](../benchmarks/supervision-cost.md).
-
-## Continue reading
-
-- [Trust ladder and scale](trust-ladder.md)
-- [Use cases](use-cases.md)
-- [Comparisons](comparisons.md)
-- [When not to use pVisor](when-not-to-use.md)
-- [FAQ](faq.md)
+!!! note "Under construction"
+    "Human supervision cost per unit of agent work" has no measured data yet; requirements and acceptance criteria are in [supervision cost (planned)](../benchmarks/supervision-cost.md).

@@ -7,7 +7,7 @@ search:
 # 策略字段参考
 
 !!! warning "规划中"
-    本页尚无完整参考。现有信息见[策略模型](../concepts/policy-model.md)、[文件策略](../guides/policies/files.md)与[网络策略](../guides/policies/network.md)。
+    完整字段表尚未完成；现有信息见[策略模型](../concepts/policy-model.md)、[文件策略](../guides/policies/files.md)与[网络策略](../guides/policies/network.md)。
 
 ## 要回答的问题
 

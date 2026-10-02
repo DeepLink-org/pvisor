@@ -7,27 +7,27 @@ search:
 # Network overhead
 
 !!! warning "Planned"
-    No results are available yet. This page records the requirements; contributions are welcome.
+    No data yet. Below are the requirements; contributions are welcome.
 
 ## Question
 
-How much overhead does the proxy or VM data plane add?
+How much slower are requests that pass through the pVisor proxy or the VM data plane?
 
 ## Requirements
 
-- Metrics: latency, throughput, connection setup.
-- Controls: direct connections and Docker networking.
-- Workload: concurrent small requests, large downloads, streamed model responses.
-- Paths: host proxy, deny-all, VM smoltcp.
+- Metric: request latency, throughput, connection setup time.
+- Control group: direct connections; Docker networking.
+- Workload: many concurrent small requests; large file downloads; LLM streaming responses.
+- Environment: covers the host proxy, deny-all, and VM smoltcp.
 
 ## Acceptance criteria
 
-- Separate results for the three paths.
-- Reproducible streaming latency.
-- Distinguish cooperative and mandatory boundaries.
+- Data for each of the three paths.
+- Reproducible streaming-response latency.
+- State the difference between cooperative and mandatory boundaries.
 
 ## Tracking
 
-- Tracking issue: TODO (no issue has been assigned).
+- Tracking issue: TODO
 - Owner: TODO
-- Related: [Methodology](methodology.md), [limitations](../security/known-limitations.md)
+- Related: [methodology](methodology.md), [known limitations](../security/known-limitations.md)

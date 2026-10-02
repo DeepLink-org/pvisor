@@ -7,7 +7,7 @@ search:
 # Journal design
 
 !!! warning "Planned"
-    Implementation-owner review is pending. See [Operation and Event](operations-events.md) for the existing contract.
+    Implementation-owner review is pending. See [Operation and Event](operations-events.md) for event fields and causality.
 
 ## Question
 
@@ -16,7 +16,7 @@ How are append order, durability, causality, write failures, and crashes handled
 ## Requirements
 
 - Commit/fsync/receipt sequence.
-- Positions versus caused_by versus observed_at_unix_ms.
+- The meaning of Journal position and `caused_by`, and why `observed_at_unix_ms` is not an ordering basis.
 - Deduplication and tail recovery.
 - Poisoning and behavior afterward.
 

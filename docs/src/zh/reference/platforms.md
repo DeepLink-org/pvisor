@@ -7,7 +7,7 @@ search:
 # 平台与执行器支持矩阵
 
 !!! warning "规划中"
-    本页需要研发给出带证据的成熟度等级。各执行器的边界见[执行器边界](../security/executor-boundaries.md)。
+    成熟度等级仍待研发给出证据。各执行器的边界见[执行器边界](../security/executor-boundaries.md)。
 
 ## 要回答的问题
 
@@ -22,7 +22,7 @@ search:
 ## 验收标准
 
 - 每格都有等级和证据；
-- README 的成熟度标识指向本页。
+- README 的成熟度标识指向这份矩阵。
 
 ## 关联
 

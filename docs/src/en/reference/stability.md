@@ -11,7 +11,7 @@ search:
 
 ## Question
 
-Which CLI, configuration, Bundle, JSON, and embedding interfaces are stable?
+Which interfaces can users rely on to stay unchanged? What compatibility rules apply to CLI options, configuration fields, the Run Bundle schema, JSON output, and the embedding API?
 
 ## Requirements
 
@@ -38,7 +38,7 @@ Which CLI, configuration, Bundle, JSON, and embedding interfaces are stable?
 | Run Bundle | Strict schema 4; unknown versions/old observation contracts reject; no automatic migration promise |
 | Event / Journal | Formal version 5; old JSONL incompatible |
 | Operation | Schema 1; unknown versions reject |
-| Replay | sandbox-playback.result/v3; adapter versions pinned in guide |
+| Replay | `sandbox-playback.result/v3`; adapter versions pinned in the guide |
 | Rust embedding API | Follows crate revision; CLI availability does not imply ABI/source compatibility |
 
 These are implemented reading rules, not new long-term promises awaiting maintainer confirmation. Pin pVisor version/commit, record schemas, and validate representative tasks before upgrading.

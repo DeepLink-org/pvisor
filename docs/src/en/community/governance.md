@@ -7,23 +7,26 @@ search:
 # Governance and maintainers
 
 !!! warning "Planned"
-    No results are available yet. This page records the requirements; contributions are welcome.
+    No results are available yet. The requirements below are open to claim.
 
 ## Question
 
-Who may merge code or approve semantic specifications, and how are decisions made?
+How is the project governed, who may merge, and who may approve semantic specifications?
 
 ## Requirements
 
-- No benchmark metrics, control, workload, or environment required.
+- Metrics: —
+- Controls: —
+- Workload: —
+- Environment: —
 
 ## Acceptance criteria
 
-- Maintainer list, decision process, advancement path.
-- Human semspec approval roles.
+- Define the maintainer list, decision process and advancement path.
+- Describe the human role in semspec approval.
 
 ## Tracking
 
-- Tracking issue: TODO (no issue has been assigned).
+- Tracking issue: TODO
 - Owner: TODO
 - Related: [Contributing](contributing.md)

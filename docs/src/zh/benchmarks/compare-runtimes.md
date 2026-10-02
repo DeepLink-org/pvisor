@@ -7,7 +7,7 @@ search:
 # 定位：gVisor / Firecracker / Kata
 
 !!! warning "规划中"
-    本页尚无数据。下面是需求说明，欢迎认领。
+    尚无数据。下面是需求说明，欢迎认领。
 
 ## 要回答的问题
 

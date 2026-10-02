@@ -30,26 +30,30 @@ pvisor run \
 
 An allow rule enables OverlayNet and switches unmatched traffic to deny. Only the two listed HTTPS destinations are allowed through the proxy in this example.
 
-## Driver mode
+## Choose a driver mode
+
+Use `--overlaynet off|auto|proxy` as the main OverlayNet switch:
 
 | Mode | Executor | Boundary |
 | --- | --- | --- |
-| off | Any | OverlayNet disabled |
-| proxy | Host/container | Cooperative proxy |
-| auto | VM | Mandatory smoltcp data plane |
+| `off` | Any | OverlayNet disabled |
+| `proxy` | Host/container | Cooperative host proxy |
+| `auto` | VM (recommended) | Mandatory smoltcp data plane |
 
-Without an explicit mode, network policy flags and Gateway capture infer the mode by executor.
+Without an explicit mode, policy flags and Gateway capture infer the mode from the executor.
 
-## Policies
+## Choose a policy
+
+Policy flags configure the selected driver (inferred automatically when no mode is set):
 
 | Goal | Option | Other proxied traffic |
 | --- | --- | --- |
-| Allow specific destinations | --overlaynet-allow TARGET | Deny |
-| Reject destinations | --overlaynet-deny TARGET | Allow |
-| Reject ordinary egress | --overlaynet-deny-all | Deny; boundary above |
-| Rate limit | --overlaynet-limit [TARGET=]RATE | Does not change authorization |
+| Allow specific destinations | `--overlaynet-allow TARGET` | Deny |
+| Reject destinations | `--overlaynet-deny TARGET` | Allow |
+| Reject ordinary egress | `--overlaynet-deny-all` | Deny; boundary in the table above |
+| Rate limit | `--overlaynet-limit [TARGET=]RATE` | Does not change allow/deny actions |
 
-Allow/deny/limit are repeatable. Explicit deny wins. Deny-all is separate and cannot combine with other policy flags.
+Allow, deny, and limit flags are all repeatable. An explicit deny takes precedence over allow. `--overlaynet-deny-all` is a separate policy and cannot be combined with other policy flags.
 
 Targets accept exact hostnames, wildcard suffixes, IP/CIDR, and optional ports:
 
@@ -67,16 +71,9 @@ pvisor run \
 pvisor run --overlaynet-deny-all -- agent-command
 ```
 
-Host installs namespace/Seatbelt controls. Use container network none to block unproxied connections. VM auto rejects ordinary TCP egress. Deny-all still permits configured internal Gateway routes; disable Gateway and use VM off for complete offline execution.
+Host Runs install the namespace/Seatbelt network boundary from the table above; containers should use `--container-network none` to block connections outside the proxy. VM `auto` rejects ordinary guest TCP egress. Deny-all does not block a configured internal Gateway route; for complete offline execution, disable the Gateway and use `off` on the VM.
 
-Deny-all cannot have allow exceptions. To deny by default and allow a few destinations, specify an allowlist directly:
-
-```bash
-pvisor run \
-  --overlaynet-allow api.openai.com:443 \
-  --overlaynet-allow pypi.org:443 \
-  -- agent-command
-```
+`--overlaynet-deny-all` does not support stacking allow exceptions. To default to deny-all while allowing a few addresses, declare the allowed targets directly instead of starting from deny-all: as soon as `--overlaynet-allow` appears, pVisor adopts an allowlist policy, allowing matching targets and denying other proxied targets by default.
 
 ### Bandwidth
 
@@ -130,28 +127,26 @@ Hostname rules reject private/loopback resolution by default. Prefer narrow expl
 
 For host DNS/TUN fake-IP connectors, VM accepts 198.18/15 aliases only after logical hostname/port authorization. Guest literal-IP connections to that range remain blocked. These connectors hide the final real endpoint; use a resolver exposing concrete addresses when applying resolved IP/CIDR policy.
 
-## Client coverage
+## Understanding which clients are controlled
 
-Host/container inject upper/lowercase HTTP_PROXY, HTTPS_PROXY, and ALL_PROXY. Cooperative clients reach the proxy, which supports HTTP forwarding and HTTPS CONNECT.
+For host/container Runs, pVisor injects `HTTP_PROXY`, `HTTPS_PROXY`, their lowercase forms, and `ALL_PROXY` into the agent process. HTTP clients that honor these settings go through OverlayNet; the proxy supports ordinary HTTP forwarding and HTTPS `CONNECT` tunnels.
 
-Ordinary cooperative coverage excludes:
+The following paths are outside the boundary of an ordinary cooperative host/container proxy policy:
 
-- Ignored/deleted proxy variables.
-- NO_PROXY destinations.
-- Direct sockets.
-- DNS/UDP outside the HTTP proxy.
+- A client that ignores or deletes the proxy environment variables.
+- A destination added to `NO_PROXY`.
+- A program that creates sockets directly.
+- DNS and UDP traffic that does not go through the HTTP proxy.
 
-Such runs report safety.network_non_bypassable=false. Host deny-all creates Linux private netns or macOS Seatbelt external-IP/ambient-Unix-socket restrictions while retaining assigned loopback proxy, exact AgentCtl, and private Run IPC. Container none is another offline option. Selective ordinary host proxies stay cooperative; macOS safe adds direct-connection restrictions.
-
-VM auto supplies static IPv4, synthetic DNS, and controlled TCP; off is offline. Gateway capture is an internal guest-router route. Container proxy needs host networking.
+A host/container cooperative-proxy Run therefore reports `safety.network_non_bypassable = false`. When you must block direct egress, use `pvisor run --overlaynet-deny-all -- COMMAND`: Linux creates a private network namespace; macOS uses Seatbelt to block non-loopback IPs and host ambient Unix sockets while retaining the loopback proxy, exact AgentCtl, and IPC inside private Run directories. Container Runs can also use `--container-network none`. The VM executor defaults to `[overlaynet] mode = "auto"`, where the guest uses a static IPv4 address and smoltcp provides synthetic DNS and policy-controlled IPv4 TCP; `mode = "off"` takes the VM offline. Gateway capture is exposed through the guest's virtual router; the container executor still requires `--container-network host` when it uses the in-process proxy.
 
 ## Session, workspace, and user policy
 
-CLI reads .pvisor/policy.toml from the workspace and $XDG_CONFIG_HOME/pvisor/policy.toml (default ~/.config/pvisor/policy.toml). Files contain network/filesystem tables. Explicit Run policies.session/workspace/user entries replace defaults for their corresponding network/filesystem layer.
+The CLI reads policy from the workspace's `.pvisor/policy.toml` and the user's `$XDG_CONFIG_HOME/pvisor/policy.toml` (default `~/.config/pvisor/policy.toml`); each file may contain a `[network]` and/or `[filesystem]` table. A Run TOML can set `[policies.session]`, `[policies.workspace]`, and `[policies.user]` explicitly; explicit network/filesystem entries replace the same layer's file defaults.
 
-Both directory and file must belong to the current user, have no symlinks, and be unwritable by others. Files must be regular and at most 1 MiB. Missing files add no constraints; unsafe paths/permissions/types/content block startup. Repository policy can only narrow permissions.
+The policy directory and file must be owned by the current user and not writable by other users; neither may be a symbolic link, and the file must be a regular file no larger than 1 MiB. A missing file adds no policy; unsafe paths, permissions, file types, or invalid content block startup. Repository policy loads automatically but can only narrow permissions.
 
-For example:
+For example, a user allows a specific API and denies sensitive files:
 
 ```toml
 [network]
@@ -171,7 +166,7 @@ allow = [{ host = "api.example.com", ports = [443] }]
 deny = ["generated/private/**"]
 ```
 
-Every declared network layer and base policy must allow access. Omitted default_action denies unmatched targets; deny-only/rate-only layers need explicit allow. Any deny, port/transport mismatch, or failed resolution check rejects access. Matching rate limits stack. Interactive grants cannot override explicit deny or base deny-all. Files combine deny > ask > warn > allow. Globs are relative to the staged view. Attempt policy is fixed; changes affect later Sessions.
+Every declared network layer and base network policy must allow the request. An omitted `default_action` denies unmatched targets; a deny-only or bandwidth-limiting policy must set `default_action = "allow"` explicitly. Any explicit deny in a layer, a port/transport restriction, or a failed resolved-address safety check rejects the request, and matching bandwidth limits from every layer all stack. Interactive approval cannot override an explicit deny or a base deny-all. File policies combine across layers as deny > ask > warn > allow; allow cannot override another layer's restrictions. File globs are relative to the staged workspace view. Policy is fixed for the Attempt; changing the file only affects later Sessions.
 
 Network layers enable an explicit cooperative proxy for host/container auto. File layers create staging if absent. VM auto stays mandatory; off stays offline.
 
@@ -179,7 +174,7 @@ Embedding uses RunSpec.policies and must configure corresponding file/network dr
 
 ## Inspect results
 
-Each invocation preserves a separate Run associated with the current workspace:
+The current directory is a reusable workspace by default; each invocation preserves a separate Run under pVisor's default record root:
 
 ```bash
 pvisor run \
@@ -192,16 +187,16 @@ pvisor status --review --json last | jq '{policy: .network.policy,
      non_bypassable: .safety.network_non_bypassable}'
 ```
 
-Counters cover the driver's traffic only. They do not estimate cooperative-proxy bypass. Supported VM TCP/DNS has no guest bypass.
+These counters describe traffic handled by the current OverlayNet driver. They cannot count traffic that bypasses a cooperative host/container proxy; the VM smoltcp profile has no guest network bypass beyond its supported TCP/DNS data plane.
 
 ## Troubleshooting
 
 | Symptom | Check |
 | --- | --- |
-| Allowed hostname resolves privately and is rejected | Explicit IP/CIDR or narrow allow_private_ips |
-| Requests succeed under deny-all | Executor, installed controls, internal Gateway routes; container offline needs `--container-network none` |
-| Proxy port cannot bind | Choose an unused nonzero port, for example `--overlaynet-listen 127.0.0.1:19082` |
-| Container cannot reach proxy | Use --container-network host |
-| VM proxy rejected | Use auto or off |
+| An allowed hostname resolves to loopback or a private address and is still rejected | Use an explicit IP/CIDR rule, or set `allow_private_ips = true` only on a narrowly scoped structured rule |
+| Requests still succeed under `--overlaynet-deny-all` | Check the executor, the controls actually installed, and internal Gateway routes; use `--container-network none` for an offline container |
+| pVisor cannot bind the proxy port | Choose a free nonzero port with `--overlaynet-listen 127.0.0.1:19082` |
+| A container cannot reach the proxy | Use `--container-network host` |
+| VM `proxy` mode is rejected | Use `auto` to select smoltcp, or `off` to take the guest offline |
 
-[Network examples](https://github.com/DeepLink-org/pvisor/tree/main/examples/pvisor/03-network-isolation) reproduce allowlist, deny-all, and direct-socket bypass offline.
+Run [`examples/pvisor/03-network-isolation`](https://github.com/DeepLink-org/pvisor/tree/main/examples/pvisor/03-network-isolation) to reproduce allowlist, deny-all, and direct-socket bypass offline.

@@ -1,6 +1,6 @@
 # Native OCI containers
 
-The container executor runs OCI userspace on a Linux host kernel, invoking runc or crun directly without Docker/Podman.
+The container executor runs the userspace of an OCI image on the Linux host kernel. It calls `runc` or `crun` directly and does not need Docker or Podman.
 
 ```bash
 pvisor run --executor container \
@@ -8,11 +8,11 @@ pvisor run --executor container \
   --stage ../stage-container -- /bin/sh
 ```
 
-Container image selects the executor automatically; explicit executor makes this visible. `--container-rootfs PATH` supplies a prepared rootfs instead of image preparation through pVisor's OCI store.
+`--container-image IMAGE` selects the container executor automatically; `--executor container` makes the choice explicit. `--container-rootfs PATH` uses an existing rootfs directly; otherwise pVisor prepares the image with its bundled OCI image store.
 
-## Execution path
+## How it works
 
-pVisor creates an OCI bundle, mounts a matching static Linux amd64/arm64 pVisor binary, and invokes host execution with `--spec` and a RunSpec inside the container. Agent arguments live in the spec rather than the OCI runner argv. Inner pVisor owns its AgentCtl and returns typed results.
+pVisor generates a standard OCI bundle, mounts a matching static `linux-amd64`/`linux-arm64` pVisor binary into the rootfs, and then takes the ordinary `pvisor run --executor host --spec ...` path inside the container. The agent command lives in the RunSpec and is not exposed in the OCI runner's argv; the pVisor inside the container creates its own AgentCtl and returns typed results.
 
 ```bash
 pvisor run \
@@ -29,14 +29,14 @@ pvisor run \
 
 | Mode | Purpose | Limit |
 | --- | --- | --- |
-| host | Gateway or explicit OverlayNet proxy | Required for host-loopback proxy addresses |
-| none | Offline | Incompatible with proxy/Gateway needing host network |
-| bridge | — | Requires external CNI; currently rejected |
+| `--container-network host` | Use a Gateway or an explicit OverlayNet proxy | Required: the injected proxy address is host loopback |
+| `--container-network none` | Run offline | Cannot be combined with a proxy or Gateway that needs host networking |
+| `bridge` | — | Requires external CNI configuration; currently rejected |
 
-## Gaps
+## Known gaps
 
-- Container isolation is recorded without claiming complete capability enforcement.
-- `--safe` mode therefore rejects startup instead of offering an incomplete boundary.
-- Selective host-network policies remain cooperative.
+- The container executor records container isolation but **does not claim complete capability enforcement**.
+- `--safe` therefore refuses to start on a container rather than offering an incomplete boundary.
+- With host networking, selective network policy is cooperative, just as it is on the host.
 
-Use a [VM](vm.md) for an independent kernel or mandatory selective networking.
+Use a [VM](vm.md) when you need an independent kernel or a non-bypassable network boundary.

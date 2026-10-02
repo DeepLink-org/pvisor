@@ -7,27 +7,27 @@ search:
 # Concurrency density and resource use
 
 !!! warning "Planned"
-    No results are available yet. This page records the requirements; contributions are welcome.
+    No data yet. Below are the requirements; contributions are welcome.
 
 ## Question
 
-How many Jobs can one host run concurrently?
+How many Jobs can one host run at the same time?
 
 ## Requirements
 
-- Metrics: concurrent Jobs, per-Job CPU/memory, tail latency.
-- Control: Docker at matching density.
-- Workload: 1, 8, 32, and 128 Jobs.
-- Environment: measure each executor separately.
+- Metric: concurrent Jobs per host, per-Job CPU and memory cost, tail latency.
+- Control group: Docker at the same density.
+- Workload: 1, 8, 32, and 128 concurrent Jobs.
+- Environment: measured separately for each executor.
 
 ## Acceptance criteria
 
-- Report host capacity to inform L2/L3 planning.
+- Report the per-host limit as input for L2/L3 planning.
 - Tail-latency data.
-- Reproducible resource model.
+- A reproducible resource model.
 
 ## Tracking
 
-- Tracking issue: TODO (no issue has been assigned).
+- Tracking issue: TODO
 - Owner: TODO
-- Related: [Methodology](methodology.md), [limitations](../security/known-limitations.md)
+- Related: [methodology](methodology.md), [known limitations](../security/known-limitations.md)

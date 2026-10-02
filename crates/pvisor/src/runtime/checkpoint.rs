@@ -71,12 +71,8 @@ pub fn create_logical_checkpoint(
     record: &RunRecord,
     requested_id: Option<&str>,
 ) -> anyhow::Result<LogicalCheckpoint> {
-    anyhow::ensure!(
-        !is_live(&record.stage_dir())?,
-        "Run {} is live; forking from its current staged files requires a stopped Run",
-        record.run_id
-    );
-    create_checkpoint(record, requested_id, CheckpointConsistency::Stopped)
+    let (current, _lease) = record.lock_current()?;
+    create_checkpoint(&current, requested_id, CheckpointConsistency::Stopped)
 }
 
 pub(crate) fn create_agent_quiesced_checkpoint(

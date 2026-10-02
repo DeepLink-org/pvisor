@@ -1,6 +1,6 @@
 # OverlayNet 透明拦截
 
-!!! note "Target architecture"
+!!! note "目标架构"
     libkrun VM driver 已经实现。Design A、Design B 以及交付计划第 1–5
     项描述的是目标 host/container 拦截与验收门，不是当前公开能力。
 
@@ -146,8 +146,7 @@ socket 面。除非未覆盖通道都被拒绝，它不被视为与 netns driver
 ## Capability 报告
 
 每次 Run 记录一份 `InterceptionProfile`，描述 driver、强度和协议覆盖：VM smoltcp、
-netns 或 seccomp 激活时为 `enforce`，仅有显式代理时为 `observe`。profile 随显式
-代理基础发成 `cooperative`，并发布 intercepted/allowed/denied/CONNECT/HTTP/sink/failure
+netns 或 seccomp 激活时为 `enforce`，仅有显式代理时为 `observe`。profile 随显式代理基线发布为 `cooperative`，并发布 intercepted/allowed/denied/CONNECT/HTTP/sink/failure
 计数；这些计数只说明什么到达了 OverlayNet，不估计被绕过的流量。
 
 host `ProcessExecutor` 本身从不声称网络 enforcement；声称由当前 OverlayNet driver

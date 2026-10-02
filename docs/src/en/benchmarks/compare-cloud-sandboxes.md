@@ -7,27 +7,27 @@ search:
 # Comparison: cloud sandboxes
 
 !!! warning "Planned"
-    No results are available yet. This page records the requirements; contributions are welcome.
+    No data yet. Below are the requirements; contributions are welcome.
 
 ## Question
 
-How should users compare E2B / Daytona / Modal with local execution?
+How do you choose between cloud sandboxes like E2B / Daytona / Modal and local execution?
 
 ## Requirements
 
-- Metrics: location, local workspace integration, review, data transfer, pricing, scalability.
-- Controls: E2B, Daytona, Modal.
-- Workload: representative task using local tools.
-- Environment: pinned versions and billing configuration.
+- Metric: execution location, local workspace integration, review path, data egress, cost model, scalability.
+- Control group: E2B; Daytona; Modal.
+- Workload: one representative task with a local toolchain dependency.
+- Environment: pinned product versions and billing configuration.
 
 ## Acceptance criteria
 
-- Explain data transfer and costs.
-- Explain when cloud execution fits.
+- State the data egress and cost model clearly.
+- State when to choose the cloud.
 - Provide a correction route.
 
 ## Tracking
 
-- Tracking issue: TODO (no issue has been assigned).
+- Tracking issue: TODO
 - Owner: TODO
-- Related: [Overview](../why/comparisons.md), [methodology](methodology.md)
+- Related: [comparisons](../why/comparisons.md), [methodology](methodology.md)

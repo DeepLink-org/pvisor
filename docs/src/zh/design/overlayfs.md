@@ -7,7 +7,7 @@ search:
 # OverlayCore 设计
 
 !!! warning "规划中"
-    本页需要实现负责人撰写。对外承诺见[暂存与 apply 语义](../concepts/staging.md)，CLI 行为见 [Run 项目发现](../reference/cli.md#run-项目发现)。
+    实现细节仍待负责人撰写。对外承诺见[暂存与 apply 语义](../concepts/staging.md)，CLI 行为见 [Run 项目发现](../reference/cli.md#run-项目发现)。
 
 ## 要回答的问题
 

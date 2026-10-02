@@ -1,6 +1,6 @@
 # Commands and scenarios
 
-- [`pvisor` command reference](cli.md)
+- [`pvisor` command reference](cli.md): commands, options, defaults and the configuration model.
 - [Shared image cache protocol](shared-image-cache.md): OCI image file cache client/server protocol and remote access.
 - [Executable scenarios](cases.md): run, staging, permissions, VM, container, network and replay scenarios organized by task.
 

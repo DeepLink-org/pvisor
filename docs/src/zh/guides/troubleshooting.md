@@ -27,8 +27,8 @@ pvisor run --stage ../stage-task-001 -- AGENT_COMMAND
 
 不使用 stage 时，host executor 不会产生可以审查和选择性 apply 的 staged filesystem Effect；
 默认也保留宿主机文件系统视图。需要文件系统访问限制时使用
-`--filesystem sandbox`，需要审查改动时再使用 `--stage`。如果本来就需要 stage，请检查
-记录的 stage 路径和 executor warning，再重新执行。
+`--filesystem sandbox`，需要审查改动时再使用 `--stage`。若本就需要 stage，检查
+记录的 stage 路径和 executor warning 后重新执行。
 
 ## 请求的 capability 没有被强制执行
 

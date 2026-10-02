@@ -15,14 +15,14 @@ What do status JSON commands emit and which fields can scripts depend on?
 
 ## Requirements
 
-- Publish a schema for each JSON command.
+- Publish a JSON Schema for each command that supports `--json`.
 - Mark stable/experimental fields.
-- Provide jq queries for denials, mandatory networking, and changed path scope.
+- Provide common `jq` queries: whether any access was denied, whether the network boundary is non-bypassable, and whether changes stay within the given paths.
 
 ## Acceptance criteria
 
-- Generate schemas and check output in CI.
-- Address internal .wh.d paths leaking through status sample_paths.
+- Generate schemas and check output against them in CI.
+- Fix the known issue where `status --json` `sample_paths` leaks internal `.wh.d` paths.
 
 ## Tracking
 
@@ -38,7 +38,7 @@ What do status JSON commands emit and which fields can scripts depend on?
 | `status --review --json` | Complete versioned Run Bundle | Post-run review and machine consumers |
 | `extensions` | Installed companion commands as a JSON array | Check TUI/replay/cache availability |
 
-Review JSON and `--diff` are mutually exclusive. Do not parse human review text.
+`--review --json` and `--diff` are mutually exclusive. Do not parse human review text.
 
 ## Useful queries
 
@@ -55,4 +55,4 @@ The last query lists changes outside `src`. An empty array only establishes scop
 
 Network counters include `requests_seen`, `policy_allowed`, `policy_denied`, `failures`, `tcp_flows_opened`, `tcp_flows_denied`, and `targets`. Missing `intercepted` means unavailable observations, not zero traffic. File denials are in `run_observation.filesystem`; net changes are in `filesystem.changes`.
 
-Safety decisions must check schema, required fields, execution state, observations, and warnings together. Do not turn unknown evidence into acceptance with false/empty defaults. Stability labels and full generated schemas remain pending above.
+Safety decisions must check schema, required fields, execution state, observations, and warnings together. Do not turn unknown evidence into acceptance with `// false` or empty-array defaults. Stability labels and full generated schemas remain pending above.

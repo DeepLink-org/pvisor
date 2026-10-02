@@ -11,17 +11,17 @@ search:
 
 ## Question
 
-How do workload exit codes differ from pVisor errors?
+Which exit code does each `pvisor` subcommand return, and when? How do pVisor's own errors differ from the exit code of the command it runs?
 
 ## Requirements
 
-- List command exit behavior.
-- Cover unsupported policy, sandbox setup, apply conflict, missing Job.
-- Explain CI classification of agent failure versus admission refusal.
+- List each subcommand's exit codes and meanings.
+- List the main error types (unsupported policy, sandbox setup failure, apply conflict, missing Job) with their exit codes and messages.
+- Explain how CI distinguishes "agent failure" from "pVisor refused to run".
 
 ## Acceptance criteria
 
-- Map behavior to implementation and tests.
+- The exit-code table maps one-to-one to error types in the code and has test coverage.
 
 ## Tracking
 
@@ -38,9 +38,9 @@ How do workload exit codes differ from pVisor errors?
 | Execution fails without a workload exit code | 1 |
 | Internal host sandbox setup fails | Launcher uses 125; outer errors may return 1, so inspect diagnostics |
 | Argument parsing error | clap returns 2 |
-| Successful status/apply/drop/kill | 0 |
-| Runtime error in those commands | anyhow returns 1 with stderr diagnostics |
-| Command under inspect | Returns inspected command's exit code |
+| Successful `status`/`apply`/`drop`/`kill` | 0 |
+| Runtime error in those commands | `anyhow` returns 1 with stderr diagnostics |
+| Command under `inspect` | Returns the inspected command's exit code |
 | Companion command | Dispatch preserves its code; also inspect replay result phase/quality |
 
 Apply conflicts, missing Jobs, and UnsupportedPolicy do not currently have distinct numeric codes. Workloads may themselves return 1, 2, 125, or 130; numbers alone cannot distinguish agent failure from pVisor refusal.

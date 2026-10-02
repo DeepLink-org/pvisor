@@ -7,7 +7,7 @@ search:
 # 回放设计
 
 !!! warning "规划中"
-    本页需要实现负责人撰写。操作方法见[回放](../guides/replay.md)。
+    实现细节仍待负责人撰写。操作方法见[回放](../guides/replay.md)。
 
 ## 要回答的问题
 

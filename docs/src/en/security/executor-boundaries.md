@@ -1,28 +1,30 @@
 # Executor boundaries
 
-This summarizes capability scope when corresponding controls are requested. [Network boundaries](../guides/policies/network.md#网络边界) owns network detail; [isolation](../design/isolation.md) owns mechanisms. Verify controls installed for each Run in its Bundle.
+Each executor provides the protection below per capability dimension. Every statement describes the case where **the corresponding control was requested**; whether a given Run actually installed it is decided by that Run's Bundle.
 
-## Matrix
+[Network boundaries](../guides/policies/network.md#网络边界) owns network detail (which path can be bypassed, and the VM data plane's protocol coverage); [isolation design](../design/isolation.md) owns the mechanisms.
 
-| Dimension | Linux host | macOS host | Container | VM |
+## Overview
+
+| Dimension | host (Linux) | host (macOS) | container | VM |
 | --- | --- | --- | --- | --- |
-| Workspace writes | Staged via FUSE before apply | Staged via macFUSE | Staged via OverlayFS | virtio-fs copy-on-write |
-| Other host writes | `--filesystem sandbox`: namespaces/projected root/Landlock | `--filesystem sandbox`: Seatbelt | Image and explicit mounts | Independent guest, temporary root upper |
-| Reads | Ambient by default; sandbox confines | Ambient by default; safe requests Seatbelt, current evidence still reports ambient | Image and mounts | Rootfs and declared shares; `--rootfs host` exposes host data |
-| Sensitive paths in view | `--access`/`--safe` OverlayFS rules | Same | Same | Same, including root view |
-| Selective network | Cooperative, bypassable | Safe blocks direct connections; proxy filters | Cooperative with host network | Mandatory smoltcp |
-| Offline | Private network namespace | Seatbelt external-IP/ambient-Unix block | `--container-network none` | `--overlaynet off` |
-| HOME/credentials | `--safe` private HOME; explicit `--pass-env` grants | Safe temporary HOME | Explicit mounts/variables | Rootfs-dependent; host root preserves host HOME |
-| Descendants | Namespaces and group cleanup | Group cleanup | Container process tree | Guest kernel |
-| `--safe` usable? | Yes, prerequisites required | Yes, prerequisites required | **Rejected**: incomplete controls | Yes, auto required |
+| Workspace writes | Staged through OverlayFS (FUSE); nothing lands before apply | Staged through OverlayFS (macFUSE) | Staged through OverlayFS | Copy-on-write workspace served over virtio-fs |
+| Writes to other host paths | `--filesystem sandbox`: namespaces, projected root, and Landlock | `--filesystem sandbox`: Seatbelt write scope | Image user space and configured mounts | Separate guest; root writes go to a temporary upper and are discarded on exit |
+| Reads | Ambient by default; under `--filesystem sandbox`, constrained by the projected root and Landlock | Ambient by default; `--safe` requests a Seatbelt read scope, but current Run evidence still reports reads as ambient (see [known limitations](known-limitations.md)) | Image contents and configured mounts | Only rootfs and declared mounts; `--rootfs host` exposes host content |
+| Sensitive paths in the view | `--access` rules and the `--safe` preset, enforced through OverlayFS | Same as Linux | Same as Linux | Same, applied to the root view |
+| Network (selective policy) | Cooperative proxy, bypassable | Under `--safe`, blocks direct connections and enforces selective rules at the proxy | Cooperative proxy, needs host networking | Non-bypassable smoltcp data plane |
+| Network (deny all) | Private network namespace | Seatbelt blocks non-loopback IPs and ambient Unix sockets | `--container-network none` | `--overlaynet off` |
+| HOME and credentials | `--safe`: copy-on-write HOME view; credentials require an explicit `--pass-env` | `--safe`: temporary HOME; cannot read the original home directory | Only explicit mounts and passed variables | Rootfs-dependent; `--rootfs host` preserves the host HOME |
+| Child processes | user/mount/PID namespaces; process-group cleanup | Process-group cleanup | Container process tree | Inside the guest kernel |
+| Is `--safe` available? | Yes | Yes | **Refuses to start** (missing complete enforcement boundary) | Yes, requires `auto` networking |
 
-## Interpretation
+## Reading the table
 
-- A control in one dimension does not establish others.
-- No executor claims complete subprocess enforcement. `--strict` therefore rejects with UnsupportedPolicy on host/container/VM; it tests fail-closed behavior.
-- macOS VM is not a hostile multi-tenant boundary.
-- Detached descendants escape host process-group cleanup.
+- **A control in one dimension does not raise another.** A staged file does not prove the network is isolated, and a captured model request does not prove no other connection exists.
+- **No executor currently claims complete subprocess enforcement.** As a result, `--strict` (which requires non-bypassable enforcement evidence for every requested dimension) exits with `UnsupportedPolicy` on host, container, and VM. Use it to verify fail-closed behavior; it is not a ready-made stronger sandbox preset.
+- **The macOS VM is not a hostile multi-tenant boundary**: the VMM still holds the calling user's host permissions.
+- **Descendants that actively leave the process group** are outside host process-group cleanup.
 
-## Verify a Run
+## Verify it in the Run Bundle
 
-`pvisor status --review` displays installed controls and warnings; `--json` exposes structured fields. executor_observations is authoritative; safety.* is derived. See [control levels](../concepts/capabilities-and-evidence.md).
+The Safety boundary section of `pvisor status --review` lists the controls and warnings actually installed for each dimension; in `--json`, `executor_observations` is the enforcement evidence, and the `safety.*` summary is derived from it. See [capabilities, evidence, and assurance boundaries](../concepts/capabilities-and-evidence.md) for what the levels (`Unenforced`, `Cooperative`, `Enforced`) mean.

@@ -7,26 +7,26 @@ search:
 # Isolation effectiveness tests
 
 !!! warning "Planned"
-    No results are available yet. This page records the requirements; contributions are welcome.
+    No data yet. Below are the requirements; contributions are welcome.
 
 ## Question
 
-Are there known escape paths?
+Are there any known escape paths?
 
 ## Requirements
 
-- Metric: escape-corpus pass rate.
-- Controls: compare executors.
-- Workload: S-STAGE semspec plus public escape cases such as symlink replacement, traversal, Unix sockets, and /proc.
-- Report PASS/FAIL/XFAIL per executor.
+- Metric: escape-case pass rate.
+- Control group: across executors.
+- Workload: semspec S-STAGE cases plus a public sandbox-escape corpus (symlink replacement, path traversal, Unix sockets, /proc, and similar).
+- Environment: report PASS/FAIL/XFAIL per executor for each case.
 
 ## Acceptance criteria
 
-- Link XFAIL to limitations.
-- Publish corpus and reproducible scripts.
+- XFAIL cases link to known limitations.
+- Publish the corpus and reproducible scripts.
 
 ## Tracking
 
-- Tracking issue: TODO (no issue has been assigned).
+- Tracking issue: TODO
 - Owner: TODO
-- Related: [Methodology](methodology.md), [limitations](../security/known-limitations.md)
+- Related: [methodology](methodology.md), [known limitations](../security/known-limitations.md)

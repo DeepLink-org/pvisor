@@ -1,30 +1,40 @@
-# Vulnerability disclosure
+# Vulnerability disclosure policy
 
-Keep this policy synchronized with repository [SECURITY.md](https://github.com/DeepLink-org/pvisor/blob/main/SECURITY.md).
+## How to report
 
-## Reporting
+**Do not disclose vulnerabilities in public issues.** Submit through GitHub private vulnerability reporting: [Report a vulnerability](https://github.com/DeepLink-org/pvisor/security/advisories/new) (repository Security → Advisories → Report a vulnerability).
 
-**Do not disclose vulnerabilities in public issues.** Use [GitHub private vulnerability reporting](https://github.com/DeepLink-org/pvisor/security/advisories/new): Security → Advisories → Report a vulnerability.
+Include:
 
-Include version/commit, platform, executor, command/config, expected boundary, observed violation, and a minimal reproduction. Attach a Bundle only when safe to share.
+- The pVisor version or commit, platform, and executor (host, container, or VM);
+- the command or configuration you used, plus a Run Bundle when it is safe to share;
+- the boundary you expected, and what the workload actually did;
+- minimal reproduction steps, if you have them.
 
 ## Response targets
 
 | Step | Target |
 | --- | --- |
-| Acknowledge | 3 business days |
-| Assessment/severity | 10 business days |
-| Fix/mitigation plan | With assessment |
-| Public advisory | After a fix, coordinated with reporter |
+| Acknowledge receipt | Within 3 business days |
+| Initial assessment and severity | Within 10 business days |
+| Fix or mitigation plan | Shared with the initial assessment |
+| Public advisory | After the fix ships, at a time coordinated with the reporter |
 
-Reporters are credited unless they request anonymity.
+Advisories credit the reporter unless they ask to stay anonymous.
 
 ## Scope
 
-In scope: crossing controls reported Enforced; staged writes reaching workspace without apply; apply escaping targets/overwriting conflicting edits; evidence misreporting installation.
+**In scope**:
 
-Excluded: documented cooperative-proxy limits, kernel bugs, side channels, misuse of granted credentials. See [overview](index.md) and [limitations](known-limitations.md).
+- A Run crosses a boundary its own capability evidence marks `Enforced`.
+- Staged changes reach the workspace without `apply`.
+- `apply` writes outside its target or overwrites a conflicting external change.
+- Evidence misreports the controls actually installed.
+
+**Out of scope**: limitations the documentation already states (for example, a bypassable cooperative host proxy), kernel bugs, side channels, and misuse of explicitly granted credentials. See [security overview](index.md) and [known limitations](known-limitations.md).
 
 ## Supported versions
 
-Fixes target the latest release and main.
+Security fixes target the latest release and the `main` branch.
+
+The repository root [`SECURITY.md`](https://github.com/DeepLink-org/pvisor/blob/main/SECURITY.md) matches this policy; changes must be kept in sync in both places.

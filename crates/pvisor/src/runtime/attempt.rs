@@ -270,6 +270,7 @@ impl AttemptSession {
         AttemptTeardown {
             run_record: self.run_record,
             errors,
+            _lease: self._lease,
         }
     }
 
@@ -340,6 +341,9 @@ fn finalize_overlay(
 pub(crate) struct AttemptTeardown {
     run_record: RunRecord,
     errors: Vec<String>,
+    // Finalization is still a mutation of the Run. Keep its exclusive ownership
+    // until both the durable result and terminal events have been committed.
+    _lease: RunLease,
 }
 
 impl AttemptTeardown {
@@ -451,6 +455,7 @@ struct PreparedVmNetwork {
 }
 
 struct PreparedOverlay {
+    lease: RunLease,
     mount: Option<OverlayMount>,
     fs_metrics: Option<pvisor_overlayfs::FsMetrics>,
     hint: OverlayHint,
@@ -518,6 +523,7 @@ pub(crate) fn prepare_attempt(
         uses_krun_executor(spec),
     )?;
     let PreparedOverlay {
+        lease,
         mount: overlay_mount,
         fs_metrics,
         hint: overlay_hint,
@@ -529,11 +535,6 @@ pub(crate) fn prepare_attempt(
     let command = std::iter::once(process.program.clone())
         .chain(process.args.iter().cloned())
         .collect::<Vec<_>>();
-    let stage_dir = overlay_record
-        .as_ref()
-        .map(|record| record.stage_dir.clone())
-        .unwrap_or_else(|| storage.clone());
-    let lease = RunLease::acquire(&stage_dir)?;
     let vm_network = opts
         .vm_network
         .then(|| {
@@ -676,6 +677,7 @@ pub(crate) fn prepare_overlay_attempt(
         uses_krun_executor(spec),
     )?;
     let PreparedOverlay {
+        lease,
         mount: overlay_mount,
         fs_metrics,
         hint: overlay_hint,
@@ -690,7 +692,6 @@ pub(crate) fn prepare_overlay_attempt(
     let command = std::iter::once(process.program.clone())
         .chain(process.args.iter().cloned())
         .collect::<Vec<_>>();
-    let lease = RunLease::acquire(&overlay_record.stage_dir)?;
     let prepared_network = opts
         .vm_network
         .map(|network| prepare_vm_network(spec, network, None))
@@ -818,7 +819,7 @@ pub(crate) fn prepare_storage_attempt(
     let command = std::iter::once(process.program.clone())
         .chain(process.args.iter().cloned())
         .collect::<Vec<_>>();
-    let lease = RunLease::acquire(&storage)?;
+    let lease = RunLease::acquire_new(&storage)?;
     let prepared_network = vm_network_opts
         .map(|network| prepare_vm_network(spec, network, None))
         .transpose()?;
@@ -1158,6 +1159,7 @@ fn prepare_overlay(
 ) -> anyhow::Result<PreparedOverlay> {
     if !overlay_cfg.enabled && overlay_cfg.target.is_none() {
         return Ok(PreparedOverlay {
+            lease: RunLease::acquire_new(storage)?,
             mount: None,
             fs_metrics: None,
             hint: OverlayHint::default(),
@@ -1167,13 +1169,7 @@ fn prepare_overlay(
     }
     match resolve_overlay_workspace(overlay_cfg, storage, root_session)? {
         Some(record) => {
-            if let Ok(existing) = RunRecord::read(&record.stage_dir) {
-                anyhow::bail!(
-                    "OverlayFS stage {} already belongs to Run {}; choose a unique stage_dir",
-                    record.stage_dir.display(),
-                    existing.run_id
-                );
-            }
+            let lease = RunLease::acquire_new(&record.stage_dir)?;
             let lowers = lower_stack_from_config(overlay_cfg, storage, &record)?;
             let (mount, record, fs_metrics) = if mountless {
                 (
@@ -1192,6 +1188,7 @@ fn prepare_overlay(
                 hint.merged_dir = None;
             }
             Ok(PreparedOverlay {
+                lease,
                 mount,
                 fs_metrics,
                 hint,
@@ -1200,6 +1197,7 @@ fn prepare_overlay(
             })
         }
         None => Ok(PreparedOverlay {
+            lease: RunLease::acquire_new(storage)?,
             mount: None,
             fs_metrics: None,
             hint: OverlayHint::default(),

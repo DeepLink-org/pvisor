@@ -14,7 +14,7 @@ Run identifies a command, configuration and result independently of the OS PID. 
 
 ## Attempt: one execution
 
-Attempt identifies one execution by an executor. Each current `PVisor::run` creates one Attempt. Session in pvisor owns preparation, cancellation, cleanup and terminal publication.
+Attempt identifies one execution by an executor. Each current `PVisor::run` creates one Attempt. Session in pvisor owns preparation, cancellation, cleanup and terminal publication; Session is the lifecycle owner.
 
 Fork creates a new Run with lineage from a logical checkpoint; it does not restore the original process.
 

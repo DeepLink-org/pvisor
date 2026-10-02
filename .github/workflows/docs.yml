@@ -28,7 +28,7 @@ jobs:
         working-directory: docs
         run: uv run --no-project --with zensical==0.0.61 python ../scripts/build-docs.py
       - name: Check generated pages
-        run: python scripts/check-docs.py
+        run: python scripts/check-docs.py --require-recorded
       - uses: actions/upload-pages-artifact@v3
         with:
           path: docs/site

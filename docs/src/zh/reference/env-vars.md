@@ -7,7 +7,7 @@ search:
 # 环境变量
 
 !!! warning "规划中"
-    本页尚无完整参考。投影给 Agent 的变量见[凭据与环境变量](../guides/policies/credentials.md)。
+    完整参考尚未完成；投影给 Agent 的变量见[凭据与环境变量](../guides/policies/credentials.md)。
 
 ## 要回答的问题
 
@@ -40,7 +40,7 @@ pVisor 读取哪些 `PVISOR_*` 环境变量（例如 `PVISOR_RUN_HOME`、`PVISOR
 | `XDG_CONFIG_HOME` | 用户策略根；未设置用 `~/.config` |
 | `HOME` / `PATH` | 存储、工具发现与环境投影的宿主输入；safe 下 HOME 会重定向 |
 
-缓存的端点语法、安全要求和失败行为见[共享镜像缓存](shared-image-cache.md)。不要把宿主读取变量与 Agent 可见变量混为一谈。
+缓存的端点语法、安全要求和失败行为见[共享镜像缓存](shared-image-cache.md)。不要把宿主读取变量与 Agent 可见变量混为一谈；显式投影用 `--pass-env NAME`。
 
 ## 运行时注入
 

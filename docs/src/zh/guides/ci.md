@@ -34,7 +34,7 @@ search:
 
 ## 今天可以采用的最小流程
 
-下面是待环境验证的接入模板，不宣称完成 L2 自动免审。准备一个已安装相同 pVisor 版本、支持 FUSE/user namespace/Landlock 的 Linux runner，把标签 `pvisor` 分配给它；仓库中的 `ci-agent.sh` 必须可执行，先用离线脚本验证。默认 GitHub 托管 runner 的权限和 FUSE 条件不可直接假定。
+这个接入模板待环境验证，不宣称完成 L2 自动免审。准备一个已安装相同 pVisor 版本、支持 FUSE/user namespace/Landlock 的 Linux runner，把标签 `pvisor` 分配给它；仓库中的 `ci-agent.sh` 必须可执行，先用离线脚本验证。默认 GitHub 托管 runner 的权限和 FUSE 条件不可直接假定。
 
 ```yaml
 name: Staged task

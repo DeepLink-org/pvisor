@@ -2,33 +2,33 @@
 
 All benchmarks follow the same protocol:
 
-- State hardware, OS, kernel/macOS version, FUSE implementation, pVisor version and commit;
-- Report p50, p95, p99 and sample count;
-- Provide a one-command reproducer under `benchmark/`, using the `pvisor-benchmark/v1` report schema;
-- State every comparison configuration; avoid comparisons with unconfigured alternatives;
-- Keep results by date rather than overwriting historical data.
+- State the hardware, operating system, kernel or macOS version, FUSE implementation, pVisor version, and commit.
+- Report p50, p95, and p99 with the sample count.
+- Provide a script that reproduces the result in one command (under `benchmark/`), reporting through the `pvisor-benchmark/v1` schema.
+- State the configuration of every control group; do not compare against untuned competitors.
+- Keep results by date instead of overwriting old data.
 
 ## Environment checklist
 
-Start each report with this table:
+Start every report with this table:
 
 | Item | Example |
 | --- | --- |
 | Date | 2026-10-02 |
 | pVisor version and commit | `0.x.y` / `abc1234` |
-| Hardware | Apple M4, 16 GiB; or CPU model, cores and memory |
+| Hardware | Apple M4, 16 GiB; or CPU model, core count, memory |
 | OS and kernel | macOS 26.x; or Ubuntu 24.04, Linux 6.8 |
-| Filesystem and FUSE | APFS + macFUSE 5.x; or ext4 + libfuse 3.x |
+| Filesystem and FUSE implementation | APFS + macFUSE 5.x; or ext4 + libfuse 3.x |
 | Executor and options | `--executor vm --overlaynet auto` |
-| Samples and warmup | 100 runs, discard the first 5 |
+| Samples and warmups | 100 runs, discarding the first 5 |
 
-## Controls
+## Control groups
 
-- Use each alternative's documented recommended configuration; state versions and options;
-- Isolate pVisor's own cost: for example, compare `--filesystem host` with staging under the same executor rather than only reporting total time;
-- When measuring only one phase, such as guest init, name that phase in the title rather than claiming end-to-end results.
+- Use each alternative's documented recommended configuration, and state its version and options.
+- Isolate pVisor's own overhead: for example, the difference between `--filesystem host` and staging under the same executor, rather than only the end-to-end total.
+- When you have data for only part of a phase (for example, only guest init), the title must name the phase being measured; do not present it as an end-to-end conclusion.
 
-## Start with existing measurement entry points
+## Start from the existing measurement entry points
 
 ```bash
 just benchmark
@@ -38,12 +38,12 @@ just benchmark-compare target/pvisor-benchmark/candidate/raw-report.json target/
 just benchmark-startup --warmups 10 --samples 100
 ```
 
-`just benchmark` measures process-level costs of a minimal host Run and reading its Bundle: smoke uses 2 warmups/10 samples; nightly uses 10 warmups/50 samples. Both use `pvisor-benchmark/v1`. `benchmark-startup` writes separate `startup.json`/`startup.md` rather than claiming the same schema; its default is 3 warmups/30 samples, overridden above.
+`just benchmark` measures the process-level cost of a minimal host Run and of reading its Run Bundle: smoke uses 2 warmups and 10 samples, nightly uses 10 warmups and 50 samples. Both use `pvisor-benchmark/v1`. `benchmark-startup` writes separate `startup.json`/`startup.md` files and does not pretend to share the same report schema; its default is 3 warmups and 30 samples, overridden explicitly above.
 
-Existing startup trials exclude building, image downloads and rootfs preparation; state this boundary. Executors failing preflight are listed as SKIP with stderr retained. Successful trials require command success and completed/zero-exit Bundles. Failures, skips or degraded controls cannot count as faster successful samples.
+Building, image downloads, and rootfs preparation are not counted in the existing startup samples; reports must state this boundary. Executors that fail preflight are listed separately as SKIP with stderr retained. A successful measurement requires the command to succeed and the Bundle to be completed with a zero exit. Failures, skips, or degraded controls cannot count as faster successful samples.
 
-## Interpretation and archives
+## Interpretation and archiving
 
-Compare candidate/baseline on the same host, suite and inputs. `benchmark-compare` defaults to a 15% regression threshold; reports remain informational unless `--fail-on-regression` is enabled. Retain raw samples, summaries, complete options, input hashes and commits. Distinguish cold images, warm disk caches and warm page caches; record background load/power state.
+Compare candidate and baseline on the same host, suite, and inputs. `benchmark-compare` defaults to a 15% regression threshold and reports only unless `--fail-on-regression` is explicitly enabled. Save raw samples, summaries, complete parameters, input hashes, and commits; distinguish cold images, warm disk caches, and warm page caches, and record background load and power state.
 
-Complete filesystem, network, supervision-cost and density measurements are still missing. Existing tools, passing specifications or phase-specific figures do not replace those results.
+Complete filesystem, network, supervision-cost, and concurrency-density measurements are still missing. Existing tools, passing specifications, or phase-specific figures cannot replace those results.

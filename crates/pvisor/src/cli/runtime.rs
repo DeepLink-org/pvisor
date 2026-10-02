@@ -425,15 +425,8 @@ fn mutate(
     target: Option<&Path>,
     selection: Option<&ApplySelection>,
 ) -> anyhow::Result<()> {
-    let mut record = selected(args.selector.as_deref(), &args.output_dir)?;
-    if is_live(&record.stage_dir())? {
-        bail!(
-            "Job {} is still running; its upper cannot be {}",
-            record.run_id,
-            if apply { "applied" } else { "dropped" }
-        );
-    }
-    let _lease = RunLease::acquire(&record.stage_dir())?;
+    let selected = selected(args.selector.as_deref(), &args.output_dir)?;
+    let (mut record, _lease) = selected.lock_current()?;
     let mut overlay = record
         .overlay
         .take()

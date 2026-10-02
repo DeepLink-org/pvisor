@@ -1,13 +1,21 @@
 # Guides
 
-Start with a task and follow its executable workflow. Use [concepts](../concepts/index.md) for the mental model and [reference](../reference/index.md) for parameter contracts.
+If this is your first time, complete [First run](../start/first-run.md) first.
 
-- [Connect your agent](agents/index.md): Agent CLIs and arbitrary scripts.
-- [Review and apply](review-apply.md): select file changes and handle conflicts.
-- [Checkpoints and forks](fork-checkpoint.md): branch staged filesystem state.
-- [File policies](policies/files.md), [network policies](policies/network.md), and [credentials](policies/credentials.md): choose permissions.
-- [Executors](executors/index.md): host, container, or VM.
-- [Capture](capture.md) and [replay](replay.md): record interaction and continue trajectories.
-- [Troubleshooting](troubleshooting.md): inspect evidence before retrying.
+| Task | Guide |
+| --- | --- |
+| Connect your agent | [Connect your agent](agents/index.md) |
+| Accept or discard file changes | [Review and apply](review-apply.md) |
+| Save a checkpoint or fork | [Logical checkpoints and forks](fork-checkpoint.md) |
+| Choose host, container, or VM | [Executors overview](executors/index.md) |
+| Control file access | [File policies](policies/files.md) |
+| Limit destinations or bandwidth | [Network policies](policies/network.md) |
+| Deliver credentials | [Credentials and environment variables](policies/credentials.md) |
+| Record model requests and responses | [Gateway capture](capture.md) |
+| Rerun supported native trajectories | [Replay](replay.md) |
+| Run in CI (planned) | [Run agents in CI](ci.md) |
+| Run many agents on one host (planned) | [Parallel agents](parallel-agents.md) |
+| RL rollouts (planned) | [RL rollouts](rl-rollouts.md) |
+| Diagnose unexpected behavior | [Troubleshooting](troubleshooting.md) |
 
-CI, parallel agents, and RL rollout integration are under construction: [CI](ci.md), [parallel agents](parallel-agents.md), [RL rollouts](rl-rollouts.md).
+For exact commands see the [CLI reference](../reference/cli.md); for implementation details see [Design](../design/index.md).

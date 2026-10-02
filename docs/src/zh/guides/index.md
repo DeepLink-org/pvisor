@@ -1,6 +1,6 @@
 # 任务指南
 
-每篇指南解决一个实际任务。第一次使用，请先完成[第一次运行](../start/first-run.md)。
+第一次使用，请先完成[第一次运行](../start/first-run.md)。
 
 | 任务 | 指南 |
 | --- | --- |
@@ -18,4 +18,4 @@
 | RL rollout（规划中） | [RL rollout](rl-rollouts.md) |
 | 排查异常行为 | [故障排查](troubleshooting.md) |
 
-精确命令见 [CLI 参考](../reference/cli.md)，实现细节见[设计与研究](../design/index.md)。
+精确命令见 [CLI 参考](../reference/cli.md)，实现细节见[实现设计](../design/index.md)。

@@ -1,56 +1,56 @@
 # Threat model
 
-This page defines what can go wrong, the protected assets, and trust boundaries. See [executor boundaries](executor-boundaries.md) for per-platform capabilities.
+pVisor protects the project workspace, HOME, credentials, network, and model quota. It assumes workloads **may fail or be manipulated**, and it trusts the supervisor process, the host kernel, and the executor backend.
+
+Per-executor, per-capability protection is in [executor boundaries](executor-boundaries.md).
 
 ## Assets
 
-| Asset | Risk |
+| Asset | Typical risk |
 | --- | --- |
-| Project | Deletion, corruption, unreviewed changes |
-| Concurrent manual edits | Overwritten by agent changes |
-| HOME/application state | Configuration/state contamination |
-| SSH/cloud/API credentials | Reading or exfiltration |
-| Other host paths | Reads or writes |
-| Network | Unauthorized destinations/exfiltration |
-| Model quotas | Misuse |
+| Project workspace | Accidental deletion, corruption, or overwrite by unreviewed changes |
+| Your manual edits during a run | Overwritten by agent changes |
+| HOME and application state | Configuration rewritten, state polluted |
+| Credentials (SSH keys, cloud credentials, API keys) | Read or exfiltrated |
+| Other host paths | Read or written |
+| Network | Unauthorized destinations, data exfiltration |
+| Model quota | Misuse |
 
 ## Adversaries and mistakes
 
-Workloads **may fail or be manipulated**:
-
-1. Agents misunderstand tasks and edit/delete wrong files.
-2. Prompt injection in repositories/pages/tool output induces secrets access or unwanted requests.
-3. Malicious dependencies/tools perform additional actions.
-4. Malicious/abnormal model responses request unnecessary tools.
-
-The **supervisor, host kernel, and executor backend are trusted**.
+1. **A mistaken agent** misunderstands the task and deletes or rewrites files it should not touch.
+2. **A prompt-injected agent** is induced by repository content, web pages, or tool output to read secrets or reach external addresses.
+3. **A malicious dependency or tool** performs extra work when the agent installs or invokes it.
+4. **A malicious or abnormal model response** requests tool calls beyond what the task needs.
 
 ## Trust boundary
 
 ```text
 You (review and apply)
-  └─ Trusted pVisor supervisor: admission, staging, apply, evidence
-       └─ Executor boundary: host controls / OCI / libkrun VM
-            └─ Untrusted workload: agent, script, descendants
+  └─ pVisor supervisor (trusted): admission, staging, apply, evidence
+       └─ Executor boundary: host platform controls / OCI container / libkrun VM
+            └─ Workload (untrusted): agent, script, the child processes it starts
 ```
 
-Staged workspace changes cross apply before reaching the project; see [staging](../concepts/staging.md). Executors supply file-read/network/process controls with different strengths. The trusted supervisor produces records; workloads cannot rewrite their own Bundle within the configured boundary.
+- Workspace changes must cross the **staging and apply** boundary to reach the project; see [staging and apply semantics](../concepts/staging.md).
+- File reads, network, and process constraints come from the **executor boundary**, and their strength varies by executor and platform.
+- The supervisor produces the records, so the workload cannot rewrite its own Run Bundle.
 
-## Exclusions
+## Out of scope
 
-- Host kernel, virtualization, and FUSE vulnerabilities.
-- Timing/cache/resource side channels.
-- Misuse of credentials explicitly granted through `--pass-env`.
-- Exfiltration through authorized destinations: domain rules do not distinguish inference/telemetry/uploads or data embedded in prompts.
-- Hostile multi-tenancy/cryptographic proof; macOS VMM retains caller host permissions.
-- Rolling back external effects; staging covers workspace files only.
+- Bugs in the host kernel, the virtualization layer, or the FUSE implementation.
+- Side channels (timing, cache, resource contention).
+- Misuse of explicitly granted credentials: a key handed to the agent through `--pass-env` can be used any way the agent likes.
+- Exfiltration through authorized destinations: domain rules cannot tell inference, telemetry, and upload APIs on the same domain apart, nor stop content smuggled inside model requests.
+- Hostile multi-tenancy: local records serve review and diagnostics and provide no cryptographic proof; on macOS the VMM still holds the calling user's host permissions.
+- Rolling back external effects: staging covers workspace files only.
 
-## Evidence
+## What evidence is for
 
-Plans stop at Planned; enforcement comes from executor teardown observations. Review Bundles rather than configuration alone. See [evidence](../concepts/capabilities-and-evidence.md).
+A claim is not evidence. An admission-time plan can be at most `Planned`; actual enforcement comes only from the observations the executor returns at teardown. A security review should therefore read the Run Bundle, not the configuration. See [capabilities, evidence, and assurance boundaries](../concepts/capabilities-and-evidence.md).
 
-## Apply the model to a review
+## Apply the model to a real review
 
-List task assets and controls: staging/conflicts for project files, executor for outside reads, appropriate network boundary for egress, Gateway or short-lived explicit grants for model keys. External writes also need service-side permissions/review.
+List the assets the task touches, then choose a control for each: staging and conflict checks for project files, an executor for reads outside the view, the matching network boundary for ordinary egress, and Gateway or a short-lived explicit grant for model keys. External writes that must be allowed need their own service-side permissions and review.
 
-Record request → plan → installed control → observation → exclusions. Missing observation means unknown. Cooperative controls need explicit bypass assumptions. Untriggered tools, unavailable networking, or nonadversarial samples do not establish a boundary.
+Record "request → plan → installed control → observation → uncovered part". When an observation is missing, mark the conclusion unknown; when only a cooperative control is available, describe how the workload bypasses it. Never treat an untriggered tool, an unreachable network, or a non-adversarial sample as proof that a boundary holds.

@@ -1,8 +1,8 @@
 # Installation
 
-PolicyVisor (pVisor) provides policy control and checkable execution records for Agent CLIs, scripts, and automation. The Python package, CLI, and core Rust crate are named `pvisor`; other crates use `pvisor-*` and environment variables use `PVISOR_*`.
+Once `pvisor` is installed, you can run Agent CLIs, scripts, and automation inside a policy boundary and get checkable execution records. The Python package, CLI, and core Rust crate are all named `pvisor`; other crates use `pvisor-*` and environment variables use `PVISOR_*`.
 
-When upgrading, update deployed `PVISOR_*` settings as needed. Local state uses `.pvisor` and user caches use `pvisor/`; existing data is not migrated automatically.
+When upgrading, update deployed `PVISOR_*` settings as well. Local state defaults to `.pvisor` and user caches to `pvisor/`; existing data is not migrated automatically.
 
 ## 1. Install the tools
 
@@ -25,20 +25,17 @@ python -m pip install --upgrade pip
 pip install pvisor
 ```
 
-!!! tip "Start with one Run"
-    Reviewing a staged workspace needs no separate history service.
-
 Published wheels target Linux x86_64 and macOS arm64. Check release artifacts or build from source for other architectures.
 
 ## 2. Check platform prerequisites
 
-The CLI supports macOS and Linux; Python requires 3.10 or later. Ordinary host Jobs write directly to the workspace. `--safe` or `--stage` enables staging. Install macFUSE before staged host execution on macOS:
+The CLI supports macOS and Linux and requires Python 3.10 or newer. Ordinary host Jobs write directly to the workspace; only `--safe` or `--stage` uses filesystem staging. Install macFUSE before running a staged host Job on macOS:
 
 ```bash
 brew install --cask macfuse
 ```
 
-macOS uses macFUSE's **FSKit backend** by default. Install macFUSE 5.4.0 or newer (older FSKit versions can corrupt small writes into zeroes), then enable it in System Settings → General → Login Items & Extensions → File System Extensions. This needs no kernel extension, Recovery mode, or reduced boot security. Mounts use `/Volumes/pvisor-*`; data stays in the Job stage. If FSKit is unavailable, execution fails instead of switching to the kernel backend or direct writes. libkrun VM execution does not need macFUSE.
+macOS uses macFUSE's **FSKit backend** by default. Install macFUSE 5.4.0 or newer (older FSKit versions can corrupt small writes into zeroes), then enable it in System Settings → General → Login Items & Extensions → File System Extensions. This path loads no kernel extension and needs neither Recovery mode nor reduced boot security. Mounts use `/Volumes/pvisor-*`; data stays in the Job stage. If FSKit is unavailable, execution fails instead of switching to the kernel backend or direct writes. libkrun VM execution does not need macFUSE.
 
 ## 3. Install from source when needed
 
@@ -62,7 +59,7 @@ Or build the CLI from source:
 just install-cli
 ```
 
-Set `PVISOR_BIN` only when testing a specific binary. Keep the Python package and CLI on the same revision when diagnosing executor behavior.
+Set `PVISOR_BIN` only when you are explicitly testing a specific pVisor binary. When diagnosing provider behavior, keep the Python package and CLI on the same revision.
 
 ## 4. Enable VM or OCI execution when needed
 

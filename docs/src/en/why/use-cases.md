@@ -1,50 +1,25 @@
-# Use cases: value across scales
+# Use cases
 
-| Scale | Reader | Level | Status |
-| --- | --- | --- | --- |
-| One person, one agent | Developer | L1 | Available today |
-| One person, multiple agents | Developer | L2 | Next |
-| Teams and platforms | CI, platform engineering | L2–L3 | Direction |
-| Research and training | MLSys, agentic RL | L3 | Direction |
+The same pVisor solves different problems at different scales.
 
-## One person, one agent (today)
+## One person, one agent
 
-**Scenario:** Claude Code or Codex refactors several files.
-
-**Pain today:** approve every command while watching a long task, or run automatically and inspect the entire diff while worrying about deletions, private keys, and network destinations.
-
-**With pVisor:**
+Let Claude Code or Codex complete a refactor fully unattended: it edits files and runs tests, and may delete a few things along the way. You do not watch; when it finishes you review the changes as you would a PR and merge only the paths you want. **Available today.**
 
 ```bash
-pvisor run --safe -- codex
+pvisor run --safe -- claude
 pvisor status --review last
 pvisor apply last --path src
 ```
 
-The agent finishes unattended; changes remain staged and the project stays unchanged until apply. Review changes and denied accesses, apply `src`, and discard the rest. Conflicting edits you made meanwhile are not overwritten.
+## One person, multiple agents
 
-See [first run](../start/first-run.md), [agent integration](../guides/agents/index.md), and [review/apply](../guides/review-apply.md).
+Run several agents on different approaches at once. Each Job is isolated and leaves its own evidence, so you can review in batches and merge only the results you need. **Next (L2)**; see [parallel agents (planned)](../guides/parallel-agents.md).
 
-## One person, multiple agents (next)
+## Teams and platforms
 
-**Scenario:** try several solutions and keep the best.
+Put pVisor in CI: let the agent finish, review, and merge only what you want. **Available today (the L1 way)**; policy- and evidence-driven exemption and clustering (L2/L3) are the direction—see [running agents in CI (planned)](../guides/ci.md).
 
-**Pain today:** shared workspaces clash; separate worktrees isolate files but do not control networking/credentials or produce comparable evidence.
+## Research and training
 
-**With pVisor:** each agent has a Job, stage, and evidence. You can already [fork a checkpoint](../guides/fork-checkpoint.md). Batch review and concurrency guidance remain [planned](../guides/parallel-agents.md).
-
-## Teams and platforms (direction)
-
-**Scenario:** fix failing tests in CI or run agents for several teams.
-
-**Pain today:** unattended execution is difficult to audit and its changes difficult to recover selectively.
-
-**With pVisor:** policy bounds execution, Run Bundles support audit, and the direction is human intervention for exceptions. See [CI](../guides/ci.md) and the [trust ladder](trust-ladder.md).
-
-## Research and training (direction)
-
-**Scenario:** agentic RL rollouts, evaluation, and trajectory collection.
-
-**Pain today:** many untrusted executions need isolation, reproducibility, records, and branches from intermediate states.
-
-**With pVisor:** the intended substrate gives each rollout bounded, recoverable, checkable execution. Gateway records model interaction, checkpoints fork filesystem states, and [replay](../guides/replay.md) reconstructs tool prefixes before live continuation. Batch integration is [planned](../guides/rl-rollouts.md).
+Agentic RL and evaluation want exactly a "large-scale, untrusted, recordable" execution substrate: trajectories can be recorded, forked from checkpoints, and replayed by tool prefix. **Direction**; see [RL rollouts (planned)](../guides/rl-rollouts.md) and [research directions](../design/research/index.md).

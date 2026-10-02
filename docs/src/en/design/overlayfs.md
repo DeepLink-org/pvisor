@@ -24,7 +24,7 @@ How are S-STAGE-001 through 014 implemented and recovered after crashes?
 ## Acceptance criteria
 
 - Code/test references for each transition.
-- Link crash injection in apply/drop benchmarks.
+- Cross-reference the crash-injection results in [apply/drop cost and crash consistency (planned)](../benchmarks/apply.md).
 
 ## Tracking
 

@@ -7,7 +7,7 @@ search:
 # Papers, reports, and talks
 
 !!! warning "Planned"
-    No results are available yet. This page records the requirements; contributions are welcome.
+    No results are available yet. The requirements are open for contributions.
 
 ## Question
 
@@ -15,7 +15,10 @@ Which public research outputs exist?
 
 ## Requirements
 
-- No metrics, controls, workload, or environment required for this catalog.
+- Metrics: —
+- Controls: —
+- Workload: —
+- Environment: —
 
 ## Acceptance criteria
 

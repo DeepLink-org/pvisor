@@ -7,26 +7,26 @@ search:
 # apply/drop cost and crash consistency
 
 !!! warning "Planned"
-    No results are available yet. This page records the requirements; contributions are welcome.
+    No data yet. Below are the requirements; contributions are welcome.
 
 ## Question
 
-How long does apply take for large changesets, and what state remains after a crash?
+How long does apply take for a large changeset, and is the workspace consistent after a crash?
 
 ## Requirements
 
-- Metrics: apply/drop time by size, conflict-check cost, crash consistency.
-- Controls: `cp -a`, `git apply`.
-- Workload: 10, 1k, and 100k changed files.
-- Environment: inject `kill -9` at Prepared, TargetApplied, and Committed.
+- Metric: apply/drop time as a function of changeset size; conflict-detection cost; crash consistency.
+- Control group: `cp -a`; `git apply`.
+- Workload: changesets of 10, 1k, and 100k files.
+- Environment: `kill -9` in each of the Prepared, TargetApplied, and Committed states.
 
 ## Acceptance criteria
 
-- 100% consistency in the tested crash corpus, with recovery paths explained.
-- Conflict regression checks.
+- Workspace consistency must be 100% after crash injection, with the recovery path explained.
+- Conflict detection has regression coverage.
 
 ## Tracking
 
-- Tracking issue: TODO (no issue has been assigned).
+- Tracking issue: TODO
 - Owner: TODO
-- Related: [Methodology](methodology.md), [limitations](../security/known-limitations.md)
+- Related: [methodology](methodology.md), [known limitations](../security/known-limitations.md)

@@ -7,26 +7,26 @@ search:
 # Replay fidelity
 
 !!! warning "Planned"
-    No data yet meets [methodology](methodology.md). [Historical Qwen3.6 samples](https://github.com/DeepLink-org/pvisor/blob/main/benchmark/replay/qwen3.6-results.md) cover three tasks and five agents, without complete dates, commits, or repeat counts. They do not establish compatibility or determinism.
+    No data yet meets [benchmark methodology](methodology.md). Existing historical samples are in the [Qwen3.6 experiment log](https://github.com/DeepLink-org/pvisor/blob/main/benchmark/replay/qwen3.6-results.md): 3 tasks and 5 agents, with run dates, commit IDs, and repeat counts not fully recorded, so they are not a compatibility or determinism guarantee.
 
 ## Question
 
-How similar is the next action after a replay boundary, and how does continuation success compare with starting fresh?
+Replaying forward from step N, how closely does the agent's next action match the original trajectory? How does the continued task success rate compare with running from scratch?
 
 ## Requirements
 
-- At least 20 tasks with repeats per Claude Code, Codex, OpenCode, OpenHands, mini-swe-agent, and Pi adapter.
-- Metrics: exact next-tool agreement, visible-text similarity, continued versus original reward.
-- Record date, commit, model/agent, sampling settings, hardware.
-- Classify context reconstruction failures, model nondeterminism, and environment differences.
+- At least 20 tasks per adapter (Claude Code, Codex, OpenCode, OpenHands, mini-swe-agent, Pi agent), with multiple repeats each.
+- Metric: exact next-action tool agreement rate, visible-text similarity, and the gap between continued and original reward.
+- Record the run date, pVisor commit, model and agent versions, sampling parameters, and hardware.
+- List failed samples separately and classify them (context reconstruction failure, model nondeterminism, environment difference).
 
 ## Acceptance criteria
 
-- One-command reproduction with pvisor-benchmark/v1.
-- Link results from replay design.
+- Reproduce in one command, reporting through the `pvisor-benchmark/v1` schema.
+- [Replay design (planned)](../design/replay.md) cites these metrics.
 
 ## Tracking
 
-- Tracking issue: TODO (no issue has been assigned).
+- Tracking issue: TODO
 - Owner: TODO
 - Related: [Replay](../guides/replay.md)

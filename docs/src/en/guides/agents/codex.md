@@ -6,20 +6,20 @@ pvisor status --review last
 pvisor apply last --path src   # 或：pvisor drop last
 ```
 
-## What `--safe` mode does for Codex
+## What `--safe` does for Codex
 
-- **Network:** executable codex selects port 443 on api.openai.com, chatgpt.com, and ab.chatgpt.com.
-- **Workspace:** changes remain staged until review/apply.
-- **HOME / CODEX_HOME:** private stages; state writes are discarded after execution and excluded from the workspace Bundle.
-- **Sensitive paths:** .ssh, .gnupg, and private-key names are rejected within the view.
+- **Network:** the preset matches the `codex` executable and allows only port 443 on `api.openai.com`, `chatgpt.com`, and `ab.chatgpt.com`.
+- **Workspace:** changes go to the stage and are applied after review.
+- **HOME and `CODEX_HOME`:** separate private stages; Codex state changes are discarded when the Run ends and never enter the workspace Run Bundle.
+- **Sensitive paths:** `.ssh`, `.gnupg`, and private-key files within the view are denied.
 
-## Without `--safe` mode
+## Without `--safe`
 
-Direct Codex execution inherits the host environment for account/routing compatibility. State and project writes reach the host and cannot be undone with drop. Use `--safe` or an explicit `--stage PATH` for reviewable changes.
+When you run Codex directly (without `--safe`), pVisor keeps host environment inheritance to preserve account and routing configuration. Codex state and project writes reach the host directly and cannot be undone with `drop`. Use `--safe` or `--stage PATH` when you need reviewable changes.
 
 ## Credentials
 
-`--safe` mode needs explicit `--pass-env OPENAI_API_KEY` projection or a Gateway-held key; see [credentials](../policies/credentials.md).
+Under `--safe`, deliver credentials explicitly with `--pass-env OPENAI_API_KEY`, or configure a Gateway so the trusted side holds the key; see [credentials and environment](../policies/credentials.md).
 
 ## In a VM
 
@@ -29,7 +29,7 @@ For mandatory networking or fixed Linux userspace:
 pvisor run --safe --vm --rootfs image=my-agent-image:latest -- codex
 ```
 
-The image must contain Codex. See [VM prerequisites](../executors/vm.md).
+The image must contain Codex. See [libkrun VM](../executors/vm.md) for prerequisites and limits.
 
 ## Fork
 

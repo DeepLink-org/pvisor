@@ -20,7 +20,7 @@ pvisor apply last --path src   # 或：pvisor drop last
 - 用 `--pass-env ANTHROPIC_API_KEY` 显式交付；
 - 配置 Gateway 路由，由可信侧持有上游 Key，Agent 看不到 Key，见[凭据与环境变量](../policies/credentials.md)。
 
-macOS 上 `--safe` 使用临时 HOME，宿主上已登录的会话状态不可见；Linux 上 HOME 通过私有 stage 投影，Agent 写入的状态不会回到宿主。需要稳定的认证方式时，按上面的方法显式交付凭据。
+macOS 上 `--safe` 使用临时 HOME，宿主上已登录的会话状态不可见；Linux 上 HOME 通过私有 stage 投影，Agent 写入的状态不会回到宿主。
 
 ## 需要访问其他目标时
 

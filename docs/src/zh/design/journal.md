@@ -7,7 +7,7 @@ search:
 # Journal 设计
 
 !!! warning "规划中"
-    本页需要实现负责人撰写。事件字段与因果关系见 [Operation 与 Event](operations-events.md)。
+    实现细节仍待负责人撰写。事件字段与因果关系见 [Operation 与 Event](operations-events.md)。
 
 ## 要回答的问题
 
@@ -23,7 +23,7 @@ Event Journal 如何保证追加顺序、持久化与因果引用？写入失败
 ## 验收标准
 
 - 每条机制给出对应的代码位置与测试；
-- 与 Operation 与 Event 页去重：字段契约留在该页，机制写在本页。
+- 与 [Operation 与 Event](operations-events.md) 去重：字段契约留在该页，机制写在这里。
 
 ## 关联
 

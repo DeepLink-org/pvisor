@@ -1,25 +1,12 @@
 # When you do not need pVisor
 
-If **all three** conditions hold, an agent sandbox or Docker may be enough:
+There is one test: **you are going to watch this execution from start to finish.**
 
-- You only need a disposable environment whose file changes you can discard with `git checkout`.
-- You need neither selective path merging nor refusal to overwrite your concurrent edits.
-- You need neither checkable execution evidence nor semantics shared across agents/executors.
+- **You are watching it run**: approval and correction happen in the moment, so reviewing afterward adds nothing.
+- **`git` already rolls it back cleanly**: if the diff is small and `git checkout` always leaves a clean tree, staging and selective merging do not save much.
+- **The real side effects are external**: remote APIs, database writes, and sent messages are beyond staging's reach; rollback needs something else.
+- **You need adversarial isolation**: for untrusted multi-tenancy you want a VM-grade isolation substrate, and pVisor is only one choice of executor.
 
-## Other poor fits
+pVisor is for the opposite case: you **want to let the agent run unattended**. The goal is not to block every action but to move supervision from the process to the results—review the changes and evidence once at the end, and merge only what you want.
 
-| Situation | Reason | Suggested approach |
-| --- | --- | --- |
-| Main risk is production APIs, database writes, or messages | Staging cannot undo external effects | Service-side permissions/approval or a test environment |
-| Mutually untrusted tenants | pVisor is not a hostile multi-tenant boundary; macOS VMM retains caller host permissions | A dedicated multi-tenant sandbox/virtualization platform |
-| Cryptographic execution proof | Local records provide no remote attestation | A trusted execution environment or equivalent |
-| Mandatory networking with UDP, IPv6, or QUIC | VM data plane does not support these | Host execution with accepted cooperative-network limitations |
-| Short interactive tasks you already watch | Existing approval mode costs little attention | Agent-native approval |
-
-## Choosing
-
-1. Is the main risk **workspace files**? Staging/selective apply fit directly.
-2. Must you explain **which limits actually applied** afterward? Use the evidence model.
-3. Need **one semantic model across agents or machines**? The common entry point fits; clusters remain a direction in the [trust ladder](trust-ladder.md).
-
-If all answers are no, choose a lighter approach. See [comparisons](comparisons.md).
+For trade-offs against other tools see [comparisons](comparisons.md).

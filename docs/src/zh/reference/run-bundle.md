@@ -7,7 +7,7 @@ search:
 # Run Bundle 格式
 
 !!! warning "规划中"
-    本页尚无完整参考。字段的含义与证据口径见[能力、证据与保证边界](../concepts/capabilities-and-evidence.md)，目录结构见 [Run 项目发现](cli.md#run-项目发现)。
+    完整字段表尚未完成；字段含义与证据口径见[能力、证据与保证边界](../concepts/capabilities-and-evidence.md)，目录结构见 [Run 项目发现](cli.md#run-项目发现)。
 
 ## 要回答的问题
 
@@ -15,14 +15,14 @@ search:
 
 ## 需求
 
-- 从 Bundle 类型定义生成 JSON Schema，并发布在本页；
+- 从 Bundle 类型定义生成 JSON Schema，并随版本发布；
 - 每个顶层字段说明：来源（准入计划、执行器观察、OverlayFS、OverlayNet、Gateway）、是否可能为 `null`、`null` 与零的区别；
 - 写明 schema 版本策略：何时升级、旧 Bundle 是否可读（当前缺少观察契约的旧 Bundle 拒绝读取）。
 
 ## 验收标准
 
 - JSON Schema 文件随版本发布，CI 校验实际输出符合 schema；
-- 本页给出一个最小示例 Bundle 与逐字段注释。
+- 给出一个最小示例 Bundle 与逐字段注释。
 
 ## 关联
 
