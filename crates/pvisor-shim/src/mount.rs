@@ -121,11 +121,21 @@ mod linux {
 
     fn apply_one(mount_plan: &MountPlan, rootfs: &Path) -> Result<()> {
         let target = rootfs.join(mount_plan.destination.strip_prefix("/")?);
-        fs::create_dir_all(&target)
-            .with_context(|| format!("create mountpoint {}", target.display()))?;
         let parsed = super::parse_mount_options(&mount_plan.options);
         let data = parsed.data.join(",");
         let source = mount_plan.source.as_deref().map(Path::new);
+        let directory = if matches!(mount_plan.fs_type.as_str(), "bind" | "rbind") {
+            fs::metadata(source.context("bind mount without source")?)?.is_dir()
+        } else {
+            true
+        };
+        let _mountpoint = pvisor_overlay_core::sys::prepare_rooted_path(
+            rootfs,
+            mount_plan.destination.strip_prefix("/")?,
+            directory,
+            false,
+        )
+        .with_context(|| format!("prepare mountpoint {}", target.display()))?;
         match mount_plan.fs_type.as_str() {
             "bind" | "rbind" => {
                 let source = source.with_context(|| "bind mount without source")?;

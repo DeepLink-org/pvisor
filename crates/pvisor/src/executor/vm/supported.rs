@@ -713,6 +713,7 @@ fn run_runner(spec: RunnerSpec) -> anyhow::Result<()> {
         let mut read_only = spec.root.lowers.clone();
         let mut read_write = vec![spec.root.upper.clone()];
         read_write.extend(spec.root.work.iter().cloned());
+        read_write.extend(spec.root.preimages.iter().cloned());
         if let Some(workspace) = &spec.workspace {
             read_only.extend(workspace.lowers.iter().cloned());
             read_write.push(workspace.upper.clone());

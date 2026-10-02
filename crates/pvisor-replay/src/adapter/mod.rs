@@ -315,6 +315,7 @@ fn run_sdk_bridge(
         pipe_grace: Duration::from_millis(250),
         retained_bytes: MAX_TOOL_OUTPUT_BYTES / 2,
         log_path: log.clone(),
+        log_bytes_limit: None,
     })
     .map_err(|error| ReplayError::new(ReplayErrorKind::Continuation, error.message))?;
     if !output.status.success() {

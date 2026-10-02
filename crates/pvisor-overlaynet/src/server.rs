@@ -10,6 +10,7 @@ use axum::extract::{ConnectInfo, Request, State};
 use axum::http::{Method, StatusCode};
 use axum::response::{IntoResponse, Response};
 use axum::routing::any;
+use http_body_util::BodyExt;
 use pvisor_core::ControlController;
 use pvisor_core::{NetworkAccessRequest, NetworkTransport, RunId};
 
@@ -139,15 +140,21 @@ where
 async fn proxy_handler<S>(
     ConnectInfo(peer): ConnectInfo<SocketAddr>,
     State(state): State<OverlayServerState<S>>,
-    request: Request,
+    mut request: Request,
 ) -> Response
 where
     S: OverlaySink,
 {
-    let _active_request = ActiveRequestGuard::new(Arc::clone(&state.active_requests));
+    let guard = ActiveRequestGuard::new(Arc::clone(&state.active_requests));
+    let guard = if request.method() == Method::CONNECT {
+        request.extensions_mut().insert(Arc::new(guard));
+        None
+    } else {
+        Some(guard)
+    };
     state.interception_metrics.request_seen();
     let response = dispatch(&state, request, peer).await;
-    match response {
+    let response = match response {
         Ok(response) => response,
         Err(error) => {
             state.interception_metrics.failure();
@@ -158,6 +165,18 @@ where
             )
                 .into_response()
         }
+    };
+    if let Some(guard) = guard {
+        let (parts, body) = response.into_parts();
+        Response::from_parts(
+            parts,
+            axum::body::Body::new(body.map_frame(move |frame| {
+                let _ = &guard;
+                frame
+            })),
+        )
+    } else {
+        response
     }
 }
 
@@ -391,7 +410,7 @@ where
     .await
 }
 
-struct ActiveRequestGuard {
+pub(crate) struct ActiveRequestGuard {
     counter: Arc<AtomicUsize>,
 }
 
@@ -440,6 +459,19 @@ mod tests {
         fn accepts(&self, request: &Request) -> bool {
             request.uri().path().starts_with("/events/")
         }
+    }
+
+    #[test]
+    fn response_body_owns_the_active_request_guard() {
+        let counter = Arc::new(AtomicUsize::new(0));
+        let guard = ActiveRequestGuard::new(Arc::clone(&counter));
+        let body = axum::body::Body::new(axum::body::Body::empty().map_frame(move |frame| {
+            let _ = &guard;
+            frame
+        }));
+        assert_eq!(counter.load(Ordering::Relaxed), 1);
+        drop(body);
+        assert_eq!(counter.load(Ordering::Relaxed), 0);
     }
 
     #[test]

@@ -22,6 +22,7 @@ path = "src/main.rs"
 
 [dependencies]
 pvisor-guest.workspace = true
+pvisor-overlay-core.workspace = true
 anyhow = { workspace = true }
 libc = { workspace = true }
 log = { workspace = true }

@@ -376,3 +376,31 @@ fn auto_probe_distinguishes_absence_from_explicit_failure() {
             .is_some()
     );
 }
+
+#[test]
+fn remote_linux_identity_reaches_the_override_stat_contract() {
+    let (_temp, _server, client, digest) = fixture();
+    let cache = tempfile::tempdir().unwrap();
+    let mut fs = RemoteFs::new(client, digest, cache.path().to_path_buf(), None).unwrap();
+    let node = fs
+        .insert_node(
+            b"owned".to_vec(),
+            Response::Metadata {
+                kind: "file".into(),
+                size: 0,
+                mode: 0o100640,
+                uid: 123,
+                gid: 456,
+                inode: u64::MAX,
+                nlink: 1,
+                mtime: 0,
+                mtime_nsec: 0,
+                target: None,
+            },
+        )
+        .unwrap();
+    assert_eq!(node.override_stat, b"123:456:0100640");
+    if cfg!(target_os = "linux") {
+        assert_eq!((node.attr.uid, node.attr.gid), (123, 456));
+    }
+}

@@ -168,10 +168,10 @@ pub fn status(args: StatusArgs) -> anyhow::Result<()> {
     println!("session: {}", record.session_id);
     let state = if live {
         "running"
-    } else if record.state == "running" {
+    } else if record.state == crate::RunRecordState::Running {
         "stale"
     } else {
-        &record.state
+        record.state.as_str()
     };
     println!("state: {state}");
     println!(
@@ -266,7 +266,7 @@ pub fn kill(args: KillArgs) -> anyhow::Result<()> {
         record.run_id
     );
     anyhow::ensure!(
-        record.state == "running" && is_live(&record.stage_dir())?,
+        record.state == crate::RunRecordState::Running && is_live(&record.stage_dir())?,
         "Job {} is not live",
         record.run_id
     );
@@ -487,7 +487,8 @@ fn mutate(
         if let Some(target) = target {
             let target = resolve_apply_target(target, &record.stage_dir())?;
             overlay.target = target.clone();
-            if let Some(primary_lower) = record.overlay_lowers.first_mut() {
+            overlay.baseline_lower = None;
+            if let Some(primary_lower) = record.overlay_lowers.last_mut() {
                 *primary_lower = target;
             } else {
                 record.overlay_lowers.push(target);

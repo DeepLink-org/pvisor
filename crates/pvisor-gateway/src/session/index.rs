@@ -155,6 +155,9 @@ impl SessionIndexHandle {
                 cost,
             );
         }
+        if event.name() == "llm.call.cancelled" {
+            self.set_active(&data.story.agent_id, &data.story.route.session_id, false);
+        }
         if let Some(time) =
             chrono::DateTime::from_timestamp_millis(event.observed_at_unix_ms as i64)
         {

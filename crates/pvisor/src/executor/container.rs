@@ -4,8 +4,8 @@
 use crate::config::{ContainerMount, ContainerPlatform, ContainerSettings};
 use crate::executor::artifact::resolve_pvisor_binary;
 use crate::executor::delegated::{DelegatedRunFiles, RESULT_FILENAME, SPEC_FILENAME};
+use crate::executor::{Captured, read_limited, stdio};
 use crate::executor::{ExecutorOutput, RunExecutor, Session, SessionEnd as End};
-use crate::executor::{join_capture, read_limited, stdio};
 use async_trait::async_trait;
 use pvisor_core::{
     ExecutorKind, ExecutorPlan, IsolationKind, ProcessOutput, RunFailure, RunFailureKind,
@@ -14,7 +14,6 @@ use pvisor_core::{
 use std::collections::BTreeMap;
 use std::fs;
 use std::path::{Path, PathBuf};
-use std::process::Stdio;
 use std::time::Duration;
 use tokio::process::{Child, Command};
 
@@ -154,23 +153,20 @@ impl ContainerExecutor {
                 "OCI rootfs does not exist: {}",
                 configured_rootfs.display()
             );
-            configured_rootfs
+            // ponytail: private copy avoids mount/session ownership; add COW when image copy cost warrants it.
+            let private = bundle.join("rootfs");
+            pvisor_overlay_core::apply::restore_overlay_upper(&configured_rootfs, &private)?;
+            private
         };
-        let _ = fs::create_dir_all(rootfs.join("opt/pvisor"));
-        let _ = fs::create_dir_all(rootfs.join("run/pvisor"));
-        // A read-only image still needs a standard writable scratch location
-        // for the injected pVisor and AgentCtl setup.
-        let _ = fs::create_dir_all(rootfs.join("tmp"));
+        pvisor_overlay_core::sys::prepare_rooted_path(&rootfs, Path::new("tmp"), true, false)?;
         for mount in mounts.values() {
-            if let Ok(relative) = mount.target.strip_prefix("/") {
-                let target = rootfs.join(relative);
-                if mount.source.is_dir() {
-                    let _ = fs::create_dir_all(target);
-                } else if let Some(parent) = target.parent() {
-                    let _ = fs::create_dir_all(parent);
-                    let _ = fs::File::create(target);
-                }
-            }
+            let relative = mount.target.strip_prefix("/")?;
+            pvisor_overlay_core::sys::prepare_rooted_path(
+                &rootfs,
+                relative,
+                fs::metadata(&mount.source)?.is_dir(),
+                false,
+            )?;
         }
         let config = bundle.join("config.json");
         let mut namespaces = vec![
@@ -194,20 +190,11 @@ impl ContainerExecutor {
         let requested_user = parse_user(self.settings.user.as_deref())?;
         let host_uid = unsafe { libc::geteuid() };
         let host_gid = unsafe { libc::getegid() };
-        // Without subordinate ID ranges, rootless runtimes can only map the
-        // caller's identity. Keep the container runnable (best effort) by
-        // falling back to container root for an explicitly requested user.
-        // pVisor currently uses a single-identity rootless mapping.  A
-        // non-root container user would require configured subordinate ID
-        // ranges and cannot be represented safely otherwise.
-        let process_user = if requested_user != (0, 0) {
-            eprintln!(
-                "pVisor container: subordinate UID/GID mapping is unavailable; running as container root"
-            );
-            (0, 0)
-        } else {
-            requested_user
-        };
+        anyhow::ensure!(
+            requested_user == (0, 0),
+            "non-root container users require subordinate UID/GID mappings; refusing to run as root"
+        );
+        let process_user = requested_user;
         namespaces.insert(0, serde_json::json!({"type":"user"}));
         let resources = serde_json::json!({"memory": limits.memory_bytes.map(|v| serde_json::json!({"limit":v})), "pids": limits.processes.map(|v| serde_json::json!({"limit":v}))});
         let mut env_json = Vec::new();
@@ -241,10 +228,8 @@ impl ContainerExecutor {
         crate::util::write_private_json(&config, &cfg)?;
         let state = control_dir.join("oci-state");
         fs::create_dir_all(&state)?;
-        let mut command = Command::new(&self.settings.runtime);
+        let mut command = self.runtime_command(&state);
         command
-            .arg("--root")
-            .arg(state)
             .arg("run")
             .arg("--bundle")
             .arg(bundle)
@@ -258,54 +243,88 @@ impl ContainerExecutor {
         Ok(command)
     }
 
+    fn runtime_command(&self, state_root: &Path) -> Command {
+        let mut command = Command::new(&self.settings.runtime);
+        command.arg("--root").arg(state_root).kill_on_drop(true);
+        command
+    }
+
+    async fn runtime_operation(&self, state_root: &Path, args: &[&str]) -> Option<String> {
+        match tokio::time::timeout(
+            Duration::from_secs(2),
+            self.runtime_command(state_root).args(args).output(),
+        )
+        .await
+        {
+            Ok(Ok(output)) if output.status.success() => None,
+            Ok(Ok(output)) => Some(format!(
+                "OCI {} failed ({}): {}",
+                args.join(" "),
+                output.status,
+                String::from_utf8_lossy(&output.stderr)
+            )),
+            Ok(Err(error)) => Some(format!("OCI {}: {error}", args.join(" "))),
+            Err(_) => Some(format!("OCI {} timed out", args.join(" "))),
+        }
+    }
+
     async fn terminate(
         &self,
         child: &mut Child,
-        container_name: &str,
+        state_root: &Path,
+        name: &str,
         grace_ms: u64,
     ) -> Option<String> {
-        let stop = tokio::time::timeout(
-            Duration::from_millis(grace_ms.saturating_add(2_000)),
-            Command::new(&self.settings.runtime)
-                .arg("kill")
-                .arg(container_name)
-                .arg("TERM")
-                .stdout(Stdio::null())
-                .stderr(Stdio::null())
-                .status(),
-        )
-        .await;
-        if tokio::time::timeout(Duration::from_millis(2_000), child.wait())
+        let mut errors = Vec::new();
+        if let Some(error) = self
+            .runtime_operation(state_root, &["kill", name, "TERM"])
             .await
-            .is_ok()
         {
-            return match stop {
-                Ok(Ok(status)) if status.success() => None,
-                Ok(Ok(_)) => Some("container stop reported failure".into()),
-                Ok(Err(error)) => Some(format!("failed to execute container stop: {error}")),
-                Err(_) => Some("container stop timed out".into()),
-            };
+            errors.push(error);
         }
-        let kill = Command::new(&self.settings.runtime)
-            .arg("kill")
-            .arg(container_name)
-            .arg("KILL")
-            .stdout(Stdio::null())
-            .stderr(Stdio::null())
-            .status()
-            .await;
-        let _ = child.kill().await;
-        let _ = child.wait().await;
-        let _ = Command::new(&self.settings.runtime)
-            .arg("delete")
-            .arg("--force")
-            .arg(container_name)
-            .status()
-            .await;
-        match kill {
-            Ok(status) if status.success() => None,
-            Ok(_) => Some("container runtime could not kill the delegated pVisor".into()),
-            Err(error) => Some(format!("failed to execute container kill: {error}")),
+        let stopped = matches!(
+            tokio::time::timeout(Duration::from_millis(grace_ms), child.wait()).await,
+            Ok(Ok(_))
+        );
+        if !stopped {
+            if let Some(error) = self
+                .runtime_operation(state_root, &["kill", name, "KILL"])
+                .await
+            {
+                errors.push(error);
+            }
+            if let Err(error) = child.start_kill() {
+                errors.push(format!("kill OCI transport: {error}"));
+            }
+            if !matches!(
+                tokio::time::timeout(Duration::from_secs(2), child.wait()).await,
+                Ok(Ok(_))
+            ) {
+                errors.push("OCI transport did not exit before cleanup deadline".into());
+            }
+        }
+        if let Some(error) = self
+            .runtime_operation(state_root, &["delete", "--force", name])
+            .await
+        {
+            errors.push(error);
+        }
+        (!errors.is_empty()).then(|| errors.join("; "))
+    }
+}
+
+async fn join_capture_bounded(
+    task: Option<tokio::task::JoinHandle<std::io::Result<Captured>>>,
+) -> Option<Captured> {
+    let mut task = task?;
+    match tokio::time::timeout(Duration::from_secs(2), &mut task).await {
+        Ok(result) => result.ok().and_then(Result::ok),
+        Err(_) => {
+            task.abort();
+            Some(Captured {
+                text: String::new(),
+                truncated: true,
+            })
         }
     }
 }
@@ -399,14 +418,19 @@ impl RunExecutor for ContainerExecutor {
         let mut warnings = Vec::new();
         if matches!(end, End::Cancelled | End::Deadline)
             && let Some(warning) = self
-                .terminate(&mut child, &name, spec.runtime.termination_grace_ms)
+                .terminate(
+                    &mut child,
+                    &files.spec_path.parent().unwrap().join("oci-state"),
+                    &name,
+                    spec.runtime.termination_grace_ms,
+                )
                 .await
         {
             warnings.push(warning);
         }
 
-        let transport_stdout = join_capture(stdout_task).await;
-        let transport_stderr = join_capture(stderr_task).await;
+        let transport_stdout = join_capture_bounded(stdout_task).await;
+        let transport_stderr = join_capture_bounded(stderr_task).await;
         if matches!(end, End::Exited(_)) && files.result_path.is_file() {
             match files.read_result(&spec.run_id, context.attempt_id()) {
                 Ok(mut output) => {
@@ -617,6 +641,52 @@ fn container_name(run_id: &str, attempt_id: &str) -> String {
 
 #[cfg(test)]
 mod tests {
+
+    #[tokio::test]
+    async fn output_capture_has_a_deadline_when_a_descendant_keeps_the_pipe_open() {
+        let task = tokio::spawn(std::future::pending::<std::io::Result<Captured>>());
+        let abort = task.abort_handle();
+        assert!(join_capture_bounded(Some(task)).await.unwrap().truncated);
+        tokio::task::yield_now().await;
+        assert!(abort.is_finished());
+    }
+
+    #[test]
+    fn bundle_uses_a_private_root_and_correct_file_mountpoints() {
+        let temp = tempfile::tempdir().unwrap();
+        let image = temp.path().join("image");
+        fs::create_dir(&image).unwrap();
+        fs::write(image.join("unchanged"), b"cache").unwrap();
+        let binary = temp.path().join("pvisor");
+        executable(&binary);
+        let executor = ContainerExecutor::new(ContainerSettings {
+            rootfs: Some(image.clone()),
+            ..Default::default()
+        })
+        .unwrap();
+        let spec = RunSpec::process("r", "a", "true");
+        let files = DelegatedRunFiles::new_with_stdio(&spec, false).unwrap();
+        executor
+            .build_command(&spec, "a", ContainerPlatform::LinuxAmd64, &binary, &files)
+            .unwrap();
+        let private = files
+            .spec_path
+            .parent()
+            .unwrap()
+            .join("oci-bundle-a/rootfs");
+        assert!(private.join("opt/pvisor").is_file());
+        assert!(!image.join("opt").exists());
+        fs::write(private.join("unchanged"), b"changed").unwrap();
+        assert_eq!(fs::read(image.join("unchanged")).unwrap(), b"cache");
+        let command = executor.runtime_command(Path::new("/private-state"));
+        assert_eq!(
+            command.as_std().get_args().collect::<Vec<_>>(),
+            vec![
+                std::ffi::OsStr::new("--root"),
+                std::ffi::OsStr::new("/private-state")
+            ]
+        );
+    }
     use super::*;
     use crate::config::{ContainerNetwork, ContainerPlatform};
     use pvisor_core::ResourceLimits;

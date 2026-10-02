@@ -182,7 +182,8 @@ pub fn estimate_cost_usd(model: &str, provider: ProviderKind, usage: &TokenUsage
     };
     let price = table
         .iter()
-        .find(|(m, _)| model_key.contains(m))
+        .filter(|(m, _)| model_key.contains(m))
+        .max_by_key(|(m, _)| m.len())
         .map(|(_, p)| p)
         .unwrap_or(&fallback);
     (usage.input_tokens as f64 / 1_000_000.0) * price.input_per_million
@@ -193,6 +194,22 @@ pub fn estimate_cost_usd(model: &str, provider: ProviderKind, usage: &TokenUsage
 mod tests {
     use super::*;
     use serde_json::json;
+
+    #[test]
+    fn longer_model_names_select_their_own_price() {
+        let usage = TokenUsage {
+            input_tokens: 1_000_000,
+            ..Default::default()
+        };
+        assert_eq!(
+            estimate_cost_usd("gpt-4o-mini", ProviderKind::OpenAi, &usage),
+            0.15
+        );
+        assert_eq!(
+            estimate_cost_usd("gpt-4o", ProviderKind::OpenAi, &usage),
+            2.5
+        );
+    }
 
     #[test]
     fn openai_usage() {

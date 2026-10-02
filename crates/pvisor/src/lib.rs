@@ -75,4 +75,4 @@ pub use runtime::{
 pub use util::unix_now_ms;
 
 #[doc(hidden)]
-pub use runtime::{RunRecord, control_observations};
+pub use runtime::{RunRecord, RunRecordState, control_observations};

@@ -22,6 +22,20 @@ const RENAME_EXCHANGE: u32 = 2;
 #[derive(Clone, Debug)]
 struct Node {
     paths: BTreeSet<PathBuf>,
+    lookups: u64,
+}
+
+struct OpenFile {
+    file: File,
+    ino: u64,
+    path: PathBuf,
+    flags: i32,
+}
+impl std::ops::Deref for OpenFile {
+    type Target = File;
+    fn deref(&self) -> &File {
+        &self.file
+    }
 }
 
 #[derive(Clone, Copy, Debug, Eq, Hash, PartialEq)]
@@ -48,8 +62,7 @@ pub struct OverlayFs {
     by_path: HashMap<PathBuf, u64>,
     by_object: HashMap<ObjectKey, u64>,
     next_ino: u64,
-    open_files: HashMap<u64, File>,
-    open_paths: HashMap<u64, PathBuf>,
+    open_files: HashMap<u64, OpenFile>,
     open_directories: HashMap<u64, Vec<DirectoryEntry>>,
     next_handle: u64,
 }
@@ -127,7 +140,7 @@ impl OverlayFs {
         self
     }
 
-    fn open_inode(&self, ino: u64, flags: i32) -> io::Result<File> {
+    fn open_inode(&mut self, ino: u64, flags: i32) -> io::Result<File> {
         // FSKit may send O_RDWR even for a read. A read-only inspection must
         // never copy lower files into the persistent upper merely by opening.
         let flags = if self.read_only {
@@ -193,7 +206,13 @@ impl OverlayFs {
         let mut root_paths = BTreeSet::new();
         root_paths.insert(PathBuf::new());
         let mut nodes = HashMap::new();
-        nodes.insert(FUSE_ROOT_ID, Node { paths: root_paths });
+        nodes.insert(
+            FUSE_ROOT_ID,
+            Node {
+                paths: root_paths,
+                lookups: 0,
+            },
+        );
         let mut by_path = HashMap::new();
         by_path.insert(PathBuf::new(), FUSE_ROOT_ID);
         Ok(Self {
@@ -207,7 +226,6 @@ impl OverlayFs {
             by_object: HashMap::new(),
             next_ino: FUSE_ROOT_ID + 1,
             open_files: HashMap::new(),
-            open_paths: HashMap::new(),
             open_directories: HashMap::new(),
             next_handle: 1,
         })
@@ -219,6 +237,49 @@ impl OverlayFs {
             .and_then(|node| node.paths.iter().next())
             .cloned()
             .ok_or_else(|| io::Error::from_raw_os_error(libc::ENOENT))
+    }
+
+    fn retain_lookup(&mut self, ino: u64) {
+        if let Some(node) = self.nodes.get_mut(&ino) {
+            node.lookups = node.lookups.saturating_add(1);
+        }
+    }
+
+    fn reclaim_inode(&mut self, ino: u64) {
+        if ino == FUSE_ROOT_ID || self.nodes.get(&ino).is_some_and(|node| node.lookups != 0) {
+            return;
+        }
+        // ponytail: scan active handles on reclaim; index pins if handle counts make it costly.
+        if self.open_files.values().any(|file| file.ino == ino)
+            || self
+                .open_directories
+                .values()
+                .any(|entries| entries.iter().any(|entry| entry.ino == ino))
+        {
+            return;
+        }
+        self.nodes.remove(&ino);
+        self.by_path.retain(|_, value| *value != ino);
+        self.by_object.retain(|_, value| *value != ino);
+    }
+
+    fn inode_metadata(&self, ino: u64, fh: Option<u64>) -> io::Result<fs::Metadata> {
+        if let Some(fh) = fh {
+            return self
+                .open_files
+                .get(&fh)
+                .filter(|file| file.ino == ino)
+                .ok_or_else(|| io::Error::from_raw_os_error(libc::EBADF))?
+                .metadata();
+        }
+        if let Ok(path) = self.node_path(ino) {
+            return self.core.metadata(&path);
+        }
+        self.open_files
+            .values()
+            .find(|file| file.ino == ino)
+            .ok_or_else(|| io::Error::from_raw_os_error(libc::ENOENT))?
+            .metadata()
     }
 
     fn allocate_inode(&mut self, path: PathBuf, metadata: &fs::Metadata) -> u64 {
@@ -237,7 +298,7 @@ impl OverlayFs {
         self.next_ino += 1;
         let mut paths = BTreeSet::new();
         paths.insert(path.clone());
-        self.nodes.insert(ino, Node { paths });
+        self.nodes.insert(ino, Node { paths, lookups: 0 });
         self.by_path.insert(path, ino);
         if let Some(object) = object {
             self.by_object.insert(object, ino);
@@ -264,11 +325,18 @@ impl OverlayFs {
                 && let Some(node) = self.nodes.get_mut(&ino)
             {
                 node.paths.remove(&path);
+                if node.paths.is_empty() {
+                    self.by_object.retain(|_, value| *value != ino);
+                }
+                self.reclaim_inode(ino);
             }
         }
     }
 
     fn remap_inode_prefix(&mut self, old: &Path, new: &Path) {
+        if old == new {
+            return;
+        }
         self.remove_inode_prefix(new);
         let mappings: Vec<_> = self
             .by_path
@@ -287,7 +355,14 @@ impl OverlayFs {
             self.by_path.insert(new_path.clone(), ino);
             if let Some(node) = self.nodes.get_mut(&ino) {
                 node.paths.remove(&old_path);
-                node.paths.insert(new_path);
+                node.paths.insert(new_path.clone());
+            }
+            for file in self
+                .open_files
+                .values_mut()
+                .filter(|file| file.ino == ino && file.path == old_path)
+            {
+                file.path = new_path.clone();
             }
         }
     }
@@ -314,6 +389,14 @@ impl OverlayFs {
                 node.paths.remove(old);
             }
         }
+        for file in self.open_files.values_mut() {
+            if let Some((_, _, new)) = mappings
+                .iter()
+                .find(|(old, ino, _)| *ino == file.ino && *old == file.path)
+            {
+                file.path = new.clone();
+            }
+        }
         for (_, ino, new) in mappings {
             self.by_path.insert(new.clone(), ino);
             if let Some(node) = self.nodes.get_mut(&ino) {
@@ -331,11 +414,7 @@ impl OverlayFs {
     fn attr_from_metadata(&self, ino: u64, metadata: &fs::Metadata) -> FileAttr {
         let mtime = metadata.modified().unwrap_or(UNIX_EPOCH);
         let atime = metadata.accessed().unwrap_or(mtime);
-        let ctime = UNIX_EPOCH
-            + Duration::new(
-                metadata.ctime().max(0) as u64,
-                metadata.ctime_nsec().max(0) as u32,
-            );
+        let ctime = sys::unix_time(metadata.ctime(), metadata.ctime_nsec());
         #[cfg(target_os = "macos")]
         let flags = {
             use std::os::macos::fs::MetadataExt as MacMetadataExt;
@@ -380,7 +459,7 @@ impl OverlayFs {
         OverlayCore::child(&self.node_path(parent)?, name)
     }
 
-    fn copy_up_inode(&self, ino: u64) -> io::Result<PathBuf> {
+    fn copy_up_inode(&mut self, ino: u64) -> io::Result<PathBuf> {
         let path = self.node_path(ino)?;
         let aliases = self
             .nodes
@@ -389,6 +468,33 @@ impl OverlayFs {
             .unwrap_or_else(|| vec![path.clone()]);
         for alias in aliases {
             self.core.copy_up(&alias)?;
+        }
+        let upper = self.core.upper_path(&path);
+        let copied = fs::symlink_metadata(&upper)?;
+        if !copied.is_dir() {
+            self.by_object.insert(
+                ObjectKey {
+                    device: copied.dev(),
+                    inode: copied.ino(),
+                },
+                ino,
+            );
+        }
+        for file in self.open_files.values_mut().filter(|file| file.ino == ino) {
+            let metadata = file.metadata()?;
+            if metadata.dev() == copied.dev() && metadata.ino() == copied.ino() {
+                continue;
+            }
+            let access = file.flags & libc::O_ACCMODE;
+            let replacement = OpenOptions::new()
+                .read(access != libc::O_WRONLY)
+                .write(access != libc::O_RDONLY)
+                .append(file.flags & libc::O_APPEND != 0)
+                .custom_flags(libc::O_NOFOLLOW)
+                .open(&upper)?;
+            let offset = sys::seek(file, 0, libc::SEEK_CUR)?;
+            sys::seek(&replacement, offset, libc::SEEK_SET)?;
+            file.file = replacement;
         }
         Ok(path)
     }
@@ -466,6 +572,12 @@ impl OverlayFs {
 }
 
 impl Filesystem for OverlayFs {
+    fn forget(&mut self, _request: &Request<'_>, ino: u64, nlookup: u64) {
+        if let Some(node) = self.nodes.get_mut(&ino) {
+            node.lookups = node.lookups.saturating_sub(nlookup);
+        }
+        self.reclaim_inode(ino);
+    }
     fn lookup(&mut self, _request: &Request<'_>, parent: u64, name: &OsStr, reply: ReplyEntry) {
         let observed_path = self.child_path(parent, name).ok();
         let result = (|| {
@@ -476,14 +588,19 @@ impl Filesystem for OverlayFs {
         })();
         self.observe_result(observed_path.as_deref(), "lookup", &result, 0, false);
         match result {
-            Ok((ino, metadata)) => reply.entry(&TTL, &self.attr_from_metadata(ino, &metadata), 0),
+            Ok((ino, metadata)) => {
+                self.retain_lookup(ino);
+                reply.entry(&TTL, &self.attr_from_metadata(ino, &metadata), 0)
+            }
             Err(error) => reply.error(errno(&error)),
         }
     }
 
-    fn getattr(&mut self, _request: &Request<'_>, ino: u64, _fh: Option<u64>, reply: ReplyAttr) {
+    fn getattr(&mut self, _request: &Request<'_>, ino: u64, fh: Option<u64>, reply: ReplyAttr) {
         let observed_path = self.node_path(ino).ok();
-        let result = self.node_path(ino).and_then(|path| self.attr(ino, &path));
+        let result = self
+            .inode_metadata(ino, fh)
+            .map(|metadata| self.attr_from_metadata(ino, &metadata));
         self.observe_result(observed_path.as_deref(), "getattr", &result, 0, false);
         match result {
             Ok(attr) => reply.attr(&TTL, &attr),
@@ -503,7 +620,7 @@ impl Filesystem for OverlayFs {
         atime: Option<TimeOrNow>,
         mtime: Option<TimeOrNow>,
         _ctime: Option<SystemTime>,
-        _fh: Option<u64>,
+        fh: Option<u64>,
         _crtime: Option<SystemTime>,
         _chgtime: Option<SystemTime>,
         _bkuptime: Option<SystemTime>,
@@ -513,6 +630,48 @@ impl Filesystem for OverlayFs {
         let observed_path = self.node_path(ino).ok();
         let mutating = setattr_requires_copy_up(mode, uid, gid, size, atime, mtime, flags);
         let result = (|| {
+            if fh.is_some_and(|handle| {
+                !self
+                    .open_files
+                    .get(&handle)
+                    .is_some_and(|file| file.ino == ino)
+            }) {
+                return Err(io::Error::from_raw_os_error(libc::EBADF));
+            }
+            if mutating && self.read_only {
+                return Err(io::Error::from_raw_os_error(libc::EROFS));
+            }
+            if mutating && self.node_path(ino).is_ok() {
+                self.copy_up_inode(ino)?;
+            }
+            if let Some(file) = fh
+                .and_then(|fh| self.open_files.get(&fh).filter(|file| file.ino == ino))
+                .or_else(|| {
+                    self.node_path(ino)
+                        .is_err()
+                        .then(|| self.open_files.values().find(|file| file.ino == ino))
+                        .flatten()
+                })
+            {
+                if mutating {
+                    sys::set_file_metadata(
+                        file,
+                        mode,
+                        uid,
+                        gid,
+                        size,
+                        atime.map(time_value),
+                        mtime.map(time_value),
+                        flags,
+                    )?;
+                }
+                return file
+                    .metadata()
+                    .map(|metadata| self.attr_from_metadata(ino, &metadata));
+            }
+            if fh.is_some() {
+                return Err(io::Error::from_raw_os_error(libc::EBADF));
+            }
             let path = self.node_path(ino)?;
             // macFUSE can report a read-induced atime update through SETATTR.
             // Overlay views are mounted noatime, and an atime-only request must
@@ -520,8 +679,7 @@ impl Filesystem for OverlayFs {
             if !setattr_requires_copy_up(mode, uid, gid, size, atime, mtime, flags) {
                 return self.attr(ino, &path);
             }
-            self.copy_up_inode(ino)?;
-            let upper = self.core.copy_up(&path)?;
+            let upper = self.core.prepare_metadata_change(&path)?;
             if let Some(size) = size {
                 OpenOptions::new().write(true).open(&upper)?.set_len(size)?;
             }
@@ -599,7 +757,10 @@ impl Filesystem for OverlayFs {
         })();
         self.observe_result(observed_path.as_deref(), "mknod", &result, 0, true);
         match result {
-            Ok(attr) => reply.entry(&TTL, &attr, 0),
+            Ok(attr) => {
+                self.retain_lookup(attr.ino);
+                reply.entry(&TTL, &attr, 0)
+            }
             Err(error) => reply.error(errno(&error)),
         }
     }
@@ -623,16 +784,24 @@ impl Filesystem for OverlayFs {
         })();
         self.observe_result(observed_path.as_deref(), "mkdir", &result, 0, true);
         match result {
-            Ok(attr) => reply.entry(&TTL, &attr, 0),
+            Ok(attr) => {
+                self.retain_lookup(attr.ino);
+                reply.entry(&TTL, &attr, 0)
+            }
             Err(error) => reply.error(errno(&error)),
         }
     }
 
     fn unlink(&mut self, _request: &Request<'_>, parent: u64, name: &OsStr, reply: ReplyEmpty) {
         let observed_path = self.child_path(parent, name).ok();
-        let result = self
-            .child_path(parent, name)
-            .and_then(|path| self.core.remove(&path, false).map(|()| path));
+        let result = self.child_path(parent, name).and_then(|path| {
+            if let Some(ino) = self.by_path.get(&path).copied()
+                && self.open_files.values().any(|file| file.ino == ino)
+            {
+                self.copy_up_inode(ino)?;
+            }
+            self.core.remove(&path, false).map(|()| path)
+        });
         self.observe_result(observed_path.as_deref(), "unlink", &result, 0, true);
         match result {
             Ok(path) => {
@@ -676,7 +845,10 @@ impl Filesystem for OverlayFs {
         })();
         self.observe_result(observed_path.as_deref(), "symlink", &result, 0, true);
         match result {
-            Ok(attr) => reply.entry(&TTL, &attr, 0),
+            Ok(attr) => {
+                self.retain_lookup(attr.ino);
+                reply.entry(&TTL, &attr, 0)
+            }
             Err(error) => reply.error(errno(&error)),
         }
     }
@@ -710,6 +882,21 @@ impl Filesystem for OverlayFs {
         let result = (|| {
             let old = self.child_path(parent, name)?;
             let new = self.child_path(newparent, newname)?;
+            // Pin open objects to upper storage before rename can hide their lower paths.
+            for prefix in [&old, &new] {
+                let inodes: BTreeSet<_> = self
+                    .by_path
+                    .iter()
+                    .filter(|(path, ino)| {
+                        path.starts_with(prefix)
+                            && self.open_files.values().any(|file| file.ino == **ino)
+                    })
+                    .map(|(_, ino)| *ino)
+                    .collect();
+                for ino in inodes {
+                    self.copy_up_inode(ino)?;
+                }
+            }
             if flags & RENAME_EXCHANGE != 0 {
                 self.core.exchange(&old, &new)?;
                 Ok((old, new, true))
@@ -744,7 +931,7 @@ impl Filesystem for OverlayFs {
     ) {
         let observed_path = self.child_path(newparent, newname).ok();
         let result = (|| {
-            let source = self.node_path(ino)?;
+            let source = self.copy_up_inode(ino)?;
             let destination = self.child_path(newparent, newname)?;
             self.core.hard_link(&source, &destination)?;
             self.add_inode_alias(ino, destination.clone());
@@ -752,7 +939,10 @@ impl Filesystem for OverlayFs {
         })();
         self.observe_result(observed_path.as_deref(), "link", &result, 0, true);
         match result {
-            Ok(attr) => reply.entry(&TTL, &attr, 0),
+            Ok(attr) => {
+                self.retain_lookup(attr.ino);
+                reply.entry(&TTL, &attr, 0)
+            }
             Err(error) => reply.error(errno(&error)),
         }
     }
@@ -770,10 +960,15 @@ impl Filesystem for OverlayFs {
         match result {
             Ok(file) => {
                 let handle = self.allocate_handle();
-                self.open_files.insert(handle, file);
-                if let Some(path) = observed_path {
-                    self.open_paths.insert(handle, path);
-                }
+                self.open_files.insert(
+                    handle,
+                    OpenFile {
+                        file,
+                        ino,
+                        path: observed_path.unwrap_or_default(),
+                        flags,
+                    },
+                );
                 reply.opened(handle, 0);
             }
             Err(error) => reply.error(errno(&error)),
@@ -792,9 +987,9 @@ impl Filesystem for OverlayFs {
         reply: ReplyData,
     ) {
         let observed_path = self
-            .open_paths
+            .open_files
             .get(&fh)
-            .cloned()
+            .map(|file| file.path.clone())
             .or_else(|| self.node_path(ino).ok());
         if offset < 0 {
             self.observe_result(
@@ -849,9 +1044,9 @@ impl Filesystem for OverlayFs {
         reply: ReplyWrite,
     ) {
         let observed_path = self
-            .open_paths
+            .open_files
             .get(&fh)
-            .cloned()
+            .map(|file| file.path.clone())
             .or_else(|| self.node_path(ino).ok());
         if offset < 0 {
             self.observe_result(
@@ -914,8 +1109,8 @@ impl Filesystem for OverlayFs {
         _flush: bool,
         reply: ReplyEmpty,
     ) {
-        self.open_paths.remove(&fh);
-        if self.open_files.remove(&fh).is_some() {
+        if let Some(file) = self.open_files.remove(&fh) {
+            self.reclaim_inode(file.ino);
             reply.ok();
         } else {
             reply.error(libc::EBADF);
@@ -993,6 +1188,7 @@ impl Filesystem for OverlayFs {
             reply.error(libc::EBADF);
             return;
         };
+        let mut delivered = Vec::new();
         for (index, entry) in entries.iter().enumerate().skip(offset as usize) {
             if reply.add(
                 entry.ino,
@@ -1004,6 +1200,12 @@ impl Filesystem for OverlayFs {
             ) {
                 break;
             }
+            if index >= 2 {
+                delivered.push(entry.ino);
+            }
+        }
+        for ino in delivered {
+            self.retain_lookup(ino);
         }
         reply.ok();
     }
@@ -1016,7 +1218,10 @@ impl Filesystem for OverlayFs {
         _flags: i32,
         reply: ReplyEmpty,
     ) {
-        if self.open_directories.remove(&fh).is_some() {
+        if let Some(entries) = self.open_directories.remove(&fh) {
+            for entry in entries {
+                self.reclaim_inode(entry.ino);
+            }
             reply.ok();
         } else {
             reply.error(libc::EBADF);
@@ -1032,8 +1237,11 @@ impl Filesystem for OverlayFs {
         reply: ReplyEmpty,
     ) {
         let result = self.node_path(ino).and_then(|path| {
-            let upper = self.core.copy_up(&path)?;
-            let directory = File::open(upper)?;
+            let resolved = self
+                .core
+                .resolve(&path)
+                .ok_or_else(|| io::Error::from_raw_os_error(libc::ENOENT))?;
+            let directory = File::open(resolved.path)?;
             sys::fsync(&directory, datasync)
         });
         match result {
@@ -1073,9 +1281,9 @@ impl Filesystem for OverlayFs {
             reply.error(libc::ENOTSUP);
             return;
         }
-        let result = self
-            .copy_up_inode(ino)
-            .and_then(|path| self.core.copy_up(&path))
+        let result = pvisor_overlay_core::validate_guest_xattr(name)
+            .and_then(|()| self.copy_up_inode(ino))
+            .and_then(|path| self.core.prepare_metadata_change(&path))
             .and_then(|path| sys::set_xattr(&path, name, value, flags));
         self.observe_result(
             observed_path.as_deref(),
@@ -1139,9 +1347,9 @@ impl Filesystem for OverlayFs {
 
     fn removexattr(&mut self, _request: &Request<'_>, ino: u64, name: &OsStr, reply: ReplyEmpty) {
         let observed_path = self.node_path(ino).ok();
-        let result = self
-            .copy_up_inode(ino)
-            .and_then(|path| self.core.copy_up(&path))
+        let result = pvisor_overlay_core::validate_guest_xattr(name)
+            .and_then(|()| self.copy_up_inode(ino))
+            .and_then(|path| self.core.prepare_metadata_change(&path))
             .and_then(|path| sys::remove_xattr(&path, name));
         self.observe_result(observed_path.as_deref(), "removexattr", &result, 0, true);
         match result {
@@ -1189,10 +1397,16 @@ impl Filesystem for OverlayFs {
         match result {
             Ok((file, attr)) => {
                 let handle = self.allocate_handle();
-                self.open_files.insert(handle, file);
-                if let Some(path) = observed_path {
-                    self.open_paths.insert(handle, path);
-                }
+                self.retain_lookup(attr.ino);
+                self.open_files.insert(
+                    handle,
+                    OpenFile {
+                        file,
+                        ino: attr.ino,
+                        path: observed_path.unwrap_or_default(),
+                        flags,
+                    },
+                );
                 reply.created(&TTL, &attr, 0, handle, 0);
             }
             Err(error) => reply.error(errno(&error)),
@@ -1210,9 +1424,9 @@ impl Filesystem for OverlayFs {
         reply: ReplyEmpty,
     ) {
         let observed_path = self
-            .open_paths
+            .open_files
             .get(&fh)
-            .cloned()
+            .map(|file| file.path.clone())
             .or_else(|| self.node_path(ino).ok());
         if offset < 0 || length < 0 {
             reply.error(libc::EINVAL);
@@ -1226,14 +1440,7 @@ impl Filesystem for OverlayFs {
             reply.error(libc::EBADF);
             return;
         };
-        let end = (offset as u64).saturating_add(length as u64);
-        let result = file.metadata().and_then(|metadata| {
-            if metadata.len() < end {
-                file.set_len(end)
-            } else {
-                Ok(())
-            }
-        });
+        let result = sys::allocate(file, offset, length);
         self.observe_result(observed_path.as_deref(), "fallocate", &result, 0, true);
         match result {
             Ok(()) => reply.ok(),
@@ -1374,6 +1581,58 @@ impl Filesystem for OverlayFs {
 
 #[cfg(test)]
 mod tests {
+
+    #[test]
+    fn newly_discovered_upper_hardlink_keeps_the_existing_fuse_inode() {
+        let dir = tempfile::tempdir().unwrap();
+        let lower = dir.path().join("lower");
+        fs::create_dir(&lower).unwrap();
+        fs::write(lower.join("a"), b"original").unwrap();
+        fs::hard_link(lower.join("a"), lower.join("b")).unwrap();
+        let mut overlay = OverlayFs::new(vec![lower], dir.path().join("upper"), None).unwrap();
+        let metadata = overlay.core.metadata(Path::new("a")).unwrap();
+        let ino = overlay.allocate_inode(PathBuf::from("a"), &metadata);
+        overlay.copy_up_inode(ino).unwrap();
+        overlay.core.copy_up(Path::new("b")).unwrap();
+        let metadata = overlay.core.metadata(Path::new("b")).unwrap();
+        assert_eq!(overlay.allocate_inode(PathBuf::from("b"), &metadata), ino);
+    }
+
+    #[test]
+    fn detached_open_file_keeps_metadata_and_pins_its_inode_until_release() {
+        let dir = tempfile::tempdir().unwrap();
+        let lower = dir.path().join("lower");
+        fs::create_dir(&lower).unwrap();
+        fs::write(lower.join("file"), b"original").unwrap();
+        let mut overlay =
+            OverlayFs::new(vec![lower.clone()], dir.path().join("upper"), None).unwrap();
+        let path = PathBuf::from("file");
+        let ino = overlay.allocate_inode(path.clone(), &overlay.core.metadata(&path).unwrap());
+        overlay.retain_lookup(ino);
+        let file = overlay.open_inode(ino, libc::O_RDONLY).unwrap();
+        overlay.open_files.insert(
+            1,
+            OpenFile {
+                file,
+                ino,
+                path: path.clone(),
+                flags: libc::O_RDONLY,
+            },
+        );
+        overlay.copy_up_inode(ino).unwrap();
+        overlay.core.remove(&path, false).unwrap();
+        overlay.remove_inode_prefix(&path);
+        overlay.nodes.get_mut(&ino).unwrap().lookups = 0;
+        overlay.reclaim_inode(ino);
+        assert!(overlay.nodes.contains_key(&ino));
+        assert_eq!(overlay.inode_metadata(ino, Some(1)).unwrap().len(), 8);
+        assert!(overlay.inode_metadata(ino, Some(2)).is_err());
+        assert_eq!(fs::read(lower.join("file")).unwrap(), b"original");
+        overlay.open_files.remove(&1);
+        overlay.reclaim_inode(ino);
+        assert!(!overlay.nodes.contains_key(&ino));
+        assert!(!overlay.by_object.values().any(|value| *value == ino));
+    }
     use super::*;
 
     #[test]

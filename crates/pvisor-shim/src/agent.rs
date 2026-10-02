@@ -234,7 +234,7 @@ mod linux {
     }
 
     /// Serve one exec: read the start request, spawn, stream, report exit.
-    fn serve_connection(stream: std::os::unix::net::UnixStream) -> anyhow::Result<()> {
+    pub(super) fn serve_connection(stream: std::os::unix::net::UnixStream) -> anyhow::Result<()> {
         let read_half = stream.try_clone()?;
         let mut writer = FrameWriter::new(stream);
 
@@ -266,12 +266,21 @@ mod linux {
         // Guest process output -> frames.
         let stdout = child.stdout.take();
         let stderr = child.stderr.take();
-        let writer_stdout = writer.inner.try_clone()?;
-        let writer_stderr = writer.inner.try_clone()?;
-        let out_handle =
-            std::thread::spawn(move || pump_to_frames(stdout, writer_stdout, Channel::Stdout));
-        let err_handle =
-            std::thread::spawn(move || pump_to_frames(stderr, writer_stderr, Channel::Stderr));
+        writer
+            .inner
+            .set_write_timeout(Some(std::time::Duration::from_secs(2)))?;
+        let writer = std::sync::Arc::new(std::sync::Mutex::new(writer));
+        let writer_stdout = std::sync::Arc::clone(&writer);
+        let writer_stderr = std::sync::Arc::clone(&writer);
+        let stop_output = std::sync::Arc::new(std::sync::atomic::AtomicBool::new(false));
+        let stop_stdout = std::sync::Arc::clone(&stop_output);
+        let stop_stderr = std::sync::Arc::clone(&stop_output);
+        let out_handle = std::thread::spawn(move || {
+            pump_to_frames(stdout, writer_stdout, Channel::Stdout, stop_stdout)
+        });
+        let err_handle = std::thread::spawn(move || {
+            pump_to_frames(stderr, writer_stderr, Channel::Stderr, stop_stderr)
+        });
 
         // Socket -> child stdin in a thread of its own: the main thread
         // blocks in `wait` instead, so a process that exits while the host
@@ -279,9 +288,15 @@ mod linux {
         let mut reader = FrameReader::new(read_half);
         let mut child_stdin = child.stdin.take();
         let kill_target = pid as i32;
+        let alive = std::sync::Arc::new(std::sync::Mutex::new(true));
+        let stdin_alive = std::sync::Arc::clone(&alive);
         let stdin_handle = std::thread::spawn(move || {
             while let Ok(Some(frame)) = reader.read_frame() {
-                if frame.channel != Channel::Stdin || frame.payload.is_empty() {
+                if frame.channel != Channel::Stdin {
+                    continue;
+                }
+                if frame.payload.is_empty() {
+                    child_stdin.take();
                     continue;
                 }
                 let Some(stdin) = child_stdin.as_mut() else {
@@ -292,36 +307,107 @@ mod linux {
                 }
             }
             // Socket EOF is the host-side kill for this exec.
-            unsafe { libc::kill(kill_target, libc::SIGKILL) };
+            let live = stdin_alive.lock().unwrap();
+            if *live {
+                unsafe { libc::kill(kill_target, libc::SIGKILL) };
+            }
         });
 
+        // Observe exit without reaping so socket EOF cannot signal a recycled PID.
+        let mut exit_info: libc::siginfo_t = unsafe { std::mem::zeroed() };
+        loop {
+            let result = unsafe {
+                libc::waitid(
+                    libc::P_PID,
+                    pid,
+                    &mut exit_info,
+                    libc::WEXITED | libc::WNOWAIT,
+                )
+            };
+            if result == 0 {
+                break;
+            }
+            let error = std::io::Error::last_os_error();
+            if error.kind() != std::io::ErrorKind::Interrupted {
+                return Err(error.into());
+            }
+        }
+        let mut live = alive.lock().unwrap();
+        *live = false;
         let status = child
             .wait()
             .ok()
             .and_then(|status| status.code())
             .unwrap_or(255) as u32;
-        let _ = writer.write_control(&Control::Exited { status });
+        drop(live);
+        let deadline = std::time::Instant::now() + std::time::Duration::from_secs(2);
+        while (!out_handle.is_finished() || !err_handle.is_finished())
+            && std::time::Instant::now() < deadline
+        {
+            std::thread::sleep(std::time::Duration::from_millis(5));
+        }
+        let incomplete = !out_handle.is_finished() || !err_handle.is_finished();
+        stop_output.store(true, std::sync::atomic::Ordering::Release);
+        let output_ok = out_handle.join().unwrap_or(false) & err_handle.join().unwrap_or(false);
+        let status = if incomplete || !output_ok {
+            255
+        } else {
+            status
+        };
+        let _ = writer
+            .lock()
+            .unwrap()
+            .write_control(&Control::Exited { status });
         // Dropping our writer closes the guest side; the host then closes
         // its end, which unblocks and ends the stdin thread.
+        let _ = writer
+            .lock()
+            .unwrap()
+            .inner
+            .shutdown(std::net::Shutdown::Read);
         drop(writer);
         let _ = stdin_handle.join();
-        let _ = out_handle.join();
-        let _ = err_handle.join();
         Ok(())
     }
 
-    fn pump_to_frames<R: Read, W: Write>(input: Option<R>, mut output: W, channel: Channel) {
-        let Some(mut input) = input else { return };
+    fn pump_to_frames<R: Read + std::os::fd::AsRawFd>(
+        input: Option<R>,
+        output: std::sync::Arc<std::sync::Mutex<FrameWriter<std::os::unix::net::UnixStream>>>,
+        channel: Channel,
+        stop: std::sync::Arc<std::sync::atomic::AtomicBool>,
+    ) -> bool {
+        let Some(mut input) = input else { return true };
         let mut buffer = [0u8; 8192];
         loop {
+            if stop.load(std::sync::atomic::Ordering::Acquire) {
+                return false;
+            }
+            let mut fd = libc::pollfd {
+                fd: input.as_raw_fd(),
+                events: libc::POLLIN,
+                revents: 0,
+            };
+            let ready = unsafe { libc::poll(&mut fd, 1, 25) };
+            if ready == 0 {
+                continue;
+            }
+            if ready < 0 {
+                if std::io::Error::last_os_error().kind() == std::io::ErrorKind::Interrupted {
+                    continue;
+                }
+                return false;
+            }
             match input.read(&mut buffer) {
-                Ok(0) | Err(_) => break,
+                Ok(0) => return true,
+                Err(_) => return false,
                 Ok(n) => {
-                    if FrameWriter::new(&mut output)
+                    if output
+                        .lock()
+                        .unwrap()
                         .write_frame(channel, &buffer[..n])
                         .is_err()
                     {
-                        break;
+                        return false;
                     }
                 }
             }
@@ -345,6 +431,47 @@ mod tests {
 
     fn control_bytes(message: &Control) -> Vec<u8> {
         serde_json::to_vec(message).expect("serialize control")
+    }
+
+    #[cfg(target_os = "linux")]
+    #[test]
+    fn guest_stdin_eof_drains_output_before_exit() {
+        let (client, guest) = std::os::unix::net::UnixStream::pair().unwrap();
+        client
+            .set_read_timeout(Some(std::time::Duration::from_secs(5)))
+            .unwrap();
+        let worker = std::thread::spawn(move || super::linux::serve_connection(guest));
+        let mut writer = FrameWriter::new(client.try_clone().unwrap());
+        writer
+            .write_control(&Control::ExecStart {
+                argv: vec!["/bin/cat".into()],
+                env: Vec::new(),
+                cwd: "/".into(),
+            })
+            .unwrap();
+        let mut reader = FrameReader::new(client);
+        assert!(matches!(
+            reader.read_control().unwrap(),
+            Some(Control::Started { .. })
+        ));
+        writer.write_frame(Channel::Stdin, b"tail").unwrap();
+        writer.write_frame(Channel::Stdin, b"").unwrap();
+        let mut output = Vec::new();
+        loop {
+            let frame = reader.read_frame().unwrap().unwrap();
+            if frame.channel == Channel::Stdout {
+                output.extend_from_slice(&frame.payload);
+            }
+            if frame.channel == Channel::Control {
+                assert_eq!(
+                    serde_json::from_slice::<Control>(&frame.payload).unwrap(),
+                    Control::Exited { status: 0 }
+                );
+                break;
+            }
+        }
+        assert_eq!(output, b"tail");
+        worker.join().unwrap().unwrap();
     }
 
     #[test]

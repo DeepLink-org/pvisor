@@ -73,6 +73,15 @@ pub(super) struct Snapshot {
     pub(super) audit_prompt: Prompt,
 }
 
+fn audit_belongs_to(request: &AuditRequest, record: &RunRecord) -> bool {
+    request.scope.as_ref().is_some_and(|scope| {
+        scope.run_id == record.run_id
+            && record.attempt_id.as_deref() == Some(scope.attempt_id.as_str())
+            && (request.kind != pvisor_core::audit::AuditKind::File
+                || matches!(scope.view.as_str(), "workspace" | "rootfs"))
+    })
+}
+
 impl Snapshot {
     fn refresh(&mut self, stage_file: &Path, log_file: &Path) {
         if let Ok(bytes) = std::fs::read(log_file.with_extension("image.json"))
@@ -346,6 +355,14 @@ pub(crate) fn run(args: Vec<OsString>, audit_enabled: bool) -> Result<i32> {
         }
         if let Some(server) = audit.as_mut() {
             while let Some(request) = server.active().cloned() {
+                if snapshot
+                    .record
+                    .as_ref()
+                    .is_some_and(|record| !audit_belongs_to(&request, record))
+                {
+                    server.decide(AuditDecision::Deny);
+                    continue;
+                }
                 let Some((decision, scope, lifetime)) =
                     audit_policy.as_ref().and_then(|p| p.resolve(&request))
                 else {
@@ -490,6 +507,7 @@ pub(crate) fn run(args: Vec<OsString>, audit_enabled: bool) -> Result<i32> {
                             .as_ref()
                             .ok_or_else(|| anyhow::anyhow!("Job record is not ready"))
                             .and_then(|record| {
+                                anyhow::ensure!(audit_belongs_to(&request, record), "audit request belongs to a different run/attempt or unknown view");
                                 audit_policy
                                     .as_mut()
                                     .context("audit permissions are not loaded")?

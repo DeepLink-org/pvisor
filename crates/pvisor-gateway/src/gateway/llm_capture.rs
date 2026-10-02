@@ -65,6 +65,30 @@ fn http_version_label(version: axum::http::Version) -> String {
     }
 }
 
+// Owns the terminal obligation after Request, including dropped handler futures.
+struct PendingCall {
+    engine: crate::engine::CaptureEngine,
+    ctx: Arc<crate::engine::CallContext>,
+    status: u16,
+    armed: bool,
+    phase: &'static str,
+}
+impl Drop for PendingCall {
+    fn drop(&mut self) {
+        if self.armed {
+            self.engine.spawn_apply(
+                Arc::clone(&self.ctx),
+                Event::Cancelled(crate::engine::CancelEvent {
+                    reason: Some(self.phase.into()),
+                    status: self.status,
+                    bytes_received: 0,
+                    streaming: false,
+                }),
+            );
+        }
+    }
+}
+
 pub(super) async fn llm_capture(
     state: GatewayState,
     req: Request,
@@ -205,16 +229,13 @@ pub(super) async fn llm_capture(
         );
     }
 
-    let upstream_body = prepare_upstream_body(
-        &body_bytes,
-        parsed_request
-            .as_ref()
-            .map(|parsed| parsed.semantic.as_ref()),
-        resolved.model_rewritten,
-        &upstream_model,
-        bridge,
-        Some(state.reasoning_cache.as_ref()),
-    )?;
+    let mut pending = PendingCall {
+        engine: state.capture_engine.clone(),
+        ctx: Arc::clone(&call_ctx),
+        status: 502,
+        armed: true,
+        phase: "prepare_failed",
+    };
 
     let upstream_path = bridge.upstream_path(&path, &upstream_model, stream_request)?;
     let mut upstream_url = resolve_upstream_url(route, &upstream_path, upstream_protocol)?;
@@ -238,7 +259,18 @@ pub(super) async fn llm_capture(
         let mut ctx = (*call_ctx).clone();
         ctx.attach_upstream_url(upstream_url.as_str());
         call_ctx = Arc::new(ctx);
+        pending.ctx = Arc::clone(&call_ctx);
     }
+    let upstream_body = prepare_upstream_body(
+        &body_bytes,
+        parsed_request
+            .as_ref()
+            .map(|parsed| parsed.semantic.as_ref()),
+        resolved.model_rewritten,
+        &upstream_model,
+        bridge,
+        Some(&state.reasoning_cache.scoped(&call_ctx)),
+    )?;
 
     let model_policy = model_access_policy(&cfg);
     let model_request = ModelCallRequest {
@@ -276,6 +308,8 @@ pub(super) async fn llm_capture(
             reason = reason.code(),
             "pVisor denied model call"
         );
+        pending.status = 403;
+        pending.phase = "model_denied";
         return Ok((
             StatusCode::FORBIDDEN,
             format!(
@@ -290,7 +324,11 @@ pub(super) async fn llm_capture(
         .expect("an allowed model control transition can be applied");
 
     if debug_on {
-        let body_preview = truncate_body_bytes(&upstream_body);
+        let body_preview = if cfg.capture_level.includes_full_body() {
+            truncate_body_bytes(&upstream_body)
+        } else {
+            "<content omitted by capture level>".into()
+        };
         debug::log_llm_request(
             state.storage.as_path(),
             &session_id,
@@ -303,6 +341,7 @@ pub(super) async fn llm_capture(
         );
     }
 
+    pending.phase = "authentication_failed";
     let (_, auth_source) = match resolve_upstream_api_key(route, &parts.headers) {
         Ok(v) => v,
         Err(e) => {
@@ -350,6 +389,7 @@ pub(super) async fn llm_capture(
         );
     }
 
+    pending.phase = "upstream_connect_failed";
     let upstream_resp = match upstream_req.send().await {
         Ok(r) => r,
         Err(e) => {
@@ -385,15 +425,18 @@ pub(super) async fn llm_capture(
         );
     }
 
+    pending.status = status.as_u16();
+    pending.phase = "upstream_read_failed";
     if !status.is_success() {
         let raw_error = read_response_body_limited(upstream_resp, MAX_RESPONSE_BODY_BYTES).await?;
         let client_error = translate_error_for_bridge(bridge, &raw_error, status)?;
         let body_was_rewritten = client_error != raw_error;
+        pending.armed = false;
         state.capture_engine.spawn_apply(
             Arc::clone(&call_ctx),
             Event::ResponseComplete(CompleteEvent {
                 status: status.as_u16(),
-                resp_bytes: client_error.clone(),
+                resp_bytes: raw_error.clone(),
                 streaming: false,
                 stream_metrics: None,
                 assistant_content: None,
@@ -426,19 +469,22 @@ pub(super) async fn llm_capture(
         // streaming_llm_response takes an owned CallContext so unwrap the Arc when
         // we know we're the only owner (we are — request emit was the only earlier clone).
         let owned_ctx = Arc::try_unwrap(call_ctx).unwrap_or_else(|arc| (*arc).clone());
+        pending.armed = false; // Streaming producer now owns the terminal obligation.
         return streaming_llm_response(upstream_resp, state, owned_ctx, bridge).await;
     }
 
     let upstream_bytes = read_response_body_limited(upstream_resp, MAX_RESPONSE_BODY_BYTES).await?;
     let body_was_rewritten = bridge.needs_response_translation();
+    pending.phase = "response_translation_failed";
     let translated =
         translate_response_for_bridge(bridge, &upstream_bytes, protocol, &client_model)?;
     let resp_bytes = translated.body;
+    pending.armed = false;
     state.capture_engine.spawn_apply(
         Arc::clone(&call_ctx),
         Event::ResponseComplete(CompleteEvent {
             status: status.as_u16(),
-            resp_bytes: resp_bytes.clone(),
+            resp_bytes: upstream_bytes.clone(),
             streaming: false,
             stream_metrics: None,
             assistant_content: None,

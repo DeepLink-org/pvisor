@@ -53,7 +53,7 @@ pub use overlay::{OverlayRecord, OverlayUpper};
 pub(crate) use registry::LEASE_FILENAME;
 pub use registry::control_observations;
 pub use registry::{
-    EnvironmentProjection, RunLease, RunLineage, RunRecord, control_mount_inspect,
+    EnvironmentProjection, RunLease, RunLineage, RunRecord, RunRecordState, control_mount_inspect,
     control_overlay_status, control_ping, control_unmount_inspect, default_run_home, is_live,
     resolve_run,
 };

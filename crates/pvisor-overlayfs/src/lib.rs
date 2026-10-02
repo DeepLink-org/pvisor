@@ -17,6 +17,7 @@ use std::time::Duration;
 #[derive(Clone, Debug)]
 pub struct OverlayMountConfig {
     pub apply_target: Option<PathBuf>,
+    pub baseline_lower: Option<PathBuf>,
     pub lower_dirs: Vec<PathBuf>,
     pub upper_dir: PathBuf,
     pub work_dir: Option<PathBuf>,
@@ -49,6 +50,7 @@ impl OverlayMountConfig {
     ) -> Self {
         Self {
             apply_target: lower_dirs.last().cloned(),
+            baseline_lower: None,
             lower_dirs,
             upper_dir,
             work_dir,
@@ -288,9 +290,12 @@ fn prepare(mut config: OverlayMountConfig) -> Result<(OverlayFs, PathBuf, Vec<Mo
         .clone()
         .or_else(|| config.lower_dirs.last().cloned())
         .ok_or_else(|| anyhow::anyhow!("overlay has no apply target"))?;
-    let filesystem = OverlayFs::from_core(pvisor_overlay_core::OverlayCore::new_for_target(
-        config.lower_dirs,
-        target,
+    let filesystem = OverlayFs::from_core(pvisor_overlay_core::OverlayCore::new_for_layout(
+        pvisor_overlay_core::OverlayLayout::with_baseline(
+            config.lower_dirs,
+            target,
+            config.baseline_lower.as_deref(),
+        )?,
         config.upper_dir,
         config.work_dir,
         config.excluded_paths,

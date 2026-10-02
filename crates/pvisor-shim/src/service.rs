@@ -63,13 +63,23 @@ use crate::plan::{IoPlan, MountPlan, build_exec_plan, build_plan, build_sandbox_
 use crate::spec::load_bundle_spec;
 use crate::state::{ExecEntry, ExitInfo, ExitTarget, TaskEntry, TaskStatus};
 
+fn notify_exit(sender: &watch::Sender<Option<ExitInfo>>, exit: ExitInfo) {
+    sender.send_replace(Some(exit));
+}
+
+fn already_started_exec_pid(entry: &ExecEntry, vm: bool) -> Option<u32> {
+    entry.pid.filter(|_| {
+        entry.status == TaskStatus::Running || vm && entry.status == TaskStatus::Stopped
+    })
+}
+
 /// One live exec process: bookkeeping lives on the task entry; here we keep
 /// the start pipe and the shim-owned IO.
 struct LiveExec {
     exit_tx: watch::Sender<Option<ExitInfo>>,
     internal: Option<InternalChild>,
-    /// VM execs: the agent socket fd; shutting it down is the kill.
-    vm_sock: Option<i32>,
+    /// VM execs own a duplicate of the agent socket until exit; shutdown is the kill.
+    vm_sock: Option<std::os::unix::net::UnixStream>,
     io: ContainerIo,
 }
 
@@ -187,9 +197,7 @@ impl PvisorTask {
         if let Some(mut internal) = live_exec.internal.take() {
             internal.close_start();
         }
-        if let Some(sock_fd) = live_exec.vm_sock.take() {
-            unsafe { libc::close(sock_fd) };
-        }
+        drop(live_exec.vm_sock.take());
         let _ = std::fs::remove_file(bundle.join(format!("pvisor-exec-{exec_id}.json")));
 
         let mut response = DeleteResponse::new();
@@ -237,6 +245,8 @@ impl PvisorTask {
                     format!("invalid exec process spec: {error}"),
                 )
             })?;
+        crate::plan::validate_vm_process(&process, true)
+            .map_err(|error| rpc_error(Code::UNIMPLEMENTED, error.to_string()))?;
         let io = io_plan_from(false, &req.stdin, &req.stdout, &req.stderr);
         let plan = build_exec_plan(&process, &req.id, &req.exec_id, 0, io)
             .map_err(|error| rpc_error(Code::INVALID_ARGUMENT, error.to_string()))?;
@@ -256,11 +266,13 @@ impl PvisorTask {
         .await
         .map_err(|error| rpc_error(Code::INTERNAL, format!("vm exec join: {error}")))?
         .map_err(|error| rpc_error(Code::INTERNAL, format!("{error:#}")))?;
-        let sock_fd = stream.as_raw_fd();
+        let owned_socket = stream
+            .try_clone()
+            .map_err(|error| rpc_error(Code::INTERNAL, error.to_string()))?;
 
         // The guest process starts immediately (containerd's Start call for
         // VM execs just returns the pid we already know).
-        let exec_entry = ExecEntry::new(
+        let mut exec_entry = ExecEntry::new(
             &req.exec_id,
             plan.io.stdin.clone(),
             plan.io.stdout.clone(),
@@ -268,6 +280,7 @@ impl PvisorTask {
             false,
             Some(pid),
         );
+        exec_entry.mark_started(pid);
         let (exit_tx, _) = watch::channel(None);
         let (events_tx, mut events_rx) = mpsc::unbounded_channel::<u32>();
         {
@@ -284,12 +297,23 @@ impl PvisorTask {
                 LiveExec {
                     exit_tx,
                     internal: None,
-                    vm_sock: Some(sock_fd),
+                    vm_sock: Some(owned_socket),
                     io: owned_io,
                 },
             );
         }
 
+        let mut event = TaskExecAdded::new();
+        event.set_container_id(req.id.clone());
+        event.set_exec_id(req.exec_id.clone());
+        self.publish(TASK_EXEC_ADDED_EVENT_TOPIC, Box::new(event))
+            .await;
+        let mut started = TaskExecStarted::new();
+        started.set_container_id(req.id.clone());
+        started.set_exec_id(req.exec_id.clone());
+        started.set_pid(pid);
+        self.publish(TASK_EXEC_STARTED_EVENT_TOPIC, Box::new(started))
+            .await;
         // Relay the exec IO and bridge the guest exit into the task state.
         {
             let inner = self.inner.clone();
@@ -303,11 +327,6 @@ impl PvisorTask {
         }
         spawn_vm_exec_relay(stream, stdin, stdout, stderr, events_tx);
 
-        let mut event = TaskExecAdded::new();
-        event.set_container_id(req.id.clone());
-        event.set_exec_id(req.exec_id.clone());
-        self.publish(TASK_EXEC_ADDED_EVENT_TOPIC, Box::new(event))
-            .await;
         Ok(Empty::new())
     }
 }
@@ -319,6 +338,11 @@ fn vm_exec_connect_and_start(
     socket_path: &std::path::Path,
     plan: &ExecPlan,
 ) -> Result<(u32, std::os::unix::net::UnixStream)> {
+    crate::plan::guest_config(&plan.process, false)?;
+    anyhow::ensure!(
+        plan.process.rlimits.is_empty(),
+        "VM exec rlimits are unsupported"
+    );
     let mut stream = None;
     for _ in 0..300 {
         match std::os::unix::net::UnixStream::connect(socket_path) {
@@ -438,11 +462,17 @@ async fn vm_exec_exited(
         {
             return;
         }
-        live.execs.get(exec_id).map(|exec| {
-            exec.exit_tx.send(Some(ExitInfo {
-                status,
-                exited_at: SystemTime::now(),
-            }))
+        live.execs.get_mut(exec_id).map(|exec| {
+            if let Some(socket) = exec.vm_sock.take() {
+                let _ = socket.shutdown(std::net::Shutdown::Both);
+            }
+            notify_exit(
+                &exec.exit_tx,
+                ExitInfo {
+                    status,
+                    exited_at: SystemTime::now(),
+                },
+            )
         })
     };
     if notified.is_some() {
@@ -534,13 +564,13 @@ async fn run_exit_watcher(inner: Arc<TaskInner>, mut subscription: Subscription)
                     .record_exit_by_pid(pid as u32, exit.status, exit.exited_at)
                 {
                     Some(ExitTarget::Init) => {
-                        let _ = live.exit_tx.send(Some(exit));
+                        notify_exit(&live.exit_tx, exit);
                         found = Some((id.clone(), String::new()));
                         break;
                     }
                     Some(ExitTarget::Exec(exec_id)) => {
                         if let Some(exec) = live.execs.get_mut(&exec_id) {
-                            let _ = exec.exit_tx.send(Some(exit));
+                            notify_exit(&exec.exit_tx, exit);
                         }
                         found = Some((id.clone(), exec_id));
                         break;
@@ -557,7 +587,7 @@ async fn run_exit_watcher(inner: Arc<TaskInner>, mut subscription: Subscription)
             if let Some(sandbox) = sandbox.as_ref()
                 && sandbox.internal.pid == Some(pid as u32)
             {
-                let _ = sandbox.exit_tx.send(Some(exit));
+                notify_exit(&sandbox.exit_tx, exit);
             }
             continue;
         }
@@ -739,8 +769,8 @@ impl Task for PvisorTask {
                     .execs
                     .get(&req.exec_id)
                     .ok_or_else(|| not_found(&req.exec_id))?;
-                if entry.status == TaskStatus::Running && entry.pid.is_some() {
-                    return Ok(start_response(entry.pid.unwrap_or(0)));
+                if let Some(pid) = already_started_exec_pid(entry, live.vm) {
+                    return Ok(start_response(pid));
                 }
                 let mut internal = live
                     .execs
@@ -1015,17 +1045,39 @@ impl Task for PvisorTask {
                     .execs
                     .get(&req.exec_id)
                     .ok_or_else(|| not_found(&req.exec_id))?;
+                if exec.status == TaskStatus::Stopped {
+                    return Ok(Empty::new());
+                }
+                if live.vm
+                    && live
+                        .execs
+                        .get(&req.exec_id)
+                        .and_then(|exec| exec.vm_sock.as_ref())
+                        .is_none()
+                {
+                    return Err(rpc_error(
+                        Code::FAILED_PRECONDITION,
+                        "VM exec has no agent socket",
+                    ));
+                }
                 (
                     exec.pid,
-                    live.execs.get(&req.exec_id).and_then(|exec| exec.vm_sock),
+                    live.execs
+                        .get(&req.exec_id)
+                        .and_then(|exec| exec.vm_sock.as_ref())
+                        .map(|socket| socket.try_clone())
+                        .transpose()
+                        .map_err(|error| rpc_error(Code::INTERNAL, error.to_string()))?,
                 )
             }
         };
-        if let Some(sock_fd) = vm_sock {
+        if let Some(socket) = vm_sock {
             // VM exec kill: dropping the agent connection makes the guest
             // agent SIGKILL the process (guest pids must never be signaled
             // on the host).
-            unsafe { libc::shutdown(sock_fd, libc::SHUT_RDWR) };
+            socket
+                .shutdown(std::net::Shutdown::Both)
+                .map_err(|error| rpc_error(Code::INTERNAL, error.to_string()))?;
             return Ok(Empty::new());
         }
         let Some(pid) = pid else {
@@ -1333,7 +1385,7 @@ impl Sandbox for PvisorSandbox {
     ) -> ttrpc::Result<ShutdownSandboxResponse> {
         let state = {
             let mut sandbox = self.inner.sandbox.lock().expect("sandbox mutex");
-            sandbox.take().filter(|state| state.id == req.sandbox_id)
+            sandbox.take_if(|state| state.id == req.sandbox_id)
         };
         let Some(mut state) = state else {
             return Err(rpc_error(Code::NOT_FOUND, "no sandbox on this shim"));
@@ -1406,7 +1458,7 @@ fn io_error(err: std::io::Error) -> containerd_shim::Error {
 }
 
 /// Normalize a socket address to the filesystem path to bind. Prefixed
-/// forms (`unix://`, abstract ` `) degrade to their path component.
+/// forms (`unix://`, abstract `\0`) degrade to their path component.
 fn sock_path(address: &str) -> String {
     let trimmed = address
         .strip_prefix("unix://")
@@ -1681,5 +1733,39 @@ async fn reap_children_loop() {
                 break;
             }
         }
+    }
+}
+
+#[cfg(test)]
+mod lifecycle_regression_tests {
+    use super::*;
+    #[tokio::test]
+    async fn exit_is_retained_for_early_and_late_waiters() {
+        let (sender, initial) = watch::channel(None);
+        drop(initial);
+        let exit = ExitInfo {
+            status: 7,
+            exited_at: SystemTime::now(),
+        };
+        notify_exit(&sender, exit);
+        let late = sender.subscribe();
+        assert_eq!(*late.borrow(), Some(exit));
+        let (sender, mut early) = watch::channel(None);
+        let other = sender.subscribe();
+        notify_exit(&sender, exit);
+        early.changed().await.unwrap();
+        assert_eq!(*early.borrow(), Some(exit));
+        assert_eq!(*other.borrow(), Some(exit));
+        assert_eq!(*sender.subscribe().borrow(), Some(exit));
+    }
+    #[test]
+    fn vm_start_reports_started_pid_even_after_a_fast_exit() {
+        let mut entry = ExecEntry::new("e", None, None, None, false, Some(42));
+        assert_eq!(already_started_exec_pid(&entry, true), None);
+        assert!(entry.mark_started(42));
+        assert_eq!(already_started_exec_pid(&entry, true), Some(42));
+        entry.mark_exited(0, SystemTime::now());
+        assert_eq!(already_started_exec_pid(&entry, true), Some(42));
+        assert_eq!(already_started_exec_pid(&entry, false), None);
     }
 }

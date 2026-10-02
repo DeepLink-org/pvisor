@@ -9,6 +9,7 @@ const HOP_BY_HOP: &[&str] = &[
     "proxy-authenticate",
     "proxy-authorization",
     "te",
+    "trailer",
     "trailers",
     "transfer-encoding",
     "upgrade",
@@ -33,6 +34,11 @@ pub fn skip_upstream_forward_header(name: &str) -> bool {
         name.to_ascii_lowercase().as_str(),
         "host" | "content-length" | "x-api-key" | "x-goog-api-key" | "authorization" | "expect"
     ) || is_hop_by_hop(name)
+}
+
+/// Apply upstream credential/body filtering and Connection nominations together.
+pub fn skip_upstream_forward_header_for(headers: &HeaderMap, name: &str) -> bool {
+    skip_upstream_forward_header(name) || connection_nominates_header(headers, name)
 }
 
 pub fn skip_response_header_when_body_changed(name: &str) -> bool {
@@ -98,6 +104,7 @@ mod tests {
             Just("proxy-authenticate"),
             Just("proxy-authorization"),
             Just("te"),
+            Just("trailer"),
             Just("trailers"),
             Just("transfer-encoding"),
             Just("upgrade"),

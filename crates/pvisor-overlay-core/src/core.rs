@@ -1,5 +1,5 @@
 use crate::sys;
-use pvisor_core::overlay::{PathFingerprint, PathPreimage};
+use pvisor_core::overlay::{PathFingerprint, PathPreimage, XattrFingerprint};
 use sha2::{Digest, Sha256};
 use std::collections::{BTreeSet, HashMap};
 use std::ffi::{OsStr, OsString};
@@ -10,10 +10,10 @@ use std::os::unix::fs::{MetadataExt, OpenOptionsExt, PermissionsExt};
 use std::path::{Component, Path, PathBuf};
 use std::sync::Mutex;
 use std::sync::atomic::{AtomicU64, Ordering};
-use std::time::{Duration, UNIX_EPOCH};
 
 pub const WHITEOUT_PREFIX: &str = ".wh.";
 pub const OPAQUE_NAME: &str = ".wh..wh..opq";
+pub const ROOT_METADATA_NAME: &str = ".wh..pvisor-root-metadata";
 const TEMP_PREFIX: &str = ".wh..pvisor-copyup-";
 const PREIMAGE_COMPLETE_MARKER: &str = "complete-v1";
 pub(crate) const OPAQUE_XATTRS: [&str; 3] = [
@@ -38,9 +38,19 @@ pub struct OverlayLayout {
 }
 impl OverlayLayout {
     pub fn new(lowers: Vec<PathBuf>, target: PathBuf) -> io::Result<Self> {
+        Self::with_baseline(lowers, target, None)
+    }
+    pub fn with_baseline(
+        lowers: Vec<PathBuf>,
+        target: PathBuf,
+        snapshot: Option<&Path>,
+    ) -> io::Result<Self> {
         let last = lowers.last().ok_or_else(|| error(libc::EINVAL))?;
-        if fs::canonicalize(last)? != fs::canonicalize(&target)? {
+        if fs::canonicalize(last)? != fs::canonicalize(snapshot.unwrap_or(&target))? {
             return Err(error(libc::EINVAL));
+        }
+        if !target.is_dir() {
+            return Err(error(libc::ENOTDIR));
         }
         for lower in &lowers {
             if !lower.is_dir() {
@@ -79,6 +89,52 @@ fn exists(path: &Path) -> bool {
     fs::symlink_metadata(path).is_ok()
 }
 
+/// A candidate layer must not follow symlinks in any relative ancestor,
+/// even when a different layer supplied the merged directory prefix.
+pub(crate) fn layer_path(root: &Path, rel: &Path) -> io::Result<Option<PathBuf>> {
+    OverlayCore::validate_rel(rel)?;
+    let mut path = root.to_path_buf();
+    if let Some(parent) = rel.parent() {
+        for component in parent.components() {
+            path.push(component.as_os_str());
+            match fs::symlink_metadata(&path) {
+                Ok(metadata) if metadata.is_dir() => {}
+                Ok(_) => return Ok(None),
+                Err(error) if error.kind() == io::ErrorKind::NotFound => return Ok(None),
+                Err(error) => return Err(error),
+            }
+        }
+    }
+    let path = if rel.as_os_str().is_empty() {
+        root.to_path_buf()
+    } else {
+        root.join(rel)
+    };
+    match fs::symlink_metadata(&path) {
+        Ok(_) => Ok(Some(path)),
+        Err(error) if error.kind() == io::ErrorKind::NotFound => Ok(None),
+        Err(error) => Err(error),
+    }
+}
+
+/// The same opaque interpretation is used for the merged view and apply plan.
+pub fn is_opaque_directory(path: &Path) -> bool {
+    exists(&path.join(OPAQUE_NAME))
+        || OPAQUE_XATTRS
+            .iter()
+            .any(|name| sys::get_xattr(path, OsStr::new(name)).is_ok_and(|value| value == b"y"))
+}
+
+pub fn validate_guest_xattr(name: &OsStr) -> io::Result<()> {
+    if OPAQUE_XATTRS
+        .iter()
+        .any(|reserved| name == OsStr::new(reserved))
+    {
+        return Err(error(libc::EPERM));
+    }
+    Ok(())
+}
+
 fn ignorable_metadata_error(err: &io::Error) -> bool {
     matches!(
         err.raw_os_error(),
@@ -106,10 +162,8 @@ fn sha256_hex(bytes: &[u8]) -> String {
 /// Fingerprint one path without following its final symlink.
 pub fn fingerprint_at(root: &Path, rel: &Path) -> io::Result<PathFingerprint> {
     OverlayCore::validate_rel(rel)?;
-    let path = if rel.as_os_str().is_empty() {
-        root.to_path_buf()
-    } else {
-        root.join(rel)
+    let Some(path) = layer_path(root, rel)? else {
+        return Ok(PathFingerprint::Absent);
     };
     let metadata = match fs::symlink_metadata(&path) {
         Ok(metadata) => metadata,
@@ -123,10 +177,14 @@ pub fn fingerprint_at(root: &Path, rel: &Path) -> io::Result<PathFingerprint> {
         }
         Err(error) => return Err(error),
     };
+    let xattrs = Some(fingerprint_xattrs(&path)?);
     let kind = metadata.file_type();
     if kind.is_file() {
         let mut digest = Sha256::new();
-        let mut file = File::open(&path)?;
+        let mut file = OpenOptions::new()
+            .read(true)
+            .custom_flags(libc::O_NOFOLLOW)
+            .open(&path)?;
         let mut buffer = [0u8; 64 * 1024];
         loop {
             let read = file.read(&mut buffer)?;
@@ -144,6 +202,7 @@ pub fn fingerprint_at(root: &Path, rel: &Path) -> io::Result<PathFingerprint> {
             mode: metadata.mode(),
             uid: metadata.uid(),
             gid: metadata.gid(),
+            xattrs,
         });
     }
     if kind.is_dir() {
@@ -153,6 +212,7 @@ pub fn fingerprint_at(root: &Path, rel: &Path) -> io::Result<PathFingerprint> {
             gid: metadata.gid(),
             mtime_seconds: metadata.mtime(),
             mtime_nanoseconds: metadata.mtime_nsec(),
+            xattrs,
         });
     }
     if kind.is_symlink() {
@@ -160,6 +220,7 @@ pub fn fingerprint_at(root: &Path, rel: &Path) -> io::Result<PathFingerprint> {
             target: fs::read_link(&path)?.into_os_string().into_vec(),
             uid: metadata.uid(),
             gid: metadata.gid(),
+            xattrs,
         });
     }
     Ok(PathFingerprint::Other {
@@ -167,7 +228,32 @@ pub fn fingerprint_at(root: &Path, rel: &Path) -> io::Result<PathFingerprint> {
         uid: metadata.uid(),
         gid: metadata.gid(),
         rdev: metadata.rdev(),
+        xattrs,
     })
+}
+
+fn fingerprint_xattrs(path: &Path) -> io::Result<XattrFingerprint> {
+    let names = match sys::list_xattrs(path) {
+        Ok(names) => names,
+        Err(error) if error.raw_os_error() == Some(libc::ENOTSUP) => {
+            return Ok(XattrFingerprint::Unsupported);
+        }
+        Err(error) => return Err(error),
+    };
+    let mut entries = Vec::new();
+    for name in names {
+        let name = OsStr::from_bytes(&name);
+        if OPAQUE_XATTRS
+            .iter()
+            .any(|reserved| name == OsStr::new(reserved))
+        {
+            continue;
+        }
+        let value = sys::get_xattr(path, name)?;
+        entries.push((name.as_bytes().to_vec(), sha256_hex(&value)));
+    }
+    entries.sort();
+    Ok(XattrFingerprint::Values { entries })
 }
 
 /// Load all durable first-touch entries from a preimage journal.
@@ -251,16 +337,60 @@ impl OverlayCore {
         preimage_dir: Option<PathBuf>,
     ) -> io::Result<Self> {
         let layout = OverlayLayout::new(lowers, target)?;
+        Self::new_for_layout(layout, upper, work, excluded, preimage_dir)
+    }
+
+    pub fn new_for_layout(
+        layout: OverlayLayout,
+        upper: PathBuf,
+        work: Option<PathBuf>,
+        excluded: Vec<PathBuf>,
+        preimage_dir: Option<PathBuf>,
+    ) -> io::Result<Self> {
         fs::create_dir_all(&upper)?;
         let upper_was_empty = fs::read_dir(&upper)?.next().is_none();
         if let Some(work) = &work {
             fs::create_dir_all(work)?;
-            if work == &upper || work.starts_with(&upper) || upper.starts_with(work) {
+            let actual_work = fs::canonicalize(work)?;
+            let actual_upper = fs::canonicalize(&upper)?;
+            if actual_work.starts_with(&actual_upper) || actual_upper.starts_with(&actual_work) {
                 return Err(error(libc::EINVAL));
             }
             if fs::metadata(work)?.dev() != fs::metadata(&upper)?.dev() {
                 return Err(error(libc::EXDEV));
             }
+        }
+        let excluded = excluded
+            .into_iter()
+            .map(|path| {
+                Self::validate_rel(&path)?;
+                if path.as_os_str().is_empty() {
+                    return Err(error(libc::EINVAL));
+                }
+                Ok(path)
+            })
+            .collect::<io::Result<BTreeSet<_>>>()?;
+        // Compare physical paths, so symlink aliases cannot bypass backing isolation.
+        let backing = std::iter::once(&upper)
+            .chain(work.iter())
+            .map(fs::canonicalize)
+            .collect::<io::Result<Vec<_>>>()?;
+        for root in layout.lowers.iter().chain(std::iter::once(&layout.target)) {
+            let root = fs::canonicalize(root)?;
+            for path in &backing {
+                if root.starts_with(path) {
+                    return Err(error(libc::EINVAL));
+                }
+                if let Ok(relative) = path.strip_prefix(&root)
+                    && !excluded
+                        .iter()
+                        .any(|excluded| relative.starts_with(excluded))
+                {
+                    return Err(error(libc::EINVAL));
+                }
+            }
+        }
+        if let Some(work) = &work {
             for entry in fs::read_dir(work)? {
                 let entry = entry?;
                 if entry
@@ -277,16 +407,6 @@ impl OverlayCore {
                 }
             }
         }
-        let excluded = excluded
-            .into_iter()
-            .map(|path| {
-                Self::validate_rel(&path)?;
-                if path.as_os_str().is_empty() {
-                    return Err(error(libc::EINVAL));
-                }
-                Ok(path)
-            })
-            .collect::<io::Result<BTreeSet<_>>>()?;
         if let Some(directory) = &preimage_dir {
             fs::create_dir_all(directory.join("entries"))?;
             if upper_was_empty && !preimage_journal_is_complete(directory) {
@@ -465,6 +585,7 @@ impl OverlayCore {
             || bytes == b"."
             || bytes == b".."
             || bytes.contains(&b'/')
+            || bytes.contains(&0)
             || bytes.starts_with(WHITEOUT_PREFIX.as_bytes())
         {
             return Err(error(libc::EINVAL));
@@ -505,16 +626,12 @@ impl OverlayCore {
     }
 
     pub fn is_opaque(&self, rel: &Path) -> bool {
-        let path = self.upper_path(rel);
-        exists(&path.join(OPAQUE_NAME))
-            || OPAQUE_XATTRS.iter().any(|name| {
-                sys::get_xattr(&path, OsStr::new(name)).is_ok_and(|value| value == b"y")
-            })
+        is_opaque_directory(&self.upper_path(rel))
     }
 
     fn resolve_component(&self, rel: &Path) -> Option<Resolved> {
         let upper = self.upper_path(rel);
-        if exists(&upper) {
+        if layer_path(&self.upper, rel).ok().flatten().is_some() {
             return Some(Resolved {
                 path: upper,
                 is_upper: true,
@@ -526,8 +643,8 @@ impl OverlayCore {
             return None;
         }
         self.layout.lowers.iter().find_map(|lower| {
-            let path = lower.join(rel);
-            exists(&path).then_some(Resolved {
+            let path = layer_path(lower, rel).ok().flatten()?;
+            Some(Resolved {
                 path,
                 is_upper: false,
             })
@@ -575,7 +692,7 @@ impl OverlayCore {
         self.layout
             .lowers
             .iter()
-            .any(|lower| exists(&lower.join(rel)))
+            .any(|lower| layer_path(lower, rel).ok().flatten().is_some())
     }
 
     fn copy_metadata(
@@ -601,10 +718,8 @@ impl OverlayCore {
         {
             return Err(err);
         }
-        let atime = UNIX_EPOCH
-            + Duration::new(metadata.atime().max(0) as u64, metadata.atime_nsec() as u32);
-        let mtime = UNIX_EPOCH
-            + Duration::new(metadata.mtime().max(0) as u64, metadata.mtime_nsec() as u32);
+        let atime = sys::unix_time(metadata.atime(), metadata.atime_nsec());
+        let mtime = sys::unix_time(metadata.mtime(), metadata.mtime_nsec());
         if let Err(err) = sys::set_times(destination, Some(atime), Some(mtime), nofollow)
             && !ignorable_metadata_error(&err)
         {
@@ -672,6 +787,7 @@ impl OverlayCore {
         let temporary = self.temporary_path(parent);
         let result = (|| {
             let kind = metadata.file_type();
+            let mut reused_upper_inode = false;
             if kind.is_dir() {
                 fs::create_dir(&temporary)?;
             } else if kind.is_symlink() {
@@ -691,6 +807,7 @@ impl OverlayCore {
                 };
                 if let Some(existing) = existing {
                     fs::hard_link(existing, &temporary)?;
+                    reused_upper_inode = true;
                 } else {
                     let mut options = OpenOptions::new();
                     options
@@ -707,7 +824,9 @@ impl OverlayCore {
             } else {
                 sys::mknod(&temporary, metadata.mode(), metadata.rdev() as u32)?;
             }
-            self.copy_metadata(&resolved.path, &temporary, &metadata)?;
+            if !reused_upper_inode {
+                self.copy_metadata(&resolved.path, &temporary, &metadata)?;
+            }
             fs::rename(&temporary, &upper)?;
             if metadata.is_file()
                 && metadata.nlink() > 1
@@ -739,11 +858,14 @@ impl OverlayCore {
         let mut names = BTreeSet::new();
         if !self.is_opaque(rel) {
             for lower in &self.layout.lowers {
-                let directory = lower.join(rel);
-                let Ok(entries) = fs::read_dir(directory) else {
+                let Some(directory) = layer_path(lower, rel)? else {
                     continue;
                 };
-                for entry in entries.flatten() {
+                if !fs::symlink_metadata(&directory)?.is_dir() {
+                    continue;
+                }
+                for entry in fs::read_dir(directory)? {
+                    let entry = entry?;
                     let name = entry.file_name();
                     if !Self::is_whiteout_name(&name) {
                         names.insert(name);
@@ -751,8 +873,9 @@ impl OverlayCore {
                 }
             }
         }
-        if let Ok(entries) = fs::read_dir(self.upper_path(rel)) {
-            for entry in entries.flatten() {
+        if let Some(directory) = layer_path(&self.upper, rel)? {
+            for entry in fs::read_dir(directory)? {
+                let entry = entry?;
                 let name = entry.file_name();
                 if !Self::is_whiteout_name(&name) {
                     names.insert(name);
@@ -769,6 +892,20 @@ impl OverlayCore {
                 })
         });
         Ok(names.into_iter().collect())
+    }
+
+    /// Record an explicit metadata mutation separately from incidental root mtime.
+    pub fn prepare_metadata_change(&self, rel: &Path) -> io::Result<PathBuf> {
+        let upper = self.copy_up(rel)?;
+        if rel.as_os_str().is_empty() {
+            OpenOptions::new()
+                .write(true)
+                .create(true)
+                .truncate(false)
+                .mode(0o600)
+                .open(upper.join(ROOT_METADATA_NAME))?;
+        }
+        Ok(upper)
     }
 
     fn mark_opaque(&self, rel: &Path) -> io::Result<()> {
@@ -1159,6 +1296,120 @@ impl OverlayCore {
 
 #[cfg(test)]
 mod tests {
+
+    #[test]
+    fn explicit_root_metadata_is_reported_and_xattr_changes_conflict() {
+        use super::*;
+        let dir = tempfile::tempdir().unwrap();
+        let base = dir.path().join("base");
+        let upper = dir.path().join("upper");
+        fs::create_dir(&base).unwrap();
+        fs::write(base.join("file"), b"same contents").unwrap();
+        let core = OverlayCore::new(vec![base.clone()], upper.clone(), None).unwrap();
+        core.prepare_metadata_change(Path::new("")).unwrap();
+        assert!(upper.join(ROOT_METADATA_NAME).is_file());
+        assert_eq!(
+            validate_guest_xattr(OsStr::new("user.overlay.opaque"))
+                .unwrap_err()
+                .raw_os_error(),
+            Some(libc::EPERM)
+        );
+        let file = base.join("file");
+        match sys::set_xattr(&file, OsStr::new("user.pvisor.conflict"), b"before", 0) {
+            Ok(()) => {}
+            Err(error) if error.raw_os_error() == Some(libc::ENOTSUP) => return,
+            Err(error) => panic!("xattr setup failed: {error}"),
+        }
+        let before = fingerprint_at(&base, Path::new("file")).unwrap();
+        sys::set_xattr(&file, OsStr::new("user.pvisor.conflict"), b"after", 0).unwrap();
+        assert!(!before.matches(&fingerprint_at(&base, Path::new("file")).unwrap()));
+    }
+
+    #[test]
+    fn backing_symlink_alias_cannot_share_the_upper_and_work_directory() {
+        use super::*;
+        let dir = tempfile::tempdir().unwrap();
+        let base = dir.path().join("base");
+        let upper = dir.path().join("upper");
+        fs::create_dir(&base).unwrap();
+        fs::create_dir(&upper).unwrap();
+        let alias = dir.path().join("alias");
+        std::os::unix::fs::symlink(&upper, &alias).unwrap();
+        assert!(OverlayCore::new(vec![base], upper, Some(alias)).is_err());
+    }
+
+    #[test]
+    fn masked_lower_symlink_cannot_supply_children_outside_its_layer() {
+        use super::*;
+        let dir = tempfile::tempdir().unwrap();
+        let top = dir.path().join("top");
+        let base = dir.path().join("base");
+        let outside = dir.path().join("outside");
+        fs::create_dir_all(top.join("masked")).unwrap();
+        fs::create_dir(&base).unwrap();
+        fs::create_dir(&outside).unwrap();
+        fs::write(outside.join("secret"), b"private").unwrap();
+        std::os::unix::fs::symlink(&outside, base.join("masked")).unwrap();
+        let core =
+            OverlayCore::new(vec![top, base.clone()], dir.path().join("upper"), None).unwrap();
+        assert!(core.resolve(Path::new("masked/secret")).is_none());
+        assert!(core.list_names(Path::new("masked")).unwrap().is_empty());
+        assert_eq!(
+            fingerprint_at(&base, Path::new("masked/secret")).unwrap(),
+            PathFingerprint::Absent
+        );
+    }
+
+    #[test]
+    fn copying_a_hardlink_alias_keeps_edited_upper_metadata() {
+        use super::*;
+        let dir = tempfile::tempdir().unwrap();
+        let base = dir.path().join("base");
+        fs::create_dir(&base).unwrap();
+        fs::write(base.join("a"), b"original").unwrap();
+        fs::hard_link(base.join("a"), base.join("b")).unwrap();
+        let core = OverlayCore::new(vec![base], dir.path().join("upper"), None).unwrap();
+        let a = core.copy_up(Path::new("a")).unwrap();
+        fs::set_permissions(&a, fs::Permissions::from_mode(0o600)).unwrap();
+        fs::write(&a, b"edited").unwrap();
+        let b = core.copy_up(Path::new("b")).unwrap();
+        assert_eq!(
+            fs::metadata(&b).unwrap().ino(),
+            fs::metadata(&a).unwrap().ino()
+        );
+        assert_eq!(fs::metadata(&a).unwrap().mode() & 0o777, 0o600);
+        assert_eq!(fs::read(b).unwrap(), b"edited");
+    }
+
+    #[test]
+    fn snapshot_layout_keeps_original_target_as_the_conflict_baseline() {
+        use super::*;
+        let dir = tempfile::tempdir().unwrap();
+        let target = dir.path().join("target");
+        let snapshot = dir.path().join("snapshot");
+        fs::create_dir(&target).unwrap();
+        fs::create_dir(&snapshot).unwrap();
+        fs::write(target.join("file"), b"original").unwrap();
+        fs::write(snapshot.join("file"), b"snapshot").unwrap();
+        let layout =
+            OverlayLayout::with_baseline(vec![snapshot.clone()], target.clone(), Some(&snapshot))
+                .unwrap();
+        let journal = dir.path().join("preimages");
+        let core = OverlayCore::new_for_layout(
+            layout,
+            dir.path().join("upper"),
+            None,
+            Vec::new(),
+            Some(journal.clone()),
+        )
+        .unwrap();
+        let file = core.copy_up(Path::new("file")).unwrap();
+        assert_eq!(fs::read(file).unwrap(), b"snapshot");
+        assert_eq!(
+            load_preimages(&journal).unwrap()[0].state,
+            fingerprint_at(&target, Path::new("file")).unwrap()
+        );
+    }
     #[test]
     fn layout_rejects_a_different_apply_baseline_before_creating_upper() {
         let directory = tempfile::tempdir().unwrap();
@@ -1222,6 +1473,10 @@ mod tests {
         let temporary = tempfile::tempdir().unwrap();
         let content = vec![b'x'; 128 * 1024 + 3];
         fs::write(temporary.path().join("large"), &content).unwrap();
+        assert_eq!(
+            fingerprint_at(&temporary.path().join("large"), Path::new("")).unwrap(),
+            fingerprint_at(temporary.path(), Path::new("large")).unwrap()
+        );
         let PathFingerprint::File { sha256, .. } =
             fingerprint_at(temporary.path(), Path::new("large")).unwrap()
         else {

@@ -142,6 +142,40 @@ struct SharedJournalObserver {
     journal: crate::trace::Journal,
     observer: Option<Arc<dyn TrajectoryEventSink>>,
 }
+/// Gateway lifecycle and capture must commit into the same Attempt journal.
+/// A live-only observer must not cause a journal to survive across Runs.
+#[cfg(feature = "gateway")]
+pub(crate) fn attempt_observer(
+    observer: Arc<dyn TrajectoryEventSink>,
+) -> Arc<dyn TrajectoryEventSink> {
+    if observer.journal().is_some() {
+        return observer;
+    }
+    Arc::new(SharedJournalObserver {
+        journal: crate::trace::Journal::memory(),
+        observer: Some(observer),
+    })
+}
+#[cfg(feature = "gateway")]
+struct LiveEventObserver {
+    sink: Arc<super::event::NoopEventSink>,
+    observer: Option<Arc<dyn TrajectoryEventSink>>,
+}
+#[cfg(feature = "gateway")]
+impl pvisor_gateway::sink::CaptureEventObserver for LiveEventObserver {
+    fn observe(&self, event: &pvisor_core::event::Event) -> anyhow::Result<()> {
+        self.sink.observe(event)?;
+        if let Some(observer) = &self.observer {
+            observer.observe(event)?;
+        }
+        Ok(())
+    }
+    fn journal(&self) -> Option<crate::trace::Journal> {
+        self.observer
+            .as_ref()
+            .and_then(|observer| observer.journal())
+    }
+}
 #[cfg(feature = "gateway")]
 impl pvisor_gateway::sink::CaptureEventObserver for SharedJournalObserver {
     fn observe(&self, event: &pvisor_core::event::Event) -> anyhow::Result<()> {
@@ -156,6 +190,14 @@ impl pvisor_gateway::sink::CaptureEventObserver for SharedJournalObserver {
 }
 
 impl RuntimeSupervisorBuilder {
+    #[cfg(feature = "gateway")]
+    pub(crate) fn live_events(mut self, sink: Arc<super::event::NoopEventSink>) -> Self {
+        self.sink = Some(Arc::new(LiveEventObserver {
+            sink,
+            observer: self.sink.take(),
+        }));
+        self
+    }
     #[cfg(feature = "gateway")]
     pub(crate) fn journal(mut self, journal: crate::trace::Journal) -> Self {
         self.sink = Some(Arc::new(SharedJournalObserver {
@@ -324,14 +366,16 @@ impl RuntimeSupervisor {
     }
 
     /// Start configured pVisor drivers and merge their implant into `spec`.
-    pub fn prepare(
+    pub(crate) fn prepare(
         &self,
         spec: &mut RunSpec,
+        preparation: &super::run::PreparedRun,
         limits: &[pvisor_core::NetworkBandwidthLimit],
         vm_executor: bool,
         attempt_id: &AttemptId,
     ) -> anyhow::Result<Option<AttemptSession>> {
-        let mut session = self.prepare_drivers(spec, limits, vm_executor, attempt_id)?;
+        let mut session =
+            self.prepare_drivers(spec, preparation, limits, vm_executor, attempt_id)?;
         if self.network_mode() == OverlayNetMode::Proxy {
             #[cfg(feature = "gateway")]
             if self.proxy.is_some() {
@@ -345,7 +389,13 @@ impl RuntimeSupervisor {
                     super::registry::default_run_home().join(spec.run_id.as_str())
                 });
                 std::fs::create_dir_all(&storage)?;
-                session = Some(prepare_storage_attempt(spec, &storage, None)?);
+                session = Some(prepare_storage_attempt(
+                    spec,
+                    preparation,
+                    &storage,
+                    attempt_id,
+                    None,
+                )?);
             }
             let session_ref = session.as_mut().unwrap();
             if let Err(error) =
@@ -380,6 +430,7 @@ impl RuntimeSupervisor {
     fn prepare_drivers(
         &self,
         spec: &mut RunSpec,
+        preparation: &super::run::PreparedRun,
         supervisor_limits: &[pvisor_core::NetworkBandwidthLimit],
         vm_executor: bool,
         attempt_id: &AttemptId,
@@ -428,6 +479,7 @@ impl RuntimeSupervisor {
                 .unwrap_or_else(|| storage.clone());
             let session = prepare_attempt(
                 spec,
+                preparation,
                 AttemptPrepareOpts {
                     config: &proxy,
                     storage: &storage,
@@ -459,9 +511,11 @@ impl RuntimeSupervisor {
                 .unwrap_or_else(|| PathBuf::from(".pvisor/capture"));
             let session = prepare_overlay_attempt(
                 spec,
+                preparation,
                 OverlayAttemptPrepareOpts {
                     storage: &storage,
                     overlay: overlay.clone(),
+                    attempt_id,
                     vm_network: vm_network
                         .then(|| self.vm_network_options(network, supervisor_limits, attempt_id)),
                 },
@@ -472,7 +526,9 @@ impl RuntimeSupervisor {
         if let Some(storage) = &self.storage {
             let session = prepare_storage_attempt(
                 spec,
+                preparation,
                 storage,
+                attempt_id,
                 vm_network.then(|| self.vm_network_options(network, supervisor_limits, attempt_id)),
             )?;
             return Ok(Some(session));
@@ -483,7 +539,9 @@ impl RuntimeSupervisor {
             std::fs::create_dir_all(&storage)?;
             let session = prepare_storage_attempt(
                 spec,
+                preparation,
                 &storage,
+                attempt_id,
                 Some(self.vm_network_options(network, supervisor_limits, attempt_id)),
             )?;
             return Ok(Some(session));
@@ -618,6 +676,36 @@ mod tests {
     use pvisor_gateway::config::ProxyConfig;
 
     #[cfg(feature = "gateway")]
+    #[test]
+    fn default_gateway_observations_reach_the_volatile_run_stream() {
+        use crate::EventSink;
+        let sink = Arc::new(super::super::event::NoopEventSink::default());
+        let mut receiver = sink.subscribe().unwrap();
+        let builder = RuntimeSupervisorBuilder::default().live_events(Arc::clone(&sink));
+        let trace = crate::trace::Trace::new(crate::trace::Journal::memory(), "pvisor-gateway");
+        let event = trace.event(
+            vec!["capture".into()],
+            None,
+            None,
+            vec![],
+            pvisor_core::event::Fact::Observation {
+                domain: "llm".into(),
+                name: "request".into(),
+                version: 1,
+                payload: serde_json::Value::Null,
+            },
+        );
+        let observer = builder.sink.unwrap();
+        assert!(observer.journal().is_none());
+        let observer = attempt_observer(observer);
+        let journal = observer.journal().unwrap();
+        journal.append(event.clone()).unwrap();
+        observer.observe(&event).unwrap();
+        assert_eq!(receiver.try_recv().unwrap(), event);
+        assert_eq!(journal.records().unwrap().len(), 1);
+    }
+
+    #[cfg(feature = "gateway")]
     fn test_proxy() -> ProxyConfig {
         ProxyConfig::from_toml_str(
             r#"
@@ -720,11 +808,20 @@ models = []
             .gateway(GatewayDriverConfig::new(test_proxy()))
             .build();
         let mut spec = RunSpec::process("offline-vm", "test", "true");
-        let error =
-            match supervisor.prepare(&mut spec, &[], true, &AttemptId::new("attempt-offline")) {
-                Ok(_) => panic!("offline VM accepted Gateway configuration"),
-                Err(error) => error,
-            };
+        let preparation = crate::PVisor::new()
+            .resolve_run(spec.clone())
+            .unwrap()
+            .preparation;
+        let error = match supervisor.prepare(
+            &mut spec,
+            &preparation,
+            &[],
+            true,
+            &AttemptId::new("attempt-offline"),
+        ) {
+            Ok(_) => panic!("offline VM accepted Gateway configuration"),
+            Err(error) => error,
+        };
         assert!(
             error
                 .to_string()

@@ -128,6 +128,8 @@ pub enum SerializableEvent {
         assistant_content: String,
     },
     Cancelled {
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        reason: Option<String>,
         status: u16,
         bytes_received: usize,
         streaming: bool,
@@ -236,10 +238,62 @@ pub fn append_dead_letter(
     error: &str,
     prepared_record_json: Option<String>,
 ) -> Result<()> {
+    let mut retained_event = SerializableEvent::from_event(event);
+    match &mut retained_event {
+        SerializableEvent::Request {
+            user_content,
+            body_json,
+            ..
+        } => {
+            if !ctx.level.includes_user_text() {
+                *user_content = None;
+            }
+            if !ctx.level.includes_full_body() {
+                *body_json = None;
+            }
+        }
+        SerializableEvent::ResponseComplete {
+            resp_payload,
+            assistant_content,
+            ..
+        } => {
+            if !ctx.level.includes_assistant_text() {
+                *assistant_content = None;
+            }
+            if !ctx.level.includes_full_body() {
+                let usage = match event {
+                    Event::ResponseComplete(event) if !event.streaming => {
+                        serde_json::from_slice::<Value>(&event.resp_bytes)
+                            .ok()
+                            .map(|body| crate::usage::extract_usage_from_response(&body))
+                            .unwrap_or_default()
+                    }
+                    _ => Default::default(),
+                };
+                *resp_payload = RespPayload::Text(serde_json::json!({"usage":usage}).to_string());
+            }
+        }
+        SerializableEvent::ResponseDraft {
+            assistant_content, ..
+        } => {
+            if !ctx.level.includes_assistant_text() {
+                assistant_content.clear();
+            }
+        }
+        SerializableEvent::Cancelled { .. } => {}
+    }
+    let prepared_record_json = prepared_record_json
+        .map(|raw| -> Result<String> {
+            let mut record: crate::record::CaptureRecord = serde_json::from_str(&raw)?;
+            crate::sink::retain_capture_content(&mut record.payload, ctx.level);
+            record.payload = redact_sensitive_body(&record.payload);
+            Ok(serde_json::to_string(&record)?)
+        })
+        .transpose()?;
     let entry = DeadLetterEntry {
         timestamp: chrono::Utc::now().to_rfc3339(),
         context: DeadLetterContext::from_context(ctx),
-        event: SerializableEvent::from_event(event),
+        event: retained_event,
         error: error.to_string(),
         prepared_record_json,
     };
@@ -344,6 +398,7 @@ impl SerializableEvent {
                 assistant_content: e.assistant_content.clone(),
             },
             Event::Cancelled(e) => Self::Cancelled {
+                reason: e.reason.clone(),
                 status: e.status,
                 bytes_received: e.bytes_received,
                 streaming: e.streaming,
@@ -399,10 +454,12 @@ impl SerializableEvent {
                 assistant_content: assistant_content.clone(),
             }),
             Self::Cancelled {
+                reason,
                 status,
                 bytes_received,
                 streaming,
             } => Event::Cancelled(CancelEvent {
+                reason: reason.clone(),
                 status: *status,
                 bytes_received: *bytes_received,
                 streaming: *streaming,
@@ -459,6 +516,29 @@ pub async fn replay_dead_letter(
 
 #[cfg(test)]
 mod tests {
+
+    #[test]
+    fn summary_dead_letter_does_not_restore_dropped_payload_copies() {
+        let dir = tempfile::tempdir().unwrap();
+        let mut ctx = sample_ctx(dir.path());
+        ctx.level = CaptureLevel::Summary;
+        let event = Event::Request(RequestEvent {
+            path: "/v1/chat/completions".into(),
+            method: "POST".into(),
+            url: None,
+            body_bytes: 10,
+            user_content: Some("unique-private-prompt".into()),
+            body_json: Some(serde_json::json!({"messages":["unique-private-prompt"]})),
+            semantic: None,
+            model_rewritten: false,
+            headers: vec![],
+        });
+        let prepared = serde_json::json!({"kind":"llm.request","payload":{"user_content":"unique-private-prompt","llm_request":{"text":"unique-private-prompt"},"http":{"request_body":"unique-private-prompt"}}}).to_string();
+        append_dead_letter(dir.path(), &ctx, &event, "queue full", Some(prepared)).unwrap();
+        let persisted = std::fs::read_to_string(dead_letter_path(dir.path())).unwrap();
+        assert!(!persisted.contains("unique-private-prompt"));
+        assert_eq!(read_dead_letter_entries(dir.path()).unwrap().len(), 1);
+    }
     use super::*;
     use crate::config::CaptureLevel;
     use crate::protocol::ProtocolKind;
@@ -516,6 +596,7 @@ mod tests {
     fn dead_letter_redacts_credentials_before_writing() {
         let dir = tempfile::tempdir().unwrap();
         let mut ctx = sample_ctx(dir.path());
+        ctx.level = CaptureLevel::Full;
         ctx.request_headers = vec![
             ("authorization".into(), "Bearer context-secret".into()),
             ("x-request-id".into(), "req-safe".into()),
@@ -577,6 +658,7 @@ mod tests {
         let dir = tempfile::tempdir().unwrap();
         let ctx = sample_ctx(dir.path());
         let event = Event::Cancelled(CancelEvent {
+            reason: None,
             status: 499,
             bytes_received: 0,
             streaming: true,

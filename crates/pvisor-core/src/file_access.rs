@@ -11,35 +11,34 @@ use std::{
 };
 
 /// Identity and approval endpoint bound to one Session view.
-#[derive(Debug, Clone, Serialize, Deserialize)]
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
 pub struct FileAccessContext {
     pub run_id: String,
     pub attempt_id: String,
     pub view: String,
     pub audit_socket: Option<PathBuf>,
-    // Preparation happens before any workload can access the view. Deserialized
-    // policies always enforce; a persisted policy cannot restore preparation bypass.
+}
+
+/// Attempt-local state is not part of the persisted identity or rule value.
+#[derive(Debug, Clone, Default, Serialize)]
+struct FileAccessBinding {
+    #[serde(skip_serializing_if = "Option::is_none")]
+    context: Option<FileAccessContext>,
+    // Deserialization always starts armed; persisted input cannot enable bypass.
     #[serde(skip)]
     preparing: Arc<AtomicBool>,
 }
-impl PartialEq for FileAccessContext {
-    fn eq(&self, other: &Self) -> bool {
-        self.run_id == other.run_id
-            && self.attempt_id == other.attempt_id
-            && self.view == other.view
-            && self.audit_socket == other.audit_socket
-    }
-}
-impl Eq for FileAccessContext {}
 
 /// Validated mount-relative rules and their compiled matchers.
 /// Precedence is deny, ask, warn/read, then ordinary access.
 /// Rules are immutable so the serialized policy always agrees with authorization.
 #[derive(Debug, Clone, Default, Serialize, Deserialize)]
-#[serde(try_from = "FileAccessRules")]
+#[serde(try_from = "FileAccessWire")]
 pub struct FileAccessPolicy {
     #[serde(flatten)]
     rules: FileAccessRules,
+    #[serde(flatten)]
+    binding: FileAccessBinding,
     #[serde(skip)]
     deny: GlobSet,
     #[serde(skip)]
@@ -52,9 +51,21 @@ pub struct FileAccessPolicy {
 
 #[derive(Debug, Clone, Default, Serialize, Deserialize, PartialEq, Eq)]
 #[serde(default, deny_unknown_fields)]
-struct FileAccessRules {
+struct FileAccessWire {
     #[serde(skip_serializing_if = "Option::is_none")]
     context: Option<FileAccessContext>,
+    #[serde(skip_serializing_if = "Vec::is_empty")]
+    allow: Vec<String>,
+    #[serde(skip_serializing_if = "Vec::is_empty")]
+    layers: Vec<(crate::PolicyScope, FileAccessPolicy)>,
+    deny: Vec<String>,
+    #[serde(skip_serializing_if = "Vec::is_empty")]
+    ask: Vec<String>,
+    warn: Vec<String>,
+}
+
+#[derive(Debug, Clone, Default, Serialize, PartialEq, Eq)]
+struct FileAccessRules {
     #[serde(skip_serializing_if = "Vec::is_empty")]
     allow: Vec<String>,
     #[serde(skip_serializing_if = "Vec::is_empty")]
@@ -75,18 +86,18 @@ pub enum FileAccessDecision {
 
 impl PartialEq for FileAccessPolicy {
     fn eq(&self, other: &Self) -> bool {
-        self.rules == other.rules
+        self.rules == other.rules && self.binding.context == other.binding.context
     }
 }
 
 impl Eq for FileAccessPolicy {}
 
-impl TryFrom<FileAccessRules> for FileAccessPolicy {
+impl TryFrom<FileAccessWire> for FileAccessPolicy {
     type Error = io::Error;
 
-    fn try_from(rules: FileAccessRules) -> io::Result<Self> {
+    fn try_from(rules: FileAccessWire) -> io::Result<Self> {
         let mut policy = Self::new_with_allow(rules.deny, rules.ask, rules.warn, rules.allow)?;
-        policy.rules.context = rules.context;
+        policy.binding.context = rules.context;
         policy.rules.layers = rules.layers;
         policy
             .rules
@@ -149,13 +160,13 @@ impl FileAccessPolicy {
             ask: compile(&ask)?,
             warn: compile(&warn)?,
             allow: compile(&allow)?,
+            binding: FileAccessBinding::default(),
             rules: FileAccessRules {
                 deny,
                 ask,
                 warn,
                 allow,
                 layers: Vec::new(),
-                context: None,
             },
         })
     }
@@ -165,28 +176,26 @@ impl FileAccessPolicy {
         let audit_socket = crate::audit::socket();
         #[cfg(not(unix))]
         let audit_socket = None;
-        self.rules.context = Some(FileAccessContext {
+        self.binding.context = Some(FileAccessContext {
             run_id: run_id.into(),
             attempt_id: attempt_id.into(),
             view: view.into(),
             audit_socket,
-            preparing: Arc::new(AtomicBool::new(true)),
         });
+        self.binding.preparing = Arc::new(AtomicBool::new(true));
     }
     pub fn for_view(&self, view: &str) -> Self {
         let mut policy = self.clone();
-        if let Some(context) = &mut policy.rules.context {
+        if let Some(context) = &mut policy.binding.context {
             context.view = view.into();
         }
         policy
     }
     pub fn arm(&self) {
-        if let Some(context) = &self.rules.context {
-            context.preparing.store(false, Ordering::Release);
-        }
+        self.binding.preparing.store(false, Ordering::Release);
     }
     pub fn context(&self) -> Option<&FileAccessContext> {
-        self.rules.context.as_ref()
+        self.binding.context.as_ref()
     }
 
     /// Translate this policy into another view without dropping scope restrictions.
@@ -211,7 +220,7 @@ impl FileAccessPolicy {
             .iter()
             .map(|(scope, policy)| Ok((*scope, policy.prefixed(raw_prefix)?)))
             .collect::<io::Result<_>>()?;
-        policy.rules.context = self.rules.context.clone();
+        policy.binding = self.binding.clone();
         Ok(policy)
     }
     /// Merge paths projected into the same view, preserving scope identity.
@@ -232,7 +241,14 @@ impl FileAccessPolicy {
                 rules.layers.push((*scope, policy.clone()));
             }
         }
-        *self = rules.try_into()?;
+        let mut policy = Self::new_with_allow(rules.deny, rules.ask, rules.warn, rules.allow)?;
+        policy.rules.layers = rules.layers;
+        policy
+            .rules
+            .layers
+            .sort_by_key(|(scope, _)| std::cmp::Reverse(*scope));
+        policy.binding = self.binding.clone();
+        *self = policy;
         Ok(())
     }
 
@@ -388,7 +404,7 @@ impl FileAccessPolicy {
                 #[cfg(unix)]
                 {
                     let prompt = crate::audit::AuditRequest {
-                        scope: self.rules.context.as_ref().map(|context| {
+                        scope: self.binding.context.as_ref().map(|context| {
                             crate::audit::AuditScope {
                                 run_id: context.run_id.clone(),
                                 attempt_id: context.attempt_id.clone(),
@@ -405,8 +421,8 @@ impl FileAccessPolicy {
                         port: None,
                         transport: None,
                     };
-                    let decision = if let Some(context) = &self.rules.context {
-                        if context.preparing.load(Ordering::Acquire) {
+                    let decision = if let Some(context) = &self.binding.context {
+                        if self.binding.preparing.load(Ordering::Acquire) {
                             return Ok(());
                         }
                         let Some(socket) = &context.audit_socket else {
@@ -437,6 +453,25 @@ impl FileAccessPolicy {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn projected_rules_share_only_the_attempt_binding_and_persist_as_values() {
+        let mut policy =
+            FileAccessPolicy::new_with_ask(vec![], vec!["secret".into()], vec![]).unwrap();
+        policy.bind_session("run", "attempt", "workspace");
+        let before = serde_json::to_value(&policy).unwrap();
+        let mut projected = policy.prefixed("workspace").unwrap().for_view("root");
+        projected.extend(&FileAccessPolicy::default()).unwrap();
+        assert!(projected.binding.preparing.load(Ordering::Acquire));
+        policy.arm();
+        assert!(!projected.binding.preparing.load(Ordering::Acquire));
+        assert_eq!(serde_json::to_value(&policy).unwrap(), before);
+        assert_eq!(policy.context().unwrap().view, "workspace");
+        assert_eq!(projected.context().unwrap().view, "root");
+        let restored: FileAccessPolicy = serde_json::from_value(before).unwrap();
+        assert_eq!(restored, policy);
+        assert!(!restored.binding.preparing.load(Ordering::Acquire));
+    }
 
     #[test]
     fn persisted_policy_cannot_restore_preparation_bypass() {

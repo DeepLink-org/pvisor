@@ -766,6 +766,7 @@ fn execute_tool_value(
             pipe_grace: Duration::from_millis(250),
             retained_bytes: MAX_TOOL_OUTPUT_BYTES,
             log_path: context.state_dir.join(format!("native-tool-{ordinal}.log")),
+            log_bytes_limit: None,
         })
         .map_err(|error| ReplayError::new(ReplayErrorKind::Executor, error.message))?;
         let mut rendered = String::from_utf8_lossy(&output.stdout_tail).into_owned();
@@ -1082,6 +1083,7 @@ fn continue_native_cli(
                 pipe_grace: Duration::from_millis(250),
                 retained_bytes: MAX_TOOL_OUTPUT_BYTES / 4,
                 log_path: import_log.clone(),
+                log_bytes_limit: None,
             })
             .map_err(|error| ReplayError::new(ReplayErrorKind::Continuation, error.message))?;
             if !imported.status.success() {
@@ -1221,6 +1223,7 @@ fn continue_native_cli(
         pipe_grace: Duration::from_millis(250),
         retained_bytes: MAX_TOOL_OUTPUT_BYTES / 2,
         log_path: log_path.clone(),
+        log_bytes_limit: None,
     })
     .map_err(|error| ReplayError::new(ReplayErrorKind::Continuation, error.message))?;
     let step_limited = output.step_limited;

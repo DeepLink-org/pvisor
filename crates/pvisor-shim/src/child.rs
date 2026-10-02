@@ -375,7 +375,11 @@ fn init_parent_main() -> Result<()> {
     if let Some(cgroup_plan) = plan.cgroup.as_ref()
         && let Err(error) = attach_cgroup(cgroup_plan, g_pid)
     {
-        warn!("cgroup setup skipped: {error:#}");
+        unsafe {
+            libc::kill(g_pid as i32, libc::SIGKILL);
+            libc::waitpid(g_pid as i32, std::ptr::null_mut(), 0);
+        }
+        return Err(error).context("install requested cgroup limits");
     }
 
     relay_fork_report(fork_report_fd, g_pid)
@@ -553,6 +557,27 @@ fn exec_parent_main() -> Result<()> {
     let start_fd = fd_from_env(ENV_START_FD)?;
     let fork_report_fd = fd_from_env(ENV_FORK_REPORT_FD)?;
 
+    // Join the init's host cgroup before entering its mount namespace.
+    let membership = fs::read_to_string(format!("/proc/{}/cgroup", plan.init_pid))
+        .context("read init cgroup")?;
+    let path = membership
+        .lines()
+        .find_map(|line| line.strip_prefix("0::"))
+        .context("init has no unified cgroup")?;
+    let relative = std::path::Path::new(path.trim_start_matches('/'));
+    anyhow::ensure!(
+        relative
+            .components()
+            .all(|part| matches!(part, std::path::Component::Normal(_))),
+        "invalid init cgroup path"
+    );
+    fs::write(
+        std::path::Path::new(cgroup::UNIFIED_MOUNT)
+            .join(relative)
+            .join("cgroup.procs"),
+        std::process::id().to_string(),
+    )
+    .context("join init cgroup")?;
     join_init_namespaces(plan.init_pid)?;
 
     let f_pid = unsafe { libc::fork() };
@@ -735,8 +760,18 @@ fn write_id_map(file: &str, content: &str) -> Result<()> {
 
 fn attach_cgroup(plan: &CgroupPlan, pid: u32) -> Result<()> {
     let Some(dir) = cgroup::cgroup_dir(plan) else {
+        anyhow::ensure!(
+            cgroup::control_files(plan).is_empty(),
+            "cgroup limits require a cgroup path"
+        );
         return Ok(());
     };
+    anyhow::ensure!(
+        dir.strip_prefix(cgroup::UNIFIED_MOUNT)?
+            .components()
+            .all(|part| matches!(part, std::path::Component::Normal(_))),
+        "invalid cgroup path"
+    );
     fs::create_dir_all(&dir).with_context(|| format!("create {}", dir.display()))?;
     for (file, value) in cgroup::control_files(plan) {
         fs::write(dir.join(file), value)
@@ -984,11 +1019,20 @@ fn apply_capabilities(plan: &crate::plan::CapabilityPlan) -> Result<()> {
     }
 
     // Ambient capabilities must be cleared before capset drops them.
-    if unsafe { libc::prctl(libc::PR_CAP_AMBIENT_CLEAR_ALL, 0, 0, 0, 0) } != 0 {
-        warn!(
-            "PR_CAP_AMBIENT_CLEAR_ALL failed: {}",
-            std::io::Error::last_os_error()
-        );
+    if unsafe {
+        libc::prctl(
+            libc::PR_CAP_AMBIENT,
+            libc::PR_CAP_AMBIENT_CLEAR_ALL,
+            0,
+            0,
+            0,
+        )
+    } != 0
+    {
+        let error = std::io::Error::last_os_error();
+        if error.raw_os_error() != Some(libc::EINVAL) || ambient != 0 {
+            return Err(error).context("clear ambient capabilities");
+        }
     }
 
     // `capset(2)` argument layout (kernel uapi); libc does not expose it.
@@ -1025,10 +1069,18 @@ fn apply_capabilities(plan: &crate::plan::CapabilityPlan) -> Result<()> {
     // permitted and inheritable sets.
     for bit in 0..41u64 {
         if ambient & (1 << bit) != 0 {
-            let ret =
-                unsafe { libc::prctl(libc::PR_CAP_AMBIENT_RAISE, bit as libc::c_ulong, 0, 0, 0) };
+            let ret = unsafe {
+                libc::prctl(
+                    libc::PR_CAP_AMBIENT,
+                    libc::PR_CAP_AMBIENT_RAISE,
+                    bit as libc::c_ulong,
+                    0,
+                    0,
+                )
+            };
             if ret != 0 {
-                warn!("PR_CAP_AMBIENT_RAISE {bit} failed");
+                return Err(std::io::Error::last_os_error())
+                    .context(format!("raise ambient capability {bit}"));
             }
         }
     }
@@ -1105,6 +1157,16 @@ fn exec_process(process: &ProcessPlan) -> Result<()> {
 mod tests {
     use super::*;
     use crate::plan::{IoPlan, NamespacePlan};
+
+    #[test]
+    fn requested_limits_cannot_succeed_without_a_cgroup_path() {
+        let plan = CgroupPlan {
+            path: None,
+            pids_max: Some("1".into()),
+            ..Default::default()
+        };
+        assert!(attach_cgroup(&plan, 1).is_err());
+    }
 
     #[test]
     fn joining_a_mount_namespace_does_not_immediately_unshare_it() {

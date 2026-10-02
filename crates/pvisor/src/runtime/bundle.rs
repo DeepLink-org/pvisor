@@ -568,6 +568,7 @@ mod tests {
         fs::create_dir(&upper).unwrap();
         fs::write(upper.join("changed.txt"), b"changed").unwrap();
         let mut record = RunRecord {
+            attempt_id: None,
             schema_version: 1,
             run_id: "run-1".into(),
             parent_run_id: Some("job-1".into()),
@@ -578,7 +579,7 @@ mod tests {
             command: vec!["codex".into()],
             executor: None,
             executor_plan: None,
-            state: "completed".into(),
+            state: crate::RunRecordState::Completed,
             started_at_unix_ms: 10,
             finished_at_unix_ms: Some(20),
             storage: temp.path().to_path_buf(),
@@ -596,6 +597,7 @@ mod tests {
                 id: "run-1".into(),
                 generation: 0,
                 target: temp.path().join("target"),
+                baseline_lower: None,
                 upper: OverlayUpper {
                     upper_dir: upper,
                     work_dir: temp.path().join("work"),

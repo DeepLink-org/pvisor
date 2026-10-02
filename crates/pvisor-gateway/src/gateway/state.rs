@@ -21,6 +21,7 @@ use crate::sink::CaptureEventObserver;
 
 #[derive(Clone)]
 pub(crate) struct GatewayState {
+    pub stop: tokio::sync::watch::Receiver<()>,
     pub(crate) gateway_enabled: bool,
     pub(crate) config: Arc<ProxyConfig>,
     pub(crate) storage: Arc<std::path::PathBuf>,
@@ -277,6 +278,7 @@ async fn serve_with_bound_listeners(
         client_builder = client_builder.proxy(reqwest::Proxy::all(proxy)?);
     }
     let state = GatewayState {
+        stop: stop_rx.clone(),
         config: Arc::new(config.clone()),
         storage,
         client: client_builder.build()?,

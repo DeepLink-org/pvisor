@@ -377,6 +377,9 @@ impl FileSystem for OverlayFs {
             .lock()
             .map_err(|_| io::Error::from_raw_os_error(libc::EIO))?;
         let path = self.path(inode)?;
+        self.core
+            .prepare_metadata_change(&path)
+            .map_err(linux_error)?;
         let inner = self.writable_inner(ctx, &path)?;
         let result = self.layers[0].setattr(ctx, inner, attr, None, valid);
         self.layers[0].forget(ctx, inner, 1);
@@ -760,7 +763,12 @@ impl FileSystem for OverlayFs {
             .operation_lock
             .lock()
             .map_err(|_| io::Error::from_raw_os_error(libc::EIO))?;
+        pvisor_overlay_core::validate_guest_xattr(OsStr::from_bytes(name.to_bytes()))
+            .map_err(linux_error)?;
         let path = self.path(inode)?;
+        self.core
+            .prepare_metadata_change(&path)
+            .map_err(linux_error)?;
         let inner = self.writable_inner(ctx, &path)?;
         let result = self.layers[0].setxattr(ctx, inner, name, value, flags);
         self.layers[0].forget(ctx, inner, 1);
@@ -804,7 +812,12 @@ impl FileSystem for OverlayFs {
             .operation_lock
             .lock()
             .map_err(|_| io::Error::from_raw_os_error(libc::EIO))?;
+        pvisor_overlay_core::validate_guest_xattr(OsStr::from_bytes(name.to_bytes()))
+            .map_err(linux_error)?;
         let path = self.path(inode)?;
+        self.core
+            .prepare_metadata_change(&path)
+            .map_err(linux_error)?;
         let inner = self.writable_inner(ctx, &path)?;
         let result = self.layers[0].removexattr(ctx, inner, name);
         self.layers[0].forget(ctx, inner, 1);

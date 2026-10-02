@@ -34,3 +34,8 @@ cargo nextest run --locked -p pvisor-gateway --test llm_fixtures --test ag_fixtu
 - [Gateway architecture](../../docs/src/zh/design/gateway.md)
 - [Capture trajectories](../../docs/src/zh/guides/capture.md)
 - [`pvisor-overlaynet`](../pvisor-overlaynet/README.md)
+
+
+### Capture retention
+
+`summary` persists metadata and counts without message text. `dialogue` retains visible user/assistant text, without raw bodies or full semantic history. `full` retains parsed bodies and semantic request/response records. The same limits apply to dead letters and debug body previews; complete replay evidence requires `full`. Credential redaction applies at every level.

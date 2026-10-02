@@ -5,7 +5,7 @@ use anyhow::{Context, ensure};
 use fs2::FileExt;
 use fuser::{
     BackgroundSession, FileAttr, FileType, Filesystem, MountOption, ReplyAttr, ReplyData,
-    ReplyDirectory, ReplyEntry, ReplyOpen, ReplyStatfs, Request, Session,
+    ReplyDirectory, ReplyEntry, ReplyOpen, ReplyStatfs, ReplyXattr, Request, Session,
 };
 use sha2::{Digest, Sha256};
 use std::cell::RefCell;
@@ -142,8 +142,9 @@ fn mount(filesystem: RemoteFs, _store: &Path) -> anyhow::Result<LazyMount> {
         MountOption::FSName("pvisor-image".into()),
         MountOption::RO,
         MountOption::NoAtime,
-        MountOption::DefaultPermissions,
     ];
+    #[cfg(target_os = "macos")]
+    options.push(MountOption::DefaultPermissions);
     #[cfg(target_os = "macos")]
     options.push(MountOption::CUSTOM("backend=fskit".into()));
     let session = Session::new(filesystem, &mountpoint, &options)
@@ -179,6 +180,7 @@ struct Node {
     path: Vec<u8>,
     attr: FileAttr,
     target: Option<Vec<u8>>,
+    override_stat: Vec<u8>,
     cache: PathBuf,
 }
 
@@ -322,6 +324,8 @@ impl RemoteFs {
             kind,
             size,
             mode,
+            uid,
+            gid,
             inode,
             nlink,
             mtime,
@@ -364,6 +368,7 @@ impl RemoteFs {
             cache: self.cache.join(&hash(&path)[7..]),
             path: path.clone(),
             target,
+            override_stat: format!("{uid}:{gid}:0{mode:o}").into_bytes(),
             attr: FileAttr {
                 ino,
                 size,
@@ -374,14 +379,22 @@ impl RemoteFs {
                 crtime: time,
                 kind,
                 // Host permission checks use the mounting user; the guest receives its
-                // normal permission semantics through the existing virtio-fs overlay.
-                perm: if ino == 1 {
+                // Linux identity through user.containers.override_stat below.
+                perm: if cfg!(target_os = "macos") && ino == 1 {
                     0o700
                 } else {
                     (mode & 0o7777) as u16
                 },
-                uid: unsafe { libc::geteuid() },
-                gid: unsafe { libc::getegid() },
+                uid: if cfg!(target_os = "macos") {
+                    unsafe { libc::geteuid() }
+                } else {
+                    uid
+                },
+                gid: if cfg!(target_os = "macos") {
+                    unsafe { libc::getegid() }
+                } else {
+                    gid
+                },
                 nlink: nlink.min(u32::MAX as u64) as u32,
                 rdev: 0,
                 blksize: 4096,
@@ -597,6 +610,36 @@ fn errno(error: anyhow::Error) -> i32 {
 // ponytail: synchronous FUSE reads preserve the existing serialized virtio-fs
 // behavior. Introduce queued completions when cache-miss latency warrants it.
 impl Filesystem for RemoteFs {
+    fn getxattr(&mut self, _: &Request<'_>, ino: u64, name: &OsStr, size: u32, reply: ReplyXattr) {
+        match self.node(ino) {
+            Ok(node) if name == OsStr::new("user.containers.override_stat") => {
+                if size == 0 {
+                    reply.size(node.override_stat.len() as u32);
+                } else if node.override_stat.len() <= size as usize {
+                    reply.data(&node.override_stat);
+                } else {
+                    reply.error(libc::ERANGE);
+                }
+            }
+            Ok(_) => reply.error(libc::ENODATA),
+            Err(error) => reply.error(errno(error)),
+        }
+    }
+    fn listxattr(&mut self, _: &Request<'_>, ino: u64, size: u32, reply: ReplyXattr) {
+        if let Err(error) = self.node(ino) {
+            reply.error(errno(error));
+            return;
+        }
+        let name = b"user.containers.override_stat\0";
+        if size == 0 {
+            reply.size(name.len() as u32);
+        } else if size as usize >= name.len() {
+            reply.data(name);
+        } else {
+            reply.error(libc::ERANGE);
+        }
+    }
+
     fn lookup(&mut self, _: &Request<'_>, parent: u64, name: &OsStr, reply: ReplyEntry) {
         match self.child(parent, name) {
             Ok(node) => reply.entry(&TTL, &node.attr, 0),

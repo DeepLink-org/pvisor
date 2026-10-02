@@ -954,6 +954,7 @@ fn run_claude(
         pipe_grace: Duration::from_millis(250),
         retained_bytes: MAX_TOOL_OUTPUT_BYTES / 2,
         log_path: log.clone(),
+        log_bytes_limit: None,
     })
     .map_err(|error| ReplayError::new(ReplayErrorKind::Continuation, error.message))?;
     let process_error = if output.timed_out
@@ -1366,6 +1367,7 @@ fn run_bash(
         pipe_grace: Duration::from_millis(100),
         retained_bytes: MAX_TOOL_OUTPUT_BYTES / 2,
         log_path: log_path.to_path_buf(),
+        log_bytes_limit: None,
     })?;
     let mut content = String::from_utf8_lossy(&output.stdout_tail).into_owned();
     if !output.stderr_tail.is_empty() {

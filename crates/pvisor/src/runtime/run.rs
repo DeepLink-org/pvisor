@@ -21,8 +21,8 @@ use pvisor_core::event::Event;
 use pvisor_core::event::Receipt;
 use pvisor_core::{
     AttemptId, CapabilityDimension, CapabilityEnforcementPlan, EnforcementPlanLevel, ExecutorPlan,
-    IsolationKind, NetworkCapability, PolicyMode, RUNTIME_SCHEMA_VERSION, RunResult, RunSpec,
-    RunStatus,
+    IsolationKind, NetworkCapability, PolicyMode, RUNTIME_SCHEMA_VERSION, RunInvocation, RunResult,
+    RunSpec, RunStatus,
 };
 use std::sync::Arc;
 use tokio::sync::{broadcast, watch};
@@ -256,16 +256,22 @@ impl PVisorBuilder {
     }
 
     pub fn build(self) -> PVisor {
-        let event_sink = self
-            .event_sink
-            .unwrap_or_else(|| Arc::new(NoopEventSink::default()) as Arc<dyn EventSink>);
+        let (event_sink, runtime) = match self.event_sink {
+            Some(sink) => (sink, self.runtime),
+            None => {
+                let sink = Arc::new(NoopEventSink::default());
+                #[cfg(feature = "gateway")]
+                let runtime = self.runtime.live_events(Arc::clone(&sink));
+                #[cfg(not(feature = "gateway"))]
+                let runtime = self.runtime;
+                (sink as Arc<dyn EventSink>, runtime)
+            }
+        };
         #[cfg(feature = "gateway")]
         let runtime = match event_sink.journal() {
-            Some(journal) => self.runtime.journal(journal),
-            None => self.runtime,
+            Some(journal) => runtime.journal(journal),
+            None => runtime,
         };
-        #[cfg(not(feature = "gateway"))]
-        let runtime = self.runtime;
         PVisor {
             executors: Arc::new(self.executors.unwrap_or_else(|| {
                 vec![Arc::new(ProcessExecutor::default()) as Arc<dyn RunExecutor>]
@@ -287,7 +293,58 @@ pub struct PVisor {
     runtime: RuntimeSupervisor,
 }
 
+/// Typed preparation inputs resolved before any runtime side effects.
+/// Legacy caller metadata is decoded once at admission, never reinterpreted by drivers.
+#[derive(Clone)]
+pub(crate) struct PreparedRun {
+    pub executor: ExecutorPlan,
+    pub operation: pvisor_core::operation::Operation,
+    pub lineage: Option<crate::runtime::RunLineage>,
+    pub environment: crate::runtime::EnvironmentProjection,
+    pub workspace: Option<std::path::PathBuf>,
+}
+
+impl PreparedRun {
+    pub(crate) fn new(
+        spec: &RunSpec,
+        executor: ExecutorPlan,
+        operation: pvisor_core::operation::Operation,
+    ) -> anyhow::Result<Self> {
+        let lineage = spec
+            .metadata
+            .get("pvisor.lineage")
+            .map(|value| serde_json::from_value(value.clone()))
+            .transpose()?;
+        let RunInvocation::Process(process) = &spec.invocation;
+        let environment = match spec.metadata.get("pvisor.environment") {
+            Some(value) => serde_json::from_value(value.clone())?,
+            None => crate::runtime::EnvironmentProjection {
+                inherits_host: process.inherit_env,
+                projected_keys: process.env.keys().cloned().collect(),
+                runtime_injected_keys: Vec::new(),
+            },
+        };
+        let workspace = spec
+            .metadata
+            .get("pvisor.workspace")
+            .map(|value| serde_json::from_value(value.clone()))
+            .transpose()?;
+        Ok(Self {
+            executor,
+            operation,
+            lineage,
+            environment,
+            workspace,
+        })
+    }
+
+    pub(crate) fn is_krun(&self) -> bool {
+        self.executor.name.starts_with("libkrun-")
+    }
+}
+
 pub(crate) struct ResolvedRun {
+    pub(crate) preparation: PreparedRun,
     pub(crate) spec: RunSpec,
     pub(crate) executor: Arc<dyn RunExecutor>,
     pub(crate) descriptor: ExecutorPlan,
@@ -330,8 +387,10 @@ impl PVisor {
         Ok(self.resolve_run(spec)?.operation)
     }
 
-    fn resolve_run(&self, mut spec: RunSpec) -> Result<ResolvedRun, PVisorError> {
+    pub(crate) fn resolve_run(&self, mut spec: RunSpec) -> Result<ResolvedRun, PVisorError> {
         validate_spec(&spec)?;
+        spec.metadata.remove("pvisor.executor");
+        spec.metadata.remove("pvisor.operation");
         let requested_spec = spec.clone();
         let executor = self
             .executors
@@ -454,19 +513,12 @@ impl PVisor {
         )
         .map_err(PVisorError::Prepare)?;
         requested_operation.placements.clear();
-        spec.metadata.insert(
-            "pvisor.operation".into(),
-            serde_json::to_value(&operation).map_err(|error| PVisorError::Prepare(error.into()))?,
-        );
-        // Admission publishes only a plan; installed evidence comes from executors.
-        descriptor.capability_plan = capability_plan.clone();
-        spec.metadata.insert(
-            "pvisor.executor".into(),
-            serde_json::to_value(&descriptor).map_err(|error| {
-                PVisorError::InvalidSpec(format!("serialize executor descriptor: {error}"))
-            })?,
-        );
+        // Plans stay typed; caller metadata cannot supply trusted runtime decisions.
+        descriptor.capability_plan = capability_plan;
+        let preparation = PreparedRun::new(&spec, descriptor.clone(), operation.clone())
+            .map_err(PVisorError::Prepare)?;
         Ok(ResolvedRun {
+            preparation,
             spec,
             executor,
             descriptor,
@@ -622,6 +674,28 @@ mod tests {
         ExecutorKind, NetworkCapability, RunFailureKind, RunInvocation, RunState, StdioMode,
     };
     use std::sync::Mutex;
+
+    #[test]
+    fn preparation_rejects_malformed_provenance_and_ignores_metadata_plans() {
+        for key in ["pvisor.lineage", "pvisor.environment", "pvisor.workspace"] {
+            let mut spec = RunSpec::process("admission", "agent", "true");
+            spec.metadata.insert(key.into(), serde_json::json!(42));
+            assert!(PVisor::new().resolve_run(spec).is_err(), "{key}");
+        }
+        let mut spec = RunSpec::process("admission", "agent", "true");
+        spec.metadata.insert(
+            "pvisor.executor".into(),
+            serde_json::json!({"name": "libkrun-forged"}),
+        );
+        spec.metadata
+            .insert("pvisor.operation".into(), serde_json::Value::Null);
+        let resolved = PVisor::new().resolve_run(spec).unwrap();
+        assert!(!resolved.preparation.is_krun());
+        assert!(!resolved.spec.metadata.contains_key("pvisor.executor"));
+        assert!(!resolved.spec.metadata.contains_key("pvisor.operation"));
+        assert_eq!(resolved.preparation.operation, resolved.operation);
+        assert_eq!(resolved.preparation.executor.name, resolved.descriptor.name);
+    }
 
     #[tokio::test]
     async fn cancellation_finishes_the_attempt() {
@@ -885,7 +959,7 @@ mod tests {
         assert!(matches!(error, PVisorError::EventSink(_)));
 
         let record = crate::runtime::RunRecord::read(&storage).unwrap();
-        assert_eq!(record.state, "failed");
+        assert_eq!(record.state, crate::RunRecordState::Failed);
         assert!(record.finished_at_unix_ms.is_some());
         let bundle = crate::RunBundle::read(&storage).unwrap();
         assert_eq!(bundle.run.state, RunState::Failed);

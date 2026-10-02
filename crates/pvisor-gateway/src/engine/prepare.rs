@@ -13,6 +13,7 @@ use crate::runtime::debug;
 use crate::sink::{
     attach_connection_and_client, attach_http_wire_request, attach_http_wire_response,
     attach_recorded_headers, llm_request_summary_record, llm_response_record_with_content,
+    retain_capture_content,
 };
 use crate::subagent_link::SpawnLinkBackfill;
 use crate::usage::{
@@ -92,22 +93,25 @@ impl CapturePreparer {
             ctx.client_peer.as_deref(),
             ctx.client_meta.as_ref(),
         );
-        // Raw SoT (RFC-0002): always persist wire body into `http.request_body` when
-        // available. Flat `payload.body` remains gated by CaptureLevel::Full for
-        // dialogue-oriented consumers.
-        let body_for_wire = event.body_json.as_ref();
+        // Full retention preserves raw evidence; lower levels omit every body copy.
+        let body_for_wire = ctx
+            .level
+            .includes_full_body()
+            .then_some(event.body_json.as_ref())
+            .flatten();
         attach_http_wire_request(
             &mut rec.payload,
             &event.method,
             &event.path,
             event.url.as_deref().or(ctx.upstream_url.as_deref()),
             body_for_wire,
-            body_for_wire.is_some() && !event.headers.is_empty(),
+            event.body_json.is_some() && !event.headers.is_empty(),
         );
-        if let Some(semantic) = semantic {
+        if let Some(semantic) = semantic.filter(|_| ctx.level.includes_full_body()) {
             rec.payload["llm_request"] = serde_json::to_value(semantic.as_ref())?;
         }
         let backfills = run_enrich(run, &mut rec, ctx, event.body_json.as_ref(), None).await?;
+        retain_capture_content(&mut rec.payload, ctx.level);
         let scope = StoryScope::from_context(ctx);
         let story_cmd = Some(StoryCommand::persist_record(
             scope,
@@ -135,7 +139,7 @@ impl CapturePreparer {
                 story_cmd: None,
             });
         }
-        let rec = llm_response_record_with_content(
+        let mut rec = llm_response_record_with_content(
             Some(ctx.route().session_id.clone()),
             Some(ctx.agent_id().to_string()),
             event.status,
@@ -182,7 +186,11 @@ impl CapturePreparer {
                 &ctx.client_model,
                 event.status,
                 usage.total_tokens,
-                resp_text,
+                if ctx.level.includes_full_body() {
+                    resp_text
+                } else {
+                    "<content omitted by capture level>"
+                },
             );
         }
 
@@ -262,7 +270,7 @@ impl CapturePreparer {
             &ctx.call,
             ctx.level,
         );
-        if let Some(semantic) = semantic_response {
+        if let Some(semantic) = semantic_response.filter(|_| ctx.level.includes_full_body()) {
             rec.payload["llm_response"] = serde_json::to_value(semantic.as_ref())?;
         }
         attach_recorded_headers(&mut rec.payload, &event.headers);
@@ -273,8 +281,8 @@ impl CapturePreparer {
             ctx.client_peer.as_deref(),
             ctx.client_meta.as_ref(),
         );
-        // Raw SoT: always mirror response bytes into `http.response_body`.
-        let body_for_wire = Some(&resp_json);
+        // Raw response evidence follows the same retention boundary as requests.
+        let body_for_wire = ctx.level.includes_full_body().then_some(&resp_json);
         attach_http_wire_response(
             &mut rec.payload,
             event.status,
@@ -285,6 +293,7 @@ impl CapturePreparer {
             !event.headers.is_empty(),
         );
         let backfills = run_enrich(run, &mut rec, ctx, None, assistant_content.as_deref()).await?;
+        retain_capture_content(&mut rec.payload, ctx.level);
         let scope = StoryScope::from_context(ctx);
         let story_cmd = Some(StoryCommand::persist_record(
             scope,
@@ -321,6 +330,7 @@ impl CapturePreparer {
                 "status": event.status,
                 "streaming": event.streaming,
                 "bytes_received": event.bytes_received,
+                "reason": event.reason,
             }),
         };
         let story_cmd = Some(StoryCommand::persist_record(
@@ -355,5 +365,26 @@ fn resolve_response_usage(
         let resp_json: Value = serde_json::from_str(resp_text)
             .unwrap_or_else(|_| Value::String(resp_text.to_string()));
         extract_usage_from_response(&resp_json)
+    }
+}
+
+#[cfg(test)]
+mod retention_tests {
+    use super::*;
+    #[test]
+    fn summary_omits_every_payload_copy_and_dialogue_keeps_only_visible_text() {
+        let payload = serde_json::json!({"model":"m","usage":{"total_tokens":3},"user_content":"unique-prompt","assistant_content":"unique-answer","body":{"messages":["unique-prompt"]},"llm_request":{"text":"unique-prompt"},"llm_response":{"text":"unique-answer"},"http":{"request_body":"unique-prompt","response_body":"unique-answer","status":200},"spawn_links":[{"description":"unique-prompt"}]});
+        let mut summary = payload.clone();
+        retain_capture_content(&mut summary, crate::config::CaptureLevel::Summary);
+        assert!(!summary.to_string().contains("unique-"));
+        assert_eq!(summary["usage"]["total_tokens"], 3);
+        let mut dialogue = payload.clone();
+        retain_capture_content(&mut dialogue, crate::config::CaptureLevel::Dialogue);
+        assert_eq!(dialogue["user_content"], "unique-prompt");
+        assert!(dialogue.get("llm_request").is_none());
+        assert!(dialogue["http"].get("request_body").is_none());
+        let mut full = payload.clone();
+        retain_capture_content(&mut full, crate::config::CaptureLevel::Full);
+        assert_eq!(full, payload);
     }
 }

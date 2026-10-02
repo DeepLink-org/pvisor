@@ -280,7 +280,8 @@ impl CaptureRuntimeInner {
             )
             .await?;
         for bf in backfills {
-            let rec = spawn_link_backfill_record(&bf.parent_call_id, &bf.links, &ctx.call);
+            let mut rec = spawn_link_backfill_record(&bf.parent_call_id, &bf.links, &ctx.call);
+            crate::sink::retain_capture_content(&mut rec.payload, ctx.level);
             let record_bytes = serde_json::to_vec(&rec)?;
             let cmd = StoryCommand::persist_record(scope.clone(), record_bytes);
             let reply: StoryReply = actor.ask(cmd).await.map_err(pulsing_err)?;

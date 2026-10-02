@@ -19,6 +19,8 @@ pub enum PlanError {
     MissingProcess,
     #[error("bundle process section has no args")]
     MissingArgs,
+    #[error("VM process constraint is not supported: {0}")]
+    UnsupportedVmProcess(&'static str),
     #[error("namespace type {0} is not supported (M1 limitation)")]
     UnsupportedNamespaceType(String),
     #[error("unsupported mount type {0} at {1}")]
@@ -504,10 +506,49 @@ pub fn vm_agent_enabled(annotations: &HashMap<String, String>) -> bool {
 }
 
 /// Build the same launch contract used by pVisor's VM executor.
+pub fn validate_vm_process(
+    process: &oci_spec::runtime::Process,
+    exec: bool,
+) -> Result<(), PlanError> {
+    let user = process.user();
+    if user.uid() != 0
+        || user.gid() != 0
+        || user
+            .additional_gids()
+            .as_ref()
+            .is_some_and(|groups| !groups.is_empty())
+        || user.umask().is_some()
+    {
+        return Err(PlanError::UnsupportedVmProcess("uid/gid/groups/umask"));
+    }
+    // Even explicitly empty capability sets are a restriction we cannot install.
+    if process.capabilities().is_some() {
+        return Err(PlanError::UnsupportedVmProcess("capabilities"));
+    }
+    if process.no_new_privileges().unwrap_or(false) {
+        return Err(PlanError::UnsupportedVmProcess("noNewPrivileges"));
+    }
+    if exec
+        && process
+            .rlimits()
+            .as_ref()
+            .is_some_and(|limits| !limits.is_empty())
+    {
+        return Err(PlanError::UnsupportedVmProcess("exec rlimits"));
+    }
+    Ok(())
+}
+
 pub fn guest_config(
     process: &ProcessPlan,
     agent: bool,
 ) -> anyhow::Result<pvisor_guest::GuestConfig> {
+    anyhow::ensure!(
+        process.user == UserPlan::default()
+            && process.capabilities == CapabilityPlan::default()
+            && !process.no_new_privileges,
+        "VM process security constraints are unsupported; refusing to discard them"
+    );
     let env = process
         .env
         .iter()
@@ -575,6 +616,14 @@ pub fn build_plan(
     io: IoPlan,
 ) -> Result<ContainerPlan, PlanError> {
     let process = spec.process().as_ref().ok_or(PlanError::MissingProcess)?;
+    if spec
+        .annotations()
+        .as_ref()
+        .and_then(|annotations| annotations.get("io.pvisor.executor"))
+        .is_some_and(|executor| executor == "vm")
+    {
+        validate_vm_process(process, false)?;
+    }
     let process_plan = process_plan_from(process)?;
 
     let mut warnings = Vec::new();
@@ -672,6 +721,31 @@ pub fn build_plan(
 
 #[cfg(test)]
 mod tests {
+
+    #[test]
+    fn vm_constraints_fail_before_unsupported_security_is_discarded() {
+        let mut base = serde_json::to_value(minimal_spec()).unwrap();
+        base["annotations"] = serde_json::json!({"io.pvisor.executor":"vm"});
+        for (field, value) in [
+            ("user", serde_json::json!({"uid":1000,"gid":1000})),
+            ("capabilities", serde_json::json!({})),
+            ("noNewPrivileges", serde_json::json!(true)),
+        ] {
+            let mut value_spec = base.clone();
+            value_spec["process"][field] = value;
+            let spec: Spec = serde_json::from_value(value_spec).unwrap();
+            assert!(
+                build_plan(&spec, "vm", Path::new("/bundle"), vec![], IoPlan::default()).is_err()
+            );
+            assert!(validate_vm_process(spec.process().as_ref().unwrap(), true).is_err());
+        }
+        let mut exec = base;
+        exec["process"]["rlimits"] =
+            serde_json::json!([{"type":"RLIMIT_NOFILE","soft":32,"hard":64}]);
+        let spec: Spec = serde_json::from_value(exec).unwrap();
+        assert!(validate_vm_process(spec.process().as_ref().unwrap(), false).is_ok());
+        assert!(validate_vm_process(spec.process().as_ref().unwrap(), true).is_err());
+    }
     use super::*;
 
     fn spec_from_json(json: &str) -> Spec {

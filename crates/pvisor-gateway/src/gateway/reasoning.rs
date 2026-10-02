@@ -1,7 +1,7 @@
 //! DeepSeek Chat Completions multi-turn tool-call reasoning replay.
 
 use std::collections::HashMap;
-use std::sync::Mutex;
+use std::sync::{Arc, Mutex};
 
 use serde_json::{Value, json};
 
@@ -16,9 +16,16 @@ impl ReasoningCache {
         if reasoning.is_empty() {
             return;
         }
+        if reasoning.len() > 16 * 1024 {
+            return;
+        }
         for id in tool_call_ids {
-            if id.is_empty() {
+            if id.is_empty() || id.len() > 4096 {
                 continue;
+            }
+            // ponytail: bounded cache resets on capacity; use LRU only if misses matter.
+            if self.by_tool_call.len() >= 64 {
+                self.by_tool_call.clear();
             }
             self.by_tool_call.insert(id.clone(), reasoning.to_string());
         }
@@ -31,7 +38,8 @@ impl ReasoningCache {
 
 #[derive(Debug, Default)]
 pub struct ReasoningCacheHandle {
-    inner: Mutex<ReasoningCache>,
+    inner: Arc<Mutex<HashMap<String, ReasoningCache>>>,
+    scope: String,
 }
 
 impl ReasoningCacheHandle {
@@ -39,9 +47,30 @@ impl ReasoningCacheHandle {
         Self::default()
     }
 
+    pub(crate) fn scoped(&self, ctx: &crate::engine::CallContext) -> Self {
+        Self {
+            inner: Arc::clone(&self.inner),
+            scope: serde_json::to_string(&(
+                ctx.agent_id(),
+                ctx.story.story_id(),
+                ctx.provider.as_str(),
+                ctx.upstream_url.as_deref(),
+            ))
+            .expect("serializable reasoning scope"),
+        }
+    }
+
     pub fn remember(&self, tool_call_ids: &[String], reasoning: &str) {
+        if self.scope.len() > 8192 {
+            return;
+        }
         if let Ok(mut g) = self.inner.lock() {
-            g.remember(tool_call_ids, reasoning);
+            if !g.contains_key(&self.scope) && g.len() >= 16 {
+                g.clear();
+            }
+            g.entry(self.scope.clone())
+                .or_default()
+                .remember(tool_call_ids, reasoning);
         }
     }
 
@@ -49,7 +78,11 @@ impl ReasoningCacheHandle {
         let Ok(cache) = self.inner.lock() else {
             return;
         };
-        apply_deepseek_message_fixup(messages, &cache);
+        if let Some(cache) = cache.get(&self.scope) {
+            apply_deepseek_message_fixup(messages, cache);
+        } else {
+            apply_deepseek_message_fixup(messages, &ReasoningCache::default());
+        }
     }
 }
 
@@ -93,6 +126,43 @@ pub fn apply_deepseek_message_fixup(messages: &mut [Value], cache: &ReasoningCac
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn scoped_reasoning_does_not_cross_story_or_provider() {
+        let handle = ReasoningCacheHandle::new();
+        let mut ctx = crate::engine::CallContext::new(
+            crate::session::storage::CaptureRoute {
+                root_session: Some("run".into()),
+                session_id: "s1".into(),
+                storage_session_id: "s1".into(),
+                subagent_id: None,
+            },
+            "agent",
+            crate::Call::from_headers(&axum::http::HeaderMap::new()),
+            Vec::new(),
+            crate::config::CaptureLevel::Full,
+            "m",
+            "m",
+            crate::provider::ProviderKind::OpenAi,
+            crate::protocol::ProtocolKind::Responses,
+            false,
+        );
+        ctx.attach_upstream_url("https://one.invalid/v1/chat/completions");
+        handle.scoped(&ctx).remember(&["same".into()], "one");
+        let message = json!({"role":"assistant", "tool_calls":[{"id":"same"}]});
+        let mut own = vec![message.clone()];
+        handle.scoped(&ctx).apply_to_messages(&mut own);
+        assert_eq!(own[0]["reasoning_content"], "one");
+        ctx.attach_upstream_url("https://other.invalid/v1/chat/completions");
+        let mut other = vec![message];
+        handle.scoped(&ctx).apply_to_messages(&mut other);
+        assert_eq!(other[0]["reasoning_content"], "");
+        let mut cache = ReasoningCache::default();
+        for i in 0..1000 {
+            cache.remember(&[i.to_string()], "reason");
+        }
+        assert!(cache.by_tool_call.len() <= 64);
+    }
 
     #[test]
     fn injects_empty_reasoning_for_tool_call_assistant() {

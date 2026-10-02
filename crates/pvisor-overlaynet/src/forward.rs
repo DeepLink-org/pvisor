@@ -7,6 +7,7 @@ use axum::http::{Method, StatusCode, Uri};
 use axum::response::{IntoResponse, Response};
 use bytes::Bytes;
 use futures_util::StreamExt;
+use http_body_util::BodyExt;
 use hyper::upgrade::OnUpgrade;
 use hyper_util::rt::TokioIo;
 use std::time::Duration;
@@ -25,11 +26,14 @@ pub(crate) struct ConnectTarget {
 }
 
 pub(crate) async fn handle_connect_authorized(
-    req: Request,
+    mut req: Request,
     target: ConnectTarget,
     authorized: &AuthorizedTarget,
     bandwidth: BandwidthSession,
 ) -> anyhow::Result<Response> {
+    let guard = req
+        .extensions_mut()
+        .remove::<std::sync::Arc<crate::server::ActiveRequestGuard>>();
     // HTTP/1 CONNECT uses hyper's connection upgrade. HTTP/2 has no
     // connection-wide upgrade; extended CONNECT carries the tunnel in the
     // request and response bodies, so it must be bridged as a duplex stream.
@@ -84,7 +88,12 @@ pub(crate) async fn handle_connect_authorized(
         );
         return Response::builder()
             .status(StatusCode::OK)
-            .body(Body::from_stream(stream))
+            .body(Body::new(Body::from_stream(stream).map_frame(
+                move |frame| {
+                    let _ = &guard;
+                    frame
+                },
+            )))
             .map_err(|error| anyhow::anyhow!("build HTTP/2 CONNECT response: {error}"))
             .map(IntoResponse::into_response);
     }
@@ -106,6 +115,7 @@ pub(crate) async fn handle_connect_authorized(
             .map_err(|error| anyhow::anyhow!("CONNECT to {} failed: {error}", target.authority))?,
     };
     tokio::spawn(async move {
+        let _guard = guard;
         let Ok(upgraded) = on_upgrade.await else {
             return;
         };

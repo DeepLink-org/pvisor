@@ -42,6 +42,7 @@ impl TypedStreamTranslator {
             // Provider extensions or malformed frames must never alter or block
             // the exact upstream bytes returned to the client.
             if let Err(error) = self.decoder.push_chunk(chunk) {
+                self.decoder.decode_failed = true;
                 tracing::warn!(
                     target: "pvisor_gateway",
                     "passthrough stream semantic decode: {error:#}"
@@ -55,16 +56,10 @@ impl TypedStreamTranslator {
     }
 
     pub fn finish_stream(&mut self) -> Result<Bytes> {
+        let events = self.decoder.finish()?;
         if self.passthrough {
-            if let Err(error) = self.decoder.finish() {
-                tracing::warn!(
-                    target: "pvisor_gateway",
-                    "passthrough stream semantic finish: {error:#}"
-                );
-            }
             return Ok(Bytes::new());
         }
-        let events = self.decoder.finish()?;
         let rendered = self.renderer.finish(&events)?;
         Ok(Bytes::from(rendered))
     }
@@ -109,8 +104,12 @@ struct StreamDecoder {
     started: Instant,
     emitted_start: bool,
     finished: bool,
+    terminal_observed: bool,
+    decode_failed: bool,
     metrics: StreamMetrics,
     tool_ids: HashMap<(usize, usize), String>,
+    response_call_ids: HashMap<String, String>,
+    message_usage: Value,
     accumulator: ResponseAccumulator,
 }
 
@@ -124,8 +123,12 @@ impl StreamDecoder {
             started: Instant::now(),
             emitted_start: false,
             finished: false,
+            terminal_observed: false,
+            decode_failed: false,
             metrics: StreamMetrics::default(),
             tool_ids: HashMap::new(),
+            response_call_ids: HashMap::new(),
+            message_usage: json!({}),
             accumulator: ResponseAccumulator::new(protocol),
         }
     }
@@ -144,6 +147,37 @@ impl StreamDecoder {
                 continue;
             }
             let value: Value = serde_json::from_str(&data).context("parse provider SSE data")?;
+            anyhow::ensure!(
+                value.get("error").is_none()
+                    && value.get("type").and_then(Value::as_str) != Some("error"),
+                "provider stream reported an error"
+            );
+            self.terminal_observed |= match self.protocol {
+                LlmProtocol::Messages => {
+                    value.get("type").and_then(Value::as_str) == Some("message_stop")
+                }
+                LlmProtocol::Responses => matches!(
+                    value.get("type").and_then(Value::as_str),
+                    Some("response.completed" | "response.incomplete" | "response.failed")
+                ),
+                LlmProtocol::ChatCompletions => value
+                    .get("choices")
+                    .and_then(Value::as_array)
+                    .is_some_and(|choices| {
+                        choices
+                            .iter()
+                            .any(|choice| choice.get("finish_reason").is_some_and(Value::is_string))
+                    }),
+                LlmProtocol::Gemini => value
+                    .get("candidates")
+                    .and_then(Value::as_array)
+                    .is_some_and(|candidates| {
+                        candidates.iter().any(|candidate| {
+                            candidate.get("finishReason").is_some_and(Value::is_string)
+                        })
+                    }),
+                LlmProtocol::Unknown => false,
+            };
             match self.protocol {
                 LlmProtocol::Gemini => self.decode_gemini(&value, &mut events),
                 LlmProtocol::ChatCompletions => self.decode_chat(&value, &mut events),
@@ -163,6 +197,30 @@ impl StreamDecoder {
     fn finish(&mut self) -> Result<Vec<LlmStreamEvent>> {
         if self.finished {
             return Ok(Vec::new());
+        }
+        anyhow::ensure!(
+            !self.decode_failed,
+            "provider semantic stream decode failed"
+        );
+        anyhow::ensure!(
+            self.buffer.iter().all(u8::is_ascii_whitespace),
+            "provider stream ended inside an SSE frame"
+        );
+        anyhow::ensure!(
+            self.terminal_observed,
+            "provider stream ended without a protocol terminal event"
+        );
+        if matches!(
+            self.protocol,
+            LlmProtocol::ChatCompletions | LlmProtocol::Gemini
+        ) {
+            anyhow::ensure!(
+                self.accumulator
+                    .candidates
+                    .values()
+                    .all(|candidate| candidate.finish_reason.is_some()),
+                "provider stream ended with an unfinished candidate"
+            );
         }
         self.finished = true;
         Ok(Vec::new())
@@ -483,6 +541,9 @@ impl StreamDecoder {
                         .or_else(|| item.get("id"))
                         .and_then(Value::as_str)
                         .unwrap_or("call_stream");
+                    if let Some(item_id) = item.get("id").and_then(Value::as_str) {
+                        self.response_call_ids.insert(item_id.into(), id.into());
+                    }
                     events.push(LlmStreamEvent::ToolCallStart {
                         candidate: 0,
                         id: id.into(),
@@ -501,6 +562,11 @@ impl StreamDecoder {
                     .or_else(|| value.get("item_id"))
                     .and_then(Value::as_str)
                     .unwrap_or("call_stream");
+                let id = self
+                    .response_call_ids
+                    .get(id)
+                    .map(String::as_str)
+                    .unwrap_or(id);
                 if let Some(delta) = value.get("delta").and_then(Value::as_str) {
                     events.push(LlmStreamEvent::ToolArgumentsDelta {
                         candidate: 0,
@@ -544,7 +610,20 @@ impl StreamDecoder {
         events.push(LlmStreamEvent::Start { id, model });
     }
 
-    fn usage_from(&self, value: &Value, events: &mut Vec<LlmStreamEvent>) {
+    fn usage_from(&mut self, value: &Value, events: &mut Vec<LlmStreamEvent>) {
+        let merged;
+        let value = if self.protocol == LlmProtocol::Messages {
+            if let Some(fields) = value.get("usage").and_then(Value::as_object) {
+                self.message_usage
+                    .as_object_mut()
+                    .expect("usage object")
+                    .extend(fields.clone());
+            }
+            merged = json!({"usage": self.message_usage.clone()});
+            &merged
+        } else {
+            value
+        };
         let usage = extract_usage_from_response(value);
         if usage != TokenUsage::default() {
             events.push(LlmStreamEvent::Usage {
@@ -1134,7 +1213,8 @@ impl StreamRenderer {
             _ => "completed",
         };
         let usage = self.usage.clone();
-        self.emit_response_event("response.completed", json!({"type":"response.completed","response":{"id":self.id,"object":"response","status":status,"model":self.model,"output":completed_output,"usage":{"input_tokens":usage.input_tokens,"output_tokens":usage.output_tokens,"total_tokens":usage.total_tokens}}}), output)
+        let event_type = format!("response.{status}");
+        self.emit_response_event(&event_type, json!({"type":event_type,"response":{"id":self.id,"object":"response","status":status,"model":self.model,"output":completed_output,"usage":{"input_tokens":usage.input_tokens,"output_tokens":usage.output_tokens,"total_tokens":usage.total_tokens}}}), output)
     }
 
     fn render_gemini(&mut self, event: &LlmStreamEvent, output: &mut String) -> Result<()> {
@@ -1240,6 +1320,49 @@ fn from_llm_usage(usage: &LlmUsage) -> TokenUsage {
 
 #[cfg(test)]
 mod tests {
+
+    #[test]
+    fn responses_tool_identity_and_messages_usage_survive_deltas() {
+        let mut response = StreamDecoder::new(LlmProtocol::Responses, "m");
+        response.push_chunk(b"data: {\"type\":\"response.output_item.added\",\"item\":{\"type\":\"function_call\",\"id\":\"fc_1\",\"call_id\":\"call_1\",\"name\":\"shell\"}}\n\ndata: {\"type\":\"response.function_call_arguments.delta\",\"item_id\":\"fc_1\",\"delta\":\"{}\"}\n\n").unwrap();
+        let candidate = response.accumulator.candidates.get(&0).unwrap();
+        assert_eq!(candidate.tools.len(), 1);
+        assert_eq!(candidate.tools[0].id, "call_1");
+        assert_eq!(candidate.tools[0].arguments, "{}");
+        let mut messages = StreamDecoder::new(LlmProtocol::Messages, "m");
+        messages.push_chunk(b"data: {\"type\":\"message_start\",\"message\":{\"usage\":{\"input_tokens\":100,\"output_tokens\":0,\"cache_read_input_tokens\":20}}}\n\ndata: {\"type\":\"message_delta\",\"usage\":{\"output_tokens\":5}}\n\ndata: {\"type\":\"message_delta\",\"usage\":{\"output_tokens\":7}}\n\n").unwrap();
+        assert_eq!(messages.metrics.usage.input_tokens, 100);
+        assert_eq!(messages.metrics.usage.output_tokens, 7);
+        assert_eq!(messages.metrics.usage.cache_read_tokens, 20);
+    }
+
+    #[test]
+    fn eof_requires_terminal_evidence_and_complete_framing() {
+        for bridge in [
+            ProtocolBridge::Passthrough,
+            ProtocolBridge::MessagesToCompletions,
+        ] {
+            let client = if bridge == ProtocolBridge::Passthrough {
+                ProtocolKind::ChatCompletions
+            } else {
+                ProtocolKind::Messages
+            };
+            for wire in [
+                "data: {\"choices\":[{\"delta\":{\"content\":\"partial\"}}]}\n\n",
+                "data: {\"choices\":[{\"finish_reason\":\"stop\"}]}\n\ndata: {",
+                "data: {\"error\":{\"message\":\"failed\"}}\n\n",
+            ] {
+                let mut translator = TypedStreamTranslator::new(bridge, client, "m").unwrap();
+                let pushed = translator.push_chunk(wire.as_bytes());
+                if pushed.is_ok() {
+                    assert!(translator.finish_stream().is_err(), "{wire}");
+                }
+            }
+            let mut translator = TypedStreamTranslator::new(bridge, client, "m").unwrap();
+            translator.push_chunk(b"data: {\"choices\":[{\"index\":0,\"delta\":{},\"finish_reason\":\"stop\"}]}\n\n").unwrap();
+            assert!(translator.finish_stream().is_ok());
+        }
+    }
     use super::*;
 
     #[test]
@@ -1271,6 +1394,7 @@ mod tests {
                             .unwrap(),
                     );
                 }
+                rendered.extend_from_slice(&translator.push_chunk(b"data: {\"choices\":[{\"index\":0,\"delta\":{},\"finish_reason\":\"tool_calls\"}]}\n\n").unwrap());
                 rendered.extend_from_slice(&translator.finish_stream().unwrap());
                 let response = translator.semantic_response();
                 assert!(
@@ -1318,7 +1442,7 @@ mod tests {
 
     #[test]
     fn passthrough_preserves_unicode_split_at_every_byte_boundary() {
-        let input = "data: {\"choices\":[{\"delta\":{\"content\":\"你好🌍\"}}]}\n\n".as_bytes();
+        let input = "data: {\"choices\":[{\"delta\":{\"content\":\"你好🌍\"},\"finish_reason\":\"stop\"}]}\n\n".as_bytes();
         for split in 0..=input.len() {
             let mut translator = TypedStreamTranslator::new(
                 ProtocolBridge::Passthrough,

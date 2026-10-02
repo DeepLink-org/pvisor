@@ -35,12 +35,27 @@ fn timespec(time: SystemTime) -> libc::timespec {
         },
         Err(value) => {
             let value = value.duration();
+            let fractional = value.subsec_nanos();
             libc::timespec {
-                tv_sec: (-(value.as_secs() as i64) - 1) as _,
-                tv_nsec: 1_000_000_000 - value.subsec_nanos() as libc::c_long,
+                tv_sec: (-(value.as_secs() as i64) - i64::from(fractional != 0)) as _,
+                tv_nsec: if fractional == 0 {
+                    0
+                } else {
+                    1_000_000_000 - fractional as libc::c_long
+                },
             }
         }
     }
+}
+
+pub fn unix_time(seconds: i64, nanoseconds: i64) -> SystemTime {
+    let offset = std::time::Duration::new(seconds.unsigned_abs(), 0);
+    let base = if seconds < 0 {
+        UNIX_EPOCH - offset
+    } else {
+        UNIX_EPOCH + offset
+    };
+    base + std::time::Duration::from_nanos(nanoseconds as u64)
 }
 
 pub fn set_times(
@@ -263,6 +278,71 @@ pub fn fsync(file: &File, datasync: bool) -> io::Result<()> {
     }
 }
 
+/// Never report sparse length extension as physical space reservation.
+pub fn allocate(file: &File, offset: i64, length: i64) -> io::Result<()> {
+    if offset < 0 || length <= 0 || offset.checked_add(length).is_none() {
+        return Err(io::Error::from_raw_os_error(libc::EINVAL));
+    }
+    #[cfg(target_os = "linux")]
+    {
+        cvt(unsafe { libc::fallocate(file.as_raw_fd(), 0, offset, length) })
+    }
+    #[cfg(not(target_os = "linux"))]
+    {
+        let _ = file;
+        Err(io::Error::from_raw_os_error(libc::ENOTSUP))
+    }
+}
+
+#[allow(clippy::too_many_arguments)]
+pub fn set_file_metadata(
+    file: &File,
+    mode: Option<u32>,
+    uid: Option<u32>,
+    gid: Option<u32>,
+    size: Option<u64>,
+    atime: Option<SystemTime>,
+    mtime: Option<SystemTime>,
+    flags: Option<u32>,
+) -> io::Result<()> {
+    if let Some(size) = size {
+        file.set_len(size)?;
+    }
+    if uid.is_some() || gid.is_some() {
+        cvt(unsafe {
+            libc::fchown(
+                file.as_raw_fd(),
+                uid.unwrap_or(u32::MAX),
+                gid.unwrap_or(u32::MAX),
+            )
+        })?;
+    }
+    if let Some(mode) = mode {
+        use std::os::unix::fs::PermissionsExt;
+        file.set_permissions(std::fs::Permissions::from_mode(mode & 0o7777))?;
+    }
+    if atime.is_some() || mtime.is_some() {
+        let omit = libc::timespec {
+            tv_sec: 0,
+            tv_nsec: libc::UTIME_OMIT,
+        };
+        let times = [
+            atime.map(timespec).unwrap_or(omit),
+            mtime.map(timespec).unwrap_or(omit),
+        ];
+        cvt(unsafe { libc::futimens(file.as_raw_fd(), times.as_ptr()) })?;
+    }
+    if let Some(flags) = flags {
+        #[cfg(target_os = "macos")]
+        cvt(unsafe { libc::fchflags(file.as_raw_fd(), flags) })?;
+        #[cfg(not(target_os = "macos"))]
+        if flags != 0 {
+            return Err(io::Error::from_raw_os_error(libc::ENOTSUP));
+        }
+    }
+    Ok(())
+}
+
 pub fn seek(file: &File, offset: i64, whence: i32) -> io::Result<i64> {
     // SAFETY: lseek only operates on the valid owned descriptor.
     let result = unsafe { libc::lseek(file.as_raw_fd(), offset, whence) };
@@ -278,4 +358,96 @@ pub fn set_flags(path: &Path, flags: u32) -> io::Result<()> {
     let path = c_path(path)?;
     // SAFETY: path is a valid NUL-terminated string.
     cvt(unsafe { libc::chflags(path.as_ptr(), flags) })
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    #[test]
+    fn negative_epoch_round_trips_integral_and_fractional_timestamps() {
+        for (seconds, nanos) in [(-2, 0), (-2, 123_456_789), (0, 0)] {
+            let value = timespec(unix_time(seconds, nanos));
+            assert_eq!(value.tv_sec as i64, seconds);
+            assert_eq!(value.tv_nsec as i64, nanos);
+        }
+    }
+}
+
+/// Materialize a fixed rootfs mountpoint without following image-provided links.
+/// Each create/open is anchored to an owned directory descriptor.
+pub fn prepare_rooted_path(
+    root: &Path,
+    relative: &Path,
+    directory: bool,
+    writable: bool,
+) -> io::Result<File> {
+    use std::os::fd::FromRawFd;
+    use std::os::unix::fs::OpenOptionsExt;
+    use std::path::Component;
+    let components = relative
+        .components()
+        .map(|component| match component {
+            Component::Normal(name) => c_name(name),
+            _ => Err(io::Error::from_raw_os_error(libc::EINVAL)),
+        })
+        .collect::<io::Result<Vec<_>>>()?;
+    if components.is_empty() && !directory {
+        return Err(io::Error::from_raw_os_error(libc::EINVAL));
+    }
+    let mut parent = std::fs::OpenOptions::new()
+        .read(true)
+        .custom_flags(libc::O_DIRECTORY | libc::O_NOFOLLOW | libc::O_CLOEXEC)
+        .open(root)?;
+    for (index, name) in components.iter().enumerate() {
+        let is_dir = index + 1 != components.len() || directory;
+        if is_dir {
+            let rc = unsafe { libc::mkdirat(parent.as_raw_fd(), name.as_ptr(), 0o755) };
+            if rc != 0 && io::Error::last_os_error().raw_os_error() != Some(libc::EEXIST) {
+                return Err(io::Error::last_os_error());
+            }
+        }
+        let flags = libc::O_NOFOLLOW
+            | libc::O_CLOEXEC
+            | if is_dir {
+                libc::O_RDONLY | libc::O_DIRECTORY
+            } else {
+                (if writable {
+                    libc::O_RDWR
+                } else {
+                    libc::O_RDONLY
+                }) | libc::O_CREAT
+                    | libc::O_NONBLOCK
+            };
+        let fd = unsafe { libc::openat(parent.as_raw_fd(), name.as_ptr(), flags, 0o644) };
+        if fd < 0 {
+            return Err(io::Error::last_os_error());
+        }
+        parent = unsafe { File::from_raw_fd(fd) };
+        if !is_dir && !parent.metadata()?.is_file() {
+            return Err(io::Error::from_raw_os_error(libc::EINVAL));
+        }
+    }
+    Ok(parent)
+}
+
+#[cfg(test)]
+mod rooted_tests {
+    use super::*;
+    #[test]
+    fn rooted_preparation_rejects_links_and_type_conflicts_without_truncation() {
+        let temp = tempfile::tempdir().unwrap();
+        let root = temp.path().join("root");
+        std::fs::create_dir(&root).unwrap();
+        let outside = temp.path().join("sentinel");
+        std::fs::write(&outside, b"keep").unwrap();
+        std::os::unix::fs::symlink(&outside, root.join("link")).unwrap();
+        assert!(prepare_rooted_path(&root, Path::new("link"), false, false).is_err());
+        std::os::unix::fs::symlink(temp.path(), root.join("ancestor")).unwrap();
+        assert!(prepare_rooted_path(&root, Path::new("ancestor/new"), false, false).is_err());
+        assert!(prepare_rooted_path(&root, Path::new("../sentinel"), false, false).is_err());
+        let file = prepare_rooted_path(&root, Path::new("opt/pvisor"), false, false).unwrap();
+        assert!(file.metadata().unwrap().is_file());
+        assert!(prepare_rooted_path(&root, Path::new("opt/pvisor"), true, false).is_err());
+        assert_eq!(std::fs::read(outside).unwrap(), b"keep");
+    }
 }

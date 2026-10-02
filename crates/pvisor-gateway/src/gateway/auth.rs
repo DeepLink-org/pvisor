@@ -8,7 +8,7 @@ use reqwest::RequestBuilder;
 use crate::config::ModelRoute;
 use crate::protocol::ProtocolKind;
 use crate::provider::ProviderKind;
-use pvisor_overlaynet::headers::skip_upstream_forward_header;
+use pvisor_overlaynet::headers::skip_upstream_forward_header_for;
 
 pub fn resolve_upstream_api_key(
     route: &ModelRoute,
@@ -55,7 +55,7 @@ pub fn apply_upstream_headers(
         // encodings. reqwest decodes gzip/deflate before parsing or streaming
         // and removes stale Content-Encoding/Content-Length response headers.
         if name == axum::http::header::ACCEPT_ENCODING
-            || skip_upstream_forward_header(name.as_str())
+            || skip_upstream_forward_header_for(client_headers, name.as_str())
         {
             continue;
         }
@@ -145,6 +145,40 @@ mod tests {
                 std::env::remove_var(key);
             }
         }
+    }
+
+    #[test]
+    fn upstream_drops_connection_nominations_and_trailer_but_keeps_route_auth() {
+        let r = route(Some("openai"), Some("route-key"));
+        let mut headers = HeaderMap::new();
+        headers.append("connection", HeaderValue::from_static("keep-alive"));
+        headers.append(
+            "connection",
+            HeaderValue::from_static(" X-Private-Hop , x-second-hop, Authorization "),
+        );
+        headers.insert("x-private-hop", HeaderValue::from_static("private"));
+        headers.insert("x-second-hop", HeaderValue::from_static("private-too"));
+        headers.insert("authorization", HeaderValue::from_static("Bearer client"));
+        headers.insert("trailer", HeaderValue::from_static("x-checksum"));
+        headers.insert("x-request-id", HeaderValue::from_static("request-1"));
+
+        let built = apply_upstream_headers(
+            reqwest::Client::new().post("https://example.com/v1/chat/completions"),
+            &headers,
+            &r,
+            ProtocolKind::ChatCompletions,
+        )
+        .unwrap()
+        .build()
+        .unwrap();
+        for name in ["connection", "x-private-hop", "x-second-hop", "trailer"] {
+            assert!(built.headers().get(name).is_none(), "forwarded {name}");
+        }
+        assert_eq!(built.headers().get("x-request-id").unwrap(), "request-1");
+        assert_eq!(
+            built.headers().get("authorization").unwrap(),
+            "Bearer route-key"
+        );
     }
 
     #[test]

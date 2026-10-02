@@ -144,6 +144,45 @@ fn metadata_at(directory: &File, name: &[u8]) -> anyhow::Result<Response> {
     } else {
         None
     };
+    #[cfg(target_os = "macos")]
+    {
+        // Open relative to the confined parent, including symlinks themselves.
+        let fd = unsafe {
+            libc::openat(
+                directory.as_raw_fd(),
+                name.as_ptr(),
+                libc::O_SYMLINK | libc::O_NOFOLLOW | libc::O_CLOEXEC | libc::O_EVTONLY,
+            )
+        };
+        if fd < 0 {
+            return Err(std::io::Error::last_os_error().into());
+        }
+        let file = unsafe { File::from_raw_fd(fd) };
+        let mut bytes = [0u8; 128];
+        let count = unsafe {
+            libc::fgetxattr(
+                file.as_raw_fd(),
+                c"user.containers.override_stat".as_ptr(),
+                bytes.as_mut_ptr().cast(),
+                bytes.len(),
+                0,
+                0,
+            )
+        };
+        if count >= 0 {
+            let text = std::str::from_utf8(&bytes[..count as usize])?;
+            let fields: Vec<_> = text.split(':').collect();
+            ensure!(fields.len() == 3, "invalid image override_stat");
+            m.st_uid = fields[0].parse()?;
+            m.st_gid = fields[1].parse()?;
+            m.st_mode = u16::from_str_radix(fields[2], 8)?;
+        } else {
+            let error = std::io::Error::last_os_error();
+            if !matches!(error.raw_os_error(), Some(libc::ENOATTR | libc::ENOTSUP)) {
+                return Err(error.into());
+            }
+        }
+    }
     Ok(Response::Metadata {
         kind: kind.into(),
         size: m.st_size as u64,

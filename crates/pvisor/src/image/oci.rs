@@ -648,7 +648,7 @@ fn apply_layer(blob: &Path, media_type: &str, rootfs: &Path) -> anyhow::Result<(
     for entry in archive.entries()? {
         let entry = entry?;
         let relative = clean_relative(&entry.path()?)?;
-        if let Some(whiteout) = whiteout(&relative) {
+        if let Some(whiteout) = whiteout(&relative)? {
             match whiteout {
                 Whiteout::Remove(path) => remove_relative(rootfs, &path)?,
                 Whiteout::Opaque(path) => clear_relative_directory(rootfs, &path)?,
@@ -663,7 +663,7 @@ fn apply_layer(blob: &Path, media_type: &str, rootfs: &Path) -> anyhow::Result<(
     for entry in archive.entries()? {
         let mut entry = entry?;
         let relative = clean_relative(&entry.path()?)?;
-        if whiteout(&relative).is_some() {
+        if whiteout(&relative)?.is_some() {
             continue;
         }
         #[cfg(unix)]
@@ -811,15 +811,27 @@ enum Whiteout {
     Opaque(PathBuf),
 }
 
-fn whiteout(path: &Path) -> Option<Whiteout> {
-    let name = path.file_name()?.to_str()?;
-    if name == ".wh..wh..opq" {
-        return Some(Whiteout::Opaque(
-            path.parent().unwrap_or_else(|| Path::new("")).to_path_buf(),
-        ));
+fn whiteout(path: &Path) -> anyhow::Result<Option<Whiteout>> {
+    use std::os::unix::ffi::OsStrExt;
+    let Some(name) = path.file_name() else {
+        return Ok(None);
+    };
+    let name = name.as_bytes();
+    let parent = path.parent().unwrap_or_else(|| Path::new(""));
+    if name == b".wh..wh..opq" {
+        return Ok(Some(Whiteout::Opaque(parent.to_path_buf())));
     }
-    name.strip_prefix(".wh.")
-        .map(|target| Whiteout::Remove(path.parent().unwrap_or_else(|| Path::new("")).join(target)))
+    let Some(target) = name.strip_prefix(b".wh.") else {
+        return Ok(None);
+    };
+    anyhow::ensure!(
+        !target.is_empty() && target != b"." && target != b".." && !target.contains(&0),
+        "unsafe OCI whiteout {}",
+        path.display()
+    );
+    Ok(Some(Whiteout::Remove(
+        parent.join(std::ffi::OsStr::from_bytes(target)),
+    )))
 }
 
 fn clean_relative(path: &Path) -> anyhow::Result<PathBuf> {
@@ -853,6 +865,14 @@ fn ensure_no_symlink_ancestors(root: &Path, relative: &Path) -> anyhow::Result<(
 }
 
 fn remove_relative(root: &Path, relative: &Path) -> anyhow::Result<()> {
+    anyhow::ensure!(
+        !relative.as_os_str().is_empty()
+            && relative
+                .components()
+                .all(|component| matches!(component, Component::Normal(_))),
+        "unsafe OCI deletion {}",
+        relative.display()
+    );
     ensure_no_symlink_ancestors(root, relative.parent().unwrap_or_else(|| Path::new("")))?;
     let target = root.join(relative);
     match fs::symlink_metadata(&target) {
@@ -867,6 +887,13 @@ fn remove_relative(root: &Path, relative: &Path) -> anyhow::Result<()> {
 }
 
 fn clear_relative_directory(root: &Path, relative: &Path) -> anyhow::Result<()> {
+    anyhow::ensure!(
+        relative
+            .components()
+            .all(|component| matches!(component, Component::Normal(_))),
+        "unsafe OCI opaque path {}",
+        relative.display()
+    );
     ensure_no_symlink_ancestors(root, relative)?;
     let target = root.join(relative);
     match fs::symlink_metadata(&target) {
@@ -893,6 +920,28 @@ fn clear_relative_directory(root: &Path, relative: &Path) -> anyhow::Result<()> 
 
 #[cfg(test)]
 mod tests {
+
+    #[test]
+    fn whiteout_navigation_is_rejected_at_parse_and_delete_boundaries() {
+        for path in [".wh.", ".wh..", ".wh..."] {
+            assert!(whiteout(Path::new(path)).is_err());
+        }
+        assert!(
+            matches!(whiteout(Path::new("dir/.wh.file")).unwrap(), Some(Whiteout::Remove(path)) if path == Path::new("dir/file"))
+        );
+        assert!(
+            matches!(whiteout(Path::new(".wh..wh..opq")).unwrap(), Some(Whiteout::Opaque(path)) if path.as_os_str().is_empty())
+        );
+        let temp = tempfile::tempdir().unwrap();
+        let root = temp.path().join("root");
+        fs::create_dir(&root).unwrap();
+        fs::write(temp.path().join("sentinel"), b"keep").unwrap();
+        for path in ["", "..", "../sentinel"] {
+            assert!(remove_relative(&root, Path::new(path)).is_err());
+        }
+        assert!(clear_relative_directory(&root, Path::new("..")).is_err());
+        assert_eq!(fs::read(temp.path().join("sentinel")).unwrap(), b"keep");
+    }
     use super::*;
 
     #[test]

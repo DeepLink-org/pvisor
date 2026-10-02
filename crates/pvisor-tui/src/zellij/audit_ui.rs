@@ -26,6 +26,8 @@ pub(super) enum Scope {
 #[serde(deny_unknown_fields)]
 pub(super) struct SessionRule {
     kind: AuditKind,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    identity: Option<pvisor_core::audit::AuditScope>,
     scope: Scope,
     value: String,
     port: Option<u16>,
@@ -64,6 +66,7 @@ impl SessionRule {
         };
         Some(Self {
             kind: request.kind,
+            identity: request.scope.clone(),
             scope,
             value,
             port,
@@ -73,7 +76,7 @@ impl SessionRule {
     }
 
     fn matches(&self, request: &AuditRequest) -> bool {
-        if self.kind != request.kind {
+        if self.kind != request.kind || self.identity != request.scope {
             return false;
         }
         match request.kind {
@@ -110,7 +113,13 @@ impl SessionRule {
     pub(super) fn label(&self) -> String {
         format!(
             "{:?} {:?} {} → {:?}",
-            self.kind, self.scope, self.value, self.decision
+            self.kind,
+            self.scope,
+            self.identity
+                .as_ref()
+                .map(|identity| format!("[{}] {}", identity.view, self.value))
+                .unwrap_or_else(|| self.value.clone()),
+            self.decision
         )
     }
 }
@@ -207,6 +216,7 @@ impl SessionPolicy {
         let mut next = self.clone();
         next.rules.retain(|old| {
             !(old.kind == rule.kind
+                && old.identity == rule.identity
                 && old.scope == rule.scope
                 && old.value == rule.value
                 && old.port == rule.port
@@ -318,6 +328,13 @@ impl Permissions {
     fn persistent_request(&self, request: &AuditRequest) -> Result<AuditRequest> {
         let mut request = request.clone();
         if request.kind == AuditKind::File {
+            anyhow::ensure!(
+                request
+                    .scope
+                    .as_ref()
+                    .is_none_or(|scope| scope.view == "workspace"),
+                "only workspace view supports persistent file decisions"
+            );
             let path = Path::new(&request.target);
             anyhow::ensure!(
                 !path
@@ -332,6 +349,7 @@ impl Permissions {
                 .context("audit path must be UTF-8")?
                 .into();
         }
+        request.scope = None;
         Ok(request)
     }
 
@@ -586,6 +604,7 @@ struct Pending {
 pub(super) struct AuditServer {
     listener: UnixListener,
     queue: VecDeque<Pending>,
+    incoming: Vec<(UnixStream, Vec<u8>, std::time::Instant)>,
 }
 
 impl AuditServer {
@@ -595,28 +614,52 @@ impl AuditServer {
         Ok(Self {
             listener,
             queue: VecDeque::new(),
+            incoming: Vec::new(),
         })
     }
 
     pub fn poll(&mut self) -> Result<bool> {
+        const CAPACITY: usize = 64;
+        const FRAME: usize = 64 * 1024;
         let mut changed = false;
-        loop {
+        for _ in 0..16 {
             let (mut stream, _) = match self.listener.accept() {
                 Ok(value) => value,
                 Err(error) if error.kind() == std::io::ErrorKind::WouldBlock => break,
                 Err(error) => return Err(error.into()),
             };
-            stream.set_read_timeout(Some(std::time::Duration::from_secs(1)))?;
-            let mut line = String::new();
-            if BufReader::new(&stream).read_line(&mut line).is_ok()
-                && let Ok(request) = serde_json::from_str::<AuditRequest>(&line)
-            {
-                self.queue.push_back(Pending { request, stream });
-                changed = true;
-            } else {
+            stream.set_nonblocking(true)?;
+            if self.incoming.len() + self.queue.len() >= CAPACITY {
                 let _ = stream.write_all(b"\"deny\"\n");
+            } else {
+                self.incoming
+                    .push((stream, Vec::new(), std::time::Instant::now()));
             }
         }
+        let mut remaining = Vec::new();
+        for (mut stream, mut bytes, started) in self.incoming.drain(..) {
+            let mut chunk = [0; 4096];
+            let count = match stream.read(&mut chunk) {
+                Ok(0) => continue,
+                Ok(count) => count,
+                Err(error) if error.kind() == std::io::ErrorKind::WouldBlock => 0,
+                Err(_) => continue,
+            };
+            bytes.extend_from_slice(&chunk[..count]);
+            if bytes.len() > FRAME || started.elapsed() >= std::time::Duration::from_secs(1) {
+                let _ = stream.write_all(b"\"deny\"\n");
+            } else if let Some(end) = bytes.iter().position(|byte| *byte == b'\n') {
+                if let Ok(request) = serde_json::from_slice::<AuditRequest>(&bytes[..end]) {
+                    self.queue.push_back(Pending { request, stream });
+                    changed = true;
+                } else {
+                    let _ = stream.write_all(b"\"deny\"\n");
+                }
+            } else {
+                remaining.push((stream, bytes, started));
+            }
+        }
+        self.incoming = remaining;
         Ok(changed)
     }
 
@@ -637,6 +680,37 @@ impl AuditServer {
 mod tests {
     use super::*;
     use pvisor_core::audit::AuditKind;
+
+    #[test]
+    fn view_identity_and_fragmented_socket_requests_are_isolated() {
+        let mut workspace = file("same/path");
+        workspace.scope = Some(pvisor_core::audit::AuditScope {
+            run_id: "run".into(),
+            attempt_id: "attempt".into(),
+            view: "workspace".into(),
+        });
+        let rule =
+            SessionRule::from_request(&workspace, Scope::Exact, AuditDecision::Allow).unwrap();
+        let mut root = workspace.clone();
+        root.scope.as_mut().unwrap().view = "rootfs".into();
+        assert!(rule.matches(&workspace));
+        assert!(!rule.matches(&root));
+        root.scope.as_mut().unwrap().attempt_id = "other".into();
+        assert!(!rule.matches(&root));
+        let temp = tempfile::tempdir().unwrap();
+        let socket = temp.path().join("audit.sock");
+        let mut server = AuditServer::bind(&socket).unwrap();
+        let mut client = UnixStream::connect(&socket).unwrap();
+        let wire = serde_json::to_vec(&workspace).unwrap();
+        client.write_all(&wire[..5]).unwrap();
+        let started = std::time::Instant::now();
+        assert!(!server.poll().unwrap());
+        assert!(started.elapsed() < std::time::Duration::from_millis(100));
+        client.write_all(&wire[5..]).unwrap();
+        client.write_all(b"\n").unwrap();
+        assert!(server.poll().unwrap());
+        assert_eq!(server.active(), Some(&workspace));
+    }
 
     #[test]
     fn prompt_waits_for_a_decision_and_returns_it_to_the_blocked_operation() {

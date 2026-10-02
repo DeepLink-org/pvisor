@@ -339,7 +339,7 @@ fn print_diffs(
             println!("  … diff output truncated at {max_total_bytes} bytes");
             break;
         }
-        let relative = safe_change_path(&change.path)?;
+        let relative = safe_change_path(&change.relative_path())?;
         let old = lowers
             .iter()
             .map(|lower| lower.join(&relative))
@@ -408,9 +408,8 @@ fn print_diffs(
     Ok(())
 }
 
-fn safe_change_path(path: &str) -> anyhow::Result<PathBuf> {
+fn safe_change_path(path: &Path) -> anyhow::Result<PathBuf> {
     use std::path::Component;
-    let path = Path::new(path);
     anyhow::ensure!(
         path.components()
             .all(|component| matches!(component, Component::Normal(_) | Component::CurDir)),
@@ -449,9 +448,9 @@ mod tests {
 
     #[test]
     fn diff_paths_cannot_escape_the_overlay_roots() {
-        assert!(safe_change_path("src/lib.rs").is_ok());
-        assert!(safe_change_path("../host-secret").is_err());
-        assert!(safe_change_path("/etc/passwd").is_err());
+        assert!(safe_change_path(Path::new("src/lib.rs")).is_ok());
+        assert!(safe_change_path(Path::new("../host-secret")).is_err());
+        assert!(safe_change_path(Path::new("/etc/passwd")).is_err());
     }
 
     #[test]

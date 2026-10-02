@@ -73,6 +73,8 @@ fn emit(storage: &Path, line: &str) {
 }
 
 pub fn truncate_body_bytes(raw: &[u8]) -> String {
+    let redacted = crate::sink::redact_sensitive_wire_text(&String::from_utf8_lossy(raw));
+    let raw = redacted.as_bytes();
     if raw.len() <= MAX_BODY_CHARS {
         return String::from_utf8_lossy(raw).into_owned();
     }
@@ -83,6 +85,8 @@ pub fn truncate_body_bytes(raw: &[u8]) -> String {
 }
 
 pub fn truncate_body(raw: &str) -> String {
+    let redacted = crate::sink::redact_sensitive_wire_text(raw);
+    let raw = redacted.as_str();
     if raw.chars().count() <= MAX_BODY_CHARS {
         return raw.to_string();
     }
@@ -125,6 +129,7 @@ pub fn log_forward(
     status: u16,
     body: &str,
 ) {
+    let url = crate::sink::redact_sensitive_url(url);
     emit(
         storage,
         &format!(
@@ -135,6 +140,7 @@ pub fn log_forward(
 }
 
 pub fn log_dispatch(storage: &Path, method: &str, uri: &str, session_id: &str, mode: &str) {
+    let uri = crate::sink::redact_sensitive_url(uri);
     emit(
         storage,
         &format!("dispatch {method} {uri} session={session_id} mode={mode}"),
@@ -166,6 +172,7 @@ pub fn log_llm_request(
     upstream: &str,
     body: &str,
 ) {
+    let upstream = crate::sink::redact_sensitive_url(upstream);
     emit(
         storage,
         &format!(
@@ -184,6 +191,7 @@ pub fn log_llm_auth_resolved(storage: &Path, session_id: &str, source: &str) {
 }
 
 pub fn log_llm_upstream_sending(storage: &Path, session_id: &str, upstream: &str) {
+    let upstream = crate::sink::redact_sensitive_url(upstream);
     emit(
         storage,
         &format!("capture llm.upstream.sending session={session_id} upstream={upstream}"),
@@ -201,6 +209,7 @@ pub fn log_llm_upstream_headers(
     content_type: &str,
     stream_request: bool,
 ) {
+    let upstream = crate::sink::redact_sensitive_url(upstream);
     emit(
         storage,
         &format!(
@@ -253,6 +262,8 @@ pub fn log_llm_upstream_error(
     upstream: &str,
     error: &str,
 ) {
+    let error = error.replace(upstream, &crate::sink::redact_sensitive_url(upstream));
+    let upstream = crate::sink::redact_sensitive_url(upstream);
     emit(
         storage,
         &format!(
@@ -264,6 +275,24 @@ pub fn log_llm_upstream_error(
 
 #[cfg(test)]
 mod tests {
+
+    #[test]
+    fn debug_redacts_before_truncating_bodies_and_urls() {
+        let dir = tempfile::tempdir().unwrap();
+        let body = serde_json::json!({"api_key":"debug-private-key","padding":"x".repeat(9000)})
+            .to_string();
+        assert!(!truncate_body_bytes(body.as_bytes()).contains("debug-private-key"));
+        log_llm_upstream_error(
+            dir.path(),
+            "s",
+            "a",
+            "m",
+            "https://example.com?key=debug-url-key",
+            "error at https://example.com?key=debug-url-key",
+        );
+        let text = std::fs::read_to_string(debug_log_path(dir.path())).unwrap();
+        assert!(!text.contains("debug-url-key"));
+    }
     use super::*;
 
     #[test]

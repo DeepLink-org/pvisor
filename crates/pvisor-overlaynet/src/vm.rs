@@ -537,13 +537,18 @@ fn drive_dns_tcp(
     dns: &mut SyntheticDns,
     metrics: &InterceptionMetrics,
 ) {
-    if socket.can_recv() {
+    flush_inbound(socket, flow);
+    if flow.inbound.len() < FLOW_BUFFER_CHUNKS
+        && flow.dns_input.len() < DNS_MAX_MESSAGE + 2
+        && socket.can_recv()
+    {
         let mut bytes = [0; DNS_MAX_MESSAGE + 2];
-        if let Ok(length) = socket.recv_slice(&mut bytes) {
+        let available = DNS_MAX_MESSAGE + 2 - flow.dns_input.len();
+        if let Ok(length) = socket.recv_slice(&mut bytes[..available]) {
             flow.dns_input.extend_from_slice(&bytes[..length]);
         }
     }
-    loop {
+    while flow.inbound.len() < FLOW_BUFFER_CHUNKS {
         if flow.dns_input.len() < 2 {
             break;
         }
@@ -1222,6 +1227,54 @@ impl TxToken for FrameTxToken<'_> {
 
 #[cfg(test)]
 mod tests {
+
+    #[test]
+    fn dns_tcp_stops_processing_queries_when_responses_are_full() {
+        let mut sockets = SocketSet::new(Vec::new());
+        let handle = sockets.add(tcp::Socket::new(
+            tcp::SocketBuffer::new(vec![0; 1024]),
+            tcp::SocketBuffer::new(vec![0; 1024]),
+        ));
+        let query = query("bounded.example", 1);
+        let mut input = (query.len() as u16).to_be_bytes().to_vec();
+        input.extend_from_slice(&query);
+        let mut flow = Flow {
+            handle,
+            destination: FlowDestination::Egress {
+                host: "dns".into(),
+                port: 53,
+            },
+            phase: FlowPhase::LocalDns,
+            upstream: None,
+            upstream_task: None,
+            inbound: (0..FLOW_BUFFER_CHUNKS)
+                .map(|_| (vec![0; DNS_MAX_MESSAGE + 2], None))
+                .collect(),
+            inbound_offset: 0,
+            dns_input: input.clone(),
+            remote_eof: false,
+        };
+        let mut dns = SyntheticDns::default();
+        for _ in 0..100 {
+            drive_dns_tcp(
+                sockets.get_mut::<tcp::Socket>(handle),
+                &mut flow,
+                &mut dns,
+                &InterceptionMetrics::default(),
+            );
+            assert_eq!(flow.inbound.len(), FLOW_BUFFER_CHUNKS);
+            assert_eq!(flow.dns_input, input);
+        }
+        flow.inbound.clear();
+        drive_dns_tcp(
+            sockets.get_mut::<tcp::Socket>(handle),
+            &mut flow,
+            &mut dns,
+            &InterceptionMetrics::default(),
+        );
+        assert!(flow.dns_input.is_empty());
+        assert_eq!(flow.inbound.len(), 1);
+    }
     use super::*;
 
     #[tokio::test]

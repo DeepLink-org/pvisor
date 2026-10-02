@@ -105,6 +105,7 @@ impl Session {
         resolved: ResolvedRun,
     ) -> Result<RunHandle, PVisorError> {
         let ResolvedRun {
+            preparation,
             mut spec,
             executor,
             descriptor,
@@ -178,6 +179,7 @@ impl Session {
         let prepared = (|| {
             context.drivers = runtime.prepare(
                 Arc::make_mut(&mut context.spec),
+                &preparation,
                 &[],
                 vm_network_executor,
                 &attempt_id,

@@ -16,6 +16,7 @@ pub enum Event {
 
 #[derive(Debug, Clone)]
 pub struct CancelEvent {
+    pub reason: Option<String>,
     pub status: u16,
     pub bytes_received: usize,
     pub streaming: bool,

@@ -555,7 +555,12 @@ fn audit_dialog(
         },
         BODY,
     );
-    let target = wrap_log_lines(std::slice::from_ref(&request.target), (width - 4) as usize);
+    let label = request
+        .scope
+        .as_ref()
+        .map(|scope| format!("[{}] {}", scope.view, request.target))
+        .unwrap_or_else(|| request.target.clone());
+    let target = wrap_log_lines(std::slice::from_ref(&label), (width - 4) as usize);
     for (index, text) in target.iter().take(2).enumerate() {
         line(2 + index as u16, text, AMBER);
     }

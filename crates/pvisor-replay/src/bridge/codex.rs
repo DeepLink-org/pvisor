@@ -438,7 +438,7 @@ async fn forward(shared: &BridgeShared, body: Vec<u8>) -> anyhow::Result<Upstrea
     Ok(UpstreamResponse {
         status,
         headers,
-        body: request.bytes().await?.to_vec(),
+        body: super::read_response_limited(request).await?,
     })
 }
 

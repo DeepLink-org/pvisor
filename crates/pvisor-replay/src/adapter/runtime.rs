@@ -189,18 +189,31 @@ fn probe_version(agent: AgentKind, entrypoint: &Path) -> Result<String, ReplayEr
         let runtime = mini_python_runtime(entrypoint)?;
         configure_mini_python_environment(&mut command, &runtime)?;
     }
-    let output = command.output().replay_context(
-        ReplayErrorKind::UnsupportedVersion,
-        format!(
-            "probe {} version from {}",
-            agent.as_str(),
-            entrypoint.display()
-        ),
-    )?;
-    let rendered = String::from_utf8_lossy(if output.stdout.is_empty() {
-        &output.stderr
+    let log = tempfile::NamedTempFile::new()
+        .replay_context(ReplayErrorKind::Executor, "allocate version probe log")?;
+    let output = crate::process::run_process(crate::process::ProcessSpec {
+        command,
+        stdin: None,
+        idle_timeout: None,
+        step_finish_limit: None,
+        stdout_redirect: None,
+        timeout: std::time::Duration::from_secs(5),
+        termination_grace: std::time::Duration::from_millis(100),
+        pipe_grace: std::time::Duration::from_millis(100),
+        retained_bytes: 8192,
+        log_path: log.path().to_path_buf(),
+        log_bytes_limit: Some(8192),
+    })?;
+    if output.timed_out || output.stdout_truncated || output.stderr_truncated {
+        return Err(ReplayError::new(
+            ReplayErrorKind::UnsupportedVersion,
+            "version probe exceeded time/output budget",
+        ));
+    }
+    let rendered = String::from_utf8_lossy(if output.stdout_tail.is_empty() {
+        &output.stderr_tail
     } else {
-        &output.stdout
+        &output.stdout_tail
     });
     let detected = parse_version(agent, &rendered);
     let status_is_acceptable =

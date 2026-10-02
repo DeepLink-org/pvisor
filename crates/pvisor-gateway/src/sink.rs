@@ -314,7 +314,7 @@ pub fn attach_http_wire_request(
     };
     obj.insert("method".into(), Value::String(method.to_string()));
     if let Some(u) = url {
-        obj.insert("url".into(), Value::String(u.to_string()));
+        obj.insert("url".into(), Value::String(redact_sensitive_url(u)));
     }
     let http = obj
         .entry("http".to_string())
@@ -323,7 +323,7 @@ pub fn attach_http_wire_request(
         http_obj.insert("method".into(), Value::String(method.to_string()));
         http_obj.insert("path".into(), Value::String(path.to_string()));
         if let Some(u) = url {
-            http_obj.insert("url".into(), Value::String(u.to_string()));
+            http_obj.insert("url".into(), Value::String(redact_sensitive_url(u)));
         }
         if let Some(b) = body {
             http_obj.insert("request_body".into(), redact_sensitive_body(b));
@@ -349,7 +349,7 @@ pub fn attach_http_wire_response(
         return;
     };
     if let Some(u) = url {
-        obj.insert("url".into(), Value::String(u.to_string()));
+        obj.insert("url".into(), Value::String(redact_sensitive_url(u)));
     }
     let http = obj
         .entry("http".to_string())
@@ -357,7 +357,7 @@ pub fn attach_http_wire_response(
     if let Value::Object(http_obj) = http {
         http_obj.insert("status".into(), Value::Number(status.into()));
         if let Some(u) = url {
-            http_obj.insert("url".into(), Value::String(u.to_string()));
+            http_obj.insert("url".into(), Value::String(redact_sensitive_url(u)));
         }
         http_obj.insert("streaming".into(), Value::Bool(streaming));
         if let Some(b) = body {
@@ -382,6 +382,11 @@ pub fn redact_sensitive_body(value: &Value) -> Value {
                 .map(|(key, value)| {
                     let value = if is_sensitive_field_name(key) {
                         Value::String(REDACTED_VALUE.into())
+                    } else if matches!(key.as_str(), "url" | "uri" | "upstream_url" | "path") {
+                        value
+                            .as_str()
+                            .map(|text| Value::String(redact_sensitive_url(text)))
+                            .unwrap_or_else(|| redact_sensitive_body(value))
                     } else {
                         redact_sensitive_body(value)
                     };
@@ -640,6 +645,22 @@ pub fn llm_response_record_with_content(
 
 #[cfg(test)]
 mod header_tests {
+
+    #[test]
+    fn normal_wire_records_redact_url_credentials_at_all_copies() {
+        let mut payload = serde_json::json!({});
+        let url = "https://private-user:private-pass@example.com/v1?api_key=private-query&safe=yes";
+        super::attach_http_wire_request(&mut payload, "POST", "/v1", Some(url), None, true);
+        let request = super::redact_sensitive_body(&payload).to_string();
+        super::attach_http_wire_response(&mut payload, 200, Some(url), None, true, false, true);
+        let response = super::redact_sensitive_body(&payload).to_string();
+        for wire in [request, response] {
+            for secret in ["private-user", "private-pass", "private-query"] {
+                assert!(!wire.contains(secret));
+            }
+            assert!(wire.contains("safe=yes"));
+        }
+    }
     #[test]
     fn encoded_json_and_sse_credentials_are_redacted_without_changing_other_wire_text() {
         let wire = "event: message\r\ndata: {\"api_key\":\"never-record-this\",\"content\":\"ok\"}\r\n\r\ndata: [DONE]\n";
@@ -783,5 +804,39 @@ mod header_tests {
         assert_eq!(payload["headers"]["authorization"], "<redacted>");
         assert_eq!(payload["headers_redacted"], true);
         assert_eq!(payload["http"]["headers"]["authorization"], "<redacted>");
+    }
+}
+
+/// Retention applies to every persisted copy, including enrichment fields.
+pub(crate) fn retain_capture_content(payload: &mut Value, level: crate::config::CaptureLevel) {
+    let Some(object) = payload.as_object_mut() else {
+        return;
+    };
+    if !level.includes_full_body() {
+        for key in ["body", "llm_request", "llm_response", "spawn_hints"] {
+            object.remove(key);
+        }
+        if let Some(links) = object.get_mut("spawn_links").and_then(Value::as_array_mut) {
+            links.retain(Value::is_object);
+            for link in links {
+                if let Some(link) = link.as_object_mut() {
+                    link.retain(|key, _| {
+                        matches!(
+                            key.as_str(),
+                            "subagent_type" | "subagent_id" | "subagent_trajectory"
+                        )
+                    });
+                }
+            }
+        }
+        if let Some(http) = object.get_mut("http").and_then(Value::as_object_mut) {
+            for key in ["request_body", "response_body", "body_encoding"] {
+                http.remove(key);
+            }
+        }
+    }
+    if level == crate::config::CaptureLevel::Summary {
+        object.remove("user_content");
+        object.remove("assistant_content");
     }
 }

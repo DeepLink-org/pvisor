@@ -1,8 +1,6 @@
 //! Filesystem-backed logical checkpoints for Agent Runs.
 
-use crate::runtime::{
-    OverlayState, RunRecord, is_live, restore_overlay_upper, snapshot_overlay_upper,
-};
+use crate::runtime::{OverlayState, RunRecord, restore_overlay_upper, snapshot_overlay_upper};
 use crate::unix_now_ms;
 use crate::util::{create_dir_all_durable, sync_directory, write_private_json};
 use serde::{Deserialize, Serialize};
@@ -71,6 +69,9 @@ pub fn create_logical_checkpoint(
     record: &RunRecord,
     requested_id: Option<&str>,
 ) -> anyhow::Result<LogicalCheckpoint> {
+    if let Some(id) = requested_id {
+        validate_checkpoint_id(id)?;
+    }
     let (current, _lease) = record.lock_current()?;
     create_checkpoint(&current, requested_id, CheckpointConsistency::Stopped)
 }
@@ -246,6 +247,7 @@ mod tests {
         fs::create_dir_all(&target).unwrap();
         fs::create_dir_all(&upper).unwrap();
         RunRecord {
+            attempt_id: None,
             schema_version: 1,
             run_id: "run-source".into(),
             parent_run_id: None,
@@ -256,7 +258,7 @@ mod tests {
             command: vec!["codex".into()],
             executor: None,
             executor_plan: None,
-            state: "completed".into(),
+            state: crate::RunRecordState::Completed,
             started_at_unix_ms: 1,
             finished_at_unix_ms: Some(2),
             storage: root.to_path_buf(),
@@ -274,6 +276,7 @@ mod tests {
                 id: "run-source".into(),
                 generation: 0,
                 target: target.clone(),
+                baseline_lower: None,
                 upper: OverlayUpper {
                     upper_dir: upper,
                     work_dir: root.join("work"),
@@ -309,6 +312,7 @@ mod tests {
         fs::hard_link(upper.join("one"), upper.join("two")).unwrap();
         std::os::unix::fs::symlink("one", upper.join("link")).unwrap();
 
+        record.write().unwrap();
         let checkpoint = create_logical_checkpoint(&record, Some("before-refactor")).unwrap();
         assert!(checkpoint.protect_target);
         assert_eq!(checkpoint.access_policy.deny(), ["**/.ssh"]);
@@ -367,6 +371,7 @@ mod tests {
         .unwrap();
         core.copy_up(Path::new("value")).unwrap();
         fs::write(upper.join("value"), b"staged").unwrap();
+        parent.write().unwrap();
         let checkpoint = create_logical_checkpoint(&parent, Some("baseline")).unwrap();
         assert!(create_logical_checkpoint(&parent, Some("baseline")).is_err());
         fs::write(target.join("value"), b"external-edit").unwrap();

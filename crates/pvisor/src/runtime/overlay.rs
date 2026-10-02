@@ -207,6 +207,7 @@ pub fn resolve_overlay_workspace(
         id: session_id.to_string(),
         generation: 0,
         target,
+        baseline_lower: None,
         upper,
         merged_dir: merged,
         stage_dir,
@@ -238,7 +239,8 @@ pub fn hint_from_record(record: &OverlayRecord, lower_dirs: Vec<PathBuf>) -> Ove
 pub fn lower_stack_from_config(
     cfg: &OverlayConfig,
     storage: &Path,
-    record: &OverlayRecord,
+    record: &mut OverlayRecord,
+    snapshot_required: bool,
 ) -> io::Result<Vec<PathBuf>> {
     let target = &record.target;
     let resolve = |p: &str| -> PathBuf {
@@ -255,9 +257,10 @@ pub fn lower_stack_from_config(
     // With an external stage (the normal --safe layout), the source is already
     // a valid read-only lower. Copying it into Run storage can be both slow and
     // larger than the available space there.
-    let needs_snapshot = record.merged_dir == *target
-        || !record.excluded_paths.is_empty()
-        || storage.starts_with(target);
+    let needs_snapshot = snapshot_required
+        && (record.merged_dir == *target
+            || !record.excluded_paths.is_empty()
+            || storage.starts_with(target));
     let lower = if cfg.target.is_some() && target.is_dir() && needs_snapshot {
         use std::hash::{Hash, Hasher};
         let mut hasher = std::collections::hash_map::DefaultHasher::new();
@@ -278,6 +281,7 @@ pub fn lower_stack_from_config(
     } else {
         target.to_path_buf()
     };
+    record.baseline_lower = (lower != *target).then(|| lower.clone());
     lowers.push(lower);
     Ok(lowers)
 }
@@ -350,6 +354,7 @@ pub(crate) fn mount_overlay_record_observed(
     config.excluded_paths = record.excluded_paths.clone();
     config.access_policy = record.access_policy.clone();
     config.apply_target = Some(record.target.clone());
+    config.baseline_lower = record.baseline_lower.clone();
     config.observation = observation;
     config.preimage_dir = Some(record.stage_dir.join("preimages"));
     let session = mount_embedded_overlay(config).map_err(embedded_mount_error)?;
@@ -378,12 +383,21 @@ pub(crate) fn prepare_overlay_record_mountless(
         create_dir_all_durable(dir)
             .map_err(|error| OverlayError::Prepare(io::Error::other(error)))?;
     }
-    create_dir_all_durable(&record.stage_dir.join("preimages/entries"))
-        .map_err(|error| OverlayError::Prepare(io::Error::other(error)))?;
-    create_dir_all_durable(&record.upper.upper_dir)
-        .map_err(|error| OverlayError::Prepare(io::Error::other(error)))?;
-    create_dir_all_durable(&record.upper.work_dir)
-        .map_err(|error| OverlayError::Prepare(io::Error::other(error)))?;
+    let layout = pvisor_overlay_core::OverlayLayout::with_baseline(
+        lower_dirs.to_vec(),
+        record.target.clone(),
+        record.baseline_lower.as_deref(),
+    )
+    .map_err(OverlayError::Prepare)?;
+    // Share backing validation and journal initialization with the host adapter.
+    pvisor_overlay_core::OverlayCore::new_for_layout(
+        layout,
+        record.upper.upper_dir.clone(),
+        Some(record.upper.work_dir.clone()),
+        record.excluded_paths.clone(),
+        Some(record.stage_dir.join("preimages")),
+    )
+    .map_err(OverlayError::Prepare)?;
 
     let mut record = record.clone();
     record.state = OverlayState::Active;
@@ -428,6 +442,7 @@ pub fn mount_overlay_record_read_only(
     }
     config.access_policy = record.access_policy.clone();
     config.apply_target = Some(record.target.clone());
+    config.baseline_lower = record.baseline_lower.clone();
     config.read_only = true;
     let session = mount_embedded_overlay(config).map_err(embedded_mount_error)?;
     wait_merged_ready(&mountpoint, &session).map_err(|error| embedded_mount_error(error.into()))?;
@@ -605,6 +620,7 @@ mod tests {
             id: "mountless".into(),
             generation: 0,
             target: lower.clone(),
+            baseline_lower: None,
             upper: OverlayUpper {
                 upper_dir: stage.join("upper"),
                 work_dir: stage.join("work"),
@@ -635,11 +651,11 @@ mod tests {
             lower_dirs: vec!["extra-a".into(), "extra-b".into()],
             ..OverlayConfig::default()
         };
-        let record = resolve_overlay_workspace(&cfg, Path::new("/store"), "test")
+        let mut record = resolve_overlay_workspace(&cfg, Path::new("/store"), "test")
             .unwrap()
             .unwrap();
         assert_eq!(
-            lower_stack_from_config(&cfg, Path::new("/store"), &record).unwrap(),
+            lower_stack_from_config(&cfg, Path::new("/store"), &mut record, true).unwrap(),
             vec![
                 PathBuf::from("/store/extra-a"),
                 PathBuf::from("/store/extra-b"),
@@ -659,11 +675,11 @@ mod tests {
             target: Some(workspace.display().to_string()),
             ..OverlayConfig::default()
         };
-        let record = resolve_overlay_workspace(&cfg, &storage, "test")
+        let mut record = resolve_overlay_workspace(&cfg, &storage, "test")
             .unwrap()
             .unwrap();
         assert_eq!(
-            lower_stack_from_config(&cfg, &storage, &record).unwrap(),
+            lower_stack_from_config(&cfg, &storage, &mut record, true).unwrap(),
             vec![workspace]
         );
         assert!(!storage.join(".overlay-lowers").exists());
@@ -685,10 +701,10 @@ mod tests {
             merged_dir: Some(workspace.display().to_string()),
             ..OverlayConfig::default()
         };
-        let record = resolve_overlay_workspace(&cfg, &storage, "test")
+        let mut record = resolve_overlay_workspace(&cfg, &storage, "test")
             .unwrap()
             .unwrap();
-        let lowers = lower_stack_from_config(&cfg, &storage, &record).unwrap();
+        let lowers = lower_stack_from_config(&cfg, &storage, &mut record, true).unwrap();
         assert_ne!(lowers[0], workspace);
         let staged_link = lowers[0].join("escape");
         assert!(
@@ -713,10 +729,11 @@ mod tests {
         fs::create_dir_all(&lower).unwrap();
         fs::write(lower.join("lower-file"), b"lower").unwrap();
         fs::write(lower.join("deleted-file"), b"delete me").unwrap();
-        let record = OverlayRecord {
+        let mut record = OverlayRecord {
             id: "embedded-e2e".into(),
             generation: 0,
             target: lower.clone(),
+            baseline_lower: None,
             upper: OverlayUpper {
                 upper_dir: upper.clone(),
                 work_dir: work,

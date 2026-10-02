@@ -47,7 +47,7 @@ fn prompts_match(a: &str, b: &str) -> bool {
         return false;
     }
     let prefix_len = 80.min(na.len()).min(nb.len());
-    na[..prefix_len] == nb[..prefix_len]
+    na.as_bytes()[..prefix_len] == nb.as_bytes()[..prefix_len]
 }
 
 fn normalize_prompt(s: &str) -> String {
@@ -135,5 +135,20 @@ pub(crate) fn merge_string_array_payload(rec: &mut CaptureRecord, key: &str, val
         let mut merged: Vec<_> = set.into_iter().collect();
         merged.sort();
         rec.payload[key] = json!(merged);
+    }
+}
+
+#[cfg(test)]
+mod unicode_tests {
+    #[test]
+    fn prompt_prefix_matching_is_safe_for_unicode() {
+        for prompt in [
+            "审核网络模块".repeat(10),
+            "🌍".repeat(30),
+            "review".repeat(20),
+        ] {
+            assert!(super::prompts_match(&prompt, &prompt));
+            assert!(!super::prompts_match(&prompt, &"different".repeat(20)));
+        }
     }
 }

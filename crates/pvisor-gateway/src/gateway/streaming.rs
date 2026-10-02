@@ -79,6 +79,7 @@ pub(super) async fn streaming_llm_response(
     let storage = Arc::clone(&state.storage);
     let reasoning_cache = Arc::clone(&state.reasoning_cache);
 
+    let mut stop = state.stop.clone();
     tokio::spawn(async move {
         let mut buf = BytesMut::new();
         let mut translator = StreamTranslator::new(bridge, ctx_bg.protocol, &ctx_bg.client_model);
@@ -87,7 +88,15 @@ pub(super) async fn streaming_llm_response(
         let mut client_disconnected = false;
         let mut upstream_failed = false;
         let mut stream = byte_stream;
-        while let Some(item) = stream.next().await {
+        loop {
+            let item = tokio::select! {
+                _ = tx.closed() => { client_disconnected = true; break; }
+                _ = stop.changed() => { upstream_failed = true; break; }
+                item = stream.next() => item,
+            };
+            let Some(item) = item else {
+                break;
+            };
             match item {
                 Ok(chunk) => {
                     let retained = translator
@@ -99,7 +108,7 @@ pub(super) async fn streaming_llm_response(
                         let message = format!(
                             "stream response exceeds durable capture limit of {MAX_STREAM_CAPTURE_BYTES} bytes"
                         );
-                        let _ = tx.send(Err(message.clone())).await;
+                        let _ = send_stream_chunk(&tx, &mut stop, Err(message.clone())).await;
                         if debug_on {
                             debug::log_llm_upstream_error(
                                 storage.as_path(),
@@ -133,7 +142,7 @@ pub(super) async fn streaming_llm_response(
                                 tracing::warn!("stream translate: {e:#}");
                                 upstream_failed = true;
                                 let message = format!("stream translation failed: {e:#}");
-                                let _ = tx.send(Err(message)).await;
+                                let _ = send_stream_chunk(&tx, &mut stop, Err(message)).await;
                                 break;
                             }
                         }
@@ -150,7 +159,7 @@ pub(super) async fn streaming_llm_response(
                             &mut last_draft_content,
                         );
                     }
-                    if tx.send(Ok(out)).await.is_err() {
+                    if send_stream_chunk(&tx, &mut stop, Ok(out)).await.is_err() {
                         client_disconnected = true;
                         break;
                     }
@@ -158,7 +167,7 @@ pub(super) async fn streaming_llm_response(
                 Err(e) => {
                     upstream_failed = true;
                     let msg = e.to_string();
-                    let _ = tx.send(Err(msg.clone())).await;
+                    let _ = send_stream_chunk(&tx, &mut stop, Err(msg.clone())).await;
                     if debug_on {
                         debug::log_llm_upstream_error(
                             storage.as_path(),
@@ -182,6 +191,7 @@ pub(super) async fn streaming_llm_response(
             capture_engine.spawn_apply(
                 Arc::clone(&ctx_bg),
                 Event::Cancelled(CancelEvent {
+                    reason: Some("client_disconnected".into()),
                     status: status.as_u16(),
                     bytes_received,
                     streaming: true,
@@ -198,6 +208,7 @@ pub(super) async fn streaming_llm_response(
             capture_engine.spawn_apply(
                 Arc::clone(&ctx_bg),
                 Event::Cancelled(CancelEvent {
+                    reason: Some("stream_interrupted".into()),
                     status: status.as_u16(),
                     bytes_received,
                     streaming: true,
@@ -211,10 +222,13 @@ pub(super) async fn streaming_llm_response(
         if let Some(t) = translator.as_mut() {
             match t.finish_stream() {
                 Ok(tail) => {
-                    if !tail.is_empty() && tx.send(Ok(tail)).await.is_err() {
+                    if !tail.is_empty()
+                        && send_stream_chunk(&tx, &mut stop, Ok(tail)).await.is_err()
+                    {
                         capture_engine.spawn_apply(
                             Arc::clone(&ctx_bg),
                             Event::Cancelled(CancelEvent {
+                                reason: Some("stream_interrupted".into()),
                                 status: status.as_u16(),
                                 bytes_received: t.upstream_snapshot().len(),
                                 streaming: true,
@@ -224,12 +238,16 @@ pub(super) async fn streaming_llm_response(
                     }
                 }
                 Err(error) => {
-                    let _ = tx
-                        .send(Err(format!("finish stream translation: {error:#}")))
-                        .await;
+                    let _ = send_stream_chunk(
+                        &tx,
+                        &mut stop,
+                        Err(format!("finish stream translation: {error:#}")),
+                    )
+                    .await;
                     capture_engine.spawn_apply(
                         Arc::clone(&ctx_bg),
                         Event::Cancelled(CancelEvent {
+                            reason: Some("stream_interrupted".into()),
                             status: status.as_u16(),
                             bytes_received: t.upstream_snapshot().len(),
                             streaming: true,
@@ -241,7 +259,9 @@ pub(super) async fn streaming_llm_response(
             stream_semantic = Some(Arc::new(t.semantic_response()));
             let (tool_ids, reasoning) = t.drain_reasoning_snapshot();
             if !reasoning.is_empty() {
-                reasoning_cache.remember(&tool_ids, &reasoning);
+                reasoning_cache
+                    .scoped(&ctx_bg)
+                    .remember(&tool_ids, &reasoning);
             }
         }
         let resp_bytes = translator
@@ -332,5 +352,35 @@ mod tests {
         h.insert("content-type", "text/event-stream".parse().unwrap());
         let body = Bytes::from_static(b"{}");
         assert!(should_stream_to_client(&h, &body));
+    }
+}
+
+async fn send_stream_chunk(
+    tx: &tokio::sync::mpsc::Sender<Result<Bytes, String>>,
+    stop: &mut tokio::sync::watch::Receiver<()>,
+    chunk: Result<Bytes, String>,
+) -> Result<(), ()> {
+    tokio::select! {
+        _ = stop.changed() => Err(()),
+        result = tx.send(chunk) => result.map_err(|_| ()),
+    }
+}
+
+#[cfg(test)]
+mod lifecycle_tests {
+    use super::*;
+    #[tokio::test]
+    async fn shutdown_interrupts_a_backpressured_sender() {
+        let (tx, _rx) = tokio::sync::mpsc::channel(1);
+        tx.send(Ok(Bytes::new())).await.unwrap();
+        let (stop_tx, mut stop) = tokio::sync::watch::channel(());
+        stop_tx.send(()).unwrap();
+        let result = tokio::time::timeout(
+            Duration::from_millis(100),
+            send_stream_chunk(&tx, &mut stop, Ok(Bytes::new())),
+        )
+        .await
+        .unwrap();
+        assert!(result.is_err());
     }
 }

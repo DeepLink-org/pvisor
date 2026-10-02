@@ -32,10 +32,19 @@ pub fn boot_vm(plan: &ContainerPlan) -> Result<i32> {
     if agent {
         // The static musl shim binary doubles as the guest agent: copy it
         // into the rootfs so exec works without image requirements.
-        let agent_host = plan.rootfs.join(AGENT_GUEST_PATH.trim_start_matches('/'));
-        std::fs::copy(std::env::current_exe().context("current exe")?, &agent_host)
-            .with_context(|| format!("copy agent to {}", agent_host.display()))?;
-        make_executable(&agent_host)?;
+        let mut agent_file = pvisor_overlay_core::sys::prepare_rooted_path(
+            &plan.rootfs,
+            Path::new(AGENT_GUEST_PATH.trim_start_matches('/')),
+            false,
+            true,
+        )
+        .context("prepare guest agent without following image symlinks")?;
+        agent_file.set_len(0)?;
+        std::io::copy(
+            &mut std::fs::File::open(std::env::current_exe().context("current exe")?)?,
+            &mut agent_file,
+        )?;
+        agent_file.set_permissions(std::fs::Permissions::from_mode(0o755))?;
     }
 
     let ctx = krun::krun_create_ctx();
@@ -106,13 +115,6 @@ pub fn boot_vm(plan: &ContainerPlan) -> Result<i32> {
         anyhow::bail!("krun_start_enter failed with errno {}", -code);
     }
     Ok(code)
-}
-
-fn make_executable(path: &Path) -> Result<()> {
-    let mut permissions = std::fs::metadata(path)?.permissions();
-    permissions.set_mode(0o755);
-    std::fs::set_permissions(path, permissions)?;
-    Ok(())
 }
 
 fn cstring(value: &str) -> Result<CString> {

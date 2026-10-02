@@ -19,6 +19,7 @@ pub(super) fn generation(store: &ImageStore, digest: &str) -> anyhow::Result<Str
     // Include store identity and host inode generation: extracted inode numbers
     // can change when the same OCI digest is removed and prepared again.
     Ok(hash(&serde_json::to_vec(&(
+        "linux-stat-v2",
         root.as_os_str().as_bytes(),
         m.dev(),
         m.ino(),

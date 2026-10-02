@@ -1,5 +1,6 @@
 use std::fs::{File, OpenOptions};
-use std::io::{self, Read, Write};
+use std::io::{self, Read, Seek, SeekFrom, Write};
+use std::os::fd::AsRawFd;
 #[cfg(unix)]
 use std::os::unix::fs::{OpenOptionsExt, PermissionsExt};
 #[cfg(unix)]
@@ -20,8 +21,7 @@ pub(crate) struct ProcessSpec {
     /// are the signature of an agent CLI that wedged internally instead of
     /// working.
     pub idle_timeout: Option<Duration>,
-    /// Terminate the process once stdout has carried this many
-    /// `"type":"step_finish"` JSONL events. OpenCode ignores its
+    /// Terminate after this many complete `message=loop step=N` stderr lines. OpenCode ignores its
     /// `agent.steps` budget on resumed sessions, so pVisor enforces the
     /// remaining live-action budget itself.
     pub step_finish_limit: Option<usize>,
@@ -35,6 +35,8 @@ pub(crate) struct ProcessSpec {
     pub pipe_grace: Duration,
     pub retained_bytes: usize,
     pub log_path: PathBuf,
+    /// Combined stdout/stderr log quota for short probes; full replay logs use None.
+    pub log_bytes_limit: Option<u64>,
 }
 
 pub(crate) struct ProcessOutput {
@@ -57,6 +59,7 @@ struct StreamCapture {
 pub(crate) fn run_process(mut spec: ProcessSpec) -> Result<ProcessOutput, ReplayError> {
     let log = owner_only_log(&spec.log_path)?;
     let log = Arc::new(Mutex::new(log));
+    let output_limited = Arc::new(std::sync::atomic::AtomicBool::new(false));
     let stdout_redirect = spec.stdout_redirect.take();
     if let Some(target) = &stdout_redirect {
         if let Some(parent) = target.parent() {
@@ -103,6 +106,7 @@ pub(crate) fn run_process(mut spec: ProcessSpec) -> Result<ProcessOutput, Replay
             .map(|value| value.as_millis() as u64)
             .unwrap_or(0),
     ));
+    let stop_readers = Arc::new(std::sync::atomic::AtomicBool::new(false));
     let step_finish_seen = Arc::new(std::sync::atomic::AtomicUsize::new(0));
     // With a redirected stdout there is no pipe to drain; the wait loop
     // below polls the redirect file for growth so idle_timeout still sees
@@ -111,6 +115,9 @@ pub(crate) fn run_process(mut spec: ProcessSpec) -> Result<ProcessOutput, Replay
     let stdout_reader = stdout.map(|pipe| {
         spawn_reader(
             pipe,
+            Arc::clone(&stop_readers),
+            spec.log_bytes_limit
+                .map(|limit| (limit, Arc::clone(&output_limited))),
             Arc::clone(&log),
             spec.retained_bytes,
             Some(Arc::clone(&last_activity)),
@@ -119,13 +126,14 @@ pub(crate) fn run_process(mut spec: ProcessSpec) -> Result<ProcessOutput, Replay
     });
     let stderr_reader = spawn_reader(
         stderr,
+        Arc::clone(&stop_readers),
+        spec.log_bytes_limit
+            .map(|limit| (limit, Arc::clone(&output_limited))),
         Arc::clone(&log),
         spec.retained_bytes,
         Some(Arc::clone(&last_activity)),
-        Some((
-            Arc::clone(&step_finish_seen),
-            spec.step_finish_limit.is_some(),
-        )),
+        spec.step_finish_limit
+            .map(|_| Arc::clone(&step_finish_seen)),
     );
     if let Some(input) = spec.stdin.take() {
         let write_result = child
@@ -139,6 +147,7 @@ pub(crate) fn run_process(mut spec: ProcessSpec) -> Result<ProcessOutput, Replay
             #[cfg(not(unix))]
             let _ = child.kill();
             let _ = child.wait();
+            stop_readers.store(true, std::sync::atomic::Ordering::Release);
             if let Some(reader) = stdout_reader {
                 let _ = reader.join();
             }
@@ -161,7 +170,9 @@ pub(crate) fn run_process(mut spec: ProcessSpec) -> Result<ProcessOutput, Replay
         {
             break status;
         }
-        if started.elapsed() >= spec.timeout {
+        if started.elapsed() >= spec.timeout
+            || output_limited.load(std::sync::atomic::Ordering::Acquire)
+        {
             timed_out = true;
             background_cleanup = true;
             break terminate_running_group(&mut child, process_group, spec.termination_grace)?;
@@ -214,21 +225,24 @@ pub(crate) fn run_process(mut spec: ProcessSpec) -> Result<ProcessOutput, Replay
     }
 
     let pipe_deadline = Instant::now() + spec.pipe_grace + spec.termination_grace;
-    let stdout_pending = stdout_reader
+    while (stdout_reader
         .as_ref()
-        .is_some_and(|reader| !reader.is_finished());
-    while (stdout_pending || !stderr_reader.is_finished()) && Instant::now() < pipe_deadline {
+        .is_some_and(|reader| !reader.is_finished())
+        || !stderr_reader.is_finished())
+        && Instant::now() < pipe_deadline
+    {
         thread::sleep(Duration::from_millis(5));
     }
-    #[cfg(unix)]
     let stdout_still_pending = stdout_reader
         .as_ref()
         .is_some_and(|reader| !reader.is_finished());
-    if stdout_still_pending || !stderr_reader.is_finished() {
+    let stderr_still_pending = !stderr_reader.is_finished();
+    if stdout_still_pending || stderr_still_pending {
         background_cleanup = true;
         let _ = signal_group(process_group, libc::SIGKILL);
     }
 
+    stop_readers.store(true, std::sync::atomic::Ordering::Release);
     let stdout = match stdout_reader {
         Some(reader) => reader
             .join()
@@ -237,14 +251,22 @@ pub(crate) fn run_process(mut spec: ProcessSpec) -> Result<ProcessOutput, Replay
         None => {
             // Redirected stdout: summarize the redirect file itself so the
             // caller keeps its usual byte accounting.
-            let bytes = stdout_redirect
-                .as_deref()
-                .and_then(|path| std::fs::read(path).ok())
-                .unwrap_or_default();
-            let tail_len = bytes.len().min(spec_retained(spec.retained_bytes));
+            let mut file = File::open(stdout_redirect.as_ref().expect("redirect path"))
+                .replay_context(ReplayErrorKind::Executor, "open redirected stdout tail")?;
+            let total = file
+                .metadata()
+                .replay_context(ReplayErrorKind::Executor, "stat stdout tail")?
+                .len();
+            let tail_len = total.min(spec.retained_bytes as u64);
+            file.seek(SeekFrom::Start(total - tail_len))
+                .replay_context(ReplayErrorKind::Executor, "seek stdout tail")?;
+            let mut tail = Vec::new();
+            file.take(tail_len)
+                .read_to_end(&mut tail)
+                .replay_context(ReplayErrorKind::Executor, "read stdout tail")?;
             StreamCapture {
-                tail: bytes[bytes.len() - tail_len..].to_vec(),
-                total: bytes.len() as u64,
+                tail,
+                total,
                 log_error: None,
             }
         }
@@ -262,8 +284,12 @@ pub(crate) fn run_process(mut spec: ProcessSpec) -> Result<ProcessOutput, Replay
 
     Ok(ProcessOutput {
         status,
-        stdout_truncated: stdout.total > stdout.tail.len() as u64,
-        stderr_truncated: stderr.total > stderr.tail.len() as u64,
+        stdout_truncated: output_limited.load(std::sync::atomic::Ordering::Acquire)
+            || stdout_still_pending
+            || stdout.total > stdout.tail.len() as u64,
+        stderr_truncated: output_limited.load(std::sync::atomic::Ordering::Acquire)
+            || stderr_still_pending
+            || stderr.total > stderr.tail.len() as u64,
         stdout_tail: stdout.tail,
         stderr_tail: stderr.tail,
         timed_out,
@@ -276,7 +302,9 @@ fn owner_only_log(path: &std::path::Path) -> Result<File, ReplayError> {
     let mut options = OpenOptions::new();
     options.create(true).truncate(true).write(true);
     #[cfg(unix)]
-    options.mode(0o600);
+    options
+        .mode(0o600)
+        .custom_flags(libc::O_NOFOLLOW | libc::O_CLOEXEC);
     let file = options.open(path).replay_context(
         ReplayErrorKind::Executor,
         format!("create process log {}", path.display()),
@@ -292,27 +320,49 @@ fn owner_only_log(path: &std::path::Path) -> Result<File, ReplayError> {
 
 fn spawn_reader<R>(
     mut reader: R,
+    stop: Arc<std::sync::atomic::AtomicBool>,
+    budget: Option<(u64, Arc<std::sync::atomic::AtomicBool>)>,
     log: Arc<Mutex<File>>,
     retained_bytes: usize,
     activity: Option<Arc<std::sync::atomic::AtomicU64>>,
-    step_counter: Option<(Arc<std::sync::atomic::AtomicUsize>, bool)>,
+    step_counter: Option<Arc<std::sync::atomic::AtomicUsize>>,
 ) -> thread::JoinHandle<io::Result<StreamCapture>>
 where
-    R: Read + Send + 'static,
+    R: Read + AsRawFd + Send + 'static,
 {
     thread::spawn(move || {
         let mut tail = Vec::with_capacity(retained_bytes.min(64 * 1024));
         let mut total = 0_u64;
         let mut log_error = None;
         let mut chunk = [0_u8; 16 * 1024];
+        let mut progress_line = Vec::new();
         loop {
+            if stop.load(std::sync::atomic::Ordering::Acquire) {
+                break;
+            }
+            let mut pollfd = libc::pollfd {
+                fd: reader.as_raw_fd(),
+                events: libc::POLLIN,
+                revents: 0,
+            };
+            let ready = unsafe { libc::poll(&mut pollfd, 1, 25) };
+            if ready == 0 {
+                continue;
+            }
+            if ready < 0 {
+                let error = io::Error::last_os_error();
+                if error.kind() == io::ErrorKind::Interrupted {
+                    continue;
+                }
+                return Err(error);
+            }
             let count = reader.read(&mut chunk)?;
             if count == 0 {
                 break;
             }
             total = total.saturating_add(count as u64);
-            if let Some((counter, _)) = &step_counter {
-                let hits = count_step_finish(&chunk[..count]);
+            if let Some(counter) = &step_counter {
+                let hits = count_progress_chunk(&mut progress_line, &chunk[..count]);
                 if hits > 0 {
                     counter.fetch_add(hits, std::sync::atomic::Ordering::AcqRel);
                 }
@@ -325,10 +375,21 @@ where
                 activity.store(now_ms, std::sync::atomic::Ordering::Release);
             }
             if log_error.is_none() {
-                let write_result = log
-                    .lock()
-                    .map_err(|_| io::Error::other("process log lock poisoned"))?
-                    .write_all(&chunk[..count]);
+                let write_result = (|| {
+                    let mut log = log
+                        .lock()
+                        .map_err(|_| io::Error::other("process log lock poisoned"))?;
+                    let count = if let Some((limit, limited)) = &budget {
+                        let remaining = limit.saturating_sub(log.stream_position()?);
+                        if remaining < count as u64 {
+                            limited.store(true, std::sync::atomic::Ordering::Release);
+                        }
+                        count.min(remaining as usize)
+                    } else {
+                        count
+                    };
+                    log.write_all(&chunk[..count])
+                })();
                 if let Err(error) = write_result {
                     log_error = Some(error);
                 }
@@ -343,26 +404,32 @@ where
     })
 }
 
-fn spec_retained(retained_bytes: usize) -> usize {
-    retained_bytes.max(1)
-}
-
-fn count_step_finish(chunk: &[u8]) -> usize {
-    // OpenCode's stdout JSONL is block-buffered (events only flush in ~8KB
-    // batches or at exit), but `--print-logs` stderr carries one
-    // `message=loop ... step=N` line per live turn in real time.
-    const NEEDLE: &[u8] = b"message=loop";
+fn count_progress_chunk(line: &mut Vec<u8>, chunk: &[u8]) -> usize {
     let mut hits = 0;
-    let mut offset = 0;
-    while offset + NEEDLE.len() <= chunk.len() {
-        if &chunk[offset..offset + NEEDLE.len()] == NEEDLE {
-            hits += 1;
-            offset += NEEDLE.len();
-        } else {
-            offset += 1;
+    for byte in chunk {
+        if *byte == b'\n' {
+            hits += count_step_finish(line);
+            line.clear();
+        } else if line.len() < 64 * 1024 {
+            line.push(*byte);
         }
     }
     hits
+}
+
+fn count_step_finish(chunk: &[u8]) -> usize {
+    chunk
+        .split(|byte| *byte == b'\n')
+        .filter(|line| {
+            let fields: Vec<_> = line.split(u8::is_ascii_whitespace).collect();
+            fields.contains(&b"message=loop".as_slice())
+                && fields.iter().any(|field| {
+                    field
+                        .strip_prefix(b"step=")
+                        .is_some_and(|step| !step.is_empty() && step.iter().all(u8::is_ascii_digit))
+                })
+        })
+        .count()
 }
 
 fn retain_tail(tail: &mut Vec<u8>, chunk: &[u8], limit: usize) {
@@ -510,7 +577,53 @@ mod tests {
             pipe_grace: Duration::from_millis(100),
             retained_bytes: 64 * 1024,
             log_path: log_path.to_path_buf(),
+            log_bytes_limit: None,
         }
+    }
+
+    #[test]
+    fn probe_log_quota_and_redirected_tail_bound_allocations() {
+        let temp = tempfile::tempdir().unwrap();
+        let log = temp.path().join("quota.log");
+        let mut spec = shell_spec("yes x | head -c 131072", &log);
+        spec.log_bytes_limit = Some(32);
+        let output = run_process(spec).unwrap();
+        assert!(output.stdout_truncated);
+        assert!(std::fs::metadata(&log).unwrap().len() <= 32);
+        let mut spec = shell_spec("printf abcdefgh", &temp.path().join("tail.log"));
+        spec.stdout_redirect = Some(temp.path().join("events"));
+        spec.retained_bytes = 3;
+        let output = run_process(spec).unwrap();
+        assert_eq!(output.stdout_tail, b"fgh");
+        assert!(output.stdout_truncated);
+    }
+
+    #[test]
+    fn split_progress_and_unterminated_pipes_stay_bounded() {
+        let mut line = Vec::new();
+        assert_eq!(count_progress_chunk(&mut line, b"message=lo"), 0);
+        assert_eq!(
+            count_progress_chunk(&mut line, b"op step=1\nmessage=loop step=2\n"),
+            2
+        );
+        assert_eq!(
+            count_progress_chunk(&mut line, b"message=looping step=3\n"),
+            0
+        );
+        let temp = tempfile::tempdir().unwrap();
+        let log = Arc::new(Mutex::new(
+            owner_only_log(&temp.path().join("log")).unwrap(),
+        ));
+        let (read, _held_writer) = std::os::unix::net::UnixStream::pair().unwrap();
+        let stop = Arc::new(std::sync::atomic::AtomicBool::new(false));
+        let reader = spawn_reader(read, Arc::clone(&stop), None, log, 16, None, None);
+        stop.store(true, std::sync::atomic::Ordering::Release);
+        let deadline = Instant::now() + Duration::from_secs(1);
+        while !reader.is_finished() && Instant::now() < deadline {
+            thread::sleep(Duration::from_millis(5));
+        }
+        assert!(reader.is_finished());
+        assert_eq!(reader.join().unwrap().unwrap().total, 0);
     }
 
     #[test]

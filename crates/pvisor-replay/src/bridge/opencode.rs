@@ -347,41 +347,6 @@ async fn forward_handler(
     let Some(path) = path else {
         return error_response(StatusCode::BAD_REQUEST, "request has no path");
     };
-    let debug_level = std::env::var("PVISOR_OPENCODE_BRIDGE_DEBUG")
-        .ok()
-        .and_then(|value| value.trim().parse::<u8>().ok())
-        .unwrap_or(0);
-    if debug_level > 0 {
-        use std::io::Write;
-        if let Ok(mut log) = std::fs::OpenOptions::new()
-            .create(true)
-            .append(true)
-            .open("/tmp/pvisor-opencode-bridge-debug.log")
-        {
-            let _ = writeln!(
-                log,
-                "[{}] {} {} body={}B head={}",
-                std::time::SystemTime::now()
-                    .duration_since(std::time::UNIX_EPOCH)
-                    .map(|d| d.as_secs())
-                    .unwrap_or(0),
-                method,
-                path,
-                body.len(),
-                String::from_utf8_lossy(&body[..body.len().min(300)]).replace('\n', " ")
-            );
-        }
-        if debug_level >= 2
-            && let Ok(mut bodies) = std::fs::OpenOptions::new()
-                .create(true)
-                .append(true)
-                .open("/tmp/pvisor-opencode-bridge-bodies.log")
-        {
-            use std::io::Write as _;
-            let _ = bodies.write_all(&body);
-            let _ = bodies.write_all(b"\n===REQUEST-END===\n");
-        }
-    }
     let content_type = headers
         .get(axum::http::header::CONTENT_TYPE)
         .and_then(|value| value.to_str().ok())
@@ -399,17 +364,6 @@ async fn forward_handler(
     } else {
         body
     };
-    if debug_level >= 2 {
-        use std::io::Write;
-        if let Ok(mut bodies) = std::fs::OpenOptions::new()
-            .create(true)
-            .append(true)
-            .open("/tmp/pvisor-opencode-bridge-upstream.log")
-        {
-            let _ = bodies.write_all(&body);
-            let _ = bodies.write_all(b"\n===UPSTREAM-END===\n");
-        }
-    }
     let upstream_url = format!("{}{}", shared.upstream_origin, path);
     let mut upstream = shared.client.request(method, &upstream_url);
     for (name, value) in headers.iter() {
@@ -445,16 +399,6 @@ async fn forward_handler(
         }
     };
     let status = response.status();
-    if std::env::var("PVISOR_OPENCODE_BRIDGE_DEBUG").is_ok() {
-        use std::io::Write;
-        if let Ok(mut log) = std::fs::OpenOptions::new()
-            .create(true)
-            .append(true)
-            .open("/tmp/pvisor-opencode-bridge-debug.log")
-        {
-            let _ = writeln!(log, "[upstream] status={}", status.as_u16());
-        }
-    }
     let mut response_headers = HeaderMap::new();
     for (name, value) in response.headers().iter() {
         if is_hop_by_hop_header(name.as_str()) {
@@ -468,7 +412,7 @@ async fn forward_handler(
     // bridge. A pass-through stream can die mid-flight; OpenCode's Bun-based
     // fetch then hangs on the half-open response without retrying, which
     // stalls the continuation forever.
-    let body = match response.bytes().await {
+    let body = match super::read_response_limited(response).await {
         Ok(bytes) => bytes,
         Err(error) => {
             fail(&shared, format!("read upstream OpenCode response: {error}"));

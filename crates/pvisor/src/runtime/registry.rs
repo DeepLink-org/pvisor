@@ -24,6 +24,8 @@ use pvisor_core::{ExecutorIdentity, ExecutorPlan, ResourceLimits};
 pub const RUN_META_FILENAME: &str = "run.json";
 pub const LEASE_FILENAME: &str = "lease.lock";
 pub const CONTROL_FILENAME: &str = "control.sock";
+const CONTROL_TIMEOUT: Duration = Duration::from_secs(2);
+const CONTROL_MAX_FRAME_BYTES: usize = 1024 * 1024;
 
 pub fn default_run_home() -> PathBuf {
     if let Some(root) = std::env::var_os("PVISOR_RUN_HOME") {
@@ -52,10 +54,34 @@ pub struct EnvironmentProjection {
     pub runtime_injected_keys: Vec<String>,
 }
 
+#[derive(Debug, Clone, Copy, Serialize, Deserialize, PartialEq, Eq)]
+#[serde(rename_all = "snake_case")]
+pub enum RunRecordState {
+    Running,
+    Completed,
+    Cancelled,
+    Failed,
+    Terminated,
+}
+
+impl RunRecordState {
+    pub fn as_str(&self) -> &'static str {
+        match self {
+            Self::Running => "running",
+            Self::Completed => "completed",
+            Self::Cancelled => "cancelled",
+            Self::Failed => "failed",
+            Self::Terminated => "terminated",
+        }
+    }
+}
+
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct RunRecord {
     pub schema_version: u32,
     pub run_id: String,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub attempt_id: Option<String>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub parent_run_id: Option<String>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
@@ -69,7 +95,7 @@ pub struct RunRecord {
     /// Admission-only data carried in memory to the authoritative Bundle.
     #[serde(skip)]
     pub executor_plan: Option<ExecutorPlan>,
-    pub state: String,
+    pub state: RunRecordState,
     pub started_at_unix_ms: u64,
     pub finished_at_unix_ms: Option<u64>,
     pub storage: PathBuf,
@@ -110,7 +136,14 @@ impl RunRecord {
         let stage = self.stage_dir();
         let lease = RunLease::acquire(&stage)?;
         let current = Self::read(&stage)?;
-        anyhow::ensure!(current.run_id == self.run_id, "Run identity changed while acquiring its lease");
+        anyhow::ensure!(
+            current.run_id == self.run_id,
+            "Run identity changed while acquiring its lease"
+        );
+        anyhow::ensure!(
+            current.stage_dir() == stage,
+            "Run backing changed while acquiring its lease"
+        );
         Ok((current, lease))
     }
     pub fn stage_dir(&self) -> PathBuf {
@@ -121,6 +154,11 @@ impl RunRecord {
     }
 
     pub fn write(&self) -> anyhow::Result<()> {
+        anyhow::ensure!(
+            self.schema_version == 1,
+            "unsupported Run record schema {}",
+            self.schema_version
+        );
         let stage = self.stage_dir();
         let path = stage.join(RUN_META_FILENAME);
         crate::util::write_private_json(&path, self)?;
@@ -142,7 +180,13 @@ impl RunRecord {
 
     pub fn read(stage: &Path) -> anyhow::Result<Self> {
         let path = stage.join(RUN_META_FILENAME);
-        Ok(serde_json::from_slice(&fs::read(&path)?)?)
+        let record: Self = serde_json::from_slice(&fs::read(&path)?)?;
+        anyhow::ensure!(
+            record.schema_version == 1,
+            "unsupported Run record schema {}",
+            record.schema_version
+        );
+        Ok(record)
     }
 
     pub fn remove_index(&self) -> anyhow::Result<()> {
@@ -176,7 +220,11 @@ impl RunLease {
         let lease = Self::acquire(stage_dir)?;
         if stage_dir.join(RUN_META_FILENAME).try_exists()? {
             let existing = RunRecord::read(stage_dir)?;
-            anyhow::bail!("Run storage {} already belongs to Run {}; choose unique storage", stage_dir.display(), existing.run_id);
+            anyhow::bail!(
+                "Run storage {} already belongs to Run {}; choose unique storage",
+                stage_dir.display(),
+                existing.run_id
+            );
         }
         Ok(lease)
     }
@@ -285,7 +333,6 @@ impl RunControlServer {
 impl Drop for RunControlServer {
     fn drop(&mut self) {
         self.stop.store(true, Ordering::Release);
-        let _ = std::os::unix::net::UnixStream::connect(&self.socket_path);
         if let Some(join) = self.join.take() {
             let _ = join.join();
         }
@@ -303,14 +350,13 @@ fn serve_control(
     filesystem: Option<&pvisor_overlayfs::FsMetrics>,
     network: Option<&pvisor_overlaynet::InterceptionMetrics>,
 ) {
-    use std::io::{BufRead, Write};
+    use std::io::Write;
     let request = (|| -> anyhow::Result<RunControlRequest> {
         // macOS accept inherits O_NONBLOCK from the listener. The line-based
         // protocol must wait for the complete request, including its newline.
         stream.set_nonblocking(false)?;
-        let mut line = String::new();
-        std::io::BufReader::new(&stream).read_line(&mut line)?;
-        Ok(serde_json::from_str(&line)?)
+        stream.set_write_timeout(Some(CONTROL_TIMEOUT))?;
+        Ok(serde_json::from_slice(&read_control_frame(&mut stream)?)?)
     })();
     let response = match request {
         Ok(RunControlRequest::Ping) => RunControlResponse {
@@ -402,13 +448,17 @@ fn control_request(
     stage: &Path,
     request: &RunControlRequest,
 ) -> anyhow::Result<RunControlResponse> {
-    use std::io::{BufRead, Write};
+    use std::io::Write;
     let mut stream = std::os::unix::net::UnixStream::connect(stage.join(CONTROL_FILENAME))?;
-    serde_json::to_writer(&mut stream, request)?;
-    stream.write_all(b"\n")?;
-    let mut line = String::new();
-    std::io::BufReader::new(stream).read_line(&mut line)?;
-    let response: RunControlResponse = serde_json::from_str(&line)?;
+    stream.set_write_timeout(Some(CONTROL_TIMEOUT))?;
+    let mut body = serde_json::to_vec(request)?;
+    anyhow::ensure!(
+        body.len() <= CONTROL_MAX_FRAME_BYTES,
+        "control frame too large"
+    );
+    body.push(b'\n');
+    stream.write_all(&body)?;
+    let response: RunControlResponse = serde_json::from_slice(&read_control_frame(&mut stream)?)?;
     if !response.ok {
         anyhow::bail!(
             "pVisor control request failed: {}",
@@ -416,6 +466,34 @@ fn control_request(
         );
     }
     Ok(response)
+}
+
+// One connection carries one frame. A total deadline also bounds slow trickle
+// clients; a timeout on each individual read would not bound teardown latency.
+fn read_control_frame(stream: &mut std::os::unix::net::UnixStream) -> anyhow::Result<Vec<u8>> {
+    use std::io::Read;
+    let deadline = std::time::Instant::now() + CONTROL_TIMEOUT;
+    let mut frame = Vec::new();
+    loop {
+        let remaining = deadline
+            .checked_duration_since(std::time::Instant::now())
+            .filter(|duration| !duration.is_zero())
+            .context("control frame deadline exceeded")?;
+        stream.set_read_timeout(Some(remaining))?;
+        let mut chunk = [0; 1024];
+        let count = stream.read(&mut chunk)?;
+        anyhow::ensure!(count != 0, "control frame ended before newline");
+        let newline = chunk[..count].iter().position(|byte| *byte == b'\n');
+        let length = newline.unwrap_or(count);
+        anyhow::ensure!(
+            frame.len() + length <= CONTROL_MAX_FRAME_BYTES,
+            "control frame too large"
+        );
+        frame.extend_from_slice(&chunk[..length]);
+        if newline.is_some() {
+            return Ok(frame);
+        }
+    }
 }
 
 pub fn control_ping(stage: &Path) -> bool {
@@ -677,6 +755,7 @@ mod tests {
 
     fn record(storage: &Path, stage: &Path, upper: &Path) -> RunRecord {
         RunRecord {
+            attempt_id: None,
             schema_version: 1,
             run_id: "run-test".into(),
             parent_run_id: None,
@@ -687,7 +766,7 @@ mod tests {
             command: vec!["true".into()],
             executor: None,
             executor_plan: None,
-            state: "completed".into(),
+            state: RunRecordState::Completed,
             started_at_unix_ms: 1,
             finished_at_unix_ms: Some(2),
             storage: storage.to_path_buf(),
@@ -705,6 +784,7 @@ mod tests {
                 id: "session-test".into(),
                 generation: 0,
                 target: storage.join("target"),
+                baseline_lower: None,
                 upper: OverlayUpper {
                     upper_dir: upper.to_path_buf(),
                     work_dir: stage.join("work"),
@@ -808,6 +888,58 @@ mod tests {
         assert!(is_live(temp.path()).unwrap());
         drop(lease);
         assert!(!is_live(temp.path()).unwrap());
+    }
+
+    #[test]
+    fn ownership_rereads_current_state_and_rejects_existing_or_invalid_storage() {
+        let temp = tempfile::tempdir().unwrap();
+        let mut current = record(temp.path(), temp.path(), &temp.path().join("upper"));
+        current.write().unwrap();
+        let selected = current.clone();
+        current.state = RunRecordState::Failed;
+        current.write().unwrap();
+        let (locked, lease) = selected.lock_current().unwrap();
+        assert_eq!(locked.state, RunRecordState::Failed);
+        assert!(selected.lock_current().is_err());
+        drop(lease);
+        assert!(RunLease::acquire_new(temp.path()).is_err());
+
+        let path = temp.path().join(RUN_META_FILENAME);
+        let mut wire = serde_json::to_value(&current).unwrap();
+        wire["state"] = "unknown".into();
+        fs::write(&path, serde_json::to_vec(&wire).unwrap()).unwrap();
+        assert!(RunRecord::read(temp.path()).is_err());
+        wire["state"] = "completed".into();
+        wire["schema_version"] = 99.into();
+        fs::write(&path, serde_json::to_vec(&wire).unwrap()).unwrap();
+        assert!(RunRecord::read(temp.path()).is_err());
+        assert!(RunLease::acquire_new(temp.path()).is_err());
+    }
+
+    #[test]
+    fn control_frames_require_a_newline_and_enforce_the_size_limit() {
+        use std::io::Write;
+        let (mut reader, mut writer) = std::os::unix::net::UnixStream::pair().unwrap();
+        writer.write_all(b"{\"type\":\"ping\"}\n").unwrap();
+        assert_eq!(
+            read_control_frame(&mut reader).unwrap(),
+            b"{\"type\":\"ping\"}"
+        );
+        drop(writer);
+        assert!(read_control_frame(&mut reader).is_err());
+
+        let (mut reader, mut writer) = std::os::unix::net::UnixStream::pair().unwrap();
+        let sending = std::thread::spawn(move || {
+            let _ = writer.write_all(&vec![b'x'; CONTROL_MAX_FRAME_BYTES + 1]);
+        });
+        assert!(read_control_frame(&mut reader).is_err());
+        drop(reader);
+        sending.join().unwrap();
+
+        let (mut reader, _idle_client) = std::os::unix::net::UnixStream::pair().unwrap();
+        let started = std::time::Instant::now();
+        assert!(read_control_frame(&mut reader).is_err());
+        assert!(started.elapsed() < CONTROL_TIMEOUT + Duration::from_secs(2));
     }
 
     #[test]

@@ -23,7 +23,7 @@ use std::{
 
 const META_FILENAME: &str = "overlay.json";
 const APPLY_LEDGER_FILENAME: &str = "apply-ledger.json";
-const APPLY_LEDGER_SCHEMA_VERSION: u32 = 1;
+const APPLY_LEDGER_SCHEMA_VERSION: u32 = 2;
 use crate::core::OPAQUE_XATTRS;
 use crate::{OPAQUE_NAME as OPAQUE_WHITEOUT, WHITEOUT_PREFIX};
 
@@ -203,25 +203,44 @@ pub fn overlay_changes(
     if !upper_dir.is_dir() {
         return Ok(changes);
     }
+    let opaque_change = |path: &Path| ChangeEntry {
+        path: path.display().to_string(),
+        path_bytes: raw_change_path(path),
+        kind: ChangeKind::Opaque,
+        old_type: Some(ChangeEntryType::Directory),
+        new_type: Some(ChangeEntryType::Directory),
+        size_bytes: None,
+        mode: None,
+    };
+    if crate::is_opaque_directory(upper_dir) {
+        changes.push(opaque_change(Path::new("")));
+    }
+    if path_exists(&upper_dir.join(crate::ROOT_METADATA_NAME)) {
+        let metadata = fs::symlink_metadata(upper_dir)?;
+        changes.push(ChangeEntry {
+            path: String::new(),
+            path_bytes: None,
+            kind: ChangeKind::Modified,
+            old_type: Some(ChangeEntryType::Directory),
+            new_type: Some(ChangeEntryType::Directory),
+            size_bytes: None,
+            mode: Some(metadata.mode() & 0o7777),
+        });
+    }
     walk_upper(upper_dir, upper_dir, &mut |rel, is_whiteout| {
         let upper_path = upper_dir.join(&rel);
         if is_whiteout {
             let name = rel.file_name().unwrap_or_default();
             let parent = rel.parent().unwrap_or_else(|| Path::new(""));
-            if name == OPAQUE_WHITEOUT {
-                changes.push(ChangeEntry {
-                    path: parent.display().to_string(),
-                    kind: ChangeKind::Opaque,
-                    old_type: Some(ChangeEntryType::Directory),
-                    new_type: Some(ChangeEntryType::Directory),
-                    size_bytes: None,
-                    mode: None,
-                });
-            } else if let Some(victim) = whiteout_target(name) {
+            if name == OPAQUE_WHITEOUT || name == crate::ROOT_METADATA_NAME {
+                return Ok(());
+            }
+            if let Some(victim) = whiteout_target(name) {
                 let path = parent.join(victim);
                 let old = lower_metadata(lower_dirs, &path);
                 changes.push(ChangeEntry {
                     path: path.display().to_string(),
+                    path_bytes: raw_change_path(&path),
                     kind: ChangeKind::Deleted,
                     old_type: old.as_ref().map(metadata_type),
                     new_type: None,
@@ -231,7 +250,6 @@ pub fn overlay_changes(
             }
             return Ok(());
         }
-
         let new = fs::symlink_metadata(&upper_path)?;
         let old = lower_metadata(lower_dirs, &rel);
         let old_type = old.as_ref().map(metadata_type);
@@ -243,22 +261,39 @@ pub fn overlay_changes(
         };
         changes.push(ChangeEntry {
             path: rel.display().to_string(),
+            path_bytes: raw_change_path(&rel),
             kind,
             old_type,
             new_type: Some(new_type),
             size_bytes: new.is_file().then_some(new.len()),
             mode: Some(new.permissions().mode() & 0o7777),
         });
+        if new.is_dir() && crate::is_opaque_directory(&upper_path) {
+            changes.push(opaque_change(&rel));
+        }
         Ok(())
     })?;
-    changes.sort_by(|left, right| left.path.cmp(&right.path).then(left.kind.cmp(&right.kind)));
+    changes.sort_by(|left, right| {
+        left.relative_path()
+            .cmp(&right.relative_path())
+            .then(left.kind.cmp(&right.kind))
+    });
     Ok(changes)
 }
 
+fn raw_change_path(path: &Path) -> Option<Vec<u8>> {
+    path.to_str()
+        .is_none()
+        .then(|| path.as_os_str().as_bytes().to_vec())
+}
+
 fn lower_metadata(lower_dirs: &[PathBuf], relative: &Path) -> Option<fs::Metadata> {
-    lower_dirs
-        .iter()
-        .find_map(|lower| fs::symlink_metadata(lower.join(relative)).ok())
+    lower_dirs.iter().find_map(|lower| {
+        crate::core::layer_path(lower, relative)
+            .ok()
+            .flatten()
+            .and_then(|path| fs::symlink_metadata(path).ok())
+    })
 }
 
 fn metadata_type(metadata: &fs::Metadata) -> ChangeEntryType {
@@ -395,12 +430,17 @@ pub fn plan_overlay_apply(
     lower_dirs: &[PathBuf],
     selection: &ApplySelection,
 ) -> Result<ApplyPlan, OverlayError> {
-    crate::OverlayLayout::new(lower_dirs.to_vec(), record.target.clone())?;
+    crate::OverlayLayout::with_baseline(
+        lower_dirs.to_vec(),
+        record.target.clone(),
+        record.baseline_lower.as_deref(),
+    )?;
     let changes = overlay_changes(record, lower_dirs)?;
+    replacement_paths(&changes)?;
     let compiled = CompiledApplySelection::compile(selection)?;
     let mut selected_paths = changes
         .iter()
-        .map(|change| PathBuf::from(&change.path))
+        .map(|change| change.relative_path())
         .filter(|path| compiled.requested(path) && !compiled.excluded(path))
         .collect::<BTreeSet<_>>();
 
@@ -413,7 +453,7 @@ pub fn plan_overlay_apply(
     let opaque_dirs = changes
         .iter()
         .filter(|change| change.kind == ChangeKind::Opaque)
-        .map(|change| PathBuf::from(&change.path))
+        .map(|change| change.relative_path())
         .collect::<Vec<_>>();
     let hard_link_groups = upper_hard_link_groups(record.upper.path())?;
 
@@ -440,7 +480,7 @@ pub fn plan_overlay_apply(
             }
             if selected_paths.contains(opaque) {
                 for change in &changes {
-                    let path = PathBuf::from(&change.path);
+                    let path = change.relative_path();
                     if at_or_below(&path, opaque) {
                         if compiled.excluded(&path) {
                             return Err(OverlayError::Apply(format!(
@@ -474,7 +514,7 @@ pub fn plan_overlay_apply(
             let mut parent = path.parent();
             while let Some(ancestor) = parent {
                 if changes.iter().any(|change| {
-                    Path::new(&change.path) == ancestor
+                    change.relative_path() == ancestor
                         && change.new_type == Some(ChangeEntryType::Directory)
                 }) {
                     if compiled.excluded(ancestor) {
@@ -497,7 +537,7 @@ pub fn plan_overlay_apply(
 
     let selected = changes
         .iter()
-        .filter(|change| selected_paths.contains(Path::new(&change.path)))
+        .filter(|change| selected_paths.contains(&change.relative_path()))
         .cloned()
         .collect::<Vec<_>>();
     Ok(ApplyPlan {
@@ -541,6 +581,11 @@ pub fn apply_overlay_selected(
             "target is an immutable image rootfs: {}",
             record.target.display()
         )));
+    }
+    if record.state == OverlayState::Discarded {
+        return Err(OverlayError::InvalidState(
+            "discarded overlays cannot recover pending applies".into(),
+        ));
     }
     let _target_lock = TargetApplyLock::acquire(&record.target)?;
     recover_pending_applies_locked(record, lower_dirs)?;
@@ -593,11 +638,13 @@ pub fn apply_overlay_selected(
         &preimages,
         &plan.selected,
         false,
+        &apply_id,
     )?;
     mark_apply_target_applied(record, &apply_id)?;
     let remaining = complete_target_applied(record, lower_dirs, &plan.selected_paths)?;
     consume_applied_preimages(record, &plan.selected_paths, &plan.selected)?;
     mark_apply_committed(record, &apply_id, remaining.len())?;
+    cleanup_apply_backups(record, &apply_id)?;
     Ok(ApplyOutcome {
         apply_id,
         applied: plan.selected,
@@ -621,7 +668,18 @@ fn recover_pending_applies_locked(
     record: &mut OverlayRecord,
     lower_dirs: &[PathBuf],
 ) -> Result<Vec<String>, OverlayError> {
-    let pending = load_apply_records(&record.stage_dir)?
+    let records = load_apply_records(&record.stage_dir)?;
+    for apply in &records {
+        if apply.state == ApplyRecordState::Committed
+            && apply.schema_version >= 2
+            && apply.overlay_id == record.id
+            && apply.overlay_generation == record.generation
+            && apply.target == record.target
+        {
+            cleanup_apply_backups(record, &apply.apply_id)?;
+        }
+    }
+    let pending = records
         .into_iter()
         .filter(|apply| apply.state != ApplyRecordState::Committed)
         .collect::<Vec<_>>();
@@ -660,15 +718,239 @@ fn recover_pending_applies_locked(
                 &apply.preimages,
                 &apply.changes,
                 true,
+                &apply.apply_id,
             )?;
             mark_apply_target_applied(record, &apply.apply_id)?;
         }
         let remaining = complete_target_applied(record, lower_dirs, &selected_paths)?;
         consume_applied_preimages(record, &selected_paths, &apply.changes)?;
         mark_apply_committed(record, &apply.apply_id, remaining.len())?;
+        cleanup_apply_backups(record, &apply.apply_id)?;
         recovered.push(apply.apply_id);
     }
     Ok(recovered)
+}
+
+// Private, same-filesystem backups belong to the durable apply_id. They survive
+// errors and are removed only after the ledger commits, never by temporary Drop.
+fn apply_backup_dir(record: &OverlayRecord, apply_id: &str) -> Result<PathBuf, OverlayError> {
+    let target = fs::canonicalize(&record.target)?;
+    let parent = target
+        .parent()
+        .ok_or_else(|| OverlayError::Apply("cannot replace the filesystem root".into()))?;
+    Ok(parent.join(format!(
+        ".pvisor-apply-backup-{}-{}",
+        path_digest(&target),
+        path_digest(Path::new(apply_id))
+    )))
+}
+
+fn replacement_paths(changes: &[ChangeEntry]) -> Result<Vec<PathBuf>, OverlayError> {
+    let mut paths = changes
+        .iter()
+        .filter(|change| replaces_directory(change))
+        .map(ChangeEntry::relative_path)
+        .collect::<Vec<_>>();
+    paths.sort();
+    paths.dedup();
+    let mut roots = Vec::new();
+    for path in paths {
+        crate::OverlayCore::validate_rel(&path)?;
+        if path.as_os_str().is_empty() {
+            return Err(OverlayError::Apply(
+                "opaque root apply is unsupported; select explicit subdirectories".into(),
+            ));
+        }
+        if !roots.iter().any(|root: &PathBuf| path.starts_with(root)) {
+            roots.push(path);
+        }
+    }
+    Ok(roots)
+}
+
+fn open_backup_dir(path: &Path) -> Result<File, OverlayError> {
+    match fs::DirBuilder::new().mode(0o700).create(path) {
+        Ok(()) => {
+            File::open(path.parent().unwrap())?.sync_all()?;
+        }
+        Err(error) if error.kind() == io::ErrorKind::AlreadyExists => {}
+        Err(error) => return Err(error.into()),
+    }
+    let directory = fs::OpenOptions::new()
+        .read(true)
+        .custom_flags(libc::O_DIRECTORY | libc::O_NOFOLLOW)
+        .open(path)?;
+    let metadata = directory.metadata()?;
+    if metadata.uid() != unsafe { libc::geteuid() } || metadata.mode() & 0o077 != 0 {
+        return Err(OverlayError::Apply(
+            "apply backup directory must be private and owned by the current user".into(),
+        ));
+    }
+    Ok(directory)
+}
+
+fn back_up_replacements(
+    record: &OverlayRecord,
+    apply_id: &str,
+    changes: &[ChangeEntry],
+) -> Result<(), OverlayError> {
+    let paths = replacement_paths(changes)?;
+    if paths.is_empty() {
+        return Ok(());
+    }
+    let backup = apply_backup_dir(record, apply_id)?;
+    let directory = open_backup_dir(&backup)?;
+    for path in paths {
+        let destination = record.target.join(&path);
+        let slot = backup.join(path_digest(&path));
+        if !path_exists(&slot) && path_exists(&destination) {
+            fs::rename(&destination, &slot)?;
+            directory.sync_all()?;
+            File::open(destination.parent().unwrap())?.sync_all()?;
+        }
+    }
+    Ok(())
+}
+
+fn restore_interrupted_replacements(
+    record: &OverlayRecord,
+    apply_id: &str,
+    preimages: &[PathPreimage],
+    changes: &[ChangeEntry],
+) -> Result<(), OverlayError> {
+    let backup = apply_backup_dir(record, apply_id)?;
+    if !path_exists(&backup) {
+        return Ok(());
+    }
+    let directory = open_backup_dir(&backup)?;
+    for path in replacement_paths(changes)? {
+        let slot = backup.join(path_digest(&path));
+        let destination = record.target.join(&path);
+        if !path_exists(&slot) {
+            continue;
+        }
+        for preimage in preimages
+            .iter()
+            .filter(|preimage| preimage.relative_path().starts_with(&path))
+        {
+            let relative = preimage.relative_path();
+            let suffix = relative
+                .strip_prefix(&path)
+                .map_err(|_| io::Error::from_raw_os_error(libc::EINVAL))?;
+            if !preimage.state.matches(&fingerprint_at(&slot, suffix)?) {
+                return Err(OverlayError::Apply(format!(
+                    "apply backup changed at {}; original data retained for inspection",
+                    slot.display()
+                )));
+            }
+        }
+        if path_exists(&destination) {
+            continue;
+        }
+        fs::rename(&slot, &destination)?;
+        File::open(destination.parent().unwrap())?.sync_all()?;
+        directory.sync_all()?;
+    }
+    Ok(())
+}
+
+// Replacement directories are assembled outside target and published as one rename.
+// A crash leaves either an absent target with the original backup, or a complete tree.
+fn install_replacement_directories(
+    record: &OverlayRecord,
+    apply_id: &str,
+    changes: &[ChangeEntry],
+    selected: &BTreeSet<PathBuf>,
+    hard_links: &mut HashMap<(u64, u64), PathBuf>,
+) -> Result<Vec<PathBuf>, OverlayError> {
+    let roots = replacement_paths(changes)?
+        .into_iter()
+        .filter(|path| {
+            fs::symlink_metadata(record.upper.path().join(path))
+                .is_ok_and(|metadata| metadata.is_dir())
+        })
+        .collect::<Vec<_>>();
+    if roots.is_empty() {
+        return Ok(roots);
+    }
+    let backup = apply_backup_dir(record, apply_id)?;
+    let directory = open_backup_dir(&backup)?;
+    for path in &roots {
+        let destination = record.target.join(path);
+        let source = record.upper.path().join(path);
+        if path_exists(&destination) {
+            if !replacement_tree_matches(&source, &destination)? {
+                return Err(OverlayError::Apply(format!(
+                    "replacement {} changed; original data retained at {}",
+                    destination.display(),
+                    backup.display()
+                )));
+            }
+            walk_upper(&source, &source, &mut |relative, whiteout| {
+                if !whiteout {
+                    let metadata = fs::symlink_metadata(source.join(&relative))?;
+                    if metadata.is_file() && metadata.nlink() > 1 {
+                        hard_links
+                            .insert((metadata.dev(), metadata.ino()), destination.join(relative));
+                    }
+                }
+                Ok(())
+            })?;
+            continue;
+        }
+        let temporary = backup.join(format!("{}.new", path_digest(path)));
+        remove_path(&temporary)?;
+        fs::create_dir(&temporary)?;
+        apply_selected_directory(&source, &temporary, path, selected, hard_links)?;
+        fs::rename(&temporary, &destination)?;
+        for linked in hard_links.values_mut() {
+            if let Ok(suffix) = linked.strip_prefix(&temporary) {
+                *linked = destination.join(suffix);
+            }
+        }
+        File::open(destination.parent().unwrap())?.sync_all()?;
+        directory.sync_all()?;
+    }
+    Ok(roots)
+}
+
+fn replacement_tree_matches(source: &Path, destination: &Path) -> io::Result<bool> {
+    let current = fingerprint_at(destination, Path::new(""))?;
+    let desired = fingerprint_at(source, Path::new(""))?;
+    if !recovery_fingerprint_matches(&current, &desired) {
+        return Ok(false);
+    }
+    if !matches!(desired, PathFingerprint::Directory { .. }) {
+        return Ok(true);
+    }
+    let source_names = fs::read_dir(source)?
+        .map(|entry| entry.map(|entry| entry.file_name()))
+        .collect::<io::Result<BTreeSet<_>>>()?
+        .into_iter()
+        .filter(|name| !name.as_bytes().starts_with(WHITEOUT_PREFIX.as_bytes()))
+        .collect::<BTreeSet<_>>();
+    let destination_names = fs::read_dir(destination)?
+        .map(|entry| entry.map(|entry| entry.file_name()))
+        .collect::<io::Result<BTreeSet<_>>>()?;
+    if source_names != destination_names {
+        return Ok(false);
+    }
+    for name in source_names {
+        if !replacement_tree_matches(&source.join(&name), &destination.join(&name))? {
+            return Ok(false);
+        }
+    }
+    Ok(true)
+}
+
+fn cleanup_apply_backups(record: &OverlayRecord, apply_id: &str) -> Result<(), OverlayError> {
+    let backup = apply_backup_dir(record, apply_id)?;
+    if path_exists(&backup) {
+        let _directory = open_backup_dir(&backup)?;
+        fs::remove_dir_all(&backup)?;
+        File::open(backup.parent().unwrap())?.sync_all()?;
+    }
+    Ok(())
 }
 
 fn consume_applied_preimages(
@@ -683,9 +965,9 @@ fn consume_applied_preimages(
         .map(|preimage| preimage.relative_path())
         .filter(|path| {
             (selected_paths.contains(path)
-                || changes
-                    .iter()
-                    .any(|change| replaces_directory(change) && path.starts_with(&change.path)))
+                || changes.iter().any(|change| {
+                    replaces_directory(change) && path.starts_with(change.relative_path())
+                }))
                 && !fs::symlink_metadata(record.upper.path().join(path)).is_ok_and(|m| m.is_dir())
         })
         .collect::<Vec<_>>();
@@ -698,11 +980,44 @@ fn apply_prepared_target(
     preimages: &[PathPreimage],
     changes: &[ChangeEntry],
     recovering: bool,
+    apply_id: &str,
 ) -> Result<(), OverlayError> {
-    validate_target_preimages(record, preimages, changes, recovering)?;
+    if recovering {
+        restore_interrupted_replacements(record, apply_id, preimages, changes)?;
+    }
+    validate_target_preimages(record, preimages, changes, recovering).map_err(|error| {
+        match apply_backup_dir(record, apply_id) {
+            Ok(backup) if path_exists(&backup) => OverlayError::Apply(format!(
+                "{error}; original replacement data retained at {}",
+                backup.display()
+            )),
+            _ => error,
+        }
+    })?;
+    back_up_replacements(record, apply_id, changes)?;
     let upper_dir = record.upper.path();
     if upper_dir.is_dir() && !selected_paths.is_empty() {
-        apply_selected_upper(upper_dir, &record.target, selected_paths)?;
+        let mut hard_links = HashMap::new();
+        let replaced = install_replacement_directories(
+            record,
+            apply_id,
+            changes,
+            selected_paths,
+            &mut hard_links,
+        )?;
+        let remaining_paths = selected_paths
+            .iter()
+            .filter(|path| !replaced.iter().any(|root| path.starts_with(root)))
+            .cloned()
+            .collect();
+        let target = fs::canonicalize(&record.target)?;
+        apply_selected_directory(
+            upper_dir,
+            &target,
+            Path::new(""),
+            &remaining_paths,
+            &mut hard_links,
+        )?;
         // Persist this before TargetApplied/pruning: recovery must not adopt
         // arbitrary target edits made after a crash as a new baseline.
         for path in selected_paths {
@@ -762,7 +1077,8 @@ fn prepare_apply_preimages(
     // descendant still needs validation before recursive deletion/replacement.
     preimages.extend(journal.into_values().filter(|preimage| {
         changes.iter().any(|change| {
-            replaces_directory(change) && preimage.relative_path().starts_with(&change.path)
+            replaces_directory(change)
+                && preimage.relative_path().starts_with(change.relative_path())
         })
     }));
     preimages.sort_by(|left, right| left.path.cmp(&right.path));
@@ -776,7 +1092,7 @@ fn replaces_directory(change: &ChangeEntry) -> bool {
 }
 
 fn recovery_fingerprint_matches(current: &PathFingerprint, expected: &PathFingerprint) -> bool {
-    if current == expected {
+    if expected.matches(current) {
         return true;
     }
     matches!(
@@ -797,6 +1113,7 @@ fn recovery_fingerprint_matches(current: &PathFingerprint, expected: &PathFinger
         ) if current_mode == expected_mode
             && current_uid == expected_uid
             && current_gid == expected_gid
+            && (expected.xattrs().is_none() || current.xattrs() == expected.xattrs())
     )
 }
 
@@ -806,13 +1123,13 @@ fn desired_fingerprint(
     changes: &[ChangeEntry],
 ) -> Result<Option<PathFingerprint>, OverlayError> {
     let Some(change) = changes.iter().find(|change| {
-        Path::new(&change.path) == path
-            || (replaces_directory(change) && path.starts_with(&change.path))
+        change.relative_path() == path
+            || (replaces_directory(change) && path.starts_with(change.relative_path()))
     }) else {
         return Ok(None);
     };
     if change.kind == ChangeKind::Deleted
-        || (change.kind == ChangeKind::TypeChanged && Path::new(&change.path) != path)
+        || (change.kind == ChangeKind::TypeChanged && change.relative_path() != path)
     {
         return Ok(Some(PathFingerprint::Absent));
     }
@@ -828,7 +1145,7 @@ fn validate_target_preimages(
     for preimage in preimages {
         let path = preimage.relative_path();
         let current = fingerprint_at(&record.target, &path)?;
-        if current == preimage.state {
+        if preimage.state.matches(&current) {
             continue;
         }
         if recovering
@@ -868,12 +1185,26 @@ fn complete_target_applied(
 
 /// Merge the complete staging upper onto `target`.
 pub fn apply_overlay(record: &mut OverlayRecord) -> Result<(), OverlayError> {
-    let lower_dirs = vec![record.target.clone()];
+    let lower_dirs = vec![
+        record
+            .baseline_lower
+            .clone()
+            .unwrap_or_else(|| record.target.clone()),
+    ];
     apply_overlay_selected(record, &lower_dirs, &ApplySelection::default()).map(|_| ())
 }
 
 /// Drop staging upper (and optionally the whole stage dir contents except meta).
 pub fn discard_overlay(record: &mut OverlayRecord) -> Result<(), OverlayError> {
+    let _target_lock = TargetApplyLock::acquire(&record.target)?;
+    if load_apply_records(&record.stage_dir)?
+        .iter()
+        .any(|apply| apply.state != ApplyRecordState::Committed)
+    {
+        return Err(OverlayError::InvalidState(
+            "pending apply must be recovered before dropping its staging data".into(),
+        ));
+    }
     match record.state {
         OverlayState::Discarded => return Ok(()),
         OverlayState::Applied => {
@@ -931,6 +1262,7 @@ fn apply_upper_onto_target(upper: &Path, target: &Path) -> Result<(), OverlayErr
     apply_directory(upper, &target, &mut hard_links, false)
 }
 
+#[cfg(test)]
 fn apply_selected_upper(
     upper: &Path,
     target: &Path,
@@ -955,7 +1287,8 @@ fn apply_selected_directory(
     hard_links: &mut HashMap<(u64, u64), PathBuf>,
 ) -> Result<(), OverlayError> {
     ensure_directory(destination)?;
-    let opaque = path_exists(&source.join(OPAQUE_WHITEOUT)) || has_opaque_xattr(source);
+    let durable_directory = File::open(destination)?;
+    let opaque = crate::is_opaque_directory(source);
     if opaque && selected.contains(relative) {
         for entry in fs::read_dir(destination)? {
             remove_path(&entry?.path())?;
@@ -965,7 +1298,7 @@ fn apply_selected_directory(
     let entries = fs::read_dir(source)?.collect::<Result<Vec<_>, _>>()?;
     for entry in &entries {
         let name = entry.file_name();
-        if name == OPAQUE_WHITEOUT {
+        if name == OPAQUE_WHITEOUT || name == crate::ROOT_METADATA_NAME {
             continue;
         }
         if let Some(victim) = whiteout_target(&name) {
@@ -998,13 +1331,21 @@ fn apply_selected_directory(
                     selected,
                     hard_links,
                 )?;
-                if selected.contains(&logical) {
-                    copy_host_metadata(&source_path, &target_path)?;
-                }
             }
         } else if selected.contains(&logical) {
             copy_upper_entry(&source_path, &destination.join(name), hard_links)?;
         }
+    }
+    if selected.contains(relative)
+        && (!relative.as_os_str().is_empty()
+            || path_exists(&source.join(crate::ROOT_METADATA_NAME)))
+    {
+        copy_host_metadata(source, destination)?;
+    }
+    // Covers pure deletes, empty directories and directory metadata, as well as files.
+    durable_directory.sync_all()?;
+    if let Some(parent) = destination.parent() {
+        File::open(parent)?.sync_all()?;
     }
     Ok(())
 }
@@ -1024,7 +1365,7 @@ fn prune_selected_directory(
     let entries = fs::read_dir(directory)?.collect::<Result<Vec<_>, _>>()?;
     for entry in entries {
         let name = entry.file_name();
-        if name == OPAQUE_WHITEOUT {
+        if name == OPAQUE_WHITEOUT || name == crate::ROOT_METADATA_NAME {
             if selected.contains(relative) {
                 remove_path(&entry.path())?;
             }
@@ -1070,12 +1411,29 @@ pub fn load_apply_records(stage_dir: &Path) -> Result<Vec<ApplyRecord>, OverlayE
     };
     let ledger = serde_json::from_slice::<ApplyLedger>(&raw)
         .map_err(|error| OverlayError::Meta(format!("{}: {error}", path.display())))?;
-    if ledger.schema_version != APPLY_LEDGER_SCHEMA_VERSION {
+    if !matches!(ledger.schema_version, 1 | APPLY_LEDGER_SCHEMA_VERSION) {
         return Err(OverlayError::Meta(format!(
             "{}: unsupported apply ledger schema {}",
             path.display(),
             ledger.schema_version
         )));
+    }
+    for record in &ledger.records {
+        if !matches!(record.schema_version, 1 | APPLY_LEDGER_SCHEMA_VERSION) {
+            return Err(OverlayError::Meta(format!(
+                "unsupported apply record schema {}",
+                record.schema_version
+            )));
+        }
+        for path in &record.planned_paths {
+            OverlayCore::validate_rel(path)?;
+        }
+        for change in &record.changes {
+            OverlayCore::validate_rel(&change.relative_path())?;
+        }
+        for preimage in &record.preimages {
+            OverlayCore::validate_rel(&preimage.relative_path())?;
+        }
     }
     Ok(ledger.records)
 }
@@ -1181,7 +1539,7 @@ fn apply_directory(
     preserve_metadata: bool,
 ) -> Result<(), OverlayError> {
     ensure_directory(destination)?;
-    let opaque = path_exists(&source.join(OPAQUE_WHITEOUT)) || has_opaque_xattr(source);
+    let opaque = crate::is_opaque_directory(source);
     if opaque {
         for entry in fs::read_dir(destination)? {
             remove_path(&entry?.path())?;
@@ -1192,7 +1550,7 @@ fn apply_directory(
     // Whiteouts are processed first, independent of host readdir order.
     for entry in &entries {
         let name = entry.file_name();
-        if name == OPAQUE_WHITEOUT {
+        if name == OPAQUE_WHITEOUT || name == crate::ROOT_METADATA_NAME {
             continue;
         }
         if let Some(victim) = whiteout_target(&name) {
@@ -1492,18 +1850,6 @@ fn copy_host_xattrs(source: &CString, destination: &CString) -> io::Result<()> {
     Ok(())
 }
 
-fn has_opaque_xattr(path: &Path) -> bool {
-    let Ok(path) = c_path(path) else {
-        return false;
-    };
-    OPAQUE_XATTRS.iter().any(|name| {
-        let Ok(name) = CString::new(*name) else {
-            return false;
-        };
-        get_host_xattr(&path, &name).is_ok_and(|value| value == b"y")
-    })
-}
-
 fn clear_opaque_xattrs(path: &Path) -> Result<(), OverlayError> {
     let path = c_path(path)?;
     for name in OPAQUE_XATTRS {
@@ -1648,6 +1994,93 @@ fn walk_upper(
 
 #[cfg(test)]
 mod tests {
+
+    #[test]
+    fn interrupted_directory_replacement_restores_the_recorded_original() {
+        let tmp = tempfile::tempdir().unwrap();
+        let target = tmp.path().join("target");
+        let upper = tmp.path().join("upper");
+        fs::create_dir_all(target.join("replaced")).unwrap();
+        fs::write(target.join("replaced/old"), b"original").unwrap();
+        fs::create_dir_all(upper.join("replaced")).unwrap();
+        fs::write(upper.join("replaced").join(OPAQUE_WHITEOUT), b"").unwrap();
+        fs::write(upper.join("replaced/new"), b"desired").unwrap();
+        let record = OverlayRecord {
+            id: "backup-check".into(),
+            generation: 0,
+            target: target.clone(),
+            baseline_lower: None,
+            upper: OverlayUpper {
+                upper_dir: upper,
+                work_dir: tmp.path().join("work"),
+            },
+            merged_dir: tmp.path().join("merged"),
+            stage_dir: tmp.path().join("stage"),
+            excluded_paths: Vec::new(),
+            access_policy: Default::default(),
+            auto_apply: false,
+            auto_discard: false,
+            protect_target: false,
+            state: OverlayState::Staged,
+        };
+        let changes = overlay_changes(&record, std::slice::from_ref(&target)).unwrap();
+        let preimages = vec![
+            PathPreimage {
+                path: b"replaced".to_vec(),
+                state: fingerprint_at(&target, Path::new("replaced")).unwrap(),
+            },
+            PathPreimage {
+                path: b"replaced/old".to_vec(),
+                state: fingerprint_at(&target, Path::new("replaced/old")).unwrap(),
+            },
+        ];
+        back_up_replacements(&record, "interrupted", &changes).unwrap();
+        assert!(!target.join("replaced").exists());
+        restore_interrupted_replacements(&record, "interrupted", &preimages, &changes).unwrap();
+        assert_eq!(fs::read(target.join("replaced/old")).unwrap(), b"original");
+        back_up_replacements(&record, "interrupted", &changes).unwrap();
+        let unfinished = apply_backup_dir(&record, "interrupted")
+            .unwrap()
+            .join(format!("{}.new", path_digest(Path::new("replaced"))));
+        fs::create_dir(&unfinished).unwrap();
+        fs::write(unfinished.join("partial"), b"partial").unwrap();
+        let selected = changes.iter().map(ChangeEntry::relative_path).collect();
+        install_replacement_directories(
+            &record,
+            "interrupted",
+            &changes,
+            &selected,
+            &mut HashMap::new(),
+        )
+        .unwrap();
+        assert_eq!(fs::read(target.join("replaced/new")).unwrap(), b"desired");
+        assert!(!target.join("replaced/partial").exists());
+        assert!(!target.join("replaced/old").exists());
+        install_replacement_directories(
+            &record,
+            "interrupted",
+            &changes,
+            &selected,
+            &mut HashMap::new(),
+        )
+        .unwrap();
+        fs::write(target.join("replaced/external"), b"do not overwrite").unwrap();
+        assert!(
+            install_replacement_directories(
+                &record,
+                "interrupted",
+                &changes,
+                &selected,
+                &mut HashMap::new()
+            )
+            .is_err()
+        );
+        assert_eq!(
+            fs::read(target.join("replaced/external")).unwrap(),
+            b"do not overwrite"
+        );
+        cleanup_apply_backups(&record, "interrupted").unwrap();
+    }
     use super::*;
     use tempfile::tempdir;
     #[test]
@@ -1670,6 +2103,7 @@ mod tests {
             id: "t".into(),
             generation: 0,
             target: target.clone(),
+            baseline_lower: None,
             upper: OverlayUpper {
                 upper_dir: upper.clone(),
                 work_dir: work.clone(),
@@ -1724,6 +2158,7 @@ mod tests {
             generation: 0,
             id: "selective".into(),
             target: target.clone(),
+            baseline_lower: None,
             upper: OverlayUpper {
                 upper_dir: upper.clone(),
                 work_dir: stage.join("work"),
@@ -1854,6 +2289,7 @@ mod tests {
                 id: operation.into(),
                 generation: 0,
                 target: target.clone(),
+                baseline_lower: None,
                 upper: OverlayUpper {
                     upper_dir: upper.clone(),
                     work_dir: stage.join("work"),
@@ -1950,6 +2386,7 @@ mod tests {
             id: "reuse".into(),
             generation: 0,
             target: target.clone(),
+            baseline_lower: None,
             upper: OverlayUpper {
                 upper_dir: upper.clone(),
                 work_dir: stage.join("work"),
@@ -2031,6 +2468,7 @@ mod tests {
                 generation: 0,
                 id: format!("recover-{target_already_mutated}"),
                 target: target.clone(),
+                baseline_lower: None,
                 upper: OverlayUpper {
                     upper_dir: upper.clone(),
                     work_dir: stage.join("work"),
@@ -2122,6 +2560,7 @@ mod tests {
             generation: 0,
             id: "conflicting-apply".into(),
             target: target.clone(),
+            baseline_lower: None,
             upper: OverlayUpper {
                 upper_dir: upper.clone(),
                 work_dir: work,
@@ -2158,6 +2597,7 @@ mod tests {
             generation: 0,
             id: "opaque-recovery".into(),
             target: target.clone(),
+            baseline_lower: None,
             upper: OverlayUpper {
                 upper_dir: upper.clone(),
                 work_dir: stage.join("work"),
@@ -2196,7 +2636,15 @@ mod tests {
         )
         .unwrap();
 
-        apply_prepared_target(&record, &plan.selected_paths, &[], &plan.selected, false).unwrap();
+        apply_prepared_target(
+            &record,
+            &plan.selected_paths,
+            &[],
+            &plan.selected,
+            false,
+            &apply_id,
+        )
+        .unwrap();
         mark_apply_target_applied(&record, &apply_id).unwrap();
         assert!(!target.join("replaced/old").exists());
         assert_eq!(fs::read(target.join("replaced/new")).unwrap(), b"new");
@@ -2235,6 +2683,7 @@ mod tests {
             generation: 0,
             id: "glob".into(),
             target: target.clone(),
+            baseline_lower: None,
             upper: OverlayUpper {
                 upper_dir: upper.clone(),
                 work_dir: stage.join("work"),
@@ -2286,6 +2735,7 @@ mod tests {
             generation: 0,
             id: "opaque-select".into(),
             target: target.clone(),
+            baseline_lower: None,
             upper: OverlayUpper {
                 upper_dir: upper,
                 work_dir: stage.join("work"),
@@ -2338,6 +2788,7 @@ mod tests {
             generation: 0,
             id: "hard-links".into(),
             target: target.clone(),
+            baseline_lower: None,
             upper: OverlayUpper {
                 upper_dir: upper,
                 work_dir: stage.join("work"),
@@ -2382,6 +2833,7 @@ mod tests {
             generation: 0,
             id: "invalid-selection".into(),
             target: target.clone(),
+            baseline_lower: None,
             upper: OverlayUpper {
                 upper_dir: upper,
                 work_dir: tmp.path().join("work"),
@@ -2425,6 +2877,7 @@ mod tests {
             generation: 0,
             id: "changes".into(),
             target: target.clone(),
+            baseline_lower: None,
             upper: OverlayUpper {
                 upper_dir: upper,
                 work_dir: tmp.path().join("work"),
@@ -2473,6 +2926,7 @@ mod tests {
             generation: 0,
             id: "immutable".into(),
             target: target.clone(),
+            baseline_lower: None,
             upper: OverlayUpper {
                 upper_dir: upper,
                 work_dir: tmp.path().join("work"),
@@ -2534,6 +2988,7 @@ mod tests {
             generation: 0,
             id: "t".into(),
             target: tmp.path().join("target"),
+            baseline_lower: None,
             upper: OverlayUpper {
                 upper_dir: upper,
                 work_dir: tmp.path().join("work"),
@@ -2561,6 +3016,7 @@ mod tests {
             id: "t".into(),
             generation: 0,
             target: tmp.path().join("target"),
+            baseline_lower: None,
             upper: OverlayUpper {
                 upper_dir: upper.clone(),
                 work_dir: tmp.path().join("work"),
@@ -2591,6 +3047,7 @@ mod tests {
             id: "applied-run".into(),
             generation: 0,
             target: applied_target,
+            baseline_lower: None,
             upper: OverlayUpper {
                 upper_dir: applied_upper,
                 work_dir: applied_root.path().join("work"),
@@ -2621,6 +3078,7 @@ mod tests {
             id: "dropped-run".into(),
             generation: 0,
             target: dropped_root.path().join("target"),
+            baseline_lower: None,
             upper: OverlayUpper {
                 upper_dir: dropped_upper,
                 work_dir: dropped_root.path().join("work"),
