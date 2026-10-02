@@ -80,8 +80,7 @@ PY
 ```bash
 require_vm_sdk
 vm_case_setup
-"$VM_CASE_DRIVER" pause > "$CASE_ROOT/sdk.log" 2>&1
-cat "$CASE_ROOT/sdk.log"
+vm_run_sdk pause
 grep -Fq 'vm-control-case-ok pause' "$CASE_ROOT/sdk.log"
 test -s "$CASE_ROOT/startup.ram"
 ```
@@ -97,8 +96,7 @@ test -s "$CASE_ROOT/startup.ram"
 ```bash
 require_vm_sdk
 vm_case_setup
-"$VM_CASE_DRIVER" offload > "$CASE_ROOT/sdk.log" 2>&1
-cat "$CASE_ROOT/sdk.log"
+vm_run_sdk offload
 grep -Fq 'vm-control-case-ok offload' "$CASE_ROOT/sdk.log"
 python3 - "$CASE_ROOT/startup.ram" "$CASE_ROOT/offloaded.ram" <<'PY'
 import os, stat, sys
@@ -118,8 +116,7 @@ PY
 ```bash
 require_vm_sdk
 vm_case_setup
-"$VM_CASE_DRIVER" reject > "$CASE_ROOT/sdk.log" 2>&1
-cat "$CASE_ROOT/sdk.log"
+vm_run_sdk reject
 grep -Fq 'vm-control-case-ok reject' "$CASE_ROOT/sdk.log"
 assert_content "$CASE_ROOT/occupied.ram" keep
 ```
@@ -135,8 +132,7 @@ assert_content "$CASE_ROOT/occupied.ram" keep
 ```bash
 require_vm_compression
 vm_case_setup
-"$VM_CASE_DRIVER" compressed > "$CASE_ROOT/sdk.log" 2>&1
-cat "$CASE_ROOT/sdk.log"
+vm_run_sdk compressed
 grep -Fq 'vm-control-case-ok compressed' "$CASE_ROOT/sdk.log"
 grep -Fq 'compressed-cycle=9 depth=1 layers=1 ' "$CASE_ROOT/sdk.log"
 grep -Fq 'compressed-cycle=10 depth=2 layers=2 ' "$CASE_ROOT/sdk.log"

@@ -36,3 +36,11 @@ require_vm_compression() {
     Darwin) [ -d /Library/Filesystems/macfuse.fs ] || skip 'macFUSE kernel backend unavailable' ;;
   esac
 }
+
+# Preserve driver diagnostics even when errexit aborts a failing DOC case.
+vm_run_sdk() {
+  local status=0
+  "$VM_CASE_DRIVER" "$1" > "$CASE_ROOT/sdk.log" 2>&1 || status=$?
+  cat "$CASE_ROOT/sdk.log"
+  [ "$status" -eq 0 ] || fail "VM SDK driver failed: exit=$status"
+}

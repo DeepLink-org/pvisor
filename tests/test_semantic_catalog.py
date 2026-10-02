@@ -157,7 +157,7 @@ def test_vm_catalog_has_executable_sdk_checks_and_explicit_prerequisites():
         block.startswith(("require_vm_case\n", "require_vm_sdk\n", "require_vm_compression\n"))
         for block in blocks
     )
-    assert contents.count('"$VM_CASE_DRIVER"') == 4
+    assert contents.count("vm_run_sdk ") == 4
     assert "xfail-on" not in contents
 
 
@@ -202,3 +202,19 @@ def test_bash_prerequisites_skip_without_turning_assertions_into_pass():
     assert result.returncode == 77
     assert "SKIP:" in result.stderr
     assert "reached" not in result.stdout
+
+
+def test_vm_sdk_failure_keeps_diagnostics(tmp_path):
+    case_root = tmp_path / "case"
+    case_root.mkdir()
+    driver = tmp_path / "driver"
+    driver.write_text("#!/bin/sh\nprintf 'sdk-failure-detail\n'\nexit 23\n")
+    driver.chmod(0o755)
+    result = subprocess.run(
+        ["bash", "-euo", "pipefail", "-c", 'source "$1"; source "$2"; vm_run_sdk compressed', "vm-test", str(VOCAB / "core.sh"), str(VOCAB / "vm.sh")],
+        env={**os.environ, "CASE_ROOT": str(case_root), "VM_CASE_DRIVER": str(driver)},
+        capture_output=True, text=True, timeout=10,
+    )
+    assert result.returncode != 0
+    assert "sdk-failure-detail" in result.stdout
+    assert "exit=23" in result.stderr
