@@ -3,12 +3,12 @@
 
 //#![deny(warnings)]
 
-#[cfg(feature = "tee")]
 use std::fs::File;
 #[cfg(feature = "tee")]
 use std::io::BufReader;
 use std::os::fd::RawFd;
 use std::path::PathBuf;
+use std::sync::Arc;
 
 #[cfg(feature = "tee")]
 use serde::{Deserialize, Serialize};
@@ -128,6 +128,8 @@ pub enum VsockConfig {
 /// held in the Vmm.
 #[derive(Default)]
 pub struct VmResources {
+    /// Live MAP_SHARED RAM backing, supplied by the owning supervisor.
+    pub ram_backing: Option<Arc<File>>,
     /// The vCpu and memory configuration for this microVM.
     vm_config: VmConfig,
     /// The firmware to be loaded into the microVM.
@@ -408,6 +410,7 @@ mod tests {
 
     fn default_vm_resources() -> VmResources {
         VmResources {
+            ram_backing: None,
             vm_config: VmConfig::default(),
             firmware_config: None,
             kernel_cmdline: default_kernel_cmdline(),

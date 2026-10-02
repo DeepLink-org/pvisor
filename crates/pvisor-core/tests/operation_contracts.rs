@@ -143,7 +143,9 @@ proptest! {
 fn rewrite_preserves_identity_and_placement_is_a_separate_fact() {
     let before = plan();
     let mut after = before.clone();
-    let OperationKind::RunExecute { args, .. } = &mut after.kind;
+    let OperationKind::RunExecute { args, .. } = &mut after.kind else {
+        panic!("expected run.execute")
+    };
     args.push("--adapted".into());
     event(Fact::Rewritten {
         before: before.clone(),
@@ -173,4 +175,115 @@ fn rewrite_preserves_identity_and_placement_is_a_separate_fact() {
         .is_err()
     );
     event(Fact::Placed { operation: after }).validate().unwrap();
+}
+
+#[test]
+fn vm_control_primitives_round_trip_and_require_matching_results() {
+    use pvisor_core::operation::{VmMemory, VmState};
+    for (kind, state) in [
+        (OperationKind::RunPause, VmState::Paused),
+        (OperationKind::RunResume, VmState::Running),
+    ] {
+        let mut operation = plan();
+        operation.kind = kind;
+        operation.rules.clear();
+        operation.validate().unwrap();
+        let decoded: Operation =
+            serde_json::from_slice(&serde_json::to_vec(&operation).unwrap()).unwrap();
+        assert_eq!(operation, decoded);
+        let mut observation = OperationObservation {
+            outcome: Outcome::success(Value::Vm {
+                state,
+                memory: None,
+            }),
+            rules: Default::default(),
+            filesystem: None,
+        };
+        observation.validate(&operation).unwrap();
+        observation.outcome = Outcome::success(Value::Vm {
+            state: VmState::Offloaded,
+            memory: None,
+        });
+        assert!(observation.validate(&operation).is_err());
+    }
+    let mut operation = plan();
+    operation.kind = OperationKind::RunOffload {
+        file: Some("/data/guest.ram".into()),
+    };
+    operation.rules.clear();
+    let observation = OperationObservation {
+        outcome: Outcome::success(Value::Vm {
+            state: VmState::Offloaded,
+            memory: Some(VmMemory {
+                backing_file: "/data/guest.ram".into(),
+                backed_bytes: 4096,
+                resident_before_bytes: Some(4096),
+                resident_after_bytes: Some(0),
+            }),
+        }),
+        rules: Default::default(),
+        filesystem: None,
+    };
+    observation.validate(&operation).unwrap();
+    let decoded: Operation =
+        serde_json::from_slice(&serde_json::to_vec(&operation).unwrap()).unwrap();
+    assert_eq!(operation, decoded);
+}
+
+#[test]
+fn vm_control_contract_rejects_bad_paths_unknown_fields_and_mismatched_states() {
+    use pvisor_core::operation::{VmMemory, VmState};
+    for json in [
+        r#"{"op":"run.pause","file":"/ram"}"#,
+        r#"{"op":"run.resume","extra":true}"#,
+        r#"{"op":"run.offload","file":42}"#,
+    ] {
+        assert!(
+            serde_json::from_str::<OperationKind>(json).is_err(),
+            "{json}"
+        );
+    }
+    for json in [
+        r#"{"op":"run.offload"}"#,
+        r#"{"op":"run.offload","file":null}"#,
+    ] {
+        assert_eq!(
+            serde_json::from_str::<OperationKind>(json).unwrap(),
+            OperationKind::RunOffload { file: None }
+        );
+    }
+    for path in ["".to_owned(), "/".to_owned(), "x".repeat(4097)] {
+        assert!(
+            OperationKind::RunOffload {
+                file: Some(path.into())
+            }
+            .validate()
+            .is_err()
+        );
+    }
+    let mut operation = plan();
+    operation.kind = OperationKind::RunPause;
+    operation.rules.clear();
+    let mut observation = OperationObservation {
+        outcome: Outcome::success(Value::Vm {
+            state: VmState::Running,
+            memory: None,
+        }),
+        rules: Default::default(),
+        filesystem: None,
+    };
+    assert!(observation.validate(&operation).is_err());
+    operation.kind = OperationKind::RunOffload { file: None };
+    for (path, bytes) in [("relative.ram", 4096), ("/ram", 0)] {
+        observation.outcome = Outcome::success(Value::Vm {
+            state: VmState::Offloaded,
+            memory: Some(VmMemory {
+                backing_file: path.into(),
+                backed_bytes: bytes,
+                resident_before_bytes: None,
+                resident_after_bytes: None,
+            }),
+        });
+        assert!(observation.validate(&operation).is_err());
+    }
 }

@@ -344,6 +344,12 @@ struct ContainerOverrides {
 
 #[derive(Debug, Clone, Default, Args)]
 struct VmOverrides {
+    /// Create a private file backing the VM's live RAM (must not already exist).
+    #[arg(long = "vm-ram-backing", value_name = "FILE")]
+    vm_ram_backing: Option<PathBuf>,
+    /// Commit RAM as Seekable base/delta generations (requires FUSE/macFUSE).
+    #[arg(long = "vm-ram-compression")]
+    vm_ram_compression: bool,
     /// Shorthand for `--executor vm`.
     #[arg(long)]
     vm: bool,
@@ -2173,6 +2179,8 @@ fn apply_cli(config: &mut RunConfig, args: RunArgs) -> anyhow::Result<()> {
     }
 
     let enables_vm = rootfs_source.is_some()
+        || args.vm.vm_ram_compression
+        || args.vm.vm_ram_backing.is_some()
         || args.vm.vm_image_store.is_some()
         || args.vm.vm_library_dir.is_some();
     if host_rootfs && !container_rootfs {
@@ -2185,6 +2193,12 @@ fn apply_cli(config: &mut RunConfig, args: RunArgs) -> anyhow::Result<()> {
     }
     if let Some(value) = args.vm.vm_library_dir {
         config.vm.library_dir = Some(value);
+    }
+    if let Some(value) = args.vm.vm_ram_backing {
+        config.vm.ram_backing = Some(value);
+    }
+    if args.vm.vm_ram_compression {
+        config.vm.ram_compression = true;
     }
     if let Some(value) = args.run.cpu {
         config.vm.cpus = value;
@@ -3416,6 +3430,29 @@ sandbox = "required""#
         assert_eq!(config.vm.library_dir.as_deref(), Some(libraries.as_path()));
         assert_eq!(config.vm.memory_mib, 4096);
         assert_eq!(config.vm.cpus, 4);
+    }
+
+    #[test]
+    fn ram_backing_flag_selects_vm_and_overrides_config() {
+        let mut config = RunConfig::default();
+        config.vm.ram_backing = Some("old.ram".into());
+        apply_cli(
+            &mut config,
+            preset_args(&[
+                "--vm-ram-backing",
+                "new ram.file",
+                "--vm-ram-compression",
+                "--",
+                "agent",
+            ]),
+        )
+        .unwrap();
+        assert_eq!(config.run.executor, RunExecutorKind::Vm);
+        assert!(config.vm.ram_compression);
+        assert_eq!(
+            config.vm.ram_backing.as_deref(),
+            Some(Path::new("new ram.file"))
+        );
     }
 
     #[test]

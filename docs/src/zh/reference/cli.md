@@ -440,6 +440,14 @@ pvisor run \
 enforcement。
 
 `--executor vm` 使用静态链接的 libkrun 及其嵌入 init 启动最小 Linux guest。
+`--vm-ram-backing FILE`（配置 `[vm].ram_backing`）指定尚不存在的私有 RAM
+backing 文件。省略时，在用户缓存下创建并在正常退出时删除临时文件。
+`--vm-ram-compression`（`[vm].ram_compression = true`）启用 PVZRAM v2 manifest
+与不可变 Zstd Seekable base/delta sidecar 文件，
+需要 Linux FUSE 或 macFUSE kernel backend；压缩在启动时选择。
+Rust `RunHandle::pause/resume/offload` 支持 VM 控制；offload 的新目标路径
+限于当前 backing 的同一文件系统，返回实际驻留页采样。文件不是完整 VM
+快照；此实现尚未编译或运行验收。
 `--rootfs image=<IMAGE>` 选择该 executor，并直接拉取 OCI/Docker 镜像，不调用 Docker、
 Podman 或 Buildah。未提供显式 rootfs 或镜像时，Linux 上默认通过 virtiofs 和
 OverlayFS 使用宿主 `/`，保留宿主运行环境、PATH 和 HOME，不拉取镜像。

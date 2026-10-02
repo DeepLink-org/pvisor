@@ -18,7 +18,7 @@ use super::super::{FC_EXIT_CODE_GENERIC_ERROR, FC_EXIT_CODE_OK};
 use crate::vmm_config::machine_config::CpuFeaturesTemplate;
 
 use arch::ArchMemoryInfo;
-use crossbeam_channel::{unbounded, Receiver, RecvTimeoutError, Sender};
+use crossbeam_channel::{Receiver, Sender, after, select, unbounded};
 use devices::legacy::VcpuList;
 use hvf::{HvfVcpu, HvfVm, VcpuExit, Vcpus};
 use utils::eventfd::EventFd;
@@ -49,6 +49,8 @@ pub enum Error {
     VcpuRun,
     /// Cannot spawn a new vCPU thread.
     VcpuSpawn(io::Error),
+    /// The live control channel has closed.
+    VcpuChannelClosed,
     /// Cannot cleanly initialize vcpu TLS.
     VcpuTlsInit,
     /// Vcpu not present in TLS.
@@ -79,6 +81,7 @@ impl Display for Error {
                 "Error configuring the general purpose aarch64 registers: {e:?}"
             ),
             VcpuSpawn(e) => write!(f, "Cannot spawn a new vCPU thread: {e}"),
+            VcpuChannelClosed => write!(f, "vCPU control channel closed"),
             VcpuTlsInit => write!(f, "Cannot clean init vcpu TLS"),
             VcpuTlsNotPresent => write!(f, "Vcpu not present in TLS"),
             VcpuUnhandledKvmExit => write!(f, "Unexpected KVM_RUN exit reason"),
@@ -343,13 +346,14 @@ impl Vcpu {
             })
             .map_err(Error::VcpuSpawn)?;
 
-        init_tls_receiver
+        let hvf_id = init_tls_receiver
             .recv()
             .expect("Error waiting for TLS initialization.");
 
         Ok(VcpuHandle::new(
             event_sender,
             response_receiver,
+            hvf_id,
             vcpu_thread,
         ))
     }
@@ -435,20 +439,35 @@ impl Vcpu {
     }
 
     /// Main loop of the vCPU thread.
-    pub fn run(&mut self, init_tls_sender: Sender<bool>) {
+    pub fn run(&mut self, init_tls_sender: Sender<u64>) {
         let mut hvf_vcpu =
             HvfVcpu::new(self.mpidr, self.nested_enabled).expect("Can't create HVF vCPU");
         let hvf_vcpuid = hvf_vcpu.id();
 
         init_tls_sender
-            .send(true)
+            .send(hvf_vcpuid)
             .expect("Cannot notify vcpu TLS initialization.");
 
         let (wfe_sender, wfe_receiver) = unbounded();
         self.vcpu_list.register(hvf_vcpuid, wfe_sender);
 
-        let entry_addr = if let Some(boot_receiver) = &self.boot_receiver {
-            boot_receiver.recv().unwrap()
+        let entry_addr = if let Some(boot_receiver) = self.boot_receiver.clone() {
+            // A secondary CPU may not have received PSCI CPU_ON yet. It must
+            // acknowledge pause without waiting for the guest to boot it.
+            loop {
+                let event = select! {
+                    recv(boot_receiver) -> entry => break entry.expect("boot channel closed"),
+                    recv(self.event_receiver) -> event => event,
+                };
+                match event {
+                    Ok(VcpuEvent::Pause) => self.pause_and_park(),
+                    Ok(VcpuEvent::Resume) => (),
+                    Err(_) => {
+                        self.exit(FC_EXIT_CODE_GENERIC_ERROR);
+                        return;
+                    }
+                }
+            }
         } else {
             self.boot_entry_addr
         };
@@ -458,6 +477,9 @@ impl Vcpu {
             .unwrap_or_else(|_| panic!("Can't set HVF vCPU {hvf_vcpuid} initial state"));
 
         loop {
+            if let Ok(VcpuEvent::Pause) = self.event_receiver.try_recv() {
+                self.pause_and_park();
+            }
             match self.run_emulation(&mut hvf_vcpu) {
                 // Emulation ran successfully, continue.
                 Ok(VcpuEmulation::Handled) => (),
@@ -492,21 +514,46 @@ impl Vcpu {
         timeout: Option<Duration>,
     ) {
         if self.vcpu_list.should_wait(hvf_vcpuid) {
-            if let Some(timeout) = timeout {
-                match receiver.recv_timeout(timeout) {
-                    Ok(_) => {}
-                    Err(e) => match e {
-                        RecvTimeoutError::Timeout => {}
-                        RecvTimeoutError::Disconnected => panic!("WFE channel closed unexpectedly"),
-                    },
+            let paused = if let Some(timeout) = timeout {
+                select! {
+                    recv(receiver) -> event => { event.expect("WFE channel closed"); false }
+                    recv(self.event_receiver) -> event => matches!(event, Ok(VcpuEvent::Pause)),
+                    recv(after(timeout)) -> _ => false,
                 }
             } else {
-                receiver.recv().unwrap();
+                select! {
+                    recv(receiver) -> event => { event.expect("WFE channel closed"); false }
+                    recv(self.event_receiver) -> event => matches!(event, Ok(VcpuEvent::Pause)),
+                }
+            };
+            if paused {
+                self.pause_and_park();
             }
         }
     }
 
     fn wait_for_resume(&mut self) {}
+
+    fn pause_and_park(&mut self) {
+        self.response_sender
+            .send(VcpuResponse::Paused)
+            .expect("pause response channel closed");
+        loop {
+            match self.event_receiver.recv() {
+                Ok(VcpuEvent::Resume) => {
+                    self.response_sender
+                        .send(VcpuResponse::Resumed)
+                        .expect("resume response channel closed");
+                    return;
+                }
+                Ok(VcpuEvent::Pause) => (),
+                Err(_) => {
+                    self.exit(FC_EXIT_CODE_GENERIC_ERROR);
+                    return;
+                }
+            }
+        }
+    }
 
     fn exit(&mut self, exit_code: u8) {
         self.response_sender
@@ -552,35 +599,28 @@ pub enum VcpuResponse {
 pub struct VcpuHandle {
     event_sender: Sender<VcpuEvent>,
     response_receiver: Receiver<VcpuResponse>,
+    hvf_id: u64,
 }
 
 impl VcpuHandle {
     pub fn new(
         event_sender: Sender<VcpuEvent>,
         response_receiver: Receiver<VcpuResponse>,
+        hvf_id: u64,
         _vcpu_thread: thread::JoinHandle<()>,
     ) -> Self {
         Self {
             event_sender,
             response_receiver,
+            hvf_id,
         }
     }
 
     pub fn send_event(&self, event: VcpuEvent) -> Result<()> {
-        // Use expect() to crash if the other thread closed this channel.
         self.event_sender
             .send(event)
-            .expect("event sender channel closed on vcpu end.");
-        // Kick the vcpu so it picks up the message.
-        /*
-        self.vcpu_thread
-            .as_ref()
-            // Safe to unwrap since constructor make this 'Some'.
-            .unwrap()
-            .kill(sigrtmin() + VCPU_RTSIG_OFFSET)
-            .map_err(Error::SignalVcpu)?;
-        */
-        Ok(())
+            .map_err(|_| Error::VcpuChannelClosed)?;
+        hvf::vcpu_request_exit(self.hvf_id).map_err(Error::VmSetup)
     }
 
     pub fn response_receiver(&self) -> &Receiver<VcpuResponse> {

@@ -31,4 +31,5 @@ pub mod gateway;
 pub use event::{Event, Fact};
 pub use operation::{
     Operation, OperationDecision, OperationKind, OperationObservation, Outcome, Placement,
+    VmMemory, VmState,
 };

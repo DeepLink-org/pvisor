@@ -17,6 +17,7 @@ mod config;
 pub mod diagnostics;
 mod executor;
 mod image;
+pub mod ram_backing;
 
 #[doc(hidden)]
 pub use executor::sandbox;

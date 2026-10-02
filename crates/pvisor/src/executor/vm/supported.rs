@@ -14,7 +14,7 @@ use pvisor_core::{
 use serde::{Deserialize, Serialize};
 use std::collections::BTreeMap;
 use std::ffi::CString;
-use std::os::fd::{AsRawFd, RawFd};
+use std::os::fd::{AsRawFd, FromRawFd, OwnedFd, RawFd};
 use std::path::{Path, PathBuf};
 use tokio::process::Command;
 
@@ -22,6 +22,20 @@ const RUNNER_SPEC_ENV: &str = "PVISOR_KRUN_RUNNER_SPEC";
 const WORKSPACE_TAG: &str = "pvisor-workspace";
 const NETWORK_FD_ENV: &str = "PVISOR_KRUN_NETWORK_FD";
 const NETWORK_CHILD_FD: RawFd = 198;
+const CONTROL_FD_ENV: &str = "PVISOR_KRUN_CONTROL_FD";
+const CONTROL_CHILD_FD: RawFd = 199;
+const RAM_FD_ENV: &str = "PVISOR_KRUN_RAM_FD";
+const RAM_CHILD_FD: RawFd = 200;
+
+fn runner_fd(fd: RawFd) -> std::io::Result<OwnedFd> {
+    // Keep both source descriptors above the fixed destinations, avoiding dup2
+    // clobbering one socket when the parent's fd table happens to be crowded.
+    let duplicate = unsafe { libc::fcntl(fd, libc::F_DUPFD_CLOEXEC, RAM_CHILD_FD + 1) };
+    if duplicate < 0 {
+        return Err(std::io::Error::last_os_error());
+    }
+    Ok(unsafe { OwnedFd::from_raw_fd(duplicate) })
+}
 
 #[cfg(all(target_os = "linux", target_arch = "x86_64"))]
 fn needs_krun_enomem_workaround() -> bool {
@@ -124,6 +138,21 @@ fn protect_overlay_backing(
                 );
                 root.excluded.push(relative.to_owned());
             }
+        }
+    }
+    Ok(())
+}
+
+fn hide_ram_backing(device: &mut OverlayDeviceSpec, path: &Path) -> anyhow::Result<()> {
+    let path = path.canonicalize()?;
+    for lower in &device.lowers {
+        let lower = lower.canonicalize()?;
+        if let Ok(relative) = path.strip_prefix(lower) {
+            anyhow::ensure!(
+                !relative.as_os_str().is_empty(),
+                "RAM backing directory cannot be the guest lower root"
+            );
+            device.excluded.push(relative.to_owned());
         }
     }
     Ok(())
@@ -287,7 +316,7 @@ impl RunExecutor for VmExecutor {
             .as_ref()
             .map(|overlay| overlay.access_policy.clone())
             .unwrap_or_default();
-        let (root_overlay, workspace) = if overlay_target.is_none() {
+        let (root_overlay, mut workspace) = if overlay_target.is_none() {
             (
                 configured_overlay.unwrap_or_else(|| OverlayDeviceSpec {
                     lowers: vec![root.clone()],
@@ -478,6 +507,37 @@ impl RunExecutor for VmExecutor {
                 return failed_to_start(error.to_string());
             }
         };
+        let mut ram_backing =
+            match super::control::RamBacking::create(self.settings.ram_backing.as_deref()) {
+                Ok(backing) => backing,
+                Err(error) => return failed_to_start(format!("create VM RAM backing: {error}")),
+            };
+        if self.settings.ram_compression {
+            if let Err(error) = ram_backing.enable_compression() {
+                return failed_to_start(format!(
+                    "create compressed RAM backing (FUSE/macFUSE required): {error}"
+                ));
+            }
+        }
+        let mut hidden = vec![ram_backing.path.clone()];
+        if let Some(layers) = ram_backing.layer_directory() {
+            hidden.push(layers.to_path_buf());
+        }
+        if let Some(cache) = dirs::cache_dir()
+            .map(|path| path.join("pvisor/ram"))
+            .filter(|path| path.exists())
+        {
+            hidden.push(cache);
+        }
+        for path in hidden {
+            if let Err(error) = hide_ram_backing(&mut root_overlay, &path).and_then(|()| {
+                workspace
+                    .as_mut()
+                    .map_or(Ok(()), |device| hide_ram_backing(device, &path))
+            }) {
+                return failed_to_start(format!("hide VM RAM backing: {error}"));
+            }
+        }
         let runner = RunnerSpec {
             setup_attestation: attestation.path().to_path_buf(),
             root: root_overlay,
@@ -504,16 +564,55 @@ impl RunExecutor for VmExecutor {
         if vm_network_enabled && vm_network.is_none() {
             return failed_to_start("pVisor VM network attachment is missing".into());
         }
+        let ram_runner = match runner_fd(ram_backing.file.as_raw_fd()) {
+            Ok(fd) => fd,
+            Err(error) => {
+                return failed_to_start(format!("duplicate RAM backing descriptor: {error}"));
+            }
+        };
+        let control_pair = (|| {
+            let (host, runner) = std::os::unix::net::UnixStream::pair()?;
+            host.set_nonblocking(true)?;
+            let runner = runner_fd(runner.as_raw_fd())?;
+            Ok::<_, std::io::Error>((tokio::net::UnixStream::from_std(host)?, runner))
+        })();
+        let (control_host, control_runner) = match control_pair {
+            Ok(pair) => pair,
+            Err(error) => return failed_to_start(format!("create VM control socket: {error}")),
+        };
+        let network_runner = match vm_network
+            .as_ref()
+            .map(|network| runner_fd(network.guest_stream().as_raw_fd()))
+            .transpose()
+        {
+            Ok(fd) => fd,
+            Err(error) => return failed_to_start(format!("duplicate VM network socket: {error}")),
+        };
         let mut command = Command::new(executable);
         command
             .env(RUNNER_SPEC_ENV, &runner_path)
+            .env(CONTROL_FD_ENV, CONTROL_CHILD_FD.to_string())
+            .env(RAM_FD_ENV, RAM_CHILD_FD.to_string())
             .stdin(stdio(invocation.stdin))
             .stdout(stdio(invocation.stdout))
             .stderr(stdio(invocation.stderr))
             .kill_on_drop(true)
             .process_group(0);
-        if let Some(network) = &vm_network {
-            let source_fd = network.guest_stream().as_raw_fd();
+        let control_source_fd = control_runner.as_raw_fd();
+        let ram_source_fd = ram_runner.as_raw_fd();
+        unsafe {
+            command.pre_exec(move || {
+                if libc::dup2(control_source_fd, CONTROL_CHILD_FD) < 0 {
+                    return Err(std::io::Error::last_os_error());
+                }
+                if libc::dup2(ram_source_fd, RAM_CHILD_FD) < 0 {
+                    return Err(std::io::Error::last_os_error());
+                }
+                Ok(())
+            });
+        }
+        if let Some(network) = &network_runner {
+            let source_fd = network.as_raw_fd();
             command.env(NETWORK_FD_ENV, NETWORK_CHILD_FD.to_string());
             // The socketpair has CLOEXEC. Duplicate it to one fixed inherited
             // descriptor after fork and before exec; the JSON runner spec never
@@ -549,6 +648,9 @@ impl RunExecutor for VmExecutor {
                 return failed_to_start(error.to_string());
             }
         };
+        drop(control_runner);
+        drop(ram_runner);
+        drop(network_runner);
         let process_group = child.id();
         let _foreground =
             match crate::executor::process::ForegroundProcessGroup::give_to(&child, invocation) {
@@ -573,6 +675,7 @@ impl RunExecutor for VmExecutor {
             let limit = spec.runtime.max_output_bytes;
             tokio::spawn(async move { read_limited(stderr, limit).await })
         });
+        context.vm_control.attach(control_host, ram_backing).await;
         context.transition(RunState::Running, None).await;
 
         let end = context
@@ -586,6 +689,7 @@ impl RunExecutor for VmExecutor {
             )
             .await;
         }
+        context.vm_control.detach().await;
         let transport_stdout = join_capture(stdout_task).await;
         let transport_stderr = join_capture(stderr_task).await;
         let mut output = ProcessOutput::default();
@@ -737,6 +841,15 @@ fn run_linked_krun(spec: RunnerSpec, mut attestation: std::fs::File) -> anyhow::
     let workspace_tag = CString::new(WORKSPACE_TAG)?;
     let guest_config = serde_json::to_vec(&spec.guest)?;
     let ctx = check_ctx(krun::krun_create_ctx(), "krun_create_ctx")?;
+    let ram = std::env::var(RAM_FD_ENV)?.parse::<RawFd>()?;
+    anyhow::ensure!(ram == RAM_CHILD_FD, "invalid RAM backing descriptor");
+    if unsafe { libc::fcntl(ram, libc::F_SETFD, libc::FD_CLOEXEC) } < 0 {
+        return Err(std::io::Error::last_os_error().into());
+    }
+    check_krun(
+        krun::krun_set_ram_backing(ctx, unsafe { std::fs::File::from_raw_fd(ram) }),
+        "krun_set_ram_backing",
+    )?;
     check_krun(
         krun::krun_set_vm_config(ctx, spec.cpus, spec.memory_mib),
         "krun_set_vm_config",
@@ -802,7 +915,91 @@ fn run_linked_krun(spec: RunnerSpec, mut attestation: std::fs::File) -> anyhow::
     check_krun(krun::krun_add_vsock(ctx, 0), "krun_add_vsock")?;
     attestation.write_all(b"pvisor-vmm-installed-v1\n")?;
     attestation.sync_data()?;
-    let started = krun::krun_start_enter(ctx);
+    let control = std::env::var(CONTROL_FD_ENV)
+        .with_context(|| format!("missing {CONTROL_FD_ENV}"))?
+        .parse::<RawFd>()?;
+    anyhow::ensure!(control == CONTROL_CHILD_FD, "invalid VM control descriptor");
+    // Validate the inherited descriptor before taking ownership and keep it
+    // out of any later exec in the VMM.
+    if unsafe { libc::fcntl(control, libc::F_SETFD, libc::FD_CLOEXEC) } < 0 {
+        return Err(std::io::Error::last_os_error().into());
+    }
+    let mut control = unsafe { std::os::unix::net::UnixStream::from_raw_fd(control) };
+    let started = krun::krun_start_enter_with_handle(ctx, move |handle| {
+        std::thread::Builder::new()
+            .name("pvisor-vm-control".into())
+            .spawn(move || {
+                use std::io::Read;
+                loop {
+                    let mut length = [0; 4];
+                    if control.read_exact(&mut length).is_err() {
+                        // The host supervisor is gone. Do not leave its VM parked
+                        // indefinitely, or resume an orphaned workload.
+                        std::process::exit(1);
+                    }
+                    let size = u32::from_be_bytes(length) as usize;
+                    if size > super::control::MAX_FRAME {
+                        std::process::exit(1);
+                    }
+                    let mut request = vec![0; size];
+                    if control.read_exact(&mut request).is_err() {
+                        std::process::exit(1);
+                    }
+                    use pvisor_core::operation::{OperationKind, VmMemory, VmState};
+                    let result = match serde_json::from_slice::<OperationKind>(&request) {
+                        Ok(OperationKind::RunPause) => {
+                            handle.pause().map(|()| (VmState::Paused, None))
+                        }
+                        Ok(OperationKind::RunResume) => {
+                            handle.resume().map(|()| (VmState::Running, None))
+                        }
+                        Ok(OperationKind::RunOffload { .. }) => {
+                            handle.offload_ram().map(|memory| {
+                                (
+                                    VmState::Offloaded,
+                                    Some(VmMemory {
+                                        backing_file: PathBuf::new(),
+                                        backed_bytes: memory.backed_bytes,
+                                        resident_before_bytes: memory.resident_before_bytes,
+                                        resident_after_bytes: memory.resident_after_bytes,
+                                    }),
+                                )
+                            })
+                        }
+                        _ => Err("invalid VM control primitive".into()),
+                    };
+                    let reply = match result {
+                        Ok((state, memory)) => super::control::ControlReply {
+                            state: Some(state),
+                            memory,
+                            error: None,
+                        },
+                        Err(error) => {
+                            eprintln!("VM control failed: {error}");
+                            super::control::ControlReply {
+                                state: None,
+                                memory: None,
+                                error: Some(error),
+                            }
+                        }
+                    };
+                    let Ok(response) = serde_json::to_vec(&reply) else {
+                        std::process::exit(1);
+                    };
+                    if response.len() > super::control::MAX_FRAME {
+                        std::process::exit(1);
+                    }
+                    if control
+                        .write_all(&(response.len() as u32).to_be_bytes())
+                        .is_err()
+                        || control.write_all(&response).is_err()
+                    {
+                        std::process::exit(1);
+                    }
+                }
+            })?;
+        Ok(())
+    });
     if started < 0 {
         attestation.set_len(0)?;
         attestation.sync_data()?;

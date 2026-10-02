@@ -38,8 +38,8 @@ use std::path::PathBuf;
 use std::slice;
 #[cfg(not(target_env = "musl"))]
 use std::sync::LazyLock;
-use std::sync::Mutex;
 use std::sync::atomic::{AtomicI32, Ordering};
+use std::sync::{Arc, Mutex, Weak};
 use utils::eventfd::EventFd;
 use vmm::resources::{
     DefaultVirtioConsoleConfig, PortConfig, SerialConsoleConfig, TsiFlags, VirtioConsoleConfigMode,
@@ -3135,6 +3135,89 @@ pub unsafe extern "C" fn krun_set_kernel_console(ctx_id: u32, console_id: *const
 #[no_mangle]
 #[allow(unreachable_code)]
 pub extern "C" fn krun_start_enter(ctx_id: u32) -> i32 {
+    krun_start_enter_with_handle(ctx_id, |_| Ok(()))
+}
+
+/// Live Rust control handle, following upstream 2.0's handle model without
+/// replacing the 1.x configuration API or claiming 2.0 C ABI compatibility.
+#[derive(Clone)]
+pub struct VmmHandle {
+    vmm: Weak<Mutex<vmm::Vmm>>,
+    transition: Arc<Mutex<()>>,
+}
+
+impl VmmHandle {
+    pub fn offload_ram(&self) -> Result<vmm::ram::RamReclaim, String> {
+        let _transition = self
+            .transition
+            .lock()
+            .map_err(|_| "VM transition lock poisoned")?;
+        let vmm = self.vmm.upgrade().ok_or("VMM has stopped")?;
+        let gate = {
+            let mut locked = vmm.lock().map_err(|_| "VMM lock poisoned")?;
+            locked.pause().map_err(|error| error.to_string())?;
+            locked.device_memory_gate()
+        };
+        // Device I/O may need the VMM worker to finish; never drain under its lock.
+        if let Err(error) = gate.close(std::time::Duration::from_secs(5)) {
+            vmm.lock().map_err(|_| "VMM lock poisoned")?.fail_control();
+            return Err(error.to_owned());
+        }
+        let mut locked = vmm.lock().map_err(|_| "VMM lock poisoned")?;
+        let result = locked.offload_ram();
+        if result.is_err() {
+            locked.fail_control();
+        }
+        result.map_err(|error| error.to_string())
+    }
+    pub fn pause(&self) -> Result<(), String> {
+        self.control(true)
+    }
+
+    pub fn resume(&self) -> Result<(), String> {
+        self.control(false)
+    }
+
+    fn control(&self, paused: bool) -> Result<(), String> {
+        let _transition = self
+            .transition
+            .lock()
+            .map_err(|_| "VM transition lock poisoned")?;
+        let vmm = self.vmm.upgrade().ok_or("VMM has stopped")?;
+        let mut vmm = vmm.lock().map_err(|_| "VMM lock poisoned")?;
+        let result = if paused { vmm.pause() } else { vmm.resume() };
+        result.map_err(|error| error.to_string())
+    }
+}
+
+/// Configure live file-backed RAM without granting the VMM filesystem paths.
+pub fn krun_set_ram_backing(ctx_id: u32, file: File) -> i32 {
+    #[cfg(any(feature = "tee", feature = "aws-nitro"))]
+    {
+        let _ = (ctx_id, file);
+        return -libc::ENOTSUP;
+    }
+    #[cfg(not(any(feature = "tee", feature = "aws-nitro")))]
+    {
+        if !matches!(file.metadata(), Ok(metadata) if metadata.is_file() && metadata.len() == 0) {
+            return -libc::EINVAL;
+        }
+        let mut contexts = CTX_MAP.lock().unwrap();
+        let Some(context) = contexts.get_mut(&ctx_id) else {
+            return -libc::ENOENT;
+        };
+        context.vmr.ram_backing = Some(Arc::new(file));
+        KRUN_SUCCESS
+    }
+}
+
+/// Build the VM, hand a live handle to the caller, then enter the event loop.
+/// The callback must return promptly (typically after starting a control thread).
+#[allow(unreachable_code)]
+pub fn krun_start_enter_with_handle(
+    ctx_id: u32,
+    on_ready: impl FnOnce(VmmHandle) -> std::io::Result<()>,
+) -> i32 {
     #[cfg(target_os = "linux")]
     {
         let prname = match env::var("HOSTNAME") {
@@ -3328,6 +3411,14 @@ pub extern "C" fn krun_start_enter(ctx_id: u32) -> i32 {
             return -libc::EINVAL;
         }
     };
+
+    if let Err(error) = on_ready(VmmHandle {
+        vmm: Arc::downgrade(&_vmm),
+        transition: Arc::new(Mutex::new(())),
+    }) {
+        error!("Unable to install VMM control: {error}");
+        return -libc::EIO;
+    }
 
     #[cfg(target_os = "macos")]
     if ctx_cfg.gpu_virgl_flags.is_some() {

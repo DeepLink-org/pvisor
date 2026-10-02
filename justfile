@@ -135,7 +135,21 @@ examples *scenarios: (build "release")
 
 # Run DOC specifications and save JSON; select S-DOC IDs with --case.
 cases *args: (build "release")
-    cargo run --quiet --manifest-path tools/semspec/Cargo.toml --locked -- --config semspec-doc.toml run docs/src/zh/reference/cases.md --domain DOC --subject-bin "{{ target_dir }}/release/pvisor" --format json --output "{{ target_dir }}/pvisor-case-report.json" "$@"
+    cargo run --quiet --manifest-path tools/semspec/Cargo.toml --locked -- --config semspec-doc.toml run --domain DOC --subject-bin "{{ target_dir }}/release/pvisor" --format json --output "{{ target_dir }}/pvisor-case-report.json" "$@"
+
+# Build/sign the native SDK driver and run VM control/backing DOC cases.
+vm-cases *args: (build "release")
+    #!/usr/bin/env bash
+    set -euo pipefail
+    cargo build --locked -p pvisor --release --example vm_control_case --target-dir "{{ target_dir }}"
+    driver="{{ target_dir }}/release/examples/vm_control_case"
+    test -x "$driver"
+    if [[ "$(uname -s)" == Darwin ]]; then
+      codesign --force --sign - --entitlements "{{ repo }}/crates/pvisor/macos-hypervisor.entitlements" "$driver"
+      codesign --verify --strict "$driver"
+    fi
+    export PVISOR_CASE_VM_DRIVER="$driver"
+    cargo run --quiet --manifest-path tools/semspec/Cargo.toml --locked -- --config semspec-doc.toml run docs/src/zh/reference/cases-vm.md --domain DOC --subject-bin "{{ target_dir }}/release/pvisor" --format json --output "{{ target_dir }}/pvisor-vm-case-report.json" "$@"
 
 # Measure process startup and Run Bundle access (smoke or nightly).
 benchmark suite="smoke" output="target/pvisor-benchmark/current" build_dir="target/pvisor-benchmark-build":

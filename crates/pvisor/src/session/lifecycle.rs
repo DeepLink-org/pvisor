@@ -116,6 +116,7 @@ impl Session {
         } = resolved;
         let attempt_id = AttemptId::new(format!("attempt-{}", uuid::Uuid::new_v4()));
         let cancellation = CancellationToken::new();
+        let vm_control = crate::executor::vm::control::VmControl::new(cancellation.clone());
         let agentctl_server = {
             let run_id = spec.run_id.clone();
             let attempt_id = attempt_id.clone();
@@ -168,6 +169,7 @@ impl Session {
             created_at_unix_ms: now,
             attempt_id: attempt_id.clone(),
             cancel: cancellation.clone(),
+            vm_control: vm_control.clone(),
             status: status_tx,
             events: events.clone(),
             agentctl: agentctl.clone(),
@@ -225,6 +227,8 @@ impl Session {
             );
             return Err(PVisorError::EventSink(error));
         }
+        let vm_status = context.status.clone();
+        let control_operation = operation.clone();
         let join = tokio::spawn(async move {
             context
                 .complete(executor, operation, safe_profile_requested)
@@ -236,6 +240,9 @@ impl Session {
             attempt_id,
             status: status_rx,
             cancellation,
+            vm_control,
+            vm_status,
+            control_operation,
             events,
             agentctl,
             checkpoint_record,

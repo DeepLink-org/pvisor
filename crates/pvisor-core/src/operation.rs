@@ -15,6 +15,29 @@ pub enum Value {
         state: crate::execution::RunState,
         exit_code: Option<i32>,
     },
+    Vm {
+        state: VmState,
+        memory: Option<VmMemory>,
+    },
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum VmState {
+    Running,
+    Paused,
+    Offloaded,
+}
+
+/// File backing is live RAM, not a standalone VM checkpoint. Residency is a
+/// best-effort mincore sample, not a guarantee that all physical pages were freed.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
+pub struct VmMemory {
+    pub backing_file: std::path::PathBuf,
+    pub backed_bytes: u64,
+    pub resident_before_bytes: Option<u64>,
+    pub resident_after_bytes: Option<u64>,
 }
 
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
@@ -53,6 +76,21 @@ impl Outcome {
         } = self
         {
             ensure!(state.is_terminal(), "run result requires a terminal state");
+        }
+        if let Self::Success {
+            value: Value::Vm { state, memory },
+        } = self
+        {
+            ensure!(
+                (*state == VmState::Offloaded) == memory.is_some(),
+                "offloaded VM requires a RAM report; pause/resume must not carry one"
+            );
+            if let Some(memory) = memory {
+                ensure!(
+                    memory.backing_file.is_absolute() && memory.backed_bytes > 0,
+                    "invalid live RAM report"
+                );
+            }
         }
         Ok(())
     }
@@ -125,8 +163,14 @@ pub struct OperationDecision {
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
-#[serde(tag = "op", deny_unknown_fields)]
+#[serde(tag = "op", deny_unknown_fields, from = "OperationKindWire")]
 pub enum OperationKind {
+    #[serde(rename = "run.pause")]
+    RunPause,
+    #[serde(rename = "run.resume")]
+    RunResume,
+    #[serde(rename = "run.offload")]
+    RunOffload { file: Option<std::path::PathBuf> },
     #[serde(rename = "run.execute")]
     RunExecute {
         program: String,
@@ -134,13 +178,61 @@ pub enum OperationKind {
         cwd: Option<String>,
     },
 }
+// Empty struct variants enforce unknown-field rejection; serde's internally
+// tagged unit variants otherwise ignore fields even with deny_unknown_fields.
+#[derive(Deserialize)]
+#[serde(tag = "op", deny_unknown_fields)]
+enum OperationKindWire {
+    #[serde(rename = "run.pause")]
+    RunPause {},
+    #[serde(rename = "run.resume")]
+    RunResume {},
+    #[serde(rename = "run.offload")]
+    RunOffload { file: Option<std::path::PathBuf> },
+    #[serde(rename = "run.execute")]
+    RunExecute {
+        program: String,
+        args: Vec<String>,
+        cwd: Option<String>,
+    },
+}
+impl From<OperationKindWire> for OperationKind {
+    fn from(wire: OperationKindWire) -> Self {
+        match wire {
+            OperationKindWire::RunPause {} => Self::RunPause,
+            OperationKindWire::RunResume {} => Self::RunResume,
+            OperationKindWire::RunOffload { file } => Self::RunOffload { file },
+            OperationKindWire::RunExecute { program, args, cwd } => {
+                Self::RunExecute { program, args, cwd }
+            }
+        }
+    }
+}
+
 impl OperationKind {
     pub fn name(&self) -> &'static str {
-        "run.execute"
+        match self {
+            Self::RunExecute { .. } => "run.execute",
+            Self::RunPause => "run.pause",
+            Self::RunResume => "run.resume",
+            Self::RunOffload { .. } => "run.offload",
+        }
     }
-    fn validate(&self) -> Result<()> {
-        let Self::RunExecute { program, .. } = self;
-        ensure!(!program.trim().is_empty(), "empty operation program");
+    pub fn validate(&self) -> Result<()> {
+        match self {
+            Self::RunExecute { program, .. } => {
+                ensure!(!program.trim().is_empty(), "empty operation program")
+            }
+            Self::RunOffload { file: Some(file) } => {
+                ensure!(
+                    !file.as_os_str().is_empty()
+                        && file.as_os_str().len() <= 4096
+                        && file.file_name().is_some(),
+                    "invalid RAM backing path"
+                );
+            }
+            _ => (),
+        }
         Ok(())
     }
 }
@@ -239,6 +331,36 @@ impl OperationObservation {
     pub fn validate(&self, plan: &Operation) -> Result<()> {
         plan.validate()?;
         self.outcome.validate()?;
+        if let Outcome::Success { value } = &self.outcome {
+            ensure!(
+                matches!(
+                    (&plan.kind, value),
+                    (OperationKind::RunExecute { .. }, Value::Run { .. })
+                        | (
+                            OperationKind::RunPause,
+                            Value::Vm {
+                                state: VmState::Paused,
+                                ..
+                            }
+                        )
+                        | (
+                            OperationKind::RunResume,
+                            Value::Vm {
+                                state: VmState::Running,
+                                ..
+                            }
+                        )
+                        | (
+                            OperationKind::RunOffload { .. },
+                            Value::Vm {
+                                state: VmState::Offloaded,
+                                ..
+                            }
+                        )
+                ),
+                "outcome does not match operation primitive"
+            );
+        }
         let ids: BTreeSet<_> = plan.rules.iter().map(|rule| rule.id.as_str()).collect();
         ensure!(
             self.rules.keys().all(|id| ids.contains(id.as_str())),

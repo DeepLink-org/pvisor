@@ -16,6 +16,7 @@ extern crate log;
 /// Handles setup and initialization a `Vmm` object.
 pub mod builder;
 pub(crate) mod device_manager;
+pub mod ram;
 /// Resource store for configured microVM resources.
 pub mod resources;
 /// Signal handling utilities.
@@ -41,13 +42,11 @@ use std::io;
 use std::os::unix::io::AsRawFd;
 use std::sync::atomic::{AtomicI32, Ordering};
 use std::sync::{Arc, Mutex};
-#[cfg(target_os = "linux")]
-use std::time::Duration;
+use std::time::{Duration, Instant};
 
 #[cfg(target_arch = "x86_64")]
 use crate::device_manager::legacy::PortIODeviceManager;
 use crate::device_manager::mmio::MMIODeviceManager;
-#[cfg(target_os = "linux")]
 use crate::vstate::VcpuEvent;
 use crate::vstate::{Vcpu, VcpuHandle, VcpuResponse, Vm};
 
@@ -63,7 +62,9 @@ use kernel::cmdline::Cmdline as KernelCmdline;
 use polly::event_manager::{self, EventManager, Subscriber};
 use utils::epoll::{EpollEvent, EventSet};
 use utils::eventfd::EventFd;
-use vm_memory::GuestMemoryMmap;
+#[cfg(target_os = "macos")]
+use vm_memory::Address;
+use vm_memory::{GuestMemory, GuestMemoryMmap, GuestMemoryRegion};
 
 /// Success exit code.
 pub const FC_EXIT_CODE_OK: u8 = 0;
@@ -127,6 +128,8 @@ pub enum Error {
     VcpuHandle(vstate::Error),
     /// vCPU resume failed.
     VcpuResume,
+    /// A live pause/resume failed; the VMM must be terminated.
+    VcpuControl(String),
     /// Cannot spawn a new Vcpu thread.
     VcpuSpawn(std::io::Error),
     /// Vm error.
@@ -163,6 +166,7 @@ impl Display for Error {
             VcpuEvent(e) => write!(f, "Cannot send event to vCPU. {e:?}"),
             VcpuHandle(e) => write!(f, "Cannot create a vCPU handle. {e}"),
             VcpuResume => write!(f, "vCPUs resume failed."),
+            VcpuControl(e) => write!(f, "vCPU control failed: {e}"),
             VcpuSpawn(e) => write!(f, "Cannot spawn Vcpu thread: {e}"),
             Vm(e) => write!(f, "Vm error: {e}"),
             VmmObserverInit(e) => write!(
@@ -204,6 +208,11 @@ pub struct Vmm {
     vm: Vm,
     exit_observers: Vec<Arc<Mutex<dyn VmmExitObserver>>>,
     exit_code: Arc<AtomicI32>,
+    paused: bool,
+    control_failed: bool,
+    device_memory_gate: Arc<devices::virtio::memory_gate::MemoryGate>,
+    #[cfg(target_os = "macos")]
+    ram_unmapped: bool,
 
     // Guest VM devices.
     mmio_device_manager: MMIODeviceManager,
@@ -212,6 +221,148 @@ pub struct Vmm {
 }
 
 impl Vmm {
+    /// Pause all vCPUs. Device workers and host I/O remain active.
+    pub fn pause(&mut self) -> Result<()> {
+        self.set_paused(true)
+    }
+
+    /// Resume all vCPUs. Guest clocks retain their existing wall-time semantics.
+    pub fn resume(&mut self) -> Result<()> {
+        if self.control_failed {
+            return Err(Error::VcpuControl(
+                "previous transition failed; terminate VMM".into(),
+            ));
+        }
+        // ponytail: preserve wall-time clocks; freezing guest time requires the
+        // matching HVF WFE offset support and KVM clock handling, not just pause.
+        #[cfg(target_os = "macos")]
+        if self.ram_unmapped && !self.control_failed {
+            self.control_failed = true;
+            for region in self
+                .guest_memory
+                .iter()
+                .filter(|region| region.file_offset().is_some())
+            {
+                self.vm
+                    .hvf_vm()
+                    .map_memory(
+                        region.as_ptr() as u64,
+                        region.start_addr().raw_value(),
+                        region.len(),
+                    )
+                    .map_err(|e| Error::VcpuControl(format!("restore RAM mapping: {e:?}")))?;
+            }
+            self.ram_unmapped = false;
+            self.control_failed = false;
+        }
+        self.device_memory_gate.open();
+        self.set_paused(false)
+    }
+
+    pub fn device_memory_gate(&self) -> Arc<devices::virtio::memory_gate::MemoryGate> {
+        self.device_memory_gate.clone()
+    }
+
+    pub fn fail_control(&mut self) {
+        self.control_failed = true;
+    }
+
+    /// Pause and flush/reclaim file-backed RAM. Host device mappings stay valid.
+    pub fn offload_ram(&mut self) -> Result<ram::RamReclaim> {
+        if cfg!(any(
+            feature = "gpu",
+            feature = "snd",
+            feature = "input",
+            feature = "tee"
+        )) {
+            return Err(Error::VcpuControl(
+                "offload is unavailable with unguarded GPU/audio/input/TEE devices".into(),
+            ));
+        }
+        if !self.device_memory_gate.is_idle_closed() {
+            return Err(Error::VcpuControl(
+                "device RAM access must be quiesced before offload".into(),
+            ));
+        }
+        if !self
+            .guest_memory
+            .iter()
+            .any(|region| region.file_offset().is_some())
+        {
+            return Err(Error::VcpuControl("VM has no file-backed RAM".into()));
+        }
+        self.pause()?;
+        let before = ram::residency(&self.guest_memory);
+        self.control_failed = true;
+        #[cfg(target_os = "macos")]
+        if !self.ram_unmapped {
+            // HVF must release its GPA mappings before host pages can be reclaimed.
+            for region in self
+                .guest_memory
+                .iter()
+                .filter(|region| region.file_offset().is_some())
+            {
+                self.vm
+                    .hvf_vm()
+                    .unmap_memory(region.start_addr().raw_value(), region.len())
+                    .map_err(|e| Error::VcpuControl(format!("offload RAM mapping: {e:?}")))?;
+            }
+            self.ram_unmapped = true;
+        }
+        let backed_bytes = ram::reclaim(&self.guest_memory).map_err(Error::VcpuControl)?;
+        let after = ram::residency(&self.guest_memory);
+        self.control_failed = false;
+        Ok(ram::RamReclaim {
+            backed_bytes,
+            resident_before_bytes: before,
+            resident_after_bytes: after,
+        })
+    }
+
+    fn set_paused(&mut self, paused: bool) -> Result<()> {
+        if self.control_failed {
+            return Err(Error::VcpuControl(
+                "previous transition failed; terminate VMM".into(),
+            ));
+        }
+        if self.paused == paused {
+            return Ok(());
+        }
+        // A partial transition is not safe to retry: late acknowledgements could
+        // otherwise be mistaken for the next request's response.
+        self.control_failed = true;
+        for handle in &self.vcpus_handles {
+            let event = if paused {
+                VcpuEvent::Pause
+            } else {
+                VcpuEvent::Resume
+            };
+            handle.send_event(event).map_err(Error::VcpuEvent)?;
+        }
+        let deadline = Instant::now() + Duration::from_secs(3);
+        let expected = if paused {
+            VcpuResponse::Paused
+        } else {
+            VcpuResponse::Resumed
+        };
+        for handle in &self.vcpus_handles {
+            match handle
+                .response_receiver()
+                .recv_timeout(deadline.saturating_duration_since(Instant::now()))
+            {
+                Ok(response) if response == expected => (),
+                response => {
+                    return Err(Error::VcpuControl(format!(
+                        "unexpected response: {response:?}"
+                    )));
+                }
+            }
+        }
+        self.paused = paused;
+        self.control_failed = false;
+        Ok(())
+    }
+
     /// Gets the the specified bus device.
     pub fn get_bus_device(
         &self,

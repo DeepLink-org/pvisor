@@ -951,7 +951,9 @@ pub fn build_microvm(
     // We use this atomic to record the exit code set by the guest supervisor in the VM.
     let exit_code = Arc::new(AtomicI32::new(i32::MAX));
 
+    let device_memory_gate = devices::virtio::memory_gate::register(&guest_memory);
     let mut vmm = Vmm {
+        device_memory_gate,
         guest_memory,
         arch_memory_info,
         kernel_cmdline,
@@ -959,6 +961,10 @@ pub fn build_microvm(
         exit_evt,
         exit_observers: Vec::new(),
         exit_code: exit_code.clone(),
+        paused: false,
+        control_failed: false,
+        #[cfg(target_os = "macos")]
+        ram_unmapped: false,
         vm,
         mmio_device_manager,
         #[cfg(target_arch = "x86_64")]
@@ -1336,6 +1342,19 @@ fn load_payload(
                     return Err(StartMicrovmError::MissingKernelConfig);
                 };
 
+            if _vm_resources.ram_backing.is_some() {
+                let data = unsafe {
+                    std::slice::from_raw_parts(kernel_host_addr as *const u8, kernel_size)
+                };
+                guest_mem
+                    .write(data, GuestAddress(kernel_guest_addr))
+                    .map_err(|e| {
+                        StartMicrovmError::GuestMemoryMmap(format!(
+                            "copy kernel to RAM backing: {e:?}"
+                        ))
+                    })?;
+                return Ok((guest_mem, GuestAddress(kernel_entry_addr), None, None));
+            }
             let kernel_region = unsafe {
                 MmapRegion::build_raw(kernel_host_addr as *mut u8, kernel_size, 0, 0)
                     .map_err(StartMicrovmError::InvalidKernelBundle)?
@@ -1507,10 +1526,23 @@ pub fn create_guest_memory(
             .map_err(StartMicrovmError::ShmCreate)?;
     }
 
-    arch_mem_regions.extend(shm_manager.regions());
-
-    let guest_mem = GuestMemoryMmap::from_ranges(&arch_mem_regions)
-        .map_err(|e| StartMicrovmError::GuestMemoryMmap(format!("{e:?}")))?;
+    #[cfg(all(target_arch = "x86_64", not(feature = "tee")))]
+    if vm_resources.ram_backing.is_some() && matches!(payload, Payload::KernelMmap) {
+        let kernel = vm_resources
+            .kernel_bundle
+            .as_ref()
+            .ok_or(StartMicrovmError::MissingKernelConfig)?;
+        arch_mem_regions.push((GuestAddress(kernel.guest_addr), kernel.size));
+        arch_mem_regions.sort_by_key(|region| region.0);
+    }
+    let guest_mem = if let Some(file) = &vm_resources.ram_backing {
+        crate::ram::map(&arch_mem_regions, &shm_manager.regions(), file.clone())
+            .map_err(StartMicrovmError::GuestMemoryMmap)?
+    } else {
+        arch_mem_regions.extend(shm_manager.regions());
+        GuestMemoryMmap::from_ranges(&arch_mem_regions)
+            .map_err(|e| StartMicrovmError::GuestMemoryMmap(format!("{e:?}")))?
+    };
 
     let (guest_mem, entry_addr, initrd_config, cmdline) =
         load_payload(vm_resources, guest_mem, &arch_mem_info, payload)?;

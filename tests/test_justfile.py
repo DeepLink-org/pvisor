@@ -34,6 +34,12 @@ def run_task(tmp_path):
         "        binary.parent.mkdir(parents=True, exist_ok=True)\n"
         "        binary.write_text('#!/bin/sh\\nexit 0\\n')\n"
         "        binary.chmod(0o755)\n"
+        "if name == 'cargo' and args[:1] == ['build'] and '--example' in args:\n"
+        "    target = Path(args[args.index('--target-dir') + 1])\n"
+        "    binary = target / 'release/examples' / args[args.index('--example') + 1]\n"
+        "    binary.parent.mkdir(parents=True, exist_ok=True)\n"
+        "    binary.write_text('#!/bin/sh\\nexit 0\\n')\n"
+        "    binary.chmod(0o755)\n"
         "if name == 'codesign': print('com.apple.security.hypervisor')\n"
     )
     stub.chmod(0o755)
@@ -116,7 +122,6 @@ def test_cases_preserve_shell_characters_in_arguments(run_task, tmp_path):
         "--config",
         "semspec-doc.toml",
         "run",
-        "docs/src/zh/reference/cases.md",
         "--domain",
         "DOC",
         "--subject-bin",
@@ -133,6 +138,18 @@ def test_cases_preserve_shell_characters_in_arguments(run_task, tmp_path):
     assert commands[0][0:2] == ["python3", "scripts/build-pvisor.py"]
     assert commands[0][commands[0].index("--profile") + 1] == "release"
     assert not marker.exists()
+
+
+def test_vm_cases_build_driver_and_forward_selection(run_task, tmp_path):
+    commands = run_task("vm-cases", "--case", "S-DOC-060", "--keep")
+    target = tmp_path / "target with spaces"
+    assert [
+        "cargo", "build", "--locked", "-p", "pvisor", "--release",
+        "--example", "vm_control_case", "--target-dir", str(target),
+    ] in commands
+    assert commands[-1][-3:] == ["--case", "S-DOC-060", "--keep"]
+    assert "docs/src/zh/reference/cases-vm.md" in commands[-1]
+    assert str(target / "pvisor-vm-case-report.json") in commands[-1]
 
 
 def test_ci_and_task_reference_use_existing_recipes():

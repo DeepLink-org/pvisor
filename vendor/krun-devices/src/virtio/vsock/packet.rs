@@ -188,6 +188,7 @@ pub struct TsiReleaseReq {
 /// - the chain head, holding the packet header; and
 /// - (an optional) data/buffer descriptor, only present for data packets (VSOCK_OP_RW).
 pub struct VsockPacket {
+    _memory_access: Option<std::sync::Arc<super::super::memory_gate::Access>>,
     hdr: *mut u8,
     buf: Option<*mut u8>,
     buf_size: usize,
@@ -226,6 +227,7 @@ impl VsockPacket {
             buf: None,
             buf_size: 0,
             owned_buf: None,
+            _memory_access: head.memory_access.clone(),
         };
         let pkt_len = pkt.len();
 
@@ -352,6 +354,7 @@ impl VsockPacket {
             buf: None,
             buf_size: 0,
             owned_buf: None,
+            _memory_access: head.memory_access.clone(),
         };
 
         // Starting from Linux 6.2 the virtio-vsock driver can use a single descriptor for both
@@ -783,5 +786,42 @@ impl VsockPacket {
                 byte_order::write_le_u64(&mut buf[0..], time);
             }
         }
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn packet_retains_memory_access_after_descriptor_is_dropped() {
+        use crate::virtio::{memory_gate, queue, Descriptor};
+        use std::time::Duration;
+        use vm_memory::{Bytes, GuestMemoryMmap};
+        let mem = GuestMemoryMmap::from_ranges(&[(GuestAddress(0), 8192)]).unwrap();
+        let gate = memory_gate::register(&mem);
+        mem.write_obj(
+            Descriptor {
+                addr: 4096,
+                len: 64,
+                flags: queue::VIRTQ_DESC_F_WRITE,
+                next: 0,
+            },
+            GuestAddress(0),
+        )
+        .unwrap();
+        let chain = DescriptorChain::checked_new(&mem, GuestAddress(0), 1, 0).unwrap();
+        let mut packet = VsockPacket::from_rx_virtq_head(&chain).unwrap();
+        drop(chain);
+        assert!(gate.close(Duration::ZERO).is_err());
+        packet.set_len(4);
+        packet.buf_mut().unwrap()[..4].copy_from_slice(b"data");
+        drop(packet);
+        gate.close(Duration::ZERO).unwrap();
+        let mut actual = [0; 4];
+        mem.read_slice(&mut actual, GuestAddress(4096 + VSOCK_PKT_HDR_SIZE as u64))
+            .unwrap();
+        assert_eq!(&actual, b"data");
+        gate.open();
     }
 }

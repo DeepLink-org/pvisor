@@ -579,7 +579,19 @@ external CNI configuration and is currently rejected. The executor records
 container isolation but does not claim complete capability enforcement.
 
 `--executor vm` uses statically linked libkrun and its embedded init to boot a
-minimal Linux guest. `--rootfs image=IMAGE` selects this executor and pulls an
+minimal Linux guest. `--vm-ram-backing FILE` (`[vm].ram_backing`) creates a new
+private file backing live RAM. When omitted, an attempt-local file in the user
+cache is deleted on normal exit. `--vm-ram-compression`
+(`[vm].ram_compression = true`) selects the PVZRAM v2 manifest and immutable
+Zstd Seekable base/delta sidecar files
+at startup, requiring Linux FUSE or the macFUSE kernel backend.
+Rust `RunHandle::pause/resume/offload` controls
+the VM; a new offload destination must be on the backing's existing filesystem.
+Reclaim reports sampled residency, not guaranteed zero RAM. The file is not a
+complete VM snapshot. This implementation has not been compiled or validated at
+runtime.
+
+`--rootfs image=IMAGE` selects this executor and pulls an
 OCI/Docker image directly, without invoking Docker, Podman or Buildah. When no
 explicit rootfs or image is supplied, Linux uses the host `/` through virtiofs
 and OverlayFS by default, preserving the host runtime, PATH and HOME without

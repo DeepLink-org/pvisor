@@ -16,6 +16,7 @@ pub struct Session {
     pub(crate) network_policy: pvisor_core::NetworkPolicy,
     pub(crate) attempt_id: AttemptId,
     pub(crate) cancel: CancellationToken,
+    pub(crate) vm_control: crate::executor::vm::control::VmControl,
     pub(crate) status: watch::Sender<RunStatus>,
     pub(crate) events: RunEventPublisher,
     pub(crate) agentctl: crate::AgentCtlControl,

@@ -48,7 +48,8 @@ just cases
 just semspec show S-DOC-001
 ```
 
-`just cases` 构建 release pVisor，运行全部 54 个有效 DOC 规格，输出 JSON 报告到
+`just cases` 构建 release pVisor，发现本页的 54 个有效 DOC 规格和
+[VM 控制与 RAM backing 的六条场景](cases-vm.md)，输出 JSON 报告到
 `target/pvisor-case-report.json`。使用 S-DOC ID 选择 case；A01 对应 S-DOC-001，
 C01 对应 S-DOC-012。完整映射见 `tests/semantics/README.md`。也可以通过
 `just semspec run --domain DOC --subject-bin PATH` 使用已有二进制。

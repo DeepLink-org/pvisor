@@ -257,6 +257,12 @@ impl std::str::FromStr for ContainerPlatform {
 #[derive(Debug, Clone, Deserialize, Serialize, PartialEq, Eq)]
 #[serde(default, deny_unknown_fields)]
 pub struct VmSettings {
+    /// New private live RAM backing file. Omitted: create an attempt-local file
+    /// in the user's disk cache. Existing files are never overwritten.
+    pub ram_backing: Option<PathBuf>,
+    /// Commit RAM as Seekable base/delta generations through a cached FUSE adapter. Requires
+    /// /dev/fuse on Linux or the macFUSE kernel backend on Apple Silicon.
+    pub ram_compression: bool,
     /// Linux root filesystem exported to the libkrun guest; defaults to host `/`.
     pub rootfs: Option<PathBuf>,
     /// Explicit OCI image used instead of the host root filesystem.
@@ -277,6 +283,8 @@ pub struct VmSettings {
 impl Default for VmSettings {
     fn default() -> Self {
         Self {
+            ram_backing: None,
+            ram_compression: false,
             rootfs: None,
             image: None,
             image_store: None,
@@ -714,6 +722,8 @@ command = ["agent"]
 
 [vm]
 rootfs = "/opt/rootfs"
+ram_backing = "/opt/ram/session.ram"
+ram_compression = true
 library_dir = "/opt/libkrun/lib"
 memory_mib = 4096
 cpus = 4
@@ -723,10 +733,15 @@ cpus = 4
         assert_eq!(config.run.executor, RunExecutorKind::Vm);
         assert_eq!(config.vm.rootfs.as_deref(), Some(Path::new("/opt/rootfs")));
         assert_eq!(
+            config.vm.ram_backing.as_deref(),
+            Some(Path::new("/opt/ram/session.ram"))
+        );
+        assert_eq!(
             config.vm.library_dir.as_deref(),
             Some(Path::new("/opt/libkrun/lib"))
         );
         assert_eq!(config.vm.memory_mib, 4096);
+        assert!(config.vm.ram_compression);
         assert_eq!(config.vm.cpus, 4);
         let encoded = toml::to_string_pretty(&config).unwrap();
         let decoded: RunConfig = toml::from_str(&encoded).unwrap();

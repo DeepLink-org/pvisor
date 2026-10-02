@@ -34,6 +34,12 @@ DOC 继续由同一 runner 执行示例回归，不作为已审核的语义承�
 
 ## 文档场景迁移
 
+VM 新增六条 DOC 场景 S-DOC-057..062，见
+[`cases-vm.md`](../../docs/src/zh/reference/cases-vm.md)。`just cases` 扫描整个 DOC
+目录；`just vm-cases` 准备 SDK 驱动并执行这六条场景。需要 Linux/KVM 或
+Apple Silicon/HVF、Linux guest rootfs；SDK 场景还需要 guest Python；S-DOC-062 还需要 FUSE/macFUSE kernel backend。
+新规格与 `vm.sh` 保持 UNREVIEWED，没有更新人工审批台账。
+
 `docs/src/zh/reference/cases.md` 同时是用户文档和 DOC 规格源，覆盖原 A01–M02 中仍有效的 54 个场景，`just cases` 只运行 DOC 域。
 L01、L02 随 `env` 功能移除，S-DOC-053、S-DOC-054 的删除记录保留在 Git 中。
 

@@ -314,6 +314,8 @@ impl NetWorker {
 
         while let Some(head) = tx_queue.pop(&self.mem) {
             let head_index = head.index;
+            // Addresses below outlive the descriptor walk.
+            let _memory_access = head.memory_access.clone();
             let mut next_desc = Some(head);
 
             self.tx_iovec.clear();

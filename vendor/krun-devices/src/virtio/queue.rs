@@ -195,6 +195,7 @@ unsafe impl ByteValued for Descriptor {}
 /// A virtio descriptor chain.
 #[derive(Clone)]
 pub struct DescriptorChain<'a> {
+    pub(crate) memory_access: Option<std::sync::Arc<super::memory_gate::Access>>,
     desc_table: GuestAddress,
     queue_size: u16,
     ttl: u16, // used to prevent infinite chain cycles
@@ -230,6 +231,7 @@ impl<'a> DescriptorChain<'a> {
             return None;
         }
 
+        let memory_access = super::memory_gate::access(mem);
         let desc_head = mem.checked_offset(desc_table, (index as usize) * 16)?;
         mem.checked_offset(desc_head, 16)?;
 
@@ -243,6 +245,7 @@ impl<'a> DescriptorChain<'a> {
             }
         };
         let chain = DescriptorChain {
+            memory_access,
             mem,
             desc_table,
             queue_size,
@@ -379,6 +382,7 @@ impl Queue {
     }
 
     pub fn is_valid(&self, mem: &GuestMemoryMmap) -> bool {
+        let _memory_access = super::memory_gate::access(mem);
         let queue_size = u64::from(self.actual_size());
         let desc_table = self.desc_table;
         let desc_table_size = 16 * queue_size;
@@ -440,6 +444,7 @@ impl Queue {
     /// Returns the number of yet-to-be-popped descriptor chains in the avail ring.
     #[allow(clippy::len_without_is_empty)]
     pub fn len(&self, mem: &GuestMemoryMmap) -> u16 {
+        let _memory_access = super::memory_gate::access(mem);
         (self.avail_idx(mem, Ordering::Acquire).unwrap() - self.next_avail).0
     }
 
@@ -450,6 +455,7 @@ impl Queue {
 
     /// Pop the first available descriptor chain from the avail ring.
     pub fn pop<'b>(&mut self, mem: &'b GuestMemoryMmap) -> Option<DescriptorChain<'b>> {
+        let _memory_access = super::memory_gate::access(mem);
         if self.len(mem) == 0 || self.actual_size() == 0 {
             return None;
         }
@@ -505,6 +511,7 @@ impl Queue {
         head_index: u16,
         len: u32,
     ) -> Result<(), Error> {
+        let _memory_access = super::memory_gate::access(mem);
         if head_index >= self.size {
             error!("attempted to add out of bounds descriptor to used ring: {head_index}");
             return Err(Error::InvalidDescriptorIndex);
@@ -545,6 +552,7 @@ impl Queue {
     // with the device, but they serve as useful optimizations. So we only ensure access to the
     // virtq_avail.used_event is atomic, but do not need to synchronize with other memory accesses.
     fn used_event(&self, mem: &GuestMemoryMmap, order: Ordering) -> Result<Wrapping<u16>, Error> {
+        let _memory_access = super::memory_gate::access(mem);
         // This can not overflow an u64 since it is working with relatively small numbers compared
         // to u64::MAX.
         let used_event_offset =
@@ -567,6 +575,7 @@ impl Queue {
         val: u16,
         order: Ordering,
     ) -> Result<(), Error> {
+        let _memory_access = super::memory_gate::access(mem);
         // This can not overflow an u64 since it is working with relatively small numbers compared
         // to u64::MAX.
         let avail_event_offset =
@@ -590,6 +599,7 @@ impl Queue {
         val: u16,
         order: Ordering,
     ) -> Result<(), Error> {
+        let _memory_access = super::memory_gate::access(mem);
         mem.store(val, self.used_ring, order)
             .map_err(Error::GuestMemory)
     }
@@ -700,6 +710,7 @@ impl Queue {
     /// This is written by the driver, to indicate the next slot that will be filled in the avail
     /// ring.
     fn avail_idx(&self, mem: &GuestMemoryMmap, order: Ordering) -> Result<Wrapping<u16>, Error> {
+        let _memory_access = super::memory_gate::access(mem);
         let addr = self
             .avail_ring
             .checked_add(2)

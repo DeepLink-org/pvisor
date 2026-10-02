@@ -14,6 +14,8 @@ pub(crate) use supported::{bundled_firmware_dir, firmware_name};
 #[cfg(all(target_os = "macos", target_arch = "x86_64"))]
 pub use unsupported::{VmExecutor, run_internal_if_requested};
 
+pub(crate) mod control;
+mod compressed;
 #[cfg(not(any(
     all(target_os = "linux", target_env = "musl", target_arch = "x86_64"),
     all(target_os = "macos", target_arch = "x86_64")

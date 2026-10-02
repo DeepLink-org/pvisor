@@ -55,6 +55,7 @@ impl std::error::Error for Error {}
 
 #[derive(Clone)]
 struct DescriptorChainConsumer<'a> {
+    memory_access: Option<std::sync::Arc<super::memory_gate::Access>>,
     buffers: VecDeque<VolatileSlice<'a>>,
     bytes_consumed: usize,
 }
@@ -161,11 +162,13 @@ impl<'a> DescriptorChainConsumer<'a> {
             }
 
             Ok(DescriptorChainConsumer {
+                memory_access: self.memory_access.clone(),
                 buffers: other,
                 bytes_consumed: 0,
             })
         } else if rem == 0 {
             Ok(DescriptorChainConsumer {
+                memory_access: self.memory_access.clone(),
                 buffers: VecDeque::new(),
                 bytes_consumed: 0,
             })
@@ -190,6 +193,7 @@ pub struct Reader<'a> {
 impl<'a> Reader<'a> {
     /// Construct a new Reader wrapper over `desc_chain`.
     pub fn new(mem: &'a GuestMemoryMmap, chain: DescriptorChain<'a>) -> Result<Reader<'a>> {
+        let memory_access = chain.memory_access.clone();
         let mut total_len: usize = 0;
         let buffers = chain
             .into_iter()
@@ -215,6 +219,7 @@ impl<'a> Reader<'a> {
             .collect::<Result<VecDeque<VolatileSlice<'a>>>>()?;
         Ok(Reader {
             buffer: DescriptorChainConsumer {
+                memory_access,
                 buffers,
                 bytes_consumed: 0,
             },
@@ -342,6 +347,7 @@ pub struct Writer<'a> {
 impl<'a> Writer<'a> {
     /// Construct a new Writer wrapper over `desc_chain`.
     pub fn new(mem: &'a GuestMemoryMmap, chain: DescriptorChain<'a>) -> Result<Writer<'a>> {
+        let memory_access = chain.memory_access.clone();
         let mut total_len: usize = 0;
         let buffers = chain
             .into_iter()
@@ -368,6 +374,7 @@ impl<'a> Writer<'a> {
 
         Ok(Writer {
             buffer: DescriptorChainConsumer {
+                memory_access,
                 buffers,
                 bytes_consumed: 0,
             },

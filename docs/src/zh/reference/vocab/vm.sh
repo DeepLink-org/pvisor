@@ -1,0 +1,1 @@
+../../../../../tests/semantics/vocab/vm.sh

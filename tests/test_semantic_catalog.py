@@ -143,6 +143,46 @@ def test_default_review_scope_is_stage_and_doc_regressions_remain_configured():
     assert stage["project"]["ledger"] == doc["project"]["ledger"]
 
 
+def test_vm_catalog_has_executable_sdk_checks_and_explicit_prerequisites():
+    contents = (ROOT / "docs/src/zh/reference/cases-vm.md").read_text()
+    identifiers = re.findall(r"^### (S-DOC-\d{3})：", contents, re.MULTILINE)
+    assert identifiers == [f"S-DOC-{number:03d}" for number in range(57, 63)]
+    assert contents.count("**语义**") == contents.count("**违反示例**") == 6
+    assert contents.count("vocab=core.sh,cases.sh,pvisor.sh,vm.sh") == 6
+    assert (ROOT / "docs/src/zh/reference/vocab/vm.sh").resolve() == (VOCAB / "vm.sh").resolve()
+    assert (ROOT / "docs/src/zh/reference/vocab/vm.sh").is_file()
+    blocks = re.findall(r"^```bash\n(.*?)^```", contents, re.MULTILINE | re.DOTALL)
+    assert len(blocks) == 6
+    assert all(
+        block.startswith(("require_vm_case\n", "require_vm_sdk\n", "require_vm_compression\n"))
+        for block in blocks
+    )
+    assert contents.count('"$VM_CASE_DRIVER"') == 4
+    assert "xfail-on" not in contents
+
+
+def test_vm_prerequisite_skips_missing_rootfs_before_invoking_product(tmp_path):
+    environment = {
+        **os.environ,
+        "PVISOR_CASE_ROOTFS": str(tmp_path / "missing"),
+        "PVISOR_CASE_VM_DRIVER": str(tmp_path / "missing-driver"),
+    }
+    result = subprocess.run(
+        [
+            "bash", "-euo", "pipefail", "-c",
+            'source "$1"; source "$2"; require_vm_sdk; echo reached',
+            "vm-prerequisite", str(VOCAB / "pvisor.sh"), str(VOCAB / "vm.sh"),
+        ],
+        env=environment,
+        capture_output=True,
+        text=True,
+        timeout=15,
+    )
+    assert result.returncode == 77
+    assert "SKIP:" in result.stderr
+    assert "reached" not in result.stdout
+
+
 def test_bash_prerequisites_skip_without_turning_assertions_into_pass():
     result = subprocess.run(
         [
