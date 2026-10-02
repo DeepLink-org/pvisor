@@ -1,27 +1,23 @@
 # Start here
 
-**PolicyVisor (pVisor)** runs agents unattended and keeps only the file changes you approve. It runs your existing Agent CLIs, scripts, and automation commands, and records what was actually in effect on each run.
+**PolicyVisor (pVisor)** runs agents unattended and lets you keep only the file changes you approve. It runs your existing Agent CLI, script, or automation command and records the limits actually installed for each execution. The Python package and CLI are both named `pvisor`.
 
-The Python package and CLI are both named `pvisor`.
+## Complete your first loop
 
-## Your first workflow
+1. [Install pVisor](installation.md) and check platform prerequisites.
+2. [Run the small demo](first-run.md); no agent account or API key is needed.
+3. Replace the demo command with your script, automation, or Agent CLI.
+4. [Review and apply](../guides/review-apply.md) the changes you want to retain.
 
-1. [Install pVisor](installation.md) and check the platform requirements.
-2. [Run a small example](first-run.md) without an Agent account or API key.
-3. Replace the example command with your script, automation command, or Agent CLI.
-4. [Review and apply](../../zh/guides/review-apply.md) the changes you want to keep.
-
-Use `--safe` or `--stage PATH` to stage workspace changes for review after exit.
-See [staging and storage](../reference/cli.md#staging-and-storage) for defaults and
-the separate HOME and VM rootfs lifetimes.
+Use `--safe` or `--stage PATH` to stage workspace changes for review after exit. Defaults and the different handling of HOME and VM rootfs are defined in [staging and storage](../reference/cli.md#暂存与存储).
 
 ## Find an answer
 
-| Question | Read |
+| Question | Documentation |
 | --- | --- |
 | What does pVisor do? | [Product overview](what-is-pvisor.md) |
-| Where should the command run? | [Host, container, or VM](../../zh/guides/executors/index.md) |
-| What is actually isolated? | [Capabilities and evidence](../../zh/concepts/capabilities-and-evidence.md) |
-| How do I record model traffic? | [Capture](../../zh/guides/capture.md) |
-| Which option do I need? | [CLI reference](../reference/cli.md) |
-| How do I build or contribute? | [Development](../../zh/community/index.md) |
+| Where should my command run? | [Host, container, and VM](../guides/executors/index.md) |
+| What was actually isolated? | [Capabilities and evidence](../concepts/capabilities-and-evidence.md) |
+| How do I record model requests? | [Capture](../guides/capture.md) |
+| Which option should I use? | [CLI reference](../reference/cli.md) |
+| How do I build and contribute? | [Community](../community/index.md) |

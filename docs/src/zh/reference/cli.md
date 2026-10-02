@@ -67,9 +67,9 @@ macOS 的 macFUSE 临时工作区默认以启动 pVisor 时的当前目录作为
 `--stage PATH` 仅用于指定存储位置，不再是保留改动的前提。
 
 ```bash
-pvisor run --stage ./run-stage -- codex
+pvisor run --stage ../run-stage -- codex
 pvisor run --safe --mount /opt/zcode:read --mount /var/lib/zcode:write -- zcode
-pvisor run --access '/workspace/**/.ssh:deny' -- zcode
+pvisor run --access '**/.ssh:deny' -- zcode
 pvisor run --access '.env:ask' -- codex
 ```
 
@@ -250,7 +250,7 @@ warn 放行并在监督进程 stderr 打印路径，不打印文件内容。告�
 TOML 中对应：
 
 ```toml
-[filesystem]
+[overlayfs]
 stage = "../stage-001"
 mount = [{ source = "/opt/tool", access = "stage" }]
 access = [
@@ -392,7 +392,7 @@ agent = "my-agent"
 executor = "host"
 command = ["my-agent"]
 
-[filesystem]
+[overlayfs]
 stage = "../stage-001"
 mount = [{ source = "/opt/tool", access = "stage" }]
 access = [{ path = "**/.ssh", level = "deny" }]
@@ -427,7 +427,7 @@ destination = "./capture"
 
 用 `pvisor run --config run.toml` 运行。显式 CLI 标量替换 TOML 标量。网络和 Gateway
 列表选项替换配置中的完整列表；文件系统的 `--mount` 和 `--access` 追加到配置条目。
-`[filesystem]` 的序列化字段 `stage`、`mount`、`access`、`max_size`
+`[overlayfs]` 的序列化字段 `stage`、`mount`、`access`、`max_size`
 分别对应 `--stage`、`--mount`、`--access`、
 `--overlayfs-max-size`。`--` 之后的命令替换 `run.command`。
 大小限制在运行结束后检查，因此不限制 Agent 运行期间的峰值占用。

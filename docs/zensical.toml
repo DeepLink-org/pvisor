@@ -78,7 +78,6 @@ accent = "custom"
 
 [project.extra]
 homepage = "zh/"
-english_pages = ["", "reference/cli/", "start/", "start/first-run/", "start/installation/", "start/what-is-pvisor/"]
 alternate = [
   { name = "English", link = "/pvisor/en/", lang = "en" },
   { name = "中文", link = "/pvisor/zh/", lang = "zh" },

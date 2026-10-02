@@ -22,7 +22,7 @@ pvisor status --review last
 先检查启动命令是否使用 stage：
 
 ```bash
-pvisor run --stage ./runs/task-001 -- AGENT_COMMAND
+pvisor run --stage ../stage-task-001 -- AGENT_COMMAND
 ```
 
 不使用 stage 时，host executor 不会产生可以审查和选择性 apply 的 staged filesystem Effect；
@@ -46,7 +46,7 @@ pvisor inspect last -- git status --short
 ```
 
 Agent 修改的是 Run-owned view。写入该 view 之外的路径可能被记录为 external Effect，也可能
-无法被 executor 提供。保持 stage 位于预期项目边界内，不要只按文件名比较生成的 Run 目录与项目根目录。
+无法被 executor 提供。保持 stage 位于项目目录之外，使用明确的 stage 路径定位 Job，不要只按文件名比较生成的 Run 目录与项目根目录。
 
 ## capture 输出缺失
 

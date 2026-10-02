@@ -29,4 +29,4 @@ search:
 
 - 跟踪 issue：TODO
 - 负责人：TODO
-- 相关页面：[回放](../guides/replay.md)、[SandboxReplay](../guides/sandbox-replay.md)
+- 相关页面：[回放](../guides/replay.md)

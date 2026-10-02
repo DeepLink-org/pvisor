@@ -1,8 +1,9 @@
 #!/usr/bin/env python3
-"""Build canonical Chinese docs and the smaller English entry points."""
+"""Build matching Chinese and English documentation with native locale themes."""
 
 import json
 import os
+import re
 import shutil
 import subprocess
 import sys
@@ -10,19 +11,79 @@ import tempfile
 from html import escape
 from pathlib import Path
 
+import tomllib
+
 DOCS = Path(__file__).resolve().parents[1] / "docs"
+
+EN_NAV_LABELS = {
+    "首页": "Home", "为什么": "Why pVisor", "开始使用": "Get started",
+    "指南": "Guides", "接入你的 Agent": "Connect your agent", "策略": "Policies",
+    "执行器": "Executors", "概念": "Concepts", "基准与对比": "Benchmarks and comparisons",
+    "安全": "Security", "参考": "Reference", "设计与研究": "Design and research",
+    "研究方向": "Research directions", "社区": "Community", "对比": "Comparisons",
+    "Gemini CLI": "Gemini CLI", "aider": "aider", "OpenCode": "OpenCode",
+    "在 CI 中运行": "Run in CI", "并行 Agent": "Parallel agents", "RL rollout": "RL rollouts",
+    "文件系统开销": "Filesystem overhead", "网络开销": "Network overhead",
+    "apply/drop 成本": "apply/drop cost", "端到端任务": "End-to-end tasks",
+    "监督成本": "Supervision cost", "并发密度": "Concurrency density",
+    "隔离有效性": "Isolation effectiveness", "Agent 自带沙箱": "Agent-native sandboxes",
+    "Docker / devcontainer": "Docker / devcontainer", "云端沙箱": "Cloud sandboxes",
+    "隔离基座": "Isolation runtimes", "RL 基础设施": "RL infrastructure",
+    "第三方审计": "Third-party audits", "集群化执行": "Cluster execution",
+    "RL 执行基座": "RL execution substrate", "论文与报告": "Publications and reports",
+    "治理": "Governance", "使用者": "Adopters",
+}
+
+
+def english_nav(node):
+    if isinstance(node, str):
+        return json.dumps(node.replace("zh/", "en/", 1))
+    if isinstance(node, list):
+        return "[" + ", ".join(english_nav(child) for child in node) + "]"
+    entries = []
+    for label, child in node.items():
+        planned = label.endswith("（规划中）")
+        label = EN_NAV_LABELS[label.removesuffix("（规划中）")]
+        if planned:
+            label += " (planned)"
+        entries.append(json.dumps(label) + " = " + english_nav(child))
+    return "{" + ", ".join(entries) + "}"
+
+
+def localize_search(site, locale):
+    """Keep the native search index and result links inside the current locale."""
+    index = json.loads((site / "search.json").read_text())
+    prefix = locale + "/"
+    index["items"] = [
+        {**item, "location": item["location"].removeprefix(prefix)}
+        for item in index["items"] if item["location"].startswith(prefix)
+    ]
+    (site / locale / "search.json").write_text(json.dumps(index, ensure_ascii=False))
+    for page in (site / locale).rglob("*.html"):
+        def configure(match):
+            config = json.loads(match[2])
+            config["base"] = os.path.relpath(site / locale, page.parent)
+            return match[1] + json.dumps(config, ensure_ascii=False) + match[3]
+
+        page.write_text(re.sub(
+            r'(<script id="__config"[^>]*>)(.*?)(</script>)', configure, page.read_text(),
+            flags=re.S,
+        ))
 
 
 def build() -> None:
+    from importlib import import_module
+
+    import_module("check-docs").check_translations()
     zensical = shutil.which("zensical") or str(Path(sys.executable).with_name("zensical"))
     subprocess.run([zensical, "build", "--strict"], cwd=DOCS, check=True)
-    # Zensical has one canonical language/navigation per build. Reuse the same
-    # content and search index, rendering English HTML with its native en theme.
+    localize_search(DOCS / "site", "zh")
+    # Zensical has one language/navigation per build; mirror the source navigation.
     config = (DOCS / "zensical.toml").read_text()
     before, nav = config.split("nav = [", 1)
     nav, after = nav.split("\n[project.theme]", 1)
-    nav = '\n  { "Home" = "en/index.md" },\n  { "Get started" = ["en/start/index.md", "en/start/what-is-pvisor.md", "en/start/installation.md", "en/start/first-run.md"] },\n  { "CLI reference" = "en/reference/cli.md" },\n]\n'
-    config = before + "nav = [" + nav + "\n[project.theme]" + after
+    nav = english_nav(tomllib.loads(config)["project"]["nav"])
+    config = before + "nav = " + nav + "\n\n[project.theme]" + after
     config = config.replace('language = "zh"', 'language = "en"').replace(
         'homepage = "zh/"', 'homepage = "en/"'
     )
@@ -38,21 +99,15 @@ def build() -> None:
             subprocess.run(
                 [zensical, "build", "--strict", "-f", config_file.name], cwd=DOCS, check=True
             )
+        localize_search(temp / "site", "en")
         shutil.copytree(temp / "site/en", DOCS / "site/en", dirs_exist_ok=True)
     # Keep published article URLs usable after reorganizing the source tree.
     redirects = json.loads((DOCS / "redirects.json").read_text())
-    # Former English translations now lead to the authoritative Chinese article.
-    for page in (DOCS / "src/zh").rglob("*.md"):
-        name = str(page.relative_to(DOCS / "src/zh"))
-        if not (DOCS / "src/en" / name).exists():
-            redirects.setdefault(name, name)
     for old, new in redirects.items():
         for locale in ("en", "zh", ""):
             source = DOCS / "site" / locale / old.removesuffix(".md")
             target_locale = locale or "zh"
-            if not (DOCS / "src" / target_locale / new).exists():
-                target_locale = "zh"
-            if old == new and locale != "en":
+            if old == new:
                 continue
             target = DOCS / "site" / target_locale / new.removesuffix(".md")
             source = source.parent if source.name == "index" else source

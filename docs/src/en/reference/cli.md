@@ -3,12 +3,12 @@
 The Job is pVisor's primary user-facing object. `pvisor run` creates a
 Job. The other flat commands act directly on that Job; there is no `job`
 subcommand. `replay` starts a Job from a trajectory. See the
-[execution model](../../zh/design/execution-model.md) for how Job, Run, and Attempt
+[execution model](../design/execution-model.md) for how Job, Run, and Attempt
 relate; existing Job IDs and on-disk records retain their `run-*`
 and `Run Bundle` names.
 Full command examples for Host, OCI VM, and transparent host-rootfs VM
 are in
-[Run workloads with pVisor](../../zh/guides/executors/index.md).
+[Run workloads with pVisor](../guides/executors/index.md).
 
 ## Find the command you need
 
@@ -17,10 +17,10 @@ Use the smallest surface that matches your next decision:
 - **Run a command:** start with [`pvisor run`](../start/first-run.md), then use
   `status --review`, `inspect`, and `apply` to decide what reaches the project.
 - **Understand a boundary:** use `status` and `inspect`, then read the
-  [execution guide](../../zh/guides/executors/index.md) before changing providers.
+  [execution guide](../guides/executors/index.md) before changing providers.
 - **Continue a trajectory:** use `replay` only when you already have a
   supported trajectory and want a fresh sandbox; begin with the
-  [replay guide](../../zh/guides/replay.md).
+  [replay guide](../guides/replay.md).
 
 If this is your first command, do not start with the full option list below:
 
@@ -84,17 +84,34 @@ Other configuration settings and comments are preserved when saving.
 
 ```text
 pvisor
-├── run                 start a Job
-├── apply               commit a stopped Job's staged changes
-├── drop                discard a stopped Job's staged changes
-├── status              show Job state and review its evidence
-├── kill                request termination of a live Job
-├── fork                start a child Job from a stopped Job
-├── inspect             open a read-only Job filesystem view
-└── replay              start a Job from an Agent trajectory
+├── run                 Create a Job
+├── apply               Apply staged changes of a stopped Job
+├── drop                Discard staged changes of a stopped Job
+├── status              Inspect Job state and review evidence
+├── kill                Request termination of a running Job
+├── fork                Create a child from a stopped Job
+├── inspect             Inspect the Job filesystem read-only
+└── replay              Create a Job from an agent trajectory
 ```
 
-## Staging and storage
+### Filesystem parameters {#文件系统参数}
+
+The macFUSE merged mount at /Volumes/pvisor-* uses the current directory as its default lower unless an explicit base is configured. Ordinary host writes reach the workspace; safe/ask retain staging.
+
+```bash
+pvisor run --stage ../run-stage -- codex
+pvisor run --safe --mount /opt/zcode:read --mount /var/lib/zcode:write -- zcode
+pvisor run --access '**/.ssh:deny' -- zcode
+pvisor run --access '.env:ask' -- codex
+```
+
+`--mount SOURCE:read` grants read-only access at the original absolute path for host with `--safe` or `--ask`; `SOURCE:write` modifies host storage directly. Neither rewrites TARGET or may overlap the workspace, Job storage or writable runtime paths. Linux private `/tmp` cannot hold a read-only share. Explicit shares bypass workspace OverlayFS ask rules. `--mount SOURCE[:TARGET]:stage` composes a workspace lower rather than mounting an independent directory.
+
+`--access PATH-GLOB:deny|ask|warn` appends configuration, preset and CLI rules, with deny > ask > warn. Use `--clear-access` explicitly to clear defaults/configuration before adding CLI rules. The obsolete warning spelling `:read` is rejected; use `:warn`, or `--mount PATH:read` for actual read-only sharing. Proxy audit is cooperative: direct connections outside the proxy do not prompt.
+
+<a id="staging-and-storage"></a>
+
+## Staging and storage {#暂存与存储}
 
 These are the CLI defaults. Explicit commit settings, writable shares, and
 application compatibility grants can change where writes go.
@@ -113,7 +130,9 @@ Job records and the Run Bundle live in run storage. `--stage PATH` selects a
 location; `--safe` and `--ask` retain workspace changes without it.
 File review cannot undo remote side effects.
 
-## Safe first run
+<a id="safe-first-run"></a>
+
+## Safe first run {#安全的第一次运行}
 
 ```bash
 pvisor run --safe -- codex
@@ -168,7 +187,9 @@ To stop a running Job, use `pvisor kill JOB_ID`. It requests graceful
 termination from the Job supervisor; check `pvisor status JOB_ID` for the final
 state. A stopped Job can still be reviewed and applied or dropped.
 
-## `--safe` parameter preset
+<a id="safe-parameter-preset"></a>
+
+## `--safe` parameter preset {#safe-参数预设}
 
 ```bash
 pvisor run --safe -- claude
@@ -288,7 +309,7 @@ Public keys inside `.ssh` are hidden with the directory; those outside only warn
 cannot identify every private key; add rules for custom names.
 
 ```toml
-[filesystem]
+[overlayfs]
 stage = "../stage-001"
 mount = [{ source = "/opt/tool", access = "stage" }]
 access = [
@@ -311,7 +332,9 @@ ambient host reads, extra container shares and credentials outside the view rema
 concerns. Backing directories must be managed by a trusted supervisor; concurrent mutation by
 other host processes is outside this rule mechanism's guarantee.
 
-## Replay an Agent trajectory
+<a id="replay-an-agent-trajectory"></a>
+
+## Replay an Agent trajectory {#replay-an-agent-trajectory}
 
 `pvisor replay` assumes the caller has normally created a fresh sandbox. It
 replays complete tool batches through `after_step`, rebuilds the selected
@@ -439,7 +462,7 @@ observation metadata, not an ordering source of truth.
 The equivalent TOML is:
 
 ```toml
-# host (default) or sandbox; independent from OverlayNet and OverlayFS staging
+# host（默认）或 sandbox；与 OverlayNet 和 OverlayFS 暂存相互独立
 filesystem = "host"
 
 [run]
@@ -447,7 +470,7 @@ agent = "my-agent"
 executor = "host"
 command = ["my-agent"]
 
-[filesystem]
+[overlayfs]
 stage = "../stage-001"
 mount = [{ source = "/opt/tool", access = "stage" }]
 access = [{ path = "**/.ssh", level = "deny" }]
@@ -483,7 +506,7 @@ destination = "./capture"
 Run it with `pvisor run --config run.toml`. Explicit CLI scalars replace TOML
 scalars. Network and Gateway list options replace their complete configured
 lists; filesystem `--mount` and `--access` entries are appended to configured
-entries. Every serialized `[filesystem]` field has a CLI form: `stage`, `mount`,
+entries. Every serialized `[overlayfs]` field has a CLI form: `stage`, `mount`,
 `access`, and `max_size` map to `--stage`, `--mount`, `--access`,
 and `--overlayfs-max-size`.
 The size limit is checked after execution, so it does not bound peak space used
@@ -513,8 +536,7 @@ pvisor run \
 
 The in-process Gateway and explicit OverlayNet proxy currently require
 `container.network = "host"`, because their injected addresses are host
-loopback endpoints. Bridge and no-network modes are valid when these drivers
-are off. The executor records container isolation but does not claim full
+loopback endpoints. No-network mode is valid when these drivers are off; bridge currently requires external CNI and is rejected. The executor records container isolation but does not claim full
 capability enforcement.
 
 `--executor vm` uses statically linked libkrun and its embedded init to boot a
@@ -568,9 +590,13 @@ Selective host/container rules cover traffic routed through the explicit proxy.
 Host deny-all uses a namespace or Seatbelt to block direct egress; containers
 can use `--container-network none` for offline execution. VM `auto` uses
 smoltcp IPv4 TCP/DNS and `off` leaves the guest offline. VM deny-all still
-permits configured internal Gateway routes. See the [network boundaries](../../zh/guides/policies/network.md).
+permits configured internal Gateway routes. See the [network boundaries](../guides/policies/network.md).
 
-## Run project discovery
+<a id="run-project-discovery"></a>
+
+`--container-rootfs PATH` supplies a prepared container rootfs instead of an image.
+
+## Run project discovery {#run-项目发现}
 
 The current directory is the default project association. `--mount` identifies
 additional host layers and, when specified, their Agent-visible paths. Each Run receives an
@@ -636,4 +662,4 @@ lower with persistent 1 MiB block caching when a compatible server is available.
 A missing/stale default socket retains local OCI preparation. An explicitly
 configured server must work; `PVISOR_CACHE_SERVER=off` forces local
 preparation. Explicit rootfs directories and native containers are unchanged.
-See the [protocol and remote-access guide](../../zh/reference/shared-image-cache.md).
+See the [protocol and remote-access guide](../reference/shared-image-cache.md).

@@ -31,3 +31,22 @@ pvisor drop last
 ```
 
 丢弃只移除尚未应用的暂存改动，不能撤销已应用批次、网络调用或其他外部影响。丢弃之前想保留当前状态继续尝试，见[逻辑检查点与分叉](fork-checkpoint.md)。
+
+## 审查顺序与预期结果
+
+先确认 Job 已停止，再按以下顺序阅读：结果与退出码 → 实际文件/网络边界和警告 → 拒绝或失败的访问 → 净文件改动。允许规则和捕获记录不能代替强制力证据。
+
+```bash
+pvisor status --review --diff ../stage-001
+pvisor inspect ../stage-001 -- git diff -- src
+pvisor apply ../stage-001 --path src
+pvisor status --review ../stage-001
+```
+
+成功的选择性 apply 后，宿主 `src` 应出现所选改动，审查清单里其他未应用路径仍保留。只看 `changed_files` 不能判断改动质量；文本 diff 有总字节数和单文件大小限制，二进制文件或被截断的内容需另行检查。
+
+## 冲突后怎么处理
+
+遇到冲突时先保留当前工作区和 stage，不删除原像或手改 ledger。比较宿主当前文件、暂存文件与原任务要求，决定保留哪一份。要把两边的改动合在一起，应在新的 Job 或常规 Git 工作流里明确解决，再重试；pVisor 不会自动做三方合并。
+
+drop 前记录最终决定。已 apply 的批次不能被 drop 回滚；全部 apply 或 drop 会清理一次性暂存数据，所以需要 fork 时应先 fork。

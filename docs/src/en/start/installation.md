@@ -1,12 +1,8 @@
 # Installation
 
-PolicyVisor (pVisor) runs Agent CLIs, scripts, and automation commands with
-policy controls and an inspectable execution record. The CLI is `pvisor`;
-the Python package and core Rust crate are also named `pvisor`.
-Companion crates use `pvisor-*`; environment variables use `PVISOR_*`.
+PolicyVisor (pVisor) provides policy control and checkable execution records for Agent CLIs, scripts, and automation. The Python package, CLI, and core Rust crate are named `pvisor`; other crates use `pvisor-*` and environment variables use `PVISOR_*`.
 
-Update deployment environment variables to `PVISOR_*` when upgrading. Default local
-state uses `.pvisor` and the user cache uses `pvisor/`; existing data is not moved automatically.
+When upgrading, update deployed `PVISOR_*` settings as needed. Local state uses `.pvisor` and user caches use `pvisor/`; existing data is not migrated automatically.
 
 ## 1. Install the tools
 
@@ -14,15 +10,13 @@ state uses `.pvisor` and the user cache uses `pvisor/`; existing data is not mov
 pip install pvisor
 ```
 
-Verify that the command is available:
+Check the command:
 
 ```bash
 pvisor --version
 ```
 
-The wheel installs matching versions of the Python package and the `pvisor`
-CLI into the active Python environment. Use a virtual environment when the
-project has other Python dependencies:
+The wheel installs a matching Python package and CLI in the current Python environment. If your project has other Python dependencies, use a virtual environment:
 
 ```bash
 python3 -m venv .venv
@@ -31,32 +25,24 @@ python -m pip install --upgrade pip
 pip install pvisor
 ```
 
-!!! tip "Start with a Run"
+!!! tip "Start with one Run"
+    Reviewing a staged workspace needs no separate history service.
 
-    You do not need a separate history service to review a staged workspace.
+Published wheels target Linux x86_64 and macOS arm64. Check release artifacts or build from source for other architectures.
 
-Published wheels target Linux x86_64 and macOS arm64. Check the release artifacts before choosing another architecture.
+## 2. Check platform prerequisites
 
-## 2. Check platform requirements
-
-The CLI supports macOS and Linux with Python 3.10 or newer. Ordinary host Runs
-write through to the workspace; `--safe` or `--stage` uses a filesystem stage.
-On macOS, install macFUSE before using staged host execution:
+The CLI supports macOS and Linux; Python requires 3.10 or later. Ordinary host Jobs write directly to the workspace. `--safe` or `--stage` enables staging. Install macFUSE before staged host execution on macOS:
 
 ```bash
 brew install --cask macfuse
 ```
 
-macOS uses the macFUSE **FSKit backend** by default. Install macFUSE 5.4.0 or later (older FSKit releases can corrupt small writes with zero-filled data),
-then enable it under System Settings → General → Login Items & Extensions →
-File System Extensions. This backend does not load a kernel extension and needs
-no Recovery-mode security changes. Mounts appear at `/Volumes/pvisor-*`; backing
-data stays in the Run's stage directory. If FSKit is unavailable, the Run fails
-closed without falling back to a kernel backend or writing through. The libkrun VM executor does not require macFUSE.
+macOS uses macFUSE's **FSKit backend** by default. Install macFUSE 5.4.0 or newer (older FSKit versions can corrupt small writes into zeroes), then enable it in System Settings → General → Login Items & Extensions → File System Extensions. This needs no kernel extension, Recovery mode, or reduced boot security. Mounts use `/Volumes/pvisor-*`; data stays in the Job stage. If FSKit is unavailable, execution fails instead of switching to the kernel backend or direct writes. libkrun VM execution does not need macFUSE.
 
 ## 3. Install from source when needed
 
-Use the nightly wheel when you need the latest build published from `main`:
+Use the nightly wheel for the latest `main` build:
 
 ```bash
 curl -fsSL https://raw.githubusercontent.com/DeepLink-org/pvisor/main/scripts/install-nightly.sh | bash
@@ -70,32 +56,22 @@ cd pvisor
 pip install -e .
 ```
 
-A source build of the CLI is also available:
+Or build the CLI from source:
 
 ```bash
 just install-cli
 ```
 
-Use `PVISOR_BIN` only when you deliberately need to test a specific
-pVisor binary. Keep the Python package and CLI from the same revision when
-debugging provider behavior.
+Set `PVISOR_BIN` only when testing a specific binary. Keep the Python package and CLI on the same revision when diagnosing executor behavior.
 
 ## 4. Enable VM or OCI execution when needed
 
-The default local workflow does not require Docker or Podman. To run an OCI
-image through the VM executor, provide an image explicitly:
+The default local workflow needs neither Docker nor Podman. To run an OCI image with the VM executor:
 
 ```bash
 pvisor run --executor vm --rootfs image=ubuntu:24.04 -- /bin/echo hello
 ```
 
-Without a rootfs or image option, Linux VM runs use the host `/` through virtio-fs;
-macOS requires an explicit Linux rootfs or image. `--image-store DIR` changes the
-local content-addressed cache, `--mount SOURCE[:TARGET]:ACCESS` exposes a path,
-and `--rootfs DIR` points to a prepared Linux rootfs. Linux hosts use KVM;
-Apple Silicon macOS hosts use HVF. Building the VM support from source on macOS
-uses the Rust `pvisor-guest` supervisor; no C cross-compiler is needed.
-Source build prerequisites are listed in [Engineering notes](../../zh/community/development.md).
+Without an explicit rootfs or image, Linux VM uses host `/` through virtio-fs and OverlayFS without pulling an image. macOS requires a Linux rootfs or image. `--image-store DIR` changes the content-addressed cache, `--mount SOURCE[:TARGET]:ACCESS` exposes host paths, and `--rootfs DIR` selects a prepared rootfs. Linux uses KVM; Apple Silicon uses HVF. The guest supervisor is a static musl Rust ELF built with Rust's linker; macOS no longer needs a C cross compiler. See [development](../community/development.md) for build prerequisites.
 
-Treat these options as a separate platform step. First complete the staged host
-workflow so that you have a baseline Run Bundle to compare against.
+Treat these as separate platform steps: first complete a staged host workflow, then compare executor evidence in Run Bundles.

@@ -44,7 +44,7 @@ def main() -> None:
         docs = Path(__file__).resolve().parents[1] / "docs"
         def watch():
             def snapshot():
-                files = [docs / "zensical.toml"]
+                files = [docs / "zensical.toml", docs / "translations.json", docs / "redirects.json"]
                 for folder in ("src", "overrides"):
                     files.extend(p for p in (docs / folder).rglob("*") if p.is_file())
                 return {str(p): p.stat().st_mtime_ns for p in files}

@@ -31,3 +31,18 @@ search:
 - 跟踪 issue：TODO
 - 负责人：TODO
 - 相关页面：guides/agents/index、reference/platforms
+
+## 基于现有 CLI 的接入起点
+
+先在所选 executor 内安装 Gemini CLI，并确认在独立测试项目中可以运行。下面以 generativelanguage.googleapis.com:443 作为目标；aider/OpenCode 示例假设你已经在 Agent 自身配置里选择对应 OpenAI 服务，并非替你配置 provider。
+
+```bash
+pvisor run --safe --overlaynet-allow generativelanguage.googleapis.com:443 \
+  --pass-env GEMINI_API_KEY -- gemini
+pvisor status --review last
+pvisor apply last --path src
+```
+
+显式 allow 会替换 safe 预设列表，登录、其他 provider 或依赖下载需要逐个补充目标。直接可执行文件名才匹配 safe 适配，shell 包装会改变匹配结果。safe HOME 的状态写入退出后丢弃，所以不要依赖本次运行保存下次登录状态。
+
+这组命令只使用已有 pVisor 参数；本页尚未完成固定 Agent 版本的端到端回归。先用[第一次运行](../../start/first-run.md)核对暂存、拒绝与选择性 apply，再用 Bundle 核对真实 Agent。Linux host 的选择性代理是协作式；需要强制边界时使用已安装 Agent 的 VM。

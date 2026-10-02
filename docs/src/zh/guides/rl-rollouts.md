@@ -31,3 +31,20 @@ search:
 - 跟踪 issue：TODO
 - 负责人：TODO
 - 相关页面：design/research/rl-execution-substrate、guides/replay
+
+## 单次 rollout 的现有拼装方式
+
+当前可以将一次命令执行、模型流量记录和原生 Agent 轨迹作为一个评测样本。先为样本准备干净 workspace，再运行命令并保留 Job ID、Run Bundle、Event Journal 与 Agent 原生轨迹。reward 的计算、任务队列、模型训练和跨节点调度由现有框架负责。
+
+| 产物 | 用途 | 不能替代 |
+| --- | --- | --- |
+| Run Bundle | 结果、控制与文件变化 | 训练框架的 reward 与数据集元数据 |
+| Gateway Journal | 经过网关的模型调用 | 未捕获流量与 Agent 原生 session |
+| Agent 原生轨迹 | 对应适配器的工具前缀回放 | 进程内存快照 |
+| 逻辑检查点 | 分叉暂存文件状态 | 完整环境和外部服务状态 |
+
+## 固定样本身份
+
+为每次 rollout 保存任务 ID、pVisor 提交、Agent/模型版本、初始仓库提交、镜像摘要、采样参数、策略和执行器。分别记录任务失败、隔离拒绝、记录失败与续跑质量；不要把基础设施失败记为“模型没有能力”。
+
+回放在新环境中重新执行工具，会再次发生相应副作用。使用测试 API/数据库和独立输出目录；用 `--prepare-only` 先验证格式，用 `--replay-only` 验证工具前缀，再开始真实续跑。固定适配版本与边界语义见[回放](replay.md)。集群吞吐与 hostile 多租户仍未建立保证。
