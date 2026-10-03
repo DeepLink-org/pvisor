@@ -37,7 +37,7 @@ def check_translations(docs=ROOT.parent, record=False, strict=False):
         for pattern, label in ((r"^status: (\w+)$", "page status"),
                                (r"^  exclude: (true|false)$", "search exclusion"),
                                (r"\{#([^}]+)\}", "explicit anchors"),
-                               (r"\bS-(?:DOC|STAGE)-\d+\b", "semantic case IDs")):
+                               (r"\bS-(?:DOC|STAGE|USE)-\d+\b", "semantic case IDs")):
             if set(re.findall(pattern, zh, re.M)) != set(re.findall(pattern, en, re.M)):
                 issues.append(f"{path}: translations disagree on {label}")
         def examples(text):

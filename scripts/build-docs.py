@@ -16,6 +16,7 @@ import tomllib
 DOCS = Path(__file__).resolve().parents[1] / "docs"
 
 EN_NAV_LABELS = {
+    "任务学习路线": "Learning path",
     "首页": "Home", "为什么": "Why pVisor", "开始使用": "Get started",
     "指南": "Guides", "接入你的 Agent": "Connect your agent", "策略": "Policies",
     "执行器": "Executors", "概念": "Concepts", "基准与对比": "Benchmarks and comparisons",

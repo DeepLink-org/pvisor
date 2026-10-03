@@ -10,6 +10,7 @@ import platform
 import shutil
 import subprocess
 import time
+import threading
 from zoneinfo import ZoneInfo
 
 from bench import percentile
@@ -46,6 +47,7 @@ class Context:
         self.image = None
         self.rootfs = None
         self.counter = 0
+        self.counter_lock=threading.Lock()
         self.rows = []
         self.capabilities = {}
         shutil.copytree(self.repo/'benchmark/pvisor',self.output/'harness',ignore=shutil.ignore_patterns('__pycache__','.pytest_cache'))
@@ -65,7 +67,7 @@ class Context:
             firmware_sha256=digest(self.firmware/'libkrunfw.so.5'),
             python=checked(['/usr/bin/python3','--version']).stdout.strip(),
             protocol=dict(samples=args.samples, warmups=args.warmups, caches='warm; no host cache eviction',
-                          startup_logging=False, correctness_required=True, percentile='linear interpolation',
+                          startup_logging=False, vm_memory=args.vm_memory, correctness_required=True, percentile='linear interpolation',
                           timing='wall includes process launch and teardown; worker_ms is workload only'),
             harness_sha256={str(p.relative_to(self.output/'harness')):digest(p) for p in (self.output/'harness').rglob('*.py')},
             load_before=os.getloadavg(),
@@ -79,8 +81,9 @@ class Context:
         temporary.replace(self.output/'report.json')
 
     def fresh(self, name):
-        self.counter += 1
-        path=self.output/'trials'/f'{self.counter:05d}-{name}'
+        with self.counter_lock:
+            self.counter += 1
+            path=self.output/'trials'/f'{self.counter:05d}-{name}'
         path.mkdir(parents=True)
         return path
 
@@ -118,7 +121,7 @@ class Context:
         if backend=='podman':
             if self.image is None:
                 raise RuntimeError('prepared OCI image unavailable')
-            return ['podman','run','--rm','--network','none','--entrypoint',payload[0],
+            return ['podman','run','--rm','--network','host' if network else 'none','--entrypoint',payload[0],
                     '-v',f'{workspace}:/work:Z','-v',f'{self.toolchain}:{self.toolchain}:ro,Z',
                     '-w','/work',self.image,*payload[1:]]
         argv=[str(self.binary),'run','--no-agent-defaults','--stdio','capture',
@@ -130,10 +133,10 @@ class Context:
             argv += ['--safe','--filesystem','sandbox','--mount',f'{self.toolchain}:read']
         if backend=='vm':
             argv += ['--vm','--rootfs','/','--vm-library-dir',str(self.firmware),
-                     '--cpu','2','--memory','1GiB','--stage',str(stage)]
+                     '--cpu','2','--memory',self.args.vm_memory,'--stage',str(stage)]
         if backend=='container':
             argv += ['--executor','container','--container-rootfs',str(self.rootfs),
-                     '--container-runtime','crun','--container-network','none',
+                     '--container-runtime','crun','--container-network','host' if network else 'none',
                      '--container-mount',f'source="{workspace}",target="/work",read_only=false',
                      '--container-mount',f'source="{self.toolchain}",target="{self.toolchain}",read_only=true',
                      '--container-workdir','/work']

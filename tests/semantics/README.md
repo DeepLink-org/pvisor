@@ -32,6 +32,24 @@ DOC 继续由同一 runner 执行示例回归，不作为已审核的语义承�
 不要自动填充台账，也不要因为实现失败而削弱性质。已分配的 ID 不复用，
 差异和删除历史用 Git 审查，不维护独立退役清单。引擎执行语义变化必须升级 ENGINE_SEMANTICS。
 
+## 新 CLI 学习路线（USE）
+
+[`docs/src/zh/cases/index.md`](../../docs/src/zh/cases/index.md) 将使用叙事和实际检查放在同一套文档中，
+按首次运行、文件审查、workspace checkpoint/fork、访问边界、轨迹恢复逐步展开。
+旧 DOC/STAGE 规格、词汇和入口保留；USE 使用独立的 `semspec-use.toml` 与 `journey.sh`。
+`journey.sh` 内的 Python 断言和 fixture 服务一起参与词汇摘要，不在摘要外隐藏检查。
+
+```sh
+just semspec --config semspec-use.toml lint
+just cases-v2
+just cases-v2 --case S-USE-005,S-USE-007 --keep
+```
+
+USE 仍为 UNREVIEWED，不自动批准。`just cases-v2` 的执行门禁要求选定 ID 精确匹配、
+全部 PASS，并拒绝 SKIP/XFAIL、空报告、漏项和重复项；可单独选择场景调试。
+CI 的 Linux 隔离 job 执行全部 USE，预检 FUSE 和 user/mount/network namespace，
+报告作为 `pvisor-learning-report` artifact 上传。
+
 ## 文档场景迁移
 
 VM 新增六条 DOC 场景 S-DOC-057..062，见

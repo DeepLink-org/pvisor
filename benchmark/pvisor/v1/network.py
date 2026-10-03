@@ -40,8 +40,8 @@ def run(ctx):
     ctx.metadata['network_origin']=dict(address=target,location='same host; no Internet',bytes=32*1024*1024)
     rng=random.Random(20261004)
     try:
-        for mode in ('small','bulk','stream','deny'):
-            backends=['native','host','vm'] if mode!='deny' else ['host','vm']
+        for mode in ctx.args.network_modes.split(','):
+            backends=ctx.args.network_backends.split(',') if mode!='deny' else ['host','vm']
             for i in range(-ctx.args.warmups,ctx.args.samples):
                 rng.shuffle(backends)
                 for backend in backends:

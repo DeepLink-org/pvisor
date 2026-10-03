@@ -1,8 +1,9 @@
-//! Best-effort preparation of the RAM tail used by Linux's early page metadata.
+//! Best-effort preparation of the loaded kernel and Linux's early page metadata.
 //!
 //! Only cold, file-backed libkrunfw boots call this module. Preparing a bounded
-//! tail avoids paying host faults and nested page-table faults one guest page
-//! at a time during memmap_init(), without eagerly allocating all guest RAM.
+//! tail and the loader's kernel region avoids paying host faults and nested
+//! page-table faults one guest page at a time during early boot, without eagerly
+//! allocating all guest RAM.
 
 use std::io;
 use std::os::fd::RawFd;
@@ -27,6 +28,7 @@ const _: () = assert!(std::mem::size_of::<PreFaultMemory>() == 64);
 
 const MIB: u64 = 1024 * 1024;
 const MAX_BYTES: u64 = 128 * MIB;
+const MAX_KERNEL_BYTES: u64 = 16 * MIB;
 const CHUNK_BYTES: u64 = 2 * MIB;
 const MAX_TIME: Duration = Duration::from_millis(50);
 
@@ -37,7 +39,7 @@ struct Range {
     size: usize,
 }
 
-fn plan(memory: &GuestMemoryMmap, page: u64) -> Vec<Range> {
+fn plan(memory: &GuestMemoryMmap, page: u64, limit: u64) -> Vec<Range> {
     if !page.is_power_of_two() {
         return Vec::new();
     }
@@ -60,7 +62,7 @@ fn plan(memory: &GuestMemoryMmap, page: u64) -> Vec<Range> {
     let budget = (total / 64 + 6 * MIB)
         .div_ceil(CHUNK_BYTES)
         .saturating_mul(CHUNK_BYTES)
-        .min(MAX_BYTES)
+        .min(limit)
         .min(total);
     let mut remaining = budget / page * page;
     regions.sort_unstable_by_key(|r| std::cmp::Reverse(r.start_addr().0));
@@ -78,6 +80,65 @@ fn plan(memory: &GuestMemoryMmap, page: u64) -> Vec<Range> {
         });
         remaining -= size;
     }
+    ranges
+}
+
+fn boot_plan(memory: &GuestMemoryMmap, page: u64, kernel: Option<(u64, u64)>) -> Vec<Range> {
+    if !page.is_power_of_two() {
+        return Vec::new();
+    }
+    // The loader has already written this exact file-backed region. Preparing
+    // its stage-2 mappings makes early instruction fetches and alternatives
+    // patching avoid one nested page fault per kernel page. Do not infer a
+    // kernel address from a slot number, and do not populate a restore's COW.
+    let primed = kernel.and_then(|(address, size)| {
+        memory
+            .iter()
+            .find(|r| {
+                r.start_addr().0 == address
+                    && r.len() == size
+                    && r.file_offset().is_some()
+                    && r.flags() & libc::MAP_SHARED != 0
+                    && r.flags() & libc::MAP_PRIVATE == 0
+                    && r.prot() & libc::PROT_WRITE != 0
+                    && address % page == 0
+                    && size % page == 0
+                    && r.as_ptr() as usize % page as usize == 0
+            })
+            .map(|r| Range {
+                gpa: address,
+                host: r.as_ptr() as usize,
+                size: size.min(MAX_KERNEL_BYTES) as usize,
+            })
+    });
+    let Some(primed) = primed else {
+        return plan(memory, page, MAX_BYTES);
+    };
+    let end = primed.gpa + primed.size as u64;
+    let tail = plan(memory, page, MAX_BYTES - primed.size as u64);
+    let mut ranges = Vec::new();
+    for range in tail {
+        let range_end = range.gpa + range.size as u64;
+        if range_end <= primed.gpa || range.gpa >= end {
+            ranges.push(range);
+        } else {
+            if range.gpa < primed.gpa {
+                ranges.push(Range {
+                    gpa: range.gpa,
+                    host: range.host,
+                    size: (primed.gpa - range.gpa) as usize,
+                });
+            }
+            if range_end > end {
+                ranges.push(Range {
+                    gpa: end,
+                    host: range.host + (end - range.gpa) as usize,
+                    size: (range_end - end) as usize,
+                });
+            }
+        }
+    }
+    ranges.insert(0, primed);
     ranges
 }
 
@@ -142,14 +203,14 @@ fn populate_kvm(
     Ok(())
 }
 
-pub(crate) fn prepare(vcpu: RawFd, memory: &GuestMemoryMmap) {
+pub(crate) fn prepare(vcpu: RawFd, memory: &GuestMemoryMmap, kernel: Option<(u64, u64)>) {
     let start = Instant::now();
     let page = unsafe { libc::sysconf(libc::_SC_PAGESIZE) };
     if page <= 0 {
         return;
     }
     let page = page as u64;
-    let ranges = plan(memory, page);
+    let ranges = boot_plan(memory, page, kernel);
     let mut host_us = 0;
     let mut kvm_us = 0;
     let mut bytes = 0;
@@ -250,7 +311,7 @@ mod tests {
         memory
             .write_slice(b"keep COW bytes", GuestAddress(8 * MIB))
             .unwrap();
-        let ranges = plan(&memory, 4096);
+        let ranges = plan(&memory, 4096, MAX_BYTES);
         assert_eq!(ranges.len(), 1);
         assert_eq!((ranges[0].gpa, ranges[0].size), (0, 4 * MIB as usize));
         if let Err(e) = populate_host(&ranges[0]) {
@@ -288,12 +349,51 @@ mod tests {
             ),
         ])
         .unwrap();
-        let ranges = plan(&memory, 4096);
+        let ranges = plan(&memory, 4096, MAX_BYTES);
         assert_eq!(ranges.len(), 2);
         assert_eq!(ranges.iter().map(|r| r.size as u64).sum::<u64>(), MAX_BYTES);
         assert_eq!(ranges[0].gpa, 32 * 1024 * MIB);
         assert_eq!(ranges[1].gpa + ranges[1].size as u64, 16 * 1024 * MIB);
-        assert!(plan(&memory, 0).is_empty());
+        assert!(plan(&memory, 0, MAX_BYTES).is_empty());
+    }
+
+    #[test]
+    fn loaded_kernel_and_ram_tail_are_disjoint_and_share_the_size_budget() {
+        for ram_size in [4 * MIB, 16 * 1024 * MIB] {
+            let file = backing();
+            file.set_len(MAX_KERNEL_BYTES + ram_size).unwrap();
+            let address = 16 * MIB;
+            let memory = GuestMemoryMmap::from_ranges_with_files(&[
+                (
+                    GuestAddress(address),
+                    MAX_KERNEL_BYTES as usize,
+                    Some(FileOffset::from_arc(file.clone(), 0)),
+                ),
+                (
+                    GuestAddress(64 * MIB),
+                    ram_size as usize,
+                    Some(FileOffset::from_arc(file, MAX_KERNEL_BYTES)),
+                ),
+            ])
+            .unwrap();
+            let mut ranges = boot_plan(&memory, 4096, Some((address, MAX_KERNEL_BYTES)));
+            assert_eq!(
+                (ranges[0].gpa, ranges[0].size),
+                (address, MAX_KERNEL_BYTES as usize)
+            );
+            assert!(ranges.iter().map(|r| r.size as u64).sum::<u64>() <= MAX_BYTES);
+            ranges.sort_by_key(|r| r.gpa);
+            assert!(ranges
+                .windows(2)
+                .all(|r| r[0].gpa + r[0].size as u64 <= r[1].gpa));
+            // An address that is not the loader's exact RAM region gets no
+            // special treatment; it cannot prime a hole or another mapping.
+            let fallback = boot_plan(&memory, 4096, Some((address + 4096, MAX_KERNEL_BYTES)));
+            assert_eq!(
+                fallback[0].gpa + fallback[0].size as u64,
+                64 * MIB + ram_size
+            );
+        }
     }
 
     #[test]

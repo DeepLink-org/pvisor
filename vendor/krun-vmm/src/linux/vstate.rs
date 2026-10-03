@@ -1078,13 +1078,18 @@ impl Vcpu {
 
     /// Prepare cold-boot RAM after CPU setup and before starting vCPU threads.
     #[cfg(all(target_arch = "x86_64", not(feature = "tee")))]
-    pub(crate) fn prefault_boot_memory(&self, vm: &VmFd, memory: &GuestMemoryMmap) {
+    pub(crate) fn prefault_boot_memory(
+        &self,
+        vm: &VmFd,
+        memory: &GuestMemoryMmap,
+        kernel: Option<(u64, u64)>,
+    ) {
         if env::var("KRUN_BOOT_PREFAULT").as_deref() == Ok("0") {
             return;
         }
         if vm.check_extension_raw(super::prefault::KVM_CAP_PRE_FAULT_MEMORY as _) > 0 {
             use std::os::fd::AsRawFd;
-            super::prefault::prepare(self.fd.as_raw_fd(), memory);
+            super::prefault::prepare(self.fd.as_raw_fd(), memory, kernel);
         }
     }
 
@@ -1237,6 +1242,9 @@ impl Vcpu {
             error!("Failure in configuring CPUID for vcpu {}: {:?}", self.id, e);
             Error::CpuId(e)
         })?;
+
+        #[cfg(not(feature = "tee"))]
+        super::cpuid::expose_supported_extended_leaves(&mut self.cpuid);
 
         if let Some(template) = vcpu_config.cpu_template {
             match template {

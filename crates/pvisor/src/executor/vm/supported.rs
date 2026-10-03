@@ -930,7 +930,11 @@ fn run_linked_krun(spec: RunnerSpec, mut attestation: std::fs::File) -> anyhow::
         },
         "krun_set_embedded_kernel",
     )?;
-    add_krun_overlay(ctx, "/dev/root", &spec.root, 1 << 29)?;
+    // OverlayFs implements FUSE reads/writes and mmap via the guest page cache;
+    // it does not implement FUSE_SETUPMAPPING/removemapping. Advertising a DAX
+    // window only allocates device-page metadata during boot (512 MiB before),
+    // and cannot accelerate this overlay's file accesses.
+    add_krun_overlay(ctx, "/dev/root", &spec.root, 0)?;
     check_krun(
         unsafe {
             krun::krun_fs_add_overlay_file(

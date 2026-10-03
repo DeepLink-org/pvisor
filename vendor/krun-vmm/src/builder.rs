@@ -1187,7 +1187,11 @@ pub fn build_microvm(
         && matches!(payload, Payload::KernelMmap)
     {
         if let Some(boot_cpu) = vcpus.first() {
-            boot_cpu.prefault_boot_memory(vmm.kvm_vm().fd(), vmm.guest_memory());
+            let kernel = vm_resources
+                .kernel_bundle
+                .as_ref()
+                .map(|bundle| (bundle.guest_addr, bundle.size as u64));
+            boot_cpu.prefault_boot_memory(vmm.kvm_vm().fd(), vmm.guest_memory(), kernel);
         }
     }
 

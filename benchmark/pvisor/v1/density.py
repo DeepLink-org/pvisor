@@ -25,16 +25,17 @@ def snapshot(roots):
 
 
 def run(ctx):
-    backends=['native','host','staged','safe','vm']
-    if ctx.image:backends+=['podman','container']
+    backends=ctx.args.density_backends.split(',')
     # Workers all hold for 1s after recording ready; this is an occupancy probe.
     payload=['/bin/sh','-c','printf PVISOR_DENSITY_READY; sleep 1']
     original_run=ctx.run
     for backend in backends:
-        for concurrency in (1,8,32,128):
+        for concurrency in map(int,ctx.args.density_concurrencies.split(',')):
             available=next(int(line.split()[1]) for line in Path('/proc/meminfo').read_text().splitlines() if line.startswith('MemAvailable:'))
-            if backend=='vm' and concurrency*256*1024>available*0.65:
-                ctx.capabilities[f'density/{backend}/{concurrency}']={'state':'not-measured','reason':'memory guard: 256 MiB estimated RSS/VM exceeds 65% of available host memory'}
+            single=[x['peak_tree_rss_kib'] for x in ctx.rows if x['suite']=='density' and x['backend']=='vm' and x['concurrency']==1]
+            estimate=max(128*1024,max(single)*1.5) if single else 256*1024
+            if backend=='vm' and concurrency*estimate+2*1024*1024>available:
+                ctx.capabilities[f'density/{backend}/{concurrency}']={'state':'not-measured','reason':f'memory guard: {estimate/1024:.1f} MiB estimated RSS/VM plus 2 GiB reserve exceeds available memory', 'available_kib':available,'estimated_per_job_kib':estimate}
                 ctx.save();continue
             for trial in range(min(ctx.args.samples,5)):
                 print(f'density {backend} C={concurrency}: {trial}',flush=True)
@@ -61,12 +62,16 @@ def run(ctx):
                     stage=root/'stage';runs=root/'runs'
                     command=ctx.command(backend,work,stage,payload)
                     if backend=='vm':command[command.index('--memory')+1]='128MiB'
-                    env={'PVISOR_RUN_HOME':str(runs),'XDG_CONFIG_HOME':str(root/'config')}
-                    wall,stdout,_=original_run(command,cwd=work,env=env,timeout=120)
+                    home=root/'home';home.mkdir()
+                    env={'HOME':str(home),'PVISOR_RUN_HOME':str(runs),'XDG_CONFIG_HOME':str(root/'config')}
+                    try:
+                        wall,stdout,_=original_run(command,cwd=work,env=env,timeout=120)
+                    except (RuntimeError,TimeoutError) as error:
+                        return {'error':str(error),'logs':str(root)}
                     bundle=ctx.validate_bundle(backend,runs,stage)
                     if bundle:stdout=bundle['run']['output']['stdout']
                     assert stdout=='PVISOR_DENSITY_READY'
-                    return wall
+                    return {'wall_ms':wall}
 
                 before=resource.getrusage(resource.RUSAGE_CHILDREN)
                 start=time.perf_counter_ns()
@@ -75,12 +80,20 @@ def run(ctx):
                 sampler.start()
                 try:
                     with concurrent.futures.ThreadPoolExecutor(max_workers=concurrency) as pool:
-                        latencies=list(pool.map(job,range(concurrency)))
+                        outcomes=list(pool.map(job,range(concurrency)))
+                        latencies=[item['wall_ms'] for item in outcomes if 'wall_ms' in item]
                 finally:
                     subprocess.Popen=Popen
                     stop.set();sampler.join()
                 wall=(time.perf_counter_ns()-start)/1e6
                 after=resource.getrusage(resource.RUSAGE_CHILDREN)
+                errors=[item for item in outcomes if 'error' in item]
+                if errors:
+                    key=f'density/{backend}/{concurrency}'
+                    capability=ctx.capabilities.setdefault(key,{'state':'failed','batches':[]})
+                    capability['batches'].append({'trial':trial,'attempted':concurrency,'completed':len(latencies),'failed':len(errors),'errors':errors})
+                    ctx.save()
+                    continue
                 ctx.record(dict(suite='density',workload='hold-1s',backend=backend,concurrency=concurrency,trial=trial,
                     wall_ms=wall,job_wall_ms=latencies,peak_tree_rss_kib=peaks[0],peak_tree_processes=peaks[1],
                     child_cpu_ms=((after.ru_utime+after.ru_stime)-(before.ru_utime+before.ru_stime))*1000,

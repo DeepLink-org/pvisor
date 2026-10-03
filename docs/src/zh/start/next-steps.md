@@ -4,6 +4,7 @@
 
 | 你想 | 下一页 | 你会得到 |
 | --- | --- | --- |
+| 从浅到深走完可执行场景 | [任务学习路线](../cases/index.md) | 从运行、审查到 checkpoint、分支和执行边界 |
 | 接入自己的 Agent CLI 或脚本 | [接入你的 Agent](../guides/agents/index.md) | 每个 Agent 的 `--safe` 默认放行目标、凭据交付方式 |
 | 更细地挑选要合入的改动 | [审查并应用改动](../guides/review-apply.md) | 按路径、glob 分批 apply，冲突处理 |
 | 控制 Agent 能读写的文件 | [文件策略](../guides/policies/files.md) | 默认保护、追加规则、只读共享 |

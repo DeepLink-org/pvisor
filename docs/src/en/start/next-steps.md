@@ -4,6 +4,7 @@ Pick the next page by what you want to do:
 
 | You want to | Next page | What you get |
 | --- | --- | --- |
+| Follow executable scenarios step by step | [Learning path](../cases/index.md) | Run, review, checkpoint, branch, and set execution boundaries |
 | Connect your own Agent CLI or script | [Connect your agent](../guides/agents/index.md) | Per-agent `--safe` default allowed destinations and credential delivery |
 | Select changes more precisely | [Review and apply](../guides/review-apply.md) | Path/glob batch apply and conflict handling |
 | Control what the agent can read and write | [File policies](../guides/policies/files.md) | Default protection, added rules, read-only shares |

@@ -24,7 +24,9 @@ class Model(BaseHTTPRequestHandler):
             if value.get('stream'):
                 initial=message|{'content':[],'stop_reason':None}
                 start=block if finished else tool|{'input':{}}
+                if finished:start=block|{'text':''}
                 events=[('message_start',{'type':'message_start','message':initial}),('content_block_start',{'type':'content_block_start','index':0,'content_block':start})]
+                if finished:events.append(('content_block_delta',{'type':'content_block_delta','index':0,'delta':{'type':'text_delta','text':'BENCH_COMPLETE'}}))
                 if not finished:events.append(('content_block_delta',{'type':'content_block_delta','index':0,'delta':{'type':'input_json_delta','partial_json':json.dumps(tool['input'])}}))
                 events += [('content_block_stop',{'type':'content_block_stop','index':0}),('message_delta',{'type':'message_delta','delta':{'stop_reason':message['stop_reason'],'stop_sequence':None},'usage':{'output_tokens':16}}),('message_stop',{'type':'message_stop'})]
                 self.send_events(events)
@@ -86,6 +88,8 @@ def run(ctx):
                         checked(['/usr/bin/python3','grade.py'],cwd=target if backend=='native' else work,env=ctx.env) if backend=='native' else None
                         assert (target/'adder.py').read_text()=='def add(a, b):\n    return a + b\n'
                         if backend=='staged':assert (work/'adder.py').read_text()=='def add(a, b):\n    return a - b\n'
+                        if 'BENCH_COMPLETE' not in stdout:
+                            (root/'model-requests.json').write_text(json.dumps(server.requests,indent=2))
                         assert 'BENCH_COMPLETE' in stdout
                         with server.lock:requests=list(server.requests)
                         (root/'model-requests.json').write_text(json.dumps(requests,indent=2))

@@ -1,5 +1,7 @@
 //! Reject missing supervisor XSAVE state before entering KVM, without hardware.
 #![cfg(all(target_os = "linux", target_arch = "x86_64"))]
+#[path = "../../../vendor/krun-vmm/src/linux/cpuid.rs"]
+mod cpuid;
 use krun_vmm::CpuSnapshot;
 use kvm_bindings::{
     CpuId, Msrs, Xsave, kvm_cpuid_entry2, kvm_debugregs, kvm_lapic_state, kvm_mp_state,

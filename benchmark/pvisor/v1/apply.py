@@ -5,6 +5,7 @@ import shutil
 import signal
 import subprocess
 import time
+import concurrent.futures
 
 from .common import checked
 
@@ -17,6 +18,7 @@ def prepare(ctx,count,name):
     shutil.copy2(Path(__file__).with_name('apply_worker.py'),work/'worker.py')
     stage=root/'stage'
     command=ctx.command('staged',work,stage,['/usr/bin/python3','worker.py',str(count)])
+    command[command.index('--timeout')+1]='600s'
     ctx.run(command,cwd=work,env={'PVISOR_RUN_HOME':str(root/'runs'),'XDG_CONFIG_HOME':str(root/'config')},timeout=600)
     ctx.validate_bundle('staged',root/'runs',stage)
     assert all((work/'files'/f'f{i:06d}').read_text()==f'old-{i}\n' for i in range(count))
@@ -29,13 +31,20 @@ def check_target(work,count,prefix):
 
 
 def run(ctx):
-    for count in (10,1000,100000):
+    for count in map(int,ctx.args.apply_sizes.split(',')):
         samples=min(ctx.args.samples,3 if count==100000 else (10 if count==1000 else 30))
-        warmups=min(ctx.args.warmups,1)
+        warmups=0 if count==100000 else min(ctx.args.warmups,1)
         for action in ('apply','drop','conflict'):
-            for trial in range(-warmups,samples):
+            trials=list(range(-warmups,samples))
+            if count==100000:
+                print(f'preparing {action} {count}: {samples} independent stages',flush=True)
+                with concurrent.futures.ThreadPoolExecutor(max_workers=3) as pool:
+                    prepared=list(pool.map(lambda _:prepare(ctx,count,f'{action}-{count}'),trials))
+            else:
+                prepared=[None]*len(trials)
+            for trial,item in zip(trials,prepared):
                 print(f'{action} {count}: trial {trial}',flush=True)
-                root,work,stage=prepare(ctx,count,f'{action}-{count}')
+                root,work,stage=item or prepare(ctx,count,f'{action}-{count}')
                 if action=='conflict':
                     (work/'files/f000000').write_text('concurrent-host-edit\n')
                 argv=[str(ctx.binary),action if action!='conflict' else 'apply',str(stage)]

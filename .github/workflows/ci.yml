@@ -60,6 +60,7 @@ jobs:
       - run: just test-semspec
       - run: just semspec lint
       - run: just semspec --config semspec-doc.toml lint
+      - run: just semspec --config semspec-use.toml lint
       - run: just semspec --config tools/semspec/semantics/semspec.toml lint
       # Human review must approve STAGE, its vocabulary and engine before enabling reviewed release gates.
 
@@ -213,6 +214,17 @@ jobs:
             --case S-DOC-041,S-DOC-042 \
             --case S-DOC-043,S-DOC-044,S-DOC-045 \
             --case S-DOC-048
+
+      - name: Run the CLI learning path (all cases must PASS)
+        run: just cases-v2
+
+      - name: Upload learning-path report
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: pvisor-learning-report
+          path: target/pvisor-learning-report.json
+          if-no-files-found: error
 
       - name: Upload case report
         if: always()

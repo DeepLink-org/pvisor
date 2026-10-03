@@ -54,7 +54,7 @@ def run(ctx):
     backends=['native','host','staged','safe','vm']
     if ctx.image:
         backends.extend(['podman','container'])
-    modes=['metadata','read','write','git','rg','cargo','npm']
+    modes=ctx.args.filesystem_modes.split(',')
     for mode in modes:
         available=[]
         for backend in backends:

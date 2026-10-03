@@ -72,7 +72,15 @@ pub fn unpack(mut input: &[u8]) -> Result<Vec<u8>, &'static str> {
         }
         let destination = &mut kernel[cursor..cursor + count];
         match tag {
-            0 => destination.fill(take(&mut input, 1)?[0]),
+            0 => {
+                let byte = take(&mut input, 1)?[0];
+                // The allocation is already zeroed. Keep zero padding lazy on
+                // allocators backed by fresh anonymous pages instead of touching
+                // it a second time while expanding the embedded kernel.
+                if byte != 0 {
+                    destination.fill(byte);
+                }
+            }
             1 => destination.copy_from_slice(take(&mut input, count)?),
             _ => return Err("invalid kernel chunk tag"),
         }

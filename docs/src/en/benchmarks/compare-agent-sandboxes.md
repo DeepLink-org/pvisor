@@ -1,33 +1,26 @@
----
-status: todo
-search:
-  exclude: true
----
-
 # Comparison: agent-native sandboxes
 
-!!! warning "Planned"
-    No data yet. Below are the requirements; contributions are welcome.
+Native sandboxes control one agent's tool permissions. pVisor adds shared staging, review, conflict protection and execution records across agents; the layers can be combined. Use [task overhead](agent-tasks.md) and [filesystem overhead](filesystem.md) for measured costs. This page does not rank unmeasured product performance.
 
-## Question
+## Scope
 
-What differs from the built-in sandboxes in Claude Code, Codex, and Gemini CLI?
+Official documentation checked on 2026-10-04. Installed locally: Claude Code 2.1.128 and Codex CLI 0.160.0. Gemini CLI was absent. Documentation capabilities below do not establish that these installed versions implement every current option. The [task report](agent-tasks.md) records the controlled CLI experiment.
 
-## Requirements
+| Option | Execution and network boundary | Workspace changes | Choose it when |
+|---|---|---|---|
+| Claude Code sandbox | OS boundary around shell commands and descendants; Seatbelt on macOS, bubblewrap on Linux, domain-checking proxy. File tools, MCP and hooks have separate permissions | Writes happen directly in permitted directories; command approval differs from later file admission | Claude Code is the primary interface and interactive permission configuration matters |
+| Codex sandbox | read-only/workspace-write/danger-full-access, separate approval policy; Linux bubblewrap and macOS Seatbelt | Direct edits within workspace-write; worktrees support file parallelism | You want Codex-integrated approvals, rules and sessions |
+| Gemini CLI sandbox | Seatbelt, Docker/Podman, runsc and other configurations; enforcement depends on runtime and settings | Container workspace mounts expose the corresponding files to writes | You primarily use Gemini and its tool/image configuration |
+| pVisor | Host, isolated host, OCI, libkrun VM; host proxy and VM TCP enforcement differ; inspect the actual Bundle | Staged changes remain pending until apply; selective admission and preimage conflict protection | Several agents need one execution protocol, or review must precede workspace modification |
 
-- Metric: interception method, selective post-hoc merge, conflict protection, evidence, cross-agent consistency, network control, performance overhead.
-- Control group: the Claude Code sandbox; the Codex sandbox and approval modes; the Gemini CLI sandbox.
-- Workload: one representative task (read, write, call a model API).
-- Environment: pinned product versions, with the date stated.
+Sources: [Claude](https://code.claude.com/docs/en/sandboxing), [Codex](https://learn.chatgpt.com/docs/sandboxing), [Gemini](https://geminicli.com/docs/cli/sandbox/). pVisor evidence: [executors](../guides/executors/index.md), [review/apply](../guides/review-apply.md), [isolation tests](isolation-tests.md).
 
-## Acceptance criteria
+## Review and evidence
 
-- Cite a source for every conclusion (official documentation or a reproducible test).
-- State where the alternatives are strong and when to choose them.
-- Provide a correction route.
+These native sandbox pages do not define pVisor's stage/preimage/apply-ledger protocol; agents can still have logs, diffs and Git workflows. pVisor records outcomes, observed controls and artifacts in a Run Bundle, with pending changes in a stage. Staging and access restrictions are configured independently: `--stage` alone permits access outside the staged workspace.
 
-## Tracking
+Our representative flow reads, edits, requests a model API, and then encounters a concurrent host edit. See [apply/drop](apply.md) for conflicts and [task overhead](agent-tasks.md) for CLI tool loops. Gemini execution and comparative native-sandbox performance were not measured in this edition.
 
-- Tracking issue: TODO
-- Owner: TODO
-- Related: [comparisons](../why/comparisons.md), [methodology](methodology.md)
+## Corrections
+
+Use [pVisor issues](https://github.com/DeepLink-org/pvisor/issues), including version, configuration and an official source or reproduction. Append dated evidence when products change.
