@@ -6,8 +6,6 @@ license.workspace = true
 description = "pVisor Linux guest bootstrap and launch configuration"
 
 [dependencies]
-base64.workspace = true
-flate2.workspace = true
 serde = { workspace = true, features = ["derive"] }
 serde_json.workspace = true
 

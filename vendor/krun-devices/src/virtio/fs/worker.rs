@@ -5,8 +5,8 @@ use utils::worker_message::WorkerMessage;
 
 use std::io;
 use std::os::fd::AsRawFd;
-use std::sync::Arc;
 use std::sync::atomic::AtomicI32;
+use std::sync::Arc;
 use std::thread;
 
 use utils::epoll::{ControlOperation, Epoll, EpollEvent, EventSet};
@@ -162,15 +162,14 @@ impl FsWorker {
         })
     }
 
-    pub fn run(self, timing_tag: &'static str) -> thread::JoinHandle<()> {
+    pub fn run(self) -> thread::JoinHandle<()> {
         thread::Builder::new()
             .name("fs worker".into())
-            .spawn(move || self.work(timing_tag))
+            .spawn(|| self.work())
             .unwrap()
     }
 
-    fn work(mut self, timing_tag: &str) {
-        super::device::startup_mark(timing_tag, "worker_begin");
+    fn work(mut self) {
         let virtq_hpq_ev_fd = self.queue_evts[HPQ_INDEX].as_raw_fd();
         let virtq_req_ev_fd = self.queue_evts[REQ_INDEX].as_raw_fd();
         let stop_ev_fd = self.stop_fd.as_raw_fd();
@@ -194,7 +193,6 @@ impl FsWorker {
         );
 
         let mut epoll_events = vec![EpollEvent::new(EventSet::empty(), 0); 32];
-        super::device::startup_mark(timing_tag, "worker_ready");
         loop {
             match epoll.wait(epoll_events.len(), -1, epoll_events.as_mut_slice()) {
                 Ok(ev_cnt) => {

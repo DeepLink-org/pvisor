@@ -2,12 +2,12 @@
 use crossbeam_channel::Sender;
 use std::cmp;
 use std::io::Write;
-use std::sync::Arc;
 use std::sync::atomic::{AtomicI32, AtomicU64, Ordering};
+use std::sync::Arc;
 use std::thread::JoinHandle;
 use std::time::Duration;
 
-use utils::eventfd::{EFD_NONBLOCK, EventFd};
+use utils::eventfd::{EventFd, EFD_NONBLOCK};
 #[cfg(target_os = "macos")]
 use utils::worker_message::WorkerMessage;
 use virtio_bindings::{virtio_config::VIRTIO_F_VERSION_1, virtio_ring::VIRTIO_RING_F_EVENT_IDX};
@@ -17,40 +17,14 @@ use super::super::{
     ActivateError, ActivateResult, DeviceQueue, DeviceState, FsError, QueueConfig, VirtioDevice,
     VirtioShmRegion,
 };
-use super::ExportTable;
 use super::overlay::Config as OverlayConfig;
 use super::passthrough;
 use super::virtual_entry::VirtualDirEntry;
 use super::worker::FsWorker;
+use super::ExportTable;
 use super::{defs, defs::uapi};
-use crate::virtio::InterruptTransport;
 use crate::virtio::passthrough::PermissionSemantics;
-
-// Share the supervisor's opt-in clock/format without depending on its crate.
-pub(super) fn startup_mark(tag: &str, stage: &str) {
-    static ENABLED: std::sync::OnceLock<bool> = std::sync::OnceLock::new();
-    if !*ENABLED.get_or_init(|| std::env::var("PVISOR_STARTUP_TIMING").as_deref() == Ok("1")) {
-        return;
-    }
-    let mut clock: libc::timespec = unsafe { std::mem::zeroed() };
-    if unsafe { libc::clock_gettime(libc::CLOCK_MONOTONIC, &mut clock) } == 0 {
-        let timestamp = clock.tv_sec as u64 * 1_000_000 + clock.tv_nsec as u64 / 1_000;
-        let _ = writeln!(
-            std::io::stderr().lock(),
-            "pvisor-startup pid={} ppid={} stage=virtiofs.{tag}.{stage} monotonic_us={timestamp}",
-            std::process::id(),
-            unsafe { libc::getppid() }
-        );
-    }
-}
-
-fn timing_tag(tag: &[u8]) -> &'static str {
-    match tag.split(|byte| *byte == 0).next().unwrap_or_default() {
-        b"/dev/root" => "root",
-        b"pvisor-workspace" => "workspace",
-        _ => "other",
-    }
-}
+use crate::virtio::InterruptTransport;
 
 #[derive(Copy, Clone)]
 #[repr(C, packed)]
@@ -98,8 +72,6 @@ impl Fs {
         virtual_entries: Vec<VirtualDirEntry>,
         overlay_cfg: Option<OverlayConfig>,
     ) -> super::Result<Fs> {
-        let timing = timing_tag(fs_id.as_bytes());
-        startup_mark(timing, "construct_begin");
         let avail_features = (1u64 << VIRTIO_F_VERSION_1) | (1u64 << VIRTIO_RING_F_EVENT_IDX);
 
         let tag = fs_id.into_bytes();
@@ -124,7 +96,7 @@ impl Fs {
 
         let allow_idmap = matches!(semantics, PermissionSemantics::LinuxComplete);
 
-        let device = Fs {
+        Ok(Fs {
             avail_features,
             acked_features: 0,
             device_state: DeviceState::Inactive,
@@ -140,9 +112,7 @@ impl Fs {
             exit_code,
             #[cfg(target_os = "macos")]
             map_sender: None,
-        };
-        startup_mark(timing, "construct_ready");
-        Ok(device)
+        })
     }
 
     pub fn id(&self) -> &str {
@@ -230,8 +200,6 @@ impl VirtioDevice for Fs {
         if self.worker_thread.is_some() {
             panic!("virtio_fs: worker thread already exists");
         }
-        let timing = timing_tag(&self.config.tag);
-        startup_mark(timing, "activate_begin");
 
         // Extract queues and eventfds from DeviceQueues.
         let mut worker_queues = Vec::with_capacity(queues.len());
@@ -262,11 +230,9 @@ impl VirtioDevice for Fs {
             error!("virtio_fs: failed to create worker: {}", e);
             ActivateError::BadActivate
         })?;
-        startup_mark(timing, "backend_ready");
-        self.worker_thread = Some(worker.run(timing));
+        self.worker_thread = Some(worker.run());
 
         self.device_state = DeviceState::Activated(mem, interrupt);
-        startup_mark(timing, "activate_ready");
         Ok(())
     }
 

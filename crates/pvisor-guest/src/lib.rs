@@ -1,55 +1,12 @@
 //! Launch contract shared by the host executors and the Linux guest.
-use base64::{Engine as _, engine::general_purpose::URL_SAFE_NO_PAD};
 use serde::{Deserialize, Serialize};
 use std::collections::BTreeMap;
 use std::ffi::CString;
 use std::io;
-use std::io::{Read, Write};
 use std::path::PathBuf;
 use std::process::Command;
 
 pub const CONFIG_PATH: &str = "/.pvisor-guest.json";
-pub const INIT_ARG_PREFIX: &str = "--pvisor-config-z64=";
-// Experimental transport: leave room for the kernel's other boot parameters.
-pub const MAX_INIT_ARG_BYTES: usize = 1400;
-
-pub fn config_from_init_arg(argument: &str) -> io::Result<GuestConfig> {
-    let invalid = || io::Error::new(io::ErrorKind::InvalidInput, "invalid init config argument");
-    if argument.len() > MAX_INIT_ARG_BYTES {
-        return Err(invalid());
-    }
-    let encoded = argument.strip_prefix(INIT_ARG_PREFIX).ok_or_else(invalid)?;
-    let compressed = URL_SAFE_NO_PAD.decode(encoded).map_err(|_| invalid())?;
-    let mut bytes = Vec::new();
-    flate2::read::ZlibDecoder::new(compressed.as_slice())
-        .take(1_048_577)
-        .read_to_end(&mut bytes)?;
-    if bytes.len() > 1_048_576 {
-        return Err(invalid());
-    }
-    serde_json::from_slice(&bytes)
-        .map_err(|error| io::Error::new(io::ErrorKind::InvalidData, error))
-}
-
-/// A single quote-free argument; it must fit the experimental boot budget.
-pub fn config_init_arg(bytes: &[u8]) -> io::Result<String> {
-    let mut encoder = flate2::write::ZlibEncoder::new(Vec::new(), flate2::Compression::fast());
-    encoder.write_all(bytes)?;
-    let argument = format!(
-        "{INIT_ARG_PREFIX}{}",
-        URL_SAFE_NO_PAD.encode(encoder.finish()?)
-    );
-    if argument.len() > MAX_INIT_ARG_BYTES {
-        return Err(io::Error::new(
-            io::ErrorKind::InvalidInput,
-            format!(
-                "init config argument needs {} bytes; limit is {MAX_INIT_ARG_BYTES}",
-                argument.len()
-            ),
-        ));
-    }
-    Ok(argument)
-}
 
 #[derive(Debug, Default, Serialize, Deserialize)]
 #[serde(deny_unknown_fields)]
@@ -126,29 +83,6 @@ impl GuestConfig {
 #[cfg(test)]
 mod tests {
     use super::*;
-
-    #[test]
-    fn init_argument_roundtrip_and_rejection() {
-        let config = GuestConfig {
-            argv: vec!["/bin/sh".into(), "space ' quote \"\n中文".into()],
-            env: BTreeMap::from([("VALUE".into(), "a=b\n\"".into())]),
-            cwd: "/workspace".into(),
-            ..Default::default()
-        };
-        let bytes = serde_json::to_vec(&config).unwrap();
-        let argument = config_init_arg(&bytes).unwrap();
-        let decoded = config_from_init_arg(&argument).unwrap();
-        assert_eq!(serde_json::to_vec(&decoded).unwrap(), bytes);
-        for bad in [
-            "--other=00",
-            "--pvisor-config-z64=0",
-            "--pvisor-config-z64=***",
-        ] {
-            assert!(config_from_init_arg(bad).is_err());
-        }
-        assert!(config_from_init_arg(&"a".repeat(MAX_INIT_ARG_BYTES + 1)).is_err());
-        assert!(config_from_init_arg(&config_init_arg(b"not JSON").unwrap()).is_err());
-    }
 
     #[test]
     fn launch_contract_preserves_values_and_rejects_invalid_input() {

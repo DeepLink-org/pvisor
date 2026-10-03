@@ -241,27 +241,17 @@ fn workload(config: &GuestConfig) -> io::Result<i32> {
 }
 
 fn run() -> io::Result<i32> {
-    let arguments = std::env::args().skip(1).collect::<Vec<_>>();
-    let config: GuestConfig = if arguments.is_empty() {
-        let mut bytes = Vec::new();
-        File::open(CONFIG_PATH)?
-            .take(1_048_577)
-            .read_to_end(&mut bytes)?;
-        if bytes.len() > 1_048_576 {
-            return Err(io::Error::new(
-                io::ErrorKind::InvalidData,
-                "guest config exceeds 1 MiB",
-            ));
-        }
-        serde_json::from_slice(&bytes)?
-    } else if arguments.len() == 1 {
-        pvisor_guest::config_from_init_arg(&arguments[0])?
-    } else {
+    let mut bytes = Vec::new();
+    File::open(CONFIG_PATH)?
+        .take(1_048_577)
+        .read_to_end(&mut bytes)?;
+    if bytes.len() > 1_048_576 {
         return Err(io::Error::new(
-            io::ErrorKind::InvalidInput,
-            "unexpected init arguments",
+            io::ErrorKind::InvalidData,
+            "guest config exceeds 1 MiB",
         ));
-    };
+    }
+    let config: GuestConfig = serde_json::from_slice(&bytes)?;
     config.command()?; // Validate before any configuration side effects.
     initialize()?;
     if let Some(target) = &config.workspace {

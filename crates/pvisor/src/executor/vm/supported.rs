@@ -368,7 +368,6 @@ impl RunExecutor for VmExecutor {
         for key in [
             crate::image::cache::SERVER_ENV,
             "PVISOR_CACHE_TOKEN",
-            "PVISOR_EXPERIMENTAL_INIT_ARGV",
             crate::AGENTCTL_ENDPOINT_ENV,
             crate::AGENTCTL_TOKEN_ENV,
             crate::AGENTCTL_TRANSPORT_ENV,
@@ -909,47 +908,22 @@ fn run_linked_krun(spec: RunnerSpec, mut attestation: std::fs::File) -> anyhow::
         "krun_set_embedded_kernel",
     )?;
     add_krun_overlay(ctx, "/dev/root", &spec.root, 1 << 29)?;
-    if std::env::var("PVISOR_EXPERIMENTAL_INIT_ARGV").as_deref() == Ok("1") {
-        let argument = pvisor_guest::config_init_arg(&guest_config)?;
-        let argument = CString::new(argument)?;
-        // libkrun reads MAX_ARGS slots, even for a one-argument list.
-        let mut argv = vec![std::ptr::null(); 4096];
-        argv[0] = argument.as_ptr();
-        let env = vec![std::ptr::null(); 4096];
-        check_krun(
-            unsafe {
-                krun::krun_set_exec(ctx, c"/init.krun".as_ptr(), argv.as_ptr(), env.as_ptr())
-            },
-            "krun_set_exec(init argv)",
-        )?;
-    } else {
-        check_krun(
-            unsafe {
-                krun::krun_fs_add_overlay_file(
-                    ctx,
-                    c"/dev/root".as_ptr(),
-                    c"/.pvisor-guest.json".as_ptr(),
-                    guest_config.as_ptr(),
-                    guest_config.len(),
-                    0o400,
-                    true,
-                )
-            },
-            "krun_fs_add_overlay_file(guest config)",
-        )?;
-    }
+    check_krun(
+        unsafe {
+            krun::krun_fs_add_overlay_file(
+                ctx,
+                c"/dev/root".as_ptr(),
+                c"/.pvisor-guest.json".as_ptr(),
+                guest_config.as_ptr(),
+                guest_config.len(),
+                0o400,
+                true,
+            )
+        },
+        "krun_fs_add_overlay_file(guest config)",
+    )?;
     if let Some(workspace) = &spec.workspace {
         add_krun_overlay(ctx, workspace_tag.to_str()?, workspace, 0)?;
-    }
-    if std::env::var("PVISOR_KRUN_INITCALL_DEBUG").as_deref() == Ok("1") {
-        // An unknown NAME=value would reach PID 1; this recognized kernel
-        // boolean enables initcall diagnostics before the cmdline's `--`.
-        let mut env = vec![std::ptr::null(); 4096];
-        env[0] = c"initcall_debug".as_ptr();
-        check_krun(
-            unsafe { krun::krun_set_env(ctx, env.as_ptr()) },
-            "krun_set_env(initcall_debug)",
-        )?;
     }
     if let Some(fd) = std::env::var_os(NETWORK_FD_ENV) {
         let fd = fd
@@ -1075,7 +1049,6 @@ fn run_linked_krun(spec: RunnerSpec, mut attestation: std::fs::File) -> anyhow::
                     }
                 }
             })?;
-        crate::util::startup_mark("runner.control_ready");
         Ok(())
     });
     if started < 0 {

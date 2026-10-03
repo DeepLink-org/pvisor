@@ -31,7 +31,7 @@ nav = [
     "zh/benchmarks/index.md",
     "zh/benchmarks/methodology.md",
     "zh/benchmarks/startup.md",
-    { "VM 内存节约与开销" = ["zh/benchmarks/vm-memory/index.md", "zh/benchmarks/vm-memory/methodology.md", "zh/benchmarks/vm-memory/results.md"] },
+    { "VM 内存节约与开销" = "zh/benchmarks/vm-memory/index.md" },
     { "文件系统开销（规划中）" = "zh/benchmarks/filesystem.md" },
     { "网络开销（规划中）" = "zh/benchmarks/network.md" },
     { "apply/drop 成本（规划中）" = "zh/benchmarks/apply.md" },
