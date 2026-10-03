@@ -350,6 +350,9 @@ struct VmOverrides {
     /// Commit RAM as Seekable base/delta generations (requires FUSE/macFUSE).
     #[arg(long = "vm-ram-compression")]
     vm_ram_compression: bool,
+    /// Experimental macOS cold-page sharing; pool loss fails dependent VMs.
+    #[arg(long = "vm-memory-pool", value_name = "SOCKET")]
+    vm_memory_pool: Option<PathBuf>,
     /// Shorthand for `--executor vm`.
     #[arg(long)]
     vm: bool,
@@ -2180,6 +2183,7 @@ fn apply_cli(config: &mut RunConfig, args: RunArgs) -> anyhow::Result<()> {
 
     let enables_vm = rootfs_source.is_some()
         || args.vm.vm_ram_compression
+        || args.vm.vm_memory_pool.is_some()
         || args.vm.vm_ram_backing.is_some()
         || args.vm.vm_image_store.is_some()
         || args.vm.vm_library_dir.is_some();
@@ -2196,6 +2200,9 @@ fn apply_cli(config: &mut RunConfig, args: RunArgs) -> anyhow::Result<()> {
     }
     if let Some(value) = args.vm.vm_ram_backing {
         config.vm.ram_backing = Some(value);
+    }
+    if let Some(value) = args.vm.vm_memory_pool {
+        config.vm.memory_pool = Some(value);
     }
     if args.vm.vm_ram_compression {
         config.vm.ram_compression = true;
@@ -2850,6 +2857,22 @@ fn resolve_filesystem_grants(
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn memory_pool_is_explicit_and_selects_vm_without_fuse() {
+        let args = preset_args(&["--vm-memory-pool", "/private/tmp/pool/socket", "--", "bash"]);
+        let mut config = RunConfig::default();
+        assert!(config.vm.memory_pool.is_none());
+        let command = crate::cli::normalize_default_run(vec!["pvisor".into(), "memory-pool".into()]);
+        assert_eq!(command[1], "memory-pool");
+        apply_run_options(&mut config, args).unwrap();
+        assert_eq!(config.run.executor, RunExecutorKind::Vm);
+        assert_eq!(config.vm.memory_pool.as_deref(), Some(Path::new("/private/tmp/pool/socket")));
+        assert!(!config.vm.ram_compression);
+        let encoded = toml::to_string(&config).unwrap();
+        let decoded: RunConfig = toml::from_str(&encoded).unwrap();
+        assert_eq!(decoded.vm.memory_pool, config.vm.memory_pool);
+    }
 
     #[test]
     fn spec_format_is_detected_from_content() {

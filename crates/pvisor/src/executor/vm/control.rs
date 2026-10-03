@@ -285,6 +285,15 @@ impl VmControl {
             let mut response = vec![0; size];
             connection.stream.read_exact(&mut response).await?;
             let mut reply: ControlReply = serde_json::from_slice(&response)?;
+            if let Some(error) = &reply.error {
+                // A complete rejection with a known live state leaves the
+                // connection usable. Unknown transition errors remain fail-stop.
+                if matches!(reply.state, Some(VmState::Running | VmState::Paused))
+                    && reply.memory.is_none()
+                {
+                    return Ok(Err(anyhow::anyhow!("VMM rejected control: {error}")));
+                }
+            }
             anyhow::ensure!(
                 reply.error.is_none(),
                 "VMM rejected control: {}",
@@ -310,16 +319,16 @@ impl VmControl {
                 memory: reply.memory.clone(),
             })
             .validate()?;
-            Ok::<_, anyhow::Error>(reply)
+            Ok::<_, anyhow::Error>(Ok(reply))
         })
         .await
         .unwrap_or_else(|_| Err(anyhow::anyhow!("VM control timed out; terminating attempt")));
         if result.is_err() {
             let connection = guard.take();
             self.cancellation.cancel();
-            let _ = tokio::task::spawn_blocking(move || drop(connection));
+            drop(tokio::task::spawn_blocking(move || drop(connection)));
         }
-        result
+        result?
     }
 }
 
@@ -474,6 +483,62 @@ mod tests {
     }
 
     #[tokio::test]
+    async fn known_live_rejection_preserves_connection_for_next_control() {
+        let directory = tempfile::tempdir().unwrap();
+        let cancellation = CancellationToken::new();
+        let control = VmControl::new(cancellation.clone());
+        let (host, mut runner) = UnixStream::pair().unwrap();
+        control
+            .attach(
+                host,
+                RamBacking::create(Some(&directory.path().join("ram"))).unwrap(),
+            )
+            .await;
+        let peer = tokio::spawn(async move {
+            assert_eq!(
+                read_request(&mut runner).await,
+                OperationKind::RunOffload { file: None }
+            );
+            send_reply(
+                &mut runner,
+                ControlReply {
+                    state: Some(VmState::Running),
+                    memory: None,
+                    error: Some("incompatible cold pager".into()),
+                },
+            )
+            .await;
+            assert_eq!(read_request(&mut runner).await, OperationKind::RunPause);
+            send_reply(
+                &mut runner,
+                ControlReply {
+                    state: Some(VmState::Paused),
+                    memory: None,
+                    error: None,
+                },
+            )
+            .await;
+        });
+        assert!(
+            control
+                .command(OperationKind::RunOffload { file: None })
+                .await
+                .is_err()
+        );
+        assert!(!cancellation.is_cancelled());
+        assert_eq!(
+            control
+                .command(OperationKind::RunPause)
+                .await
+                .unwrap()
+                .state,
+            Some(VmState::Paused)
+        );
+        peer.await.unwrap();
+        assert!(!cancellation.is_cancelled());
+    }
+
+    #[tokio::test]
     async fn offload_rejection_preserves_connection_and_success_uses_owned_path() {
         let directory = tempfile::tempdir().unwrap();
         let path = directory.path().join("ram");
@@ -534,6 +599,54 @@ mod tests {
         );
         peer.await.unwrap();
         assert!(!cancellation.is_cancelled());
+    }
+
+    // Characterizes VMR-03: a published alias survives a rejected transition.
+    // This is an observable side effect, not a successful offload.
+    #[tokio::test]
+    async fn rejected_offload_leaves_published_backing_alias() {
+        let directory = tempfile::tempdir().unwrap();
+        let source = directory.path().join("ram");
+        let target = directory.path().join("published");
+        let cancellation = CancellationToken::new();
+        let control = VmControl::new(cancellation.clone());
+        let (host, mut runner) = UnixStream::pair().unwrap();
+        control
+            .attach(host, RamBacking::create(Some(&source)).unwrap())
+            .await;
+        let published = target.clone();
+        let peer = tokio::spawn(async move {
+            assert_eq!(
+                read_request(&mut runner).await,
+                OperationKind::RunOffload {
+                    file: Some(published.clone())
+                }
+            );
+            assert!(published.exists());
+            send_reply(
+                &mut runner,
+                ControlReply {
+                    state: None,
+                    memory: None,
+                    error: Some("injected offload failure".into()),
+                },
+            )
+            .await;
+        });
+        assert!(
+            control
+                .command(OperationKind::RunOffload {
+                    file: Some(target.clone())
+                })
+                .await
+                .is_err()
+        );
+        peer.await.unwrap();
+        assert!(cancellation.is_cancelled());
+        assert_eq!(
+            std::fs::metadata(source).unwrap().ino(),
+            std::fs::metadata(target).unwrap().ino()
+        );
     }
 
     #[tokio::test]

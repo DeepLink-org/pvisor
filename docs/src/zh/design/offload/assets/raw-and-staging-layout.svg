@@ -1,0 +1,107 @@
+<svg xmlns="http://www.w3.org/2000/svg" width="1600" height="1640" viewBox="0 0 1600 1640" role="img" aria-labelledby="title"><title id="title">03 · 原始 RAM、staging 与空 pin 文件的内部布局</title><desc>文件字节布局，offset、length 和编码均明确标注。可变段的绘图高度不按实际字节数缩放。</desc><style>text{font-family:"PingFang SC",sans-serif;fill:#203246;font-size:20px}.title{font-size:34px;font-weight:700}.head{font-size:24px;font-weight:600}.mono{font-family:Menlo,monospace;font-size:19px}.small{font-size:17px;fill:#526477}</style><rect width="1600" height="1640" fill="#fff"/>
+<text x="55" y="60" class="title">03 · 原始 RAM、staging 与空 pin 文件的内部布局</text>
+<text x="55" y="100" class="">这些文件没有 PVZRAM / PVSNAP header。RAM region、有效脏页和保留根在不同层表达。</text>
+<text x="55" y="160" class="head">A · 普通 vm.ram · 紧凑原始 RAM，逻辑长度 L</text>
+<text x="55" y="197" class="small">例：主机页 H=16 KiB；region 0 长度 20 KiB，region 1 长度 16 KiB。仅作 offset 演示。</text>
+<rect x="160" y="240" width="500" height="110" fill="#eaf6ef" stroke="#9bafc4"/>
+<text x="180" y="280" class="">region 0 原始字节</text>
+<text x="180" y="315" class="mono">20 KiB</text>
+<rect x="660" y="240" width="300" height="110" fill="#f4f4f4" stroke="#9bafc4"/>
+<text x="680" y="280" class="">对齐 padding</text>
+<text x="680" y="315" class="mono">12 KiB</text>
+<rect x="960" y="240" width="400" height="110" fill="#edf3fc" stroke="#9bafc4"/>
+<text x="980" y="280" class="">region 1 原始字节</text>
+<text x="980" y="315" class="mono">16 KiB</text>
+<text x="160" y="226" class="mono">0</text>
+<text x="660" y="226" class="mono">20480</text>
+<text x="960" y="226" class="mono">32768</text>
+<text x="1360" y="226" class="mono">49152 = L</text>
+<text x="160" y="390" class="mono">file_offset(region 1)=32768，不是它的 guest physical address。</text>
+<text x="160" y="427" class="small">每个 region 结束后向 H 对齐；设备匿名窗口不放进该文件。</text>
+<text x="55" y="500" class="head">B · staging .tmp* · 同一个逻辑 offset，存原始脏页；洞不代表最终 RAM 是零</text>
+<text x="55" y="538" class="small">例：一个 64 KiB 块中，只有页 1 和页 4 已进入 staging。每格严格代表 4 KiB。</text>
+<rect x="160" y="584" width="80" height="105" fill="#f4f4f4" stroke="#9bafc4"/>
+<text x="180" y="620" class="mono">0</text>
+<text x="168" y="663" class="small">hole</text>
+<text x="164" y="571" class="small">0</text>
+<rect x="240" y="584" width="80" height="105" fill="#eaf6ef" stroke="#9bafc4"/>
+<text x="260" y="620" class="mono">1</text>
+<text x="248" y="663" class="small">有效</text>
+<text x="244" y="571" class="small">4096</text>
+<rect x="320" y="584" width="80" height="105" fill="#f4f4f4" stroke="#9bafc4"/>
+<text x="340" y="620" class="mono">2</text>
+<text x="328" y="663" class="small">hole</text>
+<text x="324" y="571" class="small">8192</text>
+<rect x="400" y="584" width="80" height="105" fill="#f4f4f4" stroke="#9bafc4"/>
+<text x="420" y="620" class="mono">3</text>
+<text x="408" y="663" class="small">hole</text>
+<text x="404" y="571" class="small">12288</text>
+<rect x="480" y="584" width="80" height="105" fill="#eaf6ef" stroke="#9bafc4"/>
+<text x="500" y="620" class="mono">4</text>
+<text x="488" y="663" class="small">有效</text>
+<text x="484" y="571" class="small">16384</text>
+<rect x="560" y="584" width="80" height="105" fill="#f4f4f4" stroke="#9bafc4"/>
+<text x="580" y="620" class="mono">5</text>
+<text x="568" y="663" class="small">EOF外</text>
+<text x="564" y="571" class="small">20480</text>
+<rect x="640" y="584" width="80" height="105" fill="#f4f4f4" stroke="#9bafc4"/>
+<text x="660" y="620" class="mono">6</text>
+<text x="648" y="663" class="small">EOF外</text>
+<text x="644" y="571" class="small">24576</text>
+<rect x="720" y="584" width="80" height="105" fill="#f4f4f4" stroke="#9bafc4"/>
+<text x="740" y="620" class="mono">7</text>
+<text x="728" y="663" class="small">EOF外</text>
+<text x="724" y="571" class="small">28672</text>
+<rect x="800" y="584" width="80" height="105" fill="#f4f4f4" stroke="#9bafc4"/>
+<text x="820" y="620" class="mono">8</text>
+<text x="808" y="663" class="small">EOF外</text>
+<text x="804" y="571" class="small">32768</text>
+<rect x="880" y="584" width="80" height="105" fill="#f4f4f4" stroke="#9bafc4"/>
+<text x="900" y="620" class="mono">9</text>
+<text x="888" y="663" class="small">EOF外</text>
+<text x="884" y="571" class="small">36864</text>
+<rect x="960" y="584" width="80" height="105" fill="#f4f4f4" stroke="#9bafc4"/>
+<text x="980" y="620" class="mono">10</text>
+<text x="968" y="663" class="small">EOF外</text>
+<text x="964" y="571" class="small">40960</text>
+<rect x="1040" y="584" width="80" height="105" fill="#f4f4f4" stroke="#9bafc4"/>
+<text x="1060" y="620" class="mono">11</text>
+<text x="1048" y="663" class="small">EOF外</text>
+<text x="1044" y="571" class="small">45056</text>
+<rect x="1120" y="584" width="80" height="105" fill="#f4f4f4" stroke="#9bafc4"/>
+<text x="1140" y="620" class="mono">12</text>
+<text x="1128" y="663" class="small">EOF外</text>
+<text x="1124" y="571" class="small">49152</text>
+<rect x="1200" y="584" width="80" height="105" fill="#f4f4f4" stroke="#9bafc4"/>
+<text x="1220" y="620" class="mono">13</text>
+<text x="1208" y="663" class="small">EOF外</text>
+<text x="1204" y="571" class="small">53248</text>
+<rect x="1280" y="584" width="80" height="105" fill="#f4f4f4" stroke="#9bafc4"/>
+<text x="1300" y="620" class="mono">14</text>
+<text x="1288" y="663" class="small">EOF外</text>
+<text x="1284" y="571" class="small">57344</text>
+<rect x="1360" y="584" width="80" height="105" fill="#f4f4f4" stroke="#9bafc4"/>
+<text x="1380" y="620" class="mono">15</text>
+<text x="1368" y="663" class="small">EOF外</text>
+<text x="1364" y="571" class="small">61440</text>
+<text x="1440" y="571" class="small">65536</text>
+<path d="M560 584 L560 702" stroke="#9bafc4" fill="none"/>
+<text x="575" y="705" class="small">EOF = 20480</text>
+<text x="160" y="731" class="mono">dirty[block 0] = 0x0012（位 1、4 置位）仅存在内存 BTreeMap 中。</text>
+<text x="160" y="770" class="">页 1、4：读取 staging；其他页：读取 committed parent，或初始零 RAM。</text>
+<text x="160" y="809" class="">示例最高写入结束 = 20480 B，st_size≈20 KiB；后面逻辑 RAM 范围尚未延长到文件 EOF。</text>
+<text x="160" y="848" class="small">已写页之间的稀疏洞占据逻辑地址，物理占用取决于文件系统分配；commit 后 truncate(0)。</text>
+<text x="55" y="925" class="head">C · &lt;head-id&gt;.pvpin · 空文件，没有 header / payload / JSON</text>
+<rect x="160" y="958" width="1280" height="90" fill="#fff3e5" stroke="#9bafc4"/>
+<text x="185" y="994" class="">文件内容：∅；st_size = 0 B</text>
+<text x="185" y="1026" class="small">文件名中的 64 位 hex ID 是 GC 保留根；目录项本身仍有文件系统成本。</text>
+<text x="55" y="1117" class="head">D · mount-*/ram · FUSE 合成逻辑文件，不是磁盘上的第二份完整 RAM</text>
+<rect x="160" y="1150" width="1280" height="115" fill="#edf3fc" stroke="#9bafc4"/>
+<text x="185" y="1190" class="">逻辑 [0,L) 原始字节视图；读取时由 staging + generation chain 合成。</text>
+<text x="185" y="1230" class="small">没有可打开解析的独立 payload / footer；报告 size=L 不等于实际压缩磁盘占用。</text>
+<text x="55" y="1338" class="head">E · offload alias · 一个新目录项，不是一个新字节布局</text>
+<rect x="160" y="1370" width="1280" height="110" fill="#f1edfa" stroke="#9bafc4"/>
+<text x="185" y="1410" class="">普通模式：alias 与原 RAM 共享 inode；压缩模式：alias 与 manifest 共享 inode。</text>
+<text x="185" y="1450" class="small">内部字节完全相同，不重复存储；layers 的绝对路径也不会因 alias 自动变化。</text>
+<text x="55" y="1550" class="small">横条只在本图声明的 region/page 示例中按 byte 长度绘制；其他容器不代表磁盘占用比例。</text>
+</svg>

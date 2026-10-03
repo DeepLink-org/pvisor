@@ -1,6 +1,13 @@
 //! Immutable base/delta RAM storage plus a bounded writable staging adapter.
 //! The adapter preserves live mmap semantics; generation commit is not a VM checkpoint.
 pub mod image;
+/// Experimental resident compression interfaces; not enabled by VM settings.
+pub mod resident;
+/// Experimental Unix-stream transport for a host-owned compressed pool.
+pub mod ipc;
+/// macOS mapped-backing page diagnostics; never private RSS accounting.
+#[cfg(target_os = "macos")]
+pub mod inventory;
 pub use image::{ImageId, RamLayout, RamRegion, SnapshotChain};
 
 use serde::{Deserialize, Serialize};
@@ -16,6 +23,55 @@ pub const BLOCK_BYTES: usize = 64 * 1024;
 const PAGE_BYTES: usize = 4096;
 const HEAD_MAGIC: &[u8; 8] = b"PVHEAD2\0";
 const HEAD_BYTES: usize = 80;
+
+/// Publish a completed diagnostic after releasing VMM mapping locks.
+#[cfg(target_os = "macos")]
+pub fn write_process_inventory(directory: &Path, inventory: inventory::ProcessInventory) -> io::Result<()> {
+    use std::os::unix::fs::{MetadataExt, OpenOptionsExt, PermissionsExt};
+    let metadata = directory.metadata()?;
+    if !metadata.is_dir() || metadata.uid() != unsafe { libc::geteuid() }
+        || metadata.permissions().mode() & 0o077 != 0 {
+        return Err(io::Error::other("process inventory directory must be private and owned by this user"));
+    }
+    // Stream numeric rows directly; constructing Value for every row would
+    // inflate the diagnostic's own memory footprint.
+    #[derive(Serialize)]
+    struct Record {
+        pid: u32,
+        timestamp_ns: u128,
+        query_us: u128,
+        query_attempts: u32,
+        page_bytes: u64,
+        regions: u64,
+        scanned_pages: u64,
+        columns: [&'static str; 4],
+        scope: &'static str,
+        pages: Vec<[u64; 4]>,
+    }
+    let value = Record {
+        pid: std::process::id(), timestamp_ns: inventory.timestamp_ns,
+        query_us: inventory.query_us, query_attempts: inventory.query_attempts,
+        page_bytes: inventory.page_bytes,
+        regions: inventory.regions, scanned_pages: inventory.scanned_pages,
+        columns: ["host_address", "object_id", "object_offset", "disposition"],
+        scope: "complete live mapped-backing walk; not atomic, private RSS or PFNs",
+        pages: inventory.pages,
+    };
+    let file = std::fs::OpenOptions::new().write(true).create_new(true).mode(0o600)
+        .open(directory.join(format!("{}.json", std::process::id())))?;
+    let mut writer = io::BufWriter::new(file);
+    serde_json::to_writer(&mut writer, &value).map_err(io::Error::other)?;
+    std::io::Write::flush(&mut writer)
+}
+
+#[cfg(target_os = "macos")]
+pub fn record_process_inventory_if_requested() -> io::Result<()> {
+    if let Some(directory) = std::env::var_os("PVISOR_EXPERIMENTAL_MEMORY_PROCESS_INVENTORY") {
+        let inventory = inventory::process_inventory()?;
+        write_process_inventory(Path::new(&directory), inventory)?;
+    }
+    Ok(())
+}
 
 pub(super) fn invalid(message: &'static str) -> io::Error {
     io::Error::new(ErrorKind::InvalidData, message)
@@ -99,7 +155,7 @@ impl CompressedRam {
             return Err(invalid("unsupported RAM manifest"));
         }
         let mut offset = 44 + descriptor_bytes as u64;
-        if length < offset || (length - offset) % HEAD_BYTES as u64 != 0 {
+        if length < offset || !(length - offset).is_multiple_of(HEAD_BYTES as u64) {
             return Err(invalid("incomplete RAM head record"));
         }
         let mut head = None;
@@ -202,10 +258,10 @@ impl CompressedRam {
         let length = (self.logical_bytes - offset).min(BLOCK_BYTES as u64) as usize;
         let full_mask = ((1u32 << length.div_ceil(PAGE_BYTES)) - 1) as u16;
         let fully_staged = self.dirty.get(&block) == Some(&full_mask);
-        let mut output = if fully_staged || self.chain.is_none() {
-            vec![0; length]
+        let mut output = if !fully_staged && let Some(chain) = self.chain.as_ref() {
+            chain.read_block(block)?
         } else {
-            self.chain.as_ref().unwrap().read_block(block)?
+            vec![0; length]
         };
         if let Some(mask) = self.dirty.get(&block) {
             let staging = self

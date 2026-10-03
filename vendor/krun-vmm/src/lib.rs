@@ -213,6 +213,8 @@ pub struct Vmm {
     device_memory_gate: Arc<devices::virtio::memory_gate::MemoryGate>,
     #[cfg(target_os = "macos")]
     ram_unmapped: bool,
+    #[cfg(target_os = "macos")]
+    ram_fault_vcpus: Arc<devices::legacy::VcpuList>,
 
     // Guest VM devices.
     mmio_device_manager: MMIODeviceManager,
@@ -221,6 +223,33 @@ pub struct Vmm {
 }
 
 impl Vmm {
+    /// Retain real RAM ranges only while CPUs and device users are quiescent.
+    #[cfg(target_os = "macos")]
+    pub fn experimental_ram_blocks(&self, chunk: usize) -> std::result::Result<Vec<ram::RamBlock>, String> {
+        self.require_ram_quiesced()?;
+        ram::blocks(&self.guest_memory, chunk)
+    }
+
+    #[cfg(target_os = "macos")]
+    fn require_ram_quiesced(&self) -> std::result::Result<(), String> {
+        if !self.paused || !self.device_memory_gate.is_idle_closed() || self.control_failed || self.ram_unmapped {
+            return Err("RAM block access requires a healthy quiescent VM".into());
+        }
+        if cfg!(any(feature = "gpu", feature = "snd", feature = "input", feature = "tee")) {
+            return Err("RAM sampling unavailable with unguarded devices".into());
+        }
+        Ok(())
+    }
+
+    /// Full RAM inventory while mappings are quiescent; DAX windows excluded.
+    #[cfg(target_os = "macos")]
+    pub fn experimental_ram_page_inventory(&self) -> std::result::Result<(u64, Vec<[u64; 4]>), String> {
+        self.require_ram_quiesced()?;
+        ram::page_inventory(&self.guest_memory)
+    }
+
+    pub fn is_paused(&self) -> bool { self.paused }
+
     /// Pause all vCPUs. Device workers and host I/O remain active.
     pub fn pause(&mut self) -> Result<()> {
         self.set_paused(true)
@@ -263,12 +292,32 @@ impl Vmm {
         self.device_memory_gate.clone()
     }
 
+    /// Advisory residency of owned file-backed RAM ranges, including anonymous
+    /// replacements installed by the experimental pager. This does not pause CPUs.
+    #[cfg(target_os = "macos")]
+    pub fn experimental_ram_residency(&self) -> Option<u64> {
+        ram::residency(&self.guest_memory)
+    }
+
+    /// Install an experimental RAM fault resolver only within a quiescent epoch.
+    /// The resolver owns address validation; registration does not change mappings.
+    #[cfg(target_os = "macos")]
+    pub fn install_memory_fault_handler(&mut self, handler: Arc<hvf::MemoryFaultHandler>) -> Result<()> {
+        if !self.paused || !self.device_memory_gate.is_idle_closed() || self.control_failed {
+            return Err(Error::VcpuControl("RAM fault registration requires paused CPUs and drained devices".into()));
+        }
+        self.ram_fault_vcpus.set_memory_fault_handler(handler).map_err(Error::VcpuControl)
+    }
+
     pub fn fail_control(&mut self) {
         self.control_failed = true;
     }
 
     /// Pause and flush/reclaim file-backed RAM. Host device mappings stay valid.
     pub fn offload_ram(&mut self) -> Result<ram::RamReclaim> {
+        if self.device_memory_gate.has_prepare() {
+            return Err(Error::VcpuControl("whole-VM offload is incompatible with experimental RAM preparation".into()));
+        }
         if cfg!(any(
             feature = "gpu",
             feature = "snd",

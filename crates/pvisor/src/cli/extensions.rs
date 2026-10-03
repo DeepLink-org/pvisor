@@ -23,6 +23,10 @@ pub struct Companion {
 
 const COMMANDS: &[Companion] = &[
     Companion {
+        name: "memory-pool",
+        description: "Serve the experimental shared VM cold-page pool",
+    },
+    Companion {
         name: "cache",
         description: "Serve or query the shared OCI file cache",
     },

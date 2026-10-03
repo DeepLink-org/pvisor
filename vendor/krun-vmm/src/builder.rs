@@ -965,6 +965,8 @@ pub fn build_microvm(
         control_failed: false,
         #[cfg(target_os = "macos")]
         ram_unmapped: false,
+        #[cfg(target_os = "macos")]
+        ram_fault_vcpus: vcpu_list.clone(),
         vm,
         mmio_device_manager,
         #[cfg(target_arch = "x86_64")]

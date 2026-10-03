@@ -718,3 +718,6 @@ falls back to local OCI preparation. An explicitly configured server must work;
 and the native container executor keep their current behavior. See the
 [shared image cache protocol](shared-image-cache.md) for the full protocol,
 limits and SSH remote access.
+
+
+Experimental macOS memory-pool entry points are `pvisor memory-pool SOCKET` and `pvisor run --vm-memory-pool SOCKET`. Keep the pool running: stopping it fails dependent VMs. See [first-version memory sharing integration](../design/memory-sharing/index.md#v1-integration) for configuration, budgets and usage.

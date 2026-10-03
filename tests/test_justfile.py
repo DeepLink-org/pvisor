@@ -28,7 +28,7 @@ def run_task(tmp_path):
         "if name == 'python3' and args[0] == 'scripts/build-pvisor.py':\n"
         "    profile = args[args.index('--profile') + 1]\n"
         "    target = Path(args[args.index('--target-dir') + 1])\n"
-        "    names = ['pvisor', 'pvisor-cache', 'pvisor-tui', 'pvisor-replay']\n"
+        "    names = ['pvisor', 'pvisor-cache', 'pvisor-tui', 'pvisor-replay', 'pvisor-memory-pool']\n"
         "    for binary_name in names:\n"
         "        binary = target / ('debug' if profile == 'dev' else profile) / binary_name\n"
         "        binary.parent.mkdir(parents=True, exist_ok=True)\n"

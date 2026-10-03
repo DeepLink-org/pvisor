@@ -94,10 +94,10 @@ impl CompressedMount {
 
 impl Drop for CompressedMount {
     fn drop(&mut self) {
-        if let Some(session) = self.session.take() {
-            if let Err(error) = session.unmount() {
-                tracing::warn!(%error, "cannot unmount compressed RAM");
-            }
+        if let Some(session) = self.session.take()
+            && let Err(error) = session.unmount()
+        {
+            tracing::warn!(%error, "cannot unmount compressed RAM");
         }
     }
 }
@@ -181,12 +181,12 @@ impl Filesystem for RamFs {
             reply.error(libc::EPERM);
             return;
         }
-        if let Some(size) = size {
-            if let Err(error) = self.store.lock().unwrap().set_len(size) {
-                tracing::error!(%error, "compressed RAM resize failed");
-                reply.error(libc::EIO);
-                return;
-            }
+        if let Some(size) = size
+            && let Err(error) = self.store.lock().unwrap().set_len(size)
+        {
+            tracing::error!(%error, "compressed RAM resize failed");
+            reply.error(libc::EIO);
+            return;
         }
         reply.attr(&Duration::ZERO, &self.attr(RAM));
     }

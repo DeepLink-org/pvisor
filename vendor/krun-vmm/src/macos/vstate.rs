@@ -368,6 +368,7 @@ impl Vcpu {
                     debug!("vCPU {vcpuid} breakpoint");
                     Ok(VcpuEmulation::Interrupted)
                 }
+                VcpuExit::MemoryFaultHandled => Ok(VcpuEmulation::Handled),
                 VcpuExit::Canceled => {
                     debug!("vCPU {vcpuid} canceled");
                     Ok(VcpuEmulation::Handled)
@@ -434,6 +435,10 @@ impl Vcpu {
                     Ok(VcpuEmulation::WaitForEventTimeout(duration))
                 }
             },
+            Err(hvf::Error::MemoryFault(error)) => {
+                error!("vCPU {vcpuid} RAM recovery failed: {error}");
+                Err(Error::VcpuRun)
+            }
             Err(e) => panic!("Error running HVF vCPU: {e:?}"),
         }
     }

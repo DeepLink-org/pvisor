@@ -552,3 +552,6 @@ VM 镜像启动会自动探测默认 socket；服务可用时，将远程镜像�
 显式指定服务端后连接失败会报错；`PVISOR_CACHE_SERVER=off` 强制本地准备。
 显式 rootfs 目录和原生 container executor 保持原有行为。
 完整协议、限制和 SSH 远程访问方式见 [共享镜像缓存协议](shared-image-cache.md)。
+
+
+实验性 macOS 内存池入口为 `pvisor memory-pool SOCKET` 与 `pvisor run --vm-memory-pool SOCKET`。池需要保持运行，停止会使依赖 VM 失败；配置、预算和使用步骤见[共享内存首版接入](../design/memory-sharing/index.md#v1-integration)。

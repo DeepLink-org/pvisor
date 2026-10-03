@@ -3,6 +3,8 @@
 | 领域 | 文档 |
 | --- | --- |
 | 核心职责与执行路径 | [核心架构](architecture.md) |
+| VM RAM offload、文件布局与生命周期 | [offload 完整设计](offload/index.md) · [磁盘格式与 schema](offload/disk-layout-and-schema.md) |
+| 跨 VM 内容去重、共享池与冷页恢复 | [内存去重与冷页压缩](memory-sharing/index.md) |
 | 操作、改写、放置与事实 | [Operation 与 Event](operations-events.md) |
 | 宿主机、容器、VM 与文件系统边界 | [隔离](isolation.md) |
 | 网络策略与拦截 | [OverlayNet](overlaynet.md) |

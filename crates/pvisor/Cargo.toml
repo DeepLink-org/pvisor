@@ -66,3 +66,6 @@ fuser = { workspace = true, features = ["abi-7-19", "libfuse", "macfuse-5"] }
 
 [target.'cfg(target_os = "linux")'.dependencies]
 fuser = { workspace = true, default-features = false, features = ["abi-7-31"] }
+
+[target.'cfg(all(target_os = "macos", target_arch = "aarch64"))'.dev-dependencies]
+hvf = { version = "=0.1.0-1.19.3", package = "krun-hvf" }

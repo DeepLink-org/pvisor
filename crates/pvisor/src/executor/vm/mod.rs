@@ -16,6 +16,8 @@ pub use unsupported::{VmExecutor, run_internal_if_requested};
 
 pub(crate) mod control;
 mod compressed;
+#[cfg(all(target_os = "macos", target_arch = "aarch64"))]
+mod pager;
 #[cfg(not(any(
     all(target_os = "linux", target_env = "musl", target_arch = "x86_64"),
     all(target_os = "macos", target_arch = "x86_64")

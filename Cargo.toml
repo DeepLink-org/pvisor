@@ -20,7 +20,7 @@ members = [
     "crates/pvisor-overlay-core",
     "crates/pvisor-overlaynet",
 ]
-exclude = ["vendor/fuser", "vendor/libkrun", "vendor/krun-vmm", "vendor/krun-devices"]
+exclude = ["vendor/fuser", "vendor/libkrun", "vendor/krun-vmm", "vendor/krun-devices", "vendor/krun-hvf"]
 
 default-members = [
     "crates/pvisor",
@@ -136,3 +136,5 @@ fuser = { path = "vendor/fuser" }
 libkrun = { path = "vendor/libkrun" }
 krun-vmm = { path = "vendor/krun-vmm" }
 krun-devices = { path = "vendor/krun-devices" }
+
+krun-hvf = { path = "vendor/krun-hvf" }

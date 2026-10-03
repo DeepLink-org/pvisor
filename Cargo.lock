@@ -1979,8 +1979,6 @@ dependencies = [
 [[package]]
 name = "krun-hvf"
 version = "0.1.0-1.19.3"
-source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "2f7e78f0c5431195ca36aded1886024872699a6a56f0a600f619aeb7ef2161bc"
 dependencies = [
  "crossbeam-channel",
  "krun-arch",
@@ -2812,6 +2810,7 @@ dependencies = [
  "fs2",
  "fuser",
  "globset",
+ "krun-hvf",
  "libc",
  "libkrun",
  "libloading",

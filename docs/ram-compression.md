@@ -1,5 +1,7 @@
 # 压缩 RAM backing：Seekable base/delta（PVZRAM v2）
 
+完整设计与文件内部 SVG 见 [VM RAM offload](src/zh/design/offload/index.md)；逐文件大小与 schema 见 [磁盘格式](src/zh/design/offload/disk-layout-and-schema.md)。
+
 > 本次为源码重构。未编译、未执行测试、未启动 KVM/HVF。
 > 存储核心已采用不可变增量文件；VM 接入仍使用 FUSE 兼容适配器。
 > 当前 generation 是文件写入 epoch，不是跨 vCPU/设备的一致性 VM 快照。

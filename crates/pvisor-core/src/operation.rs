@@ -184,13 +184,13 @@ pub enum OperationKind {
 #[serde(tag = "op", deny_unknown_fields)]
 enum OperationKindWire {
     #[serde(rename = "run.pause")]
-    RunPause {},
+    Pause {},
     #[serde(rename = "run.resume")]
-    RunResume {},
+    Resume {},
     #[serde(rename = "run.offload")]
-    RunOffload { file: Option<std::path::PathBuf> },
+    Offload { file: Option<std::path::PathBuf> },
     #[serde(rename = "run.execute")]
-    RunExecute {
+    Execute {
         program: String,
         args: Vec<String>,
         cwd: Option<String>,
@@ -199,10 +199,10 @@ enum OperationKindWire {
 impl From<OperationKindWire> for OperationKind {
     fn from(wire: OperationKindWire) -> Self {
         match wire {
-            OperationKindWire::RunPause {} => Self::RunPause,
-            OperationKindWire::RunResume {} => Self::RunResume,
-            OperationKindWire::RunOffload { file } => Self::RunOffload { file },
-            OperationKindWire::RunExecute { program, args, cwd } => {
+            OperationKindWire::Pause {} => Self::RunPause,
+            OperationKindWire::Resume {} => Self::RunResume,
+            OperationKindWire::Offload { file } => Self::RunOffload { file },
+            OperationKindWire::Execute { program, args, cwd } => {
                 Self::RunExecute { program, args, cwd }
             }
         }

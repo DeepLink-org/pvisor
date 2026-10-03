@@ -404,13 +404,12 @@ impl SnapshotChain {
         let mut removed = 0;
         for entry in entries {
             let path = entry.path();
-            if path.extension().is_some_and(|ext| ext == "pvdelta") {
-                if let Some(id) = parse_id(&path) {
-                    if !live.contains(&id) {
-                        std::fs::remove_file(path)?;
-                        removed += 1;
-                    }
-                }
+            if path.extension().is_some_and(|ext| ext == "pvdelta")
+                && let Some(id) = parse_id(&path)
+                && !live.contains(&id)
+            {
+                std::fs::remove_file(path)?;
+                removed += 1;
             }
         }
         File::open(&self.directory)?.sync_all()?;
@@ -479,8 +478,8 @@ impl SnapshotChain {
                 checksum,
             });
         }
-        if delta.is_some() && entries.is_empty() {
-            return Self::open(&directory, delta.unwrap().head_id());
+        if entries.is_empty() && let Some(delta) = delta {
+            return Self::open(&directory, delta.head_id());
         }
         let seek_bytes = 17 + sizes.len() as u64 * 8;
         temporary.write_all(&SEEK_MAGIC.to_le_bytes())?;

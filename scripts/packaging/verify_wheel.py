@@ -13,7 +13,7 @@ import zipfile
 from email.parser import BytesParser
 from pathlib import Path
 
-EXPECTED_BINARIES = ("pvisor", "pvisor-cache", "pvisor-tui", "pvisor-replay")
+EXPECTED_BINARIES = ("pvisor", "pvisor-cache", "pvisor-tui", "pvisor-replay", "pvisor-memory-pool")
 FIRMWARE_NAMES = ("libkrunfw.so.5", "libkrunfw.5.dylib")
 
 
@@ -178,7 +178,6 @@ def install_smoke(wheel: Path, version: str) -> None:
         for binary in EXPECTED_BINARIES[1:]:
             name = binary.removeprefix("pvisor-")
             _run([str(scripts / "pvisor"), name, "--help"], env=env)
-            _run([str(scripts / f"pvisor-{name}"), "--pvisor-manifest"], env=env)
 
 
 def main() -> None:

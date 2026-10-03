@@ -263,6 +263,9 @@ pub struct VmSettings {
     /// Commit RAM as Seekable base/delta generations through a cached FUSE adapter. Requires
     /// /dev/fuse on Linux or the macFUSE kernel backend on Apple Silicon.
     pub ram_compression: bool,
+    /// Experimental macOS shared cold-page pool socket. Requires a separately
+    /// managed pool; loss of that pool fails dependent VMs. Disabled by default.
+    pub memory_pool: Option<PathBuf>,
     /// Linux root filesystem exported to the libkrun guest; defaults to host `/`.
     pub rootfs: Option<PathBuf>,
     /// Explicit OCI image used instead of the host root filesystem.
@@ -285,6 +288,7 @@ impl Default for VmSettings {
         Self {
             ram_backing: None,
             ram_compression: false,
+            memory_pool: None,
             rootfs: None,
             image: None,
             image_store: None,

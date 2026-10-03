@@ -18,7 +18,7 @@ build profile="debug":
       *) echo "expected debug or release, got: $1" >&2; exit 2 ;;
     esac
     python3 scripts/build-pvisor.py --profile "$cargo_profile" --target-dir "{{ target_dir }}"
-    for name in pvisor pvisor-cache pvisor-tui pvisor-replay; do
+    for name in pvisor pvisor-cache pvisor-tui pvisor-replay pvisor-memory-pool; do
       binary="{{ target_dir }}/$1/$name"
       test -x "$binary"
       if [[ "$(uname -s)" == Darwin ]]; then
@@ -33,7 +33,7 @@ install-cli: (build "release")
     set -euo pipefail
     install_root="${CARGO_INSTALL_ROOT:-${CARGO_HOME:-$HOME/.cargo}}"
     mkdir -p "$install_root/bin"
-    for binary in pvisor pvisor-cache pvisor-tui pvisor-replay; do
+    for binary in pvisor pvisor-cache pvisor-tui pvisor-replay pvisor-memory-pool; do
       install -m 755 "{{ target_dir }}/release/$binary" "$install_root/bin/$binary"
     done
 

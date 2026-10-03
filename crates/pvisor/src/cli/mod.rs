@@ -59,6 +59,7 @@ fn normalize_default_run(mut args: Vec<OsString>) -> Vec<OsString> {
         && !extensions::BUILTINS.contains(&first)
         && ![
             "cache",
+            "memory-pool",
             "tui",
             "replay",
             "env",

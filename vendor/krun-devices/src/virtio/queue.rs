@@ -231,9 +231,9 @@ impl<'a> DescriptorChain<'a> {
             return None;
         }
 
-        let memory_access = super::memory_gate::access(mem);
         let desc_head = mem.checked_offset(desc_table, (index as usize) * 16)?;
         mem.checked_offset(desc_head, 16)?;
+        let memory_access = super::memory_gate::access_ranges(mem, &[(desc_head.raw_value(), 16)]);
 
         // These reads can't fail unless Guest memory is hopelessly broken.
         let desc = match mem.read_obj::<Descriptor>(desc_head) {
@@ -244,6 +244,13 @@ impl<'a> DescriptorChain<'a> {
                 return None;
             }
         };
+        // Payload pointers may outlive the head. Prepare only after validating
+        // its complete guest range; retain the same lease in chain/slices.
+        if let Some(access) = &memory_access {
+            if mem.check_range(GuestAddress(desc.addr), desc.len as usize) {
+                access.prepare(&[(desc.addr, desc.len as usize)]);
+            }
+        }
         let chain = DescriptorChain {
             memory_access,
             mem,
@@ -371,6 +378,15 @@ impl Queue {
         }
     }
 
+    fn memory_access(&self, mem: &GuestMemoryMmap) -> Option<std::sync::Arc<super::memory_gate::Access>> {
+        let size = self.actual_size() as usize;
+        super::memory_gate::access_ranges(mem, &[
+            (self.desc_table.raw_value(), 16 * size),
+            (self.avail_ring.raw_value(), 6 + 2 * size),
+            (self.used_ring.raw_value(), 6 + 8 * size),
+        ])
+    }
+
     pub fn get_max_size(&self) -> u16 {
         self.max_size
     }
@@ -382,7 +398,7 @@ impl Queue {
     }
 
     pub fn is_valid(&self, mem: &GuestMemoryMmap) -> bool {
-        let _memory_access = super::memory_gate::access(mem);
+        let _memory_access = self.memory_access(mem);
         let queue_size = u64::from(self.actual_size());
         let desc_table = self.desc_table;
         let desc_table_size = 16 * queue_size;
@@ -444,7 +460,7 @@ impl Queue {
     /// Returns the number of yet-to-be-popped descriptor chains in the avail ring.
     #[allow(clippy::len_without_is_empty)]
     pub fn len(&self, mem: &GuestMemoryMmap) -> u16 {
-        let _memory_access = super::memory_gate::access(mem);
+        let _memory_access = self.memory_access(mem);
         (self.avail_idx(mem, Ordering::Acquire).unwrap() - self.next_avail).0
     }
 
@@ -455,7 +471,7 @@ impl Queue {
 
     /// Pop the first available descriptor chain from the avail ring.
     pub fn pop<'b>(&mut self, mem: &'b GuestMemoryMmap) -> Option<DescriptorChain<'b>> {
-        let _memory_access = super::memory_gate::access(mem);
+        let _memory_access = self.memory_access(mem);
         if self.len(mem) == 0 || self.actual_size() == 0 {
             return None;
         }
@@ -511,7 +527,7 @@ impl Queue {
         head_index: u16,
         len: u32,
     ) -> Result<(), Error> {
-        let _memory_access = super::memory_gate::access(mem);
+        let _memory_access = self.memory_access(mem);
         if head_index >= self.size {
             error!("attempted to add out of bounds descriptor to used ring: {head_index}");
             return Err(Error::InvalidDescriptorIndex);
@@ -552,7 +568,7 @@ impl Queue {
     // with the device, but they serve as useful optimizations. So we only ensure access to the
     // virtq_avail.used_event is atomic, but do not need to synchronize with other memory accesses.
     fn used_event(&self, mem: &GuestMemoryMmap, order: Ordering) -> Result<Wrapping<u16>, Error> {
-        let _memory_access = super::memory_gate::access(mem);
+        let _memory_access = self.memory_access(mem);
         // This can not overflow an u64 since it is working with relatively small numbers compared
         // to u64::MAX.
         let used_event_offset =
@@ -575,7 +591,7 @@ impl Queue {
         val: u16,
         order: Ordering,
     ) -> Result<(), Error> {
-        let _memory_access = super::memory_gate::access(mem);
+        let _memory_access = self.memory_access(mem);
         // This can not overflow an u64 since it is working with relatively small numbers compared
         // to u64::MAX.
         let avail_event_offset =
@@ -599,7 +615,7 @@ impl Queue {
         val: u16,
         order: Ordering,
     ) -> Result<(), Error> {
-        let _memory_access = super::memory_gate::access(mem);
+        let _memory_access = self.memory_access(mem);
         mem.store(val, self.used_ring, order)
             .map_err(Error::GuestMemory)
     }
@@ -710,7 +726,7 @@ impl Queue {
     /// This is written by the driver, to indicate the next slot that will be filled in the avail
     /// ring.
     fn avail_idx(&self, mem: &GuestMemoryMmap, order: Ordering) -> Result<Wrapping<u16>, Error> {
-        let _memory_access = super::memory_gate::access(mem);
+        let _memory_access = self.memory_access(mem);
         let addr = self
             .avail_ring
             .checked_add(2)

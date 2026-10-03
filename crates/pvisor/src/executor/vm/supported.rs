@@ -160,6 +160,19 @@ fn hide_ram_backing(device: &mut OverlayDeviceSpec, path: &Path) -> anyhow::Resu
 
 impl VmExecutor {
     pub fn new(mut settings: VmSettings) -> anyhow::Result<Self> {
+        anyhow::ensure!(
+            settings.memory_pool.is_none() || cfg!(all(target_os = "macos", target_arch = "aarch64")),
+            "vm.memory_pool requires macOS on Apple Silicon"
+        );
+        if let Some(path) = settings.memory_pool.as_ref() {
+            settings.memory_pool = Some(path.canonicalize().context("resolve vm.memory_pool socket")?);
+        }
+        #[cfg(all(target_os = "macos", target_arch = "aarch64"))]
+        anyhow::ensure!(
+            !settings.ram_compression || (settings.memory_pool.is_none()
+                && std::env::var_os(super::pager::POOL_ENV).is_none()),
+            "experimental cold pager cannot use a FUSE RAM backing"
+        );
         anyhow::ensure!(settings.memory_mib > 0, "vm.memory_mib must be positive");
         anyhow::ensure!(settings.cpus > 0, "vm.cpus must be positive");
         anyhow::ensure!(settings.cpus <= 8, "libkrunfw supports at most 8 vCPUs");
@@ -512,12 +525,12 @@ impl RunExecutor for VmExecutor {
                 Ok(backing) => backing,
                 Err(error) => return failed_to_start(format!("create VM RAM backing: {error}")),
             };
-        if self.settings.ram_compression {
-            if let Err(error) = ram_backing.enable_compression() {
-                return failed_to_start(format!(
-                    "create compressed RAM backing (FUSE/macFUSE required): {error}"
-                ));
-            }
+        if self.settings.ram_compression
+            && let Err(error) = ram_backing.enable_compression()
+        {
+            return failed_to_start(format!(
+                "create compressed RAM backing (FUSE/macFUSE required): {error}"
+            ));
         }
         let mut hidden = vec![ram_backing.path.clone()];
         if let Some(layers) = ram_backing.layer_directory() {
@@ -598,6 +611,9 @@ impl RunExecutor for VmExecutor {
             .stderr(stdio(invocation.stderr))
             .kill_on_drop(true)
             .process_group(0);
+        if let Some(path) = &self.settings.memory_pool {
+            command.env("PVISOR_EXPERIMENTAL_MEMORY_POOL", path);
+        }
         let control_source_fd = control_runner.as_raw_fd();
         let ram_source_fd = ram_runner.as_raw_fd();
         unsafe {
@@ -926,6 +942,8 @@ fn run_linked_krun(spec: RunnerSpec, mut attestation: std::fs::File) -> anyhow::
     }
     let mut control = unsafe { std::os::unix::net::UnixStream::from_raw_fd(control) };
     let started = krun::krun_start_enter_with_handle(ctx, move |handle| {
+        #[cfg(all(target_os = "macos", target_arch = "aarch64"))]
+        super::pager::start_if_requested(handle.clone())?;
         std::thread::Builder::new()
             .name("pvisor-vm-control".into())
             .spawn(move || {
@@ -946,6 +964,7 @@ fn run_linked_krun(spec: RunnerSpec, mut attestation: std::fs::File) -> anyhow::
                         std::process::exit(1);
                     }
                     use pvisor_core::operation::{OperationKind, VmMemory, VmState};
+                    let mut rejection_state = None;
                     let result = match serde_json::from_slice::<OperationKind>(&request) {
                         Ok(OperationKind::RunPause) => {
                             handle.pause().map(|()| (VmState::Paused, None))
@@ -954,7 +973,11 @@ fn run_linked_krun(spec: RunnerSpec, mut attestation: std::fs::File) -> anyhow::
                             handle.resume().map(|()| (VmState::Running, None))
                         }
                         Ok(OperationKind::RunOffload { .. }) => {
-                            handle.offload_ram().map(|memory| {
+                            if cfg!(all(target_os = "macos", target_arch = "aarch64")) && std::env::var_os("PVISOR_EXPERIMENTAL_MEMORY_POOL").is_some() {
+                                rejection_state = handle.is_paused().ok().map(|paused|
+                                    if paused { VmState::Paused } else { VmState::Running });
+                                Err("whole-VM offload is incompatible with the experimental cold pager".into())
+                            } else { handle.offload_ram().map(|memory| {
                                 (
                                     VmState::Offloaded,
                                     Some(VmMemory {
@@ -964,7 +987,7 @@ fn run_linked_krun(spec: RunnerSpec, mut attestation: std::fs::File) -> anyhow::
                                         resident_after_bytes: memory.resident_after_bytes,
                                     }),
                                 )
-                            })
+                            }) }
                         }
                         _ => Err("invalid VM control primitive".into()),
                     };
@@ -977,7 +1000,7 @@ fn run_linked_krun(spec: RunnerSpec, mut attestation: std::fs::File) -> anyhow::
                         Err(error) => {
                             eprintln!("VM control failed: {error}");
                             super::control::ControlReply {
-                                state: None,
+                                state: rejection_state,
                                 memory: None,
                                 error: Some(error),
                             }

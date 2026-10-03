@@ -50,14 +50,10 @@ async fn await_heartbeat(
                 "guest exited before heartbeat: {:?}",
                 handle.status()
             );
-            if let Ok(bytes) = std::fs::read(path) {
-                if !bytes.is_empty() && previous != Some(bytes.as_slice()) {
-                    ensure!(
-                        handle.status().state == RunState::Running,
-                        "resumed VM must be running"
-                    );
-                    return Ok(bytes);
-                }
+            if let Ok(bytes) = std::fs::read(path)
+                && !bytes.is_empty() && previous != Some(bytes.as_slice()) {
+                ensure!(handle.status().state == RunState::Running, "resumed VM must be running");
+                return Ok(bytes);
             }
             tokio::time::sleep(Duration::from_millis(50)).await;
         }
@@ -279,7 +275,7 @@ async fn run() -> anyhow::Result<()> {
         controls.len() == operations.len() * 2,
         "missing or duplicate control events"
     );
-    for (pair, (operation, state)) in controls.chunks_exact(2).zip(&operations) {
+    for (pair, (operation, state)) in controls.as_chunks::<2>().0.iter().zip(&operations) {
         ensure!(
             pair[0].name() == "vm.control_requested",
             "missing request event"

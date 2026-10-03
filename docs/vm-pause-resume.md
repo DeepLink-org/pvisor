@@ -1,5 +1,7 @@
 # VM 原语与文件 RAM backing
 
+完整设计与文件内部 SVG 见 [VM RAM offload](src/zh/design/offload/index.md)；逐文件大小与 schema 见 [磁盘格式](src/zh/design/offload/disk-layout-and-schema.md)。
+
 > 当前实现仅完成静态检查；未编译、未运行测试或启动 VM。
 
 pVisor 的 VM 生命周期支持 `run.pause`、`run.resume`、`run.offload`。

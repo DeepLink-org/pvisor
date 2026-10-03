@@ -93,3 +93,6 @@ pvisor inspect ../stage-config-001 -- cat result.txt
 - `--safe` 位于配置与显式 CLI 之间，并清空配置的 `run.pass_env`；之后显式的 `--pass-env` 生效。
 - 未知字段被拒绝；`filesystem = "sandbox"` 不能写成 `[filesystem] mode = "sandbox"`。
 - 含路径的配置没有“以配置文件目录为根”的通用承诺；从预期工作区启动，跨环境使用绝对路径。
+
+
+`[vm].memory_pool` 是实验性 macOS / Apple Silicon 共享冷页池的 socket 路径，默认未设置；CLI 对应 `--vm-memory-pool SOCKET`，Rust SDK 对应 `VmSettings.memory_pool`。见[首版内存共享](../design/memory-sharing/index.md#v1-integration)。

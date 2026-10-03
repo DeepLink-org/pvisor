@@ -1,6 +1,6 @@
 use crossbeam_channel::Sender;
 use std::collections::VecDeque;
-use std::sync::Mutex;
+use std::sync::{Arc, Mutex};
 
 use arch::aarch64::layout::VTIMER_IRQ;
 use arch::aarch64::sysreg::*;
@@ -8,7 +8,7 @@ use hvf::bindings::{
     hv_sys_reg_t_HV_SYS_REG_CNTHCTL_EL2, hv_sys_reg_t_HV_SYS_REG_MDCCINT_EL1, hv_vcpu_get_sys_reg,
     hv_vcpu_set_sys_reg, HV_SUCCESS,
 };
-use hvf::{vcpu_request_exit, Vcpus};
+use hvf::{vcpu_request_exit, MemoryFault, MemoryFaultHandler, Vcpus};
 
 // See https://developer.arm.com/documentation/ddi0595/2020-12/AArch64-Registers/ICC-IAR0-EL1--Interrupt-Controller-Interrupt-Acknowledge-Register-0
 const GIC_INTID_SPURIOUS: u32 = 1023;
@@ -67,6 +67,7 @@ impl PerCPUInterruptControllerState {
 
 pub struct VcpuList {
     cpu_count: u64,
+    memory_fault_handler: Mutex<Option<Arc<MemoryFaultHandler>>>,
     vcpus: Vec<Mutex<PerCPUInterruptControllerState>>,
 }
 
@@ -82,7 +83,14 @@ impl VcpuList {
             }));
         }
 
-        Self { cpu_count, vcpus }
+        Self { cpu_count, vcpus, memory_fault_handler: Mutex::new(None) }
+    }
+
+    /// Caller must quiesce CPUs/devices and remove sampling mappings before
+    /// replacing a resolver. Invoke callbacks without holding the registry lock.
+    pub fn set_memory_fault_handler(&self, handler: Arc<MemoryFaultHandler>) -> Result<(), String> {
+        *self.memory_fault_handler.lock().map_err(|_| "RAM fault handler lock poisoned")? = Some(handler);
+        Ok(())
     }
 
     pub fn get_cpu_count(&self) -> u64 {
@@ -113,6 +121,12 @@ impl VcpuList {
 }
 
 impl Vcpus for VcpuList {
+    fn handle_memory_fault(&self, fault: MemoryFault) -> Result<bool, String> {
+        let handler = self.memory_fault_handler.lock()
+            .map_err(|_| "RAM fault handler lock poisoned")?.clone();
+        match handler { Some(handler) => handler(fault), None => Ok(false) }
+    }
+
     fn set_vtimer_irq(&self, vcpuid: u64) {
         assert!(vcpuid < self.cpu_count);
         self.vcpus[vcpuid as usize]

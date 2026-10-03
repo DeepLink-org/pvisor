@@ -1,0 +1,304 @@
+<svg xmlns="http://www.w3.org/2000/svg" width="1600" height="5130" viewBox="0 0 1600 5130" role="img" aria-labelledby="atlas-title"><title id="atlas-title">pVisor offload 文件内部字节布局全集</title><svg width="1600" height="1450" viewBox="0 0 1600 1450" role="img" aria-labelledby="file0-title" x="0" y="0"><title id="file0-title">01 · vm.ram / manifest 的内部布局</title><desc>文件字节布局，offset、length 和编码均明确标注。可变段的绘图高度不按实际字节数缩放。</desc><style>text{font-family:"PingFang SC",sans-serif;fill:#203246;font-size:20px}.title{font-size:34px;font-weight:700}.head{font-size:24px;font-weight:600}.mono{font-family:Menlo,monospace;font-size:19px}.small{font-size:17px;fill:#526477}</style><rect width="1600" height="1450" fill="#fff" />
+<text x="55" y="60" class="title">01 · vm.ram / manifest 的内部布局</text>
+<text x="55" y="100" class="">PVZRAM v2；物理文件长度 = 44 + N + 80k B。左侧为文件 offset，右侧为段长度。</text>
+<text x="55" y="153" class="mono">FILE OFFSET</text>
+<text x="270" y="153" class="mono">FILE BYTES</text>
+<text x="1150" y="153" class="mono">LENGTH</text>
+<text x="55" y="208" class="mono">0</text>
+<rect x="270" y="178" width="850" height="50" fill="#edf3fc" stroke="#9bafc4" />
+<text x="292" y="210" class="head">magic = PVZRAM\0\0</text>
+<text x="1150" y="208" class="mono">8 B</text>
+<text x="55" y="258" class="mono">8</text>
+<rect x="270" y="228" width="850" height="50" fill="#edf3fc" stroke="#9bafc4" />
+<text x="292" y="260" class="head">N = descriptor byte length · u32 LE</text>
+<text x="1150" y="258" class="mono">4 B</text>
+<text x="55" y="308" class="mono">12</text>
+<rect x="270" y="278" width="850" height="185" fill="#eaf6ef" stroke="#9bafc4" />
+<text x="292" y="310" class="head">Descriptor · UTF-8 JSON</text>
+<text x="292" y="340" class="mono">{"version":2,"directory":"/data/vm.ram.layers"}</text>
+<text x="292" y="368" class="">version: 固定 2；directory: 宿主绝对路径</text>
+<text x="292" y="396" class="">紧凑原字节；N ≤ 8192；此处不存 RAM 数据</text>
+<text x="1150" y="308" class="mono">N B</text>
+<text x="55" y="493" class="mono">12 + N</text>
+<rect x="270" y="463" width="850" height="90" fill="#edf3fc" stroke="#9bafc4" />
+<text x="292" y="495" class="head">descriptor_checksum</text>
+<text x="292" y="525" class="">SHA-256(descriptor 原始 N 字节)</text>
+<text x="1150" y="493" class="mono">32 B</text>
+<text x="55" y="583" class="mono">44 + N</text>
+<rect x="270" y="553" width="850" height="80" fill="#fff3e5" stroke="#9bafc4" />
+<text x="292" y="585" class="head">head record [0]</text>
+<text x="292" y="615" class="">第一个已提交 generation 的 ID</text>
+<text x="1150" y="583" class="mono">80 B</text>
+<text x="55" y="663" class="mono">124 + N</text>
+<rect x="270" y="633" width="850" height="80" fill="#fff3e5" stroke="#9bafc4" />
+<text x="292" y="665" class="head">head record [1]</text>
+<text x="292" y="695" class="">后续 generation；不代表历史文件一定仍保留</text>
+<text x="1150" y="663" class="mono">80 B</text>
+<text x="55" y="743" class="mono">204 + N</text>
+<rect x="270" y="713" width="850" height="70" fill="#fff3e5" stroke="#9bafc4" />
+<text x="292" y="745" class="head">head records [2 … k−1]（若 k ≥ 3）</text>
+<text x="1150" y="743" class="mono">80 × (k−2) B</text>
+<text x="55" y="819" class="mono">EOF = 44 + N + 80k</text>
+<text x="650" y="819" class="small">k=0 时到 descriptor checksum 即结束</text>
+<text x="55" y="878" class="head">放大一条 head record · 80 B，以下横向宽度按字节数比例绘制</text>
+<rect x="160" y="928" width="128.0" height="95" fill="#fff3e5" stroke="#9bafc4" />
+<text x="170" y="964" class="">magic</text>
+<text x="170" y="998" class="mono">8 B</text>
+<text x="160" y="916" class="mono">0</text>
+<rect x="288.0" y="928" width="128.0" height="95" fill="#edf3fc" stroke="#9bafc4" />
+<text x="298.0" y="964" class="">L u64 LE</text>
+<text x="298.0" y="998" class="mono">8 B</text>
+<text x="288.0" y="916" class="mono">8</text>
+<rect x="416.0" y="928" width="512.0" height="95" fill="#eaf6ef" stroke="#9bafc4" />
+<text x="426.0" y="964" class="">head ImageId</text>
+<text x="426.0" y="998" class="mono">32 B</text>
+<text x="416.0" y="916" class="mono">16</text>
+<rect x="928.0" y="928" width="512.0" height="95" fill="#f1edfa" stroke="#9bafc4" />
+<text x="938.0" y="964" class="">SHA-256(record[0:48])</text>
+<text x="938.0" y="998" class="mono">32 B</text>
+<text x="928.0" y="916" class="mono">48</text>
+<text x="1425.0" y="916" class="mono">80</text>
+<text x="160" y="1060" class="mono">magic = PVHEAD2\0；L = logical RAM bytes；ID / checksum 均为原始 32 B。</text>
+<text x="55" y="1130" class="head">头部前 12 字节 · 每格 1 B，数字为十六进制 byte</text>
+<rect x="160" y="1160" width="90" height="68" fill="#eaf6ef" stroke="#9bafc4" />
+<text x="182" y="1202" class="mono">50</text>
+<text x="188" y="1150" class="small">0</text>
+<rect x="250" y="1160" width="90" height="68" fill="#eaf6ef" stroke="#9bafc4" />
+<text x="272" y="1202" class="mono">56</text>
+<text x="278" y="1150" class="small">1</text>
+<rect x="340" y="1160" width="90" height="68" fill="#eaf6ef" stroke="#9bafc4" />
+<text x="362" y="1202" class="mono">5a</text>
+<text x="368" y="1150" class="small">2</text>
+<rect x="430" y="1160" width="90" height="68" fill="#eaf6ef" stroke="#9bafc4" />
+<text x="452" y="1202" class="mono">52</text>
+<text x="458" y="1150" class="small">3</text>
+<rect x="520" y="1160" width="90" height="68" fill="#eaf6ef" stroke="#9bafc4" />
+<text x="542" y="1202" class="mono">41</text>
+<text x="548" y="1150" class="small">4</text>
+<rect x="610" y="1160" width="90" height="68" fill="#eaf6ef" stroke="#9bafc4" />
+<text x="632" y="1202" class="mono">4d</text>
+<text x="638" y="1150" class="small">5</text>
+<rect x="700" y="1160" width="90" height="68" fill="#eaf6ef" stroke="#9bafc4" />
+<text x="722" y="1202" class="mono">00</text>
+<text x="728" y="1150" class="small">6</text>
+<rect x="790" y="1160" width="90" height="68" fill="#eaf6ef" stroke="#9bafc4" />
+<text x="812" y="1202" class="mono">00</text>
+<text x="818" y="1150" class="small">7</text>
+<rect x="880" y="1160" width="90" height="68" fill="#edf3fc" stroke="#9bafc4" />
+<text x="902" y="1202" class="mono">N0</text>
+<text x="908" y="1150" class="small">8</text>
+<rect x="970" y="1160" width="90" height="68" fill="#edf3fc" stroke="#9bafc4" />
+<text x="992" y="1202" class="mono">N1</text>
+<text x="998" y="1150" class="small">9</text>
+<rect x="1060" y="1160" width="90" height="68" fill="#edf3fc" stroke="#9bafc4" />
+<text x="1082" y="1202" class="mono">N2</text>
+<text x="1088" y="1150" class="small">10</text>
+<rect x="1150" y="1160" width="90" height="68" fill="#edf3fc" stroke="#9bafc4" />
+<text x="1172" y="1202" class="mono">N3</text>
+<text x="1178" y="1150" class="small">11</text>
+<text x="160" y="1270" class="mono">N = N0 + 256×N1 + 65536×N2 + 16777216×N3（little-endian）</text>
+<text x="55" y="1340" class="">已有样本：N=155、k=10 ⇒ descriptor 结束于 167，head 起点 199，EOF=999 B。</text>
+<text x="55" y="1380" class="small">绘图高度不代表可变段实际大小；只有明确标注的固定记录横条按比例绘制。</text>
+</svg><svg width="1600" height="1960" viewBox="0 0 1600 1960" role="img" aria-labelledby="file1-title" x="0" y="1490"><title id="file1-title">02 · &lt;ImageId&gt;.pvdelta 的内部布局</title><desc>文件字节布局，offset、length 和编码均明确标注。可变段的绘图高度不按实际字节数缩放。</desc><style>text{font-family:"PingFang SC",sans-serif;fill:#203246;font-size:20px}.title{font-size:34px;font-weight:700}.head{font-size:24px;font-weight:600}.mono{font-family:Menlo,monospace;font-size:19px}.small{font-size:17px;fill:#526477}</style><rect width="1600" height="1960" fill="#fff" />
+<text x="55" y="60" class="title">02 · &lt;ImageId&gt;.pvdelta 的内部布局</text>
+<text x="55" y="100" class="">base / delta 使用同一格式。P=frames 总长度；F=frame 数；J=metadata JSON 长度；I=P+17+8F。</text>
+<text x="55" y="153" class="mono">FILE OFFSET</text>
+<text x="270" y="153" class="mono">FILE BYTES</text>
+<text x="1150" y="153" class="mono">LENGTH</text>
+<text x="55" y="205" class="mono">0</text>
+<rect x="270" y="175" width="850" height="145" fill="#eaf6ef" stroke="#9bafc4" />
+<text x="292" y="207" class="head">Zstd frame payload</text>
+<text x="292" y="237" class="">frame 0 | frame 1 | … | frame F−1</text>
+<text x="292" y="265" class="">每个 frame 解码为一个逻辑块；通常 65536 B</text>
+<text x="292" y="293" class="">fill entry 没有 frame；frame 数可以少于 entry 数</text>
+<text x="1150" y="205" class="mono">P B</text>
+<text x="55" y="350" class="mono">P</text>
+<rect x="270" y="320" width="850" height="160" fill="#edf3fc" stroke="#9bafc4" />
+<text x="292" y="352" class="head">Zstd Seekable table</text>
+<text x="292" y="382" class="">记录每个 frame 的 stored / decoded 长度</text>
+<text x="292" y="410" class="">seek checksum flag = 0</text>
+<text x="292" y="438" class="">其自身布局在下方展开</text>
+<text x="1150" y="350" class="mono">17 + 8F B</text>
+<text x="55" y="510" class="mono">I</text>
+<rect x="270" y="480" width="850" height="200" fill="#fff3e5" stroke="#9bafc4" />
+<text x="292" y="512" class="head">Metadata · UTF-8 JSON index</text>
+<text x="292" y="542" class="">version / block_bytes / parent / layout / entries</text>
+<text x="292" y="570" class="">ImageId = SHA-256(metadata 原始 JSON 字节)</text>
+<text x="292" y="598" class="">base: parent=null，entries 覆盖全部逻辑块</text>
+<text x="292" y="626" class="">delta: parent=[32 bytes]，entries 仅保存变化块</text>
+<text x="1150" y="510" class="mono">J B</text>
+<text x="55" y="710" class="mono">I + J</text>
+<rect x="270" y="680" width="850" height="100" fill="#f1edfa" stroke="#9bafc4" />
+<text x="292" y="712" class="head">PVSNAP2 footer</text>
+<text x="292" y="742" class="">reader 从 EOF−64 读取；字段布局见下方</text>
+<text x="1150" y="710" class="mono">64 B</text>
+<text x="55" y="815" class="mono">EOF = P + 17 + 8F + J + 64</text>
+<text x="55" y="878" class="head">放大 Seekable table · 相对 offset，以文件 offset P 为原点</text>
+<rect x="55" y="905" width="1490" height="44" fill="#f7f9fc" stroke="#9bafc4" />
+<text x="75" y="934" class="mono">0</text>
+<text x="325" y="934" class="mono">4 B</text>
+<text x="465" y="934" class="mono">magic = 0x184d2a5e</text>
+<rect x="55" y="949" width="1490" height="44" fill="#fff" stroke="#9bafc4" />
+<text x="75" y="978" class="mono">4</text>
+<text x="325" y="978" class="mono">4 B</text>
+<text x="465" y="978" class="mono">table body length = 9 + 8F</text>
+<rect x="55" y="993" width="1490" height="44" fill="#f7f9fc" stroke="#9bafc4" />
+<text x="75" y="1022" class="mono">8 + 8j</text>
+<text x="325" y="1022" class="mono">4 B</text>
+<text x="465" y="1022" class="mono">frame[j].stored_bytes  · u32 LE</text>
+<rect x="55" y="1037" width="1490" height="44" fill="#fff" stroke="#9bafc4" />
+<text x="75" y="1066" class="mono">12 + 8j</text>
+<text x="325" y="1066" class="mono">4 B</text>
+<text x="465" y="1066" class="mono">frame[j].decoded_bytes · u32 LE</text>
+<rect x="55" y="1081" width="1490" height="44" fill="#f7f9fc" stroke="#9bafc4" />
+<text x="75" y="1110" class="mono">8 + 8F</text>
+<text x="325" y="1110" class="mono">4 B</text>
+<text x="465" y="1110" class="mono">frame_count = F        · u32 LE</text>
+<rect x="55" y="1125" width="1490" height="44" fill="#fff" stroke="#9bafc4" />
+<text x="75" y="1154" class="mono">12 + 8F</text>
+<text x="325" y="1154" class="mono">1 B</text>
+<text x="465" y="1154" class="mono">flags = 0</text>
+<rect x="55" y="1169" width="1490" height="44" fill="#f7f9fc" stroke="#9bafc4" />
+<text x="75" y="1198" class="mono">13 + 8F</text>
+<text x="325" y="1198" class="mono">4 B</text>
+<text x="465" y="1198" class="mono">seek footer magic = 0x8f92eab1</text>
+<text x="55" y="1250" class="small">j∈[0,F)；两个 size 字段形成一个 8 B entry；所有整数为 little-endian。</text>
+<text x="55" y="1310" class="head">放大 footer · 64 B，以下横向宽度按字节数比例绘制</text>
+<rect x="160" y="1355" width="160.0" height="95" fill="#f1edfa" stroke="#9bafc4" />
+<text x="170" y="1391" class="">magic</text>
+<text x="170" y="1425" class="mono">8 B</text>
+<text x="160" y="1343" class="mono">0</text>
+<rect x="320.0" y="1355" width="160.0" height="95" fill="#edf3fc" stroke="#9bafc4" />
+<text x="330.0" y="1391" class="">I u64 LE</text>
+<text x="330.0" y="1425" class="mono">8 B</text>
+<text x="320.0" y="1343" class="mono">8</text>
+<rect x="480.0" y="1355" width="160.0" height="95" fill="#fff3e5" stroke="#9bafc4" />
+<text x="490.0" y="1391" class="">J u64 LE</text>
+<text x="490.0" y="1425" class="mono">8 B</text>
+<text x="480.0" y="1343" class="mono">16</text>
+<rect x="640.0" y="1355" width="160.0" height="95" fill="#edf3fc" stroke="#9bafc4" />
+<text x="650.0" y="1391" class="">seek len</text>
+<text x="650.0" y="1425" class="mono">8 B</text>
+<text x="640.0" y="1343" class="mono">24</text>
+<rect x="800.0" y="1355" width="640.0" height="95" fill="#eaf6ef" stroke="#9bafc4" />
+<text x="810.0" y="1391" class="">ImageId = SHA-256(metadata)</text>
+<text x="810.0" y="1425" class="mono">32 B</text>
+<text x="800.0" y="1343" class="mono">32</text>
+<text x="1425.0" y="1343" class="mono">64</text>
+<text x="160" y="1488" class="mono">magic = PVSNAP2\0；seek len = 17 + 8F；64 位 offset / length 均为 LE。</text>
+<text x="55" y="1560" class="head">Metadata 的 entry 结构 · JSON 中的 ID / checksum 是整数数组，不是 hex string</text>
+<rect x="55" y="1590" width="1490" height="190" fill="#fff3e5" stroke="#9bafc4" />
+<text x="78" y="1630" class="mono">entries: [</text>
+<text x="78" y="1666" class="mono">  { block: 353, frame: 0, fill: null, checksum: [32 个 u8] },</text>
+<text x="78" y="1702" class="mono">  { block: 354, frame: null, fill: 0, checksum: [32 个 u8] }</text>
+<text x="78" y="1738" class="mono">]  // 第一项读取 payload frame 0；第二项直接合成整块零，无 payload frame</text>
+<text x="55" y="1830" class="">已有 base：P=21797445，F=1360，J=677657 ⇒ 文件大小 22486063 B。</text>
+<text x="55" y="1870" class="">已有 delta：P=1901198，F=209，J=34911 ⇒ 文件大小 1937862 B。</text>
+<text x="55" y="1910" class="small">capture .tmp 文件逐段写成上述格式；footer 未完成、未发布前不能当作 committed generation。</text>
+</svg><svg width="1600" height="1640" viewBox="0 0 1600 1640" role="img" aria-labelledby="file2-title" x="0" y="3490"><title id="file2-title">03 · 原始 RAM、staging 与空 pin 文件的内部布局</title><desc>文件字节布局，offset、length 和编码均明确标注。可变段的绘图高度不按实际字节数缩放。</desc><style>text{font-family:"PingFang SC",sans-serif;fill:#203246;font-size:20px}.title{font-size:34px;font-weight:700}.head{font-size:24px;font-weight:600}.mono{font-family:Menlo,monospace;font-size:19px}.small{font-size:17px;fill:#526477}</style><rect width="1600" height="1640" fill="#fff" />
+<text x="55" y="60" class="title">03 · 原始 RAM、staging 与空 pin 文件的内部布局</text>
+<text x="55" y="100" class="">这些文件没有 PVZRAM / PVSNAP header。RAM region、有效脏页和保留根在不同层表达。</text>
+<text x="55" y="160" class="head">A · 普通 vm.ram · 紧凑原始 RAM，逻辑长度 L</text>
+<text x="55" y="197" class="small">例：主机页 H=16 KiB；region 0 长度 20 KiB，region 1 长度 16 KiB。仅作 offset 演示。</text>
+<rect x="160" y="240" width="500" height="110" fill="#eaf6ef" stroke="#9bafc4" />
+<text x="180" y="280" class="">region 0 原始字节</text>
+<text x="180" y="315" class="mono">20 KiB</text>
+<rect x="660" y="240" width="300" height="110" fill="#f4f4f4" stroke="#9bafc4" />
+<text x="680" y="280" class="">对齐 padding</text>
+<text x="680" y="315" class="mono">12 KiB</text>
+<rect x="960" y="240" width="400" height="110" fill="#edf3fc" stroke="#9bafc4" />
+<text x="980" y="280" class="">region 1 原始字节</text>
+<text x="980" y="315" class="mono">16 KiB</text>
+<text x="160" y="226" class="mono">0</text>
+<text x="660" y="226" class="mono">20480</text>
+<text x="960" y="226" class="mono">32768</text>
+<text x="1360" y="226" class="mono">49152 = L</text>
+<text x="160" y="390" class="mono">file_offset(region 1)=32768，不是它的 guest physical address。</text>
+<text x="160" y="427" class="small">每个 region 结束后向 H 对齐；设备匿名窗口不放进该文件。</text>
+<text x="55" y="500" class="head">B · staging .tmp* · 同一个逻辑 offset，存原始脏页；洞不代表最终 RAM 是零</text>
+<text x="55" y="538" class="small">例：一个 64 KiB 块中，只有页 1 和页 4 已进入 staging。每格严格代表 4 KiB。</text>
+<rect x="160" y="584" width="80" height="105" fill="#f4f4f4" stroke="#9bafc4" />
+<text x="180" y="620" class="mono">0</text>
+<text x="168" y="663" class="small">hole</text>
+<text x="164" y="571" class="small">0</text>
+<rect x="240" y="584" width="80" height="105" fill="#eaf6ef" stroke="#9bafc4" />
+<text x="260" y="620" class="mono">1</text>
+<text x="248" y="663" class="small">有效</text>
+<text x="244" y="571" class="small">4096</text>
+<rect x="320" y="584" width="80" height="105" fill="#f4f4f4" stroke="#9bafc4" />
+<text x="340" y="620" class="mono">2</text>
+<text x="328" y="663" class="small">hole</text>
+<text x="324" y="571" class="small">8192</text>
+<rect x="400" y="584" width="80" height="105" fill="#f4f4f4" stroke="#9bafc4" />
+<text x="420" y="620" class="mono">3</text>
+<text x="408" y="663" class="small">hole</text>
+<text x="404" y="571" class="small">12288</text>
+<rect x="480" y="584" width="80" height="105" fill="#eaf6ef" stroke="#9bafc4" />
+<text x="500" y="620" class="mono">4</text>
+<text x="488" y="663" class="small">有效</text>
+<text x="484" y="571" class="small">16384</text>
+<rect x="560" y="584" width="80" height="105" fill="#f4f4f4" stroke="#9bafc4" />
+<text x="580" y="620" class="mono">5</text>
+<text x="568" y="663" class="small">EOF外</text>
+<text x="564" y="571" class="small">20480</text>
+<rect x="640" y="584" width="80" height="105" fill="#f4f4f4" stroke="#9bafc4" />
+<text x="660" y="620" class="mono">6</text>
+<text x="648" y="663" class="small">EOF外</text>
+<text x="644" y="571" class="small">24576</text>
+<rect x="720" y="584" width="80" height="105" fill="#f4f4f4" stroke="#9bafc4" />
+<text x="740" y="620" class="mono">7</text>
+<text x="728" y="663" class="small">EOF外</text>
+<text x="724" y="571" class="small">28672</text>
+<rect x="800" y="584" width="80" height="105" fill="#f4f4f4" stroke="#9bafc4" />
+<text x="820" y="620" class="mono">8</text>
+<text x="808" y="663" class="small">EOF外</text>
+<text x="804" y="571" class="small">32768</text>
+<rect x="880" y="584" width="80" height="105" fill="#f4f4f4" stroke="#9bafc4" />
+<text x="900" y="620" class="mono">9</text>
+<text x="888" y="663" class="small">EOF外</text>
+<text x="884" y="571" class="small">36864</text>
+<rect x="960" y="584" width="80" height="105" fill="#f4f4f4" stroke="#9bafc4" />
+<text x="980" y="620" class="mono">10</text>
+<text x="968" y="663" class="small">EOF外</text>
+<text x="964" y="571" class="small">40960</text>
+<rect x="1040" y="584" width="80" height="105" fill="#f4f4f4" stroke="#9bafc4" />
+<text x="1060" y="620" class="mono">11</text>
+<text x="1048" y="663" class="small">EOF外</text>
+<text x="1044" y="571" class="small">45056</text>
+<rect x="1120" y="584" width="80" height="105" fill="#f4f4f4" stroke="#9bafc4" />
+<text x="1140" y="620" class="mono">12</text>
+<text x="1128" y="663" class="small">EOF外</text>
+<text x="1124" y="571" class="small">49152</text>
+<rect x="1200" y="584" width="80" height="105" fill="#f4f4f4" stroke="#9bafc4" />
+<text x="1220" y="620" class="mono">13</text>
+<text x="1208" y="663" class="small">EOF外</text>
+<text x="1204" y="571" class="small">53248</text>
+<rect x="1280" y="584" width="80" height="105" fill="#f4f4f4" stroke="#9bafc4" />
+<text x="1300" y="620" class="mono">14</text>
+<text x="1288" y="663" class="small">EOF外</text>
+<text x="1284" y="571" class="small">57344</text>
+<rect x="1360" y="584" width="80" height="105" fill="#f4f4f4" stroke="#9bafc4" />
+<text x="1380" y="620" class="mono">15</text>
+<text x="1368" y="663" class="small">EOF外</text>
+<text x="1364" y="571" class="small">61440</text>
+<text x="1440" y="571" class="small">65536</text>
+<path d="M560 584 L560 702" stroke="#9bafc4" fill="none" />
+<text x="575" y="705" class="small">EOF = 20480</text>
+<text x="160" y="731" class="mono">dirty[block 0] = 0x0012（位 1、4 置位）仅存在内存 BTreeMap 中。</text>
+<text x="160" y="770" class="">页 1、4：读取 staging；其他页：读取 committed parent，或初始零 RAM。</text>
+<text x="160" y="809" class="">示例最高写入结束 = 20480 B，st_size≈20 KiB；后面逻辑 RAM 范围尚未延长到文件 EOF。</text>
+<text x="160" y="848" class="small">已写页之间的稀疏洞占据逻辑地址，物理占用取决于文件系统分配；commit 后 truncate(0)。</text>
+<text x="55" y="925" class="head">C · &lt;head-id&gt;.pvpin · 空文件，没有 header / payload / JSON</text>
+<rect x="160" y="958" width="1280" height="90" fill="#fff3e5" stroke="#9bafc4" />
+<text x="185" y="994" class="">文件内容：∅；st_size = 0 B</text>
+<text x="185" y="1026" class="small">文件名中的 64 位 hex ID 是 GC 保留根；目录项本身仍有文件系统成本。</text>
+<text x="55" y="1117" class="head">D · mount-*/ram · FUSE 合成逻辑文件，不是磁盘上的第二份完整 RAM</text>
+<rect x="160" y="1150" width="1280" height="115" fill="#edf3fc" stroke="#9bafc4" />
+<text x="185" y="1190" class="">逻辑 [0,L) 原始字节视图；读取时由 staging + generation chain 合成。</text>
+<text x="185" y="1230" class="small">没有可打开解析的独立 payload / footer；报告 size=L 不等于实际压缩磁盘占用。</text>
+<text x="55" y="1338" class="head">E · offload alias · 一个新目录项，不是一个新字节布局</text>
+<rect x="160" y="1370" width="1280" height="110" fill="#f1edfa" stroke="#9bafc4" />
+<text x="185" y="1410" class="">普通模式：alias 与原 RAM 共享 inode；压缩模式：alias 与 manifest 共享 inode。</text>
+<text x="185" y="1450" class="small">内部字节完全相同，不重复存储；layers 的绝对路径也不会因 alias 自动变化。</text>
+<text x="55" y="1550" class="small">横条只在本图声明的 region/page 示例中按 byte 长度绘制；其他容器不代表磁盘占用比例。</text>
+</svg></svg>

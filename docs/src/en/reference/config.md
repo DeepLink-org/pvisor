@@ -93,3 +93,6 @@ Definitions come from `crates/pvisor/src/config.rs`. This navigation table does 
 - `--safe` presets sit between config and explicit CLI and clear configured pass_env; explicit `--pass-env` then applies.
 - Unknown fields reject loading. Use `filesystem = "sandbox"`, not `[filesystem] mode = "sandbox"`.
 - There is no general config-directory-relative path guarantee. Start from the intended workspace and use absolute paths across environments.
+
+
+`[vm].memory_pool` is the socket path of the experimental macOS / Apple Silicon shared cold-page pool, unset by default. CLI uses `--vm-memory-pool SOCKET`; Rust SDK uses `VmSettings.memory_pool`. See [first-version memory sharing](../design/memory-sharing/index.md#v1-integration).
