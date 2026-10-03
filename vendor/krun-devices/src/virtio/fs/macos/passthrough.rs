@@ -1385,7 +1385,10 @@ impl FileSystem for PassthroughFs {
             saved_handles.push(HandleSnapshot {
                 handle,
                 inode: data.inode,
-                flags,
+                // XNU F_GETFL exposes FWASWRITTEN (0x10000), an internal
+                // history bit rather than an open option. Reopening must not
+                // replay it. All other unknown flags remain rejected.
+                flags: flags & !0x0001_0000,
                 offset: offset as u64,
                 entries: directory
                     .entries
@@ -1512,7 +1515,10 @@ impl FileSystem for PassthroughFs {
                 || saved.flags & libc::O_ACCMODE == libc::O_ACCMODE
                 || saved.offset > i64::MAX as u64
             {
-                return Err(snapshot::invalid("invalid filesystem handle"));
+                return Err(snapshot::invalid(&format!(
+                    "invalid filesystem handle id={} flags={:#x} offset={} next={}",
+                    saved.handle, saved.flags, saved.offset, state.next_handle
+                )));
             }
             let path = paths
                 .get(&saved.inode)

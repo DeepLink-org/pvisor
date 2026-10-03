@@ -115,6 +115,21 @@ impl Subscriber for Console {
         let activate_evt = self.activate_evt.as_raw_fd();
         let sigwinch_evt = self.sigwinch_evt.as_raw_fd();
 
+        if self.is_activated() && self.frozen && source != activate_evt {
+            if let Some(event) = self
+                .queue_events
+                .iter()
+                .find(|event| event.as_raw_fd() == source)
+            {
+                let _ = event.read();
+            } else if source == self.control.queue_evt().as_raw_fd() {
+                let _ = self.control.queue_evt().read();
+            } else if source == sigwinch_evt {
+                let _ = self.sigwinch_evt.read();
+            }
+            return;
+        }
+
         if self.is_activated() {
             // interest_list() registers sigwinch_evt and control.queue_evt() with
             // epoll at creation time, but queue_events is only populated later in
@@ -134,7 +149,8 @@ impl Subscriber for Console {
                 self.read_control_queue_event(event);
                 raise_irq |= self.process_control_rx();
             } else if source == control_rxq {
-                raise_irq |= self.read_queue_event(CONTROL_RXQ_INDEX, event)
+                raise_irq |=
+                    self.read_queue_event(CONTROL_RXQ_INDEX, event) && self.process_control_rx()
             }
             /* Guest signaled input/output on port */
             else if let Some(queue_index) = self

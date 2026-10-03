@@ -1,5 +1,5 @@
 use std::borrow::Cow;
-use std::sync::atomic::{AtomicBool, Ordering};
+use std::sync::atomic::{AtomicU8, Ordering};
 use std::sync::{Arc, Mutex};
 use std::thread::JoinHandle;
 use std::{mem, thread};
@@ -63,9 +63,17 @@ enum PortState {
     Inactive,
     Active {
         stopfd: utils::eventfd::EventFd,
-        stop: Arc<AtomicBool>,
-        rx_thread: Option<JoinHandle<()>>,
-        tx_thread: Option<JoinHandle<()>>,
+        stop: Arc<AtomicU8>,
+        rx_thread: Option<JoinHandle<(Queue, bool)>>,
+        tx_thread: Option<JoinHandle<(Queue, bool)>>,
+        rx: Option<(Queue, bool)>,
+        tx: Option<(Queue, bool)>,
+    },
+    Frozen {
+        rx: Queue,
+        tx: Queue,
+        rx_closed: bool,
+        tx_closed: bool,
     },
 }
 
@@ -129,6 +137,20 @@ impl Port {
         interrupt: InterruptTransport,
         control: Arc<ConsoleControl>,
     ) {
+        self.start_inner(mem, rx_queue, tx_queue, interrupt, control, false, false);
+    }
+
+    #[allow(clippy::too_many_arguments)]
+    fn start_inner(
+        &mut self,
+        mem: GuestMemoryMmap,
+        rx_queue: Queue,
+        tx_queue: Queue,
+        interrupt: InterruptTransport,
+        control: Arc<ConsoleControl>,
+        rx_closed: bool,
+        tx_closed: bool,
+    ) {
         if let PortState::Active { .. } = &mut self.state {
             self.shutdown();
         };
@@ -138,9 +160,12 @@ impl Port {
 
         let stopfd = utils::eventfd::EventFd::new(utils::eventfd::EFD_NONBLOCK)
             .expect("Failed to create EventFd for interrupt_evt");
-        let stop = Arc::new(AtomicBool::new(false));
+        let stop = Arc::new(AtomicU8::new(0));
+        let mut rx = Some((rx_queue, rx_closed));
+        let mut tx = Some((tx_queue, tx_closed));
 
-        let rx_thread = input.map(|input| {
+        let rx_thread = input.filter(|_| !rx_closed).map(|input| {
+            let (rx_queue, _) = rx.take().unwrap();
             let mem = mem.clone();
             let interrupt = interrupt.clone();
             let port_id = self.port_id;
@@ -156,7 +181,8 @@ impl Port {
                 .unwrap()
         });
 
-        let tx_thread = output.map(|output| {
+        let tx_thread = output.filter(|_| !tx_closed).map(|output| {
+            let (tx_queue, _) = tx.take().unwrap();
             let stop = stop.clone();
             thread::spawn(move || process_tx(mem, tx_queue, interrupt, output, stop))
         });
@@ -166,7 +192,171 @@ impl Port {
             stop,
             rx_thread,
             tx_thread,
+            rx,
+            tx,
         }
+    }
+
+    pub fn is_started(&self) -> bool {
+        !matches!(self.state, PortState::Inactive)
+    }
+
+    pub fn freeze(&mut self) -> Result<bool, String> {
+        let PortState::Active {
+            stopfd,
+            stop,
+            rx_thread,
+            tx_thread,
+            rx,
+            tx,
+        } = &mut self.state
+        else {
+            return Ok(true);
+        };
+        if stop.load(Ordering::Acquire) != 1 {
+            stop.store(1, Ordering::Release);
+            stopfd.write(1).map_err(|e| e.to_string())?;
+            if let Some(worker) = rx_thread.as_ref() {
+                worker.thread().unpark();
+            }
+            if let Some(worker) = tx_thread.as_ref() {
+                worker.thread().unpark();
+            }
+        }
+        for (worker, queue) in [(rx_thread, &mut *rx), (tx_thread, &mut *tx)] {
+            if worker.as_ref().is_some_and(|worker| worker.is_finished()) {
+                *queue = Some(
+                    worker
+                        .take()
+                        .unwrap()
+                        .join()
+                        .map_err(|_| "console worker panicked")?,
+                );
+            }
+        }
+        let (Some(_), Some(_)) = (&rx, &tx) else {
+            return Ok(false);
+        };
+        let (rx, rx_closed) = rx.take().unwrap();
+        let (tx, tx_closed) = tx.take().unwrap();
+        self.state = PortState::Frozen {
+            rx,
+            tx,
+            rx_closed,
+            tx_closed,
+        };
+        Ok(true)
+    }
+
+    pub fn thaw(
+        &mut self,
+        mem: GuestMemoryMmap,
+        interrupt: InterruptTransport,
+        control: Arc<ConsoleControl>,
+    ) -> Result<(), String> {
+        if matches!(self.state, PortState::Active { .. }) {
+            return Err("console freeze still pending".into());
+        }
+        let old = mem::replace(&mut self.state, PortState::Inactive);
+        if let PortState::Frozen {
+            rx,
+            tx,
+            rx_closed,
+            tx_closed,
+        } = old
+        {
+            self.start_inner(mem, rx, tx, interrupt, control, rx_closed, tx_closed);
+        }
+        Ok(())
+    }
+
+    pub fn frozen_queues(&self) -> Option<(&Queue, &Queue)> {
+        match &self.state {
+            PortState::Frozen { rx, tx, .. } => Some((rx, tx)),
+            _ => None,
+        }
+    }
+
+    pub fn capture_state(&self) -> Result<super::device::PortSnapshot, String> {
+        let (started, rx_closed, tx_closed) = match self.state {
+            PortState::Inactive => (false, false, false),
+            PortState::Frozen {
+                rx_closed,
+                tx_closed,
+                ..
+            } => (true, rx_closed, tx_closed),
+            PortState::Active { .. } => return Err("console port must be frozen".into()),
+        };
+        if tx_closed {
+            return Err(
+                "console output failed during a request; cannot snapshot partial external effects"
+                    .into(),
+            );
+        }
+        let input = self
+            .input
+            .as_ref()
+            .map(|io| {
+                io.try_lock()
+                    .map_err(|_| "console input is busy".to_string())?
+                    .capture_state()
+            })
+            .transpose()?;
+        let output = self
+            .output
+            .as_ref()
+            .map(|io| {
+                io.try_lock()
+                    .map_err(|_| "console output is busy".to_string())?
+                    .capture_state()
+            })
+            .transpose()?;
+        Ok(super::device::PortSnapshot {
+            name: self.name.to_string(),
+            input,
+            output,
+            terminal: self.terminal.is_some(),
+            started,
+            rx_closed,
+            tx_closed,
+        })
+    }
+
+    pub fn validate_state(&self, saved: &super::device::PortSnapshot) -> Result<(), String> {
+        if saved.name != self.name
+            || saved.input.is_some() != self.input.is_some()
+            || saved.output.is_some() != self.output.is_some()
+            || saved.terminal != self.terminal.is_some()
+            || self.is_started()
+            || saved.tx_closed
+            || (!saved.started && saved.rx_closed)
+        {
+            return Err("console port topology or lifecycle mismatch".into());
+        }
+        Ok(())
+    }
+
+    pub fn restore_io(&mut self, saved: &super::device::PortSnapshot) -> Result<(), String> {
+        if let (Some(io), Some(state)) = (&self.input, &saved.input) {
+            io.try_lock()
+                .map_err(|_| "console input is busy")?
+                .restore_state(state)?;
+        }
+        if let (Some(io), Some(state)) = (&self.output, &saved.output) {
+            io.try_lock()
+                .map_err(|_| "console output is busy")?
+                .restore_state(state)?;
+        }
+        Ok(())
+    }
+
+    pub fn restore_state(&mut self, saved: &super::device::PortSnapshot, rx: Queue, tx: Queue) {
+        self.state = PortState::Frozen {
+            rx,
+            tx,
+            rx_closed: saved.rx_closed,
+            tx_closed: saved.tx_closed,
+        };
     }
 
     pub fn shutdown(&mut self) {
@@ -175,9 +365,10 @@ impl Port {
             stop,
             tx_thread,
             rx_thread,
+            ..
         } = &mut self.state
         {
-            stop.store(true, Ordering::Release);
+            stop.store(2, Ordering::Release);
             if let Some(tx_thread) = mem::take(tx_thread) {
                 tx_thread.thread().unpark();
                 if let Err(e) = tx_thread.join() {
@@ -198,5 +389,6 @@ impl Port {
                 }
             }
         };
+        self.state = PortState::Inactive;
     }
 }

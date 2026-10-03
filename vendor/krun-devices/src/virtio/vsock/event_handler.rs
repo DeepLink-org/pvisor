@@ -120,12 +120,25 @@ impl Vsock {
 impl Subscriber for Vsock {
     fn process(&mut self, event: &EpollEvent, event_manager: &mut EventManager) {
         let source = event.fd();
+        if !self.is_activated() {
+            warn!("Spurious vsock event before activation: {source}");
+            return;
+        }
+        let activate_evt = self.activate_evt.as_raw_fd();
+        if self.frozen && source != activate_evt {
+            if let Some(event) = self
+                .queue_events
+                .iter()
+                .find(|event| event.as_raw_fd() == source)
+            {
+                let _ = event.read();
+            }
+            return;
+        }
         let rxq = self.queue_events[RXQ_INDEX].as_raw_fd();
         let txq = self.queue_events[TXQ_INDEX].as_raw_fd();
         let evq = self.queue_events[EVQ_INDEX].as_raw_fd();
         //let backend = self.backend.as_raw_fd();
-        let activate_evt = self.activate_evt.as_raw_fd();
-
         if self.is_activated() {
             let mut raise_irq = false;
             match source {

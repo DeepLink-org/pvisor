@@ -53,6 +53,15 @@ impl fmt::Display for Error {
 
 type Result<T> = result::Result<T, Error>;
 
+#[derive(Clone, Debug, serde::Serialize, serde::Deserialize)]
+#[serde(deny_unknown_fields)]
+pub struct GpioSnapshot {
+    version: u32,
+    registers: [u32; 8],
+    irq_line: Option<u32>,
+    has_intc: bool,
+}
+
 /// A GPIO device following the PL061 specification.
 pub struct Gpio {
     // Data Register
@@ -76,6 +85,8 @@ pub struct Gpio {
     intc: Option<IrqChip>,
     irq_line: Option<u32>,
     shutdown_efd: EventFd,
+    frozen: bool,
+    pending_shutdown: bool,
 }
 
 impl Gpio {
@@ -94,6 +105,96 @@ impl Gpio {
             intc: None,
             irq_line: None,
             shutdown_efd,
+            frozen: false,
+            pending_shutdown: false,
+        }
+    }
+
+    pub fn freeze(&mut self) {
+        self.frozen = true;
+    }
+
+    pub fn thaw(&mut self) {
+        self.frozen = false;
+        if std::mem::take(&mut self.pending_shutdown) {
+            self.trigger_restart_key(true);
+        }
+    }
+
+    /// A shutdown request vetoes capture; source thaw still delivers it. A
+    /// successful capture never turns an external shutdown into lost input.
+    pub fn capture_state(&mut self) -> std::result::Result<GpioSnapshot, String> {
+        if !self.frozen {
+            return Err("GPIO snapshot requires frozen device".into());
+        }
+        match self.shutdown_efd.read() {
+            Ok(_) => self.pending_shutdown = true,
+            Err(e) if e.kind() == std::io::ErrorKind::WouldBlock => {}
+            Err(e) => return Err(e.to_string()),
+        }
+        if self.pending_shutdown {
+            return Err("GPIO shutdown pending during snapshot".into());
+        }
+        self.require_empty_interrupt_event()?;
+        Ok(GpioSnapshot {
+            version: 1,
+            registers: [
+                self.data,
+                self.dir,
+                self.isense,
+                self.ibe,
+                self.iev,
+                self.im,
+                self.istate,
+                self.afsel,
+            ],
+            irq_line: self.irq_line,
+            has_intc: self.intc.is_some(),
+        })
+    }
+
+    /// IRQ delivery state belongs to the interrupt controller; installing
+    /// registers must not inject the saved interrupt a second time.
+    pub fn restore_state(&mut self, state: &GpioSnapshot) -> std::result::Result<(), String> {
+        if !self.frozen
+            || self.pending_shutdown
+            || state.version != 1
+            || state.registers.iter().any(|value| *value > 0xff)
+            || state.irq_line != self.irq_line
+            || state.has_intc != self.intc.is_some()
+        {
+            return Err("invalid GPIO snapshot or destination topology".into());
+        }
+        match self.shutdown_efd.read() {
+            Ok(_) => {
+                self.pending_shutdown = true;
+                return Err("GPIO destination has pending shutdown".into());
+            }
+            Err(e) if e.kind() == std::io::ErrorKind::WouldBlock => {}
+            Err(e) => return Err(e.to_string()),
+        }
+        self.require_empty_interrupt_event()?;
+        [
+            self.data,
+            self.dir,
+            self.isense,
+            self.ibe,
+            self.iev,
+            self.im,
+            self.istate,
+            self.afsel,
+        ] = state.registers;
+        Ok(())
+    }
+
+    fn require_empty_interrupt_event(&self) -> std::result::Result<(), String> {
+        match self.interrupt_evt.read() {
+            Ok(count) => {
+                self.interrupt_evt.write(count).map_err(|e| e.to_string())?;
+                Err("GPIO interrupt event pending; controller must drain it first".into())
+            }
+            Err(e) if e.kind() == std::io::ErrorKind::WouldBlock => Ok(()),
+            Err(e) => Err(e.to_string()),
         }
     }
 
@@ -241,7 +342,13 @@ impl Subscriber for Gpio {
 
         match source {
             _ if source == self.shutdown_efd.as_raw_fd() => {
-                _ = self.shutdown_efd.read();
+                if self.shutdown_efd.read().is_err() {
+                    return;
+                }
+                if self.frozen {
+                    self.pending_shutdown = true;
+                    return;
+                }
                 // Send a key press event.
                 self.trigger_restart_key(true);
             }

@@ -1,4 +1,4 @@
-use std::sync::atomic::{AtomicBool, Ordering};
+use std::sync::atomic::{AtomicU8, Ordering};
 use std::sync::{Arc, Mutex};
 use std::{io, thread};
 
@@ -12,11 +12,11 @@ pub(crate) fn process_tx(
     mut queue: Queue,
     interrupt: InterruptTransport,
     output: Arc<Mutex<Box<dyn PortOutput + Send>>>,
-    stop: Arc<AtomicBool>,
-) {
+    stop: Arc<AtomicU8>,
+) -> (Queue, bool) {
     loop {
         let Some(head) = pop_head_blocking(&mut queue, &mem, &interrupt, &stop) else {
-            return;
+            return (queue, false);
         };
 
         let head_index = head.index;
@@ -25,22 +25,16 @@ pub(crate) fn process_tx(
         for desc in head.into_iter().readable() {
             let desc_len = desc.len as usize;
             match write_desc_to_output(desc, output.lock().unwrap().as_mut(), &interrupt) {
-                Ok(0) => {
-                    break;
-                }
+                Ok(0) => return (queue, true),
                 Ok(n) => {
                     assert_eq!(n, desc_len);
                     bytes_written += n;
                 }
                 Err(e) => {
                     log::error!("Failed to write output: {e}");
-                    if matches!(e, GuestMemoryError::IOError(e) if e.kind() == io::ErrorKind::BrokenPipe)
-                    {
-                        // Errors could conceivably be spurious. Broken
-                        // pipe is not and there is no point in attempting
-                        // to write more.
-                        return;
-                    }
+                    // External writes may already have succeeded. Mark the endpoint failed
+                    // rather than presenting this request as safely resumable.
+                    return (queue, true);
                 }
             }
         }
@@ -61,14 +55,17 @@ fn pop_head_blocking<'mem>(
     queue: &mut Queue,
     mem: &'mem GuestMemoryMmap,
     interrupt: &InterruptTransport,
-    stop: &AtomicBool,
+    stop: &AtomicU8,
 ) -> Option<DescriptorChain<'mem>> {
     loop {
+        if stop.load(Ordering::Acquire) == 1 {
+            return None;
+        }
         match queue.pop(mem) {
             Some(descriptor) => break Some(descriptor),
             None => {
                 interrupt.signal_used_queue();
-                if stop.load(Ordering::Acquire) {
+                if stop.load(Ordering::Acquire) != 0 {
                     break None;
                 }
                 thread::park();

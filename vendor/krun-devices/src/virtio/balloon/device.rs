@@ -129,9 +129,10 @@ impl VirtioDevice for Balloon {
     fn thaw(&mut self) -> Result<(), String> {
         if self.frozen {
             if let Some(queues) = &self.queues {
-                for queue in queues {
-                    queue.event.write(1).map_err(|e| e.to_string())?;
-                }
+                queues[FRQ_INDEX]
+                    .event
+                    .write(1)
+                    .map_err(|e| e.to_string())?;
             }
             self.frozen = false;
         }

@@ -1,4 +1,4 @@
-use std::sync::atomic::{AtomicBool, Ordering};
+use std::sync::atomic::{AtomicU8, Ordering};
 use std::sync::{Arc, Mutex};
 use std::{io, thread};
 
@@ -17,15 +17,15 @@ pub(crate) fn process_rx(
     control: Arc<ConsoleControl>,
     port_id: u32,
     stopfd: utils::eventfd::EventFd,
-    stop: Arc<AtomicBool>,
-) {
+    stop: Arc<AtomicU8>,
+) -> (Queue, bool) {
     let mem = &mem;
     let mut eof = false;
 
     let mut input = input.lock().unwrap();
     loop {
         let Some(head) = pop_head_blocking(&mut queue, mem, &interrupt, &stop) else {
-            return;
+            return (queue, false);
         };
 
         let head_index = head.index;
@@ -53,18 +53,23 @@ pub(crate) fn process_rx(
 
         // We signal_used_queue only when we get WouldBlock or EOF
         if eof {
+            if bytes_read == 0 {
+                if let Err(e) = queue.add_used(mem, head_index, 0) {
+                    error!("failed to add EOF to used queue: {e:?}");
+                }
+            }
             interrupt.signal_used_queue();
             log::trace!("signaling EOF on port {port_id}");
             control.port_open(port_id, false);
-            return;
+            return (queue, true);
         } else if bytes_read == 0 {
             queue.undo_pop();
             interrupt.signal_used_queue();
             input.wait_until_readable(Some(&stopfd));
         }
 
-        if stop.load(Ordering::Acquire) {
-            return;
+        if stop.load(Ordering::Acquire) != 0 {
+            return (queue, false);
         }
     }
 }
@@ -73,14 +78,17 @@ fn pop_head_blocking<'mem>(
     queue: &mut Queue,
     mem: &'mem GuestMemoryMmap,
     interrupt: &InterruptTransport,
-    stop: &AtomicBool,
+    stop: &AtomicU8,
 ) -> Option<DescriptorChain<'mem>> {
     loop {
+        if stop.load(Ordering::Acquire) == 1 {
+            return None;
+        }
         match queue.pop(mem) {
             Some(descriptor) => break Some(descriptor),
             None => {
                 interrupt.signal_used_queue();
-                if stop.load(Ordering::Acquire) {
+                if stop.load(Ordering::Acquire) != 0 {
                     break None;
                 }
                 thread::park();

@@ -3150,6 +3150,51 @@ pub struct VmmHandle {
 }
 
 impl VmmHandle {
+    /// Full-device quiescence for snapshot capture. This does not publish a
+    /// snapshot or implement cold restore. Caller persists state inside action.
+    /// Deadline failure leaves CPU parked: a worker still stopping cannot safely
+    /// be abandoned or resumed. The caller must terminate that failed runner.
+    #[cfg(all(target_os = "macos", target_arch = "aarch64"))]
+    pub fn with_snapshot_quiesced<T>(
+        &self,
+        timeout: std::time::Duration,
+        action: impl FnOnce(&mut vmm::Vmm) -> Result<T, String>,
+    ) -> Result<T, String> {
+        let _transition = self.transition.lock().map_err(|_| "VM transition lock poisoned")?;
+        let vmm = self.vmm.upgrade().ok_or("VMM has stopped")?;
+        let deadline = std::time::Instant::now().checked_add(timeout).ok_or("invalid snapshot timeout")?;
+        {
+            let locked = vmm.lock().map_err(|_| "VMM lock poisoned")?;
+            if locked.is_paused() || locked.device_memory_gate().has_prepare() {
+                return Err("snapshot transaction requires a running VM without active RAM pager".into());
+            }
+        }
+        loop {
+            let result = vmm.lock().map_err(|_| "VMM lock poisoned")?.freeze_for_snapshot();
+            match result {
+                Ok(true) => break,
+                Ok(false) if std::time::Instant::now() < deadline => {
+                    // Release VMM lock so worker completion can make progress.
+                    std::thread::sleep(std::time::Duration::from_millis(1));
+                }
+                result => {
+                    vmm.lock().map_err(|_| "VMM lock poisoned")?.fail_control();
+                    return Err(match result {
+                        Err(error) => error,
+                        _ => "snapshot worker freeze timed out; terminate runner".into(),
+                    });
+                }
+            }
+        }
+        let mut locked = vmm.lock().map_err(|_| "VMM lock poisoned")?;
+        let result = action(&mut locked);
+        if let Err(error) = locked.resume() {
+            locked.fail_control();
+            return Err(format!("snapshot source resume failed: {error}"));
+        }
+        result
+    }
+
     #[cfg(target_os = "macos")]
     pub fn experimental_ram_residency(&self) -> Result<Option<u64>, String> {
         let vmm = self.vmm.upgrade().ok_or("VMM has stopped")?;
@@ -3289,6 +3334,21 @@ pub fn krun_set_snapshot_profile(ctx_id: u32) -> i32 {
     if context.vmr.nested_enabled { return -libc::ENOTSUP; }
     context.vmr.snapshot_profile = true;
     KRUN_SUCCESS
+}
+
+/// Internal same-host restore input. The runner must validate durable manifest
+/// identity, sealed backing files and single execution ownership first. A
+/// successfully built VM remains paused until the ready callback resumes it.
+#[cfg(all(target_os = "macos", target_arch = "aarch64"))]
+pub fn krun_set_machine_restore(ctx_id: u32, restore: vmm::snapshot::MachineRestore) -> Result<(), String> {
+    let mut contexts = CTX_MAP.lock().map_err(|_| "context map poisoned")?;
+    let context = contexts.get_mut(&ctx_id).ok_or("unknown VM context")?;
+    if context.vmr.nested_enabled {
+        return Err("machine restore does not support nested virtualization".into());
+    }
+    context.vmr.snapshot_profile = true;
+    context.vmr.machine_restore = Some(Arc::new(restore));
+    Ok(())
 }
 
 /// Configure live file-backed RAM without granting the VMM filesystem paths.

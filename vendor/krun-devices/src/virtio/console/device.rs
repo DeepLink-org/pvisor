@@ -52,6 +52,26 @@ impl VirtioConsoleConfig {
     }
 }
 
+#[derive(Clone, Debug, serde::Serialize, serde::Deserialize)]
+#[serde(deny_unknown_fields)]
+pub struct PortSnapshot {
+    pub(crate) name: String,
+    pub(crate) input: Option<super::port_io::PortIoSnapshot>,
+    pub(crate) output: Option<super::port_io::PortIoSnapshot>,
+    pub(crate) terminal: bool,
+    pub(crate) started: bool,
+    pub(crate) rx_closed: bool,
+    pub(crate) tx_closed: bool,
+}
+
+#[derive(Clone, Debug, serde::Serialize, serde::Deserialize)]
+#[serde(deny_unknown_fields)]
+pub struct ConsoleSnapshot {
+    config: [u32; 4],
+    ports: Vec<PortSnapshot>,
+    control: Vec<Vec<u8>>,
+}
+
 pub struct Console {
     pub(crate) device_state: DeviceState,
     pub(crate) control: Arc<ConsoleControl>,
@@ -70,6 +90,8 @@ pub struct Console {
     pub(crate) sigwinch_evt: EventFd,
 
     config: VirtioConsoleConfig,
+    pub(crate) frozen: bool,
+    restore: Option<Vec<PortSnapshot>>,
 }
 
 impl Console {
@@ -105,6 +127,8 @@ impl Console {
                 .map_err(super::ConsoleError::EventFd)?,
             device_state: DeviceState::Inactive,
             config,
+            frozen: false,
+            restore: None,
         })
     }
 
@@ -123,6 +147,9 @@ impl Console {
     }
 
     pub(crate) fn process_control_rx(&mut self) -> bool {
+        if self.frozen {
+            return false;
+        }
         log::trace!("process_control_rx");
         let DeviceState::Activated(ref mem, _) = self.device_state else {
             unreachable!()
@@ -159,6 +186,9 @@ impl Console {
     }
 
     pub(crate) fn process_control_tx(&mut self) -> bool {
+        if self.frozen {
+            return false;
+        }
         log::trace!("process_control_tx");
         let DeviceState::Activated(ref mem, ref interrupt) = self.device_state else {
             unreachable!()
@@ -193,6 +223,12 @@ impl Console {
             }
 
             log::trace!("VirtioConsoleControl cmd: {cmd:?}");
+            if cmd.event != control_event::VIRTIO_CONSOLE_DEVICE_READY
+                && cmd.id as usize >= self.ports.len()
+            {
+                log::warn!("Invalid console port {}", cmd.id);
+                continue;
+            }
             match cmd.event {
                 control_event::VIRTIO_CONSOLE_DEVICE_READY => {
                     log::debug!(
@@ -246,7 +282,10 @@ impl Console {
                         continue;
                     }
 
-                    ports_to_start.push(cmd.id as usize);
+                    let id = cmd.id as usize;
+                    if !self.ports[id].is_started() && !ports_to_start.contains(&id) {
+                        ports_to_start.push(id);
+                    }
                 }
                 _ => log::warn!("Unknown console control event {:x}", cmd.event),
             }
@@ -281,6 +320,119 @@ impl Console {
 }
 
 impl VirtioDevice for Console {
+    fn freeze(&mut self) -> Result<bool, String> {
+        self.frozen = true;
+        let mut complete = true;
+        for port in &mut self.ports {
+            complete &= port.freeze()?;
+        }
+        Ok(complete)
+    }
+
+    fn thaw(&mut self) -> Result<(), String> {
+        if !self.frozen {
+            return Ok(());
+        }
+        if let DeviceState::Activated(mem, interrupt) = &self.device_state {
+            // Check every worker before restarting any of them.
+            if self
+                .ports
+                .iter()
+                .any(|port| port.is_started() && port.frozen_queues().is_none())
+            {
+                return Err("console freeze still pending".into());
+            }
+            for port in &mut self.ports {
+                port.thaw(mem.clone(), interrupt.clone(), self.control.clone())?;
+            }
+            for event in &self.queue_events {
+                event.write(1).map_err(|e| e.to_string())?;
+            }
+            self.control
+                .queue_evt()
+                .write(1)
+                .map_err(|e| e.to_string())?;
+        }
+        self.frozen = false;
+        Ok(())
+    }
+
+    fn capture_state(&self) -> Result<super::super::DeviceSnapshot, String> {
+        if self.is_activated() && !self.frozen {
+            return Err("console must be frozen before capture".into());
+        }
+        let ports = self
+            .ports
+            .iter()
+            .map(Port::capture_state)
+            .collect::<Result<Vec<_>, _>>()?;
+        let mut queues = self
+            .queues
+            .iter()
+            .map(|q| q.as_ref().map(|q| q.queue.capture_state()))
+            .collect::<Vec<_>>();
+        for (id, port) in self.ports.iter().enumerate() {
+            if let Some((rx, tx)) = port.frozen_queues() {
+                queues[port_id_to_queue_idx(QueueDirection::Rx, id)] = Some(rx.capture_state());
+                queues[port_id_to_queue_idx(QueueDirection::Tx, id)] = Some(tx.capture_state());
+            }
+        }
+        let queues = if self.is_activated() {
+            Some(
+                queues
+                    .into_iter()
+                    .collect::<Option<Vec<_>>>()
+                    .ok_or("console queues missing")?,
+            )
+        } else {
+            None
+        };
+        Ok(super::super::DeviceSnapshot {
+            queues,
+            state: super::super::DeviceSnapshotState::Console(ConsoleSnapshot {
+                config: [
+                    u32::from(self.config.cols),
+                    u32::from(self.config.rows),
+                    self.config.max_nr_ports,
+                    self.config.emerg_wr,
+                ],
+                ports,
+                control: self.control.capture_state(),
+            }),
+        })
+    }
+
+    fn restore_state(&mut self, state: &super::super::DeviceSnapshotState) -> Result<(), String> {
+        let super::super::DeviceSnapshotState::Console(state) = state else {
+            return Err("console state type mismatch".into());
+        };
+        if self.is_activated()
+            || state.ports.len() != self.ports.len()
+            || state.config[2] as usize != self.ports.len()
+            || state.config[0] > u16::MAX as u32
+            || state.config[1] > u16::MAX as u32
+        {
+            return Err("console topology or configuration mismatch".into());
+        }
+        for (port, saved) in self.ports.iter().zip(&state.ports) {
+            port.validate_state(saved)?;
+        }
+        self.control
+            .restore_state(&state.control, self.ports.len())?;
+        for (port, saved) in self.ports.iter_mut().zip(&state.ports) {
+            port.restore_io(saved)?;
+        }
+        self.config = VirtioConsoleConfig {
+            cols: state.config[0] as u16,
+            rows: state.config[1] as u16,
+            max_nr_ports: state.config[2],
+            emerg_wr: state.config[3],
+        };
+        self.restore = Some(state.ports.clone());
+        self.frozen = true;
+        Ok(())
+    }
+
     fn avail_features(&self) -> u64 {
         self.avail_features
     }
@@ -341,6 +493,21 @@ impl VirtioDevice for Console {
         self.queue_events = queues.iter().map(|dq| dq.event.clone()).collect();
         self.queues = queues.into_iter().map(Some).collect();
         self.device_state = DeviceState::Activated(mem, interrupt);
+        if let Some(ports) = self.restore.take() {
+            for (id, (port, saved)) in self.ports.iter_mut().zip(&ports).enumerate() {
+                if saved.started {
+                    let rx = self.queues[port_id_to_queue_idx(QueueDirection::Rx, id)]
+                        .take()
+                        .unwrap()
+                        .queue;
+                    let tx = self.queues[port_id_to_queue_idx(QueueDirection::Tx, id)]
+                        .take()
+                        .unwrap()
+                        .queue;
+                    port.restore_state(saved, rx, tx);
+                }
+            }
+        }
 
         Ok(())
     }
@@ -354,6 +521,9 @@ impl VirtioDevice for Console {
         for port in &mut self.ports {
             port.shutdown();
         }
+        self.frozen = false;
+        self.restore = None;
+        self.control.clear();
         self.queues.clear();
         self.queue_events.clear();
         self.device_state = DeviceState::Inactive;

@@ -17,6 +17,8 @@ mod bus;
 #[cfg(any(target_arch = "aarch64", target_arch = "riscv64"))]
 pub mod fdt;
 pub mod legacy;
+#[cfg(all(target_os = "macos", target_arch = "aarch64"))]
+pub mod snapshot;
 pub mod virtio;
 
 pub use self::bus::{Bus, BusDevice, Error as BusError};

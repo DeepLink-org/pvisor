@@ -36,6 +36,8 @@ pub(crate) const AVAIL_FEATURES: u64 = (1 << uapi::VIRTIO_F_VERSION_1 as u64)
     | (1 << uapi::VIRTIO_VSOCK_F_DGRAM);
 
 pub struct Vsock {
+    pub(crate) frozen: bool,
+    queue_event: Option<VirtQueue>,
     cid: u64,
     pub(crate) muxer: VsockMuxer,
     pub(crate) queue_rx: Option<Arc<Mutex<VirtQueue>>>,
@@ -57,6 +59,8 @@ impl Vsock {
         tsi_flags: TsiFlags,
     ) -> super::Result<Vsock> {
         Ok(Vsock {
+            frozen: false,
+            queue_event: None,
             cid,
             muxer: VsockMuxer::new(cid, host_port_map, unix_ipc_port_map, tsi_flags),
             queue_rx: None,
@@ -82,6 +86,9 @@ impl Vsock {
     /// have pending. Return `true` if descriptors have been added to the used ring, and `false`
     /// otherwise.
     pub fn process_stream_rx(&mut self) -> bool {
+        if self.frozen {
+            return false;
+        }
         debug!("process_stream_rx()");
         let mem = match self.device_state {
             DeviceState::Activated(ref mem, _) => mem,
@@ -129,6 +136,9 @@ impl Vsock {
     /// Walk the driver-provided TX queue buffers, package them up as vsock packets, and process
     /// them. Return `true` if descriptors have been added to the used ring, and `false` otherwise.
     pub fn process_stream_tx(&mut self) -> bool {
+        if self.frozen {
+            return false;
+        }
         debug!("process_stream_tx()");
         let mem = match self.device_state {
             DeviceState::Activated(ref mem, _) => mem,
@@ -181,6 +191,62 @@ impl Vsock {
 }
 
 impl VirtioDevice for Vsock {
+    fn freeze(&mut self) -> Result<bool, String> {
+        self.frozen = true;
+        self.muxer.freeze()
+    }
+
+    fn thaw(&mut self) -> Result<(), String> {
+        if !self.frozen {
+            return Ok(());
+        }
+        self.muxer.thaw()?;
+        self.frozen = false;
+        for event in &self.queue_events {
+            event.write(1).map_err(|e| e.to_string())?;
+        }
+        Ok(())
+    }
+
+    fn capture_state(&self) -> Result<super::super::DeviceSnapshot, String> {
+        let state = super::super::DeviceSnapshotState::Vsock(self.muxer.capture_state()?);
+        let queues = if self.is_activated() {
+            if !self.frozen {
+                return Err("vsock must be frozen before capture".into());
+            }
+            Some(vec![
+                self.queue_rx
+                    .as_ref()
+                    .ok_or("vsock RX missing")?
+                    .try_lock()
+                    .map_err(|_| "vsock RX busy")?
+                    .capture_state(),
+                self.queue_tx
+                    .as_ref()
+                    .ok_or("vsock TX missing")?
+                    .try_lock()
+                    .map_err(|_| "vsock TX busy")?
+                    .capture_state(),
+                self.queue_event
+                    .as_ref()
+                    .ok_or("vsock event queue missing")?
+                    .capture_state(),
+            ])
+        } else {
+            None
+        };
+        Ok(super::super::DeviceSnapshot { queues, state })
+    }
+
+    fn restore_state(&mut self, state: &super::super::DeviceSnapshotState) -> Result<(), String> {
+        let super::super::DeviceSnapshotState::Vsock(state) = state else {
+            return Err("vsock state type mismatch".into());
+        };
+        self.muxer.validate_state(state)?;
+        self.frozen = true;
+        Ok(())
+    }
+
     fn avail_features(&self) -> u64 {
         self.avail_features
     }
@@ -256,7 +322,7 @@ impl VirtioDevice for Vsock {
         // Extract queues from DeviceQueues and wrap in Arc<Mutex<>>.
         let mut queues_vec: Vec<VirtQueue> = queues.into_iter().map(|dq| dq.queue).collect();
         // Note: EVQ (index 2) is currently unused, we just take it to maintain the vec.
-        let _evq = queues_vec.pop().unwrap();
+        self.queue_event = queues_vec.pop();
         let tx_queue = queues_vec.pop().unwrap();
         let rx_queue = queues_vec.pop().unwrap();
 
@@ -266,6 +332,7 @@ impl VirtioDevice for Vsock {
             mem.clone(),
             self.queue_rx.clone().unwrap(),
             interrupt.clone(),
+            self.frozen,
         );
 
         self.device_state = DeviceState::Activated(mem, interrupt);

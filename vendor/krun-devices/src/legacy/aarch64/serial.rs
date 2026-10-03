@@ -70,6 +70,18 @@ impl fmt::Display for Error {
 
 type Result<T> = result::Result<T, Error>;
 
+/// PL011 registers and guest input FIFO. External host streams require their
+/// own state contract and are deliberately not silently serialized here.
+#[derive(Clone, Debug, serde::Serialize, serde::Deserialize)]
+#[serde(deny_unknown_fields)]
+pub struct SerialSnapshot {
+    version: u32,
+    registers: [u32; 14],
+    read_fifo: VecDeque<u8>,
+    irq_line: Option<u32>,
+    has_intc: bool,
+}
+
 /// A PL011 device following the PL011 specification.
 pub struct Serial {
     interrupt_evt: EventFd,
@@ -92,6 +104,7 @@ pub struct Serial {
     input: Option<Box<dyn ReadableFd + Send>>,
     intc: Option<IrqChip>,
     irq_line: Option<u32>,
+    frozen: bool,
 }
 
 impl Serial {
@@ -156,6 +169,96 @@ impl Serial {
             input,
             intc: None,
             irq_line: None,
+            frozen: false,
+        }
+    }
+
+    pub fn freeze(&mut self) {
+        self.frozen = true;
+    }
+
+    pub fn thaw(&mut self) {
+        self.frozen = false;
+    }
+
+    pub fn capture_state(&self) -> std::result::Result<SerialSnapshot, String> {
+        if !self.frozen
+            || self.input.is_some()
+            || self.out.is_some()
+            || self.dmacr & 3 != 0
+            || self.read_fifo.len() != self.read_count as usize
+        {
+            return Err(
+                "PL011 snapshot requires frozen sink without DMA or external streams".into(),
+            );
+        }
+        self.require_empty_interrupt_event()?;
+        Ok(SerialSnapshot {
+            version: 1,
+            registers: [
+                self.flags,
+                self.lcr,
+                self.rsr,
+                self.cr,
+                self.dmacr,
+                self.debug,
+                self.int_enabled,
+                self.int_level,
+                self.ilpr,
+                self.ibrd,
+                self.fbrd,
+                self.ifl,
+                self.read_count,
+                self.read_trigger,
+            ],
+            read_fifo: self.read_fifo.clone(),
+            irq_line: self.irq_line,
+            has_intc: self.intc.is_some(),
+        })
+    }
+
+    pub fn restore_state(&mut self, state: &SerialSnapshot) -> std::result::Result<(), String> {
+        if !self.frozen
+            || self.input.is_some()
+            || self.out.is_some()
+            || state.version != 1
+            || state.irq_line != self.irq_line
+            || state.has_intc != self.intc.is_some()
+            || state.registers[4] & 3 != 0
+            || state.registers[13] != 1
+            || state.read_fifo.len() != state.registers[12] as usize
+        {
+            return Err("invalid PL011 snapshot or destination topology".into());
+        }
+        self.require_empty_interrupt_event()?;
+        [
+            self.flags,
+            self.lcr,
+            self.rsr,
+            self.cr,
+            self.dmacr,
+            self.debug,
+            self.int_enabled,
+            self.int_level,
+            self.ilpr,
+            self.ibrd,
+            self.fbrd,
+            self.ifl,
+            self.read_count,
+            self.read_trigger,
+        ] = state.registers;
+        self.read_fifo = state.read_fifo.clone();
+        Ok(())
+    }
+
+    fn require_empty_interrupt_event(&self) -> std::result::Result<(), String> {
+        match self.interrupt_evt.read() {
+            Ok(count) => {
+                self.interrupt_evt.write(count).map_err(|e| e.to_string())?;
+                Err("PL011 interrupt event pending; controller must drain it first".into())
+            }
+            Err(e) if e.kind() == io::ErrorKind::WouldBlock => Ok(()),
+            Err(e) => Err(e.to_string()),
         }
     }
 
@@ -269,6 +372,7 @@ impl Serial {
                 /* Reset the FIFO state on FIFO enable or disable */
                 if ((self.lcr ^ val) & 0x10) != 0 {
                     self.read_count = 0;
+                    self.read_fifo.clear();
                 }
                 self.lcr = val;
                 self.pl011_set_read_trigger();
@@ -391,6 +495,9 @@ impl BusDevice for Serial {
 impl Subscriber for Serial {
     /// Handle a read event (EPOLLIN) on the serial input fd.
     fn process(&mut self, event: &EpollEvent, _: &mut EventManager) {
+        if self.frozen {
+            return;
+        }
         let source = event.fd();
         let event_set = event.event_set();
 

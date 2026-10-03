@@ -82,6 +82,8 @@ pub struct DeviceSnapshot {
 #[serde(tag = "kind", content = "state", deny_unknown_fields)]
 pub enum DeviceSnapshotState {
     Rng,
+    Console(super::console::ConsoleSnapshot),
+    Vsock(super::vsock::VsockSnapshot),
     Balloon([u32; 4]),
     #[cfg(all(target_os = "macos", not(any(feature = "tee", feature = "aws-nitro"))))]
     Fs {

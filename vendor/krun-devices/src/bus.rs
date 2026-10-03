@@ -110,6 +110,14 @@ impl Bus {
         None
     }
 
+    /// Every mapped range, including legacy devices absent from a manager's
+    /// logical-ID index. Snapshot coordinators must inspect the complete bus.
+    pub fn mapped_devices(&self) -> impl Iterator<Item = (u64, u64, &Mutex<dyn BusDevice>)> {
+        self.devices
+            .iter()
+            .map(|(range, dev)| (range.0, range.1, dev.as_ref()))
+    }
+
     /// Puts the given device at the given address space.
     pub fn insert(&mut self, device: Arc<Mutex<dyn BusDevice>>, base: u64, len: u64) -> Result<()> {
         if len == 0 {

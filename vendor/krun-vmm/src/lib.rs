@@ -17,6 +17,8 @@ extern crate log;
 pub mod builder;
 pub(crate) mod device_manager;
 pub mod ram;
+#[cfg(all(target_os = "macos", target_arch = "aarch64"))]
+pub mod snapshot;
 /// Resource store for configured microVM resources.
 pub mod resources;
 /// Signal handling utilities.
@@ -214,6 +216,10 @@ pub struct Vmm {
     exit_code: Arc<AtomicI32>,
     paused: bool,
     control_failed: bool,
+    #[cfg(all(target_os = "macos", target_arch = "aarch64"))]
+    snapshot_freeze_requested: bool,
+    #[cfg(all(target_os = "macos", target_arch = "aarch64"))]
+    snapshot_devices_frozen: bool,
     device_memory_gate: Arc<devices::virtio::memory_gate::MemoryGate>,
     #[cfg(target_os = "macos")]
     ram_unmapped: bool,
@@ -227,6 +233,43 @@ pub struct Vmm {
 }
 
 impl Vmm {
+    /// Poll with the VMM lock released between calls and a caller-owned global
+    /// deadline. CPU acknowledgement precedes worker shutdown; RAM gate closes
+    /// only after every worker has returned ownership of its guest queues.
+    #[cfg(all(target_os = "macos", target_arch = "aarch64"))]
+    pub fn freeze_for_snapshot(&mut self) -> std::result::Result<bool, String> {
+        if self.control_failed || self.ram_unmapped || self.device_memory_gate.has_prepare() {
+            return Err("snapshot requires healthy mapped VM".into());
+        }
+        if self.snapshot_devices_frozen {
+            return Ok(true);
+        }
+        if !self.snapshot_freeze_requested {
+            if self.device_memory_gate.is_idle_closed() {
+                return Err("freeze devices before closing RAM gate".into());
+            }
+            self.pause().map_err(|e| format!("pause for snapshot: {e:?}"))?;
+            self.snapshot_freeze_requested = true;
+        }
+        if !self.mmio_device_manager.bus.freeze_snapshot_devices()? {
+            return Ok(false);
+        }
+        if !self.device_memory_gate.try_close()? {
+            return Ok(false);
+        }
+        self.snapshot_devices_frozen = true;
+        Ok(true)
+    }
+
+    #[cfg(all(target_os = "macos", target_arch = "aarch64"))]
+    pub fn capture_device_states(&self) -> std::result::Result<Vec<devices::snapshot::BusMappingSnapshot>, String> {
+        self.require_ram_quiesced()?;
+        if !self.snapshot_devices_frozen {
+            return Err("device capture requires complete snapshot freeze".into());
+        }
+        self.mmio_device_manager.bus.capture_snapshot_devices()
+    }
+
     /// Retain real RAM ranges only while CPUs and device users are quiescent.
     #[cfg(target_os = "macos")]
     pub fn experimental_ram_blocks(&self, chunk: usize) -> std::result::Result<Vec<ram::RamBlock>, String> {
@@ -302,6 +345,17 @@ impl Vmm {
             self.control_failed = false;
         }
         self.device_memory_gate.open();
+        #[cfg(all(target_os = "macos", target_arch = "aarch64"))]
+        if self.snapshot_freeze_requested {
+            // A failed thaw is a partial transition. Keep CPU parked and
+            // poison control rather than running it against missing workers.
+            if let Err(error) = self.mmio_device_manager.bus.thaw_snapshot_devices() {
+                self.control_failed = true;
+                return Err(Error::VcpuControl(format!("snapshot thaw failed: {error}")));
+            }
+            self.snapshot_devices_frozen = false;
+            self.snapshot_freeze_requested = false;
+        }
         self.set_paused(false)
     }
 
@@ -454,6 +508,18 @@ impl Vmm {
         }
 
         // The vcpus start off in the `Paused` state, let them run.
+        #[cfg(all(target_os = "macos", target_arch = "aarch64"))]
+        if self.snapshot_devices_frozen {
+            let deadline = Instant::now() + Duration::from_secs(3);
+            for handle in &self.vcpus_handles {
+                match handle.response_receiver().recv_timeout(deadline.saturating_duration_since(Instant::now())) {
+                    Ok(VcpuResponse::Paused) => (),
+                    response => return Err(Error::VcpuControl(format!("restored CPU not parked: {response:?}"))),
+                }
+            }
+            self.paused = true;
+            return Ok(());
+        }
         self.resume_vcpus()?;
 
         Ok(())

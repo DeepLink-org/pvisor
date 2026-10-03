@@ -1,8 +1,10 @@
 use std::collections::HashMap;
 use std::os::unix::io::RawFd;
 use std::path::PathBuf;
+use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::{Arc, Mutex};
-use std::thread;
+use std::thread::{self, JoinHandle};
+use utils::eventfd::EventFd;
 
 use super::super::Queue as VirtQueue;
 use super::muxer::{push_packet, MuxerRx, ProxyMap};
@@ -19,6 +21,9 @@ use utils::epoll::{ControlOperation, Epoll, EpollEvent, EventSet};
 use vm_memory::GuestMemoryMmap;
 
 pub struct MuxerThread {
+    stop: Arc<AtomicBool>,
+    stopfd: Arc<EventFd>,
+    initialized: bool,
     cid: u64,
     pub epoll: Epoll,
     rxq: Arc<Mutex<MuxerRxQ>>,
@@ -33,6 +38,8 @@ pub struct MuxerThread {
 impl MuxerThread {
     #[allow(clippy::too_many_arguments)]
     pub fn new(
+        stop: Arc<AtomicBool>,
+        stopfd: Arc<EventFd>,
         cid: u64,
         epoll: Epoll,
         rxq: Arc<Mutex<MuxerRxQ>>,
@@ -44,6 +51,9 @@ impl MuxerThread {
         unix_ipc_port_map: HashMap<u32, (PathBuf, bool)>,
     ) -> Self {
         MuxerThread {
+            stop,
+            stopfd,
+            initialized: false,
             cid,
             epoll,
             rxq,
@@ -56,11 +66,11 @@ impl MuxerThread {
         }
     }
 
-    pub fn run(self) {
+    pub fn run(self) -> JoinHandle<Self> {
         thread::Builder::new()
             .name("vsock muxer".into())
             .spawn(|| self.work())
-            .unwrap();
+            .unwrap()
     }
 
     fn send_credit_request(&self, credit_rx: MuxerRx) {
@@ -172,17 +182,29 @@ impl MuxerThread {
         }
     }
 
-    fn work(self) {
+    fn work(mut self) -> Self {
         let mut thread_rng = rng();
-        self.create_lisening_ipc_sockets();
+        if !self.initialized {
+            self.create_lisening_ipc_sockets();
+            self.initialized = true;
+        }
         let mut epoll_events = vec![EpollEvent::new(EventSet::empty(), 0); 32];
         loop {
+            if self.stop.load(Ordering::Acquire) {
+                return self;
+            }
             match self
                 .epoll
                 .wait(epoll_events.len(), -1, epoll_events.as_mut_slice())
             {
                 Ok(ev_cnt) => {
                     for ev in &epoll_events[0..ev_cnt] {
+                        if self.stop.load(Ordering::Acquire) {
+                            return self;
+                        }
+                        if ev.data() == u64::MAX && self.stopfd.read().is_ok() {
+                            continue;
+                        }
                         debug!("Event: ev.data={} ev.fd={}", ev.data(), ev.fd());
                         let evset = EventSet::from_bits(ev.events).unwrap();
                         let id = ev.data();

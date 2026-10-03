@@ -14,13 +14,39 @@ use utils::eventfd::EFD_NONBLOCK;
 use vm_memory::bitmap::Bitmap;
 use vm_memory::{VolatileMemoryError, VolatileSlice, WriteVolatile};
 
+/// Runner-owned endpoints are rebound; kernel pipe buffers and remote peers are external state.
+#[derive(Clone, Debug, PartialEq, Eq, serde::Serialize, serde::Deserialize)]
+#[serde(deny_unknown_fields)]
+pub enum PortIoSnapshot {
+    NativeFd,
+    Empty,
+    Signal { pending: u64 },
+    Log { buffer: Vec<u8> },
+}
+
+fn unsupported_snapshot() -> String {
+    "console endpoint does not support snapshots".into()
+}
+
 pub trait PortInput {
+    fn capture_state(&self) -> Result<PortIoSnapshot, String> {
+        Err(unsupported_snapshot())
+    }
+    fn restore_state(&mut self, _state: &PortIoSnapshot) -> Result<(), String> {
+        Err(unsupported_snapshot())
+    }
     fn read_volatile(&mut self, buf: &mut VolatileSlice) -> Result<usize, io::Error>;
 
     fn wait_until_readable(&self, stopfd: Option<&EventFd>);
 }
 
 pub trait PortOutput {
+    fn capture_state(&self) -> Result<PortIoSnapshot, String> {
+        Err(unsupported_snapshot())
+    }
+    fn restore_state(&mut self, _state: &PortIoSnapshot) -> Result<(), String> {
+        Err(unsupported_snapshot())
+    }
     fn write_volatile(&mut self, buf: &VolatileSlice) -> Result<usize, io::Error>;
 
     fn wait_until_writable(&self);
@@ -93,6 +119,16 @@ impl AsRawFd for PortInputFd {
 }
 
 impl PortInput for PortInputFd {
+    fn capture_state(&self) -> Result<PortIoSnapshot, String> {
+        Ok(PortIoSnapshot::NativeFd)
+    }
+    fn restore_state(&mut self, state: &PortIoSnapshot) -> Result<(), String> {
+        if *state == PortIoSnapshot::NativeFd {
+            Ok(())
+        } else {
+            Err("console endpoint type mismatch".into())
+        }
+    }
     fn read_volatile(&mut self, buf: &mut VolatileSlice) -> io::Result<usize> {
         // This source code is copied from vm-memory, except it fixes an issue, where
         // the original code would does not handle handle EWOULDBLOCK
@@ -143,6 +179,16 @@ impl AsRawFd for PortOutputFd {
 }
 
 impl PortOutput for PortOutputFd {
+    fn capture_state(&self) -> Result<PortIoSnapshot, String> {
+        Ok(PortIoSnapshot::NativeFd)
+    }
+    fn restore_state(&mut self, state: &PortIoSnapshot) -> Result<(), String> {
+        if *state == PortIoSnapshot::NativeFd {
+            Ok(())
+        } else {
+            Err("console endpoint type mismatch".into())
+        }
+    }
     fn write_volatile(&mut self, buf: &VolatileSlice) -> Result<usize, io::Error> {
         self.0.write_volatile(buf).map_err(|e| match e {
             VolatileMemoryError::IOError(e) => e,
@@ -203,6 +249,21 @@ impl PortOutputLog {
 }
 
 impl PortOutput for PortOutputLog {
+    fn capture_state(&self) -> Result<PortIoSnapshot, String> {
+        Ok(PortIoSnapshot::Log {
+            buffer: self.buf.clone(),
+        })
+    }
+    fn restore_state(&mut self, state: &PortIoSnapshot) -> Result<(), String> {
+        let PortIoSnapshot::Log { buffer } = state else {
+            return Err("console endpoint type mismatch".into());
+        };
+        if buffer.len() > Self::FORCE_FLUSH_TRESHOLD || buffer.contains(&b'\n') {
+            return Err("invalid console log buffer".into());
+        }
+        self.buf.clone_from(buffer);
+        Ok(())
+    }
     fn write_volatile(&mut self, buf: &VolatileSlice) -> Result<usize, io::Error> {
         self.buf.write_volatile(buf).map_err(io::Error::other)?;
 
@@ -248,6 +309,38 @@ impl Default for PortInputSigInt {
 }
 
 impl PortInput for PortInputSigInt {
+    fn capture_state(&self) -> Result<PortIoSnapshot, String> {
+        let pending = match self.sigint_evt.read() {
+            Ok(pending) => pending,
+            Err(e) if e.kind() == ErrorKind::WouldBlock => 0,
+            Err(e) => return Err(e.to_string()),
+        };
+        if pending != 0 {
+            self.sigint_evt.write(pending).map_err(|e| e.to_string())?;
+        }
+        Ok(PortIoSnapshot::Signal { pending })
+    }
+    fn restore_state(&mut self, state: &PortIoSnapshot) -> Result<(), String> {
+        let PortIoSnapshot::Signal { pending } = state else {
+            return Err("console endpoint type mismatch".into());
+        };
+        if *pending == u64::MAX {
+            return Err("invalid console signal count".into());
+        }
+        // This destination belongs to a fresh runner. Do not silently overwrite an active signal.
+        match self.sigint_evt.read() {
+            Err(e) if e.kind() == ErrorKind::WouldBlock => {}
+            Ok(count) => {
+                self.sigint_evt.write(count).map_err(|e| e.to_string())?;
+                return Err("destination console has pending signal".into());
+            }
+            Err(e) => return Err(e.to_string()),
+        }
+        if *pending != 0 {
+            self.sigint_evt.write(*pending).map_err(|e| e.to_string())?;
+        }
+        Ok(())
+    }
     fn read_volatile(&mut self, buf: &mut VolatileSlice) -> Result<usize, io::Error> {
         self.sigint_evt.read()?;
         log::trace!("SIGINT received");
@@ -285,6 +378,16 @@ impl Default for PortInputEmpty {
 }
 
 impl PortInput for PortInputEmpty {
+    fn capture_state(&self) -> Result<PortIoSnapshot, String> {
+        Ok(PortIoSnapshot::Empty)
+    }
+    fn restore_state(&mut self, state: &PortIoSnapshot) -> Result<(), String> {
+        if *state == PortIoSnapshot::Empty {
+            Ok(())
+        } else {
+            Err("console endpoint type mismatch".into())
+        }
+    }
     fn read_volatile(&mut self, _buf: &mut VolatileSlice) -> Result<usize, io::Error> {
         Ok(0)
     }

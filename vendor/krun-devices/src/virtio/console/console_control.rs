@@ -125,6 +125,44 @@ impl ConsoleControl {
         self.push_vec(buf)
     }
 
+    pub fn capture_state(&self) -> Vec<Vec<u8>> {
+        self.queue
+            .lock()
+            .unwrap()
+            .iter()
+            .map(|payload| payload.to_vec())
+            .collect()
+    }
+
+    pub fn restore_state(&self, saved: &[Vec<u8>], ports: usize) -> Result<(), String> {
+        if saved.len() > 65536 {
+            return Err("too many console control messages".into());
+        }
+        for bytes in saved {
+            if bytes.len() < 8 || bytes.len() > 4096 {
+                return Err("invalid console control message length".into());
+            }
+            let id = u32::from_le_bytes(bytes[..4].try_into().unwrap());
+            let event = u16::from_le_bytes(bytes[4..6].try_into().unwrap());
+            let value = u16::from_le_bytes(bytes[6..8].try_into().unwrap());
+            if id as usize >= ports
+                || !matches!(event, 1 | 2 | 4 | 5 | 6 | 7)
+                || (matches!(event, 1 | 2 | 4 | 6) && bytes.len() != 8)
+                || (event == 5 && bytes.len() != 12)
+                || (event == 7 && bytes.len() == 8)
+                || (matches!(event, 4 | 6) && value > 1)
+            {
+                return Err("invalid console control message".into());
+            }
+        }
+        *self.queue.lock().unwrap() = saved.iter().cloned().map(Payload::Bytes).collect();
+        Ok(())
+    }
+
+    pub fn clear(&self) {
+        self.queue.lock().unwrap().clear();
+    }
+
     pub fn queue_pop(&self) -> Option<Payload> {
         let mut queue = self.queue.lock().expect("Poisoned lock");
         queue.pop_front()

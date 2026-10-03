@@ -75,3 +75,5 @@ devices = { version = "=0.1.0-1.19.3", package = "krun-devices" }
 utils = { version = "=0.1.0-1.19.3", package = "krun-utils" }
 vm-memory = { version = "=0.17.1", features = ["backend-mmap"] }
 crossbeam-channel = "0.5.15"
+
+polly = { version = "=0.1.0-1.19.3", package = "krun-polly" }

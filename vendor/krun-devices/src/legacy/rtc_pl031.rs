@@ -54,6 +54,23 @@ impl fmt::Display for Error {
 }
 type Result<T> = result::Result<T, Error>;
 
+/// PL031 state for same-host, same-boot restore. The enclosing machine manifest
+/// must bind the host boot identity before accepting the monotonic anchor.
+#[derive(Clone, Debug, serde::Serialize, serde::Deserialize)]
+#[serde(deny_unknown_fields)]
+pub struct RtcSnapshot {
+    version: u32,
+    counter_ns: u64,
+    host_monotonic_ns: u64,
+    match_value: u32,
+    load: u32,
+    imsc: u32,
+    ris: u32,
+    pending_events: u64,
+}
+
+const COUNTER_PERIOD_NS: u64 = (1u64 << 32) * utils::time::NANOS_PER_SECOND;
+
 /// A RTC device following the PL031 specification..
 pub struct RTC {
     previous_now: Instant,
@@ -68,6 +85,69 @@ pub struct RTC {
 }
 
 impl RTC {
+    /// Caller must stop guest MMIO accesses before capturing device state.
+    pub fn capture_state(&self) -> std::result::Result<RtcSnapshot, String> {
+        let host_monotonic_ns = utils::time::get_time(utils::time::ClockType::Monotonic);
+        let counter_ns = (i128::from(self.tick_offset)
+            + self.previous_now.elapsed().as_nanos() as i128)
+            .rem_euclid(i128::from(COUNTER_PERIOD_NS)) as u64;
+        let pending_events = match self.interrupt_evt.read() {
+            Ok(count) => {
+                self.interrupt_evt.write(count).map_err(|e| e.to_string())?;
+                count
+            }
+            Err(e) if e.kind() == io::ErrorKind::WouldBlock => 0,
+            Err(e) => return Err(e.to_string()),
+        };
+        Ok(RtcSnapshot {
+            version: 1,
+            counter_ns,
+            host_monotonic_ns,
+            match_value: self.match_value,
+            load: self.load,
+            imsc: self.imsc,
+            ris: self.ris,
+            pending_events,
+        })
+    }
+
+    /// Restore into a fresh device. Wall-clock adjustments do not undo a guest
+    /// RTC load; the saved counter advances by elapsed host monotonic time.
+    pub fn restore_state(&mut self, state: &RtcSnapshot) -> std::result::Result<(), String> {
+        let now = utils::time::get_time(utils::time::ClockType::Monotonic);
+        if state.version != 1
+            || state.counter_ns >= COUNTER_PERIOD_NS
+            || state.imsc > 1
+            || state.ris > 1
+            || state.pending_events == u64::MAX
+            || state.host_monotonic_ns > now
+        {
+            return Err("invalid PL031 snapshot".into());
+        }
+        match self.interrupt_evt.read() {
+            Ok(count) => {
+                self.interrupt_evt.write(count).map_err(|e| e.to_string())?;
+                return Err("PL031 restore requires a fresh interrupt event".into());
+            }
+            Err(e) if e.kind() == io::ErrorKind::WouldBlock => {}
+            Err(e) => return Err(e.to_string()),
+        }
+        if state.pending_events != 0 {
+            self.interrupt_evt
+                .write(state.pending_events)
+                .map_err(|e| e.to_string())?;
+        }
+        self.tick_offset = ((u128::from(state.counter_ns)
+            + u128::from(now - state.host_monotonic_ns))
+            % u128::from(COUNTER_PERIOD_NS)) as i64;
+        self.previous_now = Instant::now();
+        self.match_value = state.match_value;
+        self.load = state.load;
+        self.imsc = state.imsc;
+        self.ris = state.ris;
+        Ok(())
+    }
+
     /// Constructs an AMBA PL031 RTC device.
     pub fn new(interrupt_evt: EventFd) -> RTC {
         RTC {

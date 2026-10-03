@@ -18,7 +18,7 @@ use super::*;
 use crate::bus::BusDevice;
 use crate::legacy::IrqChip;
 use utils::{byte_order, eventfd::EventFd};
-use vm_memory::{GuestAddress, GuestMemoryMmap};
+use vm_memory::{Bytes, GuestAddress, GuestMemoryMmap};
 
 //TODO crosvm uses 0 here, but IIRC virtio specified some other vendor id that should be used
 const VENDOR_ID: u32 = 0;
@@ -187,18 +187,33 @@ impl MmioTransport {
     /// Keep polling with the VMM lock released between calls. Close the RAM
     /// gate only after every device has returned true.
     pub fn freeze(&mut self) -> Result<bool, String> {
-        self.device
-            .try_lock()
-            .map_err(|_| "virtio device busy or poisoned")?
-            .freeze()
+        match self.device.try_lock() {
+            Ok(mut device) => device.freeze(),
+            Err(std::sync::TryLockError::WouldBlock) => Ok(false),
+            Err(_) => Err("virtio device poisoned".into()),
+        }
     }
 
     /// Open the RAM gate before waking workers; resume CPUs last.
     pub fn thaw(&mut self) -> Result<(), String> {
-        self.device
-            .try_lock()
-            .map_err(|_| "virtio device busy or poisoned")?
-            .thaw()
+        // Frozen event handlers can briefly hold this lock while consuming
+        // activation notifications. Contention is not a failed restore. RAM
+        // gate is already open and CPUs remain parked throughout this wait.
+        let deadline = std::time::Instant::now() + std::time::Duration::from_secs(3);
+        loop {
+            match self.device.try_lock() {
+                Ok(mut device) => return device.thaw(),
+                Err(std::sync::TryLockError::WouldBlock)
+                    if std::time::Instant::now() < deadline =>
+                {
+                    std::thread::sleep(std::time::Duration::from_millis(1));
+                }
+                Err(std::sync::TryLockError::WouldBlock) => {
+                    return Err("virtio thaw lock timed out".into())
+                }
+                Err(_) => return Err("virtio device poisoned".into()),
+            }
+        }
     }
 
     pub fn capture_state(&self) -> Result<MmioSnapshot, String> {
@@ -280,6 +295,22 @@ impl MmioTransport {
         device.restore_state(&state.device.state)?;
         device.set_acked_features(state.acked_features);
         if active {
+            // Fresh restore owns RAM exclusively. Do not use Queue::len here:
+            // it acquires the deliberately closed memory gate. Read only the
+            // validated avail index to avoid inventing empty queue requests.
+            let pending = queues
+                .iter()
+                .map(|queue| {
+                    if !queue.ready {
+                        return Ok(false);
+                    }
+                    let available: u16 = self
+                        .mem
+                        .read_obj(GuestAddress(queue.avail_ring.0 + 2))
+                        .map_err(|e| e.to_string())?;
+                    Ok(u16::from_le(available) != queue.next_avail.0)
+                })
+                .collect::<Result<Vec<_>, String>>()?;
             let queues = queues
                 .into_iter()
                 .zip(self.queue_evts.iter().cloned())
@@ -290,8 +321,10 @@ impl MmioTransport {
                 .map_err(|error| format!("restored device activation: {error:?}"))?;
             // Host notification counters are not persisted. Wake workers to
             // inspect restored rings, including work submitted just before pause.
-            for event in &self.queue_evts {
-                event.write(1).map_err(|e| e.to_string())?;
+            for (event, pending) in self.queue_evts.iter().zip(pending) {
+                if pending {
+                    event.write(1).map_err(|e| e.to_string())?;
+                }
             }
             self.queues = None;
         } else {

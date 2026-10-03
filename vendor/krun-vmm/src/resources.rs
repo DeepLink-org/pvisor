@@ -128,6 +128,8 @@ pub enum VsockConfig {
 /// held in the Vmm.
 #[derive(Default)]
 pub struct VmResources {
+    #[cfg(all(target_os = "macos", target_arch = "aarch64"))]
+    pub machine_restore: Option<Arc<crate::snapshot::MachineRestore>>,
     /// Live MAP_SHARED RAM backing, supplied by the owning supervisor.
     pub ram_backing: Option<Arc<File>>,
     /// The vCpu and memory configuration for this microVM.
@@ -440,6 +442,8 @@ mod tests {
             nested_enabled: false,
             #[cfg(target_os = "macos")]
             snapshot_profile: false,
+            #[cfg(all(target_os = "macos", target_arch = "aarch64"))]
+            machine_restore: None,
             split_irqchip: false,
             disable_implicit_console: false,
             serial_consoles: Vec::new(),

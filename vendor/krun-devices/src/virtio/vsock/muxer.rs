@@ -1,7 +1,11 @@
 use std::collections::HashMap;
+use std::os::fd::AsRawFd;
 use std::os::unix::io::RawFd;
 use std::path::PathBuf;
+use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::{Arc, Mutex, RwLock};
+use std::thread::JoinHandle;
+use utils::eventfd::{EventFd, EFD_NONBLOCK};
 
 use super::super::Queue as VirtQueue;
 use super::defs;
@@ -96,7 +100,28 @@ pub fn push_packet(
     }
 }
 
+/// External sockets are deliberately excluded. Active proxies reject capture.
+#[derive(Clone, Debug, serde::Serialize, serde::Deserialize)]
+#[serde(deny_unknown_fields)]
+pub struct VsockSnapshot {
+    cid: u64,
+    host_port_map: Option<HashMap<u16, u16>>,
+    unix_ipc_port_map: Option<HashMap<u32, (PathBuf, bool)>>,
+    tsi_flags: u32,
+}
+
 pub struct VsockMuxer {
+    worker_fault: Option<&'static str>,
+    stop: Arc<AtomicBool>,
+    stopfd: Arc<EventFd>,
+    worker: Option<JoinHandle<MuxerThread>>,
+    parked_worker: Option<MuxerThread>,
+    reaper: Option<JoinHandle<ReaperThread>>,
+    parked_reaper: Option<ReaperThread>,
+    #[cfg(target_os = "macos")]
+    timesync: Option<JoinHandle<TimesyncThread>>,
+    #[cfg(target_os = "macos")]
+    parked_timesync: Option<TimesyncThread>,
     cid: u64,
     host_port_map: Option<HashMap<u16, u16>>,
     queue: Option<Arc<Mutex<VirtQueue>>>,
@@ -117,13 +142,33 @@ impl VsockMuxer {
         unix_ipc_port_map: Option<HashMap<u32, (PathBuf, bool)>>,
         tsi_flags: TsiFlags,
     ) -> Self {
+        let stopfd = Arc::new(EventFd::new(EFD_NONBLOCK).unwrap());
+        let epoll = Epoll::new().unwrap();
+        epoll
+            .ctl(
+                ControlOperation::Add,
+                stopfd.as_raw_fd(),
+                &EpollEvent::new(EventSet::IN, u64::MAX),
+            )
+            .unwrap();
         VsockMuxer {
+            worker_fault: None,
+            stop: Arc::new(AtomicBool::new(false)),
+            stopfd,
+            worker: None,
+            parked_worker: None,
+            reaper: None,
+            parked_reaper: None,
+            #[cfg(target_os = "macos")]
+            timesync: None,
+            #[cfg(target_os = "macos")]
+            parked_timesync: None,
             cid,
             host_port_map,
             queue: None,
             mem: None,
             rxq: Arc::new(Mutex::new(MuxerRxQ::new())),
-            epoll: Epoll::new().unwrap(),
+            epoll,
             interrupt: None,
             proxy_map: Arc::new(RwLock::new(HashMap::new())),
             reaper_sender: None,
@@ -137,6 +182,7 @@ impl VsockMuxer {
         mem: GuestMemoryMmap,
         queue: Arc<Mutex<VirtQueue>>,
         interrupt: InterruptTransport,
+        frozen: bool,
     ) {
         self.queue = Some(queue.clone());
         self.mem = Some(mem.clone());
@@ -144,14 +190,21 @@ impl VsockMuxer {
 
         #[cfg(target_os = "macos")]
         {
-            let timesync =
-                TimesyncThread::new(self.cid, mem.clone(), queue.clone(), interrupt.clone());
-            timesync.run();
+            let timesync = TimesyncThread::new(
+                self.stop.clone(),
+                self.cid,
+                mem.clone(),
+                queue.clone(),
+                interrupt.clone(),
+            );
+            self.parked_timesync = Some(timesync);
         }
 
         let (sender, receiver) = unbounded();
 
         let thread = MuxerThread::new(
+            self.stop.clone(),
+            self.stopfd.clone(),
             self.cid,
             self.epoll.clone(),
             self.rxq.clone(),
@@ -162,11 +215,138 @@ impl VsockMuxer {
             sender.clone(),
             self.unix_ipc_port_map.clone().unwrap_or_default(),
         );
-        thread.run();
-
+        self.parked_worker = Some(thread);
         self.reaper_sender = Some(sender);
-        let reaper = ReaperThread::new(receiver, self.proxy_map.clone());
-        reaper.run();
+        self.parked_reaper = Some(ReaperThread::new(
+            receiver,
+            self.proxy_map.clone(),
+            self.stop.clone(),
+        ));
+        if frozen {
+            self.stop.store(true, Ordering::Release);
+        } else {
+            self.thaw().expect("fresh vsock workers");
+        }
+    }
+
+    fn request_stop(&self) -> Result<(), String> {
+        self.stop.store(true, Ordering::Release);
+        self.stopfd.write(1).map_err(|e| e.to_string())?;
+        #[cfg(target_os = "macos")]
+        if let Some(thread) = &self.timesync {
+            thread.thread().unpark();
+        }
+        Ok(())
+    }
+
+    pub fn freeze(&mut self) -> Result<bool, String> {
+        if let Some(fault) = self.worker_fault {
+            return Err(fault.into());
+        }
+        if !self.stop.load(Ordering::Acquire) {
+            self.request_stop()?;
+        }
+        if self.worker.as_ref().is_some_and(|w| w.is_finished()) {
+            self.parked_worker = match self.worker.take().unwrap().join() {
+                Ok(worker) => Some(worker),
+                Err(_) => {
+                    self.worker_fault = Some("vsock muxer panicked");
+                    return Err("vsock muxer panicked".into());
+                }
+            };
+        }
+        if self.reaper.as_ref().is_some_and(|w| w.is_finished()) {
+            self.parked_reaper = match self.reaper.take().unwrap().join() {
+                Ok(worker) => Some(worker),
+                Err(_) => {
+                    self.worker_fault = Some("vsock reaper panicked");
+                    return Err("vsock reaper panicked".into());
+                }
+            };
+        }
+        #[cfg(target_os = "macos")]
+        if self.timesync.as_ref().is_some_and(|w| w.is_finished()) {
+            self.parked_timesync = match self.timesync.take().unwrap().join() {
+                Ok(worker) => Some(worker),
+                Err(_) => {
+                    self.worker_fault = Some("vsock timesync panicked");
+                    return Err("vsock timesync panicked".into());
+                }
+            };
+        }
+        Ok(self.workers_stopped())
+    }
+
+    fn workers_stopped(&self) -> bool {
+        let stopped = self.worker.is_none() && self.reaper.is_none();
+        #[cfg(target_os = "macos")]
+        let stopped = stopped && self.timesync.is_none();
+        stopped
+    }
+
+    pub fn thaw(&mut self) -> Result<(), String> {
+        if let Some(fault) = self.worker_fault {
+            return Err(fault.into());
+        }
+        if !self.workers_stopped() {
+            return Err("vsock freeze still pending".into());
+        }
+        let _ = self.stopfd.read();
+        self.stop.store(false, Ordering::Release);
+        if let Some(worker) = self.parked_worker.take() {
+            self.worker = Some(worker.run());
+        }
+        if let Some(reaper) = self.parked_reaper.take() {
+            self.reaper = Some(reaper.run());
+        }
+        #[cfg(target_os = "macos")]
+        if let Some(timesync) = self.parked_timesync.take() {
+            self.timesync = Some(timesync.run());
+        }
+        Ok(())
+    }
+
+    pub fn capture_state(&self) -> Result<VsockSnapshot, String> {
+        if let Some(fault) = self.worker_fault {
+            return Err(fault.into());
+        }
+        if self.mem.is_some() && (!self.stop.load(Ordering::Acquire) || !self.workers_stopped()) {
+            return Err("vsock workers must be frozen".into());
+        }
+        if !self
+            .proxy_map
+            .try_read()
+            .map_err(|_| "vsock proxies busy")?
+            .is_empty()
+            || !self
+                .rxq
+                .try_lock()
+                .map_err(|_| "vsock responses busy")?
+                .is_empty()
+            || self.parked_reaper.as_ref().is_some_and(|r| !r.is_idle())
+        {
+            return Err(
+                "vsock snapshot requires no connections, listeners or pending responses".into(),
+            );
+        }
+        Ok(VsockSnapshot {
+            cid: self.cid,
+            host_port_map: self.host_port_map.clone(),
+            unix_ipc_port_map: self.unix_ipc_port_map.clone(),
+            tsi_flags: self.tsi_flags.bits(),
+        })
+    }
+
+    pub fn validate_state(&self, saved: &VsockSnapshot) -> Result<(), String> {
+        if self.mem.is_some()
+            || self.cid != saved.cid
+            || self.host_port_map != saved.host_port_map
+            || self.unix_ipc_port_map != saved.unix_ipc_port_map
+            || self.tsi_flags.bits() != saved.tsi_flags
+        {
+            return Err("vsock configuration or lifecycle mismatch".into());
+        }
+        Ok(())
     }
 
     pub(crate) fn has_pending_rx(&self) -> bool {
@@ -712,5 +892,21 @@ impl VsockMuxer {
             _ => warn!("stream: unhandled op={}", pkt.op()),
         }
         Ok(())
+    }
+}
+
+impl Drop for VsockMuxer {
+    fn drop(&mut self) {
+        let _ = self.request_stop();
+        if let Some(worker) = self.worker.take() {
+            let _ = worker.join();
+        }
+        if let Some(reaper) = self.reaper.take() {
+            let _ = reaper.join();
+        }
+        #[cfg(target_os = "macos")]
+        if let Some(timesync) = self.timesync.take() {
+            let _ = timesync.join();
+        }
     }
 }

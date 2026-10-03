@@ -90,6 +90,21 @@ fn transport(mem: GuestMemoryMmap) -> MmioTransport {
 }
 
 #[test]
+fn mmio_freeze_retries_busy_backend_without_poisoning_transition() {
+    let mem = GuestMemoryMmap::from_ranges(&[(GuestAddress(0x1000), 0x5000)]).unwrap();
+    let chip = Arc::new(Mutex::new(IrqChipDevice::new(Box::new(GicV3::new(
+        Arc::new(VcpuList::new(1)),
+    )))));
+    let backend = Arc::new(Mutex::new(Rng::new().unwrap()));
+    let mut transport = MmioTransport::new(mem, chip, backend.clone()).unwrap();
+    let busy = backend.lock().unwrap();
+    assert!(!transport.freeze().unwrap());
+    drop(busy);
+    assert!(transport.freeze().unwrap());
+    transport.thaw().unwrap();
+}
+
+#[test]
 fn mmio_restores_activated_queue_and_rejects_features_before_mutation() {
     let mem = GuestMemoryMmap::from_ranges(&[(GuestAddress(0x1000), 0x5000)]).unwrap();
     let mut source = transport(mem.clone());

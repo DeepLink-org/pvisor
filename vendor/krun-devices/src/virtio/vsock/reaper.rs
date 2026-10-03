@@ -1,6 +1,7 @@
 use std::collections::HashMap;
+use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::{Arc, Mutex, RwLock};
-use std::thread;
+use std::thread::{self, JoinHandle};
 use std::time::{Duration, Instant};
 
 use super::proxy::Proxy;
@@ -10,14 +11,16 @@ pub type ProxyMap = Arc<RwLock<HashMap<u64, Mutex<Box<dyn Proxy>>>>>;
 const TIMEOUT: Duration = Duration::new(5, 0);
 
 pub struct ReaperThread {
+    stop: Arc<AtomicBool>,
     receiver: Receiver<u64>,
     proxy_map: ProxyMap,
     released_map: HashMap<u64, Instant>,
 }
 
 impl ReaperThread {
-    pub fn new(receiver: Receiver<u64>, proxy_map: ProxyMap) -> Self {
+    pub fn new(receiver: Receiver<u64>, proxy_map: ProxyMap, stop: Arc<AtomicBool>) -> Self {
         Self {
+            stop,
             receiver,
             proxy_map,
             released_map: HashMap::new(),
@@ -56,19 +59,26 @@ impl ReaperThread {
         timeout
     }
 
-    fn work(&mut self) {
+    fn work(mut self) -> Self {
         loop {
-            let timeout = self.check_expiration();
+            if self.stop.load(Ordering::Acquire) {
+                return self;
+            }
+            let timeout = self.check_expiration().min(Duration::from_millis(100));
             if let Ok(id) = self.receiver.recv_timeout(timeout) {
                 self.released_map.insert(id, Instant::now());
             }
         }
     }
 
-    pub fn run(mut self) {
+    pub fn is_idle(&self) -> bool {
+        self.released_map.is_empty() && self.receiver.is_empty()
+    }
+
+    pub fn run(self) -> JoinHandle<Self> {
         thread::Builder::new()
             .name("vsock reaper".into())
             .spawn(move || self.work())
-            .unwrap();
+            .unwrap()
     }
 }
