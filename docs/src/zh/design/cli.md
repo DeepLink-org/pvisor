@@ -36,7 +36,8 @@ Evidence 会分维度记录。
 完成后的 Job 仍然是一个记录，staged effect 必须显式接受或丢弃：
 
 ```bash
-pvisor status --review last
+pvisor review last
+# 兼容入口：pvisor status --review last
 pvisor inspect last -- git status --short
 pvisor apply last --path src
 pvisor apply last --include 'tests/**' --exclude 'tests/generated/**'
@@ -44,8 +45,8 @@ pvisor apply last --all
 # 或：pvisor drop last
 ```
 
-`status --review` 解释 Run Bundle 与 staged change；`inspect` 在 Job 视图中执行只读命令；`apply`
-提交选定路径并保留其余内容；`drop` 丢弃 stage。两者都不会修改正在运行的 Job。重置会
+`review` 和 `status --review` 解释历史 Run Bundle 的执行证据，并重新读取选定工作区的 staged change；`inspect` 在 Job 视图中执行只读命令；`apply`
+提交选定路径并保留其余内容；`drop` 丢弃剩余文件变更，保留 Job 和 checkpoint。两者要求显式 Job 和已确认的停止终态。重置会
 创建新的 stage generation，避免旧 metadata 覆盖新的决定。
 
 ## Checkpoint 与 Fork
@@ -53,7 +54,9 @@ pvisor apply last --all
 `fork` 默认先为已停止 Job 的文件系统创建逻辑检查点，再启动子 Job（检查点范围见[执行模型](../design/execution-model.md)）：
 
 ```bash
-pvisor fork last -- codex
+pvisor checkpoint create last --request-id before-refactor --json
+pvisor checkpoint list last --json
+pvisor fork last --state workspace --stage ./stage/branch -- codex
 ```
 
 嵌入式调用方可使用协作式 AgentCtl 协议，让参与的 session
@@ -70,8 +73,8 @@ pvisor fork last -- codex
 
 ## 核心命令与伴随工具
 
-`pvisor` 内置 `run`、`status`、`kill`、`inspect`、`fork`、`apply`、`drop`，
-另提供帮助与 `extensions` 列表。单独安装核心即可管理完整 Job 生命周期。
+`pvisor` 内置 `run`、`status`、`review`、`checkpoint`、`kill`、`inspect`、`fork`、`apply`、`drop`，
+另提供帮助与 `extensions` 列表。单独安装核心即可管理普通运行和文件接受。`suspend/resume` 已提供能力检查入口，普通 Job 的完整执行检查点当前尚未接通。
 
 `pvisor-tui` 属于 `pvisor-tui`，`pvisor-replay` 属于 `pvisor-replay`；
 它们依赖核心，核心不依赖它们。`pvisor-cache` 前端仍在核心包中，因为 OCI 与懒加载缓存
@@ -89,3 +92,6 @@ pvisor fork last -- codex
 嵌入调用方通过 `RunHandle` 查询状态、请求取消、创建 checkpoint 和订阅 Event。
 Attempt 生命周期由 Session 管理；AgentCtl 保留工作负载协作职责。
 具体执行与终态处理见[核心架构](architecture.md)，记录与失败语义见 [Operation 与 Event](operations-events.md)。
+
+
+完整 VM 快照接入 Job 的目标接口见[Job 检查点与分叉 CLI 设计稿](job-checkpoint-cli.md)。工作区命令已接入，完整执行保存/恢复仍在实现中；已交付范围和限制见设计的第 10 节。当前独立 `pvisor snapshot` 入口的使用边界见[完整环境快照 CLI](environment-snapshot.md)，不能与普通 Job 命令混用。

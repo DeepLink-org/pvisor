@@ -4,11 +4,14 @@ use crate::runtime::{OverlayState, RunRecord, restore_overlay_upper, snapshot_ov
 use crate::unix_now_ms;
 use crate::util::{create_dir_all_durable, sync_directory, write_private_json};
 use serde::{Deserialize, Serialize};
+use sha2::{Digest, Sha256};
 use std::fs;
 use std::os::unix::fs::DirBuilderExt;
+use std::os::unix::fs::MetadataExt;
 use std::path::{Path, PathBuf};
 
 pub const CHECKPOINTS_DIR: &str = "checkpoints";
+pub(crate) const SOURCE_CHECKPOINT_PIN: &str = "source-checkpoint.json";
 const CHECKPOINT_FILENAME: &str = "checkpoint.json";
 const CHECKPOINT_SCHEMA_VERSION: u32 = 2;
 
@@ -24,6 +27,12 @@ pub enum CheckpointConsistency {
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct LogicalCheckpoint {
     pub schema_version: u32,
+    #[serde(default)]
+    pub kind: WorkspaceCheckpointKind,
+    #[serde(default)]
+    pub source_attempt_id: Option<String>,
+    #[serde(default)]
+    pub workspace_generation: u64,
     pub checkpoint_id: String,
     pub run_id: String,
     pub created_at_unix_ms: u64,
@@ -38,6 +47,14 @@ pub struct LogicalCheckpoint {
     pub protect_target: bool,
     #[serde(default)]
     pub access_policy: pvisor_core::overlay::FileAccessPolicy,
+}
+
+/// Missing kind in schema-2 legacy manifests means workspace, never execution.
+#[derive(Debug, Clone, Copy, Default, Serialize, Deserialize, PartialEq, Eq)]
+#[serde(rename_all = "snake_case")]
+pub enum WorkspaceCheckpointKind {
+    #[default]
+    Workspace,
 }
 
 impl LogicalCheckpoint {
@@ -73,7 +90,73 @@ pub fn create_logical_checkpoint(
         validate_checkpoint_id(id)?;
     }
     let (current, _lease) = record.lock_current()?;
-    create_checkpoint(&current, requested_id, CheckpointConsistency::Stopped)
+    create_stopped_checkpoint_locked(&current, requested_id)
+}
+
+#[derive(Serialize, Deserialize)]
+struct WorkspaceRequest {
+    schema_version: u32,
+    job_id: String,
+    checkpoint_id: String,
+}
+
+pub(crate) fn create_workspace_request(
+    selected: &RunRecord,
+    request_id: Option<&str>,
+) -> anyhow::Result<(LogicalCheckpoint, bool)> {
+    let (record, _lease) = selected.lock_current()?;
+    record.require_stopped()?;
+    let Some(key) = request_id else {
+        return Ok((create_stopped_checkpoint_locked(&record, None)?, false));
+    };
+    anyhow::ensure!(
+        !key.trim().is_empty() && key.len() <= 256,
+        "request id must contain 1..256 bytes"
+    );
+    let id = format!(
+        "request-{}",
+        crate::util::encode_hex(&Sha256::digest(key.as_bytes()))
+    );
+    let requests = record.stage_dir().join(CHECKPOINTS_DIR).join(".requests");
+    let receipt = requests.join(format!("{id}.json"));
+    if receipt.try_exists()? {
+        let prior: WorkspaceRequest = serde_json::from_slice(&fs::read(&receipt)?)?;
+        anyhow::ensure!(
+            prior.schema_version == 1 && prior.job_id == record.run_id && prior.checkpoint_id == id,
+            "workspace request receipt identity mismatch"
+        );
+        let cp = resolve_checkpoint(&record, &id).map_err(|e| anyhow::anyhow!(
+            "request already committed; its checkpoint is no longer available; use a new request id: {e}"))?;
+        return Ok((cp, true));
+    }
+    // Recover publication followed by a crash before the request receipt.
+    let prior = list_checkpoints(&record)?
+        .into_iter()
+        .find(|cp| cp.checkpoint_id == id);
+    let reused = prior.is_some();
+    let checkpoint = match prior {
+        Some(cp) => cp,
+        None => create_stopped_checkpoint_locked(&record, Some(&id))?,
+    };
+    create_dir_all_durable(&requests)?;
+    write_private_json(
+        &receipt,
+        &WorkspaceRequest {
+            schema_version: 1,
+            job_id: record.run_id,
+            checkpoint_id: id,
+        },
+    )?;
+    Ok((checkpoint, reused))
+}
+
+/// Caller retains the Job lease through publication and any branch pin/copy.
+pub(crate) fn create_stopped_checkpoint_locked(
+    record: &RunRecord,
+    requested_id: Option<&str>,
+) -> anyhow::Result<LogicalCheckpoint> {
+    record.require_stopped()?;
+    create_checkpoint(record, requested_id, CheckpointConsistency::Stopped)
 }
 
 pub(crate) fn create_agent_quiesced_checkpoint(
@@ -118,20 +201,25 @@ fn create_checkpoint(
         .join(&checkpoint_id);
     let parent = root.parent().expect("checkpoint has a parent");
     create_dir_all_durable(parent)?;
-    fs::DirBuilder::new().mode(0o700).create(&root)?;
+    anyhow::ensure!(!root.exists(), "checkpoint {checkpoint_id} already exists");
+    let pending = parent.join(format!(".pending-{}", uuid::Uuid::new_v4().simple()));
+    fs::DirBuilder::new().mode(0o700).create(&pending)?;
     let result = (|| -> anyhow::Result<LogicalCheckpoint> {
         sync_directory(parent)?;
         let upper_snapshot = root.join("upper");
-        snapshot_overlay_upper(overlay, &upper_snapshot)?;
+        snapshot_overlay_upper(overlay, &pending.join("upper"))?;
         let preimages_snapshot = root.join("preimages");
         let journal = record.stage_dir().join("preimages");
         if journal.is_dir() {
-            restore_overlay_upper(&journal, &preimages_snapshot)?;
+            restore_overlay_upper(&journal, &pending.join("preimages"))?;
         } else {
-            create_dir_all_durable(&preimages_snapshot)?;
+            create_dir_all_durable(&pending.join("preimages"))?;
         }
         let checkpoint = LogicalCheckpoint {
             schema_version: CHECKPOINT_SCHEMA_VERSION,
+            kind: WorkspaceCheckpointKind::Workspace,
+            source_attempt_id: record.attempt_id.clone(),
+            workspace_generation: overlay.generation,
             checkpoint_id,
             run_id: record.run_id.clone(),
             created_at_unix_ms: unix_now_ms(),
@@ -148,27 +236,212 @@ fn create_checkpoint(
             protect_target: overlay.protect_target,
             access_policy: overlay.access_policy.clone(),
         };
-        write_private_json(&root.join(CHECKPOINT_FILENAME), &checkpoint)?;
+        write_private_json(&pending.join(CHECKPOINT_FILENAME), &checkpoint)?;
+        fs::rename(&pending, &root)?;
+        sync_directory(parent)?;
         Ok(checkpoint)
     })();
     if result.is_err() {
-        let _ = fs::remove_dir_all(&root);
+        let _ = fs::remove_dir_all(&pending);
     }
     result
 }
 
-pub fn latest_logical_checkpoint(record: &RunRecord) -> anyhow::Result<LogicalCheckpoint> {
+/// Committed workspace checkpoints only. Corrupt committed records are errors,
+/// whereas unpublished transaction directories are never exposed as savepoints.
+pub(crate) fn list_checkpoints(record: &RunRecord) -> anyhow::Result<Vec<LogicalCheckpoint>> {
     let root = record.stage_dir().join(CHECKPOINTS_DIR);
-    let checkpoints = if root.is_dir() {
-        fs::read_dir(root)?
-            .filter_map(Result::ok)
-            .filter_map(|entry| LogicalCheckpoint::read(&entry.path()).ok())
-            .filter(|checkpoint| checkpoint.run_id == record.run_id)
-            .max_by_key(|checkpoint| checkpoint.created_at_unix_ms)
-    } else {
-        None
-    };
-    checkpoints.ok_or_else(|| anyhow::anyhow!("Run {} has no logical checkpoints", record.run_id))
+    if !root.exists() {
+        return Ok(Vec::new());
+    }
+    let mut checkpoints = Vec::new();
+    for entry in fs::read_dir(root)? {
+        let entry = entry?;
+        if entry.file_name().to_string_lossy().starts_with('.') {
+            continue;
+        }
+        anyhow::ensure!(
+            entry.file_type()?.is_dir(),
+            "invalid checkpoint entry {}",
+            entry.path().display()
+        );
+        let checkpoint = LogicalCheckpoint::read(&entry.path())?;
+        validate_owned_checkpoint(record, &checkpoint, &entry.path())?;
+        checkpoints.push(checkpoint);
+    }
+    checkpoints.sort_by(|a, b| {
+        a.created_at_unix_ms
+            .cmp(&b.created_at_unix_ms)
+            .then(a.checkpoint_id.cmp(&b.checkpoint_id))
+    });
+    Ok(checkpoints)
+}
+
+fn validate_owned_checkpoint(
+    record: &RunRecord,
+    checkpoint: &LogicalCheckpoint,
+    root: &Path,
+) -> anyhow::Result<()> {
+    validate_checkpoint_id(&checkpoint.checkpoint_id)?;
+    anyhow::ensure!(
+        checkpoint.run_id == record.run_id
+            && root.file_name().and_then(|s| s.to_str()) == Some(&checkpoint.checkpoint_id),
+        "checkpoint identity or Job ownership mismatch"
+    );
+    let root = root.canonicalize()?;
+    anyhow::ensure!(
+        checkpoint.upper_snapshot.is_dir()
+            && checkpoint.preimages_snapshot.is_dir()
+            && checkpoint
+                .upper_snapshot
+                .file_name()
+                .and_then(|s| s.to_str())
+                == Some("upper")
+            && checkpoint
+                .preimages_snapshot
+                .file_name()
+                .and_then(|s| s.to_str())
+                == Some("preimages")
+            && checkpoint
+                .upper_snapshot
+                .parent()
+                .expect("upper parent")
+                .canonicalize()?
+                == root
+            && checkpoint
+                .preimages_snapshot
+                .parent()
+                .expect("preimages parent")
+                .canonicalize()?
+                == root
+            && checkpoint.upper_snapshot.canonicalize()? == root.join("upper")
+            && checkpoint.preimages_snapshot.canonicalize()? == root.join("preimages"),
+        "checkpoint files are not contained in their published directory"
+    );
+    Ok(())
+}
+
+pub(crate) fn resolve_checkpoint(
+    record: &RunRecord,
+    id: &str,
+) -> anyhow::Result<LogicalCheckpoint> {
+    validate_checkpoint_id(id)?;
+    let checkpoints = list_checkpoints(record)?;
+    if let Some(exact) = checkpoints.iter().find(|cp| cp.checkpoint_id == id) {
+        return Ok(exact.clone());
+    }
+    let mut candidates = checkpoints.into_iter().filter(|cp| {
+        cp.checkpoint_id.starts_with(id)
+            || cp
+                .checkpoint_id
+                .strip_prefix("checkpoint-")
+                .is_some_and(|suffix| suffix.starts_with(id))
+    });
+    let checkpoint = candidates
+        .next()
+        .ok_or_else(|| anyhow::anyhow!("Job {} has no checkpoint matching {id}", record.run_id))?;
+    anyhow::ensure!(
+        candidates.next().is_none(),
+        "ambiguous checkpoint prefix {id}"
+    );
+    Ok(checkpoint)
+}
+
+/// A hard link is a durable branch retention reference, including when the
+/// child fails before its runner starts. Job lease serializes pin vs delete.
+pub(crate) fn pin_checkpoint(
+    checkpoint: &LogicalCheckpoint,
+    child_stage: &Path,
+) -> anyhow::Result<()> {
+    fs::hard_link(checkpoint.manifest_path(), child_stage.join(SOURCE_CHECKPOINT_PIN))
+        .map_err(|e| anyhow::anyhow!("retain source checkpoint: {e}; workspace branches currently require a stage on the same filesystem"))?;
+    sync_directory(child_stage)?;
+    Ok(())
+}
+
+pub(crate) fn checkpoint_branch_refs(checkpoint: &LogicalCheckpoint) -> anyhow::Result<u64> {
+    Ok(fs::metadata(checkpoint.manifest_path())?
+        .nlink()
+        .saturating_sub(1))
+}
+
+/// In-memory read-only projection, never a replacement Job/Attempt record.
+pub(crate) fn workspace_view(
+    record: &RunRecord,
+    checkpoint: &LogicalCheckpoint,
+) -> anyhow::Result<RunRecord> {
+    let mut view = record.clone();
+    let overlay = view
+        .overlay
+        .as_mut()
+        .ok_or_else(|| anyhow::anyhow!("Job has no staged filesystem"))?;
+    overlay.upper.upper_dir = checkpoint.upper_snapshot.clone();
+    overlay.target = checkpoint.target.clone();
+    overlay.access_policy = checkpoint.access_policy.clone();
+    overlay.state = OverlayState::Staged;
+    overlay.generation = checkpoint.workspace_generation;
+    view.overlay_lowers = checkpoint.lower_dirs.clone();
+    Ok(view)
+}
+
+pub(crate) fn delete_checkpoint(record: &RunRecord, id: &str) -> anyhow::Result<String> {
+    let (current, _lease) = record.lock_current()?;
+    current.require_stopped()?;
+    let checkpoint = resolve_checkpoint(&current, id)?;
+    anyhow::ensure!(
+        checkpoint_branch_refs(&checkpoint)? == 0,
+        "CHECKPOINT_REFERENCED: checkpoint {} is retained by a child Job",
+        checkpoint.checkpoint_id
+    );
+    let root = checkpoint
+        .manifest_path()
+        .parent()
+        .expect("manifest parent")
+        .to_path_buf();
+    let parent = root.parent().expect("checkpoint parent");
+    let tombstone = parent.join(format!(".deleted-{}", uuid::Uuid::new_v4().simple()));
+    fs::rename(&root, &tombstone)?;
+    sync_directory(parent)?;
+    fs::remove_dir_all(tombstone)?;
+    sync_directory(parent)?;
+    Ok(checkpoint.checkpoint_id)
+}
+
+pub(crate) fn collect_workspace_transactions(record: &RunRecord) -> anyhow::Result<usize> {
+    let (current, _lease) = record.lock_current()?;
+    current.require_stopped()?;
+    let root = current.stage_dir().join(CHECKPOINTS_DIR);
+    if !root.exists() {
+        return Ok(0);
+    }
+    let mut removed = 0;
+    for entry in fs::read_dir(&root)? {
+        let entry = entry?;
+        let name = entry.file_name();
+        let name = name.to_string_lossy();
+        if (name.starts_with(".pending-") || name.starts_with(".deleted-"))
+            && entry.file_type()?.is_dir()
+        {
+            // Old callers could choose dot-prefixed ids before these names
+            // became reserved. Never mistake their committed object for debris.
+            if let Ok(cp) = LogicalCheckpoint::read(&entry.path()) {
+                anyhow::ensure!(
+                    cp.checkpoint_id != name,
+                    "refuse to collect a legacy committed checkpoint named {name}"
+                );
+            }
+            fs::remove_dir_all(entry.path())?;
+            removed += 1;
+        }
+    }
+    sync_directory(&root)?;
+    Ok(removed)
+}
+
+pub fn latest_logical_checkpoint(record: &RunRecord) -> anyhow::Result<LogicalCheckpoint> {
+    list_checkpoints(record)?
+        .pop()
+        .ok_or_else(|| anyhow::anyhow!("Run {} has no logical checkpoints", record.run_id))
 }
 
 pub fn restore_logical_checkpoint(
@@ -223,10 +496,13 @@ fn absolute_candidate(path: &Path) -> anyhow::Result<PathBuf> {
 
 pub(crate) fn validate_checkpoint_id(id: &str) -> anyhow::Result<()> {
     let trimmed = id.trim();
-    anyhow::ensure!(!trimmed.is_empty(), "checkpoint id cannot be empty");
     anyhow::ensure!(
-        trimmed != "."
-            && trimmed != ".."
+        !trimmed.is_empty() && trimmed == id && id.len() <= 256,
+        "checkpoint id must contain 1..256 bytes without surrounding whitespace"
+    );
+    anyhow::ensure!(
+        !trimmed.starts_with('.')
+            && !trimmed.chars().any(char::is_control)
             && !trimmed.contains('/')
             && !trimmed.contains('\\')
             && !id.contains('\0'),
@@ -350,6 +626,129 @@ mod tests {
         let temp = tempfile::tempdir().unwrap();
         let record = stopped_record(temp.path());
         assert!(create_logical_checkpoint(&record, Some("../escape")).is_err());
+        assert!(create_logical_checkpoint(&record, Some(".pending-user")).is_err());
+    }
+
+    #[test]
+    fn missing_lease_does_not_make_an_unconfirmed_attempt_stopped() {
+        let temp = tempfile::tempdir().unwrap();
+        let mut record = stopped_record(temp.path());
+        record.state = crate::RunRecordState::Running;
+        record.write().unwrap();
+        assert!(
+            create_logical_checkpoint(&record, None)
+                .unwrap_err()
+                .to_string()
+                .contains("EXECUTION_UNKNOWN")
+        );
+        assert!(!record.stage_dir().join(CHECKPOINTS_DIR).exists());
+    }
+
+    #[test]
+    fn branch_pin_survives_reopen_and_prevents_deletion() {
+        let temp = tempfile::tempdir().unwrap();
+        let record = stopped_record(temp.path());
+        record.write().unwrap();
+        fs::write(
+            record.overlay.as_ref().unwrap().upper.path().join("file"),
+            b"original",
+        )
+        .unwrap();
+        let cp = create_logical_checkpoint(&record, Some("branch-point")).unwrap();
+        let child = temp.path().join("child");
+        fs::create_dir(&child).unwrap();
+        pin_checkpoint(&cp, &child).unwrap();
+        restore_logical_checkpoint(&cp, &child.join("upper"), &child.join("preimages")).unwrap();
+        fs::write(child.join("upper/file"), b"child").unwrap();
+        assert_eq!(
+            fs::read(cp.upper_snapshot.join("file")).unwrap(),
+            b"original"
+        );
+        let reopened = RunRecord::read(temp.path()).unwrap();
+        assert_eq!(checkpoint_branch_refs(&cp).unwrap(), 1);
+        assert!(
+            delete_checkpoint(&reopened, "branch-point")
+                .unwrap_err()
+                .to_string()
+                .contains("CHECKPOINT_REFERENCED")
+        );
+        fs::remove_file(child.join(SOURCE_CHECKPOINT_PIN)).unwrap();
+        delete_checkpoint(&reopened, "branch-point").unwrap();
+        assert_eq!(fs::read(child.join("upper/file")).unwrap(), b"child");
+    }
+
+    #[test]
+    fn request_retry_returns_original_result_and_never_recaptures_a_deleted_result() {
+        let temp = tempfile::tempdir().unwrap();
+        let record = stopped_record(temp.path());
+        record.write().unwrap();
+        let upper = record.overlay.as_ref().unwrap().upper.path();
+        fs::write(upper.join("file"), b"first").unwrap();
+        let (cp, reused) = create_workspace_request(&record, Some("client-key")).unwrap();
+        assert!(!reused);
+        fs::write(upper.join("file"), b"second").unwrap();
+        let (retry, reused) = create_workspace_request(&record, Some("client-key")).unwrap();
+        assert!(reused);
+        assert_eq!(retry.checkpoint_id, cp.checkpoint_id);
+        assert_eq!(
+            fs::read(retry.upper_snapshot.join("file")).unwrap(),
+            b"first"
+        );
+        delete_checkpoint(&record, &cp.checkpoint_id).unwrap();
+        assert!(create_workspace_request(&record, Some("client-key")).is_err());
+    }
+
+    #[test]
+    fn committed_corruption_and_ambiguous_prefix_are_not_hidden() {
+        let temp = tempfile::tempdir().unwrap();
+        let record = stopped_record(temp.path());
+        record.write().unwrap();
+        create_logical_checkpoint(&record, Some("checkpoint-abcdef1")).unwrap();
+        create_logical_checkpoint(&record, Some("checkpoint-abcdef2")).unwrap();
+        assert!(
+            resolve_checkpoint(&record, "abcdef")
+                .unwrap_err()
+                .to_string()
+                .contains("ambiguous")
+        );
+        assert_eq!(
+            resolve_checkpoint(&record, "abcdef1")
+                .unwrap()
+                .checkpoint_id,
+            "checkpoint-abcdef1"
+        );
+        fs::create_dir(
+            record
+                .stage_dir()
+                .join(CHECKPOINTS_DIR)
+                .join(".pending-abandoned"),
+        )
+        .unwrap();
+        assert_eq!(list_checkpoints(&record).unwrap().len(), 2);
+        assert_eq!(collect_workspace_transactions(&record).unwrap(), 1);
+        fs::write(
+            record
+                .stage_dir()
+                .join(CHECKPOINTS_DIR)
+                .join("checkpoint-abcdef1/checkpoint.json"),
+            b"broken",
+        )
+        .unwrap();
+        assert!(list_checkpoints(&record).is_err());
+    }
+
+    #[test]
+    fn legacy_manifests_are_workspace_and_execution_manifests_cannot_be_misread() {
+        let temp = tempfile::tempdir().unwrap();
+        let record = stopped_record(temp.path());
+        record.write().unwrap();
+        let cp = create_logical_checkpoint(&record, None).unwrap();
+        let mut json = serde_json::to_value(&cp).unwrap();
+        json.as_object_mut().unwrap().remove("kind");
+        let old: LogicalCheckpoint = serde_json::from_value(json.clone()).unwrap();
+        assert_eq!(old.kind, WorkspaceCheckpointKind::Workspace);
+        json["kind"] = serde_json::json!("execution");
+        assert!(serde_json::from_value::<LogicalCheckpoint>(json).is_err());
     }
 
     #[test]

@@ -43,6 +43,8 @@ pub struct KillArgs {
     pub selector: PathBuf,
     #[arg(long, short = 'o', default_value = DEFAULT_STORAGE)]
     pub output_dir: PathBuf,
+    #[arg(long)]
+    pub json: bool,
 }
 
 #[derive(Debug, Clone, Args)]
@@ -51,6 +53,9 @@ pub struct InspectArgs {
     pub selector: Option<PathBuf>,
     #[arg(long, short = 'o', default_value = DEFAULT_STORAGE)]
     pub output_dir: PathBuf,
+    /// Inspect the saved workspace of an immutable checkpoint.
+    #[arg(long)]
+    pub checkpoint: Option<String>,
     /// Command to run in the read-only view; defaults to $SHELL or /bin/bash.
     #[arg(last = true, allow_hyphen_values = true)]
     pub command: Vec<String>,
@@ -59,7 +64,7 @@ pub struct InspectArgs {
 #[derive(Debug, Clone, Args)]
 pub struct SelectArgs {
     /// Job id, stage directory, upper directory, or workspace path.
-    pub selector: Option<PathBuf>,
+    pub selector: PathBuf,
     #[arg(long, short = 'o', default_value = DEFAULT_STORAGE)]
     pub output_dir: PathBuf,
 }
@@ -67,7 +72,7 @@ pub struct SelectArgs {
 #[derive(Debug, Clone, Args)]
 pub struct ApplyArgs {
     /// Job id, stage directory, upper directory, or workspace path.
-    pub selector: Option<PathBuf>,
+    pub selector: PathBuf,
     #[arg(long, short = 'o', default_value = DEFAULT_STORAGE)]
     pub output_dir: PathBuf,
     /// Apply staged changes here instead of the target recorded by the Job.
@@ -96,10 +101,18 @@ pub fn status(args: StatusArgs) -> anyhow::Result<()> {
             diff: args.diff,
             max_diff_bytes: args.max_diff_bytes,
             max_diff_file_bytes: args.max_diff_file_bytes,
+            checkpoint: None,
         });
     }
     let record = selected(args.selector.as_deref(), &args.output_dir)?;
     let live = control_ping(&record.stage_dir()) || is_live(&record.stage_dir())?;
+    let checkpoints = crate::runtime::checkpoint::list_checkpoints(&record)?;
+    let capability = serde_json::json!({
+        "workspace": record.overlay.is_some(),
+        "workspace_capture_requires": "confirmed_stopped",
+        "execution": false,
+        "execution_blocker": super::checkpoint::execution_blocker(&record),
+    });
     let apply_history = load_apply_records(&record.stage_dir())?;
     let fs = record
         .overlay
@@ -148,6 +161,9 @@ pub fn status(args: StatusArgs) -> anyhow::Result<()> {
             serde_json::to_string_pretty(&serde_json::json!({
                 "run": record,
                 "live": live,
+                "checkpoint_capability": capability,
+                "checkpoints": checkpoints,
+                "workspace_generation": record.overlay.as_ref().map(|overlay| overlay.generation),
                 "apply_history": apply_history,
                 "observations": {
                     "filesystem": file_observed,
@@ -182,6 +198,11 @@ pub fn status(args: StatusArgs) -> anyhow::Result<()> {
     println!("agent: {}", record.agent);
     println!("command: {}", shell_join(&record.command));
     println!("stage: {}", record.stage_dir().display());
+    println!("checkpoints: {} workspace", checkpoints.len());
+    println!(
+        "execution checkpoint: unsupported ({})",
+        super::checkpoint::execution_blocker(&record)
+    );
     if !apply_history.is_empty() {
         println!("apply batches: {}", apply_history.len());
     }
@@ -260,6 +281,20 @@ pub fn status(args: StatusArgs) -> anyhow::Result<()> {
 
 pub fn kill(args: KillArgs) -> anyhow::Result<()> {
     let record = selected(Some(&args.selector), &args.output_dir)?;
+    if record.state.is_stopped() {
+        let (current, _lease) = record.lock_current()?;
+        current.require_stopped()?;
+        if args.json {
+            println!(
+                "{}",
+                serde_json::json!({"schema_version":1,"operation":"kill",
+                "job_id":current.run_id,"state":current.state,"already_stopped":true})
+            );
+        } else {
+            println!("Job {} is already stopped", current.run_id);
+        }
+        return Ok(());
+    }
     anyhow::ensure!(
         record.executor.is_some(),
         "{} is a legacy environment record, not an executable Job",
@@ -286,7 +321,15 @@ pub fn kill(args: KillArgs) -> anyhow::Result<()> {
         return Err(std::io::Error::last_os_error())
             .with_context(|| format!("terminate Job {} (PID {pid})", record.run_id));
     }
-    println!("requested termination of Job {} (PID {pid})", record.run_id);
+    if args.json {
+        println!(
+            "{}",
+            serde_json::json!({"schema_version":1,"operation":"kill",
+            "job_id":record.run_id,"state":"stopping","termination_requested":true})
+        );
+    } else {
+        println!("requested termination of Job {} (PID {pid})", record.run_id);
+    }
     Ok(())
 }
 
@@ -311,7 +354,14 @@ struct FsSummary {
 }
 
 pub fn inspect(args: InspectArgs) -> anyhow::Result<i32> {
-    let record = selected(args.selector.as_deref(), &args.output_dir)?;
+    let selected = selected(args.selector.as_deref(), &args.output_dir)?;
+    let (mut record, _lease) = selected.lock_current()?;
+    if let Some(id) = &args.checkpoint {
+        let checkpoint = crate::runtime::checkpoint::resolve_checkpoint(&record, id)?;
+        record = crate::runtime::checkpoint::workspace_view(&record, &checkpoint)?;
+    } else {
+        record.require_stopped()?;
+    }
     let overlay = record
         .overlay
         .as_ref()
@@ -425,8 +475,16 @@ fn mutate(
     target: Option<&Path>,
     selection: Option<&ApplySelection>,
 ) -> anyhow::Result<()> {
-    let selected = selected(args.selector.as_deref(), &args.output_dir)?;
+    let selected = selected(Some(&args.selector), &args.output_dir)?;
     let (mut record, _lease) = selected.lock_current()?;
+    record.require_stopped()?;
+    let next_generation = record
+        .overlay
+        .as_ref()
+        .context("this Job has no OverlayFS workspace")?
+        .generation
+        .checked_add(1)
+        .context("workspace generation exhausted")?;
     let mut overlay = record
         .overlay
         .take()
@@ -517,6 +575,8 @@ fn mutate(
         println!("dropped remaining staged changes for {}", record.run_id);
     }
     record.overlay = Some(overlay);
+    let overlay = record.overlay.as_mut().expect("restored above");
+    overlay.generation = next_generation;
     record.write()?;
     Ok(())
 }

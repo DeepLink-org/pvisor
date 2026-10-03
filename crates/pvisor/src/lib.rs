@@ -7,6 +7,9 @@
 #![cfg_attr(all(target_os = "macos", target_arch = "x86_64"), allow(dead_code))]
 
 pub mod cli;
+#[cfg(target_os = "macos")]
+#[doc(hidden)]
+pub mod environment_snapshot;
 mod runtime;
 pub mod session;
 pub mod trace;
@@ -60,8 +63,8 @@ pub use runtime::bundle::{
     RUN_BUNDLE_SCHEMA_VERSION, ResourceSummary, RunBundle, SafetySummary,
 };
 pub use runtime::checkpoint::{
-    CHECKPOINTS_DIR, CheckpointConsistency, LogicalCheckpoint, create_logical_checkpoint,
-    latest_logical_checkpoint, restore_logical_checkpoint,
+    CHECKPOINTS_DIR, CheckpointConsistency, LogicalCheckpoint, WorkspaceCheckpointKind,
+    create_logical_checkpoint, latest_logical_checkpoint, restore_logical_checkpoint,
 };
 pub use runtime::event::{
     EventAppendErrorKind, EventSink, MemoryEventSink, NoopEventSink, RunEventPublisher,

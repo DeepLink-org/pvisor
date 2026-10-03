@@ -54,6 +54,7 @@ pub(crate) struct InodeSnapshot {
     pub path: Option<Vec<u8>>,
     pub identity: FileIdentity,
     pub digest: Option<[u8; 32]>,
+    pub link_target: Option<Vec<u8>>,
 }
 #[derive(Clone, Debug, Serialize, Deserialize)]
 #[serde(deny_unknown_fields)]
@@ -71,6 +72,8 @@ pub(crate) struct FileIdentity {
     pub dev: u64,
     pub ino: u64,
     pub mode: u32,
+    pub uid: u32,
+    pub gid: u32,
     pub size: u64,
     pub mtime: i64,
     pub mtime_nsec: i64,
@@ -85,6 +88,8 @@ impl FileIdentity {
             dev: meta.dev(),
             ino: meta.ino(),
             mode: meta.mode(),
+            uid: meta.uid(),
+            gid: meta.gid(),
             size: meta.len(),
             mtime: meta.mtime(),
             mtime_nsec: meta.mtime_nsec(),
@@ -92,6 +97,106 @@ impl FileIdentity {
             ctime_nsec: meta.ctime_nsec(),
             nlink: meta.nlink(),
         })
+    }
+}
+
+impl ServerSnapshot {
+    /// Rebind a captured filesystem to an exclusively owned, verified full
+    /// copy. The environment coordinator must validate the entire archive
+    /// (including objects not looked up by the guest) before calling this.
+    /// This does not change the ordinary restore identity checks or publish
+    /// a snapshot. On failure the original server state is unchanged.
+    #[cfg(target_os = "macos")]
+    pub fn rebind_owned_copy(&mut self, source: &Path, destination: &Path) -> io::Result<()> {
+        let mut rebound = self.fs.clone();
+        rebound.rebind_owned_copy(source, destination)?;
+        self.fs = rebound;
+        Ok(())
+    }
+}
+
+#[cfg(target_os = "macos")]
+impl FsSnapshot {
+    fn rebind_owned_copy(&mut self, source: &Path, destination: &Path) -> io::Result<()> {
+        use std::os::unix::fs::OpenOptionsExt;
+        match self {
+            Self::ReadOnly(inner) | Self::Augment { inner, .. } => {
+                inner.rebind_owned_copy(source, destination)
+            }
+            Self::Passthrough(state) => {
+                // Source may already have been removed. Its canonical path is
+                // taken from the sealed environment binding, never resolved.
+                if source.as_os_str().as_bytes() != state.root {
+                    return Err(invalid("copied filesystem source binding mismatch"));
+                }
+                let root = destination.canonicalize()?;
+                if root == source {
+                    return Err(invalid("copied filesystem must have an independent root"));
+                }
+                let mut identities = Vec::with_capacity(state.inodes.len());
+                let mut host_inodes = std::collections::BTreeSet::new();
+                for saved in &state.inodes {
+                    let path = relative_path(
+                        &root,
+                        saved
+                            .path
+                            .as_deref()
+                            .ok_or_else(|| invalid("missing inode path"))?,
+                    )?;
+                    let pin = std::fs::OpenOptions::new()
+                        .read(true)
+                        // O_SYMLINK pins the link itself on macOS. Combining
+                        // it with O_NOFOLLOW rejects symlinks with ELOOP.
+                        .custom_flags(libc::O_EVTONLY | libc::O_SYMLINK)
+                        .open(&path)?;
+                    let identity = FileIdentity::read(&pin)?;
+                    let kind = identity.mode & u32::from(libc::S_IFMT);
+                    let regular = kind == u32::from(libc::S_IFREG);
+                    let symlink = kind == u32::from(libc::S_IFLNK);
+                    if identity.mode != saved.identity.mode
+                        || identity.uid != saved.identity.uid
+                        || identity.gid != saved.identity.gid
+                        || identity.mtime != saved.identity.mtime
+                        || identity.mtime_nsec != saved.identity.mtime_nsec
+                        || identity.nlink != saved.identity.nlink
+                        || ((regular || symlink) && identity.size != saved.identity.size)
+                        || regular != saved.digest.is_some()
+                        || symlink != saved.link_target.is_some()
+                    {
+                        return Err(invalid("copied filesystem metadata mismatch"));
+                    }
+                    if regular
+                        && Some(file_digest(
+                            &std::fs::OpenOptions::new()
+                                .read(true)
+                                .custom_flags(libc::O_NOFOLLOW)
+                                .open(&path)?,
+                        )?) != saved.digest
+                    {
+                        return Err(invalid("copied filesystem content mismatch"));
+                    }
+                    if symlink
+                        && Some(std::fs::read_link(&path)?.as_os_str().as_bytes().to_vec())
+                            != saved.link_target
+                    {
+                        return Err(invalid("copied filesystem symlink mismatch"));
+                    }
+                    if !host_inodes.insert((identity.dev, identity.ino)) {
+                        return Err(invalid("copied filesystem collapsed distinct inodes"));
+                    }
+                    if FileIdentity::read(&pin)? != identity {
+                        return Err(invalid("copied filesystem changed during verification"));
+                    }
+                    identities.push(identity);
+                }
+                for (saved, identity) in state.inodes.iter_mut().zip(identities) {
+                    saved.identity = identity;
+                }
+                state.root = root.as_os_str().as_bytes().to_vec();
+                Ok(())
+            }
+            _ => Err(unsupported("copied filesystem requires a passthrough root")),
+        }
     }
 }
 pub(crate) fn invalid(message: &str) -> io::Error {

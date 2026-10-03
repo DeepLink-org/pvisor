@@ -65,6 +65,12 @@ pub enum RunRecordState {
 }
 
 impl RunRecordState {
+    pub fn is_stopped(self) -> bool {
+        matches!(
+            self,
+            Self::Completed | Self::Cancelled | Self::Failed | Self::Terminated
+        )
+    }
     pub fn as_str(&self) -> &'static str {
         match self {
             Self::Running => "running",
@@ -130,6 +136,16 @@ pub struct RunRecord {
 }
 
 impl RunRecord {
+    /// A missing process/lease is insufficient evidence of a completed Attempt.
+    pub(crate) fn require_stopped(&self) -> anyhow::Result<()> {
+        anyhow::ensure!(
+            self.state.is_stopped() && self.finished_at_unix_ms.is_some(),
+            "EXECUTION_UNKNOWN: Job {} has no confirmed stopped Attempt (state={}); refuse workspace mutation or capture",
+            self.run_id,
+            self.state.as_str()
+        );
+        Ok(())
+    }
     /// Read the authoritative record only after obtaining mutation ownership.
     /// A selector's earlier snapshot is not safe input to apply/drop/recovery.
     pub fn lock_current(&self) -> anyhow::Result<(Self, RunLease)> {

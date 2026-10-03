@@ -25,6 +25,78 @@ pub struct CompressedObject {
     payload: Payload,
 }
 impl CompressedObject {
+    /// Shared encoding for resident and durable content; callers provide stable bytes.
+    pub(crate) fn from_bytes(bytes: &[u8]) -> io::Result<Self> {
+        if bytes.is_empty() || bytes.len() > BLOCK_BYTES {
+            return Err(invalid("invalid resident block length"));
+        }
+        let payload = if bytes.iter().all(|b| *b == bytes[0]) {
+            Payload::Fill(bytes[0])
+        } else {
+            let encoded = zstd::bulk::compress(bytes, 1)?;
+            if encoded.len() < bytes.len() {
+                Payload::Zstd(encoded.into_boxed_slice())
+            } else {
+                Payload::Raw(bytes.into())
+            }
+        };
+        Ok(Self {
+            id: identity(bytes),
+            length: bytes.len(),
+            payload,
+        })
+    }
+
+    /// Versioned disk frame; checksums identify decoded bytes, not codec output.
+    #[cfg(target_os = "macos")]
+    pub(crate) fn frame(&self) -> Vec<u8> {
+        let mut bytes = Vec::with_capacity(45 + self.encoded_bytes());
+        bytes.extend_from_slice(b"PVBLK1\0\0");
+        bytes.extend_from_slice(&self.id);
+        bytes.extend_from_slice(&(self.length as u32).to_le_bytes());
+        match &self.payload {
+            Payload::Fill(byte) => bytes.extend_from_slice(&[0, *byte]),
+            Payload::Raw(payload) => {
+                bytes.push(1);
+                bytes.extend_from_slice(payload);
+            }
+            Payload::Zstd(payload) => {
+                bytes.push(2);
+                bytes.extend_from_slice(payload);
+            }
+        }
+        bytes
+    }
+
+    #[cfg(target_os = "macos")]
+    pub(crate) fn from_frame(bytes: &[u8]) -> io::Result<Self> {
+        if bytes.len() < 46 || bytes.len() > 45 + BLOCK_BYTES || &bytes[..8] != b"PVBLK1\0\0" {
+            return Err(invalid("invalid content frame"));
+        }
+        let length = u32::from_le_bytes(bytes[40..44].try_into().unwrap()) as usize;
+        if length == 0 || length > BLOCK_BYTES {
+            return Err(invalid("invalid content frame length"));
+        }
+        let data = &bytes[45..];
+        let payload = match bytes[44] {
+            0 if data.len() == 1 => Payload::Fill(data[0]),
+            1 if data.len() == length => Payload::Raw(data.into()),
+            2 if data.len() < length
+                && zstd::zstd_safe::find_frame_compressed_size(data).ok() == Some(data.len()) =>
+            {
+                Payload::Zstd(data.into())
+            }
+            _ => return Err(invalid("invalid content frame encoding")),
+        };
+        let object = Self {
+            id: bytes[8..40].try_into().unwrap(),
+            length,
+            payload,
+        };
+        object.restore(&mut vec![0; length])?;
+        Ok(object)
+    }
+
     pub fn id(&self) -> ImageId {
         self.id
     }
@@ -114,23 +186,7 @@ impl CompressedPool {
             }
             return Ok(object.clone());
         }
-        let payload = if bytes.iter().all(|b| *b == bytes[0]) {
-            Payload::Fill(bytes[0])
-        } else {
-            let encoded = zstd::bulk::compress(bytes, 1)?;
-            if encoded.len() < bytes.len() {
-                // Compress allocates its worst-case bound. Retaining that Vec
-                // capacity makes small encoded objects consume nearly a raw block.
-                Payload::Zstd(encoded.into_boxed_slice())
-            } else {
-                Payload::Raw(bytes.into())
-            }
-        };
-        let object = Arc::new(CompressedObject {
-            id,
-            length: bytes.len(),
-            payload,
-        });
+        let object = Arc::new(CompressedObject::from_bytes(bytes)?);
         let size = object.encoded_bytes();
         if self.objects.len() >= self.object_budget
             || size > self.payload_budget.saturating_sub(self.encoded_bytes)

@@ -38,8 +38,8 @@ pub struct RunControlResponse {
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct OverlayRecord {
     pub id: String,
-    /// Monotonic reusable-environment generation. Terminal overlays are never
-    /// reopened; a reset creates the next generation over the same stage.
+    /// Monotonic workspace generation, advanced after apply/drop or reuse.
+    /// Terminal overlays are never reopened by applying staged changes.
     #[serde(default)]
     pub generation: u64,
     /// Target filesystem (apply destination + primary lower).

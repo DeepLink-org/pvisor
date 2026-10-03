@@ -20,6 +20,9 @@ pub struct ReviewArgs {
     pub selector: Option<PathBuf>,
     #[arg(long, short = 'o', default_value = DEFAULT_STORAGE)]
     pub output_dir: PathBuf,
+    /// Review the staged files saved in this workspace checkpoint.
+    #[arg(long)]
+    pub checkpoint: Option<String>,
     /// Emit the complete versioned Run Bundle.
     #[arg(long)]
     pub json: bool,
@@ -35,19 +38,52 @@ pub struct ReviewArgs {
 }
 
 pub fn review(args: ReviewArgs) -> anyhow::Result<()> {
-    let record = selected(args.selector.as_deref(), &args.output_dir)?;
-    let bundle = RunBundle::read(&record.stage_dir()).with_context(|| {
+    let selected = selected(args.selector.as_deref(), &args.output_dir)?;
+    let (mut record, _lease) = selected.lock_current()?;
+    let bundle_stage = record.stage_dir();
+    let checkpoint_id = if let Some(id) = &args.checkpoint {
+        let checkpoint = crate::runtime::checkpoint::resolve_checkpoint(&record, id)?;
+        record = crate::runtime::checkpoint::workspace_view(&record, &checkpoint)?;
+        Some(checkpoint.checkpoint_id)
+    } else {
+        record.require_stopped()?;
+        None
+    };
+    let mut bundle = RunBundle::read(&bundle_stage).with_context(|| {
         format!(
             "Job {} has no readable Run Bundle; re-run it with this pVisor version",
             record.run_id
         )
     })?;
+    // The Bundle's execution evidence is historical. Read the selected file
+    // view again so a preceding apply/drop cannot leave review showing old files.
+    if let Some(overlay) = &record.overlay {
+        let status = crate::runtime::overlay_status(overlay)?;
+        let filesystem = bundle
+            .filesystem
+            .as_mut()
+            .context("Job Bundle has no workspace evidence")?;
+        filesystem.state = overlay.state;
+        filesystem.target = overlay.target.clone();
+        filesystem.upper = overlay.upper.path().to_path_buf();
+        filesystem.changed_files = status.changed_files;
+        filesystem.whiteouts = status.whiteouts;
+        filesystem.sample_paths = status.sample_paths;
+        filesystem.changes = crate::runtime::overlay_changes(overlay, &record.overlay_lowers)?;
+    }
+    let context = serde_json::json!({"job_id":record.run_id,
+        "attempt_id":record.attempt_id,"checkpoint_id":checkpoint_id,
+        "workspace_generation":record.overlay.as_ref().map(|overlay| overlay.generation),
+        "file_view":"staged_upper_with_external_lowers","execution_evidence":"historical_bundle"});
     if args.json {
-        println!("{}", serde_json::to_string_pretty(&bundle)?);
+        let mut result = serde_json::to_value(&bundle)?;
+        result["review_context"] = context;
+        println!("{}", serde_json::to_string_pretty(&result)?);
         return Ok(());
     }
 
     println!("pVisor review — {}", bundle.run.run_id);
+    println!("file view: {}", context);
     println!(
         "outcome: {:?} (exit {:?})",
         bundle.run.state, bundle.run.exit_code

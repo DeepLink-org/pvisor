@@ -8,7 +8,7 @@ use std::process::Command;
 
 pub const CONFIG_PATH: &str = "/.pvisor-guest.json";
 
-#[derive(Debug, Default, Serialize, Deserialize)]
+#[derive(Clone, Debug, Default, Serialize, Deserialize)]
 #[serde(deny_unknown_fields)]
 pub struct GuestConfig {
     pub argv: Vec<String>,
@@ -25,7 +25,7 @@ pub struct GuestConfig {
     pub agent: Option<Vec<String>>,
 }
 
-#[derive(Debug, Serialize, Deserialize)]
+#[derive(Clone, Debug, Serialize, Deserialize)]
 #[serde(deny_unknown_fields)]
 pub struct NetworkConfig {
     pub address: [u8; 4],

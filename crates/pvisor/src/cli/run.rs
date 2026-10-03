@@ -86,9 +86,8 @@ use crate::config::{
 };
 use crate::runtime::{RunLineage, default_run_home, resolve_run};
 use crate::{
-    ContainerExecutor, LogicalCheckpoint, NetworkDriverConfig, OverlayHint, PVisor,
-    ProcessExecutor, RunBundle, RunExecutor, VmExecutor, create_logical_checkpoint,
-    restore_logical_checkpoint,
+    ContainerExecutor, NetworkDriverConfig, OverlayHint, PVisor, ProcessExecutor, RunBundle,
+    RunExecutor, VmExecutor, restore_logical_checkpoint,
 };
 
 use super::trajectory::JournalRecording;
@@ -248,9 +247,21 @@ impl RunArgs {
 pub struct ForkArgs {
     /// Source Job id, workspace, run.json, or path inside the source Job.
     source: PathBuf,
+    /// Workspace starts a new command; execution continues saved CPU/RAM state.
+    #[arg(long, value_enum, default_value = "workspace")]
+    state: super::checkpoint::Kind,
     /// Existing logical checkpoint id; when omitted, snapshot the stopped source Job now.
     #[arg(long, value_name = "ID")]
     checkpoint: Option<String>,
+    /// Empty or new directory for the child Job's independent stage.
+    #[arg(long)]
+    stage: Option<PathBuf>,
+    /// Human-readable child Job name.
+    #[arg(long)]
+    name: Option<String>,
+    /// Encoding for a newly captured execution checkpoint only.
+    #[arg(long, value_enum)]
+    ram_storage: Option<super::checkpoint::RamStorage>,
     #[arg(long, short = 'o', default_value = ".pvisor/capture")]
     output_dir: PathBuf,
     /// Agent command; defaults to the source Job command.
@@ -1086,17 +1097,32 @@ async fn delegated_shutdown_signal() {
 }
 
 pub async fn fork(args: ForkArgs) -> anyhow::Result<i32> {
+    anyhow::ensure!(
+        args.state == super::checkpoint::Kind::Execution || args.ram_storage.is_none(),
+        "--ram-storage is only valid for execution capture"
+    );
+    anyhow::ensure!(
+        args.state == super::checkpoint::Kind::Workspace || args.command.is_empty(),
+        "execution fork cannot replace the saved command"
+    );
+    anyhow::ensure!(
+        args.checkpoint.is_none() || args.ram_storage.is_none(),
+        "--ram-storage cannot change an existing checkpoint"
+    );
     let storage = args
         .output_dir
         .canonicalize()
         .unwrap_or(args.output_dir.clone());
     let source = resolve_run(Some(&args.source), &storage)?;
+    if args.state == super::checkpoint::Kind::Execution {
+        super::checkpoint::reject_execution(&source)?;
+    }
+    // Hold ownership from selection through copy and durable source retention.
+    // The runner starts only after releasing the source's lease.
+    let (source, source_lease) = source.lock_current()?;
     let checkpoint = match args.checkpoint.as_deref() {
-        Some(id) => {
-            crate::runtime::checkpoint::validate_checkpoint_id(id)?;
-            LogicalCheckpoint::read(&source.stage_dir().join(crate::CHECKPOINTS_DIR).join(id))?
-        }
-        None => create_logical_checkpoint(&source, None)?,
+        Some(id) => crate::runtime::checkpoint::resolve_checkpoint(&source, id)?,
+        None => crate::runtime::checkpoint::create_stopped_checkpoint_locked(&source, None)?,
     };
     anyhow::ensure!(
         checkpoint.run_id == source.run_id,
@@ -1124,6 +1150,9 @@ pub async fn fork(args: ForkArgs) -> anyhow::Result<i32> {
     config.run.workspace = Some(fork_workspace.clone());
     let (agent, command) = fork_command(&source.agent, &source.command, args.command);
     config.run.agent = agent;
+    if let Some(name) = args.name {
+        config.run.agent = name;
+    }
     config.run.command = command;
     config.overlayfs = Some(OverlayFsSettings {
         access_policy: checkpoint.access_policy.clone(),
@@ -1136,21 +1165,45 @@ pub async fn fork(args: ForkArgs) -> anyhow::Result<i32> {
             .filter(|lower| *lower != &checkpoint.target)
             .cloned()
             .collect(),
-        stage: None,
+        stage: args.stage,
         stage_size_bytes: None,
         mount: Vec::new(),
         access: Vec::new(),
         commit: OverlayFsCommit::Manual,
     });
-    let stage = select_run_storage(&config, &fork_workspace, &run_id)?;
-    std::fs::create_dir_all(&stage)?;
+    let stage = match config
+        .overlayfs
+        .as_ref()
+        .and_then(|overlay| overlay.stage.as_ref())
+    {
+        Some(path) => fork_stage_candidate(path)?,
+        None => select_run_storage(&config, &fork_workspace, &run_id)?,
+    };
+    anyhow::ensure!(
+        !stage.exists() || std::fs::read_dir(&stage)?.next().is_none(),
+        "child stage must be empty or absent: {}",
+        stage.display()
+    );
+    anyhow::ensure!(
+        !paths_overlap(&stage, &source.stage_dir())
+            && checkpoint
+                .lower_dirs
+                .iter()
+                .all(|lower| !lower.starts_with(&stage)),
+        "child stage must not overlap the source Job or contain its filesystem layers"
+    );
+    crate::util::create_dir_all_durable(&stage)?;
     let upper = stage.join("upper");
+    // Exclusive pin creation arbitrates competing forks targeting one empty
+    // directory. A loser must never remove the winner's files during cleanup.
+    crate::runtime::checkpoint::pin_checkpoint(&checkpoint, &stage)?;
     if let Err(error) = restore_logical_checkpoint(&checkpoint, &upper, &stage.join("preimages")) {
         let _ = std::fs::remove_dir_all(&stage);
         return Err(error);
     }
     config.overlayfs.as_mut().expect("configured above").stage = Some(stage);
     apply_safe_defaults(&mut config)?;
+    drop(source_lease);
     execute_config(
         config,
         run_id,
@@ -1161,6 +1214,25 @@ pub async fn fork(args: ForkArgs) -> anyhow::Result<i32> {
         }),
     )
     .await
+}
+
+/// Resolve existing symlink ancestors before validating a new branch path,
+/// without creating directories inside the source Job on rejected requests.
+fn fork_stage_candidate(path: &Path) -> anyhow::Result<PathBuf> {
+    let path = if path.is_absolute() {
+        path.to_path_buf()
+    } else {
+        std::env::current_dir()?.join(path)
+    };
+    fn resolve(path: &Path) -> anyhow::Result<PathBuf> {
+        if path.try_exists()? {
+            return Ok(path.canonicalize()?);
+        }
+        let name = path.file_name().context("invalid child stage path")?;
+        let parent = path.parent().context("child stage has no parent")?;
+        Ok(resolve(parent)?.join(name))
+    }
+    resolve(&path)
 }
 
 fn fork_command(

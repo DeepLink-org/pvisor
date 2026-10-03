@@ -95,7 +95,14 @@ pvisor
 ├── run                 创建 Job
 ├── apply               提交已停止 Job 的暂存改动
 ├── drop                丢弃已停止 Job 的暂存改动
-├── status              查看 Job 状态和审查证据
+├── status              查看 Job 状态和能力
+├── review              查看当前或保存的工作区变更
+├── checkpoint
+│   ├── create          保存停止 Job 的工作区
+│   ├── list            列出 Job 检查点
+│   ├── show            查看归属和保留引用
+│   ├── delete          删除无引用检查点
+│   └── gc              回收本 Job 遗留工作区事务
 ├── kill                请求终止正在运行的 Job
 ├── fork                从已停止的 Job 创建子 Job
 ├── inspect             只读查看 Job 的文件系统
@@ -132,6 +139,37 @@ checkpoint 的 Session 报告匹配的 quiesced 状态，快照 raw upper，再�
 
 要结束正在运行的 Job，使用 `pvisor kill JOB_ID`。它向 Job 的监督进程请求正常
 终止；用 `pvisor status JOB_ID` 查看最终状态。已停止的 Job 仍可审查并选择应用或丢弃。
+
+## Job 检查点管理
+
+`run` 保持既有选项和默认行为。以下接口已支持停止 Job 的工作区检查点：
+
+```bash
+pvisor checkpoint create ./stage/task --request-id before-refactor --json
+pvisor checkpoint list ./stage/task --json
+pvisor checkpoint show ./stage/task CHECKPOINT_ID --json
+pvisor review ./stage/task --checkpoint CHECKPOINT_ID --diff
+pvisor inspect ./stage/task --checkpoint CHECKPOINT_ID -- ls
+pvisor fork ./stage/task --state workspace --checkpoint CHECKPOINT_ID --stage ./stage/branch -- codex
+pvisor checkpoint delete ./stage/task CHECKPOINT_ID --json
+pvisor checkpoint gc ./stage/task --json
+```
+
+检查点属于指定 Job，默认类型为 workspace，保存 staged upper、前像、策略及来源 Attempt。
+其 lower 仍是外部路径引用；不会因此保存进程内存或保证外部 lower 不变。唯一 ID 前缀可以解析，歧义会报错。
+创建请求可用 `--request-id` 重试；已经删除的结果不能通过重用同一 key 再捕获。
+分叉保留来源 manifest 的硬链接引用，父子 stage 需要在同一文件系统；引用存在时删除拒绝。
+`drop JOB` 保留 Job、检查点和分支引用，`apply/drop` 必须显式指定 Job，并要求记录已确认停止。
+`review` 的 JSON 区分历史执行证据与当前选定的文件视图；成功 apply/drop 后工作区 generation 递增。
+
+当前 GC 仅清理指定 Job 的工作区检查点暂存与删除目录，输出 scope 为 `job_workspace_transactions`。
+尚未接入共享 execution 内容库 GC。指定历史检查点的查看与分叉目前仍要求取得源 Job lease，因此运行中的源 Job 会拒绝这些操作。
+
+`suspend JOB`、`resume JOB`、`checkpoint create JOB --kind execution` 和
+`fork JOB --state execution` 目前会明确返回 `CAPABILITY_UNSUPPORTED`，不改变 Job 状态。
+普通 VM Job 的 Overlay/DAX、临时根文件层和 Attempt 交接尚未接入完整保存/恢复。
+已有独立 `snapshot` 工作流继续保留；它的对象不等同于 stage 中的 Job 检查点。
+详细实现范围见[Job 检查点设计](../design/job-checkpoint-cli.md#10-当前实现与验收边界)。
 
 ## `--safe` 参数预设 {#safe-参数预设}
 

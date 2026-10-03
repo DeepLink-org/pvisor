@@ -285,6 +285,9 @@ pub fn main() {
         Ok(code) => code,
         Err(error) => {
             eprintln!("pvisor guest: {error}");
+            // Keep an early initialization error visible in an owned rootfs
+            // even when console ports have not been configured yet.
+            let _ = fs::write("/.pvisor-guest-error", error.to_string());
             125
         }
     };

@@ -1,0 +1,333 @@
+#![cfg(target_os = "macos")]
+use pvisor::environment_snapshot::{Compatibility, SnapshotStore};
+use std::{fs, io::Write};
+
+fn compatibility() -> Compatibility {
+    Compatibility {
+        host_boot: "test-boot".into(),
+        build: "test-build".into(),
+        firmware: "test-firmware".into(),
+        profile: "test-no-external-resources".into(),
+    }
+}
+
+#[test]
+fn published_object_survives_source_removal_and_has_private_worktrees() {
+    let directory = tempfile::tempdir().unwrap();
+    let source = directory.path().join("source");
+    fs::create_dir(&source).unwrap();
+    fs::write(source.join("file"), b"original").unwrap();
+    let store = SnapshotStore::new(&directory.path().join("store")).unwrap();
+    let pending = store.begin().unwrap();
+    let mut writable_capture = pending.create_ram().unwrap();
+    writable_capture.write_all(b"RAM").unwrap();
+    let id = pending
+        .publish(&source, b"machine-state", compatibility())
+        .unwrap();
+    // A stale capture writer must no longer name the sealed RAM payload.
+    writable_capture
+        .write_all(b"stale capture modification")
+        .unwrap();
+    fs::remove_dir_all(source).unwrap();
+    let snapshot = store.open(&id, &compatibility()).unwrap();
+    assert_eq!(snapshot.machine_bytes().unwrap(), b"machine-state");
+    let first = directory.path().join("first");
+    let second = directory.path().join("second");
+    snapshot.materialize(&first).unwrap();
+    fs::write(first.join("file"), b"first-private").unwrap();
+    snapshot.materialize(&second).unwrap();
+    assert_eq!(fs::read(second.join("file")).unwrap(), b"original");
+    assert!(store.delete(&id).is_err());
+    drop(snapshot);
+    store.delete(&id).unwrap();
+    assert!(store.open(&id, &compatibility()).is_err());
+    assert_eq!(fs::read(first.join("file")).unwrap(), b"first-private");
+    assert_eq!(fs::read(second.join("file")).unwrap(), b"original");
+}
+
+#[test]
+fn unpublished_failures_are_cleaned_and_never_openable() {
+    let directory = tempfile::tempdir().unwrap();
+    let root = directory.path().join("store");
+    let store = SnapshotStore::new(&root).unwrap();
+    let pending = store.begin().unwrap();
+    pending.create_ram().unwrap().write_all(b"RAM").unwrap();
+    assert!(store.open(&"0".repeat(64), &compatibility()).is_err());
+    drop(pending);
+    assert_eq!(fs::read_dir(root.join("pending")).unwrap().count(), 0);
+    let pending = store.begin().unwrap();
+    let source = directory.path().join("source");
+    fs::create_dir(&source).unwrap();
+    fs::write(source.join("data"), b"source preserved").unwrap();
+    assert!(
+        pending
+            .publish(&source, b"machine", compatibility())
+            .is_err()
+    );
+    assert_eq!(fs::read(source.join("data")).unwrap(), b"source preserved");
+    assert_eq!(fs::read_dir(root.join("objects")).unwrap().count(), 0);
+    assert_eq!(fs::read_dir(root.join("pending")).unwrap().count(), 0);
+}
+
+#[test]
+fn payload_and_manifest_corruption_and_incompatible_restore_are_rejected() {
+    let directory = tempfile::tempdir().unwrap();
+    let source = directory.path().join("source");
+    fs::create_dir(&source).unwrap();
+    fs::write(source.join("file"), b"original").unwrap();
+    let root = directory.path().join("store");
+    let store = SnapshotStore::new(&root).unwrap();
+    let pending = store.begin().unwrap();
+    pending.create_ram().unwrap().write_all(b"RAM").unwrap();
+    let id = pending
+        .publish(&source, b"machine-state", compatibility())
+        .unwrap();
+    let mut incompatible = compatibility();
+    incompatible.host_boot = "other".into();
+    assert!(store.open(&id, &incompatible).is_err());
+    let object = root.join("objects").join(&id);
+    for name in ["ram.bin", "machine.json", "manifest.json", "rootfs/file"] {
+        let path = object.join(name);
+        let saved = fs::read(&path).unwrap();
+        fs::write(&path, b"corruption").unwrap();
+        assert!(store.open(&id, &compatibility()).is_err(), "{name}");
+        fs::write(path, saved).unwrap();
+        // File timestamps are part of the filesystem seal; restoring bytes
+        // alone does not make a modified backing tree valid again.
+        if name == "rootfs/file" {
+            break;
+        }
+    }
+}
+
+#[test]
+fn cleanup_abandoned_objects_preserves_active_writer() {
+    const ROLE: &str = "PVISOR_ENVIRONMENT_ABANDONED_WRITER";
+    if let Some(root) = std::env::var_os(ROLE) {
+        let store = SnapshotStore::new(std::path::Path::new(&root)).unwrap();
+        let pending = store.begin().unwrap();
+        pending
+            .create_ram()
+            .unwrap()
+            .write_all(b"unfinished RAM")
+            .unwrap();
+        // Process exit bypasses TempDir Drop but releases its OS file lock.
+        std::process::exit(0);
+    }
+    let directory = tempfile::tempdir().unwrap();
+    let root = directory.path().join("store");
+    let store = SnapshotStore::new(&root).unwrap();
+    assert!(
+        std::process::Command::new(std::env::current_exe().unwrap())
+            .args([
+                "--exact",
+                "cleanup_abandoned_objects_preserves_active_writer",
+                "--nocapture"
+            ])
+            .env(ROLE, &root)
+            .status()
+            .unwrap()
+            .success()
+    );
+    assert_eq!(fs::read_dir(root.join("pending")).unwrap().count(), 1);
+    let active = store.begin().unwrap();
+    active
+        .create_ram()
+        .unwrap()
+        .write_all(b"active RAM")
+        .unwrap();
+    fs::create_dir(root.join("deleted/tombstone")).unwrap();
+    fs::write(root.join("deleted/tombstone/file"), b"deleted payload").unwrap();
+    assert_eq!(store.collect_abandoned().unwrap(), 2);
+    assert_eq!(fs::read_dir(root.join("pending")).unwrap().count(), 1);
+    assert_eq!(fs::read_dir(root.join("deleted")).unwrap().count(), 0);
+    drop(active);
+    assert_eq!(fs::read_dir(root.join("pending")).unwrap().count(), 0);
+}
+
+#[test]
+fn compressed_ram_is_durable_shared_and_collected_only_after_last_snapshot() {
+    use std::io::Read;
+    use std::os::unix::fs::MetadataExt;
+    let directory = tempfile::tempdir().unwrap();
+    let source = directory.path().join("source");
+    fs::create_dir(&source).unwrap();
+    fs::write(source.join("file"), b"original").unwrap();
+    let root = directory.path().join("store");
+    let store = SnapshotStore::new(&root).unwrap();
+    // Repetition within and across snapshots, and a short tail, use one codec.
+    let bytes = vec![17; 2 * 65536 + 13];
+    let mut identities = Vec::new();
+    for machine in [b"first-machine".as_slice(), b"second-machine"] {
+        let pending = store.begin().unwrap();
+        let mut stale = pending.create_ram().unwrap();
+        stale.write_all(&bytes).unwrap();
+        identities.push(
+            pending
+                .publish_compressed(&source, machine, compatibility())
+                .unwrap(),
+        );
+        stale.write_all(b"stale modification").unwrap();
+    }
+    fs::remove_dir_all(source).unwrap();
+    drop(store);
+    let store = SnapshotStore::new(&root).unwrap();
+    let first = store.open(&identities[0], &compatibility()).unwrap();
+    let blocks = first.manifest().ram_blocks.as_ref().unwrap();
+    assert_eq!(blocks.blocks.len(), 3);
+    assert_eq!(blocks.blocks[0].id, blocks.blocks[1].id);
+    assert_eq!(fs::read_dir(root.join("content")).unwrap().count(), 2);
+    let blob = root.join("content").join(&blocks.blocks[0].id);
+    let meta = fs::metadata(&blob).unwrap();
+    assert!(meta.len() < 65536);
+    assert_eq!(meta.nlink(), 3); // cache + one reference from each snapshot
+    let mut reader = first.ram_file().unwrap();
+    assert!(reader.write_all(b"write forbidden").is_err());
+    let mut restored = Vec::new();
+    reader.read_to_end(&mut restored).unwrap();
+    assert_eq!(restored, bytes);
+    assert!(store.collect_abandoned().is_err());
+    drop(first);
+    store.delete(&identities[0]).unwrap();
+    assert_eq!(store.collect_abandoned().unwrap(), 0);
+    let second = store.open(&identities[1], &compatibility()).unwrap();
+    assert_eq!(fs::metadata(&blob).unwrap().nlink(), 2);
+    // Same read-only artifact is independently materialized for each consumer.
+    let mut restored = Vec::new();
+    second
+        .ram_file()
+        .unwrap()
+        .read_to_end(&mut restored)
+        .unwrap();
+    assert_eq!(restored, bytes);
+    drop(second);
+    store.delete(&identities[1]).unwrap();
+    assert_eq!(store.collect_abandoned().unwrap(), 2);
+    assert_eq!(fs::read_dir(root.join("content")).unwrap().count(), 0);
+}
+
+#[test]
+fn compressed_ram_corruption_truncation_and_missing_references_fail_closed() {
+    let directory = tempfile::tempdir().unwrap();
+    let source = directory.path().join("source");
+    fs::create_dir(&source).unwrap();
+    let root = directory.path().join("store");
+    let store = SnapshotStore::new(&root).unwrap();
+    let pending = store.begin().unwrap();
+    pending
+        .create_ram()
+        .unwrap()
+        .write_all(&vec![23; 65536])
+        .unwrap();
+    let id = pending
+        .publish_compressed(&source, b"machine", compatibility())
+        .unwrap();
+    let snapshot = store.open(&id, &compatibility()).unwrap();
+    let block = snapshot.manifest().ram_blocks.as_ref().unwrap().blocks[0]
+        .id
+        .clone();
+    drop(snapshot);
+    let reference = root
+        .join("objects")
+        .join(&id)
+        .join("ram-blocks")
+        .join(block);
+    let original = fs::read(&reference).unwrap();
+    for corrupted in [
+        original[..12].to_vec(),
+        {
+            let mut bytes = original.clone();
+            *bytes.last_mut().unwrap() ^= 1;
+            bytes
+        },
+        {
+            let mut bytes = original.clone();
+            bytes[40..44].copy_from_slice(&u32::MAX.to_le_bytes());
+            bytes
+        },
+    ] {
+        fs::write(&reference, corrupted).unwrap();
+        assert!(store.open(&id, &compatibility()).is_err());
+    }
+    fs::write(&reference, original).unwrap();
+    assert!(store.open(&id, &compatibility()).is_ok());
+    fs::remove_file(reference).unwrap();
+    assert!(store.open(&id, &compatibility()).is_err());
+}
+
+#[test]
+fn durable_codec_roundtrips_fill_zstd_raw_and_short_tail() {
+    use std::io::Read;
+    let directory = tempfile::tempdir().unwrap();
+    let source = directory.path().join("source");
+    fs::create_dir(&source).unwrap();
+    let root = directory.path().join("store");
+    let store = SnapshotStore::new(&root).unwrap();
+    let mut bytes = vec![0; 65536];
+    bytes.extend((0..65536).map(|n| (n % 251) as u8));
+    let mut seed = 123456789u64;
+    bytes.extend((0..65536).map(|_| {
+        seed ^= seed << 13;
+        seed ^= seed >> 7;
+        seed ^= seed << 17;
+        seed as u8
+    }));
+    bytes.extend_from_slice(b"short tail");
+    let pending = store.begin().unwrap();
+    pending.create_ram().unwrap().write_all(&bytes).unwrap();
+    let id = pending
+        .publish_compressed(&source, b"machine", compatibility())
+        .unwrap();
+    let snapshot = store.open(&id, &compatibility()).unwrap();
+    let blocks = &snapshot.manifest().ram_blocks.as_ref().unwrap().blocks;
+    assert_eq!(blocks.len(), 4);
+    let encodings: Vec<_> = blocks
+        .iter()
+        .map(|block| fs::read(root.join("content").join(&block.id)).unwrap()[44])
+        .collect();
+    assert_eq!(encodings, [0, 2, 1, 1]);
+    let mut restored = Vec::new();
+    snapshot
+        .ram_file()
+        .unwrap()
+        .read_to_end(&mut restored)
+        .unwrap();
+    assert_eq!(restored, bytes);
+}
+
+#[test]
+fn failed_compressed_publication_keeps_live_objects_and_reaps_orphan_content() {
+    let directory = tempfile::tempdir().unwrap();
+    let source = directory.path().join("source");
+    fs::create_dir(&source).unwrap();
+    let root = directory.path().join("store");
+    let store = SnapshotStore::new(&root).unwrap();
+    let pending = store.begin().unwrap();
+    pending
+        .create_ram()
+        .unwrap()
+        .write_all(b"raw baseline")
+        .unwrap();
+    let baseline = pending
+        .publish(&source, b"machine", compatibility())
+        .unwrap();
+    let reader = store.open(&baseline, &compatibility()).unwrap();
+    let pending = store.begin().unwrap();
+    pending
+        .create_ram()
+        .unwrap()
+        .write_all(&vec![29; 65536])
+        .unwrap();
+    // Conservative store-wide reader gate rejects final publication, after blocks exist.
+    assert!(
+        pending
+            .publish_compressed(&source, b"second", compatibility())
+            .is_err()
+    );
+    assert_eq!(fs::read_dir(root.join("pending")).unwrap().count(), 0);
+    assert_eq!(fs::read_dir(root.join("content")).unwrap().count(), 1);
+    drop(reader);
+    assert_eq!(store.collect_abandoned().unwrap(), 1);
+    assert_eq!(fs::read_dir(root.join("content")).unwrap().count(), 0);
+    assert!(store.open(&baseline, &compatibility()).is_ok());
+}

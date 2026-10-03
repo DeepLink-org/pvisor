@@ -177,6 +177,87 @@ impl Drop for GuestFs {
 }
 
 #[test]
+fn fs_rebinds_verified_copy_after_original_tree_is_removed() {
+    use devices::virtio::DeviceSnapshotState;
+    use std::os::unix::fs::{MetadataExt, symlink};
+
+    let workspace = tempfile::tempdir().unwrap();
+    let root = workspace.path().join("original");
+    std::fs::create_dir(&root).unwrap();
+    std::fs::write(root.join("data"), b"0123456789").unwrap();
+    symlink("data", root.join("link")).unwrap();
+    let root = root.canonicalize().unwrap();
+    let mut source = GuestFs::new(&root, None);
+    source.request(
+        fuse::Opcode::Init,
+        0,
+        fuse::InitInCompat {
+            major: 7,
+            minor: 31,
+            ..Default::default()
+        }
+        .as_slice(),
+    );
+    let entry = source.request(fuse::Opcode::Lookup, 1, b"data\0");
+    let inode = u64::from_ne_bytes(entry[..8].try_into().unwrap());
+    source.request(fuse::Opcode::Lookup, 1, b"link\0");
+    let opened = source.request(
+        fuse::Opcode::Open,
+        inode,
+        fuse::OpenIn::default().as_slice(),
+    );
+    let handle = u64::from_ne_bytes(opened[..8].try_into().unwrap());
+    let mut state = source.freeze();
+    let copied = workspace.path().join("copied");
+    assert!(
+        std::process::Command::new("/bin/cp")
+            .args(["-pR"])
+            .arg(&root)
+            .arg(&copied)
+            .status()
+            .unwrap()
+            .success()
+    );
+    assert_ne!(
+        std::fs::metadata(root.join("data")).unwrap().ino(),
+        std::fs::metadata(copied.join("data")).unwrap().ino()
+    );
+    let damaged = workspace.path().join("damaged");
+    assert!(
+        std::process::Command::new("/bin/cp")
+            .arg("-pR")
+            .arg(&root)
+            .arg(&damaged)
+            .status()
+            .unwrap()
+            .success()
+    );
+    let mem = source.mem.clone();
+    let next = source.next;
+    drop(source);
+    std::fs::remove_dir_all(&root).unwrap();
+
+    let DeviceSnapshotState::Fs { server, .. } = &mut state.state else {
+        panic!()
+    };
+    let pristine = serde_json::to_vec(server).unwrap();
+    assert!(server.rebind_owned_copy(&copied, &copied).is_err());
+    assert_eq!(serde_json::to_vec(server).unwrap(), pristine);
+    std::fs::remove_file(damaged.join("link")).unwrap();
+    symlink("evil", damaged.join("link")).unwrap();
+    assert!(server.rebind_owned_copy(&root, &damaged).is_err());
+    assert_eq!(serde_json::to_vec(server).unwrap(), pristine);
+    std::fs::remove_file(damaged.join("link")).unwrap();
+    symlink("data", damaged.join("link")).unwrap();
+    std::fs::write(damaged.join("data"), b"XXXXXXXXXX").unwrap();
+    assert!(server.rebind_owned_copy(&root, &damaged).is_err());
+    assert_eq!(serde_json::to_vec(server).unwrap(), pristine);
+    server.rebind_owned_copy(&root, &copied).unwrap();
+    let mut destination = GuestFs::new(&copied, Some((mem, state, next)));
+    assert_eq!(destination.read(inode, handle), b"3456");
+}
+
+#[test]
 fn fs_restores_inode_and_open_handle_without_a_new_fuse_init() {
     let root = tempfile::tempdir().unwrap();
     std::fs::write(root.path().join("data"), b"0123456789").unwrap();

@@ -8,10 +8,15 @@ pub(crate) const BUILTINS: &[&str] = &[
     "apply",
     "drop",
     "status",
+    "review",
+    "checkpoint",
+    "suspend",
+    "resume",
     "kill",
     "fork",
     "inspect",
     "extensions",
+    "snapshot",
     "help",
 ];
 

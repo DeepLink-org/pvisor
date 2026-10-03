@@ -1,9 +1,11 @@
 //! Job lifecycle commands and discovery of independent executable extensions.
+mod checkpoint;
 mod commands;
 pub mod extensions;
 mod product;
 mod run;
 pub mod runtime;
+mod snapshot;
 #[cfg(unix)]
 pub mod terminal;
 mod trajectory;
@@ -34,12 +36,22 @@ enum Command {
     Drop(runtime::SelectArgs),
     /// Show a Job's process, filesystem, and network status.
     Status(runtime::StatusArgs),
+    /// Review a stopped Job's current staged changes and execution evidence.
+    Review(product::ReviewArgs),
+    /// Manage immutable, Job-scoped checkpoints.
+    Checkpoint(checkpoint::CheckpointArgs),
+    /// Suspend a Job when its executor supports complete execution checkpoints.
+    Suspend(checkpoint::SuspendArgs),
+    /// Continue a suspended Job when its executor supports full state restoration.
+    Resume(checkpoint::ResumeArgs),
     /// Request graceful termination of a live Job.
     Kill(runtime::KillArgs),
     /// Start a new safe Job from a stopped Job or checkpoint.
     Fork(run::ForkArgs),
     /// Open a read-only shell or run a command against a Job filesystem view.
     Inspect(runtime::InspectArgs),
+    /// Legacy independent full-copy VM snapshot tools.
+    Snapshot(snapshot::Args),
     /// List installed executable extensions and their descriptions.
     Extensions,
     #[command(external_subcommand)]
@@ -65,8 +77,6 @@ fn normalize_default_run(mut args: Vec<OsString>) -> Vec<OsString> {
             "env",
             "ir",
             "trace",
-            "review",
-            "checkpoint",
             "job",
             "--help",
             "-h",
@@ -126,6 +136,7 @@ pub fn main() -> anyhow::Result<()> {
     let parsed = Cli::from_arg_matches(&command.get_matches_from(args.clone()))?;
     crate::util::startup_mark("cli.parsed");
     match parsed.command {
+        Command::Snapshot(args) => snapshot::run(args)?,
         Command::Run(run) => {
             if !terminal::is_child() {
                 let audit = run.audit_requested()?;
@@ -149,6 +160,10 @@ pub fn main() -> anyhow::Result<()> {
         Command::Apply(args) => runtime::apply(args)?,
         Command::Drop(args) => runtime::drop_overlay(args)?,
         Command::Status(args) => runtime::status(args)?,
+        Command::Review(args) => product::review(args)?,
+        Command::Checkpoint(args) => checkpoint::run(args)?,
+        Command::Suspend(args) => checkpoint::suspend(args)?,
+        Command::Resume(args) => checkpoint::resume(args)?,
         Command::Kill(args) => runtime::kill(args)?,
         Command::Inspect(args) => finish(runtime::inspect(args)?),
         Command::Extensions => println!(

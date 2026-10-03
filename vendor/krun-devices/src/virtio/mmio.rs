@@ -77,6 +77,32 @@ pub struct MmioSnapshot {
     device: DeviceSnapshot,
 }
 
+impl MmioSnapshot {
+    /// Explicit relocation of a single filesystem binding after the caller
+    /// verifies an independently owned environment copy. Other devices are
+    /// untouched; the coordinator must require exactly one matching binding.
+    #[cfg(all(target_os = "macos", not(any(feature = "tee", feature = "aws-nitro"))))]
+    pub fn rebind_filesystem_copy(
+        &mut self,
+        tag: &[u8],
+        source: &std::path::Path,
+        destination: &std::path::Path,
+    ) -> std::io::Result<bool> {
+        if let super::DeviceSnapshotState::Fs {
+            tag: saved_tag,
+            server,
+            ..
+        } = &mut self.device.state
+        {
+            if saved_tag == tag {
+                server.rebind_owned_copy(source, destination)?;
+                return Ok(true);
+            }
+        }
+        Ok(false)
+    }
+}
+
 pub struct MmioTransport {
     device: Arc<Mutex<dyn VirtioDevice>>,
     // The register where feature bits are stored.
@@ -209,7 +235,7 @@ impl MmioTransport {
                     std::thread::sleep(std::time::Duration::from_millis(1));
                 }
                 Err(std::sync::TryLockError::WouldBlock) => {
-                    return Err("virtio thaw lock timed out".into())
+                    return Err("virtio thaw lock timed out".into());
                 }
                 Err(_) => return Err("virtio device poisoned".into()),
             }

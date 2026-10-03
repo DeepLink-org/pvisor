@@ -151,8 +151,14 @@ fn queued_external_response_rejects_snapshot_and_original_can_resume() {
     );
     source.thaw().unwrap();
     submit(&mem, 0, 0, &[0; 52], true);
-    assert!(source.process_stream_rx());
+    // The thawed worker may drain RX before this thread; completion and the
+    // actual RST response are the contract, not which thread drains the queue.
+    wait(|| {
+        source.process_stream_rx();
+        used(&mem, 0) == 1
+    });
     assert_eq!(used(&mem, 0), 1);
+    assert_eq!(mem.read_obj::<u16>(GuestAddress(0x10000 + 30)).unwrap(), 3);
     freeze(&mut source);
     assert!(source.capture_state().is_ok());
 }

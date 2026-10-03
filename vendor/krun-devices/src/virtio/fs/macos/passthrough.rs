@@ -5,9 +5,9 @@
 use super::super::snapshot::{
     self, FileIdentity, FsSnapshot, HandleSnapshot, InodeSnapshot, PassthroughSnapshot,
 };
-use std::collections::btree_map;
 use std::collections::BTreeMap;
 use std::collections::HashMap;
+use std::collections::btree_map;
 use std::ffi::{CStr, CString};
 use std::fs::File;
 use std::io;
@@ -22,13 +22,13 @@ use std::sync::atomic::{AtomicBool, AtomicI64, AtomicU64, Ordering};
 use std::sync::{Arc, Mutex, RwLock};
 use std::time::Duration;
 
-use crossbeam_channel::{unbounded, Sender};
+use crossbeam_channel::{Sender, unbounded};
 use nix::errno::Errno;
 use utils::worker_message::WorkerMessage;
 
 use crate::virtio::fs::filesystem::SecContext;
 
-use super::super::super::linux_errno::{linux_error, LINUX_ERANGE};
+use super::super::super::linux_errno::{LINUX_ERANGE, linux_error};
 use super::super::bindings;
 use super::super::filesystem::{
     Context, DirEntry, Entry, ExportTable, Extensions, FileSystem, FsOptions, GetxattrReply,
@@ -1371,6 +1371,11 @@ impl FileSystem for PassthroughFs {
                 path: Some(relative.as_os_str().as_bytes().to_vec()),
                 identity,
                 digest,
+                link_target: if std::fs::symlink_metadata(path)?.file_type().is_symlink() {
+                    Some(std::fs::read_link(path)?.as_os_str().as_bytes().to_vec())
+                } else {
+                    None
+                },
             });
         }
         let mut saved_handles = Vec::new();
@@ -1453,10 +1458,15 @@ impl FileSystem for PassthroughFs {
             let path = snapshot::relative_path(&root, relative)?;
             let pin = std::fs::OpenOptions::new()
                 .read(true)
-                .custom_flags(libc::O_EVTONLY | libc::O_SYMLINK | libc::O_NOFOLLOW)
+                .custom_flags(libc::O_EVTONLY | libc::O_SYMLINK)
                 .open(&path)?;
             let identity = FileIdentity::read(&pin)?;
             if identity != saved.identity
+                || (identity.mode & u32::from(libc::S_IFMT) == u32::from(libc::S_IFLNK))
+                    != saved.link_target.is_some()
+                || (saved.link_target.is_some()
+                    && Some(std::fs::read_link(&path)?.as_os_str().as_bytes().to_vec())
+                        != saved.link_target)
                 || (identity.mode & u32::from(libc::S_IFMT) == u32::from(libc::S_IFREG))
                     != saved.digest.is_some()
                 || (saved.digest.is_some()
@@ -3192,12 +3202,16 @@ mod path_handle_tests {
             panic!("expected names");
         };
         assert_eq!(names.len(), count as usize);
-        assert!(names
-            .split(|byte| *byte == 0)
-            .any(|name| name == b"user.pvisor-visible"));
-        assert!(!names
-            .split(|byte| *byte == 0)
-            .any(|name| name.starts_with(b"com.apple.")));
+        assert!(
+            names
+                .split(|byte| *byte == 0)
+                .any(|name| name == b"user.pvisor-visible")
+        );
+        assert!(
+            !names
+                .split(|byte| *byte == 0)
+                .any(|name| name.starts_with(b"com.apple."))
+        );
         assert_eq!(
             unsafe {
                 libc::fgetxattr(
