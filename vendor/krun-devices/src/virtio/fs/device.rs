@@ -58,7 +58,6 @@ pub struct Fs {
     worker_thread: Option<JoinHandle<FsWorker>>,
     parked_worker: Option<FsWorker>,
     freeze_requested: bool,
-    #[cfg(target_os = "macos")]
     restore: Option<super::snapshot::ServerSnapshot>,
     worker_stopfd: EventFd,
     exit_code: Arc<AtomicI32>,
@@ -114,7 +113,6 @@ impl Fs {
             worker_thread: None,
             parked_worker: None,
             freeze_requested: false,
-            #[cfg(target_os = "macos")]
             restore: None,
             worker_stopfd: EventFd::new(EFD_NONBLOCK).map_err(FsError::EventFd)?,
             exit_code,
@@ -190,7 +188,6 @@ impl VirtioDevice for Fs {
         self.freeze_requested = false;
         Ok(())
     }
-    #[cfg(target_os = "macos")]
     fn capture_state(&self) -> Result<super::super::DeviceSnapshot, String> {
         if self.is_activated() {
             let (queues, server) = self
@@ -210,7 +207,6 @@ impl VirtioDevice for Fs {
         }
         Err("inactive filesystem snapshot unsupported".into())
     }
-    #[cfg(target_os = "macos")]
     fn restore_state(&mut self, state: &super::super::DeviceSnapshotState) -> Result<(), String> {
         if self.is_activated() || self.worker_thread.is_some() || self.parked_worker.is_some() {
             return Err("filesystem restore requires a fresh device".into());
@@ -308,7 +304,6 @@ impl VirtioDevice for Fs {
             virtual_entries,
             self.worker_stopfd.try_clone().unwrap(),
             self.exit_code.clone(),
-            #[cfg(target_os = "macos")]
             self.restore.is_some(),
             #[cfg(target_os = "macos")]
             self.map_sender.clone(),
@@ -317,7 +312,6 @@ impl VirtioDevice for Fs {
             error!("virtio_fs: failed to create worker: {}", e);
             ActivateError::BadActivate
         })?;
-        #[cfg(target_os = "macos")]
         if let Some(state) = self.restore.take() {
             worker.restore_state(&state).map_err(|error| {
                 error!("virtio_fs: failed restoring worker: {error}");
@@ -326,10 +320,6 @@ impl VirtioDevice for Fs {
             self.parked_worker = Some(worker);
             self.freeze_requested = true;
         } else {
-            self.worker_thread = Some(worker.run());
-        }
-        #[cfg(not(target_os = "macos"))]
-        {
             self.worker_thread = Some(worker.run());
         }
 
@@ -354,7 +344,6 @@ impl VirtioDevice for Fs {
         }
         self.parked_worker = None;
         self.freeze_requested = false;
-        #[cfg(target_os = "macos")]
         {
             self.restore = None;
         }

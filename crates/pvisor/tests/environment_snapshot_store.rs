@@ -1,4 +1,4 @@
-#![cfg(target_os = "macos")]
+#![cfg(any(target_os = "macos", all(target_os = "linux", target_arch = "x86_64")))]
 use pvisor::environment_snapshot::{Compatibility, SnapshotStore};
 use std::{fs, io::Write};
 

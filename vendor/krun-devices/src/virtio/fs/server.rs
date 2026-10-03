@@ -78,7 +78,6 @@ impl<F: FileSystem + Sync> Server<F> {
         }
     }
 
-    #[cfg(target_os = "macos")]
     pub fn capture_state(&self, next_inode: u64) -> io::Result<super::snapshot::ServerSnapshot> {
         Ok(super::snapshot::ServerSnapshot {
             options: self.options.load(Ordering::Relaxed),
@@ -86,7 +85,6 @@ impl<F: FileSystem + Sync> Server<F> {
             fs: self.fs.capture_state()?,
         })
     }
-    #[cfg(target_os = "macos")]
     pub fn restore_state(&self, state: &super::snapshot::ServerSnapshot) -> io::Result<()> {
         if FsOptions::from_bits(state.options).is_none() {
             return Err(super::snapshot::invalid("invalid FUSE options"));

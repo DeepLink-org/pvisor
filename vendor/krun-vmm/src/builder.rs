@@ -566,7 +566,7 @@ pub fn build_microvm(
     _shutdown_efd: Option<EventFd>,
     _sender: Sender<WorkerMessage>,
 ) -> std::result::Result<Arc<Mutex<Vmm>>, StartMicrovmError> {
-    #[cfg(all(target_os = "macos", target_arch = "aarch64"))]
+    #[cfg(any(all(target_os = "macos", target_arch = "aarch64"), all(target_os = "linux", target_arch = "x86_64")))]
     if let Some(restore) = &vm_resources.machine_restore {
         if !vm_resources.snapshot_profile || vm_resources.nested_enabled {
             return Err(StartMicrovmError::GuestMemoryMmap("restore requires snapshot profile without nested virtualization".into()));
@@ -980,9 +980,9 @@ pub fn build_microvm(
         exit_code: exit_code.clone(),
         paused: false,
         control_failed: false,
-        #[cfg(all(target_os = "macos", target_arch = "aarch64"))]
+        #[cfg(any(all(target_os = "macos", target_arch = "aarch64"), all(target_os = "linux", target_arch = "x86_64")))]
         snapshot_freeze_requested: false,
-        #[cfg(all(target_os = "macos", target_arch = "aarch64"))]
+        #[cfg(any(all(target_os = "macos", target_arch = "aarch64"), all(target_os = "linux", target_arch = "x86_64")))]
         snapshot_devices_frozen: false,
         #[cfg(target_os = "macos")]
         ram_unmapped: false,
@@ -1107,9 +1107,9 @@ pub fn build_microvm(
     #[cfg(all(target_arch = "x86_64", not(feature = "tee")))]
     load_cmdline(&vmm)?;
 
-    #[cfg(all(target_os = "macos", target_arch = "aarch64"))]
+    #[cfg(any(all(target_os = "macos", target_arch = "aarch64"), all(target_os = "linux", target_arch = "x86_64")))]
     let restoring = vm_resources.machine_restore.is_some();
-    #[cfg(not(all(target_os = "macos", target_arch = "aarch64")))]
+    #[cfg(not(any(all(target_os = "macos", target_arch = "aarch64"), all(target_os = "linux", target_arch = "x86_64"))))]
     let restoring = false;
     if !restoring {
     vmm.configure_system(
@@ -1121,7 +1121,7 @@ pub fn build_microvm(
     .map_err(StartMicrovmError::Internal)?;
     }
 
-    #[cfg(all(target_os = "macos", target_arch = "aarch64"))]
+    #[cfg(any(all(target_os = "macos", target_arch = "aarch64"), all(target_os = "linux", target_arch = "x86_64")))]
     if let Some(restore) = &vm_resources.machine_restore {
         restore.load_ram(vmm.guest_memory()).map_err(StartMicrovmError::GuestMemoryMmap)?;
         if !vmm.device_memory_gate.try_close().map_err(|e| StartMicrovmError::GuestMemoryMmap(e.into()))? {
@@ -1129,6 +1129,14 @@ pub fn build_microvm(
         }
         vmm.mmio_device_manager.bus.restore_snapshot_devices(&restore.state.devices)
             .map_err(StartMicrovmError::GuestMemoryMmap)?;
+        #[cfg(all(target_os = "linux", target_arch = "x86_64"))]
+        {
+            vmm.pio_device_manager.io_bus.restore_snapshot_devices(&restore.state.pio_devices)
+                .map_err(StartMicrovmError::GuestMemoryMmap)?;
+            vmm.vm.restore_state(restore.state.kvm.as_ref().ok_or_else(||
+                StartMicrovmError::GuestMemoryMmap("missing KVM machine state".into()))?)
+                .map_err(Error::Vcpu).map_err(StartMicrovmError::Internal)?;
+        }
         for (vcpu, state) in vcpus.iter_mut().zip(&restore.state.cpus) {
             vcpu.set_restore_state(state.clone()).map_err(Error::Vcpu).map_err(StartMicrovmError::Internal)?;
         }
@@ -1571,7 +1579,11 @@ pub fn create_guest_memory(
     }
 
     #[cfg(all(target_arch = "x86_64", not(feature = "tee")))]
-    if vm_resources.ram_backing.is_some() && matches!(payload, Payload::KernelMmap) {
+    let map_kernel_region = vm_resources.ram_backing.is_some();
+    #[cfg(all(target_os = "linux", target_arch = "x86_64", not(feature = "tee")))]
+    let map_kernel_region = map_kernel_region || vm_resources.machine_restore.is_some();
+    #[cfg(all(target_arch = "x86_64", not(feature = "tee")))]
+    if map_kernel_region && matches!(payload, Payload::KernelMmap) {
         let kernel = vm_resources
             .kernel_bundle
             .as_ref()
@@ -1588,7 +1600,7 @@ pub fn create_guest_memory(
             .map_err(|e| StartMicrovmError::GuestMemoryMmap(format!("{e:?}")))?
     };
 
-    #[cfg(all(target_os = "macos", target_arch = "aarch64"))]
+    #[cfg(any(all(target_os = "macos", target_arch = "aarch64"), all(target_os = "linux", target_arch = "x86_64")))]
     if vm_resources.machine_restore.is_some() {
         return Ok((guest_mem, arch_mem_info, shm_manager, PayloadConfig {
             entry_addr: GuestAddress(0), initrd_config: None, kernel_cmdline: None,

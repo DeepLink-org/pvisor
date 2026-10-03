@@ -486,3 +486,19 @@ mod tests {
         )
     }
 }
+
+#[derive(Clone, Debug, serde::Serialize, serde::Deserialize)]
+#[serde(deny_unknown_fields)]
+pub struct I8042Snapshot { status:u8, control:u8, outp:u8, cmd:u8, buf:[u8;BUF_SIZE], head:usize, tail:usize }
+impl I8042Device {
+    pub fn capture_state(&self) -> std::result::Result<I8042Snapshot, String> {
+        Ok(I8042Snapshot { status:self.status, control:self.control, outp:self.outp, cmd:self.cmd,
+            buf:self.buf, head:self.bhead.0, tail:self.btail.0 })
+    }
+    pub fn restore_state(&mut self, state:&I8042Snapshot) -> std::result::Result<(), String> {
+        if state.tail.wrapping_sub(state.head) > BUF_SIZE { return Err("invalid i8042 buffer state".into()); }
+        self.status=state.status; self.control=state.control; self.outp=state.outp; self.cmd=state.cmd;
+        self.buf=state.buf; self.bhead=Wrapping(state.head); self.btail=Wrapping(state.tail);
+        Ok(())
+    }
+}

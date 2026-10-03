@@ -6,7 +6,10 @@
 use anyhow::{Context, bail, ensure};
 use serde::{Deserialize, Serialize};
 use sha2::{Digest, Sha256};
+#[cfg(target_os = "macos")]
 use std::os::macos::fs::MetadataExt as _;
+#[cfg(target_os = "linux")]
+mod linux;
 use std::{
     collections::BTreeMap,
     ffi::CString,
@@ -87,6 +90,7 @@ fn native_path(path: &Path) -> anyhow::Result<CString> {
     Ok(CString::new(path.as_os_str().as_bytes())?)
 }
 
+#[cfg(target_os = "macos")]
 fn xattrs(path: &Path) -> anyhow::Result<Vec<(Vec<u8>, Vec<u8>)>> {
     let path = native_path(path)?;
     let size =
@@ -137,13 +141,23 @@ fn xattrs(path: &Path) -> anyhow::Result<Vec<(Vec<u8>, Vec<u8>)>> {
     Ok(result)
 }
 
+#[cfg(target_os = "linux")]
+use linux::xattrs;
+#[cfg(target_os = "linux")]
+fn acl(_path: &Path) -> anyhow::Result<Option<Vec<u8>>> {
+    // Linux POSIX ACLs are included in the system.posix_acl_* xattrs.
+    Ok(None)
+}
+
 // Darwin sys/acl.h: ACL_TYPE_EXTENDED = 0x100. These link-specific calls do
 // not follow a symlink outside the owned tree. libc does not expose them.
+#[cfg(target_os = "macos")]
 unsafe extern "C" {
     fn acl_get_link_np(path: *const libc::c_char, kind: libc::c_int) -> *mut libc::c_void;
     fn acl_to_text(acl: *mut libc::c_void, length: *mut libc::ssize_t) -> *mut libc::c_char;
     fn acl_free(pointer: *mut libc::c_void) -> libc::c_int;
 }
+#[cfg(target_os = "macos")]
 fn acl(path: &Path) -> anyhow::Result<Option<Vec<u8>>> {
     let path = native_path(path)?;
     let object = unsafe { acl_get_link_np(path.as_ptr(), 0x100) };
@@ -189,6 +203,7 @@ pub fn inventory(root: &Path) -> anyhow::Result<TreeInventory> {
         links: &mut BTreeMap<(u64, u64), (Vec<u8>, u64, u64)>,
     ) -> anyhow::Result<()> {
         let metadata = fs::symlink_metadata(path)?;
+        #[cfg(target_os = "macos")]
         ensure!(
             metadata.st_flags() == 0,
             "unsupported BSD file flags at {}",
@@ -309,23 +324,29 @@ pub fn copy_owned_tree(source: &Path, destination: &Path) -> anyhow::Result<Tree
                 fs::hard_link(first, destination)?;
                 return Ok(());
             }
-            let flags = libc::COPYFILE_METADATA
-                | libc::COPYFILE_NOFOLLOW
-                | if metadata.is_dir() {
-                    0
-                } else {
-                    libc::COPYFILE_DATA | libc::COPYFILE_EXCL
+            #[cfg(target_os = "macos")]
+            {
+                let flags = libc::COPYFILE_METADATA
+                    | libc::COPYFILE_NOFOLLOW
+                    | if metadata.is_dir() {
+                        0
+                    } else {
+                        libc::COPYFILE_DATA | libc::COPYFILE_EXCL
+                    };
+                let src = native_path(source)?;
+                let dst = native_path(destination)?;
+                let rc = unsafe {
+                    libc::copyfile(src.as_ptr(), dst.as_ptr(), std::ptr::null_mut(), flags)
                 };
-            let src = native_path(source)?;
-            let dst = native_path(destination)?;
-            let rc =
-                unsafe { libc::copyfile(src.as_ptr(), dst.as_ptr(), std::ptr::null_mut(), flags) };
-            ensure!(
-                rc == 0,
-                "copyfile {}: {}",
-                source.display(),
-                std::io::Error::last_os_error()
-            );
+                ensure!(
+                    rc == 0,
+                    "copyfile {}: {}",
+                    source.display(),
+                    std::io::Error::last_os_error()
+                );
+            }
+            #[cfg(target_os = "linux")]
+            linux::copy_entry(source, destination, &metadata)?;
             if !metadata.is_dir() {
                 links.insert((metadata.dev(), metadata.ino()), destination.to_owned());
             }

@@ -1,6 +1,9 @@
 //! Structural checks for the new whole-machine builder input. No Linux/HVF
 //! runtime is created by these tests; real guest continuation remains a gate.
-#![cfg(all(target_os = "macos", target_arch = "aarch64"))]
+#![cfg(any(
+    all(target_os = "macos", target_arch = "aarch64"),
+    all(target_os = "linux", target_arch = "x86_64")
+))]
 
 use krun_vmm::snapshot::{MachineRestore, MachineSnapshot, RamMappingSnapshot};
 use std::sync::Arc;
@@ -13,6 +16,10 @@ fn restore() -> MachineRestore {
         state: MachineSnapshot {
             version: 1,
             cpus: vec![],
+            #[cfg(target_os = "linux")]
+            kvm: None,
+            #[cfg(target_os = "linux")]
+            pio_devices: vec![],
             devices: vec![],
             ram: vec![
                 RamMappingSnapshot {

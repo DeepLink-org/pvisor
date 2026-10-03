@@ -142,7 +142,6 @@ impl<T: FileSystem<Inode = Inode, Handle = Handle>> AugmentFs<T> {
 impl<T: FileSystem<Inode = Inode, Handle = Handle>> FileSystem for AugmentFs<T> {
     type Inode = Inode;
     type Handle = Handle;
-    #[cfg(target_os = "macos")]
     fn capture_state(&self) -> io::Result<super::snapshot::FsSnapshot> {
         use sha2::{Digest, Sha256};
         let names = self
@@ -171,7 +170,6 @@ impl<T: FileSystem<Inode = Inode, Handle = Handle>> FileSystem for AugmentFs<T> 
             inodes,
         })
     }
-    #[cfg(target_os = "macos")]
     fn restore_state(&self, state: &super::snapshot::FsSnapshot) -> io::Result<()> {
         use super::snapshot::{invalid, FsSnapshot};
         use sha2::{Digest, Sha256};

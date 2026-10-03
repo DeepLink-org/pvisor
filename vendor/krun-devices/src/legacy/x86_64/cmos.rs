@@ -77,3 +77,18 @@ impl BusDevice for Cmos {
         }
     }
 }
+
+#[derive(Clone, Debug, serde::Serialize, serde::Deserialize)]
+#[serde(deny_unknown_fields)]
+pub struct CmosSnapshot { index: u8, data: Vec<u8> }
+impl Cmos {
+    pub fn capture_state(&self) -> Result<CmosSnapshot, String> {
+        Ok(CmosSnapshot { index: self.index, data: self.data.to_vec() })
+    }
+    pub fn restore_state(&mut self, state: &CmosSnapshot) -> Result<(), String> {
+        if state.data.len() != DATA_LEN || state.index > INDEX_MASK { return Err("invalid CMOS state".into()); }
+        self.index = state.index;
+        self.data.copy_from_slice(&state.data);
+        Ok(())
+    }
+}

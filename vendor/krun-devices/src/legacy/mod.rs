@@ -46,7 +46,7 @@ mod riscv64;
 use riscv64::serial;
 
 #[cfg(target_arch = "x86_64")]
-pub use self::cmos::Cmos;
+pub use self::cmos::{Cmos, CmosSnapshot};
 #[cfg(target_os = "macos")]
 pub use self::gicv3::{GicSnapshot, GicV3};
 #[cfg(target_arch = "aarch64")]
@@ -54,7 +54,7 @@ pub use self::gpio::{Gpio, GpioSnapshot};
 #[cfg(all(target_os = "macos", target_arch = "aarch64"))]
 pub use self::hvfgicv3::HvfGicV3;
 #[cfg(target_arch = "x86_64")]
-pub use self::i8042::{Error as I8042DeviceError, I8042Device};
+pub use self::i8042::{Error as I8042DeviceError, I8042Device, I8042Snapshot};
 #[cfg(all(target_os = "linux", target_arch = "x86_64"))]
 pub use self::ioapic::IoApic;
 #[cfg(any(test, feature = "test_utils"))]
@@ -71,7 +71,7 @@ pub use self::kvmioapic::KvmIoapic;
 #[cfg(target_arch = "aarch64")]
 pub use self::rtc_pl031::{RtcSnapshot, RTC};
 pub use self::serial::Serial;
-#[cfg(target_arch = "aarch64")]
+#[cfg(any(target_arch = "aarch64", target_arch = "x86_64"))]
 pub use self::serial::SerialSnapshot;
 #[cfg(target_os = "macos")]
 pub use self::vcpu::{PendingInterrupts, VcpuList};

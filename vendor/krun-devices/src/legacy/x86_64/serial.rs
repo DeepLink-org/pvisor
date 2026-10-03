@@ -561,3 +561,27 @@ mod tests {
         assert_eq!(data[0], 0x12_u8);
     }
 }
+
+#[derive(Clone, Debug, serde::Serialize, serde::Deserialize)]
+#[serde(deny_unknown_fields)]
+pub struct SerialSnapshot {
+    interrupt_enable:u8, interrupt_identification:u8, line_control:u8, line_status:u8,
+    modem_control:u8, modem_status:u8, scratch:u8, baud_divisor:u16, in_buffer:Vec<u8>,
+}
+impl Serial {
+    pub fn capture_state(&self) -> Result<SerialSnapshot, String> {
+        if self.input.is_some() { return Err("snapshot does not support external serial input".into()); }
+        Ok(SerialSnapshot { interrupt_enable:self.interrupt_enable, interrupt_identification:self.interrupt_identification,
+            line_control:self.line_control, line_status:self.line_status, modem_control:self.modem_control,
+            modem_status:self.modem_status, scratch:self.scratch, baud_divisor:self.baud_divisor,
+            in_buffer:self.in_buffer.iter().copied().collect() })
+    }
+    pub fn restore_state(&mut self, state:&SerialSnapshot) -> Result<(), String> {
+        if self.input.is_some() || state.in_buffer.len() > 65536 { return Err("invalid serial snapshot".into()); }
+        self.interrupt_enable=state.interrupt_enable; self.interrupt_identification=state.interrupt_identification;
+        self.line_control=state.line_control; self.line_status=state.line_status; self.modem_control=state.modem_control;
+        self.modem_status=state.modem_status; self.scratch=state.scratch; self.baud_divisor=state.baud_divisor;
+        self.in_buffer=state.in_buffer.iter().copied().collect();
+        Ok(())
+    }
+}

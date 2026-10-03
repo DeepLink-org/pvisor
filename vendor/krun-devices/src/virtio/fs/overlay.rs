@@ -31,10 +31,10 @@ const RENAME_EXCHANGE: u32 = 2;
 
 #[derive(Clone, Debug)]
 #[cfg_attr(
-    target_os = "macos",
+    any(target_os = "macos", target_os = "linux"),
     derive(PartialEq, Eq, serde::Serialize, serde::Deserialize)
 )]
-#[cfg_attr(target_os = "macos", serde(deny_unknown_fields))]
+#[cfg_attr(any(target_os = "macos", target_os = "linux"), serde(deny_unknown_fields))]
 pub struct Config {
     pub lower_dirs: Vec<String>,
     pub upper_dir: String,
@@ -46,12 +46,12 @@ pub struct Config {
 }
 
 #[derive(Clone, Copy, Debug)]
-#[cfg_attr(target_os = "macos", derive(serde::Serialize, serde::Deserialize))]
+#[cfg_attr(any(target_os = "macos", target_os = "linux"), derive(serde::Serialize, serde::Deserialize))]
 struct Layer(usize);
 
 #[derive(Clone, Debug)]
-#[cfg_attr(target_os = "macos", derive(serde::Serialize, serde::Deserialize))]
-#[cfg_attr(target_os = "macos", serde(deny_unknown_fields))]
+#[cfg_attr(any(target_os = "macos", target_os = "linux"), derive(serde::Serialize, serde::Deserialize))]
+#[cfg_attr(any(target_os = "macos", target_os = "linux"), serde(deny_unknown_fields))]
 struct FileHandle {
     overlay_inode: u64,
     layer: Layer,
@@ -60,8 +60,8 @@ struct FileHandle {
 }
 
 #[derive(Clone, Debug)]
-#[cfg_attr(target_os = "macos", derive(serde::Serialize, serde::Deserialize))]
-#[cfg_attr(target_os = "macos", serde(deny_unknown_fields))]
+#[cfg_attr(any(target_os = "macos", target_os = "linux"), derive(serde::Serialize, serde::Deserialize))]
+#[cfg_attr(any(target_os = "macos", target_os = "linux"), serde(deny_unknown_fields))]
 struct DirectoryItem {
     ino: u64,
     name: Vec<u8>,
@@ -69,9 +69,9 @@ struct DirectoryItem {
 }
 
 #[derive(Clone, Debug)]
-#[cfg_attr(target_os = "macos", derive(serde::Serialize, serde::Deserialize))]
+#[cfg_attr(any(target_os = "macos", target_os = "linux"), derive(serde::Serialize, serde::Deserialize))]
 #[cfg_attr(
-    target_os = "macos",
+    any(target_os = "macos", target_os = "linux"),
     serde(tag = "kind", content = "state", deny_unknown_fields)
 )]
 enum Handle {
@@ -85,7 +85,6 @@ struct Nodes {
     by_path: HashMap<PathBuf, u64>,
 }
 
-#[cfg(target_os = "macos")]
 #[derive(Clone, Debug, serde::Serialize, serde::Deserialize)]
 #[serde(deny_unknown_fields)]
 pub struct OverlaySnapshot {
@@ -97,7 +96,6 @@ pub struct OverlaySnapshot {
     next_handle: u64,
 }
 
-#[cfg(target_os = "macos")]
 impl OverlaySnapshot {
     pub(crate) fn contains_inode(&self, inode: u64) -> bool {
         self.nodes.iter().any(|n| n.0 == inode)
@@ -119,8 +117,7 @@ pub struct OverlayFs {
     // use directory-fd-based resolution before relaxing this for throughput.
     operation_lock: Mutex<()>,
     core: OverlayCore,
-    #[cfg(target_os = "macos")]
-    snapshot_config: Config,
+        snapshot_config: Config,
     roots: Vec<PathBuf>,
     layers: Vec<PassthroughFs>,
     inode_alloc: Arc<InodeAllocator>,
@@ -134,8 +131,7 @@ impl OverlayFs {
         Self::build(cfg, inode_alloc, false)
     }
 
-    #[cfg(target_os = "macos")]
-    pub fn open_existing(cfg: Config, inode_alloc: Arc<InodeAllocator>) -> io::Result<Self> {
+        pub fn open_existing(cfg: Config, inode_alloc: Arc<InodeAllocator>) -> io::Result<Self> {
         Self::build(cfg, inode_alloc, true)
     }
 
@@ -180,8 +176,7 @@ impl OverlayFs {
         Ok(Self {
             operation_lock: Mutex::new(()),
             core,
-            #[cfg(target_os = "macos")]
-            snapshot_config: cfg,
+                        snapshot_config: cfg,
             roots,
             layers,
             inode_alloc,
@@ -350,8 +345,7 @@ impl OverlayFs {
 }
 
 impl FileSystem for OverlayFs {
-    #[cfg(target_os = "macos")]
-    fn capture_state(&self) -> io::Result<super::snapshot::FsSnapshot> {
+        fn capture_state(&self) -> io::Result<super::snapshot::FsSnapshot> {
         let _operation = self.operation_lock.lock().unwrap();
         Ok(super::snapshot::FsSnapshot::Overlay(OverlaySnapshot {
             config: self.snapshot_config.clone(),
@@ -379,8 +373,7 @@ impl FileSystem for OverlayFs {
             next_handle: self.next_handle.load(Ordering::Relaxed),
         }))
     }
-    #[cfg(target_os = "macos")]
-    fn restore_state(&self, state: &super::snapshot::FsSnapshot) -> io::Result<()> {
+        fn restore_state(&self, state: &super::snapshot::FsSnapshot) -> io::Result<()> {
         use super::snapshot::{invalid, FsSnapshot};
         let FsSnapshot::Overlay(state) = state else {
             return Err(invalid("overlay filesystem type mismatch"));

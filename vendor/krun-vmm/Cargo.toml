@@ -170,7 +170,8 @@ version = "=0.17.1"
 features = ["backend-mmap"]
 
 [dependencies.vmm-sys-util]
-version = "0.15"
+version = "0.14"
+features = ["with-serde"]
 
 [dev-dependencies.devices]
 version = "=0.1.0-1.19.3"
@@ -189,7 +190,7 @@ version = "0.13"
 
 [target.'cfg(target_os = "linux")'.dependencies.kvm-bindings]
 version = "0.12"
-features = ["fam-wrappers"]
+features = ["fam-wrappers", "serde"]
 
 [target.'cfg(target_os = "linux")'.dependencies.kvm-ioctls]
 version = "0.22"

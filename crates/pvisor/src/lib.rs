@@ -7,7 +7,7 @@
 #![cfg_attr(all(target_os = "macos", target_arch = "x86_64"), allow(dead_code))]
 
 pub mod cli;
-#[cfg(target_os = "macos")]
+#[cfg(any(target_os = "macos", all(target_os = "linux", target_arch = "x86_64")))]
 #[doc(hidden)]
 pub mod environment_snapshot;
 mod runtime;

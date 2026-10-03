@@ -10,7 +10,6 @@ mod null_fs;
 mod overlay;
 mod read_only;
 mod server;
-#[cfg(target_os = "macos")]
 pub mod snapshot;
 pub mod virtual_entry;
 mod worker;

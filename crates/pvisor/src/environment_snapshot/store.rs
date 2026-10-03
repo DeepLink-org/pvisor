@@ -352,7 +352,19 @@ impl PendingEnvironment {
         let destination = self.store.join("objects").join(&id);
         let old = native_path(self.staging.path())?;
         let new = native_path(&destination)?;
+        #[cfg(target_os = "macos")]
         let rc = unsafe { libc::renamex_np(old.as_ptr(), new.as_ptr(), libc::RENAME_EXCL) };
+        #[cfg(target_os = "linux")]
+        let rc = unsafe {
+            libc::syscall(
+                libc::SYS_renameat2,
+                libc::AT_FDCWD,
+                old.as_ptr(),
+                libc::AT_FDCWD,
+                new.as_ptr(),
+                libc::RENAME_NOREPLACE,
+            )
+        };
         ensure!(
             rc == 0,
             "environment publication: {}",

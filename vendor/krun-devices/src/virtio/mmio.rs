@@ -81,7 +81,7 @@ impl MmioSnapshot {
     /// Explicit relocation of a single filesystem binding after the caller
     /// verifies an independently owned environment copy. Other devices are
     /// untouched; the coordinator must require exactly one matching binding.
-    #[cfg(all(target_os = "macos", not(any(feature = "tee", feature = "aws-nitro"))))]
+    #[cfg(not(any(feature = "tee", feature = "aws-nitro")))]
     pub fn rebind_filesystem_copy(
         &mut self,
         tag: &[u8],

@@ -56,6 +56,10 @@ pub(crate) struct InodeSnapshot {
     pub digest: Option<[u8; 32]>,
     pub link_target: Option<Vec<u8>>,
 }
+#[cfg(target_os = "linux")]
+#[derive(Clone, Debug, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
+pub(crate) struct DirectoryEntrySnapshot { pub ino:u64, pub offset:u64, pub type_:u8, pub name:Vec<u8> }
 #[derive(Clone, Debug, Serialize, Deserialize)]
 #[serde(deny_unknown_fields)]
 pub(crate) struct HandleSnapshot {
@@ -65,6 +69,9 @@ pub(crate) struct HandleSnapshot {
     pub offset: u64,
     pub entries: Vec<(u64, Vec<u8>, u8)>,
     pub directory_ready: bool,
+    #[cfg(target_os = "linux")]
+    #[serde(default)]
+    pub directory_entries: Option<Vec<DirectoryEntrySnapshot>>,
 }
 #[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(deny_unknown_fields)]
@@ -106,7 +113,6 @@ impl ServerSnapshot {
     /// (including objects not looked up by the guest) before calling this.
     /// This does not change the ordinary restore identity checks or publish
     /// a snapshot. On failure the original server state is unchanged.
-    #[cfg(target_os = "macos")]
     pub fn rebind_owned_copy(&mut self, source: &Path, destination: &Path) -> io::Result<()> {
         let mut rebound = self.fs.clone();
         rebound.rebind_owned_copy(source, destination)?;
@@ -115,7 +121,6 @@ impl ServerSnapshot {
     }
 }
 
-#[cfg(target_os = "macos")]
 impl FsSnapshot {
     fn rebind_owned_copy(&mut self, source: &Path, destination: &Path) -> io::Result<()> {
         use std::os::unix::fs::OpenOptionsExt;
@@ -147,7 +152,7 @@ impl FsSnapshot {
                         .read(true)
                         // O_SYMLINK pins the link itself on macOS. Combining
                         // it with O_NOFOLLOW rejects symlinks with ELOOP.
-                        .custom_flags(libc::O_EVTONLY | libc::O_SYMLINK)
+                        .custom_flags(pin_flags())
                         .open(&path)?;
                     let identity = FileIdentity::read(&pin)?;
                     let kind = identity.mode & u32::from(libc::S_IFMT);
@@ -266,4 +271,9 @@ impl FsSnapshot {
             Self::Null => 1,
         }
     }
+}
+
+pub(crate) fn pin_flags() -> i32 {
+    #[cfg(target_os = "macos")] { libc::O_EVTONLY | libc::O_SYMLINK }
+    #[cfg(target_os = "linux")] { libc::O_PATH | libc::O_NOFOLLOW }
 }

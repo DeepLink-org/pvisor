@@ -17,7 +17,7 @@ extern crate log;
 pub mod builder;
 pub(crate) mod device_manager;
 pub mod ram;
-#[cfg(all(target_os = "macos", target_arch = "aarch64"))]
+#[cfg(any(all(target_os = "macos", target_arch = "aarch64"), all(target_os = "linux", target_arch = "x86_64")))]
 pub mod snapshot;
 /// Resource store for configured microVM resources.
 pub mod resources;
@@ -52,7 +52,9 @@ use crate::device_manager::mmio::MMIODeviceManager;
 #[cfg(target_os = "linux")]
 use crate::vstate::VcpuEvent;
 #[cfg(target_os = "linux")]
-use crate::vstate::{Vcpu, VcpuHandle, VcpuResponse, Vm};
+pub use crate::vstate::{Vcpu, VcpuHandle, VcpuResponse, Vm};
+#[cfg(all(target_os = "linux", target_arch = "x86_64"))]
+pub use crate::vstate::{CpuSnapshot, VmState};
 #[cfg(target_os = "macos")]
 pub use crate::vstate::{CpuSnapshot, Vcpu, VcpuEvent, VcpuHandle, VcpuResponse, Vm};
 
@@ -216,9 +218,9 @@ pub struct Vmm {
     exit_code: Arc<AtomicI32>,
     paused: bool,
     control_failed: bool,
-    #[cfg(all(target_os = "macos", target_arch = "aarch64"))]
+    #[cfg(any(all(target_os = "macos", target_arch = "aarch64"), all(target_os = "linux", target_arch = "x86_64")))]
     snapshot_freeze_requested: bool,
-    #[cfg(all(target_os = "macos", target_arch = "aarch64"))]
+    #[cfg(any(all(target_os = "macos", target_arch = "aarch64"), all(target_os = "linux", target_arch = "x86_64")))]
     snapshot_devices_frozen: bool,
     device_memory_gate: Arc<devices::virtio::memory_gate::MemoryGate>,
     #[cfg(target_os = "macos")]
@@ -236,9 +238,13 @@ impl Vmm {
     /// Poll with the VMM lock released between calls and a caller-owned global
     /// deadline. CPU acknowledgement precedes worker shutdown; RAM gate closes
     /// only after every worker has returned ownership of its guest queues.
-    #[cfg(all(target_os = "macos", target_arch = "aarch64"))]
+    #[cfg(any(all(target_os = "macos", target_arch = "aarch64"), all(target_os = "linux", target_arch = "x86_64")))]
     pub fn freeze_for_snapshot(&mut self) -> std::result::Result<bool, String> {
-        if self.control_failed || self.ram_unmapped || self.device_memory_gate.has_prepare() {
+        if self.control_failed || self.device_memory_gate.has_prepare() {
+            return Err("snapshot requires healthy mapped VM".into());
+        }
+        #[cfg(target_os = "macos")]
+        if self.ram_unmapped {
             return Err("snapshot requires healthy mapped VM".into());
         }
         if self.snapshot_devices_frozen {
@@ -257,11 +263,13 @@ impl Vmm {
         if !self.device_memory_gate.try_close()? {
             return Ok(false);
         }
+        #[cfg(all(target_os = "linux", target_arch = "x86_64"))]
+        if !self.pio_device_manager.io_bus.freeze_snapshot_devices()? { return Ok(false); }
         self.snapshot_devices_frozen = true;
         Ok(true)
     }
 
-    #[cfg(all(target_os = "macos", target_arch = "aarch64"))]
+    #[cfg(any(all(target_os = "macos", target_arch = "aarch64"), all(target_os = "linux", target_arch = "x86_64")))]
     pub fn capture_device_states(&self) -> std::result::Result<Vec<devices::snapshot::BusMappingSnapshot>, String> {
         self.require_ram_quiesced()?;
         if !self.snapshot_devices_frozen {
@@ -277,11 +285,13 @@ impl Vmm {
         ram::blocks(&self.guest_memory, chunk)
     }
 
-    #[cfg(target_os = "macos")]
+    #[cfg(any(all(target_os = "macos", target_arch = "aarch64"), all(target_os = "linux", target_arch = "x86_64")))]
     fn require_ram_quiesced(&self) -> std::result::Result<(), String> {
-        if !self.paused || !self.device_memory_gate.is_idle_closed() || self.control_failed || self.ram_unmapped {
+        if !self.paused || !self.device_memory_gate.is_idle_closed() || self.control_failed {
             return Err("RAM block access requires a healthy quiescent VM".into());
         }
+        #[cfg(target_os = "macos")]
+        if self.ram_unmapped { return Err("RAM is unmapped".into()); }
         if cfg!(any(feature = "gpu", feature = "snd", feature = "input", feature = "tee")) {
             return Err("RAM sampling unavailable with unguarded devices".into());
         }
@@ -290,7 +300,7 @@ impl Vmm {
 
     /// Capture CPU state on each owning thread. This does not capture devices
     /// and must never be published as a complete VM snapshot.
-    #[cfg(target_os = "macos")]
+    #[cfg(any(all(target_os = "macos", target_arch = "aarch64"), all(target_os = "linux", target_arch = "x86_64")))]
     pub fn capture_cpu_states(&self) -> std::result::Result<Vec<CpuSnapshot>, String> {
         self.require_ram_quiesced()?;
         let deadline = Instant::now() + Duration::from_secs(3);
@@ -345,7 +355,7 @@ impl Vmm {
             self.control_failed = false;
         }
         self.device_memory_gate.open();
-        #[cfg(all(target_os = "macos", target_arch = "aarch64"))]
+        #[cfg(any(all(target_os = "macos", target_arch = "aarch64"), all(target_os = "linux", target_arch = "x86_64")))]
         if self.snapshot_freeze_requested {
             // A failed thaw is a partial transition. Keep CPU parked and
             // poison control rather than running it against missing workers.
@@ -353,6 +363,8 @@ impl Vmm {
                 self.control_failed = true;
                 return Err(Error::VcpuControl(format!("snapshot thaw failed: {error}")));
             }
+            #[cfg(all(target_os = "linux", target_arch = "x86_64"))]
+            self.pio_device_manager.io_bus.thaw_snapshot_devices().map_err(Error::VcpuControl)?;
             self.snapshot_devices_frozen = false;
             self.snapshot_freeze_requested = false;
         }
@@ -508,7 +520,7 @@ impl Vmm {
         }
 
         // The vcpus start off in the `Paused` state, let them run.
-        #[cfg(all(target_os = "macos", target_arch = "aarch64"))]
+        #[cfg(any(all(target_os = "macos", target_arch = "aarch64"), all(target_os = "linux", target_arch = "x86_64")))]
         if self.snapshot_devices_frozen {
             let deadline = Instant::now() + Duration::from_secs(3);
             for handle in &self.vcpus_handles {

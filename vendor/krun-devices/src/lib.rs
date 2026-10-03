@@ -19,6 +19,9 @@ pub mod fdt;
 pub mod legacy;
 #[cfg(all(target_os = "macos", target_arch = "aarch64"))]
 pub mod snapshot;
+#[cfg(all(target_os = "linux", target_arch = "x86_64"))]
+#[path = "snapshot_kvm.rs"]
+pub mod snapshot;
 pub mod virtio;
 
 pub use self::bus::{Bus, BusDevice, Error as BusError};

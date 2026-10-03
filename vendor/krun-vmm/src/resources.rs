@@ -128,7 +128,7 @@ pub enum VsockConfig {
 /// held in the Vmm.
 #[derive(Default)]
 pub struct VmResources {
-    #[cfg(all(target_os = "macos", target_arch = "aarch64"))]
+    #[cfg(any(all(target_os = "macos", target_arch = "aarch64"), all(target_os = "linux", target_arch = "x86_64")))]
     pub machine_restore: Option<Arc<crate::snapshot::MachineRestore>>,
     /// Live MAP_SHARED RAM backing, supplied by the owning supervisor.
     pub ram_backing: Option<Arc<File>>,
@@ -184,7 +184,7 @@ pub struct VmResources {
     /// Whether to enable nested virtualization.
     pub nested_enabled: bool,
     /// Opt in before boot: restricted CPU extensions and serializable software GIC.
-    #[cfg(target_os = "macos")]
+    #[cfg(any(all(target_os = "macos", target_arch = "aarch64"), all(target_os = "linux", target_arch = "x86_64")))]
     pub snapshot_profile: bool,
     /// Whether to enable split irqchip
     pub split_irqchip: bool,
@@ -440,9 +440,9 @@ mod tests {
             console_output: None,
             smbios_oem_strings: None,
             nested_enabled: false,
-            #[cfg(target_os = "macos")]
+            #[cfg(any(all(target_os = "macos", target_arch = "aarch64"), all(target_os = "linux", target_arch = "x86_64")))]
             snapshot_profile: false,
-            #[cfg(all(target_os = "macos", target_arch = "aarch64"))]
+            #[cfg(any(all(target_os = "macos", target_arch = "aarch64"), all(target_os = "linux", target_arch = "x86_64")))]
             machine_restore: None,
             split_irqchip: false,
             disable_implicit_console: false,

@@ -53,6 +53,7 @@ struct InodeData {
 }
 
 struct HandleData {
+    directory_snapshot: Option<Vec<super::super::snapshot::DirectoryEntrySnapshot>>,
     inode: Inode,
     file: RwLock<File>,
     exported: AtomicBool,
@@ -293,7 +294,7 @@ fn statx(f: &File) -> io::Result<(libc::stat64, u64)> {
 /// The caching policy that the file system should report to the FUSE client. By default the FUSE
 /// protocol uses close-to-open consistency. This means that any cached contents of the file are
 /// invalidated the next time that file is opened.
-#[derive(Default, Debug, Clone)]
+#[derive(Default, Debug, Clone, PartialEq, Eq, serde::Serialize, serde::Deserialize)]
 pub enum CachePolicy {
     /// The client should never cache file data and all I/O should be directly forwarded to the
     /// server. This policy must be selected when file contents may change without the knowledge of
@@ -326,7 +327,7 @@ impl FromStr for CachePolicy {
 }
 
 /// The permission semantics to be emulated by this file system personality.
-#[derive(Debug, Default, Clone, Copy)]
+#[derive(Debug, Default, Clone, Copy, PartialEq, Eq, serde::Serialize, serde::Deserialize)]
 pub enum PermissionSemantics {
     /// Be as close as possible to the common semantics of Linux file systems.
     #[default]
@@ -638,6 +639,15 @@ impl PassthroughFs {
             .cloned()
             .ok_or_else(ebadf)?;
 
+        if let Some(entries) = &data.directory_snapshot {
+            let start = if offset == 0 { 0 } else {
+                entries.iter().position(|e| e.offset == offset).ok_or_else(einval)? + 1
+            };
+            for entry in &entries[start..] {
+                if add_entry(DirEntry { ino: entry.ino, offset: entry.offset, type_: entry.type_ as u32, name: &entry.name })? == 0 { break; }
+            }
+            return Ok(());
+        }
         let mut buf = vec![0; size as usize];
 
         {
@@ -752,6 +762,7 @@ impl PassthroughFs {
             inode,
             file,
             exported: Default::default(),
+            directory_snapshot: None,
         };
 
         self.handles.write().unwrap().insert(handle, Arc::new(data));
@@ -903,7 +914,12 @@ fn forget_one(
     }
 }
 
+#[path = "passthrough_snapshot.rs"]
+mod snapshot_state;
 impl FileSystem for PassthroughFs {
+    fn capture_state(&self) -> io::Result<super::super::snapshot::FsSnapshot> { snapshot_state::capture(self) }
+    fn restore_state(&self, state: &super::super::snapshot::FsSnapshot) -> io::Result<()> { snapshot_state::restore(self, state) }
+
     type Inode = Inode;
     type Handle = Handle;
 
@@ -1262,6 +1278,7 @@ impl FileSystem for PassthroughFs {
             inode: entry.inode,
             file,
             exported: Default::default(),
+            directory_snapshot: None,
         };
 
         self.handles.write().unwrap().insert(handle, Arc::new(data));

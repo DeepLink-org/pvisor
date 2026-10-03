@@ -48,7 +48,6 @@ impl CompressedObject {
     }
 
     /// Versioned disk frame; checksums identify decoded bytes, not codec output.
-    #[cfg(target_os = "macos")]
     pub(crate) fn frame(&self) -> Vec<u8> {
         let mut bytes = Vec::with_capacity(45 + self.encoded_bytes());
         bytes.extend_from_slice(b"PVBLK1\0\0");
@@ -68,7 +67,6 @@ impl CompressedObject {
         bytes
     }
 
-    #[cfg(target_os = "macos")]
     pub(crate) fn from_frame(bytes: &[u8]) -> io::Result<Self> {
         if bytes.len() < 46 || bytes.len() > 45 + BLOCK_BYTES || &bytes[..8] != b"PVBLK1\0\0" {
             return Err(invalid("invalid content frame"));

@@ -349,14 +349,12 @@ pub type ExportTable = Arc<Mutex<BTreeMap<(u64, u64), File>>>;
 /// The main trait that connects a file system with a transport.
 #[allow(unused_variables)]
 pub trait FileSystem {
-    #[cfg(target_os = "macos")]
     fn capture_state(&self) -> io::Result<super::snapshot::FsSnapshot> {
         Err(io::Error::new(
             io::ErrorKind::Unsupported,
             "filesystem snapshot unsupported",
         ))
     }
-    #[cfg(target_os = "macos")]
     fn restore_state(&self, _state: &super::snapshot::FsSnapshot) -> io::Result<()> {
         Err(io::Error::new(
             io::ErrorKind::Unsupported,

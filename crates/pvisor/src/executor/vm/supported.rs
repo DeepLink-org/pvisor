@@ -67,9 +67,7 @@ fn kernel_release_needs_krun_workaround(release: &str) -> bool {
 compile_error!("static musl VM support currently targets x86_64 only");
 
 #[cfg(all(target_os = "linux", target_env = "musl", target_arch = "x86_64"))]
-mod embedded_kernel {
-    include!(concat!(env!("OUT_DIR"), "/embedded_kernel.rs"));
-}
+use super::embedded_kernel;
 
 #[derive(Debug, Clone)]
 pub struct VmExecutor {

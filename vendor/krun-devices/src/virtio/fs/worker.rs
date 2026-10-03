@@ -92,7 +92,6 @@ pub struct FsWorker {
     allow_idmap: bool,
     shm_region: Option<VirtioShmRegion>,
     server: FsServer,
-    #[cfg(target_os = "macos")]
     inode_alloc: Arc<InodeAllocator>,
     stop_fd: EventFd,
     exit_code: Arc<AtomicI32>,
@@ -115,20 +114,17 @@ impl FsWorker {
         virtual_entries: Vec<VirtualDirEntry>,
         stop_fd: EventFd,
         exit_code: Arc<AtomicI32>,
-        #[cfg(target_os = "macos")] restoring: bool,
+        restoring: bool,
         #[cfg(target_os = "macos")] map_sender: Option<Sender<WorkerMessage>>,
     ) -> Result<Self, io::Error> {
         let inode_alloc = Arc::new(InodeAllocator::new());
         let server = match (overlay_cfg, passthrough_cfg) {
             (Some(cfg), _) => {
-                #[cfg(target_os = "macos")]
                 let inner = if restoring {
                     OverlayFs::open_existing(cfg, inode_alloc.clone())?
                 } else {
                     OverlayFs::new(cfg, inode_alloc.clone())?
                 };
-                #[cfg(not(target_os = "macos"))]
-                let inner = OverlayFs::new(cfg, inode_alloc.clone())?;
                 FsServer::Overlay(Server::new(AugmentFs::new(
                     inner,
                     &inode_alloc,
@@ -165,7 +161,6 @@ impl FsWorker {
             allow_idmap,
             shm_region,
             server,
-            #[cfg(target_os = "macos")]
             inode_alloc,
             stop_fd,
             exit_code,
@@ -174,7 +169,6 @@ impl FsWorker {
         })
     }
 
-    #[cfg(target_os = "macos")]
     pub fn capture_state(
         &self,
     ) -> io::Result<(
@@ -193,7 +187,6 @@ impl FsWorker {
             state,
         ))
     }
-    #[cfg(target_os = "macos")]
     pub fn restore_state(&self, state: &super::snapshot::ServerSnapshot) -> io::Result<()> {
         if state.next_inode <= state.fs.max_inode()
             || state.next_inode < self.inode_alloc.snapshot_next()

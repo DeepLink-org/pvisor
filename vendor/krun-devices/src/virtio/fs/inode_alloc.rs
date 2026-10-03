@@ -21,12 +21,10 @@ impl InodeAllocator {
         }
     }
 
-    #[cfg(target_os = "macos")]
     pub fn snapshot_next(&self) -> u64 {
         self.next.load(Ordering::Relaxed)
     }
 
-    #[cfg(target_os = "macos")]
     pub fn restore_next(&self, next: u64) -> std::io::Result<()> {
         if next < self.next.load(Ordering::Relaxed) || next == u64::MAX {
             return Err(std::io::Error::new(

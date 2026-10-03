@@ -113,16 +113,50 @@ fn control_socket(directory: &Path) -> anyhow::Result<PathBuf> {
     Ok(parent.join(format!("{name}.sock")))
 }
 fn compatibility(firmware: &Path) -> anyhow::Result<Compatibility> {
-    let output = std::process::Command::new("sysctl")
-        .args(["-n", "kern.bootsessionuuid"])
-        .output()?;
-    ensure!(output.status.success(), "host boot identity unavailable");
+    #[cfg(all(target_os = "linux", target_env = "musl", target_arch = "x86_64"))]
+    let firmware_hash = {
+        use crate::executor::vm::embedded_kernel;
+        let _ = firmware;
+        Sha256::digest(embedded_kernel::KERNEL)
+            .iter()
+            .map(|byte| format!("{byte:02x}"))
+            .collect()
+    };
+    #[cfg(not(all(target_os = "linux", target_env = "musl", target_arch = "x86_64")))]
+    let firmware_hash = file_hash(
+        &firmware.join(crate::executor::vm::firmware_name()).canonicalize()?,
+    )?;
+    #[cfg(target_os = "macos")]
+    let host_boot = {
+        let output = std::process::Command::new("sysctl")
+            .args(["-n", "kern.bootsessionuuid"])
+            .output()?;
+        ensure!(output.status.success(), "host boot identity unavailable");
+        String::from_utf8(output.stdout)?
+    };
+    #[cfg(target_os = "linux")]
+    let host_boot = fs::read_to_string("/proc/sys/kernel/random/boot_id")?;
+    ensure!(!host_boot.trim().is_empty(), "host boot identity unavailable");
     Ok(Compatibility {
-        host_boot: String::from_utf8(output.stdout)?.trim().into(),
+        host_boot: host_boot.trim().into(),
         build: file_hash(&std::env::current_exe()?)?,
-        firmware: file_hash(&firmware.join("libkrunfw.5.dylib"))?,
+        firmware: firmware_hash,
         profile: "pvisor-cli-full-copy-v1".into(),
     })
+}
+fn firmware_directory() -> anyhow::Result<PathBuf> {
+    #[cfg(all(target_os = "linux", target_env = "musl", target_arch = "x86_64"))]
+    {
+        // Static runners use the shared embedded kernel module, with no loader path.
+        Ok(PathBuf::new())
+    }
+    #[cfg(not(all(target_os = "linux", target_env = "musl", target_arch = "x86_64")))]
+    {
+        if let Some(directory) = crate::executor::vm::bundled_firmware_dir() {
+            return Ok(directory);
+        }
+        crate::executor::vm::firmware::FirmwareStore::new()?.prepare()
+    }
 }
 fn launch(spec: Launch) -> anyhow::Result<()> {
     let path = spec.directory.join("launch.json");
@@ -130,7 +164,7 @@ fn launch(spec: Launch) -> anyhow::Result<()> {
     let status = std::process::Command::new(std::env::current_exe()?)
         .args(["snapshot", "runner"])
         .arg(&path)
-        .env("DYLD_LIBRARY_PATH", &spec.firmware)
+        .env(if cfg!(target_os = "macos") { "DYLD_LIBRARY_PATH" } else { "LD_LIBRARY_PATH" }, &spec.firmware)
         .status()?;
     let socket = control_socket(&spec.directory)?;
     if socket.exists() {
@@ -175,7 +209,7 @@ pub(super) fn run(args: Args) -> anyhow::Result<()> {
                 config.command()?;
                 Some(config)
             };
-            let firmware = crate::executor::vm::firmware::FirmwareStore::new()?.prepare()?;
+            let firmware = firmware_directory()?;
             let directory = new_instance(&root, &name)?;
             if let Err(error) = copy_owned_tree(&rootfs, &directory.join("rootfs")) {
                 fs::remove_dir_all(&directory)?;
@@ -205,7 +239,7 @@ pub(super) fn run(args: Args) -> anyhow::Result<()> {
             Ok(())
         }
         Command::Restore { id, name } => {
-            let firmware = crate::executor::vm::firmware::FirmwareStore::new()?.prepare()?;
+            let firmware = firmware_directory()?;
             // Validate before allocating a new instance directory.
             let published = store.open(&id, &compatibility(&firmware)?)?;
             let saved: Saved = serde_json::from_slice(&published.machine_bytes()?)?;
@@ -293,10 +327,24 @@ fn runner(spec: Launch) -> anyhow::Result<()> {
     let socket = control_socket(&spec.directory)?;
     // Instance names are single-use; no stale socket is removed or rebound.
     let listener = UnixListener::bind(&socket)?;
+    check(krun::krun_set_log_level(1))?;
     let ctx = krun::krun_create_ctx();
     check(ctx)?;
     let ctx = ctx as u32;
     check(krun::krun_set_vm_config(ctx, spec.cpus, spec.memory))?;
+    #[cfg(all(target_os = "linux", target_env = "musl", target_arch = "x86_64"))]
+    {
+        use crate::executor::vm::embedded_kernel;
+        check(unsafe {
+            krun::krun_set_embedded_kernel(
+                ctx,
+                embedded_kernel::KERNEL.as_ptr(),
+                embedded_kernel::KERNEL.len(),
+                embedded_kernel::GUEST_ADDR,
+                embedded_kernel::ENTRY_ADDR,
+            )
+        })?;
+    }
     check(krun::krun_set_snapshot_profile(ctx))?;
     if spec.guest.is_none() {
         check(krun::krun_disable_implicit_init(ctx))?;

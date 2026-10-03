@@ -85,7 +85,7 @@ pub enum DeviceSnapshotState {
     Console(super::console::ConsoleSnapshot),
     Vsock(super::vsock::VsockSnapshot),
     Balloon([u32; 4]),
-    #[cfg(all(target_os = "macos", not(any(feature = "tee", feature = "aws-nitro"))))]
+    #[cfg(not(any(feature = "tee", feature = "aws-nitro")))]
     Fs {
         tag: Vec<u8>,
         allow_idmap: bool,

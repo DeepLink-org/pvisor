@@ -19,6 +19,10 @@ pub struct MachineSnapshot {
     pub cpus: Vec<CpuSnapshot>,
     pub devices: Vec<devices::snapshot::BusMappingSnapshot>,
     pub ram: Vec<RamMappingSnapshot>,
+    #[cfg(all(target_os = "linux", target_arch = "x86_64"))]
+    pub kvm: Option<crate::linux::vstate::VmState>,
+    #[cfg(all(target_os = "linux", target_arch = "x86_64"))]
+    pub pio_devices: Vec<devices::snapshot::BusMappingSnapshot>,
 }
 
 pub struct MachineRestore {
@@ -36,6 +40,8 @@ impl MachineRestore {
         {
             return Err("invalid machine snapshot version or CPU/RAM inventory".into());
         }
+        #[cfg(all(target_os = "linux", target_arch = "x86_64"))]
+        if self.state.kvm.is_none() { return Err("missing KVM machine state".into()); }
         for (id, cpu) in self.state.cpus.iter().enumerate() {
             cpu.validate(id as u8)?;
         }
@@ -105,6 +111,10 @@ impl Vmm {
         }
         let cpus = self.capture_cpu_states()?;
         let devices = self.capture_device_states()?;
+        #[cfg(all(target_os = "linux", target_arch = "x86_64"))]
+        let kvm = Some(self.vm.save_state().map_err(|e| e.to_string())?);
+        #[cfg(all(target_os = "linux", target_arch = "x86_64"))]
+        let pio_devices = self.pio_device_manager.io_bus.capture_snapshot_devices()?;
         let mut ram = Vec::new();
         let mut file_offset = 0u64;
         let mut buffer = vec![0; 1024 * 1024];
@@ -136,6 +146,10 @@ impl Vmm {
             cpus,
             devices,
             ram,
+            #[cfg(all(target_os = "linux", target_arch = "x86_64"))]
+            kvm,
+            #[cfg(all(target_os = "linux", target_arch = "x86_64"))]
+            pio_devices,
         })
     }
 }

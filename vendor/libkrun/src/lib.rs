@@ -3154,7 +3154,7 @@ impl VmmHandle {
     /// snapshot or implement cold restore. Caller persists state inside action.
     /// Deadline failure leaves CPU parked: a worker still stopping cannot safely
     /// be abandoned or resumed. The caller must terminate that failed runner.
-    #[cfg(all(target_os = "macos", target_arch = "aarch64"))]
+    #[cfg(any(all(target_os = "macos", target_arch = "aarch64"), all(target_os = "linux", target_arch = "x86_64")))]
     pub fn with_snapshot_quiesced<T>(
         &self,
         timeout: std::time::Duration,
@@ -3327,7 +3327,7 @@ impl VmmHandle {
 
 /// Opt in before launching: uses serializable CPU extensions and software GIC.
 /// This enables CPU capture only, not complete VM snapshot publication.
-#[cfg(target_os = "macos")]
+#[cfg(any(all(target_os = "macos", target_arch = "aarch64"), all(target_os = "linux", target_arch = "x86_64")))]
 pub fn krun_set_snapshot_profile(ctx_id: u32) -> i32 {
     let mut contexts = CTX_MAP.lock().unwrap();
     let Some(context) = contexts.get_mut(&ctx_id) else { return -libc::ENOENT; };
@@ -3339,7 +3339,7 @@ pub fn krun_set_snapshot_profile(ctx_id: u32) -> i32 {
 /// Internal same-host restore input. The runner must validate durable manifest
 /// identity, sealed backing files and single execution ownership first. A
 /// successfully built VM remains paused until the ready callback resumes it.
-#[cfg(all(target_os = "macos", target_arch = "aarch64"))]
+#[cfg(any(all(target_os = "macos", target_arch = "aarch64"), all(target_os = "linux", target_arch = "x86_64")))]
 pub fn krun_set_machine_restore(ctx_id: u32, restore: vmm::snapshot::MachineRestore) -> Result<(), String> {
     let mut contexts = CTX_MAP.lock().map_err(|_| "context map poisoned")?;
     let context = contexts.get_mut(&ctx_id).ok_or("unknown VM context")?;

@@ -71,7 +71,7 @@ def prepare_rootfs(rootfs: Path, pvisor: Path) -> list[str]:
         target.parent.mkdir(parents=True, exist_ok=True)
         shutil.copy2(source, target, follow_symlinks=True)
         copied.append(str(source))
-    for name in ("dev", "proc", "sys", "tmp", "run", "opt/pvisor", "etc"):
+    for name in ("dev", "proc", "sys", "tmp", "run", "opt", "etc"):
         (rootfs / name).mkdir(parents=True, exist_ok=True)
     (rootfs / "etc/passwd").write_text("root:x:0:0:root:/root:/bin/sh\n")
     (rootfs / "etc/group").write_text("root:x:0:\n")

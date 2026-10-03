@@ -64,7 +64,7 @@ libloading.workspace = true
 [target.'cfg(target_os = "macos")'.dependencies]
 fuser = { workspace = true, features = ["abi-7-19", "libfuse", "macfuse-5"] }
 
-[target.'cfg(all(target_os = "macos", target_arch = "aarch64"))'.dependencies]
+[target.'cfg(any(all(target_os = "macos", target_arch = "aarch64"), all(target_os = "linux", target_arch = "x86_64")))'.dependencies]
 krun-vmm = "=0.1.0-1.19.3"
 devices = { version = "=0.1.0-1.19.3", package = "krun-devices" }
 
