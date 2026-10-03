@@ -250,3 +250,57 @@ python3 benchmark/pvisor/guest_init.py \
 
 Setup/build time is excluded. `results.json` contains every sample, medians,
 p95, and hashes of the runner, both init binaries, firmware, and payload.
+
+## Startup timing checkpoints
+
+Set `PVISOR_STARTUP_TIMING=1` to emit opt-in host timing checkpoints to stderr:
+
+```sh
+PVISOR_STARTUP_TIMING=1 ./target/release/pvisor run \
+  --vm --rootfs /path/to/prepared/rootfs --vm-library-dir /path/to/firmware \
+  --overlaynet off -- /bin/sh -c 'printf "GUEST_READY\n"' \
+  2>startup.log
+```
+
+Each `pvisor-startup` line includes `pid`, `ppid`, `stage`, `monotonic_us`, and
+`process_elapsed_us`. Subtract `monotonic_us` values to measure intervals across
+parent and runner processes on the same host; use PID/PPID to match the runner.
+`process_elapsed_us` starts at each process's first enabled checkpoint, not at
+OS process creation. The initial executable loader time precedes `process.entry`.
+The switch is cached at first use, disabled by default, and supported on Unix.
+Logs contain stage labels and timing/identity fields, not command arguments or
+credentials. Guest clock timestamps cannot be subtracted from host timestamps.
+
+| Checkpoints | Interval |
+|---|---|
+| `process.entry` → `cli.parsed` → `cli.runtime_ready` | CLI parsing and runtime setup |
+| `cli.run_begin` → `cli.config_ready` | Config loading and CLI overrides |
+| `cli.rootfs_begin` → `cli.vm_inputs_ready` | VM inputs and CLI preparation; includes more than rootfs alone |
+| `session.begin` → `session.agentctl_ready` | Agent control setup |
+| `session.storage_begin` → `session.storage_ready` | Runtime preparation, including storage/filesystem setup |
+| `storage.overlay_begin` → `storage.overlay_ready` | Overlay preparation, when selected |
+| `storage.record_write_begin` → `storage.record_write_ready` | Each preparation-time durable Run record write; may repeat |
+| `session.storage_ready` → `session.events_ready` | Initial execution events publication |
+| `vm.prepare_begin` → `vm.ram_backing_begin` | Executor inputs and root/workspace overlay preparation |
+| `vm.ram_backing_begin` → `vm.ram_backing_ready` | RAM backing setup and exclusions |
+| `vm.spec_write_begin` → `vm.spec_write_ready` | Private temporary runner specification write (no disk sync) |
+| `vm.spawn_begin` → runner `process.entry` | Child launch and executable loading; overlaps spawn-return bookkeeping |
+| `runner.spec_read_begin` → `runner.spec_read_ready` | Read/decode runner specification |
+| `runner.context_begin` → `runner.context_ready` | libkrun context creation |
+| `runner.context_ready` → `runner.devices_configured` | Guest config and device declarations |
+| `runner.devices_configured` → `runner.attestation_ready` | Setup attestation write/sync |
+| `runner.krun_enter` → `runner.vmm_built` | libkrun startup and VM construction |
+| `cli.run_finished` → `cli.result_loaded` | Post-run bookkeeping through finalized record lookup |
+
+`vm.spawn_returned` only means spawn returned to the parent; it does not mean the
+runner has entered main. `cli.session_started` means the asynchronous session was
+started, not that the guest is ready. `runner.vmm_built` is the libkrun ready
+callback after VM construction; it is not an exact first-vCPU or guest-ready
+marker. Log receipt order across processes can differ from timestamp order.
+
+Use a payload marker and the external host timer for command-ready latency, as in
+`firmware_boot.py`. These checkpoints do not invent a generic guest-ready event.
+Capture-mode stderr may be delivered only after the run; timestamps still record
+the actual checkpoints. Timing logs add diagnostic overhead, so measure final
+latency with the switch off. No persistence or synchronization guarantees are
+relaxed by this instrumentation.

@@ -14,6 +14,54 @@ pub(crate) fn write_private_json(path: &Path, value: &impl serde::Serialize) -> 
     atomic_write(path, &serde_json::to_vec_pretty(value)?, 0o600)
 }
 
+/// Opt-in startup checkpoints. Host processes share CLOCK_MONOTONIC's epoch;
+/// guest clocks must never be subtracted from these timestamps.
+pub(crate) fn startup_mark(stage: &str) {
+    #[cfg(unix)]
+    {
+        use std::io::Write;
+        use std::sync::OnceLock;
+        use std::time::Instant;
+        static ENABLED: OnceLock<bool> = OnceLock::new();
+        static START: OnceLock<Instant> = OnceLock::new();
+        if !*ENABLED.get_or_init(|| std::env::var("PVISOR_STARTUP_TIMING").as_deref() == Ok("1")) {
+            return;
+        }
+        let start = START.get_or_init(Instant::now);
+        if let Some(timestamp) = startup_monotonic_us() {
+            // Diagnostic output must not turn a closed stderr into a run failure.
+            let _ = writeln!(
+                std::io::stderr().lock(),
+                "pvisor-startup pid={} ppid={} stage={} monotonic_us={} process_elapsed_us={}",
+                std::process::id(),
+                unsafe { libc::getppid() },
+                stage,
+                timestamp,
+                start.elapsed().as_micros()
+            );
+        }
+    }
+    #[cfg(not(unix))]
+    let _ = stage;
+}
+
+#[cfg(unix)]
+fn startup_monotonic_us() -> Option<u64> {
+    let mut timestamp = libc::timespec {
+        tv_sec: 0,
+        tv_nsec: 0,
+    };
+    if unsafe { libc::clock_gettime(libc::CLOCK_MONOTONIC, &mut timestamp) } != 0 {
+        return None;
+    }
+    Some(
+        u64::try_from(timestamp.tv_sec)
+            .ok()?
+            .checked_mul(1_000_000)?
+            + u64::try_from(timestamp.tv_nsec).ok()? / 1_000,
+    )
+}
+
 pub(crate) fn encode_hex(bytes: &[u8]) -> String {
     const HEX: &[u8; 16] = b"0123456789abcdef";
     let mut output = String::with_capacity(bytes.len() * 2);
@@ -28,6 +76,14 @@ pub(crate) fn encode_hex(bytes: &[u8]) -> String {
 mod tests {
     use super::*;
     use std::os::unix::fs::PermissionsExt;
+
+    #[cfg(unix)]
+    #[test]
+    fn startup_clock_is_monotonic() {
+        let before = startup_monotonic_us().expect("host monotonic clock");
+        let after = startup_monotonic_us().expect("host monotonic clock");
+        assert!(after >= before);
+    }
 
     #[test]
     fn atomic_write_replaces_private_file() {

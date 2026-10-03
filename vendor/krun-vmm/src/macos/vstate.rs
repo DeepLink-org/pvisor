@@ -13,6 +13,48 @@ use std::result;
 use std::sync::Arc;
 use std::thread;
 use std::time::Duration;
+use std::time::Instant;
+
+/// Opt-in boot investigation; snapshots avoid logging every VM exit.
+struct BootProfile {
+    start: Instant,
+    hvf_ns: u128,
+    bus_ns: u128,
+    waits_ns: u128,
+    exits: HashMap<&'static str, u64>,
+    fs_bases: Vec<u64>,
+}
+
+impl BootProfile {
+    fn mark(&self, id: u8, stage: &str) {
+        use std::io::Write;
+        let mut clock: libc::timespec = unsafe { std::mem::zeroed() };
+        if unsafe { libc::clock_gettime(libc::CLOCK_MONOTONIC, &mut clock) } != 0 {
+            return;
+        }
+        let mut cpu: libc::timespec = unsafe { std::mem::zeroed() };
+        let cpu_us = if unsafe { libc::clock_gettime(libc::CLOCK_THREAD_CPUTIME_ID, &mut cpu) } == 0
+        {
+            cpu.tv_sec as u64 * 1_000_000 + cpu.tv_nsec as u64 / 1_000
+        } else {
+            0
+        };
+        let timestamp = clock.tv_sec as u64 * 1_000_000 + clock.tv_nsec as u64 / 1_000;
+        let _ = writeln!(
+            std::io::stderr().lock(),
+            "pvisor-startup pid={} stage=vcpu.{id}.{stage} monotonic_us={timestamp} boot_elapsed_us={} hvf_us={} bus_us={} waits_us={} thread_cpu_us={cpu_us} sysreg={} mmio={} wfe={} other={}",
+            std::process::id(),
+            self.start.elapsed().as_micros(),
+            self.hvf_ns / 1000,
+            self.bus_ns / 1000,
+            self.waits_ns / 1000,
+            self.exits.get("sysreg").unwrap_or(&0),
+            self.exits.get("mmio").unwrap_or(&0),
+            self.exits.get("wfe").unwrap_or(&0),
+            self.exits.get("other").unwrap_or(&0)
+        );
+    }
+}
 
 use super::super::{FC_EXIT_CODE_GENERIC_ERROR, FC_EXIT_CODE_OK};
 use crate::vmm_config::machine_config::CpuFeaturesTemplate;
@@ -359,10 +401,36 @@ impl Vcpu {
     }
 
     /// Returns error or enum specifying whether emulation was handled or interrupted.
-    fn run_emulation(&mut self, hvf_vcpu: &mut HvfVcpu) -> Result<VcpuEmulation> {
+    fn run_emulation(
+        &mut self,
+        hvf_vcpu: &mut HvfVcpu,
+        profile: &mut Option<BootProfile>,
+    ) -> Result<VcpuEmulation> {
         let vcpuid = hvf_vcpu.id();
 
-        match hvf_vcpu.run(self.vcpu_list.clone()) {
+        let started = profile.as_ref().map(|_| Instant::now());
+        let result = hvf_vcpu.run(self.vcpu_list.clone());
+        if let Some(profile) = profile {
+            profile.hvf_ns += started.unwrap().elapsed().as_nanos();
+            let kind = match &result {
+                Ok(VcpuExit::SystemRegister) => "sysreg",
+                Ok(VcpuExit::MmioRead(..) | VcpuExit::MmioWrite(..)) => "mmio",
+                Ok(
+                    VcpuExit::WaitForEvent
+                    | VcpuExit::WaitForEventTimeout(_)
+                    | VcpuExit::WaitForEventExpired,
+                ) => "wfe",
+                _ => "other",
+            };
+            if profile.exits.is_empty() {
+                profile.mark(self.id, "first_exit");
+            }
+            *profile.exits.entry(kind).or_default() += 1;
+            if matches!(&result, Ok(VcpuExit::CpuOn(..))) {
+                profile.mark(self.id, "cpu_on");
+            }
+        }
+        match result {
             Ok(exit) => match exit {
                 VcpuExit::Breakpoint => {
                     debug!("vCPU {vcpuid} breakpoint");
@@ -390,14 +458,38 @@ impl Vcpu {
                 }
                 VcpuExit::MmioRead(addr, data) => {
                     if let Some(ref mmio_bus) = self.mmio_bus {
+                        let started = profile.as_ref().map(|_| Instant::now());
                         debug!("vCPU {vcpuid} MMIO read 0x{addr:x}");
                         mmio_bus.read(vcpuid, addr, data);
+                        if let Some(profile) = profile {
+                            profile.bus_ns += started.unwrap().elapsed().as_nanos();
+                            if addr & 0xfff == 8
+                                && data == 26u32.to_le_bytes()
+                                && !profile.fs_bases.contains(&(addr & !0xfff))
+                            {
+                                profile.fs_bases.push(addr & !0xfff);
+                                profile.mark(self.id, "fs_identified");
+                            }
+                        }
                     }
                     Ok(VcpuEmulation::Handled)
                 }
                 VcpuExit::MmioWrite(addr, data) => {
                     if let Some(ref mmio_bus) = self.mmio_bus {
+                        if let Some(profile) = profile.as_ref() {
+                            if addr & 0xfff == 0x70
+                                && profile.fs_bases.contains(&(addr & !0xfff))
+                                && data.len() == 4
+                                && data[0] & 4 != 0
+                            {
+                                profile.mark(self.id, "fs_driver_ok");
+                            }
+                        }
+                        let started = profile.as_ref().map(|_| Instant::now());
                         mmio_bus.write(vcpuid, addr, data);
+                        if let Some(profile) = profile {
+                            profile.bus_ns += started.unwrap().elapsed().as_nanos();
+                        }
                     }
                     Ok(VcpuEmulation::Handled)
                 }
@@ -445,6 +537,18 @@ impl Vcpu {
 
     /// Main loop of the vCPU thread.
     pub fn run(&mut self, init_tls_sender: Sender<u64>) {
+        let mut profile =
+            (std::env::var("PVISOR_BOOT_PROFILE").as_deref() == Ok("1")).then(|| BootProfile {
+                start: Instant::now(),
+                hvf_ns: 0,
+                bus_ns: 0,
+                waits_ns: 0,
+                exits: HashMap::new(),
+                fs_bases: Vec::new(),
+            });
+        if let Some(profile) = &profile {
+            profile.mark(self.id, "thread_entry");
+        }
         let mut hvf_vcpu =
             HvfVcpu::new(self.mpidr, self.nested_enabled).expect("Can't create HVF vCPU");
         let hvf_vcpuid = hvf_vcpu.id();
@@ -480,23 +584,34 @@ impl Vcpu {
         hvf_vcpu
             .set_initial_state(entry_addr, self.fdt_addr)
             .unwrap_or_else(|_| panic!("Can't set HVF vCPU {hvf_vcpuid} initial state"));
+        if let Some(profile) = &profile {
+            profile.mark(self.id, "first_enter");
+        }
 
         loop {
             if let Ok(VcpuEvent::Pause) = self.event_receiver.try_recv() {
                 self.pause_and_park();
             }
-            match self.run_emulation(&mut hvf_vcpu) {
+            match self.run_emulation(&mut hvf_vcpu, &mut profile) {
                 // Emulation ran successfully, continue.
                 Ok(VcpuEmulation::Handled) => (),
                 // Emulation was interrupted by a breakpoint.
                 Ok(VcpuEmulation::Interrupted) => self.wait_for_resume(),
                 // Wait for an external event.
                 Ok(VcpuEmulation::WaitForEvent) => {
-                    self.wait_for_event(hvf_vcpuid, &wfe_receiver, None)
+                    let started = profile.as_ref().map(|_| Instant::now());
+                    self.wait_for_event(hvf_vcpuid, &wfe_receiver, None);
+                    if let Some(profile) = &mut profile {
+                        profile.waits_ns += started.unwrap().elapsed().as_nanos();
+                    }
                 }
                 Ok(VcpuEmulation::WaitForEventExpired) => (),
                 Ok(VcpuEmulation::WaitForEventTimeout(timeout)) => {
-                    self.wait_for_event(hvf_vcpuid, &wfe_receiver, Some(timeout))
+                    let started = profile.as_ref().map(|_| Instant::now());
+                    self.wait_for_event(hvf_vcpuid, &wfe_receiver, Some(timeout));
+                    if let Some(profile) = &mut profile {
+                        profile.waits_ns += started.unwrap().elapsed().as_nanos();
+                    }
                 }
                 // The guest was rebooted or halted.
                 Ok(VcpuEmulation::Stopped) => {

@@ -3,7 +3,6 @@
 use crate::config::VmSettings;
 use crate::executor::{ExecutorOutput, RunExecutor, Session, SessionEnd as End};
 use crate::executor::{join_capture, read_limited, stdio};
-use crate::util::write_private_json;
 use anyhow::Context as _;
 use async_trait::async_trait;
 use pvisor_core::{
@@ -267,6 +266,7 @@ impl RunExecutor for VmExecutor {
     }
 
     async fn execute(&self, context: &Session) -> ExecutorOutput {
+        crate::util::startup_mark("vm.prepare_begin");
         let mut spec = context.spec().clone();
         context
             .transition(
@@ -368,6 +368,7 @@ impl RunExecutor for VmExecutor {
         for key in [
             crate::image::cache::SERVER_ENV,
             "PVISOR_CACHE_TOKEN",
+            "PVISOR_EXPERIMENTAL_INIT_ARGV",
             crate::AGENTCTL_ENDPOINT_ENV,
             crate::AGENTCTL_TOKEN_ENV,
             crate::AGENTCTL_TRANSPORT_ENV,
@@ -525,6 +526,7 @@ impl RunExecutor for VmExecutor {
                 return failed_to_start(error.to_string());
             }
         };
+        crate::util::startup_mark("vm.ram_backing_begin");
         let mut ram_backing =
             match super::control::RamBacking::create(self.settings.ram_backing.as_deref()) {
                 Ok(backing) => backing,
@@ -556,6 +558,7 @@ impl RunExecutor for VmExecutor {
                 return failed_to_start(format!("hide VM RAM backing: {error}"));
             }
         }
+        crate::util::startup_mark("vm.ram_backing_ready");
         let runner = RunnerSpec {
             setup_attestation: attestation.path().to_path_buf(),
             root: root_overlay,
@@ -568,11 +571,22 @@ impl RunExecutor for VmExecutor {
                 .unwrap_or(self.settings.memory_mib),
             library_dir: self.settings.library_dir.clone(),
         };
-        let runner_path = temporary.path().join("runner.json");
-        if let Err(error) = write_private_json(&runner_path, &runner) {
-            return failed_to_start(error.to_string());
-        }
-
+        crate::util::startup_mark("vm.spec_write_begin");
+        // This private launch message is consumed only by the child spawned below.
+        // It is not recovery metadata: complete the write, without disk sync.
+        let runner_file = (|| -> anyhow::Result<_> {
+            use std::io::Write;
+            let contents = serde_json::to_vec(&runner)?;
+            let mut file = tempfile::NamedTempFile::new_in(temporary.path())?;
+            file.write_all(&contents)?;
+            Ok(file)
+        })();
+        let runner_file = match runner_file {
+            Ok(file) => file,
+            Err(error) => return failed_to_start(error.to_string()),
+        };
+        let runner_path = runner_file.path();
+        crate::util::startup_mark("vm.spec_write_ready");
         let mut vm_network = match context.take_vm_network() {
             Ok(network) => network,
             Err(error) => {
@@ -608,7 +622,7 @@ impl RunExecutor for VmExecutor {
         };
         let mut command = Command::new(executable);
         command
-            .env(RUNNER_SPEC_ENV, &runner_path)
+            .env(RUNNER_SPEC_ENV, runner_path)
             .env(CONTROL_FD_ENV, CONTROL_CHILD_FD.to_string())
             .env(RAM_FD_ENV, RAM_CHILD_FD.to_string())
             .stdin(stdio(invocation.stdin))
@@ -663,12 +677,14 @@ impl RunExecutor for VmExecutor {
             #[cfg(target_os = "macos")]
             command.env("DYLD_LIBRARY_PATH", directory);
         }
+        crate::util::startup_mark("vm.spawn_begin");
         let mut child = match command.spawn() {
             Ok(child) => child,
             Err(error) => {
                 return failed_to_start(error.to_string());
             }
         };
+        crate::util::startup_mark("vm.spawn_returned");
         drop(control_runner);
         drop(ram_runner);
         drop(network_runner);
@@ -822,7 +838,9 @@ fn guest_exit_outcome(
 /// Returns `true` when the current process was consumed by an internal mode.
 pub fn run_internal_if_requested() -> anyhow::Result<bool> {
     if let Some(path) = std::env::var_os(RUNNER_SPEC_ENV) {
+        crate::util::startup_mark("runner.spec_read_begin");
         let spec: RunnerSpec = serde_json::from_slice(&std::fs::read(&path)?)?;
+        crate::util::startup_mark("runner.spec_read_ready");
         run_runner(spec)?;
         return Ok(true);
     }
@@ -861,7 +879,9 @@ fn run_linked_krun(spec: RunnerSpec, mut attestation: std::fs::File) -> anyhow::
     }
     let workspace_tag = CString::new(WORKSPACE_TAG)?;
     let guest_config = serde_json::to_vec(&spec.guest)?;
+    crate::util::startup_mark("runner.context_begin");
     let ctx = check_ctx(krun::krun_create_ctx(), "krun_create_ctx")?;
+    crate::util::startup_mark("runner.context_ready");
     let ram = std::env::var(RAM_FD_ENV)?.parse::<RawFd>()?;
     anyhow::ensure!(ram == RAM_CHILD_FD, "invalid RAM backing descriptor");
     if unsafe { libc::fcntl(ram, libc::F_SETFD, libc::FD_CLOEXEC) } < 0 {
@@ -889,22 +909,47 @@ fn run_linked_krun(spec: RunnerSpec, mut attestation: std::fs::File) -> anyhow::
         "krun_set_embedded_kernel",
     )?;
     add_krun_overlay(ctx, "/dev/root", &spec.root, 1 << 29)?;
-    check_krun(
-        unsafe {
-            krun::krun_fs_add_overlay_file(
-                ctx,
-                c"/dev/root".as_ptr(),
-                c"/.pvisor-guest.json".as_ptr(),
-                guest_config.as_ptr(),
-                guest_config.len(),
-                0o400,
-                true,
-            )
-        },
-        "krun_fs_add_overlay_file(guest config)",
-    )?;
+    if std::env::var("PVISOR_EXPERIMENTAL_INIT_ARGV").as_deref() == Ok("1") {
+        let argument = pvisor_guest::config_init_arg(&guest_config)?;
+        let argument = CString::new(argument)?;
+        // libkrun reads MAX_ARGS slots, even for a one-argument list.
+        let mut argv = vec![std::ptr::null(); 4096];
+        argv[0] = argument.as_ptr();
+        let env = vec![std::ptr::null(); 4096];
+        check_krun(
+            unsafe {
+                krun::krun_set_exec(ctx, c"/init.krun".as_ptr(), argv.as_ptr(), env.as_ptr())
+            },
+            "krun_set_exec(init argv)",
+        )?;
+    } else {
+        check_krun(
+            unsafe {
+                krun::krun_fs_add_overlay_file(
+                    ctx,
+                    c"/dev/root".as_ptr(),
+                    c"/.pvisor-guest.json".as_ptr(),
+                    guest_config.as_ptr(),
+                    guest_config.len(),
+                    0o400,
+                    true,
+                )
+            },
+            "krun_fs_add_overlay_file(guest config)",
+        )?;
+    }
     if let Some(workspace) = &spec.workspace {
         add_krun_overlay(ctx, workspace_tag.to_str()?, workspace, 0)?;
+    }
+    if std::env::var("PVISOR_KRUN_INITCALL_DEBUG").as_deref() == Ok("1") {
+        // An unknown NAME=value would reach PID 1; this recognized kernel
+        // boolean enables initcall diagnostics before the cmdline's `--`.
+        let mut env = vec![std::ptr::null(); 4096];
+        env[0] = c"initcall_debug".as_ptr();
+        check_krun(
+            unsafe { krun::krun_set_env(ctx, env.as_ptr()) },
+            "krun_set_env(initcall_debug)",
+        )?;
     }
     if let Some(fd) = std::env::var_os(NETWORK_FD_ENV) {
         let fd = fd
@@ -934,8 +979,10 @@ fn run_linked_krun(spec: RunnerSpec, mut attestation: std::fs::File) -> anyhow::
         "krun_disable_implicit_vsock",
     )?;
     check_krun(krun::krun_add_vsock(ctx, 0), "krun_add_vsock")?;
+    crate::util::startup_mark("runner.devices_configured");
     attestation.write_all(b"pvisor-vmm-installed-v1\n")?;
     attestation.sync_data()?;
+    crate::util::startup_mark("runner.attestation_ready");
     let control = std::env::var(CONTROL_FD_ENV)
         .with_context(|| format!("missing {CONTROL_FD_ENV}"))?
         .parse::<RawFd>()?;
@@ -946,7 +993,9 @@ fn run_linked_krun(spec: RunnerSpec, mut attestation: std::fs::File) -> anyhow::
         return Err(std::io::Error::last_os_error().into());
     }
     let mut control = unsafe { std::os::unix::net::UnixStream::from_raw_fd(control) };
+    crate::util::startup_mark("runner.krun_enter");
     let started = krun::krun_start_enter_with_handle(ctx, move |handle| {
+        crate::util::startup_mark("runner.vmm_built");
         #[cfg(all(target_os = "macos", target_arch = "aarch64"))]
         super::pager::start_if_requested(handle.clone())?;
         std::thread::Builder::new()
@@ -1026,6 +1075,7 @@ fn run_linked_krun(spec: RunnerSpec, mut attestation: std::fs::File) -> anyhow::
                     }
                 }
             })?;
+        crate::util::startup_mark("runner.control_ready");
         Ok(())
     });
     if started < 0 {

@@ -164,17 +164,32 @@ impl RunRecord {
         crate::util::write_private_json(&path, self)?;
 
         let index_dir = self.storage.join(".pvisor").join("runs");
-        atomic_write(
-            &index_dir.join(format!(
-                "{}.json",
-                crate::util::encode_hex(self.run_id.as_bytes())
-            )),
-            &serde_json::to_vec_pretty(&RunIndex {
-                run_id: self.run_id.clone(),
-                stage_dir: stage,
-            })?,
-            0o600,
-        )?;
+        let index_path = index_dir.join(format!(
+            "{}.json",
+            crate::util::encode_hex(self.run_id.as_bytes())
+        ));
+        let contents = serde_json::to_vec_pretty(&RunIndex {
+            run_id: self.run_id.clone(),
+            stage_dir: stage,
+        })?;
+        // State updates do not move the Run. Keep the existing index inode,
+        // but still confirm durability (including a prior failed directory sync).
+        let unchanged = match fs::symlink_metadata(&index_path) {
+            Ok(metadata)
+                if metadata.is_file() && metadata.permissions().mode() & 0o777 == 0o600 =>
+            {
+                fs::read(&index_path)? == contents
+            }
+            Ok(_) => false,
+            Err(error) if error.kind() == std::io::ErrorKind::NotFound => false,
+            Err(error) => return Err(error.into()),
+        };
+        if unchanged {
+            File::open(&index_path)?.sync_all()?;
+            crate::util::sync_directory(&index_dir)?;
+        } else {
+            atomic_write(&index_path, &contents, 0o600)?;
+        }
         Ok(())
     }
 
@@ -803,6 +818,42 @@ mod tests {
             orchestration: Default::default(),
             operation: None,
         }
+    }
+
+    #[test]
+    fn state_updates_reuse_index_and_moves_republish_it() {
+        use std::os::unix::fs::MetadataExt;
+        let temp = tempfile::tempdir().unwrap();
+        let stage = temp.path().join("stage");
+        let mut run = record(temp.path(), &stage, &stage.join("upper"));
+        run.write().unwrap();
+        let index = temp.path().join(".pvisor/runs").join(format!(
+            "{}.json",
+            crate::util::encode_hex(run.run_id.as_bytes())
+        ));
+        let original = fs::metadata(&index).unwrap().ino();
+        run.state = RunRecordState::Failed;
+        run.write().unwrap();
+        assert_eq!(fs::metadata(&index).unwrap().ino(), original);
+        assert_eq!(
+            RunRecord::read(&stage).unwrap().state,
+            RunRecordState::Failed
+        );
+        let moved = temp.path().join("moved");
+        run.overlay.as_mut().unwrap().stage_dir = moved.clone();
+        run.write().unwrap();
+        let updated: RunIndex = serde_json::from_slice(&fs::read(&index).unwrap()).unwrap();
+        assert_eq!(updated.stage_dir, moved);
+        // An otherwise identical index with public permissions must be repaired.
+        fs::set_permissions(&index, fs::Permissions::from_mode(0o644)).unwrap();
+        run.write().unwrap();
+        assert_eq!(
+            fs::metadata(&index).unwrap().permissions().mode() & 0o777,
+            0o600
+        );
+        fs::write(&index, b"broken").unwrap();
+        run.write().unwrap();
+        assert!(serde_json::from_slice::<RunIndex>(&fs::read(&index).unwrap()).is_ok());
     }
 
     #[test]

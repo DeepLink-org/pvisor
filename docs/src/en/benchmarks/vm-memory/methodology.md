@@ -4,7 +4,7 @@
 
 ## Scope of this run {#scope}
 
-Rerun on 2026-10-03 from the current worktree using the real `pvisor run` and
+Run on 2026-10-03 after freezing a build snapshot, using the real `pvisor run` and
 `pvisor-memory-pool`, built and signed by `just build release`. Historical SDK
 fixture results do not substitute for CLI measurements. Each VM runs the same
 static Linux program and actually allocates and accesses 64 MiB of data. This
@@ -21,7 +21,18 @@ builds, and rootfs preparation are outside the execution samples.
 | Guest program | Rust 1.98.0, aarch64 Linux musl, optimization level 2 |
 | Host pages | 16 KiB; pager blocks 64 KiB |
 | Observation | Process and host samples every second; experimental diagnostics enabled equally for successful cases |
-| Pressure control | No additional pressure allocator; observe actual NORMAL / WARN and stop at critical |
+| Pressure control | No additional pressure allocator; record actual pressure levels and stop at critical |
+
+Measurements target the build snapshot fixed for this run. Later source changes or rebuilds from concurrent work do not enter the dataset. Evidence retains binary hashes, the build-time runtime worktree diff, and experiment source files; this report does not validate all subsequent code.
+
+## What the two datasets answer {#datasets}
+
+| Dataset | Runs | Question | Main observation windows |
+|---|---:|---|---|
+| 35-second parameter matrix | 40 | How parameters and workloads affect reclamation and restoration at equal task duration | 18–33 seconds after ready |
+| Extended 2 GiB observation | 4 | Whether larger VMs continue reclaiming after scanning starts | 60–90, 120–150 and 150–175 seconds after ready |
+
+Both use the same frozen CLI, pool and firmware; they do not combine into one savings percentage. The 175–178 second endpoint was added descriptively after inspecting the first curve, with only three samples per case. It does not replace predefined windows or steady-state acceptance. The overview rounds representative results; complete evidence retains original precision.
 
 ## Parameter and workload matrix {#matrix}
 
@@ -51,6 +62,10 @@ all 64 MiB three times, two seconds apart, retaining first and subsequent
 access times. Later reads can trigger renewed cold restoration and are not
 automatically “warm reads.”
 
+The main checksum workload is single-threaded. The 1 / 2 vCPU comparison covers these settings and this workload, not CPU scalability of multithreaded applications. First-read times take a median across VMs, then across two runs; ratios are calculated per pair and can differ from dividing aggregated times.
+
+This run compares **startup behavior at the same task duration**, not steady state across all capacities. The 2 GiB configuration had zero pool payload within the window, with its first nonzero sample about 34.3 seconds after ready. The [results page](results.md#scan-startup) gives the scan mechanism, timing evidence and requirements for subsequent steady-state measurements.
+
 ## Memory, pressure, and performance metrics {#metrics}
 
 | Metric | Calculation / scope | What it does not establish |
@@ -78,6 +93,10 @@ of two runs' P95 values are not the pooled event P95. Retain medians, sampled
 maxima, first wakeups, and restore peaks instead of showing only quiet-period
 best results.
 
+Barrier metrics measure wall time of both calls, including possible scheduling and waiting; they are not exact accumulated vCPU stopped time. Single / dual VMs also change each VM's share of the common budget, preventing independent attribution of deduplication benefits.
+
+One-second observations are not atomic across processes: RAM diagnostics, pool payload, and host counters have sampling skew. RAM records must be available and no more than three seconds old. Peaks are observed sample or logged-event maxima, not hard bounds for unobserved intervals.
+
 ## Reproduce {#reproduce}
 
 Set the existing firmware directory first. The output directory must not
@@ -87,8 +106,12 @@ with usable HVF and permission for host sockets and Hypervisor execution.
 ```bash
 just build release
 FIRMWARE_DIR=/path/to/pvisor/firmware/5.5.0/macos-aarch64
+EXPERIMENT_BIN=$(mktemp -d /tmp/pvisor-memory-bin.XXXXXX)
+cp target/release/pvisor target/release/pvisor-memory-pool "$EXPERIMENT_BIN/"
+codesign --verify --strict "$EXPERIMENT_BIN/pvisor"
 python3 tools/experiments/macos-memory/cli_decision_matrix.py \
   --firmware "$FIRMWARE_DIR" \
+  --binary-dir "$EXPERIMENT_BIN" \
   --output target/memory-cli-matrix-new \
   --repeats 2
 ```
@@ -100,6 +123,8 @@ arguments, stdout, stderr, process identities and clock counters, host
 pairs, input contents, CPU units, RAM proxies, and reference reclamation.
 Failed cases remain in their original directories and are excluded from
 successful performance comparisons.
+
+Copy signed executables to isolate concurrent builds. Formal cases check CLI SHA-256 at startup and exit; every pair must match the single digest recorded by the matrix. Do not keep launching samples from a `target/release` directory that another build may replace.
 
 ## Limits and stop conditions {#limits}
 
@@ -113,3 +138,18 @@ Stop at critical pressure, at least 2 GiB swap growth from the run's initial
 snapshot, or less than 4 GiB free disk. No other applications were closed,
 administrator password requested, macFUSE automatically enabled, or existing
 physical-memory acceptance threshold lowered.
+
+Pairs run sequentially on one host, but pressure levels and background load are not guaranteed identical. The pressure table exposes each mode and repetition; this is not a causal pressure experiment on an isolated host.
+
+## Reproducing the extended 2 GiB observation {#long-idle-2048}
+
+Use the same frozen executables in a separate output directory, retaining two pairs and reversed order. The default remains 35 seconds; the follow-up only extends waiting and matching timeouts. Replace the executable, firmware and output paths below. The [results page](results.md#long-idle-2048) separates predefined windows from the descriptive endpoint.
+
+```bash
+python3 tools/experiments/macos-memory/cli_decision_matrix.py \
+  --binary-dir /path/to/frozen-binaries \
+  --firmware /path/to/firmware \
+  --output /path/to/evidence/cases \
+  --only cold-2048-dual --idle-seconds 180 --repeats 2
+python3 tools/experiments/macos-memory/long_idle_report.py /path/to/evidence
+```

@@ -50,7 +50,7 @@ An object ID is:
 SHA-256("PVRES1\0\0" || decoded_length:u64_le || decoded_bytes)
 ```
 
-The domain prefix separates it from disk generation IDs. Inputs contain 1–65,536 B. `intern()` computes the ID, decodes an existing candidate and compares every byte before reuse. Both length and content must match. New content uses these encoding rules:
+The domain prefix separates it from disk generation IDs. Inputs contain 1–65,536 B. `intern()` computes the ID and verifies every byte of an existing candidate before reuse: Fill / Raw compare directly, while Zstd decodes first. Both length and content must match. New content uses these encoding rules:
 
 | Payload | Selection | `encoded_bytes` accounting |
 |---|---|---:|
@@ -263,3 +263,5 @@ Default pool budgets are 16 MiB encoded payload, 8192 objects, 16 connections an
 The v1 integration check used the shipped pool and explicit SDK option without the old pool environment variable in the parent. Two real VMs passed shared-object, restoration, independent-write and exit checks; service exit and socket cleanup passed in about 36.6 s, without host-guard errors. Raw evidence is `v1-product-integration.json`. Targeted Rust regression, Clippy and installation/packaging results are recorded in the convergence report.
 
 After first-version integration, the experiment matrix stops expanding. Existing performance, measurement and pool-failure limits remain documented. Longer pressure coverage, full physical attribution and restoration-tail optimization are follow-up work driven by concrete usage feedback, not claimed as solved by v1.
+
+For current CLI parameter combinations, savings, and access costs, see the [VM memory experiment report](../../benchmarks/vm-memory/index.md). Historical datasets support only their recorded versions.

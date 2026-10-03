@@ -14,6 +14,7 @@ use crate::legacy::IrqChip;
 use crate::DeviceType;
 use arch::aarch64::layout::{GTIMER_HYP, GTIMER_PHYS, GTIMER_SEC, GTIMER_VIRT};
 use arch::{ArchMemoryInfo, InitrdConfig};
+use rand::{rngs::OsRng, TryRngCore};
 use vm_fdt::{Error as FdtError, FdtWriter};
 use vm_memory::{Address, Bytes, GuestAddress, GuestMemoryError, GuestMemoryMmap};
 
@@ -59,6 +60,8 @@ pub enum Error {
     FinishFDTReserveMap(io::Error),
     /// Failure in writing FDT in memory.
     WriteFDTToMemory(GuestMemoryError),
+    /// The host could not supply a fresh boot entropy seed.
+    BootEntropy(rand::rand_core::OsError),
 }
 type Result<T> = result::Result<T, Error>;
 
@@ -196,6 +199,13 @@ fn create_chosen_node<T: DeviceInfoForFDT + Clone + Debug>(
 ) -> Result<()> {
     let chosen_node = fdt.begin_node("chosen")?;
     fdt.property_string("bootargs", cmdline)?;
+    // Fresh for every VM, including identical images. Linux consumes and removes
+    // this property during early DT scanning, before virtio-rng is available.
+    let mut seed = [0u8; 32];
+    OsRng
+        .try_fill_bytes(&mut seed)
+        .map_err(Error::BootEntropy)?;
+    fdt.property("rng-seed", &seed)?;
 
     // If we have a legacy serial device, tell the guest this is the default console.
     // Clever guests will still switch to a better console (like virtio-console) if
@@ -217,6 +227,46 @@ fn create_chosen_node<T: DeviceInfoForFDT + Clone + Debug>(
     fdt.end_node(chosen_node)?;
 
     Ok(())
+}
+
+#[cfg(test)]
+mod boot_entropy_tests {
+    use super::*;
+
+    #[derive(Clone, Debug)]
+    struct NoDevice;
+    impl DeviceInfoForFDT for NoDevice {
+        fn addr(&self) -> u64 {
+            0
+        }
+        fn irq(&self) -> u32 {
+            0
+        }
+        fn length(&self) -> u64 {
+            0
+        }
+    }
+
+    #[test]
+    fn chosen_has_fresh_256_bit_seed() {
+        let seed = || {
+            let mut fdt = FdtWriter::new().unwrap();
+            create_chosen_node(&mut fdt, "", &None, &HashMap::<_, NoDevice>::new()).unwrap();
+            let blob = fdt.finish().unwrap();
+            let word =
+                |offset| u32::from_be_bytes(blob[offset..offset + 4].try_into().unwrap()) as usize;
+            let structure = word(8);
+            let strings = word(12);
+            // BEGIN_NODE + "chosen\0" (padded), then empty bootargs property.
+            let property = structure + 12 + 16;
+            assert_eq!(word(property), 3); // FDT_PROP
+            assert_eq!(word(property + 4), 32);
+            let name = strings + word(property + 8);
+            assert_eq!(&blob[name..name + 9], b"rng-seed\0");
+            blob[property + 12..property + 44].to_vec()
+        };
+        assert_ne!(seed(), seed());
+    }
 }
 
 fn create_gic_node(fdt: &mut FdtWriter, gic_device: &IrqChip) -> Result<()> {

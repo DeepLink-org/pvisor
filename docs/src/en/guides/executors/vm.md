@@ -43,3 +43,7 @@ Unsupported UDP, IPv6, ICMP, QUIC, and inbound forwarding fail closed. `deny-all
 - On Linux the VMM is additionally confined with namespaces and Landlock; **on macOS the VMM still holds the calling user's host permissions**, so despite guest kernel isolation it is not a hostile multi-tenant boundary.
 - Host connectors and shared files remain part of the boundary.
 - `--safe` requires the VM to use the existing `auto` network boundary, but it does not select the VM automatically.
+
+## Memory options
+
+`--memory` sets guest RAM capacity, not actual physical occupancy. On macOS / Apple Silicon, explicitly select `--vm-memory-pool SOCKET` to share immutable compressed cold blocks; it defaults off, and pool loss fails attached VMs. `--vm-ram-backing FILE` selects a separate new RAM file and does not itself guarantee savings. `--vm-ram-compression` uses the FUSE Seekable compression path and is mutually exclusive with the pool. Read the [experiments and usage decisions](../../benchmarks/vm-memory/index.md) before enabling it.

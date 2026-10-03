@@ -540,8 +540,10 @@ pub(crate) fn prepare_attempt(
     let mut overlay_cfg = config.overlay.clone();
     apply_overlay_override(&mut overlay_cfg, &opts.overlay_override);
 
+    crate::util::startup_mark("storage.overlay_begin");
     let prepared_overlay =
         prepare_overlay(&overlay_cfg, &storage, &root_session, preparation.is_krun())?;
+    crate::util::startup_mark("storage.overlay_ready");
     let PreparedOverlay {
         lease,
         mount: overlay_mount,
@@ -634,7 +636,9 @@ pub(crate) fn prepare_attempt(
         &pvisor_core::AttemptId::new(opts.attempt_id),
         safe,
         |session| {
+            crate::util::startup_mark("storage.record_write_begin");
             session.run_record.write()?;
+            crate::util::startup_mark("storage.record_write_ready");
             session._control = RunControlServer::start_observed(
                 &session.run_record,
                 session.fs_metrics.clone(),
@@ -677,7 +681,9 @@ pub(crate) fn prepare_attempt(
             )?;
             session.run_record.environment.runtime_injected_keys =
                 implant.env.keys().cloned().collect();
+            crate::util::startup_mark("storage.record_write_begin");
             session.run_record.write()?;
+            crate::util::startup_mark("storage.record_write_ready");
             #[cfg(unix)]
             crate::runtime::audit::arm();
             // The Attempt listener is also the VM's explicit HTTP proxy endpoint.
@@ -707,8 +713,10 @@ pub(crate) fn prepare_overlay_attempt(
     let root_session = spec.run_id.as_str().to_string();
     let mut overlay_cfg = pvisor_core::overlay::OverlayConfig::default();
     apply_overlay_override(&mut overlay_cfg, &opts.overlay);
+    crate::util::startup_mark("storage.overlay_begin");
     let prepared_overlay =
         prepare_overlay(&overlay_cfg, &storage, &root_session, preparation.is_krun())?;
+    crate::util::startup_mark("storage.overlay_ready");
     let PreparedOverlay {
         lease,
         mount: overlay_mount,
@@ -796,13 +804,6 @@ pub(crate) fn prepare_overlay_attempt(
         .and_then(serde_json::Value::as_bool)
         .unwrap_or(false);
     session.finish_preparation(opts.attempt_id, safe, |session| {
-        session.run_record.write()?;
-        session._control = RunControlServer::start_observed(
-            &session.run_record,
-            session.fs_metrics.clone(),
-            session.network_metrics.clone(),
-        )?;
-
         let mut plan = ImplantPlan {
             env: ImplantPlan::marker_env(),
             cwd: overlay_cwd(spec, preparation, &overlay_hint, Some(&overlay_record)),
@@ -839,7 +840,14 @@ pub(crate) fn prepare_overlay_attempt(
         let RunInvocation::Process(ref mut process) = spec.invocation;
         apply_implant(process, &plan);
         session.run_record.environment.runtime_injected_keys = plan.env.keys().cloned().collect();
+        crate::util::startup_mark("storage.record_write_begin");
         session.run_record.write()?;
+        crate::util::startup_mark("storage.record_write_ready");
+        session._control = RunControlServer::start_observed(
+            &session.run_record,
+            session.fs_metrics.clone(),
+            session.network_metrics.clone(),
+        )?;
         #[cfg(unix)]
         crate::runtime::audit::arm();
         spec.metadata
@@ -937,9 +945,6 @@ pub(crate) fn prepare_storage_attempt(
         .and_then(serde_json::Value::as_bool)
         .unwrap_or(false);
     session.finish_preparation(attempt_id, safe, |session| {
-        session.run_record.write()?;
-        session._control = RunControlServer::start(&session.run_record)?;
-
         let mut plan = ImplantPlan {
             env: ImplantPlan::marker_env(),
             cwd: None,
@@ -958,7 +963,10 @@ pub(crate) fn prepare_storage_attempt(
         let RunInvocation::Process(ref mut process) = spec.invocation;
         apply_implant(process, &plan);
         session.run_record.environment.runtime_injected_keys = plan.env.keys().cloned().collect();
+        crate::util::startup_mark("storage.record_write_begin");
         session.run_record.write()?;
+        crate::util::startup_mark("storage.record_write_ready");
+        session._control = RunControlServer::start(&session.run_record)?;
         #[cfg(unix)]
         crate::runtime::audit::arm();
         spec.metadata

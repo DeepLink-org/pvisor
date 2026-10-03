@@ -20,6 +20,7 @@ EN_NAV_LABELS = {
     "指南": "Guides", "接入你的 Agent": "Connect your agent", "策略": "Policies",
     "执行器": "Executors", "概念": "Concepts", "基准与对比": "Benchmarks and comparisons",
     "安全": "Security", "参考": "Reference", "设计与研究": "Design and research",
+    "VM 内存节约与开销": "VM memory savings and overhead",
     "内存去重与冷页压缩": "Memory deduplication and cold blocks",
     "研究方向": "Research directions", "VM RAM offload": "VM RAM offload", "社区": "Community", "对比": "Comparisons",
     "Gemini CLI": "Gemini CLI", "aider": "aider", "OpenCode": "OpenCode",

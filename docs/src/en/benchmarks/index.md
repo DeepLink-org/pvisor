@@ -2,18 +2,18 @@
 
 Every measurement and comparison is reproducible and serves as evidence for the "auditable" promise; the method, environment, and sample counts are in [methodology](methodology.md).
 
-## Headline figures
+## Available measurements
 
-| Metric | Value | Source |
-| --- | --- | --- |
-| VM executor guest readiness latency (guest init phase only, Apple M4/HVF) | p50 ≈ 114 ms (Rust init) | [Startup latency](startup.md) |
-| End-to-end pVisor cold start (host / container / VM) | In progress | [Startup latency](startup.md) |
-| Filesystem overhead | In progress | [Filesystem overhead (planned)](filesystem.md) |
-| End-to-end agent task overhead | In progress | [End-to-end tasks (planned)](agent-tasks.md) |
+| Measurement | Observed result | Conditions and evidence |
+|---|---|---|
+| VM guest readiness phase | p50 about 114 ms | Rust guest init only, Apple M4/HVF; [startup latency](startup.md) |
+| Cold VM RAM reclamation | About 60% lower RAM proxy for 2 GiB VMs | Two VMs with 64 MiB repeated cold data each, seconds 60–90 after ready; first reads slow down and footprint increases. See [memory benefits and usage costs](vm-memory/index.md) |
+
+Each number describes a specific phase and workload. Guest init is not end-to-end startup, and cold RAM proxy is not whole-host physical memory. Other benchmarks remain marked below; unmeasured areas have no performance conclusion.
 
 ## Benchmarks
 
-[Startup latency](startup.md) · [Filesystem overhead (planned)](filesystem.md) · [Network overhead (planned)](network.md) · [apply/drop cost (planned)](apply.md) · [End-to-end tasks (planned)](agent-tasks.md) · [Supervision cost (planned)](supervision-cost.md) · [Concurrency density (planned)](density.md) · [Isolation effectiveness (planned)](isolation-tests.md) · [Replay fidelity](replay-fidelity.md)
+[VM memory savings, physical pressure, and performance overhead](vm-memory/index.md) · [Startup latency](startup.md) · [Filesystem overhead (planned)](filesystem.md) · [Network overhead (planned)](network.md) · [apply/drop cost (planned)](apply.md) · [End-to-end tasks (planned)](agent-tasks.md) · [Supervision cost (planned)](supervision-cost.md) · [Concurrency density (planned)](density.md) · [Isolation effectiveness (planned)](isolation-tests.md) · [Replay fidelity](replay-fidelity.md)
 
 ## Comparisons
 

@@ -50,7 +50,7 @@ pVisor 当前选择在宿主侧处理冷块：观察哪些 RAM 块暂时没有 C
 SHA-256("PVRES1\0\0" || decoded_length:u64_le || decoded_bytes)
 ```
 
-域前缀使它与磁盘 generation ID 分开。输入长度为 1–65,536 B。`intern()` 先计算 ID；遇到已有 ID，解码旧对象并逐字节比较后才复用，长度和内容都必须一致。新内容按以下顺序编码：
+域前缀使它与磁盘 generation ID 分开。输入长度为 1–65,536 B。`intern()` 先计算 ID；遇到已有 ID，Fill／Raw 直接逐字节核验内容，Zstd 解码后核验，长度与内容均一致才复用。新内容按以下顺序编码：
 
 | Payload | 选择条件 | `encoded_bytes` 计量 |
 |---|---|---:|
@@ -263,3 +263,5 @@ pvisor run --vm-memory-pool /tmp/pvisor-memory-pool-v1/pool.sock --rootfs image=
 v1 接入验证使用产品池程序和显式 SDK 参数，父进程未设置旧池环境变量。两个真实 VM 的共享对象、内容恢复、独立写入和正常退出通过；池退出及 socket 清理通过，约 36.6 s，无宿主守卫错误。原始记录为 `v1-product-integration.json`。定向 Rust 回归、Clippy 与安装/打包检查见 review 的收敛报告。
 
 首版完成接入后停止扩展实验矩阵。已有性能、计量和池故障限制随版本保留；更长压力、完整物理收益与恢复尾延迟优化作为后续按具体使用反馈安排的工作，不将它们宣称为首版已解决。
+
+当前 CLI 的参数组合、节约量和访问代价见[VM 内存实验报告](../../benchmarks/vm-memory/index.md)，旧数据只支持其记录版本的结论。

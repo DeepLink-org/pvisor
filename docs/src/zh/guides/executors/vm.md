@@ -43,3 +43,7 @@ pvisor run --executor vm --rootfs image=ubuntu:24.04 \
 - Linux 另外用 namespace 和 Landlock 约束 VMM；**macOS 上 VMM 仍拥有调用用户的宿主权限**，因此尽管有 guest 内核隔离，也不应把它当作敌对多租户边界；
 - 宿主连接器和共享文件仍是边界的一部分；
 - `--safe` 要求 VM 使用现有的 `auto` 网络边界，但不会自动选择 VM。
+
+## 内存选项
+
+`--memory` 设置 guest RAM 上限，不能直接视为实际物理占用。macOS / Apple Silicon 可显式使用 `--vm-memory-pool SOCKET` 共享不可变的压缩冷块，默认关闭；共享池退出会使关联 VM 失败。`--vm-ram-backing FILE` 指定独立的新 RAM 文件，本身不保证节约内存。`--vm-ram-compression` 使用 FUSE 的 Seekable 压缩路径，与共享池互斥。开启前查看[实验与使用决策](../../benchmarks/vm-memory/index.md)。

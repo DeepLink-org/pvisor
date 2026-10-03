@@ -81,6 +81,7 @@ fn normalize_default_run(mut args: Vec<OsString>) -> Vec<OsString> {
 }
 
 pub fn main() -> anyhow::Result<()> {
+    crate::util::startup_mark("process.entry");
     if crate::run_krun_internal_if_requested()? {
         return Ok(());
     }
@@ -122,6 +123,7 @@ pub fn main() -> anyhow::Result<()> {
         Cli::command()
     };
     let parsed = Cli::from_arg_matches(&command.get_matches_from(args.clone()))?;
+    crate::util::startup_mark("cli.parsed");
     match parsed.command {
         Command::Run(run) => {
             if !terminal::is_child() {
@@ -138,7 +140,9 @@ pub fn main() -> anyhow::Result<()> {
                     return extensions::dispatch("tui", &args[1..]);
                 }
             }
-            finish(tokio::runtime::Runtime::new()?.block_on(run::run(*run))?);
+            let runtime = tokio::runtime::Runtime::new()?;
+            crate::util::startup_mark("cli.runtime_ready");
+            finish(runtime.block_on(run::run(*run))?);
         }
         Command::Fork(args) => finish(tokio::runtime::Runtime::new()?.block_on(run::fork(args))?),
         Command::Apply(args) => runtime::apply(args)?,
