@@ -61,7 +61,7 @@ pvisor snapshot fork SNAPSHOT_ID --name branch-b
 
 两个 VM 从同一保存点继续，guest 内 boot ID/PID 保持保存时的值，宿主实例名称、runner 和工作目录不同。每个实例取得完整私有 RAM 和文件副本，堆、文件修改和打开句柄互不影响；安装完成后不依赖发布对象。当前不是保留源 VM 运行的 live fork，也没有低成本共享运行态 RAM 或文件 COW。
 
-恢复通过只读 FUSE RAM 文件和 `MAP_PRIVATE` 映射按需加载：guest 或设备首次访问时读取并校验对应块，压缩块按需解码，guest 写入使用 COW 私有页，不修改快照或其他分支。启动前不再全量解码、写临时 RAM 文件或复制全部 RAM；v1 原始快照仍先检查整体摘要，再按需映射。Linux 需要可用的 `/dev/fuse` 和挂载权限，macOS 需要 macFUSE 内核后端。每个 runner 持有自己的 RAM 挂载和有界块缓存，尚未共享跨 runner 的解码页缓存。普通 RAM offload 禁止丢弃恢复后的 COW 页；保存新的完整快照仍会读取全部 RAM。文件树仍为完整副本；活跃冷页 pager 的直接保存尚未接入，恢复延迟和物理内存收益需要实测。
+恢复通过只读 FUSE RAM 文件和 `MAP_PRIVATE` 映射按需加载：guest 或设备首次访问时读取并校验对应块，压缩块按需解码，guest 写入使用 COW 私有页，不修改快照或其他分支。启动前不再全量解码、写临时 RAM 文件或复制全部 RAM；v1 原始快照仍先检查整体摘要，再按需映射。Linux 需要可用的 `/dev/fuse` 和挂载权限，macOS 需要 macFUSE 内核后端。每个 runner 持有自己的 RAM 挂载和有界块缓存，尚未共享跨 runner 的解码页缓存。独立的退出监视进程在 runner 退出后卸载 RAM，包括绕过析构函数的退出和 `SIGKILL`。普通 RAM offload 禁止丢弃恢复后的 COW 页；保存新的完整快照仍会读取全部 RAM。文件树仍为完整副本；活跃冷页 pager 的直接保存尚未接入，恢复延迟和物理内存收益需要实测。
 
 ## 首版边界
 

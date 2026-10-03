@@ -188,6 +188,9 @@ fn launch(spec: Launch) -> anyhow::Result<()> {
     Ok(())
 }
 pub(super) fn run(args: Args) -> anyhow::Result<()> {
+    if let Command::RamWatchdog { mount } = &args.command {
+        return crate::environment_snapshot::watch_mount(mount);
+    }
     if let Command::Runner { spec } = &args.command {
         return runner(serde_json::from_slice(&fs::read(spec)?)?);
     }
@@ -289,7 +292,7 @@ pub(super) fn run(args: Args) -> anyhow::Result<()> {
             println!("{}", store.collect_abandoned()?);
             Ok(())
         }
-        Command::Runner { .. } => unreachable!(),
+        Command::Runner { .. } | Command::RamWatchdog { .. } => unreachable!(),
     }
 }
 
@@ -334,8 +337,9 @@ fn runner(spec: Launch) -> anyhow::Result<()> {
             }
         }
         ensure!(count == 1, "snapshot requires one root filesystem");
-        let (mount, ram_file) = SnapshotRamMount::new(snapshot.ram_reader()?, &spec.directory)
+        let (mut mount, ram_file) = SnapshotRamMount::new(snapshot.ram_reader()?, &spec.directory)
             .context("mount on-demand snapshot RAM")?;
+        mount.watch_runner_exit(&std::env::current_exe()?)?;
         ram_mount = Some(mount);
         Some(MachineRestore {
             state: saved.state,
@@ -392,10 +396,12 @@ fn runner(spec: Launch) -> anyhow::Result<()> {
         krun::krun_set_machine_restore(ctx, state).map_err(anyhow::Error::msg)?;
     }
     let result = check(krun::krun_start_enter_with_handle(ctx, move |handle| {
+        // Preparation is complete and the pager owns its independent pins.
+        // Release the store gate before the first resumed guest heartbeat.
+        drop(published);
         if spec.restore.is_some() {
             handle.resume().map_err(std::io::Error::other)?;
         }
-        drop(published);
         println!("snapshot VM ready: {}", spec.directory.display());
         std::thread::spawn(move || {
             for connection in listener.incoming() {

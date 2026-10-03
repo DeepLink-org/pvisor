@@ -56,6 +56,8 @@ enum Command {
     Gc,
     #[command(hide = true)]
     Runner { spec: PathBuf },
+    #[command(hide = true)]
+    RamWatchdog { mount: PathBuf },
 }
 
 pub(super) fn run(args: Args) -> anyhow::Result<()> {

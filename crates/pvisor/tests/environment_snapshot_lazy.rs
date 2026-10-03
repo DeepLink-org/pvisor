@@ -255,8 +255,11 @@ fn fuse_faults_restore_ram_and_private_mappings_isolate_forks() {
         let bytes = bytes()[..3 * 65536].to_vec();
         let id = publish(&store, &source, &bytes, compressed);
         let published = store.open_for_restore(&id, &compatibility()).unwrap();
-        let (mount, file) =
+        let (mut mount, file) =
             SnapshotRamMount::new(published.ram_reader().unwrap(), directory.path()).unwrap();
+        mount
+            .watch_runner_exit(std::path::Path::new(env!("CARGO_BIN_EXE_pvisor")))
+            .unwrap();
         let restore = MachineRestore {
             ram_file: Arc::new(file),
             state: MachineSnapshot {
@@ -292,4 +295,79 @@ fn fuse_faults_restore_ram_and_private_mappings_isolate_forks() {
         drop(mount);
         store.collect_abandoned().unwrap();
     }
+}
+
+#[cfg(target_os = "linux")]
+#[test]
+#[ignore = "requires /dev/fuse; exercises runner SIGKILL cleanup"]
+fn fuse_mount_is_reaped_after_runner_is_killed() {
+    use pvisor::environment_snapshot::SnapshotRamMount;
+    use std::{
+        os::fd::AsRawFd,
+        process::{Command, Stdio},
+        time::{Duration, Instant},
+    };
+    const ROLE: &str = "PVISOR_RAM_WATCHDOG_TEST";
+    if let Some(directory) = std::env::var_os(ROLE) {
+        let directory = std::path::PathBuf::from(directory);
+        let source = directory.join("source");
+        fs::create_dir(&source).unwrap();
+        let store = SnapshotStore::new(&directory.join("store")).unwrap();
+        let id = publish(&store, &source, &bytes(), true);
+        let published = store.open_for_restore(&id, &compatibility()).unwrap();
+        let (mut mount, file) =
+            SnapshotRamMount::new(published.ram_reader().unwrap(), &directory).unwrap();
+        mount
+            .watch_runner_exit(std::path::Path::new(env!("CARGO_BIN_EXE_pvisor")))
+            .unwrap();
+        drop(published);
+        let path = fs::read_link(format!("/proc/self/fd/{}", file.as_raw_fd())).unwrap();
+        fs::write(
+            directory.join("ready"),
+            path.parent().unwrap().as_os_str().as_encoded_bytes(),
+        )
+        .unwrap();
+        loop {
+            std::thread::park();
+        }
+    }
+    let directory = tempfile::tempdir().unwrap();
+    let mut child = Command::new(std::env::current_exe().unwrap())
+        .args([
+            "--exact",
+            "fuse_mount_is_reaped_after_runner_is_killed",
+            "--ignored",
+            "--nocapture",
+        ])
+        .env(ROLE, directory.path())
+        .stdin(Stdio::null())
+        .spawn()
+        .unwrap();
+    let deadline = Instant::now() + Duration::from_secs(10);
+    while !directory.path().join("ready").exists() {
+        assert!(
+            child.try_wait().unwrap().is_none(),
+            "runner exited before readiness"
+        );
+        assert!(Instant::now() < deadline, "runner did not mount RAM");
+        std::thread::sleep(Duration::from_millis(10));
+    }
+    let path =
+        std::path::PathBuf::from(fs::read_to_string(directory.path().join("ready")).unwrap());
+    child.kill().unwrap(); // SIGKILL bypasses all Rust cleanup in the runner.
+    child.wait().unwrap();
+    while fs::symlink_metadata(&path).is_ok()
+        || fs::read_to_string("/proc/self/mountinfo")
+            .unwrap()
+            .contains(path.to_str().unwrap())
+    {
+        assert!(
+            Instant::now() < deadline,
+            "RAM mount survived runner SIGKILL"
+        );
+        std::thread::sleep(Duration::from_millis(10));
+    }
+    let store = SnapshotStore::new(&directory.path().join("store")).unwrap();
+    // The crashed pager's content pins are now eligible for normal gc.
+    assert_eq!(store.collect_abandoned().unwrap(), 1);
 }

@@ -392,6 +392,16 @@ private writes across mappings. It is explicitly ignored by the ordinary suite:
 cargo nextest run --locked -p pvisor --test environment_snapshot_lazy --run-ignored only
 ```
 
+`vm_snapshot_lazy.py` additionally checks real KVM continuation after deleting
+and collecting a snapshot before the first full heap read. It saves that restored
+COW VM and restores it again, then checks mount cleanup after VM termination:
+
+```bash
+python3 benchmark/pvisor/vm_snapshot_lazy.py \
+  --output target/vm-snapshot-lazy-new --binary target/release/pvisor \
+  --guest /tmp/snapshot-guest
+```
+
 ## Linux/KVM first-command readiness
 
 `linux_vm_ready.py` reuses the first-output timing and completed-Bundle checks from

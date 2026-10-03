@@ -21,6 +21,7 @@ fn snapshot_is_a_discoverable_builtin_without_companions() {
         assert!(text.contains(&format!("  {command} ")), "{text}");
     }
     assert!(!text.contains("  runner "));
+    assert!(!text.contains("  ram-watchdog "));
     assert!(text.contains("fork"), "{text}");
 }
 

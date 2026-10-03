@@ -26,6 +26,7 @@ mod blocks;
 mod lazy;
 mod store;
 pub use blocks::RamBlocks;
+pub(crate) use lazy::watch_mount;
 pub use lazy::{RawRamIndex, SnapshotRamMount, SnapshotRamReader};
 pub use store::{
     Compatibility, EnvironmentManifest, PendingEnvironment, PublishedEnvironment, SnapshotStore,

@@ -16,6 +16,7 @@ use std::{
     io,
     os::unix::fs::{FileExt, OpenOptionsExt, PermissionsExt},
     path::Path,
+    process::{Child, ChildStdin, Command, Stdio},
     time::{Duration, Instant, UNIX_EPOCH},
 };
 
@@ -188,6 +189,7 @@ impl SnapshotRamReader {
 /// releases content pins; it must never be dropped at the guest-ready callback.
 pub struct SnapshotRamMount {
     session: Option<BackgroundSession>,
+    watchdog: Option<(Child, ChildStdin)>,
     directory: tempfile::TempDir,
 }
 impl SnapshotRamMount {
@@ -209,6 +211,7 @@ impl SnapshotRamMount {
         let session = fuser::spawn_mount2(RamFs { reader }, temporary.path(), &options)?;
         let mount = Self {
             session: Some(session),
+            watchdog: None,
             directory: temporary,
         };
         let deadline = Instant::now() + Duration::from_secs(5);
@@ -234,15 +237,104 @@ impl SnapshotRamMount {
         };
         Ok((mount, file))
     }
+
+    /// A VMM can terminate with _exit or SIGKILL, bypassing Rust destructors.
+    /// A separate process group watches this pipe and unmounts after EOF. It
+    /// inherits no RAM descriptors and does not require FUSE allow_other.
+    pub fn watch_runner_exit(&mut self, executable: &Path) -> io::Result<()> {
+        use std::os::unix::process::CommandExt;
+        if self.watchdog.is_some() {
+            return Err(io::Error::other("RAM exit watchdog already installed"));
+        }
+        let mut child = Command::new(executable)
+            .args(["snapshot", "ram-watchdog"])
+            .arg(self.directory.path())
+            .stdin(Stdio::piped())
+            .stdout(Stdio::null())
+            .stderr(Stdio::inherit())
+            .process_group(0)
+            .spawn()?;
+        let pipe = child
+            .stdin
+            .take()
+            .ok_or_else(|| io::Error::other("missing RAM watchdog pipe"))?;
+        self.watchdog = Some((child, pipe));
+        Ok(())
+    }
 }
 impl Drop for SnapshotRamMount {
     fn drop(&mut self) {
+        if let Some((mut child, pipe)) = self.watchdog.take() {
+            drop(pipe);
+            if let Err(error) = child.wait() {
+                tracing::warn!(%error, "cannot wait for snapshot RAM cleanup");
+            }
+        }
         if let Some(session) = self.session.take()
             && let Err(error) = session.unmount()
         {
             tracing::warn!(%error, "cannot unmount snapshot RAM");
         }
     }
+}
+
+/// Internal CLI watchdog entry point. EOF means the sole owning runner has
+/// exited or explicitly released its mount after all RAM users were dropped.
+pub(crate) fn watch_mount(path: &Path) -> anyhow::Result<()> {
+    ensure!(
+        path.is_absolute()
+            && path
+                .file_name()
+                .is_some_and(|name| name.to_string_lossy().starts_with("ram-mount-")),
+        "invalid RAM watchdog mountpoint"
+    );
+    io::copy(&mut io::stdin().lock(), &mut io::sink())?;
+    #[cfg(target_os = "linux")]
+    {
+        let native = super::native_path(path)?;
+        // Privileged deployments may mount directly without fusermount.
+        let detached = unsafe { libc::umount2(native.as_ptr(), libc::MNT_DETACH) } == 0;
+        let error = io::Error::last_os_error();
+        if !detached && !matches!(error.raw_os_error(), Some(libc::EINVAL | libc::ENOENT)) {
+            let mut result = None;
+            for helper in ["fusermount3", "fusermount"] {
+                match Command::new(helper)
+                    .args(["-u", "-z", "--"])
+                    .arg(path)
+                    .output()
+                {
+                    Ok(output) => {
+                        result = Some(output);
+                        break;
+                    }
+                    Err(error) if error.kind() == io::ErrorKind::NotFound => continue,
+                    Err(error) => return Err(error.into()),
+                }
+            }
+            let output =
+                result.ok_or_else(|| anyhow::anyhow!("FUSE unmount helper unavailable"))?;
+            ensure!(
+                output.status.success(),
+                "snapshot RAM unmount failed: {}",
+                String::from_utf8_lossy(&output.stderr)
+            );
+        }
+    }
+    #[cfg(target_os = "macos")]
+    {
+        let output = Command::new("/sbin/umount").arg(path).output()?;
+        ensure!(
+            output.status.success(),
+            "snapshot RAM unmount failed: {}",
+            String::from_utf8_lossy(&output.stderr)
+        );
+    }
+    match fs::remove_dir(path) {
+        Ok(()) => {}
+        Err(error) if error.kind() == io::ErrorKind::NotFound => {}
+        Err(error) => return Err(error.into()),
+    }
+    Ok(())
 }
 
 const ROOT: u64 = 1;
