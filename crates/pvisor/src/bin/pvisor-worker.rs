@@ -3,6 +3,7 @@ use anyhow::{Context, ensure};
 use clap::{Parser, ValueEnum};
 use fs2::FileExt;
 use pvisor::{ContainerExecutor, PVisor, ProcessExecutor, RunExecutor, VmExecutor};
+use pvisor_cluster::admission::{AdmissionPolicy, sample_linux};
 use pvisor_cluster::{client::Client, *};
 use pvisor_core::{ExecutorKind, IsolationKind, RunInvocation, StdioMode};
 use std::{
@@ -33,6 +34,7 @@ struct WorkerProfile {
     overlaynet: pvisor::OverlayNetSettings,
     /// Shared read-only inputs, ordered bottom to top. Upper storage is private.
     lower_layers: Vec<PathBuf>,
+    admission: AdmissionPolicy,
 }
 
 #[derive(Parser)]
@@ -86,6 +88,135 @@ struct Active {
     commands: mpsc::Sender<ControlCommand>,
     acknowledgement: Option<ControlAcknowledgement>,
     control_revision: u64,
+    rejection: Option<AdmissionRejection>,
+}
+
+#[derive(Clone)]
+struct NodeSample {
+    started: Instant,
+    measurements: Result<NodeMeasurements, String>,
+}
+fn node_sampler(mode: AdmissionMode, interval: Duration) -> watch::Receiver<NodeSample> {
+    let (tx, rx) = watch::channel(NodeSample {
+        started: Instant::now(),
+        measurements: Err("awaiting first node sample".into()),
+    });
+    if mode == AdmissionMode::LinuxPressure {
+        tokio::spawn(async move {
+            let mut tick = tokio::time::interval(interval);
+            tick.set_missed_tick_behavior(tokio::time::MissedTickBehavior::Skip);
+            loop {
+                tick.tick().await;
+                let started = Instant::now();
+                // Exactly one probe can be in flight. A stalled read ages out
+                // the cached sample; it never blocks lease timers or spawns
+                // an accumulating queue of replacement probes.
+                let measurements = match tokio::task::spawn_blocking(sample_linux).await {
+                    Ok(result) => result.map_err(|error| format!("{error:#}")),
+                    Err(error) => Err(format!("node probe failed: {error}")),
+                };
+                if tx
+                    .send(NodeSample {
+                        started,
+                        measurements,
+                    })
+                    .is_err()
+                {
+                    break;
+                }
+            }
+        });
+    }
+    rx
+}
+fn node_report(
+    policy: &AdmissionPolicy,
+    capacity: Resources,
+    used: Resources,
+    sample: &NodeSample,
+) -> anyhow::Result<AdmissionReport> {
+    policy.report(
+        capacity,
+        used,
+        sample
+            .started
+            .elapsed()
+            .as_millis()
+            .try_into()
+            .unwrap_or(u64::MAX),
+        sample.measurements.clone(),
+    )
+}
+fn resume_allowed(report: &AdmissionReport, used: Resources) -> bool {
+    report.mode == AdmissionMode::Reservations
+        || (report.error.is_none()
+            && !report
+                .blocked
+                .iter()
+                .any(|block| *block != AdmissionBlock::CpuQuota)
+            && report
+                .measurements
+                .as_ref()
+                .is_some_and(|m| used.cpu_millis <= m.cpu_limit_millis))
+}
+
+#[cfg(test)]
+mod admission_tests {
+    use super::*;
+    #[test]
+    fn resume_uses_precharged_budget_but_requires_fresh_healthy_node_observations() {
+        let policy = AdmissionPolicy {
+            mode: AdmissionMode::LinuxPressure,
+            memory_reserve_bytes: 0,
+            ..Default::default()
+        };
+        let full = Resources {
+            slots: 1,
+            memory_bytes: 1024,
+            cpu_millis: 250,
+        };
+        let measurements = NodeMeasurements {
+            system_memory_available_bytes: 4096,
+            cgroup_memory_headroom_bytes: None,
+            cpu_limit_millis: 250,
+            cpu_some_avg10_bps: 0,
+            memory_full_avg10_bps: 0,
+        };
+        let report = policy
+            .report(full, full, 0, Ok(measurements.clone()))
+            .unwrap();
+        assert_eq!(report.available.cpu_millis, 0);
+        assert!(resume_allowed(&report, full)); // quota already reserved, not another charge
+        let mut pressure = measurements.clone();
+        pressure.cpu_some_avg10_bps = policy.cpu_some_avg10_limit_bps;
+        assert!(!resume_allowed(
+            &policy.report(full, full, 0, Ok(pressure)).unwrap(),
+            full
+        ));
+        assert!(!resume_allowed(
+            &policy
+                .report(
+                    full,
+                    full,
+                    policy.max_sample_age_ms,
+                    Ok(measurements.clone())
+                )
+                .unwrap(),
+            full
+        ));
+        assert!(!resume_allowed(
+            &policy
+                .report(full, full, 0, Err("unavailable".into()))
+                .unwrap(),
+            full
+        ));
+        let mut reduced_quota = measurements;
+        reduced_quota.cpu_limit_millis = 249;
+        assert!(!resume_allowed(
+            &policy.report(full, full, 0, Ok(reduced_quota)).unwrap(),
+            full
+        ));
+    }
 }
 
 fn executor(
@@ -350,10 +481,17 @@ async fn main() -> anyhow::Result<()> {
         .open(args.state.join("owner.lock"))?;
     lock.try_lock_exclusive()
         .context("worker state already owned")?;
-    let config = match &args.config {
+    let config: WorkerProfile = match &args.config {
         Some(path) => toml::from_str(&std::fs::read_to_string(path)?)?,
         None => WorkerProfile::default(),
     };
+    config.admission.validate()?;
+    ensure!(
+        config.admission.mode != AdmissionMode::LinuxPressure
+            || config.admission.max_sample_age_ms >= args.poll_ms * 2,
+        "node sample age limit must allow at least two poll intervals"
+    );
+    let samples = node_sampler(config.admission.mode, Duration::from_millis(args.poll_ms));
     let capacity = Resources {
         slots: args.slots,
         memory_bytes: args.memory_bytes,
@@ -414,6 +552,7 @@ async fn main() -> anyhow::Result<()> {
     };
     tokio::pin!(shutdown);
     let mut stopping = false;
+    let mut last_probe_error = None;
     eprintln!("pVisor worker {} registered ({:?})", args.id, args.backend);
     loop {
         tokio::select! {
@@ -434,9 +573,14 @@ async fn main() -> anyhow::Result<()> {
             },
             _ = tick.tick() => {
                 let used = active.values().try_fold(Resources::default(), |r, entry| r.checked_add(entry.resources)).context("worker reservation overflow")?;
+                let report = node_report(&config.admission, capacity, used, &samples.borrow())?;
+                if report.error != last_probe_error {
+                    if let Some(error) = &report.error { eprintln!("node admission blocked: {error}"); }
+                    last_probe_error = report.error.clone();
+                }
                 let request = PollRequest { worker_id: registration.id.clone(), incarnation: registration.incarnation.clone(),
-                    active: active.values().map(|a| a.key.clone()).collect(), available: capacity.checked_sub(used).context("worker over capacity")?,
-                    max_assignments: if stopping { 0 } else { capacity.slots.min(64) } };
+                    active: active.values().filter(|a| a.rejection.is_none()).map(|a| a.key.clone()).collect(), available: report.available,
+                    max_assignments: if stopping { 0 } else { capacity.slots.min(64) }, admission: Some(report) };
                 let began = Instant::now();
                 // The lease watchdog must remain live while HTTP waits. This
                 // branch awaits only via a nested select that observes expiry.
@@ -465,10 +609,24 @@ async fn main() -> anyhow::Result<()> {
                                     entry.control_revision = command.revision;
                                     entry.acknowledgement = None;
                                 }
-                                if command.request.action == ControlAction::Resume { entry.resources = entry.full_resources; }
-                                let _ = entry.commands.try_send(command);
+                                if command.request.action == ControlAction::Resume {
+                                    entry.resources = entry.full_resources;
+                                } else {
+                                    let _ = entry.commands.try_send(command);
+                                    continue;
+                                }
+                                // Re-sample admission after HTTP, including all
+                                // new controller charges, before native resume.
+                                let used = active.values().try_fold(Resources::default(), |r, entry| r.checked_add(entry.resources)).context("worker reservation overflow")?;
+                                let report = node_report(&config.admission, capacity, used, &samples.borrow())?;
+                                if !stopping && Instant::now() < began + duration && resume_allowed(&report, used) {
+                                    let _ = active.get(&command.key.task_id).unwrap().commands.try_send(command);
+                                }
                             }
                         }
+                        let used = active.values().try_fold(Resources::default(), |r, entry| r.checked_add(entry.resources)).context("worker reservation overflow")?;
+                        let final_report = node_report(&config.admission, capacity, used, &samples.borrow())?;
+                        let mut available = final_report.available;
                         for assignment in response.assignments {
                             let id = assignment.spec.id.clone();
                             if active.contains_key(&id) { continue; }
@@ -480,14 +638,54 @@ async fn main() -> anyhow::Result<()> {
                             let (stop_tx, stop_rx) = watch::channel(stopping || Instant::now() >= began + duration);
                             let (lease_tx, lease_rx) = watch::channel(began + duration);
                             let (commands_tx, commands_rx) = mpsc::channel(1);
-                            let runtime = runtime(&args, &config, &assignment, &storage);
-                            let tx = finished_tx.clone();
-                            let ack_tx = acknowledgements_tx.clone();
-                            tokio::spawn(async move { let completion = execute(runtime, assignment, stop_rx, lease_rx, commands_rx, ack_tx, storage).await; let _ = tx.send(completion).await; });
-                            active.insert(id, Active { key, resources, full_resources: resources, deadline: began + duration, lease_clock: lease_tx, stop: stop_tx, completion: None, commands: commands_tx, acknowledgement: None, control_revision: 0 });
+                            let rejection = if stopping || Instant::now() >= began + duration || !resources.fits(available) {
+                                let rejection = AdmissionRejection { key: key.clone(), reason: "node final admission denied before execution".into() };
+                                persist(&storage.join("admission-rejection.json"), &rejection)?;
+                                Some(rejection)
+                            } else {
+                                available = available.checked_sub(resources).unwrap();
+                                let runtime = runtime(&args, &config, &assignment, &storage);
+                                let tx = finished_tx.clone();
+                                let ack_tx = acknowledgements_tx.clone();
+                                tokio::spawn(async move { let completion = execute(runtime, assignment, stop_rx, lease_rx, commands_rx, ack_tx, storage).await; let _ = tx.send(completion).await; });
+                                None
+                            };
+                            active.insert(id, Active { key, resources, full_resources: resources, deadline: began + duration, lease_clock: lease_tx, stop: stop_tx, completion: None, commands: commands_tx, acknowledgement: None, control_revision: 0, rejection });
                         }
                     }
                     Err(error) => eprintln!("worker poll failed: {error:#}"),
+                }
+                // Declines are only created before runtime.run and are omitted
+                // from the active-key acknowledgement. They safely requeue the
+                // same task with a new generation; uncertain executions never do.
+                let rejections: Vec<_> = active.values().filter_map(|a| a.rejection.clone()).collect();
+                for rejection in rejections {
+                    let id = rejection.key.task_id.clone();
+                    let delivery = client.decline(&rejection);
+                    tokio::pin!(delivery);
+                    let response = loop {
+                        tokio::select! {
+                            response = &mut delivery => break response,
+                            _ = watchdog.tick() => { for entry in active.values() { if Instant::now() >= entry.deadline { entry.stop.send_replace(true); } } },
+                            _ = &mut shutdown, if !stopping => { stopping = true; for entry in active.values() { entry.stop.send_replace(true); } },
+                        }
+                    };
+                    match response {
+                        Ok(_) => { active.remove(&id); },
+                        Err(error) if error.downcast_ref::<reqwest::Error>().and_then(|e| e.status()) == Some(reqwest::StatusCode::CONFLICT) => {
+                            if let Some(entry) = active.get_mut(&id) {
+                                // Cancellation may have won the decline race.
+                                // This completion confirms no native run began.
+                                entry.rejection = None;
+                                entry.completion = Some(Completion { key: rejection.key.clone(), result: None, error: Some("node admission rejected before execution".into()) });
+                                persist(&args.state.join("tasks").join(format!("{}-{}", id, entry.key.generation)).join("completion.json"), entry.completion.as_ref().unwrap())?;
+                            }
+                        },
+                        Err(error) => {
+                            eprintln!("admission rejection delivery failed for {id}: {error:#}");
+                            if active.get(&id).is_some_and(|entry| Instant::now() >= entry.deadline) { active.remove(&id); }
+                        },
+                    }
                 }
                 let acknowledgements: Vec<_> = active.values().filter_map(|a| a.acknowledgement.clone()).collect();
                 for acknowledgement in acknowledgements {

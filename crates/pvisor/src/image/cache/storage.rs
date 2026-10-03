@@ -1,6 +1,6 @@
 //! Small object API shared by filesystem and S3 caches; keys are internal only.
 use anyhow::{Context, ensure};
-use object_store::{ObjectStore, ObjectStoreExt, PutMode, PutOptions, GetOptions, GetRange, UpdateVersion};
+use object_store::{GetOptions, GetRange, ObjectStore, PutMode, PutOptions, UpdateVersion};
 use std::fs::{self, OpenOptions};
 use std::io::{Read, Seek, SeekFrom};
 use std::ops::Range;
@@ -10,9 +10,10 @@ use std::sync::{Arc, mpsc};
 
 pub(super) const MAX_OBJECT: usize = 64 * 1024 * 1024;
 
+#[derive(Clone)]
 pub(super) enum Storage {
     Filesystem(PathBuf),
-    S3(S3),
+    S3(Arc<S3>),
 }
 impl Storage {
     pub(super) fn filesystem(root: PathBuf, create: bool) -> anyhow::Result<Self> {
@@ -55,7 +56,7 @@ impl Storage {
             )
             .build()
             .context("configure S3 cache")?;
-        Ok(Self::S3(S3::new(Arc::new(store), prefix.into())?))
+        Ok(Self::S3(Arc::new(S3::new(Arc::new(store), prefix.into())?)))
     }
 
     pub(super) fn get(&self, key: &str) -> anyhow::Result<Option<Vec<u8>>> {
@@ -65,9 +66,14 @@ impl Storage {
         self.read(key, None)
     }
     pub(super) fn range(&self, key: &str, range: Range<u64>) -> anyhow::Result<Vec<u8>> {
-        ensure!(range.end > range.start && range.end - range.start <= MAX_OBJECT as u64, "invalid cache range");
-        let expected = (range.end-range.start) as usize;
-        let object = self.read(key, Some(range))?.context("missing cache object")?;
+        ensure!(
+            range.end > range.start && range.end - range.start <= MAX_OBJECT as u64,
+            "invalid cache range"
+        );
+        let expected = (range.end - range.start) as usize;
+        let object = self
+            .read(key, Some(range))?
+            .context("missing cache object")?;
         ensure!(object.bytes.len() == expected, "truncated cache range");
         Ok(object.bytes)
     }
@@ -77,63 +83,123 @@ impl Storage {
             Self::S3(s3) => s3.request(key, Operation::Get(range)),
             Self::Filesystem(root) => {
                 let path = confined(root, key, false)?;
-                let mut file = match OpenOptions::new().read(true)
-                    .custom_flags(libc::O_NOFOLLOW | libc::O_NONBLOCK).open(&path) {
+                let mut file = match OpenOptions::new()
+                    .read(true)
+                    .custom_flags(libc::O_NOFOLLOW | libc::O_NONBLOCK)
+                    .open(&path)
+                {
                     Ok(file) => file,
                     Err(error) if error.kind() == std::io::ErrorKind::NotFound => return Ok(None),
                     Err(error) => return Err(error.into()),
                 };
-                ensure!(file.metadata()?.is_file(), "cache object is not a regular file");
+                ensure!(
+                    file.metadata()?.is_file(),
+                    "cache object is not a regular file"
+                );
                 let length = if let Some(range) = range {
                     ensure!(range.end <= file.metadata()?.len(), "truncated cache range");
                     file.seek(SeekFrom::Start(range.start))?;
-                    range.end-range.start
+                    range.end - range.start
                 } else {
                     file.metadata()?.len()
                 };
-                ensure!(length <= MAX_OBJECT as u64, "cache object exceeds size limit");
+                ensure!(
+                    length <= MAX_OBJECT as u64,
+                    "cache object exceeds size limit"
+                );
                 let mut bytes = Vec::new();
-                file.take(length+1).read_to_end(&mut bytes)?;
+                file.take(length).read_to_end(&mut bytes)?;
                 // A range read must not include the following byte.
                 bytes.truncate(length as usize);
                 ensure!(bytes.len() == length as usize, "truncated cache object");
-                let version = UpdateVersion { e_tag: Some(super::hash(&bytes)), version: None };
+                let version = UpdateVersion {
+                    e_tag: Some(super::hash(&bytes)),
+                    version: None,
+                };
                 Ok(Some(StoredObject { bytes, version }))
             }
         }
     }
     pub(super) fn put(&self, key: &str, bytes: Vec<u8>, immutable: bool) -> anyhow::Result<()> {
-        let result = self.write(key, bytes, if immutable { PutMode::Create } else { PutMode::Overwrite });
+        let result = self.write(
+            key,
+            bytes,
+            if immutable {
+                PutMode::Create
+            } else {
+                PutMode::Overwrite
+            },
+        );
         match result {
             Err(error) if immutable && is_conflict(&error) => Ok(()),
             result => result,
         }
     }
-    pub(super) fn compare_and_swap(&self, key: &str, bytes: Vec<u8>, expected: Option<UpdateVersion>) -> anyhow::Result<()> {
-        self.write(key, bytes, expected.map(PutMode::Update).unwrap_or(PutMode::Create))
+    pub(super) fn compare_and_swap(
+        &self,
+        key: &str,
+        bytes: Vec<u8>,
+        expected: Option<UpdateVersion>,
+    ) -> anyhow::Result<()> {
+        self.write(
+            key,
+            bytes,
+            expected.map(PutMode::Update).unwrap_or(PutMode::Create),
+        )
     }
     fn write(&self, key: &str, bytes: Vec<u8>, mode: PutMode) -> anyhow::Result<()> {
         validate_key(key)?;
         ensure!(bytes.len() <= MAX_OBJECT, "cache object exceeds size limit");
         match self {
-            Self::S3(s3) => { s3.request(key, Operation::Put(bytes, mode))?; }
+            Self::S3(s3) => {
+                s3.request(key, Operation::Put(bytes, mode))?;
+            }
             Self::Filesystem(root) => {
                 let target = confined(root, key, true)?;
                 let parent = target.parent().context("object requires parent")?;
+                if mode == PutMode::Create {
+                    let mut staging = tempfile::NamedTempFile::new_in(parent)?;
+                    use std::io::Write;
+                    staging.write_all(&bytes)?;
+                    staging.as_file().sync_all()?;
+                    match staging.persist_noclobber(&target) {
+                        Ok(_) => {}
+                        Err(e) if e.error.kind() == std::io::ErrorKind::AlreadyExists => {
+                            return Err(conflict());
+                        }
+                        Err(e) => return Err(e.error.into()),
+                    }
+                    fs::File::open(parent)?.sync_all()?;
+                    return Ok(());
+                }
                 // Keep the lock file permanently: unlinking it would allow two
                 // processes to lock different inodes for the same HEAD.
-                let lock = OpenOptions::new().create(true).truncate(false).read(true).write(true)
+                let lock = OpenOptions::new()
+                    .create(true)
+                    .truncate(false)
+                    .read(true)
+                    .write(true)
                     .custom_flags(libc::O_NOFOLLOW | libc::O_NONBLOCK)
-                    .open(parent.join(format!(".{}.lock", target.file_name().unwrap().to_string_lossy())))?;
-                ensure!(lock.metadata()?.is_file(), "cache lock is not a regular file");
+                    .open(parent.join(format!(
+                        ".{}.lock",
+                        target.file_name().unwrap().to_string_lossy()
+                    )))?;
+                ensure!(
+                    lock.metadata()?.is_file(),
+                    "cache lock is not a regular file"
+                );
                 fs2::FileExt::lock_exclusive(&lock)?;
                 match &mode {
                     PutMode::Create => {
-                        if fs::symlink_metadata(&target).is_ok() { return Err(conflict()); }
+                        if fs::symlink_metadata(&target).is_ok() {
+                            return Err(conflict());
+                        }
                     }
                     PutMode::Update(version) => {
                         let current = self.get_versioned(key)?;
-                        if current.as_ref().map(|v| &v.version) != Some(version) { return Err(conflict()); }
+                        if current.as_ref().map(|v| &v.version) != Some(version) {
+                            return Err(conflict());
+                        }
                     }
                     PutMode::Overwrite => {}
                 }
@@ -147,7 +213,6 @@ impl Storage {
         }
         Ok(())
     }
-
 }
 
 fn validate_key(key: &str) -> anyhow::Result<()> {
@@ -194,11 +259,16 @@ pub(super) struct StoredObject {
     pub(super) bytes: Vec<u8>,
     pub(super) version: UpdateVersion,
 }
-enum Operation { Get(Option<Range<u64>>), Put(Vec<u8>, PutMode) }
+enum Operation {
+    Get(Option<Range<u64>>),
+    Put(Vec<u8>, PutMode),
+}
 #[derive(Debug, thiserror::Error)]
 #[error("cache publication conflict: HEAD changed or object already exists")]
 struct Conflict;
-fn conflict() -> anyhow::Error { Conflict.into() }
+fn conflict() -> anyhow::Error {
+    Conflict.into()
+}
 pub(super) fn is_conflict(error: &anyhow::Error) -> bool {
     error.downcast_ref::<Conflict>().is_some()
 }
@@ -245,8 +315,7 @@ impl S3 {
                     };
                     runtime.spawn(async move {
                         let _permit = permit;
-                        let result =
-                            s3_operation(store.as_ref(), &key, job.operation).await;
+                        let result = s3_operation(store.as_ref(), &key, job.operation).await;
                         let _ = job.reply.send(result);
                     });
                 }
@@ -260,11 +329,7 @@ impl S3 {
             worker: Some(worker),
         })
     }
-    fn request(
-        &self,
-        key: &str,
-        operation: Operation,
-    ) -> anyhow::Result<Option<StoredObject>> {
+    fn request(&self, key: &str, operation: Operation) -> anyhow::Result<Option<StoredObject>> {
         let (reply, receive) = mpsc::sync_channel(1);
         self.send
             .as_ref()
@@ -287,27 +352,52 @@ impl Drop for S3 {
     }
 }
 
-async fn s3_operation(store: &dyn ObjectStore, key: &str, operation: Operation) -> anyhow::Result<Option<StoredObject>> {
+async fn s3_operation(
+    store: &dyn ObjectStore,
+    key: &str,
+    operation: Operation,
+) -> anyhow::Result<Option<StoredObject>> {
     let path = object_store::path::Path::from(key);
     match operation {
         Operation::Put(bytes, mode) => {
-            let options = PutOptions { mode, ..Default::default() };
+            let options = PutOptions {
+                mode,
+                ..Default::default()
+            };
             match store.put_opts(&path, bytes.into(), options).await {
                 Ok(_) => Ok(None),
-                Err(object_store::Error::AlreadyExists { .. } | object_store::Error::Precondition { .. }) => Err(conflict()),
+                Err(
+                    object_store::Error::AlreadyExists { .. }
+                    | object_store::Error::Precondition { .. },
+                ) => Err(conflict()),
                 Err(error) => Err(error.into()),
             }
         }
         Operation::Get(range) => {
-            let expected = range.as_ref().map(|r| (r.end-r.start) as usize);
-            let options = GetOptions { range: range.map(GetRange::Bounded), ..Default::default() };
+            let expected = range.as_ref().map(|r| (r.end - r.start) as usize);
+            let options = GetOptions {
+                range: range.map(GetRange::Bounded),
+                ..Default::default()
+            };
             match store.get_opts(&path, options).await {
                 Ok(result) => {
-                    ensure!(expected.is_some() || result.meta.size <= MAX_OBJECT as u64, "cache object exceeds size limit");
-                    let version = UpdateVersion { e_tag: result.meta.e_tag.clone(), version: result.meta.version.clone() };
+                    ensure!(
+                        expected.is_some() || result.meta.size <= MAX_OBJECT as u64,
+                        "cache object exceeds size limit"
+                    );
+                    let version = UpdateVersion {
+                        e_tag: result.meta.e_tag.clone(),
+                        version: result.meta.version.clone(),
+                    };
                     let bytes = result.bytes().await?;
-                    ensure!(bytes.len() <= MAX_OBJECT && expected.is_none_or(|len| bytes.len()==len), "truncated or oversized cache range");
-                    Ok(Some(StoredObject { bytes: bytes.to_vec(), version }))
+                    ensure!(
+                        bytes.len() <= MAX_OBJECT && expected.is_none_or(|len| bytes.len() == len),
+                        "truncated or oversized cache range"
+                    );
+                    Ok(Some(StoredObject {
+                        bytes: bytes.to_vec(),
+                        version,
+                    }))
                 }
                 Err(object_store::Error::NotFound { .. }) => Ok(None),
                 Err(error) => Err(error.into()),
@@ -321,13 +411,13 @@ mod tests {
     use super::*;
     #[tokio::test(flavor = "current_thread")]
     async fn s3_runtime_can_be_owned_and_dropped_from_an_existing_tokio_context() {
-        let storage = Storage::S3(
+        let storage = Storage::S3(Arc::new(
             S3::new(
                 Arc::new(object_store::memory::InMemory::new()),
                 "team".into(),
             )
             .unwrap(),
-        );
+        ));
         storage.put("v1/test", b"value".to_vec(), true).unwrap();
         storage.put("v1/test", b"other".to_vec(), true).unwrap();
         assert_eq!(storage.get("v1/test").unwrap().unwrap(), b"value");
@@ -344,5 +434,68 @@ mod tests {
         std::os::unix::fs::symlink("/etc/passwd", root.join("link")).unwrap();
         assert!(storage.get("link").is_err());
         assert!(storage.get("../outside").is_err());
+    }
+}
+
+#[cfg(test)]
+mod cas_tests {
+    use super::*;
+    #[test]
+    fn conditional_head_updates_allow_exactly_one_writer_on_both_backends() {
+        let temp = tempfile::tempdir().unwrap();
+        let backends = [
+            Storage::filesystem(temp.path().join("fs"), true).unwrap(),
+            Storage::S3(Arc::new(
+                S3::new(
+                    Arc::new(object_store::memory::InMemory::new()),
+                    String::new(),
+                )
+                .unwrap(),
+            )),
+        ];
+        for storage in backends {
+            storage
+                .compare_and_swap(
+                    "meta/image/platforms/linux-amd64/HEAD.json",
+                    b"original".to_vec(),
+                    None,
+                )
+                .unwrap();
+            let version = storage
+                .get_versioned("meta/image/platforms/linux-amd64/HEAD.json")
+                .unwrap()
+                .unwrap()
+                .version;
+            let barrier = Arc::new(std::sync::Barrier::new(2));
+            let workers: Vec<_> = (0..2)
+                .map(|i| {
+                    let storage = storage.clone();
+                    let version = version.clone();
+                    let barrier = barrier.clone();
+                    std::thread::spawn(move || {
+                        barrier.wait();
+                        storage.compare_and_swap(
+                            "meta/image/platforms/linux-amd64/HEAD.json",
+                            vec![i],
+                            Some(version),
+                        )
+                    })
+                })
+                .collect();
+            let results: Vec<_> = workers.into_iter().map(|w| w.join().unwrap()).collect();
+            assert_eq!(results.iter().filter(|r| r.is_ok()).count(), 1);
+            assert!(
+                results
+                    .iter()
+                    .filter_map(|r| r.as_ref().err())
+                    .all(is_conflict)
+            );
+            assert!(
+                storage
+                    .compare_and_swap("meta/other/platforms/linux-amd64/HEAD.json", vec![2], None)
+                    .is_ok(),
+                "different images need no common publication state"
+            );
+        }
     }
 }

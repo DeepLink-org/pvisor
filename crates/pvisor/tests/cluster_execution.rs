@@ -22,8 +22,20 @@ impl Drop for ChildGuard {
     }
 }
 fn spawn_worker(url: &str, id: &str, root: &std::path::Path) -> ChildGuard {
+    spawn_worker_config(url, id, root, None)
+}
+fn spawn_worker_config(
+    url: &str,
+    id: &str,
+    root: &std::path::Path,
+    config: Option<&std::path::Path>,
+) -> ChildGuard {
+    let mut command = Command::new(env!("CARGO_BIN_EXE_pvisor-worker"));
+    if let Some(config) = config {
+        command.arg("--config").arg(config);
+    }
     ChildGuard(
-        Command::new(env!("CARGO_BIN_EXE_pvisor-worker"))
+        command
             .args([
                 "--url",
                 url,
@@ -45,6 +57,120 @@ fn spawn_worker(url: &str, id: &str, root: &std::path::Path) -> ChildGuard {
             .spawn()
             .unwrap(),
     )
+}
+
+#[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+async fn worker_final_admission_declines_without_starting_and_requeues_the_exact_task() {
+    use axum::{
+        body::{Body, to_bytes},
+        extract::{Request, State},
+        middleware::Next,
+        response::Response,
+    };
+    use std::sync::{
+        Arc,
+        atomic::{AtomicBool, Ordering},
+    };
+    // Adversarial test service deliberately ignores the first local budget.
+    // The real worker must still reject it before any native side effect.
+    async fn force_first_assignment(
+        State(first): State<Arc<AtomicBool>>,
+        request: Request,
+        next: Next,
+    ) -> Response {
+        if request.uri().path() == "/v1/workers/poll" && first.swap(false, Ordering::SeqCst) {
+            let (mut parts, body) = request.into_parts();
+            let bytes = to_bytes(body, 4 * 1024 * 1024).await.unwrap();
+            let mut poll: PollRequest = serde_json::from_slice(&bytes).unwrap();
+            poll.admission = None;
+            poll.available = Resources {
+                slots: 2,
+                memory_bytes: 8 * 1024 * 1024 * 1024,
+                cpu_millis: 4000,
+            };
+            parts.headers.remove(axum::http::header::CONTENT_LENGTH);
+            return next
+                .run(Request::from_parts(
+                    parts,
+                    Body::from(serde_json::to_vec(&poll).unwrap()),
+                ))
+                .await;
+        }
+        next.run(request).await
+    }
+    let temp = tempfile::tempdir().unwrap();
+    let scheduler = Scheduler::open(
+        &temp.path().join("journal"),
+        SchedulerConfig {
+            lease_duration_ms: 1500,
+            ..Default::default()
+        },
+    )
+    .unwrap();
+    let router = pvisor_cluster::server::router(scheduler, ADMIN.into(), WORKER.into())
+        .unwrap()
+        .layer(axum::middleware::from_fn_with_state(
+            Arc::new(AtomicBool::new(true)),
+            force_first_assignment,
+        ));
+    let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
+    let url = format!("http://{}", listener.local_addr().unwrap());
+    let server = tokio::spawn(async move {
+        axum::serve(listener, router).await.unwrap();
+    });
+    let admin = Client::new(&url, ADMIN.into()).unwrap();
+    let marker = temp.path().join("must-not-run");
+    admin
+        .submit(&spec(
+            "declined",
+            &format!("printf started > '{}'", marker.display()),
+        ))
+        .await
+        .unwrap();
+    let profile = temp.path().join("pressure.toml");
+    std::fs::write(
+        &profile,
+        "[admission]\nmode = 'linux_pressure'\nmemory_reserve_bytes = 18446744073709551615\n",
+    )
+    .unwrap();
+    let _worker = spawn_worker_config(&url, "pressure", temp.path(), Some(&profile));
+    tokio::time::timeout(Duration::from_secs(10), async {
+        loop {
+            let task = admin.task("declined").await.unwrap();
+            let workers = admin.workers().await.unwrap();
+            if task.admission_rejections == 1
+                && workers.first().and_then(|w| w.admission.as_ref()).is_some()
+            {
+                assert_eq!(task.phase, TaskPhase::Queued);
+                assert_eq!(task.generation, 1);
+                assert!(task.lease.is_none());
+                let report = workers[0].admission.as_ref().unwrap();
+                assert_eq!(report.mode, AdmissionMode::LinuxPressure);
+                assert_eq!(report.available.memory_bytes, 0);
+                assert_eq!(report.available.cpu_millis, 0);
+                break;
+            }
+            tokio::time::sleep(Duration::from_millis(50)).await;
+        }
+    })
+    .await
+    .unwrap();
+    let evidence = temp.path().join("pressure/tasks/declined-1");
+    assert!(evidence.join("assignment.json").exists());
+    assert!(evidence.join("admission-rejection.json").exists());
+    assert!(!evidence.join("trace").exists());
+    assert!(!marker.exists());
+    tokio::time::sleep(Duration::from_millis(300)).await;
+    assert_eq!(
+        admin.task("declined").await.unwrap().admission_rejections,
+        1
+    );
+    assert_eq!(
+        admin.cancel("declined").await.unwrap().phase,
+        TaskPhase::Cancelled
+    );
+    assert!(!marker.exists());
+    server.abort();
 }
 fn spec(id: &str, command: &str) -> TaskSpec {
     let mut run = RunSpec::process(id, "cluster-test", "/bin/sh");
@@ -211,7 +337,8 @@ async fn worker_credentials_cannot_submit_or_read_tenant_tasks() {
                 incarnation: "i".into(),
                 active: vec![],
                 available: Resources::default(),
-                max_assignments: 1
+                max_assignments: 1,
+                admission: None,
             })
             .await
             .is_err()
@@ -275,6 +402,7 @@ async fn vm_control_wire_protocol_enforces_roles_and_resume_admission() {
         active: vec![],
         available: capacity,
         max_assignments: 1,
+        admission: None,
     };
     let key = worker
         .poll(&poll)

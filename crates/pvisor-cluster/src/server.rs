@@ -114,6 +114,7 @@ pub fn router(
         .route("/v1/workers/register", post(register))
         .route("/v1/workers/poll", post(poll))
         .route("/v1/workers/complete", post(complete))
+        .route("/v1/workers/decline", post(decline))
         .route("/v1/workers/control-ack", post(control_ack))
         .route_layer(middleware::from_fn_with_state(Arc::new(worker_token), auth));
     Ok(admin
@@ -188,6 +189,15 @@ async fn complete(
 ) -> Result<Json<TaskRecord>, ApiError> {
     run(app, move |s| {
         s.complete(request, pvisor_core::unix_now_ms())
+    })
+    .await
+}
+async fn decline(
+    State(app): State<App>,
+    Json(rejection): Json<AdmissionRejection>,
+) -> Result<Json<TaskRecord>, ApiError> {
+    run(app, move |s| {
+        s.decline(rejection, pvisor_core::unix_now_ms())
     })
     .await
 }

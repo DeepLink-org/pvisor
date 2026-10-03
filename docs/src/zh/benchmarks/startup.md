@@ -2,7 +2,7 @@
 
 ## 1. 结论
 
-pVisor 启动新 VM 并返回首条命令输出，macOS / Apple M4 上的中位耗时约 **84 ms**，Linux / Ryzen 7 9700X 上约 **173 ms**，达到 **0.1–0.2 秒量级**。两组均使用 2 vCPU / 128 MiB、已准备的镜像和预热的宿主缓存，耗时不含镜像下载。
+pVisor 启动新 VM 并返回首条命令输出，最新准备环境批次在 macOS / Apple M4 上约 **84 ms**、Linux / Ryzen 7 9700X 上约 **86 ms**，均为 **0.1 秒量级**。使用 2 vCPU / 128 MiB、预制环境与热宿主缓存，不含镜像下载；两平台的历史批次分别保留。
 
 ## 2. Motivation
 
@@ -282,6 +282,32 @@ RunRecord 是执行前的权威状态，不能为了更快把必要持久化改�
 | KVM / 2 vCPU / 2048 MiB | 220.47 | 228.20 | 231.22 | 284.08 | 294.39 |
 
 在这批测量中，新 VM 就绪约需 **0.2 秒**，完成退出约需 **0.23–0.28 秒**；两者应分别评估。这里测的是新建 VM；[快照恢复](vm-memory/index.md#linux-snapshot)的耗时另外记录。没有采集 Linux 的细分启动账本，不能把 macOS 的阶段比例直接套用到 Linux。
+
+#### 熟悉基线：Docker、Firecracker 与两种 QEMU {#reference-startup}
+
+同机、相同两核执行预算的准备环境中，pVisor VM Ready 中位数 **86.29 ms**，与 Docker **90.12 ms**、QEMU microvm **88.10 ms**接近，Firecracker 为 **73.74 ms**。这给出了“百毫秒量级”的位置：它接近成熟 microVM 路径，并没有全面胜过它们。
+
+![同机准备环境的首条输出 P50 与 P95](../../assets/benchmarks/reference-env-20261004/reference-startup.svg)
+
+条形为 P50，横线为 P95；不是置信区间。N=30、3 次预热，按轮随机排列。128 MiB/2 vCPU，所有运行时绑定宿主物理核心 0、1；Docker daemon 与容器内工具也明确绑定。环境已包含完整 Python/Node/Rust/Git/Claude/Codex 工具，工作区包含 2,048 文件及 64 MiB 输入；准备与克隆成本另计。
+
+| Backend | N | Ready P50 / P95 / P99 ms |
+|---|---|---|
+| Native | 30 | 1.20 / 1.42 / 1.49 |
+| pVisor host | 30 | 6.10 / 6.65 / 7.01 |
+| pVisor staged | 30 | 14.68 / 15.94 / 16.09 |
+| pVisor VM | 30 | 86.29 / 92.99 / 94.89 |
+| Docker rootless | 30 | 90.12 / 101.13 / 112.01 |
+| Firecracker PCI | 30 | 73.74 / 79.06 / 81.21 |
+| QEMU q35 | 30 | 218.12 / 235.27 / 237.07 |
+| QEMU microvm | 30 | 88.10 / 103.42 / 109.75 |
+
+
+QEMU q35 的 218 ms 不能代表 QEMU 的最低启动成本；关闭可选传统设备的 microvm 配置为 88 ms。因此本页同时保留两者。Firecracker/QEMU 共用裁剪 Linux 6.12.109 和 ext4，pVisor 使用自己的内置 firmware 与 staged virtio-fs；这里比较完整命令路径，不能把差值都归因于 VMM。
+
+**首条输出不等于 Agent 已能完成任务。** 七种工具完成版本自检需要 pVisor VM 1.40 秒；实际修复测试任务与 CLI 兼容性见[完整工具环境](agent-tasks.md#reference-env)。上一节 172.69 ms 的旧 GNU/libkrunfw 5.5.0 批次继续保留；本轮为新的固定静态制品，不能当作只改变一项配置的优化实验。
+
+[本轮配置与复现](methodology.md#reference-env) · [逐样本 CSV](../../assets/benchmarks/reference-env-20261004/samples.csv) · [分布与阶段计时](../../assets/benchmarks/reference-env-20261004/summary.json) · [原始证据](../../assets/benchmarks/reference-env-20261004/evidence.tar.gz) · [兼容性矩阵](../../assets/benchmarks/reference-env-20261004/compatibility.json)
 
 ## 5. 复现与原始数据
 

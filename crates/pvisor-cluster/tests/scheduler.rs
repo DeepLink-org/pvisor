@@ -54,6 +54,7 @@ fn poll(id: &str, slots: u32, active: Vec<LeaseKey>) -> PollRequest {
         active,
         available: resources(slots),
         max_assignments: 64,
+        admission: None,
     }
 }
 fn config() -> SchedulerConfig {
@@ -68,6 +69,151 @@ fn finish(key: LeaseKey) -> Completion {
         result: None,
         error: Some("test error".into()),
     }
+}
+
+#[test]
+fn final_admission_rejection_requeues_only_unstarted_work_and_fences_old_generation() {
+    let temp = tempfile::tempdir().unwrap();
+    let path = temp.path().join("journal");
+    let mut s = Scheduler::open(&path, config()).unwrap();
+    s.register(worker("w", 1), 0).unwrap();
+    s.register(worker("other", 1), 0).unwrap();
+    s.submit(spec("one"), 0).unwrap();
+    let key = s
+        .poll(poll("w", 1, vec![]), 1)
+        .unwrap()
+        .assignments
+        .remove(0)
+        .lease
+        .key;
+    let rejection = AdmissionRejection {
+        key: key.clone(),
+        reason: "pressure changed before start".into(),
+    };
+    let task = s.decline(rejection.clone(), 2).unwrap();
+    assert_eq!(task.phase, TaskPhase::Queued);
+    assert_eq!(task.admission_rejections, 1);
+    assert!(task.lease.is_none());
+    assert_eq!(s.workers()[1].reserved, Resources::default());
+    drop(s);
+    let mut s = Scheduler::open(&path, config()).unwrap();
+    assert_eq!(
+        s.decline(rejection.clone(), 3)
+            .unwrap()
+            .admission_rejections,
+        1
+    );
+    let next = s
+        .poll(poll("other", 1, vec![]), 4)
+        .unwrap()
+        .assignments
+        .remove(0)
+        .lease
+        .key;
+    assert_eq!(next.generation, key.generation + 1);
+    assert!(s.complete(finish(key), 5).is_err());
+    assert_eq!(s.decline(rejection, 6).unwrap().lease.unwrap().key, next);
+    s.poll(poll("other", 0, vec![next.clone()]), 7).unwrap();
+    assert!(
+        s.decline(
+            AdmissionRejection {
+                key: next.clone(),
+                reason: "already accepted".into()
+            },
+            8
+        )
+        .is_err()
+    );
+    assert_eq!(s.task("one").unwrap().phase, TaskPhase::Running);
+    s.complete(finish(next), 9).unwrap();
+    assert_eq!(s.workers()[0].reserved, Resources::default());
+}
+
+#[test]
+fn node_probe_failure_blocks_new_work_but_keeps_renewal_cancellation_and_report_evidence() {
+    use pvisor_cluster::admission::AdmissionPolicy;
+    let temp = tempfile::tempdir().unwrap();
+    let path = temp.path().join("journal");
+    let mut s = Scheduler::open(&path, config()).unwrap();
+    s.register(worker("w", 2), 0).unwrap();
+    s.submit(spec("one"), 0).unwrap();
+    s.submit(spec("two"), 0).unwrap();
+    let mut first = poll("w", 2, vec![]);
+    first.max_assignments = 1;
+    let key = s.poll(first, 1).unwrap().assignments.remove(0).lease.key;
+    let policy = AdmissionPolicy {
+        mode: AdmissionMode::LinuxPressure,
+        ..Default::default()
+    };
+    let mut request = poll("w", 1, vec![key.clone()]);
+    let report = policy
+        .report(
+            resources(2),
+            resources(1),
+            0,
+            Err("probe unavailable".into()),
+        )
+        .unwrap();
+    request.available = report.available;
+    request.admission = Some(report.clone());
+    let response = s.poll(request.clone(), 900).unwrap();
+    assert!(response.assignments.is_empty());
+    assert_eq!(response.renewed, vec![key.clone()]);
+    assert_eq!(
+        s.task("one").unwrap().lease.as_ref().unwrap().expires_at_ms,
+        1900
+    );
+    assert_eq!(s.workers()[0].reserved, resources(1));
+    assert_eq!(s.workers()[0].admission.as_ref(), Some(&report));
+    drop(s);
+    let mut s = Scheduler::open(&path, config()).unwrap();
+    assert_eq!(s.workers()[0].admission_received_at_ms, Some(900));
+    s.cancel("one", 901).unwrap();
+    assert_eq!(s.poll(request, 902).unwrap().stop, vec![key.clone()]);
+    s.complete(finish(key), 903).unwrap();
+    assert_eq!(s.task("one").unwrap().phase, TaskPhase::Cancelled);
+    assert_eq!(s.task("two").unwrap().phase, TaskPhase::Queued);
+    // An older worker can still renew without claiming measured telemetry.
+    assert_eq!(
+        s.poll(poll("w", 2, vec![]), 904).unwrap().assignments.len(),
+        1
+    );
+    assert!(s.workers()[0].admission.is_none());
+}
+
+#[test]
+fn controller_normalizes_stale_measurements_and_rejects_inconsistent_reports() {
+    use pvisor_cluster::admission::AdmissionPolicy;
+    let temp = tempfile::tempdir().unwrap();
+    let mut s = Scheduler::open(&temp.path().join("journal"), config()).unwrap();
+    s.register(worker("w", 2), 0).unwrap();
+    s.submit(spec("one"), 0).unwrap();
+    let policy = AdmissionPolicy {
+        mode: AdmissionMode::LinuxPressure,
+        memory_reserve_bytes: 0,
+        ..Default::default()
+    };
+    let measured = NodeMeasurements {
+        system_memory_available_bytes: resources(2).memory_bytes,
+        cgroup_memory_headroom_bytes: None,
+        cpu_limit_millis: resources(2).cpu_millis,
+        cpu_some_avg10_bps: 0,
+        memory_full_avg10_bps: 0,
+    };
+    let report = policy
+        .report(resources(2), Resources::default(), 1000, Ok(measured))
+        .unwrap();
+    assert_eq!(report.available, resources(2)); // worker's configured age limit is longer
+    let mut request = poll("w", 2, vec![]);
+    request.admission = Some(report);
+    assert!(s.poll(request.clone(), 1).unwrap().assignments.is_empty());
+    let recorded = s.workers()[0].admission.clone().unwrap();
+    assert_eq!(recorded.available, Resources::default());
+    assert!(recorded.blocked.contains(&AdmissionBlock::StaleSample));
+    request.admission.as_mut().unwrap().available.slots = 0;
+    assert!(s.poll(request, 2).is_err());
+    assert_eq!(s.workers()[0].seen_at_ms, 1);
+    assert_eq!(s.task("one").unwrap().phase, TaskPhase::Queued);
 }
 
 #[test]

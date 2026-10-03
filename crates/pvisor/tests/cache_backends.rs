@@ -194,8 +194,13 @@ fn serve_s3(
     }
     let body = &bytes[header_end..header_end + length];
     verify_signature(first[0], first[1], &headers, body);
-    assert!(first[1].starts_with("/cache-bucket/team/v1/"));
+    assert!(first[1].starts_with("/cache-bucket/team/"));
     let mut objects = objects.lock().unwrap();
+    let mut content_range = String::new();
+    let etag = objects
+        .get(first[1])
+        .map(|body| digest(body))
+        .unwrap_or_else(|| digest(body));
     let (status, response) = match first[0] {
         "PUT" => {
             puts.fetch_add(1, Ordering::Relaxed);
@@ -207,6 +212,15 @@ fn serve_s3(
             } else if headers.get("if-none-match").map(String::as_str) == Some("*")
                 && objects.contains_key(first[1])
             {
+                (
+                    "412 Precondition Failed",
+                    b"<Error><Code>PreconditionFailed</Code></Error>".to_vec(),
+                )
+            } else if headers.get("if-match").is_some_and(|expected| {
+                objects
+                    .get(first[1])
+                    .is_none_or(|body| *expected != format!("\"{}\"", digest(body)))
+            }) {
                 (
                     "412 Precondition Failed",
                     b"<Error><Code>PreconditionFailed</Code></Error>".to_vec(),
@@ -225,7 +239,32 @@ fn serve_s3(
                 )
             } else {
                 match objects.get(first[1]) {
-                    Some(body) => ("200 OK", body.clone()),
+                    Some(body) => {
+                        if read_only.load(Ordering::Relaxed)
+                            && first[1].ends_with(".bin")
+                            && !first[1].ends_with("checksums.bin")
+                        {
+                            assert!(
+                                headers.contains_key("range"),
+                                "binary metadata must use ranged reads"
+                            );
+                        }
+                        if let Some(range) = headers.get("range") {
+                            let (start, end) = range
+                                .strip_prefix("bytes=")
+                                .unwrap()
+                                .split_once('-')
+                                .unwrap();
+                            let start: usize = start.parse().unwrap();
+                            let end: usize = end.parse().unwrap();
+                            assert!(start <= end && end < body.len());
+                            content_range =
+                                format!("Content-Range: bytes {start}-{end}/{}\r\n", body.len());
+                            ("206 Partial Content", body[start..=end].to_vec())
+                        } else {
+                            ("200 OK", body.clone())
+                        }
+                    }
                     None => (
                         "404 Not Found",
                         b"<Error><Code>NoSuchKey</Code></Error>".to_vec(),
@@ -237,7 +276,7 @@ fn serve_s3(
             panic!("unexpected S3 operation {method}; cache should only need GetObject/PutObject")
         }
     };
-    write!(stream, "HTTP/1.1 {status}\r\nContent-Length: {}\r\nETag: \"{}\"\r\nLast-Modified: Wed, 01 Jan 2025 00:00:00 GMT\r\nContent-Type: application/octet-stream\r\nConnection: close\r\n\r\n", response.len(), digest(&response)).unwrap();
+    write!(stream, "HTTP/1.1 {status}\r\n{content_range}Content-Length: {}\r\nETag: \"{}\"\r\nLast-Modified: Wed, 01 Jan 2025 00:00:00 GMT\r\nContent-Type: application/octet-stream\r\nConnection: close\r\n\r\n", response.len(), etag).unwrap();
     stream.write_all(&response).unwrap();
 }
 fn architecture() -> &'static str {
@@ -321,11 +360,14 @@ fn s3_cli_publishes_once_then_independent_read_only_clients_need_no_registry_or_
     let prepared: serde_json::Value = serde_json::from_slice(&prepared).unwrap();
     assert_eq!(prepared["digest"], digest);
     let objects = s3.objects.lock().unwrap();
-    let blobs = objects.keys().filter(|key| key.contains("/blobs/")).count();
+    let blobs = objects
+        .keys()
+        .filter(|key| key.contains("/data/sha256/"))
+        .count();
     drop(objects);
     assert!(
-        blobs <= 3,
-        "small files should pack into existing 1 MiB objects"
+        blobs == 102,
+        "100 independent small files plus two distinct chunks of the large file"
     );
     fs::remove_dir_all(&source).unwrap();
     s3.read_only.store(true, Ordering::Relaxed);
@@ -339,18 +381,19 @@ fn s3_cli_publishes_once_then_independent_read_only_clients_need_no_registry_or_
     ));
     let prepared: serde_json::Value = serde_json::from_slice(&prepared).unwrap();
     assert_eq!(prepared["digest"], digest);
+    let handle = prepared["image_handle"].as_str().unwrap();
     let before_gets = s3.gets.load(Ordering::Relaxed);
     let contents = successful(cli(
         tmp.path(),
         "s3",
         "s3://cache-bucket/team",
         Some(&s3),
-        &["--read-only", "read", &digest, "large"],
+        &["--read-only", "read", handle, "large"],
     ));
     assert_eq!(contents, vec![42; 2 * 1024 * 1024 + 13]);
     assert!(
-        s3.gets.load(Ordering::Relaxed) - before_gets <= 5,
-        "pointer/index plus only the three intersecting blobs"
+        s3.gets.load(Ordering::Relaxed) - before_gets <= 12,
+        "small control objects and required metadata pages plus two distinct data chunks"
     );
     assert_eq!(
         s3.puts.load(Ordering::Relaxed),
@@ -371,7 +414,7 @@ fn s3_cli_publishes_once_then_independent_read_only_clients_need_no_registry_or_
         "s3",
         "s3://cache-bucket/team",
         Some(&s3),
-        &["--read-only", "read", &digest, "alias"],
+        &["--read-only", "read", handle, "alias"],
     );
     assert!(!alias.status.success());
     let blob = s3
@@ -379,7 +422,7 @@ fn s3_cli_publishes_once_then_independent_read_only_clients_need_no_registry_or_
         .lock()
         .unwrap()
         .keys()
-        .find(|key| key.contains("/blobs/"))
+        .find(|key| key.ends_with(&digest_bytes(&vec![42u8; 1024 * 1024])))
         .unwrap()
         .clone();
     s3.objects
@@ -391,7 +434,7 @@ fn s3_cli_publishes_once_then_independent_read_only_clients_need_no_registry_or_
         "s3",
         "s3://cache-bucket/team",
         Some(&s3),
-        &["--read-only", "read", &digest, "large"],
+        &["--read-only", "read", handle, "large"],
     );
     assert!(!corrupt.status.success());
     assert!(String::from_utf8_lossy(&corrupt.stderr).contains("digest mismatch"));
@@ -416,7 +459,7 @@ fn s3_cli_publishes_once_then_independent_read_only_clients_need_no_registry_or_
     );
 }
 #[test]
-fn explicit_s3_publisher_rebuilds_missing_objects_without_reading_remote_references() {
+fn explicit_s3_publisher_rebuilds_missing_objects_and_conditionally_updates_its_own_head() {
     let tmp = tempfile::tempdir().unwrap();
     let source = tmp.path().join("source");
     let target = if architecture() == "amd64" {
@@ -426,7 +469,6 @@ fn explicit_s3_publisher_rebuilds_missing_objects_without_reading_remote_referen
     };
     let image_digest = source_fixture_for_architecture(&source, target);
     let s3 = MockS3::start();
-    s3.deny_reads.store(true, Ordering::Relaxed);
     let publish = || {
         let output = cli(
             tmp.path(),
@@ -450,29 +492,45 @@ fn explicit_s3_publisher_rebuilds_missing_objects_without_reading_remote_referen
     };
     let first = publish();
     let original = s3.objects.lock().unwrap().clone();
-    for part in ["/v1/refs/", "/v1/images/", "/v1/indexes/", "/v1/blobs/"] {
+    for part in ["/meta/", "/revisions/", "/data/sha256/", "/uploads/"] {
         assert!(
             original.keys().any(|key| key.contains(part)),
             "missing {part}"
         );
     }
-    let missing_blob = original.keys().find(|key| key.contains("/blobs/")).unwrap();
+    let missing_blob = original
+        .keys()
+        .find(|key| key.contains("/data/sha256/"))
+        .unwrap();
     s3.objects.lock().unwrap().remove(missing_blob);
     let second = publish();
     assert_eq!(first["metadata_generation"], second["metadata_generation"]);
     let restored = s3.objects.lock().unwrap();
     assert_eq!(
-        restored.len(),
-        original.len(),
+        restored
+            .keys()
+            .filter(|key| !key.contains("/uploads/"))
+            .count(),
+        original
+            .keys()
+            .filter(|key| !key.contains("/uploads/"))
+            .count(),
         "republication must reuse existing content objects"
     );
     assert_eq!(restored[missing_blob], original[missing_blob]);
     drop(restored);
-    assert_eq!(
-        s3.gets.load(Ordering::Relaxed),
-        0,
-        "explicit publish does not query the remote cache"
+    assert!(
+        s3.gets.load(Ordering::Relaxed) > 0,
+        "v2 CAS and immutable reuse verification require GetObject"
     );
+    let head_key = original
+        .keys()
+        .find(|key| key.ends_with("/HEAD.json"))
+        .unwrap();
+    let head: serde_json::Value =
+        serde_json::from_slice(&s3.objects.lock().unwrap()[head_key]).unwrap();
+    assert_eq!(head["generation"], 2);
+    assert_eq!(first["image_handle"], second["image_handle"]);
     fs::remove_dir_all(&source).unwrap();
     s3.deny_reads.store(false, Ordering::Relaxed);
     s3.read_only.store(true, Ordering::Relaxed);
@@ -483,7 +541,12 @@ fn explicit_s3_publisher_rebuilds_missing_objects_without_reading_remote_referen
             "s3",
             "s3://cache-bucket/team",
             Some(&s3),
-            &["--read-only", "read", &image_digest, "small-003"],
+            &[
+                "--read-only",
+                "read",
+                second["image_handle"].as_str().unwrap(),
+                "small-003"
+            ],
         )),
         b"value-3"
     );
@@ -535,9 +598,9 @@ fn publisher_rejects_server_backend_before_connecting() {
 fn filesystem_cli_and_explicit_options_use_the_same_daemonless_contract() {
     let tmp = tempfile::tempdir().unwrap();
     let source = tmp.path().join("source");
-    let digest = source_fixture(&source);
+    source_fixture(&source);
     let shared = tmp.path().join("shared");
-    successful(cli(
+    let prepared = successful(cli(
         tmp.path(),
         "filesystem",
         shared.to_str().unwrap(),
@@ -549,13 +612,15 @@ fn filesystem_cli_and_explicit_options_use_the_same_daemonless_contract() {
             "example:test",
         ],
     ));
+    let prepared: serde_json::Value = serde_json::from_slice(&prepared).unwrap();
+    let handle = prepared["image_handle"].as_str().unwrap();
     fs::remove_dir_all(source).unwrap();
     let contents = successful(cli(
         tmp.path(),
         "filesystem",
         shared.to_str().unwrap(),
         None,
-        &["--read-only", "read", &digest, "small-003"],
+        &["--read-only", "read", handle, "small-003"],
     ));
     assert_eq!(contents, b"value-3");
     let output = Command::new(env!("CARGO_BIN_EXE_pvisor-cache"))
@@ -569,7 +634,7 @@ fn filesystem_cli_and_explicit_options_use_the_same_daemonless_contract() {
             shared.to_str().unwrap(),
             "--read-only",
             "stat",
-            &digest,
+            handle,
             "small-003",
         ])
         .output()

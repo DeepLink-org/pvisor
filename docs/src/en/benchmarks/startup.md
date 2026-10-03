@@ -2,7 +2,7 @@
 
 ## 1. Conclusions
 
-pVisor starts a new VM and returns its first command output with a measured median of about **84 ms** on macOS / Apple M4 and **173 ms** on Linux / Ryzen 7 9700X: on the order of **0.1–0.2 seconds**. Both use 2 vCPU / 128 MiB, prepared images and warm host caches; image download is excluded.
+Starting a new pVisor VM and returning its first command output takes about **84 ms** on macOS / Apple M4 and **86 ms** on Linux / Ryzen 7 9700X in the latest prepared-environment batches: roughly **0.1 seconds**. These use 2 vCPU / 128 MiB, prebuilt environments and warm host caches, excluding image downloads; both platforms retain their historical batches.
 
 ## 2. Motivation
 
@@ -282,6 +282,32 @@ Values below are milliseconds, with 100 measured samples per row. Ready ends at 
 | KVM / 2 vCPU / 2048 MiB | 220.47 | 228.20 | 231.22 | 284.08 | 294.39 |
 
 In this batch, new VMs become ready in about **0.2 seconds**, with exit completion around **0.23–0.28 seconds**. Evaluate those boundaries separately. These are fresh VM launches; [snapshot restoration](vm-memory/index.md#linux-snapshot) is measured separately. Linux has no detailed startup phase accounting in this batch, so macOS phase proportions cannot be applied to it.
+
+#### Familiar baselines: Docker, Firecracker, and both QEMU configurations {#reference-startup}
+
+With the same two-core host execution budget and prepared environment, pVisor VM Ready P50 is **86.29 ms**, close to Docker **90.12 ms** and QEMU microvm **88.10 ms**; Firecracker measures **73.74 ms**. This locates its hundred-millisecond scale near mature microVM paths, without claiming to beat all of them.
+
+![P50 and P95 first-output latency in the same prepared environment](../../assets/benchmarks/reference-env-20261004/reference-startup.svg)
+
+Bars show P50 and lines P95, not confidence intervals. N=30, 3 warmups, randomized backend order per round. VMs use 128 MiB/2 vCPU; every runtime is bound to physical host cores 0 and 1, including the Docker daemon and in-container tools. The environment already contains Python/Node/Rust/Git/Claude/Codex; the workspace has 2,048 files and a 64 MiB input. Preparation and cloning are measured separately.
+
+| Backend | N | Ready P50 / P95 / P99 ms |
+|---|---|---|
+| Native | 30 | 1.20 / 1.42 / 1.49 |
+| pVisor host | 30 | 6.10 / 6.65 / 7.01 |
+| pVisor staged | 30 | 14.68 / 15.94 / 16.09 |
+| pVisor VM | 30 | 86.29 / 92.99 / 94.89 |
+| Docker rootless | 30 | 90.12 / 101.13 / 112.01 |
+| Firecracker PCI | 30 | 73.74 / 79.06 / 81.21 |
+| QEMU q35 | 30 | 218.12 / 235.27 / 237.07 |
+| QEMU microvm | 30 | 88.10 / 103.42 / 109.75 |
+
+
+QEMU q35's 218 ms does not establish QEMU's minimum startup cost: microvm with optional legacy devices disabled measures 88 ms. Both are retained. Firecracker and QEMU share a trimmed Linux 6.12.109 kernel and ext4; pVisor uses its own embedded firmware and staged virtio-fs. These are complete command paths, so their differences cannot all be attributed to the VMM.
+
+**First output does not establish that an Agent can complete a task.** Seven-tool version checking takes 1.40 seconds in pVisor VM. See the [complete tool environment](agent-tasks.md#reference-env) for repair/test timing and CLI compatibility. The preceding 172.69 ms GNU/libkrunfw 5.5.0 batch remains historical evidence. This batch uses a new pinned static artifact; it is not a controlled single-configuration optimization experiment.
+
+[Configuration and reproduction](methodology.md#reference-env) · [逐样本 CSV](../../assets/benchmarks/reference-env-20261004/samples.csv) · [分布与阶段计时](../../assets/benchmarks/reference-env-20261004/summary.json) · [原始证据](../../assets/benchmarks/reference-env-20261004/evidence.tar.gz) · [兼容性矩阵](../../assets/benchmarks/reference-env-20261004/compatibility.json)
 
 ## 5. Reproduction and raw data
 

@@ -142,6 +142,10 @@ pub struct TaskRecord {
     /// Old journal records lacking it use the full budget while leased.
     #[serde(default)]
     pub reserved: Option<Resources>,
+    #[serde(default)]
+    pub admission_rejections: u64,
+    #[serde(default)]
+    pub last_admission_rejection: Option<AdmissionRejection>,
 }
 impl TaskRecord {
     pub fn current_reservation(&self) -> Resources {
@@ -297,6 +301,124 @@ pub struct PollRequest {
     /// Local final admission: free capacity can be below the advertised limit.
     pub available: Resources,
     pub max_assignments: u32,
+    #[serde(default)]
+    pub admission: Option<AdmissionReport>,
+}
+
+#[derive(Debug, Clone, Copy, Default, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum AdmissionMode {
+    #[default]
+    Reservations,
+    LinuxPressure,
+}
+
+/// Node observations are estimates, not per-task enforcement or reclaim proof.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
+pub struct NodeMeasurements {
+    pub system_memory_available_bytes: u64,
+    pub cgroup_memory_headroom_bytes: Option<u64>,
+    /// Affinity/cpuset intersected with visible ancestor CPU bandwidth limits.
+    pub cpu_limit_millis: u64,
+    pub cpu_some_avg10_bps: u16,
+    pub memory_full_avg10_bps: u16,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum AdmissionBlock {
+    ProbeFailed,
+    StaleSample,
+    CpuPressure,
+    MemoryPressure,
+    MemoryHeadroom,
+    CpuQuota,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
+pub struct AdmissionReport {
+    pub mode: AdmissionMode,
+    /// Age uses the worker's monotonic clock, not cross-node wall clocks.
+    pub sample_age_ms: u64,
+    pub available: Resources,
+    pub measurements: Option<NodeMeasurements>,
+    pub blocked: Vec<AdmissionBlock>,
+    pub error: Option<String>,
+}
+impl AdmissionReport {
+    pub fn validate(&self) -> anyhow::Result<()> {
+        anyhow::ensure!(self.blocked.len() <= 6, "too many admission blocks");
+        for (index, block) in self.blocked.iter().enumerate() {
+            anyhow::ensure!(
+                !self.blocked[..index].contains(block),
+                "duplicate admission block"
+            );
+        }
+        if let Some(error) = &self.error {
+            anyhow::ensure!(
+                !error.is_empty() && error.len() <= 4096,
+                "invalid probe error"
+            );
+        }
+        match self.mode {
+            AdmissionMode::Reservations => anyhow::ensure!(
+                self.measurements.is_none()
+                    && self.error.is_none()
+                    && self.blocked.is_empty()
+                    && self.sample_age_ms == 0,
+                "reservation admission cannot claim measurements"
+            ),
+            AdmissionMode::LinuxPressure => {
+                anyhow::ensure!(
+                    self.measurements.is_some() || self.error.is_some(),
+                    "missing node observation"
+                );
+                if self.error.is_some() {
+                    anyhow::ensure!(
+                        self.available == Resources::default()
+                            && self.blocked.contains(&AdmissionBlock::ProbeFailed),
+                        "probe failure must stop admission"
+                    );
+                }
+                if let Some(m) = &self.measurements {
+                    anyhow::ensure!(
+                        m.cpu_some_avg10_bps <= 10_000 && m.memory_full_avg10_bps <= 10_000,
+                        "invalid pressure observation"
+                    );
+                    anyhow::ensure!(
+                        self.available.memory_bytes <= m.system_memory_available_bytes
+                            && m.cgroup_memory_headroom_bytes
+                                .is_none_or(|r| self.available.memory_bytes <= r)
+                            && self.available.cpu_millis <= m.cpu_limit_millis,
+                        "availability exceeds observed limit"
+                    );
+                }
+                for block in &self.blocked {
+                    match block {
+                        AdmissionBlock::ProbeFailed | AdmissionBlock::StaleSample => {
+                            anyhow::ensure!(
+                                self.available == Resources::default(),
+                                "unavailable sample must stop admission"
+                            )
+                        }
+                        AdmissionBlock::CpuPressure | AdmissionBlock::CpuQuota => anyhow::ensure!(
+                            self.available.cpu_millis == 0,
+                            "CPU admission is blocked"
+                        ),
+                        AdmissionBlock::MemoryPressure | AdmissionBlock::MemoryHeadroom => {
+                            anyhow::ensure!(
+                                self.available.memory_bytes == 0 && self.available.cpu_millis == 0,
+                                "memory pressure must block new work and resume"
+                            )
+                        }
+                    }
+                }
+            }
+        }
+        Ok(())
+    }
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -325,10 +447,24 @@ pub struct Completion {
     pub error: Option<String>,
 }
 
+/// Worker assertion that this exact assignment was never started. Only a
+/// still-unacknowledged leased assignment can return to the ready queue.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
+pub struct AdmissionRejection {
+    pub key: LeaseKey,
+    pub reason: String,
+}
+
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct WorkerRecord {
     pub registration: WorkerRegistration,
     pub seen_at_ms: u64,
     pub draining: bool,
     pub reserved: Resources,
+    #[serde(default)]
+    pub admission: Option<AdmissionReport>,
+    /// Last report receipt. Retained reports are historical after restart.
+    #[serde(default)]
+    pub admission_received_at_ms: Option<u64>,
 }

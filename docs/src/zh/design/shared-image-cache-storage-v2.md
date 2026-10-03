@@ -1,6 +1,6 @@
 # 共享镜像缓存 v2：独立元数据与共享内容
 
-> 状态：目标设计，尚未实现。本文按“每个镜像单独处理、镜像之间共享实际文件内容”重新设计布局。现有发布器和读取器仍使用[已实现的 v1 格式](shared-image-cache-storage.md)。
+> 状态：已实现。文件系统与 S3 的新发布使用本文 v2 格式：镜像元数据独立管理，文件内容跨镜像共享，索引按页读取。[旧 v1 格式](shared-image-cache-storage.md)保留只读兼容，不自动迁移；在线/离线 GC 工具尚未实现。
 
 v2 把每个镜像的可变状态与文件索引收进自己的 meta 目录，只共享不可变 data 对象。不同镜像不更新同一个引用表、镜像索引或可变打包文件；同一镜像的并发更新在其自身的平台 HEAD 上处理。
 
@@ -86,14 +86,18 @@ tag 改指向新 manifest 时，image-key 不变；创建新 revision 并更新�
 
 查询必须携带 `image-key + platform + revision`，运行开始时读一次 HEAD 并固定该句柄。manifest 摘要用于验证来源，不单独充当全部存储查询的地址；不能为了兼容旧的“仅按 digest 查找”接口，再加回一个全局可变镜像索引。
 
+prepare/publish 返回 image_handle，编码为 pvisor-v2:<image-key>:<platform>:<revision-hex>。CLI 的 list/stat/read 把它作为第一个位置参数；请求里的 digest 字段保留原名，但 v2 要求传入该完整句柄。响应 digest 仍是 OCI manifest 摘要，用于来源记录。FUSE 自动使用 image_handle；只有 server/v1 才用 manifest digest 读取。metadata_generation 为 COMMIT 摘要。本地文件块按句柄摘要区分，避免平台或 revision 间混用。
+
+tag 发布不会自动建立 pinned-digest 引用的 meta；需要按 IMAGE@sha256:… 准备的只读节点，应另行发布这个引用。直接使用已返回的 image_handle 无需再创建 pinned 引用目录。
+
 ## meta：每个镜像单独管理什么
 
 | 对象 | 内容与用途 | 可变性 |
 |---|---|---|
 | identity.json | version、规范化镜像引用、image-key | 不可变，条件创建；存在时核对身份 |
-| HEAD.json | 当前 revision、manifest 摘要、generation、发布时间 | 平台范围内 CAS 更新 |
+| HEAD.json | 当前 revision、manifest 摘要、generation、发布时间与 publication_id | 平台范围内 CAS 更新 |
 | revisions/<revision>/manifest.json | 来源引用、平台、所选 OCI manifest/config/layer 摘要等 provenance | 不可变 |
-| config.json | env、entrypoint、cmd、working directory 等启动配置 | 不可变 |
+| config.json | env、entrypoint、cmd、architecture、文件数和逻辑字节总量 | 不可变 |
 | files.bin | 完整文件列表：路径原始字节、类型、Unix 属性、硬链接组、符号链接目标、file-digest | 不可变 |
 | contents.bin | 该版本用到的不同文件内容：file-digest、size、有序 chunks | 不可变 |
 | index.bin | 路径 → files 条目，以及目录 → 有序子条目索引 | 不可变，可从 files 重建 |
@@ -119,7 +123,8 @@ HEAD 示例：
   "revision": "sha256:<commit-bytes-sha256-hex>",
   "manifest_digest": "sha256:<platform-manifest-hex>",
   "generation": 7,
-  "published_at": 1791072000
+  "published_at": 1791072000,
+  "publication_id": "00000000-0000-4000-8000-000000000001"
 }
 ```
 
@@ -165,7 +170,7 @@ v2 的目标是：启动无需遍历所有文件，lookup 无需建立全镜像�
 files.bin
 ├── header + section directory
 ├── fixed FileRecord table
-└── raw-byte arena: paths, symlink targets, extended attributes
+└── raw-byte arena: paths, symlink targets
 
 contents.bin
 ├── header + section directory
@@ -189,7 +194,7 @@ checksums.bin
 | 对象/结构 | 设计字段与访问方式 |
 |---|---|
 | 通用 header | magic、对象类型、format/schema version、flags、page_bytes、总长度、条目数、section 位置；多字节整数明确 little-endian |
-| FileRecord | file ID、parent file ID、inode/link-group、类型与 Unix 属性、路径/目标/xattr 的 offset+length、content ID；按 file ID 直接定位 |
+| FileRecord | file ID、parent file ID、inode/link-group、类型与 Unix 属性、路径/目标的 offset+length、content ID；按 file ID 直接定位 |
 | ContentRecord | 32 字节完整文件摘要、文件长度、首 chunk ID、chunk 数；按 content ID 直接定位 |
 | ChunkRecord | 32 字节数据摘要、块长度；文件 offset 由固定 chunk_bytes 与 chunk 序号计算 |
 | 索引页 | 有界页内条目、完整分隔键、子页/相邻页 ID；按 parent file ID 与 basename 原始字节排序，不依赖路径哈希无碰撞假设 |
@@ -200,7 +205,7 @@ checksums.bin
 
 file ID 标识目录项，inode/link-group 标识硬链接身份，两者不能混用。content ID 只在本 revision 内定位描述，不是跨镜像身份；跨镜像共享仍以完整文件/数据摘要为准。目录不允许除特殊 . / .. 语义外的硬链接。路径、basename 与符号链接目标保持原始字节，不强制 UTF-8。
 
-各固定记录表的记录不得跨页；变长字节区通过 offset+length 访问，可以跨页。section 在页边界对齐，padding 固定为零。ID 与 section/page 偏移按规范换算，不能直接把 Rust struct 内存写入文件。具体字段偏移、记录宽度和 schema 需在实现前单独固定；这里确定的是组织与读取协议，并非已经完成的二进制 ABI。
+各固定记录表的记录不得跨页；变长字节区通过 offset+length 访问，可以跨页。section 在页边界对齐，padding 固定为零。ID 与 section/page 偏移按规范换算，不能直接把 Rust struct 内存写入文件。字段偏移与宽度已固定为下节的 pvisor-paged-v1 schema；任何不兼容变更必须使用新的 schema/encoding，不能改变已有对象的解释。当前 FileRecord 不保存 xattr，沿用现有 cache 的属性范围，保留字节也不能被解释为已实现的扩展属性。
 
 完整路径逐组件 lookup；readdir 从该 parent 的第一条键顺序读取叶子页，cookie 绑定 revision 与页/槽位置。发布器验证路径唯一、父子关系、硬链接属性，以及索引与 files 一致。读取器限制树深度、页访问次数、键长度、条目数与 offset 运算，拒绝越界、循环与未知必要特性；错误不能被当作“文件不存在”。
 
@@ -215,15 +220,15 @@ file ID 标识目录项，inode/link-group 标识硬链接身份，两者不能�
 
 例如四个对象共 64 MiB，且各对象长度整页对齐，64 KiB 分页产生 1,024 个摘要，校验目录占 32 KiB 加少量 header。这是大小计算，不是延迟测试结果。页表仍需大小上限；超大镜像若要求分页校验目录，需后续引入有认证路径的层级结构，不能跳过校验。
 
-页缓存使用有界 LRU 与持久化缓存，远端缺页尽可能合并相邻 Range GET，常用 header/root 页可预取；不要逐路径组件无条件发出独立 S3 请求。缺页文件不可作为完整文件 mmap；先以页缓存读取，完整下载并验证后才能整文件 mmap。初版不使用整文件 zstd；独立页压缩留待基准后设计。
+页缓存使用有界 LRU 与持久化缓存，远端缺页尽可能合并相邻 Range GET，常用 header/root 页可预取；不要逐路径组件无条件发出独立 S3 请求。缺页文件不可作为完整文件 mmap；先以页缓存读取，完整下载并验证后才能整文件 mmap。当前不使用整文件 zstd，也不提供页压缩。独立的 manifest/config/checksums、三个表头以及根属性/根索引分别并行读取，减少串行 S3 往返；同一查询的索引依赖仍按层获取。相邻 Range GET 的合并和整文件 mmap 尚未实现，文件系统当前使用 seek/read。
 
 ### 查询与格式选型
 
 启动读取控制对象、checksums 和必要 header/root 页；lookup 读取索引路径上的页与对应 FileRecord，read 再读取相关 ContentRecord/ChunkRecord 和 data 对象。目录枚举和全文件清单导出是顺序分页操作，不占据启动必经路径。冷查询仍可能产生多次 S3 往返，“二进制”不自动等于“几十毫秒”。
 
-[FlatBuffers 的 offset 访问方式](https://flatbuffers.dev/white_paper/)可避免先转换整个对象，是原型对比候选；但整个镜像一个 FlatBuffer 并不自动提供远端分页、页校验和目录索引协议。[SQLite 的分页 B-tree 格式](https://www.sqlite.org/fileformat.html)也适合比较；用于这里还需要只读远端分页访问与完整性/缓存设计。v2 当前以明确分页的只读格式为基线，本次文档变更不加入库依赖。
+[FlatBuffers 的 offset 访问方式](https://flatbuffers.dev/white_paper/)可避免先转换整个对象，是原型对比候选；但整个镜像一个 FlatBuffer 并不自动提供远端分页、页校验和目录索引协议。[SQLite 的分页 B-tree 格式](https://www.sqlite.org/fileformat.html)也适合比较；用于这里还需要只读远端分页访问与完整性/缓存设计。当前实现使用明确分页的只读格式，未引入这些库。
 
-实现前对 1 千、1 万、10 万条目录项比较当前 JSON、分页二进制与候选库：记录冷 S3/热本地的启动到首个 lookup、首个文件读取、readdir、顺序扫描、下载字节、GET 数量、解析/校验 CPU 与峰值 RSS。依据结果确定页大小、预取策略和最终编码，不在测量前给出固定加速倍数。
+后续性能评估需对 1 千、1 万、10 万条目录项比较 JSON、分页二进制与候选库：记录冷 S3/热本地的启动到首个 lookup、首个文件读取、readdir、顺序扫描、下载字节、GET 数量、解析/校验 CPU 与峰值 RSS。依据结果确定页大小、预取策略和最终编码，不在测量前给出固定加速倍数。
 
 ## data：共享真实文件内容
 
@@ -243,7 +248,7 @@ file ID 标识目录项，inode/link-group 标识硬链接身份，两者不能�
 
 默认两级前缀分别取摘要前两个、第三第四个 hex 字符。若 h 以 abcd 开头，则对象键为 `data/sha256/ab/cd/<h>`。叶子对象名仍是完整摘要，避免短摘要冲突。内容为 raw，算法/编码和分片深度属于前缀的不可变格式配置。
 
-两级分片有 65,536 个可能的叶子分片，上层每层最多 256 个子目录。叶子对象平均约为 N/65,536；固定哈希分片不构成叶子对象数的严格上限。可在初始化时选三层两位前缀，让叶子空间达到 16,777,216；初始化后不能直接修改深度，使旧引用失效。确有硬对象数上限时，应配置容量预算或设计明确的迁移/扩分片机制，不能声称“两位前缀即可保证无限规模”。
+两级分片有 65,536 个可能的叶子分片，上层每层最多 256 个子目录。叶子对象平均约为 N/65,536；固定哈希分片不构成叶子对象数的严格上限。当前实现固定两层；若后续格式支持三层，叶子空间可达到 16,777,216，但需要初始化新的前缀或执行明确迁移，不能直接修改旧格式深度。确有硬对象数上限时，应配置容量预算或设计明确的迁移/扩分片机制，不能声称“两位前缀即可保证无限规模”。
 
 ### 文件独立分块
 
@@ -293,7 +298,7 @@ data 对象以“已存在则复用”的条件创建写入；读取核对内容
 3. 上传/复用全部 data 对象，仅用条件创建，不写共享引用计数。
 4. 在自己的 meta/image-key/platform/revision 中条件创建完整元数据文件，校验各摘要/长度。
 5. 最后条件创建 COMMIT，作为这个 revision 的完整标记。
-6. CAS 更新自身平台的 HEAD：初次用 If-None-Match，已有时用开始观察的 If-Match ETag；成功后清理上传状态。
+6. CAS 更新自身平台的 HEAD：初次用 If-None-Match，已有时用开始观察的 If-Match ETag；成功后写入 progress.json 的 committed 完成记录。上传记录保留供离线维护清理，日常发布不要求 DeleteObject。
 
 **HEAD 是唯一的可见性提交点。** 它不是整个对象存储的事务：上传成功而 HEAD 失败会留下不可见版本/可复用数据，但不会改变该镜像当前可读版本。所有依赖应先完成写入并可读，再提交 HEAD。
 
@@ -306,7 +311,7 @@ S3 的 If-Match 使用服务返回的 ETag 作为比较令牌，ETag 不当作�
 | 同镜像同平台，两者看到同一个旧 HEAD | 两者能各自构建版本，只有一个 CAS 成功 |
 | HEAD CAS 冲突 | 明确报冲突；不能自动去掉条件覆盖，也不能直接重试旧来源覆盖新 HEAD |
 | 提交前崩溃 | 当前 HEAD 不变；留下上传状态或未引用数据 |
-| HEAD 写入超时、结果未知 | 重新读取 HEAD 判断是否已提交，不盲目覆盖 |
+| HEAD 写入超时、结果未知 | 重新读取 HEAD，以唯一 publication_id 和完整内容核对本次提交，不盲目覆盖 |
 | 已固定旧 revision 的读者 | 继续沿原 COMMIT/元数据读取保留的数据 |
 
 generation 只在平台 HEAD 内递增，由成功 CAS 决定，不作为全局时钟。发布冲突后重新尝试需要重新观察 HEAD 和确认源 tag，而不是无条件“最后写入者获胜”。
@@ -317,7 +322,7 @@ generation 只在平台 HEAD 内递增，由成功 CAS 决定，不作为全局�
 
 删除镜像需要先停用该镜像的新任务/发布，并确认其读者和发布者已退出，再删除它自己的 meta；退役指定 revision 也必须确认没有读者使用。不直接删除共享 data，保留历史 revision 就保留其 objects 引用。没有活跃读者协调时，不能仅因版本不在 HEAD 就删除它：只读节点可能仍在使用已固定版本。
 
-首版 GC 采用离线维护：暂停发布/元数据变更，确认受影响读者已经退出；枚举全部保留的已提交 revision，以 objects.bin 的并集标记存活数据，最后删除未引用对象。uploads 残留也只能在确认上传者停止后清理。日常发布不依赖一个全局可变引用计数库，在线并发 GC 留待专门设计。
+GC 工具尚未实现，预定离线维护协议为：暂停发布/元数据变更，确认受影响读者已经退出；枚举全部保留的已提交 revision，以 objects.bin 的并集标记存活数据，最后删除未引用对象。uploads 残留也只能在确认上传者停止后清理。日常发布不依赖一个全局可变引用计数库，在线并发 GC 留待专门设计。
 
 SHA-256 完整性不认证发布者。格式配置、身份和 HEAD/COMMIT 必须由可信发布者及存储权限保护。发布器为 CAS/复用校验需 GetObject 和 PutObject，读取者只需 GetObject，GC 使用独立的枚举/删除权限。
 
@@ -332,6 +337,6 @@ SHA-256 完整性不认证发布者。格式配置、身份和 HEAD/COMMIT 必�
 | blobs 单层摘要路径 | data 按摘要前缀分层 |
 | 按 manifest digest 单独查询 | 按 image-key/platform/revision 固定句柄查询 |
 
-实现 v2 必须同步改发布器、读取器、句柄和本地缓存键。格式并不兼容，不能仅把 v1 的目录改名。迁移需逐镜像重新生成元数据与文件独立分块，验证后提交自己的 HEAD；保留仍有任务使用的 v1 数据。现有 v1 教学对象继续用于记录旧格式，不声称已经迁移。
+v2 已同步改发布器、读取器、句柄和本地缓存键。格式并不兼容，不能仅把 v1 的目录改名。迁移需逐镜像重新生成元数据与文件独立分块，验证后提交自己的 HEAD；保留仍有任务使用的 v1 数据。现有 v1 教学对象继续用于记录旧格式，不声称已经迁移。
 
-本文确定的是目录、一致性与二进制分页读取设计，未在此变更运行时。实现时还需要补充 CAS 冲突/未知提交结果、同文件跨镜像复用、独立 tag/平台、历史读者保留、离线 GC、局部页损坏、索引边界与冷热查询性能的验证。
+实现已验证跨镜像/平台共享、CAS 冲突、历史 revision 读取、v1 兼容、损坏数据/索引页、局部缓存修复与索引边界。5,000 个文件的回归用例启动加载 5 页，单次查找累计最多 10 页，并完整枚举目录；这些是读取数量断言，不是延迟基准。完整的冷热性能对比、GC 与超时故障注入仍需后续验证。

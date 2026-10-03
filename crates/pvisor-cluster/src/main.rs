@@ -49,6 +49,8 @@ enum Command {
         request_id: String,
     },
     Workers,
+    /// Inspect this Linux node's read-only pressure and visible cgroup limits.
+    ProbeNode,
     Drain {
         id: String,
         #[arg(long)]
@@ -65,6 +67,13 @@ enum Action {
 #[tokio::main]
 async fn main() -> anyhow::Result<()> {
     let args = Args::parse();
+    if matches!(args.command, Command::ProbeNode) {
+        println!(
+            "{}",
+            serde_json::to_string_pretty(&pvisor_cluster::admission::sample_linux()?)?
+        );
+        return Ok(());
+    }
     let token = args
         .token
         .ok_or_else(|| anyhow::anyhow!("set PVISOR_CLUSTER_TOKEN or --token"))?;
@@ -124,6 +133,7 @@ async fn main() -> anyhow::Result<()> {
         Command::Workers => serde_json::to_value(client.workers().await?)?,
         Command::Drain { id, resume } => client.drain(&id, !resume).await?,
         Command::Serve { .. } => unreachable!(),
+        Command::ProbeNode => unreachable!(),
     };
     println!("{}", serde_json::to_string_pretty(&value)?);
     Ok(())

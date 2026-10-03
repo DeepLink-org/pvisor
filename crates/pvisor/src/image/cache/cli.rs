@@ -34,7 +34,7 @@ enum CacheCommand {
         #[arg(long)]
         listen: Option<String>,
     },
-    /// Resolve and prepare an image in the cache; print its immutable digest.
+    /// Resolve an image; print its manifest digest and immutable read handle.
     Prepare {
         image: String,
         /// Recheck the registry even when a fresh prepared-image record exists.
@@ -53,13 +53,18 @@ enum CacheCommand {
     },
     /// List one directory page. Paths are relative to the image root.
     List {
+        /// image_handle from prepare/publish (or a server/v1 manifest digest).
         digest: String,
         path: Option<PathBuf>,
         #[arg(long, default_value_t = 0)]
         offset: usize,
     },
     /// Show file attributes without following symlinks.
-    Stat { digest: String, path: PathBuf },
+    Stat {
+        /// image_handle from prepare/publish (or a server/v1 manifest digest).
+        digest: String,
+        path: PathBuf,
+    },
     /// Stream one regular file to stdout. Does not follow symlinks.
     Read { digest: String, path: PathBuf },
 }

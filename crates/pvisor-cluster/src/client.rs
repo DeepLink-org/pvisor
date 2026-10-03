@@ -72,6 +72,9 @@ impl Client {
     pub async fn complete(&self, completion: &Completion) -> anyhow::Result<TaskRecord> {
         self.post("/v1/workers/complete", completion).await
     }
+    pub async fn decline(&self, rejection: &AdmissionRejection) -> anyhow::Result<TaskRecord> {
+        self.post("/v1/workers/decline", rejection).await
+    }
     pub async fn drain(&self, id: &str, draining: bool) -> anyhow::Result<serde_json::Value> {
         self.post(
             &format!("/v1/workers/{id}/drain"),

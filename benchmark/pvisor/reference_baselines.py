@@ -468,7 +468,7 @@ def main():
         "protocol": {
             "cache": "warm; no eviction",
             "image_preparation": "excluded from timed job; measured separately",
-            "vm_shape": "2 vCPU; shell ready 128 MiB; complete environment 16 GiB configured RAM",
+            "vm_shape": f"2 vCPU; shell ready 128 MiB; complete environment {args.memory_mib} MiB configured RAM",
             "agent_model": "same-guest deterministic fixture; no real inference",
             "codex_sandbox": "danger-full-access uniformly; fixed commands, outer runtime boundary",
             "resource_scope": f"All launch trees bound to host CPUs {args.cpu_affinity or 'unrestricted'}; Docker private daemon pinned separately; VMs 2 vCPU; Rust -j2; RSS sums may double-count shared pages",

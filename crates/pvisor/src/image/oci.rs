@@ -274,6 +274,13 @@ impl ImageStore {
         }
         let manifest: ImageManifest = serde_json::from_slice(&body)
             .with_context(|| format!("decode image manifest for {image}"))?;
+        let manifest_dir = self.root.join("metadata/manifests-v1");
+        fs::create_dir_all(&manifest_dir)?;
+        crate::util::atomic_write(
+            &manifest_dir.join(format!("{}.json", digest_hex(&manifest_digest)?)),
+            &body,
+            0o600,
+        )?;
         let config_path = self.fetch_blob(&mut registry, &manifest.config)?;
         let config: ImageConfiguration = serde_json::from_reader(File::open(config_path)?)
             .with_context(|| format!("decode image configuration for {image}"))?;

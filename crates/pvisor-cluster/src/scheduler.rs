@@ -52,6 +52,8 @@ enum Change {
         expires: u64,
         keys: Vec<LeaseKey>,
         acknowledged: BTreeSet<String>,
+        #[serde(default)]
+        admission: Option<Box<AdmissionReport>>,
     },
     Cancel {
         task_id: String,
@@ -77,6 +79,10 @@ enum Change {
     ControlAcknowledged {
         acknowledgement: ControlAcknowledgement,
         reserved: Resources,
+        at: u64,
+    },
+    Decline {
+        rejection: AdmissionRejection,
         at: u64,
     },
 }
@@ -223,6 +229,8 @@ impl Scheduler {
                         seen_at_ms: at,
                         draining,
                         reserved,
+                        admission: None,
+                        admission_received_at_ms: None,
                     },
                 );
                 self.active.entry(id).or_default();
@@ -263,8 +271,12 @@ impl Scheduler {
                 expires,
                 keys,
                 acknowledged,
+                admission,
             } => {
-                self.workers.get_mut(&worker_id).expect("worker").seen_at_ms = at;
+                let worker = self.workers.get_mut(&worker_id).expect("worker");
+                worker.seen_at_ms = at;
+                worker.admission_received_at_ms = admission.as_ref().map(|_| at);
+                worker.admission = admission.map(|r| *r);
                 for key in keys {
                     let task = self.tasks.get_mut(&key.task_id).expect("task");
                     let lease = task.lease.as_mut().expect("lease");
@@ -321,6 +333,24 @@ impl Scheduler {
                     .expect("task")
                     .controls
                     .push(record);
+            }
+            Change::Decline { rejection, at } => {
+                let id = rejection.key.task_id.clone();
+                self.release(&id);
+                let task = self.tasks.get_mut(&id).expect("task");
+                task.phase = TaskPhase::Queued;
+                task.lease = None;
+                task.reserved = None;
+                task.updated_at_ms = at;
+                task.admission_rejections += 1;
+                task.last_admission_rejection = Some(rejection);
+                for control in &mut task.controls {
+                    if !control.phase.terminal() {
+                        control.phase = ControlPhase::Aborted;
+                        control.completed_at_ms = Some(at);
+                    }
+                }
+                self.queue.push_back(id);
             }
             Change::ControlIssued {
                 task_id,
@@ -426,6 +456,8 @@ impl Scheduler {
             updated_at_ms: now,
             controls: Vec::new(),
             reserved: None,
+            admission_rejections: 0,
+            last_admission_rejection: None,
         };
         self.commit(vec![Change::Submit {
             task: Box::new(task.clone()),
@@ -484,6 +516,39 @@ impl Scheduler {
         }])
     }
 
+    pub fn decline(
+        &mut self,
+        rejection: AdmissionRejection,
+        now: u64,
+    ) -> anyhow::Result<TaskRecord> {
+        self.reap(now)?;
+        ensure!(
+            !rejection.reason.is_empty() && rejection.reason.len() <= 1024,
+            "invalid admission rejection"
+        );
+        let task = self
+            .tasks
+            .get(&rejection.key.task_id)
+            .context("unknown task")?;
+        if let Some(previous) = &task.last_admission_rejection
+            && previous.key == rejection.key
+        {
+            ensure!(previous == &rejection, "conflicting admission rejection");
+            return Ok(task.clone());
+        }
+        ensure!(
+            task.phase == TaskPhase::Leased && self.valid_key(&rejection.key, now),
+            "only an unstarted live assignment can be declined"
+        );
+        ensure!(
+            task.admission_rejections < u64::MAX,
+            "admission rejection count overflow"
+        );
+        let id = rejection.key.task_id.clone();
+        self.commit(vec![Change::Decline { rejection, at: now }])?;
+        Ok(self.tasks[&id].clone())
+    }
+
     fn valid_key(&self, key: &LeaseKey, now: u64) -> bool {
         self.tasks.get(&key.task_id).is_some_and(|t| {
             !t.phase.terminal()
@@ -493,7 +558,7 @@ impl Scheduler {
         })
     }
 
-    pub fn poll(&mut self, request: PollRequest, now: u64) -> anyhow::Result<PollResponse> {
+    pub fn poll(&mut self, mut request: PollRequest, now: u64) -> anyhow::Result<PollResponse> {
         self.reap(now)?;
         ensure!(
             request.max_assignments <= self.config.max_batch,
@@ -511,6 +576,24 @@ impl Scheduler {
             request.active.len() <= worker.registration.capacity.slots as usize,
             "too many active leases"
         );
+        if let Some(report) = &mut request.admission {
+            report.validate()?;
+            ensure!(
+                report.available == request.available,
+                "inconsistent admission report"
+            );
+            // A stale sample never authorizes new work, but renewal/teardown
+            // must continue even if the node probe is no longer responsive.
+            if report.mode == AdmissionMode::LinuxPressure
+                && report.sample_age_ms >= self.config.lease_duration_ms
+            {
+                request.available = Resources::default();
+                report.available = Resources::default();
+                if !report.blocked.contains(&AdmissionBlock::StaleSample) {
+                    report.blocked.push(AdmissionBlock::StaleSample);
+                }
+            }
+        }
         let mut seen = BTreeSet::new();
         let mut renewed = Vec::new();
         let mut stop = Vec::new();
@@ -546,6 +629,7 @@ impl Scheduler {
             expires,
             keys: renew_keys,
             acknowledged: seen.clone(),
+            admission: request.admission.clone().map(Box::new),
         }])?;
 
         // Lost assignment responses are redelivered with the same fencing key.

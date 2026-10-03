@@ -1,6 +1,6 @@
 # Shared image cache storage format v1
 
-> The successor design uses independent per-image meta and shared, sharded data; see [shared image cache v2](shared-image-cache-storage-v2.md). This page continues documenting implemented v1 for compatibility and migration.
+> New publications use [shared image cache v2](shared-image-cache-storage-v2.md), with independent meta, shared sharded data, and paged binary indexes. This page records legacy v1, which remains readable for compatibility and migration.
 
 This page describes the implemented filesystem/S3 direct-storage format and how `pvisor cache publish` produces it. See the [shared image cache reference](../reference/shared-image-cache.md) for operations. Directories, fields, and publication order follow `image/cache/portable.rs`, `portable/publish.rs`, `storage.rs`, and `client.rs`.
 

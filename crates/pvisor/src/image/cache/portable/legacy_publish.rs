@@ -6,24 +6,6 @@ use std::io::Read;
 use std::os::unix::ffi::OsStrExt;
 
 impl LegacyCache {
-    pub(in crate::image::cache) fn publish_image(
-        &self,
-        image: &str,
-        architecture: &str,
-        refresh: bool,
-    ) -> anyhow::Result<Response> {
-        ensure!(!self.read_only, "read-only cache cannot publish images");
-        ensure!(
-            matches!(architecture, "amd64" | "arm64"),
-            "unsupported image architecture"
-        );
-        let (canonical, _) = crate::image::oci::cache_reference(image)?;
-        let store = ImageStore::new(self.local_store.clone())?;
-        let image = store.prepare_with_refresh(image, architecture, refresh)?;
-        self.publish(&store, &image, architecture, &canonical)
-            .map(|(response, _)| response)
-    }
-
     pub(super) fn publish(
         &self,
         store: &ImageStore,

@@ -27,6 +27,15 @@ fn fixture() -> (tempfile::TempDir, PortableCache, ImageStore, PreparedImage) {
     };
     (tmp, cache, store, image)
 }
+fn read_handle(cache: &PortableCache) -> String {
+    match cache.prepare("example:test", "amd64", false).unwrap().0 {
+        Response::Prepared {
+            image_handle: Some(handle),
+            ..
+        } => handle,
+        _ => panic!("missing v2 read handle"),
+    }
+}
 #[test]
 fn filesystem_publishing_and_offline_readers_preserve_the_image_contract() {
     let (tmp, publisher, store, image) = fixture();
@@ -56,7 +65,7 @@ fn filesystem_publishing_and_offline_readers_preserve_the_image_contract() {
     );
     let (_, bytes) = reader
         .request(Request::Read {
-            digest: image.digest.clone(),
+            digest: read_handle(&reader),
             path: b"large".to_vec(),
             offset: MAX_READ as u64 - 1,
             length: 25,
@@ -65,7 +74,7 @@ fn filesystem_publishing_and_offline_readers_preserve_the_image_contract() {
     assert_eq!(bytes, vec![42; 25]);
     let (_, bytes) = reader
         .request(Request::Read {
-            digest: image.digest.clone(),
+            digest: read_handle(&reader),
             path: b"small".to_vec(),
             offset: 100,
             length: 10,
@@ -75,7 +84,7 @@ fn filesystem_publishing_and_offline_readers_preserve_the_image_contract() {
     assert!(
         reader
             .request(Request::Read {
-                digest: image.digest.clone(),
+                digest: read_handle(&reader),
                 path: b"link".to_vec(),
                 offset: 0,
                 length: 10
@@ -85,7 +94,7 @@ fn filesystem_publishing_and_offline_readers_preserve_the_image_contract() {
     assert!(
         reader
             .request(Request::Stat {
-                digest: image.digest.clone(),
+                digest: read_handle(&reader),
                 path: b"link/child".to_vec()
             })
             .is_err()
@@ -99,7 +108,7 @@ fn filesystem_publishing_and_offline_readers_preserve_the_image_contract() {
         assert!(
             reader
                 .request(Request::Stat {
-                    digest: image.digest.clone(),
+                    digest: read_handle(&reader),
                     path: path.into()
                 })
                 .is_err()
@@ -107,7 +116,7 @@ fn filesystem_publishing_and_offline_readers_preserve_the_image_contract() {
     }
     let inode = |name: &[u8]| match reader
         .request(Request::Stat {
-            digest: image.digest.clone(),
+            digest: read_handle(&reader),
             path: name.into(),
         })
         .unwrap()
@@ -123,17 +132,22 @@ fn corrupt_content_is_not_served_and_read_only_never_prepares_missing_images() {
     let (tmp, cache, store, image) = fixture();
     let (canonical, _) = crate::image::oci::cache_reference("example:test").unwrap();
     cache.publish(&store, &image, "amd64", &canonical).unwrap();
-    let index = cache.for_digest(&image.digest).unwrap();
-    let blob = &index.entry(b"small").unwrap().spans[0].blob;
+    let index = cache
+        .load(&Handle::parse(&read_handle(&cache)).unwrap())
+        .unwrap();
+    let content = index
+        .content(index.entry(b"small").unwrap().content.unwrap())
+        .unwrap();
+    let (blob, _) = index.chunk(content.first).unwrap();
     fs::write(
-        tmp.path().join("shared/v1/blobs").join(&blob[7..]),
+        tmp.path().join("shared").join(data_key(&blob).unwrap()),
         b"corrupt",
     )
     .unwrap();
     assert!(
         cache
             .request(Request::Read {
-                digest: image.digest.clone(),
+                digest: read_handle(&cache),
                 path: b"small".to_vec(),
                 offset: 0,
                 length: 5
@@ -201,7 +215,7 @@ fn directory_pages_preserve_every_name_including_non_utf8() {
     loop {
         let (response, _) = reader
             .request(Request::List {
-                digest: image.digest.clone(),
+                digest: read_handle(&reader),
                 path: b"directory".to_vec(),
                 offset,
             })
@@ -245,7 +259,7 @@ fn local_objects_survive_backend_loss_and_corruption_is_refetched() {
     let read = |reader: &PortableCache| {
         reader
             .request(Request::Read {
-                digest: image.digest.clone(),
+                digest: read_handle(&reader),
                 path: b"small".to_vec(),
                 offset: 0,
                 length: 5,
@@ -255,9 +269,14 @@ fn local_objects_survive_backend_loss_and_corruption_is_refetched() {
     };
     let reader = make_reader();
     assert_eq!(read(&reader), b"small");
-    let index = reader.for_digest(&image.digest).unwrap();
-    let blob = &index.entry(b"small").unwrap().spans[0].blob;
-    let remote = tmp.path().join("shared/v1/blobs").join(&blob[7..]);
+    let index = reader
+        .load(&Handle::parse(&read_handle(&reader)).unwrap())
+        .unwrap();
+    let content = index
+        .content(index.entry(b"small").unwrap().content.unwrap())
+        .unwrap();
+    let (blob, _) = index.chunk(content.first).unwrap();
+    let remote = tmp.path().join("shared").join(data_key(&blob).unwrap());
     let original = fs::read(&remote).unwrap();
     fs::remove_file(&remote).unwrap();
     drop(reader);
@@ -267,7 +286,7 @@ fn local_objects_survive_backend_loss_and_corruption_is_refetched() {
         "a new reader must reuse local objects"
     );
     fs::write(&remote, &original).unwrap();
-    let local = tmp.path().join("objects/blobs").join(&blob[7..]);
+    let local = tmp.path().join("objects/immutable").join(&blob[7..]);
     fs::write(&local, b"corrupt").unwrap();
     assert_eq!(read(&make_reader()), b"small");
     assert_eq!(fs::read(local).unwrap(), original);
@@ -276,13 +295,9 @@ fn local_objects_survive_backend_loss_and_corruption_is_refetched() {
 #[test]
 fn failed_publication_never_exposes_an_image_reference() {
     let (tmp, publisher, store, image) = fixture();
-    fs::create_dir_all(tmp.path().join("shared/v1")).unwrap();
+    fs::create_dir_all(tmp.path().join("shared")).unwrap();
     fs::create_dir(tmp.path().join("outside")).unwrap();
-    std::os::unix::fs::symlink(
-        tmp.path().join("outside"),
-        tmp.path().join("shared/v1/blobs"),
-    )
-    .unwrap();
+    std::os::unix::fs::symlink(tmp.path().join("outside"), tmp.path().join("shared/data")).unwrap();
     let (canonical, _) = crate::image::oci::cache_reference("example:test").unwrap();
     assert!(
         publisher
@@ -292,14 +307,285 @@ fn failed_publication_never_exposes_an_image_reference() {
     assert!(
         !tmp.path()
             .join("shared")
-            .join(reference_key(&canonical, "amd64"))
+            .join(head_key(&canonical, "linux-amd64"))
+            .exists()
+    );
+
+    assert_eq!(fs::read_dir(tmp.path().join("outside")).unwrap().count(), 0);
+}
+
+#[test]
+fn independent_images_share_file_chunks_and_old_revisions_remain_readable() {
+    let (tmp, cache, store, image) = fixture();
+    let (canonical, _) = crate::image::oci::cache_reference("example:test").unwrap();
+    cache.publish(&store, &image, "amd64", &canonical).unwrap();
+    let old = read_handle(&cache);
+    let object_paths = || {
+        fn walk(root: &std::path::Path, paths: &mut Vec<PathBuf>) {
+            for entry in fs::read_dir(root).unwrap() {
+                let path = entry.unwrap().path();
+                if path.is_dir() {
+                    walk(&path, paths);
+                } else {
+                    paths.push(path);
+                }
+            }
+        }
+        let mut paths = Vec::new();
+        walk(&tmp.path().join("shared/data"), &mut paths);
+        paths.sort();
+        paths
+    };
+    let initial = object_paths();
+    let other = crate::image::oci::cache_reference("other:test").unwrap().0;
+    cache.publish(&store, &image, "amd64", &other).unwrap();
+    cache.publish(&store, &image, "arm64", &canonical).unwrap();
+    assert_eq!(
+        object_paths(),
+        initial,
+        "identical files/chunks must be shared across images and platforms"
+    );
+    assert_ne!(image_key(&other), image_key(&canonical));
+    assert!(
+        tmp.path()
+            .join("shared")
+            .join(head_key(&other, "linux-amd64"))
             .exists()
     );
     assert!(
-        !tmp.path()
-            .join("shared/v1/images")
-            .join(format!("{}.json", &image.digest[7..]))
+        tmp.path()
+            .join("shared")
+            .join(head_key(&canonical, "linux-arm64-v8"))
             .exists()
     );
-    assert_eq!(fs::read_dir(tmp.path().join("outside")).unwrap().count(), 0);
+    let mut image = image;
+    fs::write(image.rootfs.join("small"), b"changed").unwrap();
+    let next_digest = format!("sha256:{}", "b".repeat(64));
+    let next_root = store.root.join("rootfs-v3/sha256").join(&next_digest[7..]);
+    fs::rename(&image.rootfs, &next_root).unwrap();
+    image.rootfs = next_root;
+    image.digest = next_digest;
+    cache.publish(&store, &image, "amd64", &canonical).unwrap();
+    let new = read_handle(&cache);
+    assert_ne!(old, new);
+    assert_eq!(object_paths().len(), initial.len() + 1);
+    let cold = PortableCache::new(
+        Storage::filesystem(tmp.path().join("shared"), false).unwrap(),
+        None,
+        true,
+    );
+    for (handle, expected) in [(old, b"small".as_slice()), (new, b"changed".as_slice())] {
+        let bytes = cold
+            .request(Request::Read {
+                digest: handle,
+                path: b"small".into(),
+                offset: 0,
+                length: 64,
+            })
+            .unwrap()
+            .1;
+        assert_eq!(bytes, expected);
+    }
+    assert!(
+        cold.request(Request::Stat {
+            digest: image.digest,
+            path: b"small".into()
+        })
+        .is_err(),
+        "v2 must not introduce a global digest-only index"
+    );
+}
+
+#[test]
+fn stale_publishers_cannot_replace_head_and_corrupt_existing_objects_are_not_reused() {
+    let (tmp, cache, store, image) = fixture();
+    let canonical = crate::image::oci::cache_reference("example:test")
+        .unwrap()
+        .0;
+    let first = cache.observe(&canonical, "linux-amd64").unwrap();
+    let second = cache.observe(&canonical, "linux-amd64").unwrap();
+    cache
+        .publish_observed(&store, &image, "amd64", &canonical, first)
+        .unwrap();
+    let head = fs::read(
+        tmp.path()
+            .join("shared")
+            .join(head_key(&canonical, "linux-amd64")),
+    )
+    .unwrap();
+    let error = cache
+        .publish_observed(&store, &image, "amd64", &canonical, second)
+        .unwrap_err();
+    assert!(super::super::storage::is_conflict(&error));
+    assert_eq!(
+        fs::read(
+            tmp.path()
+                .join("shared")
+                .join(head_key(&canonical, "linux-amd64"))
+        )
+        .unwrap(),
+        head
+    );
+    let data = tmp
+        .path()
+        .join("shared")
+        .join(data_key(&hash(b"small")).unwrap());
+    fs::write(data, b"corrupt").unwrap();
+    assert!(
+        cache
+            .publish(&store, &image, "amd64", &canonical)
+            .unwrap_err()
+            .to_string()
+            .contains("digest mismatch")
+    );
+    assert_eq!(
+        fs::read(
+            tmp.path()
+                .join("shared")
+                .join(head_key(&canonical, "linux-amd64"))
+        )
+        .unwrap(),
+        head
+    );
+}
+
+#[test]
+fn cold_start_fetches_pages_instead_of_deserializing_the_complete_file_tree() {
+    let (tmp, cache, store, image) = fixture();
+    for i in 0..5000 {
+        fs::write(image.rootfs.join("directory").join(format!("f-{i:05}")), []).unwrap();
+    }
+    let canonical = crate::image::oci::cache_reference("example:test")
+        .unwrap()
+        .0;
+    cache.publish(&store, &image, "amd64", &canonical).unwrap();
+    let handle = read_handle(&cache);
+    let reader = PortableCache::new(
+        Storage::filesystem(tmp.path().join("shared"), false).unwrap(),
+        None,
+        true,
+    );
+    let loaded = reader.load(&Handle::parse(&handle).unwrap()).unwrap();
+    assert!(
+        loaded.cached_page_count() <= 5,
+        "startup must only fetch headers, root metadata and index root"
+    );
+    assert!(loaded.commit.metadata["index.bin"].bytes > 20 * binary::PAGE_BYTES as u64);
+    assert!(matches!(
+        reader
+            .request(Request::Stat {
+                digest: handle.clone(),
+                path: b"directory/f-04999".into()
+            })
+            .unwrap()
+            .0,
+        Response::Metadata { size: 0, .. }
+    ));
+    assert!(
+        loaded.cached_page_count() <= 10,
+        "one lookup must not populate a complete-image index"
+    );
+    let mut offset = 0;
+    let mut count = 0;
+    loop {
+        let Response::Entries {
+            names, next_offset, ..
+        } = reader
+            .request(Request::List {
+                digest: handle.clone(),
+                path: b"directory".into(),
+                offset,
+            })
+            .unwrap()
+            .0
+        else {
+            panic!()
+        };
+        count += names.len();
+        let Some(next) = next_offset else { break };
+        offset = next;
+    }
+    assert_eq!(count, 5000);
+}
+
+#[test]
+fn corrupt_remote_pages_fail_and_corrupt_local_pages_are_refetched() {
+    let (tmp, cache, store, image) = fixture();
+    let canonical = crate::image::oci::cache_reference("example:test")
+        .unwrap()
+        .0;
+    cache.publish(&store, &image, "amd64", &canonical).unwrap();
+    let handle = read_handle(&cache);
+    let parsed = Handle::parse(&handle).unwrap();
+    let make = || {
+        PortableCache::new(
+            Storage::filesystem(tmp.path().join("shared"), false).unwrap(),
+            None,
+            true,
+        )
+        .with_local_objects(Some(tmp.path().join("pages")))
+    };
+    let read = |reader: &PortableCache| {
+        reader.request(Request::Stat {
+            digest: handle.clone(),
+            path: b"small".into(),
+        })
+    };
+    read(&make()).unwrap();
+    let local = tmp
+        .path()
+        .join("pages/pages")
+        .join(&parsed.revision)
+        .join("index.bin/1");
+    fs::write(&local, b"bad").unwrap();
+    read(&make()).unwrap();
+    assert_eq!(
+        fs::metadata(&local).unwrap().len(),
+        binary::PAGE_BYTES as u64
+    );
+    fs::remove_dir_all(tmp.path().join("pages")).unwrap();
+    let remote = tmp
+        .path()
+        .join("shared")
+        .join(parsed.prefix())
+        .join("index.bin");
+    use std::io::{Seek, SeekFrom, Write};
+    let mut file = fs::OpenOptions::new().write(true).open(remote).unwrap();
+    file.seek(SeekFrom::Start(binary::PAGE_BYTES as u64 + 24))
+        .unwrap();
+    file.write_all(b"corrupt").unwrap();
+    assert!(
+        read(&make())
+            .unwrap_err()
+            .to_string()
+            .contains("page digest mismatch")
+    );
+}
+
+#[test]
+fn filesystem_reader_still_accepts_committed_v1_teaching_objects() {
+    let root = PathBuf::from(env!("CARGO_MANIFEST_DIR"))
+        .join("../../docs/src/assets/examples/cache-layout-v1");
+    let reader = PortableCache::new(Storage::filesystem(root, false).unwrap(), None, true);
+    let response = reader.prepare("example:layout", "amd64", false).unwrap().0;
+    let Response::Prepared {
+        digest,
+        image_handle: None,
+        ..
+    } = response
+    else {
+        panic!("expected legacy response")
+    };
+    assert_eq!(
+        reader
+            .request(Request::Read {
+                digest,
+                path: b"bin/tool".into(),
+                offset: 0,
+                length: 32
+            })
+            .unwrap()
+            .1,
+        b"ABC"
+    );
 }

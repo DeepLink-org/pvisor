@@ -70,6 +70,7 @@ struct LoadedIndex {
 
 pub(super) struct LegacyCache {
     storage: Storage,
+    #[cfg(test)]
     local_store: Option<PathBuf>,
     read_only: bool,
     local_objects: Option<PathBuf>,
@@ -78,8 +79,11 @@ pub(super) struct LegacyCache {
 }
 impl LegacyCache {
     pub(super) fn new(storage: Storage, local_store: Option<PathBuf>, read_only: bool) -> Self {
+        #[cfg(not(test))]
+        let _ = local_store;
         Self {
             storage,
+            #[cfg(test)]
             local_store,
             read_only,
             local_objects: None,
@@ -271,6 +275,7 @@ impl LegacyCache {
         );
         let (canonical, pinned) = crate::image::oci::cache_reference(image)?;
         let key = reference_key(&canonical, architecture);
+        #[cfg(test)]
         let mut expired = false;
         if !refresh && let Some(bytes) = self.storage.get(&key)? {
             let reference: Reference =
@@ -290,7 +295,10 @@ impl LegacyCache {
                 );
                 return Ok((prepared(&index.index, &reference.index), Vec::new()));
             }
-            expired = true;
+            #[cfg(test)]
+            {
+                expired = true;
+            }
         }
         ensure!(
             !self.read_only,
@@ -304,7 +312,6 @@ impl LegacyCache {
         let image = store.prepare_with_refresh(image, architecture, refresh || expired)?;
         #[cfg(test)]
         return self.publish(&store, &image, architecture, &canonical);
-
     }
     fn for_digest(&self, digest: &str) -> anyhow::Result<Arc<LoadedIndex>> {
         let hex = crate::image::oci::digest_hex(digest)?;

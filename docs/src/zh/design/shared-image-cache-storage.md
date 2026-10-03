@@ -1,6 +1,6 @@
 # 共享镜像缓存存储格式 v1
 
-> 后续设计采用每个镜像独立的 meta 与共享、分片的 data，见[共享镜像缓存 v2](shared-image-cache-storage-v2.md)。本文继续记录当前已实现的 v1，便于兼容和迁移核对。
+> 新发布已采用[共享镜像缓存 v2](shared-image-cache-storage-v2.md)的独立 meta、共享分片 data 与分页二进制索引。本文记录旧 v1 格式，读取器保留兼容，便于迁移核对。
 
 本文描述已实现的文件系统/S3 直接存储格式，以及 `pvisor cache publish` 生成它的过程。操作步骤见[共享镜像缓存参考](../reference/shared-image-cache.md)。目录、字段和发布顺序对应 `image/cache/portable.rs`、`portable/publish.rs`、`storage.rs` 与 `client.rs`。
 

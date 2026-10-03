@@ -173,7 +173,40 @@ def export_evidence(source, out):
                 "_cli-output.json",
             ):
                 continue
-            archive.add(path, arcname=str(path.relative_to(source)))
+            if path.name == "_model-requests.json":
+                import io
+
+                requests = json.loads(path.read_text())
+                minimized = []
+                for request in requests:
+                    body = request["body"]
+                    proof = {k: body[k] for k in ("model", "stream") if k in body}
+                    proof["messages"] = [
+                        {
+                            "role": message["role"],
+                            "content": [
+                                block
+                                for block in message["content"]
+                                if block.get("type") == "tool_result"
+                            ],
+                        }
+                        for message in body.get("messages", [])
+                        if isinstance(message.get("content"), list)
+                        and any(block.get("type") == "tool_result" for block in message["content"])
+                    ]
+                    proof["input"] = [
+                        item
+                        for item in body.get("input", [])
+                        if isinstance(item, dict)
+                        and item.get("type") in ("function_call", "function_call_output")
+                    ]
+                    minimized.append({"path": request["path"], "body": proof})
+                payload = json.dumps(minimized, indent=2).encode()
+                info = tarfile.TarInfo(str(path.relative_to(source)))
+                info.size = len(payload)
+                archive.addfile(info, io.BytesIO(payload))
+            else:
+                archive.add(path, arcname=str(path.relative_to(source)))
         for path in sorted((source / "harness").rglob("*")):
             if path.is_file() and path.suffix in (".py", ".rs", ".sh", ".config"):
                 archive.add(path, arcname=str(path.relative_to(source)))
@@ -185,6 +218,7 @@ def export_evidence(source, out):
                 "exit_code": run.get("exit_code"),
                 "executor": run["executor"],
                 "safety": value.get("safety"),
+                "metrics": {k: v for k, v in run.get("metrics", {}).items() if k.startswith("resource.vm_")},
             }
             # Runtime proof is sufficient here; do not publish inherited host environment.
             import io

@@ -1,6 +1,6 @@
 # Shared image cache v2: independent metadata and shared content
 
-> Status: proposed design, not implemented. This layout handles each image independently while sharing actual file content. Existing publishers and readers still use the [implemented v1 format](shared-image-cache-storage.md).
+> Status: implemented. New filesystem/S3 publications use v2: independently managed image metadata, shared file contents, and paged indexes. [Legacy v1](shared-image-cache-storage.md) remains read-only compatible without automatic migration. Online/offline GC tooling is not implemented.
 
 V2 keeps each image's mutable state and file indexes in its own meta directory, sharing only immutable data objects. Different images do not update a common reference table, image index, or mutable pack. Concurrent updates of one image are handled at that platform's own HEAD.
 
@@ -86,14 +86,18 @@ When a tag resolves to a new manifest, its image-key stays unchanged. Create a r
 
 Queries carry `image-key + platform + revision`. A reader loads HEAD once at startup and pins that handle. Manifest digests verify provenance rather than serving as the complete storage address. A global mutable image index must not be reintroduced merely to preserve the old digest-only query interface.
 
+Prepare/publish returns image_handle, encoded as pvisor-v2:<image-key>:<platform>:<revision-hex>. Pass it as the first positional argument to CLI list/stat/read. The request field retains the name digest, but v2 requires the complete handle. Response digest remains the OCI manifest provenance digest. FUSE automatically uses image_handle; server/v1 reads still use manifest digests. Metadata_generation is the COMMIT digest. Local file blocks are separated by handle hash to avoid mixing platforms or revisions.
+
+Publishing a tag does not automatically create pinned-digest-reference meta. Read-only nodes preparing IMAGE@sha256:… need that reference published separately. Using a returned image_handle requires no additional pinned-reference directory.
+
 ## meta: what each image owns
 
 | Object | Contents/purpose | Mutability |
 |---|---|---|
 | identity.json | Version, canonical image reference, image-key | Immutable conditional creation; verify existing identity |
-| HEAD.json | Current revision, manifest digest, generation, publication time | Platform-scoped CAS update |
+| HEAD.json | Current revision, manifest digest, generation, publication time and publication_id | Platform-scoped CAS update |
 | revisions/<revision>/manifest.json | Provenance: source reference, platform, selected OCI manifest/config/layer digests | Immutable |
-| config.json | Environment, entrypoint, command, working directory, startup configuration | Immutable |
+| config.json | Environment, entrypoint, command, architecture, file count and logical bytes | Immutable |
 | files.bin | Complete paths/raw bytes, types, Unix attributes, hard-link groups, symlink targets, file-digests | Immutable |
 | contents.bin | Distinct file contents used by the revision: file-digest, size, ordered chunks | Immutable |
 | index.bin | Paths to files entries and directories to ordered child entries | Immutable; derivable from files |
@@ -119,7 +123,8 @@ Example HEAD:
   "revision": "sha256:<commit-bytes-sha256-hex>",
   "manifest_digest": "sha256:<platform-manifest-hex>",
   "generation": 7,
-  "published_at": 1791072000
+  "published_at": 1791072000,
+  "publication_id": "00000000-0000-4000-8000-000000000001"
 }
 ```
 
@@ -165,7 +170,7 @@ The baseline is a versioned read-only paged format with fixed record tables, byt
 files.bin
 ├── header + section directory
 ├── fixed FileRecord table
-└── raw-byte arena: paths, symlink targets, extended attributes
+└── raw-byte arena: paths, symlink targets
 
 contents.bin
 ├── header + section directory
@@ -189,7 +194,7 @@ checksums.bin
 | Object/structure | Proposed fields and access |
 |---|---|
 | Common header | Magic, object type, format/schema version, flags, page_bytes, total length, entry counts, section locations; explicitly little-endian multibyte integers |
-| FileRecord | File ID, parent file ID, inode/link-group, type and Unix attributes, offset+length for paths/targets/xattrs, content ID; direct addressing by file ID |
+| FileRecord | File ID, parent file ID, inode/link-group, type and Unix attributes, offset+length for paths/targets, content ID; direct addressing by file ID |
 | ContentRecord | 32-byte whole-file digest, file length, first chunk ID, chunk count; direct addressing by content ID |
 | ChunkRecord | 32-byte data digest and chunk length; file offsets follow fixed chunk_bytes and chunk ordinal |
 | Index pages | Bounded page entries, full separator keys, child/adjacent page IDs; sorted by parent file ID and raw basename bytes, without assuming collision-free path hashes |
@@ -200,7 +205,7 @@ Publishers assign file IDs in raw-path-byte order and content IDs in whole-file-
 
 File IDs identify directory entries; inode/link-group identifies hard links. These are distinct. Content IDs address descriptors within this revision rather than providing cross-image identities; sharing still uses whole-file/data digests. Directory hard links are prohibited except for special . / .. semantics. Paths, basenames, and symlink targets retain raw bytes without requiring UTF-8.
 
-Fixed table records cannot straddle pages. Variable byte arenas use offset+length and may span pages. Sections are page-aligned with deterministic zero padding. The specification defines ID-to-section/page offset calculations; Rust struct memory must not be written directly. Exact field offsets, record widths, and schemas must be fixed separately before implementation. This section defines organization and the read protocol rather than a completed binary ABI.
+Fixed table records cannot straddle pages. Variable byte arenas use offset+length and may span pages. Sections are page-aligned with deterministic zero padding. The specification defines ID-to-section/page offset calculations; Rust struct memory must not be written directly. Field offsets and widths are fixed in the pvisor-paged-v1 schema below. Incompatible changes require a new schema/encoding rather than reinterpreting existing objects. Current FileRecord does not store xattrs and preserves the existing cache attribute scope; reserved bytes do not represent implemented extended attributes.
 
 Full paths resolve component by component. Readdir starts at the parent's first key and follows leaf pages; cookies bind to revision and page/slot. Publishers validate unique paths, parent relationships, hard-link attributes, and consistency between index and files. Readers bound tree depth, page visits, key lengths, entry counts, and offset arithmetic, rejecting out-of-bounds references, cycles, and unknown required features. Errors must not become “file not found.”
 
@@ -215,15 +220,15 @@ Whole-file SHA-256 alone is insufficient: downloading an entire index before che
 
 For example, four objects totaling 64 MiB, with each object's length page-aligned, contain 1,024 digests at 64 KiB per page. The catalog occupies 32 KiB plus a small header. This is a size calculation, not a latency measurement. The catalog still needs a size limit. Larger images requiring paged checksum catalogs need a future authenticated hierarchy rather than skipped verification.
 
-Use bounded LRU and persistent page caches, coalesce adjacent remote Range GETs where possible, and optionally prefetch common header/root pages. Do not unconditionally issue an independent S3 request per path component. Incomplete cached files cannot be mapped as complete objects; use the page cache until a full download has been verified, then allow whole-file mmap. Initial metadata avoids whole-file zstd; independently compressed pages require later benchmark-driven design.
+Use bounded LRU and persistent page caches, coalesce adjacent remote Range GETs where possible, and optionally prefetch common header/root pages. Do not unconditionally issue an independent S3 request per path component. Incomplete cached files cannot be mapped as complete objects; use the page cache until a full download has been verified, then allow whole-file mmap. Current metadata supports neither whole-file zstd nor page compression. Manifest/config/checksums, the three table headers, and root attributes/index are each read in parallel groups to reduce sequential S3 round trips; dependent index traversal remains sequential. Adjacent-range coalescing and whole-file mmap are not implemented. Filesystem readers currently use seek/read.
 
 ### Queries and encoding choice
 
 Startup reads control objects, checksums, and necessary header/root pages. Lookup reads index traversal pages and the target FileRecord; read subsequently fetches related ContentRecord/ChunkRecord entries and data objects. Directory enumeration and complete file-list export are sequential paged operations, outside the mandatory startup path. Cold queries can still require multiple S3 round trips; binary encoding does not automatically deliver tens of milliseconds.
 
-[FlatBuffers offset-based access](https://flatbuffers.dev/white_paper/) can avoid first converting an entire object and is a prototype comparison candidate. A single whole-image FlatBuffer does not automatically provide remote paging, page integrity, and directory indexing. [SQLite's paged B-tree format](https://www.sqlite.org/fileformat.html) is also a comparison candidate; this use still requires read-only remote page access plus integrity and caching design. V2 currently uses an explicit read-only paged format as its baseline; this documentation change adds no library dependency.
+[FlatBuffers offset-based access](https://flatbuffers.dev/white_paper/) can avoid first converting an entire object and is a prototype comparison candidate. A single whole-image FlatBuffer does not automatically provide remote paging, page integrity, and directory indexing. [SQLite's paged B-tree format](https://www.sqlite.org/fileformat.html) is also a comparison candidate; this use still requires read-only remote page access plus integrity and caching design. The current implementation uses an explicit read-only paged format without introducing these libraries.
 
-Before implementation, compare current JSON, paged binary, and candidate libraries at 1,000, 10,000, and 100,000 directory entries. Measure cold-S3/warm-local startup to first lookup, first file read, readdir, sequential scan, downloaded bytes, GET counts, parsing/verification CPU, and peak RSS. Results determine page size, prefetch policy, and final encoding; no fixed speedup is claimed before measurement.
+Future performance evaluation should compare JSON, paged binary, and candidate libraries at 1,000, 10,000, and 100,000 directory entries. Measure cold-S3/warm-local startup to first lookup, first file read, readdir, sequential scan, downloaded bytes, GET counts, parsing/verification CPU, and peak RSS. Results determine page size, prefetch policy, and final encoding; no fixed speedup is claimed before measurement.
 
 ## data: share actual file bytes
 
@@ -317,7 +322,7 @@ Reading follows image-key/platform/HEAD → revision/COMMIT → file metadata/co
 
 Image deletion first disables new jobs/publications and confirms its readers and publishers have exited, then removes its own meta. Retiring a revision likewise requires confirming no readers use it. Neither directly deletes shared data; retained history retains objects references. Without active-reader coordination, revisions cannot be deleted merely because HEAD moved: read-only clients may still be pinned to them.
 
-Initial GC is offline maintenance: pause publishing/metadata changes and confirm affected readers exited, enumerate all retained committed revisions, mark the union of objects.bin, then sweep unreferenced data. Upload leftovers can be removed only once their writers have stopped. Routine publishing does not depend on a global mutable reference-count database. Online concurrent GC needs separate design.
+GC tooling is not implemented. The planned offline maintenance protocol is: pause publishing/metadata changes and confirm affected readers exited, enumerate all retained committed revisions, mark the union of objects.bin, then sweep unreferenced data. Upload leftovers can be removed only once their writers have stopped. Routine publishing does not depend on a global mutable reference-count database. Online concurrent GC needs separate design.
 
 SHA-256 integrity does not authenticate publishers. Trusted publishers and storage permissions protect format, identity, HEAD, and COMMIT. Publishers need GetObject and PutObject for CAS/reuse verification, readers only GetObject, and GC separate enumeration/deletion privileges.
 
@@ -332,6 +337,6 @@ SHA-256 integrity does not authenticate publishers. Trusted publishers and stora
 | Single-level blob digest paths | Prefix-sharded data |
 | Manifest-digest-only queries | Pinned image-key/platform/revision handles |
 
-Implementing v2 requires publisher, reader, handle, and local-cache-key changes. It is incompatible with v1 and cannot be obtained by renaming directories. Migrate each image by rebuilding metadata and file-independent chunks, verify them, then commit its own HEAD. Retain v1 data still needed by running jobs. Existing teaching objects continue documenting v1, without claiming migration.
+V2 updates the publisher, reader, handles, and local cache keys together. It is incompatible with v1 and cannot be obtained by renaming directories. Migrate each image by rebuilding metadata and file-independent chunks, verify them, then commit its own HEAD. Retain v1 data still needed by running jobs. Existing teaching objects continue documenting v1, without claiming migration.
 
-This page defines layout, consistency, and binary paged reads, without runtime changes. Implementation still needs verification of CAS conflicts/unknown commit outcomes, identical-file reuse across images, independent tags/platforms, historical-reader retention, offline GC, corrupt pages, index bounds, and cold/warm query performance.
+Implementation verifies cross-image/platform sharing, CAS conflicts, historical revisions, v1 compatibility, corrupt data/index pages, local cache repair, and index bounds. A 5,000-file regression starts with 5 pages and uses at most 10 cumulative pages for one lookup, then enumerates the entire directory. These are read-count assertions, not latency benchmarks. Full cold/warm comparisons, GC, and timeout fault injection remain future work.

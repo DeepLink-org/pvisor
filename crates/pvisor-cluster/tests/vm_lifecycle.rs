@@ -76,6 +76,7 @@ fn poll(keys: Vec<LeaseKey>, available: Resources) -> PollRequest {
         active: keys,
         available,
         max_assignments: 64,
+        admission: None,
     }
 }
 fn free(s: &Scheduler) -> Resources {
@@ -538,4 +539,53 @@ fn shared_pool_worker_rejects_offload_but_accepts_pause() {
     let response = s.poll(poll(vec![key], free(&s)), 4).unwrap();
     assert!(response.stop.is_empty());
     assert_eq!(response.controls, vec![pause.command]);
+}
+
+#[test]
+fn admission_rejection_aborts_attempt_scoped_controls_before_requeue() {
+    let temp = tempfile::tempdir().unwrap();
+    let mut s = Scheduler::open(&temp.path().join("journal"), config()).unwrap();
+    s.register(worker(), 0).unwrap();
+    s.submit(spec("one"), 0).unwrap();
+    let key = s
+        .poll(poll(vec![], free(&s)), 1)
+        .unwrap()
+        .assignments
+        .remove(0)
+        .lease
+        .key;
+    let control = s
+        .request_control("one", request("pause", ControlAction::Pause), 2)
+        .unwrap();
+    s.decline(
+        AdmissionRejection {
+            key,
+            reason: "not started".into(),
+        },
+        3,
+    )
+    .unwrap();
+    assert_eq!(
+        s.task("one").unwrap().controls[0].phase,
+        ControlPhase::Aborted
+    );
+    assert!(s.acknowledge_control(success(control.command), 4).is_err());
+    let next = s
+        .poll(poll(vec![], free(&s)), 5)
+        .unwrap()
+        .assignments
+        .remove(0)
+        .lease
+        .key;
+    assert!(
+        s.poll(poll(vec![next.clone()], free(&s)), 6)
+            .unwrap()
+            .controls
+            .is_empty()
+    );
+    let pause = s
+        .request_control("one", request("new-pause", ControlAction::Pause), 7)
+        .unwrap();
+    assert_eq!(pause.command.key, next);
+    assert_eq!(pause.command.revision, 2);
 }

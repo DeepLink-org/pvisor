@@ -3,7 +3,7 @@
 | Area | Documentation |
 | --- | --- |
 | Core ownership and execution path | [Core architecture](architecture.md) |
-| Shared image caches, S3/filesystem trees, and file indexes | [v2: independent metadata and shared content design](shared-image-cache-storage-v2.md) · [v1: current implementation](shared-image-cache-storage.md) |
+| Shared image caches, S3/filesystem trees, and file indexes | [v2: independent metadata and paged indexes](shared-image-cache-storage-v2.md) · [v1: compatible reads](shared-image-cache-storage.md) |
 | VM RAM offload, file layout and lifecycle | [Complete offload design](offload/index.md) · [Disk format and schema](offload/disk-layout-and-schema.md) |
 | Full VM environment saves, independent file copies and restore across runners | [Full environment snapshot CLI](environment-snapshot.md) |
 | Cross-VM content deduplication, shared pool and cold restoration | [Memory deduplication and cold-block compression](memory-sharing/index.md) |
