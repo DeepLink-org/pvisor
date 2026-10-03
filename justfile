@@ -206,3 +206,20 @@ test-hvf-cold-restore:
 # VMM owning-thread/GIC checks; full Linux snapshot acceptance is separate.
 test-vm-snapshot-state:
     python3 scripts/check-vm-snapshot-state.py --target-dir "{{ target_dir }}"
+
+# Linux hardware gate: concurrent snapshots, memory/FD integrity and injected crashes.
+test-vm-stress output cycles="5" forks="4" seed="1":
+    #!/usr/bin/env bash
+    set -euo pipefail
+    test "$(uname -s)" = Linux
+    test "$(uname -m)" = x86_64
+    test -r /dev/kvm && test -w /dev/kvm
+    test -r /dev/fuse && test -w /dev/fuse
+    cargo build --release --locked -p pvisor --bin pvisor --target-dir "{{ target_dir }}"
+    stress_guest=$(mktemp "{{ target_dir }}/snapshot-stress-guest.XXXXXX")
+    trap 'rm -f "$stress_guest"' EXIT
+    rustc --target x86_64-unknown-linux-musl -C opt-level=2 -C panic=abort \
+      "{{ repo }}/benchmark/pvisor/snapshot_stress_guest.rs" -o "$stress_guest"
+    python3 "{{ repo }}/benchmark/pvisor/vm_stress.py" \
+      --binary "{{ target_dir }}/release/pvisor" --guest "$stress_guest" \
+      --output "$1" --cycles "$2" --forks "$3" --seed "$4"

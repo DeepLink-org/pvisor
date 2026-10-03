@@ -58,6 +58,8 @@ enum Command {
     Runner { spec: PathBuf },
     #[command(hide = true)]
     RamWatchdog { mount: PathBuf },
+    #[command(hide = true)]
+    SocketWatchdog { directory: PathBuf },
 }
 
 pub(super) fn run(args: Args) -> anyhow::Result<()> {

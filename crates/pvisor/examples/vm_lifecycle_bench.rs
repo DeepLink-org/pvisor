@@ -1,6 +1,6 @@
 //! Real guest correctness checks and repeated SDK lifecycle timings.
 use anyhow::{Context, ensure};
-use clap::Parser;
+use clap::{Parser, ValueEnum};
 use pvisor::{OverlayHint, PVisor, VmExecutor, VmSettings};
 use pvisor_core::{RunInvocation, RunSpec, RunState, StdioMode};
 use serde_json::{Value, json};
@@ -28,6 +28,20 @@ struct Args {
     compressed: bool,
     #[arg(long, default_value_t = 10)]
     long_pause_seconds: u64,
+    /// Race controls, abandon a caller, reject an occupied path and check recovery.
+    #[arg(long)]
+    stress: bool,
+    /// End by cancelling the VM in this state instead of releasing the guest.
+    #[arg(long, value_enum)]
+    cancel_while: Option<CancelState>,
+}
+
+#[derive(Clone, Copy, Debug, ValueEnum, serde::Serialize)]
+#[serde(rename_all = "snake_case")]
+enum CancelState {
+    Running,
+    Paused,
+    Offloaded,
 }
 
 const GUEST: &str = r#"
@@ -163,6 +177,28 @@ async fn run(args: Args) -> anyhow::Result<()> {
         changed(&handle, &heartbeat, &[]).await?;
         let mut rows = Vec::new();
         for cycle in 0..args.warmups + args.samples {
+            if args.stress {
+                let occupied = root.join("occupied.ram");
+                std::fs::write(&occupied, b"must survive rejected offload")?;
+                ensure!(handle.offload(Some(occupied.clone())).await.is_err(), "occupied destination accepted");
+                ensure!(std::fs::read(&occupied)? == b"must survive rejected offload", "rejection overwrote destination");
+                let (first, second, third) = tokio::join!(handle.pause(), handle.resume(), handle.pause());
+                first?; second?; third?;
+                // Pin the resulting state after an intentionally unordered race.
+                handle.resume().await?;
+                let old = std::fs::read(&heartbeat)?;
+                changed(&handle, &heartbeat, &old).await?;
+                // Dropping a waiting caller must not misalign the control reply
+                // stream. A later resume must consume its own acknowledgement.
+                let mut abandoned = Box::pin(handle.offload(None));
+                tokio::select! {
+                    result = &mut abandoned => { result?; }
+                    _ = sleep(Duration::from_millis(1)) => {}
+                }
+                drop(abandoned);
+                handle.resume().await?;
+                read_check(&handle, &upper, &format!("after-abandoned-{cycle}")).await?;
+            }
             let baseline_read = read_check(&handle, &upper, &format!("before-{cycle}")).await?;
             let start = Instant::now();
             handle.pause().await?;
@@ -203,34 +239,51 @@ async fn run(args: Args) -> anyhow::Result<()> {
                 "backed_bytes":memory.backed_bytes, "resident_before_bytes":memory.resident_before_bytes,
                 "resident_after_bytes":memory.resident_after_bytes, "allocated_bytes":allocated_bytes}));
         }
-        std::fs::write(upper.join("release"), "go")?;
+        if let Some(state) = args.cancel_while {
+            match state {
+                CancelState::Running => {},
+                CancelState::Paused => handle.pause().await?,
+                CancelState::Offloaded => { handle.offload(None).await?; },
+            }
+            handle.cancel();
+        } else { std::fs::write(upper.join("release"), "go")?; }
         Ok::<_, anyhow::Error>(rows)
     }.await;
     if check.is_err() {
         handle.cancel();
     }
-    let result = handle.wait().await?;
+    let result = tokio::time::timeout(Duration::from_secs(30), handle.wait())
+        .await
+        .context("VM did not terminate after release/cancellation")??;
     std::fs::write(
         root.join("guest.stderr"),
         result.output.stderr.as_deref().unwrap_or_default(),
     )?;
     let rows = check?;
-    ensure!(
-        result.state == RunState::Completed && result.exit_code == Some(0),
-        "guest failed: {result:?}"
-    );
-    ensure!(
-        result
-            .output
-            .stdout
-            .as_deref()
-            .unwrap_or_default()
-            .contains("guest-memory-ok"),
-        "missing integrity check"
-    );
+    if args.cancel_while.is_some() {
+        ensure!(
+            result.state == RunState::Cancelled,
+            "VM cancellation failed: {result:?}"
+        );
+    } else {
+        ensure!(
+            result.state == RunState::Completed && result.exit_code == Some(0),
+            "guest failed: {result:?}"
+        );
+        ensure!(
+            result
+                .output
+                .stdout
+                .as_deref()
+                .unwrap_or_default()
+                .contains("guest-memory-ok"),
+            "missing integrity check"
+        );
+    }
     let report = json!({"schema":"pvisor-vm-lifecycle/v1", "memory_mib":args.memory,
         "cpus":args.cpus, "compressed":args.compressed, "samples":args.samples,
         "warmups":args.warmups, "long_pause_seconds":args.long_pause_seconds,
+        "stress":args.stress, "cancel_while":args.cancel_while,
         "guest_data_bytes":64*1024*1024, "correctness":"passed", "rows":rows});
     std::fs::write(root.join("raw.json"), serde_json::to_vec_pretty(&report)?)?;
     println!("{}", serde_json::to_string(&report)?);

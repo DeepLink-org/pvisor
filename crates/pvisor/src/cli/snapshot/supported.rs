@@ -14,13 +14,62 @@ use std::{
     io::{Read, Write},
     os::unix::{
         ffi::OsStrExt,
-        fs::{DirBuilderExt, MetadataExt, PermissionsExt},
+        fs::{DirBuilderExt, FileTypeExt, MetadataExt, PermissionsExt},
         net::{UnixListener, UnixStream},
     },
     path::{Path, PathBuf},
     sync::Arc,
     time::Duration,
 };
+
+/// Keep IPC cleanup alive across _exit and SIGKILL of the whole VM group.
+/// Install before binding so no kill window leaves a socket without an owner.
+struct SocketWatchdog(std::process::Child, Option<std::process::ChildStdin>);
+impl SocketWatchdog {
+    fn start(directory: &Path) -> anyhow::Result<Self> {
+        use std::os::unix::process::CommandExt;
+        use std::process::Stdio;
+        let mut child = std::process::Command::new(std::env::current_exe()?)
+            .args(["snapshot", "socket-watchdog"])
+            .arg(directory)
+            .stdin(Stdio::piped())
+            .stdout(Stdio::null())
+            .stderr(Stdio::inherit())
+            .process_group(0)
+            .spawn()?;
+        let pipe = child.stdin.take().context("missing socket watchdog pipe")?;
+        Ok(Self(child, Some(pipe)))
+    }
+}
+impl Drop for SocketWatchdog {
+    fn drop(&mut self) {
+        drop(self.1.take());
+        if let Err(error) = self.0.wait() {
+            tracing::warn!(%error, "cannot wait for snapshot IPC cleanup");
+        }
+    }
+}
+fn watch_socket(directory: &Path) -> anyhow::Result<()> {
+    ensure!(directory.is_absolute(), "invalid socket watchdog directory");
+    let socket = control_socket(directory)?;
+    std::io::copy(&mut std::io::stdin().lock(), &mut std::io::sink())?;
+    match fs::symlink_metadata(&socket) {
+        Ok(meta) => {
+            ensure!(
+                meta.file_type().is_socket(),
+                "invalid snapshot control socket"
+            );
+            match fs::remove_file(socket) {
+                Ok(()) => {}
+                Err(error) if error.kind() == std::io::ErrorKind::NotFound => {}
+                Err(error) => return Err(error.into()),
+            }
+        }
+        Err(error) if error.kind() == std::io::ErrorKind::NotFound => {}
+        Err(error) => return Err(error.into()),
+    }
+    Ok(())
+}
 
 #[derive(Serialize, Deserialize)]
 #[serde(deny_unknown_fields)]
@@ -181,8 +230,10 @@ fn launch(spec: Launch) -> anyhow::Result<()> {
         )
         .status()?;
     let socket = control_socket(&spec.directory)?;
-    if socket.exists() {
-        fs::remove_file(socket)?;
+    match fs::remove_file(socket) {
+        Ok(()) => {}
+        Err(error) if error.kind() == std::io::ErrorKind::NotFound => {}
+        Err(error) => return Err(error.into()),
     }
     ensure!(status.success(), "snapshot VM exited with {status}");
     Ok(())
@@ -190,6 +241,9 @@ fn launch(spec: Launch) -> anyhow::Result<()> {
 pub(super) fn run(args: Args) -> anyhow::Result<()> {
     if let Command::RamWatchdog { mount } = &args.command {
         return crate::environment_snapshot::watch_mount(mount);
+    }
+    if let Command::SocketWatchdog { directory } = &args.command {
+        return watch_socket(directory);
     }
     if let Command::Runner { spec } = &args.command {
         return runner(serde_json::from_slice(&fs::read(spec)?)?);
@@ -292,7 +346,9 @@ pub(super) fn run(args: Args) -> anyhow::Result<()> {
             println!("{}", store.collect_abandoned()?);
             Ok(())
         }
-        Command::Runner { .. } | Command::RamWatchdog { .. } => unreachable!(),
+        Command::Runner { .. } | Command::RamWatchdog { .. } | Command::SocketWatchdog { .. } => {
+            unreachable!()
+        }
     }
 }
 
@@ -349,6 +405,7 @@ fn runner(spec: Launch) -> anyhow::Result<()> {
         None
     };
     let socket = control_socket(&spec.directory)?;
+    let _socket_watchdog = SocketWatchdog::start(&spec.directory)?;
     // Instance names are single-use; no stale socket is removed or rebound.
     let listener = UnixListener::bind(&socket)?;
     check(krun::krun_set_log_level(1))?;
@@ -416,10 +473,12 @@ fn runner(spec: Launch) -> anyhow::Result<()> {
                 let result: Result<(), String> =
                     handle.with_snapshot_quiesced(Duration::from_secs(30), |vm| {
                         let result = (|| -> anyhow::Result<String> {
-                            let pending = store.begin()?;
-                            let ram = pending.create_ram()?;
-                            let state =
-                                vm.capture_machine_state(&ram).map_err(anyhow::Error::msg)?;
+                            let pending = store.begin().context("begin snapshot staging")?;
+                            let ram = pending.create_ram().context("create capture RAM")?;
+                            let state = vm
+                                .capture_machine_state(&ram)
+                                .map_err(anyhow::Error::msg)
+                                .context("capture complete VM state")?;
                             let saved = Saved {
                                 cpus: spec.cpus,
                                 memory: spec.memory,
@@ -437,6 +496,7 @@ fn runner(spec: Launch) -> anyhow::Result<()> {
                                     pending.publish_compressed(&root, &machine, binding.clone())
                                 }
                             }
+                            .context("publish frozen filesystem and RAM")
                         })();
                         match result {
                             Ok(id) => {

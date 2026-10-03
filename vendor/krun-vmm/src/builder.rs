@@ -1180,6 +1180,17 @@ pub fn build_microvm(
         println!("Starting TEE/microVM.");
     }
 
+    #[cfg(all(target_os = "linux", target_arch = "x86_64", not(feature = "tee")))]
+    if !restoring
+        && !vm_resources.nested_enabled
+        && vm_resources.ram_backing.is_some()
+        && matches!(payload, Payload::KernelMmap)
+    {
+        if let Some(boot_cpu) = vcpus.first() {
+            boot_cpu.prefault_boot_memory(vmm.kvm_vm().fd(), vmm.guest_memory());
+        }
+    }
+
     vmm.start_vcpus(vcpus)
         .map_err(StartMicrovmError::Internal)?;
 

@@ -2823,6 +2823,7 @@ dependencies = [
  "krun-polly",
  "krun-utils",
  "krun-vmm",
+ "kvm-bindings",
  "libc",
  "libkrun",
  "libloading",

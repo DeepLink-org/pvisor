@@ -517,6 +517,31 @@ pub struct Vm {
     pub guest_memfds: Vec<(Range<u64>, RawFd)>,
 }
 
+#[cfg(target_arch = "x86_64")]
+fn snapshot_msrs(kvm: &Kvm) -> Result<MsrList> {
+    let filtered = arch::x86_64::msr::supported_guest_msrs(kvm).map_err(Error::GuestMSRs)?;
+    let supported = kvm.get_msr_index_list().map_err(Error::VcpuGetMsrs)?;
+    let mut entries = filtered.as_slice().to_vec();
+    // The inherited whitelist predates supervisor XSAVE state. XCRS only
+    // includes XCR0, not IA32_XSS. Linux can enable CET xstate in XSS even when
+    // userspace shadow stacks are inactive. Losing XSS makes XRSTORS fault on
+    // the saved compacted task state during the first post-restore switch.
+    // KVM's userspace XSAVE ABI omits supervisor components. Preserve the CET
+    // registers explicitly too, rather than depending on XSAVE to contain them.
+    const SUPERVISOR_XSTATE_MSRS: &[u32] = &[
+        0xda0, // IA32_XSS
+        0x6a0, 0x6a2, // IA32_U_CET, IA32_S_CET
+        0x6a4, 0x6a5, 0x6a6, 0x6a7, // IA32_PL{0,1,2,3}_SSP
+        0x6a8, // IA32_INTERRUPT_SSP_TABLE_ADDR
+    ];
+    for index in SUPERVISOR_XSTATE_MSRS {
+        if supported.as_slice().contains(index) && !entries.contains(index) {
+            entries.push(*index);
+        }
+    }
+    MsrList::from_entries(&entries).map_err(|e| Error::Snapshot(e.to_string()))
+}
+
 impl Vm {
     /// Constructs a new `Vm` using the given `Kvm` instance.
     #[cfg(not(feature = "tee"))]
@@ -530,7 +555,7 @@ impl Vm {
             .map_err(Error::VmFd)?;
         #[cfg(target_arch = "x86_64")]
         let supported_msrs =
-            arch::x86_64::msr::supported_guest_msrs(kvm).map_err(Error::GuestMSRs)?;
+            snapshot_msrs(kvm)?;
 
         Ok(Vm {
             fd: vm_fd,
@@ -555,7 +580,7 @@ impl Vm {
             .map_err(Error::VmFd)?;
 
         let supported_msrs =
-            arch::x86_64::msr::supported_guest_msrs(kvm).map_err(Error::GuestMSRs)?;
+            snapshot_msrs(kvm)?;
 
         let cap = kvm_enable_cap {
             cap: KVM_CAP_EXIT_HYPERCALL,
@@ -598,7 +623,7 @@ impl Vm {
             .map_err(Error::VmFd)?;
 
         let supported_msrs =
-            arch::x86_64::msr::supported_guest_msrs(kvm).map_err(Error::GuestMSRs)?;
+            snapshot_msrs(kvm)?;
 
         let mut cap = kvm_enable_cap {
             cap: KVM_CAP_EXIT_HYPERCALL,
@@ -1049,6 +1074,18 @@ impl Vcpu {
 
         register_signal_handler(sigrtmin() + VCPU_RTSIG_OFFSET, handle_signal)
             .expect("Failed to register vcpu signal handler");
+    }
+
+    /// Prepare cold-boot RAM after CPU setup and before starting vCPU threads.
+    #[cfg(all(target_arch = "x86_64", not(feature = "tee")))]
+    pub(crate) fn prefault_boot_memory(&self, vm: &VmFd, memory: &GuestMemoryMmap) {
+        if env::var("KRUN_BOOT_PREFAULT").as_deref() == Ok("0") {
+            return;
+        }
+        if vm.check_extension_raw(super::prefault::KVM_CAP_PRE_FAULT_MEMORY as _) > 0 {
+            use std::os::fd::AsRawFd;
+            super::prefault::prepare(self.fd.as_raw_fd(), memory);
+        }
     }
 
     /// Constructs a new VCPU for `vm`.
@@ -1807,6 +1844,11 @@ impl CpuSnapshot {
     pub fn validate(&self, id: u8) -> std::result::Result<(), String> {
         if self.id != id || self.cpu.cpuid.as_slice().is_empty() || self.cpu.msrs.as_slice().is_empty() {
             return Err("KVM CPU topology or register inventory mismatch".into());
+        }
+        if self.cpu.cpuid.as_slice().iter().any(|entry| {
+            entry.function == 0xd && entry.index == 1 && (entry.ecx != 0 || entry.edx != 0)
+        }) && !self.cpu.msrs.as_slice().iter().any(|entry| entry.index == 0xda0) {
+            return Err("missing supervisor XSAVE control (IA32_XSS)".into());
         }
         Ok(())
     }

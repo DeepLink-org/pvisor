@@ -11,7 +11,7 @@ use std::{
     io::Write,
     os::unix::{
         ffi::OsStrExt,
-        fs::{OpenOptionsExt, PermissionsExt},
+        fs::{DirBuilderExt, OpenOptionsExt, PermissionsExt},
     },
     path::{Path, PathBuf},
 };
@@ -101,9 +101,23 @@ fn write_synced(path: &Path, bytes: &[u8]) -> anyhow::Result<()> {
 
 impl SnapshotStore {
     pub fn new(root: &Path) -> anyhow::Result<Self> {
-        if !root.exists() {
-            fs::create_dir(root)?;
+        // mkdir is the arbitration point for concurrent first use. An exists
+        // check followed by mkdir spuriously fails when another runner wins.
+        // Create private directories from the outset, then validate even when
+        // mkdir reports AlreadyExists (including files and dangling symlinks).
+        fn directory(path: &Path) -> anyhow::Result<()> {
+            match fs::DirBuilder::new().mode(0o700).create(path) {
+                Ok(()) => {}
+                Err(error) if error.kind() == std::io::ErrorKind::AlreadyExists => {}
+                Err(error) => return Err(error.into()),
+            }
+            ensure!(
+                fs::symlink_metadata(path)?.is_dir(),
+                "invalid snapshot store directory"
+            );
+            Ok(())
         }
+        directory(root)?;
         ensure!(
             fs::symlink_metadata(root)?.is_dir(),
             "snapshot store must not be a symlink"
@@ -112,13 +126,7 @@ impl SnapshotStore {
         let root = root.canonicalize()?;
         for name in ["objects", "pending", "deleted", "content"] {
             let path = root.join(name);
-            if !path.exists() {
-                fs::create_dir(&path)?;
-            }
-            ensure!(
-                fs::symlink_metadata(&path)?.is_dir(),
-                "invalid snapshot store directory"
-            );
+            directory(&path)?;
         }
         Ok(Self { root })
     }

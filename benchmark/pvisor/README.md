@@ -402,6 +402,56 @@ python3 benchmark/pvisor/vm_snapshot_lazy.py \
   --guest /tmp/snapshot-guest
 ```
 
+## VM correctness stress and fault injection
+
+Run the Linux x86_64 KVM/FUSE gate with a **new** output directory:
+
+```bash
+just test-vm-stress target/vm-stress-new 5 4 20261004
+```
+
+This builds the CLI and a static multithreaded guest (requires the installed
+`x86_64-unknown-linux-musl` Rust target). Missing KVM/FUSE permissions fail the
+gate. The arguments select generations, concurrent forks and the random seed.
+The seed selects the survivor and termination signals; OS scheduling is variable.
+This is a correctness gate, not a latency benchmark.
+
+Both raw and compressed snapshots must preserve 64 MiB of guest data, pagewise
+COW mutations, four live worker threads, an open file's seek position, and a
+partially consumed directory iterator. Every generation checks sibling and sealed
+filesystem isolation, then deletes the parent snapshot and runs GC before another
+full heap check and recapture. Faults include unsupported FIFO publication,
+malformed/disconnected control clients, SIGTERM/SIGKILL of VM groups, and SIGKILL
+after observing an in-progress RAM capture. A failed save must thaw the guest;
+an interrupted save must leave the previous snapshot recoverable. Cleanup checks
+actual `/proc/self/mountinfo`, control sockets, content pins and owned processes.
+
+`events.jsonl`, per-VM logs and `result.json` retain failures, binary/guest digests,
+the seed and cleanup evidence. Guest panics abort the process, including worker
+panics; a live main thread cannot hide a dead worker. Snapshot regression coverage
+also runs in `just test pvisor`: concurrent store initialization and parallel
+authenticated reads/cache eviction racing GC do not require hardware.
+
+The SDK lifecycle driver separately stresses racing pause/resume calls, an
+abandoned offload caller, rejection of occupied backing paths, repeated RAM
+reclaim and guest integrity. Cancellation can be tested while running, paused or
+offloaded:
+
+```bash
+cargo build --release --locked -p pvisor --example vm_lifecycle_bench
+target/release/examples/vm_lifecycle_bench \
+  --rootfs / --firmware /path/to/libkrunfw-directory \
+  --output target/vm-lifecycle-stress-new --samples 100 --warmups 2 --stress
+target/release/examples/vm_lifecycle_bench \
+  --rootfs / --firmware /path/to/libkrunfw-directory \
+  --output target/vm-lifecycle-cancel-new --samples 10 --warmups 1 \
+  --stress --compressed --cancel-while offloaded
+```
+
+Use `--cancel-while running` and `--cancel-while paused` in separate fresh runs to
+cover the other terminal transitions. These Linux gates do not establish macOS
+HVF behavior, active network connection recovery or host OOM resilience.
+
 ## Linux/KVM first-command readiness
 
 `linux_vm_ready.py` reuses the first-output timing and completed-Bundle checks from

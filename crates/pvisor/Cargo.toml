@@ -73,6 +73,9 @@ fuser = { workspace = true, default-features = false, features = ["abi-7-31"] }
 
 [target.'cfg(all(target_os = "linux", target_arch = "x86_64"))'.dev-dependencies]
 vm-memory = { version = "=0.17.1", features = ["backend-mmap"] }
+kvm-bindings = { version = "=0.12.1", features = ["fam-wrappers", "serde"] }
+utils = { version = "=0.1.0-1.19.3", package = "krun-utils" }
+devices = { version = "=0.1.0-1.19.3", package = "krun-devices", features = ["test_utils"] }
 
 [target.'cfg(all(target_os = "macos", target_arch = "aarch64"))'.dev-dependencies]
 hvf = { version = "=0.1.0-1.19.3", package = "krun-hvf" }

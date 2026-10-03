@@ -48,6 +48,14 @@ pub(super) fn capture(fs: &PassthroughFs) -> io::Result<FsSnapshot> {
         let path = std::fs::read_link(format!("/proc/self/fd/{}", data.file.as_raw_fd()))?;
         let relative = path.strip_prefix(&root).map_err(|_| snapshot::invalid("inode outside filesystem root"))?;
         let identity = FileIdentity::read(&data.file)?;
+        if identity.nlink == 0 {
+            let open_handles = fs.handles.read().unwrap().values()
+                .any(|handle| handle.inode == data.inode);
+            return Err(snapshot::unsupported(&format!(
+                "unlinked inode {} (application handle: {open_handles}) at {}",
+                data.inode, path.display()
+            )));
+        }
         let pin = std::fs::OpenOptions::new().read(true).custom_flags(snapshot::pin_flags()).open(&path)?;
         if identity != FileIdentity::read(&pin)? || identity.nlink == 0 { return Err(snapshot::unsupported("unlinked or replaced inode")); }
         let regular = identity.mode & libc::S_IFMT == libc::S_IFREG;

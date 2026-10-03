@@ -1,7 +1,14 @@
 //! Exercise the real virtio-fs worker through guest descriptor rings.
-#![cfg(all(target_os = "macos", target_arch = "aarch64"))]
+#![cfg(any(
+    all(target_os = "macos", target_arch = "aarch64"),
+    all(target_os = "linux", target_arch = "x86_64")
+))]
+#[cfg(target_os = "linux")]
+use devices::legacy::DummyIrqChip;
+#[cfg(all(target_os = "macos", target_arch = "aarch64"))]
+use devices::legacy::{GicV3, VcpuList};
 use devices::{
-    legacy::{GicV3, IrqChipDevice, VcpuList},
+    legacy::IrqChipDevice,
     virtio::{
         DeviceQueue, DeviceSnapshot, InterruptTransport, Queue, VirtioDevice,
         fs::{Fs, fuse, passthrough::PermissionSemantics},
@@ -13,6 +20,14 @@ use std::{
 };
 use utils::eventfd::{EFD_NONBLOCK, EventFd};
 use vm_memory::{ByteValued, Bytes, GuestAddress, GuestMemoryMmap};
+
+fn interrupt_chip() -> devices::legacy::IrqChip {
+    #[cfg(target_os = "macos")]
+    let inner = GicV3::new(Arc::new(VcpuList::new(1)));
+    #[cfg(target_os = "linux")]
+    let inner = DummyIrqChip::new();
+    Arc::new(Mutex::new(IrqChipDevice::new(Box::new(inner))))
+}
 
 struct GuestFs {
     fs: Fs,
@@ -38,9 +53,7 @@ impl GuestFs {
         Self::from_device(fs, restore)
     }
     fn from_device(mut fs: Fs, restore: Option<(GuestMemoryMmap, DeviceSnapshot, u16)>) -> Self {
-        let chip = Arc::new(Mutex::new(IrqChipDevice::new(Box::new(GicV3::new(
-            Arc::new(VcpuList::new(1)),
-        )))));
+        let chip = interrupt_chip();
         let interrupt = InterruptTransport::new(chip, "fs-check".into()).unwrap();
         let events: Vec<_> = (0..2)
             .map(|_| Arc::new(EventFd::new(EFD_NONBLOCK).unwrap()))
@@ -138,6 +151,7 @@ impl GuestFs {
         }
         let response: fuse::OutHeader = self.mem.read_obj(GuestAddress(0x28000)).unwrap();
         assert_eq!(response.error, 0, "FUSE {opcode:?} failed");
+        assert_eq!(response.unique, input.unique, "stale FUSE response");
         let mut result = vec![0; response.len as usize - std::mem::size_of::<fuse::OutHeader>()];
         self.mem
             .read_slice(
@@ -169,6 +183,42 @@ impl GuestFs {
             .as_slice(),
         )
     }
+}
+
+#[cfg(target_os = "linux")]
+#[test]
+fn unlinked_cached_inode_rejection_identifies_absence_of_application_handles() {
+    // Characterize a remaining capture limitation: an ordinary LOOKUP/UNLINK
+    // leaves an O_PATH cache pin until the guest sends FORGET. There is no open
+    // application handle, but snapshot capture currently rejects the cache pin.
+    // This is a deterministic reproducer for investigation, not a claim that
+    // POSIX closed/unlinked inode caching must remain unsupported.
+    let root = tempfile::tempdir().unwrap();
+    std::fs::write(root.path().join("atomic"), b"old").unwrap();
+    let mut source = GuestFs::new(root.path(), None);
+    source.request(
+        fuse::Opcode::Init,
+        0,
+        fuse::InitInCompat {
+            major: 7,
+            minor: 31,
+            ..Default::default()
+        }
+        .as_slice(),
+    );
+    source.request(fuse::Opcode::Lookup, 1, b"atomic\0");
+    source.request(fuse::Opcode::Unlink, 1, b"atomic\0");
+    let deadline = Instant::now() + Duration::from_secs(3);
+    while !source.fs.freeze().unwrap() {
+        assert!(Instant::now() < deadline);
+        std::thread::sleep(Duration::from_millis(1));
+    }
+    let error = source.fs.capture_state().unwrap_err();
+    assert!(error.contains("unlinked inode"), "{error}");
+    assert!(error.contains("application handle: false"), "{error}");
+    source.fs.thaw().unwrap();
+    std::fs::write(root.path().join("replacement"), b"new").unwrap();
+    source.request(fuse::Opcode::Lookup, 1, b"replacement\0");
 }
 impl Drop for GuestFs {
     fn drop(&mut self) {
@@ -315,9 +365,7 @@ fn fs_restores_inode_and_open_handle_without_a_new_fuse_init() {
             continue;
         }
         fresh.restore_state(&invalid.state).unwrap();
-        let chip = Arc::new(Mutex::new(IrqChipDevice::new(Box::new(GicV3::new(
-            Arc::new(VcpuList::new(1)),
-        )))));
+        let chip = interrupt_chip();
         let interrupt = InterruptTransport::new(chip, "reject".into()).unwrap();
         let queues = invalid
             .queues
@@ -361,9 +409,7 @@ fn fs_restores_inode_and_open_handle_without_a_new_fuse_init() {
     fresh.restore_state(&state.state).unwrap();
     // Validation occurs while building the parked worker, before it can serve
     // any old guest request. Changed backing content must reject activation.
-    let chip = Arc::new(Mutex::new(IrqChipDevice::new(Box::new(GicV3::new(
-        Arc::new(VcpuList::new(1)),
-    )))));
+    let chip = interrupt_chip();
     let interrupt = InterruptTransport::new(chip, "reject".into()).unwrap();
     let queues = state
         .queues
