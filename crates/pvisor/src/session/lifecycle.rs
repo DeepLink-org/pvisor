@@ -114,7 +114,7 @@ impl Session {
             requested_operation,
             network_policy,
         } = resolved;
-        crate::util::startup_mark("session.begin");
+        crate::util::startup_mark_run("session.begin", spec.run_id.as_str());
         let attempt_id = AttemptId::new(format!("attempt-{}", uuid::Uuid::new_v4()));
         let cancellation = CancellationToken::new();
         let vm_control = crate::executor::vm::control::VmControl::new(cancellation.clone());
@@ -126,7 +126,7 @@ impl Session {
                 .map_err(|error| PVisorError::AgentCtl(error.into()))?
                 .map_err(PVisorError::AgentCtl)?
         };
-        crate::util::startup_mark("session.agentctl_ready");
+        crate::util::startup_mark_run("session.agentctl_ready", spec.run_id.as_str());
         let agentctl = agentctl_server.control();
         let safe_profile_requested = spec
             .metadata
@@ -180,7 +180,7 @@ impl Session {
             server: Some(agentctl_server),
             network_policy,
         };
-        crate::util::startup_mark("session.storage_begin");
+        crate::util::startup_mark_run("session.storage_begin", context.spec.run_id.as_str());
         let prepared = (|| {
             context.drivers = runtime.prepare(
                 Arc::make_mut(&mut context.spec),
@@ -200,7 +200,7 @@ impl Session {
             context.abort_startup(&error, safe_profile_requested);
             return Err(PVisorError::Prepare(error));
         }
-        crate::util::startup_mark("session.storage_ready");
+        crate::util::startup_mark_run("session.storage_ready", context.spec.run_id.as_str());
         let checkpoint_record = context
             .drivers
             .as_ref()
@@ -231,7 +231,7 @@ impl Session {
             );
             return Err(PVisorError::EventSink(error));
         }
-        crate::util::startup_mark("session.events_ready");
+        crate::util::startup_mark_run("session.events_ready", context.spec.run_id.as_str());
         let vm_status = context.status.clone();
         let control_operation = operation.clone();
         let join = tokio::spawn(async move {

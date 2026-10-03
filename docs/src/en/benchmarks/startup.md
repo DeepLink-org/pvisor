@@ -1,10 +1,28 @@
 # pVisor startup: optimizations and complete benchmark
 
+## 1. Conclusions
+
 On Apple M4, the current release CLI with trimmed libkrunfw and 2 vCPU / 128 MiB reaches the workload stdout marker at **P50 82.64 ms and P95 98.98 ms**. The same CLI with official 5.6.2 firmware reaches P50 117.77 ms. Each main case has 100 samples; a separate diagnostic batch breaks down the host startup path.
 
 This includes CLI preparation, durable Run records, runner launch, VMM construction, Linux initialization and guest shell execution. The rootfs is prepared and host caches are warm. Each trial creates a new VM; image download, cold-disk startup and a complete Agent service startup are outside the measurement.
 
-## Timing boundaries
+For 2 vCPU / 128 MiB, same-round paired comparisons show median savings of **33.79 ms**, with a **[32.35, 37.14] ms** bootstrap 95% interval. Independent diagnostics identify parent preparation and guest-to-output arrival as the main remaining costs. Some shapes have tails above 400 ms, so the roughly 83 ms median alone does not describe the full startup experience.
+
+## 2. Motivation
+
+Agent executors may repeatedly create isolated environments. Startup waiting affects the first command's response time and the total cost of short tasks. This work therefore measures the complete path from launching the CLI to executing a guest workload, rather than only one interval in kernel initialization logs.
+
+Earlier investigations covered Run record persistence, runner parameter transport, early random initialization and firmware trimming. A consistent protocol is needed to establish current performance and distinguish validated gains from experiments without stable benefits. This measurement addresses three questions:
+
+- How long does a new VM take from CLI launch to workload readiness, and how long does exit and finalization take?
+- With the same CLI, how do official and trimmed firmware differ in median and tail latency?
+- How much time goes into host preparation, process loading, VMM construction and guest execution, and where should optimization focus next?
+
+Optimization must preserve isolation, durable Run records and attestation semantics. Successful execution samples must support performance claims; shorter kernel logs, smaller files or less code cannot independently replace end-to-end measurements.
+
+## 3. Experimental design
+
+### Timing boundaries and workload
 
 The harness records the host monotonic clock immediately before `Popen`. Ready ends when its stdout reader receives the guest shell's standalone `PVISOR_BENCH_READY` line. The payload only executes `/bin/sh -c 'printf "PVISOR_BENCH_READY\n"'`; it does not run `dmesg` around the marker. Ready includes transport and reader scheduling, so it is not kernel boot time.
 
@@ -12,7 +30,7 @@ Exit ends when a blocking waiter observes CLI termination. It includes guest exi
 
 Main samples disable `PVISOR_STARTUP_TIMING`; diagnostics enable it separately. Each trial uses a new working directory, skips personal Agent defaults, disables OverlayNet and inherits stdio, without Gateway or TUI. Native shell and host execution provide context. macOS and Alpine use different shell builds, so subtracting their times does not precisely isolate virtualization overhead.
 
-## Environment and samples
+### Environment and comparison artifacts
 
 | Item | Value |
 |---|---|
@@ -31,7 +49,47 @@ Official firmware uses the upstream 5.6.2 prebuilt aarch64 `kernel.c`, wrapped i
 
 The official dylib is 23.715 MiB and the trimmed dylib 11.307 MiB, about 52.3% smaller on disk. This does not imply 52.3% lower physical memory. Full hashes, parameters, source status and samples are in the [raw JSON](../../assets/benchmarks/startup-20261003.json). Absolute paths identify measured inputs; replace them with local paths when reproducing.
 
-## End-to-end results without diagnostic logging
+### Sampling, validation and statistics
+
+The main matrix contains 1,000 successful samples, with 80 additional diagnostic samples and 70 discarded warmups: 1,150 launches total. After timing, VM trials require a completed Bundle, zero exit status and `virtual_machine` isolation. Failures, missing markers and incorrect isolation abort measurement rather than count as fast samples.
+
+Case order is randomized each round. Subtract trimmed Ready from official Ready at the same shape and round, then take the median of differences. The 95% interval uses 5,000 fixed-seed bootstrap resamples. It describes this batch's variation, not systematic differences across machines or workloads.
+
+### Routine startup diagnostics
+
+The current implementation emits `pvisor-startup level=info` checkpoints by default, without a debugging switch. Fields include Unix `timestamp_ms`, `pid`/`ppid`, JSON-quoted `run_id`, `stage`, `monotonic_us` and `process_elapsed_us`. Early process events use `"-"` before Run identity exists; correlate them by PID with later identified events. Parent and runner share the same Run ID. Compute intervals using the host monotonic clock, not the adjustable wall clock.
+
+Ordinary CLI diagnostics use stderr and can be retained by production collectors. TUI diagnostics use the existing frontend log; a pre-opened dedicated descriptor sends VM runner diagnostics to the same channel without polluting the Agent terminal. Records include no commands, environment variables or credentials. Output is best-effort, adds no fsync and is not recovery metadata.
+
+`PVISOR_STARTUP_TIMING=0` explicitly suppresses checkpoints for uninstrumented benchmarks; unset and `1` both enable logging. Historical measurements in this article use archived artifacts and do not establish zero overhead from routine logging. `cli.session_started` and `runner.vmm_built` mean Session started and VMM constructed, respectively, not guest or application readiness. There is no generic guest-ready notification yet.
+
+### Reproduction and raw data
+
+Prepare the release CLI, Alpine rootfs and both firmware directories, then run:
+
+```bash
+python3 benchmark/pvisor/vm_ready.py \
+  --binary target/release/pvisor \
+  --rootfs target/guest-init-benchmark/rootfs \
+  --official target/firmware-official-compare-20261003/official \
+  --trimmed target/firmware-official-compare-20261003/trimmed \
+  --output target/vm-startup-new \
+  --samples 100 --warmups 5 --profile-samples 20
+```
+
+The output directory must not exist. The harness uses the Python standard library and existing percentile/Bundle validation helpers. Main and diagnostic batches are separate, warmups are excluded, and outputs include `results.json`, incrementally flushed `samples.jsonl`, input hashes and per-trial stdout/stderr. Its schema is `pvisor-vm-readiness/v1`; do not mix it with `startup.py` command-completion measurements.
+
+Local logs are in `target/vm-startup-20261003/`; the raw JSON link above contains the report. Historical persistence, entropy and firmware experiments remain under `review_project/03-modules/`. The older C/Rust guest-init runner comparison remains in `benchmark/pvisor/README.md`; it excludes full CLI preparation and is not directly comparable with this table.
+
+The measured harness snapshot is retained in `review_project/06-evidence/vm-startup-20261003/`; the reusable harness subsequently added explicit pipe closure and `PVISOR_STARTUP_TIMING=0` for uninstrumented samples; the snapshot preserves the measured implementation.
+
+## 4. Data analysis
+
+### End-to-end results without diagnostic logging
+
+![Ready P50, P95 and P99 for official and trimmed firmware across four VM shapes](../../assets/benchmarks/startup-firmware-latency.svg)
+
+Figure 1: Readiness across VM shapes. Panels use different x-axis ranges. P99 retains tail samples; a better median does not mean every launch improves equally.
 
 All values are milliseconds, N=100 per row. `direct` is native shell, `host` is the pVisor host executor, and VM names encode firmware, vCPU count and MiB.
 
@@ -48,15 +106,11 @@ All values are milliseconds, N=100 per row. `direct` is native shell, `host` is 
 | `official-2cpu-2048` | 125.15 | 143.53 | 156.74 | 211.97 | 314.88 |
 | `trimmed-2cpu-2048` | 92.71 | 108.48 | 167.57 | 167.68 | 252.12 |
 
-The main matrix contains 1,000 successful samples, with 80 additional diagnostic samples and 70 discarded warmups: 1,150 launches total. After timing, VM trials require a completed Bundle, zero exit status and `virtual_machine` isolation. Failures, missing markers and incorrect isolation abort measurement rather than count as fast samples.
-
 With 100 samples, P99 is close to the observed maximum and cannot guarantee long-term tail latency. Background load, power, APFS persistence and scheduling affect later batches. The earlier roughly 84 ms observation came from another batch; it is not a fixed performance constant.
 
 The batch also contains substantial tails: trimmed 4 vCPU / 128 MiB has 2/100 trials above 200 ms, maximum 412.91 ms; official 2 vCPU / 128 MiB has 3/100, maximum 389.00 ms. Rounds 15 and 68 each contain multiple slow cases. Main samples lack fine-grained diagnostics, so persistence, scheduling or other host activity cannot be assigned as the cause. All successful samples remain included; outliers were not removed to improve P99.
 
-### Paired firmware improvement
-
-Case order is randomized each round. Subtract trimmed Ready from official Ready at the same shape and round, then take the median of differences. The 95% interval uses 5,000 fixed-seed bootstrap resamples. It describes this batch's variation, not systematic differences across machines or workloads.
+#### Paired firmware improvement
 
 | vCPU / MiB | Paired saving P50 | Bootstrap 95% CI | Trimmed faster |
 |---|---:|---:|---:|
@@ -67,7 +121,11 @@ Case order is randomized each round. Subtract trimmed Ready from official Ready 
 
 Median paired savings need not equal the difference between group medians. More vCPUs or RAM do not necessarily start faster. This matrix uses no snapshots, resident VM pool or memory-sharing scan.
 
-## Where startup time goes
+### Where startup time goes
+
+![Six startup phase means for trimmed firmware at 2 vCPU and 128 MiB, totaling 87.05 ms](../../assets/benchmarks/startup-phase-waterfall.svg)
+
+Figure 2: Phases follow startup order; horizontal position shows cumulative elapsed time. Diagnostic means sum to 87.05 ms; the table also lists P50. The guest phase includes initialization, workload execution and output arrival.
 
 These independent diagnostics use trimmed firmware, 2 vCPU / 128 MiB and N=20. Diagnostic Ready P50 is 87.67 ms. Subtracting it from the main batch does not estimate logging overhead.
 
@@ -98,54 +156,38 @@ Nested preparation spans follow. Storage contains record and overlay work; do no
 
 Durable records and overlay preparation dominate parent preparation. Runner preparation also includes device configuration and attestation. JSON parsing or one virtio-fs log line cannot explain the whole guest interval.
 
-## Validated and retained optimizations
+### Validated and retained optimizations
 
-### Remove duplicate persistence while preserving Run semantics
+![Ready P50 before and after persistence and boot-entropy changes in two independent historical experiments](../../assets/benchmarks/startup-retained-optimizations.svg)
+
+Figure 3: Independent historical comparisons validate persistence and boot entropy changes. Each uses 50 pairs, with different shapes and batches; they are not a continuous optimization timeline and gains cannot be added.
+
+#### Remove duplicate persistence while preserving Run semantics
 
 Non-Gateway startup combines initial RunRecord writes. Unchanged indexes reuse their inode and contents while retaining required file and directory synchronization; invalid indexes, permissions and moved paths are repaired. Runner specs use private temporary IPC files held by the parent, without long-lived-record fsync requirements.
 
 An earlier 50-pair, no-log experiment at 2 vCPU / 2 GiB with identical trimmed firmware reduced Ready P50 from 163.522 to 136.217 ms. Median paired savings were 24.507 ms, with 48/50 pairs faster. Parent main-to-spawn P50 fell from 54.804 to 34.675 ms. This validates persistence changes within that batch; do not concatenate it with today's numbers as a single experimental curve.
 
-### Supply fresh boot entropy
+#### Supply fresh boot entropy
 
 The aarch64 FDT supplies a fresh 32-byte `rng-seed` for every new VM from the host OS random source. RNG failure stops boot instead of falling back to a fixed seed. Linux obtains early entropy without removing guest DRBG or entropy health checks.
 
 An earlier 50-pair, no-log experiment at 2 vCPU / 128 MiB reduced Ready P50 from 129.270 to 82.268 ms. Paired savings were 47.614 ms, 95% CI [46.590, 48.750], with 50/50 pairs faster. The diagnostic CPU_ON interval fell from about 49.849 to 4.080 ms. That interval includes its surrounding startup path, not 50 ms of pure PSCI execution.
 
-### Trim firmware to actual VM and Agent requirements
+#### Trim firmware to actual VM and Agent requirements
 
 Unused GPU/display/input hardware, rare filesystems and crypto algorithms, debugging exports and unnecessary memory/power capabilities were removed. Required virtio, virtio-fs, console, networking and crypto remain. Algorithm self-tests and Jitterentropy health checks are separate mechanisms; security checks were not indiscriminately disabled.
 
 Today's paired data validates the combined trimmed artifact, not an exact contribution from each removed driver. Smaller kernel code can reduce mapping, initialization and cache costs, but file size alone does not determine boot time. The customized libkrunfw configuration remains the authority for enabled capabilities.
 
-### Remove experiments without stable benefits
+#### Remove experiments without stable benefits
 
-The compressed init argv transport was removed; guest initialization still reads bounded JSON. The kernel random-capability cache patch remains experimental because additional benefits after FDT seeding were unstable. A 20-pair cleanup comparison showed no stable regression. Detailed per-exit/MMIO and virtio-fs instrumentation was removed; lightweight, default-off host checkpoints remain.
+The compressed init argv transport was removed; guest initialization still reads bounded JSON. The kernel random-capability cache patch remains experimental because additional benefits after FDT seeding were unstable. A 20-pair cleanup comparison showed no stable regression. Detailed per-exit/MMIO and virtio-fs instrumentation was removed; lightweight, default-off host checkpoints remained at that point; this mechanism now provides the routine diagnostics described above.
 
-## Next optimization boundaries
+### Next optimization boundaries
 
 Investigate critical-path directory durability barriers and temporary attestation synchronization, then process loading and PID1 work. Reducing attestation synchronization remains a candidate, not an implemented or measured improvement; failure, cancellation and attestation semantics must hold.
 
 RunRecord is authoritative state before execution. Required persistence cannot become an unawaited background task. Merge redundant barriers and parallelize independent work where safe, then validate with paired measurements and failure/recovery checks.
 
 Linux/KVM, Docker, Firecracker, a3s and real Agent readiness were not measured here, so this report makes no speed claims against them. First image preparation, cold disk caches, TUI, Gateway, concurrent density and service health checks require separate matrices.
-
-## Reproduction and raw data
-
-Prepare the release CLI, Alpine rootfs and both firmware directories, then run:
-
-```bash
-python3 benchmark/pvisor/vm_ready.py \
-  --binary target/release/pvisor \
-  --rootfs target/guest-init-benchmark/rootfs \
-  --official target/firmware-official-compare-20261003/official \
-  --trimmed target/firmware-official-compare-20261003/trimmed \
-  --output target/vm-startup-new \
-  --samples 100 --warmups 5 --profile-samples 20
-```
-
-The output directory must not exist. The harness uses the Python standard library and existing percentile/Bundle validation helpers. Main and diagnostic batches are separate, warmups are excluded, and outputs include `results.json`, incrementally flushed `samples.jsonl`, input hashes and per-trial stdout/stderr. Its schema is `pvisor-vm-readiness/v1`; do not mix it with `startup.py` command-completion measurements.
-
-Local logs are in `target/vm-startup-20261003/`; the raw JSON link above contains the report. Historical persistence, entropy and firmware experiments remain under `review_project/03-modules/`. The older C/Rust guest-init runner comparison remains in `benchmark/pvisor/README.md`; it excludes full CLI preparation and is not directly comparable with this table.
-
-The measured harness snapshot is retained in `review_project/06-evidence/vm-startup-20261003/`; subsequent explicit pipe closure does not change timing.

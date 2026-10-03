@@ -9,6 +9,9 @@
 #[allow(deref_nullptr)]
 pub mod bindings;
 
+#[cfg(all(target_os = "macos", target_arch = "aarch64"))]
+pub mod snapshot;
+
 #[macro_use]
 extern crate log;
 
@@ -112,6 +115,7 @@ pub enum Error {
     MemoryUnmap,
     MemoryProtect,
     MemoryFault(String),
+    Snapshot(String),
     NestedCheck,
     VcpuCreate,
     VcpuInitialRegisters,
@@ -137,6 +141,7 @@ impl Display for Error {
             MemoryUnmap => write!(f, "Error unregistering memory region in HVF"),
             MemoryProtect => write!(f, "Error protecting memory region in HVF"),
             MemoryFault(error) => write!(f, "RAM fault recovery failed: {error}"),
+            Snapshot(error) => write!(f, "HVF snapshot: {error}"),
             NestedCheck => write!(
                 f,
                 "Nested virtualization was requested but it's not support in this system"
@@ -350,6 +355,8 @@ pub enum VcpuExit<'a> {
     WaitForEventTimeout(Duration),
 }
 
+#[derive(Clone, Debug, serde::Serialize, serde::Deserialize)]
+#[serde(deny_unknown_fields)]
 struct MmioRead {
     addr: u64,
     len: usize,
@@ -515,8 +522,8 @@ impl HvfVcpu<'_> {
     }
 
     fn read_reg(&self, reg: u32) -> Result<u64, Error> {
-        let val: u64 = 0;
-        let ret = unsafe { hv_vcpu_get_reg(self.vcpuid, reg, &val as *const _ as *mut _) };
+        let mut val = 0;
+        let ret = unsafe { hv_vcpu_get_reg(self.vcpuid, reg, &mut val) };
         if ret != HV_SUCCESS {
             Err(Error::VcpuReadRegister)
         } else {
@@ -534,8 +541,8 @@ impl HvfVcpu<'_> {
     }
 
     fn read_sys_reg(&self, reg: u16) -> Result<u64, Error> {
-        let val: u64 = 0;
-        let ret = unsafe { hv_vcpu_get_sys_reg(self.vcpuid, reg, &val as *const _ as *mut _) };
+        let mut val = 0;
+        let ret = unsafe { hv_vcpu_get_sys_reg(self.vcpuid, reg, &mut val) };
         if ret != HV_SUCCESS {
             Err(Error::VcpuReadSystemRegister)
         } else {
@@ -757,13 +764,18 @@ impl HvfVcpu<'_> {
 
                 // Also CNTV_CVAL & CNTV_CVAL_EL0
                 let cval = self.read_sys_reg(hv_sys_reg_t_HV_SYS_REG_CNTV_CVAL_EL0)?;
-                let now = unsafe { mach_absolute_time() };
-                if now > cval {
-                    return Ok(VcpuExit::WaitForEventExpired);
+                let mut offset = 0;
+                let ret = unsafe { hv_vcpu_get_vtimer_offset(self.vcpuid, &mut offset) };
+                if ret != HV_SUCCESS {
+                    return Err(Error::VcpuReadSystemRegister);
                 }
-
-                let timeout = Duration::from_nanos((cval - now) * (1_000_000_000 / self.cntfrq));
-                Ok(VcpuExit::WaitForEventTimeout(timeout))
+                // HVF defines CNTVCT = mach_absolute_time - offset. A restored
+                // vCPU can have a nonzero offset; use its guest clock for WFE.
+                let now = unsafe { mach_absolute_time() }.wrapping_sub(offset);
+                match virtual_timer_timeout(cval, now, self.cntfrq) {
+                    Some(timeout) => Ok(VcpuExit::WaitForEventTimeout(timeout)),
+                    None => Ok(VcpuExit::WaitForEventExpired),
+                }
             }
             EC_AA64_HVC => self.handle_psci_request(),
             EC_AA64_SMC => {
@@ -772,5 +784,42 @@ impl HvfVcpu<'_> {
             }
             _ => panic!("unexpected exception: 0x{ec:x}"),
         }
+    }
+}
+
+
+fn virtual_timer_timeout(compare: u64, now: u64, frequency: u64) -> Option<Duration> {
+    let ticks = compare.wrapping_sub(now);
+    if frequency == 0 || ticks == 0 || ticks > i64::MAX as u64 {
+        return None;
+    }
+    // Round up fractional nanoseconds; dividing the frequency first loses
+    // precision, and multiplying the full tick delta in u64 can overflow.
+    let nanos = ((ticks % frequency) as u128 * 1_000_000_000).div_ceil(frequency as u128);
+    Some(Duration::from_secs(ticks / frequency) + Duration::from_nanos(nanos as u64))
+}
+
+#[cfg(test)]
+mod timer_tests {
+    use super::*;
+
+    #[test]
+    fn restored_timer_uses_guest_ticks_and_precise_duration() {
+        let physical = 100_000_000_u64;
+        let offset = 50_000_000;
+        assert_eq!(
+            virtual_timer_timeout(74_000_000, physical - offset, 24_000_000),
+            Some(Duration::from_secs(1))
+        );
+        assert_eq!(
+            virtual_timer_timeout(1, 0, 24_000_000),
+            Some(Duration::from_nanos(42))
+        );
+        assert_eq!(
+            virtual_timer_timeout(1, u64::MAX - 1, 24_000_000),
+            Some(Duration::from_nanos(125))
+        );
+        assert_eq!(virtual_timer_timeout(10, 10, 24_000_000), None);
+        assert_eq!(virtual_timer_timeout(9, 10, 24_000_000), None);
     }
 }

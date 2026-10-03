@@ -198,3 +198,7 @@ semspec *args:
 # Verify the first review domain in fresh temporary workspaces. DOC remains in just cases.
 semantics *args: (build "debug")
     cargo run --quiet --manifest-path tools/semspec/Cargo.toml --locked -- run --domain STAGE --subject-bin "{{ target_dir }}/debug/pvisor" "$@"
+
+# Real macOS HVF CPU/RAM cold-restore validation (M0, not full guest recovery).
+test-hvf-cold-restore:
+    python3 scripts/check-hvf-cold-restore.py --target-dir "{{ target_dir }}"

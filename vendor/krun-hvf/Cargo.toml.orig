@@ -13,3 +13,8 @@ libloading = "0.8"
 log = "0.4.0"
 
 arch = { package = "krun-arch", version = "=0.1.0-1.19.3", path = "../arch" }
+
+serde = { version = "1", features = ["derive"] }
+
+[build-dependencies]
+cc = "1"

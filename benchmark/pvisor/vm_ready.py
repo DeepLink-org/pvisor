@@ -65,8 +65,7 @@ def trial(args, case, round_id, diagnostic=False):
     (work / 'config').mkdir()
     env = {k: os.environ[k] for k in ('PATH', 'HOME', 'TMPDIR') if k in os.environ}
     env.update(PVISOR_RUN_HOME=str(work / 'runs'), XDG_CONFIG_HOME=str(work / 'config'))
-    if diagnostic:
-        env['PVISOR_STARTUP_TIMING'] = '1'
+    env['PVISOR_STARTUP_TIMING'] = '1' if diagnostic else '0'
     command = WORKLOAD.copy()
     if backend != 'direct':
         options = [] if backend == 'host' else [

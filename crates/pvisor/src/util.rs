@@ -14,35 +14,42 @@ pub(crate) fn write_private_json(path: &Path, value: &impl serde::Serialize) -> 
     atomic_write(path, &serde_json::to_vec_pretty(value)?, 0o600)
 }
 
-/// Opt-in startup checkpoints. Host processes share CLOCK_MONOTONIC's epoch;
-/// guest clocks must never be subtracted from these timestamps.
+/// Routine host checkpoints; guest clocks have a different epoch.
+/// `PVISOR_STARTUP_TIMING=0` suppresses output for uninstrumented benchmarks.
 pub(crate) fn startup_mark(stage: &str) {
+    startup_checkpoint(stage, None);
+}
+
+pub(crate) fn startup_mark_run(stage: &str, run_id: &str) {
+    startup_checkpoint(stage, Some(run_id));
+}
+
+fn startup_checkpoint(stage: &str, run_id: Option<&str>) {
     #[cfg(unix)]
     {
-        use std::io::Write;
         use std::sync::OnceLock;
         use std::time::Instant;
         static ENABLED: OnceLock<bool> = OnceLock::new();
         static START: OnceLock<Instant> = OnceLock::new();
-        if !*ENABLED.get_or_init(|| std::env::var("PVISOR_STARTUP_TIMING").as_deref() == Ok("1")) {
+        let start = START.get_or_init(Instant::now);
+        if !*ENABLED.get_or_init(|| std::env::var("PVISOR_STARTUP_TIMING").as_deref() != Ok("0")) {
             return;
         }
-        let start = START.get_or_init(Instant::now);
         if let Some(timestamp) = startup_monotonic_us() {
-            // Diagnostic output must not turn a closed stderr into a run failure.
-            let _ = writeln!(
-                std::io::stderr().lock(),
-                "pvisor-startup pid={} ppid={} stage={} monotonic_us={} process_elapsed_us={}",
+            crate::diagnostics::diagnostic(format_args!(
+                "pvisor-startup level=info timestamp_ms={} pid={} ppid={} run_id={} stage={} monotonic_us={} process_elapsed_us={}",
+                unix_now_ms(),
                 std::process::id(),
                 unsafe { libc::getppid() },
+                serde_json::to_string(run_id.unwrap_or("-")).unwrap_or_default(),
                 stage,
                 timestamp,
                 start.elapsed().as_micros()
-            );
+            ));
         }
     }
     #[cfg(not(unix))]
-    let _ = stage;
+    let _ = (stage, run_id);
 }
 
 #[cfg(unix)]

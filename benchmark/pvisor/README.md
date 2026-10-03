@@ -253,21 +253,29 @@ p95, and hashes of the runner, both init binaries, firmware, and payload.
 
 ## Startup timing checkpoints
 
-Set `PVISOR_STARTUP_TIMING=1` to emit opt-in host timing checkpoints to stderr:
+Host startup checkpoints are routine INFO diagnostics, enabled by default.
+Capture ordinary CLI diagnostics from stderr:
 
 ```sh
-PVISOR_STARTUP_TIMING=1 ./target/release/pvisor run \
+./target/release/pvisor run \
   --vm --rootfs /path/to/prepared/rootfs --vm-library-dir /path/to/firmware \
   --overlaynet off -- /bin/sh -c 'printf "GUEST_READY\n"' \
   2>startup.log
 ```
 
-Each `pvisor-startup` line includes `pid`, `ppid`, `stage`, `monotonic_us`, and
-`process_elapsed_us`. Subtract `monotonic_us` values to measure intervals across
+Each `pvisor-startup` line includes `level`, `timestamp_ms`, `pid`, `ppid`,
+`run_id`, `stage`, `monotonic_us`, and `process_elapsed_us`. Run IDs are JSON-quoted
+to prevent newline injection; early process checkpoints use `run_id="-"`. Subtract `monotonic_us` values to measure intervals across
 parent and runner processes on the same host; use PID/PPID to match the runner.
-`process_elapsed_us` starts at each process's first enabled checkpoint, not at
-OS process creation. The initial executable loader time precedes `process.entry`.
-The switch is cached at first use, disabled by default, and supported on Unix.
+`process_elapsed_us` starts at each process's first checkpoint, not at
+OS process creation. Executable loading and diagnostic routing initialization precede `process.entry`.
+The switch is cached at first use and supported on Unix. `PVISOR_STARTUP_TIMING=0`
+suppresses checkpoints for uninstrumented benchmarks; unset and `1` both log.
+TUI Runs route parent and VM runner diagnostics into the existing frontend log,
+using a pre-opened inherited descriptor for the runner. Complete log lines are
+formatted before append so processes do not interleave formatting fragments. No extra fsync or
+background logging service is introduced. Ordinary Runs use stderr; production
+log collectors or `2>startup.log` retain it. Logging failures are best-effort.
 Logs contain stage labels and timing/identity fields, not command arguments or
 credentials. Guest clock timestamps cannot be subtracted from host timestamps.
 
@@ -302,7 +310,7 @@ Use a payload marker and the external host timer for command-ready latency, as i
 `firmware_boot.py`. These checkpoints do not invent a generic guest-ready event.
 Capture-mode stderr may be delivered only after the run; timestamps still record
 the actual checkpoints. Timing logs add diagnostic overhead, so measure final
-latency with the switch off. No persistence or synchronization guarantees are
+latency with `PVISOR_STARTUP_TIMING=0`. No persistence or synchronization guarantees are
 relaxed by this instrumentation.
 
 ## Full CLI → VM workload readiness (Apple Silicon)
@@ -333,3 +341,13 @@ shell builds: host cases give context, not a pure virtualization-overhead estima
 
 See the [startup article](../../docs/src/zh/benchmarks/startup.md) for measured
 results, checkpoint boundaries, retained optimizations and limitations.
+
+Render the startup article figures from its archived JSON (temporary plotting dependency):
+
+```bash
+uv run --no-project --with matplotlib python benchmark/pvisor/plot_startup.py
+```
+
+The plot script exports shared SVG assets and local PNG previews. Phase means
+are checked to sum to observed diagnostic readiness. Historical optimization
+comparisons use separate batches and are labeled accordingly.

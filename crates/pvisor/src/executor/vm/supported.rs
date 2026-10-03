@@ -29,7 +29,13 @@ const RAM_CHILD_FD: RawFd = 200;
 fn runner_fd(fd: RawFd) -> std::io::Result<OwnedFd> {
     // Keep both source descriptors above the fixed destinations, avoiding dup2
     // clobbering one socket when the parent's fd table happens to be crowded.
-    let duplicate = unsafe { libc::fcntl(fd, libc::F_DUPFD_CLOEXEC, RAM_CHILD_FD + 1) };
+    let duplicate = unsafe {
+        libc::fcntl(
+            fd,
+            libc::F_DUPFD_CLOEXEC,
+            crate::diagnostics::INHERITED_LOG_FD + 1,
+        )
+    };
     if duplicate < 0 {
         return Err(std::io::Error::last_os_error());
     }
@@ -72,6 +78,8 @@ pub struct VmExecutor {
 
 #[derive(Debug, Serialize, Deserialize)]
 struct RunnerSpec {
+    #[serde(default)]
+    run_id: String,
     setup_attestation: PathBuf,
     root: OverlayDeviceSpec,
     workspace: Option<OverlayDeviceSpec>,
@@ -266,7 +274,7 @@ impl RunExecutor for VmExecutor {
     }
 
     async fn execute(&self, context: &Session) -> ExecutorOutput {
-        crate::util::startup_mark("vm.prepare_begin");
+        crate::util::startup_mark_run("vm.prepare_begin", context.spec().run_id.as_str());
         let mut spec = context.spec().clone();
         context
             .transition(
@@ -525,7 +533,7 @@ impl RunExecutor for VmExecutor {
                 return failed_to_start(error.to_string());
             }
         };
-        crate::util::startup_mark("vm.ram_backing_begin");
+        crate::util::startup_mark_run("vm.ram_backing_begin", spec.run_id.as_str());
         let mut ram_backing =
             match super::control::RamBacking::create(self.settings.ram_backing.as_deref()) {
                 Ok(backing) => backing,
@@ -557,8 +565,9 @@ impl RunExecutor for VmExecutor {
                 return failed_to_start(format!("hide VM RAM backing: {error}"));
             }
         }
-        crate::util::startup_mark("vm.ram_backing_ready");
+        crate::util::startup_mark_run("vm.ram_backing_ready", spec.run_id.as_str());
         let runner = RunnerSpec {
+            run_id: spec.run_id.to_string(),
             setup_attestation: attestation.path().to_path_buf(),
             root: root_overlay,
             workspace,
@@ -570,7 +579,7 @@ impl RunExecutor for VmExecutor {
                 .unwrap_or(self.settings.memory_mib),
             library_dir: self.settings.library_dir.clone(),
         };
-        crate::util::startup_mark("vm.spec_write_begin");
+        crate::util::startup_mark_run("vm.spec_write_begin", spec.run_id.as_str());
         // This private launch message is consumed only by the child spawned below.
         // It is not recovery metadata: complete the write, without disk sync.
         let runner_file = (|| -> anyhow::Result<_> {
@@ -585,7 +594,7 @@ impl RunExecutor for VmExecutor {
             Err(error) => return failed_to_start(error.to_string()),
         };
         let runner_path = runner_file.path();
-        crate::util::startup_mark("vm.spec_write_ready");
+        crate::util::startup_mark_run("vm.spec_write_ready", spec.run_id.as_str());
         let mut vm_network = match context.take_vm_network() {
             Ok(network) => network,
             Err(error) => {
@@ -632,10 +641,25 @@ impl RunExecutor for VmExecutor {
         if let Some(path) = &self.settings.memory_pool {
             command.env("PVISOR_EXPERIMENTAL_MEMORY_POOL", path);
         }
+        let diagnostic_runner =
+            crate::diagnostics::runner_output().and_then(|file| runner_fd(file.as_raw_fd()).ok());
+        let diagnostic_source_fd = diagnostic_runner.as_ref().map(AsRawFd::as_raw_fd);
+        if diagnostic_source_fd.is_some() {
+            command.env(crate::diagnostics::INHERITED_LOG_ENV, "201");
+        } else {
+            command.env_remove(crate::diagnostics::INHERITED_LOG_ENV);
+        }
         let control_source_fd = control_runner.as_raw_fd();
         let ram_source_fd = ram_runner.as_raw_fd();
         unsafe {
             command.pre_exec(move || {
+                if let Some(fd) = diagnostic_source_fd
+                    && libc::dup2(fd, crate::diagnostics::INHERITED_LOG_FD) < 0
+                {
+                    // Logging cannot prevent execution. Ensure the child cannot
+                    // mistake an unrelated descriptor for diagnostic output.
+                    libc::close(crate::diagnostics::INHERITED_LOG_FD);
+                }
                 if libc::dup2(control_source_fd, CONTROL_CHILD_FD) < 0 {
                     return Err(std::io::Error::last_os_error());
                 }
@@ -676,14 +700,15 @@ impl RunExecutor for VmExecutor {
             #[cfg(target_os = "macos")]
             command.env("DYLD_LIBRARY_PATH", directory);
         }
-        crate::util::startup_mark("vm.spawn_begin");
+        crate::util::startup_mark_run("vm.spawn_begin", spec.run_id.as_str());
         let mut child = match command.spawn() {
             Ok(child) => child,
             Err(error) => {
                 return failed_to_start(error.to_string());
             }
         };
-        crate::util::startup_mark("vm.spawn_returned");
+        crate::util::startup_mark_run("vm.spawn_returned", spec.run_id.as_str());
+        drop(diagnostic_runner);
         drop(control_runner);
         drop(ram_runner);
         drop(network_runner);
@@ -839,7 +864,7 @@ pub fn run_internal_if_requested() -> anyhow::Result<bool> {
     if let Some(path) = std::env::var_os(RUNNER_SPEC_ENV) {
         crate::util::startup_mark("runner.spec_read_begin");
         let spec: RunnerSpec = serde_json::from_slice(&std::fs::read(&path)?)?;
-        crate::util::startup_mark("runner.spec_read_ready");
+        crate::util::startup_mark_run("runner.spec_read_ready", &spec.run_id);
         run_runner(spec)?;
         return Ok(true);
     }
@@ -878,9 +903,9 @@ fn run_linked_krun(spec: RunnerSpec, mut attestation: std::fs::File) -> anyhow::
     }
     let workspace_tag = CString::new(WORKSPACE_TAG)?;
     let guest_config = serde_json::to_vec(&spec.guest)?;
-    crate::util::startup_mark("runner.context_begin");
+    crate::util::startup_mark_run("runner.context_begin", &spec.run_id);
     let ctx = check_ctx(krun::krun_create_ctx(), "krun_create_ctx")?;
-    crate::util::startup_mark("runner.context_ready");
+    crate::util::startup_mark_run("runner.context_ready", &spec.run_id);
     let ram = std::env::var(RAM_FD_ENV)?.parse::<RawFd>()?;
     anyhow::ensure!(ram == RAM_CHILD_FD, "invalid RAM backing descriptor");
     if unsafe { libc::fcntl(ram, libc::F_SETFD, libc::FD_CLOEXEC) } < 0 {
@@ -953,10 +978,10 @@ fn run_linked_krun(spec: RunnerSpec, mut attestation: std::fs::File) -> anyhow::
         "krun_disable_implicit_vsock",
     )?;
     check_krun(krun::krun_add_vsock(ctx, 0), "krun_add_vsock")?;
-    crate::util::startup_mark("runner.devices_configured");
+    crate::util::startup_mark_run("runner.devices_configured", &spec.run_id);
     attestation.write_all(b"pvisor-vmm-installed-v1\n")?;
     attestation.sync_data()?;
-    crate::util::startup_mark("runner.attestation_ready");
+    crate::util::startup_mark_run("runner.attestation_ready", &spec.run_id);
     let control = std::env::var(CONTROL_FD_ENV)
         .with_context(|| format!("missing {CONTROL_FD_ENV}"))?
         .parse::<RawFd>()?;
@@ -967,9 +992,9 @@ fn run_linked_krun(spec: RunnerSpec, mut attestation: std::fs::File) -> anyhow::
         return Err(std::io::Error::last_os_error().into());
     }
     let mut control = unsafe { std::os::unix::net::UnixStream::from_raw_fd(control) };
-    crate::util::startup_mark("runner.krun_enter");
+    crate::util::startup_mark_run("runner.krun_enter", &spec.run_id);
     let started = krun::krun_start_enter_with_handle(ctx, move |handle| {
-        crate::util::startup_mark("runner.vmm_built");
+        crate::util::startup_mark_run("runner.vmm_built", &spec.run_id);
         #[cfg(all(target_os = "macos", target_arch = "aarch64"))]
         super::pager::start_if_requested(handle.clone())?;
         std::thread::Builder::new()

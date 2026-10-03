@@ -825,7 +825,7 @@ pub async fn run(mut args: RunArgs) -> anyhow::Result<i32> {
     if args.run.safe || args.audit {
         warn_safe_preset(&config, &args);
     }
-    crate::util::startup_mark("cli.config_ready");
+    crate::util::startup_mark_run("cli.config_ready", &run_id);
     execute_config(config, run_id, args.run.safe || args.audit, None).await
 }
 
@@ -1186,7 +1186,7 @@ async fn execute_config(
     lineage: Option<RunLineage>,
 ) -> anyhow::Result<i32> {
     normalize_filesystem_config(&mut config)?;
-    crate::util::startup_mark("cli.rootfs_begin");
+    crate::util::startup_mark_run("cli.rootfs_begin", &run_id);
     resolve_default_vm_rootfs(&mut config)?;
     let mut _image_mount: Option<crate::image::cache::LazyMount> = None;
     let prepared_image = if config.run.executor == RunExecutorKind::Vm && config.vm.rootfs.is_none()
@@ -1467,7 +1467,7 @@ async fn execute_config(
         RunExecutorKind::Host => Arc::new(ProcessExecutor::default()),
         RunExecutorKind::Container => Arc::new(ContainerExecutor::new(config.container.clone())?),
         RunExecutorKind::Vm => {
-            crate::util::startup_mark("cli.vm_inputs_ready");
+            crate::util::startup_mark_run("cli.vm_inputs_ready", &run_id);
             Arc::new(VmExecutor::new(config.vm.clone())?)
         }
     };
@@ -1713,9 +1713,9 @@ async fn execute_config(
             }
         }
     }
-    crate::util::startup_mark("cli.session_begin");
+    crate::util::startup_mark_run("cli.session_begin", &run_id);
     let handle = pvisor.run(spec).await?;
-    crate::util::startup_mark("cli.session_started");
+    crate::util::startup_mark_run("cli.session_started", &run_id);
     let cancellation = handle.cancellation();
     let wait = handle.wait();
     tokio::pin!(wait);
@@ -1726,7 +1726,7 @@ async fn execute_config(
             wait.await?
         }
     };
-    crate::util::startup_mark("cli.run_finished");
+    crate::util::startup_mark_run("cli.run_finished", &run_id);
     drop(pvisor);
     if let Some(writer) = json_writer {
         writer.finish()?;
@@ -1751,7 +1751,7 @@ async fn execute_config(
     }
     let record = resolve_run(Some(Path::new(&run_id)), &storage)
         .with_context(|| format!("load finalized Run record for {run_id}"))?;
-    crate::util::startup_mark("cli.result_loaded");
+    crate::util::startup_mark_run("cli.result_loaded", &run_id);
     let bundle = RunBundle::read(&record.stage_dir()).with_context(|| {
         format!(
             "load finalized Run Bundle from {}",

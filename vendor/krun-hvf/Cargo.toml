@@ -14,7 +14,7 @@ edition = "2021"
 name = "krun-hvf"
 version = "0.1.0-1.19.3"
 authors = ["The libkrun Authors"]
-build = false
+build = "build.rs"
 autolib = false
 autobins = false
 autoexamples = false
@@ -41,3 +41,10 @@ version = "0.8"
 
 [dependencies.log]
 version = "0.4.0"
+
+[dependencies.serde]
+version = "1"
+features = ["derive"]
+
+[build-dependencies.cc]
+version = "1"

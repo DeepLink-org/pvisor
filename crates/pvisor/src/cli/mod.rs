@@ -81,6 +81,8 @@ fn normalize_default_run(mut args: Vec<OsString>) -> Vec<OsString> {
 }
 
 pub fn main() -> anyhow::Result<()> {
+    crate::diagnostics::init_inherited();
+    terminal::init_child_context();
     crate::util::startup_mark("process.entry");
     if crate::run_krun_internal_if_requested()? {
         return Ok(());
@@ -108,7 +110,6 @@ pub fn main() -> anyhow::Result<()> {
         }
     }
     let args = normalize_default_run(args);
-    terminal::init_child_context();
     if args.len() == 1 {
         root_command()?.print_long_help()?;
         println!();

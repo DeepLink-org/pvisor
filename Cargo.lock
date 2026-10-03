@@ -1980,10 +1980,12 @@ dependencies = [
 name = "krun-hvf"
 version = "0.1.0-1.19.3"
 dependencies = [
+ "cc",
  "crossbeam-channel",
  "krun-arch",
  "libloading",
  "log",
+ "serde",
 ]
 
 [[package]]
