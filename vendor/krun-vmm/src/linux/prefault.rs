@@ -52,7 +52,7 @@ fn plan(memory: &GuestMemoryMmap, page: u64, limit: u64) -> Vec<Range> {
                 && r.prot() & libc::PROT_WRITE != 0
                 && r.start_addr().0 % page == 0
                 && r.len() % page == 0
-                && r.as_ptr() as usize % page as usize == 0
+                && (r.as_ptr() as usize).is_multiple_of(page as usize)
         })
         .collect();
     let total: u64 = regions.iter().map(|r| r.len()).sum();
@@ -103,7 +103,7 @@ fn boot_plan(memory: &GuestMemoryMmap, page: u64, kernel: Option<(u64, u64)>) ->
                     && r.prot() & libc::PROT_WRITE != 0
                     && address % page == 0
                     && size % page == 0
-                    && r.as_ptr() as usize % page as usize == 0
+                    && (r.as_ptr() as usize).is_multiple_of(page as usize)
             })
             .map(|r| Range {
                 gpa: address,
@@ -189,8 +189,8 @@ fn populate_kvm(
             ioctl(&mut request)?;
             if request.size >= old_size
                 || request.gpa != old_gpa + old_size - request.size
-                || request.gpa % page != 0
-                || request.size % page != 0
+                || !request.gpa.is_multiple_of(page)
+                || !request.size.is_multiple_of(page)
             {
                 return Err(io::Error::new(
                     io::ErrorKind::InvalidData,
@@ -256,9 +256,13 @@ pub(crate) fn prepare(vcpu: RawFd, memory: &GuestMemoryMmap, kernel: Option<(u64
     if std::env::var("PVISOR_STARTUP_TIMING").as_deref() == Ok("1")
         || std::env::var("KRUN_BOOT_PREFAULT_DIAGNOSTICS").as_deref() == Ok("1")
     {
-        eprintln!("libkrun-boot-prefault bytes={bytes} planned_bytes={} host_us={host_us} kvm_us={kvm_us} outcome={}",
+        eprintln!(
+            "libkrun-boot-prefault bytes={bytes} planned_bytes={} host_us={host_us} kvm_us={kvm_us} outcome={}",
             ranges.iter().map(|r| r.size).sum::<usize>(),
-            outcome.map(|()| "ok".to_owned()).unwrap_or_else(|e| format!("fallback:{e}")));
+            outcome
+                .map(|()| "ok".to_owned())
+                .unwrap_or_else(|e| format!("fallback:{e}"))
+        );
     }
 }
 

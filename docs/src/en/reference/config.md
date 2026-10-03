@@ -1,34 +1,8 @@
----
-status: todo
-search:
-  exclude: true
----
-
 # Configuration files
 
-!!! warning "Planned"
-    The complete generated reference is pending. Current configuration information is in [CLI reference](cli.md).
+Save a working command as TOML to reuse its settings locally, in CI, and in batch jobs. Start with the offline example below: it keeps output in a Stage so you can inspect it before writing changes back to the project.
 
-## Question
-
-Which fields does `pvisor run --config run.toml` accept, and what are each field's type, default, CLI equivalent, and override rule?
-
-## Requirements
-
-- Automatically generate field tables from RunConfig serde definitions.
-- Include TOML path, type, default, CLI option, scalar/list merge behavior.
-- Identify values not honored on some CLI paths, such as `run.inherit_env`.
-
-## Acceptance criteria
-
-- Generate at `just docs-build`, or check the generated result against the code in CI.
-- Cover `[run]`, top-level `filesystem`, `[overlayfs]`, `[overlaynet]`, `[gateway]`, `[record]`, `[policies.*]`, `[container]` and `[vm]`.
-
-## Tracking
-
-- Tracking issue: TODO (no issue has been assigned).
-- Owner: TODO
-- Related: [CLI](cli.md), [policy fields](policy.md)
+Use the [CLI reference](cli.md) for command-line options and the [policy reference](policy.md) for file and network rules.
 
 ## Configuration entry points available today
 
@@ -84,7 +58,7 @@ Proxy deny applies to traffic reaching the proxy; this example does not establis
 | `container` | OCI settings | Default runtime `crun`, network `host`; image or rootfs |
 | `vm` | VM settings | `memory_mib = 2048`, `cpus = 2`; macOS requires Linux rootfs/image |
 
-Definitions come from `crates/pvisor/src/config.rs`. This navigation table does not replace the complete generated table still planned above. Internally resolved and `serde(skip)` fields are not configuration interfaces.
+Definitions come from `crates/pvisor/src/config.rs`. Internally resolved and `serde(skip)` fields are not configuration interfaces.
 
 ## Overrides and common mistakes
 
@@ -96,3 +70,47 @@ Definitions come from `crates/pvisor/src/config.rs`. This navigation table does 
 
 
 `[vm].memory_pool` is the socket path of the experimental macOS / Apple Silicon shared cold-page pool, unset by default. CLI uses `--vm-memory-pool SOCKET`; Rust SDK uses `VmSettings.memory_pool`. See [first-version memory sharing](../design/memory-sharing/index.md#v1-integration).
+
+## Fields in commonly used groups {#settings}
+
+### Run and resource limits
+
+`[run].command` is a string array without automatic shell expansion. For pipes or redirection, explicitly use `/bin/sh -c`. Defaults are `executor = "host"`, `stdio = "inherit"`, `policy = "observe"`, and no `timeout_ms`.
+
+`[run.resource_limits]` accepts the following optional integers. Omitting a field requests no limit for that dimension in the configuration.
+
+| Field | Unit | CLI |
+| --- | --- | --- |
+| `memory_bytes` | Bytes | `--memory` |
+| `processes` | Process/thread count | `--max-processes` |
+| `cpu_time_ms` | Milliseconds of CPU time | `--max-cpu-time` |
+| `open_files` | File descriptor count | `--max-open-files` |
+| `file_size_bytes` | Bytes per file | `--max-file-size` |
+
+Enforcement depends on the executor. Check requested, effective, mechanisms, and limitations under `resources` after execution. CPU time and wall-time timeout are separate settings.
+
+### Files and networking
+
+`[overlayfs].mount` and `access` are arrays of tables. Mount entries have `source`, optional `target`, and required `access`; access rules have `path` and `level`. Levels are `deny`, `ask`, `read`, `warn`, `stage`, and `write`. See [File policies](../guides/policies/files.md) for usage.
+
+`[overlaynet].mode` accepts `auto`, `off`, or `proxy`; `policy` accepts `public`, `deny`, or `allowlist`. `allow` is an array of destination strings; `rules`, `deny`, and `limits` are structured table arrays. Lists default to empty. See [Policy fields](policy.md) for port, transport, and address rules.
+
+### Container and VM
+
+| Table | Fields and defaults |
+| --- | --- |
+| `container` | `runtime = "crun"`, `image = ""`, `network = "host"`, `read_only_rootfs = false`, `mounts = []` |
+| Optional `container` fields | `rootfs`, `pvisor_binary`, `platform`, `workdir`, `user` |
+| Each `container.mounts` entry | `source`, `target`, `read_only = false` |
+| `vm` | `memory_mib = 2048`, `cpus = 2`, `rootfs_immutable = false`, `ram_compression = false` |
+| Optional `vm` fields | `rootfs`, `image`, `image_store`, `library_dir`, `ram_backing`, `memory_pool` |
+
+`container.platform` accepts `linux-amd64` or `linux-arm64`; `container.network` accepts `host`, `bridge`, or `none`. The injected Linux container binary must match the rootfs architecture and ABI.
+
+VM memory is measured in MiB and CPU count is a positive integer. `ram_backing` retains a RAM file; `ram_compression` enables the corresponding compressed backing. Compressed backing and shared pools on macOS have additional FUSE requirements; see [Memory-sharing design](../design/memory-sharing/index.md).
+
+### Capture and recording
+
+`[gateway]` defaults to `mode = "off"`; capture uses `capture`. Other defaults are `admin_listen = "127.0.0.1:9876"`, `level = "dialogue"`, `session_header = "x-pvisor-session-id"`, `debug = false`, `stream_markdown = false`, and `routes = []`. The optional `profile` currently accepts `zcode-bigmodel`; `zcode_builtin_config` points to that integration's configuration. Configure routes and capture levels using the [Gateway guide](../guides/capture.md).
+
+`[record].destination` is an optional path. Gateway model-traffic records and Trace Event journals have different responsibilities; retain the artifacts you need as described in [Jobs and storage](../concepts/jobs.md).

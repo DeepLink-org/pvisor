@@ -36,4 +36,4 @@ Deferring is not abandoning. Evidence carries the process facts—what was read 
 What ships today is this stage at single-machine scale: individual Jobs on one machine—run unattended, then review changes and evidence afterward, and merge only what you want. L2's exemption decisions and L3's cluster scale are not here yet.
 
 !!! note "Under construction"
-    The entry criteria and gap list for L2/L3 are not final. See the [roadmap](../community/roadmap.md) for progress, [concurrency density (planned)](../benchmarks/density.md) for the capacity rationale, and [cluster execution (planned)](../design/research/cluster-execution.md) for the cluster direction.
+    The entry criteria and gap list for L2/L3 are not final. See the [roadmap](../community/roadmap.md) for progress, [concurrency density](../benchmarks/density.md) for the capacity rationale, and [cluster execution](../design/research/cluster-execution.md) for the cluster direction.

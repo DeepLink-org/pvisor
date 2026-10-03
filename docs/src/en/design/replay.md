@@ -1,34 +1,8 @@
----
-status: todo
-search:
-  exclude: true
----
-
 # Replay design
 
-!!! warning "Planned"
-    Implementation-owner review is pending. See the [replay guide](../guides/replay.md) for how to run a replay.
+Replay turns a history of agent tool calls into fresh results from the current workspace, then supplies those results to the agent for continuation. It supports reproducing failures, comparing behavior after a fix, and constructing training prefixes.
 
-## Question
-
-How do fresh tool observations reconstruct native agent context before live continuation?
-
-## Requirements
-
-- Read trajectory, replay complete batches through after_step, rebuild context, continue.
-- Adapter mechanisms and limits, including Claude Code, Codex, OpenCode.
-- Boundary between replay and continuation and effects not reproduced.
-
-## Acceptance criteria
-
-- Code/test references per adapter.
-- Link replay-fidelity results.
-
-## Tracking
-
-- Tracking issue: TODO (no issue has been assigned).
-- Owner: TODO
-- Related: `crates/pvisor-replay`, [replay guide](../guides/replay.md)
+Follow the [trajectory replay guide](../guides/replay.md) to use it. The design below explains boundary selection, tool re-execution, and native agent sessions so you can decide whether replay results are comparable.
 
 ## Current processing pipeline
 
@@ -56,4 +30,4 @@ just test pvisor-replay
 - `tests/replay_contract.rs`: mini-swe-agent, SWE-agent, OpenHands and Pi replay-only boundaries, prompt injection and step budgets;
 - `bridge/`: request/response mappings and boundary validation.
 
-These describe mechanisms/regression entry points. Success rates, costs and divergences across large real trajectory samples remain measurement requirements in [Replay fidelity (planned)](../benchmarks/replay-fidelity.md).
+See [Replay fidelity](../benchmarks/replay-fidelity.md) for native-prefix preparation results across six adapters. The experiment validates prefixes and zero-execution preparation; continuation quality requires real model tasks.

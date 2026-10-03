@@ -1,15 +1,20 @@
-//! Shared read-only OCI cache: CLI, client, wire protocol, and server.
+//! Shared OCI cache with server, filesystem, and S3 storage backends.
 //! See docs/src/zh/reference/shared-image-cache.md for storage layout and lifecycle.
 
 mod cli;
 mod client;
+mod config;
+mod portable;
 pub mod progress;
 mod protocol;
 mod server;
+mod storage;
+pub(crate) use config::scrub_guest_environment;
 mod transport;
 
 pub use cli::{CacheArgs, run};
 pub use client::CacheClient;
+pub use config::{BACKEND_ENV, CacheBackend, CacheConfig, LOCATION_ENV, READ_ONLY_ENV};
 pub use progress::ImageTotals;
 use protocol::hash;
 pub use protocol::{MAX_READ, Request, Response};

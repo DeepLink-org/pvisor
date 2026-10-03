@@ -1,32 +1,13 @@
----
-status: todo
-search:
-  exclude: true
----
-
 # Environment variables
 
-!!! warning "Planned"
-    The complete reference is pending. See [Credentials and environment](../guides/policies/credentials.md) for variables projected to agents.
+Usually you only need to choose where Runs are stored and explicitly pass the credentials your agent needs. Host variables configure pVisor itself; environment projection determines what the task receives.
 
-## Question
+```bash
+PVISOR_RUN_HOME="$HOME/.pvisor/runs" pvisor run --safe \
+  --stage ../stage-env-001 --overlaynet-deny-all -- /bin/sh -c 'printf "%s\n" "$PVISOR_RUN_ID"'
+```
 
-Which `PVISOR_*` variables does pVisor read (for example `PVISOR_RUN_HOME` and `PVISOR_CACHE_SERVER`), and which does it inject into agents?
-
-## Requirements
-
-- Collect every read site from the code and generate two tables automatically: variables pVisor reads and variables injected into agents.
-- Describe each variable: purpose, default, applicable executors and platforms, and stability.
-
-## Acceptance criteria
-
-- A script generates the tables and CI detects new `PVISOR_*` read sites that are missing from them.
-
-## Tracking
-
-- Tracking issue: TODO (no issue has been assigned).
-- Owner: TODO
-- Related: [CLI](cli.md)
+The task prints its own Run ID. For network credentials, use `--pass-env` as described in [Credentials and environment](../guides/policies/credentials.md).
 
 ## Common host settings
 
@@ -48,4 +29,17 @@ See [shared cache](shared-image-cache.md) for endpoint grammar, security, and fa
 
 Proxy mode also injects upper/lowercase `HTTP_PROXY`, `HTTPS_PROXY`, and `ALL_PROXY`. These direct cooperating clients; they do not establish mandatory isolation alone. The Bundle `environment` field lists the actual projected names.
 
-`PVISOR_KRUN_RUNNER_SPEC` and `PVISOR_KRUN_NETWORK_FD` are internal launch protocol. `PVISOR_KRUN_LOG` and `PVISOR_KRUN_ENOMEM_WORKAROUND` are VM diagnostics, not stable configuration. An automatic inventory remains planned; this table covers common user settings.
+`PVISOR_KRUN_RUNNER_SPEC` and `PVISOR_KRUN_NETWORK_FD` are internal launch protocol. `PVISOR_KRUN_LOG` and `PVISOR_KRUN_ENOMEM_WORKAROUND` are VM diagnostics, not stable configuration. Use the tables above to configure the host; leave internal launch variables to the launcher and diagnostic tools.
+
+## Startup diagnostics and source builds {#build-and-diagnostics}
+
+`PVISOR_STARTUP_TIMING` enables startup phase logs by default; set it to `0` to disable them for measurements without logging overhead. It changes diagnostic output, not task policy.
+
+The following configure the guest kernel embedded **at build time** in Linux x86_64 musl builds:
+
+| Variable | Input | Precedence |
+| --- | --- | --- |
+| `PVISOR_KRUNFW_KERNEL_BUNDLE` | Directory containing `kernel.bin` and `kernel.json` | Takes precedence when set |
+| `PVISOR_KRUNFW_PATH` | `libkrunfw.so.5` file from which to extract the kernel | Used when the bundle is unset |
+
+Rebuild the CLI after changing these inputs. Setting them while running an already-built musl binary does not replace its embedded kernel. See [Platform support](platforms.md) for dynamic firmware entry points and platform requirements. The build implementation is `crates/pvisor/build.rs`.

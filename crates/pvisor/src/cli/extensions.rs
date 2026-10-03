@@ -33,7 +33,7 @@ const COMMANDS: &[Companion] = &[
     },
     Companion {
         name: "cache",
-        description: "Serve or query the shared OCI file cache",
+        description: "Prepare or query OCI caches backed by a server, filesystem, or S3",
     },
     Companion {
         name: "replay",

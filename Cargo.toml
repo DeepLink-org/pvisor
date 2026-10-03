@@ -9,6 +9,7 @@ description = "Scaling autonomous agent execution"
 resolver = "3"
 members = [
     "crates/pvisor-core",
+    "crates/pvisor-cluster",
     "crates/pvisor-journal",
     "crates/pvisor-gateway",
     "crates/pvisor",
@@ -58,6 +59,7 @@ log = "0.4"
 pvisor-guest = { path = "crates/pvisor-guest" }
 pvisor-journal = { path = "crates/pvisor-journal" }
 pvisor-core = { path = "crates/pvisor-core" }
+pvisor-cluster = { path = "crates/pvisor-cluster" }
 pvisor-gateway = { path = "crates/pvisor-gateway", default-features = false }
 pvisor-overlayfs = { path = "crates/pvisor-overlayfs", default-features = false }
 pvisor-overlay-core = { path = "crates/pvisor-overlay-core" }

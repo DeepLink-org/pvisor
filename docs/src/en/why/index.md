@@ -33,4 +33,4 @@ Today pVisor runs Job by Job on one machine: finish a task unattended, then afte
 For how the four levels split, where pVisor places its bet, and the status of L2/L3, see [trust ladder and scale](trust-ladder.md); for usage at different scales see [use cases](use-cases.md).
 
 !!! note "Under construction"
-    "Human supervision cost per unit of agent work" has no measured data yet; requirements and acceptance criteria are in [supervision cost (planned)](../benchmarks/supervision-cost.md).
+    "Human supervision cost per unit of agent work" has no measured data yet; requirements and acceptance criteria are in [supervision cost](../benchmarks/supervision-cost.md).

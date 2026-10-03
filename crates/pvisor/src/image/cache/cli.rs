@@ -1,7 +1,7 @@
 //! `pvisor cache` command definitions and dispatch.
 use super::server::serve;
-use super::transport::{TOKEN_ENV, endpoint_from_env};
-use super::{CacheClient, MAX_READ, Request, architecture};
+use super::transport::TOKEN_ENV;
+use super::{CacheBackend, CacheClient, CacheConfig, MAX_READ, Request, architecture};
 use crate::image::oci::ImageStore;
 use clap::{Args, Subcommand};
 use std::io::Write;
@@ -10,6 +10,18 @@ use std::path::PathBuf;
 
 #[derive(Debug, Args)]
 pub struct CacheArgs {
+    /// Cache backend: daemon, shared filesystem, or direct S3 object storage.
+    #[arg(long, global = true)]
+    backend: Option<CacheBackend>,
+    /// Server endpoint, absolute shared directory, or s3://BUCKET/PREFIX.
+    #[arg(long, global = true)]
+    location: Option<String>,
+    /// Read published images without registry access or cache writes.
+    #[arg(long, global = true)]
+    read_only: bool,
+    /// Local OCI staging used by the server or a daemonless cache publisher.
+    #[arg(long, global = true)]
+    image_store: Option<PathBuf>,
     #[command(subcommand)]
     command: CacheCommand,
 }
@@ -21,14 +33,21 @@ enum CacheCommand {
         /// unix:///absolute/path or tcp://127.0.0.1:PORT. Defaults to CACHE_SERVER.
         #[arg(long)]
         listen: Option<String>,
-        /// OCI cache to serve and populate.
-        #[arg(long, env = "PVISOR_IMAGE_STORE")]
-        image_store: Option<PathBuf>,
     },
-    /// Resolve and prepare an image on the server; print its immutable digest.
+    /// Resolve and prepare an image in the cache; print its immutable digest.
     Prepare {
         image: String,
         /// Recheck the registry even when a fresh prepared-image record exists.
+        #[arg(long)]
+        refresh: bool,
+    },
+    /// Unpack an OCI image and publish its file index and content blocks to S3 or a filesystem.
+    Publish {
+        image: String,
+        /// Target platform architecture (defaults to the host architecture).
+        #[arg(long, value_parser = ["amd64", "arm64"])]
+        architecture: Option<String>,
+        /// Recheck the registry instead of reusing the local prepared image.
         #[arg(long)]
         refresh: bool,
     },
@@ -46,19 +65,43 @@ enum CacheCommand {
 }
 
 pub fn run(args: CacheArgs) -> anyhow::Result<()> {
-    if let CacheCommand::Serve {
-        listen,
-        image_store,
-    } = args.command
-    {
+    let config = CacheConfig::from_options(
+        args.backend,
+        args.location,
+        args.read_only.then_some(true),
+        args.image_store,
+    )?;
+    if matches!(args.command, CacheCommand::Publish { .. }) {
+        let address = config.address()?;
+        anyhow::ensure!(
+            address.starts_with("s3://") || address.starts_with("file://"),
+            "publish requires a filesystem or S3 backend; use --backend s3 --location s3://BUCKET/PREFIX"
+        );
+        anyhow::ensure!(!config.read_only, "read-only cache cannot publish images");
+    }
+    if let CacheCommand::Serve { listen } = args.command {
+        anyhow::ensure!(
+            config.backend == CacheBackend::Server && !config.read_only,
+            "serve requires the server backend; filesystem/S3 backends do not need a daemon"
+        );
         return serve(
-            listen.map_or_else(endpoint_from_env, Ok)?,
-            ImageStore::new(image_store)?,
+            listen.unwrap_or(config.location),
+            ImageStore::new(config.image_store)?,
             std::env::var(TOKEN_ENV).ok(),
         );
     }
-    let client = CacheClient::from_env()?;
+    let client = CacheClient::from_config(config)?;
     let request = match args.command {
+        CacheCommand::Publish {
+            image,
+            architecture: target,
+            refresh,
+        } => {
+            let response =
+                client.publish(&image, target.as_deref().unwrap_or(architecture()), refresh)?;
+            println!("{}", serde_json::to_string_pretty(&response)?);
+            return Ok(());
+        }
         CacheCommand::Prepare { image, refresh } => Request::Prepare {
             image,
             architecture: architecture().into(),

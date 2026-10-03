@@ -89,25 +89,24 @@ observations. Other articles link to these definitions. Implementation pages
 explain mechanisms and code ownership. Benchmark and comparison pages state
 method, environment and date, and keep dated samples under `benchmark/`.
 
-### Planned (TODO) pages
+### Publication readiness
 
-A required page that has no data yet is created with a uniform template and
-front matter:
+A reader-facing article is ready when it answers its question using current,
+verified behavior, provides usable examples where appropriate, and clearly
+states the scope of available evidence. Completing documentation does not
+establish a new product guarantee, approve an ADR, adopt a governance policy,
+or create benchmark or audit results.
 
-```yaml
----
-status: todo
-search:
-  exclude: true
----
-```
+Keep engineering requirements and contributor acceptance checklists in this
+file or their tracking issues. Published pages describe the available interface
+and what readers can do with it. Research pages distinguish implemented
+integration points from proposed extensions; audit and adopter pages state the
+current public record without inventing reports or participants.
 
-It carries a plain-language question, the required metric, controls, workload,
-environment, acceptance criteria, and a tracking issue. TODO pages may appear in
-the navigation with a “（规划中）” suffix, but they are excluded from search and
-are never linked as finished content — the enclosing index says “建设中” and
-links to the placeholder instead. Finish a page by removing `status: todo` and
-closing its issue.
+Use `status: todo` and search exclusion only for an actual placeholder lacking
+reader-facing content. Remove those markers and navigation suffixes when the
+article is usable; retain factual limits in its body. Preserve page paths,
+navigation order, and bilingual parity.
 
 ### Writing style
 
@@ -138,8 +137,7 @@ not authorize edits to human approval ledgers or snapshots.
 
 For a new article, create both locale files at the same relative path. For a
 behavior change, update both versions in the same change. Translate all prose,
-including prerequisites, expected results, platform limits and TODO acceptance
-criteria. Keep executable fences identical; translate surrounding explanations
+including prerequisites, expected results, platform limits and evidence scope. Keep executable fences identical; translate surrounding explanations
 and `text` diagrams. Preserve explicit heading IDs, semantic case IDs, page
 status and search exclusion. Links within an article should stay in its locale.
 
@@ -163,10 +161,9 @@ semspec approval ledger and never replaces human semantic approval.
 
 Navigation labels for English groups live in `EN_NAV_LABELS` in
 `scripts/build-docs.py`; ordinary article labels use translated page titles.
-Add the English label when adding a Chinese navigation group. Planned pages
-remain planned in both languages until their original acceptance criteria are
-met; do not fill missing measurements, audit results or maintainer decisions
-with inferred claims.
+Add the English label when adding a Chinese navigation group. Documented pages become searchable in both languages together. Do not fill
+missing measurements, audit results or maintainer decisions with inferred claims;
+state the current public record and keep engineering follow-ups below.
 
 ## Core design
 
@@ -175,3 +172,266 @@ with inferred claims.
 - [Design principles](src/zh/design/principles.md): ownership, causality and evidence rules.
 
 These articles describe the current implementation. Keep field and sequencing contracts in the Operation/Event article rather than duplicating them in component guides.
+
+## Engineering follow-ups from former placeholder pages
+
+These requirements remain engineering or policy work. They are separate from
+publication readiness and do not authorize AI to approve semantic claims or
+make maintainer decisions.
+
+### community/adopters.md
+
+The original acceptance requirements remain below. Measurements, generated references, or formal decisions still need completion, so the planned status remains.
+
+**Acceptance criteria**
+
+- Publish users and scenarios with consent.
+- Distinguish production use from experiments.
+
+### community/code-of-conduct.md
+
+**Requirements**
+
+- Adopt [Contributor Covenant 2.1](https://www.contributor-covenant.org/version/2/1/code_of_conduct/) or an equivalent text;
+- Specify a reporting channel (dedicated email or maintainers), rather than public issues;
+- Describe handling procedures and possible consequences.
+
+**Acceptance criteria**
+
+- Add repository-root `CODE_OF_CONDUCT.md` and keep this page consistent;
+- Ensure that the reporting channel works and is listed on [Community](index.md).
+
+### community/governance.md
+
+The original acceptance requirements remain below. Measurements, generated references, or formal decisions still need completion, so the planned status remains.
+
+**Acceptance criteria**
+
+- Define the maintainer list, decision process and advancement path.
+- Describe the human role in semspec approval.
+
+### design/decisions/index.md
+
+**Requirements**
+
+- Create an ADR template (context, options, decision, consequences, status) and a numbering convention (`NNNN-short-title.md`).
+- Backfill the existing key decisions, for example:
+    - Admission plans stop at `Planned`; enforcement comes only from executor observations.
+    - Gateway and replay are separated from the core closure as optional features.
+    - `--safe` does not select an executor and refuses to start rather than degrading when it cannot enforce.
+    - The human approval process for semantic specifications.
+
+**Acceptance criteria**
+
+- At least four numbered ADRs with titles/status.
+
+### design/replay.md
+
+**Requirements**
+
+- Read trajectory, replay complete batches through after_step, rebuild context, continue.
+- Adapter mechanisms and limits, including Claude Code, Codex, OpenCode.
+- Boundary between replay and continuation and effects not reproduced.
+
+**Acceptance criteria**
+
+- Code/test references per adapter.
+- Link replay-fidelity results.
+
+### design/research/cluster-execution.md
+
+**Requirements**
+
+- Metrics: cross-node scheduling throughput, centralized-evidence audit cost, single-cluster concurrency limit.
+- Controls: native Kubernetes and Ray scheduling.
+- Workload: batch agent execution across multiple nodes.
+- Environment: multi-machine cluster; pinned scheduler versions.
+
+**Acceptance criteria**
+
+- pVisor defines execution semantics without replacing schedulers.
+- Gaps and phases.
+- Align with density measurements.
+
+### design/research/publications.md
+
+The original acceptance requirements remain below. Measurements, generated references, or formal decisions still need completion, so the planned status remains.
+
+**Acceptance criteria**
+
+- Link papers/reports/talks.
+- State implementation revisions.
+- Mark outputs that do not establish product guarantees.
+
+### design/research/rl-execution-substrate.md
+
+**Requirements**
+
+- Metrics: throughput, isolation, reproducibility, fork cost.
+- Controls: RL framework sandboxes.
+- Workload: fixed rollouts, failure replay, checkpoint forks.
+- Environment: pinned model/tools.
+
+**Acceptance criteria**
+
+- Integration and scope.
+- Tested recording, fork, and prefix replay.
+- Separate design from the rollout guide.
+
+### guides/ci.md
+
+**Requirements**
+
+- Metrics: wall clock time for one run, resource use, failure rate, and the number of human interventions.
+- Control: the same agent running directly in CI.
+- Workload: use the agent to repair failing tests or perform routine refactoring.
+- Environment: GitHub Actions runners (Linux/macOS), pinned agent versions.
+
+**Acceptance criteria**
+
+- A copyable workflow example with `--safe`, staging paths, and artifact upload.
+- Explicit `apply` semantics in CI (who reviews, when it merges).
+- Regression coverage for failure and timeout paths.
+
+### guides/parallel-agents.md
+
+**Requirements**
+
+- Metrics: number of concurrent Jobs, CPU/memory cost per Job, tail latency.
+- Control: sequential runs; Docker at the same density.
+- Workload: a fixed task set at 8/32/128 concurrent Jobs.
+- Environment: one set each for Linux (KVM/FUSE) and macOS (HVF/macFUSE).
+
+**Acceptance criteria**
+
+- A host concurrency limit and resource model.
+- A reproducible batch-review flow (aggregate by workspace, apply in batches).
+- Alignment with benchmarks/density.
+
+### guides/rl-rollouts.md
+
+**Requirements**
+
+- Metrics: rollout throughput, isolation effectiveness, trajectory reproducibility, fork cost.
+- Control: the sandbox components of existing RL frameworks; OpenHands-runtime-style approaches.
+- Workload: batch rollouts of fixed tasks, including failure replay and forking from a checkpoint.
+- Environment: cluster or multi-host environments; pinned model and tool versions.
+
+**Acceptance criteria**
+
+- The integration with training frameworks and its boundaries.
+- Tested behavior for trajectory recording, forking, and tool-prefix replay.
+- An explicit relation to design/research/rl-execution-substrate.
+
+### reference/config.md
+
+**Requirements**
+
+- Automatically generate field tables from RunConfig serde definitions.
+- Include TOML path, type, default, CLI option, scalar/list merge behavior.
+- Identify values not honored on some CLI paths, such as `run.inherit_env`.
+
+**Acceptance criteria**
+
+- Generate at `just docs-build`, or check the generated result against the code in CI.
+- Cover `[run]`, top-level `filesystem`, `[overlayfs]`, `[overlaynet]`, `[gateway]`, `[record]`, `[policies.*]`, `[container]` and `[vm]`.
+
+### reference/env-vars.md
+
+**Requirements**
+
+- Collect every read site from the code and generate two tables automatically: variables pVisor reads and variables injected into agents.
+- Describe each variable: purpose, default, applicable executors and platforms, and stability.
+
+**Acceptance criteria**
+
+- A script generates the tables and CI detects new `PVISOR_*` read sites that are missing from them.
+
+### reference/exit-codes.md
+
+**Requirements**
+
+- List each subcommand's exit codes and meanings.
+- List the main error types (unsupported policy, sandbox setup failure, apply conflict, missing Job) with their exit codes and messages.
+- Explain how CI distinguishes "agent failure" from "pVisor refused to run".
+
+**Acceptance criteria**
+
+- The exit-code table maps one-to-one to error types in the code and has test coverage.
+
+### reference/json-output.md
+
+**Requirements**
+
+- Publish a JSON Schema for each command that supports `--json`.
+- Mark stable/experimental fields.
+- Provide common `jq` queries: whether any access was denied, whether the network boundary is non-bypassable, and whether changes stay within the given paths.
+
+**Acceptance criteria**
+
+- Generate schemas and check output against them in CI.
+- Fix the known issue where `status --json` `sample_paths` leaks internal `.wh.d` paths.
+
+### reference/platforms.md
+
+**Requirements**
+
+- Linux x86_64/arm64 and Apple Silicon macOS × host/container/VM × capabilities.
+- Stable/Beta/experimental/unsupported maturity labels.
+- Every label needs CI/spec/benchmark/issue evidence.
+
+**Acceptance criteria**
+
+- Evidence for every cell.
+- README maturity labels link here.
+
+### reference/policy.md
+
+**Requirements**
+
+- Generate field tables from policy type definitions: fields, types, defaults and ranges.
+- List the complete rules that the `--safe` preset generates per platform and per Agent command name.
+- State the merge rules for each layer and give the test or semantic specification for each rule.
+
+**Acceptance criteria**
+
+- The field table is code-generated or CI-checked.
+- The `--safe` preset table matches the `apply_safe_defaults` implementation.
+
+### reference/run-bundle.md
+
+**Requirements**
+
+- Generate a JSON Schema from the Bundle type definitions and publish it with each version.
+- Describe each top-level field: source (admission plan, executor observations, OverlayFS, OverlayNet, Gateway), whether it can be `null`, and the difference between `null` and zero.
+- State the schema version policy: when it is upgraded and whether old Bundles can be read (old Bundles that lack the observation contract are currently rejected).
+
+**Acceptance criteria**
+
+- Release schema files; check real output in CI.
+- Annotated minimal Bundle example.
+
+### reference/stability.md
+
+**Requirements**
+
+- Maintainer-defined version policy, including pre-1.0 incompatible changes.
+- Stability and deprecation notice period per interface.
+- Old-record handling on Bundle upgrades.
+
+**Acceptance criteria**
+
+- Maintainer confirmation.
+- Changelog marks incompatible changes accordingly.
+
+### security/audits.md
+
+**Requirements**
+
+- Metric: audit scope, findings, and remediation status.
+- Control group: —
+**Acceptance criteria**
+
+- Publish the audit scope, date, and report link.
+- Mark each finding with its remediation status.
+- Explain the uncovered scope.

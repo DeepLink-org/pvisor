@@ -371,9 +371,8 @@ impl RunExecutor for VmExecutor {
         } else {
             BTreeMap::new()
         };
+        crate::image::cache::scrub_guest_environment(&mut env);
         for key in [
-            crate::image::cache::SERVER_ENV,
-            "PVISOR_CACHE_TOKEN",
             crate::AGENTCTL_ENDPOINT_ENV,
             crate::AGENTCTL_TOKEN_ENV,
             crate::AGENTCTL_TRANSPORT_ENV,

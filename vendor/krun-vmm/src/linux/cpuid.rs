@@ -19,14 +19,13 @@ pub(crate) fn expose_supported_extended_leaves(cpuid: &mut CpuId) {
         .as_slice()
         .iter()
         .any(|e| e.function == mitigation_leaf && e.index == 0);
-    if present {
-        if let Some(base) = cpuid
-            .as_mut_slice()
-            .iter_mut()
-            .find(|e| e.function == 0x8000_0000)
-        {
-            base.eax = base.eax.max(mitigation_leaf);
-        }
+    if let Some(base) = cpuid
+        .as_mut_slice()
+        .iter_mut()
+        .find(|e| e.function == 0x8000_0000)
+        .filter(|_| present)
+    {
+        base.eax = base.eax.max(mitigation_leaf);
     }
 }
 

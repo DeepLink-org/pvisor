@@ -20,4 +20,4 @@ pVisor is neither cryptographic remote attestation nor hostile multi-tenant isol
 - [Hardening](hardening.md): progressively stricter configuration.
 - [Known limitations](known-limitations.md): known gaps and invariant problems.
 - [Vulnerability disclosure](disclosure.md): how to report privately, and response targets.
-- [Third-party audits (planned)](audits.md)
+- [Third-party audits](audits.md)

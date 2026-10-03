@@ -26,7 +26,9 @@ fs2.workspace = true
 globset.workspace = true
 libc.workspace = true
 lru = "0.12.5"
+object_store = { version = "=0.13.2", default-features = false, features = ["aws", "tls-webpki-roots"] }
 pvisor-core.workspace = true
+pvisor-cluster.workspace = true
 pvisor-journal.workspace = true
 pvisor-gateway = { workspace = true, default-features = false, optional = true }
 pvisor-overlaynet.workspace = true

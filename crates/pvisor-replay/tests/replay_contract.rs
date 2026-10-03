@@ -593,3 +593,73 @@ fn pi_replay_only_executes_native_tool_prefix_without_a_model_request() {
             && artifact.path.ends_with("native/reconstructed-events.jsonl")
     }));
 }
+
+#[test]
+fn native_jsonl_prepare_only_never_executes_tools_or_replaces_observations() {
+    for agent in [AgentKind::Codex, AgentKind::Opencode] {
+        let temporary = tempfile::tempdir().unwrap();
+        let workspace = temporary.path().join("workspace");
+        fs::create_dir(&workspace).unwrap();
+        let marker = workspace.join("must-not-exist");
+        let command = "printf unexpected > must-not-exist";
+        let events = match agent {
+            AgentKind::Codex => vec![
+                json!({"type":"session_meta","payload":{"id":"prepare-contract"}}),
+                json!({"type":"response_item","payload":{"type":"message","role":"user","content":[{"type":"input_text","text":"prepare only"}]}}),
+                json!({"type":"response_item","payload":{"type":"message","role":"assistant","content":[{"type":"output_text","text":"historical action"}]}}),
+                json!({"type":"response_item","payload":{"type":"function_call","call_id":"call-1","name":"exec_command","arguments":json!({"cmd":command}).to_string()}}),
+                json!({"type":"response_item","payload":{"type":"function_call_output","call_id":"call-1","output":"historical observation"}}),
+            ],
+            AgentKind::Opencode => vec![
+                json!({"type":"user","sessionID":"prepare-contract","parts":[{"type":"text","text":"prepare only"}]}),
+                json!({"type":"step_start","sessionID":"prepare-contract"}),
+                json!({"type":"tool_use","sessionID":"prepare-contract","part":{"type":"tool","tool":"bash","callID":"call-1","state":{"status":"completed","input":{"command":command},"output":"historical observation"}}}),
+                json!({"type":"step_finish","sessionID":"prepare-contract","part":{"reason":"tool-calls"}}),
+            ],
+            _ => unreachable!(),
+        };
+        let trajectory = temporary.path().join("trajectory.jsonl");
+        fs::write(
+            &trajectory,
+            events
+                .iter()
+                .map(Value::to_string)
+                .collect::<Vec<_>>()
+                .join("\n")
+                + "\n",
+        )
+        .unwrap();
+        let report = execute(PlaybackRequest {
+            agent,
+            trajectory,
+            after_step: 1,
+            workspace,
+            state_dir: temporary.path().join("state"),
+            output_dir: temporary.path().join("output"),
+            agent_entrypoint: None,
+            agent_runtime: None,
+            disallowed_tools: Vec::new(),
+            trajectory_assets: None,
+            session_id: None,
+            max_steps: None,
+            mode: ReplayMode::PrepareOnly,
+            allow_stale_observations: false,
+            run_id: None,
+            disable_thinking: false,
+            boundary_user_prompt: None,
+        })
+        .unwrap();
+        assert_eq!(report.exit_code, 0);
+        assert_eq!(report.result.phase, ReplayPhase::Prepared);
+        assert_eq!(report.result.replayed_tool_calls, 0);
+        assert!(!marker.exists(), "{agent:?} prepare-only executed a tool");
+        let prepared = fs::read_to_string(
+            report
+                .result
+                .output_dir
+                .join("native/prepared-prefix.jsonl"),
+        )
+        .unwrap();
+        assert!(prepared.contains("historical observation"));
+    }
+}

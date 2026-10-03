@@ -8,8 +8,8 @@ Thanks for helping. This page is the short version; the full guide is
 - Bugs and feature requests: open a GitHub issue. Security problems follow
   [SECURITY.md](SECURITY.md) instead.
 - Larger changes: open an issue first so the design can be discussed before code.
-- Documentation pages marked “（规划中）” are open requirements; each lists its
-  acceptance criteria and can be claimed.
+- Documentation fixes should update both languages. Engineering follow-ups and
+  acceptance requirements are collected in `docs/README.md`.
 
 ## Development loop
 

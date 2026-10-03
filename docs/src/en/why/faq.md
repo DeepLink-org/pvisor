@@ -7,7 +7,7 @@ An agent-native sandbox answers whether it can block something. On top of that, 
 pVisor adds the cost of admission, file interception, and recording. Measured startup and filesystem overhead is in [benchmarks and comparisons](../benchmarks/index.md) (partly under construction).
 
 **Can it run in CI?**
-Yes. You can use it in a pipeline the L1 way today: let the agent finish, review, and merge only what you want. Policy- and evidence-driven exemption and clustering (L2/L3) are the direction; see [running agents in CI (planned)](../guides/ci.md).
+Yes. You can use it in a pipeline the L1 way today: let the agent finish, review, and merge only what you want. Policy- and evidence-driven exemption and clustering (L2/L3) are the direction; see [running agents in CI](../guides/ci.md).
 
 **Which agents are supported?**
 Any command can run; Claude Code, Codex, and others get presets matched by executable name. See [connecting your agent](../guides/agents/index.md).

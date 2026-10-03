@@ -1,34 +1,8 @@
----
-status: todo
-search:
-  exclude: true
----
-
 # 回放设计
 
-!!! warning "规划中"
-    实现细节仍待负责人撰写。操作方法见[回放](../guides/replay.md)。
+Replay 把“Agent 曾经调用过哪些工具”转换成“这些工具在当前工作区实际产生了什么结果”，再把新结果交给 Agent 继续执行。它适合复现一次失败、比较修复后的行为，以及构造训练前缀。
 
-## 要回答的问题
-
-工具前缀回放如何用新鲜的 observation 重建 Agent 的原生上下文，再交给实时 Agent 续跑？每个 Agent 适配器有什么限制？
-
-## 需求
-
-- 回放流程：读取轨迹、按 `after_step` 回放完整 tool batch、重建原生上下文、启动实时 Agent；
-- 各适配器的机制与限制：Claude Code、Codex、OpenCode 等；
-- 回放与续跑的边界：哪些副作用不会被重放。
-
-## 验收标准
-
-- 每个适配器给出代码位置与测试；
-- 与[回放保真度（规划中）](../benchmarks/replay-fidelity.md)的数据互相引用。
-
-## 关联
-
-- 跟踪 issue：TODO
-- 负责人：TODO
-- 相关代码：`crates/pvisor-replay`
+使用步骤见[轨迹回放指南](../guides/replay.md)。这里说明边界选择、工具重执行和各 Agent 原生会话之间的关系，方便你判断一次回放结果是否可比。
 
 ## 当前处理流水线
 
@@ -56,4 +30,4 @@ just test pvisor-replay
 - `tests/replay_contract.rs`：mini-swe-agent、SWE-agent、OpenHands、Pi 的 replay-only 边界、提示注入与步数约束；
 - `bridge/`：协议桥的请求/响应映射及边界验证。
 
-这些是机制与回归入口。大规模真实轨迹的成功率、成本和分歧统计仍见[回放保真度（规划中）](../benchmarks/replay-fidelity.md)的待测要求。
+六种适配器的原生前缀准备实验与逐项结果见[回放保真度](../benchmarks/replay-fidelity.md)。该实验验证前缀和零执行准备；模型续跑质量需要按真实任务另行测量。

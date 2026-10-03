@@ -13,9 +13,9 @@
 | 交付凭据 | [凭据与环境变量](policies/credentials.md) |
 | 记录模型请求和响应 | [Gateway 捕获](capture.md) |
 | 重新执行受支持的原生轨迹 | [回放](replay.md) |
-| 在 CI 中运行（规划中） | [在 CI 中运行 Agent](ci.md) |
-| 单机多 Agent 并行（规划中） | [并行 Agent](parallel-agents.md) |
-| RL rollout（规划中） | [RL rollout](rl-rollouts.md) |
+| 在 CI 中运行 | [在 CI 中运行 Agent](ci.md) |
+| 单机多 Agent 并行 | [并行 Agent](parallel-agents.md) |
+| RL rollout | [RL rollout](rl-rollouts.md) |
 | 排查异常行为 | [故障排查](troubleshooting.md) |
 
 精确命令见 [CLI 参考](../reference/cli.md)，实现细节见[实现设计](../design/index.md)。

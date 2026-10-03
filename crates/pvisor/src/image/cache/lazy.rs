@@ -148,7 +148,7 @@ fn mount(filesystem: RemoteFs, _store: &Path) -> anyhow::Result<LazyMount> {
     #[cfg(target_os = "macos")]
     options.push(MountOption::CUSTOM("backend=fskit".into()));
     let session = Session::new(filesystem, &mountpoint, &options)
-        .context("mount lazy image lower (FUSE is required); set PVISOR_CACHE_SERVER=off to use local OCI extraction")?;
+        .context("mount lazy image lower (FUSE is required); unset PVISOR_CACHE_BACKEND/PVISOR_CACHE_LOCATION and set PVISOR_CACHE_SERVER=off to use local OCI extraction")?;
     let mount = LazyMount {
         session: Some(BackgroundSession::new(session)?),
         path: mountpoint.clone(),

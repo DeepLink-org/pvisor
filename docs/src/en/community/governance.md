@@ -1,32 +1,28 @@
----
-status: todo
-search:
-  exclude: true
----
-
 # Governance and maintainers
 
-!!! warning "Planned"
-    No results are available yet. The requirements below are open to claim.
+Choose an entry by change size: submit a PR for wording fixes and small issues, and discuss larger interface or behavior changes in an issue with clear acceptance criteria. Report security-boundary vulnerabilities through [private disclosure](../security/disclosure.md).
 
-## Question
+## Current contribution and decision workflow {#workflow}
 
-How is the project governed, who may merge, and who may approve semantic specifications?
+1. Describe the user problem, expected behavior, and reproduction.
+2. For design changes, explain options, costs, and compatibility effects, with clear acceptance requirements.
+3. Submit implementation, matching documentation, and validation, following [Contributing](contributing.md).
+4. Reviewers check behavior, evidence, and tests; maintainers with the relevant repository permissions merge and release changes.
 
-## Requirements
+Code review, merge permission, and semantic approval are separate responsibilities. Passing PR tests does not automatically approve a product commitment; new public boundaries need matching specifications and human review.
 
-- Metrics: —
-- Controls: —
-- Workload: —
-- Environment: —
+## Human responsibility for semspec approval {#semspec}
 
-## Acceptance criteria
+Contributors can draft cases, fix implementations, and maintain runner tests. Maintainers assess claim accuracy and coverage before approve/revoke actions and approval-record updates. AI does not approve cases, edit real `REVIEWED.toml` or `.approved/` snapshots, or weaken existing checks to obtain PASS.
 
-- Define the maintainer list, decision process and advancement path.
-- Describe the human role in semspec approval.
+Provide source version, environment, results, and limitations with the review. See [Testing and semspec](testing.md) for commands and rules.
 
-## Tracking
+## Becoming a sustained contributor {#contributors}
 
-- Tracking issue: TODO
-- Owner: TODO
-- Related: [Contributing](contributing.md)
+Start with a reproducible problem and maintain a module's implementation, documentation, and regression cases over time. Propose broader responsibilities in a public issue, describing the intended scope and work already completed.
+
+Repository permissions determine who can merge and release; expanded responsibilities need confirmation from maintainers with that authority. When views differ, collect the disputed points, alternatives, and validation in one issue and request a maintainer decision linked to the resulting change.
+
+## What governance records should publish {#records}
+
+Maintainer entries should include accounts, responsibilities, and effective dates. Design decisions should link to issues, PRs, or ADRs; permission and release-responsibility changes should remain recorded. Sensitive security reports follow disclosure procedures, with public records referencing only publishable conclusions.

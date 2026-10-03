@@ -22,7 +22,7 @@ pvisor apply last --path src
 
 Unknown commands deny outbound access. `--overlaynet-allow HOST:PORT` grants it explicitly and replaces preset lists. Matching uses the **direct executable filename**; shell wrappers do not trigger agent-specific adaptation.
 
-Compatibility comes from observed controls in the Bundle, not agent names. Supported version ranges are not systematically tested; see [end-to-end tasks (planned)](../../benchmarks/agent-tasks.md).
+Compatibility comes from observed controls in the Bundle, not agent names. Supported version ranges are not systematically tested; see [end-to-end tasks](../../benchmarks/agent-tasks.md).
 
 !!! note "Experimental integrations"
     The aider, Gemini CLI, and OpenCode guides use only existing pVisor options and stay experimental until a pinned-version regression exists. The Linux host selective proxy is cooperative; use a prepared VM when you need enforcement.

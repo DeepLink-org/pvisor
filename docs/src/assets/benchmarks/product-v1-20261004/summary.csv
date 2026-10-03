@@ -1,0 +1,453 @@
+batch,suite,workload,backend,agent,files,concurrency,requested_state,metric,n,p50,p95,p99,minimum,maximum,state,reason,attempted,completed
+final,apply,apply,staged,,10,,,wall_ms,30,15.011522,16.747045099999998,18.25771624,14.34829,18.862785,,,,
+final,apply,apply,staged,,1000,,,wall_ms,10,836.377311,1462.806474150001,1864.6158492300003,809.631122,1965.068193,,,,
+final,apply,conflict,staged,,10,,,wall_ms,30,4.067411,9.4430419,11.669373530000003,1.681278,12.552378,,,,
+final,apply,conflict,staged,,1000,,,wall_ms,10,42.896121,43.29431675,43.34150734999999,42.069238,43.353305,,,,
+final,apply,copy,native,,10,,,wall_ms,30,5.06581,10.8068788,11.5858207,2.549067,11.613826,,,,
+final,apply,copy,native,,1000,,,wall_ms,10,15.837749,16.19517585,16.24086957,15.162339,16.252293,,,,
+final,apply,drop,staged,,10,,,wall_ms,30,3.3760209999999997,3.81709265,4.722211280000002,3.17149,5.088617,,,,
+final,apply,drop,staged,,1000,,,wall_ms,10,24.4440475,26.01515275,26.243732950000002,23.252799,26.300878,,,,
+final,filesystem,cargo,host,,,,,wall_ms,30,83.8603565,94.87719295,95.49082320000001,73.512693,95.635394,,,,
+final,filesystem,cargo,host,,,,,worker_ms,30,47.0744945,59.04561505,62.69527599,43.788887,64.119863,,,,
+final,filesystem,cargo,native,,,,,wall_ms,30,67.211423,84.93146945000001,86.36158151000001,63.34171,86.539085,,,,
+final,filesystem,cargo,native,,,,,worker_ms,30,49.0928065,64.10796705,64.61251907,45.621969,64.675831,,,,
+final,filesystem,cargo,safe,,,,,wall_ms,30,188.83076799999998,209.8340381,224.89912618000005,188.302287,231.009936,,,,
+final,filesystem,cargo,safe,,,,,worker_ms,30,96.0034805,115.17278970000001,122.66195307000001,89.726666,124.364403,,,,
+final,filesystem,cargo,staged,,,,,wall_ms,30,146.28486049999998,167.3065197,168.42225267,145.624533,168.698268,,,,
+final,filesystem,cargo,staged,,,,,worker_ms,30,90.31044,102.45374935000001,104.87565144,86.224849,105.718352,,,,
+final,filesystem,cargo,vm,,,,,wall_ms,30,897.606764,959.1375990500001,959.4251523999999,857.76595,959.519733,,,,
+final,filesystem,cargo,vm,,,,,worker_ms,30,541.562513,585.458951,591.57670978,523.391466,592.727841,,,,
+final,filesystem,git,container,,,,,wall_ms,30,375.1786665,434.7591511,490.7698250900001,334.421392,512.094099,,,,
+final,filesystem,git,container,,,,,worker_ms,30,15.7815645,20.42436585,24.157833040000007,13.495939,25.309778,,,,
+final,filesystem,git,host,,,,,wall_ms,30,54.339224,65.108508,92.63426508000003,43.662411,103.822914,,,,
+final,filesystem,git,host,,,,,worker_ms,30,14.511699499999999,19.7629039,26.39138597000001,12.639641,28.515,,,,
+final,filesystem,git,native,,,,,wall_ms,30,36.136244500000004,79.20662295000002,165.4977328000001,30.869214,193.728734,,,,
+final,filesystem,git,native,,,,,worker_ms,30,14.71563,36.032415450000016,58.18549561000001,12.89125,62.752181,,,,
+final,filesystem,git,podman,,,,,wall_ms,30,158.8701495,209.35343395,215.16122432999998,141.743439,215.337464,,,,
+final,filesystem,git,podman,,,,,worker_ms,30,15.549106,20.4276197,30.53390707000001,13.6575,34.512654,,,,
+final,filesystem,git,safe,,,,,wall_ms,30,394.3836655,491.36228845000005,960.7772320800005,359.23255,1150.379072,,,,
+final,filesystem,git,safe,,,,,worker_ms,30,225.9945045,318.20262325,589.0650044700003,207.368772,696.620018,,,,
+final,filesystem,git,staged,,,,,wall_ms,30,333.161025,458.83685185,1316.658149800001,295.806161,1666.73176,,,,
+final,filesystem,git,staged,,,,,worker_ms,30,203.33299449999998,302.79773035000005,850.0084930800007,181.375028,1068.714443,,,,
+final,filesystem,git,vm,,,,,wall_ms,30,929.222416,1558.9679291000002,2447.310801290001,858.043829,2807.414183,,,,
+final,filesystem,git,vm,,,,,worker_ms,30,535.063582,947.7647881,1671.9317872500008,480.749922,1938.904823,,,,
+final,filesystem,metadata,container,,,,,wall_ms,30,320.213655,419.25920390000005,479.51483770000004,293.976837,496.709016,,,,
+final,filesystem,metadata,container,,,,,worker_ms,30,4.8278315,5.68694095,6.16768225,4.544252,6.250876,,,,
+final,filesystem,metadata,host,,,,,wall_ms,30,34.02274,44.90019425,58.182265690000015,33.423782,63.553686,,,,
+final,filesystem,metadata,host,,,,,worker_ms,30,4.940811500000001,5.74769365,6.649411650000001,4.533031,6.959339,,,,
+final,filesystem,metadata,native,,,,,wall_ms,30,23.436016000000002,29.168601949999996,30.714724190000005,21.248338,31.323692,,,,
+final,filesystem,metadata,native,,,,,worker_ms,30,4.843875000000001,6.691945600000001,7.75598986,4.453442,7.859539,,,,
+final,filesystem,metadata,podman,,,,,wall_ms,30,138.99129299999998,158.5770972,159.34015288,123.117877,159.470255,,,,
+final,filesystem,metadata,podman,,,,,worker_ms,30,4.945701,6.726275200000002,8.219933930000002,4.568667,8.515584,,,,
+final,filesystem,metadata,safe,,,,,wall_ms,30,288.73314,346.4721376,363.59371074,286.551218,368.917616,,,,
+final,filesystem,metadata,safe,,,,,worker_ms,30,171.25929250000002,196.5789613,230.37561862,163.551501,241.421899,,,,
+final,filesystem,metadata,staged,,,,,wall_ms,30,225.0301455,295.07926944999997,314.54579002,223.542689,319.996561,,,,
+final,filesystem,metadata,staged,,,,,worker_ms,30,149.6010095,211.85302355000002,218.01501726,143.971287,220.508236,,,,
+final,filesystem,metadata,vm,,,,,wall_ms,30,636.442463,828.3812533,892.93710414,595.702737,911.47925,,,,
+final,filesystem,metadata,vm,,,,,worker_ms,30,263.083034,358.13639675,390.98010192000004,257.616775,399.959764,,,,
+final,filesystem,npm,container,,,,,wall_ms,30,515.8830760000001,552.0293281,891.6243128300005,505.13945,1028.247075,,,,
+final,filesystem,npm,container,,,,,worker_ms,30,195.28783950000002,212.16118455000003,388.9584897000002,190.563277,459.194799,,,,
+final,filesystem,npm,host,,,,,wall_ms,30,184.7313365,204.95071435,552.1970914500004,184.147592,693.958631,,,,
+final,filesystem,npm,host,,,,,worker_ms,30,156.3822515,165.4978516,435.63835941000036,151.610245,544.566005,,,,
+final,filesystem,npm,native,,,,,wall_ms,30,175.5967385,205.84188875,434.16015697000023,168.43155,521.60412,,,,
+final,filesystem,npm,native,,,,,worker_ms,30,157.56138149999998,186.5338934,402.76847012000025,150.834977,485.609369,,,,
+final,filesystem,npm,podman,,,,,wall_ms,30,339.63695700000005,474.64873515,857.3654768500005,328.296652,1002.313664,,,,
+final,filesystem,npm,podman,,,,,worker_ms,30,208.4135265,267.31868655000005,494.3550550100002,202.965764,572.828194,,,,
+final,filesystem,npm,safe,,,,,wall_ms,30,318.5847005,432.2472569,708.1198782800003,298.47945,809.722442,,,,
+final,filesystem,npm,safe,,,,,worker_ms,30,232.29945750000002,248.02941825,492.72393249000027,222.184625,591.556257,,,,
+final,filesystem,npm,staged,,,,,wall_ms,30,235.76193999999998,256.12507365,608.4823830500004,235.462967,752.304187,,,,
+final,filesystem,npm,staged,,,,,worker_ms,30,187.874082,208.91838225,488.32461372000034,183.917482,600.561786,,,,
+final,filesystem,read,container,,,,,wall_ms,30,405.548479,945.62925245,1092.9309878000001,354.425498,1145.035949,,,,
+final,filesystem,read,container,,,,,worker_ms,30,33.56719,54.47859510000001,91.44617615000004,31.566166,103.950502,,,,
+final,filesystem,read,host,,,,,wall_ms,30,64.648439,213.37374880000004,232.88130293,63.902296,234.115422,,,,
+final,filesystem,read,host,,,,,worker_ms,30,31.797005499999997,59.14397460000001,65.42901772,30.531924,65.642264,,,,
+final,filesystem,read,native,,,,,wall_ms,30,52.805025,125.9834343,143.36059467,48.484121,149.39514,,,,
+final,filesystem,read,native,,,,,worker_ms,30,32.6579625,62.15570435000001,67.82920358000001,31.050082,68.054156,,,,
+final,filesystem,read,podman,,,,,wall_ms,30,170.6426165,408.9506355,452.0451785700001,149.534971,466.87893,,,,
+final,filesystem,read,podman,,,,,worker_ms,30,32.6788215,51.14375795,51.7096425,30.643683,51.927157,,,,
+final,filesystem,read,safe,,,,,wall_ms,30,153.97538300000002,386.69247989999997,390.95734941999996,116.776151,392.589296,,,,
+final,filesystem,read,safe,,,,,worker_ms,30,41.3770655,92.29579204999999,97.01564326,38.039888,98.774031,,,,
+final,filesystem,read,staged,,,,,wall_ms,30,95.23799149999999,338.92056005000006,378.03972226999997,94.139371,378.954509,,,,
+final,filesystem,read,staged,,,,,worker_ms,30,40.7627095,105.02750415000001,136.12608249000004,37.2212,146.738232,,,,
+final,filesystem,read,vm,,,,,wall_ms,30,476.559693,1379.7717805500001,1436.40402071,435.105559,1446.188389,,,,
+final,filesystem,read,vm,,,,,worker_ms,30,100.57947899999999,390.4722125,393.45586017,94.54126,394.163758,,,,
+final,filesystem,rg,container,,,,,wall_ms,30,355.3305775,390.9551792,395.69327373,335.46991,395.769823,,,,
+final,filesystem,rg,container,,,,,worker_ms,30,6.393302500000001,8.11607075,8.144005530000001,5.381404,8.153878,,,,
+final,filesystem,rg,host,,,,,wall_ms,30,44.0127855,44.78644685,45.023238629999994,33.450893,45.115213,,,,
+final,filesystem,rg,host,,,,,worker_ms,30,6.636506499999999,7.73864005,8.25368603,5.554737,8.456133,,,,
+final,filesystem,rg,native,,,,,wall_ms,30,26.542298000000002,28.701997650000003,29.895903840000003,23.769033,30.249357,,,,
+final,filesystem,rg,native,,,,,worker_ms,30,6.716245,7.6293334,8.01487442,5.519241,8.111619,,,,
+final,filesystem,rg,podman,,,,,wall_ms,30,141.35760850000003,154.7269502,160.82135994,128.405144,162.942946,,,,
+final,filesystem,rg,podman,,,,,worker_ms,30,5.89898,7.2363105,7.870569430000001,4.827129,8.114846,,,,
+final,filesystem,rg,safe,,,,,wall_ms,30,349.8015885,380.68634384999996,389.60942620000003,338.597426,392.828954,,,,
+final,filesystem,rg,safe,,,,,worker_ms,30,190.8219035,207.9143455,210.77365665000002,186.452374,211.848053,,,,
+final,filesystem,rg,staged,,,,,wall_ms,30,288.074811,312.75743194999995,320.23176958,276.414859,321.897297,,,,
+final,filesystem,rg,staged,,,,,worker_ms,30,167.89619,175.8112042,183.36418564,161.530199,186.313945,,,,
+final,filesystem,rg,vm,,,,,wall_ms,30,716.9981915,769.3331870500001,780.18080878,676.131309,780.958768,,,,
+final,filesystem,rg,vm,,,,,worker_ms,30,340.97882549999997,388.0179227,406.17925590000004,322.457067,407.178883,,,,
+final,filesystem,write,container,,,,,wall_ms,30,356.8921875,406.9677812,627.1936822400003,324.675422,716.982161,,,,
+final,filesystem,write,container,,,,,worker_ms,30,3.8189725,5.9548836000000005,8.617863770000003,3.541049,9.520108,,,,
+final,filesystem,write,host,,,,,wall_ms,30,34.16242,46.23171765000001,93.69198580000005,33.609619,112.648526,,,,
+final,filesystem,write,host,,,,,worker_ms,30,3.8100905000000003,4.75776185,10.689300420000007,3.489122,13.048393,,,,
+final,filesystem,write,native,,,,,wall_ms,30,22.953125,26.544755000000002,55.29196532000003,20.948739,66.906695,,,,
+final,filesystem,write,native,,,,,worker_ms,30,3.8144539999999996,5.2218216,9.120715560000004,3.406487,10.635309,,,,
+final,filesystem,write,podman,,,,,wall_ms,30,139.67618099999999,151.52614864999998,340.8712262200002,130.513049,417.357213,,,,
+final,filesystem,write,podman,,,,,worker_ms,30,3.761646,4.519517250000001,10.325167460000007,3.455329,12.564961,,,,
+final,filesystem,write,safe,,,,,wall_ms,30,312.829348,549.3074466500002,762.4848187900002,292.300668,810.493782,,,,
+final,filesystem,write,safe,,,,,worker_ms,30,199.556346,368.5813187000001,579.5464123500001,188.781901,638.451643,,,,
+final,filesystem,write,staged,,,,,wall_ms,30,252.61345649999998,444.2042976000001,812.3008067900005,249.31013,951.447838,,,,
+final,filesystem,write,staged,,,,,worker_ms,30,192.463949,235.60608855,602.6707975500004,184.594305,751.183395,,,,
+final,filesystem,write,vm,,,,,wall_ms,30,476.93542049999996,694.8807499500001,1003.7276764600002,455.939552,1098.36872,,,,
+final,filesystem,write,vm,,,,,worker_ms,30,114.67799099999999,188.85652150000004,295.8175926400001,104.693848,325.115041,,,,
+final,network,bulk,host,,,,,bulk_mib_per_s,30,416.77947520024424,928.4472633891172,980.186393784428,392.69634860381353,990.0477001888053,,,,
+final,network,bulk,host,,,,,wall_ms,30,154.4277485,160.21785475000001,164.61684721,114.228707,164.632609,,,,
+final,network,bulk,host,,,,,worker_ms,30,107.0345285,110.31532575,112.09405774000001,62.55387,112.523633,,,,
+final,network,bulk,native,,,,,bulk_mib_per_s,30,869.3924000434781,923.0377146422449,924.1173359648826,399.92451924604876,924.2170336549589,,,,
+final,network,bulk,native,,,,,wall_ms,30,100.548187,142.83948494999999,143.35800383,97.296723,143.484349,,,,
+final,network,bulk,native,,,,,worker_ms,30,67.5793295,109.71430925000001,110.06975666,64.783,110.199806,,,,
+final,network,bulk,vm,,,,,bulk_mib_per_s,30,154.66077752545095,160.7417067669007,162.80005004916916,127.43504171980342,163.26707123940793,,,,
+final,network,bulk,vm,,,,,wall_ms,30,656.40999,667.7214021499999,690.9863748,636.211893,696.907705,,,,
+final,network,bulk,vm,,,,,worker_ms,30,241.013947,268.2704986,284.29955387999996,229.810333,285.263348,,,,
+final,network,deny,host,,,,,wall_ms,30,53.974818,65.3013354,72.7542257,53.773171,75.737476,,,,
+final,network,deny,host,,,,,worker_ms,30,0.5269935,0.7665045000000001,0.8421323100000001,0.501796,0.864132,,,,
+final,network,deny,vm,,,,,wall_ms,30,415.170542,522.0962204,745.7358440500003,394.743507,829.386534,,,,
+final,network,deny,vm,,,,,worker_ms,30,3.8855560000000002,5.1276428,8.704249220000005,3.577685,10.086935,,,,
+final,network,small,host,,,,,request_ms,7680,1.2392029999999998,2.422090350000001,7.15550788,0.463135,11.082575,,,,
+final,network,small,host,,,,,wall_ms,30,99.333741,114.73131335,124.10365730000002,83.913376,127.929056,,,,
+final,network,small,host,,,,,worker_ms,30,48.286001,64.17299995,71.45554984,38.601696,73.664017,,,,
+final,network,small,native,,,,,request_ms,7680,0.9496074999999999,1.4244791,4.66606318,0.457725,6.540287,,,,
+final,network,small,native,,,,,wall_ms,30,68.9610035,76.8758722,81.29883115,62.594186,83.024176,,,,
+final,network,small,native,,,,,worker_ms,30,35.075590000000005,43.031378450000005,45.78706401,29.685685,46.781773,,,,
+final,network,small,vm,,,,,request_ms,7680,3.8299114999999997,8.63190165,17.35835835,0.375673,26.790652,,,,
+final,network,small,vm,,,,,wall_ms,30,545.8708605,616.5614256,616.64702466,475.092009,616.672935,,,,
+final,network,small,vm,,,,,worker_ms,30,137.81045799999998,202.48929935,204.36212199,70.309627,204.867148,,,,
+final,network,stream,host,,,,,first_body_ms,30,1.3672065,1.6301654,1.6861062100000002,1.276843,1.703289,,,,
+final,network,stream,host,,,,,wall_ms,30,64.06648849999999,74.32358805,74.61276658,63.888462,74.655947,,,,
+final,network,stream,host,,,,,worker_ms,30,19.836398000000003,20.1585544,20.2456061,19.736296,20.278437,,,,
+final,network,stream,native,,,,,first_body_ms,30,1.1042055,1.19831755,1.3955257800000003,0.918544,1.476035,,,,
+final,network,stream,native,,,,,wall_ms,30,52.133953,53.92099085,58.23918544,50.475828,59.838612,,,,
+final,network,stream,native,,,,,worker_ms,30,19.678638499999998,19.9197687,19.98899833,19.478925,19.997183,,,,
+final,network,stream,vm,,,,,first_body_ms,30,4.5719805000000004,5.190723,6.443329800000001,4.377422,6.939195,,,,
+final,network,stream,vm,,,,,wall_ms,30,435.177513,451.0212077,500.25756931,394.999416,518.601885,,,,
+final,network,stream,vm,,,,,worker_ms,30,23.3703315,23.89176885,25.037550440000004,23.006461,25.499887,,,,
+final,capability,filesystem/cargo/podman,,,,,,,,,,,,,unavailable,"exit 1, expected 0; logs in /home/reiase/workspace/pvisor/target/product-benchmark-v1-20261004-final/trials/01196-fs-cargo-podman/workspace
+iz_oxide-*,libadler2-*,libunwind-*,liblibc-*,librustc_std_workspace_core-*,liballoc-*,libcore-*,libcompiler_builtins-*}.rlib"" ""-Wl,-Bdynamic"" ""-lgcc_s"" ""-lutil"" ""-lrt"" ""-lpthread"" ""-lm"" ""-ldl"" ""-lc"" ""-L"" ""/work/_cargo-target/release/deps/rustcBa69Vn/raw-dylibs"" ""-B<sysroot>/lib/rustlib/x86_64-unknown-linux-gnu/bin/gcc-ld"" ""-fuse-ld=lld"" ""-Wl,--eh-frame-hdr"" ""-Wl,-z,noexecstack"" ""-L"" ""<sysroot>/lib/rustlib/x86_64-unknown-linux-gnu/lib"" ""-o"" ""/work/_cargo-target/release/deps/fixture-77b9bd285f4194f3"" ""-Wl,--gc-sections"" ""-pie"" ""-Wl,-z,relro,-z,now"" ""-Wl,-O1"" ""-Wl,--strip-debug"" ""-nodefaultlibs""
+  = note: some arguments are omitted. use `--verbose` to show all linker arguments
+  = note: rust-lld: error: cannot open Scrt1.o: No such file or directory
+          rust-lld: error: unable to find library -lutil
+          rust-lld: error: unable to find library -lrt
+          rust-lld: error: unable to find library -lpthread
+          rust-lld: error: unable to find library -ldl
+          collect2: error: ld returned 1 exit status
+          
+
+error: could not compile `fixture` (bin ""fixture"") due to 1 previous error
+Traceback (most recent call last):
+  File ""/work/workload.py"", line 63, in <module>
+    main()
+    ~~~~^^
+  File ""/work/workload.py"", line 47, in main
+    subprocess.run([str(toolchain/'bin/cargo'),'build','--offline','--release','--manifest-path','rust/Cargo.toml'],env=env,check=True,stdout=subprocess.DEVNULL)
+    ~~~~~~~~~~~~~~^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+  File ""/usr/lib64/python3.14/subprocess.py"", line 578, in run
+    raise CalledProcessError(retcode, process.args,
+                             output=stdout, stderr=stderr)
+subprocess.CalledProcessError: Command '['/home/reiase/.rustup/toolchains/stable-x86_64-unknown-linux-gnu/bin/cargo', 'build', '--offline', '--release', '--manifest-path', 'rust/Cargo.toml']' returned non-zero exit status 101.
+",0,0
+final,capability,filesystem/cargo/container,,,,,,,,,,,,,unavailable,"exit 1, expected 0; logs in /home/reiase/workspace/pvisor/target/product-benchmark-v1-20261004-final/trials/01197-fs-cargo-container/workspace
+pVisor safe profile: host filesystem access + workspace writes are direct + cooperative network review
+workspace: /home/reiase/workspace/pvisor/target/product-benchmark-v1-20261004-final/trials/01197-fs-cargo-container/workspace
+Job storage: /home/reiase/workspace/pvisor/target/product-benchmark-v1-20261004-final/trials/01197-fs-cargo-container/runs/run-9c5d2062-5b4a-4487-ad92-1c7c50097b29
+boundary: OCI container process; direct sockets remain outside proxy enforcement
+Run Bundle: /home/reiase/workspace/pvisor/target/product-benchmark-v1-20261004-final/trials/01197-fs-cargo-container/runs/run-9c5d2062-5b4a-4487-ad92-1c7c50097b29/run-bundle.json
+Review: pvisor status --review /home/reiase/workspace/pvisor/target/product-benchmark-v1-20261004-final/trials/01197-fs-cargo-container/runs/run-9c5d2062-5b4a-4487-ad92-1c7c50097b29
+pVisor Job failed: ProcessExit: workload exited with exit status: 1
+",0,0
+final,capability,filesystem/npm/vm,,,,,,,,,,,,,unavailable,"exit 1, expected 0; logs in /home/reiase/workspace/pvisor/target/product-benchmark-v1-20261004-final/trials/01367-fs-npm-vm/workspace
+pVisor safe profile: host filesystem access + staged workspace + cooperative network review
+workspace: /home/reiase/workspace/pvisor/target/product-benchmark-v1-20261004-final/trials/01367-fs-npm-vm/workspace
+Job storage: /home/reiase/workspace/pvisor/target/product-benchmark-v1-20261004-final/trials/01367-fs-npm-vm/stage
+boundary: libkrun Linux virtual machine (KVM/HVF); virtio-net is owned by pVisor smoltcp and Gateway capture uses a virtual guest route
+Run Bundle: /home/reiase/workspace/pvisor/target/product-benchmark-v1-20261004-final/trials/01367-fs-npm-vm/stage/run-bundle.json
+Review: pvisor status --review /home/reiase/workspace/pvisor/target/product-benchmark-v1-20261004-final/trials/01367-fs-npm-vm/stage
+Decide: pvisor apply /home/reiase/workspace/pvisor/target/product-benchmark-v1-20261004-final/trials/01367-fs-npm-vm/stage | pvisor drop /home/reiase/workspace/pvisor/target/product-benchmark-v1-20261004-final/trials/01367-fs-npm-vm/stage
+pVisor Job failed: ProcessExit: workload exited with exit status: 1
+",0,0
+supplement,density,hold-1s,host,,,1,,child_cpu_ms,5,7.97900000000018,9.32599999999999,9.556400000000007,7.604000000000166,9.614000000000011,,,,
+supplement,density,hold-1s,host,,,1,,job_wall_ms,5,1018.917917,1021.6198838,1022.1331063599999,1018.695832,1022.261412,,,,
+supplement,density,hold-1s,host,,,1,,peak_tree_rss_kib,5,12432,12558.400000000001,12575.68,11988,12580,,,,
+supplement,density,hold-1s,host,,,1,,wall_ms,5,1019.574564,1028.244641,1029.9304282,1019.437368,1030.351875,,,,
+supplement,density,hold-1s,host,,,128,,child_cpu_ms,5,987.6189999999987,1019.359600000001,1023.1743200000011,971.7129999999994,1024.128000000001,,,,
+supplement,density,hold-1s,host,,,128,,job_wall_ms,640,1032.08113,1055.6830457,1059.0086348200002,1018.959635,1061.815385,,,,
+supplement,density,hold-1s,host,,,128,,peak_tree_rss_kib,5,1569900,1571023.2000000002,1571116.64,1568400,1571140,,,,
+supplement,density,hold-1s,host,,,128,,wall_ms,5,1109.178364,1128.2792153999999,1129.04651748,1094.195988,1129.238343,,,,
+supplement,density,hold-1s,host,,,32,,child_cpu_ms,5,230.61700000000053,241.2014000000001,242.6658800000003,229.9199999999999,243.03200000000035,,,,
+supplement,density,hold-1s,host,,,32,,job_wall_ms,160,1019.8907945,1021.1346605,1021.54219234,1018.646079,1021.961362,,,,
+supplement,density,hold-1s,host,,,32,,peak_tree_rss_kib,5,392564,393447.2,393534.24000000005,391956,393556,,,,
+supplement,density,hold-1s,host,,,32,,wall_ms,5,1037.48013,1047.7387352,1048.17197344,1035.934072,1048.280283,,,,
+supplement,density,hold-1s,host,,,8,,child_cpu_ms,5,54.02599999999991,55.16420000000002,55.31123999999997,52.74199999999985,55.347999999999956,,,,
+supplement,density,hold-1s,host,,,8,,job_wall_ms,40,1019.2998210000001,1019.8710337,1019.94166149,1018.57111,1019.978949,,,,
+supplement,density,hold-1s,host,,,8,,peak_tree_rss_kib,5,97580,98113.6,98163.51999999999,97468,98176,,,,
+supplement,density,hold-1s,host,,,8,,wall_ms,5,1022.227168,1025.9853970000001,1026.7061370000001,1021.705114,1026.886322,,,,
+supplement,density,hold-1s,native,,,1,,child_cpu_ms,5,1.00800000000012,1.230000000000242,1.2564000000002373,0.9279999999995958,1.2630000000002362,,,,
+supplement,density,hold-1s,native,,,1,,job_wall_ms,5,1002.321618,1002.5363026,1002.57065972,1001.216954,1002.579249,,,,
+supplement,density,hold-1s,native,,,1,,peak_tree_rss_kib,5,2088,2196.0,2205.6,2080,2208,,,,
+supplement,density,hold-1s,native,,,1,,wall_ms,5,1003.095762,1004.264901,1004.4602466,1002.749436,1004.509083,,,,
+supplement,density,hold-1s,native,,,128,,child_cpu_ms,5,86.82100000000004,87.64059999999994,87.73691999999997,86.16000000000045,87.76099999999998,,,,
+supplement,density,hold-1s,native,,,128,,job_wall_ms,640,1002.1881025,1003.1743339,1010.6498801800001,1000.914619,1011.486467,,,,
+supplement,density,hold-1s,native,,,128,,peak_tree_rss_kib,5,272836,274140.0,274296.8,272052,274336,,,,
+supplement,density,hold-1s,native,,,128,,wall_ms,5,1038.514592,1044.1208556,1045.1502487199998,1037.890697,1045.407597,,,,
+supplement,density,hold-1s,native,,,32,,child_cpu_ms,5,22.66699999999977,23.004400000000036,23.025680000000026,22.182000000000368,23.031000000000024,,,,
+supplement,density,hold-1s,native,,,32,,job_wall_ms,160,1002.119174,1002.9167956,1003.33774285,1000.921632,1003.984093,,,,
+supplement,density,hold-1s,native,,,32,,peak_tree_rss_kib,5,68012,68630.4,68660.48,67680,68668,,,,
+supplement,density,hold-1s,native,,,32,,wall_ms,5,1021.401907,1023.8687127999999,1024.2577369599999,1010.511595,1024.354993,,,,
+supplement,density,hold-1s,native,,,8,,child_cpu_ms,5,6.2590000000000146,6.797599999999715,6.90351999999967,6.178000000000239,6.929999999999659,,,,
+supplement,density,hold-1s,native,,,8,,job_wall_ms,40,1001.5191385,1002.5805368499999,1002.71093548,1001.084947,1002.791926,,,,
+supplement,density,hold-1s,native,,,8,,peak_tree_rss_kib,5,16904,17205.600000000002,17223.52,16692,17228,,,,
+supplement,density,hold-1s,native,,,8,,wall_ms,5,1006.251658,1011.1926834,1011.2585054799999,1003.958435,1011.274961,,,,
+supplement,density,hold-1s,staged,,,1,,child_cpu_ms,5,12.800999999999618,13.127000000000066,13.18460000000016,11.79300000000083,13.199000000000183,,,,
+supplement,density,hold-1s,staged,,,1,,job_wall_ms,5,1039.82036,1127.7123706,1137.44636212,1039.24202,1139.87986,,,,
+supplement,density,hold-1s,staged,,,1,,peak_tree_rss_kib,5,12668,12924.0,12968.8,12472,12980,,,,
+supplement,density,hold-1s,staged,,,1,,wall_ms,5,1042.645617,1141.3332102,1153.66884684,1040.449997,1156.752756,,,,
+supplement,density,hold-1s,staged,,,128,,child_cpu_ms,5,1786.6959999999956,1820.9334000000017,1827.5394800000017,1741.3010000000036,1829.1910000000016,,,,
+supplement,density,hold-1s,staged,,,128,,job_wall_ms,640,1204.5987519999999,1248.6189402999998,1315.25460603,1070.990562,1323.242269,,,,
+supplement,density,hold-1s,staged,,,128,,peak_tree_rss_kib,5,1635568,1638155.2000000002,1638331.84,1632260,1638376,,,,
+supplement,density,hold-1s,staged,,,128,,wall_ms,5,1290.77801,1379.3263413999998,1396.94302028,1277.173578,1401.34719,,,,
+supplement,density,hold-1s,staged,,,32,,child_cpu_ms,5,410.6059999999996,422.2633999999996,423.6886799999996,400.40599999999847,424.04499999999956,,,,
+supplement,density,hold-1s,staged,,,32,,job_wall_ms,160,1132.1822164999999,1211.45774145,1214.72219454,1051.434945,1217.205605,,,,
+supplement,density,hold-1s,staged,,,32,,peak_tree_rss_kib,5,408372,409009.6,409104.32,407392,409128,,,,
+supplement,density,hold-1s,staged,,,32,,wall_ms,5,1168.831799,1213.9734376,1220.36240352,1086.01731,1221.959645,,,,
+supplement,density,hold-1s,staged,,,8,,child_cpu_ms,5,95.68499999999958,101.0311999999999,101.24703999999952,94.93200000000002,101.30099999999942,,,,
+supplement,density,hold-1s,staged,,,8,,job_wall_ms,40,1075.5076104999998,1101.62113245,1110.42963046,1040.167899,1110.485044,,,,
+supplement,density,hold-1s,staged,,,8,,peak_tree_rss_kib,5,101900,102431.20000000001,102467.04,101520,102476,,,,
+supplement,density,hold-1s,staged,,,8,,wall_ms,5,1091.286323,1119.0556162,1120.5897984399999,1053.3113,1120.973344,,,,
+completion,apply,apply,staged,,100000,,,wall_ms,3,330396.222029,337869.0852431,338533.33975102,324697.496788,338699.403378,,,,
+completion,apply,conflict,staged,,100000,,,wall_ms,3,247496.210991,253640.34891359997,254186.49450672,242369.169367,254323.030905,,,,
+completion,apply,copy,native,,100000,,,wall_ms,3,1214.854435,1359.5858506,1372.45086532,1176.534294,1375.667119,,,,
+completion,apply,crash-recovery,staged,,1000,,prepared,recovery_ms,3,1587.600152,1640.0349674000001,1644.69583988,1193.706957,1645.861058,,,,
+completion,apply,crash-recovery,staged,,1000,,target_applied,recovery_ms,3,120.97651,123.46944250000001,123.6910365,107.523344,123.746435,,,,
+completion,apply,drop,staged,,100000,,,wall_ms,3,996.549204,1207.8457976999998,1226.6277171399997,930.991518,1231.323197,,,,
+completion,apply,git-apply,native,,10,,,wall_ms,30,0.7282895,0.8510191500000001,0.8806470700000001,0.671423,0.881696,,,,
+completion,apply,git-apply,native,,1000,,,wall_ms,10,13.610157000000001,14.432698400000001,14.611563680000001,13.228414,14.65628,,,,
+completion,apply,git-apply,native,,100000,,,wall_ms,3,1464.628612,1552.1238571,1559.90121222,1456.528792,1561.845551,,,,
+completion,density,hold-1s,container,,,1,,child_cpu_ms,5,245.13099999998644,296.9888000000111,307.34016000001304,237.6820000000066,309.9280000000135,,,,
+completion,density,hold-1s,container,,,1,,job_wall_ms,5,1269.609925,1393.0851584,1415.8546788800002,1259.354541,1421.547059,,,,
+completion,density,hold-1s,container,,,1,,peak_tree_rss_kib,5,26852,26909.6,26914.72,26700,26916,,,,
+completion,density,hold-1s,container,,,1,,wall_ms,5,1270.271482,1395.8604882,1419.0514608400001,1269.906501,1424.849204,,,,
+completion,density,hold-1s,container,,,8,,child_cpu_ms,5,3949.128999999999,9933.495399999996,11114.051079999996,3615.593000000004,11409.189999999995,,,,
+completion,density,hold-1s,container,,,8,,job_wall_ms,40,1521.907817,2512.7608597,2515.96737922,1471.514773,2517.642859,,,,
+completion,density,hold-1s,container,,,8,,peak_tree_rss_kib,5,215156,216428.80000000002,216677.76,195792,216740,,,,
+completion,density,hold-1s,container,,,8,,wall_ms,5,1524.143792,2329.0283259999997,2480.5574724,1493.354696,2518.439759,,,,
+completion,density,hold-1s,podman,,,1,,child_cpu_ms,5,31.65999999998803,33.7346000000025,33.7365200000022,31.379000000001156,33.737000000002126,,,,
+completion,density,hold-1s,podman,,,1,,job_wall_ms,5,1054.410932,1056.406069,1056.797973,1052.328689,1056.895949,,,,
+completion,density,hold-1s,podman,,,1,,peak_tree_rss_kib,5,50228,50733.6,50780.32,50012,50792,,,,
+completion,density,hold-1s,podman,,,1,,wall_ms,5,1068.667607,1071.0696926,1071.3694497200001,1054.871784,1071.444389,,,,
+completion,density,hold-1s,podman,,,128,,child_cpu_ms,5,6581.276000000003,6712.5895999999975,6717.581919999997,6463.476,6718.829999999997,,,,
+completion,density,hold-1s,podman,,,128,,job_wall_ms,640,6469.8661355,8542.540929800001,9251.62070986,1410.790007,9753.892918,,,,
+completion,density,hold-1s,podman,,,128,,peak_tree_rss_kib,5,6155580,6233929.6,6244920.319999999,6121320,6247668,,,,
+completion,density,hold-1s,podman,,,128,,wall_ms,5,9593.609489,9795.3740884,9811.969769679998,7797.440586,9816.11869,,,,
+completion,density,hold-1s,podman,,,32,,child_cpu_ms,5,1453.5300000000007,1464.3261999999993,1465.3572399999996,1424.1720000000057,1465.6149999999998,,,,
+completion,density,hold-1s,podman,,,32,,job_wall_ms,160,1407.3914835,1679.2229453,1740.6657699900002,1109.486055,1807.617328,,,,
+completion,density,hold-1s,podman,,,32,,peak_tree_rss_kib,5,1608280,1612475.2,1612565.44,1607016,1612588,,,,
+completion,density,hold-1s,podman,,,32,,wall_ms,5,1713.464903,1804.300205,1809.0911706,1601.267089,1810.288912,,,,
+completion,density,hold-1s,podman,,,8,,child_cpu_ms,5,293.5579999999973,302.4107999999984,303.3773599999978,282.8010000000063,303.61899999999764,,,,
+completion,density,hold-1s,podman,,,8,,job_wall_ms,40,1114.210548,1181.26254275,1190.50043741,1055.61835,1193.231171,,,,
+completion,density,hold-1s,podman,,,8,,peak_tree_rss_kib,5,401260,401355.2,401355.84,396252,401356,,,,
+completion,density,hold-1s,podman,,,8,,wall_ms,5,1183.076265,1192.968607,1193.8615678,1161.169376,1194.084808,,,,
+completion,density,hold-1s,safe,,,1,,child_cpu_ms,5,61.037999999999926,62.732600000000176,62.84892000000038,60.76999999999977,62.87800000000043,,,,
+completion,density,hold-1s,safe,,,1,,job_wall_ms,5,1194.073747,1238.3716042,1238.6563816399998,1168.240848,1238.727576,,,,
+completion,density,hold-1s,safe,,,1,,peak_tree_rss_kib,5,26620,26811.2,26847.04,26016,26856,,,,
+completion,density,hold-1s,safe,,,1,,wall_ms,5,1221.251982,1279.552032,1281.9630936,1185.840754,1282.565859,,,,
+completion,density,hold-1s,safe,,,128,,child_cpu_ms,3,5116.654000000004,5121.055899999998,5121.447179999997,5035.414999999999,5121.544999999997,,,,
+completion,density,hold-1s,safe,,,128,,job_wall_ms,384,1446.3369435,1490.5393672,1504.6335802899998,1355.392802,1511.995419,,,,
+completion,density,hold-1s,safe,,,128,,peak_tree_rss_kib,3,3322836,3362526.0,3366054.0,3322320,3366936,,,,
+completion,density,hold-1s,safe,,,128,,wall_ms,3,1531.953935,1543.9605587,1545.0278141400001,1516.466459,1545.294628,,,,
+completion,density,hold-1s,safe,,,32,,child_cpu_ms,5,1185.5159999999998,1220.3084000000001,1225.4024800000002,1180.4680000000012,1226.6760000000004,,,,
+completion,density,hold-1s,safe,,,32,,job_wall_ms,160,1135.1494825,1156.40501885,1158.75591058,1104.641107,1159.453719,,,,
+completion,density,hold-1s,safe,,,32,,peak_tree_rss_kib,5,841304,843365.6000000001,843505.1200000001,838936,843540,,,,
+completion,density,hold-1s,safe,,,32,,wall_ms,5,1160.573713,1175.555526,1178.0599588,1154.419786,1178.686067,,,,
+completion,density,hold-1s,safe,,,8,,child_cpu_ms,5,425.9610000000009,441.7373999999991,443.369079999999,394.75599999999923,443.77699999999896,,,,
+completion,density,hold-1s,safe,,,8,,job_wall_ms,40,1300.499589,1411.58157575,1416.18377585,1197.103952,1418.085137,,,,
+completion,density,hold-1s,safe,,,8,,peak_tree_rss_kib,5,210128,210446.40000000002,210466.88,209244,210472,,,,
+completion,density,hold-1s,safe,,,8,,wall_ms,5,1348.980823,1445.8519173999998,1457.72760428,1248.752799,1460.696526,,,,
+completion,density,hold-1s,vm,,,1,,child_cpu_ms,5,213.11800000000147,215.7350000000008,215.73579999999993,209.58100000000002,215.7359999999997,,,,
+completion,density,hold-1s,vm,,,1,,job_wall_ms,5,1219.228128,1235.0631338,1238.22819556,1218.977168,1239.019461,,,,
+completion,density,hold-1s,vm,,,1,,peak_tree_rss_kib,5,101856,102022.4,102046.08,100796,102052,,,,
+completion,density,hold-1s,vm,,,1,,wall_ms,5,1219.858697,1235.790618,1238.9213723999999,1219.593711,1239.704061,,,,
+completion,density,hold-1s,vm,,,8,,child_cpu_ms,5,2193.7660000000037,2320.1582000000058,2340.290040000007,2137.148999999994,2345.3230000000076,,,,
+completion,density,hold-1s,vm,,,8,,job_wall_ms,40,1281.2166065000001,1323.1797877499998,1326.80233703,1260.628773,1327.914587,,,,
+completion,density,hold-1s,vm,,,8,,peak_tree_rss_kib,5,805388,808019.2,808240.6399999999,802360,808296,,,,
+completion,density,hold-1s,vm,,,8,,wall_ms,5,1301.519607,1326.9880408,1328.94857376,1283.200035,1329.438707,,,,
+completion,replay,prepare-only,,claude-code,,,,wall_ms,60,6.3886415,21.112991549999997,30.133190469999985,5.196962,33.451154,,,,
+completion,supervision,review-select-10-drop-10,staged,,,,,apply_ms,30,17.621689500000002,43.6591856,51.07383575000001,14.732342,54.007628,,,,
+completion,supervision,review-select-10-drop-10,staged,,,,,drop_ms,30,4.068044,12.828213850000004,16.683210090000003,2.964143,17.19575,,,,
+completion,supervision,review-select-10-drop-10,staged,,,,,review_ms,30,3.205769,7.951489950000001,10.80994605,2.076687,11.682108,,,,
+completion,supervision,review-select-10-drop-10,staged,,,,,wall_ms,30,24.9434725,64.73668415,75.67250871,19.908454,79.878031,,,,
+completion,capability,density/safe/128,,,,,,,,,,,,,failed,,256,254
+completion,capability,density/vm/32,,,,,,,,,,,,,not-measured,memory guard: 256 MiB estimated RSS/VM exceeds 65% of available host memory,0,0
+completion,capability,density/vm/128,,,,,,,,,,,,,not-measured,memory guard: 256 MiB estimated RSS/VM exceeds 65% of available host memory,0,0
+completion,capability,density/container/32,,,,,,,,,,,,,failed,,160,45
+completion,capability,density/container/128,,,,,,,,,,,,,failed,,640,55
+completion,capability,suite/agent,,,,,,,,,,,,,failed,,0,0
+completion,capability,suite/isolation,,,,,,,,,,,,,failed,AF_UNIX path too long,0,0
+completion,capability,suite/replay,,,,,,,,,,,,,failed,,0,0
+completion,capability,suite/apply,,,,,,,,,,,,,failed,"crash window missed: committed, committed, 0",0,0
+verified,agent,arithmetic-repair,native,claude,,,,wall_ms,18,302.150825,318.5789411,340.44343941999995,291.23619,345.909564,,,,
+verified,agent,arithmetic-repair,native,codex,,,,wall_ms,18,1433.746811,1543.03642435,1546.18143047,1271.544257,1546.967682,,,,
+verified,agent,arithmetic-repair,staged,claude,,,,wall_ms,18,345.69029,365.94622495,366.28602979,335.573129,366.370981,,,,
+verified,agent,arithmetic-repair,staged,codex,,,,wall_ms,18,1401.228205,1521.7124488,1521.85926896,1300.697286,1521.895974,,,,
+verified,isolation,escape-fixtures,container,,,,,wall_ms,1,505.537335,505.537335,505.537335,505.537335,505.537335,,,,
+verified,isolation,escape-fixtures,host,,,,,wall_ms,1,33.921386,33.921386,33.921386,33.921386,33.921386,,,,
+verified,isolation,escape-fixtures,safe,,,,,wall_ms,1,79.262952,79.262952,79.262952,79.262952,79.262952,,,,
+verified,isolation,escape-fixtures,staged,,,,,wall_ms,1,65.519904,65.519904,65.519904,65.519904,65.519904,,,,
+verified,isolation,escape-fixtures,vm,,,,,wall_ms,1,395.199204,395.199204,395.199204,395.199204,395.199204,,,,
+verified,replay,prepare-only,,claude-code,,,,wall_ms,60,5.025897,5.61580045,6.132196849999996,4.811357,6.613923,,,,
+verified,replay,prepare-only,,codex,,,,wall_ms,60,5.0488645000000005,5.4916447,6.491993749999995,4.852694,7.305294,,,,
+verified,replay,prepare-only,,mini-swe-agent,,,,wall_ms,60,5.476027,6.7601242,7.275139349999998,4.94216,7.605265,,,,
+verified,replay,prepare-only,,opencode,,,,wall_ms,60,5.155908999999999,5.4237958,6.024912509999998,4.825303,6.404702,,,,
+verified,replay,prepare-only,,openhands,,,,wall_ms,60,5.180496,6.101944549999998,7.969981429999991,4.818649,9.354902,,,,
+verified,replay,prepare-only,,pi-agent,,,,wall_ms,60,5.2540985,6.076111049999999,7.405674069999996,4.964433,8.178295,,,,
+density-shell,density,hold-1s,container,,,1,,child_cpu_ms,5,18.33899999999744,19.5339999999959,19.727599999993686,17.99399999998741,19.775999999993132,,,,
+density-shell,density,hold-1s,container,,,1,,job_wall_ms,5,1037.858666,1054.4388102,1057.64907964,1037.798403,1058.451647,,,,
+density-shell,density,hold-1s,container,,,1,,peak_tree_rss_kib,5,26744,26954.4,26955.68,26244,26956,,,,
+density-shell,density,hold-1s,container,,,1,,wall_ms,5,1038.564594,1062.9277096,1067.70454192,1038.458796,1068.89875,,,,
+density-shell,density,hold-1s,container,,,128,,child_cpu_ms,5,3638.90200000003,3836.0997999999913,3858.2311599999894,3225.6109999999862,3863.763999999989,,,,
+density-shell,density,hold-1s,container,,,128,,job_wall_ms,640,1300.1519375,1478.31229835,1528.8959885900001,1045.645609,1674.674313,,,,
+density-shell,density,hold-1s,container,,,128,,peak_tree_rss_kib,5,3418996,3422450.4,3422992.48,3415964,3423128,,,,
+density-shell,density,hold-1s,container,,,128,,wall_ms,5,1531.17757,1690.4846698,1714.1755595599998,1393.432871,1720.098282,,,,
+density-shell,density,hold-1s,container,,,32,,child_cpu_ms,5,705.646999999999,749.8914000000013,752.495080000001,679.7200000000032,753.146000000001,,,,
+density-shell,density,hold-1s,container,,,32,,job_wall_ms,160,1060.1204445,1066.8778632,1071.39883518,1039.244775,1071.866653,,,,
+density-shell,density,hold-1s,container,,,32,,peak_tree_rss_kib,5,854264,856265.6,856590.72,852276,856672,,,,
+density-shell,density,hold-1s,container,,,32,,wall_ms,5,1085.614681,1094.4412506,1095.5576605200001,1083.299817,1095.836763,,,,
+density-shell,density,hold-1s,container,,,8,,child_cpu_ms,5,162.84500000000435,163.3265999999992,163.4021199999995,160.06199999999637,163.4209999999996,,,,
+density-shell,density,hold-1s,container,,,8,,job_wall_ms,40,1048.3603055,1048.9486001500002,1049.06480745,1038.008706,1049.105502,,,,
+density-shell,density,hold-1s,container,,,8,,peak_tree_rss_kib,5,213064,214449.6,214454.72,211572,214456,,,,
+density-shell,density,hold-1s,container,,,8,,wall_ms,5,1057.02845,1066.801946,1068.753878,1050.503172,1069.241861,,,,
+density-shell,density,hold-1s,podman,,,1,,child_cpu_ms,5,36.722999999994954,45.72399999999561,47.30319999999665,35.72800000000598,47.69799999999691,,,,
+density-shell,density,hold-1s,podman,,,1,,job_wall_ms,5,1060.066504,1085.2022048,1090.0150065599998,1054.653463,1091.218207,,,,
+density-shell,density,hold-1s,podman,,,1,,peak_tree_rss_kib,5,49976,50429.6,50489.119999999995,49028,50504,,,,
+density-shell,density,hold-1s,podman,,,1,,wall_ms,5,1060.655233,1095.1933652,1101.2009266400003,1055.194405,1102.702817,,,,
+density-shell,density,hold-1s,podman,,,128,,child_cpu_ms,5,6494.376000000003,6717.505599999999,6729.529919999997,6464.970999999991,6732.535999999996,,,,
+density-shell,density,hold-1s,podman,,,128,,job_wall_ms,640,6473.435293500001,8242.552960099998,8752.413575520002,1382.935044,9458.396633,,,,
+density-shell,density,hold-1s,podman,,,128,,peak_tree_rss_kib,5,6071300,6231443.2,6256643.840000001,6060156,6262944,,,,
+density-shell,density,hold-1s,podman,,,128,,wall_ms,5,8799.767224,9373.4303958,9481.182073560001,8140.55166,9508.119993,,,,
+density-shell,density,hold-1s,podman,,,32,,child_cpu_ms,5,1471.7050000000143,1512.1181999999947,1518.1172399999962,1413.9079999999922,1519.6169999999966,,,,
+density-shell,density,hold-1s,podman,,,32,,job_wall_ms,160,1496.9685875,1969.3595553,2071.8767900699995,1091.872599,2176.501779,,,,
+density-shell,density,hold-1s,podman,,,32,,peak_tree_rss_kib,5,1597044,1600544.8,1600736.16,1590284,1600784,,,,
+density-shell,density,hold-1s,podman,,,32,,wall_ms,5,1888.254001,2162.9159464000004,2175.68130688,1607.763662,2178.872647,,,,
+density-shell,density,hold-1s,podman,,,8,,child_cpu_ms,5,307.9660000000075,315.2647999999999,315.4625599999986,294.92700000000127,315.51199999999824,,,,
+density-shell,density,hold-1s,podman,,,8,,job_wall_ms,40,1132.4298290000002,1189.41107645,1237.29045317,1063.504485,1259.632499,,,,
+density-shell,density,hold-1s,podman,,,8,,peak_tree_rss_kib,5,398508,400247.19999999995,400507.04000000004,395220,400572,,,,
+density-shell,density,hold-1s,podman,,,8,,wall_ms,5,1187.375332,1249.9600748,1258.49752296,1159.046461,1260.631885,,,,
+density-shell,density,hold-1s,vm,,,1,,child_cpu_ms,5,217.11199999999997,250.58,257.14480000000003,213.74599999999998,258.786,,,,
+density-shell,density,hold-1s,vm,,,1,,job_wall_ms,5,1239.300393,1272.223671,1278.7419126,1219.042638,1280.371473,,,,
+density-shell,density,hold-1s,vm,,,1,,peak_tree_rss_kib,5,100880,102656.8,102761.76,100380,102788,,,,
+density-shell,density,hold-1s,vm,,,1,,wall_ms,5,1239.981966,1285.1166652000002,1293.9457794400003,1219.822114,1296.153058,,,,
+density-shell,density,hold-1s,vm,,,32,,child_cpu_ms,5,11854.155999999995,12024.210799999999,12050.486959999998,11561.085,12057.055999999999,,,,
+density-shell,density,hold-1s,vm,,,32,,job_wall_ms,160,1938.9764415,2115.243474,2132.66849402,1466.230327,2150.873813,,,,
+density-shell,density,hold-1s,vm,,,32,,peak_tree_rss_kib,5,3167596,3173047.2,3173879.8400000003,3156152,3174088,,,,
+density-shell,density,hold-1s,vm,,,32,,wall_ms,5,2129.363988,2161.7064258,2163.39284756,2104.410872,2163.814453,,,,
+density-shell,density,hold-1s,vm,,,8,,child_cpu_ms,5,2265.0620000000004,2275.624,2276.8088,2242.533999999999,2277.105,,,,
+density-shell,density,hold-1s,vm,,,8,,job_wall_ms,40,1292.123944,1306.0727613,1318.2094248500002,1280.753677,1322.666339,,,,
+density-shell,density,hold-1s,vm,,,8,,peak_tree_rss_kib,5,808748,811484.0,811880.7999999999,808012,811980,,,,
+density-shell,density,hold-1s,vm,,,8,,wall_ms,5,1312.408009,1324.0634338000002,1325.1578731600002,1307.481047,1325.431483,,,,
+density-shell,capability,density/vm/128,,,,,,,,,,,,,not-measured,memory guard: 150.6 MiB estimated RSS/VM plus 2 GiB reserve exceeds available memory,0,0
+compatibility,filesystem,cargo,host,,,,,wall_ms,30,84.384522,111.78946755000001,124.55724006,84.128389,127.85616,,,,
+compatibility,filesystem,cargo,host,,,,,worker_ms,30,52.6035235,70.49179219999999,75.30298973999999,49.936989,76.168522,,,,
+compatibility,filesystem,cargo,native,,,,,wall_ms,30,71.95655550000001,89.41344650000002,103.03778006,68.683442,104.981066,,,,
+compatibility,filesystem,cargo,native,,,,,worker_ms,30,52.895078,65.79161210000001,76.17061216,49.420544,77.871693,,,,
+compatibility,filesystem,cargo,safe,,,,,wall_ms,30,209.9223725,242.16252785,342.2207250900001,189.124593,379.114171,,,,
+compatibility,filesystem,cargo,safe,,,,,worker_ms,30,119.76904,138.773214,228.2295697600001,101.107963,262.037264,,,,
+compatibility,filesystem,cargo,staged,,,,,wall_ms,30,166.6491055,210.5673135,397.5479789100002,146.253111,473.243379,,,,
+compatibility,filesystem,cargo,staged,,,,,worker_ms,30,116.067537,139.92896470000002,233.8976170900001,94.844313,270.849904,,,,
+compatibility,filesystem,cargo,vm,,,,,wall_ms,30,1271.1451055,2683.4337062000004,3889.265898550001,1199.332815,4223.983233,,,,
+compatibility,filesystem,cargo,vm,,,,,worker_ms,30,567.4226135,1365.4256200500004,2047.1665879200004,545.808353,2227.950399,,,,
+compatibility,filesystem,npm,container,,,,,wall_ms,30,550.8895405000001,1368.06374375,1469.7481900000002,515.792509,1489.023417,,,,
+compatibility,filesystem,npm,container,,,,,worker_ms,30,202.4791055,587.64882225,601.7448107600001,196.796251,607.147585,,,,
+compatibility,filesystem,npm,host,,,,,wall_ms,30,205.33905199999998,522.0372405,595.2250027100001,194.661133,625.109764,,,,
+compatibility,filesystem,npm,host,,,,,worker_ms,30,163.560064,430.5286274,475.13514540000006,155.547209,490.958746,,,,
+compatibility,filesystem,npm,native,,,,,wall_ms,30,181.472552,472.5988914,531.92559634,175.40578,550.184273,,,,
+compatibility,filesystem,npm,native,,,,,worker_ms,30,162.861764,433.43690065000004,488.03529225,157.614672,503.329943,,,,
+compatibility,filesystem,npm,podman,,,,,wall_ms,30,365.172192,883.4188725,1239.5883494400005,341.256409,1376.772114,,,,
+compatibility,filesystem,npm,podman,,,,,worker_ms,30,217.057769,547.4380146000001,833.4543970000003,206.47638,935.936453,,,,
+compatibility,filesystem,npm,safe,,,,,wall_ms,30,339.6323655,983.3422103999999,1085.49395165,318.892528,1124.970496,,,,
+compatibility,filesystem,npm,safe,,,,,worker_ms,30,256.70035099999996,717.5639262000001,777.66758478,232.675098,790.843479,,,,
+compatibility,filesystem,npm,staged,,,,,wall_ms,30,266.483293,544.8654702000001,780.5668436100001,235.89304,836.392392,,,,
+compatibility,filesystem,npm,staged,,,,,worker_ms,30,213.165309,437.02619660000016,612.1503708800001,188.831516,650.456624,,,,
+compatibility,filesystem,npm,vm,,,,,wall_ms,30,1661.9072605000001,5172.1809295,5755.11123457,1561.567522,5847.359065,,,,
+compatibility,filesystem,npm,vm,,,,,worker_ms,30,985.28586,3238.11805915,4617.056490790002,934.860126,5157.738943,,,,
+compatibility,capability,filesystem/cargo/podman,,,,,,,,,,,,,unavailable,"exit 1, expected 0; logs in /home/reiase/workspace/pvisor/target/product-benchmark-v1-20261004-compatibility/trials/00006-fs-cargo-podman/workspace
+1
+  |
+  = note:  ""cc"" ""-m64"" ""/work/_cargo-target/release/deps/rustchqtvKS/symbols.o"" ""<2 object files omitted>"" ""-Wl,--as-needed"" ""-Wl,-Bstatic"" ""<sysroot>/lib/rustlib/x86_64-unknown-linux-gnu/lib/{libstd-*,libpanic_unwind-*,libobject-*,libmemchr-*,libaddr2line-*,libgimli-*,libcfg_if-*,librustc_demangle-*,libstd_detect-*,libhashbrown-*,librustc_std_workspace_alloc-*,libminiz_oxide-*,libadler2-*,libunwind-*,liblibc-*,librustc_std_workspace_core-*,liballoc-*,libcore-*,libcompiler_builtins-*}.rlib"" ""-Wl,-Bdynamic"" ""-lgcc_s"" ""-lutil"" ""-lrt"" ""-lpthread"" ""-lm"" ""-ldl"" ""-lc"" ""-L"" ""/work/_cargo-target/release/deps/rustchqtvKS/raw-dylibs"" ""-B<sysroot>/lib/rustlib/x86_64-unknown-linux-gnu/bin/gcc-ld"" ""-fuse-ld=lld"" ""-Wl,--eh-frame-hdr"" ""-Wl,-z,noexecstack"" ""-L"" ""<sysroot>/lib/rustlib/x86_64-unknown-linux-gnu/lib"" ""-o"" ""/work/_cargo-target/release/deps/fixture-77b9bd285f4194f3"" ""-Wl,--gc-sections"" ""-pie"" ""-Wl,-z,relro,-z,now"" ""-Wl,-O1"" ""-Wl,--strip-debug"" ""-nodefaultlibs""
+  = note: some arguments are omitted. use `--verbose` to show all linker arguments
+  = note: rust-lld: error: cannot open /lib64/libmvec.so.1: No such file or directory
+          collect2: error: ld returned 1 exit status
+          
+
+error: could not compile `fixture` (bin ""fixture"") due to 1 previous error
+Traceback (most recent call last):
+  File ""/work/workload.py"", line 109, in <module>
+    main()
+    ~~~~^^
+  File ""/work/workload.py"", line 58, in main
+    subprocess.run(
+    ~~~~~~~~~~~~~~^
+        [
+        ^
+    ...<9 lines>...
+        stdout=subprocess.DEVNULL,
+        ^^^^^^^^^^^^^^^^^^^^^^^^^^
+    )
+    ^
+  File ""/usr/lib64/python3.14/subprocess.py"", line 578, in run
+    raise CalledProcessError(retcode, process.args,
+                             output=stdout, stderr=stderr)
+subprocess.CalledProcessError: Command '['/home/reiase/.rustup/toolchains/stable-x86_64-unknown-linux-gnu/bin/cargo', 'build', '--offline', '--release', '--manifest-path', 'rust/Cargo.toml']' returned non-zero exit status 101.
+",0,0
+compatibility,capability,filesystem/cargo/container,,,,,,,,,,,,,unavailable,"exit 1, expected 0; logs in /home/reiase/workspace/pvisor/target/product-benchmark-v1-20261004-compatibility/trials/00007-fs-cargo-container/workspace
+pVisor safe profile: host filesystem access + workspace writes are direct + cooperative network review
+workspace: /home/reiase/workspace/pvisor/target/product-benchmark-v1-20261004-compatibility/trials/00007-fs-cargo-container/workspace
+Job storage: /home/reiase/workspace/pvisor/target/product-benchmark-v1-20261004-compatibility/trials/00007-fs-cargo-container/runs/run-040f1bd3-775b-4d3b-aaa0-48fc2f65e76b
+boundary: OCI container process; direct sockets remain outside proxy enforcement
+Run Bundle: /home/reiase/workspace/pvisor/target/product-benchmark-v1-20261004-compatibility/trials/00007-fs-cargo-container/runs/run-040f1bd3-775b-4d3b-aaa0-48fc2f65e76b/run-bundle.json
+Review: pvisor status --review /home/reiase/workspace/pvisor/target/product-benchmark-v1-20261004-compatibility/trials/00007-fs-cargo-container/runs/run-040f1bd3-775b-4d3b-aaa0-48fc2f65e76b
+pVisor Job failed: ProcessExit: workload exited with exit status: 1
+",0,0
+cargo-ready,filesystem,cargo,container,,,,,wall_ms,30,405.0762855,425.09778235,425.45909371,374.558021,425.592262,,,,
+cargo-ready,filesystem,cargo,container,,,,,worker_ms,30,51.990894499999996,57.943478,59.963094690000005,45.919694,60.71641,,,,
+cargo-ready,filesystem,cargo,native,,,,,wall_ms,30,70.8493785,80.24680805,82.02462749,67.009837,82.481006,,,,
+cargo-ready,filesystem,cargo,native,,,,,worker_ms,30,51.518102999999996,59.7042484,62.43847529,48.54173,63.499527,,,,
+cargo-ready,filesystem,cargo,podman,,,,,wall_ms,30,181.1838305,187.7052898,189.69609676,163.133766,190.221361,,,,
+cargo-ready,filesystem,cargo,podman,,,,,worker_ms,30,49.2920505,54.35426985,55.746463649999995,45.414929,55.914378,,,,
+network-oci,network,bulk,container,,,,,bulk_mib_per_s,30,811.0278997644698,943.9598783444908,947.822141049809,395.97981982893447,949.3610236627642,,,,
+network-oci,network,bulk,container,,,,,wall_ms,30,475.855623,516.0568081,523.92741275,465.438882,527.121393,,,,
+network-oci,network,bulk,container,,,,,worker_ms,30,69.747489,110.39967010000001,110.7217807,63.826469,110.740477,,,,
+network-oci,network,bulk,native,,,,,bulk_mib_per_s,30,861.3948436294129,937.4959846112295,987.2709745720986,376.47942885811767,1006.508524466681,,,,
+network-oci,network,bulk,native,,,,,wall_ms,30,102.1546235,142.94931715,146.93060564,95.540085,148.271097,,,,
+network-oci,network,bulk,native,,,,,worker_ms,30,68.048734,109.5699626,113.85778305000001,62.771091,115.133422,,,,
+network-oci,network,bulk,podman,,,,,bulk_mib_per_s,30,853.6654169779015,889.5071206363473,928.3240320399666,397.1788830761346,943.8726427923717,,,,
+network-oci,network,bulk,podman,,,,,wall_ms,30,270.29853649999995,310.01069595,311.13649066,258.841456,311.42981,,,,
+network-oci,network,bulk,podman,,,,,worker_ms,30,68.5334385,109.78414035,110.85891802,64.725875,111.249131,,,,
+network-oci,network,small,container,,,,,request_ms,7680,1.297607,2.3016415500000003,10.064459880000005,0.485971,15.418802,,,,
+network-oci,network,small,container,,,,,wall_ms,30,475.7708335,501.60993790000003,506.11048288,435.832647,506.15344,,,,
+network-oci,network,small,container,,,,,worker_ms,30,56.3078615,68.92630145,69.30190141,48.043836,69.370101,,,,
+network-oci,network,small,native,,,,,request_ms,7680,0.9871749999999999,1.440326,4.850760500000002,0.513122,7.069481,,,,
+network-oci,network,small,native,,,,,wall_ms,30,71.9064205,78.3375727,79.49574875,66.717769,79.796805,,,,
+network-oci,network,small,native,,,,,worker_ms,30,35.4235495,43.735747599999996,43.97883176,32.222669,44.012169,,,,
+network-oci,network,small,podman,,,,,request_ms,7680,1.009482,1.4342326500000002,9.070780880000003,0.493866,11.992278,,,,
+network-oci,network,small,podman,,,,,wall_ms,30,252.195924,260.19006759999996,262.31517324,238.653995,262.991756,,,,
+network-oci,network,small,podman,,,,,worker_ms,30,45.286563,52.4096402,52.62628524,39.276252,52.629952,,,,
+network-oci,network,stream,container,,,,,first_body_ms,30,3.781809,3.9838187,4.0451315,3.586482,4.059008,,,,
+network-oci,network,stream,container,,,,,wall_ms,30,425.5146815,435.63944405,435.96626655,415.133808,436.075192,,,,
+network-oci,network,stream,container,,,,,worker_ms,30,22.2416215,22.51704595,22.63274179,22.06496,22.66831,,,,
+network-oci,network,stream,native,,,,,first_body_ms,30,1.069239,1.17535685,1.18176425,0.938369,1.182656,,,,
+network-oci,network,stream,native,,,,,wall_ms,30,52.339353,53.149084200000004,53.279218189999995,51.083112,53.327239,,,,
+network-oci,network,stream,native,,,,,worker_ms,30,19.621204,19.93323195,19.961248559999998,19.460107,19.966827,,,,
+network-oci,network,stream,podman,,,,,first_body_ms,30,3.5303269999999998,3.6032133999999996,3.6431046600000005,3.402628,3.656603,,,,
+network-oci,network,stream,podman,,,,,wall_ms,30,218.50651,226.52090570000001,228.03030004,212.915421,228.094281,,,,
+network-oci,network,stream,podman,,,,,worker_ms,30,22.164661000000002,22.35968115,22.37270641,21.938232,22.372727,,,,
+crash-verified,apply,crash-recovery,staged,,10000,,prepared,recovery_ms,3,8856.003849,9023.8515585,9038.771354899998,8846.008831,9042.501304,,,,
+crash-verified,apply,crash-recovery,staged,,10000,,target_applied,recovery_ms,3,354.279327,371.49126720000004,373.02121744,338.921352,373.403705,,,,
+crash-verified,capability,suite/crashes,,,,,,,,,,,,,failed,"crash window missed: committed, committed, 0",0,0
+committed-verified,apply,crash-recovery,staged,,10000,,committed,recovery_ms,3,259.466116,347.7030457,355.54632834000006,247.684383,357.507149,,,,

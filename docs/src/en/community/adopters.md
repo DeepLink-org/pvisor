@@ -1,32 +1,28 @@
----
-status: todo
-search:
-  exclude: true
----
-
 # Adopters and case studies
 
-!!! warning "Planned"
-    No results are available yet. The requirements below are open to claim.
+If you are considering pVisor, start with your task type: let a coding agent modify a project, collect candidate changes in CI, or generate scored rollouts in a batch. One small task can establish whether execution, review, and change acceptance fit your workflow.
 
-## Question
+No organization case with public authorization is currently registered here. The following are reproducible trial paths; organization names, logos, and production scale require confirmation before publication.
 
-Who uses pVisor in production or research?
+## Start from your workflow {#start}
 
-## Requirements
+| Scenario | First trial | Results to inspect |
+| --- | --- | --- |
+| Local coding agent | One small staged change | File diff, tests, and apply selection |
+| CI repair | An offline script, then an agent | Failure records, Stage artifacts, and review handoff |
+| Parallel agents | Two independent worktrees | Separately traceable results and clear integration |
+| RL rollout | One candidate collected and scored | Input version, trajectory, reward, and failure category |
 
-- Metrics: —
-- Controls: —
-- Workload: —
-- Environment: —
+Follow [CI](../guides/ci.md), [Parallel agents](../guides/parallel-agents.md), or [Rollouts](../guides/rl-rollouts.md). Validate your task before measuring speed and capacity with your actual workload.
 
-## Acceptance criteria
+## Share a useful case study {#case}
 
-- Publish users and scenarios with consent.
-- Distinguish production use from experiments.
+Describe the original workflow, problem, pVisor version, platform and executor, agent and model versions, key commands or configuration, and review process. Include a public task input and result, explaining what adoption changed in practice.
 
-## Tracking
+Attach task counts, hardware, and methodology to performance figures. Connect experience claims to concrete actions such as approval counts, consolidated diff review, or conflict handling. Failure cases and subsequent configuration changes are useful too.
 
-- Tracking issue: TODO
-- Owner: TODO
-- Related: [Community](index.md)
+Confirm permission to publish organization names, logos, quotations, and data. Replace private code and credentials with a public reproduction; full logs containing secrets are unnecessary.
+
+## Case record fields {#fields}
+
+Record organization or individual attribution, publication permission scope, date, versions, task type, integration, scale, metric definitions, and links to original material. Keep unauthorized cases unnamed and distinguish experimental trials from production use.

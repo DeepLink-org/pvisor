@@ -1,38 +1,12 @@
----
-status: todo
-search:
-  exclude: true
----
-
 # Platforms and executor support
 
-!!! warning "Planned"
-    Engineering must provide evidence-backed maturity levels. See [Executor boundaries](../security/executor-boundaries.md) for current controls.
+Choose an executor for your platform, then check its prerequisites. Host tasks are a quick starting point on Linux; choose a VM when you need Linux userspace or a separate kernel. VMs on Apple Silicon use Linux aarch64 userspace.
 
-## Question
-
-What maturity is evidenced for each platform, executor, and capability?
-
-## Requirements
-
-- Linux x86_64/arm64 and Apple Silicon macOS × host/container/VM × capabilities.
-- Stable/Beta/experimental/unsupported maturity labels.
-- Every label needs CI/spec/benchmark/issue evidence.
-
-## Acceptance criteria
-
-- Evidence for every cell.
-- README maturity labels link here.
-
-## Tracking
-
-- Tracking issue: TODO (no issue has been assigned).
-- Owner: TODO
-- Related: [Boundaries](../security/executor-boundaries.md), [limitations](../security/known-limitations.md)
+Package availability and installed controls should be checked separately. The table below describes current implementation paths; the executor observations in each Run Bundle identify its effective boundaries.
 
 ## Mechanisms and prerequisites today
 
-This matrix describes implementation paths and release prerequisites, without assigning unverified Stable/Beta maturity.
+Prepare the environment using these prerequisites, then validate the features you need with a small task and its Bundle.
 
 | Platform | host | container | VM |
 | --- | --- | --- | --- |

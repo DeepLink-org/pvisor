@@ -1,33 +1,8 @@
----
-status: todo
-search:
-  exclude: true
----
-
 # Exit codes and errors
 
-!!! warning "Planned"
-    The complete reference is pending. `pvisor run` preserves command exit codes; `--strict` admission rejects missing enforcement evidence with `UnsupportedPolicy`.
+Scripts should preserve the exit code, then read the Run Bundle. The code tells you whether the command succeeded; the recorded failure type helps distinguish workload errors, setup failures, and policy rejection.
 
-## Question
-
-Which exit code does each `pvisor` subcommand return, and when? How do pVisor's own errors differ from the exit code of the command it runs?
-
-## Requirements
-
-- List each subcommand's exit codes and meanings.
-- List the main error types (unsupported policy, sandbox setup failure, apply conflict, missing Job) with their exit codes and messages.
-- Explain how CI distinguishes "agent failure" from "pVisor refused to run".
-
-## Acceptance criteria
-
-- The exit-code table maps one-to-one to error types in the code and has test coverage.
-
-## Tracking
-
-- Tracking issue: TODO (no issue has been assigned).
-- Owner: TODO
-- Related: [CI](../guides/ci.md)
+A workload can return `1`, `2`, or `125` itself, so a number alone is insufficient for deciding whether to retry, switch executors, or grade an agent.
 
 ## Current exit behavior
 
@@ -50,3 +25,17 @@ Apply conflicts, missing Jobs, and UnsupportedPolicy do not currently have disti
 Save stderr and the return code, then look for the Bundle at an explicit stage path. `run.state`, `run.exit_code`, and `run.failure` describe execution. Admission/preparation can fail before a complete Bundle exists; classify this as startup/infrastructure failure rather than successful no-op.
 
 Do not apply automatically just because the agent returned 0. Apply has independent conflicts/recovery and its result needs checking. Timeouts, cancellations, and nonzero exits can leave reviewable changes. See [CI](../guides/ci.md).
+
+## A shell pattern that retains failure evidence {#shell}
+
+```bash
+set +e
+pvisor run --safe --overlaynet-deny-all --stdio capture \
+  --stage ../stage-exit-001 -- /bin/sh -c 'printf "candidate\n" > result.txt; exit 7'
+run_code=$?
+pvisor status --review --json ../stage-exit-001 > ../stage-exit-001.review.json
+review_code=$?
+printf 'run=%s review=%s\n' "$run_code" "$review_code"
+```
+
+The command returns `7` and may still leave a reviewable `result.txt`. Retain execution and review-reading statuses separately; after collecting artifacts, CI should end the step with the original `run_code`. Apply changes after review, or drop them if discarded.

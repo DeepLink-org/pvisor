@@ -1,6 +1,99 @@
-# 共享镜像缓存协议 v1
+# 共享镜像缓存与存储后端
 
-`pvisor cache serve` 把服务端的 OCI 镜像存储暴露为只读文件服务。客户端不会收到宿主文件系统路径。镜像在服务端准备一次，之后以其解析后的平台 manifest 的 SHA-256 摘要寻址。现有存储负责 blob 校验、层应用和白障（whiteout）处理。文件查询不访问 registry。
+`pvisor cache` 通过服务器、文件系统或 S3 复用 OCI 镜像内容。服务器模式的 `pvisor cache serve` 把已有 OCI 存储暴露为只读文件服务。客户端不会收到宿主文件系统路径。镜像在服务端准备一次，之后以其解析后的平台 manifest 的 SHA-256 摘要寻址。现有存储负责 blob 校验、层应用和白障（whiteout）处理。文件查询不访问 registry。
+
+## 选择后端
+
+服务器、文件系统和 S3 使用同一套 `prepare/list/stat/read` 接口，VM 也使用相同配置。文件系统和 S3 是直接存储后端，使用它们不需要启动 `cache serve`。
+
+| 后端 | 配置 | 适用场景 |
+|---|---|---|
+| `server`（默认） | `PVISOR_CACHE_SERVER=unix://...` 或 loopback `tcp://...` | 复用同一台机器的已解包 OCI 存储，或已有集中服务 |
+| `filesystem` | `PVISOR_CACHE_BACKEND=filesystem` 与 `PVISOR_CACHE_LOCATION=/absolute/directory` | 单机多个进程，或共享盘/NFS 上的缓存 |
+| `s3` | `PVISOR_CACHE_BACKEND=s3` 与 `PVISOR_CACHE_LOCATION=s3://BUCKET/PREFIX` | 多机器通过对象存储共享镜像，无需维护缓存服务 |
+
+命令行 `--backend`、`--location`、`--image-store` 优先于环境变量，在子命令前后都可使用。`--read-only` 或 `PVISOR_CACHE_READ_ONLY=true` 让共享后端只接受读取：准备未发布镜像和 `--refresh` 会明确失败，不访问 registry，不尝试写入后端。只读客户端仍可写自己的本地加速缓存。
+
+### 文件系统：发布一次，独立进程读取
+
+```sh
+pvisor cache --backend filesystem --location /mnt/pvisor-cache \
+  --image-store /tmp/pvisor-publish publish alpine:latest
+pvisor cache --backend filesystem --location /mnt/pvisor-cache \
+  --read-only prepare alpine:latest
+pvisor cache --backend filesystem --location /mnt/pvisor-cache \
+  --read-only read sha256:YOUR_MANIFEST_DIGEST etc/os-release
+```
+
+`--location` 是新的共享缓存目录，`--image-store` 是发布时用来拉取/解包 OCI 镜像的本地暂存目录；两者不同。也可以复用现有 `PVISOR_IMAGE_STORE`。发布完成后读取不依赖暂存目录，CI 可把它设为任务临时目录。共享目录中的对象默认私有，跨 UID 使用共享盘时需由存储管理员设置相应读取权限；只读模式不会创建缺失的共享目录。
+
+### S3：发布端有写权限，工作节点只读
+
+```sh
+export AWS_DEFAULT_REGION=ap-southeast-1
+# Supply AWS credentials through environment variables or workload roles.
+export PVISOR_CACHE_BACKEND=s3
+export PVISOR_CACHE_LOCATION=s3://your-bucket/pvisor-cache
+pvisor cache --image-store /tmp/pvisor-publish publish alpine:latest
+
+# Workers only need GetObject access to this prefix.
+export PVISOR_CACHE_READ_ONLY=true
+pvisor cache prepare alpine:latest
+pvisor cache read sha256:YOUR_MANIFEST_DIGEST etc/os-release
+pvisor run --executor vm --rootfs image=alpine:latest -- /bin/sh
+```
+
+桶需要预先建立；pVisor 不创建桶。`publish` 向该前缀上传对象，需要 `s3:PutObject`；读写模式的 `prepare` 先查询缓存、未命中时发布，因此还需要 `s3:GetObject`。读取节点只需要 `s3:GetObject`，正常读写不需要 `ListBucket` 或 `DeleteObject`。S3 存储连接由宿主负责，新的缓存配置及其隐式 `AWS_*` 凭据不会投影到 guest；显式传给工作负载的环境变量仍由调用方决定。
+
+S3 使用 SigV4，默认 HTTPS。凭据支持 `AWS_ACCESS_KEY_ID`、`AWS_SECRET_ACCESS_KEY`、可选 `AWS_SESSION_TOKEN`，以及 EC2、ECS、Web Identity 工作负载角色；由 [object_store 的 S3 provider](https://docs.rs/object_store/0.13.2/object_store/aws/struct.AmazonS3Builder.html) 管理获取与续期。当前不直接读取 `~/.aws` profile/SSO 文件，可向进程提供导出的环境凭据或使用工作负载角色。区域用 `AWS_DEFAULT_REGION` 或 `AWS_REGION`。S3 兼容服务可设置 `AWS_ENDPOINT`（或 `AWS_ENDPOINT_URL_S3`）；下面的 HTTP 配置仅用于本机测试服务。
+
+```sh
+export AWS_ENDPOINT=http://127.0.0.1:9000
+export AWS_ALLOW_HTTP=true
+export AWS_ACCESS_KEY_ID=YOUR_ACCESS_KEY
+export AWS_SECRET_ACCESS_KEY=YOUR_SECRET_KEY
+export PVISOR_CACHE_BACKEND=s3
+export PVISOR_CACHE_LOCATION=s3://your-bucket/pvisor-cache
+pvisor cache prepare alpine:latest
+```
+
+### 镜像拆分与上传工具
+
+`pvisor cache publish IMAGE` 是显式发布入口：从 registry 拉取所选平台的 OCI manifest 和层，在本地应用层与 whiteout，遍历合并后的镜像文件，再上传文件索引和内容块。已有的本地 OCI 暂存可通过 `--image-store` 或 `PVISOR_IMAGE_STORE` 复用；上传后可以删除暂存目录。
+
+```sh
+PVISOR_CACHE_READ_ONLY=false pvisor cache publish alpine:latest \
+  --backend s3 --location s3://your-bucket/pvisor-cache \
+  --architecture amd64 --image-store /tmp/pvisor-publish
+```
+
+`--architecture` 支持 `amd64`、`arm64`，默认取宿主架构。`--refresh` 重新查询 registry；不指定时可使用本地仍有效的已准备镜像记录。`publish` 总会执行拆分和上传，不根据远端 tag 记录跳过；已存在的不可变内容块通过条件创建复用，缺失的块会重新上传。只读模式和服务器后端不接受发布。命令成功时输出 JSON，包含 manifest 摘要、架构、索引摘要 `metadata_generation` 以及文件数/逻辑字节总量 `totals`；客户端随后通过这些索引按路径读取文件。
+
+```text
+s3://your-bucket/pvisor-cache/
+└── v1/
+    ├── format
+    ├── refs/<reference-and-architecture-hash>.json
+    ├── images/<manifest-sha256>.json
+    ├── indexes/<index-sha256>.json
+    └── blobs/<content-sha256>
+```
+
+这里的文件存储结构由索引中的文件路径、权限、硬链接、符号链接和内容片段共同表示。S3 中的内容对象是至多 1 MiB 的块；一个大文件可以使用多个对象，多个小文件也可以共享同一个对象。文件路径由索引映射到内容块，读取端无需重新下载或解包 OCI 层。
+
+### 存储布局与请求成本
+
+直接存储后端的单镜像索引上限为 64 MiB，最多 200,000 个路径和 500,000 个内容片段；超过上限会明确失败。兼容的对象服务需要支持原子 PUT 和 `If-None-Match` 条件创建。
+
+两个直接存储后端共享 `v1/` 格式：`refs/` 保存按镜像引用和架构的记录，`images/` 保存 manifest 摘要到索引的指针，`indexes/` 保存不可变的元数据和文件内容片段索引，`blobs/` 保存 SHA-256 标识的内容块。文件名与符号链接使用 Unix 原始字节，硬链接保持相同 inode 身份，文件模式和 Linux 身份沿用 OCI 提取规则。
+
+发布把小文件合并进至多 1 MiB 的块；大文件可以跨块。块按内容去重，先写全部块和索引，最后原子发布引用。并发发布使用不可变对象的条件创建，不向读者暴露正在写入的对象。失败可能留下未引用的块，但不会发布指向未完成上传的引用。
+
+读取先获取引用和索引，随后只读请求范围所在的块；目录查询只访问索引。单个客户端保持有界内存缓存，本地 `<user-cache>/pvisor/cache-v1/objects/<location-hash>/` 还持久复用经过摘要验证的索引与打包块。损坏的本地对象会重新获取；损坏、缺失或被拒绝的远端对象使操作失败，不填零或静默改走 registry。底层块缓存之外，VM 的文件块和元数据缓存也继续生效。
+
+可变 tag 的发布记录在读写模式下缓存五分钟；`--refresh` 由发布端显式更新。只读模式使用已发布记录，即使超过五分钟也不去 registry；需要更新时由发布端刷新，任务随后固定到返回的 manifest 摘要。使用 `IMAGE@sha256:...` 可以固定版本。
+
+S3 的实际传输包括索引和完整打包块，小文件读取可能获取邻近文件字节。现有 TUI `Transferred` 计数是 cache 接口返回的逻辑文件字节，不是 S3 GET 次数或计费流量；不要用它估算对象存储账单。共享块的自动 GC/配额暂未加入；运维可按独立前缀分组保存和退役，确认没有任务使用旧前缀后整体清理。不能单独按块年龄删除仍被新引用使用的内容。
 
 ## 代码布局
 
@@ -12,7 +105,11 @@ cache/
 ├── cli.rs              # pvisor cache 子命令
 ├── protocol.rs         # 请求/响应类型、分帧、内容哈希
 ├── transport.rs        # Unix/TCP 端点、流、超时
-├── client.rs           # 服务发现与校验后的请求
+├── client.rs           # 后端发现与校验后的请求
+├── config.rs           # CLI/执行器共享的后端配置
+├── storage.rs          # 文件系统和 S3 对象 I/O
+├── portable.rs         # 直接存储格式、索引和范围读取
+├── portable/           # 打包发布与回归测试
 ├── server.rs           # 认证、工作队列、受限文件访问
 ├── server/
 │   ├── metadata.rs     # 服务端元数据与目录 LRU 缓存
@@ -51,7 +148,7 @@ pvisor cache read sha256:YOUR_MANIFEST_DIGEST etc/os-release
 
 ## VM 自动懒加载
 
-当 `pvisor run --vm --rootfs image=IMAGE -- COMMAND` 准备 OCI 镜像时，它用一个两秒的 `ping` 握手探测默认 socket。有兼容的服务端在线时自动选择懒加载；socket 缺失或连接被拒（陈旧 socket）时走现有的本地 OCI 准备路径。认证、协议和超时错误会被报告，而不是静默绕过。
+未选择文件系统或 S3 后端时，当 `pvisor run --executor vm --rootfs image=IMAGE -- COMMAND` 准备 OCI 镜像时，它用一个两秒的 `ping` 握手探测默认 socket。有兼容的服务端在线时自动选择懒加载；socket 缺失或连接被拒（陈旧 socket）时走现有的本地 OCI 准备路径。认证、协议和超时错误会被报告，而不是静默绕过。
 
 显式设置 `PVISOR_CACHE_SERVER` 时要求该服务可用。设置 `PVISOR_CACHE_SERVER=off` 强制本地准备。显式 rootfs 目录和原生容器执行保持原有行为。
 
@@ -64,7 +161,7 @@ FUSE 挂载在 VM 运行结束前一直存在，随后卸载；缓存的块保�
 
 服务端在应答 `prepare` 前仍会完整准备未缓存的镜像。这是客户端侧的懒加载，不是服务端的惰性 OCI 层解包。FUSE 适配器和现有 virtio-fs worker 目前同步处理请求：一次缓存未命中可能延迟无关的文件系统请求。不使用显式 vCPU 暂停。磁盘缓存配额/淘汰、原始 OCI xattr 和异步 virtio-fs 完成不在此实现中加入。
 
-公共 Rust 客户端是 `pvisor::cache::CacheClient::from_env()`，它是阻塞式的。`cache prepare/list/stat/read` 仍是显式的服务命令，不使用 VM 的本地回退策略。
+公共 Rust 客户端是 `pvisor::cache::CacheClient::from_env()`，它是阻塞式的。`cache prepare/list/stat/read` 使用显式后端配置，不使用 VM 默认 socket 探测的本地回退策略。
 
 Unix socket 权限为 0600，并要求两端为同一有效用户。锁可防止两个服务端占用同一 socket；重启时会回收陈旧 socket，但普通文件、符号链接或活跃监听者绝不会被移除。请把 socket 放在由服务用户拥有的目录中。用 Ctrl-C 停止前台服务端可能留下陈旧 socket；无需手工清理。
 
@@ -139,3 +236,15 @@ TCP 要求非空令牌，且只接受字面 loopback IP 端点。没有内置 TL
 服务端有 16 个请求/文件 worker，最多 16 个排队连接。多余连接会被关闭；客户端可以重试。带认证的 prepare 请求转入单独的 2 worker 池，队列 16 个请求；满时服务端返回显式 busy 错误。registry 等待与解包不占用文件 worker。入站请求读取有五秒不活动超时；响应读写保留 300 秒超时，TCP 连接有 10 秒超时。长时间准备可能比断开的客户端活得更久；重试是安全的。关闭时不会优雅取消单个 OCI 下载。registry 下载限制和缓存淘汰沿用现有镜像存储；v1 不增加配额或淘汰。
 
 不存在 vCPU 暂停/恢复消息。下载发生在宿主侧 FUSE 服务端，在沙箱化的 VM runner 进程之外。
+
+## 验证后端
+
+`just test pvisor` 包含服务器兼容性、文件系统/S3 独立 CLI 读写、只读权限、损坏拒绝与配置优先级检查。S3 本地夹具独立验算 SigV4（包括临时会话令牌），不使用真实账号、公网请求或外部 daemon。
+
+有 KVM/FUSE 与静态 musl guest target 的 Linux x86_64 主机可以执行真实 VM 验收：
+
+```sh
+cargo nextest run --locked -p pvisor --test cache_backends --run-ignored ignored-only
+```
+
+此验收从两个后端启动 VM，删除发布端暂存目录后校验 guest 文件内容，并验证继承宿主环境时不会泄漏存储凭据。

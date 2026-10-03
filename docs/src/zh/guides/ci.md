@@ -1,40 +1,23 @@
----
-status: todo
-search:
-  exclude: true
----
-
 # 在 CI 中运行 Agent
 
-!!! warning "规划中"
-    本页尚无数据。下面是需求说明，欢迎认领。
+在 CI 中让 Agent 完成任务，把改动作为产物交给评审者。任务结束后上传 Stage 和运行证据；合入工作区由评审步骤决定。
 
-## 要回答的问题
+先准备一个能运行 `pvisor run --safe` 的 Linux 自托管 runner，并安装 pVisor。下面先用不需要模型凭据的脚本验证整条流程，再把命令换成你的 Agent。所需宿主能力见[平台支持](../reference/platforms.md)。
 
-如何在 GitHub Actions 等流水线里让 Agent 无人值守地修问题，并把结果交给审查？
+```bash
+cat > ci-agent.sh <<'SH'
+#!/bin/sh
+set -eu
+printf 'CI task completed\n' > result.txt
+SH
+chmod +x ci-agent.sh
+```
 
-## 需求
-
-- 指标：单次运行墙钟时间、资源占用、失败率、需要人工介入的次数
-- 对照组：同一 Agent 在 CI 中直接运行
-- 工作负载：用 Agent 修复失败的测试或执行例行重构
-- 环境：GitHub Actions runner（Linux/macOS），固定 Agent 版本
-
-## 验收标准
-
-- 给出可复制的 workflow 示例，含 `--safe`、暂存路径与产物上传
-- 明确 `apply` 在 CI 中的语义（谁审、何时合）
-- 失败与超时路径有回归
-
-## 关联
-
-- 跟踪 issue：TODO
-- 负责人：TODO
-- 相关页面：guides/parallel-agents、reference/cli
+工作流执行成功后，下载产物，确认 `result.txt` 的改动和 Run 的结束状态。脚本返回非零时工作流失败，但 `always()` 步骤仍会收集已生成的记录；启动准备失败可能还没有 Bundle。
 
 ## 今天可以采用的最小流程
 
-这个接入模板待环境验证，不宣称完成 L2 自动免审。准备一个已安装相同 pVisor 版本、支持 FUSE/user namespace/Landlock 的 Linux runner，把标签 `pvisor` 分配给它；仓库中的 `ci-agent.sh` 必须可执行，先用离线脚本验证。默认 GitHub 托管 runner 的权限和 FUSE 条件不可直接假定。
+把标签 `pvisor` 分配给准备好的 runner，提交可执行的 `ci-agent.sh`，将工作流保存到 `.github/workflows/pvisor-task.yml`。从 Actions 手动触发一次，确认 Stage 产物可下载。
 
 ```yaml
 name: Staged task
@@ -64,7 +47,7 @@ jobs:
           if-no-files-found: warn
 ```
 
-网络模型 API 需要把 deny-all 替换为具体 allowlist 并显式交付凭据；Linux host 选择性代理仍是协作式，需要不可绕过的选择性出口时使用已准备好的 VM。不要为“能跑”而删除 safe 准入失败检查。
+替换为联网 Agent 时，按[网络策略](policies/network.md)配置具体目标，按[凭据与环境](policies/credentials.md)投影模型凭据。需要强制的选择性出口时使用准备好的 VM。
 
 ## 产物、失败与合入
 

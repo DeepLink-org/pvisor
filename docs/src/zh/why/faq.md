@@ -7,7 +7,7 @@
 pVisor 增加的是准入、文件拦截和记录的开销。启动与文件系统开销的实测见[基准与对比](../benchmarks/index.md)（部分建设中）。
 
 **能在 CI 里跑吗？**
-可以。今天就能按 L1 方式在流水线里用：让 Agent 跑完、审查、只合入想要的。策略与证据驱动的免审和集群化（L2/L3）是方向，见[在 CI 中运行 Agent（规划中）](../guides/ci.md)。
+可以。今天就能按 L1 方式在流水线里用：让 Agent 跑完、审查、只合入想要的。策略与证据驱动的免审和集群化（L2/L3）是方向，见[在 CI 中运行 Agent](../guides/ci.md)。
 
 **支持哪些 Agent？**
 任何命令都能跑；对 Claude Code、Codex 等提供按可执行文件名匹配的预设。见[接入你的 Agent](../guides/agents/index.md)。

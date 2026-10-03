@@ -520,6 +520,22 @@ impl ImageReference {
     }
 }
 
+/// Canonical identity for shared cache references, using the registry parser.
+pub(crate) fn cache_reference(image: &str) -> anyhow::Result<(String, bool)> {
+    let reference = ImageReference::parse(image)?;
+    let pinned = reference.reference.starts_with("sha256:");
+    if pinned {
+        digest_hex(&reference.reference)?;
+    }
+    Ok((
+        format!(
+            "{}/{}@{}",
+            reference.registry, reference.repository, reference.reference
+        ),
+        pinned,
+    ))
+}
+
 fn default_store_dir() -> anyhow::Result<PathBuf> {
     if let Some(value) = std::env::var_os("PVISOR_IMAGE_STORE") {
         return Ok(PathBuf::from(value));

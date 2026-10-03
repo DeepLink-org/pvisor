@@ -1,10 +1,12 @@
 # Benchmarks and comparisons
 
-Every measurement and comparison is reproducible and serves as evidence for the "auditable" promise; the method, environment, and sample counts are in [methodology](methodology.md).
+The first version shows near-native host tool time, roughly hundreds of milliseconds added for staged small-file work, and mostly 0.5–1 second small VM jobs. Small submissions fit interactive workflows; 100,000-file apply takes about 5.5 minutes and is a clear current limitation.
+
+Measurements publish reproduction scripts, samples and failures; comparisons identify official sources and unmeasured areas. See [methodology](methodology.md).
 
 ## Available measurements
 
-Both macOS and Linux measurements are retained, with separate records for each platform, measurement date and artifact. The measurements below are from 2026-10-03; new results are added while earlier batches and raw evidence remain available.
+Both macOS and Linux measurements are retained, with separate records for each platform, measurement date and artifact. The VM measurements below are from 2026-10-03; new results are added while earlier batches and raw evidence remain available.
 
 | Host platform / backend | Measurement | Observed result | Conditions and evidence |
 |---|---|---|---|
@@ -16,15 +18,31 @@ Both macOS and Linux measurements are retained, with separate records for each p
 
 These datasets cover different workloads and phases, so they do not rank macOS against Linux. The shared cold-page pager currently requires macOS/ARM64; Linux offload and complete snapshots are separate measurements.
 
-Each number describes a specific phase and workload. The startup table includes the full CLI-to-marker path, and cold RAM proxy is not whole-host physical memory. Other benchmarks remain marked below; unmeasured areas have no performance conclusion.
+Each number describes a specific phase and workload. The startup table includes the full CLI-to-marker path, and cold RAM proxy is not whole-host physical memory. New product measurements appear below, with unmeasured metrics identified separately.
 
 ## Benchmarks
 
-[VM memory reclamation, offload and complete snapshots](vm-memory/index.md) · [Startup latency](startup.md) · [Filesystem overhead (planned)](filesystem.md) · [Network overhead (planned)](network.md) · [apply/drop cost (planned)](apply.md) · [End-to-end tasks (planned)](agent-tasks.md) · [Supervision cost (planned)](supervision-cost.md) · [Concurrency density (planned)](density.md) · [Isolation effectiveness (planned)](isolation-tests.md) · [Replay fidelity](replay-fidelity.md)
+[VM memory reclamation, offload and complete snapshots](vm-memory/index.md) · [Startup latency](startup.md) · [Filesystem overhead](filesystem.md) · [Network overhead](network.md) · [apply/drop cost](apply.md) · [End-to-end tasks](agent-tasks.md) · [Supervision cost](supervision-cost.md) · [Concurrency density](density.md) · [Isolation effectiveness](isolation-tests.md) · [Replay fidelity](replay-fidelity.md)
 
 ## Comparisons
 
-[Agent-native sandboxes (planned)](compare-agent-sandboxes.md) · [Docker/devcontainer (planned)](compare-containers.md) · [Cloud sandboxes (planned)](compare-cloud-sandboxes.md) · [Isolation runtimes (planned)](compare-runtimes.md) · [RL infrastructure (planned)](compare-rl-infra.md)
+[Agent-native sandboxes](compare-agent-sandboxes.md) · [Docker/devcontainer](compare-containers.md) · [Cloud sandboxes](compare-cloud-sandboxes.md) · [Isolation runtimes](compare-runtimes.md) · [RL infrastructure](compare-rl-infra.md)
 
-!!! note "Under construction"
-    End-to-end cold start, filesystem overhead, and end-to-end agent task overhead have no headline figures yet; see [Startup latency](startup.md), [Filesystem overhead (planned)](filesystem.md), and [End-to-end tasks (planned)](agent-tasks.md) for scope and acceptance criteria.
+## Product performance first version, 2026-10-04
+
+Linux controls cover native, staged, safe, VM and OCI. Host tool time is near native; staging adds tens of milliseconds for sequential reads/offline npm and more for small files. Apply rises from about 15 ms for ten files to 5.5 minutes for 100,000. Failures are published with timings.
+
+The measurements support small-batch review and local tool execution: staging costs are modest for sequential reads and offline installs, while 1,000-file submission approaches a second. Directory traversal, dense small-file writes, large submissions and safe-mode concurrency stability still need improvement. Idle-probe capacity does not establish full-agent capacity.
+
+| Topic | Observed result |
+|---|---|
+| [Filesystem](filesystem.md) | 64 MiB read worker P50 32.66 ms native / 40.76 staged; 2,048-file metadata 4.84 → 149.60 ms |
+| [Network](network.md) | Local HTTP small-request P50 0.95 ms native / 1.24 proxy / 3.83 VM; not public API latency |
+| [apply/drop](apply.md) | 10/1,000/100,000-file apply P50 about 15 ms / 0.84 s / 5.5 min; conflicts and SIGKILL recovery retained |
+| [Density](density.md) | Idle concurrency 128: native/host/staged/Podman all completed; safe 638/640, large OCI rootfs hit tmpfs quota |
+| [Agent tool loop](agent-tasks.md) | Real Claude/Codex CLIs, 72/72 controlled repairs; real-model task success unmeasured |
+| [Review](supervision-cost.md) | Review 20, apply ten/drop ten costs about 25 ms machine time; human minutes unmeasured |
+| [Isolation](isolation-tests.md) | Five profiles, outside-path/socket/alias probes with actual host effects |
+| [Replay](replay-fidelity.md) | Six adapters, 360/360 synthetic prefixes; prepare-only side-effect bug found and fixed |
+
+Platforms have separate sections. New macOS workloads, real-model quality, human studies and cloud timings/cost remain unmeasured. See [protocol and raw evidence](methodology.md#product-v1).

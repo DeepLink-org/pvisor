@@ -1,32 +1,13 @@
----
-status: todo
-search:
-  exclude: true
----
-
 # 环境变量
 
-!!! warning "规划中"
-    完整参考尚未完成；投影给 Agent 的变量见[凭据与环境变量](../guides/policies/credentials.md)。
+通常只需要设置任务存储位置，以及明确传给 Agent 的凭据。宿主上的变量影响 pVisor 自身；任务实际收到的变量由环境投影规则决定。
 
-## 要回答的问题
+```bash
+PVISOR_RUN_HOME="$HOME/.pvisor/runs" pvisor run --safe \
+  --stage ../stage-env-001 --overlaynet-deny-all -- /bin/sh -c 'printf "%s\n" "$PVISOR_RUN_ID"'
+```
 
-pVisor 读取哪些 `PVISOR_*` 环境变量（例如 `PVISOR_RUN_HOME`、`PVISOR_CACHE_SERVER`），又向 Agent 注入哪些变量？
-
-## 需求
-
-- 从代码中收集全部读取点，自动生成两张表：pVisor 读取的变量、注入给 Agent 的变量；
-- 每个变量说明：作用、默认值、适用的执行器与平台、是否稳定。
-
-## 验收标准
-
-- 表格由脚本生成，CI 检查没有遗漏代码中新增的 `PVISOR_*` 读取点。
-
-## 关联
-
-- 跟踪 issue：TODO
-- 负责人：TODO
-- 相关页面：[CLI 参考](cli.md)
+这次任务打印自己的 Run ID。需要联网凭据时，按[凭据与环境指南](../guides/policies/credentials.md)使用 `--pass-env`。
 
 ## 常用宿主设置
 
@@ -48,4 +29,17 @@ pVisor 读取哪些 `PVISOR_*` 环境变量（例如 `PVISOR_RUN_HOME`、`PVISOR
 
 启用代理时还会注入 `HTTP_PROXY`、`HTTPS_PROXY`、`ALL_PROXY` 及小写形式。它们只为客户端指定代理，不单独提供不可绕过的网络隔离。完整投影以 Bundle 的 `environment` 变量名清单为准。
 
-`PVISOR_KRUN_RUNNER_SPEC`、`PVISOR_KRUN_NETWORK_FD` 等是内部启动协议；`PVISOR_KRUN_LOG` 和 `PVISOR_KRUN_ENOMEM_WORKAROUND` 是 VM 诊断设置，不是稳定产品配置。全部读取点的自动清单仍待生成；当前表覆盖用户最常接触的设置。
+`PVISOR_KRUN_RUNNER_SPEC`、`PVISOR_KRUN_NETWORK_FD` 等是内部启动协议；`PVISOR_KRUN_LOG` 和 `PVISOR_KRUN_ENOMEM_WORKAROUND` 是 VM 诊断设置，不是稳定产品配置。使用上表配置宿主；内部变量留给启动器与诊断工具管理。
+
+## 启动诊断与源码构建 {#build-and-diagnostics}
+
+`PVISOR_STARTUP_TIMING` 默认启用启动阶段日志；设为 `0` 关闭，适合不带日志开销的测量。它只影响诊断输出，不改变任务策略。
+
+下面两个变量影响 Linux x86_64 musl **构建时**嵌入的 guest 内核：
+
+| 变量 | 输入 | 优先级 |
+| --- | --- | --- |
+| `PVISOR_KRUNFW_KERNEL_BUNDLE` | 含 `kernel.bin` 与 `kernel.json` 的目录 | 设置时优先使用 |
+| `PVISOR_KRUNFW_PATH` | 要提取内核的 `libkrunfw.so.5` 文件 | 未设置 bundle 时使用 |
+
+更换这两个输入后重新构建 CLI。运行已经构建好的 musl 二进制时设置这些变量，不会替换其中的内核；动态固件入口与平台条件见[平台矩阵](platforms.md)。构建源见 `crates/pvisor/build.rs`。

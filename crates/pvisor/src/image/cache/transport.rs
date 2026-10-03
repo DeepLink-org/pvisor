@@ -1,5 +1,4 @@
 //! Shared Unix/TCP endpoint validation and stream I/O.
-use super::SERVER_ENV;
 use anyhow::{Context, bail, ensure};
 use std::io::{Read, Write};
 use std::net::{SocketAddr, TcpStream};
@@ -16,14 +15,6 @@ pub fn default_endpoint() -> anyhow::Result<String> {
         "unix://{}",
         base.join("pvisor/cache.sock").display()
     ))
-}
-
-pub(super) fn endpoint_from_env() -> anyhow::Result<String> {
-    match std::env::var(SERVER_ENV) {
-        Ok(value) => Ok(value),
-        Err(std::env::VarError::NotPresent) => default_endpoint(),
-        Err(error) => Err(error.into()),
-    }
 }
 
 pub(super) enum Endpoint {

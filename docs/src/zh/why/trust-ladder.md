@@ -36,4 +36,4 @@ L0 已经是通用能力，不值得重复投入。pVisor 的取舍是只做执�
 今天交付的是这一级在单机上的形态：本机逐个 Job，放手跑完，事后审查改动和证据，只合入想要的。L2 的免审判定和 L3 的集群规模都还没到。
 
 !!! note "建设中"
-    L2/L3 的进入条件和缺口清单还没定稿。进度见[路线图](../community/roadmap.md)，容量依据见[并发密度（规划中）](../benchmarks/density.md)，集群方向见[集群化执行（规划中）](../design/research/cluster-execution.md)。
+    L2/L3 的进入条件和缺口清单还没定稿。进度见[路线图](../community/roadmap.md)，容量依据见[并发密度](../benchmarks/density.md)，集群方向见[集群化执行](../design/research/cluster-execution.md)。

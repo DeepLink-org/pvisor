@@ -1,31 +1,26 @@
----
-status: todo
-search:
-  exclude: true
----
-
 # Code of conduct
 
-!!! warning "Planned"
-    There is no formal text yet. These requirements need maintainer decisions.
+When discussing implementation, reporting problems, or reviewing contributions, focus on observable behavior and evidence so people with different experience, backgrounds, and communication styles can keep collaborating.
 
-## Question
+Formal adoption of the Contributor Covenant and a private conduct-reporting contact have not yet been published. The following provides practical discussion expectations; the formal policy needs maintainer confirmation.
 
-What conduct is expected, where should participants report problems, and how are reports handled?
+## Make discussions easier to resolve {#participation}
 
-## Requirements
+- Include versions, platforms, reproductions, or specific passages so others can act on a report.
+- Explain the impact and acceptable changes in code review without judging a contributor's ability or identity.
+- When views differ, restate the problem both sides need to solve, then compare options and acceptance results.
+- Give newcomers necessary context and allow questions, corrections, and uncertainty.
 
-- Adopt [Contributor Covenant 2.1](https://www.contributor-covenant.org/version/2/1/code_of_conduct/) or an equivalent text;
-- Specify a reporting channel (dedicated email or maintainers), rather than public issues;
-- Describe handling procedures and possible consequences.
+Insults, harassment, discrimination, threats, disclosure of private information, and persistent personal attacks undermine collaboration. Keep technical disagreement focused on proposals.
 
-## Acceptance criteria
+## Responding to inappropriate interactions {#response}
 
-- Add repository-root `CODE_OF_CONDUCT.md` and keep this page consistent;
-- Ensure that the reporting channel works and is listed on [Community](index.md).
+You can pause a conversation and retain relevant links, timestamps, and records without escalating the conflict. If you already have a private maintainer contact, ask about the appropriate reporting route. Public issues can discuss process improvements, but should not disclose affected people's identities, private messages, or sensitive incident details.
 
-## Tracking
+The project still needs to publish an available private conduct-reporting channel, responsible people, recusal process, and response times. The vulnerability channel is for security vulnerabilities; follow [Disclosure policy](../security/disclosure.md) for those reports.
 
-- Tracking issue: TODO
-- Owner: Maintainers
-- Related: [Governance and maintainers (planned)](governance.md)
+## Scope {#adoption}
+
+These discussion expectations apply to issues, PRs, reviews, and community exchanges. Technical discussions can retain differing views while allowing participants to contribute and receive responses.
+
+Formal conduct incident handling requires a private channel and responsible people. No dedicated contact is currently published; the repository's vulnerability channel continues to follow the security disclosure policy.

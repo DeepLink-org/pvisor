@@ -1,0 +1,220 @@
+//! Real HTTP controller + independent worker processes + pVisor execution.
+//! These exercise communication failure and cancellation, not VM fidelity.
+use pvisor_cluster::{
+    client::Client,
+    scheduler::{Scheduler, SchedulerConfig},
+    *,
+};
+use pvisor_core::{ExecutorKind, IsolationKind, RunInvocation, RunSpec};
+use std::{
+    collections::BTreeMap,
+    process::{Child, Command, Stdio},
+    time::Duration,
+};
+
+const ADMIN: &str = "test-admin-token-0123456789";
+const WORKER: &str = "test-worker-token-0123456789";
+struct ChildGuard(Child);
+impl Drop for ChildGuard {
+    fn drop(&mut self) {
+        let _ = self.0.kill();
+        let _ = self.0.wait();
+    }
+}
+fn spawn_worker(url: &str, id: &str, root: &std::path::Path) -> ChildGuard {
+    ChildGuard(
+        Command::new(env!("CARGO_BIN_EXE_pvisor-worker"))
+            .args([
+                "--url",
+                url,
+                "--id",
+                id,
+                "--backend",
+                "host",
+                "--poll-ms",
+                "100",
+                "--slots",
+                "2",
+            ])
+            .arg("--state")
+            .arg(root.join(id))
+            .env("PVISOR_CLUSTER_WORKER_TOKEN", WORKER)
+            .env("PVISOR_CLUSTER_TOKEN", ADMIN)
+            .stdout(Stdio::null())
+            .stderr(Stdio::inherit())
+            .spawn()
+            .unwrap(),
+    )
+}
+fn spec(id: &str, command: &str) -> TaskSpec {
+    let mut run = RunSpec::process(id, "cluster-test", "/bin/sh");
+    let RunInvocation::Process(p) = &mut run.invocation;
+    p.args = vec!["-c".into(), command.into()];
+    p.inherit_env = false;
+    run.runtime.max_output_bytes = 4096;
+    run.runtime.termination_grace_ms = 100;
+    TaskSpec {
+        version: CLUSTER_VERSION,
+        id: id.into(),
+        tenant: "test".into(),
+        run,
+        execution: ExecutionClass {
+            executor: ExecutorKind::Process,
+            isolation: IsolationKind::HostProcess,
+        },
+        resources: Resources {
+            slots: 1,
+            memory_bytes: 64 * 1024 * 1024,
+            cpu_millis: 100,
+        },
+        labels: BTreeMap::new(),
+        cache_keys: vec![],
+    }
+}
+async fn wait(client: &Client, id: &str, terminal: bool) -> TaskRecord {
+    tokio::time::timeout(Duration::from_secs(15), async {
+        loop {
+            let task = client.task(id).await.unwrap();
+            if if terminal {
+                task.phase.terminal()
+            } else {
+                task.phase == TaskPhase::Running
+            } {
+                break task;
+            }
+            tokio::time::sleep(Duration::from_millis(50)).await;
+        }
+    })
+    .await
+    .expect("task transition timed out")
+}
+async fn controller(root: &std::path::Path) -> (Client, String, tokio::task::JoinHandle<()>) {
+    let s = Scheduler::open(
+        &root.join("journal"),
+        SchedulerConfig {
+            lease_duration_ms: 1500,
+            ..Default::default()
+        },
+    )
+    .unwrap();
+    let router = pvisor_cluster::server::router(s, ADMIN.into(), WORKER.into()).unwrap();
+    let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
+    let url = format!("http://{}", listener.local_addr().unwrap());
+    let server = tokio::spawn(async move {
+        axum::serve(listener, router).await.unwrap();
+    });
+    (Client::new(&url, ADMIN.into()).unwrap(), url, server)
+}
+
+#[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+async fn two_workers_execute_tasks_and_credentials_never_reach_the_agent() {
+    let temp = tempfile::tempdir().unwrap();
+    let (client, url, server) = controller(temp.path()).await;
+    let _one = spawn_worker(&url, "one", temp.path());
+    let _two = spawn_worker(&url, "two", temp.path());
+    tokio::time::timeout(Duration::from_secs(10), async {
+        while client.workers().await.unwrap().len() != 2 {
+            tokio::time::sleep(Duration::from_millis(50)).await;
+        }
+    })
+    .await
+    .unwrap();
+    for i in 0..6 {
+        client.submit(&spec(&format!("task-{i}"),"sleep 0.2; printf '%s' \"${PVISOR_CLUSTER_TOKEN-unset}/${PVISOR_CLUSTER_WORKER_TOKEN-unset}\"")).await.unwrap();
+    }
+    let mut workers = std::collections::BTreeSet::new();
+    for i in 0..6 {
+        let task = wait(&client, &format!("task-{i}"), true).await;
+        assert_eq!(task.phase, TaskPhase::Succeeded);
+        workers.insert(task.lease.unwrap().key.worker_id);
+        assert_eq!(
+            task.result.unwrap().output.stdout.as_deref(),
+            Some("unset/unset")
+        );
+    }
+    assert_eq!(workers.len(), 2);
+    assert!(
+        client
+            .workers()
+            .await
+            .unwrap()
+            .iter()
+            .all(|w| w.reserved.slots == 0)
+    );
+    server.abort();
+}
+
+#[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+async fn cancellation_stops_live_process_tree_and_preserves_result_evidence() {
+    let temp = tempfile::tempdir().unwrap();
+    let (client, url, server) = controller(temp.path()).await;
+    let _worker = spawn_worker(&url, "cancel", temp.path());
+    client.submit(&spec("long", "sleep 30")).await.unwrap();
+    wait(&client, "long", false).await;
+    assert_eq!(
+        client.cancel("long").await.unwrap().phase,
+        TaskPhase::Cancelling
+    );
+    let task = wait(&client, "long", true).await;
+    assert_eq!(task.phase, TaskPhase::Cancelled);
+    assert_eq!(task.result.unwrap().state, pvisor_core::RunState::Cancelled);
+    assert!(
+        temp.path()
+            .join("cancel/tasks/long-1/completion.json")
+            .exists()
+    );
+    server.abort();
+}
+
+#[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+async fn controller_outage_triggers_worker_monotonic_lease_watchdog() {
+    let temp = tempfile::tempdir().unwrap();
+    let (client, url, server) = controller(temp.path()).await;
+    let _worker = spawn_worker(&url, "outage", temp.path());
+    client.submit(&spec("long", "sleep 30")).await.unwrap();
+    wait(&client, "long", false).await;
+    server.abort();
+    let _ = server.await;
+    let path = temp.path().join("outage/tasks/long-1/completion.json");
+    let completion: Completion = tokio::time::timeout(Duration::from_secs(8), async {
+        loop {
+            if let Ok(data) = std::fs::read(&path) {
+                if let Ok(c) = serde_json::from_slice(&data) {
+                    break c;
+                }
+            }
+            tokio::time::sleep(Duration::from_millis(50)).await;
+        }
+    })
+    .await
+    .expect("worker did not stop after controller outage");
+    assert_eq!(
+        completion.result.unwrap().state,
+        pvisor_core::RunState::Cancelled
+    );
+}
+
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn worker_credentials_cannot_submit_or_read_tenant_tasks() {
+    let temp = tempfile::tempdir().unwrap();
+    let (admin, url, server) = controller(temp.path()).await;
+    let worker = Client::new(&url, WORKER.into()).unwrap();
+    let missing = Client::new(&url, "incorrect".into()).unwrap();
+    admin.submit(&spec("private", "true")).await.unwrap();
+    assert!(worker.submit(&spec("forged", "true")).await.is_err());
+    assert!(worker.task("private").await.is_err());
+    assert!(missing.workers().await.is_err());
+    assert!(
+        admin
+            .poll(&PollRequest {
+                worker_id: "w".into(),
+                incarnation: "i".into(),
+                active: vec![],
+                available: Resources::default(),
+                max_assignments: 1
+            })
+            .await
+            .is_err()
+    );
+    server.abort();
+}

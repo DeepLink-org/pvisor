@@ -23,7 +23,7 @@ mod tests;
 
 // Every component is opened relative to its parent fd, without following links.
 // This remains confined even if a directory is renamed during a request.
-fn open_child(parent: &File, name: &OsStr, directory: bool) -> anyhow::Result<File> {
+pub(super) fn open_child(parent: &File, name: &OsStr, directory: bool) -> anyhow::Result<File> {
     let name = CString::new(name.as_bytes())?;
     let flags = libc::O_RDONLY
         | libc::O_CLOEXEC
@@ -37,7 +37,11 @@ fn open_child(parent: &File, name: &OsStr, directory: bool) -> anyhow::Result<Fi
     Ok(unsafe { File::from_raw_fd(fd) })
 }
 
-fn parent(store: &ImageStore, digest: &str, path: &[u8]) -> anyhow::Result<(File, Vec<u8>)> {
+pub(super) fn parent(
+    store: &ImageStore,
+    digest: &str,
+    path: &[u8],
+) -> anyhow::Result<(File, Vec<u8>)> {
     let digest = crate::image::oci::digest_hex(digest)?;
     ensure!(!path.contains(&0), "NUL in cache path");
     let path = Path::new(OsStr::from_bytes(path));

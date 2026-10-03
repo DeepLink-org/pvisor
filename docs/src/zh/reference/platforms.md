@@ -1,38 +1,12 @@
----
-status: todo
-search:
-  exclude: true
----
-
 # 平台与执行器支持矩阵
 
-!!! warning "规划中"
-    成熟度等级仍待研发给出证据。各执行器的边界见[执行器边界](../security/executor-boundaries.md)。
+先按你所在的平台选择执行器，再检查该执行器的前置条件。Linux 的宿主任务适合快速开始；需要 Linux 用户空间或更独立的内核时选择 VM。Apple Silicon 上的 VM 使用 Linux aarch64 用户空间。
 
-## 要回答的问题
-
-在哪个平台上、用哪个执行器、哪个能力维度，当前处于什么成熟度？
-
-## 需求
-
-- 矩阵：平台（Linux x86_64、Linux arm64、macOS Apple Silicon）× 执行器（host、container、VM）× 能力维度；
-- 每格的成熟度等级：稳定、Beta、实验、不支持；
-- 每个等级必须附证据链接：CI 任务、语义规格、基准或 issue，不凭空标注。
-
-## 验收标准
-
-- 每格都有等级和证据；
-- README 的成熟度标识指向这份矩阵。
-
-## 关联
-
-- 跟踪 issue：TODO
-- 负责人：TODO
-- 相关页面：[执行器边界](../security/executor-boundaries.md)、[已知限制](../security/known-limitations.md)
+安装包可用与某项控制生效是两件需要分别检查的事。下面列出当前实现入口；一次运行的有效边界以 Run Bundle 的执行器观察为准。
 
 ## 当前机制与准备条件
 
-这张表描述代码路径与发布准备条件，不替尚未完成的验证宣布 Stable/Beta 等级。
+按下面的条件准备执行环境；需要的功能能否启用，以一次小任务及其 Bundle 验证。
 
 | 平台 | host | container | VM |
 | --- | --- | --- | --- |

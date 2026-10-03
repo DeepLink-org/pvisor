@@ -469,3 +469,58 @@ python3 benchmark/pvisor/linux_vm_ready.py \
 
 See the [startup article](../../docs/src/zh/benchmarks/startup.md#linux-results)
 for retained macOS/HVF and Linux/KVM measurements and their environment differences.
+
+## Product benchmarks, first release (Linux)
+
+`product_v1.py` checks outputs and observed Bundle isolation before retaining a
+performance sample. It pins CLI/firmware copies, snapshots harness source and
+records hashes, input configuration, source dirtiness and failure diagnostics.
+Reports use `pvisor-benchmark/v1`; output directories must be new.
+
+```bash
+python3 benchmark/pvisor/product_v1.py \
+  --binary /absolute/path/to/gnu-linux/pvisor \
+  --firmware /absolute/path/to/libkrunfw-directory \
+  --replay-binary /absolute/path/to/pvisor-replay \
+  --output target/product-benchmark-new \
+  --samples 30 --warmups 3 \
+  --suites filesystem,network,apply,density,agent,isolation,replay,supervision,baselines
+```
+
+Prerequisites: Linux x86_64, accessible KVM/FUSE/user namespaces, GNU CLI with
+`--vm-library-dir`, libkrunfw 5.5.0, Python 3.14 system stdlib, Git, ripgrep,
+Rust, GCC, Node 24/npm, Podman and crun. `agent` additionally needs Claude Code
+and Codex; it uses local deterministic responses with fake keys and no inference.
+`replay` uses twenty synthetic native prefixes per adapter; it measures prefix
+preparation, not real model fidelity. No real model or cloud account is used.
+
+Run `--samples 1 --warmups 0` first. Full 100,000-file apply has substantial
+CPU/disk cost and takes minutes per sample. It runs three independent stage
+preparations concurrently, then times operations sequentially. `crashes` can
+run separately and is also included by `apply`. Samples are capped at 10 for
+1,000 files and 3 for 100,000; agent/replay/crashes at 3; density at 5 batches.
+Agent, replay, supervision, density and baselines do not perform warmups; each
+page gives its effective protocol. VM density has a host-memory guard.
+
+`--oci-shape shell` creates a minimal idle-probe image; tools suites need the
+default tools image. `--density-backends`, `--density-concurrencies`,
+`--network-backends`, `--network-modes`, `--filesystem-backends`, `--filesystem-modes`, `--apply-sizes`
+and `--vm-memory` isolate follow-up measurements. Keep each batch separate;
+never pool incompatible rootfs or memory shapes. Local model/network servers
+are owned and stopped by the harness. Trial payloads are removed after checks;
+retain reports, fixture hashes, logs, Bundle evidence and the copied harness.
+
+The [benchmark index](../../docs/src/zh/benchmarks/index.md) contains the retained
+2026-10-04 first-version data and the earlier macOS/Linux VM measurements.
+
+Recompute distributions without combining batches:
+
+```bash
+python3 benchmark/pvisor/summarize_product_v1.py \
+  target/product-benchmark-new/report.json --output-csv /tmp/product-summary.csv
+```
+
+SIGKILL probes default to `--crash-files 10000`; `--crash-states committed`
+can isolate the shortest transition window. Ledger state is read from the atomic
+JSON tail during injection and fully decoded after death. A missed window fails
+the injection rather than becoming a successful sample.

@@ -1,34 +1,8 @@
----
-status: todo
-search:
-  exclude: true
----
-
 # Stability and compatibility
 
-!!! warning "Planned"
-    Maintainers must decide the version policy.
+For a long-running pipeline, pin the pVisor version, record format, and agent version. Before upgrading, use representative tasks to verify execution, review, apply, and replay; keep the matching reader for old records.
 
-## Question
-
-Which interfaces can users rely on to stay unchanged? What compatibility rules apply to CLI options, configuration fields, the Run Bundle schema, JSON output, and the embedding API?
-
-## Requirements
-
-- Maintainer-defined version policy, including pre-1.0 incompatible changes.
-- Stability and deprecation notice period per interface.
-- Old-record handling on Bundle upgrades.
-
-## Acceptance criteria
-
-- Maintainer confirmation.
-- Changelog marks incompatible changes accordingly.
-
-## Tracking
-
-- Tracking issue: TODO (no issue has been assigned).
-- Owner: Maintainers
-- Related: [Run Bundle](run-bundle.md), [changelog](../community/changelog.md)
+Current readers check explicit format versions. The following lists interface reading rules and the operations to verify during an upgrade.
 
 ## Reading rules available today
 

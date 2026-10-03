@@ -1,39 +1,32 @@
----
-status: todo
-search:
-  exclude: true
----
+# Independent audits and penetration tests
 
-# Third-party audits and penetration tests
+No independent security audit or penetration-test report is currently registered here publicly. When assessing adoption, start with the executor boundaries, known limitations, and regression cases relevant to your configuration, then decide whether you need an independent assessment.
 
-!!! warning "Planned"
-    No data yet. Below are the requirements; contributions are welcome.
+## Evidence you can inspect now {#evidence}
 
-## Question
+[Executor boundaries](executor-boundaries.md) describes platform controls, [Known limitations](known-limitations.md) states their conditions, and [Isolation tests](../benchmarks/isolation-tests.md) explains checks for specific attacks. Each Run Bundle reports installed controls.
 
-Have independent audits or penetration tests been performed, and what did they find?
+These materials provide internal implementation and verification evidence. An independent audit requires an assessor, scope, and findings; passing internal tests does not replace that report.
 
-## Requirements
+## Define the assessment scope {#scope}
 
-- Metric: audit scope, findings, and remediation status.
-- Control group: —
-- Workload: —
-- Environment: —
+Fix the pVisor commit or version, operating system, executor, kernel, and FUSE/virtualization dependencies. List assets and actions to assess: workspace aliases and symlinks, traversal, staging and apply, process isolation, egress, credential projection, evidence accuracy, and resource exhaustion.
 
-## Acceptance criteria
+Test normal execution, setup failure, concurrent modifications, and crash recovery separately. Identify uncovered executors, protocols, tenancy models, and side channels so conclusions from one path are not extended to the whole product.
 
-- Publish the audit scope, date, and report link.
-- Mark each finding with its remediation status.
-- Explain the uncovered scope.
+## Organize the report {#report}
 
-## Tracking
+| Field | Required content |
+| --- | --- |
+| Assessment | Assessor, dates, methods, and public report link |
+| Implementation scope | Version/commit, platform, executor, configuration, and dependencies |
+| Findings | Identifier, impact, severity, and reproduction conditions |
+| Remediation | Open, mitigated, fixed, or accepted risk, with supporting evidence |
+| Verification | Fix commit, retest date, and outcome |
+| Uncovered scope | Untested attack surfaces, configurations, and deployments |
 
-- Tracking issue: TODO
-- Owner: TODO
-- Related: [security overview](index.md), [vulnerability disclosure](disclosure.md)
+Record fixes and retests separately: merging a fix and assessor verification are different events. Preserve report history so adopters can match findings to the version they run.
 
-## Report format
+## Report a problem {#reporting}
 
-An audit record includes at least the auditor, date, pVisor commit, platform and executor, test configuration, attack surface, finding severity, fix commits, and retest results. Untested executors, protocols, tenant models, and resource attacks must each be listed.
-
-There is no independent audit conclusion today; internal testing and semspec results do not substitute for a third-party audit, and the absence of a public report does not imply that no issues were found. Handle vulnerability details under the [disclosure policy](disclosure.md) before publishing.
+For boundary escapes or inaccurate evidence, privately submit version, command, expected behavior, and actual behavior through [Vulnerability disclosure](disclosure.md). Coordinate publication of details and remediation with the reporter.

@@ -54,6 +54,55 @@ Building, image downloads, and rootfs preparation are not counted in the existin
 
 Compare candidate and baseline on the same host, suite, and inputs. `benchmark-compare` defaults to a 15% regression threshold and reports only unless `--fail-on-regression` is explicitly enabled. Save raw samples, summaries, complete parameters, input hashes, and commits; distinguish cold images, warm disk caches, and warm page caches, and record background load and power state.
 
-Complete filesystem, network, supervision-cost, and concurrency-density measurements are still missing. Existing tools, passing specifications, or phase-specific figures cannot replace those results.
+The first product measurements are recorded below; real-model success, human supervision and cloud timings remain unmeasured.
 
 `benchmark/pvisor/vm_ready.py` uses `pvisor-vm-readiness/v1`, measuring workload readiness and CLI completion separately, with independent host-checkpoint diagnostics. See [startup latency](startup.md) for the protocol.
+
+## Product benchmark first version, 2026-10-04 {#product-v1}
+
+Host tool time is close to native. Staging adds tens of milliseconds for sequential reads/offline npm and about 150–190 ms for small-file operations. Most measured small VM jobs take 0.5–1 second. Applying 10/1,000/100,000 files costs roughly 15 ms/0.84 seconds/5.5 minutes. These describe this configuration, not all repositories.
+
+### Environment and identity
+
+| Item | Recorded configuration |
+|---|---|
+| Date/platform | 2026-10-04, Linux x86_64 |
+| CPU/RAM | Ryzen 7 9700X, 8 cores/16 threads; MemTotal 31,980,420 KiB (about 30.5 GiB) |
+| OS | Fedora 44, Linux 7.2.8-200.fc44.x86_64 |
+| Filesystems | home btrfs, Linux FUSE; default /tmp is 16 GiB tmpfs with user quota |
+| pVisor | 0.3.0; initial worktree based on 8c63f4f0, with parallel development/dirty changes preserved in source_status |
+| CLI SHA256 | `592b01a0683b8eeedc4750d04b7400820034fa84e630c0dcecc9eb742b800383` |
+| libkrunfw | 5.5.0, SHA256 `6df51f65d7f99fc22215e69a4236c770b1588ceb6777eca014f92b366517d237` |
+| Repaired replay SHA256 | `a69f7a6e40e4bbc71fb1e5af6c957fd7c59c194c3e719c4e497c492044b33f32` |
+| Container/Agent | rootless Podman/crun 1.28, Claude 2.1.128, Codex 0.160.0; reports retain image IDs and versions |
+| Background work | Shared desktop, editors and parallel development; not a dedicated idle benchmark host. Reports retain before/after load; supplementary batches overlapped one large apply |
+
+### Controls
+
+| Name | Configuration and scope |
+|---|---|
+| native | Direct execution of identical input/tool |
+| host | Host process, OverlayNet off; host paths remain accessible |
+| staged | Host plus staged workspace; outside paths are not confined by staging alone |
+| safe | Rootless filesystem sandbox, stage and proxy; read-only Rust toolchain share |
+| vm | libkrun/KVM, 2 vCPU; main tools use 1 GiB and host rootfs `/` plus stage; isolation uses a prepared rootfs; idle probe uses 128 MiB |
+| podman | Prepared local OCI image, workspace bind mount, crun; network none for tools, host network for networking |
+| container | pVisor OCI/crun, writable workspace mount, network none/host; wall includes per-Job private rootfs copying |
+
+These groups have different boundaries. A successful pVisor sample requires a completed zero-exit Bundle and the requested observed executor; staged/safe/VM also require observed staging. File data, tool output or network hashes must validate before entering rows.
+
+### Sampling
+
+Warm host caches, no eviction. Image construction/import and input preparation are outside timed tasks; cargo's workload compilation is inside tool time. Filesystem/network use 3 warmups/30 samples with randomized backend order. Apply uses N=30/10/3 for 10/1,000/100,000 files, one warmup for smaller cases and none for the largest. Density has five batches per cell, agent/replay three repetitions per task, supervision thirty; these have no warmups. Quantiles interpolate linearly. Nested requests/jobs may correlate; no independent-sample confidence intervals are claimed.
+
+Wall covers command launch through exit. Worker covers internal tool execution/validation. Failed batches retain attempted/completed counts and diagnostics. Memory guards are not successes or zero-cost results. An inaccessible Docker daemon, missing image tools and Node address-space failures are explained separately.
+
+### Raw evidence
+
+[Batch manifest](../../assets/benchmarks/product-v1-20261004/manifest.json), [per-sample CSV](../../assets/benchmarks/product-v1-20261004/samples.csv), and [evidence archive](../../assets/benchmarks/product-v1-20261004/evidence.tar.gz) retain JSON, exact harness snapshots, Bundles, errors and SIGKILL ledgers. Rootfs/payloads are reproducible and excluded from docs to avoid gigabytes of copies. Prior macOS/Linux VM results remain intact. New product workloads are Linux-only and are not pooled across platforms.
+
+`just lint` passed. `just test`: Rust 1,075 passed / 8 skipped, Python 84 passed / 16 skipped. Benchmark tests alone: 19 passed. STAGE semantics: 14/14 PASS, with human review still UNREVIEWED; test success is not human approval. Large syscall traces and non-crash apply ledgers remain in local target artifacts; the public archive retains reports, Bundles, diagnostics and crash ledgers.
+
+Recompute with `python3 benchmark/pvisor/summarize_product_v1.py <batch>/report.json --output-csv /tmp/summary.csv`; [summary CSV](../../assets/benchmarks/product-v1-20261004/summary.csv) keeps batches separate.
+
+Performance describes pinned artifacts, not later parallel changes or other release builds; source was not a clean commit. Workspace lint/tests validate the then-current source, while the pinned CLI is checked by benchmarks and STAGE specifications.

@@ -14,12 +14,12 @@ pvisor apply last --path src
 
 ## One person, multiple agents
 
-Run several agents on different approaches at once. Each Job is isolated and leaves its own evidence, so you can review in batches and merge only the results you need. **Next (L2)**; see [parallel agents (planned)](../guides/parallel-agents.md).
+Run several agents on different approaches at once. Each Job is isolated and leaves its own evidence, so you can review in batches and merge only the results you need. **Next (L2)**; see [parallel agents](../guides/parallel-agents.md).
 
 ## Teams and platforms
 
-Put pVisor in CI: let the agent finish, review, and merge only what you want. **Available today (the L1 way)**; policy- and evidence-driven exemption and clustering (L2/L3) are the direction—see [running agents in CI (planned)](../guides/ci.md).
+Put pVisor in CI: let the agent finish, review, and merge only what you want. **Available today (the L1 way)**; policy- and evidence-driven exemption and clustering (L2/L3) are the direction—see [running agents in CI](../guides/ci.md).
 
 ## Research and training
 
-Agentic RL and evaluation want exactly a "large-scale, untrusted, recordable" execution substrate: trajectories can be recorded, forked from checkpoints, and replayed by tool prefix. **Direction**; see [RL rollouts (planned)](../guides/rl-rollouts.md) and [research directions](../design/research/index.md).
+Agentic RL and evaluation want exactly a "large-scale, untrusted, recordable" execution substrate: trajectories can be recorded, forked from checkpoints, and replayed by tool prefix. **Direction**; see [RL rollouts](../guides/rl-rollouts.md) and [research directions](../design/research/index.md).

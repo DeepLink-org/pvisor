@@ -6,7 +6,7 @@ pub fn cache_main() -> anyhow::Result<()> {
     #[command(
         name = "pvisor-cache",
         version,
-        about = "Serve or query the shared OCI file cache"
+        about = "Prepare or query OCI caches backed by a server, filesystem, or S3"
     )]
     struct CacheCli {
         #[command(flatten)]

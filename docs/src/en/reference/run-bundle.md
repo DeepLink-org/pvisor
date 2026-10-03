@@ -1,34 +1,8 @@
----
-status: todo
-search:
-  exclude: true
----
-
 # Run Bundle format
 
-!!! warning "Planned"
-    The complete reference is pending. See [Capabilities and evidence](../concepts/capabilities-and-evidence.md) for field meanings and [Run project discovery](cli.md#run-项目发现) for storage layout.
+A Run Bundle is the handoff record for a task: what ran, how it ended, which changes remain, and which controls were installed. Reviews, CI, and batch jobs can consume the same record.
 
-## Question
-
-Which fields does `run-bundle.json` (currently schema version 4) contain? Which are enforcement evidence, which are derived summaries, and how does cross-version compatibility work?
-
-## Requirements
-
-- Generate a JSON Schema from the Bundle type definitions and publish it with each version.
-- Describe each top-level field: source (admission plan, executor observations, OverlayFS, OverlayNet, Gateway), whether it can be `null`, and the difference between `null` and zero.
-- State the schema version policy: when it is upgraded and whether old Bundles can be read (old Bundles that lack the observation contract are currently rejected).
-
-## Acceptance criteria
-
-- Release schema files; check real output in CI.
-- Annotated minimal Bundle example.
-
-## Tracking
-
-- Tracking issue: TODO (no issue has been assigned).
-- Owner: TODO
-- Related: [JSON output](json-output.md), [stability](stability.md)
+Start with `pvisor status --review STAGE` for a summary. Automation can use `--json` and select its reader by `schema_version`. The full file is the `run-bundle.json` path printed with the task output.
 
 ## Top-level schema-4 records
 

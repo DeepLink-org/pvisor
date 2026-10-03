@@ -15,23 +15,23 @@
 ## L2 与 L3 里程碑
 
 !!! note "建设中"
-    L2/L3 的进入条件与缺口清单尚未定稿；下面汇总已写下的要求与验收标准，不构成排期或完成度承诺。级别定义见[信任阶梯](../why/trust-ladder.md)，容量依据见[并发密度（规划中）](../benchmarks/density.md)。
+    L2/L3 的进入条件与缺口清单尚未定稿；下面汇总已写下的要求与验收标准，不构成排期或完成度承诺。级别定义见[信任阶梯](../why/trust-ladder.md)，容量依据见[并发密度](../benchmarks/density.md)。
 
 ### L2：本机多个 Job／一条流水线
 
-进入条件（待定稿）：本机并发上限与资源模型有数据，作为容量规划依据，见[并发密度（规划中）](../benchmarks/density.md)。
+进入条件（待定稿）：本机并发上限与资源模型有数据，作为容量规划依据，见[并发密度](../benchmarks/density.md)。
 
 验收标准：
 
-- 批量审查流程可复现：按 workspace 聚合、批量 apply，见[单机多 Agent 并行与批量审查（规划中）](../guides/parallel-agents.md)。
-- CI 接入给出可复制的 workflow 示例，明确 `apply` 的语义（谁审、何时合），失败与超时路径有回归，见[在 CI 中运行 Agent（规划中）](../guides/ci.md)。
+- 批量审查流程可复现：按 workspace 聚合、批量 apply，见[单机多 Agent 并行与批量审查](../guides/parallel-agents.md)。
+- CI 接入给出可复制的 workflow 示例，明确 `apply` 的语义（谁审、何时合），失败与超时路径有回归，见[在 CI 中运行 Agent](../guides/ci.md)。
 
 ### L3：集群化执行、集中证据
 
-进入条件（待定稿）：明确与调度器的边界——pVisor 提供执行语义与证据，跨节点编排交给 Kubernetes、Ray，见[集群化执行（规划中）](../design/research/cluster-execution.md)。
+进入条件（待定稿）：明确与调度器的边界——pVisor 提供执行语义与证据，跨节点编排交给 Kubernetes、Ray，见[集群化执行](../design/research/cluster-execution.md)。
 
 验收标准：
 
-- 给出跨节点调度与证据集中后的缺口清单和阶段划分，见[集群化执行（规划中）](../design/research/cluster-execution.md)。
-- 容量依据与 L2 共用[并发密度（规划中）](../benchmarks/density.md)。
+- 给出跨节点调度与证据集中后的缺口清单和阶段划分，见[集群化执行](../design/research/cluster-execution.md)。
+- 容量依据与 L2 共用[并发密度](../benchmarks/density.md)。
 

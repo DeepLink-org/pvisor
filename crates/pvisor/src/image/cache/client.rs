@@ -1,9 +1,9 @@
 //! Blocking cache client and service discovery.
+use super::portable::PortableCache;
 use super::protocol::{Envelope, hash, read_frame, write_frame};
-use super::transport::{
-    Endpoint, Stream, TIMEOUT, TOKEN_ENV, default_endpoint, endpoint, endpoint_from_env,
-};
-use super::{MAX_READ, Request, Response, SERVER_ENV};
+use super::storage::Storage;
+use super::transport::{Endpoint, Stream, TIMEOUT, TOKEN_ENV, endpoint};
+use super::{CacheConfig, MAX_READ, Request, Response, SERVER_ENV};
 use anyhow::{Context, bail, ensure};
 use std::io::Read;
 use std::net::TcpStream;
@@ -18,35 +18,83 @@ struct CacheConnectError(#[source] std::io::Error);
 pub struct CacheClient {
     pub(super) endpoint: String,
     token: Option<String>,
+    direct: Option<PortableCache>,
 }
 impl CacheClient {
     pub fn from_env() -> anyhow::Result<Self> {
-        Self::new(endpoint_from_env()?, std::env::var(TOKEN_ENV).ok())
+        Self::from_config(CacheConfig::from_env()?)
+    }
+    pub fn from_config(config: CacheConfig) -> anyhow::Result<Self> {
+        let address = config.address()?;
+        Self::configured(
+            address,
+            std::env::var(TOKEN_ENV).ok(),
+            config.image_store,
+            config.read_only,
+        )
     }
     pub fn new(address: String, token: Option<String>) -> anyhow::Result<Self> {
-        if matches!(endpoint(&address)?, Endpoint::Tcp(_)) {
+        Self::configured(address, token, None, false)
+    }
+    fn configured(
+        address: String,
+        token: Option<String>,
+        local_store: Option<std::path::PathBuf>,
+        read_only: bool,
+    ) -> anyhow::Result<Self> {
+        let direct = if let Some(path) = address.strip_prefix("file://") {
+            Some(PortableCache::new(
+                Storage::filesystem(path.into(), !read_only)?,
+                local_store,
+                read_only,
+            ))
+        } else if address.starts_with("s3://") {
+            Some(PortableCache::new(
+                Storage::s3(&address)?,
+                local_store,
+                read_only,
+            ))
+        } else {
             ensure!(
-                token.as_ref().is_some_and(|s| !s.is_empty()),
-                "TCP requires {TOKEN_ENV}"
+                !read_only,
+                "read-only mode requires filesystem or S3 cache backend"
             );
-        }
+            if matches!(endpoint(&address)?, Endpoint::Tcp(_)) {
+                ensure!(
+                    token.as_ref().is_some_and(|s| !s.is_empty()),
+                    "TCP requires {TOKEN_ENV}"
+                );
+            }
+            None
+        };
+        let local_objects = dirs::cache_dir().map(|root| {
+            root.join("pvisor/cache-v1/objects")
+                .join(&hash(address.as_bytes())[7..])
+        });
         Ok(Self {
             endpoint: address,
             token,
+            direct: direct.map(|cache| cache.with_local_objects(local_objects)),
         })
     }
     /// Discover the default socket, or require an explicitly configured service.
     pub(crate) fn discover() -> anyhow::Result<Option<Self>> {
-        let explicit = match std::env::var(SERVER_ENV) {
-            Ok(value) => Some(value),
-            Err(std::env::VarError::NotPresent) => None,
-            Err(error) => return Err(error.into()),
-        };
-        if explicit.as_deref() == Some("off") {
+        if std::env::var(SERVER_ENV).as_deref() == Ok("off")
+            && std::env::var_os(super::config::BACKEND_ENV).is_none()
+            && std::env::var_os(super::config::LOCATION_ENV).is_none()
+        {
             return Ok(None);
         }
-        let address = explicit.clone().map_or_else(default_endpoint, Ok)?;
-        Self::probe(address, std::env::var(TOKEN_ENV).ok(), explicit.is_some())
+        let config = CacheConfig::from_env()?;
+        let address = config.address()?;
+        if address.starts_with("file://") || address.starts_with("s3://") {
+            return Ok(Some(Self::from_config(config)?));
+        }
+        Self::probe(
+            address,
+            std::env::var(TOKEN_ENV).ok(),
+            CacheConfig::explicit(),
+        )
     }
 
     pub(super) fn probe(
@@ -79,11 +127,28 @@ impl CacheClient {
         self.request_timeout(request, TIMEOUT)
     }
 
+    /// Publish the local OCI image even when its remote reference already exists.
+    /// Only filesystem and S3 backends support publication without a daemon.
+    pub fn publish(
+        &self,
+        image: &str,
+        architecture: &str,
+        refresh: bool,
+    ) -> anyhow::Result<Response> {
+        self.direct
+            .as_ref()
+            .context("publish requires a filesystem or S3 backend")?
+            .publish_image(image, architecture, refresh)
+    }
+
     fn request_timeout(
         &self,
         request: Request,
         timeout: Duration,
     ) -> anyhow::Result<(Response, Vec<u8>)> {
+        if let Some(cache) = &self.direct {
+            return cache.request(request);
+        }
         let expected = match &request {
             Request::Read { length, .. } => Some(*length),
             _ => None,

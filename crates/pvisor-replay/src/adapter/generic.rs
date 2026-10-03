@@ -175,29 +175,31 @@ pub(super) fn execute(
     }
     let mut reconstructed_events = events[..=boundary_end].to_vec();
     let mut observations = Vec::new();
-    for call in plan.calls() {
-        let fresh = execute_call(call, context)?;
-        let output_event = call
-            .native
-            .get("output_event")
-            .and_then(Value::as_u64)
-            .ok_or_else(|| ReplayError::trajectory("native JSONL call has no output event"))?
-            as usize;
-        match agent {
-            NativeJsonlAgent::Opencode => replace_opencode_observation(
-                reconstructed_events.get_mut(output_event).ok_or_else(|| {
-                    ReplayError::trajectory("OpenCode call event is out of bounds")
-                })?,
-                &fresh,
-            )?,
-            NativeJsonlAgent::Codex => replace_codex_observation(
-                reconstructed_events.get_mut(output_event).ok_or_else(|| {
-                    ReplayError::trajectory("Codex output event is out of bounds")
-                })?,
-                &fresh,
-            )?,
+    if context.request.mode != ReplayMode::PrepareOnly {
+        for call in plan.calls() {
+            let fresh = execute_call(call, context)?;
+            let output_event = call
+                .native
+                .get("output_event")
+                .and_then(Value::as_u64)
+                .ok_or_else(|| ReplayError::trajectory("native JSONL call has no output event"))?
+                as usize;
+            match agent {
+                NativeJsonlAgent::Opencode => replace_opencode_observation(
+                    reconstructed_events.get_mut(output_event).ok_or_else(|| {
+                        ReplayError::trajectory("OpenCode call event is out of bounds")
+                    })?,
+                    &fresh,
+                )?,
+                NativeJsonlAgent::Codex => replace_codex_observation(
+                    reconstructed_events.get_mut(output_event).ok_or_else(|| {
+                        ReplayError::trajectory("Codex output event is out of bounds")
+                    })?,
+                    &fresh,
+                )?,
+            }
+            observations.push(fresh);
         }
-        observations.push(fresh);
     }
     let prepared = context.output_dir.join("native/prepared-prefix.jsonl");
     write_jsonl(&prepared, &reconstructed_events)?;

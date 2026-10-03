@@ -1,34 +1,8 @@
----
-status: todo
-search:
-  exclude: true
----
-
 # Policy fields
 
-!!! warning "Planned"
-    The complete reference is pending. See [Policy model](../concepts/policy-model.md), [File policies](../guides/policies/files.md) and [Network policy](../guides/policies/network.md).
+Policies define which files a task can access and which destinations it can reach. Put shared project rules in `.pvisor/policy.toml`, personal rules in the user configuration directory, and task-specific restrictions in the Run configuration.
 
-## Question
-
-Which `[network]` and `[filesystem]` fields do `policy.toml` and `[policies.*]` accept, what are the merge rules, and what rules does the `--safe` preset generate?
-
-## Requirements
-
-- Generate field tables from policy type definitions: fields, types, defaults and ranges.
-- List the complete rules that the `--safe` preset generates per platform and per Agent command name.
-- State the merge rules for each layer and give the test or semantic specification for each rule.
-
-## Acceptance criteria
-
-- The field table is code-generated or CI-checked.
-- The `--safe` preset table matches the `apply_safe_defaults` implementation.
-
-## Tracking
-
-- Tracking issue: TODO (no issue has been assigned).
-- Owner: TODO
-- Related: [Configuration](config.md)
+Start with the smallest useful grants, then check installed controls in the Run Bundle. The examples below cover rule syntax; the [network policy guide](../guides/policies/network.md) explains enforcement boundaries.
 
 ## Policy files available today
 

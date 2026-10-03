@@ -20,4 +20,4 @@ pVisor 不提供密码学远程证明，也不是敌对多租户隔离。
 - [加固建议](hardening.md)：按风险从低到高的配置建议。
 - [已知限制](known-limitations.md)：已知的缺口与不变量问题。
 - [漏洞披露政策](disclosure.md)：如何私密报告漏洞，以及响应目标。
-- [第三方审计（规划中）](audits.md)
+- [第三方审计](audits.md)

@@ -33,4 +33,4 @@ pVisor 是**每次执行的语义层**：定义边界、落实控制、留下证
 四级的分工、pVisor 的取舍，以及 L2/L3 的状态见[信任阶梯与规模轴](trust-ladder.md)；不同规模下的用法见[用例](use-cases.md)。
 
 !!! note "建设中"
-    「每单位 Agent 工作所需人工监督成本」还没有实测数据；需求与验收标准见[监督成本（规划中）](../benchmarks/supervision-cost.md)。
+    「每单位 Agent 工作所需人工监督成本」还没有实测数据；需求与验收标准见[监督成本](../benchmarks/supervision-cost.md)。

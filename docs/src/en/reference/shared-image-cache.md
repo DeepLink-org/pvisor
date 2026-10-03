@@ -1,6 +1,99 @@
-# Shared image cache protocol v1
+# Shared image cache and storage backends
 
-`pvisor cache serve` exposes server OCI image storage as a read-only file service. Clients never receive host filesystem paths. Images are prepared once on the server and addressed by the resolved platform manifest SHA-256 digest. Existing storage validates blobs, applies layers and handles whiteouts. File queries never access registries.
+`pvisor cache` reuses OCI image content through server, filesystem, or S3 backends. In server mode, `pvisor cache serve` exposes existing OCI image storage as a read-only file service. Clients never receive host filesystem paths. Images are prepared once on the server and addressed by the resolved platform manifest SHA-256 digest. Existing storage validates blobs, applies layers and handles whiteouts. File queries never access registries.
+
+## Choose a backend
+
+Server, filesystem, and S3 caches share the same prepare/list/stat/read interface and VM configuration. Filesystem and S3 are direct storage backends and require no cache serve process.
+
+| Backend | Configuration | Use case |
+|---|---|---|
+| `server` (default) | PVISOR_CACHE_SERVER=unix://... or loopback tcp://... | Reuse an extracted OCI store on one host or an existing central service |
+| `filesystem` | PVISOR_CACHE_BACKEND=filesystem and PVISOR_CACHE_LOCATION=/absolute/directory | Multiple local processes or a shared disk/NFS cache |
+| `s3` | PVISOR_CACHE_BACKEND=s3 and PVISOR_CACHE_LOCATION=s3://BUCKET/PREFIX | Share images across machines through object storage without a cache service |
+
+CLI --backend, --location, and --image-store override environment values and work before or after a subcommand. --read-only or PVISOR_CACHE_READ_ONLY=true makes the shared backend read-only: preparing an unpublished image or requesting --refresh fails explicitly without registry access or backend writes. Readers may still write their own local acceleration cache.
+
+### Filesystem: publish once, read from independent processes
+
+```sh
+pvisor cache --backend filesystem --location /mnt/pvisor-cache \
+  --image-store /tmp/pvisor-publish publish alpine:latest
+pvisor cache --backend filesystem --location /mnt/pvisor-cache \
+  --read-only prepare alpine:latest
+pvisor cache --backend filesystem --location /mnt/pvisor-cache \
+  --read-only read sha256:YOUR_MANIFEST_DIGEST etc/os-release
+```
+
+--location selects the new shared cache format; --image-store is local OCI download/extraction staging. These are separate directories. Existing PVISOR_IMAGE_STORE can also be reused. Reads do not depend on staging after publication, so CI can use task-local staging. Shared objects are private by default; administrators must grant read permissions for cross-UID shared disks. Read-only mode does not create a missing shared directory.
+
+### S3: a writable publisher and read-only workers
+
+```sh
+export AWS_DEFAULT_REGION=ap-southeast-1
+# Supply AWS credentials through environment variables or workload roles.
+export PVISOR_CACHE_BACKEND=s3
+export PVISOR_CACHE_LOCATION=s3://your-bucket/pvisor-cache
+pvisor cache --image-store /tmp/pvisor-publish publish alpine:latest
+
+# Workers only need GetObject access to this prefix.
+export PVISOR_CACHE_READ_ONLY=true
+pvisor cache prepare alpine:latest
+pvisor cache read sha256:YOUR_MANIFEST_DIGEST etc/os-release
+pvisor run --executor vm --rootfs image=alpine:latest -- /bin/sh
+```
+
+Create the bucket first; pVisor does not create buckets. `publish` uploads objects to the prefix and needs `s3:PutObject`. Writable `prepare` also needs `s3:GetObject` because it checks the cache before publishing a miss. Readers need only `s3:GetObject`. Normal operations require neither `ListBucket` nor `DeleteObject`. Storage connections remain on the host. New cache configuration and implicit AWS_* storage credentials are not projected into the guest; explicitly supplied workload environment remains the caller's decision.
+
+S3 uses SigV4 and HTTPS by default. Credentials support AWS_ACCESS_KEY_ID, AWS_SECRET_ACCESS_KEY, optional AWS_SESSION_TOKEN, and EC2, ECS, and Web Identity workload roles; the [object_store S3 provider](https://docs.rs/object_store/0.13.2/object_store/aws/struct.AmazonS3Builder.html) handles fetching and renewal. Shared ~/.aws profile/SSO files are not read directly; supply exported environment credentials or use workload roles. Set AWS_DEFAULT_REGION or AWS_REGION. S3-compatible services can use AWS_ENDPOINT (or AWS_ENDPOINT_URL_S3); the HTTP example below is for a local test service.
+
+```sh
+export AWS_ENDPOINT=http://127.0.0.1:9000
+export AWS_ALLOW_HTTP=true
+export AWS_ACCESS_KEY_ID=YOUR_ACCESS_KEY
+export AWS_SECRET_ACCESS_KEY=YOUR_SECRET_KEY
+export PVISOR_CACHE_BACKEND=s3
+export PVISOR_CACHE_LOCATION=s3://your-bucket/pvisor-cache
+pvisor cache prepare alpine:latest
+```
+
+### Image splitting and upload tool
+
+`pvisor cache publish IMAGE` is the explicit publishing command. It pulls the selected platform's OCI manifest and layers from a registry, applies layers and whiteouts locally, walks the merged image filesystem, and uploads the file index and content blocks. Reuse existing local OCI staging through `--image-store` or `PVISOR_IMAGE_STORE`; staging can be removed after upload.
+
+```sh
+PVISOR_CACHE_READ_ONLY=false pvisor cache publish alpine:latest \
+  --backend s3 --location s3://your-bucket/pvisor-cache \
+  --architecture amd64 --image-store /tmp/pvisor-publish
+```
+
+`--architecture` accepts `amd64` and `arm64`, defaulting to the host architecture. `--refresh` rechecks the registry; without it, fresh local prepared-image records can be reused. `publish` always performs splitting and upload, without skipping based on a remote tag record. Conditional creation reuses existing immutable content objects and uploads missing blocks again. Read-only mode and the server backend reject publication. On success, JSON output includes the manifest digest, architecture, index digest in `metadata_generation`, and file count/logical-byte totals in `totals`. Readers use these indexes to access files by path.
+
+```text
+s3://your-bucket/pvisor-cache/
+└── v1/
+    ├── format
+    ├── refs/<reference-and-architecture-hash>.json
+    ├── images/<manifest-sha256>.json
+    ├── indexes/<index-sha256>.json
+    └── blobs/<content-sha256>
+```
+
+This file storage structure combines indexed paths, modes, hard links, symlinks, and content spans. S3 content objects contain blocks of at most 1 MiB. A large file can use several objects, and several small files can share one object. The index maps file paths to content blocks, so readers do not download or extract OCI layers again.
+
+### Layout and request costs
+
+A direct-backend image index is limited to 64 MiB, 200,000 paths, and 500,000 content spans; larger indexes fail explicitly. Compatible object services must support atomic PUT and If-None-Match conditional creation.
+
+Both direct backends use the v1/ format: refs/ contains image-reference/architecture records, images/ maps manifest digests to indexes, indexes/ holds immutable metadata and file-span indexes, and blobs/ holds SHA-256-addressed content. Paths and symlinks preserve Unix bytes, hard links share inode identity, and modes/Linux ownership follow OCI extraction rules.
+
+Publishing packs small files into blocks of at most 1 MiB; large files can span blocks. Content is deduplicated by hash. All blocks and indexes are written before atomically publishing references. Concurrent publishers conditionally create immutable objects, so readers never see partial uploads. Failed publication may leave unreferenced blocks but does not publish a reference to an unfinished upload.
+
+Reads fetch a reference and index, followed only by blocks intersecting the requested range. Directory queries use the index alone. Bounded client memory caches and a persistent local cache under <user-cache>/pvisor/cache-v1/objects/<location-hash>/ reuse validated indexes and packed blocks. Corrupt local objects are refetched. Corrupt, missing, or denied remote objects fail the operation without zero filling or silently falling back to the registry. Existing VM file-block and metadata caches still apply.
+
+Writable mode caches mutable-tag records for five minutes; publishers explicitly update them with --refresh. Read-only mode uses published records beyond that window without registry access. Refresh from a publisher to update workers, whose tasks then pin the returned manifest digest. IMAGE@sha256:... pins a version.
+
+Actual S3 traffic includes indexes and complete packed blocks; a small-file read can fetch neighboring file bytes. Existing TUI Transferred counts logical file bytes returned by the cache interface rather than S3 GETs or billed traffic, so it cannot estimate object-storage bills. Shared-block automatic GC/quotas are not included. Retire independent prefixes as groups after confirming no tasks use them. Expiring old blobs alone can delete content still used by newer references.
 
 ## Code layout
 
@@ -12,7 +105,11 @@ cache/
 ├── cli.rs              # pvisor cache subcommands
 ├── protocol.rs         # Request/response types, framing and content hashes
 ├── transport.rs        # Unix/TCP endpoints, streams and timeouts
-├── client.rs           # Discovery and validated requests
+├── client.rs           # Backend discovery and validated requests
+├── config.rs           # Shared CLI/executor backend configuration
+├── storage.rs          # Filesystem and S3 object I/O
+├── portable.rs         # Direct storage format, indexes, range reads
+├── portable/           # Packing/publication and regression tests
 ├── server.rs           # Authentication, work queues and confined file access
 ├── server/
 │   ├── metadata.rs     # Server metadata and directory LRU caches
@@ -50,7 +147,7 @@ Use `--image-store DIR` or `PVISOR_IMAGE_STORE` for existing OCI storage. The se
 
 ## Automatic VM lazy loading
 
-When `pvisor run --vm --rootfs image=IMAGE -- COMMAND` prepares an OCI image, it probes the default socket with a two-second `ping` handshake. A compatible server enables lazy loading automatically. Missing/refused sockets (including stale sockets) use local OCI preparation. Authentication, protocol and timeout errors are reported rather than bypassed silently.
+When no filesystem/S3 backend is selected and `pvisor run --executor vm --rootfs image=IMAGE -- COMMAND` prepares an OCI image, it probes the default socket with a two-second `ping` handshake. A compatible server enables lazy loading automatically. Missing/refused sockets (including stale sockets) use local OCI preparation. Authentication, protocol and timeout errors are reported rather than bypassed silently.
 
 An explicit `PVISOR_CACHE_SERVER` requires the service. `PVISOR_CACHE_SERVER=off` forces local preparation. Explicit directory rootfs and native containers retain their behavior.
 
@@ -137,3 +234,15 @@ Server memory caches share up to 4096 stat responses and 128 sorted directory in
 There are 16 request/file workers and up to 16 queued connections; excess connections close and clients may retry. Authenticated prepare uses a separate two-worker pool with 16 queued requests; full queues return explicit busy errors. Registry/extraction work does not occupy file workers. Request reads have a five-second inactivity timeout; response reads/writes retain 300 seconds; TCP connects have 10 seconds. Long preparation may outlive a disconnected client; retry is safe. Shutdown does not gracefully cancel individual OCI downloads. Existing image storage governs registry limits/cache eviction; v1 adds no quotas or eviction.
 
 There are no vCPU pause/resume messages. Downloading happens in host FUSE services outside the sandboxed VM runner.
+
+## Backend validation
+
+`just test pvisor` includes server compatibility, independent filesystem/S3 CLI processes, read-only access, corruption refusal, and configuration precedence. The local S3 fixture independently verifies SigV4, including temporary session tokens, without real accounts, public requests, or an external daemon.
+
+On Linux x86_64 with KVM/FUSE and the static musl guest target, run the real VM acceptance check:
+
+```sh
+cargo nextest run --locked -p pvisor --test cache_backends --run-ignored ignored-only
+```
+
+This starts VMs from both backends, validates guest file contents after deleting publisher staging, and verifies that inheriting the host environment does not leak storage credentials.

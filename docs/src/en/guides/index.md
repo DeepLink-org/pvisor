@@ -13,9 +13,9 @@ If this is your first time, complete [First run](../start/first-run.md) first.
 | Deliver credentials | [Credentials and environment variables](policies/credentials.md) |
 | Record model requests and responses | [Gateway capture](capture.md) |
 | Rerun supported native trajectories | [Replay](replay.md) |
-| Run in CI (planned) | [Run agents in CI](ci.md) |
-| Run many agents on one host (planned) | [Parallel agents](parallel-agents.md) |
-| RL rollouts (planned) | [RL rollouts](rl-rollouts.md) |
+| Run in CI | [Run agents in CI](ci.md) |
+| Run many agents on one host | [Parallel agents](parallel-agents.md) |
+| RL rollouts | [RL rollouts](rl-rollouts.md) |
 | Diagnose unexpected behavior | [Troubleshooting](troubleshooting.md) |
 
 For exact commands see the [CLI reference](../reference/cli.md); for implementation details see [Design](../design/index.md).

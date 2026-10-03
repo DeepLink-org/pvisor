@@ -16,12 +16,12 @@ pub mod trace;
 pub use session::Session;
 
 mod config;
-#[cfg(test)]
-mod kernel_bundle;
 #[doc(hidden)]
 pub mod diagnostics;
 mod executor;
 mod image;
+#[cfg(test)]
+mod kernel_bundle;
 pub mod ram_backing;
 
 #[doc(hidden)]

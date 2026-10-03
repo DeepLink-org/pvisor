@@ -1,34 +1,8 @@
----
-status: todo
-search:
-  exclude: true
----
-
 # Run Bundle 格式
 
-!!! warning "规划中"
-    完整字段表尚未完成；字段含义与证据口径见[能力、证据与保证边界](../concepts/capabilities-and-evidence.md)，目录结构见 [Run 项目发现](cli.md#run-项目发现)。
+Run Bundle 是一次任务的交接记录：执行了什么、如何结束、留下哪些改动，以及哪些控制实际生效。评审、CI 和批量任务都可以读取同一份记录。
 
-## 要回答的问题
-
-`run-bundle.json`（当前 schema 版本 4）包含哪些字段？哪些是强制力证据，哪些是派生摘要？跨版本如何兼容？
-
-## 需求
-
-- 从 Bundle 类型定义生成 JSON Schema，并随版本发布；
-- 每个顶层字段说明：来源（准入计划、执行器观察、OverlayFS、OverlayNet、Gateway）、是否可能为 `null`、`null` 与零的区别；
-- 写明 schema 版本策略：何时升级、旧 Bundle 是否可读（当前缺少观察契约的旧 Bundle 拒绝读取）。
-
-## 验收标准
-
-- JSON Schema 文件随版本发布，CI 校验实际输出符合 schema；
-- 给出一个最小示例 Bundle 与逐字段注释。
-
-## 关联
-
-- 跟踪 issue：TODO
-- 负责人：TODO
-- 相关页面：[机器可读输出（规划中）](json-output.md)、[稳定性承诺（规划中）](stability.md)
+先用 `pvisor status --review STAGE` 看摘要；自动化使用 `--json`，按 `schema_version` 选择读取逻辑。完整文件位于任务输出提示的 `run-bundle.json`。
 
 ## schema 4 的顶层记录
 
