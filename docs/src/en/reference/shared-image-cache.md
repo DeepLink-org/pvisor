@@ -4,6 +4,10 @@
 
 ## Choose a backend
 
+See [shared image cache storage format v1](../design/shared-image-cache-storage.md) for directory trees, object fields, file-to-block mappings, and publication consistency, including complete readable example objects.
+
+The successor [v2 layout isolates per-image meta and shares sharded data](../design/shared-image-cache-storage-v2.md). Publishers/readers do not yet implement it; commands below still use v1.
+
 Server, filesystem, and S3 caches share the same prepare/list/stat/read interface and VM configuration. Filesystem and S3 are direct storage backends and require no cache serve process.
 
 | Backend | Configuration | Use case |

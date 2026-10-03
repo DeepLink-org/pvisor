@@ -64,6 +64,12 @@ These workloads were measured on Linux; macFUSE/FSKit overhead and capacity rema
 Main safe concurrency 128 completed **638/640** jobs. Failures reported `Address already in use`, a race between free-port probing and actual listening. Successful samples do not establish stable concurrency 128. Idle VM tree RSS is roughly 100 MiB at one and 789 MiB at eight, not configured RAM or a maximum active working set.
 
 The tools rootfs is about 749 MiB. pVisor OCI copies a private environment per Job into default `/tmp`; concurrency 32/128 hit the tmpfs user quota (`Disk quota exceeded`). Failures remain visible. A minimal-shell follow-up is separate, distinguishing runtime from tool-environment preparation. Podman uses a prebuilt shared image rather than the same full per-Job copy.
+### Idle occupancy and complete Agent capacity differ {#baseline-meaning}
+
+Native shell and Podman/crun provide familiar occupancy baselines. Success at concurrency 128 answers whether these idle processes can be maintained together. It does not answer whether 128 tasks using Python, Node, Rust, and Agent CLIs can run together. A 2 vCPU/128 MiB idle VM does not represent the active working set of a complete tool environment.
+
+Single-task latency and actual process-tree RSS for the complete environment are in the [Agent environment comparison](agent-tasks.md#reference-env). The new Docker resource data includes its private daemon's fixed cost; it cannot be ranked directly against these Podman RSS figures, which may omit background processes. Plan concurrency from your task working set, then measure success and completion time. No complete-Agent capacity claim at concurrency 128 is published.
+
 ## Limits and next measurements {#acceptance}
 
 This shared desktop has editors and background work; it is not a dedicated maximum-capacity experiment. Main VM guarding was conservative. Follow-up budgets max(128 MiB, 1.5×observed single-VM RSS) per Job plus 2 GiB host reserve. Summed RSS counts shared pages repeatedly and is not PSS/system memory. Podman daemons may fall outside the tracked ancestry, so CPU/RSS do not support a strict whole-system ranking.

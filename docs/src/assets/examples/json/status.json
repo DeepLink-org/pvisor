@@ -1,0 +1,459 @@
+{
+  "apply_history": [],
+  "checkpoint_capability": {
+    "execution": false,
+    "execution_blocker": "this Job executor has no full CPU/RAM/device capture and restore contract",
+    "workspace": true,
+    "workspace_capture_requires": "confirmed_stopped"
+  },
+  "checkpoints": [],
+  "filesystem": {
+    "changed_files": 2,
+    "sample_paths": [
+      ".wh.obsolete.txt",
+      "src",
+      "src/result.txt"
+    ],
+    "state": "staged",
+    "whiteouts": 1
+  },
+  "live": false,
+  "observations": {
+    "filesystem": {
+      "overflow_hits": 0,
+      "paths": {
+        "": {
+          "getattr": {
+            "allowed": 3,
+            "bytes_read": 0,
+            "bytes_written": 0,
+            "denied": 0,
+            "effects": 0,
+            "failed": 0,
+            "hits": 3,
+            "succeeded": 3,
+            "uncertain_effects": 0
+          },
+          "opendir": {
+            "allowed": 1,
+            "bytes_read": 0,
+            "bytes_written": 0,
+            "denied": 0,
+            "effects": 0,
+            "failed": 0,
+            "hits": 1,
+            "succeeded": 1,
+            "uncertain_effects": 0
+          }
+        },
+        "obsolete.txt": {
+          "lookup": {
+            "allowed": 1,
+            "bytes_read": 0,
+            "bytes_written": 0,
+            "denied": 0,
+            "effects": 0,
+            "failed": 0,
+            "hits": 1,
+            "succeeded": 1,
+            "uncertain_effects": 0
+          },
+          "unlink": {
+            "allowed": 1,
+            "bytes_read": 0,
+            "bytes_written": 0,
+            "denied": 0,
+            "effects": 1,
+            "failed": 0,
+            "hits": 1,
+            "succeeded": 1,
+            "uncertain_effects": 0
+          }
+        },
+        "src": {
+          "lookup": {
+            "allowed": 1,
+            "bytes_read": 0,
+            "bytes_written": 0,
+            "denied": 0,
+            "effects": 0,
+            "failed": 1,
+            "hits": 1,
+            "succeeded": 0,
+            "uncertain_effects": 0
+          },
+          "mkdir": {
+            "allowed": 1,
+            "bytes_read": 0,
+            "bytes_written": 0,
+            "denied": 0,
+            "effects": 1,
+            "failed": 0,
+            "hits": 1,
+            "succeeded": 1,
+            "uncertain_effects": 0
+          }
+        },
+        "src/result.txt": {
+          "create": {
+            "allowed": 1,
+            "bytes_read": 0,
+            "bytes_written": 0,
+            "denied": 0,
+            "effects": 1,
+            "failed": 0,
+            "hits": 1,
+            "succeeded": 1,
+            "uncertain_effects": 0
+          },
+          "getxattr": {
+            "allowed": 1,
+            "bytes_read": 0,
+            "bytes_written": 0,
+            "denied": 0,
+            "effects": 0,
+            "failed": 1,
+            "hits": 1,
+            "succeeded": 0,
+            "uncertain_effects": 0
+          },
+          "lookup": {
+            "allowed": 1,
+            "bytes_read": 0,
+            "bytes_written": 0,
+            "denied": 0,
+            "effects": 0,
+            "failed": 1,
+            "hits": 1,
+            "succeeded": 0,
+            "uncertain_effects": 0
+          },
+          "write": {
+            "allowed": 1,
+            "bytes_read": 0,
+            "bytes_written": 6,
+            "denied": 0,
+            "effects": 1,
+            "failed": 0,
+            "hits": 1,
+            "succeeded": 1,
+            "uncertain_effects": 0
+          }
+        }
+      },
+      "rules": {
+        "fs.stage": {
+          "allowed": 4,
+          "bytes_read": 0,
+          "bytes_written": 6,
+          "denied": 0,
+          "effects": 4,
+          "failed": 0,
+          "hits": 4,
+          "succeeded": 4,
+          "uncertain_effects": 0
+        }
+      }
+    },
+    "network": {
+      "absolute_http_requests": 0,
+      "active_tcp_flows": 0,
+      "bytes_guest_to_host": 0,
+      "bytes_host_to_guest": 0,
+      "connect_requests": 0,
+      "dns_answers": 0,
+      "dns_queries": 0,
+      "failures": 0,
+      "peak_tcp_flows": 0,
+      "policy_allowed": 0,
+      "policy_denied": 0,
+      "requests_seen": 0,
+      "sink_requests": 0,
+      "target_overflow": 0,
+      "targets": {},
+      "tcp_connect_failures": 0,
+      "tcp_flows_denied": 0,
+      "tcp_flows_opened": 0,
+      "unsupported_packets": 0
+    }
+  },
+  "run": {
+    "agent": "sh",
+    "attempt_id": "run-bundle-attempt_id",
+    "command": [
+      "/bin/sh",
+      "-c",
+      "mkdir -p src; printf \"ready\\n\" > src/result.txt; rm obsolete.txt"
+    ],
+    "environment": {
+      "inherits_host": false,
+      "projected_keys": [
+        "COLORTERM",
+        "HOME",
+        "LANG",
+        "LC_ALL",
+        "LC_CTYPE",
+        "LOGNAME",
+        "PATH",
+        "SHELL",
+        "TERM",
+        "USER"
+      ],
+      "runtime_injected_keys": [
+        "ALL_PROXY",
+        "HTTPS_PROXY",
+        "HTTP_PROXY",
+        "NO_PROXY",
+        "PVISOR_OVERLAYNET_DRIVER",
+        "PVISOR_OVERLAYNET_STRENGTH",
+        "all_proxy",
+        "http_proxy",
+        "https_proxy",
+        "no_proxy"
+      ]
+    },
+    "executor": {
+      "isolation": "rootless_process",
+      "kind": "process",
+      "name": "local-rootless-v1"
+    },
+    "filesystem_observation": {
+      "overflow_hits": 0,
+      "paths": {
+        "": {
+          "getattr": {
+            "allowed": 3,
+            "bytes_read": 0,
+            "bytes_written": 0,
+            "denied": 0,
+            "effects": 0,
+            "failed": 0,
+            "hits": 3,
+            "succeeded": 3,
+            "uncertain_effects": 0
+          },
+          "opendir": {
+            "allowed": 1,
+            "bytes_read": 0,
+            "bytes_written": 0,
+            "denied": 0,
+            "effects": 0,
+            "failed": 0,
+            "hits": 1,
+            "succeeded": 1,
+            "uncertain_effects": 0
+          }
+        },
+        "obsolete.txt": {
+          "lookup": {
+            "allowed": 1,
+            "bytes_read": 0,
+            "bytes_written": 0,
+            "denied": 0,
+            "effects": 0,
+            "failed": 0,
+            "hits": 1,
+            "succeeded": 1,
+            "uncertain_effects": 0
+          },
+          "unlink": {
+            "allowed": 1,
+            "bytes_read": 0,
+            "bytes_written": 0,
+            "denied": 0,
+            "effects": 1,
+            "failed": 0,
+            "hits": 1,
+            "succeeded": 1,
+            "uncertain_effects": 0
+          }
+        },
+        "src": {
+          "lookup": {
+            "allowed": 1,
+            "bytes_read": 0,
+            "bytes_written": 0,
+            "denied": 0,
+            "effects": 0,
+            "failed": 1,
+            "hits": 1,
+            "succeeded": 0,
+            "uncertain_effects": 0
+          },
+          "mkdir": {
+            "allowed": 1,
+            "bytes_read": 0,
+            "bytes_written": 0,
+            "denied": 0,
+            "effects": 1,
+            "failed": 0,
+            "hits": 1,
+            "succeeded": 1,
+            "uncertain_effects": 0
+          }
+        },
+        "src/result.txt": {
+          "create": {
+            "allowed": 1,
+            "bytes_read": 0,
+            "bytes_written": 0,
+            "denied": 0,
+            "effects": 1,
+            "failed": 0,
+            "hits": 1,
+            "succeeded": 1,
+            "uncertain_effects": 0
+          },
+          "getxattr": {
+            "allowed": 1,
+            "bytes_read": 0,
+            "bytes_written": 0,
+            "denied": 0,
+            "effects": 0,
+            "failed": 1,
+            "hits": 1,
+            "succeeded": 0,
+            "uncertain_effects": 0
+          },
+          "lookup": {
+            "allowed": 1,
+            "bytes_read": 0,
+            "bytes_written": 0,
+            "denied": 0,
+            "effects": 0,
+            "failed": 1,
+            "hits": 1,
+            "succeeded": 0,
+            "uncertain_effects": 0
+          },
+          "write": {
+            "allowed": 1,
+            "bytes_read": 0,
+            "bytes_written": 6,
+            "denied": 0,
+            "effects": 1,
+            "failed": 0,
+            "hits": 1,
+            "succeeded": 1,
+            "uncertain_effects": 0
+          }
+        }
+      },
+      "rules": {
+        "fs.stage": {
+          "allowed": 4,
+          "bytes_read": 0,
+          "bytes_written": 6,
+          "denied": 0,
+          "effects": 4,
+          "failed": 0,
+          "hits": 4,
+          "succeeded": 4,
+          "uncertain_effects": 0
+        }
+      }
+    },
+    "finished_at_unix_ms": 0,
+    "gateway_listen": null,
+    "network": {
+      "mode": "deny"
+    },
+    "network_interception": {
+      "dns": false,
+      "driver": "explicit-proxy",
+      "http": true,
+      "inherited_by_children": false,
+      "strength": "cooperative",
+      "tcp_connect": true,
+      "udp": false
+    },
+    "network_interception_metrics": {
+      "absolute_http_requests": 0,
+      "active_tcp_flows": 0,
+      "bytes_guest_to_host": 0,
+      "bytes_host_to_guest": 0,
+      "connect_requests": 0,
+      "dns_answers": 0,
+      "dns_queries": 0,
+      "failures": 0,
+      "peak_tcp_flows": 0,
+      "policy_allowed": 0,
+      "policy_denied": 0,
+      "requests_seen": 0,
+      "sink_requests": 0,
+      "target_overflow": 0,
+      "targets": {},
+      "tcp_connect_failures": 0,
+      "tcp_flows_denied": 0,
+      "tcp_flows_opened": 0,
+      "unsupported_packets": 0
+    },
+    "network_policy": {
+      "allowed_hosts": [],
+      "deny_rules": [],
+      "limits": [],
+      "mode": "no-network",
+      "rules": []
+    },
+    "overlay": {
+      "access_policy": {
+        "context": {
+          "attempt_id": "run-bundle-attempt_id",
+          "audit_socket": null,
+          "run_id": "run-bundle-run_id",
+          "view": "workspace"
+        },
+        "deny": [
+          "**/.ssh",
+          "**/.gnupg",
+          "**/id_rsa",
+          "**/id_dsa",
+          "**/id_ecdsa",
+          "**/id_ecdsa_sk",
+          "**/id_ed25519",
+          "**/id_ed25519_sk"
+        ],
+        "warn": [
+          "**/.env",
+          "**/.env.*",
+          "**/*.pem",
+          "**/*.key",
+          "**/*.pub",
+          "**/*.p12",
+          "**/*.pfx",
+          "**/.aws/credentials",
+          "**/.netrc",
+          "**/.npmrc"
+        ]
+      },
+      "auto_apply": false,
+      "auto_discard": false,
+      "excluded_paths": [],
+      "generation": 0,
+      "id": "run-bundle-run_id",
+      "merged_dir": "/tmp/pvisor-example/run-bundle/merged",
+      "protect_target": false,
+      "stage_dir": "/tmp/pvisor-example/run-bundle",
+      "state": "staged",
+      "target": "/tmp/pvisor-example/workspace",
+      "upper": {
+        "upper_dir": "/tmp/pvisor-example/run-bundle/upper",
+        "work_dir": "/tmp/pvisor-example/run-bundle/work"
+      }
+    },
+    "overlay_lowers": [
+      "/tmp/pvisor-example/workspace"
+    ],
+    "overlaynet_listen": "127.0.0.1:36593",
+    "pid": 1118712,
+    "resource_limits": {},
+    "run_id": "run-bundle-run_id",
+    "schema_version": 1,
+    "session_id": "run-bundle-run_id",
+    "started_at_unix_ms": 0,
+    "state": "completed",
+    "storage": "/tmp/pvisor-example/run-bundle",
+    "workspace": "/tmp/pvisor-example/workspace"
+  },
+  "workspace_generation": 0
+}

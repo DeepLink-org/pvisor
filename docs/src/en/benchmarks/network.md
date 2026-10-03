@@ -30,6 +30,12 @@ These workloads were measured on Linux; macFUSE/FSKit overhead and capacity rema
 Host adds about 0.29 ms to small-request P50; VM adds about 2.88 ms. Main-batch bulk P50 is roughly 869 MiB/s native, 417 host and 155 VM. Bulk timing includes connect/read, with hashing after transfer; worker time also includes hashing. This describes a local HTTP path, not public Internet capacity.
 
 Host deny-all with a private network namespace and VM deny-all each blocked direct sockets **30/30**, with non-bypassable networking confirmed in the Bundle. Ordinary host proxy enforcement is cooperative and direct sockets can bypass it. Fast denials are correctness checks rather than throughput results.
+### Read the numbers as requests and downloads {#baseline-meaning}
+
+Native HTTP is the baseline without the pVisor path; Podman/crun is a measured ordinary OCI path. Host proxy adds about 0.29 ms per small request, and VM about 2.88 ms. If an external service itself takes 100 ms, these additions alone would be about 0.3% and 2.9%. That is an illustrative assumption, not an Internet or model API measurement.
+
+Bulk downloads differ: at the measured rates, transferring 32 MiB takes about 37 ms natively and 207 ms through VM. Many local requests, dependency downloads, and model streams are different workloads. The new [complete Docker tool-environment comparison](agent-tasks.md#reference-env) uses network none; its task timings do not establish Docker bridge or Internet performance.
+
 ## Limits and next measurements {#acceptance}
 
 Nested requests may be correlated; no independent-request confidence interval is claimed. OCI follow-up is kept separate. Host networking does not measure Docker bridge/CNI. UDP/IPv6/QUIC, real model SSE, TLS interception and public API variability are outside this batch.

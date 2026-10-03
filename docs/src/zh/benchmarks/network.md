@@ -30,6 +30,12 @@
 小请求 host 相对 native P50 增加约 0.29 ms，VM 增加约 2.88 ms。大块传输主批次 P50 为原生约 869 MiB/s、host 417 MiB/s、VM 155 MiB/s；吞吐包括连接和读取，数据摘要校验在传输计时之后。网络 worker 总时长还包含摘要计算。它们是本机 HTTP 通路能力，不预测公网带宽。
 
 host deny-all 的私有网络命名空间和 VM deny-all 各 **30/30** 次阻止 direct socket，Bundle 同时确认 network_non_bypassable。普通 host proxy 的限制是协作式；direct socket 可以绕过，拒绝耗时不能当成吞吐优势。
+### 用熟悉的请求和下载理解这些数字 {#baseline-meaning}
+
+原生 HTTP 是没有 pVisor 通路的基线；Podman/crun 是已测的普通 OCI 路径。本轮 host proxy 比原生每次小请求增加约 0.29 ms，VM 增加约 2.88 ms。如果外部服务本身耗时 100 ms，单看这部分附加成本约为 0.3% 和 2.9%；这是代入假设的解释，不是公网或模型 API 实测。
+
+下载大文件时不能用同样的直觉：32 MiB 按本轮吞吐折算，原生传输约 37 ms、VM 约 207 ms。大量本机小请求、下载依赖、传模型响应是不同负载。新 [Docker 完整工具环境对比](agent-tasks.md#reference-env)采用 network none，不能借用其任务耗时宣称 Docker bridge 或公网性能已经测过。
+
 ## 边界与下一轮 {#acceptance}
 
 请求 P95/P99 是同批次嵌套样本，连接间可能相关；没有宣称独立请求统计置信区间。OCI 补测与主批次分别列出，host network 未测 Docker bridge/CNI。UDP/IPv6/QUIC、真实模型 SSE、HTTPS 解密及公网 API 波动不在本轮。

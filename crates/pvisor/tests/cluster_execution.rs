@@ -178,10 +178,10 @@ async fn controller_outage_triggers_worker_monotonic_lease_watchdog() {
     let path = temp.path().join("outage/tasks/long-1/completion.json");
     let completion: Completion = tokio::time::timeout(Duration::from_secs(8), async {
         loop {
-            if let Ok(data) = std::fs::read(&path) {
-                if let Ok(c) = serde_json::from_slice(&data) {
-                    break c;
-                }
+            if let Ok(data) = std::fs::read(&path)
+                && let Ok(c) = serde_json::from_slice(&data)
+            {
+                break c;
             }
             tokio::time::sleep(Duration::from_millis(50)).await;
         }
@@ -215,6 +215,149 @@ async fn worker_credentials_cannot_submit_or_read_tenant_tasks() {
             })
             .await
             .is_err()
+    );
+    server.abort();
+}
+
+#[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+async fn non_utf8_output_remains_bounded_and_deliverable() {
+    let temp = tempfile::tempdir().unwrap();
+    let (client, url, server) = controller(temp.path()).await;
+    let _worker = spawn_worker(&url, "output", temp.path());
+    let mut task = spec(
+        "binary",
+        "printf '\\377\\377\\377\\377\\377\\377\\377\\377'",
+    );
+    task.run.runtime.max_output_bytes = 7;
+    client.submit(&task).await.unwrap();
+    let task = wait(&client, "binary", true).await;
+    assert_eq!(task.phase, TaskPhase::Succeeded);
+    let output = task.result.unwrap().output;
+    assert!(output.stdout.unwrap().len() <= 7);
+    assert!(output.stdout_truncated);
+    server.abort();
+}
+
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn vm_control_wire_protocol_enforces_roles_and_resume_admission() {
+    // Synthetic worker observations verify the real HTTP protocol, not VM hardware.
+    let temp = tempfile::tempdir().unwrap();
+    let (admin, url, server) = controller(temp.path()).await;
+    let worker = Client::new(&url, WORKER.into()).unwrap();
+    let mut task = spec("vm-wire", "true");
+    task.execution = ExecutionClass {
+        executor: ExecutorKind::VirtualMachine,
+        isolation: IsolationKind::VirtualMachine,
+    };
+    let capacity = task.resources;
+    worker
+        .register(&WorkerRegistration {
+            version: CLUSTER_VERSION,
+            id: "wire".into(),
+            incarnation: "epoch".into(),
+            capacity,
+            execution: vec![task.execution.clone()],
+            labels: BTreeMap::new(),
+            cache_keys: vec![],
+            vm_control_protocol: Some(CLUSTER_VERSION),
+            vm_control_actions: vec![
+                ControlAction::Pause,
+                ControlAction::Offload,
+                ControlAction::Resume,
+            ],
+        })
+        .await
+        .unwrap();
+    admin.submit(&task).await.unwrap();
+    let mut poll = PollRequest {
+        worker_id: "wire".into(),
+        incarnation: "epoch".into(),
+        active: vec![],
+        available: capacity,
+        max_assignments: 1,
+    };
+    let key = worker
+        .poll(&poll)
+        .await
+        .unwrap()
+        .assignments
+        .remove(0)
+        .lease
+        .key;
+    poll.active.push(key);
+    poll.available = Resources::default();
+    poll.max_assignments = 0;
+    let pause = ControlRequest {
+        request_id: "pause".into(),
+        action: ControlAction::Pause,
+    };
+    let unauthorized = worker.control("vm-wire", &pause).await.unwrap_err();
+    assert_eq!(
+        unauthorized
+            .downcast_ref::<reqwest::Error>()
+            .and_then(|e| e.status()),
+        Some(reqwest::StatusCode::UNAUTHORIZED)
+    );
+    let requested = admin.control("vm-wire", &pause).await.unwrap();
+    assert_eq!(admin.control("vm-wire", &pause).await.unwrap(), requested);
+    let command = worker.poll(&poll).await.unwrap().controls.remove(0);
+    let acknowledged = ControlAcknowledgement {
+        command,
+        outcome: ControlOutcome::Succeeded {
+            state: pvisor_core::VmState::Paused,
+            memory: None,
+        },
+    };
+    let unauthorized = admin.acknowledge_control(&acknowledged).await.unwrap_err();
+    assert_eq!(
+        unauthorized
+            .downcast_ref::<reqwest::Error>()
+            .and_then(|e| e.status()),
+        Some(reqwest::StatusCode::UNAUTHORIZED)
+    );
+    let observed = worker.acknowledge_control(&acknowledged).await.unwrap();
+    assert_eq!(
+        worker.acknowledge_control(&acknowledged).await.unwrap(),
+        observed
+    );
+    assert_eq!(
+        admin.task("vm-wire").await.unwrap().phase,
+        TaskPhase::Paused
+    );
+    assert_eq!(
+        admin.workers().await.unwrap()[0].reserved,
+        Resources {
+            cpu_millis: 0,
+            ..capacity
+        }
+    );
+    admin
+        .control(
+            "vm-wire",
+            &ControlRequest {
+                request_id: "resume".into(),
+                action: ControlAction::Resume,
+            },
+        )
+        .await
+        .unwrap();
+    assert!(worker.poll(&poll).await.unwrap().controls.is_empty());
+    poll.available.cpu_millis = capacity.cpu_millis;
+    let command = worker.poll(&poll).await.unwrap().controls.remove(0);
+    assert_eq!(admin.workers().await.unwrap()[0].reserved, capacity);
+    worker
+        .acknowledge_control(&ControlAcknowledgement {
+            command,
+            outcome: ControlOutcome::Succeeded {
+                state: pvisor_core::VmState::Running,
+                memory: None,
+            },
+        })
+        .await
+        .unwrap();
+    assert_eq!(
+        admin.task("vm-wire").await.unwrap().phase,
+        TaskPhase::Running
     );
     server.abort();
 }

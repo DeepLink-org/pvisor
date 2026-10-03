@@ -524,3 +524,66 @@ SIGKILL probes default to `--crash-files 10000`; `--crash-states committed`
 can isolate the shortest transition window. Ledger state is read from the atomic
 JSON tail during injection and fully decoded after death. A missed window fails
 the injection rather than becoming a successful sample.
+
+## Familiar runtimes and the complete Agent tool environment
+
+`reference_baselines.py` measures native, pVisor host/staged/VM, a **private
+rootless Docker Engine**, Firecracker PCI, QEMU q35, and QEMU microvm on Linux.
+It runs a first-command probe, seven-tool self-check, seven filesystem/tool
+workloads, a repair/test/diff workflow, and real Claude/Codex CLIs against a
+local deterministic model. These are tool-environment measurements; there is
+no paid inference, model success-rate benchmark, or SWE-bench claim.
+
+Every available case gets 3 warmups and 30 samples, with seeded randomized
+backend order. All execution trees use the same two host cores; Docker also
+runs an in-container affinity helper because its runtime resets inherited CPU
+affinity. VM cases use 2 vCPU, 128 MiB for the shell probe and 16 GiB for the
+complete environment. Docker/native memory is not capped. RSS is process-tree
+sum, not PSS; Docker includes its private daemon tree, whose idle cost is
+recorded separately. The two cores are a common execution budget, not a claim
+of identical isolation or complete resource policy.
+
+Use an installed private rootless daemon on a short Unix-socket path; the
+system daemon is neither required nor altered. Supply its host PID explicitly.
+The runner checks its owner and socket before changing only that daemon's CPU
+affinity. Linux/KVM/FUSE and installed Docker, Firecracker, QEMU, Claude, Codex,
+Rust's musl target, Python/Node/Git/rg/GCC and e2fsprogs are prerequisites.
+The automatic tool-base builder targets Fedora 44's Python 3.14/Node 24 layout;
+`--tools-rootfs` accepts another already prepared equivalent base.
+
+```bash
+bash benchmark/pvisor/prepare_reference_kernel.sh \
+  /absolute/path/to/clean/linux-6.12.109 target/reference-kernel-new
+python3 benchmark/pvisor/prepare_reference_env.py \
+  --output target/reference-env-new \
+  --kernel-elf target/reference-kernel-new/vmlinux \
+  --kernel-bzimage target/reference-kernel-new/arch/x86/boot/bzImage \
+  --kernel-config target/reference-kernel-new/.config \
+  --docker-host unix:///tmp/pvisor-reference-docker/docker.sock
+python3 benchmark/pvisor/reference_baselines.py \
+  --assets target/reference-env-new --binary target/release/pvisor \
+  --output target/reference-results-new \
+  --docker-host unix:///tmp/pvisor-reference-docker/docker.sock \
+  --docker-root-pid 12345 --cpu-affinity 0,1 --samples 30 --warmups 3
+```
+
+Choose two allowed physical cores on your host. For a smoke check use
+`--samples 1 --warmups 0`. Every output directory must be new. Preparation
+measures offline copying, image import and ext4 creation separately; image
+pulls and kernel compilation are excluded from timed jobs. Firecracker and
+both QEMU cases use one kernel/config and private reflinked ext4 images;
+pVisor uses its own embedded firmware and staged virtio-fs workspace. The
+reference VMMs run without Firecracker jailer, systemd, SSH or cloud-init.
+These configurations expose practical path costs, not a pure VMM or security
+ranking. QEMU microvm is included so the PC machine is not used as its sole
+performance representative.
+
+Codex's inner sandbox is uniformly `danger-full-access` for these fixed,
+controlled commands: the outer runtime owns the boundary. Default
+`workspace-write` failures are recorded separately. A failed preflight stays
+in `capabilities`, never becomes a fast latency sample, and makes the runner
+exit nonzero after finishing unaffected cases. Guest panic, wrong task mode,
+failed grading, absent tool results and wrong pVisor isolation are rejected.
+Pinned binaries, actual guest kernel/tool versions, scripts, commands and
+per-trial logs are retained. The method and interpreted results live in the
+existing bilingual benchmark articles.

@@ -1,6 +1,6 @@
 # 配置文件参考
 
-把一次已经跑通的命令保存为 TOML，就能在本机、CI 和批量任务里复用同一套运行设置。先从下面的离线示例开始：它把输出留在 Stage，方便检查后再决定是否写回项目。
+把一次已经跑通的命令保存为 TOML，就能在本机、CI 和批量任务里复用同一套运行设置。先从下面的本地示例开始：它把输出留在 Stage，方便检查后再决定是否写回项目。
 
 需要查命令行参数时，使用 [CLI 参考](cli.md)；需要限制具体文件或网络目标时，使用[策略字段参考](policy.md)。
 
@@ -63,7 +63,7 @@ pvisor inspect ../stage-config-001 -- cat result.txt
 ## 覆盖规则与常见错误
 
 - 显式 CLI 标量覆盖配置值；命令替换 `run.command`。
-- 重复列表选项通常替换整份配置列表；`--mount` 与 `--access` 是追加，`--clear-access` 才清空默认与配置规则。
+- 重复列表选项通常替换整份配置列表；`--mount` 替换整份挂载列表，`--access` 追加规则，`--clear-access` 才清空默认与配置规则。
 - `--safe` 位于配置与显式 CLI 之间，并清空配置的 `run.pass_env`；之后显式的 `--pass-env` 生效。
 - 未知字段被拒绝；`filesystem = "sandbox"` 不能写成 `[filesystem] mode = "sandbox"`。
 - 含路径的配置没有“以配置文件目录为根”的通用承诺；从预期工作区启动，跨环境使用绝对路径。
@@ -114,3 +114,114 @@ VM 的内存以 MiB 为单位，CPU 是正整数。`ram_backing` 保存 RAM 文�
 `[gateway]` 默认 `mode = "off"`，捕获模式为 `capture`。默认 `admin_listen = "127.0.0.1:9876"`、`level = "dialogue"`、`session_header = "x-pvisor-session-id"`、`debug = false`、`stream_markdown = false`、`routes = []`。可选 `profile` 当前为 `zcode-bigmodel`；`zcode_builtin_config` 指向该适配配置文件。路由与捕获级别按 [Gateway 指南](../guides/capture.md)配置。
 
 `[record].destination` 是可选路径。Gateway 的模型通信记录与 Trace Event journal 有不同数据职责，按[记录概念](../concepts/jobs.md)保留所需产物。
+
+## 完整配置字段表 {#all-fields}
+
+每行列出一个可序列化字段、Rust 类型、TOML/SDK 原始默认值与用途。`Option<T>` 表示可选，TOML 中省略键即可，不写 `null`；`Vec<T>` 表示数组，结构体使用表。`required` 指创建数组条目时必须提供。表中的默认值在 CLI 预设与解析之前生效。
+
+下方的 `network_rule`、`bandwidth_limit`、`policy_layer`、`network_layer` 是复用的条目结构，不是顶层 TOML 表名。网络规则放在 `overlaynet.rules`、`overlaynet.deny` 或某个作用域的 network 层中；带宽限制放在对应的 `limits` 数组。`policies.session`、`policies.workspace`、`policies.user` 均使用 `policy_layer`。
+
+文档构建会对照 Rust serde 结构检查字段名与类型。默认值和 CLI 行为单独核查，字段覆盖检查不能替代行为验证。
+
+<!-- config-fields:start -->
+| TOML 路径 / 条目字段 | Rust 类型 | 默认值 | 用途 |
+| --- | --- | --- | --- |
+| `run` | `RunSettings` | `{}` | 命令与进程设置 |
+| `container` | `ContainerSettings` | `{}` | 选择 OCI 执行器时使用 |
+| `vm` | `VmSettings` | `{}` | VM 执行器设置；`kvm` 是兼容表名 |
+| `filesystem` | `FilesystemMode` | `"host"` | `host` 或 `sandbox`；访问控制独立于暂存 |
+| `overlayfs` | `Option<OverlayFsSettings>` | `未设置` | 省略时直接写入；即使是空表也请求暂存 |
+| `overlaynet` | `OverlayNetSettings` | `{}` | 网络驱动与基础策略 |
+| `gateway` | `GatewaySettings` | `{}` | 模型流量捕获与路由 |
+| `record` | `RecordSettings` | `{}` | Trace Event journal 目的地 |
+| `policies` | `pvisor_core::SessionPolicies` | `{}` | 额外的 session、workspace、user 约束 |
+| `run.agent` | `String` | `"agent"` | `--name`；保持默认时 CLI 取命令名 |
+| `run.executor` | `RunExecutorKind` | `"host"` | `--executor`：host、container、vm |
+| `run.timeout_ms` | `Option<u64>` | `未设置` | 实际经过时间，毫秒；`--timeout 30s` |
+| `run.stdio` | `RunStdio` | `"inherit"` | inherit 或 capture；`--stdio` |
+| `run.policy` | `RunPolicy` | `"observe"` | observe 或 enforce；`--strict` 选择 enforce |
+| `run.inherit_env` | `bool` | `true` | TOML/SDK 原始默认值；CLI 仅对命令名 codex 设为 true |
+| `run.pass_env` | `Vec<String>` | `[]` | 环境变量名；`--pass-env KEY` 替换列表 |
+| `run.filesystem` | `Vec<FilesystemCapability>` | `[]` | 工作区以外的宿主权限；条目字段见下方 |
+| `run.resource_limits` | `ResourceLimits` | `{}` | 请求额度；运行后对照 Bundle 的有效额度 |
+| `run.command` | `Vec<String>` | `[]` | 参数数组；`--` 后命令替换它；不自动经 shell 展开 |
+| `container.runtime` | `PathBuf` | `"crun"` | OCI runtime 程序；`--container-runtime` |
+| `container.image` | `String` | `""` | OCI 镜像引用；`--container-image` |
+| `container.rootfs` | `Option<PathBuf>` | `未设置` | 已有 rootfs，替代镜像；`--container-rootfs` |
+| `container.pvisor_binary` | `Option<PathBuf>` | `未设置` | 注入的 Linux 程序，默认当前程序；`--container-pvisor-binary` |
+| `container.platform` | `Option<ContainerPlatform>` | `未设置` | linux-amd64 或 linux-arm64；`--container-platform` |
+| `container.network` | `ContainerNetwork` | `"host"` | host、bridge、none；`--container-network` |
+| `container.workdir` | `Option<PathBuf>` | `未设置` | 未挂载 Run cwd 时的容器目录；`--container-workdir` |
+| `container.user` | `Option<String>` | `未设置` | uid、uid:gid 或用户名；`--container-user` |
+| `container.read_only_rootfs` | `bool` | `false` | 镜像根目录只读；`--container-read-only-rootfs` |
+| `container.mounts` | `Vec<ContainerMount>` | `[]` | bind mounts；重复 `--container-mount` 替换列表 |
+| `container.mounts[].source` | `PathBuf` | `必需` | 宿主路径 |
+| `container.mounts[].target` | `PathBuf` | `必需` | 容器路径 |
+| `container.mounts[].read_only` | `bool` | `false` | 只读 bind mount |
+| `vm.ram_backing` | `Option<PathBuf>` | `未设置` | 新建 RAM backing 路径；拒绝已有文件；`--vm-ram-backing` |
+| `vm.ram_compression` | `bool` | `false` | Seekable 压缩 backing；`--vm-ram-compression` |
+| `vm.memory_pool` | `Option<PathBuf>` | `未设置` | 实验性 macOS pool socket；`--vm-memory-pool` |
+| `vm.rootfs` | `Option<PathBuf>` | `未设置` | Linux 根目录；Linux CLI 默认宿主 `/`；`--rootfs` |
+| `vm.image` | `Option<String>` | `未设置` | OCI 镜像，替代 rootfs 目录；`--rootfs IMAGE` |
+| `vm.image_store` | `Option<PathBuf>` | `未设置` | OCI 缓存路径；`--vm-image-store` |
+| `vm.rootfs_immutable` | `bool` | `false` | 拒绝将变更 apply 到 rootfs lower |
+| `vm.library_dir` | `Option<PathBuf>` | `未设置` | 固件目录；musl 内嵌固件并拒绝此参数；`--vm-library-dir` |
+| `vm.memory_mib` | `u32` | `2048` | guest RAM，MiB；CLI `--memory` 还设置进程额度 |
+| `vm.cpus` | `u16` | `2` | vCPU 数量；`--cpu` |
+| `overlayfs.mount` | `Vec<FilesystemMount>` | `[]` | 统一挂载；重复 `--mount` 替换列表 |
+| `overlayfs.access` | `Vec<FilesystemAccessRule>` | `[]` | 访问规则；重复 `--access` 追加；`--clear-access` 清空 |
+| `overlayfs.stage` | `Option<PathBuf>` | `未设置` | 项目外的新持久 Stage；`--stage` |
+| `overlayfs.max_size` | `Option<u64>` | `未设置` | 暂存总字节额度；`--overlayfs-max-size` |
+| `overlayfs.mount[].source` | `PathBuf` | `必需` | 宿主源路径 |
+| `overlayfs.mount[].target` | `Option<PathBuf>` | `未设置` | Agent 可见的挂载路径；省略时由规范化过程补充 |
+| `overlayfs.mount[].access` | `FilesystemAccessLevel` | `必需` | deny、ask、read、warn、stage、write |
+| `overlayfs.access[].path` | `String` | `必需` | Agent 可见路径/规则；语法见文件策略指南 |
+| `overlayfs.access[].level` | `FilesystemAccessLevel` | `必需` | deny、ask、read、warn、stage、write |
+| `overlaynet.mode` | `OverlayNetMode` | `"auto"` | auto、off、proxy；`--overlaynet`；auto 在 VM 中使用 smoltcp |
+| `overlaynet.listen` | `String` | `"127.0.0.1:19081"` | 代理地址；CLI 将此默认值换成空闲端口；`--overlaynet-listen` |
+| `overlaynet.policy` | `OverlayNetPolicy` | `"public"` | public、deny、allowlist；`--overlaynet-policy` |
+| `overlaynet.allow` | `Vec<String>` | `[]` | 兼容的目标字符串授权；优先使用结构化 rules |
+| `overlaynet.rules` | `Vec<NetworkAccessRule>` | `[]` | 结构化授权；字段见 network_rule；`--overlaynet-rule` 替换 |
+| `overlaynet.deny` | `Vec<NetworkAccessRule>` | `[]` | 结构化拒绝；`--overlaynet-deny` 替换 |
+| `overlaynet.limits` | `Vec<NetworkBandwidthLimit>` | `[]` | 带宽条目；字段见 bandwidth_limit；`--overlaynet-limit` 替换 |
+| `gateway.mode` | `GatewayMode` | `"off"` | off 或 capture；`--gateway-mode` |
+| `gateway.profile` | `Option<GatewayProfile>` | `未设置` | zcode-bigmodel；`--gateway-profile` 同时选择 capture |
+| `gateway.zcode_builtin_config` | `Option<PathBuf>` | `未设置` | Zcode 适配配置路径 |
+| `gateway.admin_listen` | `String` | `"127.0.0.1:9876"` | 管理地址；CLI 将此默认值换成空闲端口；`--gateway-admin-listen` |
+| `gateway.level` | `CaptureLevel` | `"dialogue"` | summary、dialogue、full；`--gateway-level` |
+| `gateway.session_header` | `String` | `"x-pvisor-session-id"` | Session 关联头；`--gateway-session-header` |
+| `gateway.debug` | `bool` | `false` | Gateway 调试；`--gateway-debug` |
+| `gateway.stream_markdown` | `bool` | `false` | 输出流式对话；`--gateway-stream-markdown` |
+| `gateway.routes` | `Vec<ModelRoute>` | `[]` | 模型路由条目；`--gateway-route` 替换列表 |
+| `record.destination` | `Option<PathBuf>` | `未设置` | Trace Event 文件/目录；`--record-destination` |
+| `run.resource_limits.memory_bytes` | `Option<u64>` | `未设置` | 字节；`--memory` |
+| `run.resource_limits.processes` | `Option<u64>` | `未设置` | 进程/线程数量；`--max-processes` |
+| `run.resource_limits.cpu_time_ms` | `Option<u64>` | `未设置` | CPU 毫秒；`--max-cpu-time`；独立于任务超时 |
+| `run.resource_limits.open_files` | `Option<u64>` | `未设置` | 文件描述符数；`--max-open-files` |
+| `run.resource_limits.file_size_bytes` | `Option<u64>` | `未设置` | 单文件字节；`--max-file-size` |
+| `run.filesystem[].path` | `String` | `必需` | 暂存项目以外的宿主路径 |
+| `run.filesystem[].access` | `FilesystemAccess` | `必需` | read 或 read_write |
+| `network_rule.host` | `String` | `必需` | 主机名、通配后缀、IP 或 CIDR；不带 URL scheme |
+| `network_rule.ports` | `Vec<u16>` | `[]` | 1–65535 端口；空表示所有端口 |
+| `network_rule.transports` | `Vec<NetworkTransport>` | `[]` | http、https、tcp_tunnel；空表示所有协议 |
+| `network_rule.allow_private_ips` | `bool` | `false` | 允许主机名解析到私网/回环地址 |
+| `bandwidth_limit.host` | `Option<String>` | `未设置` | 省略匹配所有拦截目标 |
+| `bandwidth_limit.port` | `Option<u16>` | `未设置` | 省略匹配所有端口 |
+| `bandwidth_limit.bytes_per_second` | `u64` | `必需` | 正的字节速率；匹配的限制叠加 |
+| `gateway.routes[].name` | `String` | `必需` | 模型匹配：精确值、prefix*、*suffix、* |
+| `gateway.routes[].provider` | `Option<String>` | `未设置` | openai、anthropic、gemini、vertex、bedrock、azure、copilot、custom |
+| `gateway.routes[].upstream` | `Option<String>` | `未设置` | 包含 /v1 等前缀的上游 API base |
+| `gateway.routes[].upstream_anthropic` | `Option<String>` | `未设置` | Anthropic API base；省略时用 upstream |
+| `gateway.routes[].api_key_env` | `Option<String>` | `未设置` | 宿主密钥变量名；避免将密钥明文写入 TOML |
+| `gateway.routes[].api_key` | `Option<String>` | `未设置` | 明文上游密钥；配置需私密保存 |
+| `gateway.routes[].forward` | `Option<String>` | `未设置` | 转发到精确路由名，并改写 model |
+| `policies.session` | `PolicyLayer` | `{}` | 当前 Session 的额外策略层 |
+| `policies.workspace` | `PolicyLayer` | `{}` | 显式策略或 .pvisor/policy.toml 默认值 |
+| `policies.user` | `PolicyLayer` | `{}` | 显式策略或用户配置默认值 |
+| `policy_layer.network` | `Option<NetworkPolicyLayer>` | `未设置` | 可选 network_layer 表；省略不增加该层约束 |
+| `policy_layer.filesystem` | `Option<FileAccessPolicy>` | `未设置` | 可选 deny/ask/warn/allow glob 数组；见策略参考 |
+| `network_layer.default_action` | `Option<NetworkDefaultAction>` | `未设置` | allow 或 deny；存在此层时，省略会拒绝未匹配目标 |
+| `network_layer.allow` | `Vec<NetworkAccessRule>` | `[]` | network_rule 授权条目 |
+| `network_layer.deny` | `Vec<NetworkAccessRule>` | `[]` | network_rule 拒绝条目；拒绝优先 |
+| `network_layer.limits` | `Vec<NetworkBandwidthLimit>` | `[]` | bandwidth_limit 条目 |
+<!-- config-fields:end -->

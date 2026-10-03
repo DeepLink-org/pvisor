@@ -9,6 +9,7 @@
 | 情况 | CLI 行为 |
 | --- | --- |
 | 被运行命令正常结束 | `run` 返回该命令退出码；成功通常为 0 |
+| 实际经过时间超时 | 1；`run.failure.kind = "deadline_exceeded"`；没有正常任务退出码 |
 | Run 取消 | 返回 130 |
 | 执行失败但没有命令退出码 | 返回 1 |
 | 内部 host sandbox 安装失败 | 启动器使用 125；外层错误也可能以 1 返回，需结合诊断 |
@@ -39,3 +40,21 @@ printf 'run=%s review=%s\n' "$run_code" "$review_code"
 ```
 
 命令返回 `7`，仍可能有可评审的 `result.txt`。分别保存运行与读取记录的状态；CI 在收集完产物后用原始 `run_code` 结束步骤。确认修改适用再 apply，决定放弃则 drop。
+
+## 按记录的失败类型处理 {#failures}
+
+`run.failure` 包含 `kind`、`message`、`retryable`。把 `retryable` 当作执行器的提示，再结合任务决定是否重试。超时是没有正常进程退出码的失败执行，与命令自行返回 `1` 不同。
+
+| Failure kind | 含义 / 处理 |
+| --- | --- |
+| `invalid_spec` | 已解析请求无效；先修正配置再重试 |
+| `unsupported` | 执行器无法满足请求的能力；调整请求或执行器 |
+| `spawn` | 任务或 VM 启动失败；检查路径、程序与设备诊断 |
+| `process_exit` | 任务返回非零状态；保留其 `exit_code` |
+| `workload` | 执行器报告了普通退出状态以外的任务失败 |
+| `deadline_exceeded` | 任务超过实际经过时间限制；检查进度与保留文件 |
+| `infrastructure` | sandbox 设置或 I/O 等执行基础设施失败；检查诊断 |
+
+解析错误和准入前失败可能发生在 `run.failure` 或 Bundle 生成之前。找不到 Job、apply 冲突和管理命令错误写到 stderr 并返回 1，不会伪装成任务失败。`UnsupportedPolicy` 诊断表示能力请求被拒绝；普通 execution checkpoint/suspend 请求使用 `CAPABILITY_UNSUPPORTED`。不要把这些情况评分为模型回答失败。
+
+可下载的[非零退出样例](../../assets/examples/json/failed-run.json) 记录 `state = "failed"`、`exit_code = 7`、`failure.kind = "process_exit"`。[超时样例](../../assets/examples/json/timeout-run.json) 记录 `state = "failed"`，省略 `exit_code`，`failure.kind = "deadline_exceeded"`，CLI 返回 1。两者都保留了暂存的候选文件。[采集来源](../../assets/examples/json/provenance.json) 包含命令与实际退出码。

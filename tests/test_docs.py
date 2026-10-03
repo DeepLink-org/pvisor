@@ -9,6 +9,49 @@ pytest.importorskip("tomllib")  # Documentation builds require Python 3.11+.
 
 ROOT = Path(__file__).resolve().parents[1]
 check_translations = runpy.run_path(str(ROOT / "scripts/check-docs.py"))["check_translations"]
+reference = runpy.run_path(str(ROOT / "scripts/check-reference.py"))
+
+
+def test_reference_field_parser_honors_wire_names_and_skips():
+    source = '''pub struct Example {
+    #[serde(rename = "max_size")]
+    pub budget: Option<u64>,
+    #[serde(rename = "path")]
+    #[serde(skip)]
+    pub internal: String,
+    #[serde(alias = "old")]
+    pub current: Vec<String>,
+}'''
+    assert reference["fields"](source, "Example") == {
+        "max_size": "Option<u64>", "current": "Vec<String>"
+    }
+    with pytest.raises(ValueError, match="unsupported field syntax"):
+        reference["fields"](source.replace("pub budget", "budget"), "Example")
+
+
+def test_config_reference_covers_serialized_fields():
+    assert reference["check"]() >= 98
+
+
+@pytest.mark.parametrize("mutation", ["missing", "type"])
+def test_reference_check_rejects_incomplete_or_stale_tables(tmp_path, mutation):
+    import shutil
+
+    for source, _, _ in reference["GROUPS"]:
+        target = tmp_path / source
+        target.parent.mkdir(parents=True, exist_ok=True)
+        shutil.copyfile(ROOT / source, target)
+    for locale in ("en", "zh"):
+        target = tmp_path / f"docs/src/{locale}/reference/config.md"
+        target.parent.mkdir(parents=True)
+        text = (ROOT / target.relative_to(tmp_path)).read_text()
+        if mutation == "missing":
+            text = text.replace("| `vm.cpus` | `u16` |", "| `removed.cpus` | `u16` |")
+        else:
+            text = text.replace("| `vm.cpus` | `u16` |", "| `vm.cpus` | `u32` |")
+        target.write_text(text)
+    with pytest.raises(SystemExit, match="config reference drift"):
+        reference["check"](tmp_path)
 
 
 def test_bilingual_docs_guard(tmp_path):

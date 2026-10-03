@@ -4,6 +4,10 @@
 
 ## 选择后端
 
+目录树、对象字段、文件路径到内容块的映射和发布一致性见[共享镜像缓存存储格式 v1](../design/shared-image-cache-storage.md)，其中包含可直接读取的完整示例对象。
+
+后续布局设计改为[每个镜像独立 meta、共享分片 data 的 v2 格式](../design/shared-image-cache-storage-v2.md)。该设计尚未接入发布器/读取器，下面的命令仍使用 v1。
+
 服务器、文件系统和 S3 使用同一套 `prepare/list/stat/read` 接口，VM 也使用相同配置。文件系统和 S3 是直接存储后端，使用它们不需要启动 `cache serve`。
 
 | 后端 | 配置 | 适用场景 |

@@ -103,10 +103,11 @@ and what readers can do with it. Research pages distinguish implemented
 integration points from proposed extensions; audit and adopter pages state the
 current public record without inventing reports or participants.
 
-Use `status: todo` and search exclusion only for an actual placeholder lacking
-reader-facing content. Remove those markers and navigation suffixes when the
-article is usable; retain factual limits in its body. Preserve page paths,
-navigation order, and bilingual parity.
+Assess completion against the page's acceptance requirements, not its front
+matter or navigation label. Removing `status: todo` does not complete a missing
+field reference, schema, experiment, or policy decision. Keep outstanding items
+explicit and attach the implementation or verification that completes each one.
+Preserve page paths, navigation order, and bilingual parity.
 
 ### Writing style
 
@@ -178,6 +179,47 @@ These articles describe the current implementation. Keep field and sequencing co
 These requirements remain engineering or policy work. They are separate from
 publication readiness and do not authorize AI to approve semantic claims or
 make maintainer decisions.
+
+### Verified reference and example coverage
+
+- `reference/config`: all 98 fields in the configured serde structures, including
+  nested mount, route, resource, and policy entries, now have names, types,
+  defaults, and usage. `scripts/check-reference.py` compares names and types
+  against source during `just docs-build`; Rust documentation tests compare raw
+  defaults against serialization and parse the actual TOML fences. CLI precedence
+  remains behavioral review, with existing `cli_lists_replace_config_lists` and
+  file-access-priority tests. This covers fields, not a complete TOML schema.
+- `reference/run-bundle`: 78 fields across the Bundle's own structs, environment,
+  lineage, and ChangeEntry have source-checked names/types; presence rules were
+  reviewed against serde attributes.
+  Linked nested protocols remain owned by their definitions; this does not claim
+  a full generated JSON Schema.
+- `reference/json-output`: status, review context, kill, and all five checkpoint
+  success envelopes are documented. Six downloadable outputs are collected by
+  `scripts/record-doc-json.py` from a real offline host task, nonzero exit, and
+  deadline. Provenance includes binary/source hashes and actual return codes.
+  Rust tests read the samples using the product reader and reject incompatible
+  versions and missing required receipts. Generated schemas for all nested
+  protocols and the internal whiteout sample-path issue remain outstanding.
+- `guides/ci` and `reference/exit-codes`: copyable failure/timeout commands have
+  expected return codes, retained-file behavior, and real output samples.
+  `tests/documentation_json.rs` executes both paths and checks that candidates
+  remain staged. This is local Linux coverage, not a hosted-runner measurement.
+
+Validate content and build before updating bilingual revision hashes:
+
+```bash
+just test pvisor
+just test-py tests/test_docs.py
+python3 scripts/check-docs.py --record-translations
+just docs-build
+```
+
+To validate a TOML file without launching an executor:
+
+```bash
+cargo run --locked -p pvisor --example documentation_config -- run.toml
+```
 
 ### community/adopters.md
 

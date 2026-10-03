@@ -107,53 +107,51 @@ pub struct RunHandle {
     pub(crate) join: JoinHandle<RunResult>,
 }
 
-impl RunHandle {
-    /// Pause every VM vCPU and wait for acknowledgement. Device I/O remains
-    /// active and the Run's wall-time deadline continues. Other executors reject
-    /// this operation. An uncertain transition cancels the attempt.
-    pub async fn pause_vm(&self) -> anyhow::Result<()> {
-        self.pause().await
+/// Cloneable VM controls bound to one live Run attempt. Native controls still
+/// require executor support, a live state, and the Run's cancellation authority.
+#[derive(Clone)]
+pub struct RunControlHandle {
+    status: watch::Receiver<RunStatus>,
+    vm_control: crate::executor::vm::control::VmControl,
+    vm_status: watch::Sender<RunStatus>,
+    control_operation: pvisor_core::operation::Operation,
+    events: RunEventPublisher,
+    cancellation: CancellationToken,
+}
+
+impl RunControlHandle {
+    /// Wait through asynchronous attempt startup without issuing a primitive
+    /// before the native control endpoint is usable. Cancellation still fences it.
+    pub async fn wait_ready(&mut self) -> anyhow::Result<()> {
+        anyhow::ensure!(
+            self.status.borrow().attempt.executor.kind == pvisor_core::ExecutorKind::VirtualMachine,
+            "VM controls require a VM executor"
+        );
+        loop {
+            let state = self.status.borrow().state;
+            anyhow::ensure!(
+                !self.cancellation.is_cancelled()
+                    && !state.is_terminal()
+                    && state != pvisor_core::RunState::Cancelling,
+                "attempt ended before control readiness"
+            );
+            if matches!(
+                state,
+                pvisor_core::RunState::Running | pvisor_core::RunState::Suspended
+            ) {
+                return Ok(());
+            }
+            tokio::select! {
+                _ = self.cancellation.cancelled() => {
+                    anyhow::bail!("attempt ended before control readiness");
+                }
+                changed = self.status.changed() => {
+                    changed.map_err(|_| anyhow::anyhow!("attempt status closed before control readiness"))?;
+                }
+            }
+        }
     }
 
-    /// Resume the paused VM and wait for acknowledgement. Repeated calls are
-    /// idempotent while the VM remains available.
-    pub async fn resume_vm(&self) -> anyhow::Result<()> {
-        self.resume().await
-    }
-
-    pub async fn pause(&self) -> anyhow::Result<()> {
-        self.control(pvisor_core::operation::OperationKind::RunPause)
-            .await
-            .map(|_| ())
-    }
-
-    pub async fn resume(&self) -> anyhow::Result<()> {
-        self.control(pvisor_core::operation::OperationKind::RunResume)
-            .await
-            .map(|_| ())
-    }
-
-    /// Pause and reclaim live file-backed RAM. A new destination must be on the
-    /// same filesystem as the current backing. None retains the existing file.
-    pub async fn offload(
-        &self,
-        file: Option<std::path::PathBuf>,
-    ) -> anyhow::Result<pvisor_core::operation::VmMemory> {
-        let value = self
-            .control(pvisor_core::operation::OperationKind::RunOffload { file })
-            .await?;
-        let pvisor_core::operation::Value::Vm {
-            memory: Some(memory),
-            ..
-        } = value
-        else {
-            anyhow::bail!("offload returned no RAM report")
-        };
-        Ok(memory)
-    }
-
-    /// Execute an attempt-scoped control primitive using this handle's authority.
-    /// Commands and observations remain intact if the caller stops waiting.
     pub async fn control(
         &self,
         kind: pvisor_core::operation::OperationKind,
@@ -244,6 +242,74 @@ impl RunHandle {
             }
         })
         .await?
+    }
+}
+
+impl RunHandle {
+    /// Pause every VM vCPU and wait for acknowledgement. Device I/O remains
+    /// active and the Run's wall-time deadline continues. Other executors reject
+    /// this operation. An uncertain transition cancels the attempt.
+    pub async fn pause_vm(&self) -> anyhow::Result<()> {
+        self.pause().await
+    }
+
+    /// Resume the paused VM and wait for acknowledgement. Repeated calls are
+    /// idempotent while the VM remains available.
+    pub async fn resume_vm(&self) -> anyhow::Result<()> {
+        self.resume().await
+    }
+
+    pub async fn pause(&self) -> anyhow::Result<()> {
+        self.control(pvisor_core::operation::OperationKind::RunPause)
+            .await
+            .map(|_| ())
+    }
+
+    pub async fn resume(&self) -> anyhow::Result<()> {
+        self.control(pvisor_core::operation::OperationKind::RunResume)
+            .await
+            .map(|_| ())
+    }
+
+    /// Pause and reclaim live file-backed RAM. A new destination must be on the
+    /// same filesystem as the current backing. None retains the existing file.
+    pub async fn offload(
+        &self,
+        file: Option<std::path::PathBuf>,
+    ) -> anyhow::Result<pvisor_core::operation::VmMemory> {
+        let value = self
+            .control(pvisor_core::operation::OperationKind::RunOffload { file })
+            .await?;
+        let pvisor_core::operation::Value::Vm {
+            memory: Some(memory),
+            ..
+        } = value
+        else {
+            anyhow::bail!("offload returned no RAM report")
+        };
+        Ok(memory)
+    }
+
+    /// Execute an attempt-scoped control primitive using this handle's authority.
+    /// Commands and observations remain intact if the caller stops waiting.
+    /// Clone the attempt-scoped VM control authority while another task waits
+    /// for Run completion. It shares cancellation and native transition ordering.
+    pub fn controls(&self) -> RunControlHandle {
+        RunControlHandle {
+            status: self.status.clone(),
+            vm_control: self.vm_control.clone(),
+            vm_status: self.vm_status.clone(),
+            control_operation: self.control_operation.clone(),
+            events: self.events.clone(),
+            cancellation: self.cancellation.clone(),
+        }
+    }
+
+    pub async fn control(
+        &self,
+        kind: pvisor_core::operation::OperationKind,
+    ) -> anyhow::Result<pvisor_core::operation::Value> {
+        self.controls().control(kind).await
     }
 
     pub fn run_id(&self) -> &pvisor_core::RunId {
@@ -815,6 +881,98 @@ mod tests {
         ExecutorKind, NetworkCapability, RunFailureKind, RunInvocation, RunState, StdioMode,
     };
     use std::sync::Mutex;
+
+    fn starting_vm_controls() -> RunControlHandle {
+        let run_id = pvisor_core::RunId::from("control-readiness");
+        let attempt_id = AttemptId::from("attempt-readiness");
+        let (vm_status, status) = watch::channel(RunStatus {
+            run_id: run_id.clone(),
+            state: RunState::Starting,
+            attempt: pvisor_core::AttemptInfo {
+                attempt_id: attempt_id.clone(),
+                number: 1,
+                executor: ExecutorPlan {
+                    name: "readiness-fixture".into(),
+                    kind: ExecutorKind::VirtualMachine,
+                    isolation: IsolationKind::VirtualMachine,
+                    capability_plan: CapabilityEnforcementPlan::default(),
+                    supports_checkpoint: false,
+                    supports_migration: false,
+                },
+                started_at_unix_ms: None,
+                finished_at_unix_ms: None,
+            },
+            updated_at_unix_ms: 0,
+            message: None,
+        });
+        let cancellation = CancellationToken::new();
+        let (live, _) = broadcast::channel(16);
+        RunControlHandle {
+            status,
+            vm_status,
+            vm_control: crate::executor::vm::control::VmControl::new(cancellation.clone()),
+            cancellation,
+            control_operation: PVisor::new()
+                .resolve_operation(RunSpec::process("readiness", "test", "/bin/true"))
+                .unwrap(),
+            events: RunEventPublisher::new(
+                run_id,
+                attempt_id,
+                "test",
+                Arc::new(NoopEventSink::default()),
+                live,
+            ),
+        }
+    }
+
+    #[tokio::test(start_paused = true)]
+    async fn vm_control_readiness_waits_for_start_and_is_fenced_by_cancellation() {
+        let controls = starting_vm_controls();
+        let mut pending = controls.clone();
+        assert!(
+            tokio::time::timeout(std::time::Duration::from_millis(1), pending.wait_ready())
+                .await
+                .is_err()
+        );
+        controls
+            .vm_status
+            .send_modify(|status| status.state = RunState::Running);
+        pending.wait_ready().await.unwrap();
+        controls
+            .vm_status
+            .send_modify(|status| status.state = RunState::Suspended);
+        pending.wait_ready().await.unwrap();
+        controls.cancellation.cancel();
+        assert!(pending.wait_ready().await.is_err());
+
+        // Cancellation must wake a waiter even before any status update.
+        let controls = starting_vm_controls();
+        let mut pending = controls.clone();
+        let waiter = tokio::spawn(async move { pending.wait_ready().await });
+        tokio::task::yield_now().await;
+        controls.cancellation.cancel();
+        assert!(
+            tokio::time::timeout(std::time::Duration::from_millis(1), waiter)
+                .await
+                .unwrap()
+                .unwrap()
+                .is_err()
+        );
+    }
+
+    #[tokio::test]
+    async fn vm_control_readiness_rejects_terminal_and_non_vm_attempts() {
+        let mut controls = starting_vm_controls();
+        controls
+            .vm_status
+            .send_modify(|status| status.state = RunState::Completed);
+        assert!(controls.wait_ready().await.is_err());
+        controls.vm_status.send_modify(|status| {
+            status.state = RunState::Running;
+            status.attempt.executor.kind = ExecutorKind::Process;
+        });
+        assert!(controls.wait_ready().await.is_err());
+    }
 
     #[test]
     fn preparation_rejects_malformed_provenance_and_ignores_metadata_plans() {

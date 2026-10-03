@@ -1,0 +1,7 @@
+{
+  "already_stopped": true,
+  "job_id": "run-bundle-run_id",
+  "operation": "kill",
+  "schema_version": 1,
+  "state": "completed"
+}

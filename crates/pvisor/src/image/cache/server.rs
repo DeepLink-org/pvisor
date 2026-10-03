@@ -213,6 +213,7 @@ pub(super) fn handle(store: &ImageStore, request: Request) -> anyhow::Result<(Re
         } => {
             let image = store.prepare_with_refresh(&image, &requested, refresh)?;
             Response::Prepared {
+        image_handle: None,
                 metadata_generation: Some(metadata::generation(store, &image.digest)?),
                 totals: Some(progress::image_totals(store, &image.digest)?),
                 digest: image.digest,

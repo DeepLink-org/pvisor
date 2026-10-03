@@ -1,0 +1,10 @@
+{
+  "checkpoints": [],
+  "job_id": "run-bundle-run_id",
+  "kind_filter": null,
+  "operation": "checkpoint.list",
+  "schema_version": 1,
+  "supported_kinds": [
+    "workspace"
+  ]
+}

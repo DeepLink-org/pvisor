@@ -1,8 +1,9 @@
 //! Small object API shared by filesystem and S3 caches; keys are internal only.
 use anyhow::{Context, ensure};
-use object_store::{ObjectStore, ObjectStoreExt, PutMode, PutOptions};
+use object_store::{ObjectStore, ObjectStoreExt, PutMode, PutOptions, GetOptions, GetRange, UpdateVersion};
 use std::fs::{self, OpenOptions};
-use std::io::Read;
+use std::io::{Read, Seek, SeekFrom};
+use std::ops::Range;
 use std::os::unix::fs::OpenOptionsExt;
 use std::path::{Path, PathBuf};
 use std::sync::{Arc, mpsc};
@@ -56,60 +57,97 @@ impl Storage {
             .context("configure S3 cache")?;
         Ok(Self::S3(S3::new(Arc::new(store), prefix.into())?))
     }
+
     pub(super) fn get(&self, key: &str) -> anyhow::Result<Option<Vec<u8>>> {
+        Ok(self.get_versioned(key)?.map(|object| object.bytes))
+    }
+    pub(super) fn get_versioned(&self, key: &str) -> anyhow::Result<Option<StoredObject>> {
+        self.read(key, None)
+    }
+    pub(super) fn range(&self, key: &str, range: Range<u64>) -> anyhow::Result<Vec<u8>> {
+        ensure!(range.end > range.start && range.end - range.start <= MAX_OBJECT as u64, "invalid cache range");
+        let expected = (range.end-range.start) as usize;
+        let object = self.read(key, Some(range))?.context("missing cache object")?;
+        ensure!(object.bytes.len() == expected, "truncated cache range");
+        Ok(object.bytes)
+    }
+    fn read(&self, key: &str, range: Option<Range<u64>>) -> anyhow::Result<Option<StoredObject>> {
         validate_key(key)?;
         match self {
-            Self::S3(s3) => s3.request(key, None, false),
+            Self::S3(s3) => s3.request(key, Operation::Get(range)),
             Self::Filesystem(root) => {
                 let path = confined(root, key, false)?;
-                let file = match OpenOptions::new()
-                    .read(true)
-                    .custom_flags(libc::O_NOFOLLOW | libc::O_NONBLOCK)
-                    .open(&path)
-                {
+                let mut file = match OpenOptions::new().read(true)
+                    .custom_flags(libc::O_NOFOLLOW | libc::O_NONBLOCK).open(&path) {
                     Ok(file) => file,
                     Err(error) if error.kind() == std::io::ErrorKind::NotFound => return Ok(None),
                     Err(error) => return Err(error.into()),
                 };
-                ensure!(
-                    file.metadata()?.is_file(),
-                    "cache object is not a regular file"
-                );
-                let mut body = Vec::new();
-                file.take((MAX_OBJECT + 1) as u64).read_to_end(&mut body)?;
-                ensure!(body.len() <= MAX_OBJECT, "cache object exceeds size limit");
-                Ok(Some(body))
+                ensure!(file.metadata()?.is_file(), "cache object is not a regular file");
+                let length = if let Some(range) = range {
+                    ensure!(range.end <= file.metadata()?.len(), "truncated cache range");
+                    file.seek(SeekFrom::Start(range.start))?;
+                    range.end-range.start
+                } else {
+                    file.metadata()?.len()
+                };
+                ensure!(length <= MAX_OBJECT as u64, "cache object exceeds size limit");
+                let mut bytes = Vec::new();
+                file.take(length+1).read_to_end(&mut bytes)?;
+                // A range read must not include the following byte.
+                bytes.truncate(length as usize);
+                ensure!(bytes.len() == length as usize, "truncated cache object");
+                let version = UpdateVersion { e_tag: Some(super::hash(&bytes)), version: None };
+                Ok(Some(StoredObject { bytes, version }))
             }
         }
     }
     pub(super) fn put(&self, key: &str, bytes: Vec<u8>, immutable: bool) -> anyhow::Result<()> {
+        let result = self.write(key, bytes, if immutable { PutMode::Create } else { PutMode::Overwrite });
+        match result {
+            Err(error) if immutable && is_conflict(&error) => Ok(()),
+            result => result,
+        }
+    }
+    pub(super) fn compare_and_swap(&self, key: &str, bytes: Vec<u8>, expected: Option<UpdateVersion>) -> anyhow::Result<()> {
+        self.write(key, bytes, expected.map(PutMode::Update).unwrap_or(PutMode::Create))
+    }
+    fn write(&self, key: &str, bytes: Vec<u8>, mode: PutMode) -> anyhow::Result<()> {
         validate_key(key)?;
         ensure!(bytes.len() <= MAX_OBJECT, "cache object exceeds size limit");
         match self {
-            Self::S3(s3) => {
-                s3.request(key, Some(bytes), immutable)?;
-            }
+            Self::S3(s3) => { s3.request(key, Operation::Put(bytes, mode))?; }
             Self::Filesystem(root) => {
                 let target = confined(root, key, true)?;
                 let parent = target.parent().context("object requires parent")?;
+                // Keep the lock file permanently: unlinking it would allow two
+                // processes to lock different inodes for the same HEAD.
+                let lock = OpenOptions::new().create(true).truncate(false).read(true).write(true)
+                    .custom_flags(libc::O_NOFOLLOW | libc::O_NONBLOCK)
+                    .open(parent.join(format!(".{}.lock", target.file_name().unwrap().to_string_lossy())))?;
+                ensure!(lock.metadata()?.is_file(), "cache lock is not a regular file");
+                fs2::FileExt::lock_exclusive(&lock)?;
+                match &mode {
+                    PutMode::Create => {
+                        if fs::symlink_metadata(&target).is_ok() { return Err(conflict()); }
+                    }
+                    PutMode::Update(version) => {
+                        let current = self.get_versioned(key)?;
+                        if current.as_ref().map(|v| &v.version) != Some(version) { return Err(conflict()); }
+                    }
+                    PutMode::Overwrite => {}
+                }
                 let mut staging = tempfile::NamedTempFile::new_in(parent)?;
                 use std::io::Write;
                 staging.write_all(&bytes)?;
                 staging.as_file().sync_all()?;
-                if immutable {
-                    match staging.persist_noclobber(&target) {
-                        Ok(_) => (),
-                        Err(error) if error.error.kind() == std::io::ErrorKind::AlreadyExists => (),
-                        Err(error) => return Err(error.error.into()),
-                    }
-                } else {
-                    staging.persist(&target).map_err(|e| e.error)?;
-                }
+                staging.persist(&target).map_err(|e| e.error)?;
                 fs::File::open(parent)?.sync_all()?;
             }
         }
         Ok(())
     }
+
 }
 
 fn validate_key(key: &str) -> anyhow::Result<()> {
@@ -152,11 +190,22 @@ fn confined(root: &Path, key: &str, create: bool) -> anyhow::Result<PathBuf> {
 
 // Own the async runtime on a separate host thread. Blocking cache callers may
 // already be in a Tokio context; creating/dropping or block_on there would panic.
-type ResultSender = mpsc::SyncSender<anyhow::Result<Option<Vec<u8>>>>;
+pub(super) struct StoredObject {
+    pub(super) bytes: Vec<u8>,
+    pub(super) version: UpdateVersion,
+}
+enum Operation { Get(Option<Range<u64>>), Put(Vec<u8>, PutMode) }
+#[derive(Debug, thiserror::Error)]
+#[error("cache publication conflict: HEAD changed or object already exists")]
+struct Conflict;
+fn conflict() -> anyhow::Error { Conflict.into() }
+pub(super) fn is_conflict(error: &anyhow::Error) -> bool {
+    error.downcast_ref::<Conflict>().is_some()
+}
+type ResultSender = mpsc::SyncSender<anyhow::Result<Option<StoredObject>>>;
 struct Job {
     key: String,
-    bytes: Option<Vec<u8>>,
-    immutable: bool,
+    operation: Operation,
     reply: ResultSender,
 }
 pub(super) struct S3 {
@@ -197,7 +246,7 @@ impl S3 {
                     runtime.spawn(async move {
                         let _permit = permit;
                         let result =
-                            s3_operation(store.as_ref(), &key, job.bytes, job.immutable).await;
+                            s3_operation(store.as_ref(), &key, job.operation).await;
                         let _ = job.reply.send(result);
                     });
                 }
@@ -214,17 +263,15 @@ impl S3 {
     fn request(
         &self,
         key: &str,
-        bytes: Option<Vec<u8>>,
-        immutable: bool,
-    ) -> anyhow::Result<Option<Vec<u8>>> {
+        operation: Operation,
+    ) -> anyhow::Result<Option<StoredObject>> {
         let (reply, receive) = mpsc::sync_channel(1);
         self.send
             .as_ref()
             .context("S3 cache worker stopped")?
             .send(Job {
                 key: key.into(),
-                bytes,
-                immutable,
+                operation,
                 reply,
             })
             .context("S3 cache worker stopped")?;
@@ -239,43 +286,32 @@ impl Drop for S3 {
         }
     }
 }
-async fn s3_operation(
-    store: &dyn ObjectStore,
-    key: &str,
-    bytes: Option<Vec<u8>>,
-    immutable: bool,
-) -> anyhow::Result<Option<Vec<u8>>> {
+
+async fn s3_operation(store: &dyn ObjectStore, key: &str, operation: Operation) -> anyhow::Result<Option<StoredObject>> {
     let path = object_store::path::Path::from(key);
-    if let Some(bytes) = bytes {
-        let options = PutOptions {
-            mode: if immutable {
-                PutMode::Create
-            } else {
-                PutMode::Overwrite
-            },
-            ..Default::default()
-        };
-        match store.put_opts(&path, bytes.into(), options).await {
-            Ok(_) => Ok(None),
-            Err(
-                object_store::Error::AlreadyExists { .. }
-                | object_store::Error::Precondition { .. },
-            ) if immutable => Ok(None),
-            Err(error) => Err(error.into()),
-        }
-    } else {
-        match store.get(&path).await {
-            Ok(result) => {
-                ensure!(
-                    result.meta.size <= MAX_OBJECT as u64,
-                    "cache object exceeds size limit"
-                );
-                let bytes = result.bytes().await?;
-                ensure!(bytes.len() <= MAX_OBJECT, "cache object exceeds size limit");
-                Ok(Some(bytes.to_vec()))
+    match operation {
+        Operation::Put(bytes, mode) => {
+            let options = PutOptions { mode, ..Default::default() };
+            match store.put_opts(&path, bytes.into(), options).await {
+                Ok(_) => Ok(None),
+                Err(object_store::Error::AlreadyExists { .. } | object_store::Error::Precondition { .. }) => Err(conflict()),
+                Err(error) => Err(error.into()),
             }
-            Err(object_store::Error::NotFound { .. }) => Ok(None),
-            Err(error) => Err(error.into()),
+        }
+        Operation::Get(range) => {
+            let expected = range.as_ref().map(|r| (r.end-r.start) as usize);
+            let options = GetOptions { range: range.map(GetRange::Bounded), ..Default::default() };
+            match store.get_opts(&path, options).await {
+                Ok(result) => {
+                    ensure!(expected.is_some() || result.meta.size <= MAX_OBJECT as u64, "cache object exceeds size limit");
+                    let version = UpdateVersion { e_tag: result.meta.e_tag.clone(), version: result.meta.version.clone() };
+                    let bytes = result.bytes().await?;
+                    ensure!(bytes.len() <= MAX_OBJECT && expected.is_none_or(|len| bytes.len()==len), "truncated or oversized cache range");
+                    Ok(Some(StoredObject { bytes: bytes.to_vec(), version }))
+                }
+                Err(object_store::Error::NotFound { .. }) => Ok(None),
+                Err(error) => Err(error.into()),
+            }
         }
     }
 }

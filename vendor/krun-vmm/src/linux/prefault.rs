@@ -387,9 +387,11 @@ mod tests {
             );
             assert!(ranges.iter().map(|r| r.size as u64).sum::<u64>() <= MAX_BYTES);
             ranges.sort_by_key(|r| r.gpa);
-            assert!(ranges
-                .windows(2)
-                .all(|r| r[0].gpa + r[0].size as u64 <= r[1].gpa));
+            assert!(
+                ranges
+                    .windows(2)
+                    .all(|r| r[0].gpa + r[0].size as u64 <= r[1].gpa)
+            );
             // An address that is not the loader's exact RAM region gets no
             // special treatment; it cannot prime a hole or another mapping.
             let fallback = boot_plan(&memory, 4096, Some((address + 4096, MAX_KERNEL_BYTES)));

@@ -24,6 +24,17 @@ enum Backend {
     Vm,
 }
 
+/// Only fields actually connected to the cluster worker are accepted.
+#[derive(Default, serde::Deserialize)]
+#[serde(default, deny_unknown_fields)]
+struct WorkerProfile {
+    vm: pvisor::VmSettings,
+    container: pvisor::ContainerSettings,
+    overlaynet: pvisor::OverlayNetSettings,
+    /// Shared read-only inputs, ordered bottom to top. Upper storage is private.
+    lower_layers: Vec<PathBuf>,
+}
+
 #[derive(Parser)]
 #[command(about = "Execute distributed tasks with the host-local pVisor kernel")]
 struct Args {
@@ -42,7 +53,7 @@ struct Args {
     /// Host is explicitly a trusted process backend; it has no sandbox boundary.
     #[arg(long, value_enum, default_value = "rootless")]
     backend: Backend,
-    /// Host-owned TOML profile supplies rootfs, toolkit layers, network and cache settings.
+    /// Host-owned TOML worker profile supplies rootfs, layers, network and cache settings.
     #[arg(long)]
     config: Option<PathBuf>,
     #[arg(long, default_value_t = 16)]
@@ -67,15 +78,19 @@ fn pair(value: &str) -> Result<(String, String), String> {
 struct Active {
     key: LeaseKey,
     resources: Resources,
+    full_resources: Resources,
     deadline: Instant,
     lease_clock: watch::Sender<Instant>,
     stop: watch::Sender<bool>,
     completion: Option<Completion>,
+    commands: mpsc::Sender<ControlCommand>,
+    acknowledgement: Option<ControlAcknowledgement>,
+    control_revision: u64,
 }
 
 fn executor(
     args: &Args,
-    config: &pvisor::RunConfig,
+    config: &WorkerProfile,
     resources: Resources,
 ) -> anyhow::Result<Arc<dyn RunExecutor>> {
     Ok(match args.backend {
@@ -95,6 +110,7 @@ fn executor(
             settings.memory_mib = u32::try_from(resources.memory_bytes / (1024 * 1024))?;
             settings.cpus = u16::try_from(resources.cpu_millis.div_ceil(1000))?;
             settings.ram_backing = None; // every Attempt owns a new backing
+            settings.rootfs_immutable = true;
             Arc::new(VmExecutor::new(settings)?)
         }
     })
@@ -102,7 +118,7 @@ fn executor(
 
 fn runtime(
     args: &Args,
-    config: &pvisor::RunConfig,
+    config: &WorkerProfile,
     assignment: &Assignment,
     storage: &Path,
 ) -> anyhow::Result<PVisor> {
@@ -137,19 +153,11 @@ fn runtime(
         .network(
             pvisor::NetworkDriverConfig::new(config.overlaynet.mode, network).listen("127.0.0.1:0"),
         );
-    if let Some(overlay) = &config.overlayfs {
-        ensure!(
-            overlay.commit == pvisor::OverlayFsCommit::Manual,
-            "cluster overlays must preserve staged outputs"
-        );
-        ensure!(
-            !overlay.mount.is_empty(),
-            "cluster overlayfs profile needs explicit mounts"
-        );
+    if !config.lower_layers.is_empty() {
         // Core filesystem rules remain in RunSpec. Host-owned lower layers are
         // shared; writable upper and merged mount are private to each lease.
         builder = builder.overlay(pvisor::OverlayHint {
-            lower_dirs: overlay.mount.iter().map(|m| m.source.clone()).collect(),
+            lower_dirs: config.lower_layers.clone(),
             stage_dir: Some(storage.to_owned()),
             protect_target: true,
             ..Default::default()
@@ -163,11 +171,14 @@ async fn execute(
     assignment: Assignment,
     mut stop: watch::Receiver<bool>,
     mut lease_clock: watch::Receiver<Instant>,
+    mut commands: mpsc::Receiver<ControlCommand>,
+    acknowledgements: mpsc::Sender<ControlAcknowledgement>,
     storage: PathBuf,
 ) -> Completion {
     let result: anyhow::Result<pvisor_core::RunResult> = async {
         let runtime = runtime?;
         let mut spec = assignment.spec.run;
+        let output_limit = spec.runtime.max_output_bytes;
         let RunInvocation::Process(process) = &mut spec.invocation;
         ensure!(!process.inherit_env, "worker refuses inherited environment");
         process.stdin = StdioMode::Null;
@@ -181,7 +192,9 @@ async fn execute(
         );
         let handle = runtime.run(spec).await?;
         let cancellation = handle.cancellation();
-        if *stop.borrow() || Instant::now() >= *lease_clock.borrow() {
+        let controls = handle.controls();
+        let mut halted = *stop.borrow() || Instant::now() >= *lease_clock.borrow();
+        if halted {
             cancellation.cancel();
         }
         tokio::pin! { let wait = handle.wait(); }
@@ -194,11 +207,82 @@ async fn execute(
                 }
             }
         };
-        tokio::select! {
-            result = &mut wait => Ok(result?),
-            _ = stop.changed() => { cancellation.cancel(); Ok(wait.await?) },
-            _ = expired => { cancellation.cancel(); Ok(wait.await?) }
-        }
+        tokio::pin!(expired);
+        let mut last_acknowledgement: Option<ControlAcknowledgement> = None;
+        let mut result = 'execution: loop {
+            tokio::select! {
+                result = &mut wait => break result,
+                _ = stop.changed(), if !halted => { halted = true; cancellation.cancel(); },
+                _ = &mut expired, if !halted => { halted = true; cancellation.cancel(); },
+                command = commands.recv(), if !halted => {
+                    let Some(command) = command else { halted = true; cancellation.cancel(); continue; };
+                    if command.key != assignment.lease.key { halted = true; cancellation.cancel(); continue; }
+                    if let Some(previous) = &last_acknowledgement {
+                        if previous.command == command {
+                            let _ = acknowledgements.try_send(previous.clone());
+                            continue;
+                        }
+                        if command.revision < previous.command.revision { continue; }
+                        if command.revision == previous.command.revision { halted = true; cancellation.cancel(); continue; }
+                    }
+                    // Native control and task completion can progress concurrently.
+                    // Lease expiry interrupts waiting without acknowledging uncertain
+                    // effects; cancellation owns the eventual native teardown.
+                    let action = command.request.action;
+                    let operation = async {
+                        controls.clone().wait_ready().await?;
+                        controls.control(action.operation()).await
+                    };
+                    tokio::pin!(operation);
+                    let outcome = tokio::select! {
+                        result = &mut wait => break 'execution result,
+                        _ = stop.changed() => { halted = true; cancellation.cancel(); continue 'execution; },
+                        _ = &mut expired => { halted = true; cancellation.cancel(); continue 'execution; },
+                        result = &mut operation => result,
+                    };
+                    let mut outcome = match outcome {
+                        Ok(pvisor_core::operation::Value::Vm { state, memory }) => ControlOutcome::Succeeded { state, memory },
+                        Ok(_) => ControlOutcome::Failed { error: "native control returned no VM observation".into() },
+                        Err(error) => {
+                            let mut message = Some(format!("{error:#}"));
+                            bound_text(&mut message, &mut false, 8192);
+                            ControlOutcome::Failed { error: message.unwrap() }
+                        },
+                    };
+                    if let Err(error) = outcome.validate(command.request.action) {
+                        outcome = ControlOutcome::Failed { error: format!("invalid native control observation: {error}") };
+                    }
+                    let acknowledgement = ControlAcknowledgement { command, outcome };
+                    if let Err(error) = persist(&storage.join(format!("control-{}.json", acknowledgement.command.revision)), &acknowledgement) {
+                        eprintln!("worker control evidence write failed: {error:#}");
+                        halted = true;
+                        cancellation.cancel();
+                        continue;
+                    }
+                    if matches!(acknowledgement.outcome, ControlOutcome::Failed { .. }) {
+                        halted = true;
+                        cancellation.cancel();
+                    }
+                    // Full channels never block the lease timer: redelivery of
+                    // the same command replays this durable acknowledgement.
+                    let _ = acknowledgements.try_send(acknowledgement.clone());
+                    last_acknowledgement = Some(acknowledgement);
+                }
+            }
+        }?;
+        // Lossy UTF-8 decoding can expand raw output. Bound the wire form as
+        // well as the executor's byte buffer so results remain deliverable.
+        bound_text(
+            &mut result.output.stdout,
+            &mut result.output.stdout_truncated,
+            output_limit,
+        );
+        bound_text(
+            &mut result.output.stderr,
+            &mut result.output.stderr_truncated,
+            output_limit,
+        );
+        Ok(result)
     }
     .await;
     let completion = match result {
@@ -220,9 +304,27 @@ async fn execute(
     }
     completion
 }
+fn bound_text(text: &mut Option<String>, truncated: &mut bool, limit: usize) {
+    if let Some(text) = text
+        && text.len() > limit
+    {
+        let mut end = limit;
+        while !text.is_char_boundary(end) {
+            end -= 1;
+        }
+        text.truncate(end);
+        *truncated = true;
+    }
+}
 fn persist(path: &Path, value: &impl serde::Serialize) -> anyhow::Result<()> {
     use std::io::Write;
-    let mut file = std::fs::File::create(path)?;
+    use std::os::unix::fs::OpenOptionsExt;
+    let mut file = std::fs::OpenOptions::new()
+        .create(true)
+        .truncate(true)
+        .write(true)
+        .mode(0o600)
+        .open(path)?;
     file.write_all(&serde_json::to_vec(value)?)?;
     file.sync_all()?;
     std::fs::File::open(path.parent().unwrap())?.sync_all()?;
@@ -249,13 +351,9 @@ async fn main() -> anyhow::Result<()> {
     lock.try_lock_exclusive()
         .context("worker state already owned")?;
     let config = match &args.config {
-        Some(path) => pvisor::RunConfig::from_file(path)?,
-        None => pvisor::RunConfig::default(),
+        Some(path) => toml::from_str(&std::fs::read_to_string(path)?)?,
+        None => WorkerProfile::default(),
     };
-    ensure!(
-        config.gateway.mode != pvisor::GatewayMode::Capture,
-        "cluster worker Gateway capture profile is not yet connected"
-    );
     let capacity = Resources {
         slots: args.slots,
         memory_bytes: args.memory_bytes,
@@ -287,10 +385,25 @@ async fn main() -> anyhow::Result<()> {
         execution: vec![class],
         labels: args.label.iter().cloned().collect(),
         cache_keys: args.cache_key.clone(),
+        vm_control_protocol: matches!(args.backend, Backend::Vm).then_some(CLUSTER_VERSION),
+        vm_control_actions: if matches!(args.backend, Backend::Vm) {
+            let mut actions = vec![ControlAction::Pause, ControlAction::Resume];
+            let uses_pool = config.vm.memory_pool.is_some()
+                || (cfg!(all(target_os = "macos", target_arch = "aarch64"))
+                    && std::env::var_os("PVISOR_EXPERIMENTAL_MEMORY_POOL").is_some());
+            if !uses_pool {
+                actions.push(ControlAction::Offload);
+            }
+            actions
+        } else {
+            Vec::new()
+        },
     };
     let client = Client::new(&args.url, args.token.clone())?;
     client.register(&registration).await?;
     let (finished_tx, mut finished_rx) = mpsc::channel::<Completion>(capacity.slots as usize);
+    let (acknowledgements_tx, mut acknowledgements_rx) =
+        mpsc::channel::<ControlAcknowledgement>(capacity.slots as usize);
     let mut active = BTreeMap::<String, Active>::new();
     let mut tick = tokio::time::interval(Duration::from_millis(args.poll_ms));
     tick.set_missed_tick_behavior(tokio::time::MissedTickBehavior::Skip);
@@ -307,6 +420,14 @@ async fn main() -> anyhow::Result<()> {
             _ = &mut shutdown, if !stopping => { stopping = true; for entry in active.values() { entry.stop.send_replace(true); } },
             Some(completion) = finished_rx.recv() => {
                 if let Some(entry) = active.get_mut(&completion.key.task_id) { entry.completion = Some(completion); }
+            },
+            Some(acknowledgement) = acknowledgements_rx.recv() => {
+                if let Some(entry) = active.get_mut(&acknowledgement.command.key.task_id)
+                    && entry.key == acknowledgement.command.key
+                    && entry.control_revision == acknowledgement.command.revision {
+                    entry.resources = acknowledgement.outcome.reservation(entry.full_resources, entry.resources);
+                    entry.acknowledgement = Some(acknowledgement);
+                }
             },
             _ = watchdog.tick() => {
                 for entry in active.values() { if Instant::now() >= entry.deadline { entry.stop.send_replace(true); } }
@@ -330,12 +451,24 @@ async fn main() -> anyhow::Result<()> {
                 };
                 match response {
                     Ok(response) => {
+                        ensure!(response.version == CLUSTER_VERSION, "unsupported controller protocol");
                         let duration = Duration::from_millis(response.lease_duration_ms);
                         ensure!(args.poll_ms * 3 < response.lease_duration_ms, "poll interval must be below one third of lease duration");
                         for key in response.renewed {
                             if let Some(entry) = active.get_mut(&key.task_id) { entry.deadline = began + duration; entry.lease_clock.send_replace(entry.deadline); }
                         }
                         for key in response.stop { if let Some(entry) = active.get(&key.task_id) { entry.stop.send_replace(true); } }
+                        for command in response.controls {
+                            if let Some(entry) = active.get_mut(&command.key.task_id) && entry.key == command.key {
+                                if command.revision < entry.control_revision { continue; }
+                                if command.revision > entry.control_revision {
+                                    entry.control_revision = command.revision;
+                                    entry.acknowledgement = None;
+                                }
+                                if command.request.action == ControlAction::Resume { entry.resources = entry.full_resources; }
+                                let _ = entry.commands.try_send(command);
+                            }
+                        }
                         for assignment in response.assignments {
                             let id = assignment.spec.id.clone();
                             if active.contains_key(&id) { continue; }
@@ -346,13 +479,35 @@ async fn main() -> anyhow::Result<()> {
                             persist(&storage.join("assignment.json"), &assignment)?;
                             let (stop_tx, stop_rx) = watch::channel(stopping || Instant::now() >= began + duration);
                             let (lease_tx, lease_rx) = watch::channel(began + duration);
+                            let (commands_tx, commands_rx) = mpsc::channel(1);
                             let runtime = runtime(&args, &config, &assignment, &storage);
                             let tx = finished_tx.clone();
-                            tokio::spawn(async move { let completion = execute(runtime, assignment, stop_rx, lease_rx, storage).await; let _ = tx.send(completion).await; });
-                            active.insert(id, Active { key, resources, deadline: began + duration, lease_clock: lease_tx, stop: stop_tx, completion: None });
+                            let ack_tx = acknowledgements_tx.clone();
+                            tokio::spawn(async move { let completion = execute(runtime, assignment, stop_rx, lease_rx, commands_rx, ack_tx, storage).await; let _ = tx.send(completion).await; });
+                            active.insert(id, Active { key, resources, full_resources: resources, deadline: began + duration, lease_clock: lease_tx, stop: stop_tx, completion: None, commands: commands_tx, acknowledgement: None, control_revision: 0 });
                         }
                     }
                     Err(error) => eprintln!("worker poll failed: {error:#}"),
+                }
+                let acknowledgements: Vec<_> = active.values().filter_map(|a| a.acknowledgement.clone()).collect();
+                for acknowledgement in acknowledgements {
+                    let id = acknowledgement.command.key.task_id.clone();
+                    let delivery = client.acknowledge_control(&acknowledgement);
+                    tokio::pin!(delivery);
+                    let response = loop {
+                        tokio::select! {
+                            response = &mut delivery => break response,
+                            _ = watchdog.tick() => { for entry in active.values() { if Instant::now() >= entry.deadline { entry.stop.send_replace(true); } } },
+                            _ = &mut shutdown, if !stopping => { stopping = true; for entry in active.values() { entry.stop.send_replace(true); } },
+                        }
+                    };
+                    match response {
+                        Ok(_) => { if let Some(entry) = active.get_mut(&id) { entry.acknowledgement = None; } },
+                        Err(error) if error.downcast_ref::<reqwest::Error>().and_then(|e| e.status()) == Some(reqwest::StatusCode::CONFLICT) => {
+                            if let Some(entry) = active.get_mut(&id) { entry.acknowledgement = None; entry.stop.send_replace(true); }
+                        },
+                        Err(error) => eprintln!("control acknowledgement delivery failed for {id}: {error:#}"),
+                    }
                 }
                 // Deliver completed evidence independently of task execution.
                 // Retain reservations until the controller acknowledges it.

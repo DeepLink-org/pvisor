@@ -64,6 +64,12 @@
 主批次 safe 128 路为 **638/640** 成功，失败是 `Address already in use`：临时端口探测与实际监听之间有竞争。不能据成功样本宣称 128 路稳定。VM 单路进程树 RSS 约 100 MiB，8 路约 789 MiB；这是启动后空闲常驻值，不是每台 VM 配置内存或活跃工作集上限。
 
 工具 rootfs 约 749 MiB，pVisor OCI 每 Job 复制私有环境到默认 `/tmp`。32/128 路触发 tmpfs 用户配额（`Disk quota exceeded`），失败数公开保留。最小 shell rootfs 补测另列，区别运行时与工具环境成本；Podman 使用同一预制镜像，不做相同的每 Job 完整 rootfs 复制。
+### 空闲容量和完整 Agent 容量是两回事 {#baseline-meaning}
+
+这里的原生 shell 和 Podman/crun 给出熟悉的占用基线，128 路成功回答的是“能否同时维持这些空闲进程”。它不能回答“能否同时运行 128 个带 Python、Node、Rust 和 Agent CLI 的任务”。2 vCPU/128 MiB 的空闲 VM 也不能代表完整工具环境的活跃工作集。
+
+完整工具环境的单任务延迟与实际进程树 RSS 见 [Agent 环境对比](agent-tasks.md#reference-env)。新 Docker 资源数据包含私有 daemon 的固定成本，不能与这里可能漏掉后台进程的 Podman RSS 直接排名。并发规划应使用自己的任务工作集，再测成功率和完成时间；当前未发布完整 Agent 的 128 路容量承诺。
+
 ## 边界与下一轮 {#acceptance}
 
 共享桌面有编辑器和后台进程，本轮不是专用性能机或最大容量搜索。主批次 VM 内存 guard 比较保守；补测按单路实测 RSS×1.5、至少 128 MiB/Job，另留 2 GiB 再决定是否运行。RSS 求和会重复计算共享页；不是 PSS 或系统总内存。Podman 的后台进程可能不全在被跟踪的父子树中，CPU/RSS 不能据此做严格总资源排名。

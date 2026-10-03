@@ -54,6 +54,12 @@ After observing prepared / target_applied / committed, kill the apply process gr
 | 10000 | target_applied | 3 | target_applied | 354.28 / 371.49 / 373.02 |
 | 10000 | committed | 3 | committed | 259.47 / 347.70 / 355.55 |
 
+### What the Git patch baseline means {#baseline-meaning}
+
+`git apply` on the same inputs is a familiar cost baseline: about 0.73 ms for 10 files and 13.61 ms for 1,000, versus 15 ms and 836 ms for pVisor apply—roughly 21× and 61×. Absolute budgets matter more: tens of milliseconds for a small edit, seconds for a thousand-file merge, and minutes for a hundred thousand files.
+
+Git patch, copying, and pVisor apply have different workflows. This compares the measured cost of the same text updates, without claiming identical transactions. Consider whether preimage checks, selective merging, and crash recovery are requirements of the workflow. Large batches currently carry a clear performance cost.
+
 ## Limits and next measurements {#acceptance}
 
 SIGKILL does not test power loss, filesystem damage or lost disk writes. All file kinds/symlink/metadata combinations are not covered. Keep failures and before/after evidence when adding those cases. Large projects should bound each submitted batch; tiny-file results are not extrapolated to millions of files.

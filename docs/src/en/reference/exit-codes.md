@@ -9,6 +9,7 @@ A workload can return `1`, `2`, or `125` itself, so a number alone is insufficie
 | Situation | CLI behavior |
 | --- | --- |
 | Workload exits normally | `run` returns its exit code; success is usually 0 |
+| Wall-time timeout | 1; `run.failure.kind = "deadline_exceeded"`, no workload exit code |
 | Run cancelled | 130 |
 | Execution fails without a workload exit code | 1 |
 | Internal host sandbox setup fails | Launcher uses 125; outer errors may return 1, so inspect diagnostics |
@@ -39,3 +40,21 @@ printf 'run=%s review=%s\n' "$run_code" "$review_code"
 ```
 
 The command returns `7` and may still leave a reviewable `result.txt`. Retain execution and review-reading statuses separately; after collecting artifacts, CI should end the step with the original `run_code`. Apply changes after review, or drop them if discarded.
+
+## Classify the recorded failure {#failures}
+
+`run.failure` contains `kind`, `message`, and `retryable`. Treat `retryable` as the executor's hint, then apply your task's retry policy. A timeout is a failed execution with no normal process exit code; it is different from a command that itself returns `1`.
+
+| Failure kind | Meaning / action |
+| --- | --- |
+| `invalid_spec` | Invalid resolved request; correct configuration before retrying |
+| `unsupported` | Executor cannot satisfy a requested capability; change the request or executor |
+| `spawn` | Workload or VM launch failed; inspect paths, executables and device diagnostics |
+| `process_exit` | Workload returned a nonzero status; preserve its `exit_code` |
+| `workload` | Executor reported task-level failure beyond a simple process status |
+| `deadline_exceeded` | Task exceeded its wall-clock deadline; inspect progress and retained files |
+| `infrastructure` | Execution machinery failed, such as sandbox setup or I/O; inspect diagnostics |
+
+Parse errors and pre-admission failures can occur before `run.failure` or a Bundle exists. Missing Job selection, apply conflicts, and management-command errors are reported on stderr with exit 1, rather than being fabricated as workload failures. `UnsupportedPolicy` diagnostics describe a rejected capability request; `CAPABILITY_UNSUPPORTED` is used for ordinary execution-checkpoint/suspend requests. Do not grade these as failed model answers.
+
+The downloadable [nonzero-exit sample](../../assets/examples/json/failed-run.json) records `state = "failed"`, `exit_code = 7`, and `failure.kind = "process_exit"`. The [timeout sample](../../assets/examples/json/timeout-run.json) records `state = "failed"`, omits `exit_code`, and uses `failure.kind = "deadline_exceeded"`; its CLI returned 1. Both retain staged candidate files. [Collection provenance](../../assets/examples/json/provenance.json) includes the commands and observed return codes.

@@ -28,6 +28,10 @@ These workloads were measured on Linux; macFUSE/FSKit overhead and capacity rema
 Per-tool approval count depends on tool requests. Stage review can decide multiple changes together, while still requiring diff reading, conflict handling and path selection. Docker/Git can also batch review. There are no human participants here; batching files does not establish a 90% reduction in human time.
 
 These timings support a low machine cost for an automated review flow. They do not establish user satisfaction, decision accuracy or an optimal approval policy.
+### Baseline and interaction budget {#baseline-meaning}
+
+The familiar reference workflow is inspecting changes with Git/diff and selecting files to keep. An equivalent Git review workflow was not timed in this batch. The measured roughly 25 ms covers machine work for listing, filtering, and committing, which fits within an interaction. It does not mean a person can review changes in 25 ms or establish saved human time. Human review performance still requires a separate experiment.
+
 ## Limits and next measurements {#acceptance}
 
 A human study should fix tasks/diffs, cross over per-tool approvals, staged review and Docker+Git, and record waiting, actual decisions, incorrect accepts/rejects and conflict resolution. Publish anonymized data and intervals. Human minutes remain unmeasured until then.

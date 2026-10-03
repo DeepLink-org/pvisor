@@ -1,0 +1,59 @@
+{
+  "kind": "actual CLI output; paths, identities and numeric wall-clock fields normalized",
+  "commands": {
+    "run-bundle": [
+      "run",
+      "--safe",
+      "--overlaynet-deny-all",
+      "--stdio",
+      "capture",
+      "--stage",
+      "/tmp/pvisor-example/run-bundle",
+      "--",
+      "/bin/sh",
+      "-c",
+      "mkdir -p src; printf \"ready\\n\" > src/result.txt; rm obsolete.txt"
+    ],
+    "failed-run": [
+      "run",
+      "--safe",
+      "--overlaynet-deny-all",
+      "--stdio",
+      "capture",
+      "--stage",
+      "/tmp/pvisor-example/failed-run",
+      "--",
+      "/bin/sh",
+      "-c",
+      "printf \"candidate\\n\" > failed.txt; exit 7"
+    ],
+    "timeout-run": [
+      "run",
+      "--safe",
+      "--overlaynet-deny-all",
+      "--stdio",
+      "capture",
+      "--stage",
+      "/tmp/pvisor-example/timeout-run",
+      "--timeout",
+      "100ms",
+      "--",
+      "/bin/sh",
+      "-c",
+      "printf \"candidate\\n\" > timed.txt; sleep 2"
+    ]
+  },
+  "return_codes": {
+    "run-bundle": 0,
+    "failed-run": 7,
+    "timeout-run": 1
+  },
+  "cli_sha256": "b8a3799d17b72f41e910b444e853f8298aa2b1e5edc0b951c04fd7f661ea658b",
+  "source_sha256": {
+    "crates/pvisor/src/runtime/bundle.rs": "1d552fa2a1c6d6787c66cc235455b8847170740227e9f6d131c8007251ef82c3",
+    "crates/pvisor/src/cli/runtime.rs": "4b71fd099cee7815c023608abf5667a83928ae01aa2f055caa8e012666adea1b",
+    "crates/pvisor/src/cli/checkpoint.rs": "8ec66653952aee860144724186ece5b58aa8f819c199d761ac088277fc1c2f2b",
+    "crates/pvisor/src/cli/product.rs": "fe6656766373d58587c2fbc4368687f9c656b41e8602858830834e99cd6b930e"
+  },
+  "platform": "Linux x86_64; host executor; safe staging and deny-all networking"
+}

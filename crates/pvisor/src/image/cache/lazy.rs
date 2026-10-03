@@ -70,6 +70,7 @@ pub(crate) fn prepare_image(
             })
         })?;
     let Response::Prepared {
+        image_handle,
         metadata_generation,
         totals,
         digest,
@@ -86,11 +87,12 @@ pub(crate) fn prepare_image(
         "cache returned the wrong image architecture"
     );
     crate::image::oci::digest_hex(&digest)?;
+    let read_handle = image_handle.unwrap_or_else(|| digest.clone());
     let cache = dirs::cache_dir()
         .context("cannot find user cache directory")?
         .join("pvisor/blocks")
         .join(&hash(client.endpoint.as_bytes())[7..])
-        .join(&digest[7..]);
+        .join(&hash(read_handle.as_bytes())[7..]);
     fs::create_dir_all(&cache)?;
     downloads.totals(totals);
     if let Some(totals) = totals {
@@ -109,7 +111,7 @@ pub(crate) fn prepare_image(
             .join(&hash(generation.as_bytes())[7..])
     });
     let mut filesystem = super::progress::loading("loading root metadata", || {
-        RemoteFs::new(client, digest.clone(), cache, metadata_cache)
+        RemoteFs::new(client, read_handle, cache, metadata_cache)
     })?;
     filesystem.downloads = downloads;
     let mount =

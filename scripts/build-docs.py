@@ -78,6 +78,7 @@ def build() -> None:
     from importlib import import_module
 
     import_module("check-docs").check_translations()
+    import_module("check-reference").check()
     zensical = shutil.which("zensical") or str(Path(sys.executable).with_name("zensical"))
     subprocess.run([zensical, "build", "--strict"], cwd=DOCS, check=True)
     localize_search(DOCS / "site", "zh")

@@ -60,6 +60,21 @@ wheel profile="release":
 check:
     cargo check --locked -p pvisor
 
+# Build the distributed controller and native per-host worker.
+cluster-build:
+    #!/usr/bin/env bash
+    set -euo pipefail
+    cargo build --locked -p pvisor-cluster -p pvisor --bin pvisor-cluster --bin pvisor-worker
+    if [[ "$(uname -s)" == Darwin ]]; then
+      codesign --force --sign - --entitlements "{{ repo }}/crates/pvisor/macos-hypervisor.entitlements" "{{ target_dir }}/debug/pvisor-worker"
+      codesign --verify --strict "{{ target_dir }}/debug/pvisor-worker"
+    fi
+
+# Controller contracts plus real HTTP/multi-worker execution and failure tests.
+test-cluster:
+    just test pvisor-cluster pvisor-core
+    cargo nextest run --locked -p pvisor --test cluster_execution
+
 # Format source files; use fmt-check for a read-only check.
 fmt: fmt-rust fmt-py
 

@@ -72,7 +72,8 @@ pub use runtime::event::{
     EventAppendErrorKind, EventSink, MemoryEventSink, NoopEventSink, RunEventPublisher,
 };
 pub use runtime::run::{
-    PVisor, PVisorBuilder, PVisorError, RunCancellation, RunEventStream, RunHandle,
+    PVisor, PVisorBuilder, PVisorError, RunCancellation, RunControlHandle, RunEventStream,
+    RunHandle,
 };
 pub use runtime::{
     ChangeEntry, ChangeEntryType, ChangeKind, ImplantPlan, OverlayHint, RunLineage,
