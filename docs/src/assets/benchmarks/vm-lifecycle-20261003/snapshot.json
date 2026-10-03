@@ -1,0 +1,590 @@
+{
+  "schema": "pvisor-kvm-snapshot-benchmark/v1",
+  "recorded_at": "2026-10-03T12:51:10.632932+00:00",
+  "os": "Linux-7.2.8-200.fc44.x86_64-x86_64-with-glibc2.43",
+  "cpus": 2,
+  "memory_mib": 256,
+  "samples": 10,
+  "warmups": 2,
+  "guest_data_bytes": 67108864,
+  "binary_sha256": "b69da539f2771b8acbd76ef3020df141b83b497dd60644a9a6beffc104bf3bf0",
+  "guest_sha256": "963846369b12bf4391c965096725162a37ef880e984ad53c85345936af1986cd",
+  "rows": [
+    {
+      "correctness": "passed",
+      "storage": "raw",
+      "ready_ms": 499.13785199987615,
+      "save_ms": 1316.6863239998747,
+      "snapshot_id": "e52f39da58dddb1d17f20d607d1ea6720564bc7b6f32b28dad255dea8cbb3f02",
+      "snapshot_allocated_bytes": 311418880,
+      "restores": [
+        {
+          "name": "fork0",
+          "restore_heartbeat_ms": 1105.647859000328,
+          "read_check_ms": 93.572049,
+          "ack": "fork0 472 93.572049 5357"
+        },
+        {
+          "name": "fork1",
+          "restore_heartbeat_ms": 1093.8850810002805,
+          "read_check_ms": 120.981012,
+          "ack": "fork1 406 120.981012 5388"
+        }
+      ],
+      "trial": 0,
+      "warmup": true
+    },
+    {
+      "correctness": "passed",
+      "storage": "compressed",
+      "ready_ms": 442.85259200023575,
+      "save_ms": 2980.9942070000943,
+      "snapshot_id": "357b202d8feb73d9cf3a354def764b8caa4881fafed1e42b3b05cb6d65a4ab13",
+      "snapshot_allocated_bytes": 17145856,
+      "restores": [
+        {
+          "name": "fork0",
+          "restore_heartbeat_ms": 2362.3619699997107,
+          "read_check_ms": 109.581769,
+          "ack": "fork0 466 109.581769 5375"
+        },
+        {
+          "name": "fork1",
+          "restore_heartbeat_ms": 2031.5253740000117,
+          "read_check_ms": 110.927904,
+          "ack": "fork1 469 110.927904 5381"
+        }
+      ],
+      "trial": 0,
+      "warmup": true
+    },
+    {
+      "correctness": "passed",
+      "storage": "raw",
+      "ready_ms": 375.79338899968207,
+      "save_ms": 758.3607340002345,
+      "snapshot_id": "aa8bc6b9faed9c9d838b4e6b089bf54c0a8e87c454bdb76711a1d7f575c3bb96",
+      "snapshot_allocated_bytes": 311418880,
+      "restores": [
+        {
+          "name": "fork0",
+          "restore_heartbeat_ms": 968.0434890001379,
+          "read_check_ms": 109.344314,
+          "ack": "fork0 471 109.344314 5375"
+        },
+        {
+          "name": "fork1",
+          "restore_heartbeat_ms": 1001.6499319999639,
+          "read_check_ms": 108.87875,
+          "ack": "fork1 471 108.878750 5378"
+        }
+      ],
+      "trial": 1,
+      "warmup": true
+    },
+    {
+      "correctness": "passed",
+      "storage": "compressed",
+      "ready_ms": 375.64279800017175,
+      "save_ms": 1291.5847149997717,
+      "snapshot_id": "ca68c8a06e1c344344282fe97c807fbd4fb92bb32cd7b5517fa13efd07dd664e",
+      "snapshot_allocated_bytes": 17334272,
+      "restores": [
+        {
+          "name": "fork0",
+          "restore_heartbeat_ms": 1955.702663000011,
+          "read_check_ms": 86.613166,
+          "ack": "fork0 473 86.613166 5353"
+        },
+        {
+          "name": "fork1",
+          "restore_heartbeat_ms": 1926.8395320000309,
+          "read_check_ms": 107.829813,
+          "ack": "fork1 472 107.829813 5374"
+        }
+      ],
+      "trial": 1,
+      "warmup": true
+    },
+    {
+      "correctness": "passed",
+      "storage": "raw",
+      "ready_ms": 294.17587100033415,
+      "save_ms": 791.360566000094,
+      "snapshot_id": "69c86d7fa1f0c15c11099ac13267b0e297c8b9355f15194d5f1be77ef9819fd6",
+      "snapshot_allocated_bytes": 311418880,
+      "restores": [
+        {
+          "name": "fork0",
+          "restore_heartbeat_ms": 886.5142640001977,
+          "read_check_ms": 109.103372,
+          "ack": "fork0 470 109.103372 5368"
+        },
+        {
+          "name": "fork1",
+          "restore_heartbeat_ms": 914.4198759995561,
+          "read_check_ms": 108.046119,
+          "ack": "fork1 471 108.046119 5368"
+        }
+      ],
+      "trial": 2,
+      "warmup": false
+    },
+    {
+      "correctness": "passed",
+      "storage": "compressed",
+      "ready_ms": 309.40857599989613,
+      "save_ms": 1211.1669959999745,
+      "snapshot_id": "ddace86ed6ba7f2f9db72e4c41aaa52fc71072216057468e654399d5a8135db1",
+      "snapshot_allocated_bytes": 17264640,
+      "restores": [
+        {
+          "name": "fork0",
+          "restore_heartbeat_ms": 1866.2308120001398,
+          "read_check_ms": 107.44926,
+          "ack": "fork0 476 107.449260 5376"
+        },
+        {
+          "name": "fork1",
+          "restore_heartbeat_ms": 1889.248480000333,
+          "read_check_ms": 107.544658,
+          "ack": "fork1 474 107.544658 5379"
+        }
+      ],
+      "trial": 2,
+      "warmup": false
+    },
+    {
+      "correctness": "passed",
+      "storage": "raw",
+      "ready_ms": 370.62626399983856,
+      "save_ms": 780.839295000078,
+      "snapshot_id": "ddfb1909aca7c91a0f008876eb423a02a58f41c710d3f8b9b89962d69f2bb3e6",
+      "snapshot_allocated_bytes": 311418880,
+      "restores": [
+        {
+          "name": "fork0",
+          "restore_heartbeat_ms": 964.7082420001425,
+          "read_check_ms": 111.420769,
+          "ack": "fork0 475 111.420769 5383"
+        },
+        {
+          "name": "fork1",
+          "restore_heartbeat_ms": 1012.6437640001313,
+          "read_check_ms": 110.975834,
+          "ack": "fork1 472 110.975834 5382"
+        }
+      ],
+      "trial": 3,
+      "warmup": false
+    },
+    {
+      "correctness": "passed",
+      "storage": "compressed",
+      "ready_ms": 380.04628799990314,
+      "save_ms": 1357.244214000275,
+      "snapshot_id": "26617170e3f7a4d17e4768abbbb9eadddf2948b22c2b8488e3a81feda472f6b5",
+      "snapshot_allocated_bytes": 17301504,
+      "restores": [
+        {
+          "name": "fork0",
+          "restore_heartbeat_ms": 1951.6443160000563,
+          "read_check_ms": 111.843311,
+          "ack": "fork0 471 111.843311 5371"
+        },
+        {
+          "name": "fork1",
+          "restore_heartbeat_ms": 1947.9643769996073,
+          "read_check_ms": 111.876834,
+          "ack": "fork1 471 111.876834 5379"
+        }
+      ],
+      "trial": 3,
+      "warmup": false
+    },
+    {
+      "correctness": "passed",
+      "storage": "raw",
+      "ready_ms": 293.8693180003611,
+      "save_ms": 630.050151999967,
+      "snapshot_id": "3a802988ba63658f7c0c3ee80c06dd9763136cfcbb1ee199a3e90c48be9a2669",
+      "snapshot_allocated_bytes": 311418880,
+      "restores": [
+        {
+          "name": "fork0",
+          "restore_heartbeat_ms": 874.0082879999136,
+          "read_check_ms": 109.407182,
+          "ack": "fork0 476 109.407182 5380"
+        },
+        {
+          "name": "fork1",
+          "restore_heartbeat_ms": 906.731002000015,
+          "read_check_ms": 108.877187,
+          "ack": "fork1 477 108.877187 5374"
+        }
+      ],
+      "trial": 4,
+      "warmup": false
+    },
+    {
+      "correctness": "passed",
+      "storage": "compressed",
+      "ready_ms": 370.96050800028024,
+      "save_ms": 1279.3658049999976,
+      "snapshot_id": "de35e9496188857d3aaeebccaa43f7caa4f578f72d3634d3d70f496a191c672a",
+      "snapshot_allocated_bytes": 17231872,
+      "restores": [
+        {
+          "name": "fork0",
+          "restore_heartbeat_ms": 1933.92558000005,
+          "read_check_ms": 108.560313,
+          "ack": "fork0 471 108.560313 5373"
+        },
+        {
+          "name": "fork1",
+          "restore_heartbeat_ms": 1955.111739000131,
+          "read_check_ms": 107.906557,
+          "ack": "fork1 471 107.906557 5372"
+        }
+      ],
+      "trial": 4,
+      "warmup": false
+    },
+    {
+      "correctness": "passed",
+      "storage": "raw",
+      "ready_ms": 370.32016300008763,
+      "save_ms": 672.1839639999416,
+      "snapshot_id": "00c23dea79ee6a2a065f9a484bca020ed1e5a37736868b4250ae5e40808f4001",
+      "snapshot_allocated_bytes": 311418880,
+      "restores": [
+        {
+          "name": "fork0",
+          "restore_heartbeat_ms": 956.1567979999381,
+          "read_check_ms": 109.099094,
+          "ack": "fork0 471 109.099094 5378"
+        },
+        {
+          "name": "fork1",
+          "restore_heartbeat_ms": 999.548157999925,
+          "read_check_ms": 108.660642,
+          "ack": "fork1 454 108.660642 5379"
+        }
+      ],
+      "trial": 5,
+      "warmup": false
+    },
+    {
+      "correctness": "passed",
+      "storage": "compressed",
+      "ready_ms": 356.3546829996085,
+      "save_ms": 1296.6414749998876,
+      "snapshot_id": "808c37dbe4cd93e342d02a5787010e5922e22727cf533c0f7e9d8fba15b3ea45",
+      "snapshot_allocated_bytes": 17272832,
+      "restores": [
+        {
+          "name": "fork0",
+          "restore_heartbeat_ms": 1925.0267179995717,
+          "read_check_ms": 109.037208,
+          "ack": "fork0 472 109.037208 5386"
+        },
+        {
+          "name": "fork1",
+          "restore_heartbeat_ms": 1940.215210000133,
+          "read_check_ms": 107.959817,
+          "ack": "fork1 470 107.959817 5376"
+        }
+      ],
+      "trial": 5,
+      "warmup": false
+    },
+    {
+      "correctness": "passed",
+      "storage": "raw",
+      "ready_ms": 350.1156649999757,
+      "save_ms": 617.9800290001367,
+      "snapshot_id": "4572761e42731e78d1dae69209d614019493983e11377f0325607f4078d88e4f",
+      "snapshot_allocated_bytes": 311418880,
+      "restores": [
+        {
+          "name": "fork0",
+          "restore_heartbeat_ms": 932.9878980001922,
+          "read_check_ms": 109.371244,
+          "ack": "fork0 471 109.371244 5374"
+        },
+        {
+          "name": "fork1",
+          "restore_heartbeat_ms": 963.7432909999006,
+          "read_check_ms": 108.226527,
+          "ack": "fork1 470 108.226527 5364"
+        }
+      ],
+      "trial": 6,
+      "warmup": false
+    },
+    {
+      "correctness": "passed",
+      "storage": "compressed",
+      "ready_ms": 365.5942599998525,
+      "save_ms": 1198.533062000024,
+      "snapshot_id": "ee82f6c0b825541c2257f4c2cf6bb585d0aac04bfcc0adf2e8a965b83735c1b8",
+      "snapshot_allocated_bytes": 17276928,
+      "restores": [
+        {
+          "name": "fork0",
+          "restore_heartbeat_ms": 1917.8886329996203,
+          "read_check_ms": 110.185932,
+          "ack": "fork0 472 110.185932 5366"
+        },
+        {
+          "name": "fork1",
+          "restore_heartbeat_ms": 1934.2124549998516,
+          "read_check_ms": 104.306524,
+          "ack": "fork1 472 104.306524 5360"
+        }
+      ],
+      "trial": 6,
+      "warmup": false
+    },
+    {
+      "correctness": "passed",
+      "storage": "raw",
+      "ready_ms": 294.19724999979735,
+      "save_ms": 645.9928519998357,
+      "snapshot_id": "faca57841dfdabcdc7e4e76af0d20ba2ae2f4f18f618488289487e298a747620",
+      "snapshot_allocated_bytes": 311418880,
+      "restores": [
+        {
+          "name": "fork0",
+          "restore_heartbeat_ms": 890.8331559996441,
+          "read_check_ms": 110.788482,
+          "ack": "fork0 477 110.788482 5374"
+        },
+        {
+          "name": "fork1",
+          "restore_heartbeat_ms": 883.8183709999612,
+          "read_check_ms": 87.690707,
+          "ack": "fork1 480 87.690707 5355"
+        }
+      ],
+      "trial": 7,
+      "warmup": false
+    },
+    {
+      "correctness": "passed",
+      "storage": "compressed",
+      "ready_ms": 288.9606150001782,
+      "save_ms": 1215.2529330001016,
+      "snapshot_id": "8a563885cec112a508c1a1ee253842627f43e4fd42822c2c8bb4b44dff77b1a5",
+      "snapshot_allocated_bytes": 17285120,
+      "restores": [
+        {
+          "name": "fork0",
+          "restore_heartbeat_ms": 1847.3226349997276,
+          "read_check_ms": 86.474425,
+          "ack": "fork0 482 86.474425 5354"
+        },
+        {
+          "name": "fork1",
+          "restore_heartbeat_ms": 1843.7766849997388,
+          "read_check_ms": 107.164355,
+          "ack": "fork1 473 107.164355 5366"
+        }
+      ],
+      "trial": 7,
+      "warmup": false
+    },
+    {
+      "correctness": "passed",
+      "storage": "raw",
+      "ready_ms": 355.67089599999235,
+      "save_ms": 707.3765200002526,
+      "snapshot_id": "4c4432db9e49609fbe3cd105ccbff672513883f3b2ad0f2810419c8bcc37491e",
+      "snapshot_allocated_bytes": 311418880,
+      "restores": [
+        {
+          "name": "fork0",
+          "restore_heartbeat_ms": 936.4885120003237,
+          "read_check_ms": 110.559112,
+          "ack": "fork0 472 110.559112 5384"
+        },
+        {
+          "name": "fork1",
+          "restore_heartbeat_ms": 976.6263490000711,
+          "read_check_ms": 107.612655,
+          "ack": "fork1 471 107.612655 5375"
+        }
+      ],
+      "trial": 8,
+      "warmup": false
+    },
+    {
+      "correctness": "passed",
+      "storage": "compressed",
+      "ready_ms": 365.7118400001309,
+      "save_ms": 1326.9923820002987,
+      "snapshot_id": "26db80c3c58794f15a0c8e3be04652e8743de26a9c2fa6706b4e96a861b83c3f",
+      "snapshot_allocated_bytes": 17321984,
+      "restores": [
+        {
+          "name": "fork0",
+          "restore_heartbeat_ms": 1922.1238089999133,
+          "read_check_ms": 108.789212,
+          "ack": "fork0 472 108.789212 5366"
+        },
+        {
+          "name": "fork1",
+          "restore_heartbeat_ms": 1941.3966870001786,
+          "read_check_ms": 126.409404,
+          "ack": "fork1 420 126.409404 5394"
+        }
+      ],
+      "trial": 8,
+      "warmup": false
+    },
+    {
+      "correctness": "passed",
+      "storage": "raw",
+      "ready_ms": 473.7631140001213,
+      "save_ms": 842.9748670000663,
+      "snapshot_id": "a50749f31a7e7201e9dcf110e800306a8e953746d1646a83c29241bb1a5f6e21",
+      "snapshot_allocated_bytes": 311418880,
+      "restores": [
+        {
+          "name": "fork0",
+          "restore_heartbeat_ms": 1078.2272320002448,
+          "read_check_ms": 87.976453,
+          "ack": "fork0 478 87.976453 5356"
+        },
+        {
+          "name": "fork1",
+          "restore_heartbeat_ms": 1067.2088129999793,
+          "read_check_ms": 110.931832,
+          "ack": "fork1 471 110.931832 5384"
+        }
+      ],
+      "trial": 9,
+      "warmup": false
+    },
+    {
+      "correctness": "passed",
+      "storage": "compressed",
+      "ready_ms": 314.62031499995646,
+      "save_ms": 1226.9876689997545,
+      "snapshot_id": "bbeb7a20fc57c76d1b36e6e143ef1b975b80cfcd3b5a84d520df638400dbddf2",
+      "snapshot_allocated_bytes": 17297408,
+      "restores": [
+        {
+          "name": "fork0",
+          "restore_heartbeat_ms": 1879.0625050000926,
+          "read_check_ms": 111.174647,
+          "ack": "fork0 473 111.174647 5381"
+        },
+        {
+          "name": "fork1",
+          "restore_heartbeat_ms": 1894.1530560000501,
+          "read_check_ms": 106.962476,
+          "ack": "fork1 474 106.962476 5378"
+        }
+      ],
+      "trial": 9,
+      "warmup": false
+    },
+    {
+      "correctness": "passed",
+      "storage": "raw",
+      "ready_ms": 294.33420600025784,
+      "save_ms": 763.3618989998467,
+      "snapshot_id": "91edcf6d0d90fb085463176a5eeebd88935bb8a9913a128f5894ad41db095e81",
+      "snapshot_allocated_bytes": 311418880,
+      "restores": [
+        {
+          "name": "fork0",
+          "restore_heartbeat_ms": 904.1737689999536,
+          "read_check_ms": 113.490241,
+          "ack": "fork0 476 113.490241 5377"
+        },
+        {
+          "name": "fork1",
+          "restore_heartbeat_ms": 930.612803999793,
+          "read_check_ms": 111.344566,
+          "ack": "fork1 477 111.344566 5381"
+        }
+      ],
+      "trial": 10,
+      "warmup": false
+    },
+    {
+      "correctness": "passed",
+      "storage": "compressed",
+      "ready_ms": 324.886308999794,
+      "save_ms": 1246.2568209998608,
+      "snapshot_id": "b191c99116e260ad1c7b4ac27dafefd0d4120f5f74cc2e5a8f51b7f385e6b63e",
+      "snapshot_allocated_bytes": 17285120,
+      "restores": [
+        {
+          "name": "fork0",
+          "restore_heartbeat_ms": 1887.5345799997376,
+          "read_check_ms": 110.330394,
+          "ack": "fork0 472 110.330394 5364"
+        },
+        {
+          "name": "fork1",
+          "restore_heartbeat_ms": 1891.03061600008,
+          "read_check_ms": 110.119749,
+          "ack": "fork1 472 110.119749 5369"
+        }
+      ],
+      "trial": 10,
+      "warmup": false
+    },
+    {
+      "correctness": "passed",
+      "storage": "raw",
+      "ready_ms": 299.6219569999994,
+      "save_ms": 716.8347150000045,
+      "snapshot_id": "9012b62863e6152996610a67c170f33c38a622190872a17aa76fc59c3eab7aab",
+      "snapshot_allocated_bytes": 311418880,
+      "restores": [
+        {
+          "name": "fork0",
+          "restore_heartbeat_ms": 900.1390579996951,
+          "read_check_ms": 111.201197,
+          "ack": "fork0 473 111.201197 5376"
+        },
+        {
+          "name": "fork1",
+          "restore_heartbeat_ms": 920.8239800000229,
+          "read_check_ms": 109.426458,
+          "ack": "fork1 476 109.426458 5376"
+        }
+      ],
+      "trial": 11,
+      "warmup": false
+    },
+    {
+      "correctness": "passed",
+      "storage": "compressed",
+      "ready_ms": 340.33592000014323,
+      "save_ms": 1213.4304209998845,
+      "snapshot_id": "88646dcf9ae66b1f7787a926970abb8be349774a35c90b5d247a1b6a8a7fc3ee",
+      "snapshot_allocated_bytes": 17436672,
+      "restores": [
+        {
+          "name": "fork0",
+          "restore_heartbeat_ms": 1910.9252439998272,
+          "read_check_ms": 109.940302,
+          "ack": "fork0 472 109.940302 5368"
+        },
+        {
+          "name": "fork1",
+          "restore_heartbeat_ms": 1917.9045429996222,
+          "read_check_ms": 110.306849,
+          "ack": "fork1 471 110.306849 5365"
+        }
+      ],
+      "trial": 11,
+      "warmup": false
+    }
+  ]
+}

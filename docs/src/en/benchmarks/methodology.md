@@ -8,6 +8,14 @@ All benchmarks follow the same protocol:
 - State the configuration of every control group; do not compare against untuned competitors.
 - Keep results by date instead of overwriting old data.
 
+## Retaining macOS and Linux data
+
+Integrate and retain both macOS/HVF and Linux/KVM datasets in the corresponding benchmark articles, listed by host OS, architecture and backend in the [benchmark overview](index.md). Every run records its date, hardware, configuration, source state, executable and firmware hashes, and raw samples. Reruns use new directories and retain earlier reports, charts and JSON/CSV files. Summary pages may reference a newer batch while keeping links to earlier batches.
+
+Calculate distributions separately for each platform. Cross-platform comparisons require matching workloads, timing boundaries, cache states and parameters. Label unmeasured areas and state platform restrictions for unsupported features. Interpret Linux offload and macOS shared cold-page reclamation as separate datasets.
+
+Available data: [macOS startup latency](startup.md), [macOS shared cold-page reclamation](vm-memory/index.md), and [Linux lifecycle and complete snapshots](vm-memory/index.md#linux-methodology).
+
 ## Environment checklist
 
 Start every report with this table:

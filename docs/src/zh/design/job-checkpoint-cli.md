@@ -342,7 +342,7 @@ pvisor apply ./stage/task --all
 
 Job与Attempt记录可以增加版本化、兼容读取的能力和生命周期字段；这些字段不改变用户的run语义。
 
-## 10. 当前实现与验收边界
+## 10. 当前实现与验收边界 {#10-当前实现与验收边界}
 
 本轮保持 `run` 的解析、默认配置、rootfs、DAX、网络和执行器选择。新增工作区功能复用既有 RunRecord、Job lease、逻辑检查点、OverlayFS 前像和 Run Bundle；没有通过旧 snapshot runner 创建伪 Job。
 

@@ -1,8 +1,11 @@
-//! In-memory restore input for the macOS builder. Durable publication, build
+//! Restore input for the KVM/HVF builders. Durable publication, build
 //! identity, backing-file sealing and execution ownership belong to the runner.
 use crate::{CpuSnapshot, Vmm};
 use std::{fs::File, os::unix::fs::FileExt, sync::Arc};
-use vm_memory::{Address, Bytes, GuestAddress, GuestMemory, GuestMemoryMmap, GuestMemoryRegion};
+use vm_memory::{
+    mmap::MmapRegionBuilder, Address, Bytes, FileOffset, GuestAddress, GuestMemory,
+    GuestMemoryMmap, GuestMemoryRegion, GuestRegionMmap,
+};
 
 #[derive(Clone, Debug, serde::Serialize, serde::Deserialize)]
 #[serde(deny_unknown_fields)]
@@ -41,7 +44,9 @@ impl MachineRestore {
             return Err("invalid machine snapshot version or CPU/RAM inventory".into());
         }
         #[cfg(all(target_os = "linux", target_arch = "x86_64"))]
-        if self.state.kvm.is_none() { return Err("missing KVM machine state".into()); }
+        if self.state.kvm.is_none() {
+            return Err("missing KVM machine state".into());
+        }
         for (id, cpu) in self.state.cpus.iter().enumerate() {
             cpu.validate(id as u8)?;
         }
@@ -72,29 +77,46 @@ impl MachineRestore {
         Ok(())
     }
 
-    pub(crate) fn load_ram(&self, memory: &GuestMemoryMmap) -> Result<(), String> {
-        if memory.num_regions() != self.state.ram.len()
-            || memory.iter().zip(&self.state.ram).any(|(region, saved)| {
-                region.start_addr().raw_value() != saved.base || region.len() != saved.len
-            })
+    /// Map sealed RAM without reading it. Host page faults fetch the backing
+    /// file; guest/device writes become private COW pages, never snapshot writes.
+    /// The caller must retain any pager serving `ram_file` for the VM lifetime.
+    pub fn map_ram(&self, ranges: &[(GuestAddress, usize)]) -> Result<GuestMemoryMmap, String> {
+        self.validate_ram_file()?;
+        if ranges.len() != self.state.ram.len()
+            || ranges
+                .iter()
+                .zip(&self.state.ram)
+                .any(|((base, len), saved)| {
+                    base.raw_value() != saved.base || *len as u64 != saved.len
+                })
         {
             return Err("RAM snapshot topology mismatch".into());
         }
-        let mut buffer = vec![0; 1024 * 1024];
-        for mapping in &self.state.ram {
-            let mut offset = 0;
-            while offset < mapping.len {
-                let count = (mapping.len - offset).min(buffer.len() as u64) as usize;
-                self.ram_file
-                    .read_exact_at(&mut buffer[..count], mapping.file_offset + offset)
-                    .map_err(|e| e.to_string())?;
-                memory
-                    .write_slice(&buffer[..count], GuestAddress(mapping.base + offset))
-                    .map_err(|e| e.to_string())?;
-                offset += count as u64;
-            }
+        let page = unsafe { libc::sysconf(libc::_SC_PAGESIZE) };
+        if page <= 0 {
+            return Err("cannot determine host page size".into());
         }
-        Ok(())
+        let mut regions = Vec::with_capacity(ranges.len());
+        for mapping in &self.state.ram {
+            if mapping.file_offset % page as u64 != 0 || mapping.len % page as u64 != 0 {
+                return Err("RAM snapshot mappings must be host-page aligned".into());
+            }
+            let size = usize::try_from(mapping.len).map_err(|e| e.to_string())?;
+            let region = MmapRegionBuilder::new(size)
+                .with_file_offset(FileOffset::from_arc(
+                    self.ram_file.clone(),
+                    mapping.file_offset,
+                ))
+                .with_mmap_prot(libc::PROT_READ | libc::PROT_WRITE)
+                .with_mmap_flags(libc::MAP_PRIVATE)
+                .build()
+                .map_err(|e| e.to_string())?;
+            regions.push(Arc::new(
+                GuestRegionMmap::new(region, GuestAddress(mapping.base))
+                    .ok_or("invalid RAM snapshot mapping")?,
+            ));
+        }
+        GuestMemoryMmap::from_arc_regions(regions).map_err(|e| format!("{e:?}"))
     }
 }
 

@@ -31,7 +31,8 @@ Provider selection preserves the Run contract while changing each capability's e
 A completed Job remains a record. Staged effects require explicit acceptance or discard:
 
 ```bash
-pvisor status --review last
+pvisor review last
+# Compatibility entry: pvisor status --review last
 pvisor inspect last -- git status --short
 pvisor apply last --path src
 pvisor apply last --include 'tests/**' --exclude 'tests/generated/**'
@@ -39,14 +40,16 @@ pvisor apply last --all
 # 或：pvisor drop last
 ```
 
-`status --review` explains the Run Bundle and staged changes; `inspect` runs a read-only command in the Job view; `apply` commits selected paths and retains the rest; `drop` discards the stage. Neither changes a running Job. Reset creates a new stage generation so old metadata cannot overwrite a new decision.
+`review` and `status --review` explain the historical Run Bundle's execution evidence and reread staged changes in the selected workspace; `inspect` runs a read-only command in the Job view; `apply` commits selected paths and retains the rest; `drop` discards remaining file changes while preserving the Job and checkpoints. Both require an explicit Job and a confirmed stopped terminal state. Reset creates a new stage generation so old metadata cannot overwrite a new decision.
 
 ## Checkpoint and fork
 
 By default, `fork` creates a logical filesystem checkpoint of a stopped Job before launching the child; see [Execution model](execution-model.md) for scope:
 
 ```bash
-pvisor fork last -- codex
+pvisor checkpoint create last --request-id before-refactor --json
+pvisor checkpoint list last --json
+pvisor fork last --state workspace --stage ./stage/branch -- codex
 ```
 
 Embedded callers can use the cooperative AgentCtl protocol to quiesce participating sessions before checkpointing.
@@ -59,7 +62,7 @@ The public workflow is simple: start a Job, inspect evidence, then decide what t
 
 ## Core commands and companion tools
 
-`pvisor` includes `run`, `status`, `kill`, `inspect`, `fork`, `apply`, `drop`, help and `extensions`. Installing the core alone supports the full Job lifecycle.
+`pvisor` includes `run`, `status`, `review`, `checkpoint`, `kill`, `inspect`, `fork`, `apply`, `drop`, help and `extensions`. Installing the core alone supports ordinary runs and file acceptance. `suspend/resume` provide capability checks; full execution checkpoints for ordinary Jobs are not yet connected.
 
 `pvisor-tui` and `pvisor-replay` belong to their respective crates and depend on core; core does not depend on them. The `pvisor-cache` frontend remains in the core package because executors use OCI and lazy caches. Wheels install four binaries together.
 

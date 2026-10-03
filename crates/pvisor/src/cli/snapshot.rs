@@ -30,7 +30,7 @@ enum Command {
         cpus: u8,
         #[arg(long, default_value_t = 256, value_parser = clap::value_parser!(u32).range(64..))]
         memory: u32,
-        /// Persist RAM as compressed, deduplicated blocks; raw keeps the baseline format.
+        /// Persist RAM as compressed, deduplicated blocks or indexed raw bytes.
         #[arg(long, value_enum, default_value = "raw")]
         ram_storage: RamStorage,
         /// Use rootfs /init.krun directly instead of the pVisor guest launcher.
@@ -59,16 +59,25 @@ enum Command {
 }
 
 pub(super) fn run(args: Args) -> anyhow::Result<()> {
-    #[cfg(any(all(target_os = "macos", target_arch = "aarch64"), all(target_os = "linux", target_arch = "x86_64")))]
+    #[cfg(any(
+        all(target_os = "macos", target_arch = "aarch64"),
+        all(target_os = "linux", target_arch = "x86_64")
+    ))]
     {
         supported::run(args)
     }
-    #[cfg(not(any(all(target_os = "macos", target_arch = "aarch64"), all(target_os = "linux", target_arch = "x86_64"))))]
+    #[cfg(not(any(
+        all(target_os = "macos", target_arch = "aarch64"),
+        all(target_os = "linux", target_arch = "x86_64")
+    )))]
     {
         let _ = args;
         anyhow::bail!("complete environment snapshots require macOS on Apple Silicon")
     }
 }
 
-#[cfg(any(all(target_os = "macos", target_arch = "aarch64"), all(target_os = "linux", target_arch = "x86_64")))]
+#[cfg(any(
+    all(target_os = "macos", target_arch = "aarch64"),
+    all(target_os = "linux", target_arch = "x86_64")
+))]
 mod supported;

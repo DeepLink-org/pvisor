@@ -351,3 +351,61 @@ uv run --no-project --with matplotlib python benchmark/pvisor/plot_startup.py
 The plot script exports shared SVG assets and local PNG previews. Phase means
 are checked to sum to observed diagnostic readiness. Historical optimization
 comparisons use separate batches and are labeled accordingly.
+
+## Linux VM lifecycle and full snapshots
+
+The [VM memory benchmark](../../docs/src/zh/benchmarks/vm-memory/index.md#linux-lifecycle) records
+real KVM pause/resume, plain and compressed RAM offload, and complete raw/compressed
+snapshots. `vm_lifecycle_bench` verifies fixed and mutable guest RAM every cycle;
+`vm_snapshot.py` terminates the source, removes its source trees and verifies two
+private restored forks, open file offsets and continued guest execution.
+
+```bash
+cargo build --release --locked -p pvisor --bin pvisor --example vm_lifecycle_bench
+target/release/examples/vm_lifecycle_bench \
+  --rootfs / --firmware /path/to/libkrunfw-directory \
+  --output target/vm-lifecycle-new --samples 30 --warmups 3
+rustc --target x86_64-unknown-linux-musl -C opt-level=2 \
+  benchmark/pvisor/snapshot_guest.rs -o /tmp/snapshot-guest
+python3 benchmark/pvisor/vm_snapshot.py \
+  --output target/vm-snapshot-new --binary target/release/pvisor \
+  --guest /tmp/snapshot-guest --samples 10 --warmups 2
+```
+
+Outputs must be new directories on disk. The snapshot tool copies the CLI to pin
+its compatibility digest and retains per-trial results and logs. Linux does not
+support the VM shared cold-page pager; cross-process pool protocol tests do not
+establish Linux guest reclamation or whole-host physical savings.
+
+Snapshot RAM restore uses a read-only FUSE file and private COW mappings. New raw
+snapshots carry a 64 KiB digest index (manifest v3); compressed snapshots reuse
+the v2 block identities and decode only requested blocks. Legacy v1 raw snapshots
+still verify the full RAM digest before mapping. Linux restore requires usable
+`/dev/fuse` and mount permissions. Compare both restore-to-heartbeat latency and
+the first complete RAM read: on-demand loading moves work into first access.
+Full snapshot saves still read all RAM; decoded caches are per runner.
+
+The hardware-backed FUSE test checks faults after snapshot deletion and GC, and
+private writes across mappings. It is explicitly ignored by the ordinary suite:
+
+```bash
+cargo nextest run --locked -p pvisor --test environment_snapshot_lazy --run-ignored only
+```
+
+## Linux/KVM first-command readiness
+
+`linux_vm_ready.py` reuses the first-output timing and completed-Bundle checks from
+`vm_ready.py`, with native shell and host controls and 2-vCPU VM shapes at
+128/256/2048 MiB. It retains logs and copies the CLI and firmware to pin identity;
+output directories must be new. Samples exclude image preparation and use warm
+host caches. This is separate from `startup.py` command-completion timing.
+
+```bash
+python3 benchmark/pvisor/linux_vm_ready.py \
+  --binary target/release/pvisor --rootfs / \
+  --firmware /path/to/libkrunfw-5.5.0-directory \
+  --output target/vm-startup-linux-new --samples 100 --warmups 5
+```
+
+See the [startup article](../../docs/src/zh/benchmarks/startup.md#linux-results)
+for retained macOS/HVF and Linux/KVM measurements and their environment differences.

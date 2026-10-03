@@ -42,6 +42,34 @@ fn read_object(path: &Path) -> anyhow::Result<CompressedObject> {
     Ok(CompressedObject::from_frame(&bytes)?)
 }
 impl RamBlocks {
+    pub(super) fn validate(&self) -> anyhow::Result<()> {
+        ensure!(
+            self.length > 0 && self.blocks.len() as u64 == self.length.div_ceil(BLOCK_BYTES as u64),
+            "invalid RAM block inventory"
+        );
+        for (index, block) in self.blocks.iter().enumerate() {
+            super::store::valid_id(&block.id)?;
+            let remaining = self.length - index as u64 * BLOCK_BYTES as u64;
+            ensure!(
+                block.length as u64 == remaining.min(BLOCK_BYTES as u64),
+                "RAM block length mismatch"
+            );
+        }
+        Ok(())
+    }
+
+    pub(super) fn read_block(&self, references: &Path, index: usize) -> anyhow::Result<Vec<u8>> {
+        let block = &self.blocks[index];
+        let object =
+            read_object(&references.join(&block.id)).context("load persistent RAM block")?;
+        ensure!(
+            id(&object) == block.id && object.length() == block.length as usize,
+            "RAM block identity mismatch"
+        );
+        let mut bytes = vec![0; block.length as usize];
+        object.restore(&mut bytes)?;
+        Ok(bytes)
+    }
     /// Caller holds the store's shared gate through blob publication and linking.
     pub(super) fn capture(
         store: &Path,
@@ -108,27 +136,12 @@ impl RamBlocks {
         mut output: impl Write,
         expected_hash: &str,
     ) -> anyhow::Result<()> {
-        ensure!(
-            self.length > 0 && self.blocks.len() as u64 == self.length.div_ceil(BLOCK_BYTES as u64),
-            "invalid RAM block inventory"
-        );
+        self.validate()?;
         let mut digest = Sha256::new();
-        let mut offset = 0;
-        for block in &self.blocks {
-            super::store::valid_id(&block.id)?;
-            let length = (self.length - offset).min(BLOCK_BYTES as u64) as usize;
-            ensure!(block.length as usize == length, "RAM block length mismatch");
-            let object =
-                read_object(&references.join(&block.id)).context("load persistent RAM block")?;
-            ensure!(
-                id(&object) == block.id && object.length() == length,
-                "RAM block identity mismatch"
-            );
-            let mut bytes = vec![0; length];
-            object.restore(&mut bytes)?;
+        for index in 0..self.blocks.len() {
+            let bytes = self.read_block(references, index)?;
             digest.update(&bytes);
             output.write_all(&bytes)?;
-            offset += length as u64;
         }
         let actual: String = digest
             .finalize()

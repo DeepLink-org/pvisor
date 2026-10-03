@@ -2,6 +2,9 @@ use std::env;
 use std::fs;
 use std::path::PathBuf;
 
+#[path = "src/kernel_bundle.rs"]
+mod kernel_bundle;
+
 fn main() {
     println!("cargo:rerun-if-env-changed=PVISOR_KRUNFW_PATH");
     println!("cargo:rerun-if-env-changed=PVISOR_KRUNFW_KERNEL_BUNDLE");
@@ -63,10 +66,19 @@ fn main() {
             kernel_path.display()
         )
     });
+    let packed_path = out_dir.join("embedded-libkrun-kernel.packed");
+    fs::write(&packed_path, kernel_bundle::pack(&kernel))
+        .unwrap_or_else(|error| panic!("write packed kernel bundle: {error}"));
+    let decoder_path = out_dir.join("kernel_bundle_decoder.rs");
+    fs::write(&decoder_path, include_str!("src/kernel_bundle.rs"))
+        .unwrap_or_else(|error| panic!("write shared kernel decoder: {error}"));
     let generated = out_dir.join("embedded_kernel.rs");
-    let kernel_literal = format!("{:?}", kernel_path.to_string_lossy());
+    let kernel_literal = format!("{:?}", packed_path.to_string_lossy());
+    let decoder_literal = format!("{:?}", decoder_path.to_string_lossy());
     let source = format!(
-        "pub static KERNEL: &[u8] = include_bytes!({kernel_literal});\n\
+        "mod packed {{ include!({decoder_literal}); }}\n\
+         pub static KERNEL: std::sync::LazyLock<Vec<u8>> = std::sync::LazyLock::new(||\n\
+             packed::unpack(include_bytes!({kernel_literal})).expect(\"invalid embedded kernel bundle\"));\n\
          pub const GUEST_ADDR: u64 = {guest_addr};\n\
          pub const ENTRY_ADDR: u64 = {entry_addr};\n"
     );

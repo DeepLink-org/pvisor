@@ -567,6 +567,10 @@ pub fn build_microvm(
     _sender: Sender<WorkerMessage>,
 ) -> std::result::Result<Arc<Mutex<Vmm>>, StartMicrovmError> {
     #[cfg(any(all(target_os = "macos", target_arch = "aarch64"), all(target_os = "linux", target_arch = "x86_64")))]
+    let restoring = vm_resources.machine_restore.is_some();
+    #[cfg(not(any(all(target_os = "macos", target_arch = "aarch64"), all(target_os = "linux", target_arch = "x86_64"))))]
+    let restoring = false;
+    #[cfg(any(all(target_os = "macos", target_arch = "aarch64"), all(target_os = "linux", target_arch = "x86_64")))]
     if let Some(restore) = &vm_resources.machine_restore {
         if !vm_resources.snapshot_profile || vm_resources.nested_enabled {
             return Err(StartMicrovmError::GuestMemoryMmap("restore requires snapshot profile without nested virtualization".into()));
@@ -835,7 +839,9 @@ pub fn build_microvm(
             Some(intc.clone()),
         )?;
 
-        let kernel_boot = vm_resources.firmware_config.is_none() && !cfg!(feature = "tee");
+        // Cold-boot register setup also writes GDT/page tables into guest RAM.
+        // A restore must keep those saved bytes untouched and install CPU state later.
+        let kernel_boot = !restoring && vm_resources.firmware_config.is_none() && !cfg!(feature = "tee");
 
         vcpus = create_vcpus_x86_64(
             &vm,
@@ -1105,12 +1111,9 @@ pub fn build_microvm(
     // Write the kernel command line to guest memory. This is x86_64 specific, since on
     // aarch64 the command line will be specified through the FDT.
     #[cfg(all(target_arch = "x86_64", not(feature = "tee")))]
-    load_cmdline(&vmm)?;
-
-    #[cfg(any(all(target_os = "macos", target_arch = "aarch64"), all(target_os = "linux", target_arch = "x86_64")))]
-    let restoring = vm_resources.machine_restore.is_some();
-    #[cfg(not(any(all(target_os = "macos", target_arch = "aarch64"), all(target_os = "linux", target_arch = "x86_64"))))]
-    let restoring = false;
+    if !restoring {
+        load_cmdline(&vmm)?;
+    }
     if !restoring {
     vmm.configure_system(
         vcpus.as_slice(),
@@ -1123,7 +1126,6 @@ pub fn build_microvm(
 
     #[cfg(any(all(target_os = "macos", target_arch = "aarch64"), all(target_os = "linux", target_arch = "x86_64")))]
     if let Some(restore) = &vm_resources.machine_restore {
-        restore.load_ram(vmm.guest_memory()).map_err(StartMicrovmError::GuestMemoryMmap)?;
         if !vmm.device_memory_gate.try_close().map_err(|e| StartMicrovmError::GuestMemoryMmap(e.into()))? {
             return Err(StartMicrovmError::GuestMemoryMmap("fresh restore RAM gate unexpectedly busy".into()));
         }
@@ -1591,6 +1593,19 @@ pub fn create_guest_memory(
         arch_mem_regions.push((GuestAddress(kernel.guest_addr), kernel.size));
         arch_mem_regions.sort_by_key(|region| region.0);
     }
+    #[cfg(any(all(target_os = "macos", target_arch = "aarch64"), all(target_os = "linux", target_arch = "x86_64")))]
+    if let Some(restore) = &vm_resources.machine_restore {
+        if vm_resources.ram_backing.is_some() {
+            return Err(StartMicrovmError::GuestMemoryMmap(
+                "machine restore cannot use a writable RAM backing".into()));
+        }
+        arch_mem_regions.extend(shm_manager.regions());
+        let memory = restore.map_ram(&arch_mem_regions)
+            .map_err(StartMicrovmError::GuestMemoryMmap)?;
+        return Ok((memory, arch_mem_info, shm_manager, PayloadConfig {
+            entry_addr: GuestAddress(0), initrd_config: None, kernel_cmdline: None,
+        }));
+    }
     let guest_mem = if let Some(file) = &vm_resources.ram_backing {
         crate::ram::map(&arch_mem_regions, &shm_manager.regions(), file.clone())
             .map_err(StartMicrovmError::GuestMemoryMmap)?
@@ -1599,13 +1614,6 @@ pub fn create_guest_memory(
         GuestMemoryMmap::from_ranges(&arch_mem_regions)
             .map_err(|e| StartMicrovmError::GuestMemoryMmap(format!("{e:?}")))?
     };
-
-    #[cfg(any(all(target_os = "macos", target_arch = "aarch64"), all(target_os = "linux", target_arch = "x86_64")))]
-    if vm_resources.machine_restore.is_some() {
-        return Ok((guest_mem, arch_mem_info, shm_manager, PayloadConfig {
-            entry_addr: GuestAddress(0), initrd_config: None, kernel_cmdline: None,
-        }));
-    }
 
     let (guest_mem, entry_addr, initrd_config, cmdline) =
         load_payload(vm_resources, guest_mem, &arch_mem_info, payload)?;

@@ -1,14 +1,14 @@
-# Reclaiming cold VM memory: experiments and usage decisions
+# VM memory: cold-page reclamation, offload and complete snapshots
 
 [Main conclusions](#conclusions) · [Motivation](#motivation) · [Experiment design](#experiment-design) · [Experimental data](#experiment-data) · [Analysis and usage guidance](#analysis) · [Mechanism design](../../design/memory-sharing/index.md)
 
-This article asks whether the shared cold-page pool reduces idle VM RAM residency, how long benefits take to appear, and what happens on subsequent access. Evidence comes from real CLI measurements on the frozen version from 2026-10-03.
+This article records the benefits and costs of idle VM memory reclamation, subsequent access and complete snapshot restoration. Measurements from 2026-10-03 cover shared cold-page reclamation on macOS ARM64 / HVF, and pause/resume, raw/compressed offload and complete snapshots on Linux x86_64 / KVM. Each dataset specifies its environment, workload and timing boundaries; raw records are retained by platform.
 
 ## 1. Main conclusions {#conclusions}
 
-**Cold RAM reclamation is observed at 256 MiB, 512 MiB and 2 GiB capacities.** The pool suits repeated compressible data with long idle periods. Latency-sensitive and short tasks should prefer leaving it disabled. The main 2 GiB conclusion uses the sustained 60–90 second window; short terminal lows remain descriptive evidence.
+**The macOS/HVF pool reclaims cold RAM at 256 MiB, 512 MiB and 2 GiB capacities.** The pool suits repeated compressible data with long idle periods. Latency-sensitive and short tasks should prefer leaving it disabled. The main 2 GiB conclusion uses the sustained 60–90 second window; short terminal lows remain descriptive evidence.
 
-### Core measurements {#measurements}
+### macOS/HVF: shared cold-page core measurements {#measurements}
 
 The **RAM proxy** combines resident guest RAM, pending reclamation, temporary snapshots and encoded pool data to track cold-page reclamation. It is not whole-host physical memory. Each row aggregates two VMs with 2 vCPUs each, the default pool budget and the same repeated cold data.
 
@@ -22,6 +22,12 @@ Capacities need different reclamation times. These rows show observed benefits, 
 
 **Costs to account for:** in the extended 2 GiB experiment, the first complete 64 MiB read increases from about 20 ms to 164 ms, with additional CPU consumption over the run. macOS footprint ledgers also increase. Cold RAM residency reduction is established, while whole-host physical-memory or pressure improvements remain unproven. See [access costs](#performance) and [physical accounting](#physical) for the evidence.
 
+### Linux: explicit offload and complete snapshots {#linux-summary}
+
+At 256 MiB / 2 vCPU / raw, pause P50 is **0.24 ms** and offload is **22.98 ms**. Complete snapshot save is **712 ms**, with restoration to guest heartbeat at **933 ms**. Compression reduces disk allocation while increasing save and restore time. [Lifecycle distributions](#linux-lifecycle) and [complete snapshot results](#linux-snapshot) include all configurations, P95 and correctness checks.
+
+The shared cold-page pager currently requires macOS/ARM64. Linux offload explicitly pauses and flushes RAM; complete snapshots also capture CPU, device and filesystem state. Interpret these figures separately from automatic cold-page reclamation above. macOS CLI startup measurements remain in [startup latency](../startup.md).
+
 ## 2. Motivation: why measure cold memory {#motivation}
 
 Configured VM capacity, current RAM residency, process footprint and whole-host physical pressure answer different questions. For allocated data that stays idle, pVisor's experimental host path observes cold pages, compresses and shares their content in a same-node pool, then restores private RAM on access. Both reclamation and restoration need measurement.
@@ -32,7 +38,7 @@ This run tests mechanism effectiveness for a controlled workload and conditions 
 
 ## 3. Experiment design {#experiment-design}
 
-### Scope of this run {#scope}
+### macOS/HVF: shared cold-page experiment scope {#scope}
 
 Run on 2026-10-03 after freezing a build snapshot, using the real `pvisor run` and
 `pvisor-memory-pool`, built and signed by `just build release`. Historical SDK
@@ -55,7 +61,7 @@ builds, and rootfs preparation are outside the execution samples.
 
 Measurements target the build snapshot fixed for this run. Later source changes or rebuilds from concurrent work do not enter the dataset. Evidence retains binary hashes, the build-time runtime worktree diff, and experiment source files; this report does not validate all subsequent code.
 
-### What the two datasets answer {#datasets}
+### macOS/HVF: what the two cold-page datasets answer {#datasets}
 
 | Dataset | Runs | Question | Main observation windows |
 |---|---:|---|---|
@@ -184,11 +190,32 @@ python3 tools/experiments/macos-memory/cli_decision_matrix.py \
 python3 tools/experiments/macos-memory/long_idle_report.py /path/to/evidence
 ```
 
+### Linux/KVM: lifecycle and complete snapshot experiment design {#linux-methodology}
+
+On 2026-10-03, AMD Ryzen 7 9700X / Linux KVM tests covered pause/resume, RAM offload, compressed backing and complete VM snapshots. All 413 targeted Rust tests passed; Python had 64 passes and 16 skips; six documented VM black-box cases passed (execution PASS; review state UNREVIEWED). All 180 measured lifecycle cycles passed guest RAM integrity checks.
+
+The static musl release artifact also passed raw/compressed private-fork smoke checks, recorded separately from GNU performance distributions.
+
+Complete snapshots use the independent `pvisor snapshot` entry point. Each of 10 measured runs per raw/compressed format stopped the source VM, deleted its source directories, then restored two private forks. All passed. This does not establish support for ordinary Job `checkpoint --kind execution`. The shared cold-page pager currently requires macOS/ARM64 and Linux rejects `vm.memory_pool`; this host validated the cross-process pool protocol, without establishing HVF physical memory savings.
+
+| Item | Conditions |
+|---|---|
+| Host | AMD Ryzen 7 9700X, 8 cores / 16 threads, approximately 30 GiB total usable RAM |
+| System | Fedora; Linux 7.2.8-200.fc44.x86_64; KVM and FUSE |
+| Artifacts | Release builds; uncommitted and concurrent workspace edits; binary SHA-256 in raw reports defines the measured version |
+| RAM files | Sparse files on local disk; FUSE compression measured separately |
+| Lifecycle workload | Python guest, SHA-256 checks of 64 MiB fixed data, 1 MiB mutable data and a heartbeat |
+| Lifecycle samples | 3 warmups and 30 measured cycles per configuration; 1/2/4 vCPU, 256/512/2048 MiB; repeated within one VM |
+| Snapshot workload | Static musl guest; 64 MiB data, RAM counter, open file and directory cursor, initialization allowed exactly once |
+| Snapshot samples | 2 warmups and 10 measured runs per format; 2 vCPU / 256 MiB; fresh source and two restored forks per run |
+
+P50/P95 use linear interpolation over measured samples. Restore timings first take the median of each run's two forks, then summarize 10 independent runs; the forks are not treated as 20 independent repetitions. The sample size supports local descriptions, without a robust cross-host P99 or confidence interval. Host caches were warm and ordinary background workloads were present.
+
 ## 4. Experimental data {#experiment-data}
 
 <a id="validity"></a>
 
-The original matrix contains 40 runs, with four additional extended 2 GiB runs. All successful runs pass three content checks, private mutation checks and exit reference cleanup. Both datasets use the same frozen CLI, pool and firmware; they remain separate rather than combining into one savings percentage. Expand the exact tables below; original data is retained.
+The macOS shared cold-page matrix contains 40 runs, with four additional extended 2 GiB runs. All successful runs pass three content checks, private mutation checks and exit reference cleanup. Both datasets use the same frozen CLI, pool and firmware; they remain separate rather than combining into one savings percentage. Expand the exact tables below; original data is retained.
 
 ### 2 GiB: observing the full reclamation process {#long-idle-2048}
 
@@ -258,7 +285,54 @@ The original matrix compares seconds 18–33 after ready to observe behavior at 
 
     Case memory is the median of samples 18–33 seconds after all guests are ready; these tables then summarize two pairs. The range is not a confidence interval. “Sampled maximum savings” remains within this window, not the whole-run peak from startup through exit. Cross-session objects establish reuse, not its independent contribution to savings.
 
+### Linux/KVM: pause/resume and offload {#linux-lifecycle}
+
+Milliseconds, **P50 / P95** in each cell. SDK timings run from invocation to host acknowledgement and include control exchange and event persistence. Offload pauses, flushes and requests RAM reclamation; explicit resume follows.
+
+| MiB / vCPU / backing | pause | resume | offload | offload resume | heartbeat |
+|---|---:|---:|---:|---:|---:|
+| 256 / 1 / raw | 0.24 / 0.30 | 0.26 / 0.34 | 20.43 / 21.76 | 0.28 / 0.37 | 49.57 / 51.92 |
+| 256 / 2 / raw | 0.24 / 0.31 | 0.29 / 0.35 | 22.98 / 24.90 | 0.29 / 0.40 | 46.79 / 49.83 |
+| 256 / 4 / raw | 0.25 / 0.36 | 0.27 / 0.35 | 22.93 / 25.60 | 0.29 / 0.35 | 43.61 / 46.87 |
+| 512 / 2 / raw | 0.24 / 0.31 | 0.28 / 0.35 | 26.44 / 29.35 | 0.28 / 0.39 | 44.63 / 46.74 |
+| 2048 / 2 / raw | 0.21 / 0.27 | 0.23 / 0.31 | 23.86 / 28.80 | 0.26 / 0.32 | 40.39 / 46.71 |
+| 256 / 2 / compressed | 0.21 / 0.33 | 0.25 / 0.40 | 66.93 / 505.43 | 0.24 / 0.31 | 175.09 / 203.24 |
+
+`offload resume` ends when the control call returns; `heartbeat` ends at the first guest progress after that call began. They measure different readiness boundaries.
+
+| MiB / vCPU / backing | 64 MiB read before offload (ms) | First complete read after offload (ms) | Backing allocation (MiB, P50) |
+|---|---:|---:|---:|
+| 256 / 1 / raw | 32.12 / 32.31 | 109.02 / 111.56 | 200.80 |
+| 256 / 2 / raw | 32.12 / 32.37 | 109.49 / 110.84 | 202.23 |
+| 256 / 4 / raw | 32.10 / 32.93 | 114.85 / 117.64 | 203.99 |
+| 512 / 2 / raw | 32.15 / 32.48 | 115.15 / 117.42 | 206.30 |
+| 2048 / 2 / raw | 25.03 / 31.91 | 86.12 / 109.30 | 235.91 |
+| 256 / 2 / compressed | 25.06 / 27.64 | 698.71 / 754.50 | 23.96 |
+
+Configured capacity is not the number of dirty workload bytes. The 2 GiB guest still allocates the same 64 MiB data, so this is not throughput for flushing 2 GiB of dirty RAM. The backing inventory exceeds configured capacity by approximately 36.4 MiB, including low-address memory and a separate kernel region.
+
+Immediate post-offload mincore samples were zero in every configuration. This establishes a reduction in that file-backed mapping's sampled residency, without establishing whole-host physical memory reduction or zero process RSS. Reading again brings pages back. Compression uses less disk space but increases the first complete read and tail latency.
+
+A separate real guest check paused for 60 seconds: its heartbeat stopped and its SHA-256 and mutable data survived resume. Initial measurements overlapped diagnostic work; they remain correctness and raw evidence. The headline 2-vCPU timings use a later sequential run.
+
+### Linux/KVM: complete checkpoint save and private forks {#linux-snapshot}
+
+`save` includes CLI startup, vCPU/device freeze, CPU/device/RAM capture, filesystem copy, validation, durable publication and source runner exit. `restore heartbeat` spans a new CLI invocation through the first resumed guest heartbeat, including compatibility checks, RAM decode/validation and private filesystem copy. It is not a register-only restore timing.
+
+| RAM storage | save (ms, P50 / P95) | restore heartbeat (ms, P50 / P95) | Published allocation (MiB, P50 / P95) |
+|---|---:|---:|---:|
+| raw | 712.11 / 819.75 | 932.88 / 1034.90 | 296.99 / 296.99 |
+| compressed | 1236.62 / 1343.63 | 1920.23 / 1947.43 | 16.48 / 16.58 |
+
+Disk allocation sums `st_blocks × 512` for files under one published object. It excludes active forks, temporary artifacts and process memory, and does not measure cold-page pool savings. The guest data is repetitive and compressible; arbitrary Agents may have different compression ratios.
+
+Each run checks that restoration survives source VM exit and source rootfs deletion, guest initialization is not repeated, the 64 MiB data and mutable counter continue, the open file offset remains 2, directory iteration continues, and fork0 writes leave fork1 and the published object intact. Storage tests also cover corruption, truncation, missing blocks, incompatible restore, block sharing between snapshots and collection after the last reference.
+
+This run repaired Linux build/platform issues, missing KVM clock/interrupt-controller and PIO state, and the missing private kernel RAM region on restore. Host requests now publish atomically, preventing empty requests during truncate/write. Failed diagnostic runs remain under local `target/local-vm-validation-20261003/` and do not contribute to the tables.
+
 ## 5. Analysis and usage guidance {#analysis}
+
+The following analysis covers the macOS/HVF shared cold-page experiment. Linux offload first reads, compression costs and complete snapshot restoration are covered in the [lifecycle](#linux-lifecycle) and [snapshot](#linux-snapshot) sections.
 
 Reclamation, waiting time and first-access costs jointly determine fit. The following sections explain costs and memory accounting, then scan behavior and capacity timelines, followed by opt-in instructions and verification.
 
@@ -387,7 +461,7 @@ Top panels show the aggregate RAM proxy across both VMs and the pool; bottom pan
 
 Explicit RAM files do not inherently compress or share memory. FUSE-compressed RAM is a separate, mutually exclusive path with no performance data in this run.
 
-### Minimal opt-in {#usage}
+### macOS/HVF: minimal opt-in {#usage}
 
 In one terminal, create a new owner-private directory and start the service; if the directory already exists, choose a new path or verify its permissions. Keep Unix socket paths short.
 
@@ -414,7 +488,7 @@ Guest RAM must still cover application peaks. Validate first access, CPU, footpr
 
 For verification, consult [results and evidence](#experiment-data) for the full matrix, diagnostic ledgers and failure records, then reproduce with the [methodology](#reproduce).
 
-### Unsupported, failed, and uncovered combinations {#compatibility}
+### macOS/HVF: unsupported, failed, and uncovered combinations {#compatibility}
 
 | Combination / condition | This run | User implication |
 |---|---|---|
@@ -431,7 +505,7 @@ For verification, consult [results and evidence](#experiment-data) for the full 
 
 Earlier pilot issues with ready/read matching, long socket paths, and CPU units remain separate; uncalibrated pilot CPU values do not enter formal performance tables. Resume reuses only passed cases, verifies signed executables, firmware and runtime source hashes, retains earlier batch metadata, and keeps the original whole-run host guard reference.
 
-### Evidence and reproduction {#evidence}
+### macOS/HVF: evidence and reproduction {#evidence}
 
 [Download summary JSON](assets/decision.json) · [Configuration CSV](assets/decision.csv) · [Parameter-boundary JSON](assets/compatibility.json)
 
@@ -454,3 +528,36 @@ python3 tools/experiments/macos-memory/cli_decision_report.py \
   target/memory-cli-matrix-new/summary.json \
   --output target/memory-cli-report
 ```
+
+### Linux/KVM: shared-pool protocol and validation boundaries {#linux-pool}
+
+Two independent clients published identical 64 KiB content, received the same content ID and shared a 271-byte encoded payload. Per-session budget rejection, restore after peer disconnect, survival of another reference after release, and zero objects after final disconnect all passed. These checks cover compression, deduplication and reference lifetime; the Linux guest cold-page pager was not enabled.
+
+macOS/HVF reclamation measurements are in this page's [shared cold-page results](#matrix). These Linux results apply to the named artifacts and workloads. The updated macOS implementation, cross-host/boot/build restore, active external connections and larger concurrency are outside this measurement's conclusions.
+
+### Linux/KVM: reproduction and raw evidence {#linux-evidence}
+
+```bash
+just test pvisor pvisor-core pvisor-overlayfs pvisor-overlay-core
+just test-py
+just vm-cases
+cargo build --release --locked -p pvisor --bin pvisor --example vm_lifecycle_bench
+
+target/release/examples/vm_lifecycle_bench \
+  --rootfs / --firmware /path/to/libkrunfw-directory \
+  --output target/vm-lifecycle-new --memory 256 --cpus 2 \
+  --samples 30 --warmups 3 --long-pause-seconds 60
+# Add --compressed to measure FUSE-backed RAM compression.
+
+rustc --target x86_64-unknown-linux-musl -C opt-level=2 \
+  benchmark/pvisor/snapshot_guest.rs -o /tmp/snapshot-guest
+python3 benchmark/pvisor/vm_snapshot.py \
+  --output target/vm-snapshot-new --binary target/release/pvisor \
+  --guest /tmp/snapshot-guest --samples 10 --warmups 2
+```
+
+Supply a prepared guest rootfs and firmware directory. The complete snapshot benchmark requires a new output directory and copies the CLI to pin compatibility identity. It retains each private store, separate logs and correctness result. Source/artifact preparation and compilation are excluded from timings.
+
+- [Per-cycle lifecycle data](../../../assets/benchmarks/vm-lifecycle-20261003/lifecycle.json)
+- [Snapshot samples and artifact digests](../../../assets/benchmarks/vm-lifecycle-20261003/snapshot.json)
+- [Environment, pool and validation results](../../../assets/benchmarks/vm-lifecycle-20261003/validation.json)

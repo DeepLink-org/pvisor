@@ -23,8 +23,10 @@ use std::{
 };
 
 mod blocks;
+mod lazy;
 mod store;
 pub use blocks::RamBlocks;
+pub use lazy::{RawRamIndex, SnapshotRamMount, SnapshotRamReader};
 pub use store::{
     Compatibility, EnvironmentManifest, PendingEnvironment, PublishedEnvironment, SnapshotStore,
 };

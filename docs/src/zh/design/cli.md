@@ -37,7 +37,7 @@ Evidence 会分维度记录。
 
 ```bash
 pvisor review last
-# 兼容入口：pvisor status --review last
+# Compatibility entry: pvisor status --review last
 pvisor inspect last -- git status --short
 pvisor apply last --path src
 pvisor apply last --include 'tests/**' --exclude 'tests/generated/**'

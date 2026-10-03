@@ -148,6 +148,13 @@ pvisor
 ├── apply               Apply staged changes of a stopped Job
 ├── drop                Discard staged changes of a stopped Job
 ├── status              Inspect Job state and review evidence
+├── review              Review current or saved workspace changes
+├── checkpoint
+│   ├── create          Save the workspace of a stopped Job
+│   ├── list            List Job checkpoints
+│   ├── show            Inspect ownership and retained references
+│   ├── delete          Delete unreferenced checkpoints
+│   └── gc              Collect leftover workspace transactions for this Job
 ├── kill                Request termination of a running Job
 ├── fork                Create a child from a stopped Job
 ├── inspect             Inspect the Job filesystem read-only
@@ -206,6 +213,47 @@ boundaries, not process memory.
 To stop a running Job, use `pvisor kill JOB_ID`. It requests graceful termination
 from the Job supervisor; check `pvisor status JOB_ID` for the final state. A
 stopped Job can still be reviewed and applied or dropped.
+
+## Job checkpoint management
+
+`run` retains its existing options and defaults. These interfaces support workspace checkpoints for stopped Jobs:
+
+```bash
+pvisor checkpoint create ./stage/task --request-id before-refactor --json
+pvisor checkpoint list ./stage/task --json
+pvisor checkpoint show ./stage/task CHECKPOINT_ID --json
+pvisor review ./stage/task --checkpoint CHECKPOINT_ID --diff
+pvisor inspect ./stage/task --checkpoint CHECKPOINT_ID -- ls
+pvisor fork ./stage/task --state workspace --checkpoint CHECKPOINT_ID --stage ./stage/branch -- codex
+pvisor checkpoint delete ./stage/task CHECKPOINT_ID --json
+pvisor checkpoint gc ./stage/task --json
+```
+
+Checkpoints belong to the selected Job. The default kind is workspace, preserving
+the staged upper, preimages, policy and source Attempt. Lower layers remain external
+path references; this does not save process memory or guarantee that external
+lowers remain unchanged. Unique ID prefixes resolve; ambiguous prefixes fail.
+Creation requests can be retried with `--request-id`; a deleted result cannot be
+captured again by reusing the same key. Forks retain hard-link references to the
+source manifest, requiring parent and child stages on the same filesystem;
+deletion is refused while references exist. `drop JOB` preserves the Job,
+checkpoints and branch references. `apply/drop` require an explicit Job and records
+confirming it has stopped. `review` JSON distinguishes historical execution
+evidence from the currently selected file view; successful apply/drop advances
+the workspace generation.
+
+Current GC only removes checkpoint staging and deletion directories for the
+selected Job, reporting scope `job_workspace_transactions`. Shared execution
+content-store GC is not yet connected. Reading or forking historical checkpoints
+still requires the source Job lease, so these operations refuse a running source.
+
+`suspend JOB`, `resume JOB`, `checkpoint create JOB --kind execution` and
+`fork JOB --state execution` currently return `CAPABILITY_UNSUPPORTED` without
+changing Job state. Overlay/DAX, temporary root filesystem layers and Attempt
+handoff for ordinary VM Jobs are not yet connected to full save/restore. The
+existing standalone `snapshot` workflow remains available; its objects are not
+Job checkpoints within a stage. See [Job checkpoint design](../design/job-checkpoint-cli.md#10-当前实现与验收边界)
+for the implementation scope.
 
 ## `--safe` parameter preset {#safe-参数预设}
 

@@ -64,3 +64,102 @@ fn machine_manifest_rejects_unknown_fields() {
     value["ram"][0]["unexpected"] = true.into();
     assert!(serde_json::from_value::<MachineSnapshot>(value).is_err());
 }
+
+#[test]
+fn restored_ram_is_file_mapped_and_forks_keep_private_writes() {
+    use std::fs::File;
+    use std::os::unix::fs::FileExt;
+    use vm_memory::{Bytes, GuestAddress, GuestMemory};
+    let page = unsafe { libc::sysconf(libc::_SC_PAGESIZE) } as usize;
+    let mut input = restore();
+    input.ram_file.set_len((page * 4) as u64).unwrap();
+    input.ram_file.write_all_at(b"saved first", 0).unwrap();
+    input
+        .ram_file
+        .write_all_at(b"saved second", (page * 2) as u64)
+        .unwrap();
+    input.state.ram = vec![
+        RamMappingSnapshot {
+            base: page as u64,
+            len: (page * 2) as u64,
+            file_offset: 0,
+        },
+        RamMappingSnapshot {
+            base: (page * 8) as u64,
+            len: (page * 2) as u64,
+            file_offset: (page * 2) as u64,
+        },
+    ];
+    // A read-only descriptor must still permit writable MAP_PRIVATE mappings.
+    let path = tempfile::NamedTempFile::new().unwrap();
+    std::io::copy(
+        &mut input.ram_file.try_clone().unwrap(),
+        &mut path.as_file(),
+    )
+    .unwrap();
+    input.ram_file = Arc::new(File::open(path.path()).unwrap());
+    let ranges = [
+        (GuestAddress(page as u64), page * 2),
+        (GuestAddress((page * 8) as u64), page * 2),
+    ];
+    let first = input.map_ram(&ranges).unwrap();
+    let second = input.map_ram(&ranges).unwrap();
+    for region in first.iter() {
+        assert_eq!(region.flags() & libc::MAP_PRIVATE, libc::MAP_PRIVATE);
+        #[cfg(target_os = "linux")]
+        assert_eq!(region.flags() & libc::MAP_POPULATE, 0);
+        assert!(region.file_offset().is_some());
+    }
+    first.write_slice(b"first fork!", ranges[0].0).unwrap();
+    second.write_slice(b"second fork!", ranges[1].0).unwrap();
+    let mut bytes = [0; 11];
+    second.read_slice(&mut bytes, ranges[0].0).unwrap();
+    assert_eq!(&bytes, b"saved first");
+    let mut bytes = [0; 12];
+    first.read_slice(&mut bytes, ranges[1].0).unwrap();
+    assert_eq!(&bytes, b"saved second");
+    input
+        .ram_file
+        .read_exact_at(&mut bytes, (page * 2) as u64)
+        .unwrap();
+    assert_eq!(&bytes, b"saved second");
+    assert!(input.map_ram(&ranges[..1]).is_err());
+    let mut invalid = ranges;
+    invalid[0].0 = GuestAddress(0);
+    assert!(input.map_ram(&invalid).is_err());
+}
+
+#[cfg(target_os = "linux")]
+#[test]
+fn mapping_restore_does_not_fault_in_untouched_ram() {
+    use std::os::unix::fs::FileExt;
+    use vm_memory::{Bytes, GuestAddress, GuestMemory};
+    let mut input = restore();
+    input.ram_file.set_len(32 * 1024 * 1024).unwrap();
+    input.state.ram = vec![RamMappingSnapshot {
+        base: 0,
+        len: 32 * 1024 * 1024,
+        file_offset: 0,
+    }];
+    let memory = input
+        .map_ram(&[(GuestAddress(0), 32 * 1024 * 1024)])
+        .unwrap();
+    let page = unsafe { libc::sysconf(libc::_SC_PAGESIZE) } as u64;
+    let pagemap = std::fs::File::open("/proc/self/pagemap").unwrap();
+    let present = |address: u64| {
+        let mut bytes = [0; 8];
+        pagemap
+            .read_exact_at(&mut bytes, address / page * 8)
+            .unwrap();
+        u64::from_ne_bytes(bytes) & (1 << 63) != 0
+    };
+    let region = memory.iter().next().unwrap();
+    let address = region.as_ptr() as u64;
+    assert!(!present(address));
+    assert!(!present(address + 16 * 1024 * 1024));
+    let mut bytes = [1];
+    memory.read_slice(&mut bytes, GuestAddress(0)).unwrap();
+    assert_eq!(bytes, [0]);
+    assert!(present(address));
+    assert!(!present(address + 16 * 1024 * 1024));
+}

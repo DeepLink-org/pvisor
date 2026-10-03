@@ -125,7 +125,18 @@ pub(crate) fn page_inventory(memory: &GuestMemoryMmap) -> Result<(u64, Vec<[u64;
     Ok((page as u64, rows))
 }
 
+pub(crate) fn check_reclaim(memory: &GuestMemoryMmap) -> Result<(), String> {
+    if memory.iter().any(|region| region.file_offset().is_some()
+        && region.flags() & libc::MAP_PRIVATE != 0) {
+        // MADV_DONTNEED discards modified private pages instead of writing them
+        // back. A restore's COW pages must survive until the next snapshot.
+        return Err("offload cannot discard private snapshot RAM; save a new snapshot instead".into());
+    }
+    Ok(())
+}
+
 pub(crate) fn reclaim(memory: &GuestMemoryMmap) -> Result<u64, String> {
+    check_reclaim(memory)?;
     let mut bytes = 0;
     for region in memory
         .iter()

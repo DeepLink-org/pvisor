@@ -67,6 +67,8 @@ impl CompressedObject {
         bytes
     }
 
+    /// Parse framing only. Callers must verify decoded identity with `restore`
+    /// before exposing bytes. This avoids decoding the same block twice.
     pub(crate) fn from_frame(bytes: &[u8]) -> io::Result<Self> {
         if bytes.len() < 46 || bytes.len() > 45 + BLOCK_BYTES || &bytes[..8] != b"PVBLK1\0\0" {
             return Err(invalid("invalid content frame"));
@@ -91,7 +93,6 @@ impl CompressedObject {
             length,
             payload,
         };
-        object.restore(&mut vec![0; length])?;
         Ok(object)
     }
 

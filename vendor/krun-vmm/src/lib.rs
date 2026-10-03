@@ -398,6 +398,7 @@ impl Vmm {
 
     /// Pause and flush/reclaim file-backed RAM. Host device mappings stay valid.
     pub fn offload_ram(&mut self) -> Result<ram::RamReclaim> {
+        ram::check_reclaim(&self.guest_memory).map_err(Error::VcpuControl)?;
         if self.device_memory_gate.has_prepare() {
             return Err(Error::VcpuControl("whole-VM offload is incompatible with experimental RAM preparation".into()));
         }

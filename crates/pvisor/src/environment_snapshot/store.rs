@@ -1,6 +1,7 @@
 //! Atomic environment objects with raw or durable compressed RAM. VM freezing belongs to the executor.
 use super::{
-    RamBlocks, TreeInventory, blocks, copy_owned_tree, file_hash, native_path, verify_tree,
+    RamBlocks, RawRamIndex, SnapshotRamReader, TreeInventory, blocks, copy_owned_tree, file_hash,
+    native_path, verify_tree,
 };
 use anyhow::{Context, ensure};
 use serde::{Deserialize, Serialize};
@@ -35,6 +36,8 @@ pub struct EnvironmentManifest {
     pub machine_sha256: String,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub ram_blocks: Option<RamBlocks>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub ram_index: Option<RawRamIndex>,
 }
 
 pub struct SnapshotStore {
@@ -139,6 +142,25 @@ impl SnapshotStore {
         })
     }
     pub fn open(&self, id: &str, expected: &Compatibility) -> anyhow::Result<PublishedEnvironment> {
+        self.open_checked(id, expected, false)
+    }
+
+    /// Validate seals and inventories now; verify indexed RAM on first access.
+    /// Legacy raw snapshots without block digests retain full upfront validation.
+    pub fn open_for_restore(
+        &self,
+        id: &str,
+        expected: &Compatibility,
+    ) -> anyhow::Result<PublishedEnvironment> {
+        self.open_checked(id, expected, true)
+    }
+
+    fn open_checked(
+        &self,
+        id: &str,
+        expected: &Compatibility,
+        lazy: bool,
+    ) -> anyhow::Result<PublishedEnvironment> {
         valid_id(id)?;
         let reference = gate(&self.root, false)?;
         let path = self.root.join("objects").join(id);
@@ -151,18 +173,35 @@ impl SnapshotStore {
         let manifest: EnvironmentManifest = serde_json::from_slice(&bytes)?;
         ensure!(
             matches!(
-                (manifest.version, &manifest.ram_blocks),
-                (1, None) | (2, Some(_))
+                (manifest.version, &manifest.ram_blocks, &manifest.ram_index),
+                (1, None, None) | (2, Some(_), None) | (3, None, Some(_))
             ) && manifest.compatibility == *expected,
             "environment compatibility mismatch"
         );
+        valid_id(&manifest.ram_sha256)?;
+        valid_id(&manifest.machine_sha256)?;
+        if let Some(index) = &manifest.ram_index {
+            index.validate()?;
+            let meta = fs::symlink_metadata(path.join("ram.bin"))?;
+            ensure!(
+                meta.is_file() && meta.len() == index.length,
+                "RAM file size mismatch"
+            );
+        }
         if let Some(blocks) = &manifest.ram_blocks {
-            blocks.decode(
-                &path.join("ram-blocks"),
-                std::io::sink(),
-                &manifest.ram_sha256,
-            )?;
-        } else {
+            blocks.validate()?;
+            ensure!(
+                fs::symlink_metadata(path.join("ram-blocks"))?.is_dir(),
+                "invalid RAM references"
+            );
+            if !lazy {
+                blocks.decode(
+                    &path.join("ram-blocks"),
+                    std::io::sink(),
+                    &manifest.ram_sha256,
+                )?;
+            }
+        } else if !lazy || manifest.ram_index.is_none() {
             ensure!(
                 file_hash(&path.join("ram.bin"))? == manifest.ram_sha256,
                 "environment RAM digest mismatch"
@@ -250,6 +289,9 @@ impl SnapshotStore {
 }
 
 impl PendingEnvironment {
+    pub(super) fn directory(&self) -> &Path {
+        self.staging.path()
+    }
     pub fn create_ram(&self) -> anyhow::Result<File> {
         Ok(OpenOptions::new()
             .create_new(true)
@@ -332,13 +374,21 @@ impl PendingEnvironment {
             "captured RAM changed while sealing"
         );
         fs::remove_file(capture_path)?;
+        let ram_index = if compressed {
+            None
+        } else {
+            Some(RawRamIndex::capture(&File::open(
+                self.staging.path().join("ram.bin"),
+            )?)?)
+        };
         let manifest = EnvironmentManifest {
-            version: if compressed { 2 } else { 1 },
+            version: if compressed { 2 } else { 3 },
             compatibility,
             source_root: source.as_os_str().as_bytes().to_vec(),
             filesystem,
             ram_sha256: capture_hash,
             ram_blocks,
+            ram_index,
             machine_sha256: digest(machine),
         };
         let bytes = serde_json::to_vec(&manifest)?;
@@ -399,6 +449,11 @@ impl PublishedEnvironment {
         } else {
             Ok(File::open(self.path.join("ram.bin"))?)
         }
+    }
+    /// Pin backing independently of the object/store gate. Deleting the saved
+    /// environment remains safe while a restored VM faults in previously cold RAM.
+    pub fn ram_reader(&self) -> anyhow::Result<SnapshotRamReader> {
+        SnapshotRamReader::new(&self.path, &self.manifest)
     }
     pub fn materialize(&self, destination: &Path) -> anyhow::Result<()> {
         verify_tree(&self.path.join("rootfs"), &self.manifest.filesystem)?;

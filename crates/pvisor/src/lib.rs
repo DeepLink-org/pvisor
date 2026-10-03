@@ -16,6 +16,8 @@ pub mod trace;
 pub use session::Session;
 
 mod config;
+#[cfg(test)]
+mod kernel_bundle;
 #[doc(hidden)]
 pub mod diagnostics;
 mod executor;

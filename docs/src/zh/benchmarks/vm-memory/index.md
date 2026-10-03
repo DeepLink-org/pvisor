@@ -1,14 +1,14 @@
-# VM 冷内存回收：实验与使用决策
+# VM 内存：冷页回收、offload 与完整快照
 
 [主要结论](#conclusions) · [Motivation](#motivation) · [实验设计](#experiment-design) · [实验数据](#experiment-data) · [分析与使用建议](#analysis) · [机制设计](../../design/memory-sharing/index.md)
 
-本文围绕一个问题：共享冷页池能否减少闲置 VM 的 RAM 驻留，收益需要等待多久，以及重新访问时付出什么代价？数据来自 2026-10-03 固定版本的真实 CLI 测量。
+本文记录闲置 VM 的内存回收、再次访问与完整快照恢复的收益和代价。2026-10-03 的 macOS ARM64 / HVF 数据覆盖共享冷页回收；Linux x86_64 / KVM 数据覆盖 pause/resume、raw/compressed offload 和完整快照。两组环境、负载与计时边界分别说明，原始数据按平台保留。
 
 ## 一、主要结论 {#conclusions}
 
-**共享池在 256 MiB、512 MiB 和 2 GiB 配置中均观察到冷 RAM 回收。** 它适合重复、可压缩且允许较长静默期的数据；延迟敏感或短任务应优先保持关闭。2 GiB 的主结论采用 60–90 秒的持续窗口，末尾短暂低点保留为描述性证据。
+**macOS/HVF 共享池在 256 MiB、512 MiB 和 2 GiB 配置中均观察到冷 RAM 回收。** 它适合重复、可压缩且允许较长静默期的数据；延迟敏感或短任务应优先保持关闭。2 GiB 的主结论采用 60–90 秒的持续窗口，末尾短暂低点保留为描述性证据。
 
-### 核心测量 {#measurements}
+### macOS/HVF：共享冷页核心测量 {#measurements}
 
 这里的 **RAM 代理** 是驻留 guest RAM、待回收页、临时快照和池编码数据的合计，用于判断冷页是否被回收。它不是整机物理内存。下表均为两台 VM 的合计，每台 2 vCPU、默认池预算、相同重复冷数据。
 
@@ -22,6 +22,12 @@
 
 **需要同时接受的代价：** 2 GiB 延长实验首次完整读取 64 MiB 从约 20 ms 增至 164 ms，全程还增加 CPU 消耗。macOS 的 footprint 账目也增加，因此目前能确认的是冷 RAM 驻留下降，尚不能承诺整机物理内存或压力改善。[访问代价](#performance)和[物理账目](#physical)给出完整证据。
 
+### Linux：显式 offload 与完整快照 {#linux-summary}
+
+256 MiB / 2 vCPU / raw 的 pause P50 为 **0.24 ms**，offload 为 **22.98 ms**；完整快照保存为 **712 ms**，恢复至 guest heartbeat 为 **933 ms**。压缩格式降低磁盘占用，但增加保存和恢复时间。[生命周期分布](#linux-lifecycle)与[完整快照结果](#linux-snapshot)包含全部规格、P95 和正确性检查。
+
+共享冷页 pager 当前仅支持 macOS/ARM64。Linux 的 offload 是显式暂停并写回 RAM，完整快照还包含 CPU、设备与文件系统状态；这些数字与上面的自动冷页回收收益分别解释。macOS 的 CLI 启动结果继续保留在[启动延迟](../startup.md)中。
+
 ## 二、Motivation：为什么测冷内存 {#motivation}
 
 一台 VM 的配置容量、当前驻留 RAM、进程 footprint 和全机物理压力回答不同的问题。对于已经分配但长时间不访问的数据，pVisor 的实验路径由宿主观察冷页，将内容压缩并在同节点池中共享，再按访问恢复私有 RAM；既要测回收，也要测恢复。
@@ -32,7 +38,7 @@
 
 ## 三、实验设计 {#experiment-design}
 
-### 本轮范围 {#scope}
+### macOS/HVF：共享冷页实验范围 {#scope}
 
 2026-10-03 固定构建快照后执行，使用 `just build release` 构建并签名的
 真实 `pvisor run` 和 `pvisor-memory-pool`，不使用旧 SDK fixture 的结果替代
@@ -53,7 +59,7 @@ CLI 测量。每个 VM 运行同一个静态 Linux 程序，实际分配并访�
 
 测量针对本轮固定的构建快照。并行工作的后续源码修改或重新构建不进入这组数据；二进制摘要、构建时 runtime 工作树差异与实验源文件保存在 evidence 中，不能把本报告称作后续全部代码的验证。
 
-### 两组数据分别回答什么 {#datasets}
+### macOS/HVF：两组冷页数据分别回答什么 {#datasets}
 
 | 数据集 | 运行数 | 要回答的问题 | 主要观察窗口 |
 |---|---:|---|---|
@@ -170,11 +176,32 @@ python3 tools/experiments/macos-memory/cli_decision_matrix.py \
 python3 tools/experiments/macos-memory/long_idle_report.py /path/to/evidence
 ```
 
+### Linux/KVM：生命周期与完整快照实验设计 {#linux-methodology}
+
+2026-10-03 在 AMD Ryzen 7 9700X / Linux KVM 上验证 pause/resume、RAM offload、压缩 backing 和完整 VM 快照。413 项 Rust 定向测试通过，Python 64 项通过、16 项跳过；六个 VM 文档黑盒场景通过（执行 PASS，审阅状态 UNREVIEWED）。生命周期共 180 个有效计时样本，全部通过 guest 内存校验。
+
+静态 musl 发布制品也通过 raw/compressed 双 fork 功能 smoke；其数据单列，不混入 GNU 性能分布。
+
+完整快照使用 `pvisor snapshot` 独立入口。raw 和 compressed 各 10 次有效运行，每次终止源 VM、删除源目录，再恢复两个独立 fork；全部通过。本轮不把这些结果推广为普通 Job 的 `checkpoint --kind execution` 已接通。多 VM 共享冷页 pager 当前只支持 macOS/ARM64，Linux 会拒绝 `vm.memory_pool`；这里验证了共享池跨进程协议，不能从本机数据推导 HVF 的物理内存收益。
+
+| 项目 | 条件 |
+|---|---|
+| 宿主 | AMD Ryzen 7 9700X，8 核 / 16 线程，约 30 GiB 可用总 RAM |
+| 系统 | Fedora；Linux 7.2.8-200.fc44.x86_64；KVM、FUSE |
+| 制品 | release 构建；工作区包含未提交及并行修改，以原始报告中的二进制 SHA-256 为准 |
+| RAM 文件 | 本地磁盘上的稀疏文件；FUSE 压缩模式单独统计 |
+| 生命周期负载 | Python guest，64 MiB 固定数据 SHA-256 校验，另有 1 MiB 可变数据与 heartbeat |
+| 生命周期样本 | 每组 3 次预热、30 次计时；1/2/4 vCPU、256/512/2048 MiB；同一个 VM 内连续采样 |
+| 完整快照负载 | 静态 musl guest，64 MiB 数据、RAM 计数、打开的文件及目录游标、初始化只允许执行一次 |
+| 快照样本 | 每种格式 2 次预热、10 次计时；2 vCPU / 256 MiB；每次从独立 VM 保存、恢复两个 fork |
+
+P50/P95 对有效样本做线性插值，不把预热计入结果。快照恢复先取每次两个 fork 的中位数，再对 10 次独立运行汇总；不把两个 fork 当成 20 次独立重复。样本量用于本机描述，不给出稳健的跨机器 P99 或置信区间。宿主缓存已预热，环境存在日常后台负载。
+
 ## 四、实验数据 {#experiment-data}
 
 <a id="validity"></a>
 
-原参数矩阵为 40 次运行，2 GiB 延长观察增加 4 次。全部成功运行通过三次内容校验、本 VM 私有修改校验及退出引用清理。两组使用同一固定 CLI、池与固件；下面分别展示，不合并成一个节约率。精确表格可展开查看，原始数据未删减。
+macOS 共享冷页参数矩阵为 40 次运行，2 GiB 延长观察增加 4 次。全部成功运行通过三次内容校验、本 VM 私有修改校验及退出引用清理。两组使用同一固定 CLI、池与固件；下面分别展示，不合并成一个节约率。精确表格可展开查看，原始数据未删减。
 
 ### 2 GiB：把回收过程看完整 {#long-idle-2048}
 
@@ -244,7 +271,54 @@ python3 tools/experiments/macos-memory/long_idle_report.py /path/to/evidence
 
     每个 case 的内存取所有 guest ready 后第 18–33 秒的采样中位数；上表再汇总两次配对，范围不是置信区间。“采样最大值节约”仍限于这个窗口，不是从启动到退出的全程峰值。跨会话对象来自 runner 统计，说明共享对象存在，不量化它独立贡献了多少节约。
 
+### Linux/KVM：pause/resume 与 offload {#linux-lifecycle}
+
+单位 ms；每格为 **P50 / P95**。pause、resume 和 offload 是 SDK 调用开始至宿主确认完成，包含控制交换与事件持久化。offload 自动暂停、写回并请求回收 RAM；返回后仍需 resume。
+
+| MiB / vCPU / backing | pause | resume | offload | offload resume | heartbeat |
+|---|---:|---:|---:|---:|---:|
+| 256 / 1 / raw | 0.24 / 0.30 | 0.26 / 0.34 | 20.43 / 21.76 | 0.28 / 0.37 | 49.57 / 51.92 |
+| 256 / 2 / raw | 0.24 / 0.31 | 0.29 / 0.35 | 22.98 / 24.90 | 0.29 / 0.40 | 46.79 / 49.83 |
+| 256 / 4 / raw | 0.25 / 0.36 | 0.27 / 0.35 | 22.93 / 25.60 | 0.29 / 0.35 | 43.61 / 46.87 |
+| 512 / 2 / raw | 0.24 / 0.31 | 0.28 / 0.35 | 26.44 / 29.35 | 0.28 / 0.39 | 44.63 / 46.74 |
+| 2048 / 2 / raw | 0.21 / 0.27 | 0.23 / 0.31 | 23.86 / 28.80 | 0.26 / 0.32 | 40.39 / 46.71 |
+| 256 / 2 / compressed | 0.21 / 0.33 | 0.25 / 0.40 | 66.93 / 505.43 | 0.24 / 0.31 | 175.09 / 203.24 |
+
+`offload resume` 测的是控制调用返回；`heartbeat` 测的是从恢复调用开始到 guest 首次推进。两者不是同一个就绪指标。
+
+| MiB / vCPU / backing | 64 MiB read before offload (ms) | First complete read after offload (ms) | Backing allocation (MiB, P50) |
+|---|---:|---:|---:|
+| 256 / 1 / raw | 32.12 / 32.31 | 109.02 / 111.56 | 200.80 |
+| 256 / 2 / raw | 32.12 / 32.37 | 109.49 / 110.84 | 202.23 |
+| 256 / 4 / raw | 32.10 / 32.93 | 114.85 / 117.64 | 203.99 |
+| 512 / 2 / raw | 32.15 / 32.48 | 115.15 / 117.42 | 206.30 |
+| 2048 / 2 / raw | 25.03 / 31.91 | 86.12 / 109.30 | 235.91 |
+| 256 / 2 / compressed | 25.06 / 27.64 | 698.71 / 754.50 | 23.96 |
+
+配置容量不等于实际被工作负载写入的字节。2 GiB guest 仍只分配同一段 64 MiB 数据，不能把它解释为写回了 2 GiB 脏 RAM 的吞吐量。backing 的逻辑 RAM 范围比配置容量大约 36.4 MiB，包含低地址内存与单独的 kernel 区域。
+
+所有组的 offload 后即时 mincore 采样均为 0，说明该次映射驻留采样下降；这是 file-backed RAM 的观测，不能等同于全机物理内存下降或进程 RSS 归零。首次重新访问会重新带入页面。压缩模式的磁盘空间更小，但完整首次读取与尾延迟更高。
+
+另有一次 60 秒暂停的真实 guest 验证：暂停期间 heartbeat 不推进；恢复后内存 SHA-256 和可变数据保持。该组最初采样与诊断工作重叠，保留为正确性及原始证据，首页 2 vCPU 的性能使用后续独立顺序采样。
+
+### Linux/KVM：完整 checkpoint 保存与双 fork 恢复 {#linux-snapshot}
+
+`save` 包含 CLI 启动、全部 vCPU/设备冻结、CPU/设备/RAM 捕获、文件复制、校验、持久发布，以及源 runner 退出。`restore heartbeat` 从新 CLI 启动到恢复 guest 首次 heartbeat 更新，包含兼容性检查、RAM 解码/校验与私有文件副本；不是仅恢复寄存器的耗时。
+
+| RAM storage | save (ms, P50 / P95) | restore heartbeat (ms, P50 / P95) | Published allocation (MiB, P50 / P95) |
+|---|---:|---:|---:|
+| raw | 712.11 / 819.75 | 932.88 / 1034.90 | 296.99 / 296.99 |
+| compressed | 1236.62 / 1343.63 | 1920.23 / 1947.43 | 16.48 / 16.58 |
+
+磁盘数值是单个已发布对象下文件的 `st_blocks × 512` 合计，不包含活动 fork、临时制品或进程内存，也不是共享冷页池的节约率。该 guest 数据重复且可压缩，不代表任意 Agent 的压缩率。
+
+每次运行检查：源 VM 退出后仍可恢复；源 rootfs 删除不影响快照；guest 初始化不会再次执行；64 MiB 数据及可变计数连续；打开文件偏移仍为 2；目录迭代可继续；fork0 的写入不影响 fork1 或已发布对象。存储测试另外覆盖损坏、截断、缺失块、兼容性拒绝、压缩块跨快照共享及最后引用释放后回收。
+
+本轮修复了 Linux 构建与快照平台调用问题、KVM VM 时钟/中断控制器和 PIO 状态遗漏，以及恢复时独立 kernel RAM 区域遗漏。宿主请求改为原子发布，避免测试脚本在截断写入过程中向 guest 发出空请求。失败诊断保留在本机 `target/local-vm-validation-20261003/`，失败轮不计入上表。
+
 ## 五、分析与使用建议 {#analysis}
+
+以下分析针对 macOS/HVF 共享冷页实验。Linux offload 的首次读取、压缩开销及完整快照恢复结果分别见[生命周期](#linux-lifecycle)与[快照](#linux-snapshot)章节。
 
 回收量、等待时间和首次访问代价共同决定适用场景。以下先讨论代价与内存账目，再解释扫描过程和容量曲线，最后给出启用方式与复核入口。
 
@@ -373,7 +447,7 @@ RAM 代理回答“冷 guest RAM 是否已回收”；footprint 回答 macOS 对
 
 显式 RAM 文件本身不带来压缩或共享。FUSE 压缩 RAM 是另一条路径，与共享池互斥，本轮没有它的性能数据。
 
-### 最小启用方式 {#usage}
+### macOS/HVF：最小启用方式 {#usage}
 
 在第一个终端创建仅自己可访问的新目录并运行服务；目录已经存在时应换新路径或核验权限。Unix socket 路径应保持短。
 
@@ -400,7 +474,7 @@ pvisor run --vm --memory 256MiB --cpu 2 \
 
 需要复核时，按[结果与证据](#experiment-data)查看完整参数矩阵、诊断账目和失败记录，再用[测量方法](#reproduce)复现。
 
-### 不支持、失败和未覆盖组合 {#compatibility}
+### macOS/HVF：不支持、失败和未覆盖组合 {#compatibility}
 
 | 组合／条件 | 本轮结果 | 用户含义 |
 |---|---|---|
@@ -417,7 +491,7 @@ pvisor run --vm --memory 256MiB --cpu 2 \
 
 前期 pilot 的 ready/read 标记匹配、长 socket 路径和 CPU 单位问题均另存；CPU 未校准的 pilot 不进入正式性能表。续跑只复用已通过案例，核对 signed binary、固件和 runtime 源码摘要，保留先前批次 metadata，沿用原整轮宿主守卫起点。
 
-### 证据与复现 {#evidence}
+### macOS/HVF：证据与复现 {#evidence}
 
 [可下载的汇总 JSON](assets/decision.json) · [配置结果 CSV](assets/decision.csv) · [参数边界 JSON](assets/compatibility.json)
 
@@ -440,3 +514,36 @@ python3 tools/experiments/macos-memory/cli_decision_report.py \
   target/memory-cli-matrix-new/summary.json \
   --output target/memory-cli-report
 ```
+
+### Linux/KVM：共享池协议与验证边界 {#linux-pool}
+
+两个独立客户端发布同一 64 KiB 内容，获得同一内容 ID；共享编码 payload 为 271 字节。每会话预算拒绝、另一客户端断连后的内容恢复、单个引用释放不破坏其余引用，以及最终对象归零均通过。此测试验证压缩/去重/引用生命周期；没有启用 Linux guest 冷页 pager。
+
+macOS/HVF 的回收数据见本页[共享冷页结果](#matrix)。本轮 Linux 结果按上述制品和负载单独记录，macOS 新版本、跨 host/boot/build 恢复、活动外部连接及更大并发规模仍不在本次实测结论中。
+
+### Linux/KVM：复现与原始证据 {#linux-evidence}
+
+```bash
+just test pvisor pvisor-core pvisor-overlayfs pvisor-overlay-core
+just test-py
+just vm-cases
+cargo build --release --locked -p pvisor --bin pvisor --example vm_lifecycle_bench
+
+target/release/examples/vm_lifecycle_bench \
+  --rootfs / --firmware /path/to/libkrunfw-directory \
+  --output target/vm-lifecycle-new --memory 256 --cpus 2 \
+  --samples 30 --warmups 3 --long-pause-seconds 60
+# Add --compressed to measure FUSE-backed RAM compression.
+
+rustc --target x86_64-unknown-linux-musl -C opt-level=2 \
+  benchmark/pvisor/snapshot_guest.rs -o /tmp/snapshot-guest
+python3 benchmark/pvisor/vm_snapshot.py \
+  --output target/vm-snapshot-new --binary target/release/pvisor \
+  --guest /tmp/snapshot-guest --samples 10 --warmups 2
+```
+
+传入已准备好的 guest rootfs 与 firmware 目录。完整快照 benchmark 的 output 必须是新目录，脚本复制 CLI 固定制品身份；每次保留私有 store、独立日志和正确性结果。源码/制品准备及编译时间不计入采样。
+
+- [生命周期逐次数据](../../../assets/benchmarks/vm-lifecycle-20261003/lifecycle.json)
+- [完整快照逐次数据与制品摘要](../../../assets/benchmarks/vm-lifecycle-20261003/snapshot.json)
+- [环境、共享池及验证结果](../../../assets/benchmarks/vm-lifecycle-20261003/validation.json)

@@ -1,5 +1,7 @@
 use super::{Args, Command, RamStorage};
-use crate::environment_snapshot::{Compatibility, SnapshotStore, copy_owned_tree, file_hash};
+use crate::environment_snapshot::{
+    Compatibility, SnapshotRamMount, SnapshotStore, copy_owned_tree, file_hash,
+};
 use anyhow::{Context, ensure};
 use devices::snapshot::BusDeviceSnapshot;
 use krun_vmm::snapshot::{MachineRestore, MachineSnapshot};
@@ -117,14 +119,16 @@ fn compatibility(firmware: &Path) -> anyhow::Result<Compatibility> {
     let firmware_hash = {
         use crate::executor::vm::embedded_kernel;
         let _ = firmware;
-        Sha256::digest(embedded_kernel::KERNEL)
+        Sha256::digest(embedded_kernel::KERNEL.as_slice())
             .iter()
             .map(|byte| format!("{byte:02x}"))
             .collect()
     };
     #[cfg(not(all(target_os = "linux", target_env = "musl", target_arch = "x86_64")))]
     let firmware_hash = file_hash(
-        &firmware.join(crate::executor::vm::firmware_name()).canonicalize()?,
+        &firmware
+            .join(crate::executor::vm::firmware_name())
+            .canonicalize()?,
     )?;
     #[cfg(target_os = "macos")]
     let host_boot = {
@@ -136,7 +140,10 @@ fn compatibility(firmware: &Path) -> anyhow::Result<Compatibility> {
     };
     #[cfg(target_os = "linux")]
     let host_boot = fs::read_to_string("/proc/sys/kernel/random/boot_id")?;
-    ensure!(!host_boot.trim().is_empty(), "host boot identity unavailable");
+    ensure!(
+        !host_boot.trim().is_empty(),
+        "host boot identity unavailable"
+    );
     Ok(Compatibility {
         host_boot: host_boot.trim().into(),
         build: file_hash(&std::env::current_exe()?)?,
@@ -164,7 +171,14 @@ fn launch(spec: Launch) -> anyhow::Result<()> {
     let status = std::process::Command::new(std::env::current_exe()?)
         .args(["snapshot", "runner"])
         .arg(&path)
-        .env(if cfg!(target_os = "macos") { "DYLD_LIBRARY_PATH" } else { "LD_LIBRARY_PATH" }, &spec.firmware)
+        .env(
+            if cfg!(target_os = "macos") {
+                "DYLD_LIBRARY_PATH"
+            } else {
+                "LD_LIBRARY_PATH"
+            },
+            &spec.firmware,
+        )
         .status()?;
     let socket = control_socket(&spec.directory)?;
     if socket.exists() {
@@ -241,7 +255,7 @@ pub(super) fn run(args: Args) -> anyhow::Result<()> {
         Command::Restore { id, name } => {
             let firmware = firmware_directory()?;
             // Validate before allocating a new instance directory.
-            let published = store.open(&id, &compatibility(&firmware)?)?;
+            let published = store.open_for_restore(&id, &compatibility(&firmware)?)?;
             let saved: Saved = serde_json::from_slice(&published.machine_bytes()?)?;
             ensure!(
                 saved.exclusions == exclusions(),
@@ -292,12 +306,15 @@ fn runner(spec: Launch) -> anyhow::Result<()> {
     let published = spec
         .restore
         .as_deref()
-        .map(|id| store.open(id, &binding))
+        .map(|id| store.open_for_restore(id, &binding))
         .transpose()?;
     let root = spec.directory.join("rootfs");
     if let Some(snapshot) = &published {
         snapshot.materialize(&root)?;
     }
+    // Retain the mount across the entire blocking VMM call, including after
+    // the guest-ready callback drops the published object's store-wide gate.
+    let mut ram_mount = None;
     let restore = if let Some(snapshot) = &published {
         let mut saved: Saved = serde_json::from_slice(&snapshot.machine_bytes()?)?;
         ensure!(
@@ -317,9 +334,12 @@ fn runner(spec: Launch) -> anyhow::Result<()> {
             }
         }
         ensure!(count == 1, "snapshot requires one root filesystem");
+        let (mount, ram_file) = SnapshotRamMount::new(snapshot.ram_reader()?, &spec.directory)
+            .context("mount on-demand snapshot RAM")?;
+        ram_mount = Some(mount);
         Some(MachineRestore {
             state: saved.state,
-            ram_file: Arc::new(snapshot.ram_file()?),
+            ram_file: Arc::new(ram_file),
         })
     } else {
         None
@@ -371,7 +391,7 @@ fn runner(spec: Launch) -> anyhow::Result<()> {
     if let Some(state) = restore {
         krun::krun_set_machine_restore(ctx, state).map_err(anyhow::Error::msg)?;
     }
-    check(krun::krun_start_enter_with_handle(ctx, move |handle| {
+    let result = check(krun::krun_start_enter_with_handle(ctx, move |handle| {
         if spec.restore.is_some() {
             handle.resume().map_err(std::io::Error::other)?;
         }
@@ -433,5 +453,7 @@ fn runner(spec: Launch) -> anyhow::Result<()> {
             }
         });
         Ok(())
-    }))
+    }));
+    drop(ram_mount);
+    result
 }
