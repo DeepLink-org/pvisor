@@ -1,62 +1,196 @@
----
-status: todo
-search:
-  exclude: true
----
-
 # OverlayCore 设计
 
-!!! warning "规划中"
-    实现细节仍待负责人撰写。对外承诺见[暂存与 apply 语义](../concepts/staging.md)，CLI 行为见 [Run 项目发现](../reference/cli.md#run-项目发现)。
+## 1. Motivation {#motivation}
 
-## 要回答的问题
+Agent 修改工作区时，开发者通常希望先看结果，再决定合入哪些文件。如果直接写宿主工作区，失败、取消和不满意的修改都会留下需要人工辨认的状态。OverlayCore 将执行中的修改保留在 upper，读取时与 lower 合成视图；执行结束后，upper 留作审查、选择性 apply 或 drop。
 
-暂存与 apply 的承诺（S-STAGE-001 到 014）在实现上如何保证？崩溃时如何恢复？
+仅有写时复制还不够。Agent 运行期间，编辑器或其他任务可能修改真正的目标；一次 apply 也可能在更新几个文件后中断。因此设计同时保存第一次修改时的目标指纹，以及每次 apply 的持久意图，让冲突可以被拒绝，中断可以按已记录的批次向前完成。
 
-## 需求
+这套机制覆盖文件树，不覆盖远程请求、数据库写入或显式共享挂载的副作用。多文件 apply 不是对外部读者原子的事务，目标锁也只协调遵守该锁的 pVisor 调用。对外语义见[暂存与 apply](../concepts/staging.md)，用户流程见[审查与应用](../guides/review-apply.md)。
 
-- 写时复制与首次触达原像（first-touch preimage）、durable fingerprint 的记录方式；
-- apply 状态机：Prepared → TargetApplied → Committed，每个状态的持久化内容与恢复路径；
-- 冲突检测：如何覆盖递归删除、目录替换、链接替换（对应 S-STAGE-008、S-STAGE-011、S-STAGE-012）；
-- macFUSE、FSKit、Linux FUSE 与 VM virtio-fs 的差异；硬链接组与不透明目录的处理；
-- 已知问题：`copied_hard_links` 目前只在内存中维护。
+## 2. 核心设计 {#core-design}
 
-## 验收标准
+### 读视图与写目标分开 {#layout}
 
-- 每个状态转换给出对应的代码位置与测试；
-- 与[apply/drop 成本与崩溃一致性（规划中）](../benchmarks/apply.md)的崩溃注入结果互相引用。
+`OverlayLayout` 保存按优先级排列的 lowers 和独立的 apply target。upper 优先，随后是最高优先级 lower，最后是 target 或它的只读 snapshot baseline。构造时要求最后一层 canonical path 与明确 baseline 一致，避免把“看见的文件”误当成“将覆盖的文件”。
 
-## 关联
+例如 compose lower 的 `config` 为 B，宿主 target 的 `config` 为 A。Agent 读取 B，修改后 upper 为 C；first-touch 指纹必须记录 A。apply 判断宿主 A 是否仍完整，然后将 C 合入，不能以 B 作为宿主冲突基线。
 
-- 跟踪 issue：TODO
-- 负责人：TODO
-- 相关代码：`crates/pvisor-overlay-core`、`crates/pvisor-overlayfs`
+| 数据 / 模块 | 持有的内容 | 职责 |
+|---|---|---|
+| `OverlayCore` / `core.rs` | layout、upper/work、排除项、访问策略、内存硬链接索引 | 查找、目录合成、copy-up、删除与重命名、first-touch |
+| `apply.rs` | changeset、依赖闭合选择集合、apply ledger | 审查、冲突检测、目标写入、恢复与 drop |
+| `sys.rs` | syscall 包装、POSIX 元数据与 xattr 操作 | 集中 Unix 平台差异及 unsafe 边界 |
+| `pvisor-core::overlay` | `OverlayRecord`、`ApplyRecord`、指纹与路径编码 | 跨 runtime / driver 共享的序列化合同 |
+| runtime / 文件服务适配器 | Attempt lease、mount、文件 handle、请求与观察 | 停止写入、挂载生命周期、调用共享 core |
 
-## 当前实现：从写入到应用
+OverlayCore 不拥有 FUSE mount、Run 调度或公开 Event Journal。它借用 `pvisor-journal::atomic_write` 持久化元数据，但 `apply-ledger.json` 不是 [Event Journal](journal.md)：前者整体替换 JSON，后者逐行追加事件。
 
-`core.rs` 中的 `OverlayCore` 管理 lower/upper 视图；宿主 FUSE 与 VM 文件服务接入这套操作。第一次修改路径前，`record_preimage` 从真正的 apply 目标取指纹，而不是从覆盖在它上面的可见 lower 取值。已有条目不会因后续写入而重置。
+### 文件布局与实际关系 {#disk-layout}
 
-指纹区分不存在、常规文件、目录、符号链接和其他节点。常规文件保存 SHA-256 与权限/所有权；链接保存目标字节而不解引用；目录还保存修改时间。原像条目位于 `preimages/entries/`，文件与目录同步后才继续操作。标为完整的原像日志缺少所选路径时，apply 拒绝；旧 stage 的 apply 时取样不能声称提供同样的运行期冲突检测。
+![OverlayCore 的物理目录、文件与映射关系](assets/overlaycore-layout.svg)
 
-## apply 的持久状态
-
-`apply.rs::apply_overlay_selected` 先取得目标锁、恢复待完成批次、计算净改动与选择集合，并检查整个选择集合的原像，再保存应用意图。该锁协调 pVisor apply，不能阻止外部编辑器写入。
-
-| 状态 | 已持久化的信息 / 恢复动作 |
-| --- | --- |
-| `Prepared` | apply ID、Overlay ID/generation、目标、选择器、改动、恢复路径和原像已写入 `apply-ledger.json`；恢复时检查目标仍为原像或本批次期望结果，再向前完成写入 |
-| `TargetApplied` | 目标已更新，状态先于 upper 清理保存；恢复只完成已应用 upper 的裁剪与原像消费，避免把裁剪过的不透明目录重新当作完整修改 |
-| `Committed` | 剩余改动已计算并保存，批次完成；仍有改动时 Overlay 为 `Staged`，否则为 `Applied` |
-
-恢复拒绝 Overlay ID、generation 或目标不匹配的旧批次。目录删除和替换还检查被折叠的后代原像，避免遗漏递归树中的冲突。选择性 apply 扩展相关硬链接组；创建后又删除的文件不进入净改动。
-
-## 验证入口与剩余工作
-
-```bash
-just test pvisor-overlay-core pvisor-overlayfs
-just semantics
+```text
+<compose lower 0>/ … <compose lower n>/   只读组合层，前者优先
+<target>/                                原工作区；明确 apply 目的地
+<baseline snapshot>/                     可选：替代 target 的最后只读 lower
+<stage>/
+├── overlay.json                         OverlayRecord，0600，整体替换
+├── upper/                               常规文件、目录、链接、whiteout 等实际增量
+├── work/                                .wh..pvisor-copyup-<pid>-<counter> 临时节点
+├── merged/                              host mount / 占位；VM mountless 路径无需宿主 union mount
+├── preimages/
+│   ├── complete-v1                      首次触达日志完整性的标记
+│   └── entries/<sha256(raw-path)>.json   每相对路径一份 PathPreimage，0600
+└── apply-ledger.json                    schema 2 的完整批次账本，0600
+<target-parent>/
+└── .pvisor-apply-backup-<target-hash>-<apply-id-hash>/
+    ├── <path-hash>                      删除 / 替换目录的原节点，rename 进入
+    └── <path-hash>.new                  待发布的完整替换目录
+<target-subdirectory>/
+└── .pvisor-apply-<destination-hash>      单文件 / 链接 / 特殊节点的临时替换名
+<system temp>/pvisor-apply-locks-<uid>/
+└── <canonical-target-hash>.lock         0600 advisory lock；目录为 0700
 ```
 
-`core.rs` 的 `first_touch_preimage_is_durable_and_never_rebased` 验证首次原像；`apply.rs` 的 `apply_rejects_a_target_changed_after_first_touch`、`directory_replacement_checks_descendants_and_recovers_after_mutation`、`prepared_apply_recovers_before_or_after_target_mutation`、`target_applied_recovery_only_finishes_partially_pruned_opaque_upper` 覆盖冲突与恢复。
+路径为布局示意，upper、work、merged 可由配置覆盖。work 与 upper 必须同文件系统、不能相互包含；若 backing 位于 lower / target 内，它必须被排除在 guest 视图之外。目录别名按 canonical path 检查，不能只比较字符串。
 
-多文件写入仍可能被外部读者看到中间状态；恢复是向前完成，不是自动回滚。`copied_hard_links` 的内存状态、各挂载后端差异及系统级崩溃注入矩阵仍属于上方待完成的设计审查。
+upper 保存完整 copy-up 文件，修改一字节也可能复制整个文件；没有块级 delta 或压缩格式。merged 是投影视图，不是一份额外完整副本。preimage 只存指纹，不存原文件内容；真正需要保留的目录原数据在 target 旁的 backup 中。
+
+## 3. 关键数据和核心机制详细设计 {#detailed-design}
+
+### 合成、copy-up 与 POSIX 节点 {#copy-up}
+
+查找逐组件验证路径，拒绝绝对路径和 `..`。每一层的祖先都必须是实际目录，不跟随祖先 symlink 去层外找子节点。目录读取合并名字，再移除 whiteout、排除项与不允许访问的名字。lower 顺序决定同名节点的读取来源。
+
+第一次写入 lower 节点时，先记录目标 preimage，再创建 upper 父目录，在 work 或 upper 同目录的临时节点中复制内容及元数据，最后 rename 发布。普通文件复制字节；目录初次只复制自身，子节点仍可由 lower 提供；symlink 复制目标字节而不解引用；其他节点保留 POSIX 类型与 rdev。copy-up 的 rename 避免暴露半复制节点，不代表普通 upper 写入都已 fsync。
+
+| upper 表达 | 字节 / 元数据 | 语义 |
+|---|---|---|
+| `name` | 文件完整内容，或目录 / symlink / 其他节点 | 覆盖 lower 同名节点 |
+| `.wh.name` | Core 创建的空文件，0 B | 隐藏 lower 的 `name`；apply 删除目标路径 |
+| `.wh..wh..opq` | Core 创建的空文件，0 B | 目录不再合并 lower 子节点 |
+| opaque xattr | 支持的 overlay xattr 值为 `y` | 与 opaque marker 一致解释 |
+| `.wh..pvisor-root-metadata` | 空 marker，0 B | 根目录显式元数据修改，不把 incidental mtime 当作同类修改 |
+
+重建已 whiteout 的目录会标为 opaque，防止旧子节点重新出现。移动 lower 目录先递归 materialize 合成树再移动，不能只 copy-up 一个空目录。rename 在审查中表现为删除和新增，不保存独立 rename 操作。
+
+`copied_hard_links` 按 lower `(dev, ino)` 记录 upper aliases，尽量复用已 copy-up inode，rename / unlink 更新索引。该表只在内存中，重启不重建它；upper 上已存在的硬链接仍由文件系统保存，但不能承诺重启后的新 copy-up 继续关联未复制的 lower alias。有拒绝规则时，多链接普通文件保守拒绝，防止路径授权被 inode alias 绕过；目录移动还检查物理后代，而不只检查可见名字。
+
+### 首次触达与冲突指纹 {#preimages}
+
+`record_preimage()` 在 preimage mutex 内按相对路径原始字节寻址。已有条目保持不变；新条目取真正 target 的指纹，`create_new` 写 JSON、同步文件及 entries 目录后才继续修改。父目录、删除树与 rename 目的地也需要记录，覆盖隐含的元数据变化及递归破坏范围。
+
+`PathPreimage` 的结构示例：
+
+```json
+{
+  "path": [110, 101, 119, 46, 116, 120, 116],
+  "state": { "kind": "absent" }
+}
+```
+
+这里的 path 是 `new.txt` 的原始 Unix 字节。指纹变体分别记录：
+
+| kind | 核心字段 |
+|---|---|
+| absent | 路径不存在 |
+| file | SHA-256、mode、uid、gid、可选 xattrs |
+| directory | mode、uid、gid、mtime 秒 / 纳秒、可选 xattrs |
+| symlink | 链接 target 原始字节、uid、gid、可选 xattrs |
+| other | mode、uid、gid、rdev、可选 xattrs |
+
+xattrs 区分 Unsupported 与排序后的 `(name-bytes, value-sha256)`；内部 opaque xattr 排除在用户元数据指纹之外。旧条目没有 xattrs 时，兼容比较也不宣称验证过 xattrs。普通文件哈希使用 64 KiB 缓冲，但总读取量仍与文件长度成正比；目录指纹不是整个子树的 Merkle hash。
+
+新空 upper 初始化 `complete-v1`，内容为 `pvisor-overlay-preimage-journal-v1` 加换行。完整日志缺少选中路径时直接拒绝 apply。没有标记的旧 stage 可在 apply 时补取指纹以兼容，但不提供从执行期开始的同等冲突保护。preimage 写入不是整体替换；完整条目损坏会让加载失败，没有类似 JSONL 的尾部修复。
+
+### 审查与选择集合 {#selection}
+
+`overlay_status()` 统计 upper 节点、whiteout 和最多 32 个 sample_paths；`overlay_changes()` 按 lower 的路径存在性及类型分类 Added / Modified / Deleted / TypeChanged / Opaque，不读取全部内容做字节 diff。copy-up 后又恢复原字节的文件仍可能列为 Modified；这是可应用的 upper 清单，不是最小内容差异。
+
+`ApplySelection` 支持精确相对路径及 git-style include/exclude glob。空选择为全部；精确路径包含后代。规划反复扩展集合直到闭合：
+
+- upper 硬链接组必须一起选择，排除同组成员会拒绝；
+- opaque 目录必须作为完整单元选择，不能只选择其子节点或排除其中部分；
+- 所选子节点需要的新增 upper 祖先目录会一起加入，不能将必要祖先排除。
+
+根 opaque replacement 不支持，要求选择明确子目录。`ChangeEntry.path` 是展示字符串；非 UTF-8 名称另存 `path_bytes`，实际变更调用 `relative_path()`。selection / planned_paths 中的非 UTF-8 路径编码为 `{ "bytes": [...] }`，不能从有损显示字符串反推操作路径。
+
+### apply 账本与恢复 {#apply-recovery}
+
+`OverlayRecord` 保存 id、generation、target、可选 baseline_lower、upper/work、stage/merged、策略、排除项和状态。状态为 Active / Staged / Applied / Discarded；generation 标识可复用环境的新一轮，终态 Overlay 不重新打开为 Active。
+
+`apply-ledger.json` 的结构为：
+
+```json
+{
+  "schema_version": 2,
+  "records": [
+    {
+      "schema_version": 2,
+      "apply_id": "apply-demo",
+      "created_at_unix_ms": 0,
+      "overlay_id": "overlay-demo",
+      "overlay_generation": 0,
+      "target": "/workspace",
+      "selection": { "paths": ["new.txt"] },
+      "changes": [{ "path": "new.txt", "kind": "added", "new_type": "file" }],
+      "planned_paths": ["new.txt"],
+      "preimages": [{ "path": [110,101,119,46,116,120,116], "state": { "kind": "absent" } }],
+      "state": "prepared",
+      "remaining_changes": 0
+    }
+  ]
+}
+```
+
+这是字段示例；具体 mode / size 等可选字段随节点变化。读端接受 schema 1 / 2；旧 records 缺少 state 时按 Committed 处理。每次增记或状态变化都序列化整份 ledger，通过同目录临时文件写入、fsync、rename、父目录 fsync 替换，不是在 JSON 末尾追加。
+
+`apply_overlay_selected()` 取得目标锁，先恢复 pending 批次，再规划选择、收集全部 preimages 并检查冲突，最后保存 Prepared。该锁以 canonical target 路径的 SHA-256 命名，锁文件必须为本用户私有、单链接的普通文件；外部编辑器不受此锁约束。
+
+| 持久状态 | 已发生的动作 | 下次恢复 |
+|---|---|---|
+| Prepared | ID、generation、路径集合、changes、preimages 已写入 ledger；目标可能尚未或部分更新 | 校验身份及原像 / 期望结果，检查目录 backup，向前完成目标写入 |
+| TargetApplied | 目标更新后先写入此状态，upper 尚可未清理 | 只裁剪 upper、处理 preimage、保存 Overlay 状态，不重新应用半裁剪的 opaque 树 |
+| Committed | 剩余清单及数量已确定，upper / preimage 处理结束 | 清理遗留 backup；重复完成不再覆盖目标 |
+
+普通文件写入目标旁的 deterministic 临时名，同步内容后 rename，再同步目录；删除先处理 whiteout。破坏性目录替换先将原节点 rename 到 target 旁的私有 backup，在 `.new` 组装替换树后发布。backup 与 apply ID 绑定，失败时保留，Committed 后清理；它不是所有修改的通用回滚副本。
+
+Prepared 恢复不能接受任意目标新状态：目标必须仍匹配原像，或在恢复分支中匹配该批次的期望结果。目录允许与恢复相关的 mtime 变化，但仍检查权限、所有权及已记录 xattrs；删除 / 替换会额外验证被折叠的后代原像。恢复拒绝 Overlay ID、generation、target 不匹配的旧批次。
+
+选择性完成后，有残留则 Overlay 为 Staged，没有残留则为 Applied。所选数据从 upper 裁剪，相关 preimage 被消费；仍承载待应用子节点的目录保留需要的基线。整个过程可跨多个路径暴露中间状态，检查后与写入间仍存在外部修改窗口，使用时必须停止外部写入者。
+
+### drop 与适配器边界 {#adapters}
+
+pending apply 存在时不能 drop，以免删掉恢复所需的 upper。已 Discarded 的 drop 幂等；已 Applied 不能靠 drop 撤销。清理 upper/work 后写入 Discarded；merged 只尝试移除空占位，不递归删除可能仍挂载的目录。调用方必须先停止实际写入并完成卸载；Core API 的 Active 分支本身不代替 Attempt lease 和执行生命周期协调。
+
+宿主 `pvisor-overlayfs` 将 FUSE 请求、inode/handle 与权限转换接到共享 core；Linux FUSE、macFUSE kernel / FSKit 的挂载约束由适配器处理。仓库 FSKit 入口默认选择 fskit，并按实现中的版本检查拒绝低于 5.4.0 的 macFUSE。VM 的 `vendor/krun-devices/src/virtio/fs/overlay.rs` 使用相同 Core，经 virtio-fs 服务 guest，不需要宿主 FUSE union mount；guest errno 转换、设备队列与 handle 生命周期属于该适配器。
+
+共享 Core 不代表全部后端的 POSIX 返回行为相同。现有暂存契约仍记录 macOS symlink 创建的 S-STAGE-013 XFAIL，不能以 Core 测试覆盖替代实际挂载检查。
+
+## 4. 实验数据支撑 {#experiments}
+
+本次整理读取代码与既有文档，没有编译或运行产品测试。当前源码中 `core.rs` 有 24 个显式测试函数，`apply.rs` 有 19 个；这些是覆盖入口数量，不是本次通过数，也不是独立故障场景数量。
+
+| 机制 | 现有可复核测试 |
+|---|---|
+| lower 组合与独立目标基线 | `top_lower_wins_and_directories_merge`、`composed_lower_preimage_tracks_apply_target_not_visible_layer` |
+| first-touch 持久且不重取 | `first_touch_preimage_is_durable_and_never_rebased` |
+| backing / alias / 授权边界 | `backing_symlink_alias_cannot_share_the_upper_and_work_directory`、`access_rules_reject_hardlink_aliases_and_symlink_traversal` |
+| 主动修改目标后的冲突拒绝 | `apply_rejects_a_target_changed_after_first_touch` |
+| 递归替换、backup 与中断恢复 | `directory_replacement_checks_descendants_and_recovers_after_mutation`、`interrupted_directory_replacement_restores_the_recorded_original` |
+| Prepared 前后目标变化 | `prepared_apply_recovers_before_or_after_target_mutation` |
+| TargetApplied 后 upper 已部分裁剪 | `target_applied_recovery_only_finishes_partially_pruned_opaque_upper` |
+| 选择依赖与终态 | `selective_apply_expands_hard_link_groups`、`opaque_directory_requires_atomic_selection`、`terminal_decisions_are_idempotent_but_cannot_be_reversed` |
+
+`pvisor-core/tests/overlay_contracts.rs` 另覆盖旧 schema 默认值、指纹变体和原始路径字节。`tests/semantics/stage-apply.md` 提供 S-STAGE-001～014 的运行语义草稿；其人工审批状态独立于测试通过，不能由这份文档替代。
+
+目前没有在本次证据中建立 copy-up / apply 吞吐、fsync 尾延迟、大型目录扫描成本或断电级恢复数据，因此不填性能数字。源码可确认的成本包括首次文件哈希与整文件 copy-up、目录遍历、每条 preimage 同步，以及每次状态更新重写完整 ledger。以进程内构造状态的恢复测试也不能替代任意 syscall 处 kill / 断电的完整矩阵。[apply 成本页面](../benchmarks/apply.md)仍为规划，不作为已完成实验。
+
+## 5. 使用建议 {#usage}
+
+执行时保持 target 与 backing 的明确隔离，保留 stage 内元数据和 upper；只复制 upper 无法同时保留运行期冲突检测与 pending apply 恢复信息。不要将 stage 内部文件暴露为 guest 可修改内容，也不要直接修改 preimage 或 ledger 来绕过冲突。
+
+先结束实际写入，再审查 changeset 和文件内容。选择性 apply 前查看依赖扩展，尤其是硬链接组与 opaque 目录；展示清单不能替代内容 diff。apply 期间停止其他目标写入者，失败后保留 target 旁 backup 与原 stage，重新进入 apply 恢复流程，不能把 drop 当作回滚。
+
+对大文件、高文件数或频繁选择性 apply 的负载，分别量 copy-up、preimage 哈希、目标安装和 ledger 同步成本。只有测到索引或 ledger 规模确实成为瓶颈，再考虑分段或增量账本；当前格式清晰，优先保住恢复合同。需要更强并发或外部编辑保护时，应先建立稳定快照、目录 FD 操作或更强协调机制，不能从 advisory lock 推导完全事务隔离。

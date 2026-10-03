@@ -1,62 +1,198 @@
----
-status: todo
-search:
-  exclude: true
----
-
 # OverlayCore design
 
-!!! warning "Planned"
-    Implementation-owner review is pending. See [Staging and apply semantics](../concepts/staging.md) for public promises and [Run project discovery](../reference/cli.md#run-项目发现) for CLI behavior.
+## 1. Motivation {#motivation}
 
-## Question
+When an Agent edits a workspace, developers often want to review the result before accepting selected files. Direct writes leave failed, canceled or unwanted changes mixed with host state. OverlayCore keeps execution-time changes in upper and merges them with lower layers for reads. After execution, upper remains available for review, selective apply or drop.
 
-How are S-STAGE-001 through 014 implemented and recovered after crashes?
+Copy-on-write alone is insufficient. An editor or another task can change the actual target while the Agent runs, and apply can stop after updating some files. The design therefore records target fingerprints before first mutation and persists each apply's intent, allowing conflicts to be rejected and interrupted batches to complete forward.
 
-## Requirements
+This covers filesystem trees, not remote requests, database writes or explicitly shared mounts. Multi-file apply is not atomic to external readers, and its target lock only coordinates cooperating pVisor callers. Public semantics are in [Staging and apply](../concepts/staging.md); the workflow is in [Review and apply](../guides/review-apply.md).
 
-- Copy-on-write, first-touch preimages, durable fingerprints.
-- Prepared → TargetApplied → Committed persistence and recovery.
-- Recursive deletion, directory/link replacement conflicts (S-STAGE-008, S-STAGE-011, S-STAGE-012).
-- macFUSE/FSKit/Linux FUSE/virtio-fs differences; hard-link groups and opaque directories.
-- Known issue: copied_hard_links is currently in-memory only.
+## 2. Core design {#core-design}
 
-## Acceptance criteria
+### Separate the read view from the write target {#layout}
 
-- Code/test references for each transition.
-- Cross-reference the crash-injection results in [apply/drop cost and crash consistency (planned)](../benchmarks/apply.md).
+`OverlayLayout` owns priority-ordered lowers and a separate apply target. Upper wins, followed by the highest-priority lower, with target or its read-only snapshot baseline last. Construction requires the last lower's canonical path to match the declared baseline, avoiding confusion between the visible file and the file that apply will overwrite.
 
-## Tracking
+For example, a compose lower contains `config` B while the host target contains A. The Agent reads B and produces upper C. First-touch must fingerprint A. Apply checks that host A remains intact before installing C; B is not the host conflict baseline.
 
-- Tracking issue: TODO (no issue has been assigned).
-- Owner: TODO
-- Related: `crates/pvisor-overlay-core`, `crates/pvisor-overlayfs`
+| Data/module | Owned content | Responsibility |
+|---|---|---|
+| `OverlayCore` / `core.rs` | Layout, upper/work, exclusions, policy, in-memory hard-link index | Lookup, directory merge, copy-up, deletion/rename, first-touch |
+| `apply.rs` | Changeset, dependency-closed selection, apply ledger | Review, conflicts, target installation, recovery and drop |
+| `sys.rs` | Syscall wrappers, POSIX metadata and xattrs | Unix differences and concentrated unsafe boundaries |
+| `pvisor-core::overlay` | `OverlayRecord`, `ApplyRecord`, fingerprints and path encoding | Shared serialization contracts |
+| Runtime/filesystem adapters | Attempt lease, mount, handles, requests and observations | Stop writers, manage mounts and call the shared core |
 
-## Current implementation: writes to application
+OverlayCore does not own FUSE mounts, Run scheduling or the public Event Journal. It uses `pvisor-journal::atomic_write` for metadata, but `apply-ledger.json` is distinct from the [Event Journal](journal.md): the former replaces complete JSON documents; the latter appends event lines.
 
-`OverlayCore` in `core.rs` manages lower/upper views; host FUSE and VM file services use these operations. Before first modification, `record_preimage` fingerprints the actual apply target rather than an overlaid visible lower. Later writes do not reset existing entries.
+### Files and their actual relationships {#disk-layout}
 
-Fingerprints distinguish absence, regular files, directories, symlinks and other nodes. Regular files store SHA-256 plus permissions/ownership; links store target bytes without dereferencing; directories also store modification time. Entries live in `preimages/entries/` and file/directory sync precedes continuing the operation. A complete journal missing a selected path causes refusal. Apply-time sampling for older stages cannot claim equivalent run-time conflict detection.
+![OverlayCore physical directories, files and projection relationships](../../zh/design/assets/overlaycore-layout.svg)
 
-## Durable apply states
+Figure annotations are in Chinese.
 
-`apply.rs::apply_overlay_selected` acquires the target lock, recovers pending batches, calculates net changes/selections and checks all selected preimages before persisting intent. The lock coordinates pVisor apply; it cannot stop external editors.
-
-| State | Persisted information / recovery |
-| --- | --- |
-| `Prepared` | apply ID, Overlay ID/generation, target, selector, changes, recovery paths and preimages are in `apply-ledger.json`; recovery accepts only original or batch-desired target state and completes writes forward |
-| `TargetApplied` | Target updates are complete; state persists before pruning upper; recovery finishes pruning/consuming preimages without treating partially pruned opaque directories as complete new mutations |
-| `Committed` | Remaining changes have been calculated/persisted; Overlay stays `Staged` if changes remain, otherwise `Applied` |
-
-Recovery rejects batches with different Overlay ID, generation or target. Directory deletion/replacement also validates collapsed descendant preimages. Selective apply expands related hard-link groups; files created then deleted are absent from the net diff.
-
-## Validation and remaining work
-
-```bash
-just test pvisor-overlay-core pvisor-overlayfs
-just semantics
+```text
+<compose lower 0>/ … <compose lower n>/   Read-only layers, first has highest priority
+<target>/                                Original workspace and explicit apply destination
+<baseline snapshot>/                     Optional final read-only lower replacing target
+<stage>/
+├── overlay.json                         OverlayRecord, 0600, whole-document replacement
+├── upper/                               Real files, directories, links and whiteout deltas
+├── work/                                .wh..pvisor-copyup-<pid>-<counter> temporary entries
+├── merged/                              Host mount/placeholder; VM path needs no host union mount
+├── preimages/
+│   ├── complete-v1                      First-touch journal completeness marker
+│   └── entries/<sha256(raw-path)>.json   One PathPreimage per relative path, 0600
+└── apply-ledger.json                    Complete schema-2 batch ledger, 0600
+<target-parent>/
+└── .pvisor-apply-backup-<target-hash>-<apply-id-hash>/
+    ├── <path-hash>                      Original deleted/replaced directory node, renamed in
+    └── <path-hash>.new                  Complete replacement tree awaiting publication
+<target-subdirectory>/
+└── .pvisor-apply-<destination-hash>      Temporary replacement file/link/special node
+<system temp>/pvisor-apply-locks-<uid>/
+└── <canonical-target-hash>.lock         0600 advisory lock in a 0700 directory
 ```
 
-`first_touch_preimage_is_durable_and_never_rebased` in `core.rs` checks the first baseline. In `apply.rs`, `apply_rejects_a_target_changed_after_first_touch`, `directory_replacement_checks_descendants_and_recovers_after_mutation`, `prepared_apply_recovers_before_or_after_target_mutation` and `target_applied_recovery_only_finishes_partially_pruned_opaque_upper` cover conflicts/recovery.
+Paths illustrate the layout; configuration may override upper, work and merged. Work and upper must be on the same filesystem and must not contain each other. Backing inside a lower/target must be excluded from the guest view. Canonical-path checks prevent directory aliases from bypassing these rules.
 
-External readers can still see intermediate multi-file states. Recovery completes forward rather than rolling back automatically. In-memory `copied_hard_links`, mount-backend differences and system crash-injection matrices remain part of the pending design review above.
+Upper stores complete copied-up files: a one-byte edit can copy the entire file. There is no block delta or compression format. Merged is a projection, not another complete copy. Preimages contain fingerprints rather than original bytes; directory originals that must survive replacement remain in backups beside target.
+
+## 3. Detailed data and mechanisms {#detailed-design}
+
+### Merge, copy-up and POSIX nodes {#copy-up}
+
+Lookup validates each path component, rejecting absolute paths and `..`. Relative ancestors in every candidate layer must be actual directories; lookup does not follow ancestor symlinks outside a layer. Directory listing merges names and removes whiteouts, exclusions and unauthorized names. Lower ordering selects the source for conflicting names.
+
+Before modifying a lower node, copy-up records its target preimage, creates upper ancestors and copies content/metadata into a temporary node in work or the upper parent, then publishes by rename. Regular files copy bytes; a directory initially copies only itself and continues exposing lower children. Symlinks copy target bytes without dereferencing; other nodes preserve POSIX type and rdev. Copy-up rename avoids exposing a half-copied node, but does not establish that every ordinary upper write has been fsynced.
+
+| Upper representation | Bytes/metadata | Meaning |
+|---|---|---|
+| `name` | Complete file or directory/symlink/other node | Overrides the matching lower entry |
+| `.wh.name` | Empty file created by Core, 0 B | Hides lower `name`; apply deletes the target path |
+| `.wh..wh..opq` | Empty file created by Core, 0 B | Stops merging lower directory children |
+| Opaque xattr | Supported overlay xattr with value `y` | Same interpretation as the opaque marker |
+| `.wh..pvisor-root-metadata` | Empty marker, 0 B | Explicit root metadata change rather than incidental mtime |
+
+Recreating a whiteouted directory marks it opaque to prevent old children resurfacing. Moving a lower directory recursively materializes its merged tree first; copying only the directory node would lose children. Review represents rename as deletion plus addition rather than a separate rename operation.
+
+`copied_hard_links` indexes upper aliases by lower `(dev, ino)` and reuses an already copied-up inode when possible; rename/unlink update it. The index is in-memory and is not rebuilt on restart. Existing upper hard links survive in the filesystem, but new copy-ups after restart are not guaranteed to reconnect uncopied lower aliases. With denial rules, multiply-linked regular files are conservatively rejected to prevent inode-alias authorization bypasses. Directory moves inspect physical descendants, not only visible names.
+
+### First-touch and conflict fingerprints {#preimages}
+
+`record_preimage()` addresses entries by raw relative-path bytes under a preimage mutex. Existing entries remain unchanged. New entries fingerprint the actual target, use `create_new` to write JSON, then sync the file and entries directory before mutation continues. Parents, deleted trees and rename destinations also need entries for implicit metadata changes and destructive descendant effects.
+
+Example `PathPreimage`:
+
+```json
+{
+  "path": [110, 101, 119, 46, 116, 120, 116],
+  "state": { "kind": "absent" }
+}
+```
+
+The path bytes encode `new.txt`. Fingerprint variants are:
+
+| kind | Core fields |
+|---|---|
+| absent | Path does not exist |
+| file | SHA-256, mode, uid, gid, optional xattrs |
+| directory | Mode, uid, gid, mtime seconds/nanoseconds, optional xattrs |
+| symlink | Raw target bytes, uid, gid, optional xattrs |
+| other | Mode, uid, gid, rdev, optional xattrs |
+
+Xattrs distinguish Unsupported from sorted `(name-bytes, value-sha256)` entries; internal opaque xattrs are excluded. Compatibility with older fingerprints lacking xattrs does not claim those attributes were verified. File hashing uses a 64 KiB buffer but reads bytes proportional to file size. Directory fingerprints are not whole-subtree Merkle hashes.
+
+An empty new upper initializes `complete-v1`, containing `pvisor-overlay-preimage-journal-v1` and LF. A complete journal missing a selected path rejects apply. Legacy stages without the marker can fingerprint at apply time for compatibility, without equivalent execution-time conflict protection. Preimages are not written through whole-document replacement; corrupt complete entries fail loading, with no JSONL-style tail repair.
+
+### Review and selection {#selection}
+
+`overlay_status()` counts upper entries/whiteouts and up to 32 sample_paths. `overlay_changes()` classifies Added/Modified/Deleted/TypeChanged/Opaque from lower path existence and node type without reading every file for a byte diff. A copied-up file restored to its original bytes may still be Modified. This is an applicable upper inventory, not a minimal content diff.
+
+`ApplySelection` supports exact relative paths and git-style include/exclude globs. Empty selection means all; exact paths include descendants. Planning repeatedly expands dependencies to closure:
+
+- Upper hard-link groups are selected together; excluding a sibling rejects the batch.
+- An opaque directory is one complete selection unit; selecting only its children or excluding members is rejected.
+- Required new upper ancestor directories join selected descendants and cannot be excluded.
+
+Opaque root replacement is unsupported; select explicit subdirectories. `ChangeEntry.path` is for display, with `path_bytes` preserving non-UTF-8 identity. Mutations use `relative_path()`. Non-UTF-8 selection/planned_paths encode as `{ "bytes": [...] }`; lossy display text must not determine mutation paths.
+
+### Apply ledger and recovery {#apply-recovery}
+
+`OverlayRecord` stores ID, generation, target, optional baseline_lower, upper/work, stage/merged, policies, exclusions and state. States are Active/Staged/Applied/Discarded. Generation identifies a new iteration of a reusable environment; a terminal Overlay is not reopened as Active.
+
+The `apply-ledger.json` structure is:
+
+```json
+{
+  "schema_version": 2,
+  "records": [
+    {
+      "schema_version": 2,
+      "apply_id": "apply-demo",
+      "created_at_unix_ms": 0,
+      "overlay_id": "overlay-demo",
+      "overlay_generation": 0,
+      "target": "/workspace",
+      "selection": { "paths": ["new.txt"] },
+      "changes": [{ "path": "new.txt", "kind": "added", "new_type": "file" }],
+      "planned_paths": ["new.txt"],
+      "preimages": [{ "path": [110,101,119,46,116,120,116], "state": { "kind": "absent" } }],
+      "state": "prepared",
+      "remaining_changes": 0
+    }
+  ]
+}
+```
+
+This illustrates fields; optional mode/size vary by node. Readers accept schema 1/2; legacy records missing state default to Committed. Adding a record or changing state serializes the whole ledger and replaces it through a same-directory temporary file, fsync, rename and parent-directory fsync. It does not append JSON to EOF.
+
+`apply_overlay_selected()` locks target, recovers pending batches, plans selection, gathers all preimages and checks conflicts before persisting Prepared. The lock name hashes the canonical target path. Lock files must be private, current-user-owned single-link regular files. External editors do not participate in this lock.
+
+| Durable state | Actions already taken | Recovery |
+|---|---|---|
+| Prepared | IDs, generation, paths, changes and preimages persisted; target may be untouched or partly updated | Validate identity and original/desired contents, inspect directory backups and finish target writes forward |
+| TargetApplied | Persisted after target updates and before upper cleanup | Only prune upper, handle preimages and save Overlay state; do not reapply a partly pruned opaque tree |
+| Committed | Remaining changes/count determined, upper/preimage processing complete | Remove leftover backups; repeating completion does not overwrite target again |
+
+Regular target replacements use deterministic temporary names beside their destinations, sync contents, rename and sync directories. Whiteouts are processed before copying. Destructive directory replacements rename originals into private backups beside target, build replacements in `.new` and publish the complete tree. Backups belong to apply IDs, survive errors and are removed after Committed. They are not generic rollback copies for every modified file.
+
+Prepared recovery cannot accept arbitrary target states: targets must match preimages or, on the recovery branch, the batch's desired result. Directory comparison permits recovery-related mtime changes but still checks mode, ownership and recorded xattrs. Deletes/replacements also validate collapsed descendant preimages. Recovery rejects mismatched Overlay IDs, generations or targets.
+
+Selective completion leaves the Overlay Staged when changes remain and Applied when none remain. Selected upper entries are pruned and corresponding preimages consumed; directories carrying pending children retain the needed baseline. Multiple paths can expose intermediate states. External mutations can still occur after checks and before writes; stop external writers during apply.
+
+### Drop and adapter boundaries {#adapters}
+
+Pending apply prevents drop from destroying recovery data. Drop is idempotent for Discarded and cannot undo Applied. It clears upper/work and saves Discarded; merged cleanup only removes an empty placeholder rather than recursively traversing a possible mount. Callers must stop writers and unmount first. The Core API's Active branch does not replace Attempt leases and lifecycle coordination.
+
+Host `pvisor-overlayfs` adapts FUSE requests, inode/handle ownership and permissions to the shared core. Its adapter handles Linux FUSE and macFUSE kernel/FSKit mounting restrictions. The repository defaults to fskit on its FSKit entry path and rejects macFUSE versions below 5.4.0 through the implemented guard. VM `vendor/krun-devices/src/virtio/fs/overlay.rs` uses the same Core through guest virtio-fs, without a host FUSE union mount. Guest errno translation, queues and handle lifetime belong to that adapter.
+
+Shared Core does not imply identical POSIX return behavior across backends. Staging contracts still record macOS symlink creation S-STAGE-013 XFAIL. Core tests cannot replace real mount checks.
+
+## 4. Experimental evidence {#experiments}
+
+This revision reads code and existing documentation without compiling or running product tests. Current source contains 24 explicit tests in `core.rs` and 19 in `apply.rs`. These are coverage entry counts, not passes in this revision or counts of independent fault cases.
+
+| Mechanism | Existing tests to inspect |
+|---|---|
+| Lower composition and separate target baseline | `top_lower_wins_and_directories_merge`, `composed_lower_preimage_tracks_apply_target_not_visible_layer` |
+| Durable first-touch without rebasing | `first_touch_preimage_is_durable_and_never_rebased` |
+| Backing/alias/authorization boundaries | `backing_symlink_alias_cannot_share_the_upper_and_work_directory`, `access_rules_reject_hardlink_aliases_and_symlink_traversal` |
+| Conflict after target mutation | `apply_rejects_a_target_changed_after_first_touch` |
+| Recursive replacement, backups and interruption | `directory_replacement_checks_descendants_and_recovers_after_mutation`, `interrupted_directory_replacement_restores_the_recorded_original` |
+| Prepared before/after target changes | `prepared_apply_recovers_before_or_after_target_mutation` |
+| Partly pruned upper after TargetApplied | `target_applied_recovery_only_finishes_partially_pruned_opaque_upper` |
+| Selection dependencies and terminal states | `selective_apply_expands_hard_link_groups`, `opaque_directory_requires_atomic_selection`, `terminal_decisions_are_idempotent_but_cannot_be_reversed` |
+
+`pvisor-core/tests/overlay_contracts.rs` also checks legacy defaults, fingerprint variants and raw path bytes. `tests/semantics/stage-apply.md` supplies S-STAGE-001–014 runtime contract drafts. Human approval is separate from test success and is not replaced by this document.
+
+No copy-up/apply throughput, fsync tails, large-tree scan measurements or power-loss recovery data were established for this revision. Source confirms full-file hashing/copy-up, tree traversal, per-preimage synchronization and whole-ledger rewrites. In-process constructed recovery states do not replace a complete kill/power-loss matrix at every syscall. The [apply cost page](../benchmarks/apply.md) remains planned rather than completed evidence.
+
+## 5. Usage recommendations {#usage}
+
+Keep target and backing boundaries explicit and preserve stage metadata plus upper. Copying upper alone does not preserve both execution-time conflict detection and pending-apply recovery. Do not expose internal stage files to guest modification or edit fingerprints/ledgers to bypass conflicts.
+
+Stop actual writers before reviewing changes and contents. Inspect dependency expansion for selective apply, especially hard links and opaque directories; inventories do not replace content diffs. Stop other target writers during apply. After failure, preserve original stage and target-side backups and reenter apply recovery; drop is not rollback.
+
+For large files, large trees or frequent selective apply, measure copy-up, fingerprint hashing, installation and ledger synchronization separately. Consider segmentation or incremental ledgers only when measured scale requires them, preserving the recovery contract. Stronger concurrency/external-edit protection needs stable snapshots, directory-FD operations or stronger coordination; advisory locks do not establish full transactional isolation.

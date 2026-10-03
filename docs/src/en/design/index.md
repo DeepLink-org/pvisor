@@ -6,6 +6,8 @@
 | VM RAM offload, file layout and lifecycle | [Complete offload design](offload/index.md) · [Disk format and schema](offload/disk-layout-and-schema.md) |
 | Cross-VM content deduplication, shared pool and cold restoration | [Memory deduplication and cold-block compression](memory-sharing/index.md) |
 | Operations, rewrites, placement and facts | [Operation and Event](operations-events.md) |
+| File composition, first-touch and apply recovery | [OverlayCore design](overlayfs.md) |
+| Event append, receipts and tail recovery | [Journal design](journal.md) |
 | Host, container, VM and filesystem boundaries | [Isolation](isolation.md) |
 | Network policy and interception | [OverlayNet](overlaynet.md) |
 | Model routing and capture | [Gateway](gateway.md) |

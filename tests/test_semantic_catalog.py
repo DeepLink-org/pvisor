@@ -169,9 +169,14 @@ def test_vm_prerequisite_skips_missing_rootfs_before_invoking_product(tmp_path):
     }
     result = subprocess.run(
         [
-            "bash", "-euo", "pipefail", "-c",
+            "bash",
+            "-euo",
+            "pipefail",
+            "-c",
             'source "$1"; source "$2"; require_vm_sdk; echo reached',
-            "vm-prerequisite", str(VOCAB / "pvisor.sh"), str(VOCAB / "vm.sh"),
+            "vm-prerequisite",
+            str(VOCAB / "pvisor.sh"),
+            str(VOCAB / "vm.sh"),
         ],
         env=environment,
         capture_output=True,
@@ -211,9 +216,20 @@ def test_vm_sdk_failure_keeps_diagnostics(tmp_path):
     driver.write_text("#!/bin/sh\nprintf 'sdk-failure-detail\n'\nexit 23\n")
     driver.chmod(0o755)
     result = subprocess.run(
-        ["bash", "-euo", "pipefail", "-c", 'source "$1"; source "$2"; vm_run_sdk compressed', "vm-test", str(VOCAB / "core.sh"), str(VOCAB / "vm.sh")],
+        [
+            "bash",
+            "-euo",
+            "pipefail",
+            "-c",
+            'source "$1"; source "$2"; vm_run_sdk compressed',
+            "vm-test",
+            str(VOCAB / "core.sh"),
+            str(VOCAB / "vm.sh"),
+        ],
         env={**os.environ, "CASE_ROOT": str(case_root), "VM_CASE_DRIVER": str(driver)},
-        capture_output=True, text=True, timeout=10,
+        capture_output=True,
+        text=True,
+        timeout=10,
     )
     assert result.returncode != 0
     assert "sdk-failure-detail" in result.stdout

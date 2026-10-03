@@ -161,16 +161,21 @@ fn hide_ram_backing(device: &mut OverlayDeviceSpec, path: &Path) -> anyhow::Resu
 impl VmExecutor {
     pub fn new(mut settings: VmSettings) -> anyhow::Result<Self> {
         anyhow::ensure!(
-            settings.memory_pool.is_none() || cfg!(all(target_os = "macos", target_arch = "aarch64")),
+            settings.memory_pool.is_none()
+                || cfg!(all(target_os = "macos", target_arch = "aarch64")),
             "vm.memory_pool requires macOS on Apple Silicon"
         );
         if let Some(path) = settings.memory_pool.as_ref() {
-            settings.memory_pool = Some(path.canonicalize().context("resolve vm.memory_pool socket")?);
+            settings.memory_pool = Some(
+                path.canonicalize()
+                    .context("resolve vm.memory_pool socket")?,
+            );
         }
         #[cfg(all(target_os = "macos", target_arch = "aarch64"))]
         anyhow::ensure!(
-            !settings.ram_compression || (settings.memory_pool.is_none()
-                && std::env::var_os(super::pager::POOL_ENV).is_none()),
+            !settings.ram_compression
+                || (settings.memory_pool.is_none()
+                    && std::env::var_os(super::pager::POOL_ENV).is_none()),
             "experimental cold pager cannot use a FUSE RAM backing"
         );
         anyhow::ensure!(settings.memory_mib > 0, "vm.memory_mib must be positive");

@@ -144,8 +144,16 @@ def test_vm_cases_build_driver_and_forward_selection(run_task, tmp_path):
     commands = run_task("vm-cases", "--case", "S-DOC-060", "--keep")
     target = tmp_path / "target with spaces"
     assert [
-        "cargo", "build", "--locked", "-p", "pvisor", "--release",
-        "--example", "vm_control_case", "--target-dir", str(target),
+        "cargo",
+        "build",
+        "--locked",
+        "-p",
+        "pvisor",
+        "--release",
+        "--example",
+        "vm_control_case",
+        "--target-dir",
+        str(target),
     ] in commands
     assert commands[-1][-3:] == ["--case", "S-DOC-060", "--keep"]
     assert "docs/src/zh/reference/cases-vm.md" in commands[-1]

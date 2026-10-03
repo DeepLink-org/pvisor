@@ -2863,11 +2863,15 @@ mod tests {
         let args = preset_args(&["--vm-memory-pool", "/private/tmp/pool/socket", "--", "bash"]);
         let mut config = RunConfig::default();
         assert!(config.vm.memory_pool.is_none());
-        let command = crate::cli::normalize_default_run(vec!["pvisor".into(), "memory-pool".into()]);
+        let command =
+            crate::cli::normalize_default_run(vec!["pvisor".into(), "memory-pool".into()]);
         assert_eq!(command[1], "memory-pool");
         apply_run_options(&mut config, args).unwrap();
         assert_eq!(config.run.executor, RunExecutorKind::Vm);
-        assert_eq!(config.vm.memory_pool.as_deref(), Some(Path::new("/private/tmp/pool/socket")));
+        assert_eq!(
+            config.vm.memory_pool.as_deref(),
+            Some(Path::new("/private/tmp/pool/socket"))
+        );
         assert!(!config.vm.ram_compression);
         let encoded = toml::to_string(&config).unwrap();
         let decoded: RunConfig = toml::from_str(&encoded).unwrap();

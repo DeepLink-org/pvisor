@@ -478,7 +478,9 @@ impl SnapshotChain {
                 checksum,
             });
         }
-        if entries.is_empty() && let Some(delta) = delta {
+        if entries.is_empty()
+            && let Some(delta) = delta
+        {
             return Self::open(&directory, delta.head_id());
         }
         let seek_bytes = 17 + sizes.len() as u64 * 8;

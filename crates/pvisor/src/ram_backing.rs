@@ -1,13 +1,13 @@
 //! Immutable base/delta RAM storage plus a bounded writable staging adapter.
 //! The adapter preserves live mmap semantics; generation commit is not a VM checkpoint.
 pub mod image;
-/// Experimental resident compression interfaces; not enabled by VM settings.
-pub mod resident;
-/// Experimental Unix-stream transport for a host-owned compressed pool.
-pub mod ipc;
 /// macOS mapped-backing page diagnostics; never private RSS accounting.
 #[cfg(target_os = "macos")]
 pub mod inventory;
+/// Experimental Unix-stream transport for a host-owned compressed pool.
+pub mod ipc;
+/// Experimental resident compression interfaces; not enabled by VM settings.
+pub mod resident;
 pub use image::{ImageId, RamLayout, RamRegion, SnapshotChain};
 
 use serde::{Deserialize, Serialize};
@@ -26,12 +26,19 @@ const HEAD_BYTES: usize = 80;
 
 /// Publish a completed diagnostic after releasing VMM mapping locks.
 #[cfg(target_os = "macos")]
-pub fn write_process_inventory(directory: &Path, inventory: inventory::ProcessInventory) -> io::Result<()> {
+pub fn write_process_inventory(
+    directory: &Path,
+    inventory: inventory::ProcessInventory,
+) -> io::Result<()> {
     use std::os::unix::fs::{MetadataExt, OpenOptionsExt, PermissionsExt};
     let metadata = directory.metadata()?;
-    if !metadata.is_dir() || metadata.uid() != unsafe { libc::geteuid() }
-        || metadata.permissions().mode() & 0o077 != 0 {
-        return Err(io::Error::other("process inventory directory must be private and owned by this user"));
+    if !metadata.is_dir()
+        || metadata.uid() != unsafe { libc::geteuid() }
+        || metadata.permissions().mode() & 0o077 != 0
+    {
+        return Err(io::Error::other(
+            "process inventory directory must be private and owned by this user",
+        ));
     }
     // Stream numeric rows directly; constructing Value for every row would
     // inflate the diagnostic's own memory footprint.
@@ -49,15 +56,21 @@ pub fn write_process_inventory(directory: &Path, inventory: inventory::ProcessIn
         pages: Vec<[u64; 4]>,
     }
     let value = Record {
-        pid: std::process::id(), timestamp_ns: inventory.timestamp_ns,
-        query_us: inventory.query_us, query_attempts: inventory.query_attempts,
+        pid: std::process::id(),
+        timestamp_ns: inventory.timestamp_ns,
+        query_us: inventory.query_us,
+        query_attempts: inventory.query_attempts,
         page_bytes: inventory.page_bytes,
-        regions: inventory.regions, scanned_pages: inventory.scanned_pages,
+        regions: inventory.regions,
+        scanned_pages: inventory.scanned_pages,
         columns: ["host_address", "object_id", "object_offset", "disposition"],
         scope: "complete live mapped-backing walk; not atomic, private RSS or PFNs",
         pages: inventory.pages,
     };
-    let file = std::fs::OpenOptions::new().write(true).create_new(true).mode(0o600)
+    let file = std::fs::OpenOptions::new()
+        .write(true)
+        .create_new(true)
+        .mode(0o600)
         .open(directory.join(format!("{}.json", std::process::id())))?;
     let mut writer = io::BufWriter::new(file);
     serde_json::to_writer(&mut writer, &value).map_err(io::Error::other)?;
@@ -616,10 +629,17 @@ mod tests {
         let mut store =
             CompressedRam::create(manifest.try_clone().unwrap(), directory.path()).unwrap();
         store.set_len(BLOCK_BYTES as u64).unwrap();
-        let input = (0..BLOCK_BYTES).map(|i| (i % 251) as u8).collect::<Vec<_>>();
+        let input = (0..BLOCK_BYTES)
+            .map(|i| (i % 251) as u8)
+            .collect::<Vec<_>>();
         store.write_at(0, &input).unwrap();
         store.sync_all().unwrap();
-        let hex = store.head_id().unwrap().iter().map(|byte| format!("{byte:02x}")).collect::<String>();
+        let hex = store
+            .head_id()
+            .unwrap()
+            .iter()
+            .map(|byte| format!("{byte:02x}"))
+            .collect::<String>();
         let payload = std::fs::OpenOptions::new()
             .write(true)
             .open(directory.path().join(format!("{hex}.pvdelta")))
@@ -640,11 +660,17 @@ mod tests {
         let manifest = tempfile::tempfile().unwrap();
         let mut store = CompressedRam::create(manifest, directory.path()).unwrap();
         store.set_len(BLOCK_BYTES as u64).unwrap();
-        let input = (0..BLOCK_BYTES).map(|i| (i % 251) as u8).collect::<Vec<_>>();
+        let input = (0..BLOCK_BYTES)
+            .map(|i| (i % 251) as u8)
+            .collect::<Vec<_>>();
         store.write_at(0, &input).unwrap();
         store.sync_all().unwrap();
         let old_head = store.head_id();
-        let hex = old_head.unwrap().iter().map(|byte| format!("{byte:02x}")).collect::<String>();
+        let hex = old_head
+            .unwrap()
+            .iter()
+            .map(|byte| format!("{byte:02x}"))
+            .collect::<String>();
         std::fs::OpenOptions::new()
             .write(true)
             .open(directory.path().join(format!("{hex}.pvdelta")))

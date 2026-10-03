@@ -46,10 +46,17 @@ def test_bilingual_navigation_uses_matching_articles():
     import tomllib
 
     english_nav = runpy.run_path(str(ROOT / "scripts/build-docs.py"))["english_nav"]
-    nav = [{"指南": ["zh/guides/index.md", {"并行 Agent（规划中）": "zh/guides/parallel-agents.md"}]}]
+    nav = [
+        {"指南": ["zh/guides/index.md", {"并行 Agent（规划中）": "zh/guides/parallel-agents.md"}]}
+    ]
     translated = tomllib.loads("nav = " + english_nav(nav))["nav"]
     assert translated == [
-        {"Guides": ["en/guides/index.md", {"Parallel agents (planned)": "en/guides/parallel-agents.md"}]}
+        {
+            "Guides": [
+                "en/guides/index.md",
+                {"Parallel agents (planned)": "en/guides/parallel-agents.md"},
+            ]
+        }
     ]
 
 
@@ -60,10 +67,14 @@ def test_native_search_stays_in_its_locale(tmp_path):
     page = tmp_path / "en/guides/index.html"
     page.parent.mkdir(parents=True)
     page.write_text('<script id="__config" type="application/json">{"base":"../.."}</script>')
-    (tmp_path / "search.json").write_text(json.dumps({
-        "config": {"lang": ["en"]},
-        "items": [{"location": "en/guides/#example"}, {"location": "zh/guides/"}],
-    }))
+    (tmp_path / "search.json").write_text(
+        json.dumps(
+            {
+                "config": {"lang": ["en"]},
+                "items": [{"location": "en/guides/#example"}, {"location": "zh/guides/"}],
+            }
+        )
+    )
     localize_search(tmp_path, "en")
     assert json.loads((tmp_path / "en/search.json").read_text())["items"] == [
         {"location": "guides/#example"}

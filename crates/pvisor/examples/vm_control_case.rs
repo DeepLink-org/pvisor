@@ -51,8 +51,13 @@ async fn await_heartbeat(
                 handle.status()
             );
             if let Ok(bytes) = std::fs::read(path)
-                && !bytes.is_empty() && previous != Some(bytes.as_slice()) {
-                ensure!(handle.status().state == RunState::Running, "resumed VM must be running");
+                && !bytes.is_empty()
+                && previous != Some(bytes.as_slice())
+            {
+                ensure!(
+                    handle.status().state == RunState::Running,
+                    "resumed VM must be running"
+                );
                 return Ok(bytes);
             }
             tokio::time::sleep(Duration::from_millis(50)).await;
