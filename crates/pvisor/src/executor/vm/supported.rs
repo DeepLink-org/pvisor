@@ -979,8 +979,9 @@ fn run_linked_krun(spec: RunnerSpec, mut attestation: std::fs::File) -> anyhow::
     )?;
     check_krun(krun::krun_add_vsock(ctx, 0), "krun_add_vsock")?;
     crate::util::startup_mark_run("runner.devices_configured", &spec.run_id);
+    // Private parent/runner IPC: write visibility is sufficient. The parent
+    // accepts the receipt only after a normal exit; it is not recovery metadata.
     attestation.write_all(b"pvisor-vmm-installed-v1\n")?;
-    attestation.sync_data()?;
     crate::util::startup_mark_run("runner.attestation_ready", &spec.run_id);
     let control = std::env::var(CONTROL_FD_ENV)
         .with_context(|| format!("missing {CONTROL_FD_ENV}"))?
@@ -1077,8 +1078,8 @@ fn run_linked_krun(spec: RunnerSpec, mut attestation: std::fs::File) -> anyhow::
         Ok(())
     });
     if started < 0 {
+        // Preserve failed-entry invalidation without a disk durability barrier.
         attestation.set_len(0)?;
-        attestation.sync_data()?;
     }
     #[cfg(target_os = "macos")]
     if started == -libc::EINVAL {

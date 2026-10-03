@@ -181,6 +181,9 @@ pub struct VmResources {
     pub smbios_oem_strings: Option<Vec<String>>,
     /// Whether to enable nested virtualization.
     pub nested_enabled: bool,
+    /// Opt in before boot: restricted CPU extensions and serializable software GIC.
+    #[cfg(target_os = "macos")]
+    pub snapshot_profile: bool,
     /// Whether to enable split irqchip
     pub split_irqchip: bool,
     /// Do not create an implicit console device in the guest
@@ -435,6 +438,8 @@ mod tests {
             console_output: None,
             smbios_oem_strings: None,
             nested_enabled: false,
+            #[cfg(target_os = "macos")]
+            snapshot_profile: false,
             split_irqchip: false,
             disable_implicit_console: false,
             serial_consoles: Vec::new(),

@@ -6,7 +6,7 @@ Every measurement and comparison is reproducible and serves as evidence for the 
 
 | Measurement | Observed result | Conditions and evidence |
 |---|---|---|
-| CLI → VM workload ready | P50 82.64 ms; P95 98.98 ms | Apple M4/HVF, trimmed firmware, 2 vCPU / 128 MiB, N=100; prepared rootfs, warm host caches; [startup latency](startup.md) |
+| CLI → VM workload ready | P50 84.35 ms; P95 112.14 ms | Apple M4/HVF, controlled P0 candidate, trimmed firmware, 2 vCPU / 128 MiB, N=100; prepared rootfs, warm host caches; [startup latency](startup.md) |
 | Cold VM RAM reclamation | About 60% lower RAM proxy for 2 GiB VMs | Two VMs with 64 MiB repeated cold data each, seconds 60–90 after ready; first reads slow down and footprint increases. See [memory benefits and usage costs](vm-memory/index.md) |
 
 Each number describes a specific phase and workload. The startup table includes the full CLI-to-marker path, and cold RAM proxy is not whole-host physical memory. Other benchmarks remain marked below; unmeasured areas have no performance conclusion.

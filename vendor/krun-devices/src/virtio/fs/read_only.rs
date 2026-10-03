@@ -65,6 +65,22 @@ impl PassthroughFsRo {
 }
 
 impl FileSystem for PassthroughFsRo {
+    #[cfg(target_os = "macos")]
+    fn capture_state(&self) -> io::Result<super::snapshot::FsSnapshot> {
+        Ok(super::snapshot::FsSnapshot::ReadOnly(Box::new(
+            self.inner.capture_state()?,
+        )))
+    }
+    #[cfg(target_os = "macos")]
+    fn restore_state(&self, state: &super::snapshot::FsSnapshot) -> io::Result<()> {
+        let super::snapshot::FsSnapshot::ReadOnly(inner) = state else {
+            return Err(super::snapshot::invalid(
+                "read-only filesystem type mismatch",
+            ));
+        };
+        self.inner.restore_state(inner)
+    }
+
     type Inode = Inode;
     type Handle = Handle;
 

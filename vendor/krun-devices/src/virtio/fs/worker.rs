@@ -92,6 +92,8 @@ pub struct FsWorker {
     allow_idmap: bool,
     shm_region: Option<VirtioShmRegion>,
     server: FsServer,
+    #[cfg(target_os = "macos")]
+    inode_alloc: Arc<InodeAllocator>,
     stop_fd: EventFd,
     exit_code: Arc<AtomicI32>,
     #[cfg(target_os = "macos")]
@@ -113,11 +115,19 @@ impl FsWorker {
         virtual_entries: Vec<VirtualDirEntry>,
         stop_fd: EventFd,
         exit_code: Arc<AtomicI32>,
+        #[cfg(target_os = "macos")] restoring: bool,
         #[cfg(target_os = "macos")] map_sender: Option<Sender<WorkerMessage>>,
     ) -> Result<Self, io::Error> {
         let inode_alloc = Arc::new(InodeAllocator::new());
         let server = match (overlay_cfg, passthrough_cfg) {
             (Some(cfg), _) => {
+                #[cfg(target_os = "macos")]
+                let inner = if restoring {
+                    OverlayFs::open_existing(cfg, inode_alloc.clone())?
+                } else {
+                    OverlayFs::new(cfg, inode_alloc.clone())?
+                };
+                #[cfg(not(target_os = "macos"))]
                 let inner = OverlayFs::new(cfg, inode_alloc.clone())?;
                 FsServer::Overlay(Server::new(AugmentFs::new(
                     inner,
@@ -155,6 +165,8 @@ impl FsWorker {
             allow_idmap,
             shm_region,
             server,
+            #[cfg(target_os = "macos")]
+            inode_alloc,
             stop_fd,
             exit_code,
             #[cfg(target_os = "macos")]
@@ -162,14 +174,52 @@ impl FsWorker {
         })
     }
 
-    pub fn run(self) -> thread::JoinHandle<()> {
+    #[cfg(target_os = "macos")]
+    pub fn capture_state(
+        &self,
+    ) -> io::Result<(
+        Vec<super::super::QueueSnapshot>,
+        super::snapshot::ServerSnapshot,
+    )> {
+        let next = self.inode_alloc.snapshot_next();
+        let state = match &self.server {
+            FsServer::ReadWrite(s) => s.capture_state(next),
+            FsServer::ReadOnly(s) => s.capture_state(next),
+            FsServer::Null(s) => s.capture_state(next),
+            FsServer::Overlay(s) => s.capture_state(next),
+        }?;
+        Ok((
+            self.queues.iter().map(Queue::capture_state).collect(),
+            state,
+        ))
+    }
+    #[cfg(target_os = "macos")]
+    pub fn restore_state(&self, state: &super::snapshot::ServerSnapshot) -> io::Result<()> {
+        if state.next_inode <= state.fs.max_inode()
+            || state.next_inode < self.inode_alloc.snapshot_next()
+            || state.next_inode == u64::MAX
+        {
+            return Err(super::snapshot::invalid(
+                "invalid filesystem inode allocator",
+            ));
+        }
+        match &self.server {
+            FsServer::ReadWrite(s) => s.restore_state(state),
+            FsServer::ReadOnly(s) => s.restore_state(state),
+            FsServer::Null(s) => s.restore_state(state),
+            FsServer::Overlay(s) => s.restore_state(state),
+        }?;
+        self.inode_alloc.restore_next(state.next_inode)
+    }
+
+    pub fn run(self) -> thread::JoinHandle<Self> {
         thread::Builder::new()
             .name("fs worker".into())
             .spawn(|| self.work())
             .unwrap()
     }
 
-    fn work(mut self) {
+    fn work(mut self) -> Self {
         let virtq_hpq_ev_fd = self.queue_evts[HPQ_INDEX].as_raw_fd();
         let virtq_req_ev_fd = self.queue_evts[REQ_INDEX].as_raw_fd();
         let stop_ev_fd = self.stop_fd.as_raw_fd();
@@ -209,7 +259,7 @@ impl FsWorker {
                             EventSet::IN if source == stop_ev_fd => {
                                 debug!("stopping worker thread");
                                 let _ = self.stop_fd.read();
-                                return;
+                                return self;
                             }
                             _ => {
                                 log::warn!(

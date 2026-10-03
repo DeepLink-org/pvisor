@@ -21,6 +21,23 @@ impl InodeAllocator {
         }
     }
 
+    #[cfg(target_os = "macos")]
+    pub fn snapshot_next(&self) -> u64 {
+        self.next.load(Ordering::Relaxed)
+    }
+
+    #[cfg(target_os = "macos")]
+    pub fn restore_next(&self, next: u64) -> std::io::Result<()> {
+        if next < self.next.load(Ordering::Relaxed) || next == u64::MAX {
+            return Err(std::io::Error::new(
+                std::io::ErrorKind::InvalidData,
+                "inode allocator regression",
+            ));
+        }
+        self.next.store(next, Ordering::Relaxed);
+        Ok(())
+    }
+
     /// Allocate the next inode number. Each call returns a unique value.
     pub fn next(&self) -> u64 {
         self.next.fetch_add(1, Ordering::Relaxed)

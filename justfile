@@ -202,3 +202,7 @@ semantics *args: (build "debug")
 # Real macOS HVF CPU/RAM cold-restore validation (M0, not full guest recovery).
 test-hvf-cold-restore:
     python3 scripts/check-hvf-cold-restore.py --target-dir "{{ target_dir }}"
+
+# VMM owning-thread/GIC checks; full Linux snapshot acceptance is separate.
+test-vm-snapshot-state:
+    python3 scripts/check-vm-snapshot-state.py --target-dir "{{ target_dir }}"

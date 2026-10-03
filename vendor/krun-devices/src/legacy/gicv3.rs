@@ -89,6 +89,18 @@ const GICV3_PIDR0_REDIST: u8 = 0x93;
 const GICV3_BASE_SIZE: u64 = 0x0001_0000;
 const GICV3_MAINT_IRQ: u32 = 8;
 
+#[derive(Clone, Debug, serde::Serialize, serde::Deserialize)]
+#[serde(deny_unknown_fields)]
+pub struct GicSnapshot {
+    pub properties: [u64; 4],
+    pub revision: u8,
+    pub ctlr: u32,
+    pub waker: u32,
+    pub edge_trigger: Vec<u32>,
+    pub routes: Vec<u64>,
+    pub pending: super::vcpu::PendingInterrupts,
+}
+
 #[derive(Clone)]
 pub struct GicV3 {
     dist_addr: u64,
@@ -109,6 +121,36 @@ pub struct GicV3 {
 }
 
 impl GicV3 {
+    /// Caller must freeze all CPU and device interrupt producers first.
+    pub fn capture_state(&self) -> Result<GicSnapshot, String> {
+        Ok(GicSnapshot {
+            properties: self.properties,
+            revision: self.revision,
+            ctlr: self.gicd_ctlr,
+            waker: self.gicr_waker,
+            edge_trigger: self.edge_trigger.to_vec(),
+            routes: self.gicd_irouter.to_vec(),
+            pending: self.vcpu_list.capture_pending()?,
+        })
+    }
+
+    pub fn restore_state(&mut self, state: &GicSnapshot) -> Result<(), String> {
+        if state.properties != self.properties
+            || state.revision != self.revision
+            || state.edge_trigger.len() != BITMAP_SZ
+            || state.routes.len() != MAXIRQ as usize
+        {
+            return Err("GIC layout or register count mismatch".into());
+        }
+        self.vcpu_list.validate_pending(&state.pending)?;
+        self.vcpu_list.restore_pending(&state.pending)?;
+        self.gicd_ctlr = state.ctlr;
+        self.gicr_waker = state.waker;
+        self.edge_trigger.copy_from_slice(&state.edge_trigger);
+        self.gicd_irouter.copy_from_slice(&state.routes);
+        Ok(())
+    }
+
     /// Get the address of the GICv3 distributor.
     pub fn get_dist_addr(&self) -> u64 {
         self.dist_addr
@@ -389,6 +431,13 @@ impl GicV3 {
 }
 
 impl IrqChipT for GicV3 {
+    fn capture_state(&self) -> Result<GicSnapshot, String> {
+        GicV3::capture_state(self)
+    }
+    fn restore_state(&mut self, state: &GicSnapshot) -> Result<(), String> {
+        GicV3::restore_state(self, state)
+    }
+
     fn get_mmio_addr(&self) -> u64 {
         self.redists_addr
     }

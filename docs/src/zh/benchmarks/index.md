@@ -6,7 +6,7 @@
 
 | 测量 | 已观察到的结果 | 条件与完整证据 |
 |---|---|---|
-| CLI → VM 工作负载就绪 | P50 82.64 ms；P95 98.98 ms | Apple M4/HVF，裁剪 firmware，2 vCPU / 128 MiB，N=100；已准备 rootfs、热宿主缓存；[启动延迟](startup.md) |
+| CLI → VM 工作负载就绪 | P50 84.35 ms；P95 112.14 ms | Apple M4/HVF，两轮 P0 受控制品、裁剪 firmware，2 vCPU / 128 MiB，N=100；已准备 rootfs、热宿主缓存；[启动延迟](startup.md) |
 | VM 冷 RAM 回收 | 2 GiB 配置的 RAM 代理约降低 60% | 两台 VM、每台 64 MiB 重复冷数据、ready 后 60–90 秒；首次读取变慢且 footprint 增加，见[内存收益与使用代价](vm-memory/index.md) |
 
 每个数字对应明确的阶段和负载；启动表包含完整 CLI 到标记路径，冷 RAM 代理不是整机物理内存。其余基准按下方标注推进，尚无数据的项目不提供性能结论。

@@ -9,6 +9,8 @@ license = "Apache-2.0"
 repository = "https://github.com/containers/libkrun"
 
 [features]
+# Preserve the previous feature name; state serialization is now always available.
+serde = []
 tee = ["devices/tee", "arch/tee"]
 amd-sev = ["blk", "bitfield", "bitflags", "iocuddle", "tee", "kbs-types", "serde", "serde_json", "devices/amd-sev", "arch/amd-sev"]
 tdx = ["blk", "tee", "kbs-types", "serde", "serde_json", "dep:tdx", "devices/tdx", "arch/tdx", "cpuid/tdx"]
@@ -41,7 +43,7 @@ polly = { package = "krun-polly", version = "=0.1.0-1.19.3", path = "../polly" }
 
 # Dependencies for amd-sev
 kbs-types = { version = "0.13.0", optional = true }
-serde = { version = "1.0.125", optional = true }
+serde = { version = "1.0.125", features = ["derive"] }
 serde_json = { version = "1.0.64", optional = true }
 iocuddle = { version = "0.1.1", optional = true }
 bitfield = { version = "0.19.4", optional = true }

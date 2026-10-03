@@ -154,10 +154,20 @@ pub fn overlay_meta_path(stage_dir: &Path) -> PathBuf {
 }
 
 pub fn write_overlay_record(record: &OverlayRecord) -> Result<(), OverlayError> {
+    write_overlay_record_observed(record, |_, _, _| {})
+}
+
+/// Observe metadata persistence without imposing a logging backend on OverlayCore.
+pub fn write_overlay_record_observed(
+    record: &OverlayRecord,
+    mut observe: impl FnMut(&'static str, std::time::Duration, bool),
+) -> Result<(), OverlayError> {
+    let start = std::time::Instant::now();
     let path = overlay_meta_path(&record.stage_dir);
-    let body = serde_json::to_string_pretty(record)
-        .map_err(|e| OverlayError::Persist(format!("serialize meta: {e}")))?;
-    atomic_write(&path, body.as_bytes(), 0o600)
+    let body = serde_json::to_string_pretty(record);
+    observe("serialize", start.elapsed(), body.is_ok());
+    let body = body.map_err(|e| OverlayError::Persist(format!("serialize meta: {e}")))?;
+    pvisor_journal::atomic_write_observed(&path, body.as_bytes(), 0o600, observe)
         .map_err(|error| OverlayError::Persist(format!("{}: {error:#}", path.display())))?;
     Ok(())
 }

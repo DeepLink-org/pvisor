@@ -55,7 +55,11 @@ pub struct Fs {
     overlay_cfg: Option<OverlayConfig>,
     read_only: bool,
     virtual_entries: Vec<VirtualDirEntry>,
-    worker_thread: Option<JoinHandle<()>>,
+    worker_thread: Option<JoinHandle<FsWorker>>,
+    parked_worker: Option<FsWorker>,
+    freeze_requested: bool,
+    #[cfg(target_os = "macos")]
+    restore: Option<super::snapshot::ServerSnapshot>,
     worker_stopfd: EventFd,
     exit_code: Arc<AtomicI32>,
     #[cfg(target_os = "macos")]
@@ -108,6 +112,10 @@ impl Fs {
             read_only,
             virtual_entries,
             worker_thread: None,
+            parked_worker: None,
+            freeze_requested: false,
+            #[cfg(target_os = "macos")]
+            restore: None,
             worker_stopfd: EventFd::new(EFD_NONBLOCK).map_err(FsError::EventFd)?,
             exit_code,
             #[cfg(target_os = "macos")]
@@ -145,6 +153,83 @@ impl Fs {
 }
 
 impl VirtioDevice for Fs {
+    fn freeze(&mut self) -> Result<bool, String> {
+        if self.shm_region.is_some() {
+            return Err("filesystem DAX/SHM freeze unsupported".into());
+        }
+        if self.parked_worker.is_some() || !self.is_activated() {
+            return Ok(true);
+        }
+        let worker = self
+            .worker_thread
+            .as_ref()
+            .ok_or("active filesystem worker missing")?;
+        if !self.freeze_requested {
+            self.worker_stopfd.write(1).map_err(|e| e.to_string())?;
+            self.freeze_requested = true;
+        }
+        if !worker.is_finished() {
+            return Ok(false);
+        }
+        self.parked_worker = Some(
+            self.worker_thread
+                .take()
+                .unwrap()
+                .join()
+                .map_err(|_| "filesystem worker panicked")?,
+        );
+        Ok(true)
+    }
+    fn thaw(&mut self) -> Result<(), String> {
+        if self.freeze_requested && self.worker_thread.is_some() {
+            return Err("filesystem freeze still pending".into());
+        }
+        if let Some(worker) = self.parked_worker.take() {
+            self.worker_thread = Some(worker.run());
+        }
+        self.freeze_requested = false;
+        Ok(())
+    }
+    #[cfg(target_os = "macos")]
+    fn capture_state(&self) -> Result<super::super::DeviceSnapshot, String> {
+        if self.is_activated() {
+            let (queues, server) = self
+                .parked_worker
+                .as_ref()
+                .ok_or("filesystem worker must be frozen")?
+                .capture_state()
+                .map_err(|e| e.to_string())?;
+            return Ok(super::super::DeviceSnapshot {
+                queues: Some(queues),
+                state: super::super::DeviceSnapshotState::Fs {
+                    tag: self.config.tag.to_vec(),
+                    allow_idmap: self.allow_idmap,
+                    server: Box::new(server),
+                },
+            });
+        }
+        Err("inactive filesystem snapshot unsupported".into())
+    }
+    #[cfg(target_os = "macos")]
+    fn restore_state(&mut self, state: &super::super::DeviceSnapshotState) -> Result<(), String> {
+        if self.is_activated() || self.worker_thread.is_some() || self.parked_worker.is_some() {
+            return Err("filesystem restore requires a fresh device".into());
+        }
+        let super::super::DeviceSnapshotState::Fs {
+            tag,
+            allow_idmap,
+            server,
+        } = state
+        else {
+            return Err("filesystem state type mismatch".into());
+        };
+        if tag.as_slice() != self.config.tag || *allow_idmap != self.allow_idmap {
+            return Err("filesystem tag or idmap mismatch".into());
+        }
+        self.restore = Some((**server).clone());
+        Ok(())
+    }
+
     fn avail_features(&self) -> u64 {
         self.avail_features
     }
@@ -224,13 +309,29 @@ impl VirtioDevice for Fs {
             self.worker_stopfd.try_clone().unwrap(),
             self.exit_code.clone(),
             #[cfg(target_os = "macos")]
+            self.restore.is_some(),
+            #[cfg(target_os = "macos")]
             self.map_sender.clone(),
         )
         .map_err(|e| {
             error!("virtio_fs: failed to create worker: {}", e);
             ActivateError::BadActivate
         })?;
-        self.worker_thread = Some(worker.run());
+        #[cfg(target_os = "macos")]
+        if let Some(state) = self.restore.take() {
+            worker.restore_state(&state).map_err(|error| {
+                error!("virtio_fs: failed restoring worker: {error}");
+                ActivateError::SnapshotRestore(error.to_string())
+            })?;
+            self.parked_worker = Some(worker);
+            self.freeze_requested = true;
+        } else {
+            self.worker_thread = Some(worker.run());
+        }
+        #[cfg(not(target_os = "macos"))]
+        {
+            self.worker_thread = Some(worker.run());
+        }
 
         self.device_state = DeviceState::Activated(mem, interrupt);
         Ok(())
@@ -250,6 +351,12 @@ impl VirtioDevice for Fs {
             if let Err(e) = worker.join() {
                 error!("error waiting for worker thread: {e:?}");
             }
+        }
+        self.parked_worker = None;
+        self.freeze_requested = false;
+        #[cfg(target_os = "macos")]
+        {
+            self.restore = None;
         }
         self.device_state = DeviceState::Inactive;
         true

@@ -20,6 +20,16 @@ impl IrqChipDevice {
         Self { inner: irqchip }
     }
 
+    #[cfg(all(target_os = "macos", target_arch = "aarch64"))]
+    pub fn capture_state(&self) -> Result<super::gicv3::GicSnapshot, String> {
+        self.inner.capture_state()
+    }
+
+    #[cfg(all(target_os = "macos", target_arch = "aarch64"))]
+    pub fn restore_state(&mut self, state: &super::gicv3::GicSnapshot) -> Result<(), String> {
+        self.inner.restore_state(state)
+    }
+
     pub fn get_mmio_addr(&self) -> u64 {
         self.inner.get_mmio_addr()
     }
@@ -125,6 +135,15 @@ pub trait IrqChipT: BusDevice {
 
 #[cfg(target_arch = "aarch64")]
 pub trait IrqChipT: BusDevice + GICDevice {
+    #[cfg(target_os = "macos")]
+    fn capture_state(&self) -> Result<super::gicv3::GicSnapshot, String> {
+        Err("snapshot requires the software GIC profile".into())
+    }
+    #[cfg(target_os = "macos")]
+    fn restore_state(&mut self, _state: &super::gicv3::GicSnapshot) -> Result<(), String> {
+        Err("snapshot requires the software GIC profile".into())
+    }
+
     fn get_mmio_addr(&self) -> u64;
     fn get_mmio_size(&self) -> u64;
     fn set_irq(

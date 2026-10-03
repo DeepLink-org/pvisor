@@ -47,8 +47,12 @@ use std::time::{Duration, Instant};
 #[cfg(target_arch = "x86_64")]
 use crate::device_manager::legacy::PortIODeviceManager;
 use crate::device_manager::mmio::MMIODeviceManager;
+#[cfg(target_os = "linux")]
 use crate::vstate::VcpuEvent;
+#[cfg(target_os = "linux")]
 use crate::vstate::{Vcpu, VcpuHandle, VcpuResponse, Vm};
+#[cfg(target_os = "macos")]
+pub use crate::vstate::{CpuSnapshot, Vcpu, VcpuEvent, VcpuHandle, VcpuResponse, Vm};
 
 use arch::{ArchMemoryInfo, InitrdConfig};
 #[cfg(target_os = "macos")]
@@ -239,6 +243,19 @@ impl Vmm {
             return Err("RAM sampling unavailable with unguarded devices".into());
         }
         Ok(())
+    }
+
+    /// Capture CPU state on each owning thread. This does not capture devices
+    /// and must never be published as a complete VM snapshot.
+    #[cfg(target_os = "macos")]
+    pub fn capture_cpu_states(&self) -> std::result::Result<Vec<CpuSnapshot>, String> {
+        self.require_ram_quiesced()?;
+        let deadline = Instant::now() + Duration::from_secs(3);
+        self.vcpus_handles.iter().enumerate().map(|(id, cpu)| {
+            let state = cpu.capture_state(deadline.saturating_duration_since(Instant::now()))?;
+            state.validate(id as u8)?;
+            Ok(state)
+        }).collect()
     }
 
     /// Full RAM inventory while mappings are quiescent; DAX windows excluded.

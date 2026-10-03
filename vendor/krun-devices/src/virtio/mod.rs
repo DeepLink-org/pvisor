@@ -52,7 +52,7 @@ pub use self::gpu::*;
 pub use self::mmio::*;
 #[cfg(feature = "net")]
 pub use self::net::Net;
-pub use self::queue::{Descriptor, DescriptorChain, Queue};
+pub use self::queue::{Descriptor, DescriptorChain, Queue, QueueSnapshot};
 #[cfg(not(feature = "tee"))]
 pub use self::rng::*;
 #[cfg(feature = "snd")]
@@ -94,6 +94,7 @@ pub const NOTIFY_REG_OFFSET: u32 = 0x50;
 pub enum ActivateError {
     EpollCtl(IOError),
     BadActivate,
+    SnapshotRestore(String),
 }
 
 pub type ActivateResult = std::result::Result<(), ActivateError>;

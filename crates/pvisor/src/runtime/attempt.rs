@@ -1169,12 +1169,15 @@ fn prepare_overlay(
     }
     match resolve_overlay_workspace(overlay_cfg, storage, root_session)? {
         Some(mut record) => {
-            let lease = RunLease::acquire_new(&record.stage_dir)?;
+            let lease =
+                crate::util::persistence_step(root_session, "overlay", "lease_prepare", || {
+                    RunLease::acquire_new(&record.stage_dir)
+                })?;
             let lowers = lower_stack_from_config(overlay_cfg, storage, &mut record, !mountless)?;
             let (mount, record, fs_metrics) = if mountless {
                 (
                     None,
-                    prepare_overlay_record_mountless(&record, &lowers)?,
+                    prepare_overlay_record_mountless(&record, &lowers, root_session)?,
                     None,
                 )
             } else {
@@ -1515,9 +1518,12 @@ mod tests {
         let record = super::resolve_overlay_workspace(&config, temporary.path(), "run-1")
             .unwrap()
             .unwrap();
-        let mut record =
-            super::prepare_overlay_record_mountless(&record, std::slice::from_ref(&target))
-                .unwrap();
+        let mut record = super::prepare_overlay_record_mountless(
+            &record,
+            std::slice::from_ref(&target),
+            "test-run",
+        )
+        .unwrap();
         std::fs::write(record.upper.path().join("value"), b"staged").unwrap();
         record.auto_discard = true;
         super::finalize_overlay(&mut record, false, true).unwrap();

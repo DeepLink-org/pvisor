@@ -30,6 +30,11 @@ const RENAME_NOREPLACE: u32 = 1;
 const RENAME_EXCHANGE: u32 = 2;
 
 #[derive(Clone, Debug)]
+#[cfg_attr(
+    target_os = "macos",
+    derive(PartialEq, Eq, serde::Serialize, serde::Deserialize)
+)]
+#[cfg_attr(target_os = "macos", serde(deny_unknown_fields))]
 pub struct Config {
     pub lower_dirs: Vec<String>,
     pub upper_dir: String,
@@ -41,9 +46,12 @@ pub struct Config {
 }
 
 #[derive(Clone, Copy, Debug)]
+#[cfg_attr(target_os = "macos", derive(serde::Serialize, serde::Deserialize))]
 struct Layer(usize);
 
-#[derive(Debug)]
+#[derive(Clone, Debug)]
+#[cfg_attr(target_os = "macos", derive(serde::Serialize, serde::Deserialize))]
+#[cfg_attr(target_os = "macos", serde(deny_unknown_fields))]
 struct FileHandle {
     overlay_inode: u64,
     layer: Layer,
@@ -51,14 +59,21 @@ struct FileHandle {
     handle: u64,
 }
 
-#[derive(Debug)]
+#[derive(Clone, Debug)]
+#[cfg_attr(target_os = "macos", derive(serde::Serialize, serde::Deserialize))]
+#[cfg_attr(target_os = "macos", serde(deny_unknown_fields))]
 struct DirectoryItem {
     ino: u64,
     name: Vec<u8>,
     type_: u32,
 }
 
-#[derive(Debug)]
+#[derive(Clone, Debug)]
+#[cfg_attr(target_os = "macos", derive(serde::Serialize, serde::Deserialize))]
+#[cfg_attr(
+    target_os = "macos",
+    serde(tag = "kind", content = "state", deny_unknown_fields)
+)]
 enum Handle {
     File(FileHandle),
     Directory(Vec<DirectoryItem>),
@@ -70,11 +85,42 @@ struct Nodes {
     by_path: HashMap<PathBuf, u64>,
 }
 
+#[cfg(target_os = "macos")]
+#[derive(Clone, Debug, serde::Serialize, serde::Deserialize)]
+#[serde(deny_unknown_fields)]
+pub struct OverlaySnapshot {
+    config: Config,
+    hard_links: Vec<(u64, u64, Vec<PathBuf>)>,
+    layers: Vec<super::snapshot::FsSnapshot>,
+    nodes: Vec<(u64, Vec<u8>)>,
+    handles: Vec<(u64, Handle)>,
+    next_handle: u64,
+}
+
+#[cfg(target_os = "macos")]
+impl OverlaySnapshot {
+    pub(crate) fn contains_inode(&self, inode: u64) -> bool {
+        self.nodes.iter().any(|n| n.0 == inode)
+            || self.layers.iter().any(|s| s.contains_inode(inode))
+    }
+
+    pub(crate) fn max_inode(&self) -> u64 {
+        self.layers
+            .iter()
+            .map(super::snapshot::FsSnapshot::max_inode)
+            .chain(self.nodes.iter().map(|n| n.0))
+            .max()
+            .unwrap_or(1)
+    }
+}
+
 pub struct OverlayFs {
     // ponytail: serialize requests so guest renames cannot race path checks/open;
     // use directory-fd-based resolution before relaxing this for throughput.
     operation_lock: Mutex<()>,
     core: OverlayCore,
+    #[cfg(target_os = "macos")]
+    snapshot_config: Config,
     roots: Vec<PathBuf>,
     layers: Vec<PassthroughFs>,
     inode_alloc: Arc<InodeAllocator>,
@@ -85,6 +131,15 @@ pub struct OverlayFs {
 
 impl OverlayFs {
     pub fn new(cfg: Config, inode_alloc: Arc<InodeAllocator>) -> io::Result<Self> {
+        Self::build(cfg, inode_alloc, false)
+    }
+
+    #[cfg(target_os = "macos")]
+    pub fn open_existing(cfg: Config, inode_alloc: Arc<InodeAllocator>) -> io::Result<Self> {
+        Self::build(cfg, inode_alloc, true)
+    }
+
+    fn build(cfg: Config, inode_alloc: Arc<InodeAllocator>, restoring: bool) -> io::Result<Self> {
         if cfg.lower_dirs.is_empty() {
             return Err(io::Error::from_raw_os_error(libc::EINVAL));
         }
@@ -93,14 +148,13 @@ impl OverlayFs {
         let work = cfg.work_dir.as_ref().map(PathBuf::from);
         let preimages = cfg.preimage_dir.as_ref().map(PathBuf::from);
         let excluded = cfg.excluded_paths.iter().map(PathBuf::from).collect();
-        let core = OverlayCore::new_with_exclusions_and_preimages(
-            lowers.clone(),
-            upper.clone(),
-            work,
-            excluded,
-            preimages,
-        )?
-        .with_access_policy(&cfg.access_policy);
+        let open = if restoring {
+            OverlayCore::open_existing
+        } else {
+            OverlayCore::new_with_exclusions_and_preimages
+        };
+        let core = open(lowers.clone(), upper.clone(), work, excluded, preimages)?
+            .with_access_policy(&cfg.access_policy);
 
         let mut roots = Vec::with_capacity(lowers.len() + 1);
         roots.push(upper);
@@ -126,6 +180,8 @@ impl OverlayFs {
         Ok(Self {
             operation_lock: Mutex::new(()),
             core,
+            #[cfg(target_os = "macos")]
+            snapshot_config: cfg,
             roots,
             layers,
             inode_alloc,
@@ -294,6 +350,103 @@ impl OverlayFs {
 }
 
 impl FileSystem for OverlayFs {
+    #[cfg(target_os = "macos")]
+    fn capture_state(&self) -> io::Result<super::snapshot::FsSnapshot> {
+        let _operation = self.operation_lock.lock().unwrap();
+        Ok(super::snapshot::FsSnapshot::Overlay(OverlaySnapshot {
+            config: self.snapshot_config.clone(),
+            hard_links: self.core.capture_hard_links()?,
+            layers: self
+                .layers
+                .iter()
+                .map(FileSystem::capture_state)
+                .collect::<io::Result<_>>()?,
+            nodes: self
+                .nodes
+                .lock()
+                .unwrap()
+                .by_inode
+                .iter()
+                .map(|(inode, path)| (*inode, path.as_os_str().as_bytes().to_vec()))
+                .collect(),
+            handles: self
+                .handles
+                .lock()
+                .unwrap()
+                .iter()
+                .map(|(id, handle)| (*id, handle.clone()))
+                .collect(),
+            next_handle: self.next_handle.load(Ordering::Relaxed),
+        }))
+    }
+    #[cfg(target_os = "macos")]
+    fn restore_state(&self, state: &super::snapshot::FsSnapshot) -> io::Result<()> {
+        use super::snapshot::{invalid, FsSnapshot};
+        let FsSnapshot::Overlay(state) = state else {
+            return Err(invalid("overlay filesystem type mismatch"));
+        };
+        let _operation = self.operation_lock.lock().unwrap();
+        if state.config != self.snapshot_config
+            || state.layers.len() != self.layers.len()
+            || state.next_handle == 0
+            || state.next_handle == u64::MAX
+        {
+            return Err(invalid("overlay topology or handle allocator mismatch"));
+        }
+        let mut nodes = Nodes::default();
+        for (inode, path) in &state.nodes {
+            let path = PathBuf::from(OsStr::from_bytes(path));
+            if *inode == 0
+                || path
+                    .components()
+                    .any(|c| !matches!(c, std::path::Component::Normal(_)))
+                || nodes.by_inode.insert(*inode, path.clone()).is_some()
+                || nodes.by_path.insert(path, *inode).is_some()
+            {
+                return Err(invalid("invalid overlay inode paths"));
+            }
+        }
+        let mut handles = HashMap::new();
+        for (id, handle) in &state.handles {
+            if *id == 0 || *id >= state.next_handle || handles.insert(*id, handle.clone()).is_some()
+            {
+                return Err(invalid("invalid overlay handle"));
+            }
+            match handle {
+                Handle::File(file) => {
+                    let Some(FsSnapshot::Passthrough(layer)) = state.layers.get(file.layer.0)
+                    else {
+                        return Err(invalid("invalid file handle layer"));
+                    };
+                    if !nodes.by_inode.contains_key(&file.overlay_inode)
+                        || !layer
+                            .handles
+                            .iter()
+                            .any(|h| h.handle == file.handle && h.inode == file.inode)
+                    {
+                        return Err(invalid("overlay handle without backing inode"));
+                    }
+                }
+                Handle::Directory(entries) => {
+                    if entries
+                        .iter()
+                        .any(|e| e.name.is_empty() || e.name.contains(&0) || e.name.contains(&b'/'))
+                    {
+                        return Err(invalid("invalid overlay directory cookie"));
+                    }
+                }
+            }
+        }
+        for (layer, saved) in self.layers.iter().zip(&state.layers) {
+            layer.restore_state(saved)?;
+        }
+        self.core.restore_hard_links(&state.hard_links)?;
+        *self.nodes.lock().unwrap() = nodes;
+        *self.handles.lock().unwrap() = handles;
+        self.next_handle.store(state.next_handle, Ordering::Relaxed);
+        Ok(())
+    }
+
     type Inode = u64;
     type Handle = u64;
 
@@ -1004,24 +1157,21 @@ mod tests {
             gid: 0,
             pid: 1,
         };
-        assert!(
-            fs.lookup(ctx, fuse::ROOT_ID, &CString::new("private.key").unwrap())
-                .is_err()
-        );
+        assert!(fs
+            .lookup(ctx, fuse::ROOT_ID, &CString::new("private.key").unwrap())
+            .is_err());
         let alias = fs
             .lookup(ctx, fuse::ROOT_ID, &CString::new("alias").unwrap())
             .unwrap();
-        assert!(
-            fs.open(ctx, alias.inode, false, libc::O_RDONLY as u32)
-                .is_err()
-        );
+        assert!(fs
+            .open(ctx, alias.inode, false, libc::O_RDONLY as u32)
+            .is_err());
         let env = fs
             .lookup(ctx, fuse::ROOT_ID, &CString::new(".env").unwrap())
             .unwrap();
-        assert!(
-            fs.open(ctx, env.inode, false, libc::O_RDONLY as u32)
-                .is_ok()
-        );
+        assert!(fs
+            .open(ctx, env.inode, false, libc::O_RDONLY as u32)
+            .is_ok());
     }
 
     #[test]

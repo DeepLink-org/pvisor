@@ -51,6 +51,7 @@ pub struct Balloon {
     pub(crate) acked_features: u64,
     pub(crate) activate_evt: EventFd,
     pub(crate) device_state: DeviceState,
+    frozen: bool,
     config: VirtioBalloonConfig,
 }
 
@@ -63,6 +64,7 @@ impl Balloon {
             activate_evt: EventFd::new(utils::eventfd::EFD_NONBLOCK)
                 .map_err(BalloonError::EventFd)?,
             device_state: DeviceState::Inactive,
+            frozen: false,
             config: VirtioBalloonConfig::default(),
         })
     }
@@ -72,6 +74,9 @@ impl Balloon {
     }
 
     pub fn process_frq(&mut self) -> bool {
+        if self.frozen {
+            return false;
+        }
         debug!("balloon: process_frq()");
         let mem = match self.device_state {
             DeviceState::Activated(ref mem, _) => mem,
@@ -117,6 +122,59 @@ impl Balloon {
 }
 
 impl VirtioDevice for Balloon {
+    fn freeze(&mut self) -> Result<bool, String> {
+        self.frozen = true;
+        Ok(true)
+    }
+    fn thaw(&mut self) -> Result<(), String> {
+        if self.frozen {
+            if let Some(queues) = &self.queues {
+                for queue in queues {
+                    queue.event.write(1).map_err(|e| e.to_string())?;
+                }
+            }
+            self.frozen = false;
+        }
+        Ok(())
+    }
+
+    fn capture_state(&self) -> Result<super::super::DeviceSnapshot, String> {
+        if self.is_activated() && !self.frozen {
+            return Err("device must be frozen before capture".into());
+        }
+        Ok(super::super::DeviceSnapshot {
+            queues: self
+                .queues
+                .as_ref()
+                .map(|queues| queues.iter().map(|dq| dq.queue.capture_state()).collect()),
+            state: super::super::DeviceSnapshotState::Balloon([
+                self.config.num_pages,
+                self.config.actual,
+                self.config.free_page_report_cmd_id,
+                self.config.poison_val,
+            ]),
+        })
+    }
+
+    fn restore_state(&mut self, state: &super::super::DeviceSnapshotState) -> Result<(), String> {
+        if self.is_activated() {
+            return Err("restore requires a fresh device".into());
+        }
+        match state {
+            super::super::DeviceSnapshotState::Balloon(values) => {
+                self.frozen = true;
+                self.config = VirtioBalloonConfig {
+                    num_pages: values[0],
+                    actual: values[1],
+                    free_page_report_cmd_id: values[2],
+                    poison_val: values[3],
+                };
+                Ok(())
+            }
+            _ => Err("balloon state type mismatch".into()),
+        }
+    }
+
     fn avail_features(&self) -> u64 {
         self.avail_features
     }

@@ -58,6 +58,25 @@ impl Display for CreateMmioTransportError {
 ///
 /// Typically one page (4096 bytes) of MMIO address space is sufficient to handle this transport
 /// and inner virtio device.
+#[derive(Clone, Debug, serde::Serialize, serde::Deserialize)]
+#[serde(deny_unknown_fields)]
+pub struct MmioSnapshot {
+    version: u32,
+    device_type: u32,
+    avail_features: u64,
+    acked_features: u64,
+    features_select: u32,
+    acked_features_select: u32,
+    queue_select: u32,
+    device_status: u32,
+    config_generation: u32,
+    shm_region_select: u32,
+    interrupt_status: u32,
+    irq_line: Option<u32>,
+    queues: Option<Vec<QueueSnapshot>>,
+    device: DeviceSnapshot,
+}
+
 pub struct MmioTransport {
     device: Arc<Mutex<dyn VirtioDevice>>,
     // The register where feature bits are stored.
@@ -163,6 +182,134 @@ impl InterruptTransport {
 }
 
 impl MmioTransport {
+    /// Requires a parked CPU and frozen backend. A busy worker is an error,
+    /// never wait on its lock while the memory gate is closed.
+    /// Keep polling with the VMM lock released between calls. Close the RAM
+    /// gate only after every device has returned true.
+    pub fn freeze(&mut self) -> Result<bool, String> {
+        self.device
+            .try_lock()
+            .map_err(|_| "virtio device busy or poisoned")?
+            .freeze()
+    }
+
+    /// Open the RAM gate before waking workers; resume CPUs last.
+    pub fn thaw(&mut self) -> Result<(), String> {
+        self.device
+            .try_lock()
+            .map_err(|_| "virtio device busy or poisoned")?
+            .thaw()
+    }
+
+    pub fn capture_state(&self) -> Result<MmioSnapshot, String> {
+        let device = self
+            .device
+            .try_lock()
+            .map_err(|_| "virtio device busy or poisoned")?;
+        if device.shm_region().is_some() {
+            return Err("DAX/SHM snapshot unsupported".into());
+        }
+        let state = device.capture_state()?;
+        if state.queues.is_some() != device.is_activated() {
+            return Err("device queue ownership inconsistent".into());
+        }
+        Ok(MmioSnapshot {
+            version: 1,
+            device_type: device.device_type(),
+            avail_features: device.avail_features(),
+            acked_features: device.acked_features(),
+            features_select: self.features_select,
+            acked_features_select: self.acked_features_select,
+            queue_select: self.queue_select,
+            device_status: self.device_status,
+            config_generation: self.config_generation,
+            shm_region_select: self.shm_region_select,
+            interrupt_status: self.interrupt.status().load(Ordering::SeqCst) as u32,
+            irq_line: self.interrupt.irq_line(),
+            queues: self
+                .queues
+                .as_ref()
+                .map(|queues| queues.iter().map(Queue::capture_state).collect()),
+            device: state,
+        })
+    }
+
+    /// Fresh topology and RAM must already exist; all workers stay quiescent
+    /// until the caller opens the memory gate. On error discard this destination.
+    pub fn restore_state(&mut self, state: &MmioSnapshot) -> Result<(), String> {
+        let mut device = self
+            .device
+            .try_lock()
+            .map_err(|_| "virtio device busy or poisoned")?;
+        let active = state.device.queues.is_some();
+        if state.version != 1
+            || state.device_type != device.device_type()
+            || state.avail_features != device.avail_features()
+            || state.acked_features & !state.avail_features != 0
+            || state.irq_line != self.interrupt.irq_line()
+            || state.interrupt_status & !3 != 0
+            || device.is_activated()
+            || device.shm_region().is_some()
+            || active == state.queues.is_some()
+            || active != (state.device_status & device_status::DRIVER_OK != 0)
+        {
+            return Err("virtio topology, features or lifecycle mismatch".into());
+        }
+        let saved = if active {
+            state.device.queues.as_ref()
+        } else {
+            state.queues.as_ref()
+        }
+        .ok_or("missing virtqueues")?;
+        if saved.len() != self.queue_config.len() {
+            return Err("virtqueue count mismatch".into());
+        }
+        if active
+            && saved.iter().any(|queue| {
+                queue.event_idx_enabled
+                    != (state.acked_features & (1 << VIRTIO_RING_F_EVENT_IDX) != 0)
+            })
+        {
+            return Err("virtqueue notification feature mismatch".into());
+        }
+        let queues = saved
+            .iter()
+            .zip(&self.queue_config)
+            .map(|(queue, cfg)| queue.restore(cfg.size, &self.mem))
+            .collect::<Result<Vec<_>, _>>()?;
+        device.restore_state(&state.device.state)?;
+        device.set_acked_features(state.acked_features);
+        if active {
+            let queues = queues
+                .into_iter()
+                .zip(self.queue_evts.iter().cloned())
+                .map(|(queue, event)| DeviceQueue::new(queue, event))
+                .collect();
+            device
+                .activate(self.mem.clone(), self.interrupt.clone(), queues)
+                .map_err(|error| format!("restored device activation: {error:?}"))?;
+            // Host notification counters are not persisted. Wake workers to
+            // inspect restored rings, including work submitted just before pause.
+            for event in &self.queue_evts {
+                event.write(1).map_err(|e| e.to_string())?;
+            }
+            self.queues = None;
+        } else {
+            self.queues = Some(queues);
+        }
+        self.features_select = state.features_select;
+        self.acked_features_select = state.acked_features_select;
+        self.queue_select = state.queue_select;
+        self.device_status = state.device_status;
+        self.config_generation = state.config_generation;
+        self.shm_region_select = state.shm_region_select;
+        self.interrupt
+            .status()
+            .store(state.interrupt_status as usize, Ordering::SeqCst);
+        // Pending controller interrupts are restored separately. Do not inject twice.
+        Ok(())
+    }
+
     /// Constructs a new MMIO transport for the given virtio device.
     pub fn new(
         mem: GuestMemoryMmap,

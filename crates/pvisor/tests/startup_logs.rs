@@ -39,10 +39,42 @@ fn startup_logs_are_default_correlated_and_route_to_frontend() {
     assert!(log.contains("run_id=\"run-"));
     assert!(log.contains("stage=cli.run_finished"));
     assert!(!log.contains("printf"));
+    let persistence: Vec<_> = log
+        .lines()
+        .filter(|line| line.starts_with("pvisor-persistence "))
+        .collect();
+    assert!(!persistence.is_empty());
+    for object in ["run_record", "run_index"] {
+        for phase in [
+            "serialize",
+            "file_write",
+            "file_sync",
+            "rename",
+            "directory_sync",
+        ] {
+            assert!(
+                persistence
+                    .iter()
+                    .any(|line| line.contains(&format!("object={object} phase={phase} ")))
+            );
+        }
+    }
+    for line in persistence {
+        assert!(line.contains("run_id=\"run-"));
+        assert!(line.contains("outcome=ok"));
+        assert!(
+            line.split_whitespace()
+                .find_map(|field| field.strip_prefix("duration_us="))
+                .unwrap()
+                .parse::<u128>()
+                .is_ok()
+        );
+    }
 
     let output = command.env("PVISOR_STARTUP_TIMING", "0").output().unwrap();
     assert!(output.status.success());
     assert!(!String::from_utf8_lossy(&output.stderr).contains("pvisor-startup "));
+    assert!(!String::from_utf8_lossy(&output.stderr).contains("pvisor-persistence "));
 
     let path = temp.path().join("frontend.log");
     std::fs::write(&path, "").unwrap();
@@ -63,6 +95,7 @@ fn startup_logs_are_default_correlated_and_route_to_frontend() {
     let log = std::fs::read_to_string(path).unwrap();
     assert!(log.contains("stage=process.entry"));
     assert!(log.contains("stage=cli.run_finished"));
+    assert!(log.contains("pvisor-persistence "));
     // Concurrent host processes share the same frontend append log too.
     std::fs::write(temp.path().join("frontend.log"), "").unwrap();
     command

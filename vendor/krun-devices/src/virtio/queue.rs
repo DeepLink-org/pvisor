@@ -329,6 +329,48 @@ impl<'a> DescriptorChain<'a> {
     }
 }
 
+/// Queue runtime indices cannot be reconstructed from guest RAM alone.
+#[derive(Clone, Debug, serde::Serialize, serde::Deserialize)]
+#[serde(deny_unknown_fields)]
+pub struct QueueSnapshot {
+    max_size: u16,
+    size: u16,
+    ready: bool,
+    desc_table: u64,
+    avail_ring: u64,
+    used_ring: u64,
+    next_avail: u16,
+    next_used: u16,
+    pub(crate) event_idx_enabled: bool,
+    num_added: u16,
+}
+
+impl QueueSnapshot {
+    /// Validate against freshly constructed device topology and restored RAM.
+    /// No memory-gate lease or guest reads: safe while the restore gate is closed.
+    pub fn restore(&self, max_size: u16, mem: &GuestMemoryMmap) -> Result<Queue, String> {
+        if self.max_size != max_size {
+            return Err("virtqueue maximum size mismatch".into());
+        }
+        let queue = Queue {
+            max_size,
+            size: self.size,
+            ready: self.ready,
+            desc_table: GuestAddress(self.desc_table),
+            avail_ring: GuestAddress(self.avail_ring),
+            used_ring: GuestAddress(self.used_ring),
+            next_avail: Wrapping(self.next_avail),
+            next_used: Wrapping(self.next_used),
+            event_idx_enabled: self.event_idx_enabled,
+            num_added: Wrapping(self.num_added),
+        };
+        if self.ready && !queue.valid_layout(mem) {
+            return Err("invalid restored virtqueue layout".into());
+        }
+        Ok(queue)
+    }
+}
+
 #[derive(Debug, Eq, PartialEq)]
 /// A virtio queue's parameters.
 pub struct Queue {
@@ -378,13 +420,19 @@ impl Queue {
         }
     }
 
-    fn memory_access(&self, mem: &GuestMemoryMmap) -> Option<std::sync::Arc<super::memory_gate::Access>> {
+    fn memory_access(
+        &self,
+        mem: &GuestMemoryMmap,
+    ) -> Option<std::sync::Arc<super::memory_gate::Access>> {
         let size = self.actual_size() as usize;
-        super::memory_gate::access_ranges(mem, &[
-            (self.desc_table.raw_value(), 16 * size),
-            (self.avail_ring.raw_value(), 6 + 2 * size),
-            (self.used_ring.raw_value(), 6 + 8 * size),
-        ])
+        super::memory_gate::access_ranges(
+            mem,
+            &[
+                (self.desc_table.raw_value(), 16 * size),
+                (self.avail_ring.raw_value(), 6 + 2 * size),
+                (self.used_ring.raw_value(), 6 + 8 * size),
+            ],
+        )
     }
 
     pub fn get_max_size(&self) -> u16 {
@@ -399,61 +447,42 @@ impl Queue {
 
     pub fn is_valid(&self, mem: &GuestMemoryMmap) -> bool {
         let _memory_access = self.memory_access(mem);
-        let queue_size = u64::from(self.actual_size());
-        let desc_table = self.desc_table;
-        let desc_table_size = 16 * queue_size;
-        let avail_ring = self.avail_ring;
-        let avail_ring_size = 6 + 2 * queue_size;
-        let used_ring = self.used_ring;
-        let used_ring_size = 6 + 8 * queue_size;
-        if !self.ready {
-            error!("attempt to use virtio queue that is not marked ready");
-            false
-        } else if self.size > self.max_size || self.size == 0 || (self.size & (self.size - 1)) != 0
+        self.valid_layout(mem)
+    }
+
+    fn valid_layout(&self, mem: &GuestMemoryMmap) -> bool {
+        if !self.ready
+            || self.size == 0
+            || self.size > self.max_size
+            || !self.size.is_power_of_two()
         {
-            error!("virtio queue with invalid size: {}", self.size);
-            false
-        } else if desc_table
-            .checked_add(desc_table_size)
-            .is_none_or(|v| !mem.address_in_range(v))
-        {
-            error!(
-                "virtio queue descriptor table goes out of bounds: start:0x{:08x} size:0x{:08x}",
-                desc_table.raw_value(),
-                desc_table_size
-            );
-            false
-        } else if avail_ring
-            .checked_add(avail_ring_size)
-            .is_none_or(|v| !mem.address_in_range(v))
-        {
-            error!(
-                "virtio queue available ring goes out of bounds: start:0x{:08x} size:0x{:08x}",
-                avail_ring.raw_value(),
-                avail_ring_size
-            );
-            false
-        } else if used_ring
-            .checked_add(used_ring_size)
-            .is_none_or(|v| !mem.address_in_range(v))
-        {
-            error!(
-                "virtio queue used ring goes out of bounds: start:0x{:08x} size:0x{:08x}",
-                used_ring.raw_value(),
-                used_ring_size
-            );
-            false
-        } else if desc_table.raw_value() & 0xf != 0 {
-            error!("virtio queue descriptor table breaks alignment contraints");
-            false
-        } else if avail_ring.raw_value() & 0x1 != 0 {
-            error!("virtio queue available ring breaks alignment contraints");
-            false
-        } else if used_ring.raw_value() & 0x3 != 0 {
-            error!("virtio queue used ring breaks alignment contraints");
-            false
-        } else {
-            true
+            return false;
+        }
+        let size = self.size as usize;
+        [
+            (self.desc_table, 16 * size, 16),
+            (self.avail_ring, 6 + 2 * size, 2),
+            (self.used_ring, 6 + 8 * size, 4),
+        ]
+        .iter()
+        .all(|(addr, len, align)| {
+            addr.raw_value() % align == 0 && mem.get_slice(*addr, *len).is_ok()
+        })
+    }
+
+    /// Requires the owning worker parked outside any descriptor operation.
+    pub fn capture_state(&self) -> QueueSnapshot {
+        QueueSnapshot {
+            max_size: self.max_size,
+            size: self.size,
+            ready: self.ready,
+            desc_table: self.desc_table.raw_value(),
+            avail_ring: self.avail_ring.raw_value(),
+            used_ring: self.used_ring.raw_value(),
+            next_avail: self.next_avail.0,
+            next_used: self.next_used.0,
+            event_idx_enabled: self.event_idx_enabled,
+            num_added: self.num_added.0,
         }
     }
 

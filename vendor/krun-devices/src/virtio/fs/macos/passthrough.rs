@@ -2,6 +2,9 @@
 // Use of this source code is governed by a BSD-style license that can be
 // found in the LICENSE file.
 
+use super::super::snapshot::{
+    self, FileIdentity, FsSnapshot, HandleSnapshot, InodeSnapshot, PassthroughSnapshot,
+};
 use std::collections::btree_map;
 use std::collections::BTreeMap;
 use std::collections::HashMap;
@@ -11,6 +14,7 @@ use std::io;
 use std::mem::MaybeUninit;
 use std::os::unix::io::{AsRawFd, FromRawFd, RawFd};
 use std::os::unix::net::UnixListener;
+use std::os::unix::{ffi::OsStrExt, fs::OpenOptionsExt};
 use std::path::Path;
 use std::ptr::null_mut;
 use std::str::FromStr;
@@ -59,6 +63,15 @@ struct InodeData {
     dev: i32,
     refcount: AtomicU64,
     unlinked_fd: AtomicI64,
+}
+
+impl Drop for InodeData {
+    fn drop(&mut self) {
+        let fd = self.unlinked_fd.swap(-1, Ordering::AcqRel);
+        if fd >= 0 {
+            unsafe { libc::close(fd as RawFd) };
+        }
+    }
 }
 
 enum InodeHandle {
@@ -165,7 +178,9 @@ fn descriptor_path(file: &File) -> io::Result<CString> {
     if unsafe { libc::fcntl(file.as_raw_fd(), libc::F_GETPATH, path.as_mut_ptr()) } < 0 {
         return Err(linux_error(io::Error::last_os_error()));
     }
-    CStr::from_bytes_until_nul(&path).map(CStr::to_owned).map_err(|_| einval())
+    CStr::from_bytes_until_nul(&path)
+        .map(CStr::to_owned)
+        .map_err(|_| einval())
 }
 
 fn ebadf() -> io::Error {
@@ -506,7 +521,7 @@ fn istat(
 /// The caching policy that the file system should report to the FUSE client. By default the FUSE
 /// protocol uses close-to-open consistency. This means that any cached contents of the file are
 /// invalidated the next time that file is opened.
-#[derive(Debug, Default, Clone)]
+#[derive(Debug, Default, Clone, PartialEq, Eq, serde::Serialize, serde::Deserialize)]
 pub enum CachePolicy {
     /// The client should never cache file data and all I/O should be directly forwarded to the
     /// server. This policy must be selected when file contents may change without the knowledge of
@@ -539,7 +554,7 @@ impl FromStr for CachePolicy {
 }
 
 /// The permission semantics to be emulated by this file system personality.
-#[derive(Debug, Default, Clone, Copy)]
+#[derive(Debug, Default, Clone, Copy, PartialEq, Eq, serde::Serialize, serde::Deserialize)]
 pub enum PermissionSemantics {
     /// Be as close as possible to the common semantics of Linux file systems.
     #[default]
@@ -1285,10 +1300,7 @@ fn forget_one(
                 if new_count == 0 {
                     // If we have unlinked this inode, we have opened a file descriptor to be
                     // able to operate on it without a path. Close it now.
-                    let fd = data.unlinked_fd.load(Ordering::Acquire);
-                    if fd >= 0 {
-                        unsafe { libc::close(fd as RawFd) };
-                    }
+                    // InodeData owns its detached descriptor and closes it on drop.
                     // We just removed the last refcount for this inode. There's no need for an
                     // acquire fence here because we hold a write lock on the inode map and any
                     // thread that is waiting to do a forget on the same inode will have to wait
@@ -1303,6 +1315,268 @@ fn forget_one(
 }
 
 impl FileSystem for PassthroughFs {
+    fn capture_state(&self) -> io::Result<FsSnapshot> {
+        if self.writeback.load(Ordering::Relaxed)
+            || !self.map_windows.lock().unwrap().is_empty()
+            || self.cfg.export_table.is_some()
+            || self.cfg.proc_sfd_rawfd.is_some()
+        {
+            return Err(snapshot::unsupported(
+                "filesystem writeback, DAX or exported descriptors",
+            ));
+        }
+        let root = Path::new(&self.cfg.root_dir).canonicalize()?;
+        let mut saved_inodes = Vec::new();
+        for data in self.inodes.read().unwrap().values() {
+            if data.unlinked_fd.load(Ordering::Acquire) >= 0 {
+                return Err(snapshot::unsupported("detached filesystem inode"));
+            }
+            let pinned = match &data.path_fd {
+                Some(file) => file.try_clone()?,
+                None => {
+                    let path = CString::new(format!("/.vol/{}/{}", data.dev, data.ino)).unwrap();
+                    let fd = unsafe {
+                        libc::open(
+                            path.as_ptr(),
+                            libc::O_EVTONLY | libc::O_SYMLINK | libc::O_CLOEXEC,
+                        )
+                    };
+                    if fd < 0 {
+                        return Err(io::Error::last_os_error());
+                    }
+                    unsafe { File::from_raw_fd(fd) }
+                }
+            };
+            let name = descriptor_path(&pinned)?;
+            let path = Path::new(std::ffi::OsStr::from_bytes(name.to_bytes()));
+            let relative = path
+                .strip_prefix(&root)
+                .map_err(|_| snapshot::invalid("inode outside filesystem root"))?;
+            let identity = FileIdentity::read(&pinned)?;
+            // Validate file content as well as identity: a same-size rewrite can
+            // preserve timestamps. Tree ownership is still the caller's lease.
+            let digest = if identity.mode & u32::from(libc::S_IFMT) == u32::from(libc::S_IFREG) {
+                Some(snapshot::file_digest(
+                    &std::fs::OpenOptions::new()
+                        .read(true)
+                        .custom_flags(libc::O_NOFOLLOW)
+                        .open(path)?,
+                )?)
+            } else {
+                None
+            };
+            saved_inodes.push(InodeSnapshot {
+                inode: data.inode,
+                refs: data.refcount.load(Ordering::Relaxed),
+                path: Some(relative.as_os_str().as_bytes().to_vec()),
+                identity,
+                digest,
+            });
+        }
+        let mut saved_handles = Vec::new();
+        for (&handle, data) in self.handles.read().unwrap().iter() {
+            let file = data.file.read().unwrap();
+            let flags = unsafe { libc::fcntl(file.as_raw_fd(), libc::F_GETFL) };
+            let offset = unsafe { libc::lseek(file.as_raw_fd(), 0, libc::SEEK_CUR) };
+            if flags < 0 || offset < 0 {
+                return Err(io::Error::last_os_error());
+            }
+            let directory = data.dirstream.lock().unwrap();
+            saved_handles.push(HandleSnapshot {
+                handle,
+                inode: data.inode,
+                flags,
+                offset: offset as u64,
+                entries: directory
+                    .entries
+                    .iter()
+                    .map(|e| (e.ino, e.name.to_vec(), e.type_))
+                    .collect(),
+                directory_ready: directory.ready,
+            });
+        }
+        Ok(FsSnapshot::Passthrough(PassthroughSnapshot {
+            root: root.as_os_str().as_bytes().to_vec(),
+            semantics: self.cfg.semantics as u8,
+            entry_timeout: self.cfg.entry_timeout,
+            attr_timeout: self.cfg.attr_timeout,
+            cache_policy: self.cfg.cache_policy.clone(),
+            xattr: self.cfg.xattr,
+            inodes: saved_inodes,
+            handles: saved_handles,
+            next_handle: self.next_handle.load(Ordering::Relaxed),
+            submounts: self.announce_submounts.load(Ordering::Relaxed),
+        }))
+    }
+
+    fn restore_state(&self, state: &FsSnapshot) -> io::Result<()> {
+        let FsSnapshot::Passthrough(state) = state else {
+            return Err(snapshot::invalid("filesystem type mismatch"));
+        };
+        if self.writeback.load(Ordering::Relaxed)
+            || !self.map_windows.lock().unwrap().is_empty()
+            || self.cfg.export_table.is_some()
+            || self.cfg.proc_sfd_rawfd.is_some()
+        {
+            return Err(snapshot::unsupported(
+                "filesystem writeback, DAX or exported descriptors",
+            ));
+        }
+        let root = Path::new(&self.cfg.root_dir).canonicalize()?;
+        if root.as_os_str().as_bytes() != state.root
+            || self.cfg.semantics as u8 != state.semantics
+            || self.cfg.entry_timeout != state.entry_timeout
+            || self.cfg.attr_timeout != state.attr_timeout
+            || self.cfg.cache_policy != state.cache_policy
+            || self.cfg.xattr != state.xattr
+        {
+            return Err(snapshot::invalid(
+                "filesystem root or permission semantics mismatch",
+            ));
+        }
+        let mut inodes = MultikeyBTreeMap::new();
+        let mut paths = BTreeMap::new();
+        for saved in &state.inodes {
+            if saved.inode == 0 || saved.refs == 0 || inodes.get(&saved.inode).is_some() {
+                return Err(snapshot::invalid("invalid or unsupported inode state"));
+            }
+            let relative = saved
+                .path
+                .as_deref()
+                .ok_or_else(|| snapshot::invalid("missing inode path"))?;
+            if (saved.inode == fuse::ROOT_ID) != relative.is_empty() {
+                return Err(snapshot::invalid("invalid root inode path"));
+            }
+            let path = snapshot::relative_path(&root, relative)?;
+            let pin = std::fs::OpenOptions::new()
+                .read(true)
+                .custom_flags(libc::O_EVTONLY | libc::O_SYMLINK | libc::O_NOFOLLOW)
+                .open(&path)?;
+            let identity = FileIdentity::read(&pin)?;
+            if identity != saved.identity
+                || (identity.mode & u32::from(libc::S_IFMT) == u32::from(libc::S_IFREG))
+                    != saved.digest.is_some()
+                || (saved.digest.is_some()
+                    && Some(snapshot::file_digest(
+                        &std::fs::OpenOptions::new()
+                            .read(true)
+                            .custom_flags(libc::O_NOFOLLOW)
+                            .open(&path)?,
+                    )?) != saved.digest)
+            {
+                return Err(io::Error::new(
+                    io::ErrorKind::InvalidData,
+                    format!(
+                        "filesystem object changed since snapshot: {}: saved {:?}, current {:?}",
+                        path.display(),
+                        saved.identity,
+                        identity
+                    ),
+                ));
+            }
+            let key = InodeAltKey {
+                ino: identity.ino,
+                dev: identity.dev as i32,
+            };
+            if inodes.get_alt(&key).is_some() {
+                return Err(snapshot::invalid("duplicate host inode"));
+            }
+            paths.insert(saved.inode, path);
+            inodes.insert(
+                saved.inode,
+                key,
+                Arc::new(InodeData {
+                    path_fd: Some(pin),
+                    inode: saved.inode,
+                    ino: identity.ino,
+                    dev: identity.dev as i32,
+                    refcount: AtomicU64::new(saved.refs),
+                    unlinked_fd: AtomicI64::new(-1),
+                }),
+            );
+        }
+        let mut handles = BTreeMap::new();
+        // Reopen with non-destructive native flags. Never replay create/truncate
+        // or host file locks from an untrusted snapshot.
+        let allowed = libc::O_ACCMODE
+            | libc::O_APPEND
+            | libc::O_NONBLOCK
+            | libc::O_SYNC
+            | libc::O_DIRECTORY
+            | libc::O_NOFOLLOW;
+        for saved in &state.handles {
+            if saved.handle == 0
+                || saved.handle >= state.next_handle
+                || handles.contains_key(&saved.handle)
+                || saved.flags & !allowed != 0
+                || saved.flags & libc::O_ACCMODE == libc::O_ACCMODE
+                || saved.offset > i64::MAX as u64
+            {
+                return Err(snapshot::invalid("invalid filesystem handle"));
+            }
+            let path = paths
+                .get(&saved.inode)
+                .ok_or_else(|| snapshot::invalid("handle without inode"))?;
+            let name = CString::new(path.as_os_str().as_bytes())
+                .map_err(|_| snapshot::invalid("NUL in path"))?;
+            let fd = unsafe {
+                libc::open(
+                    name.as_ptr(),
+                    saved.flags | libc::O_CLOEXEC | libc::O_NOFOLLOW,
+                )
+            };
+            if fd < 0 {
+                return Err(io::Error::last_os_error());
+            }
+            let file = unsafe { File::from_raw_fd(fd) };
+            let saved_inode = state
+                .inodes
+                .iter()
+                .find(|i| i.inode == saved.inode)
+                .unwrap();
+            if FileIdentity::read(&file)? != saved_inode.identity {
+                return Err(snapshot::invalid(
+                    "filesystem object replaced while reopening",
+                ));
+            }
+            if unsafe { libc::lseek(fd, saved.offset as i64, libc::SEEK_SET) } < 0 {
+                return Err(io::Error::last_os_error());
+            }
+            let mut entries = Vec::new();
+            for (ino, name, type_) in &saved.entries {
+                if name.is_empty() || name.contains(&0) || name.contains(&b'/') {
+                    return Err(snapshot::invalid("invalid directory cookie entry"));
+                }
+                entries.push(CachedDirEntry {
+                    ino: *ino,
+                    name: name.clone().into_boxed_slice(),
+                    type_: *type_,
+                });
+            }
+            handles.insert(
+                saved.handle,
+                Arc::new(HandleData {
+                    inode: saved.inode,
+                    file: RwLock::new(file),
+                    dirstream: Mutex::new(DirStream {
+                        entries,
+                        ready: saved.directory_ready,
+                    }),
+                }),
+            );
+        }
+        if state.next_handle == 0 || state.next_handle == u64::MAX {
+            return Err(snapshot::invalid("invalid next handle"));
+        }
+        // Commit only after every object and handle has been validated/opened.
+        *self.inodes.write().unwrap() = inodes;
+        *self.handles.write().unwrap() = handles;
+        self.next_handle.store(state.next_handle, Ordering::Relaxed);
+        self.announce_submounts
+            .store(state.submounts, Ordering::Relaxed);
+        Ok(())
+    }
+
     type Inode = Inode;
     type Handle = Handle;
 
@@ -1350,7 +1624,11 @@ impl FileSystem for PassthroughFs {
                 dev: st.st_dev,
             },
             Arc::new(InodeData {
-                path_fd: if self.fd_paths { Some(f.try_clone()?) } else { None },
+                path_fd: if self.fd_paths {
+                    Some(f.try_clone()?)
+                } else {
+                    None
+                },
                 inode: fuse::ROOT_ID,
                 ino: st.st_ino,
                 dev: st.st_dev,
@@ -2934,18 +3212,30 @@ mod path_handle_tests {
         let root = tempfile::tempdir().unwrap();
         std::fs::write(root.path().join("file"), b"data").unwrap();
         let mut filesystem = PassthroughFs::new(
-            Config { root_dir: root.path().to_string_lossy().into_owned(), ..Default::default() },
+            Config {
+                root_dir: root.path().to_string_lossy().into_owned(),
+                ..Default::default()
+            },
             Arc::new(InodeAllocator::new()),
-        ).unwrap();
+        )
+        .unwrap();
         filesystem.fd_paths = true; // Exercise the FSKit path on any host volume.
         filesystem.init(FsOptions::empty()).unwrap();
-        let ctx = Context { uid: 0, gid: 0, pid: 0 };
+        let ctx = Context {
+            uid: 0,
+            gid: 0,
+            pid: 0,
+        };
         let entry = filesystem.lookup(ctx, fuse::ROOT_ID, c"file").unwrap();
         std::fs::rename(root.path().join("file"), root.path().join("renamed")).unwrap();
-        let InodeHandle::Path(path) = filesystem.inode_to_handle(entry.inode, false).unwrap() else {
+        let InodeHandle::Path(path) = filesystem.inode_to_handle(entry.inode, false).unwrap()
+        else {
             panic!("expected current descriptor path");
         };
         assert!(path.to_bytes().ends_with(b"/renamed"));
-        assert_eq!(filesystem.do_getattr(&ctx, entry.inode).unwrap().0.st_size, 4);
+        assert_eq!(
+            filesystem.do_getattr(&ctx, entry.inode).unwrap().0.st_size,
+            4
+        );
     }
 }

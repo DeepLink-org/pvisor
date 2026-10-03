@@ -4,7 +4,7 @@ use super::overlay::{
     OverlayRecord, ReadOnlyOverlayMount, load_overlay_record, mount_overlay_record_read_only,
     overlay_status,
 };
-use crate::util::{atomic_write, create_dir_all_durable};
+use crate::util::create_dir_all_durable;
 use anyhow::Context;
 use serde::{Deserialize, Serialize};
 use std::collections::HashMap;
@@ -161,17 +161,20 @@ impl RunRecord {
         );
         let stage = self.stage_dir();
         let path = stage.join(RUN_META_FILENAME);
-        crate::util::write_private_json(&path, self)?;
+        crate::util::write_run_json(&path, self, &self.run_id, "run_record")?;
 
         let index_dir = self.storage.join(".pvisor").join("runs");
         let index_path = index_dir.join(format!(
             "{}.json",
             crate::util::encode_hex(self.run_id.as_bytes())
         ));
-        let contents = serde_json::to_vec_pretty(&RunIndex {
-            run_id: self.run_id.clone(),
-            stage_dir: stage,
-        })?;
+        let contents =
+            crate::util::persistence_step(&self.run_id, "run_index", "serialize", || {
+                serde_json::to_vec_pretty(&RunIndex {
+                    run_id: self.run_id.clone(),
+                    stage_dir: stage,
+                })
+            })?;
         // State updates do not move the Run. Keep the existing index inode,
         // but still confirm durability (including a prior failed directory sync).
         let unchanged = match fs::symlink_metadata(&index_path) {
@@ -185,10 +188,14 @@ impl RunRecord {
             Err(error) => return Err(error.into()),
         };
         if unchanged {
-            File::open(&index_path)?.sync_all()?;
-            crate::util::sync_directory(&index_dir)?;
+            crate::util::persistence_step(&self.run_id, "run_index", "file_sync", || {
+                File::open(&index_path)?.sync_all()
+            })?;
+            crate::util::persistence_step(&self.run_id, "run_index", "directory_sync", || {
+                crate::util::sync_directory(&index_dir)
+            })?;
         } else {
-            atomic_write(&index_path, &contents, 0o600)?;
+            crate::util::write_run_bytes(&index_path, &contents, &self.run_id, "run_index")?;
         }
         Ok(())
     }

@@ -26,6 +26,8 @@ license = "Apache-2.0"
 repository = "https://github.com/containers/libkrun"
 
 [features]
+# Preserve the previous feature name; state serialization is now always available.
+serde = []
 amd-sev = [
     "blk",
     "bitfield",
@@ -153,7 +155,7 @@ package = "krun-polly"
 
 [dependencies.serde]
 version = "1.0.125"
-optional = true
+features = ["derive"]
 
 [dependencies.serde_json]
 version = "1.0.64"

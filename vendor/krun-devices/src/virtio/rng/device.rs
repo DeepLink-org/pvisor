@@ -20,6 +20,7 @@ pub struct Rng {
     pub(crate) acked_features: u64,
     pub(crate) activate_evt: EventFd,
     pub(crate) device_state: DeviceState,
+    frozen: bool,
 }
 
 impl Rng {
@@ -34,6 +35,7 @@ impl Rng {
             acked_features: 0,
             activate_evt: EventFd::new(utils::eventfd::EFD_NONBLOCK).map_err(RngError::EventFd)?,
             device_state: DeviceState::Inactive,
+            frozen: false,
         })
     }
 
@@ -42,6 +44,9 @@ impl Rng {
     }
 
     pub fn process_req(&mut self) -> bool {
+        if self.frozen {
+            return false;
+        }
         debug!("rng: process_req()");
         let mem = match self.device_state {
             DeviceState::Activated(ref mem, _) => mem,
@@ -84,6 +89,48 @@ impl Rng {
 }
 
 impl VirtioDevice for Rng {
+    fn freeze(&mut self) -> Result<bool, String> {
+        self.frozen = true;
+        Ok(true)
+    }
+    fn thaw(&mut self) -> Result<(), String> {
+        if self.frozen {
+            if let Some(queues) = &self.queues {
+                for queue in queues {
+                    queue.event.write(1).map_err(|e| e.to_string())?;
+                }
+            }
+            self.frozen = false;
+        }
+        Ok(())
+    }
+
+    fn capture_state(&self) -> Result<super::super::DeviceSnapshot, String> {
+        if self.is_activated() && !self.frozen {
+            return Err("device must be frozen before capture".into());
+        }
+        Ok(super::super::DeviceSnapshot {
+            queues: self
+                .queues
+                .as_ref()
+                .map(|queues| queues.iter().map(|dq| dq.queue.capture_state()).collect()),
+            state: super::super::DeviceSnapshotState::Rng,
+        })
+    }
+
+    fn restore_state(&mut self, state: &super::super::DeviceSnapshotState) -> Result<(), String> {
+        if self.is_activated() {
+            return Err("restore requires a fresh device".into());
+        }
+        match state {
+            super::super::DeviceSnapshotState::Rng => {
+                self.frozen = true;
+                Ok(())
+            }
+            _ => Err("RNG state type mismatch".into()),
+        }
+    }
+
     fn avail_features(&self) -> u64 {
         self.avail_features
     }
@@ -152,6 +199,7 @@ impl VirtioDevice for Rng {
 
     fn reset(&mut self) -> bool {
         self.queues = None;
+        self.frozen = false;
         self.device_state = DeviceState::Inactive;
         true
     }

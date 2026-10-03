@@ -142,6 +142,104 @@ impl<T: FileSystem<Inode = Inode, Handle = Handle>> AugmentFs<T> {
 impl<T: FileSystem<Inode = Inode, Handle = Handle>> FileSystem for AugmentFs<T> {
     type Inode = Inode;
     type Handle = Handle;
+    #[cfg(target_os = "macos")]
+    fn capture_state(&self) -> io::Result<super::snapshot::FsSnapshot> {
+        use sha2::{Digest, Sha256};
+        let names = self
+            .name_to_inode
+            .read()
+            .unwrap()
+            .iter()
+            .map(|((parent, name), inode)| (*parent, name.to_bytes().to_vec(), *inode))
+            .collect();
+        let inodes = self
+            .inodes
+            .read()
+            .unwrap()
+            .iter()
+            .map(|(inode, entry)| {
+                let digest = match &entry.content {
+                    VirtualEntryContent::File { data, .. } => Some(Sha256::digest(data).into()),
+                    VirtualEntryContent::Dir { .. } => None,
+                };
+                (*inode, entry.mode, entry.one_shot, digest)
+            })
+            .collect();
+        Ok(super::snapshot::FsSnapshot::Augment {
+            inner: Box::new(self.inner.capture_state()?),
+            names,
+            inodes,
+        })
+    }
+    #[cfg(target_os = "macos")]
+    fn restore_state(&self, state: &super::snapshot::FsSnapshot) -> io::Result<()> {
+        use super::snapshot::{invalid, FsSnapshot};
+        use sha2::{Digest, Sha256};
+        let FsSnapshot::Augment {
+            inner,
+            names,
+            inodes,
+        } = state
+        else {
+            return Err(invalid("virtual filesystem type mismatch"));
+        };
+        let mut restored_inodes = HashMap::new();
+        let current = self.inodes.read().unwrap();
+        if current.keys().any(|inode| inner.contains_inode(*inode)) {
+            return Err(invalid("virtual and backing inode namespaces overlap"));
+        }
+        for (inode, mode, once, digest) in inodes {
+            let entry = current
+                .get(inode)
+                .ok_or_else(|| invalid("virtual inode missing from configuration"))?;
+            let expected = match &entry.content {
+                VirtualEntryContent::File { data, .. } => {
+                    Some(<[u8; 32]>::from(Sha256::digest(data)))
+                }
+                VirtualEntryContent::Dir { .. } => None,
+            };
+            if entry.mode != *mode
+                || entry.one_shot != *once
+                || expected != *digest
+                || restored_inodes.insert(*inode, entry.clone()).is_some()
+            {
+                return Err(invalid("virtual inode configuration mismatch"));
+            }
+        }
+        if current
+            .iter()
+            .any(|(inode, entry)| !entry.one_shot && !restored_inodes.contains_key(inode))
+        {
+            return Err(invalid("persistent virtual inode removed"));
+        }
+        drop(current);
+        let original_names = self.name_to_inode.read().unwrap();
+        let mut restored_names = HashMap::new();
+        for (parent, name, inode) in names {
+            let name =
+                CString::new(name.as_slice()).map_err(|_| invalid("invalid virtual name"))?;
+            let key = (*parent, name);
+            if !restored_inodes.contains_key(inode)
+                || original_names.get(&key) != Some(inode)
+                || restored_names.insert(key, *inode).is_some()
+            {
+                return Err(invalid("virtual name configuration mismatch"));
+            }
+        }
+        if original_names.iter().any(|(name, inode)| {
+            restored_inodes
+                .get(inode)
+                .is_some_and(|entry| !entry.one_shot)
+                && !restored_names.contains_key(name)
+        }) {
+            return Err(invalid("persistent virtual name removed"));
+        }
+        drop(original_names);
+        self.inner.restore_state(inner)?;
+        *self.inodes.write().unwrap() = restored_inodes;
+        *self.name_to_inode.write().unwrap() = restored_names;
+        Ok(())
+    }
 
     fn init(&self, capable: FsOptions) -> io::Result<FsOptions> {
         self.inner.init(capable)

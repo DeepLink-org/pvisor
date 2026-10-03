@@ -94,14 +94,9 @@ impl<'a> DescriptorChainConsumer<'a> {
                 break;
             }
 
-            bufs.push(vs);
-
-            let rem = count - buflen;
-            if rem < vs.len() {
-                buflen += rem;
-            } else {
-                buflen += vs.len();
-            }
+            let len = (count - buflen).min(vs.len());
+            bufs.push(vs.subslice(0, len).map_err(io::Error::other)?);
+            buflen += len;
         }
 
         if bufs.is_empty() {
@@ -109,6 +104,12 @@ impl<'a> DescriptorChainConsumer<'a> {
         }
 
         let bytes_consumed = f(&bufs)?;
+        if bytes_consumed > buflen {
+            return Err(io::Error::new(
+                io::ErrorKind::InvalidData,
+                "descriptor consumer exceeded offered bytes",
+            ));
+        }
 
         // This can happen if a driver tricks a device into reading/writing more data than
         // fits in a `usize`.
@@ -157,7 +158,7 @@ impl<'a> DescriptorChainConsumer<'a> {
                 // its `size` value in the call to `position` above.
                 let front = other.pop_front().expect("empty VecDeque after split");
                 self.buffers
-                    .push_back(front.offset(rem).map_err(Error::VolatileMemoryError)?);
+                    .push_back(front.subslice(0, rem).map_err(Error::VolatileMemoryError)?);
                 other.push_front(front.offset(rem).map_err(Error::VolatileMemoryError)?);
             }
 

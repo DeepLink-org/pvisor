@@ -20,6 +20,18 @@ type Inode = u64;
 type Handle = u64;
 
 impl FileSystem for NullFs {
+    #[cfg(target_os = "macos")]
+    fn capture_state(&self) -> io::Result<super::snapshot::FsSnapshot> {
+        Ok(super::snapshot::FsSnapshot::Null)
+    }
+    #[cfg(target_os = "macos")]
+    fn restore_state(&self, state: &super::snapshot::FsSnapshot) -> io::Result<()> {
+        if !matches!(state, super::snapshot::FsSnapshot::Null) {
+            return Err(super::snapshot::invalid("null filesystem type mismatch"));
+        }
+        Ok(())
+    }
+
     type Inode = Inode;
     type Handle = Handle;
 

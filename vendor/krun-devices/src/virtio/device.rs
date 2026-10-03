@@ -71,6 +71,26 @@ pub struct VirtioShmRegion {
     pub size: usize,
 }
 
+/// Concrete state for supported devices. No empty default for unsupported devices.
+#[derive(Clone, Debug, serde::Serialize, serde::Deserialize)]
+#[serde(deny_unknown_fields)]
+pub struct DeviceSnapshot {
+    pub queues: Option<Vec<super::QueueSnapshot>>,
+    pub state: DeviceSnapshotState,
+}
+#[derive(Clone, Debug, serde::Serialize, serde::Deserialize)]
+#[serde(tag = "kind", content = "state", deny_unknown_fields)]
+pub enum DeviceSnapshotState {
+    Rng,
+    Balloon([u32; 4]),
+    #[cfg(all(target_os = "macos", not(any(feature = "tee", feature = "aws-nitro"))))]
+    Fs {
+        tag: Vec<u8>,
+        allow_idmap: bool,
+        server: Box<super::fs::snapshot::ServerSnapshot>,
+    },
+}
+
 /// Trait for virtio devices to be driven by a virtio transport.
 ///
 /// The lifecycle of a virtio device is to be moved to a virtio transport, which will then query the
@@ -78,6 +98,28 @@ pub struct VirtioShmRegion {
 /// during activation, transferring ownership. After reset, the transport recreates queues
 /// from queue_config() for the next negotiation cycle.
 pub trait VirtioDevice: AsAny + Send {
+    /// Poll a request-boundary freeze without blocking the event loop. The
+    /// memory gate must remain open until all workers have returned true.
+    fn freeze(&mut self) -> Result<bool, String> {
+        Err(format!("freeze unsupported for {}", self.device_name()))
+    }
+    fn thaw(&mut self) -> Result<(), String> {
+        Err(format!("thaw unsupported for {}", self.device_name()))
+    }
+
+    /// Only after the device owner has frozen its worker and in-flight I/O.
+    fn capture_state(&self) -> Result<DeviceSnapshot, String> {
+        Err(format!("snapshot unsupported for {}", self.device_name()))
+    }
+    /// Apply backend configuration to a fresh inactive device. Queue activation
+    /// belongs to the transport, using new host eventfds and restored indices.
+    fn restore_state(&mut self, _state: &DeviceSnapshotState) -> Result<(), String> {
+        Err(format!(
+            "snapshot restore unsupported for {}",
+            self.device_name()
+        ))
+    }
+
     /// Get the available features offered by device.
     fn avail_features(&self) -> u64;
 

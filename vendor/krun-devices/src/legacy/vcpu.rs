@@ -65,6 +65,14 @@ impl PerCPUInterruptControllerState {
     }
 }
 
+/// Only architectural pending interrupts, indexed by guest CPU. Host waiters
+/// are recreated, and a restored CPU checks this queue before waiting again.
+#[derive(Clone, Debug, serde::Serialize, serde::Deserialize)]
+#[serde(deny_unknown_fields)]
+pub struct PendingInterrupts {
+    pub queues: Vec<Vec<u32>>,
+}
+
 pub struct VcpuList {
     cpu_count: u64,
     memory_fault_handler: Mutex<Option<Arc<MemoryFaultHandler>>>,
@@ -83,13 +91,59 @@ impl VcpuList {
             }));
         }
 
-        Self { cpu_count, vcpus, memory_fault_handler: Mutex::new(None) }
+        Self {
+            cpu_count,
+            vcpus,
+            memory_fault_handler: Mutex::new(None),
+        }
+    }
+
+    /// Requires all CPUs parked and every interrupt producer frozen.
+    pub fn capture_pending(&self) -> Result<PendingInterrupts, String> {
+        let queues = self
+            .vcpus
+            .iter()
+            .map(|cpu| {
+                cpu.lock()
+                    .map(|state| state.pending_irqs.iter().copied().collect())
+                    .map_err(|_| "interrupt controller lock poisoned".to_owned())
+            })
+            .collect::<Result<Vec<_>, _>>()?;
+        Ok(PendingInterrupts { queues })
+    }
+
+    pub fn validate_pending(&self, state: &PendingInterrupts) -> Result<(), String> {
+        if state.queues.len() != self.vcpus.len()
+            || state
+                .queues
+                .iter()
+                .any(|queue| queue.len() > 65536 || queue.iter().any(|irq| *irq >= 1020))
+        {
+            return Err("invalid pending interrupt topology or INTID".into());
+        }
+        Ok(())
+    }
+
+    /// Call before guest entry; registration keeps newly constructed senders.
+    pub fn restore_pending(&self, state: &PendingInterrupts) -> Result<(), String> {
+        self.validate_pending(state)?;
+        for (cpu, queue) in self.vcpus.iter().zip(&state.queues) {
+            let mut cpu = cpu
+                .lock()
+                .map_err(|_| "interrupt controller lock poisoned")?;
+            cpu.pending_irqs = queue.iter().copied().collect();
+            cpu.status = VcpuStatus::Running;
+        }
+        Ok(())
     }
 
     /// Caller must quiesce CPUs/devices and remove sampling mappings before
     /// replacing a resolver. Invoke callbacks without holding the registry lock.
     pub fn set_memory_fault_handler(&self, handler: Arc<MemoryFaultHandler>) -> Result<(), String> {
-        *self.memory_fault_handler.lock().map_err(|_| "RAM fault handler lock poisoned")? = Some(handler);
+        *self
+            .memory_fault_handler
+            .lock()
+            .map_err(|_| "RAM fault handler lock poisoned")? = Some(handler);
         Ok(())
     }
 
@@ -122,9 +176,15 @@ impl VcpuList {
 
 impl Vcpus for VcpuList {
     fn handle_memory_fault(&self, fault: MemoryFault) -> Result<bool, String> {
-        let handler = self.memory_fault_handler.lock()
-            .map_err(|_| "RAM fault handler lock poisoned")?.clone();
-        match handler { Some(handler) => handler(fault), None => Ok(false) }
+        let handler = self
+            .memory_fault_handler
+            .lock()
+            .map_err(|_| "RAM fault handler lock poisoned")?
+            .clone();
+        match handler {
+            Some(handler) => handler(fault),
+            None => Ok(false),
+        }
     }
 
     fn set_vtimer_irq(&self, vcpuid: u64) {
@@ -178,13 +238,9 @@ impl Vcpus for VcpuList {
                     | (4 << ICC_CTLR_EL1_PRI_BITS_SHIFT),
             ),
             SYSREG_CNTHCTL_EL2 => {
-                let val: u64 = 0;
+                let mut val: u64 = 0;
                 let ret = unsafe {
-                    hv_vcpu_get_sys_reg(
-                        vcpuid,
-                        hv_sys_reg_t_HV_SYS_REG_CNTHCTL_EL2,
-                        &val as *const _ as *mut _,
-                    )
+                    hv_vcpu_get_sys_reg(vcpuid, hv_sys_reg_t_HV_SYS_REG_CNTHCTL_EL2, &mut val)
                 };
                 if ret == HV_SUCCESS {
                     Some(val)
@@ -193,13 +249,9 @@ impl Vcpus for VcpuList {
                 }
             }
             SYSREG_MDCCINT_EL1 => {
-                let val: u64 = 0;
+                let mut val: u64 = 0;
                 let ret = unsafe {
-                    hv_vcpu_get_sys_reg(
-                        vcpuid,
-                        hv_sys_reg_t_HV_SYS_REG_MDCCINT_EL1,
-                        &val as *const _ as *mut _,
-                    )
+                    hv_vcpu_get_sys_reg(vcpuid, hv_sys_reg_t_HV_SYS_REG_MDCCINT_EL1, &mut val)
                 };
                 if ret == HV_SUCCESS {
                     Some(val)

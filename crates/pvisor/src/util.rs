@@ -14,6 +14,69 @@ pub(crate) fn write_private_json(path: &Path, value: &impl serde::Serialize) -> 
     atomic_write(path, &serde_json::to_vec_pretty(value)?, 0o600)
 }
 
+/// Persistence diagnostics carry durations, not additional startup checkpoints.
+pub(crate) fn persistence_log(
+    run_id: &str,
+    object: &str,
+    phase: &str,
+    elapsed: std::time::Duration,
+    success: bool,
+) {
+    if !startup_logging_enabled() {
+        return;
+    }
+    crate::diagnostics::diagnostic(format_args!(
+        "pvisor-persistence level=info timestamp_ms={} pid={} run_id={} object={} phase={} duration_us={} outcome={}",
+        unix_now_ms(),
+        std::process::id(),
+        serde_json::to_string(run_id).unwrap_or_default(),
+        object,
+        phase,
+        elapsed.as_micros(),
+        if success { "ok" } else { "error" }
+    ));
+}
+
+pub(crate) fn persistence_step<T, E>(
+    run_id: &str,
+    object: &str,
+    phase: &str,
+    operation: impl FnOnce() -> Result<T, E>,
+) -> Result<T, E> {
+    let start = std::time::Instant::now();
+    let result = operation();
+    persistence_log(run_id, object, phase, start.elapsed(), result.is_ok());
+    result
+}
+
+pub(crate) fn write_run_json(
+    path: &Path,
+    value: &impl serde::Serialize,
+    run_id: &str,
+    object: &str,
+) -> anyhow::Result<()> {
+    let body = persistence_step(run_id, object, "serialize", || {
+        serde_json::to_vec_pretty(value)
+    })?;
+    write_run_bytes(path, &body, run_id, object)
+}
+
+pub(crate) fn write_run_bytes(
+    path: &Path,
+    body: &[u8],
+    run_id: &str,
+    object: &str,
+) -> anyhow::Result<()> {
+    pvisor_journal::atomic_write_observed(path, body, 0o600, |phase, elapsed, success| {
+        persistence_log(run_id, object, phase, elapsed, success);
+    })
+}
+
+fn startup_logging_enabled() -> bool {
+    static ENABLED: std::sync::OnceLock<bool> = std::sync::OnceLock::new();
+    *ENABLED.get_or_init(|| std::env::var("PVISOR_STARTUP_TIMING").as_deref() != Ok("0"))
+}
+
 /// Routine host checkpoints; guest clocks have a different epoch.
 /// `PVISOR_STARTUP_TIMING=0` suppresses output for uninstrumented benchmarks.
 pub(crate) fn startup_mark(stage: &str) {
@@ -29,10 +92,9 @@ fn startup_checkpoint(stage: &str, run_id: Option<&str>) {
     {
         use std::sync::OnceLock;
         use std::time::Instant;
-        static ENABLED: OnceLock<bool> = OnceLock::new();
         static START: OnceLock<Instant> = OnceLock::new();
         let start = START.get_or_init(Instant::now);
-        if !*ENABLED.get_or_init(|| std::env::var("PVISOR_STARTUP_TIMING").as_deref() != Ok("0")) {
+        if !startup_logging_enabled() {
             return;
         }
         if let Some(timestamp) = startup_monotonic_us() {

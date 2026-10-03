@@ -18,7 +18,7 @@ use super::super::{FC_EXIT_CODE_GENERIC_ERROR, FC_EXIT_CODE_OK};
 use crate::vmm_config::machine_config::CpuFeaturesTemplate;
 
 use arch::ArchMemoryInfo;
-use crossbeam_channel::{Receiver, Sender, after, select, unbounded};
+use crossbeam_channel::{after, select, unbounded, Receiver, Sender};
 use devices::legacy::VcpuList;
 use hvf::{HvfVcpu, HvfVm, VcpuExit, Vcpus};
 use utils::eventfd::EventFd;
@@ -90,6 +90,8 @@ impl Display for Error {
         }
     }
 }
+
+impl std::error::Error for Error {}
 
 pub type Result<T> = result::Result<T, Error>;
 
@@ -203,6 +205,11 @@ pub struct Vcpu {
 
     vcpu_list: Arc<VcpuList>,
     nested_enabled: bool,
+    snapshot_profile: bool,
+    booted: bool,
+    pending_boot: Option<u64>,
+    restore: Option<CpuSnapshot>,
+    stopping: bool,
 }
 
 impl Vcpu {
@@ -296,7 +303,33 @@ impl Vcpu {
             response_sender,
             vcpu_list,
             nested_enabled,
+            snapshot_profile: false,
+            booted: false,
+            pending_boot: None,
+            restore: None,
+            stopping: false,
         })
+    }
+
+    /// Select before guest entry: CPU extensions without capture support are hidden.
+    pub fn enable_snapshot_profile(&mut self) -> Result<()> {
+        if self.nested_enabled {
+            return Err(Error::VmSetup(hvf::Error::Snapshot(
+                "nested snapshot unsupported".into(),
+            )));
+        }
+        self.snapshot_profile = true;
+        Ok(())
+    }
+
+    /// Install before thread creation. The new CPU remains parked until Resume.
+    pub fn set_restore_state(&mut self, state: CpuSnapshot) -> Result<()> {
+        state
+            .validate(self.id)
+            .map_err(|e| Error::VmSetup(hvf::Error::Snapshot(e)))?;
+        self.enable_snapshot_profile()?;
+        self.restore = Some(state);
+        Ok(())
     }
 
     /// Returns the cpu index as seen by the guest OS.
@@ -348,7 +381,7 @@ impl Vcpu {
 
         let hvf_id = init_tls_receiver
             .recv()
-            .expect("Error waiting for TLS initialization.");
+            .map_err(|_| Error::VcpuChannelClosed)??;
 
         Ok(VcpuHandle::new(
             event_sender,
@@ -444,29 +477,85 @@ impl Vcpu {
     }
 
     /// Main loop of the vCPU thread.
-    pub fn run(&mut self, init_tls_sender: Sender<u64>) {
-        let mut hvf_vcpu =
-            HvfVcpu::new(self.mpidr, self.nested_enabled).expect("Can't create HVF vCPU");
+    pub fn run(&mut self, init_tls_sender: Sender<Result<u64>>) {
+        let hvf_vcpu = if self.snapshot_profile {
+            HvfVcpu::new_snapshot_cpu(self.mpidr)
+        } else {
+            HvfVcpu::new(self.mpidr, self.nested_enabled)
+        };
+        let mut hvf_vcpu = match hvf_vcpu {
+            Ok(cpu) => cpu,
+            Err(error) => {
+                let _ = init_tls_sender.send(Err(Error::VmSetup(error)));
+                return;
+            }
+        };
         let hvf_vcpuid = hvf_vcpu.id();
-
-        init_tls_sender
-            .send(hvf_vcpuid)
-            .expect("Cannot notify vcpu TLS initialization.");
+        if hvf_vcpuid != u64::from(self.id) {
+            let _ = init_tls_sender.send(Err(Error::VmSetup(hvf::Error::Snapshot(
+                "HVF CPU identity differs from the software GIC topology".into(),
+            ))));
+            unsafe {
+                hvf::bindings::hv_vcpu_destroy(hvf_vcpuid);
+            }
+            return;
+        }
+        // All HVF operations, including destruction, belong to this thread.
+        struct CpuCleanup(u64);
+        impl Drop for CpuCleanup {
+            fn drop(&mut self) {
+                unsafe {
+                    hvf::bindings::hv_vcpu_destroy(self.0);
+                }
+            }
+        }
+        let _cleanup = CpuCleanup(hvf_vcpuid);
 
         let (wfe_sender, wfe_receiver) = unbounded();
         self.vcpu_list.register(hvf_vcpuid, wfe_sender);
 
-        let entry_addr = if let Some(boot_receiver) = self.boot_receiver.clone() {
+        if let Some(state) = self.restore.take() {
+            if let Err(error) = hvf_vcpu.restore_state(&state.cpu) {
+                let _ = init_tls_sender.send(Err(Error::VmSetup(error)));
+                return;
+            }
+            self.booted = state.booted;
+            self.pending_boot = state.pending_boot;
+            if init_tls_sender.send(Ok(hvf_vcpuid)).is_err() {
+                return;
+            }
+            self.pause_and_park(&mut hvf_vcpu);
+        } else if init_tls_sender.send(Ok(hvf_vcpuid)).is_err() {
+            return;
+        }
+        if self.stopping {
+            return;
+        }
+
+        let entry_addr = if self.booted {
+            None
+        } else if let Some(boot_receiver) = self.boot_receiver.clone() {
             // A secondary CPU may not have received PSCI CPU_ON yet. It must
             // acknowledge pause without waiting for the guest to boot it.
             loop {
+                if let Some(entry) = self.pending_boot.take() {
+                    break Some(entry);
+                }
                 let event = select! {
-                    recv(boot_receiver) -> entry => break entry.expect("boot channel closed"),
+                    recv(boot_receiver) -> entry => break Some(entry.expect("boot channel closed")),
                     recv(self.event_receiver) -> event => event,
                 };
                 match event {
-                    Ok(VcpuEvent::Pause) => self.pause_and_park(),
+                    Ok(VcpuEvent::Pause) => {
+                        self.pause_and_park(&mut hvf_vcpu);
+                        if self.stopping {
+                            return;
+                        }
+                    }
                     Ok(VcpuEvent::Resume) => (),
+                    Ok(VcpuEvent::Capture(reply)) => {
+                        let _ = reply.send(Err("CPU must be paused".into()));
+                    }
                     Err(_) => {
                         self.exit(FC_EXIT_CODE_GENERIC_ERROR);
                         return;
@@ -474,16 +563,30 @@ impl Vcpu {
                 }
             }
         } else {
-            self.boot_entry_addr
+            Some(self.boot_entry_addr)
         };
 
-        hvf_vcpu
-            .set_initial_state(entry_addr, self.fdt_addr)
-            .unwrap_or_else(|_| panic!("Can't set HVF vCPU {hvf_vcpuid} initial state"));
+        if let Some(entry_addr) = entry_addr {
+            hvf_vcpu
+                .set_initial_state(entry_addr, self.fdt_addr)
+                .unwrap_or_else(|_| panic!("Can't set HVF vCPU {hvf_vcpuid} initial state"));
+            self.booted = true;
+        }
 
         loop {
-            if let Ok(VcpuEvent::Pause) = self.event_receiver.try_recv() {
-                self.pause_and_park();
+            if self.stopping {
+                return;
+            }
+            match self.event_receiver.try_recv() {
+                Ok(VcpuEvent::Pause) => self.pause_and_park(&mut hvf_vcpu),
+                Ok(VcpuEvent::Capture(reply)) => {
+                    let _ = reply.send(Err("CPU must be paused".into()));
+                }
+                Err(crossbeam_channel::TryRecvError::Disconnected) => return,
+                _ => (),
+            }
+            if self.stopping {
+                return;
             }
             match self.run_emulation(&mut hvf_vcpu) {
                 // Emulation ran successfully, continue.
@@ -492,11 +595,11 @@ impl Vcpu {
                 Ok(VcpuEmulation::Interrupted) => self.wait_for_resume(),
                 // Wait for an external event.
                 Ok(VcpuEmulation::WaitForEvent) => {
-                    self.wait_for_event(hvf_vcpuid, &wfe_receiver, None)
+                    self.wait_for_event(&mut hvf_vcpu, &wfe_receiver, None)
                 }
                 Ok(VcpuEmulation::WaitForEventExpired) => (),
                 Ok(VcpuEmulation::WaitForEventTimeout(timeout)) => {
-                    self.wait_for_event(hvf_vcpuid, &wfe_receiver, Some(timeout))
+                    self.wait_for_event(&mut hvf_vcpu, &wfe_receiver, Some(timeout))
                 }
                 // The guest was rebooted or halted.
                 Ok(VcpuEmulation::Stopped) => {
@@ -514,32 +617,47 @@ impl Vcpu {
 
     fn wait_for_event(
         &mut self,
-        hvf_vcpuid: u64,
+        hvf_vcpu: &mut HvfVcpu,
         receiver: &Receiver<u32>,
         timeout: Option<Duration>,
     ) {
-        if self.vcpu_list.should_wait(hvf_vcpuid) {
+        if self.vcpu_list.should_wait(hvf_vcpu.id()) {
             let paused = if let Some(timeout) = timeout {
                 select! {
                     recv(receiver) -> event => { event.expect("WFE channel closed"); false }
-                    recv(self.event_receiver) -> event => matches!(event, Ok(VcpuEvent::Pause)),
+                    recv(self.event_receiver) -> event => self.wait_control(event),
                     recv(after(timeout)) -> _ => false,
                 }
             } else {
                 select! {
                     recv(receiver) -> event => { event.expect("WFE channel closed"); false }
-                    recv(self.event_receiver) -> event => matches!(event, Ok(VcpuEvent::Pause)),
+                    recv(self.event_receiver) -> event => self.wait_control(event),
                 }
             };
             if paused {
-                self.pause_and_park();
+                self.pause_and_park(hvf_vcpu);
             }
         }
     }
 
     fn wait_for_resume(&mut self) {}
 
-    fn pause_and_park(&mut self) {
+    fn wait_control(
+        &self,
+        event: std::result::Result<VcpuEvent, crossbeam_channel::RecvError>,
+    ) -> bool {
+        match event {
+            Ok(VcpuEvent::Pause) => true,
+            Ok(VcpuEvent::Capture(reply)) => {
+                let _ = reply.send(Err("CPU must be paused".into()));
+                false
+            }
+            Err(_) => true,
+            _ => false,
+        }
+    }
+
+    fn pause_and_park(&mut self, hvf_vcpu: &mut HvfVcpu) {
         self.response_sender
             .send(VcpuResponse::Paused)
             .expect("pause response channel closed");
@@ -552,8 +670,30 @@ impl Vcpu {
                     return;
                 }
                 Ok(VcpuEvent::Pause) => (),
+                Ok(VcpuEvent::Capture(reply)) => {
+                    let state = if self.snapshot_profile {
+                        if !self.booted && self.pending_boot.is_none() {
+                            self.pending_boot = self
+                                .boot_receiver
+                                .as_ref()
+                                .and_then(|rx| rx.try_recv().ok());
+                        }
+                        hvf_vcpu
+                            .capture_state()
+                            .map(|cpu| CpuSnapshot {
+                                id: self.id,
+                                booted: self.booted,
+                                pending_boot: self.pending_boot,
+                                cpu,
+                            })
+                            .map_err(|e| e.to_string())
+                    } else {
+                        Err("VM was not launched with the snapshot CPU profile".into())
+                    };
+                    let _ = reply.send(state);
+                }
                 Err(_) => {
-                    self.exit(FC_EXIT_CODE_GENERIC_ERROR);
+                    self.stopping = true;
                     return;
                 }
             }
@@ -561,9 +701,8 @@ impl Vcpu {
     }
 
     fn exit(&mut self, exit_code: u8) {
-        self.response_sender
-            .send(VcpuResponse::Exited(exit_code))
-            .expect("failed to send Exited status");
+        // A dropped handle closes the response channel during normal teardown.
+        let _ = self.response_sender.send(VcpuResponse::Exited(exit_code));
 
         if let Err(e) = self.exit_evt.write(1) {
             error!("Failed signaling vcpu exit event: {e}");
@@ -586,7 +725,7 @@ pub enum VcpuEvent {
     Pause,
     /// Event that should resume the Vcpu.
     Resume,
-    // Serialize and Deserialize to follow after we get the support from kvm-ioctls.
+    Capture(Sender<std::result::Result<CpuSnapshot, String>>),
 }
 
 #[derive(Debug, Eq, PartialEq)]
@@ -598,6 +737,25 @@ pub enum VcpuResponse {
     Resumed,
     /// Vcpu is stopped.
     Exited(u8),
+}
+
+/// CPU and PSCI startup state; host threads and HVF IDs are never persisted.
+#[derive(Clone, Debug, serde::Serialize, serde::Deserialize)]
+#[serde(deny_unknown_fields)]
+pub struct CpuSnapshot {
+    pub id: u8,
+    pub booted: bool,
+    pub pending_boot: Option<u64>,
+    pub cpu: hvf::snapshot::VcpuSnapshot,
+}
+
+impl CpuSnapshot {
+    pub fn validate(&self, id: u8) -> std::result::Result<(), String> {
+        if self.id != id || (self.booted && self.pending_boot.is_some()) {
+            return Err("CPU topology or PSCI state mismatch".into());
+        }
+        self.cpu.validate().map_err(|e| e.to_string())
+    }
 }
 
 /// Wrapper over Vcpu that hides the underlying interactions with the Vcpu thread.
@@ -626,6 +784,16 @@ impl VcpuHandle {
             .send(event)
             .map_err(|_| Error::VcpuChannelClosed)?;
         hvf::vcpu_request_exit(self.hvf_id).map_err(Error::VmSetup)
+    }
+
+    /// Caller must have consumed the Pause acknowledgement first.
+    pub fn capture_state(&self, timeout: Duration) -> std::result::Result<CpuSnapshot, String> {
+        let (reply, response) = crossbeam_channel::bounded(1);
+        self.send_event(VcpuEvent::Capture(reply))
+            .map_err(|e| e.to_string())?;
+        response
+            .recv_timeout(timeout)
+            .map_err(|e| format!("CPU snapshot response: {e}"))?
     }
 
     pub fn response_receiver(&self) -> &Receiver<VcpuResponse> {

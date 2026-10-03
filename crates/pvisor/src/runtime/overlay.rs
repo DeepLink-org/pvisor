@@ -375,13 +375,16 @@ pub(crate) fn mount_overlay_record_observed(
 pub(crate) fn prepare_overlay_record_mountless(
     record: &OverlayRecord,
     lower_dirs: &[PathBuf],
+    run_id: &str,
 ) -> Result<OverlayRecord, OverlayError> {
     if lower_dirs.is_empty() {
         return Err(OverlayError::MissingTarget);
     }
     for dir in lower_dirs.iter().chain([&record.stage_dir]) {
-        create_dir_all_durable(dir)
-            .map_err(|error| OverlayError::Prepare(io::Error::other(error)))?;
+        crate::util::persistence_step(run_id, "overlay", "directory_prepare", || {
+            create_dir_all_durable(dir)
+        })
+        .map_err(|error| OverlayError::Prepare(io::Error::other(error)))?;
     }
     let layout = pvisor_overlay_core::OverlayLayout::with_baseline(
         lower_dirs.to_vec(),
@@ -390,18 +393,22 @@ pub(crate) fn prepare_overlay_record_mountless(
     )
     .map_err(OverlayError::Prepare)?;
     // Share backing validation and journal initialization with the host adapter.
-    pvisor_overlay_core::OverlayCore::new_for_layout(
-        layout,
-        record.upper.upper_dir.clone(),
-        Some(record.upper.work_dir.clone()),
-        record.excluded_paths.clone(),
-        Some(record.stage_dir.join("preimages")),
-    )
+    crate::util::persistence_step(run_id, "overlay", "backing_and_journal", || {
+        pvisor_overlay_core::OverlayCore::new_for_layout(
+            layout,
+            record.upper.upper_dir.clone(),
+            Some(record.upper.work_dir.clone()),
+            record.excluded_paths.clone(),
+            Some(record.stage_dir.join("preimages")),
+        )
+    })
     .map_err(OverlayError::Prepare)?;
 
     let mut record = record.clone();
     record.state = OverlayState::Active;
-    write_overlay_record(&record)?;
+    write_overlay_record_observed(&record, |phase, elapsed, success| {
+        crate::util::persistence_log(run_id, "overlay_record", phase, elapsed, success);
+    })?;
     Ok(record)
 }
 
@@ -634,7 +641,7 @@ mod tests {
             protect_target: false,
             state: OverlayState::Active,
         };
-        let prepared = prepare_overlay_record_mountless(&record, &[lower]).unwrap();
+        let prepared = prepare_overlay_record_mountless(&record, &[lower], "test-run").unwrap();
         assert!(prepared.upper.path().is_dir());
         assert!(stage.join("work").is_dir());
         assert!(!prepared.merged_dir.exists());

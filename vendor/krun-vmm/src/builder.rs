@@ -802,7 +802,8 @@ pub fn build_microvm(
         Arc::new(VcpuList::new(cpu_count as u64))
     };
 
-    let vcpus;
+    #[allow(unused_mut)]
+    let mut vcpus;
     let intc: IrqChip;
     // For x86_64 we need to create the interrupt controller before calling `KVM_CREATE_VCPUS`
     // while on aarch64 we need to do it the other way around.
@@ -895,10 +896,12 @@ pub fn build_microvm(
         intc = {
             // If the system supports the in-kernel GIC, use it. Otherwise, fall back to the
             // userspace implementation.
-            let gic = match HvfGicV3::new(vm_resources.vm_config().vcpu_count.unwrap() as u64) {
+            let gic = if vm_resources.snapshot_profile {
+                IrqChipDevice::new(Box::new(GicV3::new(vcpu_list.clone())))
+            } else { match HvfGicV3::new(vm_resources.vm_config().vcpu_count.unwrap() as u64) {
                 Ok(hvfgic) => IrqChipDevice::new(Box::new(hvfgic)),
                 Err(_) => IrqChipDevice::new(Box::new(GicV3::new(vcpu_list.clone()))),
-            };
+            }};
             Arc::new(Mutex::new(gic))
         };
 
@@ -912,6 +915,12 @@ pub fn build_microvm(
             vm_resources.nested_enabled,
         )
         .map_err(StartMicrovmError::Internal)?;
+
+        if vm_resources.snapshot_profile {
+            for vcpu in &mut vcpus {
+                vcpu.enable_snapshot_profile().map_err(Error::Vcpu).map_err(StartMicrovmError::Internal)?;
+            }
+        }
 
         attach_legacy_devices(
             &vm,

@@ -347,10 +347,39 @@ impl OverlayCore {
         excluded: Vec<PathBuf>,
         preimage_dir: Option<PathBuf>,
     ) -> io::Result<Self> {
-        fs::create_dir_all(&upper)?;
+        Self::build_for_layout(layout, upper, work, excluded, preimage_dir, true)
+    }
+
+    /// Open a snapshot's existing backing without initialization writes, root
+    /// metadata copies or temporary-file recovery. The caller owns its lease.
+    pub fn open_existing(
+        lowers: Vec<PathBuf>,
+        upper: PathBuf,
+        work: Option<PathBuf>,
+        excluded: Vec<PathBuf>,
+        preimage_dir: Option<PathBuf>,
+    ) -> io::Result<Self> {
+        let target = lowers.last().ok_or_else(|| error(libc::EINVAL))?.clone();
+        let layout = OverlayLayout::new(lowers, target)?;
+        Self::build_for_layout(layout, upper, work, excluded, preimage_dir, false)
+    }
+
+    fn build_for_layout(
+        layout: OverlayLayout,
+        upper: PathBuf,
+        work: Option<PathBuf>,
+        excluded: Vec<PathBuf>,
+        preimage_dir: Option<PathBuf>,
+        initialize: bool,
+    ) -> io::Result<Self> {
+        if initialize {
+            fs::create_dir_all(&upper)?;
+        }
         let upper_was_empty = fs::read_dir(&upper)?.next().is_none();
         if let Some(work) = &work {
-            fs::create_dir_all(work)?;
+            if initialize {
+                fs::create_dir_all(work)?;
+            }
             let actual_work = fs::canonicalize(work)?;
             let actual_upper = fs::canonicalize(&upper)?;
             if actual_work.starts_with(&actual_upper) || actual_upper.starts_with(&actual_work) {
@@ -393,10 +422,11 @@ impl OverlayCore {
         if let Some(work) = &work {
             for entry in fs::read_dir(work)? {
                 let entry = entry?;
-                if entry
-                    .file_name()
-                    .as_bytes()
-                    .starts_with(TEMP_PREFIX.as_bytes())
+                if initialize
+                    && entry
+                        .file_name()
+                        .as_bytes()
+                        .starts_with(TEMP_PREFIX.as_bytes())
                 {
                     let path = entry.path();
                     if fs::symlink_metadata(&path)?.is_dir() {
@@ -408,8 +438,12 @@ impl OverlayCore {
             }
         }
         if let Some(directory) = &preimage_dir {
-            fs::create_dir_all(directory.join("entries"))?;
-            if upper_was_empty && !preimage_journal_is_complete(directory) {
+            if initialize {
+                fs::create_dir_all(directory.join("entries"))?;
+            } else {
+                fs::read_dir(directory.join("entries"))?;
+            }
+            if initialize && upper_was_empty && !preimage_journal_is_complete(directory) {
                 let marker = directory.join(PREIMAGE_COMPLETE_MARKER);
                 let mut file = OpenOptions::new()
                     .write(true)
@@ -431,13 +465,67 @@ impl OverlayCore {
             preimage_dir,
             preimage_lock: Mutex::new(()),
         };
-        if fs::read_dir(&core.upper)?.next().is_none()
+        if initialize
+            && fs::read_dir(&core.upper)?.next().is_none()
             && let Some(root) = core.layout.lowers.first()
         {
             let metadata = fs::symlink_metadata(root)?;
             core.copy_metadata(root, &core.upper, &metadata)?;
         }
         Ok(core)
+    }
+
+    /// Preserve copy-up hard-link groups across a VM runner replacement.
+    /// Paths are relative to the existing upper; no host descriptors are saved.
+    pub fn capture_hard_links(&self) -> io::Result<Vec<(u64, u64, Vec<PathBuf>)>> {
+        self.copied_hard_links
+            .lock()
+            .map_err(|_| error(libc::EIO))?
+            .iter()
+            .map(|(&(dev, ino), paths)| {
+                let paths = paths
+                    .iter()
+                    .map(|path| {
+                        path.strip_prefix(&self.upper)
+                            .map(Path::to_path_buf)
+                            .map_err(|_| error(libc::EINVAL))
+                    })
+                    .collect::<io::Result<Vec<_>>>()?;
+                Ok((dev, ino, paths))
+            })
+            .collect()
+    }
+
+    pub fn restore_hard_links(&self, saved: &[(u64, u64, Vec<PathBuf>)]) -> io::Result<()> {
+        let mut groups = HashMap::new();
+        let mut seen = BTreeSet::new();
+        for (dev, ino, paths) in saved {
+            if *ino == 0 || paths.is_empty() || groups.contains_key(&(*dev, *ino)) {
+                return Err(error(libc::EINVAL));
+            }
+            let mut restored = Vec::new();
+            let mut identity = None;
+            for relative in paths {
+                Self::validate_rel(relative)?;
+                if relative.as_os_str().is_empty() || !seen.insert(relative.clone()) {
+                    return Err(error(libc::EINVAL));
+                }
+                let path = layer_path(&self.upper, relative)?.ok_or_else(|| error(libc::ENOENT))?;
+                let metadata = fs::symlink_metadata(&path)?;
+                let current = (metadata.dev(), metadata.ino());
+                if !metadata.is_file() || identity.is_some_and(|expected| expected != current) {
+                    return Err(error(libc::EINVAL));
+                }
+                identity = Some(current);
+                restored.push(path);
+            }
+            groups.insert((*dev, *ino), restored);
+        }
+        *self
+            .copied_hard_links
+            .lock()
+            .map_err(|_| error(libc::EIO))? = groups;
+        Ok(())
     }
 
     fn record_preimage(&self, rel: &Path) -> io::Result<()> {
@@ -1296,6 +1384,51 @@ impl OverlayCore {
 
 #[cfg(test)]
 mod tests {
+
+    #[test]
+    fn opening_snapshot_backing_preserves_empty_root_and_copy_up_hard_links() {
+        use super::*;
+        let dir = tempfile::tempdir().unwrap();
+        let lower = dir.path().join("lower");
+        let upper = dir.path().join("upper");
+        fs::create_dir(&lower).unwrap();
+        fs::write(lower.join("one"), b"before").unwrap();
+        fs::hard_link(lower.join("one"), lower.join("two")).unwrap();
+        let core = OverlayCore::new(vec![lower.clone()], upper.clone(), None).unwrap();
+        fs::set_permissions(&upper, fs::Permissions::from_mode(0o701)).unwrap();
+        let before = fs::metadata(&upper).unwrap();
+        drop(core);
+        let open = || {
+            OverlayCore::open_existing(vec![lower.clone()], upper.clone(), None, vec![], None)
+                .unwrap()
+        };
+        let core = open();
+        let after = fs::metadata(&upper).unwrap();
+        assert_eq!(after.mode(), before.mode());
+        assert_eq!(
+            (after.ctime(), after.ctime_nsec()),
+            (before.ctime(), before.ctime_nsec())
+        );
+        core.copy_up(Path::new("one")).unwrap();
+        core.rename(Path::new("one"), Path::new("renamed"), false)
+            .unwrap();
+        let state = core.capture_hard_links().unwrap();
+        drop(core);
+        let restored = open();
+        restored.restore_hard_links(&state).unwrap();
+        restored.copy_up(Path::new("two")).unwrap();
+        assert_eq!(
+            fs::metadata(upper.join("renamed")).unwrap().ino(),
+            fs::metadata(upper.join("two")).unwrap().ino()
+        );
+        fs::write(upper.join("two"), b"continued").unwrap();
+        assert_eq!(fs::read(upper.join("renamed")).unwrap(), b"continued");
+        assert!(
+            restored
+                .restore_hard_links(&[(1, 2, vec![PathBuf::from("../outside")])])
+                .is_err()
+        );
+    }
 
     #[test]
     fn explicit_root_metadata_is_reported_and_xattr_changes_conflict() {

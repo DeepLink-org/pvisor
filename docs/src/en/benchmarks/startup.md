@@ -2,7 +2,9 @@
 
 ## 1. Conclusions
 
-On Apple M4, the current release CLI with trimmed libkrunfw and 2 vCPU / 128 MiB reaches the workload stdout marker at **P50 82.64 ms and P95 98.98 ms**. The same CLI with official 5.6.2 firmware reaches P50 117.77 ms. Each main case has 100 samples; a separate diagnostic batch breaks down the host startup path.
+The latest controlled P0 remeasurement at 2 vCPU / 128 MiB with trimmed firmware reduces Ready P50 from **90.50 ms** to **84.35 ms**, with optimized P95 **112.14 ms** and median paired savings **5.64 ms**. Routine logs are enabled, N=100 per case; this batch is separate from the earlier full matrix below.
+
+On Apple M4, the release CLI in the earlier full matrix with trimmed libkrunfw and 2 vCPU / 128 MiB reaches the workload stdout marker at **P50 82.64 ms and P95 98.98 ms**. The same CLI with official 5.6.2 firmware reaches P50 117.77 ms. Each main case has 100 samples; a separate diagnostic batch breaks down the host startup path.
 
 This includes CLI preparation, durable Run records, runner launch, VMM construction, Linux initialization and guest shell execution. The rootfs is prepared and host caches are warm. Each trial creates a new VM; image download, cold-disk startup and a complete Agent service startup are outside the measurement.
 
@@ -184,9 +186,49 @@ Today's paired data validates the combined trimmed artifact, not an exact contri
 
 The compressed init argv transport was removed; guest initialization still reads bounded JSON. The kernel random-capability cache patch remains experimental because additional benefits after FDT seeding were unstable. A 20-pair cleanup comparison showed no stable regression. Detailed per-exit/MMIO and virtio-fs instrumentation was removed; lightweight, default-off host checkpoints remained at that point; this mechanism now provides the routine diagnostics described above.
 
+### Controlled remeasurement of both P0 changes
+
+The baseline is fixed commit `52e77c60d6352960a4d2ab4ef8661f3d5b1b2797`. Changes are applied sequentially, excluding concurrent HVF/VMM working-tree edits. All release artifacts use one isolated source and target directory: `baseline` is unchanged, `attestation` removes temporary receipt synchronization, and `both` additionally deduplicates directory barriers. Firmware and prepared rootfs remain identical; routine checkpoints are enabled throughout (`1` is equivalent to default behavior). Official firmware was not remeasured; its earlier numbers are not a same-round control for these results.
+
+Round one retains complete receipt writes, normal-exit validation and failed-entry truncation, removing only two `sync_data()` calls. Round two creates the full directory tree before syncing the first new directory's parent and each new directory once. N new levels require N+1 directory barriers instead of 2N. Existing-directory behavior and sync-error propagation retain their contracts; RunRecord and index publication remain synchronous atomic operations.
+
+At 2 vCPU, each artifact has 100 formal samples and 5 warmups at 128 and 2048 MiB: 600 formal samples and 30 warmups. All six cases are randomized each round. Values are milliseconds; Ready still runs from before process creation to workload stdout marker, while Exit is measured separately. See the [P0 raw JSON](../../assets/benchmarks/startup-p0-20261003.json) for samples and hashes.
+
+| MiB | Variant | Ready P50 | Ready P95 | Ready P99 | Exit P50 |
+|---:|---|---:|---:|---:|---:|
+| 128 | `baseline` | 90.50 | 107.99 | 717.92 | 155.10 |
+| 128 | `attestation` | 84.69 | 101.89 | 149.32 | 144.91 |
+| 128 | `both` | 84.35 | 112.14 | 193.52 | 144.60 |
+| 2048 | `baseline` | 97.27 | 116.15 | 183.06 | 182.45 |
+| 2048 | `attestation` | 94.36 | 108.69 | 503.98 | 177.42 |
+| 2048 | `both` | 94.55 | 110.57 | 145.46 | 176.42 |
+
+| MiB | Comparison | Paired saving P50 | Bootstrap 95% CI | Faster |
+|---:|---|---:|---|---:|
+| 128 | `baseline → attestation` | 6.61 | [2.98, 8.80] | 70/100 |
+| 128 | `attestation → both` | 1.30 | [-0.98, 3.35] | 53/100 |
+| 128 | `baseline → both` | 5.64 | [4.00, 8.46] | 73/100 |
+| 2048 | `baseline → attestation` | 3.61 | [2.01, 6.35] | 66/100 |
+| 2048 | `attestation → both` | 2.31 | [-0.31, 4.42] | 56/100 |
+| 2048 | `baseline → both` | 4.24 | [1.61, 5.77] | 66/100 |
+
+| Variant (128 MiB) | Attestation P50 | Storage P50 | Parent preparation mean | Ready mean |
+|---|---:|---:|---:|---:|
+| `baseline` | 4.03 | 33.33 | 48.66 | 104.74 |
+| `attestation` | 0.04 | 33.63 | 42.32 | 91.34 |
+| `both` | 0.04 | 32.57 | 37.42 | 88.73 |
+
+Round one has positive end-to-end paired intervals at both memory sizes. Its attestation span falls from about 4.03 to 0.04 ms; all 100 pairs at 128 MiB improve that span. Round two's independent end-to-end intervals still cross zero, so an additional stable millisecond gain is not established; redundant directory calls are demonstrably reduced. The combined changes improve the median in this batch, but 128 MiB Ready P95 changes from 107.99 to 112.14 ms, so tail latency does not improve universally.
+
+An earlier batch used 50 samples per case, with 1-minute host load average falling from 18.38 to 8.66 and all end-to-end intervals crossing zero. Its [complete raw JSON](../../assets/benchmarks/startup-p0-20261003-first.json) remains archived and is not pooled with this batch. The second batch's load average is 5.67 → 6.87: lower, but not a fully isolated idle host. All successful tail samples remain included.
+
+Savings are median same-round differences, with 5,000 bootstrap resamples. Median gains from the two rounds cannot be added. Nested-span medians do not sum to total latency either. Intervals crossing zero do not establish stable improvement; exit tails and readiness tails remain separate observations.
+
+Checks cover four sync targets for three new directory levels, no additional barriers for existing directories, and immediate sync-error propagation. All artifacts also pass real-VM success, nonzero guest exit and deadline checks: the first two retain enforcement evidence; deadlines leave it unknown. Temporary receipts are not recovery state. These checks validate runtime semantics, not actual power-loss behavior.
+
 ### Next optimization boundaries
 
-Investigate critical-path directory durability barriers and temporary attestation synchronization, then process loading and PID1 work. Reducing attestation synchronization remains a candidate, not an implemented or measured improvement; failure, cancellation and attestation semantics must hold.
+Temporary attestation synchronization and duplicate barriers within directory creation are addressed by the P0 experiments above. Next investigate barriers across RunRecord/index publication and preparation steps, then process loading and PID1 work, preserving failure, cancellation and attestation semantics.
 
 RunRecord is authoritative state before execution. Required persistence cannot become an unawaited background task. Merge redundant barriers and parallelize independent work where safe, then validate with paired measurements and failure/recovery checks.
 

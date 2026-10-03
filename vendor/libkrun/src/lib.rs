@@ -3280,6 +3280,17 @@ impl VmmHandle {
     }
 }
 
+/// Opt in before launching: uses serializable CPU extensions and software GIC.
+/// This enables CPU capture only, not complete VM snapshot publication.
+#[cfg(target_os = "macos")]
+pub fn krun_set_snapshot_profile(ctx_id: u32) -> i32 {
+    let mut contexts = CTX_MAP.lock().unwrap();
+    let Some(context) = contexts.get_mut(&ctx_id) else { return -libc::ENOENT; };
+    if context.vmr.nested_enabled { return -libc::ENOTSUP; }
+    context.vmr.snapshot_profile = true;
+    KRUN_SUCCESS
+}
+
 /// Configure live file-backed RAM without granting the VMM filesystem paths.
 pub fn krun_set_ram_backing(ctx_id: u32, file: File) -> i32 {
     #[cfg(any(feature = "tee", feature = "aws-nitro"))]
