@@ -47,3 +47,5 @@ just benchmark-startup --warmups 10 --samples 100
 同机、同套件、同输入比较 candidate 与 baseline。`benchmark-compare` 默认以 15% 为回归阈值，除非显式启用 `--fail-on-regression`，结果只作报告。保存原始样本、摘要、完整参数、输入摘要与提交号；区分冷镜像、热磁盘缓存与热页缓存，记录后台负载和电源状态。
 
 文件系统、网络、监督成本与并发密度仍缺完整实测。已有工具、规格通过或某个阶段的数字，都不能替代这些结果。
+
+`benchmark/pvisor/vm_ready.py` 使用 `pvisor-vm-readiness/v1`，分别测量负载输出就绪和 CLI 完成，并用独立诊断批次拆分宿主时间；完整协议见[启动延迟](startup.md)。

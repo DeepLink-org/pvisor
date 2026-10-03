@@ -47,3 +47,5 @@ Building, image downloads, and rootfs preparation are not counted in the existin
 Compare candidate and baseline on the same host, suite, and inputs. `benchmark-compare` defaults to a 15% regression threshold and reports only unless `--fail-on-regression` is explicitly enabled. Save raw samples, summaries, complete parameters, input hashes, and commits; distinguish cold images, warm disk caches, and warm page caches, and record background load and power state.
 
 Complete filesystem, network, supervision-cost, and concurrency-density measurements are still missing. Existing tools, passing specifications, or phase-specific figures cannot replace those results.
+
+`benchmark/pvisor/vm_ready.py` uses `pvisor-vm-readiness/v1`, measuring workload readiness and CLI completion separately, with independent host-checkpoint diagnostics. See [startup latency](startup.md) for the protocol.

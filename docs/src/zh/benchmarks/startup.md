@@ -1,20 +1,151 @@
-# 启动延迟
+# pVisor 启动时间：优化过程与完整基准
 
-覆盖冷启动、热启动延迟与常驻内存；对照组为裸进程、`docker run`、Firecracker，以及各 Agent 自带沙箱；工作负载为 `pvisor run -- true`，覆盖 host、host+stage、`--safe`、container、VM 五种配置。
+在 Apple M4 上，当前 release CLI 使用裁剪版 libkrunfw、2 vCPU / 128 MiB 启动新 VM，到工作负载输出就绪标记的 **P50 为 82.64 ms，P95 为 98.98 ms**。同一 CLI 使用官方 5.6.2 firmware 的 P50 为 117.77 ms。每组 100 个正式样本，另取诊断样本拆分宿主启动路径。
 
-## 已迁移数据：VM 执行器的 guest init 就绪延迟（Apple Silicon）
+这个数字包括 CLI 准备、持久化运行记录、启动 runner、构造 VMM、Linux 初始化与 guest 执行 shell。rootfs 已准备、宿主缓存已预热；它描述新 VM 启动，不包括镜像下载，也不是磁盘冷启动或完整 Agent 服务启动。
 
-这组数据只测量 VM 执行器内 guest init 到就绪的阶段，比较 C 与 Rust 两种 guest init 实现；它不是 pVisor 的端到端冷启动延迟，也不涉及 host 和 container 执行器。来自 `benchmark/pvisor/README.md`。测量于 2026-10-01，Apple M4/HVF，libkrunfw 5.5.0，Alpine minirootfs 3.22.1 aarch64，10 warmup / 100 sample：
+## 计时边界：什么才算就绪
 
-| 场景 | C ready p50 (ms) | Rust ready p50 (ms) | Rust ready p95 (ms) | p50 变化 |
-| --- | ---: | ---: | ---: | ---: |
-| 直接命令，网络关闭 | 105.27 | 114.57 | 116.63 | 慢 8.83% |
-| 工作区，网络关闭 | 119.18 | 114.48 | 116.24 | 快 3.94% |
-| 工作区，网络开启 | 119.46 | 114.81 | 116.33 | 快 3.89% |
+起点是 Python harness 调用 `Popen` 前的宿主单调时钟；终点是宿主读取到 guest shell 输出的独立 `PVISOR_BENCH_READY` 行。负载只执行 `/bin/sh -c 'printf "PVISOR_BENCH_READY\n"'`，不在标记前后运行 `dmesg`。因此 Ready 包含输出传输和宿主读取线程调度，不能缩写成“内核启动时间”。
 
-方法、脚本与原始报告仍保留在 `benchmark/pvisor/`。
+Exit 是同一起点到 CLI 退出被阻塞等待线程观察到的时间，包含 guest 退出、sync/reboot、VMM 退出及运行结果持久化。读取标记与等待退出分别使用线程，避免带 timeout 的轮询等待制造人为延迟；线程被调度的误差仍包含在观测值中。
 
-!!! note "建设中"
-    host／host+stage／--safe／container／VM 五组配置的冷启动、热启动与常驻内存，以及 p99 与样本数，尚无数据；报告要求见[方法](methodology.md)。
-    结论只描述该 HVF runner，不外推到 Linux/KVM。
+正式矩阵关闭 `PVISOR_STARTUP_TIMING`，诊断矩阵单独开启。每次正式启动都使用新工作目录，跳过个人 Agent 默认配置，关闭 OverlayNet，使用继承 stdio，没有 Gateway 或 TUI。原生 shell 和 host 执行器是上下文对照：macOS 与 Alpine shell 实现不同，不能用相减结果精确代表虚拟化成本。
 
+## 环境与样本
+
+| Item | Value |
+|---|---|
+| Date | 2026-10-03 |
+| Host | Apple M4, 10 cores, 24 GiB RAM, AC power |
+| OS / filesystem | macOS 27.0.1 (26A434), APFS |
+| Executor | pVisor 0.3.0 release, libkrun 1.19.3, HVF / aarch64 |
+| Source HEAD at measurement | `d6c607e79b8c497d2994731beb2ce2b3dfe628c0`; working tree status preserved in raw data |
+| CLI SHA-256 | `04d4c05fbc706d34738f4a453449f9f670a7a89021f261b133aa855cb9bc19b4` |
+| Guest rootfs | Alpine 3.22.1 aarch64, prepared directory, virtio-fs |
+| Firmware | official libkrunfw 5.6.2 / locally trimmed 5.6.2; Linux 6.12.109 |
+| Samples | 100 per main case + 5 discarded warmups; 20 per diagnostic case + 5 warmups |
+| Load average, before / after | 3.23, 3.35, 4.25 / 3.31, 3.79, 4.29 |
+
+官方 firmware 来自上游 5.6.2 发布的预编译 aarch64 `kernel.c`，只在 macOS 包装成 dylib；裁剪版来自本地 libkrunfw 构建。官方源码无需完整重编译。两者内核版本一致，但本地源码为 `v5.6.2-3-gf6a710f`，因此比较的是这两个真实制品，不是严格只改变一项 Kconfig 的因果实验。CLI 当前默认下载器仍固定 5.5.0，本实验显式选择 5.6.2，不把默认版本混进表格。
+
+官方 dylib 为 23.715 MiB，裁剪版为 11.307 MiB，文件大小减少约 52.3%；这不等于 guest 或宿主物理内存降低 52.3%。完整 SHA-256、参数、源码状态和每个样本见[原始 JSON](../../assets/benchmarks/startup-20261003.json)。原始 JSON 保留测量时的绝对路径作为来源记录，复现时替换为自己的路径。
+
+## 无诊断日志的端到端结果
+
+下表单位均为毫秒；每行 N=100。`direct` 是原生 shell，`host` 是 pVisor host 执行器，其余名称为 firmware、vCPU 数和 MiB。
+
+| Case | Ready P50 | Ready P95 | Ready P99 | Exit P50 | Exit P95 |
+|---|---:|---:|---:|---:|---:|
+| `direct` | 5.16 | 7.36 | 8.15 | 5.44 | 7.66 |
+| `host` | 31.49 | 37.34 | 44.08 | 56.63 | 70.56 |
+| `official-1cpu-128` | 125.49 | 140.99 | 146.79 | 202.61 | 302.99 |
+| `trimmed-1cpu-128` | 81.03 | 99.55 | 127.66 | 138.58 | 200.79 |
+| `official-2cpu-128` | 117.77 | 144.38 | 229.53 | 190.21 | 291.47 |
+| `trimmed-2cpu-128` | 82.64 | 98.98 | 103.31 | 142.56 | 194.52 |
+| `official-4cpu-128` | 108.68 | 121.24 | 132.39 | 188.59 | 262.58 |
+| `trimmed-4cpu-128` | 85.15 | 103.62 | 400.23 | 153.01 | 199.25 |
+| `official-2cpu-2048` | 125.15 | 143.53 | 156.74 | 211.97 | 314.88 |
+| `trimmed-2cpu-2048` | 92.71 | 108.48 | 167.57 | 167.68 | 252.12 |
+
+正式矩阵共 1,000 个成功样本，另外 80 个成功诊断样本；预热共 70 次，总计 1,150 次启动。VM 样本在计时结束后检查 Bundle 为 completed、零退出，并确认 `virtual_machine` 隔离。任一失败、缺少标记或隔离不符都会终止测量，不能作为快速样本。
+
+100 个样本足以描述这次测量的中位数和常见尾部，但 P99 接近最大观测值，不能据此保证长期尾延迟。后台负载、电源状态、APFS 持久化与宿主调度都可能影响下一批结果；之前约 84 ms 是另一批次的观测，不是固定性能常数。
+
+本次也出现了明显长尾：裁剪版 4 vCPU / 128 MiB 有 2/100 次超过 200 ms，最大 412.91 ms；官方 2 vCPU / 128 MiB 有 3/100 次超过 200 ms，最大 389.00 ms。第 15 和 68 轮分别包含多个较慢案例。正式矩阵没有细粒度埋点，无法确定是持久化、调度还是其他宿主活动导致；这些成功样本全部保留，不剔除后再报告更漂亮的 P99。
+
+### 同轮配对的 firmware 收益
+
+每轮随机排列所有案例；将同轮、同规格的官方值减去裁剪值，再对差值取中位数。置信区间使用固定 seed 的 5,000 次 bootstrap 重采样，它反映本批次样本变化，不能覆盖不同机器或负载条件的系统误差。
+
+| vCPU / MiB | Paired saving P50 | Bootstrap 95% CI | Trimmed faster |
+|---|---:|---:|---:|
+| 1cpu-128 | 44.62 | [42.60, 47.18] | 98/100 |
+| 2cpu-128 | 33.79 | [32.35, 37.14] | 99/100 |
+| 4cpu-128 | 23.88 | [22.72, 25.15] | 96/100 |
+| 2cpu-2048 | 34.94 | [32.21, 37.13] | 98/100 |
+
+配对差值中位数不必等于两个组中位数的相减。增加 vCPU 或分配 RAM 也不保证更快，应按实际工作负载选择配置。这里未使用快照恢复、常驻 VM 池或共享内存扫描。
+
+## 启动账本：时间去了哪里
+
+下面是裁剪版 2 vCPU / 128 MiB 的独立诊断批次，N=20；诊断 Ready P50 为 87.67 ms。它不能与正式批次直接相减来估计日志开销。
+
+| Boundary | P50 (ms) | Mean (ms) |
+|---|---:|---:|
+| `parent_load` | 7.14 | 7.26 |
+| `parent_prepare` | 33.73 | 34.02 |
+| `runner_load` | 6.17 | 6.28 |
+| `runner_prepare` | 4.78 | 4.74 |
+| `vmm_build` | 3.19 | 3.30 |
+| `guest_and_output` | 31.08 | 31.46 |
+
+六段的边界依次是：harness 起点 → 父进程 `main` → 开始 spawn runner → runner `main` → 进入 libkrun → VMM 构造完成 → 宿主读到就绪标记。父子进程埋点和 harness 使用同一宿主 `CLOCK_MONOTONIC` 时间域。每个样本的六段相加都必须严格闭合到该样本 Ready；各段均值也可以相加，独立中位数通常不能相加。
+
+`guest_and_output` 包括 guest boot、PID1 初始化、exec shell、virtio 控制台传输和宿主读线程调度，并不是纯 Linux 初始化。guest `dmesg` 使用 guest 时钟，不能直接与宿主时间戳相减。此前同制品的独立 kernel 日志对照中，官方到 `Run /init.krun` 约 42–43 ms，裁剪版约 21 ms；该历史辅助批次不参与本表统计。
+
+准备阶段中的嵌套区间如下。它们存在包含关系，不能把 storage、record、overlay 全部相加。
+
+| Nested span | P50 (ms) |
+|---|---:|
+| `storage` | 30.72 |
+| `record` | 18.02 |
+| `overlay` | 12.15 |
+| `agentctl` | 0.14 |
+| `ram` | 0.18 |
+| `spec` | 0.11 |
+| `attestation` | 4.12 |
+
+记录持久化和 overlay 准备是父进程路径的主要组成；runner 还包含设备配置与证明文件准备。仅阅读 JSON 或 virtio-fs 的某条日志，不能解释整段 guest 启动时间。
+
+## 已验证并保留的优化
+
+### 缩减重复持久化，保持运行记录语义
+
+非 Gateway 路径合并重复的初始 RunRecord 写入；未变化的索引复用原 inode 与内容，并保留必要的文件和目录同步。runner spec 使用父进程持有的私有临时文件进行 IPC，无需按长期业务记录执行 fsync。失效索引、权限不符和路径迁移仍会修复。
+
+此前相同裁剪 firmware、2 vCPU / 2 GiB、50 对无日志样本中，Ready P50 从 163.522 降到 136.217 ms；配对中位数节省 24.507 ms，48/50 对更快。父进程 main 到 spawn 的 P50 从 54.804 降到 34.675 ms。这组历史数据验证持久化优化，不能与本次结果串成同一实验曲线。
+
+### 给 Linux 传入新鲜的启动熵
+
+aarch64 FDT 为每台新 VM 注入独立的 32 字节 `rng-seed`，使用宿主操作系统随机源；生成失败会阻止启动，不回退到固定 seed。它让 Linux 更早获得可用熵，避免早期随机数准备拉长关键路径，保留 guest 的 DRBG 和熵健康检查。
+
+此前 2 vCPU / 128 MiB、50 对无日志样本中，Ready P50 从 129.270 降到 82.268 ms；配对节省 47.614 ms，95% CI [46.590, 48.750]，50/50 对更快。诊断中的 CPU_ON 区间也由约 49.849 降到 4.080 ms。后者包含启动调用路径，不能认作 PSCI 本身执行了 50 ms。
+
+### 按实际 VM 设备与 Agent 需求裁剪 firmware
+
+裁剪无使用路径的 GPU/显示/物理输入设备、罕见文件系统与加密算法、调试导出以及内存和电源管理的多余能力，保留 pVisor 实际依赖的 virtio、virtio-fs、控制台、网络和必要密码能力。加密算法自检与 Jitterentropy 健康检查是不同机制；没有把安全检查一概关掉。
+
+本次配对数据验证裁剪制品的整体收益，不能把收益精确分摊到某一驱动。内核代码量减少会影响映射、初始化和缓存，但文件体积不直接决定启动时间。完整设备能力和配置变化仍需以 libkrunfw 的定制配置为准。
+
+### 清理未稳定获益的实验
+
+init argv 压缩参数通道已撤下，guest 仍读取有大小上限的 JSON。内核随机能力探测缓存补丁只保留实验记录，没有成为默认：在 FDT seed 已启用时，附加收益未稳定。清理前后 20 对无日志样本未观察到稳定回归。实验性逐 exit/MMIO 与 virtio-fs 细粒度埋点也已移除，保留轻量且默认关闭的宿主启动计时。
+
+## 下一步优化的边界
+
+优先调查仍在关键路径的持久化目录屏障与临时 attestation 文件同步，再测父子进程装载和 guest PID1 后的具体工作。attestation 同步缩减只是候选，尚未合入或计入收益；它必须维持失败、取消和执行证明的语义。
+
+RunRecord 是执行前的权威状态，不能为了更快把必要持久化改成无等待的后台任务。安全可行的方向是合并重复屏障、并行真正独立的准备工作，并用同轮配对实验确认收益。需要保留失败注入与恢复验证，速度不是取消一致性的理由。
+
+Linux/KVM、Docker、Firecracker、a3s 和真实 Agent 就绪没有在本矩阵中测量，不据此声称比它们更快。首次镜像准备、磁盘冷缓存、TUI、Gateway、并发密度及服务健康检查，需要独立矩阵。
+
+## 复现与原始数据
+
+先准备 release CLI、Alpine rootfs 和两个 firmware 目录，再运行：
+
+```bash
+python3 benchmark/pvisor/vm_ready.py \
+  --binary target/release/pvisor \
+  --rootfs target/guest-init-benchmark/rootfs \
+  --official target/firmware-official-compare-20261003/official \
+  --trimmed target/firmware-official-compare-20261003/trimmed \
+  --output target/vm-startup-new \
+  --samples 100 --warmups 5 --profile-samples 20
+```
+
+输出目录必须尚不存在。harness 只依赖 Python 标准库，复用已有百分位数计算和 Bundle 验证。主矩阵与诊断矩阵隔离；预热不计入摘要；输出包括 `results.json`、逐行刷新的 `samples.jsonl`、输入 hash 和逐次 stdout/stderr。它使用独立 schema `pvisor-vm-readiness/v1`，不要与 `startup.py` 的命令完成耗时 schema 混用。
+
+本次本地日志位于 `target/vm-startup-20261003/`，正式报告为上方原始 JSON 链接。历史持久化、熵优化与 firmware 对照的完整实验说明保留在 `review_project/03-modules/`；旧 C/Rust guest init 的 runner 基准保留在 `benchmark/pvisor/README.md`，它不包含完整 CLI 准备，不能与本表直接比较。
+
+测量时的 harness 快照保留在 `review_project/06-evidence/vm-startup-20261003/`；测量后仅补上管道显式关闭，不改变计时。

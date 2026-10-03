@@ -304,3 +304,32 @@ Capture-mode stderr may be delivered only after the run; timestamps still record
 the actual checkpoints. Timing logs add diagnostic overhead, so measure final
 latency with the switch off. No persistence or synchronization guarantees are
 relaxed by this instrumentation.
+
+## Full CLI → VM workload readiness (Apple Silicon)
+
+`vm_ready.py` measures process creation → first workload stdout marker and
+process creation → CLI exit separately. Each trial creates a new VM and validates
+the completed Run Bundle and VM isolation after timing stops. Rootfs is prepared
+and host caches are warm; image download, build and TUI are excluded.
+
+```bash
+python3 benchmark/pvisor/vm_ready.py \
+  --binary target/release/pvisor \
+  --rootfs target/guest-init-benchmark/rootfs \
+  --official target/firmware-official-compare-20261003/official \
+  --trimmed target/firmware-official-compare-20261003/trimmed \
+  --output target/vm-startup-new \
+  --samples 100 --warmups 5 --profile-samples 20
+```
+
+Both library directories must contain the intended `libkrunfw.5.dylib`.
+The output must be new. The matrix includes native shell, pVisor host, and both
+firmwares at 1/2/4 vCPU × 128 MiB and 2 vCPU × 2048 MiB. Diagnostic samples are
+separate from the main matrix. `results.json` uses `pvisor-vm-readiness/v1`,
+including raw samples, artifact SHA-256, source status and paired bootstrap
+intervals. `samples.jsonl` is flushed incrementally; trial logs remain available.
+The same shell command runs on host and guest, but macOS and Alpine use different
+shell builds: host cases give context, not a pure virtualization-overhead estimate.
+
+See the [startup article](../../docs/src/zh/benchmarks/startup.md) for measured
+results, checkpoint boundaries, retained optimizations and limitations.
