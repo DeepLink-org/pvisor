@@ -12,10 +12,12 @@ done
 if [ "$provision" = 1 ]; then
     mkdir -p /mnt/reference-payload
     mount -o ro /dev/vdb /mnt/reference-payload
+    printf "REFERENCE_COPY_START\n"
     cp -a /mnt/reference-payload/. /
+    printf "REFERENCE_COPY_DONE\n"
     umount /mnt/reference-payload
     export DEBIAN_FRONTEND=noninteractive
-    apt-get update
+    apt-get -o Acquire::Retries=1 -o Acquire::http::Timeout=30 update
     apt-get install -y --no-install-recommends python3 git ripgrep nodejs npm build-essential
     dpkg-query -W > /root/reference-packages.txt
     printf 'REFERENCE_PROVISIONED\n'

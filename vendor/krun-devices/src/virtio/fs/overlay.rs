@@ -94,6 +94,10 @@ struct Nodes {
 pub struct OverlaySnapshot {
     config: Config,
     hard_links: Vec<(u64, u64, Vec<PathBuf>)>,
+    /// Physical lower identities must be relocated too: a future copy-up of a
+    /// previously unvisited alias must join the already copied upper inode.
+    #[serde(default)]
+    hard_link_origins: Vec<(u64, u64, usize, Vec<u8>)>,
     layers: Vec<super::snapshot::FsSnapshot>,
     nodes: Vec<(u64, Vec<u8>)>,
     handles: Vec<(u64, Handle)>,
@@ -101,6 +105,137 @@ pub struct OverlaySnapshot {
 }
 
 impl OverlaySnapshot {
+    pub(super) fn rebind_owned_copy(
+        &mut self,
+        source: &Path,
+        destination: &Path,
+    ) -> io::Result<()> {
+        use super::snapshot::invalid;
+        if !source.is_absolute()
+            || source.components().any(|part| {
+                !matches!(
+                    part,
+                    std::path::Component::RootDir | std::path::Component::Normal(_)
+                )
+            })
+        {
+            return Err(invalid("invalid overlay source binding"));
+        }
+        let destination = destination.canonicalize()?;
+        if destination.starts_with(source) || source.starts_with(&destination) {
+            return Err(invalid("copied overlay must have an independent root"));
+        }
+        let relocate = |path: &str| -> io::Result<String> {
+            let original = Path::new(path);
+            let relative = original
+                .strip_prefix(source)
+                .map_err(|_| invalid("overlay backing escapes owned source tree"))?;
+            if relative
+                .components()
+                .any(|part| !matches!(part, std::path::Component::Normal(_)))
+            {
+                return Err(invalid("invalid overlay backing relative path"));
+            }
+            let copied = destination.join(relative);
+            if !std::fs::symlink_metadata(&copied)?.is_dir()
+                || !copied.canonicalize()?.starts_with(&destination)
+            {
+                return Err(invalid("copied overlay backing is not an owned directory"));
+            }
+            copied
+                .to_str()
+                .map(str::to_owned)
+                .ok_or_else(|| invalid("overlay backing path is not UTF-8"))
+        };
+        self.rebind_roots(relocate)
+    }
+
+    pub(super) fn rebind_roots(
+        &mut self,
+        relocate: impl Fn(&str) -> io::Result<String>,
+    ) -> io::Result<()> {
+        use super::snapshot::invalid;
+        use std::os::unix::fs::MetadataExt;
+        let original_roots = std::iter::once(self.config.upper_dir.clone())
+            .chain(self.config.lower_dirs.iter().cloned())
+            .collect::<Vec<_>>();
+        if self.layers.len() != original_roots.len() || self.config.lower_dirs.is_empty() {
+            return Err(invalid("overlay snapshot layer count mismatch"));
+        }
+        let mut config = self.config.clone();
+        config.upper_dir = relocate(&config.upper_dir)?;
+        config.lower_dirs = config
+            .lower_dirs
+            .iter()
+            .map(|root| relocate(root))
+            .collect::<io::Result<_>>()?;
+        config.work_dir = config.work_dir.as_deref().map(&relocate).transpose()?;
+        config.preimage_dir = config.preimage_dir.as_deref().map(&relocate).transpose()?;
+        config.apply_target = config.apply_target.as_deref().map(&relocate).transpose()?;
+        config.baseline_lower = config.baseline_lower.as_deref().map(&relocate).transpose()?;
+        let roots = std::iter::once(config.upper_dir.clone())
+            .chain(config.lower_dirs.iter().cloned())
+            .collect::<Vec<_>>();
+        let mut layers = self.layers.clone();
+        for ((layer, original), copied) in layers.iter_mut().zip(&original_roots).zip(&roots) {
+            layer.rebind_owned_copy(Path::new(original), Path::new(copied))?;
+        }
+        let mut origins = std::collections::BTreeMap::new();
+        let mut rebound_origins = Vec::new();
+        for (dev, ino, layer, relative) in &self.hard_link_origins {
+            if *layer == 0 || *layer >= roots.len() || origins.contains_key(&(*dev, *ino)) {
+                return Err(invalid("invalid overlay hard-link origin"));
+            }
+            let path = super::snapshot::relative_path(Path::new(&roots[*layer]), relative)?;
+            let metadata = std::fs::symlink_metadata(path)?;
+            if !metadata.is_file() || metadata.nlink() < 2 {
+                return Err(invalid("copied overlay lost its lower hard-link origin"));
+            }
+            let identity = (metadata.dev(), metadata.ino());
+            origins.insert((*dev, *ino), identity);
+            rebound_origins.push((identity.0, identity.1, *layer, relative.clone()));
+        }
+        if origins.len() != self.hard_links.len() {
+            return Err(invalid(
+                "overlay hard-link origins are missing or duplicated",
+            ));
+        }
+        let mut seen = std::collections::BTreeSet::new();
+        let mut hard_links = Vec::new();
+        for (dev, ino, paths) in &self.hard_links {
+            let &(dev, ino) = origins
+                .get(&(*dev, *ino))
+                .ok_or_else(|| invalid("overlay hard-link origin missing"))?;
+            if !seen.insert((dev, ino)) {
+                return Err(invalid("copied overlay collapsed hard-link origins"));
+            }
+            hard_links.push((dev, ino, paths.clone()));
+        }
+        // Validate upper aliases against their new physical inode before changing
+        // any state. This also rejects escaping, absent or split link groups.
+        let layout = pvisor_overlay_core::OverlayLayout::with_baseline(
+            config.lower_dirs.iter().map(PathBuf::from).collect(),
+            config
+                .apply_target
+                .as_ref()
+                .map(PathBuf::from)
+                .unwrap_or_else(|| PathBuf::from(config.lower_dirs.last().unwrap())),
+            config.baseline_lower.as_deref().map(Path::new),
+        )?;
+        let core = OverlayCore::open_existing_for_layout(
+            layout,
+            PathBuf::from(&config.upper_dir),
+            config.work_dir.as_ref().map(PathBuf::from),
+            config.excluded_paths.iter().map(PathBuf::from).collect(),
+            config.preimage_dir.as_ref().map(PathBuf::from),
+        )?;
+        core.restore_hard_links(&hard_links)?;
+        self.config = config;
+        self.layers = layers;
+        self.hard_links = hard_links;
+        self.hard_link_origins = rebound_origins;
+        Ok(())
+    }
     pub(crate) fn contains_inode(&self, inode: u64) -> bool {
         self.nodes.iter().any(|n| n.0 == inode)
             || self.layers.iter().any(|s| s.contains_inode(inode))
@@ -353,11 +488,57 @@ impl OverlayFs {
 }
 
 impl FileSystem for OverlayFs {
-        fn capture_state(&self) -> io::Result<super::snapshot::FsSnapshot> {
+    fn capture_state(&self) -> io::Result<super::snapshot::FsSnapshot> {
         let _operation = self.operation_lock.lock().unwrap();
+        let hard_links = self.core.capture_hard_links()?;
+        let mut missing = hard_links
+            .iter()
+            .map(|(dev, ino, _)| (*dev, *ino))
+            .collect::<std::collections::BTreeSet<_>>();
+        let mut hard_link_origins = Vec::new();
+        // Lower origins can already have been forgotten by FUSE. Preserve their
+        // paths now, while all device writes are frozen and the trees are owned.
+        for (layer, root) in self.roots.iter().enumerate().skip(1) {
+            use std::os::unix::fs::MetadataExt;
+            let mut directories = vec![root.clone()];
+            while !missing.is_empty() && !directories.is_empty() {
+                let directory = directories.pop().unwrap();
+                for entry in std::fs::read_dir(directory)? {
+                    let path = entry?.path();
+                    let metadata = std::fs::symlink_metadata(&path)?;
+                    if missing.is_empty() {
+                        break;
+                    }
+                    if metadata.is_dir() {
+                        directories.push(path);
+                    } else if metadata.is_file()
+                        && missing.remove(&(metadata.dev(), metadata.ino()))
+                    {
+                        hard_link_origins.push((
+                            metadata.dev(),
+                            metadata.ino(),
+                            layer,
+                            path.strip_prefix(root)
+                                .map_err(|_| {
+                                    super::snapshot::invalid("hard-link origin escaped lower")
+                                })?
+                                .as_os_str()
+                                .as_bytes()
+                                .to_vec(),
+                        ));
+                    }
+                }
+            }
+        }
+        if !missing.is_empty() {
+            return Err(super::snapshot::unsupported(
+                "overlay hard-link source is no longer owned",
+            ));
+        }
         Ok(super::snapshot::FsSnapshot::Overlay(OverlaySnapshot {
             config: self.snapshot_config.clone(),
-            hard_links: self.core.capture_hard_links()?,
+            hard_links,
+            hard_link_origins,
             layers: self
                 .layers
                 .iter()

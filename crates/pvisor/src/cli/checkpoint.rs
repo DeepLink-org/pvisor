@@ -134,7 +134,7 @@ pub(crate) fn execution_blocker(record: &RunRecord) -> &'static str {
         .as_ref()
         .is_some_and(|identity| identity.isolation == pvisor_core::IsolationKind::VirtualMachine)
     {
-        "ordinary VM Jobs use OverlayFS/DAX and temporary root layers; full machine capture, copied-layer rebinding and Attempt handoff are not yet connected to this executor"
+        "ordinary VM Jobs use temporary overlay root layers; their executor has no owned-layer checkpoint binding, full machine capture/restore or Attempt handoff"
     } else {
         "this Job executor has no full CPU/RAM/device capture and restore contract"
     }

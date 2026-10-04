@@ -158,9 +158,7 @@ def agent_loop(name):
     server = ThreadingHTTPServer(("127.0.0.1", 0), RecordingModel)
     server.lock = threading.Lock()
     server.requests = []
-    fixture_model.COMMAND = (
-        f"{ROOT}/usr/bin/python3 {WORKLOAD} --mode tool-action"
-    )
+    fixture_model.COMMAND = f"{ROOT}/usr/bin/python3 {WORKLOAD} --mode tool-action"
     thread = threading.Thread(
         target=server.serve_forever, kwargs={"poll_interval": 0.01}, daemon=True
     )

@@ -108,9 +108,57 @@ impl FileIdentity {
 }
 
 impl ServerSnapshot {
+    /// Rebind separately verified, exclusively owned copies of every backing
+    /// directory. The coordinator must verify full inventories and preserve
+    /// cross-directory hard links before calling. No partial or external layer
+    /// binding is accepted; failure leaves the original snapshot unchanged.
+    pub fn rebind_owned_layers(&mut self, copies: &[(PathBuf, PathBuf)]) -> io::Result<()> {
+        let mut roots = std::collections::BTreeMap::new();
+        let mut destinations = std::collections::BTreeSet::new();
+        for (source, destination) in copies {
+            if !source.is_absolute()
+                || source.components().any(|part| !matches!(part, Component::RootDir | Component::Normal(_)))
+            {
+                return Err(invalid("invalid copied layer source binding"));
+            }
+            let destination = destination.canonicalize()?;
+            if !std::fs::symlink_metadata(&destination)?.is_dir()
+                || destination.starts_with(source)
+                || source.starts_with(&destination)
+                || !destinations.insert(destination.clone())
+                || roots.insert(source.clone(), destination).is_some()
+            {
+                return Err(invalid("copied layer roots must be distinct and independent"));
+            }
+        }
+        if roots.is_empty() {
+            return Err(invalid("missing copied layer bindings"));
+        }
+        let relocate = |path: &str| -> io::Result<String> {
+            roots.get(Path::new(path))
+                .ok_or_else(|| invalid("overlay backing has no verified owned copy"))?
+                .to_str().map(str::to_owned)
+                .ok_or_else(|| invalid("copied layer path is not UTF-8"))
+        };
+        fn rebind(state: &mut FsSnapshot, relocate: &impl Fn(&str) -> io::Result<String>) -> io::Result<()> {
+            match state {
+                FsSnapshot::ReadOnly(inner) | FsSnapshot::Augment { inner, .. } => rebind(inner, relocate),
+                FsSnapshot::Overlay(state) => state.rebind_roots(relocate),
+                _ => Err(unsupported("layer copies require an overlay filesystem")),
+            }
+        }
+        let mut rebound = self.fs.clone();
+        rebind(&mut rebound, &relocate)?;
+        self.fs = rebound;
+        Ok(())
+    }
+
     /// Rebind a captured filesystem to an exclusively owned, verified full
     /// copy. The environment coordinator must validate the entire archive
     /// (including objects not looked up by the guest) before calling this.
+    /// For an overlay, source/destination are the common owned tree roots;
+    /// every lower, upper, work, preimage, target and baseline binding must
+    /// belong to that tree. Shared external backing is not relocated here.
     /// This does not change the ordinary restore identity checks or publish
     /// a snapshot. On failure the original server state is unchanged.
     pub fn rebind_owned_copy(&mut self, source: &Path, destination: &Path) -> io::Result<()> {
@@ -122,7 +170,7 @@ impl ServerSnapshot {
 }
 
 impl FsSnapshot {
-    fn rebind_owned_copy(&mut self, source: &Path, destination: &Path) -> io::Result<()> {
+    pub(super) fn rebind_owned_copy(&mut self, source: &Path, destination: &Path) -> io::Result<()> {
         use std::os::unix::fs::OpenOptionsExt;
         match self {
             Self::ReadOnly(inner) | Self::Augment { inner, .. } => {
@@ -200,7 +248,10 @@ impl FsSnapshot {
                 state.root = root.as_os_str().as_bytes().to_vec();
                 Ok(())
             }
-            _ => Err(unsupported("copied filesystem requires a passthrough root")),
+            Self::Overlay(state) => state.rebind_owned_copy(source, destination),
+            _ => Err(unsupported(
+                "copied filesystem requires a passthrough or owned overlay root",
+            )),
         }
     }
 }

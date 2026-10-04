@@ -38,7 +38,7 @@ Primary sources inspected on 2026-10-04:
 | Scalable scheduling | Bounded ready window, indexed expiration, batched leases, reservations, tenant quotas | Sharding, replicated authority, group commit, admission/load measurements and large-scale benchmarks |
 | Independently versioned base/workspace/toolkit layers | Durable immutable template registry; lease-bound revision handles; VM worker composes native lazy-cache layers with private upper and shared live read mounts; real Linux VM composition/upper isolation gate | Distribution deployment and measured startup/density benefit; container composition |
 | AgentENV pause/resume | Durable lease-bound desired/observed pause/offload/resume; native controls verified on real Linux VM; CPU reserved before resume | Multi-host VM lifecycle/fault experiments and inference-wait coordination |
-| Incremental execution checkpoints, fork and recovery | Ordinary Job executor explicitly rejects full execution capture | Connect full VM state capture/restore to Job driver; independent forks, compatible runtime identity, remote storage and recovery tests |
+| Incremental execution checkpoints, fork and recovery | Ordinary Job executor explicitly rejects full execution capture; virtio-fs can rebind verified, fully owned overlay copies | Connect full VM state capture/restore to Job driver; independent forks, compatible runtime identity, remote storage and recovery tests |
 | Dense memory use | VM size derived from task admission budget; host-local shared RAM/cache profile options; offload observations retain RAM charge | Physical resident-memory accounting, controlled reclaim/overcommit and measured density improvement |
 | CPU QoS/controlled overcommit | CPU reservations; optional Linux PSI, affinity and visible cgroup v2 CPU/memory admission; native resume gating | BE/LS enforcement, per-attempt physical accounting, pressure-aware overcommit and latency/isolation verification |
 | RL preemption/resumption | Lease protocol and per-task evidence | Preserve rollout/scaffold state independently of GPU scheduling; resumable checkpoint coordination |
@@ -48,6 +48,17 @@ Completion requires the whole matrix, not only passing scheduler tests. The
 unconnected ordinary-Job checkpoint path is documented in
 `crates/pvisor/src/cli/checkpoint.rs::execution_blocker`; VM pause/offload is
 not a complete checkpoint, portable migration or a claim of zero resident RAM.
+
+The overlay rebinding prerequisite preserves ordered lower layers, private upper,
+work/preimage directories, saved guest file handles and directory cookies. It
+also relocates original lower inode identities so later copy-up of an unseen
+hard-link alias joins the existing upper inode. Descriptor-ring tests remove the
+original tree before restoring and verify a second copy/fork. The coordinator
+must verify the complete owned-tree inventory before rebinding, including files
+never opened by the guest. External backing roots, missing hard-link origins and
+invalid copied state fail without changing the saved server state. This full-copy
+primitive does not yet connect ordinary Job checkpoints, shared immutable cache
+bindings, CPU/RAM handoff or controller-directed recovery.
 
 ## Run a controller and workers
 
