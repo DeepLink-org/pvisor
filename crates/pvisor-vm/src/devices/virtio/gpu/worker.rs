@@ -45,6 +45,10 @@ pub struct Worker {
 }
 
 impl Worker {
+    #[allow(
+        clippy::too_many_arguments,
+        reason = "GPU worker initialization transfers transport, shared-memory and display backend resources"
+    )]
     pub fn new(
         control_q: DeviceQueue,
         mem: GuestMemoryMmap,

@@ -283,11 +283,11 @@ impl VmResources {
 
         if kernel_bundle.host_addr == 0 || (kernel_bundle.host_addr as usize) & (page_size - 1) != 0
         {
-            return Err(KernelBundleError::HostAddress);
+            return Err(KernelBundleError::InvalidHostAddress);
         }
 
         if (kernel_bundle.guest_addr as usize) & (page_size - 1) != 0 {
-            return Err(KernelBundleError::GuestAddress);
+            return Err(KernelBundleError::InvalidGuestAddress);
         }
 
         self.kernel_bundle = Some(kernel_bundle);

@@ -23,11 +23,22 @@ fn request_record(
     subagent_id: Option<&str>,
     body: Option<&serde_json::Value>,
 ) -> CaptureRecord {
-    let mut rec = llm_request_summary_record(Some(super::support::CLAUDE_SESSION.into()),
-Some(super::support::PROXY_AGENT.into()),
-pvisor_gateway::sink::LlmRequestSummary { model, path: "/v1/messages", body_bytes: 100, protocol: "messages", provider: "anthropic", user_content: Some(user.into()), forward_to: None, body_json: body },
-&test_call(),
-CaptureLevel::Dialogue,);
+    let mut rec = llm_request_summary_record(
+        Some(super::support::CLAUDE_SESSION.into()),
+        Some(super::support::PROXY_AGENT.into()),
+        pvisor_gateway::sink::LlmRequestSummary {
+            model,
+            path: "/v1/messages",
+            body_bytes: 100,
+            protocol: "messages",
+            provider: "anthropic",
+            user_content: Some(user.into()),
+            forward_to: None,
+            body_json: body,
+        },
+        &test_call(),
+        CaptureLevel::Dialogue,
+    );
     rec.subagent_id = subagent_id.map(str::to_string);
     if let Some(body) = body {
         if let Some(messages) = body.get("messages") {

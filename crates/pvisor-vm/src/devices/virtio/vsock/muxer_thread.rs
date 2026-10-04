@@ -134,18 +134,32 @@ impl MuxerThread {
             let local_port: u32 = thread_rng.random_range(1024..u32::MAX);
             let new_id: u64 = ((peer_port as u64) << 32) | (local_port as u64);
             let new_proxy: Box<dyn Proxy> = match proxy_type {
-                NewProxyType::Tcp => Box::new(TsiStreamProxy::new_reverse(new_id,
-id,
-family,
-local_port,
-peer_port,
-accept_fd,
-super::proxy::ProxyGuest { cid: self.cid, mem: self.mem.clone(), queue: self.queue.clone(), rxq: self.rxq.clone() },)),
-                NewProxyType::Unix => Box::new(UnixProxy::new_reverse(new_id,
-local_port,
-peer_port,
-accept_fd,
-super::proxy::ProxyGuest { cid: self.cid, mem: self.mem.clone(), queue: self.queue.clone(), rxq: self.rxq.clone() },)),
+                NewProxyType::Tcp => Box::new(TsiStreamProxy::new_reverse(
+                    new_id,
+                    id,
+                    family,
+                    local_port,
+                    peer_port,
+                    accept_fd,
+                    super::proxy::ProxyGuest {
+                        cid: self.cid,
+                        mem: self.mem.clone(),
+                        queue: self.queue.clone(),
+                        rxq: self.rxq.clone(),
+                    },
+                )),
+                NewProxyType::Unix => Box::new(UnixProxy::new_reverse(
+                    new_id,
+                    local_port,
+                    peer_port,
+                    accept_fd,
+                    super::proxy::ProxyGuest {
+                        cid: self.cid,
+                        mem: self.mem.clone(),
+                        queue: self.queue.clone(),
+                        rxq: self.rxq.clone(),
+                    },
+                )),
             };
             self.proxy_map
                 .write()

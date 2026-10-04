@@ -74,6 +74,10 @@ pub(crate) struct DiskProperties {
 }
 
 impl DiskProperties {
+    #[allow(
+        clippy::too_many_arguments,
+        reason = "Native block initialization transfers distinct image, cache, identity and I/O settings"
+    )]
     pub fn new(
         disk_image: Arc<Mutex<SyncFormatAccess<Box<dyn DynStorage>>>>,
         disk_image_id: Vec<u8>,

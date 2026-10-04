@@ -63,8 +63,16 @@ impl VmSpec {
 #[derive(Debug, Clone)]
 pub enum Error {
     /// A FamStructWrapper operation has failed
+    #[allow(
+        clippy::enum_variant_names,
+        reason = "Identifies the upstream FAM error rather than a domain value"
+    )]
     FamError(vmm_sys_util::fam::Error),
     /// A call to an internal helper method failed
+    #[allow(
+        clippy::enum_variant_names,
+        reason = "Preserves the diagnostic distinction between internal and input errors"
+    )]
     InternalError(super::common::Error),
     /// The maximum number of addressable logical CPUs cannot be stored in an `u8`.
     VcpuCountOverflow,

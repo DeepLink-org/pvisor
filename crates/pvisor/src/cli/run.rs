@@ -1,3 +1,4 @@
+use pvisor_vm::api::RuntimeSupport;
 mod safe;
 
 use std::path::{Path, PathBuf};
@@ -1327,14 +1328,14 @@ async fn execute_config(
                 all(target_os = "macos", target_arch = "x86_64")
             )))]
             if config.vm.library_dir.is_none()
-                && crate::executor::vm::bundled_firmware_dir().is_none()
+                && pvisor_vm::api::VmPlatform::bundled_firmware_directory().is_none()
             {
                 run_log!(
                     "pVisor firmware: resolving libkrunfw {}",
-                    crate::executor::vm::firmware::VERSION
+                    pvisor_vm::api::VmPlatform::firmware_version()
                 );
                 let directory = tokio::task::spawn_blocking(|| {
-                    crate::executor::vm::firmware::FirmwareStore::new()?.prepare()
+                    pvisor_vm::api::VmPlatform::prepare_firmware(None)
                 })
                 .await
                 .context("libkrunfw preparation task failed")??;
@@ -3675,7 +3676,9 @@ sandbox = "required""#
         {
             config.vm.library_dir = Some(temporary.path().to_path_buf());
             std::fs::write(
-                temporary.path().join(crate::executor::vm::firmware_name()),
+                temporary
+                    .path()
+                    .join(pvisor_vm::api::VmPlatform::firmware_name()),
                 [],
             )
             .unwrap();

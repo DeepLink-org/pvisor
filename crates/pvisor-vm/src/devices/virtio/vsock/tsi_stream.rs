@@ -69,7 +69,12 @@ impl TsiStreamProxy {
         control_port: u32,
         guest: super::proxy::ProxyGuest,
     ) -> Result<Self, ProxyError> {
-        let super::proxy::ProxyGuest { cid, mem, queue, rxq } = guest;
+        let super::proxy::ProxyGuest {
+            cid,
+            mem,
+            queue,
+            rxq,
+        } = guest;
         let family = match family {
             defs::LINUX_AF_INET => AddressFamily::Inet,
             defs::LINUX_AF_INET6 => AddressFamily::Inet6,
@@ -147,7 +152,12 @@ impl TsiStreamProxy {
         fd: OwnedFd,
         guest: super::proxy::ProxyGuest,
     ) -> Self {
-        let super::proxy::ProxyGuest { cid, mem, queue, rxq } = guest;
+        let super::proxy::ProxyGuest {
+            cid,
+            mem,
+            queue,
+            rxq,
+        } = guest;
         debug!("new_reverse: id={id} local_port={local_port} peer_port={peer_port}");
         TsiStreamProxy {
             id,

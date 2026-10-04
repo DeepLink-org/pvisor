@@ -137,7 +137,13 @@ impl Port {
         interrupt: InterruptTransport,
         control: Arc<ConsoleControl>,
     ) {
-        self.start_inner(mem, (rx_queue, false), (tx_queue, false), interrupt, control);
+        self.start_inner(
+            mem,
+            (rx_queue, false),
+            (tx_queue, false),
+            interrupt,
+            control,
+        );
     }
 
     fn start_inner(
@@ -174,8 +180,16 @@ impl Port {
                 .name("console port".into())
                 .spawn(move || {
                     process_rx(
-                        mem, rx_queue, interrupt, input, control, port_id,
-                        super::process_rx::RxStop { event: stopfd, state: stop },
+                        mem,
+                        rx_queue,
+                        interrupt,
+                        input,
+                        control,
+                        port_id,
+                        super::process_rx::RxStop {
+                            event: stopfd,
+                            state: stop,
+                        },
                     )
                 })
                 .unwrap()

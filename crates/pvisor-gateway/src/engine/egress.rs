@@ -139,16 +139,34 @@ mod tests {
     #[test]
     fn rebuild_story_counts_dialogue_turns() {
         let call = sample_call("c1");
-        let req = llm_request_summary_record(Some("run".into()),
-Some("agent".into()),
-crate::sink::LlmRequestSummary { model: "m", path: "/v1/chat/completions", body_bytes: 10, protocol: "chat", provider: "openai", user_content: Some("hi".into()), forward_to: None, body_json: None },
-&call,
-CaptureLevel::Dialogue,);
-        let resp = llm_response_record_with_content(Some("run".into()),
-Some("agent".into()),
-crate::sink::LlmResponseContent { status: 200, payload: &serde_json::json!({}), streaming: false, assistant_content: Some("ok".into()) },
-&call,
-CaptureLevel::Dialogue,);
+        let req = llm_request_summary_record(
+            Some("run".into()),
+            Some("agent".into()),
+            crate::sink::LlmRequestSummary {
+                model: "m",
+                path: "/v1/chat/completions",
+                body_bytes: 10,
+                protocol: "chat",
+                provider: "openai",
+                user_content: Some("hi".into()),
+                forward_to: None,
+                body_json: None,
+            },
+            &call,
+            CaptureLevel::Dialogue,
+        );
+        let resp = llm_response_record_with_content(
+            Some("run".into()),
+            Some("agent".into()),
+            crate::sink::LlmResponseContent {
+                status: 200,
+                payload: &serde_json::json!({}),
+                streaming: false,
+                assistant_content: Some("ok".into()),
+            },
+            &call,
+            CaptureLevel::Dialogue,
+        );
         let story = rebuild_session_story("run", "run", &[req, resp]);
         assert_eq!(story_user_turn_count(&story), 1);
         assert!(story_call_ids(&story).contains("c1"));
@@ -159,16 +177,34 @@ CaptureLevel::Dialogue,);
         let mut records = Vec::new();
         for (i, text) in [("c1", "first"), ("c2", "second")] {
             let call = sample_call(i);
-            records.push(llm_request_summary_record(Some("run".into()),
-Some("agent".into()),
-crate::sink::LlmRequestSummary { model: "m", path: "/v1/chat/completions", body_bytes: 10, protocol: "chat", provider: "openai", user_content: Some(text.into()), forward_to: None, body_json: None },
-&call,
-CaptureLevel::Dialogue,));
-            records.push(llm_response_record_with_content(Some("run".into()),
-Some("agent".into()),
-crate::sink::LlmResponseContent { status: 200, payload: &serde_json::json!({}), streaming: false, assistant_content: Some(format!("reply-{text}")) },
-&call,
-CaptureLevel::Dialogue,));
+            records.push(llm_request_summary_record(
+                Some("run".into()),
+                Some("agent".into()),
+                crate::sink::LlmRequestSummary {
+                    model: "m",
+                    path: "/v1/chat/completions",
+                    body_bytes: 10,
+                    protocol: "chat",
+                    provider: "openai",
+                    user_content: Some(text.into()),
+                    forward_to: None,
+                    body_json: None,
+                },
+                &call,
+                CaptureLevel::Dialogue,
+            ));
+            records.push(llm_response_record_with_content(
+                Some("run".into()),
+                Some("agent".into()),
+                crate::sink::LlmResponseContent {
+                    status: 200,
+                    payload: &serde_json::json!({}),
+                    streaming: false,
+                    assistant_content: Some(format!("reply-{text}")),
+                },
+                &call,
+                CaptureLevel::Dialogue,
+            ));
         }
         let story = rebuild_session_story("run", "run", &records);
         assert_eq!(story_user_turn_count(&story), 2);
@@ -179,11 +215,22 @@ CaptureLevel::Dialogue,));
     #[test]
     fn subagent_session_uses_root_scoped_story_id() {
         let call = sample_call("c1");
-        let req = llm_request_summary_record(Some("agent-sub".into()),
-Some("agent".into()),
-crate::sink::LlmRequestSummary { model: "m", path: "/v1/chat/completions", body_bytes: 10, protocol: "chat", provider: "openai", user_content: Some("sub".into()), forward_to: None, body_json: None },
-&call,
-CaptureLevel::Dialogue,);
+        let req = llm_request_summary_record(
+            Some("agent-sub".into()),
+            Some("agent".into()),
+            crate::sink::LlmRequestSummary {
+                model: "m",
+                path: "/v1/chat/completions",
+                body_bytes: 10,
+                protocol: "chat",
+                provider: "openai",
+                user_content: Some("sub".into()),
+                forward_to: None,
+                body_json: None,
+            },
+            &call,
+            CaptureLevel::Dialogue,
+        );
         let story = rebuild_session_story("agent-sub", "run-root", &[req]);
         assert_eq!(story.story_id.as_str(), "run-root|agent-sub");
         assert_eq!(story.run_id.as_ref().map(|r| r.as_str()), Some("run-root"));
@@ -192,11 +239,22 @@ CaptureLevel::Dialogue,);
     #[test]
     fn story_user_turn_count_ignores_autonomous_turn() {
         let call = sample_call("tool-only");
-        let req = llm_request_summary_record(Some("run".into()),
-Some("agent".into()),
-crate::sink::LlmRequestSummary { model: "m", path: "/v1/chat/completions", body_bytes: 10, protocol: "chat", provider: "openai", user_content: None, forward_to: None, body_json: None },
-&call,
-CaptureLevel::Dialogue,);
+        let req = llm_request_summary_record(
+            Some("run".into()),
+            Some("agent".into()),
+            crate::sink::LlmRequestSummary {
+                model: "m",
+                path: "/v1/chat/completions",
+                body_bytes: 10,
+                protocol: "chat",
+                provider: "openai",
+                user_content: None,
+                forward_to: None,
+                body_json: None,
+            },
+            &call,
+            CaptureLevel::Dialogue,
+        );
         let story = rebuild_session_story("run", "run", &[req]);
         assert_eq!(story.turns.len(), 1);
         assert_eq!(story.turns[0].kind, TurnKind::Autonomous);
@@ -207,11 +265,22 @@ CaptureLevel::Dialogue,);
     fn persist_and_load_story_snapshots_roundtrip() {
         let dir = tempfile::tempdir().unwrap();
         let call = sample_call("c1");
-        let req = llm_request_summary_record(Some("sess".into()),
-Some("agent".into()),
-crate::sink::LlmRequestSummary { model: "m", path: "/v1/chat/completions", body_bytes: 10, protocol: "chat", provider: "openai", user_content: Some("hi".into()), forward_to: None, body_json: None },
-&call,
-CaptureLevel::Dialogue,);
+        let req = llm_request_summary_record(
+            Some("sess".into()),
+            Some("agent".into()),
+            crate::sink::LlmRequestSummary {
+                model: "m",
+                path: "/v1/chat/completions",
+                body_bytes: 10,
+                protocol: "chat",
+                provider: "openai",
+                user_content: Some("hi".into()),
+                forward_to: None,
+                body_json: None,
+            },
+            &call,
+            CaptureLevel::Dialogue,
+        );
         let story = rebuild_session_story("sess", "sess", &[req]);
         let mut stories = HashMap::new();
         stories.insert("sess".to_string(), story.clone());

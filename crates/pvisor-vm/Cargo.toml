@@ -23,6 +23,13 @@ test_utils = []
 virgl_resource_map2 = []
 
 [dependencies]
+anyhow.workspace = true
+dirs.workspace = true
+fs2.workspace = true
+reqwest = { workspace = true, features = ["blocking", "rustls-tls"] }
+tar.workspace = true
+tracing.workspace = true
+tempfile = "3"
 bitfield = { version = "0.19.4", optional = true }
 bitflags = { version = "1.2.0" }
 bitflags2 = { version = "2.10.0", optional = true, package = "bitflags" }
@@ -53,6 +60,7 @@ vmm-sys-util = { version = "0.14", features = ["with-serde"] }
 zerocopy = { version = "0.8.26", features = ["derive"], optional = true }
 
 [target.'cfg(target_os = "linux")'.dependencies]
+fuser = { workspace = true, default-features = false, features = ["abi-7-31"] }
 caps = { version = "0.5.5" }
 kvm-bindings = { version = "0.12", features = ["fam-wrappers", "serde"] }
 kvm-ioctls = { version = "0.22" }
@@ -60,6 +68,7 @@ rutabaga_gfx = { version = "=0.1.0-1.19.3", features = ["x"], optional = true, p
 tdx = { version = "0.1.0", optional = true }
 
 [target.'cfg(target_os = "macos")'.dependencies]
+fuser = { workspace = true, features = ["abi-7-19", "libfuse", "macfuse-5"] }
 lru = { version = ">=0.9" }
 nix = { version = "0.30.1", features = ["fs"] }
 
@@ -73,9 +82,7 @@ zstd = { version = "0.13" }
 [dev-dependencies]
 toml.workspace = true
 syn = { version = "2", features = ["full", "visit"] }
-anyhow.workspace = true
 pvisor = { path = "../pvisor", default-features = false }
-tempfile = "3"
 
 [build-dependencies]
 cc = "1"

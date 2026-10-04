@@ -132,7 +132,7 @@ Remaining defects concern pathname visibility, state reporting and cleanup timin
 |---|---|
 | [control.rs](https://github.com/deeplink-org/pvisor/blob/main/crates/pvisor/src/executor/vm/control.rs) | Ownership, publication, exchange and host commit |
 | [supported.rs](https://github.com/deeplink-org/pvisor/blob/main/crates/pvisor/src/executor/vm/supported.rs) | Startup, FDs, exclusions and runner control |
-| [compressed.rs](https://github.com/deeplink-org/pvisor/blob/main/crates/pvisor/src/executor/vm/compressed.rs) | FUSE file and callbacks |
+| [ram_file.rs](https://github.com/deeplink-org/pvisor/blob/main/crates/pvisor-vm/src/ram_file.rs) | FUSE file and callbacks |
 | [ram_backing.rs](https://github.com/deeplink-org/pvisor/blob/main/crates/pvisor/src/ram_backing.rs) | Manifest, staging, masks and commit |
 | [image.rs](https://github.com/deeplink-org/pvisor/blob/main/crates/pvisor/src/ram_backing/image.rs) | Encoding, inheritance, pins, compaction and GC |
 | [VMM RAM](https://github.com/deeplink-org/pvisor/blob/main/crates/pvisor-vm/src/vmm/ram.rs) | Mapping, sync, reclamation and sampling |

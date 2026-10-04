@@ -291,7 +291,23 @@ impl VirtioDevice for Fs {
         }
 
         let virtual_entries = self.virtual_entries.clone();
-        let worker = FsWorker::new(super::worker::FsWorkerConfig { queues: worker_queues, queue_evts, interrupt: interrupt.clone(), mem: mem.clone(), allow_idmap: self.allow_idmap, shm_region: self.shm_region.clone(), passthrough_cfg: self.passthrough_cfg.clone(), overlay_cfg: self.overlay_cfg.clone(), read_only: self.read_only, virtual_entries, stop_fd: self.worker_stopfd.try_clone().unwrap(), exit_code: self.exit_code.clone(), restoring: self.restore.is_some(), #[cfg(target_os = "macos")] map_sender: self.map_sender.clone() },)
+        let worker = FsWorker::new(super::worker::FsWorkerConfig {
+            queues: worker_queues,
+            queue_evts,
+            interrupt: interrupt.clone(),
+            mem: mem.clone(),
+            allow_idmap: self.allow_idmap,
+            shm_region: self.shm_region.clone(),
+            passthrough_cfg: self.passthrough_cfg.clone(),
+            overlay_cfg: self.overlay_cfg.clone(),
+            read_only: self.read_only,
+            virtual_entries,
+            stop_fd: self.worker_stopfd.try_clone().unwrap(),
+            exit_code: self.exit_code.clone(),
+            restoring: self.restore.is_some(),
+            #[cfg(target_os = "macos")]
+            map_sender: self.map_sender.clone(),
+        })
         .map_err(|e| {
             error!("virtio_fs: failed to create worker: {}", e);
             ActivateError::BadActivate

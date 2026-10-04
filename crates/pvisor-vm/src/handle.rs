@@ -5,6 +5,7 @@ use std::sync::{Arc, Mutex, Weak};
 pub(crate) struct Handle {
     pub(crate) vmm: Weak<Mutex<vmm::Vmm>>,
     pub(crate) transition: Arc<Mutex<()>>,
+    pub(crate) cold_pager_started: Arc<std::sync::atomic::AtomicBool>,
 }
 
 impl Handle {
@@ -31,7 +32,12 @@ impl Handle {
             .ok_or("invalid snapshot timeout")?;
         {
             let locked = vmm.lock().map_err(|_| "VMM lock poisoned")?;
-            if locked.is_paused() || locked.device_memory_gate().has_prepare() {
+            if locked.is_paused()
+                || locked.device_memory_gate().has_prepare()
+                || self
+                    .cold_pager_started
+                    .load(std::sync::atomic::Ordering::Acquire)
+            {
                 return Err(
                     "snapshot transaction requires a running VM without active RAM pager".into(),
                 );
@@ -185,6 +191,12 @@ impl Handle {
             .transition
             .lock()
             .map_err(|_| "VM transition lock poisoned")?;
+        if self
+            .cold_pager_started
+            .load(std::sync::atomic::Ordering::Acquire)
+        {
+            return Err("whole-VM offload is incompatible with the experimental cold pager".into());
+        }
         let vmm = self.vmm.upgrade().ok_or("VMM has stopped")?;
         let gate = {
             let mut locked = vmm.lock().map_err(|_| "VMM lock poisoned")?;

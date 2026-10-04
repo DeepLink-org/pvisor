@@ -26,12 +26,11 @@ use super::server::Server;
 use super::virtual_entry::VirtualDirEntry;
 use crate::devices::virtio::{InterruptTransport, VirtioShmRegion};
 
-#[expect(clippy::large_enum_variant, reason = "Retain the existing worker ownership and stack layout during backend migration")]
 enum FsServer {
     ReadWrite(Server<AugmentFs<PassthroughFs>>),
     ReadOnly(Server<AugmentFs<PassthroughFsRo>>),
     Null(Server<AugmentFs<NullFs>>),
-    Overlay(Server<AugmentFs<OverlayFs>>),
+    Overlay(Box<Server<AugmentFs<OverlayFs>>>),
 }
 
 impl FsServer {
@@ -114,7 +113,8 @@ pub(super) struct FsWorkerConfig {
     pub stop_fd: EventFd,
     pub exit_code: Arc<AtomicI32>,
     pub restoring: bool,
-    #[cfg(target_os = "macos")] pub map_sender: Option<Sender<WorkerMessage>>,
+    #[cfg(target_os = "macos")]
+    pub map_sender: Option<Sender<WorkerMessage>>,
 }
 
 impl FsWorker {
@@ -144,11 +144,11 @@ impl FsWorker {
                 } else {
                     OverlayFs::new(cfg, inode_alloc.clone())?
                 };
-                FsServer::Overlay(Server::new(AugmentFs::new(
+                FsServer::Overlay(Box::new(Server::new(AugmentFs::new(
                     inner,
                     &inode_alloc,
                     virtual_entries,
-                )))
+                ))))
             }
             (None, Some(cfg)) if read_only => {
                 let inner = PassthroughFsRo::new(cfg, inode_alloc.clone())?;

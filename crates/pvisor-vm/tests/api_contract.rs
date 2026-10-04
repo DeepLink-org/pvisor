@@ -124,6 +124,9 @@ fn private_adapters_do_not_define_public_inherent_methods() {
     for source in [
         include_str!("../src/portable.rs"),
         include_str!("../src/memory.rs"),
+        include_str!("../src/firmware_store.rs"),
+        include_str!("../src/cold_ram.rs"),
+        include_str!("../src/ram_file.rs"),
     ] {
         for item in syn::parse_file(source).unwrap().items {
             if let syn::Item::Impl(implementation) = item {
@@ -141,4 +144,35 @@ fn private_adapters_do_not_define_public_inherent_methods() {
             }
         }
     }
+}
+
+#[test]
+fn invalid_overlay_path_does_not_poison_the_builder() {
+    use std::os::unix::ffi::OsStringExt;
+    let root = tempfile::tempdir().unwrap();
+    let lower = root.path().join("lower");
+    let upper = root.path().join("upper");
+    std::fs::create_dir_all(&lower).unwrap();
+    std::fs::create_dir_all(&upper).unwrap();
+    let mut builder = VmBuilder::new(1, 64).unwrap();
+    let mut overlay = api::OverlayConfig {
+        lower_dirs: vec![lower],
+        upper_dir: upper,
+        work_dir: None,
+        preimage_dir: None,
+        apply_target: None,
+        baseline_lower: None,
+        excluded_paths: vec![],
+        access_policy: Default::default(),
+        semantics: api::PermissionSemantics::LinuxComplete,
+    };
+    let valid = overlay.clone();
+    overlay
+        .excluded_paths
+        .push(std::ffi::OsString::from_vec(vec![0xff]).into());
+    assert_eq!(
+        builder.overlay("workspace", overlay, 0).unwrap_err().kind(),
+        std::io::ErrorKind::InvalidInput
+    );
+    builder.overlay("workspace", valid, 0).unwrap();
 }

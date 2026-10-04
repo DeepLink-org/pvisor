@@ -62,6 +62,22 @@ pub trait RuntimeSupport {
     /// Build-embedded kernel, if present. This does not load host firmware.
     /// The shared bytes are immutable; addresses describe the guest boot layout.
     fn embedded_kernel() -> Option<KernelImage>;
+    /// Firmware ABI library name selected internally for the host platform.
+    /// Process-local outstanding cold-RAM work; zero when no pager is active.
+    /// These counters are diagnostic bounds, not physical memory attribution.
+    fn cold_ram_activity() -> ColdRamActivity;
+    fn firmware_name() -> &'static str;
+    /// Pinned firmware release version used by automatic provisioning.
+    fn firmware_version() -> &'static str;
+    /// Firmware next to the current executable, if installed. No download or load.
+    fn bundled_firmware_directory() -> Option<PathBuf>;
+    /// Provision pinned, SHA-256-verified firmware in a per-user cache. `None`
+    /// selects the platform cache under pvisor/firmware. A custom root must be
+    /// trusted and exclusively controlled by the caller. This blocking operation
+    /// can download and, on macOS, invoke /usr/bin/cc; use it before sandboxing.
+    /// Concurrent installs serialize through a file lock. Unsupported platforms
+    /// return an error without requiring target-specific calls from consumers.
+    fn prepare_firmware(cache_root: Option<&Path>) -> io::Result<PathBuf>;
 }
 
 #[derive(Clone, Debug)]
@@ -166,6 +182,18 @@ pub trait SnapshotCapture {
 /// Experimental cold-RAM control. Unavailable backends return an explicit error.
 /// Fault handlers must synchronize concurrent faults and reject unowned addresses.
 pub trait ColdRamControl: VmControl {
+    /// Start one VM-owned experimental pager using caller-authorized storage.
+    /// Supported on Apple Silicon HVF. Unsupported backends reject before
+    /// spawning a worker. The store exclusively owns its session references;
+    /// restore/release RPCs serialize separately from CPU/device barriers.
+    /// Blocks are 64 KiB; snapshots are bounded to 4 MiB per sampling batch.
+    /// The worker lives with the runner; a failed mapping transition terminates
+    /// that runner. Call once, before allowing control requests or guest work.
+    fn start_cold_pager<S: ColdRamStore + 'static>(
+        &self,
+        store: S,
+        options: ColdRamOptions,
+    ) -> io::Result<()>;
     fn with_ram_quiesced<T>(
         &self,
         action: impl FnOnce(&mut FrozenMachine<'_>) -> Result<T, String>,
@@ -301,14 +329,16 @@ pub enum PermissionSemantics {
     LinuxSimplified,
 }
 #[derive(Clone, Debug)]
+/// Host paths retain their native representation. The runtime validates UTF-8
+/// atomically before replacing configuration for the backend that requires it.
 pub struct OverlayConfig {
-    pub lower_dirs: Vec<String>,
-    pub upper_dir: String,
-    pub work_dir: Option<String>,
-    pub preimage_dir: Option<String>,
-    pub apply_target: Option<String>,
-    pub baseline_lower: Option<String>,
-    pub excluded_paths: Vec<String>,
+    pub lower_dirs: Vec<PathBuf>,
+    pub upper_dir: PathBuf,
+    pub work_dir: Option<PathBuf>,
+    pub preimage_dir: Option<PathBuf>,
+    pub apply_target: Option<PathBuf>,
+    pub baseline_lower: Option<PathBuf>,
+    pub excluded_paths: Vec<PathBuf>,
     pub access_policy: pvisor_overlay_core::FileAccessPolicy,
     pub semantics: PermissionSemantics,
 }
@@ -330,4 +360,66 @@ pub struct RamMappingSnapshot {
 pub struct MachineRestore {
     pub state: MachineSnapshot,
     pub ram_file: Arc<File>,
+}
+
+/// Immutable block storage supplied by the host's pool/service adapter.
+/// Object references belong to one store session; successful `put` acquires one
+/// reference, and `release` consumes it. `restore` must verify the entire block
+/// before returning success. Rejected puts must leave the session usable; stats
+/// distinguishes capacity rejection from a broken connection. No VM pointers or
+/// OS mapping state cross this boundary. The pager never calls put under a VM barrier.
+pub trait ColdRamStore: Send {
+    type Object: Send;
+    fn put(&mut self, bytes: &[u8]) -> io::Result<Self::Object>;
+    fn restore(&mut self, object: &Self::Object, output: &mut [u8]) -> io::Result<()>;
+    fn release(&mut self, object: Self::Object) -> io::Result<()>;
+    fn stats(&mut self) -> io::Result<ColdRamPoolStats>;
+}
+
+#[derive(Clone, Copy, Debug, Default)]
+pub struct ColdRamOptions {
+    pub metrics: bool,
+}
+
+#[derive(Clone, Copy, Debug, Default)]
+pub struct ColdRamActivity {
+    pub pending_file_bytes: u64,
+    pub pending_snapshot_bytes: u64,
+}
+
+#[derive(Clone, Copy, Debug)]
+pub struct ColdRamPoolStats {
+    pub encoded_bytes: u64,
+    pub objects: u64,
+    pub session_references: u64,
+    pub cross_session_objects: u64,
+}
+
+/// Writable staging storage behind a VM's mmap-compatible RAM file.
+/// Methods execute on the FUSE worker; they must be bounded and must not call
+/// back into VM control. `flush_writes` drains staging, not checkpoint publication.
+/// Readers observe staged writes without requiring generation commit.
+pub trait RamFileStore: Send {
+    fn logical_bytes(&self) -> u64;
+    fn set_len(&mut self, size: u64) -> io::Result<()>;
+    fn read_at(&self, offset: u64, output: &mut [u8]) -> io::Result<usize>;
+    fn write_at(&mut self, offset: u64, input: &[u8]) -> io::Result<()>;
+    fn flush_writes(&self) -> io::Result<()>;
+}
+
+/// Owns the FUSE session and its private mount directory. Close mapped/file
+/// users before dropping this owner; drop unmounts before deleting the directory.
+pub struct RamFileMount {
+    pub(crate) _inner: crate::ram_file::Mount,
+}
+
+pub trait RamFileMapping: Sized {
+    /// Create one mmap-compatible RAM inode in a private child of `directory`.
+    /// The caller owns cache authorization and generation commit. The runtime
+    /// owns mount readiness, request bounds, cached I/O and session lifetime.
+    /// Requires the host's FUSE support; mount/readiness failure returns an error.
+    fn mount(
+        store: Arc<std::sync::Mutex<dyn RamFileStore>>,
+        directory: &Path,
+    ) -> io::Result<(Self, File)>;
 }

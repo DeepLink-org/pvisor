@@ -3,7 +3,7 @@
 
 //! ARM PL031 Real Time Clock
 //!
-//! This module implements a PL031 Real Time Clock (Rtc) that provides to provides long time base counter.
+//! This module implements a PL031 Real Time Clock (RTC) that provides to provides long time base counter.
 //! This is achieved by generating an interrupt signal after counting for a programmed number of cycles of
 //! a real-time clock input.
 //!
@@ -18,7 +18,7 @@ use crate::utils::eventfd::EventFd;
 //use bus::Error;
 
 // As you can see in https://static.docs.arm.com/ddi0224/c/real_time_clock_pl031_r1p3_technical_reference_manual_DDI0224C.pdf
-// at section 3.2 Summary of Rtc registers, the total size occupied by this device is 0x000 -> 0xFFC + 4 = 0x1000.
+// at section 3.2 Summary of RTC registers, the total size occupied by this device is 0x000 -> 0xFFC + 4 = 0x1000.
 // From 0x0 to 0x1C we have following registers:
 const RTCDR: u64 = 0x0; // Data Register.
 const RTCMR: u64 = 0x4; // Match Register.
@@ -71,20 +71,24 @@ pub struct RtcSnapshot {
 
 const COUNTER_PERIOD_NS: u64 = (1u64 << 32) * crate::utils::time::NANOS_PER_SECOND;
 
-/// A Rtc device following the PL031 specification..
-pub struct Rtc {
+/// A RTC device following the PL031 specification..
+#[allow(
+    clippy::upper_case_acronyms,
+    reason = "RTC is the hardware real-time clock peripheral name"
+)]
+pub struct RTC {
     previous_now: Instant,
     tick_offset: i64,
-    // This is used for implementing the Rtc alarm. However, in Firecracker we do not need it.
+    // This is used for implementing the RTC alarm. However, in Firecracker we do not need it.
     match_value: u32,
-    // Writes to this register load an update value into the Rtc.
+    // Writes to this register load an update value into the RTC.
     load: u32,
     imsc: u32,
     ris: u32,
     interrupt_evt: EventFd,
 }
 
-impl Rtc {
+impl RTC {
     /// Caller must stop guest MMIO accesses before capturing device state.
     pub fn capture_state(&self) -> std::result::Result<RtcSnapshot, String> {
         let host_monotonic_ns =
@@ -113,7 +117,7 @@ impl Rtc {
     }
 
     /// Restore into a fresh device. Wall-clock adjustments do not undo a guest
-    /// Rtc load; the saved counter advances by elapsed host monotonic time.
+    /// RTC load; the saved counter advances by elapsed host monotonic time.
     pub fn restore_state(&mut self, state: &RtcSnapshot) -> std::result::Result<(), String> {
         let now = crate::utils::time::get_time(crate::utils::time::ClockType::Monotonic);
         if state.version != 1
@@ -149,9 +153,9 @@ impl Rtc {
         Ok(())
     }
 
-    /// Constructs an AMBA PL031 Rtc device.
-    pub fn new(interrupt_evt: EventFd) -> Rtc {
-        Rtc {
+    /// Constructs an AMBA PL031 RTC device.
+    pub fn new(interrupt_evt: EventFd) -> RTC {
+        RTC {
             // This is used only for duration measuring purposes.
             previous_now: Instant::now(),
             tick_offset: crate::utils::time::get_time(crate::utils::time::ClockType::Real) as i64,
@@ -176,7 +180,7 @@ impl Rtc {
     fn handle_write(&mut self, offset: u64, val: u32) -> Result<()> {
         match offset {
             RTCMR => {
-                // The MR register is used for implementing the Rtc alarm. A real time clock alarm is
+                // The MR register is used for implementing the RTC alarm. A real time clock alarm is
                 // a feature that can be used to allow a computer to 'wake up' after shut down to execute
                 // tasks every day or on a certain day. It can sometimes be found in the 'Power Management'
                 // section of a motherboard's BIOS setup. This is functionality that extends beyond
@@ -210,7 +214,7 @@ impl Rtc {
     }
 }
 
-impl BusDevice for Rtc {
+impl BusDevice for RTC {
     fn read(&mut self, _vcpuid: u64, offset: u64, data: &mut [u8]) {
         let mut read_ok = true;
 
@@ -221,11 +225,11 @@ impl BusDevice for Rtc {
             match offset {
                 RTCDR => self.get_time(),
                 RTCMR => {
-                    // Even though we are not implementing Rtc alarm we return the last value
+                    // Even though we are not implementing RTC alarm we return the last value
                     self.match_value
                 }
                 RTCLR => self.load,
-                RTCCR => 1, // Rtc is always enabled.
+                RTCCR => 1, // RTC is always enabled.
                 RTCIMSC => self.imsc,
                 RTCRIS => self.ris,
                 RTCMIS => self.ris & self.imsc,
@@ -239,7 +243,7 @@ impl BusDevice for Rtc {
             byte_order::write_le_u32(data, v);
         } else {
             warn!(
-                "Invalid Rtc PL031 read: offset {}, data length {}",
+                "Invalid RTC PL031 read: offset {}, data length {}",
                 offset,
                 data.len()
             );
@@ -250,11 +254,11 @@ impl BusDevice for Rtc {
         if data.len() <= 4 {
             let v = byte_order::read_le_u32(data);
             if let Err(e) = self.handle_write(offset, v) {
-                warn!("Failed to write to Rtc PL031 device: {e}");
+                warn!("Failed to write to RTC PL031 device: {e}");
             }
         } else {
             warn!(
-                "Invalid Rtc PL031 write: offset {}, data length {}",
+                "Invalid RTC PL031 write: offset {}, data length {}",
                 offset,
                 data.len()
             );
@@ -268,7 +272,7 @@ mod tests {
 
     #[test]
     fn test_rtc_read_write_and_event() {
-        let mut rtc = Rtc::new(EventFd::new(crate::utils::eventfd::EFD_NONBLOCK).unwrap());
+        let mut rtc = RTC::new(EventFd::new(crate::utils::eventfd::EFD_NONBLOCK).unwrap());
         let mut data = [0; 4];
 
         // Read and write to the MR register.
@@ -308,7 +312,7 @@ mod tests {
         let v = byte_order::read_le_u32(&data[..]);
         assert_eq!(0, v);
 
-        // Attempts to turn off the Rtc should not go through.
+        // Attempts to turn off the RTC should not go through.
         byte_order::write_le_u32(&mut data, 0);
         rtc.write(0, RTCCR, &data);
         rtc.read(0, RTCCR, &mut data);

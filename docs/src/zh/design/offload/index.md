@@ -132,7 +132,7 @@ GC 保留 current head 及所有 `.pvpin` 所指 head 的祖先。旧 manifest �
 |---|---|
 | [control.rs](https://github.com/deeplink-org/pvisor/blob/main/crates/pvisor/src/executor/vm/control.rs) | backing 所有权、路径发布、控制交换和 host 提交 |
 | [supported.rs](https://github.com/deeplink-org/pvisor/blob/main/crates/pvisor/src/executor/vm/supported.rs) | 启动、FD 传递、guest 排除、runner 控制线程 |
-| [compressed.rs](https://github.com/deeplink-org/pvisor/blob/main/crates/pvisor/src/executor/vm/compressed.rs) | FUSE 文件与回调 |
+| [ram_file.rs](https://github.com/deeplink-org/pvisor/blob/main/crates/pvisor-vm/src/ram_file.rs) | FUSE 文件与回调 |
 | [ram_backing.rs](https://github.com/deeplink-org/pvisor/blob/main/crates/pvisor/src/ram_backing.rs) | manifest、staging、dirty mask、提交 |
 | [image.rs](https://github.com/deeplink-org/pvisor/blob/main/crates/pvisor/src/ram_backing/image.rs) | generation 编码、继承、pin、合并和 GC |
 | [VMM ram.rs](https://github.com/deeplink-org/pvisor/blob/main/crates/pvisor-vm/src/vmm/ram.rs) | RAM 映射、同步、回收与驻留采样 |

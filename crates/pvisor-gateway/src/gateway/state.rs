@@ -114,19 +114,27 @@ pub async fn serve_with_listeners_and_shutdown(
         .context("read Gateway admin listen address")?
         .to_string();
     config.validate()?;
-    serve_with_bound_listeners(config,
-storage,
-sink,
-stream_markdown,
-GatewayRuntimeControl {
+    serve_with_bound_listeners(
+        config,
+        storage,
+        sink,
+        stream_markdown,
+        GatewayRuntimeControl {
             controller: Arc::new(PolicyControlController),
             interception_metrics: InterceptionMetrics::default(),
             bandwidth_registry: BandwidthRegistry::default(),
             attempt_id: None,
             gateway_enabled: true,
         },
-GatewayListeners { proxy: listener, admin: admin_listener },
-GatewaySignals { ready: None, shutdown },)
+        GatewayListeners {
+            proxy: listener,
+            admin: admin_listener,
+        },
+        GatewaySignals {
+            ready: None,
+            shutdown,
+        },
+    )
     .await
 }
 
@@ -190,13 +198,18 @@ pub(crate) async fn serve_with_runtime_control_and_metrics(
     let listener = tokio::net::TcpListener::bind(listen)
         .await
         .with_context(|| format!("bind overlaynet gateway on {listen}"))?;
-    serve_with_bound_listeners(config,
-storage,
-sink,
-stream_markdown,
-runtime_control,
-GatewayListeners { proxy: listener, admin: admin_listener },
-GatewaySignals { ready, shutdown },)
+    serve_with_bound_listeners(
+        config,
+        storage,
+        sink,
+        stream_markdown,
+        runtime_control,
+        GatewayListeners {
+            proxy: listener,
+            admin: admin_listener,
+        },
+        GatewaySignals { ready, shutdown },
+    )
     .await
 }
 
@@ -219,7 +232,10 @@ async fn serve_with_bound_listeners(
     listeners: GatewayListeners,
     signals: GatewaySignals<impl std::future::Future<Output = ()> + Send + 'static>,
 ) -> anyhow::Result<()> {
-    let GatewayListeners { proxy: listener, admin: admin_listener } = listeners;
+    let GatewayListeners {
+        proxy: listener,
+        admin: admin_listener,
+    } = listeners;
     let GatewaySignals { ready, shutdown } = signals;
     let (stop_tx, stop_rx) = tokio::sync::watch::channel(());
     tokio::spawn(async move {

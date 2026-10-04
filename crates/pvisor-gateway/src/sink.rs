@@ -494,7 +494,16 @@ pub fn llm_request_summary_record(
     call: &Call,
     level: CaptureLevel,
 ) -> CaptureRecord {
-    let LlmRequestSummary { model, path, body_bytes, protocol, provider, user_content, forward_to, body_json } = request;
+    let LlmRequestSummary {
+        model,
+        path,
+        body_bytes,
+        protocol,
+        provider,
+        user_content,
+        forward_to,
+        body_json,
+    } = request;
     let mut payload = serde_json::json!({
         "model": model,
         "path": path,
@@ -620,7 +629,12 @@ pub fn llm_response_record_with_content(
     call: &Call,
     level: CaptureLevel,
 ) -> CaptureRecord {
-    let LlmResponseContent { status, payload, streaming, assistant_content } = response;
+    let LlmResponseContent {
+        status,
+        payload,
+        streaming,
+        assistant_content,
+    } = response;
     let mut payload = redact_sensitive_body(payload);
     payload["status"] = serde_json::json!(status);
     if level.includes_assistant_text()

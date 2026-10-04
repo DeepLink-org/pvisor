@@ -32,7 +32,11 @@ pub enum Error {
     FailedReadTap,
     FailedSignalingUsedQueue(io::Error),
     PayloadExpected,
-    Io(io::Error),
+    #[allow(
+        clippy::enum_variant_names,
+        reason = "IoError distinguishes a wrapped I/O diagnostic from device operations"
+    )]
+    IoError(io::Error),
     NoAvailBuffers,
     SpuriousEvent,
 }
@@ -50,15 +54,15 @@ pub enum DeviceType {
     Serial,
     /// Device Type: RTC.
     #[cfg(target_arch = "aarch64")]
-    Rtc,
+    #[allow(
+        clippy::upper_case_acronyms,
+        reason = "RTC is the hardware peripheral name and persisted device vocabulary"
+    )]
+    RTC,
 }
 
 impl fmt::Display for DeviceType {
     fn fmt(&self, f: &mut fmt::Formatter) -> fmt::Result {
-        match self {
-            #[cfg(target_arch = "aarch64")]
-            Self::Rtc => write!(f, "RTC"), // Preserve device identifiers used by snapshots.
-            _ => write!(f, "{self:?}"),
-        }
+        write!(f, "{self:?}")
     }
 }

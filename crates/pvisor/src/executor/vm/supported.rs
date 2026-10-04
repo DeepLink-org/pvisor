@@ -218,12 +218,14 @@ impl VmExecutor {
                 directory.display()
             );
             anyhow::ensure!(
-                directory.join(firmware_name()).is_file(),
+                directory
+                    .join(pvisor_vm::api::VmPlatform::firmware_name())
+                    .is_file(),
                 "vm.library_dir does not contain {}: {}",
-                firmware_name(),
+                pvisor_vm::api::VmPlatform::firmware_name(),
                 directory.display()
             );
-        } else if let Some(directory) = bundled_firmware_dir() {
+        } else if let Some(directory) = pvisor_vm::api::VmPlatform::bundled_firmware_directory() {
             settings.library_dir = Some(directory);
         }
         Ok(Self { settings })
@@ -231,25 +233,6 @@ impl VmExecutor {
 
     pub fn settings(&self) -> &VmSettings {
         &self.settings
-    }
-}
-
-pub(crate) fn bundled_firmware_dir() -> Option<PathBuf> {
-    let directory = std::env::current_exe().ok()?.parent()?.to_path_buf();
-    directory
-        .join(firmware_name())
-        .is_file()
-        .then_some(directory)
-}
-
-pub(crate) const fn firmware_name() -> &'static str {
-    #[cfg(target_os = "macos")]
-    {
-        "libkrunfw.5.dylib"
-    }
-    #[cfg(not(target_os = "macos"))]
-    {
-        "libkrunfw.so.5"
     }
 }
 
@@ -1070,30 +1053,16 @@ fn add_vm_overlay(
     overlay: &OverlayDeviceSpec,
 ) -> anyhow::Result<()> {
     use pvisor_vm::api::{OverlayConfig, PermissionSemantics};
-    let path = |path: &Path| -> anyhow::Result<String> {
-        Ok(path
-            .to_str()
-            .ok_or_else(|| anyhow::anyhow!("VM filesystem path is not UTF-8: {}", path.display()))?
-            .into())
-    };
     vm.overlay(
         tag,
         OverlayConfig {
-            lower_dirs: overlay
-                .lowers
-                .iter()
-                .map(|p| path(p))
-                .collect::<anyhow::Result<_>>()?,
-            upper_dir: path(&overlay.upper)?,
-            work_dir: overlay.work.as_deref().map(path).transpose()?,
-            preimage_dir: overlay.preimages.as_deref().map(path).transpose()?,
-            apply_target: overlay.apply_target.as_deref().map(path).transpose()?,
-            baseline_lower: overlay.baseline_lower.as_deref().map(path).transpose()?,
-            excluded_paths: overlay
-                .excluded
-                .iter()
-                .map(|p| path(p))
-                .collect::<anyhow::Result<_>>()?,
+            lower_dirs: overlay.lowers.clone(),
+            upper_dir: overlay.upper.clone(),
+            work_dir: overlay.work.clone(),
+            preimage_dir: overlay.preimages.clone(),
+            apply_target: overlay.apply_target.clone(),
+            baseline_lower: overlay.baseline_lower.clone(),
+            excluded_paths: overlay.excluded.clone(),
             access_policy: overlay.access_policy.clone(),
             semantics: PermissionSemantics::LinuxComplete,
         },

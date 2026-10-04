@@ -15,8 +15,8 @@ pub use egress::{
     story_call_ids, story_user_turn_count,
 };
 pub use story::{
-    Call, CallCaptureConfig, CallContext, CancelEvent, CompleteEvent, DraftEvent, Event, RequestEvent, Story,
-    StoryContext, TurnKind,
+    Call, CallCaptureConfig, CallContext, CancelEvent, CompleteEvent, DraftEvent, Event,
+    RequestEvent, Story, StoryContext, TurnKind,
 };
 
 #[cfg(test)]

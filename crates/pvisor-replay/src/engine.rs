@@ -67,21 +67,33 @@ fn execute_with_run_id(
         format!("create unique replay output {}", output_dir.display()),
     )?;
 
-    match execute_allocated(&request,
-ExecutionPaths { run_id: &run_id, state_dir: &state_dir, output_dir: &output_dir },
-&plan,
-launch.as_ref(),
-&mut journal,) {
+    match execute_allocated(
+        &request,
+        ExecutionPaths {
+            run_id: &run_id,
+            state_dir: &state_dir,
+            output_dir: &output_dir,
+        },
+        &plan,
+        launch.as_ref(),
+        &mut journal,
+    ) {
         Ok(result) => Ok(ExecutionReport {
             result,
             exit_code: 0,
         }),
-        Err(error) => finalize_failure(&request,
-ExecutionPaths { run_id: &run_id, state_dir: &state_dir, output_dir: &output_dir },
-&plan,
-launch.as_ref(),
-&mut journal,
-error,),
+        Err(error) => finalize_failure(
+            &request,
+            ExecutionPaths {
+                run_id: &run_id,
+                state_dir: &state_dir,
+                output_dir: &output_dir,
+            },
+            &plan,
+            launch.as_ref(),
+            &mut journal,
+            error,
+        ),
     }
 }
 
@@ -98,7 +110,11 @@ fn execute_allocated(
     launch: Option<&LaunchSpec>,
     journal: &mut Journal,
 ) -> Result<ReplayResult, ReplayError> {
-    let ExecutionPaths { run_id, state_dir, output_dir } = paths;
+    let ExecutionPaths {
+        run_id,
+        state_dir,
+        output_dir,
+    } = paths;
     journal.append(
         "run_started",
         [
@@ -204,7 +220,11 @@ fn finalize_failure(
     journal: &mut Journal,
     error: ReplayError,
 ) -> Result<ExecutionReport, ReplayError> {
-    let ExecutionPaths { run_id, state_dir, output_dir } = paths;
+    let ExecutionPaths {
+        run_id,
+        state_dir,
+        output_dir,
+    } = paths;
     let _ = journal.append(
         "run_failed",
         [

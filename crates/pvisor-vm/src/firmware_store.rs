@@ -1,6 +1,6 @@
 //! Verified libkrunfw download and per-user cache.
 
-use anyhow::{Context, bail};
+use anyhow::{bail, Context};
 use flate2::read::GzDecoder;
 use fs2::FileExt;
 use reqwest::blocking::Client;
@@ -12,7 +12,7 @@ use std::path::{Path, PathBuf};
 use std::process::Command;
 use std::time::Duration;
 
-pub(crate) const VERSION: &str = "5.5.0";
+pub(super) const VERSION: &str = "5.5.0";
 #[cfg(target_os = "macos")]
 const ABI_VERSION: &str = "5";
 const MAX_ARCHIVE_BYTES: usize = 64 * 1024 * 1024;
@@ -25,16 +25,19 @@ struct ReleaseAsset {
 }
 
 #[derive(Debug, Clone)]
-pub struct FirmwareStore {
+struct FirmwareStore {
     root: PathBuf,
     client: Client,
 }
 
 impl FirmwareStore {
-    pub fn new() -> anyhow::Result<Self> {
-        let root = dirs::cache_dir()
-            .context("platform cache directory is unavailable")?
-            .join("pvisor/firmware");
+    fn new(cache_root: Option<&Path>) -> anyhow::Result<Self> {
+        let root = match cache_root {
+            Some(root) => root.to_path_buf(),
+            None => dirs::cache_dir()
+                .context("platform cache directory is unavailable")?
+                .join("pvisor/firmware"),
+        };
         fs::create_dir_all(&root)?;
         let client = Client::builder()
             .user_agent(concat!("pvisor/", env!("CARGO_PKG_VERSION")))
@@ -45,10 +48,10 @@ impl FirmwareStore {
         Ok(Self { root, client })
     }
 
-    pub fn prepare(&self) -> anyhow::Result<PathBuf> {
+    fn prepare(&self) -> anyhow::Result<PathBuf> {
         let platform = platform_name()?;
         let directory = self.root.join(VERSION).join(platform);
-        let firmware = directory.join(crate::executor::vm::firmware_name());
+        let firmware = directory.join(firmware_name());
         if firmware.is_file() {
             return Ok(directory);
         }
@@ -81,7 +84,7 @@ impl FirmwareStore {
             .tempdir_in(directory)?;
         let payload = temporary.path().join("kernel.c");
         extract_member(&archive, asset.archive_member, &payload)?;
-        let built = temporary.path().join(crate::executor::vm::firmware_name());
+        let built = temporary.path().join(firmware_name());
         build_platform_firmware(&payload, &built)?;
         let mut permissions = fs::metadata(&built)?.permissions();
         #[cfg(unix)]
@@ -143,7 +146,10 @@ fn verify_archive(archive: &[u8], expected: &str) -> anyhow::Result<()> {
         "libkrunfw archive exceeds {} bytes",
         MAX_ARCHIVE_BYTES
     );
-    let actual = crate::util::encode_hex(&Sha256::digest(archive));
+    let actual = Sha256::digest(archive)
+        .iter()
+        .map(|byte| format!("{byte:02x}"))
+        .collect::<String>();
     anyhow::ensure!(
         actual == expected,
         "libkrunfw archive digest mismatch: expected {expected}, got {actual}"
@@ -228,6 +234,31 @@ fn build_platform_firmware(source: &Path, destination: &Path) -> anyhow::Result<
 fn build_platform_firmware(source: &Path, destination: &Path) -> anyhow::Result<()> {
     fs::copy(source, destination)?;
     Ok(())
+}
+
+pub(super) fn firmware_name() -> &'static str {
+    #[cfg(target_os = "macos")]
+    {
+        "libkrunfw.5.dylib"
+    }
+    #[cfg(not(target_os = "macos"))]
+    {
+        "libkrunfw.so.5"
+    }
+}
+
+pub(super) fn bundled_directory() -> Option<PathBuf> {
+    let directory = std::env::current_exe().ok()?.parent()?.to_path_buf();
+    directory
+        .join(firmware_name())
+        .is_file()
+        .then_some(directory)
+}
+
+pub(super) fn prepare(cache_root: Option<&Path>) -> std::io::Result<PathBuf> {
+    platform_name().map_err(|error| std::io::Error::new(std::io::ErrorKind::Unsupported, error))?;
+    let store = FirmwareStore::new(cache_root).map_err(std::io::Error::other)?;
+    store.prepare().map_err(std::io::Error::other)
 }
 
 #[cfg(test)]

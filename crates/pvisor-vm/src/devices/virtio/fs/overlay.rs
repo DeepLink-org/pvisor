@@ -567,32 +567,34 @@ impl FileSystem for OverlayFs {
                 "overlay hard-link source is no longer owned",
             ));
         }
-        Ok(super::snapshot::FsSnapshot::Overlay(OverlaySnapshot {
-            config: self.snapshot_config.clone(),
-            hard_links,
-            hard_link_origins,
-            layers: self
-                .layers
-                .iter()
-                .map(FileSystem::capture_state)
-                .collect::<io::Result<_>>()?,
-            nodes: self
-                .nodes
-                .lock()
-                .unwrap()
-                .by_inode
-                .iter()
-                .map(|(inode, path)| (*inode, path.as_os_str().as_bytes().to_vec()))
-                .collect(),
-            handles: self
-                .handles
-                .lock()
-                .unwrap()
-                .iter()
-                .map(|(id, handle)| (*id, handle.clone()))
-                .collect(),
-            next_handle: self.next_handle.load(Ordering::Relaxed),
-        }))
+        Ok(super::snapshot::FsSnapshot::Overlay(Box::new(
+            OverlaySnapshot {
+                config: self.snapshot_config.clone(),
+                hard_links,
+                hard_link_origins,
+                layers: self
+                    .layers
+                    .iter()
+                    .map(FileSystem::capture_state)
+                    .collect::<io::Result<_>>()?,
+                nodes: self
+                    .nodes
+                    .lock()
+                    .unwrap()
+                    .by_inode
+                    .iter()
+                    .map(|(inode, path)| (*inode, path.as_os_str().as_bytes().to_vec()))
+                    .collect(),
+                handles: self
+                    .handles
+                    .lock()
+                    .unwrap()
+                    .iter()
+                    .map(|(id, handle)| (*id, handle.clone()))
+                    .collect(),
+                next_handle: self.next_handle.load(Ordering::Relaxed),
+            },
+        )))
     }
     fn restore_state(&self, state: &super::snapshot::FsSnapshot) -> io::Result<()> {
         use super::snapshot::{invalid, FsSnapshot};
@@ -1343,6 +1345,40 @@ impl FileSystem for OverlayFs {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn overlay_snapshot_preserves_the_unboxed_json_contract() {
+        let state = OverlaySnapshot {
+            config: Config {
+                lower_dirs: vec!["/lower".into()],
+                apply_target: None,
+                baseline_lower: None,
+                upper_dir: "/upper".into(),
+                work_dir: None,
+                preimage_dir: None,
+                excluded_paths: vec![],
+                access_policy: Default::default(),
+                semantics: passthrough::PermissionSemantics::LinuxComplete,
+            },
+            hard_links: vec![],
+            hard_link_origins: vec![],
+            layers: vec![],
+            nodes: vec![(1, b"/".to_vec())],
+            handles: vec![],
+            next_handle: 2,
+        };
+        // Previously the tagged enum stored this state directly. Box must add
+        // no wrapper to the persisted format, including when nested in layers.
+        let old_wire = serde_json::json!({
+            "kind": "Overlay",
+            "state": serde_json::to_value(&state).unwrap(),
+        });
+        let snapshot = super::super::snapshot::FsSnapshot::Overlay(Box::new(state));
+        assert_eq!(serde_json::to_value(&snapshot).unwrap(), old_wire);
+        let restored: super::super::snapshot::FsSnapshot =
+            serde_json::from_value(old_wire.clone()).unwrap();
+        assert_eq!(serde_json::to_value(restored).unwrap(), old_wire);
+    }
 
     #[test]
     fn access_policy_reaches_virtiofs_lookup_and_open() {

@@ -22,7 +22,10 @@ pub(crate) fn process_rx(
     port_id: u32,
     shutdown: RxStop,
 ) -> (Queue, bool) {
-    let RxStop { event: stopfd, state: stop } = shutdown;
+    let RxStop {
+        event: stopfd,
+        state: stop,
+    } = shutdown;
     let mem = &mem;
     let mut eof = false;
 

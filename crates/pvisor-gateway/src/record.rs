@@ -407,11 +407,22 @@ mod tests {
             trace_id: "t".into(),
             started_at: "2026-01-01T00:00:00Z".into(),
         };
-        let rec = llm_request_summary_record(Some("s".into()),
-Some("a".into()),
-crate::sink::LlmRequestSummary { model: "m", path: "/v1/messages/count_tokens", body_bytes: 10, protocol: "count_tokens", provider: "openai", user_content: None, forward_to: None, body_json: None },
-&call,
-CaptureLevel::Dialogue,);
+        let rec = llm_request_summary_record(
+            Some("s".into()),
+            Some("a".into()),
+            crate::sink::LlmRequestSummary {
+                model: "m",
+                path: "/v1/messages/count_tokens",
+                body_bytes: 10,
+                protocol: "count_tokens",
+                provider: "openai",
+                user_content: None,
+                forward_to: None,
+                body_json: None,
+            },
+            &call,
+            CaptureLevel::Dialogue,
+        );
         assert!(rec.is_internal_llm_request());
     }
 

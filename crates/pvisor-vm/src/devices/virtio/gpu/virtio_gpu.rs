@@ -123,6 +123,10 @@ struct VirtioGpuResource {
 impl VirtioGpuResource {
     /// Creates a new VirtioGpuResource with the given metadata.  Width and height are used by the
     /// display, while size is useful for hypervisor mapping.
+    #[allow(
+        clippy::too_many_arguments,
+        reason = "Native renderer initialization requires transport, export and display backend resources"
+    )]
     pub fn new(
         resource_id: u32,
         width: u32,

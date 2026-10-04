@@ -130,15 +130,27 @@ mod tests {
     #[test]
     fn scoped_reasoning_does_not_cross_story_or_provider() {
         let handle = ReasoningCacheHandle::new();
-        let mut ctx = crate::engine::CallContext::new(crate::engine::StoryContext::from_route(crate::session::storage::CaptureRoute {
-                root_session: Some("run".into()),
-                session_id: "s1".into(),
-                storage_session_id: "s1".into(),
-                subagent_id: None,
-            }, "agent"),
-crate::Call::from_headers(&axum::http::HeaderMap::new()),
-Vec::new(),
-crate::engine::CallCaptureConfig { level: crate::config::CaptureLevel::Full, client_model: "m".into(), upstream_model: "m".into(), provider: crate::provider::ProviderKind::OpenAi, protocol: crate::protocol::ProtocolKind::Responses, debug_on: false },);
+        let mut ctx = crate::engine::CallContext::new(
+            crate::engine::StoryContext::from_route(
+                crate::session::storage::CaptureRoute {
+                    root_session: Some("run".into()),
+                    session_id: "s1".into(),
+                    storage_session_id: "s1".into(),
+                    subagent_id: None,
+                },
+                "agent",
+            ),
+            crate::Call::from_headers(&axum::http::HeaderMap::new()),
+            Vec::new(),
+            crate::engine::CallCaptureConfig {
+                level: crate::config::CaptureLevel::Full,
+                client_model: "m".into(),
+                upstream_model: "m".into(),
+                provider: crate::provider::ProviderKind::OpenAi,
+                protocol: crate::protocol::ProtocolKind::Responses,
+                debug_on: false,
+            },
+        );
         ctx.attach_upstream_url("https://one.invalid/v1/chat/completions");
         handle.scoped(&ctx).remember(&["same".into()], "one");
         let message = json!({"role":"assistant", "tool_calls":[{"id":"same"}]});

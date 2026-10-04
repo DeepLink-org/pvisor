@@ -1,4 +1,3 @@
-#![allow(clippy::missing_safety_doc)]
 use libc;
 
 pub const LINUX_EACCES: libc::c_int = 13;
@@ -54,6 +53,9 @@ pub type ino64_t = libc::ino_t;
 pub use libc::ino64_t;
 
 #[cfg(target_os = "linux")]
+/// # Safety
+/// `fd` must remain valid during the call. `buf` must point to `count` writable bytes,
+/// exclusively accessible for the duration of the syscall.
 pub unsafe fn pread64(
     fd: libc::c_int,
     buf: *mut libc::c_void,
@@ -63,6 +65,9 @@ pub unsafe fn pread64(
     libc::pread64(fd, buf, count, offset)
 }
 #[cfg(target_os = "macos")]
+/// # Safety
+/// `fd` must remain valid during the call. `buf` must point to `count` writable bytes,
+/// exclusively accessible for the duration of the syscall.
 pub unsafe fn pread64(
     fd: libc::c_int,
     buf: *mut libc::c_void,
@@ -73,6 +78,9 @@ pub unsafe fn pread64(
 }
 
 #[cfg(target_os = "linux")]
+/// # Safety
+/// `fd` must remain valid. `iov` must point to `iovcnt` initialized iovec entries;
+/// each referenced buffer must be writable and exclusively accessible during the syscall.
 pub unsafe fn preadv64(
     fd: libc::c_int,
     iov: *const libc::iovec,
@@ -82,6 +90,9 @@ pub unsafe fn preadv64(
     libc::preadv64(fd, iov, iovcnt, offset)
 }
 #[cfg(target_os = "macos")]
+/// # Safety
+/// `fd` must remain valid. `iov` must point to `iovcnt` initialized iovec entries;
+/// each referenced buffer must be writable and exclusively accessible during the syscall.
 pub unsafe fn preadv64(
     fd: libc::c_int,
     iov: *const libc::iovec,
@@ -92,6 +103,9 @@ pub unsafe fn preadv64(
 }
 
 #[cfg(target_os = "linux")]
+/// # Safety
+/// `fd` must remain valid. `buf` must point to `count` initialized, readable bytes
+/// that are not mutated during the syscall.
 pub unsafe fn pwrite64(
     fd: libc::c_int,
     buf: *const libc::c_void,
@@ -101,6 +115,9 @@ pub unsafe fn pwrite64(
     libc::pwrite64(fd, buf, count, offset)
 }
 #[cfg(target_os = "macos")]
+/// # Safety
+/// `fd` must remain valid. `buf` must point to `count` initialized, readable bytes
+/// that are not mutated during the syscall.
 pub unsafe fn pwrite64(
     fd: libc::c_int,
     buf: *const libc::c_void,
@@ -111,6 +128,9 @@ pub unsafe fn pwrite64(
 }
 
 #[cfg(target_os = "linux")]
+/// # Safety
+/// `fd` must remain valid. `iov` must point to `iovcnt` initialized iovec entries;
+/// each referenced buffer must remain initialized, readable and unmodified during the syscall.
 pub unsafe fn pwritev64(
     fd: libc::c_int,
     iov: *const libc::iovec,
@@ -120,6 +140,9 @@ pub unsafe fn pwritev64(
     libc::pwritev64(fd, iov, iovcnt, offset)
 }
 #[cfg(target_os = "macos")]
+/// # Safety
+/// `fd` must remain valid. `iov` must point to `iovcnt` initialized iovec entries;
+/// each referenced buffer must remain initialized, readable and unmodified during the syscall.
 pub unsafe fn pwritev64(
     fd: libc::c_int,
     iov: *const libc::iovec,
@@ -130,6 +153,10 @@ pub unsafe fn pwritev64(
 }
 
 #[cfg(target_os = "linux")]
+/// # Safety
+/// `pathname` must point to a readable NUL-terminated path. `buf` must be aligned,
+/// writable storage for one stat64 value, exclusively accessible during the call.
+/// A relative path requires a valid `dirfd` or AT_FDCWD.
 pub unsafe fn fstatat64(
     dirfd: libc::c_int,
     pathname: *const libc::c_char,
@@ -139,6 +166,10 @@ pub unsafe fn fstatat64(
     libc::fstatat64(dirfd, pathname, buf, flags)
 }
 #[cfg(target_os = "macos")]
+/// # Safety
+/// `pathname` must point to a readable NUL-terminated path. `buf` must be aligned,
+/// writable storage for one stat64 value, exclusively accessible during the call.
+/// A relative path requires a valid `dirfd` or AT_FDCWD.
 pub unsafe fn fstatat64(
     dirfd: libc::c_int,
     pathname: *const libc::c_char,
@@ -149,6 +180,9 @@ pub unsafe fn fstatat64(
 }
 
 #[cfg(target_os = "linux")]
+/// # Safety
+/// The descriptor must remain owned by the intended file for the entire call.
+/// Synchronize allocation with other users of the file. The macOS stub ignores its inputs.
 pub unsafe fn fallocate64(
     fd: libc::c_int,
     mode: libc::c_int,
@@ -158,6 +192,9 @@ pub unsafe fn fallocate64(
     libc::fallocate64(fd, mode, offset, len)
 }
 #[cfg(target_os = "macos")]
+/// # Safety
+/// The descriptor must remain owned by the intended file for the entire call.
+/// Synchronize allocation with other users of the file. The macOS stub ignores its inputs.
 pub unsafe fn fallocate64(
     _fd: libc::c_int,
     _mode: libc::c_int,
@@ -168,38 +205,62 @@ pub unsafe fn fallocate64(
 }
 
 #[cfg(target_os = "linux")]
+/// # Safety
+/// The descriptor must remain owned by the intended file for the entire call.
+/// Synchronize truncation with other users, especially users of memory mappings.
 pub unsafe fn ftruncate64(fd: libc::c_int, length: off64_t) -> libc::c_int {
     libc::ftruncate64(fd, length)
 }
 #[cfg(target_os = "macos")]
+/// # Safety
+/// The descriptor must remain owned by the intended file for the entire call.
+/// Synchronize truncation with other users, especially users of memory mappings.
 pub unsafe fn ftruncate64(fd: libc::c_int, length: off64_t) -> libc::c_int {
     libc::ftruncate(fd, length)
 }
 
 #[cfg(target_os = "linux")]
+/// # Safety
+/// The descriptor must remain owned by the intended file for the entire call.
+/// Synchronize cursor changes with other users of the same file description.
 pub unsafe fn lseek64(fd: libc::c_int, offset: off64_t, whence: libc::c_int) -> off64_t {
     libc::lseek64(fd, offset, whence)
 }
 #[cfg(target_os = "macos")]
+/// # Safety
+/// The descriptor must remain owned by the intended file for the entire call.
+/// Synchronize cursor changes with other users of the same file description.
 pub unsafe fn lseek64(fd: libc::c_int, offset: off64_t, whence: libc::c_int) -> off64_t {
     libc::lseek(fd, offset, whence)
 }
 
 #[cfg(target_os = "macos")]
+/// # Safety
+/// `path` must point to a readable NUL-terminated path. `buf` must be aligned,
+/// writable storage for one statvfs64 value, exclusively accessible during the call.
 pub unsafe fn statvfs64(path: *const libc::c_char, buf: *mut statvfs64) -> libc::c_int {
     libc::statvfs(path, buf)
 }
 
 #[cfg(target_os = "linux")]
+/// # Safety
+/// `fd` must remain valid. `buf` must be aligned, writable storage for one
+/// statvfs64 value, exclusively accessible during the call.
 pub unsafe fn fstatvfs64(fd: libc::c_int, buf: *mut statvfs64) -> libc::c_int {
     libc::fstatvfs64(fd, buf)
 }
 #[cfg(target_os = "macos")]
+/// # Safety
+/// `fd` must remain valid. `buf` must be aligned, writable storage for one
+/// statvfs64 value, exclusively accessible during the call.
 pub unsafe fn fstatvfs64(fd: libc::c_int, buf: *mut statvfs64) -> libc::c_int {
     libc::fstatvfs(fd, buf)
 }
 
 #[cfg(target_os = "linux")]
+/// # Safety
+/// `pathname` must point to a readable NUL-terminated path for the call.
+/// A relative path requires a valid `dirfd` or AT_FDCWD. The macOS stub ignores its inputs.
 pub unsafe fn mknodat(
     dirfd: libc::c_int,
     pathname: *const libc::c_char,
@@ -209,6 +270,9 @@ pub unsafe fn mknodat(
     libc::mknodat(dirfd, pathname, mode, dev)
 }
 #[cfg(target_os = "macos")]
+/// # Safety
+/// `pathname` must point to a readable NUL-terminated path for the call.
+/// A relative path requires a valid `dirfd` or AT_FDCWD. The macOS stub ignores its inputs.
 pub unsafe fn mknodat(
     _dirfd: libc::c_int,
     _pathname: *const libc::c_char,

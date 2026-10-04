@@ -174,7 +174,7 @@ fn compatibility(firmware: &Path) -> anyhow::Result<Compatibility> {
     #[cfg(not(all(target_os = "linux", target_env = "musl", target_arch = "x86_64")))]
     let firmware_hash = file_hash(
         &firmware
-            .join(crate::executor::vm::firmware_name())
+            .join(pvisor_vm::api::VmPlatform::firmware_name())
             .canonicalize()?,
     )?;
     #[cfg(target_os = "macos")]
@@ -206,10 +206,10 @@ fn firmware_directory() -> anyhow::Result<PathBuf> {
     }
     #[cfg(not(all(target_os = "linux", target_env = "musl", target_arch = "x86_64")))]
     {
-        if let Some(directory) = crate::executor::vm::bundled_firmware_dir() {
+        if let Some(directory) = pvisor_vm::api::VmPlatform::bundled_firmware_directory() {
             return Ok(directory);
         }
-        crate::executor::vm::firmware::FirmwareStore::new()?.prepare()
+        Ok(pvisor_vm::api::VmPlatform::prepare_firmware(None)?)
     }
 }
 fn launch(spec: Launch) -> anyhow::Result<()> {

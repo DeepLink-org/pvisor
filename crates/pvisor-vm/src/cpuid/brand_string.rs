@@ -12,6 +12,10 @@ pub enum Error {
 }
 
 /// Register designations used to get/set specific register values within the brand string buffer.
+#[allow(
+    clippy::upper_case_acronyms,
+    reason = "EAX/EBX/ECX/EDX are x86 architectural register names"
+)]
 pub enum Reg {
     EAX = 0,
     EBX = 1,

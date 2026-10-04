@@ -12,11 +12,10 @@ use std::path::{Component, Path, PathBuf};
 
 #[derive(Clone, Debug, Serialize, Deserialize)]
 #[serde(tag = "kind", content = "state", deny_unknown_fields)]
-#[expect(clippy::large_enum_variant, reason = "Preserve the migrated snapshot representation; boxing is a separate storage change")]
 pub enum FsSnapshot {
     Passthrough(PassthroughSnapshot),
     ReadOnly(Box<FsSnapshot>),
-    Overlay(super::overlay::OverlaySnapshot),
+    Overlay(Box<super::overlay::OverlaySnapshot>),
     Augment {
         inner: Box<FsSnapshot>,
         names: Vec<(u64, Vec<u8>, u64)>,
@@ -224,8 +223,13 @@ impl FsSnapshot {
                         .custom_flags(pin_flags())
                         .open(&path)?;
                     let identity = FileIdentity::read(&pin)?;
-                    #[allow(clippy::useless_conversion)] // libc mode constants differ in width across hosts.
-                    let (mask, regular_mode, symlink_mode) = (u32::from(libc::S_IFMT), u32::from(libc::S_IFREG), u32::from(libc::S_IFLNK));
+                    #[allow(clippy::useless_conversion)]
+                    // libc mode constants differ in width across hosts.
+                    let (mask, regular_mode, symlink_mode) = (
+                        u32::from(libc::S_IFMT),
+                        u32::from(libc::S_IFREG),
+                        u32::from(libc::S_IFLNK),
+                    );
                     let kind = identity.mode & mask;
                     let regular = kind == regular_mode;
                     let symlink = kind == symlink_mode;

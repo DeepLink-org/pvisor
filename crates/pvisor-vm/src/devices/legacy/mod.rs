@@ -69,7 +69,7 @@ pub use self::kvmgicv3::KvmGicV3;
 #[cfg(all(target_os = "linux", target_arch = "x86_64"))]
 pub use self::kvmioapic::KvmIoapic;
 #[cfg(target_arch = "aarch64")]
-pub use self::rtc_pl031::{RtcSnapshot, Rtc};
+pub use self::rtc_pl031::{RtcSnapshot, RTC};
 pub use self::serial::Serial;
 #[cfg(any(target_arch = "aarch64", target_arch = "x86_64"))]
 pub use self::serial::SerialSnapshot;

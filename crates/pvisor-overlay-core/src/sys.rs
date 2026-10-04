@@ -307,7 +307,15 @@ pub struct FileMetadataUpdate {
 }
 
 pub fn set_file_metadata(file: &File, update: FileMetadataUpdate) -> io::Result<()> {
-    let FileMetadataUpdate { mode, uid, gid, size, atime, mtime, flags } = update;
+    let FileMetadataUpdate {
+        mode,
+        uid,
+        gid,
+        size,
+        atime,
+        mtime,
+        flags,
+    } = update;
     if let Some(size) = size {
         file.set_len(size)?;
     }

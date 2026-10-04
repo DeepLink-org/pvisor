@@ -23,17 +23,20 @@ pVisor 的 Rust VM 运行时。VMM、设备、架构支持和虚拟化后端在�
 
 ## 核心接口模型
 
-所有定义集中在 `src/api.rs`，实现集中在私有适配器中。
+所有定义集中在 `src/api.rs`，实现集中在私有适配器中。文件系统配置使用 `PathBuf`，UTF-8 校验及内部设备格式转换由运行时完成。
 
 | Trait | 实现 struct | 契约 |
 | --- | --- | --- |
-| `RuntimeSupport` | `VmPlatform` | 能力、日志初始化及内置内核查询 |
+| `RuntimeSupport` | `VmPlatform` | 能力、日志、内核/固件准备及冷 RAM 诊断 |
 | `VmConfiguration` | `VmBuilder` | 在启动前接收配置与资源所有权 |
 | `VmRuntime` | `VmBuilder` | 消费配置，启动一个独立 runner 的 VM |
 | `VmControl` | `VmmHandle` | 查询、暂停、恢复、RAM offload；可用于动态分派与 mock |
 | `SnapshotControl` | `VmmHandle` | 在完整冻结窗口执行带类型返回值的动作 |
 | `SnapshotCapture` | `FrozenMachine` | 捕获 CPU、RAM 和设备状态；冻结 guard 不可逃逸 |
-| `ColdRamControl` | `VmmHandle` | 冷 RAM 冻结、驻留查询和缺页处理 |
+| `ColdRamControl` | `VmmHandle` | 冷 RAM worker、冻结、驻留查询和缺页处理 |
+| `ColdRamStore` | 宿主存储适配器 | 不可变 block 的发布、校验恢复和引用释放 |
+| `RamFileMapping` | `RamFileMount` | mmap 兼容 RAM 文件与 FUSE 生命周期 |
+| `RamFileStore` | 宿主存储适配器 | 有界暂存 I/O，与代际发布区分 |
 | `FrozenMemory` | `FrozenMachine` | 冻结窗口内的内存操作 |
 | `SnapshotState` | `MachineSnapshot` | 快照清单查询和文件系统副本绑定 |
 | `RestoreState` | `MachineRestore` | 恢复校验和私有 RAM 映射 |
@@ -55,11 +58,17 @@ fn configure() -> std::io::Result<VmBuilder> {
 
 CLI 执行器、containerd shim、暂停/恢复、快照、checkpoint、RAM pager、示例和 guest-init 基准均使用本模块的契约。禁止恢复 `libkrun` / `krun-vmm` / `krun-devices` / `krun-hvf` 等独立核心运行时依赖，也不保留 C context/裸指针配置入口。内部硬件探针和设备测试归属 `pvisor-vm`，不要求外部访问私有模块。
 
+RAM 文件的 FUSE 挂载、readiness、mmap 缓存 I/O 和卸载顺序由私有 `ram_file` 模块管理。`RamFileStore` 接收宿主的暂存存储实现；`RamFileMount` 只公开所有权与挂载契约。压缩代际提交和持久化发布由宿主存储层负责。
+
+冷 RAM pager 的状态机、采样/发布窗口、回收线程及 CPU/设备缺页恢复也在本 crate 内。`ColdRamStore` 是外部存储适配契约：pVisor 只负责 pool 连接授权、存储传输和产品诊断目录，VM 指针与映射状态不越过边界。`ColdRamOptions` 在所有平台都存在；不支持的后端返回明确错误，重复启动同一 VM 的 pager 会被拒绝。
+
 `GuestCommand` 配合禁用 implicit init 的自定义 init；普通 Rust supervisor 继续使用 `/.pvisor-guest.json`。参数和环境不会继承宿主值，拒绝不支持的引号、控制字符、保留环境键及超长命令。`NetworkOptions` 显式控制自定义 init 的 DHCP，请求不会开启 TSI。`network` 默认关闭 DHCP。
 
-静态 x86_64 musl 的内核提取、无损打包、加载全部在本 crate 内完成；既有 `PVISOR_KRUNFW_PATH` / `PVISOR_KRUNFW_KERNEL_BUNDLE` 构建输入保持兼容。`VmRuntime::run` 自动安装构建内置内核；`VmPlatform::embedded_kernel` 提供不可变共享字节和启动地址用于身份绑定。固件下载和证据存储仍由调用方负责。
+静态 x86_64 musl 的内核提取、无损打包、加载全部在本 crate 内完成；既有 `PVISOR_KRUNFW_PATH` / `PVISOR_KRUNFW_KERNEL_BUNDLE` 构建输入保持兼容。`VmRuntime::run` 自动安装构建内置内核；`VmPlatform::embedded_kernel` 提供不可变共享字节和启动地址用于身份绑定。固件的版本、校验、缓存、下载和平台产物处理集中在本 crate 内；调用方决定何时授权并调用阻塞的准备操作，负责宿主隔离和证据存储。
 
 为保持已有 Run/证据协议兼容，部分记录标识、trace stage、环境变量和 runner 参数保留历史 `krun` 命名；它们不再调用原 C API。既有原始基准证据保持原样，不能当成新实现的验证结果。
+
+Clippy 清理以语义和契约为先：保留 `EAX/EBX/ECX/EDX`、`RTC` 等硬件专名以及诊断含义明确的错误名称，必要时使用带理由的局部豁免。优先删除失效豁免、整理配置与资源参数、修复实现问题，不为消除告警改变专有术语或持久化协议。生成的 ABI 定义、跨平台 libc 字段宽度和 FUSE 协议签名需单独判断。
 
 ## 验证入口
 

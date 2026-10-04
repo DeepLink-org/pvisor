@@ -23,11 +23,15 @@ use super::file_traits::{FileReadWriteAtVolatile, FileReadWriteVolatile};
 pub enum Error {
     DescriptorChainOverflow,
     FindMemoryRegion,
-    GuestMemory(GuestMemoryError),
+    GuestMemoryError(GuestMemoryError),
     InvalidChain,
-    Io(io::Error),
+    #[allow(
+        clippy::enum_variant_names,
+        reason = "Names the wrapped I/O error domain"
+    )]
+    IoError(io::Error),
     SplitOutOfBounds(usize),
-    VolatileMemory(VolatileMemoryError),
+    VolatileMemoryError(VolatileMemoryError),
 }
 
 impl Display for Error {
@@ -40,11 +44,11 @@ impl Display for Error {
                 "the combined length of all the buffers in a `DescriptorChain` would overflow"
             ),
             FindMemoryRegion => write!(f, "no memory region for this address range"),
-            GuestMemory(e) => write!(f, "descriptor guest memory error: {e}"),
+            GuestMemoryError(e) => write!(f, "descriptor guest memory error: {e}"),
             InvalidChain => write!(f, "invalid descriptor chain"),
-            Io(e) => write!(f, "descriptor I/O error: {e}"),
+            IoError(e) => write!(f, "descriptor I/O error: {e}"),
             SplitOutOfBounds(off) => write!(f, "`DescriptorChain` split is out of bounds: {off}"),
-            VolatileMemory(e) => write!(f, "volatile memory error: {e}"),
+            VolatileMemoryError(e) => write!(f, "volatile memory error: {e}"),
         }
     }
 }
@@ -158,8 +162,8 @@ impl<'a> DescriptorChainConsumer<'a> {
                 // its `size` value in the call to `position` above.
                 let front = other.pop_front().expect("empty VecDeque after split");
                 self.buffers
-                    .push_back(front.subslice(0, rem).map_err(Error::VolatileMemory)?);
-                other.push_front(front.offset(rem).map_err(Error::VolatileMemory)?);
+                    .push_back(front.subslice(0, rem).map_err(Error::VolatileMemoryError)?);
+                other.push_front(front.offset(rem).map_err(Error::VolatileMemoryError)?);
             }
 
             Ok(DescriptorChainConsumer {
@@ -215,7 +219,7 @@ impl<'a> Reader<'a> {
                 region
                     .deref()
                     .get_slice(offset.raw_value() as usize, desc.len as usize)
-                    .map_err(Error::VolatileMemory)
+                    .map_err(Error::VolatileMemoryError)
             })
             .collect::<Result<VecDeque<VolatileSlice<'a>>>>()?;
         Ok(Reader {
@@ -369,7 +373,7 @@ impl<'a> Writer<'a> {
                 region
                     .deref()
                     .get_slice(offset.raw_value() as usize, desc.len as usize)
-                    .map_err(Error::VolatileMemory)
+                    .map_err(Error::VolatileMemoryError)
             })
             .collect::<Result<VecDeque<VolatileSlice<'a>>>>()?;
 

@@ -18,6 +18,29 @@ impl RuntimeSupport for VmPlatform {
     fn embedded_kernel() -> Option<KernelImage> {
         crate::firmware::embedded_kernel()
     }
+    fn firmware_name() -> &'static str {
+        crate::firmware_store::firmware_name()
+    }
+    fn firmware_version() -> &'static str {
+        crate::firmware_store::VERSION
+    }
+    fn bundled_firmware_directory() -> Option<PathBuf> {
+        crate::firmware_store::bundled_directory()
+    }
+    fn prepare_firmware(cache_root: Option<&Path>) -> io::Result<PathBuf> {
+        crate::firmware_store::prepare(cache_root)
+    }
+
+    fn cold_ram_activity() -> ColdRamActivity {
+        #[cfg(all(target_os = "macos", target_arch = "aarch64"))]
+        {
+            crate::cold_ram::activity()
+        }
+        #[cfg(not(all(target_os = "macos", target_arch = "aarch64")))]
+        {
+            ColdRamActivity::default()
+        }
+    }
 }
 fn capabilities() -> Capabilities {
     Capabilities {
@@ -121,6 +144,14 @@ impl VmConfiguration for VmBuilder {
     fn overlay(&mut self, tag: &str, overlay: OverlayConfig, shm_size: usize) -> io::Result<()> {
         #[cfg(not(any(feature = "tee", feature = "aws-nitro")))]
         {
+            let path = |path: &Path| -> io::Result<String> {
+                path.to_str().map(str::to_owned).ok_or_else(|| {
+                    io::Error::new(
+                        io::ErrorKind::InvalidInput,
+                        format!("VM filesystem path is not UTF-8: {}", path.display()),
+                    )
+                })
+            };
             use crate::devices::virtio::fs::passthrough::PermissionSemantics as Internal;
             let semantics = match overlay.semantics {
                 PermissionSemantics::LinuxComplete => Internal::LinuxComplete,
@@ -129,13 +160,21 @@ impl VmConfiguration for VmBuilder {
             self.inner.overlay(
                 tag,
                 crate::devices::virtio::fs::OverlayConfig {
-                    lower_dirs: overlay.lower_dirs,
-                    upper_dir: overlay.upper_dir,
-                    work_dir: overlay.work_dir,
-                    preimage_dir: overlay.preimage_dir,
-                    apply_target: overlay.apply_target,
-                    baseline_lower: overlay.baseline_lower,
-                    excluded_paths: overlay.excluded_paths,
+                    lower_dirs: overlay
+                        .lower_dirs
+                        .iter()
+                        .map(|p| path(p))
+                        .collect::<io::Result<_>>()?,
+                    upper_dir: path(&overlay.upper_dir)?,
+                    work_dir: overlay.work_dir.as_deref().map(path).transpose()?,
+                    preimage_dir: overlay.preimage_dir.as_deref().map(path).transpose()?,
+                    apply_target: overlay.apply_target.as_deref().map(path).transpose()?,
+                    baseline_lower: overlay.baseline_lower.as_deref().map(path).transpose()?,
+                    excluded_paths: overlay
+                        .excluded_paths
+                        .iter()
+                        .map(|p| path(p))
+                        .collect::<io::Result<_>>()?,
                     access_policy: overlay.access_policy,
                     semantics,
                 },
@@ -257,6 +296,21 @@ impl SnapshotControl for VmmHandle {
     }
 }
 impl ColdRamControl for VmmHandle {
+    fn start_cold_pager<S: ColdRamStore + 'static>(
+        &self,
+        store: S,
+        options: ColdRamOptions,
+    ) -> io::Result<()> {
+        #[cfg(all(target_os = "macos", target_arch = "aarch64"))]
+        {
+            crate::cold_ram::start(self.clone(), store, options)
+        }
+        #[cfg(not(all(target_os = "macos", target_arch = "aarch64")))]
+        {
+            let _ = (store, options);
+            Err(unsupported("experimental cold RAM pager"))
+        }
+    }
     fn with_ram_quiesced<T>(
         &self,
         action: impl FnOnce(&mut FrozenMachine<'_>) -> Result<T, String>,
@@ -497,5 +551,15 @@ impl MachineRestore {
             state: serde_json::from_value(self.state.state.clone()).map_err(|e| e.to_string())?,
             ram_file: self.ram_file.clone(),
         })
+    }
+}
+
+impl RamFileMapping for RamFileMount {
+    fn mount(
+        store: Arc<std::sync::Mutex<dyn RamFileStore>>,
+        directory: &Path,
+    ) -> io::Result<(Self, File)> {
+        crate::ram_file::Mount::new(store, directory)
+            .map(|(inner, file)| (Self { _inner: inner }, file))
     }
 }

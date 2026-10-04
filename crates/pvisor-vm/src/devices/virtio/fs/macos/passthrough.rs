@@ -307,7 +307,9 @@ fn set_xattr_stat(
         0
     };
 
-    let buf = if let Some((owner, mode)) = owner.zip(mode).filter(|(owner, _)| is_valid_owner(Some(*owner)))
+    let buf = if let Some((owner, mode)) = owner
+        .zip(mode)
+        .filter(|(owner, _)| is_valid_owner(Some(*owner)))
     {
         format!("{}:{}:0{:o}", owner.0, owner.1, mode)
     } else {
@@ -1103,7 +1105,11 @@ impl PassthroughFs {
         node: NodeCreation,
         extensions: Extensions,
     ) -> io::Result<Entry> {
-        let NodeCreation { mode, rdev: _, umask } = node;
+        let NodeCreation {
+            mode,
+            rdev: _,
+            umask,
+        } = node;
         let c_path = self.name_to_path(parent, name)?;
 
         let fd = unsafe {
@@ -2416,20 +2422,20 @@ impl FileSystem for PassthroughFs {
         extensions: Extensions,
     ) -> io::Result<Entry> {
         match self.cfg.semantics {
-            PermissionSemantics::LinuxComplete => {
-                self.mknod_complete(ctx,
-parent,
-name,
-NodeCreation { mode, rdev, umask },
-extensions,)
-            }
-            PermissionSemantics::LinuxSimplified => {
-                self.mknod_simplified(ctx,
-parent,
-name,
-NodeCreation { mode, rdev, umask },
-extensions,)
-            }
+            PermissionSemantics::LinuxComplete => self.mknod_complete(
+                ctx,
+                parent,
+                name,
+                NodeCreation { mode, rdev, umask },
+                extensions,
+            ),
+            PermissionSemantics::LinuxSimplified => self.mknod_simplified(
+                ctx,
+                parent,
+                name,
+                NodeCreation { mode, rdev, umask },
+                extensions,
+            ),
         }
     }
 

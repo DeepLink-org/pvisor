@@ -176,7 +176,11 @@ pub fn log_llm_request(
     upstream: &str,
     body: &str,
 ) {
-    let LlmDebugContext { session_id, agent_id, model } = context;
+    let LlmDebugContext {
+        session_id,
+        agent_id,
+        model,
+    } = context;
     let upstream = crate::sink::redact_sensitive_url(upstream);
     emit(
         storage,
@@ -211,7 +215,11 @@ pub fn log_llm_upstream_headers(
     content_type: &str,
     stream_request: bool,
 ) {
-    let LlmDebugContext { session_id, agent_id, model } = context;
+    let LlmDebugContext {
+        session_id,
+        agent_id,
+        model,
+    } = context;
     let upstream = crate::sink::redact_sensitive_url(upstream);
     emit(
         storage,

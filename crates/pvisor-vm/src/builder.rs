@@ -212,6 +212,7 @@ impl<B: Backend> Builder<B> {
         on_ready(Handle {
             vmm: Arc::downgrade(&vm),
             transition: Arc::new(Mutex::new(())),
+            cold_pager_started: Arc::new(std::sync::atomic::AtomicBool::new(false)),
         })?;
         B::start_worker(&self.resources, vm.clone(), receiver)?;
         loop {

@@ -1,6 +1,6 @@
 //! Compatibility adapter: mmap writes stage pages; offload commits generations.
 //! The kernel owns fault handling; no signal handler performs allocation or I/O.
-use crate::ram_backing::CompressedRam;
+use crate::api::RamFileStore;
 use fuser::{
     BackgroundSession, FileAttr, FileType, Filesystem, KernelConfig, MountOption, ReplyAttr,
     ReplyData, ReplyEmpty, ReplyEntry, ReplyOpen, ReplyWrite, Request, TimeOrNow,
@@ -17,23 +17,17 @@ const ROOT: u64 = 1;
 const RAM: u64 = 2;
 const MAX_IO: usize = 1024 * 1024;
 
-pub(super) struct CompressedMount {
+pub(crate) struct Mount {
     // Drop file descriptors before unmount, and unmount before deleting the directory.
     session: Option<BackgroundSession>,
-    store: Arc<Mutex<CompressedRam>>,
     _directory: tempfile::TempDir,
 }
 
-impl CompressedMount {
-    pub(super) fn commit_store(&self) -> Arc<Mutex<CompressedRam>> {
-        self.store.clone()
-    }
-
-    pub(super) fn new(storage: &File, directory: &Path, layers: &Path) -> io::Result<(Self, File)> {
-        let store = Arc::new(Mutex::new(CompressedRam::create(
-            storage.try_clone()?,
-            layers,
-        )?));
+impl Mount {
+    pub(crate) fn new(
+        store: Arc<Mutex<dyn RamFileStore>>,
+        directory: &Path,
+    ) -> io::Result<(Self, File)> {
         let temporary = tempfile::Builder::new()
             .prefix("mount-")
             .permissions(std::fs::Permissions::from_mode(0o700))
@@ -58,7 +52,6 @@ impl CompressedMount {
         )?;
         let mount = Self {
             session: Some(session),
-            store,
             _directory: temporary,
         };
         // macFUSE can return a channel before its asynchronous mount appears.
@@ -92,18 +85,18 @@ impl CompressedMount {
     }
 }
 
-impl Drop for CompressedMount {
+impl Drop for Mount {
     fn drop(&mut self) {
-        if let Some(session) = self.session.take()
-            && let Err(error) = session.unmount()
-        {
-            tracing::warn!(%error, "cannot unmount compressed RAM");
+        if let Some(session) = self.session.take() {
+            if let Err(error) = session.unmount() {
+                tracing::warn!(%error, "cannot unmount compressed RAM");
+            }
         }
     }
 }
 
 struct RamFs {
-    store: Arc<Mutex<CompressedRam>>,
+    store: Arc<Mutex<dyn RamFileStore>>,
 }
 impl RamFs {
     fn attr(&self, ino: u64) -> FileAttr {
@@ -138,8 +131,8 @@ impl RamFs {
 
 impl Filesystem for RamFs {
     fn init(&mut self, _req: &Request<'_>, config: &mut KernelConfig) -> Result<(), i32> {
-        let _ = config.set_max_write(crate::ram_backing::BLOCK_BYTES as u32);
-        let _ = config.set_max_readahead(crate::ram_backing::BLOCK_BYTES as u32);
+        let _ = config.set_max_write((64 * 1024) as u32);
+        let _ = config.set_max_readahead((64 * 1024) as u32);
         Ok(())
     }
 
@@ -181,12 +174,12 @@ impl Filesystem for RamFs {
             reply.error(libc::EPERM);
             return;
         }
-        if let Some(size) = size
-            && let Err(error) = self.store.lock().unwrap().set_len(size)
-        {
-            tracing::error!(%error, "compressed RAM resize failed");
-            reply.error(libc::EIO);
-            return;
+        if let Some(size) = size {
+            if let Err(error) = self.store.lock().unwrap().set_len(size) {
+                tracing::error!(%error, "compressed RAM resize failed");
+                reply.error(libc::EIO);
+                return;
+            }
         }
         reply.attr(&Duration::ZERO, &self.attr(RAM));
     }

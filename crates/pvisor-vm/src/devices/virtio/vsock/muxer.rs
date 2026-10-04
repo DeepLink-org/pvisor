@@ -202,7 +202,19 @@ impl VsockMuxer {
 
         let (sender, receiver) = unbounded();
 
-        let thread = MuxerThread::new(super::muxer_thread::MuxerThreadConfig { stop: self.stop.clone(), stopfd: self.stopfd.clone(), cid: self.cid, epoll: self.epoll.clone(), rxq: self.rxq.clone(), proxy_map: self.proxy_map.clone(), mem, queue, interrupt: interrupt.clone(), reaper_sender: sender.clone(), unix_ipc_port_map: self.unix_ipc_port_map.clone().unwrap_or_default() },);
+        let thread = MuxerThread::new(super::muxer_thread::MuxerThreadConfig {
+            stop: self.stop.clone(),
+            stopfd: self.stopfd.clone(),
+            cid: self.cid,
+            epoll: self.epoll.clone(),
+            rxq: self.rxq.clone(),
+            proxy_map: self.proxy_map.clone(),
+            mem,
+            queue,
+            interrupt: interrupt.clone(),
+            reaper_sender: sender.clone(),
+            unix_ipc_port_map: self.unix_ipc_port_map.clone().unwrap_or_default(),
+        });
         self.parked_worker = Some(thread);
         self.reaper_sender = Some(sender);
         self.parked_reaper = Some(ReaperThread::new(
@@ -463,12 +475,19 @@ impl VsockMuxer {
                         warn!("rejecting stream inet proxy because HIJACK_INET is disabled");
                         return;
                     }
-                    match TsiStreamProxy::new(id,
-req.family,
-defs::TSI_PROXY_PORT,
-req.peer_port,
-pkt.src_port(),
-super::proxy::ProxyGuest { cid: self.cid, mem: mem.clone(), queue: queue.clone(), rxq: self.rxq.clone() },) {
+                    match TsiStreamProxy::new(
+                        id,
+                        req.family,
+                        defs::TSI_PROXY_PORT,
+                        req.peer_port,
+                        pkt.src_port(),
+                        super::proxy::ProxyGuest {
+                            cid: self.cid,
+                            mem: mem.clone(),
+                            queue: queue.clone(),
+                            rxq: self.rxq.clone(),
+                        },
+                    ) {
                         Ok(proxy) => {
                             self.proxy_map
                                 .write()
@@ -723,11 +742,18 @@ super::proxy::ProxyGuest { cid: self.cid, mem: mem.clone(), queue: queue.clone()
                 }
                 let rxq = self.rxq.clone();
 
-                let mut unix = UnixProxy::new(id,
-pkt.dst_port(),
-pkt.src_port(),
-super::proxy::ProxyGuest { cid: self.cid, mem: mem.clone(), queue: queue.clone(), rxq },
-path.to_path_buf(),)
+                let mut unix = UnixProxy::new(
+                    id,
+                    pkt.dst_port(),
+                    pkt.src_port(),
+                    super::proxy::ProxyGuest {
+                        cid: self.cid,
+                        mem: mem.clone(),
+                        queue: queue.clone(),
+                        rxq,
+                    },
+                    path.to_path_buf(),
+                )
                 .unwrap();
                 let tsi = TsiConnectReq {
                     peer_port: 0,

@@ -1,6 +1,7 @@
 //! Attempt-local VM controls and the live file backing owned by the supervisor.
 
 use pvisor_core::operation::{OperationKind, VmMemory, VmState};
+use pvisor_vm::api::{RamFileMapping, RamFileMount};
 use serde::{Deserialize, Serialize};
 use std::fs::{File, OpenOptions};
 use std::os::unix::fs::{DirBuilderExt, MetadataExt, OpenOptionsExt};
@@ -19,7 +20,8 @@ pub(super) struct RamBacking {
     pub file: Arc<File>,
     storage: Arc<File>,
     pub path: PathBuf,
-    _mount: Option<super::compressed::CompressedMount>,
+    _mount: Option<RamFileMount>,
+    compression_store: Option<Arc<std::sync::Mutex<crate::ram_backing::CompressedRam>>>,
     layers: Option<PathBuf>,
     _temporary_layers: Option<tempfile::TempDir>,
     _temporary: Option<tempfile::NamedTempFile>,
@@ -42,6 +44,7 @@ impl RamBacking {
                 file,
                 path,
                 _mount: None,
+                compression_store: None,
                 layers: None,
                 _temporary_layers: None,
                 _temporary: None,
@@ -55,6 +58,7 @@ impl RamBacking {
             file,
             path: temporary.path().canonicalize()?,
             _mount: None,
+            compression_store: None,
             layers: None,
             _temporary_layers: None,
             _temporary: Some(temporary),
@@ -83,8 +87,11 @@ impl RamBacking {
             std::fs::DirBuilder::new().mode(0o700).create(&path)?;
             path
         };
-        let (mount, file) =
-            super::compressed::CompressedMount::new(&self.storage, &cache, &layers)?;
+        let store = Arc::new(std::sync::Mutex::new(
+            crate::ram_backing::CompressedRam::create(self.storage.try_clone()?, &layers)?,
+        ));
+        let (mount, file) = RamFileMount::mount(store.clone(), &cache)?;
+        self.compression_store = Some(store);
         self.file = Arc::new(file);
         self._mount = Some(mount);
         self.layers = Some(layers);
@@ -100,10 +107,7 @@ impl RamBacking {
         let logical = self.file.clone();
         let physical = self.storage.clone();
         let layers = self.layers.clone();
-        let commit_store = self
-            ._mount
-            .as_ref()
-            .map(super::compressed::CompressedMount::commit_store);
+        let commit_store = self.compression_store.clone();
         tokio::task::spawn_blocking(move || {
             // The VMM has paused CPUs and closed/drained device RAM access.
             // Drain kernel writeback first; compression runs outside the FUSE thread.
@@ -381,6 +385,7 @@ mod tests {
             file: Arc::new(tempfile::tempfile().unwrap()),
             path: physical.path.clone(),
             _mount: None,
+            compression_store: None,
             layers: None,
             _temporary_layers: None,
             _temporary: None,
@@ -407,6 +412,7 @@ mod tests {
             file: Arc::new(temporary.reopen().unwrap()),
             path: original.clone(),
             _mount: None,
+            compression_store: None,
             layers: None,
             _temporary_layers: None,
             _temporary: Some(temporary),

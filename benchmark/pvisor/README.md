@@ -356,6 +356,61 @@ The plot script exports shared SVG assets and local PNG previews. Phase means
 are checked to sum to observed diagnostic readiness. Historical optimization
 comparisons use separate batches and are labeled accordingly.
 
+## Same-host macOS VM migration comparison
+
+`macos_migration.py` interleaves two signed release CLIs on Apple Silicon/HVF,
+using one prepared Alpine rootfs and firmware. It checks VM isolation, zero-exit
+completion and workload assertions before accepting each sample. The eight cases
+cover three startup shapes, 2,048-file metadata/search, 32-MiB write/read,
+a fixed repair/test/diff script and compressed-RAM startup with real FUSE.
+
+```bash
+python3 benchmark/pvisor/macos_migration.py \
+  --baseline /absolute/path/to/signed/baseline/pvisor \
+  --candidate /absolute/path/to/signed/candidate/pvisor \
+  --rootfs target/guest-init-benchmark/rootfs \
+  --firmware target/firmware-official-compare-20261003/trimmed \
+  --output target/macos-migration-new \
+  --samples 30 --warmups 3 --batches 3
+```
+
+Build both versions with the same toolchain and release options before sampling;
+do not run builds or other benchmarks concurrently. Each batch has separate
+P50/P95/P99 and a paired bootstrap interval for P50 change. The default gate is
+15% for P50/P95; exceeding it returns nonzero. Raw samples, hashes, logs and
+completed Bundles are retained. Owned trial storage is removed after validation
+so generated files do not accumulate during sampling. Build/setup, image pulls
+and fixture copying are outside the timers; caches remain warm.
+
+These end-to-end shell workloads use BusyBox `find`/`grep`, and do not establish
+Git/ripgrep/npm or real Agent CLI performance. Steady-state RAM offload and
+restore need the separate `vm_lifecycle_bench` driver with a Python-capable
+rootfs; compressed startup alone does not measure generation commits or cold
+page restoration.
+
+The exit timer uses a blocking wait thread; timeouts apply only to its completion
+event. A Python timeout-based `wait()` can poll at 50-ms intervals and must not
+be used as the exit timestamp.
+
+For an additional real cold-pager diagnostic, provide the same prepared
+Python-capable rootfs and pool binary to both versions:
+
+```bash
+python3 benchmark/pvisor/macos_cold_ram.py \
+  --baseline /absolute/path/to/signed/baseline/pvisor \
+  --candidate /absolute/path/to/signed/candidate/pvisor \
+  --pool /absolute/path/to/pvisor-memory-pool \
+  --rootfs /absolute/path/to/python-rootfs \
+  --firmware /absolute/path/to/firmware \
+  --output target/macos-cold-new --samples 3 --idle-seconds 40
+```
+
+Each trial owns a private pool and fresh VM, verifies 32 MiB of random guest
+data, and rejects missing reclaim/restore or pool capacity rejection. Three
+trials per version are diagnostic coverage, not P95/P99 acceptance. Run this
+after other sampling ends. The [2026-10-04 migration report](../../review_project/06-evidence/macos-vm-migration-20261004.md)
+retains results, invalid-timer evidence and the compressed resume RPC signal.
+
 ## Linux VM lifecycle and full snapshots
 
 The [VM memory benchmark](../../docs/src/zh/benchmarks/vm-memory/index.md#linux-lifecycle) records

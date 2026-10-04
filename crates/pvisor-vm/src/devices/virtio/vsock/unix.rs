@@ -95,7 +95,12 @@ impl UnixProxy {
         guest: super::proxy::ProxyGuest,
         path: PathBuf,
     ) -> Result<Self, ProxyError> {
-        let super::proxy::ProxyGuest { cid, mem, queue, rxq } = guest;
+        let super::proxy::ProxyGuest {
+            cid,
+            mem,
+            queue,
+            rxq,
+        } = guest;
         let fd = proxy_fd_create(id)?;
 
         Ok(UnixProxy {
@@ -126,7 +131,12 @@ impl UnixProxy {
         fd: OwnedFd,
         guest: super::proxy::ProxyGuest,
     ) -> Self {
-        let super::proxy::ProxyGuest { cid, mem, queue, rxq } = guest;
+        let super::proxy::ProxyGuest {
+            cid,
+            mem,
+            queue,
+            rxq,
+        } = guest;
         debug!("new_reverse: id={id} local_port={local_port} peer_port={peer_port}");
         UnixProxy {
             id,

@@ -1314,10 +1314,7 @@ fn load_external_kernel(
         KernelFormat::ImageBz2 => {
             let data: Vec<u8> = std::fs::read(external_kernel.path.clone())
                 .map_err(StartMicrovmError::ImageBz2OpenKernel)?;
-            if let Some(magic) = data
-                .windows(3)
-                .position(|window| window == b"BZh")
-            {
+            if let Some(magic) = data.windows(3).position(|window| window == b"BZh") {
                 debug!("Found BZIP2 header on Image file at: 0x{magic:x}");
                 let (_, compressed) = data.split_at(magic);
                 let mut kernel_data: Vec<u8> = Vec::new();
@@ -1936,6 +1933,10 @@ fn attach_legacy_devices(
 }
 
 #[cfg(target_arch = "x86_64")]
+#[allow(
+    clippy::too_many_arguments,
+    reason = "TEE builds additionally require the page-management channel alongside the x86 CPU boot resources"
+)]
 fn create_vcpus_x86_64(
     vm: &Vm,
     vcpu_config: &VcpuConfig,
@@ -2472,6 +2473,10 @@ fn attach_rng_device(
 }
 
 #[cfg(feature = "gpu")]
+#[allow(
+    clippy::too_many_arguments,
+    reason = "GPU attachment transfers native display resources and architecture-specific mapping channels"
+)]
 fn attach_gpu_device(
     vmm: &mut Vmm,
     shm_manager: &mut ShmManager,

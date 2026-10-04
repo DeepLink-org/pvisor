@@ -442,6 +442,24 @@ impl CompressedRam {
     }
 }
 
+impl pvisor_vm::api::RamFileStore for CompressedRam {
+    fn logical_bytes(&self) -> u64 {
+        CompressedRam::logical_bytes(self)
+    }
+    fn set_len(&mut self, size: u64) -> io::Result<()> {
+        CompressedRam::set_len(self, size)
+    }
+    fn read_at(&self, offset: u64, output: &mut [u8]) -> io::Result<usize> {
+        CompressedRam::read_at(self, offset, output)
+    }
+    fn write_at(&mut self, offset: u64, input: &[u8]) -> io::Result<()> {
+        CompressedRam::write_at(self, offset, input)
+    }
+    fn flush_writes(&self) -> io::Result<()> {
+        CompressedRam::flush_writes(self)
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;

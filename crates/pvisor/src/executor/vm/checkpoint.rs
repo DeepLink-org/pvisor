@@ -3,7 +3,7 @@
 use crate::environment_snapshot::{Compatibility, SnapshotStore, file_hash};
 use anyhow::{Context, ensure};
 use pvisor_core::operation::{ExecutionCheckpoint, OperationKind, SnapshotRamStorage};
-use pvisor_vm::api::{SnapshotCapture, SnapshotState};
+use pvisor_vm::api::{RuntimeSupport, SnapshotCapture, SnapshotState};
 use serde::{Deserialize, Serialize};
 use std::{
     fs,
@@ -56,7 +56,6 @@ pub(super) fn binding(
     let firmware_hash = {
         use sha2::{Digest, Sha256};
         let _ = firmware;
-        use pvisor_vm::api::RuntimeSupport;
         let kernel =
             pvisor_vm::api::VmPlatform::embedded_kernel().context("static VM kernel is missing")?;
         crate::util::encode_hex(&Sha256::digest(&kernel.bytes))
@@ -65,7 +64,7 @@ pub(super) fn binding(
     let firmware_hash = file_hash(
         &firmware
             .context("checkpoint capture requires a bound firmware directory")?
-            .join(super::firmware_name())
+            .join(pvisor_vm::api::VmPlatform::firmware_name())
             .canonicalize()?,
     )?;
     #[cfg(target_os = "linux")]

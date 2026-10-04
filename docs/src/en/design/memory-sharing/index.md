@@ -156,7 +156,8 @@ RAM inventory fields include `pid`, `timestamp_ns`, `page_bytes`, `query_transac
 |---|---|
 | `crates/pvisor/src/ram_backing/resident.rs` | `identity`, `intern`, `restore`, `collect_one` |
 | `crates/pvisor/src/ram_backing/ipc.rs` | `serve`, `DeadlineStream`, `PoolClient` |
-| `crates/pvisor/src/executor/vm/pager.rs` | `sample`, `fault`, `device_prepare`, `start_if_requested` |
+| `crates/pvisor-vm/src/cold_ram.rs` | `sample`, `fault`, `device_prepare`, VM-owned worker |
+| `crates/pvisor/src/executor/vm/pager.rs` | pool authorization and diagnostic destinations |
 | `crates/pvisor-vm/src/vmm/ram.rs` | `RamBlock` observe/discard/reclaim_file/restore |
 | `crates/pvisor-vm/src/handle.rs` | `with_ram_quiesced`, offload exclusion |
 | `crates/pvisor-vm/src/hvf/mod.rs` | RAM fault dispatch before MMIO and instruction retry |

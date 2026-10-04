@@ -654,8 +654,18 @@ impl Filesystem for OverlayFs {
                 })
             {
                 if mutating {
-                    sys::set_file_metadata(file,
-sys::FileMetadataUpdate { mode, uid, gid, size, atime: atime.map(time_value), mtime: mtime.map(time_value), flags },)?;
+                    sys::set_file_metadata(
+                        file,
+                        sys::FileMetadataUpdate {
+                            mode,
+                            uid,
+                            gid,
+                            size,
+                            atime: atime.map(time_value),
+                            mtime: mtime.map(time_value),
+                            flags,
+                        },
+                    )?;
                 }
                 return file
                     .metadata()

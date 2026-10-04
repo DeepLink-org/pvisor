@@ -243,7 +243,7 @@ impl MMIODeviceManager {
 
         // Attaching the RTC device.
         let rtc_evt = EventFd::new(crate::utils::eventfd::EFD_NONBLOCK).map_err(Error::EventFd)?;
-        let device = crate::devices::legacy::Rtc::new(rtc_evt.try_clone().map_err(Error::EventFd)?);
+        let device = crate::devices::legacy::RTC::new(rtc_evt.try_clone().map_err(Error::EventFd)?);
         vm.register_irqfd(&rtc_evt, self.irq)
             .map_err(Error::RegisterIrqFd)?;
 
@@ -253,7 +253,7 @@ impl MMIODeviceManager {
 
         let ret = self.mmio_base;
         self.id_to_dev_info.insert(
-            (DeviceType::Rtc, "rtc".to_string()),
+            (DeviceType::RTC, "rtc".to_string()),
             MMIODeviceInfo {
                 addr: ret,
                 _len: MMIO_LEN,
