@@ -237,6 +237,375 @@ async fn controller(root: &std::path::Path) -> (Client, String, tokio::task::Joi
     (Client::new(&url, ADMIN.into()).unwrap(), url, server)
 }
 
+async fn pending_record(root: &std::path::Path, ready: bool) -> serde_json::Value {
+    tokio::time::timeout(Duration::from_secs(5), async {
+        'outer: loop {
+            if let Ok(files) = std::fs::read_dir(root.join("outbox/pending")) {
+                for file in files.flatten() {
+                    if let Ok(bytes) = std::fs::read(file.path())
+                        && let Ok(value) = serde_json::from_slice::<serde_json::Value>(&bytes)
+                        && value["ready"] == ready
+                    {
+                        break 'outer value;
+                    }
+                }
+            }
+            tokio::time::sleep(Duration::from_millis(10)).await;
+        }
+    })
+    .await
+    .unwrap()
+}
+
+async fn reregistered(admin: &Client, id: &str, old: &str, root: &std::path::Path) {
+    tokio::time::timeout(Duration::from_secs(10), async {
+        loop {
+            let workers = admin.workers().await.unwrap();
+            if workers
+                .iter()
+                .any(|w| w.registration.id == id && w.registration.incarnation != old)
+                && std::fs::read_dir(root.join("outbox/pending"))
+                    .unwrap()
+                    .all(|e| {
+                        e.unwrap()
+                            .file_name()
+                            .to_string_lossy()
+                            .starts_with(".write-")
+                    })
+            {
+                break;
+            }
+            tokio::time::sleep(Duration::from_millis(20)).await;
+        }
+    })
+    .await
+    .expect("worker restart did not finish delivery/register");
+}
+
+#[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+async fn worker_restart_replays_committed_completion_after_wrong_ack_without_reexecuting() {
+    use axum::{
+        body::to_bytes,
+        extract::{Request, State},
+        middleware::Next,
+        response::{IntoResponse, Response},
+    };
+    use std::sync::{
+        Arc,
+        atomic::{AtomicBool, Ordering},
+    };
+    async fn corrupt_ack(
+        State(corrupt): State<Arc<AtomicBool>>,
+        request: Request,
+        next: Next,
+    ) -> Response {
+        let complete = request.uri().path() == "/v1/workers/complete";
+        let response = next.run(request).await;
+        if complete && response.status().is_success() && corrupt.load(Ordering::SeqCst) {
+            let bytes = to_bytes(response.into_body(), 4 * 1024 * 1024)
+                .await
+                .unwrap();
+            let mut task: TaskRecord = serde_json::from_slice(&bytes).unwrap();
+            task.lease.as_mut().unwrap().key.incarnation = "wrong-ack".into();
+            return axum::Json(task).into_response();
+        }
+        response
+    }
+    let temp = tempfile::tempdir().unwrap();
+    let corrupt = Arc::new(AtomicBool::new(true));
+    let scheduler = Scheduler::open(
+        &temp.path().join("journal"),
+        SchedulerConfig {
+            lease_duration_ms: 1500,
+            ..Default::default()
+        },
+    )
+    .unwrap();
+    let router = pvisor_cluster::server::router(scheduler, ADMIN.into(), WORKER.into())
+        .unwrap()
+        .layer(axum::middleware::from_fn_with_state(
+            corrupt.clone(),
+            corrupt_ack,
+        ));
+    let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
+    let url = format!("http://{}", listener.local_addr().unwrap());
+    let server = tokio::spawn(async move {
+        axum::serve(listener, router).await.unwrap();
+    });
+    let admin = Client::new(&url, ADMIN.into()).unwrap();
+    let marker = temp.path().join("executions");
+    let mut task = spec(
+        "wrong-ack",
+        &format!("printf 'once\\n' >> {}; printf result", marker.display()),
+    );
+    task.retain_bundle = true;
+    admin.submit(&task).await.unwrap();
+    let worker = spawn_worker(&url, "restart", temp.path());
+    let done = wait(&admin, "wrong-ack", true).await;
+    let state = temp.path().join("restart");
+    let pending = pending_record(&state, true).await;
+    assert_eq!(
+        pending["completion"]["key"]["incarnation"],
+        done.lease.as_ref().unwrap().key.incarnation
+    );
+    assert_eq!(
+        std::fs::read_dir(state.join("outbox/receipts"))
+            .unwrap()
+            .count(),
+        0
+    );
+    let original = std::fs::read(state.join("tasks/wrong-ack-1/run-bundle.json")).unwrap();
+    drop(worker);
+    // A terminal exact result remains replayable even after its old lease TTL.
+    tokio::time::sleep(Duration::from_millis(1600)).await;
+    corrupt.store(false, Ordering::SeqCst);
+    let _restarted = spawn_worker(&url, "restart", temp.path());
+    reregistered(
+        &admin,
+        "restart",
+        &done.lease.as_ref().unwrap().key.incarnation,
+        &state,
+    )
+    .await;
+    let recovered = admin.task("wrong-ack").await.unwrap();
+    assert_eq!(recovered.phase, TaskPhase::Succeeded);
+    assert_eq!(recovered.generation, 1);
+    assert_eq!(
+        serde_json::to_value(recovered.result).unwrap(),
+        serde_json::to_value(done.result).unwrap()
+    );
+    assert_eq!(std::fs::read_to_string(marker).unwrap(), "once\n");
+    assert_eq!(
+        std::fs::read_dir(state.join("outbox/receipts"))
+            .unwrap()
+            .count(),
+        1
+    );
+    let output = temp.path().join("download-recovered");
+    admin
+        .download_artifacts("wrong-ack", &output)
+        .await
+        .unwrap();
+    assert_eq!(
+        std::fs::read(output.join("run-bundle.json")).unwrap(),
+        original
+    );
+    let second_incarnation = admin.workers().await.unwrap()[0]
+        .registration
+        .incarnation
+        .clone();
+    drop(_restarted);
+    let _twice = spawn_worker(&url, "restart", temp.path());
+    reregistered(&admin, "restart", &second_incarnation, &state).await;
+    assert_eq!(
+        std::fs::read_to_string(temp.path().join("executions")).unwrap(),
+        "once\n"
+    );
+    assert_eq!(
+        std::fs::read_dir(state.join("outbox/receipts"))
+            .unwrap()
+            .count(),
+        1
+    );
+    server.abort();
+}
+
+#[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+async fn worker_restart_finishes_interrupted_bundle_upload_and_renews_only_terminal_evidence() {
+    use axum::{
+        extract::{Request, State},
+        middleware::Next,
+        response::{IntoResponse, Response},
+    };
+    use std::sync::{
+        Arc,
+        atomic::{AtomicBool, AtomicUsize, Ordering},
+    };
+    struct Faults {
+        blocked: AtomicBool,
+        uploads: AtomicUsize,
+        recoveries: AtomicUsize,
+    }
+    async fn lost_upload_ack(
+        State(faults): State<Arc<Faults>>,
+        request: Request,
+        next: Next,
+    ) -> Response {
+        let upload = request.uri().path().starts_with("/v1/workers/artifacts/");
+        if request.uri().path() == "/v1/workers/recover" {
+            faults.recoveries.fetch_add(1, Ordering::SeqCst);
+        }
+        let response = next.run(request).await;
+        if upload && response.status().is_success() {
+            let attempt = faults.uploads.fetch_add(1, Ordering::SeqCst);
+            if faults.blocked.load(Ordering::SeqCst) || attempt < 6 {
+                return axum::http::StatusCode::SERVICE_UNAVAILABLE.into_response();
+            }
+        }
+        response
+    }
+    let temp = tempfile::tempdir().unwrap();
+    let faults = Arc::new(Faults {
+        blocked: AtomicBool::new(true),
+        uploads: AtomicUsize::new(0),
+        recoveries: AtomicUsize::new(0),
+    });
+    let scheduler = Scheduler::open(
+        &temp.path().join("journal"),
+        SchedulerConfig {
+            lease_duration_ms: 1500,
+            ..Default::default()
+        },
+    )
+    .unwrap();
+    let router = pvisor_cluster::server::router(scheduler, ADMIN.into(), WORKER.into())
+        .unwrap()
+        .layer(axum::middleware::from_fn_with_state(
+            faults.clone(),
+            lost_upload_ack,
+        ));
+    let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
+    let url = format!("http://{}", listener.local_addr().unwrap());
+    let server = tokio::spawn(async move {
+        axum::serve(listener, router).await.unwrap();
+    });
+    let admin = Client::new(&url, ADMIN.into()).unwrap();
+    let marker = temp.path().join("executions");
+    let mut task = spec(
+        "upload-restart",
+        &format!("printf 'once\\n' >> {}; printf completed", marker.display()),
+    );
+    task.retain_bundle = true;
+    admin.submit(&task).await.unwrap();
+    let worker = spawn_worker(&url, "restart-upload", temp.path());
+    let state = temp.path().join("restart-upload");
+    let pending = pending_record(&state, false).await;
+    assert_eq!(pending["completion"]["result"]["state"], "completed");
+    let old = pending["completion"]["key"]["incarnation"]
+        .as_str()
+        .unwrap();
+    let attempt = pending["completion"]["result"]["attempt_id"].clone();
+    let original = std::fs::read(state.join("tasks/upload-restart-1/run-bundle.json")).unwrap();
+    drop(worker);
+    faults.uploads.store(0, Ordering::SeqCst);
+    faults.blocked.store(false, Ordering::SeqCst);
+    let _restarted = spawn_worker(&url, "restart-upload", temp.path());
+    let done = wait(&admin, "upload-restart", true).await;
+    assert_eq!(done.phase, TaskPhase::Succeeded, "{done:?}");
+    assert_eq!(done.generation, 1);
+    assert_eq!(
+        serde_json::to_value(done.result.as_ref().unwrap()).unwrap()["attempt_id"],
+        attempt
+    );
+    assert!(done.artifacts.is_some());
+    assert!(done.artifact_error.is_none());
+    assert!(faults.recoveries.load(Ordering::SeqCst) >= 10);
+    reregistered(&admin, "restart-upload", old, &state).await;
+    assert_eq!(std::fs::read_to_string(marker).unwrap(), "once\n");
+    let output = temp.path().join("download-recovered");
+    admin
+        .download_artifacts("upload-restart", &output)
+        .await
+        .unwrap();
+    assert_eq!(
+        std::fs::read(output.join("run-bundle.json")).unwrap(),
+        original
+    );
+    server.abort();
+}
+
+#[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+async fn worker_restart_fences_expired_uncommitted_completion_without_retrying_command() {
+    use axum::{
+        extract::{Request, State},
+        middleware::Next,
+        response::{IntoResponse, Response},
+    };
+    use std::sync::{
+        Arc,
+        atomic::{AtomicBool, Ordering},
+    };
+    async fn reject_completion(
+        State(blocked): State<Arc<AtomicBool>>,
+        request: Request,
+        next: Next,
+    ) -> Response {
+        if request.uri().path() == "/v1/workers/complete" && blocked.load(Ordering::SeqCst) {
+            return axum::http::StatusCode::SERVICE_UNAVAILABLE.into_response();
+        }
+        next.run(request).await
+    }
+    let temp = tempfile::tempdir().unwrap();
+    let blocked = Arc::new(AtomicBool::new(true));
+    let scheduler = Scheduler::open(
+        &temp.path().join("journal"),
+        SchedulerConfig {
+            lease_duration_ms: 1500,
+            ..Default::default()
+        },
+    )
+    .unwrap();
+    let router = pvisor_cluster::server::router(scheduler, ADMIN.into(), WORKER.into())
+        .unwrap()
+        .layer(axum::middleware::from_fn_with_state(
+            blocked.clone(),
+            reject_completion,
+        ));
+    let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
+    let url = format!("http://{}", listener.local_addr().unwrap());
+    let server = tokio::spawn(async move {
+        axum::serve(listener, router).await.unwrap();
+    });
+    let admin = Client::new(&url, ADMIN.into()).unwrap();
+    let marker = temp.path().join("executions");
+    admin
+        .submit(&spec(
+            "expired-restart",
+            &format!("printf 'once\\n' >> {}; printf completed", marker.display()),
+        ))
+        .await
+        .unwrap();
+    let worker = spawn_worker(&url, "restart-expired", temp.path());
+    let state = temp.path().join("restart-expired");
+    let pending = pending_record(&state, true).await;
+    drop(worker);
+    let lost = wait(&admin, "expired-restart", true).await;
+    assert_eq!(lost.phase, TaskPhase::Lost);
+    blocked.store(false, Ordering::SeqCst);
+    let _restarted = spawn_worker(&url, "restart-expired", temp.path());
+    reregistered(
+        &admin,
+        "restart-expired",
+        pending["completion"]["key"]["incarnation"]
+            .as_str()
+            .unwrap(),
+        &state,
+    )
+    .await;
+    assert_eq!(
+        admin.task("expired-restart").await.unwrap().phase,
+        TaskPhase::Lost
+    );
+    assert_eq!(std::fs::read_to_string(marker).unwrap(), "once\n");
+    let receipt = std::fs::read_dir(state.join("outbox/receipts"))
+        .unwrap()
+        .next()
+        .unwrap()
+        .unwrap();
+    let value: serde_json::Value =
+        serde_json::from_slice(&std::fs::read(receipt.path()).unwrap()).unwrap();
+    assert_eq!(value["disposition"]["status"], "fenced");
+    admin
+        .submit(&spec("fresh-after-restart", "printf fresh"))
+        .await
+        .unwrap();
+    assert_eq!(
+        wait(&admin, "fresh-after-restart", true).await.phase,
+        TaskPhase::Succeeded
+    );
+    server.abort();
+}
+
 #[tokio::test(flavor = "multi_thread", worker_threads = 4)]
 async fn environment_http_is_admin_owned_and_missing_revision_never_executes_on_host() {
     let temp = tempfile::tempdir().unwrap();
@@ -834,6 +1203,48 @@ async fn worker_credentials_cannot_submit_or_read_tenant_tasks() {
     assert!(worker.submit(&spec("forged", "true")).await.is_err());
     assert!(worker.task("private").await.is_err());
     assert!(missing.workers().await.is_err());
+    let recovery = RecoveryRequest {
+        worker_id: "recovery-role".into(),
+        incarnation: "epoch".into(),
+        completed: vec![],
+    };
+    for denied in [&admin, &missing] {
+        let error = denied.recover(&recovery).await.unwrap_err();
+        assert_eq!(
+            error.downcast_ref::<reqwest::Error>().unwrap().status(),
+            Some(reqwest::StatusCode::UNAUTHORIZED)
+        );
+    }
+    worker
+        .register(&WorkerRegistration {
+            version: CLUSTER_VERSION,
+            id: "recovery-role".into(),
+            incarnation: "epoch".into(),
+            capacity: Resources {
+                slots: 1,
+                memory_bytes: 64 * 1024 * 1024,
+                cpu_millis: 100,
+            },
+            execution: vec![ExecutionClass {
+                executor: ExecutorKind::Process,
+                isolation: IsolationKind::HostProcess,
+            }],
+            labels: BTreeMap::new(),
+            cache_keys: vec![],
+            vm_control_protocol: None,
+            vm_control_actions: vec![],
+            artifact_protocol: None,
+            environment_support: None,
+        })
+        .await
+        .unwrap();
+    let renewed = worker.recover(&recovery).await.unwrap();
+    assert_eq!(renewed.version, CLUSTER_VERSION);
+    assert!(renewed.renewed.is_empty() && renewed.stop.is_empty());
+    assert_eq!(
+        admin.task("private").await.unwrap().phase,
+        TaskPhase::Queued
+    );
     assert!(
         admin
             .poll(&PollRequest {
@@ -866,6 +1277,41 @@ async fn non_utf8_output_remains_bounded_and_deliverable() {
     let output = task.result.unwrap().output;
     assert!(output.stdout.unwrap().len() <= 7);
     assert!(output.stdout_truncated);
+    server.abort();
+}
+
+#[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+async fn json_expanded_binary_output_fits_completion_body_and_retains_full_native_bundle() {
+    let temp = tempfile::tempdir().unwrap();
+    let (client, url, server) = controller(temp.path()).await;
+    let _worker = spawn_worker(&url, "binary-json", temp.path());
+    let mut task = spec(
+        "binary-json",
+        "/bin/dd if=/dev/zero bs=1048576 count=1 2>/dev/null",
+    );
+    task.run.runtime.max_output_bytes = 1024 * 1024;
+    task.retain_bundle = true;
+    client.submit(&task).await.unwrap();
+    let done = wait(&client, "binary-json", true).await;
+    assert_eq!(done.phase, TaskPhase::Succeeded);
+    let result = done.result.as_ref().unwrap();
+    assert!(result.output.stdout_truncated);
+    let stdout = result.output.stdout.as_ref().unwrap();
+    assert!(stdout.bytes().all(|byte| byte == 0));
+    assert!(!stdout.is_empty());
+    assert!(serde_json::to_vec(stdout).unwrap().len() <= 1024 * 1024 + 2);
+    assert!(serde_json::to_vec(result).unwrap().len() < 4 * 1024 * 1024);
+    let output = temp.path().join("download-binary");
+    client
+        .download_artifacts("binary-json", &output)
+        .await
+        .unwrap();
+    let bundle: pvisor::RunBundle =
+        serde_json::from_slice(&std::fs::read(output.join("run-bundle.json")).unwrap()).unwrap();
+    let captured = bundle.run.output.stdout.unwrap();
+    assert_eq!(captured.len(), 1024 * 1024);
+    assert!(captured.bytes().all(|byte| byte == 0));
+    assert!(captured.len() > stdout.len());
     server.abort();
 }
 

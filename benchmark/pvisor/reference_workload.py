@@ -11,8 +11,11 @@ import time
 from http.server import ThreadingHTTPServer
 from pathlib import Path
 
-ROOT = Path(__file__).resolve().parents[1]
-sys.path.insert(0, str(ROOT / "bench/harness"))
+ROOT = Path(os.environ.get("PVISOR_REFERENCE_TOOL_ROOT", Path(__file__).resolve().parents[1]))
+TOOLCHAIN = Path(os.environ.get("PVISOR_REFERENCE_TOOLCHAIN", ROOT / "opt/toolchain"))
+WORKLOAD = Path(__file__).resolve()
+HARNESS = Path(os.environ.get("PVISOR_REFERENCE_HARNESS", WORKLOAD.parent / "harness"))
+sys.path.insert(0, str(HARNESS))
 from v1 import agent as fixture_model  # noqa: E402 - also loaded inside the guest rootfs
 
 
@@ -29,8 +32,8 @@ def checked(argv, cwd=None, env=None):
 
 def tools_env():
     return os.environ | {
-        "PATH": f"{ROOT}/opt/toolchain/bin:{ROOT}/usr/local/bin:{ROOT}/usr/bin:/bin",
-        "RUSTC": str(ROOT / "opt/toolchain/bin/rustc"),
+        "PATH": f"{TOOLCHAIN}/bin:{ROOT}/usr/local/bin:{ROOT}/usr/bin:/bin",
+        "RUSTC": str(TOOLCHAIN / "bin/rustc"),
         "GIT_CONFIG_COUNT": "1",
         "GIT_CONFIG_KEY_0": "safe.directory",
         "GIT_CONFIG_VALUE_0": "*",
@@ -44,15 +47,15 @@ def tools_env():
 def probe():
     env = tools_env()
     versions = {
-        name: checked([str(ROOT / path), "--version"], env=env).splitlines()[0]
+        name: checked([str(path), "--version"], env=env).splitlines()[0]
         for name, path in {
-            "python": "usr/bin/python3",
-            "node": "usr/bin/node",
-            "git": "usr/bin/git",
-            "cargo": "opt/toolchain/bin/cargo",
-            "rustc": "opt/toolchain/bin/rustc",
-            "claude": "usr/local/bin/claude",
-            "codex": "usr/local/bin/codex",
+            "python": ROOT / "usr/bin/python3",
+            "node": ROOT / "usr/bin/node",
+            "git": ROOT / "usr/bin/git",
+            "cargo": TOOLCHAIN / "bin/cargo",
+            "rustc": TOOLCHAIN / "bin/rustc",
+            "claude": ROOT / "usr/local/bin/claude",
+            "codex": ROOT / "usr/local/bin/codex",
         }.items()
     }
     versions["kernel"] = os.uname().release
@@ -156,7 +159,7 @@ def agent_loop(name):
     server.lock = threading.Lock()
     server.requests = []
     fixture_model.COMMAND = (
-        f"{ROOT}/usr/bin/python3 {ROOT}/bench/reference_workload.py --mode tool-action"
+        f"{ROOT}/usr/bin/python3 {WORKLOAD} --mode tool-action"
     )
     thread = threading.Thread(
         target=server.serve_forever, kwargs={"poll_interval": 0.01}, daemon=True
@@ -221,12 +224,12 @@ def agent_loop(name):
 def filesystem():
     configuration = Path("_fs/fixture.json")
     value = json.loads(configuration.read_text())
-    value["toolchain"] = str(ROOT / "opt/toolchain")
+    value["toolchain"] = str(TOOLCHAIN)
     configuration.write_text(json.dumps(value))
     results = {}
     for mode in ("metadata", "read", "write", "git", "rg", "cargo", "npm"):
         output = checked(
-            [str(ROOT / "usr/bin/python3"), str(ROOT / "bench/harness/v1/workload.py"), mode],
+            [str(ROOT / "usr/bin/python3"), str(HARNESS / "v1/workload.py"), mode],
             cwd="_fs",
             env=tools_env(),
         )

@@ -77,6 +77,76 @@ fn finish(key: LeaseKey) -> Completion {
     }
 }
 
+#[test]
+fn restart_delivery_renews_only_known_terminal_attempts_and_never_redelivers_unknown_work() {
+    let temp = tempfile::tempdir().unwrap();
+    let path = temp.path().join("journal");
+    let mut s = Scheduler::open(&path, config()).unwrap();
+    s.register(worker("node", 2), 0).unwrap();
+    s.submit(spec("known"), 0).unwrap();
+    s.submit(spec("unknown"), 0).unwrap();
+    let assignments = s.poll(poll("node", 2, vec![]), 1).unwrap().assignments;
+    let known = assignments
+        .iter()
+        .find(|a| a.spec.id == "known")
+        .unwrap()
+        .lease
+        .key
+        .clone();
+    let unknown = assignments
+        .iter()
+        .find(|a| a.spec.id == "unknown")
+        .unwrap()
+        .lease
+        .key
+        .clone();
+    s.submit(spec("queued"), 2).unwrap();
+    let request = RecoveryRequest {
+        worker_id: "node".into(),
+        incarnation: "epoch-1".into(),
+        completed: vec![known.clone()],
+    };
+    let first = s.recover(request.clone(), 900).unwrap();
+    assert_eq!(first.renewed, vec![known.clone()]);
+    assert!(first.stop.is_empty());
+    assert_eq!(s.task("unknown").unwrap().phase, TaskPhase::Leased);
+    assert_eq!(
+        s.task("unknown")
+            .unwrap()
+            .lease
+            .as_ref()
+            .unwrap()
+            .expires_at_ms,
+        1001
+    );
+    assert_eq!(s.task("queued").unwrap().phase, TaskPhase::Queued);
+    assert_eq!(s.workers()[0].reserved, resources(2));
+    drop(s);
+    let mut s = Scheduler::open(&path, config()).unwrap();
+    let mut invalid = request.clone();
+    invalid.completed.push(known.clone());
+    assert!(s.recover(invalid, 950).is_err());
+    let mut invalid = request.clone();
+    invalid.completed[0].worker_id = "another".into();
+    assert!(s.recover(invalid, 950).is_err());
+    let next = s.recover(request.clone(), 1100).unwrap();
+    assert_eq!(next.renewed, vec![known.clone()]);
+    assert_eq!(s.task("unknown").unwrap().phase, TaskPhase::Lost);
+    assert_eq!(
+        s.task("unknown").unwrap().lease.as_ref().unwrap().key,
+        unknown
+    );
+    assert_eq!(s.task("queued").unwrap().phase, TaskPhase::Queued);
+    assert_eq!(s.workers()[0].reserved, resources(1));
+    let mut fresh = worker("node", 2);
+    fresh.incarnation = "epoch-2".into();
+    assert!(s.register(fresh.clone(), 1101).is_err());
+    s.complete(finish(known), 1102).unwrap();
+    s.register(fresh, 1103).unwrap();
+    assert!(s.recover(request, 1104).is_err());
+    assert_eq!(s.task("queued").unwrap().phase, TaskPhase::Queued);
+}
+
 fn environment_template() -> EnvironmentTemplate {
     let layer = |key: &str, revision: &str| EnvironmentLayer {
         handle: format!(

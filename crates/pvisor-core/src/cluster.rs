@@ -65,10 +65,10 @@ pub struct TaskSpec {
     #[serde(default)]
     pub cache_keys: Vec<String>,
     /// Require durable controller-side retention of the native Run Bundle.
-    #[serde(default)]
+    #[serde(default, skip_serializing_if = "std::ops::Not::not")]
     pub retain_bundle: bool,
     /// Content digest of a registered immutable VM environment template.
-    #[serde(default)]
+    #[serde(default, skip_serializing_if = "Option::is_none")]
     pub environment: Option<String>,
 }
 
@@ -93,7 +93,7 @@ pub struct WorkerRegistration {
     pub vm_control_actions: Vec<ControlAction>,
     #[serde(default)]
     pub artifact_protocol: Option<u32>,
-    #[serde(default)]
+    #[serde(default, skip_serializing_if = "Option::is_none")]
     pub environment_support: Option<EnvironmentSupport>,
 }
 
@@ -519,7 +519,7 @@ impl AdmissionReport {
 pub struct Assignment {
     pub spec: TaskSpec,
     pub lease: Lease,
-    #[serde(default)]
+    #[serde(default, skip_serializing_if = "Option::is_none")]
     pub environment: Option<EnvironmentRecord>,
 }
 
@@ -533,6 +533,25 @@ pub struct PollResponse {
     pub stop: Vec<LeaseKey>,
     #[serde(default)]
     pub controls: Vec<ControlCommand>,
+}
+
+/// Restart delivery only. These keys have durable native terminal results;
+/// this request never adopts or redelivers an execution whose outcome is unknown.
+#[derive(Debug, Clone, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
+pub struct RecoveryRequest {
+    pub worker_id: String,
+    pub incarnation: String,
+    pub completed: Vec<LeaseKey>,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
+pub struct RecoveryResponse {
+    pub version: u32,
+    pub lease_duration_ms: u64,
+    pub renewed: Vec<LeaseKey>,
+    pub stop: Vec<LeaseKey>,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]

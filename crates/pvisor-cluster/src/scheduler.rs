@@ -650,6 +650,69 @@ impl Scheduler {
         })
     }
 
+    pub fn recover(
+        &mut self,
+        request: RecoveryRequest,
+        now: u64,
+    ) -> anyhow::Result<RecoveryResponse> {
+        self.reap(now)?;
+        let worker = self
+            .workers
+            .get(&request.worker_id)
+            .context("unknown worker")?;
+        ensure!(
+            worker.registration.incarnation == request.incarnation,
+            "stale worker incarnation"
+        );
+        // Terminal entries can outnumber the live capacity after lost replies.
+        // Only live exact keys are renewed; all other reservations stay unchanged.
+        ensure!(
+            request.completed.len() <= 4096,
+            "recovery batch limit exceeded"
+        );
+        let mut seen = BTreeSet::new();
+        let mut unique = BTreeSet::new();
+        let mut renewed = Vec::new();
+        let mut stop = Vec::new();
+        for key in &request.completed {
+            ensure!(
+                key.worker_id == request.worker_id
+                    && key.incarnation == request.incarnation
+                    && identifier(&key.task_id)
+                    && key.generation > 0
+                    && unique.insert((key.task_id.clone(), key.generation)),
+                "invalid or duplicate recovery key"
+            );
+            seen.insert(key.task_id.clone());
+            if self.valid_key(key, now) {
+                renewed.push(key.clone());
+                if self.tasks[&key.task_id].phase == TaskPhase::Cancelling {
+                    stop.push(key.clone());
+                }
+            } else {
+                stop.push(key.clone());
+            }
+        }
+        let expires = now
+            .checked_add(self.config.lease_duration_ms)
+            .context("time overflow")?;
+        self.commit(vec![Change::Renew {
+            worker_id: request.worker_id,
+            at: now,
+            expires,
+            keys: renewed.clone(),
+            acknowledged: seen,
+            admission: None,
+        }])?;
+        // No queue scan, assignment redelivery, unseen-key renewal or control issue.
+        Ok(RecoveryResponse {
+            version: CLUSTER_VERSION,
+            lease_duration_ms: self.config.lease_duration_ms,
+            renewed,
+            stop,
+        })
+    }
+
     pub fn poll(&mut self, mut request: PollRequest, now: u64) -> anyhow::Result<PollResponse> {
         self.reap(now)?;
         ensure!(

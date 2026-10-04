@@ -118,6 +118,7 @@ pub fn router(
     let worker = Router::new()
         .route("/v1/workers/register", post(register))
         .route("/v1/workers/poll", post(poll))
+        .route("/v1/workers/recover", post(recover))
         .route("/v1/workers/complete", post(complete))
         .route("/v1/workers/decline", post(decline))
         .route("/v1/workers/control-ack", post(control_ack))
@@ -228,6 +229,13 @@ async fn complete(
         s.complete_verified(request, verified, pvisor_core::unix_now_ms())
     })
     .await
+}
+
+async fn recover(
+    State(app): State<App>,
+    Json(request): Json<RecoveryRequest>,
+) -> Result<Json<RecoveryResponse>, ApiError> {
+    run(app, move |s| s.recover(request, pvisor_core::unix_now_ms())).await
 }
 
 async fn task_artifacts(

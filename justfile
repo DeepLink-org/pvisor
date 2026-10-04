@@ -75,6 +75,10 @@ test-cluster:
     just test pvisor-cluster pvisor-core
     cargo nextest run --locked -p pvisor --test cluster_execution --bin pvisor-worker
 
+# Actual Linux KVM/FUSE environments and remote VM controls; missing devices fail.
+test-cluster-vm:
+    cargo nextest run --locked -p pvisor --test cluster_environment_vm --run-ignored only
+
 # Format source files; use fmt-check for a read-only check.
 fmt: fmt-rust fmt-py
 

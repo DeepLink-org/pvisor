@@ -96,7 +96,25 @@ impl Client {
         self.post("/v1/workers/poll", request).await
     }
     pub async fn complete(&self, completion: &Completion) -> anyhow::Result<TaskRecord> {
-        self.post("/v1/workers/complete", completion).await
+        let task: TaskRecord = self.post("/v1/workers/complete", completion).await?;
+        anyhow::ensure!(
+            task.phase.terminal()
+                && task.phase != TaskPhase::Lost
+                && task.spec.id == completion.key.task_id
+                && task
+                    .lease
+                    .as_ref()
+                    .is_some_and(|lease| lease.key == completion.key)
+                && serde_json::to_value(&task.result)? == serde_json::to_value(&completion.result)?
+                && task.error == completion.error
+                && task.artifacts == completion.artifacts
+                && task.artifact_error == completion.artifact_error,
+            "completion acknowledgement does not match delivered evidence"
+        );
+        Ok(task)
+    }
+    pub async fn recover(&self, request: &RecoveryRequest) -> anyhow::Result<RecoveryResponse> {
+        self.post("/v1/workers/recover", request).await
     }
     pub async fn upload_artifact(&self, key: &LeaseKey, bytes: Vec<u8>) -> anyhow::Result<BlobRef> {
         anyhow::ensure!(

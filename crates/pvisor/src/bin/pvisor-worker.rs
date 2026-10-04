@@ -18,6 +18,8 @@ use tokio::{
 };
 #[path = "worker/environment.rs"]
 mod environment;
+#[path = "worker/outbox.rs"]
+mod outbox;
 
 #[derive(Debug, Clone, Copy, ValueEnum)]
 enum Backend {
@@ -106,6 +108,7 @@ struct Active {
     acknowledgement: Option<ControlAcknowledgement>,
     control_revision: u64,
     rejection: Option<AdmissionRejection>,
+    retain_bundle: bool,
 }
 
 #[derive(Clone)]
@@ -412,6 +415,7 @@ async fn execute(
     channels: AttemptChannels,
     storage: PathBuf,
     client: Client,
+    outbox: Arc<outbox::Outbox>,
 ) -> Completion {
     let AttemptChannels {
         mut stop,
@@ -543,6 +547,11 @@ async fn execute(
             &mut result.output.stderr_truncated,
             output_limit,
         );
+        // JSON can expand control bytes sixfold. Keep each delivered stream
+        // within 1 MiB encoded, leaving room under the 4 MiB HTTP body limit.
+        // The full native capture stays in the Bundle when retention is required.
+        bound_json_text(&mut result.output.stdout, &mut result.output.stdout_truncated, 1024 * 1024);
+        bound_json_text(&mut result.output.stderr, &mut result.output.stderr_truncated, 1024 * 1024);
         Ok(result)
     }
     .await;
@@ -554,14 +563,26 @@ async fn execute(
             artifacts: None,
             artifact_error: None,
         },
-        Err(error) => Completion {
-            key: lease_key,
-            result: None,
-            error: Some(format!("{error:#}")),
-            artifacts: None,
-            artifact_error: None,
-        },
+        Err(error) => {
+            let mut message = Some(format!("{error:#}"));
+            bound_text(&mut message, &mut false, 8192);
+            Completion {
+                key: lease_key,
+                result: None,
+                error: message,
+                artifacts: None,
+                artifact_error: None,
+            }
+        }
     };
+    // Native execution has already terminated. Preserve that result before any
+    // potentially long/retried upload so restart can publish without re-execution.
+    if requested_bundle
+        && completion.result.is_some()
+        && let Err(error) = outbox::save(outbox.clone(), completion.clone(), true, false).await
+    {
+        eprintln!("worker native terminal outbox write failed: {error:#}");
+    }
     if requested_bundle && let Some(result) = &completion.result {
         let expired = async {
             loop {
@@ -592,6 +613,9 @@ async fn execute(
             }
         }
     }
+    if let Err(error) = outbox::save(outbox, completion.clone(), requested_bundle, true).await {
+        eprintln!("worker final outbox write failed: {error:#}");
+    }
     // Keep evidence even after acknowledgement; the controller journal retains
     // small results while worker storage retains local bundles/trace/artifacts.
     if let Err(error) = persist(&storage.join("completion.json"), &completion) {
@@ -611,27 +635,45 @@ fn bound_text(text: &mut Option<String>, truncated: &mut bool, limit: usize) {
         *truncated = true;
     }
 }
+fn bound_json_text(text: &mut Option<String>, truncated: &mut bool, limit: usize) {
+    let Some(text) = text else {
+        return;
+    };
+    // Small normal agent output needs no second traversal.
+    if text.len() <= limit / 6 {
+        return;
+    }
+    let mut encoded = 0;
+    let cut = text.char_indices().find_map(|(position, character)| {
+        let cost = match character {
+            '"' | '\\' | '\u{0008}' | '\u{000c}' | '\n' | '\r' | '\t' => 2,
+            character if character < ' ' => 6,
+            character => character.len_utf8(),
+        };
+        encoded += cost;
+        (encoded > limit).then_some(position)
+    });
+    if let Some(position) = cut {
+        text.truncate(position);
+        *truncated = true;
+    }
+}
 fn persist(path: &Path, value: &impl serde::Serialize) -> anyhow::Result<()> {
-    use std::io::Write;
-    use std::os::unix::fs::OpenOptionsExt;
-    let mut file = std::fs::OpenOptions::new()
-        .create(true)
-        .truncate(true)
-        .write(true)
-        .mode(0o600)
-        .open(path)?;
-    file.write_all(&serde_json::to_vec(value)?)?;
-    file.sync_all()?;
-    std::fs::File::open(path.parent().unwrap())?.sync_all()?;
-    Ok(())
+    outbox::persist(path, value)
 }
 
-#[tokio::main]
-async fn main() -> anyhow::Result<()> {
-    // VM/rootless child launchers re-enter this binary before parsing the worker CLI.
+fn main() -> anyhow::Result<()> {
+    // Linux user-namespace setup requires a single-threaded process. Re-enter
+    // native VM/rootless launchers before Tokio creates any worker threads.
     if pvisor::run_krun_internal_if_requested()? || pvisor::sandbox::run_internal_if_requested()? {
         return Ok(());
     }
+    tokio::runtime::Builder::new_multi_thread()
+        .enable_all()
+        .build()?
+        .block_on(worker_main())
+}
+async fn worker_main() -> anyhow::Result<()> {
     let args = Args::parse();
     ensure!(
         args.poll_ms > 0 && args.poll_ms <= 10_000,
@@ -645,6 +687,9 @@ async fn main() -> anyhow::Result<()> {
         .open(args.state.join("owner.lock"))?;
     lock.try_lock_exclusive()
         .context("worker state already owned")?;
+    let client = Client::new(&args.url, args.token.clone())?;
+    let outbox = Arc::new(outbox::Outbox::open(&args.state, &args.id, &args.url)?);
+    outbox::recover(outbox.clone(), client.clone(), args.poll_ms).await?;
     let config: WorkerProfile = match &args.config {
         Some(path) => toml::from_str(&std::fs::read_to_string(path)?)?,
         None => WorkerProfile::default(),
@@ -684,6 +729,10 @@ async fn main() -> anyhow::Result<()> {
         memory_bytes: args.memory_bytes,
         cpu_millis: args.cpu_millis,
     };
+    ensure!(
+        capacity.slots > 0 && capacity.memory_bytes > 0 && capacity.cpu_millis > 0,
+        "worker capacity must be positive"
+    );
     let class = match args.backend {
         Backend::Host => ExecutionClass {
             executor: ExecutorKind::Process,
@@ -737,8 +786,20 @@ async fn main() -> anyhow::Result<()> {
             Vec::new()
         },
     };
-    let client = Client::new(&args.url, args.token.clone())?;
-    client.register(&registration).await?;
+    // Unknown old executions are never adopted. They must expire before a new
+    // incarnation starts work; known terminal outbox records were delivered above.
+    loop {
+        match client.register(&registration).await {
+            Ok(_) => break,
+            Err(error) if outbox::conflict(&error) || outbox::retryable(&error) => {
+                eprintln!(
+                    "worker registration waiting for controller/old lease fencing: {error:#}"
+                );
+                tokio::time::sleep(Duration::from_millis(500)).await;
+            }
+            Err(error) => return Err(error),
+        }
+    }
     let (finished_tx, mut finished_rx) = mpsc::channel::<Completion>(capacity.slots as usize);
     let (acknowledgements_tx, mut acknowledgements_rx) =
         mpsc::channel::<ControlAcknowledgement>(capacity.slots as usize);
@@ -833,6 +894,7 @@ async fn main() -> anyhow::Result<()> {
                             let id = assignment.spec.id.clone();
                             if active.contains_key(&id) { continue; }
                             let resources = assignment.spec.resources;
+                            let retain_bundle = assignment.spec.retain_bundle;
                             let key = assignment.lease.key.clone();
                             let storage = args.state.join("tasks").join(format!("{}-{}", id, key.generation));
                             std::fs::create_dir_all(&storage)?;
@@ -850,10 +912,11 @@ async fn main() -> anyhow::Result<()> {
                                 let tx = finished_tx.clone();
                                 let ack_tx = acknowledgements_tx.clone();
                                 let publisher = client.clone();
-                                tokio::spawn(async move { let completion = execute(runtime, assignment, AttemptChannels { stop: stop_rx, lease_clock: lease_rx, commands: commands_rx, acknowledgements: ack_tx }, storage, publisher).await; let _ = tx.send(completion).await; });
+                                let pending = outbox.clone();
+                                tokio::spawn(async move { let completion = execute(runtime, assignment, AttemptChannels { stop: stop_rx, lease_clock: lease_rx, commands: commands_rx, acknowledgements: ack_tx }, storage, publisher, pending).await; let _ = tx.send(completion).await; });
                                 None
                             };
-                            active.insert(id, Active { key, resources, full_resources: resources, deadline: began + duration, lease_clock: lease_tx, stop: stop_tx, completion: None, commands: commands_tx, acknowledgement: None, control_revision: 0, rejection });
+                            active.insert(id, Active { key, resources, full_resources: resources, deadline: began + duration, lease_clock: lease_tx, stop: stop_tx, completion: None, commands: commands_tx, acknowledgement: None, control_revision: 0, rejection, retain_bundle });
                         }
                     }
                     Err(error) => eprintln!("worker poll failed: {error:#}"),
@@ -916,6 +979,15 @@ async fn main() -> anyhow::Result<()> {
                 for completion in completions {
                     let id = completion.key.task_id.clone();
                     let deadline = active[&id].deadline;
+                    let pending = match outbox::save(outbox.clone(), completion.clone(), active[&id].retain_bundle, true).await {
+                        Ok(pending) => pending,
+                        Err(error) => {
+                            eprintln!("completion delivery waiting for durable outbox: {error:#}");
+                            stopping = true;
+                            for entry in active.values() { entry.stop.send_replace(true); }
+                            continue;
+                        },
+                    };
                     let delivery = client.complete(&completion);
                     tokio::pin!(delivery);
                     let response = loop {
@@ -926,8 +998,12 @@ async fn main() -> anyhow::Result<()> {
                         }
                     };
                     match response {
-                        Ok(_) => { active.remove(&id); },
+                        Ok(task) => {
+                            outbox::finish(outbox.clone(), pending, outbox::Disposition::Accepted { phase: task.phase }).await?;
+                            active.remove(&id);
+                        },
                         Err(error) if error.downcast_ref::<reqwest::Error>().and_then(|e| e.status()) == Some(reqwest::StatusCode::CONFLICT) => {
+                            outbox::finish(outbox.clone(), pending, outbox::Disposition::Fenced).await?;
                             eprintln!("controller fenced completion for {id}; retained local evidence"); active.remove(&id);
                         },
                         Err(error) => { eprintln!("completion delivery failed for {id}: {error:#}"); if Instant::now() >= deadline { active.remove(&id); } },
