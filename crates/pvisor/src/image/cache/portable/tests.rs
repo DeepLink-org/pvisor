@@ -237,7 +237,7 @@ fn corrupt_content_is_not_served_and_read_only_never_prepares_missing_images() {
 }
 
 #[test]
-fn directory_pages_preserve_every_name_including_non_utf8() {
+fn directory_pages_preserve_every_host_supported_name() {
     use std::os::unix::ffi::OsStrExt;
     let (tmp, publisher, store, image) = fixture();
     let mut expected = Vec::new();
@@ -253,16 +253,20 @@ fn directory_pages_preserve_every_name_including_non_utf8() {
         .unwrap();
         expected.push(name);
     }
-    let name = b"entry-\xff".to_vec();
-    fs::write(
-        image
-            .rootfs
-            .join("directory")
-            .join(std::ffi::OsStr::from_bytes(&name)),
-        [],
-    )
-    .unwrap();
-    expected.push(name);
+    // Linux filesystems support arbitrary filename bytes; macOS APFS rejects
+    // invalid UTF-8. The binary codec tests cover these bytes on every host.
+    if cfg!(target_os = "linux") {
+        let name = b"entry-\xff".to_vec();
+        fs::write(
+            image
+                .rootfs
+                .join("directory")
+                .join(std::ffi::OsStr::from_bytes(&name)),
+            [],
+        )
+        .unwrap();
+        expected.push(name);
+    }
     expected.sort();
     let (canonical, _) = crate::image::oci::cache_reference("example:test").unwrap();
     publisher

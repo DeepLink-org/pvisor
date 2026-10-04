@@ -256,10 +256,14 @@ impl SnapshotStore {
         let mut removed = 0;
         for entry in fs::read_dir(self.root.join("pending"))? {
             let path = entry?.path();
-            ensure!(
-                fs::symlink_metadata(&path)?.is_dir(),
-                "invalid pending snapshot directory"
-            );
+            // A reader/writer can drop its TempDir after read_dir yields the
+            // entry. Its own cleanup needs no store gate; absence is benign.
+            let metadata = match fs::symlink_metadata(&path) {
+                Ok(metadata) => metadata,
+                Err(error) if error.kind() == std::io::ErrorKind::NotFound => continue,
+                Err(error) => return Err(error.into()),
+            };
+            ensure!(metadata.is_dir(), "invalid pending snapshot directory");
             let writer = match OpenOptions::new()
                 .read(true)
                 .write(true)
@@ -277,8 +281,11 @@ impl SnapshotStore {
                     Err(error) => return Err(error.into()),
                 }
             }
-            fs::remove_dir_all(path)?;
-            removed += 1;
+            match fs::remove_dir_all(path) {
+                Ok(()) => removed += 1,
+                Err(error) if error.kind() == std::io::ErrorKind::NotFound => {}
+                Err(error) => return Err(error.into()),
+            }
         }
         for entry in fs::read_dir(self.root.join("deleted"))? {
             let path = entry?.path();

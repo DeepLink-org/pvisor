@@ -13,7 +13,7 @@ reference = runpy.run_path(str(ROOT / "scripts/check-reference.py"))
 
 
 def test_reference_field_parser_honors_wire_names_and_skips():
-    source = '''pub struct Example {
+    source = """pub struct Example {
     #[serde(rename = "max_size")]
     pub budget: Option<u64>,
     #[serde(rename = "path")]
@@ -21,9 +21,10 @@ def test_reference_field_parser_honors_wire_names_and_skips():
     pub internal: String,
     #[serde(alias = "old")]
     pub current: Vec<String>,
-}'''
+}"""
     assert reference["fields"](source, "Example") == {
-        "max_size": "Option<u64>", "current": "Vec<String>"
+        "max_size": "Option<u64>",
+        "current": "Vec<String>",
     }
     with pytest.raises(ValueError, match="unsupported field syntax"):
         reference["fields"](source.replace("pub budget", "budget"), "Example")

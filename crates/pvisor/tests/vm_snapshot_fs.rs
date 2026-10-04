@@ -322,6 +322,9 @@ fn overlay_rebinds_owned_layers_handles_cookies_and_future_hard_link_copy_up() {
     let mut state = source.freeze();
     let copied = workspace.path().join("copied");
     let inventory = copy_owned_tree(&original, &copied).unwrap();
+    // Rebinding stores canonical owned roots. macOS temporary paths can use
+    // /var aliases for /private/var; construct the restored device identically.
+    let copied = copied.canonicalize().unwrap();
     verify_tree(&copied, &inventory).unwrap();
     let damaged = workspace.path().join("damaged");
     copy_owned_tree(&original, &damaged).unwrap();

@@ -47,12 +47,18 @@ pub struct ExecutionCheckpoint {
 impl ExecutionCheckpoint {
     pub fn validate(&self) -> Result<()> {
         ensure!(
-            self.snapshot_id.len() == 64 && self.snapshot_id.bytes().all(|b| b.is_ascii_digit() || (b'a'..=b'f').contains(&b)),
+            self.snapshot_id.len() == 64
+                && self
+                    .snapshot_id
+                    .bytes()
+                    .all(|b| b.is_ascii_digit() || (b'a'..=b'f').contains(&b)),
             "invalid execution checkpoint identity"
         );
         ensure!(
-            self.store.is_absolute() && !self.source_run_id.trim().is_empty()
-                && !self.source_attempt_id.trim().is_empty() && self.created_at_unix_ms > 0,
+            self.store.is_absolute()
+                && !self.source_run_id.trim().is_empty()
+                && !self.source_attempt_id.trim().is_empty()
+                && self.created_at_unix_ms > 0,
             "incomplete execution checkpoint binding"
         );
         Ok(())
@@ -109,7 +115,10 @@ impl Outcome {
         Self::Success { value }
     }
     pub fn validate(&self) -> Result<()> {
-        if let Self::Success { value: Value::ExecutionCheckpoint { checkpoint } } = self {
+        if let Self::Success {
+            value: Value::ExecutionCheckpoint { checkpoint },
+        } = self
+        {
             checkpoint.validate()?;
         }
         if let Self::Success {
@@ -213,7 +222,10 @@ pub enum OperationKind {
     #[serde(rename = "run.offload")]
     RunOffload { file: Option<std::path::PathBuf> },
     #[serde(rename = "run.checkpoint")]
-    RunCheckpoint { request_id: String, ram_storage: SnapshotRamStorage },
+    RunCheckpoint {
+        request_id: String,
+        ram_storage: SnapshotRamStorage,
+    },
     #[serde(rename = "run.execute")]
     RunExecute {
         program: String,
@@ -233,7 +245,10 @@ enum OperationKindWire {
     #[serde(rename = "run.offload")]
     Offload { file: Option<std::path::PathBuf> },
     #[serde(rename = "run.checkpoint")]
-    Checkpoint { request_id: String, ram_storage: SnapshotRamStorage },
+    Checkpoint {
+        request_id: String,
+        ram_storage: SnapshotRamStorage,
+    },
     #[serde(rename = "run.execute")]
     Execute {
         program: String,
@@ -247,7 +262,13 @@ impl From<OperationKindWire> for OperationKind {
             OperationKindWire::Pause {} => Self::RunPause,
             OperationKindWire::Resume {} => Self::RunResume,
             OperationKindWire::Offload { file } => Self::RunOffload { file },
-            OperationKindWire::Checkpoint { request_id, ram_storage } => Self::RunCheckpoint { request_id, ram_storage },
+            OperationKindWire::Checkpoint {
+                request_id,
+                ram_storage,
+            } => Self::RunCheckpoint {
+                request_id,
+                ram_storage,
+            },
             OperationKindWire::Execute { program, args, cwd } => {
                 Self::RunExecute { program, args, cwd }
             }
@@ -268,7 +289,10 @@ impl OperationKind {
     pub fn validate(&self) -> Result<()> {
         match self {
             Self::RunCheckpoint { request_id, .. } => {
-                ensure!(!request_id.trim().is_empty() && request_id.len() <= 256, "checkpoint request id must contain 1..256 bytes");
+                ensure!(
+                    !request_id.trim().is_empty() && request_id.len() <= 256,
+                    "checkpoint request id must contain 1..256 bytes"
+                );
             }
             Self::RunExecute { program, .. } => {
                 ensure!(!program.trim().is_empty(), "empty operation program")
@@ -386,7 +410,10 @@ impl OperationObservation {
                 matches!(
                     (&plan.kind, value),
                     (OperationKind::RunExecute { .. }, Value::Run { .. })
-                        | (OperationKind::RunCheckpoint { .. }, Value::ExecutionCheckpoint { .. })
+                        | (
+                            OperationKind::RunCheckpoint { .. },
+                            Value::ExecutionCheckpoint { .. }
+                        )
                         | (
                             OperationKind::RunPause,
                             Value::Vm {
@@ -412,9 +439,15 @@ impl OperationObservation {
                 "outcome does not match operation primitive"
             );
             if let Value::ExecutionCheckpoint { checkpoint } = value {
-                ensure!(checkpoint.source_run_id == plan.run_id, "checkpoint belongs to another Run");
+                ensure!(
+                    checkpoint.source_run_id == plan.run_id,
+                    "checkpoint belongs to another Run"
+                );
                 if let OperationKind::RunCheckpoint { ram_storage, .. } = &plan.kind {
-                    ensure!(checkpoint.ram_storage == *ram_storage, "checkpoint RAM encoding mismatch");
+                    ensure!(
+                        checkpoint.ram_storage == *ram_storage,
+                        "checkpoint RAM encoding mismatch"
+                    );
                 }
             }
         }

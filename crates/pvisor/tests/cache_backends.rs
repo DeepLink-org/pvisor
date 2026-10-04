@@ -119,28 +119,41 @@ impl MockS3 {
         let worker_gets = gets.clone();
         let worker_stop = stop.clone();
         let worker = std::thread::spawn(move || {
-            while !worker_stop.load(Ordering::Relaxed) {
-                match listener.accept() {
-                    Ok((mut stream, _)) => {
-                        stream
-                            .set_read_timeout(Some(Duration::from_secs(5)))
-                            .unwrap();
-                        serve_s3(
-                            &mut stream,
-                            &worker_objects,
-                            &worker_read_only,
-                            &worker_deny_reads,
-                            &worker_puts,
-                            &worker_gets,
-                            &worker_lost_head_ack,
-                        );
+            std::thread::scope(|scope| {
+                while !worker_stop.load(Ordering::Relaxed) {
+                    match listener.accept() {
+                        Ok((mut stream, _)) => {
+                            // Accepted sockets can inherit nonblocking mode on macOS.
+                            stream.set_nonblocking(false).unwrap();
+                            stream
+                                .set_read_timeout(Some(Duration::from_secs(5)))
+                                .unwrap();
+                            let objects = &worker_objects;
+                            let read_only = &worker_read_only;
+                            let deny_reads = &worker_deny_reads;
+                            let puts = &worker_puts;
+                            let gets = &worker_gets;
+                            let lost_head_ack = &worker_lost_head_ack;
+                            // An idle pooled connection must not block other requests.
+                            scope.spawn(move || {
+                                serve_s3(
+                                    &mut stream,
+                                    objects,
+                                    read_only,
+                                    deny_reads,
+                                    puts,
+                                    gets,
+                                    lost_head_ack,
+                                );
+                            });
+                        }
+                        Err(error) if error.kind() == std::io::ErrorKind::WouldBlock => {
+                            std::thread::sleep(Duration::from_millis(1))
+                        }
+                        Err(error) => panic!("S3 fixture: {error}"),
                     }
-                    Err(error) if error.kind() == std::io::ErrorKind::WouldBlock => {
-                        std::thread::sleep(Duration::from_millis(1))
-                    }
-                    Err(error) => panic!("S3 fixture: {error}"),
                 }
-            }
+            });
         });
         Self {
             endpoint,
@@ -173,7 +186,19 @@ fn serve_s3(
     let mut bytes = Vec::new();
     let header_end = loop {
         let mut chunk = [0; 8192];
-        let size = stream.read(&mut chunk).unwrap();
+        let size = match stream.read(&mut chunk) {
+            Ok(0) if bytes.is_empty() => return,
+            Err(error)
+                if bytes.is_empty()
+                    && matches!(
+                        error.kind(),
+                        std::io::ErrorKind::WouldBlock | std::io::ErrorKind::TimedOut
+                    ) =>
+            {
+                return;
+            }
+            result => result.unwrap(),
+        };
         assert!(size > 0);
         bytes.extend_from_slice(&chunk[..size]);
         if let Some(end) = bytes.windows(4).position(|v| v == b"\r\n\r\n") {

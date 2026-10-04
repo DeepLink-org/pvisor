@@ -86,6 +86,10 @@ pub(super) struct RunnerSpec {
     pub(super) cpus: u8,
     pub(super) memory_mib: u32,
     pub(super) library_dir: Option<PathBuf>,
+    /// Reserved for the Job freeze/capture/commit protocol. Normal launches
+    /// leave this unbound until that protocol is connected end to end.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub(super) checkpoint: Option<super::checkpoint::LaunchBinding>,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -590,6 +594,7 @@ impl RunExecutor for VmExecutor {
                 .map(|requested| requested.min(self.settings.memory_mib))
                 .unwrap_or(self.settings.memory_mib),
             library_dir: self.settings.library_dir.clone(),
+            checkpoint: None,
         };
         crate::util::startup_mark_run("vm.spec_write_begin", spec.run_id.as_str());
         // This private launch message is consumed only by the child spawned below.
@@ -1289,6 +1294,41 @@ fn check_krun(value: i32, operation: &str) -> anyhow::Result<()> {
 
 #[cfg(test)]
 mod tests {
+    #[test]
+    fn runner_checkpoint_binding_is_optional_and_roundtrips() {
+        let legacy = serde_json::json!({
+            "run_id": "run",
+            "setup_attestation": "/private/setup.json",
+            "root": {"lowers": ["/private/lower"], "upper": "/private/upper"},
+            "workspace": null,
+            "workspace_target": null,
+            "guest": pvisor_guest::GuestConfig::default(),
+            "cpus": 1,
+            "memory_mib": 128,
+            "library_dir": null
+        });
+        let mut spec: RunnerSpec = serde_json::from_value(legacy.clone()).unwrap();
+        assert!(spec.checkpoint.is_none());
+        let encoded = serde_json::to_value(&spec).unwrap();
+        assert!(encoded.get("checkpoint").is_none());
+
+        spec.checkpoint = Some(super::super::checkpoint::LaunchBinding {
+            store: "/private/snapshots".into(),
+            compatibility: crate::environment_snapshot::Compatibility {
+                host_boot: "boot".into(),
+                build: "build".into(),
+                firmware: "firmware".into(),
+                profile: "pvisor-job-owned-overlay-v1".into(),
+            },
+            run_id: "run".into(),
+            attempt_id: "attempt".into(),
+        });
+        let encoded = serde_json::to_value(&spec).unwrap();
+        let decoded: RunnerSpec = serde_json::from_value(encoded.clone()).unwrap();
+        assert_eq!(serde_json::to_value(&decoded).unwrap(), encoded);
+        assert_eq!(decoded.checkpoint.unwrap().attempt_id, "attempt");
+    }
+
     #[test]
     fn vm_nonzero_exit_is_failed() {
         use std::os::unix::process::ExitStatusExt;

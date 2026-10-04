@@ -237,7 +237,22 @@ fn process_inventory_once() -> io::Result<ProcessInventory> {
 mod tests {
     #[test]
     fn complete_process_inventory_has_unique_addresses() {
-        let inventory = super::process_inventory().unwrap();
+        // A live self-query can explicitly reject a racing page-state change.
+        // Require a complete inventory within a bounded window, without
+        // relaxing the production consistency checks or accepting partial rows.
+        let deadline = std::time::Instant::now() + std::time::Duration::from_secs(5);
+        let inventory = loop {
+            match super::process_inventory() {
+                Ok(inventory) => break inventory,
+                Err(error)
+                    if error.kind() == std::io::ErrorKind::WouldBlock
+                        && std::time::Instant::now() < deadline =>
+                {
+                    std::thread::sleep(std::time::Duration::from_millis(25));
+                }
+                Err(error) => panic!("complete process inventory unavailable: {error}"),
+            }
+        };
         assert!(inventory.regions > 0 && inventory.scanned_pages > 0);
         assert!(inventory.pages.len() >= 2);
         let addresses: std::collections::BTreeSet<_> =

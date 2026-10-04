@@ -25,3 +25,4 @@ build/
 .worktrees/
 review_project/
 review/
+tools/experiments/

@@ -14,8 +14,13 @@ pub(crate) use supported::{bundled_firmware_dir, firmware_name};
 #[cfg(all(target_os = "macos", target_arch = "x86_64"))]
 pub use unsupported::{VmExecutor, run_internal_if_requested};
 
-mod compressed;
+#[cfg(not(all(target_os = "macos", target_arch = "x86_64")))]
+#[expect(
+    dead_code,
+    reason = "Job capture/commit transport is not wired yet; keep the checked implementation until integration"
+)]
 pub(crate) mod checkpoint;
+mod compressed;
 #[cfg(all(target_os = "linux", target_env = "musl", target_arch = "x86_64"))]
 pub(crate) mod embedded_kernel {
     include!(concat!(env!("OUT_DIR"), "/embedded_kernel.rs"));

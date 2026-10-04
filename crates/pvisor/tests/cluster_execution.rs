@@ -242,6 +242,12 @@ async fn pending_record(root: &std::path::Path, ready: bool) -> serde_json::Valu
         'outer: loop {
             if let Ok(files) = std::fs::read_dir(root.join("outbox/pending")) {
                 for file in files.flatten() {
+                    // A complete JSON body in a .write-* file is not yet a
+                    // published outbox record. Killing here would test a crash
+                    // before commit rather than durable completion recovery.
+                    if file.file_name().to_string_lossy().starts_with(".write-") {
+                        continue;
+                    }
                     if let Ok(bytes) = std::fs::read(file.path())
                         && let Ok(value) = serde_json::from_slice::<serde_json::Value>(&bytes)
                         && value["ready"] == ready

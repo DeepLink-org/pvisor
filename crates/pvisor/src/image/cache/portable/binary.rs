@@ -1020,6 +1020,13 @@ mod malformed_tests {
     fn image(
         mutate: impl FnOnce(&mut BTreeMap<String, Vec<u8>>),
     ) -> (tempfile::TempDir, LoadedImage) {
+        image_named(b"a", mutate)
+    }
+
+    fn image_named(
+        name: &[u8],
+        mutate: impl FnOnce(&mut BTreeMap<String, Vec<u8>>),
+    ) -> (tempfile::TempDir, LoadedImage) {
         let temp = tempfile::tempdir().unwrap();
         let root = Response::Metadata {
             kind: "directory".into(),
@@ -1053,7 +1060,7 @@ mod malformed_tests {
                 content: None,
             },
             SourceEntry {
-                path: b"a".to_vec(),
+                path: name.to_vec(),
                 metadata: file,
                 content: Some(digest.clone()),
             },
@@ -1120,6 +1127,17 @@ mod malformed_tests {
         let image = LoadedImage::new(storage, None, handle, commit, config, &catalog).unwrap();
         (temp, image)
     }
+    #[test]
+    fn non_utf8_names_roundtrip_without_host_filesystem_support() {
+        let name = b"entry-\xff";
+        let (_temp, image) = image_named(name, |_| {});
+        let Response::Entries { names, .. } = image.list(b"", 0).unwrap() else {
+            panic!("missing directory entries")
+        };
+        assert_eq!(names, vec![name.to_vec()]);
+        assert_eq!(image.file(1).unwrap().path, name);
+    }
+
     #[test]
     fn authenticated_but_invalid_content_references_are_rejected() {
         let (_temp, image) = image(|objects| {

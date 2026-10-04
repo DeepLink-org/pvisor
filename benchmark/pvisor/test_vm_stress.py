@@ -1,7 +1,6 @@
 """The hardware gate must retain failure evidence and never turn a skip green."""
 
 import json
-from pathlib import Path
 from types import SimpleNamespace
 
 import pytest
@@ -11,9 +10,12 @@ from vm_stress import Harness
 def test_missing_hardware_is_failure_with_a_retained_report(tmp_path, monkeypatch):
     guest = tmp_path / "guest"
     guest.write_bytes(b"guest-identity")
+    binary = tmp_path / "binary"
+    binary.write_text("#!/bin/sh\nexit 1\n")
+    binary.chmod(0o755)
     harness = Harness(
         SimpleNamespace(
-            binary=Path("/bin/false"),
+            binary=binary,
             guest=guest,
             output=tmp_path / "report",
             cycles=1,
@@ -27,6 +29,10 @@ def test_missing_hardware_is_failure_with_a_retained_report(tmp_path, monkeypatc
         raise PermissionError("injected KVM permission failure")
 
     monkeypatch.setattr("vm_stress.os.open", unavailable)
+    # The injected gate fails before any mount/process is created. Supply the
+    # empty Linux mount inventory so this unit test also runs on macOS.
+    monkeypatch.setattr("vm_stress.mounts_under", lambda root: [])
+    monkeypatch.setattr(harness, "live_processes", lambda: [])
     with pytest.raises(PermissionError, match="injected KVM"):
         harness.run()
     report = json.loads((harness.root / "result.json").read_text())
@@ -35,6 +41,8 @@ def test_missing_hardware_is_failure_with_a_retained_report(tmp_path, monkeypatc
     assert report["seed"] == 123
     assert report["cleanup_errors"] == []
     assert report["live_processes"] == []
+    assert harness.processes == []
+    assert harness.instances == []
     assert (harness.root / "harness.py").is_file()
     events = [json.loads(line) for line in (harness.root / "events.jsonl").read_text().splitlines()]
     assert events == report["events"]
