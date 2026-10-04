@@ -1,7 +1,7 @@
 //! Atomic environment objects with raw or durable compressed RAM. VM freezing belongs to the executor.
 use super::{
-    RamBlocks, RawRamIndex, SnapshotRamReader, TreeInventory, blocks, copy_owned_tree, file_hash,
-    native_path, verify_tree,
+    RamBlocks, RawRamIndex, SnapshotRamReader, TreeInventory, blocks, copy_owned_tree,
+    copy_owned_tree_checked, file_hash, native_path, verify_tree,
 };
 use anyhow::{Context, ensure};
 use serde::{Deserialize, Serialize};
@@ -587,12 +587,11 @@ impl PublishedEnvironment {
         self.copy_payload(destination)
     }
     fn copy_payload(&self, destination: &Path) -> anyhow::Result<()> {
-        verify_tree(&self.path.join("rootfs"), &self.manifest.filesystem)?;
-        let copied = copy_owned_tree(&self.path.join("rootfs"), destination)?;
-        ensure!(
-            copied == self.manifest.filesystem,
-            "environment changed during restore copy"
-        );
+        copy_owned_tree_checked(
+            &self.path.join("rootfs"),
+            destination,
+            Some(&self.manifest.filesystem),
+        )?;
         Ok(())
     }
 }

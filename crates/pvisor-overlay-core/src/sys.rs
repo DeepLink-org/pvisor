@@ -27,6 +27,44 @@ fn cvt(rc: libc::c_int) -> io::Result<()> {
     }
 }
 
+/// Optional mount context for a just-observed parent. Failure or a concurrent
+/// identity change disables inode reuse rather than supplying a guessed ID.
+pub(crate) fn metadata_mount_id(path: &Path, metadata: &std::fs::Metadata) -> Option<u64> {
+    #[cfg(target_os = "linux")]
+    {
+        use std::os::unix::fs::MetadataExt;
+        let path = c_path(path).ok()?;
+        // SAFETY: zero is a valid initial statx representation; the owned
+        // path/output remain valid for the duration of the syscall.
+        let mut stat: libc::statx = unsafe { std::mem::zeroed() };
+        let rc = unsafe {
+            libc::syscall(
+                libc::SYS_statx,
+                libc::AT_FDCWD,
+                path.as_ptr(),
+                libc::AT_SYMLINK_NOFOLLOW,
+                libc::STATX_MNT_ID | libc::STATX_INO,
+                &mut stat,
+            )
+        };
+        if rc == 0
+            && stat.stx_mask & (libc::STATX_MNT_ID | libc::STATX_INO)
+                == libc::STATX_MNT_ID | libc::STATX_INO
+            && stat.stx_ino == metadata.ino()
+            && libc::makedev(stat.stx_dev_major, stat.stx_dev_minor) == metadata.dev()
+        {
+            Some(stat.stx_mnt_id)
+        } else {
+            None
+        }
+    }
+    #[cfg(not(target_os = "linux"))]
+    {
+        let _ = (path, metadata);
+        None
+    }
+}
+
 /// Publish a complete temporary file without replacing an existing winner.
 /// Success consumes `source`. Both paths must be on the same filesystem.
 /// Older kernels/filesystems fall back to atomic link publication; never use
@@ -68,7 +106,7 @@ pub(crate) fn publish_no_replace(source: &Path, destination: &Path) -> io::Resul
     }
 }
 
-fn publish_by_link(source: &Path, destination: &Path) -> io::Result<()> {
+pub(crate) fn publish_by_link(source: &Path, destination: &Path) -> io::Result<()> {
     std::fs::hard_link(source, destination)?;
     std::fs::remove_file(source)
 }

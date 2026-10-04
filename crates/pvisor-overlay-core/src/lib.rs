@@ -6,9 +6,10 @@ pub mod profile;
 pub mod sys;
 
 pub use core::{
-    DirectoryEntry, OPAQUE_NAME, OverlayCore, OverlayLayout, ROOT_METADATA_NAME, Resolved,
-    ResolvedMetadata, WHITEOUT_PREFIX, fingerprint_at, is_opaque_directory, load_preimages,
-    preimage_journal_is_complete, remove_preimages, validate_guest_xattr,
+    BackingIdentity, BackingResolution, DirectoryEntry, OPAQUE_NAME, OverlayCore, OverlayLayout,
+    ROOT_METADATA_NAME, Resolved, ResolvedMetadata, WHITEOUT_PREFIX, fingerprint_at,
+    is_opaque_directory, load_preimages, preimage_journal_is_complete, remove_preimages,
+    validate_guest_xattr,
 };
 pub use pvisor_core::overlay::FileAccessPolicy;
 

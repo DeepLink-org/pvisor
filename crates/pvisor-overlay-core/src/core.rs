@@ -1,7 +1,7 @@
 use crate::sys;
 use pvisor_core::overlay::{PathFingerprint, PathPreimage, XattrFingerprint};
 use sha2::{Digest, Sha256};
-use std::collections::{BTreeSet, HashMap};
+use std::collections::{BTreeSet, HashMap, HashSet};
 use std::ffi::{OsStr, OsString};
 use std::fs::{self, File, Metadata, OpenOptions};
 use std::io::{self, Read, Write};
@@ -38,6 +38,25 @@ pub struct ResolvedMetadata {
     pub resolved: Resolved,
     pub metadata: Metadata,
     pub layer: usize,
+}
+
+/// Physical identity observed while checking a backing parent directory.
+/// Request-local evidence, not a permission capability or cached attributes.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub struct BackingIdentity {
+    pub device: u64,
+    pub inode: u64,
+    /// Linux mount identity distinguishes bind/idmapped mount contexts.
+    /// Absent on systems without an observable mount ID.
+    pub mount_id: Option<u64>,
+}
+
+/// Checked metadata plus identities of the selected layer's physical parents,
+/// in component order, excluding the layer root and the final object.
+#[derive(Debug)]
+pub struct BackingResolution {
+    pub entry: ResolvedMetadata,
+    pub parents: Vec<BackingIdentity>,
 }
 
 #[derive(Debug)]
@@ -130,13 +149,45 @@ pub(crate) fn layer_path(root: &Path, rel: &Path) -> io::Result<Option<PathBuf>>
 }
 
 fn layer_metadata(root: &Path, rel: &Path) -> io::Result<Option<(PathBuf, Metadata)>> {
+    layer_metadata_with_parents(root, rel, None, &crate::profile::Profile::default(), None)
+}
+
+fn layer_metadata_with_parents(
+    root: &Path,
+    rel: &Path,
+    mut parents: Option<&mut Vec<BackingIdentity>>,
+    profile: &crate::profile::Profile,
+    mut checked_directories: Option<&mut HashSet<PathBuf>>,
+) -> io::Result<Option<(PathBuf, Metadata)>> {
     OverlayCore::validate_rel(rel)?;
+    if let Some(parents) = &mut parents {
+        parents.clear();
+    }
     let mut path = root.to_path_buf();
-    if let Some(parent) = rel.parent() {
+    if let Some(parent) = rel.parent().filter(|parent| {
+        !checked_directories
+            .as_ref()
+            .is_some_and(|checked| checked.contains(&root.join(parent)))
+    }) {
         for component in parent.components() {
             path.push(component.as_os_str());
+            profile.add("layer_parent_stats", 1);
             match fs::symlink_metadata(&path) {
-                Ok(metadata) if metadata.is_dir() => {}
+                Ok(metadata) if metadata.is_dir() => {
+                    if let Some(checked) = &mut checked_directories {
+                        checked.insert(path.clone());
+                    }
+                    if let Some(parents) = &mut parents {
+                        if cfg!(target_os = "linux") {
+                            profile.add("mount_identity_attempts", 1);
+                        }
+                        parents.push(BackingIdentity {
+                            device: metadata.dev(),
+                            inode: metadata.ino(),
+                            mount_id: sys::metadata_mount_id(&path, &metadata),
+                        });
+                    }
+                }
                 Ok(_) => return Ok(None),
                 Err(error) if error.kind() == io::ErrorKind::NotFound => return Ok(None),
                 Err(error) => return Err(error),
@@ -148,8 +199,16 @@ fn layer_metadata(root: &Path, rel: &Path) -> io::Result<Option<(PathBuf, Metada
     } else {
         root.join(rel)
     };
+    profile.add("layer_leaf_stats", 1);
     match fs::symlink_metadata(&path) {
-        Ok(metadata) => Ok(Some((path, metadata))),
+        Ok(metadata) => {
+            if metadata.is_dir()
+                && let Some(checked) = &mut checked_directories
+            {
+                checked.insert(path.clone());
+            }
+            Ok(Some((path, metadata)))
+        }
         Err(error) if error.kind() == io::ErrorKind::NotFound => Ok(None),
         Err(error) => Err(error),
     }
@@ -755,7 +814,16 @@ impl OverlayCore {
             // Publish without replacement even if another core instance uses
             // the same stage. A race must never replace its first observation.
             let publish = self.profile.span("journal_publish");
-            let publication = sys::publish_no_replace(&temporary, &destination);
+            // Rename reduces the bulk first-read cost on APFS. Keep absence
+            // and direct mutation publication on the established link path:
+            // paired repair/diff trials regressed when those also used rename.
+            let publication = if !durable && !observed_absent {
+                self.profile.add("journal_rename_attempts", 1);
+                sys::publish_no_replace(&temporary, &destination)
+            } else {
+                self.profile.add("journal_link_attempts", 1);
+                sys::publish_by_link(&temporary, &destination)
+            };
             drop(publish);
             match publication {
                 Ok(()) => {}
@@ -978,7 +1046,22 @@ impl OverlayCore {
     }
 
     fn resolve_component_metadata(&self, rel: &Path) -> io::Result<Option<ResolvedMetadata>> {
-        if let Some((path, metadata)) = layer_metadata(&self.upper, rel)? {
+        self.resolve_component_metadata_with_parents(rel, None, None)
+    }
+
+    fn resolve_component_metadata_with_parents(
+        &self,
+        rel: &Path,
+        mut parents: Option<&mut Vec<BackingIdentity>>,
+        mut checked_directories: Option<&mut HashSet<PathBuf>>,
+    ) -> io::Result<Option<ResolvedMetadata>> {
+        if let Some((path, metadata)) = layer_metadata_with_parents(
+            &self.upper,
+            rel,
+            parents.as_deref_mut(),
+            &self.profile,
+            checked_directories.as_deref_mut(),
+        )? {
             return Ok(Some(ResolvedMetadata {
                 resolved: Resolved {
                     path,
@@ -994,7 +1077,13 @@ impl OverlayCore {
             return Ok(None);
         }
         for (index, lower) in self.layout.lowers.iter().enumerate() {
-            if let Some((path, metadata)) = layer_metadata(lower, rel)? {
+            if let Some((path, metadata)) = layer_metadata_with_parents(
+                lower,
+                rel,
+                parents.as_deref_mut(),
+                &self.profile,
+                checked_directories.as_deref_mut(),
+            )? {
                 return Ok(Some(ResolvedMetadata {
                     resolved: Resolved {
                         path,
@@ -1021,6 +1110,23 @@ impl OverlayCore {
     }
 
     fn resolve_metadata_checked(&self, rel: &Path) -> io::Result<Option<ResolvedMetadata>> {
+        self.resolve_metadata_checked_with_parents(rel, None)
+    }
+
+    fn resolve_metadata_checked_with_parents(
+        &self,
+        rel: &Path,
+        parents: Option<&mut Vec<BackingIdentity>>,
+    ) -> io::Result<Option<ResolvedMetadata>> {
+        self.resolve_metadata_walk::<true>(rel, parents, |_| Ok(()))
+    }
+
+    fn resolve_metadata_walk<const REUSE_DIRECTORIES: bool>(
+        &self,
+        rel: &Path,
+        mut parents: Option<&mut Vec<BackingIdentity>>,
+        mut after_prefix: impl FnMut(&Path) -> io::Result<()>,
+    ) -> io::Result<Option<ResolvedMetadata>> {
         let _span = self.profile.span("resolve");
         self.require_visible(rel)?;
         if rel.as_os_str().is_empty() {
@@ -1036,10 +1142,30 @@ impl OverlayCore {
         let mut current = PathBuf::new();
         let mut resolved = None;
         let count = rel.components().count();
+        // Reuse only successful directory checks within this walk. Every
+        // logical prefix still gets fresh leaf metadata and alias checks.
+        // The final component rechecks ALL physical ancestors, including
+        // those in losing layers; neither attributes nor absence are cached.
+        // This retains the existing non-atomic host namespace contract.
+        let mut checked = (REUSE_DIRECTORIES && count > 2).then(HashSet::new);
         for (index, component) in rel.components().enumerate() {
             self.profile.add("resolve_components", 1);
             current.push(component.as_os_str());
-            let Some(item) = self.resolve_component_metadata(&current)? else {
+            let observed_parents = if index + 1 == count {
+                parents.as_deref_mut()
+            } else {
+                None
+            };
+            let Some(item) = self.resolve_component_metadata_with_parents(
+                &current,
+                observed_parents,
+                if index + 1 == count {
+                    None
+                } else {
+                    checked.as_mut()
+                },
+            )?
+            else {
                 return Ok(None);
             };
             self.require_unaliased_metadata(&item.metadata)?;
@@ -1047,6 +1173,7 @@ impl OverlayCore {
                 return Err(error(libc::ENOTDIR));
             }
             resolved = Some(item);
+            after_prefix(&current)?;
         }
         Ok(resolved)
     }
@@ -1054,8 +1181,66 @@ impl OverlayCore {
     /// Preserve absence observations and policy/alias checks while returning
     /// the backing identity and metadata from this same resolution.
     pub fn metadata_resolved(&self, rel: &Path) -> io::Result<ResolvedMetadata> {
+        self.metadata_resolved_with_parents(rel, None)
+    }
+
+    /// Reuse identities already read by the selected layer's parent checks.
+    /// Callers must still resolve policy and backing metadata on every request;
+    /// these identities permit reuse of an inode reference, not its attributes.
+    pub fn metadata_for_backing_lookup(&self, rel: &Path) -> io::Result<BackingResolution> {
+        let mut parents = Vec::with_capacity(rel.components().count().saturating_sub(1));
+        let entry = self.metadata_resolved_with_parents(rel, Some(&mut parents))?;
+        Ok(BackingResolution { entry, parents })
+    }
+
+    /// Prepare a no-follow file read and record the baseline observation before
+    /// returning its backing. Reject symlinks before reading their preimage.
+    /// A live journal may hash/publish while the host changes the view, so the
+    /// returned metadata is checked again after publication. Frozen/no-journal
+    /// reads need only one resolution. This is request-local evidence, not an
+    /// authorization capability for a future open or a content snapshot.
+    pub fn prepare_file_read(&self, rel: &Path) -> io::Result<ResolvedMetadata> {
+        self.prepare_file_read_with_parents(rel, None)
+    }
+
+    /// Like `prepare_file_read`, also return freshly checked physical parents
+    /// for a native adapter's bounded directory-reference cache.
+    pub fn prepare_file_read_for_backing_lookup(
+        &self,
+        rel: &Path,
+    ) -> io::Result<BackingResolution> {
+        let mut parents = Vec::with_capacity(rel.components().count().saturating_sub(1));
+        let entry = self.prepare_file_read_with_parents(rel, Some(&mut parents))?;
+        Ok(BackingResolution { entry, parents })
+    }
+
+    fn prepare_file_read_with_parents(
+        &self,
+        rel: &Path,
+        parents: Option<&mut Vec<BackingIdentity>>,
+    ) -> io::Result<ResolvedMetadata> {
+        let _span = self.profile.span("observe_read");
+        if !self.layout.frozen_baseline && self.preimage_dir.is_some() {
+            let before = self.metadata_resolved(rel)?;
+            if before.metadata.file_type().is_symlink() {
+                return Err(error(libc::ELOOP));
+            }
+            self.capture_preimage(rel, false)?;
+        }
+        let backing = self.metadata_resolved_with_parents(rel, parents)?;
+        if backing.metadata.file_type().is_symlink() {
+            return Err(error(libc::ELOOP));
+        }
+        Ok(backing)
+    }
+
+    fn metadata_resolved_with_parents(
+        &self,
+        rel: &Path,
+        parents: Option<&mut Vec<BackingIdentity>>,
+    ) -> io::Result<ResolvedMetadata> {
         let _span = self.profile.span("metadata");
-        let Some(resolved) = self.resolve_metadata_checked(rel)? else {
+        let Some(resolved) = self.resolve_metadata_checked_with_parents(rel, parents)? else {
             self.observe_absence(rel)?;
             return Err(error(libc::ENOENT));
         };
@@ -2628,4 +2813,390 @@ fn resolved_metadata_and_directory_entries_preserve_layer_and_visibility() {
         core.list_entries(Path::new("")).unwrap_err().raw_os_error(),
         Some(libc::EACCES)
     );
+}
+
+#[cfg(test)]
+mod backing_resolution_tests {
+    use super::*;
+
+    #[test]
+    fn deep_walk_rechecks_final_physical_ancestors_after_host_replacement() {
+        let temp = tempfile::tempdir().unwrap();
+        let lower = temp.path().join("lower");
+        let outside = temp.path().join("outside");
+        fs::create_dir_all(lower.join("a/b/c")).unwrap();
+        fs::create_dir_all(outside.join("b/c")).unwrap();
+        fs::write(lower.join("a/b/c/file"), b"inside").unwrap();
+        fs::write(outside.join("b/c/file"), b"outside").unwrap();
+        let core = OverlayCore::new(vec![lower.clone()], temp.path().join("upper"), None).unwrap();
+        let result = core
+            .resolve_metadata_walk::<true>(Path::new("a/b/c/file"), None, |prefix| {
+                if prefix == Path::new("a/b/c") {
+                    fs::rename(lower.join("a"), lower.join("old-a"))?;
+                    std::os::unix::fs::symlink(&outside, lower.join("a"))?;
+                }
+                Ok(())
+            })
+            .unwrap();
+        assert!(result.is_none());
+    }
+
+    #[test]
+    fn deep_walk_returns_fresh_selected_layer_parent_identities() {
+        let temp = tempfile::tempdir().unwrap();
+        let lower = temp.path().join("lower");
+        let upper = temp.path().join("upper");
+        fs::create_dir_all(lower.join("a/b/c/d/e/f/g/h")).unwrap();
+        fs::create_dir_all(upper.join("a/b")).unwrap();
+        fs::write(lower.join("a/b/c/d/e/f/g/h/file"), b"content").unwrap();
+        let core = OverlayCore::new(vec![lower.clone()], upper, None)
+            .unwrap()
+            .with_profile(crate::profile::Profile::enabled("overlay-core"));
+        let resolved = core
+            .metadata_for_backing_lookup(Path::new("a/b/c/d/e/f/g/h/file"))
+            .unwrap();
+        assert_eq!(resolved.entry.layer, 1);
+        assert_eq!(resolved.parents.len(), 8);
+        let mut path = lower.clone();
+        for (component, identity) in Path::new("a/b/c/d/e/f/g/h")
+            .components()
+            .zip(&resolved.parents)
+        {
+            path.push(component);
+            let metadata = fs::symlink_metadata(&path).unwrap();
+            assert_eq!(
+                (identity.device, identity.inode),
+                (metadata.dev(), metadata.ino())
+            );
+        }
+        let report = core.profile_report().unwrap();
+        // Eight fresh final lower checks, plus the missing upper candidate
+        // and its uncached absence checks. The old prefix walk needed 36
+        // lower ancestor checks alone for this one resolution.
+        assert!(report.measurements["layer_parent_stats"].units < 36);
+        fs::write(lower.join("a/b/c/d/e/f/g/h/file"), b"changed content").unwrap();
+        assert_eq!(
+            core.metadata(Path::new("a/b/c/d/e/f/g/h/file"))
+                .unwrap()
+                .len(),
+            15
+        );
+    }
+
+    #[test]
+    fn frozen_baseline_reads_do_not_fingerprint_and_mutation_uses_frozen_preimage() {
+        let temp = tempfile::tempdir().unwrap();
+        let target = temp.path().join("target");
+        let frozen = temp.path().join("frozen");
+        let journal = temp.path().join("preimages");
+        for root in [&target, &frozen] {
+            fs::create_dir(root).unwrap();
+            fs::write(root.join("file"), b"frozen").unwrap();
+        }
+        let original = fingerprint_at(&frozen, Path::new("file")).unwrap();
+        let layout =
+            OverlayLayout::with_baseline(vec![frozen.clone()], target.clone(), Some(&frozen))
+                .unwrap();
+        let core = OverlayCore::new_for_layout(
+            layout,
+            temp.path().join("upper"),
+            None,
+            vec![],
+            Some(journal.clone()),
+        )
+        .unwrap()
+        .with_profile(crate::profile::Profile::enabled("overlay-core"));
+        for _ in 0..3 {
+            let prepared = core.prepare_file_read(Path::new("file")).unwrap();
+            assert_eq!(fs::read(prepared.resolved.path).unwrap(), b"frozen");
+            core.observe_read(Path::new("file")).unwrap();
+        }
+        assert!(load_preimages(&journal).unwrap().is_empty());
+        assert_eq!(
+            core.profile_report()
+                .unwrap()
+                .measurements
+                .get("fingerprint_bytes")
+                .map_or(0, |measurement| measurement.units),
+            0
+        );
+        fs::write(target.join("file"), b"host change").unwrap();
+        core.copy_up(Path::new("file")).unwrap();
+        assert_eq!(load_preimages(&journal).unwrap()[0].state, original);
+        assert_eq!(
+            core.profile_report()
+                .unwrap()
+                .measurements
+                .get("fingerprint_bytes")
+                .map(|measurement| measurement.units),
+            Some(6)
+        );
+    }
+
+    #[test]
+    fn prepared_file_reads_observe_baseline_not_visible_upper_and_never_rebase() {
+        let temp = tempfile::tempdir().unwrap();
+        let target = temp.path().join("target");
+        let upper = temp.path().join("upper");
+        let journal = temp.path().join("preimages");
+        fs::create_dir_all(target.join("dir")).unwrap();
+        fs::write(target.join("dir/file"), b"baseline").unwrap();
+        let original = fingerprint_at(&target, Path::new("dir/file")).unwrap();
+        let core = OverlayCore::new_with_exclusions_and_preimages(
+            vec![target.clone()],
+            upper.clone(),
+            None,
+            vec![],
+            Some(journal.clone()),
+        )
+        .unwrap();
+        fs::create_dir_all(upper.join("dir")).unwrap();
+        fs::write(upper.join("dir/file"), b"visible stage content").unwrap();
+
+        let prepared = core
+            .prepare_file_read_for_backing_lookup(Path::new("dir/file"))
+            .unwrap();
+        assert_eq!(prepared.entry.layer, 0);
+        assert_eq!(prepared.parents.len(), 1);
+        assert_eq!(
+            fs::read(prepared.entry.resolved.path).unwrap(),
+            b"visible stage content"
+        );
+        assert_eq!(load_preimages(&journal).unwrap()[0].state, original);
+        fs::write(target.join("dir/file"), b"host change").unwrap();
+        core.prepare_file_read(Path::new("dir/file")).unwrap();
+        core.copy_up(Path::new("dir/file")).unwrap();
+        assert_eq!(load_preimages(&journal).unwrap()[0].state, original);
+    }
+
+    #[test]
+    fn prepared_reads_reject_symlinks_and_denied_aliases_before_observation() {
+        let temp = tempfile::tempdir().unwrap();
+        let target = temp.path().join("target");
+        let journal = temp.path().join("preimages");
+        fs::create_dir(&target).unwrap();
+        fs::write(target.join("secret"), b"secret content").unwrap();
+        fs::hard_link(target.join("secret"), target.join("alias")).unwrap();
+        std::os::unix::fs::symlink("secret", target.join("link")).unwrap();
+        let core = OverlayCore::new_with_exclusions_and_preimages(
+            vec![target],
+            temp.path().join("upper"),
+            None,
+            vec![],
+            Some(journal.clone()),
+        )
+        .unwrap()
+        .with_access_policy(&crate::FileAccessPolicy::new(vec!["secret".into()], vec![]).unwrap());
+        for (path, errno) in [
+            ("link", libc::ELOOP),
+            ("alias", libc::EACCES),
+            ("secret", libc::EACCES),
+        ] {
+            assert_eq!(
+                core.prepare_file_read(Path::new(path))
+                    .unwrap_err()
+                    .raw_os_error(),
+                Some(errno)
+            );
+        }
+        assert!(load_preimages(&journal).unwrap().is_empty());
+        assert_eq!(
+            core.prepare_file_read(Path::new("missing"))
+                .unwrap_err()
+                .raw_os_error(),
+            Some(libc::ENOENT)
+        );
+        let entries = load_preimages(&journal).unwrap();
+        assert_eq!(entries.len(), 1);
+        assert_eq!(entries[0].state, PathFingerprint::Absent);
+    }
+
+    #[test]
+    fn backing_parents_belong_to_selected_layer_not_merged_directories() {
+        let temp = tempfile::tempdir().unwrap();
+        let upper = temp.path().join("upper");
+        let first = temp.path().join("first");
+        let last = temp.path().join("last");
+        for root in [&upper, &first, &last] {
+            fs::create_dir_all(root.join("tree/branch")).unwrap();
+        }
+        fs::write(last.join("tree/branch/file"), b"last").unwrap();
+        let core = OverlayCore::new(vec![first, last.clone()], upper, None).unwrap();
+        let backing = core
+            .metadata_for_backing_lookup(Path::new("tree/branch/file"))
+            .unwrap();
+        assert_eq!(backing.entry.layer, 2);
+        assert_eq!(backing.parents.len(), 2);
+        for (identity, path) in backing.parents.iter().zip(["tree", "tree/branch"]) {
+            let metadata = fs::symlink_metadata(last.join(path)).unwrap();
+            assert_eq!(identity.device, metadata.dev());
+            assert_eq!(identity.inode, metadata.ino());
+        }
+        assert!(
+            core.metadata_for_backing_lookup(Path::new(""))
+                .unwrap()
+                .parents
+                .is_empty()
+        );
+    }
+}
+
+/// Mechanism screening only: clone cost is a lower bound for an owned-preimage
+/// design (no policy, journal, durable publication, or apply comparison here).
+#[cfg(all(test, target_os = "macos"))]
+#[test]
+#[ignore = "manual APFS fingerprint versus COW preimage screening"]
+fn content_observation_benchmark() {
+    use std::ffi::CString;
+    use std::hint::black_box;
+    use std::time::Instant;
+    let temp = tempfile::tempdir_in("/private/tmp").unwrap();
+    for (size, count) in [(16, 2048), (4096, 2048), (1024 * 1024, 32)] {
+        let source = temp.path().join(format!("source-{size}"));
+        fs::create_dir(&source).unwrap();
+        let data: Vec<u8> = (0..size).map(|index| (index % 251) as u8).collect();
+        let paths: Vec<_> = (0..count)
+            .map(|index| PathBuf::from(format!("f{index}")))
+            .collect();
+        for path in &paths {
+            fs::write(source.join(path), &data).unwrap();
+        }
+        let expected = fingerprint_at(&source, &paths[0]).unwrap();
+        for round in -3i32..15 {
+            let modes = if round % 2 == 0 {
+                ["fingerprint", "clonefile"]
+            } else {
+                ["clonefile", "fingerprint"]
+            };
+            for mode in modes {
+                let destination = temp.path().join(format!("copies-{size}-{round}"));
+                let pairs = if mode == "clonefile" {
+                    fs::create_dir(&destination).unwrap();
+                    paths
+                        .iter()
+                        .map(|path| {
+                            (
+                                CString::new(source.join(path).as_os_str().as_bytes()).unwrap(),
+                                CString::new(destination.join(path).as_os_str().as_bytes())
+                                    .unwrap(),
+                            )
+                        })
+                        .collect::<Vec<_>>()
+                } else {
+                    Vec::new()
+                };
+                let started = Instant::now();
+                if mode == "fingerprint" {
+                    for path in &paths {
+                        let actual = fingerprint_at(&source, path).unwrap();
+                        assert_eq!(actual, expected);
+                        black_box(actual);
+                    }
+                } else {
+                    for (from, to) in &pairs {
+                        // SAFETY: both owned C strings stay live during the
+                        // call; no-follow clones to a fresh destination name.
+                        let rc = unsafe { libc::clonefile(from.as_ptr(), to.as_ptr(), 1) };
+                        assert_eq!(rc, 0, "clonefile failed: {}", io::Error::last_os_error());
+                    }
+                }
+                let elapsed_ms = started.elapsed().as_secs_f64() * 1000.0;
+                if mode == "clonefile" {
+                    for path in &paths {
+                        assert_eq!(fs::read(destination.join(path)).unwrap(), data);
+                    }
+                    // COW must preserve the captured content across a later
+                    // source write; hard-linking the file would fail this check.
+                    fs::write(source.join(&paths[0]), b"later host edit").unwrap();
+                    assert_eq!(fs::read(destination.join(&paths[0])).unwrap(), data);
+                    fs::write(source.join(&paths[0]), &data).unwrap();
+                    fs::remove_dir_all(destination).unwrap();
+                }
+                println!(
+                    "PVISOR_OBSERVATION_BENCH {}",
+                    serde_json::json!({
+                        "mode": mode, "size": size, "files": count, "round": round,
+                        "elapsed_ms": elapsed_ms,
+                        "scope": "host-warm-cache mechanism screening; clone excludes journal/policy/apply",
+                    })
+                );
+            }
+        }
+    }
+}
+
+#[cfg(test)]
+#[test]
+#[ignore = "manual paired directory-walk performance measurement"]
+fn directory_walk_paired_benchmark() {
+    use std::time::Instant;
+    let temp = tempfile::tempdir().unwrap();
+    for depth in [1, 8] {
+        let lower = temp.path().join(format!("lower-{depth}"));
+        let upper = temp.path().join(format!("upper-{depth}"));
+        let mut paths = Vec::new();
+        for group in 0..32 {
+            let mut parent = PathBuf::from(format!("d{group:02}"));
+            for level in 1..depth {
+                parent.push(format!("l{level}"));
+            }
+            fs::create_dir_all(lower.join(&parent)).unwrap();
+            for file in 0..64 {
+                let path = parent.join(format!("f{file:04}"));
+                fs::write(lower.join(&path), b"small-file-fixture").unwrap();
+                paths.push(path);
+            }
+        }
+        let core = OverlayCore::new(vec![lower], upper, None).unwrap();
+        // Check selected backing, stat fields and fresh parent identities
+        // before timing. The baseline runs the same walker without reuse.
+        for path in &paths {
+            let mut before = Vec::new();
+            let mut after = Vec::new();
+            let a = core
+                .resolve_metadata_walk::<false>(path, Some(&mut before), |_| Ok(()))
+                .unwrap()
+                .unwrap();
+            let b = core
+                .resolve_metadata_walk::<true>(path, Some(&mut after), |_| Ok(()))
+                .unwrap()
+                .unwrap();
+            assert_eq!(a.resolved.path, b.resolved.path);
+            assert_eq!(
+                (a.layer, a.metadata.ino(), a.metadata.len()),
+                (b.layer, b.metadata.ino(), b.metadata.len())
+            );
+            assert_eq!(before, after);
+        }
+        for round in 0..33 {
+            let order = if round % 2 == 0 {
+                [false, true]
+            } else {
+                [true, false]
+            };
+            for reuse in order {
+                let start = Instant::now();
+                for path in &paths {
+                    let mut parents = Vec::new();
+                    let entry = if reuse {
+                        core.resolve_metadata_walk::<true>(path, Some(&mut parents), |_| Ok(()))
+                    } else {
+                        core.resolve_metadata_walk::<false>(path, Some(&mut parents), |_| Ok(()))
+                    }
+                    .unwrap()
+                    .unwrap();
+                    std::hint::black_box((entry, parents));
+                }
+                println!(
+                    "PVISOR_WALK_BENCH {}",
+                    serde_json::json!({
+                        "depth": depth, "files": paths.len(), "round": round,
+                        "warmup": round < 3, "reuse": reuse,
+                        "elapsed_ms": start.elapsed().as_secs_f64() * 1000.0,
+                        "scope": "paired Core resolution only, warm cache, no guest/VM/journal",
+                    })
+                );
+            }
+        }
+    }
 }

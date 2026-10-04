@@ -539,19 +539,15 @@ impl OverlayFs {
     }
 
     fn open_path(&self, path: &Path, flags: i32) -> io::Result<File> {
-        if self.core.metadata(path)?.file_type().is_symlink() {
-            return Err(io::Error::from_raw_os_error(libc::ELOOP));
-        }
         let writing = flags & libc::O_ACCMODE != libc::O_RDONLY
             || flags & (libc::O_APPEND | libc::O_TRUNC) != 0;
         let real = if writing {
+            if self.core.metadata(path)?.file_type().is_symlink() {
+                return Err(io::Error::from_raw_os_error(libc::ELOOP));
+            }
             self.core.copy_up(path)?
         } else {
-            self.core.observe_read(path)?;
-            self.core
-                .resolve(path)
-                .ok_or_else(|| io::Error::from_raw_os_error(libc::ENOENT))?
-                .path
+            self.core.prepare_file_read(path)?.resolved.path
         };
         let access_mode = flags & libc::O_ACCMODE;
         let mut options = OpenOptions::new();

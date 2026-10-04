@@ -59,11 +59,12 @@ def trial(args, variant, case, batch, round_id):
         shutil.copytree(args.output / "fixture", work / "fixture")
     env = {k: os.environ[k] for k in ("PATH", "HOME", "TMPDIR") if k in os.environ}
     run_home = args.output / "run-storage" / work.name
+    diagnostic_timing = getattr(args, "diagnostic_timing", False)
     env.update(
         PVISOR_RUN_HOME=str(run_home),
         XDG_CONFIG_HOME=str(work / "config-home"),
-        PVISOR_STARTUP_TIMING="0",
-        PVISOR_PERSISTENCE_TIMING="0",
+        PVISOR_STARTUP_TIMING="1" if diagnostic_timing else "0",
+        PVISOR_PERSISTENCE_TIMING="1" if diagnostic_timing else "0",
     )
     command = [
         str(getattr(args, variant)),
@@ -218,6 +219,11 @@ def main():
     parser.add_argument("--batches", type=int, default=3)
     parser.add_argument("--cases", default=",".join(CASES))
     parser.add_argument("--regression-threshold", type=float, default=15)
+    parser.add_argument("--seed", type=int, default=20261004)
+    parser.add_argument(
+        "--diagnostic-timing", action="store_true",
+        help="retain CLI startup/persistence stage timings; report as an instrumented diagnostic",
+    )
     args = parser.parse_args()
     if platform.system() != "Darwin" or platform.machine() != "arm64":
         parser.error("requires Apple Silicon/HVF")
@@ -245,7 +251,8 @@ def main():
             warmups=args.warmups,
             batches=args.batches,
             threshold_percent=args.regression_threshold,
-            seed=20261004,
+            seed=args.seed,
+            diagnostic_timing=args.diagnostic_timing,
             exit_timer="blocking wait thread; timeout only on completion event",
             host_cache="warm; no eviction",
             cases={k: CASES[k] for k in selected},
@@ -263,7 +270,7 @@ def main():
         },
     )
     (args.output / "metadata.json").write_text(json.dumps(metadata, indent=2) + "\n")
-    rng, rows = random.Random(20261004), []
+    rng, rows = random.Random(args.seed), []
     with (args.output / "samples.jsonl").open("w") as log:
         for batch in range(args.batches):
             for round_id in range(-args.warmups, args.samples):

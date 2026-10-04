@@ -2249,6 +2249,16 @@ impl FileSystem for PassthroughFs {
     }
 }
 
+impl PassthroughFs {
+    pub(crate) fn lookup_mount_id(&self, inode: u64) -> Option<u64> {
+        self.inodes
+            .read()
+            .unwrap()
+            .get(&inode)
+            .map(|data| data.mnt_id)
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;

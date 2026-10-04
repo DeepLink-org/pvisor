@@ -297,6 +297,16 @@ pub fn verify_tree(root: &Path, expected: &TreeInventory) -> anyhow::Result<()> 
 /// validate both trees; cloning does not make verification constant-time.
 /// Only the caller's unpublished destination is removed on any failure.
 pub fn copy_owned_tree(source: &Path, destination: &Path) -> anyhow::Result<TreeInventory> {
+    copy_owned_tree_checked(source, destination, None)
+}
+
+/// Reuse the source inventory pass to validate a saved manifest before creating
+/// the destination. Post-copy source and destination verification stays intact.
+fn copy_owned_tree_checked(
+    source: &Path,
+    destination: &Path,
+    expected: Option<&TreeInventory>,
+) -> anyhow::Result<TreeInventory> {
     ensure!(
         fs::symlink_metadata(source)?.is_dir(),
         "source root must not be a symlink"
@@ -311,6 +321,9 @@ pub fn copy_owned_tree(source: &Path, destination: &Path) -> anyhow::Result<Tree
         "destination lies inside source tree"
     );
     let before = inventory(&source)?;
+    if let Some(expected) = expected {
+        ensure!(before == *expected, "filesystem inventory mismatch");
+    }
     fs::create_dir(destination)?;
     let result = (|| {
         fn copy(
@@ -396,4 +409,37 @@ pub fn copy_owned_tree(source: &Path, destination: &Path) -> anyhow::Result<Tree
         fs::remove_dir_all(destination).context("failed to remove incomplete tree")?;
     }
     result
+}
+
+#[cfg(test)]
+mod checked_copy_tests {
+    use super::*;
+
+    #[test]
+    fn checked_copy_rejects_changed_content_before_creating_destination() {
+        let temp = tempfile::tempdir().unwrap();
+        let source = temp.path().join("source");
+        let destination = temp.path().join("destination");
+        fs::create_dir(&source).unwrap();
+        fs::write(source.join("file"), b"original").unwrap();
+        let expected = inventory(&source).unwrap();
+        fs::write(source.join("file"), b"modified").unwrap();
+        assert!(copy_owned_tree_checked(&source, &destination, Some(&expected)).is_err());
+        assert!(!destination.exists());
+    }
+
+    #[test]
+    fn checked_copy_preserves_manifest_and_independent_destination() {
+        let temp = tempfile::tempdir().unwrap();
+        let source = temp.path().join("source");
+        let destination = temp.path().join("destination");
+        fs::create_dir(&source).unwrap();
+        fs::write(source.join("file"), b"original").unwrap();
+        let expected = inventory(&source).unwrap();
+        let copied = copy_owned_tree_checked(&source, &destination, Some(&expected)).unwrap();
+        assert_eq!(copied, expected);
+        verify_tree(&destination, &expected).unwrap();
+        fs::write(source.join("file"), b"modified").unwrap();
+        assert_eq!(fs::read(destination.join("file")).unwrap(), b"original");
+    }
 }

@@ -14,7 +14,7 @@ use std::sync::atomic::{AtomicU64, Ordering};
 use std::sync::{Arc, Mutex};
 use std::time::Duration;
 
-use pvisor_overlay_core::OverlayCore;
+use pvisor_overlay_core::{BackingIdentity, BackingResolution, OverlayCore};
 
 use super::super::linux_errno::linux_error;
 use super::bindings;
@@ -27,6 +27,7 @@ use super::inode_alloc::InodeAllocator;
 use super::passthrough::{self, PassthroughFs};
 
 const TTL: Duration = Duration::from_secs(1);
+const DIRECTORY_CACHE_CAPACITY: usize = 256;
 const RENAME_NOREPLACE: u32 = 1;
 const RENAME_EXCHANGE: u32 = 2;
 
@@ -302,6 +303,18 @@ impl OverlaySnapshot {
     }
 }
 
+struct CachedDirectory {
+    identity: BackingIdentity,
+    inode: u64,
+    used: u64,
+}
+
+#[derive(Default)]
+struct DirectoryCache {
+    entries: HashMap<(usize, PathBuf), CachedDirectory>,
+    clock: u64,
+}
+
 pub struct OverlayFs {
     profile: pvisor_overlay_core::profile::Profile,
     // ponytail: serialize requests so guest renames cannot race path checks/open;
@@ -311,6 +324,9 @@ pub struct OverlayFs {
     snapshot_config: Config,
     roots: Vec<PathBuf>,
     layers: Vec<PassthroughFs>,
+    // Owns one lookup reference per entry, never attributes or policy results.
+    // Checked against fresh Core parent identities before every use.
+    directory_cache: Mutex<DirectoryCache>,
     inode_alloc: Arc<InodeAllocator>,
     nodes: Mutex<Nodes>,
     handles: Mutex<HashMap<u64, Handle>>,
@@ -382,6 +398,7 @@ impl OverlayFs {
             snapshot_config: cfg,
             roots,
             layers,
+            directory_cache: Mutex::new(DirectoryCache::default()),
             inode_alloc,
             nodes: Mutex::new(nodes),
             handles: Mutex::new(HashMap::new()),
@@ -473,21 +490,103 @@ impl OverlayFs {
     }
 
     fn inner_entry(&self, layer: Layer, path: &Path, ctx: Context) -> io::Result<Entry> {
+        self.inner_entry_with_parents(layer, path, ctx, &[])
+    }
+
+    fn inner_entry_with_parents(
+        &self,
+        layer: Layer,
+        path: &Path,
+        ctx: Context,
+        parents: &[BackingIdentity],
+    ) -> io::Result<Entry> {
         let _span = self.profile.span("inner_inode");
         let fs = &self.layers[layer.0];
         let mut inode = fuse::ROOT_ID;
+        let mut temporary_reference = false;
         let mut result = None;
-        for component in path.components() {
+        let mut prefix = PathBuf::new();
+        let mut cache = (!parents.is_empty()
+            && parents.len() + 1 == path.components().count()
+            && parents
+                .iter()
+                .all(|identity| cfg!(target_os = "macos") || identity.mount_id.is_some()))
+        .then(|| self.directory_cache.lock().unwrap());
+        for (index, component) in path.components().enumerate() {
+            let key = if cache.is_some() && index < parents.len() {
+                prefix.push(component.as_os_str());
+                Some((layer.0, prefix.clone()))
+            } else {
+                None
+            };
+            if let (Some(cache), Some(identity), Some(key)) =
+                (&mut cache, parents.get(index), key.as_ref())
+            {
+                cache.clock = cache.clock.saturating_add(1);
+                let used = cache.clock;
+                if let Some(directory) = cache
+                    .entries
+                    .get_mut(key)
+                    .filter(|directory| directory.identity == *identity)
+                {
+                    if temporary_reference {
+                        fs.forget(ctx, inode, 1);
+                    }
+                    inode = directory.inode;
+                    directory.used = used;
+                    temporary_reference = false;
+                    self.profile.add("directory_cache_hits", 1);
+                    continue;
+                }
+                if let Some(stale) = cache.entries.remove(key) {
+                    fs.forget(ctx, stale.inode, 1);
+                    self.profile.add("directory_cache_invalidations", 1);
+                }
+                self.profile.add("directory_cache_misses", 1);
+            }
             let name = CString::new(component.as_os_str().as_bytes())?;
             let entry = {
                 let _span = self.profile.span("backing_lookup");
                 fs.lookup(ctx, inode, &name)
             };
-            if inode != fuse::ROOT_ID {
+            if temporary_reference {
                 fs.forget(ctx, inode, 1);
             }
             let entry = entry?;
             inode = entry.inode;
+            temporary_reference = inode != fuse::ROOT_ID;
+            let matching_parent = parents.get(index).filter(|identity| {
+                cache.is_some()
+                    && **identity
+                        == BackingIdentity {
+                            device: entry.attr.st_dev as _,
+                            inode: entry.attr.st_ino as _,
+                            mount_id: fs.lookup_mount_id(inode),
+                        }
+            });
+            if let (Some(cache), Some(identity), Some(key)) = (&mut cache, matching_parent, key) {
+                if cache.entries.len() == DIRECTORY_CACHE_CAPACITY {
+                    let oldest = cache
+                        .entries
+                        .iter()
+                        .min_by_key(|(_, directory)| directory.used)
+                        .map(|(key, _)| key.clone())
+                        .unwrap();
+                    let directory = cache.entries.remove(&oldest).unwrap();
+                    self.layers[oldest.0].forget(ctx, directory.inode, 1);
+                    self.profile.add("directory_cache_evictions", 1);
+                }
+                let used = cache.clock;
+                cache.entries.insert(
+                    key,
+                    CachedDirectory {
+                        identity: *identity,
+                        inode,
+                        used,
+                    },
+                );
+                temporary_reference = false;
+            }
             result = Some(entry);
         }
         if let Some(entry) = result {
@@ -508,15 +607,16 @@ impl OverlayFs {
         Ok(self.inner_entry(layer, path, ctx)?.inode)
     }
 
-    fn entry_on_layer(
+    fn entry_on_backing(
         &self,
         ctx: Context,
         path: &Path,
         inode: u64,
-        layer: Layer,
+        backing: &BackingResolution,
     ) -> io::Result<Entry> {
         let _span = self.profile.span("entry");
-        let mut entry = self.inner_entry(layer, path, ctx)?;
+        let layer = Layer(backing.entry.layer);
+        let mut entry = self.inner_entry_with_parents(layer, path, ctx, &backing.parents)?;
         if entry.inode != fuse::ROOT_ID {
             self.layers[layer.0].forget(ctx, entry.inode, 1);
         }
@@ -526,8 +626,26 @@ impl OverlayFs {
     }
 
     fn entry(&self, ctx: Context, path: &Path, inode: u64) -> io::Result<Entry> {
-        let resolved = self.core.metadata_resolved(path).map_err(linux_error)?;
-        self.entry_on_layer(ctx, path, inode, Layer(resolved.layer))
+        let backing = self
+            .core
+            .metadata_for_backing_lookup(path)
+            .map_err(linux_error)?;
+        self.entry_on_backing(ctx, path, inode, &backing)
+    }
+
+    fn clear_directory_cache(&self) {
+        let mut cache = self.directory_cache.lock().unwrap();
+        for ((layer, _), directory) in cache.entries.drain() {
+            self.layers[layer].forget(
+                Context {
+                    uid: 0,
+                    gid: 0,
+                    pid: 0,
+                },
+                directory.inode,
+                1,
+            );
+        }
     }
 
     fn writable_inner(&self, ctx: Context, path: &Path) -> io::Result<u64> {
@@ -576,6 +694,7 @@ impl OverlayFs {
 impl FileSystem for OverlayFs {
     fn capture_state(&self) -> io::Result<super::snapshot::FsSnapshot> {
         let _operation = self.operation_lock.lock().unwrap();
+        self.clear_directory_cache();
         self.profile.emit_checkpoint();
         self.core.emit_profile_checkpoint();
         let hard_links = self.core.capture_hard_links()?;
@@ -742,6 +861,7 @@ impl FileSystem for OverlayFs {
                 }
             }
         }
+        self.clear_directory_cache();
         for (layer, saved) in self.layers.iter().zip(&state.layers) {
             layer.restore_state(saved)?;
         }
@@ -782,6 +902,7 @@ impl FileSystem for OverlayFs {
     }
 
     fn destroy(&self) {
+        self.clear_directory_cache();
         self.handles.lock().unwrap().clear();
         for layer in &self.layers {
             layer.destroy();
@@ -795,9 +916,12 @@ impl FileSystem for OverlayFs {
             .lock()
             .map_err(|_| io::Error::from_raw_os_error(libc::EIO))?;
         let path = self.child(parent, name)?;
-        let resolved = self.core.metadata_resolved(&path).map_err(linux_error)?;
+        let backing = self
+            .core
+            .metadata_for_backing_lookup(&path)
+            .map_err(linux_error)?;
         let inode = self.allocate_inode(path.clone());
-        self.entry_on_layer(ctx, &path, inode, Layer(resolved.layer))
+        self.entry_on_backing(ctx, &path, inode, &backing)
     }
 
     fn getattr(
@@ -1034,29 +1158,43 @@ impl FileSystem for OverlayFs {
             .lock()
             .map_err(|_| io::Error::from_raw_os_error(libc::EIO))?;
         let path = self.path(inode)?;
-        // Symlinks are resolved by the guest through overlay lookups, never by
-        // the passthrough layer against an unfiltered lower directory.
-        if self
-            .core
-            .metadata(&path)
-            .map_err(linux_error)?
-            .file_type()
-            .is_symlink()
-        {
-            return Err(linux_error(io::Error::from_raw_os_error(libc::ELOOP)));
-        }
         let writing = flags as i32 & libc::O_ACCMODE != libc::O_RDONLY
             || flags as i32 & (libc::O_APPEND | libc::O_TRUNC) != 0;
-        let layer = if writing {
+        let (layer, inner) = if writing {
+            // Symlinks are resolved by guest lookups, never by passthrough.
+            if self
+                .core
+                .metadata(&path)
+                .map_err(linux_error)?
+                .file_type()
+                .is_symlink()
+            {
+                return Err(linux_error(io::Error::from_raw_os_error(libc::ELOOP)));
+            }
             self.core.copy_up(&path).map_err(linux_error)?;
-            Layer(0)
+            (Layer(0), self.inner_inode(Layer(0), &path, ctx)?)
         } else {
-            self.core.observe_read(&path).map_err(linux_error)?;
-            self.layer(&path)?
+            let backing = self
+                .core
+                .prepare_file_read_for_backing_lookup(&path)
+                .map_err(linux_error)?;
+            let layer = Layer(backing.entry.layer);
+            let inner = self
+                .inner_entry_with_parents(layer, &path, ctx, &backing.parents)?
+                .inode;
+            (layer, inner)
         };
-        let inner = self.inner_inode(layer, &path, ctx)?;
-        let (handle, options) = self.layers[layer.0].open(ctx, inner, kill_priv, flags)?;
-        let handle = handle.ok_or_else(|| io::Error::from_raw_os_error(libc::EIO))?;
+        let opened = self.layers[layer.0].open(ctx, inner, kill_priv, flags);
+        let (handle, options) = match opened {
+            Ok((Some(handle), options)) => (handle, options),
+            result => {
+                self.layers[layer.0].forget(ctx, inner, 1);
+                return match result {
+                    Err(error) => Err(error),
+                    _ => Err(io::Error::from_raw_os_error(libc::EIO)),
+                };
+            }
+        };
         let id = self.allocate_handle(Handle::File(FileHandle {
             overlay_inode: inode,
             layer,
@@ -1454,6 +1592,144 @@ impl FileSystem for OverlayFs {
 mod tests {
     use super::*;
 
+    fn parent_cache_fixture(root: &Path) -> OverlayFs {
+        let fs = OverlayFs::new(
+            Config {
+                lower_dirs: vec![root.join("lower").to_string_lossy().into_owned()],
+                apply_target: None,
+                baseline_lower: None,
+                upper_dir: root.join("upper").to_string_lossy().into_owned(),
+                work_dir: None,
+                preimage_dir: None,
+                excluded_paths: vec!["private".into()],
+                access_policy: pvisor_overlay_core::FileAccessPolicy::new(
+                    vec!["private/**".into()],
+                    vec![],
+                )
+                .unwrap(),
+                semantics: passthrough::PermissionSemantics::LinuxComplete,
+            },
+            Arc::new(InodeAllocator::new()),
+        )
+        .unwrap();
+        fs.init(FsOptions::empty()).unwrap();
+        fs
+    }
+
+    #[test]
+    fn cached_parents_follow_replacement_and_do_not_authorize_aliases() {
+        let temp = tempfile::tempdir().unwrap();
+        let lower = temp.path().join("lower");
+        std::fs::create_dir_all(lower.join("allowed")).unwrap();
+        std::fs::create_dir_all(lower.join("private")).unwrap();
+        std::fs::write(lower.join("allowed/file"), b"old").unwrap();
+        std::fs::write(lower.join("private/secret"), b"secret").unwrap();
+        let fs = parent_cache_fixture(temp.path());
+        let ctx = Context {
+            uid: 0,
+            gid: 0,
+            pid: 1,
+        };
+        let parent = fs.lookup(ctx, fuse::ROOT_ID, c"allowed").unwrap();
+        assert_eq!(
+            fs.lookup(ctx, parent.inode, c"file").unwrap().attr.st_size,
+            3
+        );
+        assert_eq!(fs.directory_cache.lock().unwrap().entries.len(), 1);
+        std::fs::rename(lower.join("allowed"), lower.join("old-allowed")).unwrap();
+        std::fs::create_dir(lower.join("allowed")).unwrap();
+        std::fs::write(lower.join("allowed/file"), b"replacement").unwrap();
+        let file = fs.lookup(ctx, parent.inode, c"file").unwrap();
+        assert_eq!(file.attr.st_size, 11);
+        std::fs::write(lower.join("allowed/file"), b"live attributes").unwrap();
+        assert_eq!(fs.getattr(ctx, file.inode, None).unwrap().0.st_size, 15);
+        std::fs::remove_file(lower.join("allowed/file")).unwrap();
+        std::fs::hard_link(lower.join("private/secret"), lower.join("allowed/file")).unwrap();
+        assert_eq!(
+            fs.lookup(ctx, parent.inode, c"file")
+                .err()
+                .expect("excluded hard-link alias must be denied")
+                .raw_os_error(),
+            Some(libc::EACCES)
+        );
+        std::fs::rename(lower.join("allowed"), lower.join("replaced-allowed")).unwrap();
+        std::os::unix::fs::symlink(lower.join("private"), lower.join("allowed")).unwrap();
+        assert!(fs.lookup(ctx, parent.inode, c"secret").is_err());
+    }
+
+    #[test]
+    fn cached_parents_are_bounded_and_released_before_snapshot() {
+        let temp = tempfile::tempdir().unwrap();
+        let lower = temp.path().join("lower");
+        std::fs::create_dir(&lower).unwrap();
+        let fs = parent_cache_fixture(temp.path());
+        let ctx = Context {
+            uid: 0,
+            gid: 0,
+            pid: 1,
+        };
+        for i in 0..DIRECTORY_CACHE_CAPACITY + 4 {
+            let name = format!("d{i}");
+            std::fs::create_dir(lower.join(&name)).unwrap();
+            std::fs::write(lower.join(&name).join("file"), b"data").unwrap();
+            let parent = fs
+                .lookup(ctx, fuse::ROOT_ID, &CString::new(name).unwrap())
+                .unwrap();
+            fs.lookup(ctx, parent.inode, c"file").unwrap();
+            assert!(fs.directory_cache.lock().unwrap().entries.len() <= DIRECTORY_CACHE_CAPACITY);
+        }
+        let snapshot = fs.capture_state().unwrap();
+        assert!(fs.directory_cache.lock().unwrap().entries.is_empty());
+        let restored =
+            OverlayFs::open_existing(fs.snapshot_config.clone(), Arc::new(InodeAllocator::new()))
+                .unwrap();
+        restored.init(FsOptions::empty()).unwrap();
+        restored.restore_state(&snapshot).unwrap();
+        let parent = restored.lookup(ctx, fuse::ROOT_ID, c"d0").unwrap();
+        assert_eq!(
+            restored
+                .lookup(ctx, parent.inode, c"file")
+                .unwrap()
+                .attr
+                .st_size,
+            4
+        );
+    }
+
+    #[test]
+    fn failed_file_opens_do_not_retain_native_lookup_references() {
+        let temp = tempfile::tempdir().unwrap();
+        std::fs::create_dir_all(temp.path().join("lower/dir")).unwrap();
+        std::fs::write(temp.path().join("lower/dir/file"), b"data").unwrap();
+        let fs = parent_cache_fixture(temp.path());
+        let ctx = Context {
+            uid: 0,
+            gid: 0,
+            pid: 1,
+        };
+        let entry = fs.lookup(ctx, fuse::ROOT_ID, c"dir").unwrap();
+        for _ in 0..16 {
+            assert!(fs
+                .open(ctx, entry.inode, false, libc::O_WRONLY as u32)
+                .is_err());
+        }
+        assert!(fs.handles.lock().unwrap().is_empty());
+        let super::super::snapshot::FsSnapshot::Overlay(snapshot) = fs.capture_state().unwrap()
+        else {
+            panic!("expected an overlay snapshot");
+        };
+        for layer in &snapshot.layers {
+            let super::super::snapshot::FsSnapshot::Passthrough(native) = layer else {
+                panic!("expected a native layer");
+            };
+            assert!(native.handles.is_empty());
+            assert!(native
+                .inodes
+                .iter()
+                .all(|inode| inode.inode == fuse::ROOT_ID));
+        }
+    }
+
     #[test]
     fn overlay_snapshot_preserves_the_unboxed_json_contract() {
         let state = OverlaySnapshot {
@@ -1768,18 +2044,33 @@ fn small_file_adapter_benchmark() {
     use std::time::Instant;
     let temp = tempfile::tempdir().unwrap();
     let lower = temp.path().join("lower");
+    let deep = temp.path().join("deep");
     for directory in 0..32 {
-        let root = lower.join(format!("d{directory:02}"));
-        std::fs::create_dir_all(&root).unwrap();
-        for file in 0..64 {
-            std::fs::write(root.join(format!("f{file:04}")), b"small-file-fixture").unwrap();
+        for root in [
+            lower.join(format!("d{directory:02}")),
+            deep.join(format!("d{directory:02}/a/b/c/d/e/f/g")),
+        ] {
+            std::fs::create_dir_all(&root).unwrap();
+            for file in 0..64 {
+                std::fs::write(root.join(format!("f{file:04}")), b"small-file-fixture").unwrap();
+            }
         }
     }
-    for case in ["lookup_getattr", "directory_plus"] {
+    for case in [
+        "lookup_getattr",
+        "lookup_open_getattr",
+        "deep_lookup_open_getattr",
+        "directory_plus",
+    ] {
         for trial in 0..11 {
+            let backing_root = if case == "deep_lookup_open_getattr" {
+                &deep
+            } else {
+                &lower
+            };
             let mut fs = OverlayFs::new(
                 Config {
-                    lower_dirs: vec![lower.to_string_lossy().into_owned()],
+                    lower_dirs: vec![backing_root.to_string_lossy().into_owned()],
                     apply_target: None,
                     baseline_lower: None,
                     upper_dir: temp
@@ -1810,13 +2101,41 @@ fn small_file_adapter_benchmark() {
             let mut count = 0;
             for directory in 0..32 {
                 let name = CString::new(format!("d{directory:02}")).unwrap();
-                let parent = fs.lookup(ctx, fuse::ROOT_ID, &name).unwrap();
-                if case == "lookup_getattr" {
+                let mut parent = fs.lookup(ctx, fuse::ROOT_ID, &name).unwrap();
+                if case == "deep_lookup_open_getattr" {
+                    for component in [c"a", c"b", c"c", c"d", c"e", c"f", c"g"] {
+                        parent = fs.lookup(ctx, parent.inode, component).unwrap();
+                    }
+                }
+                if case != "directory_plus" {
                     for file in 0..64 {
                         let name = CString::new(format!("f{file:04}")).unwrap();
                         let entry = fs.lookup(ctx, parent.inode, &name).unwrap();
-                        let (attr, _) = fs.getattr(ctx, entry.inode, None).unwrap();
+                        let handle =
+                            if matches!(case, "lookup_open_getattr" | "deep_lookup_open_getattr") {
+                                Some(
+                                    fs.open(ctx, entry.inode, false, libc::O_RDONLY as u32)
+                                        .unwrap()
+                                        .0
+                                        .expect("opened file must have a handle"),
+                                )
+                            } else {
+                                None
+                            };
+                        let (attr, _) = fs.getattr(ctx, entry.inode, handle).unwrap();
                         assert_eq!(attr.st_size, 18);
+                        if let Some(handle) = handle {
+                            fs.release(
+                                ctx,
+                                entry.inode,
+                                libc::O_RDONLY as u32,
+                                handle,
+                                false,
+                                false,
+                                None,
+                            )
+                            .unwrap();
+                        }
                         count += 1;
                     }
                 } else {

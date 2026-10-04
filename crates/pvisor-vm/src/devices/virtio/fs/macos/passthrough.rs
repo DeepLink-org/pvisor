@@ -3124,6 +3124,12 @@ impl FileSystem for PassthroughFs {
     }
 }
 
+impl PassthroughFs {
+    pub(crate) fn lookup_mount_id(&self, _inode: u64) -> Option<u64> {
+        None
+    }
+}
+
 #[cfg(test)]
 mod path_handle_tests {
     use super::*;
