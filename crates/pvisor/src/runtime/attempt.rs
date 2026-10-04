@@ -198,6 +198,10 @@ impl AttemptSession {
             .map(|_| self.run_record.clone())
     }
 
+    pub(crate) fn execution_snapshot_store(&self) -> PathBuf {
+        self.run_record.stage_dir().join("execution-snapshots")
+    }
+
     pub(crate) fn teardown(self, exit_code: Option<i32>, executed: bool) -> AttemptTeardown {
         self.teardown_inner(exit_code, executed)
     }

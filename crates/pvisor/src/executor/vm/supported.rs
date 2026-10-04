@@ -75,34 +75,34 @@ pub struct VmExecutor {
 }
 
 #[derive(Debug, Serialize, Deserialize)]
-struct RunnerSpec {
+pub(super) struct RunnerSpec {
     #[serde(default)]
-    run_id: String,
-    setup_attestation: PathBuf,
-    root: OverlayDeviceSpec,
-    workspace: Option<OverlayDeviceSpec>,
-    workspace_target: Option<PathBuf>,
-    guest: pvisor_guest::GuestConfig,
-    cpus: u8,
-    memory_mib: u32,
-    library_dir: Option<PathBuf>,
+    pub(super) run_id: String,
+    pub(super) setup_attestation: PathBuf,
+    pub(super) root: OverlayDeviceSpec,
+    pub(super) workspace: Option<OverlayDeviceSpec>,
+    pub(super) workspace_target: Option<PathBuf>,
+    pub(super) guest: pvisor_guest::GuestConfig,
+    pub(super) cpus: u8,
+    pub(super) memory_mib: u32,
+    pub(super) library_dir: Option<PathBuf>,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
-struct OverlayDeviceSpec {
-    lowers: Vec<PathBuf>,
+pub(super) struct OverlayDeviceSpec {
+    pub(super) lowers: Vec<PathBuf>,
     #[serde(default)]
-    apply_target: Option<PathBuf>,
+    pub(super) apply_target: Option<PathBuf>,
     #[serde(default)]
-    baseline_lower: Option<PathBuf>,
-    upper: PathBuf,
-    work: Option<PathBuf>,
+    pub(super) baseline_lower: Option<PathBuf>,
+    pub(super) upper: PathBuf,
+    pub(super) work: Option<PathBuf>,
     #[serde(default)]
-    preimages: Option<PathBuf>,
+    pub(super) preimages: Option<PathBuf>,
     #[serde(default)]
-    excluded: Vec<PathBuf>,
+    pub(super) excluded: Vec<PathBuf>,
     #[serde(default)]
-    access_policy: pvisor_core::overlay::FileAccessPolicy,
+    pub(super) access_policy: pvisor_core::overlay::FileAccessPolicy,
 }
 
 /// A host-root VM must not reach the same workspace through its original lower
