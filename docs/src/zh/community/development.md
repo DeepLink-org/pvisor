@@ -168,7 +168,7 @@ release 构建和隔离环境。网络/Gateway 示例在单独任务运行。
 ## VM guest 启动
 
 `pvisor-guest` 同时提供共享的 `GuestConfig` 库和 `pvisor-guest` 可执行文件。
-构建 libkrun 的 `init-blob` feature 时，`vendor/libkrun/build.rs` 使用 Rust 自带
+构建 `pvisor-vm` 的 `init-blob` feature 时，`crates/pvisor-vm/build.rs` 使用 Rust 自带
 `rust-lld`，按 VM 架构把 guest 编译成 release Linux musl ELF。
 独立的 `target/pvisor-guest/` 目录避免与外层 Cargo 构建争抢产物锁。
 libkrun 内嵌该 ELF，暴露为 `/init.krun`，由它担任 guest PID 1。
@@ -212,4 +212,12 @@ Linux CLI 全静态链接 musl 并内嵌 VM 内核。构建需要 Zig、cargo-zi
 发布流程见[发布 PolicyVisor](releasing.md)，运行时要求见[可复现示例](examples.md)。
 
 
-Vendored libkrun 在 1.19.3 基线上选择性回移植上游改进。来源提交、本地适配与验收限制见[上游同步记录](https://github.com/deeplink-org/pvisor/blob/main/vendor/libkrun/UPSTREAM.md)；版本号不代表已完整升级到 1.19.6 或 2.0。
+合并后的私有运行时模块在 libkrun 1.19.3 基线上选择性回移植上游改进。来源提交、本地适配与验收限制见[上游同步记录](https://github.com/deeplink-org/pvisor/blob/main/crates/pvisor-vm/provenance/libkrun/UPSTREAM.md)；版本号不代表已完整升级到 1.19.6 或 2.0。
+
+## VM API 边界
+
+`pvisor_vm::api` 是运行时唯一的外部接口。它声明跨平台 struct 和 trait 方法签名，不包含条件编译或方法体。私有模块实现契约；调用方导入需要的 `VmConfiguration`、`VmRuntime`、`VmControl` 以及快照/RAM trait。平台服务由 `VmPlatform` 的 `RuntimeSupport` 提供。
+
+CLI、shim、示例和 init 基准使用这套接口。寄存器/设备测试及硬件探针归属 `pvisor-vm` 内部。静态内核提取与打包已迁到 `crates/pvisor-vm/build_kernel.rs`；既有构建环境变量兼容。固件数据 ABI 和操作系统 FFI 保持私有。历史 trace/receipt 标识和基准证据保留原名。
+
+运行 `just test pvisor-vm`；macOS 使用既有 Hypervisor entitlement 签署其测试程序。真实 VM 测试需要宿主 HVF/KVM 权限；Linux 创建 VM 的测试需要 `/dev/kvm`。

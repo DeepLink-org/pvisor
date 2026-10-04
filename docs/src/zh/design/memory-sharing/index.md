@@ -157,10 +157,10 @@ RAM inventory 的主要字段为 `pid`、`timestamp_ns`、`page_bytes`、`query_
 | `crates/pvisor/src/ram_backing/resident.rs` | `identity`、`intern`、`restore`、`collect_one` |
 | `crates/pvisor/src/ram_backing/ipc.rs` | `serve`、`DeadlineStream`、`PoolClient` |
 | `crates/pvisor/src/executor/vm/pager.rs` | `sample`、`fault`、`device_prepare`、`start_if_requested` |
-| `vendor/krun-vmm/src/ram.rs` | `RamBlock` 的 observe / discard / reclaim_file / restore |
-| `vendor/libkrun/src/lib.rs` | `with_ram_quiesced`、offload 互斥 |
-| `vendor/krun-hvf/src/lib.rs` | RAM fault 在 MMIO 前的分流与指令重试 |
-| `vendor/krun-devices/src/virtio/memory_gate.rs` | 设备准备与访问 lease |
+| `crates/pvisor-vm/src/vmm/ram.rs` | `RamBlock` 的 observe / discard / reclaim_file / restore |
+| `crates/pvisor-vm/src/handle.rs` | `with_ram_quiesced`、offload 互斥 |
+| `crates/pvisor-vm/src/hvf/mod.rs` | RAM fault 在 MMIO 前的分流与指令重试 |
+| `crates/pvisor-vm/src/devices/virtio/memory_gate.rs` | 设备准备与访问 lease |
 | `crates/pvisor/src/ram_backing/inventory.rs` | 映射页诊断与完整查询重试 |
 
 ## 4. 实验数据支撑 {#experiments}

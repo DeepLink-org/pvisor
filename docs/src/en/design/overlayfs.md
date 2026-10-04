@@ -170,7 +170,7 @@ Selective completion leaves the Overlay Staged when changes remain and Applied w
 
 Pending apply prevents drop from destroying recovery data. Drop is idempotent for Discarded and cannot undo Applied. It clears upper/work and saves Discarded; merged cleanup only removes an empty placeholder rather than recursively traversing a possible mount. Callers must stop writers and unmount first. The Core API's Active branch does not replace Attempt leases and lifecycle coordination.
 
-Host `pvisor-overlayfs` adapts FUSE requests, inode/handle ownership and permissions to the shared core. Its adapter handles Linux FUSE and macFUSE kernel/FSKit mounting restrictions. The repository defaults to fskit on its FSKit entry path and rejects macFUSE versions below 5.4.0 through the implemented guard. VM `vendor/krun-devices/src/virtio/fs/overlay.rs` uses the same Core through guest virtio-fs, without a host FUSE union mount. Guest errno translation, queues and handle lifetime belong to that adapter.
+Host `pvisor-overlayfs` adapts FUSE requests, inode/handle ownership and permissions to the shared core. Its adapter handles Linux FUSE and macFUSE kernel/FSKit mounting restrictions. The repository defaults to fskit on its FSKit entry path and rejects macFUSE versions below 5.4.0 through the implemented guard. VM `crates/pvisor-vm/src/devices/virtio/fs/overlay.rs` uses the same Core through guest virtio-fs, without a host FUSE union mount. Guest errno translation, queues and handle lifetime belong to that adapter.
 
 Shared Core does not imply identical POSIX return behavior across backends. Staging contracts still record macOS symlink creation S-STAGE-013 XFAIL. Core tests cannot replace real mount checks.
 

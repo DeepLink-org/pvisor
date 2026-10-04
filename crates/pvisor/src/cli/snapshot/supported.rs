@@ -3,13 +3,14 @@ use crate::environment_snapshot::{
     Compatibility, SnapshotRamMount, SnapshotStore, copy_owned_tree, file_hash,
 };
 use anyhow::{Context, ensure};
-use devices::snapshot::BusDeviceSnapshot;
-use krun_vmm::snapshot::{MachineRestore, MachineSnapshot};
 use pvisor_guest::GuestConfig;
+use pvisor_vm::api::{MachineRestore, MachineSnapshot};
+use pvisor_vm::api::{RuntimeSupport, VmConfiguration, VmRuntime};
+use pvisor_vm::api::{SnapshotCapture, SnapshotControl, SnapshotState, VmControl};
 use serde::{Deserialize, Serialize};
 use sha2::{Digest, Sha256};
 use std::{
-    ffi::{CString, OsStr},
+    ffi::OsStr,
     fs::{self, OpenOptions},
     io::{Read, Write},
     os::unix::{
@@ -109,10 +110,6 @@ fn exclusions() -> Vec<String> {
     .map(str::to_owned)
     .into()
 }
-fn check(value: i32) -> anyhow::Result<()> {
-    ensure!(value >= 0, "libkrun error {value}");
-    Ok(())
-}
 fn store_path(value: Option<PathBuf>) -> anyhow::Result<PathBuf> {
     let path = value.unwrap_or(
         dirs::data_local_dir()
@@ -166,9 +163,10 @@ fn control_socket(directory: &Path) -> anyhow::Result<PathBuf> {
 fn compatibility(firmware: &Path) -> anyhow::Result<Compatibility> {
     #[cfg(all(target_os = "linux", target_env = "musl", target_arch = "x86_64"))]
     let firmware_hash = {
-        use crate::executor::vm::embedded_kernel;
         let _ = firmware;
-        Sha256::digest(embedded_kernel::KERNEL.as_slice())
+        let kernel =
+            pvisor_vm::api::VmPlatform::embedded_kernel().context("static VM kernel is missing")?;
+        Sha256::digest(&kernel.bytes)
             .iter()
             .map(|byte| format!("{byte:02x}"))
             .collect()
@@ -384,14 +382,9 @@ fn runner(spec: Launch) -> anyhow::Result<()> {
             "snapshot launch contract mismatch"
         );
         let old = Path::new(OsStr::from_bytes(&snapshot.manifest().source_root));
-        let mut tag = [0; 36];
-        tag[..9].copy_from_slice(b"/dev/root");
-        let mut count = 0;
-        for mapping in &mut saved.state.devices {
-            if let BusDeviceSnapshot::Virtio(device) = &mut mapping.device {
-                count += usize::from(device.rebind_filesystem_copy(&tag, old, &root)?);
-            }
-        }
+        let count = saved
+            .state
+            .rebind_filesystem_copy("/dev/root", old, &root)?;
         ensure!(count == 1, "snapshot requires one root filesystem");
         let (mut mount, ram_file) = SnapshotRamMount::new(snapshot.ram_reader()?, &spec.directory)
             .context("mount on-demand snapshot RAM")?;
@@ -408,51 +401,26 @@ fn runner(spec: Launch) -> anyhow::Result<()> {
     let _socket_watchdog = SocketWatchdog::start(&spec.directory)?;
     // Instance names are single-use; no stale socket is removed or rebound.
     let listener = UnixListener::bind(&socket)?;
-    check(krun::krun_set_log_level(1))?;
-    let ctx = krun::krun_create_ctx();
-    check(ctx)?;
-    let ctx = ctx as u32;
-    check(krun::krun_set_vm_config(ctx, spec.cpus, spec.memory))?;
-    #[cfg(all(target_os = "linux", target_env = "musl", target_arch = "x86_64"))]
-    {
-        use crate::executor::vm::embedded_kernel;
-        check(unsafe {
-            krun::krun_set_embedded_kernel(
-                ctx,
-                embedded_kernel::KERNEL.as_ptr(),
-                embedded_kernel::KERNEL.len(),
-                embedded_kernel::GUEST_ADDR,
-                embedded_kernel::ENTRY_ADDR,
-            )
-        })?;
-    }
-    check(krun::krun_set_snapshot_profile(ctx))?;
+    pvisor_vm::api::VmPlatform::init_logging("error");
+    let mut vm = pvisor_vm::api::VmBuilder::new(spec.cpus, spec.memory)?;
+    vm.snapshot_profile()?;
     if spec.guest.is_none() {
-        check(krun::krun_disable_implicit_init(ctx))?;
+        vm.disable_implicit_init()?;
     }
-    check(krun::krun_disable_implicit_vsock(ctx))?;
-    check(krun::krun_add_vsock(ctx, 0))?;
-    let native = CString::new(root.as_os_str().as_bytes())?;
-    check(unsafe { krun::krun_add_virtiofs2(ctx, c"/dev/root".as_ptr(), native.as_ptr(), 0) })?;
-    // libkrun borrows virtual file bytes for the VM lifetime.
-    let guest_bytes = spec.guest.as_ref().map(serde_json::to_vec).transpose()?;
-    if let Some(bytes) = &guest_bytes {
-        check(unsafe {
-            krun::krun_fs_add_overlay_file(
-                ctx,
-                c"/dev/root".as_ptr(),
-                c"/.pvisor-guest.json".as_ptr(),
-                bytes.as_ptr(),
-                bytes.len(),
-                0o400,
-                true,
-            )
-        })?;
+    vm.filesystem("/dev/root", &root, 0)?;
+    if let Some(guest) = &spec.guest {
+        vm.virtual_file(
+            "/dev/root",
+            "/.pvisor-guest.json",
+            serde_json::to_vec(guest)?,
+            0o400,
+            true,
+        )?;
     }
     if let Some(state) = restore {
-        krun::krun_set_machine_restore(ctx, state).map_err(anyhow::Error::msg)?;
+        vm.machine_restore(state)?;
     }
-    let result = check(krun::krun_start_enter_with_handle(ctx, move |handle| {
+    let result = vm.run(move |handle| {
         // Preparation is complete and the pager owns its independent pins.
         // Release the store gate before the first resumed guest heartbeat.
         drop(published);
@@ -519,7 +487,7 @@ fn runner(spec: Launch) -> anyhow::Result<()> {
             }
         });
         Ok(())
-    }));
+    });
     drop(ram_mount);
-    result
+    result.map_err(Into::into)
 }

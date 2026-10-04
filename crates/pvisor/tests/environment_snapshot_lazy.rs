@@ -3,6 +3,7 @@
     all(target_os = "linux", target_arch = "x86_64")
 ))]
 use pvisor::environment_snapshot::{Compatibility, SnapshotStore};
+use pvisor_vm::api::RestoreState;
 use std::{fs, io::Write};
 
 fn compatibility() -> Compatibility {
@@ -243,8 +244,8 @@ fn lazy_restore_rejects_invalid_index_lengths_digests_and_format_combinations() 
 #[test]
 #[ignore = "requires /dev/fuse or macFUSE; run with nextest --run-ignored only"]
 fn fuse_faults_restore_ram_and_private_mappings_isolate_forks() {
-    use krun_vmm::snapshot::{MachineRestore, MachineSnapshot, RamMappingSnapshot};
     use pvisor::environment_snapshot::SnapshotRamMount;
+    use pvisor_vm::api::{MachineRestore, MachineSnapshot};
     use std::sync::Arc;
     use vm_memory::{Bytes, GuestAddress};
     for compressed in [false, true] {
@@ -262,20 +263,11 @@ fn fuse_faults_restore_ram_and_private_mappings_isolate_forks() {
             .unwrap();
         let restore = MachineRestore {
             ram_file: Arc::new(file),
-            state: MachineSnapshot {
-                version: 1,
-                cpus: vec![],
-                devices: vec![],
-                #[cfg(target_os = "linux")]
-                kvm: None,
-                #[cfg(target_os = "linux")]
-                pio_devices: vec![],
-                ram: vec![RamMappingSnapshot {
-                    base: 0,
-                    len: bytes.len() as u64,
-                    file_offset: 0,
-                }],
-            },
+            state: serde_json::from_value::<MachineSnapshot>(serde_json::json!({
+                "version": 1, "cpus": [], "devices": [],
+                "ram": [{ "base": 0, "len": bytes.len(), "file_offset": 0 }]
+            }))
+            .unwrap(),
         };
         let first = restore.map_ram(&[(GuestAddress(0), bytes.len())]).unwrap();
         let second = restore.map_ram(&[(GuestAddress(0), bytes.len())]).unwrap();

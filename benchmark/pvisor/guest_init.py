@@ -1,5 +1,5 @@
 #!/usr/bin/env python3
-"""Compare C and Rust init under an identical signed libkrun/HVF host runner.
+"""Compare C and Rust init under an identical signed pvisor-vm/HVF host runner.
 
 Requires a prepared Alpine aarch64 rootfs, the previous static C init binary,
 and macOS libkrunfw. Outputs raw interleaved timings plus summary statistics.
@@ -64,57 +64,13 @@ def main():
         ],
         check=True,
     )
-    build = subprocess.run(
-        [
-            "cargo",
-            "build",
-            "--release",
-            "--lib",
-            "--locked",
-            "-p",
-            "pvisor",
-            "--message-format=json",
-        ],
+    subprocess.run(
+        ["cargo", "build", "--release", "--example", "guest_init_bench", "--locked", "-p", "pvisor"],
         cwd=root,
-        stdout=subprocess.PIPE,
-        text=True,
         check=True,
     )
-    libraries = {}
-    for line in build.stdout.splitlines():
-        item = json.loads(line)
-        if item.get("reason") == "compiler-artifact":
-            for filename in item["filenames"]:
-                if filename.endswith(".rlib"):
-                    libraries[item["target"]["name"]] = filename
     rust_init = root / "target/pvisor-guest/aarch64-unknown-linux-musl/release/pvisor-guest"
-    runner = output / "runner"
-    compile_env = dict(
-        os.environ,
-        PVISOR_BENCH_C_INIT=str(args.c_init.resolve()),
-        PVISOR_BENCH_RUST_INIT=str(rust_init),
-    )
-    command = [
-        "rustc",
-        "--edition",
-        "2024",
-        "-C",
-        "opt-level=z",
-        "-C",
-        "codegen-units=8",
-        "-C",
-        "panic=abort",
-        "-C",
-        "lto=thin",
-        str(Path(__file__).with_suffix(".rs")),
-        "-L",
-        f"dependency={Path(libraries['krun']).parent}",
-        "-o",
-        str(runner),
-    ]
-    for name in ["krun", "pvisor_overlaynet", "pvisor_core"]:
-        command += ["--extern", f"{name}={libraries[name]}"]
-    subprocess.run(command, env=compile_env, check=True)
+    runner = root / "target/release/examples/guest_init_bench"
     subprocess.run(
         [
             "codesign",
@@ -179,7 +135,7 @@ def main():
                     mode,
                     net,
                     str(rootfs),
-                    "embedded",
+                    str(args.c_init.resolve() if init == "c" else rust_init),
                     str(configs[(init, mode, net)]),
                     str(workspace),
                 ],

@@ -7,11 +7,6 @@ edition.workspace = true
 authors.workspace = true
 license.workspace = true
 
-build = "../pvisor/build.rs"
-
-[build-dependencies]
-libloading.workspace = true
-
 [lib]
 name = "pvisor_shim"
 path = "src/lib.rs"
@@ -35,13 +30,13 @@ thiserror = { workspace = true }
 async-trait = { workspace = true }
 containerd-shim = { workspace = true, features = ["async"] }
 containerd-shim-protos = { workspace = true, features = ["sandbox"] }
-libkrun = { workspace = true, optional = true }
+pvisor-vm = { workspace = true, optional = true }
 tokio = { workspace = true, features = ["macros", "rt", "sync", "time"] }
 
 [features]
-# libkrun microVM executor. Off by default: linking libkrun requires the
-# vendored VMM toolchain and a libkrunfw kernel on the host.
-vm = ["libkrun"]
+# pvisor-vm microVM executor. Off by default: linking pvisor-vm requires the
+# VM toolchain and a libkrunfw kernel (embedded in static builds).
+vm = ["pvisor-vm"]
 
 [dev-dependencies]
 tempfile = { workspace = true }

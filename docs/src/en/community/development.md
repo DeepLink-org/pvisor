@@ -142,7 +142,7 @@ The shared setup action installs only Python, uv and just by default. Rust, next
 
 ## VM guest startup
 
-`pvisor-guest` provides the shared `GuestConfig` library and the `pvisor-guest` executable. With libkrun's `init-blob` feature, `vendor/libkrun/build.rs` uses Rust's `rust-lld` to build a release Linux musl ELF for the VM architecture. Separate `target/pvisor-guest/` avoids competing with the outer Cargo artifact lock. libkrun embeds the ELF as `/init.krun`, which becomes guest PID 1.
+`pvisor-guest` provides the shared `GuestConfig` library and the `pvisor-guest` executable. With `pvisor-vm`'s `init-blob` feature, `crates/pvisor-vm/build.rs` uses Rust's `rust-lld` to build a release Linux musl ELF for the VM architecture. Separate `target/pvisor-guest/` avoids competing with the outer Cargo artifact lock. `pvisor-vm` embeds the ELF as `/init.krun`, which becomes guest PID 1.
 
 CLI/shim inject `/.pvisor-guest.json` containing argv, environment, cwd, workspace mounts, limits, optional networking and shim agent arguments. The supervisor initializes guest filesystems/console I/O, mounts the workspace, configures networking, launches the workload directly and reaps children. On exit, it reports the workload exit code using libkrun's private rootfs ioctl `0x7602`, then syncs/reboots. Nonzero exit fails the Attempt; normal VM shutdown without a reported code fails with 125.
 
@@ -160,7 +160,7 @@ Use the stable toolchain from `rust-toolchain.toml`, default LLVM backend and pl
 | --- | --- | --- |
 | Host CLI | Static Linux musl ELF | Native Darwin executable with HVF entitlement |
 | Embedded guest | Static Linux musl ELF | Static Linux musl ELF |
-| libkrun | Statically linked Rust library | Statically linked Rust library |
+| pvisor-vm | Single Rust runtime crate | Single Rust runtime crate |
 | Guest kernel | Embedded at build time | Runtime-loaded `libkrunfw.5.dylib` |
 
 `CARGO_TARGET_DIR` selects native build output shared by build/install/smoke/examples/cases. Wheel verification uses a fresh staging directory so old `dist/` packages cannot be mistaken for new artifacts. Linux CLI links musl statically and embeds the VM kernel. Building requires Zig, cargo-zigbuild and `rustup target add x86_64-unknown-linux-musl`. Linux wheels retain manylinux_2_28 for glibc Python installers.
@@ -170,4 +170,12 @@ Documentation tasks use an isolated uv environment with the same pinned Zensical
 See [Release process](releasing.md) and [Reproducible examples](examples.md) for releases/runtime requirements.
 
 
-Vendored libkrun uses a 1.19.3 base with selected upstream backports. See the [upstream synchronization ledger](https://github.com/deeplink-org/pvisor/blob/main/vendor/libkrun/UPSTREAM.md) for source commits, local adaptations and validation limits; the version number does not imply a complete 1.19.6 or 2.0 upgrade.
+The merged private runtime modules use a libkrun 1.19.3 base with selected upstream backports. See the [upstream synchronization ledger](https://github.com/deeplink-org/pvisor/blob/main/crates/pvisor-vm/provenance/libkrun/UPSTREAM.md) for source commits, local adaptations and validation limits; the version number does not imply a complete 1.19.6 or 2.0 upgrade.
+
+## VM API boundary
+
+`pvisor_vm::api` is the sole external runtime interface. It declares portable structs and trait signatures with no conditional compilation or method bodies. Private modules implement the contracts; consumers import `VmConfiguration`, `VmRuntime`, `VmControl` and the snapshot/RAM traits they use. Platform services use `RuntimeSupport` on `VmPlatform`.
+
+CLI, shim, examples and the init benchmark use this interface. Low-level register/device tests and hardware probes belong inside `pvisor-vm`. Static kernel extraction/packing now lives in `crates/pvisor-vm/build_kernel.rs`; its existing build environment variables remain compatible. Firmware data ABI and OS FFI remain private. Historical trace/receipt identifiers and benchmark evidence retain their original names.
+
+Run `just test pvisor-vm`; macOS signs its test executables with the existing Hypervisor entitlement. Real VM tests require host HVF/KVM access; Linux VM-creation tests require `/dev/kvm`.

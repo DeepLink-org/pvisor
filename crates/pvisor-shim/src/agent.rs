@@ -1,7 +1,7 @@
-//! The guest agent protocol: exec processes inside libkrun VMs.
+//! The guest agent protocol: exec processes inside pVisor VMs.
 //!
 //! Transport: one vsock connection per exec. The shim (host) connects to a
-//! unix socket that libkrun proxies into the VM (`krun_add_vsock_port2`
+//! unix socket that pvisor-vm proxies into the VM (`VmConfiguration::vsock_port`
 //! with `listen = true`); the agent (guest) listens on the vsock port and
 //! serves each connection with one exec'd process.
 //!

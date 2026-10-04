@@ -42,4 +42,4 @@ The following configure the guest kernel embedded **at build time** in Linux x86
 | `PVISOR_KRUNFW_KERNEL_BUNDLE` | Directory containing `kernel.bin` and `kernel.json` | Takes precedence when set |
 | `PVISOR_KRUNFW_PATH` | `libkrunfw.so.5` file from which to extract the kernel | Used when the bundle is unset |
 
-Rebuild the CLI after changing these inputs. Setting them while running an already-built musl binary does not replace its embedded kernel. See [Platform support](platforms.md) for dynamic firmware entry points and platform requirements. The build implementation is `crates/pvisor/build.rs`.
+Rebuild the CLI after changing these inputs. Setting them while running an already-built musl binary does not replace its embedded kernel. See [Platform support](platforms.md) for dynamic firmware entry points and platform requirements. The build implementation is `crates/pvisor-vm/build_kernel.rs`.

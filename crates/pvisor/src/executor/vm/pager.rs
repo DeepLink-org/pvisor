@@ -5,6 +5,7 @@ use crate::ram_backing::{
     BLOCK_BYTES,
     ipc::{PoolClient, PoolStats, RemoteObject},
 };
+use pvisor_vm::api::{ColdRamControl, FrozenMemory, RamAccess};
 use std::{
     io,
     os::unix::{
@@ -32,7 +33,7 @@ enum State {
     Cold(RemoteObject),
 }
 struct Page {
-    block: krun::RamBlock,
+    block: pvisor_vm::api::RamBlock,
     state: State,
     file_detached: bool,
 }
@@ -230,7 +231,7 @@ impl Pager {
     fn commit(
         &mut self,
         published: Vec<(usize, Option<RemoteObject>)>,
-    ) -> Result<(Vec<krun::RamBlock>, Vec<RemoteObject>, u128), String> {
+    ) -> Result<(Vec<pvisor_vm::api::RamBlock>, Vec<RemoteObject>, u128), String> {
         let mut detached = Vec::new();
         let mut unused = Vec::new();
         let mut discard_max_us = 0;
@@ -385,7 +386,7 @@ fn fatal(error: impl std::fmt::Display) -> ! {
     eprintln!("experimental cold RAM failure: {error}");
     std::process::exit(1)
 }
-pub(super) fn start_if_requested(handle: krun::VmmHandle) -> io::Result<()> {
+pub(super) fn start_if_requested(handle: pvisor_vm::api::VmmHandle) -> io::Result<()> {
     if let Some(directory) = std::env::var_os("PVISOR_EXPERIMENTAL_MEMORY_PAGE_INVENTORY") {
         let directory = std::path::PathBuf::from(directory);
         let metadata = directory.metadata()?;
@@ -552,14 +553,13 @@ pub(super) fn start_if_requested(handle: krun::VmmHandle) -> io::Result<()> {
                     }))
                     .map_err(|error| error.to_string())?;
                     let device = pager.clone();
-                    vmm.device_memory_gate()
-                        .set_prepare(Some(Arc::new(move |ranges| {
+                    vmm.set_device_prepare(Some(Arc::new(move |ranges| {
                             device
                                 .lock()
                                 .map_err(|_| "cold pager poisoned".to_string())?
                                 .device_prepare(ranges)
                         })))
-                        .map_err(str::to_string)?;
+                        ?;
                     Ok(pager)
                 });
                 match initialized {

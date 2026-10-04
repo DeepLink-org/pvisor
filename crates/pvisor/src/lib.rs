@@ -20,8 +20,6 @@ mod config;
 pub mod diagnostics;
 mod executor;
 mod image;
-#[cfg(test)]
-mod kernel_bundle;
 pub mod ram_backing;
 
 #[doc(hidden)]

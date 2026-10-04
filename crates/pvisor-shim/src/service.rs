@@ -48,7 +48,6 @@ use containerd_shim_protos::topics::{
 use containerd_shim_protos::ttrpc::{self, Code, context::Context, get_status};
 use log::{info, warn};
 #[cfg(feature = "vm")]
-use std::os::fd::AsRawFd;
 #[cfg(feature = "vm")]
 use tokio::sync::mpsc;
 use tokio::sync::watch;

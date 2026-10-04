@@ -10,9 +10,10 @@ use pvisor_core::{
     ExecutorObservations, ExecutorPlan, IsolationKind, ProcessOutput, ResourceLimits, RunFailure,
     RunFailureKind, RunInvocation, RunState,
 };
+use pvisor_vm::api::VmControl;
+use pvisor_vm::api::{RuntimeSupport, VmConfiguration, VmRuntime};
 use serde::{Deserialize, Serialize};
 use std::collections::BTreeMap;
-use std::ffi::CString;
 use std::os::fd::{AsRawFd, FromRawFd, OwnedFd, RawFd};
 use std::path::{Path, PathBuf};
 use tokio::process::Command;
@@ -65,9 +66,6 @@ fn kernel_release_needs_krun_workaround(release: &str) -> bool {
 
 #[cfg(all(target_os = "linux", target_env = "musl", not(target_arch = "x86_64")))]
 compile_error!("static musl VM support currently targets x86_64 only");
-
-#[cfg(all(target_os = "linux", target_env = "musl", target_arch = "x86_64"))]
-use super::embedded_kernel;
 
 #[derive(Debug, Clone)]
 pub struct VmExecutor {
@@ -916,60 +914,30 @@ fn run_runner(spec: RunnerSpec) -> anyhow::Result<()> {
 fn run_linked_krun(spec: RunnerSpec, mut attestation: std::fs::File) -> anyhow::Result<()> {
     use std::io::Write;
     if std::env::var_os("PVISOR_KRUN_LOG").is_some() {
-        check_krun(krun::krun_set_log_level(5), "krun_set_log_level")?;
+        pvisor_vm::api::VmPlatform::init_logging("trace");
     }
-    let workspace_tag = CString::new(WORKSPACE_TAG)?;
     let guest_config = serde_json::to_vec(&spec.guest)?;
     crate::util::startup_mark_run("runner.context_begin", &spec.run_id);
-    let ctx = check_ctx(krun::krun_create_ctx(), "krun_create_ctx")?;
+    let mut vm = pvisor_vm::api::VmBuilder::new(spec.cpus, spec.memory_mib)?;
     crate::util::startup_mark_run("runner.context_ready", &spec.run_id);
     let ram = std::env::var(RAM_FD_ENV)?.parse::<RawFd>()?;
     anyhow::ensure!(ram == RAM_CHILD_FD, "invalid RAM backing descriptor");
     if unsafe { libc::fcntl(ram, libc::F_SETFD, libc::FD_CLOEXEC) } < 0 {
         return Err(std::io::Error::last_os_error().into());
     }
-    check_krun(
-        krun::krun_set_ram_backing(ctx, unsafe { std::fs::File::from_raw_fd(ram) }),
-        "krun_set_ram_backing",
-    )?;
-    check_krun(
-        krun::krun_set_vm_config(ctx, spec.cpus, spec.memory_mib),
-        "krun_set_vm_config",
-    )?;
-    #[cfg(all(target_os = "linux", target_env = "musl", target_arch = "x86_64"))]
-    check_krun(
-        unsafe {
-            krun::krun_set_embedded_kernel(
-                ctx,
-                embedded_kernel::KERNEL.as_ptr(),
-                embedded_kernel::KERNEL.len(),
-                embedded_kernel::GUEST_ADDR,
-                embedded_kernel::ENTRY_ADDR,
-            )
-        },
-        "krun_set_embedded_kernel",
-    )?;
-    // OverlayFs implements FUSE reads/writes and mmap via the guest page cache;
-    // it does not implement FUSE_SETUPMAPPING/removemapping. Advertising a DAX
-    // window only allocates device-page metadata during boot (512 MiB before),
-    // and cannot accelerate this overlay's file accesses.
-    add_krun_overlay(ctx, "/dev/root", &spec.root, 0)?;
-    check_krun(
-        unsafe {
-            krun::krun_fs_add_overlay_file(
-                ctx,
-                c"/dev/root".as_ptr(),
-                c"/.pvisor-guest.json".as_ptr(),
-                guest_config.as_ptr(),
-                guest_config.len(),
-                0o400,
-                true,
-            )
-        },
-        "krun_fs_add_overlay_file(guest config)",
+    vm.ram_backing(unsafe { std::fs::File::from_raw_fd(ram) })?;
+
+    // OverlayFs cannot service FUSE_SETUPMAPPING; keep DAX disabled.
+    add_vm_overlay(&mut vm, "/dev/root", &spec.root)?;
+    vm.virtual_file(
+        "/dev/root",
+        "/.pvisor-guest.json",
+        guest_config,
+        0o400,
+        true,
     )?;
     if let Some(workspace) = &spec.workspace {
-        add_krun_overlay(ctx, workspace_tag.to_str()?, workspace, 0)?;
+        add_vm_overlay(&mut vm, WORKSPACE_TAG, workspace)?;
     }
     if let Some(fd) = std::env::var_os(NETWORK_FD_ENV) {
         let fd = fd
@@ -977,28 +945,15 @@ fn run_linked_krun(spec: RunnerSpec, mut attestation: std::fs::File) -> anyhow::
             .ok_or_else(|| anyhow::anyhow!("invalid {NETWORK_FD_ENV}"))?
             .parse::<RawFd>()
             .with_context(|| format!("parse {NETWORK_FD_ENV}"))?;
-        check_krun(
-            unsafe {
-                krun::krun_add_net_unixstream(
-                    ctx,
-                    std::ptr::null(),
-                    fd,
-                    pvisor_overlaynet::vm::VM_MAC.as_ptr(),
-                    0,
-                    0,
-                )
-            },
-            "krun_add_net_unixstream",
+        if unsafe { libc::fcntl(fd, libc::F_SETFD, libc::FD_CLOEXEC) } < 0 {
+            return Err(std::io::Error::last_os_error().into());
+        }
+        vm.network(
+            unsafe { std::os::unix::net::UnixStream::from_raw_fd(fd) },
+            pvisor_overlaynet::vm::VM_MAC,
         )?;
     }
-    // Contexts start with an implicit vsock whose heuristic enables TSI when
-    // there is no virtio-net device. Replace it with an explicit zero-feature
-    // device so ordinary guest sockets cannot escape through the host stack.
-    check_krun(
-        krun::krun_disable_implicit_vsock(ctx),
-        "krun_disable_implicit_vsock",
-    )?;
-    check_krun(krun::krun_add_vsock(ctx, 0), "krun_add_vsock")?;
+    // The Rust builder installs only zero-feature vsock, never implicit TSI.
     crate::util::startup_mark_run("runner.devices_configured", &spec.run_id);
     // Private parent/runner IPC: write visibility is sufficient. The parent
     // accepts the receipt only after a normal exit; it is not recovery metadata.
@@ -1015,7 +970,7 @@ fn run_linked_krun(spec: RunnerSpec, mut attestation: std::fs::File) -> anyhow::
     }
     let mut control = unsafe { std::os::unix::net::UnixStream::from_raw_fd(control) };
     crate::util::startup_mark_run("runner.krun_enter", &spec.run_id);
-    let started = krun::krun_start_enter_with_handle(ctx, move |handle| {
+    let started = vm.run( move |handle| {
         crate::util::startup_mark_run("runner.vmm_built", &spec.run_id);
         #[cfg(all(target_os = "macos", target_arch = "aarch64"))]
         super::pager::start_if_requested(handle.clone())?;
@@ -1098,87 +1053,53 @@ fn run_linked_krun(spec: RunnerSpec, mut attestation: std::fs::File) -> anyhow::
             })?;
         Ok(())
     });
-    if started < 0 {
-        // Preserve failed-entry invalidation without a disk durability barrier.
+    if let Err(error) = started {
+        // A failed build cannot leave an accepted execution receipt.
         attestation.set_len(0)?;
+        #[cfg(target_os = "macos")]
+        return Err(error).context("VM entry failed; source-built macOS binaries require crates/pvisor/macos-hypervisor.entitlements");
+        #[cfg(not(target_os = "macos"))]
+        return Err(error.into());
     }
-    #[cfg(target_os = "macos")]
-    if started == -libc::EINVAL {
-        anyhow::bail!(
-            "krun_start_enter failed with errno 22; source-built macOS binaries must be signed \
-             with crates/pvisor/macos-hypervisor.entitlements"
-        );
-    }
-    check_krun(started, "krun_start_enter")?;
     Ok(())
 }
 
-fn add_krun_overlay(
-    ctx: u32,
+fn add_vm_overlay(
+    vm: &mut pvisor_vm::api::VmBuilder,
     tag: &str,
     overlay: &OverlayDeviceSpec,
-    shm_size: u64,
 ) -> anyhow::Result<()> {
-    anyhow::ensure!(
-        !overlay.lowers.is_empty(),
-        "libkrun overlay requires a lower directory"
-    );
-    let policy = CString::new(serde_json::to_string(&overlay.access_policy)?)?;
-    let tag = CString::new(tag)?;
-    let lowers = overlay
-        .lowers
-        .iter()
-        .map(|path| path_cstring(path))
-        .collect::<anyhow::Result<Vec<_>>>()?;
-    let lower_ptrs = lowers.iter().map(|path| path.as_ptr()).collect::<Vec<_>>();
-    let upper = path_cstring(&overlay.upper)?;
-    let work = overlay.work.as_deref().map(path_cstring).transpose()?;
-    let preimages = overlay.preimages.as_deref().map(path_cstring).transpose()?;
-    let target = overlay
-        .apply_target
-        .as_deref()
-        .map(path_cstring)
-        .transpose()?;
-    let baseline = overlay
-        .baseline_lower
-        .as_deref()
-        .map(path_cstring)
-        .transpose()?;
-    let excluded = overlay
-        .excluded
-        .iter()
-        .map(|path| path_cstring(path))
-        .collect::<anyhow::Result<Vec<_>>>()?;
-    let excluded_ptrs = excluded
-        .iter()
-        .map(|path| path.as_ptr())
-        .collect::<Vec<_>>();
-    check_krun(
-        unsafe {
-            krun::krun_add_virtiofs_overlay_with_layout(
-                ctx,
-                tag.as_ptr(),
-                lower_ptrs.as_ptr(),
-                lower_ptrs.len(),
-                upper.as_ptr(),
-                work.as_ref().map_or(std::ptr::null(), |path| path.as_ptr()),
-                preimages
-                    .as_ref()
-                    .map_or(std::ptr::null(), |path| path.as_ptr()),
-                excluded_ptrs.as_ptr(),
-                excluded_ptrs.len(),
-                shm_size,
-                policy.as_ptr(),
-                target
-                    .as_ref()
-                    .map_or(std::ptr::null(), |path| path.as_ptr()),
-                baseline
-                    .as_ref()
-                    .map_or(std::ptr::null(), |path| path.as_ptr()),
-            )
+    use pvisor_vm::api::{OverlayConfig, PermissionSemantics};
+    let path = |path: &Path| -> anyhow::Result<String> {
+        Ok(path
+            .to_str()
+            .ok_or_else(|| anyhow::anyhow!("VM filesystem path is not UTF-8: {}", path.display()))?
+            .into())
+    };
+    vm.overlay(
+        tag,
+        OverlayConfig {
+            lower_dirs: overlay
+                .lowers
+                .iter()
+                .map(|p| path(p))
+                .collect::<anyhow::Result<_>>()?,
+            upper_dir: path(&overlay.upper)?,
+            work_dir: overlay.work.as_deref().map(path).transpose()?,
+            preimage_dir: overlay.preimages.as_deref().map(path).transpose()?,
+            apply_target: overlay.apply_target.as_deref().map(path).transpose()?,
+            baseline_lower: overlay.baseline_lower.as_deref().map(path).transpose()?,
+            excluded_paths: overlay
+                .excluded
+                .iter()
+                .map(|p| path(p))
+                .collect::<anyhow::Result<_>>()?,
+            access_policy: overlay.access_policy.clone(),
+            semantics: PermissionSemantics::LinuxComplete,
         },
-        "krun_add_virtiofs_overlay",
-    )
+        0,
+    )?;
+    Ok(())
 }
 
 fn guest_config(
@@ -1242,11 +1163,6 @@ fn failed_to_start(message: String) -> ExecutorOutput {
     }
 }
 
-fn path_cstring(path: &Path) -> anyhow::Result<CString> {
-    use std::os::unix::ffi::OsStrExt;
-    Ok(CString::new(path.as_os_str().as_bytes())?)
-}
-
 fn guest_path_in_root(root: &Path, target: &Path) -> anyhow::Result<PathBuf> {
     anyhow::ensure!(
         target.is_absolute() && target != Path::new("/"),
@@ -1276,20 +1192,6 @@ fn guest_path_in_root(root: &Path, target: &Path) -> anyhow::Result<PathBuf> {
         }
     }
     Ok(resolved)
-}
-
-fn check_ctx(value: i32, operation: &str) -> anyhow::Result<u32> {
-    if value < 0 {
-        anyhow::bail!("{operation} failed with errno {}", -value);
-    }
-    Ok(value as u32)
-}
-
-fn check_krun(value: i32, operation: &str) -> anyhow::Result<()> {
-    if value < 0 {
-        anyhow::bail!("{operation} failed with errno {}", -value);
-    }
-    Ok(())
 }
 
 #[cfg(test)]

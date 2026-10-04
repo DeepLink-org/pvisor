@@ -3,6 +3,7 @@
 use crate::environment_snapshot::{Compatibility, SnapshotStore, file_hash};
 use anyhow::{Context, ensure};
 use pvisor_core::operation::{ExecutionCheckpoint, OperationKind, SnapshotRamStorage};
+use pvisor_vm::api::{SnapshotCapture, SnapshotState};
 use serde::{Deserialize, Serialize};
 use std::{
     fs,
@@ -55,7 +56,10 @@ pub(super) fn binding(
     let firmware_hash = {
         use sha2::{Digest, Sha256};
         let _ = firmware;
-        crate::util::encode_hex(&Sha256::digest(super::embedded_kernel::KERNEL))
+        use pvisor_vm::api::RuntimeSupport;
+        let kernel =
+            pvisor_vm::api::VmPlatform::embedded_kernel().context("static VM kernel is missing")?;
+        crate::util::encode_hex(&Sha256::digest(&kernel.bytes))
     };
     #[cfg(not(all(target_os = "linux", target_env = "musl", target_arch = "x86_64")))]
     let firmware_hash = file_hash(
@@ -151,8 +155,7 @@ pub(super) mod native {
     use super::super::supported::{OverlayDeviceSpec, RunnerSpec};
     use super::*;
     use crate::environment_snapshot::copy_owned_tree;
-    use devices::snapshot::BusDeviceSnapshot;
-    use krun_vmm::snapshot::MachineSnapshot;
+    use pvisor_vm::api::MachineSnapshot;
     use std::{collections::BTreeMap, fs::OpenOptions, os::unix::fs::OpenOptionsExt};
 
     #[derive(Serialize, Deserialize)]
@@ -225,7 +228,7 @@ pub(super) mod native {
 
     pub(super) fn capture(
         spec: &RunnerSpec,
-        vm: &mut krun_vmm::Vmm,
+        vm: &mut pvisor_vm::api::FrozenMachine<'_>,
         directory: &Path,
         storage: SnapshotRamStorage,
     ) -> anyhow::Result<CaptureReady> {
@@ -262,14 +265,7 @@ pub(super) mod native {
             tags.push("pvisor-workspace");
         }
         for name in tags {
-            let mut tag = [0; 36];
-            tag[..name.len()].copy_from_slice(name.as_bytes());
-            let mut count = 0;
-            for mapping in &mut state.devices {
-                if let BusDeviceSnapshot::Virtio(device) = &mut mapping.device {
-                    count += usize::from(device.rebind_filesystem_layers(&tag, &copies)?);
-                }
-            }
+            let count = state.rebind_filesystem_layers(name, &copies)?;
             ensure!(
                 count == 1,
                 "checkpoint must bind exactly one {name} filesystem"

@@ -552,6 +552,7 @@ fn is_mountpoint(path: &Path) -> bool {
 #[cfg(test)]
 mod tests {
     use super::*;
+    #[cfg(target_os = "macos")]
     use std::os::unix::fs::MetadataExt;
     use tempfile::tempdir;
 

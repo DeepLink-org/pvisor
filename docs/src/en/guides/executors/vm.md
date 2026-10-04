@@ -1,6 +1,6 @@
-# libkrun VM
+# pVisor VM
 
-The VM executor boots a minimal Linux guest through libkrun, giving it an independent guest kernel, a workspace served over virtio-fs, and networking handled by the pVisor smoltcp data plane. Linux uses KVM; Apple Silicon macOS uses HVF.
+The VM executor boots a minimal Linux guest through `pvisor-vm`, giving it an independent guest kernel, a workspace served over virtio-fs, and networking handled by the pVisor smoltcp data plane. Linux uses KVM; Apple Silicon macOS uses HVF.
 
 ```bash
 pvisor run --executor vm --rootfs image=ubuntu:24.04 \

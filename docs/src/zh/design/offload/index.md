@@ -135,8 +135,8 @@ GC 保留 current head 及所有 `.pvpin` 所指 head 的祖先。旧 manifest �
 | [compressed.rs](https://github.com/deeplink-org/pvisor/blob/main/crates/pvisor/src/executor/vm/compressed.rs) | FUSE 文件与回调 |
 | [ram_backing.rs](https://github.com/deeplink-org/pvisor/blob/main/crates/pvisor/src/ram_backing.rs) | manifest、staging、dirty mask、提交 |
 | [image.rs](https://github.com/deeplink-org/pvisor/blob/main/crates/pvisor/src/ram_backing/image.rs) | generation 编码、继承、pin、合并和 GC |
-| [VMM ram.rs](https://github.com/deeplink-org/pvisor/blob/main/vendor/krun-vmm/src/ram.rs) | RAM 映射、同步、回收与驻留采样 |
-| [libkrun](https://github.com/deeplink-org/pvisor/blob/main/vendor/libkrun/src/lib.rs) / [memory gate](https://github.com/deeplink-org/pvisor/blob/main/vendor/krun-devices/src/virtio/memory_gate.rs) | CPU 与设备静默顺序 |
+| [VMM ram.rs](https://github.com/deeplink-org/pvisor/blob/main/crates/pvisor-vm/src/vmm/ram.rs) | RAM 映射、同步、回收与驻留采样 |
+| [libkrun](https://github.com/deeplink-org/pvisor/blob/main/crates/pvisor-vm/src/handle.rs) / [memory gate](https://github.com/deeplink-org/pvisor/blob/main/crates/pvisor-vm/src/devices/virtio/memory_gate.rs) | CPU 与设备静默顺序 |
 
 ## 4. 实验数据支撑 {#experiments}
 

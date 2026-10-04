@@ -196,8 +196,8 @@ measure all involved processes in a dedicated cgroup instead.
 
 ## Guest init comparison (Apple Silicon)
 
-`guest_init.py` embeds the old C init and the Rust guest in the same signed
-libkrun runner, using release host libraries. It creates a fresh 1-vCPU,
+`guest_init.py` supplies the old C init and the Rust guest to the same signed
+`guest_init_bench` Cargo example through `pvisor_vm::api`, using release host libraries. It creates a fresh 1-vCPU,
 128-MiB VM for every sample and interleaves both variants. Readiness ends at a
 common payload's stdout marker; completion includes sync/reboot and VMM exit.
 The payload stays alive for 20 ms after the marker so stdout can drain before
@@ -205,6 +205,10 @@ the VMM exits. Readiness excludes this delay; completion includes it.
 Neither interval includes CLI preparation, image extraction, helper preparation,
 or Run Bundle persistence. The C workspace case reconstructs the old shell
 chain, using Alpine's `/bin/mount` BusyBox applet rather than a renamed copy.
+
+The results below use the pre-migration driver, which embedded init bytes in
+the runner. The current driver reads both init files at runtime before VM setup;
+new measurements include that read and must identify this driver revision.
 
 Measured on 2026-10-01 with Apple M4/HVF, libkrunfw 5.5.0, Alpine
 minirootfs 3.22.1 aarch64, 10 warmups and 100 samples per variant:

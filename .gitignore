@@ -26,3 +26,4 @@ build/
 review_project/
 review/
 tools/experiments/
+crates/pvisor-vm/upstream/

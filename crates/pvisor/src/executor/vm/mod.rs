@@ -21,10 +21,6 @@ pub use unsupported::{VmExecutor, run_internal_if_requested};
 )]
 pub(crate) mod checkpoint;
 mod compressed;
-#[cfg(all(target_os = "linux", target_env = "musl", target_arch = "x86_64"))]
-pub(crate) mod embedded_kernel {
-    include!(concat!(env!("OUT_DIR"), "/embedded_kernel.rs"));
-}
 pub(crate) mod control;
 #[cfg(not(any(
     all(target_os = "linux", target_env = "musl", target_arch = "x86_64"),

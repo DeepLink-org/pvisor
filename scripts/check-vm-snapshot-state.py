@@ -28,7 +28,7 @@ def main():
             "--locked",
             "--offline",
             "-p",
-            "pvisor",
+            "pvisor-vm",
             "--example",
             "threaded_cold_restore_case",
             "--target-dir",
@@ -118,13 +118,13 @@ def main():
             path.write_text(json.dumps(changed))
             run("restore", path, error=error)
     sources = [
-        "vendor/krun-vmm/src/macos/vstate.rs",
-        "vendor/krun-devices/src/legacy/gicv3.rs",
-        "vendor/krun-devices/src/legacy/vcpu.rs",
-        "vendor/krun-devices/src/virtio/queue.rs",
-        "vendor/krun-devices/src/virtio/mmio.rs",
-        "crates/pvisor/tests/vm_snapshot_state.rs",
-        "crates/pvisor/examples/threaded_cold_restore_case.rs",
+        "crates/pvisor-vm/src/vmm/macos/vstate.rs",
+        "crates/pvisor-vm/src/devices/legacy/gicv3.rs",
+        "crates/pvisor-vm/src/devices/legacy/vcpu.rs",
+        "crates/pvisor-vm/src/devices/virtio/queue.rs",
+        "crates/pvisor-vm/src/devices/virtio/mmio.rs",
+        "crates/pvisor-vm/src/contract_tests/vm_snapshot_state.rs",
+        "crates/pvisor-vm/src/probes/threaded_cold_restore_case.rs",
         str(Path(__file__).relative_to(root)),
     ]
     report = {

@@ -3,13 +3,15 @@
 #![cfg_attr(not(all(target_os = "macos", target_arch = "aarch64")), allow(unused))]
 #[cfg(all(target_os = "macos", target_arch = "aarch64"))]
 fn main() -> anyhow::Result<()> {
+    use pvisor_vm::api::{RuntimeSupport, VmConfiguration, VmRuntime};
+    use pvisor_vm::api::{SnapshotCapture, SnapshotControl, SnapshotState, VmControl};
+
     use anyhow::{Context, ensure};
-    use devices::snapshot::BusDeviceSnapshot;
-    use krun_vmm::snapshot::{MachineRestore, MachineSnapshot};
     use pvisor::environment_snapshot::{Compatibility, SnapshotStore, file_hash};
+    use pvisor_vm::api::{MachineRestore, MachineSnapshot};
     use serde::{Deserialize, Serialize};
     use std::{
-        ffi::{CString, OsStr},
+        ffi::OsStr,
         fs::{File, OpenOptions},
         os::unix::ffi::OsStrExt,
         path::PathBuf,
@@ -37,10 +39,6 @@ fn main() -> anyhow::Result<()> {
         ]
         .map(str::to_owned)
         .into()
-    }
-    fn check(result: i32) -> anyhow::Result<()> {
-        ensure!(result >= 0, "libkrun error {result}");
-        Ok(())
     }
     let mode = std::env::args()
         .nth(1)
@@ -112,14 +110,9 @@ fn main() -> anyhow::Result<()> {
             "unsupported resource contract mismatch"
         );
         let old = std::path::Path::new(OsStr::from_bytes(&snapshot.manifest().source_root));
-        let mut bindings = 0;
-        let mut root_tag = [0; 36];
-        root_tag[..b"/dev/root".len()].copy_from_slice(b"/dev/root");
-        for mapping in &mut saved.state.devices {
-            if let BusDeviceSnapshot::Virtio(device) = &mut mapping.device {
-                bindings += usize::from(device.rebind_filesystem_copy(&root_tag, old, &root)?);
-            }
-        }
+        let bindings = saved
+            .state
+            .rebind_filesystem_copy("/dev/root", old, &root)?;
         ensure!(
             bindings == 1,
             "environment requires exactly one root filesystem binding"
@@ -131,21 +124,15 @@ fn main() -> anyhow::Result<()> {
     } else {
         None
     };
-    check(krun::krun_set_log_level(5))?;
-    let ctx = krun::krun_create_ctx();
-    check(ctx)?;
-    let ctx = ctx as u32;
-    check(krun::krun_set_vm_config(ctx, 2, 256))?;
-    check(krun::krun_set_snapshot_profile(ctx))?;
-    check(krun::krun_disable_implicit_init(ctx))?;
-    check(krun::krun_disable_implicit_vsock(ctx))?;
-    check(krun::krun_add_vsock(ctx, 0))?;
-    let native = CString::new(root.as_os_str().as_bytes())?;
-    check(unsafe { krun::krun_add_virtiofs2(ctx, c"/dev/root".as_ptr(), native.as_ptr(), 0) })?;
+    pvisor_vm::api::VmPlatform::init_logging("trace");
+    let mut vm = pvisor_vm::api::VmBuilder::new(2, 256)?;
+    vm.snapshot_profile()?;
+    vm.disable_implicit_init()?;
+    vm.filesystem("/dev/root", &root, 0)?;
     if let Some(restore) = restored {
-        krun::krun_set_machine_restore(ctx, restore).map_err(anyhow::Error::msg)?;
+        vm.machine_restore(restore)?;
     }
-    let result = krun::krun_start_enter_with_handle(ctx, move |handle| {
+    let result = vm.run(move |handle| {
         std::thread::spawn(move || {
             // Keep the reference alive until fresh VM RAM/devices are installed.
             let _published = published;
@@ -207,7 +194,7 @@ fn main() -> anyhow::Result<()> {
         });
         Ok(())
     });
-    check(result)
+    result.map_err(Into::into)
 }
 #[cfg(not(all(target_os = "macos", target_arch = "aarch64")))]
 fn main() {

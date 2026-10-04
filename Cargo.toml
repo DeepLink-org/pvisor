@@ -8,6 +8,7 @@ description = "Scaling autonomous agent execution"
 [workspace]
 resolver = "3"
 members = [
+    "crates/pvisor-vm",
     "crates/pvisor-core",
     "crates/pvisor-cluster",
     "crates/pvisor-journal",
@@ -21,7 +22,7 @@ members = [
     "crates/pvisor-overlay-core",
     "crates/pvisor-overlaynet",
 ]
-exclude = ["vendor/fuser", "vendor/libkrun", "vendor/krun-vmm", "vendor/krun-devices", "vendor/krun-hvf"]
+exclude = ["vendor/fuser"]
 
 default-members = [
     "crates/pvisor",
@@ -54,7 +55,7 @@ hyper-util = { version = "0.1", default-features = false }
 ipnet = "2"
 libc = "0.2"
 libloading = "0.8"
-libkrun = "=1.19.3"
+pvisor-vm = { path = "crates/pvisor-vm" }
 log = "0.4"
 pvisor-guest = { path = "crates/pvisor-guest" }
 pvisor-journal = { path = "crates/pvisor-journal" }
@@ -135,8 +136,3 @@ strip = "none"
 
 [patch.crates-io]
 fuser = { path = "vendor/fuser" }
-libkrun = { path = "vendor/libkrun" }
-krun-vmm = { path = "vendor/krun-vmm" }
-krun-devices = { path = "vendor/krun-devices" }
-
-krun-hvf = { path = "vendor/krun-hvf" }

@@ -135,8 +135,8 @@ Remaining defects concern pathname visibility, state reporting and cleanup timin
 | [compressed.rs](https://github.com/deeplink-org/pvisor/blob/main/crates/pvisor/src/executor/vm/compressed.rs) | FUSE file and callbacks |
 | [ram_backing.rs](https://github.com/deeplink-org/pvisor/blob/main/crates/pvisor/src/ram_backing.rs) | Manifest, staging, masks and commit |
 | [image.rs](https://github.com/deeplink-org/pvisor/blob/main/crates/pvisor/src/ram_backing/image.rs) | Encoding, inheritance, pins, compaction and GC |
-| [VMM RAM](https://github.com/deeplink-org/pvisor/blob/main/vendor/krun-vmm/src/ram.rs) | Mapping, sync, reclamation and sampling |
-| [libkrun](https://github.com/deeplink-org/pvisor/blob/main/vendor/libkrun/src/lib.rs) / [memory gate](https://github.com/deeplink-org/pvisor/blob/main/vendor/krun-devices/src/virtio/memory_gate.rs) | CPU/device quiescence |
+| [VMM RAM](https://github.com/deeplink-org/pvisor/blob/main/crates/pvisor-vm/src/vmm/ram.rs) | Mapping, sync, reclamation and sampling |
+| [libkrun](https://github.com/deeplink-org/pvisor/blob/main/crates/pvisor-vm/src/handle.rs) / [memory gate](https://github.com/deeplink-org/pvisor/blob/main/crates/pvisor-vm/src/devices/virtio/memory_gate.rs) | CPU/device quiescence |
 
 ## 4. Experimental evidence {#experiments}
 

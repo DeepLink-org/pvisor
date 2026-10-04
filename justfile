@@ -120,6 +120,9 @@ test-rust *packages:
       args+=(-p "$package")
     done
     if [[ $# -eq 0 ]]; then args+=(--workspace); fi
+    if [[ "$(uname -s)" == Darwin ]]; then
+      python3 scripts/sign-vm-tests.py "${args[@]}"
+    fi
     cargo nextest run --locked "${args[@]}"
 
 # Cross-check the containerd shim for Linux; full builds need a Linux host.
@@ -127,7 +130,7 @@ shim-check:
     cargo check --locked -p pvisor-shim --target x86_64-unknown-linux-musl
     cargo clippy --locked -p pvisor-shim --all-targets --target x86_64-unknown-linux-musl -- -D warnings
 
-# Build the static musl shim with the libkrun VM executor (needs zigbuild).
+# Build the static musl shim with the pvisor-vm executor (needs zigbuild).
 shim-vm-build:
     python3 scripts/build-pvisor.py --shim-vm --profile dev --target-dir "{{ target_dir }}"
 

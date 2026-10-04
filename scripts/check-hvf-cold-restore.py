@@ -26,7 +26,7 @@ def main():
             "build",
             "--locked",
             "-p",
-            "pvisor",
+            "pvisor-vm",
             "--example",
             "hvf_cold_restore_case",
             "--target-dir",

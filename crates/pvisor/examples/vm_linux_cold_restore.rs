@@ -2,12 +2,14 @@
 #![cfg_attr(not(all(target_os = "macos", target_arch = "aarch64")), allow(unused))]
 #[cfg(all(target_os = "macos", target_arch = "aarch64"))]
 fn main() -> anyhow::Result<()> {
+    use pvisor_vm::api::{RuntimeSupport, VmConfiguration, VmRuntime};
+    use pvisor_vm::api::{SnapshotCapture, SnapshotControl, VmControl};
+
     use anyhow::{Context, ensure};
-    use krun_vmm::snapshot::{MachineRestore, MachineSnapshot};
+    use pvisor_vm::api::{MachineRestore, MachineSnapshot};
     use serde::{Deserialize, Serialize};
     use sha2::{Digest, Sha256};
     use std::{
-        ffi::CString,
         fs::{File, OpenOptions},
         path::PathBuf,
         sync::Arc,
@@ -48,10 +50,6 @@ fn main() -> anyhow::Result<()> {
             .map(|byte| format!("{byte:02x}"))
             .collect())
     }
-    fn check(value: i32) -> anyhow::Result<()> {
-        ensure!(value >= 0, "libkrun error {value}");
-        Ok(())
-    }
     let mode = std::env::args()
         .nth(1)
         .context("save or restore required")?;
@@ -79,17 +77,11 @@ fn main() -> anyhow::Result<()> {
     .to_owned();
     ensure!(!boot.is_empty(), "host boot identity unavailable");
     let binary = hash(&std::env::current_exe()?)?;
-    check(krun::krun_set_log_level(5))?;
-    let ctx = krun::krun_create_ctx();
-    check(ctx)?;
-    let ctx = ctx as u32;
-    check(krun::krun_set_vm_config(ctx, 2, 256))?;
-    check(krun::krun_set_snapshot_profile(ctx))?;
-    check(krun::krun_disable_implicit_init(ctx))?;
-    check(krun::krun_disable_implicit_vsock(ctx))?;
-    check(krun::krun_add_vsock(ctx, 0))?;
-    let path = CString::new(root.as_os_str().as_encoded_bytes())?;
-    check(unsafe { krun::krun_add_virtiofs2(ctx, c"/dev/root".as_ptr(), path.as_ptr(), 0) })?;
+    pvisor_vm::api::VmPlatform::init_logging("trace");
+    let mut vm = pvisor_vm::api::VmBuilder::new(2, 256)?;
+    vm.snapshot_profile()?;
+    vm.disable_implicit_init()?;
+    vm.filesystem("/dev/root", &root, 0)?;
     if mode == "restore" {
         let saved: Saved = serde_json::from_slice(&std::fs::read(base.join("state.json"))?)?;
         ensure!(
@@ -108,16 +100,12 @@ fn main() -> anyhow::Result<()> {
             state_hash(&saved.state)? == saved.state_hash,
             "machine state digest mismatch"
         );
-        krun::krun_set_machine_restore(
-            ctx,
-            MachineRestore {
-                state: saved.state,
-                ram_file: Arc::new(File::open(base.join("ram.bin"))?),
-            },
-        )
-        .map_err(anyhow::Error::msg)?;
+        vm.machine_restore(MachineRestore {
+            state: saved.state,
+            ram_file: Arc::new(File::open(base.join("ram.bin"))?),
+        })?;
     }
-    let rc = krun::krun_start_enter_with_handle(ctx, move |handle| {
+    let rc = vm.run(move |handle| {
         let mode = mode.clone();
         let base = base.clone();
         let root = root.clone();
@@ -183,7 +171,7 @@ fn main() -> anyhow::Result<()> {
         });
         Ok(())
     });
-    check(rc)
+    rc.map_err(Into::into)
 }
 #[cfg(not(all(target_os = "macos", target_arch = "aarch64")))]
 fn main() {

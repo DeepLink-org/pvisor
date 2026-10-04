@@ -104,7 +104,7 @@ jobs:
           - platform: Linux
             os: ubuntu-latest
             shard: pvisor
-            packages: pvisor
+            packages: pvisor pvisor-vm
             prepare_pvisor: true
           - platform: macOS
             os: macos-latest
@@ -119,6 +119,7 @@ jobs:
               pvisor-overlayfs
               pvisor-overlaynet
               pvisor
+              pvisor-vm
               pvisor-replay
               pvisor-tui
             prepare_pvisor: true

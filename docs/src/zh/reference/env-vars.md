@@ -42,4 +42,4 @@ PVISOR_RUN_HOME="$HOME/.pvisor/runs" pvisor run --safe \
 | `PVISOR_KRUNFW_KERNEL_BUNDLE` | 含 `kernel.bin` 与 `kernel.json` 的目录 | 设置时优先使用 |
 | `PVISOR_KRUNFW_PATH` | 要提取内核的 `libkrunfw.so.5` 文件 | 未设置 bundle 时使用 |
 
-更换这两个输入后重新构建 CLI。运行已经构建好的 musl 二进制时设置这些变量，不会替换其中的内核；动态固件入口与平台条件见[平台矩阵](platforms.md)。构建源见 `crates/pvisor/build.rs`。
+更换这两个输入后重新构建 CLI。运行已经构建好的 musl 二进制时设置这些变量，不会替换其中的内核；动态固件入口与平台条件见[平台矩阵](platforms.md)。构建源见 `crates/pvisor-vm/build_kernel.rs`。

@@ -168,7 +168,7 @@ Prepared 恢复不能接受任意目标新状态：目标必须仍匹配原像�
 
 pending apply 存在时不能 drop，以免删掉恢复所需的 upper。已 Discarded 的 drop 幂等；已 Applied 不能靠 drop 撤销。清理 upper/work 后写入 Discarded；merged 只尝试移除空占位，不递归删除可能仍挂载的目录。调用方必须先停止实际写入并完成卸载；Core API 的 Active 分支本身不代替 Attempt lease 和执行生命周期协调。
 
-宿主 `pvisor-overlayfs` 将 FUSE 请求、inode/handle 与权限转换接到共享 core；Linux FUSE、macFUSE kernel / FSKit 的挂载约束由适配器处理。仓库 FSKit 入口默认选择 fskit，并按实现中的版本检查拒绝低于 5.4.0 的 macFUSE。VM 的 `vendor/krun-devices/src/virtio/fs/overlay.rs` 使用相同 Core，经 virtio-fs 服务 guest，不需要宿主 FUSE union mount；guest errno 转换、设备队列与 handle 生命周期属于该适配器。
+宿主 `pvisor-overlayfs` 将 FUSE 请求、inode/handle 与权限转换接到共享 core；Linux FUSE、macFUSE kernel / FSKit 的挂载约束由适配器处理。仓库 FSKit 入口默认选择 fskit，并按实现中的版本检查拒绝低于 5.4.0 的 macFUSE。VM 的 `crates/pvisor-vm/src/devices/virtio/fs/overlay.rs` 使用相同 Core，经 virtio-fs 服务 guest，不需要宿主 FUSE union mount；guest errno 转换、设备队列与 handle 生命周期属于该适配器。
 
 共享 Core 不代表全部后端的 POSIX 返回行为相同。现有暂存契约仍记录 macOS symlink 创建的 S-STAGE-013 XFAIL，不能以 Core 测试覆盖替代实际挂载检查。
 
