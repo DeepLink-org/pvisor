@@ -35,21 +35,35 @@ pub struct MuxerThread {
     unix_ipc_port_map: HashMap<u32, (PathBuf, bool)>,
 }
 
+pub(super) struct MuxerThreadConfig {
+    pub stop: Arc<AtomicBool>,
+    pub stopfd: Arc<EventFd>,
+    pub cid: u64,
+    pub epoll: Epoll,
+    pub rxq: Arc<Mutex<MuxerRxQ>>,
+    pub proxy_map: ProxyMap,
+    pub mem: GuestMemoryMmap,
+    pub queue: Arc<Mutex<VirtQueue>>,
+    pub interrupt: InterruptTransport,
+    pub reaper_sender: Sender<u64>,
+    pub unix_ipc_port_map: HashMap<u32, (PathBuf, bool)>,
+}
+
 impl MuxerThread {
-    #[allow(clippy::too_many_arguments)]
-    pub fn new(
-        stop: Arc<AtomicBool>,
-        stopfd: Arc<EventFd>,
-        cid: u64,
-        epoll: Epoll,
-        rxq: Arc<Mutex<MuxerRxQ>>,
-        proxy_map: ProxyMap,
-        mem: GuestMemoryMmap,
-        queue: Arc<Mutex<VirtQueue>>,
-        interrupt: InterruptTransport,
-        reaper_sender: Sender<u64>,
-        unix_ipc_port_map: HashMap<u32, (PathBuf, bool)>,
-    ) -> Self {
+    pub fn new(config: MuxerThreadConfig) -> Self {
+        let MuxerThreadConfig {
+            stop,
+            stopfd,
+            cid,
+            epoll,
+            rxq,
+            proxy_map,
+            mem,
+            queue,
+            interrupt,
+            reaper_sender,
+            unix_ipc_port_map,
+        } = config;
         MuxerThread {
             stop,
             stopfd,
@@ -120,28 +134,18 @@ impl MuxerThread {
             let local_port: u32 = thread_rng.random_range(1024..u32::MAX);
             let new_id: u64 = ((peer_port as u64) << 32) | (local_port as u64);
             let new_proxy: Box<dyn Proxy> = match proxy_type {
-                NewProxyType::Tcp => Box::new(TsiStreamProxy::new_reverse(
-                    new_id,
-                    self.cid,
-                    id,
-                    family,
-                    local_port,
-                    peer_port,
-                    accept_fd,
-                    self.mem.clone(),
-                    self.queue.clone(),
-                    self.rxq.clone(),
-                )),
-                NewProxyType::Unix => Box::new(UnixProxy::new_reverse(
-                    new_id,
-                    self.cid,
-                    local_port,
-                    peer_port,
-                    accept_fd,
-                    self.mem.clone(),
-                    self.queue.clone(),
-                    self.rxq.clone(),
-                )),
+                NewProxyType::Tcp => Box::new(TsiStreamProxy::new_reverse(new_id,
+id,
+family,
+local_port,
+peer_port,
+accept_fd,
+super::proxy::ProxyGuest { cid: self.cid, mem: self.mem.clone(), queue: self.queue.clone(), rxq: self.rxq.clone() },)),
+                NewProxyType::Unix => Box::new(UnixProxy::new_reverse(new_id,
+local_port,
+peer_port,
+accept_fd,
+super::proxy::ProxyGuest { cid: self.cid, mem: self.mem.clone(), queue: self.queue.clone(), rxq: self.rxq.clone() },)),
             };
             self.proxy_map
                 .write()

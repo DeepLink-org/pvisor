@@ -161,17 +161,22 @@ pub fn log_proxy_error(storage: &Path, target: &str, error: &str, session_id: &s
     );
 }
 
-#[allow(clippy::too_many_arguments)]
+/// Shared call identity for one LLM debug message.
+pub struct LlmDebugContext<'a> {
+    pub session_id: &'a str,
+    pub agent_id: &'a str,
+    pub model: &'a str,
+}
+
 pub fn log_llm_request(
     storage: &Path,
-    session_id: &str,
-    agent_id: &str,
-    model: &str,
+    context: LlmDebugContext<'_>,
     protocol: &str,
     path: &str,
     upstream: &str,
     body: &str,
 ) {
+    let LlmDebugContext { session_id, agent_id, model } = context;
     let upstream = crate::sink::redact_sensitive_url(upstream);
     emit(
         storage,
@@ -198,17 +203,15 @@ pub fn log_llm_upstream_sending(storage: &Path, session_id: &str, upstream: &str
     );
 }
 
-#[allow(clippy::too_many_arguments)]
 pub fn log_llm_upstream_headers(
     storage: &Path,
-    session_id: &str,
-    agent_id: &str,
-    model: &str,
+    context: LlmDebugContext<'_>,
     upstream: &str,
     status: u16,
     content_type: &str,
     stream_request: bool,
 ) {
+    let LlmDebugContext { session_id, agent_id, model } = context;
     let upstream = crate::sink::redact_sensitive_url(upstream);
     emit(
         storage,

@@ -294,17 +294,20 @@ pub fn allocate(file: &File, offset: i64, length: i64) -> io::Result<()> {
     }
 }
 
-#[allow(clippy::too_many_arguments)]
-pub fn set_file_metadata(
-    file: &File,
-    mode: Option<u32>,
-    uid: Option<u32>,
-    gid: Option<u32>,
-    size: Option<u64>,
-    atime: Option<SystemTime>,
-    mtime: Option<SystemTime>,
-    flags: Option<u32>,
-) -> io::Result<()> {
+/// Changes applied to an open file, in size/owner/mode/time/flags order.
+#[derive(Clone, Copy, Debug, Default)]
+pub struct FileMetadataUpdate {
+    pub mode: Option<u32>,
+    pub uid: Option<u32>,
+    pub gid: Option<u32>,
+    pub size: Option<u64>,
+    pub atime: Option<SystemTime>,
+    pub mtime: Option<SystemTime>,
+    pub flags: Option<u32>,
+}
+
+pub fn set_file_metadata(file: &File, update: FileMetadataUpdate) -> io::Result<()> {
+    let FileMetadataUpdate { mode, uid, gid, size, atime, mtime, flags } = update;
     if let Some(size) = size {
         file.set_len(size)?;
     }

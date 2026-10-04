@@ -1253,7 +1253,6 @@ pub fn build_microvm_for_arch<A: crate::backend::Architecture>(
 
     // Clippy thinks we don't need Arc<Mutex<...
     // but we don't want to change the event_manager interface
-    #[allow(clippy::arc_with_non_send_sync)]
     let vmm = Arc::new(Mutex::new(vmm));
     event_manager
         .add_subscriber(vmm.clone())
@@ -1937,7 +1936,6 @@ fn attach_legacy_devices(
 }
 
 #[cfg(target_arch = "x86_64")]
-#[allow(clippy::too_many_arguments)]
 fn create_vcpus_x86_64(
     vm: &Vm,
     vcpu_config: &VcpuConfig,
@@ -2474,7 +2472,6 @@ fn attach_rng_device(
 }
 
 #[cfg(feature = "gpu")]
-#[allow(clippy::too_many_arguments)]
 fn attach_gpu_device(
     vmm: &mut Vmm,
     shm_manager: &mut ShmManager,
@@ -2596,7 +2593,7 @@ pub mod tests {
         let (guest_memory, _arch_memory_info, _shm_manager, _payload_config) =
             default_guest_memory(128).unwrap();
         let vm = setup_vm(&guest_memory, false).unwrap();
-        let _kvmioapic = KvmIoapic::new(&vm.fd()).unwrap();
+        let _kvmioapic = KvmIoapic::new(vm.fd()).unwrap();
 
         // Dummy entry_addr, vcpus will not boot.
         let entry_addr = GuestAddress(0);

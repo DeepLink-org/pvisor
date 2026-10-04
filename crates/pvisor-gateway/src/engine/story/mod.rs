@@ -15,7 +15,7 @@ mod model;
 mod turn_machine;
 
 pub use call::Call;
-pub use context::{CallContext, StoryContext};
+pub use context::{CallCaptureConfig, CallContext, StoryContext};
 pub use event::{CancelEvent, CompleteEvent, DraftEvent, Event, RequestEvent};
 pub use ids::{RunId, StoryId};
 pub use model::{Story, TurnKind};

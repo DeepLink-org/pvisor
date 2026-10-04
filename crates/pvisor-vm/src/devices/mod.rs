@@ -24,7 +24,6 @@ pub mod virtio;
 pub use self::bus::{Bus, BusDevice, Error as BusError};
 
 #[derive(Debug)]
-#[allow(clippy::enum_variant_names)] // Retain device error vocabulary during module migration.
 pub enum Error {
     FailedReadingQueue {
         event_type: &'static str,
@@ -33,7 +32,7 @@ pub enum Error {
     FailedReadTap,
     FailedSignalingUsedQueue(io::Error),
     PayloadExpected,
-    IoError(io::Error),
+    Io(io::Error),
     NoAvailBuffers,
     SpuriousEvent,
 }
@@ -51,12 +50,15 @@ pub enum DeviceType {
     Serial,
     /// Device Type: RTC.
     #[cfg(target_arch = "aarch64")]
-    #[allow(clippy::upper_case_acronyms)] // Persisted DeviceType spelling.
-    RTC,
+    Rtc,
 }
 
 impl fmt::Display for DeviceType {
     fn fmt(&self, f: &mut fmt::Formatter) -> fmt::Result {
-        write!(f, "{self:?}")
+        match self {
+            #[cfg(target_arch = "aarch64")]
+            Self::Rtc => write!(f, "RTC"), // Preserve device identifiers used by snapshots.
+            _ => write!(f, "{self:?}"),
+        }
     }
 }

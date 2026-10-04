@@ -14,23 +14,22 @@ pub struct KernelBundle {
 
 /// Structure used to specify the parameters for the `libkrunfw` kernel bundle.
 #[derive(Debug)]
-#[allow(clippy::enum_variant_names)] // Keep existing validation error variants in this migration.
 pub enum KernelBundleError {
     /// Guest address is not page-aligned.
-    InvalidGuestAddress,
+    GuestAddress,
     /// Host address is zero or not page-aligned.
-    InvalidHostAddress,
+    HostAddress,
     /// Kernel size is zero or not a multiple of the page size.
-    InvalidSize,
+    Size,
 }
 
 impl Display for KernelBundleError {
     fn fmt(&self, f: &mut Formatter) -> Result {
         use self::KernelBundleError::*;
         match *self {
-            InvalidGuestAddress => write!(f, "Guest address is not page-aligned"),
-            InvalidHostAddress => write!(f, "Host address is zero or not page-aligned"),
-            InvalidSize => write!(f, "Kernel size is zero or not a multiple of the page size"),
+            GuestAddress => write!(f, "Guest address is not page-aligned"),
+            HostAddress => write!(f, "Host address is zero or not page-aligned"),
+            Size => write!(f, "Kernel size is zero or not a multiple of the page size"),
         }
     }
 }

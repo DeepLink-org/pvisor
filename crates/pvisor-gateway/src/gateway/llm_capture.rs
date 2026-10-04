@@ -203,18 +203,11 @@ pub(super) async fn llm_capture(
 
     // Wrap once in Arc so the request, response (or stream draft), and final events
     // all share a single allocation; clones become refcount bumps.
-    let mut ctx = call_context(
-        &capture_route,
-        &agent_id,
-        &call,
-        &parts.headers,
-        &client_model,
-        &upstream_model,
-        provider,
-        protocol,
-        cfg.capture_level,
-        debug_on,
-    );
+    let mut ctx = call_context(&capture_route,
+&agent_id,
+&call,
+&parts.headers,
+crate::engine::CallCaptureConfig { client_model: client_model.clone(), upstream_model: upstream_model.clone(), provider, protocol, level: cfg.capture_level, debug_on },);
     ctx.attach_client(peer, client_meta);
     ctx.attach_http_version(http_version_label(parts.version));
     let mut call_ctx: Arc<_> = Arc::new(ctx);
@@ -348,16 +341,12 @@ pub(super) async fn llm_capture(
         } else {
             "<content omitted by capture level>".into()
         };
-        debug::log_llm_request(
-            state.storage.as_path(),
-            &session_id,
-            &agent_id,
-            &client_model,
-            protocol.as_str(),
-            &path,
-            upstream_url.as_str(),
-            &body_preview,
-        );
+        debug::log_llm_request(state.storage.as_path(),
+debug::LlmDebugContext { session_id: &session_id, agent_id: &agent_id, model: &client_model },
+protocol.as_str(),
+&path,
+upstream_url.as_str(),
+&body_preview,);
     }
 
     pending.phase = "authentication_failed";
@@ -432,16 +421,12 @@ pub(super) async fn llm_capture(
             .get("content-type")
             .and_then(|v| v.to_str().ok())
             .unwrap_or("-");
-        debug::log_llm_upstream_headers(
-            state.storage.as_path(),
-            &session_id,
-            &agent_id,
-            &client_model,
-            upstream_url.as_str(),
-            status.as_u16(),
-            content_type,
-            stream_request,
-        );
+        debug::log_llm_upstream_headers(state.storage.as_path(),
+debug::LlmDebugContext { session_id: &session_id, agent_id: &agent_id, model: &client_model },
+upstream_url.as_str(),
+status.as_u16(),
+content_type,
+stream_request,);
     }
 
     pending.status = status.as_u16();

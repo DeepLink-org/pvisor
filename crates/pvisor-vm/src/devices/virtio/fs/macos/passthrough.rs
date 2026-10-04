@@ -293,8 +293,6 @@ fn is_valid_owner(owner: Option<(u32, u32)>) -> bool {
     false
 }
 
-// We won't need this once expressions like "if let ... &&" are allowed.
-#[allow(clippy::unnecessary_unwrap)]
 fn set_xattr_stat(
     ctx: &Context,
     file: &InodeHandle,
@@ -309,9 +307,8 @@ fn set_xattr_stat(
         0
     };
 
-    let buf = if is_valid_owner(owner) && mode.is_some() {
-        let owner = owner.unwrap();
-        let mode = mode.unwrap();
+    let buf = if let Some((owner, mode)) = owner.zip(mode).filter(|(owner, _)| is_valid_owner(Some(*owner)))
+    {
         format!("{}:{}:0{:o}", owner.0, owner.1, mode)
     } else {
         let (orig_uid, orig_gid, orig_mode) = match file {
@@ -684,6 +681,12 @@ pub struct PassthroughFs {
     writeback: AtomicBool,
     announce_submounts: AtomicBool,
     cfg: Config,
+}
+
+struct NodeCreation {
+    mode: u32,
+    rdev: u32,
+    umask: u32,
 }
 
 impl PassthroughFs {
@@ -1092,17 +1095,15 @@ impl PassthroughFs {
         }
     }
 
-    #[allow(clippy::too_many_arguments)]
     fn mknod_complete(
         &self,
         ctx: Context,
         parent: Inode,
         name: &CStr,
-        mode: u32,
-        _rdev: u32,
-        umask: u32,
+        node: NodeCreation,
         extensions: Extensions,
     ) -> io::Result<Entry> {
+        let NodeCreation { mode, rdev: _, umask } = node;
         let c_path = self.name_to_path(parent, name)?;
 
         let fd = unsafe {
@@ -1141,17 +1142,15 @@ impl PassthroughFs {
         }
     }
 
-    #[allow(clippy::too_many_arguments)]
     fn mknod_simplified(
         &self,
         ctx: Context,
         parent: Inode,
         name: &CStr,
-        mode: u32,
-        rdev: u32,
-        umask: u32,
+        node: NodeCreation,
         extensions: Extensions,
     ) -> io::Result<Entry> {
+        let NodeCreation { mode, rdev, umask } = node;
         let c_path = self.name_to_path(parent, name)?;
 
         // macOS doesn't allow us to create UNIX sockets using macOS, so we
@@ -2418,10 +2417,18 @@ impl FileSystem for PassthroughFs {
     ) -> io::Result<Entry> {
         match self.cfg.semantics {
             PermissionSemantics::LinuxComplete => {
-                self.mknod_complete(ctx, parent, name, mode, rdev, umask, extensions)
+                self.mknod_complete(ctx,
+parent,
+name,
+NodeCreation { mode, rdev, umask },
+extensions,)
             }
             PermissionSemantics::LinuxSimplified => {
-                self.mknod_simplified(ctx, parent, name, mode, rdev, umask, extensions)
+                self.mknod_simplified(ctx,
+parent,
+name,
+NodeCreation { mode, rdev, umask },
+extensions,)
             }
         }
     }

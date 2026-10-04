@@ -59,7 +59,6 @@ pub fn arch_memory_regions(
 /// * `device_info` - A hashmap containing the attached devices for building FDT device nodes.
 /// * `aia_device` - The AIA device.
 /// * `initrd` - Information about an optional initrd.
-#[allow(clippy::too_many_arguments)]
 pub fn configure_system(
     _guest_mem: &GuestMemoryMmap,
     _smbios_oem_strings: &Option<Vec<String>>,

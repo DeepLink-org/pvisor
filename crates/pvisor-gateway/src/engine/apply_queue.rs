@@ -250,27 +250,19 @@ mod tests {
     }
 
     fn sample_ctx(call_id: &str) -> CallContext {
-        CallContext::new(
-            CaptureRoute {
+        CallContext::new(crate::engine::StoryContext::from_route(CaptureRoute {
                 root_session: Some("run-1".into()),
                 session_id: "sess".into(),
                 storage_session_id: "run-1".into(),
                 subagent_id: None,
-            },
-            "agent",
-            Call {
+            }, "agent"),
+Call {
                 call_id: call_id.into(),
                 trace_id: "t1".into(),
                 started_at: "2026-01-01T00:00:00Z".into(),
             },
-            Vec::new(),
-            CaptureLevel::Dialogue,
-            "m",
-            "m",
-            ProviderKind::OpenAi,
-            ProtocolKind::ChatCompletions,
-            false,
-        )
+Vec::new(),
+crate::engine::CallCaptureConfig { level: CaptureLevel::Dialogue, client_model: "m".into(), upstream_model: "m".into(), provider: ProviderKind::OpenAi, protocol: ProtocolKind::ChatCompletions, debug_on: false },)
     }
 
     #[tokio::test]

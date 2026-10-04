@@ -299,7 +299,6 @@ impl VirtioGpu {
         builder.clone().build(fence.clone(), None).ok()
     }
 
-    #[allow(clippy::too_many_arguments)]
     pub fn new(
         mem: GuestMemoryMmap,
         queue_ctl: Arc<Mutex<VirtQueue>>,

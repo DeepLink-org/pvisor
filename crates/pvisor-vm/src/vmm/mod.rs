@@ -108,7 +108,6 @@ pub enum Error {
     EventManager(event_manager::Error),
     /// I8042 Error.
     #[cfg(target_arch = "x86_64")]
-    #[allow(clippy::enum_variant_names)] // Name describes the legacy hardware error.
     I8042Error(crate::devices::legacy::I8042DeviceError),
     /// Cannot access kernel file.
     KernelFile(io::Error),

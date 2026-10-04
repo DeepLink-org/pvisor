@@ -72,69 +72,37 @@ mod tests {
 
     #[test]
     fn skip_internal_suggestion_request_and_silent_response() {
-        let req = llm_request_summary_record(
-            Some("s".into()),
-            None,
-            "m",
-            "/v1/messages",
-            100,
-            "messages",
-            "anthropic",
-            None,
-            None,
-            &test_call(),
-            LEVEL,
-            None,
-        );
+        let req = llm_request_summary_record(Some("s".into()),
+None,
+crate::sink::LlmRequestSummary { model: "m", path: "/v1/messages", body_bytes: 100, protocol: "messages", provider: "anthropic", user_content: None, forward_to: None, body_json: None },
+&test_call(),
+LEVEL,);
         assert!(should_skip_record(&req));
-        let resp = llm_response_record_with_content(
-            Some("s".into()),
-            None,
-            200,
-            &json!({"body": "event: x\ndata: {}\n"}),
-            true,
-            Some(String::new()),
-            &test_call(),
-            LEVEL,
-        );
+        let resp = llm_response_record_with_content(Some("s".into()),
+None,
+crate::sink::LlmResponseContent { status: 200, payload: &json!({"body": "event: x\ndata: {}\n"}), streaming: true, assistant_content: Some(String::new()) },
+&test_call(),
+LEVEL,);
         assert!(should_skip_record(&resp));
     }
 
     #[test]
     fn skip_count_tokens_request() {
-        let req = llm_request_summary_record(
-            Some("s".into()),
-            None,
-            "m",
-            "/v1/messages/count_tokens",
-            1000,
-            "count_tokens",
-            "anthropic",
-            Some("huge context".into()),
-            None,
-            &test_call(),
-            LEVEL,
-            None,
-        );
+        let req = llm_request_summary_record(Some("s".into()),
+None,
+crate::sink::LlmRequestSummary { model: "m", path: "/v1/messages/count_tokens", body_bytes: 1000, protocol: "count_tokens", provider: "anthropic", user_content: Some("huge context".into()), forward_to: None, body_json: None },
+&test_call(),
+LEVEL,);
         assert!(should_skip_record(&req));
     }
 
     #[test]
     fn skip_main_flash_companion_user_duplicate() {
-        let mut rec = llm_request_summary_record(
-            Some("sess".into()),
-            Some("proxy".into()),
-            "deepseek-v4-flash",
-            "/v1/messages",
-            100,
-            "messages",
-            "anthropic",
-            Some("再次开三个subagent".into()),
-            None,
-            &test_call(),
-            LEVEL,
-            None,
-        );
+        let mut rec = llm_request_summary_record(Some("sess".into()),
+Some("proxy".into()),
+crate::sink::LlmRequestSummary { model: "deepseek-v4-flash", path: "/v1/messages", body_bytes: 100, protocol: "messages", provider: "anthropic", user_content: Some("再次开三个subagent".into()), forward_to: None, body_json: None },
+&test_call(),
+LEVEL,);
         assert!(should_skip_record(&rec));
         rec.subagent_id = Some("abc".into());
         assert!(!should_skip_record(&rec));

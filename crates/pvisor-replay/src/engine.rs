@@ -67,41 +67,38 @@ fn execute_with_run_id(
         format!("create unique replay output {}", output_dir.display()),
     )?;
 
-    match execute_allocated(
-        &request,
-        &run_id,
-        &state_dir,
-        &output_dir,
-        &plan,
-        launch.as_ref(),
-        &mut journal,
-    ) {
+    match execute_allocated(&request,
+ExecutionPaths { run_id: &run_id, state_dir: &state_dir, output_dir: &output_dir },
+&plan,
+launch.as_ref(),
+&mut journal,) {
         Ok(result) => Ok(ExecutionReport {
             result,
             exit_code: 0,
         }),
-        Err(error) => finalize_failure(
-            &request,
-            &run_id,
-            &state_dir,
-            &output_dir,
-            &plan,
-            launch.as_ref(),
-            &mut journal,
-            error,
-        ),
+        Err(error) => finalize_failure(&request,
+ExecutionPaths { run_id: &run_id, state_dir: &state_dir, output_dir: &output_dir },
+&plan,
+launch.as_ref(),
+&mut journal,
+error,),
     }
+}
+
+struct ExecutionPaths<'a> {
+    run_id: &'a str,
+    state_dir: &'a Path,
+    output_dir: &'a Path,
 }
 
 fn execute_allocated(
     request: &PlaybackRequest,
-    run_id: &str,
-    state_dir: &Path,
-    output_dir: &Path,
+    paths: ExecutionPaths<'_>,
     plan: &AdapterPlan,
     launch: Option<&LaunchSpec>,
     journal: &mut Journal,
 ) -> Result<ReplayResult, ReplayError> {
+    let ExecutionPaths { run_id, state_dir, output_dir } = paths;
     journal.append(
         "run_started",
         [
@@ -199,17 +196,15 @@ fn execute_allocated(
     Ok(result)
 }
 
-#[allow(clippy::too_many_arguments)]
 fn finalize_failure(
     request: &PlaybackRequest,
-    run_id: &str,
-    state_dir: &Path,
-    output_dir: &Path,
+    paths: ExecutionPaths<'_>,
     plan: &AdapterPlan,
     launch: Option<&LaunchSpec>,
     journal: &mut Journal,
     error: ReplayError,
 ) -> Result<ExecutionReport, ReplayError> {
+    let ExecutionPaths { run_id, state_dir, output_dir } = paths;
     let _ = journal.append(
         "run_failed",
         [

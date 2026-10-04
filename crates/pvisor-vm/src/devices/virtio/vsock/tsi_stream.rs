@@ -61,18 +61,15 @@ pub struct TsiStreamProxy {
 }
 
 impl TsiStreamProxy {
-    #[allow(clippy::too_many_arguments)]
     pub fn new(
         id: u64,
-        cid: u64,
         family: u16,
         local_port: u32,
         peer_port: u32,
         control_port: u32,
-        mem: GuestMemoryMmap,
-        queue: Arc<Mutex<VirtQueue>>,
-        rxq: Arc<Mutex<MuxerRxQ>>,
+        guest: super::proxy::ProxyGuest,
     ) -> Result<Self, ProxyError> {
+        let super::proxy::ProxyGuest { cid, mem, queue, rxq } = guest;
         let family = match family {
             defs::LINUX_AF_INET => AddressFamily::Inet,
             defs::LINUX_AF_INET6 => AddressFamily::Inet6,
@@ -141,19 +138,16 @@ impl TsiStreamProxy {
         })
     }
 
-    #[allow(clippy::too_many_arguments)]
     pub fn new_reverse(
         id: u64,
-        cid: u64,
         parent_id: u64,
         family: AddressFamily,
         local_port: u32,
         peer_port: u32,
         fd: OwnedFd,
-        mem: GuestMemoryMmap,
-        queue: Arc<Mutex<VirtQueue>>,
-        rxq: Arc<Mutex<MuxerRxQ>>,
+        guest: super::proxy::ProxyGuest,
     ) -> Self {
+        let super::proxy::ProxyGuest { cid, mem, queue, rxq } = guest;
         debug!("new_reverse: id={id} local_port={local_port} peer_port={peer_port}");
         TsiStreamProxy {
             id,

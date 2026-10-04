@@ -288,20 +288,11 @@ mod tests {
         let story_id = StoryId::new("run|main");
         let mut tm = TurnMachine::new(story_id);
         let call = sample_call("c1");
-        let mut rec = llm_request_summary_record(
-            Some("s".into()),
-            Some("a".into()),
-            "m",
-            "/v1/chat/completions",
-            10,
-            "chat_completions",
-            "openai",
-            Some("hello".into()),
-            None,
-            &call,
-            CaptureLevel::Dialogue,
-            None,
-        );
+        let mut rec = llm_request_summary_record(Some("s".into()),
+Some("a".into()),
+crate::sink::LlmRequestSummary { model: "m", path: "/v1/chat/completions", body_bytes: 10, protocol: "chat_completions", provider: "openai", user_content: Some("hello".into()), forward_to: None, body_json: None },
+&call,
+CaptureLevel::Dialogue,);
         let out = tm.observe_record(&mut rec);
         assert!(out.turn_id.is_some());
         assert_eq!(tm.turns().len(), 1);
@@ -318,32 +309,18 @@ mod tests {
         let story_id = StoryId::new("run|main");
         let mut tm = TurnMachine::new(story_id);
         let call = sample_call("c1");
-        let mut req = llm_request_summary_record(
-            Some("s".into()),
-            Some("a".into()),
-            "m",
-            "/v1/chat/completions",
-            10,
-            "chat_completions",
-            "openai",
-            Some("hi".into()),
-            None,
-            &call,
-            CaptureLevel::Dialogue,
-            None,
-        );
+        let mut req = llm_request_summary_record(Some("s".into()),
+Some("a".into()),
+crate::sink::LlmRequestSummary { model: "m", path: "/v1/chat/completions", body_bytes: 10, protocol: "chat_completions", provider: "openai", user_content: Some("hi".into()), forward_to: None, body_json: None },
+&call,
+CaptureLevel::Dialogue,);
         tm.observe_record(&mut req);
 
-        let mut resp = llm_response_record_with_content(
-            Some("s".into()),
-            Some("a".into()),
-            200,
-            &json!({}),
-            false,
-            Some("ok".into()),
-            &call,
-            CaptureLevel::Dialogue,
-        );
+        let mut resp = llm_response_record_with_content(Some("s".into()),
+Some("a".into()),
+crate::sink::LlmResponseContent { status: 200, payload: &json!({}), streaming: false, assistant_content: Some("ok".into()) },
+&call,
+CaptureLevel::Dialogue,);
         tm.observe_record(&mut resp);
         assert_eq!(tm.turns()[0].assistant.as_ref().unwrap().text, "ok");
     }
@@ -353,38 +330,20 @@ mod tests {
         let story_id = StoryId::new("run|main");
         let mut tm = TurnMachine::new(story_id);
         let user_call = sample_call("c-user");
-        let mut user_req = llm_request_summary_record(
-            Some("s".into()),
-            Some("a".into()),
-            "m",
-            "/v1/chat/completions",
-            10,
-            "chat_completions",
-            "openai",
-            Some("hello".into()),
-            None,
-            &user_call,
-            CaptureLevel::Dialogue,
-            None,
-        );
+        let mut user_req = llm_request_summary_record(Some("s".into()),
+Some("a".into()),
+crate::sink::LlmRequestSummary { model: "m", path: "/v1/chat/completions", body_bytes: 10, protocol: "chat_completions", provider: "openai", user_content: Some("hello".into()), forward_to: None, body_json: None },
+&user_call,
+CaptureLevel::Dialogue,);
         tm.observe_record(&mut user_req);
         assert_eq!(tm.turns()[0].kind, TurnKind::Dialogue);
 
         let internal_call = sample_call("c-internal");
-        let mut internal_req = llm_request_summary_record(
-            Some("s".into()),
-            Some("a".into()),
-            "m",
-            "/v1/messages/count_tokens",
-            10,
-            "count_tokens",
-            "openai",
-            None,
-            None,
-            &internal_call,
-            CaptureLevel::Dialogue,
-            None,
-        );
+        let mut internal_req = llm_request_summary_record(Some("s".into()),
+Some("a".into()),
+crate::sink::LlmRequestSummary { model: "m", path: "/v1/messages/count_tokens", body_bytes: 10, protocol: "count_tokens", provider: "openai", user_content: None, forward_to: None, body_json: None },
+&internal_call,
+CaptureLevel::Dialogue,);
         tm.observe_record(&mut internal_req);
 
         assert_eq!(tm.turns().len(), 1);
@@ -397,20 +356,11 @@ mod tests {
         let story_id = StoryId::new("run|main");
         let mut tm = TurnMachine::with_context(story_id.clone(), "agent-1", None);
         let call = sample_call("c1");
-        let mut rec = llm_request_summary_record(
-            Some("s".into()),
-            Some("a".into()),
-            "m",
-            "/v1/chat/completions",
-            10,
-            "chat_completions",
-            "openai",
-            Some("hi".into()),
-            None,
-            &call,
-            CaptureLevel::Dialogue,
-            None,
-        );
+        let mut rec = llm_request_summary_record(Some("s".into()),
+Some("a".into()),
+crate::sink::LlmRequestSummary { model: "m", path: "/v1/chat/completions", body_bytes: 10, protocol: "chat_completions", provider: "openai", user_content: Some("hi".into()), forward_to: None, body_json: None },
+&call,
+CaptureLevel::Dialogue,);
         tm.observe_record(&mut rec);
         let snap = tm.snapshot();
         assert_eq!(snap.story_id, story_id);
@@ -426,33 +376,19 @@ mod tests {
 
         for (id, text) in [("c1", "one"), ("c2", "two")] {
             let call = sample_call(id);
-            let mut req = llm_request_summary_record(
-                Some("s".into()),
-                Some("a".into()),
-                "m",
-                "/v1/chat/completions",
-                10,
-                "chat_completions",
-                "openai",
-                Some(text.into()),
-                None,
-                &call,
-                CaptureLevel::Dialogue,
-                None,
-            );
+            let mut req = llm_request_summary_record(Some("s".into()),
+Some("a".into()),
+crate::sink::LlmRequestSummary { model: "m", path: "/v1/chat/completions", body_bytes: 10, protocol: "chat_completions", provider: "openai", user_content: Some(text.into()), forward_to: None, body_json: None },
+&call,
+CaptureLevel::Dialogue,);
             live.observe_record(&mut req);
             records.push(req);
 
-            let mut resp = llm_response_record_with_content(
-                Some("s".into()),
-                Some("a".into()),
-                200,
-                &json!({}),
-                false,
-                Some(format!("ok-{text}")),
-                &call,
-                CaptureLevel::Dialogue,
-            );
+            let mut resp = llm_response_record_with_content(Some("s".into()),
+Some("a".into()),
+crate::sink::LlmResponseContent { status: 200, payload: &json!({}), streaming: false, assistant_content: Some(format!("ok-{text}")) },
+&call,
+CaptureLevel::Dialogue,);
             live.observe_record(&mut resp);
             records.push(resp);
         }
@@ -467,32 +403,18 @@ mod tests {
         let story_id = StoryId::new("run|main");
         let mut tm = TurnMachine::new(story_id);
         let call = sample_call("c1");
-        let mut req = llm_request_summary_record(
-            Some("s".into()),
-            Some("a".into()),
-            "m",
-            "/v1/chat/completions",
-            10,
-            "chat_completions",
-            "openai",
-            Some("hi".into()),
-            None,
-            &call,
-            CaptureLevel::Dialogue,
-            None,
-        );
+        let mut req = llm_request_summary_record(Some("s".into()),
+Some("a".into()),
+crate::sink::LlmRequestSummary { model: "m", path: "/v1/chat/completions", body_bytes: 10, protocol: "chat_completions", provider: "openai", user_content: Some("hi".into()), forward_to: None, body_json: None },
+&call,
+CaptureLevel::Dialogue,);
         tm.observe_record(&mut req);
 
-        let mut cancel = llm_response_record_with_content(
-            Some("s".into()),
-            Some("a".into()),
-            499,
-            &json!({ "cancelled": true }),
-            true,
-            None,
-            &call,
-            CaptureLevel::Dialogue,
-        );
+        let mut cancel = llm_response_record_with_content(Some("s".into()),
+Some("a".into()),
+crate::sink::LlmResponseContent { status: 499, payload: &json!({ "cancelled": true }), streaming: true, assistant_content: None },
+&call,
+CaptureLevel::Dialogue,);
         cancel.kind = "llm.call.cancelled".into();
         tm.observe_record(&mut cancel);
 
@@ -508,48 +430,25 @@ mod tests {
         let call_a = sample_call("call-a");
         let call_b = sample_call("call-b");
 
-        let mut req_a = llm_request_summary_record(
-            Some("s".into()),
-            Some("a".into()),
-            "m",
-            "/v1/chat/completions",
-            10,
-            "chat_completions",
-            "openai",
-            Some("first".into()),
-            None,
-            &call_a,
-            CaptureLevel::Dialogue,
-            None,
-        );
+        let mut req_a = llm_request_summary_record(Some("s".into()),
+Some("a".into()),
+crate::sink::LlmRequestSummary { model: "m", path: "/v1/chat/completions", body_bytes: 10, protocol: "chat_completions", provider: "openai", user_content: Some("first".into()), forward_to: None, body_json: None },
+&call_a,
+CaptureLevel::Dialogue,);
         tm.observe_record(&mut req_a);
 
-        let mut req_b = llm_request_summary_record(
-            Some("s".into()),
-            Some("a".into()),
-            "m",
-            "/v1/chat/completions",
-            10,
-            "chat_completions",
-            "openai",
-            Some("second".into()),
-            None,
-            &call_b,
-            CaptureLevel::Dialogue,
-            None,
-        );
+        let mut req_b = llm_request_summary_record(Some("s".into()),
+Some("a".into()),
+crate::sink::LlmRequestSummary { model: "m", path: "/v1/chat/completions", body_bytes: 10, protocol: "chat_completions", provider: "openai", user_content: Some("second".into()), forward_to: None, body_json: None },
+&call_b,
+CaptureLevel::Dialogue,);
         tm.observe_record(&mut req_b);
 
-        let mut resp_a = llm_response_record_with_content(
-            Some("s".into()),
-            Some("a".into()),
-            200,
-            &json!({}),
-            false,
-            Some("reply to first".into()),
-            &call_a,
-            CaptureLevel::Dialogue,
-        );
+        let mut resp_a = llm_response_record_with_content(Some("s".into()),
+Some("a".into()),
+crate::sink::LlmResponseContent { status: 200, payload: &json!({}), streaming: false, assistant_content: Some("reply to first".into()) },
+&call_a,
+CaptureLevel::Dialogue,);
         let out = tm.observe_record(&mut resp_a);
 
         assert_eq!(out.turn_index, Some(0));

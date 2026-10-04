@@ -1,7 +1,6 @@
 // Copyright 2019 Amazon.com, Inc. or its affiliates. All Rights Reserved.
 // SPDX-License-Identifier: Apache-2.0
 
-#![allow(clippy::borrowed_box)]
 
 /// Layout for this aarch64 system.
 pub mod layout;
@@ -88,7 +87,6 @@ pub fn arch_memory_regions(
 
 /// Configures the system and should be called once per vm before starting vcpu threads.
 /// For aarch64, we only setup SMBIOS.
-#[allow(clippy::too_many_arguments)]
 pub fn configure_system(
     guest_mem: &GuestMemoryMmap,
     mem_info: &ArchMemoryInfo,

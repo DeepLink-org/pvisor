@@ -20,7 +20,6 @@ use crate::utils::eventfd::EventFd;
 use crate::vmm::vstate::Vm;
 
 /// Errors for MMIO device manager.
-#[allow(clippy::enum_variant_names)]
 #[derive(Debug)]
 pub enum Error {
     /// Failed to create MmioTransport
@@ -190,7 +189,7 @@ impl MMIODeviceManager {
 
         // Attaching the RTC device.
         let rtc_evt = EventFd::new(crate::utils::eventfd::EFD_NONBLOCK).map_err(Error::EventFd)?;
-        let device = crate::devices::legacy::RTC::new(rtc_evt.try_clone().map_err(Error::EventFd)?);
+        let device = crate::devices::legacy::Rtc::new(rtc_evt.try_clone().map_err(Error::EventFd)?);
 
         self.bus
             .insert(Arc::new(Mutex::new(device)), self.mmio_base, MMIO_LEN)
@@ -198,7 +197,7 @@ impl MMIODeviceManager {
 
         let ret = self.mmio_base;
         self.id_to_dev_info.insert(
-            (DeviceType::RTC, "rtc".to_string()),
+            (DeviceType::Rtc, "rtc".to_string()),
             MMIODeviceInfo {
                 addr: ret,
                 len: MMIO_LEN,

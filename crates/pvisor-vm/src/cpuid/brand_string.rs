@@ -12,7 +12,6 @@ pub enum Error {
 }
 
 /// Register designations used to get/set specific register values within the brand string buffer.
-#[allow(clippy::upper_case_acronyms)]
 pub enum Reg {
     EAX = 0,
     EBX = 1,
@@ -304,7 +303,6 @@ impl BrandString {
 
 #[cfg(test)]
 mod tests {
-    use std::iter::repeat;
 
     use super::*;
 
@@ -374,7 +372,7 @@ mod tests {
         // Test BrandString::push_bytes()
         //
         let actual_len = bstr.as_bytes().len();
-        let mut old_bytes: Vec<u8> = repeat(0).take(actual_len).collect();
+        let mut old_bytes: Vec<u8> = vec![0; actual_len];
         old_bytes.copy_from_slice(bstr.as_bytes());
         assert_eq!(
             bstr.push_bytes(&_overflow),

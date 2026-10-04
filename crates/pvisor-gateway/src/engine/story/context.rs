@@ -58,30 +58,34 @@ pub struct CallContext {
     pub upstream_url: Option<String>,
 }
 
+/// Capture policy and model routing selected before a call is forwarded.
+#[derive(Clone)]
+pub struct CallCaptureConfig {
+    pub level: CaptureLevel,
+    pub client_model: String,
+    pub upstream_model: String,
+    pub provider: ProviderKind,
+    pub protocol: ProtocolKind,
+    pub debug_on: bool,
+}
+
 impl CallContext {
-    #[allow(clippy::too_many_arguments)]
     pub fn new(
-        route: CaptureRoute,
-        agent_id: impl Into<String>,
+        story: StoryContext,
         call: Call,
         request_headers: Vec<(String, String)>,
-        level: CaptureLevel,
-        client_model: impl Into<String>,
-        upstream_model: impl Into<String>,
-        provider: ProviderKind,
-        protocol: ProtocolKind,
-        debug_on: bool,
+        capture: CallCaptureConfig,
     ) -> Self {
         Self {
-            story: StoryContext::from_route(route, agent_id),
+            story,
             call,
             request_headers,
-            level,
-            client_model: client_model.into(),
-            upstream_model: upstream_model.into(),
-            provider,
-            protocol,
-            debug_on,
+            level: capture.level,
+            client_model: capture.client_model,
+            upstream_model: capture.upstream_model,
+            provider: capture.provider,
+            protocol: capture.protocol,
+            debug_on: capture.debug_on,
             client_peer: None,
             client_meta: None,
             http_version: None,

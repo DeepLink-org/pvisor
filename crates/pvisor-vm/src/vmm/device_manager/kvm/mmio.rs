@@ -20,7 +20,6 @@ use crate::utils::eventfd::EventFd;
 use kvm_ioctls::{IoEventAddress, VmFd};
 
 /// Errors for MMIO device manager.
-#[allow(clippy::enum_variant_names)]
 #[derive(Debug)]
 pub enum Error {
     /// Failed to create MmioTransport
@@ -244,7 +243,7 @@ impl MMIODeviceManager {
 
         // Attaching the RTC device.
         let rtc_evt = EventFd::new(crate::utils::eventfd::EFD_NONBLOCK).map_err(Error::EventFd)?;
-        let device = crate::devices::legacy::RTC::new(rtc_evt.try_clone().map_err(Error::EventFd)?);
+        let device = crate::devices::legacy::Rtc::new(rtc_evt.try_clone().map_err(Error::EventFd)?);
         vm.register_irqfd(&rtc_evt, self.irq)
             .map_err(Error::RegisterIrqFd)?;
 
@@ -254,7 +253,7 @@ impl MMIODeviceManager {
 
         let ret = self.mmio_base;
         self.id_to_dev_info.insert(
-            (DeviceType::RTC, "rtc".to_string()),
+            (DeviceType::Rtc, "rtc".to_string()),
             MMIODeviceInfo {
                 addr: ret,
                 _len: MMIO_LEN,
@@ -387,7 +386,7 @@ mod tests {
         }
 
         fn queue_config(&self) -> &[QueueConfig] {
-            &QUEUE_CONFIG
+            QUEUE_CONFIG
         }
 
         fn read_config(&self, offset: u64, data: &mut [u8]) {

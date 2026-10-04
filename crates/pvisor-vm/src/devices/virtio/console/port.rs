@@ -137,20 +137,19 @@ impl Port {
         interrupt: InterruptTransport,
         control: Arc<ConsoleControl>,
     ) {
-        self.start_inner(mem, rx_queue, tx_queue, interrupt, control, false, false);
+        self.start_inner(mem, (rx_queue, false), (tx_queue, false), interrupt, control);
     }
 
-    #[allow(clippy::too_many_arguments)]
     fn start_inner(
         &mut self,
         mem: GuestMemoryMmap,
-        rx_queue: Queue,
-        tx_queue: Queue,
+        rx: (Queue, bool),
+        tx: (Queue, bool),
         interrupt: InterruptTransport,
         control: Arc<ConsoleControl>,
-        rx_closed: bool,
-        tx_closed: bool,
     ) {
+        let (rx_queue, rx_closed) = rx;
+        let (tx_queue, tx_closed) = tx;
         if let PortState::Active { .. } = &mut self.state {
             self.shutdown();
         };
@@ -175,7 +174,8 @@ impl Port {
                 .name("console port".into())
                 .spawn(move || {
                     process_rx(
-                        mem, rx_queue, interrupt, input, control, port_id, stopfd, stop,
+                        mem, rx_queue, interrupt, input, control, port_id,
+                        super::process_rx::RxStop { event: stopfd, state: stop },
                     )
                 })
                 .unwrap()
@@ -265,7 +265,7 @@ impl Port {
             tx_closed,
         } = old
         {
-            self.start_inner(mem, rx, tx, interrupt, control, rx_closed, tx_closed);
+            self.start_inner(mem, (rx, rx_closed), (tx, tx_closed), interrupt, control);
         }
         Ok(())
     }

@@ -31,7 +31,6 @@ pub(super) const VIRTQ_DESC_F_NEXT: u16 = 0x1;
 pub(super) const VIRTQ_DESC_F_WRITE: u16 = 0x2;
 
 /// Virtio Queue related errors.
-#[allow(clippy::enum_variant_names)]
 #[derive(Debug)]
 pub enum Error {
     /// Address overflow.
@@ -314,7 +313,6 @@ impl<'a> DescriptorChain<'a> {
     }
 
     /// Produces an iterator over all the descriptors in this chain.
-    #[allow(clippy::should_implement_trait)]
     pub fn into_iter(self) -> DescIter<'a> {
         DescIter { next: Some(self) }
     }
@@ -487,7 +485,6 @@ impl Queue {
     }
 
     /// Returns the number of yet-to-be-popped descriptor chains in the avail ring.
-    #[allow(clippy::len_without_is_empty)]
     pub fn len(&self, mem: &GuestMemoryMmap) -> u16 {
         let _memory_access = self.memory_access(mem);
         (self.avail_idx(mem, Ordering::Acquire).unwrap() - self.next_avail).0

@@ -345,18 +345,10 @@ impl DeadLetterContext {
     }
 
     pub fn to_call_context(&self) -> CallContext {
-        let mut ctx = CallContext::new(
-            self.route.clone(),
-            self.agent_id.clone(),
-            self.call.clone(),
-            self.request_headers.clone(),
-            self.level,
-            self.client_model.clone(),
-            self.upstream_model.clone(),
-            self.provider,
-            self.protocol,
-            false,
-        );
+        let mut ctx = CallContext::new(crate::engine::StoryContext::from_route(self.route.clone(), self.agent_id.clone()),
+self.call.clone(),
+self.request_headers.clone(),
+crate::engine::CallCaptureConfig { level: self.level, client_model: self.client_model.clone(), upstream_model: self.upstream_model.clone(), provider: self.provider, protocol: self.protocol, debug_on: false },);
         if let Some(peer) = &self.client_peer {
             ctx.attach_client(peer.clone(), self.client_meta.clone());
         } else if self.client_meta.is_some() {
@@ -545,27 +537,19 @@ mod tests {
     use crate::provider::ProviderKind;
 
     fn sample_ctx(_dir: &Path) -> CallContext {
-        CallContext::new(
-            CaptureRoute {
+        CallContext::new(crate::engine::StoryContext::from_route(CaptureRoute {
                 root_session: Some("run-1".into()),
                 session_id: "sess".into(),
                 storage_session_id: "run-1".into(),
                 subagent_id: None,
-            },
-            "agent",
-            Call {
+            }, "agent"),
+Call {
                 call_id: "c1".into(),
                 trace_id: "t1".into(),
                 started_at: "2026-01-01T00:00:00Z".into(),
             },
-            Vec::new(),
-            CaptureLevel::Dialogue,
-            "m",
-            "m",
-            ProviderKind::OpenAi,
-            ProtocolKind::ChatCompletions,
-            false,
-        )
+Vec::new(),
+crate::engine::CallCaptureConfig { level: CaptureLevel::Dialogue, client_model: "m".into(), upstream_model: "m".into(), provider: ProviderKind::OpenAi, protocol: ProtocolKind::ChatCompletions, debug_on: false },)
     }
 
     #[test]

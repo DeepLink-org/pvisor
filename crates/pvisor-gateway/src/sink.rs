@@ -45,9 +45,10 @@ impl CaptureEventObserver for NoopCaptureObserver {
     }
 }
 
+type EventCallback = dyn Fn(&Event) -> Result<()> + Send + Sync;
+
 pub struct CallbackObserver {
-    #[allow(clippy::type_complexity)]
-    callback: Arc<dyn Fn(&Event) -> Result<()> + Send + Sync>,
+    callback: Arc<EventCallback>,
 }
 impl CallbackObserver {
     pub fn new<F>(callback: F) -> Self
@@ -474,21 +475,26 @@ fn attach_call_context(rec: &mut CaptureRecord, call: &Call) {
     rec.call_id = Some(call.call_id.clone());
 }
 
-#[allow(clippy::too_many_arguments)]
+/// Wire request summary, separate from call identity and retention policy.
+pub struct LlmRequestSummary<'a> {
+    pub model: &'a str,
+    pub path: &'a str,
+    pub body_bytes: usize,
+    pub protocol: &'a str,
+    pub provider: &'a str,
+    pub user_content: Option<String>,
+    pub forward_to: Option<&'a str>,
+    pub body_json: Option<&'a Value>,
+}
+
 pub fn llm_request_summary_record(
     session_id: Option<String>,
     agent_id: Option<String>,
-    model: &str,
-    path: &str,
-    body_bytes: usize,
-    protocol: &str,
-    provider: &str,
-    user_content: Option<String>,
-    forward_to: Option<&str>,
+    request: LlmRequestSummary<'_>,
     call: &Call,
     level: CaptureLevel,
-    body_json: Option<&Value>,
 ) -> CaptureRecord {
+    let LlmRequestSummary { model, path, body_bytes, protocol, provider, user_content, forward_to, body_json } = request;
     let mut payload = serde_json::json!({
         "model": model,
         "path": path,
@@ -599,17 +605,22 @@ pub fn llm_response_record(
     rec
 }
 
-#[allow(clippy::too_many_arguments)]
+/// Response body and display content before retention/redaction is applied.
+pub struct LlmResponseContent<'a> {
+    pub status: u16,
+    pub payload: &'a Value,
+    pub streaming: bool,
+    pub assistant_content: Option<String>,
+}
+
 pub fn llm_response_record_with_content(
     session_id: Option<String>,
     agent_id: Option<String>,
-    status: u16,
-    payload: &serde_json::Value,
-    streaming: bool,
-    assistant_content: Option<String>,
+    response: LlmResponseContent<'_>,
     call: &Call,
     level: CaptureLevel,
 ) -> CaptureRecord {
+    let LlmResponseContent { status, payload, streaming, assistant_content } = response;
     let mut payload = redact_sensitive_body(payload);
     payload["status"] = serde_json::json!(status);
     if level.includes_assistant_text()

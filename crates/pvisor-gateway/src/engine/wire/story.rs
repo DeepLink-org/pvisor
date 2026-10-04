@@ -157,20 +157,11 @@ mod tests {
             trace_id: "t".into(),
             started_at: "2026-01-01T00:00:00Z".into(),
         };
-        let rec = llm_request_summary_record(
-            Some("s".into()),
-            Some("a".into()),
-            "model",
-            "/v1/chat/completions",
-            12,
-            "chat_completions",
-            "openai",
-            Some("hi".into()),
-            None,
-            &call,
-            CaptureLevel::Dialogue,
-            None,
-        );
+        let rec = llm_request_summary_record(Some("s".into()),
+Some("a".into()),
+crate::sink::LlmRequestSummary { model: "model", path: "/v1/chat/completions", body_bytes: 12, protocol: "chat_completions", provider: "openai", user_content: Some("hi".into()), forward_to: None, body_json: None },
+&call,
+CaptureLevel::Dialogue,);
         let cmd = StoryCommand::persist_record(scope, serde_json::to_vec(&rec).unwrap());
         let packed = pulsing_actor::Message::pack(&cmd).expect("pack");
         let back: StoryCommand = packed.unpack().expect("unpack");

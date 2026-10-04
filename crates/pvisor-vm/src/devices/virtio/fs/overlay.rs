@@ -1449,13 +1449,16 @@ mod tests {
         assert_eq!(std::fs::read(lower.join("original")).unwrap(), b"lower");
         assert!(upper.join(".wh.original").is_file());
 
+        // mode_t is u16 on macOS and u32 on Linux.
+        #[allow(clippy::unnecessary_cast)]
+        let regular_file_mode = libc::S_IFREG as u32;
         let created = CString::new("created").unwrap();
         let (entry, handle, _) = fs
             .create(
                 ctx,
                 fuse::ROOT_ID,
                 &created,
-                libc::S_IFREG as u32 | 0o640,
+                regular_file_mode | 0o640,
                 false,
                 libc::O_RDWR as u32,
                 0,
@@ -1504,12 +1507,15 @@ mod tests {
                 gid: 0,
                 pid: 1,
             };
+            // mode_t is u16 on macOS and u32 on Linux.
+            #[allow(clippy::unnecessary_cast)]
+            let regular_file_mode = libc::S_IFREG as u32;
             let (entry, handle, _) = fs
                 .create(
                     ctx,
                     fuse::ROOT_ID,
                     c"temporary",
-                    libc::S_IFREG as u32 | 0o600,
+                    regular_file_mode | 0o600,
                     false,
                     libc::O_RDWR as u32,
                     0,

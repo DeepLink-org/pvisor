@@ -84,9 +84,7 @@ def test_test_routes_packages_and_python(run_task):
     ]
     commands = run_task("test")
     signing = (
-        [["python3", "scripts/sign-vm-tests.py", "--workspace"]]
-        if sys.platform == "darwin"
-        else []
+        [["python3", "scripts/sign-vm-tests.py", "--workspace"]] if sys.platform == "darwin" else []
     )
     assert commands == signing + [
         ["cargo", "nextest", "run", "--locked", "--workspace"],
@@ -101,9 +99,7 @@ def test_vm_package_signs_before_running_native_tests(run_task):
         if sys.platform == "darwin"
         else []
     )
-    assert commands == signing + [
-        ["cargo", "nextest", "run", "--locked", "-p", "pvisor-vm"]
-    ]
+    assert commands == signing + [["cargo", "nextest", "run", "--locked", "-p", "pvisor-vm"]]
 
 
 def test_ci_checks_format_without_rewriting(run_task):

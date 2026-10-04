@@ -45,7 +45,6 @@ pub struct Worker {
 }
 
 impl Worker {
-    #[allow(clippy::too_many_arguments)]
     pub fn new(
         control_q: DeviceQueue,
         mem: GuestMemoryMmap,

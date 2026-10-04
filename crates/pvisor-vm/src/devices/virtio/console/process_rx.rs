@@ -8,7 +8,11 @@ use crate::devices::virtio::console::console_control::ConsoleControl;
 use crate::devices::virtio::console::port_io::PortInput;
 use crate::devices::virtio::{DescriptorChain, InterruptTransport, Queue};
 
-#[allow(clippy::too_many_arguments)]
+pub(super) struct RxStop {
+    pub event: crate::utils::eventfd::EventFd,
+    pub state: Arc<AtomicU8>,
+}
+
 pub(crate) fn process_rx(
     mem: GuestMemoryMmap,
     mut queue: Queue,
@@ -16,9 +20,9 @@ pub(crate) fn process_rx(
     input: Arc<Mutex<Box<dyn PortInput + Send>>>,
     control: Arc<ConsoleControl>,
     port_id: u32,
-    stopfd: crate::utils::eventfd::EventFd,
-    stop: Arc<AtomicU8>,
+    shutdown: RxStop,
 ) -> (Queue, bool) {
+    let RxStop { event: stopfd, state: stop } = shutdown;
     let mem = &mem;
     let mut eof = false;
 

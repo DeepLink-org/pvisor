@@ -609,7 +609,6 @@ impl Filesystem for OverlayFs {
         }
     }
 
-    #[allow(clippy::too_many_arguments)]
     fn setattr(
         &mut self,
         _request: &Request<'_>,
@@ -655,16 +654,8 @@ impl Filesystem for OverlayFs {
                 })
             {
                 if mutating {
-                    sys::set_file_metadata(
-                        file,
-                        mode,
-                        uid,
-                        gid,
-                        size,
-                        atime.map(time_value),
-                        mtime.map(time_value),
-                        flags,
-                    )?;
+                    sys::set_file_metadata(file,
+sys::FileMetadataUpdate { mode, uid, gid, size, atime: atime.map(time_value), mtime: mtime.map(time_value), flags },)?;
                 }
                 return file
                     .metadata()
@@ -1470,7 +1461,6 @@ impl Filesystem for OverlayFs {
         }
     }
 
-    #[allow(clippy::too_many_arguments)]
     fn copy_file_range(
         &mut self,
         _request: &Request<'_>,

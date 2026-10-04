@@ -44,27 +44,19 @@ impl CaptureEventObserver for RecordingSink {
 }
 
 pub(crate) fn test_context() -> CallContext {
-    CallContext::new(
-        CaptureRoute {
+    CallContext::new(crate::engine::StoryContext::from_route(CaptureRoute {
             root_session: Some("run-test".into()),
             session_id: "sess-1".into(),
             storage_session_id: "sess-1".into(),
             subagent_id: None,
-        },
-        "agent-1",
-        Call {
+        }, "agent-1"),
+Call {
             call_id: "call-1".into(),
             trace_id: "trace-1".into(),
             started_at: "2026-01-01T00:00:00Z".into(),
         },
-        Vec::new(),
-        CaptureLevel::Dialogue,
-        "deepseek-chat",
-        "deepseek-chat",
-        ProviderKind::OpenAi,
-        ProtocolKind::ChatCompletions,
-        false,
-    )
+Vec::new(),
+crate::engine::CallCaptureConfig { level: CaptureLevel::Dialogue, client_model: "deepseek-chat".into(), upstream_model: "deepseek-chat".into(), provider: ProviderKind::OpenAi, protocol: ProtocolKind::ChatCompletions, debug_on: false },)
 }
 
 pub(crate) async fn test_engine(

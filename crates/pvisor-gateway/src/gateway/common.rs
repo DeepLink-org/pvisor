@@ -9,11 +9,9 @@ use serde_json::Value;
 
 use super::state::GatewayState;
 use crate::Call;
-use crate::config::{CaptureLevel, ProxyConfig};
+use crate::config::ProxyConfig;
 use crate::engine::CallContext;
 use crate::engine::headers_to_vec;
-use crate::protocol::ProtocolKind;
-use crate::provider::ProviderKind;
 use crate::runtime::run_config::load_session_proxy_config;
 use crate::session::storage::{CaptureRoute, route_config_key};
 
@@ -47,30 +45,18 @@ pub(crate) fn model_access_policy(config: &ProxyConfig) -> ModelAccessPolicy {
     }
 }
 
-#[allow(clippy::too_many_arguments)]
 pub(crate) fn call_context(
     route: &CaptureRoute,
     agent_id: &str,
     call: &Call,
     headers: &HeaderMap,
-    client_model: &str,
-    upstream_model: &str,
-    provider: ProviderKind,
-    protocol: ProtocolKind,
-    capture_level: CaptureLevel,
-    debug_on: bool,
+    capture: crate::engine::CallCaptureConfig,
 ) -> CallContext {
     CallContext::new(
-        route.clone(),
-        agent_id,
+        crate::engine::StoryContext::from_route(route.clone(), agent_id),
         call.clone(),
         headers_to_vec(headers),
-        capture_level,
-        client_model,
-        upstream_model,
-        provider,
-        protocol,
-        debug_on,
+        capture,
     )
 }
 

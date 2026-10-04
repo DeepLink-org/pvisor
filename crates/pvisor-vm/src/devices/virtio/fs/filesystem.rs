@@ -518,7 +518,7 @@ pub trait FileSystem {
     ///
     /// If this call is successful then the lookup count of the `Inode` associated with the returned
     /// `Entry` must be increased by 1.
-    #[allow(clippy::too_many_arguments)]
+    #[allow(clippy::too_many_arguments, reason = "Mirrors the FUSE operation fields; filesystem implementations share this protocol contract")]
     fn mknod(
         &self,
         ctx: Context,
@@ -681,7 +681,7 @@ pub trait FileSystem {
     /// addition to the optional `Handle` and the `OpenOptions`, the file system must also return an
     /// `Entry` for the file. This increases the lookup count for the `Inode` associated with the
     /// file by 1.
-    #[allow(clippy::too_many_arguments)]
+    #[allow(clippy::too_many_arguments, reason = "Mirrors the FUSE operation fields; filesystem implementations share this protocol contract")]
     fn create(
         &self,
         ctx: Context,
@@ -711,7 +711,7 @@ pub trait FileSystem {
     /// zeroes. An exception to this rule is if the file was opened with the "direct I/O" option
     /// (`libc::O_DIRECT`), in which case the kernel will forward the return code from this method
     /// to the userspace application that made the system call.
-    #[allow(clippy::too_many_arguments)]
+    #[allow(clippy::too_many_arguments, reason = "Mirrors the FUSE operation fields; filesystem implementations share this protocol contract")]
     fn read<W: io::Write + ZeroCopyWriter>(
         &self,
         ctx: Context,
@@ -745,7 +745,7 @@ pub trait FileSystem {
     /// case of error. An exception to this rule is if the file was opened with the "direct I/O"
     /// option (`libc::O_DIRECT`), in which case the kernel will forward the return code from this
     /// method to the userspace application that made the system call.
-    #[allow(clippy::too_many_arguments)]
+    #[allow(clippy::too_many_arguments, reason = "Mirrors the FUSE operation fields; filesystem implementations share this protocol contract")]
     fn write<R: io::Read + ZeroCopyReader>(
         &self,
         ctx: Context,
@@ -858,7 +858,7 @@ pub trait FileSystem {
     /// `handle` are undefined.
     ///
     /// If `flush` is `true` then the contents of the file should also be flushed to disk.
-    #[allow(clippy::too_many_arguments)]
+    #[allow(clippy::too_many_arguments, reason = "Mirrors the FUSE operation fields; filesystem implementations share this protocol contract")]
     fn release(
         &self,
         ctx: Context,
@@ -1126,7 +1126,7 @@ pub trait FileSystem {
         Err(io::Error::from_raw_os_error(bindings::LINUX_ENOSYS))
     }
 
-    #[allow(clippy::too_many_arguments)]
+    #[allow(clippy::too_many_arguments, reason = "Mirrors the FUSE operation fields; filesystem implementations share this protocol contract")]
     fn copyfilerange(
         &self,
         ctx: Context,
@@ -1143,7 +1143,7 @@ pub trait FileSystem {
     }
 
     /// Setup a mapping so that guest can access files in DAX style.
-    #[allow(clippy::too_many_arguments)]
+    #[allow(clippy::too_many_arguments, reason = "Mirrors the FUSE operation fields; filesystem implementations share this protocol contract")]
     fn setupmapping(
         &self,
         _ctx: Context,
@@ -1171,7 +1171,7 @@ pub trait FileSystem {
         Err(io::Error::from_raw_os_error(libc::ENOSYS))
     }
 
-    #[allow(clippy::too_many_arguments)]
+    #[allow(clippy::too_many_arguments, reason = "Mirrors the FUSE operation fields; filesystem implementations share this protocol contract")]
     fn ioctl(
         &self,
         ctx: Context,

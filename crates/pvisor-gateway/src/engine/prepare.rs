@@ -65,20 +65,11 @@ impl CapturePreparer {
             })
         });
         let forward_to = event.model_rewritten.then_some(ctx.upstream_model.as_str());
-        let mut rec = llm_request_summary_record(
-            Some(ctx.route().session_id.clone()),
-            Some(ctx.agent_id().to_string()),
-            &ctx.client_model,
-            &event.path,
-            event.body_bytes,
-            ctx.protocol.as_str(),
-            ctx.provider.as_str(),
-            event.user_content,
-            forward_to,
-            &ctx.call,
-            ctx.level,
-            event.body_json.as_ref(),
-        );
+        let mut rec = llm_request_summary_record(Some(ctx.route().session_id.clone()),
+Some(ctx.agent_id().to_string()),
+crate::sink::LlmRequestSummary { model: &ctx.client_model, path: &event.path, body_bytes: event.body_bytes, protocol: ctx.protocol.as_str(), provider: ctx.provider.as_str(), user_content: event.user_content, forward_to, body_json: event.body_json.as_ref() },
+&ctx.call,
+ctx.level,);
         attach_recorded_headers(&mut rec.payload, &event.headers);
         // Prefer event headers for connection flags; fall back to ctx request headers.
         let hdrs = if event.headers.is_empty() {
@@ -139,16 +130,11 @@ impl CapturePreparer {
                 story_cmd: None,
             });
         }
-        let rec = llm_response_record_with_content(
-            Some(ctx.route().session_id.clone()),
-            Some(ctx.agent_id().to_string()),
-            event.status,
-            &serde_json::json!({ "status": event.status, "draft": true }),
-            true,
-            Some(event.assistant_content.clone()),
-            &ctx.call,
-            ctx.level,
-        );
+        let rec = llm_response_record_with_content(Some(ctx.route().session_id.clone()),
+Some(ctx.agent_id().to_string()),
+crate::sink::LlmResponseContent { status: event.status, payload: &serde_json::json!({ "status": event.status, "draft": true }), streaming: true, assistant_content: Some(event.assistant_content.clone()) },
+&ctx.call,
+ctx.level,);
         let story_cmd = Some(StoryCommand::upsert_draft(
             StoryScope::from_context(ctx),
             serde_json::to_vec(&rec)?,
@@ -260,16 +246,11 @@ impl CapturePreparer {
             }
         });
 
-        let mut rec = llm_response_record_with_content(
-            Some(ctx.route().session_id.clone()),
-            Some(ctx.agent_id().to_string()),
-            event.status,
-            &resp_payload,
-            event.streaming,
-            assistant_content.clone(),
-            &ctx.call,
-            ctx.level,
-        );
+        let mut rec = llm_response_record_with_content(Some(ctx.route().session_id.clone()),
+Some(ctx.agent_id().to_string()),
+crate::sink::LlmResponseContent { status: event.status, payload: &resp_payload, streaming: event.streaming, assistant_content: assistant_content.clone() },
+&ctx.call,
+ctx.level,);
         if let Some(semantic) = semantic_response.filter(|_| ctx.level.includes_full_body()) {
             rec.payload["llm_response"] = serde_json::to_value(semantic.as_ref())?;
         }

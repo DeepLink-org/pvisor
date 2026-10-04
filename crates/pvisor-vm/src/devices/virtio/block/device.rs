@@ -227,7 +227,6 @@ impl Block {
     /// Create a new virtio block device that operates on the given file.
     ///
     /// The given file must be seekable and sizable.
-    #[allow(clippy::too_many_arguments)]
     pub fn new(
         id: String,
         partuuid: Option<String>,

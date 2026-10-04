@@ -94,7 +94,6 @@ impl<F: FileSystem + Sync> Server<F> {
         Ok(())
     }
 
-    #[allow(clippy::cognitive_complexity)]
     pub fn handle_message(
         &self,
         mut r: Reader,

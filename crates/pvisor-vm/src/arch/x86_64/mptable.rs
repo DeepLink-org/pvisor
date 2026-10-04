@@ -376,7 +376,7 @@ mod tests {
         let mut buf: Vec<u8> = vec![0; mpc_table.0.length as usize];
         mem.write_volatile_to(mpc_offset, &mut buf, mpc_table.0.length as usize)
             .unwrap();
-        sum.write(&buf).unwrap();
+        sum.write_all(&buf).unwrap();
         assert_eq!(sum.0, 0);
     }
 

@@ -96,3 +96,11 @@ pub trait Proxy: Send + AsRawFd {
     fn release(&mut self) -> ProxyUpdate;
     fn process_event(&mut self, evset: EventSet) -> ProxyUpdate;
 }
+
+/// Guest identity and receive resources shared by Unix and TSI stream proxies.
+pub(super) struct ProxyGuest {
+    pub cid: u64,
+    pub mem: vm_memory::GuestMemoryMmap,
+    pub queue: std::sync::Arc<std::sync::Mutex<super::super::Queue>>,
+    pub rxq: std::sync::Arc<std::sync::Mutex<super::muxer_rxq::MuxerRxQ>>,
+}

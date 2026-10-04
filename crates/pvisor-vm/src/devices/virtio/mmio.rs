@@ -954,7 +954,6 @@ pub(crate) mod tests {
     }
 
     #[test]
-    #[allow(clippy::cognitive_complexity)]
     fn test_bus_device_write() {
         let m = GuestMemoryMmap::from_ranges(&[(GuestAddress(0), 0x1000)]).unwrap();
         let dummy_dev = Arc::new(Mutex::new(DummyDevice::new()));

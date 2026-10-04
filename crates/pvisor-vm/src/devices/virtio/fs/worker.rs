@@ -100,24 +100,42 @@ pub struct FsWorker {
     map_sender: Option<Sender<WorkerMessage>>,
 }
 
+pub(super) struct FsWorkerConfig {
+    pub queues: Vec<Queue>,
+    pub queue_evts: Vec<Arc<EventFd>>,
+    pub interrupt: InterruptTransport,
+    pub mem: GuestMemoryMmap,
+    pub allow_idmap: bool,
+    pub shm_region: Option<VirtioShmRegion>,
+    pub passthrough_cfg: Option<passthrough::Config>,
+    pub overlay_cfg: Option<OverlayConfig>,
+    pub read_only: bool,
+    pub virtual_entries: Vec<VirtualDirEntry>,
+    pub stop_fd: EventFd,
+    pub exit_code: Arc<AtomicI32>,
+    pub restoring: bool,
+    #[cfg(target_os = "macos")] pub map_sender: Option<Sender<WorkerMessage>>,
+}
+
 impl FsWorker {
-    #[allow(clippy::too_many_arguments)]
-    pub fn new(
-        queues: Vec<Queue>,
-        queue_evts: Vec<Arc<EventFd>>,
-        interrupt: InterruptTransport,
-        mem: GuestMemoryMmap,
-        allow_idmap: bool,
-        shm_region: Option<VirtioShmRegion>,
-        passthrough_cfg: Option<passthrough::Config>,
-        overlay_cfg: Option<OverlayConfig>,
-        read_only: bool,
-        virtual_entries: Vec<VirtualDirEntry>,
-        stop_fd: EventFd,
-        exit_code: Arc<AtomicI32>,
-        restoring: bool,
-        #[cfg(target_os = "macos")] map_sender: Option<Sender<WorkerMessage>>,
-    ) -> Result<Self, io::Error> {
+    pub fn new(config: FsWorkerConfig) -> Result<Self, io::Error> {
+        let FsWorkerConfig {
+            queues,
+            queue_evts,
+            interrupt,
+            mem,
+            allow_idmap,
+            shm_region,
+            passthrough_cfg,
+            overlay_cfg,
+            read_only,
+            virtual_entries,
+            stop_fd,
+            exit_code,
+            restoring,
+            #[cfg(target_os = "macos")]
+            map_sender,
+        } = config;
         let inode_alloc = Arc::new(InodeAllocator::new());
         let server = match (overlay_cfg, passthrough_cfg) {
             (Some(cfg), _) => {

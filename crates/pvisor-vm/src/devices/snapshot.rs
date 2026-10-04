@@ -2,7 +2,7 @@
 //! CPU parking and RAM gating remain the VMM caller's responsibility.
 use crate::devices::{
     legacy::{
-        GicSnapshot, Gpio, GpioSnapshot, IrqChipDevice, RtcSnapshot, Serial, SerialSnapshot, RTC,
+        GicSnapshot, Gpio, GpioSnapshot, IrqChipDevice, RtcSnapshot, Serial, SerialSnapshot, Rtc,
     },
     virtio::{MmioSnapshot, MmioTransport},
     Bus, BusDevice,
@@ -30,7 +30,7 @@ fn supported(device: &dyn BusDevice) -> bool {
     let any = device.as_any();
     any.is::<MmioTransport>()
         || any.is::<IrqChipDevice>()
-        || any.is::<RTC>()
+        || any.is::<Rtc>()
         || any.is::<Gpio>()
         || any.is::<Serial>()
 }
@@ -102,7 +102,7 @@ impl Bus {
                     BusDeviceSnapshot::Virtio(device.capture_state()?)
                 } else if let Some(device) = any.downcast_mut::<IrqChipDevice>() {
                     BusDeviceSnapshot::Gic(device.capture_state()?)
-                } else if let Some(device) = any.downcast_mut::<RTC>() {
+                } else if let Some(device) = any.downcast_mut::<Rtc>() {
                     BusDeviceSnapshot::Rtc(device.capture_state()?)
                 } else if let Some(device) = any.downcast_mut::<Gpio>() {
                     BusDeviceSnapshot::Gpio(device.capture_state()?)
@@ -136,7 +136,7 @@ impl Bus {
             let matches = match &state.device {
                 BusDeviceSnapshot::Virtio(_) => any.is::<MmioTransport>(),
                 BusDeviceSnapshot::Gic(_) => any.is::<IrqChipDevice>(),
-                BusDeviceSnapshot::Rtc(_) => any.is::<RTC>(),
+                BusDeviceSnapshot::Rtc(_) => any.is::<Rtc>(),
                 BusDeviceSnapshot::Gpio(_) => any.is::<Gpio>(),
                 BusDeviceSnapshot::Serial(_) => any.is::<Serial>(),
             };
@@ -159,7 +159,7 @@ impl Bus {
                     .ok_or("GIC topology changed")?
                     .restore_state(state)?,
                 BusDeviceSnapshot::Rtc(state) => any
-                    .downcast_mut::<RTC>()
+                    .downcast_mut::<Rtc>()
                     .ok_or("RTC topology changed")?
                     .restore_state(state)?,
                 BusDeviceSnapshot::Gpio(state) => {

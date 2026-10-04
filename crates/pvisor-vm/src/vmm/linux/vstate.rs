@@ -2011,7 +2011,7 @@ mod tests {
         let gm = GuestMemoryMmap::from_ranges(&[(GuestAddress(0), mem_size)]).unwrap();
         let mut vm = Vm::new(kvm.fd()).expect("Cannot create new vm");
         #[cfg(target_arch = "x86_64")]
-        let _kvmioapic = KvmIoapic::new(&vm.fd()).unwrap();
+        let _kvmioapic = KvmIoapic::new(vm.fd()).unwrap();
         assert!(vm.memory_init(&gm, kvm.max_memslots()).is_ok());
 
         let exit_evt = EventFd::new(crate::utils::eventfd::EFD_NONBLOCK).unwrap();
