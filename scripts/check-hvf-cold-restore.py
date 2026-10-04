@@ -130,7 +130,7 @@ def main():
     if args.report:
         args.report.parent.mkdir(parents=True, exist_ok=True)
         args.report.write_text(json.dumps(report, indent=2) + "\n")
-    print(f"{len(results)} M0 checks passed; full pVisor VM restore is not implemented")
+    print(f"{len(results)} M0 checks passed; CPU/RAM only; full VM restore is outside this probe scope")
 
 
 if __name__ == "__main__":

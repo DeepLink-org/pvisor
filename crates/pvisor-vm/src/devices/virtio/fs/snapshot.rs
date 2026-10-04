@@ -224,9 +224,11 @@ impl FsSnapshot {
                         .custom_flags(pin_flags())
                         .open(&path)?;
                     let identity = FileIdentity::read(&pin)?;
-                    let kind = identity.mode & u32::from(libc::S_IFMT);
-                    let regular = kind == u32::from(libc::S_IFREG);
-                    let symlink = kind == u32::from(libc::S_IFLNK);
+                    #[allow(clippy::useless_conversion)] // libc mode constants differ in width across hosts.
+                    let (mask, regular_mode, symlink_mode) = (u32::from(libc::S_IFMT), u32::from(libc::S_IFREG), u32::from(libc::S_IFLNK));
+                    let kind = identity.mode & mask;
+                    let regular = kind == regular_mode;
+                    let symlink = kind == symlink_mode;
                     if identity.mode != saved.identity.mode
                         || identity.uid != saved.identity.uid
                         || identity.gid != saved.identity.gid

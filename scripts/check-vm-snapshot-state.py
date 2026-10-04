@@ -140,7 +140,7 @@ def main():
     if args.report:
         args.report.parent.mkdir(parents=True, exist_ok=True)
         args.report.write_text(json.dumps(report, indent=2) + "\n")
-    print(f"{len(checks)} VMM thread checks passed; full Linux VM restore remains incomplete")
+    print(f"{len(checks)} VMM thread checks passed; CPU/RAM/GIC only; full Linux VM restore is outside this probe scope")
 
 
 if __name__ == "__main__":

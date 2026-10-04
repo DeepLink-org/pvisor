@@ -110,6 +110,7 @@ test-rust *packages:
     #!/usr/bin/env bash
     set -euo pipefail
     args=()
+    needs_vm_signature=0
     for package in "$@"; do
       case "$package" in
         pvisor) package=pvisor ;;
@@ -117,10 +118,11 @@ test-rust *packages:
         capture) package=pvisor-gateway ;;
         shim) package=pvisor-shim ;;
       esac
+      if [[ "$package" == pvisor-vm ]]; then needs_vm_signature=1; fi
       args+=(-p "$package")
     done
-    if [[ $# -eq 0 ]]; then args+=(--workspace); fi
-    if [[ "$(uname -s)" == Darwin ]]; then
+    if [[ $# -eq 0 ]]; then args+=(--workspace); needs_vm_signature=1; fi
+    if [[ "$needs_vm_signature" == 1 && "$(uname -s)" == Darwin ]]; then
       python3 scripts/sign-vm-tests.py "${args[@]}"
     fi
     cargo nextest run --locked "${args[@]}"

@@ -477,7 +477,7 @@ pvisor run \
 `bridge` 需要外部 CNI 配置，当前会被拒绝。executor 记录 container 隔离，但不声称完整 capability
 enforcement。
 
-`--executor vm` 使用静态链接的 libkrun 及其嵌入 init 启动最小 Linux guest。
+`--executor vm` 使用静态链接的 `pvisor-vm` 及其嵌入 init 启动最小 Linux guest。
 `--vm-ram-backing FILE`（配置 `[vm].ram_backing`）指定尚不存在的私有 RAM
 backing 文件。省略时，在用户缓存下创建并在正常退出时删除临时文件。
 `--vm-ram-compression`（`[vm].ram_compression = true`）启用 PVZRAM v2 manifest
@@ -505,7 +505,7 @@ read/write 显式宿主共享目前仅支持 host executor。工作区改动进�
 VM 根目录其他写入使用临时 upper，并在 VM 退出时丢弃。
 
 合并后的 rootfs 是 guest `/`，`/workspace` 成为 guest cwd。在 Linux 和
-macOS 上，vendored libkrun 通过 virtio-fs 直接服务 pVisor 的 rootfs 与
+macOS 上，`pvisor-vm` 通过 virtio-fs 直接服务 pVisor 的 rootfs 与
 工作区 copy-on-write union。VMM 从不重新导出 host FUSE mount，也不物化或
 对账这两棵树。Linux 使用 KVM，Apple Silicon macOS 通过同一 executor 使用
 HVF。Linux 静态 musl 构建内嵌 guest 内核，运行时不需要固件共享库，
@@ -520,13 +520,13 @@ namespace 和 Landlock 约束 VMM。macOS VMM 仍拥有调用用户的 host 权�
 在 host/container 执行上，四个可见 OverlayNet 策略标志和 Gateway capture
 会自动启用代理 driver。`--safe` 默认暂存工作区，`--mount` 添加显式底层；
 工作区写入去向见 [暂存与存储](#暂存与存储)。当 stage 嵌在 base 或 compose 层内时，pVisor 从合并视图
-隐藏该子树，并拒绝 guest 重建它。libkrun Run 不创建 live host mountpoint，
+隐藏该子树，并拒绝 guest 重建它。VM Run 不创建 live host mountpoint，
 防止 host indexer 递归进入 `<stage>/merged`。反向拓扑——stage 包含 lower
 层——会被拒绝。在 pVisor 能安全物化完整 merged-vs-base diff 之前，组合 Run
 拒绝随后的 `pvisor apply` 命令。
 host/container 的选择性网络规则作用于经过显式代理的流量。host deny-all 使用
 namespace 或 Seatbelt 阻止直接出口；容器离线使用 `--container-network none`。
-在 libkrun VM 上，`auto` 使用 smoltcp IPv4 TCP/DNS，`off` 让 guest 离线；
+在 pVisor VM 上，`auto` 使用 smoltcp IPv4 TCP/DNS，`off` 让 guest 离线；
 deny-all 仍允许已配置的内部 Gateway 路由。各路径的范围见 [网络边界](../guides/policies/network.md)。
 
 ## Run 项目发现 {#run-项目发现}

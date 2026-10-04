@@ -513,6 +513,7 @@ impl OverlayFs {
         }
     }
 
+    #[allow(clippy::unnecessary_cast)] // mode_t is u16 on macOS and u32 on Linux.
     fn dtype(mode: libc::mode_t) -> u32 {
         ((mode & libc::S_IFMT) >> 12) as u32
     }

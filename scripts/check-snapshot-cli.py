@@ -125,7 +125,8 @@ def main():
             result = results[0]
             command('gc')
             record = {'scope':'actual product CLI run/save/restore/fork/list/delete/gc, standard guest launcher and argv', 'ram_storage':args.ram_storage, 'concurrent_branches':len(restored), 'branch_results':results, 'persistent_content':content_stats, 'content_gc_before_guest_checks':True, 'snapshot_id':identity, 'guest_before':original, 'guest_after':resumed, 'result':result, 'source_input_and_private_trees_deleted':True, 'published_snapshot_deleted_before_final_check':True, 'source_frontend_exit_code':parent.returncode, 'cli_sha256':hashlib.sha256(binary.read_bytes()).hexdigest(), 'logs':{p.name:p.read_text() for p in base.glob('runner-*.*')}}
-            destination = ROOT/'review_project/06-evidence/macos-cold-restore'/f'product-cli-{args.ram_storage}-{"fork" if args.fork else "restore"}-20261003.json'
+            destination = ROOT/'target/vm-validation'/f'product-cli-{args.ram_storage}-{"fork" if args.fork else "restore"}.json'
+            destination.parent.mkdir(parents=True, exist_ok=True)
             destination.write_text(json.dumps(record, ensure_ascii=False, indent=2)+'\n')
             print(json.dumps({'result':result,'evidence':str(destination)},ensure_ascii=False))
         finally:

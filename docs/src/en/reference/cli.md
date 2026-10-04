@@ -191,7 +191,7 @@ filesystem sandbox or network isolation is requested; filesystem policy and
 network policy are independent. For a deny-all Run it blocks IP and ambient host
 Unix sockets while retaining the exact AgentCtl and Run-local IPC. Reads and
 selective network policy remain ambient/cooperative and are labeled separately
-in the Bundle. Native OCI and libkrun executors retain the same outer Run,
+in the Bundle. Native OCI and pVisor VM executors retain the same outer Run,
 OverlayFS and AgentCtl state observation.
 
 After completion:
@@ -626,7 +626,7 @@ endpoints. `none` mode is valid when these drivers are off; `bridge` requires
 external CNI configuration and is currently rejected. The executor records
 container isolation but does not claim complete capability enforcement.
 
-`--executor vm` uses statically linked libkrun and its embedded init to boot a
+`--executor vm` uses statically linked `pvisor-vm` and its embedded init to boot a
 minimal Linux guest. `--vm-ram-backing FILE` (`[vm].ram_backing`) creates a new
 private file backing live RAM. When omitted, an attempt-local file in the user
 cache is deleted on normal exit. `--vm-ram-compression`
@@ -663,7 +663,7 @@ retained after exit; other writes to the VM root use a temporary upper and are
 discarded when the VM exits.
 
 The merged rootfs is guest `/`, and `/workspace` becomes the guest cwd. On both
-Linux and macOS, a vendored libkrun serves pVisor's rootfs and workspace
+Linux and macOS, `pvisor-vm` serves pVisor's rootfs and workspace
 copy-on-write unions directly over virtio-fs. The VMM never re-exports a host
 FUSE mount and does not materialize or reconcile either tree. Linux uses KVM and
 Apple Silicon macOS uses HVF through the same executor. Linux static musl builds
@@ -684,14 +684,14 @@ Gateway capture automatically enable the proxy driver. `--safe` stages the
 workspace by default and `--mount` adds explicit lower layers; see
 [Staging and storage](#暂存与存储) for write destinations. When a stage is nested
 inside a base or compose layer, pVisor hides that subtree from the merged view
-and rejects guest attempts to recreate it. libkrun Runs create no live host
+and rejects guest attempts to recreate it. VM Runs create no live host
 mountpoint, preventing host indexers from recursively entering `<stage>/merged`.
 The reverse topology, where a stage contains a lower layer, is rejected. Until
 pVisor can safely materialize a complete merged-vs-base diff, a composed Run
 rejects a subsequent `pvisor apply`. Selective host/container network rules
 apply to traffic through the explicit proxy. Host deny-all uses a namespace or
 Seatbelt to block direct egress; containers can use `--container-network none`
-for offline execution. On a libkrun VM, `auto` uses smoltcp IPv4 TCP/DNS and
+for offline execution. On a pVisor VM, `auto` uses smoltcp IPv4 TCP/DNS and
 `off` leaves the guest offline; deny-all still permits configured internal
 Gateway routes. See [network boundaries](../guides/policies/network.md) for the
 scope of each path.

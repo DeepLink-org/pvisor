@@ -1,6 +1,6 @@
 # Architecture decision records (ADR)
 
-Start with four choices already reflected in pVisor's implementation and development workflow. These records explain the current system for design review and carry the status “implementation backfill”.
+These records cover choices already reflected in pVisor's implementation and development workflow. They explain the current system for design review and carry the status “implementation backfill”.
 
 | Number | Choice | Record status |
 | --- | --- | --- |
@@ -8,6 +8,7 @@ Start with four choices already reflected in pVisor's implementation and develop
 | 0002 | Give Gateway and Replay independent boundaries | Implementation backfill |
 | 0003 | Preserve executor selection under safe; reject missing controls | Implementation backfill |
 | 0004 | Human approval establishes semantic commitments | Existing contribution rule backfill |
+| 0005 | One Rust VM crate and a uniform trait API | Implementation backfill |
 
 ## 0001: A plan cannot prove that controls were installed {#adr-0001}
 
@@ -48,6 +49,18 @@ Start with four choices already reflected in pVisor's implementation and develop
 **Current choice.** AI and contributors can draft cases, fix implementations, and maintain runner tests. Humans maintain `semspec approve`, `revoke`, real `REVIEWED.toml` ledgers, and `.approved/` snapshots. Existing checks and xfail annotations must not be weakened to obtain PASS. See [Testing and semspec](../../community/testing.md).
 
 **Consequences.** Reviews consider claims, execution results, and human approval records together. Green tests do not automatically expand support.
+
+## 0005: Keep VM backend differences inside one Rust runtime {#adr-0005}
+
+**Status.** Implementation backfill; this records the implemented boundary, not independent maintainer approval.
+
+**Context.** VM configuration, device customizations and snapshots were split between pVisor and multiple libkrun crates. C contexts, borrowed raw pointers and public backend structs made ownership and platform differences leak into consumers.
+
+**Options.** Retain an external C context ABI and vendored component crates, or consolidate private runtime modules behind one Rust contract.
+
+**Current choice.** `pvisor-vm` compiles the core modules together. Only `api` is public; portable structs and traits define every public method signature without conditional compilation or default implementations. Private adapters implement those traits. Architecture layout and hypervisor behavior have separate internal traits; callers receive explicit unsupported errors and inspect capabilities. Firmware data ABI and OS FFI remain private.
+
+**Migration and consequences.** Executor, shim, snapshot/checkpoint/pager, examples and the init benchmark use the new API. Hardware/device tests move inside the crate. Static kernel packing belongs to the runtime. Old core crate dependencies and VM control C functions are removed; existing evidence identifiers and serialized snapshot fields remain compatible. Uniform API shape does not promise cross-architecture restore. `api_contract` and `repository_boundary` guard the boundary; native tests and target compile checks supply distinct evidence. See [development](../../community/development.md) and the [runtime contract](https://github.com/deeplink-org/pvisor/blob/main/crates/pvisor-vm/README.md).
 
 ## Record the next decision {#new-decision}
 

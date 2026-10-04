@@ -83,8 +83,27 @@ def test_test_routes_packages_and_python(run_task):
         ]
     ]
     commands = run_task("test")
-    assert commands[0] == ["cargo", "nextest", "run", "--locked", "--workspace"]
-    assert commands[1] == ["uv", "run", "--extra", "dev", "pytest", "-q"]
+    signing = (
+        [["python3", "scripts/sign-vm-tests.py", "--workspace"]]
+        if sys.platform == "darwin"
+        else []
+    )
+    assert commands == signing + [
+        ["cargo", "nextest", "run", "--locked", "--workspace"],
+        ["uv", "run", "--extra", "dev", "pytest", "-q"],
+    ]
+
+
+def test_vm_package_signs_before_running_native_tests(run_task):
+    commands = run_task("test", "pvisor-vm")
+    signing = (
+        [["python3", "scripts/sign-vm-tests.py", "-p", "pvisor-vm"]]
+        if sys.platform == "darwin"
+        else []
+    )
+    assert commands == signing + [
+        ["cargo", "nextest", "run", "--locked", "-p", "pvisor-vm"]
+    ]
 
 
 def test_ci_checks_format_without_rewriting(run_task):

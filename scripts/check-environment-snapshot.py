@@ -1,5 +1,6 @@
 #!/usr/bin/env python3
 """Real Linux independent full-copy environment save/exit/restore on macOS HVF."""
+import argparse
 import hashlib
 import json
 import os
@@ -14,6 +15,9 @@ DRIVER = ROOT / 'target/debug/examples/vm_environment_snapshot'
 FIRMWARE = Path(os.environ.get('PVISOR_CASE_VM_LIBRARY_DIR', str(Path.home() / 'Library/Caches/pvisor/firmware/5.5.0/macos-aarch64')))
 
 def main():
+    parser = argparse.ArgumentParser(description=__doc__)
+    parser.add_argument("--report", type=Path, default=ROOT / "target/vm-validation/environment-linux.json")
+    args = parser.parse_args()
     subprocess.run(['cargo', 'build', '-p', 'pvisor', '--example', 'vm_environment_snapshot', '--locked', '--offline'], cwd=ROOT, check=True)
     with tempfile.TemporaryDirectory(prefix='pvisor-environment-snapshot-') as directory:
         base = Path(directory)
@@ -23,7 +27,7 @@ def main():
         subprocess.run(['codesign', '--force', '--sign', '-', '--entitlements', str(ROOT / 'crates/pvisor/macos-hypervisor.entitlements'), str(runner)], check=True)
         root = base / 'rootfs'
         root.mkdir()
-        subprocess.run(['rustc', '--edition', '2024', '--target', 'aarch64-unknown-linux-musl', '-C', 'linker=rust-lld', '-C', 'opt-level=2', str(ROOT / 'tools/experiments/macos-cold-restore/guest_linux.rs'), '-o', str(root / 'init.krun')], check=True)
+        subprocess.run(['rustc', '--edition', '2024', '--target', 'aarch64-unknown-linux-musl', '-C', 'linker=rust-lld', '-C', 'opt-level=2', str(ROOT / 'crates/pvisor-vm/src/probes/guest_linux.rs'), '-o', str(root / 'init.krun')], check=True)
         # Include state the guest never looks up, to exercise the full seal.
         (root / 'unvisited').write_bytes(b'independent filesystem contents')
         env = dict(os.environ, DYLD_LIBRARY_PATH=str(FIRMWARE))
@@ -63,7 +67,7 @@ def main():
                         raise RuntimeError('independent restore failed: ' + out.read_text() + err.read_text())
                     time.sleep(0.05)
                 resumed = (work / 'ready').read_text()
-                assert resumed.split()[:2] == original.split()[:2]
+                assert resumed.split()[:2] == original.split()[:2], (original, resumed)
                 assert int(resumed.split()[2]) > int(original.split()[2])
                 assert (work / 'unvisited').read_bytes() == b'independent filesystem contents'
                 assert not root.exists()
@@ -83,7 +87,8 @@ def main():
                 assert result.startswith('linux-cold-restore-ok ')
                 assert len((work / 'starts').read_text().splitlines()) == 1
                 record = {'scope': 'same-host/boot/build real Linux independent full-copy environment snapshot', 'snapshot_id': identity, 'cpu_count': len(machine['state']['cpus']), 'ram_mapping_bytes': sum(item['len'] for item in machine['state']['ram']), 'device_inventory': [{'base': item['base'], 'len': item['len'], 'kind': item['device']['kind'], 'virtio_type': item['device']['state'].get('device_type') if item['device']['kind'] == 'Virtio' else None} for item in machine['state']['devices']], 'excluded_resources': machine['excluded_resources'], 'source_pid': machine['source_pid'], 'restore_pid': target.pid, 'source_reaped_before_restore': True, 'original_tree_deleted_before_restore': True, 'published_object_deleted_before_guest_final_check': True, 'guest_before': original, 'guest_after': resumed, 'result': result, 'manifest': manifest, 'negative_payloads': rejected, 'same_execution_lease_rejected_second_runner': True, 'source_stdout': source.stdout, 'source_stderr': source.stderr, 'restore_stdout': out.read_text(), 'restore_stderr': err.read_text(), 'driver_sha256': hashlib.sha256(runner.read_bytes()).hexdigest(), 'firmware_sha256': hashlib.sha256((FIRMWARE/'libkrunfw.5.dylib').read_bytes()).hexdigest(), 'guest_sha256': hashlib.sha256((work/'init.krun').read_bytes()).hexdigest()}
-                evidence = ROOT / 'review_project/06-evidence/macos-cold-restore/environment-linux-20261003.json'
+                evidence = args.report
+                evidence.parent.mkdir(parents=True, exist_ok=True)
                 evidence.write_text(json.dumps(record, ensure_ascii=False, indent=2)+'\n')
                 print(json.dumps({'result': result, 'evidence': str(evidence)}, ensure_ascii=False), flush=True)
             finally:

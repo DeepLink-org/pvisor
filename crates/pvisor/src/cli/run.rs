@@ -3669,12 +3669,17 @@ sandbox = "required""#
         config.run.command = vec!["agent".into()];
         config.run.executor = RunExecutorKind::Vm;
         config.vm.rootfs = Some(temporary.path().to_path_buf());
-        config.vm.library_dir = Some(temporary.path().to_path_buf());
-        std::fs::write(
-            temporary.path().join(crate::executor::vm::firmware_name()),
-            [],
-        )
-        .unwrap();
+        // Static builds already own their kernel and reject a dynamic firmware
+        // directory. Set up valid VM inputs before checking the proxy contract.
+        #[cfg(not(all(target_os = "linux", target_env = "musl", target_arch = "x86_64")))]
+        {
+            config.vm.library_dir = Some(temporary.path().to_path_buf());
+            std::fs::write(
+                temporary.path().join(crate::executor::vm::firmware_name()),
+                [],
+            )
+            .unwrap();
+        }
         config.overlayfs = Some(OverlayFsSettings {
             base: Some(temporary.path().to_path_buf()),
             ..OverlayFsSettings::default()

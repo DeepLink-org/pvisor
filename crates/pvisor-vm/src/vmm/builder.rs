@@ -1317,7 +1317,7 @@ fn load_external_kernel(
                 .map_err(StartMicrovmError::ImageBz2OpenKernel)?;
             if let Some(magic) = data
                 .windows(3)
-                .position(|window| window == [b'B', b'Z', b'h'])
+                .position(|window| window == b"BZh")
             {
                 debug!("Found BZIP2 header on Image file at: 0x{magic:x}");
                 let (_, compressed) = data.split_at(magic);

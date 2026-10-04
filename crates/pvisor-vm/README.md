@@ -66,3 +66,5 @@ CLI 执行器、containerd shim、暂停/恢复、快照、checkpoint、RAM page
 `just test pvisor-vm` 运行设备、快照和接口契约测试；macOS 自动使用仓库既有 Hypervisor entitlement 签署测试程序。真实 HVF/KVM 和本地 socket 测试需要宿主权限。Linux 测试中创建 VM 的用例需要可用 `/dev/kvm`。
 
 `repository_boundary` 检查所有工作区 manifest 与外部 Rust 调用者，防止重新依赖旧 VM 核心 crate。`api_contract` 保证 API 无条件编译、无方法体，并禁止私有适配器另设公开固有方法。
+
+真实 Linux guest 的独立 rootfs/RAM 保存与恢复验证使用 `python3 scripts/check-environment-snapshot.py --report target/vm-validation/environment-linux.json`（Apple Silicon HVF）。guest 探针在 `src/probes/guest_linux.rs`，readiness 使用原子 rename 发布，避免把探针写文件的中间状态误判为恢复失败。底层 CPU/RAM 与 VMM-thread CPU/RAM/GIC 检查分别使用 `check-hvf-cold-restore.py` 和 `check-vm-snapshot-state.py`，它们的报告只描述各自覆盖的范围。
