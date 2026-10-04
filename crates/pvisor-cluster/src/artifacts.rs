@@ -20,10 +20,34 @@ pub struct ArtifactStore {
 pub(crate) struct VerifiedArtifacts {
     reference: BlobRef,
     key: LeaseKey,
+    run: BundleRunIdentity,
+}
+#[derive(serde::Deserialize)]
+struct BundleRunIdentity {
+    run_id: pvisor_core::RunId,
+    attempt_id: pvisor_core::AttemptId,
+    state: pvisor_core::RunState,
+    started_at_unix_ms: u64,
+    finished_at_unix_ms: u64,
+    exit_code: Option<i32>,
 }
 impl VerifiedArtifacts {
-    pub(crate) fn matches(&self, reference: &BlobRef, key: &LeaseKey) -> bool {
-        self.reference == *reference && self.key == *key
+    pub(crate) fn matches(
+        &self,
+        reference: &BlobRef,
+        key: &LeaseKey,
+        result: Option<&pvisor_core::RunResult>,
+    ) -> bool {
+        self.reference == *reference
+            && self.key == *key
+            && result.is_some_and(|r| {
+                self.run.run_id == r.run_id
+                    && self.run.attempt_id == r.attempt_id
+                    && self.run.state == r.state
+                    && self.run.started_at_unix_ms == r.started_at_unix_ms
+                    && self.run.finished_at_unix_ms == r.finished_at_unix_ms
+                    && self.run.exit_code == r.exit_code
+            })
     }
 }
 impl ArtifactStore {
@@ -79,6 +103,7 @@ impl ArtifactStore {
             std::process::id(),
             TEMP_ID.fetch_add(1, Ordering::Relaxed)
         ));
+        let mut created = false;
         let published = (|| -> anyhow::Result<()> {
             let mut file = OpenOptions::new()
                 .write(true)
@@ -86,6 +111,7 @@ impl ArtifactStore {
                 .mode(0o400)
                 .custom_flags(libc::O_NOFOLLOW)
                 .open(&temporary)?;
+            created = true;
             file.write_all(bytes)?;
             file.sync_all()?;
             match fs::hard_link(&temporary, &path) {
@@ -98,7 +124,11 @@ impl ArtifactStore {
             File::open(directory)?.sync_all()?;
             Ok(())
         })();
-        let removed = fs::remove_file(&temporary);
+        let removed = if created {
+            fs::remove_file(&temporary)
+        } else {
+            Ok(())
+        };
         published?;
         removed?;
         File::open(directory)?.sync_all()?;
@@ -148,19 +178,35 @@ impl ArtifactStore {
             manifest.files.iter().any(|f| f.name == "run-bundle.json"),
             "missing native Run Bundle artifact"
         );
+        let mut bundle = Vec::new();
         for file in &manifest.files {
             let mut hash = blake3::Hasher::new();
             for chunk in &file.chunks {
-                hash.update(&self.get(chunk)?);
+                let bytes = self.get(chunk)?;
+                hash.update(&bytes);
+                if file.name == "run-bundle.json" {
+                    bundle.extend_from_slice(&bytes);
+                }
             }
             ensure!(
                 hash.finalize().to_hex().as_str() == file.digest,
                 "whole artifact file integrity check failed"
             );
         }
+        // Validate attempt identity independently of the worker. The worker
+        // validates the complete native schema; this crate has no dependency
+        // on the executor or its evolving Bundle schema.
+        #[derive(serde::Deserialize)]
+        struct BundleIdentity {
+            schema_version: u32,
+            run: BundleRunIdentity,
+        }
+        let identity: BundleIdentity = serde_json::from_slice(&bundle)?;
+        ensure!(identity.schema_version > 0, "invalid Bundle schema version");
         Ok(VerifiedArtifacts {
             reference: reference.clone(),
             key: key.clone(),
+            run: identity.run,
         })
     }
 }

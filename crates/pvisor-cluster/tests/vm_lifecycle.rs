@@ -35,6 +35,7 @@ fn spec(id: &str) -> TaskSpec {
         labels: BTreeMap::new(),
         cache_keys: vec![],
         retain_bundle: false,
+        environment: None,
     }
 }
 fn worker() -> WorkerRegistration {
@@ -52,6 +53,7 @@ fn worker() -> WorkerRegistration {
         cache_keys: vec![],
         vm_control_protocol: Some(CLUSTER_VERSION),
         artifact_protocol: None,
+        environment_support: None,
         vm_control_actions: vec![
             ControlAction::Pause,
             ControlAction::Offload,

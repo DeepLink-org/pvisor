@@ -13,6 +13,11 @@ pub const MAX_READ: u32 = 1024 * 1024;
 #[serde(tag = "op", rename_all = "snake_case", deny_unknown_fields)]
 pub enum Request {
     Ping,
+    /// Open a published immutable revision without reading mutable HEAD.
+    Open {
+        handle: String,
+        architecture: String,
+    },
     Prepare {
         image: String,
         architecture: String,

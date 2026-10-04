@@ -34,6 +34,11 @@ enum Command {
     Submit {
         spec: PathBuf,
     },
+    /// Register or inspect an immutable native-cache environment template.
+    Environment {
+        #[command(subcommand)]
+        command: EnvironmentCommand,
+    },
     Show {
         id: String,
     },
@@ -68,6 +73,11 @@ enum Action {
     Pause,
     Offload,
     Resume,
+}
+#[derive(Subcommand)]
+enum EnvironmentCommand {
+    Publish { template: PathBuf },
+    Show { digest: String },
 }
 
 #[tokio::main]
@@ -110,6 +120,14 @@ async fn main() -> anyhow::Result<()> {
     }
     let client = Client::new(&args.url, token)?;
     let value = match args.command {
+        Command::Environment { command } => serde_json::to_value(match command {
+            EnvironmentCommand::Publish { template } => {
+                client
+                    .publish_environment(&serde_json::from_slice(&std::fs::read(template)?)?)
+                    .await?
+            }
+            EnvironmentCommand::Show { digest } => client.environment(&digest).await?,
+        })?,
         Command::Submit { spec } => serde_json::to_value(
             client
                 .submit(&serde_json::from_slice(&std::fs::read(spec)?)?)

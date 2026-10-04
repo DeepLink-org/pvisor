@@ -36,6 +36,70 @@ fn read_handle(cache: &PortableCache) -> String {
         _ => panic!("missing v1 read handle"),
     }
 }
+
+#[test]
+fn immutable_open_survives_head_replacement_and_does_not_resolve_an_oci_tag() {
+    let (tmp, cache, store, image) = fixture();
+    let (canonical, _) = crate::image::oci::cache_reference("example:test").unwrap();
+    cache.publish(&store, &image, "amd64", &canonical).unwrap();
+    let old = read_handle(&cache);
+    let mut updated = image.clone();
+    updated.env.insert("EXAMPLE".into(), "new-version".into());
+    cache
+        .publish(&store, &updated, "amd64", &canonical)
+        .unwrap();
+    assert_ne!(old, read_handle(&cache));
+    fs::remove_file(
+        tmp.path()
+            .join("shared")
+            .join(head_key(&canonical, "linux-amd64")),
+    )
+    .unwrap();
+    fs::remove_dir_all(&store.root).unwrap();
+    let reader = PortableCache::new(
+        Storage::filesystem(tmp.path().join("shared"), false).unwrap(),
+        Some(tmp.path().join("reader")),
+        true,
+    );
+    let (response, _) = reader
+        .request(Request::Open {
+            handle: old.clone(),
+            architecture: "amd64".into(),
+        })
+        .unwrap();
+    assert!(
+        matches!(response, Response::Prepared { image_handle: Some(handle), env, .. } if handle == old && env["EXAMPLE"] == "value")
+    );
+    assert!(
+        !tmp.path().join("reader").exists(),
+        "immutable open never creates OCI extraction state"
+    );
+    let (_, bytes) = reader
+        .request(Request::Read {
+            digest: old.clone(),
+            path: b"small".to_vec(),
+            offset: 0,
+            length: 64,
+        })
+        .unwrap();
+    assert_eq!(bytes, b"small");
+    assert!(
+        reader
+            .request(Request::Open {
+                handle: old,
+                architecture: "arm64".into()
+            })
+            .is_err()
+    );
+    assert!(
+        reader
+            .request(Request::Open {
+                handle: "example:test".into(),
+                architecture: "amd64".into()
+            })
+            .is_err()
+    );
+}
 #[test]
 fn filesystem_publishing_and_offline_readers_preserve_the_image_contract() {
     let (tmp, publisher, store, image) = fixture();

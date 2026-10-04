@@ -133,6 +133,17 @@ impl PortableCache {
     }
     pub(super) fn request(&self, request: Request) -> anyhow::Result<(Response, Vec<u8>)> {
         match request {
+            Request::Open {
+                handle,
+                architecture,
+            } => {
+                let handle = Handle::parse(&handle)?;
+                ensure!(
+                    handle.platform == platform(&architecture)?,
+                    "immutable cache handle architecture mismatch"
+                );
+                Ok((self.load(&handle)?.prepared(), Vec::new()))
+            }
             Request::Ping => {
                 if let Some(bytes) = self.storage.get("format.json")? {
                     ensure!(bytes == FORMAT, "unsupported cache format");

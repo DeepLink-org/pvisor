@@ -32,7 +32,7 @@ Primary sources inspected on 2026-10-04:
 
 | Required behavior | Current authoritative implementation | Remaining acceptance evidence |
 | --- | --- | --- |
-| Distributed user task execution | HTTP submit/show/cancel, multi-worker process execution, common RunSpec/RunResult | Multi-host workload, task graph/scaffold integration, artifact collection |
+| Distributed user task execution | HTTP submit/show/cancel, multi-worker process execution, common RunSpec/RunResult; optional remote native Run Bundle retention | Multi-host workload, task graph/scaffold integration, workspace/trace export |
 | Backend/isolation selection | Exact execution class and label matching; host/rootless/container/VM workers | VM/container distributed execution and host-policy failure experiments |
 | Reliable control | fsync-before-ack WAL, fencing, cancellation, expiry, drain, idempotent submit/completion; unstarted admission rejection/requeue | Restart during live workloads, disk-full faults, worker restart outbox recovery |
 | Scalable scheduling | Bounded ready window, indexed expiration, batched leases, reservations, tenant quotas | Sharding, replicated authority, group commit, admission/load measurements and large-scale benchmarks |
@@ -42,7 +42,7 @@ Primary sources inspected on 2026-10-04:
 | Dense memory use | VM size derived from task admission budget; host-local shared RAM/cache profile options; offload observations retain RAM charge | Physical resident-memory accounting, controlled reclaim/overcommit and measured density improvement |
 | CPU QoS/controlled overcommit | CPU reservations; optional Linux PSI, affinity and visible cgroup v2 CPU/memory admission; native resume gating | BE/LS enforcement, per-attempt physical accounting, pressure-aware overcommit and latency/isolation verification |
 | RL preemption/resumption | Lease protocol and per-task evidence | Preserve rollout/scaffold state independently of GPU scheduling; resumable checkpoint coordination |
-| Access control and observability | Distinct admin/worker API credentials, explicit task environment, trace and local Bundle | Per-tenant/node identities, TLS deployment, centralized artifacts/traces, dynamic task policies/Gateway integration |
+| Access control and observability | Distinct admin/worker API credentials, explicit task environment, local trace; verified remote native Bundle downloads | Per-tenant/node identities, TLS deployment, centralized workspace/trace artifacts, dynamic task policies/Gateway integration |
 
 Completion requires the whole matrix, not only passing scheduler tests. The
 unconnected ordinary-Job checkpoint path is documented in
@@ -120,6 +120,57 @@ out of local availability. Control failure keeps the prior charge until
 completion or lease expiry. Slots and the full RAM budget remain reserved
 while paused or offloaded. Native `mincore` residency samples do not account
 for all compressed/shared host allocations and are not proof of freed memory.
+
+## Retain and download native execution evidence
+
+Set `"retain_bundle": true` in a task specification to require retention of
+the native `run-bundle.json` before successful cluster completion. The default
+is false. Only workers advertising the artifact protocol can receive such a
+task. This requirement is part of the immutable submission specification.
+The checked-in `hello` task example enables retention.
+
+```sh
+target/debug/pvisor-cluster artifacts hello
+target/debug/pvisor-cluster artifacts hello --out /tmp/hello-evidence
+```
+
+The first command prints the manifest; `--out` downloads files, verifies each
+chunk and the complete file, and publishes verified files without overwriting
+existing destination files. The native Bundle bytes are preserved, including
+executor observations and native output; the separate inline RunResult still
+obeys its wire output limit.
+
+Workers upload content-addressed BLAKE3 objects of at most 1 MiB, with a 64 MiB
+limit per file. The current worker exports one native Bundle. The manifest
+binds files to the exact task, lease generation, worker and incarnation. Before
+accepting completion, the controller verifies every chunk, whole-file digest
+and Bundle Run/Attempt identity, terminal state, timestamps and exit code
+against the completion result. The worker additionally validates the complete
+native Bundle schema. Bulk verification runs outside the scheduler lock.
+Objects are fsynced and published without replacement in a private directory
+beside the journal, with its extension replaced by `.artifacts`; the WAL stores
+the manifest reference only after verification. Back up both together.
+
+Upload requires a live lease before and after object publication. Duplicate
+uploads safely reuse identical bytes; transient failures retry while the worker
+continues lease renewal. Cancellation and lease expiry interrupt retention.
+Expired or superseded attempts cannot attach artifacts to tasks. Admin
+credentials read manifests and objects; worker credentials upload and cannot
+read other tasks' artifacts. These are trusted deployment roles, not tenant
+isolation or attestation of an untrusted worker.
+
+If native execution finishes but retention fails, the task records the native
+RunResult and a separate `artifact_error`. A required archive failure makes
+the aggregate cluster task Failed, even when native execution Completed; it
+does not rewrite that native result or automatically repeat side effects.
+Local assignment, Bundle, export manifest/reference when available, and final
+completion records remain in worker storage for inspection.
+
+This exports the Bundle itself. Paths to local traces, workspace files and
+other artifacts inside it remain local references; this is not complete
+workspace export, an execution snapshot, or portable recovery. Object storage
+is controller-local and append-only. Storage quotas, orphan GC, remote
+replication and worker crash/restart delivery remain implementation gates.
 
 ## Worker profiles and scheduling
 
@@ -278,8 +329,10 @@ not infer a successful resume from request delivery.
   worker with SIGINT/SIGTERM requests native cancellation and sends completion
   evidence before exit. SIGKILL is an unconfirmed loss case.
 
-API routes: admin credentials can submit/read/cancel/control tasks, list/drain workers
-and read counts; worker credentials can register/poll/decline/complete/acknowledge controls. Health
+API routes: admin credentials can submit/read/cancel/control tasks, download
+artifact manifests/objects, list/drain workers and read counts; worker
+credentials can register/poll/decline/complete/acknowledge controls and upload
+lease-bound artifact objects. Health
 exposes the protocol version. Both roles are trusted deployment services.
 TLS termination and node/tenant credential issuance are deployment work still
 to implement. The HTTP request limit is 4 MiB; the single shard retains at most
@@ -325,6 +378,14 @@ then another Worker completes the same task under a new generation.
 Fixtures and this adversarial service test do not establish measured CPU QoS,
 memory reclaim or production-scale performance.
 
+Artifact tests verify missing/corrupt chunks, whole-file and attempt identity
+mismatches, unsupported workers, traversal filenames, role separation, body
+limits and late uploads. A real worker test loses successful upload replies
+for longer than a lease interval, proves continued renewal and multi-chunk
+retention, then restarts the controller and compares downloaded bytes with
+the native Bundle. Other real worker tests interrupt uploading with cancellation
+and confirm export failures retain native completion without repeating commands.
+
 Next gates, in dependency order:
 
 1. Validate distributed controls on VM hardware, connect inference-wait
@@ -333,8 +394,9 @@ Next gates, in dependency order:
    backing-file residency sample is zero.
 2. Connect full execution snapshot/restore and immutable checkpoint lineage
    to ordinary Job attempts, then fork, restore and cross-node recovery.
-3. Implement immutable task environments and remote output collection,
-   Gateway/scaffold state and idempotent worker restart delivery.
+3. Implement immutable task environments, extend native Bundle retention to
+   workspace/trace artifacts, and connect Gateway/scaffold state and idempotent
+   worker restart delivery.
 4. Add enforced CPU QoS and controlled memory/CPU overcommit using node reports;
    shard/replicate authority and group durable operations.
 5. Measure completed useful tasks/sec, p50/p95/p99 step and lifecycle latency,

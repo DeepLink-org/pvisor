@@ -205,6 +205,9 @@ fn metadata_at(directory: &File, name: &[u8]) -> anyhow::Result<Response> {
 
 pub(super) fn handle(store: &ImageStore, request: Request) -> anyhow::Result<(Response, Vec<u8>)> {
     let response = match request {
+        Request::Open { .. } => {
+            anyhow::bail!("immutable revisions require a filesystem or S3 native cache backend")
+        }
         Request::Ping => Response::Ready,
         Request::Prepare {
             image,

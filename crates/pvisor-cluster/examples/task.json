@@ -17,5 +17,6 @@
     "runtime": {"timeout_ms": 10000, "max_output_bytes": 4096}
   },
   "execution": {"executor": "process", "isolation": "host_process"},
-  "resources": {"slots": 1, "memory_bytes": 67108864, "cpu_millis": 100}
+  "resources": {"slots": 1, "memory_bytes": 67108864, "cpu_millis": 100},
+  "retain_bundle": true
 }

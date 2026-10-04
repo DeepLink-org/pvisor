@@ -103,6 +103,8 @@ pub fn router(
         }
     });
     let admin = Router::new()
+        .route("/v1/environments", post(publish_environment))
+        .route("/v1/environments/{digest}", get(environment))
         .route("/v1/tasks", post(submit))
         .route("/v1/tasks/{id}", get(task))
         .route("/v1/tasks/{id}/cancel", post(cancel))
@@ -134,6 +136,18 @@ pub fn router(
         .with_state(app))
 }
 
+async fn publish_environment(
+    State(app): State<App>,
+    Json(template): Json<EnvironmentTemplate>,
+) -> Result<Json<EnvironmentRecord>, ApiError> {
+    run(app, move |s| s.publish_environment(template)).await
+}
+async fn environment(
+    State(app): State<App>,
+    Path(digest): Path<String>,
+) -> Result<Json<EnvironmentRecord>, ApiError> {
+    run(app, move |s| s.environment(&digest)).await
+}
 async fn submit(
     State(app): State<App>,
     Json(spec): Json<TaskSpec>,

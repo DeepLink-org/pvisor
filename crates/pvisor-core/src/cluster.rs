@@ -67,6 +67,9 @@ pub struct TaskSpec {
     /// Require durable controller-side retention of the native Run Bundle.
     #[serde(default)]
     pub retain_bundle: bool,
+    /// Content digest of a registered immutable VM environment template.
+    #[serde(default)]
+    pub environment: Option<String>,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -90,6 +93,84 @@ pub struct WorkerRegistration {
     pub vm_control_actions: Vec<ControlAction>,
     #[serde(default)]
     pub artifact_protocol: Option<u32>,
+    #[serde(default)]
+    pub environment_support: Option<EnvironmentSupport>,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
+pub struct EnvironmentSupport {
+    pub version: u32,
+    pub architecture: String,
+}
+
+/// A native cache revision, independent of mutable OCI tags and cache locations.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
+pub struct EnvironmentLayer {
+    pub handle: String,
+    pub manifest_digest: String,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
+pub struct EnvironmentTemplate {
+    pub version: u32,
+    pub architecture: String,
+    pub base: EnvironmentLayer,
+    #[serde(default)]
+    pub workspace: Option<EnvironmentLayer>,
+    /// Bottom to top: later toolkits take precedence in the merged root.
+    #[serde(default)]
+    pub toolkits: Vec<EnvironmentLayer>,
+}
+impl EnvironmentTemplate {
+    pub fn layers(&self) -> impl DoubleEndedIterator<Item = &EnvironmentLayer> {
+        std::iter::once(&self.base)
+            .chain(self.workspace.iter())
+            .chain(self.toolkits.iter())
+    }
+    pub fn validate(&self) -> anyhow::Result<()> {
+        anyhow::ensure!(
+            self.version == CLUSTER_VERSION && self.toolkits.len() <= 16,
+            "invalid environment version/layer count"
+        );
+        let platform = match self.architecture.as_str() {
+            "amd64" => "linux-amd64",
+            "arm64" => "linux-arm64-v8",
+            _ => anyhow::bail!("unsupported environment architecture"),
+        };
+        let hex = |s: &str| {
+            s.len() == 64
+                && s.bytes()
+                    .all(|b| b.is_ascii_digit() || (b'a'..=b'f').contains(&b))
+        };
+        for layer in self.layers() {
+            let parts: Vec<_> = layer.handle.split(':').collect();
+            anyhow::ensure!(
+                parts.len() == 4
+                    && parts[0] == "pvisor-v1"
+                    && hex(parts[1])
+                    && parts[2] == platform
+                    && hex(parts[3]),
+                "environment requires an immutable native cache handle for its platform"
+            );
+            anyhow::ensure!(
+                layer
+                    .manifest_digest
+                    .strip_prefix("sha256:")
+                    .is_some_and(hex),
+                "invalid layer manifest digest"
+            );
+        }
+        Ok(())
+    }
+}
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
+pub struct EnvironmentRecord {
+    pub digest: String,
+    pub template: EnvironmentTemplate,
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
@@ -438,6 +519,8 @@ impl AdmissionReport {
 pub struct Assignment {
     pub spec: TaskSpec,
     pub lease: Lease,
+    #[serde(default)]
+    pub environment: Option<EnvironmentRecord>,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]

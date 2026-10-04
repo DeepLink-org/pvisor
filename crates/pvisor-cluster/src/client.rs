@@ -51,6 +51,32 @@ impl Client {
             .json()
             .await?)
     }
+    pub async fn publish_environment(
+        &self,
+        template: &EnvironmentTemplate,
+    ) -> anyhow::Result<EnvironmentRecord> {
+        let record: EnvironmentRecord = self.post("/v1/environments", template).await?;
+        crate::environment::validate(&record)?;
+        anyhow::ensure!(
+            record.template == *template,
+            "published environment differs from request"
+        );
+        Ok(record)
+    }
+    pub async fn environment(&self, digest: &str) -> anyhow::Result<EnvironmentRecord> {
+        BlobRef {
+            digest: digest.into(),
+            bytes: 0,
+        }
+        .validate()?;
+        let record: EnvironmentRecord = self.get(&format!("/v1/environments/{digest}")).await?;
+        crate::environment::validate(&record)?;
+        anyhow::ensure!(
+            record.digest == digest,
+            "environment response differs from request"
+        );
+        Ok(record)
+    }
     pub async fn submit(&self, spec: &TaskSpec) -> anyhow::Result<TaskRecord> {
         self.post("/v1/tasks", spec).await
     }

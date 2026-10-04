@@ -69,6 +69,57 @@ pub(crate) fn prepare_image(
                 refresh: false,
             })
         })?;
+    let (prepared, mount) = mount_prepared(client, response, &store.root, downloads, None)?;
+    Ok((prepared, Some(mount)))
+}
+
+/// A read-only native-cache mount. Keep it alive through native Run teardown.
+/// Multiple attempts may share one mount and retain separate writable uppers.
+pub struct MountedImage {
+    rootfs: PathBuf,
+    digest: String,
+    _mount: LazyMount,
+}
+impl MountedImage {
+    pub fn rootfs(&self) -> &Path {
+        &self.rootfs
+    }
+    pub fn manifest_digest(&self) -> &str {
+        &self.digest
+    }
+}
+
+pub fn mount_image_handle(
+    config: super::CacheConfig,
+    handle: &str,
+) -> anyhow::Result<MountedImage> {
+    let store = ImageStore::new(config.image_store.clone())?;
+    let client = CacheClient::from_config(config)?;
+    let (response, _) = client.request(CacheRequest::Open {
+        handle: handle.into(),
+        architecture: architecture().into(),
+    })?;
+    let (prepared, mount) = mount_prepared(
+        client,
+        response,
+        &store.root,
+        super::progress::Downloads::new(handle),
+        Some(handle),
+    )?;
+    Ok(MountedImage {
+        rootfs: prepared.rootfs,
+        digest: prepared.digest,
+        _mount: mount,
+    })
+}
+
+fn mount_prepared(
+    client: CacheClient,
+    response: Response,
+    store: &Path,
+    downloads: super::progress::Downloads,
+    expected: Option<&str>,
+) -> anyhow::Result<(PreparedImage, LazyMount)> {
     let Response::Prepared {
         image_handle,
         metadata_generation,
@@ -87,6 +138,12 @@ pub(crate) fn prepare_image(
         "cache returned the wrong image architecture"
     );
     crate::image::oci::digest_hex(&digest)?;
+    if let Some(expected) = expected {
+        ensure!(
+            image_handle.as_deref() == Some(expected),
+            "cache changed the requested immutable revision"
+        );
+    }
     let read_handle = image_handle.unwrap_or_else(|| digest.clone());
     let cache = dirs::cache_dir()
         .context("cannot find user cache directory")?
@@ -114,8 +171,7 @@ pub(crate) fn prepare_image(
         RemoteFs::new(client, read_handle, cache, metadata_cache)
     })?;
     filesystem.downloads = downloads;
-    let mount =
-        super::progress::loading("mounting lazy rootfs", || mount(filesystem, &store.root))?;
+    let mount = super::progress::loading("mounting lazy rootfs", || mount(filesystem, store))?;
     Ok((
         PreparedImage {
             rootfs: mount.path.clone(),
@@ -124,7 +180,7 @@ pub(crate) fn prepare_image(
             entrypoint,
             cmd,
         },
-        Some(mount),
+        mount,
     ))
 }
 

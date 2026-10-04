@@ -24,6 +24,8 @@ pub use transport::default_endpoint;
 mod lazy;
 #[cfg(any(target_os = "macos", target_os = "linux"))]
 pub(crate) use lazy::{LazyMount, prepare_image};
+#[cfg(any(target_os = "macos", target_os = "linux"))]
+pub use lazy::{MountedImage, mount_image_handle};
 
 pub const SERVER_ENV: &str = "PVISOR_CACHE_SERVER";
 

@@ -199,6 +199,7 @@ fn spec(id: &str, command: &str) -> TaskSpec {
         labels: BTreeMap::new(),
         cache_keys: vec![],
         retain_bundle: false,
+        environment: None,
     }
 }
 async fn wait(client: &Client, id: &str, terminal: bool) -> TaskRecord {
@@ -234,6 +235,505 @@ async fn controller(root: &std::path::Path) -> (Client, String, tokio::task::Joi
         axum::serve(listener, router).await.unwrap();
     });
     (Client::new(&url, ADMIN.into()).unwrap(), url, server)
+}
+
+#[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+async fn environment_http_is_admin_owned_and_missing_revision_never_executes_on_host() {
+    let temp = tempfile::tempdir().unwrap();
+    let (admin, url, server) = controller(temp.path()).await;
+    let worker_api = Client::new(&url, WORKER.into()).unwrap();
+    let (architecture, platform) = match std::env::consts::ARCH {
+        "x86_64" => ("amd64", "linux-amd64"),
+        "aarch64" => ("arm64", "linux-arm64-v8"),
+        other => panic!("unsupported VM test architecture: {other}"),
+    };
+    let template = EnvironmentTemplate {
+        version: CLUSTER_VERSION,
+        architecture: architecture.into(),
+        base: EnvironmentLayer {
+            handle: format!("pvisor-v1:{}:{platform}:{}", "a".repeat(64), "b".repeat(64)),
+            manifest_digest: format!("sha256:{}", "c".repeat(64)),
+        },
+        workspace: None,
+        toolkits: vec![],
+    };
+    assert!(worker_api.publish_environment(&template).await.is_err());
+    let record = admin.publish_environment(&template).await.unwrap();
+    assert_eq!(admin.publish_environment(&template).await.unwrap(), record);
+    assert_eq!(admin.environment(&record.digest).await.unwrap(), record);
+    assert!(worker_api.environment(&record.digest).await.is_err());
+    let mut tampered = record.clone();
+    tampered.template.base.manifest_digest = format!("sha256:{}", "d".repeat(64));
+    assert!(pvisor_cluster::environment::validate(&tampered).is_err());
+    let marker = temp.path().join("must-not-execute");
+    let mut task = spec(
+        "missing-revision",
+        &format!("printf escaped > '{}'", marker.display()),
+    );
+    task.execution = ExecutionClass {
+        executor: ExecutorKind::VirtualMachine,
+        isolation: IsolationKind::VirtualMachine,
+    };
+    task.environment = Some(record.digest.clone());
+    admin.submit(&task).await.unwrap();
+    let profile = temp.path().join("environment.toml");
+    std::fs::write(&profile, "[environments]\nenabled = true\nmax_layers = 8\n").unwrap();
+    let cache = temp.path().join("empty-cache");
+    std::fs::create_dir(&cache).unwrap();
+    let _worker = ChildGuard(
+        Command::new(env!("CARGO_BIN_EXE_pvisor-worker"))
+            .args([
+                "--url",
+                &url,
+                "--id",
+                "environment",
+                "--backend",
+                "vm",
+                "--poll-ms",
+                "100",
+                "--slots",
+                "1",
+            ])
+            .arg("--config")
+            .arg(&profile)
+            .arg("--state")
+            .arg(temp.path().join("environment"))
+            .env("PVISOR_CLUSTER_WORKER_TOKEN", WORKER)
+            .env("PVISOR_CACHE_BACKEND", "filesystem")
+            .env("PVISOR_CACHE_LOCATION", &cache)
+            .stdout(Stdio::null())
+            .stderr(Stdio::inherit())
+            .spawn()
+            .unwrap(),
+    );
+    let record = wait(&admin, "missing-revision", true).await;
+    assert_eq!(record.phase, TaskPhase::Failed);
+    assert!(
+        record.result.is_none(),
+        "failure precedes native runtime.run"
+    );
+    assert!(record.error.is_some());
+    assert!(!marker.exists());
+    let assignment: Assignment = serde_json::from_slice(
+        &std::fs::read(
+            temp.path()
+                .join("environment/tasks/missing-revision-1/assignment.json"),
+        )
+        .unwrap(),
+    )
+    .unwrap();
+    assert_eq!(
+        assignment.environment.unwrap().digest,
+        task.environment.unwrap()
+    );
+    assert!(
+        !temp
+            .path()
+            .join("environment/tasks/missing-revision-1/run-bundle.json")
+            .exists()
+    );
+    let workers = admin.workers().await.unwrap();
+    assert_eq!(
+        workers[0]
+            .registration
+            .environment_support
+            .as_ref()
+            .unwrap()
+            .architecture,
+        architecture
+    );
+    assert_eq!(workers[0].reserved, Resources::default());
+    server.abort();
+}
+
+#[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+async fn native_bundle_retries_lost_upload_ack_renews_lease_and_downloads_after_restart() {
+    use axum::{
+        extract::{Request, State},
+        middleware::Next,
+        response::{IntoResponse, Response},
+    };
+    use std::sync::{
+        Arc,
+        atomic::{AtomicUsize, Ordering},
+    };
+    // Lose successful acknowledgements for longer than one lease interval.
+    // The worker must renew while publishing and safely resend stored bytes.
+    async fn lose_ack(
+        State(attempts): State<Arc<AtomicUsize>>,
+        request: Request,
+        next: Next,
+    ) -> Response {
+        let artifact = request.uri().path().starts_with("/v1/workers/artifacts/");
+        let response = next.run(request).await;
+        if artifact && response.status().is_success() && attempts.fetch_add(1, Ordering::SeqCst) < 6
+        {
+            return axum::http::StatusCode::SERVICE_UNAVAILABLE.into_response();
+        }
+        response
+    }
+    let temp = tempfile::tempdir().unwrap();
+    let attempts = Arc::new(AtomicUsize::new(0));
+    let scheduler = Scheduler::open(
+        &temp.path().join("journal"),
+        SchedulerConfig {
+            lease_duration_ms: 1500,
+            ..Default::default()
+        },
+    )
+    .unwrap();
+    let router = pvisor_cluster::server::router(scheduler, ADMIN.into(), WORKER.into())
+        .unwrap()
+        .layer(axum::middleware::from_fn_with_state(
+            attempts.clone(),
+            lose_ack,
+        ));
+    let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
+    let url = format!("http://{}", listener.local_addr().unwrap());
+    let server = tokio::spawn(async move {
+        axum::serve(listener, router).await.unwrap();
+    });
+    let admin = Client::new(&url, ADMIN.into()).unwrap();
+    let worker = spawn_worker(&url, "publisher", temp.path());
+    let mut task = spec(
+        "retained",
+        "/bin/dd if=/dev/zero bs=800000 count=1 2>/dev/null | /usr/bin/tr '\\000' '\\377'",
+    );
+    task.run.runtime.max_output_bytes = ARTIFACT_CHUNK_BYTES;
+    task.retain_bundle = true;
+    admin.submit(&task).await.unwrap();
+    let started = wait(&admin, "retained", false).await;
+    let finished = wait(&admin, "retained", true).await;
+    assert_eq!(finished.phase, TaskPhase::Succeeded);
+    assert!(finished.artifact_error.is_none());
+    assert!(attempts.load(Ordering::SeqCst) >= 9);
+    assert!(finished.lease.as_ref().unwrap().expires_at_ms > started.lease.unwrap().expires_at_ms);
+    let result = finished.result.as_ref().unwrap();
+    assert!(result.output.stdout.as_ref().unwrap().len() <= ARTIFACT_CHUNK_BYTES);
+    assert!(result.output.stdout_truncated);
+    let manifest = admin.artifacts("retained").await.unwrap();
+    assert_eq!(manifest.key, finished.lease.as_ref().unwrap().key);
+    assert!(manifest.files[0].chunks.len() >= 3);
+    let local = std::fs::read(
+        temp.path()
+            .join("publisher/tasks/retained-1/run-bundle.json"),
+    )
+    .unwrap();
+    let out = temp.path().join("download");
+    admin.download_artifacts("retained", &out).await.unwrap();
+    assert_eq!(std::fs::read(out.join("run-bundle.json")).unwrap(), local);
+    assert!(admin.download_artifacts("retained", &out).await.is_err());
+    assert_eq!(std::fs::read(out.join("run-bundle.json")).unwrap(), local);
+    let bundle: pvisor::RunBundle = serde_json::from_slice(&local).unwrap();
+    assert_eq!(bundle.schema_version, pvisor::RUN_BUNDLE_SCHEMA_VERSION);
+    assert_eq!(bundle.run.run_id, result.run_id.as_str());
+    assert_eq!(bundle.run.attempt_id, result.attempt_id.as_str());
+    assert_eq!(bundle.run.state, pvisor_core::RunState::Completed);
+    assert!(bundle.run.output.stdout.unwrap().len() > ARTIFACT_CHUNK_BYTES);
+    drop(worker);
+    drop(admin);
+    server.abort();
+    let _ = server.await;
+    // Wait only for old server connection/reaper ownership to be released.
+    let reopened = tokio::time::timeout(Duration::from_secs(3), async {
+        loop {
+            match Scheduler::open(&temp.path().join("journal"), SchedulerConfig::default()) {
+                Ok(s) => break s,
+                Err(error) if error.to_string().contains("already owned") => {
+                    tokio::time::sleep(Duration::from_millis(10)).await
+                }
+                Err(error) => panic!("controller recovery failed: {error:#}"),
+            }
+        }
+    })
+    .await
+    .unwrap();
+    let router = pvisor_cluster::server::router(reopened, ADMIN.into(), WORKER.into()).unwrap();
+    let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
+    let recovered = Client::new(
+        &format!("http://{}", listener.local_addr().unwrap()),
+        ADMIN.into(),
+    )
+    .unwrap();
+    let server = tokio::spawn(async move {
+        axum::serve(listener, router).await.unwrap();
+    });
+    assert_eq!(
+        recovered.task("retained").await.unwrap().artifacts,
+        finished.artifacts
+    );
+    assert_eq!(
+        recovered
+            .download_artifacts("retained", &temp.path().join("recovered"))
+            .await
+            .unwrap(),
+        manifest
+    );
+    assert_eq!(
+        std::fs::read(temp.path().join("recovered/run-bundle.json")).unwrap(),
+        local
+    );
+    server.abort();
+}
+
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn artifact_http_requires_live_lease_exact_hash_bounded_body_and_separate_roles() {
+    let temp = tempfile::tempdir().unwrap();
+    let (admin, url, server) = controller(temp.path()).await;
+    let worker = Client::new(&url, WORKER.into()).unwrap();
+    let task = spec("wire-artifacts", "true");
+    worker
+        .register(&WorkerRegistration {
+            version: CLUSTER_VERSION,
+            id: "publisher".into(),
+            incarnation: "epoch".into(),
+            capacity: task.resources,
+            execution: vec![task.execution.clone()],
+            labels: BTreeMap::new(),
+            cache_keys: vec![],
+            vm_control_protocol: None,
+            vm_control_actions: vec![],
+            artifact_protocol: Some(CLUSTER_VERSION),
+            environment_support: None,
+        })
+        .await
+        .unwrap();
+    admin.submit(&task).await.unwrap();
+    let mut poll = PollRequest {
+        worker_id: "publisher".into(),
+        incarnation: "epoch".into(),
+        active: vec![],
+        available: task.resources,
+        max_assignments: 1,
+        admission: None,
+    };
+    let key = worker
+        .poll(&poll)
+        .await
+        .unwrap()
+        .assignments
+        .remove(0)
+        .lease
+        .key;
+    let bytes = b"evidence".to_vec();
+    assert!(admin.upload_artifact(&key, bytes.clone()).await.is_err());
+    let mut forged = key.clone();
+    forged.generation += 1;
+    assert!(
+        worker
+            .upload_artifact(&forged, bytes.clone())
+            .await
+            .is_err()
+    );
+    forged = key.clone();
+    forged.incarnation = "other".into();
+    assert!(
+        worker
+            .upload_artifact(&forged, bytes.clone())
+            .await
+            .is_err()
+    );
+    let reference = worker.upload_artifact(&key, bytes.clone()).await.unwrap();
+    assert_eq!(
+        worker.upload_artifact(&key, bytes.clone()).await.unwrap(),
+        reference
+    );
+    assert_eq!(admin.artifact_bytes(&reference).await.unwrap(), bytes);
+    assert!(worker.artifact_bytes(&reference).await.is_err());
+    assert!(worker.artifacts("wire-artifacts").await.is_err());
+    let path = format!(
+        "{url}/v1/workers/artifacts/{}/{}/{}/{}/{}",
+        key.task_id, key.generation, key.worker_id, key.incarnation, reference.digest
+    );
+    let http = reqwest::Client::new();
+    assert_eq!(
+        http.post(&path)
+            .bearer_auth(WORKER)
+            .body("wrong")
+            .send()
+            .await
+            .unwrap()
+            .status(),
+        reqwest::StatusCode::CONFLICT
+    );
+    assert_eq!(
+        http.post(&path)
+            .bearer_auth(WORKER)
+            .body(vec![0; ARTIFACT_CHUNK_BYTES + 1])
+            .send()
+            .await
+            .unwrap()
+            .status(),
+        reqwest::StatusCode::PAYLOAD_TOO_LARGE
+    );
+    worker
+        .complete(&Completion {
+            key: key.clone(),
+            result: None,
+            error: Some("stopped".into()),
+            artifacts: None,
+            artifact_error: None,
+        })
+        .await
+        .unwrap();
+    assert!(worker.upload_artifact(&key, bytes.clone()).await.is_err());
+    admin
+        .submit(&spec("expired-artifacts", "true"))
+        .await
+        .unwrap();
+    poll.available = task.resources;
+    let expired = worker
+        .poll(&poll)
+        .await
+        .unwrap()
+        .assignments
+        .remove(0)
+        .lease
+        .key;
+    tokio::time::sleep(Duration::from_millis(1600)).await;
+    assert!(worker.upload_artifact(&expired, bytes).await.is_err());
+    assert_eq!(
+        admin.task("expired-artifacts").await.unwrap().phase,
+        TaskPhase::Lost
+    );
+    server.abort();
+}
+
+#[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+async fn retention_failure_reports_native_completion_and_does_not_repeat_command() {
+    use axum::{
+        extract::Request,
+        middleware::Next,
+        response::{IntoResponse, Response},
+    };
+    async fn reject_upload(request: Request, next: Next) -> Response {
+        if request.uri().path().starts_with("/v1/workers/artifacts/") {
+            return axum::http::StatusCode::CONFLICT.into_response();
+        }
+        next.run(request).await
+    }
+    let temp = tempfile::tempdir().unwrap();
+    let scheduler =
+        Scheduler::open(&temp.path().join("journal"), SchedulerConfig::default()).unwrap();
+    let router = pvisor_cluster::server::router(scheduler, ADMIN.into(), WORKER.into())
+        .unwrap()
+        .layer(axum::middleware::from_fn(reject_upload));
+    let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
+    let url = format!("http://{}", listener.local_addr().unwrap());
+    let server = tokio::spawn(async move {
+        axum::serve(listener, router).await.unwrap();
+    });
+    let admin = Client::new(&url, ADMIN.into()).unwrap();
+    let _worker = spawn_worker(&url, "failed-export", temp.path());
+    let marker = temp.path().join("side-effect");
+    let mut task = spec(
+        "failed-export",
+        &format!("printf x >> '{}'", marker.display()),
+    );
+    task.retain_bundle = true;
+    admin.submit(&task).await.unwrap();
+    let record = wait(&admin, "failed-export", true).await;
+    assert_eq!(record.phase, TaskPhase::Failed);
+    assert_eq!(
+        record.result.unwrap().state,
+        pvisor_core::RunState::Completed
+    );
+    assert!(record.error.is_none());
+    assert!(record.artifacts.is_none());
+    assert!(record.artifact_error.is_some());
+    assert!(
+        temp.path()
+            .join("failed-export/tasks/failed-export-1/run-bundle.json")
+            .exists()
+    );
+    assert!(
+        temp.path()
+            .join("failed-export/tasks/failed-export-1/completion.json")
+            .exists()
+    );
+    tokio::time::sleep(Duration::from_millis(300)).await;
+    assert_eq!(std::fs::read(marker).unwrap(), b"x");
+    assert_eq!(admin.task("failed-export").await.unwrap().generation, 1);
+    server.abort();
+}
+
+#[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+async fn cancellation_interrupts_upload_and_preserves_already_completed_native_result() {
+    use axum::{
+        extract::{Request, State},
+        middleware::Next,
+        response::Response,
+    };
+    use std::sync::{
+        Arc,
+        atomic::{AtomicBool, Ordering},
+    };
+    struct UploadGate {
+        entered: AtomicBool,
+        release: tokio::sync::Notify,
+    }
+    async fn delay_ack(
+        State(gate): State<Arc<UploadGate>>,
+        request: Request,
+        next: Next,
+    ) -> Response {
+        let artifact = request.uri().path().starts_with("/v1/workers/artifacts/");
+        let response = next.run(request).await;
+        if artifact && response.status().is_success() {
+            gate.entered.store(true, Ordering::SeqCst);
+            gate.release.notified().await;
+        }
+        response
+    }
+    let temp = tempfile::tempdir().unwrap();
+    let gate = Arc::new(UploadGate {
+        entered: AtomicBool::new(false),
+        release: tokio::sync::Notify::new(),
+    });
+    let scheduler =
+        Scheduler::open(&temp.path().join("journal"), SchedulerConfig::default()).unwrap();
+    let router = pvisor_cluster::server::router(scheduler, ADMIN.into(), WORKER.into())
+        .unwrap()
+        .layer(axum::middleware::from_fn_with_state(
+            gate.clone(),
+            delay_ack,
+        ));
+    let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
+    let url = format!("http://{}", listener.local_addr().unwrap());
+    let server = tokio::spawn(async move {
+        axum::serve(listener, router).await.unwrap();
+    });
+    let admin = Client::new(&url, ADMIN.into()).unwrap();
+    let _worker = spawn_worker(&url, "cancel-export", temp.path());
+    let mut task = spec("cancel-export", "printf completed");
+    task.retain_bundle = true;
+    admin.submit(&task).await.unwrap();
+    tokio::time::timeout(Duration::from_secs(5), async {
+        while !gate.entered.load(Ordering::SeqCst) {
+            tokio::time::sleep(Duration::from_millis(10)).await;
+        }
+    })
+    .await
+    .unwrap();
+    admin.cancel("cancel-export").await.unwrap();
+    let record = tokio::time::timeout(Duration::from_secs(2), wait(&admin, "cancel-export", true))
+        .await
+        .unwrap();
+    assert_eq!(record.phase, TaskPhase::Cancelled);
+    let result = record.result.unwrap();
+    assert_eq!(result.state, pvisor_core::RunState::Completed);
+    assert_eq!(result.output.stdout.as_deref(), Some("completed"));
+    assert!(record.artifacts.is_none());
+    assert!(record.artifact_error.unwrap().contains("cancellation"));
+    gate.release.notify_one();
+    let publisher = Client::new(&url, WORKER.into()).unwrap();
+    assert!(
+        publisher
+            .upload_artifact(&record.lease.unwrap().key, b"late".to_vec())
+            .await
+            .is_err()
+    );
+    server.abort();
 }
 
 #[tokio::test(flavor = "multi_thread", worker_threads = 4)]
@@ -392,6 +892,7 @@ async fn vm_control_wire_protocol_enforces_roles_and_resume_admission() {
             cache_keys: vec![],
             vm_control_protocol: Some(CLUSTER_VERSION),
             artifact_protocol: None,
+            environment_support: None,
             vm_control_actions: vec![
                 ControlAction::Pause,
                 ControlAction::Offload,

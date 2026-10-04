@@ -31,6 +31,9 @@ impl Default for SchedulerConfig {
 #[derive(Debug, Clone, Serialize, Deserialize)]
 #[serde(tag = "kind", rename_all = "snake_case")]
 enum Change {
+    Environment {
+        record: EnvironmentRecord,
+    },
     Submit {
         task: Box<TaskRecord>,
     },
@@ -107,6 +110,7 @@ pub struct Scheduler {
     expiry: BTreeSet<(u64, String)>,
     tenant_reserved: BTreeMap<String, Resources>,
     artifacts: crate::artifacts::ArtifactStore,
+    environments: BTreeMap<String, EnvironmentRecord>,
 }
 
 fn identifier(value: &str) -> bool {
@@ -141,6 +145,7 @@ impl Scheduler {
             expiry: BTreeSet::new(),
             tenant_reserved: BTreeMap::new(),
             artifacts,
+            environments: BTreeMap::new(),
         };
         for transaction in transactions {
             ensure!(
@@ -230,6 +235,9 @@ impl Scheduler {
 
     fn apply(&mut self, change: Change) {
         match change {
+            Change::Environment { record } => {
+                self.environments.insert(record.digest.clone(), record);
+            }
             Change::Submit { task } => {
                 self.queue.push_back(task.spec.id.clone());
                 self.tasks.insert(task.spec.id.clone(), *task);
@@ -427,6 +435,35 @@ impl Scheduler {
         }
     }
 
+    pub fn publish_environment(
+        &mut self,
+        template: EnvironmentTemplate,
+    ) -> anyhow::Result<EnvironmentRecord> {
+        let record = crate::environment::record(template)?;
+        if let Some(existing) = self.environments.get(&record.digest) {
+            return Ok(existing.clone());
+        }
+        ensure!(
+            self.environments.len() < 10_000,
+            "environment retention limit reached"
+        );
+        self.commit(vec![Change::Environment {
+            record: record.clone(),
+        }])?;
+        Ok(record)
+    }
+    pub fn environment(&self, digest: &str) -> anyhow::Result<EnvironmentRecord> {
+        self.environments
+            .get(digest)
+            .cloned()
+            .context("unknown environment digest")
+    }
+    fn task_environment(&self, spec: &TaskSpec) -> Option<EnvironmentRecord> {
+        spec.environment
+            .as_ref()
+            .map(|digest| self.environments[digest].clone())
+    }
+
     pub fn submit(&mut self, spec: TaskSpec, now: u64) -> anyhow::Result<TaskRecord> {
         ensure!(
             spec.version == CLUSTER_VERSION,
@@ -447,6 +484,29 @@ impl Scheduler {
             !process.inherit_env,
             "cluster tasks must explicitly project environment variables"
         );
+        if let Some(digest) = &spec.environment {
+            self.environment(digest)?;
+            ensure!(
+                spec.execution
+                    == ExecutionClass {
+                        executor: pvisor_core::ExecutorKind::VirtualMachine,
+                        isolation: pvisor_core::IsolationKind::VirtualMachine
+                    },
+                "immutable environments require VM execution"
+            );
+            ensure!(
+                !spec.run.metadata.keys().any(|k| k.starts_with("pvisor.vm.")
+                    || k.starts_with("pvisor.orchestration.environment")),
+                "environment tasks cannot override host VM/environment preparation metadata"
+            );
+            ensure!(
+                process
+                    .cwd
+                    .as_ref()
+                    .is_none_or(|p| Path::new(p).is_absolute()),
+                "environment cwd must be an absolute guest path"
+            );
+        }
         ensure!(
             spec.resources.slots == 1
                 && spec.resources.memory_bytes > 0
@@ -514,6 +574,13 @@ impl Scheduler {
             !registration.execution.is_empty(),
             "worker advertises no execution classes"
         );
+        if let Some(support) = &registration.environment_support {
+            ensure!(
+                support.version == CLUSTER_VERSION
+                    && matches!(support.architecture.as_str(), "amd64" | "arm64"),
+                "invalid environment capability"
+            );
+        }
         if let Some(worker) = self.workers.get(&registration.id) {
             ensure!(
                 worker.registration.incarnation == registration.incarnation
@@ -670,6 +737,7 @@ impl Scheduler {
                 assignments.push(Assignment {
                     spec: task.spec.clone(),
                     lease: task.lease.clone().unwrap(),
+                    environment: self.task_environment(&task.spec),
                 });
             }
         }
@@ -711,7 +779,18 @@ impl Scheduler {
                     .cache_keys
                     .iter()
                     .filter(|k| cached.contains(k))
-                    .count(),
+                    .count()
+                    + self.tasks[id]
+                        .spec
+                        .environment
+                        .as_ref()
+                        .map_or(0, |digest| {
+                            self.environments[digest]
+                                .template
+                                .layers()
+                                .filter(|layer| cached.contains(&layer.handle))
+                                .count()
+                        }),
             )
         });
         let mut changes = Vec::new();
@@ -740,6 +819,16 @@ impl Scheduler {
             if !spec.resources.fits(budget)
                 || !quota_fits
                 || (spec.retain_bundle && registration.artifact_protocol != Some(CLUSTER_VERSION))
+                || spec.environment.as_ref().is_some_and(|digest| {
+                    registration
+                        .environment_support
+                        .as_ref()
+                        .is_none_or(|support| {
+                            support.version != CLUSTER_VERSION
+                                || support.architecture
+                                    != self.environments[digest].template.architecture
+                        })
+                })
                 || !registration.execution.contains(&spec.execution)
                 || !spec
                     .labels
@@ -768,6 +857,7 @@ impl Scheduler {
             assignments.push(Assignment {
                 spec: spec.clone(),
                 lease: lease.clone(),
+                environment: self.task_environment(spec),
             });
             changes.push(Change::Assign { lease, at: now });
         }
@@ -1042,7 +1132,9 @@ impl Scheduler {
         ensure!(
             match (&completion.artifacts, &verified) {
                 (None, None) => true,
-                (Some(reference), Some(verified)) => verified.matches(reference, &completion.key),
+                (Some(reference), Some(verified)) => {
+                    verified.matches(reference, &completion.key, completion.result.as_ref())
+                }
                 _ => false,
             },
             "unverified artifact manifest"

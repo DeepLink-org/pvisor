@@ -16,6 +16,8 @@ use tokio::{
     sync::{mpsc, watch},
     time::Instant,
 };
+#[path = "worker/environment.rs"]
+mod environment;
 
 #[derive(Debug, Clone, Copy, ValueEnum)]
 enum Backend {
@@ -26,18 +28,33 @@ enum Backend {
 }
 
 /// Only fields actually connected to the cluster worker are accepted.
-#[derive(Default, serde::Deserialize)]
+#[derive(Clone, Default, serde::Deserialize)]
 #[serde(default, deny_unknown_fields)]
 struct WorkerProfile {
     vm: pvisor::VmSettings,
     container: pvisor::ContainerSettings,
     overlaynet: pvisor::OverlayNetSettings,
-    /// Shared read-only inputs, ordered bottom to top. Upper storage is private.
+    /// Shared read-only inputs, highest priority first. Upper storage is private.
     lower_layers: Vec<PathBuf>,
     admission: AdmissionPolicy,
+    environments: EnvironmentProfile,
+}
+#[derive(Clone, serde::Deserialize)]
+#[serde(default, deny_unknown_fields)]
+struct EnvironmentProfile {
+    enabled: bool,
+    max_layers: usize,
+}
+impl Default for EnvironmentProfile {
+    fn default() -> Self {
+        Self {
+            enabled: false,
+            max_layers: 128,
+        }
+    }
 }
 
-#[derive(Parser)]
+#[derive(Clone, Parser)]
 #[command(about = "Execute distributed tasks with the host-local pVisor kernel")]
 struct Args {
     #[arg(
@@ -245,6 +262,62 @@ fn runtime(
     Ok(builder.build())
 }
 
+#[derive(Clone)]
+struct AttemptRuntime {
+    args: Arc<Args>,
+    profile: Arc<WorkerProfile>,
+    environments: Option<Arc<environment::EnvironmentMounts>>,
+}
+struct PreparedRuntime {
+    runtime: PVisor,
+    _mounts: Vec<Arc<pvisor::cache::MountedImage>>,
+}
+impl AttemptRuntime {
+    async fn prepare(
+        &self,
+        assignment: &Assignment,
+        storage: &Path,
+    ) -> anyhow::Result<PreparedRuntime> {
+        let mut profile = (*self.profile).clone();
+        let mounts = match (&assignment.spec.environment, &assignment.environment) {
+            (None, None) => Vec::new(),
+            (Some(digest), Some(record)) => {
+                ensure!(
+                    *digest == record.digest && matches!(self.args.backend, Backend::Vm),
+                    "environment assignment identity/backend mismatch"
+                );
+                ensure!(
+                    profile.lower_layers.is_empty(),
+                    "immutable environment cannot include unversioned worker lower_layers"
+                );
+                let pool = self
+                    .environments
+                    .as_ref()
+                    .context("worker immutable environments are disabled")?;
+                let mounts = pool.prepare(record).await?;
+                profile.vm.rootfs = Some(mounts[0].rootfs().to_owned());
+                profile.vm.image = None;
+                profile.lower_layers = mounts.iter().rev().map(|m| m.rootfs().to_owned()).collect();
+                mounts
+            }
+            _ => anyhow::bail!("environment assignment is incomplete"),
+        };
+        Ok(PreparedRuntime {
+            runtime: runtime(&self.args, &profile, assignment, storage)?,
+            _mounts: mounts,
+        })
+    }
+}
+async fn lease_expired(mut clock: watch::Receiver<Instant>) {
+    loop {
+        let deadline = *clock.borrow();
+        tokio::select! {
+            _ = tokio::time::sleep_until(deadline) => break,
+            changed = clock.changed() => { if changed.is_err() { break; } }
+        }
+    }
+}
+
 struct AttemptChannels {
     stop: watch::Receiver<bool>,
     lease_clock: watch::Receiver<Instant>,
@@ -334,7 +407,7 @@ async fn retain_bundle(
 }
 
 async fn execute(
-    runtime: anyhow::Result<PVisor>,
+    runtime: AttemptRuntime,
     assignment: Assignment,
     channels: AttemptChannels,
     storage: PathBuf,
@@ -347,9 +420,25 @@ async fn execute(
         acknowledgements,
     } = channels;
     let requested_bundle = assignment.spec.retain_bundle;
+    let lease_key = assignment.lease.key.clone();
     let result: anyhow::Result<pvisor_core::RunResult> = async {
-        let runtime = runtime?;
+        ensure!(!*stop.borrow(), "lease ended before environment preparation");
+        let prepared = tokio::select! {
+            prepared = runtime.prepare(&assignment, &storage) => prepared?,
+            _ = stop.changed() => anyhow::bail!("environment preparation cancelled"),
+            _ = lease_expired(lease_clock.clone()) => anyhow::bail!("environment preparation lease expired"),
+        };
+        let runtime = prepared.runtime;
+        let _mounts = prepared._mounts; // Keep shared lowers through native teardown.
         let mut spec = assignment.spec.run;
+        if let Some(record) = assignment.environment {
+            let RunInvocation::Process(process) = &spec.invocation;
+            ensure!(!spec.metadata.keys().any(|k| k.starts_with("pvisor.vm.") || k.starts_with("pvisor.orchestration.environment")), "environment task overrides host preparation metadata");
+            let cwd = process.cwd.clone().unwrap_or_else(|| "/".into());
+            ensure!(Path::new(&cwd).is_absolute(), "environment cwd must be an absolute guest path");
+            spec.metadata.insert("pvisor.vm.guest_cwd".into(), serde_json::json!(cwd));
+            spec.metadata.insert("pvisor.orchestration.environment".into(), serde_json::to_value(record)?);
+        }
         let output_limit = spec.runtime.max_output_bytes;
         let RunInvocation::Process(process) = &mut spec.invocation;
         ensure!(!process.inherit_env, "worker refuses inherited environment");
@@ -459,14 +548,14 @@ async fn execute(
     .await;
     let mut completion = match result {
         Ok(result) => Completion {
-            key: assignment.lease.key,
+            key: lease_key.clone(),
             result: Some(result),
             error: None,
             artifacts: None,
             artifact_error: None,
         },
         Err(error) => Completion {
-            key: assignment.lease.key,
+            key: lease_key,
             result: None,
             error: Some(format!("{error:#}")),
             artifacts: None,
@@ -560,6 +649,29 @@ async fn main() -> anyhow::Result<()> {
         Some(path) => toml::from_str(&std::fs::read_to_string(path)?)?,
         None => WorkerProfile::default(),
     };
+    let args = Arc::new(args);
+    let config = Arc::new(config);
+    let environments = if config.environments.enabled {
+        ensure!(
+            matches!(args.backend, Backend::Vm),
+            "immutable environment profile requires VM backend"
+        );
+        ensure!(
+            config.lower_layers.is_empty(),
+            "immutable environment profile cannot include unversioned lower_layers"
+        );
+        Some(Arc::new(environment::EnvironmentMounts::new(
+            &args.state,
+            config.environments.max_layers,
+        )?))
+    } else {
+        None
+    };
+    let attempt_runtime = AttemptRuntime {
+        args: args.clone(),
+        profile: config.clone(),
+        environments,
+    };
     config.admission.validate()?;
     ensure!(
         config.admission.mode != AdmissionMode::LinuxPressure
@@ -600,6 +712,18 @@ async fn main() -> anyhow::Result<()> {
         cache_keys: args.cache_key.clone(),
         vm_control_protocol: matches!(args.backend, Backend::Vm).then_some(CLUSTER_VERSION),
         artifact_protocol: Some(CLUSTER_VERSION),
+        environment_support: attempt_runtime
+            .environments
+            .as_ref()
+            .map(|_| EnvironmentSupport {
+                version: CLUSTER_VERSION,
+                architecture: match std::env::consts::ARCH {
+                    "x86_64" => "amd64",
+                    "aarch64" => "arm64",
+                    other => other,
+                }
+                .into(),
+            }),
         vm_control_actions: if matches!(args.backend, Backend::Vm) {
             let mut actions = vec![ControlAction::Pause, ControlAction::Resume];
             let uses_pool = config.vm.memory_pool.is_some()
@@ -722,7 +846,7 @@ async fn main() -> anyhow::Result<()> {
                                 Some(rejection)
                             } else {
                                 available = available.checked_sub(resources).unwrap();
-                                let runtime = runtime(&args, &config, &assignment, &storage);
+                                let runtime = attempt_runtime.clone();
                                 let tx = finished_tx.clone();
                                 let ack_tx = acknowledgements_tx.clone();
                                 let publisher = client.clone();

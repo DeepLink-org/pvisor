@@ -33,6 +33,7 @@ fn spec(id: &str) -> TaskSpec {
         labels: BTreeMap::new(),
         cache_keys: Vec::new(),
         retain_bundle: false,
+        environment: None,
     }
 }
 fn worker(id: &str, slots: u32) -> WorkerRegistration {
@@ -45,6 +46,7 @@ fn worker(id: &str, slots: u32) -> WorkerRegistration {
         vm_control_protocol: None,
         vm_control_actions: Vec::new(),
         artifact_protocol: None,
+        environment_support: None,
         labels: BTreeMap::new(),
         cache_keys: Vec::new(),
     }
@@ -73,6 +75,317 @@ fn finish(key: LeaseKey) -> Completion {
         artifacts: None,
         artifact_error: None,
     }
+}
+
+fn environment_template() -> EnvironmentTemplate {
+    let layer = |key: &str, revision: &str| EnvironmentLayer {
+        handle: format!(
+            "pvisor-v1:{}:linux-amd64:{}",
+            key.repeat(64),
+            revision.repeat(64)
+        ),
+        manifest_digest: format!("sha256:{}", revision.repeat(64)),
+    };
+    EnvironmentTemplate {
+        version: CLUSTER_VERSION,
+        architecture: "amd64".into(),
+        base: layer("a", "1"),
+        workspace: Some(layer("b", "2")),
+        toolkits: vec![layer("c", "3")],
+    }
+}
+
+#[test]
+fn immutable_environment_layers_are_independent_fenced_by_capability_and_replayed_exactly() {
+    let temp = tempfile::tempdir().unwrap();
+    let path = temp.path().join("journal");
+    let mut s = Scheduler::open(&path, config()).unwrap();
+    let original = s.publish_environment(environment_template()).unwrap();
+    assert_eq!(
+        s.publish_environment(environment_template()).unwrap(),
+        original
+    );
+    let mut update = environment_template();
+    update.toolkits[0].handle = update.toolkits[0]
+        .handle
+        .replace(&"3".repeat(64), &"4".repeat(64));
+    update.toolkits[0].manifest_digest = format!("sha256:{}", "4".repeat(64));
+    let updated = s.publish_environment(update).unwrap();
+    assert_ne!(original.digest, updated.digest);
+    assert_eq!(original.template.base, updated.template.base);
+    assert_eq!(original.template.workspace, updated.template.workspace);
+    assert_eq!(s.environment(&original.digest).unwrap(), original);
+    let mut task = spec("env");
+    task.environment = Some(original.digest.clone());
+    assert!(
+        s.submit(task.clone(), 0).is_err(),
+        "host execution must not ignore environment layers"
+    );
+    task.execution = ExecutionClass {
+        executor: ExecutorKind::VirtualMachine,
+        isolation: IsolationKind::VirtualMachine,
+    };
+    let mut unknown = task.clone();
+    unknown.environment = Some("0".repeat(64));
+    assert!(s.submit(unknown, 0).is_err());
+    let mut forged = task.clone();
+    forged.run.metadata.insert(
+        "pvisor.vm.workspace_overlay".into(),
+        serde_json::json!({"lowers":["/"]}),
+    );
+    assert!(s.submit(forged, 0).is_err());
+    s.submit(task.clone(), 0).unwrap();
+    let mut legacy = worker("w", 1);
+    legacy.execution = vec![task.execution.clone()];
+    s.register(legacy.clone(), 0).unwrap();
+    assert!(
+        s.poll(poll("w", 1, vec![]), 1)
+            .unwrap()
+            .assignments
+            .is_empty()
+    );
+    legacy.environment_support = Some(EnvironmentSupport {
+        version: CLUSTER_VERSION,
+        architecture: "arm64".into(),
+    });
+    s.register(legacy.clone(), 2).unwrap();
+    assert!(
+        s.poll(poll("w", 1, vec![]), 3)
+            .unwrap()
+            .assignments
+            .is_empty()
+    );
+    legacy.environment_support.as_mut().unwrap().architecture = "amd64".into();
+    s.register(legacy, 4).unwrap();
+    let assignment = s
+        .poll(poll("w", 1, vec![]), 5)
+        .unwrap()
+        .assignments
+        .remove(0);
+    assert_eq!(assignment.environment, Some(original.clone()));
+    drop(s);
+    let mut s = Scheduler::open(&path, config()).unwrap();
+    assert_eq!(s.environment(&updated.digest).unwrap(), updated);
+    let redelivered = s
+        .poll(poll("w", 0, vec![]), 6)
+        .unwrap()
+        .assignments
+        .remove(0);
+    assert_eq!(redelivered.lease.key, assignment.lease.key);
+    assert_eq!(redelivered.environment, assignment.environment);
+    assert_eq!(s.workers()[0].reserved, resources(1));
+    task.environment = Some(updated.digest);
+    assert!(
+        s.submit(task, 7).is_err(),
+        "existing task stays pinned to original version"
+    );
+}
+
+#[test]
+fn environment_rejects_mutable_handles_and_affinity_uses_independent_layers() {
+    let temp = tempfile::tempdir().unwrap();
+    let mut s = Scheduler::open(&temp.path().join("journal"), config()).unwrap();
+    for handle in [
+        "ubuntu:latest".to_owned(),
+        "/srv/layers".into(),
+        format!(
+            "pvisor-v1:{}:linux-arm64-v8:{}",
+            "a".repeat(64),
+            "b".repeat(64)
+        ),
+    ] {
+        let mut invalid = environment_template();
+        invalid.base.handle = handle;
+        assert!(s.publish_environment(invalid).is_err());
+    }
+    let cold = s.publish_environment(environment_template()).unwrap();
+    let mut changed = environment_template();
+    changed.workspace.as_mut().unwrap().handle = changed
+        .workspace
+        .as_ref()
+        .unwrap()
+        .handle
+        .replace(&"2".repeat(64), &"5".repeat(64));
+    let warm = s.publish_environment(changed).unwrap();
+    let mut registration = worker("w", 1);
+    registration.execution = vec![ExecutionClass {
+        executor: ExecutorKind::VirtualMachine,
+        isolation: IsolationKind::VirtualMachine,
+    }];
+    registration.environment_support = Some(EnvironmentSupport {
+        version: CLUSTER_VERSION,
+        architecture: "amd64".into(),
+    });
+    registration.cache_keys = vec![warm.template.workspace.as_ref().unwrap().handle.clone()];
+    for (id, environment) in [("cold", cold), ("warm", warm)] {
+        let mut task = spec(id);
+        task.execution = registration.execution[0].clone();
+        task.environment = Some(environment.digest);
+        s.submit(task, 0).unwrap();
+    }
+    s.register(registration, 0).unwrap();
+    assert_eq!(
+        s.poll(poll("w", 1, vec![]), 1).unwrap().assignments[0]
+            .spec
+            .id,
+        "warm"
+    );
+}
+
+fn native_result(id: &str) -> pvisor_core::RunResult {
+    serde_json::from_value(serde_json::json!({
+        "run_id": id, "attempt_id": "native-attempt", "state": "completed",
+        "started_at_unix_ms": 2, "finished_at_unix_ms": 3, "exit_code": 0
+    }))
+    .unwrap()
+}
+
+fn archive(s: &Scheduler, key: &LeaseKey, result: &pvisor_core::RunResult) -> ArtifactManifest {
+    let bytes = serde_json::to_vec(&serde_json::json!({
+        "schema_version": 4, "run": result
+    }))
+    .unwrap();
+    let chunk = s.artifact_store().put(&bytes).unwrap();
+    ArtifactManifest {
+        version: CLUSTER_VERSION,
+        key: key.clone(),
+        files: vec![ArtifactFile {
+            name: "run-bundle.json".into(),
+            bytes: bytes.len() as u64,
+            digest: chunk.digest.clone(),
+            chunks: vec![chunk],
+        }],
+    }
+}
+
+fn manifest_ref(s: &Scheduler, manifest: &ArtifactManifest) -> BlobRef {
+    s.artifact_store()
+        .put(&serde_json::to_vec(manifest).unwrap())
+        .unwrap()
+}
+
+#[test]
+fn required_archive_checks_capability_integrity_identity_and_survives_restart() {
+    let temp = tempfile::tempdir().unwrap();
+    let path = temp.path().join("journal");
+    let mut s = Scheduler::open(&path, config()).unwrap();
+    s.register(worker("w", 1), 0).unwrap();
+    let mut task = spec("archived");
+    task.retain_bundle = true;
+    s.submit(task, 0).unwrap();
+    assert!(
+        s.poll(poll("w", 1, vec![]), 1)
+            .unwrap()
+            .assignments
+            .is_empty()
+    );
+    let mut supported = worker("new", 1);
+    supported.artifact_protocol = Some(CLUSTER_VERSION);
+    s.register(supported, 1).unwrap();
+    let key = s
+        .poll(poll("new", 1, vec![]), 2)
+        .unwrap()
+        .assignments
+        .remove(0)
+        .lease
+        .key;
+    let result = native_result("archived");
+    let mut completion = Completion {
+        key: key.clone(),
+        result: Some(result.clone()),
+        error: None,
+        artifacts: None,
+        artifact_error: None,
+    };
+    assert!(s.complete(completion.clone(), 3).is_err());
+    let manifest = archive(&s, &key, &result);
+    let mut wrong = manifest.clone();
+    wrong.key.generation += 1;
+    completion.artifacts = Some(manifest_ref(&s, &wrong));
+    assert!(s.complete(completion.clone(), 4).is_err());
+    wrong = manifest.clone();
+    wrong.files[0].chunks[0].digest = "0".repeat(64);
+    completion.artifacts = Some(manifest_ref(&s, &wrong));
+    assert!(s.complete(completion.clone(), 5).is_err());
+    wrong = manifest.clone();
+    wrong.files[0].digest = "0".repeat(64);
+    completion.artifacts = Some(manifest_ref(&s, &wrong));
+    assert!(s.complete(completion.clone(), 6).is_err());
+    wrong = manifest.clone();
+    wrong.files[0].name = "../run-bundle.json".into();
+    completion.artifacts = Some(manifest_ref(&s, &wrong));
+    assert!(s.complete(completion.clone(), 7).is_err());
+    let mut different = result.clone();
+    different.attempt_id = "other-attempt".into();
+    let wrong = archive(&s, &key, &different);
+    completion.artifacts = Some(manifest_ref(&s, &wrong));
+    assert!(s.complete(completion.clone(), 8).is_err());
+    assert_eq!(s.task("archived").unwrap().phase, TaskPhase::Leased);
+    assert_eq!(s.workers()[0].reserved, resources(1));
+    completion.artifacts = Some(manifest_ref(&s, &manifest));
+    assert_eq!(
+        s.complete(completion.clone(), 9).unwrap().phase,
+        TaskPhase::Succeeded
+    );
+    assert!(s.authorize_artifact_upload(&key, 10).is_err());
+    drop(s);
+    let mut s = Scheduler::open(&path, config()).unwrap();
+    let record = s.complete(completion.clone(), 2000).unwrap();
+    assert_eq!(record.phase, TaskPhase::Succeeded);
+    assert_eq!(record.artifacts, completion.artifacts);
+    assert_eq!(
+        s.artifact_store()
+            .read_manifest(record.artifacts.as_ref().unwrap())
+            .unwrap(),
+        manifest
+    );
+    completion.artifact_error = Some("conflicting delivery".into());
+    assert!(s.complete(completion, 2001).is_err());
+}
+
+#[test]
+fn archive_failure_retains_native_success_without_reexecuting_side_effects() {
+    let temp = tempfile::tempdir().unwrap();
+    let path = temp.path().join("journal");
+    let mut s = Scheduler::open(&path, config()).unwrap();
+    let mut registration = worker("w", 1);
+    registration.artifact_protocol = Some(CLUSTER_VERSION);
+    s.register(registration, 0).unwrap();
+    let mut task = spec("unarchived");
+    task.retain_bundle = true;
+    s.submit(task, 0).unwrap();
+    let key = s
+        .poll(poll("w", 1, vec![]), 1)
+        .unwrap()
+        .assignments
+        .remove(0)
+        .lease
+        .key;
+    let completion = Completion {
+        key,
+        result: Some(native_result("unarchived")),
+        error: None,
+        artifacts: None,
+        artifact_error: Some("store unavailable".into()),
+    };
+    let record = s.complete(completion.clone(), 2).unwrap();
+    assert_eq!(record.phase, TaskPhase::Failed);
+    assert_eq!(
+        record.result.unwrap().state,
+        pvisor_core::RunState::Completed
+    );
+    assert_eq!(record.artifact_error.as_deref(), Some("store unavailable"));
+    assert!(record.error.is_none());
+    drop(s);
+    let mut s = Scheduler::open(&path, config()).unwrap();
+    assert_eq!(s.complete(completion, 3).unwrap().phase, TaskPhase::Failed);
+    assert!(
+        s.poll(poll("w", 1, vec![]), 4)
+            .unwrap()
+            .assignments
+            .is_empty()
+    );
+    assert_eq!(s.workers()[0].reserved, Resources::default());
 }
 
 #[test]
