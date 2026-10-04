@@ -4,6 +4,7 @@ use anyhow::ensure;
 use std::{
     ffi::CString,
     fs, io,
+    os::fd::AsRawFd,
     os::unix::fs::{MetadataExt, OpenOptionsExt, PermissionsExt},
     path::Path,
 };
@@ -55,7 +56,25 @@ pub(super) fn copy_entry(
             .create_new(true)
             .mode(0o600)
             .open(destination)?;
-        io::copy(&mut input, &mut output)?;
+        // FICLONE shares extents, not writable inode identity. Neither file
+        // offset moves. Only capability/geometry failures permit fallback;
+        // storage, permission and I/O failures must still abort publication.
+        let rc = unsafe { libc::ioctl(output.as_raw_fd(), libc::FICLONE, input.as_raw_fd()) };
+        if rc != 0 {
+            let error = io::Error::last_os_error();
+            ensure!(
+                matches!(
+                    error.raw_os_error(),
+                    Some(
+                        libc::EXDEV | libc::EOPNOTSUPP | libc::ENOTTY | libc::EINVAL | libc::ENOSYS
+                    )
+                ),
+                "reflink {}: {error}",
+                source.display()
+            );
+            output.set_len(0)?;
+            io::copy(&mut input, &mut output)?;
+        }
     } else if metadata.file_type().is_symlink() {
         std::os::unix::fs::symlink(fs::read_link(source)?, destination)?;
     }

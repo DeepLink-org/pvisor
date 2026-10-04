@@ -9,6 +9,7 @@ These records cover choices already reflected in pVisor's implementation and dev
 | 0003 | Preserve executor selection under safe; reject missing controls | Implementation backfill |
 | 0004 | Human approval establishes semantic commitments | Existing contribution rule backfill |
 | 0005 | One Rust VM crate and a uniform trait API | Implementation backfill |
+| 0006 | [Snapshot stages and reuse immutable bases](0006-stage-snapshot.md) | proposed |
 
 ## 0001: A plan cannot prove that controls were installed {#adr-0001}
 

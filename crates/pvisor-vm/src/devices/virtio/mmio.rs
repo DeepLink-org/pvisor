@@ -100,6 +100,29 @@ impl MmioSnapshot {
         Ok(false)
     }
 
+    /// Rebind all backing layers of a matching filesystem to separately
+    /// verified full copies. The coordinator requires exactly one match per tag.
+    #[cfg(not(any(feature = "tee", feature = "aws-nitro")))]
+    pub fn rebind_filesystem_stage(
+        &mut self,
+        tag: &[u8],
+        copies: &[(std::path::PathBuf, std::path::PathBuf)],
+        immutable_lowers: &[std::path::PathBuf],
+    ) -> std::io::Result<bool> {
+        if let super::DeviceSnapshotState::Fs {
+            tag: saved_tag,
+            server,
+            ..
+        } = &mut self.device.state
+        {
+            if saved_tag == tag {
+                server.rebind_stage(copies, immutable_lowers)?;
+                return Ok(true);
+            }
+        }
+        Ok(false)
+    }
+
     /// Explicit relocation of a single filesystem binding after the caller
     /// verifies an independently owned environment copy. Other devices are
     /// untouched; the coordinator must require exactly one matching binding.

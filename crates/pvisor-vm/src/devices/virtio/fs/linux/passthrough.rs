@@ -326,33 +326,7 @@ impl FromStr for CachePolicy {
     }
 }
 
-/// The permission semantics to be emulated by this file system personality.
-#[derive(Debug, Default, Clone, Copy, PartialEq, Eq, serde::Serialize, serde::Deserialize)]
-pub enum PermissionSemantics {
-    /// Be as close as possible to the common semantics of Linux file systems.
-    #[default]
-    LinuxComplete,
-
-    /// As `LinuxComplete`, with the following simplifications:
-    ///  - Extended attributes are not supported.
-    ///  - Idmaps are not supported.
-    ///  - Ownership bits are ignored, always returning the uid/gid from the process
-    ///    requesting the operation within the guest (obtained from `Context`).
-    ///  - Permissions bits are stored in the host, not as extended attributes.
-    LinuxSimplified,
-}
-
-impl TryFrom<u32> for PermissionSemantics {
-    type Error = ();
-
-    fn try_from(semantics: u32) -> Result<Self, Self::Error> {
-        match semantics {
-            0 => Ok(PermissionSemantics::LinuxComplete),
-            1 => Ok(PermissionSemantics::LinuxSimplified),
-            _ => Err(()),
-        }
-    }
-}
+pub use crate::api::PermissionSemantics;
 
 /// Options that configure the behavior of the file system.
 #[derive(Debug, Clone)]

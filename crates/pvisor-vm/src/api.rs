@@ -230,6 +230,20 @@ pub trait SnapshotState {
         tag: &str,
         copies: &[(PathBuf, PathBuf)],
     ) -> io::Result<usize>;
+    /// Restore an overlay stage while retaining explicitly leased immutable
+    /// lowers at their original canonical paths. `copies` must cover upper,
+    /// work, preimages and every other mutable backing with independently owned,
+    /// inventory-verified copies. Retained roots may only be lower/baseline
+    /// bindings, never writable stage directories. The coordinator guarantees
+    /// base immutability, pins dependencies through VM exit, and validates the
+    /// stage inventory before calling. Runtime validation still verifies saved
+    /// inode identities/content. Failure leaves machine state unchanged.
+    fn rebind_filesystem_stage(
+        &mut self,
+        tag: &str,
+        copies: &[(PathBuf, PathBuf)],
+        immutable_lowers: &[PathBuf],
+    ) -> io::Result<usize>;
 }
 
 /// Validate a native restore and map sealed RAM privately. RAM mapping alone
@@ -293,7 +307,9 @@ pub struct VmBuilder {
 /// Weak live control reference; transitions are serialized internally.
 #[derive(Clone)]
 pub struct VmmHandle {
-    pub(crate) inner: crate::handle::Handle,
+    pub(crate) vmm: std::sync::Weak<std::sync::Mutex<crate::vmm::Vmm>>,
+    pub(crate) transition: Arc<std::sync::Mutex<()>>,
+    pub(crate) cold_pager_started: Arc<std::sync::atomic::AtomicBool>,
 }
 /// Access available only within a quiescence callback; cannot escape its lifetime.
 pub struct FrozenMachine<'a> {
@@ -323,9 +339,13 @@ pub struct RamReclaim {
 }
 
 /// Host-independent attachment data. The permission model is explicit.
-#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq, serde::Serialize, serde::Deserialize)]
 pub enum PermissionSemantics {
+    /// Emulate Linux ownership, permissions, extended attributes and idmaps.
+    #[default]
     LinuxComplete,
+    /// Disable extended attributes and idmaps, return the guest caller's uid/gid,
+    /// and store permission bits on the host instead of in extended attributes.
     LinuxSimplified,
 }
 #[derive(Clone, Debug)]

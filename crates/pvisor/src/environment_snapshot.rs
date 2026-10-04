@@ -22,6 +22,8 @@ use std::{
     path::Path,
 };
 
+mod base;
+pub use base::{BaseReference, SnapshotBase};
 mod blocks;
 mod lazy;
 mod store;
@@ -288,8 +290,11 @@ pub fn verify_tree(root: &Path, expected: &TreeInventory) -> anyhow::Result<()> 
     Ok(())
 }
 
-/// Full data copy, never clonefile. Native metadata copying preserves ACLs,
-/// xattrs, permissions and timestamps; our traversal preserves hardlinks.
+/// Independent owned copy, using filesystem COW for regular files when available
+/// and falling back to data copying. Native metadata copying preserves ACLs,
+/// xattrs, permissions and timestamps; our traversal preserves hardlinks within
+/// the destination, never between source and destination. Full inventories still
+/// validate both trees; cloning does not make verification constant-time.
 /// Only the caller's unpublished destination is removed on any failure.
 pub fn copy_owned_tree(source: &Path, destination: &Path) -> anyhow::Result<TreeInventory> {
     ensure!(
@@ -329,13 +334,18 @@ pub fn copy_owned_tree(source: &Path, destination: &Path) -> anyhow::Result<Tree
             }
             #[cfg(target_os = "macos")]
             {
-                let flags = libc::COPYFILE_METADATA
+                let mut flags = libc::COPYFILE_METADATA
                     | libc::COPYFILE_NOFOLLOW
                     | if metadata.is_dir() {
                         0
                     } else {
                         libc::COPYFILE_DATA | libc::COPYFILE_EXCL
                     };
+                if metadata.is_file() {
+                    // COPYFILE_CLONE falls back to copying when cloning is not
+                    // supported. Keep ACL and no-follow flags on both paths.
+                    flags |= libc::COPYFILE_CLONE;
+                }
                 let src = native_path(source)?;
                 let dst = native_path(destination)?;
                 let rc = unsafe {
@@ -347,6 +357,24 @@ pub fn copy_owned_tree(source: &Path, destination: &Path) -> anyhow::Result<Tree
                     source.display(),
                     std::io::Error::last_os_error()
                 );
+                if metadata.is_file() {
+                    // Successful clones omit setuid/setgid bits. Reapply the
+                    // existing metadata-copy contract before verification.
+                    let rc = unsafe {
+                        libc::copyfile(
+                            src.as_ptr(),
+                            dst.as_ptr(),
+                            std::ptr::null_mut(),
+                            libc::COPYFILE_METADATA | libc::COPYFILE_NOFOLLOW,
+                        )
+                    };
+                    ensure!(
+                        rc == 0,
+                        "copy cloned metadata {}: {}",
+                        source.display(),
+                        std::io::Error::last_os_error()
+                    );
+                }
             }
             #[cfg(target_os = "linux")]
             linux::copy_entry(source, destination, &metadata)?;

@@ -38,10 +38,13 @@ pub struct EnvironmentManifest {
     pub ram_blocks: Option<RamBlocks>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub ram_index: Option<RawRamIndex>,
+    /// Ordered immutable generations. None identifies the legacy full-tree profile.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub stage_bases: Option<Vec<super::BaseReference>>,
 }
 
 pub struct SnapshotStore {
-    root: PathBuf,
+    pub(super) root: PathBuf,
 }
 pub struct PendingEnvironment {
     store: PathBuf,
@@ -54,9 +57,10 @@ pub struct PublishedEnvironment {
     // Permanent store lock is outside removable objects. This guard holds a
     // shared reference until RAM/state/worktree preparation is complete.
     _reference: File,
+    bases: Vec<super::SnapshotBase>,
 }
 
-fn digest(bytes: &[u8]) -> String {
+pub(super) fn digest(bytes: &[u8]) -> String {
     Sha256::digest(bytes)
         .iter()
         .map(|byte| format!("{byte:02x}"))
@@ -72,7 +76,7 @@ pub(super) fn valid_id(id: &str) -> anyhow::Result<()> {
     );
     Ok(())
 }
-fn gate(root: &Path, exclusive: bool) -> anyhow::Result<File> {
+pub(super) fn gate(root: &Path, exclusive: bool) -> anyhow::Result<File> {
     let file = OpenOptions::new()
         .create(true)
         .truncate(false)
@@ -88,7 +92,7 @@ fn gate(root: &Path, exclusive: bool) -> anyhow::Result<File> {
     }
     Ok(file)
 }
-fn write_synced(path: &Path, bytes: &[u8]) -> anyhow::Result<()> {
+pub(super) fn write_synced(path: &Path, bytes: &[u8]) -> anyhow::Result<()> {
     let mut file = OpenOptions::new()
         .create_new(true)
         .write(true)
@@ -124,7 +128,7 @@ impl SnapshotStore {
         );
         fs::set_permissions(root, fs::Permissions::from_mode(0o700))?;
         let root = root.canonicalize()?;
-        for name in ["objects", "pending", "deleted", "content"] {
+        for name in ["objects", "pending", "deleted", "content", "bases"] {
             let path = root.join(name);
             directory(&path)?;
         }
@@ -181,8 +185,17 @@ impl SnapshotStore {
         let manifest: EnvironmentManifest = serde_json::from_slice(&bytes)?;
         ensure!(
             matches!(
-                (manifest.version, &manifest.ram_blocks, &manifest.ram_index),
-                (1, None, None) | (2, Some(_), None) | (3, None, Some(_))
+                (
+                    manifest.version,
+                    &manifest.ram_blocks,
+                    &manifest.ram_index,
+                    &manifest.stage_bases
+                ),
+                (1, None, None, None)
+                    | (2, Some(_), None, None)
+                    | (3, None, Some(_), None)
+                    | (4, None, Some(_), Some(_))
+                    | (5, Some(_), None, Some(_))
             ) && manifest.compatibility == *expected,
             "environment compatibility mismatch"
         );
@@ -220,11 +233,37 @@ impl SnapshotStore {
             "environment machine digest mismatch"
         );
         verify_tree(&path.join("rootfs"), &manifest.filesystem)?;
+        let bases = if let Some(references) = &manifest.stage_bases {
+            ensure!(!references.is_empty(), "stage snapshot has no base");
+            let mut ids = std::collections::BTreeSet::new();
+            references
+                .iter()
+                .map(|reference| {
+                    ensure!(ids.insert(&reference.id), "duplicate stage base");
+                    let base = super::base::open(&self.root, reference)?;
+                    base.verify_pin(&path.join("base-refs").join(&reference.id))?;
+                    Ok(base)
+                })
+                .collect::<anyhow::Result<Vec<_>>>()?
+        } else {
+            Vec::new()
+        };
         Ok(PublishedEnvironment {
             path,
             manifest,
             _reference: reference,
+            bases,
         })
+    }
+    /// Read the digest-bound profile; callers still perform full compatibility validation.
+    pub fn profile(&self, id: &str) -> anyhow::Result<String> {
+        valid_id(id)?;
+        let _reference = gate(&self.root, false)?;
+        let bytes = fs::read(self.root.join("objects").join(id).join("manifest.json"))?;
+        ensure!(digest(&bytes) == id, "environment manifest digest mismatch");
+        Ok(serde_json::from_slice::<EnvironmentManifest>(&bytes)?
+            .compatibility
+            .profile)
     }
     /// Deletion is refused while any published object is referenced. The
     /// first version deliberately uses one conservative store-wide gate.
@@ -299,6 +338,7 @@ impl SnapshotStore {
         File::open(self.root.join("pending"))?.sync_all()?;
         File::open(self.root.join("deleted"))?.sync_all()?;
         removed += blocks::collect(&self.root)?;
+        removed += super::base::collect(&self.root)?;
         Ok(removed)
     }
 }
@@ -325,7 +365,7 @@ impl PendingEnvironment {
         machine: &[u8],
         compatibility: Compatibility,
     ) -> anyhow::Result<String> {
-        self.publish_with_ram(source, machine, compatibility, false)
+        self.publish_with_ram(source, machine, compatibility, false, &[])
     }
     /// Durable compressed content uses the resident pool codec; no live pool is required.
     pub fn publish_compressed(
@@ -334,7 +374,21 @@ impl PendingEnvironment {
         machine: &[u8],
         compatibility: Compatibility,
     ) -> anyhow::Result<String> {
-        self.publish_with_ram(source, machine, compatibility, true)
+        self.publish_with_ram(source, machine, compatibility, true, &[])
+    }
+    /// Capture a complete writable stage, not its immutable lower trees. The
+    /// supplied leases must belong to this store and remain immutable. Freeze
+    /// requirements are identical to `publish`; every lower needs a lease.
+    pub fn publish_stage(
+        self,
+        source: &Path,
+        bases: &[super::SnapshotBase],
+        machine: &[u8],
+        compatibility: Compatibility,
+        compressed: bool,
+    ) -> anyhow::Result<String> {
+        ensure!(!bases.is_empty(), "stage snapshot has no base");
+        self.publish_with_ram(source, machine, compatibility, compressed, bases)
     }
     fn publish_with_ram(
         self,
@@ -342,6 +396,7 @@ impl PendingEnvironment {
         machine: &[u8],
         compatibility: Compatibility,
         compressed: bool,
+        bases: &[super::SnapshotBase],
     ) -> anyhow::Result<String> {
         ensure!(!machine.is_empty(), "missing machine state");
         ensure!(
@@ -352,6 +407,33 @@ impl PendingEnvironment {
             "incomplete compatibility binding"
         );
         let source = source.canonicalize()?;
+        let stage_bases = if bases.is_empty() {
+            None
+        } else {
+            fs::create_dir(self.staging.path().join("base-refs"))?;
+            let mut ids = std::collections::BTreeSet::new();
+            let references = bases
+                .iter()
+                .map(|base| {
+                    ensure!(ids.insert(&base.reference().id), "duplicate stage base");
+                    base.pin(
+                        &self.store,
+                        &self
+                            .staging
+                            .path()
+                            .join("base-refs")
+                            .join(&base.reference().id),
+                    )?;
+                    ensure!(
+                        !source.starts_with(base.root()) && !base.root().starts_with(&source),
+                        "stage overlaps its base"
+                    );
+                    Ok(base.reference().clone())
+                })
+                .collect::<anyhow::Result<Vec<_>>>()?;
+            File::open(self.staging.path().join("base-refs"))?.sync_all()?;
+            Some(references)
+        };
         let filesystem = copy_owned_tree(&source, &self.staging.path().join("rootfs"))?;
         write_synced(&self.staging.path().join("machine.json"), machine)?;
         // Detach the sealed RAM inode from writable capture descriptors which
@@ -397,13 +479,19 @@ impl PendingEnvironment {
             )?)?)
         };
         let manifest = EnvironmentManifest {
-            version: if compressed { 2 } else { 3 },
+            version: match (compressed, stage_bases.is_some()) {
+                (false, false) => 3,
+                (true, false) => 2,
+                (false, true) => 4,
+                (true, true) => 5,
+            },
             compatibility,
             source_root: source.as_os_str().as_bytes().to_vec(),
             filesystem,
             ram_sha256: capture_hash,
             ram_blocks,
             ram_index,
+            stage_bases,
             machine_sha256: digest(machine),
         };
         let bytes = serde_json::to_vec(&manifest)?;
@@ -470,7 +558,29 @@ impl PublishedEnvironment {
     pub fn ram_reader(&self) -> anyhow::Result<SnapshotRamReader> {
         SnapshotRamReader::new(&self.path, &self.manifest)
     }
+    /// Independent leases must outlive restored VMs, including after object deletion.
+    pub fn base_leases(&self) -> anyhow::Result<Vec<super::SnapshotBase>> {
+        self.bases
+            .iter()
+            .map(super::SnapshotBase::try_clone)
+            .collect()
+    }
     pub fn materialize(&self, destination: &Path) -> anyhow::Result<()> {
+        ensure!(
+            self.manifest.stage_bases.is_none(),
+            "stage snapshot requires materialize_stage"
+        );
+        self.copy_payload(destination)
+    }
+    /// Restore the whole stage container (upper, work and preimages), without bases.
+    pub fn materialize_stage(&self, destination: &Path) -> anyhow::Result<()> {
+        ensure!(
+            self.manifest.stage_bases.is_some(),
+            "full snapshot is not a stage snapshot"
+        );
+        self.copy_payload(destination)
+    }
+    fn copy_payload(&self, destination: &Path) -> anyhow::Result<()> {
         verify_tree(&self.path.join("rootfs"), &self.manifest.filesystem)?;
         let copied = copy_owned_tree(&self.path.join("rootfs"), destination)?;
         ensure!(

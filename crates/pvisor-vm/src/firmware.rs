@@ -76,10 +76,7 @@ impl KernelOwner {
     }
     #[cfg(not(target_env = "musl"))]
     pub(crate) fn load(&mut self) -> io::Result<KernelBundle> {
-        #[cfg(target_os = "macos")]
-        let name = "libkrunfw.5.dylib";
-        #[cfg(target_os = "linux")]
-        let name = "libkrunfw.so.5";
+        let name = crate::firmware_store::firmware_name();
         // SAFETY: trusted pVisor firmware implements this versioned kernel ABI.
         let library = unsafe { libloading::Library::new(name) }.map_err(io::Error::other)?;
         let mut guest_addr = 0;

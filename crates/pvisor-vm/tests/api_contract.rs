@@ -123,6 +123,7 @@ fn snapshot_ram_shape_is_portable_and_mapping_is_private() {
 fn private_adapters_do_not_define_public_inherent_methods() {
     for source in [
         include_str!("../src/portable.rs"),
+        include_str!("../src/handle.rs"),
         include_str!("../src/memory.rs"),
         include_str!("../src/firmware_store.rs"),
         include_str!("../src/cold_ram.rs"),

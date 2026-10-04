@@ -10,7 +10,9 @@ use std::{
 
 impl RuntimeSupport for VmPlatform {
     fn init_logging(filter: &str) {
-        crate::builder::init_logging(filter);
+        let _ = env_logger::Builder::from_env(env_logger::Env::default().default_filter_or(filter))
+            .format_timestamp_micros()
+            .try_init();
     }
     fn capabilities() -> Capabilities {
         capabilities()
@@ -152,11 +154,6 @@ impl VmConfiguration for VmBuilder {
                     )
                 })
             };
-            use crate::devices::virtio::fs::passthrough::PermissionSemantics as Internal;
-            let semantics = match overlay.semantics {
-                PermissionSemantics::LinuxComplete => Internal::LinuxComplete,
-                PermissionSemantics::LinuxSimplified => Internal::LinuxSimplified,
-            };
             self.inner.overlay(
                 tag,
                 crate::devices::virtio::fs::OverlayConfig {
@@ -176,7 +173,7 @@ impl VmConfiguration for VmBuilder {
                         .map(|p| path(p))
                         .collect::<io::Result<_>>()?,
                     access_policy: overlay.access_policy,
-                    semantics,
+                    semantics: overlay.semantics,
                 },
                 shm_size,
             )
@@ -249,28 +246,10 @@ impl VmConfiguration for VmBuilder {
 
 impl VmRuntime for VmBuilder {
     fn run(self, on_ready: impl FnOnce(VmmHandle) -> io::Result<()>) -> io::Result<()> {
-        self.inner.run(|inner| on_ready(VmmHandle { inner }))
+        self.inner.run(on_ready)
     }
 }
 
-impl VmControl for VmmHandle {
-    fn is_paused(&self) -> Result<bool, String> {
-        self.inner.is_paused()
-    }
-    fn pause(&self) -> Result<(), String> {
-        self.inner.pause()
-    }
-    fn resume(&self) -> Result<(), String> {
-        self.inner.resume()
-    }
-    fn offload_ram(&self) -> Result<RamReclaim, String> {
-        self.inner.offload_ram().map(|s| RamReclaim {
-            backed_bytes: s.backed_bytes,
-            resident_before_bytes: s.resident_before_bytes,
-            resident_after_bytes: s.resident_after_bytes,
-        })
-    }
-}
 impl SnapshotControl for VmmHandle {
     fn with_snapshot_quiesced<T>(
         &self,
@@ -282,8 +261,7 @@ impl SnapshotControl for VmmHandle {
             all(target_os = "linux", target_arch = "x86_64")
         ))]
         {
-            self.inner
-                .with_snapshot_quiesced(timeout, |inner| action(&mut FrozenMachine { inner }))
+            self.snapshot_quiesced(timeout, |inner| action(&mut FrozenMachine { inner }))
         }
         #[cfg(not(any(
             all(target_os = "macos", target_arch = "aarch64"),
@@ -317,8 +295,7 @@ impl ColdRamControl for VmmHandle {
     ) -> Result<Option<T>, String> {
         #[cfg(target_os = "macos")]
         {
-            self.inner
-                .with_ram_quiesced(|inner| action(&mut FrozenMachine { inner }))
+            self.ram_quiesced(|inner| action(&mut FrozenMachine { inner }))
         }
         #[cfg(not(target_os = "macos"))]
         {
@@ -329,7 +306,7 @@ impl ColdRamControl for VmmHandle {
     fn experimental_ram_residency(&self) -> Result<Option<u64>, String> {
         #[cfg(target_os = "macos")]
         {
-            self.inner.experimental_ram_residency()
+            self.ram_residency()
         }
         #[cfg(not(target_os = "macos"))]
         {
@@ -339,7 +316,7 @@ impl ColdRamControl for VmmHandle {
     fn install_ram_fault_handler(&self, handler: Arc<MemoryFaultHandler>) -> Result<(), String> {
         #[cfg(target_os = "macos")]
         {
-            self.inner.install_ram_fault_handler(handler)
+            self.register_ram_fault_handler(handler)
         }
         #[cfg(not(target_os = "macos"))]
         {
@@ -477,6 +454,30 @@ impl SnapshotState for MachineSnapshot {
         )))]
         {
             let _ = (tag, copies);
+            Err(unsupported("filesystem snapshot rebinding"))
+        }
+    }
+    fn rebind_filesystem_stage(
+        &mut self,
+        tag: &str,
+        copies: &[(PathBuf, PathBuf)],
+        immutable_lowers: &[PathBuf],
+    ) -> io::Result<usize> {
+        #[cfg(any(
+            all(target_os = "macos", target_arch = "aarch64"),
+            all(target_os = "linux", target_arch = "x86_64")
+        ))]
+        {
+            self.rebind(tag, |device, tag| {
+                device.rebind_filesystem_stage(tag, copies, immutable_lowers)
+            })
+        }
+        #[cfg(not(any(
+            all(target_os = "macos", target_arch = "aarch64"),
+            all(target_os = "linux", target_arch = "x86_64")
+        )))]
+        {
+            let _ = (tag, copies, immutable_lowers);
             Err(unsupported("filesystem snapshot rebinding"))
         }
     }

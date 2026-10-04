@@ -2,18 +2,9 @@
 //! identity, backing-file sealing and execution ownership belong to the runner.
 use crate::vmm::{CpuSnapshot, Vmm};
 use std::{fs::File, os::unix::fs::FileExt, sync::Arc};
-use vm_memory::{
-    Address, Bytes, GuestAddress, GuestMemory,
-    GuestMemoryMmap, GuestMemoryRegion, 
-};
+use vm_memory::{Address, Bytes, GuestAddress, GuestMemory, GuestMemoryMmap, GuestMemoryRegion};
 
-#[derive(Clone, Debug, serde::Serialize, serde::Deserialize)]
-#[serde(deny_unknown_fields)]
-pub struct RamMappingSnapshot {
-    pub base: u64,
-    pub len: u64,
-    pub file_offset: u64,
-}
+pub use crate::api::RamMappingSnapshot;
 
 #[derive(Clone, Debug, serde::Serialize, serde::Deserialize)]
 #[serde(deny_unknown_fields)]
@@ -54,35 +45,14 @@ impl MachineRestore {
     }
 
     pub fn validate_ram_file(&self) -> Result<(), String> {
-        if self.state.ram.is_empty() {
-            return Err("empty RAM snapshot inventory".into());
-        }
-        let mut end = 0u64;
-        let mut address_end = 0u64;
-        for mapping in &self.state.ram {
-            if mapping.len == 0 || mapping.file_offset != end || mapping.base < address_end {
-                return Err("invalid RAM mapping inventory".into());
-            }
-            end = end
-                .checked_add(mapping.len)
-                .ok_or("RAM file size overflow")?;
-            address_end = mapping
-                .base
-                .checked_add(mapping.len)
-                .ok_or("RAM address overflow")?;
-        }
-        if self.ram_file.metadata().map_err(|e| e.to_string())?.len() != end {
-            return Err("RAM snapshot file size mismatch".into());
-        }
-        Ok(())
+        crate::memory::validate_snapshot_ram(&self.state.ram, &self.ram_file)
     }
 
     /// Map sealed RAM without reading it. Host page faults fetch the backing
     /// file; guest/device writes become private COW pages, never snapshot writes.
     /// The caller must retain any pager serving `ram_file` for the VM lifetime.
     pub fn map_ram(&self, ranges: &[(GuestAddress, usize)]) -> Result<GuestMemoryMmap, String> {
-        let ram = self.state.ram.iter().map(|m| crate::api::RamMappingSnapshot { base: m.base, len: m.len, file_offset: m.file_offset }).collect::<Vec<_>>();
-        crate::memory::map_snapshot_ram(&ram, self.ram_file.clone(), ranges)
+        crate::memory::map_snapshot_ram(&self.state.ram, self.ram_file.clone(), ranges)
     }
 }
 

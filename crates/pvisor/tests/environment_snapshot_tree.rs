@@ -10,7 +10,7 @@ use std::{
 };
 
 #[test]
-fn full_copy_preserves_metadata_links_and_unvisited_objects() {
+fn owned_copy_preserves_metadata_links_and_unvisited_objects() {
     let directory = tempfile::tempdir().unwrap();
     let source = directory.path().join("source");
     fs::create_dir(&source).unwrap();
@@ -62,6 +62,47 @@ fn full_copy_preserves_metadata_links_and_unvisited_objects() {
     verify_tree(&destination, &saved).unwrap();
     fs::write(destination.join("data"), b"changed contents").unwrap();
     assert!(verify_tree(&destination, &saved).is_err());
+}
+
+#[test]
+fn owned_copies_isolate_source_and_sibling_writes() {
+    use std::os::unix::{ffi::OsStringExt, fs::PermissionsExt};
+    let directory = tempfile::tempdir().unwrap();
+    let source = directory.path().join("source");
+    fs::create_dir(&source).unwrap();
+    // APFS rejects ill-formed UTF-8 names; Linux exercises raw-byte paths.
+    let name = std::ffi::OsString::from_vec(if cfg!(target_os = "linux") {
+        b"data-\xff".to_vec()
+    } else {
+        b"data".to_vec()
+    });
+    fs::write(source.join(&name), vec![0x35; 256 * 1024]).unwrap();
+    fs::hard_link(source.join(&name), source.join("alias")).unwrap();
+    fs::write(source.join("empty"), []).unwrap();
+    fs::write(source.join("executable"), b"executable").unwrap();
+    fs::set_permissions(
+        source.join("executable"),
+        fs::Permissions::from_mode(0o6755),
+    )
+    .unwrap();
+    let left = directory.path().join("left");
+    let right = directory.path().join("right");
+    let saved = copy_owned_tree(&source, &left).unwrap();
+    copy_owned_tree(&source, &right).unwrap();
+    assert_eq!(
+        fs::metadata(left.join("executable")).unwrap().mode() & 0o7777,
+        0o6755
+    );
+    fs::write(left.join(&name), b"left").unwrap();
+    assert_eq!(fs::read(left.join("alias")).unwrap(), b"left");
+    verify_tree(&source, &saved).unwrap();
+    verify_tree(&right, &saved).unwrap();
+    fs::write(source.join(&name), b"source").unwrap();
+    verify_tree(&right, &saved).unwrap();
+    assert_eq!(fs::read(left.join(&name)).unwrap(), b"left");
+    fs::remove_dir_all(source).unwrap();
+    fs::remove_dir_all(left).unwrap();
+    verify_tree(&right, &saved).unwrap();
 }
 
 #[test]

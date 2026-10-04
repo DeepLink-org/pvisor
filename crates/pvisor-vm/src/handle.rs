@@ -1,14 +1,11 @@
-use crate::vmm;
-use std::sync::{Arc, Mutex, Weak};
+use crate::{
+    api::{RamReclaim, VmControl, VmmHandle},
+    vmm,
+};
+#[cfg(target_os = "macos")]
+use std::sync::Arc;
 
-#[derive(Clone)]
-pub(crate) struct Handle {
-    pub(crate) vmm: Weak<Mutex<vmm::Vmm>>,
-    pub(crate) transition: Arc<Mutex<()>>,
-    pub(crate) cold_pager_started: Arc<std::sync::atomic::AtomicBool>,
-}
-
-impl Handle {
+impl VmmHandle {
     /// Full-device quiescence for snapshot capture. This does not publish a
     /// snapshot or implement cold restore. Caller persists state inside action.
     /// Deadline failure leaves CPU parked: a worker still stopping cannot safely
@@ -17,7 +14,7 @@ impl Handle {
         all(target_os = "macos", target_arch = "aarch64"),
         all(target_os = "linux", target_arch = "x86_64")
     ))]
-    pub fn with_snapshot_quiesced<T>(
+    pub(crate) fn snapshot_quiesced<T>(
         &self,
         timeout: std::time::Duration,
         action: impl FnOnce(&mut vmm::Vmm) -> Result<T, String>,
@@ -73,26 +70,16 @@ impl Handle {
     }
 
     #[cfg(target_os = "macos")]
-    pub fn experimental_ram_residency(&self) -> Result<Option<u64>, String> {
+    pub(crate) fn ram_residency(&self) -> Result<Option<u64>, String> {
         let vmm = self.vmm.upgrade().ok_or("VMM has stopped")?;
         let locked = vmm.lock().map_err(|_| "VMM lock poisoned")?;
         Ok(locked.experimental_ram_residency())
     }
 
-    pub fn is_paused(&self) -> Result<bool, String> {
-        let _transition = self
-            .transition
-            .lock()
-            .map_err(|_| "VM transition lock poisoned")?;
-        let vmm = self.vmm.upgrade().ok_or("VMM has stopped")?;
-        let locked = vmm.lock().map_err(|_| "VMM lock poisoned")?;
-        Ok(locked.is_paused())
-    }
-
     /// Experimental optional mapping transaction. None skips a paused VM or
     /// busy devices without invoking action. Mapping errors park the VM.
     #[cfg(target_os = "macos")]
-    pub fn with_ram_quiesced<T>(
+    pub(crate) fn ram_quiesced<T>(
         &self,
         action: impl FnOnce(&mut vmm::Vmm) -> Result<T, String>,
     ) -> Result<Option<T>, String> {
@@ -154,7 +141,7 @@ impl Handle {
     /// it does not enable sampling, deduplication or change guest RAM mappings.
     /// Requires a running VM; preserves paused/offloaded VMs by rejecting them.
     #[cfg(target_os = "macos")]
-    pub fn install_ram_fault_handler(
+    pub(crate) fn register_ram_fault_handler(
         &self,
         handler: Arc<vmm::ram::MemoryFaultHandler>,
     ) -> Result<(), String> {
@@ -186,7 +173,30 @@ impl Handle {
         result.map_err(|e| e.to_string())
     }
 
-    pub fn offload_ram(&self) -> Result<vmm::ram::RamReclaim, String> {
+    fn control(&self, paused: bool) -> Result<(), String> {
+        let _transition = self
+            .transition
+            .lock()
+            .map_err(|_| "VM transition lock poisoned")?;
+        let vmm = self.vmm.upgrade().ok_or("VMM has stopped")?;
+        let mut vmm = vmm.lock().map_err(|_| "VMM lock poisoned")?;
+        let result = if paused { vmm.pause() } else { vmm.resume() };
+        result.map_err(|error| error.to_string())
+    }
+}
+
+impl VmControl for VmmHandle {
+    fn is_paused(&self) -> Result<bool, String> {
+        let _transition = self
+            .transition
+            .lock()
+            .map_err(|_| "VM transition lock poisoned")?;
+        let vmm = self.vmm.upgrade().ok_or("VMM has stopped")?;
+        let locked = vmm.lock().map_err(|_| "VMM lock poisoned")?;
+        Ok(locked.is_paused())
+    }
+
+    fn offload_ram(&self) -> Result<RamReclaim, String> {
         let _transition = self
             .transition
             .lock()
@@ -220,22 +230,11 @@ impl Handle {
         }
         result.map_err(|error| error.to_string())
     }
-    pub fn pause(&self) -> Result<(), String> {
+    fn pause(&self) -> Result<(), String> {
         self.control(true)
     }
 
-    pub fn resume(&self) -> Result<(), String> {
+    fn resume(&self) -> Result<(), String> {
         self.control(false)
-    }
-
-    fn control(&self, paused: bool) -> Result<(), String> {
-        let _transition = self
-            .transition
-            .lock()
-            .map_err(|_| "VM transition lock poisoned")?;
-        let vmm = self.vmm.upgrade().ok_or("VMM has stopped")?;
-        let mut vmm = vmm.lock().map_err(|_| "VMM lock poisoned")?;
-        let result = if paused { vmm.pause() } else { vmm.resume() };
-        result.map_err(|error| error.to_string())
     }
 }

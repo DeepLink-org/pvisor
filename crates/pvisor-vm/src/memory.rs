@@ -100,26 +100,7 @@ pub(crate) fn map_snapshot_ram(
     use vm_memory::{
         mmap::MmapRegionBuilder, Address, FileOffset, GuestMemoryMmap, GuestRegionMmap,
     };
-    if ram.is_empty() {
-        return Err("empty RAM snapshot inventory".into());
-    }
-    let mut end = 0u64;
-    let mut address_end = 0u64;
-    for mapping in ram {
-        if mapping.len == 0 || mapping.file_offset != end || mapping.base < address_end {
-            return Err("invalid RAM mapping inventory".into());
-        }
-        end = end
-            .checked_add(mapping.len)
-            .ok_or("RAM file size overflow")?;
-        address_end = mapping
-            .base
-            .checked_add(mapping.len)
-            .ok_or("RAM address overflow")?;
-    }
-    if file.metadata().map_err(|e| e.to_string())?.len() != end {
-        return Err("RAM snapshot file size mismatch".into());
-    }
+    validate_snapshot_ram(ram, &file)?;
     if ranges.len() != ram.len()
         || ranges
             .iter()
@@ -151,4 +132,32 @@ pub(crate) fn map_snapshot_ram(
         ));
     }
     GuestMemoryMmap::from_arc_regions(regions).map_err(|e| format!("{e:?}"))
+}
+
+/// Shared inventory/file checks for validation and private COW mapping.
+pub(crate) fn validate_snapshot_ram(
+    ram: &[crate::api::RamMappingSnapshot],
+    file: &std::fs::File,
+) -> Result<(), String> {
+    if ram.is_empty() {
+        return Err("empty RAM snapshot inventory".into());
+    }
+    let mut end = 0u64;
+    let mut address_end = 0u64;
+    for mapping in ram {
+        if mapping.len == 0 || mapping.file_offset != end || mapping.base < address_end {
+            return Err("invalid RAM mapping inventory".into());
+        }
+        end = end
+            .checked_add(mapping.len)
+            .ok_or("RAM file size overflow")?;
+        address_end = mapping
+            .base
+            .checked_add(mapping.len)
+            .ok_or("RAM address overflow")?;
+    }
+    if file.metadata().map_err(|e| e.to_string())?.len() != end {
+        return Err("RAM snapshot file size mismatch".into());
+    }
+    Ok(())
 }

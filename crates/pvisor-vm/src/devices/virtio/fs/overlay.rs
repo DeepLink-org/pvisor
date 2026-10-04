@@ -168,15 +168,36 @@ impl OverlaySnapshot {
                 .map(str::to_owned)
                 .ok_or_else(|| invalid("overlay backing path is not UTF-8"))
         };
-        self.rebind_roots(relocate)
+        self.rebind_roots(relocate, &[])
     }
 
     pub(super) fn rebind_roots(
         &mut self,
         relocate: impl Fn(&str) -> io::Result<String>,
+        retained: &[PathBuf],
     ) -> io::Result<()> {
         use super::snapshot::invalid;
         use std::os::unix::fs::MetadataExt;
+        for root in retained {
+            if !self
+                .config
+                .lower_dirs
+                .iter()
+                .any(|lower| Path::new(lower) == root)
+                || std::iter::once(Some(self.config.upper_dir.as_str()))
+                    .chain([
+                        self.config.work_dir.as_deref(),
+                        self.config.preimage_dir.as_deref(),
+                    ])
+                    .flatten()
+                    .any(|mutable| {
+                        let mutable = Path::new(mutable);
+                        mutable.starts_with(root) || root.starts_with(mutable)
+                    })
+            {
+                return Err(invalid("retained binding must be an immutable lower"));
+            }
+        }
         let original_roots = std::iter::once(self.config.upper_dir.clone())
             .chain(self.config.lower_dirs.iter().cloned())
             .collect::<Vec<_>>();
@@ -203,6 +224,9 @@ impl OverlaySnapshot {
             .collect::<Vec<_>>();
         let mut layers = self.layers.clone();
         for ((layer, original), copied) in layers.iter_mut().zip(&original_roots).zip(&roots) {
+            if original == copied && retained.iter().any(|root| root == Path::new(original)) {
+                continue;
+            }
             layer.rebind_owned_copy(Path::new(original), Path::new(copied))?;
         }
         let mut origins = std::collections::BTreeMap::new();
@@ -523,19 +547,52 @@ impl FileSystem for OverlayFs {
     fn capture_state(&self) -> io::Result<super::snapshot::FsSnapshot> {
         let _operation = self.operation_lock.lock().unwrap();
         let hard_links = self.core.capture_hard_links()?;
-        let mut missing = hard_links
-            .iter()
-            .map(|(dev, ino, _)| (*dev, *ino))
-            .collect::<std::collections::BTreeSet<_>>();
+        let sources = self
+            .core
+            .capture_hard_link_sources()?
+            .into_iter()
+            .map(|(dev, ino, path)| ((dev, ino), path))
+            .collect::<std::collections::BTreeMap<_, _>>();
         let mut hard_link_origins = Vec::new();
-        // Lower origins can already have been forgotten by FUSE. Preserve their
-        // paths now, while all device writes are frozen and the trees are owned.
+        let mut missing = std::collections::BTreeSet::new();
+        for (dev, ino, _) in &hard_links {
+            let Some(path) = sources.get(&(*dev, *ino)) else {
+                missing.insert((*dev, *ino));
+                continue;
+            };
+            let (layer, root) = self
+                .roots
+                .iter()
+                .enumerate()
+                .skip(1)
+                .find(|(_, root)| path.starts_with(root))
+                .ok_or_else(|| super::snapshot::invalid("hard-link source escaped lower"))?;
+            use std::os::unix::fs::MetadataExt;
+            let metadata = std::fs::symlink_metadata(path)?;
+            if !metadata.is_file()
+                || metadata.nlink() < 2
+                || (metadata.dev(), metadata.ino()) != (*dev, *ino)
+            {
+                return Err(super::snapshot::invalid("hard-link source changed"));
+            }
+            hard_link_origins.push((
+                *dev,
+                *ino,
+                layer,
+                path.strip_prefix(root)
+                    .unwrap()
+                    .as_os_str()
+                    .as_bytes()
+                    .to_vec(),
+            ));
+        }
+        // Legacy snapshots lack origin hints. Preserve their existing full-copy
+        // capture semantics; new captures/restores use copy-up-time hints above.
         for (layer, root) in self.roots.iter().enumerate().skip(1) {
             use std::os::unix::fs::MetadataExt;
             let mut directories = vec![root.clone()];
             while !missing.is_empty() && !directories.is_empty() {
-                let directory = directories.pop().unwrap();
-                for entry in std::fs::read_dir(directory)? {
+                for entry in std::fs::read_dir(directories.pop().unwrap())? {
                     let path = entry?.path();
                     let metadata = std::fs::symlink_metadata(&path)?;
                     if missing.is_empty() {
@@ -657,6 +714,19 @@ impl FileSystem for OverlayFs {
             layer.restore_state(saved)?;
         }
         self.core.restore_hard_links(&state.hard_links)?;
+        let sources = state
+            .hard_link_origins
+            .iter()
+            .map(|(dev, ino, layer, relative)| {
+                let root = self
+                    .roots
+                    .get(*layer)
+                    .filter(|_| *layer > 0)
+                    .ok_or_else(|| invalid("invalid lower hard-link source"))?;
+                Ok((*dev, *ino, super::snapshot::relative_path(root, relative)?))
+            })
+            .collect::<io::Result<Vec<_>>>()?;
+        self.core.restore_hard_link_sources(&sources)?;
         *self.nodes.lock().unwrap() = nodes;
         *self.handles.lock().unwrap() = handles;
         self.next_handle.store(state.next_handle, Ordering::Relaxed);

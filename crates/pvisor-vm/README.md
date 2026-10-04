@@ -11,6 +11,8 @@ pVisor 的 Rust VM 运行时。VMM、设备、架构支持和虚拟化后端在�
 5. **契约必须写清楚。** 接口文档说明输入校验、资源所有权、调用顺序、生命周期、线程与同步要求、错误后的状态，以及快照冻结、发布和恢复的职责边界。
 6. **底层验证也守住边界。** 需要访问寄存器、设备队列或内部状态的测试放在本 crate 内；其他 crate 的测试使用公开 API。不能为了测试重新公开实现模块。
 
+API 中的 `PermissionSemantics`、`RamReclaim`、`RamMappingSnapshot` 和内存回调类型也是内部运行时使用的唯一类型定义；内部不复制等价记录。快照恢复验证和 COW 映射共用 RAM 清单及文件大小校验，映射过程另外检查拓扑和宿主页对齐。
+
 统一的 Rust API 不表示不同架构之间可以互相恢复快照，也不表示机器已具备虚拟化权限。能力描述、运行时安装证据和持久化兼容性校验是不同契约。
 
 ## 调用方与运行时的职责
@@ -44,7 +46,7 @@ pVisor 的 Rust VM 运行时。VMM、设备、架构支持和虚拟化后端在�
 
 `VmConfig` 表达 CPU 与 RAM 配置；`Capabilities` 统一描述架构、虚拟化平台及可用原语。`MachineSnapshot`、`MachineRestore` 与 `RamMappingSnapshot` 表达快照边界；`OverlayConfig` 与 `PermissionSemantics` 表达文件系统输入。所有 trait 仅声明方法，不提供默认实现。
 
-`VmBuilder.inner` 仅保存内部状态，不承担对外接口定义。Rust 不支持无方法体的固有方法声明，因此接口使用 trait 声明，私有适配器使用 `impl VmConfiguration for VmBuilder` 等实现。调用方显式导入所需契约：
+`VmBuilder.inner` 仅保存内部状态，不承担对外接口定义。`VmmHandle` 直接保存私有运行状态，在 `handle.rs` 实现 `VmControl`，不再通过第二个 handle 类型逐方法转发。Rust 不支持无方法体的固有方法声明，因此接口使用 trait 声明，私有适配器使用 `impl VmConfiguration for VmBuilder` 等实现。调用方显式导入所需契约：
 
 ```rust
 use pvisor_vm::api::{VmBuilder, VmConfig, VmConfiguration};
@@ -77,3 +79,13 @@ Clippy 清理以语义和契约为先：保留 `EAX/EBX/ECX/EDX`、`RTC` 等硬�
 `repository_boundary` 检查所有工作区 manifest 与外部 Rust 调用者，防止重新依赖旧 VM 核心 crate。`api_contract` 保证 API 无条件编译、无方法体，并禁止私有适配器另设公开固有方法。
 
 真实 Linux guest 的独立 rootfs/RAM 保存与恢复验证使用 `python3 scripts/check-environment-snapshot.py --report target/vm-validation/environment-linux.json`（Apple Silicon HVF）。guest 探针在 `src/probes/guest_linux.rs`，readiness 使用原子 rename 发布，避免把探针写文件的中间状态误判为恢复失败。底层 CPU/RAM 与 VMM-thread CPU/RAM/GIC 检查分别使用 `check-hvf-cold-restore.py` 和 `check-vm-snapshot-state.py`，它们的报告只描述各自覆盖的范围。
+
+## Stage snapshot rebinding
+
+`api::SnapshotState::rebind_filesystem_stage` relocates independently verified
+upper/work/preimage copies while retaining explicitly leased immutable lowers.
+The host coordinator imports and pins bases, validates stage inventories, and
+holds leases until VM exit. The runtime validates overlay topology and saved
+inodes/handles; writable stage roots cannot be retained as immutable lowers.
+Legacy full-tree/layer rebinding remains separate. The trait is available with
+the same signature on every platform; unsupported backends return an error.

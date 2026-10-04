@@ -409,17 +409,14 @@ pub(crate) fn start<S: ColdRamStore + 'static>(
 ) -> io::Result<()> {
     {
         let _transition = handle
-            .inner
             .transition
             .lock()
             .map_err(|_| io::Error::other("VM transition lock poisoned"))?;
         let _live = handle
-            .inner
             .vmm
             .upgrade()
             .ok_or_else(|| io::Error::other("VMM has stopped"))?;
         handle
-            .inner
             .cold_pager_started
             .compare_exchange(false, true, Ordering::AcqRel, Ordering::Acquire)
             .map_err(|_| {
@@ -429,7 +426,7 @@ pub(crate) fn start<S: ColdRamStore + 'static>(
                 )
             })?;
     }
-    let reservation = handle.inner.cold_pager_started.clone();
+    let reservation = handle.cold_pager_started.clone();
     let metrics = options.metrics;
     let pool = Arc::new(Mutex::new(store));
     let spawned = std::thread::Builder::new()

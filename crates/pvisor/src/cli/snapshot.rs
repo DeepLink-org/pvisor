@@ -24,8 +24,12 @@ enum Command {
     Run {
         #[arg(long)]
         name: String,
-        #[arg(long)]
-        rootfs: PathBuf,
+        /// Import this directory into an owned base before starting the VM.
+        #[arg(long, required_unless_present = "base", conflicts_with = "base")]
+        rootfs: Option<PathBuf>,
+        /// Reuse an already imported base generation (no full-tree import).
+        #[arg(long, required_unless_present = "rootfs")]
+        base: Option<String>,
         #[arg(long, default_value_t = 2, value_parser = clap::value_parser!(u8).range(1..=8))]
         cpus: u8,
         #[arg(long, default_value_t = 256, value_parser = clap::value_parser!(u32).range(64..))]
@@ -39,7 +43,14 @@ enum Command {
         #[arg(last = true, required_unless_present = "native_init")]
         command: Vec<String>,
     },
-    /// Freeze, publish a complete snapshot and exit the named runner.
+    /// Import and verify a base once; prints its immutable generation identity.
+    ImportBase {
+        #[arg(long)]
+        rootfs: PathBuf,
+    },
+    /// Fully audit an imported base's content and native metadata.
+    VerifyBase { id: String },
+    /// Freeze, publish stage plus machine/RAM state and exit the named runner.
     Save { name: String },
     /// Continue a snapshot in a new, independently owned VM instance.
     #[command(visible_alias = "fork")]

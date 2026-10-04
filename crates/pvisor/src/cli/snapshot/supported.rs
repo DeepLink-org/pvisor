@@ -1,10 +1,10 @@
 use super::{Args, Command, RamStorage};
 use crate::environment_snapshot::{
-    Compatibility, SnapshotRamMount, SnapshotStore, copy_owned_tree, file_hash,
+    BaseReference, Compatibility, SnapshotRamMount, SnapshotStore, file_hash,
 };
 use anyhow::{Context, ensure};
 use pvisor_guest::GuestConfig;
-use pvisor_vm::api::{MachineRestore, MachineSnapshot};
+use pvisor_vm::api::{MachineRestore, MachineSnapshot, OverlayConfig, PermissionSemantics};
 use pvisor_vm::api::{RuntimeSupport, VmConfiguration, VmRuntime};
 use pvisor_vm::api::{SnapshotCapture, SnapshotControl, SnapshotState, VmControl};
 use serde::{Deserialize, Serialize};
@@ -84,6 +84,8 @@ struct Launch {
     #[serde(default)]
     ram_storage: RamStorage,
     guest: Option<GuestConfig>,
+    #[serde(default)]
+    base: Option<BaseReference>,
 }
 #[derive(Serialize, Deserialize)]
 #[serde(deny_unknown_fields)]
@@ -160,7 +162,10 @@ fn control_socket(directory: &Path) -> anyhow::Result<PathBuf> {
         .collect();
     Ok(parent.join(format!("{name}.sock")))
 }
-fn compatibility(firmware: &Path) -> anyhow::Result<Compatibility> {
+const FULL_PROFILE: &str = "pvisor-cli-full-copy-v1";
+const STAGE_PROFILE: &str = "pvisor-cli-stage-v1";
+
+fn compatibility(firmware: &Path, profile: &str) -> anyhow::Result<Compatibility> {
     #[cfg(all(target_os = "linux", target_env = "musl", target_arch = "x86_64"))]
     let firmware_hash = {
         let _ = firmware;
@@ -195,7 +200,7 @@ fn compatibility(firmware: &Path) -> anyhow::Result<Compatibility> {
         host_boot: host_boot.trim().into(),
         build: file_hash(&std::env::current_exe()?)?,
         firmware: firmware_hash,
-        profile: "pvisor-cli-full-copy-v1".into(),
+        profile: profile.into(),
     })
 }
 fn firmware_directory() -> anyhow::Result<PathBuf> {
@@ -252,15 +257,21 @@ pub(super) fn run(args: Args) -> anyhow::Result<()> {
         Command::Run {
             name,
             rootfs,
+            base,
             cpus,
             memory,
             ram_storage,
             native_init,
             command,
         } => {
+            let base = match (rootfs, base) {
+                (Some(source), None) => store.import_base(&source)?,
+                (None, Some(id)) => store.open_base(&BaseReference { id })?,
+                _ => anyhow::bail!("specify exactly one of --rootfs or --base"),
+            };
             let guest = if native_init {
                 ensure!(
-                    rootfs.join("init.krun").is_file(),
+                    base.root().join("init.krun").is_file(),
                     "native rootfs requires /init.krun"
                 );
                 None
@@ -280,9 +291,10 @@ pub(super) fn run(args: Args) -> anyhow::Result<()> {
             };
             let firmware = firmware_directory()?;
             let directory = new_instance(&root, &name)?;
-            if let Err(error) = copy_owned_tree(&rootfs, &directory.join("rootfs")) {
-                fs::remove_dir_all(&directory)?;
-                return Err(error);
+            let stage = directory.join("rootfs");
+            fs::create_dir(&stage)?;
+            for part in ["upper", "work", "preimages"] {
+                fs::create_dir(stage.join(part))?;
             }
             launch(Launch {
                 store: root,
@@ -293,8 +305,14 @@ pub(super) fn run(args: Args) -> anyhow::Result<()> {
                 memory,
                 ram_storage,
                 guest,
+                base: Some(base.reference().clone()),
             })
         }
+        Command::ImportBase { rootfs } => {
+            println!("{}", store.import_base(&rootfs)?.reference().id);
+            Ok(())
+        }
+        Command::VerifyBase { id } => store.open_base(&BaseReference { id })?.verify(),
         Command::Save { name } => {
             let directory = instance(&root, &name)?;
             let mut stream = UnixStream::connect(control_socket(&directory)?)
@@ -310,7 +328,21 @@ pub(super) fn run(args: Args) -> anyhow::Result<()> {
         Command::Restore { id, name } => {
             let firmware = firmware_directory()?;
             // Validate before allocating a new instance directory.
-            let published = store.open_for_restore(&id, &compatibility(&firmware)?)?;
+            let profile = store.profile(&id)?;
+            ensure!(
+                profile == FULL_PROFILE || profile == STAGE_PROFILE,
+                "unsupported CLI snapshot profile"
+            );
+            let published = store.open_for_restore(&id, &compatibility(&firmware, &profile)?)?;
+            let base = published
+                .manifest()
+                .stage_bases
+                .as_ref()
+                .map(|bases| {
+                    ensure!(bases.len() == 1, "CLI stage requires exactly one base");
+                    Ok(bases[0].clone())
+                })
+                .transpose()?;
             let saved: Saved = serde_json::from_slice(&published.machine_bytes()?)?;
             ensure!(
                 saved.exclusions == exclusions(),
@@ -327,6 +359,7 @@ pub(super) fn run(args: Args) -> anyhow::Result<()> {
                 memory: saved.memory,
                 ram_storage: saved.ram_storage,
                 guest: saved.guest,
+                base,
             })
         }
         Command::List => {
@@ -359,16 +392,40 @@ fn runner(spec: Launch) -> anyhow::Result<()> {
         .open(spec.directory.join("execution.lock"))?;
     fs2::FileExt::try_lock_exclusive(&lease).context("instance already running")?;
     let store = SnapshotStore::new(&spec.store)?;
-    let binding = compatibility(&spec.firmware)?;
+    let binding = compatibility(
+        &spec.firmware,
+        if spec.base.is_some() {
+            STAGE_PROFILE
+        } else {
+            FULL_PROFILE
+        },
+    )?;
     let published = spec
         .restore
         .as_deref()
         .map(|id| store.open_for_restore(id, &binding))
         .transpose()?;
     let root = spec.directory.join("rootfs");
-    if let Some(snapshot) = &published {
-        snapshot.materialize(&root)?;
-    }
+    let bases = if let Some(snapshot) = &published {
+        ensure!(
+            snapshot.manifest().stage_bases.as_deref()
+                == spec.base.as_ref().map(std::slice::from_ref),
+            "snapshot base binding mismatch"
+        );
+        if spec.base.is_some() {
+            snapshot.materialize_stage(&root)?;
+        } else {
+            snapshot.materialize(&root)?;
+        }
+        snapshot.base_leases()?
+    } else {
+        spec.base
+            .as_ref()
+            .map(|reference| store.open_base(reference))
+            .transpose()?
+            .into_iter()
+            .collect::<Vec<_>>()
+    };
     // Retain the mount across the entire blocking VMM call, including after
     // the guest-ready callback drops the published object's store-wide gate.
     let mut ram_mount = None;
@@ -382,9 +439,19 @@ fn runner(spec: Launch) -> anyhow::Result<()> {
             "snapshot launch contract mismatch"
         );
         let old = Path::new(OsStr::from_bytes(&snapshot.manifest().source_root));
-        let count = saved
-            .state
-            .rebind_filesystem_copy("/dev/root", old, &root)?;
+        let count = if bases.is_empty() {
+            saved
+                .state
+                .rebind_filesystem_copy("/dev/root", old, &root)?
+        } else {
+            let copies =
+                ["upper", "work", "preimages"].map(|part| (old.join(part), root.join(part)));
+            saved.state.rebind_filesystem_stage(
+                "/dev/root",
+                &copies,
+                &bases.iter().map(|base| base.root()).collect::<Vec<_>>(),
+            )?
+        };
         ensure!(count == 1, "snapshot requires one root filesystem");
         let (mut mount, ram_file) = SnapshotRamMount::new(snapshot.ram_reader()?, &spec.directory)
             .context("mount on-demand snapshot RAM")?;
@@ -407,7 +474,25 @@ fn runner(spec: Launch) -> anyhow::Result<()> {
     if spec.guest.is_none() {
         vm.disable_implicit_init()?;
     }
-    vm.filesystem("/dev/root", &root, 0)?;
+    if bases.is_empty() {
+        vm.filesystem("/dev/root", &root, 0)?;
+    } else {
+        vm.overlay(
+            "/dev/root",
+            OverlayConfig {
+                lower_dirs: bases.iter().map(|base| base.root()).collect(),
+                upper_dir: root.join("upper"),
+                work_dir: Some(root.join("work")),
+                preimage_dir: Some(root.join("preimages")),
+                apply_target: None,
+                baseline_lower: None,
+                excluded_paths: Vec::new(),
+                access_policy: Default::default(),
+                semantics: PermissionSemantics::LinuxComplete,
+            },
+            0,
+        )?;
+    }
     if let Some(guest) = &spec.guest {
         vm.virtual_file(
             "/dev/root",
@@ -456,6 +541,17 @@ fn runner(spec: Launch) -> anyhow::Result<()> {
                                 state,
                             };
                             let machine = serde_json::to_vec(&saved)?;
+                            if !bases.is_empty() {
+                                return pending
+                                    .publish_stage(
+                                        &root,
+                                        &bases,
+                                        &machine,
+                                        binding.clone(),
+                                        spec.ram_storage == RamStorage::Compressed,
+                                    )
+                                    .context("publish frozen stage and RAM");
+                            }
                             match spec.ram_storage {
                                 RamStorage::Raw => {
                                     pending.publish(&root, &machine, binding.clone())

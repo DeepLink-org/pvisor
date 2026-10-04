@@ -1,7 +1,7 @@
 use crate::{
+    api::VmmHandle,
     backend::{Architecture, Backend, NativeBackend},
     firmware::KernelOwner,
-    handle::Handle,
     polly::event_manager::EventManager,
     vmm::{
         resources::{TsiFlags, VmResources},
@@ -40,13 +40,8 @@ pub(crate) struct Builder<B: Backend = NativeBackend> {
     vsock_ports: HashMap<u32, (PathBuf, bool)>,
     backend: PhantomData<B>,
 }
-impl Builder<NativeBackend> {
-    pub fn new(cpus: u8, memory_mib: u32) -> io::Result<Self> {
-        Self::for_backend(cpus, memory_mib)
-    }
-}
 impl<B: Backend> Builder<B> {
-    pub fn for_backend(cpus: u8, memory_mib: u32) -> io::Result<Self> {
+    pub fn new(cpus: u8, memory_mib: u32) -> io::Result<Self> {
         let mut resources = VmResources::default();
         resources
             .set_vm_config(&VmConfig {
@@ -158,7 +153,7 @@ impl<B: Backend> Builder<B> {
     }
     /// Build, invoke the ready callback, then enter the runner's event loop.
     /// Guest shutdown exits this process, as in the previous isolated runner.
-    pub fn run(mut self, on_ready: impl FnOnce(Handle) -> io::Result<()>) -> io::Result<()> {
+    pub fn run(mut self, on_ready: impl FnOnce(VmmHandle) -> io::Result<()>) -> io::Result<()> {
         if self.resources.kernel_bundle.is_none()
             && self.resources.external_kernel.is_none()
             && self.resources.firmware_config.is_none()
@@ -209,7 +204,7 @@ impl<B: Backend> Builder<B> {
         let vm = B::build(&self.resources, &mut events, None, sender).map_err(|e| {
             io::Error::other(format!("build {} {} VM: {e:?}", B::NAME, B::Arch::NAME))
         })?;
-        on_ready(Handle {
+        on_ready(VmmHandle {
             vmm: Arc::downgrade(&vm),
             transition: Arc::new(Mutex::new(())),
             cold_pager_started: Arc::new(std::sync::atomic::AtomicBool::new(false)),
@@ -378,13 +373,6 @@ impl<B: crate::backend::SnapshotBackend> Builder<B> {
     }
 }
 
-/// Install logging if the embedding process has not already installed a logger.
-pub fn init_logging(filter: &str) {
-    let _ = env_logger::Builder::from_env(env_logger::Env::default().default_filter_or(filter))
-        .format_timestamp_micros()
-        .try_init();
-}
-
 /// Custom init has a narrow, validated command contract instead of exposing a
 /// raw kernel-command-line setter or inheriting arbitrary host environment.
 fn command_line<A: Architecture>(
@@ -473,7 +461,7 @@ mod contract_tests {
 
     #[test]
     fn invalid_custom_commands_preserve_the_previous_configuration() {
-        let mut builder = Builder::new(1, 128).unwrap();
+        let mut builder = Builder::<NativeBackend>::new(1, 128).unwrap();
         assert!(builder.guest_command(command()).is_err());
         builder.disable_implicit_init().unwrap();
         builder.guest_command(command()).unwrap();
@@ -497,7 +485,7 @@ mod contract_tests {
     #[test]
     fn dhcp_is_explicit_and_the_runtime_owns_the_network_descriptor() {
         use std::io::Read;
-        let mut builder = Builder::new(1, 128).unwrap();
+        let mut builder = Builder::<NativeBackend>::new(1, 128).unwrap();
         let (stream, mut peer) = std::os::unix::net::UnixStream::pair().unwrap();
         peer.set_read_timeout(Some(std::time::Duration::from_secs(1)))
             .unwrap();
@@ -512,7 +500,7 @@ mod contract_tests {
         drop(builder);
         // Dropping unbooted configuration closes its owned transport, without a worker leak.
         assert_eq!(peer.read(&mut [0]).unwrap(), 0);
-        let mut builder = Builder::new(1, 128).unwrap();
+        let mut builder = Builder::<NativeBackend>::new(1, 128).unwrap();
         let (stream, _peer) = std::os::unix::net::UnixStream::pair().unwrap();
         builder
             .network(

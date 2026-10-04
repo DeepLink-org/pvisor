@@ -7,12 +7,7 @@ use std::fs::File;
 use std::sync::Arc;
 use vm_memory::{FileOffset, GuestAddress, GuestMemory, GuestMemoryMmap, GuestMemoryRegion};
 
-#[derive(Debug, Clone, Copy)]
-pub struct RamReclaim {
-    pub backed_bytes: u64,
-    pub resident_before_bytes: Option<u64>,
-    pub resident_after_bytes: Option<u64>,
-}
+pub use crate::api::RamReclaim;
 
 pub(crate) fn map(
     ram: &[(GuestAddress, usize)],
@@ -117,7 +112,9 @@ pub(crate) fn page_inventory(memory: &GuestMemoryMmap) -> Result<(u64, Vec<[u64;
         .iter()
         .filter(|region| region.file_offset().is_some())
     {
-        if !(region.len() as usize).is_multiple_of(page) || !(region.as_ptr() as usize).is_multiple_of(page) {
+        if !(region.len() as usize).is_multiple_of(page)
+            || !(region.as_ptr() as usize).is_multiple_of(page)
+        {
             return Err("RAM inventory requires host-page-aligned ranges".into());
         }
         for offset in (0..region.len() as usize).step_by(page) {

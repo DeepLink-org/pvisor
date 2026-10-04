@@ -981,3 +981,142 @@ fn virtiofs_content_open_preserves_target_preimage_across_restore_and_composed_l
         }
     }
 }
+
+#[test]
+fn overlay_stage_retains_lower_and_restores_open_handles_and_future_alias_copy_up() {
+    use crate::devices::virtio::{fs::OverlayConfig, DeviceSnapshotState};
+    use pvisor::environment_snapshot::copy_owned_tree;
+    use std::{os::unix::fs::MetadataExt, path::Path};
+    let temp = tempfile::tempdir().unwrap();
+    let base = temp.path().join("base");
+    std::fs::create_dir(&base).unwrap();
+    std::fs::write(base.join("a"), b"0123456789").unwrap();
+    std::fs::hard_link(base.join("a"), base.join("b")).unwrap();
+    std::fs::write(base.join("gone"), b"whiteout me").unwrap();
+    let base = base.canonicalize().unwrap();
+    let stage = temp.path().join("stage");
+    std::fs::create_dir(&stage).unwrap();
+    let stage = stage.canonicalize().unwrap();
+    let make = |stage: &Path| {
+        Fs::new(
+            "rootfs".into(),
+            PermissionSemantics::LinuxComplete,
+            None,
+            Arc::new(AtomicI32::new(0)),
+            false,
+            vec![],
+            Some(OverlayConfig {
+                lower_dirs: vec![base.to_str().unwrap().into()],
+                upper_dir: stage.join("upper").to_str().unwrap().into(),
+                work_dir: Some(stage.join("work").to_str().unwrap().into()),
+                preimage_dir: Some(stage.join("preimages").to_str().unwrap().into()),
+                apply_target: None,
+                baseline_lower: None,
+                excluded_paths: vec![],
+                access_policy: Default::default(),
+                semantics: PermissionSemantics::LinuxComplete,
+            }),
+        )
+        .unwrap()
+    };
+    let mut guest = GuestFs::from_device(make(&stage), None);
+    guest.request(
+        fuse::Opcode::Init,
+        0,
+        fuse::InitInCompat {
+            major: 7,
+            minor: 31,
+            ..Default::default()
+        }
+        .as_slice(),
+    );
+    let entry = guest.request(fuse::Opcode::Lookup, 1, b"a\0");
+    let inode = u64::from_ne_bytes(entry[..8].try_into().unwrap());
+    let opened = guest.request(
+        fuse::Opcode::Open,
+        inode,
+        fuse::OpenIn {
+            flags: libc::O_RDWR as u32,
+            ..Default::default()
+        }
+        .as_slice(),
+    );
+    let handle = u64::from_ne_bytes(opened[..8].try_into().unwrap());
+    let mut rename = fuse::RenameIn { newdir: 1 }.as_slice().to_vec();
+    rename.extend_from_slice(b"a\0a-moved\0");
+    guest.request(fuse::Opcode::Rename, 1, &rename);
+    guest.request(fuse::Opcode::Unlink, 1, b"gone\0");
+    let mut state = guest.freeze();
+    let copied = temp.path().join("branch");
+    copy_owned_tree(&stage, &copied).unwrap();
+    let copied = copied.canonicalize().unwrap();
+    let mem = guest.mem.clone();
+    let next = guest.next;
+    drop(guest);
+    std::fs::remove_dir_all(&stage).unwrap();
+    let copies = ["upper", "work", "preimages"].map(|part| (stage.join(part), copied.join(part)));
+    let DeviceSnapshotState::Fs { server, .. } = &mut state.state else {
+        panic!()
+    };
+    let pristine = serde_json::to_vec(server).unwrap();
+    assert!(server.rebind_owned_layers(&copies).is_err());
+    assert!(server
+        .rebind_stage(&copies, &[copied.join("upper")])
+        .is_err());
+    assert!(server
+        .rebind_stage(&copies[..1], std::slice::from_ref(&base))
+        .is_err());
+    assert_eq!(serde_json::to_vec(server).unwrap(), pristine);
+    server
+        .rebind_stage(&copies, std::slice::from_ref(&base))
+        .unwrap();
+    let mut restored = GuestFs::from_device(make(&copied), Some((mem, state, next)));
+    assert_eq!(restored.read(inode, handle), b"3456");
+    // A lower alias never opened by the source joins its copied-up upper inode.
+    let entry = restored.request(fuse::Opcode::Lookup, 1, b"b\0");
+    let alias = u64::from_ne_bytes(entry[..8].try_into().unwrap());
+    restored.request(
+        fuse::Opcode::Open,
+        alias,
+        fuse::OpenIn {
+            flags: libc::O_RDWR as u32,
+            ..Default::default()
+        }
+        .as_slice(),
+    );
+    assert_eq!(
+        std::fs::metadata(copied.join("upper/a-moved"))
+            .unwrap()
+            .ino(),
+        std::fs::metadata(copied.join("upper/b")).unwrap().ino()
+    );
+    let mut write = fuse::WriteIn {
+        fh: handle,
+        size: 3,
+        ..Default::default()
+    }
+    .as_slice()
+    .to_vec();
+    write.extend_from_slice(b"new");
+    restored.request(fuse::Opcode::Write, inode, &write);
+    assert_eq!(
+        std::fs::read(copied.join("upper/b")).unwrap(),
+        b"new3456789"
+    );
+    assert_eq!(std::fs::read(base.join("a")).unwrap(), b"0123456789");
+    assert_eq!(std::fs::read(base.join("gone")).unwrap(), b"whiteout me");
+    // Readdir proves the saved deletion remains hidden after restore.
+    let opened = restored.request(fuse::Opcode::Opendir, 1, fuse::OpenIn::default().as_slice());
+    let directory = u64::from_ne_bytes(opened[..8].try_into().unwrap());
+    let listing = restored.request(
+        fuse::Opcode::Readdir,
+        1,
+        fuse::ReadIn {
+            fh: directory,
+            size: 4096,
+            ..Default::default()
+        }
+        .as_slice(),
+    );
+    assert!(!listing.windows(4).any(|part| part == b"gone"));
+}

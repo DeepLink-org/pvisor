@@ -91,6 +91,7 @@ pub struct OverlayCore {
     // Keep every upper alias so unlink/replacement can retire a path without
     // losing the copied inode while another alias still carries its changes.
     copied_hard_links: Mutex<HashMap<(u64, u64), Vec<PathBuf>>>,
+    hard_link_sources: Mutex<HashMap<(u64, u64), PathBuf>>,
     preimage_dir: Option<PathBuf>,
     // Read observations are published without fsync. Before the first upper
     // mutation, their file and directory are synced under this lock.
@@ -488,6 +489,7 @@ impl OverlayCore {
             work,
             excluded,
             copied_hard_links: Mutex::new(HashMap::new()),
+            hard_link_sources: Mutex::new(HashMap::new()),
             access: crate::FileAccessPolicy::default(),
             preimage_dir,
             preimage_lock: Mutex::new(BTreeSet::new()),
@@ -521,6 +523,46 @@ impl OverlayCore {
                 Ok((dev, ino, paths))
             })
             .collect()
+    }
+
+    /// Original lower path recorded at copy-up, independent of FUSE inode
+    /// cache eviction and later upper renames. Capturing these hints never
+    /// scans lower trees. Restore coordinators validate hints against identity.
+    pub fn capture_hard_link_sources(&self) -> io::Result<Vec<(u64, u64, PathBuf)>> {
+        Ok(self
+            .hard_link_sources
+            .lock()
+            .map_err(|_| error(libc::EIO))?
+            .iter()
+            .map(|(&(dev, ino), path)| (dev, ino, path.clone()))
+            .collect())
+    }
+
+    pub fn restore_hard_link_sources(&self, sources: &[(u64, u64, PathBuf)]) -> io::Result<()> {
+        let mut restored = HashMap::new();
+        for (dev, ino, path) in sources {
+            let owned = self.layout.lowers.iter().any(|root| {
+                path.strip_prefix(root).ok().is_some_and(|relative| {
+                    !relative.as_os_str().is_empty()
+                        && Self::validate_rel(relative).is_ok()
+                        && layer_path(root, relative).ok().flatten().as_ref() == Some(path)
+                })
+            });
+            let meta = fs::symlink_metadata(path)?;
+            if !owned
+                || !meta.is_file()
+                || meta.nlink() < 2
+                || (meta.dev(), meta.ino()) != (*dev, *ino)
+                || restored.insert((*dev, *ino), path.clone()).is_some()
+            {
+                return Err(error(libc::EINVAL));
+            }
+        }
+        *self
+            .hard_link_sources
+            .lock()
+            .map_err(|_| error(libc::EIO))? = restored;
+        Ok(())
     }
 
     pub fn restore_hard_links(&self, saved: &[(u64, u64, Vec<PathBuf>)]) -> io::Result<()> {
@@ -1082,6 +1124,11 @@ impl OverlayCore {
                     .entry((metadata.dev(), metadata.ino()))
                     .or_default()
                     .push(upper.clone());
+                self.hard_link_sources
+                    .lock()
+                    .map_err(|_| error(libc::EIO))?
+                    .entry((metadata.dev(), metadata.ino()))
+                    .or_insert_with(|| resolved.path.clone());
             }
             Ok(())
         })();
@@ -1370,6 +1417,9 @@ impl OverlayCore {
             paths.retain(|path| !path.starts_with(removed));
             !paths.is_empty()
         });
+        if let Ok(mut sources) = self.hard_link_sources.lock() {
+            sources.retain(|identity, _| links.contains_key(identity));
+        }
     }
 
     fn remap_copied_hard_links(&self, old: &Path, new: &Path) {

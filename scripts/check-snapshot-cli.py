@@ -30,8 +30,11 @@ def main():
         subprocess.run(['rustc', '--edition', '2024', '--target', 'aarch64-unknown-linux-musl', '-C', 'linker=rust-lld', '-C', 'opt-level=2', str(ROOT/'tools/experiments/macos-cold-restore/guest_cli.rs'), '-o', str(source/'workload')], check=True)
         store = base/'store'
         prefix = [str(binary), 'snapshot', '--store', str(store)]
+        timings = []
         def command(*args):
+            started = time.perf_counter()
             result = subprocess.run(prefix+list(args), text=True, capture_output=True, timeout=180)
+            timings.append({"command":args[0], "elapsed_ms":(time.perf_counter()-started)*1000, "exit_code":result.returncode})
             assert result.returncode == 0, result.stdout+result.stderr
             return result.stdout.strip()
         processes = []
@@ -55,22 +58,27 @@ def main():
                     return value
                 if process.poll() is not None or time.monotonic()>deadline:
                     logs = '\n'.join(p.read_text() for p in base.glob('runner-*.*'))
-                    logs += '\n'.join(p.read_text() for p in store.glob('runs/*/rootfs/.pvisor-guest-error'))
+                    logs += '\n'.join(p.read_text() for p in store.glob('runs/*/rootfs/upper/.pvisor-guest-error'))
                     raise RuntimeError('CLI VM did not progress: '+logs)
                 time.sleep(0.05)
         def valid_progress(value):
             fields = value.split()
             return len(fields) == 3 and fields[1].isdigit() and fields[2].isdigit()
         try:
-            parent = spawn('run', '--name', 'original', '--rootfs', str(source), '--ram-storage', args.ram_storage, '--', '/workload', 'space arg', '--literal')
-            private = store/'runs/original/rootfs'
+            (source/'base-only').write_bytes(b'base unchanged' * 65536)
+            imported = command('import-base', '--rootfs', str(source))
+            base_root = store/'bases'/imported/'rootfs'
+            base_identity = base_root.stat().st_ino
+            parent = spawn('run', '--name', 'original', '--base', imported, '--ram-storage', args.ram_storage, '--', '/workload', 'space arg', '--literal')
+            stage = store/'runs/original/rootfs'
+            private = stage/'upper'
             original = wait_file(private/'ready', parent, valid=valid_progress)
             identity = command('save', 'original')
             parent.wait(timeout=15)
             assert parent.returncode == 0
             assert identity in command('list').splitlines()
             shutil.rmtree(source)
-            shutil.rmtree(private)
+            shutil.rmtree(stage)
             branches = [('continued', 'continue')]
             if args.fork:
                 branches = [('branch-a', 'branch-a'), ('branch-b', 'branch-b')]
@@ -78,7 +86,7 @@ def main():
             resumed = []
             for name, marker in branches:
                 process = spawn('fork' if args.fork else 'restore', identity, '--name', name)
-                restored.append((process, store/'runs'/name/'rootfs', marker))
+                restored.append((process, store/'runs'/name/'rootfs/upper', marker))
             for process, work, marker in restored:
                 progress = wait_file(work/'ready', process, original, valid=valid_progress)
                 assert progress.split()[:2] == original.split()[:2]
@@ -89,6 +97,12 @@ def main():
                 assert (restored[0][1]/'held').stat().st_ino != (restored[1][1]/'held').stat().st_ino
             persistent = store/'objects'/identity
             manifest = json.loads((persistent/'manifest.json').read_text())
+            assert manifest['version'] == (5 if args.ram_storage == 'compressed' else 4)
+            assert manifest['stage_bases'] == [{'id': imported}]
+            assert not (persistent/'rootfs/upper/base-only').exists()
+            assert not (persistent/'rootfs/upper/workload').exists()
+            assert base_root.stat().st_ino == base_identity
+            command('verify-base', imported)
             content_stats = None
             if args.ram_storage == 'compressed':
                 blobs = list((store/'content').iterdir())
@@ -103,6 +117,7 @@ def main():
             # Reclaim backing blobs before either guest executes its final checks.
             command('gc')
             assert not list((store/'content').iterdir())
+            assert base_root.exists()  # runtime leases survive deletion of the snapshot
             results = []
             for index, (process, work, marker) in enumerate(restored):
                 # Branch A has modified RAM and its already-open file before B proceeds.
@@ -124,7 +139,7 @@ def main():
                 assert (work/'held').read_bytes().startswith(marker.encode())
             result = results[0]
             command('gc')
-            record = {'scope':'actual product CLI run/save/restore/fork/list/delete/gc, standard guest launcher and argv', 'ram_storage':args.ram_storage, 'concurrent_branches':len(restored), 'branch_results':results, 'persistent_content':content_stats, 'content_gc_before_guest_checks':True, 'snapshot_id':identity, 'guest_before':original, 'guest_after':resumed, 'result':result, 'source_input_and_private_trees_deleted':True, 'published_snapshot_deleted_before_final_check':True, 'source_frontend_exit_code':parent.returncode, 'cli_sha256':hashlib.sha256(binary.read_bytes()).hexdigest(), 'logs':{p.name:p.read_text() for p in base.glob('runner-*.*')}}
+            record = {'scope':'actual product CLI run/save/restore/fork/list/delete/gc, standard guest launcher and argv', 'command_timings':timings, 'stage_only':True, 'base_id':imported, 'base_inode':base_identity, 'ram_storage':args.ram_storage, 'concurrent_branches':len(restored), 'branch_results':results, 'persistent_content':content_stats, 'content_gc_before_guest_checks':True, 'snapshot_id':identity, 'guest_before':original, 'guest_after':resumed, 'result':result, 'source_input_and_private_trees_deleted':True, 'published_snapshot_deleted_before_final_check':True, 'source_frontend_exit_code':parent.returncode, 'cli_sha256':hashlib.sha256(binary.read_bytes()).hexdigest(), 'logs':{p.name:p.read_text() for p in base.glob('runner-*.*')}}
             destination = ROOT/'target/vm-validation'/f'product-cli-{args.ram_storage}-{"fork" if args.fork else "restore"}.json'
             destination.parent.mkdir(parents=True, exist_ok=True)
             destination.write_text(json.dumps(record, ensure_ascii=False, indent=2)+'\n')
@@ -138,6 +153,13 @@ def main():
                         os.killpg(process.pid, signal.SIGKILL)
                         process.wait()
             for handle in handles: handle.close()
+            # _exit/SIGTERM bypasses the runner's mount destructor. Do not race
+            # TemporaryDirectory cleanup with its independent RAM watchdog.
+            # Only force-detach mounts belonging to these terminated test VMs.
+            for mount in store.glob('runs/*/ram-mount-*'):
+                result = subprocess.run(['/sbin/umount', '-f', str(mount)], text=True, capture_output=True, timeout=20)
+                if result.returncode and 'not currently mounted' not in result.stderr:
+                    raise RuntimeError('test RAM cleanup failed: '+result.stderr)
 
 if __name__ == '__main__':
     main()

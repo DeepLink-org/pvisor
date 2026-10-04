@@ -118,6 +118,14 @@ impl ServerSnapshot {
     /// cross-directory hard links before calling. No partial or external layer
     /// binding is accepted; failure leaves the original snapshot unchanged.
     pub fn rebind_owned_layers(&mut self, copies: &[(PathBuf, PathBuf)]) -> io::Result<()> {
+        self.rebind_stage(copies, &[])
+    }
+
+    pub fn rebind_stage(
+        &mut self,
+        copies: &[(PathBuf, PathBuf)],
+        immutable_lowers: &[PathBuf],
+    ) -> io::Result<()> {
         let mut roots = std::collections::BTreeMap::new();
         let mut destinations = std::collections::BTreeSet::new();
         for (source, destination) in copies {
@@ -143,6 +151,19 @@ impl ServerSnapshot {
         if roots.is_empty() {
             return Err(invalid("missing copied layer bindings"));
         }
+        for root in immutable_lowers {
+            if root.canonicalize()? != *root
+                || !std::fs::symlink_metadata(root)?.is_dir()
+                || roots
+                    .keys()
+                    .chain(roots.values())
+                    .any(|path| root.starts_with(path) || path.starts_with(root))
+                || !destinations.insert(root.clone())
+                || roots.insert(root.clone(), root.clone()).is_some()
+            {
+                return Err(invalid("immutable lower overlaps copied backing"));
+            }
+        }
         let relocate = |path: &str| -> io::Result<String> {
             roots
                 .get(Path::new(path))
@@ -154,17 +175,18 @@ impl ServerSnapshot {
         fn rebind(
             state: &mut FsSnapshot,
             relocate: &impl Fn(&str) -> io::Result<String>,
+            retained: &[PathBuf],
         ) -> io::Result<()> {
             match state {
                 FsSnapshot::ReadOnly(inner) | FsSnapshot::Augment { inner, .. } => {
-                    rebind(inner, relocate)
+                    rebind(inner, relocate, retained)
                 }
-                FsSnapshot::Overlay(state) => state.rebind_roots(relocate),
+                FsSnapshot::Overlay(state) => state.rebind_roots(relocate, retained),
                 _ => Err(unsupported("layer copies require an overlay filesystem")),
             }
         }
         let mut rebound = self.fs.clone();
-        rebind(&mut rebound, &relocate)?;
+        rebind(&mut rebound, &relocate, immutable_lowers)?;
         self.fs = rebound;
         Ok(())
     }

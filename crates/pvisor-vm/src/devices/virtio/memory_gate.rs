@@ -14,7 +14,7 @@ struct State {
 /// A preparation error terminates the isolated VMM process: queue APIs cannot
 /// safely continue with absent RAM or report a recoverable memory fault.
 /// Empty ranges mean conservative whole-RAM preparation for unaudited callers.
-pub type MemoryPrepare = dyn Fn(&[(u64, usize)]) -> Result<(), String> + Send + Sync;
+pub use crate::api::MemoryPrepare;
 #[derive(Default)]
 pub struct MemoryGate {
     state: Mutex<State>,
