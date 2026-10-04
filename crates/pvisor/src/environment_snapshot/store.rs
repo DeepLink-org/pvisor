@@ -550,6 +550,12 @@ impl PublishedEnvironment {
             drop(temporary);
             Ok(file)
         } else {
+            // `open_for_restore` authenticates raw RAM lazily. Eager callers
+            // must validate the complete digest before obtaining this mapping.
+            ensure!(
+                file_hash(&self.path.join("ram.bin"))? == self.manifest.ram_sha256,
+                "environment RAM digest mismatch"
+            );
             Ok(File::open(self.path.join("ram.bin"))?)
         }
     }

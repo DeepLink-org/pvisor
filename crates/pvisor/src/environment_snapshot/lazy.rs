@@ -2,6 +2,8 @@
 //! page faults; MAP_PRIVATE guest mappings own all subsequent writes.
 use super::{EnvironmentManifest, PendingEnvironment, RamBlocks, SnapshotStore, store::valid_id};
 use crate::ram_backing::BLOCK_BYTES;
+#[cfg(target_os = "macos")]
+use anyhow::Context;
 use anyhow::ensure;
 use fuser::{
     BackgroundSession, FileAttr, FileType, Filesystem, KernelConfig, MountOption, ReplyAttr,
@@ -322,12 +324,16 @@ pub(crate) fn watch_mount(path: &Path) -> anyhow::Result<()> {
     }
     #[cfg(target_os = "macos")]
     {
-        let output = Command::new("/sbin/umount").arg(path).output()?;
-        ensure!(
-            output.status.success(),
-            "snapshot RAM unmount failed: {}",
-            String::from_utf8_lossy(&output.stderr)
-        );
+        let native = super::native_path(path)?;
+        // The sole runner has closed its ownership pipe, so no VM mappings
+        // may still use this private read-only mount. Match fuser's Darwin
+        // detach policy: ordinary umount can wait forever on a dead server.
+        // SAFETY: native is a live NUL-terminated path; the OS checks ownership.
+        let detached = unsafe { libc::unmount(native.as_ptr(), libc::MNT_FORCE) } == 0;
+        let error = io::Error::last_os_error();
+        if !detached && !matches!(error.raw_os_error(), Some(libc::EINVAL | libc::ENOENT)) {
+            return Err(error).context("snapshot RAM detach failed");
+        }
     }
     match fs::remove_dir(path) {
         Ok(()) => {}

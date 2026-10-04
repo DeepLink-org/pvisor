@@ -523,9 +523,10 @@ impl OverlayFs {
                     .or_else(|_| self.attr(FUSE_ROOT_ID, Path::new("")))?,
             },
         ];
-        for name in self.core.list_names(&path)? {
+        for entry in self.core.list_entries(&path)? {
+            let name = entry.name;
             let child = OverlayCore::child(&path, &name)?;
-            let metadata = self.core.metadata(&child)?;
+            let metadata = entry.backing.metadata;
             let child_ino = self.allocate_inode(child, &metadata);
             entries.push(DirectoryEntry {
                 ino: child_ino,

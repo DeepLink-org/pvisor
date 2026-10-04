@@ -58,6 +58,9 @@ enum Command {
         id: String,
         #[arg(long)]
         name: String,
+        /// Verify/materialize RAM upfront and avoid a FUSE RAM mount.
+        #[arg(long)]
+        eager_ram: bool,
     },
     /// List published snapshot identities.
     List,

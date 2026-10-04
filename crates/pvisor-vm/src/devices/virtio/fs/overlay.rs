@@ -8,6 +8,7 @@ use std::collections::HashMap;
 use std::ffi::{CStr, CString, OsStr};
 use std::io;
 use std::os::unix::ffi::OsStrExt;
+use std::os::unix::fs::MetadataExt;
 use std::path::{Path, PathBuf};
 use std::sync::atomic::{AtomicU64, Ordering};
 use std::sync::{Arc, Mutex};
@@ -188,6 +189,7 @@ impl OverlaySnapshot {
                     .chain([
                         self.config.work_dir.as_deref(),
                         self.config.preimage_dir.as_deref(),
+                        self.config.apply_target.as_deref(),
                     ])
                     .flatten()
                     .any(|mutable| {
@@ -301,6 +303,7 @@ impl OverlaySnapshot {
 }
 
 pub struct OverlayFs {
+    profile: pvisor_overlay_core::profile::Profile,
     // ponytail: serialize requests so guest renames cannot race path checks/open;
     // use directory-fd-based resolution before relaxing this for throughput.
     operation_lock: Mutex<()>,
@@ -373,6 +376,7 @@ impl OverlayFs {
         nodes.by_inode.insert(fuse::ROOT_ID, PathBuf::new());
         nodes.by_path.insert(PathBuf::new(), fuse::ROOT_ID);
         Ok(Self {
+            profile: pvisor_overlay_core::profile::Profile::from_env("virtio-fs-overlay"),
             operation_lock: Mutex::new(()),
             core,
             snapshot_config: cfg,
@@ -468,36 +472,62 @@ impl OverlayFs {
             .ok_or_else(|| io::Error::from_raw_os_error(libc::ENOENT))
     }
 
-    fn inner_inode(&self, layer: Layer, path: &Path, ctx: Context) -> io::Result<u64> {
+    fn inner_entry(&self, layer: Layer, path: &Path, ctx: Context) -> io::Result<Entry> {
+        let _span = self.profile.span("inner_inode");
         let fs = &self.layers[layer.0];
         let mut inode = fuse::ROOT_ID;
+        let mut result = None;
         for component in path.components() {
             let name = CString::new(component.as_os_str().as_bytes())?;
-            let entry = fs.lookup(ctx, inode, &name)?;
+            let entry = {
+                let _span = self.profile.span("backing_lookup");
+                fs.lookup(ctx, inode, &name)
+            };
             if inode != fuse::ROOT_ID {
                 fs.forget(ctx, inode, 1);
             }
+            let entry = entry?;
             inode = entry.inode;
+            result = Some(entry);
         }
-        Ok(inode)
-    }
-
-    fn entry(&self, ctx: Context, path: &Path, inode: u64) -> io::Result<Entry> {
-        let layer = self.layer(path)?;
-        let inner = self.inner_inode(layer, path, ctx)?;
-        let (mut attr, timeout) = self.layers[layer.0].getattr(ctx, inner, None)?;
-        if inner != fuse::ROOT_ID {
-            self.layers[layer.0].forget(ctx, inner, 1);
+        if let Some(entry) = result {
+            return Ok(entry);
         }
-        attr.st_ino = inode as _;
+        let (attr, timeout) = fs.getattr(ctx, fuse::ROOT_ID, None)?;
         Ok(Entry {
-            inode,
+            inode: fuse::ROOT_ID,
             generation: 0,
             attr,
             attr_flags: 0,
             attr_timeout: timeout,
             entry_timeout: TTL,
         })
+    }
+
+    fn inner_inode(&self, layer: Layer, path: &Path, ctx: Context) -> io::Result<u64> {
+        Ok(self.inner_entry(layer, path, ctx)?.inode)
+    }
+
+    fn entry_on_layer(
+        &self,
+        ctx: Context,
+        path: &Path,
+        inode: u64,
+        layer: Layer,
+    ) -> io::Result<Entry> {
+        let _span = self.profile.span("entry");
+        let mut entry = self.inner_entry(layer, path, ctx)?;
+        if entry.inode != fuse::ROOT_ID {
+            self.layers[layer.0].forget(ctx, entry.inode, 1);
+        }
+        entry.inode = inode;
+        entry.attr.st_ino = inode as _;
+        Ok(entry)
+    }
+
+    fn entry(&self, ctx: Context, path: &Path, inode: u64) -> io::Result<Entry> {
+        let resolved = self.core.metadata_resolved(path).map_err(linux_error)?;
+        self.entry_on_layer(ctx, path, inode, Layer(resolved.layer))
     }
 
     fn writable_inner(&self, ctx: Context, path: &Path) -> io::Result<u64> {
@@ -537,15 +567,17 @@ impl OverlayFs {
         }
     }
 
-    #[allow(clippy::unnecessary_cast)] // mode_t is u16 on macOS and u32 on Linux.
-    fn dtype(mode: libc::mode_t) -> u32 {
-        ((mode & libc::S_IFMT) >> 12) as u32
+    fn dtype(mode: u32) -> u32 {
+        // POSIX file type occupies bits 12..15; FUSE d_type uses bits 0..3.
+        (mode >> 12) & 0xf
     }
 }
 
 impl FileSystem for OverlayFs {
     fn capture_state(&self) -> io::Result<super::snapshot::FsSnapshot> {
         let _operation = self.operation_lock.lock().unwrap();
+        self.profile.emit_checkpoint();
+        self.core.emit_profile_checkpoint();
         let hard_links = self.core.capture_hard_links()?;
         let sources = self
             .core
@@ -757,14 +789,15 @@ impl FileSystem for OverlayFs {
     }
 
     fn lookup(&self, ctx: Context, parent: u64, name: &CStr) -> io::Result<Entry> {
+        let _span = self.profile.span("lookup");
         let _operation = self
             .operation_lock
             .lock()
             .map_err(|_| io::Error::from_raw_os_error(libc::EIO))?;
         let path = self.child(parent, name)?;
-        self.core.metadata(&path).map_err(linux_error)?;
+        let resolved = self.core.metadata_resolved(&path).map_err(linux_error)?;
         let inode = self.allocate_inode(path.clone());
-        self.entry(ctx, &path, inode)
+        self.entry_on_layer(ctx, &path, inode, Layer(resolved.layer))
     }
 
     fn getattr(
@@ -773,6 +806,7 @@ impl FileSystem for OverlayFs {
         inode: u64,
         handle: Option<u64>,
     ) -> io::Result<(bindings::stat64, Duration)> {
+        let _span = self.profile.span("getattr");
         let _operation = self
             .operation_lock
             .lock()
@@ -994,6 +1028,7 @@ impl FileSystem for OverlayFs {
         kill_priv: bool,
         flags: u32,
     ) -> io::Result<(Option<u64>, OpenOptions)> {
+        let _span = self.profile.span("open");
         let _operation = self
             .operation_lock
             .lock()
@@ -1086,6 +1121,7 @@ impl FileSystem for OverlayFs {
         lock_owner: Option<u64>,
         flags: u32,
     ) -> io::Result<usize> {
+        let _span = self.profile.span("read");
         let _operation = self
             .operation_lock
             .lock()
@@ -1108,6 +1144,7 @@ impl FileSystem for OverlayFs {
         kill_priv: bool,
         flags: u32,
     ) -> io::Result<usize> {
+        let _span = self.profile.span("write");
         let _operation = self
             .operation_lock
             .lock()
@@ -1269,24 +1306,24 @@ impl FileSystem for OverlayFs {
 
     fn opendir(
         &self,
-        ctx: Context,
+        _ctx: Context,
         inode: u64,
         _flags: u32,
     ) -> io::Result<(Option<u64>, OpenOptions)> {
+        let _span = self.profile.span("opendir");
         let _operation = self
             .operation_lock
             .lock()
             .map_err(|_| io::Error::from_raw_os_error(libc::EIO))?;
         let path = self.path(inode)?;
         let mut items = Vec::new();
-        for name in self.core.list_names(&path).map_err(linux_error)? {
-            let child = OverlayCore::child(&path, &name).map_err(linux_error)?;
-            let child_inode = self.allocate_inode(child.clone());
-            let entry = self.entry(ctx, &child, child_inode)?;
+        for entry in self.core.list_entries(&path).map_err(linux_error)? {
+            let child = OverlayCore::child(&path, &entry.name).map_err(linux_error)?;
+            let child_inode = self.allocate_inode(child);
             items.push(DirectoryItem {
                 ino: child_inode,
-                name: name.as_bytes().to_vec(),
-                type_: Self::dtype(entry.attr.st_mode),
+                name: entry.name.as_bytes().to_vec(),
+                type_: Self::dtype(entry.backing.metadata.mode()),
             });
         }
         let handle = self.allocate_handle(Handle::Directory(items));
@@ -1340,6 +1377,7 @@ impl FileSystem for OverlayFs {
     where
         F: FnMut(DirEntry, Entry) -> io::Result<usize>,
     {
+        let _span = self.profile.span("readdirplus");
         let _operation = self
             .operation_lock
             .lock()
@@ -1719,5 +1757,85 @@ mod tests {
             )
             .unwrap();
         assert_ne!(entry.inode, virtual_inode);
+    }
+}
+/// Adapter-only benchmark: no VM boot or guest/kernel cache. Use nextest
+/// --run-ignored ignored-only and --no-capture. Setup is outside the timer.
+#[test]
+#[ignore = "manual small-file performance measurement"]
+fn small_file_adapter_benchmark() {
+    use pvisor_overlay_core::profile::Profile;
+    use std::time::Instant;
+    let temp = tempfile::tempdir().unwrap();
+    let lower = temp.path().join("lower");
+    for directory in 0..32 {
+        let root = lower.join(format!("d{directory:02}"));
+        std::fs::create_dir_all(&root).unwrap();
+        for file in 0..64 {
+            std::fs::write(root.join(format!("f{file:04}")), b"small-file-fixture").unwrap();
+        }
+    }
+    for case in ["lookup_getattr", "directory_plus"] {
+        for trial in 0..11 {
+            let mut fs = OverlayFs::new(
+                Config {
+                    lower_dirs: vec![lower.to_string_lossy().into_owned()],
+                    apply_target: None,
+                    baseline_lower: None,
+                    upper_dir: temp
+                        .path()
+                        .join(format!("upper-{case}-{trial}"))
+                        .to_string_lossy()
+                        .into_owned(),
+                    work_dir: None,
+                    preimage_dir: None,
+                    excluded_paths: vec![],
+                    access_policy: Default::default(),
+                    semantics: passthrough::PermissionSemantics::LinuxComplete,
+                },
+                Arc::new(InodeAllocator::new()),
+            )
+            .unwrap();
+            fs.init(FsOptions::empty()).unwrap();
+            if trial == 10 {
+                fs.profile = Profile::enabled("virtio-fs-overlay");
+                fs.core = fs.core.with_profile(Profile::enabled("overlay-core"));
+            }
+            let ctx = Context {
+                uid: 0,
+                gid: 0,
+                pid: 1,
+            };
+            let started = Instant::now();
+            let mut count = 0;
+            for directory in 0..32 {
+                let name = CString::new(format!("d{directory:02}")).unwrap();
+                let parent = fs.lookup(ctx, fuse::ROOT_ID, &name).unwrap();
+                if case == "lookup_getattr" {
+                    for file in 0..64 {
+                        let name = CString::new(format!("f{file:04}")).unwrap();
+                        let entry = fs.lookup(ctx, parent.inode, &name).unwrap();
+                        let (attr, _) = fs.getattr(ctx, entry.inode, None).unwrap();
+                        assert_eq!(attr.st_size, 18);
+                        count += 1;
+                    }
+                } else {
+                    let handle = fs.opendir(ctx, parent.inode, 0).unwrap().0.unwrap();
+                    fs.readdirplus(ctx, parent.inode, handle, 1 << 20, 0, |_, entry| {
+                        assert_eq!(entry.attr.st_size, 18);
+                        count += 1;
+                        Ok(1)
+                    })
+                    .unwrap();
+                    fs.releasedir(ctx, parent.inode, 0, handle).unwrap();
+                }
+            }
+            assert_eq!(count, 2048);
+            let record = serde_json::json!({"scope":"adapter-only, host cache warm, fresh inode tables; no guest kernel/VM",
+                    "case":case,"trial":trial,"warmup":trial<2,"profiled":trial==10,
+                    "elapsed_ms":started.elapsed().as_secs_f64()*1000.0,
+                    "adapter_profile":fs.profile.report(),"core_profile":fs.core.profile_report()});
+            println!("PVISOR_FS_BENCH {record}");
+        }
     }
 }

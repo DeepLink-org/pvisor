@@ -27,6 +27,52 @@ fn cvt(rc: libc::c_int) -> io::Result<()> {
     }
 }
 
+/// Publish a complete temporary file without replacing an existing winner.
+/// Success consumes `source`. Both paths must be on the same filesystem.
+/// Older kernels/filesystems fall back to atomic link publication; never use
+/// a replacing rename or an existence check followed by rename.
+pub(crate) fn publish_no_replace(source: &Path, destination: &Path) -> io::Result<()> {
+    let source_c = c_path(source)?;
+    let destination_c = c_path(destination)?;
+    #[cfg(target_os = "macos")]
+    // SAFETY: both paths remain valid NUL-terminated strings during the call.
+    let result = cvt(unsafe {
+        libc::renamex_np(source_c.as_ptr(), destination_c.as_ptr(), libc::RENAME_EXCL)
+    });
+    #[cfg(target_os = "linux")]
+    // SAFETY: both paths remain valid NUL-terminated strings during the call.
+    let result = cvt(unsafe {
+        libc::renameat2(
+            libc::AT_FDCWD,
+            source_c.as_ptr(),
+            libc::AT_FDCWD,
+            destination_c.as_ptr(),
+            libc::RENAME_NOREPLACE,
+        )
+    });
+    #[cfg(not(any(target_os = "macos", target_os = "linux")))]
+    let result: io::Result<()> = {
+        let _ = (source_c, destination_c);
+        Err(io::Error::from_raw_os_error(libc::ENOSYS))
+    };
+    match result {
+        Err(error)
+            if matches!(
+                error.raw_os_error(),
+                Some(libc::ENOSYS | libc::EINVAL | libc::ENOTSUP)
+            ) =>
+        {
+            publish_by_link(source, destination)
+        }
+        result => result,
+    }
+}
+
+fn publish_by_link(source: &Path, destination: &Path) -> io::Result<()> {
+    std::fs::hard_link(source, destination)?;
+    std::fs::remove_file(source)
+}
+
 fn timespec(time: SystemTime) -> libc::timespec {
     match time.duration_since(UNIX_EPOCH) {
         Ok(value) => libc::timespec {
@@ -374,6 +420,26 @@ pub fn set_flags(path: &Path, flags: u32) -> io::Result<()> {
 #[cfg(test)]
 mod tests {
     use super::*;
+    #[test]
+    fn publication_consumes_source_and_preserves_existing_winner() {
+        for publish in [publish_no_replace, publish_by_link] {
+            let temp = tempfile::tempdir().unwrap();
+            let source = temp.path().join("pending");
+            let destination = temp.path().join("entry");
+            std::fs::write(&source, b"first").unwrap();
+            publish(&source, &destination).unwrap();
+            assert!(!source.exists());
+            assert_eq!(std::fs::read(&destination).unwrap(), b"first");
+            std::fs::write(&source, b"second").unwrap();
+            assert_eq!(
+                publish(&source, &destination).unwrap_err().kind(),
+                io::ErrorKind::AlreadyExists
+            );
+            assert_eq!(std::fs::read(&destination).unwrap(), b"first");
+            assert_eq!(std::fs::read(&source).unwrap(), b"second");
+        }
+    }
+
     #[test]
     fn negative_epoch_round_trips_integral_and_fractional_timestamps() {
         for (seconds, nanos) in [(-2, 0), (-2, 123_456_789), (0, 0)] {

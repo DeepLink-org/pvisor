@@ -38,6 +38,16 @@ pvisor snapshot gc
 
 全部命令均可加 `--store /path/to/store`；不同终端须使用相同目录。默认目录为系统用户数据目录下的 `pvisor/snapshots`，macOS 通常是 `~/Library/Application Support/pvisor/snapshots`。控制 socket 位于同 UID 拥有的私有短路径目录，以避免 macOS 的 Unix socket 路径长度限制。
 
+### Eager RAM 恢复
+
+```sh
+pvisor snapshot restore SNAPSHOT_ID --name task-eager --eager-ram
+```
+
+默认恢复保留既有 lazy FUSE RAM 路径。`--eager-ram` 在启动前验证 raw RAM 的整体摘要，或将 compressed RAM 解码、校验到独立的已 unlink 文件，再通过 `MAP_PRIVATE` 映射；不需要 RAM FUSE 挂载。此模式承担启动前 RAM 读取/物化成本，不宣称懒启动；stage/基底合同和快照的 RAM 编码保持不变。
+
+macOS 测试已复现 lazy FUSE RAM 路径中的退出进程/ownership pipe 停滞，包括成功再次 terminal save 后的退出；根因尚未确定。Eager 恢复提供经过验证的 stage 快照替代路径，这个生命周期问题仍需修复。
+
 ## 基底 generation 与 stage 布局
 
 多个实例复用同一基底，无需每次完整导入：
@@ -81,7 +91,7 @@ pvisor snapshot fork SNAPSHOT_ID --name branch-b
 
 文件树的 ACL、xattr、权限、时间戳及内容校验仍完整执行；macOS 克隆后重新复制 metadata，以保留 clone 默认遗漏的 setuid/setgid 位。此优化减少可克隆文件的数据复制，不消除目录遍历、全量 hash 或持久同步成本，也不承诺固定 fork 延迟。Linux 的权限、空间和 I/O 错误仍终止发布，不作为“克隆不支持”掩盖。
 
-恢复通过只读 FUSE RAM 文件和 `MAP_PRIVATE` 映射按需加载：guest 或设备首次访问时读取并校验对应块，压缩块按需解码，guest 写入使用 COW 私有页，不修改快照或其他分支。启动前不再全量解码、写临时 RAM 文件或复制全部 RAM；v1 原始快照仍先检查整体摘要，再按需映射。Linux 需要可用的 `/dev/fuse` 和挂载权限，macOS 需要 macFUSE 内核后端。每个 runner 持有自己的 RAM 挂载和有界块缓存，尚未共享跨 runner 的解码页缓存。独立的退出监视进程在 runner 退出后卸载 RAM，包括绕过析构函数的退出和 `SIGKILL`。普通 RAM offload 禁止丢弃恢复后的 COW 页；保存新的完整快照仍会读取全部 RAM。新 profile 只复制 stage；旧完整树对象仍恢复完整副本；活跃冷页 pager 的直接保存尚未接入，恢复延迟和物理内存收益需要实测。
+恢复通过只读 FUSE RAM 文件和 `MAP_PRIVATE` 映射按需加载：guest 或设备首次访问时读取并校验对应块，压缩块按需解码，guest 写入使用 COW 私有页，不修改快照或其他分支。启动前不再全量解码、写临时 RAM 文件或复制全部 RAM；v1 原始快照仍先检查整体摘要，再按需映射。Linux 需要可用的 `/dev/fuse` 和挂载权限，macOS 需要 macFUSE 内核后端。每个 runner 持有自己的 RAM 挂载和有界块缓存，尚未共享跨 runner 的解码页缓存。独立退出监视进程在 runner 关闭 ownership pipe 后卸载 RAM，macOS 使用 force detach，Linux 使用 lazy detach；适用于绕过析构函数的退出。不过 macOS 测试观察到强制终止及排空后的 terminal save 均可能使进程卡在退出阶段，尚未关闭 pipe；根因仍未定位，lazy RAM 退出清理尚不能作为可靠性保证。普通 RAM offload 禁止丢弃恢复后的 COW 页；保存新的完整快照仍会读取全部 RAM。新 profile 只复制 stage；旧完整树对象仍恢复完整副本；活跃冷页 pager 的直接保存尚未接入，恢复延迟和物理内存收益需要实测。
 
 ## 首版边界
 
@@ -96,4 +106,4 @@ pvisor snapshot fork SNAPSHOT_ID --name branch-b
 
 ## 验证
 
-`scripts/check-snapshot-cli.py --ram-storage compressed --fork` 使用产品二进制和普通 guest launcher 验证 import-base/run/save/fork/list/delete/gc/verify-base：原参数、boot ID/PID、后台线程、32 MiB 堆和打开文件连续；保存后删除输入及原私有目录，恢复后删除发布对象，原任务仍完成校验。两个并发分支分别修改堆与已打开文件，先修改的分支不影响另一分支；删除环境及回收持久块后两者仍保持运行。`--ram-storage raw --fork` 验证原始格式基线。该实验是正确性验收，不是性能基准。
+`scripts/check-snapshot-cli.py --ram-storage compressed --fork` 使用产品二进制和普通 guest launcher 验证 import-base/run/save/fork/list/delete/gc/verify-base：原参数、boot ID/PID、后台线程、32 MiB 堆和打开文件连续；保存后删除输入及原私有目录，恢复后删除发布对象，原任务仍完成校验。两个并发分支分别修改堆与已打开文件，先修改的分支不影响另一分支；删除环境并执行 GC 后两者仍保持运行，活跃 RAM/基底依赖继续被 pin。随后两个恢复分支各保存一次新 checkpoint 并在冻结中退出；删除这些最终 checkpoint 后，GC 必须回收全部无引用 RAM/基底，挂载清理也必须完成。`--ram-storage raw --fork` 验证原始格式基线；两种编码均可添加 `--eager-ram` 验证替代路径和完整退出/依赖清理。该实验是正确性验收，不是性能基准。

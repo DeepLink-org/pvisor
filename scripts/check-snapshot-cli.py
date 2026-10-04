@@ -9,6 +9,7 @@ import shutil
 import signal
 import subprocess
 import tempfile
+import traceback
 import time
 
 ROOT = Path(__file__).resolve().parents[1]
@@ -17,6 +18,7 @@ def main():
     parser = argparse.ArgumentParser()
     parser.add_argument('--ram-storage', choices=['raw', 'compressed'], default='raw')
     parser.add_argument('--fork', action='store_true')
+    parser.add_argument('--eager-ram', action='store_true')
     args = parser.parse_args()
     subprocess.run(['cargo', 'build', '-p', 'pvisor', '--bin', 'pvisor', '--locked', '--offline'], cwd=ROOT, check=True)
     with tempfile.TemporaryDirectory(prefix='pvisor-cli-snapshot-') as directory:
@@ -35,6 +37,7 @@ def main():
             started = time.perf_counter()
             result = subprocess.run(prefix+list(args), text=True, capture_output=True, timeout=180)
             timings.append({"command":args[0], "elapsed_ms":(time.perf_counter()-started)*1000, "exit_code":result.returncode})
+            print(json.dumps(timings[-1]), flush=True)
             assert result.returncode == 0, result.stdout+result.stderr
             return result.stdout.strip()
         processes = []
@@ -64,6 +67,7 @@ def main():
         def valid_progress(value):
             fields = value.split()
             return len(fields) == 3 and fields[1].isdigit() and fields[2].isdigit()
+        record = None
         try:
             (source/'base-only').write_bytes(b'base unchanged' * 65536)
             imported = command('import-base', '--rootfs', str(source))
@@ -77,6 +81,7 @@ def main():
             parent.wait(timeout=15)
             assert parent.returncode == 0
             assert identity in command('list').splitlines()
+            sealed_ready = (store/'objects'/identity/'rootfs/upper/ready').read_text()
             shutil.rmtree(source)
             shutil.rmtree(stage)
             branches = [('continued', 'continue')]
@@ -85,12 +90,12 @@ def main():
             restored = []
             resumed = []
             for name, marker in branches:
-                process = spawn('fork' if args.fork else 'restore', identity, '--name', name)
+                process = spawn('fork' if args.fork else 'restore', identity, '--name', name, *(['--eager-ram'] if args.eager_ram else []))
                 restored.append((process, store/'runs'/name/'rootfs/upper', marker))
             for process, work, marker in restored:
-                progress = wait_file(work/'ready', process, original, valid=valid_progress)
+                progress = wait_file(work/'ready', process, sealed_ready, valid=valid_progress)
                 assert progress.split()[:2] == original.split()[:2]
-                assert int(progress.split()[2]) > int(original.split()[2])
+                assert int(progress.split()[2]) > int(sealed_ready.split()[2])
                 resumed.append(progress)
             if args.fork:
                 assert restored[0][1].stat().st_ino != restored[1][1].stat().st_ino
@@ -114,9 +119,15 @@ def main():
                 content_stats = {'logical_ram_bytes': logical, 'unique_encoded_frame_bytes': encoded, 'unique_blocks': len(blobs), 'references': len(manifest['ram_blocks']['blocks'])}
             command('delete', identity)
             assert identity not in command('list').splitlines()
-            # Reclaim backing blobs before either guest executes its final checks.
+            # GC must preserve compressed blocks pinned by both live readers.
+            # Raw readers instead retain an open inode after object deletion.
             command('gc')
-            assert not list((store/'content').iterdir())
+            remaining = list((store/'content').iterdir())
+            if args.ram_storage == 'compressed' and not args.eager_ram:
+                assert {p.name for p in remaining} == {b['id'] for b in manifest['ram_blocks']['blocks']}, 'live RAM blocks were collected'
+                assert all(p.stat().st_nlink >= 3 for p in remaining), 'both fork readers must pin RAM'
+            else:
+                assert not remaining
             assert base_root.exists()  # runtime leases survive deletion of the snapshot
             results = []
             for index, (process, work, marker) in enumerate(restored):
@@ -139,11 +150,21 @@ def main():
                 assert (work/'held').read_bytes().startswith(marker.encode())
             result = results[0]
             command('gc')
-            record = {'scope':'actual product CLI run/save/restore/fork/list/delete/gc, standard guest launcher and argv', 'command_timings':timings, 'stage_only':True, 'base_id':imported, 'base_inode':base_identity, 'ram_storage':args.ram_storage, 'concurrent_branches':len(restored), 'branch_results':results, 'persistent_content':content_stats, 'content_gc_before_guest_checks':True, 'snapshot_id':identity, 'guest_before':original, 'guest_after':resumed, 'result':result, 'source_input_and_private_trees_deleted':True, 'published_snapshot_deleted_before_final_check':True, 'source_frontend_exit_code':parent.returncode, 'cli_sha256':hashlib.sha256(binary.read_bytes()).hexdigest(), 'logs':{p.name:p.read_text() for p in base.glob('runner-*.*')}}
-            destination = ROOT/'target/vm-validation'/f'product-cli-{args.ram_storage}-{"fork" if args.fork else "restore"}.json'
+            # Exercise a second checkpoint epoch from each restored branch and
+            # stop while all vCPUs/devices are drained. The lazy RAM path has
+            # also stalled during exit after this checkpoint; its cause is unknown.
+            for (name, _), (process, _, _) in zip(branches, restored):
+                final_id = command('save', name)
+                process.wait(timeout=15)
+                assert process.returncode == 0
+                command('delete', final_id)
+            record = {'scope':'actual product CLI run/save/restore/fork/list/delete/gc, standard guest launcher and argv', 'command_timings':timings, 'ram_loading':'eager' if args.eager_ram else 'lazy', 'second_checkpoint_epochs_saved_and_deleted':True, 'cleanup_status':'pending', 'stage_only':True, 'base_id':imported, 'base_inode':base_identity, 'ram_storage':args.ram_storage, 'concurrent_branches':len(restored), 'branch_results':results, 'persistent_content':content_stats, 'gc_before_guest_checks':True, 'live_ram_dependencies_retained':True, 'snapshot_id':identity, 'guest_before':sealed_ready, 'guest_after':resumed, 'result':result, 'source_input_and_private_trees_deleted':True, 'published_snapshot_deleted_before_final_check':True, 'source_frontend_exit_code':parent.returncode, 'cli_sha256':hashlib.sha256(binary.read_bytes()).hexdigest(), 'logs':{p.name:p.read_text() for p in base.glob('runner-*.*')}}
+            destination = ROOT/'target/vm-validation'/f'product-cli-{args.ram_storage}-{"eager" if args.eager_ram else "lazy"}-{"fork" if args.fork else "restore"}.json'
             destination.parent.mkdir(parents=True, exist_ok=True)
             destination.write_text(json.dumps(record, ensure_ascii=False, indent=2)+'\n')
-            print(json.dumps({'result':result,'evidence':str(destination)},ensure_ascii=False))
+        except BaseException:
+            traceback.print_exc()
+            raise
         finally:
             for process in processes:
                 if process.poll() is None:
@@ -153,13 +174,24 @@ def main():
                         os.killpg(process.pid, signal.SIGKILL)
                         process.wait()
             for handle in handles: handle.close()
-            # _exit/SIGTERM bypasses the runner's mount destructor. Do not race
-            # TemporaryDirectory cleanup with its independent RAM watchdog.
-            # Only force-detach mounts belonging to these terminated test VMs.
-            for mount in store.glob('runs/*/ram-mount-*'):
-                result = subprocess.run(['/sbin/umount', '-f', str(mount)], text=True, capture_output=True, timeout=20)
-                if result.returncode and 'not currently mounted' not in result.stderr:
-                    raise RuntimeError('test RAM cleanup failed: '+result.stderr)
+            # _exit/SIGTERM bypasses the runner destructor. Wait for its
+            # independent watchdog instead of racing recursive temp cleanup.
+            deadline = time.monotonic()+180
+            while True:
+                mounts = list(store.glob('runs/*/ram-mount-*'))
+                if not mounts:
+                    break
+                if time.monotonic() >= deadline:
+                    raise RuntimeError('RAM watchdog cleanup timed out: '+str(mounts))
+                time.sleep(0.1)
+            command('gc')
+            if record is not None:
+                assert not list((store/'content').iterdir()), 'RAM pins leaked after runner exit'
+                assert not list((store/'bases').iterdir()), 'base lease leaked after runner exit'
+        record['cleanup_status'] = 'passed'
+        record['dependencies_collected_after_runner_exit'] = True
+        destination.write_text(json.dumps(record, ensure_ascii=False, indent=2)+'\n')
+        print(json.dumps({'result':record['result'],'evidence':str(destination)},ensure_ascii=False), flush=True)
 
 if __name__ == '__main__':
     main()

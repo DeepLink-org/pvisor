@@ -38,6 +38,23 @@ Deletion refuses objects with active reader references. Once a running instance 
 
 All commands accept `--store /path/to/store`; different terminals must use the same directory. The default is `pvisor/snapshots` under the system user data directory, typically `~/Library/Application Support/pvisor/snapshots` on macOS. The control socket lives in a private directory with a short path, owned by the same UID, to avoid macOS Unix socket path length limits.
 
+### Eager RAM restore
+
+```sh
+pvisor snapshot restore SNAPSHOT_ID --name task-eager --eager-ram
+```
+
+Default restore uses the existing lazy FUSE RAM path. `--eager-ram` verifies
+raw RAM's full digest, or decodes/verifies compressed RAM into a private unlinked
+file before mapping it with `MAP_PRIVATE`. This mode needs no RAM FUSE mount;
+startup performs upfront RAM reads/materialization and makes no lazy-startup
+claim. The stage/base contract and saved RAM encoding stay the same.
+
+The macOS test has reproduced an exiting-task/ownership-pipe stall with the
+lazy FUSE RAM path, including exit after a successful second terminal save;
+its root cause is not yet established. Eager restore provides a validated
+alternative for stage snapshots while this lifecycle issue remains open.
+
 ## Base generations and stage layout
 
 Reuse a base without importing the full tree for each run:
@@ -108,7 +125,7 @@ cloning falls back to data copies, while permission, space and I/O errors abort
 publication. This reduces physical copying without removing stage traversal,
 hashing or durable synchronization, and makes no fixed latency promise.
 
-Restore loads RAM on demand through a read-only FUSE RAM file and `MAP_PRIVATE` mappings. The first guest or device access reads and verifies the corresponding block, decoding compressed blocks on demand. Guest writes use private COW pages without changing the snapshot or other forks. Startup no longer decodes all RAM, writes a temporary RAM file or copies all RAM. Legacy v1 raw snapshots still check the whole digest before mapping on demand. Linux requires usable `/dev/fuse` and mount permissions; macOS requires the macFUSE kernel backend. Each runner owns a RAM mount and a bounded block cache; decoded page caches are not yet shared across runners. A separate exit watcher unmounts RAM after the runner exits, including exits that bypass destructors and `SIGKILL`. Ordinary RAM offload cannot discard restored COW pages; saving a new full snapshot still reads all RAM. Only stage trees are copied for the new profile; legacy full-tree objects still materialize their complete trees. Direct saving of an active cold-page pager is not yet connected, and restore latency and physical memory savings require measurement.
+Restore loads RAM on demand through a read-only FUSE RAM file and `MAP_PRIVATE` mappings. The first guest or device access reads and verifies the corresponding block, decoding compressed blocks on demand. Guest writes use private COW pages without changing the snapshot or other forks. Startup no longer decodes all RAM, writes a temporary RAM file or copies all RAM. Legacy v1 raw snapshots still check the whole digest before mapping on demand. Linux requires usable `/dev/fuse` and mount permissions; macOS requires the macFUSE kernel backend. Each runner owns a RAM mount and a bounded block cache; decoded page caches are not yet shared across runners. A separate exit watcher detaches RAM after the runner closes its ownership pipe, using force detach on macOS and lazy detach on Linux. This covers exits that bypass destructors; however, macOS tests have observed exiting tasks stranded before the pipe closes, both after abrupt termination and a drained terminal save. The root cause remains open, and lazy RAM exit cleanup is not yet a reliability guarantee. Ordinary RAM offload cannot discard restored COW pages; saving a new full snapshot still reads all RAM. Only stage trees are copied for the new profile; legacy full-tree objects still materialize their complete trees. Direct saving of an active cold-page pager is not yet connected, and restore latency and physical memory savings require measurement.
 
 ## Initial limits
 
@@ -123,4 +140,4 @@ Native Linux root directories containing their own `/init.krun` can use `snapsho
 
 ## Validation
 
-`scripts/check-snapshot-cli.py --ram-storage compressed --fork` uses the product binary and ordinary guest launcher to validate run/save/fork/list/delete/gc: original arguments, boot ID/PID, background threads, a 32 MiB heap and open files remain continuous. The input and original private directory are deleted after saving; the published object is deleted after restoring, and the original task still completes validation. Two concurrent branches independently modify their heaps and open files; changes in the first branch do not affect the other. Both keep running after environment deletion and persistent block reclamation. `--ram-storage raw --fork` validates the raw-format baseline. This experiment validates correctness, not performance.
+`scripts/check-snapshot-cli.py --ram-storage compressed --fork` uses the product binary and ordinary guest launcher to validate run/save/fork/list/delete/gc: original arguments, boot ID/PID, background threads, a 32 MiB heap and open files remain continuous. The input and original private directory are deleted after saving; the published object is deleted after restoring, and the original task still completes validation. Two concurrent branches independently modify their heaps and open files; changes in the first branch do not affect the other. Both keep running after environment deletion and GC while their live RAM/base dependencies remain pinned. Each restored branch is then saved again and stopped while frozen; after deleting those final checkpoints, GC must reclaim all unreferenced RAM/base dependencies and mount cleanup must finish. `--ram-storage raw --fork` validates the raw-format baseline; add `--eager-ram` to either encoding to validate the alternative with complete exit/dependency cleanup. This experiment validates correctness, not performance.

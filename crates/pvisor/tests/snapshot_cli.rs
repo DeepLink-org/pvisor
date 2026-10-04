@@ -127,3 +127,26 @@ fn socket_watchdog_reaps_on_eof_and_preserves_replaced_regular_files() {
         drop(listener);
     }
 }
+
+#[cfg(any(
+    all(target_os = "linux", target_arch = "x86_64"),
+    all(target_os = "macos", target_arch = "aarch64")
+))]
+#[test]
+fn ram_watchdog_cleans_an_already_detached_private_directory() {
+    let temp = tempfile::tempdir().unwrap();
+    let mount = temp.path().join("ram-mount-watchdog-test");
+    std::fs::create_dir(&mount).unwrap();
+    let result = std::process::Command::new(env!("CARGO_BIN_EXE_pvisor"))
+        .args(["snapshot", "ram-watchdog"])
+        .arg(mount.canonicalize().unwrap())
+        .stdin(std::process::Stdio::null())
+        .output()
+        .unwrap();
+    assert!(
+        result.status.success(),
+        "{}",
+        String::from_utf8_lossy(&result.stderr)
+    );
+    assert!(!mount.exists());
+}

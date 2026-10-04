@@ -86,6 +86,8 @@ struct Launch {
     guest: Option<GuestConfig>,
     #[serde(default)]
     base: Option<BaseReference>,
+    #[serde(default)]
+    eager_ram: bool,
 }
 #[derive(Serialize, Deserialize)]
 #[serde(deny_unknown_fields)]
@@ -306,6 +308,7 @@ pub(super) fn run(args: Args) -> anyhow::Result<()> {
                 ram_storage,
                 guest,
                 base: Some(base.reference().clone()),
+                eager_ram: false,
             })
         }
         Command::ImportBase { rootfs } => {
@@ -325,7 +328,11 @@ pub(super) fn run(args: Args) -> anyhow::Result<()> {
             println!("{}", response.map_err(anyhow::Error::msg)?);
             Ok(())
         }
-        Command::Restore { id, name } => {
+        Command::Restore {
+            id,
+            name,
+            eager_ram,
+        } => {
             let firmware = firmware_directory()?;
             // Validate before allocating a new instance directory.
             let profile = store.profile(&id)?;
@@ -360,6 +367,7 @@ pub(super) fn run(args: Args) -> anyhow::Result<()> {
                 ram_storage: saved.ram_storage,
                 guest: saved.guest,
                 base,
+                eager_ram,
             })
         }
         Command::List => {
@@ -453,10 +461,18 @@ fn runner(spec: Launch) -> anyhow::Result<()> {
             )?
         };
         ensure!(count == 1, "snapshot requires one root filesystem");
-        let (mut mount, ram_file) = SnapshotRamMount::new(snapshot.ram_reader()?, &spec.directory)
-            .context("mount on-demand snapshot RAM")?;
-        mount.watch_runner_exit(&std::env::current_exe()?)?;
-        ram_mount = Some(mount);
+        let ram_file = if spec.eager_ram {
+            snapshot
+                .ram_file()
+                .context("verify/materialize snapshot RAM")?
+        } else {
+            let (mut mount, ram_file) =
+                SnapshotRamMount::new(snapshot.ram_reader()?, &spec.directory)
+                    .context("mount on-demand snapshot RAM")?;
+            mount.watch_runner_exit(&std::env::current_exe()?)?;
+            ram_mount = Some(mount);
+            ram_file
+        };
         Some(MachineRestore {
             state: saved.state,
             ram_file: Arc::new(ram_file),

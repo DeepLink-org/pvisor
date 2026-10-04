@@ -46,7 +46,7 @@
   "design/cli.md": "57a00b988f75c093309a5c24edc417e0c3ff7fc47adc8368c844e929d97c5656",
   "design/decisions/0006-stage-snapshot.md": "71496fbedd5a1e7467ae0fcd046cbac4a943c7d2b352c9eeb228de5edc2daae9",
   "design/decisions/index.md": "9fa131f8275c76cfa1b8f325e5b9d6ede2a4a2fb4ee3c342f62ce13769ecfe26",
-  "design/environment-snapshot.md": "8e71b61fd96cd5ed3f67e7bcc7d5b1cfc81894d229225f0c8230456f14604769",
+  "design/environment-snapshot.md": "15ee562c21bc6a81e7e7dba1a02ca02149f2268329e738bf3fb0a86eb266ab03",
   "design/execution-model.md": "3983a7cbf0946b011ec0a53623668a55198b0e5f40b917becab4dd70be01ae83",
   "design/gateway.md": "043d137a6093eb6d7bd6d711315a6e4fb829f7badf4a1ddbe890924746f34616",
   "design/index.md": "58ddcfad039acb06bf15b54aab85ec6b58ca74ae24c6a735ed9dedeb3a41b08d",

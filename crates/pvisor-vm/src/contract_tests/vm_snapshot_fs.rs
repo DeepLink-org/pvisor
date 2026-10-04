@@ -1059,6 +1059,15 @@ fn overlay_stage_retains_lower_and_restores_open_handles_and_future_alias_copy_u
         panic!()
     };
     let pristine = serde_json::to_vec(server).unwrap();
+    let mut writable_base = serde_json::to_value(&*server).unwrap();
+    writable_base["fs"]["state"]["inner"]["state"]["config"]["apply_target"] =
+        base.to_str().unwrap().into();
+    let mut writable_base: crate::devices::virtio::fs::snapshot::ServerSnapshot =
+        serde_json::from_value(writable_base).unwrap();
+    assert!(writable_base
+        .rebind_stage(&copies, std::slice::from_ref(&base))
+        .is_err());
+
     assert!(server.rebind_owned_layers(&copies).is_err());
     assert!(server
         .rebind_stage(&copies, &[copied.join("upper")])

@@ -66,6 +66,7 @@ impl io::Write for ZCWriter<'_> {
 }
 
 pub struct Server<F: FileSystem + Sync> {
+    profile: pvisor_overlay_core::profile::Profile,
     fs: F,
     options: AtomicU64,
 }
@@ -73,12 +74,14 @@ pub struct Server<F: FileSystem + Sync> {
 impl<F: FileSystem + Sync> Server<F> {
     pub fn new(fs: F) -> Server<F> {
         Server {
+            profile: pvisor_overlay_core::profile::Profile::from_env("virtio-fs-protocol"),
             fs,
             options: AtomicU64::new(FsOptions::empty().bits()),
         }
     }
 
     pub fn capture_state(&self, next_inode: u64) -> io::Result<super::snapshot::ServerSnapshot> {
+        self.profile.emit_checkpoint();
         Ok(super::snapshot::ServerSnapshot {
             options: self.options.load(Ordering::Relaxed),
             next_inode,
@@ -104,6 +107,23 @@ impl<F: FileSystem + Sync> Server<F> {
         #[cfg(target_os = "macos")] map_sender: &Option<Sender<WorkerMessage>>,
     ) -> Result<usize> {
         let in_header: InHeader = r.read_obj().map_err(Error::DecodeMessage)?;
+
+        let label = match in_header.opcode {
+            x if x == Opcode::Lookup as u32 => "LOOKUP",
+            x if x == Opcode::Getattr as u32 => "GETATTR",
+            x if x == Opcode::Open as u32 => "OPEN",
+            x if x == Opcode::Read as u32 => "READ",
+            x if x == Opcode::Write as u32 => "WRITE",
+            x if x == Opcode::Opendir as u32 => "OPENDIR",
+            x if x == Opcode::Readdir as u32 => "READDIR",
+            x if x == Opcode::Readdirplus as u32 => "READDIRPLUS",
+            x if x == Opcode::Create as u32 => "CREATE",
+            x if x == Opcode::Fsync as u32 => "FSYNC",
+            x if x == Opcode::Release as u32 => "RELEASE",
+            _ => "OTHER",
+        };
+        let _span = self.profile.span(label);
+        self.profile.add("request_bytes", u64::from(in_header.len));
 
         if in_header.len > (MAX_BUFFER_SIZE + BUFFER_HEADER_SIZE) {
             return reply_error(

@@ -168,3 +168,24 @@ fn full_audit_detects_nested_content_changes_and_foreign_store_is_rejected() {
         0
     );
 }
+
+#[test]
+fn eager_ram_checks_full_raw_digest_after_lazy_open() {
+    let temp = tempfile::tempdir().unwrap();
+    let source = temp.path().join("source");
+    fs::create_dir(&source).unwrap();
+    let store_root = temp.path().join("store");
+    let store = SnapshotStore::new(&store_root).unwrap();
+    let base = store.import_base(&source).unwrap();
+    let stage = temp.path().join("stage");
+    fs::create_dir(&stage).unwrap();
+    let pending = store.begin().unwrap();
+    pending.create_ram().unwrap().write_all(b"RAM").unwrap();
+    let id = pending
+        .publish_stage(&stage, &[base], b"machine", compatibility(), false)
+        .unwrap();
+    let snapshot = store.open_for_restore(&id, &compatibility()).unwrap();
+    assert!(snapshot.ram_file().is_ok());
+    fs::write(store_root.join("objects").join(id).join("ram.bin"), b"BAD").unwrap();
+    assert!(snapshot.ram_file().is_err());
+}
