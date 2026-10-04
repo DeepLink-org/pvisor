@@ -75,6 +75,34 @@ def prepare_local_tools(root, binary, toolchain):
     (root / "root").mkdir()
 
 
+def tool_identities(root):
+    paths = {
+        name: path
+        for name, path in [
+            ("python", "usr/bin/python3"),
+            ("node", "usr/bin/node"),
+            ("git", "usr/bin/git"),
+            ("rg", "usr/bin/rg"),
+            ("rustc", "opt/toolchain/bin/rustc"),
+            ("cargo", "opt/toolchain/bin/cargo"),
+            ("claude", "usr/local/lib/node_modules/@anthropic-ai/claude-code/bin/claude.exe"),
+            ("codex_launcher", "usr/local/lib/node_modules/@openai/codex/bin/codex.js"),
+        ]
+    }
+    for index, path in enumerate(
+        sorted((root / "usr/local/lib/node_modules/@openai/codex").rglob("bin/codex"))
+    ):
+        paths[f"codex_native_{index}"] = str(path.relative_to(root))
+    result = {}
+    for name, relative in paths.items():
+        digest = hashlib.sha256()
+        with (root / relative).open("rb") as stream:
+            for chunk in iter(lambda: stream.read(1024 * 1024), b""):
+                digest.update(chunk)
+        result[name] = {"path": relative, "sha256": digest.hexdigest()}
+    return result
+
+
 def main():
     p = argparse.ArgumentParser(description=__doc__)
     p.add_argument("--tools-rootfs", type=Path)
@@ -245,6 +273,7 @@ def main():
     (root / "tmp").chmod(0o1777)
     fs_input = fixture(SimpleNamespace(output=out, toolchain=Path("/opt/toolchain")))
     shutil.move(str(fs_input), root / "work/_fs")
+    (out / "tool-identities.json").write_text(json.dumps(tool_identities(root), indent=2) + "\n")
     tar = out / "agent-env.tar"
     subprocess.run(
         ["tar", "-C", str(root), "--owner=0", "--group=0", "-cf", str(tar), "."], check=True

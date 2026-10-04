@@ -53,7 +53,7 @@ enum CacheCommand {
     },
     /// List one directory page. Paths are relative to the image root.
     List {
-        /// image_handle from prepare/publish (or a server/v1 manifest digest).
+        /// image_handle from prepare/publish (or a server manifest digest).
         digest: String,
         path: Option<PathBuf>,
         #[arg(long, default_value_t = 0)]
@@ -61,7 +61,7 @@ enum CacheCommand {
     },
     /// Show file attributes without following symlinks.
     Stat {
-        /// image_handle from prepare/publish (or a server/v1 manifest digest).
+        /// image_handle from prepare/publish (or a server manifest digest).
         digest: String,
         path: PathBuf,
     },

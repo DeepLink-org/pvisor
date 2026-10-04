@@ -4,7 +4,6 @@
 mod cli;
 mod client;
 mod config;
-mod legacy;
 mod portable;
 pub mod progress;
 mod protocol;

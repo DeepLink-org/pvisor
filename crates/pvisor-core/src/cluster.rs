@@ -64,6 +64,9 @@ pub struct TaskSpec {
     /// Immutable image/layer/RAM-pool keys already resident on a worker.
     #[serde(default)]
     pub cache_keys: Vec<String>,
+    /// Require durable controller-side retention of the native Run Bundle.
+    #[serde(default)]
+    pub retain_bundle: bool,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -85,6 +88,8 @@ pub struct WorkerRegistration {
     /// Actions supported by this worker's native VM configuration.
     #[serde(default)]
     pub vm_control_actions: Vec<ControlAction>,
+    #[serde(default)]
+    pub artifact_protocol: Option<u32>,
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
@@ -146,6 +151,10 @@ pub struct TaskRecord {
     pub admission_rejections: u64,
     #[serde(default)]
     pub last_admission_rejection: Option<AdmissionRejection>,
+    #[serde(default)]
+    pub artifacts: Option<BlobRef>,
+    #[serde(default)]
+    pub artifact_error: Option<String>,
 }
 impl TaskRecord {
     pub fn current_reservation(&self) -> Resources {
@@ -372,8 +381,12 @@ impl AdmissionReport {
             ),
             AdmissionMode::LinuxPressure => {
                 anyhow::ensure!(
-                    self.measurements.is_some() || self.error.is_some(),
-                    "missing node observation"
+                    self.measurements.is_some() != self.error.is_some(),
+                    "node report needs exactly one sample or probe error"
+                );
+                anyhow::ensure!(
+                    !self.blocked.contains(&AdmissionBlock::ProbeFailed) || self.error.is_some(),
+                    "missing probe failure evidence"
                 );
                 if self.error.is_some() {
                     anyhow::ensure!(
@@ -445,6 +458,99 @@ pub struct Completion {
     pub key: LeaseKey,
     pub result: Option<RunResult>,
     pub error: Option<String>,
+    #[serde(default)]
+    pub artifacts: Option<BlobRef>,
+    #[serde(default)]
+    pub artifact_error: Option<String>,
+}
+
+pub const ARTIFACT_CHUNK_BYTES: usize = 1024 * 1024;
+pub const ARTIFACT_FILE_BYTES: u64 = 64 * 1024 * 1024;
+
+/// BLAKE3 over immutable bytes, lowercase hex, in the artifact namespace.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
+pub struct BlobRef {
+    pub digest: String,
+    pub bytes: u64,
+}
+impl BlobRef {
+    pub fn validate(&self) -> anyhow::Result<()> {
+        anyhow::ensure!(
+            self.digest.len() == 64
+                && self
+                    .digest
+                    .bytes()
+                    .all(|b| b.is_ascii_digit() || (b'a'..=b'f').contains(&b)),
+            "invalid artifact digest"
+        );
+        anyhow::ensure!(
+            self.bytes <= ARTIFACT_CHUNK_BYTES as u64,
+            "artifact chunk too large"
+        );
+        Ok(())
+    }
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
+pub struct ArtifactFile {
+    pub name: String,
+    pub bytes: u64,
+    /// Whole-file BLAKE3; individual chunks are independently verified.
+    pub digest: String,
+    pub chunks: Vec<BlobRef>,
+}
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
+pub struct ArtifactManifest {
+    pub version: u32,
+    pub key: LeaseKey,
+    pub files: Vec<ArtifactFile>,
+}
+impl ArtifactManifest {
+    pub fn validate(&self) -> anyhow::Result<()> {
+        anyhow::ensure!(
+            self.version == CLUSTER_VERSION && !self.files.is_empty() && self.files.len() <= 16,
+            "invalid artifact manifest"
+        );
+        let mut names = std::collections::BTreeSet::new();
+        for file in &self.files {
+            anyhow::ensure!(
+                !file.name.is_empty()
+                    && file.name.len() <= 128
+                    && !file.name.starts_with('.')
+                    && file
+                        .name
+                        .bytes()
+                        .all(|b| b.is_ascii_alphanumeric() || b"._-".contains(&b))
+                    && names.insert(&file.name),
+                "invalid or duplicate artifact filename"
+            );
+            anyhow::ensure!(
+                file.bytes <= ARTIFACT_FILE_BYTES && file.chunks.len() <= 64,
+                "artifact file too large"
+            );
+            BlobRef {
+                digest: file.digest.clone(),
+                bytes: 0,
+            }
+            .validate()?;
+            let mut total = 0_u64;
+            for chunk in &file.chunks {
+                chunk.validate()?;
+                anyhow::ensure!(chunk.bytes > 0, "empty file chunk");
+                total = total
+                    .checked_add(chunk.bytes)
+                    .ok_or_else(|| anyhow::anyhow!("artifact size overflow"))?;
+            }
+            anyhow::ensure!(
+                total == file.bytes,
+                "artifact chunks do not match file size"
+            );
+        }
+        Ok(())
+    }
 }
 
 /// Worker assertion that this exact assignment was never started. Only a

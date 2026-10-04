@@ -539,8 +539,10 @@ backend order. All execution trees use the same two host cores; Docker also
 runs an in-container affinity helper because its runtime resets inherited CPU
 affinity. VM cases use 2 vCPU, 128 MiB for the shell probe and 16 GiB for the
 complete environment. Docker/native memory is not capped. RSS is process-tree
-sum, not PSS; Docker includes its private daemon tree, whose idle cost is
-recorded separately. The two cores are a common execution budget, not a claim
+sum, not PSS; Docker follows the exact container ID/shim and its private daemon
+tree, whose idle cost is recorded separately. Historical main-batch Docker RSS
+omitted detached container tools and is marked partial; complete-task numbers
+come from the separate audited resource batch. The two cores are a common execution budget, not a claim
 of identical isolation or complete resource policy.
 
 Use an installed private rootless daemon on a short Unix-socket path; the
@@ -587,3 +589,18 @@ failed grading, absent tool results and wrong pVisor isolation are rejected.
 Pinned binaries, actual guest kernel/tool versions, scripts, commands and
 per-trial logs are retained. The method and interpreted results live in the
 existing bilingual benchmark articles.
+
+Export the main batch and optional separately retained follow-ups:
+
+```bash
+uv run --no-project --with matplotlib python benchmark/pvisor/render_reference_baselines.py \
+  --report target/reference-results-new/report.json --assets target/reference-env-new \
+  --output /tmp/reference-report-new \
+  --followup-report target/reference-resources-new/report.json \
+  --followup-report target/reference-startup-exit-new/report.json
+```
+
+Use the same frozen binary, assets and CPU selection. Resource follow-ups use
+`--modes tools --samples 10 --warmups 1`; precise-exit follow-ups use
+`--modes ready --samples 30 --warmups 3`, each in a new output directory. Omit
+`--followup-report` if none was collected. Never pool percentiles across batches.

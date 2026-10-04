@@ -91,6 +91,10 @@ struct RunnerSpec {
 #[derive(Debug, Clone, Serialize, Deserialize)]
 struct OverlayDeviceSpec {
     lowers: Vec<PathBuf>,
+    #[serde(default)]
+    apply_target: Option<PathBuf>,
+    #[serde(default)]
+    baseline_lower: Option<PathBuf>,
     upper: PathBuf,
     work: Option<PathBuf>,
     #[serde(default)]
@@ -117,7 +121,12 @@ fn protect_overlay_backing(
         hidden.extend(workspace.preimages.iter().cloned());
         for lower in &root.lowers {
             let lower = lower.canonicalize()?;
-            for source in &workspace.lowers {
+            for source in workspace.lowers.iter().chain(
+                workspace
+                    .apply_target
+                    .iter()
+                    .filter(|target| !workspace.lowers.contains(*target)),
+            ) {
                 let source = source.canonicalize()?;
                 if let Ok(relative) = source.strip_prefix(&lower) {
                     if relative.as_os_str().is_empty() {
@@ -344,6 +353,8 @@ impl RunExecutor for VmExecutor {
             (
                 configured_overlay.unwrap_or_else(|| OverlayDeviceSpec {
                     lowers: vec![root.clone()],
+                    apply_target: None,
+                    baseline_lower: None,
                     upper: PathBuf::new(),
                     work: None,
                     preimages: None,
@@ -356,6 +367,8 @@ impl RunExecutor for VmExecutor {
             (
                 OverlayDeviceSpec {
                     lowers: vec![root.clone()],
+                    apply_target: None,
+                    baseline_lower: None,
                     upper: PathBuf::new(),
                     work: None,
                     preimages: None,
@@ -434,6 +447,8 @@ impl RunExecutor for VmExecutor {
         let mut root_overlay = if root_overlay.upper.as_os_str().is_empty() {
             OverlayDeviceSpec {
                 lowers: root_overlay.lowers,
+                apply_target: root_overlay.apply_target,
+                baseline_lower: root_overlay.baseline_lower,
                 upper: root_upper.clone(),
                 work: Some(root_work.clone()),
                 preimages: root_overlay.preimages,
@@ -1114,6 +1129,16 @@ fn add_krun_overlay(
     let upper = path_cstring(&overlay.upper)?;
     let work = overlay.work.as_deref().map(path_cstring).transpose()?;
     let preimages = overlay.preimages.as_deref().map(path_cstring).transpose()?;
+    let target = overlay
+        .apply_target
+        .as_deref()
+        .map(path_cstring)
+        .transpose()?;
+    let baseline = overlay
+        .baseline_lower
+        .as_deref()
+        .map(path_cstring)
+        .transpose()?;
     let excluded = overlay
         .excluded
         .iter()
@@ -1125,7 +1150,7 @@ fn add_krun_overlay(
         .collect::<Vec<_>>();
     check_krun(
         unsafe {
-            krun::krun_add_virtiofs_overlay_with_policy(
+            krun::krun_add_virtiofs_overlay_with_layout(
                 ctx,
                 tag.as_ptr(),
                 lower_ptrs.as_ptr(),
@@ -1139,6 +1164,12 @@ fn add_krun_overlay(
                 excluded_ptrs.len(),
                 shm_size,
                 policy.as_ptr(),
+                target
+                    .as_ref()
+                    .map_or(std::ptr::null(), |path| path.as_ptr()),
+                baseline
+                    .as_ref()
+                    .map_or(std::ptr::null(), |path| path.as_ptr()),
             )
         },
         "krun_add_virtiofs_overlay",
@@ -1287,7 +1318,7 @@ mod tests {
     fn file_rules_cover_original_vm_workspace_paths_and_hide_backing() {
         let temp = tempfile::tempdir().unwrap();
         let root = temp.path().canonicalize().unwrap();
-        for name in ["project[1]", "upper", "work", "root-upper"] {
+        for name in ["project[1]", "snapshot", "upper", "work", "root-upper"] {
             std::fs::create_dir(root.join(name)).unwrap();
         }
         let policy = pvisor_core::overlay::FileAccessPolicy::new(
@@ -1295,28 +1326,42 @@ mod tests {
             vec![".env".into()],
         )
         .unwrap();
-        let workspace = OverlayDeviceSpec {
-            lowers: vec![root.join("project[1]")],
-            upper: root.join("upper"),
-            work: Some(root.join("work")),
-            preimages: None,
-            excluded: vec![],
-            access_policy: policy.clone(),
-        };
-        let mut device = OverlayDeviceSpec {
-            lowers: vec![root.clone()],
-            upper: root.join("root-upper"),
-            work: None,
-            preimages: None,
-            excluded: vec![],
-            access_policy: policy,
-        };
-        protect_overlay_backing(&mut device, Some(&workspace)).unwrap();
-        let access = &device.access_policy;
-        assert!(access.denied(Path::new("project[1]/private.key")));
-        assert!(!access.denied(Path::new("project1/private.key")));
-        for name in ["root-upper", "upper", "work"] {
-            assert!(device.excluded.contains(&PathBuf::from(name)));
+        for frozen in [false, true] {
+            let baseline = if frozen {
+                root.join("snapshot")
+            } else {
+                root.join("project[1]")
+            };
+            let workspace = OverlayDeviceSpec {
+                lowers: vec![baseline.clone()],
+                apply_target: Some(root.join("project[1]")),
+                baseline_lower: frozen.then_some(baseline),
+                upper: root.join("upper"),
+                work: Some(root.join("work")),
+                preimages: None,
+                excluded: vec![],
+                access_policy: policy.clone(),
+            };
+            let mut device = OverlayDeviceSpec {
+                lowers: vec![root.clone()],
+                apply_target: None,
+                baseline_lower: None,
+                upper: root.join("root-upper"),
+                work: None,
+                preimages: None,
+                excluded: vec![],
+                access_policy: policy.clone(),
+            };
+            protect_overlay_backing(&mut device, Some(&workspace)).unwrap();
+            let access = &device.access_policy;
+            assert!(access.denied(Path::new("project[1]/private.key")));
+            if frozen {
+                assert!(access.denied(Path::new("snapshot/private.key")));
+            }
+            assert!(!access.denied(Path::new("project1/private.key")));
+            for name in ["root-upper", "upper", "work"] {
+                assert!(device.excluded.contains(&PathBuf::from(name)));
+            }
         }
     }
 

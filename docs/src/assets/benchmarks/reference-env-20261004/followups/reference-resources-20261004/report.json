@@ -1,0 +1,2482 @@
+{
+  "schema": "pvisor-reference-environment/v1",
+  "recorded_at": "2026-10-04T07:06:18.074232+08:00",
+  "arguments": {
+    "assets": "/home/reiase/workspace/pvisor/target/reference-env-release-20261004",
+    "binary": "/home/reiase/workspace/pvisor/target/reference-baselines-controlled-20261004/bin/pvisor",
+    "firmware": "None",
+    "output": "/home/reiase/workspace/pvisor/target/reference-resources-20261004",
+    "docker_host": "unix:///tmp/pv-docker-v2/docker.sock",
+    "backends": "native,pvisor-host,pvisor-staged,pvisor-vm,docker,firecracker,qemu,qemu-microvm",
+    "modes": "tools",
+    "samples": "10",
+    "warmups": "1",
+    "memory_mib": "16384",
+    "docker_root_pid": "1095314",
+    "cpu_affinity": "0,1"
+  },
+  "assets": {
+    "setup_wall_ms": 108708.738233,
+    "docker_image": "sha256:43bfa55ff056caf0e8652429ce956060f7b3d4bfcd72bf2ec2658c37086f1a26",
+    "rootfs": "/home/reiase/workspace/pvisor/target/reference-env-release-20261004/rootfs",
+    "disk": "/home/reiase/workspace/pvisor/target/reference-env-release-20261004/agent-env.ext4",
+    "kernel": "/home/reiase/workspace/pvisor/target/reference-env-release-20261004/vmlinux",
+    "rootfs_file_bytes": 3840181180,
+    "files": 75566,
+    "workload_sha256": "bb56a7727316cb566dfc7fca7223a5e0e1be591e6f90376d1b3c599a8fe4764e",
+    "init_sha256": "c94b00e2b96f5c7403b985f269e90e8512467d927a92b9db2d2b7fc8fde58cc7",
+    "fixture_git_commit": "c28e68a8f9256997a5467ce4f286fae7ae624a87",
+    "kernel_config_sha256": "aee73a94bfba4fe057e472e2ba05d2125fbdea20bef89a6eedf5e160d0e7616e",
+    "preparation_scope": "offline copying installed tools, image import and ext4 creation; excludes package download and kernel compilation",
+    "docker_base_image": "sha256:5d6bb5093a6d570e1da0188ab24a536cae45f2ffe68e2e5ac20530563bbc5a46",
+    "affinity_sha256": "9b427c7c8ac4ca8f1580ac08b445e26c95e1049ae456a3cc3cafaf69b2bb4ccb",
+    "affinity_patch_wall_ms": 5301.926199
+  },
+  "source_commit": "6303a88debb66af5517fd4c2cc6582c271f8ab5e",
+  "source_status": " M .github/workflows/ci.yml\nM  benchmark/pvisor/reference_baselines.py\nM  benchmark/pvisor/render_reference_baselines.py\nA  crates/pvisor-cluster/src/admission.rs\nM  crates/pvisor-cluster/src/client.rs\nM  crates/pvisor-cluster/src/lib.rs\nM  crates/pvisor-cluster/src/main.rs\nM  crates/pvisor-cluster/src/scheduler.rs\nM  crates/pvisor-cluster/src/server.rs\nM  crates/pvisor-cluster/tests/scheduler.rs\nM  crates/pvisor-cluster/tests/vm_lifecycle.rs\nM  crates/pvisor-core/src/cluster.rs\nM  crates/pvisor/src/bin/pvisor-worker.rs\nM  crates/pvisor/src/image/cache/cli.rs\nM  crates/pvisor/src/image/cache/legacy.rs\nM  crates/pvisor/src/image/cache/mod.rs\nM  crates/pvisor/src/image/cache/portable.rs\nA  crates/pvisor/src/image/cache/portable/binary.rs\nM  crates/pvisor/src/image/cache/portable/legacy_publish.rs\nM  crates/pvisor/src/image/cache/portable/publish.rs\nM  crates/pvisor/src/image/cache/portable/tests.rs\nM  crates/pvisor/src/image/cache/server.rs\nM  crates/pvisor/src/image/cache/storage.rs\nM  crates/pvisor/src/image/oci.rs\nM  crates/pvisor/tests/cache_backends.rs\nM  crates/pvisor/tests/cluster_execution.rs\nM  docs/src/en/benchmarks/filesystem.md\nM  docs/src/en/benchmarks/startup.md\nM  docs/src/en/design/index.md\nM  docs/src/en/design/shared-image-cache-storage-v2.md\nM  docs/src/en/design/shared-image-cache-storage.md\nM  docs/src/zh/benchmarks/filesystem.md\nM  docs/src/zh/benchmarks/startup.md\nM  docs/src/zh/design/index.md\nM  docs/src/zh/design/shared-image-cache-storage-v2.md\nM  docs/src/zh/design/shared-image-cache-storage.md\n",
+  "pvisor_sha256": "1a2db5ad015c5ace40b3c96c7dd0dc94a08b8893de35150bd909554286e2cd3c",
+  "kernel_sha256": "aa55fa2dbe2762a55020182560fabd16562d565392505b1986fc51326c741f3d",
+  "bzimage_sha256": "99de4727b274d92232bd67f9e62b9744e67e99ca89d1bdb09a55e2deb7c80619",
+  "driver_sha256": "b1b96cf49a90bb72361c64878271adb3d3a05ebbebbc3e1a5b233033ecedec7d",
+  "workload_sha256": "bb56a7727316cb566dfc7fca7223a5e0e1be591e6f90376d1b3c599a8fe4764e",
+  "docker_idle_tree_rss_kib": 76864,
+  "host_os": "NAME=\"Fedora Linux\"\nVERSION=\"44 (Workstation Edition)\"\nRELEASE_TYPE=stable\nID=fedora\nVERSION_ID=44\nVERSION_CODENAME=\"\"\nPRETTY_NAME=\"Fedora Linux 44 (Workstation Edition)\"\nANSI_COLOR=\"0;38;2;60;110;180\"\nLOGO=fedora-logo-icon\nCPE_NAME=\"cpe:/o:fedoraproject:fedora:44\"\nDEFAULT_HOSTNAME=\"fedora\"\nHOME_URL=\"https://fedoraproject.org/\"\nDOCUMENTATION_URL=\"https://docs.fedoraproject.org/en-US/fedora/f44/\"\nSUPPORT_URL=\"https://ask.fedoraproject.org/\"\nBUG_REPORT_URL=\"https://bugzilla.redhat.com/\"\nREDHAT_BUGZILLA_PRODUCT=\"Fedora\"\nREDHAT_BUGZILLA_PRODUCT_VERSION=44\nREDHAT_SUPPORT_PRODUCT=\"Fedora\"\nREDHAT_SUPPORT_PRODUCT_VERSION=44\nSUPPORT_END=2027-05-19\nVARIANT=\"Workstation Edition\"\nVARIANT_ID=workstation\n",
+  "host_kernel": "7.2.8-200.fc44.x86_64",
+  "load_before": [
+    3.17578125,
+    3.654296875,
+    3.63134765625
+  ],
+  "protocol": {
+    "cache": "warm; no eviction",
+    "image_preparation": "excluded from timed job; measured separately",
+    "vm_shape": "2 vCPU; shell ready 128 MiB; complete environment 16384 MiB configured RAM",
+    "agent_model": "same-guest deterministic fixture; no real inference",
+    "codex_sandbox": "danger-full-access uniformly; fixed commands, outer runtime boundary",
+    "resource_scope": "All launch trees bound to host CPUs 0,1; Docker private daemon pinned separately; VMs 2 vCPU; Rust -j2; RSS sums may double-count shared pages",
+    "order": "seeded random backend per round",
+    "percentile": "linear interpolation"
+  },
+  "docker_version": "Docker version 29.7.2, build 1.fc44",
+  "firecracker_version": "Firecracker v1.13.1\n\n2026-10-04T07:06:18.128913958 [anonymous-instance:main] Firecracker exiting successfully. exit_code=0",
+  "qemu-system-x86_64_version": "QEMU emulator version 10.2.2 (qemu-10.2.2-1.fc44)\nCopyright (c) 2003-2025 Fabrice Bellard and the QEMU Project developers",
+  "summary": {
+    "tools/native": {
+      "n": 10,
+      "ready_ms": {
+        "p50": 41.527676,
+        "p95": 48.91505325000001,
+        "p99": 51.45282825
+      },
+      "result_ms": {
+        "p50": 467.4911925,
+        "p95": 530.8982049,
+        "p99": 563.18934738
+      },
+      "completion_ms": {
+        "p50": 475.42800850000003,
+        "p95": 539.4690584,
+        "p99": 571.93591328
+      },
+      "prepare_ms": {
+        "p50": 36.759093,
+        "p95": 41.968256800000006,
+        "p99": 44.37324976
+      },
+      "peak_tree_rss_kib": {
+        "p50": 172824.0,
+        "p95": 175086.6,
+        "p99": 176127.72
+      }
+    },
+    "tools/pvisor-host": {
+      "n": 10,
+      "ready_ms": {
+        "p50": 45.9684435,
+        "p95": 66.59006570000001,
+        "p99": 69.76625714000001
+      },
+      "result_ms": {
+        "p50": 480.74323300000003,
+        "p95": 540.09129895,
+        "p99": 571.01667019
+      },
+      "completion_ms": {
+        "p50": 509.0824775,
+        "p95": 570.4015737500001,
+        "p99": 601.9861899499999
+      },
+      "prepare_ms": {
+        "p50": 37.136677500000005,
+        "p95": 38.54988185,
+        "p99": 38.66910197
+      },
+      "peak_tree_rss_kib": {
+        "p50": 182762.0,
+        "p95": 185067.40000000002,
+        "p99": 186258.28
+      }
+    },
+    "tools/pvisor-staged": {
+      "n": 10,
+      "ready_ms": {
+        "p50": 56.52027,
+        "p95": 77.73893925,
+        "p99": 78.28188225000001
+      },
+      "result_ms": {
+        "p50": 682.2433795,
+        "p95": 1036.4759147500001,
+        "p99": 1088.6770901500001
+      },
+      "completion_ms": {
+        "p50": 732.0877205,
+        "p95": 1092.2341629000002,
+        "p99": 1140.49466778
+      },
+      "prepare_ms": {
+        "p50": 37.1544655,
+        "p95": 49.37181045000001,
+        "p99": 54.225214890000004
+      },
+      "peak_tree_rss_kib": {
+        "p50": 232202.0,
+        "p95": 248282.0,
+        "p99": 249707.6
+      }
+    },
+    "tools/pvisor-vm": {
+      "n": 10,
+      "ready_ms": {
+        "p50": 565.23452,
+        "p95": 1169.1254334000007,
+        "p99": 1520.00868108
+      },
+      "result_ms": {
+        "p50": 4300.614584999999,
+        "p95": 5746.712562900001,
+        "p99": 6138.17856378
+      },
+      "completion_ms": {
+        "p50": 4408.3093235,
+        "p95": 5880.7937029,
+        "p99": 6284.65446058
+      },
+      "prepare_ms": {
+        "p50": 36.895171500000004,
+        "p95": 39.5760178,
+        "p99": 40.509035559999994
+      },
+      "peak_tree_rss_kib": {
+        "p50": 739478.0,
+        "p95": 752492.2,
+        "p99": 753084.04
+      }
+    },
+    "tools/docker": {
+      "n": 10,
+      "ready_ms": {
+        "p50": 403.0309755,
+        "p95": 569.9693787500001,
+        "p99": 625.5232197500001
+      },
+      "result_ms": {
+        "p50": 966.6573149999999,
+        "p95": 1192.9420264,
+        "p99": 1259.1914540799999
+      },
+      "completion_ms": {
+        "p50": 1062.9646225000001,
+        "p95": 1313.0413787000002,
+        "p99": 1400.05493894
+      },
+      "prepare_ms": {
+        "p50": 36.793287,
+        "p95": 46.00250110000002,
+        "p99": 51.37338502000001
+      },
+      "peak_tree_rss_kib": {
+        "p50": 287008.0,
+        "p95": 328182.0,
+        "p99": 333006.0
+      }
+    },
+    "tools/firecracker": {
+      "n": 10,
+      "ready_ms": {
+        "p50": 917.7620039999999,
+        "p95": 1005.2445055000001,
+        "p99": 1054.5278251
+      },
+      "result_ms": {
+        "p50": 2243.8379385,
+        "p95": 2640.7429307,
+        "p99": 2658.39696134
+      },
+      "completion_ms": {
+        "p50": 2302.6532815,
+        "p95": 2706.3247583,
+        "p99": 2724.98238686
+      },
+      "prepare_ms": {
+        "p50": 38.0121555,
+        "p95": 39.96018165,
+        "p99": 40.961882730000006
+      },
+      "peak_tree_rss_kib": {
+        "p50": 781012.0,
+        "p95": 789876.0,
+        "p99": 793735.2
+      }
+    },
+    "tools/qemu": {
+      "n": 10,
+      "ready_ms": {
+        "p50": 570.962925,
+        "p95": 885.4066122500001,
+        "p99": 897.66691445
+      },
+      "result_ms": {
+        "p50": 1992.361529,
+        "p95": 2354.01719625,
+        "p99": 2404.37002725
+      },
+      "completion_ms": {
+        "p50": 2053.003135,
+        "p95": 2422.80503195,
+        "p99": 2476.7412791899997
+      },
+      "prepare_ms": {
+        "p50": 38.4663635,
+        "p95": 43.54902785,
+        "p99": 45.55469117
+      },
+      "peak_tree_rss_kib": {
+        "p50": 831806.0,
+        "p95": 838537.6000000001,
+        "p99": 840017.9199999999
+      }
+    },
+    "tools/qemu-microvm": {
+      "n": 10,
+      "ready_ms": {
+        "p50": 454.2716885,
+        "p95": 916.9455563000001,
+        "p99": 979.61221286
+      },
+      "result_ms": {
+        "p50": 1978.092862,
+        "p95": 2927.3481980000006,
+        "p99": 3231.06497
+      },
+      "completion_ms": {
+        "p50": 2037.6318895,
+        "p95": 2994.541973550001,
+        "p99": 3295.90721151
+      },
+      "prepare_ms": {
+        "p50": 38.5233995,
+        "p95": 41.20037555,
+        "p99": 41.374291910000004
+      },
+      "peak_tree_rss_kib": {
+        "p50": 822222.0,
+        "p95": 838242.8,
+        "p99": 842237.36
+      }
+    }
+  },
+  "rows": [
+    {
+      "backend": "firecracker",
+      "mode": "tools",
+      "trial": 0,
+      "prepare_ms": 37.482868,
+      "ready_ms": 929.950545,
+      "result_ms": 2268.521863,
+      "completion_ms": 2334.091254,
+      "peak_tree_rss_kib": 781340,
+      "memory_scope": "owned launcher tree; Docker daemon/container RSS excluded",
+      "result": {
+        "phases_ms": {
+          "inspect": 19.104649,
+          "search": 10.224913,
+          "python-tests": 81.760344,
+          "rust-tests": 478.49332,
+          "node-install": 538.521097,
+          "node-tests": 203.338807,
+          "diff": 1.040467
+        },
+        "mode": "tools",
+        "worker_ms": 1334.218454,
+        "correctness": "passed"
+      },
+      "correctness": "passed",
+      "logs": "/home/reiase/workspace/pvisor/target/reference-resources-20261004/trials/tools-firecracker-000"
+    },
+    {
+      "backend": "docker",
+      "mode": "tools",
+      "trial": 0,
+      "prepare_ms": 36.736576,
+      "ready_ms": 416.740354,
+      "result_ms": 926.441837,
+      "completion_ms": 1030.129733,
+      "peak_tree_rss_kib": 266312,
+      "memory_scope": "CLI + private daemon + exact container shim/descendants; sampled RSS sum",
+      "result": {
+        "phases_ms": {
+          "inspect": 26.231061,
+          "search": 2.169689,
+          "python-tests": 49.478193,
+          "rust-tests": 83.790545,
+          "node-install": 229.641903,
+          "node-tests": 116.676545,
+          "diff": 0.814419
+        },
+        "mode": "tools",
+        "worker_ms": 509.647892,
+        "correctness": "passed"
+      },
+      "correctness": "passed",
+      "logs": "/home/reiase/workspace/pvisor/target/reference-resources-20261004/trials/tools-docker-000"
+    },
+    {
+      "backend": "native",
+      "mode": "tools",
+      "trial": 0,
+      "prepare_ms": 35.447329,
+      "ready_ms": 45.037897,
+      "result_ms": 468.367818,
+      "completion_ms": 476.286976,
+      "peak_tree_rss_kib": 173276,
+      "memory_scope": "owned launcher tree; Docker daemon/container RSS excluded",
+      "result": {
+        "phases_ms": {
+          "inspect": 1.941614,
+          "search": 2.405279,
+          "python-tests": 26.874261,
+          "rust-tests": 89.801703,
+          "node-install": 176.275134,
+          "node-tests": 124.077606,
+          "diff": 0.95906
+        },
+        "mode": "tools",
+        "worker_ms": 423.275169,
+        "correctness": "passed"
+      },
+      "correctness": "passed",
+      "logs": "/home/reiase/workspace/pvisor/target/reference-resources-20261004/trials/tools-native-000"
+    },
+    {
+      "backend": "qemu-microvm",
+      "mode": "tools",
+      "trial": 0,
+      "prepare_ms": 36.88872,
+      "ready_ms": 422.840589,
+      "result_ms": 1810.709532,
+      "completion_ms": 1855.291619,
+      "peak_tree_rss_kib": 817444,
+      "memory_scope": "owned launcher tree; Docker daemon/container RSS excluded",
+      "result": {
+        "phases_ms": {
+          "inspect": 19.354168,
+          "search": 9.697171,
+          "python-tests": 57.645042,
+          "rust-tests": 576.083932,
+          "node-install": 579.056553,
+          "node-tests": 140.38467,
+          "diff": 0.929549
+        },
+        "mode": "tools",
+        "worker_ms": 1385.692889,
+        "correctness": "passed"
+      },
+      "correctness": "passed",
+      "logs": "/home/reiase/workspace/pvisor/target/reference-resources-20261004/trials/tools-qemu-microvm-000"
+    },
+    {
+      "backend": "qemu",
+      "mode": "tools",
+      "trial": 0,
+      "prepare_ms": 37.283737,
+      "ready_ms": 514.741297,
+      "result_ms": 1916.014845,
+      "completion_ms": 1978.87413,
+      "peak_tree_rss_kib": 824516,
+      "memory_scope": "owned launcher tree; Docker daemon/container RSS excluded",
+      "result": {
+        "phases_ms": {
+          "inspect": 17.717816,
+          "search": 7.919766,
+          "python-tests": 53.117281,
+          "rust-tests": 584.214122,
+          "node-install": 581.624186,
+          "node-tests": 150.992164,
+          "diff": 0.896668
+        },
+        "mode": "tools",
+        "worker_ms": 1399.011486,
+        "correctness": "passed"
+      },
+      "correctness": "passed",
+      "logs": "/home/reiase/workspace/pvisor/target/reference-resources-20261004/trials/tools-qemu-000"
+    },
+    {
+      "backend": "pvisor-host",
+      "mode": "tools",
+      "trial": 0,
+      "prepare_ms": 35.734295,
+      "ready_ms": 47.35999,
+      "result_ms": 484.408472,
+      "completion_ms": 507.256971,
+      "peak_tree_rss_kib": 182652,
+      "memory_scope": "owned launcher tree; Docker daemon/container RSS excluded",
+      "result": {
+        "phases_ms": {
+          "inspect": 2.015551,
+          "search": 2.442137,
+          "python-tests": 26.523637,
+          "rust-tests": 90.698806,
+          "node-install": 181.16576,
+          "node-tests": 131.896617,
+          "diff": 1.391687
+        },
+        "mode": "tools",
+        "worker_ms": 437.036419,
+        "correctness": "passed"
+      },
+      "correctness": "passed",
+      "logs": "/home/reiase/workspace/pvisor/target/reference-resources-20261004/trials/tools-pvisor-host-000"
+    },
+    {
+      "backend": "pvisor-vm",
+      "mode": "tools",
+      "trial": 0,
+      "prepare_ms": 38.150574,
+      "ready_ms": 569.983898,
+      "result_ms": 4158.920395,
+      "completion_ms": 4266.712219,
+      "peak_tree_rss_kib": 724360,
+      "memory_scope": "owned launcher tree; Docker daemon/container RSS excluded",
+      "result": {
+        "phases_ms": {
+          "inspect": 74.701495,
+          "search": 19.843101,
+          "python-tests": 119.705619,
+          "rust-tests": 1211.936294,
+          "node-install": 1720.239666,
+          "node-tests": 405.399062,
+          "diff": 19.17429
+        },
+        "mode": "tools",
+        "worker_ms": 3588.714146,
+        "correctness": "passed"
+      },
+      "correctness": "passed",
+      "logs": "/home/reiase/workspace/pvisor/target/reference-resources-20261004/trials/tools-pvisor-vm-000"
+    },
+    {
+      "backend": "pvisor-staged",
+      "mode": "tools",
+      "trial": 0,
+      "prepare_ms": 35.547947,
+      "ready_ms": 53.5325,
+      "result_ms": 643.416854,
+      "completion_ms": 693.204856,
+      "peak_tree_rss_kib": 228840,
+      "memory_scope": "owned launcher tree; Docker daemon/container RSS excluded",
+      "result": {
+        "phases_ms": {
+          "inspect": 16.879739,
+          "search": 2.416229,
+          "python-tests": 28.592477,
+          "rust-tests": 197.739649,
+          "node-install": 200.936846,
+          "node-tests": 137.404074,
+          "diff": 2.678429
+        },
+        "mode": "tools",
+        "worker_ms": 589.854119,
+        "correctness": "passed"
+      },
+      "correctness": "passed",
+      "logs": "/home/reiase/workspace/pvisor/target/reference-resources-20261004/trials/tools-pvisor-staged-000"
+    },
+    {
+      "backend": "docker",
+      "mode": "tools",
+      "trial": 1,
+      "prepare_ms": 35.730689,
+      "ready_ms": 375.323555,
+      "result_ms": 850.462098,
+      "completion_ms": 935.153815,
+      "peak_tree_rss_kib": 258816,
+      "memory_scope": "CLI + private daemon + exact container shim/descendants; sampled RSS sum",
+      "result": {
+        "phases_ms": {
+          "inspect": 2.681344,
+          "search": 2.063561,
+          "python-tests": 48.77455,
+          "rust-tests": 86.024334,
+          "node-install": 215.96986,
+          "node-tests": 117.144127,
+          "diff": 0.812636
+        },
+        "mode": "tools",
+        "worker_ms": 474.236791,
+        "correctness": "passed"
+      },
+      "correctness": "passed",
+      "logs": "/home/reiase/workspace/pvisor/target/reference-resources-20261004/trials/tools-docker-001"
+    },
+    {
+      "backend": "native",
+      "mode": "tools",
+      "trial": 1,
+      "prepare_ms": 35.169671,
+      "ready_ms": 37.892964,
+      "result_ms": 440.403013,
+      "completion_ms": 447.626934,
+      "peak_tree_rss_kib": 137672,
+      "memory_scope": "owned launcher tree; Docker daemon/container RSS excluded",
+      "result": {
+        "phases_ms": {
+          "inspect": 3.710936,
+          "search": 2.17049,
+          "python-tests": 23.648071,
+          "rust-tests": 84.383632,
+          "node-install": 167.181093,
+          "node-tests": 119.563301,
+          "diff": 0.941596
+        },
+        "mode": "tools",
+        "worker_ms": 402.484792,
+        "correctness": "passed"
+      },
+      "correctness": "passed",
+      "logs": "/home/reiase/workspace/pvisor/target/reference-resources-20261004/trials/tools-native-001"
+    },
+    {
+      "backend": "firecracker",
+      "mode": "tools",
+      "trial": 1,
+      "prepare_ms": 37.224466,
+      "ready_ms": 902.203204,
+      "result_ms": 2232.211121,
+      "completion_ms": 2286.117658,
+      "peak_tree_rss_kib": 780684,
+      "memory_scope": "owned launcher tree; Docker daemon/container RSS excluded",
+      "result": {
+        "phases_ms": {
+          "inspect": 24.017763,
+          "search": 9.271049,
+          "python-tests": 81.776484,
+          "rust-tests": 473.472175,
+          "node-install": 540.810661,
+          "node-tests": 193.541404,
+          "diff": 0.970416
+        },
+        "mode": "tools",
+        "worker_ms": 1325.640102,
+        "correctness": "passed"
+      },
+      "correctness": "passed",
+      "logs": "/home/reiase/workspace/pvisor/target/reference-resources-20261004/trials/tools-firecracker-001"
+    },
+    {
+      "backend": "pvisor-vm",
+      "mode": "tools",
+      "trial": 1,
+      "prepare_ms": 35.942764,
+      "ready_ms": 544.364088,
+      "result_ms": 4310.620698,
+      "completion_ms": 4418.055286,
+      "peak_tree_rss_kib": 738872,
+      "memory_scope": "owned launcher tree; Docker daemon/container RSS excluded",
+      "result": {
+        "phases_ms": {
+          "inspect": 78.512436,
+          "search": 19.399551,
+          "python-tests": 135.708935,
+          "rust-tests": 1164.038004,
+          "node-install": 1822.31235,
+          "node-tests": 513.19744,
+          "diff": 16.72671
+        },
+        "mode": "tools",
+        "worker_ms": 3766.301948,
+        "correctness": "passed"
+      },
+      "correctness": "passed",
+      "logs": "/home/reiase/workspace/pvisor/target/reference-resources-20261004/trials/tools-pvisor-vm-001"
+    },
+    {
+      "backend": "pvisor-staged",
+      "mode": "tools",
+      "trial": 1,
+      "prepare_ms": 36.274714,
+      "ready_ms": 51.233478,
+      "result_ms": 646.959134,
+      "completion_ms": 695.623207,
+      "peak_tree_rss_kib": 227604,
+      "memory_scope": "owned launcher tree; Docker daemon/container RSS excluded",
+      "result": {
+        "phases_ms": {
+          "inspect": 18.124073,
+          "search": 2.216305,
+          "python-tests": 29.248081,
+          "rust-tests": 200.8644,
+          "node-install": 205.546457,
+          "node-tests": 133.73663,
+          "diff": 2.685061
+        },
+        "mode": "tools",
+        "worker_ms": 595.677616,
+        "correctness": "passed"
+      },
+      "correctness": "passed",
+      "logs": "/home/reiase/workspace/pvisor/target/reference-resources-20261004/trials/tools-pvisor-staged-001"
+    },
+    {
+      "backend": "qemu",
+      "mode": "tools",
+      "trial": 1,
+      "prepare_ms": 37.141441,
+      "ready_ms": 506.987848,
+      "result_ms": 1895.286213,
+      "completion_ms": 1943.10003,
+      "peak_tree_rss_kib": 836276,
+      "memory_scope": "owned launcher tree; Docker daemon/container RSS excluded",
+      "result": {
+        "phases_ms": {
+          "inspect": 17.285096,
+          "search": 11.363599,
+          "python-tests": 80.320192,
+          "rust-tests": 545.102923,
+          "node-install": 559.752018,
+          "node-tests": 168.776826,
+          "diff": 0.895525
+        },
+        "mode": "tools",
+        "worker_ms": 1386.011416,
+        "correctness": "passed"
+      },
+      "correctness": "passed",
+      "logs": "/home/reiase/workspace/pvisor/target/reference-resources-20261004/trials/tools-qemu-001"
+    },
+    {
+      "backend": "qemu-microvm",
+      "mode": "tools",
+      "trial": 1,
+      "prepare_ms": 36.725455,
+      "ready_ms": 379.340271,
+      "result_ms": 1839.506071,
+      "completion_ms": 1889.866019,
+      "peak_tree_rss_kib": 825164,
+      "memory_scope": "owned launcher tree; Docker daemon/container RSS excluded",
+      "result": {
+        "phases_ms": {
+          "inspect": 17.822943,
+          "search": 6.28584,
+          "python-tests": 51.330279,
+          "rust-tests": 601.463542,
+          "node-install": 601.192695,
+          "node-tests": 176.36929,
+          "diff": 1.060634
+        },
+        "mode": "tools",
+        "worker_ms": 1458.00477,
+        "correctness": "passed"
+      },
+      "correctness": "passed",
+      "logs": "/home/reiase/workspace/pvisor/target/reference-resources-20261004/trials/tools-qemu-microvm-001"
+    },
+    {
+      "backend": "pvisor-host",
+      "mode": "tools",
+      "trial": 1,
+      "prepare_ms": 38.209704,
+      "ready_ms": 45.370337,
+      "result_ms": 454.863217,
+      "completion_ms": 481.625128,
+      "peak_tree_rss_kib": 182188,
+      "memory_scope": "owned launcher tree; Docker daemon/container RSS excluded",
+      "result": {
+        "phases_ms": {
+          "inspect": 2.27678,
+          "search": 2.125106,
+          "python-tests": 24.842239,
+          "rust-tests": 89.438174,
+          "node-install": 167.424787,
+          "node-tests": 121.659523,
+          "diff": 0.86787
+        },
+        "mode": "tools",
+        "worker_ms": 409.462343,
+        "correctness": "passed"
+      },
+      "correctness": "passed",
+      "logs": "/home/reiase/workspace/pvisor/target/reference-resources-20261004/trials/tools-pvisor-host-001"
+    },
+    {
+      "backend": "docker",
+      "mode": "tools",
+      "trial": 2,
+      "prepare_ms": 35.561091,
+      "ready_ms": 383.23528,
+      "result_ms": 856.187162,
+      "completion_ms": 960.084169,
+      "peak_tree_rss_kib": 299160,
+      "memory_scope": "CLI + private daemon + exact container shim/descendants; sampled RSS sum",
+      "result": {
+        "phases_ms": {
+          "inspect": 2.73873,
+          "search": 2.080873,
+          "python-tests": 48.79574,
+          "rust-tests": 83.744238,
+          "node-install": 215.597985,
+          "node-tests": 118.31411,
+          "diff": 0.785456
+        },
+        "mode": "tools",
+        "worker_ms": 472.824445,
+        "correctness": "passed"
+      },
+      "correctness": "passed",
+      "logs": "/home/reiase/workspace/pvisor/target/reference-resources-20261004/trials/tools-docker-002"
+    },
+    {
+      "backend": "qemu-microvm",
+      "mode": "tools",
+      "trial": 2,
+      "prepare_ms": 37.099833,
+      "ready_ms": 386.652446,
+      "result_ms": 1867.648748,
+      "completion_ms": 1916.347306,
+      "peak_tree_rss_kib": 843236,
+      "memory_scope": "owned launcher tree; Docker daemon/container RSS excluded",
+      "result": {
+        "phases_ms": {
+          "inspect": 18.700094,
+          "search": 6.380085,
+          "python-tests": 51.320029,
+          "rust-tests": 601.20618,
+          "node-install": 592.043048,
+          "node-tests": 205.669925,
+          "diff": 1.871993
+        },
+        "mode": "tools",
+        "worker_ms": 1478.800425,
+        "correctness": "passed"
+      },
+      "correctness": "passed",
+      "logs": "/home/reiase/workspace/pvisor/target/reference-resources-20261004/trials/tools-qemu-microvm-002"
+    },
+    {
+      "backend": "pvisor-vm",
+      "mode": "tools",
+      "trial": 2,
+      "prepare_ms": 36.075923,
+      "ready_ms": 545.576731,
+      "result_ms": 4290.608472,
+      "completion_ms": 4398.563361,
+      "peak_tree_rss_kib": 753232,
+      "memory_scope": "owned launcher tree; Docker daemon/container RSS excluded",
+      "result": {
+        "phases_ms": {
+          "inspect": 51.997891,
+          "search": 18.315653,
+          "python-tests": 124.443665,
+          "rust-tests": 1021.184831,
+          "node-install": 1972.415149,
+          "node-tests": 523.033576,
+          "diff": 16.421999
+        },
+        "mode": "tools",
+        "worker_ms": 3744.824828,
+        "correctness": "passed"
+      },
+      "correctness": "passed",
+      "logs": "/home/reiase/workspace/pvisor/target/reference-resources-20261004/trials/tools-pvisor-vm-002"
+    },
+    {
+      "backend": "qemu",
+      "mode": "tools",
+      "trial": 2,
+      "prepare_ms": 36.56209,
+      "ready_ms": 532.562164,
+      "result_ms": 1957.467602,
+      "completion_ms": 2011.209182,
+      "peak_tree_rss_kib": 835880,
+      "memory_scope": "owned launcher tree; Docker daemon/container RSS excluded",
+      "result": {
+        "phases_ms": {
+          "inspect": 17.454965,
+          "search": 7.791797,
+          "python-tests": 55.310073,
+          "rust-tests": 575.186663,
+          "node-install": 579.527935,
+          "node-tests": 183.467519,
+          "diff": 2.090681
+        },
+        "mode": "tools",
+        "worker_ms": 1422.653635,
+        "correctness": "passed"
+      },
+      "correctness": "passed",
+      "logs": "/home/reiase/workspace/pvisor/target/reference-resources-20261004/trials/tools-qemu-002"
+    },
+    {
+      "backend": "native",
+      "mode": "tools",
+      "trial": 2,
+      "prepare_ms": 36.304219,
+      "ready_ms": 41.223198,
+      "result_ms": 466.614567,
+      "completion_ms": 474.569041,
+      "peak_tree_rss_kib": 176388,
+      "memory_scope": "owned launcher tree; Docker daemon/container RSS excluded",
+      "result": {
+        "phases_ms": {
+          "inspect": 2.200476,
+          "search": 2.235331,
+          "python-tests": 25.43193,
+          "rust-tests": 85.215543,
+          "node-install": 177.917949,
+          "node-tests": 130.270963,
+          "diff": 1.068714
+        },
+        "mode": "tools",
+        "worker_ms": 425.358287,
+        "correctness": "passed"
+      },
+      "correctness": "passed",
+      "logs": "/home/reiase/workspace/pvisor/target/reference-resources-20261004/trials/tools-native-002"
+    },
+    {
+      "backend": "pvisor-host",
+      "mode": "tools",
+      "trial": 2,
+      "prepare_ms": 38.36774,
+      "ready_ms": 43.96228,
+      "result_ms": 480.08784,
+      "completion_ms": 498.640171,
+      "peak_tree_rss_kib": 182872,
+      "memory_scope": "owned launcher tree; Docker daemon/container RSS excluded",
+      "result": {
+        "phases_ms": {
+          "inspect": 2.162735,
+          "search": 2.234851,
+          "python-tests": 26.00595,
+          "rust-tests": 97.803254,
+          "node-install": 176.46106,
+          "node-tests": 129.584101,
+          "diff": 0.889379
+        },
+        "mode": "tools",
+        "worker_ms": 436.075426,
+        "correctness": "passed"
+      },
+      "correctness": "passed",
+      "logs": "/home/reiase/workspace/pvisor/target/reference-resources-20261004/trials/tools-pvisor-host-002"
+    },
+    {
+      "backend": "firecracker",
+      "mode": "tools",
+      "trial": 2,
+      "prepare_ms": 37.692971,
+      "ready_ms": 895.012065,
+      "result_ms": 2242.464646,
+      "completion_ms": 2300.624701,
+      "peak_tree_rss_kib": 794700,
+      "memory_scope": "owned launcher tree; Docker daemon/container RSS excluded",
+      "result": {
+        "phases_ms": {
+          "inspect": 18.082878,
+          "search": 7.910944,
+          "python-tests": 79.571659,
+          "rust-tests": 489.317805,
+          "node-install": 565.393953,
+          "node-tests": 178.923851,
+          "diff": 2.220005
+        },
+        "mode": "tools",
+        "worker_ms": 1343.125932,
+        "correctness": "passed"
+      },
+      "correctness": "passed",
+      "logs": "/home/reiase/workspace/pvisor/target/reference-resources-20261004/trials/tools-firecracker-002"
+    },
+    {
+      "backend": "pvisor-staged",
+      "mode": "tools",
+      "trial": 2,
+      "prepare_ms": 36.29925,
+      "ready_ms": 51.4326,
+      "result_ms": 649.498813,
+      "completion_ms": 695.032675,
+      "peak_tree_rss_kib": 221048,
+      "memory_scope": "owned launcher tree; Docker daemon/container RSS excluded",
+      "result": {
+        "phases_ms": {
+          "inspect": 16.902012,
+          "search": 2.185889,
+          "python-tests": 28.117601,
+          "rust-tests": 204.50232,
+          "node-install": 203.073994,
+          "node-tests": 137.287648,
+          "diff": 2.71707
+        },
+        "mode": "tools",
+        "worker_ms": 598.028893,
+        "correctness": "passed"
+      },
+      "correctness": "passed",
+      "logs": "/home/reiase/workspace/pvisor/target/reference-resources-20261004/trials/tools-pvisor-staged-002"
+    },
+    {
+      "backend": "firecracker",
+      "mode": "tools",
+      "trial": 3,
+      "prepare_ms": 38.356619,
+      "ready_ms": 903.94751,
+      "result_ms": 2230.236286,
+      "completion_ms": 2295.520716,
+      "peak_tree_rss_kib": 781852,
+      "memory_scope": "owned launcher tree; Docker daemon/container RSS excluded",
+      "result": {
+        "phases_ms": {
+          "inspect": 23.013444,
+          "search": 11.043034,
+          "python-tests": 79.38557,
+          "rust-tests": 474.533019,
+          "node-install": 547.579728,
+          "node-tests": 185.19204,
+          "diff": 2.137379
+        },
+        "mode": "tools",
+        "worker_ms": 1324.609784,
+        "correctness": "passed"
+      },
+      "correctness": "passed",
+      "logs": "/home/reiase/workspace/pvisor/target/reference-resources-20261004/trials/tools-firecracker-003"
+    },
+    {
+      "backend": "docker",
+      "mode": "tools",
+      "trial": 3,
+      "prepare_ms": 36.849998,
+      "ready_ms": 396.593457,
+      "result_ms": 866.611976,
+      "completion_ms": 950.253704,
+      "peak_tree_rss_kib": 320812,
+      "memory_scope": "CLI + private daemon + exact container shim/descendants; sampled RSS sum",
+      "result": {
+        "phases_ms": {
+          "inspect": 3.543913,
+          "search": 2.086134,
+          "python-tests": 48.724497,
+          "rust-tests": 83.819638,
+          "node-install": 214.892059,
+          "node-tests": 115.326475,
+          "diff": 0.810983
+        },
+        "mode": "tools",
+        "worker_ms": 469.988813,
+        "correctness": "passed"
+      },
+      "correctness": "passed",
+      "logs": "/home/reiase/workspace/pvisor/target/reference-resources-20261004/trials/tools-docker-003"
+    },
+    {
+      "backend": "qemu-microvm",
+      "mode": "tools",
+      "trial": 3,
+      "prepare_ms": 35.598842,
+      "ready_ms": 528.912132,
+      "result_ms": 2050.748858,
+      "completion_ms": 2113.368835,
+      "peak_tree_rss_kib": 832140,
+      "memory_scope": "owned launcher tree; Docker daemon/container RSS excluded",
+      "result": {
+        "phases_ms": {
+          "inspect": 26.595655,
+          "search": 30.117022,
+          "python-tests": 82.413628,
+          "rust-tests": 571.539059,
+          "node-install": 612.569097,
+          "node-tests": 192.295034,
+          "diff": 2.193243
+        },
+        "mode": "tools",
+        "worker_ms": 1519.736357,
+        "correctness": "passed"
+      },
+      "correctness": "passed",
+      "logs": "/home/reiase/workspace/pvisor/target/reference-resources-20261004/trials/tools-qemu-microvm-003"
+    },
+    {
+      "backend": "qemu",
+      "mode": "tools",
+      "trial": 3,
+      "prepare_ms": 40.48482,
+      "ready_ms": 643.099071,
+      "result_ms": 2092.130352,
+      "completion_ms": 2157.229175,
+      "peak_tree_rss_kib": 835792,
+      "memory_scope": "owned launcher tree; Docker daemon/container RSS excluded",
+      "result": {
+        "phases_ms": {
+          "inspect": 21.612703,
+          "search": 10.900592,
+          "python-tests": 81.541257,
+          "rust-tests": 577.758364,
+          "node-install": 563.520778,
+          "node-tests": 186.662176,
+          "diff": 2.503774
+        },
+        "mode": "tools",
+        "worker_ms": 1446.608661,
+        "correctness": "passed"
+      },
+      "correctness": "passed",
+      "logs": "/home/reiase/workspace/pvisor/target/reference-resources-20261004/trials/tools-qemu-003"
+    },
+    {
+      "backend": "pvisor-host",
+      "mode": "tools",
+      "trial": 3,
+      "prepare_ms": 34.963036,
+      "ready_ms": 42.358366,
+      "result_ms": 450.453337,
+      "completion_ms": 477.647956,
+      "peak_tree_rss_kib": 183248,
+      "memory_scope": "owned launcher tree; Docker daemon/container RSS excluded",
+      "result": {
+        "phases_ms": {
+          "inspect": 2.054133,
+          "search": 2.158739,
+          "python-tests": 24.047075,
+          "rust-tests": 86.884187,
+          "node-install": 167.020453,
+          "node-tests": 124.249757,
+          "diff": 0.860065
+        },
+        "mode": "tools",
+        "worker_ms": 408.070725,
+        "correctness": "passed"
+      },
+      "correctness": "passed",
+      "logs": "/home/reiase/workspace/pvisor/target/reference-resources-20261004/trials/tools-pvisor-host-003"
+    },
+    {
+      "backend": "native",
+      "mode": "tools",
+      "trial": 3,
+      "prepare_ms": 34.92772,
+      "ready_ms": 37.880751,
+      "result_ms": 446.021587,
+      "completion_ms": 453.255887,
+      "peak_tree_rss_kib": 151116,
+      "memory_scope": "owned launcher tree; Docker daemon/container RSS excluded",
+      "result": {
+        "phases_ms": {
+          "inspect": 2.676746,
+          "search": 2.159379,
+          "python-tests": 23.887608,
+          "rust-tests": 84.970195,
+          "node-install": 168.102051,
+          "node-tests": 124.490847,
+          "diff": 0.951115
+        },
+        "mode": "tools",
+        "worker_ms": 408.120218,
+        "correctness": "passed"
+      },
+      "correctness": "passed",
+      "logs": "/home/reiase/workspace/pvisor/target/reference-resources-20261004/trials/tools-native-003"
+    },
+    {
+      "backend": "pvisor-staged",
+      "mode": "tools",
+      "trial": 3,
+      "prepare_ms": 35.787133,
+      "ready_ms": 65.0811,
+      "result_ms": 683.437598,
+      "completion_ms": 723.068595,
+      "peak_tree_rss_kib": 236088,
+      "memory_scope": "owned launcher tree; Docker daemon/container RSS excluded",
+      "result": {
+        "phases_ms": {
+          "inspect": 18.122218,
+          "search": 2.190508,
+          "python-tests": 35.201321,
+          "rust-tests": 202.497267,
+          "node-install": 207.526042,
+          "node-tests": 146.796102,
+          "diff": 2.736347
+        },
+        "mode": "tools",
+        "worker_ms": 618.349966,
+        "correctness": "passed"
+      },
+      "correctness": "passed",
+      "logs": "/home/reiase/workspace/pvisor/target/reference-resources-20261004/trials/tools-pvisor-staged-003"
+    },
+    {
+      "backend": "pvisor-vm",
+      "mode": "tools",
+      "trial": 3,
+      "prepare_ms": 35.248118,
+      "ready_ms": 547.941313,
+      "result_ms": 4240.229949,
+      "completion_ms": 4349.560985,
+      "peak_tree_rss_kib": 751588,
+      "memory_scope": "owned launcher tree; Docker daemon/container RSS excluded",
+      "result": {
+        "phases_ms": {
+          "inspect": 51.973846,
+          "search": 18.296077,
+          "python-tests": 116.100403,
+          "rust-tests": 1214.669549,
+          "node-install": 1806.84662,
+          "node-tests": 452.004914,
+          "diff": 15.433831
+        },
+        "mode": "tools",
+        "worker_ms": 3692.086372,
+        "correctness": "passed"
+      },
+      "correctness": "passed",
+      "logs": "/home/reiase/workspace/pvisor/target/reference-resources-20261004/trials/tools-pvisor-vm-003"
+    },
+    {
+      "backend": "pvisor-host",
+      "mode": "tools",
+      "trial": 4,
+      "prepare_ms": 35.653644,
+      "ready_ms": 42.794781,
+      "result_ms": 446.373585,
+      "completion_ms": 471.217567,
+      "peak_tree_rss_kib": 182924,
+      "memory_scope": "owned launcher tree; Docker daemon/container RSS excluded",
+      "result": {
+        "phases_ms": {
+          "inspect": 2.679039,
+          "search": 2.119375,
+          "python-tests": 23.730514,
+          "rust-tests": 89.458622,
+          "node-install": 163.847041,
+          "node-tests": 120.022859,
+          "diff": 0.872499
+        },
+        "mode": "tools",
+        "worker_ms": 403.546764,
+        "correctness": "passed"
+      },
+      "correctness": "passed",
+      "logs": "/home/reiase/workspace/pvisor/target/reference-resources-20261004/trials/tools-pvisor-host-004"
+    },
+    {
+      "backend": "native",
+      "mode": "tools",
+      "trial": 4,
+      "prepare_ms": 35.257264,
+      "ready_ms": 37.729328,
+      "result_ms": 441.57542,
+      "completion_ms": 448.725744,
+      "peak_tree_rss_kib": 136732,
+      "memory_scope": "owned launcher tree; Docker daemon/container RSS excluded",
+      "result": {
+        "phases_ms": {
+          "inspect": 2.643795,
+          "search": 2.122371,
+          "python-tests": 23.598097,
+          "rust-tests": 86.719741,
+          "node-install": 163.819008,
+          "node-tests": 123.111664,
+          "diff": 0.925197
+        },
+        "mode": "tools",
+        "worker_ms": 403.808381,
+        "correctness": "passed"
+      },
+      "correctness": "passed",
+      "logs": "/home/reiase/workspace/pvisor/target/reference-resources-20261004/trials/tools-native-004"
+    },
+    {
+      "backend": "pvisor-vm",
+      "mode": "tools",
+      "trial": 4,
+      "prepare_ms": 36.415056,
+      "ready_ms": 532.097166,
+      "result_ms": 4051.028945,
+      "completion_ms": 4153.976579,
+      "peak_tree_rss_kib": 715676,
+      "memory_scope": "owned launcher tree; Docker daemon/container RSS excluded",
+      "result": {
+        "phases_ms": {
+          "inspect": 53.831241,
+          "search": 17.892532,
+          "python-tests": 116.103148,
+          "rust-tests": 1112.856271,
+          "node-install": 1733.709772,
+          "node-tests": 450.475812,
+          "diff": 16.065693
+        },
+        "mode": "tools",
+        "worker_ms": 3517.241814,
+        "correctness": "passed"
+      },
+      "correctness": "passed",
+      "logs": "/home/reiase/workspace/pvisor/target/reference-resources-20261004/trials/tools-pvisor-vm-004"
+    },
+    {
+      "backend": "docker",
+      "mode": "tools",
+      "trial": 4,
+      "prepare_ms": 36.638783,
+      "ready_ms": 391.589469,
+      "result_ms": 854.362938,
+      "completion_ms": 935.524015,
+      "peak_tree_rss_kib": 277140,
+      "memory_scope": "CLI + private daemon + exact container shim/descendants; sampled RSS sum",
+      "result": {
+        "phases_ms": {
+          "inspect": 8.167271,
+          "search": 2.107684,
+          "python-tests": 48.36712,
+          "rust-tests": 79.068633,
+          "node-install": 208.428717,
+          "node-tests": 114.230961,
+          "diff": 0.752865
+        },
+        "mode": "tools",
+        "worker_ms": 461.879801,
+        "correctness": "passed"
+      },
+      "correctness": "passed",
+      "logs": "/home/reiase/workspace/pvisor/target/reference-resources-20261004/trials/tools-docker-004"
+    },
+    {
+      "backend": "qemu-microvm",
+      "mode": "tools",
+      "trial": 4,
+      "prepare_ms": 38.149993,
+      "ready_ms": 485.702788,
+      "result_ms": 2236.993687,
+      "completion_ms": 2306.314869,
+      "peak_tree_rss_kib": 819948,
+      "memory_scope": "owned launcher tree; Docker daemon/container RSS excluded",
+      "result": {
+        "phases_ms": {
+          "inspect": 29.876502,
+          "search": 10.732679,
+          "python-tests": 81.576863,
+          "rust-tests": 574.04114,
+          "node-install": 886.020077,
+          "node-tests": 162.365231,
+          "diff": 1.808694
+        },
+        "mode": "tools",
+        "worker_ms": 1748.664332,
+        "correctness": "passed"
+      },
+      "correctness": "passed",
+      "logs": "/home/reiase/workspace/pvisor/target/reference-resources-20261004/trials/tools-qemu-microvm-004"
+    },
+    {
+      "backend": "pvisor-staged",
+      "mode": "tools",
+      "trial": 4,
+      "prepare_ms": 39.482981,
+      "ready_ms": 63.878095,
+      "result_ms": 728.161038,
+      "completion_ms": 762.742452,
+      "peak_tree_rss_kib": 246104,
+      "memory_scope": "owned launcher tree; Docker daemon/container RSS excluded",
+      "result": {
+        "phases_ms": {
+          "inspect": 21.586534,
+          "search": 2.692545,
+          "python-tests": 35.084082,
+          "rust-tests": 221.884187,
+          "node-install": 232.392537,
+          "node-tests": 143.984254,
+          "diff": 2.87713
+        },
+        "mode": "tools",
+        "worker_ms": 664.246084,
+        "correctness": "passed"
+      },
+      "correctness": "passed",
+      "logs": "/home/reiase/workspace/pvisor/target/reference-resources-20261004/trials/tools-pvisor-staged-004"
+    },
+    {
+      "backend": "qemu",
+      "mode": "tools",
+      "trial": 4,
+      "prepare_ms": 37.139056,
+      "ready_ms": 644.633864,
+      "result_ms": 2119.777565,
+      "completion_ms": 2182.645024,
+      "peak_tree_rss_kib": 828128,
+      "memory_scope": "owned launcher tree; Docker daemon/container RSS excluded",
+      "result": {
+        "phases_ms": {
+          "inspect": 22.157572,
+          "search": 11.245548,
+          "python-tests": 84.397611,
+          "rust-tests": 573.676307,
+          "node-install": 615.405554,
+          "node-tests": 163.049782,
+          "diff": 1.027281
+        },
+        "mode": "tools",
+        "worker_ms": 1472.757229,
+        "correctness": "passed"
+      },
+      "correctness": "passed",
+      "logs": "/home/reiase/workspace/pvisor/target/reference-resources-20261004/trials/tools-qemu-004"
+    },
+    {
+      "backend": "firecracker",
+      "mode": "tools",
+      "trial": 4,
+      "prepare_ms": 37.948637,
+      "ready_ms": 920.965527,
+      "result_ms": 2613.771495,
+      "completion_ms": 2677.820048,
+      "peak_tree_rss_kib": 783744,
+      "memory_scope": "owned launcher tree; Docker daemon/container RSS excluded",
+      "result": {
+        "phases_ms": {
+          "inspect": 19.718058,
+          "search": 10.651782,
+          "python-tests": 89.94506,
+          "rust-tests": 593.205314,
+          "node-install": 796.048665,
+          "node-tests": 177.636322,
+          "diff": 1.106812
+        },
+        "mode": "tools",
+        "worker_ms": 1691.349766,
+        "correctness": "passed"
+      },
+      "correctness": "passed",
+      "logs": "/home/reiase/workspace/pvisor/target/reference-resources-20261004/trials/tools-firecracker-004"
+    },
+    {
+      "backend": "firecracker",
+      "mode": "tools",
+      "trial": 5,
+      "prepare_ms": 37.854451,
+      "ready_ms": 1066.848655,
+      "result_ms": 2662.810469,
+      "completion_ms": 2729.646794,
+      "peak_tree_rss_kib": 772876,
+      "memory_scope": "owned launcher tree; Docker daemon/container RSS excluded",
+      "result": {
+        "phases_ms": {
+          "inspect": 23.766122,
+          "search": 9.161934,
+          "python-tests": 101.228013,
+          "rust-tests": 729.903521,
+          "node-install": 565.640113,
+          "node-tests": 158.240958,
+          "diff": 0.994471
+        },
+        "mode": "tools",
+        "worker_ms": 1591.513287,
+        "correctness": "passed"
+      },
+      "correctness": "passed",
+      "logs": "/home/reiase/workspace/pvisor/target/reference-resources-20261004/trials/tools-firecracker-005"
+    },
+    {
+      "backend": "pvisor-vm",
+      "mode": "tools",
+      "trial": 5,
+      "prepare_ms": 36.403815,
+      "ready_ms": 1607.729493,
+      "result_ms": 5148.639506,
+      "completion_ms": 5263.784212,
+      "peak_tree_rss_kib": 727460,
+      "memory_scope": "owned launcher tree; Docker daemon/container RSS excluded",
+      "result": {
+        "phases_ms": {
+          "inspect": 77.374477,
+          "search": 20.940254,
+          "python-tests": 133.179732,
+          "rust-tests": 1077.679557,
+          "node-install": 1699.754183,
+          "node-tests": 487.016509,
+          "diff": 26.333546
+        },
+        "mode": "tools",
+        "worker_ms": 3540.361897,
+        "correctness": "passed"
+      },
+      "correctness": "passed",
+      "logs": "/home/reiase/workspace/pvisor/target/reference-resources-20261004/trials/tools-pvisor-vm-005"
+    },
+    {
+      "backend": "qemu-microvm",
+      "mode": "tools",
+      "trial": 5,
+      "prepare_ms": 40.93467,
+      "ready_ms": 995.278877,
+      "result_ms": 3306.994163,
+      "completion_ms": 3371.248521,
+      "peak_tree_rss_kib": 812568,
+      "memory_scope": "owned launcher tree; Docker daemon/container RSS excluded",
+      "result": {
+        "phases_ms": {
+          "inspect": 41.568787,
+          "search": 17.202092,
+          "python-tests": 137.302905,
+          "rust-tests": 1111.30635,
+          "node-install": 839.858438,
+          "node-tests": 158.127102,
+          "diff": 1.375463
+        },
+        "mode": "tools",
+        "worker_ms": 2309.49038,
+        "correctness": "passed"
+      },
+      "correctness": "passed",
+      "logs": "/home/reiase/workspace/pvisor/target/reference-resources-20261004/trials/tools-qemu-microvm-005"
+    },
+    {
+      "backend": "pvisor-host",
+      "mode": "tools",
+      "trial": 5,
+      "prepare_ms": 38.698907,
+      "ready_ms": 70.560305,
+      "result_ms": 578.748013,
+      "completion_ms": 609.882344,
+      "peak_tree_rss_kib": 155788,
+      "memory_scope": "owned launcher tree; Docker daemon/container RSS excluded",
+      "result": {
+        "phases_ms": {
+          "inspect": 3.518446,
+          "search": 2.77595,
+          "python-tests": 28.329016,
+          "rust-tests": 104.076261,
+          "node-install": 215.667375,
+          "node-tests": 151.822541,
+          "diff": 0.999866
+        },
+        "mode": "tools",
+        "worker_ms": 508.165075,
+        "correctness": "passed"
+      },
+      "correctness": "passed",
+      "logs": "/home/reiase/workspace/pvisor/target/reference-resources-20261004/trials/tools-pvisor-host-005"
+    },
+    {
+      "backend": "qemu",
+      "mode": "tools",
+      "trial": 5,
+      "prepare_ms": 46.056107,
+      "ready_ms": 866.675595,
+      "result_ms": 2416.958235,
+      "completion_ms": 2490.225341,
+      "peak_tree_rss_kib": 827436,
+      "memory_scope": "owned launcher tree; Docker daemon/container RSS excluded",
+      "result": {
+        "phases_ms": {
+          "inspect": 26.870589,
+          "search": 11.945628,
+          "python-tests": 99.853825,
+          "rust-tests": 607.054962,
+          "node-install": 619.24147,
+          "node-tests": 179.77466,
+          "diff": 1.292819
+        },
+        "mode": "tools",
+        "worker_ms": 1547.933868,
+        "correctness": "passed"
+      },
+      "correctness": "passed",
+      "logs": "/home/reiase/workspace/pvisor/target/reference-resources-20261004/trials/tools-qemu-005"
+    },
+    {
+      "backend": "pvisor-staged",
+      "mode": "tools",
+      "trial": 5,
+      "prepare_ms": 55.438566,
+      "ready_ms": 76.909443,
+      "result_ms": 1101.727384,
+      "completion_ms": 1152.559794,
+      "peak_tree_rss_kib": 235564,
+      "memory_scope": "owned launcher tree; Docker daemon/container RSS excluded",
+      "result": {
+        "phases_ms": {
+          "inspect": 23.591766,
+          "search": 3.132626,
+          "python-tests": 47.626948,
+          "rust-tests": 340.937987,
+          "node-install": 378.720795,
+          "node-tests": 216.45777,
+          "diff": 7.280437
+        },
+        "mode": "tools",
+        "worker_ms": 1024.784338,
+        "correctness": "passed"
+      },
+      "correctness": "passed",
+      "logs": "/home/reiase/workspace/pvisor/target/reference-resources-20261004/trials/tools-pvisor-staged-005"
+    },
+    {
+      "backend": "docker",
+      "mode": "tools",
+      "trial": 5,
+      "prepare_ms": 52.716106,
+      "ready_ms": 639.41168,
+      "result_ms": 1275.753811,
+      "completion_ms": 1421.808329,
+      "peak_tree_rss_kib": 296876,
+      "memory_scope": "CLI + private daemon + exact container shim/descendants; sampled RSS sum",
+      "result": {
+        "phases_ms": {
+          "inspect": 3.146312,
+          "search": 2.186851,
+          "python-tests": 54.868983,
+          "rust-tests": 187.51581,
+          "node-install": 246.120805,
+          "node-tests": 141.549441,
+          "diff": 0.911641
+        },
+        "mode": "tools",
+        "worker_ms": 637.276726,
+        "correctness": "passed"
+      },
+      "correctness": "passed",
+      "logs": "/home/reiase/workspace/pvisor/target/reference-resources-20261004/trials/tools-docker-005"
+    },
+    {
+      "backend": "native",
+      "mode": "tools",
+      "trial": 5,
+      "prepare_ms": 44.974498,
+      "ready_ms": 52.087272,
+      "result_ms": 571.262133,
+      "completion_ms": 580.052627,
+      "peak_tree_rss_kib": 172752,
+      "memory_scope": "owned launcher tree; Docker daemon/container RSS excluded",
+      "result": {
+        "phases_ms": {
+          "inspect": 4.307408,
+          "search": 2.745995,
+          "python-tests": 27.598332,
+          "rust-tests": 103.124745,
+          "node-install": 225.999096,
+          "node-tests": 151.749115,
+          "diff": 2.193142
+        },
+        "mode": "tools",
+        "worker_ms": 519.148051,
+        "correctness": "passed"
+      },
+      "correctness": "passed",
+      "logs": "/home/reiase/workspace/pvisor/target/reference-resources-20261004/trials/tools-native-005"
+    },
+    {
+      "backend": "qemu-microvm",
+      "mode": "tools",
+      "trial": 6,
+      "prepare_ms": 38.896806,
+      "ready_ms": 821.204831,
+      "result_ms": 2463.336463,
+      "completion_ms": 2534.12286,
+      "peak_tree_rss_kib": 822960,
+      "memory_scope": "owned launcher tree; Docker daemon/container RSS excluded",
+      "result": {
+        "phases_ms": {
+          "inspect": 24.121015,
+          "search": 11.65262,
+          "python-tests": 90.172794,
+          "rust-tests": 636.148931,
+          "node-install": 667.674409,
+          "node-tests": 206.793006,
+          "diff": 1.480901
+        },
+        "mode": "tools",
+        "worker_ms": 1639.963397,
+        "correctness": "passed"
+      },
+      "correctness": "passed",
+      "logs": "/home/reiase/workspace/pvisor/target/reference-resources-20261004/trials/tools-qemu-microvm-006"
+    },
+    {
+      "backend": "docker",
+      "mode": "tools",
+      "trial": 6,
+      "prepare_ms": 37.541929,
+      "ready_ms": 379.711173,
+      "result_ms": 1006.872793,
+      "completion_ms": 1095.799512,
+      "peak_tree_rss_kib": 272592,
+      "memory_scope": "CLI + private daemon + exact container shim/descendants; sampled RSS sum",
+      "result": {
+        "phases_ms": {
+          "inspect": 3.78283,
+          "search": 2.605111,
+          "python-tests": 55.193138,
+          "rust-tests": 167.038056,
+          "node-install": 270.765115,
+          "node-tests": 125.567856,
+          "diff": 1.17334
+        },
+        "mode": "tools",
+        "worker_ms": 627.134239,
+        "correctness": "passed"
+      },
+      "correctness": "passed",
+      "logs": "/home/reiase/workspace/pvisor/target/reference-resources-20261004/trials/tools-docker-006"
+    },
+    {
+      "backend": "pvisor-vm",
+      "mode": "tools",
+      "trial": 6,
+      "prepare_ms": 37.375287,
+      "ready_ms": 633.053805,
+      "result_ms": 6236.045064,
+      "completion_ms": 6385.61965,
+      "peak_tree_rss_kib": 744384,
+      "memory_scope": "owned launcher tree; Docker daemon/container RSS excluded",
+      "result": {
+        "phases_ms": {
+          "inspect": 65.817361,
+          "search": 194.853299,
+          "python-tests": 538.150133,
+          "rust-tests": 1732.651582,
+          "node-install": 2197.806953,
+          "node-tests": 815.520722,
+          "diff": 25.228118
+        },
+        "mode": "tools",
+        "worker_ms": 5600.000253,
+        "correctness": "passed"
+      },
+      "correctness": "passed",
+      "logs": "/home/reiase/workspace/pvisor/target/reference-resources-20261004/trials/tools-pvisor-vm-006"
+    },
+    {
+      "backend": "pvisor-staged",
+      "mode": "tools",
+      "trial": 6,
+      "prepare_ms": 41.956887,
+      "ready_ms": 78.417618,
+      "result_ms": 956.724119,
+      "completion_ms": 1018.502836,
+      "peak_tree_rss_kib": 237444,
+      "memory_scope": "owned launcher tree; Docker daemon/container RSS excluded",
+      "result": {
+        "phases_ms": {
+          "inspect": 21.864272,
+          "search": 4.515285,
+          "python-tests": 51.681304,
+          "rust-tests": 328.26085,
+          "node-install": 300.746233,
+          "node-tests": 164.62867,
+          "diff": 2.828298
+        },
+        "mode": "tools",
+        "worker_ms": 878.289509,
+        "correctness": "passed"
+      },
+      "correctness": "passed",
+      "logs": "/home/reiase/workspace/pvisor/target/reference-resources-20261004/trials/tools-pvisor-staged-006"
+    },
+    {
+      "backend": "firecracker",
+      "mode": "tools",
+      "trial": 6,
+      "prepare_ms": 38.088969,
+      "ready_ms": 917.2429,
+      "result_ms": 2269.355538,
+      "completion_ms": 2332.461863,
+      "peak_tree_rss_kib": 783980,
+      "memory_scope": "owned launcher tree; Docker daemon/container RSS excluded",
+      "result": {
+        "phases_ms": {
+          "inspect": 25.34635,
+          "search": 9.677078,
+          "python-tests": 89.246642,
+          "rust-tests": 488.627384,
+          "node-install": 528.228227,
+          "node-tests": 206.4075,
+          "diff": 1.002516
+        },
+        "mode": "tools",
+        "worker_ms": 1350.52054,
+        "correctness": "passed"
+      },
+      "correctness": "passed",
+      "logs": "/home/reiase/workspace/pvisor/target/reference-resources-20261004/trials/tools-firecracker-006"
+    },
+    {
+      "backend": "pvisor-host",
+      "mode": "tools",
+      "trial": 6,
+      "prepare_ms": 37.002983,
+      "ready_ms": 43.968702,
+      "result_ms": 473.241553,
+      "completion_ms": 510.907984,
+      "peak_tree_rss_kib": 186556,
+      "memory_scope": "owned launcher tree; Docker daemon/container RSS excluded",
+      "result": {
+        "phases_ms": {
+          "inspect": 3.138216,
+          "search": 2.142398,
+          "python-tests": 25.684661,
+          "rust-tests": 91.574962,
+          "node-install": 175.326873,
+          "node-tests": 129.293299,
+          "diff": 0.964099
+        },
+        "mode": "tools",
+        "worker_ms": 429.239739,
+        "correctness": "passed"
+      },
+      "correctness": "passed",
+      "logs": "/home/reiase/workspace/pvisor/target/reference-resources-20261004/trials/tools-pvisor-host-006"
+    },
+    {
+      "backend": "native",
+      "mode": "tools",
+      "trial": 6,
+      "prepare_ms": 37.213967,
+      "ready_ms": 42.179683,
+      "result_ms": 473.165491,
+      "completion_ms": 481.131096,
+      "peak_tree_rss_kib": 173496,
+      "memory_scope": "owned launcher tree; Docker daemon/container RSS excluded",
+      "result": {
+        "phases_ms": {
+          "inspect": 2.11149,
+          "search": 2.264966,
+          "python-tests": 26.524489,
+          "rust-tests": 96.464416,
+          "node-install": 174.030254,
+          "node-tests": 127.276756,
+          "diff": 1.319231
+        },
+        "mode": "tools",
+        "worker_ms": 430.956132,
+        "correctness": "passed"
+      },
+      "correctness": "passed",
+      "logs": "/home/reiase/workspace/pvisor/target/reference-resources-20261004/trials/tools-native-006"
+    },
+    {
+      "backend": "qemu",
+      "mode": "tools",
+      "trial": 6,
+      "prepare_ms": 38.499074,
+      "ready_ms": 900.73199,
+      "result_ms": 2277.08926,
+      "completion_ms": 2340.402432,
+      "peak_tree_rss_kib": 835484,
+      "memory_scope": "owned launcher tree; Docker daemon/container RSS excluded",
+      "result": {
+        "phases_ms": {
+          "inspect": 20.582916,
+          "search": 12.004407,
+          "python-tests": 85.17244,
+          "rust-tests": 512.224334,
+          "node-install": 544.092423,
+          "node-tests": 195.812654,
+          "diff": 1.322013
+        },
+        "mode": "tools",
+        "worker_ms": 1374.002069,
+        "correctness": "passed"
+      },
+      "correctness": "passed",
+      "logs": "/home/reiase/workspace/pvisor/target/reference-resources-20261004/trials/tools-qemu-006"
+    },
+    {
+      "backend": "pvisor-host",
+      "mode": "tools",
+      "trial": 7,
+      "prepare_ms": 37.495802,
+      "ready_ms": 46.56655,
+      "result_ms": 481.398626,
+      "completion_ms": 522.147299,
+      "peak_tree_rss_kib": 181176,
+      "memory_scope": "owned launcher tree; Docker daemon/container RSS excluded",
+      "result": {
+        "phases_ms": {
+          "inspect": 2.053131,
+          "search": 2.239499,
+          "python-tests": 26.291714,
+          "rust-tests": 93.785967,
+          "node-install": 179.766319,
+          "node-tests": 128.759112,
+          "diff": 0.967075
+        },
+        "mode": "tools",
+        "worker_ms": 434.816707,
+        "correctness": "passed"
+      },
+      "correctness": "passed",
+      "logs": "/home/reiase/workspace/pvisor/target/reference-resources-20261004/trials/tools-pvisor-host-007"
+    },
+    {
+      "backend": "qemu",
+      "mode": "tools",
+      "trial": 7,
+      "prepare_ms": 38.559196,
+      "ready_ms": 550.668343,
+      "result_ms": 1955.845566,
+      "completion_ms": 2013.378781,
+      "peak_tree_rss_kib": 827832,
+      "memory_scope": "owned launcher tree; Docker daemon/container RSS excluded",
+      "result": {
+        "phases_ms": {
+          "inspect": 22.608105,
+          "search": 10.553093,
+          "python-tests": 85.530409,
+          "rust-tests": 536.920174,
+          "node-install": 572.527108,
+          "node-tests": 169.90171,
+          "diff": 1.323235
+        },
+        "mode": "tools",
+        "worker_ms": 1402.223815,
+        "correctness": "passed"
+      },
+      "correctness": "passed",
+      "logs": "/home/reiase/workspace/pvisor/target/reference-resources-20261004/trials/tools-qemu-007"
+    },
+    {
+      "backend": "pvisor-vm",
+      "mode": "tools",
+      "trial": 7,
+      "prepare_ms": 38.110689,
+      "ready_ms": 574.520023,
+      "result_ms": 4121.781999,
+      "completion_ms": 4236.269629,
+      "peak_tree_rss_kib": 749608,
+      "memory_scope": "owned launcher tree; Docker daemon/container RSS excluded",
+      "result": {
+        "phases_ms": {
+          "inspect": 75.440207,
+          "search": 19.085093,
+          "python-tests": 126.584551,
+          "rust-tests": 1036.050608,
+          "node-install": 1775.454106,
+          "node-tests": 461.183339,
+          "diff": 23.92515
+        },
+        "mode": "tools",
+        "worker_ms": 3546.731236,
+        "correctness": "passed"
+      },
+      "correctness": "passed",
+      "logs": "/home/reiase/workspace/pvisor/target/reference-resources-20261004/trials/tools-pvisor-vm-007"
+    },
+    {
+      "backend": "native",
+      "mode": "tools",
+      "trial": 7,
+      "prepare_ms": 38.293962,
+      "ready_ms": 41.913596,
+      "result_ms": 480.606187,
+      "completion_ms": 489.866919,
+      "peak_tree_rss_kib": 172440,
+      "memory_scope": "owned launcher tree; Docker daemon/container RSS excluded",
+      "result": {
+        "phases_ms": {
+          "inspect": 3.056764,
+          "search": 2.241584,
+          "python-tests": 25.709548,
+          "rust-tests": 95.524061,
+          "node-install": 180.908791,
+          "node-tests": 129.297436,
+          "diff": 0.977204
+        },
+        "mode": "tools",
+        "worker_ms": 438.656864,
+        "correctness": "passed"
+      },
+      "correctness": "passed",
+      "logs": "/home/reiase/workspace/pvisor/target/reference-resources-20261004/trials/tools-native-007"
+    },
+    {
+      "backend": "pvisor-staged",
+      "mode": "tools",
+      "trial": 7,
+      "prepare_ms": 37.248831,
+      "ready_ms": 54.442217,
+      "result_ms": 681.049161,
+      "completion_ms": 744.493147,
+      "peak_tree_rss_kib": 219300,
+      "memory_scope": "owned launcher tree; Docker daemon/container RSS excluded",
+      "result": {
+        "phases_ms": {
+          "inspect": 18.4502,
+          "search": 2.286818,
+          "python-tests": 30.602929,
+          "rust-tests": 207.645184,
+          "node-install": 213.544513,
+          "node-tests": 147.705188,
+          "diff": 2.817788
+        },
+        "mode": "tools",
+        "worker_ms": 626.574334,
+        "correctness": "passed"
+      },
+      "correctness": "passed",
+      "logs": "/home/reiase/workspace/pvisor/target/reference-resources-20261004/trials/tools-pvisor-staged-007"
+    },
+    {
+      "backend": "docker",
+      "mode": "tools",
+      "trial": 7,
+      "prepare_ms": 37.156439,
+      "ready_ms": 475.835304,
+      "result_ms": 1091.727623,
+      "completion_ms": 1180.103995,
+      "peak_tree_rss_kib": 274804,
+      "memory_scope": "CLI + private daemon + exact container shim/descendants; sampled RSS sum",
+      "result": {
+        "phases_ms": {
+          "inspect": 3.929954,
+          "search": 2.788593,
+          "python-tests": 54.069251,
+          "rust-tests": 174.082381,
+          "node-install": 258.269366,
+          "node-tests": 120.92925,
+          "diff": 0.840088
+        },
+        "mode": "tools",
+        "worker_ms": 615.829132,
+        "correctness": "passed"
+      },
+      "correctness": "passed",
+      "logs": "/home/reiase/workspace/pvisor/target/reference-resources-20261004/trials/tools-docker-007"
+    },
+    {
+      "backend": "firecracker",
+      "mode": "tools",
+      "trial": 7,
+      "prepare_ms": 41.212308,
+      "ready_ms": 894.849271,
+      "result_ms": 2235.513103,
+      "completion_ms": 2297.011558,
+      "peak_tree_rss_kib": 774544,
+      "memory_scope": "owned launcher tree; Docker daemon/container RSS excluded",
+      "result": {
+        "phases_ms": {
+          "inspect": 23.877851,
+          "search": 8.270776,
+          "python-tests": 83.547708,
+          "rust-tests": 493.046884,
+          "node-install": 549.370499,
+          "node-tests": 177.036609,
+          "diff": 1.101452
+        },
+        "mode": "tools",
+        "worker_ms": 1339.20207,
+        "correctness": "passed"
+      },
+      "correctness": "passed",
+      "logs": "/home/reiase/workspace/pvisor/target/reference-resources-20261004/trials/tools-firecracker-007"
+    },
+    {
+      "backend": "qemu-microvm",
+      "mode": "tools",
+      "trial": 7,
+      "prepare_ms": 38.906245,
+      "ready_ms": 394.937197,
+      "result_ms": 1905.436866,
+      "completion_ms": 1961.894944,
+      "peak_tree_rss_kib": 829588,
+      "memory_scope": "owned launcher tree; Docker daemon/container RSS excluded",
+      "result": {
+        "phases_ms": {
+          "inspect": 19.586542,
+          "search": 8.379426,
+          "python-tests": 57.805221,
+          "rust-tests": 609.568734,
+          "node-install": 612.20629,
+          "node-tests": 197.233202,
+          "diff": 0.95666
+        },
+        "mode": "tools",
+        "worker_ms": 1508.397344,
+        "correctness": "passed"
+      },
+      "correctness": "passed",
+      "logs": "/home/reiase/workspace/pvisor/target/reference-resources-20261004/trials/tools-qemu-microvm-007"
+    },
+    {
+      "backend": "native",
+      "mode": "tools",
+      "trial": 8,
+      "prepare_ms": 37.55355,
+      "ready_ms": 41.832154,
+      "result_ms": 481.564515,
+      "completion_ms": 489.650565,
+      "peak_tree_rss_kib": 173244,
+      "memory_scope": "owned launcher tree; Docker daemon/container RSS excluded",
+      "result": {
+        "phases_ms": {
+          "inspect": 2.922273,
+          "search": 2.198343,
+          "python-tests": 26.928752,
+          "rust-tests": 95.632073,
+          "node-install": 176.908576,
+          "node-tests": 133.131972,
+          "diff": 0.967726
+        },
+        "mode": "tools",
+        "worker_ms": 439.718145,
+        "correctness": "passed"
+      },
+      "correctness": "passed",
+      "logs": "/home/reiase/workspace/pvisor/target/reference-resources-20261004/trials/tools-native-008"
+    },
+    {
+      "backend": "pvisor-host",
+      "mode": "tools",
+      "trial": 8,
+      "prepare_ms": 37.270372,
+      "ready_ms": 46.814082,
+      "result_ms": 485.373163,
+      "completion_ms": 514.145877,
+      "peak_tree_rss_kib": 181124,
+      "memory_scope": "owned launcher tree; Docker daemon/container RSS excluded",
+      "result": {
+        "phases_ms": {
+          "inspect": 2.077857,
+          "search": 2.241273,
+          "python-tests": 25.815084,
+          "rust-tests": 96.392652,
+          "node-install": 177.611978,
+          "node-tests": 132.147275,
+          "diff": 0.977604
+        },
+        "mode": "tools",
+        "worker_ms": 438.519317,
+        "correctness": "passed"
+      },
+      "correctness": "passed",
+      "logs": "/home/reiase/workspace/pvisor/target/reference-resources-20261004/trials/tools-pvisor-host-008"
+    },
+    {
+      "backend": "pvisor-vm",
+      "mode": "tools",
+      "trial": 8,
+      "prepare_ms": 37.670509,
+      "ready_ms": 560.485142,
+      "result_ms": 4370.462611,
+      "completion_ms": 4532.105699,
+      "peak_tree_rss_kib": 729080,
+      "memory_scope": "owned launcher tree; Docker daemon/container RSS excluded",
+      "result": {
+        "phases_ms": {
+          "inspect": 57.562934,
+          "search": 18.237106,
+          "python-tests": 123.807334,
+          "rust-tests": 1088.819622,
+          "node-install": 1872.875466,
+          "node-tests": 608.371053,
+          "diff": 20.139826
+        },
+        "mode": "tools",
+        "worker_ms": 3809.371902,
+        "correctness": "passed"
+      },
+      "correctness": "passed",
+      "logs": "/home/reiase/workspace/pvisor/target/reference-resources-20261004/trials/tools-pvisor-vm-008"
+    },
+    {
+      "backend": "qemu-microvm",
+      "mode": "tools",
+      "trial": 8,
+      "prepare_ms": 41.417771,
+      "ready_ms": 420.489111,
+      "result_ms": 1830.113993,
+      "completion_ms": 1902.281819,
+      "peak_tree_rss_kib": 821484,
+      "memory_scope": "owned launcher tree; Docker daemon/container RSS excluded",
+      "result": {
+        "phases_ms": {
+          "inspect": 23.326759,
+          "search": 8.733348,
+          "python-tests": 54.222158,
+          "rust-tests": 551.474012,
+          "node-install": 615.367563,
+          "node-tests": 150.68482,
+          "diff": 0.956619
+        },
+        "mode": "tools",
+        "worker_ms": 1407.283712,
+        "correctness": "passed"
+      },
+      "correctness": "passed",
+      "logs": "/home/reiase/workspace/pvisor/target/reference-resources-20261004/trials/tools-qemu-microvm-008"
+    },
+    {
+      "backend": "pvisor-staged",
+      "mode": "tools",
+      "trial": 8,
+      "prepare_ms": 37.0601,
+      "ready_ms": 55.948147,
+      "result_ms": 683.714474,
+      "completion_ms": 738.069418,
+      "peak_tree_rss_kib": 250064,
+      "memory_scope": "owned launcher tree; Docker daemon/container RSS excluded",
+      "result": {
+        "phases_ms": {
+          "inspect": 19.33959,
+          "search": 2.444672,
+          "python-tests": 31.018504,
+          "rust-tests": 211.663593,
+          "node-install": 218.848742,
+          "node-tests": 138.224155,
+          "diff": 2.801558
+        },
+        "mode": "tools",
+        "worker_ms": 627.74085,
+        "correctness": "passed"
+      },
+      "correctness": "passed",
+      "logs": "/home/reiase/workspace/pvisor/target/reference-resources-20261004/trials/tools-pvisor-staged-008"
+    },
+    {
+      "backend": "docker",
+      "mode": "tools",
+      "trial": 8,
+      "prepare_ms": 37.796984,
+      "ready_ms": 485.095455,
+      "result_ms": 1061.245109,
+      "completion_ms": 1145.03932,
+      "peak_tree_rss_kib": 334212,
+      "memory_scope": "CLI + private daemon + exact container shim/descendants; sampled RSS sum",
+      "result": {
+        "phases_ms": {
+          "inspect": 4.594855,
+          "search": 4.141639,
+          "python-tests": 54.750592,
+          "rust-tests": 146.378042,
+          "node-install": 241.790074,
+          "node-tests": 122.60624,
+          "diff": 1.005816
+        },
+        "mode": "tools",
+        "worker_ms": 576.130899,
+        "correctness": "passed"
+      },
+      "correctness": "passed",
+      "logs": "/home/reiase/workspace/pvisor/target/reference-resources-20261004/trials/tools-docker-008"
+    },
+    {
+      "backend": "qemu",
+      "mode": "tools",
+      "trial": 8,
+      "prepare_ms": 38.62534,
+      "ready_ms": 527.768018,
+      "result_ms": 1892.734372,
+      "completion_ms": 1955.803868,
+      "peak_tree_rss_kib": 840388,
+      "memory_scope": "owned launcher tree; Docker daemon/container RSS excluded",
+      "result": {
+        "phases_ms": {
+          "inspect": 17.421652,
+          "search": 7.897645,
+          "python-tests": 53.227007,
+          "rust-tests": 501.110392,
+          "node-install": 583.996876,
+          "node-tests": 195.315615,
+          "diff": 0.904582
+        },
+        "mode": "tools",
+        "worker_ms": 1362.382952,
+        "correctness": "passed"
+      },
+      "correctness": "passed",
+      "logs": "/home/reiase/workspace/pvisor/target/reference-resources-20261004/trials/tools-qemu-008"
+    },
+    {
+      "backend": "firecracker",
+      "mode": "tools",
+      "trial": 8,
+      "prepare_ms": 38.075674,
+      "ready_ms": 918.281108,
+      "result_ms": 2245.211231,
+      "completion_ms": 2304.681862,
+      "peak_tree_rss_kib": 775032,
+      "memory_scope": "owned launcher tree; Docker daemon/container RSS excluded",
+      "result": {
+        "phases_ms": {
+          "inspect": 23.676645,
+          "search": 9.559198,
+          "python-tests": 85.551158,
+          "rust-tests": 501.676271,
+          "node-install": 527.114212,
+          "node-tests": 174.004586,
+          "diff": 1.051929
+        },
+        "mode": "tools",
+        "worker_ms": 1325.458052,
+        "correctness": "passed"
+      },
+      "correctness": "passed",
+      "logs": "/home/reiase/workspace/pvisor/target/reference-resources-20261004/trials/tools-firecracker-008"
+    },
+    {
+      "backend": "native",
+      "mode": "tools",
+      "trial": 9,
+      "prepare_ms": 37.675357,
+      "ready_ms": 39.752804,
+      "result_ms": 465.6354,
+      "completion_ms": 474.341106,
+      "peak_tree_rss_kib": 172896,
+      "memory_scope": "owned launcher tree; Docker daemon/container RSS excluded",
+      "result": {
+        "phases_ms": {
+          "inspect": 3.052076,
+          "search": 2.155232,
+          "python-tests": 25.678781,
+          "rust-tests": 92.928748,
+          "node-install": 169.035944,
+          "node-tests": 131.10489,
+          "diff": 0.963778
+        },
+        "mode": "tools",
+        "worker_ms": 425.854402,
+        "correctness": "passed"
+      },
+      "correctness": "passed",
+      "logs": "/home/reiase/workspace/pvisor/target/reference-resources-20261004/trials/tools-native-009"
+    },
+    {
+      "backend": "pvisor-host",
+      "mode": "tools",
+      "trial": 9,
+      "prepare_ms": 36.783834,
+      "ready_ms": 61.737551,
+      "result_ms": 492.844204,
+      "completion_ms": 512.651919,
+      "peak_tree_rss_kib": 182900,
+      "memory_scope": "owned launcher tree; Docker daemon/container RSS excluded",
+      "result": {
+        "phases_ms": {
+          "inspect": 2.942912,
+          "search": 2.198303,
+          "python-tests": 25.315322,
+          "rust-tests": 94.282583,
+          "node-install": 174.210892,
+          "node-tests": 129.745703,
+          "diff": 1.190702
+        },
+        "mode": "tools",
+        "worker_ms": 431.078481,
+        "correctness": "passed"
+      },
+      "correctness": "passed",
+      "logs": "/home/reiase/workspace/pvisor/target/reference-resources-20261004/trials/tools-pvisor-host-009"
+    },
+    {
+      "backend": "qemu",
+      "mode": "tools",
+      "trial": 9,
+      "prepare_ms": 38.433653,
+      "ready_ms": 591.257507,
+      "result_ms": 2027.255456,
+      "completion_ms": 2092.627489,
+      "peak_tree_rss_kib": 822928,
+      "memory_scope": "owned launcher tree; Docker daemon/container RSS excluded",
+      "result": {
+        "phases_ms": {
+          "inspect": 20.962266,
+          "search": 11.290132,
+          "python-tests": 84.983275,
+          "rust-tests": 585.663193,
+          "node-install": 577.752754,
+          "node-tests": 149.432527,
+          "diff": 0.962301
+        },
+        "mode": "tools",
+        "worker_ms": 1433.64615,
+        "correctness": "passed"
+      },
+      "correctness": "passed",
+      "logs": "/home/reiase/workspace/pvisor/target/reference-resources-20261004/trials/tools-qemu-009"
+    },
+    {
+      "backend": "pvisor-staged",
+      "mode": "tools",
+      "trial": 9,
+      "prepare_ms": 37.5535,
+      "ready_ms": 57.092393,
+      "result_ms": 680.228971,
+      "completion_ms": 726.106023,
+      "peak_tree_rss_kib": 216600,
+      "memory_scope": "owned launcher tree; Docker daemon/container RSS excluded",
+      "result": {
+        "phases_ms": {
+          "inspect": 18.142717,
+          "search": 2.392034,
+          "python-tests": 30.424467,
+          "rust-tests": 205.206423,
+          "node-install": 213.576153,
+          "node-tests": 146.868977,
+          "diff": 2.927263
+        },
+        "mode": "tools",
+        "worker_ms": 623.104879,
+        "correctness": "passed"
+      },
+      "correctness": "passed",
+      "logs": "/home/reiase/workspace/pvisor/target/reference-resources-20261004/trials/tools-pvisor-staged-009"
+    },
+    {
+      "backend": "firecracker",
+      "mode": "tools",
+      "trial": 9,
+      "prepare_ms": 38.429805,
+      "ready_ms": 926.261521,
+      "result_ms": 2216.662676,
+      "completion_ms": 2271.671019,
+      "peak_tree_rss_kib": 778516,
+      "memory_scope": "owned launcher tree; Docker daemon/container RSS excluded",
+      "result": {
+        "phases_ms": {
+          "inspect": 18.311886,
+          "search": 10.017876,
+          "python-tests": 83.019229,
+          "rust-tests": 466.013547,
+          "node-install": 554.05239,
+          "node-tests": 153.901378,
+          "diff": 0.974995
+        },
+        "mode": "tools",
+        "worker_ms": 1288.858585,
+        "correctness": "passed"
+      },
+      "correctness": "passed",
+      "logs": "/home/reiase/workspace/pvisor/target/reference-resources-20261004/trials/tools-firecracker-009"
+    },
+    {
+      "backend": "docker",
+      "mode": "tools",
+      "trial": 9,
+      "prepare_ms": 36.270706,
+      "ready_ms": 409.468494,
+      "result_ms": 1021.191332,
+      "completion_ms": 1145.087309,
+      "peak_tree_rss_kib": 297684,
+      "memory_scope": "CLI + private daemon + exact container shim/descendants; sampled RSS sum",
+      "result": {
+        "phases_ms": {
+          "inspect": 3.730982,
+          "search": 3.788871,
+          "python-tests": 52.739249,
+          "rust-tests": 134.29904,
+          "node-install": 264.057538,
+          "node-tests": 147.386092,
+          "diff": 1.380656
+        },
+        "mode": "tools",
+        "worker_ms": 609.996237,
+        "correctness": "passed"
+      },
+      "correctness": "passed",
+      "logs": "/home/reiase/workspace/pvisor/target/reference-resources-20261004/trials/tools-docker-009"
+    },
+    {
+      "backend": "pvisor-vm",
+      "mode": "tools",
+      "trial": 9,
+      "prepare_ms": 40.74229,
+      "ready_ms": 589.391354,
+      "result_ms": 4719.57877,
+      "completion_ms": 4834.342835,
+      "peak_tree_rss_kib": 740084,
+      "memory_scope": "owned launcher tree; Docker daemon/container RSS excluded",
+      "result": {
+        "phases_ms": {
+          "inspect": 92.914897,
+          "search": 21.177127,
+          "python-tests": 132.491224,
+          "rust-tests": 1272.531553,
+          "node-install": 2010.793244,
+          "node-tests": 566.745271,
+          "diff": 14.576697
+        },
+        "mode": "tools",
+        "worker_ms": 4129.635154,
+        "correctness": "passed"
+      },
+      "correctness": "passed",
+      "logs": "/home/reiase/workspace/pvisor/target/reference-resources-20261004/trials/tools-pvisor-vm-009"
+    },
+    {
+      "backend": "qemu-microvm",
+      "mode": "tools",
+      "trial": 9,
+      "prepare_ms": 40.844191,
+      "ready_ms": 636.60925,
+      "result_ms": 2111.196241,
+      "completion_ms": 2164.825311,
+      "peak_tree_rss_kib": 819868,
+      "memory_scope": "owned launcher tree; Docker daemon/container RSS excluded",
+      "result": {
+        "phases_ms": {
+          "inspect": 22.431635,
+          "search": 18.580771,
+          "python-tests": 82.873589,
+          "rust-tests": 624.498485,
+          "node-install": 575.125339,
+          "node-tests": 145.725271,
+          "diff": 0.879365
+        },
+        "mode": "tools",
+        "worker_ms": 1472.448631,
+        "correctness": "passed"
+      },
+      "correctness": "passed",
+      "logs": "/home/reiase/workspace/pvisor/target/reference-resources-20261004/trials/tools-qemu-microvm-009"
+    }
+  ],
+  "capabilities": {
+    "tools/native": {
+      "state": "available"
+    },
+    "tools/pvisor-host": {
+      "state": "available"
+    },
+    "tools/pvisor-staged": {
+      "state": "available"
+    },
+    "tools/pvisor-vm": {
+      "state": "available"
+    },
+    "tools/docker": {
+      "state": "available"
+    },
+    "tools/firecracker": {
+      "state": "available"
+    },
+    "tools/qemu": {
+      "state": "available"
+    },
+    "tools/qemu-microvm": {
+      "state": "available"
+    }
+  },
+  "load_after": [
+    5.5380859375,
+    4.57958984375,
+    4.0048828125
+  ]
+}

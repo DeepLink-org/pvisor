@@ -64,6 +64,10 @@ enum Change {
         phase: TaskPhase,
         result: Option<Box<pvisor_core::RunResult>>,
         error: Option<String>,
+        #[serde(default)]
+        artifacts: Option<BlobRef>,
+        #[serde(default)]
+        artifact_error: Option<String>,
         at: u64,
     },
     ControlRequested {
@@ -102,10 +106,13 @@ pub struct Scheduler {
     active: BTreeMap<String, BTreeSet<String>>,
     expiry: BTreeSet<(u64, String)>,
     tenant_reserved: BTreeMap<String, Resources>,
+    artifacts: crate::artifacts::ArtifactStore,
 }
 
 fn identifier(value: &str) -> bool {
     !value.is_empty()
+        && value != "."
+        && value != ".."
         && value.len() <= 128
         && value
             .bytes()
@@ -123,6 +130,7 @@ impl Scheduler {
             "scheduler limits must be positive"
         );
         let (journal, transactions) = Journal::open::<Transaction>(path)?;
+        let artifacts = crate::artifacts::ArtifactStore::open(&path.with_extension("artifacts"))?;
         let mut scheduler = Self {
             config,
             journal,
@@ -132,6 +140,7 @@ impl Scheduler {
             active: BTreeMap::new(),
             expiry: BTreeSet::new(),
             tenant_reserved: BTreeMap::new(),
+            artifacts,
         };
         for transaction in transactions {
             ensure!(
@@ -142,6 +151,16 @@ impl Scheduler {
                 scheduler.apply(change);
             }
         }
+        // Replayed submit/decline events can refer to the same queued task.
+        // Rebuild from durable state so one batch cannot lease it twice.
+        let mut ready: Vec<_> = scheduler
+            .tasks
+            .values()
+            .filter(|task| task.phase == TaskPhase::Queued)
+            .map(|task| (task.updated_at_ms, task.spec.id.clone()))
+            .collect();
+        ready.sort();
+        scheduler.queue = ready.into_iter().map(|(_, id)| id).collect();
         Ok(scheduler)
     }
 
@@ -310,6 +329,8 @@ impl Scheduler {
                 phase,
                 result,
                 error,
+                artifacts,
+                artifact_error,
                 at,
             } => {
                 self.release(&task_id);
@@ -317,6 +338,8 @@ impl Scheduler {
                 task.phase = phase;
                 task.result = result.map(|r| *r);
                 task.error = error;
+                task.artifacts = artifacts;
+                task.artifact_error = artifact_error;
                 task.updated_at_ms = at;
                 task.reserved = None;
                 for control in &mut task.controls {
@@ -458,6 +481,8 @@ impl Scheduler {
             reserved: None,
             admission_rejections: 0,
             last_admission_rejection: None,
+            artifacts: None,
+            artifact_error: None,
         };
         self.commit(vec![Change::Submit {
             task: Box::new(task.clone()),
@@ -581,6 +606,10 @@ impl Scheduler {
             ensure!(
                 report.available == request.available,
                 "inconsistent admission report"
+            );
+            ensure!(
+                report.available.fits(worker.registration.capacity),
+                "reported availability exceeds worker capacity"
             );
             // A stale sample never authorizes new work, but renewal/teardown
             // must continue even if the node probe is no longer responsive.
@@ -710,6 +739,7 @@ impl Scheduler {
             });
             if !spec.resources.fits(budget)
                 || !quota_fits
+                || (spec.retain_bundle && registration.artifact_protocol != Some(CLUSTER_VERSION))
                 || !registration.execution.contains(&spec.execution)
                 || !spec
                     .labels
@@ -742,8 +772,13 @@ impl Scheduler {
             changes.push(Change::Assign { lease, at: now });
         }
         // Restore queue on storage failure. Queue order is advisory; leases are durable.
-        self.queue.extend(window);
-        self.commit(changes)?;
+        let committed = self.commit(changes);
+        for id in window {
+            if self.tasks[&id].phase == TaskPhase::Queued {
+                self.queue.push_back(id);
+            }
+        }
+        committed?;
         Ok(PollResponse {
             version: CLUSTER_VERSION,
             lease_duration_ms: self.config.lease_duration_ms,
@@ -977,6 +1012,41 @@ impl Scheduler {
     }
 
     pub fn complete(&mut self, completion: Completion, now: u64) -> anyhow::Result<TaskRecord> {
+        let verified = completion
+            .artifacts
+            .as_ref()
+            .map(|reference| self.artifacts.verify(reference, &completion.key))
+            .transpose()?;
+        self.complete_verified(completion, verified, now)
+    }
+
+    pub fn artifact_store(&self) -> crate::artifacts::ArtifactStore {
+        self.artifacts.clone()
+    }
+
+    pub fn authorize_artifact_upload(&mut self, key: &LeaseKey, now: u64) -> anyhow::Result<()> {
+        self.reap(now)?;
+        ensure!(
+            self.valid_key(key, now),
+            "artifact upload requires a live lease"
+        );
+        Ok(())
+    }
+
+    pub(crate) fn complete_verified(
+        &mut self,
+        completion: Completion,
+        verified: Option<crate::artifacts::VerifiedArtifacts>,
+        now: u64,
+    ) -> anyhow::Result<TaskRecord> {
+        ensure!(
+            match (&completion.artifacts, &verified) {
+                (None, None) => true,
+                (Some(reference), Some(verified)) => verified.matches(reference, &completion.key),
+                _ => false,
+            },
+            "unverified artifact manifest"
+        );
         self.reap(now)?;
         let task = self
             .tasks
@@ -988,7 +1058,9 @@ impl Scheduler {
                     && task.lease.as_ref().is_some_and(|l| l.key == completion.key)
                     && serde_json::to_value(&task.result)?
                         == serde_json::to_value(&completion.result)?
-                    && task.error == completion.error,
+                    && task.error == completion.error
+                    && task.artifacts == completion.artifacts
+                    && task.artifact_error == completion.artifact_error,
                 "stale or conflicting completion"
             );
             return Ok(task.clone());
@@ -1000,6 +1072,19 @@ impl Scheduler {
         ensure!(
             completion.result.is_some() != completion.error.is_some(),
             "completion needs exactly one result or error"
+        );
+        if let Some(error) = &completion.artifact_error {
+            ensure!(
+                !error.is_empty() && error.len() <= 8192 && completion.artifacts.is_none(),
+                "invalid artifact export error"
+            );
+        }
+        ensure!(
+            !task.spec.retain_bundle
+                || completion.result.is_none()
+                || completion.artifacts.is_some()
+                || completion.artifact_error.is_some(),
+            "required Run Bundle needs retention or an explicit export failure"
         );
         if let Some(result) = &completion.result {
             ensure!(
@@ -1028,7 +1113,8 @@ impl Scheduler {
                 TaskPhase::Cancelled
             } else if completion.result.as_ref().is_some_and(|r| {
                 r.state == pvisor_core::RunState::Completed && r.exit_code == Some(0)
-            }) {
+            }) && (!task.spec.retain_bundle || completion.artifacts.is_some())
+            {
                 TaskPhase::Succeeded
             } else {
                 TaskPhase::Failed
@@ -1039,6 +1125,8 @@ impl Scheduler {
             phase,
             result: completion.result.map(Box::new),
             error: completion.error,
+            artifacts: completion.artifacts,
+            artifact_error: completion.artifact_error,
             at: now,
         }])?;
         Ok(self.tasks[&id].clone())
@@ -1053,6 +1141,8 @@ impl Scheduler {
                 phase: TaskPhase::Lost,
                 result: None,
                 error: Some("lease expired; execution outcome unknown, no automatic retry".into()),
+                artifacts: None,
+                artifact_error: None,
                 at: now,
             })
             .collect();

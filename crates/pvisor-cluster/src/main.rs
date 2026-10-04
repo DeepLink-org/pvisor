@@ -49,6 +49,12 @@ enum Command {
         request_id: String,
     },
     Workers,
+    /// Show retained native artifacts or download verified files to a directory.
+    Artifacts {
+        id: String,
+        #[arg(long)]
+        out: Option<PathBuf>,
+    },
     /// Inspect this Linux node's read-only pressure and visible cgroup limits.
     ProbeNode,
     Drain {
@@ -131,6 +137,10 @@ async fn main() -> anyhow::Result<()> {
                 .await?,
         )?,
         Command::Workers => serde_json::to_value(client.workers().await?)?,
+        Command::Artifacts { id, out } => serde_json::to_value(match out {
+            Some(path) => client.download_artifacts(&id, &path).await?,
+            None => client.artifacts(&id).await?,
+        })?,
         Command::Drain { id, resume } => client.drain(&id, !resume).await?,
         Command::Serve { .. } => unreachable!(),
         Command::ProbeNode => unreachable!(),

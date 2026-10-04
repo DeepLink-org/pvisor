@@ -2,8 +2,8 @@
 use super::*;
 use sha2::{Digest, Sha256};
 pub(super) const PAGE_BYTES: usize = 65536;
-const MAGIC: &[u8; 8] = b"PVICB2\0\0";
-const CHECK_MAGIC: &[u8; 8] = b"PVICH2\0\0";
+const MAGIC: &[u8; 8] = b"PVICB1\0\0";
+const CHECK_MAGIC: &[u8; 8] = b"PVICH1\0\0";
 const FILE_WIDTH: usize = 128;
 const CONTENT_WIDTH: usize = 64;
 const CHUNK_WIDTH: usize = 40;
@@ -1103,14 +1103,14 @@ mod malformed_tests {
                 .unwrap();
         }
         let commit = Commit {
-            format_version: 2,
+            format_version: 1,
             image_key: handle.image_key.clone(),
             platform: handle.platform.clone(),
             manifest_digest: format!("sha256:{}", "c".repeat(64)),
             metadata,
         };
         let config = Configuration {
-            format_version: 2,
+            format_version: 1,
             architecture: "amd64".into(),
             env: BTreeMap::new(),
             entrypoint: vec![],

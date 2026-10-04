@@ -430,6 +430,13 @@ mod tests {
         assert_eq!(measured.cpu_limit_millis, 250);
         assert_eq!(measured.cpu_some_avg10_bps, 200);
         assert_eq!(measured.memory_full_avg10_bps, 30);
+        put(&leaf.join("memory.high"), "120");
+        assert_eq!(
+            sample_from_proc(&proc)
+                .unwrap()
+                .cgroup_memory_headroom_bytes,
+            Some(20)
+        );
         // Current values beyond a newly reduced max yield zero, not underflow.
         put(&parent.join("memory.current"), "2500");
         assert_eq!(

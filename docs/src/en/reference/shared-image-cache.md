@@ -4,9 +4,7 @@
 
 ## Choose a backend
 
-See [shared image cache storage format v1](../design/shared-image-cache-storage.md) for directory trees, object fields, file-to-block mappings, and publication consistency, including complete readable example objects.
-
-The successor [v2 layout isolates per-image meta and shares sharded data](../design/shared-image-cache-storage-v2.md). Publishers/readers do not yet implement it; commands below still use v1.
+Filesystem/S3 caches use [shared image cache v1](../design/shared-image-cache-storage.md): independent per-image meta, shared data, and binary paged file tables/indexes. This is the sole format implementation.
 
 Server, filesystem, and S3 caches share the same prepare/list/stat/read interface and VM configuration. Filesystem and S3 are direct storage backends and require no cache serve process.
 
@@ -26,7 +24,7 @@ pvisor cache --backend filesystem --location /mnt/pvisor-cache \
 pvisor cache --backend filesystem --location /mnt/pvisor-cache \
   --read-only prepare alpine:latest
 pvisor cache --backend filesystem --location /mnt/pvisor-cache \
-  --read-only read sha256:YOUR_MANIFEST_DIGEST etc/os-release
+  --read-only read pvisor-v1:YOUR_IMAGE_KEY:linux-amd64:YOUR_REVISION etc/os-release
 ```
 
 --location selects the new shared cache format; --image-store is local OCI download/extraction staging. These are separate directories. Existing PVISOR_IMAGE_STORE can also be reused. Reads do not depend on staging after publication, so CI can use task-local staging. Shared objects are private by default; administrators must grant read permissions for cross-UID shared disks. Read-only mode does not create a missing shared directory.
@@ -43,11 +41,11 @@ pvisor cache --image-store /tmp/pvisor-publish publish alpine:latest
 # Workers only need GetObject access to this prefix.
 export PVISOR_CACHE_READ_ONLY=true
 pvisor cache prepare alpine:latest
-pvisor cache read sha256:YOUR_MANIFEST_DIGEST etc/os-release
+pvisor cache read pvisor-v1:YOUR_IMAGE_KEY:linux-amd64:YOUR_REVISION etc/os-release
 pvisor run --executor vm --rootfs image=alpine:latest -- /bin/sh
 ```
 
-Create the bucket first; pVisor does not create buckets. `publish` uploads objects to the prefix and needs `s3:PutObject`. Writable `prepare` also needs `s3:GetObject` because it checks the cache before publishing a miss. Readers need only `s3:GetObject`. Normal operations require neither `ListBucket` nor `DeleteObject`. Storage connections remain on the host. New cache configuration and implicit AWS_* storage credentials are not projected into the guest; explicitly supplied workload environment remains the caller's decision.
+Create the bucket first; pVisor does not create buckets. Both publish and writable prepare need s3:GetObject and s3:PutObject to observe HEAD CAS tokens and verify existing immutable objects. Readers need only `s3:GetObject`. Normal operations require neither `ListBucket` nor `DeleteObject`. Storage connections remain on the host. New cache configuration and implicit AWS_* storage credentials are not projected into the guest; explicitly supplied workload environment remains the caller's decision.
 
 S3 uses SigV4 and HTTPS by default. Credentials support AWS_ACCESS_KEY_ID, AWS_SECRET_ACCESS_KEY, optional AWS_SESSION_TOKEN, and EC2, ECS, and Web Identity workload roles; the [object_store S3 provider](https://docs.rs/object_store/0.13.2/object_store/aws/struct.AmazonS3Builder.html) handles fetching and renewal. Shared ~/.aws profile/SSO files are not read directly; supply exported environment credentials or use workload roles. Set AWS_DEFAULT_REGION or AWS_REGION. S3-compatible services can use AWS_ENDPOINT (or AWS_ENDPOINT_URL_S3); the HTTP example below is for a local test service.
 
@@ -71,33 +69,43 @@ PVISOR_CACHE_READ_ONLY=false pvisor cache publish alpine:latest \
   --architecture amd64 --image-store /tmp/pvisor-publish
 ```
 
-`--architecture` accepts `amd64` and `arm64`, defaulting to the host architecture. `--refresh` rechecks the registry; without it, fresh local prepared-image records can be reused. `publish` always performs splitting and upload, without skipping based on a remote tag record. Conditional creation reuses existing immutable content objects and uploads missing blocks again. Read-only mode and the server backend reject publication. On success, JSON output includes the manifest digest, architecture, index digest in `metadata_generation`, and file count/logical-byte totals in `totals`. Readers use these indexes to access files by path.
+`--architecture` accepts `amd64` and `arm64`, defaulting to the host architecture. `--refresh` rechecks the registry; without it, fresh local prepared-image records can be reused. `publish` always performs splitting and upload, without skipping based on a remote tag record. Conditional creation reuses existing immutable content objects and uploads missing blocks again. Read-only mode and the server backend reject publication. On success, JSON output includes the manifest digest, architecture, COMMIT digest in `metadata_generation`, and file count/logical-byte totals in `totals`. Output also includes image_handle=pvisor-v1:<image-key>:<platform>:<revision-hex>, which list/stat/read uses for queries; digest records manifest provenance.
 
 ```text
 s3://your-bucket/pvisor-cache/
-└── v1/
-    ├── format
-    ├── refs/<reference-and-architecture-hash>.json
-    ├── images/<manifest-sha256>.json
-    ├── indexes/<index-sha256>.json
-    └── blobs/<content-sha256>
+├── format.json
+├── meta/<image-key>/
+│   ├── identity.json
+│   └── platforms/linux-amd64/
+│       ├── HEAD.json
+│       ├── revisions/<revision-hex>/
+│       │   ├── manifest.json
+│       │   ├── config.json
+│       │   ├── files.bin
+│       │   ├── contents.bin
+│       │   ├── index.bin
+│       │   ├── objects.bin
+│       │   ├── checksums.bin
+│       │   └── COMMIT.json
+│       └── uploads/<upload-id>/
+│           ├── plan.json
+│           └── progress.json
+└── data/sha256/<first-two-hex>/<next-two-hex>/<full-object-hex>
 ```
 
-This file storage structure combines indexed paths, modes, hard links, symlinks, and content spans. S3 content objects contain blocks of at most 1 MiB. A large file can use several objects, and several small files can share one object. The index maps file paths to content blocks, so readers do not download or extract OCI layers again.
+Each file starts at offset 0 and is split independently into raw chunks of at most 1 MiB, without packing neighboring small files. Identical files across paths, modes, or images reuse data objects. File tables, directory indexes, and content descriptors belong to their own revision. Paths/symlinks retain raw bytes, hard links share inode identity, and the existing attribute scope is preserved without adding xattrs.
 
 ### Layout and request costs
 
-A direct-backend image index is limited to 64 MiB, 200,000 paths, and 500,000 content spans; larger indexes fail explicitly. Compatible object services must support atomic PUT and If-None-Match conditional creation.
+Each binary metadata object is limited to 64 MiB, and control JSON/checksum catalogs to 1 MiB each, with limits of 200,000 file entries and 500,000 content chunk descriptors. S3-compatible services must support Range GET, If-None-Match conditional creation, and If-Match conditional updates.
 
-Both direct backends use the v1/ format: refs/ contains image-reference/architecture records, images/ maps manifest digests to indexes, indexes/ holds immutable metadata and file-span indexes, and blobs/ holds SHA-256-addressed content. Paths and symlinks preserve Unix bytes, hard links share inode identity, and modes/Linux ownership follow OCI extraction rules.
+Publishing writes and verifies shared content, per-image metadata, and COMMIT before CAS-updating its own platform HEAD. Only one publisher can commit against a given old HEAD; conflicts fail explicitly rather than blindly overwriting. Corrupt existing immutable objects cannot be reused or overwritten while other images may reference them. Failures can leave unreferenced revisions/objects. Upload completion records remain in uploads for offline maintenance.
 
-Publishing packs small files into blocks of at most 1 MiB; large files can span blocks. Content is deduplicated by hash. All blocks and indexes are written before atomically publishing references. Concurrent publishers conditionally create immutable objects, so readers never see partial uploads. Failed publication may leave unreferenced blocks but does not publish a reference to an unfinished upload.
+Startup fetches control objects, a compact checksum catalog, headers and root pages without parsing the complete file list. Lookup/readdir fetch 64 KiB index pages on demand; read fetches only related descriptors and data. Verified pages/data have bounded memory caches and persistent storage under <user-cache>/pvisor/cache-v1/objects/<location-hash>/. Corrupt local caches are refetched. Remote corruption, absence, or authorization errors fail without zero filling or registry fallback.
 
-Reads fetch a reference and index, followed only by blocks intersecting the requested range. Directory queries use the index alone. Bounded client memory caches and a persistent local cache under <user-cache>/pvisor/cache-v1/objects/<location-hash>/ reuse validated indexes and packed blocks. Corrupt local objects are refetched. Corrupt, missing, or denied remote objects fail the operation without zero filling or silently falling back to the registry. Existing VM file-block and metadata caches still apply.
+Writable mode reuses mutable-tag HEADs for five minutes; publishers update with --refresh. Read-only mode always uses published HEADs without registry queries. Tasks pin returned image_handles, and older revisions remain readable while retained. IMAGE@sha256:… is an independent reference whose meta must be published separately; a tag's returned image_handle already pins that version.
 
-Writable mode caches mutable-tag records for five minutes; publishers explicitly update them with --refresh. Read-only mode uses published records beyond that window without registry access. Refresh from a publisher to update workers, whose tasks then pin the returned manifest digest. IMAGE@sha256:... pins a version.
-
-Actual S3 traffic includes indexes and complete packed blocks; a small-file read can fetch neighboring file bytes. Existing TUI Transferred counts logical file bytes returned by the cache interface rather than S3 GETs or billed traffic, so it cannot estimate object-storage bills. Shared-block automatic GC/quotas are not included. Retire independent prefixes as groups after confirming no tasks use them. Expiring old blobs alone can delete content still used by newer references.
+Actual S3 traffic includes control objects, metadata pages, and complete data chunks. TUI Transferred only measures logical file bytes returned by the cache API, not billed traffic. Automatic GC/quotas are not implemented. Disable relevant jobs/publications and confirm readers exited before deleting meta/data; never delete shared objects based solely on age.
 
 ## Code layout
 
@@ -113,7 +121,7 @@ cache/
 ├── config.rs           # Shared CLI/executor backend configuration
 ├── storage.rs          # Filesystem and S3 object I/O
 ├── portable.rs         # Direct storage format, indexes, range reads
-├── portable/           # Packing/publication and regression tests
+├── portable/           # Binary tables, publication and regression tests
 ├── server.rs           # Authentication, work queues and confined file access
 ├── server/
 │   ├── metadata.rs     # Server metadata and directory LRU caches
@@ -157,7 +165,7 @@ An explicit `PVISOR_CACHE_SERVER` requires the service. `PVISOR_CACHE_SERVER=off
 
 The client mounts an immutable read-only FUSE lower (macFUSE FSKit on macOS, FUSE on Linux), retaining the existing writable VM upper. Metadata is fetched on demand and cached in memory for the mount. When the server advertises `metadata_generation`, validated stat responses (including absent paths) and directory pages also persist at `<user-cache>/pvisor/metadata/v1/<endpoint-hash>/<manifest-digest>/<generation-hash>/`. They survive VM exit; corrupt entries are fetched again. Older servers without generation remain memory-only. Generation includes server root identity/change time, invalidating metadata with old host inode numbers after root reconstruction. Prepared roots must remain immutable; in-place modification is unsupported.
 
-Content uses 1 MiB blocks at `<user-cache>/pvisor/blocks/<endpoint-hash>/<manifest-digest>/`, keyed by file/block. `<user-cache>` is `~/Library/Caches` on macOS and `$XDG_CACHE_HOME` (usually `~/.cache`) on Linux. This is independent of `--image-store`/`PVISOR_IMAGE_STORE`. Small files use one unpadded block; large files fetch only accessed blocks.
+Content uses 1 MiB blocks at `<user-cache>/pvisor/blocks/<endpoint-hash>/<read-handle-hash>/`, keyed by file/block. `<user-cache>` is `~/Library/Caches` on macOS and `$XDG_CACHE_HOME` (usually `~/.cache`) on Linux. This is independent of `--image-store`/`PVISOR_IMAGE_STORE`. Small files use one unpadded block; large files fetch only accessed blocks.
 
 Each mount retains validated content in a per-file memory cache capped at 64 MiB/4096 blocks with FIFO eviction. Hot reads copy the requested slice without reopening/rehashing disk blocks. Memory misses revalidate disk content; disk corruption cannot alter already validated in-memory bytes. Validated new blocks publish atomically and use file locks for local process sharing; corrupt blocks are fetched again. There are no sparse placeholder files. Kernel readahead may fetch adjacent bytes; copy-up may read entire files. The client does not extract the full image.
 
@@ -212,7 +220,7 @@ Paths/names use JSON arrays of Unix filename bytes, preserving non-UTF-8 names. 
 | `op` | Fields | Response `status` |
 | --- | --- | --- |
 | `ping` | None | `ready` (protocol v1) |
-| `prepare` | `image`, `architecture` (`amd64`/`arm64`), optional `refresh` (default false) | `prepared`: `digest`, `architecture`, `env`, `entrypoint`, `cmd`, optional `totals` (`files`, `bytes`), optional `metadata_generation` |
+| `prepare` | `image`, `architecture` (`amd64`/`arm64`), optional `refresh` (default false) | `prepared`: `digest`, `architecture`, `env`, `entrypoint`, `cmd`, optional `totals` (`files`, `bytes`), optional `metadata_generation`; direct v1 backends also return `image_handle` |
 | `list` | `digest`, `path`, `offset` (zero-based entry index) | `entries`: sorted `names`, optional aligned `metadata`, `next_offset` (null when complete) |
 | `stat` | `digest`, `path` | `metadata`: `kind`, `size`, `mode`, `uid`, `gid`, `inode`, `nlink`, `mtime`, `mtime_nsec`, `target` |
 | `read` | `digest`, `path`, `offset` (bytes), `length` (1..1048576) | `data`: `length`, `sha256`, then raw bytes |

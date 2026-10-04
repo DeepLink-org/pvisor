@@ -39,6 +39,12 @@ pvisor run --safe \
 
 Prefer the Gateway: the key stays on the trusted side and model requests can still be recorded. See [Gateway capture](../capture.md) for configuration details.
 
+Gateway-held keys are delegated only to supported model POST endpoints; unknown
+or administrative actions are rejected before forwarding. Model discovery is
+served locally. A configured model grant can still operate under `no-network`,
+which controls ordinary proxy egress. See [Gateway action scope](../../design/gateway.md#delegated-credential-actions)
+for supported paths and custom upstream prefix requirements.
+
 ## Out of scope
 
 pVisor does not track how credentials handed to the agent through `--pass-env` are used, and it does not make them expire. See the [threat model](../../security/threat-model.md).

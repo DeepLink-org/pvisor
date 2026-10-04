@@ -185,7 +185,8 @@ pub struct ApplyRecord {
     /// Exact dependency-closed paths selected by the prepared transaction.
     #[serde(default, skip_serializing_if = "Vec::is_empty", with = "unix_paths")]
     pub planned_paths: Vec<PathBuf>,
-    /// Target state captured when each path was first mutated in the overlay.
+    /// Target state from its frozen baseline, first content observation, or
+    /// first mutation when no earlier observation exists.
     #[serde(default, skip_serializing_if = "Vec::is_empty")]
     pub preimages: Vec<PathPreimage>,
     /// Old ledgers contain only successful records and therefore deserialize
@@ -253,7 +254,8 @@ pub struct ApplyOutcome {
     pub remaining: Vec<ChangeEntry>,
 }
 
-/// Durable first-touch state of one apply target path.
+/// First-observed state of one apply target path. Drivers sync entries before
+/// the corresponding upper mutation; read-only observations need not be synced.
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
 pub struct PathPreimage {
     /// Raw Unix path bytes relative to the overlay root.

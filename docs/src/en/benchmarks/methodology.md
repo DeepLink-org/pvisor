@@ -106,3 +106,90 @@ Wall covers command launch through exit. Worker covers internal tool execution/v
 Recompute with `python3 benchmark/pvisor/summarize_product_v1.py <batch>/report.json --output-csv /tmp/summary.csv`; [summary CSV](../../assets/benchmarks/product-v1-20261004/summary.csv) keeps batches separate.
 
 Performance describes pinned artifacts, not later parallel changes or other release builds; source was not a clean commit. Workspace lint/tests validate the then-current source, while the pinned CLI is checked by benchmarks and STAGE specifications.
+
+## Familiar baselines and complete Agent Env: same-host Linux comparison {#reference-env}
+
+This batch separates first-output latency, working tools, and complete client repair loops. Startup, file operations, complete tools and real CLI timing are distinct. Historical macOS/Linux data remain intact; the new Docker/Firecracker/QEMU matrix is Linux only.
+
+| Item | Recorded value |
+|---|---|
+| Host | Fedora 44 / Linux 7.2.8-200.fc44.x86_64; Ryzen 7 9700X, 8C/16T; 30.5 GiB |
+| Tools | Python 3.14.7; Node 24.18.0; Rust/Cargo 1.98.1; Claude 2.1.128; Codex 0.160.0 |
+| References | Docker Engine 29.7.2 rootless; Firecracker 1.13.1 PCI; QEMU 10.2.2 q35 / microvm |
+| pVisor SHA256 | `1a2db5ad015c5ace40b3c96c7dd0dc94a08b8893de35150bd909554286e2cd3c` |
+| Guest kernel | Linux 6.12.109; reference kernel/config shared by Firecracker/QEMU |
+| VM RAM / CPU | 128 MiB shell probe; 16 GiB complete environment; 2 vCPU |
+| Storage | btrfs host; Docker bind mount; pVisor staged virtio-fs; reference private ext4 |
+| Sampling | 30 samples + 3 warmups per available case; random order; hot host caches |
+| Effective samples | 1,410 passed; 47/48 mode/backend configurations available |
+| Identity/source | Frozen binary and harness hashes; parallel dirty development recorded, not a clean commit |
+
+
+Docker/native have no hard memory cap. Payloads and VMMs use physical host cores 0 and 1; the private Docker daemon and in-container tools are explicitly pinned, with Rust `-j2`. The Docker daemon is already running; its one-time startup is outside task time. Run Bundles/VMM configs verify guest RAM; configured capacity and sampled RSS are separate. This is a shared desktop with development on other cores, shared cache/disk activity and unlocked frequency. Small percentage differences do not establish reliable rankings.
+
+Both QEMU q35 and microvm are included. The microvm configuration disables optional legacy devices and uses KVM/host CPU and virtio-blk. Firecracker uses PCI, no API and no jailer. All three boot a trimmed kernel and static init directly, without systemd/SSH/cloud-init. Parameters follow [QEMU microvm documentation](https://www.qemu.org/docs/master/system/i386/microvm.html), [Firecracker 1.13.1](https://github.com/firecracker-microvm/firecracker/blob/v1.13.1/docs/getting-started.md), and [Docker rootless](https://docs.docker.com/engine/security/rootless/). This is a development performance baseline, not a production security assessment. Firecracker/QEMU are not pVisor executors.
+
+pVisor's embedded firmware has the same kernel version but a different configuration. Its path also provides staging, execution observations and Run Bundles. Block/ext4 versus virtio-fs, client initialization and exit protocols differ; complete-command differences cannot be attributed solely to VMM overhead.
+
+### Timing, correctness, and failures
+
+`ready_ms` measures first output or completed tool self-check; `result_ms` measures a validated task result, both including runtime startup. `completion_ms` includes exit; `prepare_ms` separately records workspace/private-disk preparation. The main batch's exit polling can add roughly 50 ms of granularity. Primary conclusions use stdout event timing; a precise-exit follow-up remains a separate batch. File tables use internal `worker_ms`, excluding environment startup.
+
+One capability preflight precedes 3 excluded warmups and 30 seeded, randomized rounds. Correctness requires zero exit, exactly one result, matching mode, actual successful grading, correct files and original state, and no VM panic. pVisor additionally requires completed Bundles, the requested actual executor, and staging observations. Failures retain logs and never enter latency distributions. Claude/VM initialization times out at 90 s, so formal N=0; the runner completes other cases then exits nonzero. Uniform Codex inner `danger-full-access` does not establish compatibility with its default inner sandbox.
+
+Real Claude/Codex CLIs use a local deterministic response server in the same environment. No real inference, Internet latency, actual tokens or billing are measured. Thirty repetitions describe one task, not thirty independent defects. P95/P99 describe this batch, not long-term tails or success-rate confidence intervals.
+
+### Resource audit {#reference-resources}
+
+RSS is summed at 20 ms intervals, not PSS or a strict cgroup peak; short peaks and shared-page double counting are possible. The initial main sampler tracked Docker CLI/daemon descendants, but an audit found that systemd adopts container shims, excluding their tools. Published main data now label that partial scope. Its roughly 102 MiB cannot be ranked against complete VM trees. A separate batch follows the exact container ID/shim and task, retaining process ancestry and affinity evidence. Resource results are presented separately in that report.
+
+#### Complete-tool resource follow-up
+
+Same configuration, 10 samples per backend and 1 warmup, tracking Docker shims by exact container ID. Docker includes its dedicated daemon's fixed cost: about 75 MiB at batch start. It is not per-container incremental memory and cannot be divided into host RAM to predict Agent density. VM RSS includes the VMM and touched guest pages, not its 16 GiB configured capacity. Environment construction/image import did not overlap measurement.
+
+| Backend | N | Peak RSS P50/P95 MiB |
+|---|---|---|
+| Native | 10 | 168.8 / 171.0 |
+| pVisor host | 10 | 178.5 / 180.7 |
+| pVisor staged | 10 | 226.8 / 242.5 |
+| pVisor VM | 10 | 722.1 / 734.9 |
+| Docker rootless | 10 | 280.3 / 320.5 |
+| Firecracker PCI | 10 | 762.7 / 771.4 |
+| QEMU q35 | 10 | 812.3 / 818.9 |
+| QEMU microvm | 10 | 803.0 / 818.6 |
+
+
+Native/staged use roughly 0.17/0.22 GiB; Docker including the daemon about 0.27 GiB; the VM about 0.71 GiB. pVisor VM and reference VMs are in the same sub-1-GiB range for this task. This short workflow does not cover large-repository long-run peaks or shared-page savings. Different scopes do not establish a strict physical-memory efficiency ranking.
+
+[Resource report](../../assets/benchmarks/reference-env-20261004/followups/reference-resources-20261004/report.json) · [Samples](../../assets/benchmarks/reference-env-20261004/followups/reference-resources-20261004/samples.csv) · [Process/affinity audit](../../assets/benchmarks/reference-env-20261004/followups/reference-resources-20261004/docker-process-audit.json) · [Evidence](../../assets/benchmarks/reference-env-20261004/followups/reference-resources-20261004/evidence.tar.gz)
+
+
+### Deployment and reproduction
+
+Build a rootfs from installed tools, import the matching Docker image and create ext4. Automatic Fedora 44 layout supports Python 3.14/Node 24; another system can supply an equivalent prepared `--tools-rootfs`. Prerequisites are KVM, FUSE, private rootless Docker, Firecracker, QEMU, Claude/Codex, the Rust musl target, GCC/e2fsprogs and clean Linux 6.12.109 sources. Tools and fake credentials are copied, not login authentication.
+
+Start a user-owned private daemon following the rootless Docker instructions, with a short socket path. Replace `12345` below with its actual host PID and select two allowed physical cores. Owner/socket checks precede pinning only that daemon; system Docker is untouched. Output directories must be new. Start with `--samples 1 --warmups 0`. Downloads, kernel compilation and image preparation are outside task timing; offline preparation and per-run cloning are recorded separately.
+
+```bash
+bash benchmark/pvisor/prepare_reference_kernel.sh \
+  /absolute/path/to/clean/linux-6.12.109 target/reference-kernel-new
+python3 benchmark/pvisor/prepare_reference_env.py \
+  --binary /absolute/path/to/pinned/pvisor --output target/reference-env-new \
+  --kernel-elf target/reference-kernel-new/vmlinux \
+  --kernel-bzimage target/reference-kernel-new/arch/x86/boot/bzImage \
+  --kernel-config target/reference-kernel-new/.config \
+  --docker-host unix:///tmp/pvisor-reference-docker/docker.sock
+python3 benchmark/pvisor/reference_baselines.py \
+  --assets target/reference-env-new --binary /absolute/path/to/pinned/pvisor \
+  --output target/reference-results-new \
+  --docker-host unix:///tmp/pvisor-reference-docker/docker.sock \
+  --docker-root-pid 12345 --cpu-affinity 0,1 --memory-mib 16384 \
+  --samples 30 --warmups 3
+uv run --no-project --with matplotlib python benchmark/pvisor/render_reference_baselines.py \
+  --report target/reference-results-new/report.json \
+  --assets target/reference-env-new --output /tmp/reference-report-new
+```
+
+The archive uses `pvisor-reference-environment/v1`, distinct from the old smoke schema. It includes samples, commands, pinned scripts, guest/tool versions, failures, minimized real tool-return evidence, and Bundle isolation/resource proof, excluding multi-GB rootfs and inherited host credentials. Reports contain tool/kernel/pVisor identities. See the [benchmark directory](https://github.com/DeepLink-org/pvisor/tree/main/benchmark/pvisor) for automatic preparation and reproduction.
+
+[Per-sample CSV](../../assets/benchmarks/reference-env-20261004/samples.csv) · [Distributions and phase timing](../../assets/benchmarks/reference-env-20261004/summary.json) · [Runtime evidence](../../assets/benchmarks/reference-env-20261004/evidence.tar.gz) · [Compatibility matrix](../../assets/benchmarks/reference-env-20261004/compatibility.json)

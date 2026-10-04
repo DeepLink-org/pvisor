@@ -252,7 +252,7 @@ impl PortableCache {
         metadata.insert(
             "manifest.json".into(),
             serde_json::to_vec(&Manifest {
-                format_version: 2,
+                format_version: 1,
                 reference: canonical.into(),
                 platform: platform.into(),
                 manifest_digest: image.digest.clone(),
@@ -261,7 +261,7 @@ impl PortableCache {
             })?,
         );
         let configuration = Configuration {
-            format_version: 2,
+            format_version: 1,
             architecture: architecture.into(),
             env: image.env.clone(),
             entrypoint: image.entrypoint.clone(),
@@ -282,7 +282,7 @@ impl PortableCache {
             })
             .collect();
         let commit = Commit {
-            format_version: 2,
+            format_version: 1,
             image_key: key.clone(),
             platform: platform.into(),
             manifest_digest: image.digest.clone(),
@@ -309,28 +309,45 @@ impl PortableCache {
         self.put_verified(
             &format!("meta/{key}/identity.json"),
             serde_json::to_vec(&Identity {
-                format_version: 2,
+                format_version: 1,
                 image_key: key,
                 reference: canonical.into(),
             })?,
         )?;
         self.put_verified(&format!("{upload_prefix}/plan.json"),serde_json::to_vec(&serde_json::json!({
-            "format_version":2,"platform":platform,"revision":revision,"manifest_digest":image.digest,
+            "format_version":1,"platform":platform,"revision":revision,"manifest_digest":image.digest,
             "expected_head":observed.as_ref().map(|o|&o.version.e_tag)
         }))?)?;
-        for digest in objects.keys() {
-            self.put_verified(
-                &data_key(digest)?,
-                std::fs::read(staging.path().join(&digest[7..]))?,
-            )?;
-        }
+        std::thread::scope(|scope| {
+            let workers = (0..objects.len().min(8))
+                .map(|worker| {
+                    let objects = &objects;
+                    let staging = &staging;
+                    scope.spawn(move || -> anyhow::Result<()> {
+                        for digest in objects.keys().skip(worker).step_by(8) {
+                            self.put_verified(
+                                &data_key(digest)?,
+                                std::fs::read(staging.path().join(&digest[7..]))?,
+                            )?;
+                        }
+                        Ok(())
+                    })
+                })
+                .collect::<Vec<_>>();
+            for worker in workers {
+                worker
+                    .join()
+                    .map_err(|_| anyhow::anyhow!("content publisher panicked"))??;
+            }
+            Ok::<_, anyhow::Error>(())
+        })?;
         for (name, bytes) in metadata {
             self.put_verified(&format!("{}/{name}", handle.prefix()), bytes)?;
         }
         self.put_verified(&format!("{}/COMMIT.json", handle.prefix()), commit_bytes)?;
         let loaded = self.load(&handle)?;
         let head = Head {
-            format_version: 2,
+            format_version: 1,
             image_key: handle.image_key.clone(),
             platform: platform.into(),
             revision,
@@ -345,10 +362,9 @@ impl PortableCache {
             self.storage
                 .compare_and_swap(&key, bytes.clone(), observed.map(|o| o.version))
         {
-            if super::super::storage::is_conflict(&error) {
-                return Err(error);
-            }
-            // Only transport/unknown-outcome failures permit reconciliation.
+            // SDK retries can turn a lost successful PUT response into a
+            // precondition failure. The unique publication ID proves whether
+            // this attempt committed, even when its revision matches a rival.
             if self.storage.get(&key)?.as_ref() != Some(&bytes) {
                 return Err(error.context(
                     "HEAD commit outcome unresolved; re-observe source and HEAD before retrying",

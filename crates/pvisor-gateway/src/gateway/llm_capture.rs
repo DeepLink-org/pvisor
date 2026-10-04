@@ -7,16 +7,15 @@ use std::sync::Arc;
 use anyhow::Context;
 use axum::body::{Body, to_bytes};
 use axum::extract::Request;
-use axum::http::{Method, StatusCode};
+use axum::http::StatusCode;
 use axum::response::{IntoResponse, Response};
 use futures_util::StreamExt;
 use pvisor_core::{ModelCallRequest, RunId};
 use serde_json::Value;
 
+use super::action::{GatewayAction, authorize_action, authorize_upstream_path};
 use super::auth::{apply_upstream_headers, resolve_upstream_api_key};
-use super::common::{
-    attach_capture_headers, call_context, extract_model, is_models_list_path, model_access_policy,
-};
+use super::common::{attach_capture_headers, call_context, extract_model, model_access_policy};
 use super::models_list::build_models_response;
 use super::router::resolve_route;
 use super::state::GatewayState;
@@ -30,7 +29,6 @@ use crate::conversion::{
 };
 use crate::engine::headers_to_vec;
 use crate::engine::{CompleteEvent, Event, RequestEvent};
-use crate::protocol::ProtocolKind;
 use crate::runtime::debug::{self, truncate_body_bytes};
 use crate::session::storage::resolve_capture_route;
 use crate::understanding::understand_request;
@@ -109,6 +107,26 @@ pub(super) async fn llm_capture(
             .into_response());
     }
 
+    // A model name in an administrative request is not a model grant. Enforce
+    // action scope before parsing the body, selecting a route or looking up keys.
+    let (protocol, path_model) = match authorize_action(&parts.method, &parts.uri, &parts.headers) {
+        Ok(GatewayAction::ModelsList) => {
+            let bytes =
+                serde_json::to_vec(&build_models_response(&cfg)).context("serialize /v1/models")?;
+            return Ok(Response::builder()
+                .status(StatusCode::OK)
+                .header("content-type", "application/json")
+                .body(Body::from(bytes))
+                .context("build /v1/models response")?
+                .into_response());
+        }
+        Ok(GatewayAction::ModelRequest {
+            protocol,
+            path_model,
+        }) => (protocol, path_model),
+        Err(reason) => return Ok((StatusCode::FORBIDDEN, reason).into_response()),
+    };
+
     let body_bytes = match to_bytes(body, MAX_REQUEST_BODY_BYTES).await {
         Ok(body) => body,
         Err(error) => {
@@ -127,7 +145,6 @@ pub(super) async fn llm_capture(
     };
     let path = parts.uri.path().to_string();
     let method = parts.method.clone();
-    let protocol = ProtocolKind::from_path(&path);
 
     let capture_route = resolve_capture_route(
         &parts.headers,
@@ -138,17 +155,6 @@ pub(super) async fn llm_capture(
     let call = Call::from_headers(&parts.headers);
     let agent_id = cfg.agent_id.clone();
     let session_id = capture_route.session_id.clone();
-
-    if method == Method::GET && is_models_list_path(&path) {
-        let json = build_models_response(&cfg);
-        let bytes = serde_json::to_vec(&json).context("serialize /v1/models")?;
-        return Ok(Response::builder()
-            .status(StatusCode::OK)
-            .header("content-type", "application/json")
-            .body(Body::from(bytes))
-            .context("build /v1/models response")?
-            .into_response());
-    }
 
     let client_meta =
         state
@@ -162,19 +168,30 @@ pub(super) async fn llm_capture(
         .as_ref()
         .map(|parsed| parsed.semantic.request.stream)
         .unwrap_or_else(|| super::streaming::request_wants_stream(&body_bytes))
-        || path.ends_with(":streamGenerateContent");
-    let client_model = parsed_request
+        || path
+            .trim_end_matches('/')
+            .ends_with(":streamGenerateContent");
+    let body_model = parsed_request
         .as_ref()
         .and_then(|parsed| parsed.semantic.request.model.clone())
-        .or_else(|| extract_model(&body_bytes))
-        .or_else(|| gemini_model_from_path(&path))
+        .or_else(|| extract_model(&body_bytes));
+    if let (Some(path_model), Some(body_model)) = (path_model, body_model.as_deref())
+        && body_model.strip_prefix("models/").unwrap_or(body_model) != path_model
+    {
+        return Ok((
+            StatusCode::FORBIDDEN,
+            "request body model conflicts with the model API path",
+        )
+            .into_response());
+    }
+    let has_body_model = body_model.is_some();
+    let client_model = path_model
+        .map(str::to_owned)
+        .or(body_model)
         .unwrap_or_else(|| "_unknown".to_string());
     if let Some(parsed) = parsed_request.as_mut() {
         let semantic = Arc::make_mut(&mut parsed.semantic);
-        semantic
-            .request
-            .model
-            .get_or_insert_with(|| client_model.clone());
+        semantic.request.model = Some(client_model.clone());
         semantic.request.stream = stream_request;
     }
     let resolved = resolve_route(&cfg.models, &client_model)?;
@@ -238,6 +255,8 @@ pub(super) async fn llm_capture(
     };
 
     let upstream_path = bridge.upstream_path(&path, &upstream_model, stream_request)?;
+    let upstream_path =
+        authorize_upstream_path(&upstream_path, upstream_protocol, &upstream_model)?;
     let mut upstream_url = resolve_upstream_url(route, &upstream_path, upstream_protocol)?;
     if bridge == ProtocolBridge::Passthrough {
         if let Some(q) = parts.uri.query() {
@@ -266,7 +285,7 @@ pub(super) async fn llm_capture(
         parsed_request
             .as_ref()
             .map(|parsed| parsed.semantic.as_ref()),
-        resolved.model_rewritten,
+        resolved.model_rewritten && (path_model.is_none() || has_body_model),
         &upstream_model,
         bridge,
         Some(&state.reasoning_cache.scoped(&call_ctx)),
@@ -512,11 +531,6 @@ pub(super) async fn llm_capture(
         .body(Body::from(resp_bytes))
         .map_err(|e| anyhow::anyhow!("response body: {e}"))?
         .into_response())
-}
-
-fn gemini_model_from_path(path: &str) -> Option<String> {
-    let model = path.split("/models/").nth(1)?.split(':').next()?;
-    (!model.is_empty()).then(|| model.to_string())
 }
 
 async fn read_response_body_limited(

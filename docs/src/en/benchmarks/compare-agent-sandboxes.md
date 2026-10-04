@@ -21,6 +21,11 @@ These native sandbox pages do not define pVisor's stage/preimage/apply-ledger pr
 
 Our representative flow reads, edits, requests a model API, and then encounters a concurrent host edit. See [apply/drop](apply.md) for conflicts and [task overhead](agent-tasks.md) for CLI tool loops. Gemini execution and comparative native-sandbox performance were not measured in this edition.
 
+## Complete-environment compatibility measurements {#reference-comparison}
+
+Real Claude/Codex CLIs complete controlled repair/test loops on native, staged, Docker, Firecracker and QEMU. Codex also passes 30/30 in pVisor VM, while Claude/VM initialization times out. This does not establish universal client compatibility. Codex uses uniform inner `danger-full-access`; Claude is limited to controlled Bash actions. Default inner sandboxes and their composition with outer isolation are not compared. See the [complete environment](agent-tasks.md#reference-env) for timing, failures and boundaries.
+
+
 ## Corrections
 
 Use [pVisor issues](https://github.com/DeepLink-org/pvisor/issues), including version, configuration and an official source or reproduction. Append dated evidence when products change.

@@ -21,6 +21,11 @@ Agent 自带沙箱适合控制单个 Agent 的工具权限；pVisor 的额外价
 
 代表性流程是：读取仓库、修改文件、请求模型 API，随后宿主修改同一文件。pVisor 的写入与冲突实验见 [apply/drop](apply.md)，CLI 的工具回路见[任务开销](agent-tasks.md)。本版未用 Gemini CLI 执行该流程，也未测各产品内置沙箱的全链路开销；能力比较与性能实验分别标注。
 
+## 完整环境兼容性实测 {#reference-comparison}
+
+真实 Claude/Codex CLI 已在 native、staged、Docker、Firecracker、QEMU 完成受控修复测试闭环；Codex 也在 pVisor VM 30/30 通过，Claude/VM 在初始化阶段超时。这不能证明所有客户端支持 pVisor VM。Codex 内部使用统一 `danger-full-access`，Claude 只开放受控 Bash 动作；本轮没有比较各客户端默认沙箱，也没有验证默认内外沙箱叠加。实际耗时、失败与外层边界见[完整工具环境](agent-tasks.md#reference-env)。
+
+
 ## 更正
 
 若某项能力描述不准确，请在 [pVisor issues](https://github.com/DeepLink-org/pvisor/issues) 提供产品版本、配置、官方链接或可复现命令。比较对象升级后，应追加日期与证据。

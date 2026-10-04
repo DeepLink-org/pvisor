@@ -838,11 +838,39 @@ pub unsafe extern "C" fn krun_add_virtiofs_overlay_with_policy(
     shm_size: u64,
     c_access_policy: *const c_char,
 ) -> i32 {
+    krun_add_virtiofs_overlay_with_layout(
+        ctx_id, c_tag, lower_paths, lower_count, c_upper_path, c_work_path,
+        c_preimage_path, excluded_paths, excluded_count, shm_size,
+        c_access_policy, std::ptr::null(), std::ptr::null(),
+    )
+}
+
+/// Preserve the apply destination and its target-corresponding frozen baseline.
+/// Null layout paths retain the legacy last-lower-as-target behavior.
+#[allow(clippy::missing_safety_doc, clippy::too_many_arguments)]
+#[unsafe(no_mangle)]
+#[cfg(not(any(feature = "tee", feature = "aws-nitro")))]
+pub unsafe extern "C" fn krun_add_virtiofs_overlay_with_layout(
+    ctx_id: u32,
+    c_tag: *const c_char,
+    lower_paths: *const *const c_char,
+    lower_count: usize,
+    c_upper_path: *const c_char,
+    c_work_path: *const c_char,
+    c_preimage_path: *const c_char,
+    excluded_paths: *const *const c_char,
+    excluded_count: usize,
+    shm_size: u64,
+    c_access_policy: *const c_char,
+    c_apply_target: *const c_char,
+    c_baseline_lower: *const c_char,
+) -> i32 {
     if c_tag.is_null()
         || c_upper_path.is_null()
         || lower_paths.is_null()
         || lower_count == 0
         || (excluded_count > 0 && excluded_paths.is_null())
+        || (!c_baseline_lower.is_null() && c_apply_target.is_null())
     {
         return -libc::EINVAL;
     }
@@ -875,6 +903,22 @@ pub unsafe extern "C" fn krun_add_virtiofs_overlay_with_policy(
         None
     } else {
         match parse(c_preimage_path) {
+            Ok(value) => Some(value),
+            Err(()) => return -libc::EINVAL,
+        }
+    };
+    let apply_target = if c_apply_target.is_null() {
+        None
+    } else {
+        match parse(c_apply_target) {
+            Ok(value) => Some(value),
+            Err(()) => return -libc::EINVAL,
+        }
+    };
+    let baseline_lower = if c_baseline_lower.is_null() {
+        None
+    } else {
+        match parse(c_baseline_lower) {
             Ok(value) => Some(value),
             Err(()) => return -libc::EINVAL,
         }
@@ -936,6 +980,8 @@ pub unsafe extern "C" fn krun_add_virtiofs_overlay_with_policy(
                 read_only: false,
                 overlay: Some(OverlayConfig {
                     lower_dirs,
+                    apply_target,
+                    baseline_lower,
                     upper_dir,
                     work_dir,
                     preimage_dir,

@@ -34,6 +34,7 @@ fn spec(id: &str) -> TaskSpec {
         resources: full(),
         labels: BTreeMap::new(),
         cache_keys: vec![],
+        retain_bundle: false,
     }
 }
 fn worker() -> WorkerRegistration {
@@ -50,6 +51,7 @@ fn worker() -> WorkerRegistration {
         labels: BTreeMap::new(),
         cache_keys: vec![],
         vm_control_protocol: Some(CLUSTER_VERSION),
+        artifact_protocol: None,
         vm_control_actions: vec![
             ControlAction::Pause,
             ControlAction::Offload,
@@ -175,6 +177,8 @@ fn only_acknowledged_pause_releases_cpu_and_restart_preserves_that_charge() {
             key,
             result: None,
             error: Some("stopped".into()),
+            artifacts: None,
+            artifact_error: None,
         },
         9,
     )
@@ -230,6 +234,8 @@ fn resume_waits_for_cpu_and_reserves_it_before_issuing_even_if_response_is_lost(
             key: other,
             result: None,
             error: Some("done".into()),
+            artifacts: None,
+            artifact_error: None,
         },
         10,
     )
@@ -361,6 +367,8 @@ fn paused_cpu_can_be_reused_but_resume_must_reenter_tenant_quota_even_while_drai
             key: other,
             result: None,
             error: Some("done".into()),
+            artifacts: None,
+            artifact_error: None,
         },
         11,
     )
@@ -489,6 +497,8 @@ fn failed_resume_keeps_reserved_cpu_until_native_run_termination_is_acknowledged
             key,
             result: None,
             error: Some("native teardown done".into()),
+            artifacts: None,
+            artifact_error: None,
         },
         9,
     )
@@ -588,4 +598,57 @@ fn admission_rejection_aborts_attempt_scoped_controls_before_requeue() {
         .unwrap();
     assert_eq!(pause.command.key, next);
     assert_eq!(pause.command.revision, 2);
+}
+
+#[test]
+fn node_pressure_allows_pause_and_renewal_but_defers_resume_without_losing_state() {
+    use pvisor_cluster::admission::AdmissionPolicy;
+    let temp = tempfile::tempdir().unwrap();
+    let mut s = Scheduler::open(&temp.path().join("journal"), config()).unwrap();
+    let key = start(&mut s);
+    let policy = AdmissionPolicy {
+        mode: AdmissionMode::LinuxPressure,
+        ..Default::default()
+    };
+    let failed = policy
+        .report(
+            worker().capacity,
+            full(),
+            0,
+            Err("node probe unavailable".into()),
+        )
+        .unwrap();
+    let pressured_poll = || {
+        let mut request = poll(vec![key.clone()], failed.available);
+        request.admission = Some(failed.clone());
+        request
+    };
+    s.request_control("one", request("pause", ControlAction::Pause), 3)
+        .unwrap();
+    let paused = s.poll(pressured_poll(), 4).unwrap().controls.remove(0);
+    s.acknowledge_control(success(paused), 5).unwrap();
+    s.request_control("one", request("resume", ControlAction::Resume), 6)
+        .unwrap();
+    let deferred = s.poll(pressured_poll(), 7).unwrap();
+    assert_eq!(deferred.renewed, vec![key.clone()]);
+    assert!(deferred.controls.is_empty());
+    assert_eq!(s.task("one").unwrap().phase, TaskPhase::Paused);
+    assert_eq!(
+        s.task("one").unwrap().controls[1].phase,
+        ControlPhase::Pending
+    );
+    let resumed = s
+        .poll(poll(vec![key.clone()], free(&s)), 8)
+        .unwrap()
+        .controls
+        .remove(0);
+    // A pressure change after issue does not undo a durable CPU charge; the
+    // same command can be redelivered and gated again at the native worker.
+    assert_eq!(
+        s.poll(pressured_poll(), 9).unwrap().controls,
+        vec![resumed.clone()]
+    );
+    assert_eq!(s.workers()[0].reserved, full());
+    s.acknowledge_control(success(resumed), 10).unwrap();
+    assert_eq!(s.task("one").unwrap().phase, TaskPhase::Running);
 }

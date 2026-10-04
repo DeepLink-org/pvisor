@@ -1,0 +1,147 @@
+{
+  "ready/native": {
+    "state": "available"
+  },
+  "ready/pvisor-host": {
+    "state": "available"
+  },
+  "ready/pvisor-staged": {
+    "state": "available"
+  },
+  "ready/pvisor-vm": {
+    "state": "available"
+  },
+  "ready/docker": {
+    "state": "available"
+  },
+  "ready/firecracker": {
+    "state": "available"
+  },
+  "ready/qemu": {
+    "state": "available"
+  },
+  "ready/qemu-microvm": {
+    "state": "available"
+  },
+  "env/native": {
+    "state": "available"
+  },
+  "env/pvisor-host": {
+    "state": "available"
+  },
+  "env/pvisor-staged": {
+    "state": "available"
+  },
+  "env/pvisor-vm": {
+    "state": "available"
+  },
+  "env/docker": {
+    "state": "available"
+  },
+  "env/firecracker": {
+    "state": "available"
+  },
+  "env/qemu": {
+    "state": "available"
+  },
+  "env/qemu-microvm": {
+    "state": "available"
+  },
+  "filesystem/native": {
+    "state": "available"
+  },
+  "filesystem/pvisor-host": {
+    "state": "available"
+  },
+  "filesystem/pvisor-staged": {
+    "state": "available"
+  },
+  "filesystem/pvisor-vm": {
+    "state": "available"
+  },
+  "filesystem/docker": {
+    "state": "available"
+  },
+  "filesystem/firecracker": {
+    "state": "available"
+  },
+  "filesystem/qemu": {
+    "state": "available"
+  },
+  "filesystem/qemu-microvm": {
+    "state": "available"
+  },
+  "tools/native": {
+    "state": "available"
+  },
+  "tools/pvisor-host": {
+    "state": "available"
+  },
+  "tools/pvisor-staged": {
+    "state": "available"
+  },
+  "tools/pvisor-vm": {
+    "state": "available"
+  },
+  "tools/docker": {
+    "state": "available"
+  },
+  "tools/firecracker": {
+    "state": "available"
+  },
+  "tools/qemu": {
+    "state": "available"
+  },
+  "tools/qemu-microvm": {
+    "state": "available"
+  },
+  "claude/native": {
+    "state": "available"
+  },
+  "claude/pvisor-host": {
+    "state": "available"
+  },
+  "claude/pvisor-staged": {
+    "state": "available"
+  },
+  "claude/pvisor-vm": {
+    "state": "failed-preflight",
+    "reason": "claude/pvisor-vm: exit 1, ready=1, result=0; /home/reiase/workspace/pvisor/target/reference-baselines-controlled-20261004/trials/claude-pvisor-vm--100\n '['/usr/local/bin/claude', '--bare', '--setting-sources', '', '--disable-slash-commands', '--strict-mcp-config', '--mcp-config', '{\"mcpServers\":{}}', '--no-session-persistence', '--tools', 'Bash', '--allowedTools', 'Bash', '--model', 'claude-sonnet-4-6', '--output-format', 'json', '-p', 'Fix the Python adder and run the Python, Rust and Node project tests.']' timed out after 90 seconds\nRun Bundle: /home/reiase/workspace/pvisor/target/reference-baselines-controlled-20261004/trials/claude-pvisor-vm--100/stage/run-bundle.json\nReview: pvisor status --review /home/reiase/workspace/pvisor/target/reference-baselines-controlled-20261004/trials/claude-pvisor-vm--100/stage\nDecide: pvisor apply /home/reiase/workspace/pvisor/target/reference-baselines-controlled-20261004/trials/claude-pvisor-vm--100/stage | pvisor drop /home/reiase/workspace/pvisor/target/reference-baselines-controlled-20261004/trials/claude-pvisor-vm--100/stage\npVisor Job failed: ProcessExit: workload exited with exit status: 1\n\nREFERENCE_READY\n"
+  },
+  "claude/docker": {
+    "state": "available"
+  },
+  "claude/firecracker": {
+    "state": "available"
+  },
+  "claude/qemu": {
+    "state": "available"
+  },
+  "claude/qemu-microvm": {
+    "state": "available"
+  },
+  "codex/native": {
+    "state": "available"
+  },
+  "codex/pvisor-host": {
+    "state": "available"
+  },
+  "codex/pvisor-staged": {
+    "state": "available"
+  },
+  "codex/pvisor-vm": {
+    "state": "available"
+  },
+  "codex/docker": {
+    "state": "available"
+  },
+  "codex/firecracker": {
+    "state": "available"
+  },
+  "codex/qemu": {
+    "state": "available"
+  },
+  "codex/qemu-microvm": {
+    "state": "available"
+  }
+}

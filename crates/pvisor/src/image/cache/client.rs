@@ -68,7 +68,7 @@ impl CacheClient {
             None
         };
         let local_objects = dirs::cache_dir().map(|root| {
-            root.join("pvisor/cache-v2/objects")
+            root.join("pvisor/cache-v1/objects")
                 .join(&hash(address.as_bytes())[7..])
         });
         Ok(Self {

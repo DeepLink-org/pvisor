@@ -455,6 +455,8 @@ fn overlay_preserves_directory_cookies_and_consumed_virtual_names() {
             }],
             Some(OverlayConfig {
                 lower_dirs: vec![lower.path().to_str().unwrap().into()],
+                apply_target: None,
+                baseline_lower: None,
                 upper_dir: upper.path().to_str().unwrap().into(),
                 work_dir: None,
                 preimage_dir: None,
@@ -617,4 +619,148 @@ fn fs_restore_in_new_process_keeps_the_old_guest_handle() {
         std::fs::read(directory.path().join("save.pid")).unwrap(),
         std::fs::read(directory.path().join("restore.pid")).unwrap()
     );
+}
+
+#[test]
+fn virtiofs_content_open_preserves_target_preimage_across_restore_and_composed_lowers() {
+    use devices::virtio::fs::OverlayConfig;
+    use pvisor_overlay_core::apply::{OverlayRecord, OverlayState, OverlayUpper, apply_overlay};
+    for frozen in [false, true] {
+        for restore in [false, true] {
+            let temp = tempfile::tempdir().unwrap();
+            let target = temp.path().join("target");
+            let baseline = temp.path().join("baseline");
+            let top = temp.path().join("top");
+            let stage = temp.path().join("stage");
+            std::fs::create_dir(&target).unwrap();
+            std::fs::create_dir(&top).unwrap();
+            std::fs::write(target.join("value"), b"original target").unwrap();
+            std::fs::write(top.join("value"), b"visible extra layer").unwrap();
+            let baseline_lower = frozen.then(|| {
+                std::fs::create_dir(&baseline).unwrap();
+                std::fs::copy(target.join("value"), baseline.join("value")).unwrap();
+                baseline.clone()
+            });
+            let config = OverlayConfig {
+                lower_dirs: vec![
+                    top.to_str().unwrap().into(),
+                    baseline_lower
+                        .as_ref()
+                        .unwrap_or(&target)
+                        .to_str()
+                        .unwrap()
+                        .into(),
+                ],
+                apply_target: Some(target.to_str().unwrap().into()),
+                baseline_lower: baseline_lower.as_ref().map(|p| p.to_str().unwrap().into()),
+                upper_dir: stage.join("upper").to_str().unwrap().into(),
+                work_dir: Some(stage.join("work").to_str().unwrap().into()),
+                preimage_dir: Some(stage.join("preimages").to_str().unwrap().into()),
+                excluded_paths: vec![],
+                access_policy: Default::default(),
+                semantics: PermissionSemantics::LinuxComplete,
+            };
+            let make = || {
+                Fs::new(
+                    "rootfs".into(),
+                    PermissionSemantics::LinuxComplete,
+                    None,
+                    Arc::new(AtomicI32::new(0)),
+                    false,
+                    vec![],
+                    Some(config.clone()),
+                )
+                .unwrap()
+            };
+            let mut source = GuestFs::from_device(make(), None);
+            source.request(
+                fuse::Opcode::Init,
+                0,
+                fuse::InitInCompat {
+                    major: 7,
+                    minor: 31,
+                    ..Default::default()
+                }
+                .as_slice(),
+            );
+            let entry = source.request(fuse::Opcode::Lookup, 1, b"value\0");
+            let inode = u64::from_ne_bytes(entry[..8].try_into().unwrap());
+            assert!(
+                pvisor_overlay_core::load_preimages(&stage.join("preimages"))
+                    .unwrap()
+                    .is_empty()
+            );
+            let opened = source.request(
+                fuse::Opcode::Open,
+                inode,
+                fuse::OpenIn::default().as_slice(),
+            );
+            let read_handle = u64::from_ne_bytes(opened[..8].try_into().unwrap());
+            assert_eq!(
+                source.request(
+                    fuse::Opcode::Read,
+                    inode,
+                    fuse::ReadIn {
+                        fh: read_handle,
+                        size: 64,
+                        ..Default::default()
+                    }
+                    .as_slice()
+                ),
+                b"visible extra layer"
+            );
+            if restore {
+                let state = source.freeze();
+                let mem = source.mem.clone();
+                let next = source.next;
+                drop(source);
+                source = GuestFs::from_device(make(), Some((mem, state, next)));
+            }
+            std::fs::write(target.join("value"), b"host edit").unwrap();
+            let opened = source.request(
+                fuse::Opcode::Open,
+                inode,
+                fuse::OpenIn {
+                    flags: (libc::O_WRONLY | libc::O_TRUNC) as u32,
+                    ..Default::default()
+                }
+                .as_slice(),
+            );
+            let write_handle = u64::from_ne_bytes(opened[..8].try_into().unwrap());
+            let mut payload = fuse::WriteIn {
+                fh: write_handle,
+                size: 10,
+                ..Default::default()
+            }
+            .as_slice()
+            .to_vec();
+            payload.extend_from_slice(b"agent edit");
+            source.request(fuse::Opcode::Write, inode, &payload);
+            drop(source);
+            let mut record = OverlayRecord {
+                id: "virtiofs-read".into(),
+                generation: 0,
+                target: target.clone(),
+                baseline_lower,
+                upper: OverlayUpper {
+                    upper_dir: stage.join("upper"),
+                    work_dir: stage.join("work"),
+                },
+                merged_dir: stage.join("merged"),
+                stage_dir: stage,
+                excluded_paths: vec![],
+                access_policy: Default::default(),
+                auto_apply: false,
+                auto_discard: false,
+                protect_target: false,
+                state: OverlayState::Staged,
+            };
+            let error = apply_overlay(&mut record).unwrap_err();
+            assert!(
+                error.to_string().contains("target changed after staging"),
+                "{error}"
+            );
+            assert_eq!(std::fs::read(target.join("value")).unwrap(), b"host edit");
+        }
+    }
 }

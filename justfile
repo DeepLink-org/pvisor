@@ -73,7 +73,7 @@ cluster-build:
 # Controller contracts plus real HTTP/multi-worker execution and failure tests.
 test-cluster:
     just test pvisor-cluster pvisor-core
-    cargo nextest run --locked -p pvisor --test cluster_execution
+    cargo nextest run --locked -p pvisor --test cluster_execution --bin pvisor-worker
 
 # Format source files; use fmt-check for a read-only check.
 fmt: fmt-rust fmt-py

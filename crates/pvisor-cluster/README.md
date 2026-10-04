@@ -34,13 +34,13 @@ Primary sources inspected on 2026-10-04:
 | --- | --- | --- |
 | Distributed user task execution | HTTP submit/show/cancel, multi-worker process execution, common RunSpec/RunResult | Multi-host workload, task graph/scaffold integration, artifact collection |
 | Backend/isolation selection | Exact execution class and label matching; host/rootless/container/VM workers | VM/container distributed execution and host-policy failure experiments |
-| Reliable control | fsync-before-ack WAL, fencing, cancellation, expiry, drain, idempotent submit/completion | Restart during live workloads, disk-full faults, worker restart outbox recovery |
+| Reliable control | fsync-before-ack WAL, fencing, cancellation, expiry, drain, idempotent submit/completion; unstarted admission rejection/requeue | Restart during live workloads, disk-full faults, worker restart outbox recovery |
 | Scalable scheduling | Bounded ready window, indexed expiration, batched leases, reservations, tenant quotas | Sharding, replicated authority, group commit, admission/load measurements and large-scale benchmarks |
 | Independently versioned base/workspace/toolkit layers | Worker-owned immutable lower layers and private upper; existing VM/image cache settings | Template registry, immutable digest resolution, per-task layer composition and artifact distribution |
 | AgentENV pause/resume | Durable lease-bound desired/observed pause/offload/resume; worker invokes native Run controls; CPU reserved before resume | Hardware-backed distributed VM lifecycle experiments and inference-wait coordination |
 | Incremental execution checkpoints, fork and recovery | Ordinary Job executor explicitly rejects full execution capture | Connect full VM state capture/restore to Job driver; independent forks, compatible runtime identity, remote storage and recovery tests |
 | Dense memory use | VM size derived from task admission budget; host-local shared RAM/cache profile options; offload observations retain RAM charge | Physical resident-memory accounting, controlled reclaim/overcommit and measured density improvement |
-| CPU QoS/controlled overcommit | CPU capacity accounting only | BE/LS policies, pressure-aware overcommit and latency/isolation verification |
+| CPU QoS/controlled overcommit | CPU reservations; optional Linux PSI, affinity and visible cgroup v2 CPU/memory admission; native resume gating | BE/LS enforcement, per-attempt physical accounting, pressure-aware overcommit and latency/isolation verification |
 | RL preemption/resumption | Lease protocol and per-task evidence | Preserve rollout/scaffold state independently of GPU scheduling; resumable checkpoint coordination |
 | Access control and observability | Distinct admin/worker API credentials, explicit task environment, trace and local Bundle | Per-tenant/node identities, TLS deployment, centralized artifacts/traces, dynamic task policies/Gateway integration |
 
@@ -171,7 +171,82 @@ limits. For example `{"team":{"slots":8,"memory_bytes":8589934592,"cpu_millis":4
 Unlisted tenants have no configured quota. Quotas constrain aggregate
 reservations; tenant names are assigned by the trusted admin client and are not
 separate authentication principals. Worker resource availability presently
-comes from its configured capacity minus local reservations.
+comes from its configured capacity minus local reservations, optionally reduced
+by measured node pressure and limits.
+
+## Node pressure and final admission
+
+The portable default is `mode = "reservations"`. Linux deployments can enable
+read-only pressure admission in the worker profile:
+
+```toml
+[admission]
+mode = "linux_pressure"
+memory_reserve_bytes = 268435456
+cpu_some_avg10_limit_bps = 5000
+memory_full_avg10_limit_bps = 100
+max_sample_age_ms = 3000
+```
+
+One basis point is 0.01 percent of stalled wall time. The CPU threshold above
+is 50%; the memory threshold is 1%. These are configurable starting values,
+not measured optimal policies. The sample age limit must allow at least two
+worker poll intervals. A separate sampler keeps at most one blocking probe
+in flight, so a stalled probe ages out without blocking lease watchdogs.
+
+The probe intersects CPU affinity/cpuset counts and CPU bandwidth limits across
+visible cgroup v2 ancestors. Memory headroom is the minimum of system
+`MemAvailable` and finite ancestor `memory.max`/`memory.high` minus
+`memory.current`; it then subtracts the configured reserve. It reads system and
+cgroup CPU `some` and memory `full` PSI averages and uses the larger observed
+pressure. No cgroup controls are changed. Probe errors, unsupported v1/hybrid
+hierarchies, unresolvable cgroup namespaces and stale samples stop admission.
+Low headroom or memory pressure blocks new tasks and VM resume. High CPU
+pressure blocks additional CPU use. Pausing, lease renewal, cancellation and
+completion delivery continue.
+
+The interfaces follow the kernel's
+[PSI](https://docs.kernel.org/accounting/psi.html),
+[cgroup v2](https://docs.kernel.org/admin-guide/cgroup-v2.html) and
+[proc](https://docs.kernel.org/filesystems/proc.html) documentation.
+These are node-wide estimates, not per-VM resident measurements or hard
+enforcement. External processes, hidden ancestor limits, changing cgroups and
+allocations between samples can change real availability. Keep configured
+capacity consistent with deployment limits; physical overcommit, CPU QoS,
+overhead accounting and density improvements still require implementation
+and measurements.
+
+Inspect local Linux observations without controller credentials:
+
+```sh
+target/debug/pvisor-cluster probe-node
+```
+
+`pvisor-cluster workers` exposes the last admission report, sample age,
+controller receipt time, observations, blocked reasons and probe error.
+A persisted report after controller restart is historical evidence; only a
+fresh poll can admit work. The controller clamps samples older than its lease
+duration to zero availability. Older workers can poll without a report and
+retain reservation admission; they do not claim pressure awareness.
+The worker's final check uses the stricter of its configured sample age and
+the learned lease duration, including when retrying an already-issued resume.
+
+The worker checks current cached observations again after HTTP and before
+native execution. An assignment rejected here is durably recorded locally,
+then returned through `/v1/workers/decline`. The controller permits requeue
+only while that exact lease is live and has not been acknowledged as active.
+The task retains its immutable specification, rejection count and latest
+rejection evidence, and the next assignment receives a new generation.
+Old completions and attempt-scoped controls cannot affect the new assignment.
+Already accepted or uncertain execution is never requeued through this path.
+If cancellation wins the race, the worker confirms that execution never
+started through the ordinary completion path. Replay rebuilds the ready queue
+from current task state; it cannot lease a declined task twice in one batch.
+
+Issued VM resume retains its CPU charge even if fresh node pressure temporarily
+denies the native transition. The same revision is redelivered and gated again
+until it can resume or the attempt is cancelled/expires; the controller does
+not infer a successful resume from request delivery.
 
 ## Failure and persistence contracts
 
@@ -204,7 +279,7 @@ comes from its configured capacity minus local reservations.
   evidence before exit. SIGKILL is an unconfirmed loss case.
 
 API routes: admin credentials can submit/read/cancel/control tasks, list/drain workers
-and read counts; worker credentials can register/poll/complete/acknowledge controls. Health
+and read counts; worker credentials can register/poll/decline/complete/acknowledge controls. Health
 exposes the protocol version. Both roles are trusted deployment services.
 TLS termination and node/tenant credential issuance are deployment work still
 to implement. The HTTP request limit is 4 MiB; the single shard retains at most
@@ -215,12 +290,13 @@ one million task records by default.
 ```sh
 just test pvisor-cluster pvisor-core
 cargo nextest run --locked -p pvisor --test cluster_execution
+cargo nextest run --locked -p pvisor --bin pvisor-worker
 cargo nextest run --locked -p pvisor --lib -E 'test(runtime::run::) or test(executor::vm::control::)'
 cargo clippy --locked -p pvisor-cluster --all-targets -- -D warnings
 cargo clippy --locked -p pvisor --bin pvisor-worker --test cluster_execution -- -D warnings
 ```
 
-`just test-cluster` combines the two test commands above. Loopback HTTP tests
+`just test-cluster` runs the Core/controller suites and Worker/HTTP tests above. Loopback HTTP tests
 require permission to bind ports; they fail rather than silently skipping
 when the execution environment denies networking.
 
@@ -240,17 +316,26 @@ client, not a hardware VM. Native control regressions cover cancellation,
 readiness, control acknowledgements and backing-file ownership; they do not
 establish hardware-backed distributed VM success.
 
+Pressure tests exercise ancestor limits and mount-root mapping, finite PSI
+parsing, arithmetic bounds, freshness, telemetry persistence, renewal under
+probe failure and rejection generation fencing. A real Worker/HTTP test
+deliberately sends a task despite the reported zero budget and proves final
+admission returns it to the queue without a native run or command side effect,
+then another Worker completes the same task under a new generation.
+Fixtures and this adversarial service test do not establish measured CPU QoS,
+memory reclaim or production-scale performance.
+
 Next gates, in dependency order:
 
 1. Validate distributed controls on VM hardware, connect inference-wait
-   coordination, and add physical node/process memory and pressure accounting.
+   coordination, and add per-attempt physical memory/overhead accounting.
    Never release memory merely because a desired state says idle or a single
    backing-file residency sample is zero.
 2. Connect full execution snapshot/restore and immutable checkpoint lineage
    to ordinary Job attempts, then fork, restore and cross-node recovery.
 3. Implement immutable task environments and remote output collection,
    Gateway/scaffold state and idempotent worker restart delivery.
-4. Add load/pressure reporting, CPU QoS and controlled memory/CPU overcommit;
+4. Add enforced CPU QoS and controlled memory/CPU overcommit using node reports;
    shard/replicate authority and group durable operations.
 5. Measure completed useful tasks/sec, p50/p95/p99 step and lifecycle latency,
    resident RAM per live/waiting sandbox, CPU time, cache/network bytes and

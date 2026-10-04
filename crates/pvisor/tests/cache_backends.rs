@@ -93,6 +93,7 @@ struct MockS3 {
     objects: Arc<Mutex<BTreeMap<String, Vec<u8>>>>,
     read_only: Arc<AtomicBool>,
     deny_reads: Arc<AtomicBool>,
+    lost_head_ack: Arc<AtomicBool>,
     puts: Arc<AtomicUsize>,
     gets: Arc<AtomicUsize>,
     stop: Arc<AtomicBool>,
@@ -106,12 +107,14 @@ impl MockS3 {
         let objects = Arc::new(Mutex::new(BTreeMap::<String, Vec<u8>>::new()));
         let read_only = Arc::new(AtomicBool::new(false));
         let deny_reads = Arc::new(AtomicBool::new(false));
+        let lost_head_ack = Arc::new(AtomicBool::new(false));
         let puts = Arc::new(AtomicUsize::new(0));
         let gets = Arc::new(AtomicUsize::new(0));
         let stop = Arc::new(AtomicBool::new(false));
         let worker_objects = objects.clone();
         let worker_read_only = read_only.clone();
         let worker_deny_reads = deny_reads.clone();
+        let worker_lost_head_ack = lost_head_ack.clone();
         let worker_puts = puts.clone();
         let worker_gets = gets.clone();
         let worker_stop = stop.clone();
@@ -129,6 +132,7 @@ impl MockS3 {
                             &worker_deny_reads,
                             &worker_puts,
                             &worker_gets,
+                            &worker_lost_head_ack,
                         );
                     }
                     Err(error) if error.kind() == std::io::ErrorKind::WouldBlock => {
@@ -143,6 +147,7 @@ impl MockS3 {
             objects,
             read_only,
             deny_reads,
+            lost_head_ack,
             puts,
             gets,
             stop,
@@ -163,6 +168,7 @@ fn serve_s3(
     deny_reads: &AtomicBool,
     puts: &AtomicUsize,
     gets: &AtomicUsize,
+    lost_head_ack: &AtomicBool,
 ) {
     let mut bytes = Vec::new();
     let header_end = loop {
@@ -209,24 +215,25 @@ fn serve_s3(
                     "403 Forbidden",
                     b"<Error><Code>AccessDenied</Code></Error>".to_vec(),
                 )
-            } else if headers.get("if-none-match").map(String::as_str) == Some("*")
-                && objects.contains_key(first[1])
+            } else if (headers.get("if-none-match").map(String::as_str) == Some("*")
+                && objects.contains_key(first[1]))
+                || headers.get("if-match").is_some_and(|expected| {
+                    objects
+                        .get(first[1])
+                        .is_none_or(|body| *expected != format!("\"{}\"", digest(body)))
+                })
             {
-                (
-                    "412 Precondition Failed",
-                    b"<Error><Code>PreconditionFailed</Code></Error>".to_vec(),
-                )
-            } else if headers.get("if-match").is_some_and(|expected| {
-                objects
-                    .get(first[1])
-                    .is_none_or(|body| *expected != format!("\"{}\"", digest(body)))
-            }) {
                 (
                     "412 Precondition Failed",
                     b"<Error><Code>PreconditionFailed</Code></Error>".to_vec(),
                 )
             } else {
                 objects.insert(first[1].into(), body.to_vec());
+                if first[1].ends_with("/HEAD.json") && lost_head_ack.swap(false, Ordering::Relaxed)
+                {
+                    // Commit succeeded but the acknowledgement never arrived.
+                    return;
+                }
                 ("200 OK", Vec::new())
             }
         }
@@ -521,7 +528,7 @@ fn explicit_s3_publisher_rebuilds_missing_objects_and_conditionally_updates_its_
     drop(restored);
     assert!(
         s3.gets.load(Ordering::Relaxed) > 0,
-        "v2 CAS and immutable reuse verification require GetObject"
+        "v1 CAS and immutable reuse verification require GetObject"
     );
     let head_key = original
         .keys()
@@ -803,6 +810,54 @@ fn main() {
                 .count(),
             0,
             "reader must not extract a local OCI root"
+        );
+    }
+}
+
+#[test]
+fn a_lost_head_acknowledgement_is_reconciled_after_sdk_conditional_retry() {
+    let tmp = tempfile::tempdir().unwrap();
+    let source = tmp.path().join("source");
+    source_fixture(&source);
+    let s3 = MockS3::start();
+    let mut previous = None;
+    for generation in 1..=2 {
+        s3.lost_head_ack.store(true, Ordering::Relaxed);
+        let response = successful(cli(
+            tmp.path(),
+            "s3",
+            "s3://cache-bucket/team",
+            Some(&s3),
+            &[
+                "publish",
+                "example:test",
+                "--image-store",
+                source.to_str().unwrap(),
+            ],
+        ));
+        let response: serde_json::Value = serde_json::from_slice(&response).unwrap();
+        let objects = s3.objects.lock().unwrap();
+        let bytes = &objects
+            .iter()
+            .find(|(key, _)| key.ends_with("/HEAD.json"))
+            .unwrap()
+            .1;
+        let head: serde_json::Value = serde_json::from_slice(bytes).unwrap();
+        assert_eq!(
+            head["generation"], generation,
+            "SDK retry must not create an extra generation"
+        );
+        let id = head["publication_id"].as_str().unwrap().to_owned();
+        assert_ne!(previous.as_ref(), Some(&id));
+        previous = Some(id);
+        assert!(
+            response["image_handle"].as_str().unwrap().ends_with(
+                head["revision"]
+                    .as_str()
+                    .unwrap()
+                    .strip_prefix("sha256:")
+                    .unwrap()
+            )
         );
     }
 }

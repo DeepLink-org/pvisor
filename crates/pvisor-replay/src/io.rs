@@ -59,6 +59,102 @@ pub fn read_regular_file(path: &Path) -> Result<Vec<u8>, ReplayError> {
     Ok(bytes)
 }
 
+pub(crate) struct BoundedFileRead {
+    pub bytes: Vec<u8>,
+    pub truncated: bool,
+}
+
+/// Read a resolved workspace target without following replacement symlinks.
+/// The opened inode, rather than a prior path inspection, must be a regular file.
+pub(crate) fn read_confined_regular_file(
+    workspace: &Path,
+    resolved_path: &Path,
+    max_bytes: usize,
+) -> Result<BoundedFileRead, ReplayError> {
+    let workspace = canonicalize(workspace, ReplayErrorKind::Workspace, "workspace")?;
+    let relative = resolved_path
+        .strip_prefix(&workspace)
+        .map_err(|_| ReplayError::new(ReplayErrorKind::Executor, "tool path escapes workspace"))?;
+    let file = open_confined_file(&workspace, relative).replay_context(
+        ReplayErrorKind::Executor,
+        format!("open {}", resolved_path.display()),
+    )?;
+    if !file
+        .metadata()
+        .replay_context(ReplayErrorKind::Executor, "inspect Read target")?
+        .is_file()
+    {
+        return Err(ReplayError::new(
+            ReplayErrorKind::Executor,
+            "Read target must be a regular file",
+        ));
+    }
+    let mut bytes = Vec::with_capacity(max_bytes.min(8192));
+    file.take(max_bytes as u64 + 1)
+        .read_to_end(&mut bytes)
+        .replay_context(ReplayErrorKind::Executor, "read tool target")?;
+    let truncated = bytes.len() > max_bytes;
+    bytes.truncate(max_bytes);
+    Ok(BoundedFileRead { bytes, truncated })
+}
+
+#[cfg(unix)]
+fn open_confined_file(workspace: &Path, relative: &Path) -> std::io::Result<File> {
+    use std::ffi::{CString, OsStr};
+    use std::os::fd::{AsRawFd, FromRawFd};
+    use std::os::unix::ffi::OsStrExt;
+    use std::os::unix::fs::OpenOptionsExt;
+    use std::path::Component;
+
+    fn open_component(directory: &File, name: &OsStr, is_directory: bool) -> std::io::Result<File> {
+        let name = CString::new(name.as_bytes())
+            .map_err(|_| std::io::Error::from(std::io::ErrorKind::InvalidInput))?;
+        let flags = libc::O_RDONLY
+            | libc::O_CLOEXEC
+            | libc::O_NOFOLLOW
+            | libc::O_NONBLOCK
+            | if is_directory { libc::O_DIRECTORY } else { 0 };
+        // Each basename is opened relative to a retained directory FD. O_NOFOLLOW
+        // blocks symlink substitution; O_NONBLOCK prevents a FIFO open from waiting.
+        // SAFETY: the directory FD is owned and the basename is a live NUL-terminated string.
+        let fd = unsafe { libc::openat(directory.as_raw_fd(), name.as_ptr(), flags) };
+        if fd < 0 {
+            return Err(std::io::Error::last_os_error());
+        }
+        // SAFETY: openat returned a new, exclusively owned file descriptor.
+        Ok(unsafe { File::from_raw_fd(fd) })
+    }
+
+    let mut directory = OpenOptions::new()
+        .read(true)
+        .custom_flags(libc::O_DIRECTORY | libc::O_CLOEXEC | libc::O_NOFOLLOW)
+        .open("/")?;
+    // Also anchor the canonical workspace without following ancestor substitutions.
+    for component in workspace.components() {
+        match component {
+            Component::RootDir => {}
+            Component::Normal(name) => directory = open_component(&directory, name, true)?,
+            _ => return Err(std::io::ErrorKind::InvalidInput.into()),
+        }
+    }
+    let mut components = relative.components().peekable();
+    while let Some(component) = components.next() {
+        let Component::Normal(name) = component else {
+            return Err(std::io::ErrorKind::InvalidInput.into());
+        };
+        directory = open_component(&directory, name, components.peek().is_some())?;
+    }
+    Ok(directory)
+}
+
+#[cfg(not(unix))]
+fn open_confined_file(_workspace: &Path, _relative: &Path) -> std::io::Result<File> {
+    Err(std::io::Error::new(
+        std::io::ErrorKind::Unsupported,
+        "secure workspace Read requires Unix directory-relative file opens",
+    ))
+}
+
 pub fn sha256(bytes: &[u8]) -> String {
     Sha256::digest(bytes)
         .iter()
@@ -150,5 +246,44 @@ mod tests {
             .set_len(256 * 1024 * 1024 + 1)
             .unwrap();
         assert!(read_regular_file(&path).is_err());
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn confined_read_rejects_symlink_substitution_after_path_resolution() {
+        let temp = tempfile::tempdir().unwrap();
+        let workspace = temp.path().join("workspace");
+        let outside = temp.path().join("outside");
+        fs::create_dir_all(workspace.join("nested")).unwrap();
+        fs::create_dir(&outside).unwrap();
+        fs::write(workspace.join("nested/source"), b"inside").unwrap();
+        fs::write(outside.join("source"), b"outside secret").unwrap();
+        let workspace = fs::canonicalize(workspace).unwrap();
+        let resolved = fs::canonicalize(workspace.join("nested/source")).unwrap();
+
+        fs::rename(workspace.join("nested"), workspace.join("retained")).unwrap();
+        std::os::unix::fs::symlink(&outside, workspace.join("nested")).unwrap();
+        assert!(read_confined_regular_file(&workspace, &resolved, 32).is_err());
+
+        fs::remove_file(workspace.join("nested")).unwrap();
+        fs::rename(workspace.join("retained"), workspace.join("nested")).unwrap();
+        fs::remove_file(&resolved).unwrap();
+        std::os::unix::fs::symlink(outside.join("source"), &resolved).unwrap();
+        assert!(read_confined_regular_file(&workspace, &resolved, 32).is_err());
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn confined_read_bounds_actual_bytes_of_a_large_sparse_file() {
+        let workspace = tempfile::tempdir().unwrap();
+        let path = workspace.path().join("large");
+        let mut file = File::create(&path).unwrap();
+        file.write_all(b"prefix").unwrap();
+        file.set_len(1024 * 1024 * 1024).unwrap();
+        let resolved = fs::canonicalize(path).unwrap();
+        let read = read_confined_regular_file(workspace.path(), &resolved, 32).unwrap();
+        assert_eq!(read.bytes.len(), 32);
+        assert_eq!(&read.bytes[..6], b"prefix");
+        assert!(read.truncated);
     }
 }

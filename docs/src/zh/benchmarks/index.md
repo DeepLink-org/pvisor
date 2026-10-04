@@ -1,6 +1,6 @@
 # 基准与对比
 
-首版显示：pVisor 宿主执行的工具耗时接近原生，暂存小文件操作增加约百毫秒，VM 小任务多数在半秒到一秒。小批量提交可交互使用，十万文件 apply 约 5.5 分钟，是当前明确的短板。
+pVisor VM 启动约 **86 ms**，接近 Docker、Firecracker 与 QEMU microvm 的百毫秒量级。完整修复测试任务为 staged **0.70 秒**、Docker **0.90 秒**、VM **3.97 秒**：暂存可交互，VM 工具路径仍明显落后。十万文件 apply 约 5.5 分钟、Claude/VM 初始化超时也是本版公开的短板。
 
 测量公开复现脚本、样本与失败情况；方案对比标明官方来源和未测范围。方法、环境与样本数见[方法](methodology.md)。
 
@@ -19,6 +19,27 @@ macOS 与 Linux 的测试数据同时保留，按平台、测量日期和制品�
 这些数据覆盖不同负载与阶段，不构成 macOS 与 Linux 的速度排名。共享冷页 pager 当前仅支持 macOS/ARM64；Linux 的 offload 与完整快照是独立测量。
 
 每个数字对应明确的阶段和负载；启动表包含完整 CLI 到标记路径，冷 RAM 代理不是整机物理内存。新产品基准见下方首版结果，未测指标单独标明。
+
+## 数据水位：基线、差距与使用含义 {#reference-position}
+
+下表将不同问题分别放在熟悉的尺度上；不把较小的启动数字替代完整任务。新环境 Linux 1,410 个有效样本、另有 320 个资源/退出补测，旧 macOS/Linux 与首版 3,375 个产品样本继续独立保留。
+
+| 问题 | 熟悉基线 | pVisor 水位 | 对用户的含义 |
+|---|---|---|---|
+| [新 VM 首条输出](startup.md#reference-startup) | Firecracker 74 ms；QEMU microvm 88 ms；Docker 90 ms | VM 86 ms | microVM 百毫秒量级，适合已准备环境的短任务；不含下载 |
+| [完整环境修复/测试](agent-tasks.md#reference-env) | 原生 0.50 s；Docker 0.90 s；QEMU microvm 1.85 s | staged 0.70 s；VM 3.97 s | stage 增量约 0.20 s；VM 约为 Docker 4.4 倍，仍需优化 |
+| [文件读取/遍历](filesystem.md#reference-fs) | Docker 64 MiB 读 33 ms、2,048 文件遍历 5 ms | staged 49 ms / 180 ms | 读取成本较小；频繁扫描小文件会积累等待 |
+| [完整任务内存](methodology.md#reference-resources) | 原生 RSS 169 MiB；Docker 含 daemon 280 MiB | staged 227 MiB；VM 722 MiB | 任务实际驻留量级，不是 Agent 并发容量；RSS 有共享页重复统计 |
+| [真实客户端工具闭环](agent-tasks.md#reference-env) | Claude/Docker 1.23 s；Codex/Docker 6.26 s | staged 1.07 s / 2.25 s；Codex/VM 10.93 s；Claude/VM 失败 | 必须按客户端选环境，初始化与兼容性会压过启动差距 |
+| [改动合入](apply.md) | Git patch apply：10 文件 0.73 ms，1,000 文件 13.61 ms | 约 15 ms / 836 ms；100,000 文件约 5.5 min | 小批量可交互；额外协议有成本，大批量是短板；Git 未提供相同事务语义 |
+| [本地请求](network.md) | native HTTP 0.95 ms | proxy 1.24 ms；VM 3.83 ms | +0.29 / +2.88 ms 本地预算，不等于公网模型时延 |
+| [审查与监督](supervision-cost.md) | 常见 Git/diff 审查流程；非同机性能对照 | 20 项机器审查/合入/drop 约 25 ms | 机器操作成本已测；人类节省分钟数未测 |
+| [并发](density.md) | native/Podman 同样 128 路 idle 全通过 | staged idle 128 路全通过；safe 有失败 | 空闲探针通过不等于能跑 128 个完整 Agent；需要实任务容量测量 |
+
+数字均为对应批次 P50。新对照共用相同工具与两核预算，VM 2 vCPU、完整任务 16 GiB；Docker 为 rootless Engine + bind mount，VM 文件路径不同。它们提供实际成本定位，并非相同安全边界、文件系统或纯 VMM 的排名。macOS 新完整环境和 Docker/Firecracker/QEMU 对照未测，已有 HVF 数据继续在独立 macOS 章节保留。
+
+[完整方法、固定制品与失败证据](methodology.md#reference-env)
+
 
 ## 基准
 

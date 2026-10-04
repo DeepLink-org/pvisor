@@ -35,6 +35,8 @@ pub struct Resolved {
 pub struct OverlayLayout {
     lowers: Vec<PathBuf>,
     target: PathBuf,
+    baseline: PathBuf,
+    frozen_baseline: bool,
 }
 impl OverlayLayout {
     pub fn new(lowers: Vec<PathBuf>, target: PathBuf) -> io::Result<Self> {
@@ -46,7 +48,8 @@ impl OverlayLayout {
         snapshot: Option<&Path>,
     ) -> io::Result<Self> {
         let last = lowers.last().ok_or_else(|| error(libc::EINVAL))?;
-        if fs::canonicalize(last)? != fs::canonicalize(snapshot.unwrap_or(&target))? {
+        let baseline = fs::canonicalize(last)?;
+        if baseline != fs::canonicalize(snapshot.unwrap_or(&target))? {
             return Err(error(libc::EINVAL));
         }
         if !target.is_dir() {
@@ -57,13 +60,24 @@ impl OverlayLayout {
                 return Err(error(libc::ENOTDIR));
             }
         }
-        Ok(Self { lowers, target })
+        let frozen_baseline = baseline != fs::canonicalize(&target)?;
+        let baseline = last.clone();
+        Ok(Self {
+            lowers,
+            target,
+            baseline,
+            frozen_baseline,
+        })
     }
     pub fn lowers(&self) -> &[PathBuf] {
         &self.lowers
     }
     pub fn target(&self) -> &Path {
         &self.target
+    }
+    /// Target-corresponding baseline, never the higher-precedence extra layer.
+    pub fn baseline(&self) -> &Path {
+        &self.baseline
     }
 }
 
@@ -78,7 +92,9 @@ pub struct OverlayCore {
     // losing the copied inode while another alias still carries its changes.
     copied_hard_links: Mutex<HashMap<(u64, u64), Vec<PathBuf>>>,
     preimage_dir: Option<PathBuf>,
-    preimage_lock: Mutex<()>,
+    // Read observations are published without fsync. Before the first upper
+    // mutation, their file and directory are synced under this lock.
+    preimage_lock: Mutex<BTreeSet<PathBuf>>,
 }
 
 fn error(errno: i32) -> io::Error {
@@ -256,7 +272,7 @@ fn fingerprint_xattrs(path: &Path) -> io::Result<XattrFingerprint> {
     Ok(XattrFingerprint::Values { entries })
 }
 
-/// Load all durable first-touch entries from a preimage journal.
+/// Load first observations. Entries for mutated paths are synced before mutation.
 pub fn load_preimages(directory: &Path) -> io::Result<Vec<PathPreimage>> {
     let entries = directory.join("entries");
     let iterator = match fs::read_dir(&entries) {
@@ -361,6 +377,17 @@ impl OverlayCore {
     ) -> io::Result<Self> {
         let target = lowers.last().ok_or_else(|| error(libc::EINVAL))?.clone();
         let layout = OverlayLayout::new(lowers, target)?;
+        Self::open_existing_for_layout(layout, upper, work, excluded, preimage_dir)
+    }
+
+    /// Reopen backing while retaining its explicit target and frozen baseline.
+    pub fn open_existing_for_layout(
+        layout: OverlayLayout,
+        upper: PathBuf,
+        work: Option<PathBuf>,
+        excluded: Vec<PathBuf>,
+        preimage_dir: Option<PathBuf>,
+    ) -> io::Result<Self> {
         Self::build_for_layout(layout, upper, work, excluded, preimage_dir, false)
     }
 
@@ -463,7 +490,7 @@ impl OverlayCore {
             copied_hard_links: Mutex::new(HashMap::new()),
             access: crate::FileAccessPolicy::default(),
             preimage_dir,
-            preimage_lock: Mutex::new(()),
+            preimage_lock: Mutex::new(BTreeSet::new()),
         };
         if initialize
             && fs::read_dir(&core.upper)?.next().is_none()
@@ -528,12 +555,60 @@ impl OverlayCore {
         Ok(())
     }
 
+    /// Remember the target's first content observation before exposing a lower
+    /// file, symlink or xattr to the workload. Positive stat/lookup alone does
+    /// not read/hash ordinary file contents. Frozen layouts need no read-time
+    /// journal: their immutable target baseline supplies the mutation preimage.
+    ///
+    /// Read-only observations are atomic files but are not fsynced per read.
+    /// Mutation promotes the same entry to durable before changing the upper.
+    /// A normal stage copy/reopen preserves observations; this is not a durable
+    /// read-set transaction or a live lower snapshot across power loss.
+    pub fn observe_read(&self, rel: &Path) -> io::Result<()> {
+        // Do not turn a denied alias or an I/O failure into a negative lookup
+        // and then read/hash the denied underlying file as its "preimage".
+        let resolved = self.resolve_checked(rel)?;
+        if self.layout.frozen_baseline {
+            return Ok(());
+        }
+        if resolved.is_none() {
+            self.observe_absence(rel)
+        } else {
+            self.capture_preimage(rel, false)
+        }
+    }
+
+    fn observe_absence(&self, rel: &Path) -> io::Result<()> {
+        if self.layout.frozen_baseline {
+            return Ok(());
+        }
+        // Absence was already observed. Do not re-read a live target that may
+        // have appeared between lookup and journal publication.
+        self.capture_preimage_after_check(rel, false, true, || Ok(()))
+    }
+
     fn record_preimage(&self, rel: &Path) -> io::Result<()> {
+        self.capture_preimage(rel, true)
+    }
+
+    fn capture_preimage(&self, rel: &Path, durable: bool) -> io::Result<()> {
+        self.capture_preimage_after_check(rel, durable, false, || Ok(()))
+    }
+
+    // The hook makes the missing-entry / publication interleaving deterministic
+    // in tests without changing the public API or relying on thread timing.
+    fn capture_preimage_after_check(
+        &self,
+        rel: &Path,
+        durable: bool,
+        observed_absent: bool,
+        after_missing: impl FnOnce() -> io::Result<()>,
+    ) -> io::Result<()> {
         let Some(directory) = &self.preimage_dir else {
             return Ok(());
         };
         Self::validate_rel(rel)?;
-        let _guard = self
+        let mut synced = self
             .preimage_lock
             .lock()
             .map_err(|_| io::Error::other("preimage journal lock poisoned"))?;
@@ -542,25 +617,92 @@ impl OverlayCore {
             .join("entries")
             .join(format!("{}.json", sha256_hex(path_bytes)));
         match fs::symlink_metadata(&destination) {
-            Ok(_) => return Ok(()),
+            Ok(metadata) => {
+                if !metadata.is_file() {
+                    return Err(error(libc::EINVAL));
+                }
+                if durable && !synced.contains(rel) {
+                    let file = Self::verified_preimage_file(&destination, rel)?;
+                    file.sync_all()?;
+                    File::open(directory.join("entries"))?.sync_all()?;
+                    synced.insert(rel.to_path_buf());
+                }
+                return Ok(());
+            }
             Err(error) if error.kind() == io::ErrorKind::NotFound => {}
             Err(error) => return Err(error),
         }
-        let target = self.layout.target();
+        after_missing()?;
+        // An apply may consume this entry while the core remains open. A new
+        // mutation then starts a new observation, rather than reusing a cache.
+        synced.remove(rel);
         let preimage = PathPreimage {
             path: path_bytes.to_vec(),
-            state: fingerprint_at(target, rel)?,
+            state: if observed_absent {
+                PathFingerprint::Absent
+            } else {
+                fingerprint_at(self.layout.baseline(), rel)?
+            },
         };
         let body = serde_json::to_vec_pretty(&preimage)
             .map_err(|error| io::Error::new(io::ErrorKind::InvalidData, error))?;
+        let temporary = directory.join("entries").join(format!(
+            ".pending-{}-{}",
+            std::process::id(),
+            TEMP_ID.fetch_add(1, Ordering::Relaxed)
+        ));
         let mut file = OpenOptions::new()
             .write(true)
             .create_new(true)
             .mode(0o600)
-            .open(&destination)?;
-        file.write_all(&body)?;
-        file.sync_all()?;
-        File::open(directory.join("entries"))?.sync_all()
+            .open(&temporary)?;
+        let result = (|| {
+            file.write_all(&body)?;
+            if durable {
+                file.sync_all()?;
+            }
+            // Publish without replacement even if another core instance uses
+            // the same stage. A race must never replace its first observation.
+            match fs::hard_link(&temporary, &destination) {
+                Ok(()) => {}
+                Err(error) if error.kind() == io::ErrorKind::AlreadyExists => {
+                    // Another core won after our initial check. Adopt its
+                    // immutable first observation, and sync the actual winner
+                    // before mutation rather than just syncing our loser.
+                    let winner = Self::verified_preimage_file(&destination, rel)?;
+                    if durable {
+                        winner.sync_all()?;
+                    }
+                }
+                Err(error) => return Err(error),
+            }
+            fs::remove_file(&temporary)?;
+            if durable {
+                File::open(directory.join("entries"))?.sync_all()?;
+                synced.insert(rel.to_path_buf());
+            }
+            Ok(())
+        })();
+        if result.is_err() {
+            let _ = fs::remove_file(temporary);
+        }
+        result
+    }
+
+    fn verified_preimage_file(destination: &Path, rel: &Path) -> io::Result<File> {
+        let file = OpenOptions::new()
+            .read(true)
+            .custom_flags(libc::O_NOFOLLOW)
+            .open(destination)?;
+        if !file.metadata()?.is_file() {
+            return Err(error(libc::EINVAL));
+        }
+        let preimage: PathPreimage = serde_json::from_reader(&file)
+            .map_err(|error| io::Error::new(io::ErrorKind::InvalidData, error))?;
+        if preimage.relative_path() != rel {
+            return Err(error(libc::EINVAL));
+        }
+        Ok(file)
     }
 
     fn record_logical_tree_mapping(&self, source: &Path, destination: &Path) -> io::Result<()> {
@@ -718,58 +860,74 @@ impl OverlayCore {
     }
 
     fn resolve_component(&self, rel: &Path) -> Option<Resolved> {
+        self.resolve_component_checked(rel).ok().flatten()
+    }
+
+    fn resolve_component_checked(&self, rel: &Path) -> io::Result<Option<Resolved>> {
         let upper = self.upper_path(rel);
-        if layer_path(&self.upper, rel).ok().flatten().is_some() {
-            return Some(Resolved {
+        if layer_path(&self.upper, rel)?.is_some() {
+            return Ok(Some(Resolved {
                 path: upper,
                 is_upper: true,
-            });
+            }));
         }
-        let name = rel.file_name()?;
+        let name = rel.file_name().ok_or_else(|| error(libc::EINVAL))?;
         let parent = rel.parent().unwrap_or_else(|| Path::new(""));
         if self.is_whiteouted(parent, name) || self.is_opaque(parent) {
-            return None;
+            return Ok(None);
         }
-        self.layout.lowers.iter().find_map(|lower| {
-            let path = layer_path(lower, rel).ok().flatten()?;
-            Some(Resolved {
-                path,
-                is_upper: false,
-            })
-        })
+        for lower in &self.layout.lowers {
+            if let Some(path) = layer_path(lower, rel)? {
+                return Ok(Some(Resolved {
+                    path,
+                    is_upper: false,
+                }));
+            }
+        }
+        Ok(None)
     }
 
     pub fn resolve(&self, rel: &Path) -> Option<Resolved> {
-        if self.require_visible(rel).is_err() {
-            return None;
-        }
+        self.resolve_checked(rel).ok().flatten()
+    }
+
+    /// Resolve while preserving permission and I/O failures. `None` means
+    /// genuine absence from the merged view, not a denied alias or failed stat.
+    pub fn resolve_checked(&self, rel: &Path) -> io::Result<Option<Resolved>> {
+        self.require_visible(rel)?;
         if rel.as_os_str().is_empty() {
-            return Some(Resolved {
+            return Ok(Some(Resolved {
                 path: self.upper.clone(),
                 is_upper: true,
-            });
+            }));
         }
         let mut current = PathBuf::new();
         let mut resolved = None;
         let count = rel.components().count();
         for (index, component) in rel.components().enumerate() {
             current.push(component.as_os_str());
-            let item = self.resolve_component(&current)?;
-            self.require_unaliased(&item.path).ok()?;
+            let Some(item) = self.resolve_component_checked(&current)? else {
+                return Ok(None);
+            };
+            self.require_unaliased(&item.path)?;
             if index + 1 != count {
-                let metadata = fs::symlink_metadata(&item.path).ok()?;
+                let metadata = fs::symlink_metadata(&item.path)?;
                 if !metadata.is_dir() {
-                    return None;
+                    return Err(error(libc::ENOTDIR));
                 }
             }
             resolved = Some(item);
         }
-        resolved
+        Ok(resolved)
     }
 
     pub fn metadata(&self, rel: &Path) -> io::Result<Metadata> {
-        self.require_visible(rel)?;
-        let resolved = self.resolve(rel).ok_or_else(|| error(libc::ENOENT))?;
+        let Some(resolved) = self.resolve_checked(rel)? else {
+            // A negative lookup is an observation too: a later create must not
+            // overwrite a file the host added after the workload saw absence.
+            self.observe_absence(rel)?;
+            return Err(error(libc::ENOENT));
+        };
         fs::symlink_metadata(resolved.path)
     }
 
@@ -1041,6 +1199,15 @@ impl OverlayCore {
             Err(err) if err.kind() == io::ErrorKind::NotFound => Ok(()),
             Err(err) => Err(err),
         }
+    }
+
+    /// Prepare a destination for adapters that create nodes via passthrough.
+    /// The destination preimage must be durable before clearing its whiteout.
+    pub fn prepare_create(&self, rel: &Path) -> io::Result<()> {
+        self.require_visible(rel)?;
+        self.record_preimage(rel)?;
+        self.ensure_upper_parents(rel)?;
+        self.clear_whiteout(rel)
     }
 
     pub fn create_file(&self, rel: &Path, mode: u32, flags: i32) -> io::Result<File> {
@@ -1384,6 +1551,111 @@ impl OverlayCore {
 
 #[cfg(test)]
 mod tests {
+    #[test]
+    fn negative_observation_remains_absent_when_host_creates_before_publication() {
+        use super::*;
+        let temp = tempfile::tempdir().unwrap();
+        let target = temp.path().join("target");
+        let journal = temp.path().join("preimages");
+        fs::create_dir(&target).unwrap();
+        let core = OverlayCore::new_with_exclusions_and_preimages(
+            vec![target.clone()],
+            temp.path().join("upper"),
+            None,
+            vec![],
+            Some(journal.clone()),
+        )
+        .unwrap();
+        assert!(core.resolve_checked(Path::new("new")).unwrap().is_none());
+        core.capture_preimage_after_check(Path::new("new"), false, true, || {
+            fs::write(target.join("new"), b"host creation after negative lookup")
+        })
+        .unwrap();
+        assert_eq!(
+            load_preimages(&journal).unwrap()[0].state,
+            PathFingerprint::Absent
+        );
+        core.copy_up(Path::new("new")).unwrap();
+        assert_eq!(
+            load_preimages(&journal).unwrap()[0].state,
+            PathFingerprint::Absent
+        );
+        assert_ne!(
+            fingerprint_at(&target, Path::new("new")).unwrap(),
+            PathFingerprint::Absent
+        );
+    }
+    #[test]
+    fn two_cores_never_replace_the_first_observation_when_publication_races() {
+        use super::*;
+        use crate::apply::{OverlayRecord, OverlayState, OverlayUpper, apply_overlay};
+        for durable_loser in [false, true] {
+            let temp = tempfile::tempdir().unwrap();
+            let target = temp.path().join("target");
+            let stage = temp.path().join("stage");
+            let journal = stage.join("preimages");
+            fs::create_dir(&target).unwrap();
+            fs::write(target.join("value"), b"original").unwrap();
+            let original = fingerprint_at(&target, Path::new("value")).unwrap();
+            let loser = OverlayCore::new_with_exclusions_and_preimages(
+                vec![target.clone()],
+                stage.join("upper"),
+                Some(stage.join("work")),
+                vec![],
+                Some(journal.clone()),
+            )
+            .unwrap();
+            let winner = OverlayCore::new_with_exclusions_and_preimages(
+                vec![target.clone()],
+                temp.path().join("other-upper"),
+                None,
+                vec![],
+                Some(journal.clone()),
+            )
+            .unwrap();
+            // Both instances can see a missing journal destination. Schedule
+            // the winner and host edit after the loser's missing-entry check,
+            // before its fingerprint/publication; a replacing rename would
+            // adopt "host edit" and permit the stale candidate to overwrite it.
+            loser
+                .capture_preimage_after_check(Path::new("value"), durable_loser, false, || {
+                    winner.observe_read(Path::new("value"))?;
+                    fs::write(target.join("value"), b"host edit")
+                })
+                .unwrap();
+            let entries = load_preimages(&journal).unwrap();
+            assert_eq!(entries.len(), 1);
+            assert_eq!(entries[0].state, original);
+            assert_eq!(fs::read_dir(journal.join("entries")).unwrap().count(), 1);
+            fs::write(
+                loser.copy_up(Path::new("value")).unwrap(),
+                b"stale agent edit",
+            )
+            .unwrap();
+            drop(loser);
+            drop(winner);
+            let mut record = OverlayRecord {
+                id: "shared-journal".into(),
+                generation: 0,
+                target: target.clone(),
+                baseline_lower: None,
+                upper: OverlayUpper {
+                    upper_dir: stage.join("upper"),
+                    work_dir: stage.join("work"),
+                },
+                merged_dir: stage.join("merged"),
+                stage_dir: stage,
+                excluded_paths: vec![],
+                access_policy: Default::default(),
+                auto_apply: false,
+                auto_discard: false,
+                protect_target: false,
+                state: OverlayState::Staged,
+            };
+            assert!(apply_overlay(&mut record).is_err());
+            assert_eq!(fs::read(target.join("value")).unwrap(), b"host edit");
+        }
+    }
 
     #[test]
     fn opening_snapshot_backing_preserves_empty_root_and_copy_up_hard_links() {
@@ -1515,7 +1787,7 @@ mod tests {
     }
 
     #[test]
-    fn snapshot_layout_keeps_original_target_as_the_conflict_baseline() {
+    fn snapshot_layout_uses_its_target_corresponding_frozen_baseline() {
         use super::*;
         let dir = tempfile::tempdir().unwrap();
         let target = dir.path().join("target");
@@ -1540,7 +1812,7 @@ mod tests {
         assert_eq!(fs::read(file).unwrap(), b"snapshot");
         assert_eq!(
             load_preimages(&journal).unwrap()[0].state,
-            fingerprint_at(&target, Path::new("file")).unwrap()
+            fingerprint_at(&snapshot, Path::new("file")).unwrap()
         );
     }
     #[test]

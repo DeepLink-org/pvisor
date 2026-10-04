@@ -33,7 +33,7 @@ fn read_handle(cache: &PortableCache) -> String {
             image_handle: Some(handle),
             ..
         } => handle,
-        _ => panic!("missing v2 read handle"),
+        _ => panic!("missing v1 read handle"),
     }
 }
 #[test]
@@ -259,7 +259,7 @@ fn local_objects_survive_backend_loss_and_corruption_is_refetched() {
     let read = |reader: &PortableCache| {
         reader
             .request(Request::Read {
-                digest: read_handle(&reader),
+                digest: read_handle(reader),
                 path: b"small".to_vec(),
                 offset: 0,
                 length: 5,
@@ -392,7 +392,7 @@ fn independent_images_share_file_chunks_and_old_revisions_remain_readable() {
             path: b"small".into()
         })
         .is_err(),
-        "v2 must not introduce a global digest-only index"
+        "v1 must not introduce a global digest-only index"
     );
 }
 
@@ -563,29 +563,97 @@ fn corrupt_remote_pages_fail_and_corrupt_local_pages_are_refetched() {
 }
 
 #[test]
-fn filesystem_reader_still_accepts_committed_v1_teaching_objects() {
-    let root = PathBuf::from(env!("CARGO_MANIFEST_DIR"))
-        .join("../../docs/src/assets/examples/cache-layout-v1");
-    let reader = PortableCache::new(Storage::filesystem(root, false).unwrap(), None, true);
-    let response = reader.prepare("example:layout", "amd64", false).unwrap().0;
-    let Response::Prepared {
-        digest,
-        image_handle: None,
-        ..
-    } = response
-    else {
-        panic!("expected legacy response")
-    };
-    assert_eq!(
-        reader
-            .request(Request::Read {
-                digest,
-                path: b"bin/tool".into(),
-                offset: 0,
-                length: 32
+fn publication_uses_v1_for_controls_handles_and_binary_magic() {
+    let (tmp, cache, store, image) = fixture();
+    let canonical = crate::image::oci::cache_reference("example:test")
+        .unwrap()
+        .0;
+    cache.publish(&store, &image, "amd64", &canonical).unwrap();
+    let handle = read_handle(&cache);
+    assert!(handle.starts_with("pvisor-v1:"));
+    let parsed = Handle::parse(&handle).unwrap();
+    assert_eq!(parsed.encode(), handle);
+    let root = tmp.path().join("shared");
+    for key in [
+        "format.json".to_string(),
+        format!("meta/{}/identity.json", parsed.image_key),
+        head_key(&canonical, &parsed.platform),
+        format!("{}/COMMIT.json", parsed.prefix()),
+        format!("{}/manifest.json", parsed.prefix()),
+        format!("{}/config.json", parsed.prefix()),
+    ] {
+        let record: serde_json::Value =
+            serde_json::from_slice(&fs::read(root.join(key)).unwrap()).unwrap();
+        assert_eq!(record["format_version"], 1);
+    }
+    for name in BINARY_NAMES {
+        let bytes = fs::read(root.join(parsed.prefix()).join(name)).unwrap();
+        assert_eq!(&bytes[..8], b"PVICB1\0\0");
+        assert_eq!(u32::from_le_bytes(bytes[8..12].try_into().unwrap()), 1);
+    }
+    let checksums = fs::read(root.join(parsed.prefix()).join("checksums.bin")).unwrap();
+    assert_eq!(&checksums[..8], b"PVICH1\0\0");
+    let old_handle = handle.replacen("pvisor-v1:", "pvisor-v2:", 1);
+    assert!(
+        cache
+            .request(Request::Stat {
+                digest: old_handle,
+                path: b"small".into(),
             })
-            .unwrap()
-            .1,
-        b"ABC"
+            .unwrap_err()
+            .to_string()
+            .contains("expected immutable pvisor-v1")
+    );
+    let head_bytes = fs::read(root.join(head_key(&canonical, &parsed.platform))).unwrap();
+    let mut head: serde_json::Value = serde_json::from_slice(&head_bytes).unwrap();
+    head["format_version"] = 2.into();
+    assert!(
+        decode_head(
+            &serde_json::to_vec(&head).unwrap(),
+            &parsed.image_key,
+            &parsed.platform,
+        )
+        .is_err()
+    );
+    let mut format: serde_json::Value = serde_json::from_slice(FORMAT).unwrap();
+    format["format_version"] = 2.into();
+    fs::write(
+        root.join("format.json"),
+        serde_json::to_vec(&format).unwrap(),
+    )
+    .unwrap();
+    assert!(
+        cache
+            .request(Request::Ping)
+            .unwrap_err()
+            .to_string()
+            .contains("unsupported cache format")
+    );
+}
+
+#[test]
+fn removed_packed_layout_is_not_a_readable_cache() {
+    let tmp = tempfile::tempdir().unwrap();
+    let storage = Storage::filesystem(tmp.path().into(), false).unwrap();
+    storage
+        .put("v1/format", b"pvisor-cache-v1\n".to_vec(), true)
+        .unwrap();
+    let cache = PortableCache::new(storage, None, true);
+    assert!(
+        cache
+            .prepare("example:test", "amd64", false)
+            .unwrap_err()
+            .to_string()
+            .contains("image absent from read-only cache")
+    );
+    assert!(
+        cache
+            .request(Request::Stat {
+                digest: format!("sha256:{}", "a".repeat(64)),
+                path: b"small".into(),
+            })
+            .unwrap_err()
+            .to_string()
+            .contains("expected immutable pvisor-v1")
     );
 }

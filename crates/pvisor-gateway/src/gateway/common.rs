@@ -87,8 +87,3 @@ pub(crate) fn attach_capture_headers(
         .header("x-pvisor-call-id", call.call_id.as_str())
         .header("x-pvisor-trace-id", call.trace_id.as_str())
 }
-
-pub(crate) fn is_models_list_path(path: &str) -> bool {
-    let p = path.trim_end_matches('/');
-    p.ends_with("/models") || p == "models" || p.ends_with("/v1/models")
-}

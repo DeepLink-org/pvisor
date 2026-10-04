@@ -1,6 +1,6 @@
 # Benchmarks and comparisons
 
-The first version shows near-native host tool time, roughly hundreds of milliseconds added for staged small-file work, and mostly 0.5–1 second small VM jobs. Small submissions fit interactive workflows; 100,000-file apply takes about 5.5 minutes and is a clear current limitation.
+pVisor VM starts in about **86 ms**, near Docker, Firecracker and QEMU microvm on a hundred-millisecond scale. Complete repair/testing takes **0.70 s** staged, **0.90 s** in Docker, and **3.97 s** in the VM: interactive staging, with a remaining VM tool-path gap. A roughly 5.5-minute 100,000-file apply and Claude/VM initialization timeout are also published limitations.
 
 Measurements publish reproduction scripts, samples and failures; comparisons identify official sources and unmeasured areas. See [methodology](methodology.md).
 
@@ -19,6 +19,27 @@ Both macOS and Linux measurements are retained, with separate records for each p
 These datasets cover different workloads and phases, so they do not rank macOS against Linux. The shared cold-page pager currently requires macOS/ARM64; Linux offload and complete snapshots are separate measurements.
 
 Each number describes a specific phase and workload. The startup table includes the full CLI-to-marker path, and cold RAM proxy is not whole-host physical memory. New product measurements appear below, with unmeasured metrics identified separately.
+
+## Performance position: baselines, gaps, and meaning {#reference-position}
+
+Different questions have different familiar scales; bare startup cannot substitute for a complete task. The new Linux environment has 1,410 valid samples plus 320 resource/exit follow-ups. Historical macOS/Linux data and 3,375 first-edition product samples remain separate.
+
+| Question | Familiar baseline | pVisor position | User implication |
+|---|---|---|---|
+| [New VM first output](startup.md#reference-startup) | Firecracker 74 ms; QEMU microvm 88 ms; Docker 90 ms | VM 86 ms | Hundred-millisecond microVM range for prepared short tasks; downloads excluded |
+| [Complete repair/testing](agent-tasks.md#reference-env) | Native 0.50 s; Docker 0.90 s; QEMU microvm 1.85 s | Staged 0.70 s; VM 3.97 s | Staging adds ~0.20 s; VM takes ~4.4 times Docker, a remaining gap |
+| [Reads/traversal](filesystem.md#reference-fs) | Docker 64 MiB read 33 ms; 2,048-file traversal 5 ms | Staged 49 ms / 180 ms | Modest individual read cost; frequent small-file scans accumulate |
+| [Complete-task memory](methodology.md#reference-resources) | Native RSS 169 MiB; Docker including daemon 280 MiB | Staged 227 MiB; VM 722 MiB | Actual residency scale, not Agent density; summed RSS duplicates shared pages |
+| [Real client tool loops](agent-tasks.md#reference-env) | Claude/Docker 1.23 s; Codex/Docker 6.26 s | Staged 1.07 s / 2.25 s; Codex/VM 10.93 s; Claude/VM failed | Choose per client; initialization and compatibility can dominate startup |
+| [Admission](apply.md) | Git patch apply: 10 files 0.73 ms; 1,000 files 13.61 ms | ~15 ms / 836 ms; 100,000 files ~5.5 min | Interactive small admission; protocol overhead and costly large batches; Git has different transaction semantics |
+| [Local requests](network.md) | Native HTTP 0.95 ms | Proxy 1.24 ms; VM 3.83 ms | +0.29 / +2.88 ms locally, not Internet model latency |
+| [Review/supervision](supervision-cost.md) | Familiar Git/diff workflow; not a measured performance control | 20-item machine review/apply/drop ~25 ms | Machine cost measured; human minutes saved unmeasured |
+| [Concurrency](density.md) | Native/Podman also pass 128 idle probes | Staged passes 128 idle probes; safe has failures | Idle success does not establish capacity for 128 complete Agents |
+
+Numbers are P50 within their own batches. New controls share tools and two host cores; VMs use 2 vCPU and 16 GiB for complete tasks. Docker is rootless Engine with bind mounts; VM file paths differ. These locate practical costs, not identical security boundaries/filesystems or pure VMM rankings. New macOS complete-environment/Docker/Firecracker/QEMU comparisons are unmeasured; existing HVF evidence remains in separate macOS sections.
+
+[Full method, pinned artifacts and failure evidence](methodology.md#reference-env)
+
 
 ## Benchmarks
 

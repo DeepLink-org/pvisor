@@ -32,6 +32,7 @@ fn spec(id: &str) -> TaskSpec {
         resources: resources(1),
         labels: BTreeMap::new(),
         cache_keys: Vec::new(),
+        retain_bundle: false,
     }
 }
 fn worker(id: &str, slots: u32) -> WorkerRegistration {
@@ -43,6 +44,7 @@ fn worker(id: &str, slots: u32) -> WorkerRegistration {
         execution: vec![class()],
         vm_control_protocol: None,
         vm_control_actions: Vec::new(),
+        artifact_protocol: None,
         labels: BTreeMap::new(),
         cache_keys: Vec::new(),
     }
@@ -68,6 +70,8 @@ fn finish(key: LeaseKey) -> Completion {
         key,
         result: None,
         error: Some("test error".into()),
+        artifacts: None,
+        artifact_error: None,
     }
 }
 
@@ -214,6 +218,71 @@ fn controller_normalizes_stale_measurements_and_rejects_inconsistent_reports() {
     assert!(s.poll(request, 2).is_err());
     assert_eq!(s.workers()[0].seen_at_ms, 1);
     assert_eq!(s.task("one").unwrap().phase, TaskPhase::Queued);
+}
+
+#[test]
+fn requeue_never_leases_the_same_task_twice_in_one_batch_live_or_after_replay() {
+    for restart in [false, true] {
+        let temp = tempfile::tempdir().unwrap();
+        let path = temp.path().join("journal");
+        let mut s = Scheduler::open(&path, config()).unwrap();
+        s.register(worker("w", 4), 0).unwrap();
+        s.submit(spec("one"), 0).unwrap();
+        let key = s
+            .poll(poll("w", 4, vec![]), 1)
+            .unwrap()
+            .assignments
+            .remove(0)
+            .lease
+            .key;
+        s.decline(
+            AdmissionRejection {
+                key,
+                reason: "not started".into(),
+            },
+            2,
+        )
+        .unwrap();
+        if restart {
+            drop(s);
+            s = Scheduler::open(&path, config()).unwrap();
+        }
+        let batch = s.poll(poll("w", 4, vec![]), 3).unwrap();
+        assert_eq!(batch.assignments.len(), 1);
+        assert_eq!(s.workers()[0].reserved, resources(1));
+        assert_eq!(batch.assignments[0].lease.key.generation, 2);
+    }
+}
+
+#[test]
+fn cancellation_winning_unstarted_rejection_is_confirmed_through_completion() {
+    let temp = tempfile::tempdir().unwrap();
+    let mut s = Scheduler::open(&temp.path().join("journal"), config()).unwrap();
+    s.register(worker("w", 1), 0).unwrap();
+    s.submit(spec("one"), 0).unwrap();
+    let key = s
+        .poll(poll("w", 1, vec![]), 1)
+        .unwrap()
+        .assignments
+        .remove(0)
+        .lease
+        .key;
+    s.cancel("one", 2).unwrap();
+    assert!(
+        s.decline(
+            AdmissionRejection {
+                key: key.clone(),
+                reason: "not started".into()
+            },
+            3
+        )
+        .is_err()
+    );
+    assert_eq!(s.task("one").unwrap().phase, TaskPhase::Cancelling);
+    assert_eq!(s.workers()[0].reserved, resources(1));
+    s.complete(finish(key), 4).unwrap();
+    assert_eq!(s.task("one").unwrap().phase, TaskPhase::Cancelled);
+    assert_eq!(s.workers()[0].reserved, Resources::default());
 }
 
 #[test]

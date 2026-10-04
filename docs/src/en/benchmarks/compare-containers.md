@@ -4,7 +4,7 @@ Docker plus Git is a capable development workflow. pVisor adds pending changes, 
 
 ## Scope
 
-Documentation checked on 2026-10-04. The local Docker daemon was inaccessible; measured containers use rootless Podman + crun. This is an OCI control, not a Docker measurement. [Filesystem results](filesystem.md) retain image/rootfs hashes and parameters; [VM startup](startup.md) retains macOS and Linux history.
+The 2026-10-04 follow-up measures a private, user-owned rootless Docker Engine 29.7.2 on the same Linux host, despite an inaccessible system daemon. It uses the same Python/Node/Rust/Claude/Codex artifacts, projects and two-core budget with prepared images. Earlier Podman/crun data remain separate. Docker Desktop, devcontainer extensions and remote environments are unmeasured.
 
 | Configuration | Where edits happen | Admission protection | Suitable use |
 |---|---|---|---|
@@ -22,6 +22,17 @@ Sources: Docker [bind mounts](https://docs.docker.com/engine/storage/bind-mounts
 
 Docker plus a complete Git admission workflow can be sufficient. `git diff` alone cannot retract changes already made through a writable bind mount or produce pVisor's observed-capability record. pVisor's process, staging and recording costs buy that shared workflow.
 
+### What these numbers support {#reference-comparison}
+
+Complete repair/testing P50 is **0.90 s** in Docker, **0.70 s** in pVisor staged, and **3.97 s** in pVisor VM. Docker metadata/read/write remain close to native. Staging adds about 16 ms for 64 MiB reads and 175 ms to traverse 2,048 files. Lightweight staging costs hundreds of milliseconds here; an independent guest kernel currently brings seconds of additional tool-path cost.
+
+This is not a ranking within identical security boundaries. Staged host supplies pending changes/evidence while retaining access outside the workspace. Docker supplies namespaces with a writable bind mount; the VM supplies a guest kernel and staged view. Select using the required boundary, task time and admission workflow together.
+
+Real clients add costs: Claude takes **1.23 s** in Docker and **1.07 s** staged; Codex takes **6.26 s** in Docker, **2.25 s** staged, and **10.93 s** in the VM. Claude/VM initialization times out and has no successful latency sample. These are fixed tools and controlled responses. Real inference, default client inner sandboxes and Docker writable-layer/overlay2 file workloads remain unmeasured.
+
+[Complete environment/distributions](agent-tasks.md#reference-env) · [File operations](filesystem.md#reference-fs) · [Memory scope/configuration](methodology.md#reference-env)
+
+
 ## Corrections
 
-Submit configuration, image digest and reproduction to [pVisor issues](https://github.com/DeepLink-org/pvisor/issues). Docker/overlay2 measurements are welcome; Podman results do not establish Docker Desktop performance.
+Submit configuration, image digest and reproduction to [pVisor issues](https://github.com/DeepLink-org/pvisor/issues). Docker writable-layer/overlay2 and Docker Desktop samples are welcome; this measures only Linux rootless Engine with bind mounts.

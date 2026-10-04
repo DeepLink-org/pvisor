@@ -309,6 +309,25 @@ QEMU q35 的 218 ms 不能代表 QEMU 的最低启动成本；关闭可选传统
 
 [本轮配置与复现](methodology.md#reference-env) · [逐样本 CSV](../../assets/benchmarks/reference-env-20261004/samples.csv) · [分布与阶段计时](../../assets/benchmarks/reference-env-20261004/summary.json) · [原始证据](../../assets/benchmarks/reference-env-20261004/evidence.tar.gz) · [兼容性矩阵](../../assets/benchmarks/reference-env-20261004/compatibility.json)
 
+#### 完整退出补测：不要把清理时间当作 Ready {#reference-exit}
+
+同配置，单独 30 次/组、3 次预热。用专用进程等待记录退出时间，替代主批次的轮询；两批 Ready 百分位数分别保留，不合并。pVisor VM 首条输出约 88 ms，完整 CLI 退出约 153 ms；用户开始使用环境和宿主完成记录/清理是两个预算。
+
+| Backend | Ready P50/P95 ms | Exit P50/P95 ms |
+|---|---|---|
+| Native | 1.27 / 1.99 | 1.35 / 2.05 |
+| pVisor host | 5.98 / 9.91 | 13.23 / 15.78 |
+| pVisor staged | 14.61 / 21.83 | 43.52 / 47.36 |
+| pVisor VM | 88.46 / 142.99 | 153.11 / 207.68 |
+| Docker rootless | 94.29 / 237.58 | 123.38 / 286.71 |
+| Firecracker PCI | 74.18 / 92.76 | 101.82 / 121.81 |
+| QEMU q35 | 219.74 / 306.82 | 248.39 / 338.34 |
+| QEMU microvm | 87.42 / 170.44 | 116.09 / 199.42 |
+
+
+[精确退出报告](../../assets/benchmarks/reference-env-20261004/followups/reference-startup-exit-20261004/report.json) · [逐样本](../../assets/benchmarks/reference-env-20261004/followups/reference-startup-exit-20261004/samples.csv) · [证据](../../assets/benchmarks/reference-env-20261004/followups/reference-startup-exit-20261004/evidence.tar.gz)
+
+
 ## 5. 复现与原始数据
 
 ### macOS / HVF

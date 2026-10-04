@@ -89,6 +89,7 @@ jobs:
               pvisor-journal
               pvisor-guest
               pvisor-core
+              pvisor-cluster
               pvisor-overlay-core
               pvisor-overlayfs
               pvisor-overlaynet
@@ -112,6 +113,7 @@ jobs:
               pvisor-journal
               pvisor-guest
               pvisor-core
+              pvisor-cluster
               pvisor-gateway
               pvisor-overlay-core
               pvisor-overlayfs

@@ -2,7 +2,8 @@ use crate::scheduler::{Scheduler, SchedulerConfig};
 use crate::*;
 use axum::{
     Json, Router,
-    extract::{DefaultBodyLimit, Path, State},
+    body::Bytes,
+    extract::{DefaultBodyLimit, Path, Query, State},
     http::{Request, StatusCode},
     middleware::{self, Next},
     response::{IntoResponse, Response},
@@ -106,6 +107,8 @@ pub fn router(
         .route("/v1/tasks/{id}", get(task))
         .route("/v1/tasks/{id}/cancel", post(cancel))
         .route("/v1/tasks/{id}/control", post(control))
+        .route("/v1/tasks/{id}/artifacts", get(task_artifacts))
+        .route("/v1/artifacts/{digest}", get(artifact_bytes))
         .route("/v1/workers", get(workers))
         .route("/v1/workers/{id}/drain", post(drain))
         .route("/v1/counts", get(counts))
@@ -116,6 +119,10 @@ pub fn router(
         .route("/v1/workers/complete", post(complete))
         .route("/v1/workers/decline", post(decline))
         .route("/v1/workers/control-ack", post(control_ack))
+        .route(
+            "/v1/workers/artifacts/{task_id}/{generation}/{worker_id}/{incarnation}/{digest}",
+            post(upload_artifact).layer(DefaultBodyLimit::max(ARTIFACT_CHUNK_BYTES)),
+        )
         .route_layer(middleware::from_fn_with_state(Arc::new(worker_token), auth));
     Ok(admin
         .merge(worker)
@@ -187,8 +194,118 @@ async fn complete(
     State(app): State<App>,
     Json(request): Json<Completion>,
 ) -> Result<Json<TaskRecord>, ApiError> {
+    let reference = request.artifacts.clone();
+    let key = request.key.clone();
+    let store = app
+        .scheduler
+        .lock()
+        .map_err(|_| ApiError(anyhow::anyhow!("scheduler unavailable")))?
+        .artifact_store();
+    let verified = tokio::task::spawn_blocking(move || {
+        reference
+            .as_ref()
+            .map(|r| store.verify(r, &key))
+            .transpose()
+    })
+    .await
+    .map_err(|e| ApiError(e.into()))?
+    .map_err(ApiError)?;
     run(app, move |s| {
-        s.complete(request, pvisor_core::unix_now_ms())
+        s.complete_verified(request, verified, pvisor_core::unix_now_ms())
+    })
+    .await
+}
+
+async fn task_artifacts(
+    State(app): State<App>,
+    Path(id): Path<String>,
+) -> Result<Json<ArtifactManifest>, ApiError> {
+    let (store, reference) = {
+        let scheduler = app
+            .scheduler
+            .lock()
+            .map_err(|_| ApiError(anyhow::anyhow!("scheduler unavailable")))?;
+        let task = scheduler.task(&id).map_err(ApiError)?;
+        (
+            scheduler.artifact_store(),
+            task.artifacts
+                .ok_or_else(|| ApiError(anyhow::anyhow!("task has no retained artifacts")))?,
+        )
+    };
+    tokio::task::spawn_blocking(move || store.read_manifest(&reference).map(Json))
+        .await
+        .map_err(|e| ApiError(e.into()))?
+        .map_err(ApiError)
+}
+#[derive(Deserialize)]
+#[serde(deny_unknown_fields)]
+struct ArtifactSize {
+    bytes: u64,
+}
+async fn artifact_bytes(
+    State(app): State<App>,
+    Path(digest): Path<String>,
+    Query(size): Query<ArtifactSize>,
+) -> Result<Bytes, ApiError> {
+    let store = app
+        .scheduler
+        .lock()
+        .map_err(|_| ApiError(anyhow::anyhow!("scheduler unavailable")))?
+        .artifact_store();
+    tokio::task::spawn_blocking(move || {
+        store
+            .get(&BlobRef {
+                digest,
+                bytes: size.bytes,
+            })
+            .map(Bytes::from)
+    })
+    .await
+    .map_err(|e| ApiError(e.into()))?
+    .map_err(ApiError)
+}
+async fn upload_artifact(
+    State(app): State<App>,
+    Path((task_id, generation, worker_id, incarnation, digest)): Path<(
+        String,
+        u64,
+        String,
+        String,
+        String,
+    )>,
+    bytes: Bytes,
+) -> Result<Json<BlobRef>, ApiError> {
+    let key = LeaseKey {
+        task_id,
+        generation,
+        worker_id,
+        incarnation,
+    };
+    let key_before = key.clone();
+    let store = run(app.clone(), move |s| {
+        s.authorize_artifact_upload(&key_before, pvisor_core::unix_now_ms())?;
+        Ok(s.artifact_store())
+    })
+    .await?
+    .0;
+    let reference = tokio::task::spawn_blocking(move || {
+        let expected = BlobRef {
+            digest,
+            bytes: bytes.len() as u64,
+        };
+        expected.validate()?;
+        anyhow::ensure!(
+            blake3::hash(&bytes).to_hex().as_str() == expected.digest,
+            "uploaded artifact hash mismatch"
+        );
+        store.put(&bytes)
+    })
+    .await
+    .map_err(|e| ApiError(e.into()))?
+    .map_err(ApiError)?;
+    run(app, move |s| {
+        s.authorize_artifact_upload(&key, pvisor_core::unix_now_ms())?;
+        Ok(reference)
     })
     .await
 }

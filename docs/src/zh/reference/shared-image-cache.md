@@ -4,9 +4,7 @@
 
 ## 选择后端
 
-目录树、对象字段、文件路径到内容块的映射和发布一致性见[共享镜像缓存存储格式 v1](../design/shared-image-cache-storage.md)，其中包含可直接读取的完整示例对象。
-
-后续布局设计改为[每个镜像独立 meta、共享分片 data 的 v2 格式](../design/shared-image-cache-storage-v2.md)。该设计尚未接入发布器/读取器，下面的命令仍使用 v1。
+文件系统与 S3 使用[共享镜像缓存 v1](../design/shared-image-cache-storage.md)：每个镜像独立 meta、跨镜像共享 data、二进制分页文件表与索引。只保留这一套格式实现。
 
 服务器、文件系统和 S3 使用同一套 `prepare/list/stat/read` 接口，VM 也使用相同配置。文件系统和 S3 是直接存储后端，使用它们不需要启动 `cache serve`。
 
@@ -26,7 +24,7 @@ pvisor cache --backend filesystem --location /mnt/pvisor-cache \
 pvisor cache --backend filesystem --location /mnt/pvisor-cache \
   --read-only prepare alpine:latest
 pvisor cache --backend filesystem --location /mnt/pvisor-cache \
-  --read-only read sha256:YOUR_MANIFEST_DIGEST etc/os-release
+  --read-only read pvisor-v1:YOUR_IMAGE_KEY:linux-amd64:YOUR_REVISION etc/os-release
 ```
 
 `--location` 是新的共享缓存目录，`--image-store` 是发布时用来拉取/解包 OCI 镜像的本地暂存目录；两者不同。也可以复用现有 `PVISOR_IMAGE_STORE`。发布完成后读取不依赖暂存目录，CI 可把它设为任务临时目录。共享目录中的对象默认私有，跨 UID 使用共享盘时需由存储管理员设置相应读取权限；只读模式不会创建缺失的共享目录。
@@ -43,11 +41,11 @@ pvisor cache --image-store /tmp/pvisor-publish publish alpine:latest
 # Workers only need GetObject access to this prefix.
 export PVISOR_CACHE_READ_ONLY=true
 pvisor cache prepare alpine:latest
-pvisor cache read sha256:YOUR_MANIFEST_DIGEST etc/os-release
+pvisor cache read pvisor-v1:YOUR_IMAGE_KEY:linux-amd64:YOUR_REVISION etc/os-release
 pvisor run --executor vm --rootfs image=alpine:latest -- /bin/sh
 ```
 
-桶需要预先建立；pVisor 不创建桶。`publish` 向该前缀上传对象，需要 `s3:PutObject`；读写模式的 `prepare` 先查询缓存、未命中时发布，因此还需要 `s3:GetObject`。读取节点只需要 `s3:GetObject`，正常读写不需要 `ListBucket` 或 `DeleteObject`。S3 存储连接由宿主负责，新的缓存配置及其隐式 `AWS_*` 凭据不会投影到 guest；显式传给工作负载的环境变量仍由调用方决定。
+桶需要预先建立；pVisor 不创建桶。publish 和读写 prepare 都需要 s3:GetObject 与 s3:PutObject：读取 HEAD 的 CAS 令牌，并验证已存在的不可变对象。读取节点只需要 `s3:GetObject`，正常读写不需要 `ListBucket` 或 `DeleteObject`。S3 存储连接由宿主负责，新的缓存配置及其隐式 `AWS_*` 凭据不会投影到 guest；显式传给工作负载的环境变量仍由调用方决定。
 
 S3 使用 SigV4，默认 HTTPS。凭据支持 `AWS_ACCESS_KEY_ID`、`AWS_SECRET_ACCESS_KEY`、可选 `AWS_SESSION_TOKEN`，以及 EC2、ECS、Web Identity 工作负载角色；由 [object_store 的 S3 provider](https://docs.rs/object_store/0.13.2/object_store/aws/struct.AmazonS3Builder.html) 管理获取与续期。当前不直接读取 `~/.aws` profile/SSO 文件，可向进程提供导出的环境凭据或使用工作负载角色。区域用 `AWS_DEFAULT_REGION` 或 `AWS_REGION`。S3 兼容服务可设置 `AWS_ENDPOINT`（或 `AWS_ENDPOINT_URL_S3`）；下面的 HTTP 配置仅用于本机测试服务。
 
@@ -71,33 +69,43 @@ PVISOR_CACHE_READ_ONLY=false pvisor cache publish alpine:latest \
   --architecture amd64 --image-store /tmp/pvisor-publish
 ```
 
-`--architecture` 支持 `amd64`、`arm64`，默认取宿主架构。`--refresh` 重新查询 registry；不指定时可使用本地仍有效的已准备镜像记录。`publish` 总会执行拆分和上传，不根据远端 tag 记录跳过；已存在的不可变内容块通过条件创建复用，缺失的块会重新上传。只读模式和服务器后端不接受发布。命令成功时输出 JSON，包含 manifest 摘要、架构、索引摘要 `metadata_generation` 以及文件数/逻辑字节总量 `totals`；客户端随后通过这些索引按路径读取文件。
+`--architecture` 支持 `amd64`、`arm64`，默认取宿主架构。`--refresh` 重新查询 registry；不指定时可使用本地仍有效的已准备镜像记录。`publish` 总会执行拆分和上传，不根据远端 tag 记录跳过；已存在的不可变内容块通过条件创建复用，缺失的块会重新上传。只读模式和服务器后端不接受发布。命令成功时输出 JSON，包含 manifest 摘要、架构、COMMIT 摘要 `metadata_generation` 以及文件数/逻辑字节总量 `totals`；同时返回 image_handle=pvisor-v1:<image-key>:<platform>:<revision-hex>，list/stat/read 以这个句柄查询；digest 仅记录来源 manifest。
 
 ```text
 s3://your-bucket/pvisor-cache/
-└── v1/
-    ├── format
-    ├── refs/<reference-and-architecture-hash>.json
-    ├── images/<manifest-sha256>.json
-    ├── indexes/<index-sha256>.json
-    └── blobs/<content-sha256>
+├── format.json
+├── meta/<image-key>/
+│   ├── identity.json
+│   └── platforms/linux-amd64/
+│       ├── HEAD.json
+│       ├── revisions/<revision-hex>/
+│       │   ├── manifest.json
+│       │   ├── config.json
+│       │   ├── files.bin
+│       │   ├── contents.bin
+│       │   ├── index.bin
+│       │   ├── objects.bin
+│       │   ├── checksums.bin
+│       │   └── COMMIT.json
+│       └── uploads/<upload-id>/
+│           ├── plan.json
+│           └── progress.json
+└── data/sha256/<first-two-hex>/<next-two-hex>/<full-object-hex>
 ```
 
-这里的文件存储结构由索引中的文件路径、权限、硬链接、符号链接和内容片段共同表示。S3 中的内容对象是至多 1 MiB 的块；一个大文件可以使用多个对象，多个小文件也可以共享同一个对象。文件路径由索引映射到内容块，读取端无需重新下载或解包 OCI 层。
+每个文件从自身 offset 0 开始独立切成至多 1 MiB 的 raw 块，不合并相邻小文件。相同文件换路径、权限或镜像仍引用相同 data 对象；文件表、目录索引与内容描述属于各自 revision。文件名与符号链接保持原始字节，硬链接保持同一 inode，属性范围沿用现有 cache，不新增 xattr。
 
 ### 存储布局与请求成本
 
-直接存储后端的单镜像索引上限为 64 MiB，最多 200,000 个路径和 500,000 个内容片段；超过上限会明确失败。兼容的对象服务需要支持原子 PUT 和 `If-None-Match` 条件创建。
+每个二进制元数据对象最多 64 MiB，控制 JSON 与页校验目录最多各 1 MiB；最多 200,000 个文件条目与 500,000 个内容块描述。S3 兼容服务必须支持 Range GET、If-None-Match 条件创建与 If-Match 条件更新。
 
-两个直接存储后端共享 `v1/` 格式：`refs/` 保存按镜像引用和架构的记录，`images/` 保存 manifest 摘要到索引的指针，`indexes/` 保存不可变的元数据和文件内容片段索引，`blobs/` 保存 SHA-256 标识的内容块。文件名与符号链接使用 Unix 原始字节，硬链接保持相同 inode 身份，文件模式和 Linux 身份沿用 OCI 提取规则。
+发布先写并校验全部共享内容、镜像元数据与 COMMIT，再 CAS 更新自身平台的 HEAD。同一旧 HEAD 只有一个发布者能提交；冲突明确失败，不盲目覆盖。损坏的已存在不可变对象也拒绝复用，不覆盖其他镜像正在使用的数据。失败会留下尚未引用的版本/对象。上传完成记录保留在 uploads，清理留给离线维护。
 
-发布把小文件合并进至多 1 MiB 的块；大文件可以跨块。块按内容去重，先写全部块和索引，最后原子发布引用。并发发布使用不可变对象的条件创建，不向读者暴露正在写入的对象。失败可能留下未引用的块，但不会发布指向未完成上传的引用。
+启动只获取控制对象、紧凑页校验目录、表头与根页，不完整解析全文件列表。lookup/readdir 按需取 64 KiB 索引页，read 仅取相关描述与数据块。校验过的页与数据对象有有界内存缓存，并持久保存到 <user-cache>/pvisor/cache-v1/objects/<location-hash>/。损坏的本地缓存会重新获取；远端损坏、缺失和权限错误会失败，不填零，不改走 registry。
 
-读取先获取引用和索引，随后只读请求范围所在的块；目录查询只访问索引。单个客户端保持有界内存缓存，本地 `<user-cache>/pvisor/cache-v1/objects/<location-hash>/` 还持久复用经过摘要验证的索引与打包块。损坏的本地对象会重新获取；损坏、缺失或被拒绝的远端对象使操作失败，不填零或静默改走 registry。底层块缓存之外，VM 的文件块和元数据缓存也继续生效。
+读写模式的可变 tag HEAD 在五分钟内复用；--refresh 由发布端显式更新。只读模式始终使用已发布 HEAD，无 registry 查询。每个任务固定返回的 image_handle，旧 revision 保留时仍可读取。IMAGE@sha256:… 是独立引用，需要另行发布其 meta；持有 tag 返回的 image_handle 已能固定那个版本。
 
-可变 tag 的发布记录在读写模式下缓存五分钟；`--refresh` 由发布端显式更新。只读模式使用已发布记录，即使超过五分钟也不去 registry；需要更新时由发布端刷新，任务随后固定到返回的 manifest 摘要。使用 `IMAGE@sha256:...` 可以固定版本。
-
-S3 的实际传输包括索引和完整打包块，小文件读取可能获取邻近文件字节。现有 TUI `Transferred` 计数是 cache 接口返回的逻辑文件字节，不是 S3 GET 次数或计费流量；不要用它估算对象存储账单。共享块的自动 GC/配额暂未加入；运维可按独立前缀分组保存和退役，确认没有任务使用旧前缀后整体清理。不能单独按块年龄删除仍被新引用使用的内容。
+S3 实际流量包括控制对象、元数据页和完整数据块。现有 TUI Transferred 只统计 cache 接口返回的逻辑文件字节，不能估算计费流量。自动 GC/配额尚未实现；删除 meta 或 data 前需要停用相关任务/发布并确认读者退出，不能按对象年龄删除共享内容。
 
 ## 代码布局
 
@@ -158,7 +166,7 @@ pvisor cache read sha256:YOUR_MANIFEST_DIGEST etc/os-release
 
 客户端挂载一个不可变的只读 FUSE lower（macOS 用 macFUSE FSKit；Linux 用 FUSE），保留现有的 VM 可写 upper。元数据按需获取，并在挂载期间保留在内存中。当服务端通告 `metadata_generation` 时，校验过的 stat 响应（包括缺失路径）和目录页也会持久化到
 `<user-cache>/pvisor/metadata/v1/<endpoint-hash>/<manifest-digest>/<generation-hash>/`。
-它们在 VM 退出后仍然存在；损坏条目会被重新获取。不提供 generation 的旧服务端保持此前的仅内存行为。generation 包含服务端根目录的身份和变更时间，因此重建解包后的 root 会使包含旧宿主 inode 号的元数据失效。已准备的 root 必须保持不可变；不支持在其下就地修改。内容以 1 MiB 块获取到 `<user-cache>/pvisor/blocks/<endpoint-hash>/<manifest-digest>/`，
+它们在 VM 退出后仍然存在；损坏条目会被重新获取。不提供 generation 的旧服务端保持此前的仅内存行为。generation 包含服务端根目录的身份和变更时间，因此重建解包后的 root 会使包含旧宿主 inode 号的元数据失效。已准备的 root 必须保持不可变；不支持在其下就地修改。内容以 1 MiB 块获取到 `<user-cache>/pvisor/blocks/<endpoint-hash>/<read-handle-hash>/`，
 按文件/块为键。macOS 上 `<user-cache>` 为 `~/Library/Caches`；Linux 上为 `$XDG_CACHE_HOME`，通常为 `~/.cache`。此块缓存独立于 `--image-store` 和 `PVISOR_IMAGE_STORE`。小文件占用一个不填充的块；大文件只获取被访问的块。每次挂载都会在按文件为键的内存缓存中保留已校验内容，上限 64 MiB 和 4096 块，FIFO 淘汰。热读只复制请求的切片，不重新打开或重新哈希磁盘块。内存未命中时，磁盘块会再次校验；磁盘损坏不会改变已校验并保留在内存中的字节。新块经校验和后原子发布，并通过文件锁在本地进程间共享；损坏的磁盘块会被重新获取。不暴露稀疏占位文件。内核正常预读可能获取相邻字节，copy-up 可能读取整个文件。客户端不提取完整镜像。
 
 FUSE 挂载在 VM 运行结束前一直存在，随后卸载；缓存的块保留。服务失败后缓存数据仍可读取，但缺失的块会以 I/O 错误失败。摘要和端点在一次运行期间固定；运行中途不会回退到 registry。缓存端点/令牌会从隐式继承的 guest 环境变量中移除。
@@ -209,7 +217,7 @@ TCP 要求非空令牌，且只接受字面 loopback IP 端点。没有内置 TL
 | `op` | 字段 | 响应 `status` |
 | --- | --- | --- |
 | `ping` | 无 | `ready`（协议 v1） |
-| `prepare` | `image`、`architecture`（`amd64` 或 `arm64`）、可选 `refresh`（默认 false） | `prepared`：`digest`、`architecture`、`env`、`entrypoint`、`cmd`、可选 `totals`（`files`、`bytes`）、可选 `metadata_generation` |
+| `prepare` | `image`、`architecture`（`amd64` 或 `arm64`）、可选 `refresh`（默认 false） | `prepared`：`digest`、`architecture`、`env`、`entrypoint`、`cmd`、可选 `totals`（`files`、`bytes`）、可选 `metadata_generation`；直接 v1 后端另有 `image_handle` |
 | `list` | `digest`、`path`、`offset`（条目索引，从 0 开始） | `entries`：已排序的 `names`、可选对齐的 `metadata` 数组、`next_offset`（完成时为 null） |
 | `stat` | `digest`、`path` | `metadata`：`kind`、`size`、`mode`、`uid`、`gid`、`inode`、`nlink`、`mtime`、`mtime_nsec`、`target` |
 | `read` | `digest`、`path`、`offset`（字节偏移）、`length`（1..1048576） | `data`：`length`、`sha256`，后接原始字节 |

@@ -546,6 +546,7 @@ impl OverlayFs {
         let real = if writing {
             self.core.copy_up(path)?
         } else {
+            self.core.observe_read(path)?;
             self.core
                 .resolve(path)
                 .ok_or_else(|| io::Error::from_raw_os_error(libc::ENOENT))?
@@ -724,6 +725,7 @@ impl Filesystem for OverlayFs {
     fn readlink(&mut self, _request: &Request<'_>, ino: u64, reply: ReplyData) {
         let observed_path = self.node_path(ino).ok();
         let result = self.node_path(ino).and_then(|path| {
+            self.core.observe_read(&path)?;
             let resolved = self
                 .core
                 .resolve(&path)
@@ -1308,6 +1310,7 @@ impl Filesystem for OverlayFs {
     ) {
         let observed_path = self.node_path(ino).ok();
         let result = self.node_path(ino).and_then(|path| {
+            self.core.observe_read(&path)?;
             let real = self
                 .core
                 .resolve(&path)
@@ -1325,6 +1328,7 @@ impl Filesystem for OverlayFs {
 
     fn listxattr(&mut self, _request: &Request<'_>, ino: u64, size: u32, reply: ReplyXattr) {
         let result = self.node_path(ino).and_then(|path| {
+            self.core.observe_read(&path)?;
             let real = self
                 .core
                 .resolve(&path)
@@ -1581,6 +1585,105 @@ impl Filesystem for OverlayFs {
 
 #[cfg(test)]
 mod tests {
+    #[test]
+    fn replacement_with_denied_hardlink_is_rejected_before_content_observation() {
+        let temp = tempfile::tempdir().unwrap();
+        let target = temp.path().join("target");
+        let stage = temp.path().join("stage");
+        fs::create_dir(&target).unwrap();
+        fs::write(target.join("private"), b"private contents").unwrap();
+        fs::write(target.join("allowed"), b"public contents").unwrap();
+        let core = OverlayCore::new_with_exclusions_and_preimages(
+            vec![target.clone()],
+            stage.join("upper"),
+            Some(stage.join("work")),
+            vec![],
+            Some(stage.join("preimages")),
+        )
+        .unwrap();
+        let mut overlay = OverlayFs::from_core(core).unwrap().with_access_policy(
+            &pvisor_overlay_core::FileAccessPolicy::new(vec!["private".into()], vec![]).unwrap(),
+        );
+        let path = PathBuf::from("allowed");
+        let ino = overlay.allocate_inode(path.clone(), &overlay.core.metadata(&path).unwrap());
+        fs::remove_file(target.join("allowed")).unwrap();
+        fs::hard_link(target.join("private"), target.join("allowed")).unwrap();
+        assert_eq!(
+            overlay
+                .open_inode(ino, libc::O_RDONLY)
+                .unwrap_err()
+                .raw_os_error(),
+            Some(libc::EACCES)
+        );
+        assert!(
+            pvisor_overlay_core::load_preimages(&stage.join("preimages"))
+                .unwrap()
+                .is_empty()
+        );
+        assert!(!stage.join("upper/allowed").exists());
+    }
+
+    #[test]
+    fn fuse_open_inode_preserves_the_first_read_before_copy_up() {
+        use pvisor_overlay_core::apply::{
+            OverlayRecord, OverlayState, OverlayUpper, apply_overlay,
+        };
+        let temp = tempfile::tempdir().unwrap();
+        let target = temp.path().join("target");
+        let stage = temp.path().join("stage");
+        fs::create_dir(&target).unwrap();
+        fs::write(target.join("value"), b"original").unwrap();
+        let core = OverlayCore::new_with_exclusions_and_preimages(
+            vec![target.clone()],
+            stage.join("upper"),
+            Some(stage.join("work")),
+            vec![],
+            Some(stage.join("preimages")),
+        )
+        .unwrap();
+        let mut overlay = OverlayFs::from_core(core).unwrap();
+        let path = PathBuf::from("value");
+        let ino = overlay.allocate_inode(path.clone(), &overlay.core.metadata(&path).unwrap());
+        // Real FUSE open callback delegates to open_inode/open_path. A plain
+        // lookup must not hash/write a content observation.
+        assert!(
+            pvisor_overlay_core::load_preimages(&stage.join("preimages"))
+                .unwrap()
+                .is_empty()
+        );
+        let input = overlay.open_inode(ino, libc::O_RDONLY).unwrap();
+        let mut bytes = [0; 8];
+        assert_eq!(input.read_at(&mut bytes, 0).unwrap(), 8);
+        assert_eq!(&bytes, b"original");
+        fs::write(target.join("value"), b"host edit").unwrap();
+        let output = overlay
+            .open_inode(ino, libc::O_WRONLY | libc::O_TRUNC)
+            .unwrap();
+        output.write_at(b"agent edit", 0).unwrap();
+        drop(output);
+        drop(input);
+        drop(overlay);
+        let mut record = OverlayRecord {
+            id: "fuse-read".into(),
+            generation: 0,
+            target: target.clone(),
+            baseline_lower: None,
+            upper: OverlayUpper {
+                upper_dir: stage.join("upper"),
+                work_dir: stage.join("work"),
+            },
+            merged_dir: stage.join("merged"),
+            stage_dir: stage,
+            excluded_paths: vec![],
+            access_policy: Default::default(),
+            auto_apply: false,
+            auto_discard: false,
+            protect_target: false,
+            state: OverlayState::Staged,
+        };
+        assert!(apply_overlay(&mut record).is_err());
+        assert_eq!(fs::read(target.join("value")).unwrap(), b"host edit");
+    }
 
     #[test]
     fn newly_discovered_upper_hardlink_keeps_the_existing_fuse_inode() {

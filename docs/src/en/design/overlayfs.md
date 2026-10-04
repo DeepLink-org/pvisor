@@ -4,7 +4,7 @@
 
 When an Agent edits a workspace, developers often want to review the result before accepting selected files. Direct writes leave failed, canceled or unwanted changes mixed with host state. OverlayCore keeps execution-time changes in upper and merges them with lower layers for reads. After execution, upper remains available for review, selective apply or drop.
 
-Copy-on-write alone is insufficient. An editor or another task can change the actual target while the Agent runs, and apply can stop after updating some files. The design therefore records target fingerprints before first mutation and persists each apply's intent, allowing conflicts to be rejected and interrupted batches to complete forward.
+Copy-on-write alone is insufficient. An editor or another task can change the actual target while the Agent runs, and apply can stop after updating some files. The design therefore records target fingerprints at first content observation or before mutation and persists each apply's intent, allowing conflicts to be rejected and interrupted batches to complete forward.
 
 This covers filesystem trees, not remote requests, database writes or explicitly shared mounts. Multi-file apply is not atomic to external readers, and its target lock only coordinates cooperating pVisor callers. Public semantics are in [Staging and apply](../concepts/staging.md); the workflow is in [Review and apply](../guides/review-apply.md).
 
@@ -12,9 +12,9 @@ This covers filesystem trees, not remote requests, database writes or explicitly
 
 ### Separate the read view from the write target {#layout}
 
-`OverlayLayout` owns priority-ordered lowers and a separate apply target. Upper wins, followed by the highest-priority lower, with target or its read-only snapshot baseline last. Construction requires the last lower's canonical path to match the declared baseline, avoiding confusion between the visible file and the file that apply will overwrite.
+`OverlayLayout` owns priority-ordered lowers, a separate apply target and its target-corresponding baseline. Upper wins, followed by the highest-priority lower, with target or its read-only snapshot baseline last. Construction requires the last lower's canonical path to match the declared baseline, avoiding confusion between the visible file and the file that apply will overwrite.
 
-For example, a compose lower contains `config` B while the host target contains A. The Agent reads B and produces upper C. First-touch must fingerprint A. Apply checks that host A remains intact before installing C; B is not the host conflict baseline.
+For example, a compose lower contains `config` B while the host target contains A. The Agent reads B and produces upper C. A live lower fingerprints target A when content is first opened; a frozen layout fingerprints A in its last baseline lower, rather than adopting a changed live target at first mutation. Apply checks that host A remains intact before installing C; B is not the host conflict baseline.
 
 | Data/module | Owned content | Responsibility |
 |---|---|---|
@@ -81,7 +81,11 @@ Recreating a whiteouted directory marks it opaque to prevent old children resurf
 
 ### First-touch and conflict fingerprints {#preimages}
 
-`record_preimage()` addresses entries by raw relative-path bytes under a preimage mutex. Existing entries remain unchanged. New entries fingerprint the actual target, use `create_new` to write JSON, then sync the file and entries directory before mutation continues. Parents, deleted trees and rename destinations also need entries for implicit metadata changes and destructive descendant effects.
+The protection starting point depends on layout. A frozen layout fingerprints the explicit target-corresponding baseline (last lower); higher-precedence extra lowers supply visible content only. A live lower captures the target at first content open or symlink/xattr read. A genuine negative lookup records the observed Absent directly, rather than adopting a host file created before journal publication. Authorization and I/O failures are not absence and must not cause reads of denied paths. Mutation without a prior content observation starts from the target immediately before mutation. Successful stat/lookup and directory listing do not hash every file and do not establish a Run-start snapshot or serializable read-set transaction. Actual FUSE and virtio-fs content entry points call the shared Core's `observe_read()` automatically. External Core adapters must do the same; `resolve()` only resolves paths.
+
+Under the preimage mutex, entries are addressed by raw relative-path bytes, written to private temporary files and atomically published through a hard link that cannot replace an existing destination. Concurrent Core instances validate and keep the first published winner; a mutating loser syncs that actual winner. Read observations do not fsync per path. Before first mutation, `record_preimage()` reuses and validates the same JSON entry, then syncs its file and entries directory before changing upper. Frozen layouts need no early read-only entry because mutation can capture the immutable baseline. Parents, deleted trees and rename destinations still receive synced entries for implicit metadata changes and destructive descendants. Normal stage/checkpoint copying and reopening preserve observations; corrupt entries fail loading or mutation. Read-only observations are not power-loss-durable read transactions: callers promising execution-state recovery must also preserve the baseline and journal. Unselected unrelated read-only paths do not block applying another file.
+
+After partial apply in a frozen layout, pruning an upper path exposes its old baseline again; the read view is not automatically updated. Reopening the same stage and rewriting a committed path from that stale view retains the old baseline and conservatively rejects apply. Rebasing only its fingerprint to the current target would wrongly accept stale-view overwrite. Create a new stage/baseline to continue editing those paths; other uncommitted candidates in the old stage remain reviewable.
 
 Example `PathPreimage`:
 
@@ -104,7 +108,7 @@ The path bytes encode `new.txt`. Fingerprint variants are:
 
 Xattrs distinguish Unsupported from sorted `(name-bytes, value-sha256)` entries; internal opaque xattrs are excluded. Compatibility with older fingerprints lacking xattrs does not claim those attributes were verified. File hashing uses a 64 KiB buffer but reads bytes proportional to file size. Directory fingerprints are not whole-subtree Merkle hashes.
 
-An empty new upper initializes `complete-v1`, containing `pvisor-overlay-preimage-journal-v1` and LF. A complete journal missing a selected path rejects apply. Legacy stages without the marker can fingerprint at apply time for compatibility, without equivalent execution-time conflict protection. Preimages are not written through whole-document replacement; corrupt complete entries fail loading, with no JSONL-style tail repair.
+An empty new upper initializes `complete-v1`, containing `pvisor-overlay-preimage-journal-v1` and LF. A complete journal missing a selected path rejects apply. Legacy stages without the marker can fingerprint at apply time for compatibility, without equivalent execution-time conflict protection. Preimages are published atomically per entry, not through whole-document replacement; corrupt complete entries fail loading, with no JSONL-style tail repair.
 
 ### Review and selection {#selection}
 
@@ -172,13 +176,14 @@ Shared Core does not imply identical POSIX return behavior across backends. Stag
 
 ## 4. Experimental evidence {#experiments}
 
-This revision reads code and existing documentation without compiling or running product tests. Current source contains 24 explicit tests in `core.rs` and 19 in `apply.rs`. These are coverage entry counts, not passes in this revision or counts of independent fault cases.
+This conflict-window fix was compiled and validated with `JUST_TEMPDIR=/tmp just test pvisor-overlay-core pvisor-overlayfs`; the targeted tests passed, covering public Core/apply behavior and the actual FUSE `open_inode` / `open_path` entry points. The `pvisor` integration regressions also drive the real virtio-fs worker through guest descriptor rings, covering content reads/writes, live/frozen target layouts and device-state restore; logical checkpoint coverage checks that copied/restored read observations constrain later first mutation. These validate shared implementation and adapter wiring, rather than real host FUSE mounts, KVM/HVF guest boot or cross-platform acceptance. The table lists coverage entry points, not counts of independent fault cases.
 
 | Mechanism | Existing tests to inspect |
 |---|---|
 | Lower composition and separate target baseline | `top_lower_wins_and_directories_merge`, `composed_lower_preimage_tracks_apply_target_not_visible_layer` |
-| Durable first-touch without rebasing | `first_touch_preimage_is_durable_and_never_rebased` |
+| First-touch synced before mutation without rebasing | `first_touch_preimage_is_durable_and_never_rebased` |
 | Backing/alias/authorization boundaries | `backing_symlink_alias_cannot_share_the_upper_and_work_directory`, `access_rules_reject_hardlink_aliases_and_symlink_traversal` |
+| Read-before-write, frozen baseline, absence and restore | `read_conflicts` integration tests, `fuse_open_inode_preserves_the_first_read_before_copy_up`, `virtiofs_content_open_preserves_target_preimage_across_restore_and_composed_lowers`, `fork_preserves_read_observation_before_any_upper_mutation` |
 | Conflict after target mutation | `apply_rejects_a_target_changed_after_first_touch` |
 | Recursive replacement, backups and interruption | `directory_replacement_checks_descendants_and_recovers_after_mutation`, `interrupted_directory_replacement_restores_the_recorded_original` |
 | Prepared before/after target changes | `prepared_apply_recovers_before_or_after_target_mutation` |
@@ -187,7 +192,7 @@ This revision reads code and existing documentation without compiling or running
 
 `pvisor-core/tests/overlay_contracts.rs` also checks legacy defaults, fingerprint variants and raw path bytes. `tests/semantics/stage-apply.md` supplies S-STAGE-001–014 runtime contract drafts. Human approval is separate from test success and is not replaced by this document.
 
-No copy-up/apply throughput, fsync tails, large-tree scan measurements or power-loss recovery data were established for this revision. Source confirms full-file hashing/copy-up, tree traversal, per-preimage synchronization and whole-ledger rewrites. In-process constructed recovery states do not replace a complete kill/power-loss matrix at every syscall. The [apply cost page](../benchmarks/apply.md) remains planned rather than completed evidence.
+This fix did not rerun copy-up/apply throughput, fsync tails, large real-repository workloads or power-loss recovery experiments. The 1,024-path positive metadata-walk regression verifies that no content-observation entries are created; it is not a throughput benchmark. First content observation still reads/hashes the entire target file and writes a per-path journal entry. First mutation still syncs the preimage, while copy-up, tree traversal and ledger updates retain their costs. Existing [apply cost experiments](../benchmarks/apply.md) are historical evidence for their fixed workloads and artifacts, not a performance revalidation of this fix. In-process recovery controls and guest descriptor tests do not replace a kill/power-loss matrix at arbitrary syscalls or real Linux FUSE and macOS FSKit/HVF acceptance.
 
 ## 5. Usage recommendations {#usage}
 

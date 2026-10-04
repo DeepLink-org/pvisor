@@ -72,6 +72,131 @@ impl Client {
     pub async fn complete(&self, completion: &Completion) -> anyhow::Result<TaskRecord> {
         self.post("/v1/workers/complete", completion).await
     }
+    pub async fn upload_artifact(&self, key: &LeaseKey, bytes: Vec<u8>) -> anyhow::Result<BlobRef> {
+        anyhow::ensure!(
+            bytes.len() <= ARTIFACT_CHUNK_BYTES,
+            "artifact chunk too large"
+        );
+        let expected = BlobRef {
+            digest: blake3::hash(&bytes).to_hex().to_string(),
+            bytes: bytes.len() as u64,
+        };
+        let path = format!(
+            "/v1/workers/artifacts/{}/{}/{}/{}/{}",
+            key.task_id, key.generation, key.worker_id, key.incarnation, expected.digest
+        );
+        let received: BlobRef = self
+            .http
+            .post(format!("{}{path}", self.base))
+            .bearer_auth(&self.token)
+            .body(bytes)
+            .send()
+            .await?
+            .error_for_status()?
+            .json()
+            .await?;
+        anyhow::ensure!(
+            received == expected,
+            "artifact acknowledgement does not match upload"
+        );
+        Ok(received)
+    }
+    pub async fn artifacts(&self, id: &str) -> anyhow::Result<ArtifactManifest> {
+        let manifest: ArtifactManifest = self.get(&format!("/v1/tasks/{id}/artifacts")).await?;
+        manifest.validate()?;
+        anyhow::ensure!(
+            manifest.key.task_id == id,
+            "artifact manifest belongs to another task"
+        );
+        Ok(manifest)
+    }
+    pub async fn download_artifacts(
+        &self,
+        id: &str,
+        destination: &std::path::Path,
+    ) -> anyhow::Result<ArtifactManifest> {
+        use std::io::Write;
+        use std::os::unix::fs::{DirBuilderExt, OpenOptionsExt};
+        static NEXT_DOWNLOAD: std::sync::atomic::AtomicU64 = std::sync::atomic::AtomicU64::new(0);
+        let manifest = self.artifacts(id).await?;
+        std::fs::create_dir_all(destination)?;
+        let temporary = destination.join(format!(
+            ".pvisor-download-{}-{}",
+            std::process::id(),
+            NEXT_DOWNLOAD.fetch_add(1, std::sync::atomic::Ordering::Relaxed)
+        ));
+        std::fs::DirBuilder::new().mode(0o700).create(&temporary)?;
+        let downloaded = async {
+            for artifact in &manifest.files {
+                let path = temporary.join(&artifact.name);
+                let mut file = std::fs::OpenOptions::new()
+                    .write(true)
+                    .create_new(true)
+                    .mode(0o600)
+                    .custom_flags(libc::O_NOFOLLOW)
+                    .open(&path)?;
+                let mut hash = blake3::Hasher::new();
+                for chunk in &artifact.chunks {
+                    let bytes = self.artifact_bytes(chunk).await?;
+                    hash.update(&bytes);
+                    file.write_all(&bytes)?;
+                }
+                anyhow::ensure!(
+                    hash.finalize().to_hex().as_str() == artifact.digest,
+                    "whole file download integrity check failed"
+                );
+                file.sync_all()?;
+            }
+            for artifact in &manifest.files {
+                // Publish verified files atomically without replacing existing user data.
+                std::fs::hard_link(
+                    temporary.join(&artifact.name),
+                    destination.join(&artifact.name),
+                )?;
+            }
+            std::fs::File::open(destination)?.sync_all()?;
+            Ok::<(), anyhow::Error>(())
+        }
+        .await;
+        for artifact in &manifest.files {
+            let _ = std::fs::remove_file(temporary.join(&artifact.name));
+        }
+        let _ = std::fs::remove_dir(&temporary);
+        downloaded?;
+        Ok(manifest)
+    }
+    pub async fn artifact_bytes(&self, reference: &BlobRef) -> anyhow::Result<Vec<u8>> {
+        reference.validate()?;
+        let response = self
+            .http
+            .get(format!("{}/v1/artifacts/{}", self.base, reference.digest))
+            .bearer_auth(&self.token)
+            .query(&[("bytes", reference.bytes)])
+            .send()
+            .await?
+            .error_for_status()?;
+        anyhow::ensure!(
+            response
+                .content_length()
+                .is_none_or(|n| n <= ARTIFACT_CHUNK_BYTES as u64),
+            "artifact response exceeds chunk limit"
+        );
+        let mut response = response;
+        let mut bytes = Vec::with_capacity(reference.bytes as usize);
+        while let Some(chunk) = response.chunk().await? {
+            anyhow::ensure!(
+                bytes.len() + chunk.len() <= ARTIFACT_CHUNK_BYTES,
+                "artifact response exceeds chunk limit"
+            );
+            bytes.extend_from_slice(&chunk);
+        }
+        anyhow::ensure!(
+            bytes.len() as u64 == reference.bytes
+                && blake3::hash(&bytes).to_hex().as_str() == reference.digest,
+            "artifact download integrity check failed"
+        );
+        Ok(bytes)
+    }
     pub async fn decline(&self, rejection: &AdmissionRejection) -> anyhow::Result<TaskRecord> {
         self.post("/v1/workers/decline", rejection).await
     }

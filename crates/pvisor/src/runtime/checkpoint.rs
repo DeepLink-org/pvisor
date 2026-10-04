@@ -752,6 +752,62 @@ mod tests {
     }
 
     #[test]
+    fn fork_preserves_read_observation_before_any_upper_mutation() {
+        use pvisor_overlay_core::{OverlayCore, load_preimages};
+        let temp = tempfile::tempdir().unwrap();
+        let parent = stopped_record(temp.path());
+        let overlay = parent.overlay.as_ref().unwrap();
+        let target = overlay.target.clone();
+        fs::write(target.join("value"), b"original").unwrap();
+        let core = OverlayCore::new_with_exclusions_and_preimages(
+            vec![target.clone()],
+            overlay.upper.path().to_path_buf(),
+            Some(temp.path().join("work")),
+            vec![],
+            Some(temp.path().join("preimages")),
+        )
+        .unwrap();
+        core.observe_read(Path::new("value")).unwrap();
+        assert!(!overlay.upper.path().join("value").exists());
+        drop(core);
+        parent.write().unwrap();
+        let checkpoint = create_logical_checkpoint(&parent, Some("read-baseline")).unwrap();
+        fs::write(target.join("value"), b"host edit").unwrap();
+        let stage = temp.path().join("child");
+        let upper = stage.join("upper");
+        let journal = stage.join("preimages");
+        fs::create_dir(&stage).unwrap();
+        restore_logical_checkpoint(&checkpoint, &upper, &journal).unwrap();
+        assert_eq!(
+            load_preimages(&journal).unwrap(),
+            load_preimages(&checkpoint.preimages_snapshot).unwrap()
+        );
+        let core = OverlayCore::new_with_exclusions_and_preimages(
+            vec![target.clone()],
+            upper.clone(),
+            Some(stage.join("work")),
+            vec![],
+            Some(journal),
+        )
+        .unwrap();
+        fs::write(
+            core.copy_up(Path::new("value")).unwrap(),
+            b"agent edit based on original",
+        )
+        .unwrap();
+        drop(core);
+        let mut child = parent.overlay.unwrap();
+        child.id = "child".into();
+        child.stage_dir = stage.clone();
+        child.upper = OverlayUpper {
+            upper_dir: upper,
+            work_dir: stage.join("work"),
+        };
+        assert!(crate::runtime::overlay::apply_overlay(&mut child).is_err());
+        assert_eq!(fs::read(target.join("value")).unwrap(), b"host edit");
+    }
+
+    #[test]
     fn fork_preserves_conflict_baselines_and_validates_before_replacing() {
         use pvisor_overlay_core::{OverlayCore, load_preimages, preimage_journal_is_complete};
         let temp = tempfile::tempdir().unwrap();

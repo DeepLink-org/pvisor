@@ -37,6 +37,10 @@ const RENAME_EXCHANGE: u32 = 2;
 #[cfg_attr(any(target_os = "macos", target_os = "linux"), serde(deny_unknown_fields))]
 pub struct Config {
     pub lower_dirs: Vec<String>,
+    #[serde(default)]
+    pub apply_target: Option<String>,
+    #[serde(default)]
+    pub baseline_lower: Option<String>,
     pub upper_dir: String,
     pub work_dir: Option<String>,
     pub preimage_dir: Option<String>,
@@ -136,7 +140,7 @@ impl OverlayFs {
     }
 
     fn build(cfg: Config, inode_alloc: Arc<InodeAllocator>, restoring: bool) -> io::Result<Self> {
-        if cfg.lower_dirs.is_empty() {
+        if cfg.lower_dirs.is_empty() || (cfg.baseline_lower.is_some() && cfg.apply_target.is_none()) {
             return Err(io::Error::from_raw_os_error(libc::EINVAL));
         }
         let lowers = cfg.lower_dirs.iter().map(PathBuf::from).collect::<Vec<_>>();
@@ -144,12 +148,17 @@ impl OverlayFs {
         let work = cfg.work_dir.as_ref().map(PathBuf::from);
         let preimages = cfg.preimage_dir.as_ref().map(PathBuf::from);
         let excluded = cfg.excluded_paths.iter().map(PathBuf::from).collect();
+        let target = cfg.apply_target.as_ref().map(PathBuf::from)
+            .unwrap_or_else(|| lowers.last().unwrap().clone());
+        let layout = pvisor_overlay_core::OverlayLayout::with_baseline(
+            lowers.clone(), target, cfg.baseline_lower.as_deref().map(Path::new)
+        )?;
         let open = if restoring {
-            OverlayCore::open_existing
+            OverlayCore::open_existing_for_layout
         } else {
-            OverlayCore::new_with_exclusions_and_preimages
+            OverlayCore::new_for_layout
         };
-        let core = open(lowers.clone(), upper.clone(), work, excluded, preimages)?
+        let core = open(layout, upper.clone(), work, excluded, preimages)?
             .with_access_policy(&cfg.access_policy);
 
         let mut roots = Vec::with_capacity(lowers.len() + 1);
@@ -309,8 +318,7 @@ impl OverlayFs {
     }
 
     fn upper_parent(&self, ctx: Context, path: &Path) -> io::Result<(u64, CString)> {
-        self.core.clear_whiteout(path).map_err(linux_error)?;
-        self.core.ensure_upper_parents(path).map_err(linux_error)?;
+        self.core.prepare_create(path).map_err(linux_error)?;
         let parent = path.parent().unwrap_or_else(|| Path::new(""));
         let name = path
             .file_name()
@@ -540,6 +548,7 @@ impl FileSystem for OverlayFs {
             .lock()
             .map_err(|_| io::Error::from_raw_os_error(libc::EIO))?;
         let path = self.path(inode)?;
+        self.core.observe_read(&path).map_err(linux_error)?;
         let layer = self.layer(&path)?;
         let inner = self.inner_inode(layer, &path, ctx)?;
         let result = self.layers[layer.0].readlink(ctx, inner);
@@ -722,6 +731,7 @@ impl FileSystem for OverlayFs {
             self.core.copy_up(&path).map_err(linux_error)?;
             Layer(0)
         } else {
+            self.core.observe_read(&path).map_err(linux_error)?;
             self.layer(&path)?
         };
         let inner = self.inner_inode(layer, &path, ctx)?;
@@ -933,6 +943,7 @@ impl FileSystem for OverlayFs {
             .lock()
             .map_err(|_| io::Error::from_raw_os_error(libc::EIO))?;
         let path = self.path(inode)?;
+        self.core.observe_read(&path).map_err(linux_error)?;
         let layer = self.layer(&path)?;
         let inner = self.inner_inode(layer, &path, ctx)?;
         let result = self.layers[layer.0].getxattr(ctx, inner, name, size);
@@ -946,6 +957,7 @@ impl FileSystem for OverlayFs {
             .lock()
             .map_err(|_| io::Error::from_raw_os_error(libc::EIO))?;
         let path = self.path(inode)?;
+        self.core.observe_read(&path).map_err(linux_error)?;
         let layer = self.layer(&path)?;
         let inner = self.inner_inode(layer, &path, ctx)?;
         let result = self.layers[layer.0].listxattr(ctx, inner, size);
@@ -1130,6 +1142,8 @@ mod tests {
         let fs = OverlayFs::new(
             Config {
                 lower_dirs: vec![lower.to_string_lossy().into_owned()],
+                apply_target: None,
+                baseline_lower: None,
                 upper_dir: temp.path().join("upper").to_string_lossy().into_owned(),
                 work_dir: None,
                 preimage_dir: None,
@@ -1178,6 +1192,8 @@ mod tests {
         let fs = OverlayFs::new(
             Config {
                 lower_dirs: vec![lower.to_string_lossy().into_owned()],
+                apply_target: None,
+                baseline_lower: None,
                 upper_dir: upper.to_string_lossy().into_owned(),
                 work_dir: Some(work.to_string_lossy().into_owned()),
                 preimage_dir: None,
@@ -1257,6 +1273,8 @@ mod tests {
             let fs = OverlayFs::new(
                 Config {
                     lower_dirs: vec![lower.to_string_lossy().into_owned()],
+                    apply_target: None,
+                    baseline_lower: None,
                     upper_dir: upper.to_string_lossy().into_owned(),
                     work_dir: None,
                     preimage_dir: None,
@@ -1346,6 +1364,8 @@ mod tests {
         let fs = OverlayFs::new(
             Config {
                 lower_dirs: vec![lower.to_string_lossy().into_owned()],
+                apply_target: None,
+                baseline_lower: None,
                 upper_dir: upper.to_string_lossy().into_owned(),
                 work_dir: None,
                 preimage_dir: None,

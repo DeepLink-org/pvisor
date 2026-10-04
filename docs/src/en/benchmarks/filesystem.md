@@ -1,6 +1,6 @@
 # Filesystem and development-tool overhead
 
-Host-mode workload time is close to native. Staging adds about 8 ms to a 64 MiB sequential read and 30 ms to offline npm, but metadata access across 2,048 small files rises from about 5 ms to 150 ms. Small-file workloads are a clear optimization target.
+Same-host Docker comparisons put 64 MiB reads at **33 ms** native/Docker versus **49 ms** staged, and traversal of 2,048 files at **5 ms** native/Docker versus **180 ms** staged. Individual reads add tens of milliseconds; dense small-file paths remain costly. VM offline npm takes **1.73 s**, versus **0.23 s** in Docker.
 
 ## Motivation
 

@@ -106,3 +106,90 @@ wall 是一项命令从启动到退出的总成本，worker 是内部工具运�
 用 `python3 benchmark/pvisor/summarize_product_v1.py <batch>/report.json --output-csv /tmp/summary.csv` 重算；公开[分布汇总 CSV](../../assets/benchmarks/product-v1-20261004/summary.csv)按批次分组。
 
 本轮性能针对固定制品，不能代表之后的并行改动或其他发行构建；源码并非干净提交。全仓 lint/test 校验的是当时工作树，固定 CLI 的功能另由 benchmark 与 STAGE 规格验证。
+
+## 熟悉基线与完整 Agent Env：Linux 同机对照 {#reference-env}
+
+这轮回答三个不同问题：环境首条输出有多快、工具能否正常运行、客户端能否完成修复闭环。启动、文件操作、完整工具任务与真实 CLI 分开计时，旧 macOS/Linux 数据原样保留；新的 Docker/Firecracker/QEMU 对照只在 Linux 采集。
+
+| Item | Recorded value |
+|---|---|
+| Host | Fedora 44 / Linux 7.2.8-200.fc44.x86_64; Ryzen 7 9700X, 8C/16T; 30.5 GiB |
+| Tools | Python 3.14.7; Node 24.18.0; Rust/Cargo 1.98.1; Claude 2.1.128; Codex 0.160.0 |
+| References | Docker Engine 29.7.2 rootless; Firecracker 1.13.1 PCI; QEMU 10.2.2 q35 / microvm |
+| pVisor SHA256 | `1a2db5ad015c5ace40b3c96c7dd0dc94a08b8893de35150bd909554286e2cd3c` |
+| Guest kernel | Linux 6.12.109; reference kernel/config shared by Firecracker/QEMU |
+| VM RAM / CPU | 128 MiB shell probe; 16 GiB complete environment; 2 vCPU |
+| Storage | btrfs host; Docker bind mount; pVisor staged virtio-fs; reference private ext4 |
+| Sampling | 30 samples + 3 warmups per available case; random order; hot host caches |
+| Effective samples | 1,410 passed; 47/48 mode/backend configurations available |
+| Identity/source | Frozen binary and harness hashes; parallel dirty development recorded, not a clean commit |
+
+
+Docker/native 不设置硬内存上限；所有 payload 与 VMM 使用宿主物理核心 0、1，Docker 私有 daemon 和容器内工具单独绑定，Rust 编译 `-j2`。Docker 的启动 daemon 已运行，其一次性启动不在任务时间内。VM RAM 由 Run Bundle 或 VMM 配置核对；配置容量与实际 RSS 分开报告。宿主是共享桌面，仍有其他核心上的并行开发，缓存/磁盘竞争不完全隔离，未锁定频率，因此不把个位数百分比当作可靠排名。
+
+QEMU q35 和 microvm 同时给出，避免以 PC 设备默认成本代替其最低路径。microvm 关闭可选传统设备，KVM/host CPU、virtio-blk；Firecracker 启用 PCI、无 API、无 jailer。三者直接启动裁剪内核与静态 init，没有 systemd/SSH/cloud-init。[QEMU microvm 官方说明](https://www.qemu.org/docs/master/system/i386/microvm.html)、[Firecracker 1.13.1 配置](https://github.com/firecracker-microvm/firecracker/blob/v1.13.1/docs/getting-started.md)、[Docker rootless](https://docs.docker.com/engine/security/rootless/)是参数依据。这是开发性能基线，不是生产安全部署评测；Firecracker/QEMU 没有成为 pVisor executor。
+
+pVisor 内置 firmware 与参考内核版本相同，配置并非相同；它还有 staged 视图、执行观察与 Run Bundle。block/ext4 与 virtio-fs 的文件路径、客户端初始化和退出协议都不同，因此完整命令差值不能解释为单纯 VMM 开销。
+
+### 计时、正确性与失败
+
+`ready_ms` 是首条输出或工具自检结果，`result_ms` 是通过校验的任务结果；两者都包含对应运行时启动。`completion_ms` 是完整退出，`prepare_ms` 单独记录工作区/私有磁盘准备。主矩阵退出采样存在最高约 50 ms 的轮询粒度，主要结论使用 stdout 事件计时；精确退出补测单独归档，不混入主批次。文件操作表使用任务内部 `worker_ms`，不含新环境启动。
+
+每组先检查一次能力，3 次预热不入分布，30 轮按固定 seed 随机后端顺序。正确性要求零退出、恰好一个结果、正确 mode、真实 grade 返回、文件内容及原目录状态、VM 无 panic；pVisor 还核对 completed Bundle、实际 VM/host executor 和 staged 观察。失败保留日志，排除性能分布；Claude/VM 90 秒初始化超时令正式 N=0，runner 在完成其他组后以非零状态退出。Codex 统一内层 `danger-full-access`，默认内部沙箱兼容性不在这张表的通过条件中。
+
+真实 Claude/Codex 连接同一环境内的本地受控响应服务。无真实推理、公网时延、真实 tokens 或账单。每组 30 次反映一个任务的重复性，不是 30 种独立缺陷；P95/P99 是本批次的描述统计，不是长期尾延迟或成功率置信区间。
+
+### 资源审计 {#reference-resources}
+
+20 ms 抽样 RSS 求和，不是 PSS，也不是严格 cgroup 峰值，可能漏掉短峰和重复统计共享页。主矩阵最初只追踪 Docker CLI/daemon 后代，审计发现容器 shim 被 systemd 接管，漏掉容器工具 RSS。公开主报告已标为部分范围，不能拿其约 102 MiB 与 VM 排名。单独补测用确切 container ID 追踪 shim 与任务，并保留 Docker 进程亲缘和 affinity 证据；资源表在补测报告中独立呈现。
+
+#### 完整工具任务的资源补测
+
+同配置、10 次/组、1 次预热，按容器 ID 跟踪 Docker shim，RSS 峰值中位数如下。Docker 包含专属 daemon 的固定占用，本批次开始时约 75 MiB；这不是单个容器的增量内存，不能直接做除法估算 Agent 密度。VM 内存包含 VMM/实际已触及 guest 页，不等于配置的 16 GiB。任务期间没有新建环境或导入镜像与测量并发。
+
+| Backend | N | Peak RSS P50/P95 MiB |
+|---|---|---|
+| Native | 10 | 168.8 / 171.0 |
+| pVisor host | 10 | 178.5 / 180.7 |
+| pVisor staged | 10 | 226.8 / 242.5 |
+| pVisor VM | 10 | 722.1 / 734.9 |
+| Docker rootless | 10 | 280.3 / 320.5 |
+| Firecracker PCI | 10 | 762.7 / 771.4 |
+| QEMU q35 | 10 | 812.3 / 818.9 |
+| QEMU microvm | 10 | 803.0 / 818.6 |
+
+
+native/staged 为约 0.17/0.22 GiB，Docker 含 daemon 约 0.27 GiB，VM 为约 0.71 GiB。pVisor VM 的实际占用与本轮参考 VM 同属不到 1 GiB 的量级；这个短任务不覆盖长时间大仓库峰值，也不测共享页节省。RSS 范围不同，不能据此排出严格物理内存效率排名。
+
+[资源报告](../../assets/benchmarks/reference-env-20261004/followups/reference-resources-20261004/report.json) · [逐样本](../../assets/benchmarks/reference-env-20261004/followups/reference-resources-20261004/samples.csv) · [进程与 affinity 审计](../../assets/benchmarks/reference-env-20261004/followups/reference-resources-20261004/docker-process-audit.json) · [证据](../../assets/benchmarks/reference-env-20261004/followups/reference-resources-20261004/evidence.tar.gz)
+
+
+### 环境部署与复现
+
+从已安装工具构建 rootfs，再导入相同 Docker 镜像、制作 ext4。Fedora 44 自动工具布局为 Python 3.14/Node 24；其他系统可传 `--tools-rootfs` 等价预制 base。需要 KVM、FUSE、Docker rootless、Firecracker、QEMU、Claude/Codex、Rust musl target、GCC/e2fsprogs；内核构建需要干净 Linux 6.12.109 源码。只复制工具与假凭据，不复制登录认证。
+
+先按 rootless Docker 官方方式启动本用户的私有 daemon，使用短 socket 路径；将下例 `12345` 替换成该 daemon 的实际宿主 PID，选择允许的两个物理核心。脚本核对 owner/socket 后只绑定该 daemon，不修改系统 Docker。所有输出目录须为新目录；先用 `--samples 1 --warmups 0` 试跑。内核/工具下载、内核编译、镜像准备不计入任务时间，离线准备和每次克隆成本另有记录。
+
+```bash
+bash benchmark/pvisor/prepare_reference_kernel.sh \
+  /absolute/path/to/clean/linux-6.12.109 target/reference-kernel-new
+python3 benchmark/pvisor/prepare_reference_env.py \
+  --binary /absolute/path/to/pinned/pvisor --output target/reference-env-new \
+  --kernel-elf target/reference-kernel-new/vmlinux \
+  --kernel-bzimage target/reference-kernel-new/arch/x86/boot/bzImage \
+  --kernel-config target/reference-kernel-new/.config \
+  --docker-host unix:///tmp/pvisor-reference-docker/docker.sock
+python3 benchmark/pvisor/reference_baselines.py \
+  --assets target/reference-env-new --binary /absolute/path/to/pinned/pvisor \
+  --output target/reference-results-new \
+  --docker-host unix:///tmp/pvisor-reference-docker/docker.sock \
+  --docker-root-pid 12345 --cpu-affinity 0,1 --memory-mib 16384 \
+  --samples 30 --warmups 3
+uv run --no-project --with matplotlib python benchmark/pvisor/render_reference_baselines.py \
+  --report target/reference-results-new/report.json \
+  --assets target/reference-env-new --output /tmp/reference-report-new
+```
+
+归档 schema 为 `pvisor-reference-environment/v1`，不冒充旧 smoke schema。含逐样本、命令、固定脚本、guest/tool 版本、失败、最小化实际工具回传及 Run Bundle 隔离/资源证明；不复制数 GB rootfs 或继承宿主环境的凭据。固定 rootfs、工具、内核与 pVisor 摘要在报告中。自动部署脚本与复现入口见[benchmark 目录](https://github.com/DeepLink-org/pvisor/tree/main/benchmark/pvisor)。
+
+[逐样本 CSV](../../assets/benchmarks/reference-env-20261004/samples.csv) · [分布与阶段计时](../../assets/benchmarks/reference-env-20261004/summary.json) · [运行证据](../../assets/benchmarks/reference-env-20261004/evidence.tar.gz) · [兼容性矩阵](../../assets/benchmarks/reference-env-20261004/compatibility.json)

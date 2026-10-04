@@ -4,7 +4,7 @@
 
 Agent 修改工作区时，开发者通常希望先看结果，再决定合入哪些文件。如果直接写宿主工作区，失败、取消和不满意的修改都会留下需要人工辨认的状态。OverlayCore 将执行中的修改保留在 upper，读取时与 lower 合成视图；执行结束后，upper 留作审查、选择性 apply 或 drop。
 
-仅有写时复制还不够。Agent 运行期间，编辑器或其他任务可能修改真正的目标；一次 apply 也可能在更新几个文件后中断。因此设计同时保存第一次修改时的目标指纹，以及每次 apply 的持久意图，让冲突可以被拒绝，中断可以按已记录的批次向前完成。
+仅有写时复制还不够。Agent 运行期间，编辑器或其他任务可能修改真正的目标；一次 apply 也可能在更新几个文件后中断。因此设计同时保存首次内容观察或修改前的目标指纹，以及每次 apply 的持久意图，让冲突可以被拒绝，中断可以按已记录的批次向前完成。
 
 这套机制覆盖文件树，不覆盖远程请求、数据库写入或显式共享挂载的副作用。多文件 apply 不是对外部读者原子的事务，目标锁也只协调遵守该锁的 pVisor 调用。对外语义见[暂存与 apply](../concepts/staging.md)，用户流程见[审查与应用](../guides/review-apply.md)。
 
@@ -12,9 +12,9 @@ Agent 修改工作区时，开发者通常希望先看结果，再决定合入�
 
 ### 读视图与写目标分开 {#layout}
 
-`OverlayLayout` 保存按优先级排列的 lowers 和独立的 apply target。upper 优先，随后是最高优先级 lower，最后是 target 或它的只读 snapshot baseline。构造时要求最后一层 canonical path 与明确 baseline 一致，避免把“看见的文件”误当成“将覆盖的文件”。
+`OverlayLayout` 保存按优先级排列的 lowers、独立的 apply target 与目标对应 baseline。upper 优先，随后是最高优先级 lower，最后是 target 或它的只读 snapshot baseline。构造时要求最后一层 canonical path 与明确 baseline 一致，避免把“看见的文件”误当成“将覆盖的文件”。
 
-例如 compose lower 的 `config` 为 B，宿主 target 的 `config` 为 A。Agent 读取 B，修改后 upper 为 C；first-touch 指纹必须记录 A。apply 判断宿主 A 是否仍完整，然后将 C 合入，不能以 B 作为宿主冲突基线。
+例如 compose lower 的 `config` 为 B，宿主 target 的 `config` 为 A。Agent 读取 B，修改后 upper 为 C；live lower 在首次实际内容打开时记录 target A；冻结布局则记录末层 baseline 中的 A，不能在首次修改时改取已变化的 live target。apply 判断宿主 A 是否仍完整，然后将 C 合入，不能以 B 作为宿主冲突基线。
 
 | 数据 / 模块 | 持有的内容 | 职责 |
 |---|---|---|
@@ -79,7 +79,11 @@ upper 保存完整 copy-up 文件，修改一字节也可能复制整个文件�
 
 ### 首次触达与冲突指纹 {#preimages}
 
-`record_preimage()` 在 preimage mutex 内按相对路径原始字节寻址。已有条目保持不变；新条目取真正 target 的指纹，`create_new` 写 JSON、同步文件及 entries 目录后才继续修改。父目录、删除树与 rename 目的地也需要记录，覆盖隐含的元数据变化及递归破坏范围。
+冲突保护起点取决于布局。冻结布局从明确的 target 对应 baseline（最后一个 lower）捕获原像；最高优先级的额外 lower 仅供应可见内容。live lower 从首次实际内容打开或 symlink/xattr 读取捕获 target 原像；真实缺失 lookup 直接记录已观察到的 Absent，不能在稍后取指纹时改为宿主刚创建的文件。授权与 I/O 拒绝不是缺失，不记录也不读取被拒路径；没有先读取的 mutation 从修改前的 target 状态开始。普通成功的 stat/lookup 和目录列表不哈希每个文件，也不承诺 Run 起点完整快照或全读集串行化。FUSE 与 virtio-fs 的实际内容入口自动调用共享 Core 的 `observe_read()`；调用 Core 的外部适配器也必须这样做，`resolve()` 仅解析路径。
+
+观察文件按相对路径原始字节寻址，在 mutex 内以私有临时文件写完后、通过不覆盖已有目的地的 hard link 原子发布；多个 Core 争同一条目时验证并保留先发布的原像，修改方同步真正的胜者；读取阶段不逐项 fsync。首次修改时 `record_preimage()` 复用该原像，验证 JSON 并同步文件和 entries 目录，完成后才修改 upper。冻结布局无需提前记录只读观察，修改时从 baseline 捕获。父目录、删除树与 rename 目的地仍记录并同步，覆盖隐含元数据变化与递归破坏范围。普通 stage/checkpoint 复制和 reopen 保留读观察；损坏条目拒绝加载或修改。只读观察并不是断电持久的读事务，带运行态恢复合同的调用方必须同时保全 baseline/journal。未选中的无关只读路径不阻止其他文件 apply。
+
+冻结布局部分 apply 后，被裁剪的 upper 路径会重新露出旧 baseline；当前不会自动更新该读视图。重新打开同一 stage 后基于旧内容改写已提交路径，仍以旧 baseline 校验并保守拒绝，不能仅将 fingerprint 重取为当前 target 后放行旧视图覆盖。继续编辑这类路径应创建新 stage/基线；原 stage 中未提交的其他路径可继续审查。
 
 `PathPreimage` 的结构示例：
 
@@ -102,7 +106,7 @@ upper 保存完整 copy-up 文件，修改一字节也可能复制整个文件�
 
 xattrs 区分 Unsupported 与排序后的 `(name-bytes, value-sha256)`；内部 opaque xattr 排除在用户元数据指纹之外。旧条目没有 xattrs 时，兼容比较也不宣称验证过 xattrs。普通文件哈希使用 64 KiB 缓冲，但总读取量仍与文件长度成正比；目录指纹不是整个子树的 Merkle hash。
 
-新空 upper 初始化 `complete-v1`，内容为 `pvisor-overlay-preimage-journal-v1` 加换行。完整日志缺少选中路径时直接拒绝 apply。没有标记的旧 stage 可在 apply 时补取指纹以兼容，但不提供从执行期开始的同等冲突保护。preimage 写入不是整体替换；完整条目损坏会让加载失败，没有类似 JSONL 的尾部修复。
+新空 upper 初始化 `complete-v1`，内容为 `pvisor-overlay-preimage-journal-v1` 加换行。完整日志缺少选中路径时直接拒绝 apply。没有标记的旧 stage 可在 apply 时补取指纹以兼容，但不提供从执行期开始的同等冲突保护。preimage 每条独立原子发布，不整体替换；完整条目损坏会让加载失败，没有类似 JSONL 的尾部修复。
 
 ### 审查与选择集合 {#selection}
 
@@ -170,13 +174,14 @@ pending apply 存在时不能 drop，以免删掉恢复所需的 upper。已 Dis
 
 ## 4. 实验数据支撑 {#experiments}
 
-本次整理读取代码与既有文档，没有编译或运行产品测试。当前源码中 `core.rs` 有 24 个显式测试函数，`apply.rs` 有 19 个；这些是覆盖入口数量，不是本次通过数，也不是独立故障场景数量。
+本轮冲突窗口修复编译并运行了 `JUST_TEMPDIR=/tmp just test pvisor-overlay-core pvisor-overlayfs`，定向测试通过，覆盖公共 Core/apply 行为以及 FUSE 的实际 `open_inode` / `open_path` 路径。`pvisor` 集成回归还通过 guest descriptor ring 驱动真实 virtio-fs worker，覆盖内容读取、写入、live/frozen 目标布局和设备状态恢复；逻辑 checkpoint 回归检查只读观察在复制/restore 后仍能约束首次修改。它们验证共享实现与适配器接线，不等同真实宿主 FUSE 挂载、KVM/HVF guest 启动或跨平台验收。以下是可复核的覆盖入口，不能将函数数量当作独立故障场景数量。
 
 | 机制 | 现有可复核测试 |
 |---|---|
 | lower 组合与独立目标基线 | `top_lower_wins_and_directories_merge`、`composed_lower_preimage_tracks_apply_target_not_visible_layer` |
-| first-touch 持久且不重取 | `first_touch_preimage_is_durable_and_never_rebased` |
+| first-touch 在修改前持久且不重取 | `first_touch_preimage_is_durable_and_never_rebased` |
 | backing / alias / 授权边界 | `backing_symlink_alias_cannot_share_the_upper_and_work_directory`、`access_rules_reject_hardlink_aliases_and_symlink_traversal` |
+| 先读后修改、冻结基线、缺失路径与恢复 | `read_conflicts` 集成测试、`fuse_open_inode_preserves_the_first_read_before_copy_up`、`virtiofs_content_open_preserves_target_preimage_across_restore_and_composed_lowers`、`fork_preserves_read_observation_before_any_upper_mutation` |
 | 主动修改目标后的冲突拒绝 | `apply_rejects_a_target_changed_after_first_touch` |
 | 递归替换、backup 与中断恢复 | `directory_replacement_checks_descendants_and_recovers_after_mutation`、`interrupted_directory_replacement_restores_the_recorded_original` |
 | Prepared 前后目标变化 | `prepared_apply_recovers_before_or_after_target_mutation` |
@@ -185,7 +190,7 @@ pending apply 存在时不能 drop，以免删掉恢复所需的 upper。已 Dis
 
 `pvisor-core/tests/overlay_contracts.rs` 另覆盖旧 schema 默认值、指纹变体和原始路径字节。`tests/semantics/stage-apply.md` 提供 S-STAGE-001～014 的运行语义草稿；其人工审批状态独立于测试通过，不能由这份文档替代。
 
-目前没有在本次证据中建立 copy-up / apply 吞吐、fsync 尾延迟、大型目录扫描成本或断电级恢复数据，因此不填性能数字。源码可确认的成本包括首次文件哈希与整文件 copy-up、目录遍历、每条 preimage 同步，以及每次状态更新重写完整 ledger。以进程内构造状态的恢复测试也不能替代任意 syscall 处 kill / 断电的完整矩阵。[apply 成本页面](../benchmarks/apply.md)仍为规划，不作为已完成实验。
+本修复没有重新测 copy-up / apply 吞吐、fsync 尾延迟、大型真实仓库负载或断电恢复。1,024 路径的普通 metadata walk 回归确认不会创建内容观察条目，不是吞吐 benchmark。首次内容观察仍需读取并哈希整个目标文件及写入每路径 journal；首次修改仍同步原像，copy-up、目录遍历与 ledger 更新也有成本。已有 [apply 成本实验](../benchmarks/apply.md) 是历史固定工作负载和制品的具体证据，不能当成本修复的性能复验。进程内恢复控制组与 guest descriptor 测试也不替代任意 syscall 处 kill / 断电、真实 Linux FUSE 或 macOS FSKit/HVF 矩阵。
 
 ## 5. 使用建议 {#usage}
 

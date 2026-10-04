@@ -19,13 +19,18 @@ Replay 把“Agent 曾经调用过哪些工具”转换成“这些工具在当�
 
 回放历史工具会再次产生文件、命令和可能的远程副作用。文件检查点不保存这些外部状态；旧 observation 无法刷新时，默认拒绝，只有显式允许才记录降级。新上下文中的工具输出可以不同，模型继续时也可以选择不同动作，不能把成功续跑理解为确定性再现原轨迹。
 
+Claude 历史 `Read` 只接受 workspace 内的普通文件。它保留指向 workspace 内部的既有 symlink 解析，但实际打开时以目录 FD 逐段拒绝新的 symlink，并以非阻塞打开后的 inode 类型检查拒绝 FIFO、目录和设备；FIFO 不需要 writer 或外层 Run timeout 才能返回工具错误。
+
+每次 `Read` 最多扫描 16 MiB（另探测一个字节以确认截断），最多返回 2,000 行文件正文，整个工具正文不超过 4 MiB。`offset` 从 1 开始，显式 `limit` 在这些预算内保持原义；达到扫描、行数或输出字节预算时保留已读内容，追加一行 `Read truncated by pvisor replay` 提示，并设置 observation 的 `truncated=true`。因此含提示的结果最多 2,001 行。若显式请求的范围已在扫描边界前完整取得，不因文件其他部分很大而标记截断。高 offset 超出扫描范围也会显示截断，不能将该结果解释为完整文件的 EOF。普通文件仍可能被并发修改；这些预算不构成文件快照，也不保证远程或故障文件系统的 I/O 延迟。
+
 ## 代码与验证
 
 ```bash
 just test pvisor-replay
 ```
 
-- `adapter/claude_code.rs`：完整批次分组、prepare-only 无工具执行、旧 observation 拒绝或显式降级、历史命令超时与进程组清理；
+- `adapter/claude_code.rs`：完整批次分组、prepare-only 无工具执行、旧 observation 拒绝或显式降级、Read 范围与输出预算、历史命令超时与进程组清理；
+- `io.rs`：Read 普通文件检查、目录 FD 路径约束及解析后的 symlink 替换回归；
 - `adapter/generic.rs`：Codex/OpenCode 的原生身份、完整工具轮次、续跑前缀验证与传输 nonce 过滤；
 - `tests/replay_contract.rs`：mini-swe-agent、SWE-agent、OpenHands、Pi 的 replay-only 边界、提示注入与步数约束；
 - `bridge/`：协议桥的请求/响应映射及边界验证。

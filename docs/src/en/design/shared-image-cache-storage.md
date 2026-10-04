@@ -1,332 +1,379 @@
-# Shared image cache storage format v1
+# Shared image cache v1: independent metadata and shared content
 
-> New publications use [shared image cache v2](shared-image-cache-storage-v2.md), with independent meta, shared sharded data, and paged binary indexes. This page records legacy v1, which remains readable for compatibility and migration.
+> Status: implemented. Filesystem/S3 caches use this v1 format: independently managed image metadata, shared file contents, and paged indexes. This is the sole cache implementation; online/offline GC tooling is not implemented.
 
-This page describes the implemented filesystem/S3 direct-storage format and how `pvisor cache publish` produces it. See the [shared image cache reference](../reference/shared-image-cache.md) for operations. Directories, fields, and publication order follow `image/cache/portable.rs`, `portable/publish.rs`, `storage.rs`, and `client.rs`.
+V1 keeps each image's mutable state and file indexes in its own meta directory, sharing only immutable data objects. Different images do not update a common reference table, image index, or mutable pack. Concurrent updates of one image are handled at that platform's own HEAD.
 
-Filesystem and S3 backends share relative object keys. The server backend continues querying an existing OCI store; its internal storage does not use this v1 layout.
-
-## Goals and stored data
-
-The publisher resolves the selected Linux platform's OCI manifest, downloads and verifies layers, extracts them, applies whiteouts, and converts the merged file view into indexes and content objects. Workers read indexes and only accessed blocks, without maintaining a cache service or extracting an entire image.
-
-The index preserves paths, types, sizes, modes, UID/GID, hard-link identities, timestamps, symlink targets, and image startup configuration. Names and symlink targets preserve Unix bytes. It does not store complete OCI manifests, original layer tar files, arbitrary xattrs, or runtime writable uppers. CPU/RAM environment snapshots use separate storage.
-
-Content objects hold raw bytes, at most **1 MiB (1,048,576 bytes)**. There is no compression encoding, individual S3 object per file, block header, or embedded offset table. Index `spans` describe all file-to-block relationships.
-
-## Shared storage tree
+## Complete tree
 
 ```text
-s3://BUCKET/PREFIX/
-└── v1/
-    ├── format
-    ├── refs/
-    │   ├── <tag-reference-and-architecture-hash>.json
-    │   └── <pinned-reference-and-architecture-hash>.json
-    ├── images/
-    │   └── <platform-manifest-hex>.json
-    ├── indexes/
-    │   └── <index-bytes-hex>.json
-    └── blobs/
-        ├── <packed-content-hex>
-        └── <other-content-hex>
+<cache-prefix>/
+├── format.json
+├── meta/
+│   ├── <image-key-A>/
+│   │   ├── identity.json
+│   │   └── platforms/
+│   │       ├── linux-amd64/
+│   │       │   ├── HEAD.json
+│   │       │   ├── revisions/
+│   │       │   │   ├── <revision-hex-1>/
+│   │       │   │   │   ├── manifest.json
+│   │       │   │   │   ├── config.json
+│   │       │   │   │   ├── files.bin
+│   │       │   │   │   ├── contents.bin
+│   │       │   │   │   ├── index.bin
+│   │       │   │   │   ├── objects.bin
+│   │       │   │   │   ├── checksums.bin
+│   │       │   │   │   └── COMMIT.json
+│   │       │   │   └── <revision-hex-2>/
+│   │       │   │       └── <same immutable metadata files>
+│   │       │   └── uploads/
+│   │       │       └── <upload-id>/
+│   │       │           ├── plan.json
+│   │       │           └── progress.json
+│   │       └── linux-arm64-v8/
+│   │           ├── HEAD.json
+│   │           ├── revisions/<revision-hex>/
+│   │           │   └── <same immutable metadata files>
+│   │           └── uploads/<upload-id>/
+│   │               ├── plan.json
+│   │               └── progress.json
+│   └── <image-key-B>/
+│       ├── identity.json
+│       └── platforms/<platform>/
+│           ├── HEAD.json
+│           ├── revisions/<revision-hex>/
+│           │   └── <same immutable metadata files>
+│           └── uploads/<upload-id>/
+│               ├── plan.json
+│               └── progress.json
+└── data/
+    └── sha256/
+        ├── 00/
+        │   ├── 00/<full-object-hex>
+        │   └── ff/<full-object-hex>
+        ├── ab/
+        │   ├── cd/<full-object-hex>
+        │   └── ef/<full-object-hex>
+        └── ff/
+            └── ff/<full-object-hex>
 ```
 
-S3 “directories” are object-key prefixes. With `s3://images-cache/team-a`, a content key is `team-a/v1/blobs/<64-hex>`. With filesystem location `/mnt/cache`, it is `/mnt/cache/v1/blobs/<64-hex>`. Image path `etc/os-release` maps through the index to blocks, not to a same-named S3 key.
+The cache-prefix is a prefix inside an S3 bucket or a filesystem cache directory. Every full-object-hex is a complete 64-character digest and its prefixes must match. Angle brackets are structural placeholders; JSON digest/length values are illustrative, not readable published objects.
 
-Digest strings use `sha256:<64-hex>`; filenames use only the hex part. Refs, images, and indexes add .json; blobs have no extension. Hashes are SHA-256. Object keys contain no host absolute paths.
+There are three boundaries:
 
-| Path | Contents and purpose | Overwrite rule |
+- `meta/<image-key>/`: management of one canonical image reference, including its tag or pinned digest.
+- `platforms/<platform>/`: independent publication for one Linux platform of that reference.
+- `data/sha256/<p0>/<p1>/<object-hash>`: immutable content reusable by all images, without a shared mutable index or reference-count file.
+
+Format.json is immutable cache-prefix configuration, conditionally created at initialization. It contains no image list, upload progress, or global current pointer.
+
+## Identities, tags, and revisions
+
+| Identity | Computation/name | Meaning |
 |---|---|---|
-| `v1/format` | Fixed bytes `pvisor-cache-v1\n`, ending in one LF | Publisher writes the fixed value |
-| `v1/refs/<hash>.json` | Reference and architecture → platform manifest and index digest | Both tag and pinned records are overwritten |
-| `v1/images/<manifest-hex>.json` | Platform manifest digest → index digest | Overwritable |
-| `v1/indexes/<index-hex>.json` | Complete file metadata, startup configuration, and spans | Conditional creation, no overwrite |
-| `v1/blobs/<content-hex>` | At most 1 MiB of packed raw bytes | Conditional creation, no overwrite |
+| image-key | `hex(SHA256(UTF8(canonical_reference)))` | Image name plus tag/pinned digest, excluding platform |
+| canonical_reference | `registry/repository@tag-or-digest` | Existing OCI normalization |
+| platform | linux-amd64, linux-arm64-v8, etc. | Canonical OS/architecture/variant directory name without slashes |
+| revision | `SHA256(exact COMMIT.json bytes)` | Complete immutable metadata revision |
+| file-digest | `SHA256(whole raw file bytes)` | File content identity independent of path/mode |
+| object-hash | `SHA256(raw chunk bytes)` | Cross-image shared storage identity |
 
-Format is written last as an identifying marker, not a global commit point. Readers rely on object versions and index/content digests. Current Ping only attempts to read the marker; it does not validate its presence or text. Successful Ping is not a complete-image integrity check.
+Alpine:3.20 normalizes to registry-1.docker.io/library/alpine@3.20. Alpine:latest, alpine:3.20, and alpine from another repository each have their own image-key but can share identical data. Explicit image@sha256:… references also have their own metadata directories, avoiding a global mutable manifest-to-image lookup.
 
-## Digests and reference relationships
+When a tag resolves to a new manifest, its image-key stays unchanged. Create a revision and update that platform's HEAD, retaining old revisions. Amd64 and arm64-v8 have separate HEADs and cannot overwrite each other's publications.
 
-```mermaid
-flowchart LR
-    R["refs / image + architecture"] --> I["indexes / index SHA-256"]
-    D["images / manifest SHA-256"] --> I
-    I --> E["entry / Unix path bytes"]
-    E --> S["ordered spans / blob + offset + length"]
-    S --> B["blobs / raw bytes"]
-```
+Queries carry `image-key + platform + revision`. A reader loads HEAD once at startup and pins that handle. Manifest digests verify provenance rather than serving as the complete storage address. A global mutable image index must not be reintroduced merely to preserve the old digest-only query interface.
 
-| Identity | Computation or source | Purpose |
+Prepare/publish returns image_handle, encoded as pvisor-v1:<image-key>:<platform>:<revision-hex>. Pass it as the first positional argument to CLI list/stat/read. The request field retains the name digest, but v1 requires the complete handle. Response digest remains the OCI manifest provenance digest. FUSE automatically uses image_handle; only server backends read by manifest digest. Metadata_generation is the COMMIT digest. Local file blocks are separated by handle hash to avoid mixing platforms or revisions.
+
+Publishing a tag does not automatically create pinned-digest-reference meta. Read-only nodes preparing IMAGE@sha256:… need that reference published separately. Using a returned image_handle requires no additional pinned-reference directory.
+
+## meta: what each image owns
+
+| Object | Contents/purpose | Mutability |
 |---|---|---|
-| Platform manifest digest | Resolved OCI Linux/amd64 or Linux/arm64 manifest digest | Public digest; multi-platform images use the selected platform manifest |
-| Reference-key digest | `SHA256(UTF8(canonical_image) + NUL + UTF8(architecture))` | Distinguishes tag/pinned references and architectures |
-| Index digest | `SHA256(exact stored index JSON bytes)` | File-tree generation returned as metadata_generation |
-| Content digest | `SHA256(exact raw packed bytes)` | Integrity and whole-block deduplication |
+| identity.json | Version, canonical image reference, image-key | Immutable conditional creation; verify existing identity |
+| HEAD.json | Current revision, manifest digest, generation, publication time and publication_id | Platform-scoped CAS update |
+| revisions/<revision>/manifest.json | Provenance: source reference, platform, selected OCI manifest/config/layer digests | Immutable |
+| config.json | Environment, entrypoint, command, architecture, file count and logical bytes | Immutable |
+| files.bin | Complete paths/raw bytes, types, Unix attributes, hard-link groups, symlink targets, file-digests | Immutable |
+| contents.bin | Distinct file contents used by the revision: file-digest, size, ordered chunks | Immutable |
+| index.bin | Paths to files entries and directories to ordered child entries | Immutable; derivable from files |
+| objects.bin | Unique chunk digest/length set for integrity, statistics, and GC | Immutable; derivable from contents |
+| checksums.bin | Per-page SHA-256 catalog for the four binary objects | Immutable; verified by COMMIT |
+| COMMIT.json | Revision identity/provenance and digests/lengths of the six metadata files plus checksums.bin | Immutable revision-completion marker |
+| uploads/<upload-id>/plan.json | Target platform/revision, source manifest, originally observed HEAD/CAS condition | Independent and immutable per upload |
+| uploads/<upload-id>/progress.json | Upload progress and resume hints, excluding storage credentials | Updated only by its uploader |
 
-`alpine:latest`, `docker.io/library/alpine:latest`, and `oci://alpine:latest` normalize to `registry-1.docker.io/library/alpine@latest`. The @latest suffix is an internal representation. A pinned reference is `registry-1.docker.io/library/alpine@sha256:…`. Architectures are amd64 or arm64. NUL in key computation is one 0x00 byte, not the two characters backslash and zero.
+Files and contents are separate: two paths with different modes can reference one file-digest. Hard links additionally share inode/link-group identity. Empty files have the empty-content digest and no chunks, requiring no zero-byte data object. Directories, symlinks, and special entries have no file-content reference.
 
-Index hashing covers original JSON bytes, including whitespace and field order. JSON below is formatted for display. Downloadable objects use compact encoding and filenames derived from actual bytes. Reformatting an index requires a new digest and new pointers.
+Index is derived binary metadata verified as part of the revision. File tables and indexes are read in pages within this image revision, without combining multiple images into one index. Metadata sizes, page counts, and entry counts require explicit limits.
 
-One platform manifest can produce different index digests when extraction timestamps or metadata change. Images is overwritable and does not permanently bind one generation. Refs stores the index digest directly, so prepare can load it directly. A manifest query without an already loaded index uses images.
+### HEAD and COMMIT
 
-## Object fields
-
-### refs: resolve a reference and architecture
+Example HEAD:
 
 ```json
 {
-  "version": 1,
-  "image": "registry-1.docker.io/library/example@layout",
-  "architecture": "amd64",
-  "checked_at": 1700000000,
-  "digest": "sha256:cccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccc",
-  "index": "sha256:78fee5fd5d5c698c7513540ebee5b9e033c10c438439ed757c8abf8f954041ad"
+  "format_version": 1,
+  "image_key": "<canonical-reference-sha256-hex>",
+  "platform": "linux-amd64",
+  "revision": "sha256:<commit-bytes-sha256-hex>",
+  "manifest_digest": "sha256:<platform-manifest-hex>",
+  "generation": 7,
+  "published_at": 1791072000,
+  "publication_id": "00000000-0000-4000-8000-000000000001"
 }
 ```
 
-| Field | Type | Meaning |
-|---|---|---|
-| `version` | u32 | Currently 1 |
-| `image` | string | Canonical reference with tag or pinned digest |
-| `architecture` | string | amd64 or arm64; part of reference-key identity |
-| `checked_at` | u64 | Publication record time in Unix seconds, for the five-minute tag window |
-| `digest` | string | Selected platform manifest digest |
-| `index` | string | Digest of the indexes object |
-
-Readers check version, reference, architecture, and the index's digest/architecture. Publication writes the requested reference and its pinned counterpart. If the input is already that pinned reference, both writes target the same key.
-
-Writable prepare reuses tag records younger than 300 seconds and queries the registry after expiry. Pinned references do not expire by age. Read-only mode uses published records beyond expiry without registry access; missing records and --refresh fail. Publish never queries remote refs: it always packs and uploads the local prepared result. --refresh controls registry re-resolution.
-
-### images: query directly by manifest
+Example COMMIT:
 
 ```json
 {
-  "version": 1,
-  "index": "sha256:78fee5fd5d5c698c7513540ebee5b9e033c10c438439ed757c8abf8f954041ad"
-}
-```
-
-The only fields are `version: u32` and `index: string`. The manifest digest comes from the key and is not repeated in contents. Readers verify the index digest and its manifest digest.
-
-### indexes: complete file view and startup configuration
-
-[Download the complete example index](../../assets/examples/cache-layout-v1/v1/indexes/78fee5fd5d5c698c7513540ebee5b9e033c10c438439ed757c8abf8f954041ad.json).
-
-| Field | Type | Meaning |
-|---|---|---|
-| `version` | u32 | Currently 1 |
-| `digest` | string | Selected platform manifest digest |
-| `architecture` | string | Selected platform architecture |
-| `env` | object<string, string> | Image default environment |
-| `entrypoint` / `cmd` | array<string> | Image startup arguments |
-| `totals` | object | files: u64 and bytes: u64; regular-file path count and logical-byte sum |
-| `entries` | array<Entry> | Complete tree including root, one entry per path |
-
-Totals count regular-file paths, including each hard-link path. They are not unique-inode counts, physical object sizes, or upload traffic. Directories, symlinks, and special entries do not contribute regular-file/byte totals.
-
-A complete Entry is:
-
-```json
-{
-  "path": [
-    101,
-    116,
-    99,
-    47,
-    109,
-    101,
-    115,
-    115,
-    97,
-    103,
-    101
-  ],
+  "format_version": 1,
+  "image_key": "<canonical-reference-sha256-hex>",
+  "platform": "linux-amd64",
+  "manifest_digest": "sha256:<platform-manifest-hex>",
   "metadata": {
-    "status": "metadata",
-    "kind": "file",
-    "size": 5,
-    "mode": 33188,
-    "uid": 0,
-    "gid": 0,
-    "inode": 6,
-    "nlink": 2,
-    "mtime": 1700000000,
-    "mtime_nsec": 0,
-    "target": null
-  },
-  "spans": [
-    {
-      "blob": "sha256:93355ccb32baf92c9cc4f6ec98a7e5aefc569663ff20a67215db0683fc61da8d",
-      "offset": 3,
-      "length": 5
-    }
+    "manifest.json": {"sha256": "sha256:<hex>", "bytes": 1200},
+    "config.json": {"sha256": "sha256:<hex>", "bytes": 800},
+    "files.bin": {"sha256": "sha256:<hex>", "bytes": 196608},
+    "contents.bin": {"sha256": "sha256:<hex>", "bytes": 196608},
+    "index.bin": {"sha256": "sha256:<hex>", "bytes": 131072},
+    "objects.bin": {"sha256": "sha256:<hex>", "bytes": 131072},
+    "checksums.bin": {"sha256": "sha256:<hex>", "bytes": 400}
+  }
+}
+```
+
+Revision hashes actual COMMIT bytes, so COMMIT **does not contain its own revision field**, avoiding a cyclic digest. Revision directories use the hex portion. Fixed metadata serialization determines exact bytes, lengths, and hashes. COMMIT excludes publication-attempt times and upload IDs so identical metadata can reuse a revision. Time and generation belong to HEAD/upload records.
+
+Publication_id is a UUID unique to each upload, stored in HEAD rather than COMMIT/revision. After a commit timeout, match the complete HEAD and this UUID so another publisher committing the same revision cannot be mistaken for this attempt.
+
+An existing COMMIT is not tag visibility. Ordinary tag readers use a revision only once HEAD points to it. Pinned readers can continue using retained older revisions.
+
+## Binary file tables and paged indexes
+
+### Why changing the serializer is insufficient
+
+A complete JSON index requires deserializing all entries and constructing paths/directories HashMaps. More files increase download, parsing, allocation, and index-building costs. This identifies an optimization opportunity; without component measurements, it does not establish JSON as the main source of current restore latency.
+
+V1 aims to start without visiting every file, perform lookup without building a whole-image in-memory index, and fetch content descriptors only for the requested file. Replacing JSON with MessagePack, Protobuf, or ordinary bincode while eagerly decoding the same structures is insufficient.
+
+Small control objects remain JSON: format, identity, HEAD, COMMIT, manifest, and config, with size limits. Files, contents, index, and objects grow with file counts and use binary encodings; a new checksums.bin supports integrity checks for partial reads. The runtime hot path does not read objects.bin, which serves publication verification, statistics, and offline GC.
+
+### Binary object layout
+
+The baseline is a versioned read-only paged format with fixed record tables, byte arenas, and indexes within pages. The default page size is 64 KiB, with uncompressed metadata initially. S3 uses Range GET; filesystem readers use pread or mmap of fully cached files. Mmap does not eliminate page-fault I/O or provide zero-copy access to remote S3.
+
+```text
+files.bin
+├── header + section directory
+├── fixed FileRecord table
+└── raw-byte arena: paths, symlink targets
+
+contents.bin
+├── header + section directory
+├── fixed ContentRecord table
+└── fixed ChunkRecord table
+
+index.bin
+├── header + B+tree root
+├── internal pages: separators + child page IDs
+└── linked leaf pages: (parent file ID, raw basename) -> file ID
+
+objects.bin
+├── header
+└── sorted unique (32-byte object hash, object length) records
+
+checksums.bin
+├── header + per-object page counts
+└── SHA-256 page hashes: files / contents / index / objects
+```
+
+| Object/structure | Proposed fields and access |
+|---|---|
+| Common header | Magic, object type, format/schema version, flags, page_bytes, total length, entry counts, section locations; explicitly little-endian multibyte integers |
+| FileRecord | File ID, parent file ID, inode/link-group, type and Unix attributes, offset+length for paths/targets, content ID; direct addressing by file ID |
+| ContentRecord | 32-byte whole-file digest, file length, first chunk ID, chunk count; direct addressing by content ID |
+| ChunkRecord | 32-byte data digest and chunk length; file offsets follow fixed chunk_bytes and chunk ordinal |
+| Index pages | Bounded page entries, full separator keys, child/adjacent page IDs; sorted by parent file ID and raw basename bytes, without assuming collision-free path hashes |
+| Objects records | Digest and length, sorted and deduplicated by full digest; no repeated hexadecimal strings |
+| Checksums | Fixed object order, per-object page counts, and 32-byte page digests; page lengths follow total object lengths in COMMIT |
+
+Publishers assign file IDs in raw-path-byte order and content IDs in whole-file-digest order. Indexes, object inventories, and checksum tables use deterministic ordering. Identical input and schemas produce identical bytes; HashMap iteration order or native memory layout is not an encoding specification.
+
+File IDs identify directory entries; inode/link-group identifies hard links. These are distinct. Content IDs address descriptors within this revision rather than providing cross-image identities; sharing still uses whole-file/data digests. Directory hard links are prohibited except for special . / .. semantics. Paths, basenames, and symlink targets retain raw bytes without requiring UTF-8.
+
+Fixed table records cannot straddle pages. Variable byte arenas use offset+length and may span pages. Sections are page-aligned with deterministic zero padding. The specification defines ID-to-section/page offset calculations; Rust struct memory must not be written directly. Field offsets and widths are fixed in the pvisor-paged-v1 schema below. Incompatible changes require a new schema/encoding rather than reinterpreting existing objects. Current FileRecord does not store xattrs and preserves the existing cache attribute scope; reserved bytes do not represent implemented extended attributes.
+
+Full paths resolve component by component. Readdir starts at the parent's first key and follows leaf pages; cookies bind to revision and page/slot. Publishers validate unique paths, parent relationships, hard-link attributes, and consistency between index and files. Readers bound tree depth, page visits, key lengths, entry counts, and offset arithmetic, rejecting out-of-bounds references, cycles, and unknown required features. Errors must not become “file not found.”
+
+### Fixed pvisor-paged-v1 byte layout
+
+All integers are little-endian; signed timestamps use i64, and SHA-256 uses 32 raw bytes. Each main binary object is a multiple of 64 KiB and at most 64 MiB. JSON control objects and checksums.bin are each limited to 1 MiB. Limits are 200,000 file entries and 500,000 content chunk descriptors; paths/symlink targets are at most 16 KiB and basenames 255 bytes.
+
+The common header occupies page 0. Its first 80 bytes are defined below; remaining bytes are zero:
+
+| Offset | Field | Type/width |
+|---|---|---|
+| 0 | Magic | 8 bytes: PVICB1 followed by two NUL bytes |
+| 8 | Schema version | u32, fixed 1 |
+| 12 | Object kind | u32: files=1, contents=2, index=3, objects=4 |
+| 16 | page_bytes | u32, fixed 65536 |
+| 20 | record_width | u32: files=128, contents=64, index=280, objects=40 |
+| 24 | object_bytes | u64, including header and padding |
+| 32 | record_count | u64; index counts non-root file entries |
+| 40 | Primary table offset | u64, fixed 65536 |
+| 48 | Auxiliary section offset | u64; byte arena for files, chunk table for contents, otherwise 0 |
+| 56 | Auxiliary count | u64; valid arena bytes for files, chunk records for contents, otherwise 0 |
+| 64 | Auxiliary record width | u32: files=1, contents=40, otherwise 0 |
+| 68 | Reserved | u32, fixed 0 |
+| 72 | Index root page ID | u64; nonzero only for index |
+
+Fixed-width tables pack floor(65536 / record_width) records into a page and zero-pad the remaining bytes. IDs start at 0, with position base + floor(id/slots)*65536 + (id%slots)*record_width; simple multiplication across page boundaries is incorrect. Root file ID is 0; other files are sorted by raw path bytes. Root parent and non-regular-file content IDs use u64::MAX.
+
+| FileRecord offset | Field | Type |
+|---|---|---|
+| 0 / 8 / 16 / 24 | Parent ID / inode / nlink / size | u64 each |
+| 32 / 40 | mtime / mtime_nsec | i64 each |
+| 48 / 52 / 56 / 60 | mode / uid / gid / kind | u32 each; kind: directory=0, file=1, symlink=2, special=3 |
+| 64 | Path offset (absolute within object) | u64 |
+| 72 / 76 | Path length / target length | u32 each |
+| 80 / 88 | Target offset (absolute within object) / content ID | u64 each |
+| 96–127 | Reserved | All zero |
+
+ContentRecord (64 bytes) contains digest[32], size u64, first_chunk_id u64, chunk_count u64, and 8 zero bytes. ChunkRecord and ObjectsRecord (40 bytes) both contain digest[32], length u32, and 4 zero bytes; ObjectsRecord is sorted and deduplicated by digest.
+
+Each index node occupies one page. The first 16 bytes contain level u32, entry_count u32, and next_leaf_page u64. Level 0 is a leaf; internal nodes have next=0, and a leaf's next=0 ends the chain. Each subsequent 280-byte record contains parent ID u64, value u64, basename_length u16, raw basename bytes, and zero padding. Basenames are at most 255 bytes, giving 234 entries per page. Leaf values are file IDs; internal values are child page IDs, with keys equal to child minimum keys. Remaining page bytes are zero. Cookie=page_id*256+slot is returned as next_offset; pass it back unchanged rather than treating it as a sequential file number.
+
+Checksums.bin does not use the common header. Bytes 0–7 contain PVICH1 followed by two NULs, bytes 8–11 page_bytes u32, and bytes 12–15 object count u32 (fixed 4). Bytes 16–79 contain four object_bytes u64/page_count u64 pairs in files/contents/index/objects order. From byte 80, 32-byte page digests follow in the same object order and increasing page ID, with no extra padding.
+
+Implementation starts in crates/pvisor/src/image/cache/portable.rs. Binary schemas, generation and validation live in portable/binary.rs; publication in portable/publish.rs; object Range GET/CAS in storage.rs. Filesystem updates to mutable objects such as HEAD and upload progress use hidden locks in the same directory (for example .HEAD.json.lock). S3 stores no lock objects.
+
+### Partial reads still require integrity checks
+
+Whole-file SHA-256 alone is insufficient: downloading an entire index before checking its hash defeats paged loading. COMMIT records whole-file digests/lengths for the four binary objects and a digest/length for checksums.bin:
+
+1. Verify COMMIT against the pinned revision digest, then fetch and fully verify size-bounded checksums.bin.
+2. Check page_bytes, object order, and page counts against COMMIT lengths; reject overflow or extra pages. COMMIT verifies checksums itself, which does not recursively appear in its own page table.
+3. Fetch pages on demand, checking their SHA-256 before using any fields/offsets. Hash only actual bytes of the final page; other pages include deterministic padding.
+4. Page-cache keys include revision, object type, and page ID. Cache hits preserve trusted verification state. Full downloads/audits additionally check the whole-file hash.
+
+For example, four objects totaling 64 MiB, with each object's length page-aligned, contain 1,024 digests at 64 KiB per page. The catalog occupies 32 KiB plus a small header. This is a size calculation, not a latency measurement. The catalog still needs a size limit. Larger images requiring paged checksum catalogs need a future authenticated hierarchy rather than skipped verification.
+
+Use bounded LRU and persistent page caches, coalesce adjacent remote Range GETs where possible, and optionally prefetch common header/root pages. Do not unconditionally issue an independent S3 request per path component. Incomplete cached files cannot be mapped as complete objects; use the page cache until a full download has been verified, then allow whole-file mmap. Current metadata supports neither whole-file zstd nor page compression. Manifest/config/checksums, the three table headers, and root attributes/index are each read in parallel groups to reduce sequential S3 round trips; dependent index traversal remains sequential. Adjacent-range coalescing and whole-file mmap are not implemented. Filesystem readers currently use seek/read.
+
+### Queries and encoding choice
+
+Startup reads control objects, checksums, and necessary header/root pages. Lookup reads index traversal pages and the target FileRecord; read subsequently fetches related ContentRecord/ChunkRecord entries and data objects. Directory enumeration and complete file-list export are sequential paged operations, outside the mandatory startup path. Cold queries can still require multiple S3 round trips; binary encoding does not automatically deliver tens of milliseconds.
+
+[FlatBuffers offset-based access](https://flatbuffers.dev/white_paper/) can avoid first converting an entire object and is a prototype comparison candidate. A single whole-image FlatBuffer does not automatically provide remote paging, page integrity, and directory indexing. [SQLite's paged B-tree format](https://www.sqlite.org/fileformat.html) is also a comparison candidate; this use still requires read-only remote page access plus integrity and caching design. The current implementation uses an explicit read-only paged format without introducing these libraries.
+
+Future performance evaluation should compare JSON, paged binary, and candidate libraries at 1,000, 10,000, and 100,000 directory entries. Measure cold-S3/warm-local startup to first lookup, first file read, readdir, sequential scan, downloaded bytes, GET counts, parsing/verification CPU, and peak RSS. Results determine page size, prefetch policy, and final encoding; no fixed speedup is claimed before measurement.
+
+## data: share actual file bytes
+
+Example format configuration:
+
+```json
+{
+  "format_version": 1,
+  "hash_algorithm": "sha256",
+  "encoding": "raw",
+  "chunk_bytes": 1048576,
+  "shard_prefix_bytes": 2,
+  "metadata_encoding": "pvisor-paged-v1",
+  "metadata_page_bytes": 65536
+}
+```
+
+Default shard prefixes are the first two and next two hex characters. An h starting with abcd maps to `data/sha256/ab/cd/<h>`. Leaf filenames retain full digests to avoid short-hash collisions. Raw encoding, hash algorithm, and shard depth are immutable prefix configuration.
+
+Two levels provide 65,536 possible leaf shards and at most 256 child directories per upper level. Average leaf occupancy is approximately N/65,536; fixed hash prefixes do not impose a hard leaf-object limit. The implementation fixes two levels. A future three-level format could provide 16,777,216 leaves, but requires a new prefix or explicit migration rather than changing existing depth in place. Hard count limits need capacity budgets or an explicit migration/resharding design, rather than claiming two hex characters guarantee unlimited scale.
+
+### File-independent chunks
+
+Each file starts at its own offset zero and is split into sequential chunks of at most 1 MiB. Different files never share a pack object. A small file uses one object, a large file several; hard links and identical files reuse content descriptors and objects. Data digests exclude image-key, path, mode, mtime, and upload time.
+
+The following is a readable illustration of a contents.bin record, **not the actual on-disk JSON encoding**:
+
+```json
+{
+  "file_digest": "sha256:<whole-file-hex>",
+  "size": 1048581,
+  "chunks": [
+    {"digest": "sha256:<first-chunk-hex>", "length": 1048576},
+    {"digest": "sha256:<last-chunk-hex>", "length": 5}
   ]
 }
 ```
 
-| Entry field | Type | Meaning |
-|---|---|---|
-| `path` | array<u8> | Raw bytes relative to the image root; [] represents root |
-| `metadata` | object | Reuses the cache protocol's status: metadata response |
-| `spans` | array<Span> | Content spans in file-logical order; empty for non-regular files |
+This represents a file of 1 MiB plus 5 bytes. A chunk's file offset is the sum of earlier lengths. A within-pack file-span offset is unnecessary. Every chunk contains one part of this file; identical complete files produce identical chunks in every image.
 
-The example path decodes to etc/message. Reads look up the index rather than opening a host path. Paths forbid NUL, empty components, dot/parent components, and leading slashes. Parents must exist and be directories. Names need not be UTF-8 and use neither URL encoding nor Base64. JSON integer arrays can occupy more storage than raw path bytes.
+Renaming a file, changing images, or changing permissions does not duplicate its data. Different files can also share identical aligned chunks. Fixed chunks are not content-defined chunks: inserting bytes at the beginning can change later chunks, so similar files are not guaranteed high deduplication.
 
-| Metadata field | Type | Meaning |
-|---|---|---|
-| `status` | string | Always metadata |
-| `kind` | string | directory, file, symlink, or special |
-| `size` | u64 | Logical file/link size; directory size follows source metadata |
-| `mode` | u32 | Numeric Unix mode; permissions use permission bits, kind specifies type |
-| `uid` / `gid` | u32 | Unix identities preserved by the source OCI view |
-| `inode` | u64 | Nonzero portable identity, shared by a hard-link group |
-| `nlink` | u64 | Source metadata link count |
-| `mtime` / `mtime_nsec` | i64 | Unix seconds and nanosecond component |
-| `target` | array<u8> or null | Raw symlink target bytes; null for other types |
+Avoiding cross-file packs increases small-file object counts and GET/PUT requests. This is the tradeoff for stable file-content reuse. Future small-file packing needs independent content addressing and location mapping; a file's physical identity must not depend on its neighbors as in whole-image packing.
 
-Publication maps host inodes to consecutive identities inside an index rather than exposing host inode numbers. Symlinks are recorded without following them. Cache read accepts regular files; FUSE resolves guest symlink paths using targets. Special entries retain metadata but have no spans and cannot be read as regular files. Arbitrary OCI xattrs are not separately stored.
+## How two images share
 
-### spans and blobs: file range mapping
-
-Span contains `blob: string`, `offset: u32`, and `length: u32`. Offset is **inside the blob**. File offset is the sum of preceding span lengths. A regular file's span lengths sum to its size; empty files have no spans.
-
-Span lengths are nonzero and offset + length ≤ 1 MiB. Reads also check against actual object length. Blobs have no JSON, compression header, or padding; final packs can be shorter than 1 MiB. The whole object's SHA-256 is verified before slicing.
-
-## A complete readable tree example
-
-This is amd64 teaching data with a placeholder manifest digest of 64 c characters. It does not identify a real registry image and is not a bootable Linux rootfs. All objects live under docs/src/assets/examples/cache-layout-v1/ in the repository. Structure and content digests are valid and readable without S3 or a registry.
-
-```text
-/
-├── bin/
-│   ├── current -> tool
-│   └── tool                 # ABC
-└── etc/
-    ├── message              # hello
-    └── message-copy         # hard link to message
+```mermaid
+flowchart LR
+    A["meta / image-key-A / platform / HEAD"] --> RA["image A revision"]
+    B["meta / image-key-B / platform / HEAD"] --> RB["image B revision"]
+    RA --> FA["files + contents + index"]
+    RB --> FB["files + contents + index"]
+    FA --> X["data / sha256 / ab / cd / shared-object"]
+    FB --> X
+    FA --> Y["data / sha256 / 12 / 34 / A-only-object"]
+    FB --> Z["data / sha256 / 56 / 78 / B-only-object"]
 ```
 
-One block stores ABChellohello, 13 bytes, with digest `sha256:93355ccb32baf92c9cc4f6ec98a7e5aefc569663ff20a67215db0683fc61da8d`:
+Identical /usr/lib/libc.so files in images A and B can use the same file-digest and data chunks. A's modes, paths, and timestamps live in A's files, and B's attributes live in B's files. Neither image modifies shared data or shares mutable metadata.
 
-| Path | File-logical range | Blob offset | Length | Inode |
-|---|---|---:|---:|---:|
-| `bin/tool` | `[0,3)` | 0 | 3 | 4 |
-| `etc/message` | `[0,5)` | 3 | 5 | 6 |
-| `etc/message-copy` | `[0,5)` | 8 | 5 | 6 |
+Data is conditionally created and reused when present; readers verify its digest. Publishers reuse objects they have verified or verify existing objects before reuse. Corruption fails without overwriting content potentially referenced by other images. Physical savings are measured by unique object lengths, not summed image-logical bytes.
 
-Bin/current has target [116,111,111,108], decoding to tool, with empty spans. The two message paths share inode 6 and nlink 2. The publisher reads per path, so they occupy separate spans. Existing deduplication operates on whole blocks, not independently on hard links or individual file spans.
+## Concurrent publication and commit protocol
 
-Inspect the [reference record](../../assets/examples/cache-layout-v1/v1/refs/a8d93e91eb6f819b7d43e6cdfa45d577eb739e9efc6bf7ec489b6242097eda03.json), [manifest pointer](../../assets/examples/cache-layout-v1/v1/images/cccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccc.json), [complete index](../../assets/examples/cache-layout-v1/v1/indexes/78fee5fd5d5c698c7513540ebee5b9e033c10c438439ed757c8abf8f954041ad.json), and [raw content block](../../assets/examples/cache-layout-v1/v1/blobs/93355ccb32baf92c9cc4f6ec98a7e5aefc569663ff20a67215db0683fc61da8d). From the repository root:
+1. Normalize the image, choose a platform, and read its HEAD contents and ETag/version, or record a create condition if absent.
+2. Prepare the image locally, build file metadata, compute file/chunk hashes, COMMIT, and target revision; create an independent upload plan.
+3. Upload/reuse all data using conditional creation, without shared reference counts.
+4. Conditionally create full metadata under the image's platform/revision and verify every digest/length.
+5. Conditionally create COMMIT last as the revision's completion marker.
+6. CAS the platform's HEAD: If-None-Match for initial creation, originally observed If-Match ETag otherwise; write a committed progress.json receipt. Upload records remain for offline maintenance without requiring DeleteObject in normal publication.
 
-```sh
-cache_layout_location="$PWD/docs/src/assets/examples/cache-layout-v1"
-pvisor cache --backend filesystem --location "$cache_layout_location" \
-  --read-only stat sha256:cccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccc etc/message
-pvisor cache --backend filesystem --location "$cache_layout_location" \
-  --read-only read sha256:cccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccc etc/message
-```
+**HEAD is the only visibility commit point.** This is not a whole-store transaction. Upload success followed by HEAD failure leaves invisible metadata/reusable data while preserving the image's current readable revision. Dependencies must be complete and readable before HEAD commits.
 
-The last command prints hello. Stat/read by manifest do not require matching host/index architectures, so arm64 hosts can also read it. Prepare by reference selects host-architecture records; this example only supplies amd64 references.
+S3 If-Match uses the returned ETag as a comparison token, not a content SHA-256. Mismatches cause conflicts; conditional writes and GetObject/PutObject permissions are documented in [AWS conditional writes](https://docs.aws.amazon.com/AmazonS3/latest/userguide/conditional-writes.html). Compatible stores must provide equivalent conditional create/update semantics. Filesystems use platform-scoped locks, old-HEAD verification, synced temporary files, and atomic replacement.
 
-Large files can span blocks and need not start at blob offset zero. If a pack already holds 100 bytes, a 1,048,576-byte file occupies [100,1,048,576) in that pack and [0,100) in the next. File range [1,048,470,1,048,490) combines the first span's final 6 bytes with the next span's first 14 bytes.
-
-## Publication order, concurrency, and failure
-
-Publish completes local OCI preparation and walks the tree in directory sort order. Each regular file appends bytes to the current pack, uploaded when it reaches 1 MiB. The shorter final pack is uploaded after traversal. Packs cross file boundaries and their digests depend on all bytes and boundaries; identical files need not reuse the same S3 object.
-
-1. Conditionally create all blobs.
-2. Validate and serialize the complete index, then conditionally create it.
-3. Overwrite images/<manifest>.json.
-4. Overwrite the requested refs record.
-5. Overwrite the corresponding pinned refs record.
-6. Write the fixed format marker and return Prepared JSON.
-
-S3 immutable objects use If-None-Match conditional creation and reuse existing objects. Filesystem writes use same-directory temporary files, file sync, no-clobber publication or atomic replacement, and directory sync. Both require complete, atomically visible single-object writes.
-
-This is not a multi-object transaction. Content/index failures do not publish new pointers/references but can leave unreferenced objects. Once images or the requested refs record is written, a later pinned-ref/format failure makes the command fail while earlier writes remain visible. They reference completed content and are not rolled back.
-
-Concurrent publication uses the last completed overwrite, without tag CAS, timestamp monotonicity checks, or a group pointer lock. Refs and images can temporarily point at different indexes. Readers follow the immutable index digest they obtained. Existing readers may retain older indexes after metadata changes, so older indexes and blocks cannot be immediately deleted.
-
-Repeated publish restores missing objects but does not overwrite existing corrupted immutable objects. Conditional creation reuses them and read-time verification fails. Repair requires an administrator to assess the impact, remove the corrupt object, and republish. Retries do not automatically fix arbitrary corruption.
-
-## Demand reads and local trees
-
-Prepare by reference loads indexes directly through refs. Direct stat/list/read resolve manifests through images. Loaded indexes for the same manifest are reused to avoid pointer lookups on every read. A whole index loads once, then directory/attribute queries use memory maps. List sorts raw bytes and pages at most 256 entries, also bounded by the 1 MiB protocol-frame limit.
-
-Range reads download only intersecting blocks. Current GETs fetch whole objects, with no S3 Range GET: reading a small file's 5 bytes can download a whole pack. Memory hits avoid GETs, and independent processes can reuse locally persisted objects.
-
-```text
---image-store DIR/
-├── blobs/sha256/<oci-blob-hex>
-├── rootfs-v3/sha256/<manifest-hex>/
-├── metadata/
-│   ├── sha256/<manifest-hex>.json
-│   └── prepared-v1/<local-reference-key>.json
-└── locks/
-
-<user-cache>/pvisor/
-├── cache-v1/objects/<location-hash>/
-│   ├── indexes/<index-hex>
-│   └── blobs/<content-hex>
-├── blocks/<endpoint-hash>/<manifest-hex>/
-│   └── <file-block-cache-objects>
-└── metadata/v1/<endpoint-hash>/<manifest-hex>/<generation-hash>/
-```
-
-Image-store is publisher OCI download/extraction staging, defaulting to pvisor/images in the system user cache. Published objects do not depend on it, so staging can be removed after success. The tree omits auxiliary OCI/FUSE/job files.
-
-Direct-backend readers maintain cache-v1/objects. Location-hash is the SHA-256 hex of the configured address string. Local index/blob names omit sha256:, and indexes omit .json. Address separation avoids mixed namespaces; textually different equivalent addresses may have separate caches.
-
-Blocks and metadata/v1 belong to the VM lazy adapter: logical file blocks and attributes/directory pages keyed by metadata_generation. They can coexist with whole-object caches, so disk accounting must include these copies. Direct-backend LRU caches keep at most 4 indexes and 64 content blocks. Blocks total at most 64 MiB; indexes have a count limit, not a 64 MiB aggregate budget.
-
-Locally persisted objects are reverified and refetched if corrupt. Unwritable local caches still allow verified remote reads. Missing, corrupt, or denied remote objects fail without zero filling or silent registry fallback. Read-only protects shared storage but can still write local acceleration caches.
-
-## Limits, permissions, and lifecycle
-
-| Item | Current value or rule |
+| Concurrent case | Outcome |
 |---|---|
-| Architectures | amd64 and arm64 |
-| Object/index read limit | 64 MiB; blocks additionally limited to 1 MiB |
-| Paths per index | 200,000, including root |
-| Spans per index | 500,000 |
-| File read length | 1…1,048,576 bytes; CLI uses streaming requests |
-| Tree structure | Directory root, unique paths, existing directory parents |
-| Content relationships | Span-length sum equals size; totals match per-path statistics |
-| Versions | Ref, image pointer, and index version must be 1 |
-| Unknown fields | Refs/images/index/Entry/Span reject them; metadata follows Response deserialization |
+| Different image-keys | Separate metadata writes; identical data hashes are reused idempotently |
+| Same image, different platforms | Separate HEADs and revisions |
+| Same image/platform observing the same HEAD | Both build revisions, only one CAS succeeds |
+| HEAD CAS conflict | Explicit conflict; never remove the condition or blindly overwrite a newer HEAD with an old source |
+| Crash before commit | Existing HEAD stays unchanged; upload state/unreferenced data may remain |
+| HEAD timeout with unknown outcome | Reread HEAD and match the unique publication_id and complete content, without blind overwrite |
+| Reader pinned to an old revision | Continues using retained COMMIT/metadata/data |
 
-Structure is validated during publication and loading. Long paths or many spans can hit the 64 MiB JSON limit first. Source prepared rootfs must stay immutable while publishing. Truncation, growth, or changing to a non-regular file is rejected, but publication is not a transactional source-tree snapshot and does not detect every same-size mutation.
+Generation increments only inside the platform HEAD, decided by successful CAS, not a global clock. A retry after conflict must reobserve HEAD and confirm the source tag instead of unconditionally allowing the last writer to win.
 
-Publish uploads require s3:PutObject; writable prepare also needs s3:GetObject, and read-only workers need only GetObject. Normal operations use neither ListBucket, DeleteObject, nor bucket creation. Connections and credentials belong to the host; see the [configuration reference](../reference/shared-image-cache.md). Digests provide integrity, not authentication of untrusted publishers. Trusted publishers and storage permissions must protect refs, images, and startup configuration.
+## Reading, deletion, and GC
 
-There is no automatic GC, quota, lease, or per-reference deletion tool. Direct-backend object caches do not coalesce downloads across processes; VM file-block caches still use local locks. Blocks can be shared by indexes, so deleting an old reference does not make blocks safe to delete. Age-based blob expiry can break valid images. Retire independent buckets/prefixes only after confirming no readers need them. Finer GC must trace references and protect active/historical readers.
+Reading follows image-key/platform/HEAD → revision/COMMIT → file metadata/content descriptors → data. Pin a revision at reader startup rather than tracking tag changes per file read. Normal readers need only GetObject and do not write leases or counters.
 
-V1 readers do not interpret other versions. Field/encoding changes require explicit versions and compatibility strategies; new compression encodings or path meanings cannot silently enter old v1 objects.
+Image deletion first disables new jobs/publications and confirms its readers and publishers have exited, then removes its own meta. Retiring a revision likewise requires confirming no readers use it. Neither directly deletes shared data; retained history retains objects references. Without active-reader coordination, revisions cannot be deleted merely because HEAD moved: read-only clients may still be pinned to them.
 
-## Implementation and validation
+GC tooling is not implemented. The planned offline maintenance protocol is: pause publishing/metadata changes and confirm affected readers exited, enumerate all retained committed revisions, mark the union of objects.bin, then sweep unreferenced data. Upload leftovers can be removed only once their writers have stopped. Routine publishing does not depend on a global mutable reference-count database. Online concurrent GC needs separate design.
 
-| Mechanism | Implementation/test |
-|---|---|
-| Objects, ranges, reference expiry, loading validation | `crates/pvisor/src/image/cache/portable.rs` |
-| Packing, portable inodes, publication order | `crates/pvisor/src/image/cache/portable/publish.rs` |
-| Filesystem writes, S3 conditional creation, errors | `crates/pvisor/src/image/cache/storage.rs` |
-| Backend configuration and local object paths | `crates/pvisor/src/image/cache/client.rs` |
-| Ranges/EOF, hard links, pagination/non-UTF-8 names, failed publication, local corruption | `crates/pvisor/src/image/cache/portable/tests.rs` |
-| Signed CLI publication, missing-block repair, independent readers, real VM | `crates/pvisor/tests/cache_backends.rs` |
+SHA-256 integrity does not authenticate publishers. Trusted publishers and storage permissions protect format, identity, HEAD, and COMMIT. Publishers need GetObject and PutObject for CAS/reuse verification, readers only GetObject, and GC separate enumeration/deletion privileges.
 
-Publish and read a production image with:
+Writable prepare can reuse a fresh revision from the platform HEAD without registry access. Explicit publish builds metadata and verifies or uploads content objects; expired writable tags and --refresh resolve the source again. New OCI preparations retain their selected manifest bytes; reused older staging can lack these bytes, in which case manifest config_digest/layer_digests are null rather than invented. Data uploads use at most eight workers per publication.
 
-```sh
-PVISOR_CACHE_READ_ONLY=false pvisor cache publish alpine:latest \
-  --backend s3 --location s3://your-bucket/pvisor-cache \
-  --architecture amd64 --image-store /tmp/pvisor-publish
+## Format version and validation
 
-export PVISOR_CACHE_BACKEND=s3
-export PVISOR_CACHE_LOCATION=s3://your-bucket/pvisor-cache
-export PVISOR_CACHE_READ_ONLY=true
-pvisor cache prepare alpine:latest
-pvisor cache read sha256:YOUR_MANIFEST_DIGEST etc/os-release
-```
+This format consistently uses format_version=1, pvisor-v1 read handles, PVICB1/PVICH1 magic, and pvisor-paged-v1 metadata encoding. Local direct-reader caches live under <user-cache>/pvisor/cache-v1/objects/<location-hash>/. The complete JSON tree index and packed-layout implementation has been removed. Neither pvisor-v2 handles nor format_version=2 control objects are accepted. Existing caches in other formats need republication from their OCI sources into an empty cache directory or S3 prefix; changing version fields or directory names is insufficient.
 
-These require an existing bucket and valid AWS region/credentials. See the [shared image cache reference](../reference/shared-image-cache.md) for operations. The attached small example validates object structure and reading semantics only.
+Implementation verifies cross-image/platform sharing, CAS conflicts, historical revisions, format-version rejection, corrupt data/index pages, local cache repair, and index bounds. A 5,000-file regression starts with 5 pages and uses at most 10 cumulative pages for one lookup, then enumerates the entire directory. These are read-count assertions, not latency benchmarks. A signed HTTP fixture also injects a lost HEAD response and verifies reconciliation after conditional retries. Full cold/warm comparisons and GC remain future work.

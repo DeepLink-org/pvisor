@@ -13,6 +13,37 @@ Protocol adapters convert supported requests/responses into the shared `pvisor-c
 
 Public capture uses `pvisor_core::event::Event` and the shared Journal. Mutable capture inputs serve conversation projection rather than a second formal event envelope. Drafts do not enter the fact log; Markdown parameters remain compatibility-only.
 
+## Delegated credential actions {#delegated-credential-actions}
+
+Gateway checks the HTTP method and endpoint before selecting a model route or
+resolving its credential. POST is allowed for Chat Completions, Messages,
+Responses, Embeddings and token counting at their exact unversioned or
+`/v1` paths. Native Gemini allows `models/{model}:generateContent`,
+`:streamGenerateContent` and `:countTokens` under `/v1`, `/v1beta` or no version
+prefix. GET `/models`, `/v1/models` and `/v1beta/models` returns the local model
+configuration without contacting an upstream. One trailing slash is accepted.
+Administrative endpoints, other methods, unknown paths, ambiguous escaped/dot/
+repeated-slash paths and method/path override headers or query parameters
+(`_method`, `method`, `path`, `url` and related spellings) are rejected. Ordinary
+API query parameters such as `alt=sse` and `api-version` are preserved.
+
+The protocol bridge result is checked again. Gemini uses the URI model as its
+identity, rejects a conflicting body model and rewrites the URI when a route
+forwards to another model. Model path segments accept ASCII letters, digits,
+hyphens, underscores and dots, but cannot be `.` or `..`.
+
+Clients must use these Gateway paths; arbitrary client prefixes that happened to
+match a protocol suffix are no longer accepted. A trusted route's `upstream`
+can still include a service prefix such as `/team/v1`. The configured upstream
+must implement the advertised API semantics. The ordinary egress policy and
+the explicit delegated model grant are separate: `no-network` can still permit
+these model requests, and this action check does not make capture mandatory or
+establish a spend budget.
+
+The legacy Detect classification has no defined delegated model action and is
+not on this allowlist. Realtime HTTP session/credential management is also not
+delegated; WebSocket transport retains its explicit unsupported response.
+
 ## Order and persistence
 
 Journal positions express commit order; stable event IDs support idempotent retries; causal references express known dependencies. Run and embedded Gateway share a Journal. Story actors commit facts before updating Story/SessionIndex and notifying observers. Observer failure does not roll back committed facts.

@@ -39,6 +39,11 @@ pvisor run --safe \
 
 优先使用 Gateway：Key 留在可信侧，模型请求还能被记录。配置细节见 [Gateway 捕获](../capture.md)。
 
+Gateway 持有的 key 只委托给支持的模型 POST 端点；未知或管理动作在转发前
+被拒绝。模型列表在本地返回。显式模型委托仍可在 `no-network` 下使用；后者
+控制普通代理出口。支持路径与自定义上游前缀要求见
+[Gateway 动作范围](../../design/gateway.md#delegated-credential-actions)。
+
 ## 不在保护范围内
 
 通过 `--pass-env` 交给 Agent 的凭据，pVisor 不追踪它如何被使用，也不会让它自动失效。见[威胁模型](../../security/threat-model.md)。

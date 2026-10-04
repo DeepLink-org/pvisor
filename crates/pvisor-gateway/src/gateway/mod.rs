@@ -1,5 +1,6 @@
 //! LLM protocol adaptation and trajectory capture on top of overlaynet.
 
+mod action;
 mod admin;
 mod auth;
 mod common;

@@ -8,10 +8,11 @@ description = "Durable distributed scheduling and worker protocol for pVisor"
 
 [dependencies]
 anyhow.workspace = true
-axum = { workspace = true, features = ["http1", "json", "tokio"] }
+axum = { workspace = true, features = ["http1", "json", "query", "tokio"] }
 blake3.workspace = true
 clap = { workspace = true, features = ["derive", "env"] }
 fs2.workspace = true
+libc.workspace = true
 pvisor-core.workspace = true
 reqwest = { workspace = true, features = ["json", "rustls-tls"] }
 serde = { workspace = true, features = ["derive"] }

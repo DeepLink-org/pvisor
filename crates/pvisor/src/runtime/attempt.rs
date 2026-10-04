@@ -1228,6 +1228,8 @@ fn inject_krun_overlay_metadata(
         "pvisor.vm.workspace_overlay".into(),
         serde_json::json!({
             "lowers": hint.lower_dirs,
+            "apply_target": record.target,
+            "baseline_lower": record.baseline_lower,
             "upper": upper,
             "work": work,
             "preimages": record.stage_dir.join("preimages"),

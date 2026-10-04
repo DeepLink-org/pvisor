@@ -49,7 +49,7 @@ pub(super) struct Envelope {
 pub enum Response {
     Ready,
     Prepared {
-        /// Immutable image/platform/revision handle for daemonless v2 reads.
+        /// Immutable image/platform/revision handle for daemonless v1 reads.
         #[serde(default, skip_serializing_if = "Option::is_none")]
         image_handle: Option<String>,
         #[serde(default)]

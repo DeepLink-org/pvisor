@@ -218,7 +218,9 @@ def export_evidence(source, out):
                 "exit_code": run.get("exit_code"),
                 "executor": run["executor"],
                 "safety": value.get("safety"),
-                "metrics": {k: v for k, v in run.get("metrics", {}).items() if k.startswith("resource.vm_")},
+                "metrics": {
+                    k: v for k, v in run.get("metrics", {}).items() if k.startswith("resource.vm_")
+                },
             }
             # Runtime proof is sufficient here; do not publish inherited host environment.
             import io
@@ -234,6 +236,7 @@ def main():
     p.add_argument("--report", type=Path, required=True)
     p.add_argument("--output", type=Path, required=True)
     p.add_argument("--assets", type=Path, required=True)
+    p.add_argument("--followup-report", type=Path, action="append", default=[])
     args = p.parse_args()
     report = json.loads(args.report.read_text())
     for row in report["rows"]:
@@ -277,6 +280,24 @@ def main():
     )
     export_evidence(args.report.parent, args.output)
     figures(summary, args.output)
+    for source in args.followup_report:
+        followup = json.loads(source.read_text())
+        if "summary" not in followup or any(
+            row["correctness"] != "passed" for row in followup["rows"]
+        ):
+            raise ValueError(f"incomplete or incorrect follow-up: {source}")
+        dest = args.output / "followups" / source.parent.name
+        dest.mkdir(parents=True, exist_ok=False)
+        shutil.copy2(source, dest / "report.json")
+        (dest / "summary.json").write_text(json.dumps(summarize(followup), indent=2) + "\n")
+        with (dest / "samples.csv").open("w", newline="") as f:
+            writer = csv.DictWriter(f, fieldnames=fields)
+            writer.writeheader()
+            writer.writerows({k: row[k] for k in fields} for row in followup["rows"])
+        audit = source.parent / "docker-process-audit.json"
+        if audit.is_file():
+            shutil.copy2(audit, dest / audit.name)
+        export_evidence(source.parent, dest)
     print("Exported", len(report["rows"]), "successful samples to", args.output)
 
 

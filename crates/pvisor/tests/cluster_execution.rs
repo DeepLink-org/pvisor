@@ -60,7 +60,7 @@ fn spawn_worker_config(
 }
 
 #[tokio::test(flavor = "multi_thread", worker_threads = 4)]
-async fn worker_final_admission_declines_without_starting_and_requeues_the_exact_task() {
+async fn worker_final_admission_declines_without_starting_and_another_node_completes_it() {
     use axum::{
         body::{Body, to_bytes},
         extract::{Request, State},
@@ -130,7 +130,7 @@ async fn worker_final_admission_declines_without_starting_and_requeues_the_exact
     let profile = temp.path().join("pressure.toml");
     std::fs::write(
         &profile,
-        "[admission]\nmode = 'linux_pressure'\nmemory_reserve_bytes = 18446744073709551615\n",
+        "[admission]\nmode = 'linux_pressure'\nmemory_reserve_bytes = 9223372036854775807\n",
     )
     .unwrap();
     let _worker = spawn_worker_config(&url, "pressure", temp.path(), Some(&profile));
@@ -165,11 +165,14 @@ async fn worker_final_admission_declines_without_starting_and_requeues_the_exact
         admin.task("declined").await.unwrap().admission_rejections,
         1
     );
-    assert_eq!(
-        admin.cancel("declined").await.unwrap().phase,
-        TaskPhase::Cancelled
-    );
-    assert!(!marker.exists());
+    let _healthy = spawn_worker(&url, "healthy", temp.path());
+    let completed = wait(&admin, "declined", true).await;
+    assert_eq!(completed.phase, TaskPhase::Succeeded);
+    assert_eq!(completed.generation, 2);
+    assert_eq!(completed.admission_rejections, 1);
+    assert_eq!(completed.lease.unwrap().key.worker_id, "healthy");
+    assert_eq!(std::fs::read_to_string(&marker).unwrap(), "started");
+    assert!(temp.path().join("healthy/tasks/declined-2/trace").exists());
     server.abort();
 }
 fn spec(id: &str, command: &str) -> TaskSpec {
@@ -195,6 +198,7 @@ fn spec(id: &str, command: &str) -> TaskSpec {
         },
         labels: BTreeMap::new(),
         cache_keys: vec![],
+        retain_bundle: false,
     }
 }
 async fn wait(client: &Client, id: &str, terminal: bool) -> TaskRecord {
@@ -387,6 +391,7 @@ async fn vm_control_wire_protocol_enforces_roles_and_resume_admission() {
             labels: BTreeMap::new(),
             cache_keys: vec![],
             vm_control_protocol: Some(CLUSTER_VERSION),
+            artifact_protocol: None,
             vm_control_actions: vec![
                 ControlAction::Pause,
                 ControlAction::Offload,

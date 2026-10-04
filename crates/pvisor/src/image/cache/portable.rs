@@ -1,4 +1,4 @@
-//! Per-image v2 metadata and file-independent content chunks; v1 reads in legacy.
+//! Per-image v1 metadata, paged indexes, and file-independent content chunks.
 use super::storage::{MAX_OBJECT, Storage, StoredObject};
 use super::{ImageTotals, MAX_READ, Request, Response, hash};
 use anyhow::{Context, bail, ensure};
@@ -18,7 +18,7 @@ const MAX_ENTRIES: usize = 200_000;
 const MAX_SPANS: usize = 500_000;
 const MAX_CONTROL: usize = 1024 * 1024;
 const BINARY_NAMES: [&str; 4] = ["files.bin", "contents.bin", "index.bin", "objects.bin"];
-const FORMAT: &[u8] = b"{\"format_version\":2,\"hash_algorithm\":\"sha256\",\"encoding\":\"raw\",\"chunk_bytes\":1048576,\"shard_prefix_bytes\":2,\"metadata_encoding\":\"pvisor-paged-v1\",\"metadata_page_bytes\":65536}";
+const FORMAT: &[u8] = b"{\"format_version\":1,\"hash_algorithm\":\"sha256\",\"encoding\":\"raw\",\"chunk_bytes\":1048576,\"shard_prefix_bytes\":2,\"metadata_encoding\":\"pvisor-paged-v1\",\"metadata_page_bytes\":65536}";
 #[derive(Clone, Serialize, Deserialize)]
 #[serde(deny_unknown_fields)]
 struct Descriptor {
@@ -83,8 +83,8 @@ impl Handle {
     fn parse(value: &str) -> anyhow::Result<Self> {
         let parts: Vec<_> = value.split(':').collect();
         ensure!(
-            parts.len() == 4 && parts[0] == "pvisor-v2",
-            "expected immutable pvisor-v2 image handle"
+            parts.len() == 4 && parts[0] == "pvisor-v1",
+            "expected immutable pvisor-v1 image handle"
         );
         check_hex(parts[1])?;
         check_hex(parts[3])?;
@@ -97,7 +97,7 @@ impl Handle {
     }
     fn encode(&self) -> String {
         format!(
-            "pvisor-v2:{}:{}:{}",
+            "pvisor-v1:{}:{}:{}",
             self.image_key, self.platform, self.revision
         )
     }
@@ -115,38 +115,23 @@ pub(super) struct PortableCache {
     local_objects: Option<PathBuf>,
     images: Mutex<LruCache<String, Arc<LoadedImage>>>,
     blobs: Mutex<LruCache<String, Arc<Vec<u8>>>>,
-    legacy: super::legacy::LegacyCache,
 }
 impl PortableCache {
     pub(super) fn new(storage: Storage, local_store: Option<PathBuf>, read_only: bool) -> Self {
-        let legacy = super::legacy::LegacyCache::new(storage.clone(), None, true);
         Self {
             storage,
             local_store,
             read_only,
             local_objects: None,
-            legacy,
             images: Mutex::new(LruCache::new(NonZeroUsize::new(4).unwrap())),
             blobs: Mutex::new(LruCache::new(NonZeroUsize::new(64).unwrap())),
         }
     }
     pub(super) fn with_local_objects(mut self, root: Option<PathBuf>) -> Self {
-        self.legacy = self
-            .legacy
-            .with_local_objects(root.as_ref().map(|r| r.join("legacy-v1")));
         self.local_objects = root;
         self
     }
     pub(super) fn request(&self, request: Request) -> anyhow::Result<(Response, Vec<u8>)> {
-        let legacy = match &request {
-            Request::List { digest, .. }
-            | Request::Stat { digest, .. }
-            | Request::Read { digest, .. } => digest.starts_with("sha256:"),
-            _ => false,
-        };
-        if legacy {
-            return self.legacy.request(request);
-        }
         match request {
             Request::Ping => {
                 if let Some(bytes) = self.storage.get("format.json")? {
@@ -259,13 +244,6 @@ impl PortableCache {
                 return Ok((loaded.prepared(), Vec::new()));
             }
         }
-        if self.read_only && observed.is_none() {
-            return self.legacy.request(Request::Prepare {
-                image: image.into(),
-                architecture: architecture.into(),
-                refresh: false,
-            });
-        }
         ensure!(
             !self.read_only,
             "image absent from read-only cache; use a publisher"
@@ -306,7 +284,7 @@ impl PortableCache {
         )?;
         let commit: Commit = serde_json::from_slice(&bytes)?;
         ensure!(
-            commit.format_version == 2
+            commit.format_version == 1
                 && commit.image_key == handle.image_key
                 && commit.platform == handle.platform,
             "COMMIT identity mismatch"
@@ -367,7 +345,7 @@ impl PortableCache {
         })?;
         let manifest: Manifest = serde_json::from_slice(&manifest_bytes)?;
         ensure!(
-            manifest.format_version == 2
+            manifest.format_version == 1
                 && image_key(&manifest.reference) == handle.image_key
                 && manifest.platform == handle.platform
                 && manifest.manifest_digest == commit.manifest_digest,
@@ -375,7 +353,7 @@ impl PortableCache {
         );
         let config: Configuration = serde_json::from_slice(&config_bytes)?;
         ensure!(
-            config.format_version == 2
+            config.format_version == 1
                 && config.architecture == platform_architecture(&handle.platform)?,
             "configuration platform mismatch"
         );
@@ -514,7 +492,7 @@ fn decode_head(bytes: &[u8], key: &str, platform: &str) -> anyhow::Result<Head> 
     ensure!(bytes.len() <= MAX_CONTROL, "HEAD exceeds size limit");
     let head: Head = serde_json::from_slice(bytes)?;
     ensure!(
-        head.format_version == 2
+        head.format_version == 1
             && head.image_key == key
             && head.platform == platform
             && head.generation > 0,

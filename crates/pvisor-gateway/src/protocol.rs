@@ -38,7 +38,10 @@ impl ProtocolKind {
         if p.ends_with("/embeddings") {
             return Self::Embeddings;
         }
-        if p.contains("count_tokens") || p.ends_with("/count-tokens") {
+        if p.contains("count_tokens")
+            || p.ends_with("/count-tokens")
+            || (p.contains("/models/") && p.ends_with(":countTokens"))
+        {
             return Self::CountTokens;
         }
         if p.contains("/realtime") {
@@ -104,6 +107,10 @@ mod tests {
         assert_eq!(
             ProtocolKind::from_path("/v1beta/models/gemini-2.5-pro:streamGenerateContent"),
             ProtocolKind::Gemini
+        );
+        assert_eq!(
+            ProtocolKind::from_path("/v1/models/gemini-2.5-pro:countTokens"),
+            ProtocolKind::CountTokens
         );
     }
 }

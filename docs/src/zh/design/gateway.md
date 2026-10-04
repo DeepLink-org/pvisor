@@ -14,6 +14,30 @@ Agent → 注入的代理或 base URL → OverlayNet HTTP 路径
 公开捕获输出使用 `pvisor_core::event::Event` 与共享 Journal。可变 capture 输入只用于对话投影，
 不是第二套正式事件信封。草稿不进入事实日志，Markdown 参数仍仅作兼容。
 
+## 委托凭据的动作范围 {#delegated-credential-actions}
+
+Gateway 在选择模型路由、解析凭据之前检查 HTTP method 和端点。POST 允许
+Chat Completions、Messages、Responses、Embeddings 和 token counting
+的精确路径，支持无版本前缀或 `/v1`。原生 Gemini 支持 `/v1`、`/v1beta` 或
+无版本前缀下的 `models/{model}:generateContent`、`:streamGenerateContent`
+和 `:countTokens`。GET `/models`、`/v1/models`、`/v1beta/models` 只返回本地
+模型配置，不联系上游。允许一个末尾斜杠。管理端点、其他 method、未知路径、
+有转义/dot/重复斜杠歧义的路径，以及 method/path override headers 或 query
+参数（`_method`、`method`、`path`、`url` 等）会被拒绝。`alt=sse`、`api-version`
+等正常 API query 参数继续保留。
+
+协议桥转换出的路径也要重新检查。Gemini 以 URI model 为身份，拒绝冲突的
+body model；route forwarding 到其他模型时同步改写 URI。模型路径段只允许
+ASCII 字母、数字、连字符、下划线和点，但不能是 `.` 或 `..`。
+
+客户端必须使用这些 Gateway 路径；过去仅靠协议后缀匹配的任意客户端前缀
+不再接受。可信 route 的 `upstream` 仍可包含 `/team/v1` 这样的服务前缀。
+配置的上游必须实现所声明的 API 语义。普通网络出口权限与显式模型委托权限
+分开：`no-network` 仍可允许这些模型调用；动作检查不代表必达留痕或消费预算。
+
+旧 Detect 分类没有已定义的模型委托动作，不在白名单中。Realtime HTTP session/
+凭据管理也不受委托；WebSocket 继续显式返回不支持。
+
 ## 顺序与持久化
 
 Journal 位置表示提交顺序；稳定事件 ID 支持幂等重试，因果引用表示已知依赖。

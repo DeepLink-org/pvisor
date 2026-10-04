@@ -134,7 +134,14 @@ fn node_report(
     capacity: Resources,
     used: Resources,
     sample: &NodeSample,
+    lease_limit_ms: Option<u64>,
 ) -> anyhow::Result<AdmissionReport> {
+    let policy = AdmissionPolicy {
+        max_sample_age_ms: policy
+            .max_sample_age_ms
+            .min(lease_limit_ms.unwrap_or(policy.max_sample_age_ms)),
+        ..policy.clone()
+    };
     policy.report(
         capacity,
         used,
@@ -158,65 +165,6 @@ fn resume_allowed(report: &AdmissionReport, used: Resources) -> bool {
                 .measurements
                 .as_ref()
                 .is_some_and(|m| used.cpu_millis <= m.cpu_limit_millis))
-}
-
-#[cfg(test)]
-mod admission_tests {
-    use super::*;
-    #[test]
-    fn resume_uses_precharged_budget_but_requires_fresh_healthy_node_observations() {
-        let policy = AdmissionPolicy {
-            mode: AdmissionMode::LinuxPressure,
-            memory_reserve_bytes: 0,
-            ..Default::default()
-        };
-        let full = Resources {
-            slots: 1,
-            memory_bytes: 1024,
-            cpu_millis: 250,
-        };
-        let measurements = NodeMeasurements {
-            system_memory_available_bytes: 4096,
-            cgroup_memory_headroom_bytes: None,
-            cpu_limit_millis: 250,
-            cpu_some_avg10_bps: 0,
-            memory_full_avg10_bps: 0,
-        };
-        let report = policy
-            .report(full, full, 0, Ok(measurements.clone()))
-            .unwrap();
-        assert_eq!(report.available.cpu_millis, 0);
-        assert!(resume_allowed(&report, full)); // quota already reserved, not another charge
-        let mut pressure = measurements.clone();
-        pressure.cpu_some_avg10_bps = policy.cpu_some_avg10_limit_bps;
-        assert!(!resume_allowed(
-            &policy.report(full, full, 0, Ok(pressure)).unwrap(),
-            full
-        ));
-        assert!(!resume_allowed(
-            &policy
-                .report(
-                    full,
-                    full,
-                    policy.max_sample_age_ms,
-                    Ok(measurements.clone())
-                )
-                .unwrap(),
-            full
-        ));
-        assert!(!resume_allowed(
-            &policy
-                .report(full, full, 0, Err("unavailable".into()))
-                .unwrap(),
-            full
-        ));
-        let mut reduced_quota = measurements;
-        reduced_quota.cpu_limit_millis = 249;
-        assert!(!resume_allowed(
-            &policy.report(full, full, 0, Ok(reduced_quota)).unwrap(),
-            full
-        ));
-    }
 }
 
 fn executor(
@@ -297,15 +245,108 @@ fn runtime(
     Ok(builder.build())
 }
 
+struct AttemptChannels {
+    stop: watch::Receiver<bool>,
+    lease_clock: watch::Receiver<Instant>,
+    commands: mpsc::Receiver<ControlCommand>,
+    acknowledgements: mpsc::Sender<ControlAcknowledgement>,
+}
+
+async fn upload_retry(client: &Client, key: &LeaseKey, bytes: Vec<u8>) -> anyhow::Result<BlobRef> {
+    let mut delay = Duration::from_millis(50);
+    loop {
+        match client.upload_artifact(key, bytes.clone()).await {
+            Ok(reference) => return Ok(reference),
+            Err(error) => {
+                let retry = error.downcast_ref::<reqwest::Error>().is_some_and(|e| {
+                    e.status().is_none_or(|s| {
+                        s.is_server_error() || s == reqwest::StatusCode::TOO_MANY_REQUESTS
+                    })
+                });
+                if !retry {
+                    return Err(error);
+                }
+                tokio::time::sleep(delay).await;
+                delay = (delay * 2).min(Duration::from_secs(2));
+            }
+        }
+    }
+}
+
+async fn retain_bundle(
+    client: &Client,
+    key: &LeaseKey,
+    result: &pvisor_core::RunResult,
+    storage: &Path,
+) -> anyhow::Result<BlobRef> {
+    let storage_owned = storage.to_owned();
+    let run_id = result.run_id.to_string();
+    let attempt_id = result.attempt_id.to_string();
+    let state = result.state;
+    let bytes = tokio::task::spawn_blocking(move || -> anyhow::Result<Vec<u8>> {
+        use std::io::Read;
+        use std::os::unix::fs::OpenOptionsExt;
+        let file = std::fs::OpenOptions::new()
+            .read(true)
+            .custom_flags(libc::O_NOFOLLOW | libc::O_NONBLOCK)
+            .open(storage_owned.join("run-bundle.json"))?;
+        ensure!(
+            file.metadata()?.is_file() && file.metadata()?.len() <= ARTIFACT_FILE_BYTES,
+            "native Run Bundle exceeds artifact limit or is not a file"
+        );
+        let mut bytes = Vec::new();
+        file.take(ARTIFACT_FILE_BYTES + 1).read_to_end(&mut bytes)?;
+        ensure!(
+            bytes.len() as u64 <= ARTIFACT_FILE_BYTES,
+            "native Run Bundle exceeds artifact limit"
+        );
+        let bundle: pvisor::RunBundle = serde_json::from_slice(&bytes)?;
+        ensure!(
+            bundle.schema_version == pvisor::RUN_BUNDLE_SCHEMA_VERSION
+                && bundle.run.run_id == run_id
+                && bundle.run.attempt_id == attempt_id
+                && bundle.run.state == state,
+            "native Run Bundle does not match completed attempt"
+        );
+        Ok(bytes)
+    })
+    .await??;
+    let digest = pvisor_cluster::artifacts::digest(&bytes);
+    let mut chunks = Vec::new();
+    for chunk in bytes.chunks(ARTIFACT_CHUNK_BYTES) {
+        chunks.push(upload_retry(client, key, chunk.to_vec()).await?);
+    }
+    let manifest = ArtifactManifest {
+        version: CLUSTER_VERSION,
+        key: key.clone(),
+        files: vec![ArtifactFile {
+            name: "run-bundle.json".into(),
+            bytes: bytes.len() as u64,
+            digest,
+            chunks,
+        }],
+    };
+    manifest.validate()?;
+    persist(&storage.join("artifact-manifest.json"), &manifest)?;
+    let reference = upload_retry(client, key, serde_json::to_vec(&manifest)?).await?;
+    persist(&storage.join("artifact-reference.json"), &reference)?;
+    Ok(reference)
+}
+
 async fn execute(
     runtime: anyhow::Result<PVisor>,
     assignment: Assignment,
-    mut stop: watch::Receiver<bool>,
-    mut lease_clock: watch::Receiver<Instant>,
-    mut commands: mpsc::Receiver<ControlCommand>,
-    acknowledgements: mpsc::Sender<ControlAcknowledgement>,
+    channels: AttemptChannels,
     storage: PathBuf,
+    client: Client,
 ) -> Completion {
+    let AttemptChannels {
+        mut stop,
+        mut lease_clock,
+        mut commands,
+        acknowledgements,
+    } = channels;
+    let requested_bundle = assignment.spec.retain_bundle;
     let result: anyhow::Result<pvisor_core::RunResult> = async {
         let runtime = runtime?;
         let mut spec = assignment.spec.run;
@@ -416,18 +457,52 @@ async fn execute(
         Ok(result)
     }
     .await;
-    let completion = match result {
+    let mut completion = match result {
         Ok(result) => Completion {
             key: assignment.lease.key,
             result: Some(result),
             error: None,
+            artifacts: None,
+            artifact_error: None,
         },
         Err(error) => Completion {
             key: assignment.lease.key,
             result: None,
             error: Some(format!("{error:#}")),
+            artifacts: None,
+            artifact_error: None,
         },
     };
+    if requested_bundle && let Some(result) = &completion.result {
+        let expired = async {
+            loop {
+                let deadline = *lease_clock.borrow();
+                tokio::select! {
+                    _ = tokio::time::sleep_until(deadline) => break,
+                    changed = lease_clock.changed() => { if changed.is_err() { break; } },
+                }
+            }
+        };
+        let exported = if *stop.borrow() {
+            Err(anyhow::anyhow!(
+                "bundle retention interrupted by cancellation"
+            ))
+        } else {
+            tokio::select! {
+                exported = retain_bundle(&client, &completion.key, result, &storage) => exported,
+                _ = stop.changed() => Err(anyhow::anyhow!("bundle retention interrupted by cancellation")),
+                _ = expired => Err(anyhow::anyhow!("bundle retention lease expired")),
+            }
+        };
+        match exported {
+            Ok(reference) => completion.artifacts = Some(reference),
+            Err(error) => {
+                let mut message = Some(format!("{error:#}"));
+                bound_text(&mut message, &mut false, 8192);
+                completion.artifact_error = message;
+            }
+        }
+    }
     // Keep evidence even after acknowledgement; the controller journal retains
     // small results while worker storage retains local bundles/trace/artifacts.
     if let Err(error) = persist(&storage.join("completion.json"), &completion) {
@@ -524,6 +599,7 @@ async fn main() -> anyhow::Result<()> {
         labels: args.label.iter().cloned().collect(),
         cache_keys: args.cache_key.clone(),
         vm_control_protocol: matches!(args.backend, Backend::Vm).then_some(CLUSTER_VERSION),
+        artifact_protocol: Some(CLUSTER_VERSION),
         vm_control_actions: if matches!(args.backend, Backend::Vm) {
             let mut actions = vec![ControlAction::Pause, ControlAction::Resume];
             let uses_pool = config.vm.memory_pool.is_some()
@@ -552,6 +628,7 @@ async fn main() -> anyhow::Result<()> {
     };
     tokio::pin!(shutdown);
     let mut stopping = false;
+    let mut admission_lease_limit = None;
     let mut last_probe_error = None;
     eprintln!("pVisor worker {} registered ({:?})", args.id, args.backend);
     loop {
@@ -573,7 +650,7 @@ async fn main() -> anyhow::Result<()> {
             },
             _ = tick.tick() => {
                 let used = active.values().try_fold(Resources::default(), |r, entry| r.checked_add(entry.resources)).context("worker reservation overflow")?;
-                let report = node_report(&config.admission, capacity, used, &samples.borrow())?;
+                let report = node_report(&config.admission, capacity, used, &samples.borrow(), admission_lease_limit)?;
                 if report.error != last_probe_error {
                     if let Some(error) = &report.error { eprintln!("node admission blocked: {error}"); }
                     last_probe_error = report.error.clone();
@@ -598,6 +675,7 @@ async fn main() -> anyhow::Result<()> {
                         ensure!(response.version == CLUSTER_VERSION, "unsupported controller protocol");
                         let duration = Duration::from_millis(response.lease_duration_ms);
                         ensure!(args.poll_ms * 3 < response.lease_duration_ms, "poll interval must be below one third of lease duration");
+                        admission_lease_limit = Some(response.lease_duration_ms);
                         for key in response.renewed {
                             if let Some(entry) = active.get_mut(&key.task_id) { entry.deadline = began + duration; entry.lease_clock.send_replace(entry.deadline); }
                         }
@@ -618,14 +696,14 @@ async fn main() -> anyhow::Result<()> {
                                 // Re-sample admission after HTTP, including all
                                 // new controller charges, before native resume.
                                 let used = active.values().try_fold(Resources::default(), |r, entry| r.checked_add(entry.resources)).context("worker reservation overflow")?;
-                                let report = node_report(&config.admission, capacity, used, &samples.borrow())?;
+                                let report = node_report(&config.admission, capacity, used, &samples.borrow(), admission_lease_limit)?;
                                 if !stopping && Instant::now() < began + duration && resume_allowed(&report, used) {
                                     let _ = active.get(&command.key.task_id).unwrap().commands.try_send(command);
                                 }
                             }
                         }
                         let used = active.values().try_fold(Resources::default(), |r, entry| r.checked_add(entry.resources)).context("worker reservation overflow")?;
-                        let final_report = node_report(&config.admission, capacity, used, &samples.borrow())?;
+                        let final_report = node_report(&config.admission, capacity, used, &samples.borrow(), admission_lease_limit)?;
                         let mut available = final_report.available;
                         for assignment in response.assignments {
                             let id = assignment.spec.id.clone();
@@ -647,7 +725,8 @@ async fn main() -> anyhow::Result<()> {
                                 let runtime = runtime(&args, &config, &assignment, &storage);
                                 let tx = finished_tx.clone();
                                 let ack_tx = acknowledgements_tx.clone();
-                                tokio::spawn(async move { let completion = execute(runtime, assignment, stop_rx, lease_rx, commands_rx, ack_tx, storage).await; let _ = tx.send(completion).await; });
+                                let publisher = client.clone();
+                                tokio::spawn(async move { let completion = execute(runtime, assignment, AttemptChannels { stop: stop_rx, lease_clock: lease_rx, commands: commands_rx, acknowledgements: ack_tx }, storage, publisher).await; let _ = tx.send(completion).await; });
                                 None
                             };
                             active.insert(id, Active { key, resources, full_resources: resources, deadline: began + duration, lease_clock: lease_tx, stop: stop_tx, completion: None, commands: commands_tx, acknowledgement: None, control_revision: 0, rejection });
@@ -677,7 +756,7 @@ async fn main() -> anyhow::Result<()> {
                                 // Cancellation may have won the decline race.
                                 // This completion confirms no native run began.
                                 entry.rejection = None;
-                                entry.completion = Some(Completion { key: rejection.key.clone(), result: None, error: Some("node admission rejected before execution".into()) });
+                                entry.completion = Some(Completion { key: rejection.key.clone(), result: None, error: Some("node admission rejected before execution".into()), artifacts: None, artifact_error: None });
                                 persist(&args.state.join("tasks").join(format!("{}-{}", id, entry.key.generation)).join("completion.json"), entry.completion.as_ref().unwrap())?;
                             }
                         },
@@ -737,4 +816,104 @@ async fn main() -> anyhow::Result<()> {
         }
     }
     Ok(())
+}
+
+#[cfg(test)]
+mod admission_tests {
+    use super::*;
+    #[tokio::test(start_paused = true)]
+    async fn final_node_admission_uses_the_stricter_lease_sample_age_limit() {
+        let policy = AdmissionPolicy {
+            mode: AdmissionMode::LinuxPressure,
+            memory_reserve_bytes: 0,
+            ..Default::default()
+        };
+        let capacity = Resources {
+            slots: 1,
+            memory_bytes: 1024,
+            cpu_millis: 250,
+        };
+        let sample = NodeSample {
+            started: Instant::now(),
+            measurements: Ok(NodeMeasurements {
+                system_memory_available_bytes: 4096,
+                cgroup_memory_headroom_bytes: None,
+                cpu_limit_millis: 250,
+                cpu_some_avg10_bps: 0,
+                memory_full_avg10_bps: 0,
+            }),
+        };
+        assert_eq!(
+            node_report(&policy, capacity, Resources::default(), &sample, Some(500))
+                .unwrap()
+                .available,
+            capacity
+        );
+        tokio::time::advance(Duration::from_millis(500)).await;
+        assert_eq!(
+            node_report(&policy, capacity, Resources::default(), &sample, None)
+                .unwrap()
+                .available,
+            capacity
+        );
+        let report =
+            node_report(&policy, capacity, Resources::default(), &sample, Some(500)).unwrap();
+        assert_eq!(report.available, Resources::default());
+        assert!(report.blocked.contains(&AdmissionBlock::StaleSample));
+        assert!(!resume_allowed(&report, Resources::default()));
+    }
+    #[test]
+    fn resume_uses_precharged_budget_but_requires_fresh_healthy_node_observations() {
+        let policy = AdmissionPolicy {
+            mode: AdmissionMode::LinuxPressure,
+            memory_reserve_bytes: 0,
+            ..Default::default()
+        };
+        let full = Resources {
+            slots: 1,
+            memory_bytes: 1024,
+            cpu_millis: 250,
+        };
+        let measurements = NodeMeasurements {
+            system_memory_available_bytes: 4096,
+            cgroup_memory_headroom_bytes: None,
+            cpu_limit_millis: 250,
+            cpu_some_avg10_bps: 0,
+            memory_full_avg10_bps: 0,
+        };
+        let report = policy
+            .report(full, full, 0, Ok(measurements.clone()))
+            .unwrap();
+        assert_eq!(report.available.cpu_millis, 0);
+        assert!(resume_allowed(&report, full)); // quota already reserved, not another charge
+        let mut pressure = measurements.clone();
+        pressure.cpu_some_avg10_bps = policy.cpu_some_avg10_limit_bps;
+        assert!(!resume_allowed(
+            &policy.report(full, full, 0, Ok(pressure)).unwrap(),
+            full
+        ));
+        assert!(!resume_allowed(
+            &policy
+                .report(
+                    full,
+                    full,
+                    policy.max_sample_age_ms,
+                    Ok(measurements.clone())
+                )
+                .unwrap(),
+            full
+        ));
+        assert!(!resume_allowed(
+            &policy
+                .report(full, full, 0, Err("unavailable".into()))
+                .unwrap(),
+            full
+        ));
+        let mut reduced_quota = measurements;
+        reduced_quota.cpu_limit_millis = 249;
+        assert!(!resume_allowed(
+            &policy.report(full, full, 0, Ok(reduced_quota)).unwrap(),
+            full
+        ));
+    }
 }

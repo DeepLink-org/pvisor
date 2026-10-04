@@ -13,7 +13,10 @@ use super::{
 use crate::bridge::claude::ClaudeBridgeHandle;
 use crate::bridge::claude_resume::ResumeTransportManifest;
 use crate::error::{ReplayError, ReplayErrorKind, ResultExt};
-use crate::io::{atomic_write, atomic_write_json, canonicalize, read_regular_file, sha256};
+use crate::io::{
+    BoundedFileRead, atomic_write, atomic_write_json, canonicalize, read_confined_regular_file,
+    read_regular_file, sha256,
+};
 use crate::journal::Journal;
 use crate::model::{
     AdapterPlan, FreshObservation, PlaybackRequest, ReplayMode, ReplayOutcome, ReplayPlan,
@@ -31,6 +34,9 @@ const STALE_CLAUDE_TOOLS: &[&str] = &[
     "TaskUpdate",
     "TodoWrite",
 ];
+const MAX_READ_SCAN_BYTES: usize = 16 * 1024 * 1024;
+const MAX_READ_OUTPUT_LINES: usize = 2_000;
+const READ_TRUNCATION_NOTICE: &str = "[Read truncated by pvisor replay: scan limit 16777216 bytes; output limit 2000 file lines / 4194304 bytes]";
 
 fn required_str<'a>(value: &'a Value, field: &str, context: &str) -> Result<&'a str, ReplayError> {
     value
@@ -1118,8 +1124,8 @@ fn execute_claude_tool_with_policy(
         }
         "Read" => {
             let path = tool_path(&call.arguments, workspace, true)?;
-            let bytes = match fs::read(&path) {
-                Ok(bytes) => bytes,
+            let input = match read_confined_regular_file(workspace, &path, MAX_READ_SCAN_BYTES) {
+                Ok(input) => input,
                 Err(error) => {
                     return observation(
                         call,
@@ -1130,25 +1136,19 @@ fn execute_claude_tool_with_policy(
                     );
                 }
             };
-            let text = String::from_utf8_lossy(&bytes);
             let offset = call
                 .arguments
                 .get("offset")
                 .and_then(Value::as_u64)
                 .unwrap_or(1)
-                .max(1) as usize;
+                .max(1);
             let limit = call
                 .arguments
                 .get("limit")
                 .and_then(Value::as_u64)
-                .unwrap_or(u64::MAX) as usize;
-            let value = text
-                .lines()
-                .skip(offset - 1)
-                .take(limit)
-                .collect::<Vec<_>>()
-                .join("\n");
-            (value, false, Some(0))
+                .unwrap_or(u64::MAX);
+            let (content, truncated) = format_read_output(input, offset, limit);
+            return observation_with_truncation(call, content, false, Some(0), started, truncated);
         }
         "Write" => {
             let path = tool_path(&call.arguments, workspace, true)?;
@@ -1263,6 +1263,60 @@ fn execute_claude_tool_with_policy(
         }
     };
     observation(call, content, is_error, return_code, started)
+}
+
+fn format_read_output(input: BoundedFileRead, offset: u64, limit: u64) -> (String, bool) {
+    let text = String::from_utf8_lossy(&input.bytes);
+    let skip = usize::try_from(offset.saturating_sub(1)).unwrap_or(usize::MAX);
+    let mut lines = text.lines().skip(skip).peekable();
+    let line_limit = limit.min(MAX_READ_OUTPUT_LINES as u64) as usize;
+    // Reserve room for a visible notice so the complete observation stays bounded.
+    let content_limit = MAX_TOOL_OUTPUT_BYTES - READ_TRUNCATION_NOTICE.len() - 1;
+    let mut content = String::new();
+    let mut selected_lines = 0;
+    let mut byte_truncated = false;
+    while selected_lines < line_limit {
+        let Some(line) = lines.next() else {
+            break;
+        };
+        let separator = usize::from(selected_lines > 0);
+        let remaining = content_limit.saturating_sub(content.len());
+        if separator > remaining {
+            byte_truncated = true;
+            break;
+        }
+        if separator > 0 {
+            content.push('\n');
+        }
+        let remaining = content_limit - content.len();
+        let mut end = line.len().min(remaining);
+        while !line.is_char_boundary(end) {
+            end -= 1;
+        }
+        content.push_str(&line[..end]);
+        selected_lines += 1;
+        if end < line.len() {
+            byte_truncated = true;
+            break;
+        }
+    }
+    let more_lines = lines.peek().is_some();
+    let line_truncated = limit > MAX_READ_OUTPUT_LINES as u64
+        && selected_lines == MAX_READ_OUTPUT_LINES
+        && (more_lines || input.truncated);
+    // An explicit caller limit is a complete result if its last selected line
+    // ended before the scan boundary. A partial final line is never silently whole.
+    let scan_truncated = input.truncated
+        && line_limit > 0
+        && (selected_lines < line_limit || (!more_lines && !text.ends_with('\n')));
+    let truncated = byte_truncated || line_truncated || scan_truncated;
+    if truncated {
+        if !content.is_empty() {
+            content.push('\n');
+        }
+        content.push_str(READ_TRUNCATION_NOTICE);
+    }
+    (content, truncated)
 }
 
 fn claude_arguments_are_invalid(call: &ToolCall) -> bool {
@@ -2055,12 +2109,14 @@ mod tests {
     use serde_json::{Value, json};
 
     use super::{
+        MAX_READ_OUTPUT_LINES, MAX_READ_SCAN_BYTES, READ_TRUNCATION_NOTICE,
         claude_boundary_tool_use_ids, claude_canonical_messages, execute_claude_tool_with_policy,
-        expected_claude_max_turn_exit, rebuild_claude, run_bash, validate_claude_tool_policy,
-        wildcard_match,
+        expected_claude_max_turn_exit, format_read_output, rebuild_claude, run_bash,
+        validate_claude_tool_policy, wildcard_match,
     };
-    use crate::adapter::{RunContext, build_plan, run};
+    use crate::adapter::{MAX_TOOL_OUTPUT_BYTES, RunContext, build_plan, run};
     use crate::bridge::claude_resume::ResumeTransportManifest;
+    use crate::io::BoundedFileRead;
     use crate::journal::Journal;
     use crate::model::{
         AdapterPlan, AgentKind, FreshObservation, PlaybackRequest, ReplayMode, ToolCall,
@@ -2331,6 +2387,135 @@ mod tests {
                     .unwrap()
                     .contains("Read failed")
             );
+        }
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn claude_read_fifo_without_a_writer_returns_a_tool_error_promptly() {
+        use std::os::unix::ffi::OsStrExt;
+
+        let workspace = tempfile::tempdir().unwrap();
+        let fifo = workspace.path().join("fifo");
+        let name = std::ffi::CString::new(fifo.as_os_str().as_bytes()).unwrap();
+        assert_eq!(unsafe { libc::mkfifo(name.as_ptr(), 0o600) }, 0);
+        let (sender, receiver) = std::sync::mpsc::channel();
+        let thread = std::thread::spawn(move || {
+            let result = execute_claude_tool_with_policy(
+                &claude_tool_call("Read", json!({"file_path": "fifo"})),
+                workspace.path(),
+                false,
+                None,
+            );
+            sender.send(result).unwrap();
+        });
+        let observation = receiver
+            .recv_timeout(Duration::from_secs(2))
+            .expect("Read must reject a FIFO without waiting for a writer")
+            .unwrap();
+        thread.join().unwrap();
+        assert!(observation.is_error);
+        assert_eq!(observation.return_code, Some(1));
+        assert!(
+            observation
+                .content
+                .as_str()
+                .unwrap()
+                .contains("regular file")
+        );
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn claude_read_preserves_ranges_and_workspace_internal_symlinks() {
+        let workspace = tempfile::tempdir().unwrap();
+        fs::write(workspace.path().join("source"), "first\r\nsecond\nthird\n").unwrap();
+        std::os::unix::fs::symlink("source", workspace.path().join("link")).unwrap();
+        for (offset, limit, expected) in [(2, 2, "second\nthird"), (1, 0, ""), (u64::MAX, 1, "")] {
+            let observation = execute_claude_tool_with_policy(
+                &claude_tool_call(
+                    "Read",
+                    json!({"file_path": "link", "offset": offset, "limit": limit}),
+                ),
+                workspace.path(),
+                false,
+                None,
+            )
+            .unwrap();
+            assert_eq!(observation.content, json!(expected));
+            assert!(!observation.is_error);
+            assert!(!observation.truncated);
+        }
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn claude_read_reports_scan_truncation_but_not_a_completed_small_range() {
+        use std::io::Write;
+
+        let workspace = tempfile::tempdir().unwrap();
+        let mut file = fs::File::create(workspace.path().join("large")).unwrap();
+        file.write_all(b"first\n").unwrap();
+        file.set_len(MAX_READ_SCAN_BYTES as u64 + 1).unwrap();
+        let read = |offset, limit| {
+            execute_claude_tool_with_policy(
+                &claude_tool_call(
+                    "Read",
+                    json!({"file_path": "large", "offset": offset, "limit": limit}),
+                ),
+                workspace.path(),
+                false,
+                None,
+            )
+            .unwrap()
+        };
+        let complete = read(1, 1);
+        assert_eq!(complete.content, json!("first"));
+        assert!(!complete.truncated);
+        let beyond_scan = read(u64::MAX, 1);
+        assert!(beyond_scan.truncated);
+        assert_eq!(beyond_scan.content, json!(READ_TRUNCATION_NOTICE));
+        assert!(!beyond_scan.is_error);
+    }
+
+    #[test]
+    fn claude_read_line_budget_is_visible_and_explicit_ranges_stay_exact() {
+        let bytes = (0..MAX_READ_OUTPUT_LINES + 1)
+            .map(|index| format!("line {index}\n"))
+            .collect::<String>()
+            .into_bytes();
+        let input = || BoundedFileRead {
+            bytes: bytes.clone(),
+            truncated: false,
+        };
+        let (content, truncated) = format_read_output(input(), 1, u64::MAX);
+        assert!(truncated);
+        assert!(content.ends_with(READ_TRUNCATION_NOTICE));
+        assert_eq!(content.lines().count(), MAX_READ_OUTPUT_LINES + 1);
+        assert!(!content.contains("line 2000\n"));
+        let (content, truncated) = format_read_output(input(), 2, 2);
+        assert_eq!(content, "line 1\nline 2");
+        assert!(!truncated);
+    }
+
+    #[test]
+    fn claude_read_single_line_and_lossy_utf8_stay_within_the_byte_budget() {
+        for bytes in [
+            "界".repeat(MAX_TOOL_OUTPUT_BYTES / 3 + 100).into_bytes(),
+            vec![0xff; MAX_TOOL_OUTPUT_BYTES / 3 + 100],
+        ] {
+            let (content, truncated) = format_read_output(
+                BoundedFileRead {
+                    bytes,
+                    truncated: false,
+                },
+                1,
+                1,
+            );
+            assert!(truncated);
+            assert!(content.len() <= MAX_TOOL_OUTPUT_BYTES);
+            assert!(content.ends_with(READ_TRUNCATION_NOTICE));
+            assert_eq!(content.lines().count(), 2);
         }
     }
 

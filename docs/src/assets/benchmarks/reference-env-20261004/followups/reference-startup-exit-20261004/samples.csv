@@ -1,0 +1,241 @@
+mode,backend,trial,correctness,ready_ms,result_ms,completion_ms,prepare_ms,peak_tree_rss_kib,memory_scope
+ready,docker,0,passed,90.760381,90.76518,125.652574,36.9052,113332,CLI + private daemon + exact container shim/descendants; sampled RSS sum
+ready,qemu-microvm,0,passed,86.529626,87.121831,108.736998,36.660123,73640,owned launcher tree; Docker daemon/container RSS excluded
+ready,pvisor-vm,0,passed,88.074189,88.081403,153.121396,35.576901,86760,owned launcher tree; Docker daemon/container RSS excluded
+ready,qemu,0,passed,214.035659,214.665405,238.338101,37.315246,80340,owned launcher tree; Docker daemon/container RSS excluded
+ready,native,0,passed,1.25444,1.257105,1.339559,36.784375,0,owned launcher tree; Docker daemon/container RSS excluded
+ready,pvisor-host,0,passed,5.10135,5.105087,12.94086,35.879516,0,owned launcher tree; Docker daemon/container RSS excluded
+ready,firecracker,0,passed,72.014299,72.480889,103.292818,37.367142,33840,owned launcher tree; Docker daemon/container RSS excluded
+ready,pvisor-staged,0,passed,14.48937,14.494038,43.504245,35.91417,10016,owned launcher tree; Docker daemon/container RSS excluded
+ready,firecracker,1,passed,72.550769,73.061312,102.876561,37.874109,34056,owned launcher tree; Docker daemon/container RSS excluded
+ready,docker,1,passed,101.084147,101.089728,128.805609,35.725539,124356,CLI + private daemon + exact container shim/descendants; sampled RSS sum
+ready,qemu-microvm,1,passed,85.162956,85.751394,115.747161,37.296049,71676,owned launcher tree; Docker daemon/container RSS excluded
+ready,qemu,1,passed,208.534444,209.106321,235.331782,36.44405,81292,owned launcher tree; Docker daemon/container RSS excluded
+ready,pvisor-host,1,passed,5.495706,5.499884,13.352759,36.795876,0,owned launcher tree; Docker daemon/container RSS excluded
+ready,native,1,passed,1.061411,1.063605,1.133095,37.231239,0,owned launcher tree; Docker daemon/container RSS excluded
+ready,pvisor-staged,1,passed,14.202073,14.206371,43.498795,35.308771,10012,owned launcher tree; Docker daemon/container RSS excluded
+ready,pvisor-vm,1,passed,78.017061,78.023823,155.820723,35.809745,79152,owned launcher tree; Docker daemon/container RSS excluded
+ready,pvisor-host,2,passed,5.036429,5.039835,13.075671,37.117807,0,owned launcher tree; Docker daemon/container RSS excluded
+ready,native,2,passed,1.159894,1.16289,1.243931,36.046838,0,owned launcher tree; Docker daemon/container RSS excluded
+ready,pvisor-vm,2,passed,80.797539,80.802368,153.099674,35.959555,79328,owned launcher tree; Docker daemon/container RSS excluded
+ready,docker,2,passed,80.746704,80.751313,114.900019,36.473184,100716,CLI + private daemon + exact container shim/descendants; sampled RSS sum
+ready,qemu-microvm,2,passed,83.035355,83.625927,112.167419,37.817313,71652,owned launcher tree; Docker daemon/container RSS excluded
+ready,pvisor-staged,2,passed,13.876545,13.881204,43.849058,36.375141,9988,owned launcher tree; Docker daemon/container RSS excluded
+ready,qemu,2,passed,215.243895,215.844075,243.269975,37.804498,82772,owned launcher tree; Docker daemon/container RSS excluded
+ready,firecracker,2,passed,70.492138,70.974238,94.953326,36.538577,33808,owned launcher tree; Docker daemon/container RSS excluded
+ready,firecracker,3,passed,71.909133,72.419625,94.24794,36.671555,33880,owned launcher tree; Docker daemon/container RSS excluded
+ready,pvisor-vm,3,passed,85.649784,85.691722,153.158194,35.944097,77988,owned launcher tree; Docker daemon/container RSS excluded
+ready,qemu-microvm,3,passed,84.365918,85.077235,112.224997,37.421764,73924,owned launcher tree; Docker daemon/container RSS excluded
+ready,pvisor-host,3,passed,5.521224,5.525452,13.634925,35.947603,0,owned launcher tree; Docker daemon/container RSS excluded
+ready,qemu,3,passed,215.078395,215.689646,247.891068,39.512575,82432,owned launcher tree; Docker daemon/container RSS excluded
+ready,pvisor-staged,3,passed,13.337469,13.341206,43.486591,35.776314,10008,owned launcher tree; Docker daemon/container RSS excluded
+ready,docker,3,passed,90.77008,90.774778,123.538009,35.585327,114912,CLI + private daemon + exact container shim/descendants; sampled RSS sum
+ready,native,3,passed,1.159133,1.162489,1.235175,35.979072,0,owned launcher tree; Docker daemon/container RSS excluded
+ready,qemu-microvm,4,passed,88.160179,88.746383,116.958209,38.11067,73748,owned launcher tree; Docker daemon/container RSS excluded
+ready,docker,4,passed,96.913915,96.917622,124.149771,35.658063,115808,CLI + private daemon + exact container shim/descendants; sampled RSS sum
+ready,pvisor-vm,4,passed,85.508752,85.666746,134.511347,37.937556,78408,owned launcher tree; Docker daemon/container RSS excluded
+ready,pvisor-staged,4,passed,13.312683,13.315338,43.444944,36.751223,10012,owned launcher tree; Docker daemon/container RSS excluded
+ready,firecracker,4,passed,72.843817,73.225138,97.392628,37.931105,32964,owned launcher tree; Docker daemon/container RSS excluded
+ready,pvisor-host,4,passed,4.854228,4.857294,13.005199,35.963513,0,owned launcher tree; Docker daemon/container RSS excluded
+ready,native,4,passed,1.165225,1.169062,1.2165,36.580434,0,owned launcher tree; Docker daemon/container RSS excluded
+ready,qemu,4,passed,238.641818,239.270291,268.184268,37.04451,89040,owned launcher tree; Docker daemon/container RSS excluded
+ready,pvisor-host,5,passed,7.9684,7.974321,15.270036,38.109608,0,owned launcher tree; Docker daemon/container RSS excluded
+ready,qemu,5,passed,235.713374,236.345764,268.435448,38.472214,78824,owned launcher tree; Docker daemon/container RSS excluded
+ready,pvisor-vm,5,passed,88.942008,89.102237,153.774384,35.358183,86968,owned launcher tree; Docker daemon/container RSS excluded
+ready,native,5,passed,1.166156,1.170344,1.227971,35.857735,0,owned launcher tree; Docker daemon/container RSS excluded
+ready,pvisor-staged,5,passed,13.37003,13.374749,43.390492,35.723595,10020,owned launcher tree; Docker daemon/container RSS excluded
+ready,docker,5,passed,90.761513,90.764839,114.749959,36.451744,114728,CLI + private daemon + exact container shim/descendants; sampled RSS sum
+ready,firecracker,5,passed,76.529584,77.028365,103.061116,37.333911,33844,owned launcher tree; Docker daemon/container RSS excluded
+ready,qemu-microvm,5,passed,97.979063,98.57783,126.602468,37.85902,73744,owned launcher tree; Docker daemon/container RSS excluded
+ready,native,6,passed,1.156538,1.159143,1.228933,37.053296,0,owned launcher tree; Docker daemon/container RSS excluded
+ready,pvisor-host,6,passed,5.356206,5.359993,13.308175,36.988465,0,owned launcher tree; Docker daemon/container RSS excluded
+ready,pvisor-vm,6,passed,92.472245,92.479088,114.808227,36.851459,85240,owned launcher tree; Docker daemon/container RSS excluded
+ready,qemu-microvm,6,passed,85.309539,85.89926,114.120274,40.027206,73800,owned launcher tree; Docker daemon/container RSS excluded
+ready,pvisor-staged,6,passed,14.938327,14.942405,43.765383,36.388787,10012,owned launcher tree; Docker daemon/container RSS excluded
+ready,docker,6,passed,87.407715,87.411191,113.971065,36.389618,115420,CLI + private daemon + exact container shim/descendants; sampled RSS sum
+ready,qemu,6,passed,224.631273,225.319488,247.363114,37.610056,81260,owned launcher tree; Docker daemon/container RSS excluded
+ready,firecracker,6,passed,75.707992,76.193097,99.025465,36.890012,33984,owned launcher tree; Docker daemon/container RSS excluded
+ready,native,7,passed,2.044315,2.046809,2.099878,36.900702,0,owned launcher tree; Docker daemon/container RSS excluded
+ready,pvisor-host,7,passed,6.060019,6.063956,13.23049,37.298224,0,owned launcher tree; Docker daemon/container RSS excluded
+ready,qemu,7,passed,216.04562,216.636723,243.435493,36.362558,80472,owned launcher tree; Docker daemon/container RSS excluded
+ready,pvisor-staged,7,passed,14.621506,14.626706,43.273304,36.338322,10012,owned launcher tree; Docker daemon/container RSS excluded
+ready,firecracker,7,passed,70.998373,71.50079,101.126927,36.919617,33736,owned launcher tree; Docker daemon/container RSS excluded
+ready,docker,7,passed,94.905877,94.941413,122.396057,35.417334,117456,CLI + private daemon + exact container shim/descendants; sampled RSS sum
+ready,pvisor-vm,7,passed,87.854519,87.859137,133.205199,35.724206,87672,owned launcher tree; Docker daemon/container RSS excluded
+ready,qemu-microvm,7,passed,87.541655,88.127859,108.959674,37.412237,73604,owned launcher tree; Docker daemon/container RSS excluded
+ready,pvisor-host,8,passed,5.820392,5.823888,13.049132,35.383881,0,owned launcher tree; Docker daemon/container RSS excluded
+ready,qemu,8,passed,232.911544,233.522044,259.259112,38.070876,79872,owned launcher tree; Docker daemon/container RSS excluded
+ready,firecracker,8,passed,73.120373,73.668225,89.493467,37.198747,28768,owned launcher tree; Docker daemon/container RSS excluded
+ready,native,8,passed,1.400714,1.403108,1.481464,35.580268,0,owned launcher tree; Docker daemon/container RSS excluded
+ready,qemu-microvm,8,passed,85.180509,85.816185,116.42741,37.615215,74032,owned launcher tree; Docker daemon/container RSS excluded
+ready,pvisor-staged,8,passed,14.964116,14.968514,43.306757,35.458561,10012,owned launcher tree; Docker daemon/container RSS excluded
+ready,docker,8,passed,92.032756,92.037705,123.042434,35.466084,115592,CLI + private daemon + exact container shim/descendants; sampled RSS sum
+ready,pvisor-vm,8,passed,91.789773,91.799631,175.474209,38.345669,77892,owned launcher tree; Docker daemon/container RSS excluded
+ready,pvisor-host,9,passed,5.961104,5.964841,13.086111,38.188545,0,owned launcher tree; Docker daemon/container RSS excluded
+ready,native,9,passed,1.331224,1.336153,1.455166,36.799824,0,owned launcher tree; Docker daemon/container RSS excluded
+ready,qemu-microvm,9,passed,98.462534,99.023091,120.396206,37.847078,74016,owned launcher tree; Docker daemon/container RSS excluded
+ready,firecracker,9,passed,73.444627,73.928761,97.992267,39.658338,33920,owned launcher tree; Docker daemon/container RSS excluded
+ready,pvisor-vm,9,passed,92.197503,92.202522,153.749678,36.129983,85776,owned launcher tree; Docker daemon/container RSS excluded
+ready,pvisor-staged,9,passed,14.493257,14.497946,43.293913,36.776349,10012,owned launcher tree; Docker daemon/container RSS excluded
+ready,docker,9,passed,94.015846,94.019173,120.899135,35.424988,115444,CLI + private daemon + exact container shim/descendants; sampled RSS sum
+ready,qemu,9,passed,217.633414,218.256025,245.883532,37.186525,80056,owned launcher tree; Docker daemon/container RSS excluded
+ready,native,10,passed,1.139056,1.141099,1.215027,35.751988,0,owned launcher tree; Docker daemon/container RSS excluded
+ready,qemu,10,passed,216.720129,217.306784,241.369849,37.025695,80876,owned launcher tree; Docker daemon/container RSS excluded
+ready,pvisor-vm,10,passed,85.398075,85.532245,113.159892,35.973942,77260,owned launcher tree; Docker daemon/container RSS excluded
+ready,qemu-microvm,10,passed,84.371398,84.957412,109.196205,37.262988,73872,owned launcher tree; Docker daemon/container RSS excluded
+ready,firecracker,10,passed,72.778745,73.291061,104.382693,37.497385,33860,owned launcher tree; Docker daemon/container RSS excluded
+ready,docker,10,passed,89.590167,89.593554,117.340533,36.023534,103240,CLI + private daemon + exact container shim/descendants; sampled RSS sum
+ready,pvisor-host,10,passed,5.912143,5.914718,13.14976,36.531573,0,owned launcher tree; Docker daemon/container RSS excluded
+ready,pvisor-staged,10,passed,14.601268,14.604915,43.414167,35.210077,10008,owned launcher tree; Docker daemon/container RSS excluded
+ready,docker,11,passed,78.610989,78.616991,104.507175,35.678401,104192,CLI + private daemon + exact container shim/descendants; sampled RSS sum
+ready,qemu-microvm,11,passed,87.301827,87.847355,102.255543,36.661605,73888,owned launcher tree; Docker daemon/container RSS excluded
+ready,native,11,passed,1.331555,1.335432,1.418828,36.656416,0,owned launcher tree; Docker daemon/container RSS excluded
+ready,pvisor-host,11,passed,6.100765,6.104542,13.250788,36.75475,0,owned launcher tree; Docker daemon/container RSS excluded
+ready,qemu,11,passed,224.692627,225.254817,250.465884,37.550444,81184,owned launcher tree; Docker daemon/container RSS excluded
+ready,pvisor-vm,11,passed,88.833886,88.877979,153.499521,35.547306,85832,owned launcher tree; Docker daemon/container RSS excluded
+ready,pvisor-staged,11,passed,16.766579,16.769595,43.54465,35.981626,26416,owned launcher tree; Docker daemon/container RSS excluded
+ready,firecracker,11,passed,72.544077,73.02779,102.075447,36.549426,34088,owned launcher tree; Docker daemon/container RSS excluded
+ready,firecracker,12,passed,73.789802,74.283814,96.854494,37.47278,33844,owned launcher tree; Docker daemon/container RSS excluded
+ready,pvisor-staged,12,passed,14.456007,14.459955,43.168048,35.28737,10008,owned launcher tree; Docker daemon/container RSS excluded
+ready,native,12,passed,1.291881,1.294305,1.359046,35.738633,0,owned launcher tree; Docker daemon/container RSS excluded
+ready,pvisor-host,12,passed,5.889842,5.892386,13.084157,36.304379,0,owned launcher tree; Docker daemon/container RSS excluded
+ready,docker,12,passed,104.747162,104.752873,136.830384,36.413132,130832,CLI + private daemon + exact container shim/descendants; sampled RSS sum
+ready,qemu,12,passed,214.619019,215.233896,241.565063,37.698209,81164,owned launcher tree; Docker daemon/container RSS excluded
+ready,pvisor-vm,12,passed,92.681907,92.684622,152.959303,36.147977,85596,owned launcher tree; Docker daemon/container RSS excluded
+ready,qemu-microvm,12,passed,84.60236,85.22391,104.831891,37.38196,73912,owned launcher tree; Docker daemon/container RSS excluded
+ready,docker,13,passed,84.127533,84.13111,111.136055,36.517036,105628,CLI + private daemon + exact container shim/descendants; sampled RSS sum
+ready,pvisor-vm,13,passed,81.41426,81.417476,93.21934,36.990499,79248,owned launcher tree; Docker daemon/container RSS excluded
+ready,pvisor-staged,13,passed,15.982175,15.986864,44.934785,36.209241,10012,owned launcher tree; Docker daemon/container RSS excluded
+ready,firecracker,13,passed,77.004561,77.507259,95.2614,36.6744,33972,owned launcher tree; Docker daemon/container RSS excluded
+ready,qemu-microvm,13,passed,84.106103,84.719688,112.490763,36.528377,73648,owned launcher tree; Docker daemon/container RSS excluded
+ready,native,13,passed,1.340472,1.342906,1.41482,35.514475,0,owned launcher tree; Docker daemon/container RSS excluded
+ready,pvisor-host,13,passed,6.003974,6.007732,13.277117,36.403214,0,owned launcher tree; Docker daemon/container RSS excluded
+ready,qemu,13,passed,212.62127,213.201503,241.082162,37.303333,81420,owned launcher tree; Docker daemon/container RSS excluded
+ready,firecracker,14,passed,74.567453,75.048691,102.728906,36.223819,33796,owned launcher tree; Docker daemon/container RSS excluded
+ready,pvisor-vm,14,passed,79.364766,79.369896,95.879485,35.80114,78968,owned launcher tree; Docker daemon/container RSS excluded
+ready,qemu-microvm,14,passed,93.999617,94.52674,127.586024,36.490176,73908,owned launcher tree; Docker daemon/container RSS excluded
+ready,pvisor-staged,14,passed,17.425959,17.430788,43.970746,36.225171,15460,owned launcher tree; Docker daemon/container RSS excluded
+ready,qemu,14,passed,219.718775,220.312683,248.897977,37.274219,82632,owned launcher tree; Docker daemon/container RSS excluded
+ready,pvisor-host,14,passed,5.150722,5.153578,13.002715,36.592166,0,owned launcher tree; Docker daemon/container RSS excluded
+ready,native,14,passed,1.209457,1.211691,1.283725,36.159539,0,owned launcher tree; Docker daemon/container RSS excluded
+ready,docker,14,passed,94.006088,94.010687,121.220614,36.215694,119072,CLI + private daemon + exact container shim/descendants; sampled RSS sum
+ready,qemu-microvm,15,passed,95.745044,96.366233,120.384865,38.372869,73484,owned launcher tree; Docker daemon/container RSS excluded
+ready,native,15,passed,1.079724,1.082499,1.153833,35.064005,0,owned launcher tree; Docker daemon/container RSS excluded
+ready,pvisor-staged,15,passed,14.575039,14.577955,43.484548,36.09556,10008,owned launcher tree; Docker daemon/container RSS excluded
+ready,pvisor-host,15,passed,5.629315,5.633934,12.988528,37.142864,0,owned launcher tree; Docker daemon/container RSS excluded
+ready,qemu,15,passed,228.838143,229.509576,256.004349,38.816777,81280,owned launcher tree; Docker daemon/container RSS excluded
+ready,pvisor-vm,15,passed,87.586919,87.592199,133.490742,42.66013,78840,owned launcher tree; Docker daemon/container RSS excluded
+ready,firecracker,15,passed,89.03937,89.426893,107.723607,42.638018,33776,owned launcher tree; Docker daemon/container RSS excluded
+ready,docker,15,passed,116.655445,116.667096,158.75065,39.19298,118128,CLI + private daemon + exact container shim/descendants; sampled RSS sum
+ready,pvisor-vm,16,passed,114.026098,114.030576,169.157942,54.289031,78780,owned launcher tree; Docker daemon/container RSS excluded
+ready,pvisor-host,16,passed,9.981356,9.986436,14.844472,55.323782,0,owned launcher tree; Docker daemon/container RSS excluded
+ready,firecracker,16,passed,89.640351,90.131938,109.261827,41.1976,33784,owned launcher tree; Docker daemon/container RSS excluded
+ready,qemu,16,passed,242.550242,243.197901,276.428133,39.366654,79824,owned launcher tree; Docker daemon/container RSS excluded
+ready,native,16,passed,1.508856,1.512914,1.608081,41.083979,0,owned launcher tree; Docker daemon/container RSS excluded
+ready,qemu-microvm,16,passed,125.377372,126.11054,161.835588,42.176126,72708,owned launcher tree; Docker daemon/container RSS excluded
+ready,pvisor-staged,16,passed,20.303809,20.306945,45.191453,42.03883,26396,owned launcher tree; Docker daemon/container RSS excluded
+ready,docker,16,passed,156.136082,156.141372,220.883189,43.684181,105980,CLI + private daemon + exact container shim/descendants; sampled RSS sum
+ready,pvisor-vm,17,passed,144.536585,144.548547,214.924208,61.314972,82748,owned launcher tree; Docker daemon/container RSS excluded
+ready,native,17,passed,10.502499,10.508601,13.526302,78.023853,0,owned launcher tree; Docker daemon/container RSS excluded
+ready,pvisor-staged,17,passed,60.950241,60.957635,96.517314,66.180442,10156,owned launcher tree; Docker daemon/container RSS excluded
+ready,qemu-microvm,17,passed,268.785751,269.559806,299.36697,155.038673,69304,owned launcher tree; Docker daemon/container RSS excluded
+ready,qemu,17,passed,290.86314,291.60262,318.239378,52.223597,74852,owned launcher tree; Docker daemon/container RSS excluded
+ready,docker,17,passed,204.422992,204.433491,252.266234,39.78227,130080,CLI + private daemon + exact container shim/descendants; sampled RSS sum
+ready,firecracker,17,passed,106.904699,107.598924,133.250624,43.198064,34108,owned launcher tree; Docker daemon/container RSS excluded
+ready,pvisor-host,17,passed,9.819185,9.825286,15.388147,43.214995,0,owned launcher tree; Docker daemon/container RSS excluded
+ready,docker,18,passed,148.320737,148.328372,193.56564,39.660472,119100,CLI + private daemon + exact container shim/descendants; sampled RSS sum
+ready,qemu-microvm,18,passed,193.595105,194.317563,216.878284,41.178986,70568,owned launcher tree; Docker daemon/container RSS excluded
+ready,pvisor-staged,18,passed,22.679793,22.685895,47.678444,43.627004,25804,owned launcher tree; Docker daemon/container RSS excluded
+ready,qemu,18,passed,319.880742,320.536235,354.779938,46.584713,79784,owned launcher tree; Docker daemon/container RSS excluded
+ready,firecracker,18,passed,77.862913,78.405996,102.251966,43.880086,33808,owned launcher tree; Docker daemon/container RSS excluded
+ready,native,18,passed,1.597861,1.602049,1.648826,37.964738,0,owned launcher tree; Docker daemon/container RSS excluded
+ready,pvisor-vm,18,passed,153.577417,153.640094,224.176464,37.916668,76636,owned launcher tree; Docker daemon/container RSS excluded
+ready,pvisor-host,18,passed,14.663344,14.669987,21.34357,130.06531,0,owned launcher tree; Docker daemon/container RSS excluded
+ready,pvisor-vm,19,passed,85.016533,85.024387,153.871756,39.762973,79244,owned launcher tree; Docker daemon/container RSS excluded
+ready,pvisor-host,19,passed,8.222875,8.227283,15.168156,39.084356,0,owned launcher tree; Docker daemon/container RSS excluded
+ready,native,19,passed,1.268597,1.272855,1.327888,37.930784,0,owned launcher tree; Docker daemon/container RSS excluded
+ready,qemu,19,passed,255.997777,256.626299,287.097182,38.942211,78820,owned launcher tree; Docker daemon/container RSS excluded
+ready,pvisor-staged,19,passed,14.523412,14.528111,43.751766,37.264471,10016,owned launcher tree; Docker daemon/container RSS excluded
+ready,firecracker,19,passed,75.758595,76.228062,103.14912,40.507252,33848,owned launcher tree; Docker daemon/container RSS excluded
+ready,qemu-microvm,19,passed,117.042056,117.594577,135.733126,39.027441,71868,owned launcher tree; Docker daemon/container RSS excluded
+ready,docker,19,passed,217.812498,217.81893,271.732089,41.11695,119676,CLI + private daemon + exact container shim/descendants; sampled RSS sum
+ready,native,20,passed,1.519856,1.522711,1.593784,39.955813,0,owned launcher tree; Docker daemon/container RSS excluded
+ready,pvisor-staged,20,passed,16.940353,16.948378,44.608065,39.200524,19148,owned launcher tree; Docker daemon/container RSS excluded
+ready,pvisor-host,20,passed,6.563057,6.566073,14.375546,38.46423,0,owned launcher tree; Docker daemon/container RSS excluded
+ready,qemu-microvm,20,passed,136.842517,137.443148,159.755997,40.007049,71560,owned launcher tree; Docker daemon/container RSS excluded
+ready,firecracker,20,passed,88.536891,88.893126,107.550614,39.311912,33884,owned launcher tree; Docker daemon/container RSS excluded
+ready,pvisor-vm,20,passed,105.157468,105.167607,155.891585,37.811611,84048,owned launcher tree; Docker daemon/container RSS excluded
+ready,docker,20,passed,132.411538,132.569112,175.819263,37.887453,128040,CLI + private daemon + exact container shim/descendants; sampled RSS sum
+ready,qemu,20,passed,325.670736,326.290903,366.84919,44.573119,79464,owned launcher tree; Docker daemon/container RSS excluded
+ready,pvisor-staged,21,passed,20.785348,20.789306,46.774207,40.719939,26420,owned launcher tree; Docker daemon/container RSS excluded
+ready,qemu-microvm,21,passed,142.1437,142.756063,178.092255,46.236513,73744,owned launcher tree; Docker daemon/container RSS excluded
+ready,docker,21,passed,289.046631,289.050789,366.962523,130.102669,129128,CLI + private daemon + exact container shim/descendants; sampled RSS sum
+ready,firecracker,21,passed,90.815805,91.205552,118.596016,40.67788,34060,owned launcher tree; Docker daemon/container RSS excluded
+ready,qemu,21,passed,264.904408,265.611317,293.208768,38.197422,79916,owned launcher tree; Docker daemon/container RSS excluded
+ready,native,21,passed,1.493778,1.497905,1.560953,43.947662,0,owned launcher tree; Docker daemon/container RSS excluded
+ready,pvisor-vm,21,passed,141.092809,141.099792,198.816158,40.487856,86724,owned launcher tree; Docker daemon/container RSS excluded
+ready,pvisor-host,21,passed,7.40025,7.4055,16.099254,59.244479,0,owned launcher tree; Docker daemon/container RSS excluded
+ready,native,22,passed,1.918219,1.923479,1.989773,40.523623,0,owned launcher tree; Docker daemon/container RSS excluded
+ready,pvisor-staged,22,passed,20.139072,20.144653,46.962929,44.129622,26416,owned launcher tree; Docker daemon/container RSS excluded
+ready,qemu-microvm,22,passed,116.671845,117.241488,145.317913,44.045214,73740,owned launcher tree; Docker daemon/container RSS excluded
+ready,firecracker,22,passed,94.357955,94.977161,124.437628,41.255489,34020,owned launcher tree; Docker daemon/container RSS excluded
+ready,docker,22,passed,253.745494,253.751064,298.966353,37.941203,104672,CLI + private daemon + exact container shim/descendants; sampled RSS sum
+ready,qemu,22,passed,218.978114,220.816354,244.011649,37.614243,79872,owned launcher tree; Docker daemon/container RSS excluded
+ready,pvisor-host,22,passed,5.077946,5.080961,13.085158,36.62662,0,owned launcher tree; Docker daemon/container RSS excluded
+ready,pvisor-vm,22,passed,89.11427,89.119099,134.809313,36.84047,77052,owned launcher tree; Docker daemon/container RSS excluded
+ready,docker,23,passed,85.560788,85.566238,114.395217,36.911652,105160,CLI + private daemon + exact container shim/descendants; sampled RSS sum
+ready,firecracker,23,passed,75.700969,76.047015,96.559924,39.857058,33180,owned launcher tree; Docker daemon/container RSS excluded
+ready,qemu-microvm,23,passed,94.94475,95.55065,126.760883,38.101312,73840,owned launcher tree; Docker daemon/container RSS excluded
+ready,pvisor-vm,23,passed,90.354233,90.361367,132.879061,36.327583,84956,owned launcher tree; Docker daemon/container RSS excluded
+ready,native,23,passed,1.051172,1.053757,1.13071,35.666879,0,owned launcher tree; Docker daemon/container RSS excluded
+ready,pvisor-staged,23,passed,13.567839,13.571095,43.40538,35.016807,9652,owned launcher tree; Docker daemon/container RSS excluded
+ready,qemu,23,passed,216.877402,216.880659,243.671284,36.719794,81552,owned launcher tree; Docker daemon/container RSS excluded
+ready,pvisor-host,23,passed,6.354098,6.358015,13.569834,36.519701,0,owned launcher tree; Docker daemon/container RSS excluded
+ready,docker,24,passed,97.188096,97.295116,124.986312,39.061775,118196,CLI + private daemon + exact container shim/descendants; sampled RSS sum
+ready,pvisor-vm,24,passed,84.552065,84.555933,133.206531,38.222218,77960,owned launcher tree; Docker daemon/container RSS excluded
+ready,pvisor-staged,24,passed,15.008227,15.012996,43.565509,36.789324,9656,owned launcher tree; Docker daemon/container RSS excluded
+ready,firecracker,24,passed,73.592855,74.053735,98.020209,36.613806,33844,owned launcher tree; Docker daemon/container RSS excluded
+ready,qemu-microvm,24,passed,83.983515,84.572213,110.386276,37.114591,73976,owned launcher tree; Docker daemon/container RSS excluded
+ready,native,24,passed,1.353155,1.355128,1.424658,35.507762,0,owned launcher tree; Docker daemon/container RSS excluded
+ready,pvisor-host,24,passed,6.341965,6.345562,13.238976,35.076698,0,owned launcher tree; Docker daemon/container RSS excluded
+ready,qemu,24,passed,216.810548,217.406861,241.219879,37.841668,80192,owned launcher tree; Docker daemon/container RSS excluded
+ready,qemu-microvm,25,passed,95.565919,96.168674,112.676299,37.218455,73824,owned launcher tree; Docker daemon/container RSS excluded
+ready,pvisor-host,25,passed,5.877528,5.881155,13.012483,35.328588,0,owned launcher tree; Docker daemon/container RSS excluded
+ready,pvisor-vm,25,passed,89.249932,89.25436,113.316504,35.461406,86108,owned launcher tree; Docker daemon/container RSS excluded
+ready,qemu,25,passed,212.889301,213.462741,250.419788,36.951787,81016,owned launcher tree; Docker daemon/container RSS excluded
+ready,docker,25,passed,90.784146,90.787843,117.245977,35.982638,115644,CLI + private daemon + exact container shim/descendants; sampled RSS sum
+ready,native,25,passed,1.277023,1.279628,1.361771,36.279593,0,owned launcher tree; Docker daemon/container RSS excluded
+ready,pvisor-staged,25,passed,14.141741,14.146139,43.480832,36.053912,9656,owned launcher tree; Docker daemon/container RSS excluded
+ready,firecracker,25,passed,73.09763,73.500993,98.710758,36.919016,33752,owned launcher tree; Docker daemon/container RSS excluded
+ready,qemu,26,passed,219.756977,220.336628,246.917181,36.898697,81596,owned launcher tree; Docker daemon/container RSS excluded
+ready,firecracker,26,passed,72.689979,73.210861,96.021068,36.981983,34012,owned launcher tree; Docker daemon/container RSS excluded
+ready,pvisor-vm,26,passed,88.08053,88.085619,153.020747,35.428104,85724,owned launcher tree; Docker daemon/container RSS excluded
+ready,pvisor-host,26,passed,5.735423,5.738008,13.05405,35.406834,0,owned launcher tree; Docker daemon/container RSS excluded
+ready,pvisor-staged,26,passed,15.007737,15.012866,43.345559,35.76936,9656,owned launcher tree; Docker daemon/container RSS excluded
+ready,docker,26,passed,90.562512,90.565538,117.564452,36.268642,102268,CLI + private daemon + exact container shim/descendants; sampled RSS sum
+ready,native,26,passed,1.160997,1.163482,1.218314,35.39938,0,owned launcher tree; Docker daemon/container RSS excluded
+ready,qemu-microvm,26,passed,84.929159,85.52462,110.179189,36.411018,73796,owned launcher tree; Docker daemon/container RSS excluded
+ready,qemu,27,passed,223.737455,224.316385,257.062053,36.161172,80464,owned launcher tree; Docker daemon/container RSS excluded
+ready,docker,27,passed,88.38028,88.38547,116.400099,35.59249,102968,CLI + private daemon + exact container shim/descendants; sampled RSS sum
+ready,pvisor-vm,27,passed,92.68853,92.894815,153.923593,35.328258,84344,owned launcher tree; Docker daemon/container RSS excluded
+ready,native,27,passed,1.143885,1.145979,1.218164,35.889735,0,owned launcher tree; Docker daemon/container RSS excluded
+ready,firecracker,27,passed,69.90418,70.353639,93.647068,36.483884,33156,owned launcher tree; Docker daemon/container RSS excluded
+ready,pvisor-host,27,passed,6.1085,6.111405,13.151112,35.319221,0,owned launcher tree; Docker daemon/container RSS excluded
+ready,pvisor-staged,27,passed,14.455276,14.459875,43.239411,35.608451,9656,owned launcher tree; Docker daemon/container RSS excluded
+ready,qemu-microvm,27,passed,85.366525,85.928224,129.686002,36.965302,73836,owned launcher tree; Docker daemon/container RSS excluded
+ready,docker,28,passed,99.053537,99.058276,131.145836,38.819232,116188,CLI + private daemon + exact container shim/descendants; sampled RSS sum
+ready,native,28,passed,1.163431,1.165985,1.241737,35.868766,0,owned launcher tree; Docker daemon/container RSS excluded
+ready,firecracker,28,passed,80.923314,81.449155,101.558401,37.531018,33776,owned launcher tree; Docker daemon/container RSS excluded
+ready,qemu-microvm,28,passed,84.249602,84.792094,113.016124,46.447077,75852,owned launcher tree; Docker daemon/container RSS excluded
+ready,pvisor-vm,28,passed,81.590459,81.593305,133.219697,35.612658,78016,owned launcher tree; Docker daemon/container RSS excluded
+ready,pvisor-staged,28,passed,14.921285,14.925372,43.942161,35.90258,9652,owned launcher tree; Docker daemon/container RSS excluded
+ready,pvisor-host,28,passed,6.033971,6.037908,13.076353,36.206977,0,owned launcher tree; Docker daemon/container RSS excluded
+ready,qemu,28,passed,219.974562,220.556388,249.421394,37.251496,80424,owned launcher tree; Docker daemon/container RSS excluded
+ready,docker,29,passed,94.567927,94.573558,123.220937,37.641865,116876,CLI + private daemon + exact container shim/descendants; sampled RSS sum
+ready,pvisor-host,29,passed,6.326787,6.330514,13.598898,37.989634,0,owned launcher tree; Docker daemon/container RSS excluded
+ready,pvisor-vm,29,passed,87.884114,87.891488,153.453185,37.11444,86024,owned launcher tree; Docker daemon/container RSS excluded
+ready,firecracker,29,passed,74.734224,75.091561,104.691138,39.97609,34004,owned launcher tree; Docker daemon/container RSS excluded
+ready,native,29,passed,1.300938,1.303653,1.391608,37.913522,0,owned launcher tree; Docker daemon/container RSS excluded
+ready,pvisor-staged,29,passed,14.46801,14.471847,43.558376,36.920469,9648,owned launcher tree; Docker daemon/container RSS excluded
+ready,qemu,29,passed,217.704826,218.403881,237.611305,39.152013,81380,owned launcher tree; Docker daemon/container RSS excluded
+ready,qemu-microvm,29,passed,85.482281,86.027769,111.805744,38.4912,74172,owned launcher tree; Docker daemon/container RSS excluded

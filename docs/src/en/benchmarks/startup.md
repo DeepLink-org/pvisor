@@ -309,6 +309,25 @@ QEMU q35's 218 ms does not establish QEMU's minimum startup cost: microvm with o
 
 [Configuration and reproduction](methodology.md#reference-env) · [逐样本 CSV](../../assets/benchmarks/reference-env-20261004/samples.csv) · [分布与阶段计时](../../assets/benchmarks/reference-env-20261004/summary.json) · [原始证据](../../assets/benchmarks/reference-env-20261004/evidence.tar.gz) · [兼容性矩阵](../../assets/benchmarks/reference-env-20261004/compatibility.json)
 
+#### Full-exit follow-up: cleanup is separate from Ready {#reference-exit}
+
+Same configuration, a separate 30 samples per backend and 3 warmups. A dedicated process waiter records exit rather than the main batch's polling; Ready percentiles remain separate. pVisor VM returns first output in about 88 ms and completes CLI exit in about 153 ms. Environment availability and completed recording/cleanup are separate budgets.
+
+| Backend | Ready P50/P95 ms | Exit P50/P95 ms |
+|---|---|---|
+| Native | 1.27 / 1.99 | 1.35 / 2.05 |
+| pVisor host | 5.98 / 9.91 | 13.23 / 15.78 |
+| pVisor staged | 14.61 / 21.83 | 43.52 / 47.36 |
+| pVisor VM | 88.46 / 142.99 | 153.11 / 207.68 |
+| Docker rootless | 94.29 / 237.58 | 123.38 / 286.71 |
+| Firecracker PCI | 74.18 / 92.76 | 101.82 / 121.81 |
+| QEMU q35 | 219.74 / 306.82 | 248.39 / 338.34 |
+| QEMU microvm | 87.42 / 170.44 | 116.09 / 199.42 |
+
+
+[Precise-exit report](../../assets/benchmarks/reference-env-20261004/followups/reference-startup-exit-20261004/report.json) · [Samples](../../assets/benchmarks/reference-env-20261004/followups/reference-startup-exit-20261004/samples.csv) · [Evidence](../../assets/benchmarks/reference-env-20261004/followups/reference-startup-exit-20261004/evidence.tar.gz)
+
+
 ## 5. Reproduction and raw data
 
 ### macOS / HVF

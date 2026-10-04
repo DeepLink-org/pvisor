@@ -45,6 +45,7 @@ macOS shutdown fd 的所有权合同有变化：调用者现在应关闭返回�
 
 - `vendor/libkrun/build.rs` 构建并嵌入 Rust pvisor-guest；rlib 静态链接与 Linux musl embedded kernel 不变。
 - `krun_add_virtiofs_overlay_with_policy`、preimage / excluded paths、共享 OverlayCore、FileAccessPolicy，以及 AugmentFs 退出码 `0x7602` 保留。
+- `krun_add_virtiofs_overlay_with_layout` 传递明确的 apply target 与 target 对应 frozen baseline，避免 VM 重新打开 OverlayCore 时把 snapshot lower 当成写目标；旧 overlay / with_policy ABI 继续作为默认布局 wrapper。内容读取和缺失 lookup 的原像经共享 Core 保存，在首次 upper 修改前同步；普通成功 stat/lookup 不全量哈希文件。
 - macOS fd 路径后端、guest 权限语义、allow_idmap 开关保留。
 - TSI 继续由 pVisor 禁用，网络走受策略控制的 virtio-net / smoltcp；vsock 修复不会启用绕过该数据面的网络。
 - 未新增 crate、依赖、固件下载、平台支持或 Cargo feature；不是借同步重写 vendor。

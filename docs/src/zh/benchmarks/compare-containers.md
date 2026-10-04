@@ -4,7 +4,7 @@ Docker 加 Git 能组成很好的开发环境。pVisor 补充的是运行期间�
 
 ## 比较范围
 
-2026-10-04 核对官方文档。本机 Docker daemon 不可访问，第一版同机容器数据使用 rootless Podman + crun；这是 OCI 对照，不能标为 Docker 实测。固定镜像 ID、rootfs 摘要、版本及参数见[文件系统报告](filesystem.md)。macOS 启动历史和 Linux VM 启动保留在[VM 启动时间](startup.md)。
+2026-10-04 新增本用户私有 rootless Docker Engine 29.7.2 同机实测；系统 daemon 不可访问不再阻止对照。Linux 使用同套 Python/Node/Rust/Claude/Codex、相同项目和两核预算，镜像已准备。旧 Podman/crun 批次单独保留。Docker Desktop、devcontainer 启动插件与远程开发环境没有实测，不外推 Linux Engine 数据。
 
 | 配置 | 文件修改在哪里发生 | 合入时的保护 | 适用场景 |
 |---|---|---|---|
@@ -22,6 +22,17 @@ Docker 挂载与容器边界依据 [bind mounts](https://docs.docker.com/engine/
 
 “Docker 加 git diff 够不够”的答案是：已有完整审查/合并协议时可以够。只增加 `git diff` 不能自动撤回已写入 bind mount 的修改，也不会生成 pVisor 的执行能力观察记录。pVisor 的收益来自这些工作流，代价是相应的进程、暂存和记录开销。
 
+### 用户能据此判断什么 {#reference-comparison}
+
+完整修复测试任务的 P50 为 Docker **0.90 秒**、pVisor staged **0.70 秒**、pVisor VM **3.97 秒**。Docker 的 metadata/read/write 接近原生；staged 读取 64 MiB 多约 16 ms，遍历 2,048 文件多约 175 ms。轻量工具任务中，暂存成本是约数百毫秒的预算；需要独立 guest kernel 时，还要接受目前 VM 工具路径的秒级差距。
+
+这不是同一安全边界的速度排名。staged host 提供改动隔离和证据，可访问视图外宿主；Docker 为 namespace 容器与 writable bind，VM 为独立 guest kernel 和 staged 视图。选择应同时看需要的边界、任务耗时和改动进入原工作区的方式。
+
+真实客户端也有额外成本：Claude 为 Docker **1.23 秒**、staged **1.07 秒**；Codex 为 Docker **6.26 秒**、staged **2.25 秒**、VM **10.93 秒**。Claude/VM 初始化超时，不能列成更快样本。这里是受控模型和固定工具动作，真实推理、默认客户端内部沙箱、Docker writable layer/overlay2 文件负载都没有测。
+
+[完整环境与分布](agent-tasks.md#reference-env) · [文件操作](filesystem.md#reference-fs) · [内存范围与配置](methodology.md#reference-env)
+
+
 ## 更正
 
-通过 [pVisor issues](https://github.com/DeepLink-org/pvisor/issues) 提供配置、镜像摘要及命令；欢迎补充真正同机的 Docker/overlay2 样本，本版未将 Podman 数字外推到 Docker Desktop。
+通过 [pVisor issues](https://github.com/DeepLink-org/pvisor/issues) 提供配置、镜像摘要及命令；欢迎补充 Docker writable layer/overlay2 与 Docker Desktop 样本，本版只实测 Linux rootless Engine + bind mount。
