@@ -3,8 +3,8 @@
 > CLI 更新：独立 `pvisor snapshot` 已删除。以下旧接口/测量属于记录中的历史制品，不是当前可执行指南；当前入口与能力范围见[CLI 参考](../reference/cli.md)。
 
 
-> 状态：分阶段实现中。2026-10-03。工作区检查点与命令管理已接入；普通 Job 的完整 execution 保存/恢复仍未接通。
-> 用户已接受该设计，并追加约束：`run` 尽可能不变。独立 `pvisor snapshot` 已删除；本文保留完整执行能力接入 Job 生命周期的目标接口。完整快照、持久压缩去重和私有副本分叉的已有实现作为底座，不因此宣称普通 Job 已可保存。
+> 状态：普通 Job 原生执行捕获、暂停、恢复与分支已接入；支持范围和验收见第 10 节。
+> 约束：保持普通 `run` 的配置和默认执行行为；执行能力由实际 executor/profile 判断。
 
 ## 1. 对象与基本约束
 
@@ -39,13 +39,12 @@ pvisor
 ├── suspend                保存执行检查点，退出 runner，保留 Job
 ├── resume                 同一 Job 从当前挂起检查点继续
 ├── fork                   从文件或执行状态创建新 Job
-├── checkpoint
+└── checkpoint
 │   ├── create             为 Job 创建一致检查点
 │   ├── list               列出 Job 内的检查点
 │   ├── show               查看类型、来源、依赖、兼容性和引用
 │   ├── delete             删除没有保留引用的检查点
 │   └── gc                 回收所在内容库的无引用对象与遗留暂存
-└── extensions             查看伴随工具
 ```
 
 `tui/replay/cache/memory-pool` 保持其工具定位，不产生与 Job 并行的产品实例身份。默认执行短写 `pvisor -- COMMAND` 继续等价于 `pvisor run -- COMMAND`。
@@ -347,34 +346,34 @@ Job与Attempt记录可以增加版本化、兼容读取的能力和生命周期�
 
 ## 10. 当前实现与验收边界 {#10-当前实现与验收边界}
 
-本轮保持 `run` 的解析、默认配置、rootfs、DAX、网络和执行器选择。新增工作区功能复用既有 RunRecord、Job lease、逻辑检查点、OverlayFS 前像和 Run Bundle；没有通过旧 snapshot runner 创建伪 Job。
+普通 Job 已接通 VM 原生捕获与恢复。`run` 的解析、默认配置、rootfs、DAX、网络和执行器选择保持原合同；不恢复独立 snapshot runner，也不由另一个管理器制造 Job。
 
 | 功能 | 当前实现 |
 | --- | --- |
-| `review [JOB] [--checkpoint ID]` | 内置；取得 Job lease 后读取稳定 upper；刷新文件变更，保留历史 Bundle 执行证据；JSON 标明两者的边界 |
-| `status --review` | 保留兼容入口 |
-| `checkpoint create JOB` | 停止且 stage 为 staged 时保存 upper、前像、策略、AttemptId 和 workspace generation；默认 workspace |
-| workspace create `--request-id` | 持久 receipt；重试返回原对象；原对象已删除则拒绝重新捕获，不重用 key 创建新结果 |
-| `checkpoint list/show/delete` | Job 归属校验、唯一前缀解析、歧义拒绝；损坏的已发布对象报错；删除检查持久分支引用 |
-| `checkpoint gc JOB` | **本阶段 scope 为 job_workspace_transactions**：仅回收本 Job 的 `.pending-*`、`.deleted-*`；尚未接入共享 execution 内容库，不声称全库 GC |
-| `fork --state workspace` | 保留默认命令重启语义；增加 `--stage`、`--name`；独立复制 upper 和前像，不复制控制 socket、执行锁和接受记录；分支引用保留在 `source-checkpoint.json` |
-| `inspect --checkpoint ID` | 挂载指定工作区检查点的只读文件视图 |
-| `apply/drop` | 显式 Job；取得 lease 后仍核对停止终态和完成时间，拒绝失去进程但缺少终态记录的 Job；成功后推进 workspace generation |
-| `kill` | 已确认停止时幂等；`--json` 区分已停止和已发送终止请求 |
-| suspend/resume/execution create/execution fork | 接入能力拒绝边界；普通 Job 当前均返回 `CAPABILITY_UNSUPPORTED`，不冻结、不复制、不改状态；**不是完整执行功能已交付** |
+| workspace create/fork/review/inspect | 沿用已停止 Job 的 upper、冲突前像、generation 与硬链接分支引用；不保存进程内存 |
+| execution create | 通过运行 Job 的私有控制 socket 调用 `RunControlHandle` 与 native VM 捕获；发布后继续源 VM |
+| suspend | 持久记录请求，封存检查点；用 `ExecutionSuspension` 终态回执核对 Job/Attempt/request，确认原生退出后才建立 suspended head |
+| resume | 仅从当前 head 恢复；保留 Job ID，runtime 生成新 Attempt；新目录保存 lease、RunRecord 和 Bundle，原 stage 仍可选择当前 Attempt |
+| execution fork | 运行中捕获并继续，或从显式历史检查点/暂停 head 创建新 Job；RAM 与 upper 私有，保存 lineage 和持久分支引用 |
+| 请求重试 | capture/suspend/resume/execution fork 接受持久 `--request-id`；同 key 不重复启动或捕获，变更已绑定选项会拒绝；超时保留已接收请求 |
+| list/show/delete/verify | 检查 Job 归属；execution verify 使用 SnapshotStore 的完整兼容性与内容审计；删除检查 head、分支引用和存储读者租约 |
+| gc | 工作区事务与 Job 所属原生存储的 pending、tombstone、未引用 RAM 内容回收；不删除已发布对象，不是跨 Job/Cluster 的全库 GC |
+| import-base/verify-base | 复用 SnapshotStore 的不可变 rootfs 导入和审计；普通 run 可以使用导入返回的 rootfs 路径 |
+| apply/drop/kill | 暂停、交接或执行状态不明时拒绝文件修改；kill 暂停 Job 撤销恢复权并保留历史，然后允许普通工作区决策 |
+| TUI | `resume JOB --tui` 通过现有终端前端启动恢复后的 Attempt |
 
-工作区检查点继续沿用已有模型：固定 staged upper 与冲突前像，`lower_dirs` 仍是外部路径引用。因此它不等价于独立完整文件树；宿主 lower 的外部变化不受 Job lease 保护。review 的 `file_view` 明确标明这个边界，历史 diff 仍相对于外部 lower；apply 继续重新检查前像。后续接通 execution 保存时需要完整封存所有相关层，不能把该模型直接提升为整机保存点。
+当前 execution profile 要求 Linux x86_64 或 macOS ARM64、无网络设备、私有 RAM 和拥有完整 rootfs。宿主 `/`、联网、可写 RAM backing、共享内存池和冷页压缩明确返回能力拒绝；不会因此改变原来的 run 配置。恢复绑定相同宿主启动、binary 和固件。guest 的原始环境随检查点保存，发起 resume/fork 的 shell 环境不会替换它。
 
-本阶段文件分支 pin 使用 manifest 硬链接。子 stage 需要与父 checkpoint 在同一文件系统；跨文件系统会明确拒绝。pin 不由 drop/kill 释放；Job 删除/归档接口尚未提供，因此保留分支的 checkpoint 不能通过 delete 强制删除。
+Job 元数据保存在 `execution-job.json`，Attempt 通过 `execution-job-root.json` 关联根 Job。请求接收、检查点发布与原生终止是独立提交点。仅恢复准备在接受 RunHandle 前失败时保留可重试的 suspended head；交接崩溃或缺少回执时保持保守状态，不根据 PID 消失自动发起新 VM。可以通过 status 检查请求与当前 Attempt，历史执行点通过显式 fork 恢复。
 
-当前工作区的检查点管理、review、inspect 和 fork 会保守地取得源 Job lease。因此指定历史检查点时，源 Job 正在运行也会被拒绝。独立的 checkpoint 元数据锁及运行中历史读取还未交付。运行中 workspace 捕获需要真实冻结边界，不能从正在变化的 upper 复制来冒充一致版本。
+工作区内的 stage 使用独立检查点存储，Job 元数据记录其归属。捕获排除 guest 已隐藏的管理目录，native launch binding 验证过滤范围，可见内容与元数据保持完整校验。`resume`/execution `fork --eager-ram` 在启动前读取完整 RAM，默认保持按需加载。
 
-完整执行态仍需继续完成：
+工作区检查点仍引用外部 lower，历史 workspace 操作仍保守取得源 Job lease；不会假装其文件视图等价于完整机器封存。execution 的元数据锁独立于源 Attempt lease，因此可以在父 VM 运行时选择已发布的历史 execution 检查点。
 
-1. 普通 VM 的 Overlay/DAX 文件层封存与设备状态捕获，并支持保存后文件 inode/句柄重绑定；不能静默改变原有 run 配置。
-2. 通过现有控制通道和 supervisor 实现 capture-and-continue、源 runner 退出确认、suspended head 与新 Attempt 的执行权交接。
-3. execution checkpoint 的 Job 归属、共享内容引用、删除/全库 GC、恢复失败持久状态及真实 Job VM 验收。
+工作区分支使用 manifest 硬链接，需要同一文件系统；execution 分支使用存储租约、内容引用和持久 Job 分支记录。引用不由 drop/kill 自动释放，尚无 Job 删除/归档接口。旧独立 snapshot store 不自动转换为 Job 检查点。
 
-旧 `snapshot` 命令已删除，其完整副本存储对象仍由底层 SDK 使用，没有被转换成 Job checkpoint。普通 Job 的完整执行恢复仍取决于 execution profile 的能力与验收。
+验收测试 `job_execution_vm` 使用真实 KVM、普通 CLI 与静态 guest，检查外部/工作区内 stage、共享文件块池、eager RAM、capture-and-continue、raw/compressed RAM、同 Job 新 Attempt、打开的文件描述符和内存计数器连续性、历史分支隔离、源 rootfs 删除后恢复、请求重试以及 head/分支删除保护。普通回归测试另外覆盖终止回执校验、未知/暂停状态拒绝工作区修改、稳定 Job 路径与历史 Attempt 记录。该原生测试需要 KVM/FUSE，默认跳过，运行方式：
 
-本轮验证：`just fmt` 通过；核心与 TUI 在启用 Gateway 下的严格 Clippy 通过；`just test pvisor` 最终 319 项通过、4 项跳过。新增测试包括真实文件分叉、前像复制、分支引用与 drop 保留、重复请求、损坏 manifest 和能力拒绝无状态改变。测试期间发现并修正既有 vsock 用例对后台 worker 调度的错误假设，改为检查队列完成和实际 RST 内容；内存诊断用例曾因页状态变动返回 WouldBlock，随后回归通过。没有以这些测试宣称普通 Job 完整 VM 保存/恢复已验收。
+```bash
+PVISOR_TEST_LIBRARY_DIR=/path/to/firmware cargo nextest run --locked -p pvisor --test job_execution_vm --run-ignored only --test-threads 1
+```

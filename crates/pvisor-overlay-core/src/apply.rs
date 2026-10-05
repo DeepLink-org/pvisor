@@ -588,6 +588,7 @@ pub fn apply_overlay_selected(
     lower_dirs: &[PathBuf],
     selection: &ApplySelection,
 ) -> Result<ApplyOutcome, OverlayError> {
+    crate::stage::require_sealed(&record.stage_dir.join("preimages"))?;
     if record.protect_target {
         return Err(OverlayError::Apply(format!(
             "target is an immutable image rootfs: {}",

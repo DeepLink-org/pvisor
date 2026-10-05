@@ -15,7 +15,6 @@ pub(crate) const BUILTINS: &[&str] = &[
     "kill",
     "fork",
     "inspect",
-    "extensions",
     "service",
     "help",
 ];

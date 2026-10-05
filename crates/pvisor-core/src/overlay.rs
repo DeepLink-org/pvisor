@@ -9,6 +9,29 @@ use std::path::{Path, PathBuf};
 
 pub use crate::file_access::{FileAccessContext, FileAccessDecision, FileAccessPolicy};
 
+/// Persistence boundary for an owned stage. This does not change isolation or
+/// content-based apply conflict detection.
+#[derive(Debug, Clone, Copy, Default, Serialize, Deserialize, PartialEq, Eq)]
+#[serde(rename_all = "snake_case")]
+pub enum StageDurability {
+    /// Persist observations and upper data at checkpoint/completion boundaries.
+    #[default]
+    Checkpoint,
+    /// Persist each first mutation's observation before changing the upper.
+    Strict,
+}
+
+impl std::str::FromStr for StageDurability {
+    type Err = String;
+    fn from_str(value: &str) -> Result<Self, Self::Err> {
+        match value {
+            "checkpoint" => Ok(Self::Checkpoint),
+            "strict" => Ok(Self::Strict),
+            _ => Err("stage durability must be checkpoint or strict".into()),
+        }
+    }
+}
+
 /// Local Run inspection request, encoded as one JSON line on `control.sock`.
 /// This endpoint is separate from the cooperative AgentCtl protocol.
 #[derive(Debug, Serialize, Deserialize)]
@@ -369,6 +392,8 @@ mod unix_paths {
 #[derive(Debug, Clone, Default, Deserialize, Serialize, PartialEq, Eq)]
 #[serde(deny_unknown_fields)]
 pub struct OverlayConfig {
+    #[serde(default)]
+    pub durability: StageDurability,
     #[serde(default)]
     pub access_policy: FileAccessPolicy,
     /// When true, pVisor mounts its embedded OverlayFS for the Attempt.

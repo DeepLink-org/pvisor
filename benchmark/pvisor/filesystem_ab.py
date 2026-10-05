@@ -64,6 +64,10 @@ def main():
     parser.add_argument("--warmups", type=int, default=3)
     parser.add_argument("--cpu-affinity", default="0,1")
     parser.add_argument("--memory-mib", type=int, default=16384)
+    parser.add_argument(
+        "--backends", default="pvisor-staged,pvisor-vm",
+        help="Comma-separated measured backends: pvisor-staged, pvisor-vm",
+    )
     for variant in ("baseline", "candidate"):
         parser.add_argument(
             f"--{variant}-staged-isolation",
@@ -77,6 +81,10 @@ def main():
     args = parser.parse_args()
     if args.samples < 1 or args.warmups < 0:
         parser.error("samples must be positive and warmups nonnegative")
+    backends = args.backends.split(",")
+    if (not backends or len(backends) != len(set(backends))
+            or any(backend not in ("pvisor-staged", "pvisor-vm") for backend in backends)):
+        parser.error("backends must be a unique nonempty subset of pvisor-staged,pvisor-vm")
     for key in ("assets", "baseline", "candidate", "firmware", "output"):
         setattr(args, key, getattr(args, key).resolve())
     args.output.mkdir(parents=True, exist_ok=False)
@@ -91,7 +99,7 @@ def main():
     cells = [("native", "native")] + [
         (variant, backend)
         for variant in ("baseline", "candidate")
-        for backend in ("pvisor-staged", "pvisor-vm")
+        for backend in backends
     ]
     configurations = {}
     hashes = {}
@@ -140,7 +148,7 @@ def main():
         "protocol": {
             "samples": args.samples,
             "warmups": args.warmups,
-            "order": "all five cells shuffled each round; seed 20261005",
+            "order": f"all {len(cells)} cells shuffled each round; seed 20261005",
             "cache": "warm; no eviction; fresh workspace and stage for every job",
             "cpu_affinity": args.cpu_affinity,
             "vm_vcpus": 2,

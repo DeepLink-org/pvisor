@@ -12,6 +12,7 @@ pub(crate) mod bundle;
 pub(crate) mod checkpoint;
 pub(crate) mod event;
 mod implant;
+pub(crate) mod job_execution;
 pub(crate) mod operation;
 mod overlay;
 mod proxy;

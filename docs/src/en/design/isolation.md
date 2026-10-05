@@ -13,7 +13,11 @@ A copy-on-write workspace and a security boundary solve different problems. Over
 
 Inspect the specific Run Bundle. Configuration expresses a request; installed controls and evidence show what happened. See [Capabilities and evidence](../concepts/capabilities-and-evidence.md). safe-best-effort may report downgraded controls. `--strict` rejects a Run when any required dimension lacks enforcement evidence. Current executors do not claim complete Subprocess enforcement, so strict is not a ready-to-use stronger sandbox preset.
 
-## Workspace and lifecycle
+## Workspace and lifecycle {#workspace-and-lifecycle}
+
+Owned stages default to `checkpoint` durability. Execution appends first observations without syncing each first mutation. Workspace checkpoints persist their own copy; after writers stop, completion syncs the preimage journal, upper files and directories, then publishes a durable completion marker. An interrupted, unsealed stage cannot be applied or reopened as a completed result; restore a committed checkpoint or discard it. Use `--stage-durability strict` (configuration: `overlayfs.durability = "strict"`) to retain sync-before-first-mutation. Explicit workload `fsync` orders observations before data in either mode. Legacy stages without a policy retain their original strict contract.
+
+Both modes retain staging isolation and content-based conflict detection. Frozen baselines use their existing verified content receipts; mutable lower files still capture the original content fingerprint. The persistence policy does not substitute metadata-only conflict checks. A live execution checkpoint also preserves guest RAM/device state; stage completion alone does not make running processes resumable.
 
 Filesystem access, network isolation and staging are independent settings. Host defaults preserve the host filesystem view. Use `--filesystem sandbox` to restrict paths and explicitly enable staging to review changes:
 
@@ -26,7 +30,7 @@ See [Staging and storage](../reference/cli.md#暂存与存储) for default write
 
 The host process executor creates a process group, signals the group on completion/cancellation and escalates termination after a grace period. Reads also have a deadline when descendants retain output pipes. Processes that deliberately leave the group need stronger platform controls; group cleanup alone is not a complete descendant isolation boundary.
 
-`fork` requires a stopped Run. See [Execution model](execution-model.md) for snapshot scope. Embedded AgentCtl participants can cooperate with quiescence, but that does not make arbitrary subprocesses resumable from a checkpoint.
+Default workspace fork requires a stopped Run; native execution fork can capture and continue a running VM or use historical execution checkpoints. See [Execution model](execution-model.md) for snapshot scope. Embedded AgentCtl participants can cooperate with quiescence, but that does not make arbitrary subprocesses resumable from a checkpoint.
 
 ## Network boundaries
 

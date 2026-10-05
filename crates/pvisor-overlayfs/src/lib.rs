@@ -32,6 +32,10 @@ pub struct OverlayMountConfig {
     pub debug: bool,
     /// Optional durable first-touch journal used to reject apply conflicts.
     pub preimage_dir: Option<PathBuf>,
+    /// Select compact first observations when this caller exclusively owns
+    /// initialization of a fresh stage. Existing journals/nonempty uppers keep
+    /// their format; inspection mounts never select a new format.
+    pub compact_preimages: bool,
     /// Paths relative to the overlay root that are absent from the mounted
     /// namespace. Exclusions apply to every lower and the writable upper and
     /// cannot be recreated from inside the mount.
@@ -63,6 +67,7 @@ impl OverlayMountConfig {
             backend: cfg!(target_os = "macos").then(|| "fskit".into()),
             debug: false,
             preimage_dir: None,
+            compact_preimages: false,
             excluded_paths: Vec::new(),
             access_policy: Default::default(),
             observation: None,
@@ -290,7 +295,12 @@ fn prepare(mut config: OverlayMountConfig) -> Result<(OverlayFs, PathBuf, Vec<Mo
         .clone()
         .or_else(|| config.lower_dirs.last().cloned())
         .ok_or_else(|| anyhow::anyhow!("overlay has no apply target"))?;
-    let filesystem = OverlayFs::from_core(pvisor_overlay_core::OverlayCore::new_for_layout(
+    let initialize = if config.compact_preimages && !config.read_only {
+        pvisor_overlay_core::OverlayCore::new_for_layout_with_compact_preimages
+    } else {
+        pvisor_overlay_core::OverlayCore::new_for_layout
+    };
+    let filesystem = OverlayFs::from_core(initialize(
         pvisor_overlay_core::OverlayLayout::with_baseline(
             config.lower_dirs,
             target,
@@ -372,6 +382,232 @@ fn is_mountpoint(path: &Path) -> bool {
 
 #[cfg(test)]
 mod mount_config_tests {
+    #[cfg(target_os = "linux")]
+    #[test]
+    #[ignore = "requires a working host FUSE mount"]
+    fn checkpoint_mount_orders_explicit_fsync_and_requires_sealed_completion() {
+        use pvisor_overlay_core::{load_preimages, stage};
+        let temp = tempfile::tempdir().unwrap();
+        let mut config = journal_config(temp.path());
+        config.compact_preimages = true;
+        let journal = temp.path().join("preimages");
+        stage::begin(&journal, Default::default()).unwrap();
+        let session = super::mount(config.clone()).unwrap();
+        assert_eq!(
+            std::fs::read(config.mountpoint.join("value")).unwrap(),
+            b"original"
+        );
+        let file = std::fs::OpenOptions::new()
+            .write(true)
+            .open(config.mountpoint.join("value"))
+            .unwrap();
+        use std::io::Write;
+        (&file).write_all(b"modified").unwrap();
+        file.sync_all().unwrap();
+        std::fs::File::open(&config.mountpoint)
+            .unwrap()
+            .sync_all()
+            .unwrap();
+        assert!(!load_preimages(&journal).unwrap().is_empty());
+        assert!(stage::require_sealed(&journal).is_err());
+        drop(file);
+        session.unmount().unwrap();
+        stage::seal(&config.upper_dir, &journal).unwrap();
+        stage::require_sealed(&journal).unwrap();
+        assert_eq!(
+            std::fs::read(config.lower_dirs[0].join("value")).unwrap(),
+            b"original"
+        );
+        assert_eq!(
+            std::fs::read(config.upper_dir.join("value")).unwrap(),
+            b"modified"
+        );
+    }
+    #[cfg(target_os = "linux")]
+    #[test]
+    #[ignore = "requires a working host FUSE mount"]
+    fn compact_mount_roundtrip_preserves_apply_and_read_conflicts() {
+        use pvisor_core::overlay::{OverlayRecord, OverlayState, OverlayUpper};
+        for conflict in [false, true] {
+            let temp = tempfile::tempdir().unwrap();
+            let mut config = journal_config(temp.path());
+            config.compact_preimages = true;
+            let lower = config.lower_dirs[0].clone();
+            std::fs::write(lower.join("deleted"), b"delete me").unwrap();
+            let merged = config.mountpoint.clone();
+            let session = mount(config.clone()).unwrap();
+            assert_eq!(std::fs::read(merged.join("value")).unwrap(), b"original");
+            std::fs::write(merged.join("value"), b"replacement").unwrap();
+            std::fs::write(merged.join("created"), b"new bytes").unwrap();
+            std::fs::hard_link(merged.join("created"), merged.join("alias")).unwrap();
+            std::fs::rename(merged.join("alias"), merged.join("renamed")).unwrap();
+            std::fs::remove_file(merged.join("deleted")).unwrap();
+            session.unmount().unwrap();
+            assert_eq!(std::fs::read(lower.join("value")).unwrap(), b"original");
+            assert!(!lower.join("created").exists());
+            assert!(
+                config
+                    .preimage_dir
+                    .as_ref()
+                    .unwrap()
+                    .join("entries/format-v2.json")
+                    .exists()
+            );
+            let before =
+                pvisor_overlay_core::load_preimages(config.preimage_dir.as_ref().unwrap()).unwrap();
+            assert!(
+                before
+                    .iter()
+                    .any(|p| p.relative_path() == Path::new("value"))
+            );
+            let session = mount(config.clone()).unwrap();
+            assert_eq!(std::fs::read(merged.join("value")).unwrap(), b"replacement");
+            std::fs::write(merged.join("after-reopen"), b"second mount").unwrap();
+            session.unmount().unwrap();
+            let after =
+                pvisor_overlay_core::load_preimages(config.preimage_dir.as_ref().unwrap()).unwrap();
+            assert!(before.iter().all(|old| after.contains(old)));
+            let mut record = OverlayRecord {
+                id: "compact-host-roundtrip".into(),
+                generation: 0,
+                target: lower.clone(),
+                baseline_lower: None,
+                upper: OverlayUpper {
+                    upper_dir: config.upper_dir,
+                    work_dir: config.work_dir.unwrap(),
+                },
+                merged_dir: merged,
+                stage_dir: temp.path().to_path_buf(),
+                excluded_paths: vec![],
+                access_policy: Default::default(),
+                auto_apply: false,
+                auto_discard: false,
+                protect_target: false,
+                state: OverlayState::Staged,
+            };
+            if conflict {
+                std::fs::write(lower.join("value"), b"external edit").unwrap();
+                assert!(pvisor_overlay_core::apply::apply_overlay(&mut record).is_err());
+                assert_eq!(
+                    std::fs::read(lower.join("value")).unwrap(),
+                    b"external edit"
+                );
+                assert!(!lower.join("created").exists());
+            } else {
+                pvisor_overlay_core::apply::apply_overlay(&mut record).unwrap();
+                assert_eq!(std::fs::read(lower.join("value")).unwrap(), b"replacement");
+                assert_eq!(
+                    std::fs::read(lower.join("after-reopen")).unwrap(),
+                    b"second mount"
+                );
+                assert!(!lower.join("deleted").exists());
+                assert_eq!(
+                    std::fs::metadata(lower.join("created")).unwrap().ino(),
+                    std::fs::metadata(lower.join("renamed")).unwrap().ino()
+                );
+            }
+        }
+    }
+
+    fn journal_config(root: &Path) -> OverlayMountConfig {
+        let lower = root.join("lower");
+        std::fs::create_dir(&lower).unwrap();
+        std::fs::write(lower.join("value"), b"original").unwrap();
+        let mut config = OverlayMountConfig::new(
+            vec![lower],
+            root.join("upper"),
+            Some(root.join("work")),
+            root.join("merged"),
+        );
+        // prepare() validates configuration without mounting either backend.
+        config.backend = None;
+        config.preimage_dir = Some(root.join("preimages"));
+        config
+    }
+
+    #[test]
+    fn compact_observations_require_explicit_writable_initialization() {
+        for (compact, read_only, expected) in [
+            (false, false, false),
+            (true, false, true),
+            (true, true, false),
+        ] {
+            let temp = tempfile::tempdir().unwrap();
+            let mut config = journal_config(temp.path());
+            config.compact_preimages = compact;
+            config.read_only = read_only;
+            let (filesystem, _, _) = prepare(config).unwrap();
+            drop(filesystem);
+            assert_eq!(
+                temp.path()
+                    .join("preimages/entries/format-v2.json")
+                    .exists(),
+                expected,
+            );
+            assert!(
+                pvisor_overlay_core::load_preimages(&temp.path().join("preimages"))
+                    .unwrap()
+                    .is_empty()
+            );
+            assert_eq!(
+                std::fs::read(temp.path().join("lower/value")).unwrap(),
+                b"original"
+            );
+        }
+    }
+
+    #[test]
+    fn compact_selection_preserves_legacy_first_observations() {
+        let temp = tempfile::tempdir().unwrap();
+        let config = journal_config(temp.path());
+        let (filesystem, _, _) = prepare(config.clone()).unwrap();
+        drop(filesystem);
+        let core = pvisor_overlay_core::OverlayCore::open_existing(
+            config.lower_dirs.clone(),
+            config.upper_dir.clone(),
+            config.work_dir.clone(),
+            vec![],
+            config.preimage_dir.clone(),
+        )
+        .unwrap();
+        core.observe_read(Path::new("value")).unwrap();
+        drop(core);
+        let directory = config.preimage_dir.clone().unwrap();
+        let before = pvisor_overlay_core::load_preimages(&directory).unwrap();
+        assert_eq!(before.len(), 1);
+        std::fs::write(temp.path().join("lower/value"), b"external edit").unwrap();
+        let mut config = config;
+        config.compact_preimages = true;
+        let (filesystem, _, _) = prepare(config).unwrap();
+        drop(filesystem);
+        assert!(!directory.join("entries/format-v2.json").exists());
+        assert_eq!(
+            pvisor_overlay_core::load_preimages(&directory).unwrap(),
+            before
+        );
+    }
+
+    #[test]
+    fn compact_selection_preserves_nonempty_upper_without_migration() {
+        let temp = tempfile::tempdir().unwrap();
+        let mut config = journal_config(temp.path());
+        std::fs::create_dir(&config.upper_dir).unwrap();
+        std::fs::write(config.upper_dir.join("pending"), b"staged change").unwrap();
+        config.compact_preimages = true;
+        let (filesystem, _, _) = prepare(config).unwrap();
+        drop(filesystem);
+        assert!(
+            !temp
+                .path()
+                .join("preimages/entries/format-v2.json")
+                .exists()
+        );
+        assert_eq!(
+            std::fs::read(temp.path().join("upper/pending")).unwrap(),
+            b"staged change"
+        );
+    }
+
     #[cfg(target_os = "macos")]
     #[test]
     fn fskit_rejects_versions_with_small_write_corruption() {

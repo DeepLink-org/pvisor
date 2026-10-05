@@ -360,6 +360,8 @@ pub enum FilesystemMode {
 #[derive(Debug, Clone, Deserialize, Serialize)]
 #[serde(default, deny_unknown_fields)]
 pub struct OverlayFsSettings {
+    /// First-mutation fsyncs (strict), or durable checkpoint/completion boundaries.
+    pub durability: pvisor_core::overlay::StageDurability,
     #[serde(skip)]
     pub access_policy: pvisor_core::overlay::FileAccessPolicy,
     /// New unified filesystem mounts. Runtime normalization converts these into executor capabilities.
@@ -391,6 +393,7 @@ pub struct OverlayFsSettings {
 impl Default for OverlayFsSettings {
     fn default() -> Self {
         Self {
+            durability: Default::default(),
             access_policy: Default::default(),
             mount: Vec::new(),
             access: Vec::new(),

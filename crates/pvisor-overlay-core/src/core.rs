@@ -16,12 +16,12 @@ pub const OPAQUE_NAME: &str = ".wh..wh..opq";
 pub const ROOT_METADATA_NAME: &str = ".wh..pvisor-root-metadata";
 const TEMP_PREFIX: &str = ".wh..pvisor-copyup-";
 const PREIMAGE_COMPLETE_MARKER: &str = "complete-v1";
-const PREIMAGE_LOG_NAME: &str = "log-v2";
+pub(crate) const PREIMAGE_LOG_NAME: &str = "log-v2";
 const PREIMAGE_FORMAT_NAME: &str = "format-v2.json";
 // Intentionally not a PathPreimage: legacy readers must reject this format.
 const PREIMAGE_FORMAT: &[u8] = b"{\"pvisor_preimage_format\":2}\n";
 
-fn compact_preimages(directory: &Path) -> io::Result<bool> {
+pub(crate) fn compact_preimages(directory: &Path) -> io::Result<bool> {
     let marker = directory.join("entries").join(PREIMAGE_FORMAT_NAME);
     match crate::backend::symlink_metadata(&marker) {
         Ok(metadata) => {
@@ -187,6 +187,8 @@ impl OverlayLayout {
 
 #[derive(Debug)]
 pub struct OverlayCore {
+    durability: crate::stage::StageDurability,
+    stage_writable: bool,
     profile: crate::profile::Profile,
     layout: OverlayLayout,
     content_index: Option<crate::content_index::ContentIndex>,
@@ -844,7 +846,18 @@ impl OverlayCore {
             })
             .transpose()?
             .flatten();
+        let durability = preimage_dir
+            .as_deref()
+            .map(crate::stage::policy)
+            .transpose()?
+            .unwrap_or(crate::stage::StageDurability::Strict);
         let core = Self {
+            durability,
+            stage_writable: preimage_dir
+                .as_deref()
+                .map(crate::stage::admits_writes)
+                .transpose()?
+                .unwrap_or(true),
             profile: crate::profile::Profile::from_env("overlay-core"),
             layout,
             content_index: None,
@@ -1074,7 +1087,23 @@ impl OverlayCore {
     }
 
     fn record_preimage(&self, rel: &Path) -> io::Result<()> {
-        self.capture_preimage(rel, true)
+        self.capture_preimage(
+            rel,
+            self.durability == crate::stage::StageDurability::Strict,
+        )
+    }
+
+    /// Order all observations before an explicit fsync, or snapshot capture.
+    pub fn sync_preimages(&self) -> io::Result<()> {
+        if let Some(log) = &self.preimage_log {
+            log.lock()
+                .map_err(|_| io::Error::other("preimage log lock poisoned"))?
+                .sync_all()
+        } else if let Some(journal) = &self.preimage_dir {
+            crate::stage::sync_journal(journal)
+        } else {
+            Ok(())
+        }
     }
 
     fn capture_preimage(&self, rel: &Path, durable: bool) -> io::Result<()> {
@@ -1091,6 +1120,9 @@ impl OverlayCore {
         after_missing: impl FnOnce() -> io::Result<()>,
     ) -> io::Result<()> {
         let _span = self.profile.span("preimage");
+        if !self.stage_writable {
+            return Err(error(libc::EROFS));
+        }
         let Some(directory) = &self.preimage_dir else {
             return Ok(());
         };

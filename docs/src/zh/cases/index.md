@@ -38,7 +38,7 @@ cat report.txt
 | 保存 CPU、RAM、设备和完整文件树 | Cluster execution profile / 存储 SDK | [完整环境快照](../design/environment-snapshot.md)；独立 snapshot CLI 已删除，普通 Job 完整 execution 能力仍有限制 |
 | 管理 OCI 文件缓存或共享冷页池 | `pvisor service cache` / `pvisor service memory-pool` | [共享镜像缓存](../reference/shared-image-cache.md)、[内存共享](../design/memory-sharing/index.md) |
 
-Gateway 捕获需要启用 `gateway` feature 的构建；wheel 和 `just build release` 包含该能力。没有安装伴随二进制时，核心 Job 命令仍能使用；`pvisor extensions` 查看实际安装情况。完整 VM 快照需要 KVM 或 Apple Silicon Hypervisor 和可用 FUSE 后端；普通 Job 的 execution checkpoint 当前明确拒绝。
+Gateway 捕获需要启用 `gateway` feature 的构建；wheel 和 `just build release` 包含该能力。没有安装伴随二进制时，核心 Job 命令仍能使用；`pvisor --help` 按操作对象列出已安装的可选命令。完整 VM 快照需要 KVM 或 Apple Silicon Hypervisor 和可用 FUSE 后端；普通 VM Job 在兼容的独立 rootfs、无网络 profile 下支持 execution checkpoint；用 `status --json` 检查能力和拒绝原因。
 
 ## 同一份文档，执行同一套检查
 

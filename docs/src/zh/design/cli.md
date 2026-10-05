@@ -73,20 +73,20 @@ pvisor fork last --state workspace --stage ./stage/branch -- codex
 
 ## 核心命令与服务边界
 
-顶层按所操作的对象组织：Job 生命周期与工作区命令保持扁平，部署/集群/节点资源集中在 `service`；`replay` 从轨迹创建 Job，`tui` 是可选交互前端，`extensions` 只列顶层可选工具。
+顶层按所操作的对象组织：Job 生命周期与工作区命令保持扁平，部署/集群/节点资源集中在 `service`；`replay` 从轨迹创建 Job，`tui` 是可选交互前端。主帮助按 Jobs、Filesystems、Checkpoints、Services、Trajectories 分组，已安装的伴随命令出现在对应组中。`extensions` 命令已删除。
 
 | 职责 | 入口 |
 |---|---|
 | 创建、观察、停止、只读检查 Job | `run`、`status`、`kill`、`inspect` |
-| 审查与接受文件变化 | `review`、`apply`、`drop` |
-| Job 检查点与分支 | `checkpoint`、`suspend`、`resume`、`fork` |
+| 查看、审查与接受文件变化 | `review`、`apply`、`drop` |
+| Job 不可变检查点 | `checkpoint`、`suspend`、`resume`、`fork` |
 | 部署角色生命周期 | `service run/status/restart/stop --config FILE` |
 | 集群任务/控制与执行节点 | `service cluster`、`service worker` |
 | 不可变环境与实验冷页池 | `service cache`、`service memory-pool` |
 
 `status --review` 保留为已存在的快捷形式；`review` 仍是详细审查入口。`run --tui` 是主要交互路径，顶层 `tui` 保留显式前端调用。暂不引入另一个 `job` 命令层，避免让相同 Job 操作形成两套语法。
 
-四个资源命令从顶层移除，原参数保持在 service 下。旧写法明确报迁移错误，不会被默认执行当成宿主程序。独立 `snapshot` 前端已删除，存储/恢复 SDK 和内部 RAM helper 保留；它不自动扩大普通 Job 的完整执行保存能力。
+四个资源命令从顶层移除，原参数保持在 service 下。旧写法明确报迁移错误，不会被默认执行当成宿主程序。独立 `snapshot` 前端已删除；原生完整捕获、恢复和存储管理进入普通 Job 命令，能力由实际 VM profile 决定。
 
 ```bash
 pvisor service --help
@@ -109,4 +109,4 @@ Attempt 生命周期由 Session 管理；AgentCtl 保留工作负载协作职责
 具体执行与终态处理见[核心架构](architecture.md)，记录与失败语义见 [Operation 与 Event](operations-events.md)。
 
 
-完整 VM 快照接入 Job 的目标接口见[Job 检查点与分叉 CLI 设计稿](job-checkpoint-cli.md)。工作区命令已接入，完整执行保存/恢复仍在实现中；已交付范围和限制见设计的第 10 节。独立 snapshot 已删除；[完整环境快照与迁移](environment-snapshot.md)说明存储 SDK 和历史证据的边界。
+完整 VM 快照接入 Job 的目标接口见[Job 检查点与分叉 CLI 设计稿](job-checkpoint-cli.md)。工作区命令和原生 VM execution 保存/恢复已接入；支持范围和验收见设计的第 10 节。独立 snapshot 已删除；[完整环境快照与迁移](environment-snapshot.md)说明存储 SDK 和历史证据的边界。

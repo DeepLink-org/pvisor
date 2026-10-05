@@ -57,7 +57,7 @@ fn parse_scaled(value: &str, units: &[(&str, u64)]) -> Result<u64, String> {
 }
 
 #[derive(Debug, Clone, Copy)]
-struct DurationMs(u64);
+pub(super) struct DurationMs(pub u64);
 
 impl FromStr for DurationMs {
     type Err = String;
@@ -89,7 +89,7 @@ use crate::config::{
     GatewayMode, GatewayProfile, OverlayFsCommit, OverlayFsSettings, OverlayNetMode,
     OverlayNetPolicy, OverlayNetSettings, RunConfig, RunExecutorKind, RunPolicy, RunStdio,
 };
-use crate::runtime::{RunLineage, default_run_home, resolve_run};
+use crate::runtime::{RunLineage, RunRecord, default_run_home, resolve_run};
 use crate::{
     ContainerExecutor, NetworkDriverConfig, OverlayHint, PVisor, ProcessExecutor, RunBundle,
     RunExecutor, VmExecutor, restore_logical_checkpoint,
@@ -267,6 +267,12 @@ pub struct ForkArgs {
     /// Encoding for a newly captured execution checkpoint only.
     #[arg(long, value_enum)]
     ram_storage: Option<super::checkpoint::RamStorage>,
+    /// Read all captured RAM before starting an execution branch; default is lazy.
+    #[arg(long)]
+    eager_ram: bool,
+    /// Durable idempotency key for an execution branch.
+    #[arg(long)]
+    request_id: Option<String>,
     #[arg(long, short = 'o', default_value = ".pvisor/capture")]
     output_dir: PathBuf,
     /// Agent command; defaults to the source Job command.
@@ -490,6 +496,9 @@ impl FromStr for FilesystemAccessArg {
 
 #[derive(Debug, Clone, Default, Args)]
 struct OverlayFsOverrides {
+    /// Stage persistence: checkpoint (default), or sync each first mutation.
+    #[arg(long = "stage-durability", value_name = "checkpoint|strict")]
+    durability: Option<pvisor_core::overlay::StageDurability>,
     /// Host path mount: SOURCE[:TARGET]:ACCESS. ACCESS is read, stage, or write.
     #[arg(long = "mount", value_name = "SOURCE[:TARGET]:ACCESS")]
     mounts: Vec<FilesystemMountArg>,
@@ -1104,6 +1113,11 @@ async fn delegated_shutdown_signal() {
 
 pub async fn fork(args: ForkArgs) -> anyhow::Result<i32> {
     anyhow::ensure!(
+        args.state == super::checkpoint::Kind::Execution
+            || args.request_id.is_none() && !args.eager_ram,
+        "--request-id is only valid for execution fork"
+    );
+    anyhow::ensure!(
         args.state == super::checkpoint::Kind::Execution || args.ram_storage.is_none(),
         "--ram-storage is only valid for execution capture"
     );
@@ -1121,7 +1135,7 @@ pub async fn fork(args: ForkArgs) -> anyhow::Result<i32> {
         .unwrap_or(args.output_dir.clone());
     let source = resolve_run(Some(&args.source), &storage)?;
     if args.state == super::checkpoint::Kind::Execution {
-        super::checkpoint::reject_execution(&source)?;
+        return fork_execution(args, source).await;
     }
     // Hold ownership from selection through copy and durable source retention.
     // The runner starts only after releasing the source's lease.
@@ -1161,6 +1175,7 @@ pub async fn fork(args: ForkArgs) -> anyhow::Result<i32> {
     }
     config.run.command = command;
     config.overlayfs = Some(OverlayFsSettings {
+        durability: pvisor_overlay_core::stage::policy(&checkpoint.preimages_snapshot)?,
         access_policy: checkpoint.access_policy.clone(),
         base: Some(checkpoint.target.clone()),
         target: None,
@@ -1255,6 +1270,376 @@ fn fork_command(
         .unwrap_or(source_agent)
         .to_owned();
     (agent, command)
+}
+
+pub(super) async fn resume_execution(
+    source: RunRecord,
+    request_id: Option<String>,
+    eager_ram: bool,
+) -> anyhow::Result<i32> {
+    use crate::runtime::job_execution;
+    let template = job_execution::job(&source)?;
+    let lease = template.lock()?;
+    let mut job = template.current()?;
+    let request_id = request_id.unwrap_or_else(|| uuid::Uuid::new_v4().to_string());
+    anyhow::ensure!(
+        !request_id.trim().is_empty() && request_id.len() <= 256,
+        "invalid request id"
+    );
+    if let Some(stage) = job.resumes.get(&request_id) {
+        anyhow::ensure!(
+            job.resume_eager_ram
+                .get(&request_id)
+                .copied()
+                .unwrap_or(false)
+                == eager_ram,
+            "REQUEST_ID_CONFLICT: resume RAM policy changed"
+        );
+        anyhow::ensure!(
+            stage.join("run.json").is_file() && job.state != "restoring",
+            "EXECUTION_UNKNOWN: resume request admitted without confirmed successor startup at {}",
+            stage.display()
+        );
+        run_log!("resume request already admitted: {}", stage.display());
+        return Ok(0);
+    }
+    anyhow::ensure!(
+        job.state == "suspended",
+        "JOB_BUSY: resume requires a confirmed suspended head (state={})",
+        job.state
+    );
+    let checkpoint = job.checkpoint(job.head.as_deref().context("missing suspended head")?)?;
+    let source_lease = source.lock_current()?.1;
+    let stage = job
+        .root
+        .join("attempts")
+        .join(uuid::Uuid::new_v4().to_string());
+    let (mut executor, mut overlay) =
+        VmExecutor::restore(job.config.vm.clone(), checkpoint.clone(), &stage)?;
+    if eager_ram {
+        executor.materialize_restore_ram(&stage)?;
+    }
+    preserve_apply_target(&source, &mut overlay);
+    let previous = job.clone();
+    job.previous_stage = job.active_stage.clone();
+    job.active_stage = stage.clone();
+    job.state = "restoring".into();
+    job.resume_eager_ram.insert(request_id.clone(), eager_ram);
+    job.resumes.insert(request_id, stage.clone());
+    job.link_stage(&stage)?;
+    job.write()?;
+    drop(lease);
+    // Keep the previous Attempt's lease until the successor has completed.
+    // The new Attempt acquires its own lease through normal runtime admission.
+    let result = execute_restored(job.clone(), stage, executor, overlay, checkpoint).await;
+    drop(source_lease);
+    if result.is_err() {
+        let _lease = job.lock()?;
+        let current = job.current()?;
+        if current.state == "restoring" {
+            // No RunHandle was accepted, hence the suspended head is retryable.
+            previous.write()?;
+        }
+    }
+    result
+}
+
+fn preserve_apply_target(source: &RunRecord, overlay: &mut OverlayHint) {
+    if let (Some(original), Some(saved)) = (&source.overlay, &mut overlay.execution_snapshot) {
+        saved.target = original.target.clone();
+        if saved.baseline_lower.is_none() {
+            saved.baseline_lower = overlay.lower_dirs.last().cloned();
+        }
+        overlay.protect_target = original.protect_target;
+    }
+}
+
+async fn fork_execution(args: ForkArgs, source: RunRecord) -> anyhow::Result<i32> {
+    use crate::runtime::job_execution;
+    use pvisor_core::operation::SnapshotRamStorage;
+    super::checkpoint::check_execution(&source)?;
+    let request_id = args
+        .request_id
+        .clone()
+        .unwrap_or_else(|| uuid::Uuid::new_v4().to_string());
+    anyhow::ensure!(
+        !request_id.trim().is_empty() && request_id.len() <= 256,
+        "invalid request id"
+    );
+    let options = serde_json::json!({"checkpoint":args.checkpoint,"stage":args.stage,"name":args.name,
+        "ram_storage":args.ram_storage.map(SnapshotRamStorage::from),"eager_ram":args.eager_ram});
+    let selected = job_execution::job(&source)?;
+    if let Some(previous) = selected.forks.get(&request_id) {
+        anyhow::ensure!(
+            previous["options"] == options,
+            "REQUEST_ID_CONFLICT: execution fork options changed"
+        );
+        let stage = Path::new(previous["stage"].as_str().context("missing branch stage")?);
+        let child=RunRecord::read(stage).context("EXECUTION_UNKNOWN: branch admitted without a confirmed Attempt; inspect retained branch stage")?;
+        anyhow::ensure!(
+            Some(child.run_id.as_str()) == previous["job_id"].as_str(),
+            "branch Job binding mismatch"
+        );
+        run_log!(
+            "fork request already admitted: Job {} at {}",
+            child.run_id,
+            stage.display()
+        );
+        return Ok(0);
+    }
+    let checkpoint = match args.checkpoint.as_deref() {
+        Some(id) => job_execution::job(&source)?.checkpoint(id)?,
+        None => {
+            let job = job_execution::job(&source)?;
+            if job.state == "suspended" {
+                job.checkpoint(job.head.as_deref().context("missing suspended head")?)?
+            } else {
+                job_execution::capture(
+                    &source,
+                    false,
+                    args.ram_storage
+                        .map(Into::into)
+                        .unwrap_or(SnapshotRamStorage::Compressed),
+                    Some({
+                        use sha2::Digest;
+                        format!(
+                            "fork-{}",
+                            crate::util::encode_hex(&sha2::Sha256::digest(request_id.as_bytes()))
+                        )
+                    }),
+                    std::time::Duration::from_secs(120),
+                )
+                .await?
+            }
+        }
+    };
+    let template = job_execution::job(&source)?;
+    let _lease = template.lock()?;
+    let mut parent = template.current()?;
+    if let Some(previous) = parent.forks.get(&request_id) {
+        anyhow::ensure!(
+            previous["options"] == options,
+            "REQUEST_ID_CONFLICT: execution fork options changed"
+        );
+        anyhow::bail!(
+            "EXECUTION_UNKNOWN: branch already admitted at {}; inspect status or retry the same request",
+            previous["stage"]
+        );
+    }
+    parent.checkpoint(&checkpoint.snapshot_id)?;
+    let run_id = format!("run-{}", uuid::Uuid::new_v4());
+    let stage = fork_stage_candidate(
+        &args
+            .stage
+            .unwrap_or_else(|| default_run_home().join(&run_id)),
+    )?;
+    anyhow::ensure!(
+        !paths_overlap(&stage, &parent.root) && !paths_overlap(&stage, &checkpoint.store),
+        "execution fork stage overlaps its source Job"
+    );
+    anyhow::ensure!(
+        !stage.exists() || std::fs::read_dir(&stage)?.next().is_none(),
+        "execution fork requires an empty stage"
+    );
+    let (mut executor, mut overlay) =
+        VmExecutor::restore(parent.config.vm.clone(), checkpoint.clone(), &stage)?;
+    if args.eager_ram {
+        executor.materialize_restore_ram(&stage)?;
+    }
+    preserve_apply_target(&source, &mut overlay);
+    let mut spec = parent.spec.clone();
+    spec.metadata.remove(job_execution::STORE_KEY);
+    spec.run_id = run_id.clone().into();
+    spec.parent_run_id = Some(parent.run_id.clone().into());
+    spec.metadata.insert(
+        "pvisor.lineage".into(),
+        serde_json::json!({"parent_run_id":parent.run_id,"checkpoint_id":checkpoint.snapshot_id}),
+    );
+    if let Some(name) = args.name {
+        spec.metadata.insert(
+            "pvisor.orchestration.job_name".into(),
+            serde_json::json!(name),
+        );
+    }
+    let child = job_execution::Job {
+        version: 1,
+        run_id: run_id.clone(),
+        root: stage.clone(),
+        active_stage: stage.clone(),
+        previous_stage: stage.clone(),
+        active_attempt: String::new(),
+        config: parent.config.clone(),
+        spec,
+        state: "restoring".into(),
+        head: None,
+        checkpoints: Default::default(),
+        requests: Default::default(),
+        resumes: Default::default(),
+        forks: Default::default(),
+        stores: [stage.join("execution-snapshots")].into(),
+        resume_eager_ram: Default::default(),
+    };
+    child.write()?;
+    child.link_stage(&stage)?;
+    // Pin before launching; a crash cannot leave a child with a deletable source.
+    parent
+        .checkpoints
+        .get_mut(&checkpoint.snapshot_id)
+        .context("checkpoint disappeared")?
+        .branches
+        .insert(run_id, stage.clone());
+    parent.forks.insert(request_id,serde_json::json!({"options":options,"stage":stage,"job_id":child.run_id,"checkpoint_id":checkpoint.snapshot_id}));
+    parent.write()?;
+    drop(_lease);
+    execute_restored(child, stage, executor, overlay, checkpoint).await
+}
+
+async fn execute_restored(
+    job: crate::runtime::job_execution::Job,
+    stage: PathBuf,
+    executor: VmExecutor,
+    overlay: OverlayHint,
+    checkpoint: pvisor_core::operation::ExecutionCheckpoint,
+) -> anyhow::Result<i32> {
+    let config = &job.config;
+    let saved_environment = executor
+        .restored_guest_environment()
+        .context("missing captured guest environment")?;
+    let mut recording = None;
+    let event_sink: Arc<dyn crate::EventSink> =
+        if config.gateway.mode == GatewayMode::Capture || config.record.destination.is_some() {
+            let destination = config
+                .record
+                .destination
+                .clone()
+                .unwrap_or_else(|| stage.join(".capture"));
+            let writer = JournalRecording::open(&destination)?;
+            let sink = Arc::new(writer.journal.clone());
+            recording = Some(writer);
+            sink
+        } else {
+            Arc::new(crate::trace::Journal::memory())
+        };
+    let network = NetworkDriverConfig::new(
+        config.overlaynet.mode,
+        NetworkConfig {
+            capability: None,
+            mode: match config.overlaynet.policy {
+                OverlayNetPolicy::Public => NetworkMode::Public,
+                OverlayNetPolicy::Deny => NetworkMode::NoNetwork,
+                OverlayNetPolicy::Allowlist => NetworkMode::Allowlist,
+            },
+            allowed_hosts: config.overlaynet.allow.clone(),
+            rules: config.overlaynet.rules.clone(),
+            deny_rules: config.overlaynet.deny.clone(),
+            limits: config.overlaynet.limits.clone(),
+        },
+    )
+    .listen(&config.overlaynet.listen);
+    #[allow(unused_mut)]
+    let mut builder = PVisor::builder()
+        .storage(&stage)
+        .overlay(overlay)
+        .executors(vec![Arc::new(executor)])
+        .network(network)
+        .event_sink(event_sink);
+    #[cfg(feature = "gateway")]
+    if let Some(proxy) = resolve_proxy(config)? {
+        builder = builder.gateway(
+            GatewayDriverConfig::new(proxy)
+                .output_dir(&stage)
+                .stream_markdown(config.gateway.stream_markdown)
+                .gateway_enabled(config.gateway.mode == GatewayMode::Capture),
+        );
+    }
+    let pvisor = builder.build();
+    let mut spec = job.spec.clone();
+    spec.metadata
+        .remove(crate::runtime::job_execution::STORE_KEY);
+    let RunInvocation::Process(process) = &mut spec.invocation;
+    process.inherit_env = false;
+    process.env = saved_environment;
+    spec.metadata.insert("pvisor.environment".into(),serde_json::json!({"inherits_host":false,"projected_keys":process.env.keys().collect::<Vec<_>>()}));
+    spec.metadata
+        .insert("pvisor.stage".into(), serde_json::to_value(&stage)?);
+    spec.metadata.insert(
+        "pvisor.orchestration.execution_restore".into(),
+        serde_json::to_value(&checkpoint)?,
+    );
+    #[cfg(unix)]
+    super::terminal::announce_stage(&stage);
+    let handle = pvisor.run(spec.clone()).await?;
+    let record = RunRecord::read(&stage)?;
+    let server = crate::runtime::job_execution::Server::start(
+        &record,
+        job.config.clone(),
+        spec,
+        handle.controls(),
+    )?;
+    let cancellation = handle.cancellation();
+    let wait = handle.wait();
+    tokio::pin!(wait);
+    let result = tokio::select! {
+        result = &mut wait => result?,
+        _ = delegated_shutdown_signal() => { cancellation.cancel(); wait.await? }
+    };
+    server.finish(&result).await?;
+    if let Some(writer) = recording {
+        writer.finish()?;
+    }
+    run_log!("Run Bundle: {}", RunBundle::path(&stage).display());
+    if let Some(failure) = &result.failure {
+        run_log!("pVisor Job failed: {:?}: {}", failure.kind, failure.message);
+    }
+    Ok(match result.state {
+        RunState::Completed => result.exit_code.unwrap_or(0),
+        RunState::Hibernated => 0,
+        RunState::Cancelled => 130,
+        _ => result.exit_code.unwrap_or(1),
+    })
+}
+
+// Stage directories can sit below a workspace that the guest sees. Keep the
+// immutable capture store outside every guest backing root, without changing
+// the stage, normal filesystem configuration, or guest I/O path.
+fn execution_store_location(
+    config: &RunConfig,
+    workspace: &Path,
+    stage: &Path,
+    run_id: &str,
+) -> anyhow::Result<PathBuf> {
+    let mut roots = vec![workspace.to_owned()];
+    if let Some(root) = &config.vm.rootfs {
+        roots.push(root.canonicalize()?);
+    }
+    if let Some(overlay) = &config.overlayfs {
+        for root in &overlay.compose {
+            roots.push(root.canonicalize()?);
+        }
+    }
+    let mut candidates = vec![
+        stage.join("execution-snapshots"),
+        default_run_home().join("execution-snapshots").join(run_id),
+        std::env::temp_dir()
+            .join("pvisor-execution-snapshots")
+            .join(run_id),
+    ];
+    if let Some(pool) = &config.vm.snapshot_filesystem_pool {
+        // Pooled snapshots need hard-linked references on the pool's volume.
+        // Prefer a sibling store while keeping it outside guest-visible roots.
+        let parent = pool
+            .parent()
+            .filter(|path| !path.as_os_str().is_empty())
+            .unwrap_or(Path::new("."));
+        candidates.insert(0, parent.join("pvisor-execution-snapshots").join(run_id));
+    }
+    for candidate in candidates {
+        let candidate = fork_stage_candidate(&candidate)?;
+        if roots.iter().all(|root| !candidate.starts_with(root)) {
+            return Ok(candidate);
+        }
+    }
+    anyhow::bail!("no execution snapshot store outside guest backing roots")
 }
 
 async fn execute_config(
@@ -1594,6 +1979,19 @@ async fn execute_config(
         .split_first()
         .context("missing Agent command; pass it after `--` or set run.command")?;
     let mut spec = RunSpec::process(run_id.as_str(), &config.run.agent, program);
+    if config.run.executor == RunExecutorKind::Vm
+        && config
+            .vm
+            .rootfs
+            .as_deref()
+            .is_some_and(|path| path != Path::new("/"))
+    {
+        let store = execution_store_location(&config, &workspace, &storage, &run_id)?;
+        spec.metadata.insert(
+            crate::runtime::job_execution::STORE_KEY.into(),
+            serde_json::to_value(store)?,
+        );
+    }
     spec.policies = config.policies.clone();
     spec.capabilities.filesystem = resolve_filesystem_grants(&config, &workspace, &storage)?;
     if let Some(path) = &config.gateway.zcode_builtin_config {
@@ -1795,7 +2193,19 @@ async fn execute_config(
         }
     }
     crate::util::startup_mark_run("cli.session_begin", &run_id);
+    let execution_spec = spec.clone();
     let handle = pvisor.run(spec).await?;
+    let execution_server = if config.run.executor == RunExecutorKind::Vm {
+        let record = resolve_run(Some(Path::new(&run_id)), &storage)?;
+        Some(crate::runtime::job_execution::Server::start(
+            &record,
+            config.clone(),
+            execution_spec,
+            handle.controls(),
+        )?)
+    } else {
+        None
+    };
     crate::util::startup_mark_run("cli.session_started", &run_id);
     let cancellation = handle.cancellation();
     let wait = handle.wait();
@@ -1808,6 +2218,9 @@ async fn execute_config(
         }
     };
     crate::util::startup_mark_run("cli.run_finished", &run_id);
+    if let Some(server) = execution_server {
+        server.finish(&result).await?;
+    }
     drop(pvisor);
     if let Some(writer) = json_writer {
         writer.finish()?;
@@ -2316,6 +2729,7 @@ fn apply_cli(config: &mut RunConfig, args: RunArgs) -> anyhow::Result<()> {
     }
 
     let enables_overlayfs = !args.overlayfs.mounts.is_empty()
+        || args.overlayfs.durability.is_some()
         || !args.overlayfs.access.is_empty()
         || args.overlayfs.clear_access
         || args.overlayfs.max_size.is_some()
@@ -2367,6 +2781,9 @@ fn apply_cli(config: &mut RunConfig, args: RunArgs) -> anyhow::Result<()> {
         }
         if let Some(value) = args.overlayfs.max_size {
             overlayfs.stage_size_bytes = Some(value.0);
+        }
+        if let Some(value) = args.overlayfs.durability {
+            overlayfs.durability = value;
         }
     }
 
@@ -2827,6 +3244,7 @@ fn resolve_overlay(
     compose.push(base);
     let merged_dir = overlayfs.merged_dir.clone();
     Ok(Some(OverlayHint {
+        durability: Some(overlayfs.durability),
         execution_snapshot: None,
         access_policy: overlayfs.access_policy.clone(),
         lower_dirs: compose,
@@ -2953,6 +3371,24 @@ fn resolve_filesystem_grants(
 
 #[cfg(test)]
 mod tests {
+    #[test]
+    fn stage_durability_defaults_to_checkpoint_and_accepts_strict_override() {
+        use pvisor_core::overlay::StageDurability;
+        let args = preset_args(&[
+            "--stage",
+            "/tmp/stage",
+            "--stage-durability",
+            "strict",
+            "--",
+            "true",
+        ]);
+        assert_eq!(args.overlayfs.durability, Some(StageDurability::Strict));
+        assert_eq!(
+            OverlayFsSettings::default().durability,
+            StageDurability::Checkpoint
+        );
+        assert!("unsupported".parse::<StageDurability>().is_err());
+    }
     use super::*;
 
     #[test]

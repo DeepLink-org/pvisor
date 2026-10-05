@@ -1,10 +1,10 @@
 # Full environment snapshots and CLI migration
 
-The standalone `pvisor snapshot` frontend has been removed. VM/Cluster and storage SDKs retain complete-state sealing, RAM encodings, base references and restoration, without exposing another independent instance workflow. Existing stores are not automatically converted into ordinary Job checkpoints, and removing the entry adds no capture capability.
+The standalone `pvisor snapshot` frontend has been removed. VM/Cluster and storage SDKs retain complete-state sealing, RAM encodings, base references and restoration, without exposing another independent instance workflow. Ordinary Jobs now integrate native full execution capture and restore; existing stores are not automatically converted into Job checkpoints.
 
 ## Current user entries {#current-entry}
 
-Ordinary Job checkpoints, suspension, continuation and branches use `checkpoint`, `suspend`, `resume` and `fork`. Stopped-Job workspace checkpoints are connected; execution support remains an explicit executor/profile capability decision.
+Ordinary Job checkpoints, suspension, continuation and branches use `checkpoint`, `suspend`, `resume` and `fork`. Stopped-Job workspace checkpoints and VM execution checkpoints on eligible native profiles are supported.
 
 ```bash
 pvisor checkpoint create last --request-id before-refactor --json
@@ -12,7 +12,7 @@ pvisor checkpoint list last --json
 pvisor fork last --state workspace --stage ./stage/branch -- codex
 ```
 
-`checkpoint --kind execution`, `suspend/resume` and execution forks are not unconditional replacements for the retired snapshot frontend. Complete execution handoff for ordinary VM Jobs still has implementation boundaries; see [Job checkpoint design](job-checkpoint-cli.md#10-当前实现与验收边界).
+The former save maps to suspend; resume continues the current head, while fork --state execution --checkpoint ID restores history or creates branches. Former run uses ordinary run --executor vm; list/delete/gc and base import/verification belong to Job checkpoint commands. Native VMs with no network devices, private RAM and owned complete rootfs support capture-and-continue and full restoration; ordinary run configuration is not changed automatically. See the [CLI reference](../reference/cli.md#full-vm-execution-checkpoints) for entries and limits, and [Job checkpoint design](job-checkpoint-cli.md#10-当前实现与验收边界) for handoff.
 
 Cluster tasks and VM controls use the service Cluster entry, retaining Task/Lease/control-revision identities and Worker reconciliation:
 

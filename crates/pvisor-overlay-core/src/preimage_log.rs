@@ -44,6 +44,7 @@ struct Observation {
 
 #[derive(Debug)]
 struct State {
+    profile: crate::profile::Profile,
     cursor: u64,
     synced: u64,
     observations: BTreeMap<Vec<u8>, Observation>,
@@ -84,6 +85,8 @@ fn invalid(message: &str) -> io::Error {
 }
 
 fn sync(file: &File, state: &mut State) -> io::Result<()> {
+    let profile = state.profile.clone();
+    let _span = profile.span("sync");
     #[cfg(target_os = "macos")]
     let result = crate::sys::order_before_publish(file).and_then(|()| {
         state
@@ -162,6 +165,8 @@ fn apply(state: &mut State, record: Record, end: u64) {
 // Only a structurally valid but incomplete final frame may be repaired.
 // A complete invalid header, digest or JSON record is never silently dropped.
 fn refresh(file: &File, state: &mut State, repair: bool, length: u64) -> io::Result<()> {
+    let profile = state.profile.clone();
+    let _span = profile.span("refresh");
     if length < state.cursor || length > MAX_LOG {
         return Err(invalid("preimage log truncated or exceeds size limit"));
     }
@@ -219,6 +224,8 @@ fn refresh(file: &File, state: &mut State, repair: bool, length: u64) -> io::Res
 }
 
 fn append(file: &File, state: &mut State, record: Record, durable: bool) -> io::Result<()> {
+    let profile = state.profile.clone();
+    let _span = profile.span("append");
     validate(&record)?;
     let body = serde_json::to_vec(&record).map_err(io::Error::other)?;
     if body.is_empty() || body.len() > MAX_RECORD {
@@ -249,6 +256,10 @@ fn append(file: &File, state: &mut State, record: Record, durable: bool) -> io::
 }
 
 impl PreimageLog {
+    /// Drain the complete prefix under the same lock used by all writers.
+    pub fn sync_all(&mut self) -> io::Result<()> {
+        self.locked(sync)
+    }
     /// Create/open, replay once, repair only an incomplete tail, and sync the
     /// recovered prefix before retrying an operation whose acknowledgement was lost.
     pub fn open(path: &Path) -> io::Result<Self> {
@@ -261,6 +272,7 @@ impl PreimageLog {
             .custom_flags(libc::O_NOFOLLOW)
             .open(path)?;
         let mut state = State {
+            profile: crate::profile::Profile::from_env("preimage-log"),
             cursor: MAGIC.len() as u64,
             synced: 0,
             observations: BTreeMap::new(),
@@ -317,13 +329,19 @@ impl PreimageLog {
         &mut self,
         operation: impl FnOnce(&File, &mut State) -> io::Result<T>,
     ) -> io::Result<T> {
+        let profile = self.state.profile.clone();
+        let _span = profile.span("transaction");
         if self.state.poisoned {
             return Err(io::Error::other(
                 "preimage append outcome unknown; reopen log",
             ));
         }
+        let lock_wait = profile.span("lock_wait");
         let _lock = Lock::new(&self.file)?;
+        drop(lock_wait);
+        let binding = profile.span("binding_check");
         let named = fs::symlink_metadata(&self.path)?;
+        drop(binding);
         if !named.is_file() || (named.dev(), named.ino()) != self.identity {
             return Err(invalid("preimage log inode was replaced"));
         }
@@ -459,6 +477,15 @@ impl PreimageLog {
     /// An incomplete final frame is not an observation; complete corruption
     /// still fails. Callers must not treat this as proof of durable read-set state.
     pub fn read(path: &Path) -> io::Result<Vec<PathPreimage>> {
+        Self::read_prefix(path, false)
+    }
+
+    /// Sealing must never acknowledge an incomplete final observation.
+    pub fn read_complete(path: &Path) -> io::Result<Vec<PathPreimage>> {
+        Self::read_prefix(path, true)
+    }
+
+    fn read_prefix(path: &Path, complete: bool) -> io::Result<Vec<PathPreimage>> {
         let file = OpenOptions::new()
             .read(true)
             .custom_flags(libc::O_NOFOLLOW)
@@ -474,6 +501,7 @@ impl PreimageLog {
             return Err(invalid("unsupported preimage log format"));
         }
         let mut state = State {
+            profile: crate::profile::Profile::from_env("preimage-log-read"),
             cursor: MAGIC.len() as u64,
             synced: 0,
             observations: BTreeMap::new(),
@@ -482,6 +510,9 @@ impl PreimageLog {
             durability_directory: None,
         };
         refresh(&file, &mut state, false, metadata.len())?;
+        if complete && state.cursor != metadata.len() {
+            return Err(invalid("incomplete preimage log cannot be sealed"));
+        }
         Ok(state
             .observations
             .into_values()
@@ -493,6 +524,28 @@ impl PreimageLog {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn checkpoint_observations_wait_for_explicit_sync_and_keep_the_first_value() {
+        let temp = tempfile::tempdir().unwrap();
+        let mut log = PreimageLog::open(&temp.path().join("log")).unwrap();
+        let initial = log.state.synced;
+        for index in 0..256 {
+            log.observe(Path::new(&format!("new-{index}")), false, || {
+                Ok(PathFingerprint::Absent)
+            })
+            .unwrap();
+        }
+        assert_eq!(log.state.synced, initial);
+        assert!(log.state.cursor > initial);
+        log.observe(Path::new("new-0"), false, || {
+            panic!("first observation must win")
+        })
+        .unwrap();
+        log.sync_all().unwrap();
+        assert_eq!(log.state.synced, log.state.cursor);
+        assert_eq!(PreimageLog::read_complete(&log.path).unwrap().len(), 256);
+    }
 
     #[test]
     fn winner_promotion_and_external_consumption_refresh_live_handles() {

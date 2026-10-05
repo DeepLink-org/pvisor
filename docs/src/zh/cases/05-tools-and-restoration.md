@@ -1,6 +1,6 @@
 # 5. 回放轨迹与选择恢复工具
 
-先判断要恢复的是文件提案、Agent 历史，还是完整机器执行状态。workspace checkpoint 用于文件提案；`pvisor-replay` 处理 Agent 原生轨迹；独立 `snapshot` 保存完整 VM。TUI 用于交互审查，Gateway 用于模型路由和捕获，cache/memory-pool 用于执行基础设施，不是 Job checkpoint 的替代入口。
+先判断要恢复的是文件提案、Agent 历史，还是完整机器执行状态。workspace checkpoint 用于文件提案；`pvisor-replay` 处理 Agent 原生轨迹；Job execution checkpoint 保存受支持 VM 的完整状态。TUI 用于交互审查，Gateway 用于模型路由和捕获，cache/memory-pool 用于执行基础设施，不是 Job checkpoint 的替代入口。
 
 ### S-USE-015：离线准备轨迹，不重跑历史工具
 
@@ -23,7 +23,7 @@ json_expect "$CASE_ROOT/prepared.json" /replayed_tool_calls 0
 
 ### S-USE-016：完整执行 checkpoint 必须检查能力
 
-普通 Job 当前未接通 CPU/RAM 保存和恢复。检查 capability，要求不支持的操作明确拒绝，不要偷偷改成 workspace fork。
+本例的 host Job 不支持 CPU/RAM 保存和恢复；兼容的原生 VM Job 支持。检查 capability，要求不支持的操作明确拒绝，不要偷偷改成 workspace fork。
 
 **语义**：execution checkpoint、suspend、resume 和 execution fork 均报告 CAPABILITY_UNSUPPORTED，Job 文件树不变。
 

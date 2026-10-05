@@ -460,11 +460,21 @@ impl SnapshotStore {
     /// Native supervisor only: the producer remains frozen and the caller
     /// has authenticated this source as a read-only launch role. First users
     /// create one pool tree; later Jobs reuse it without temporary data copies.
+    #[cfg(test)]
     pub(crate) fn retain_live_lower(
         &self,
         source: &Path,
         logical_root: &Path,
         references: &Path,
+    ) -> anyhow::Result<super::SharedFilesystemLayer> {
+        self.retain_projected_lower(source, logical_root, references, &[])
+    }
+    pub(crate) fn retain_projected_lower(
+        &self,
+        source: &Path,
+        logical_root: &Path,
+        references: &Path,
+        excluded: &[PathBuf],
     ) -> anyhow::Result<super::SharedFilesystemLayer> {
         ensure!(
             self.filesystem_pool != self.root,
@@ -481,13 +491,14 @@ impl SnapshotStore {
                     .all(|part| matches!(part, std::path::Component::Normal(_))),
             "invalid live lower namespace"
         );
-        let expected = super::inventory(source)?;
+        let expected = super::inventory_projected(source, excluded)?;
         super::filesystems::share(
             &self.filesystem_pool,
             source,
             logical_root.as_os_str().as_bytes(),
             &expected,
             references,
+            excluded,
         )
     }
     pub fn begin(&self) -> anyhow::Result<PendingEnvironment> {
@@ -1868,6 +1879,7 @@ impl PublishedEnvironment {
             relative.as_os_str().as_bytes(),
             &expected,
             references,
+            &[],
         )
     }
 

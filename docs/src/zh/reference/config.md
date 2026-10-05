@@ -175,6 +175,7 @@ VM 的内存以 MiB 为单位，CPU 是正整数。`ram_backing` 保存 RAM 文�
 | `overlayfs.mount` | `Vec<FilesystemMount>` | `[]` | 统一挂载；重复 `--mount` 替换列表 |
 | `overlayfs.access` | `Vec<FilesystemAccessRule>` | `[]` | 访问规则；重复 `--access` 追加；`--clear-access` 清空 |
 | `overlayfs.stage` | `Option<PathBuf>` | `未设置` | 项目外的新持久 Stage；`--stage` |
+| `overlayfs.durability` | `pvisor_core::overlay::StageDurability` | `"checkpoint"` | `checkpoint` 或 `strict`；`--stage-durability`；不改变隔离和内容冲突检测 |
 | `overlayfs.max_size` | `Option<u64>` | `未设置` | 暂存总字节额度；`--overlayfs-max-size` |
 | `overlayfs.mount[].source` | `PathBuf` | `必需` | 宿主源路径 |
 | `overlayfs.mount[].target` | `Option<PathBuf>` | `未设置` | Agent 可见的挂载路径；省略时由规范化过程补充 |

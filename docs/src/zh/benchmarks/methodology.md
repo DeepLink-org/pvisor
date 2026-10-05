@@ -93,4 +93,3 @@ python3 benchmark/pvisor/evidence_tsv.py convert \
 转换工具可以双向读写；重建的 JSON 保留数据，但不承诺还原旧文件的空白和键顺序。此次迁移的原始字节另保存在 `target/benchmark-json-originals-20261005/`，每个文件已验证原 SHA256；该目录是本机恢复备份，不进入发布附件。
 
 当前绘图与汇总脚本接受 TSV，也能读取新实验的运行时 JSON。参考环境与 Ubuntu 发布脚本自动把公开附件转为 TSV，运行时协议和 `target/` 下的实验输出继续使用各自原格式。格式校验与绘图不启动 VM，也不重跑基准。
-

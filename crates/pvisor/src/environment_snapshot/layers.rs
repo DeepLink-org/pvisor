@@ -49,6 +49,8 @@ pub(crate) struct CapturedFilesystemLayer {
 pub(crate) struct CapturedFilesystemSource {
     pub path: std::path::PathBuf,
     pub source: std::path::PathBuf,
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub excluded: Vec<std::path::PathBuf>,
 }
 
 impl FilesystemLayer {

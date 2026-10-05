@@ -7,6 +7,7 @@ import csv
 from pathlib import Path
 
 from bench import percentile
+from evidence_tsv import load as load_evidence
 
 
 def summarize(paths):
@@ -68,7 +69,7 @@ def summarize(paths):
                         maximum=max(values),
                     )
                 )
-        for capability, details in value.get("capabilities", {}).items():
+        for capability, details in sorted(value.get("capabilities", {}).items()):
             if details["state"] == "available":
                 continue
             output.append(

@@ -14,8 +14,8 @@ use std::sync::atomic::{AtomicU64, Ordering};
 use std::sync::{Arc, Mutex, RwLock};
 use std::time::Duration;
 
-use pvisor_overlay_core::{backend, service::FilesystemService};
 use pvisor_overlay_core::{BackingIdentity, BackingResolution, OverlayCore};
+use pvisor_overlay_core::{backend, service::FilesystemService};
 
 use super::super::linux_errno::linux_error;
 use super::bindings;
@@ -1001,6 +1001,7 @@ impl OverlayFs {
 impl FileSystem for OverlayFs {
     fn capture_state(&self) -> io::Result<super::snapshot::FsSnapshot> {
         let _operation = self.write_operation().unwrap();
+        self.core.sync_preimages()?;
         for root in self.roots.iter().skip(1) {
             backend::materialize_tree(root)?;
         }
@@ -1115,7 +1116,7 @@ impl FileSystem for OverlayFs {
         )))
     }
     fn restore_state(&self, state: &super::snapshot::FsSnapshot) -> io::Result<()> {
-        use super::snapshot::{invalid, FsSnapshot};
+        use super::snapshot::{FsSnapshot, invalid};
         let FsSnapshot::Overlay(state) = state else {
             return Err(invalid("overlay filesystem type mismatch"));
         };
@@ -1680,7 +1681,23 @@ impl FileSystem for OverlayFs {
 
     fn fsync(&self, ctx: Context, _inode: u64, datasync: bool, handle: u64) -> io::Result<()> {
         let _operation = self.write_operation()?;
+        self.core.sync_preimages()?;
         self.with_file_handle(handle, |fs, h| fs.fsync(ctx, h.inode, datasync, h.handle))
+    }
+
+    fn fsyncdir(&self, _ctx: Context, inode: u64, _datasync: bool, _handle: u64) -> io::Result<()> {
+        let _operation = self.write_operation()?;
+        self.core.sync_preimages().map_err(linux_error)?;
+        let entry = self
+            .core
+            .metadata_resolved(&self.path(inode)?)
+            .map_err(linux_error)?;
+        if !entry.metadata.is_dir() {
+            return Err(io::Error::from_raw_os_error(libc::ENOTDIR));
+        }
+        std::fs::File::open(entry.resolved.path)
+            .and_then(|file| file.sync_all())
+            .map_err(linux_error)
     }
 
     fn release(
@@ -2828,9 +2845,10 @@ mod tests {
         };
         let entry = fs.lookup(ctx, fuse::ROOT_ID, c"dir").unwrap();
         for _ in 0..16 {
-            assert!(fs
-                .open(ctx, entry.inode, false, libc::O_WRONLY as u32)
-                .is_err());
+            assert!(
+                fs.open(ctx, entry.inode, false, libc::O_WRONLY as u32)
+                    .is_err()
+            );
         }
         assert!(fs.handles.lock().unwrap().is_empty());
         let super::super::snapshot::FsSnapshot::Overlay(snapshot) = fs.capture_state().unwrap()
@@ -2842,10 +2860,12 @@ mod tests {
                 panic!("expected a native layer");
             };
             assert!(native.handles.is_empty());
-            assert!(native
-                .inodes
-                .iter()
-                .all(|inode| inode.inode == fuse::ROOT_ID));
+            assert!(
+                native
+                    .inodes
+                    .iter()
+                    .all(|inode| inode.inode == fuse::ROOT_ID)
+            );
         }
     }
 
@@ -2918,21 +2938,24 @@ mod tests {
             gid: 0,
             pid: 1,
         };
-        assert!(fs
-            .lookup(ctx, fuse::ROOT_ID, &CString::new("private.key").unwrap())
-            .is_err());
+        assert!(
+            fs.lookup(ctx, fuse::ROOT_ID, &CString::new("private.key").unwrap())
+                .is_err()
+        );
         let alias = fs
             .lookup(ctx, fuse::ROOT_ID, &CString::new("alias").unwrap())
             .unwrap();
-        assert!(fs
-            .open(ctx, alias.inode, false, libc::O_RDONLY as u32)
-            .is_err());
+        assert!(
+            fs.open(ctx, alias.inode, false, libc::O_RDONLY as u32)
+                .is_err()
+        );
         let env = fs
             .lookup(ctx, fuse::ROOT_ID, &CString::new(".env").unwrap())
             .unwrap();
-        assert!(fs
-            .open(ctx, env.inode, false, libc::O_RDONLY as u32)
-            .is_ok());
+        assert!(
+            fs.open(ctx, env.inode, false, libc::O_RDONLY as u32)
+                .is_ok()
+        );
     }
 
     #[test]
@@ -3238,8 +3261,8 @@ mod tests {
         assert_eq!(entry.attr.st_gid, 2345);
         assert_eq!(entry.attr.st_mode as u32 & 0o7777, 0o755);
         fs.access(ctx, entry.inode, libc::X_OK as u32).unwrap();
-        assert!(fs
-            .access(
+        assert!(
+            fs.access(
                 Context {
                     uid: 3456,
                     gid: 3456,
@@ -3248,7 +3271,8 @@ mod tests {
                 entry.inode,
                 libc::W_OK as u32
             )
-            .is_err());
+            .is_err()
+        );
         let handle = fs
             .open(ctx, entry.inode, false, libc::O_RDONLY as u32)
             .unwrap()

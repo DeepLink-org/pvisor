@@ -12,8 +12,7 @@ Use JSON to connect tasks to scripts: check the outcome, inspect the actual boun
 | `status --review --json` | Complete versioned Run Bundle | Post-run review and machine consumers |
 | `review --json` | Schema-4 Bundle plus `review_context` | Same review path; `--checkpoint ID` selects a saved workspace |
 | `kill --json` | Schema 1, operation `kill` | Distinguish a termination request from an already stopped Job |
-| `checkpoint create/list/show/delete/gc --json` | Schema 1, operation `checkpoint.*` | Job-scoped workspace checkpoint management |
-| `extensions` | Installed companion commands as a JSON array | Check TUI/replay/cache availability |
+| `checkpoint create/list/show/delete/gc --json` | Schema 1, operation `checkpoint.*` | Job-scoped workspace and execution checkpoint management |
 
 `--review --json` and `--diff` are mutually exclusive. Do not parse human review text.
 
@@ -65,6 +64,7 @@ The schema number belongs to the output format, not the CLI as a whole. `status 
 | `live` | Boolean liveness observation |
 | `checkpoint_capability` | `workspace`, `workspace_capture_requires`, `execution`, `execution_blocker` |
 | `checkpoints` | Array of workspace checkpoint records |
+| `execution` | Native Job state, suspended head, current Attempt, checkpoints, requests and store ownership; null without native handoff |
 | `workspace_generation` | Integer, or null without an overlay |
 | `apply_history` | Previous apply transaction records |
 | `observations.filesystem/network` | Available access/traffic observations, or null |
@@ -76,31 +76,12 @@ All checkpoint success envelopes include `schema_version = 1`, `operation`, and 
 
 | Operation | Additional fields |
 | --- | --- |
-| `checkpoint.create` | `request_id` (nullable), `checkpoint_id`, `kind = "workspace"`, `reused`, `checkpoint` |
-| `checkpoint.list` | `kind_filter` (nullable), `supported_kinds = ["workspace"]`, `checkpoints` |
-| `checkpoint.show` | `kind = "workspace"`, `branch_references`, `checkpoint` |
+| `checkpoint.create` | `request_id` (nullable), `checkpoint_id`, `kind`, `reused` (workspace only), `checkpoint` |
+| `checkpoint.list` | `kind_filter` (nullable), `execution_blocker`, `checkpoints` |
+| `checkpoint.show` | `kind`, `branch_references`, `checkpoint` |
 | `checkpoint.delete` | `checkpoint_id`, `deleted = true` |
-| `checkpoint.gc` | `scope = "job_workspace_transactions"`, `root`, `removed_transactions`, `shared_content_store = null` |
+| `checkpoint.gc` | `scope`, `root`, `removed_transactions`, `execution_removed_transactions`, `published_checkpoints_deleted = 0` |
 
 `kill --json` returns `already_stopped = true` with the stored state for a stopped Job. Otherwise it returns `state = "stopping"`, `termination_requested = true`; this confirms the request, not completed shutdown. Poll status for the resulting state.
 
-`extensions` entries contain `name`, `description`, and executable `path`. Companion commands such as replay own their own formats. Ordinary `run`, `apply`, and `drop` do not emit a JSON success envelope; read the Bundle/status or preserve their exit status. Ordinary execution checkpoints and `suspend` remain capability rejections, even with `--json`; errors go to stderr and do not become checkpoint success objects.
-
-## Downloadable outputs from a real task {#samples}
-
-These outputs were collected with the Linux host executor, safe staging and deny-all networking. The task creates `src/result.txt` and deletes `obsolete.txt`. Paths, identities and wall-clock fields are normalized; timings and mechanisms describe this one execution, not platform-wide performance.
-
-- [Review Bundle JSON](../../assets/examples/json/run-bundle.json)
-- [Status JSON](../../assets/examples/json/status.json)
-- [Checkpoint list JSON](../../assets/examples/json/checkpoint-list.json)
-- [Kill an already stopped Job JSON](../../assets/examples/json/kill-stopped.json)
-- [Collection provenance](../../assets/examples/json/provenance.json)
-
-The `src/` gate above rejects this sample because of `obsolete.txt`. It demonstrates why a successful command and enforced boundaries do not alone authorize every change. For non-UTF-8 paths, `path_bytes` preserves identity; this text-path gate rejects those entries and leaves them for a byte-aware reviewer.
-
-Contributors can regenerate samples from the repository root after building the CLI. The script creates a separate temporary workspace and Stage and executes no network workload:
-
-```bash
-cargo build --locked -p pvisor --bin pvisor
-python3 scripts/record-doc-json.py --binary target/debug/pvisor
-```
+Companion commands such as replay own their output formats. Ordinary `run`, `resume`, `fork`, `apply`, and `drop` do not emit a JSON success envelope; read status/the Bundle and preserve exit status. `suspend --json` succeeds only after checkpoint publication and native termination: it returns `schema_version = 1`, `operation = "suspend"`, `job_id`, `state = "suspended"`, `request_id`, `checkpoint_id`, `kind = "execution"`, and `checkpoint`. Unsupported profiles report errors on stderr without a checkpoint success object. `pvisor --help` lists the commands available in the current installation.

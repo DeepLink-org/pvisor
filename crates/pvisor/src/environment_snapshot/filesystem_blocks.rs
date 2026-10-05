@@ -98,7 +98,7 @@ impl FilesystemBlocks {
                     && roots.insert(source.source.clone()),
                 "ambiguous direct private filesystem source"
             );
-            let tree = super::inventory(&source.source)?;
+            let tree = super::inventory_projected(&source.source, &source.excluded)?;
             for entry in &tree.entries {
                 if let TreeObject::File {
                     bytes, hardlink, ..
@@ -123,8 +123,13 @@ impl FilesystemBlocks {
                 "direct private forest exceeds inventory limit"
             );
             let local = references.join(&source.path);
-            let (captured, current) =
-                Self::capture_with_stats(pool, &source.source, &tree, &local)?;
+            let (captured, current) = Self::capture_projected_with_stats(
+                pool,
+                &source.source,
+                &tree,
+                &local,
+                &source.excluded,
+            )?;
             stats.add(current);
             for entry in fs::read_dir(&local)? {
                 let entry = entry?;
@@ -250,6 +255,15 @@ impl FilesystemBlocks {
         tree: &TreeInventory,
         references: &Path,
     ) -> anyhow::Result<(Self, CaptureStats)> {
+        Self::capture_projected_with_stats(pool, source, tree, references, &[])
+    }
+    fn capture_projected_with_stats(
+        pool: &Path,
+        source: &Path,
+        tree: &TreeInventory,
+        references: &Path,
+        excluded: &[std::path::PathBuf],
+    ) -> anyhow::Result<(Self, CaptureStats)> {
         super::transfer::validate_tree_metadata(tree)?;
         ensure!(
             tree.entries.len() <= 65_536,
@@ -334,7 +348,10 @@ impl FilesystemBlocks {
         File::open(pool.join("content"))?.sync_all()?;
         File::open(references)?.sync_all()?;
         // Unvisited metadata and hard-link topology must also remain exact.
-        super::verify_tree(source, tree)?;
+        ensure!(
+            super::inventory_projected(source, excluded)? == *tree,
+            "filesystem inventory mismatch"
+        );
         Ok((result, stats))
     }
 

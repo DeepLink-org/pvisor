@@ -62,20 +62,20 @@ The public workflow is simple: start a Job, inspect evidence, then decide what t
 
 ## Core commands and service boundaries
 
-Top-level commands follow the object they operate on: flat Job/workspace operations, with deployments, cluster tasks and node resources grouped under `service`. `replay` creates Jobs from trajectories, `tui` is an optional interactive frontend, and `extensions` lists only optional top-level tools.
+Top-level commands follow the object they operate on: flat Job/workspace operations, with deployments, cluster tasks and node resources grouped under `service`. `replay` creates Jobs from trajectories, and `tui` is an optional interactive frontend. Root help groups commands under Jobs, Filesystems, Checkpoints, Services and Trajectories; installed companions appear in their group. `extensions` has been removed.
 
 | Responsibility | Entry |
 |---|---|
-| Create, observe, stop and inspect Jobs read-only | `run`, `status`, `kill`, `inspect` |
-| Review and accept file changes | `review`, `apply`, `drop` |
-| Job checkpoints and branches | `checkpoint`, `suspend`, `resume`, `fork` |
+| Job lifecycle and branches | `run`, `status`, `kill`, `suspend`, `resume`, `fork`, `tui` |
+| Inspect, review and accept file changes | `inspect`, `review`, `apply`, `drop` |
+| Immutable Job checkpoints | `checkpoint` |
 | Deployment role lifecycle | `service run/status/restart/stop --config FILE` |
 | Cluster tasks/controls and execution nodes | `service cluster`, `service worker` |
 | Immutable environments and experimental cold pages | `service cache`, `service memory-pool` |
 
 `status --review` remains an existing shortcut; `review` remains the detailed review entry. `run --tui` is the primary interactive path, with top-level `tui` retained for explicit frontend invocation. No additional `job` command layer is introduced, avoiding duplicate syntax for the same Job operations.
 
-The four resource commands are removed from the top level and keep their arguments under service. Retired forms return explicit migration errors instead of becoming host workloads through default execution. The standalone `snapshot` frontend is removed; storage/restore SDKs and private RAM helpers remain, without expanding ordinary Job execution capture capabilities.
+The four resource commands are removed from the top level and keep their arguments under service. Retired forms return explicit migration errors instead of becoming host workloads through default execution. The standalone `snapshot` frontend is removed; native full capture, restoration and storage management now use Job commands, with support determined by the VM profile.
 
 ```bash
 pvisor service --help

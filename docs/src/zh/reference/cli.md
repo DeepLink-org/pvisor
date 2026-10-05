@@ -106,22 +106,29 @@ Session 决定写入当前 Job 目录的 `audit-policy.json`，workspace 和 use
 代理网络审计属于协作式边界：未经过代理的直接连接不会触发此弹窗。
 
 ```text
-pvisor
-├── run                 创建 Job
-├── apply               提交已停止 Job 的暂存改动
-├── drop                丢弃已停止 Job 的暂存改动
-├── status              查看 Job 状态和能力
-├── review              查看当前或保存的工作区变更
-├── checkpoint
-│   ├── create          保存停止 Job 的工作区
-│   ├── list            列出 Job 检查点
-│   ├── show            查看归属和保留引用
-│   ├── delete          删除无引用检查点
-│   └── gc              回收本 Job 遗留工作区事务
-├── kill                请求终止正在运行的 Job
-├── fork                从已停止的 Job 创建子 Job
-├── inspect             只读查看 Job 的文件系统
-└── replay              从 Agent 轨迹创建 Job
+Jobs:
+  run         启动 Job
+  status      查看 Job 状态
+  kill        终止 Job
+  suspend     保存执行状态并暂停 Job
+  resume      继续暂停的 Job
+  fork        从暂存文件或 VM 执行状态创建分支
+  tui         交互式 Job 终端（安装后可见）
+
+Filesystems:
+  inspect     只读查看 Job 文件系统
+  review      审查暂存变化与执行证据
+  apply       接受选定的暂存变化
+  drop        丢弃暂存变化
+
+Checkpoints:
+  checkpoint  Create, list, show, delete, verify, import-base, verify-base, gc
+
+Services:
+  service     部署生命周期与 cluster/worker/cache/memory-pool
+
+Trajectories:
+  replay      回放 Agent 轨迹（安装后可见）
 ```
 
 ## 安全的第一次运行 {#安全的第一次运行}
@@ -177,14 +184,33 @@ pvisor checkpoint gc ./stage/task --json
 `drop JOB` 保留 Job、检查点和分支引用，`apply/drop` 必须显式指定 Job，并要求记录已确认停止。
 `review` 的 JSON 区分历史执行证据与当前选定的文件视图；成功 apply/drop 后工作区 generation 递增。
 
-当前 GC 仅清理指定 Job 的工作区检查点暂存与删除目录，输出 scope 为 `job_workspace_transactions`。
-尚未接入共享 execution 内容库 GC。指定历史检查点的查看与分叉目前仍要求取得源 Job lease，因此运行中的源 Job 会拒绝这些操作。
+工作区历史检查点的查看和分叉仍要求源 Job lease，因此源 Job 正在运行时会拒绝。
 
-`suspend JOB`、`resume JOB`、`checkpoint create JOB --kind execution` 和
-`fork JOB --state execution` 目前会明确返回 `CAPABILITY_UNSUPPORTED`，不改变 Job 状态。
-普通 VM Job 的 Overlay/DAX、临时根文件层和 Attempt 交接尚未接入完整保存/恢复。
-独立 `snapshot` 命令已删除；底层存储对象不自动转换成 Job 检查点，删除入口也不会扩大普通 Job 的 execution 能力。
-详细实现范围见[Job 检查点设计](../design/job-checkpoint-cli.md#10-当前实现与验收边界)。
+### 完整 VM 执行检查点 {#full-vm-execution-checkpoints}
+
+对于支持原生保存的 VM，以下命令封存 CPU、RAM、设备和文件系统状态：
+
+```bash
+pvisor run --executor vm --rootfs /path/to/rootfs --overlaynet off --stage ./stage/task -- /bin/agent
+pvisor checkpoint create ./stage/task --kind execution --ram-storage compressed --request-id save-1 --json
+pvisor suspend ./stage/task --ram-storage raw --request-id pause-1 --timeout 2m --json
+pvisor resume ./stage/task --request-id resume-1
+pvisor fork ./stage/task --state execution --checkpoint CHECKPOINT_ID --stage ./stage/branch --request-id branch-1
+pvisor checkpoint verify ./stage/task CHECKPOINT_ID --json
+pvisor checkpoint gc ./stage/task --kind execution --json
+```
+
+`create --kind execution` 保存后继续运行。`suspend` 只有在检查点发布且原 VM 确认退出后才成功；超时仅结束等待，不能据此判断 VM 已退出。使用相同 `--request-id` 重试不会重复捕获。`resume` 只恢复当前 suspended head，保留 Job ID、生成新 Attempt，并保留旧 Attempt 的记录和 Bundle；原 stage 路径继续指向当前 Attempt。恢复保持检查点中的 guest 环境，不继承发起恢复的 shell 环境。
+
+execution fork 不接受替换命令。指定历史检查点时可以保持父 Job 运行；不指定时，对运行中父 Job 捕获后继续执行，对已暂停父 Job 使用当前 head。子 Job 拥有独立 RAM 和文件系统上层。`--ram-storage raw|compressed` 只影响新捕获，默认 compressed。`resume` 和 execution `fork` 支持 `--eager-ram`，在启动前完整读取 RAM；省略时按需加载。
+
+当前支持 Linux x86_64 和 macOS ARM64 的原生无网络、私有 RAM profile；宿主根目录 `/`、联网设备、共享内存池、可写 RAM backing 和冷页压缩不在这个恢复合同内。`run` 不为保存能力自动关闭网络、DAX 或改变 rootfs；用 `status JOB --json` 查看能力与拒绝原因。恢复要求相同宿主启动、pVisor binary 和固件，不能跨宿主或跨版本恢复。
+
+当 stage 位于工作区内，检查点存储自动放在 guest backing 之外，并记录 Job 归属。捕获保存 guest 可见文件，排除 guest 已隐藏的 stage 管理目录；可见文件的内容、元数据及硬链接校验仍然完整。
+
+暂停期间拒绝 `apply/drop` 和工作区捕获；先 `kill JOB` 可撤销恢复权，保留历史检查点，再处理文件变化。execution 检查点的 `list/show/delete` 与工作区检查点共用入口；删除会检查 suspended head、分支引用及存储租约。分支引用保守保留，尚无 Job 删除/归档接口来释放它们。GC 回收本 Job 存储中的未发布事务、删除残留和未引用 RAM 内容，不删除已发布检查点，也不是跨 Job/Cluster 的全库清理。
+
+原不可变基底管理可通过 `checkpoint import-base JOB ROOTFS --json`、`checkpoint verify-base JOB BASE_ID --json` 使用；导入结果给出独立 rootfs 路径，后续普通 `run --rootfs` 可以使用该路径。独立 `snapshot` 前端保持删除，旧 store 不自动转换为 Job 检查点。实现与验收见[Job 检查点设计](../design/job-checkpoint-cli.md#10-当前实现与验收边界)。
 
 ## `--safe` 参数预设 {#safe-参数预设}
 

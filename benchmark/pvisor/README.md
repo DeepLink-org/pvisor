@@ -623,6 +623,50 @@ the injection rather than becoming a successful sample.
 
 ## Familiar runtimes and the complete Agent tool environment
 
+### Host FUSE without staging
+
+`filesystem_fuse_ab.py` compares native, direct pVisor host (no FUSE), pVisor
+host over a benchmark-only native FUSE adapter (no stage), and host staged.
+It uses the same pinned pVisor binary, seven workloads, two-core affinity,
+fresh workspaces, three warmups and 30 samples per case. Cases run serially.
+The FUSE adapter writes directly to backing without OverlayCore, copy-up,
+access policy or preimage journal. This is a diagnostic control, not a
+production CLI mode or a switch disabling only staging in OverlayFS.
+
+Build `filesystem_fuse_passthrough.rs` in an isolated Cargo package against
+the same frozen vendored `fuser` as the measured pVisor binary, with
+`default-features=false`, `abi-7-31` and `libc`. Keep its manifest, lockfile
+and build provenance; do not reuse a driver with unknown dependencies.
+The published `filesystem-fuse-20261005/build-provenance.tsv` records the
+manifest and binary/source hashes for the completed comparison. Place the
+build provenance in the run output as `build-provenance.json` before
+publication; JSON intermediates stay under `target/`, while published
+reports use TSV.
+
+```bash
+systemd-run --user --scope --quiet \
+  -p MemoryMax=1G -p MemorySwapMax=0 -p CPUQuota=200% \
+  python3 benchmark/pvisor/filesystem_fuse_ab.py \
+  --assets target/reference-env-final-20261004 \
+  --binary /absolute/path/to/pinned-pvisor \
+  --fuse-driver /absolute/path/to/fuse-passthrough \
+  --output target/filesystem-fuse-new \
+  --cpu-affinity 0,1 --samples 30 --warmups 3
+python3 benchmark/pvisor/render_filesystem_fuse_ab.py \
+  --source target/filesystem-fuse-new \
+  --output docs/src/assets/benchmarks/filesystem-fuse-new
+```
+
+Choose two allowed cores and ensure `/dev/fuse`, mount permissions and
+rootless user namespaces are available. No VM is launched. The runner
+requires FUSE mountinfo, nonzero LOOKUP/READ/WRITE counts, the full fixture
+byte counts, a non-staged rootless Run Bundle and all 256 backing writes.
+It fails on bypass or incorrect output. Publication verifies raw logs,
+Run Bundles and frozen binary/harness hashes before exporting TSV and an
+evidence archive. Tool times exclude mount/startup/teardown; completion
+includes those steps. Compare against staged in the same batch, keeping
+historical Docker/Ubuntu results separate.
+
 `filesystem_ab.py` compares two pinned GNU/Linux pVisor binaries using the
 prepared reference tool environment. It runs native once per round and both
 versions through real host FUSE and VM virtio-fs, shuffling all five cases per

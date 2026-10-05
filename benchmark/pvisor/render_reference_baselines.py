@@ -8,7 +8,8 @@ import tarfile
 from pathlib import Path
 
 from bench import percentile
-from evidence_tsv import copy_evidence, load as load_evidence, migrate, resolve
+from evidence_tsv import copy_evidence, migrate, resolve
+from evidence_tsv import load as load_evidence
 
 BACKENDS = [
     "native",

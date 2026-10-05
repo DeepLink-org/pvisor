@@ -140,6 +140,7 @@ pub struct RunRecord {
 impl RunRecord {
     /// A missing process/lease is insufficient evidence of a completed Attempt.
     pub(crate) fn require_stopped(&self) -> anyhow::Result<()> {
+        super::job_execution::require_mutable(self)?;
         anyhow::ensure!(
             self.state.is_stopped() && self.finished_at_unix_ms.is_some(),
             "EXECUTION_UNKNOWN: Job {} has no confirmed stopped Attempt (state={}); refuse workspace mutation or capture",
@@ -219,6 +220,16 @@ impl RunRecord {
     }
 
     pub fn read(stage: &Path) -> anyhow::Result<Self> {
+        // A Job's original stage remains a stable selector across Attempts.
+        // The active Attempt owns its own run.json, Bundle and storage lease.
+        let active = super::job_execution::Job::read_stage(stage)?;
+        let stage = active.as_ref().map_or(stage, |job| {
+            if job.state == "restoring" && !job.active_stage.join(RUN_META_FILENAME).exists() {
+                job.previous_stage.as_path()
+            } else {
+                job.active_stage.as_path()
+            }
+        });
         let path = stage.join(RUN_META_FILENAME);
         let record: Self = serde_json::from_slice(&fs::read(&path)?)?;
         anyhow::ensure!(
@@ -226,6 +237,12 @@ impl RunRecord {
             "unsupported Run record schema {}",
             record.schema_version
         );
+        if let Some(job) = active {
+            anyhow::ensure!(
+                record.run_id == job.run_id,
+                "execution Job record owner mismatch"
+            );
+        }
         Ok(record)
     }
 

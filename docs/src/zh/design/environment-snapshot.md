@@ -1,10 +1,10 @@
 # 完整环境快照与 CLI 迁移
 
-独立 `pvisor snapshot` 前端已删除。VM/Cluster 和存储 SDK 继续使用完整状态封存、RAM 编码、基底引用与恢复机制；这些能力不再通过另一套独立实例命令暴露。旧 store 不自动转换为普通 Job 检查点，也不会因删除入口而增加保存能力。
+独立 `pvisor snapshot` 前端已删除。VM/Cluster 和存储 SDK 继续使用完整状态封存、RAM 编码、基底引用与恢复机制；这些能力不再通过另一套独立实例命令暴露。普通 Job 已接入原生完整执行捕获与恢复，旧 store 不自动转换为 Job 检查点。
 
 ## 当前用户入口 {#current-entry}
 
-普通 Job 的检查点、挂起、恢复与分叉只通过 `checkpoint`、`suspend`、`resume`、`fork` 管理。当前已接通停止 Job 的 workspace 检查点；execution 仍按 executor/profile 返回明确的能力判断。
+普通 Job 的检查点、挂起、恢复与分叉只通过 `checkpoint`、`suspend`、`resume`、`fork` 管理。支持停止 Job 的 workspace 检查点，以及符合原生 profile 的 VM execution 检查点。
 
 ```bash
 pvisor checkpoint create last --request-id before-refactor --json
@@ -12,7 +12,7 @@ pvisor checkpoint list last --json
 pvisor fork last --state workspace --stage ./stage/branch -- codex
 ```
 
-`checkpoint --kind execution`、`suspend/resume` 和 execution fork 不能被当作旧 snapshot 的无条件替代。普通 VM Job 的完整执行交接仍有实现边界，见[Job 检查点设计](job-checkpoint-cli.md#10-当前实现与验收边界)。
+原 `save` 对应 `suspend`；恢复当前执行点用 `resume`，恢复历史点或创建分支用 `fork --state execution --checkpoint ID`。原 `run` 使用普通 `run --executor vm`；list/delete/gc、基底导入和校验进入 Job 的 `checkpoint` 命令。无网络设备、私有 RAM、拥有完整 rootfs 的原生 VM 支持 capture-and-continue 和完整恢复；普通 `run` 的配置不会自动改变。接口和限制见 [CLI 参考](../reference/cli.md#full-vm-execution-checkpoints)，交接设计见[Job 检查点设计](job-checkpoint-cli.md#10-当前实现与验收边界)。
 
 集群任务与 VM 控制使用 service 下的 Cluster 入口，保持 Task/Lease/控制修订身份与 Worker 对账：
 

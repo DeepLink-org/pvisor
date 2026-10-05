@@ -72,6 +72,7 @@ impl OverlayMount {
     /// Unmount and mark staging as [`OverlayState::Staged`] (keep upper).
     pub fn unmount(mut self) -> anyhow::Result<OverlayRecord> {
         self.unmount_inner()?;
+        seal_overlay_record(&self.record)?;
         self.record.state = OverlayState::Staged;
         write_overlay_record(&self.record)?;
         Ok(self.record.clone())
@@ -105,8 +106,10 @@ impl OverlayMount {
 
 impl Drop for OverlayMount {
     fn drop(&mut self) {
-        let _ = self.unmount_inner();
-        if self.record.state == OverlayState::Active {
+        if self.unmount_inner().is_err() {
+            return;
+        }
+        if self.record.state == OverlayState::Active && seal_overlay_record(&self.record).is_ok() {
             self.record.state = OverlayState::Staged;
             let _ = write_overlay_record(&self.record);
         }
@@ -223,6 +226,7 @@ pub fn resolve_overlay_workspace(
 /// Build an [`OverlayHint`] from a resolved record + full lower stack.
 pub fn hint_from_record(record: &OverlayRecord, lower_dirs: Vec<PathBuf>) -> OverlayHint {
     OverlayHint {
+        durability: None,
         execution_snapshot: None,
         access_policy: record.access_policy.clone(),
         lower_dirs,
@@ -325,6 +329,7 @@ pub(crate) fn mount_overlay_record_observed(
     record: &OverlayRecord,
     lower_dirs: &[PathBuf],
     observation: Option<pvisor_overlayfs::FsMetrics>,
+    durability: pvisor_core::overlay::StageDurability,
 ) -> Result<OverlayMount, OverlayError> {
     if lower_dirs.is_empty() {
         return Err(OverlayError::MissingTarget);
@@ -344,6 +349,8 @@ pub(crate) fn mount_overlay_record_observed(
         .map_err(|error| OverlayError::Prepare(io::Error::other(error)))?;
     create_dir_all_durable(&record.upper.work_dir)
         .map_err(|error| OverlayError::Prepare(io::Error::other(error)))?;
+    pvisor_overlay_core::stage::begin(&record.stage_dir.join("preimages"), durability)
+        .map_err(OverlayError::Prepare)?;
 
     let mut config = OverlayMountConfig::new(
         lower_dirs.to_vec(),
@@ -358,6 +365,10 @@ pub(crate) fn mount_overlay_record_observed(
     config.baseline_lower = record.baseline_lower.clone();
     config.observation = observation;
     config.preimage_dir = Some(record.stage_dir.join("preimages"));
+    // Match the mountless/VM initializer: the owned stage can publish one
+    // compact log, retaining first observations under the stage's policy.
+    // Reopened legacy journals and nonempty uppers keep their existing format.
+    config.compact_preimages = true;
     select_embedded_backend(&mut config)?;
     let session = mount_embedded_overlay(config).map_err(embedded_mount_error)?;
     wait_merged_ready(&record.merged_dir, &session)
@@ -378,16 +389,18 @@ pub(crate) fn prepare_overlay_record_mountless(
     record: &OverlayRecord,
     lower_dirs: &[PathBuf],
     run_id: &str,
+    durability: pvisor_core::overlay::StageDurability,
 ) -> Result<OverlayRecord, OverlayError> {
-    prepare_overlay_record_mountless_inner(record, lower_dirs, run_id, false)
+    prepare_overlay_record_mountless_inner(record, lower_dirs, run_id, false, durability)
 }
 
 pub(crate) fn prepare_execution_overlay_record(
     record: &OverlayRecord,
     lower_dirs: &[PathBuf],
     run_id: &str,
+    durability: pvisor_core::overlay::StageDurability,
 ) -> Result<OverlayRecord, OverlayError> {
-    prepare_overlay_record_mountless_inner(record, lower_dirs, run_id, true)
+    prepare_overlay_record_mountless_inner(record, lower_dirs, run_id, true, durability)
 }
 
 fn prepare_overlay_record_mountless_inner(
@@ -395,6 +408,7 @@ fn prepare_overlay_record_mountless_inner(
     lower_dirs: &[PathBuf],
     run_id: &str,
     preserve_existing: bool,
+    durability: pvisor_core::overlay::StageDurability,
 ) -> Result<OverlayRecord, OverlayError> {
     if lower_dirs.is_empty() {
         return Err(OverlayError::MissingTarget);
@@ -411,6 +425,8 @@ fn prepare_overlay_record_mountless_inner(
         record.baseline_lower.as_deref(),
     )
     .map_err(OverlayError::Prepare)?;
+    pvisor_overlay_core::stage::begin(&record.stage_dir.join("preimages"), durability)
+        .map_err(OverlayError::Prepare)?;
     // Share backing validation and journal initialization with the host adapter.
     crate::util::persistence_step(run_id, "overlay", "backing_and_journal", || {
         let open = if preserve_existing {
@@ -438,9 +454,15 @@ fn prepare_overlay_record_mountless_inner(
 
 pub(crate) fn stage_overlay_record(record: &mut OverlayRecord) -> anyhow::Result<()> {
     if record.state == OverlayState::Active {
+        seal_overlay_record(record)?;
         record.state = OverlayState::Staged;
         write_overlay_record(record)?;
     }
+    Ok(())
+}
+
+fn seal_overlay_record(record: &OverlayRecord) -> anyhow::Result<()> {
+    pvisor_overlay_core::stage::seal(record.upper.path(), &record.stage_dir.join("preimages"))?;
     Ok(())
 }
 
@@ -687,14 +709,27 @@ mod tests {
             protect_target: false,
             state: OverlayState::Active,
         };
-        let prepared = prepare_overlay_record_mountless(&record, &[lower], "test-run").unwrap();
+        let prepared =
+            prepare_overlay_record_mountless(&record, &[lower], "test-run", Default::default())
+                .unwrap();
         assert!(prepared.upper.path().is_dir());
         assert!(stage.join("work").is_dir());
         assert!(stage.join("preimages/entries/format-v2.json").is_file());
+        assert!(
+            prepare_overlay_record_mountless(
+                &prepared,
+                std::slice::from_ref(&prepared.target),
+                "interrupted-reopen",
+                Default::default()
+            )
+            .is_err()
+        );
+        seal_overlay_record(&prepared).unwrap();
         prepare_overlay_record_mountless(
             &prepared,
             std::slice::from_ref(&prepared.target),
             "test-reopen",
+            Default::default(),
         )
         .unwrap();
         assert!(stage.join("preimages/entries/format-v2.json").is_file());
@@ -725,6 +760,7 @@ mod tests {
             &legacy,
             std::slice::from_ref(&legacy.target),
             "legacy-reopen",
+            Default::default(),
         )
         .unwrap();
         assert!(
@@ -838,8 +874,14 @@ mod tests {
             state: OverlayState::Staged,
         };
 
-        let mount =
-            mount_overlay_record_observed(&record, std::slice::from_ref(&lower), None).unwrap();
+        let mount = mount_overlay_record_observed(
+            &record,
+            std::slice::from_ref(&lower),
+            None,
+            Default::default(),
+        )
+        .unwrap();
+        assert!(stage.join("preimages/entries/format-v2.json").is_file());
         assert_eq!(fs::read(merged.join("lower-file")).unwrap(), b"lower");
         fs::write(merged.join("lower-file"), b"copied-up").unwrap();
         fs::remove_file(merged.join("deleted-file")).unwrap();

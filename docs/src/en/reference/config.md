@@ -175,6 +175,7 @@ Field names and types are checked against the Rust serde structures during the d
 | `overlayfs.mount` | `Vec<FilesystemMount>` | `[]` | Unified mounts; repeated `--mount` replaces list |
 | `overlayfs.access` | `Vec<FilesystemAccessRule>` | `[]` | Access rules; repeated `--access` appends; `--clear-access` clears |
 | `overlayfs.stage` | `Option<PathBuf>` | `unset` | New durable Stage outside project; `--stage` |
+| `overlayfs.durability` | `pvisor_core::overlay::StageDurability` | `"checkpoint"` | `checkpoint` or `strict`; `--stage-durability`; isolation and content conflicts are unchanged |
 | `overlayfs.max_size` | `Option<u64>` | `unset` | Aggregate staged bytes; `--overlayfs-max-size` |
 | `overlayfs.mount[].source` | `PathBuf` | `required` | Host source path |
 | `overlayfs.mount[].target` | `Option<PathBuf>` | `unset` | Agent-visible mount path; normalization supplies it when omitted |

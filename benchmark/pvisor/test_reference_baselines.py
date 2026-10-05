@@ -1,7 +1,12 @@
 """Reject fast failure and markers that did not complete an Agent tool loop."""
 
 import pytest
-from reference_baselines import validate_direct_filesystem, validate_guest_output, validate_staged_filesystem
+from reference_baselines import (
+    validate_bundle_execution,
+    validate_direct_filesystem,
+    validate_guest_output,
+    validate_staged_filesystem,
+)
 from reference_workload import grade_returned
 
 
@@ -29,6 +34,20 @@ def test_direct_control_requires_writes_in_workspace(tmp_path, fault):
             validate_direct_filesystem(tmp_path, 256 * 64 * 1024)
     else:
         validate_direct_filesystem(tmp_path, 256 * 64 * 1024)
+
+
+@pytest.mark.parametrize("isolation,staged", [
+    ("rootless_process", False), ("host_process", False), ("rootless_process", True),
+])
+def test_nonstaged_host_requires_declared_boundary_and_direct_writes(isolation, staged):
+    bundle = {"run": {"state": "completed", "exit_code": 0,
+                      "executor": {"isolation": isolation}},
+              "safety": {"filesystem_changes_staged": staged}}
+    if isolation == "rootless_process" and not staged:
+        validate_bundle_execution(bundle, "pvisor-host", host_isolation="rootless_process")
+    else:
+        with pytest.raises(AssertionError):
+            validate_bundle_execution(bundle, "pvisor-host", host_isolation="rootless_process")
 
 
 @pytest.mark.parametrize(

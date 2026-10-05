@@ -78,6 +78,57 @@ mod tests {
         path::PathBuf,
     };
 
+    #[test]
+    fn guest_projection_preserves_visible_content_and_rejects_cross_boundary_links() {
+        let temp = tempfile::tempdir().unwrap();
+        let source = temp.path().join("source");
+        fs::create_dir_all(source.join("stage")).unwrap();
+        fs::write(source.join("visible"), b"all guest bytes").unwrap();
+        fs::write(source.join("stage/control"), b"host management").unwrap();
+        let excluded = vec![PathBuf::from("stage")];
+        let expected = super::super::inventory_projected(&source, &excluded).unwrap();
+        let copied =
+            super::super::copy_guest_tree(&source, &temp.path().join("copy"), &excluded).unwrap();
+        assert_eq!(copied, expected);
+        assert!(!temp.path().join("copy/stage").exists());
+        fs::write(source.join("stage/control"), b"updated host receipt").unwrap();
+        assert_eq!(
+            super::super::inventory_projected(&source, &excluded).unwrap(),
+            expected
+        );
+        fs::write(source.join("visible"), b"changed guest bytes").unwrap();
+        assert_ne!(
+            super::super::inventory_projected(&source, &excluded).unwrap(),
+            expected
+        );
+        fs::hard_link(source.join("visible"), source.join("stage/alias")).unwrap();
+        assert!(super::super::inventory_projected(&source, &excluded).is_err());
+        assert!(
+            super::super::inventory_projected(&source, &[PathBuf::from("../visible")]).is_err()
+        );
+    }
+
+    #[test]
+    fn guest_projection_excludes_hidden_sockets_without_weakening_owned_tree_audit() {
+        let temp = tempfile::tempdir().unwrap();
+        let source = temp.path().join("source");
+        fs::create_dir_all(source.join("stage")).unwrap();
+        fs::write(source.join("visible"), b"preserved").unwrap();
+        let _socket =
+            std::os::unix::net::UnixListener::bind(source.join("stage/control.sock")).unwrap();
+        assert!(super::super::copy_owned_tree(&source, &temp.path().join("full")).is_err());
+        super::super::copy_guest_tree(
+            &source,
+            &temp.path().join("guest"),
+            &[PathBuf::from("stage")],
+        )
+        .unwrap();
+        assert_eq!(
+            fs::read(temp.path().join("guest/visible")).unwrap(),
+            b"preserved"
+        );
+    }
+
     fn fixture() -> (tempfile::TempDir, SnapshotStore, PathBuf, PathBuf) {
         let temp = tempfile::tempdir().unwrap();
         let store_root = temp.path().canonicalize().unwrap().join("store");
@@ -149,6 +200,7 @@ mod tests {
                         private_sources: &[CapturedFilesystemSource {
                             path: "layer-001".into(),
                             source: private.clone(),
+                            excluded: Vec::new(),
                         }],
                         layers: &[],
                         delta: None,
@@ -234,6 +286,7 @@ mod tests {
             let mut sources = vec![CapturedFilesystemSource {
                 path: "layer-001".into(),
                 source: private.clone(),
+                excluded: Vec::new(),
             }];
             match fault {
                 "mixed" => fs::write(capture.join("unexpected-data"), b"private copy").unwrap(),

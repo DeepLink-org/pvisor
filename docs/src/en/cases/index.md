@@ -38,7 +38,7 @@ This stages workspace files while host file access remains ambient. Before runni
 | Save CPU, RAM, devices, and the complete file tree | Cluster execution profile / storage SDK | [Full environment snapshots](../design/environment-snapshot.md); the standalone snapshot CLI is removed and ordinary Job execution support remains limited |
 | Manage OCI file caching or a shared cold-page pool | `pvisor service cache` / `pvisor service memory-pool` | [Shared image cache](../reference/shared-image-cache.md), [memory sharing](../design/memory-sharing/index.md) |
 
-Gateway capture requires a build with the gateway feature; wheels and `just build release` include it. Core Job commands work without companion binaries; `pvisor extensions` reports what is installed. Full VM snapshots require KVM or Apple Silicon Hypervisor and a working FUSE backend. Ordinary Job execution checkpoints currently reject requests explicitly.
+Gateway capture requires a build with the gateway feature; wheels and `just build release` include it. Core Job commands work without companion binaries; `pvisor --help` lists installed optional commands in their object group. Full VM snapshots require KVM or Apple Silicon Hypervisor and a working FUSE backend. Ordinary VM Jobs support execution checkpoints with a compatible owned-rootfs, no-network profile; `status --json` reports capability and blockers.
 
 ## Execute the documentation
 

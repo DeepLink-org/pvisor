@@ -30,6 +30,8 @@ pub(super) struct LaunchBinding {
 pub(super) struct LowerBinding {
     pub slot: u8,
     pub source: PathBuf,
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub excluded: Vec<PathBuf>,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -118,6 +120,7 @@ pub(super) struct PreparedRestore {
     pub guest: pvisor_guest::GuestConfig,
     pub ram: std::sync::Arc<fs::File>,
     pub ram_path: PathBuf,
+    pub _eager_ram: Option<tempfile::NamedTempFile>,
     pub _ram_owner: std::sync::Arc<super::restore_ram::SharedRam>,
     pub _filesystem_owners: Vec<std::sync::Arc<crate::environment_snapshot::SharedFilesystemLayer>>,
     pub _private_files: Option<std::sync::Arc<crate::environment_snapshot::PrivateFilesystemOwner>>,
@@ -763,7 +766,7 @@ mod tests {
 pub(super) mod native {
     use super::super::supported::{OverlayDeviceSpec, RunnerSpec};
     use super::*;
-    use crate::environment_snapshot::copy_owned_tree;
+    use crate::environment_snapshot::copy_guest_tree;
     use pvisor_vm::api::MachineSnapshot;
     use std::{collections::BTreeMap, fs::OpenOptions, os::unix::fs::OpenOptionsExt};
 
@@ -833,12 +836,43 @@ pub(super) mod native {
         capture_role_bindings(root, workspace, false)
     }
 
+    // A backing shared by several devices must retain everything visible in
+    // any of them. Journal/work roots are never filtered. The trusted launch
+    // binding authenticates this projection before any direct source is read.
+    fn source_exclusions(
+        root: &OverlayDeviceSpec,
+        workspace: Option<&OverlayDeviceSpec>,
+    ) -> BTreeMap<PathBuf, Vec<PathBuf>> {
+        let mut result: BTreeMap<PathBuf, Vec<PathBuf>> = BTreeMap::new();
+        for device in std::iter::once(root).chain(workspace) {
+            for source in device
+                .lowers
+                .iter()
+                .chain(std::iter::once(&device.upper))
+                .chain(device.apply_target.iter())
+                .chain(device.baseline_lower.iter())
+            {
+                result
+                    .entry(source.clone())
+                    .and_modify(|paths| paths.retain(|path| device.excluded.contains(path)))
+                    .or_insert_with(|| device.excluded.clone());
+            }
+        }
+        for device in std::iter::once(root).chain(workspace) {
+            for source in device.work.iter().chain(device.preimages.iter()) {
+                result.insert(source.clone(), Vec::new());
+            }
+        }
+        result
+    }
+
     fn capture_role_bindings(
         root: &OverlayDeviceSpec,
         workspace: Option<&OverlayDeviceSpec>,
         immutable: bool,
     ) -> anyhow::Result<Vec<LowerBinding>> {
         let readonly = readonly_roots(root, workspace);
+        let exclusions = source_exclusions(root, workspace);
         let mut slots = BTreeMap::new();
         let mut bindings = Vec::new();
         for device in std::iter::once(root).chain(workspace) {
@@ -861,6 +895,7 @@ pub(super) mod native {
                     bindings.push(LowerBinding {
                         slot,
                         source: source.clone(),
+                        excluded: exclusions.get(source).cloned().unwrap_or_default(),
                     });
                 }
             }
@@ -913,10 +948,9 @@ pub(super) mod native {
         for captured in captured_sources {
             let slot = lower_slot(&captured.path)?;
             ensure!(
-                binding
-                    .private_roots
-                    .iter()
-                    .any(|root| root.slot == slot && root.source == captured.source)
+                binding.private_roots.iter().any(|root| root.slot == slot
+                    && root.source == captured.source
+                    && root.excluded == captured.excluded)
                     && !binding.readonly_lowers.iter().any(|root| root.slot == slot)
                     && private.contains(&captured.source)
                     && sources.insert(captured.source.clone())
@@ -958,6 +992,12 @@ pub(super) mod native {
                         .any(|path| path.starts_with(source) || source.starts_with(path)),
                 "captured lower escapes its read-only launch binding"
             );
+            let excluded = &binding
+                .readonly_lowers
+                .iter()
+                .find(|lower| lower.slot == slot)
+                .context("missing trusted lower slot")?
+                .excluded;
             let owner = if let Some(id) = &layer.id {
                 allowed
                     .iter()
@@ -968,10 +1008,11 @@ pub(super) mod native {
                     !allowed.iter().any(|owner| owner.slot == slot),
                     "capture omitted a supervisor-pinned lower id"
                 );
-                let owner = binding.snapshot_store()?.retain_live_lower(
+                let owner = binding.snapshot_store()?.retain_projected_lower(
                     source,
                     &layer.path,
                     references.context("fresh lower has no private reference staging")?,
+                    excluded,
                 )?;
                 layer.id = Some(owner.id.clone());
                 created.push(RetainedLower {
@@ -995,7 +1036,9 @@ pub(super) mod native {
                             || layer.source.starts_with(path)),
                 "captured lower escapes its read-only launch binding"
             );
-            owner.owner.verify_source(&layer.source)?;
+            owner
+                .owner
+                .verify_projected_source(&layer.source, excluded)?;
             if layer.source != owner.owner.root() {
                 ensure!(
                     copies
@@ -1420,11 +1463,15 @@ pub(super) mod native {
             replace_preimages(workspace, &preimages, &recorded_preimages);
         }
         let recorded = workspace.as_ref().unwrap_or(&root);
+        // This private copy comes from a verified, durably published native
+        // checkpoint. Seal the copy before the Attempt admits its writers.
+        pvisor_overlay_core::stage::seal(&recorded.upper, &recorded_preimages)?;
         let target = recorded
             .apply_target
             .clone()
             .unwrap_or_else(|| recorded.lowers.last().unwrap().clone());
         let overlay = crate::OverlayHint {
+            durability: Some(pvisor_overlay_core::stage::policy(&recorded_preimages)?),
             access_policy: recorded.access_policy.clone(),
             lower_dirs: recorded.lowers.clone(),
             stage_dir: Some(storage.clone()),
@@ -1471,6 +1518,7 @@ pub(super) mod native {
             guest: saved.guest,
             ram,
             ram_path,
+            _eager_ram: None,
             _ram_owner: ram_owner,
             _filesystem_owners: filesystem_owners,
             _private_files: private_files,
@@ -1539,6 +1587,7 @@ pub(super) mod native {
     struct CaptureLayers<'a> {
         pool: Option<&'a Path>,
         readonly: std::collections::BTreeSet<PathBuf>,
+        exclusions: BTreeMap<PathBuf, Vec<PathBuf>>,
         reuse: &'a [FilesystemReuse],
         copies: BTreeMap<PathBuf, PathBuf>,
         layers: Vec<crate::environment_snapshot::CapturedFilesystemLayer>,
@@ -1588,6 +1637,7 @@ pub(super) mod native {
         let mut collected = CaptureLayers {
             pool: binding.filesystem_pool.as_deref(),
             readonly: readonly_roots(&device, Some(&device)),
+            exclusions: source_exclusions(&device, Some(&device)),
             reuse: &[],
             copies: BTreeMap::new(),
             layers: Vec::new(),
@@ -1603,7 +1653,7 @@ pub(super) mod native {
         assert_eq!(collected.private_sources.len(), 5);
         let private = private_roots(&device, Some(&device));
         validate_private_source_bindings(&private, &collected.private_sources, &binding).unwrap();
-        for fault in 0..6 {
+        for fault in 0..7 {
             let mut forged = collected.private_sources.clone();
             match fault {
                 0 => forged[0].source = root.join("foreign"),
@@ -1614,6 +1664,7 @@ pub(super) mod native {
                 3 => forged.push(forged[0].clone()),
                 4 => forged[0].path = "layer-001/../layer-001".into(),
                 5 => forged[0].source = device.lowers[0].clone(),
+                6 => forged[0].excluded = vec!["data".into()],
                 _ => unreachable!(),
             }
             assert!(
@@ -1679,11 +1730,12 @@ pub(super) mod native {
                 })
                 .flatten();
             let direct = captured.pool.is_some();
+            let excluded = captured.exclusions.get(source).cloned().unwrap_or_default();
             let copied = if direct {
                 source.to_owned()
             } else {
                 let copied = directory.join(&path);
-                copy_owned_tree(source, &copied)
+                copy_guest_tree(source, &copied, &excluded)
                     .with_context(|| format!("copy frozen backing {}", source.display()))?;
                 copied
             };
@@ -1700,6 +1752,7 @@ pub(super) mod native {
                     crate::environment_snapshot::CapturedFilesystemSource {
                         path,
                         source: source.to_owned(),
+                        excluded,
                     },
                 );
             }
@@ -1805,6 +1858,7 @@ pub(super) mod native {
         let mut captured = CaptureLayers {
             pool: binding.filesystem_pool.as_deref(),
             readonly: readonly_roots(&spec.root, spec.workspace.as_ref()),
+            exclusions: source_exclusions(&spec.root, spec.workspace.as_ref()),
             reuse: filesystem_reuse,
             copies: BTreeMap::new(),
             layers: Vec::new(),

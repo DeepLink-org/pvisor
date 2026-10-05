@@ -158,22 +158,29 @@ Proxy network auditing is a cooperative boundary: direct connections that bypass
 the proxy do not trigger this prompt.
 
 ```text
-pvisor
-├── run                 Create a Job
-├── apply               Apply staged changes of a stopped Job
-├── drop                Discard staged changes of a stopped Job
-├── status              Inspect Job state and review evidence
-├── review              Review current or saved workspace changes
-├── checkpoint
-│   ├── create          Save the workspace of a stopped Job
-│   ├── list            List Job checkpoints
-│   ├── show            Inspect ownership and retained references
-│   ├── delete          Delete unreferenced checkpoints
-│   └── gc              Collect leftover workspace transactions for this Job
-├── kill                Request termination of a running Job
-├── fork                Create a child from a stopped Job
-├── inspect             Inspect the Job filesystem read-only
-└── replay              Create a Job from an agent trajectory
+Jobs:
+  run         Start a Job
+  status      Show Job status
+  kill        Terminate a Job
+  suspend     Save execution state and suspend a Job
+  resume      Continue a suspended Job
+  fork        Branch from staged files or VM execution state
+  tui         Interactive Job terminal (when installed)
+
+Filesystems:
+  inspect     Open a read-only Job filesystem view
+  review      Review staged changes and execution evidence
+  apply       Accept selected staged changes
+  drop        Discard staged changes
+
+Checkpoints:
+  checkpoint  Create, list, show, delete, verify, import-base, verify-base, gc
+
+Services:
+  service     Deployment lifecycle and cluster/worker/cache/memory-pool
+
+Trajectories:
+  replay      Replay an Agent trajectory (when installed)
 ```
 
 ## Safe first run {#安全的第一次运行}
@@ -257,18 +264,33 @@ confirming it has stopped. `review` JSON distinguishes historical execution
 evidence from the currently selected file view; successful apply/drop advances
 the workspace generation.
 
-Current GC only removes checkpoint staging and deletion directories for the
-selected Job, reporting scope `job_workspace_transactions`. Shared execution
-content-store GC is not yet connected. Reading or forking historical checkpoints
-still requires the source Job lease, so these operations refuse a running source.
+Reading or forking historical workspace checkpoints still requires the source Job lease and refuses a running source.
 
-`suspend JOB`, `resume JOB`, `checkpoint create JOB --kind execution` and
-`fork JOB --state execution` currently return `CAPABILITY_UNSUPPORTED` without
-changing Job state. Overlay/DAX, temporary root filesystem layers and Attempt
-handoff for ordinary VM Jobs are not yet connected to full save/restore. The
-standalone `snapshot` command has been removed. Its storage objects are not
-automatically converted into Job checkpoints, and removing the entry does not expand ordinary Job execution capabilities. See [Job checkpoint design](../design/job-checkpoint-cli.md#10-当前实现与验收边界)
-for the implementation scope.
+### Full VM execution checkpoints {#full-vm-execution-checkpoints}
+
+For VMs with native capture support, these commands seal CPU, RAM, devices and filesystem state:
+
+```bash
+pvisor run --executor vm --rootfs /path/to/rootfs --overlaynet off --stage ./stage/task -- /bin/agent
+pvisor checkpoint create ./stage/task --kind execution --ram-storage compressed --request-id save-1 --json
+pvisor suspend ./stage/task --ram-storage raw --request-id pause-1 --timeout 2m --json
+pvisor resume ./stage/task --request-id resume-1
+pvisor fork ./stage/task --state execution --checkpoint CHECKPOINT_ID --stage ./stage/branch --request-id branch-1
+pvisor checkpoint verify ./stage/task CHECKPOINT_ID --json
+pvisor checkpoint gc ./stage/task --kind execution --json
+```
+
+`create --kind execution` captures and continues the source. `suspend` succeeds only after publication and confirmed native VM termination; timeout only ends the client's wait and is not termination evidence. Retrying the same `--request-id` does not repeat capture. `resume` restores only the current suspended head, retaining the Job ID and creating a new Attempt while preserving previous records and Bundles. The original stage remains a selector for the current Attempt. Restoration retains the captured guest environment instead of inheriting the shell issuing resume.
+
+Execution forks reject replacement commands. Selecting a historical checkpoint can leave the parent running; without one, a running parent is captured and continued, while a suspended parent supplies its head. The child owns private RAM and filesystem upper layers. `--ram-storage raw|compressed` applies only to new capture and defaults to compressed. `resume` and execution `fork` accept `--eager-ram` to read all RAM before startup; omission keeps lazy loading.
+
+The current native profile supports Linux x86_64 and macOS ARM64 with no network devices and private RAM. Host root `/`, networking devices, shared memory pools, writable RAM backing and cold-page compression are outside this restore contract. `run` does not disable networking or DAX or change rootfs to enable capture; `status JOB --json` reports capability and blockers. Restore requires the same host boot, pVisor binary and firmware; cross-host and cross-version restore are unsupported.
+
+When the stage is inside the workspace, capture storage is placed outside guest backing roots and recorded as Job-owned. Capture retains the guest-visible projection, excluding stage management directories already hidden from the guest. Visible content, metadata and hard-link audits remain complete.
+
+Suspended Jobs refuse apply/drop and workspace capture. `kill JOB` withdraws continuation rights while retaining checkpoint history, allowing subsequent workspace decisions. Execution checkpoints share list/show/delete entries with workspace checkpoints; deletion checks the suspended head, branch references and storage leases. Branch references are retained conservatively; Job deletion/archiving has no release interface yet. GC collects unpublished transactions, tombstones and unreferenced RAM content in this Job's stores, never published checkpoints. It is not cross-Job/Cluster store-wide collection.
+
+Immutable base management uses `checkpoint import-base JOB ROOTFS --json` and `checkpoint verify-base JOB BASE_ID --json`. Import returns an owned rootfs path usable by subsequent ordinary `run --rootfs`. The standalone snapshot frontend remains removed, and old stores are not automatically converted into Job checkpoints. See [Job checkpoint design](../design/job-checkpoint-cli.md#10-当前实现与验收边界) for implementation and acceptance.
 
 ## `--safe` parameter preset {#safe-参数预设}
 

@@ -93,4 +93,3 @@ python3 benchmark/pvisor/evidence_tsv.py convert \
 The converter reads and writes both formats. Reconstructed JSON retains values but does not promise the original whitespace or key order. Original bytes from this migration are also retained in `target/benchmark-json-originals-20261005/`, with every original SHA256 verified. This is a local recovery backup outside published attachments.
 
 Current plotting and summary scripts accept TSV and can still read runtime JSON from new experiments. Reference-environment and Ubuntu publishers automatically convert public attachments to TSV. Runtime protocols and experiment output under `target/` retain their formats. Format checks and plotting neither start VMs nor rerun benchmarks.
-

@@ -123,18 +123,34 @@ def validate_bundle_execution(bundle, backend, staged_isolation="host_process", 
         else staged_isolation
         if backend == "pvisor-staged"
         else host_isolation
-        if backend == "pvisor-host"
+        if backend in ("pvisor-host", "pvisor-fuse")
         else "host_process"
     )
     assert bundle["run"]["executor"]["isolation"] == expected
     if backend in ("pvisor-vm", "pvisor-staged"):
         assert bundle["safety"]["filesystem_changes_staged"]
-    if backend == "pvisor-host":
+    if backend in ("pvisor-host", "pvisor-fuse"):
         assert not bundle["safety"]["filesystem_changes_staged"]
     if backend == "pvisor-staged" and staged_isolation == "rootless_process":
         assert bundle["safety"]["filesystem_non_bypassable"]
         assert bundle["safety"]["filesystem_read_non_bypassable"]
         assert bundle["safety"]["filesystem_write_non_bypassable"]
+
+
+def validate_passthrough_output(output):
+    """Reject a control that bypassed the mount or failed to serve real data."""
+    mounts = [line.removeprefix("PASSTHROUGH_MOUNT ") for line in output.splitlines()
+              if line.startswith("PASSTHROUGH_MOUNT ")]
+    stats = [json.loads(line.removeprefix("PASSTHROUGH_STATS "))
+             for line in output.splitlines() if line.startswith("PASSTHROUGH_STATS ")]
+    if len(mounts) != 1 or " - fuse" not in mounts[0] or len(stats) != 1:
+        raise ValueError("passthrough control lacks unique FUSE mount/request evidence")
+    value = stats[0]
+    if (value.get("lookup", 0) <= 0 or value.get("read", 0) <= 0
+            or value.get("write", 0) <= 0 or value.get("read_bytes", 0) < 64 * 1024 * 1024
+            or value.get("write_bytes", 0) < 256 * 64 * 1024):
+        raise ValueError("passthrough workload did not read/write the full fixture through FUSE")
+    return value
 
 
 def run_trial(args, metadata, backend, mode, trial):
@@ -239,7 +255,9 @@ def run_trial(args, metadata, backend, mode, trial):
                 argv += ["--vm-library-dir", str(args.firmware)]
         if backend == "pvisor-staged":
             argv += ["--stage", str(stage)]
-        if backend in ("pvisor-host", "pvisor-staged") and mode != "ready":
+        if backend in ("pvisor-staged", "pvisor-vm") and getattr(args, "stage_durability", None):
+            argv += ["--stage-durability", args.stage_durability]
+        if backend in ("pvisor-host", "pvisor-staged", "pvisor-fuse") and mode != "ready":
             payload = [
                 "/usr/bin/python3",
                 str(rootfs / "bench/reference_workload.py"),
@@ -247,6 +265,9 @@ def run_trial(args, metadata, backend, mode, trial):
                 mode,
             ]
         argv += ["--", *payload]
+        if backend == "pvisor-fuse":
+            argv = [str(args.fuse_driver), str(work), str(root / "fuse-view"),
+                    str(getattr(args, "fuse_ttl_seconds", 1)), "--", *argv]
     elif isvm:
         disk = root / "rootfs.ext4"
         subprocess.run(
@@ -420,6 +441,9 @@ def run_trial(args, metadata, backend, mode, trial):
         )
     )
     assert result["correctness"] == "passed" and result["mode"] == mode
+    fuse_stats = None
+    if backend == "pvisor-fuse":
+        fuse_stats = validate_passthrough_output(output)
     if backend.startswith("sdk-vm-"):
         # The built-in pvisor guest reports workload status by root ioctl;
         # successful VMM exit above and the unique result are both required.
@@ -472,8 +496,10 @@ def run_trial(args, metadata, backend, mode, trial):
         "correctness": "passed",
         "logs": str(root),
     }
-    if mode == "filesystem" and backend in ("native", "pvisor-host"):
+    if mode == "filesystem" and backend in ("native", "pvisor-host", "pvisor-fuse"):
         validate_direct_filesystem(work, result["filesystem"]["write"]["check"]["bytes"])
+    if fuse_stats is not None:
+        row["fuse_requests"] = fuse_stats
     if row_stage:
         row["workspace_transport"] = row_stage
     for name in ("_model-requests.json", "_cli-output.json"):

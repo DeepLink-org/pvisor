@@ -1,7 +1,8 @@
 # Filesystem profiling and small-file optimization
 
-`PVISOR_FS_PROFILE=1` enables opt-in aggregate diagnostics in OverlayCore and
-the VM virtio-fs adapter/protocol server. Disabled profiles do not acquire
+`PVISOR_FS_PROFILE=1` enables opt-in aggregate diagnostics in OverlayCore, the
+host FUSE adapter, the compact preimage log, and the VM virtio-fs
+adapter/protocol server. Disabled profiles do not acquire
 profiling locks, allocate per operation, or read per-operation clocks. The
 profiler records no paths or contents. Enabling profiling changes execution
 cost; use separate unprofiled runs for performance acceptance.
@@ -512,3 +513,124 @@ metadata projection, materialization, preimage and synchronization costs.
 Full results and historical context are in the [benchmark article](../../docs/src/en/design/filesystem-performance-analysis.md#filesystem-service).
 Public raw reports and provenance are preserved in [the evidence directory](../../docs/src/assets/benchmarks/filesystem-service-20261005/).
 `plot_filesystem_service.py` renders the standalone SVG figures from those reports.
+
+## Host stage journal profiling and optimization (2026-10-05)
+
+The pure host FUSE control established that staging adds substantial work beyond
+transport. The stage-specific campaign is retained under
+`target/stage-hotpath-20261005`. It profiles the original frozen release and a
+current-source baseline separately; historical artifact results are not the
+same-source optimization comparison.
+
+`host-fuse` reports inclusive callback spans, directory snapshot work, observation
+aggregation, and inode reclamation. `reclaim_paths_scanned` and
+`reclaim_objects_scanned` are work counters. `preimage-log` reports inclusive
+transactions and append/refresh/sync spans, with separate lock-wait and binding
+checks. `preimage-log-read` profiles replay by consumers. Use the last cumulative
+record for each PID/component/instance; do not add nested or repeated snapshots.
+
+The host baseline still used the legacy per-path JSON journal, although the VM
+initializer already selected compact observations. A complete diagnostic job
+published 2,705 observations and made 341 `journal_order` and 341
+`journal_fsync` calls. Typical preimage service time was about 340 ms; copy-up was
+only a few milliseconds. Host inode reclamation was also only a few milliseconds,
+so this change does not modify inode caches or directory handling.
+
+The owned host-stage initializer now opts into the existing compact log. It
+retains durable promotion before backing mutation, first observations, replay,
+apply conflicts and failure poisoning. Standalone mounts retain their default
+format. Inspection does not select a new format; existing journals and nonempty
+uppers are not migrated. The same diagnostic workload produces 2,705 verified
+frames and about 335–336 log syncs, with preimage service around 180 ms. Probe
+costs are excluded from acceptance timings.
+
+Both artifacts use the same frozen source with identical profiling additions;
+only the host mount configuration and owned initializer differ. Builds use one
+isolated Cargo target directory and a stable build-source path. An earlier
+shared-cache diagnostic reused another source tree's relative dep-info; its
+`profile-current` data is retained and excluded. Source hashes, exact patch,
+binary hashes, build logs and validation are in `build-provenance.json` and
+`optimization.patch`.
+
+Acceptance uses the unchanged frozen seven-tool fixture, fresh workspaces and
+uppers, warm host page caches, affinity `0,1`, rootless staged isolation, release
+builds, profiling disabled, three warmups and 30 samples per cell. The native,
+baseline stage and candidate stage cells are shuffled each round.
+`filesystem_ab.py --backends pvisor-staged` selects this host-only comparison;
+the default still measures both host FUSE and VM.
+
+Two eligible independent batches, `host-acceptance` and `host-repeat-clean`,
+observed the following P50 changes. Their samples and percentiles are not pooled.
+Times are milliseconds:
+
+| Metric | First baseline / candidate | Clean repeat baseline / candidate |
+| --- | ---: | ---: |
+| metadata | 78.14 / 77.65 | 78.29 / 77.62 |
+| read | 73.97 / 72.53 | 78.34 / 71.92 |
+| write | 208.16 / 122.82 | 204.32 / 123.11 |
+| git | 172.68 / 129.52 | 169.94 / 130.85 |
+| rg | 91.68 / 89.01 | 91.73 / 90.13 |
+| cargo | 125.96 / 99.37 | 121.10 / 97.17 |
+| npm | 277.98 / 255.09 | 271.59 / 256.93 |
+| completion | 1346.55 / 1175.92 | 1326.17 / 1170.74 |
+
+Write medians improve 40–41%, Git 23–25%, and completion 11.7–12.7%. Completion
+P99 increased in both batches: 1518.47 to 1594.61 ms and 2920.75 to 3266.49 ms.
+These shared-host samples do not establish a tail-latency improvement. Metadata
+traversal is largely unchanged; resolution and first-content-read fingerprints
+remain measured costs. An intervening `host-repeat` batch overlapped 1.9 seconds
+of previous-journal audit I/O and is retained with an exclusion record.
+
+Each eligible batch has 90 verified jobs / 630 tool results and 60 audited stage
+journals. Audits validate compact frame digests, unique first observations, all
+256 new-file absence observations, 2,048 tree reads and the 64 MiB payload hash.
+They run after timing completes. Each directory retains `report.json`,
+`summary.tsv`, `samples.tsv` and `journal-integrity.json`; diagnostic spans are
+also exported as `profile-stages.tsv`.
+
+Targeted OverlayCore/FUSE tests passed (112), as did pVisor tests on the host
+(496), the additional Linux FUSE roundtrip/apply/read-conflict case, 43 Python
+harness tests, and targeted Clippy with warnings denied. The new mount-config
+checks cover explicit selection, inspection, preserved legacy observations and
+nonempty uppers. Initial sandbox EPERM failures are retained separately. This
+campaign establishes host-stage median improvements; it does not measure a VM
+speedup.
+
+## Stage persistence boundaries (2026-10-05)
+
+Owned stages default to `checkpoint` durability; `--stage-durability strict`
+retains per-first-mutation synchronization. Execution still records the exact
+first content observation. Explicit workload fsync orders the journal before
+data. Completion stops writers, persists journal, upper data and directories,
+then atomically publishes `preimages/sealed-v1`. Managed, interrupted stages
+cannot be applied or reopened as complete. Live workspace checkpoints seal
+only their copied backing. Legacy journals without a policy remain strict.
+
+`filesystem_stage_durability.py` compares both policies using one pinned release
+binary, fresh workspaces/stages, three warmups and 30 shuffled samples per cell.
+Each sample verifies all seven workers, lower isolation, all 256 upper writes,
+the requested policy and durable completion marker. Completion time includes
+sealing. Evidence is in `target/stage-boundary-20261005/host`; its binary SHA-256
+is `42aff3423cfa186867f0a2bcc37e6e95567d106a50c70a504a45edb0a33ece63`.
+
+| Operation | Strict P50 ms | Checkpoint P50 ms | Change |
+| --- | ---: | ---: | ---: |
+| Metadata | 77.11 | 77.02 | -0.1% |
+| Read 64 MiB | 77.32 | 77.89 | +0.7% |
+| Write 256 files | 119.15 | 27.25 | -77.1% |
+| Git | 127.19 | 123.53 | -2.9% |
+| rg | 89.05 | 88.73 | -0.4% |
+| Cargo | 96.05 | 84.80 | -11.7% |
+| npm | 260.24 | 229.58 | -11.8% |
+| Completion | 1295.85 | 1167.81 | -9.9% |
+
+Single-job instrumented diagnostics are separate from these samples. Final
+`preimage-log::sync` counters are 340 versus 5; this counts the open handle's
+initialization and execution barriers, excluding the final seal's file/directory
+syncs. Inclusive preimage time is 174.76 versus 67.79 ms. Both jobs retain 5,725
+preimage calls and 2,157 content fingerprints (about 43 ms), so the improvement
+comes from moving durability to boundaries, not dropping content checks.
+Nested spans and cumulative checkpoints must not be added. This is a host FUSE
+performance comparison; real VM lifecycle checks do not establish VM speedups.
+The completed-marker, corruption and recovery tests are not physical power-loss
+experiments.

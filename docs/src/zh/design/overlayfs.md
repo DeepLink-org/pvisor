@@ -149,6 +149,8 @@ upper 保存完整 copy-up 文件，修改一字节也可能复制整个文件�
 
 ### 首次触达与冲突指纹 {#preimages}
 
+受 pVisor 管理的 host 与 VM stage 现在选择 compact 帧日志，默认使用 `checkpoint` 持久化策略。首次观察仍在暴露内容或修改前捕获，但首次修改不再逐项 fsync 日志。任务完成先停止所有写入者，同步完整日志，再同步 upper 数据和目录，最后发布 `preimages/sealed-v1`。`complete-v1` 表示观察覆盖完整，不是任务完成确认。没有完成标记的受管理 stage 拒绝 apply／重新使用；运行中的 workspace checkpoint 只持久化自己的副本。程序显式 fsync 时仍先同步观察记录，再同步数据。`--stage-durability strict` 保留首次修改前同步日志；没有策略文件的旧 stage 保留严格合同。下面的逐路径发布描述针对旧的严格日志；compact 记录保留同样的首个胜者和冲突规则。持久化边界见[隔离机制](isolation.md#workspace-and-lifecycle)。
+
 冲突保护起点取决于布局。冻结布局从明确的 target 对应 baseline（最后一个 lower）捕获原像；最高优先级的额外 lower 仅供应可见内容。live lower 从首次实际内容打开或 symlink/xattr 读取捕获 target 原像；真实缺失 lookup 直接记录已观察到的 Absent，不能在稍后取指纹时改为宿主刚创建的文件。授权与 I/O 拒绝不是缺失，不记录也不读取被拒路径；没有先读取的 mutation 从修改前的 target 状态开始。普通成功的 stat/lookup 和目录列表不哈希每个文件，也不承诺 Run 起点完整快照或全读集串行化。FUSE 与 virtio-fs 的实际内容入口自动调用共享 Core 的 `observe_read()`；调用 Core 的外部适配器也必须这样做，`resolve()` 仅解析路径。
 
 观察文件按相对路径原始字节寻址，在 mutex 内以私有临时文件写完后、通过不覆盖已有目的地的 hard link 原子发布；多个 Core 争同一条目时验证并保留先发布的原像，修改方同步真正的胜者；读取阶段不逐项 fsync。首次修改时 `record_preimage()` 复用该原像，验证 JSON 并同步文件和 entries 目录，完成后才修改 upper。冻结布局无需提前记录只读观察，修改时从 baseline 捕获。父目录、删除树与 rename 目的地仍记录并同步，覆盖隐含元数据变化与递归破坏范围。普通 stage/checkpoint 复制和 reopen 保留读观察；损坏条目拒绝加载或修改。只读观察并不是断电持久的读事务，带运行态恢复合同的调用方必须同时保全 baseline/journal。未选中的无关只读路径不阻止其他文件 apply。

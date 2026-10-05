@@ -198,8 +198,11 @@ impl AttemptSession {
             .map(|_| self.run_record.clone())
     }
 
-    pub(crate) fn execution_snapshot_store(&self) -> PathBuf {
-        self.run_record.stage_dir().join("execution-snapshots")
+    pub(crate) fn execution_snapshot_store(&self) -> anyhow::Result<PathBuf> {
+        super::job_execution::snapshot_store(
+            &self.run_record.stage_dir(),
+            &self.run_record.orchestration,
+        )
     }
 
     pub(crate) fn teardown(
@@ -1140,6 +1143,9 @@ fn apply_overlay_override(
     overlay_cfg: &mut pvisor_core::overlay::OverlayConfig,
     overlay_override: &OverlayHint,
 ) {
+    if let Some(durability) = overlay_override.durability {
+        overlay_cfg.durability = durability;
+    }
     if overlay_override != &OverlayHint::default() {
         overlay_cfg.access_policy = overlay_override.access_policy.clone();
     }
@@ -1229,15 +1235,30 @@ fn prepare_overlay(
                 (
                     None,
                     if execution_snapshot.is_some() {
-                        prepare_execution_overlay_record(&record, &lowers, root_session)?
+                        prepare_execution_overlay_record(
+                            &record,
+                            &lowers,
+                            root_session,
+                            overlay_cfg.durability,
+                        )?
                     } else {
-                        prepare_overlay_record_mountless(&record, &lowers, root_session)?
+                        prepare_overlay_record_mountless(
+                            &record,
+                            &lowers,
+                            root_session,
+                            overlay_cfg.durability,
+                        )?
                     },
                     None,
                 )
             } else {
                 let metrics = pvisor_overlayfs::FsMetrics::default();
-                let mount = mount_overlay_record_observed(&record, &lowers, Some(metrics.clone()))?;
+                let mount = mount_overlay_record_observed(
+                    &record,
+                    &lowers,
+                    Some(metrics.clone()),
+                    overlay_cfg.durability,
+                )?;
                 let record = mount.record().clone();
                 (Some(mount), record, Some(metrics))
             };
@@ -1591,6 +1612,7 @@ mod tests {
                 &record,
                 std::slice::from_ref(&target),
                 "hibernated",
+                Default::default(),
             )
             .unwrap();
             std::fs::write(record.upper.path().join("value"), b"partial").unwrap();
@@ -1634,6 +1656,7 @@ mod tests {
             &record,
             std::slice::from_ref(&target),
             "test-run",
+            Default::default(),
         )
         .unwrap();
         std::fs::write(record.upper.path().join("value"), b"staged").unwrap();

@@ -21,6 +21,23 @@ pub struct VmExecutor {
 }
 
 impl VmExecutor {
+    pub(crate) fn materialize_restore_ram(
+        &mut self,
+        _storage: &std::path::Path,
+    ) -> anyhow::Result<()> {
+        anyhow::bail!(UNSUPPORTED_MESSAGE)
+    }
+
+    pub(crate) fn restored_guest_environment(
+        &self,
+    ) -> Option<std::collections::BTreeMap<String, String>> {
+        None
+    }
+    pub fn checkpoint_compatibility(
+        _settings: &VmSettings,
+    ) -> anyhow::Result<crate::environment_snapshot::Compatibility> {
+        anyhow::bail!(UNSUPPORTED_MESSAGE)
+    }
     pub fn new(_settings: VmSettings) -> anyhow::Result<Self> {
         anyhow::bail!(UNSUPPORTED_MESSAGE)
     }

@@ -3,8 +3,8 @@
 > CLI update: the standalone `pvisor snapshot` entry is removed. Old interfaces/measurements below belong to their historical artifacts, not current executable instructions. See [CLI reference](../reference/cli.md) for current entries and capability boundaries.
 
 
-> Status: implementation in stages. 2026-10-03. Workspace checkpoints and command management are connected; full execution save/restore for ordinary Jobs is not yet connected.
-> The user accepted this design and added a constraint: keep `run` as unchanged as possible. The standalone `pvisor snapshot` entry is removed; this design retains the target interface for complete execution integration with the Job lifecycle. Existing full snapshots, persistent compression/deduplication and private-copy forks provide the foundation, without implying ordinary Jobs can already be saved.
+> Status: native execution capture, suspension, continuation and branches are integrated with ordinary Jobs; section 10 defines support and acceptance.
+> Constraint: preserve ordinary run configuration and default execution behavior; actual executor/profile determines capability.
 
 ## 1. Objects and basic constraints
 
@@ -39,13 +39,12 @@ pvisor
 ├── suspend                Save an execution checkpoint, exit runner, retain Job
 ├── resume                 Continue the same Job from its current suspended checkpoint
 ├── fork                   Create a new Job from file or execution state
-├── checkpoint
+└── checkpoint
 │   ├── create             Create a consistent checkpoint for a Job
 │   ├── list               List checkpoints within a Job
 │   ├── show               Inspect kind, source, dependencies, compatibility and references
 │   ├── delete             Delete checkpoints without retained references
 │   └── gc                 Collect unreferenced content and leftover staging in the store
-└── extensions             List companion tools
 ```
 
 `tui/replay/cache/memory-pool` remain tools; they do not create product instance identities parallel to Jobs. The default execution shorthand `pvisor -- COMMAND` remains equivalent to `pvisor run -- COMMAND`.
@@ -343,36 +342,36 @@ Integration must compare normal run behavior before and after changes, not only 
 
 Job and Attempt records may add versioned capability and lifecycle fields with compatible reads; these fields do not change user-facing run semantics.
 
-## 10. Current implementation and acceptance limits {#10-当前实现与验收边界}
+## 10. Current implementation and acceptance boundary {#10-当前实现与验收边界}
 
-This iteration preserves run parsing, defaults, rootfs, DAX, networking and executor selection. New workspace features reuse existing RunRecord, Job lease, logical checkpoints, OverlayFS preimages and Run Bundle; the old snapshot runner does not create fabricated Jobs.
+Ordinary Jobs now integrate native VM capture and restore. Run parsing, defaults, rootfs, DAX, networking and executor selection retain their contracts. The standalone snapshot runner is not restored, and another manager does not fabricate Jobs.
 
 | Feature | Current implementation |
 | --- | --- |
-| `review [JOB] [--checkpoint ID]` | Built in; reads a stable upper after acquiring the Job lease; refreshes file changes while preserving historical Bundle execution evidence; JSON identifies the boundary between them |
-| `status --review` | Compatible entry point retained |
-| `checkpoint create JOB` | Saves upper, preimages, policy, AttemptId and workspace generation when stopped and stage is staged; defaults to workspace |
-| workspace create `--request-id` | Durable receipt; retries return the original object; if deleted, refuse recapture rather than reuse the key for a new result |
-| `checkpoint list/show/delete` | Job ownership checks, unique prefix resolution and ambiguity refusal; corrupt published objects fail; deletion checks durable branch references |
-| `checkpoint gc JOB` | **Scope in this stage is job_workspace_transactions**: only this Job's `.pending-*` and `.deleted-*`; shared execution content store is not connected, so no claim of store-wide GC |
-| `fork --state workspace` | Retains default command restart semantics; adds `--stage` and `--name`; independently copies upper and preimages without copying control sockets, execution locks or acceptance records; branch references live in `source-checkpoint.json` |
-| `inspect --checkpoint ID` | Mounts the selected workspace checkpoint's read-only file view |
-| `apply/drop` | Explicit Job; after acquiring the lease, still checks stopped terminal state and completion time; refuses Jobs with missing processes but no terminal records; success advances workspace generation |
-| `kill` | Idempotent when confirmed stopped; `--json` distinguishes already stopped from termination request sent |
-| suspend/resume/execution create/execution fork | Capability refusal boundary connected; ordinary Jobs currently return `CAPABILITY_UNSUPPORTED` without freezing, copying or changing state; **full execution functionality has not been delivered** |
+| workspace create/fork/review/inspect | Retains stopped-Job upper layers, conflict preimages, generation and hard-link branch references; no process memory capture |
+| execution create | Calls RunControlHandle and native capture through the running Job's private control socket; publication continues the source VM |
+| suspend | Persists the request and seals the checkpoint; validates Job/Attempt/request against the terminal ExecutionSuspension receipt before creating the suspended head |
+| resume | Continues only the current head, retaining the Job ID while runtime creates a new Attempt; private directories retain leases, records and Bundles, with the original stage selecting the current Attempt |
+| execution fork | Captures and continues a running source, or creates a new Job from explicit history/a suspended head; RAM and upper layers are private, with lineage and durable branch references |
+| request retries | Capture/suspend/resume/execution fork accept durable request IDs; a key never repeats startup or capture, bound-option changes refuse, and timeout retains admitted requests |
+| list/show/delete/verify | Checks Job ownership; execution verify runs full SnapshotStore compatibility and content audits; deletion checks heads, branch references and reader leases |
+| gc | Collects workspace transactions and pending objects, tombstones and unreferenced RAM in Job-owned native stores; no published object deletion or cross-Job/Cluster store-wide collection |
+| import-base/verify-base | Reuses immutable SnapshotStore rootfs import and auditing; ordinary run accepts the returned rootfs path |
+| apply/drop/kill | Refuses workspace mutation while suspended, handing off or uncertain; killing a suspended Job withdraws continuation rights but retains history before allowing workspace decisions |
+| TUI | Resume with --tui starts the restored Attempt through the existing terminal frontend |
 
-Workspace checkpoints retain the existing model: fixed staged upper and conflict preimages, with `lower_dirs` still external path references. They are not independent complete file trees; the Job lease does not protect external changes to host lowers. Review's `file_view` explicitly reports this limit, historical diffs remain relative to external lowers, and apply continues to recheck preimages. Execution saving must eventually seal every relevant layer completely; this model cannot be directly promoted to a full VM save point.
+The current execution profile requires Linux x86_64 or macOS ARM64, no network devices, private RAM and an owned complete rootfs. Host root /, networking, writable RAM backing, memory pools and cold-page compression return capability errors without changing run configuration. Restore binds to the same host boot, binary and firmware. The captured guest environment is retained instead of being replaced by the resume/fork shell environment.
 
-Branch pins in this stage use manifest hard links. Child stages must share a filesystem with the parent checkpoint; cross-filesystem forks explicitly refuse. Drop/kill do not release pins. Job deletion/archiving interfaces are not yet available, so a checkpoint with retained branches cannot be forcibly deleted.
+`execution-job.json` retains Job metadata, and `execution-job-root.json` associates Attempts with the root Job. Request admission, checkpoint publication and native termination are separate commits. Preparation failure before accepting a RunHandle retains a retryable suspended head; interrupted handoff or missing receipts stay conservative and never start another VM based only on a missing PID. Status reports requests/current Attempt, and explicit fork restores historical execution points.
 
-Current workspace checkpoint management, review, inspect and fork conservatively acquire the source Job lease. Therefore, even selecting historical checkpoints refuses a running source Job. Independent checkpoint metadata locks and historical reads during execution are not yet delivered. Capturing a running workspace requires a real freeze boundary; copying a changing upper cannot pretend to yield a consistent version.
+Stages inside the workspace use an independent capture store whose ownership is recorded by the Job. Native launch bindings authenticate exclusions of already hidden management directories, while visible content and metadata remain fully audited. `resume`/execution `fork --eager-ram` fully reads RAM before startup; omission keeps lazy loading.
 
-Full execution state still requires:
+Workspace checkpoints still reference external lowers, and historical workspace operations conservatively acquire the source Job lease. Their file views are not treated as sealed complete machines. Execution metadata locking is independent of the source Attempt lease, allowing selection of published historical execution checkpoints while the parent VM runs.
 
-1. Sealing ordinary VM Overlay/DAX file layers and capturing device state, including file inode/handle rebinding after saving, without silently changing existing run configuration.
-2. Using the existing control channel and supervisor for capture-and-continue, source runner exit confirmation, suspended head and execution-ownership handoff to a new Attempt.
-3. Execution checkpoint Job ownership, shared content references, deletion/store-wide GC, persistent restore failure state and real Job VM validation.
+Workspace branches use manifest hard links and require the same filesystem. Execution branches use storage leases, content references and durable Job branch records. Drop/kill do not automatically release these references; Job deletion/archiving has no release interface yet. Old standalone snapshot stores are not automatically converted into Job checkpoints.
 
-The legacy `snapshot` command has been removed. Its full-copy storage objects remain available to the underlying SDK and have not been converted into Job checkpoints. Complete execution restoration for ordinary Jobs still depends on execution-profile capability and acceptance.
+The job_execution_vm acceptance test uses real KVM, ordinary CLI commands and a static guest to check external/nested stages, shared filesystem pools, eager RAM, capture-and-continue, raw/compressed RAM, same-Job/new-Attempt continuation, open descriptor and memory-counter continuity, historical branch isolation, restoration after deleting the source rootfs, request retries and head/branch deletion protection. Regular regressions additionally cover terminal receipt validation, refusing mutation of uncertain/suspended Jobs, stable Job selectors and retained Attempt records. The native test requires KVM/FUSE and is skipped by default:
 
-Validation for this iteration: `just fmt` passed; strict Clippy for core and TUI with Gateway enabled passed; the final `just test pvisor` run passed 319 tests and skipped 4. New tests cover real file forks, preimage copies, branch references retained through drop, duplicate requests, corrupt manifests and capability refusal without state changes. Testing identified and corrected an existing vsock test's faulty assumption about background worker scheduling; it now checks queue completion and actual RST content. A memory diagnostic test once returned WouldBlock after page state changed, then passed regression testing. These tests do not establish acceptance of full VM save/restore for ordinary Jobs.
+```bash
+PVISOR_TEST_LIBRARY_DIR=/path/to/firmware cargo nextest run --locked -p pvisor --test job_execution_vm --run-ignored only --test-threads 1
+```

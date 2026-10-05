@@ -1,6 +1,6 @@
 # 5. Replay trajectories and choose restoration tools
 
-Choose whether you need a file proposal, Agent history, or full machine execution state. Workspace checkpoints save files; pvisor-replay handles Agent-native trajectories; independent snapshot saves full VMs. TUI supports interactive review, Gateway handles model routing and capture, and cache/memory-pool serve execution infrastructure.
+Choose whether you need a file proposal, Agent history, or full machine execution state. Workspace checkpoints save files; pvisor-replay handles Agent-native trajectories; Job execution checkpoints save full state for supported VMs. TUI supports interactive review, Gateway handles model routing and capture, and cache/memory-pool serve execution infrastructure.
 
 ### S-USE-015: Prepare a trajectory without rerunning historical tools
 
@@ -23,7 +23,7 @@ json_expect "$CASE_ROOT/prepared.json" /replayed_tool_calls 0
 
 ### S-USE-016: Check full execution checkpoint capabilities
 
-Ordinary Jobs do not yet support CPU/RAM save and restore. Check capability and require explicit rejection instead of silently falling back to workspace fork.
+The host Job in this example does not support CPU/RAM save and restore; compatible native VM Jobs do. Check capability and require explicit rejection instead of silently falling back to workspace fork.
 
 **Contract**: Execution checkpoint, suspend, resume, and execution fork all report CAPABILITY_UNSUPPORTED and leave the Job tree unchanged.
 

@@ -1,0 +1,10 @@
+path	type	value
+	object	-
+/files	object	-
+/files/build-provenance.tsv	string	66c97166f9e80b47cf348f23933bce8ae247af6c03f8cb3cf6a0c1276cb0cd6f
+/files/evidence.tar.gz	string	72762d9eacdd18bc46abf61fbb9c78ab33168cd522b547170ff83f5b93bd5331
+/files/report.tsv	string	4b31ed3866f2bf54489d938aeb982fc156f04381dacb09f3d764632fcb19fa1b
+/files/samples.tsv	string	60e326027212fbd34572b7f8fa4c32e57338fdfb0fd526d3414a08c7e1860dfa
+/files/summary.tsv	string	8bf9a81906483d15001d6b162078fb4c7bea9d4be39ea679900422953eef87ab
+/source_report_sha256	string	22abba32097b6cf57d1170f4e53ed473cf7948a601cca9d9317d2b6a13434c53
+/verification	string	summary recomputed; binary/harness hashes matched; all Run Bundles checked; FUSE mounts and full read/write counters checked

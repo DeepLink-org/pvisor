@@ -50,6 +50,7 @@ pub use executor::vm::run_internal_if_requested as run_krun_internal_if_requeste
 #[cfg(target_os = "linux")]
 pub use executor::vm::sample_supervisor_memory;
 pub use executor::{ExecutorOutput, RunExecutor};
+pub use pvisor_core::overlay::StageDurability;
 pub use pvisor_core::{
     AGENTCTL_ENDPOINT_ENV, AGENTCTL_MAX_FRAME_BYTES, AGENTCTL_TOKEN_ENV, AGENTCTL_TRANSPORT_ENV,
     AGENTCTL_VERSION, AGENTCTL_VERSION_ENV, AgentDirective, AgentErrorCode, AgentRequest,

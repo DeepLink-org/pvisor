@@ -195,6 +195,10 @@ fn create_checkpoint(
         .map(str::to_owned)
         .unwrap_or_else(|| format!("checkpoint-{}", uuid::Uuid::new_v4().simple()));
     validate_checkpoint_id(&checkpoint_id)?;
+    let journal = record.stage_dir().join("preimages");
+    if consistency == CheckpointConsistency::Stopped {
+        pvisor_overlay_core::stage::require_sealed(&journal)?;
+    }
     let root = record
         .stage_dir()
         .join(CHECKPOINTS_DIR)
@@ -211,10 +215,12 @@ fn create_checkpoint(
         let preimages_snapshot = root.join("preimages");
         let journal = record.stage_dir().join("preimages");
         if journal.is_dir() {
+            pvisor_overlay_core::stage::sync_journal(&journal)?;
             restore_overlay_upper(&journal, &pending.join("preimages"))?;
         } else {
             create_dir_all_durable(&pending.join("preimages"))?;
         }
+        pvisor_overlay_core::stage::seal(&pending.join("upper"), &pending.join("preimages"))?;
         let checkpoint = LogicalCheckpoint {
             schema_version: CHECKPOINT_SCHEMA_VERSION,
             kind: WorkspaceCheckpointKind::Workspace,
@@ -450,6 +456,7 @@ pub fn restore_logical_checkpoint(
     destination_preimages: &Path,
 ) -> anyhow::Result<()> {
     let sources = [&checkpoint.upper_snapshot, &checkpoint.preimages_snapshot];
+    pvisor_overlay_core::stage::require_sealed(&checkpoint.preimages_snapshot)?;
     let sources = sources
         .map(|source| source.canonicalize())
         .into_iter()
@@ -516,6 +523,55 @@ mod tests {
     use super::*;
     use crate::runtime::{OverlayRecord, OverlayUpper, RunLineage};
     use std::os::unix::fs::MetadataExt;
+
+    #[test]
+    fn live_checkpoint_seals_its_copy_and_never_seals_the_running_source() {
+        use pvisor_overlay_core::{OverlayCore, OverlayLayout, stage};
+        let temp = tempfile::tempdir().unwrap();
+        let mut record = stopped_record(temp.path());
+        let overlay = record.overlay.as_mut().unwrap();
+        overlay.state = OverlayState::Active;
+        let target = overlay.target.clone();
+        fs::write(target.join("value"), b"original").unwrap();
+        let journal = temp.path().join("preimages");
+        stage::begin(&journal, Default::default()).unwrap();
+        let core = OverlayCore::new_for_layout_with_compact_preimages(
+            OverlayLayout::new(vec![target.clone()], target.clone()).unwrap(),
+            overlay.upper.upper_dir.clone(),
+            Some(overlay.upper.work_dir.clone()),
+            vec![],
+            Some(journal.clone()),
+        )
+        .unwrap();
+        fs::write(
+            core.copy_up(Path::new("value")).unwrap(),
+            b"checkpoint version",
+        )
+        .unwrap();
+        let cp = create_agent_quiesced_checkpoint(&record, "live-boundary").unwrap();
+        stage::require_sealed(&cp.preimages_snapshot).unwrap();
+        assert!(stage::require_sealed(&journal).is_err());
+        fs::write(
+            core.copy_up(Path::new("value")).unwrap(),
+            b"continued version",
+        )
+        .unwrap();
+        assert_eq!(
+            fs::read(cp.upper_snapshot.join("value")).unwrap(),
+            b"checkpoint version"
+        );
+        let child = temp.path().join("child");
+        fs::create_dir(&child).unwrap();
+        restore_logical_checkpoint(&cp, &child.join("upper"), &child.join("preimages")).unwrap();
+        stage::require_sealed(&child.join("preimages")).unwrap();
+        stage::begin(&child.join("preimages"), Default::default()).unwrap();
+        assert!(stage::require_sealed(&child.join("preimages")).is_err());
+        record.overlay.as_mut().unwrap().state = OverlayState::Staged;
+        assert!(
+            create_checkpoint(&record, Some("unconfirmed"), CheckpointConsistency::Stopped)
+                .is_err()
+        );
+    }
 
     fn stopped_record(root: &Path) -> RunRecord {
         let target = root.join("target");

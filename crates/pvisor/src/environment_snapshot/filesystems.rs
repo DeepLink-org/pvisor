@@ -1,6 +1,6 @@
 //! Authenticated immutable tree copies with durable per-Attempt references.
 //! Only marker inodes are hard-linked; filesystem data/topology stays intact.
-use super::{TreeInventory, copy_owned_tree, native_path, store, verify_tree};
+use super::{TreeInventory, copy_guest_tree, native_path, store, verify_tree};
 use anyhow::{Context, ensure};
 use serde::Serialize;
 use std::{
@@ -36,12 +36,22 @@ impl SharedFilesystemLayer {
     }
     /// The native supervisor uses this while the producer remains frozen.
     /// Verify unseen data too; saved guest inode digests alone are insufficient.
+    #[cfg(test)]
     pub(crate) fn verify_source(&self, source: &Path) -> anyhow::Result<()> {
+        self.verify_projected_source(source, &[])
+    }
+    pub(crate) fn verify_projected_source(
+        &self,
+        source: &Path,
+        excluded: &[PathBuf],
+    ) -> anyhow::Result<()> {
         let (_, expected) = seal(self)?;
         verify_tree(self.root(), &expected)?;
         if source != self.root() {
-            verify_tree(source, &expected)
-                .context("live immutable lower differs from its retained seal")?;
+            ensure!(
+                super::inventory_projected(source, excluded)? == expected,
+                "live immutable lower differs from its retained seal"
+            );
         }
         Ok(())
     }
@@ -72,6 +82,7 @@ pub(super) fn share(
     logical_root: &[u8],
     expected: &TreeInventory,
     references: &Path,
+    excluded: &[PathBuf],
 ) -> anyhow::Result<SharedFilesystemLayer> {
     let _gate = store::gate(store_root, false)?;
     ensure!(
@@ -83,7 +94,10 @@ pub(super) fn share(
         !references.starts_with(store_root),
         "Attempt references must be outside the snapshot store"
     );
-    verify_tree(source, expected).context("shared layer source does not match its seal")?;
+    ensure!(
+        super::inventory_projected(source, excluded)? == *expected,
+        "shared layer source does not match its seal"
+    );
     // Equal trees at distinct logical roots must retain distinct inode
     // identities within one overlay; hard-link origin tables depend on it.
     let manifest = serde_json::to_vec(&LayerManifest {
@@ -132,7 +146,7 @@ pub(super) fn share(
             .prefix("filesystem-")
             .tempdir_in(store_root.join("pending"))?;
         let _cleanup = StagingCleanup(temporary.path().join("tree"));
-        let copied = copy_owned_tree(source, &temporary.path().join("tree"))?;
+        let copied = copy_guest_tree(source, &temporary.path().join("tree"), excluded)?;
         ensure!(
             copied == *expected,
             "filesystem changed during shared layer creation"

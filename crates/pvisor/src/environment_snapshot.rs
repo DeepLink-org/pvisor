@@ -257,6 +257,29 @@ fn inventory_with_hash<const DEDUPLICATE: bool>(
     root: &Path,
     hash: &mut impl FnMut(&Path) -> anyhow::Result<String>,
 ) -> anyhow::Result<TreeInventory> {
+    inventory_projected_with_hash::<DEDUPLICATE>(root, hash, &[])
+}
+
+/// Inventory precisely the guest-visible projection. Native launch bindings
+/// authenticate exclusions; ordinary owned-tree callers still audit every entry.
+pub(crate) fn inventory_projected(
+    root: &Path,
+    excluded: &[std::path::PathBuf],
+) -> anyhow::Result<TreeInventory> {
+    inventory_projected_with_hash::<true>(root, &mut file_hash, excluded)
+}
+fn inventory_projected_with_hash<const DEDUPLICATE: bool>(
+    root: &Path,
+    hash: &mut impl FnMut(&Path) -> anyhow::Result<String>,
+    excluded: &[std::path::PathBuf],
+) -> anyhow::Result<TreeInventory> {
+    ensure!(
+        excluded.iter().all(|path| !path.as_os_str().is_empty()
+            && path
+                .components()
+                .all(|part| matches!(part, std::path::Component::Normal(_)))),
+        "invalid guest projection exclusion"
+    );
     ensure!(
         fs::symlink_metadata(root)?.is_dir(),
         "tree root must be a directory"
@@ -269,6 +292,7 @@ fn inventory_with_hash<const DEDUPLICATE: bool>(
         entries: &mut Vec<TreeEntry>,
         links: &mut BTreeMap<(u64, u64), InventoryLink>,
         hash: &mut impl FnMut(&Path) -> anyhow::Result<String>,
+        excluded: &[std::path::PathBuf],
     ) -> anyhow::Result<()> {
         let metadata = fs::symlink_metadata(path)?;
         #[cfg(target_os = "macos")]
@@ -338,7 +362,15 @@ fn inventory_with_hash<const DEDUPLICATE: bool>(
             let mut children = fs::read_dir(path)?.collect::<std::io::Result<Vec<_>>>()?;
             children.sort_by_key(|entry| entry.file_name());
             for child in children {
-                visit::<DEDUPLICATE>(root, &child.path(), entries, links, hash)?;
+                if excluded.iter().any(|path| {
+                    child
+                        .path()
+                        .strip_prefix(root)
+                        .is_ok_and(|relative| relative.starts_with(path))
+                }) {
+                    continue;
+                }
+                visit::<DEDUPLICATE>(root, &child.path(), entries, links, hash, excluded)?;
             }
         }
         let after = fs::symlink_metadata(path)?;
@@ -355,7 +387,7 @@ fn inventory_with_hash<const DEDUPLICATE: bool>(
         );
         Ok(())
     }
-    visit::<DEDUPLICATE>(root, root, &mut entries, &mut links, hash)?;
+    visit::<DEDUPLICATE>(root, root, &mut entries, &mut links, hash, excluded)?;
     ensure!(
         links.values().all(|link| link.seen == link.expected_links),
         "hardlink escapes owned tree"
@@ -394,7 +426,15 @@ fn copy_owned_tree_checked(
     destination: &Path,
     expected: Option<&TreeInventory>,
 ) -> anyhow::Result<TreeInventory> {
-    copy_tree::<false>(source, destination, expected)
+    copy_tree::<false>(source, destination, expected, &[])
+}
+#[allow(clippy::too_many_arguments)]
+pub(crate) fn copy_guest_tree(
+    source: &Path,
+    destination: &Path,
+    excluded: &[std::path::PathBuf],
+) -> anyhow::Result<TreeInventory> {
+    copy_tree::<false>(source, destination, None, excluded)
 }
 
 /// Only a verified PublishedEnvironment may use this path, while retaining its
@@ -404,13 +444,14 @@ fn copy_sealed_tree(
     destination: &Path,
     expected: &TreeInventory,
 ) -> anyhow::Result<TreeInventory> {
-    copy_tree::<true>(source, destination, Some(expected))
+    copy_tree::<true>(source, destination, Some(expected), &[])
 }
 
 fn copy_tree<const SEALED: bool>(
     source: &Path,
     destination: &Path,
     expected: Option<&TreeInventory>,
+    excluded: &[std::path::PathBuf],
 ) -> anyhow::Result<TreeInventory> {
     if !SEALED {
         pvisor_overlay_core::backend::materialize_tree(source)?;
@@ -443,7 +484,7 @@ fn copy_tree<const SEALED: bool>(
         // and destination checks below still reject mismatches and clean up.
         expected.clone()
     } else {
-        inventory(&source)?
+        inventory_projected(&source, excluded)?
     };
     if let Some(expected) = expected {
         ensure!(before == *expected, "filesystem inventory mismatch");
@@ -451,6 +492,7 @@ fn copy_tree<const SEALED: bool>(
     drop(before_span);
     fs::create_dir(destination)?;
     let result = (|| {
+        #[allow(clippy::too_many_arguments)]
         fn copy(
             source: &Path,
             destination: &Path,
@@ -458,11 +500,20 @@ fn copy_tree<const SEALED: bool>(
             links: &mut BTreeMap<(u64, u64), std::path::PathBuf>,
             content_cloned: &mut bool,
             profile: &pvisor_overlay_core::profile::Profile,
+            root: &Path,
+            excluded: &[std::path::PathBuf],
         ) -> anyhow::Result<()> {
             if metadata.is_dir() {
                 for child in fs::read_dir(source)? {
                     let child = child?;
                     let source = child.path();
+                    if excluded.iter().any(|path| {
+                        source
+                            .strip_prefix(root)
+                            .is_ok_and(|relative| relative.starts_with(path))
+                    }) {
+                        continue;
+                    }
                     let target = destination.join(child.file_name());
                     let entry_span = profile.span("entry_metadata");
                     let metadata = fs::symlink_metadata(&source)?;
@@ -470,7 +521,16 @@ fn copy_tree<const SEALED: bool>(
                     if metadata.is_dir() {
                         fs::create_dir(&target)?;
                     }
-                    copy(&source, &target, &metadata, links, content_cloned, profile)?;
+                    copy(
+                        &source,
+                        &target,
+                        &metadata,
+                        links,
+                        content_cloned,
+                        profile,
+                        root,
+                        excluded,
+                    )?;
                 }
             } else if let Some(first) = links.get(&(metadata.dev(), metadata.ino())) {
                 let _span = profile.span("hardlink");
@@ -591,13 +651,18 @@ fn copy_tree<const SEALED: bool>(
             &mut BTreeMap::new(),
             &mut content_cloned,
             &profile,
+            &source,
+            excluded,
         )?;
         drop(copy_span);
         let source_span = profile.span("source_after");
         if SEALED {
             verify_tree_metadata(&source, &before)
         } else {
-            verify_tree(&source, &before)
+            inventory_projected(&source, excluded).and_then(|after| {
+                ensure!(after == before, "filesystem inventory mismatch");
+                Ok(())
+            })
         }
         .context("source changed during copy")?;
         drop(source_span);

@@ -9,6 +9,7 @@ pub mod runtime;
 pub mod terminal;
 mod trajectory;
 
+pub use checkpoint::ResumeArgs;
 use clap::{CommandFactory, FromArgMatches, Parser, Subcommand};
 pub use commands::cache_main;
 pub use run::RunArgs;
@@ -45,12 +46,10 @@ enum Command {
     Resume(checkpoint::ResumeArgs),
     /// Request graceful termination of a live Job.
     Kill(runtime::KillArgs),
-    /// Start a new safe Job from a stopped Job or checkpoint.
+    /// Branch a Job from staged files or a VM execution checkpoint.
     Fork(run::ForkArgs),
     /// Open a read-only shell or run a command against a Job filesystem view.
     Inspect(runtime::InspectArgs),
-    /// List installed executable extensions and their descriptions.
-    Extensions,
     #[cfg(any(target_os = "macos", all(target_os = "linux", target_arch = "x86_64")))]
     /// Manage deployments, cluster tasks and shared node resources.
     Service(crate::service::ServiceArgs),
@@ -59,7 +58,7 @@ enum Command {
 }
 
 fn root_command() -> anyhow::Result<clap::Command> {
-    let mut command = Cli::command().after_help("Jobs: run, status, kill, inspect.\nChanges: review, apply, drop.\nCheckpoints: checkpoint, suspend, resume, fork.\nServices: service run/status/restart/stop; service cluster/worker/cache/memory-pool.\nUse pvisor -- COMMAND for default execution. Optional Job tools are discovered alongside pvisor.");
+    let mut command = Cli::command();
     for (_, manifest) in extensions::discover()? {
         command = command.subcommand(clap::Command::new(manifest.name).about(manifest.description));
     }
@@ -78,7 +77,6 @@ fn root_command() -> anyhow::Result<clap::Command> {
         "service",
         "replay",
         "tui",
-        "extensions",
         "help",
     ]
     .into_iter()
@@ -88,7 +86,53 @@ fn root_command() -> anyhow::Result<clap::Command> {
             command = command.mut_subcommand(name, |sub| sub.display_order(order));
         }
     }
-    Ok(command)
+    command.build();
+    let groups = grouped_commands(&command);
+    Ok(command
+        .before_help(groups)
+        .after_help("Use pvisor -- COMMAND for default execution. Use pvisor help COMMAND for command details.")
+        .help_template("{about}\n\n{usage-heading} {usage}\n\n{before-help}Options:\n{options}\n\n{after-help}\n"))
+}
+
+/// Display descriptions from the registered commands, including installed
+/// companions, while keeping the command syntax and parser unchanged.
+fn grouped_commands(command: &clap::Command) -> String {
+    const GROUPS: &[(&str, &[&str])] = &[
+        (
+            "Jobs",
+            &["run", "status", "kill", "suspend", "resume", "fork", "tui"],
+        ),
+        ("Filesystems", &["inspect", "review", "apply", "drop"]),
+        ("Checkpoints", &["checkpoint"]),
+        ("Services", &["service"]),
+        ("Trajectories", &["replay"]),
+        ("Help", &["help"]),
+    ];
+    let width = command
+        .get_subcommands()
+        .filter(|sub| !sub.is_hide_set())
+        .map(|sub| sub.get_name().len())
+        .max()
+        .unwrap_or(0);
+    let mut output = String::new();
+    for (heading, names) in GROUPS {
+        let members: Vec<_> = names
+            .iter()
+            .filter_map(|name| command.find_subcommand(name))
+            .filter(|sub| !sub.is_hide_set())
+            .collect();
+        if members.is_empty() {
+            continue;
+        }
+        output.push_str(&format!("{heading}:\n"));
+        for sub in members {
+            let name = sub.get_name();
+            let about = sub.get_about().map(ToString::to_string).unwrap_or_default();
+            output.push_str(&format!("  {name:width$}  {about}\n"));
+        }
+        output.push('\n');
+    }
+    output
 }
 
 fn normalize_default_run(mut args: Vec<OsString>) -> Vec<OsString> {
@@ -187,7 +231,9 @@ pub fn main() -> anyhow::Result<()> {
     crate::util::startup_mark("cli.parsed");
     match parsed.command {
         #[cfg(any(target_os = "macos", all(target_os = "linux", target_arch = "x86_64")))]
-        Command::Service(args) => tokio::runtime::Runtime::new()?.block_on(crate::service::run(args))?,
+        Command::Service(args) => {
+            tokio::runtime::Runtime::new()?.block_on(crate::service::run(args))?
+        }
         Command::Run(run) => {
             if !terminal::is_child() {
                 let audit = run.audit_requested()?;
@@ -212,20 +258,24 @@ pub fn main() -> anyhow::Result<()> {
         Command::Drop(args) => runtime::drop_overlay(args)?,
         Command::Status(args) => runtime::status(args)?,
         Command::Review(args) => product::review(args)?,
-        Command::Checkpoint(args) => checkpoint::run(args)?,
-        Command::Suspend(args) => checkpoint::suspend(args)?,
-        Command::Resume(args) => checkpoint::resume(args)?,
+        Command::Checkpoint(args) => {
+            tokio::runtime::Runtime::new()?.block_on(checkpoint::run(args))?
+        }
+        Command::Suspend(args) => {
+            tokio::runtime::Runtime::new()?.block_on(checkpoint::suspend(args))?
+        }
+        Command::Resume(resume) => {
+            if resume.tui && !terminal::is_child() {
+                anyhow::ensure!(
+                    terminal::available(),
+                    "--tui requires an interactive terminal"
+                );
+                return extensions::dispatch("tui", &args[1..]);
+            }
+            finish(tokio::runtime::Runtime::new()?.block_on(checkpoint::resume(resume))?);
+        }
         Command::Kill(args) => runtime::kill(args)?,
         Command::Inspect(args) => finish(runtime::inspect(args)?),
-        Command::Extensions => println!(
-            "{}",
-            serde_json::to_string_pretty(
-                &extensions::discover()?
-                    .into_iter()
-                    .map(|(path, manifest)| serde_json::json!({"path":path,"name":manifest.name,"description":manifest.description}))
-                    .collect::<Vec<_>>()
-            )?
-        ),
         Command::External(args) => extensions::dispatch(
             args[0]
                 .to_str()
@@ -239,6 +289,8 @@ pub fn main() -> anyhow::Result<()> {
 fn reject_retired_command(name: &str) {
     let message = if extensions::is_service_tool(name) {
         format!("`pvisor {name}` was removed; use `pvisor service {name}`")
+    } else if name == "extensions" {
+        "`pvisor extensions` was removed; use `pvisor --help` to see available commands".into()
     } else if name == "snapshot" {
         "`pvisor snapshot` was removed; use Job-scoped `checkpoint`, `suspend`, `resume` and `fork` with a supported execution profile".into()
     } else {

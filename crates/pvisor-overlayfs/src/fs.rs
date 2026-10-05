@@ -56,6 +56,7 @@ struct DirectoryEntry {
 
 pub struct OverlayFs {
     core: FilesystemService,
+    profile: pvisor_overlay_core::profile::Profile,
     read_only: bool,
     private_root: bool,
     access_policy: FileAccessPolicy,
@@ -176,6 +177,7 @@ impl OverlayFs {
 
     fn observe(&self, path: &Path, operation: &str, outcome: io::Result<u64>, mutating: bool) {
         if let Some(metrics) = &self.observation {
+            let _span = self.profile.span("observation");
             let decision = self.access_policy.authorize(path);
             let rules = self.access_policy.matched_rule_ids(path);
             metrics.observe(
@@ -225,6 +227,7 @@ impl OverlayFs {
         by_path.insert(PathBuf::new(), FUSE_ROOT_ID);
         Ok(Self {
             core: FilesystemService::new(core),
+            profile: pvisor_overlay_core::profile::Profile::from_env("host-fuse"),
             read_only: false,
             private_root: false,
             access_policy: FileAccessPolicy::default(),
@@ -254,6 +257,8 @@ impl OverlayFs {
     }
 
     fn reclaim_inode(&mut self, ino: u64) {
+        let profile = self.profile.clone();
+        let _span = profile.span("reclaim_inode");
         if ino == FUSE_ROOT_ID || self.nodes.get(&ino).is_some_and(|node| node.lookups != 0) {
             return;
         }
@@ -266,6 +271,10 @@ impl OverlayFs {
         {
             return;
         }
+        self.profile
+            .add("reclaim_paths_scanned", self.by_path.len() as u64);
+        self.profile
+            .add("reclaim_objects_scanned", self.by_object.len() as u64);
         self.nodes.remove(&ino);
         self.by_path.retain(|_, value| *value != ino);
         self.by_object.retain(|_, value| *value != ino);
@@ -508,6 +517,8 @@ impl OverlayFs {
     }
 
     fn directory_snapshot(&mut self, ino: u64) -> io::Result<Vec<DirectoryEntry>> {
+        let profile = self.profile.clone();
+        let _span = profile.span("directory_snapshot");
         let path = self.node_path(ino)?;
         let parent_path = path.parent().unwrap_or_else(|| Path::new(""));
         let parent_ino = self
@@ -585,12 +596,16 @@ impl OverlayFs {
 
 impl Filesystem for OverlayFs {
     fn forget(&mut self, _request: &Request<'_>, ino: u64, nlookup: u64) {
+        let profile = self.profile.clone();
+        let _span = profile.span("forget");
         if let Some(node) = self.nodes.get_mut(&ino) {
             node.lookups = node.lookups.saturating_sub(nlookup);
         }
         self.reclaim_inode(ino);
     }
     fn lookup(&mut self, _request: &Request<'_>, parent: u64, name: &OsStr, reply: ReplyEntry) {
+        let profile = self.profile.clone();
+        let _span = profile.span("lookup");
         let observed_path = self.child_path(parent, name).ok();
         let result = (|| {
             let path = self.child_path(parent, name)?;
@@ -609,6 +624,8 @@ impl Filesystem for OverlayFs {
     }
 
     fn getattr(&mut self, _request: &Request<'_>, ino: u64, fh: Option<u64>, reply: ReplyAttr) {
+        let profile = self.profile.clone();
+        let _span = profile.span("getattr");
         let observed_path = self.node_path(ino).ok();
         let result = self
             .inode_metadata(ino, fh)
@@ -638,6 +655,8 @@ impl Filesystem for OverlayFs {
         flags: Option<u32>,
         reply: ReplyAttr,
     ) {
+        let profile = self.profile.clone();
+        let _span = profile.span("setattr");
         let observed_path = self.node_path(ino).ok();
         let mutating = setattr_requires_copy_up(mode, uid, gid, size, atime, mtime, flags);
         let result = (|| {
@@ -735,6 +754,8 @@ impl Filesystem for OverlayFs {
     }
 
     fn readlink(&mut self, _request: &Request<'_>, ino: u64, reply: ReplyData) {
+        let profile = self.profile.clone();
+        let _span = profile.span("readlink");
         let observed_path = self.node_path(ino).ok();
         let result = self.node_path(ino).and_then(|path| {
             let backing = self.core.observe_read_resolved(&path)?;
@@ -757,6 +778,8 @@ impl Filesystem for OverlayFs {
         rdev: u32,
         reply: ReplyEntry,
     ) {
+        let profile = self.profile.clone();
+        let _span = profile.span("mknod");
         let observed_path = self.child_path(parent, name).ok();
         let result = (|| {
             let path = self.child_path(parent, name)?;
@@ -784,6 +807,8 @@ impl Filesystem for OverlayFs {
         umask: u32,
         reply: ReplyEntry,
     ) {
+        let profile = self.profile.clone();
+        let _span = profile.span("mkdir");
         let observed_path = self.child_path(parent, name).ok();
         let result = (|| {
             let path = self.child_path(parent, name)?;
@@ -803,6 +828,8 @@ impl Filesystem for OverlayFs {
     }
 
     fn unlink(&mut self, _request: &Request<'_>, parent: u64, name: &OsStr, reply: ReplyEmpty) {
+        let profile = self.profile.clone();
+        let _span = profile.span("unlink");
         let observed_path = self.child_path(parent, name).ok();
         let result = self.child_path(parent, name).and_then(|path| {
             if let Some(ino) = self.by_path.get(&path).copied()
@@ -823,6 +850,8 @@ impl Filesystem for OverlayFs {
     }
 
     fn rmdir(&mut self, _request: &Request<'_>, parent: u64, name: &OsStr, reply: ReplyEmpty) {
+        let profile = self.profile.clone();
+        let _span = profile.span("rmdir");
         let observed_path = self.child_path(parent, name).ok();
         let result = self
             .child_path(parent, name)
@@ -845,6 +874,8 @@ impl Filesystem for OverlayFs {
         target: &Path,
         reply: ReplyEntry,
     ) {
+        let profile = self.profile.clone();
+        let _span = profile.span("symlink");
         let observed_path = self.child_path(parent, name).ok();
         let result = (|| {
             let path = self.child_path(parent, name)?;
@@ -873,6 +904,8 @@ impl Filesystem for OverlayFs {
         flags: u32,
         reply: ReplyEmpty,
     ) {
+        let profile = self.profile.clone();
+        let _span = profile.span("rename");
         let old_path = self.child_path(parent, name).ok();
         let new_path = self.child_path(newparent, newname).ok();
         if flags & !(RENAME_NOREPLACE | RENAME_EXCHANGE) != 0
@@ -939,6 +972,8 @@ impl Filesystem for OverlayFs {
         newname: &OsStr,
         reply: ReplyEntry,
     ) {
+        let profile = self.profile.clone();
+        let _span = profile.span("link");
         let observed_path = self.child_path(newparent, newname).ok();
         let result = (|| {
             let source = self.copy_up_inode(ino)?;
@@ -958,6 +993,8 @@ impl Filesystem for OverlayFs {
     }
 
     fn open(&mut self, _request: &Request<'_>, ino: u64, flags: i32, reply: ReplyOpen) {
+        let profile = self.profile.clone();
+        let _span = profile.span("open");
         let observed_path = self.node_path(ino).ok();
         let result = self.open_inode_with_backing(ino, flags);
         self.observe_result(
@@ -997,6 +1034,8 @@ impl Filesystem for OverlayFs {
         _lock_owner: Option<u64>,
         reply: ReplyData,
     ) {
+        let profile = self.profile.clone();
+        let _span = profile.span("read");
         let observed_path = self
             .open_files
             .get(&fh)
@@ -1056,6 +1095,8 @@ impl Filesystem for OverlayFs {
         _lock_owner: Option<u64>,
         reply: ReplyWrite,
     ) {
+        let profile = self.profile.clone();
+        let _span = profile.span("write");
         let observed_path = self
             .open_files
             .get(&fh)
@@ -1105,6 +1146,8 @@ impl Filesystem for OverlayFs {
         _lock_owner: u64,
         reply: ReplyEmpty,
     ) {
+        let profile = self.profile.clone();
+        let _span = profile.span("flush");
         if self.open_files.contains_key(&fh) {
             reply.ok();
         } else {
@@ -1122,6 +1165,8 @@ impl Filesystem for OverlayFs {
         _flush: bool,
         reply: ReplyEmpty,
     ) {
+        let profile = self.profile.clone();
+        let _span = profile.span("release");
         if let Some(file) = self.open_files.remove(&fh) {
             self.reclaim_inode(file.ino);
             reply.ok();
@@ -1138,8 +1183,14 @@ impl Filesystem for OverlayFs {
         datasync: bool,
         reply: ReplyEmpty,
     ) {
+        let profile = self.profile.clone();
+        let _span = profile.span("fsync");
         match self.open_files.get(&fh) {
-            Some(file) => match sys::fsync(file, datasync) {
+            Some(file) => match self
+                .core
+                .sync_preimages()
+                .and_then(|()| sys::fsync(file, datasync))
+            {
                 Ok(()) => reply.ok(),
                 Err(error) => reply.error(errno(&error)),
             },
@@ -1148,6 +1199,8 @@ impl Filesystem for OverlayFs {
     }
 
     fn opendir(&mut self, _request: &Request<'_>, ino: u64, _flags: i32, reply: ReplyOpen) {
+        let profile = self.profile.clone();
+        let _span = profile.span("opendir");
         let observed_path = self.node_path(ino).ok();
         let result = self.directory_snapshot(ino);
         self.observe_result(observed_path.as_deref(), "opendir", &result, 0, false);
@@ -1169,6 +1222,8 @@ impl Filesystem for OverlayFs {
         offset: i64,
         mut reply: ReplyDirectory,
     ) {
+        let profile = self.profile.clone();
+        let _span = profile.span("readdir");
         if offset < 0 {
             reply.error(libc::EINVAL);
             return;
@@ -1193,6 +1248,8 @@ impl Filesystem for OverlayFs {
         offset: i64,
         mut reply: ReplyDirectoryPlus,
     ) {
+        let profile = self.profile.clone();
+        let _span = profile.span("readdirplus");
         if offset < 0 {
             reply.error(libc::EINVAL);
             return;
@@ -1231,6 +1288,8 @@ impl Filesystem for OverlayFs {
         _flags: i32,
         reply: ReplyEmpty,
     ) {
+        let profile = self.profile.clone();
+        let _span = profile.span("releasedir");
         if let Some(entries) = self.open_directories.remove(&fh) {
             for entry in entries {
                 self.reclaim_inode(entry.ino);
@@ -1249,7 +1308,10 @@ impl Filesystem for OverlayFs {
         datasync: bool,
         reply: ReplyEmpty,
     ) {
+        let profile = self.profile.clone();
+        let _span = profile.span("fsyncdir");
         let result = self.node_path(ino).and_then(|path| {
+            self.core.sync_preimages()?;
             let resolved = self
                 .core
                 .resolve(&path)
@@ -1264,6 +1326,8 @@ impl Filesystem for OverlayFs {
     }
 
     fn statfs(&mut self, _request: &Request<'_>, _ino: u64, reply: ReplyStatfs) {
+        let profile = self.profile.clone();
+        let _span = profile.span("statfs");
         match sys::statfs(self.core.upper()) {
             Ok(stat) => reply.statfs(
                 stat.blocks,
@@ -1289,6 +1353,8 @@ impl Filesystem for OverlayFs {
         position: u32,
         reply: ReplyEmpty,
     ) {
+        let profile = self.profile.clone();
+        let _span = profile.span("setxattr");
         let observed_path = self.node_path(ino).ok();
         if position != 0 {
             reply.error(libc::ENOTSUP);
@@ -1319,6 +1385,8 @@ impl Filesystem for OverlayFs {
         size: u32,
         reply: ReplyXattr,
     ) {
+        let profile = self.profile.clone();
+        let _span = profile.span("getxattr");
         let observed_path = self.node_path(ino).ok();
         let result = self.node_path(ino).and_then(|path| {
             let backing = self.core.observe_read_resolved(&path)?;
@@ -1334,6 +1402,8 @@ impl Filesystem for OverlayFs {
     }
 
     fn listxattr(&mut self, _request: &Request<'_>, ino: u64, size: u32, reply: ReplyXattr) {
+        let profile = self.profile.clone();
+        let _span = profile.span("listxattr");
         let result = self.node_path(ino).and_then(|path| {
             let backing = self.core.observe_read_resolved(&path)?;
             let names = sys::list_xattrs(&backing.resolved.path)?;
@@ -1353,6 +1423,8 @@ impl Filesystem for OverlayFs {
     }
 
     fn removexattr(&mut self, _request: &Request<'_>, ino: u64, name: &OsStr, reply: ReplyEmpty) {
+        let profile = self.profile.clone();
+        let _span = profile.span("removexattr");
         let observed_path = self.node_path(ino).ok();
         let result = pvisor_overlay_core::validate_guest_xattr(name)
             .and_then(|()| self.copy_up_inode(ino))
@@ -1366,6 +1438,8 @@ impl Filesystem for OverlayFs {
     }
 
     fn access(&mut self, _request: &Request<'_>, ino: u64, mask: i32, reply: ReplyEmpty) {
+        let profile = self.profile.clone();
+        let _span = profile.span("access");
         let observed_path = self.node_path(ino).ok();
         let result = self.node_path(ino).and_then(|path| {
             let real = self
@@ -1391,6 +1465,8 @@ impl Filesystem for OverlayFs {
         flags: i32,
         reply: ReplyCreate,
     ) {
+        let profile = self.profile.clone();
+        let _span = profile.span("create");
         let observed_path = self.child_path(parent, name).ok();
         let result = (|| {
             let path = self.child_path(parent, name)?;
@@ -1433,6 +1509,8 @@ impl Filesystem for OverlayFs {
         mode: i32,
         reply: ReplyEmpty,
     ) {
+        let profile = self.profile.clone();
+        let _span = profile.span("fallocate");
         let observed_path = self
             .open_files
             .get(&fh)
@@ -1467,6 +1545,8 @@ impl Filesystem for OverlayFs {
         whence: i32,
         reply: ReplyLseek,
     ) {
+        let profile = self.profile.clone();
+        let _span = profile.span("lseek");
         match self.open_files.get(&fh) {
             Some(file) => match sys::seek(file, offset, whence) {
                 Ok(offset) => reply.offset(offset),
@@ -1489,6 +1569,8 @@ impl Filesystem for OverlayFs {
         flags: u32,
         reply: ReplyWrite,
     ) {
+        let profile = self.profile.clone();
+        let _span = profile.span("copy_file_range");
         if offset_in < 0 || offset_out < 0 || flags != 0 {
             reply.error(libc::EINVAL);
             return;
@@ -1558,6 +1640,8 @@ impl Filesystem for OverlayFs {
         _options: u64,
         reply: ReplyEmpty,
     ) {
+        let profile = self.profile.clone();
+        let _span = profile.span("exchange");
         let result = (|| {
             let first = self.child_path(parent, name)?;
             let second = self.child_path(newparent, newname)?;
@@ -1575,6 +1659,8 @@ impl Filesystem for OverlayFs {
 
     #[cfg(target_os = "macos")]
     fn getxtimes(&mut self, _request: &Request<'_>, ino: u64, reply: ReplyXTimes) {
+        let profile = self.profile.clone();
+        let _span = profile.span("getxtimes");
         let result = self
             .node_path(ino)
             .and_then(|path| self.core.metadata(&path));

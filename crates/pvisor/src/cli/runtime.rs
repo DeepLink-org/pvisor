@@ -110,7 +110,7 @@ pub fn status(args: StatusArgs) -> anyhow::Result<()> {
     let capability = serde_json::json!({
         "workspace": record.overlay.is_some(),
         "workspace_capture_requires": "confirmed_stopped",
-        "execution": false,
+        "execution": super::checkpoint::execution_blocker(&record).is_none(),
         "execution_blocker": super::checkpoint::execution_blocker(&record),
     });
     let apply_history = load_apply_records(&record.stage_dir())?;
@@ -162,6 +162,7 @@ pub fn status(args: StatusArgs) -> anyhow::Result<()> {
                 "run": record,
                 "live": live,
                 "checkpoint_capability": capability,
+                "execution": crate::runtime::job_execution::Job::read(&record)?.map(|job| serde_json::json!({"state":job.state,"suspended_head":job.head,"active_attempt":job.active_attempt,"job_root":job.root,"checkpoints":job.checkpoints,"requests":job.requests,"resume_requests":job.resumes,"fork_requests":job.forks,"checkpoint_stores":job.stores})),
                 "checkpoints": checkpoints,
                 "workspace_generation": record.overlay.as_ref().map(|overlay| overlay.generation),
                 "apply_history": apply_history,
@@ -199,10 +200,21 @@ pub fn status(args: StatusArgs) -> anyhow::Result<()> {
     println!("command: {}", shell_join(&record.command));
     println!("stage: {}", record.stage_dir().display());
     println!("checkpoints: {} workspace", checkpoints.len());
-    println!(
-        "execution checkpoint: unsupported ({})",
-        super::checkpoint::execution_blocker(&record)
-    );
+    if let Some(blocker) = super::checkpoint::execution_blocker(&record) {
+        println!("execution checkpoint: unsupported ({blocker})");
+    } else {
+        println!("execution checkpoint: supported");
+    }
+    if let Some(job) = crate::runtime::job_execution::Job::read(&record)? {
+        println!(
+            "execution: {} ({} checkpoints)",
+            job.state,
+            job.checkpoints.len()
+        );
+        if let Some(head) = job.head {
+            println!("suspended head: {head}");
+        }
+    }
     if !apply_history.is_empty() {
         println!("apply batches: {}", apply_history.len());
     }
@@ -281,6 +293,17 @@ pub fn status(args: StatusArgs) -> anyhow::Result<()> {
 
 pub fn kill(args: KillArgs) -> anyhow::Result<()> {
     let record = selected(Some(&args.selector), &args.output_dir)?;
+    if crate::runtime::job_execution::terminate_suspended(&record)? {
+        if args.json {
+            println!(
+                "{}",
+                serde_json::json!({"schema_version":1,"operation":"kill","job_id":record.run_id,"state":"terminated","suspended_head_released":true})
+            );
+        } else {
+            println!("terminated suspended Job {}", record.run_id);
+        }
+        return Ok(());
+    }
     if record.state.is_stopped() {
         let (current, _lease) = record.lock_current()?;
         current.require_stopped()?;

@@ -6,7 +6,6 @@ import json
 import math
 
 import pytest
-
 from evidence_tsv import check, copy_evidence, load, migrate, retire, semantic_sha256, write
 
 
@@ -14,7 +13,7 @@ def test_nested_evidence_round_trip_and_one_physical_line_per_field(tmp_path):
     evidence = {
         "": {"0": None, "01": {}, "~/": []},
         "samples": [{"elapsed_ms": -0.0, "passed": True}, {"elapsed_ms": 1.2345678901234567}],
-        "log\t\n\"": "中文\t\r\nquote: \"; literal \\n; escape \x1b; slash /",
+        'log\t\n"': '中文\t\r\nquote: "; literal \\n; escape \x1b; slash /',
         "numbers": [2**90, 1, 1.0, False, None],
         "trailing spaces ": "retain three spaces   ",
         "empty strings": ["", '""'],
@@ -29,7 +28,9 @@ def test_nested_evidence_round_trip_and_one_physical_line_per_field(tmp_path):
     assert len(path.read_text().splitlines()) == count + 1
     assert all(not line.endswith((" ", "\t")) for line in path.read_text().splitlines())
     with path.open(newline="") as stream:
-        assert all(len(row) == 3 for row in csv.reader(stream, delimiter="\t", quoting=csv.QUOTE_NONE))
+        assert all(
+            len(row) == 3 for row in csv.reader(stream, delimiter="\t", quoting=csv.QUOTE_NONE)
+        )
 
 
 @pytest.mark.parametrize("value", [None, True, 12, -1.5, "", [], {}, [[], {}]])
@@ -45,18 +46,29 @@ def test_determinism_and_metric_change_affects_only_one_line(tmp_path):
     write(second, {"samples": [], "summary": {"p50": 10.0, "p95": 25.0}})
     assert first.read_bytes() == second.read_bytes()
     write(second, {"summary": {"p95": 25.0, "p50": 11.0}, "samples": []})
-    changed = [(a, b) for a, b in zip(first.read_text().splitlines(), second.read_text().splitlines())
-               if a != b]
+    changed = [
+        (a, b)
+        for a, b in zip(first.read_text().splitlines(), second.read_text().splitlines())
+        if a != b
+    ]
     assert changed == [("/summary/p50\tfloat\t10.0", "/summary/p50\tfloat\t11.0")]
 
 
-@pytest.mark.parametrize("body", [
-    "", "/samples\tarray\t\n", "\tobject\t\n\tobject\t\n",
-    "\tobject\t\n/x\tfloat\ttrue\n", "\tarray\t\n/1\tinteger\t1\n",
-    "\tobject\t\n/a/b\tinteger\t1\n", "\tobject\t\n/a~2\tinteger\t1\n",
-    "\tobject\t\n/x\tstring\tbad\\q\n", "\tarray\t[]\n",
-    "\tobject\t\n/x\tinteger\t1\n/x\tinteger\t2\n",
-])
+@pytest.mark.parametrize(
+    "body",
+    [
+        "",
+        "/samples\tarray\t\n",
+        "\tobject\t\n\tobject\t\n",
+        "\tobject\t\n/x\tfloat\ttrue\n",
+        "\tarray\t\n/1\tinteger\t1\n",
+        "\tobject\t\n/a/b\tinteger\t1\n",
+        "\tobject\t\n/a~2\tinteger\t1\n",
+        "\tobject\t\n/x\tstring\tbad\\q\n",
+        "\tarray\t[]\n",
+        "\tobject\t\n/x\tinteger\t1\n/x\tinteger\t2\n",
+    ],
+)
 def test_rejects_truncated_or_malformed_evidence(tmp_path, body):
     path = tmp_path / "broken.tsv"
     path.write_text("path\ttype\tvalue\n" + body)
@@ -149,3 +161,89 @@ def test_publication_copy_accepts_tsv_inputs_and_records_replaced_exports(tmp_pa
     migrate(destination.parent, replace=True)
     assert load(destination) == {"metric": 2.5}
     assert check(destination.parent) == 1
+
+
+def test_product_summary_accepts_tsv_without_changing_statistics(tmp_path):
+    from summarize_product_v1 import summarize
+
+    report = {
+        "rows": [
+            {
+                "suite": "density",
+                "workload": "hold",
+                "backend": "pvisor-vm",
+                "correctness": "passed",
+                "wall_ms": value,
+            }
+            for value in (12.125, 15.5)
+        ],
+        "capabilities": {
+            "z/unsupported": {"state": "failed-preflight", "reason": "fixture"},
+            "a/unsupported": {"state": "failed-preflight", "reason": "fixture"},
+        },
+    }
+    source = tmp_path / "report.json"
+    source.write_text(json.dumps(report))
+    target = tmp_path / "report.tsv"
+    write(target, report)
+    assert summarize([source]) == summarize([target])
+    assert summarize([target])[0]["n"] == 2
+
+
+@pytest.mark.parametrize("publisher", ["render_reference_baselines", "render_ubuntu_baselines"])
+@pytest.mark.parametrize("input_format", ["json", "tsv"])
+def test_publishers_keep_runtime_input_and_publish_tsv_only(
+    tmp_path, monkeypatch, publisher, input_format
+):
+    import importlib
+    import sys
+
+    module = importlib.import_module(publisher)
+    report = {
+        "arguments": {"modes": "ready", "backends": "native", "samples": "2"},
+        "capabilities": {"ready/native": {"state": "available"}},
+        "summary": {},
+        "rows": [
+            {
+                "mode": "ready",
+                "backend": "native",
+                "trial": i,
+                "correctness": "passed",
+                "ready_ms": 12.125 + i,
+                "result_ms": 15.0,
+                "completion_ms": 16.0,
+                "prepare_ms": 1.0,
+                "peak_tree_rss_kib": 123,
+                "memory_scope": "fixture",
+                "result": {"worker_ms": 1.0},
+            }
+            for i in range(2)
+        ],
+    }
+    batch = tmp_path / "batch"
+    batch.mkdir()
+    source = batch / f"report.{input_format}"
+    if input_format == "tsv":
+        write(source, report)
+    else:
+        source.write_text(json.dumps(report))
+    assets = tmp_path / "inputs"
+    assets.mkdir()
+    (assets / "assets.json").write_text('{"schema": "fixture"}')
+    output = tmp_path / "publication"
+    monkeypatch.setattr(
+        module, "figures" if publisher == "render_reference_baselines" else "plot", lambda *_: None
+    )
+    monkeypatch.setattr(
+        sys,
+        "argv",
+        [publisher, "--report", str(source), "--assets", str(assets), "--output", str(output)],
+    )
+    module.main()
+    assert source.exists()
+    assert not list(output.rglob("*.json"))
+    assert load(output / "assets.tsv") == {"schema": "fixture"}
+    assert load(output / "summary.tsv") == module.summarize(report)
+    assert check(output) >= 3
+    if publisher == "render_ubuntu_baselines":
+        assert load(output / "manifest.tsv")["batches"]["batch"]["report"] == "batch/report.tsv"

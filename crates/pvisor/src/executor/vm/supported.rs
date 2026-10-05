@@ -189,6 +189,72 @@ fn hide_ram_backing(device: &mut OverlayDeviceSpec, path: &Path) -> anyhow::Resu
 }
 
 impl VmExecutor {
+    /// Fully read the authenticated RAM view into an Attempt-owned file.
+    /// Default restore keeps its lazy shared baseline. CPU mappings remain
+    /// private; original owners stay pinned for later incremental captures.
+    pub(crate) fn materialize_restore_ram(&mut self, storage: &Path) -> anyhow::Result<()> {
+        #[cfg(any(
+            all(target_os = "linux", target_arch = "x86_64"),
+            all(target_os = "macos", target_arch = "aarch64")
+        ))]
+        {
+            use std::{fs, io::Write, os::unix::fs::FileExt, sync::Arc};
+            let restore = self
+                .restore
+                .as_mut()
+                .and_then(Arc::get_mut)
+                .context("eager RAM requires an unlaunched restore")?;
+            let directory = storage.join("execution-restore");
+            fs::create_dir_all(&directory)?;
+            let mut owned = tempfile::Builder::new()
+                .prefix("eager-ram-")
+                .tempfile_in(directory)?;
+            let bytes = restore.ram.metadata()?.len();
+            let mut buffer = vec![0u8; 1024 * 1024];
+            let mut offset = 0u64;
+            while offset < bytes {
+                let count = (bytes - offset).min(buffer.len() as u64) as usize;
+                restore.ram.read_exact_at(&mut buffer[..count], offset)?;
+                owned.write_all(&buffer[..count])?;
+                offset += count as u64;
+            }
+            owned.as_file().sync_all()?;
+            restore.ram = Arc::new(fs::File::open(owned.path())?);
+            restore.ram_path = owned.path().to_owned();
+            restore._eager_ram = Some(owned);
+            Ok(())
+        }
+        #[cfg(not(any(
+            all(target_os = "linux", target_arch = "x86_64"),
+            all(target_os = "macos", target_arch = "aarch64")
+        )))]
+        {
+            let _ = storage;
+            anyhow::bail!("native execution restore is unsupported on this platform")
+        }
+    }
+
+    /// CLI continuations keep the sealed guest environment rather than inherit
+    /// variables from the shell issuing resume/fork. Admission still verifies
+    /// the projected configuration against the captured guest contract.
+    pub(crate) fn restored_guest_environment(&self) -> Option<BTreeMap<String, String>> {
+        #[cfg(any(
+            all(target_os = "linux", target_arch = "x86_64"),
+            all(target_os = "macos", target_arch = "aarch64")
+        ))]
+        {
+            self.restore
+                .as_ref()
+                .map(|restore| restore.guest.env.clone())
+        }
+        #[cfg(not(any(
+            all(target_os = "linux", target_arch = "x86_64"),
+            all(target_os = "macos", target_arch = "aarch64")
+        )))]
+        {
+            None
+        }
+    }
     /// Derive the actual host/build/firmware restore binding without starting a VM.
     pub fn checkpoint_compatibility(
         settings: &VmSettings,
@@ -709,6 +775,15 @@ impl RunExecutor for VmExecutor {
                 .insert("TMPDIR".into(), scratch.path.to_string_lossy().into_owned());
             guest.temporary_filesystem = Some(scratch);
         }
+        #[cfg(any(
+            all(target_os = "linux", target_arch = "x86_64"),
+            all(target_os = "macos", target_arch = "aarch64")
+        ))]
+        if let Some(restore) = &self.restore {
+            // The captured environment already contains TMPDIR. That suppresses
+            // fresh scratch injection above, but must not erase a captured mount.
+            guest.temporary_filesystem = restore.guest.temporary_filesystem.clone();
+        }
         if let Err(error) = guest.command() {
             return failed_to_start(error.to_string());
         }
@@ -758,7 +833,12 @@ impl RunExecutor for VmExecutor {
             && self.settings.memory_pool.is_none()
         {
             let prepared = if let Some(drivers) = &context.drivers {
-                let store = drivers.execution_snapshot_store();
+                let store = match drivers.execution_snapshot_store() {
+                    Ok(store) => store,
+                    Err(error) => {
+                        return failed_to_start(format!("bind VM checkpoint store: {error:#}"));
+                    }
+                };
                 let run_id = spec.run_id.to_string();
                 let attempt_id = context.attempt_id().to_string();
                 let firmware = self.settings.library_dir.clone();
@@ -1288,12 +1368,13 @@ fn apply_restore(
         "restore requires a durable no-network Attempt"
     );
     anyhow::ensure!(
-        context.spec().run_id.as_str() != restore.checkpoint.source_run_id,
-        "restore must use a new Run identity and Attempt"
+        context.attempt_id().as_str() != restore.checkpoint.source_attempt_id,
+        "restore must use a new Attempt identity"
     );
     anyhow::ensure!(
-        context.spec().parent_run_id.as_ref().map(|id| id.as_str())
-            == Some(restore.checkpoint.source_run_id.as_str()),
+        context.spec().run_id.as_str() == restore.checkpoint.source_run_id
+            || context.spec().parent_run_id.as_ref().map(|id| id.as_str())
+                == Some(restore.checkpoint.source_run_id.as_str()),
         "restore parent Run must match the captured source"
     );
     let mut expected_guest = runner.guest.clone();

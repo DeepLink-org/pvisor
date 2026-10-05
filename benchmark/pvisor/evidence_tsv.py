@@ -12,8 +12,14 @@ from pathlib import Path
 
 HEADER = ("path", "type", "value")
 INDEX_HEADER = (
-    "source", "source_sha256", "target", "target_sha256", "semantic_sha256",
-    "source_bytes", "target_bytes", "rows",
+    "source",
+    "source_sha256",
+    "target",
+    "target_sha256",
+    "semantic_sha256",
+    "source_bytes",
+    "target_bytes",
+    "rows",
 )
 
 
@@ -129,11 +135,18 @@ def write(path, value):
     path.parent.mkdir(parents=True, exist_ok=True)
     temporary = None
     try:
-        with tempfile.NamedTemporaryFile(mode="w", encoding="utf-8", newline="", dir=path.parent,
-                                         prefix=".evidence-", delete=False) as stream:
+        with tempfile.NamedTemporaryFile(
+            mode="w",
+            encoding="utf-8",
+            newline="",
+            dir=path.parent,
+            prefix=".evidence-",
+            delete=False,
+        ) as stream:
             temporary = Path(stream.name)
-            writer = csv.writer(stream, delimiter="\t", quoting=csv.QUOTE_NONE,
-                                quotechar=None, lineterminator="\n")
+            writer = csv.writer(
+                stream, delimiter="\t", quoting=csv.QUOTE_NONE, quotechar=None, lineterminator="\n"
+            )
             writer.writerow(HEADER)
             count = 0
             for row in _rows(value):
@@ -205,16 +218,22 @@ def migrate(root, *, replace=False, keep_json=False):
         if semantic_sha256(load(target)) != semantic:
             raise ValueError(f"Conversion changed evidence: {source}")
         records[str(target.relative_to(root))] = dict(
-            source=str(source.relative_to(root)), source_sha256=source_hashes[source],
-            target=str(target.relative_to(root)), target_sha256=_file_sha256(target),
-            semantic_sha256=semantic, source_bytes=len(original),
-            target_bytes=target.stat().st_size, rows=rows,
+            source=str(source.relative_to(root)),
+            source_sha256=source_hashes[source],
+            target=str(target.relative_to(root)),
+            target_sha256=_file_sha256(target),
+            semantic_sha256=semantic,
+            source_bytes=len(original),
+            target_bytes=target.stat().st_size,
+            rows=rows,
         )
     for source, original_hash in source_hashes.items():
         if _file_sha256(source) != original_hash:
             raise ValueError(f"Source changed during conversion; sources retained: {source}")
     with (root / "conversion.tsv").open("w", newline="") as stream:
-        writer = csv.DictWriter(stream, fieldnames=INDEX_HEADER, delimiter="\t", lineterminator="\n")
+        writer = csv.DictWriter(
+            stream, fieldnames=INDEX_HEADER, delimiter="\t", lineterminator="\n"
+        )
         writer.writeheader()
         writer.writerows(records[key] for key in sorted(records))
     if not keep_json:
@@ -294,7 +313,9 @@ def main():
     elif args.command == "check":
         print(f"Verified {check(args.root, allow_json=args.allow_json)} converted evidence files")
     elif args.command == "retire":
-        print(f"Retired {retire(args.root, args.backup_dir)} JSON publication copies; originals retained in {args.backup_dir}")
+        print(
+            f"Retired {retire(args.root, args.backup_dir)} JSON publication copies; originals retained in {args.backup_dir}"
+        )
     else:
         if args.target.exists():
             raise FileExistsError(f"Refusing to overwrite {args.target}")
