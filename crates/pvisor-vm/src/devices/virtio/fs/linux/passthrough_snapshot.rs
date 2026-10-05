@@ -127,7 +127,10 @@ pub(super) fn capture(fs: &PassthroughFs) -> io::Result<FsSnapshot> {
         if data.exported.load(Ordering::Relaxed) {
             return Err(snapshot::unsupported("exported handle"));
         }
-        #[expect(clippy::readonly_write_lock, reason = "directory_entries changes and restores the shared descriptor cursor through OS calls")]
+        #[expect(
+            clippy::readonly_write_lock,
+            reason = "directory_entries changes and restores the shared descriptor cursor through OS calls"
+        )]
         let file = data.file.write().unwrap();
         let flags = unsafe { libc::fcntl(file.as_raw_fd(), libc::F_GETFL) };
         let offset = unsafe { libc::lseek(file.as_raw_fd(), 0, libc::SEEK_CUR) };

@@ -675,7 +675,7 @@ impl OverlayFs {
             if temporary_reference {
                 fs.forget(ctx, inode, 1);
             }
-            held_directory = None; // the backing lookup no longer uses its parent
+            drop(held_directory.take()); // backing lookup no longer uses its parent
             let entry = entry?;
             inode = entry.inode;
             temporary_reference = inode != fuse::ROOT_ID;
@@ -1746,6 +1746,97 @@ mod tests {
             Ok(len)
         }
     }
+    #[test]
+    fn cached_directory_borrow_survives_eviction_and_releases_the_final_reference() {
+        let temp = tempfile::tempdir().unwrap();
+        std::fs::create_dir_all(temp.path().join("lower/parent")).unwrap();
+        std::fs::write(temp.path().join("lower/parent/file"), b"content").unwrap();
+        let fs = parent_cache_fixture(temp.path());
+        let ctx = Context {
+            uid: 0,
+            gid: 0,
+            pid: 1,
+        };
+        let backing = fs
+            .core
+            .metadata_for_backing_lookup(Path::new("parent/file"))
+            .unwrap();
+        let entry = fs
+            .inner_entry_with_parents(Layer(1), Path::new("parent/file"), ctx, &backing.parents)
+            .unwrap();
+        fs.layers[1].forget(ctx, entry.inode, 1);
+        let reference = fs
+            .directory_cache
+            .lock()
+            .unwrap()
+            .entries
+            .values()
+            .next()
+            .unwrap()
+            .reference
+            .clone();
+        let inode = reference.inode;
+        fs.clear_directory_cache();
+        assert!(fs.directory_cache.lock().unwrap().entries.is_empty());
+        assert!(fs.layers[1].getattr(ctx, inode, None).is_ok());
+        let child = fs.layers[1].lookup(ctx, inode, c"file").unwrap();
+        fs.layers[1].forget(ctx, child.inode, 1);
+        drop(reference);
+        assert!(fs.layers[1].getattr(ctx, inode, None).is_err());
+    }
+
+    #[test]
+    fn concurrent_native_lookup_has_one_identity_and_keeps_each_returned_inode_alive() {
+        let temp = tempfile::tempdir().unwrap();
+        std::fs::create_dir(temp.path().join("lower")).unwrap();
+        for index in 0..32 {
+            std::fs::create_dir(temp.path().join(format!("lower/d{index}"))).unwrap();
+        }
+        let fs = parent_cache_fixture(temp.path());
+        fs.init(FsOptions::empty()).unwrap();
+        let barrier = std::sync::Barrier::new(8);
+        let results = Mutex::new(vec![Vec::new(); 32]);
+        std::thread::scope(|scope| {
+            for _ in 0..8 {
+                let native = &fs.layers[1];
+                let barrier = &barrier;
+                let results = &results;
+                scope.spawn(move || {
+                    let ctx = Context {
+                        uid: 0,
+                        gid: 0,
+                        pid: 1,
+                    };
+                    for index in 0..32 {
+                        let name = CString::new(format!("d{index}")).unwrap();
+                        barrier.wait();
+                        let entry = native.lookup(ctx, fuse::ROOT_ID, &name);
+                        barrier.wait(); // every lookup still owns a reference
+                        let outcome = match entry {
+                            Ok(entry) => {
+                                let live = native.getattr(ctx, entry.inode, None).is_ok();
+                                let inode = entry.inode;
+                                native.forget(ctx, inode, 1);
+                                (inode, live)
+                            }
+                            Err(_) => (0, false),
+                        };
+                        results.lock().unwrap()[index].push(outcome);
+                    }
+                });
+            }
+        });
+        for round in results.into_inner().unwrap() {
+            assert_eq!(round.len(), 8);
+            assert!(
+                round
+                    .iter()
+                    .all(|&(inode, live)| live && inode == round[0].0),
+                "duplicate or prematurely forgotten native inode: {round:?}"
+            );
+        }
+    }
+
     #[test]
     fn reads_overlap_but_release_waits_for_backing_io() {
         use std::sync::mpsc::channel;
