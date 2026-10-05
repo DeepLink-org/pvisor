@@ -89,6 +89,94 @@ fn finish(key: LeaseKey) -> Completion {
 }
 
 #[test]
+fn compact_graph_topology_keeps_full_spec_order_exact_retry_and_replay() {
+    let temp = tempfile::tempdir().unwrap();
+    let path = temp.path().join("graph-wal");
+    let mut s = Scheduler::open(&path, config()).unwrap();
+    let mut graph = graph_spec(
+        "rich-graph",
+        &[
+            ("z-root", &[]),
+            ("a-child", &["z-root"]),
+            ("m-child", &["z-root"]),
+        ],
+    );
+    for (index, node) in graph.nodes.iter_mut().enumerate() {
+        node.task.run.input =
+            serde_json::json!({"prompt":"x".repeat(32_768), "order":[index, 2, 1]});
+        node.task
+            .run
+            .metadata
+            .insert("custom".into(), serde_json::json!({"nested":{"key":index}}));
+        node.task
+            .labels
+            .insert("node-label".into(), index.to_string());
+        node.task.cache_keys.push(format!("cache-{index}"));
+    }
+    let original = serde_json::to_value(&graph).unwrap();
+    assert_eq!(
+        serde_json::to_value(s.submit_graph(graph.clone(), 10).unwrap().spec).unwrap(),
+        original
+    );
+    assert_eq!(s.task_records().len(), 3);
+    assert_eq!(
+        s.task_records()
+            .map(|task| task.spec.id.as_str())
+            .collect::<Vec<_>>(),
+        ["a-child", "m-child", "z-root"]
+    );
+    s.cancel_graph("rich-graph", 11).unwrap();
+    let unchanged_wal = std::fs::read(&path).unwrap();
+    assert_eq!(
+        serde_json::to_value(s.submit_graph(graph.clone(), 12).unwrap().spec).unwrap(),
+        original
+    );
+    let mut mutations = Vec::new();
+    let mut changed = graph.clone();
+    changed.nodes.swap(1, 2);
+    mutations.push(changed);
+    let mut changed = graph.clone();
+    changed.nodes[1].depends_on = vec!["m-child".into()];
+    mutations.push(changed);
+    let mut changed = graph.clone();
+    changed.nodes[0].task.run.input["order"] = serde_json::json!([1, 2, 3]);
+    mutations.push(changed);
+    let mut changed = graph.clone();
+    changed.nodes[0].task.run.metadata.insert(
+        "custom".into(),
+        serde_json::json!({"nested":{"key":"different"}}),
+    );
+    mutations.push(changed);
+    let mut changed = graph.clone();
+    changed.nodes[0].task.labels.clear();
+    mutations.push(changed);
+    let mut changed = graph.clone();
+    changed.nodes[0].task.cache_keys.clear();
+    mutations.push(changed);
+    let mut changed = graph.clone();
+    changed.tenant = "different".into();
+    mutations.push(changed);
+    let mut changed = graph.clone();
+    changed.nodes.pop();
+    mutations.push(changed);
+    for changed in mutations {
+        assert!(s.submit_graph(changed, 13).is_err());
+    }
+    assert_eq!(std::fs::read(&path).unwrap(), unchanged_wal);
+    drop(s);
+    let mut reopened = Scheduler::open(&path, config()).unwrap();
+    assert_eq!(
+        serde_json::to_value(reopened.graph("rich-graph").unwrap().spec).unwrap(),
+        original
+    );
+    assert_eq!(
+        serde_json::to_value(reopened.submit_graph(graph, 14).unwrap().spec).unwrap(),
+        original
+    );
+    assert_eq!(std::fs::read(&path).unwrap(), unchanged_wal);
+}
+
+#[test]
 fn cancelled_history_never_consumes_ready_window_and_counts_replay_every_transition() {
     let temp = tempfile::tempdir().unwrap();
     let path = temp.path().join("journal");
