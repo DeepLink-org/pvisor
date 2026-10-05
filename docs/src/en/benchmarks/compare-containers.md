@@ -20,7 +20,7 @@ Shared Linux/x86_64 host, AMD Ryzen 7 9700X, Fedora kernel 7.2.8-200.fc44.x86_64
 
 Docker Engine 29.7.2 uses a private rootless VFS daemon and writable bind mounts. This does not represent overlay2 or Docker Desktop. Firecracker 1.13.1 PCI runs without jailer; QEMU 10.2.2 uses q35/microvm with private ext4. pVisor VM uses virtio-fs and a different kernel. Kernel, storage, devices and staging semantics remain configuration differences; these results do not isolate the VMM or FUSE alone.
 
-Both use fresh validated fixtures. Operation timers exclude launch/exit; complete tasks include both. devcontainer plugins, overlay2, Docker Desktop and equivalent Git review timing are unmeasured.
+Both use fresh validated fixtures. Operation timers exclude launch/exit; complete tasks include both. devcontainer plugins, overlay2, Docker Desktop and complete container-plus-Git review workflows are unmeasured. See [review and selective application](supervision-cost.md) for the complete local stage versus Git worktree and reflink comparison.
 
 ## Data and analysis {#results}
 

@@ -1,7 +1,7 @@
-//! Job lifecycle commands and discovery of independent executable extensions.
+//! Job lifecycle commands and dispatch to first-party companions.
 mod checkpoint;
 mod commands;
-pub mod extensions;
+use crate::companions;
 mod product;
 mod run;
 pub mod runtime;
@@ -59,7 +59,7 @@ enum Command {
 
 fn root_command() -> anyhow::Result<clap::Command> {
     let mut command = Cli::command();
-    for (_, manifest) in extensions::discover()? {
+    for (_, manifest) in companions::discover()? {
         command = command.subcommand(clap::Command::new(manifest.name).about(manifest.description));
     }
     command.build();
@@ -120,7 +120,7 @@ fn grouped_commands(command: &clap::Command) -> String {
 fn normalize_default_run(mut args: Vec<OsString>, command: &clap::Command) -> Vec<OsString> {
     if let Some(first) = args.get(1).and_then(|arg| arg.to_str())
         && command.find_subcommand(first).is_none()
-        && !extensions::is_root_command(first)
+        && !companions::is_root_command(first)
         && !["--help", "-h", "--version", "-V"].contains(&first)
     {
         args.insert(1, "run".into());
@@ -153,30 +153,30 @@ pub fn main() -> anyhow::Result<()> {
         #[cfg(any(target_os = "macos", all(target_os = "linux", target_arch = "x86_64")))]
         if name == "service"
             && let Some(tool) = args.get(2).and_then(|arg| arg.to_str())
-            && extensions::is_service_tool(tool)
+            && companions::is_service_tool(tool)
         {
-            return extensions::dispatch(tool, &args[3..]);
+            return companions::dispatch(tool, &args[3..]);
         }
         #[cfg(any(target_os = "macos", all(target_os = "linux", target_arch = "x86_64")))]
         if name == "help"
             && args.get(2).is_some_and(|arg| arg == "service")
             && let Some(tool) = args.get(3).and_then(|arg| arg.to_str())
-            && extensions::is_service_tool(tool)
+            && companions::is_service_tool(tool)
         {
             let mut tool_args = args[4..].to_vec();
             tool_args.push("--help".into());
-            return extensions::dispatch(tool, &tool_args);
+            return companions::dispatch(tool, &tool_args);
         }
-        if extensions::is_root_command(name)
-            && let Some((path, _)) = extensions::find(name)?
+        if companions::is_root_command(name)
+            && let Some((path, _)) = companions::find(name)?
         {
-            return extensions::execute(path, &args[2..]);
+            return companions::execute(path, &args[2..]);
         }
         if name == "help"
             && let Some(target) = args.get(2).and_then(|arg| arg.to_str())
-            && extensions::is_root_command(target)
+            && companions::is_root_command(target)
         {
-            return extensions::dispatch(target, &["--help".into()]);
+            return companions::dispatch(target, &["--help".into()]);
         }
     }
     let args = normalize_default_run(args, &core_command);
@@ -212,7 +212,7 @@ pub fn main() -> anyhow::Result<()> {
                         terminal::available(),
                         "--tui/--ask requires an interactive terminal"
                     );
-                    return extensions::dispatch("tui", &args[1..]);
+                    return companions::dispatch("tui", &args[1..]);
                 }
             }
             let runtime = tokio::runtime::Runtime::new()?;
@@ -236,13 +236,13 @@ pub fn main() -> anyhow::Result<()> {
                     terminal::available(),
                     "--tui requires an interactive terminal"
                 );
-                return extensions::dispatch("tui", &args[1..]);
+                return companions::dispatch("tui", &args[1..]);
             }
             finish(tokio::runtime::Runtime::new()?.block_on(checkpoint::resume(resume))?);
         }
         Command::Kill(args) => runtime::kill(args)?,
         Command::Inspect(args) => finish(runtime::inspect(args)?),
-        Command::External(args) => extensions::dispatch(
+        Command::External(args) => companions::dispatch(
             args[0]
                 .to_str()
                 .ok_or_else(|| anyhow::anyhow!("extension name must be UTF-8"))?,

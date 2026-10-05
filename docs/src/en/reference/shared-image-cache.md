@@ -223,8 +223,8 @@ Paths/names use JSON arrays of Unix filename bytes, preserving non-UTF-8 names. 
 | `op` | Fields | Response `status` |
 | --- | --- | --- |
 | `ping` | None | `ready` (protocol v1) |
-| `prepare` | `image`, `architecture` (`amd64`/`arm64`), optional `refresh` (default false) | `prepared`: `digest`, `architecture`, `env`, `entrypoint`, `cmd`, optional `totals` (`files`, `bytes`), optional `metadata_generation`; all backends return `image_handle` |
-| `list` | `digest`, `path`, `offset` (zero-based entry index) | `entries`: sorted `names`, optional aligned `metadata`, `next_offset` (null when complete) |
+| `prepare` | `image`, `architecture` (`amd64`/`arm64`), optional `refresh` (default false) | `prepared`: `digest`, `architecture`, `env`, `entrypoint`, `cmd`, optional `totals` (`files`, `bytes`), required `metadata_generation` and `image_handle` |
+| `list` | `digest`, `path`, `offset` (zero-based entry index) | `entries`: sorted `names`, required aligned `metadata`, `next_offset` (null when complete) |
 | `stat` | `digest`, `path` | `metadata`: `kind`, `size`, `mode`, `uid`, `gid`, `inode`, `nlink`, `mtime`, `mtime_nsec`, `target` |
 | `read` | `digest`, `path`, `offset` (bytes), `length` (1..1048576) | `data`: `length`, `sha256`, then raw bytes |
 
@@ -232,7 +232,7 @@ Paths/names use JSON arrays of Unix filename bytes, preserving non-UTF-8 names. 
 
 Reference/architecture locks cover resolution/preparation; concurrent callers recheck/reuse the first successful result. Preparation may populate uncached images and retains existing digest extraction locks. `read`/`stat`/`list` require published immutable image handles and never pull images implicitly.
 
-Directory pages include stat-equivalent attributes, avoiding one request per child. Pages contain at most 256 entries, shrinking to fit the JSON frame limit including long byte-array names/link targets. Older name-only responses remain compatible through individual stat requests. Persisted pages retain attributes across mounts.
+Directory pages include stat-equivalent attributes, avoiding one request per child. Pages contain at most 256 entries, shrinking to fit the JSON frame limit including long byte-array names/link targets. Directory attributes are required; name-only responses are rejected. Persisted pages retain attributes across mounts.
 
 `kind` is `file`, `directory`, `symlink` or `special`. `mode` contains Unix type/permission bits; `target` contains link bytes or null. Attributes reflect the server's extracted filesystem. v1 does not reconstruct original tar ownership, provide xattrs or define portable inode IDs across servers. Only regular files are readable. Short reads, including zero bytes, indicate EOF. Clients must verify body length and SHA-256 before caching. Hashes detect transfer corruption rather than independently proving correctness against an untrusted server; server/storage are trusted.
 

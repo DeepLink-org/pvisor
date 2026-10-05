@@ -317,8 +317,8 @@ impl LoadedImage {
     }
     pub(super) fn prepared(&self) -> Response {
         Response::Prepared {
-            image_handle: Some(self.handle.encode()),
-            metadata_generation: Some(format!("sha256:{}", self.handle.revision)),
+            image_handle: self.handle.encode(),
+            metadata_generation: format!("sha256:{}", self.handle.revision),
             totals: Some(self.config.totals),
             digest: self.commit.manifest_digest.clone(),
             architecture: self.config.architecture.clone(),
@@ -526,7 +526,7 @@ impl LoadedImage {
                 if record.key.parent != parent.id {
                     return Ok(Response::Entries {
                         names,
-                        metadata: Some(metadata),
+                        metadata,
                         next_offset: None,
                     });
                 }
@@ -550,7 +550,7 @@ impl LoadedImage {
                     ensure!(!names.is_empty(), "directory entry exceeds protocol limit");
                     return Ok(Response::Entries {
                         names,
-                        metadata: Some(metadata),
+                        metadata,
                         next_offset: Some(page as usize * 256 + slot),
                     });
                 }
@@ -563,7 +563,7 @@ impl LoadedImage {
             if node.next == 0 {
                 return Ok(Response::Entries {
                     names,
-                    metadata: Some(metadata),
+                    metadata,
                     next_offset: None,
                 });
             }

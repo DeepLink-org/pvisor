@@ -68,7 +68,7 @@ fn unix_client_roundtrip_and_parallel_reads() {
     };
     let (prepared, _) = cache.publish(&store, &image, "amd64", "fixture").unwrap();
     let Response::Prepared {
-        image_handle: Some(digest),
+        image_handle: digest,
         ..
     } = prepared
     else {
@@ -185,7 +185,7 @@ fn server_and_direct_readers_share_revisions_after_source_removal() {
     let (canonical, _) = crate::image::oci::cache_reference("fixture:test").unwrap();
     let (prepared, _) = cache.publish(&store, &image, "amd64", &canonical).unwrap();
     let Response::Prepared {
-        image_handle: Some(handle),
+        image_handle: handle,
         ..
     } = prepared
     else {

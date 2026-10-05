@@ -308,7 +308,7 @@ fn path_cannot_supply_companions_and_unknown_commands_are_not_discovered() {
         assert!(!output.status.success());
         let error = String::from_utf8_lossy(&output.stderr);
         if name == "tui" {
-            assert!(error.contains("extension is not installed"), "{error}");
+            assert!(error.contains("companion is not installed"), "{error}");
         } else {
             assert!(!error.contains("was removed"), "{error}");
         }

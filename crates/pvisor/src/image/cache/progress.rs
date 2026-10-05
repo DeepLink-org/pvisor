@@ -3,7 +3,7 @@ use serde::{Deserialize, Serialize};
 use std::cell::RefCell;
 use std::collections::HashSet;
 use std::io::Write;
-use std::path::{Path, PathBuf};
+use std::path::PathBuf;
 use std::sync::{OnceLock, mpsc};
 use std::time::{Duration, Instant};
 
@@ -141,46 +141,6 @@ impl Downloads {
     }
 }
 
-pub(super) fn image_totals(
-    store: &crate::image::oci::ImageStore,
-    digest: &str,
-) -> anyhow::Result<ImageTotals> {
-    let hex = crate::image::oci::digest_hex(digest)?;
-    let record = store
-        .root
-        .join("metadata/sha256")
-        .join(format!("{hex}.totals-v1.json"));
-    if let Ok(bytes) = std::fs::read(&record)
-        && let Ok(totals) = serde_json::from_slice(&bytes)
-    {
-        return Ok(totals);
-    }
-    let totals = scan_totals(&store.root.join("rootfs-v3/sha256").join(hex))?;
-    crate::util::atomic_write(&record, &serde_json::to_vec(&totals)?, 0o600)?;
-    Ok(totals)
-}
-
-fn scan_totals(root: &Path) -> anyhow::Result<ImageTotals> {
-    let mut directories = vec![root.to_path_buf()];
-    let mut totals = ImageTotals::default();
-    while let Some(directory) = directories.pop() {
-        for entry in std::fs::read_dir(directory)? {
-            let entry = entry?;
-            let metadata = std::fs::symlink_metadata(entry.path())?;
-            if metadata.is_dir() {
-                directories.push(entry.path());
-            } else if metadata.is_file() {
-                totals.files += 1;
-                totals.bytes = totals
-                    .bytes
-                    .checked_add(metadata.len())
-                    .ok_or_else(|| anyhow::anyhow!("image size overflow"))?;
-            }
-        }
-    }
-    Ok(totals)
-}
-
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -197,19 +157,6 @@ mod tests {
         );
     }
 
-    #[test]
-    fn totals_count_regular_paths_without_following_links() {
-        let root = tempfile::tempdir().unwrap();
-        std::fs::create_dir(root.path().join("dir")).unwrap();
-        std::fs::write(root.path().join("dir/file"), b"hello").unwrap();
-        std::fs::write(root.path().join("empty"), b"").unwrap();
-        std::os::unix::fs::symlink("dir", root.path().join("alias")).unwrap();
-        std::os::unix::fs::symlink("/", root.path().join("outside")).unwrap();
-        assert_eq!(
-            scan_totals(root.path()).unwrap(),
-            ImageTotals { files: 2, bytes: 5 }
-        );
-    }
     #[test]
     fn snapshots_count_each_file_once_but_all_transferred_bytes() {
         let directory = tempfile::tempdir().unwrap();

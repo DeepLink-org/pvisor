@@ -54,11 +54,9 @@ pub(super) struct Envelope {
 pub enum Response {
     Ready,
     Prepared {
-        /// Immutable image/platform/revision handle for daemonless v1 reads.
-        #[serde(default, skip_serializing_if = "Option::is_none")]
-        image_handle: Option<String>,
-        #[serde(default)]
-        metadata_generation: Option<String>,
+        /// Immutable image/platform/revision handle used by every reader.
+        image_handle: String,
+        metadata_generation: String,
         #[serde(default)]
         totals: Option<ImageTotals>,
         digest: String,
@@ -69,9 +67,8 @@ pub enum Response {
     },
     Entries {
         names: Vec<Vec<u8>>,
-        /// Attributes aligned with names; absent on older servers.
-        #[serde(default, skip_serializing_if = "Option::is_none")]
-        metadata: Option<Vec<Response>>,
+        /// Attributes aligned with names, required on every directory page.
+        metadata: Vec<Response>,
         next_offset: Option<usize>,
     },
     Metadata {
@@ -121,4 +118,27 @@ pub(super) fn write_frame(stream: &mut impl Write, value: &impl Serialize) -> an
 
 pub(super) fn hash(bytes: &[u8]) -> String {
     format!("sha256:{}", crate::util::encode_hex(&Sha256::digest(bytes)))
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn prepared_responses_require_an_immutable_handle_and_generation() {
+        let complete = serde_json::json!({
+            "status": "prepared", "image_handle": "pvisor-v1:revision",
+            "metadata_generation": "sha256:revision", "digest": "sha256:manifest",
+            "architecture": "amd64", "env": {}, "entrypoint": [], "cmd": []
+        });
+        serde_json::from_value::<Response>(complete.clone()).unwrap();
+        for field in ["image_handle", "metadata_generation"] {
+            let mut missing = complete.clone();
+            missing.as_object_mut().unwrap().remove(field);
+            assert!(serde_json::from_value::<Response>(missing).is_err());
+            let mut null = complete.clone();
+            null[field] = serde_json::Value::Null;
+            assert!(serde_json::from_value::<Response>(null).is_err());
+        }
+    }
 }

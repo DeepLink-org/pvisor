@@ -285,7 +285,7 @@ fn direct_managed_config(args: &ReplayArgs) -> Result<ReplayToml, ReplayError> {
 }
 
 fn run_managed(config: &ReplayToml) -> Result<i32, ReplayError> {
-    let executable = pvisor::cli::extensions::core_executable().map_err(|error| {
+    let executable = pvisor::companions::core_executable().map_err(|error| {
         ReplayError::configuration(format!("cannot resolve the pVisor executable: {error}"))
     })?;
     let mut outer = PVisorRunConfig::default();

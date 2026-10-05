@@ -63,7 +63,7 @@ fn paths_metadata_pagination_and_eof() {
             metadata,
             next_offset,
         } => {
-            assert_eq!(metadata.as_ref().unwrap().len(), names.len());
+            assert_eq!(metadata.len(), names.len());
             assert_eq!(
                 names,
                 [
@@ -146,7 +146,7 @@ fn paths_metadata_pagination_and_eof() {
 }
 
 #[test]
-fn directory_metadata_pages_fit_frames_and_old_pages_still_decode() {
+fn directory_metadata_pages_fit_frames_and_old_pages_are_rejected() {
     use std::os::unix::ffi::OsStringExt;
     let (_tmp, store, digest) = fixture();
     let root = store.root.join("rootfs-v3/sha256").join(&digest[7..]);
@@ -179,7 +179,7 @@ fn directory_metadata_pages_fit_frames_and_old_pages_still_decode() {
         else {
             panic!()
         };
-        assert_eq!(metadata.unwrap().len(), names.len());
+        assert_eq!(metadata.len(), names.len());
         assert!(!names.is_empty());
         offset += names.len();
         pages += 1;
@@ -191,7 +191,10 @@ fn directory_metadata_pages_fit_frames_and_old_pages_still_decode() {
     }
     assert_eq!(offset, 260);
     assert!(pages > 1);
-    let old: Response =
-        serde_json::from_str(r#"{"status":"entries","names":[[97]],"next_offset":null}"#).unwrap();
-    assert!(matches!(old, Response::Entries { metadata: None, .. }));
+    assert!(
+        serde_json::from_str::<Response>(
+            r#"{"status":"entries","names":[[97]],"next_offset":null}"#
+        )
+        .is_err()
+    );
 }

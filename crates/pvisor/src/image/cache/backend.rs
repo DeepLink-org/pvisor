@@ -322,13 +322,11 @@ impl RemoteFs {
                 else {
                     anyhow::bail!("expected cache directory response");
                 };
-                if let Some(attributes) = &metadata {
-                    ensure!(
-                        attributes.len() == names.len(),
-                        "directory metadata count mismatch"
-                    );
-                }
-                let mut attributes = metadata.map(Vec::into_iter);
+                ensure!(
+                    metadata.len() == names.len(),
+                    "directory metadata count mismatch"
+                );
+                let mut attributes = metadata.into_iter();
                 for name in names {
                     // Validate untrusted directory names before using them as paths.
                     ensure!(
@@ -339,17 +337,12 @@ impl RemoteFs {
                             && !name.contains(&0),
                         "invalid remote filename"
                     );
-                    let child = if let Some(attributes) = &mut attributes {
-                        let mut path = node.path.clone();
-                        if !path.is_empty() {
-                            path.push(b'/');
-                        }
-                        path.extend_from_slice(&name);
-                        self.insert_node(path, attributes.next().unwrap())?
-                    } else {
-                        // Older servers and persisted v1 pages contain names only.
-                        self.child(ino, OsStr::from_bytes(&name))?
-                    };
+                    let mut path = node.path.clone();
+                    if !path.is_empty() {
+                        path.push(b'/');
+                    }
+                    path.extend_from_slice(&name);
+                    let child = self.insert_node(path, attributes.next().unwrap())?;
                     entries.push((child.attr.ino, child.attr.kind, OsString::from_vec(name)));
                 }
                 match next_offset {

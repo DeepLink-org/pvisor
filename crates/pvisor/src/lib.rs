@@ -16,6 +16,8 @@ pub mod trace;
 pub use session::Session;
 
 mod cache_budget;
+#[cfg(any(target_os = "macos", all(target_os = "linux", target_arch = "x86_64")))]
+pub mod companions;
 mod config;
 #[doc(hidden)]
 pub mod diagnostics;
@@ -24,7 +26,6 @@ mod image;
 #[cfg(any(target_os = "macos", all(target_os = "linux", target_arch = "x86_64")))]
 pub mod node;
 pub mod ram_backing;
-#[cfg(any(target_os = "macos", all(target_os = "linux", target_arch = "x86_64")))]
 pub mod service;
 
 #[doc(hidden)]

@@ -82,40 +82,15 @@ impl PortableCache {
         let mut entries = Vec::new();
         let mut pending = vec![Vec::new()];
         while let Some(path) = pending.pop() {
-            let (metadata, _) = super::super::source::handle(
-                store,
-                Request::Stat {
-                    digest: image.digest.clone(),
-                    path: path.clone(),
-                },
-            )?;
+            let metadata = super::super::source::stat(store, &image.digest, &path)?;
             if matches!(&metadata,Response::Metadata{kind,..} if kind=="directory") {
-                let mut offset = 0;
-                loop {
-                    let (response, _) = super::super::source::handle(
-                        store,
-                        Request::List {
-                            digest: image.digest.clone(),
-                            path: path.clone(),
-                            offset,
-                        },
-                    )?;
-                    let Response::Entries {
-                        names, next_offset, ..
-                    } = response
-                    else {
-                        bail!("invalid source directory")
-                    };
-                    for name in names {
-                        let mut child = path.clone();
-                        if !child.is_empty() {
-                            child.push(b'/');
-                        }
-                        child.extend(name);
-                        pending.push(child);
+                for name in super::super::source::directory(store, &image.digest, &path)?.iter() {
+                    let mut child = path.clone();
+                    if !child.is_empty() {
+                        child.push(b'/');
                     }
-                    let Some(next) = next_offset else { break };
-                    offset = next;
+                    child.extend_from_slice(name);
+                    pending.push(child);
                 }
             }
             entries.push(SourceEntry {

@@ -431,7 +431,7 @@ pub(crate) fn attach_runner_lowers<'a>(
             client_binding = local_binding;
         }
         let client = CacheClient::from_binding(client_binding)?;
-        if let Some(location) = client.endpoint.strip_prefix("file://") {
+        if let Some(location) = client.address().strip_prefix("file://") {
             owners.read_only.push(location.into());
         }
         owners.read_write.push(parent.to_owned());

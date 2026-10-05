@@ -74,7 +74,10 @@ fn inspect_sources(directory: &Path) {
     for entry in std::fs::read_dir(directory).unwrap() {
         let path = entry.unwrap().path();
         if path.is_dir() {
-            if path.file_name().unwrap() != "pvisor-vm" {
+            // Benchmark downloads contain third-party rootfs/toolchain sources,
+            // which are not callers owned by this repository.
+            let name = path.file_name().unwrap();
+            if name != "pvisor-vm" && name != ".data" {
                 inspect_sources(&path);
             }
         } else if path.extension().is_some_and(|extension| extension == "rs") {

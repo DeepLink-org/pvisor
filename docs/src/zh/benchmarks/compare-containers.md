@@ -20,7 +20,7 @@
 
 Docker Engine 29.7.2 使用专用 rootless VFS daemon 与可写 bind mount，结果不代表 overlay2 或 Docker Desktop。Firecracker 1.13.1 PCI 不使用 jailer；QEMU 10.2.2 分别使用 q35/microvm、私有 ext4。pVisor VM 使用 virtio-fs 和不同内核。内核、存储、设备及暂存语义均有差异，不能把差距单独归因于 VMM 或 FUSE。
 
-均使用新建、经校验的 fixture。单项不含启动/退出，完整任务包含二者。devcontainer 插件、overlay2、Docker Desktop 与对等 Git 审查耗时未测。
+均使用新建、经校验的 fixture。单项不含启动/退出，完整任务包含二者。devcontainer 插件、overlay2、Docker Desktop 和容器结合 Git 的完整审查流程未测。本机 stage 与 Git worktree、reflink 的完整流程对照见[审查与选择性合入](supervision-cost.md)。
 
 ## 实验数据和分析 {#results}
 

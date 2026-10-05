@@ -89,7 +89,7 @@ pub(crate) fn publish_layer_prepared(
     })
     .unwrap();
     let Response::Prepared {
-        image_handle: Some(handle),
+        image_handle: handle,
         digest,
         ..
     } = client

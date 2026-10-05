@@ -1,6 +1,6 @@
 use super::*;
 use crate::image::cache::protocol::{Envelope, read_frame, write_frame};
-use crate::image::cache::source::handle;
+use crate::image::cache::source::{Request as SourceRequest, handle};
 use crate::image::oci::ImageStore;
 use std::os::unix::net::UnixListener;
 use std::sync::{
@@ -61,7 +61,40 @@ pub(crate) fn fixture() -> (tempfile::TempDir, Server, CacheClient, String) {
             if matches!(&envelope.request, CacheRequest::Read { .. }) {
                 worker_reads.fetch_add(1, Ordering::Relaxed);
             }
-            let (response, bytes) = handle(&store, envelope.request).unwrap_or_else(|e| {
+            let result = match envelope.request {
+                CacheRequest::Ping => Ok((Response::Ready, Vec::new())),
+                CacheRequest::Stat { digest, path } => {
+                    handle(&store, SourceRequest::Stat { digest, path })
+                }
+                CacheRequest::List {
+                    digest,
+                    path,
+                    offset,
+                } => handle(
+                    &store,
+                    SourceRequest::List {
+                        digest,
+                        path,
+                        offset,
+                    },
+                ),
+                CacheRequest::Read {
+                    digest,
+                    path,
+                    offset,
+                    length,
+                } => handle(
+                    &store,
+                    SourceRequest::Read {
+                        digest,
+                        path,
+                        offset,
+                        length,
+                    },
+                ),
+                _ => Err(anyhow::anyhow!("unsupported test request")),
+            };
+            let (response, bytes) = result.unwrap_or_else(|e| {
                 let code = if e
                     .downcast_ref::<std::io::Error>()
                     .is_some_and(|e| e.kind() == std::io::ErrorKind::NotFound)
@@ -189,7 +222,7 @@ fn persistent_metadata_survives_remount_and_rejects_corruption() {
     let (temp, server, client, digest) = fixture();
     let blocks = temp.path().join("blocks");
     let metadata = temp.path().join("metadata");
-    let endpoint = client.endpoint.clone();
+    let endpoint = client.address().to_owned();
     let mut cold = RemoteFs::new(
         client,
         digest.clone(),
@@ -300,7 +333,7 @@ fn reads_only_requested_blocks_and_reuses_verified_cache() {
             .downloaded_bytes,
         3 * MAX_READ as u64
     );
-    let warm_client = CacheClient::new(filesystem.client.endpoint.clone(), None).unwrap();
+    let warm_client = CacheClient::new(filesystem.client.address().to_owned(), None).unwrap();
     let mut warm = RemoteFs::new(
         warm_client,
         filesystem.digest.clone(),
@@ -355,7 +388,7 @@ fn auto_probe_distinguishes_absence_from_explicit_failure() {
     );
     let (_temp, _server, client, _) = fixture();
     assert!(
-        CacheClient::probe(client.endpoint.clone(), None, false)
+        CacheClient::probe(client.address().to_owned(), None, false)
             .unwrap()
             .is_some()
     );

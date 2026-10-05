@@ -33,6 +33,7 @@ Startup/filesystem: 2026-10-05, repair: 2026-10-06, N=60/backend/workload, failu
 | [Prepared startup](startup.md) | pVisor VM 99.76 ms; Firecracker 74.74 ms; QEMU microvm 86.60 ms | Lightweight-VM startup range |
 | [Repair through exit](agent-tasks.md) | staged 0.68 s; VM 3.25 s; QEMU microvm 1.27 s | Complete tool waiting matters |
 | [Seven tools through exit](filesystem.md) | staged 1.29 s; VM 6.66 s; Firecracker 2.16 s | VM tool/file costs remain substantial |
+| [Workspace creation through review, selective application and disposal](supervision-cost.md) | 10,000 files, twenty edits: stage 141 ms; Git worktree 252 ms; reflink 349 ms | Sparse edits in large workspaces benefit; Git is faster in small workspaces |
 | [Apply](apply.md) | 10: 15.01 ms; 1,000: 836.38 ms; 100,000: 330.40 s | Git patch is faster; semantics differ |
 | [Network](network.md) | host proxy 1.24 ms; native 0.95 ms / local request | Budget VM bulk transfer separately |
 | [Agent CLIs](agent-tasks.md#cli-compatibility) | Pinned Codex passes; Claude/VM initialization timeout | Check the exact client version |

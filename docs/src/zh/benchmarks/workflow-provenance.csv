@@ -1,0 +1,23 @@
+field,value
+benchmark_id,B-WORKFLOW
+recorded_at,2026-10-05T17:04:00.877210+00:00
+arguments,"{""binary"": ""benchmark/.data/build-20261005/pvisor"", ""binary_source_commit"": ""df7d6436827e79cab3636ee78f9f466c48939b25"", ""cases"": ""normal,conflict"", ""cpu_affinity"": ""0,1"", ""output"": ""benchmark/.data/workflow-20261006"", ""samples"": 30, ""seed"": 20261006, ""sizes"": ""100,10000"", ""source_manifest"": ""benchmark/.data/build-20261005/current-source-manifest.json"", ""warmups"": 3}"
+host_kernel,7.2.8-200.fc44.x86_64
+host_platform,Linux-7.2.8-200.fc44.x86_64-x86_64-with-glibc2.43
+cpu_model,AMD Ryzen 7 9700X 8-Core Processor
+host_load_before,"[2.2763671875, 2.029296875, 2.0771484375]"
+binary_sha256,3bfd9aca23890c990c4e0c93dacdf58dff833c01f31f628fe4f23e4c060d54df
+binary_source_commit,df7d6436827e79cab3636ee78f9f466c48939b25
+source_manifest_sha256,f2e02943b9503744bc45f242c6a1d9f73d00dc81c209082381756a400a1655a2
+harness_sha256,930a0b13946bd7d2f0e22fcc36eea749d371794c44a45ac2d0b1390515644c15
+worker_sha256,fa5dc7b37fdba20655bff62278d7527e54881fe9e15fd446d9d0a0d51a055b11
+git_version,git version 2.55.0
+cp_version,cp (GNU coreutils) 9.10
+filesystem,btrfs
+protocol,"{""bytes_per_original_file"": 4096, ""cache"": ""warm; no eviction"", ""changes"": 20, ""failures"": ""retained with logs, never treated as zero or replaced by reruns"", ""git_config"": ""system/global config disabled; local core.autocrlf=false and core.hooksPath=/dev/null"", ""human_time"": ""unmeasured"", ""interference"": ""no timing-based exclusions; retain every valid slow sample"", ""isolation"": ""pVisor rootless process; Git/reflink native processes, not a security ranking"", ""selected"": 10, ""timing"": ""sum of view preparation, run, full content review, selected patch extraction/check/apply, disposal; fixture reset and correctness checks excluded""}"
+fixtures,"{""100"": {""bytes"": 409600, ""files"": 100, ""git_commit"": ""432820007955c20e7aedfd2c33bdc432e3b5eca5""}, ""10000"": {""bytes"": 40960000, ""files"": 10000, ""git_commit"": ""c87d278683fa35bbfa8100b80efcd1aec0566058""}}"
+host_load_after,"[4.57177734375, 3.5966796875, 2.71044921875]"
+report_sha256,5f69af7582d4748d4aad6ffc80680fddca436848021c1a4aea93ec1b01e00bef
+raw_location,benchmark/.data/workflow-20261006/report.json
+successful_measured_samples,360
+statistics,linear P95 descriptive; separated clusters replace P50; no P99; no pooled cohorts

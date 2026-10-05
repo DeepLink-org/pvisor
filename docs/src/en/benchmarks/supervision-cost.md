@@ -1,56 +1,69 @@
-# What is the machine cost of batch review and selective application?
+# Which workflow costs less: a private task workspace, review and selective application?
 
 ## Main conclusions {#conclusions}
 
-**Reviewing 20 files, applying ten and dropping the other ten takes about 25 ms at machine-side P50. That cost suits interactive use. Human reading and decision time is unmeasured, so no percentage reduction in supervision time is established. Git/diff workflows can also batch review.**
+**Creating a fresh task workspace, changing 20 of 10,000 files and retaining ten takes 141 ms at complete machine-workflow P50 with pVisor stage, 252 ms with Git worktree and 349 ms with a btrfs reflink copy. Stage suits sparse changes in large workspaces; Git costs less in a 100-file workspace.**
 
-| Need | Selection implication |
+| User scenario | Selection implication |
 |---|---|
-| Batch review and path selection | Machine steps fit an interactive flow |
-| Existing Git/diff review workflow | No equivalent timing ranking is available |
-| Estimate human supervision cost | Requires a separate participant study |
+| Large workspace, sparse changes, disposable task view | Stage reduces whole-tree creation, scanning and disposal costs |
+| Small workspace or a prepared, reused Git worktree | Git is faster for small workspaces; workspace reuse is unmeasured |
+| Estimate human supervision cost | Machine timings exclude human reading and decisions |
 
 ## Motivation {#motivation}
 
-Agent speed is only part of the experience: approvals, diff reading and conflict resolution also matter. Machine overhead and human supervision need separate evidence.
+An Agent task needs a private workspace, diff review, selective application and disposal as well as tool execution. Individual filesystem timings omit these costs. If you frequently create task workspaces, compare the entire workflow that produces the same result.
 
 ## Experiment design {#interpretation}
 
-30 independent stages, no warmups. Each run checks all 20 review items, applies 10 paths and verifies target contents, then drops the remaining 10 and verifies unchanged lower files. Wall time is the three machine steps summed; it excludes stage generation, user waiting and reading.
+The controls are pVisor rootless stage, a detached Git worktree and a btrfs reflink copy. Inputs are identical prepared, committed and packed Git repositories containing either 100 or 10,000 files of 4 KiB each. Each task changes twenty files, produces their complete content diffs, applies the first ten and discards the rest. Git and reflink workflows extract a patch for the selected paths with `git diff`, run `git apply --check`, then apply it.
 
-These results are from Linux/x86_64; matching macOS workloads are unmeasured. Linked reports pin artifacts, cache conditions and samples.
+Timing covers task-view creation, executing edits, content review, selective application and disposal, summed across machine steps. Stage's view creation is included in run. Preparing input repositories, resetting every control to an identical starting point and harness correctness checks are excluded. Prepared, long-lived worktree reuse is unmeasured.
 
-Tables identify pinned artifacts and measurement dates. Failed or invalid samples are excluded from successful timings and counted separately. Existing measurements have no predefined host-interference filter; all slow valid samples are retained. P95 from 30 or fewer samples is descriptive only; no P99 or stable tail-latency claim is made.
+Linux/x86_64, AMD Ryzen 7 9700X, Fedora kernel 7.2.8-200.fc44.x86_64, btrfs; the entire execution tree is pinned to host CPUs 0,1. Each backend, size and application condition has thirty independent samples and three warmups, randomized and interleaved with a fixed seed and warm caches. Git automatic maintenance is disabled; reflink is required and cannot fall back to a regular copy. Downloaded provenance identifies frozen artifacts and source digests.
+
+Normal application and a host conflict are separate conditions. Every sample must pass complete file inventory and content checks: execution leaves the original unchanged; normal application changes only the ten selected files. The conflict case changes one selected host file before application and requires refusing the entire application while preserving all host content. Stage also requires Run Bundle evidence of staging and rootless isolation. Failures are retained and counted, never timed as zero; no samples are excluded for their speed. Two sizes × two conditions × three backends produce 360 measured samples, with zero failures.
+
+This fixed file-editing task excludes inference, compilation and human reading. Git/reflink execute native processes with different isolation. Conflict checks do not cover races between Git's check and write, or compare crash recovery and durability guarantees. These results do not rank containers, VMs or security.
 
 ## Data and analysis {#results}
 
-| Workflow | Fixed 20-file review and selective application | Human reading time |
-|---|---|---|
-| pVisor review / apply / drop | Measured; steps below | Unmeasured |
-| Git diff / worktree / patch | Equivalent workflow unmeasured | Unmeasured |
+### Complete task cost {#baseline-meaning}
 
-Step timings are P50 / descriptive P95 milliseconds; N=30, no warmups, 2026-10-04.
+Same host and batch, 2026-10-06; milliseconds, N=30 per cell. P95 is descriptive only. The small Git workspace has separated clusters: each cluster's count and median replaces a single P50.
 
-| Step | N | P50 / P95 ms |
-|---|---|---|
-| review_ms | 30 | 3.21 / 7.95 |
-| apply_ms | 30 | 17.62 / 43.66 |
-| drop_ms | 30 | 4.07 / 12.83 |
-| wall_ms | 30 | 24.94 / 64.74 |
+| Workspace files | pVisor stage P50 / P95 | Git worktree P50 / P95 | btrfs reflink P50 / P95 |
+|---|---:|---:|---:|
+| 100 | 110.88 / 149.68 | 25 runs: 22.40; 5 runs: 38.91 / P95 42.68 | 24.69 / 38.36 |
+| 10,000 | 141.45 / 192.17 | 252.22 / 317.03 | 348.61 / 541.61 |
 
-### Decisions and interpretation
+For 10,000 files, the stage-minus-Git median difference is **−110.77 ms, 95% CI [−114.37, −95.53]**. Against reflink it is **−207.16 ms, 95% CI [−216.85, −193.64]**. Intervals use 5,000 bootstrap resamples paired by randomized sampling round; both support stage being faster. In the small workspace, stage costs **86.19 ms more than reflink, 95% CI [84.72, 87.54]**. The separated Git distribution has no single median-difference ranking.
 
-Per-tool approval count depends on tool requests. Stage review can decide multiple changes together, while still requiring diff reading, conflict handling and path selection. Docker/Git can also batch review. There are no human participants here; batching files does not establish a 90% reduction in human time.
+### Where the cost lies
 
-These timings support a low machine cost for an automated review flow. They do not establish user satisfaction, decision accuracy or an optimal approval policy.
-### Baseline and interaction budget {#baseline-meaning}
+Normal application with 10,000 files; P50 milliseconds, N=30 per cell. Step medians do not sum to the complete workflow median.
 
-The familiar reference workflow is inspecting changes with Git/diff and selecting files to keep. An equivalent Git review workflow was not timed in this batch. The measured roughly 25 ms covers machine work for listing, filtering, and committing, which fits within an interaction. It does not mean a person can review changes in 25 ms or establish saved human time. Human review performance still requires a separate experiment.
+| Step | pVisor stage | Git worktree | btrfs reflink |
+|---|---:|---:|---:|
+| Create task view | Included in run | 86.27 | 107.19 |
+| Execute twenty edits | 84.31, including view creation | 13.64 | 13.85 |
+| Review complete content diffs | 6.76 | 73.74 | 152.76 |
+| Select, check and apply ten files | 46.43 | 4.35 | 4.12 |
+| Dispose of remaining task view | 3.43 | 74.69 | 68.25 |
 
-### Scope {#acceptance}
+Stage still adds tool-execution and application costs, but creating its private view, reviewing the changeset and discarding it do not require processing all 10,000 files. Git/reflink whole-tree work outweighs stage's additional costs in this sparse-edit workflow. This supports choosing stage for frequently created large task workspaces; it does not establish faster individual reads, writes or compilation.
 
-Human reading/decision time and real-team review success are unmeasured. Machine timings do not establish a percentage labor saving.
+### Cost of preserving a host conflict {#acceptance}
+
+One selected host file is changed before application. The complete workflow includes creation, execution, review, refusal and disposal. P50 milliseconds, N=30 per cell.
+
+| Workspace files | pVisor stage | Git worktree | btrfs reflink | Refused with all host content preserved |
+|---|---:|---:|---:|---|
+| 100 | 96.25 | 23.08 | 24.10 | 30/30 for each backend |
+| 10,000 | 99.28 | 250.79 | 346.04 | 30/30 for each backend |
+
+No participant study was conducted. Batch review and machine timing cannot be converted into human time savings.
 
 ### Downloads and reproduction {#run}
 
-[Derived table CSV](supervision-cost.csv) · [Evidence source summary](evidence-sources.csv) · [Comparison method](methodology.md) · [Runner manual](https://github.com/DeepLink-org/pvisor/blob/main/benchmark/pvisor/README.md)
+[Derived table CSV](supervision-cost.csv) · [Step statistics](workflow-summary.csv) · [Differences and confidence intervals](workflow-comparisons.csv) · [Sources and artifacts](workflow-provenance.csv) · [Evidence source summary](evidence-sources.csv) · [Comparison method](methodology.md) · [Runner manual](https://github.com/DeepLink-org/pvisor/blob/main/benchmark/pvisor/README.md)

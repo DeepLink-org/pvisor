@@ -16,10 +16,16 @@ struct CacheConnectError(#[source] std::io::Error);
 
 /// Blocking client; call from the host side, outside filesystem operation locks.
 pub struct CacheClient {
-    pub(super) endpoint: String,
-    token: Option<String>,
-    direct: Option<PortableCache>,
+    transport: CacheTransport,
     binding: ClientBinding,
+}
+
+enum CacheTransport {
+    Server {
+        endpoint: Endpoint,
+        token: Option<String>,
+    },
+    Objects(PortableCache),
 }
 
 /// Private host-side runner handoff. Never include this in a guest view.
@@ -46,11 +52,16 @@ impl ClientBinding {
 }
 impl CacheClient {
     pub(super) fn local_objects_directory(&self) -> Option<std::path::PathBuf> {
-        self.direct.as_ref()?;
+        if !matches!(self.transport, CacheTransport::Objects(_)) {
+            return None;
+        }
         dirs::cache_dir().map(|root| {
             root.join("pvisor/cache-v1/objects")
-                .join(&hash(self.endpoint.as_bytes())[7..])
+                .join(&hash(self.address().as_bytes())[7..])
         })
+    }
+    pub(super) fn address(&self) -> &str {
+        &self.binding.address
     }
     pub(super) fn binding(&self) -> ClientBinding {
         self.binding.clone()
@@ -90,14 +101,14 @@ impl CacheClient {
             local_store: local_store.clone(),
             read_only,
         };
-        let direct = if let Some(path) = address.strip_prefix("file://") {
-            Some(PortableCache::new(
+        let transport = if let Some(path) = address.strip_prefix("file://") {
+            CacheTransport::Objects(PortableCache::new(
                 Storage::filesystem(path.into(), !read_only)?,
                 local_store,
                 read_only,
             ))
         } else if address.starts_with("s3://") {
-            Some(PortableCache::new(
+            CacheTransport::Objects(PortableCache::new(
                 Storage::s3(&address)?,
                 local_store,
                 read_only,
@@ -107,22 +118,26 @@ impl CacheClient {
                 !read_only,
                 "read-only mode requires filesystem or S3 cache backend"
             );
-            if matches!(endpoint(&address)?, Endpoint::Tcp(_)) {
+            let endpoint = endpoint(&address)?;
+            if matches!(endpoint, Endpoint::Tcp(_)) {
                 ensure!(
                     token.as_ref().is_some_and(|s| !s.is_empty()),
                     "TCP requires {TOKEN_ENV}"
                 );
             }
-            None
+            CacheTransport::Server { endpoint, token }
         };
         let local_objects = dirs::cache_dir().map(|root| {
             root.join("pvisor/cache-v1/objects")
                 .join(&hash(address.as_bytes())[7..])
         });
         Ok(Self {
-            endpoint: address,
-            token,
-            direct: direct.map(|cache| cache.with_local_objects(local_objects)),
+            transport: match transport {
+                CacheTransport::Objects(cache) => {
+                    CacheTransport::Objects(cache.with_local_objects(local_objects))
+                }
+                server => server,
+            },
             binding,
         })
     }
@@ -184,10 +199,10 @@ impl CacheClient {
         architecture: &str,
         refresh: bool,
     ) -> anyhow::Result<Response> {
-        self.direct
-            .as_ref()
-            .context("publish requires a filesystem or S3 backend")?
-            .publish_image(image, architecture, refresh)
+        match &self.transport {
+            CacheTransport::Objects(cache) => cache.publish_image(image, architecture, refresh),
+            CacheTransport::Server { .. } => bail!("publish requires a filesystem or S3 backend"),
+        }
     }
 
     fn request_timeout(
@@ -195,26 +210,27 @@ impl CacheClient {
         request: Request,
         timeout: Duration,
     ) -> anyhow::Result<(Response, Vec<u8>)> {
-        if let Some(cache) = &self.direct {
-            return cache.request(request);
-        }
+        let (endpoint, token) = match &self.transport {
+            CacheTransport::Objects(cache) => return cache.request(request),
+            CacheTransport::Server { endpoint, token } => (endpoint, token),
+        };
         let expected = match &request {
             Request::Read { length, .. } => Some(*length),
             _ => None,
         };
-        let mut stream = match endpoint(&self.endpoint)? {
+        let mut stream = match endpoint {
             Endpoint::Unix(path) => Stream::Unix(
                 UnixStream::connect(path)
                     .map_err(CacheConnectError)
                     .with_context(|| {
                         format!(
                             "connect cache {}; start `pvisor service cache serve`",
-                            self.endpoint
+                            self.address()
                         )
                     })?,
             ),
             Endpoint::Tcp(address) => Stream::Tcp(
-                TcpStream::connect_timeout(&address, Duration::from_secs(10))
+                TcpStream::connect_timeout(address, Duration::from_secs(10))
                     .map_err(CacheConnectError)?,
             ),
         };
@@ -223,7 +239,7 @@ impl CacheClient {
             &mut stream,
             &Envelope {
                 version: 1,
-                token: self.token.clone(),
+                token: token.clone(),
                 request,
             },
         )?;

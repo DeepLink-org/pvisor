@@ -54,7 +54,7 @@ pub(crate) fn prepare_vm_image(
     let downloads = super::progress::Downloads::new(image);
     crate::diagnostics::diagnostic(format_args!(
         "pVisor image: lazy loading from {}",
-        client.endpoint
+        client.address()
     ));
     let (response, _) =
         super::progress::loading("waiting for cache to resolve and prepare image", || {
@@ -190,15 +190,15 @@ fn prepare_remote(
     crate::image::oci::digest_hex(&digest)?;
     if let Some(expected) = expected {
         ensure!(
-            image_handle.as_deref() == Some(expected),
+            image_handle == expected,
             "cache changed the requested immutable revision"
         );
     }
-    let read_handle = image_handle.unwrap_or_else(|| digest.clone());
+    let read_handle = image_handle;
     let cache = dirs::cache_dir()
         .context("cannot find user cache directory")?
         .join("pvisor/blocks")
-        .join(&hash(client.endpoint.as_bytes())[7..])
+        .join(&hash(client.address().as_bytes())[7..])
         .join(&hash(read_handle.as_bytes())[7..]);
     fs::create_dir_all(&cache)?;
     downloads.totals(totals);
@@ -209,11 +209,12 @@ fn prepare_remote(
             totals.bytes as f64 / (1024.0 * 1024.0)
         ));
     }
-    let metadata_cache = metadata_generation.map(|generation| {
+    let metadata_cache = Some({
+        let generation = metadata_generation;
         dirs::cache_dir()
             .expect("cache directory already resolved")
             .join("pvisor/metadata/v1")
-            .join(&hash(client.endpoint.as_bytes())[7..])
+            .join(&hash(client.address().as_bytes())[7..])
             .join(&digest[7..])
             .join(&hash(generation.as_bytes())[7..])
     });

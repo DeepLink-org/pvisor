@@ -2,11 +2,11 @@
 
 ## 主要结论 {#conclusions}
 
-**本机工具与改动审查可评估 rootless host/staged。pVisor VM 启动处于轻量 VM 量级，但文件密集任务比所测 Firecracker/QEMU 配置等待更长。选型需结合完整任务等待、隔离和改动如何写回原目录。**
+**频繁新建大工作区、只保留少量改动时，pVisor stage 的完整机器流程比所测 Git worktree 和 btrfs reflink 更省时。小工作区 Git 较快。pVisor VM 启动处于轻量 VM 量级，但文件密集任务仍比所测 Firecracker/QEMU 配置等待更长。**
 
 | 需求 | 选型含义 |
 |---|---|
-| 本机工具与保留改动 | 评估 rootless host/staged |
+| 大工作区的稀疏改动与选择性合入 | 评估 rootless stage 的完整流程成本 |
 | 需要独立 guest 内核 | 预算完整 VM 工具时间 |
 | 已有容器/Git 工作流 | 比较成本与审查语义 |
 
@@ -26,13 +26,14 @@ Docker Engine 29.7.2 使用专用 rootless VFS daemon 与可写 bind mount，结
 
 ### 实测水位
 
-启动/文件系统：2026-10-05，修复：2026-10-06，各后端/负载 N=60、失败 0；通常为 P50，分离簇展示中位数与数量。合入：2026-10-04，10/1,000/100,000 文件分别 N=30/10/3。网络：2026-10-04、30 个批次。CLI：独立固定版本。
+启动/文件系统：2026-10-05，修复：2026-10-06，各后端/负载 N=60、失败 0；通常为 P50，分离簇展示中位数与数量。合入：2026-10-04，10/1,000/100,000 文件分别 N=30/10/3。网络：2026-10-04、30 个批次。CLI：独立固定版本。完整审查流程：2026-10-06，每种工作区规模/合入条件/后端 N=30，共 360 个样本、失败 0；与工具任务为不同负载，不合并计时。
 
 | 问题 | 实测水位 | 选型含义 |
 |---|---|---|
 | [已准备环境启动](startup.md) | pVisor VM 99.76 ms; Firecracker 74.74 ms; QEMU microvm 86.60 ms | 轻量 VM 启动量级 |
 | [修复到退出](agent-tasks.md) | staged 0.68 s; VM 3.25 s; QEMU microvm 1.27 s | 关注完整工具等待 |
 | [七项工具到退出](filesystem.md) | staged 1.29 s; VM 6.66 s; Firecracker 2.16 s | VM 工具/文件成本明显 |
+| [新建工作区到审查、选择性合入和清理](supervision-cost.md) | 10,000 文件、修改 20 个：stage 141 ms；Git worktree 252 ms；reflink 349 ms | 大工作区的稀疏改动有收益；小工作区 Git 更快 |
 | [合入](apply.md) | 10: 15.01 ms; 1,000: 836.38 ms; 100,000: 330.40 s | Git patch 较快；语义不同 |
 | [网络](network.md) | host proxy 1.24 ms; native 0.95 ms / local request | 另行预算 VM 大块传输 |
 | [Agent CLI](agent-tasks.md#cli-compatibility) | 固定版本 Codex 通过；Claude/VM 初始化超时 | 核验具体客户端版本 |

@@ -1,6 +1,7 @@
 mod zellij;
 use clap::{Parser, Subcommand};
-use pvisor::cli::{ResumeArgs, RunArgs, extensions, terminal};
+use pvisor::cli::{ResumeArgs, RunArgs, terminal};
+use pvisor::companions;
 
 fn main() -> anyhow::Result<()> {
     #[derive(Parser)]
@@ -43,7 +44,7 @@ fn main() -> anyhow::Result<()> {
         terminal::available(),
         "TUI requires an interactive terminal"
     );
-    args[0] = extensions::core_executable()?.into_os_string();
+    args[0] = companions::core_executable()?.into_os_string();
     let code = zellij::run(args, audit)?;
     if code != 0 {
         std::process::exit(code);

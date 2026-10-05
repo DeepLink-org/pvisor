@@ -4081,7 +4081,7 @@ async fn independent_workers_fetch_pinned_s3_layers_without_source_access_or_sto
             String::from_utf8_lossy(&output.stderr)
         );
         let pvisor::cache::Response::Prepared {
-            image_handle: Some(handle),
+            image_handle: handle,
             digest,
             ..
         } = serde_json::from_slice(&output.stdout).unwrap()
@@ -4337,4 +4337,3 @@ async fn independent_workers_fetch_pinned_s3_layers_without_source_access_or_sto
     drop(workers);
     server.abort();
 }
-

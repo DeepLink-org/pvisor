@@ -22,7 +22,7 @@ fn direct_metadata_and_reads_are_lazy_without_a_host_mount() {
     let core = OverlayCore::new(vec![root.to_owned()], temp.path().join("upper"), None).unwrap();
     let service = FilesystemService::new(core);
     let path = Path::new("large");
-    let backing = service.prepare_file_read(path).unwrap().resolved.path;
+    let backing = service.prepare_open(path, libc::O_RDONLY).unwrap();
     assert_eq!(server.reads.load(Ordering::Relaxed), 0);
     let metadata = backend::attributes(&backing).unwrap().unwrap();
     assert_eq!(metadata.size, 3 * u64::from(MAX_READ));

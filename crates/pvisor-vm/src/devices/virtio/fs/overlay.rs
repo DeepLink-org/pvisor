@@ -15,7 +15,10 @@ use std::sync::{Arc, Mutex, RwLock};
 use std::time::Duration;
 
 use pvisor_overlay_core::{BackingIdentity, BackingResolution, OverlayCore};
-use pvisor_overlay_core::{backend, service::FilesystemService};
+use pvisor_overlay_core::{
+    backend,
+    service::{FilesystemService, OpenBacking},
+};
 
 use super::super::linux_errno::linux_error;
 use super::bindings;
@@ -1511,8 +1514,7 @@ impl FileSystem for OverlayFs {
         flags: u32,
     ) -> io::Result<(Option<u64>, OpenOptions)> {
         let _span = self.profile.span("open");
-        let writing = flags as i32 & libc::O_ACCMODE != libc::O_RDONLY
-            || flags as i32 & (libc::O_APPEND | libc::O_TRUNC) != 0;
+        let writing = FilesystemService::is_write_open(flags as i32);
         // Read-only opens observe a stable namespace and insert handles under
         // their own mutex; they need not exclude independent backing reads.
         // Privilege changes, copy-up and every writable open remain exclusive.
@@ -1528,29 +1530,19 @@ impl FileSystem for OverlayFs {
             Some(self.write_operation()?)
         };
         let path = self.path(inode)?;
-        let (layer, inner) = if writing {
-            // Symlinks are resolved by guest lookups, never by passthrough.
-            if self
-                .core
-                .metadata(&path)
-                .map_err(linux_error)?
-                .file_type()
-                .is_symlink()
-            {
-                return Err(linux_error(io::Error::from_raw_os_error(libc::ELOOP)));
+        let (layer, inner) = match self
+            .core
+            .prepare_open_for_backing_lookup(&path, flags as i32)
+            .map_err(linux_error)?
+        {
+            OpenBacking::Writable(_) => (Layer(0), self.inner_inode(Layer(0), &path, ctx)?),
+            OpenBacking::ReadOnly(backing) => {
+                let layer = Layer(backing.entry.layer);
+                let inner = self
+                    .inner_entry_with_parents(layer, &path, ctx, &backing.parents)?
+                    .inode;
+                (layer, inner)
             }
-            self.core.copy_up(&path).map_err(linux_error)?;
-            (Layer(0), self.inner_inode(Layer(0), &path, ctx)?)
-        } else {
-            let backing = self
-                .core
-                .prepare_file_read_for_backing_lookup(&path)
-                .map_err(linux_error)?;
-            let layer = Layer(backing.entry.layer);
-            let inner = self
-                .inner_entry_with_parents(layer, &path, ctx, &backing.parents)?
-                .inode;
-            (layer, inner)
         };
         let opened = self.layers[layer.0].open(ctx, inner, kill_priv, flags);
         let (handle, options) = match opened {

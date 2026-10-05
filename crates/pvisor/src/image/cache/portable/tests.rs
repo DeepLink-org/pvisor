@@ -30,7 +30,7 @@ fn fixture() -> (tempfile::TempDir, PortableCache, ImageStore, PreparedImage) {
 fn read_handle(cache: &PortableCache) -> String {
     match cache.prepare("example:test", "amd64", false).unwrap().0 {
         Response::Prepared {
-            image_handle: Some(handle),
+            image_handle: handle,
             ..
         } => handle,
         _ => panic!("missing v1 read handle"),
@@ -68,7 +68,7 @@ fn immutable_open_survives_head_replacement_and_does_not_resolve_an_oci_tag() {
         })
         .unwrap();
     assert!(
-        matches!(response, Response::Prepared { image_handle: Some(handle), env, .. } if handle == old && env["EXAMPLE"] == "value")
+        matches!(response, Response::Prepared { image_handle: handle, env, .. } if handle == old && env["EXAMPLE"] == "value")
     );
     assert!(
         !tmp.path().join("reader").exists(),
@@ -121,7 +121,7 @@ fn filesystem_publishing_and_offline_readers_preserve_the_image_contract() {
         })
         .unwrap();
     assert!(
-        matches!(response, Response::Prepared { digest, metadata_generation: Some(_), env, .. } if digest == image.digest && env["EXAMPLE"] == "value")
+        matches!(response, Response::Prepared { digest, metadata_generation, env, .. } if digest == image.digest && metadata_generation.starts_with("sha256:") && env["EXAMPLE"] == "value")
     );
     assert!(
         !tmp.path().join("reader").exists(),
@@ -290,7 +290,7 @@ fn directory_pages_preserve_every_host_supported_name() {
             .unwrap();
         let Response::Entries {
             names,
-            metadata: Some(metadata),
+            metadata,
             next_offset,
         } = response
         else {

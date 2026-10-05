@@ -112,7 +112,7 @@ pub fn core_executable() -> anyhow::Result<PathBuf> {
 
 pub fn dispatch(name: &str, args: &[OsString]) -> anyhow::Result<()> {
     let (path, _) =
-        find(name)?.ok_or_else(|| anyhow::anyhow!("pvisor-{name} extension is not installed"))?;
+        find(name)?.ok_or_else(|| anyhow::anyhow!("pvisor-{name} companion is not installed"))?;
     execute(path, args)
 }
 
@@ -120,7 +120,7 @@ pub(crate) fn execute(path: PathBuf, args: &[OsString]) -> anyhow::Result<()> {
     use std::os::unix::process::CommandExt;
     anyhow::ensure!(
         path.parent() == Some(installation_directory()?.as_path()),
-        "extension is outside the installation"
+        "companion is outside the installation"
     );
     check_executable(&path)?;
     let mut command = std::process::Command::new(&path);

@@ -304,7 +304,7 @@ fn token(name: &str) -> anyhow::Result<String> {
     Ok(value)
 }
 fn companion(name: &str) -> anyhow::Result<PathBuf> {
-    crate::cli::extensions::find(
+    crate::companions::find(
         name.strip_prefix("pvisor-")
             .context("invalid companion name")?,
     )?
@@ -724,16 +724,16 @@ fn install_limits(
 pub async fn run(args: ServiceArgs) -> anyhow::Result<()> {
     let (path, request) = match args.command {
         ServiceCommand::Cluster(tool) => {
-            return crate::cli::extensions::dispatch("cluster", &tool.args);
+            return crate::companions::dispatch("cluster", &tool.args);
         }
         ServiceCommand::Worker(tool) => {
-            return crate::cli::extensions::dispatch("worker", &tool.args);
+            return crate::companions::dispatch("worker", &tool.args);
         }
         ServiceCommand::Cache(tool) => {
-            return crate::cli::extensions::dispatch("cache", &tool.args);
+            return crate::companions::dispatch("cache", &tool.args);
         }
         ServiceCommand::MemoryPool(tool) => {
-            return crate::cli::extensions::dispatch("memory-pool", &tool.args);
+            return crate::companions::dispatch("memory-pool", &tool.args);
         }
         ServiceCommand::Run { config } => return supervise(&config).await,
         ServiceCommand::Node { config } => {

@@ -65,6 +65,28 @@ Use a frozen binary, new `.data/` outputs, matching CPU/tool-VM budgets and inde
 
 ## Task, resource and correctness suites
 
+B-WORKFLOW measures the full machine workflow for sparse changes, against Git worktree and a native reflink copy. It includes private-view creation, executing twenty edits, reviewing their content diff, applying ten paths and disposing the remaining view. Normal application and a host-conflict refusal are independent cases. Input repository construction and identical trial resets are outside timing; creating each backend's task view is inside timing. The fixture is committed and packed before sampling; Git automatic maintenance is disabled. Both controls use `git diff` to select a patch and `git apply --check` before application. Git/reflink controls are native processes; this is a workflow comparison, not equal security enforcement.
+
+```bash
+python3 benchmark/pvisor/review_workflow.py \
+  --binary /absolute/path/to/frozen-release/pvisor \
+  --binary-source-commit <actual-binary-source-commit> \
+  --source-manifest /absolute/path/to/binary-source-manifest.json \
+  --output benchmark/.data/workflow-new \
+  --sizes 100,10000 --cases normal,conflict \
+  --cpu-affinity 0,1 --samples 30 --warmups 3
+```
+
+Publish the complete report with:
+
+```bash
+python3 benchmark/pvisor/publish_review_workflow.py \
+  --report benchmark/.data/workflow-new/report.json \
+  --output docs/src/en/benchmarks
+```
+
+Copy the derived CSVs to the Chinese article directory after reviewing both articles. First run a separate `--samples 1 --warmups 0` preflight. Every trial verifies all original files before application, the twenty complete content diffs, selected-only final changes or complete refusal, and the pVisor Bundle's rootless isolation and staging evidence. Reflink uses `--reflink=always`: an unsupported filesystem fails rather than silently becoming a full-copy control. All valid slow samples and failed trials are retained. Raw reports, frozen binary/harness, command logs and input manifests stay in the output `.data/` directory. Publish complete cohorts and bootstrap intervals for median differences; do not infer human review savings or VM/container performance from this test.
+
 `product_v1.py` and its active `v1/` modules serve B-APPLY, B-NETWORK, B-DENSITY, B-ISOLATION, B-SUPERVISION and B-REPLAY. The versioned module name is a report/runner contract, not a retired product feature. It pins executable inputs, validates Bundle isolation and preserves failures. Apply uses Git patches as a control; network uses native and host-network Podman; density records attempted/completed counts as well as occupancy. Unmeasured Git-review and full-rollout comparisons must stay unmeasured in user pages.
 
 ```bash

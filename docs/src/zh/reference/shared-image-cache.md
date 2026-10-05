@@ -218,8 +218,8 @@ TCP 要求非空令牌，且只接受字面 loopback IP 端点。没有内置 TL
 | `op` | 字段 | 响应 `status` |
 | --- | --- | --- |
 | `ping` | 无 | `ready`（协议 v1） |
-| `prepare` | `image`、`architecture`（`amd64` 或 `arm64`）、可选 `refresh`（默认 false） | `prepared`：`digest`、`architecture`、`env`、`entrypoint`、`cmd`、可选 `totals`（`files`、`bytes`）、可选 `metadata_generation`；所有后端均返回 `image_handle` |
-| `list` | `digest`、`path`、`offset`（条目索引，从 0 开始） | `entries`：已排序的 `names`、可选对齐的 `metadata` 数组、`next_offset`（完成时为 null） |
+| `prepare` | `image`、`architecture`（`amd64` 或 `arm64`）、可选 `refresh`（默认 false） | `prepared`：`digest`、`architecture`、`env`、`entrypoint`、`cmd`、可选 `totals`（`files`、`bytes`）、必填 `metadata_generation` 和 `image_handle` |
+| `list` | `digest`、`path`、`offset`（条目索引，从 0 开始） | `entries`：已排序的 `names`、必填且对齐的 `metadata` 数组、`next_offset`（完成时为 null） |
 | `stat` | `digest`、`path` | `metadata`：`kind`、`size`、`mode`、`uid`、`gid`、`inode`、`nlink`、`mtime`、`mtime_nsec`、`target` |
 | `read` | `digest`、`path`、`offset`（字节偏移）、`length`（1..1048576） | `data`：`length`、`sha256`，后接原始字节 |
 
@@ -231,8 +231,7 @@ TCP 要求非空令牌，且只接受字面 loopback IP 端点。没有内置 TL
 `list` 要求已发布的不可变 image_handle；它们绝不隐式拉取镜像。
 
 目录页包含与 `stat` 相同的属性，避免为每个子项单独请求。页最多 256 个条目，并会缩小以适应 JSON
-帧上限（含长字节数组名和符号链接目标）。旧服务端的仅名字响应仍通过逐个 `stat`
-请求兼容。持久化的页在多次挂载间保留其属性。
+帧上限（含长字节数组名和符号链接目标）。目录属性为必填字段，仅包含名字的响应会被拒绝。持久化的页在多次挂载间保留其属性。
 
 `kind` 为 `file`、`directory`、`symlink` 或 `special`。`mode` 包含 Unix 类型与权限位。`target` 包含符号链接字节或 null。属性反映服务端解包后的文件系统；v1 不重建原始 tar 所有权、不提供 xattr，也不定义跨服务端可移植的 inode ID。只有常规文件可读。短读（包括零字节）表示 EOF。客户端必须在校验通过后才把字节放入缓存，检查内容体长度和 SHA-256。所提供的哈希用于检测传输损坏；它不是对不可信服务端的独立证明。服务端及其本地镜像存储是受信任的。
 

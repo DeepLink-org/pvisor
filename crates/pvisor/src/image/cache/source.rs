@@ -1,10 +1,15 @@
 //! Confined OCI source inspection used only while publishing immutable images.
-use super::protocol::{MAX_FRAME, hash};
-use super::{MAX_READ, Request, Response, progress};
+#[cfg(test)]
+use super::MAX_READ;
+use super::Response;
+#[cfg(test)]
+use super::protocol::MAX_FRAME;
+use super::protocol::hash;
 use crate::image::oci::ImageStore;
 use anyhow::ensure;
 use std::ffi::{CStr, CString, OsStr};
 use std::fs::{self, File, OpenOptions};
+#[cfg(test)]
 use std::io::{Read, Seek, SeekFrom};
 use std::os::fd::{AsRawFd, FromRawFd, IntoRawFd};
 use std::os::unix::ffi::OsStrExt;
@@ -198,29 +203,42 @@ fn metadata_at(directory: &File, name: &[u8]) -> anyhow::Result<Response> {
     })
 }
 
+pub(super) fn stat(store: &ImageStore, digest: &str, path: &[u8]) -> anyhow::Result<Response> {
+    metadata::stat(store, digest, path)
+}
+
+pub(super) fn directory(
+    store: &ImageStore,
+    digest: &str,
+    path: &[u8],
+) -> anyhow::Result<Arc<Vec<Vec<u8>>>> {
+    metadata::directory(store, digest, path)
+}
+
+// Test-only source requests exercise confinement without exposing a daemon API.
+#[cfg(test)]
+pub(super) enum Request {
+    List {
+        digest: String,
+        path: Vec<u8>,
+        offset: usize,
+    },
+    Stat {
+        digest: String,
+        path: Vec<u8>,
+    },
+    #[cfg(test)]
+    Read {
+        digest: String,
+        path: Vec<u8>,
+        offset: u64,
+        length: u32,
+    },
+}
+
+#[cfg(test)]
 pub(super) fn handle(store: &ImageStore, request: Request) -> anyhow::Result<(Response, Vec<u8>)> {
     let response = match request {
-        Request::Open { .. } => {
-            anyhow::bail!("immutable revisions require a filesystem or S3 native cache backend")
-        }
-        Request::Ping => Response::Ready,
-        Request::Prepare {
-            image,
-            architecture: requested,
-            refresh,
-        } => {
-            let image = store.prepare_with_refresh(&image, &requested, refresh)?;
-            Response::Prepared {
-                image_handle: None,
-                metadata_generation: Some(metadata::generation(store, &image.digest)?),
-                totals: Some(progress::image_totals(store, &image.digest)?),
-                digest: image.digest,
-                architecture: requested,
-                env: image.env,
-                entrypoint: image.entrypoint,
-                cmd: image.cmd,
-            }
-        }
         Request::List {
             digest,
             path,
@@ -252,11 +270,12 @@ pub(super) fn handle(store: &ImageStore, request: Request) -> anyhow::Result<(Re
             let end = offset + page.len();
             Response::Entries {
                 names: page,
-                metadata: Some(attributes),
+                metadata: attributes,
                 next_offset: (end < names.len()).then_some(end),
             }
         }
         Request::Stat { digest, path } => metadata::stat(store, &digest, &path)?,
+        #[cfg(test)]
         Request::Read {
             digest,
             path,
