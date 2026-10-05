@@ -885,8 +885,7 @@ fn forget_one(
             if data
                 .refcount
                 .compare_exchange(refcount, new_count, Ordering::Release, Ordering::Relaxed)
-                .unwrap()
-                == refcount
+                .is_ok()
             {
                 if new_count == 0 {
                     // We just removed the last refcount for this inode. There's no need for an
@@ -1041,24 +1040,18 @@ impl FileSystem for PassthroughFs {
             dev: st.st_dev,
             mnt_id,
         };
-        let data = self.inodes.read().unwrap().get_alt(&altkey).cloned();
-
-        let inode = if let Some(data) = data {
-            // Matches with the release store in `forget`.
+        // openat/statx above run without the inode table lock. Lookup/pin and
+        // insertion are one table transaction: no duplicate alternate key can
+        // replace an inode which another request has already received.
+        let mut inodes = self.inodes.write().unwrap();
+        let inode = if let Some(data) = inodes.get_alt(&altkey) {
             data.refcount.fetch_add(1, Ordering::Acquire);
             data.inode
         } else {
-            // There is a possible race here where 2 threads end up adding the same file
-            // into the inode list.  However, since each of those will get a unique Inode
-            // value and unique file descriptors this shouldn't be that much of a problem.
             let inode = self.inode_alloc.next();
-            self.inodes.write().unwrap().insert(
+            inodes.insert(
                 inode,
-                InodeAltKey {
-                    ino: st.st_ino,
-                    dev: st.st_dev,
-                    mnt_id,
-                },
+                altkey,
                 Arc::new(InodeData {
                     inode,
                     file: f,
@@ -1067,11 +1060,9 @@ impl FileSystem for PassthroughFs {
                     refcount: AtomicU64::new(1),
                 }),
             );
-
             inode
         };
-
-        debug!("lookup: {}, inode: {:?}", name.to_str().unwrap(), inode);
+        drop(inodes);
 
         Ok(Entry {
             inode,

@@ -1273,8 +1273,7 @@ fn forget_one(
             if data
                 .refcount
                 .compare_exchange(refcount, new_count, Ordering::Release, Ordering::Relaxed)
-                .unwrap()
-                == refcount
+                .is_ok()
             {
                 if new_count == 0 {
                     // If we have unlinked this inode, we have opened a file descriptor to be
@@ -1699,47 +1698,63 @@ impl FileSystem for PassthroughFs {
             ino: st.st_ino,
             dev: st.st_dev,
         };
-        let data = self.inodes.read().unwrap().get_alt(&altkey).cloned();
-
-        let inode = if let Some(data) = data {
-            // Matches with the release store in `forget`.
-            data.refcount.fetch_add(1, Ordering::Acquire);
-            data.inode
-        } else {
-            // There is a possible race here where 2 threads end up adding the same file
-            // into the inode list.  However, since each of those will get a unique Inode
-            // value and unique file descriptors this shouldn't be that much of a problem.
-            let inode = self.inode_alloc.next();
-            self.inodes.write().unwrap().insert(
-                inode,
-                InodeAltKey {
-                    ino: st.st_ino,
-                    dev: st.st_dev,
-                },
-                Arc::new(InodeData {
-                    path_fd: if self.fd_paths {
-                        let fd = unsafe {
-                            libc::open(
-                                c_path.as_ptr(),
-                                libc::O_EVTONLY | libc::O_SYMLINK | libc::O_CLOEXEC,
-                            )
-                        };
-                        if fd < 0 {
-                            return Err(linux_error(io::Error::last_os_error()));
-                        }
-                        Some(unsafe { File::from_raw_fd(fd) })
-                    } else {
-                        None
-                    },
-                    inode,
-                    ino: st.st_ino,
-                    dev: st.st_dev,
-                    refcount: AtomicU64::new(1),
-                    unlinked_fd: AtomicI64::new(-1),
-                }),
-            );
-
+        let existing = {
+            let inodes = self.inodes.read().unwrap();
+            inodes.get_alt(&altkey).map(|data| {
+                // Pin while the map lock excludes final forget/removal.
+                data.refcount.fetch_add(1, Ordering::Acquire);
+                data.inode
+            })
+        };
+        let inode = if let Some(inode) = existing {
             inode
+        } else {
+            // Construct the path descriptor outside the table lock. Another
+            // lookup may win meanwhile; recheck under write lock before insert.
+            let path_fd = if self.fd_paths {
+                let fd = unsafe {
+                    libc::open(
+                        c_path.as_ptr(),
+                        libc::O_EVTONLY | libc::O_SYMLINK | libc::O_CLOEXEC,
+                    )
+                };
+                if fd < 0 {
+                    return Err(linux_error(io::Error::last_os_error()));
+                }
+                // SAFETY: open returned an owned valid descriptor.
+                let file = unsafe { File::from_raw_fd(fd) };
+                if st.st_mode & libc::S_IFMT == libc::S_IFDIR {
+                    // A retained directory must identify the descriptor we
+                    // actually opened, not the path before a host rename.
+                    let actual = fstat(&ctx, self.cfg.semantics, file.as_raw_fd(), false)?;
+                    if actual.st_dev != st.st_dev || actual.st_ino != st.st_ino {
+                        return Err(linux_error(io::Error::from_raw_os_error(libc::ESTALE)));
+                    }
+                }
+                Some(file)
+            } else {
+                None
+            };
+            let mut inodes = self.inodes.write().unwrap();
+            if let Some(data) = inodes.get_alt(&altkey) {
+                data.refcount.fetch_add(1, Ordering::Acquire);
+                data.inode
+            } else {
+                let inode = self.inode_alloc.next();
+                inodes.insert(
+                    inode,
+                    altkey,
+                    Arc::new(InodeData {
+                        path_fd,
+                        inode,
+                        ino: st.st_ino,
+                        dev: st.st_dev,
+                        refcount: AtomicU64::new(1),
+                        unlinked_fd: AtomicI64::new(-1),
+                    }),
+                );
+                inode
+            }
         };
 
         Ok(Entry {
