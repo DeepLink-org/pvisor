@@ -1,0 +1,793 @@
+{
+  "schema": "pvisor-filesystem-ab/v1",
+  "recorded_at": "2026-10-05T11:00:09.226803+08:00",
+  "arguments": {
+    "assets": "/home/reiase/workspace/pvisor/target/reference-env-final-20261004",
+    "baseline": "/home/reiase/workspace/pvisor/target/p0-filesystem-artifacts-20261005/pvisor-stdio-baseline",
+    "candidate": "/home/reiase/workspace/pvisor/target/p0-filesystem-artifacts-20261005/pvisor-stdio-candidate",
+    "firmware": "/home/reiase/workspace/pvisor/target/p0-filesystem-artifacts-20261005/firmware",
+    "output": "/home/reiase/workspace/pvisor/target/p0-filesystem-profile-20261005",
+    "provenance": "target/p0-filesystem-artifacts-20261005/stdio-provenance.json",
+    "samples": 1,
+    "warmups": 0,
+    "cpu_affinity": "0,1",
+    "memory_mib": 16384,
+    "profile": true
+  },
+  "assets": {
+    "setup_wall_ms": 108381.35316,
+    "docker_image": "sha256:4a379f54216364021da005dccde6edad3c1ae64dff222588425e5f2fc181ad95",
+    "rootfs": "/home/reiase/workspace/pvisor/target/reference-env-final-20261004/rootfs",
+    "disk": "/home/reiase/workspace/pvisor/target/reference-env-final-20261004/agent-env.ext4",
+    "kernel": "/home/reiase/workspace/pvisor/target/reference-env-final-20261004/vmlinux",
+    "rootfs_file_bytes": 3827107007,
+    "files": 75540,
+    "workload_sha256": "403eab78571c26ea5e1ba1ab10fa1fa930ac18bb39487749563b264a4a0b9040",
+    "init_sha256": "c94b00e2b96f5c7403b985f269e90e8512467d927a92b9db2d2b7fc8fde58cc7",
+    "fixture_git_commit": "1bf3d4896439bb6a2bc89daa94f22cc037c27737",
+    "kernel_config_sha256": "aee73a94bfba4fe057e472e2ba05d2125fbdea20bef89a6eedf5e160d0e7616e",
+    "preparation_scope": "offline copying installed tools, image import and ext4 creation; excludes package download and kernel compilation"
+  },
+  "assets_workload_sha256": "ff6c391b623e12351cf3dbca19e15af33c6162b8b8134748f13d86b30dde400e",
+  "assets_fs_workload_sha256": "484e661b91720d03119998cca082db6fe57d5d40591957af1840e872066b61cc",
+  "binary_sha256": {
+    "native": "a2a75e040ee1d2f74afb2c27ee4b1ef64e58e650de37f3f43395a489892eb703",
+    "baseline": "bf9bf236a5aeb1eba2bf866f34a05660f8e4e017e47ba3454416de1f23e5852f",
+    "candidate": "a2a75e040ee1d2f74afb2c27ee4b1ef64e58e650de37f3f43395a489892eb703"
+  },
+  "firmware_sha256": "b61f68dac3ef20a88e1ee387733e4baed2f7c02edac940c8882e0b549dac95e4",
+  "harness_sha256": {
+    "bench.py": "ef814d8f4002e8a653edf50030dc145ace3c881f80afd5bca20d711bbaff0608",
+    "firmware_boot.py": "277cdcb479271c5e3d9683769cd4332236c53744a5389ca76f94c44d37d28284",
+    "plot_startup.py": "f4432080e61419666dd3a11790ec9a2bd334b5377a4397c0ea018292f4b1580b",
+    "run_all.py": "ef45a6a8120f3d4734ae2fee2674848eacc6b583a68839adaede49552ae11da2",
+    "startup.py": "5dfac911d447a3562c095fe5acddcc2acb4bae93af78db0491eee02b6d199cee",
+    "test_bench.py": "d9dcea3319ad50da4f8fd7f12befed87f53bd68bd07456c71d27f103c1d18602",
+    "test_run_all.py": "76ec448980e0ea0afece9037e9af6c273c90c0cb6ee81d93ebe85659acd6a08c",
+    "test_startup.py": "a19f0e3c8a9fa47f4f8116c6415a7ace363ebbcee1a672e8f002ca48144d5b43",
+    "test_vm_ready.py": "510e171d9af9a4e64085f70f983036709e2c41c3303974b7af319c142df313bc",
+    "vm_ready.py": "b3bc5aede44b1c42000a97754cc4500b55a5d629428218cf4e7e58435985f0f2",
+    "linux_vm_ready.py": "dfc980b6d804588f758f0424ab1e12a2534b59dbd09faad1297df4c7fc6281b0",
+    "product_v1.py": "da261b063a7356cc98601bbafac9db069a2a7ecb9de5def6f836c3aea0ce9056",
+    "test_product_v1.py": "12c34aea8a7df1da1218d761f3d44cf170dfd76fd39eaf949c31e887fbf57a2b",
+    "summarize_product_v1.py": "cfa6d67111b738030290cbee2c58033bc7444aeea16bd7b82eccc15c11c9e80e",
+    "reference_baselines.py": "4dc5800a00a45c4802b89d6b60e89ff3e20b87a202c37bddfa0cde4c88de435f",
+    "prepare_reference_env.py": "865313e5940bc7a66ef22028342a78f7bd9abcc88df521c5a9df6ac29ba115ff",
+    "test_reference_baselines.py": "bba2e955bd4da2cd592b4340cb7537e4c91b2b51653235df17258a10aaa9696a",
+    "render_reference_baselines.py": "6cd1682f36cc554574a6e9e08a005ea6ea6d6ae1dd0abae3b84bb280e3dafe8b",
+    "filesystem_diagnostic.py": "da4f3efc3e8581e9ba5f287735d63e2f6bcf6620da18e6e3cd7dcb42846b23cc",
+    "guest_init.py": "e6ef21cf45781c58f8a9162d61f1ca1ef6046b4913ec76cfa2fc15d708a7b6b9",
+    "macos_cold_ram.py": "75146963b1b7b5dd7da65923fa86ee7630afa0990b3f2059b7352eb1bc6a0944",
+    "macos_docker_tools.py": "47aab2ba8d9d6bdf0019541da9f589159a32e9390312731863549120055ec327",
+    "macos_migration.py": "66a81a73b1168206128a1717713c5b6720bb8abba31232641be5d5a1f2baf738",
+    "test_macos_docker_tools.py": "defa4f7442496729f295efb9468d949672b8302160530ace22b78602de89a657",
+    "test_macos_migration.py": "920e362e3ffa4da7d10a3e5fa1901712a056c059b8443bb1ada85255572af243",
+    "test_vm_stress.py": "0180a4383dd4878e754e148d7c137232519ffdb423a2185c856ce5dd6ab446f3",
+    "vm_snapshot.py": "e677a9cf3857c5b3ea0e4c98f6066cb7d7203b0e83d49046276ab91b65565cba",
+    "vm_snapshot_lazy.py": "78451a89ffafcde1d552dbd0a6dbf170995aca308b5c305507bc0f6a21384923",
+    "vm_stage_snapshot.py": "7f6c0ea3b37935dd704987750bc2d10034b69accd75a91a6f1545df31cc76b7a",
+    "vm_stress.py": "0f036789de811a40fc6e4469de6ffd553bd41aa70fd5fc7229c032f38f2e375a",
+    "prepare_ubuntu_reference.py": "422d7f10ac8c9d9153778801ee012e84274ebf932078c2bde8e63295fcc3f1dc",
+    "reference_fixture.py": "46f64cb8eaef80c1c885d3449368f21d217609f8a58efdd4d776f2c5f2634978",
+    "reference_workload.py": "a3b120813d58746e9da8594d71a45cdc093ac9bdbad9f4cf0edc741bb9b30fd8",
+    "render_ubuntu_baselines.py": "9376188f0309c562fcca1d3ad499996c5b7362c0a2a027daa9f9635a91021ae0",
+    "test_ubuntu_baselines.py": "cf0a30d779d3f408e92310c08a4c65cf79fce38e321f721aadc276115144c98c",
+    "ubuntu_baselines.py": "04b240d48c20e14ab5773cdf76adf4e576ba3ae40ba44d327a1e9ab4cdf76c36",
+    "ubuntu_vm_network.py": "e1920f47d603a117ec5b14cdb6cf93e2816bc9321f8bc9c59c97b8f9e0052be1",
+    "filesystem_ab.py": "b4e1159de7d81679f4086049cc38fcdaead112a7d7890ac8fb7aaea00a7198e4",
+    "test_filesystem_ab.py": "60218402c788e49f98c1b8334b2e2df2c9edfc306ec1aab11a70773b96dc7e0a",
+    "v1/filesystem.py": "22bb9a0137a252e85a347ffd19d1d6b3161008ff13d67f793f6118ad1c3a034c",
+    "v1/workload.py": "484e661b91720d03119998cca082db6fe57d5d40591957af1840e872066b61cc",
+    "v1/common.py": "8a1a7eea32f62bf9217df58299f299550d645d5ed66de163347d0aed325d8c08",
+    "v1/oci.py": "ebf40f2cd6b74573a78fdc06266ae25d92ce230c94275afa44b87bd1350642f3",
+    "v1/network.py": "743d37fe8eddf9d417672d1f1ffae0e040c2e4de8670fbf2894608bd473823f9",
+    "v1/network_worker.py": "6ad52b1fc76789e3560f4853576c4ac70faec8f22666de8ae74ba4956fb547be",
+    "v1/apply.py": "fd6b5e42c2cfec99bdf605d06adb9dbcfa561d49d3803856553766af12f8311a",
+    "v1/apply_worker.py": "0b6c542251721fa948245ba021a8695d6e0fd375ec6d72bd2d1f118fd12957f6",
+    "v1/density.py": "df0b2dd3246e1c23b7dcd3b185807ff6afe12c92639b842be1186223e51d2c7e",
+    "v1/agent.py": "ecc8eda0af6812d3df4c59f61ada6122b7e3a95e2b5c971af88b83856425e656",
+    "v1/isolation.py": "13a82608320ccc2d98e93e5a9eb8229f33c3433a5fa8cbfb2274a16df428e943",
+    "v1/isolation_worker.py": "ee0c710c8b9d4ebc2339387b323b33b699d74c430092f13986b5d26be7bfd9f8",
+    "v1/replay.py": "cffe049650e0137e789dbc236a4f0589c02e62c9bfe5096070438cb52d1f7c4c",
+    "v1/supervision.py": "cb685d7e289c23a9b254e08929f307e70bd273ef18e653222fa3d896285f685a",
+    "v1/baselines.py": "fd8f9acc32e7e470c3686a5cd9580be946331338c28fedb7ea1c0378047b9e2d"
+  },
+  "source_commit": "bc08f457105a6d10f4cf78e105a9306e7f7e19f1",
+  "source_status": "",
+  "host_kernel": "7.2.8-200.fc44.x86_64",
+  "cpu": "AMD Ryzen 7 9700X 8-Core Processor",
+  "protocol": {
+    "samples": 1,
+    "warmups": 0,
+    "order": "all five cells shuffled each round; seed 20261005",
+    "cache": "warm; no eviction; fresh workspace and stage for every job",
+    "cpu_affinity": "0,1",
+    "vm_vcpus": 2,
+    "vm_memory_mib": 16384,
+    "filesystem_profile": true,
+    "worker_timing": "operation and correctness check; all seven workloads run in order per job",
+    "completion_timing": "launch to process exit; preparation excluded",
+    "percentile": "linear interpolation",
+    "correctness": "all workload checks, Run Bundle isolation, lower write absence and upper file count/size required"
+  },
+  "load_before": [
+    1.10986328125,
+    4.7919921875,
+    11.3115234375
+  ],
+  "build_provenance": {
+    "source_commit": "a1020d4b",
+    "source_archive_sha256": "7669ce9f783c9156871d4fb3631778b409fcfcdf2cfca4de8640df514235181c",
+    "source_patch_sha256": "eedae3c44ef067f4f2c35b33edb17ccef1be67fce649c9d03ca17eaad2dcee61",
+    "cargo_lock_sha256": "d6d3bc08c0e619d861368f7f9db3bf7a77fe807f4c85691b139814536135ad88",
+    "core_blob": {
+      "baseline": "a747ab22",
+      "candidate": "53a1fcb730b46f70b776e8fa5dcf741ce13bbe43"
+    },
+    "binary_sha256": {
+      "baseline": "bf9bf236a5aeb1eba2bf866f34a05660f8e4e017e47ba3454416de1f23e5852f",
+      "candidate": "a2a75e040ee1d2f74afb2c27ee4b1ef64e58e650de37f3f43395a489892eb703"
+    },
+    "build": "Both GNU/Linux release binaries were built from source.tar plus stdio-readiness.patch, in the same isolated source and target directories. Only crates/pvisor-overlay-core/src/core.rs was replaced between builds. The separately captured source.patch was not applied.",
+    "build_command": "cargo build --locked --release --manifest-path target/p0-filesystem-source-20261005/Cargo.toml --target-dir target/p0-filesystem-build-20261005 -p pvisor --bin pvisor",
+    "scope": "Both include the same guest stdio readiness fix. Baseline core restores the resolver before unavailable-upper marker optimization; candidate core is the optimized resolver. Both use archived statx implementation.",
+    "source_patch_applied": false,
+    "shared_patch_sha256": "1cc8a841c95c06433df1d4f214505b4010e0c5c92bba9a6a8fc71baf78b02ded"
+  },
+  "summary": {
+    "native/native": {
+      "n": 1,
+      "timings_ms": {
+        "completion_ms": {
+          "p50": 469.892218,
+          "p95": 469.892218,
+          "p99": 469.892218
+        },
+        "metadata": {
+          "p50": 4.779112,
+          "p95": 4.779112,
+          "p99": 4.779112
+        },
+        "read": {
+          "p50": 32.175599,
+          "p95": 32.175599,
+          "p99": 32.175599
+        },
+        "write": {
+          "p50": 3.766089,
+          "p95": 3.766089,
+          "p99": 3.766089
+        },
+        "git": {
+          "p50": 14.754091,
+          "p95": 14.754091,
+          "p99": 14.754091
+        },
+        "rg": {
+          "p50": 8.131749,
+          "p95": 8.131749,
+          "p99": 8.131749
+        },
+        "cargo": {
+          "p50": 55.025161,
+          "p95": 55.025161,
+          "p99": 55.025161
+        },
+        "npm": {
+          "p50": 181.91738,
+          "p95": 181.91738,
+          "p99": 181.91738
+        }
+      }
+    },
+    "baseline/pvisor-staged": {
+      "n": 1,
+      "timings_ms": {
+        "completion_ms": {
+          "p50": 1307.643518,
+          "p95": 1307.643518,
+          "p99": 1307.643518
+        },
+        "metadata": {
+          "p50": 96.543669,
+          "p95": 96.543669,
+          "p99": 96.543669
+        },
+        "read": {
+          "p50": 66.724258,
+          "p95": 66.724258,
+          "p99": 66.724258
+        },
+        "write": {
+          "p50": 200.616234,
+          "p95": 200.616234,
+          "p99": 200.616234
+        },
+        "git": {
+          "p50": 197.41645,
+          "p95": 197.41645,
+          "p99": 197.41645
+        },
+        "rg": {
+          "p50": 105.913379,
+          "p95": 105.913379,
+          "p99": 105.913379
+        },
+        "cargo": {
+          "p50": 116.421984,
+          "p95": 116.421984,
+          "p99": 116.421984
+        },
+        "npm": {
+          "p50": 231.12938,
+          "p95": 231.12938,
+          "p99": 231.12938
+        }
+      }
+    },
+    "baseline/pvisor-vm": {
+      "n": 1,
+      "timings_ms": {
+        "completion_ms": {
+          "p50": 4940.41673,
+          "p95": 4940.41673,
+          "p99": 4940.41673
+        },
+        "metadata": {
+          "p50": 261.655302,
+          "p95": 261.655302,
+          "p99": 261.655302
+        },
+        "read": {
+          "p50": 136.535162,
+          "p95": 136.535162,
+          "p99": 136.535162
+        },
+        "write": {
+          "p50": 332.966483,
+          "p95": 332.966483,
+          "p99": 332.966483
+        },
+        "git": {
+          "p50": 464.551271,
+          "p95": 464.551271,
+          "p99": 464.551271
+        },
+        "rg": {
+          "p50": 464.533918,
+          "p95": 464.533918,
+          "p99": 464.533918
+        },
+        "cargo": {
+          "p50": 517.279458,
+          "p95": 517.279458,
+          "p99": 517.279458
+        },
+        "npm": {
+          "p50": 1565.865543,
+          "p95": 1565.865543,
+          "p99": 1565.865543
+        }
+      }
+    },
+    "candidate/pvisor-staged": {
+      "n": 1,
+      "timings_ms": {
+        "completion_ms": {
+          "p50": 1453.372899,
+          "p95": 1453.372899,
+          "p99": 1453.372899
+        },
+        "metadata": {
+          "p50": 100.860116,
+          "p95": 100.860116,
+          "p99": 100.860116
+        },
+        "read": {
+          "p50": 76.369983,
+          "p95": 76.369983,
+          "p99": 76.369983
+        },
+        "write": {
+          "p50": 202.709611,
+          "p95": 202.709611,
+          "p99": 202.709611
+        },
+        "git": {
+          "p50": 193.036716,
+          "p95": 193.036716,
+          "p99": 193.036716
+        },
+        "rg": {
+          "p50": 100.461994,
+          "p95": 100.461994,
+          "p99": 100.461994
+        },
+        "cargo": {
+          "p50": 236.016292,
+          "p95": 236.016292,
+          "p99": 236.016292
+        },
+        "npm": {
+          "p50": 220.199328,
+          "p95": 220.199328,
+          "p99": 220.199328
+        }
+      }
+    },
+    "candidate/pvisor-vm": {
+      "n": 1,
+      "timings_ms": {
+        "completion_ms": {
+          "p50": 5569.712935,
+          "p95": 5569.712935,
+          "p99": 5569.712935
+        },
+        "metadata": {
+          "p50": 210.680256,
+          "p95": 210.680256,
+          "p99": 210.680256
+        },
+        "read": {
+          "p50": 114.035438,
+          "p95": 114.035438,
+          "p99": 114.035438
+        },
+        "write": {
+          "p50": 222.387693,
+          "p95": 222.387693,
+          "p99": 222.387693
+        },
+        "git": {
+          "p50": 436.922581,
+          "p95": 436.922581,
+          "p99": 436.922581
+        },
+        "rg": {
+          "p50": 690.446667,
+          "p95": 690.446667,
+          "p99": 690.446667
+        },
+        "cargo": {
+          "p50": 776.398034,
+          "p95": 776.398034,
+          "p99": 776.398034
+        },
+        "npm": {
+          "p50": 1899.276479,
+          "p95": 1899.276479,
+          "p99": 1899.276479
+        }
+      }
+    }
+  },
+  "rows": [
+    {
+      "backend": "pvisor-staged",
+      "mode": "filesystem",
+      "trial": 0,
+      "prepare_ms": 52.733523,
+      "ready_ms": 64.339157,
+      "result_ms": 1333.629815,
+      "completion_ms": 1453.372899,
+      "peak_tree_rss_kib": 168260,
+      "memory_scope": "owned launcher tree; Docker daemon/container RSS excluded",
+      "result": {
+        "filesystem": {
+          "metadata": {
+            "workload": "metadata",
+            "worker_ms": 100.860116,
+            "check": {
+              "files": 2048,
+              "bytes": 2095104
+            },
+            "python": "3.14.7"
+          },
+          "read": {
+            "workload": "read",
+            "worker_ms": 76.369983,
+            "check": {
+              "bytes": 67108864,
+              "sha256": "42ef3a50fe506ced865473b082c8b28f6ce254e6e2b01266b6a563531a6267bc"
+            },
+            "python": "3.14.7"
+          },
+          "write": {
+            "workload": "write",
+            "worker_ms": 202.709611,
+            "check": {
+              "files": 256,
+              "bytes": 16777216
+            },
+            "python": "3.14.7"
+          },
+          "git": {
+            "workload": "git",
+            "worker_ms": 193.036716,
+            "check": {
+              "git_clean": true
+            },
+            "python": "3.14.7"
+          },
+          "rg": {
+            "workload": "rg",
+            "worker_ms": 100.461994,
+            "check": {
+              "matches": 2048
+            },
+            "python": "3.14.7"
+          },
+          "cargo": {
+            "workload": "cargo",
+            "worker_ms": 236.016292,
+            "check": {
+              "modules": 64,
+              "result": "2016"
+            },
+            "python": "3.14.7"
+          },
+          "npm": {
+            "workload": "npm",
+            "worker_ms": 220.199328,
+            "check": {
+              "local_packages": 32
+            },
+            "python": "3.14.7"
+          }
+        },
+        "mode": "filesystem",
+        "worker_ms": 1269.262786,
+        "correctness": "passed"
+      },
+      "correctness": "passed",
+      "logs": "/home/reiase/workspace/pvisor/target/p0-filesystem-profile-20261005/candidate/trials/filesystem-pvisor-staged-000",
+      "variant": "candidate"
+    },
+    {
+      "backend": "native",
+      "mode": "filesystem",
+      "trial": 0,
+      "prepare_ms": 39.428017,
+      "ready_ms": 39.807805,
+      "result_ms": 461.066844,
+      "completion_ms": 469.892218,
+      "peak_tree_rss_kib": 136196,
+      "memory_scope": "owned launcher tree; Docker daemon/container RSS excluded",
+      "result": {
+        "filesystem": {
+          "metadata": {
+            "workload": "metadata",
+            "worker_ms": 4.779112,
+            "check": {
+              "files": 2048,
+              "bytes": 2095104
+            },
+            "python": "3.14.7"
+          },
+          "read": {
+            "workload": "read",
+            "worker_ms": 32.175599,
+            "check": {
+              "bytes": 67108864,
+              "sha256": "42ef3a50fe506ced865473b082c8b28f6ce254e6e2b01266b6a563531a6267bc"
+            },
+            "python": "3.14.7"
+          },
+          "write": {
+            "workload": "write",
+            "worker_ms": 3.766089,
+            "check": {
+              "files": 256,
+              "bytes": 16777216
+            },
+            "python": "3.14.7"
+          },
+          "git": {
+            "workload": "git",
+            "worker_ms": 14.754091,
+            "check": {
+              "git_clean": true
+            },
+            "python": "3.14.7"
+          },
+          "rg": {
+            "workload": "rg",
+            "worker_ms": 8.131749,
+            "check": {
+              "matches": 2048
+            },
+            "python": "3.14.7"
+          },
+          "cargo": {
+            "workload": "cargo",
+            "worker_ms": 55.025161,
+            "check": {
+              "modules": 64,
+              "result": "2016"
+            },
+            "python": "3.14.7"
+          },
+          "npm": {
+            "workload": "npm",
+            "worker_ms": 181.91738,
+            "check": {
+              "local_packages": 32
+            },
+            "python": "3.14.7"
+          }
+        },
+        "mode": "filesystem",
+        "worker_ms": 421.213113,
+        "correctness": "passed"
+      },
+      "correctness": "passed",
+      "logs": "/home/reiase/workspace/pvisor/target/p0-filesystem-profile-20261005/native/trials/filesystem-native-000",
+      "variant": "native"
+    },
+    {
+      "backend": "pvisor-staged",
+      "mode": "filesystem",
+      "trial": 0,
+      "prepare_ms": 38.311713,
+      "ready_ms": 48.68706,
+      "result_ms": 1188.117209,
+      "completion_ms": 1307.643518,
+      "peak_tree_rss_kib": 168560,
+      "memory_scope": "owned launcher tree; Docker daemon/container RSS excluded",
+      "result": {
+        "filesystem": {
+          "metadata": {
+            "workload": "metadata",
+            "worker_ms": 96.543669,
+            "check": {
+              "files": 2048,
+              "bytes": 2095104
+            },
+            "python": "3.14.7"
+          },
+          "read": {
+            "workload": "read",
+            "worker_ms": 66.724258,
+            "check": {
+              "bytes": 67108864,
+              "sha256": "42ef3a50fe506ced865473b082c8b28f6ce254e6e2b01266b6a563531a6267bc"
+            },
+            "python": "3.14.7"
+          },
+          "write": {
+            "workload": "write",
+            "worker_ms": 200.616234,
+            "check": {
+              "files": 256,
+              "bytes": 16777216
+            },
+            "python": "3.14.7"
+          },
+          "git": {
+            "workload": "git",
+            "worker_ms": 197.41645,
+            "check": {
+              "git_clean": true
+            },
+            "python": "3.14.7"
+          },
+          "rg": {
+            "workload": "rg",
+            "worker_ms": 105.913379,
+            "check": {
+              "matches": 2048
+            },
+            "python": "3.14.7"
+          },
+          "cargo": {
+            "workload": "cargo",
+            "worker_ms": 116.421984,
+            "check": {
+              "modules": 64,
+              "result": "2016"
+            },
+            "python": "3.14.7"
+          },
+          "npm": {
+            "workload": "npm",
+            "worker_ms": 231.12938,
+            "check": {
+              "local_packages": 32
+            },
+            "python": "3.14.7"
+          }
+        },
+        "mode": "filesystem",
+        "worker_ms": 1139.400424,
+        "correctness": "passed"
+      },
+      "correctness": "passed",
+      "logs": "/home/reiase/workspace/pvisor/target/p0-filesystem-profile-20261005/baseline/trials/filesystem-pvisor-staged-000",
+      "variant": "baseline"
+    },
+    {
+      "backend": "pvisor-vm",
+      "mode": "filesystem",
+      "trial": 0,
+      "prepare_ms": 38.673569,
+      "ready_ms": 572.103217,
+      "result_ms": 5486.421392,
+      "completion_ms": 5569.712935,
+      "peak_tree_rss_kib": 832428,
+      "memory_scope": "owned launcher tree; Docker daemon/container RSS excluded",
+      "result": {
+        "filesystem": {
+          "metadata": {
+            "workload": "metadata",
+            "worker_ms": 210.680256,
+            "check": {
+              "files": 2048,
+              "bytes": 2095104
+            },
+            "python": "3.14.7"
+          },
+          "read": {
+            "workload": "read",
+            "worker_ms": 114.035438,
+            "check": {
+              "bytes": 67108864,
+              "sha256": "42ef3a50fe506ced865473b082c8b28f6ce254e6e2b01266b6a563531a6267bc"
+            },
+            "python": "3.14.7"
+          },
+          "write": {
+            "workload": "write",
+            "worker_ms": 222.387693,
+            "check": {
+              "files": 256,
+              "bytes": 16777216
+            },
+            "python": "3.14.7"
+          },
+          "git": {
+            "workload": "git",
+            "worker_ms": 436.922581,
+            "check": {
+              "git_clean": true
+            },
+            "python": "3.14.7"
+          },
+          "rg": {
+            "workload": "rg",
+            "worker_ms": 690.446667,
+            "check": {
+              "matches": 2048
+            },
+            "python": "3.14.7"
+          },
+          "cargo": {
+            "workload": "cargo",
+            "worker_ms": 776.398034,
+            "check": {
+              "modules": 64,
+              "result": "2016"
+            },
+            "python": "3.14.7"
+          },
+          "npm": {
+            "workload": "npm",
+            "worker_ms": 1899.276479,
+            "check": {
+              "local_packages": 32
+            },
+            "python": "3.14.7"
+          }
+        },
+        "mode": "filesystem",
+        "worker_ms": 4914.26408,
+        "correctness": "passed"
+      },
+      "correctness": "passed",
+      "logs": "/home/reiase/workspace/pvisor/target/p0-filesystem-profile-20261005/candidate/trials/filesystem-pvisor-vm-000",
+      "variant": "candidate"
+    },
+    {
+      "backend": "pvisor-vm",
+      "mode": "filesystem",
+      "trial": 0,
+      "prepare_ms": 38.65788,
+      "ready_ms": 586.63936,
+      "result_ms": 4866.271309,
+      "completion_ms": 4940.41673,
+      "peak_tree_rss_kib": 832844,
+      "memory_scope": "owned launcher tree; Docker daemon/container RSS excluded",
+      "result": {
+        "filesystem": {
+          "metadata": {
+            "workload": "metadata",
+            "worker_ms": 261.655302,
+            "check": {
+              "files": 2048,
+              "bytes": 2095104
+            },
+            "python": "3.14.7"
+          },
+          "read": {
+            "workload": "read",
+            "worker_ms": 136.535162,
+            "check": {
+              "bytes": 67108864,
+              "sha256": "42ef3a50fe506ced865473b082c8b28f6ce254e6e2b01266b6a563531a6267bc"
+            },
+            "python": "3.14.7"
+          },
+          "write": {
+            "workload": "write",
+            "worker_ms": 332.966483,
+            "check": {
+              "files": 256,
+              "bytes": 16777216
+            },
+            "python": "3.14.7"
+          },
+          "git": {
+            "workload": "git",
+            "worker_ms": 464.551271,
+            "check": {
+              "git_clean": true
+            },
+            "python": "3.14.7"
+          },
+          "rg": {
+            "workload": "rg",
+            "worker_ms": 464.533918,
+            "check": {
+              "matches": 2048
+            },
+            "python": "3.14.7"
+          },
+          "cargo": {
+            "workload": "cargo",
+            "worker_ms": 517.279458,
+            "check": {
+              "modules": 64,
+              "result": "2016"
+            },
+            "python": "3.14.7"
+          },
+          "npm": {
+            "workload": "npm",
+            "worker_ms": 1565.865543,
+            "check": {
+              "local_packages": 32
+            },
+            "python": "3.14.7"
+          }
+        },
+        "mode": "filesystem",
+        "worker_ms": 4279.583304,
+        "correctness": "passed"
+      },
+      "correctness": "passed",
+      "logs": "/home/reiase/workspace/pvisor/target/p0-filesystem-profile-20261005/baseline/trials/filesystem-pvisor-vm-000",
+      "variant": "baseline"
+    }
+  ],
+  "capabilities": {
+    "native/native": {
+      "state": "available"
+    },
+    "baseline/pvisor-staged": {
+      "state": "available"
+    },
+    "baseline/pvisor-vm": {
+      "state": "available"
+    },
+    "candidate/pvisor-staged": {
+      "state": "available"
+    },
+    "candidate/pvisor-vm": {
+      "state": "available"
+    }
+  },
+  "load_after": [
+    2.73876953125,
+    4.861328125,
+    11.1591796875
+  ]
+}

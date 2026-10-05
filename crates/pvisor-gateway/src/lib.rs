@@ -22,6 +22,7 @@ mod gateway;
 pub mod injection;
 pub mod lifecycle;
 pub mod llm;
+pub mod model_wait;
 pub mod projection;
 pub mod protocol;
 pub mod provider;

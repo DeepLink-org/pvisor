@@ -117,6 +117,8 @@ pub struct RuntimeSupervisorBuilder {
     gateway_output_dir: Option<PathBuf>,
     #[cfg(feature = "gateway")]
     gateway_enabled: bool,
+    #[cfg(feature = "gateway")]
+    model_wait: Option<Arc<dyn pvisor_gateway::model_wait::ModelWaitLifecycle>>,
     storage: Option<PathBuf>,
     #[cfg(feature = "gateway")]
     stream_markdown: bool,
@@ -217,6 +219,7 @@ impl RuntimeSupervisorBuilder {
         self.gateway_output_dir = Some(gateway.output_dir);
         self.stream_markdown = gateway.stream_markdown;
         self.gateway_enabled = gateway.gateway_enabled;
+        self.model_wait = gateway.model_wait;
         self
     }
 
@@ -254,6 +257,8 @@ impl RuntimeSupervisorBuilder {
             gateway_output_dir: self.gateway_output_dir,
             #[cfg(feature = "gateway")]
             gateway_enabled: self.gateway_enabled,
+            #[cfg(feature = "gateway")]
+            model_wait: self.model_wait,
             storage: self.storage,
             #[cfg(feature = "gateway")]
             stream_markdown: self.stream_markdown,
@@ -277,6 +282,8 @@ pub struct RuntimeSupervisor {
     gateway_output_dir: Option<PathBuf>,
     #[cfg(feature = "gateway")]
     gateway_enabled: bool,
+    #[cfg(feature = "gateway")]
+    model_wait: Option<Arc<dyn pvisor_gateway::model_wait::ModelWaitLifecycle>>,
     storage: Option<PathBuf>,
     #[cfg(feature = "gateway")]
     stream_markdown: bool,
@@ -492,6 +499,7 @@ impl RuntimeSupervisor {
                     controller: Arc::clone(&self.controller),
                     #[cfg(feature = "gateway")]
                     gateway_enabled: self.gateway_enabled,
+                    model_wait: self.model_wait.clone(),
                     vm_network,
                     attempt_id: attempt_id.as_str(),
                 },

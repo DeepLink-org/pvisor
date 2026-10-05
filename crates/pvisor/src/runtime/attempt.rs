@@ -431,6 +431,7 @@ pub(crate) struct AttemptPrepareOpts<'a> {
     pub overlay_override: OverlayHint,
     pub controller: Arc<dyn ControlController>,
     pub gateway_enabled: bool,
+    pub model_wait: Option<Arc<dyn pvisor_gateway::model_wait::ModelWaitLifecycle>>,
     pub vm_network: bool,
     pub attempt_id: &'a str,
 }
@@ -539,6 +540,7 @@ pub(crate) fn prepare_attempt(
             bandwidth_registry: bandwidth_registry.clone(),
             attempt_id: Some(opts.attempt_id.to_owned()),
             gateway_enabled: opts.gateway_enabled,
+            model_wait: opts.model_wait,
         },
     )?;
     config.listen = gateway.listen.clone();

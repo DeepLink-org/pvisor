@@ -34,6 +34,7 @@ pub(crate) struct GatewayState {
     pub(crate) interception_metrics: InterceptionMetrics,
     pub(crate) bandwidth_registry: BandwidthRegistry,
     pub(crate) attempt_id: Option<String>,
+    pub(crate) model_wait: Option<Arc<dyn crate::model_wait::ModelWaitLifecycle>>,
 }
 
 pub(crate) struct GatewayRuntimeControl {
@@ -42,6 +43,7 @@ pub(crate) struct GatewayRuntimeControl {
     pub(crate) bandwidth_registry: BandwidthRegistry,
     pub(crate) attempt_id: Option<String>,
     pub(crate) gateway_enabled: bool,
+    pub(crate) model_wait: Option<Arc<dyn crate::model_wait::ModelWaitLifecycle>>,
 }
 
 pub async fn serve(
@@ -125,6 +127,7 @@ pub async fn serve_with_listeners_and_shutdown(
             bandwidth_registry: BandwidthRegistry::default(),
             attempt_id: None,
             gateway_enabled: true,
+            model_wait: None,
         },
         GatewayListeners {
             proxy: listener,
@@ -162,6 +165,7 @@ pub async fn serve_with_runtime_control(
             bandwidth_registry: BandwidthRegistry::default(),
             attempt_id: None,
             gateway_enabled: true,
+            model_wait: None,
         },
         ready.map(|tx| {
             Box::new(move |_, _| {
@@ -310,6 +314,7 @@ async fn serve_with_bound_listeners(
         bandwidth_registry: runtime_control.bandwidth_registry,
         attempt_id: runtime_control.attempt_id,
         gateway_enabled: runtime_control.gateway_enabled,
+        model_wait: runtime_control.model_wait,
     };
 
     let admin_state = AdminState {

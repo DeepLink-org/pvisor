@@ -14,6 +14,83 @@ Agent 经常反复读目录、搜索和修改文件。应同时看到任务本�
 
 本轮在 Linux 实测，以下工作负载没有 macOS 样本；macFUSE/FSKit 开销与并发容量均未测。既有 macOS/HVF 数据继续保留在 [VM 启动时间](startup.md)与[VM 内存报告](vm-memory/index.md)，不移作本页结果。
 
+## Linux：2026-10-05，真实 VM/FUSE A/B 基线 {#e2e-baseline}
+
+这次启动真实 KVM VM，并挂载真实宿主 FUSE，补齐上轮适配层微基准的
+端到端验证。宿主设备可用，最初沙箱没有暴露 `/dev/kvm` 和 `/dev/fuse`。
+两份 GNU/Linux release 制品来自同一份 `a1020d4b` 源码归档，只有
+OverlayCore 的 `core.rs` 不同；二者都加入相同的 guest stdio 端口就绪修复。
+可执行文件、firmware、源码补丁和当轮脚本均保存摘要。
+
+每轮随机交替 native、优化前/后的 FUSE staged 与优化前/后的 VM，共五格；
+每格 3 次预热、30 次测量。共 150 个测量任务、1,050 个工具测量，所有
+正确性检查通过。每个任务使用新的 workspace/upper，在同一个环境中按顺序
+执行七种负载；输入复制不计时。宿主缓存为热缓存，CPU 亲和性固定在两个
+物理核 `0,1`，VM 为 2 vCPU、16 GiB。保留的历史工具环境 fixture 写入
+256×64 KiB，共 16 MiB；这与当前 product-v1 的 60 KiB 文件不同，不合并
+历史百分位数。宿主有并行任务，1 分钟 load average 从 10.38 降至 3.06；
+固定亲和性是共同预算，不是独占 CPU。以下是单批筛查数据。
+
+下表是工具内部操作与校验的 P50，单位 ms；负百分比表示耗时下降。
+
+| 负载 | Native | FUSE 前→后 | 变化 | VM 前→后 | 变化 |
+|---|---:|---:|---:|---:|---:|
+| metadata | 4.93 | 92.38 → 78.25 | -15.3% | 224.36 → 195.24 | -13.0% |
+| read | 32.56 | 68.30 → 67.82 | -0.7% | 116.98 → 117.90 | +0.8% |
+| write | 3.90 | 201.36 → 198.92 | -1.2% | 243.10 → 257.16 | +5.8% |
+| git | 15.11 | 190.36 → 170.46 | -10.5% | 484.14 → 494.86 | +2.2% |
+| rg | 7.66 | 100.80 → 90.58 | -10.1% | 476.92 → 464.97 | -2.5% |
+| cargo | 52.92 | 112.30 → 110.11 | -1.9% | 513.46 → 512.74 | -0.1% |
+| npm | 173.19 | 221.67 → 217.47 | -1.9% | 1570.05 → 1503.67 | -4.2% |
+
+七项负载合计的启动到退出 P50：native **454.50 ms**，FUSE staged
+**1288.69 → 1230.93 ms（-4.5%）**，VM **4829.04 → 4777.55 ms（-1.1%）**。
+元数据收益已在真实路径复现，但不能宣称 VM 的 git、写入或整体任务都有
+改善；VM write 和 git 本批反而变慢。小幅变化与写入变化需要在较空闲宿主
+上复测，不能仅由一个 P50 判定收益或回归原因。
+
+一次先行预热曾出现 VM 退出码为 0、任务写入完成，但 stdout 没有任何
+工作负载标记。基准立即停止，失败报告保留。普通 VM runner 现在声明实际
+非终端 stdio 所需的 named ports；guest 在启动工具前等待名称就绪，最多
+5 秒，缺失则失败。新增测试覆盖迟到的端口名、稍后新增的端口和缺失端口，
+不加入固定启动等待。正式批次的 68 个 VM 运行（含预检与预热）都通过输出
+检查。基准还验证实际隔离类型、lower 没有写入、upper 含完整 256 个文件；
+制品摘要相同、清单不符、缺样本或中断都不能成为成功的 A/B 汇总。
+
+另开的一次 profiling 不计入上表。候选 VM 两个非空 Core 实例的最后累计
+检查点仍分别有 **126,034 / 168,027** 次物理父目录 metadata 调用、
+**57,547 / 53,161** 次 mount identity 查询尝试。两个 dispatch 检查点为
+**20,545 inline / 424 pool** 和 **24,398 inline / 100 pool**，各有 2 个
+worker。宿主候选的完整 Core profile 有 341 次 journal fsync，累计约
+110 ms。Core 的重复物理路径检查、首次观察/写入的 journal 成本，以及
+小请求仍走 inline 的调度路径应优先分别验证；单纯增加 worker 或更换
+virtiofsd 不能据此认定会消除这些开销。VM profile 缺少 final record，计数
+只覆盖检查点之前的工作；嵌套 inclusive span 不相加，admission 不等于排队
+等待时间。
+
+验证：guest 5 项、VM 全包 292 项（2 项跳过）、不含 control 的 executor
+24 项和基准 24 项测试通过，guest Clippy 与基准 Ruff 通过。当前工作区
+较宽 executor 子集另有 9 项 VM control 测试失败，保留在验证归档中，本次
+没有修改 control 实现，也不将这些检查算作通过。
+
+从同一源码构建两份 GNU/Linux 制品，仅在两次构建之间应用待测修改；
+输出目录必须是新目录。先以 `--samples 1 --warmups 0` 预检。
+
+```bash
+python3 benchmark/pvisor/filesystem_ab.py \
+  --assets target/reference-env-final-20261004 \
+  --baseline /absolute/path/to/pvisor-before \
+  --candidate /absolute/path/to/pvisor-after \
+  --firmware /absolute/path/to/libkrunfw-directory \
+  --output target/filesystem-ab-new \
+  --cpu-affinity 0,1 --samples 30 --warmups 3
+```
+
+[逐样本 CSV](../../assets/benchmarks/filesystem-ab-20261005/samples.csv) ·
+[协议、制品与 P50/P95/P99](../../assets/benchmarks/filesystem-ab-20261005/summary.json) ·
+[独立诊断](../../assets/benchmarks/filesystem-ab-20261005/profiles.json) ·
+[报告、脚本、失败样本与验证日志](../../assets/benchmarks/filesystem-ab-20261005/evidence.tar.gz)
+
 ## Linux：2026-10-05，OverlayCore 路径解析优化 {#resolution-optimization}
 
 本次只测 release 模式的 virtio-fs OverlayFs 适配层，不启动 VM、不挂载
@@ -41,9 +118,10 @@ whiteout 与 opaque 探测各从 38,016 次降至 4,352 次。标记不会通过
 目录与 whiteout，以及请求之间的 upper 内容变化。
 
 Core/host 适配层 106 项测试和 virtio-fs/descriptor/文件系统快照 57 项
-测试通过，三个相关包的 Clippy 全 targets 检查通过。环境没有 `/dev/kvm`
-和 `/dev/fuse`，VM 全包测试在依赖 KVM 的 CPU 初始化测试处失败；真实
-VM/FUSE 端到端、journal/文件内容读写和 macOS 性能未测。两个制品之间
+测试通过，三个相关包的 Clippy 全 targets 检查通过。最初沙箱未暴露 `/dev/kvm`
+和 `/dev/fuse`，当时 VM 全包测试在 KVM 初始化处失败；该微基准没有测
+真实 VM/FUSE、journal/文件内容读写和 macOS。后续宿主设备验证与端到端
+复测见[本页 P0 基线](#e2e-baseline)。两个制品之间
 工作区另有 VM 重构，适配层案例不执行 UART/VMM/CPU 初始化；制品摘要
 是本次测量身份依据。以上降幅不能替代下方历史工具工作负载的重新测量。
 

@@ -557,6 +557,7 @@ pub struct GatewayDriverConfig {
     pub output_dir: PathBuf,
     pub stream_markdown: bool,
     pub gateway_enabled: bool,
+    pub model_wait: Option<std::sync::Arc<dyn pvisor_gateway::model_wait::ModelWaitLifecycle>>,
 }
 
 /// Programmatic network-driver configuration. `Auto` selects smoltcp for a
@@ -601,6 +602,7 @@ impl GatewayDriverConfig {
             output_dir: PathBuf::from(".pvisor/run"),
             stream_markdown: false,
             gateway_enabled: true,
+            model_wait: None,
         }
     }
 
@@ -616,6 +618,16 @@ impl GatewayDriverConfig {
 
     pub fn gateway_enabled(mut self, enabled: bool) -> Self {
         self.gateway_enabled = enabled;
+        self
+    }
+
+    /// Install an Attempt-bound cooperative wait/admission lifecycle. Calls
+    /// without the explicit inference-idle declaration retain normal behavior.
+    pub fn model_wait(
+        mut self,
+        lifecycle: std::sync::Arc<dyn pvisor_gateway::model_wait::ModelWaitLifecycle>,
+    ) -> Self {
+        self.model_wait = Some(lifecycle);
         self
     }
 }

@@ -29,6 +29,7 @@ use crate::conversion::{
 };
 use crate::engine::headers_to_vec;
 use crate::engine::{CompleteEvent, Event, RequestEvent};
+use crate::model_wait::{PendingModelWait, cooperative_idle, unless_stopped};
 use crate::runtime::debug::{self, truncate_body_bytes};
 use crate::session::storage::resolve_capture_route;
 use crate::understanding::understand_request;
@@ -95,6 +96,11 @@ pub(super) async fn llm_capture(
     debug_on: bool,
 ) -> anyhow::Result<Response> {
     let (parts, body) = req.into_parts();
+
+    let cooperative = match cooperative_idle(&parts.headers) {
+        Ok(value) => value,
+        Err(error) => return Ok((StatusCode::BAD_REQUEST, error.to_string()).into_response()),
+    };
 
     if is_websocket_upgrade(&parts.headers) {
         return Ok(Response::builder()
@@ -412,8 +418,21 @@ pub(super) async fn llm_capture(
         );
     }
 
+    pending.phase = "model_wait_entry_failed";
+    let mut model_wait =
+        PendingModelWait::reserve(state.model_wait.as_ref(), cooperative, model_request)?;
+    if let Some(wait) = &mut model_wait {
+        wait.enter(state.stop.clone()).await?;
+    }
+
     pending.phase = "upstream_connect_failed";
-    let upstream_resp = match upstream_req.send().await {
+    let send = async { upstream_req.send().await.context("upstream request") };
+    let sent = if model_wait.is_some() {
+        unless_stopped(state.stop.clone(), send).await
+    } else {
+        send.await
+    };
+    let mut upstream_resp = match sent {
         Ok(r) => r,
         Err(e) => {
             if debug_on {
@@ -426,7 +445,10 @@ pub(super) async fn llm_capture(
                     &e.to_string(),
                 );
             }
-            return Err(anyhow::anyhow!("upstream request: {e}"));
+            if let Some(wait) = &mut model_wait {
+                wait.before_delivery(state.stop.clone()).await?;
+            }
+            return Err(e);
         }
     };
     let status = upstream_resp.status();
@@ -453,7 +475,16 @@ pub(super) async fn llm_capture(
     pending.status = status.as_u16();
     pending.phase = "upstream_read_failed";
     if !status.is_success() {
-        let raw_error = read_response_body_limited(upstream_resp, MAX_RESPONSE_BODY_BYTES).await?;
+        let read = read_response_body_limited(upstream_resp, MAX_RESPONSE_BODY_BYTES);
+        let read = if model_wait.is_some() {
+            unless_stopped(state.stop.clone(), read).await
+        } else {
+            read.await
+        };
+        if let Some(wait) = &mut model_wait {
+            wait.before_delivery(state.stop.clone()).await?;
+        }
+        let raw_error = read?;
         let client_error = translate_error_for_bridge(bridge, &raw_error, status)?;
         let body_was_rewritten = client_error != raw_error;
         pending.armed = false;
@@ -491,14 +522,45 @@ pub(super) async fn llm_capture(
     }
 
     if should_stream_to_client(&resp_headers, &body_bytes) {
+        // Providers may send headers long before the first token. Keep the
+        // cooperative wait alive until body data/EOF is available; resume and
+        // reacquire admission before returning any HTTP response to the guest.
+        let first_chunk = if let Some(wait) = &mut model_wait {
+            let first = unless_stopped(state.stop.clone(), async {
+                loop {
+                    match upstream_resp
+                        .chunk()
+                        .await
+                        .context("read first model stream chunk")?
+                    {
+                        Some(chunk) if chunk.is_empty() => continue,
+                        chunk => return Ok(chunk),
+                    }
+                }
+            })
+            .await;
+            wait.before_delivery(state.stop.clone()).await?;
+            first?
+        } else {
+            None
+        };
         // streaming_llm_response takes an owned CallContext so unwrap the Arc when
         // we know we're the only owner (we are — request emit was the only earlier clone).
         let owned_ctx = Arc::try_unwrap(call_ctx).unwrap_or_else(|arc| (*arc).clone());
         pending.armed = false; // Streaming producer now owns the terminal obligation.
-        return streaming_llm_response(upstream_resp, state, owned_ctx, bridge).await;
+        return streaming_llm_response(upstream_resp, state, owned_ctx, bridge, first_chunk).await;
     }
 
-    let upstream_bytes = read_response_body_limited(upstream_resp, MAX_RESPONSE_BODY_BYTES).await?;
+    let read = read_response_body_limited(upstream_resp, MAX_RESPONSE_BODY_BYTES);
+    let read = if model_wait.is_some() {
+        unless_stopped(state.stop.clone(), read).await
+    } else {
+        read.await
+    };
+    if let Some(wait) = &mut model_wait {
+        wait.before_delivery(state.stop.clone()).await?;
+    }
+    let upstream_bytes = read?;
     let body_was_rewritten = bridge.needs_response_translation();
     pending.phase = "response_translation_failed";
     let translated =

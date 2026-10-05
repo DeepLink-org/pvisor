@@ -1,0 +1,208 @@
+   Compiling pvisor v0.3.0 (/home/reiase/workspace/pvisor/crates/pvisor)
+    Finished `test` profile [unoptimized] target(s) in 0.58s
+────────────
+ Nextest run ID c2f13f71-86bf-48cb-8883-351dc3d99c7d with nextest profile: default
+    Starting 16 tests across 32 binaries (485 tests skipped)
+        PASS [   0.005s] pvisor executor::vm::control::tests::publication_uses_physical_inode_instead_of_the_logical_ram_file
+        PASS [   0.005s] pvisor executor::vm::control::tests::backing_is_private_persistent_and_rejects_symlinks_and_missing_parents
+        PASS [   0.005s] pvisor executor::vm::control::tests::temporary_name_is_removed_but_published_backing_survives_drop
+        PASS [   0.005s] pvisor executor::vm::control::tests::backing_publication_keeps_live_inode_and_never_overwrites
+        PASS [   0.005s] pvisor executor::vm::control::tests::replaced_source_cannot_publish_a_different_inode
+        PASS [   0.006s] pvisor executor::vm::control::tests::unavailable_or_detached_control_rejects_without_cancelling
+        FAIL [   0.008s] pvisor executor::vm::control::tests::offload_rejection_preserves_connection_and_success_uses_owned_path
+  stdout ───
+
+    running 1 test
+    test executor::vm::control::tests::offload_rejection_preserves_connection_and_success_uses_owned_path ... FAILED
+
+    failures:
+
+    failures:
+        executor::vm::control::tests::offload_rejection_preserves_connection_and_success_uses_owned_path
+
+    test result: FAILED. 0 passed; 1 failed; 0 ignored; 0 measured; 326 filtered out; finished in 0.00s
+
+  stderr ───
+
+    thread 'executor::vm::control::tests::offload_rejection_preserves_connection_and_success_uses_owned_path' (291) panicked at crates/pvisor/src/executor/vm/control.rs:1292:14:
+    called `Result::unwrap()` on an `Err` value: Operation not permitted (os error 1)
+    note: run with `RUST_BACKTRACE=1` environment variable to display a backtrace
+
+  Cancelling due to test failure: 9 tests still running
+        FAIL [   0.008s] pvisor executor::vm::control::tests::checkpoint_publication_failure_drains_commit_ack_before_next_control
+  stdout ───
+
+    running 1 test
+    test executor::vm::control::tests::checkpoint_publication_failure_drains_commit_ack_before_next_control ... FAILED
+
+    failures:
+
+    failures:
+        executor::vm::control::tests::checkpoint_publication_failure_drains_commit_ack_before_next_control
+
+    test result: FAILED. 0 passed; 1 failed; 0 ignored; 0 measured; 326 filtered out; finished in 0.00s
+
+  stderr ───
+
+    thread 'executor::vm::control::tests::checkpoint_publication_failure_drains_commit_ack_before_next_control' (297) panicked at crates/pvisor/src/executor/vm/control.rs:953:9:
+    Operation not permitted (os error 1)
+    note: run with `RUST_BACKTRACE=1` environment variable to display a backtrace
+
+        FAIL [   0.008s] pvisor executor::vm::control::tests::known_live_rejection_preserves_connection_for_next_control
+  stdout ───
+
+    running 1 test
+    test executor::vm::control::tests::known_live_rejection_preserves_connection_for_next_control ... FAILED
+
+    failures:
+
+    failures:
+        executor::vm::control::tests::known_live_rejection_preserves_connection_for_next_control
+
+    test result: FAILED. 0 passed; 1 failed; 0 ignored; 0 measured; 326 filtered out; finished in 0.00s
+
+  stderr ───
+
+    thread 'executor::vm::control::tests::known_live_rejection_preserves_connection_for_next_control' (287) panicked at crates/pvisor/src/executor/vm/control.rs:1229:9:
+    assertion failed: !cancellation.is_cancelled()
+    note: run with `RUST_BACKTRACE=1` environment variable to display a backtrace
+
+        FAIL [   0.008s] pvisor executor::vm::control::tests::suspend_ack_without_host_sealing_cancels_and_cannot_prove_native_termination
+  stdout ───
+
+    running 1 test
+    test executor::vm::control::tests::suspend_ack_without_host_sealing_cancels_and_cannot_prove_native_termination ... FAILED
+
+    failures:
+
+    failures:
+        executor::vm::control::tests::suspend_ack_without_host_sealing_cancels_and_cannot_prove_native_termination
+
+    test result: FAILED. 0 passed; 1 failed; 0 ignored; 0 measured; 326 filtered out; finished in 0.00s
+
+  stderr ───
+
+    thread 'executor::vm::control::tests::suspend_ack_without_host_sealing_cancels_and_cannot_prove_native_termination' (290) panicked at crates/pvisor/src/executor/vm/control.rs:823:44:
+    called `Result::unwrap()` on an `Err` value: Kind(UnexpectedEof)
+    note: run with `RUST_BACKTRACE=1` environment variable to display a backtrace
+
+    thread 'executor::vm::control::tests::suspend_ack_without_host_sealing_cancels_and_cannot_prove_native_termination' (290) panicked at crates/pvisor/src/executor/vm/control.rs:879:20:
+    called `Result::unwrap()` on an `Err` value: JoinError::Panic(Id(1), "called `Result::unwrap()` on an `Err` value: Kind(UnexpectedEof)", ...)
+
+        FAIL [   0.008s] pvisor executor::vm::control::tests::malformed_checkpoint_readiness_or_uncommitted_success_cancels_attempt
+  stdout ───
+
+    running 1 test
+    test executor::vm::control::tests::malformed_checkpoint_readiness_or_uncommitted_success_cancels_attempt ... FAILED
+
+    failures:
+
+    failures:
+        executor::vm::control::tests::malformed_checkpoint_readiness_or_uncommitted_success_cancels_attempt
+
+    test result: FAILED. 0 passed; 1 failed; 0 ignored; 0 measured; 326 filtered out; finished in 0.00s
+
+  stderr ───
+
+    thread 'executor::vm::control::tests::malformed_checkpoint_readiness_or_uncommitted_success_cancels_attempt' (288) panicked at crates/pvisor/src/executor/vm/control.rs:823:44:
+    called `Result::unwrap()` on an `Err` value: Kind(UnexpectedEof)
+    note: run with `RUST_BACKTRACE=1` environment variable to display a backtrace
+
+    thread 'executor::vm::control::tests::malformed_checkpoint_readiness_or_uncommitted_success_cancels_attempt' (288) panicked at crates/pvisor/src/executor/vm/control.rs:1020:24:
+    called `Result::unwrap()` on an `Err` value: JoinError::Panic(Id(1), "called `Result::unwrap()` on an `Err` value: Kind(UnexpectedEof)", ...)
+
+        FAIL [   0.008s] pvisor executor::vm::control::tests::cancelled_waiter_does_not_abandon_ack_and_rejection_cancels_attempt
+  stdout ───
+
+    running 1 test
+    test executor::vm::control::tests::cancelled_waiter_does_not_abandon_ack_and_rejection_cancels_attempt ... FAILED
+
+    failures:
+
+    failures:
+        executor::vm::control::tests::cancelled_waiter_does_not_abandon_ack_and_rejection_cancels_attempt
+
+    test result: FAILED. 0 passed; 1 failed; 0 ignored; 0 measured; 326 filtered out; finished in 0.00s
+
+  stderr ───
+
+    thread 'executor::vm::control::tests::cancelled_waiter_does_not_abandon_ack_and_rejection_cancels_attempt' (294) panicked at crates/pvisor/src/executor/vm/control.rs:1447:44:
+    called `Result::unwrap()` on an `Err` value: Kind(UnexpectedEof)
+    note: run with `RUST_BACKTRACE=1` environment variable to display a backtrace
+
+        FAIL [   0.008s] pvisor executor::vm::control::tests::invalid_acknowledgements_discard_connection_and_cancel_attempt
+  stdout ───
+
+    running 1 test
+    test executor::vm::control::tests::invalid_acknowledgements_discard_connection_and_cancel_attempt ... FAILED
+
+    failures:
+
+    failures:
+        executor::vm::control::tests::invalid_acknowledgements_discard_connection_and_cancel_attempt
+
+    test result: FAILED. 0 passed; 1 failed; 0 ignored; 0 measured; 326 filtered out; finished in 0.00s
+
+  stderr ───
+
+    thread 'executor::vm::control::tests::invalid_acknowledgements_discard_connection_and_cancel_attempt' (301) panicked at crates/pvisor/src/executor/vm/control.rs:1169:44:
+    called `Result::unwrap()` on an `Err` value: Kind(UnexpectedEof)
+    note: run with `RUST_BACKTRACE=1` environment variable to display a backtrace
+
+    thread 'executor::vm::control::tests::invalid_acknowledgements_discard_connection_and_cancel_attempt' (301) panicked at crates/pvisor/src/executor/vm/control.rs:1407:24:
+    called `Result::unwrap()` on an `Err` value: JoinError::Panic(Id(1), "called `Result::unwrap()` on an `Err` value: Kind(UnexpectedEof)", ...)
+
+        FAIL [   0.008s] pvisor executor::vm::control::tests::rejected_offload_leaves_published_backing_alias
+  stdout ───
+
+    running 1 test
+    test executor::vm::control::tests::rejected_offload_leaves_published_backing_alias ... FAILED
+
+    failures:
+
+    failures:
+        executor::vm::control::tests::rejected_offload_leaves_published_backing_alias
+
+    test result: FAILED. 0 passed; 1 failed; 0 ignored; 0 measured; 326 filtered out; finished in 0.00s
+
+  stderr ───
+
+    thread 'executor::vm::control::tests::rejected_offload_leaves_published_backing_alias' (292) panicked at crates/pvisor/src/executor/vm/control.rs:1169:44:
+    called `Result::unwrap()` on an `Err` value: Kind(UnexpectedEof)
+    note: run with `RUST_BACKTRACE=1` environment variable to display a backtrace
+
+    thread 'executor::vm::control::tests::rejected_offload_leaves_published_backing_alias' (292) panicked at crates/pvisor/src/executor/vm/control.rs:1349:20:
+    called `Result::unwrap()` on an `Err` value: JoinError::Panic(Id(1), "called `Result::unwrap()` on an `Err` value: Kind(UnexpectedEof)", ...)
+
+        FAIL [   0.008s] pvisor executor::vm::control::tests::missing_acknowledgement_times_out_without_real_sleep
+  stdout ───
+
+    running 1 test
+    test executor::vm::control::tests::missing_acknowledgement_times_out_without_real_sleep ... FAILED
+
+    failures:
+
+    failures:
+        executor::vm::control::tests::missing_acknowledgement_times_out_without_real_sleep
+
+    test result: FAILED. 0 passed; 1 failed; 0 ignored; 0 measured; 326 filtered out; finished in 0.00s
+
+  stderr ───
+
+    thread 'executor::vm::control::tests::missing_acknowledgement_times_out_without_real_sleep' (300) panicked at crates/pvisor/src/executor/vm/control.rs:1161:13:
+    assertion failed: error.to_string().contains("timed out")
+    note: run with `RUST_BACKTRACE=1` environment variable to display a backtrace
+
+        PASS [   0.019s] pvisor executor::vm::control::tests::unsupported_checkpoint_never_writes_to_or_cancels_live_connection
+────────────
+     Summary [   0.019s] 16 tests run: 7 passed, 9 failed, 485 skipped
+        FAIL [   0.008s] pvisor executor::vm::control::tests::cancelled_waiter_does_not_abandon_ack_and_rejection_cancels_attempt
+        FAIL [   0.008s] pvisor executor::vm::control::tests::checkpoint_publication_failure_drains_commit_ack_before_next_control
+        FAIL [   0.008s] pvisor executor::vm::control::tests::invalid_acknowledgements_discard_connection_and_cancel_attempt
+        FAIL [   0.008s] pvisor executor::vm::control::tests::known_live_rejection_preserves_connection_for_next_control
+        FAIL [   0.008s] pvisor executor::vm::control::tests::malformed_checkpoint_readiness_or_uncommitted_success_cancels_attempt
+        FAIL [   0.008s] pvisor executor::vm::control::tests::missing_acknowledgement_times_out_without_real_sleep
+        FAIL [   0.008s] pvisor executor::vm::control::tests::offload_rejection_preserves_connection_and_success_uses_owned_path
+        FAIL [   0.008s] pvisor executor::vm::control::tests::rejected_offload_leaves_published_backing_alias
+        FAIL [   0.008s] pvisor executor::vm::control::tests::suspend_ack_without_host_sealing_cancels_and_cannot_prove_native_termination
+error: test run failed

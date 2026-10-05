@@ -55,6 +55,7 @@ pub fn apply_upstream_headers(
         // encodings. reqwest decodes gzip/deflate before parsing or streaming
         // and removes stale Content-Encoding/Content-Length response headers.
         if name == axum::http::header::ACCEPT_ENCODING
+            || name == crate::model_wait::INFERENCE_IDLE_HEADER
             || skip_upstream_forward_header_for(client_headers, name.as_str())
         {
             continue;

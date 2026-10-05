@@ -31,6 +31,7 @@ pub struct InProcessRuntime {
     pub attempt_id: Option<String>,
     /// Disable LLM dispatch for pVisor runs that only need the network proxy.
     pub gateway_enabled: bool,
+    pub model_wait: Option<Arc<dyn crate::model_wait::ModelWaitLifecycle>>,
 }
 
 impl Default for InProcessRuntime {
@@ -41,6 +42,7 @@ impl Default for InProcessRuntime {
             bandwidth_registry: BandwidthRegistry::default(),
             attempt_id: None,
             gateway_enabled: true,
+            model_wait: None,
         }
     }
 }
@@ -94,6 +96,7 @@ impl InProcessCapture {
                         bandwidth_registry: runtime.bandwidth_registry,
                         attempt_id: runtime.attempt_id,
                         gateway_enabled: runtime.gateway_enabled,
+                        model_wait: runtime.model_wait,
                     },
                     Some(Box::new(move |listen, admin_listen| {
                         let _ = ready_tx.send((listen.to_string(), admin_listen.to_string()));

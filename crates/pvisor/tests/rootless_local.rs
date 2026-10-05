@@ -630,9 +630,10 @@ fn safe_launcher_closes_inherited_host_file_descriptors() {
     }
     assert!(
         output.status.success(),
-        "stdout:\n{}\nstderr:\n{}",
+        "stdout:\n{}\nstderr:\n{}\nsandbox stderr:\n{}",
         String::from_utf8_lossy(&output.stdout),
-        String::from_utf8_lossy(&output.stderr)
+        String::from_utf8_lossy(&output.stderr),
+        setup_failure(&stage_root(&run_home)).unwrap_or_default()
     );
     let bundle = RunBundle::read(&only_run(&stage_root(&run_home))).unwrap();
     assert!(bundle.safety.filesystem_non_bypassable);

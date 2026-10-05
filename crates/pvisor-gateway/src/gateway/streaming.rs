@@ -47,6 +47,7 @@ pub(super) async fn streaming_llm_response(
     state: GatewayState,
     ctx: CallContext,
     bridge: ProtocolBridge,
+    first_chunk: Option<Bytes>,
 ) -> anyhow::Result<Response> {
     let status = upstream_resp.status();
     let resp_headers = upstream_resp.headers().clone();
@@ -67,7 +68,9 @@ pub(super) async fn streaming_llm_response(
         );
     }
 
-    let byte_stream = upstream_resp.bytes_stream();
+    let byte_stream =
+        futures_util::stream::iter(first_chunk.into_iter().map(Ok::<Bytes, reqwest::Error>))
+            .chain(upstream_resp.bytes_stream());
     let (tx, rx) = tokio::sync::mpsc::channel::<Result<Bytes, String>>(STREAM_CLIENT_QUEUE);
 
     let capture_engine = state.capture_engine.clone();

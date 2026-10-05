@@ -14,6 +14,92 @@ Identical inputs across native, host, staged, safe, libkrun VM, rootless Podman/
 
 These workloads were measured on Linux; macFUSE/FSKit overhead and capacity remain unmeasured. Existing macOS/HVF results are retained in [VM startup](startup.md) and [VM memory](vm-memory/index.md), and are not substituted for this workload.
 
+## Linux: 2026-10-05, real VM/FUSE A/B baseline {#e2e-baseline}
+
+This batch boots actual KVM VMs and mounts actual host FUSE, completing the
+end-to-end check missing from the adapter experiment. Host devices are available;
+the initial sandbox hid `/dev/kvm` and `/dev/fuse`. Both GNU/Linux release binaries
+come from the same `a1020d4b` source archive and differ only in OverlayCore's
+`core.rs`. Both include the same guest stdio readiness fix. Binary, firmware,
+source patch and harness hashes are retained.
+
+Each round shuffles five cells: native and both versions of FUSE staged and VM.
+Each cell has three warmups and 30 measurements: 150 measured jobs and 1,050 tool
+measurements, all correct. Every job has a fresh workspace/upper and executes the
+seven workloads in order in one environment. Fixture copying is excluded. Host
+caches are warm; all launch trees use physical host cores `0,1`; VMs have 2 vCPU
+and 16 GiB. The pinned historical fixture writes 256×64 KiB (16 MiB), unlike the
+current product-v1 60 KiB files. Historical percentiles are not pooled. Concurrent
+host activity remained: one-minute load average fell from 10.38 to 3.06. Affinity
+is a shared execution budget, not exclusive CPUs. This is one screening batch.
+
+Tool operation and validation P50 in ms; negative changes mean less elapsed time:
+
+| Workload | Native | FUSE before→after | Change | VM before→after | Change |
+|---|---:|---:|---:|---:|---:|
+| metadata | 4.93 | 92.38 → 78.25 | -15.3% | 224.36 → 195.24 | -13.0% |
+| read | 32.56 | 68.30 → 67.82 | -0.7% | 116.98 → 117.90 | +0.8% |
+| write | 3.90 | 201.36 → 198.92 | -1.2% | 243.10 → 257.16 | +5.8% |
+| git | 15.11 | 190.36 → 170.46 | -10.5% | 484.14 → 494.86 | +2.2% |
+| rg | 7.66 | 100.80 → 90.58 | -10.1% | 476.92 → 464.97 | -2.5% |
+| cargo | 52.92 | 112.30 → 110.11 | -1.9% | 513.46 → 512.74 | -0.1% |
+| npm | 173.19 | 221.67 → 217.47 | -1.9% | 1570.05 → 1503.67 | -4.2% |
+
+Launch-to-exit P50 for the seven-workload job is **454.50 ms** native,
+**1288.69 → 1230.93 ms (-4.5%)** FUSE staged and
+**4829.04 → 4777.55 ms (-1.1%)** VM. Metadata savings reproduce in the actual
+paths. This does not establish improvements for VM git, writes or overall jobs:
+VM write and git became slower in this batch. Small changes and write behavior
+need a quieter-host rerun; a single P50 cannot establish their cause.
+
+An earlier warmup exited zero and completed writes without any workload stdout
+markers. The harness stopped and retained the failure. The ordinary VM runner now
+declares the named ports required by its actual non-terminal standard descriptors.
+The guest waits for their names before launching tools, failing after at most five
+seconds. Regression tests cover delayed names, later port creation and absent
+ports; there is no unconditional startup delay. All 68 VM runs in the formal batch,
+including preflight and warmups, passed output checks. The harness also verifies
+observed isolation, no writes in lower and all 256 upper files with correct sizes.
+Identical binaries, a mismatched build manifest, missing samples or interruption
+cannot produce a successful A/B summary.
+
+A separate profiled batch does not enter the timing table. The candidate VM's two
+nonempty Core instances still record **126,034 / 168,027** parent metadata calls
+and **57,547 / 53,161** mount identity attempts at their last checkpoints.
+Dispatch checkpoints show **20,545 inline / 424 pool** and
+**24,398 inline / 100 pool**, with two workers each. The complete candidate host
+Core profile records 341 journal fsync calls totaling about 110 ms. Repeated Core
+physical path checks, first-observation/write journal costs and inline dispatch
+of small requests warrant separate experiments. Neither more workers nor
+virtiofsd can be assumed to remove these costs. VM checkpoints lack final records
+and are partial; nested inclusive spans must not be added, and admission time is
+not queue waiting time.
+
+Validation passed: five guest tests, 292 full VM-package tests (two skipped),
+24 executor tests excluding control and 24 benchmark tests, plus guest Clippy and
+benchmark Ruff. The wider executor subset in the current worktree has nine
+VM-control test failures, retained separately in the validation archive. This
+change does not modify control implementation or count those checks as passed.
+
+Build both GNU/Linux binaries from the same source, applying only the proposed
+change between builds. Use a fresh output directory and start with
+`--samples 1 --warmups 0` for preflight.
+
+```bash
+python3 benchmark/pvisor/filesystem_ab.py \
+  --assets target/reference-env-final-20261004 \
+  --baseline /absolute/path/to/pvisor-before \
+  --candidate /absolute/path/to/pvisor-after \
+  --firmware /absolute/path/to/libkrunfw-directory \
+  --output target/filesystem-ab-new \
+  --cpu-affinity 0,1 --samples 30 --warmups 3
+```
+
+[Raw sample CSV](../../assets/benchmarks/filesystem-ab-20261005/samples.csv) ·
+[Protocol, binaries and P50/P95/P99](../../assets/benchmarks/filesystem-ab-20261005/summary.json) ·
+[Separate diagnostics](../../assets/benchmarks/filesystem-ab-20261005/profiles.json) ·
+[Reports, harness, failure and validation logs](../../assets/benchmarks/filesystem-ab-20261005/evidence.tar.gz)
+
 ## Linux: 2026-10-05, OverlayCore resolution optimization {#resolution-optimization}
 
 This release-mode experiment measures only the virtio-fs OverlayFs adapter,
@@ -44,10 +130,11 @@ hide lower entries. New tests also cover upper directories and whiteouts appeari
 within a walk and upper content changes between requests.
 
 All 106 Core/host-adapter tests and 57 virtio-fs/descriptor/filesystem-snapshot
-tests passed, as did Clippy for all targets of the three relevant packages. This
-environment has neither `/dev/kvm` nor `/dev/fuse`; full VM-package testing fails
-at KVM-dependent CPU initialization. Actual VM/FUSE end-to-end performance,
-journaling, file payload I/O and macOS were not measured. Unrelated VM refactors
+tests passed, as did Clippy for all targets of the three relevant packages. The initial
+sandbox hid `/dev/kvm` and `/dev/fuse`, so that full VM-package attempt failed
+at KVM initialization. This microbenchmark did not measure actual VM/FUSE jobs,
+journaling, payload I/O or macOS. Subsequent host validation and end-to-end runs
+appear in the [P0 baseline above](#e2e-baseline). Unrelated VM refactors
 also occurred between builds; this adapter case does not execute UART/VMM/CPU
 initialization. Binary digests identify the measured artifacts. These reductions
 do not replace new measurements of the historical tool workloads below.
