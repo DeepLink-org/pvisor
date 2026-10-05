@@ -1,10 +1,16 @@
-# Comparison: built-in Agent sandboxes
+# When is an Agent sandbox enough, and when does pVisor help?
 
 ## Main conclusions {#conclusions}
 
 **For one Agent, its built-in sandbox directly manages tool permissions; pVisor suits shared staging, review, conflict protection and records across Agents.** They can be combined, but default nested-sandbox compatibility and full overhead are unmeasured here.
 
 Controlled staged Claude/Codex loops take **1.07/2.25 s**, near native **0.82/1.97 s**. VM Codex takes **10.93 s**, while Claude initialization times out. This compares execution environments, not built-in sandbox product speed.
+
+| Need | Selection implication |
+|---|---|
+| One Agent’s tool permissions | Its built-in sandbox may suffice |
+| Shared review protocol across Agents | Evaluate pVisor |
+| Default nested sandboxes | Require separate compatibility tests |
 
 ## Motivation {#motivation}
 
@@ -21,7 +27,9 @@ Capabilities come from official documentation. Measurements pin CLI versions, to
 | Gemini CLI | OS or container sandbox options; Docker/Podman mounts the workspace |
 | pVisor | Host/isolated host/OCI/VM choices; stage retains changes with preimage checks at apply |
 
-Sources: [Claude Code](https://code.claude.com/docs/en/sandboxing), [Codex](https://learn.chatgpt.com/docs/sandboxing), [Gemini CLI](https://geminicli.com/docs/cli/sandbox/). pVisor boundaries are in [isolation validation](isolation-tests.md). Current documented capabilities and pinned measured versions are distinguished.
+Sources: [Claude Code](https://code.claude.com/docs/en/sandboxing), [Codex](https://developers.openai.com/codex/security/), [Gemini CLI](https://geminicli.com/docs/cli/sandbox/). pVisor boundaries are in [isolation validation](isolation-tests.md). Current documented capabilities and pinned measured versions are distinguished.
+
+Tables identify pinned artifacts and measurement dates. Failed or invalid samples are excluded from successful timings and counted separately. Existing measurements have no predefined host-interference filter; all slow valid samples are retained. P95 from 30 or fewer samples is descriptive only; no P99 or stable tail-latency claim is made.
 
 ## Data and analysis {#results}
 

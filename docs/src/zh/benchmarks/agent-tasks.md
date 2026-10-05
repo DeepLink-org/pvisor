@@ -1,10 +1,16 @@
-# Agent 工具任务与 CLI 兼容性
+# 修复与测试任务要多久，Agent CLI 能否完成？
 
 ## 主要结论 {#conclusions}
 
 **pVisor staged 的短工具任务接近原生，且在已测完整修复任务中快于 Docker；pVisor VM 的工具执行慢于 Docker 和最小参考 VM。** 同工具环境修复/测试 P50 为 staged **0.70 s**、原生 **0.50 s**、Docker **0.90 s**；VM **3.97 s**、QEMU microvm **1.85 s**。需要暂存审查时，staged 的额外等待约为数百毫秒。
 
 无镜像 VM 比完整 Ubuntu 的新环境更早返回短任务结果，但进入环境后的工具执行更慢。**Codex 的受控工具闭环通过；Claude 在 pVisor VM 初始化超时**，选型还需要核对客户端兼容性。
+
+| 需求 | 选型含义 |
+|---|---|
+| 可信任务，需要暂存审查 | 优先评估 host staged |
+| 需要独立 guest kernel | 预留 VM 的工具执行时间 |
+| 使用 Claude Code / VM | 先核对指定版本兼容性 |
 
 ## Motivation {#motivation}
 
@@ -15,6 +21,8 @@
 使用真实 Claude Code 2.1.128 / Codex CLI 0.160.0，本地受控响应与假凭据，无模型推理。任务检查仓库、搜索、修复 Python，再运行 Python/Rust/Node 测试、离线安装 32 个 npm 包和生成 diff。要求实际测试结果回传模型服务、客户端完成、暂存原目录未改动。
 
 Linux 同工具环境各格 3 次预热、30 次测量；完整 Ubuntu 各格 N=10、3 次预热；均两核预算、VM 2 vCPU / 16 GiB、热宿主缓存。工具版本与存储路径在完整 Ubuntu 对照中不同，两表独立呈现。任务计时从启动到校验结果，不含镜像/工具准备；worker 只计内部工具与校验。Codex 内层统一为 `danger-full-access`，不验证默认嵌套沙箱。对应 macOS 与真实模型任务尚未测量。
+
+固定制品与测量日期按表注明。失败与校验不通过的样本不计入成功耗时，失败数量单列；既有数据没有事先的宿主干扰剔除规则，所有通过校验的慢样本保留。30 次及更少采样的 P95 仅为观察参考，不给 P99 或稳定尾延迟承诺。
 
 ## 实验数据和分析 {#results}
 
@@ -52,6 +60,3 @@ pVisor VM 修复任务从启动到结果约 **4.61 s**，Firecracker/Ubuntu **8.
 
 这些对照使用各自固定的 pVisor 制品，未随当前文件系统制品全部重测。大型仓库、真实推理、公网依赖、长期池化吞吐与 SWE-bench 成功率没有对应结果。[当前文件系统](filesystem.md)另给最新本地操作数据。
 
-### 数据来源与复现 {#run}
-
-[同工具分布](../../assets/benchmarks/reference-env-20261004/summary.tsv) · [Compatibility](../../assets/benchmarks/reference-env-20261004/compatibility.tsv) · [Ubuntu](../../assets/benchmarks/full-ubuntu-20261004/summary.tsv) · [QEMU / Ubuntu](../../assets/benchmarks/full-ubuntu-qemu-20261004/summary.tsv) · [方法](methodology.md) · [阶段分析与复现命令](../design/agent-task-performance-analysis.md)

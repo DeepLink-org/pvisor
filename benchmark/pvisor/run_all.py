@@ -27,7 +27,7 @@ REPO = Path(__file__).parents[2]
 
 def parser() -> argparse.ArgumentParser:
     command = argparse.ArgumentParser(description=__doc__)
-    command.add_argument("--output", type=Path, default=Path("target/pvisor-benchmark/startup"))
+    command.add_argument("--output", type=Path, default=Path("benchmark/pvisor/.data/startup"))
     command.add_argument("--pvisor", type=Path, default=Path("target/release/pvisor"))
     command.add_argument("--no-build", action="store_true", help="use an existing release binary")
     command.add_argument("--container-rootfs", type=Path)

@@ -539,7 +539,6 @@ fn every_public_run_option_is_accepted_by_the_real_cli_parser() {
         &["--gateway-level", "full"],
         &["--gateway-session-header", "X-Session-ID"],
         &["--gateway-debug"],
-        &["--gateway-stream-markdown"],
         &[
             "--gateway-route",
             "name=\"default\",upstream=\"https://example.com\"",

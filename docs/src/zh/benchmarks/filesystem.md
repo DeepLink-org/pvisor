@@ -1,4 +1,4 @@
-# 文件系统与开发工具性能
+# 开发工具在 pVisor、Docker 和轻量 VM 中要等多久？
 
 **pVisor host staged 的离线 npm 安装与 Docker 接近，写入 256 个文件约 27 ms；pVisor VM 在 Git、搜索和 npm 等文件密集型负载上慢于所测 Firecracker、QEMU。** 下表将 pVisor 的最新实测与容器、轻量 VM 和完整 Ubuntu VM 放在一起，便于按任务判断性能水位。
 
@@ -70,10 +70,10 @@ pVisor 测试使用 Linux、本地 release、热宿主缓存。host 测试使用
 
 这些结果适用于小型、离线、热缓存开发负载。大型仓库、冷磁盘、真实 npm registry 和多任务吞吐需要按自己的任务测量。宿主 CPU 非独占，较慢样本的耗时尤其可能变化。
 
+固定制品与测量日期按表注明。失败与校验不通过的样本不计入成功耗时，失败数量单列；既有数据没有事先的宿主干扰剔除规则，所有通过校验的慢样本保留。30 次及更少采样的 P95 仅为观察参考，不给 P99 或稳定尾延迟承诺。
+
 ## 数据来源 {#run}
 
 pVisor 与原生测量日期：**2026-10-05**，使用同一批次；Docker、Firecracker、QEMU 与完整 Ubuntu 的参考数据测于 **2026-10-04**。pVisor VM 的独立采样单列展示，各批次不合并百分位数。
 
-[当前性能数据（P50/P95/P99）](../../assets/benchmarks/stage-boundaries-20261005/current.tsv) · [完整样本](../../assets/benchmarks/stage-boundaries-20261005/samples.tsv) · [原始报告](../../assets/benchmarks/stage-boundaries-20261005/local-release.tsv) · [VM 独立采样](../../assets/benchmarks/stage-boundaries-20261005/vm-repeat.tsv) · [测试制品](../../assets/benchmarks/stage-boundaries-20261005/build-provenance.tsv) · [校验清单](../../assets/benchmarks/stage-boundaries-20261005/manifest.tsv)
-
-[Docker / Firecracker / QEMU 参考汇总](../../assets/benchmarks/reference-env-20261004/summary.tsv) · [参考样本](../../assets/benchmarks/reference-env-20261004/samples.csv) · [完整 Ubuntu 汇总](../../assets/benchmarks/full-ubuntu-qemu-20261004/summary.tsv) · [测试方法与制品](methodology.md)
+ ·  ·  · [测试方法与制品](methodology.md)

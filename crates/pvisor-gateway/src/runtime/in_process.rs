@@ -52,22 +52,14 @@ impl InProcessCapture {
         config: ProxyConfig,
         storage: PathBuf,
         sink: Arc<dyn CaptureEventObserver>,
-        stream_markdown: bool,
     ) -> Result<Self> {
-        Self::start_with_runtime(
-            config,
-            storage,
-            sink,
-            stream_markdown,
-            InProcessRuntime::default(),
-        )
+        Self::start_with_runtime(config, storage, sink, InProcessRuntime::default())
     }
 
     pub fn start_with_runtime(
         config: ProxyConfig,
         storage: PathBuf,
         sink: Arc<dyn CaptureEventObserver>,
-        stream_markdown: bool,
         runtime: InProcessRuntime,
     ) -> Result<Self> {
         let listen = config.listen.clone();
@@ -89,7 +81,6 @@ impl InProcessCapture {
                     config,
                     storage,
                     sink,
-                    stream_markdown,
                     crate::gateway::GatewayRuntimeControl {
                         controller: runtime.controller,
                         interception_metrics: thread_metrics,
@@ -127,26 +118,6 @@ impl InProcessCapture {
             admin_listen,
             interception_metrics,
         })
-    }
-
-    /// Compatibility entry point for callers that only inject a controller.
-    pub fn start_with_control(
-        config: ProxyConfig,
-        storage: PathBuf,
-        sink: Arc<dyn CaptureEventObserver>,
-        stream_markdown: bool,
-        controller: Arc<dyn ControlController>,
-    ) -> Result<Self> {
-        Self::start_with_runtime(
-            config,
-            storage,
-            sink,
-            stream_markdown,
-            InProcessRuntime {
-                controller,
-                ..InProcessRuntime::default()
-            },
-        )
     }
 
     pub fn interception_snapshot(&self) -> InterceptionSnapshot {
@@ -191,7 +162,6 @@ mod tests {
             config,
             storage.path().to_path_buf(),
             Arc::new(crate::sink::NoopCaptureObserver::new()),
-            false,
         )
         .err()
         .expect("invalid address should fail startup");

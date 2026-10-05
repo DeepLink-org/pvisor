@@ -1,4 +1,0 @@
-path	type	value
-	object	-
-/reason	string	agetty DCS terminal capability request also prefixes journal lines; collector corrected and checked against every recorded Ubuntu serial protocol line.
-/state	string	superseded-incomplete-diagnostic

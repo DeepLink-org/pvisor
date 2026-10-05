@@ -113,7 +113,7 @@ VM 的内存以 MiB 为单位，CPU 是正整数。`ram_backing` 保存 RAM 文�
 
 ### 捕获与记录
 
-`[gateway]` 默认 `mode = "off"`，捕获模式为 `capture`。默认 `admin_listen = "127.0.0.1:9876"`、`level = "dialogue"`、`session_header = "x-pvisor-session-id"`、`debug = false`、`stream_markdown = false`、`routes = []`。可选 `profile` 当前为 `zcode-bigmodel`；`zcode_builtin_config` 指向该适配配置文件。路由与捕获级别按 [Gateway 指南](../guides/capture.md)配置。
+`[gateway]` 默认 `mode = "off"`，捕获模式为 `capture`。默认 `admin_listen = "127.0.0.1:9876"`、`level = "dialogue"`、`session_header = "x-pvisor-session-id"`、`debug = false`、`routes = []`。可选 `profile` 当前为 `zcode-bigmodel`；`zcode_builtin_config` 指向该适配配置文件。路由与捕获级别按 [Gateway 指南](../guides/capture.md)配置。
 
 `[record].destination` 是可选路径。Gateway 的模型通信记录与 Trace Event journal 有不同数据职责，按[记录概念](../concepts/jobs.md)保留所需产物。
 
@@ -130,7 +130,7 @@ VM 的内存以 MiB 为单位，CPU 是正整数。`ram_backing` 保存 RAM 文�
 | --- | --- | --- | --- |
 | `run` | `RunSettings` | `{}` | 命令与进程设置 |
 | `container` | `ContainerSettings` | `{}` | 选择 OCI 执行器时使用 |
-| `vm` | `VmSettings` | `{}` | VM 执行器设置；`kvm` 是兼容表名 |
+| `vm` | `VmSettings` | `{}` | VM 执行器设置 |
 | `filesystem` | `FilesystemMode` | `"host"` | `host` 或 `sandbox`；访问控制独立于暂存 |
 | `overlayfs` | `Option<OverlayFsSettings>` | `未设置` | 省略时直接写入；即使是空表也请求暂存 |
 | `overlaynet` | `OverlayNetSettings` | `{}` | 网络驱动与基础策略 |
@@ -196,7 +196,6 @@ VM 的内存以 MiB 为单位，CPU 是正整数。`ram_backing` 保存 RAM 文�
 | `gateway.level` | `CaptureLevel` | `"dialogue"` | summary、dialogue、full；`--gateway-level` |
 | `gateway.session_header` | `String` | `"x-pvisor-session-id"` | Session 关联头；`--gateway-session-header` |
 | `gateway.debug` | `bool` | `false` | Gateway 调试；`--gateway-debug` |
-| `gateway.stream_markdown` | `bool` | `false` | 输出流式对话；`--gateway-stream-markdown` |
 | `gateway.routes` | `Vec<ModelRoute>` | `[]` | 模型路由条目；`--gateway-route` 替换列表 |
 | `record.destination` | `Option<PathBuf>` | `未设置` | Trace Event 文件/目录；`--record-destination` |
 | `run.resource_limits.memory_bytes` | `Option<u64>` | `未设置` | 字节；`--memory` |

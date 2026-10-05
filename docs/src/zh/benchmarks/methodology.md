@@ -1,95 +1,63 @@
-# 基准方法与比较边界
+# 哪些 benchmark 数字可以用于选型？
 
 ## 主要结论 {#conclusions}
 
-本章的数字用于判断具体任务的等待、资源和可靠性。**只有同配置、同计时口径的数据才能直接比较**：最小 VM 与完整 Ubuntu、工具时间与启动到退出、RSS 与 cgroup 内存，都分别呈现。未测工具不使用厂商宣传值补进排名。
+**用同负载、同预算、同计时口径的实测选择执行模式；跨配置数据只用于了解各自性能水位。** 启动、工具执行、合入和资源占用回答不同问题，不能相互替代。
+
+| 决策 | 需要的数据 |
+|---|---|
+| 选本地工具执行方式 | 原生、Docker、pVisor host/staged/VM 的任务对照 |
+| 选独立 guest kernel | Firecracker、QEMU 与 pVisor 的启动和工具数据 |
+| 设置容量或超时 | 成功率、完整任务等待、相同口径的资源占用 |
 
 ## Motivation {#motivation}
 
-启动更快不一定意味着任务更快；可写挂载与暂存视图也提供不同工作流。公开对比需要让用户看清测量的是哪种环境、等待发生在哪里，以及结果是否适用于自己的配置。
+启动更快并不保证编译更快，可写挂载与暂存审查也提供不同工作流。选型需要同时知道速度、执行边界和改动最终如何进入原目录。
 
 ## 实验设计 {#interpretation}
 
-### 环境与制品
+### 同机对照
 
-| 数据范围 | 配置与身份 |
-|---|---|
-| 当前本地文件系统 | Linux/KVM，两核预算，VM 2 vCPU / 4 GiB；冻结集成源码，release/performance 分别测量 |
-| 同工具参考环境 | Linux/x86_64，Docker Engine 29.7.2 rootless、Firecracker 1.13.1、QEMU 10.2.2；2 vCPU，shell 128 MiB、工具任务 16 GiB |
-| 完整发行版部署 | pVisor host rootfs；参考 VM 使用 Ubuntu 26.04.1、generic 内核、initrd、systemd；启动 2 GiB、工具任务 16 GiB |
-| macOS | Apple M4 / HVF；启动和冷页数据使用各自报告固定的配置 |
-| Cluster | 1/2/4 Worker，增配 CPU 预算；探针使用冻结 debug 制品，不与 release 启动时间拼接 |
+B-STARTUP、B-FS-TOOLS、B-AGENT-TASK 使用相同离线工具和固定输入，对照原生、pVisor host/staged/VM、私有 rootless Docker、Firecracker PCI、QEMU q35 和 microvm。镜像、工具与 daemon 预先准备，所有组使用同一两核亲和性，工具 VM 的内存预算相同；每个任务使用新的工作区，按固定种子随机交替执行。完整 Ubuntu、macOS 和不同制品单独成批。
 
-所有版本号是实测身份，不表示第三方当前最新版。源码提交号不能替代 dirty 工作树的可执行身份；二进制 SHA256、输入摘要、参数和原始报告为准。当前文件系统重测覆盖本地与 lazy；其他主题仍为其固定制品的可用证据，不能宣称全套数据均已重测当前集成版本。
+下载、编译 benchmark 制品、镜像导入和输入复制不计入任务等待。计时区分首条有效输出、内部工具与校验、结果返回，以及启动到进程退出。成功样本必须通过输出、执行器和暂存完整性校验；暂存模式还检查宿主原目录未改动。
 
-### 计时与正确性
+### 分布与失败
 
-Ready 从宿主启动命令前到第一条有效 guest 输出；worker 为内部操作和校验；任务时间为启动到结果；Exit 另计进程结束。下载、镜像构建、工具安装与每轮输入准备独立记录。默认 3 次预热、30 次测量、随机顺序；N=10、N=3 或顺序测量会在对应页说明。
+不合并批次，不事后剔除慢样本。失败与校验不通过单列，不能计作零耗时。未执行的容量 guard 不能当成完成任务。P95 只是所测样本的观察参考，少于 30 次不展示，少于 100 次不展示 P99；小样本不给稳定尾延迟结论。
 
-通过零退出、文件数量/内容、SHA256、编译与测试结果、Run Bundle 和实际执行器检查结果。失败不进入成功耗时分布，样本数、失败原因和容量 guard 保留。共享宿主没有完全隔离后台负载、锁定频率或清空所有缓存；小幅差距不构成稳定排名。
+存在分离簇时分别展示比例和各簇中位数。复测的描述性分簇规则在[运行手册](https://github.com/DeepLink-org/pvisor/blob/main/benchmark/pvisor/README.md)中给出，不据此推断原因。工程 A/B 的百分比变化需配中位数差异的 95% bootstrap 区间；用户页不展示优化过程。
 
-### 比较条件
+### 隔离与资源
 
-Docker 对照使用已运行的私有 rootless daemon 和 writable bind mount。pVisor staged 保留改动，独立 stage 不自动禁止视图外访问；VM 通过 virtio-fs 使用共享文件服务。Firecracker/QEMU 使用私有 ext4。内核、网络、工具版本与安全部署参数见逐批报告；开发基线不是生产安全配置排名。
+Docker writable bind mount 直接写宿主；pVisor staged 保留改动到 apply。Firecracker/QEMU 使用私有 ext4，pVisor VM 使用 virtio-fs，内核与设备不同；对照不是纯 VMM 或生产安全排名。独立 stage 的隔离能力以实际记录和[隔离校验](isolation-tests.md)为准。
 
-### 资源口径 {#reference-resources}
-
-RSS 是每 20 ms 的进程范围求和，可能重复计共享页、漏掉短峰；Docker 需追踪容器 ID 对应 shim，包含专属 daemon 时明确注明。配置的 guest RAM 不等于实际驻留量。Cluster 使用互不重叠 cgroup 的 `memory.current`，其中 file 可能含 guest RAM，不能直接扣除。macOS 冷页 RAM 代理也不等于净物理内存节约。
+RSS 是定期采样的进程范围求和，可能重复共享页、漏掉短峰；Docker 必须包含实际容器进程与专属 daemon 并标明范围。Cluster 用互不重叠 cgroup 的内存总和。配置 RAM、RSS、macOS RAM proxy 和净物理内存不可混算。
 
 ## 实验数据和分析 {#results}
 
-### 当前文件系统证据 {#filesystem-service}
+### 已准备环境 {#reference-env}
 
-[本地 release](../../assets/benchmarks/filesystem-service-20261005/local-release.tsv) · [本地 performance](../../assets/benchmarks/filesystem-service-20261005/local-performance.tsv) · [lazy 冷/热](../../assets/benchmarks/filesystem-service-20261005/lazy-performance.tsv) · [制品清单](../../assets/benchmarks/filesystem-service-20261005/manifest.tsv)
+[启动](startup.md) · [文件与工具](filesystem.md) · [修复任务和 CLI](agent-tasks.md)。各表保留独立批次与样本数，使用固定制品，不代表第三方当前最新版。
 
-本地每种编译配置 150 个正式任务，lazy 120 个，共 420 个任务、2,820 项操作测量。缓存 fixture 验证按需块读取与热客户端缓存；它不代表生产 Rust 缓存、网络或 S3 性能。旧/新版本 A/B 仅在[技术分析](../design/filesystem-performance-analysis.md#filesystem-service)解释。
+### 完整发行版 {#full-ubuntu}
 
-### 同工具环境参考 {#reference-env}
+Ubuntu 使用发行版内核、initrd、systemd 和私有磁盘；pVisor 复用已准备工具目录。该对照回答部署等待，不隔离纯 VMM 成本。
 
-各组共用工具制品和输入，参考 VM 采用裁剪内核、静态 init，不启动完整发行版。准备环境的首次输出、文件操作和 CLI 工具闭环分别用于[启动](startup.md#reference-startup)、[文件系统](filesystem.md#reference-fs)和[完整任务](agent-tasks.md#reference-env)对比。
+### QEMU 完整发行版 {#full-ubuntu-qemu}
 
-[汇总与分布](../../assets/benchmarks/reference-env-20261004/summary.tsv) · [样本](../../assets/benchmarks/reference-env-20261004/samples.csv) · [兼容性](../../assets/benchmarks/reference-env-20261004/compatibility.tsv)
+q35 和 microvm 使用同一 Ubuntu 模板；样本和百分位数与其他批次分开，不合并。
 
-### 完整 Ubuntu 部署 {#full-ubuntu}
+### 任务与资源 {#product-v1}
 
-完整 Ubuntu cloud VM 使用官方发行版内核、initrd 和正常服务，pVisor 复用宿主工具目录。这测量部署方式导致的用户等待，不能隔离出纯 VMM 性能。首次 cloud-init 与已经配置的模板分开，下载和模板准备不计时。
+[合入](apply.md) · [网络](network.md) · [并发](density.md) · [隔离](isolation-tests.md) · [回放](replay-fidelity.md) · [审查](supervision-cost.md) · [Cluster](cluster-scalability.md)。未测的业界方案明确标记，不填入厂商宣传数字。
 
-[汇总](../../assets/benchmarks/full-ubuntu-20261004/summary.tsv) · [样本](../../assets/benchmarks/full-ubuntu-20261004/samples.csv)
+### 文件系统工程实验 {#filesystem-service}
 
-### QEMU 完整发行版配置 {#full-ubuntu-qemu}
+工程 A/B、带计数器的 profile 和诊断探针保存在[技术分析](../design/filesystem-performance-analysis.md)，不作为跨产品主表。
 
-q35 与 microvm 使用同一完整 Ubuntu 模板，各格 N=10；与 Firecracker/pVisor 的分布独立，不合并样本。
+### 数据位置与下载 {#evidence-format}
 
-[汇总](../../assets/benchmarks/full-ubuntu-qemu-20261004/summary.tsv) · [配置清单](../../assets/benchmarks/full-ubuntu-qemu-20261004/manifest.tsv)
+Markdown 保存面向用户的加工表格，每篇附可下载的同目录 CSV。原始报告、逐次样本、日志、制品清单和冻结 harness 放在相关目录的 `.data/`，被 Git 忽略，也不发布到站点。CSV 只保留整理后的统计和来源摘要，不能伪装成原始样本。
 
-### 其他主题与复现 {#product-v1}
-
-网络、apply/drop、隔离、回放、监督与密度的参数和样本见各主题以及[原始清单](../../assets/benchmarks/product-v1-20261004/manifest.tsv)。详细环境、命令、失败诊断和资源审计保存在[方法技术记录](../design/benchmark-methodology-evidence.md)。重跑时输出新目录，固定输入和制品，保留失败，不混合不同环境的分布。
-
-## 基准证据 TSV {#evidence-format}
-
-公开的 `docs/src/assets/benchmarks/` 报告使用三列 TSV：`path`、`type`、`value`。每个字段占一行，统计值变化不会带来 JSON 的缩进、逗号和整块对象差异。路径采用 JSON Pointer：`~0` 表示 `~`，`~1` 表示 `/`；数组下标从 0 开始并保持原顺序。
-
-```tsv
-path	type	value
-	object	-
-/samples	array	-
-/samples/0	object	-
-/samples/0/elapsed_ms	float	12.125
-/samples/0/passed	boolean	true
-```
-
-`type` 区分 `object`、`array`、`string`、`integer`、`float`、`boolean` 和 `null`。容器使用 `-` 标记，空字符串使用 `""`；空容器、null 与缺失字段不会混为一谈。字符串的制表符、换行、反斜线和控制字符使用转义，末尾空格使用 `\u0020`，避免多行记录和 Git 尾随空白告警。数字保持原有数值与整数/浮点类型，不截断精度。
-
-[转换索引](../../assets/benchmarks/conversion.tsv)记录原 JSON 文件名/字节 SHA256、TSV 文件名/字节 SHA256、规范化数据摘要、大小和行数。历史报告中的 JSON 文件名和原摘要保留其原始含义；通过索引找到对应 TSV，不将旧摘要冒充 TSV 摘要。测量样本、失败、协议、来源信息与现有 CSV/图表保持不变。
-
-```bash
-python3 benchmark/pvisor/evidence_tsv.py check docs/src/assets/benchmarks
-python3 benchmark/pvisor/evidence_tsv.py convert \
-  docs/src/assets/benchmarks/cluster-scalability-20261005/vm.tsv \
-  /tmp/pvisor-vm-evidence.json
-```
-
-转换工具可以双向读写；重建的 JSON 保留数据，但不承诺还原旧文件的空白和键顺序。此次迁移的原始字节另保存在 `target/benchmark-json-originals-20261005/`，每个文件已验证原 SHA256；该目录是本机恢复备份，不进入发布附件。
-
-当前绘图与汇总脚本接受 TSV，也能读取新实验的运行时 JSON。参考环境与 Ubuntu 发布脚本自动把公开附件转为 TSV，运行时协议和 `target/` 下的实验输出继续使用各自原格式。格式校验与绘图不启动 VM，也不重跑基准。
+复现与来源保留规则见[运行手册](https://github.com/DeepLink-org/pvisor/blob/main/benchmark/pvisor/README.md)。

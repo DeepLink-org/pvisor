@@ -1,10 +1,16 @@
-# Agent tool tasks and CLI compatibility
+# How long do repair tasks take, and do Agent CLIs finish?
 
 ## Main conclusions {#conclusions}
 
 **pVisor staged short tool tasks are near native and beat Docker in the measured complete repair; VM tool execution is slower than Docker and minimal reference VMs.** Same-tool repair/test P50 is staged **0.70 s**, native **0.50 s**, Docker **0.90 s**, VM **3.97 s**, and QEMU microvm **1.85 s**. Staging/review adds hundreds of milliseconds here.
 
 Image-free VMs return short tasks sooner than new complete Ubuntu environments, but their tools run more slowly once started. **Controlled Codex loops pass; Claude initialization times out in pVisor VM.** Client compatibility also matters.
+
+| Need | Selection implication |
+|---|---|
+| Trusted tasks needing staged review | Evaluate host staged |
+| Independent guest kernel | Allow VM tool execution time |
+| Claude Code in a VM | Check the specific version first |
 
 ## Motivation {#motivation}
 
@@ -15,6 +21,8 @@ Bare startup time does not describe an Agent editing files, installing dependenc
 Real Claude Code 2.1.128 / Codex CLI 0.160.0 use local controlled responses and fake credentials, without inference. Tasks inspect/search a repository, repair Python, run Python/Rust/Node tests, install 32 offline npm packages and generate a diff. Actual passing tests must return to the model service; clients must finish and staged originals remain unchanged.
 
 Linux same-tool cells have three warmups and 30 samples; complete Ubuntu cells have N=10 and three warmups. Both use two cores, 2 vCPU / 16 GiB VMs and warm host caches. Complete Ubuntu changes tool versions and storage paths; tables remain separate. Task timing ends at verified results and excludes preparation; worker covers internal tools/checks. Codex uses inner `danger-full-access`, without validating default nested sandboxes. Matching macOS and real-model tasks are unmeasured.
+
+Tables identify pinned artifacts and measurement dates. Failed or invalid samples are excluded from successful timings and counted separately. Existing measurements have no predefined host-interference filter; all slow valid samples are retained. P95 from 30 or fewer samples is descriptive only; no P99 or stable tail-latency claim is made.
 
 ## Data and analysis {#results}
 
@@ -52,6 +60,3 @@ pVisor VM repair takes **4.61 s** from launch to result versus **8.51 s** for Fi
 
 These comparisons use their pinned pVisor artifacts and have not all been rerun alongside current filesystem artifacts. Large repositories, real inference, Internet dependencies, persistent-pool throughput and SWE-bench success rates are unmeasured. [Current filesystem results](filesystem.md) provide the latest local operation timings.
 
-### Data sources and reproduction {#run}
-
-[Same-tool distributions](../../assets/benchmarks/reference-env-20261004/summary.tsv) · [Compatibility](../../assets/benchmarks/reference-env-20261004/compatibility.tsv) · [Ubuntu](../../assets/benchmarks/full-ubuntu-20261004/summary.tsv) · [QEMU / Ubuntu](../../assets/benchmarks/full-ubuntu-qemu-20261004/summary.tsv) · [Methodology](methodology.md) · [Phase analysis and reproduction](../design/agent-task-performance-analysis.md)

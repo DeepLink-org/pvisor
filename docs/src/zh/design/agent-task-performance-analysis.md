@@ -62,11 +62,11 @@ Claude/VM 预检仍在初始化超过 90 秒，正式 N=0；没有通过工具�
 
 Codex 使用统一内部 `danger-full-access`，外层运行时提供表明的边界，默认双层沙箱兼容性未测。每格 N=10 仅提供首版预算与重复性，P95/P99 接近最大值，不支持长期尾延迟或真实模型成功率保证。RSS 每 20 ms 求进程树之和，Firecracker 包含独立 DNS/NAT 辅助进程，QEMU 使用进程内用户态网络，可能重复统计共享页和漏掉短峰；配置 16 GiB 不等于驻留 16 GiB，也不能从短任务推算并发容量。
 
-[逐样本 CSV](../../assets/benchmarks/full-ubuntu-20261004/samples.csv) · [分布与阶段计时](../../assets/benchmarks/full-ubuntu-20261004/summary.tsv) · [方法与复现](../benchmarks/methodology.md#full-ubuntu) · [运行证据](../../assets/benchmarks/full-ubuntu-20261004/ubuntu-workflows-private-tmp-20261004/evidence.tar.gz) · [Ubuntu 客户端补测证据](../../assets/benchmarks/full-ubuntu-20261004/ubuntu-clients-console-v2-20261004/evidence.tar.gz)
+本地原始记录 `docs/src/assets/benchmarks/.data/full-ubuntu-20261004/samples.csv` · 本地原始记录 `docs/src/assets/benchmarks/.data/full-ubuntu-20261004/summary.tsv` · [方法与复现](../benchmarks/methodology.md#full-ubuntu) · 本地原始记录 `docs/src/assets/benchmarks/.data/full-ubuntu-20261004/ubuntu-workflows-private-tmp-20261004/evidence.tar.gz` · 本地原始记录 `docs/src/assets/benchmarks/.data/full-ubuntu-20261004/ubuntu-clients-console-v2-20261004/evidence.tar.gz`
 
 完整 Ubuntu 的 QEMU 修复任务为 q35 **8.12 秒**、microvm **10.33 秒**，内部工具分别 **2.75 / 2.81 秒**。无镜像 pVisor 降低新任务总等待，但其 4.02 秒工具时间仍高于这些完整 Ubuntu 路径；长期复用环境时，这个差距值得优先优化。更换为 microvm 没有在本配置下自动改善完整任务。网络、设备和 CPU 暴露方式仍有差别，不把全部差值归因于 block device 或 FUSE。
 
-[QEMU samples and cohorts](../../assets/benchmarks/full-ubuntu-qemu-20261004/manifest.tsv) · [QEMU distributions](../../assets/benchmarks/full-ubuntu-qemu-20261004/summary.tsv) · [QEMU evidence](../../assets/benchmarks/full-ubuntu-qemu-20261004/ubuntu-qemu-complete-20261004/evidence.tar.gz) · [QEMU method](../benchmarks/methodology.md#full-ubuntu-qemu)
+本地原始记录 `docs/src/assets/benchmarks/.data/full-ubuntu-qemu-20261004/manifest.tsv` · 本地原始记录 `docs/src/assets/benchmarks/.data/full-ubuntu-qemu-20261004/summary.tsv` · 本地原始记录 `docs/src/assets/benchmarks/.data/full-ubuntu-qemu-20261004/ubuntu-qemu-complete-20261004/evidence.tar.gz` · [QEMU method](../benchmarks/methodology.md#full-ubuntu-qemu)
 
 ### 历史受控环境：同工具制品与裁剪参考 VM {#reference-env}
 
@@ -113,7 +113,7 @@ Claude 与 Codex 的绝对时间不宜互相排名。Codex 还存在约秒级的
 
 **部署成本另列。** 从已安装工具离线复制、导入镜像、制作 ext4 环境约 109 秒，之后增加 CPU affinity helper 约 5.3 秒；不含工具下载和内核编译。每次的工作区/私有磁盘准备时间记录在 `prepare_ms`，不计入表中任务耗时。这些是已准备环境的短任务预算，不是首次安装到结束的耗时。内存审计见[方法](../benchmarks/methodology.md#reference-resources)，不由配置的 16 GiB 推导每个 Agent 实占 16 GiB。
 
-[逐样本 CSV](../../assets/benchmarks/reference-env-20261004/samples.csv) · [分布与阶段计时](../../assets/benchmarks/reference-env-20261004/summary.tsv) · [运行证据](../../assets/benchmarks/reference-env-20261004/evidence.tar.gz) · [兼容性矩阵](../../assets/benchmarks/reference-env-20261004/compatibility.tsv)
+本地原始记录 `docs/src/assets/benchmarks/.data/reference-env-20261004/samples.csv` · 本地原始记录 `docs/src/assets/benchmarks/.data/reference-env-20261004/summary.tsv` · 本地原始记录 `docs/src/assets/benchmarks/.data/reference-env-20261004/evidence.tar.gz` · 本地原始记录 `docs/src/assets/benchmarks/.data/reference-env-20261004/compatibility.tsv`
 
 ### 首版受控算术任务：独立历史批次
 
@@ -150,4 +150,4 @@ python3 benchmark/pvisor/product_v1.py \
 
 先用 `--samples 1 --warmups 0` 检查环境。脚本、输入定义和正确性断言在 `benchmark/pvisor/v1/`；报告会复制二进制、firmware 和当轮脚本并记录摘要。失败不会进入性能分布；准备、策略拒绝和工作负载错误分别保留。每个页面写明有效样本数；小样本 P95/P99 只描述本批次，不估计长期尾延迟。
 
-[环境、制品与采样方法](../benchmarks/methodology.md#product-v1) · [批次清单](../../assets/benchmarks/product-v1-20261004/manifest.tsv) · [逐样本汇总 CSV](../../assets/benchmarks/product-v1-20261004/samples.csv) · [原始报告与日志归档](../../assets/benchmarks/product-v1-20261004/evidence.tar.gz)。报告保留源码的未提交状态；当轮可执行制品 SHA256 是身份依据。归档不含数 GB 的 rootfs、二进制和可重建工作区；输入摘要及每轮脚本保留。
+[环境、制品与采样方法](../benchmarks/methodology.md#product-v1) · 本地原始记录 `docs/src/assets/benchmarks/.data/product-v1-20261004/manifest.tsv` · 本地原始记录 `docs/src/assets/benchmarks/.data/product-v1-20261004/samples.csv` · 本地原始记录 `docs/src/assets/benchmarks/.data/product-v1-20261004/evidence.tar.gz`。报告保留源码的未提交状态；当轮可执行制品 SHA256 是身份依据。归档不含数 GB 的 rootfs、二进制和可重建工作区；输入摘要及每轮脚本保留。

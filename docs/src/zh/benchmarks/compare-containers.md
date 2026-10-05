@@ -1,10 +1,16 @@
-# 对比：Docker / devcontainer
+# 已有 Docker 或 devcontainer，还需要 pVisor 吗？
 
 ## 主要结论 {#conclusions}
 
 **Docker bind mount 的文件访问接近原生，优于 pVisor 的暂存路径；pVisor staged 的已测短修复任务则与 Docker 接近且略快。** 同工具环境修复/测试为 staged **0.70 s**、Docker **0.90 s**；pVisor VM 为 **3.97 s**，明显更慢。pVisor 的选型价值是统一保留改动、冲突检查与选择性合入，不能以“全面比 Docker 快”概括。
 
 已有可靠 Docker + worktree/Git 审查流程时，可以继续沿用；需要多个 Agent 或非 Git 目录共用合入协议时，staged 值得评估。
+
+| 需求 | 选型含义 |
+|---|---|
+| 已有 Docker + worktree/Git | 保留既有流程，按实测评估工具成本 |
+| 跨 Agent 统一暂存与选择性合入 | 评估 pVisor host staged |
+| 要求独立 guest kernel | 对比 VM 执行成本 |
 
 ## Motivation {#motivation}
 
@@ -22,6 +28,8 @@ Linux 同机、两核预算、相同 Python/Node/Rust/Agent 工具与输入；Do
 | pVisor staged | stage 保留改动，apply 前原目录不变；按路径合入及 preimage 冲突检查 |
 
 Docker 默认 bind 写入宿主的语义见[官方说明](https://docs.docker.com/engine/storage/bind-mounts/)，devcontainer 配置见[开放规范](https://containers.dev/)。
+
+固定制品与测量日期按表注明。失败与校验不通过的样本不计入成功耗时，失败数量单列；既有数据没有事先的宿主干扰剔除规则，所有通过校验的慢样本保留。30 次及更少采样的 P95 仅为观察参考，不给 P99 或稳定尾延迟承诺。
 
 ## 实验数据和分析 {#results}
 

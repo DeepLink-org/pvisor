@@ -375,3 +375,7 @@ The job_execution_vm acceptance test uses real KVM, ordinary CLI commands and a 
 ```bash
 PVISOR_TEST_LIBRARY_DIR=/path/to/firmware cargo nextest run --locked -p pvisor --test job_execution_vm --run-ignored only --test-threads 1
 ```
+
+Execution Job records use version 2 with typed lifecycle states, resume requests (stage and RAM policy together), and fork requests. Workspace checkpoint manifests use schema 3 and require explicit kind, Attempt, generation, filesystem layers and access policy. Older Job records and workspace manifests are rejected without conversion. Native checkpoint payloads retain their independent integrity and host-binding validation.
+
+Immutable imported base seals use version 2 and require a digest-bound content index; generations without that receipt are rejected.

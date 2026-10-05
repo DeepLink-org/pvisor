@@ -1,6 +1,5 @@
 use super::fixtures::*;
 use super::support::*;
-use crate::engine::CaptureEngine;
 
 #[tokio::test]
 async fn committed_facts_rebuild_story_without_rewriting_or_notifying() {

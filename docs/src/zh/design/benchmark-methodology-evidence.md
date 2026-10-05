@@ -99,11 +99,11 @@ wall 是一项命令从启动到退出的总成本，worker 是内部工具运�
 
 ### 原始数据
 
-[批次清单](../../assets/benchmarks/product-v1-20261004/manifest.tsv)列出每个报告及摘要；[逐样本 CSV](../../assets/benchmarks/product-v1-20261004/samples.csv)便于重算分布；[证据归档](../../assets/benchmarks/product-v1-20261004/evidence.tar.gz)保留完整 JSON、脚本快照、Bundle、错误日志和 SIGKILL ledger。payload 与 rootfs 可按脚本重建，未在 docs 复制数 GB 环境。已有 macOS 与 Linux VM 批次完整保留；新产品工作负载只在 Linux 测，不合并跨平台样本。
+本地原始记录 `docs/src/assets/benchmarks/.data/product-v1-20261004/manifest.tsv`列出每个报告及摘要；本地原始记录 `docs/src/assets/benchmarks/.data/product-v1-20261004/samples.csv`便于重算分布；本地原始记录 `docs/src/assets/benchmarks/.data/product-v1-20261004/evidence.tar.gz`保留完整 JSON、脚本快照、Bundle、错误日志和 SIGKILL ledger。payload 与 rootfs 可按脚本重建，未在 docs 复制数 GB 环境。已有 macOS 与 Linux VM 批次完整保留；新产品工作负载只在 Linux 测，不合并跨平台样本。
 
 本轮 `just lint` 通过；`just test` 为 Rust 1,075 项通过 / 8 项跳过、Python 84 项通过 / 16 项跳过。新增 benchmark 测试单独运行 19 项通过；STAGE 语义规格 14/14 PASS，人工审阅状态仍为 UNREVIEWED，不等同于人类批准。大规模 syscall trace 与非崩溃 apply ledger 保留在本机 target 原始目录，公开归档保留报告、Bundle、诊断和崩溃 ledger。
 
-用 `python3 benchmark/pvisor/summarize_product_v1.py <batch>/report.json --output-csv /tmp/summary.csv` 重算；公开[分布汇总 CSV](../../assets/benchmarks/product-v1-20261004/summary.csv)按批次分组。
+用 `python3 benchmark/pvisor/summarize_product_v1.py <batch>/report.json --output-csv /tmp/summary.csv` 重算；公开本地原始记录 `docs/src/assets/benchmarks/.data/product-v1-20261004/summary.csv`按批次分组。
 
 本轮性能针对固定制品，不能代表之后的并行改动或其他发行构建；源码并非干净提交。全仓 lint/test 校验的是当时工作树，固定 CLI 的功能另由 benchmark 与 STAGE 规格验证。
 
@@ -123,7 +123,7 @@ Firecracker 私有 user/network namespace 内提供 TAP 和静态 NIC；QEMU `-m
 
 从已下载磁盘启动 QEMU、复制本机 Rust/CLI/fixture 并 apt 安装发行版工具的成功配置步骤耗时 **85.8 秒**，单独记录。它不含下载 825 MiB 官方 qcow2、格式转换、制作工具 payload、宿主安装依赖或失败诊断尝试；该秒数不是从空机器部署的总成本。pVisor 无需准备系统镜像，但前提仍是宿主工具已经安装。
 
-镜像、内核、initrd 摘要与来源见[制品清单](../../assets/benchmarks/full-ubuntu-20261004/assets.tsv)，官方 HTTPS SHA256SUMS 已核对，GPG 签名未验证。完整[原厂内核配置](../../assets/benchmarks/full-ubuntu-20261004/ubuntu-generic.config)与逐样本证明可供检查。独立归档 schema 为 `pvisor-full-ubuntu-reference/v1`；保留采样脚本快照、失败、命令、OS 证明与最小化运行证据，和旧裁剪批次分开，不合并样本。 Ubuntu 客户端最初出现串口提示/终端控制序列与结果行相连而漏记时间终点；解析器修复后，以同参数补测 Claude/Codex 各 N=10，发布表只使用补测分布，不合并旧客户端样本。原主报告和失效样本仍保留；[归档清单](../../assets/benchmarks/full-ubuntu-20261004/manifest.tsv)逐格记录选用批次。
+镜像、内核、initrd 摘要与来源见本地原始记录 `docs/src/assets/benchmarks/.data/full-ubuntu-20261004/assets.tsv`，官方 HTTPS SHA256SUMS 已核对，GPG 签名未验证。完整本地原始记录 `docs/src/assets/benchmarks/.data/full-ubuntu-20261004/ubuntu-generic.config`与逐样本证明可供检查。独立归档 schema 为 `pvisor-full-ubuntu-reference/v1`；保留采样脚本快照、失败、命令、OS 证明与最小化运行证据，和旧裁剪批次分开，不合并样本。 Ubuntu 客户端最初出现串口提示/终端控制序列与结果行相连而漏记时间终点；解析器修复后，以同参数补测 Claude/Codex 各 N=10，发布表只使用补测分布，不合并旧客户端样本。原主报告和失效样本仍保留；本地原始记录 `docs/src/assets/benchmarks/.data/full-ubuntu-20261004/manifest.tsv`逐格记录选用批次。
 
 ### 复现完整 Ubuntu 对照
 
@@ -154,11 +154,11 @@ uv run --no-project --with matplotlib python benchmark/pvisor/render_ubuntu_base
   --assets target/ubuntu-reference-new --output /tmp/full-ubuntu-report-new
 ```
 
-[逐样本 CSV](../../assets/benchmarks/full-ubuntu-20261004/samples.csv) · [分布与阶段计时](../../assets/benchmarks/full-ubuntu-20261004/summary.tsv) · [方法与复现](../benchmarks/methodology.md#full-ubuntu)
+本地原始记录 `docs/src/assets/benchmarks/.data/full-ubuntu-20261004/samples.csv` · 本地原始记录 `docs/src/assets/benchmarks/.data/full-ubuntu-20261004/summary.tsv` · [方法与复现](../benchmarks/methodology.md#full-ubuntu)
 
-Ubuntu 工具包清单另见[dpkg 记录](../../assets/benchmarks/full-ubuntu-20261004/ubuntu-packages.txt)。正式任务统一将编译与客户端临时文件置于工作区私有 `_tmp`，避免 hostroot 的只读 `/tmp`；失败诊断保留，不计入新的正式分布。
+Ubuntu 工具包清单另见本地原始记录 `docs/src/assets/benchmarks/.data/full-ubuntu-20261004/ubuntu-packages.txt`。正式任务统一将编译与客户端临时文件置于工作区私有 `_tmp`，避免 hostroot 的只读 `/tmp`；失败诊断保留，不计入新的正式分布。
 
-固定二进制的[来源限制](../../assets/benchmarks/full-ubuntu-20261004/binary-provenance.tsv)、[项目输入摘要](../../assets/benchmarks/full-ubuntu-20261004/fixture-inputs.tsv)和[临时目录配置诊断](../../assets/benchmarks/full-ubuntu-20261004/diagnostics/ubuntu-workflows-mmio-20261004/diagnostic-status.tsv)单独保留。汇总 CSV 用 `selected_for_summary` 标明发布表使用的样本，避免把补测与旧客户端样本合并。
+固定二进制的本地原始记录 `docs/src/assets/benchmarks/.data/full-ubuntu-20261004/binary-provenance.tsv`、本地原始记录 `docs/src/assets/benchmarks/.data/full-ubuntu-20261004/fixture-inputs.tsv`和本地原始记录 `docs/src/assets/benchmarks/.data/full-ubuntu-20261004/diagnostics/ubuntu-workflows-mmio-20261004/diagnostic-status.tsv`单独保留。汇总 CSV 用 `selected_for_summary` 标明发布表使用的样本，避免把补测与旧客户端样本合并。
 
 ### 完整 Ubuntu 的 QEMU 补测 {#full-ubuntu-qemu}
 
@@ -177,7 +177,7 @@ python3 benchmark/pvisor/ubuntu_baselines.py \
 ```
 
 
-补测 [80 个新增样本与独立控制批次](../../assets/benchmarks/full-ubuntu-qemu-20261004/manifest.tsv)全部通过。关闭 PIC/PIT 的前提已通过 [KVM host CPU 的 QMP 能力查询](../../assets/benchmarks/full-ubuntu-qemu-20261004/qemu-cpu-capabilities.tsv)核对：guest 模型暴露 `tsc-deadline`。这是能力核查，不是性能样本。
+补测 本地原始记录 `docs/src/assets/benchmarks/.data/full-ubuntu-qemu-20261004/manifest.tsv`全部通过。关闭 PIC/PIT 的前提已通过 本地原始记录 `docs/src/assets/benchmarks/.data/full-ubuntu-qemu-20261004/qemu-cpu-capabilities.tsv`核对：guest 模型暴露 `tsc-deadline`。这是能力核查，不是性能样本。
 
 ## 熟悉基线与完整 Agent Env：Linux 同机对照 {#reference-env}
 
@@ -233,7 +233,7 @@ pVisor 内置 firmware 与参考内核版本相同，配置并非相同；它还
 
 native/staged 为约 0.17/0.22 GiB，Docker 含 daemon 约 0.27 GiB，VM 为约 0.71 GiB。pVisor VM 的实际占用与本轮参考 VM 同属不到 1 GiB 的量级；这个短任务不覆盖长时间大仓库峰值，也不测共享页节省。RSS 范围不同，不能据此排出严格物理内存效率排名。
 
-[资源报告](../../assets/benchmarks/reference-env-20261004/followups/reference-resources-20261004/report.tsv) · [逐样本](../../assets/benchmarks/reference-env-20261004/followups/reference-resources-20261004/samples.csv) · [进程与 affinity 审计](../../assets/benchmarks/reference-env-20261004/followups/reference-resources-20261004/docker-process-audit.tsv) · [证据](../../assets/benchmarks/reference-env-20261004/followups/reference-resources-20261004/evidence.tar.gz)
+本地原始记录 `docs/src/assets/benchmarks/.data/reference-env-20261004/followups/reference-resources-20261004/report.tsv` · 本地原始记录 `docs/src/assets/benchmarks/.data/reference-env-20261004/followups/reference-resources-20261004/samples.csv` · 本地原始记录 `docs/src/assets/benchmarks/.data/reference-env-20261004/followups/reference-resources-20261004/docker-process-audit.tsv` · 本地原始记录 `docs/src/assets/benchmarks/.data/reference-env-20261004/followups/reference-resources-20261004/evidence.tar.gz`
 
 
 ### 环境部署与复现
@@ -264,4 +264,4 @@ uv run --no-project --with matplotlib python benchmark/pvisor/render_reference_b
 
 归档 schema 为 `pvisor-reference-environment/v1`，不冒充旧 smoke schema。含逐样本、命令、固定脚本、guest/tool 版本、失败、最小化实际工具回传及 Run Bundle 隔离/资源证明；不复制数 GB rootfs 或继承宿主环境的凭据。固定 rootfs、工具、内核与 pVisor 摘要在报告中。自动部署脚本与复现入口见[benchmark 目录](https://github.com/DeepLink-org/pvisor/tree/main/benchmark/pvisor)。
 
-[逐样本 CSV](../../assets/benchmarks/reference-env-20261004/samples.csv) · [分布与阶段计时](../../assets/benchmarks/reference-env-20261004/summary.tsv) · [运行证据](../../assets/benchmarks/reference-env-20261004/evidence.tar.gz) · [兼容性矩阵](../../assets/benchmarks/reference-env-20261004/compatibility.tsv)
+本地原始记录 `docs/src/assets/benchmarks/.data/reference-env-20261004/samples.csv` · 本地原始记录 `docs/src/assets/benchmarks/.data/reference-env-20261004/summary.tsv` · 本地原始记录 `docs/src/assets/benchmarks/.data/reference-env-20261004/evidence.tar.gz` · 本地原始记录 `docs/src/assets/benchmarks/.data/reference-env-20261004/compatibility.tsv`

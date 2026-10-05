@@ -1,10 +1,16 @@
-# Comparison: Firecracker, QEMU, gVisor and Kata
+# How should you choose between pVisor, Firecracker, QEMU and isolation runtimes?
 
 ## Main conclusions {#conclusions}
 
 **pVisor VM lightweight startup is close to Firecracker/QEMU microvm, while tool tasks are currently slower.** Same-tool repair/test P50 is **3.97 s** pVisor, **2.25 s** Firecracker and **1.85 s** QEMU microvm. Image-free pVisor returns short tasks sooner than booting complete Ubuntu by reducing full-system initialization waiting.
 
 gVisor/Kata lack matching measurements. pVisor currently uses libkrun; independent Firecracker/QEMU benchmarks do not make them integrated pVisor executors.
+
+| Need | Selection implication |
+|---|---|
+| Lightweight VM execution | Compare Firecracker and QEMU microvm |
+| Unified stage/apply workflow | Evaluate pVisor execution plus application |
+| gVisor or Kata required | No matching local performance ranking |
 
 ## Motivation {#motivation}
 
@@ -22,6 +28,8 @@ Linux same-host references share two cores and 2 vCPU: lightweight startup 128 M
 | Kata | VMs supporting container workflows | No accepted integration or matching measurements |
 
 See official [gVisor](https://gvisor.dev/docs/), [Firecracker](https://firecracker-microvm.github.io/) and [Kata](https://katacontainers.io/) descriptions; pVisor support is in [executors](../guides/executors/index.md).
+
+Tables identify pinned artifacts and measurement dates. Failed or invalid samples are excluded from successful timings and counted separately. Existing measurements have no predefined host-interference filter; all slow valid samples are retained. P95 from 30 or fewer samples is descriptive only; no P99 or stable tail-latency claim is made.
 
 ## Data and analysis {#results}
 

@@ -702,6 +702,32 @@ mod tests {
     }
 
     #[test]
+    fn execution_records_require_current_typed_bindings() {
+        let temp = tempfile::tempdir().unwrap();
+        let (record, job) = fixture(temp.path());
+        let original = serde_json::to_value(&job).unwrap();
+        let mut variants = Vec::new();
+        for field in ["forks", "stores", "resumes"] {
+            let mut value = original.clone();
+            value.as_object_mut().unwrap().remove(field);
+            variants.push(value);
+        }
+        let mut value = original.clone();
+        value["state"] = serde_json::json!("misspelled-state");
+        variants.push(value);
+        let mut value = original.clone();
+        value["version"] = serde_json::json!(1);
+        variants.push(value);
+        let mut value = original;
+        value["resumes"] = serde_json::json!({"key": {"stage": "/private/attempt"}});
+        variants.push(value);
+        for value in variants {
+            std::fs::write(job.root.join(STATE), serde_json::to_vec(&value).unwrap()).unwrap();
+            assert!(Job::read(&record).is_err(), "{value}");
+        }
+    }
+
+    #[test]
     fn stable_job_selector_retains_attempt_records_and_rejects_rebinding() {
         let temp = tempfile::tempdir().unwrap();
         let (record, mut job) = fixture(temp.path());

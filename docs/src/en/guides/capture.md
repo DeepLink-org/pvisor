@@ -14,7 +14,7 @@ pvisor run \
   -- claude
 ```
 
-pVisor starts an embedded Gateway, injects proxy or base-URL configuration into the child process, waits for execution, drains capture, and stops the Gateway. Use `--record-destination ./capture` to write the Trace Event journal to a chosen directory. `--gateway-stream-markdown` is kept only for compatibility and currently produces no Markdown projection.
+pVisor starts an embedded Gateway, injects proxy or base-URL configuration into the child process, waits for execution, drains capture, and stops the Gateway. Use `--record-destination ./capture` to write the Trace Event journal to a chosen directory.
 
 ### Event timestamps and order
 

@@ -1,6 +1,6 @@
 //! Shared read-only revision mounts; each native attempt has its own upper.
 use anyhow::{Context, ensure};
-use pvisor::cache::{CacheBackend, CacheConfig, MountedImage, open_image_handle_for_vm};
+use pvisor::cache::{CacheBackend, CacheConfig, LazyImage, open_image_handle_for_vm};
 use pvisor_cluster::EnvironmentRecord;
 use std::{
     collections::BTreeMap,
@@ -51,10 +51,10 @@ impl<T: Send + Sync + 'static> Drop for MountOwners<T> {
 pub struct EnvironmentMounts {
     config: Option<CacheConfig>,
     node_socket: Option<std::path::PathBuf>,
-    mounts: SharedMounts<MountedImage>,
+    mounts: SharedMounts<LazyImage>,
 }
 pub enum ImageOwner {
-    Local(Arc<MountedImage>),
+    Local(Arc<LazyImage>),
     Node(pvisor::node::Pin),
 }
 impl ImageOwner {
@@ -95,7 +95,7 @@ impl EnvironmentMounts {
             mounts: SharedMounts::new(limit),
         })
     }
-    async fn layer(&self, handle: &str) -> anyhow::Result<Arc<MountedImage>> {
+    async fn layer(&self, handle: &str) -> anyhow::Result<Arc<LazyImage>> {
         self.mounts
             .get(handle, || async {
                 let config = self

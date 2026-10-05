@@ -116,4 +116,4 @@ Worker 上报有新鲜度的本地缓存/压力摘要，Controller 内存视图�
 
 先冻结具体负载、样本量、尾延迟阈值、资源上限和有效收益门槛；不凭架构图提前上调评分。整合的第一收益是部署与资源管理收敛，性能分数由上述验收决定。
 
-相关设计：[共享工作集](shared-working-set.md)、[状态与恢复](state-and-recovery.md)、[冷 RAM pool](../memory-sharing/index.md)和[问题驱动实验](../../benchmarks/cluster-questions.md)。
+相关设计：[共享工作集](shared-working-set.md)、[状态与恢复](state-and-recovery.md)、[冷 RAM pool](../memory-sharing/index.md)和[问题驱动实验](../cluster-benchmark-plan.md)。

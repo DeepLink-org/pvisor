@@ -47,5 +47,9 @@
   "development/index.md": "community/index.md",
   "development/engineering.md": "community/development.md",
   "development/examples.md": "community/examples.md",
-  "development/releasing.md": "community/releasing.md"
+  "development/releasing.md": "community/releasing.md",
+  "benchmarks/cluster-questions.md": "design/cluster-benchmark-plan.md",
+  "benchmarks/vm-lifecycle.md": "benchmarks/vm-memory/index.md",
+  "benchmarks/vm-memory/methodology.md": "benchmarks/vm-memory/index.md",
+  "benchmarks/vm-memory/results.md": "benchmarks/vm-memory/index.md"
 }

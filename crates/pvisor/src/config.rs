@@ -497,7 +497,6 @@ pub struct GatewaySettings {
     pub level: CaptureLevel,
     pub session_header: String,
     pub debug: bool,
-    pub stream_markdown: bool,
     pub routes: Vec<ModelRoute>,
 }
 
@@ -511,7 +510,6 @@ impl Default for GatewaySettings {
             level: CaptureLevel::Dialogue,
             session_header: "x-pvisor-session-id".into(),
             debug: false,
-            stream_markdown: false,
             routes: Vec::new(),
         }
     }
@@ -560,7 +558,6 @@ pub struct RecordSettings {
 pub struct GatewayDriverConfig {
     pub proxy: ProxyConfig,
     pub output_dir: PathBuf,
-    pub stream_markdown: bool,
     pub gateway_enabled: bool,
     pub model_wait: Option<std::sync::Arc<dyn pvisor_gateway::model_wait::ModelWaitLifecycle>>,
 }
@@ -605,7 +602,6 @@ impl GatewayDriverConfig {
         Self {
             proxy,
             output_dir: PathBuf::from(".pvisor/run"),
-            stream_markdown: false,
             gateway_enabled: true,
             model_wait: None,
         }
@@ -613,11 +609,6 @@ impl GatewayDriverConfig {
 
     pub fn output_dir(mut self, output_dir: impl Into<PathBuf>) -> Self {
         self.output_dir = output_dir.into();
-        self
-    }
-
-    pub fn stream_markdown(mut self, enabled: bool) -> Self {
-        self.stream_markdown = enabled;
         self
     }
 

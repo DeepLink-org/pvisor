@@ -129,7 +129,7 @@ def main():
     parser.add_argument(
         "--data-dir",
         type=Path,
-        default=ROOT / "docs/src/assets/benchmarks/cluster-scalability-20261005",
+        default=ROOT / "docs/src/assets/benchmarks/.data/cluster-scalability-20261005",
     )
     parser.add_argument("--output-dir", type=Path)
     args = parser.parse_args()

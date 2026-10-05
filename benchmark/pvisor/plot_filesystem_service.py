@@ -65,7 +65,7 @@ def main():
         "--assets",
         type=Path,
         default=Path(__file__).resolve().parents[2]
-        / "docs/src/assets/benchmarks/filesystem-service-20261005",
+        / "docs/src/assets/benchmarks/.data/filesystem-service-20261005",
     )
     args = parser.parse_args()
     plt.rcParams.update({"font.family": "DejaVu Sans", "svg.fonttype": "none"})

@@ -68,7 +68,7 @@ release 批次一分钟 load 为 **1.37 → 2.27**；未将不同批次样本合
 
 遍历尾部略降，但 read/write 尾部升高；整轮 P95 基本持平、P99 略降。
 30 样本下 P99 受个别任务影响很大，不能据中位数或单个尾部值宣称稳定收益。
-[完整原始分布](../../assets/benchmarks/filesystem-service-20261005/local-release.tsv)
+本地原始记录 `docs/src/assets/benchmarks/.data/filesystem-service-20261005/local-release.tsv`
 保留每个任务的七项时间及启动到退出时间。
 
 ### Performance 制品：同编译配置的本地对照 {#service-performance}
@@ -104,7 +104,7 @@ npm **7.4 倍**。新版 performance 二进制 **19.38 MiB**，release
 | git | 1096.91 → 1071.94 | 1158.24 → 1095.24 |
 | 启动到退出 | 9616.95 → 7328.27 | 9971.15 → 10148.77 |
 
-[完整分布与制品来源](../../assets/benchmarks/filesystem-service-20261005/local-performance.tsv)
+本地原始记录 `docs/src/assets/benchmarks/.data/filesystem-service-20261005/local-performance.tsv`
 保留逐样本值。以下图中的两个面板属于独立批次，均对比各自同编译配置的
 旧版与新版；不是同批 release/performance A/B，也不是单机制收益。
 
@@ -167,7 +167,7 @@ copy-up 耗时变为原来的 **2.5–2.6 倍**。整轮中位数冷 **+2.3%**�
 热缓存读取尾部有所改善，metadata/copy-up 和整轮尾部则增加。冷缓存旧版
 open/read 的 P99 **1,628.39 ms**、整轮 **4,406.78 ms** 受到单个慢任务影响；
 新版分别 **804.34/3,736.05 ms**，不能只选择这组尾部写成稳定收益。
-[原始分布、缓存请求计数与挂载记录](../../assets/benchmarks/filesystem-service-20261005/lazy-performance.tsv)
+本地原始记录 `docs/src/assets/benchmarks/.data/filesystem-service-20261005/lazy-performance.tsv`
 保留全部样本。首次预检因脚本误写 fixture 字节数而失败，修正后的预检和
 正式批次分开保存；首次失败没有计入时间分布。
 
@@ -188,9 +188,9 @@ open/read 的 P99 **1,628.39 ms**、整轮 **4,406.78 ms** 受到单个慢任务
 
 组合 release 的整轮 P95 **+2.4%**、Git P99 **+25.5%**；另一批 performance
 整轮 P95/P99 分别 **-7.9%/-6.9%**。结果存在取舍，不能合并成一条速度曲线。
-[代码对照](../../assets/benchmarks/filesystem-optimizations-20261005/code-v3-4g.tsv)、
-[编译配置对照](../../assets/benchmarks/filesystem-optimizations-20261005/profile-v3-4g.tsv)
-和[制品清单](../../assets/benchmarks/filesystem-optimizations-20261005/manifest.tsv)
+本地原始记录 `docs/src/assets/benchmarks/.data/filesystem-optimizations-20261005/code-v3-4g.tsv`、
+本地原始记录 `docs/src/assets/benchmarks/.data/filesystem-optimizations-20261005/profile-v3-4g.tsv`
+和本地原始记录 `docs/src/assets/benchmarks/.data/filesystem-optimizations-20261005/manifest.tsv`
 保留完整来源；下列内核机制评测和 P0 数据也作为历史批次保留。
 
 ## Linux：内核机制与并发优化完整评测 {#kernel-campaign}
@@ -204,9 +204,9 @@ open/read 的 P99 **1,628.39 ms**、整轮 **4,406.78 ms** 受到单个慢任务
 
 | 实验 | 样本与测量边界 | 结果入口 |
 |---|---|---|
-| 真实 KVM / 宿主 FUSE 筛选 | 5 轮候选比较，每轮五格，每格预热 1 次、测量 3 次；包含实现修正后的复测 | [筛选与选择](#kernel-screening)、[逐轮记录](../../assets/benchmarks/filesystem-kernel-20261005/process.tsv) |
-| release 适配层微基准 | 4 种 lookup/getattr/open/目录 PLUS 负载，每例每制品预热 2 次、测量 8 次；不启动 VM、不挂 FUSE、不记 preimage | [最终微基准](../../assets/benchmarks/filesystem-kernel-20261005/micro-final.tsv) |
-| 缓存、并发和 guest tmpfs 对照 | 遍历、单/四线程 stat 各测 3 次；64 文件部分写入加读回各测 1 次 | [对照结果](#kernel-probes)、[原始记录](../../assets/benchmarks/filesystem-kernel-20261005/kernel-probe.tsv) |
+| 真实 KVM / 宿主 FUSE 筛选 | 5 轮候选比较，每轮五格，每格预热 1 次、测量 3 次；包含实现修正后的复测 | [筛选与选择](#kernel-screening)、本地原始记录 `docs/src/assets/benchmarks/.data/filesystem-kernel-20261005/process.tsv` |
+| release 适配层微基准 | 4 种 lookup/getattr/open/目录 PLUS 负载，每例每制品预热 2 次、测量 8 次；不启动 VM、不挂 FUSE、不记 preimage | 本地原始记录 `docs/src/assets/benchmarks/.data/filesystem-kernel-20261005/micro-final.tsv` |
+| 缓存、并发和 guest tmpfs 对照 | 遍历、单/四线程 stat 各测 3 次；64 文件部分写入加读回各测 1 次 | [对照结果](#kernel-probes)、本地原始记录 `docs/src/assets/benchmarks/.data/filesystem-kernel-20261005/kernel-probe.tsv` |
 | 同源完整七项 A/B | 五格，每格预热 3 次、测量 30 次；150 个任务、1,050 个工具测量 | [完整分布与结论](#kernel-full) |
 | 已发布 P0 与最终候选的同批完整对照 | 另五格，每格预热 3 次、测量 30 次；150 个任务、1,050 个工具测量；源码和 staged 隔离类型不同 | [历史制品重测](#kernel-history) |
 | 独立 profile 与 OPEN 并发回归 | profile 每格 1 次，不计入验收时间；回归验证旧实现阻塞、新只读锁并行、可写锁仍互斥 | [队列与锁诊断](#kernel-probes)、[实现与回归](#kernel-screening) |
@@ -325,9 +325,9 @@ staged 完成尾部包含少数较慢任务，且不等于七项 worker 时间�
 两轮完整评测合计 **300 个任务、2,100 个工具测量**。当前证据支持减少
 重复父目录查询、修复只读 OPEN 的串行约束，尚不支持普遍端到端加速。
 
-[已发布制品的原始对照](../../assets/benchmarks/filesystem-kernel-20261005/full-historical.tsv) ·
-[该批 P50/P95/P99 与协议](../../assets/benchmarks/filesystem-kernel-20261005/historical-summary.tsv) ·
-[两批逐样本 CSV](../../assets/benchmarks/filesystem-kernel-20261005/samples.csv)
+本地原始记录 `docs/src/assets/benchmarks/.data/filesystem-kernel-20261005/full-historical.tsv` ·
+本地原始记录 `docs/src/assets/benchmarks/.data/filesystem-kernel-20261005/historical-summary.tsv` ·
+本地原始记录 `docs/src/assets/benchmarks/.data/filesystem-kernel-20261005/samples.csv`
 
 ### 缓存、并发和 guest-local 对照 {#kernel-probes}
 
@@ -388,15 +388,15 @@ rglob 之后也等待 1.2 秒。候选 VM 结果如下，单位 ms；tmpfs 已�
 没有修改或批准 semspec ledger/snapshot。完整样本和失败，不只成功摘要，
 保存在下列证据中；macOS、启动、网络和完整 Agent 闭环不由这些数字推算。
 
-[同源原始报告](../../assets/benchmarks/filesystem-kernel-20261005/full-same-source.tsv) ·
-[完整分布与协议](../../assets/benchmarks/filesystem-kernel-20261005/summary.tsv) ·
-[筛选过程](../../assets/benchmarks/filesystem-kernel-20261005/process.tsv) ·
-[微基准](../../assets/benchmarks/filesystem-kernel-20261005/micro-final.tsv) ·
-[内核诊断](../../assets/benchmarks/filesystem-kernel-20261005/kernel-probe.tsv) ·
-[队列与锁诊断](../../assets/benchmarks/filesystem-kernel-20261005/profiles.tsv) ·
-[源码补丁](../../assets/benchmarks/filesystem-kernel-20261005/implementation.patch) ·
-[原始日志与完整复现证据](../../assets/benchmarks/filesystem-kernel-20261005/evidence.tar.gz) ·
-[摘要清单](../../assets/benchmarks/filesystem-kernel-20261005/manifest.tsv)
+本地原始记录 `docs/src/assets/benchmarks/.data/filesystem-kernel-20261005/full-same-source.tsv` ·
+本地原始记录 `docs/src/assets/benchmarks/.data/filesystem-kernel-20261005/summary.tsv` ·
+本地原始记录 `docs/src/assets/benchmarks/.data/filesystem-kernel-20261005/process.tsv` ·
+本地原始记录 `docs/src/assets/benchmarks/.data/filesystem-kernel-20261005/micro-final.tsv` ·
+本地原始记录 `docs/src/assets/benchmarks/.data/filesystem-kernel-20261005/kernel-probe.tsv` ·
+本地原始记录 `docs/src/assets/benchmarks/.data/filesystem-kernel-20261005/profiles.tsv` ·
+本地原始记录 `docs/src/assets/benchmarks/.data/filesystem-kernel-20261005/implementation.patch` ·
+本地原始记录 `docs/src/assets/benchmarks/.data/filesystem-kernel-20261005/evidence.tar.gz` ·
+本地原始记录 `docs/src/assets/benchmarks/.data/filesystem-kernel-20261005/manifest.tsv`
 
 ## Linux：2026-10-05，P0 真实 VM/FUSE A/B 基线 {#e2e-baseline}
 
@@ -496,10 +496,10 @@ python3 benchmark/pvisor/filesystem_ab.py \
   --cpu-affinity 0,1 --samples 30 --warmups 3
 ```
 
-[逐样本 CSV](../../assets/benchmarks/filesystem-ab-20261005/samples.csv) ·
-[协议、制品与 P50/P95/P99](../../assets/benchmarks/filesystem-ab-20261005/summary.tsv) ·
-[独立诊断](../../assets/benchmarks/filesystem-ab-20261005/profiles.tsv) ·
-[报告、脚本、失败样本与验证日志](../../assets/benchmarks/filesystem-ab-20261005/evidence.tar.gz)
+本地原始记录 `docs/src/assets/benchmarks/.data/filesystem-ab-20261005/samples.csv` ·
+本地原始记录 `docs/src/assets/benchmarks/.data/filesystem-ab-20261005/summary.tsv` ·
+本地原始记录 `docs/src/assets/benchmarks/.data/filesystem-ab-20261005/profiles.tsv` ·
+本地原始记录 `docs/src/assets/benchmarks/.data/filesystem-ab-20261005/evidence.tar.gz`
 
 ### 历史到 P0 的实测变化（保留） {#historical-progress}
 
@@ -522,8 +522,8 @@ python3 benchmark/pvisor/filesystem_ab.py \
 重新测量 Docker、完整修复任务或真实 Agent CLI 闭环；下面的历史数据保持
 原日期与制品，不能用这组文件系统百分比推算它们的最新性能。
 
-[历史分布](../../assets/benchmarks/reference-env-20261004/summary.tsv) ·
-[最新分布](../../assets/benchmarks/filesystem-ab-20261005/summary.tsv)
+本地原始记录 `docs/src/assets/benchmarks/.data/reference-env-20261004/summary.tsv` ·
+本地原始记录 `docs/src/assets/benchmarks/.data/filesystem-ab-20261005/summary.tsv`
 
 ## Linux：2026-10-05，OverlayCore 路径解析优化 {#resolution-optimization}
 
@@ -566,7 +566,7 @@ cargo nextest run --locked --release -p pvisor-vm \
   --run-ignored only --no-capture -E 'test(small_file_adapter_benchmark)'
 ```
 
-[逐样本与诊断计数](../../assets/benchmarks/overlay-resolution-20261005/samples.tsv) · [制品、协议与汇总](../../assets/benchmarks/overlay-resolution-20261005/summary.tsv)
+本地原始记录 `docs/src/assets/benchmarks/.data/overlay-resolution-20261005/samples.tsv` · 本地原始记录 `docs/src/assets/benchmarks/.data/overlay-resolution-20261005/summary.tsv`
 
 ## Linux：2026-10-04 {#results}
 
@@ -586,7 +586,7 @@ cargo nextest run --locked --release -p pvisor-vm \
 
 可以据此定位遍历、搜索、编译和安装的实际等待；不能由某一个读取数字得出 block device 总是比 FUSE 快。数据同时改变了内核、工具版本、文件系统和暂存语义。长任务选型更应结合 worker 与[完整闭环](../benchmarks/agent-tasks.md#full-ubuntu)，而不是只比较开机时间。
 
-[逐样本 CSV](../../assets/benchmarks/full-ubuntu-20261004/samples.csv) · [分布与阶段计时](../../assets/benchmarks/full-ubuntu-20261004/summary.tsv) · [方法与复现](../benchmarks/methodology.md#full-ubuntu)
+本地原始记录 `docs/src/assets/benchmarks/.data/full-ubuntu-20261004/samples.csv` · 本地原始记录 `docs/src/assets/benchmarks/.data/full-ubuntu-20261004/summary.tsv` · [方法与复现](../benchmarks/methodology.md#full-ubuntu)
 
 ### 完整工具环境的 Docker 基线 {#reference-fs}
 
@@ -607,7 +607,7 @@ cargo nextest run --locked --release -p pvisor-vm \
 
 任务核对文件数量/大小、SHA256、Git clean、搜索命中、编译结果与安装包数量。Docker 是 writable bind mount，pVisor 使用 staged 视图；Firecracker/QEMU 在私有 ext4 内执行。文件路径不同是实际部署成本的一部分；这不是相同文件系统只替换 VMM 的因果实验。其他运行时的各操作分布也在本轮汇总中。
 
-[配置与复现](../benchmarks/methodology.md#reference-env) · [逐样本 CSV](../../assets/benchmarks/reference-env-20261004/samples.csv) · [分布与阶段计时](../../assets/benchmarks/reference-env-20261004/summary.tsv) · [原始证据](../../assets/benchmarks/reference-env-20261004/evidence.tar.gz) · [兼容性矩阵](../../assets/benchmarks/reference-env-20261004/compatibility.tsv)
+[配置与复现](../benchmarks/methodology.md#reference-env) · 本地原始记录 `docs/src/assets/benchmarks/.data/reference-env-20261004/samples.csv` · 本地原始记录 `docs/src/assets/benchmarks/.data/reference-env-20261004/summary.tsv` · 本地原始记录 `docs/src/assets/benchmarks/.data/reference-env-20261004/evidence.tar.gz` · 本地原始记录 `docs/src/assets/benchmarks/.data/reference-env-20261004/compatibility.tsv`
 
 
 ### 首版 Linux 矩阵：独立批次
@@ -712,4 +712,4 @@ python3 benchmark/pvisor/product_v1.py \
 
 先用 `--samples 1 --warmups 0` 检查环境。脚本、输入定义和正确性断言在 `benchmark/pvisor/v1/`；报告会复制二进制、firmware 和当轮脚本并记录摘要。失败不会进入性能分布；准备、策略拒绝和工作负载错误分别保留。每个页面写明有效样本数；小样本 P95/P99 只描述本批次，不估计长期尾延迟。
 
-[环境、制品与采样方法](../benchmarks/methodology.md#product-v1) · [批次清单](../../assets/benchmarks/product-v1-20261004/manifest.tsv) · [逐样本汇总 CSV](../../assets/benchmarks/product-v1-20261004/samples.csv) · [原始报告与日志归档](../../assets/benchmarks/product-v1-20261004/evidence.tar.gz)。报告保留源码的未提交状态；当轮可执行制品 SHA256 是身份依据。归档不含数 GB 的 rootfs、二进制和可重建工作区；输入摘要及每轮脚本保留。
+[环境、制品与采样方法](../benchmarks/methodology.md#product-v1) · 本地原始记录 `docs/src/assets/benchmarks/.data/product-v1-20261004/manifest.tsv` · 本地原始记录 `docs/src/assets/benchmarks/.data/product-v1-20261004/samples.csv` · 本地原始记录 `docs/src/assets/benchmarks/.data/product-v1-20261004/evidence.tar.gz`。报告保留源码的未提交状态；当轮可执行制品 SHA256 是身份依据。归档不含数 GB 的 rootfs、二进制和可重建工作区；输入摘要及每轮脚本保留。

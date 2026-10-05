@@ -113,7 +113,7 @@ VM memory is measured in MiB and CPU count is a positive integer. `ram_backing` 
 
 ### Capture and recording
 
-`[gateway]` defaults to `mode = "off"`; capture uses `capture`. Other defaults are `admin_listen = "127.0.0.1:9876"`, `level = "dialogue"`, `session_header = "x-pvisor-session-id"`, `debug = false`, `stream_markdown = false`, and `routes = []`. The optional `profile` currently accepts `zcode-bigmodel`; `zcode_builtin_config` points to that integration's configuration. Configure routes and capture levels using the [Gateway guide](../guides/capture.md).
+`[gateway]` defaults to `mode = "off"`; capture uses `capture`. Other defaults are `admin_listen = "127.0.0.1:9876"`, `level = "dialogue"`, `session_header = "x-pvisor-session-id"`, `debug = false`, `routes = []`. The optional `profile` currently accepts `zcode-bigmodel`; `zcode_builtin_config` points to that integration's configuration. Configure routes and capture levels using the [Gateway guide](../guides/capture.md).
 
 `[record].destination` is an optional path. Gateway model-traffic records and Trace Event journals have different responsibilities; retain the artifacts you need as described in [Jobs and storage](../concepts/jobs.md).
 
@@ -130,7 +130,7 @@ Field names and types are checked against the Rust serde structures during the d
 | --- | --- | --- | --- |
 | `run` | `RunSettings` | `{}` | Command and process settings |
 | `container` | `ContainerSettings` | `{}` | OCI executor settings; used when selected |
-| `vm` | `VmSettings` | `{}` | VM executor settings; `kvm` is a legacy table alias |
+| `vm` | `VmSettings` | `{}` | VM executor settings |
 | `filesystem` | `FilesystemMode` | `"host"` | `host` or `sandbox`; access control independent of staging |
 | `overlayfs` | `Option<OverlayFsSettings>` | `unset` | Omitted: direct writes; even an empty table requests staging |
 | `overlaynet` | `OverlayNetSettings` | `{}` | Network driver and base policy |
@@ -196,7 +196,6 @@ Field names and types are checked against the Rust serde structures during the d
 | `gateway.level` | `CaptureLevel` | `"dialogue"` | summary, dialogue, full; `--gateway-level` |
 | `gateway.session_header` | `String` | `"x-pvisor-session-id"` | Session correlation header; `--gateway-session-header` |
 | `gateway.debug` | `bool` | `false` | Gateway debugging; `--gateway-debug` |
-| `gateway.stream_markdown` | `bool` | `false` | Render streamed dialogue; `--gateway-stream-markdown` |
 | `gateway.routes` | `Vec<ModelRoute>` | `[]` | Model route entries; `--gateway-route` replaces list |
 | `record.destination` | `Option<PathBuf>` | `unset` | Trace Event file/directory; `--record-destination` |
 | `run.resource_limits.memory_bytes` | `Option<u64>` | `unset` | Bytes; `--memory` |

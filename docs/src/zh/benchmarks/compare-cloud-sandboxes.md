@@ -1,10 +1,16 @@
-# 对比：云端沙箱
+# 选本机 pVisor，还是 E2B、Daytona、Modal？
 
 ## 主要结论 {#conclusions}
 
 **pVisor 适合直接使用本机仓库与工具链；E2B、Daytona、Modal 适合需要远端环境供应和托管容量的场景。** 没有同条件云端延迟或账单数据，无法声称 pVisor 更快或更便宜。
 
 本机已准备环境的 pVisor VM 启动约 **0.1 s**，staged 的短修复任务约 **0.7 s**。搬到远端时还要计入上传、环境准备、执行和结果回传，不能只比较环境创建时间。
+
+| 需求 | 选型含义 |
+|---|---|
+| 已有本机仓库和工具 | 评估 pVisor 的本地反馈预算 |
+| 需要远端环境与托管容量 | 评估 E2B、Daytona、Modal |
+| 比较成本或速度 | 需要同区域端到端任务实测 |
 
 ## Motivation {#motivation}
 
@@ -22,6 +28,8 @@
 | Modal | SDK 创建 sandbox，使用镜像和存储 | 依赖镜像、数据接入与流水线连接 |
 
 官方说明：[E2B](https://docs.e2b.dev/)、[Daytona](https://www.daytona.io/docs/en/)、[Modal Sandboxes](https://modal.com/docs/guide/sandboxes)。
+
+固定制品与测量日期按表注明。失败与校验不通过的样本不计入成功耗时，失败数量单列；既有数据没有事先的宿主干扰剔除规则，所有通过校验的慢样本保留。30 次及更少采样的 P95 仅为观察参考，不给 P99 或稳定尾延迟承诺。
 
 ## 实验数据和分析 {#results}
 

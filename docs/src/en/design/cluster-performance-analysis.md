@@ -2,7 +2,7 @@
 
 Exploratory measurements on 2026-10-05 observed that **adding Workers and CPU budget permits parallel readiness for one to four lightweight VMs with roughly linear memory growth; Controller counts queries avoid scanning retained history**. They do not validate fixed-host-budget useful Agent throughput, density or whole-system scalability.
 
-The next round must freeze questions, hypotheses, controls and judgment criteria before sampling; see [questions benchmarks should answer first](../benchmarks/cluster-questions.md). That protocol was written after these measurements and does not retrospectively preregister them. Growing historical memory and replay costs identify problems to investigate, rather than verified gains from any optimization.
+The next round must freeze questions, hypotheses, controls and judgment criteria before sampling; see [questions benchmarks should answer first](cluster-benchmark-plan.md). That protocol was written after these measurements and does not retrospectively preregister them. Growing historical memory and replay costs identify problems to investigate, rather than verified gains from any optimization.
 
 These tasks specify neither immutable environment handles nor checkpoint restores, and each VM uses an independent Worker, bypassing key reuse paths in [shared working sets and lazy loading](cluster/shared-working-set.md). Prioritize S1 shared RAM and S2 large environments with small working sets next, rather than treating these plots as evidence for those mechanisms.
 
@@ -84,4 +84,4 @@ Render the public archive again (requires matplotlib):
 MPLCONFIGDIR=/tmp/pvisor-plot-cache python3 benchmark/pvisor/plot_cluster_scalability.py
 ```
 
-[Execution TSV](../../assets/benchmarks/cluster-scalability-20261005/vm.tsv) · [Execution summary CSV](../../assets/benchmarks/cluster-scalability-20261005/vm-summary.csv) · [Controller summary CSV](../../assets/benchmarks/cluster-scalability-20261005/controller-summary.csv) · [Controller source/build identity](../../assets/benchmarks/cluster-scalability-20261005/controller-provenance.tsv) · [Archive manifest](../../assets/benchmarks/cluster-scalability-20261005/manifest.tsv) · [Initial configuration failure](../../assets/benchmarks/cluster-scalability-20261005/setup-failure.tsv)
+Local raw record `docs/src/assets/benchmarks/.data/cluster-scalability-20261005/vm.tsv` · Local raw record `docs/src/assets/benchmarks/.data/cluster-scalability-20261005/vm-summary.csv` · Local raw record `docs/src/assets/benchmarks/.data/cluster-scalability-20261005/controller-summary.csv` · Local raw record `docs/src/assets/benchmarks/.data/cluster-scalability-20261005/controller-provenance.tsv` · Local raw record `docs/src/assets/benchmarks/.data/cluster-scalability-20261005/manifest.tsv` · Local raw record `docs/src/assets/benchmarks/.data/cluster-scalability-20261005/setup-failure.tsv`

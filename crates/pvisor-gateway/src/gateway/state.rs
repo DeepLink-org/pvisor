@@ -61,7 +61,7 @@ pub async fn serve_with_shutdown(
     sink: Arc<dyn CaptureEventObserver>,
     shutdown: impl std::future::Future<Output = ()> + Send + 'static,
 ) -> anyhow::Result<()> {
-    serve_with_shutdown_and_ready(config, storage, sink, stream_markdown, None, shutdown).await
+    serve_with_shutdown_and_ready(config, storage, sink, None, shutdown).await
 }
 
 pub async fn serve_with_shutdown_and_ready(

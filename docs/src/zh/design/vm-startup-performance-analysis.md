@@ -60,7 +60,7 @@ Agent 执行器可能反复创建隔离环境，启动等待会直接影响首�
 
     官方 firmware 来自上游 5.6.2 发布的预编译 aarch64 `kernel.c`，只在 macOS 包装成 dylib；裁剪版来自本地 libkrunfw 构建。官方源码无需完整重编译。两者内核版本一致，但本地源码为 `v5.6.2-3-gf6a710f`，因此比较的是这两个真实制品，不是严格只改变一项 Kconfig 的因果实验。CLI 当前默认下载器仍固定 5.5.0，本实验显式选择 5.6.2，不把默认版本混进表格。
 
-    官方 dylib 为 23.715 MiB，裁剪版为 11.307 MiB，文件大小减少约 52.3%；这不等于 guest 或宿主物理内存降低 52.3%。完整 SHA-256、参数、源码状态和每个样本见[原始 TSV](../../assets/benchmarks/startup-20261003.tsv)。原始 JSON 保留测量时的绝对路径作为来源记录，复现时替换为自己的路径。
+    官方 dylib 为 23.715 MiB，裁剪版为 11.307 MiB，文件大小减少约 52.3%；这不等于 guest 或宿主物理内存降低 52.3%。完整 SHA-256、参数、源码状态和每个样本见本地原始记录 `docs/src/assets/benchmarks/.data/startup-20261003.tsv`。原始 JSON 保留测量时的绝对路径作为来源记录，复现时替换为自己的路径。
 
 <a id="linux-methodology"></a>
 
@@ -225,7 +225,7 @@ init argv 压缩参数通道已撤下，guest 仍读取有大小上限的 JSON�
 
 第一轮保留证明完整写入、正常退出判定和失败入口清空，只移除两处 `sync_data()`。第二轮先创建完整目录树，再同步最上层新目录的父目录与每个新目录；新建 N 层时，目录屏障从 2N 次降到 N＋1 次。已有目录行为与同步错误传播保持原有合同；RunRecord 和索引的原子写入没有改成后台任务。
 
-2 vCPU，128 MiB / 2048 MiB，各制品每规格 100 个正式样本，另有 5 次预热。共 600 个正式样本、30 次预热，每轮随机排列六组。时间单位均为 ms，起止仍为 harness 创建进程前到负载输出标记；Ready 与 Exit 分开记录。原始样本及制品 hash 见[两轮 P0 TSV](../../assets/benchmarks/startup-p0-20261003.tsv)。
+2 vCPU，128 MiB / 2048 MiB，各制品每规格 100 个正式样本，另有 5 次预热。共 600 个正式样本、30 次预热，每轮随机排列六组。时间单位均为 ms，起止仍为 harness 创建进程前到负载输出标记；Ready 与 Exit 分开记录。原始样本及制品 hash 见本地原始记录 `docs/src/assets/benchmarks/.data/startup-p0-20261003.tsv`。
 
 | MiB | Variant | Ready P50 | Ready P95 | Ready P99 | Exit P50 |
 |---:|---|---:|---:|---:|---:|
@@ -253,7 +253,7 @@ init argv 压缩参数通道已撤下，guest 仍读取有大小上限的 JSON�
 
 第一轮在两档内存下的端到端配对区间均为正，attestation 子区间从约 4.03 ms 降到 0.04 ms；128 MiB 的 100/100 对该子区间都更快。第二轮单独的端到端区间仍跨零，不能宣称它额外带来稳定毫秒级收益；它确定减少了冗余目录同步调用。两轮叠加在本批次有稳定中位数收益，但 128 MiB 的 Ready P95 从 107.99 ms 变为 112.14 ms，尾延迟并未全面改善。
 
-此前还取过一批每组 50 个样本，宿主 1 分钟 load average 从 18.38 降到 8.66，端到端区间均跨零；这批完整保留在[首批原始 TSV](../../assets/benchmarks/startup-p0-20261003-first.tsv)，不与本批合并。第二批 load average 为 5.67 → 6.87；负载较前一批低，但不是完全隔离的空闲宿主环境。所有成功长尾样本保留。
+此前还取过一批每组 50 个样本，宿主 1 分钟 load average 从 18.38 降到 8.66，端到端区间均跨零；这批完整保留在本地原始记录 `docs/src/assets/benchmarks/.data/startup-p0-20261003-first.tsv`，不与本批合并。第二批 load average 为 5.67 → 6.87；负载较前一批低，但不是完全隔离的空闲宿主环境。所有成功长尾样本保留。
 
 配对节省为同轮差值的中位数，区间由 5,000 次 bootstrap 得到；两轮中位数不能直接相加。子区间 P50 也不能直接相加为总耗时。对 CI 包含零的结果不宣称稳定收益；退出尾延迟与就绪尾延迟仍需分别观察。
 
@@ -287,13 +287,13 @@ Linux / KVM，2 vCPU / 2 GiB、相同宿主两核预算，原批次前五行各 
 
 **QEMU 使用同一完整 Ubuntu，而不是历史裁剪内核。** q35 与 microvm 共用 Firecracker 的原厂内核、initrd、工具和已初始化磁盘模板。这个配置下，最小设备模型并没有消除发行版的秒级开机成本。各组是同机独立批次，QEMU N=10、宿主仍有后台负载，个别波动保留；相近的中位数不支持精细的 VMM 排名。QEMU 首次 cloud-init 尚未补测。
 
-[QEMU CSV](../../assets/benchmarks/full-ubuntu-qemu-20261004/samples.csv) · [QEMU protocol](../benchmarks/methodology.md#full-ubuntu-qemu)
+本地原始记录 `docs/src/assets/benchmarks/.data/full-ubuntu-qemu-20261004/samples.csv` · [QEMU protocol](../benchmarks/methodology.md#full-ubuntu-qemu)
 
 **选择含义：** 频繁创建环境、执行一两条命令时，无镜像路径能减少秒级 OS 开机等待；需要完整 Ubuntu 系统服务和发行版环境时，这些秒数是获得该环境的成本。此表比较两种真实部署方式，包含不同内核、初始化路径和文件系统，不能据此声称 libkrun 本身比 Firecracker 快约 50 倍。长任务更应看[任务与工具内部时间](../benchmarks/agent-tasks.md#full-ubuntu)，启动差距会被摊薄。
 
 Exit 还包含正常关机：pVisor 中位数 174 ms，Firecracker/Ubuntu 约 9.23 / 12.86 秒。Firecracker/Ubuntu 使用默认 MMIO 设备和原厂 initrd，正常 guest reboot 后 VMM 零退出；每次记录完整 OS 证明且无失败 unit。工作区复制或私有磁盘克隆单列 `prepare_ms`，中位数约 37 / 29 ms，不含在 Ready 内。图采用对数轴，条形 P50、标记 P95；N=30 的 P99 接近最大值，只描述本批次。
 
-[逐样本 CSV](../../assets/benchmarks/full-ubuntu-20261004/samples.csv) · [分布与阶段计时](../../assets/benchmarks/full-ubuntu-20261004/summary.tsv) · [方法与复现](../benchmarks/methodology.md#full-ubuntu) · [运行证据](../../assets/benchmarks/full-ubuntu-20261004/ubuntu-ready-mmio-20261004/evidence.tar.gz)
+本地原始记录 `docs/src/assets/benchmarks/.data/full-ubuntu-20261004/samples.csv` · 本地原始记录 `docs/src/assets/benchmarks/.data/full-ubuntu-20261004/summary.tsv` · [方法与复现](../benchmarks/methodology.md#full-ubuntu) · 本地原始记录 `docs/src/assets/benchmarks/.data/full-ubuntu-20261004/ubuntu-ready-mmio-20261004/evidence.tar.gz`
 
 #### 新 VM 启动结果 {#linux-results}
 
@@ -337,7 +337,7 @@ QEMU q35 的 218 ms 不能代表 QEMU 的最低启动成本；关闭可选传统
 
 **首条输出不等于 Agent 已能完成任务。** 七种工具完成版本自检需要 pVisor VM 1.40 秒；实际修复测试任务与 CLI 兼容性见[完整工具环境](../benchmarks/agent-tasks.md#reference-env)。上一节 172.69 ms 的旧 GNU/libkrunfw 5.5.0 批次继续保留；本轮为新的固定静态制品，不能当作只改变一项配置的优化实验。
 
-[本轮配置与复现](../benchmarks/methodology.md#reference-env) · [逐样本 CSV](../../assets/benchmarks/reference-env-20261004/samples.csv) · [分布与阶段计时](../../assets/benchmarks/reference-env-20261004/summary.tsv) · [原始证据](../../assets/benchmarks/reference-env-20261004/evidence.tar.gz) · [兼容性矩阵](../../assets/benchmarks/reference-env-20261004/compatibility.tsv)
+[本轮配置与复现](../benchmarks/methodology.md#reference-env) · 本地原始记录 `docs/src/assets/benchmarks/.data/reference-env-20261004/samples.csv` · 本地原始记录 `docs/src/assets/benchmarks/.data/reference-env-20261004/summary.tsv` · 本地原始记录 `docs/src/assets/benchmarks/.data/reference-env-20261004/evidence.tar.gz` · 本地原始记录 `docs/src/assets/benchmarks/.data/reference-env-20261004/compatibility.tsv`
 
 #### 完整退出补测：不要把清理时间当作 Ready {#reference-exit}
 
@@ -355,7 +355,7 @@ QEMU q35 的 218 ms 不能代表 QEMU 的最低启动成本；关闭可选传统
 | QEMU microvm | 87.42 / 170.44 | 116.09 / 199.42 |
 
 
-[精确退出报告](../../assets/benchmarks/reference-env-20261004/followups/reference-startup-exit-20261004/report.tsv) · [逐样本](../../assets/benchmarks/reference-env-20261004/followups/reference-startup-exit-20261004/samples.csv) · [证据](../../assets/benchmarks/reference-env-20261004/followups/reference-startup-exit-20261004/evidence.tar.gz)
+本地原始记录 `docs/src/assets/benchmarks/.data/reference-env-20261004/followups/reference-startup-exit-20261004/report.tsv` · 本地原始记录 `docs/src/assets/benchmarks/.data/reference-env-20261004/followups/reference-startup-exit-20261004/samples.csv` · 本地原始记录 `docs/src/assets/benchmarks/.data/reference-env-20261004/followups/reference-startup-exit-20261004/evidence.tar.gz`
 
 
 ## 5. 复现与原始数据
@@ -393,7 +393,7 @@ python3 benchmark/pvisor/linux_vm_ready.py \
   --samples 100 --warmups 5
 ```
 
-[Linux 原始样本、环境与制品摘要](../../assets/benchmarks/startup-linux-20261003.tsv)。本机逐次 stdout/stderr、预热日志和固定二进制保存在 `target/local-vm-validation-20261003/startup-linux-100/`。更换制品或 rootfs 后应重新测量，保留为新批次。
+本地原始记录 `docs/src/assets/benchmarks/.data/startup-linux-20261003.tsv`。本机逐次 stdout/stderr、预热日志和固定二进制保存在 `target/local-vm-validation-20261003/startup-linux-100/`。更换制品或 rootfs 后应重新测量，保留为新批次。
 
 ## 6. 尚未覆盖的场景
 

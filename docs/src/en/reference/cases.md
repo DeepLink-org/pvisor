@@ -1273,7 +1273,6 @@ pvisor \
   --gateway-level full \
   --gateway-session-header X-Session-ID \
   --gateway-debug \
-  --gateway-stream-markdown \
   --gateway-route 'name="default",upstream="https://example.com/v1"' \
   -- "$CASE_TRUE"
 CASE_COMMAND

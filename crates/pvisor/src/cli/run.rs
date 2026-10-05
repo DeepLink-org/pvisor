@@ -193,7 +193,7 @@ pub struct RunArgs {
     record: RecordOverrides,
 
     /// Agent command; replaces `run.command` from the TOML spec.
-    #[arg(trailing_var_arg = true, allow_hyphen_values = true)]
+    #[arg(trailing_var_arg = true)]
     command: Vec<String>,
 }
 
@@ -684,9 +684,6 @@ struct GatewayOverrides {
     /// Enable or disable Gateway diagnostics.
     #[arg(long, value_name = "BOOL", num_args = 0..=1, default_missing_value = "true")]
     gateway_debug: Option<bool>,
-    /// Enable or disable the live Markdown projection.
-    #[arg(long, value_name = "BOOL", num_args = 0..=1, default_missing_value = "true")]
-    gateway_stream_markdown: Option<bool>,
     /// TOML inline-table fields for one model route; repeat to replace configured routes.
     #[arg(long, value_name = "ROUTE")]
     gateway_route: Vec<GatewayRouteArg>,
@@ -962,7 +959,6 @@ async fn run_prepared_spec(args: RunArgs) -> anyhow::Result<i32> {
             builder = builder.gateway(
                 GatewayDriverConfig::new(proxy)
                     .output_dir(&storage)
-                    .stream_markdown(config.gateway.stream_markdown)
                     .gateway_enabled(config.gateway.mode == GatewayMode::Capture),
             );
         }
@@ -1406,7 +1402,6 @@ async fn execute_config(
         builder = builder.gateway(
             GatewayDriverConfig::new(proxy)
                 .output_dir(&storage)
-                .stream_markdown(config.gateway.stream_markdown)
                 .gateway_enabled(config.gateway.mode == GatewayMode::Capture),
         );
     }
@@ -2341,9 +2336,7 @@ fn apply_cli(config: &mut RunConfig, args: RunArgs) -> anyhow::Result<()> {
     if let Some(value) = args.gateway.gateway_debug {
         config.gateway.debug = value;
     }
-    if let Some(value) = args.gateway.gateway_stream_markdown {
-        config.gateway.stream_markdown = value;
-    }
+
     if !args.gateway.gateway_route.is_empty() {
         config.gateway.routes = args
             .gateway

@@ -70,7 +70,7 @@ pub(crate) fn prepare_vm_image(
 
 /// Retain the lazy backend for the complete native Run lifetime.
 /// Host consumers own a FUSE mount; VM consumers own a direct attachment.
-pub struct MountedImage {
+pub struct LazyImage {
     digest: String,
     backing: ImageBacking,
 }
@@ -80,7 +80,7 @@ enum ImageBacking {
     Vm(super::direct::DirectImage),
 }
 
-impl MountedImage {
+impl LazyImage {
     pub fn rootfs(&self) -> &Path {
         match &self.backing {
             ImageBacking::Host(mount) => &mount.path,
@@ -92,10 +92,10 @@ impl MountedImage {
     }
 }
 
-pub fn mount_image_handle(
+pub fn open_image_handle_for_host(
     config: super::CacheConfig,
     handle: &str,
-) -> anyhow::Result<MountedImage> {
+) -> anyhow::Result<LazyImage> {
     let store = ImageStore::new(config.image_store.clone())?;
     let client = CacheClient::from_config(config)?;
     let (response, _) = client.request(CacheRequest::Open {
@@ -109,7 +109,7 @@ pub fn mount_image_handle(
         super::progress::Downloads::new(handle),
         Some(handle),
     )?;
-    Ok(MountedImage {
+    Ok(LazyImage {
         digest: prepared.digest,
         backing: ImageBacking::Host(mount),
     })
@@ -144,7 +144,7 @@ fn direct_prepared(
 pub fn open_image_handle_for_vm(
     config: super::CacheConfig,
     handle: &str,
-) -> anyhow::Result<MountedImage> {
+) -> anyhow::Result<LazyImage> {
     let store = ImageStore::new(config.image_store.clone())?;
     let client = CacheClient::from_config(config)?;
     let (response, _) = client.request(CacheRequest::Open {
@@ -158,7 +158,7 @@ pub fn open_image_handle_for_vm(
         super::progress::Downloads::new(handle),
         Some(handle),
     )?;
-    Ok(MountedImage {
+    Ok(LazyImage {
         digest: prepared.digest,
         backing: ImageBacking::Vm(owner),
     })
@@ -303,8 +303,7 @@ fn errno(error: anyhow::Error) -> i32 {
     }
     code
 }
-// ponytail: synchronous FUSE reads preserve the existing serialized virtio-fs
-// behavior. Introduce queued completions when cache-miss latency warrants it.
+// Host FUSE adapter; VM consumers access RemoteFs through the direct backend.
 impl Filesystem for RemoteFs {
     fn getxattr(&mut self, _: &Request<'_>, ino: u64, name: &OsStr, size: u32, reply: ReplyXattr) {
         match self.node(ino) {

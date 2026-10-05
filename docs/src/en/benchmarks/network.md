@@ -1,8 +1,14 @@
-# Proxy and VM TCP overhead
+# How much waiting do network controls add compared with ordinary OCI?
 
 ## Main conclusions {#conclusions}
 
-Local 1 KiB HTTP request P50 is **0.95 ms** native, **1.24 ms** through the pVisor host proxy and **3.83 ms** in the VM. A 32 MiB transfer reaches about **869, 417 and 155 MiB/s**, respectively. Small-request proxy overhead is modest; VM bulk-transfer overhead is more pronounced. These are not Internet model-response timings.
+**Local 1 KiB HTTP request P50 is **0.95 ms** native, **1.24 ms** through the pVisor host proxy and **3.83 ms** in the VM. A 32 MiB transfer reaches about **869, 417 and 155 MiB/s**, respectively. Small-request proxy overhead is modest; VM bulk-transfer overhead is more pronounced. These are not Internet model-response timings.**
+
+| Need | Selection implication |
+|---|---|
+| Small local requests | Proxy overhead is modest |
+| Bulk downloads or fast local transfer | Check VM throughput |
+| Direct sockets must be blocked | Choose an enforceable boundary |
 
 ## Motivation {#motivation}
 
@@ -14,16 +20,18 @@ Same-host IP HTTP origin; no Internet/TLS/DNS. Each path has 3 warmups and 30 ba
 
 These results are from Linux/x86_64; matching macOS workloads are unmeasured. Linked reports pin artifacts, cache conditions and samples.
 
+Tables identify pinned artifacts and measurement dates. Failed or invalid samples are excluded from successful timings and counted separately. Existing measurements have no predefined host-interference filter; all slow valid samples are retained. P95 from 30 or fewer samples is descriptive only; no P99 or stable tail-latency claim is made.
+
 ## Data and analysis {#results}
 
-| Network configuration | Backend | Batches | 1 KiB P50/P95/P99 ms | 32 MiB P50 MiB/s | Stream first body P50/P95/P99 ms |
+| Network configuration | Backend | Batches | 1 KiB P50/P95 ms | 32 MiB P50 MiB/s | Stream first body P50/P95 ms |
 |---|---|---|---|---|---|
-| proxy / VM | native | 30 | 0.95/1.42/4.67 | 869.4 | 1.10/1.20/1.40 |
-| proxy / VM | host | 30 | 1.24/2.42/7.16 | 416.8 | 1.37/1.63/1.69 |
-| proxy / VM | vm | 30 | 3.83/8.63/17.36 | 154.7 | 4.57/5.19/6.44 |
-| host-network OCI | native | 30 | 0.99/1.44/4.85 | 861.4 | 1.07/1.18/1.18 |
-| host-network OCI | podman | 30 | 1.01/1.43/9.07 | 853.7 | 3.53/3.60/3.64 |
-| host-network OCI | pVisor OCI | 30 | 1.30/2.30/10.06 | 811.0 | 3.78/3.98/4.05 |
+| proxy / VM | native | 30 | 0.95/1.42 | 869.4 | 1.10/1.20 |
+| proxy / VM | host | 30 | 1.24/2.42 | 416.8 | 1.37/1.63 |
+| proxy / VM | vm | 30 | 3.83/8.63 | 154.7 | 4.57/5.19 |
+| host-network OCI | native | 30 | 0.99/1.44 | 861.4 | 1.07/1.18 |
+| host-network OCI | podman | 30 | 1.01/1.43 | 853.7 | 3.53/3.60 |
+| host-network OCI | pVisor OCI | 30 | 1.30/2.30 | 811.0 | 3.78/3.98 |
 
 ### Analysis and denial checks
 
@@ -40,8 +48,3 @@ Bulk downloads differ: at the measured rates, transferring 32 MiB takes about 37
 
 Internet, TLS, DNS and real-model latency are unmeasured. Local first byte is not model TTFT; network paths differ from host-network OCI boundaries.
 
-### Data sources and reproduction {#run}
-
-[Configuration and sampling](methodology.md#product-v1) · [Manifest](../../assets/benchmarks/product-v1-20261004/manifest.tsv) · [Samples CSV](../../assets/benchmarks/product-v1-20261004/samples.csv) · [Raw evidence](../../assets/benchmarks/product-v1-20261004/evidence.tar.gz)
-
-Reproduction commands and prerequisites are in the [technical methodology record](../design/benchmark-methodology-evidence.md).

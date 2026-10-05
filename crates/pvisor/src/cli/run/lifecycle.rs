@@ -1,6 +1,8 @@
 //! Workspace branches and native execution restoration for CLI Jobs.
+#[cfg(feature = "gateway")]
+use super::resolve_proxy;
 use super::{
-    apply_safe_defaults, delegated_shutdown_signal, execute_config, paths_overlap, resolve_proxy,
+    apply_safe_defaults, delegated_shutdown_signal, execute_config, paths_overlap,
     resolve_workspace, select_run_storage,
 };
 #[cfg(feature = "gateway")]
@@ -506,7 +508,6 @@ async fn execute_restored(
         builder = builder.gateway(
             GatewayDriverConfig::new(proxy)
                 .output_dir(&stage)
-                .stream_markdown(config.gateway.stream_markdown)
                 .gateway_enabled(config.gateway.mode == GatewayMode::Capture),
         );
     }

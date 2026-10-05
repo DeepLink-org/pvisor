@@ -1,10 +1,16 @@
-# Cluster scaling and control-plane costs
+# Do more Workers deliver more valid task results?
 
 ## Main conclusions {#conclusions}
 
 **With more Workers and CPU budget, 1–4 lightweight VMs become ready in parallel, with approximately proportional memory growth.** Four VMs have readiness P50 **4.38 s** and combined service cgroup memory about **343 MiB**. This does not establish fixed-budget Agent throughput or a ranking against other cluster tools.
 
 Control-plane counting costs about **0.13–0.29 µs**, while retained history remains expensive: a million records use about **6.39 GiB** process/fixture RSS and **16 s** hot-log replay. Fast queries do not imply unlimited historical-state scaling.
+
+| Need | Selection implication |
+|---|---|
+| Estimate basic environment occupancy | Use lightweight VM readiness data |
+| Plan valid-task throughput | Still needs real task-completion comparisons |
+| Retain substantial history | Budget memory and restart replay |
 
 ## Motivation {#motivation}
 
@@ -15,6 +21,8 @@ Parallel tasks involve execution environments, scheduling waiting, active resour
 On a shared Linux host, 1/2/4 Workers each run one 1 vCPU / 128 MiB minimal-shell VM, marking ready then waiting six seconds. Each size has one warmup and five measured batches. Each Worker cgroup is capped at 512 MiB / 0.5 core; Controller at 256 MiB / 0.25 core. Total CPU grows with Worker count. Fixed debug binaries do not measure a release performance ceiling.
 
 Readiness runs from submit CLI to guest marker, including API, durable records, scheduling and boot. Memory sums nonoverlapping service cgroups after all guests are ready; file memory can include guest RAM. Batch rate is N / total readiness waiting, not completed-Agent throughput. Separate release Controller microbenchmarks have one ready task and canceled history; counting N=20, RSS/replay one observation per size, excluding full Worker reconciliation.
+
+Tables identify pinned artifacts and measurement dates. Failed or invalid samples are excluded from successful timings and counted separately. Existing measurements have no predefined host-interference filter; all slow valid samples are retained. P95 from 30 or fewer samples is descriptive only; no P99 or stable tail-latency claim is made.
 
 ## Data and analysis {#results}
 
@@ -45,4 +53,4 @@ The full scan is an algorithm reference over identical data, not old Controller 
 
 ### Scope and sources {#limits}
 
-[VM TSV](../../assets/benchmarks/cluster-scalability-20261005/vm.tsv) · [VM CSV](../../assets/benchmarks/cluster-scalability-20261005/vm-summary.csv) · [Controller CSV](../../assets/benchmarks/cluster-scalability-20261005/controller-summary.csv) · [Manifest](../../assets/benchmarks/cluster-scalability-20261005/manifest.tsv) · [Protocol and reproduction](../design/cluster-performance-analysis.md)
+ ·  ·  ·  · [Protocol and reproduction](../design/cluster-performance-analysis.md)

@@ -116,4 +116,4 @@ These are draft experiments, not PASS claims. A/B must use identical tasks, envi
 
 Freeze workloads, sample counts, tail-latency thresholds, resource caps and meaningful gains before collection. Do not raise scores from the diagram alone. Deployment/resource-management convergence is the first benefit; the acceptance work determines performance scores.
 
-Related designs: [shared working sets](shared-working-set.md), [state and recovery](state-and-recovery.md), [cold RAM pool](../memory-sharing/index.md) and [question-driven experiments](../../benchmarks/cluster-questions.md).
+Related designs: [shared working sets](shared-working-set.md), [state and recovery](state-and-recovery.md), [cold RAM pool](../memory-sharing/index.md) and [question-driven experiments](../cluster-benchmark-plan.md).

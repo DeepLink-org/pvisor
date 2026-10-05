@@ -124,3 +124,16 @@ def test_native_search_stays_in_its_locale(tmp_path):
         {"location": "guides/#example"}
     ]
     assert '"base": ".."' in page.read_text()
+
+
+def test_public_source_excludes_nested_raw_evidence(tmp_path):
+    copy_public_source=runpy.run_path(str(ROOT / "scripts/build-docs.py"))["copy_public_source"]
+    source=tmp_path/'source';source.mkdir()
+    (source/'results.csv').write_text('metric,p50\nrun,12\n')
+    raw=source/'nested/.data';raw.mkdir(parents=True)
+    (raw/'report.json').write_text('{"samples":[12]}')
+    (raw/'notes.md').write_text('# Not a user page')
+    dest=tmp_path/'public'
+    copy_public_source(source,dest)
+    assert (dest/'results.csv').exists()
+    assert not (dest/'nested/.data').exists()

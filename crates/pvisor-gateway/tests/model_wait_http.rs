@@ -174,7 +174,6 @@ impl Fixture {
             config,
             storage.path().to_owned(),
             Arc::new(NoopCaptureObserver::new()),
-            false,
             InProcessRuntime {
                 controller,
                 attempt_id: Some("wait-attempt".into()),

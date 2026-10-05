@@ -29,7 +29,7 @@ mod lazy;
 #[cfg(any(target_os = "macos", target_os = "linux"))]
 pub(crate) use lazy::prepare_vm_image;
 #[cfg(any(target_os = "macos", target_os = "linux"))]
-pub use lazy::{MountedImage, mount_image_handle, open_image_handle_for_vm};
+pub use lazy::{LazyImage, open_image_handle_for_host, open_image_handle_for_vm};
 
 pub const SERVER_ENV: &str = "PVISOR_CACHE_SERVER";
 

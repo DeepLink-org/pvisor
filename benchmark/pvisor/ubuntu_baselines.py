@@ -404,7 +404,7 @@ def main():
     shutil.copytree(
         Path(__file__).parent,
         args.output / "harness",
-        ignore=shutil.ignore_patterns("__pycache__", ".pytest_cache"),
+        ignore=shutil.ignore_patterns("__pycache__", ".pytest_cache", ".data"),
     )
     rows, caps = [], {}
     meta = {

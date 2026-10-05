@@ -15,7 +15,7 @@ use pvisor_core::{
 use pvisor_gateway::config::ProxyConfig;
 use pvisor_gateway::runtime::in_process::{InProcessCapture, InProcessRuntime};
 use pvisor_gateway::sink::NoopCaptureObserver;
-use pvisor_gateway::{serve_with_runtime_control, serve_with_shutdown_and_ready};
+use pvisor_gateway::{serve_with_listeners_and_shutdown, serve_with_runtime_control};
 use tokio::sync::oneshot;
 
 struct DenyModelController;
@@ -238,27 +238,27 @@ async fn spawn_capturing_gemini_http() -> (
 }
 
 async fn spawn_proxy(toml: &str) -> (String, tempfile::TempDir, oneshot::Sender<()>) {
-    let listen_port = free_port();
-    let admin_port = free_port();
+    // Keep both ports reserved until the Gateway takes ownership.
+    let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
+    let admin = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
+    let listen = listener.local_addr().unwrap();
     let toml = toml
-        .replace("{{LISTEN}}", &format!("127.0.0.1:{listen_port}"))
-        .replace("{{ADMIN}}", &format!("127.0.0.1:{admin_port}"));
+        .replace("{{LISTEN}}", &listen.to_string())
+        .replace("{{ADMIN}}", &admin.local_addr().unwrap().to_string());
     let cfg = ProxyConfig::from_toml_str(&toml).expect("proxy toml");
     let tmp = tempfile::tempdir().unwrap();
-    let (ready_tx, ready_rx) = oneshot::channel();
     let (stop_tx, stop_rx) = oneshot::channel::<()>();
     let storage = tmp.path().to_path_buf();
     let sink: Arc<dyn pvisor_gateway::sink::CaptureEventObserver> =
         Arc::new(NoopCaptureObserver::new());
     tokio::spawn(async move {
-        let _ =
-            serve_with_shutdown_and_ready(cfg, storage, sink, false, Some(ready_tx), async move {
-                let _ = stop_rx.await;
-            })
-            .await;
+        serve_with_listeners_and_shutdown(cfg, storage, sink, listener, admin, async move {
+            let _ = stop_rx.await;
+        })
+        .await
+        .expect("test Gateway failed");
     });
-    ready_rx.await.expect("proxy ready");
-    (format!("http://127.0.0.1:{listen_port}"), tmp, stop_tx)
+    (format!("http://{listen}"), tmp, stop_tx)
 }
 
 async fn spawn_proxy_with_controller(
@@ -282,7 +282,6 @@ async fn spawn_proxy_with_controller(
             cfg,
             storage,
             sink,
-            false,
             controller,
             Some(ready_tx),
             async move {
@@ -1040,7 +1039,6 @@ allowed_hosts = ["127.0.0.1"]
         config,
         storage.path().to_path_buf(),
         Arc::new(NoopCaptureObserver::new()),
-        false,
         InProcessRuntime {
             gateway_enabled: false,
             ..InProcessRuntime::default()

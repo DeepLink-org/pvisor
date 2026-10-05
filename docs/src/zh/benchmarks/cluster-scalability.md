@@ -1,10 +1,16 @@
-# Cluster 扩展性与控制面成本
+# 增加 Worker 能得到更多有效任务结果吗？
 
 ## 主要结论 {#conclusions}
 
 **增加 Worker 和 CPU 预算时，1–4 台轻量 VM 能并行就绪，内存近似按数量增长。** 4 台就绪 P50 约 **4.38 s**，服务 cgroup 总内存约 **343 MiB**。这没有验证固定总预算的 Agent 吞吐，也没有与其他集群工具建立速度排名。
 
 控制面计数查询约 **0.13–0.29 µs**，但大量保留历史仍有成本：百万记录的进程与 fixture RSS 约 **6.39 GiB**，热日志回放约 **16 s**。查询快不能代表历史状态无限扩展。
+
+| 需求 | 选型含义 |
+|---|---|
+| 评估执行环境的基础占用 | 参考轻量 VM 就绪数据 |
+| 规划有效任务吞吐 | 仍需实际任务完成率对照 |
+| 长期保留大量历史 | 评估内存与重启回放成本 |
 
 ## Motivation {#motivation}
 
@@ -15,6 +21,8 @@
 Linux 共享宿主，1/2/4 Worker、每 Worker 一个 1 vCPU / 128 MiB VM，最小 shell 输出标记后等待 6 s；各档 1 次预热、5 次正式批次。Worker cgroup 各限 512 MiB / 0.5 核，Controller 限 256 MiB / 0.25 核；数量增长时总 CPU 预算增长。制品为固定 debug 二进制，不是 release 性能上限。
 
 就绪从提交 CLI 到 guest 标记，包含 API、记录落盘、调度与 VM 启动；总内存为全部 guest 就绪后的互不重叠 cgroup 总和，含可能计入 file 的 guest RAM。批量速率为 N / 全部就绪等待，不是完成 Agent 的吞吐。Controller 独立 release 微测每档只有一个 ready task，其余为取消历史；计数 N=20，RSS/回放每档一次，不含 Worker 全量对账。
+
+固定制品与测量日期按表注明。失败与校验不通过的样本不计入成功耗时，失败数量单列；既有数据没有事先的宿主干扰剔除规则，所有通过校验的慢样本保留。30 次及更少采样的 P95 仅为观察参考，不给 P99 或稳定尾延迟承诺。
 
 ## 实验数据和分析 {#results}
 
@@ -28,7 +36,7 @@ Linux 共享宿主，1/2/4 Worker、每 Worker 一个 1 vCPU / 128 MiB VM，最�
 
 ![VM scaling](../../assets/benchmarks/cluster-scalability-20261005/execution.svg)
 
-1→4 的内存为 3.69 倍，就绪 P50 增加 15.1%，批量速率为 3.45 倍。结果只适用于这组增配资源的轻量探针；不能外推固定宿主的最大容量、共享 RAM 收益或真实编译/模型任务吞吐。观测范围不是置信区间。
+增加 Worker 时的总资源预算也增加，不能将这组就绪时间视为固定预算的吞吐扩展曲线。Kubernetes、Ray、E2B 的同任务有效产出尚未测量，不提供速度排名。
 
 ### 保留历史：查询、内存与恢复 {#controller}
 
@@ -45,4 +53,4 @@ Linux 共享宿主，1/2/4 Worker、每 Worker 一个 1 vCPU / 128 MiB VM，最�
 
 ### 数据范围与来源 {#limits}
 
-[VM TSV](../../assets/benchmarks/cluster-scalability-20261005/vm.tsv) · [VM CSV](../../assets/benchmarks/cluster-scalability-20261005/vm-summary.csv) · [Controller CSV](../../assets/benchmarks/cluster-scalability-20261005/controller-summary.csv) · [Manifest](../../assets/benchmarks/cluster-scalability-20261005/manifest.tsv) · [协议与复现](../design/cluster-performance-analysis.md)
+ ·  ·  ·  · [协议与复现](../design/cluster-performance-analysis.md)

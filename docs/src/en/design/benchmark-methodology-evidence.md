@@ -99,11 +99,11 @@ Wall covers command launch through exit. Worker covers internal tool execution/v
 
 ### Raw evidence
 
-[Batch manifest](../../assets/benchmarks/product-v1-20261004/manifest.tsv), [per-sample CSV](../../assets/benchmarks/product-v1-20261004/samples.csv), and [evidence archive](../../assets/benchmarks/product-v1-20261004/evidence.tar.gz) retain JSON, exact harness snapshots, Bundles, errors and SIGKILL ledgers. Rootfs/payloads are reproducible and excluded from docs to avoid gigabytes of copies. Prior macOS/Linux VM results remain intact. New product workloads are Linux-only and are not pooled across platforms.
+Local raw record `docs/src/assets/benchmarks/.data/product-v1-20261004/manifest.tsv`, Local raw record `docs/src/assets/benchmarks/.data/product-v1-20261004/samples.csv`, and Local raw record `docs/src/assets/benchmarks/.data/product-v1-20261004/evidence.tar.gz` retain JSON, exact harness snapshots, Bundles, errors and SIGKILL ledgers. Rootfs/payloads are reproducible and excluded from docs to avoid gigabytes of copies. Prior macOS/Linux VM results remain intact. New product workloads are Linux-only and are not pooled across platforms.
 
 `just lint` passed. `just test`: Rust 1,075 passed / 8 skipped, Python 84 passed / 16 skipped. Benchmark tests alone: 19 passed. STAGE semantics: 14/14 PASS, with human review still UNREVIEWED; test success is not human approval. Large syscall traces and non-crash apply ledgers remain in local target artifacts; the public archive retains reports, Bundles, diagnostics and crash ledgers.
 
-Recompute with `python3 benchmark/pvisor/summarize_product_v1.py <batch>/report.json --output-csv /tmp/summary.csv`; [summary CSV](../../assets/benchmarks/product-v1-20261004/summary.csv) keeps batches separate.
+Recompute with `python3 benchmark/pvisor/summarize_product_v1.py <batch>/report.json --output-csv /tmp/summary.csv`; Local raw record `docs/src/assets/benchmarks/.data/product-v1-20261004/summary.csv` keeps batches separate.
 
 Performance describes pinned artifacts, not later parallel changes or other release builds; source was not a clean commit. Workspace lint/tests validate the then-current source, while the pinned CLI is checked by benchmarks and STAGE specifications.
 
@@ -123,7 +123,7 @@ Firecracker has a TAP and static NIC in private user/network namespaces. A QEMU 
 
 The successful provisioning step boots QEMU, copies installed Rust/CLI/fixtures, and apt-installs distribution tools in **85.8 seconds**, recorded separately. It excludes the 825 MiB official qcow2 download, format conversion, tool payload creation, host prerequisite installation and failed diagnostic attempts. It is not total deployment cost from an empty machine. pVisor needs no OS image preparation, while still requiring installed host tools.
 
-Image/kernel/initrd hashes and sources are in the [asset manifest](../../assets/benchmarks/full-ubuntu-20261004/assets.tsv). Official HTTPS SHA256SUMS are checked; GPG signatures are not verified. The full [vendor kernel configuration](../../assets/benchmarks/full-ubuntu-20261004/ubuntu-generic.config) and per-trial proofs are available. The separate archive uses `pvisor-full-ubuntu-reference/v1`, retaining harness snapshots, failures, commands, OS proofs and minimized runtime evidence without pooling with the trimmed-kernel batch. Initial Ubuntu client sampling missed endpoints when the serial prompt/terminal control sequences shared a result line. After fixing the collector, Claude/Codex are each repeated at N=10 with identical parameters. Published client cells use only the follow-up distributions without pooling old samples. The original main report and invalid trials remain available; the [archive manifest](../../assets/benchmarks/full-ubuntu-20261004/manifest.tsv) records the selected batch per case.
+Image/kernel/initrd hashes and sources are in the Local raw record `docs/src/assets/benchmarks/.data/full-ubuntu-20261004/assets.tsv`. Official HTTPS SHA256SUMS are checked; GPG signatures are not verified. The full Local raw record `docs/src/assets/benchmarks/.data/full-ubuntu-20261004/ubuntu-generic.config` and per-trial proofs are available. The separate archive uses `pvisor-full-ubuntu-reference/v1`, retaining harness snapshots, failures, commands, OS proofs and minimized runtime evidence without pooling with the trimmed-kernel batch. Initial Ubuntu client sampling missed endpoints when the serial prompt/terminal control sequences shared a result line. After fixing the collector, Claude/Codex are each repeated at N=10 with identical parameters. Published client cells use only the follow-up distributions without pooling old samples. The original main report and invalid trials remain available; the Local raw record `docs/src/assets/benchmarks/.data/full-ubuntu-20261004/manifest.tsv` records the selected batch per case.
 
 ### Reproduce the complete Ubuntu comparison
 
@@ -154,11 +154,11 @@ uv run --no-project --with matplotlib python benchmark/pvisor/render_ubuntu_base
   --assets target/ubuntu-reference-new --output /tmp/full-ubuntu-report-new
 ```
 
-[Per-sample CSV](../../assets/benchmarks/full-ubuntu-20261004/samples.csv) · [Distributions and phases](../../assets/benchmarks/full-ubuntu-20261004/summary.tsv) · [Method and reproduction](../benchmarks/methodology.md#full-ubuntu)
+Local raw record `docs/src/assets/benchmarks/.data/full-ubuntu-20261004/samples.csv` · Local raw record `docs/src/assets/benchmarks/.data/full-ubuntu-20261004/summary.tsv` · [Method and reproduction](../benchmarks/methodology.md#full-ubuntu)
 
-See the [dpkg package inventory](../../assets/benchmarks/full-ubuntu-20261004/ubuntu-packages.txt). Formal tasks uniformly place compiler/client temporary files in private workspace `_tmp` to accommodate hostroot read-only `/tmp`. Failed diagnostics are retained outside the new formal distributions.
+See the Local raw record `docs/src/assets/benchmarks/.data/full-ubuntu-20261004/ubuntu-packages.txt`. Formal tasks uniformly place compiler/client temporary files in private workspace `_tmp` to accommodate hostroot read-only `/tmp`. Failed diagnostics are retained outside the new formal distributions.
 
-The frozen binary [source limitations](../../assets/benchmarks/full-ubuntu-20261004/binary-provenance.tsv), [project input hashes](../../assets/benchmarks/full-ubuntu-20261004/fixture-inputs.tsv) and [temporary-directory diagnostics](../../assets/benchmarks/full-ubuntu-20261004/diagnostics/ubuntu-workflows-mmio-20261004/diagnostic-status.tsv) are retained separately. Combined CSV marks published samples with `selected_for_summary` to avoid pooling client follow-ups with previous cohorts.
+The frozen binary Local raw record `docs/src/assets/benchmarks/.data/full-ubuntu-20261004/binary-provenance.tsv`, Local raw record `docs/src/assets/benchmarks/.data/full-ubuntu-20261004/fixture-inputs.tsv` and Local raw record `docs/src/assets/benchmarks/.data/full-ubuntu-20261004/diagnostics/ubuntu-workflows-mmio-20261004/diagnostic-status.tsv` are retained separately. Combined CSV marks published samples with `selected_for_summary` to avoid pooling client follow-ups with previous cohorts.
 
 ### QEMU follow-up with complete Ubuntu {#full-ubuntu-qemu}
 
@@ -177,7 +177,7 @@ python3 benchmark/pvisor/ubuntu_baselines.py \
 ```
 
 
-The follow-up [80 new samples and independent control cohorts](../../assets/benchmarks/full-ubuntu-qemu-20261004/manifest.tsv) all pass. The prerequisite for disabling PIC/PIT was checked by a [QMP capability query of the KVM host CPU model](../../assets/benchmarks/full-ubuntu-qemu-20261004/qemu-cpu-capabilities.tsv): the guest model exposes `tsc-deadline`. This is a capability check, not a performance sample.
+The follow-up Local raw record `docs/src/assets/benchmarks/.data/full-ubuntu-qemu-20261004/manifest.tsv` all pass. The prerequisite for disabling PIC/PIT was checked by a Local raw record `docs/src/assets/benchmarks/.data/full-ubuntu-qemu-20261004/qemu-cpu-capabilities.tsv`: the guest model exposes `tsc-deadline`. This is a capability check, not a performance sample.
 
 ## Familiar baselines and complete Agent Env: same-host Linux comparison {#reference-env}
 
@@ -233,7 +233,7 @@ Same configuration, 10 samples per backend and 1 warmup, tracking Docker shims b
 
 Native/staged use roughly 0.17/0.22 GiB; Docker including the daemon about 0.27 GiB; the VM about 0.71 GiB. pVisor VM and reference VMs are in the same sub-1-GiB range for this task. This short workflow does not cover large-repository long-run peaks or shared-page savings. Different scopes do not establish a strict physical-memory efficiency ranking.
 
-[Resource report](../../assets/benchmarks/reference-env-20261004/followups/reference-resources-20261004/report.tsv) · [Samples](../../assets/benchmarks/reference-env-20261004/followups/reference-resources-20261004/samples.csv) · [Process/affinity audit](../../assets/benchmarks/reference-env-20261004/followups/reference-resources-20261004/docker-process-audit.tsv) · [Evidence](../../assets/benchmarks/reference-env-20261004/followups/reference-resources-20261004/evidence.tar.gz)
+Local raw record `docs/src/assets/benchmarks/.data/reference-env-20261004/followups/reference-resources-20261004/report.tsv` · Local raw record `docs/src/assets/benchmarks/.data/reference-env-20261004/followups/reference-resources-20261004/samples.csv` · Local raw record `docs/src/assets/benchmarks/.data/reference-env-20261004/followups/reference-resources-20261004/docker-process-audit.tsv` · Local raw record `docs/src/assets/benchmarks/.data/reference-env-20261004/followups/reference-resources-20261004/evidence.tar.gz`
 
 
 ### Deployment and reproduction
@@ -264,4 +264,4 @@ uv run --no-project --with matplotlib python benchmark/pvisor/render_reference_b
 
 The archive uses `pvisor-reference-environment/v1`, distinct from the old smoke schema. It includes samples, commands, pinned scripts, guest/tool versions, failures, minimized real tool-return evidence, and Bundle isolation/resource proof, excluding multi-GB rootfs and inherited host credentials. Reports contain tool/kernel/pVisor identities. See the [benchmark directory](https://github.com/DeepLink-org/pvisor/tree/main/benchmark/pvisor) for automatic preparation and reproduction.
 
-[Per-sample CSV](../../assets/benchmarks/reference-env-20261004/samples.csv) · [Distributions and phase timing](../../assets/benchmarks/reference-env-20261004/summary.tsv) · [Runtime evidence](../../assets/benchmarks/reference-env-20261004/evidence.tar.gz) · [Compatibility matrix](../../assets/benchmarks/reference-env-20261004/compatibility.tsv)
+Local raw record `docs/src/assets/benchmarks/.data/reference-env-20261004/samples.csv` · Local raw record `docs/src/assets/benchmarks/.data/reference-env-20261004/summary.tsv` · Local raw record `docs/src/assets/benchmarks/.data/reference-env-20261004/evidence.tar.gz` · Local raw record `docs/src/assets/benchmarks/.data/reference-env-20261004/compatibility.tsv`

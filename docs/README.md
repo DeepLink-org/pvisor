@@ -87,7 +87,7 @@ network policy guide owns the executor boundary matrix (summarized in
 `security/executor-boundaries`); the evidence page owns the meaning and limits of
 observations. Other articles link to these definitions. Implementation pages
 explain mechanisms and code ownership. Benchmark and comparison pages state
-method, environment and date, and keep dated samples under `benchmark/`.
+method, environment and date, and keep dated raw samples in local `.data/` directories. Only derived Markdown tables and same-directory CSV downloads are versioned. Site builds use a source copy that excludes `.data/` at every depth.
 
 ### Publication readiness
 
@@ -184,7 +184,7 @@ make maintainer decisions.
 
 ### Verified reference and example coverage
 
-- `reference/config`: all 98 fields in the configured serde structures, including
+- `reference/config`: all 100 fields in the configured serde structures, including
   nested mount, route, resource, and policy entries, now have names, types,
   defaults, and usage. `scripts/check-reference.py` compares names and types
   against source during `just docs-build`; Rust documentation tests compare raw

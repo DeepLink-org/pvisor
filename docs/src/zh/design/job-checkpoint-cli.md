@@ -377,3 +377,7 @@ Job 元数据保存在 `execution-job.json`，Attempt 通过 `execution-job-root
 ```bash
 PVISOR_TEST_LIBRARY_DIR=/path/to/firmware cargo nextest run --locked -p pvisor --test job_execution_vm --run-ignored only --test-threads 1
 ```
+
+执行 Job 记录使用 version 2，生命周期状态、恢复请求（路径与 RAM 策略一起保存）和分叉请求采用明确类型。工作区检查点清单使用 schema 3，必须显式记录 kind、Attempt、generation、文件系统层和访问策略。旧 Job 记录及工作区清单直接拒绝，不做转换。原生检查点载荷仍执行独立的完整性与宿主绑定校验。
+
+导入的不可变基底封印使用 version 2，必须包含摘要绑定的内容索引；缺少该回执的代际直接拒绝。

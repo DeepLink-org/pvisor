@@ -14,7 +14,7 @@ Prioritize immutable sharing with known identity and ownership. Arbitrary anonym
 
 | Path | Existing mechanism | Current boundary |
 |---|---|---|
-| Immutable environment lower | A configured node socket shares same-identity mounts across Workers, with bounded connection pins/strong warming and task-private uppers | Without Node, Worker-local `Arc<MountedImage>` reuse remains; live takeover after node failure is unsupported |
+| Immutable environment lower | A configured node socket shares same-identity mounts across Workers, with bounded connection pins/strong warming and task-private uppers | Without Node, Worker-local `Arc<LazyImage>` reuse remains; live takeover after node failure is unsupported |
 | Image lazy cache | Demand reads, local 64 MiB/4096-block caps, 64 KiB metadata pages/256-page LRU and cross-image content CAS | Node aggregates retained blocks, metadata pages and decoded RAM; complete metadata, scratch, external Arcs and kernel pages are excluded; disk reclamation needs a separate policy |
 | Linux native restore | Node identity uses sealed ID/compatibility to share one read-only RAM inode across Workers and authorized stores; guest mappings use `MAP_PRIVATE` COW | Without Node, reuse remains supervisor-local; ordinary boot bypasses RAM restore, and compatibility/no-network profile requirements remain |
 | Snapshot RAM lazy reader | Faults validate/decode blocks on demand; a small cache retains four decoded blocks, with kernel page cache providing primary decoded reuse | First-access costs need measurement; legacy raw formats without block indexes can still require full validation |

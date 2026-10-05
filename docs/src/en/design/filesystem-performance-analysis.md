@@ -76,7 +76,7 @@ costs remain substantial.
 Traversal tails decrease slightly, while read/write tails increase. Completion
 P95 is close and P99 decreases slightly. With 30 samples P99 is sensitive to
 individual jobs; median or isolated tail changes do not establish stable gains.
-The [complete raw distribution](../../assets/benchmarks/filesystem-service-20261005/local-release.tsv)
+The Local raw record `docs/src/assets/benchmarks/.data/filesystem-service-20261005/local-release.tsv`
 retains all seven worker timings and launch-to-exit time for every job.
 
 ### Performance artifacts: local comparison with matched build settings {#service-performance}
@@ -114,7 +114,7 @@ same-batch native control, small-file writes **62.8×**, reads **3.6×** and npm
 | git | 1096.91 → 1071.94 | 1158.24 → 1095.24 |
 | Launch to exit | 9616.95 → 7328.27 | 9971.15 → 10148.77 |
 
-The [full distribution and artifact provenance](../../assets/benchmarks/filesystem-service-20261005/local-performance.tsv)
+The Local raw record `docs/src/assets/benchmarks/.data/filesystem-service-20261005/local-performance.tsv`
 retain every sample. The two figure panels are independent batches, each
 comparing old/new artifacts with matched build settings. They are not a same-batch
 release/performance A/B or individual-mechanism gains.
@@ -188,7 +188,7 @@ Warm read tails improve in some cases; metadata/copy-up and whole-job tails
 increase. Baseline cold open/read P99 of **1,628.39 ms** and completion P99 of
 **4,406.78 ms** are affected by one slow job; the new values are
 **804.34/3,736.05 ms**. Selecting only those tails would not establish stable gains.
-[Raw samples, cache request counts and mount records](../../assets/benchmarks/filesystem-service-20261005/lazy-performance.tsv)
+Local raw record `docs/src/assets/benchmarks/.data/filesystem-service-20261005/lazy-performance.tsv`
 are retained. The first preflight failed because the script misstated fixture
 byte size; corrected preflight and formal results are stored separately, with
 that failure excluded from timing distributions.
@@ -212,9 +212,9 @@ immutable-image receipt reuse.
 
 Combined release completion P95 changes **+2.4%** and Git P99 **+25.5%**;
 separate performance completion P95/P99 change **-7.9%/-6.9%**. These tradeoffs
-cannot be pooled into one speed curve. The [code comparison](../../assets/benchmarks/filesystem-optimizations-20261005/code-v3-4g.tsv),
-[build-profile comparison](../../assets/benchmarks/filesystem-optimizations-20261005/profile-v3-4g.tsv)
-and [artifact manifest](../../assets/benchmarks/filesystem-optimizations-20261005/manifest.tsv)
+cannot be pooled into one speed curve. The Local raw record `docs/src/assets/benchmarks/.data/filesystem-optimizations-20261005/code-v3-4g.tsv`,
+Local raw record `docs/src/assets/benchmarks/.data/filesystem-optimizations-20261005/profile-v3-4g.tsv`
+and Local raw record `docs/src/assets/benchmarks/.data/filesystem-optimizations-20261005/manifest.tsv`
 retain full provenance. Kernel-mechanism and P0 batches below are also historical.
 
 ## Linux: full kernel-mechanism and concurrency evaluation {#kernel-campaign}
@@ -230,9 +230,9 @@ long-lived caches are not enabled.
 
 | Experiment | Samples and measurement boundary | Results |
 |---|---|---|
-| Real KVM / host FUSE screening | Five candidate comparisons, each with five cells, one warmup and three measurements per cell; includes reruns after implementation corrections | [Screening and decisions](#kernel-screening), [per-screen records](../../assets/benchmarks/filesystem-kernel-20261005/process.tsv) |
-| Release adapter microbenchmarks | Four lookup/getattr/open/directory PLUS workloads, two warmups and eight measurements per case and artifact; no VM, FUSE mount or preimage journaling | [Final microbenchmarks](../../assets/benchmarks/filesystem-kernel-20261005/micro-final.tsv) |
-| Cache, concurrency and guest tmpfs controls | Three measurements for traversal and single/four-thread stat; one for partial writes and readback on 64 files | [Control results](#kernel-probes), [raw records](../../assets/benchmarks/filesystem-kernel-20261005/kernel-probe.tsv) |
+| Real KVM / host FUSE screening | Five candidate comparisons, each with five cells, one warmup and three measurements per cell; includes reruns after implementation corrections | [Screening and decisions](#kernel-screening), Local raw record `docs/src/assets/benchmarks/.data/filesystem-kernel-20261005/process.tsv` |
+| Release adapter microbenchmarks | Four lookup/getattr/open/directory PLUS workloads, two warmups and eight measurements per case and artifact; no VM, FUSE mount or preimage journaling | Local raw record `docs/src/assets/benchmarks/.data/filesystem-kernel-20261005/micro-final.tsv` |
+| Cache, concurrency and guest tmpfs controls | Three measurements for traversal and single/four-thread stat; one for partial writes and readback on 64 files | [Control results](#kernel-probes), Local raw record `docs/src/assets/benchmarks/.data/filesystem-kernel-20261005/kernel-probe.tsv` |
 | Same-source full seven-tool A/B | Five cells, three warmups and 30 measurements per cell; 150 jobs and 1,050 tool measurements | [Full distributions and conclusions](#kernel-full) |
 | Same-batch full comparison of published P0 and final candidate | Five additional cells, three warmups and 30 measurements per cell; 150 jobs and 1,050 tool measurements; source and staged isolation types differ | [Historical-artifact rerun](#kernel-history) |
 | Separate profiling and OPEN concurrency regression | One profile measurement per cell, excluded from acceptance timings; regression checks old blocking behavior, new read-only concurrency and retained writable exclusion | [Queue and lock diagnostics](#kernel-probes), [implementation and regression](#kernel-screening) |
@@ -370,9 +370,9 @@ cannot be equated with code gains. Both complete evaluations total
 duplicate parent queries and read-only OPEN serialization, not universal
 end-to-end acceleration.
 
-[Raw published-artifact comparison](../../assets/benchmarks/filesystem-kernel-20261005/full-historical.tsv) ·
-[Its P50/P95/P99 and protocol](../../assets/benchmarks/filesystem-kernel-20261005/historical-summary.tsv) ·
-[Both batches' raw sample CSV](../../assets/benchmarks/filesystem-kernel-20261005/samples.csv)
+Local raw record `docs/src/assets/benchmarks/.data/filesystem-kernel-20261005/full-historical.tsv` ·
+Local raw record `docs/src/assets/benchmarks/.data/filesystem-kernel-20261005/historical-summary.tsv` ·
+Local raw record `docs/src/assets/benchmarks/.data/filesystem-kernel-20261005/samples.csv`
 
 ### Cache, concurrency and guest-local controls {#kernel-probes}
 
@@ -446,15 +446,15 @@ modified or approved. Evidence includes samples and failures, not only successfu
 summaries. These numbers do not update macOS, startup, networking or complete
 Agent-loop measurements.
 
-[Raw same-source report](../../assets/benchmarks/filesystem-kernel-20261005/full-same-source.tsv) ·
-[Full distributions and protocol](../../assets/benchmarks/filesystem-kernel-20261005/summary.tsv) ·
-[Screening process](../../assets/benchmarks/filesystem-kernel-20261005/process.tsv) ·
-[Microbenchmark](../../assets/benchmarks/filesystem-kernel-20261005/micro-final.tsv) ·
-[Kernel diagnostics](../../assets/benchmarks/filesystem-kernel-20261005/kernel-probe.tsv) ·
-[Queue and lock diagnostics](../../assets/benchmarks/filesystem-kernel-20261005/profiles.tsv) ·
-[Source patch](../../assets/benchmarks/filesystem-kernel-20261005/implementation.patch) ·
-[Raw logs and reproduction evidence](../../assets/benchmarks/filesystem-kernel-20261005/evidence.tar.gz) ·
-[Hash manifest](../../assets/benchmarks/filesystem-kernel-20261005/manifest.tsv)
+Local raw record `docs/src/assets/benchmarks/.data/filesystem-kernel-20261005/full-same-source.tsv` ·
+Local raw record `docs/src/assets/benchmarks/.data/filesystem-kernel-20261005/summary.tsv` ·
+Local raw record `docs/src/assets/benchmarks/.data/filesystem-kernel-20261005/process.tsv` ·
+Local raw record `docs/src/assets/benchmarks/.data/filesystem-kernel-20261005/micro-final.tsv` ·
+Local raw record `docs/src/assets/benchmarks/.data/filesystem-kernel-20261005/kernel-probe.tsv` ·
+Local raw record `docs/src/assets/benchmarks/.data/filesystem-kernel-20261005/profiles.tsv` ·
+Local raw record `docs/src/assets/benchmarks/.data/filesystem-kernel-20261005/implementation.patch` ·
+Local raw record `docs/src/assets/benchmarks/.data/filesystem-kernel-20261005/evidence.tar.gz` ·
+Local raw record `docs/src/assets/benchmarks/.data/filesystem-kernel-20261005/manifest.tsv`
 
 ## Linux: 2026-10-05, P0 real VM/FUSE A/B baseline {#e2e-baseline}
 
@@ -568,10 +568,10 @@ python3 benchmark/pvisor/filesystem_ab.py \
   --cpu-affinity 0,1 --samples 30 --warmups 3
 ```
 
-[Raw sample CSV](../../assets/benchmarks/filesystem-ab-20261005/samples.csv) ·
-[Protocol, binaries and P50/P95/P99](../../assets/benchmarks/filesystem-ab-20261005/summary.tsv) ·
-[Separate diagnostics](../../assets/benchmarks/filesystem-ab-20261005/profiles.tsv) ·
-[Reports, harness, failure and validation logs](../../assets/benchmarks/filesystem-ab-20261005/evidence.tar.gz)
+Local raw record `docs/src/assets/benchmarks/.data/filesystem-ab-20261005/samples.csv` ·
+Local raw record `docs/src/assets/benchmarks/.data/filesystem-ab-20261005/summary.tsv` ·
+Local raw record `docs/src/assets/benchmarks/.data/filesystem-ab-20261005/profiles.tsv` ·
+Local raw record `docs/src/assets/benchmarks/.data/filesystem-ab-20261005/evidence.tar.gz`
 
 ### Retained historical-to-P0 comparison {#historical-progress}
 
@@ -597,8 +597,8 @@ did not improve alongside them. Docker, complete repair tasks and real Agent CLI
 loops were not rerun here. Historical data below retains its original dates and
 artifacts; filesystem percentages cannot predict their latest performance.
 
-[Historical distributions](../../assets/benchmarks/reference-env-20261004/summary.tsv) ·
-[Latest distributions](../../assets/benchmarks/filesystem-ab-20261005/summary.tsv)
+Local raw record `docs/src/assets/benchmarks/.data/reference-env-20261004/summary.tsv` ·
+Local raw record `docs/src/assets/benchmarks/.data/filesystem-ab-20261005/summary.tsv`
 
 ## Linux: 2026-10-05, OverlayCore resolution optimization {#resolution-optimization}
 
@@ -646,7 +646,7 @@ cargo nextest run --locked --release -p pvisor-vm \
   --run-ignored only --no-capture -E 'test(small_file_adapter_benchmark)'
 ```
 
-[Samples and diagnostic counts](../../assets/benchmarks/overlay-resolution-20261005/samples.tsv) · [Artifacts, protocol and summary](../../assets/benchmarks/overlay-resolution-20261005/summary.tsv)
+Local raw record `docs/src/assets/benchmarks/.data/overlay-resolution-20261005/samples.tsv` · Local raw record `docs/src/assets/benchmarks/.data/overlay-resolution-20261005/summary.tsv`
 
 ## Linux: 2026-10-04 {#results}
 
@@ -666,7 +666,7 @@ The table excludes environment boot, measuring operations and grading. This new 
 
 These values locate waiting in traversal, search, compilation and installation. A single read does not establish that block devices always outperform FUSE: kernels, tool versions, storage and staging semantics differ together. For longer tasks, combine worker time with the [complete loop](../benchmarks/agent-tasks.md#full-ubuntu) rather than startup alone.
 
-[Per-sample CSV](../../assets/benchmarks/full-ubuntu-20261004/samples.csv) · [Distributions and phases](../../assets/benchmarks/full-ubuntu-20261004/summary.tsv) · [Method and reproduction](../benchmarks/methodology.md#full-ubuntu)
+Local raw record `docs/src/assets/benchmarks/.data/full-ubuntu-20261004/samples.csv` · Local raw record `docs/src/assets/benchmarks/.data/full-ubuntu-20261004/summary.tsv` · [Method and reproduction](../benchmarks/methodology.md#full-ubuntu)
 
 ### Docker baseline in the complete tool environment {#reference-fs}
 
@@ -687,7 +687,7 @@ This establishes a concrete position: Docker metadata/read/write stay close to n
 
 Tasks verify file counts/sizes, SHA256, clean Git state, search matches, compiled output, and installed package counts. Docker uses a writable bind mount, pVisor a staged view, and Firecracker/QEMU private ext4. Different file paths are part of actual deployment cost; this is not a causal experiment changing only the VMM over an identical filesystem. The summary also contains each operation's distribution for other runtimes.
 
-[Configuration and reproduction](../benchmarks/methodology.md#reference-env) · [逐样本 CSV](../../assets/benchmarks/reference-env-20261004/samples.csv) · [分布与阶段计时](../../assets/benchmarks/reference-env-20261004/summary.tsv) · [原始证据](../../assets/benchmarks/reference-env-20261004/evidence.tar.gz) · [兼容性矩阵](../../assets/benchmarks/reference-env-20261004/compatibility.tsv)
+[Configuration and reproduction](../benchmarks/methodology.md#reference-env) · Local raw record `docs/src/assets/benchmarks/.data/reference-env-20261004/samples.csv` · Local raw record `docs/src/assets/benchmarks/.data/reference-env-20261004/summary.tsv` · Local raw record `docs/src/assets/benchmarks/.data/reference-env-20261004/evidence.tar.gz` · Local raw record `docs/src/assets/benchmarks/.data/reference-env-20261004/compatibility.tsv`
 
 
 ### First-edition Linux matrix: separate batch
@@ -792,4 +792,4 @@ python3 benchmark/pvisor/product_v1.py \
 
 Start with `--samples 1 --warmups 0` to check prerequisites. Workloads and correctness assertions live in `benchmark/pvisor/v1/`. Reports pin binaries, firmware and harness source with hashes. Failed operations never enter performance distributions. Effective sample counts are stated per page; P95/P99 from small samples describe this batch rather than production tail probabilities.
 
-[Environment, artifacts and method](../benchmarks/methodology.md#product-v1) · [Batch manifest](../../assets/benchmarks/product-v1-20261004/manifest.tsv) · [Per-sample CSV](../../assets/benchmarks/product-v1-20261004/samples.csv) · [Raw reports and diagnostic logs](../../assets/benchmarks/product-v1-20261004/evidence.tar.gz). Reports retain dirty source status; executable SHA256 identifies the measured artifact. The archive excludes large rootfs/binaries and reproducible workspace payloads, while retaining input hashes and each batch's harness.
+[Environment, artifacts and method](../benchmarks/methodology.md#product-v1) · Local raw record `docs/src/assets/benchmarks/.data/product-v1-20261004/manifest.tsv` · Local raw record `docs/src/assets/benchmarks/.data/product-v1-20261004/samples.csv` · Local raw record `docs/src/assets/benchmarks/.data/product-v1-20261004/evidence.tar.gz`. Reports retain dirty source status; executable SHA256 identifies the measured artifact. The archive excludes large rootfs/binaries and reproducible workspace payloads, while retaining input hashes and each batch's harness.

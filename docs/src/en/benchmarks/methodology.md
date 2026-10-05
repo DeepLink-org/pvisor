@@ -1,95 +1,63 @@
-# Benchmark methodology and comparison scope
+# Which benchmark results support an adoption decision?
 
 ## Main conclusions {#conclusions}
 
-These results describe waiting, resources and reliability for specific tasks. **Direct comparisons require matching configurations and timing definitions.** Minimal VMs and complete Ubuntu, tool time and launch-to-exit, RSS and cgroup memory are reported separately. Vendor claims do not fill gaps for unmeasured tools.
+**Choose execution modes using measured workloads with matching budgets and timing boundaries; use different configurations to understand their individual performance levels.** Startup, tool execution, application and resource occupancy answer different questions.
+
+| Decision | Required evidence |
+|---|---|
+| Choose local tool execution | Native, Docker and pVisor host/staged/VM task comparisons |
+| Choose an independent guest kernel | Firecracker, QEMU and pVisor startup plus tool data |
+| Set capacity or timeouts | Success rates, complete-task waiting and matching resource accounting |
 
 ## Motivation {#motivation}
 
-Faster startup need not mean faster tasks; writable mounts and staged views offer different workflows. Public comparisons should make the measured environment, source of waiting and applicability clear.
+Faster startup does not guarantee faster compilation. Writable mounts and staged review also provide different workflows. Adoption decisions require speed, execution boundaries and how changes reach the original directory.
 
 ## Experiment design {#interpretation}
 
-### Environments and artifacts
+### Same-host controls
 
-| Evidence scope | Configuration and identity |
-|---|---|
-| Current local filesystem | Linux/KVM, two-core budget, 2 vCPU / 4 GiB VMs; frozen integrated source, separate release/performance measurements |
-| Same-tool references | Linux/x86_64, Docker Engine 29.7.2 rootless, Firecracker 1.13.1, QEMU 10.2.2; 2 vCPU, shell 128 MiB, tool tasks 16 GiB |
-| Complete-distribution deployment | pVisor host rootfs; reference Ubuntu 26.04.1 with generic kernel, initrd and systemd; startup 2 GiB, tools 16 GiB |
-| macOS | Apple M4 / HVF; startup and cold-page results use their pinned report configurations |
-| Cluster | 1/2/4 Workers with growing CPU budgets; frozen debug probes are separate from release startup |
+B-STARTUP, B-FS-TOOLS and B-AGENT-TASK use one offline tool environment and fixed inputs across native, pVisor host/staged/VM, private rootless Docker, Firecracker PCI and QEMU q35/microvm. Images, tools and daemon are prepared beforehand. Every execution uses the same two-core affinity; tool VMs have matching configured memory. Each job gets a fresh workspace, with seeded randomized runtime order. Complete Ubuntu, macOS and distinct binaries remain separate cohorts.
 
-Version numbers identify measured software, not the latest third-party releases. A source revision does not identify a dirty tree's executable; use binary SHA256, input digests, parameters and reports. Current filesystem reruns cover local and lazy paths. Other topics retain evidence for their pinned artifacts; the entire suite has not been rerun on the current integrated version.
+Downloads, benchmark compilation, image import and input copying are excluded. Timing separates first valid output, internal tools plus validation, returned results and launch-to-process-exit. Successful samples require validated outputs, observed executor and complete staging. Staged modes also verify that original host files remain unchanged.
 
-### Timing and correctness
+### Distributions and failures
 
-Ready runs from before host command launch to first useful guest output; worker covers internal operations and checks; task time ends at the result; Exit records process termination separately. Downloads, image builds, tool installation and per-trial input preparation are separate. The default is three warmups and 30 randomized samples; N=10, N=3 and sequential measurements are specified on each page.
+Cohorts are not pooled, and slow samples are not removed after measurement. Failures and invalid outputs are counted separately and never treated as zero latency. Capacity guards are not completed jobs. P95 is descriptive: it is omitted below 30 samples. P99 is omitted below 100 samples; small cohorts do not support stable tail-latency claims.
 
-Validation checks zero exit, file count/content, SHA256, build/test results, Run Bundles and actual executors. Failed cases do not enter successful latency distributions; counts, reasons and capacity guards remain recorded. Shared hosts do not fully isolate background activity, lock frequency or flush all caches. Small differences do not establish stable rankings.
+Separated clusters are reported with counts and individual medians. The descriptive split rule is in the [runner manual](https://github.com/DeepLink-org/pvisor/blob/main/benchmark/pvisor/README.md); it establishes no cause. Engineering A/B percentage claims need a 95% bootstrap interval for the median difference; user pages do not narrate optimization work.
 
-### Comparison conditions
+### Isolation and resources
 
-Docker uses an already-running private rootless daemon and writable bind mount. pVisor staged retains changes; standalone stage does not block outside-view access. VM virtio-fs uses the shared filesystem service. Firecracker/QEMU use private ext4. Reports pin kernels, networks, tool versions and security parameters; development baselines do not rank production security deployments.
+Docker writable bind mounts write directly to the host; pVisor staging retains changes until apply. Firecracker/QEMU use private ext4, while pVisor VM uses virtio-fs with different kernels and devices. This is not a pure VMM or production-security ranking. Standalone staging boundaries follow actual records and [isolation checks](isolation-tests.md).
 
-### Resource definitions {#reference-resources}
-
-RSS sums tracked processes every 20 ms; shared pages can be counted twice and short peaks missed. Docker tracking must include its container-ID shim, with a dedicated daemon explicitly included where applicable. Configured guest RAM differs from actual residency. Cluster sums nonoverlapping cgroup `memory.current`; file memory can include guest RAM and cannot simply be subtracted. The macOS cold-page RAM proxy is not net physical memory saved.
+RSS sums sampled process scopes and may double-count shared pages or miss short peaks. Docker must include actual container processes and identify its dedicated daemon. Cluster memory sums non-overlapping cgroups. Configured RAM, RSS, macOS RAM proxies and net physical memory are distinct metrics.
 
 ## Data and analysis {#results}
 
-### Current filesystem evidence {#filesystem-service}
+### Prepared environments {#reference-env}
 
-[Local release](../../assets/benchmarks/filesystem-service-20261005/local-release.tsv) · [Local performance](../../assets/benchmarks/filesystem-service-20261005/local-performance.tsv) · [Lazy cold/warm](../../assets/benchmarks/filesystem-service-20261005/lazy-performance.tsv) · [Artifact manifest](../../assets/benchmarks/filesystem-service-20261005/manifest.tsv)
+[Startup](startup.md) · [Files and tools](filesystem.md) · [Repair tasks and CLIs](agent-tasks.md). Tables retain cohort identities and counts, with pinned artifacts rather than claims about current third-party releases.
 
-Each local profile has 150 measured jobs, plus 120 lazy jobs: 420 jobs and 2,820 operation measurements. The cache fixture checks on-demand block reads and warm client caches; it does not measure the production Rust cache, network or S3. Version A/B interpretation stays in [technical analysis](../design/filesystem-performance-analysis.md#filesystem-service).
+### Complete distributions {#full-ubuntu}
 
-### Same-tool references {#reference-env}
+Ubuntu uses its distribution kernel, initrd, systemd and private disks; pVisor reuses prepared tool directories. The comparison answers deployment waiting, rather than isolating VMM cost.
 
-Groups share tool artifacts and inputs. Reference VMs use trimmed kernels and static init, without booting a full distribution. First output, file operations and CLI loops support [startup](startup.md#reference-startup), [filesystem](filesystem.md#reference-fs) and [complete-task](agent-tasks.md#reference-env) comparisons.
+### QEMU complete distributions {#full-ubuntu-qemu}
 
-[Summary and distributions](../../assets/benchmarks/reference-env-20261004/summary.tsv) · [Samples](../../assets/benchmarks/reference-env-20261004/samples.csv) · [Compatibility](../../assets/benchmarks/reference-env-20261004/compatibility.tsv)
+q35 and microvm use one Ubuntu template. Their samples and percentiles remain separate from other cohorts.
 
-### Complete Ubuntu deployment {#full-ubuntu}
+### Tasks and resources {#product-v1}
 
-The complete Ubuntu cloud VM uses its distribution kernel, initrd and normal services; pVisor reuses host tool directories. This measures user waiting across deployment approaches, without isolating VMM performance. First cloud-init and configured templates are separate; downloads and template preparation are excluded.
+[Application](apply.md) · [Network](network.md) · [Concurrency](density.md) · [Isolation](isolation-tests.md) · [Replay](replay-fidelity.md) · [Review](supervision-cost.md) · [Cluster](cluster-scalability.md). Unmeasured industry alternatives are marked explicitly, without marketing numbers filling gaps.
 
-[Summary](../../assets/benchmarks/full-ubuntu-20261004/summary.tsv) · [Samples](../../assets/benchmarks/full-ubuntu-20261004/samples.csv)
+### Filesystem engineering experiments {#filesystem-service}
 
-### Complete-distribution QEMU configuration {#full-ubuntu-qemu}
+Engineering A/B, instrumented profiles and diagnostic probes remain in [technical analysis](../design/filesystem-performance-analysis.md), outside cross-product main tables.
 
-q35 and microvm share a complete Ubuntu template, N=10 per cell. Their distributions remain separate from Firecracker/pVisor, without pooling samples.
+### Data location and downloads {#evidence-format}
 
-[Summary](../../assets/benchmarks/full-ubuntu-qemu-20261004/summary.tsv) · [Configuration manifest](../../assets/benchmarks/full-ubuntu-qemu-20261004/manifest.tsv)
+Markdown holds derived user-facing tables, with downloadable CSVs beside each article. Raw reports, individual samples, logs, artifact manifests and frozen harnesses live in the relevant directory’s `.data/`, ignored by Git and excluded from the site. CSV downloads contain derived statistics and source summaries, rather than claiming to contain raw samples.
 
-### Other topics and reproduction {#product-v1}
-
-Network, apply/drop, isolation, replay, supervision and density parameters and samples are linked from each topic and the [raw manifest](../../assets/benchmarks/product-v1-20261004/manifest.tsv). [Technical methodology evidence](../design/benchmark-methodology-evidence.md) retains detailed environments, commands, failure diagnostics and resource audits. Reruns use new output directories, pin inputs/artifacts, retain failures and keep distributions from different environments separate.
-
-## Benchmark evidence TSV {#evidence-format}
-
-Published reports in `docs/src/assets/benchmarks/` use three TSV columns: `path`, `type`, and `value`. Each field occupies one line, so a changed statistic does not create JSON indentation, comma or object-block churn. Paths use JSON Pointer: `~0` represents `~`, and `~1` represents `/`; array indexes start at zero and preserve their original order.
-
-```tsv
-path	type	value
-	object	-
-/samples	array	-
-/samples/0	object	-
-/samples/0/elapsed_ms	float	12.125
-/samples/0/passed	boolean	true
-```
-
-Types distinguish `object`, `array`, `string`, `integer`, `float`, `boolean`, and `null`. Containers use `-`, and empty strings use `""`; empty containers, null and absent fields remain distinct. Tabs, newlines, backslashes and control characters in strings are escaped; trailing spaces use `\u0020` to avoid multiline records and Git trailing-whitespace warnings. Numeric values and integer/float types are retained without precision truncation.
-
-The [conversion index](../../assets/benchmarks/conversion.tsv) records original JSON names/byte SHA256, TSV names/byte SHA256, canonical value digests, sizes and row counts. JSON names and hashes inside historical reports retain their original meaning; resolve the corresponding TSV through the index rather than treating an old hash as a TSV hash. Samples, failures, protocols, provenance and existing CSV/figures remain unchanged.
-
-```bash
-python3 benchmark/pvisor/evidence_tsv.py check docs/src/assets/benchmarks
-python3 benchmark/pvisor/evidence_tsv.py convert \
-  docs/src/assets/benchmarks/cluster-scalability-20261005/vm.tsv \
-  /tmp/pvisor-vm-evidence.json
-```
-
-The converter reads and writes both formats. Reconstructed JSON retains values but does not promise the original whitespace or key order. Original bytes from this migration are also retained in `target/benchmark-json-originals-20261005/`, with every original SHA256 verified. This is a local recovery backup outside published attachments.
-
-Current plotting and summary scripts accept TSV and can still read runtime JSON from new experiments. Reference-environment and Ubuntu publishers automatically convert public attachments to TSV. Runtime protocols and experiment output under `target/` retain their formats. Format checks and plotting neither start VMs nor rerun benchmarks.
+See the [runner manual](https://github.com/DeepLink-org/pvisor/blob/main/benchmark/pvisor/README.md) for reproduction and retention rules.

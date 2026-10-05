@@ -127,7 +127,6 @@ async fn gateway(mock: &Service, gemini: bool, forward: bool) -> (Service, tempf
             config,
             path,
             Arc::new(NoopCaptureObserver::new()),
-            false,
             listener,
             admin,
             async {

@@ -59,8 +59,8 @@ impl CapturePreparer {
         ctx: &CallContext,
         event: RequestEvent,
     ) -> Result<PreparedCapture> {
-        // Runtime requests already carry the once-parsed semantic payload. The
-        // fallback keeps historical capture inputs replayable.
+        // Live requests carry their once-parsed semantic payload. Current
+        // dead-letter records retain client JSON and reconstruct it here.
         let semantic = event.semantic.clone().or_else(|| {
             event.body_json.as_ref().and_then(|body| {
                 crate::understanding::understand_request_value(ctx.protocol, body)

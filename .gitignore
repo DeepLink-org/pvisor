@@ -29,3 +29,6 @@ tools/experiments/
 crates/pvisor-vm/upstream/
 *.tar.gz
 *.log
+
+# Raw benchmark evidence stays local, at any directory depth.
+.data/

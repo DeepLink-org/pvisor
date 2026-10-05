@@ -1,8 +1,14 @@
-# 隔离有效性：观察真正的宿主影响
+# 哪些执行模式能阻止工作区外的宿主访问？
 
 ## 主要结论 {#conclusions}
 
-性能选择应先确定隔离边界。独立 `--stage` 保留工作区改动，却允许访问视图外宿主路径；所测 safe 和准备好的 VM rootfs 阻止了视图外读写。OCI 的可写工作区挂载会直接改变宿主文件，因此其速度不能作为相同暂存语义的对照。
+**性能选择应先确定隔离边界。独立 `--stage` 保留工作区改动，却允许访问视图外宿主路径；所测 safe 和准备好的 VM rootfs 阻止了视图外读写。OCI 的可写工作区挂载会直接改变宿主文件，因此其速度不能作为相同暂存语义的对照。**
+
+| 需求 | 选型含义 |
+|---|---|
+| 只需暂存工作区改动 | stage 不等于限制宿主访问 |
+| 需要阻止视图外读写 | 使用已验证的隔离配置 |
+| OCI 可写工作区挂载 | 写入宿主属于挂载授权 |
 
 ## Motivation {#motivation}
 
@@ -13,6 +19,8 @@
 每个配置在独立目录试探绝对路径、符号链接、/proc/self/root、路径遍历、Unix socket 和 lower 目录别名写入。host/staged 是有意开放宿主的负对照。除了进程返回值，读取宿主原文件和 Bundle 的 observed isolation/staging 字段。VM 本页用准备好的工具 rootfs，区别于文件系统表的 host rootfs `/`。
 
 这些结果来自 Linux/x86_64；macOS 的对应负载未测。每项数字的制品、缓存条件与样本保存在关联报告中。
+
+固定制品与测量日期按表注明。失败与校验不通过的样本不计入成功耗时，失败数量单列；既有数据没有事先的宿主干扰剔除规则，所有通过校验的慢样本保留。30 次及更少采样的 P95 仅为观察参考，不给 P99 或稳定尾延迟承诺。
 
 ## 实验数据和分析 {#results}
 
@@ -34,8 +42,3 @@ safe/VM 的 lower 别名写入 API 可以返回成功，但内容落在 stage，
 
 只覆盖所列文件访问与退出场景，不是内核漏洞或逃逸审计。挂载、网络与 rootfs 配置决定实际边界；单独 stage 不是完整沙箱。
 
-### 数据来源与复现 {#run}
-
-[配置与采样方法](methodology.md#product-v1) · [Manifest](../../assets/benchmarks/product-v1-20261004/manifest.tsv) · [Samples CSV](../../assets/benchmarks/product-v1-20261004/samples.csv) · [Raw evidence](../../assets/benchmarks/product-v1-20261004/evidence.tar.gz)
-
-复现命令与环境要求见[方法技术记录](../design/benchmark-methodology-evidence.md)。

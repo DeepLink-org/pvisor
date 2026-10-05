@@ -121,7 +121,6 @@ pub struct RuntimeSupervisorBuilder {
     model_wait: Option<Arc<dyn pvisor_gateway::model_wait::ModelWaitLifecycle>>,
     storage: Option<PathBuf>,
     #[cfg(feature = "gateway")]
-    stream_markdown: bool,
     #[cfg(feature = "gateway")]
     sink: Option<Arc<dyn TrajectoryEventSink>>,
     overlay: OverlayHint,
@@ -217,7 +216,6 @@ impl RuntimeSupervisorBuilder {
     pub fn gateway(mut self, gateway: GatewayDriverConfig) -> Self {
         self.proxy = Some(gateway.proxy);
         self.gateway_output_dir = Some(gateway.output_dir);
-        self.stream_markdown = gateway.stream_markdown;
         self.gateway_enabled = gateway.gateway_enabled;
         self.model_wait = gateway.model_wait;
         self
@@ -261,7 +259,6 @@ impl RuntimeSupervisorBuilder {
             model_wait: self.model_wait,
             storage: self.storage,
             #[cfg(feature = "gateway")]
-            stream_markdown: self.stream_markdown,
             #[cfg(feature = "gateway")]
             sink: self.sink,
             overlay: self.overlay,
@@ -286,7 +283,6 @@ pub struct RuntimeSupervisor {
     model_wait: Option<Arc<dyn pvisor_gateway::model_wait::ModelWaitLifecycle>>,
     storage: Option<PathBuf>,
     #[cfg(feature = "gateway")]
-    stream_markdown: bool,
     #[cfg(feature = "gateway")]
     sink: Option<Arc<dyn TrajectoryEventSink>>,
     overlay: OverlayHint,
@@ -494,7 +490,6 @@ impl RuntimeSupervisor {
                     #[cfg(feature = "gateway")]
                     sink: self.sink.clone(),
                     #[cfg(feature = "gateway")]
-                    stream_markdown: self.stream_markdown,
                     overlay_override: overlay.clone(),
                     controller: Arc::clone(&self.controller),
                     #[cfg(feature = "gateway")]

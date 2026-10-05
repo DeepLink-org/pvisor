@@ -60,7 +60,7 @@ Hardware, guest filesystems, firmware and CLI artifacts are recorded separately.
 
     Official firmware uses the upstream 5.6.2 prebuilt aarch64 `kernel.c`, wrapped into a macOS dylib without rebuilding Linux. Trimmed firmware comes from a local libkrunfw build. Both use the same kernel version, but the local source is `v5.6.2-3-gf6a710f`: this compares actual artifacts, not an experiment changing only one Kconfig option. The CLI's default downloader remains pinned to 5.5.0; this matrix explicitly selects 5.6.2.
 
-    The official dylib is 23.715 MiB and the trimmed dylib 11.307 MiB, about 52.3% smaller on disk. This does not imply 52.3% lower physical memory. Full hashes, parameters, source status and samples are in the [raw TSV](../../assets/benchmarks/startup-20261003.tsv). Absolute paths identify measured inputs; replace them with local paths when reproducing.
+    The official dylib is 23.715 MiB and the trimmed dylib 11.307 MiB, about 52.3% smaller on disk. This does not imply 52.3% lower physical memory. Full hashes, parameters, source status and samples are in the Local raw record `docs/src/assets/benchmarks/.data/startup-20261003.tsv`. Absolute paths identify measured inputs; replace them with local paths when reproducing.
 
 <a id="linux-methodology"></a>
 
@@ -225,7 +225,7 @@ The baseline is fixed commit `52e77c60d6352960a4d2ab4ef8661f3d5b1b2797`. Changes
 
 Round one retains complete receipt writes, normal-exit validation and failed-entry truncation, removing only two `sync_data()` calls. Round two creates the full directory tree before syncing the first new directory's parent and each new directory once. N new levels require N+1 directory barriers instead of 2N. Existing-directory behavior and sync-error propagation retain their contracts; RunRecord and index publication remain synchronous atomic operations.
 
-At 2 vCPU, each artifact has 100 formal samples and 5 warmups at 128 and 2048 MiB: 600 formal samples and 30 warmups. All six cases are randomized each round. Values are milliseconds; Ready still runs from before process creation to workload stdout marker, while Exit is measured separately. See the [P0 raw TSV](../../assets/benchmarks/startup-p0-20261003.tsv) for samples and hashes.
+At 2 vCPU, each artifact has 100 formal samples and 5 warmups at 128 and 2048 MiB: 600 formal samples and 30 warmups. All six cases are randomized each round. Values are milliseconds; Ready still runs from before process creation to workload stdout marker, while Exit is measured separately. See the Local raw record `docs/src/assets/benchmarks/.data/startup-p0-20261003.tsv` for samples and hashes.
 
 | MiB | Variant | Ready P50 | Ready P95 | Ready P99 | Exit P50 |
 |---:|---|---:|---:|---:|---:|
@@ -253,7 +253,7 @@ At 2 vCPU, each artifact has 100 formal samples and 5 warmups at 128 and 2048 Mi
 
 Round one has positive end-to-end paired intervals at both memory sizes. Its attestation span falls from about 4.03 to 0.04 ms; all 100 pairs at 128 MiB improve that span. Round two's independent end-to-end intervals still cross zero, so an additional stable millisecond gain is not established; redundant directory calls are demonstrably reduced. The combined changes improve the median in this batch, but 128 MiB Ready P95 changes from 107.99 to 112.14 ms, so tail latency does not improve universally.
 
-An earlier batch used 50 samples per case, with 1-minute host load average falling from 18.38 to 8.66 and all end-to-end intervals crossing zero. Its [complete raw TSV](../../assets/benchmarks/startup-p0-20261003-first.tsv) remains archived and is not pooled with this batch. The second batch's load average is 5.67 → 6.87: lower, but not a fully isolated idle host. All successful tail samples remain included.
+An earlier batch used 50 samples per case, with 1-minute host load average falling from 18.38 to 8.66 and all end-to-end intervals crossing zero. Its Local raw record `docs/src/assets/benchmarks/.data/startup-p0-20261003-first.tsv` remains archived and is not pooled with this batch. The second batch's load average is 5.67 → 6.87: lower, but not a fully isolated idle host. All successful tail samples remain included.
 
 Savings are median same-round differences, with 5,000 bootstrap resamples. Median gains from the two rounds cannot be added. Nested-span medians do not sum to total latency either. Intervals crossing zero do not establish stable improvement; exit tails and readiness tails remain separate observations.
 
@@ -287,13 +287,13 @@ Linux / KVM, 2 vCPU / 2 GiB, the same two-core host budget, 30 samples for each 
 
 **QEMU boots the same complete Ubuntu, rather than the historical trimmed kernel.** q35 and microvm share Firecracker's stock kernel, initrd, tools and initialized disk template. A minimal device model does not remove seconds of distribution boot in this configuration. These are independent same-host cohorts; QEMU has N=10, background host load remains, and outliers are retained. Similar medians do not support a precise VMM ranking. QEMU first cloud-init boot is unmeasured.
 
-[QEMU CSV](../../assets/benchmarks/full-ubuntu-qemu-20261004/samples.csv) · [QEMU protocol](../benchmarks/methodology.md#full-ubuntu-qemu)
+Local raw record `docs/src/assets/benchmarks/.data/full-ubuntu-qemu-20261004/samples.csv` · [QEMU protocol](../benchmarks/methodology.md#full-ubuntu-qemu)
 
 **Selection meaning:** Creating environments for one or two commands benefits from avoiding seconds of OS boot. Complete Ubuntu provides distribution services and an independent Ubuntu environment at that startup cost. These are deployment paths with different kernels, initialization and storage; the table does not establish a roughly 50-times VMM advantage for libkrun. For longer jobs, compare [task and internal tool time](../benchmarks/agent-tasks.md#full-ubuntu), where boot cost is amortized.
 
 Exit includes normal shutdown: pVisor P50 is 174 ms, Firecracker/Ubuntu about 9.23 / 12.86 seconds. Firecracker/Ubuntu uses default MMIO devices and the stock initrd, with zero VMM exit after guest reboot. Every trial retains full OS proof with no failed units. Workspace copying or private disk cloning is recorded as `prepare_ms`, with medians around 37 / 29 ms outside Ready. The chart uses a logarithmic axis, bars P50 and ticks P95. With N=30, P99 is near the maximum and describes this batch only.
 
-[Per-sample CSV](../../assets/benchmarks/full-ubuntu-20261004/samples.csv) · [Distributions and phases](../../assets/benchmarks/full-ubuntu-20261004/summary.tsv) · [Method and reproduction](../benchmarks/methodology.md#full-ubuntu) · [Runtime evidence](../../assets/benchmarks/full-ubuntu-20261004/ubuntu-ready-mmio-20261004/evidence.tar.gz)
+Local raw record `docs/src/assets/benchmarks/.data/full-ubuntu-20261004/samples.csv` · Local raw record `docs/src/assets/benchmarks/.data/full-ubuntu-20261004/summary.tsv` · [Method and reproduction](../benchmarks/methodology.md#full-ubuntu) · Local raw record `docs/src/assets/benchmarks/.data/full-ubuntu-20261004/ubuntu-ready-mmio-20261004/evidence.tar.gz`
 
 #### New VM startup results {#linux-results}
 
@@ -337,7 +337,7 @@ QEMU q35's 218 ms does not establish QEMU's minimum startup cost: microvm with o
 
 **First output does not establish that an Agent can complete a task.** Seven-tool version checking takes 1.40 seconds in pVisor VM. See the [complete tool environment](../benchmarks/agent-tasks.md#reference-env) for repair/test timing and CLI compatibility. The preceding 172.69 ms GNU/libkrunfw 5.5.0 batch remains historical evidence. This batch uses a new pinned static artifact; it is not a controlled single-configuration optimization experiment.
 
-[Configuration and reproduction](../benchmarks/methodology.md#reference-env) · [逐样本 CSV](../../assets/benchmarks/reference-env-20261004/samples.csv) · [分布与阶段计时](../../assets/benchmarks/reference-env-20261004/summary.tsv) · [原始证据](../../assets/benchmarks/reference-env-20261004/evidence.tar.gz) · [兼容性矩阵](../../assets/benchmarks/reference-env-20261004/compatibility.tsv)
+[Configuration and reproduction](../benchmarks/methodology.md#reference-env) · Local raw record `docs/src/assets/benchmarks/.data/reference-env-20261004/samples.csv` · Local raw record `docs/src/assets/benchmarks/.data/reference-env-20261004/summary.tsv` · Local raw record `docs/src/assets/benchmarks/.data/reference-env-20261004/evidence.tar.gz` · Local raw record `docs/src/assets/benchmarks/.data/reference-env-20261004/compatibility.tsv`
 
 #### Full-exit follow-up: cleanup is separate from Ready {#reference-exit}
 
@@ -355,7 +355,7 @@ Same configuration, a separate 30 samples per backend and 3 warmups. A dedicated
 | QEMU microvm | 87.42 / 170.44 | 116.09 / 199.42 |
 
 
-[Precise-exit report](../../assets/benchmarks/reference-env-20261004/followups/reference-startup-exit-20261004/report.tsv) · [Samples](../../assets/benchmarks/reference-env-20261004/followups/reference-startup-exit-20261004/samples.csv) · [Evidence](../../assets/benchmarks/reference-env-20261004/followups/reference-startup-exit-20261004/evidence.tar.gz)
+Local raw record `docs/src/assets/benchmarks/.data/reference-env-20261004/followups/reference-startup-exit-20261004/report.tsv` · Local raw record `docs/src/assets/benchmarks/.data/reference-env-20261004/followups/reference-startup-exit-20261004/samples.csv` · Local raw record `docs/src/assets/benchmarks/.data/reference-env-20261004/followups/reference-startup-exit-20261004/evidence.tar.gz`
 
 
 ## 5. Reproduction and raw data
@@ -393,7 +393,7 @@ python3 benchmark/pvisor/linux_vm_ready.py \
   --samples 100 --warmups 5
 ```
 
-[Linux raw samples, environment and artifact hashes](../../assets/benchmarks/startup-linux-20261003.tsv). Per-trial stdout/stderr, warmup logs and fixed binaries remain in local `target/local-vm-validation-20261003/startup-linux-100/`. Changing artifacts or rootfs requires a new measurement batch with earlier records retained.
+Local raw record `docs/src/assets/benchmarks/.data/startup-linux-20261003.tsv`. Per-trial stdout/stderr, warmup logs and fixed binaries remain in local `target/local-vm-validation-20261003/startup-linux-100/`. Changing artifacts or rootfs requires a new measurement batch with earlier records retained.
 
 ## 6. Unmeasured scenarios
 

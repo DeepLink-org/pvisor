@@ -46,8 +46,7 @@ Run 与内嵌 Gateway 共用 Journal。story actor 先提交事实，再更新 S
 
 命令 WAL 已删除。启动时从已提交事实重建投影，不重放 HTTP 请求、不重复通知观察者，
 也不重写日志。有界输入队列仍是尽力而为的，只有 Journal 回执证明持久化。
-flush 报告拒绝或失败的工作，shutdown 等待消费者释放 Journal。非空历史 WAL 会阻止
-启动，要求先用旧版本排空，避免迁移时静默丢失数据。
+flush 报告拒绝或失败的工作，shutdown 等待消费者释放 Journal。
 
 ## 观察边界
 

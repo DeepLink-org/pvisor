@@ -8,6 +8,7 @@ import tarfile
 from pathlib import Path
 
 from bench import percentile
+from publication import write_derived_summary
 from evidence_tsv import copy_evidence, migrate, resolve
 from evidence_tsv import load as load_evidence
 
@@ -252,7 +253,10 @@ def main():
     )
     if "summary" not in report:
         raise ValueError("report is incomplete: summary is absent")
-    args.output.mkdir(parents=True, exist_ok=False)
+    public_output = args.output
+    public_output.mkdir(parents=True, exist_ok=False)
+    args.output = public_output / ".data"
+    args.output.mkdir()
     summary = summarize(report)
     (args.output / "summary.json").write_text(json.dumps(summary, indent=2) + "\n")
     (args.output / "report.json").write_text(json.dumps(report, indent=2) + "\n")
@@ -280,7 +284,8 @@ def main():
         json.dumps(report["capabilities"], indent=2) + "\n"
     )
     export_evidence(args.report.parent, args.output)
-    figures(summary, args.output)
+    write_derived_summary(public_output / "summary.csv", summary)
+    figures(summary, public_output)
     for source in args.followup_report:
         followup = load_evidence(source)
         if "summary" not in followup or any(

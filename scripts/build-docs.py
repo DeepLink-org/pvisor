@@ -78,16 +78,31 @@ def localize_search(site, locale):
         ))
 
 
+def copy_public_source(source, destination):
+    """Never give raw evidence to the site generator, even at nested depths."""
+    shutil.copytree(source, destination, ignore=shutil.ignore_patterns(".data"))
+
+
 def build() -> None:
     from importlib import import_module
 
     import_module("check-docs").check_translations()
     import_module("check-reference").check()
     zensical = shutil.which("zensical") or str(Path(sys.executable).with_name("zensical"))
-    subprocess.run([zensical, "build", "--strict"], cwd=DOCS, check=True)
+    public_source = DOCS / ".data/site-source"
+    shutil.rmtree(public_source, ignore_errors=True)
+    public_source.parent.mkdir(exist_ok=True)
+    copy_public_source(DOCS / "src", public_source)
+    config = (DOCS / "zensical.toml").read_text().replace(
+        'docs_dir = "src"', 'docs_dir = ".data/site-source"'
+    )
+    shutil.rmtree(DOCS / "site", ignore_errors=True)
+    with tempfile.NamedTemporaryFile(mode="w", suffix=".toml", prefix=".zensical-zh-", dir=DOCS) as zh_config:
+        zh_config.write(config)
+        zh_config.flush()
+        subprocess.run([zensical, "build", "--strict", "-f", zh_config.name], cwd=DOCS, check=True)
     localize_search(DOCS / "site", "zh")
     # Zensical has one language/navigation per build; mirror the source navigation.
-    config = (DOCS / "zensical.toml").read_text()
     before, nav = config.split("nav = [", 1)
     nav, after = nav.split("\n[project.theme]", 1)
     nav = english_nav(tomllib.loads(config)["project"]["nav"])

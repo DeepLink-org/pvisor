@@ -1,10 +1,16 @@
-# 对比：Agent RL rollout 基础设施
+# pVisor 能为现有 Agent RL 管线提供什么？
 
 ## 主要结论 {#conclusions}
 
-**pVisor 可提供每次尝试的执行、暂存、轨迹与恢复单元，但没有完整 RL 训练吞吐领先的证据。** 本机启动、工具任务与快照成本可用于预算；它们不能推导每秒有效 rollout 或训练成本降低比例。
+**pVisor 可提供每次尝试的执行、暂存、轨迹与恢复单元，但没有完整 RL 训练吞吐领先的证据。** 本机启动、工具任务成本可用于预算；它们不能推导每秒有效 rollout 或训练成本降低比例。
 
 已有 OpenHands/SWE-Gym/verl 管线可以继续使用；需要跨 Agent 统一工作区与执行证据时评估 pVisor。模型服务、任务、reward 和训练调度仍由训练系统负责。
+
+| 需求 | 选型含义 |
+|---|---|
+| 已有 OpenHands / SWE-Gym / verl | 保留任务与训练层 |
+| 需要统一执行记录与暂存 | 将 pVisor 作为执行层评估 |
+| 关心训练吞吐和成本 | 目前没有完整训练对照 |
 
 ## Motivation {#motivation}
 
@@ -23,6 +29,8 @@
 
 依据 [OpenHands](https://docs.openhands.dev/openhands/usage/sandboxes/docker)、[SWE-Gym](https://github.com/SWE-Gym/SWE-Gym)、[verl](https://verl.readthedocs.io/en/latest/)。
 
+固定制品与测量日期按表注明。失败与校验不通过的样本不计入成功耗时，失败数量单列；既有数据没有事先的宿主干扰剔除规则，所有通过校验的慢样本保留。30 次及更少采样的 P95 仅为观察参考，不给 P99 或稳定尾延迟承诺。
+
 ## 实验数据和分析 {#results}
 
 | 成本项 | 可用证据 | 可支持的用途 |
@@ -30,7 +38,6 @@
 | [启动](startup.md) | 本地 VM 约 0.1 s | 估算一次性环境等待 |
 | [工具任务](agent-tasks.md) | staged 短修复约 0.7 s，VM 约 4 s | 按执行边界估算工具预算 |
 | [前缀准备](replay-fidelity.md) | 固定六种格式约 5–5.5 ms | 准备已记录历史；不证明模型下一动作相同 |
-| [完整快照](vm-memory/index.md#linux-snapshot) | raw 保存/恢复约 0.71/0.93 s | 判断恢复分支的固定成本 |
 | [并发密度](density.md) | 空闲环境探针 | 估算基础占用；不等于有效 rollout 吞吐 |
 
 工具回放重新执行操作，VM checkpoint 恢复 CPU/RAM 及对应设备/文件状态，不能把所有远端连接都视为可恢复。真实训练仍需测任务成功率、失败重试、总资源与每个有效样本耗时；当前数据没有回答 pVisor 是否比完整 RL 管线更快。

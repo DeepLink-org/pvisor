@@ -1691,12 +1691,13 @@ fn run_runner(spec: RunnerSpec) -> anyhow::Result<()> {
         .iter()
         .map(|owner| {
             owner.as_ref().and_then(|base| {
-                base.content_index()
-                    .map(|(file, sha256)| pvisor_vm::api::BaselineContentIndex {
+                Some(base.content_index()).map(|(file, sha256)| {
+                    pvisor_vm::api::BaselineContentIndex {
                         root: base.root(),
                         file,
                         sha256,
-                    })
+                    }
+                })
             })
         })
         .collect::<Vec<_>>();

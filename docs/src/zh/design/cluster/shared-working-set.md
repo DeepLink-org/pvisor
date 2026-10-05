@@ -14,7 +14,7 @@
 
 | 路径 | 已有机制 | 当前边界 |
 |---|---|---|
-| 不可变环境 lower | 配置 node socket 后跨 Worker 共用同身份 mount，连接 pin 与强引用保温有界，任务各有 private upper | 未接入 Node 时保留 Worker 内 `Arc<MountedImage>` 复用；节点故障不支持 live 接管 |
+| 不可变环境 lower | 配置 node socket 后跨 Worker 共用同身份 mount，连接 pin 与强引用保温有界，任务各有 private upper | 未接入 Node 时保留 Worker 内 `Arc<LazyImage>` 复用；节点故障不支持 live 接管 |
 | 镜像 lazy cache | 文件按需读取，客户端内容块上限 64 MiB/4096 条；分页索引默认 64 KiB 页、256 页 LRU；内容跨镜像 CAS 共享 | Node 统一热块、分页 metadata 与 decoded RAM 的 retained payload 额度；完整 metadata、scratch、外部 Arc 和 kernel pages 不在该计数内；磁盘容量回收仍需单独策略 |
 | Linux native restore | Node 按封存 ID/compatibility 跨 Worker 与授权 store 复用只读 RAM inode；guest 使用 `MAP_PRIVATE` COW | 未接入 Node 时复用仅在 supervisor 内；普通新启动不经过 RAM restore，兼容性/无网络 profile 合同不变 |
 | 快照 RAM lazy reader | RAM fault 按块校验/解码，小缓存保留四个 decoded 块，kernel page cache承担主要 decoded 复用 | 读取和解码的首次访问代价需测；旧 raw 格式没有块索引时仍可能需要完整校验 |

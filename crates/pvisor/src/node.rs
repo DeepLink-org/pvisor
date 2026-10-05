@@ -2,7 +2,7 @@
 //! Losing this service is not transparent recovery for live FUSE-backed VMs.
 mod registry;
 use crate::{
-    cache::{CacheBackend, CacheClient, CacheConfig, MountedImage},
+    cache::{CacheBackend, CacheClient, CacheConfig, LazyImage},
     environment_snapshot::{Compatibility, SnapshotRamMount, SnapshotStore},
 };
 use anyhow::{Context, ensure};
@@ -212,7 +212,7 @@ fn read_frame(stream: &mut impl Read) -> anyhow::Result<Response> {
 }
 
 enum Resource {
-    Image(MountedImage),
+    Image(LazyImage),
     Ram {
         path: PathBuf,
         _mount: SnapshotRamMount,
@@ -279,7 +279,8 @@ impl Owners {
                 );
                 self.registry
                     .acquire(format!("image:{handle}:{manifest_digest}"), || {
-                        let image = crate::cache::mount_image_handle(cache.clone(), &handle)?;
+                        let image =
+                            crate::cache::open_image_handle_for_host(cache.clone(), &handle)?;
                         ensure!(
                             image.manifest_digest() == manifest_digest,
                             "node environment revision changed"

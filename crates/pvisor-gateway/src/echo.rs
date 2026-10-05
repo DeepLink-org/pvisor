@@ -775,7 +775,6 @@ forward = "echo-upstream"
             config,
             state.path().to_path_buf(),
             sink,
-            false,
             gateway_listener,
             admin_listener,
             async {

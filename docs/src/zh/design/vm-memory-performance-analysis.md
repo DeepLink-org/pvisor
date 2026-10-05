@@ -236,7 +236,7 @@ macOS 共享冷页参数矩阵为 40 次运行，2 GiB 延长观察增加 4 次�
 
     预先设定的平台条件：每个 30 秒窗口至少 25 个有效采样；RAM 代理跨度不超过 max(4 MiB, 中位数的 10%)，池 payload 非零且跨度不超过中位数的 10%，RAM 代理的最小二乘趋势绝对值不超过 1 MiB／30 秒。平台起点还要求后续所有完整滚动窗口直至 175 秒均满足条件。此条件只刻画本实验，不是生产稳态保证。
 
-[完整曲线 CSV](../benchmarks/vm-memory/assets/2048-long-idle.csv) · [独立复核 JSON](../benchmarks/vm-memory/assets/2048-long-idle.json)。原始运行、预先记录的 protocol、输入源码快照与哈希位于 `review_project/06-evidence/macos-memory/cli-2048-long-idle-2026-10-03/`；运行记录在其 `cases/` 下，二进制源码归属沿用原矩阵的 `input-provenance.json`，不使用补测时工作树哈希冒充二进制来源。
+本地原始记录 `docs/src/zh/benchmarks/vm-memory/assets/.data/2048-long-idle.csv` · 本地原始记录 `docs/src/zh/benchmarks/vm-memory/assets/.data/2048-long-idle.json`。原始运行、预先记录的 protocol、输入源码快照与哈希位于 `review_project/06-evidence/macos-memory/cli-2048-long-idle-2026-10-03/`；运行记录在其 `cases/` 下，二进制源码归属沿用原矩阵的 `input-provenance.json`，不使用补测时工作树哈希冒充二进制来源。
 
 ### 参数怎样影响收益 {#matrix}
 
@@ -436,7 +436,7 @@ RAM 代理回答“冷 guest RAM 是否已回收”；footprint 回答 macOS 对
 
 上排为两台 VM 加池的 RAM 代理合计，下排为池编码 payload；蓝色实线和橙色虚线对应两次运行。绿色区域是 18–33 秒统计窗口，紫色区域是 35 秒后读取、写入与退出阶段。统一坐标便于比较；曲线从 ready 后至少 1 秒的采样开始，排除紧邻 ready 的滞后诊断点。2 GiB 在绿色窗口内 payload 始终为零；末尾归零发生于退出阶段，不能理解为回收完成。
 
-[下载六条完整时间序列](../benchmarks/vm-memory/assets/startup-timeline.csv)，可核对中间平台与瞬时波动。时间序列按约 1 Hz 采样；上表平台是曲线的描述性判断，未使用预先定义的稳态验收阈值。35 秒后开始全量读取、私有写入与退出，负载阶段改变，这些样本不能继续用于估计静默稳态。要获得可用于容量规划的稳态时间，需延长静默阶段，预先定义持续窗口内 RAM 与池占用的波动阈值，并确认不存在继续下降的趋势；原 35 秒矩阵没有这类长时间测量；下方 180 秒补测延长了观察，但仍未证明最终稳态。
+本地原始记录 `docs/src/zh/benchmarks/vm-memory/assets/.data/startup-timeline.csv`，可核对中间平台与瞬时波动。时间序列按约 1 Hz 采样；上表平台是曲线的描述性判断，未使用预先定义的稳态验收阈值。35 秒后开始全量读取、私有写入与退出，负载阶段改变，这些样本不能继续用于估计静默稳态。要获得可用于容量规划的稳态时间，需延长静默阶段，预先定义持续窗口内 RAM 与池占用的波动阈值，并确认不存在继续下降的趋势；原 35 秒矩阵没有这类长时间测量；下方 180 秒补测延长了观察，但仍未证明最终稳态。
 
 ### 如何选择 {#decisions}
 
@@ -496,7 +496,7 @@ pvisor run --vm --memory 256MiB --cpu 2 \
 
 ### macOS/HVF：证据与复现 {#evidence}
 
-[可下载的汇总 JSON](../benchmarks/vm-memory/assets/decision.json) · [配置结果 CSV](../benchmarks/vm-memory/assets/decision.csv) · [参数边界 JSON](../benchmarks/vm-memory/assets/compatibility.json)
+本地原始记录 `docs/src/zh/benchmarks/vm-memory/assets/.data/decision.json` · 本地原始记录 `docs/src/zh/benchmarks/vm-memory/assets/.data/decision.csv` · 本地原始记录 `docs/src/zh/benchmarks/vm-memory/assets/.data/compatibility.json`
 
 | 对象 | 记录 |
 |---|---|
@@ -547,6 +547,6 @@ python3 benchmark/pvisor/vm_snapshot.py \
 
 传入已准备好的 guest rootfs 与 firmware 目录。完整快照 benchmark 的 output 必须是新目录，脚本复制 CLI 固定制品身份；每次保留私有 store、独立日志和正确性结果。源码/制品准备及编译时间不计入采样。
 
-- [生命周期逐次数据](../../assets/benchmarks/vm-lifecycle-20261003/lifecycle.tsv)
-- [完整快照逐次数据与制品摘要](../../assets/benchmarks/vm-lifecycle-20261003/snapshot.tsv)
-- [环境、共享池及验证结果](../../assets/benchmarks/vm-lifecycle-20261003/validation.tsv)
+- 本地原始记录 `docs/src/assets/benchmarks/.data/vm-lifecycle-20261003/lifecycle.tsv`
+- 本地原始记录 `docs/src/assets/benchmarks/.data/vm-lifecycle-20261003/snapshot.tsv`
+- 本地原始记录 `docs/src/assets/benchmarks/.data/vm-lifecycle-20261003/validation.tsv`

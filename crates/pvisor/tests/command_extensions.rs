@@ -121,6 +121,15 @@ fn kernel_help_discovers_commands_and_default_execution_dispatches_run() {
         }
     }
 
+    for option in ["--gateway-stream-markdown", "--unknown-pvisor-option"] {
+        let output = Command::new(env!("CARGO_BIN_EXE_pvisor"))
+            .args(["run", option, "--", "/bin/true"])
+            .output()
+            .unwrap();
+        assert_eq!(output.status.code(), Some(2));
+        assert!(String::from_utf8_lossy(&output.stderr).contains("unexpected argument"));
+    }
+
     let help_command = Command::new(env!("CARGO_BIN_EXE_pvisor"))
         .args(["help", "help"])
         .output()

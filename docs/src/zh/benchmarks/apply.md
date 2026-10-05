@@ -1,8 +1,14 @@
-# apply / drop：文件数量、冲突与恢复
+# 审查后合入要多久，与 Git patch 相比如何？
 
 ## 主要结论 {#conclusions}
 
-小批量合入适合交互式审查：10 文件约 **15 ms**、1,000 文件约 **0.84 s**。10 万文件约 **5.5 分钟**，不适合高频大批量提交。Git patch 同批明显更快；pVisor 的合入流程还包含原像冲突检查、持久化与恢复。
+**小批量合入适合交互式审查：10 文件约 **15 ms**、1,000 文件约 **0.84 s**。10 万文件约 **5.5 分钟**，不适合高频大批量提交。Git patch 同批明显更快；pVisor 的合入流程还包含原像冲突检查、持久化与恢复。**
+
+| 需求 | 选型含义 |
+|---|---|
+| 少量文件的交互式合入 | 适合 pVisor apply |
+| 大批文本更新，已有 Git 流程 | Git patch 是性能参照 |
+| 宿主有并行修改 | 需要冲突检测与中断恢复检查 |
 
 ## Motivation {#motivation}
 
@@ -14,25 +20,27 @@
 
 这些结果来自 Linux/x86_64；macOS 的对应负载未测。每项数字的制品、缓存条件与样本保存在关联报告中。
 
+固定制品与测量日期按表注明。失败与校验不通过的样本不计入成功耗时，失败数量单列；既有数据没有事先的宿主干扰剔除规则，所有通过校验的慢样本保留。30 次及更少采样的 P95 仅为观察参考，不给 P99 或稳定尾延迟承诺。
+
 ## 实验数据和分析 {#results}
 
-| Files | Operation | N | P50 / P95 / P99 ms |
+| Files | Operation | N | P50 / P95 ms |
 |---|---|---|---|
-| 10 | apply | 30 | 15.01 / 16.75 / 18.26 |
-| 10 | drop | 30 | 3.38 / 3.82 / 4.72 |
-| 10 | conflict | 30 | 4.07 / 9.44 / 11.67 |
-| 10 | copy | 30 | 5.07 / 10.81 / 11.59 |
-| 10 | git-apply | 30 | 0.73 / 0.85 / 0.88 |
-| 1000 | apply | 10 | 836.38 / 1462.81 / 1864.62 |
-| 1000 | drop | 10 | 24.44 / 26.02 / 26.24 |
-| 1000 | conflict | 10 | 42.90 / 43.29 / 43.34 |
-| 1000 | copy | 10 | 15.84 / 16.20 / 16.24 |
-| 1000 | git-apply | 10 | 13.61 / 14.43 / 14.61 |
-| 100000 | apply | 3 | 330396.22 / 337869.09 / 338533.34 |
-| 100000 | drop | 3 | 996.55 / 1207.85 / 1226.63 |
-| 100000 | conflict | 3 | 247496.21 / 253640.35 / 254186.49 |
-| 100000 | copy | 3 | 1214.85 / 1359.59 / 1372.45 |
-| 100000 | git-apply | 3 | 1464.63 / 1552.12 / 1559.90 |
+| 10 | apply | 30 | 15.01 / 16.75 |
+| 10 | drop | 30 | 3.38 / 3.82 |
+| 10 | conflict | 30 | 4.07 / 9.44 |
+| 10 | copy | 30 | 5.07 / 10.81 |
+| 10 | git-apply | 30 | 0.73 / 0.85 |
+| 1000 | apply | 10 | 836.38 |
+| 1000 | drop | 10 | 24.44 |
+| 1000 | conflict | 10 | 42.90 |
+| 1000 | copy | 10 | 15.84 |
+| 1000 | git-apply | 10 | 13.61 |
+| 100000 | apply | 3 | 330396.22 |
+| 100000 | drop | 3 | 996.55 |
+| 100000 | conflict | 3 | 247496.21 |
+| 100000 | copy | 3 | 1214.85 |
+| 100000 | git-apply | 3 | 1464.63 |
 
 ### 分析
 
@@ -46,17 +54,17 @@ copy 是复制到空目录；git-apply 修改相同文本文件，但没有 pVis
 
 在 prepared、target_applied 或 committed 状态注入 SIGKILL，重跑后核对目标内容与已提交 ledger。下表仅含实际命中的注入；1,000 文件组有两次 committed 窗口未命中，不算成功注入，原始报告保留。恢复延迟依赖中断时已经完成的步骤。
 
-| Files | Requested kill state | N | Durable state at death | Recovery P50/P95/P99 ms |
+| Files | Requested kill state | N | Durable state at death | Recovery P50/P95 ms |
 |---|---|---|---|---|
-| 1000 | prepared | 3 | prepared | 1587.60 / 1640.03 / 1644.70 |
-| 1000 | target_applied | 3 | target_applied | 120.98 / 123.47 / 123.69 |
-| 10000 | prepared | 3 | prepared | 8856.00 / 9023.85 / 9038.77 |
-| 10000 | target_applied | 3 | target_applied | 354.28 / 371.49 / 373.02 |
-| 10000 | committed | 3 | committed | 259.47 / 347.70 / 355.55 |
+| 1000 | prepared | 3 | prepared | 1587.60 |
+| 1000 | target_applied | 3 | target_applied | 120.98 |
+| 10000 | prepared | 3 | prepared | 8856.00 |
+| 10000 | target_applied | 3 | target_applied | 354.28 |
+| 10000 | committed | 3 | committed | 259.47 |
 
 ### 和 Git patch 相比，这个成本意味着什么 {#baseline-meaning}
 
-同一批输入的 `git apply` 是熟悉的成本基线：10 文件约 0.73 ms、1,000 文件约 13.61 ms，而 pVisor apply 约 15 ms、836 ms，分别约 21 倍、61 倍。绝对时间更有用：少量改动可以按十几毫秒预算，千文件合入要按秒预算，十万文件要按分钟预算。
+同一批输入的 `git apply` 是熟悉的成本基线：10 文件约 0.73 ms、1,000 文件约 13.61 ms，而 pVisor apply 约 15 ms、836 ms，按各自的实测预算选择。绝对时间更有用：少量改动可以按十几毫秒预算，千文件合入要按秒预算，十万文件要按分钟预算。
 
 Git patch、复制和 pVisor apply 的流程不同；这里比较完成相同文本更新的实际耗时，不把它们说成相同事务。是否选择 pVisor，应同时考虑 preimage 检查、选择性合入和崩溃恢复是否是工作流的要求。大批量改动目前有明确的性能代价。
 
@@ -64,8 +72,3 @@ Git patch、复制和 pVisor apply 的流程不同；这里比较完成相同文
 
 SIGKILL 恢复不是断电、文件系统损坏或磁盘丢写测试；所测配置也未覆盖全部文件类型、符号链接和元数据组合。追加这些场景时保留失败和恢复前后证据。更大的项目应先控制单次提交规模；所测配置未用十文件结果外推百万文件。
 
-### 数据来源与复现 {#run}
-
-[配置与采样方法](methodology.md#product-v1) · [Manifest](../../assets/benchmarks/product-v1-20261004/manifest.tsv) · [Samples CSV](../../assets/benchmarks/product-v1-20261004/samples.csv) · [Raw evidence](../../assets/benchmarks/product-v1-20261004/evidence.tar.gz)
-
-复现命令与环境要求见[方法技术记录](../design/benchmark-methodology-evidence.md)。

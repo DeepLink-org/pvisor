@@ -25,7 +25,7 @@ def check_translations(docs=ROOT.parent, record=False, strict=False):
     """
     source = docs / "src"
     locales = {
-        locale: {p.relative_to(source / locale) for p in (source / locale).rglob("*.md")}
+        locale: {p.relative_to(source / locale) for p in (source / locale).rglob("*.md") if ".data" not in p.parts}
         for locale in ("en", "zh")
     }
     issues, revisions = [], {}

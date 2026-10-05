@@ -1,10 +1,16 @@
-# 对比：Agent 自带沙箱
+# Agent 自带沙箱何时够用，何时需要 pVisor？
 
 ## 主要结论 {#conclusions}
 
 **使用单一 Agent 时，其内置沙箱可直接管理工具权限；pVisor 适合跨 Agent 统一暂存、审查、冲突保护与记录。** 两者可组合，但默认双层沙箱的兼容性和完整开销没有本章实测结论。
 
 受控任务中，staged 的 Claude/Codex 闭环为 **1.07/2.25 s**，接近原生 **0.82/1.97 s**；VM 的 Codex **10.93 s**，Claude 初始化超时。这是执行环境对照，不是内置沙箱产品速度排名。
+
+| 需求 | 选型含义 |
+|---|---|
+| 单一 Agent 的工具权限 | 可使用内置沙箱 |
+| 多个 Agent 共用改动审查协议 | 评估 pVisor |
+| 默认双层沙箱 | 需独立兼容性测试 |
 
 ## Motivation {#motivation}
 
@@ -21,7 +27,9 @@
 | Gemini CLI | 可选 OS 或容器沙箱；Docker/Podman 方式挂载工作区 |
 | pVisor | 选择 host/隔离 host/OCI/VM；stage 保留改动，apply 时检查原像冲突 |
 
-出处：[Claude Code](https://code.claude.com/docs/en/sandboxing)、[Codex](https://learn.chatgpt.com/docs/sandboxing)、[Gemini CLI](https://geminicli.com/docs/cli/sandbox/)。pVisor 边界见[隔离实测](isolation-tests.md)。官方当前能力与实测固定版本分别标识。
+出处：[Claude Code](https://code.claude.com/docs/en/sandboxing)、[Codex](https://developers.openai.com/codex/security/)、[Gemini CLI](https://geminicli.com/docs/cli/sandbox/)。pVisor 边界见[隔离实测](isolation-tests.md)。官方当前能力与实测固定版本分别标识。
+
+固定制品与测量日期按表注明。失败与校验不通过的样本不计入成功耗时，失败数量单列；既有数据没有事先的宿主干扰剔除规则，所有通过校验的慢样本保留。30 次及更少采样的 P95 仅为观察参考，不给 P99 或稳定尾延迟承诺。
 
 ## 实验数据和分析 {#results}
 

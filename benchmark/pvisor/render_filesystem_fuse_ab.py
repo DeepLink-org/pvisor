@@ -82,7 +82,12 @@ def main():
     parser.add_argument("--source", type=Path, required=True)
     parser.add_argument("--output", type=Path, required=True)
     args = parser.parse_args()
-    publish(args.source.resolve(), args.output.resolve())
+    public = args.output.resolve()
+    public.mkdir(parents=True, exist_ok=False)
+    publish(args.source.resolve(), public / ".data")
+    from publication import write_derived_summary
+    from evidence_tsv import load
+    write_derived_summary(public / "summary.csv", load(public / ".data/report.tsv")["summary"])
 
 
 if __name__ == "__main__":

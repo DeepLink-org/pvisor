@@ -1,4 +1,4 @@
-# Filesystem and developer-tool performance
+# How long do developer tools take in pVisor, Docker and lightweight VMs?
 
 **pVisor host staged is close to Docker for offline npm installs and writes 256 files in about 27 ms; pVisor VM is slower than the measured Firecracker and QEMU configurations for file-heavy Git, search and npm workloads.** The tables place the latest pVisor measurements alongside containers, lightweight VMs and complete Ubuntu VMs to help assess performance for your tasks.
 
@@ -70,10 +70,10 @@ The workload contains 2,048 files in 32 directories; a 64 MiB read with SHA256 v
 
 These results cover small, offline workloads with warm caches. Measure your own tasks for large repositories, cold disks, real npm registries or concurrent throughput. Host CPUs are shared, so slower-sample timings can vary in particular.
 
+Tables identify pinned artifacts and measurement dates. Failed or invalid samples are excluded from successful timings and counted separately. Existing measurements have no predefined host-interference filter; all slow valid samples are retained. P95 from 30 or fewer samples is descriptive only; no P99 or stable tail-latency claim is made.
+
 ## Data sources {#run}
 
 pVisor and native measurements come from one batch on **2026-10-05**. Docker, Firecracker, QEMU and complete-Ubuntu references were measured on **2026-10-04**. The independent pVisor VM measurement is shown separately; percentiles are not pooled across batches.
 
-[Current timings (P50/P95/P99)](../../assets/benchmarks/stage-boundaries-20261005/current.tsv) · [Complete samples](../../assets/benchmarks/stage-boundaries-20261005/samples.tsv) · [Raw report](../../assets/benchmarks/stage-boundaries-20261005/local-release.tsv) · [Independent VM measurement](../../assets/benchmarks/stage-boundaries-20261005/vm-repeat.tsv) · [Test artifacts](../../assets/benchmarks/stage-boundaries-20261005/build-provenance.tsv) · [Manifest](../../assets/benchmarks/stage-boundaries-20261005/manifest.tsv)
-
-[Docker / Firecracker / QEMU reference summary](../../assets/benchmarks/reference-env-20261004/summary.tsv) · [Reference samples](../../assets/benchmarks/reference-env-20261004/samples.csv) · [Complete Ubuntu summary](../../assets/benchmarks/full-ubuntu-qemu-20261004/summary.tsv) · [Methodology and artifacts](methodology.md)
+ ·  ·  · [Methodology and artifacts](methodology.md)

@@ -48,7 +48,7 @@ delegated; WebSocket transport retains its explicit unsupported response.
 
 Journal positions express commit order; stable event IDs support idempotent retries; causal references express known dependencies. Run and embedded Gateway share a Journal. Story actors commit facts before updating Story/SessionIndex and notifying observers. Observer failure does not roll back committed facts.
 
-The command WAL has been removed. Startup reconstructs projections from committed facts without replaying HTTP requests, repeating observer notifications or rewriting logs. The bounded input queue remains best effort; only a Journal receipt proves durability. Flush reports rejected/failed work; shutdown waits for consumers to release the Journal. Nonempty historical WALs prevent startup and must first be drained with an older version, avoiding silent migration data loss.
+The command WAL has been removed. Startup reconstructs projections from committed facts without replaying HTTP requests, repeating observer notifications or rewriting logs. The bounded input queue remains best effort; only a Journal receipt proves durability. Flush reports rejected/failed work; shutdown waits for consumers to release the Journal.
 
 ## Observation boundary
 

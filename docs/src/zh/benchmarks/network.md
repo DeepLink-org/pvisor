@@ -1,8 +1,14 @@
-# 网络代理与 VM TCP 开销
+# 网络策略增加多少等待，与普通 OCI 相比如何？
 
 ## 主要结论 {#conclusions}
 
-本地 1 KiB HTTP 请求 P50 为原生 **0.95 ms**、pVisor 宿主代理 **1.24 ms**、VM **3.83 ms**。32 MiB 传输吞吐分别约 **869、417、155 MiB/s**。代理的小请求增量较小，VM 的批量传输成本更明显；这些结果不代表公网模型响应时间。
+**本地 1 KiB HTTP 请求 P50 为原生 **0.95 ms**、pVisor 宿主代理 **1.24 ms**、VM **3.83 ms**。32 MiB 传输吞吐分别约 **869、417、155 MiB/s**。代理的小请求增量较小，VM 的批量传输成本更明显；这些结果不代表公网模型响应时间。**
+
+| 需求 | 选型含义 |
+|---|---|
+| 本地小请求 | 代理增加的等待较小 |
+| 批量下载或本机高速传输 | 关注 VM 通路吞吐 |
+| 必须阻止 direct socket | 选择可强制执行的边界 |
 
 ## Motivation {#motivation}
 
@@ -14,16 +20,18 @@
 
 这些结果来自 Linux/x86_64；macOS 的对应负载未测。每项数字的制品、缓存条件与样本保存在关联报告中。
 
+固定制品与测量日期按表注明。失败与校验不通过的样本不计入成功耗时，失败数量单列；既有数据没有事先的宿主干扰剔除规则，所有通过校验的慢样本保留。30 次及更少采样的 P95 仅为观察参考，不给 P99 或稳定尾延迟承诺。
+
 ## 实验数据和分析 {#results}
 
-| Network configuration | Backend | Batches | 1 KiB P50/P95/P99 ms | 32 MiB P50 MiB/s | Stream first body P50/P95/P99 ms |
+| Network configuration | Backend | Batches | 1 KiB P50/P95 ms | 32 MiB P50 MiB/s | Stream first body P50/P95 ms |
 |---|---|---|---|---|---|
-| proxy / VM | native | 30 | 0.95/1.42/4.67 | 869.4 | 1.10/1.20/1.40 |
-| proxy / VM | host | 30 | 1.24/2.42/7.16 | 416.8 | 1.37/1.63/1.69 |
-| proxy / VM | vm | 30 | 3.83/8.63/17.36 | 154.7 | 4.57/5.19/6.44 |
-| host-network OCI | native | 30 | 0.99/1.44/4.85 | 861.4 | 1.07/1.18/1.18 |
-| host-network OCI | podman | 30 | 1.01/1.43/9.07 | 853.7 | 3.53/3.60/3.64 |
-| host-network OCI | pVisor OCI | 30 | 1.30/2.30/10.06 | 811.0 | 3.78/3.98/4.05 |
+| proxy / VM | native | 30 | 0.95/1.42 | 869.4 | 1.10/1.20 |
+| proxy / VM | host | 30 | 1.24/2.42 | 416.8 | 1.37/1.63 |
+| proxy / VM | vm | 30 | 3.83/8.63 | 154.7 | 4.57/5.19 |
+| host-network OCI | native | 30 | 0.99/1.44 | 861.4 | 1.07/1.18 |
+| host-network OCI | podman | 30 | 1.01/1.43 | 853.7 | 3.53/3.60 |
+| host-network OCI | pVisor OCI | 30 | 1.30/2.30 | 811.0 | 3.78/3.98 |
 
 ### 分析与拒绝验证
 
@@ -40,8 +48,3 @@ host deny-all 的私有网络命名空间和 VM deny-all 各 **30/30** 次阻止
 
 没有公网、TLS、DNS 或真实模型延迟对照；本地首字节不等于模型 TTFT。网络路径与 host-network OCI 的边界不同。
 
-### 数据来源与复现 {#run}
-
-[配置与采样方法](methodology.md#product-v1) · [Manifest](../../assets/benchmarks/product-v1-20261004/manifest.tsv) · [Samples CSV](../../assets/benchmarks/product-v1-20261004/samples.csv) · [Raw evidence](../../assets/benchmarks/product-v1-20261004/evidence.tar.gz)
-
-复现命令与环境要求见[方法技术记录](../design/benchmark-methodology-evidence.md)。

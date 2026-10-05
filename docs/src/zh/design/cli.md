@@ -111,3 +111,9 @@ Attempt 生命周期由 Session 管理；AgentCtl 保留工作负载协作职责
 
 
 完整 VM 快照接入 Job 的目标接口见[Job 检查点与分叉 CLI 设计稿](job-checkpoint-cli.md)。工作区命令和原生 VM execution 保存/恢复已接入；支持范围和验收见设计的第 10 节。独立 snapshot 已删除；[完整环境快照与迁移](environment-snapshot.md)说明存储 SDK 和历史证据的边界。
+
+## 实现职责 {#implementation-ownership}
+
+`cli/run.rs` 负责新 Job 的配置与启动；`cli/run/lifecycle.rs` 负责工作区分支与原生执行状态恢复；`runtime/job_execution.rs` 负责持久化 Job 状态、请求回执和原生终态确认，不会仅凭已保存的文件系统推断暂停成功。
+
+Lazy 镜像所有权分开管理宿主 FUSE 挂载与 VM 直接后端附件。VM 准备路径返回直接附件，宿主卸载逻辑不会作用于该附件。Gateway 保存规范事件，在 actor 分发前排除 draft，不再提供 live Markdown 兼容选项或旧草稿投影命令。

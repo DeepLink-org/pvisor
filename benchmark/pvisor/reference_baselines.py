@@ -65,7 +65,7 @@ def pin_private_docker_tree(root_pid, docker_host, affinity):
     if (
         not argv
         or Path(argv[0]).name != "dockerd"
-        or docker_host not in argv
+        or not (docker_host in argv or f"--host={docker_host}" in argv or f"-H={docker_host}" in argv)
         or root.stat().st_uid != os.getuid()
     ):
         raise ValueError(
@@ -538,11 +538,13 @@ def main():
     )
     p.add_argument("--modes", default="ready,env,filesystem,tools,claude,codex")
     p.add_argument("--samples", type=int, default=30)
+    p.add_argument("--seed", type=int, default=20261005)
     p.add_argument("--warmups", type=int, default=3)
     p.add_argument("--memory-mib", type=int, default=16384)
     p.add_argument(
         "--staged-isolation", choices=("host_process", "rootless_process"), default="host_process"
     )
+    p.add_argument("--host-isolation", choices=("host_process", "rootless_process"), default="rootless_process")
     p.add_argument("--docker-root-pid", type=int)
     p.add_argument(
         "--cpu-affinity", default="0,1", help="Common host CPU affinity; empty string disables it"
@@ -562,10 +564,13 @@ def main():
     shutil.copytree(
         Path(__file__).parent,
         args.output / "harness",
-        ignore=shutil.ignore_patterns("__pycache__", ".pytest_cache"),
+        ignore=shutil.ignore_patterns("__pycache__", ".pytest_cache", ".data"),
     )
     metadata = {
         "schema": "pvisor-reference-environment/v1",
+        "benchmark_ids": {"ready": "B-STARTUP", "env": "B-AGENT-TASK",
+                          "filesystem": "B-FS-TOOLS", "tools": "B-AGENT-TASK",
+                          "claude": "B-AGENT-TASK", "codex": "B-AGENT-TASK"},
         "recorded_at": datetime.now(ZoneInfo("Asia/Shanghai")).isoformat(),
         "arguments": {k: str(v) for k, v in vars(args).items()},
         "assets": json.loads((args.assets / "assets.json").read_text()),
@@ -590,7 +595,9 @@ def main():
             "codex_sandbox": "danger-full-access uniformly; fixed commands, outer runtime boundary",
             "resource_scope": f"All launch trees bound to host CPUs {args.cpu_affinity or 'unrestricted'}; Docker private daemon pinned separately; VMs 2 vCPU; Rust -j2; RSS sums may double-count shared pages",
             "order": "seeded random backend per round",
-            "percentile": "linear interpolation",
+            "percentile": "linear interpolation; public P95 is descriptive, no public P99 below 100 samples",
+            "exclusion": "reject failed output/isolation checks; no post-hoc timing exclusions",
+            "seed": args.seed,
         },
     }
     for tool in ("docker", "firecracker", "qemu-system-x86_64"):
@@ -599,7 +606,7 @@ def main():
         ).stdout.strip()
     rows = []
     caps = {}
-    rng = random.Random(20261004)
+    rng = random.Random(args.seed)
 
     def save():
         report = metadata | {"rows": rows, "capabilities": caps, "load_after": os.getloadavg()}
@@ -638,6 +645,7 @@ def main():
                     save()
                     continue
                 if trial >= 0:
+                    row["benchmark_id"] = metadata["benchmark_ids"][mode]
                     rows.append(row)
                     save()
             if trial >= 0:

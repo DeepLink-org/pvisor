@@ -429,7 +429,6 @@ pub(crate) struct AttemptPrepareOpts<'a> {
     /// Gateway capture and session configuration storage.
     pub capture_storage: &'a Path,
     pub sink: Option<Arc<dyn TrajectoryEventSink>>,
-    pub stream_markdown: bool,
     /// Extra overlay hint from CLI (overrides paths when set).
     pub overlay_override: OverlayHint,
     pub controller: Arc<dyn ControlController>,
@@ -536,7 +535,6 @@ pub(crate) fn prepare_attempt(
         config.clone(),
         capture_storage.clone(),
         Arc::clone(&sink),
-        opts.stream_markdown,
         InProcessRuntime {
             controller: Arc::clone(&opts.controller),
             interception_metrics: network_metrics.clone(),

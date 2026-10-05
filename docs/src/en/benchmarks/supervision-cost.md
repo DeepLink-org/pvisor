@@ -1,8 +1,14 @@
-# Supervision cost: measured review workflow
+# What is the machine cost of batch review and selective application?
 
 ## Main conclusions {#conclusions}
 
-Reviewing 20 files, applying ten and dropping the other ten takes about **25 ms** at machine-side P50. That cost suits interactive use. Human reading and decision time is unmeasured, so no percentage reduction in supervision time is established. Git/diff workflows can also batch review.
+**Reviewing 20 files, applying ten and dropping the other ten takes about **25 ms** at machine-side P50. That cost suits interactive use. Human reading and decision time is unmeasured, so no percentage reduction in supervision time is established. Git/diff workflows can also batch review.**
+
+| Need | Selection implication |
+|---|---|
+| Batch review and path selection | Machine steps fit an interactive flow |
+| Existing Git/diff review workflow | No equivalent timing ranking is available |
+| Estimate human supervision cost | Requires a separate participant study |
 
 ## Motivation {#motivation}
 
@@ -14,14 +20,16 @@ Agent speed is only part of the experience: approvals, diff reading and conflict
 
 These results are from Linux/x86_64; matching macOS workloads are unmeasured. Linked reports pin artifacts, cache conditions and samples.
 
+Tables identify pinned artifacts and measurement dates. Failed or invalid samples are excluded from successful timings and counted separately. Existing measurements have no predefined host-interference filter; all slow valid samples are retained. P95 from 30 or fewer samples is descriptive only; no P99 or stable tail-latency claim is made.
+
 ## Data and analysis {#results}
 
-| Step | N | P50 / P95 / P99 ms |
+| Step | N | P50 / P95 ms |
 |---|---|---|
-| review_ms | 30 | 3.21 / 7.95 / 10.81 |
-| apply_ms | 30 | 17.62 / 43.66 / 51.07 |
-| drop_ms | 30 | 4.07 / 12.83 / 16.68 |
-| wall_ms | 30 | 24.94 / 64.74 / 75.67 |
+| review_ms | 30 | 3.21 / 7.95 |
+| apply_ms | 30 | 17.62 / 43.66 |
+| drop_ms | 30 | 4.07 / 12.83 |
+| wall_ms | 30 | 24.94 / 64.74 |
 
 ### Decisions and interpretation
 
@@ -36,8 +44,3 @@ The familiar reference workflow is inspecting changes with Git/diff and selectin
 
 Human reading/decision time and real-team review success are unmeasured. Machine timings do not establish a percentage labor saving.
 
-### Data sources and reproduction {#run}
-
-[Configuration and sampling](methodology.md#product-v1) · [Manifest](../../assets/benchmarks/product-v1-20261004/manifest.tsv) · [Samples CSV](../../assets/benchmarks/product-v1-20261004/samples.csv) · [Raw evidence](../../assets/benchmarks/product-v1-20261004/evidence.tar.gz)
-
-Reproduction commands and prerequisites are in the [technical methodology record](../design/benchmark-methodology-evidence.md).

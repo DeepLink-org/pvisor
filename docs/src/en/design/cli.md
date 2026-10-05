@@ -94,3 +94,9 @@ Tools come from a static table and only a trusted installation directory; discov
 The default core build excludes Gateway. Use `--features gateway` for capture; wheel builds enable it. Without capture, OverlayNet still authorizes and forwards ordinary explicit proxy traffic. Requesting uncompiled capture or Gateway debug capabilities returns an error.
 
 Embedded callers use `RunHandle` for status, cancellation, checkpoints and Event subscriptions. Session owns Attempt lifecycle; AgentCtl retains workload cooperation duties. See [Core architecture](architecture.md) for execution/terminal handling and [Operation and Event](operations-events.md) for records/failures.
+
+## Implementation ownership {#implementation-ownership}
+
+`cli/run.rs` owns new Job configuration and startup. `cli/run/lifecycle.rs` owns workspace branches and native execution restoration. `runtime/job_execution.rs` owns durable Job state, request receipts and native terminal acknowledgement; it does not infer suspension from a saved filesystem.
+
+Lazy image ownership separates host FUSE mounts from VM direct backend attachments. VM preparation returns a direct attachment; host mount teardown cannot run on that attachment. Gateway persists canonical events and excludes drafts before actor dispatch; it has no live Markdown compatibility option or retired draft projection command.

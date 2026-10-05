@@ -29,8 +29,7 @@ pub struct BaseReference {
 struct Seal {
     version: u32,
     inventory_sha256: String,
-    #[serde(default, skip_serializing_if = "Option::is_none")]
-    content_index_sha256: Option<String>,
+    content_index_sha256: String,
     device: u64,
     inode: u64,
     mtime: i64,
@@ -46,7 +45,7 @@ pub struct SnapshotBase {
     store: PathBuf,
     directory: PathBuf,
     reference: BaseReference,
-    content_index_sha256: Option<String>,
+    content_index_sha256: String,
     lease: File,
 }
 impl SnapshotBase {
@@ -99,13 +98,12 @@ impl SnapshotBase {
     }
     /// A digest-bound receipt file built from the verified import inventory.
     /// Only attach it to this base's lower; keep this lease alive while using it.
-    /// Old imported generations have no index and retain ordinary fingerprints.
-    pub fn content_index(&self) -> Option<(PathBuf, String)> {
-        // open already verified the seal. Reuse its receipt under this lease;
-        // do not reopen/recheck the same metadata merely to attach the index.
-        self.content_index_sha256
-            .as_ref()
-            .map(|digest| (self.directory.join("content-index.bin"), digest.clone()))
+    pub fn content_index(&self) -> (PathBuf, String) {
+        // The seal binds this receipt to the leased generation.
+        (
+            self.directory.join("content-index.bin"),
+            self.content_index_sha256.clone(),
+        )
     }
 
     pub fn verify(&self) -> anyhow::Result<()> {
@@ -116,13 +114,11 @@ impl SnapshotBase {
             "base inventory digest mismatch"
         );
         let inventory: TreeInventory = serde_json::from_slice(&bytes)?;
-        if let Some(expected) = &seal.content_index_sha256 {
-            let index = fs::read(self.directory.join("content-index.bin"))?;
-            ensure!(
-                digest(&index) == *expected,
-                "base content index digest mismatch"
-            );
-        }
+        let index = fs::read(self.directory.join("content-index.bin"))?;
+        ensure!(
+            digest(&index) == seal.content_index_sha256,
+            "base content index digest mismatch"
+        );
         verify_tree(&self.root(), &inventory)
     }
     pub(super) fn pin(&self, store: &Path, destination: &Path) -> anyhow::Result<()> {
@@ -151,11 +147,9 @@ fn check(directory: &Path, reference: &BaseReference) -> anyhow::Result<Seal> {
     let bytes = fs::read(directory.join("seal.json"))?;
     ensure!(digest(&bytes) == reference.id, "base seal digest mismatch");
     let seal: Seal = serde_json::from_slice(&bytes)?;
-    ensure!(seal.version == 1, "unsupported base seal");
+    ensure!(seal.version == 2, "unsupported base seal");
     valid_id(&seal.inventory_sha256)?;
-    if let Some(digest) = &seal.content_index_sha256 {
-        valid_id(digest)?;
-    }
+    valid_id(&seal.content_index_sha256)?;
     let root = fs::symlink_metadata(directory.join("rootfs"))?;
     ensure!(
         root.is_dir()
@@ -222,9 +216,9 @@ impl SnapshotStore {
         write_synced(&pending.directory().join("inventory.json"), &bytes)?;
         let root = fs::symlink_metadata(pending.directory().join("rootfs"))?;
         let seal = Seal {
-            version: 1,
+            version: 2,
             inventory_sha256: digest(&bytes),
-            content_index_sha256: Some(digest(&index)),
+            content_index_sha256: digest(&index),
             device: root.dev(),
             inode: root.ino(),
             mtime: root.mtime(),
@@ -316,7 +310,7 @@ mod tests {
         fs::write(source.join("file"), b"original").unwrap();
         let store = SnapshotStore::new(&temp.path().join("store")).unwrap();
         let base = store.import_base(&source).unwrap();
-        let (index, sha256) = base.content_index().unwrap();
+        let (index, sha256) = base.content_index();
         fs::write(source.join("file"), b"later source edit").unwrap();
         let journal = temp.path().join("preimages");
         let core = pvisor_overlay_core::OverlayCore::new_with_exclusions_and_preimages(
@@ -345,10 +339,8 @@ mod tests {
         );
     }
     #[test]
-    fn legacy_seals_without_content_receipts_keep_their_serialized_shape() {
+    fn seals_without_content_receipts_are_rejected() {
         let bytes = br#"{"version":1,"inventory_sha256":"0000000000000000000000000000000000000000000000000000000000000000","device":1,"inode":2,"mtime":3,"mtime_nsec":4,"ctime":5,"ctime_nsec":6}"#;
-        let seal: Seal = serde_json::from_slice(bytes).unwrap();
-        assert!(seal.content_index_sha256.is_none());
-        assert_eq!(serde_json::to_vec(&seal).unwrap(), bytes);
+        assert!(serde_json::from_slice::<Seal>(bytes).is_err());
     }
 }

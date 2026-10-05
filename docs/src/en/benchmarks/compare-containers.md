@@ -1,10 +1,16 @@
-# Comparison: Docker / devcontainer
+# Do you need pVisor alongside Docker or devcontainers?
 
 ## Main conclusions {#conclusions}
 
 **Docker bind-mount file access is near native and ahead of pVisor's staged path; measured short staged repair tasks are close to Docker and slightly faster.** Same-tool repair/tests take **0.70 s** staged, **0.90 s** Docker and **3.97 s** pVisor VM. pVisor's value is retained changes, conflict checks and selective application; “faster than Docker across the board” would be inaccurate.
 
 Established Docker + worktree/Git review pipelines remain useful. Consider staged when multiple Agents or non-Git directories need one application protocol.
+
+| Need | Selection implication |
+|---|---|
+| Existing Docker + worktree/Git | Keep the workflow and compare tool costs |
+| Unified staging and selective application across Agents | Evaluate pVisor host staged |
+| Independent guest kernel | Compare VM execution costs |
 
 ## Motivation {#motivation}
 
@@ -22,6 +28,8 @@ Linux same-host comparisons share two cores, Python/Node/Rust/Agent tools and in
 | pVisor staged | Stage retains changes before apply; selective paths and preimage conflict checks |
 
 See Docker's [bind-mount documentation](https://docs.docker.com/engine/storage/bind-mounts/) for default host writes and the [devcontainer specification](https://containers.dev/) for configuration.
+
+Tables identify pinned artifacts and measurement dates. Failed or invalid samples are excluded from successful timings and counted separately. Existing measurements have no predefined host-interference filter; all slow valid samples are retained. P95 from 30 or fewer samples is descriptive only; no P99 or stable tail-latency claim is made.
 
 ## Data and analysis {#results}
 

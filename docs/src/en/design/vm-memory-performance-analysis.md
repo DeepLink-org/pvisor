@@ -250,7 +250,7 @@ Top: RAM proxy; middle: encoded pool data; bottom: footprint. Solid / dashed lin
 
     Predefined plateau criteria: at least 25 valid samples per 30-second window; RAM proxy span at most max(4 MiB, 10% of the median); nonzero pool payload with span at most 10% of its median; absolute least-squares RAM trend at most 1 MiB per 30 seconds. Plateau onset also requires every subsequent complete rolling window through 175 seconds to meet those criteria. These criteria describe this experiment, not production steady state.
 
-[Full timeline CSV](../benchmarks/vm-memory/assets/2048-long-idle.csv) · [Independent verification JSON](../benchmarks/vm-memory/assets/2048-long-idle.json). Raw runs, the predefined protocol, source snapshots and input hashes are in `review_project/06-evidence/macos-memory/cli-2048-long-idle-2026-10-03/`, with runs under `cases/`. Binary source provenance remains the original matrix's `input-provenance.json`; follow-up working-tree hashes do not establish the frozen executable's source.
+Local raw record `docs/src/en/benchmarks/vm-memory/assets/.data/2048-long-idle.csv` · Local raw record `docs/src/en/benchmarks/vm-memory/assets/.data/2048-long-idle.json`. Raw runs, the predefined protocol, source snapshots and input hashes are in `review_project/06-evidence/macos-memory/cli-2048-long-idle-2026-10-03/`, with runs under `cases/`. Binary source provenance remains the original matrix's `input-provenance.json`; follow-up working-tree hashes do not establish the frozen executable's source.
 
 ### How parameters affect benefits {#matrix}
 
@@ -450,7 +450,7 @@ The 256 MiB profile first falls to about 60 MiB at 11–12 seconds, then continu
 
 Top panels show the aggregate RAM proxy across both VMs and the pool; bottom panels show encoded pool payload. Solid blue and dashed orange lines represent the two runs. Green marks the 18–33 second measurement window; purple marks reads, writes and exit after 35 seconds. Shared axis scales support comparison. Curves start at samples at least one second after ready, excluding lagging diagnostics immediately at ready. The 2 GiB payload remains zero throughout the green window; its final drop to zero occurs during exit and does not indicate completed reclamation.
 
-[Download all six time series](../benchmarks/vm-memory/assets/startup-timeline.csv) to inspect intermediate plateaus and transient changes. Sampling is approximately 1 Hz; plateau times above are descriptive readings of the curves, not results from a predefined steady-state acceptance threshold. After 35 seconds, full reads, private writes and exit change the workload phase, so those samples cannot estimate idle steady state. Capacity-planning measurements need a longer idle phase, predefined bounds on RAM and pool occupancy variation over sustained windows, and confirmation that no downward trend remains. The original 35-second matrix contains no such long-duration measurements. The 180-second follow-up below extends observation but still does not establish final steady state.
+Local raw record `docs/src/en/benchmarks/vm-memory/assets/.data/startup-timeline.csv` to inspect intermediate plateaus and transient changes. Sampling is approximately 1 Hz; plateau times above are descriptive readings of the curves, not results from a predefined steady-state acceptance threshold. After 35 seconds, full reads, private writes and exit change the workload phase, so those samples cannot estimate idle steady state. Capacity-planning measurements need a longer idle phase, predefined bounds on RAM and pool occupancy variation over sustained windows, and confirmation that no downward trend remains. The original 35-second matrix contains no such long-duration measurements. The 180-second follow-up below extends observation but still does not establish final steady state.
 
 ### Choosing a configuration {#decisions}
 
@@ -510,7 +510,7 @@ Earlier pilot issues with ready/read matching, long socket paths, and CPU units 
 
 ### macOS/HVF: evidence and reproduction {#evidence}
 
-[Download summary JSON](../benchmarks/vm-memory/assets/decision.json) · [Configuration CSV](../benchmarks/vm-memory/assets/decision.csv) · [Parameter-boundary JSON](../benchmarks/vm-memory/assets/compatibility.json)
+Local raw record `docs/src/en/benchmarks/vm-memory/assets/.data/decision.json` · Local raw record `docs/src/en/benchmarks/vm-memory/assets/.data/decision.csv` · Local raw record `docs/src/en/benchmarks/vm-memory/assets/.data/compatibility.json`
 
 | Object | Record |
 |---|---|
@@ -561,6 +561,6 @@ python3 benchmark/pvisor/vm_snapshot.py \
 
 Supply a prepared guest rootfs and firmware directory. The complete snapshot benchmark requires a new output directory and copies the CLI to pin compatibility identity. It retains each private store, separate logs and correctness result. Source/artifact preparation and compilation are excluded from timings.
 
-- [Per-cycle lifecycle data](../../assets/benchmarks/vm-lifecycle-20261003/lifecycle.tsv)
-- [Snapshot samples and artifact digests](../../assets/benchmarks/vm-lifecycle-20261003/snapshot.tsv)
-- [Environment, pool and validation results](../../assets/benchmarks/vm-lifecycle-20261003/validation.tsv)
+- Local raw record `docs/src/assets/benchmarks/.data/vm-lifecycle-20261003/lifecycle.tsv`
+- Local raw record `docs/src/assets/benchmarks/.data/vm-lifecycle-20261003/snapshot.tsv`
+- Local raw record `docs/src/assets/benchmarks/.data/vm-lifecycle-20261003/validation.tsv`

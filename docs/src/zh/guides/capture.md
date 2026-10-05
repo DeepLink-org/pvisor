@@ -16,7 +16,6 @@ pvisor run \
 
 pVisor 启动内嵌 Gateway、向子进程注入代理或 base URL、等待执行、排空捕获并停止
 Gateway。使用 `--record-destination ./capture` 将 Trace Event journal 写入指定目录。
-`--gateway-stream-markdown` 仅保留兼容参数，当前不生成 Markdown 投影。
 
 ### 事件时间戳与顺序
 

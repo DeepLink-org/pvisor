@@ -1,10 +1,16 @@
-# 对比：Firecracker、QEMU、gVisor 与 Kata
+# 如何在 pVisor、Firecracker、QEMU 与隔离运行时之间选择？
 
 ## 主要结论 {#conclusions}
 
 **pVisor VM 的轻量启动接近 Firecracker/QEMU microvm，工具任务目前更慢。** 同工具修复/测试 P50 为 pVisor **3.97 s**、Firecracker **2.25 s**、QEMU microvm **1.85 s**。无镜像 pVisor 比启动完整 Ubuntu 更早返回短任务结果，优势来自减少完整系统启动等待。
 
 gVisor/Kata 没有同机性能数据。pVisor 当前 VM 基座为 libkrun；独立测过 Firecracker/QEMU 不表示它们已接入为 pVisor executor。
+
+| 需求 | 选型含义 |
+|---|---|
+| 只需轻量 VM 执行 | 同时比较 Firecracker 和 QEMU microvm |
+| 需要统一 stage/apply | 评估 pVisor 的执行与合入总成本 |
+| 需要 gVisor 或 Kata | 没有同条件本机性能排名 |
 
 ## Motivation {#motivation}
 
@@ -22,6 +28,8 @@ Linux 同机、相同两核预算、2 vCPU；轻量启动 128 MiB，工具任务
 | Kata | VM 支持容器工作流 | 未接入验收或同机测量 |
 
 官方定位见 [gVisor](https://gvisor.dev/docs/)、[Firecracker](https://firecracker-microvm.github.io/) 和 [Kata](https://katacontainers.io/)；pVisor 支持范围见[执行器](../guides/executors/index.md)。
+
+固定制品与测量日期按表注明。失败与校验不通过的样本不计入成功耗时，失败数量单列；既有数据没有事先的宿主干扰剔除规则，所有通过校验的慢样本保留。30 次及更少采样的 P95 仅为观察参考，不给 P99 或稳定尾延迟承诺。
 
 ## 实验数据和分析 {#results}
 

@@ -496,7 +496,6 @@ upstream = {upstream:?}
             config,
             storage_path,
             sink,
-            false,
             gateway_listener,
             admin_listener,
             async {

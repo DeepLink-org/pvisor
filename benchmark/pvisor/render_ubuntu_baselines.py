@@ -8,6 +8,7 @@ from collections import defaultdict
 from pathlib import Path
 
 from bench import percentile
+from publication import write_derived_summary
 from evidence_tsv import copy_evidence, migrate, resolve
 from evidence_tsv import load as load_evidence
 from render_reference_baselines import export_evidence
@@ -104,7 +105,8 @@ def summarize(report):
     return result
 
 
-def plot(summaries, out):
+def write_derived_summary(public_output / "summary.csv", summaries)
+    plot(summaries, public_output):
     import matplotlib
 
     matplotlib.use("Agg")
@@ -209,8 +211,10 @@ def main():
     )
     p.add_argument("--output", type=Path, required=True)
     args = p.parse_args()
-    out = args.output
-    out.mkdir(parents=True, exist_ok=True)
+    public_output = args.output
+    public_output.mkdir(parents=True, exist_ok=True)
+    out = public_output / ".data"
+    out.mkdir(exist_ok=True)
     summaries, metadata, samples, selected = {}, {}, [], {}
     for report_path in args.report:
         report = load_evidence(report_path)
@@ -290,7 +294,8 @@ def main():
         source = args.assets / name
         if resolve(source).exists():
             copy_evidence(source, out / name)
-    plot(summaries, out)
+    write_derived_summary(public_output / "summary.csv", summaries)
+    plot(summaries, public_output)
     migrate(out, replace=True)
     print(out)
 

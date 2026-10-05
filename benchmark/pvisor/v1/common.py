@@ -62,7 +62,7 @@ class Context:
         shutil.copytree(
             self.repo / "benchmark/pvisor",
             self.output / "harness",
-            ignore=shutil.ignore_patterns("__pycache__", ".pytest_cache"),
+            ignore=shutil.ignore_patterns("__pycache__", ".pytest_cache", ".data"),
         )
         self.env = os.environ.copy()
         for key in (

@@ -236,7 +236,7 @@ vm-cases *args: (build "release") vm-case-driver
     PVISOR_CASE_VM_DRIVER="{{ target_dir }}/release/examples/vm_control_case" cargo run --quiet --manifest-path tools/semspec/Cargo.toml --locked -- --config semspec-doc.toml run docs/src/zh/reference/cases-vm.md --domain DOC --subject-bin "{{ target_dir }}/release/pvisor" --format json --output "{{ target_dir }}/pvisor-vm-case-report.json" "$@"
 
 # Measure process startup and Run Bundle access (smoke or nightly).
-benchmark suite="smoke" output="target/pvisor-benchmark/current" build_dir="target/pvisor-benchmark-build":
+benchmark suite="smoke" output="benchmark/pvisor/.data/process-current" build_dir="target/pvisor-benchmark-build":
     bash benchmark/pvisor/run.sh run --suite "$1" --output "$2" --target-dir "$3"
 
 # Build, preflight, and benchmark all available sandbox cases in one command.
@@ -245,10 +245,10 @@ benchmark-startup *args:
 
 # Run the low-level startup harness with explicit rootfs/image inputs.
 benchmark-startup-raw *args:
-    python3 benchmark/pvisor/startup.py --output target/pvisor-benchmark/startup "$@"
+    python3 benchmark/pvisor/startup.py --output benchmark/pvisor/.data/startup "$@"
 
 # Compare reports from the same host; an empty baseline is allowed.
-benchmark-compare candidate baseline="" output="target/pvisor-benchmark/comparison" threshold="15":
+benchmark-compare candidate baseline="" output="benchmark/pvisor/.data/comparison" threshold="15":
     bash benchmark/pvisor/run.sh compare --candidate "$1" --baseline "$2" --output "$3" --regression-threshold "$4"
 
 test-benchmark *args:
@@ -291,12 +291,7 @@ cases-v2 *args: (build "release")
 test-hvf-cold-restore:
     python3 scripts/check-hvf-cold-restore.py --target-dir "{{ target_dir }}"
 
-# VMM owning-thread/GIC checks; full Linux snapshot acceptance is separate.
+# VMM owning-thread/GIC correctness checks.
 test-vm-snapshot-state:
     python3 scripts/check-vm-snapshot-state.py --target-dir "{{ target_dir }}"
 
-# Historical standalone snapshot gate: the current CLI no longer exposes it.
-# Use archived binaries with benchmark/pvisor/vm_stress.py to reproduce old evidence.
-test-vm-stress output cycles="5" forks="4" seed="1":
-    @echo 'Standalone snapshot CLI is removed. Use an archived binary for vm_stress.py; current capped environment-sharing gate: just test-service-vm.' >&2
-    @exit 2

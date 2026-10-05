@@ -2,7 +2,7 @@
 
 2026-10-05 的探索性测量观察到：**增加 Worker 和 CPU 预算后，1→4 台轻量 VM 可并行就绪、内存近似线性增长；Controller 的计数查询避免了随历史量全表扫描**。这尚未验证固定宿主预算下的有效 Agent 吞吐、密度或完整系统扩展性。
 
-下一轮先冻结问题、假设、对照和判定标准，再采样；详见[benchmark 应先回答的问题](../benchmarks/cluster-questions.md)。该协议在本次测量之后编写，不追认已有曲线为预注册验证。保留历史的内存和回放增长是待定位问题，不是某项优化已获验证的收益。
+下一轮先冻结问题、假设、对照和判定标准，再采样；详见[benchmark 应先回答的问题](cluster-benchmark-plan.md)。该协议在本次测量之后编写，不追认已有曲线为预注册验证。保留历史的内存和回放增长是待定位问题，不是某项优化已获验证的收益。
 
 这批任务没有指定不可变环境 handle 或 checkpoint restore，且每 VM一个独立Worker，未覆盖[共享工作集与惰性加载](cluster/shared-working-set.md)的关键复用路径。后续优先验证 S1共享RAM 与 S2大环境小工作集，而不是把本图当作这些机制的性能结论。
 
@@ -84,4 +84,4 @@ python3 benchmark/pvisor/cluster_scalability.py \
 MPLCONFIGDIR=/tmp/pvisor-plot-cache python3 benchmark/pvisor/plot_cluster_scalability.py
 ```
 
-[执行 TSV](../../assets/benchmarks/cluster-scalability-20261005/vm.tsv) · [执行汇总 CSV](../../assets/benchmarks/cluster-scalability-20261005/vm-summary.csv) · [Controller 汇总 CSV](../../assets/benchmarks/cluster-scalability-20261005/controller-summary.csv) · [Controller 源码/构建身份](../../assets/benchmarks/cluster-scalability-20261005/controller-provenance.tsv) · [归档 manifest](../../assets/benchmarks/cluster-scalability-20261005/manifest.tsv) · [首次配置失败](../../assets/benchmarks/cluster-scalability-20261005/setup-failure.tsv)
+本地原始记录 `docs/src/assets/benchmarks/.data/cluster-scalability-20261005/vm.tsv` · 本地原始记录 `docs/src/assets/benchmarks/.data/cluster-scalability-20261005/vm-summary.csv` · 本地原始记录 `docs/src/assets/benchmarks/.data/cluster-scalability-20261005/controller-summary.csv` · 本地原始记录 `docs/src/assets/benchmarks/.data/cluster-scalability-20261005/controller-provenance.tsv` · 本地原始记录 `docs/src/assets/benchmarks/.data/cluster-scalability-20261005/manifest.tsv` · 本地原始记录 `docs/src/assets/benchmarks/.data/cluster-scalability-20261005/setup-failure.tsv`

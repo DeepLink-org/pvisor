@@ -155,7 +155,7 @@ def main():
     (root / "bench").mkdir(exist_ok=True)
     shutil.copy2(R / "benchmark/pvisor/reference_workload.py", root / "bench/reference_workload.py")
     shutil.copytree(
-        R / "benchmark/pvisor", root / "bench/harness", ignore=shutil.ignore_patterns("__pycache__")
+        R / "benchmark/pvisor", root / "bench/harness", ignore=shutil.ignore_patterns("__pycache__", ".data")
     )
     # Python extensions load libraries on demand; interpreter ldd alone is insufficient.
     extensions = list((root / "usr/lib64").glob("python*/lib-dynload/*.so"))
