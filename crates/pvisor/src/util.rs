@@ -87,6 +87,19 @@ pub(crate) fn startup_mark_run(stage: &str, run_id: &str) {
     startup_checkpoint(stage, Some(run_id));
 }
 
+/// Host work counters accompanying startup/lifecycle timing, without guest data.
+pub(crate) fn startup_detail_run(stage: &str, run_id: &str, fields: std::fmt::Arguments<'_>) {
+    if startup_logging_enabled() {
+        crate::diagnostics::diagnostic(format_args!(
+            "pvisor-startup-detail level=info pid={} run_id={} stage={} {}",
+            std::process::id(),
+            serde_json::to_string(run_id).unwrap_or_default(),
+            stage,
+            fields,
+        ));
+    }
+}
+
 fn startup_checkpoint(stage: &str, run_id: Option<&str>) {
     #[cfg(unix)]
     {

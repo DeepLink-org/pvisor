@@ -17,6 +17,7 @@ axum = { workspace = true, features = ["http1", "http2", "tokio"] }
 pvisor-guest.workspace = true
 anyhow.workspace = true
 async-trait.workspace = true
+blake3.workspace = true
 chrono.workspace = true
 clap = { workspace = true, features = ["derive", "env", "string"] }
 dirs.workspace = true

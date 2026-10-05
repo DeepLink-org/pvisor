@@ -183,6 +183,10 @@ fn spec(id: &str, command: &str) -> TaskSpec {
     run.runtime.max_output_bytes = 4096;
     run.runtime.termination_grace_ms = 100;
     TaskSpec {
+        retain_artifacts: None,
+        gateway: None,
+        cpu_qos: None,
+        restore: None,
         version: CLUSTER_VERSION,
         id: id.into(),
         tenant: "test".into(),
@@ -209,7 +213,10 @@ async fn wait(client: &Client, id: &str, terminal: bool) -> TaskRecord {
             if if terminal {
                 task.phase.terminal()
             } else {
-                task.phase == TaskPhase::Running
+                matches!(
+                    task.phase,
+                    TaskPhase::Running | TaskPhase::RetainingArtifacts
+                )
             } {
                 break task;
             }
@@ -482,6 +489,12 @@ async fn worker_restart_finishes_interrupted_bundle_upload_and_renews_only_termi
         &format!("printf 'once\\n' >> {}; printf completed", marker.display()),
     );
     task.retain_bundle = true;
+    task.retain_artifacts = Some(ArtifactRetention {
+        execution_checkpoint: None,
+        version: ARTIFACT_EXPORT_VERSION,
+        trace: true,
+        workspace_upper: false,
+    });
     admin.submit(&task).await.unwrap();
     let worker = spawn_worker(&url, "restart-upload", temp.path());
     let state = temp.path().join("restart-upload");
@@ -492,7 +505,19 @@ async fn worker_restart_finishes_interrupted_bundle_upload_and_renews_only_termi
         .unwrap();
     let attempt = pending["completion"]["result"]["attempt_id"].clone();
     let original = std::fs::read(state.join("tasks/upload-restart-1/run-bundle.json")).unwrap();
+    tokio::time::timeout(Duration::from_secs(5), async {
+        while faults.uploads.load(Ordering::SeqCst) == 0 {
+            tokio::time::sleep(Duration::from_millis(10)).await;
+        }
+    })
+    .await
+    .unwrap();
     drop(worker);
+    let sealed_trace = std::fs::read(state.join("tasks/upload-restart-1/retained/trace")).unwrap();
+    // Recovery must deliver the sealed terminal trace, even if the original
+    // Worker-local source is lost after the first successful blob publication.
+    std::fs::remove_file(state.join("tasks/upload-restart-1/trace")).unwrap();
+    assert_eq!(pending["retention"]["trace"], true);
     faults.uploads.store(0, Ordering::SeqCst);
     faults.blocked.store(false, Ordering::SeqCst);
     let _restarted = spawn_worker(&url, "restart-upload", temp.path());
@@ -516,6 +541,12 @@ async fn worker_restart_finishes_interrupted_bundle_upload_and_renews_only_termi
     assert_eq!(
         std::fs::read(output.join("run-bundle.json")).unwrap(),
         original
+    );
+    assert_eq!(std::fs::read(output.join("trace")).unwrap(), sealed_trace);
+    assert!(
+        !pvisor::trace::Journal::read(&output.join("trace"))
+            .unwrap()
+            .is_empty()
     );
     server.abort();
 }
@@ -859,6 +890,13 @@ async fn artifact_http_requires_live_lease_exact_hash_bounded_body_and_separate_
     let task = spec("wire-artifacts", "true");
     worker
         .register(&WorkerRegistration {
+            checkpoint_storage: None,
+            artifact_export: None,
+            gateway: None,
+            cpu_observation_protocol: None,
+            cpu_qos_classes: vec![],
+            execution_restore_protocol: None,
+            parked_execution_suspend_protocol: None,
             version: CLUSTER_VERSION,
             id: "publisher".into(),
             incarnation: "epoch".into(),
@@ -1223,6 +1261,13 @@ async fn worker_credentials_cannot_submit_or_read_tenant_tasks() {
     }
     worker
         .register(&WorkerRegistration {
+            checkpoint_storage: None,
+            artifact_export: None,
+            gateway: None,
+            cpu_observation_protocol: None,
+            cpu_qos_classes: vec![],
+            execution_restore_protocol: None,
+            parked_execution_suspend_protocol: None,
             version: CLUSTER_VERSION,
             id: "recovery-role".into(),
             incarnation: "epoch".into(),
@@ -1335,6 +1380,13 @@ async fn vm_control_wire_protocol_enforces_roles_and_resume_admission() {
     let capacity = task.resources;
     worker
         .register(&WorkerRegistration {
+            checkpoint_storage: None,
+            artifact_export: None,
+            gateway: None,
+            cpu_observation_protocol: None,
+            cpu_qos_classes: vec![],
+            execution_restore_protocol: None,
+            parked_execution_suspend_protocol: None,
             version: CLUSTER_VERSION,
             id: "wire".into(),
             incarnation: "epoch".into(),
@@ -1406,6 +1458,109 @@ async fn vm_control_wire_protocol_enforces_roles_and_resume_admission() {
         worker.acknowledge_control(&acknowledged).await.unwrap(),
         observed
     );
+    // Synthetic wire evidence tests role/fencing semantics; real physical
+    // process counters are exercised by the KVM/FUSE gate.
+    let key = poll.active[0].clone();
+    let memory_request = MemoryReportRequest {
+        worker_id: key.worker_id.clone(),
+        incarnation: key.incarnation.clone(),
+        samples: vec![AttemptMemorySample {
+            key: key.clone(),
+            sequence: 1,
+            sample_age_ms: 10,
+            sample: pvisor_core::memory::RunMemorySample {
+                run_id: admin.task("vm-wire").await.unwrap().spec.run.run_id,
+                attempt_id: "synthetic-wire-attempt".into(),
+                sampled_at_unix_ms: pvisor_core::unix_now_ms(),
+                usage: None,
+                error: Some("synthetic reader failure".into()),
+            },
+        }],
+    };
+    let node_request = NodeMemoryReportRequest {
+        worker_id: "wire".into(),
+        incarnation: "epoch".into(),
+        sequence: 1,
+        sample_age_ms: 5,
+        sample: pvisor_core::memory::NodeMemorySample {
+            sampled_at_unix_ms: pvisor_core::unix_now_ms(),
+            supervisor: pvisor_core::memory::MemoryObservation::Unavailable {
+                error: "synthetic process failure".into(),
+            },
+            system: pvisor_core::memory::MemoryObservation::Unavailable {
+                error: "synthetic meminfo failure".into(),
+            },
+            cgroup: pvisor_core::memory::MemoryObservation::Unavailable {
+                error: "synthetic inaccessible cgroup".into(),
+            },
+        },
+    };
+    let unauthorized = admin.report_node_memory(&node_request).await.unwrap_err();
+    assert_eq!(
+        unauthorized
+            .downcast_ref::<reqwest::Error>()
+            .and_then(|error| error.status()),
+        Some(reqwest::StatusCode::UNAUTHORIZED)
+    );
+    assert!(
+        worker
+            .report_node_memory(&node_request)
+            .await
+            .unwrap()
+            .accepted
+    );
+    let nodes = admin.workers().await.unwrap();
+    assert_eq!(
+        nodes[0].memory_sample.as_ref().unwrap().report,
+        node_request
+    );
+    let mut stale_node = node_request.clone();
+    stale_node.incarnation = "stale-epoch".into();
+    let stale = worker.report_node_memory(&stale_node).await.unwrap_err();
+    assert_eq!(
+        stale
+            .downcast_ref::<reqwest::Error>()
+            .and_then(|error| error.status()),
+        Some(reqwest::StatusCode::CONFLICT)
+    );
+    assert_eq!(
+        admin.workers().await.unwrap()[0]
+            .memory_sample
+            .as_ref()
+            .unwrap(),
+        nodes[0].memory_sample.as_ref().unwrap()
+    );
+    let unauthorized = admin.report_memory(&memory_request).await.unwrap_err();
+    assert_eq!(
+        unauthorized
+            .downcast_ref::<reqwest::Error>()
+            .and_then(|e| e.status()),
+        Some(reqwest::StatusCode::UNAUTHORIZED)
+    );
+    assert_eq!(
+        worker
+            .report_memory(&memory_request)
+            .await
+            .unwrap()
+            .accepted,
+        vec![key]
+    );
+    let report = admin.task("vm-wire").await.unwrap().memory_sample.unwrap();
+    assert_eq!(report.report, memory_request.samples[0]);
+    assert!(report.report.sample.usage.is_none());
+    let mut stale = memory_request;
+    stale.incarnation = "wrong-epoch".into();
+    let rejected = worker.report_memory(&stale).await.unwrap_err();
+    assert_eq!(
+        rejected
+            .downcast_ref::<reqwest::Error>()
+            .and_then(|e| e.status()),
+        Some(reqwest::StatusCode::CONFLICT)
+    );
+    assert_eq!(
+        admin.task("vm-wire").await.unwrap().memory_sample.unwrap(),
+        report
+    );
     assert_eq!(
         admin.task("vm-wire").await.unwrap().phase,
         TaskPhase::Paused
@@ -1444,6 +1599,738 @@ async fn vm_control_wire_protocol_enforces_roles_and_resume_admission() {
     assert_eq!(
         admin.task("vm-wire").await.unwrap().phase,
         TaskPhase::Running
+    );
+    server.abort();
+}
+
+#[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+async fn durable_graph_executes_ordered_steps_on_independent_workers_and_blocks_failed_successors()
+{
+    let temp = tempfile::tempdir().unwrap();
+    let (admin, url, server) = controller(temp.path()).await;
+    let evidence = temp.path().join("graph-evidence");
+    std::fs::create_dir(&evidence).unwrap();
+    // Force distinct placements through worker identity labels, rather than
+    // relying on a race between workers polling the same ready queue.
+    let node = |id: &str, command: &str, worker: &str, deps: &[&str]| {
+        let mut task = spec(id, command);
+        task.labels.insert("graph-node".into(), worker.into());
+        TaskGraphNode {
+            task,
+            depends_on: deps.iter().map(|d| (*d).into()).collect(),
+        }
+    };
+    let graph = TaskGraphSpec {
+        version: CLUSTER_VERSION,
+        id: "user-task".into(),
+        tenant: "test".into(),
+        nodes: vec![
+            node(
+                "prepare",
+                &format!("printf 'prepared\\n' >> '{}/order'", evidence.display()),
+                "one",
+                &[],
+            ),
+            node(
+                "verify",
+                &format!(
+                    "test -f '{0}/order' && printf 'verified\\n' >> '{0}/order'",
+                    evidence.display()
+                ),
+                "two",
+                &["prepare"],
+            ),
+            node(
+                "deliver",
+                &format!(
+                    "test \"$(wc -l < '{0}/order')\" = 2 && printf 'delivered\\n' >> '{0}/order'",
+                    evidence.display()
+                ),
+                "one",
+                &["verify"],
+            ),
+        ],
+    };
+    admin.submit_graph(&graph).await.unwrap();
+    assert_eq!(
+        admin.task("verify").await.unwrap().phase,
+        TaskPhase::WaitingDependencies
+    );
+    assert!(
+        Client::new(&url, WORKER.into())
+            .unwrap()
+            .graph("user-task")
+            .await
+            .is_err()
+    );
+    assert!(
+        Client::new(&url, WORKER.into())
+            .unwrap()
+            .submit_graph(&graph)
+            .await
+            .is_err()
+    );
+    let spawn = |id: &str, label: &str| {
+        ChildGuard(
+            Command::new(env!("CARGO_BIN_EXE_pvisor-worker"))
+                .args([
+                    "--url",
+                    &url,
+                    "--id",
+                    id,
+                    "--backend",
+                    "host",
+                    "--poll-ms",
+                    "50",
+                    "--slots",
+                    "1",
+                    "--label",
+                    label,
+                ])
+                .arg("--state")
+                .arg(temp.path().join(id))
+                .env("PVISOR_CLUSTER_WORKER_TOKEN", WORKER)
+                .stdout(Stdio::null())
+                .stderr(Stdio::inherit())
+                .spawn()
+                .unwrap(),
+        )
+    };
+    let one = spawn("graph-one", "graph-node=one");
+    let two = spawn("graph-two", "graph-node=two");
+    let delivered = wait(&admin, "deliver", true).await;
+    assert_eq!(delivered.phase, TaskPhase::Succeeded);
+    assert_eq!(
+        std::fs::read_to_string(evidence.join("order")).unwrap(),
+        "prepared\nverified\ndelivered\n"
+    );
+    for (id, owner) in [
+        ("prepare", "graph-one"),
+        ("verify", "graph-two"),
+        ("deliver", "graph-one"),
+    ] {
+        let task = admin.task(id).await.unwrap();
+        assert_eq!(task.generation, 1);
+        assert_eq!(task.lease.unwrap().key.worker_id, owner);
+        assert!(
+            temp.path()
+                .join(owner)
+                .join(format!("tasks/{id}-1/run-bundle.json"))
+                .exists()
+        );
+    }
+    assert_eq!(
+        admin.submit_graph(&graph).await.unwrap().phase,
+        TaskGraphPhase::Succeeded
+    );
+    let mut failure = TaskGraphSpec {
+        version: CLUSTER_VERSION,
+        id: "failed-task".into(),
+        tenant: "test".into(),
+        nodes: vec![
+            node("fail-step", "exit 23", "two", &[]),
+            node(
+                "blocked-step",
+                &format!(
+                    "printf unexpected > '{}/must-not-exist'",
+                    evidence.display()
+                ),
+                "one",
+                &["fail-step"],
+            ),
+        ],
+    };
+    admin.submit_graph(&failure).await.unwrap();
+    assert_eq!(
+        wait(&admin, "fail-step", true).await.phase,
+        TaskPhase::Failed
+    );
+    let blocked = wait(&admin, "blocked-step", true).await;
+    assert_eq!(blocked.phase, TaskPhase::Failed);
+    assert_eq!(blocked.generation, 0);
+    assert!(blocked.lease.is_none());
+    assert!(!evidence.join("must-not-exist").exists());
+    assert_eq!(
+        admin.graph("failed-task").await.unwrap().phase,
+        TaskGraphPhase::Failed
+    );
+    failure.nodes[1].depends_on.clear();
+    assert!(admin.submit_graph(&failure).await.is_err());
+    let cancellation = TaskGraphSpec {
+        version: CLUSTER_VERSION,
+        id: "cancel-task".into(),
+        tenant: "test".into(),
+        nodes: vec![
+            node(
+                "long-step",
+                &format!(
+                    "printf started > '{}/started'; sleep 30",
+                    evidence.display()
+                ),
+                "one",
+                &[],
+            ),
+            node(
+                "cancelled-successor",
+                &format!(
+                    "printf unexpected > '{}/cancelled-must-not-exist'",
+                    evidence.display()
+                ),
+                "two",
+                &["long-step"],
+            ),
+        ],
+    };
+    admin.submit_graph(&cancellation).await.unwrap();
+    wait(&admin, "long-step", false).await;
+    tokio::time::timeout(Duration::from_secs(5), async {
+        while !evidence.join("started").exists() {
+            tokio::time::sleep(Duration::from_millis(10)).await;
+        }
+    })
+    .await
+    .unwrap();
+    assert!(
+        Client::new(&url, WORKER.into())
+            .unwrap()
+            .cancel_graph("cancel-task")
+            .await
+            .is_err()
+    );
+    assert_eq!(
+        admin.cancel_graph("cancel-task").await.unwrap().phase,
+        TaskGraphPhase::Cancelling
+    );
+    assert_eq!(
+        wait(&admin, "long-step", true).await.phase,
+        TaskPhase::Cancelled
+    );
+    assert_eq!(
+        admin.graph("cancel-task").await.unwrap().phase,
+        TaskGraphPhase::Cancelled
+    );
+    assert_eq!(
+        admin.task("cancelled-successor").await.unwrap().generation,
+        0
+    );
+    assert!(!evidence.join("cancelled-must-not-exist").exists());
+    drop(one);
+    drop(two);
+    drop(admin);
+    server.abort();
+    let _ = server.await;
+    let recovered = tokio::time::timeout(Duration::from_secs(3), async {
+        loop {
+            match Scheduler::open(&temp.path().join("journal"), SchedulerConfig::default()) {
+                Ok(s) => break s,
+                Err(error) if error.to_string().contains("already owned") => {
+                    tokio::time::sleep(Duration::from_millis(10)).await
+                }
+                Err(error) => panic!("graph recovery failed: {error:#}"),
+            }
+        }
+    })
+    .await
+    .unwrap();
+    assert_eq!(
+        recovered.graph("user-task").unwrap().phase,
+        TaskGraphPhase::Succeeded
+    );
+    assert_eq!(
+        recovered.graph("failed-task").unwrap().phase,
+        TaskGraphPhase::Failed
+    );
+    assert_eq!(
+        recovered.graph("cancel-task").unwrap().phase,
+        TaskGraphPhase::Cancelled
+    );
+    assert_eq!(recovered.task("blocked-step").unwrap().generation, 0);
+    assert_eq!(
+        std::fs::read_to_string(evidence.join("order")).unwrap(),
+        "prepared\nverified\ndelivered\n"
+    );
+}
+
+#[cfg(feature = "gateway")]
+#[path = "common/model_service.rs"]
+mod model_service;
+
+#[cfg(feature = "gateway")]
+#[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+async fn cluster_worker_gateway_runs_agent_model_tool_loop_with_private_credentials_and_attempt_trace()
+ {
+    use model_service::{KEY, ModelService};
+    let upstream = ModelService::start_held().await;
+    upstream.release();
+    let temp = tempfile::tempdir().unwrap();
+    let (admin, url, server) = controller(temp.path()).await;
+    let script = temp.path().join("agent.py");
+    std::fs::write(&script, include_str!("fixtures/cluster_agent_loop.py")).unwrap();
+    let workspace = temp.path().join("workspace");
+    std::fs::create_dir(&workspace).unwrap();
+    let profile = temp.path().join("gateway.toml");
+    // Unknown aliases resolve to the authorized upstream, but must still be
+    // denied by the task's client-model capability before dispatch.
+    std::fs::write(&profile, format!("[gateway]\nenabled = true\nlevel = 'dialogue'\n\n[[gateway.routes]]\nname = 'test-model'\nupstream = {}\napi_key_env = 'PVISOR_TEST_MODEL_KEY'\n\n[[gateway.routes]]\nname = '*'\nforward = 'test-model'\n", serde_json::to_string(&upstream.base_url).unwrap())).unwrap();
+    let mut task = spec("agent-gateway", "unused");
+    task.retain_bundle = true;
+    task.retain_artifacts = Some(ArtifactRetention {
+        execution_checkpoint: None,
+        version: ARTIFACT_EXPORT_VERSION,
+        trace: true,
+        workspace_upper: false,
+    });
+    task.gateway = Some(GatewayRequirement {
+        version: CLUSTER_VERSION,
+        level: pvisor_core::gateway::CaptureLevel::Dialogue,
+        models: vec!["test-model".into()],
+    });
+    task.run.capabilities.models = vec!["test-model".into()];
+    let RunInvocation::Process(process) = &mut task.run.invocation;
+    process.program = "/usr/bin/python3".into();
+    process.args = vec![script.display().to_string()];
+    process.cwd = Some(workspace.display().to_string());
+    admin.submit(&task).await.unwrap();
+    let legacy = spawn_worker(&url, "without-gateway", temp.path());
+    tokio::time::timeout(Duration::from_secs(5), async {
+        while admin.workers().await.unwrap().is_empty() {
+            tokio::time::sleep(Duration::from_millis(10)).await;
+        }
+    })
+    .await
+    .unwrap();
+    assert_eq!(
+        admin.task("agent-gateway").await.unwrap().phase,
+        TaskPhase::Queued
+    );
+    let worker = ChildGuard(
+        Command::new(env!("CARGO_BIN_EXE_pvisor-worker"))
+            .args([
+                "--url",
+                &url,
+                "--id",
+                "agent-worker",
+                "--backend",
+                "host",
+                "--poll-ms",
+                "50",
+                "--slots",
+                "2",
+            ])
+            .arg("--state")
+            .arg(temp.path().join("agent-worker"))
+            .arg("--config")
+            .arg(&profile)
+            .env("PVISOR_CLUSTER_WORKER_TOKEN", WORKER)
+            .env("PVISOR_CLUSTER_TOKEN", ADMIN)
+            .env("PVISOR_TEST_MODEL_KEY", KEY)
+            .stdout(Stdio::null())
+            .stderr(Stdio::inherit())
+            .spawn()
+            .unwrap(),
+    );
+    let finished = wait(&admin, "agent-gateway", true).await;
+    assert_eq!(finished.phase, TaskPhase::Succeeded, "{finished:?}");
+    assert_eq!(
+        finished.lease.as_ref().unwrap().key.worker_id,
+        "agent-worker"
+    );
+    assert_eq!(
+        finished.result.as_ref().unwrap().output.stdout.as_deref(),
+        Some("agent loop completed: 3 tests passed; unauthorized model denied\n")
+    );
+    assert_eq!(upstream.calls.lock().unwrap().len(), 2);
+    assert_eq!(
+        std::fs::read_to_string(workspace.join("answer.py")).unwrap(),
+        "def multiply(a, b):\n    return a * b\n"
+    );
+    let storage = temp.path().join("agent-worker/tasks/agent-gateway-1");
+    let bundle: pvisor::RunBundle =
+        serde_json::from_slice(&std::fs::read(storage.join("run-bundle.json")).unwrap()).unwrap();
+    assert_eq!(
+        bundle.orchestration["pvisor.orchestration.gateway"],
+        serde_json::to_value(task.gateway.as_ref().unwrap()).unwrap()
+    );
+    let download = temp.path().join("download");
+    admin
+        .download_artifacts("agent-gateway", &download)
+        .await
+        .unwrap();
+    assert_eq!(
+        std::fs::read(download.join("run-bundle.json")).unwrap(),
+        std::fs::read(storage.join("run-bundle.json")).unwrap()
+    );
+    let downloaded_trace = pvisor::trace::Journal::read(&download.join("trace")).unwrap();
+    let collision = temp.path().join("existing-output");
+    std::fs::create_dir(&collision).unwrap();
+    std::fs::write(collision.join("trace"), b"user data").unwrap();
+    assert!(
+        admin
+            .download_artifacts("agent-gateway", &collision)
+            .await
+            .is_err()
+    );
+    assert_eq!(
+        std::fs::read(collision.join("trace")).unwrap(),
+        b"user data"
+    );
+    assert!(!collision.join("run-bundle.json").exists());
+    assert!(
+        downloaded_trace
+            .iter()
+            .any(|r| r.event.producer.contains("gateway"))
+    );
+    assert!(
+        downloaded_trace
+            .iter()
+            .any(|r| r.event.producer.contains("pvisor"))
+    );
+    // Stop the Worker to close all RunControl/journal references before read-only
+    // trace inspection. The committed native evidence remains on disk.
+    drop(worker);
+    drop(legacy);
+    let records = pvisor::trace::Journal::read(&storage.join("trace")).unwrap();
+    assert!(
+        records.iter().any(|r| r.event.producer.contains("gateway")),
+        "missing Gateway facts"
+    );
+    assert!(
+        records.iter().any(|r| r.event.producer.contains("pvisor")),
+        "missing executor facts"
+    );
+    let serialized = serde_json::to_string(&records).unwrap();
+    assert!(serialized.contains("test-model") && serialized.contains("write_and_test"));
+    for record in &records {
+        record.event.validate().unwrap();
+    }
+    for file in [
+        storage.join("trace"),
+        storage.join("run-bundle.json"),
+        storage.join("assignment.json"),
+        temp.path().join("journal"),
+    ] {
+        let bytes = std::fs::read(file).unwrap();
+        assert!(
+            !bytes
+                .windows(KEY.len())
+                .any(|window| window == KEY.as_bytes())
+        );
+    }
+    server.abort();
+}
+
+#[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+async fn unsupported_or_corrupt_native_handoff_never_releases_local_execution_slots() {
+    use axum::{
+        body::to_bytes,
+        extract::{Request, State},
+        middleware::Next,
+        response::{IntoResponse, Response},
+    };
+    use std::sync::{
+        Arc,
+        atomic::{AtomicUsize, Ordering},
+    };
+    struct Faults {
+        mode: &'static str,
+        entered: AtomicUsize,
+        gate: tokio::sync::watch::Receiver<bool>,
+    }
+    async fn fault(State(faults): State<Arc<Faults>>, request: Request, next: Next) -> Response {
+        let path = request.uri().path();
+        let native = path == "/v1/workers/native-done";
+        let upload = path.starts_with("/v1/workers/artifacts/");
+        if native && faults.mode == "legacy" {
+            return axum::http::StatusCode::NOT_FOUND.into_response();
+        }
+        if upload {
+            faults.entered.fetch_add(1, Ordering::SeqCst);
+            faults.gate.clone().wait_for(|open| *open).await.unwrap();
+        }
+        let response = next.run(request).await;
+        if native && response.status().is_success() {
+            let mut receipt: NativeDoneReceipt =
+                serde_json::from_slice(&to_bytes(response.into_body(), 4096).await.unwrap())
+                    .unwrap();
+            match faults.mode {
+                "wrong-key" => receipt.key.incarnation = "forged".into(),
+                "wrong-version" => receipt.version += 1,
+                "zero-budget" => receipt.reserved = Resources::default(),
+                _ => unreachable!(),
+            }
+            return axum::Json(receipt).into_response();
+        }
+        response
+    }
+    for mode in ["legacy", "wrong-key", "wrong-version", "zero-budget"] {
+        let temp = tempfile::tempdir().unwrap();
+        let (release, gate) = tokio::sync::watch::channel(false);
+        let faults = Arc::new(Faults {
+            mode,
+            entered: AtomicUsize::new(0),
+            gate,
+        });
+        let scheduler =
+            Scheduler::open(&temp.path().join("journal"), SchedulerConfig::default()).unwrap();
+        let router = pvisor_cluster::server::router(scheduler, ADMIN.into(), WORKER.into())
+            .unwrap()
+            .layer(axum::middleware::from_fn_with_state(faults.clone(), fault));
+        let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
+        let url = format!("http://{}", listener.local_addr().unwrap());
+        let server = tokio::spawn(async move {
+            axum::serve(listener, router).await.unwrap();
+        });
+        let admin = Client::new(&url, ADMIN.into()).unwrap();
+        let worker = spawn_worker(&url, "handoff", temp.path());
+        for id in ["first", "second"] {
+            let mut task = spec(id, "printf completed");
+            task.retain_bundle = true;
+            admin.submit(&task).await.unwrap();
+        }
+        tokio::time::timeout(Duration::from_secs(5), async {
+            while faults.entered.load(Ordering::SeqCst) < 2 {
+                tokio::time::sleep(Duration::from_millis(10)).await;
+            }
+        })
+        .await
+        .unwrap();
+        let first = admin.task("first").await.unwrap();
+        assert_eq!(
+            admin.workers().await.unwrap()[0].reserved.slots,
+            if mode == "legacy" { 2 } else { 0 }
+        );
+        let marker = temp.path().join("third-executed");
+        admin
+            .submit(&spec(
+                "third",
+                &format!("printf executed > {}", marker.display()),
+            ))
+            .await
+            .unwrap();
+        // Observe further successful heartbeats, proving the worker processed
+        // controller responses while the deliveries were blocked.
+        tokio::time::timeout(Duration::from_secs(3), async {
+            loop {
+                let current = admin.task("first").await.unwrap();
+                if current.lease.unwrap().expires_at_ms
+                    > first.lease.as_ref().unwrap().expires_at_ms + 300
+                {
+                    break;
+                }
+                tokio::time::sleep(Duration::from_millis(20)).await;
+            }
+        })
+        .await
+        .unwrap();
+        assert_eq!(
+            admin.task("third").await.unwrap().phase,
+            TaskPhase::Queued,
+            "{mode}"
+        );
+        assert!(!marker.exists(), "{mode}");
+        release.send_replace(true);
+        for id in ["first", "second", "third"] {
+            assert_eq!(
+                wait(&admin, id, true).await.phase,
+                TaskPhase::Succeeded,
+                "{mode}"
+            );
+        }
+        assert_eq!(std::fs::read_to_string(marker).unwrap(), "executed");
+        drop(worker);
+        server.abort();
+    }
+}
+
+#[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+async fn artifact_storage_quota_ends_upload_preserves_native_success_and_never_reexecutes_side_effects()
+ {
+    let temp = tempfile::tempdir().unwrap();
+    let scheduler = Scheduler::open(
+        &temp.path().join("journal"),
+        SchedulerConfig {
+            artifact_storage_limits: Some(ArtifactStorageLimits {
+                version: CLUSTER_VERSION,
+                max_bytes: Some(1),
+                max_objects: Some(1),
+            }),
+            ..Default::default()
+        },
+    )
+    .unwrap();
+    let router = pvisor_cluster::server::router(scheduler, ADMIN.into(), WORKER.into()).unwrap();
+    let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
+    let url = format!("http://{}", listener.local_addr().unwrap());
+    let server = tokio::spawn(async move {
+        axum::serve(listener, router).await.unwrap();
+    });
+    let admin = Client::new(&url, ADMIN.into()).unwrap();
+    let worker = spawn_worker(&url, "quota-worker", temp.path());
+    let marker = temp.path().join("side-effect");
+    let mut task = spec(
+        "quota-task",
+        &format!("printf x >> '{}'; printf native-done", marker.display()),
+    );
+    task.retain_artifacts = Some(ArtifactRetention {
+        execution_checkpoint: None,
+        version: ARTIFACT_EXPORT_VERSION,
+        trace: true,
+        workspace_upper: false,
+    });
+    admin.submit(&task).await.unwrap();
+    let done = tokio::time::timeout(Duration::from_secs(5), wait(&admin, "quota-task", true))
+        .await
+        .unwrap();
+    assert_eq!(done.phase, TaskPhase::Failed);
+    assert!(done.error.is_none() && done.artifacts.is_none());
+    assert!(done.artifact_error.as_ref().unwrap().contains("507"));
+    let result = done.result.as_ref().unwrap();
+    assert_eq!(result.state, pvisor_core::RunState::Completed);
+    assert_eq!(result.output.stdout.as_deref(), Some("native-done"));
+    assert_eq!(
+        admin.workers().await.unwrap()[0].reserved,
+        Resources::default()
+    );
+    let usage = admin.artifact_storage().await.unwrap();
+    assert_eq!(
+        (
+            usage.stored_bytes,
+            usage.stored_objects,
+            usage.reserved_bytes,
+            usage.reserved_objects
+        ),
+        (0, 0, 0, 0)
+    );
+    let publisher = Client::new(&url, WORKER.into()).unwrap();
+    let denied = publisher.artifact_storage().await.unwrap_err();
+    assert_eq!(
+        denied.downcast_ref::<reqwest::Error>().unwrap().status(),
+        Some(reqwest::StatusCode::UNAUTHORIZED)
+    );
+    let state = temp.path().join("quota-worker");
+    let bundle = std::fs::read(state.join("tasks/quota-task-1/retained/run-bundle.json")).unwrap();
+    let old = done.lease.as_ref().unwrap().key.incarnation.clone();
+    drop(worker);
+    let _restarted = spawn_worker(&url, "quota-worker", temp.path());
+    reregistered(&admin, "quota-worker", &old, &state).await;
+    assert_eq!(std::fs::read(marker).unwrap(), b"x");
+    assert_eq!(
+        std::fs::read(state.join("tasks/quota-task-1/retained/run-bundle.json")).unwrap(),
+        bundle
+    );
+    let preserved = admin.task("quota-task").await.unwrap();
+    assert_eq!(preserved.generation, 1);
+    assert_eq!(
+        preserved.result.as_ref().unwrap().attempt_id,
+        result.attempt_id
+    );
+    assert_eq!(preserved.phase, TaskPhase::Failed);
+    server.abort();
+}
+
+#[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+async fn worker_recovers_lost_completion_ack_after_evidence_gc_without_reexecuting_native_command()
+{
+    use axum::{
+        extract::{Request, State},
+        middleware::Next,
+        response::{IntoResponse, Response},
+    };
+    use std::sync::{
+        Arc,
+        atomic::{AtomicBool, Ordering},
+    };
+    async fn lose_complete_ack(
+        State(lost): State<Arc<AtomicBool>>,
+        request: Request,
+        next: Next,
+    ) -> Response {
+        let completion = request.uri().path() == "/v1/workers/complete";
+        let response = next.run(request).await;
+        if completion && response.status().is_success() && lost.load(Ordering::SeqCst) {
+            return axum::http::StatusCode::SERVICE_UNAVAILABLE.into_response();
+        }
+        response
+    }
+    let temp = tempfile::tempdir().unwrap();
+    let lost = Arc::new(AtomicBool::new(true));
+    let scheduler =
+        Scheduler::open(&temp.path().join("journal"), SchedulerConfig::default()).unwrap();
+    let router = pvisor_cluster::server::router(scheduler, ADMIN.into(), WORKER.into())
+        .unwrap()
+        .layer(axum::middleware::from_fn_with_state(
+            lost.clone(),
+            lose_complete_ack,
+        ));
+    let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
+    let url = format!("http://{}", listener.local_addr().unwrap());
+    let server = tokio::spawn(async move {
+        axum::serve(listener, router).await.unwrap();
+    });
+    let admin = Client::new(&url, ADMIN.into()).unwrap();
+    let marker = temp.path().join("native-side-effects");
+    let mut task = spec(
+        "retired-ack",
+        &format!("printf x >> {}; printf done", marker.display()),
+    );
+    task.retain_bundle = true;
+    admin.submit(&task).await.unwrap();
+    let worker = spawn_worker(&url, "gc-recovery", temp.path());
+    let finished = wait(&admin, "retired-ack", true).await;
+    let state = temp.path().join("gc-recovery");
+    let pending = pending_record(&state, true).await;
+    assert_eq!(
+        pending["completion"]["artifacts"],
+        serde_json::to_value(&finished.artifacts).unwrap()
+    );
+    let bundle = std::fs::read(state.join("tasks/retired-ack-1/run-bundle.json")).unwrap();
+    drop(worker);
+    let plan = admin
+        .plan_artifact_gc(&pvisor_cluster::ArtifactGcRequest {
+            version: CLUSTER_VERSION,
+            retire_before_ms: Some(finished.updated_at_ms + 1),
+            max_objects: 4096,
+        })
+        .await
+        .unwrap();
+    assert_eq!(plan.retire.len(), 1);
+    let report = admin.apply_artifact_gc(&plan.id).await.unwrap();
+    assert!(report.deleted_objects > 0);
+    assert_eq!(admin.artifact_storage().await.unwrap().stored_objects, 0);
+    lost.store(false, Ordering::SeqCst);
+    let _restarted = spawn_worker(&url, "gc-recovery", temp.path());
+    reregistered(
+        &admin,
+        "gc-recovery",
+        &finished.lease.as_ref().unwrap().key.incarnation,
+        &state,
+    )
+    .await;
+    let recovered = admin.task("retired-ack").await.unwrap();
+    assert_eq!(recovered.phase, TaskPhase::Succeeded);
+    assert_eq!(recovered.generation, 1);
+    assert!(recovered.artifact_retired_at_ms.is_some());
+    assert_eq!(
+        serde_json::to_value(&recovered.result).unwrap(),
+        serde_json::to_value(&finished.result).unwrap()
+    );
+    assert_eq!(recovered.artifacts, finished.artifacts);
+    assert_eq!(std::fs::read(marker).unwrap(), b"x");
+    assert_eq!(
+        std::fs::read(state.join("tasks/retired-ack-1/run-bundle.json")).unwrap(),
+        bundle
+    );
+    assert_eq!(
+        std::fs::read_dir(state.join("outbox/receipts"))
+            .unwrap()
+            .count(),
+        1
+    );
+    assert!(
+        admin
+            .download_artifacts("retired-ack", &temp.path().join("retired-download"))
+            .await
+            .is_err()
     );
     server.abort();
 }

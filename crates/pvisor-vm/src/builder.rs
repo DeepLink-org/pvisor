@@ -154,7 +154,22 @@ impl<B: Backend> Builder<B> {
     /// Build, invoke the ready callback, then enter the runner's event loop.
     /// Guest shutdown exits this process, as in the previous isolated runner.
     pub fn run(mut self, on_ready: impl FnOnce(VmmHandle) -> io::Result<()>) -> io::Result<()> {
-        if self.resources.kernel_bundle.is_none()
+        #[cfg(any(
+            all(target_os = "macos", target_arch = "aarch64"),
+            all(target_os = "linux", target_arch = "x86_64")
+        ))]
+        let snapshot_kernel = self
+            .resources
+            .machine_restore
+            .as_ref()
+            .is_some_and(|restore| restore.state.kernel_layout.is_some());
+        #[cfg(not(any(
+            all(target_os = "macos", target_arch = "aarch64"),
+            all(target_os = "linux", target_arch = "x86_64")
+        )))]
+        let snapshot_kernel = false;
+        if !snapshot_kernel
+            && self.resources.kernel_bundle.is_none()
             && self.resources.external_kernel.is_none()
             && self.resources.firmware_config.is_none()
             && !cfg!(feature = "efi")
@@ -327,7 +342,7 @@ impl<B: Backend> Builder<B> {
                     return Err(io::Error::new(
                         io::ErrorKind::NotADirectory,
                         "virtual parent is a file",
-                    ))
+                    ));
                 }
             }
         }
@@ -367,6 +382,21 @@ impl<B: crate::backend::SnapshotBackend> Builder<B> {
         &mut self,
         restore: crate::vmm::snapshot::MachineRestore,
     ) -> io::Result<()> {
+        if cfg!(any(feature = "tee", feature = "aws-nitro", feature = "efi")) {
+            return Err(io::Error::new(
+                io::ErrorKind::Unsupported,
+                "restore requires a plain bundled-kernel VM",
+            ));
+        }
+        restore
+            .validate(self.resources.vcpu_config().vcpu_count as usize)
+            .map_err(io::Error::other)?;
+        if self.resources.ram_backing.is_some() {
+            return Err(io::Error::new(
+                io::ErrorKind::InvalidInput,
+                "machine restore cannot use writable RAM backing",
+            ));
+        }
         self.snapshot_profile()?;
         self.resources.machine_restore = Some(Arc::new(restore));
         Ok(())

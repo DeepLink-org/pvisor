@@ -517,6 +517,11 @@ impl Display for StartMicrovmError {
 }
 
 pub enum Payload {
+    #[cfg(any(
+        all(target_os = "macos", target_arch = "aarch64"),
+        all(target_os = "linux", target_arch = "x86_64")
+    ))]
+    RestoredKernel(crate::vmm::snapshot::KernelLayout),
     #[cfg(all(target_arch = "x86_64", not(feature = "tee")))]
     KernelMmap,
     #[cfg(any(target_arch = "aarch64", target_arch = "riscv64"))]
@@ -530,6 +535,20 @@ pub enum Payload {
 }
 
 fn choose_payload(vm_resources: &VmResources) -> Result<Payload, StartMicrovmError> {
+    #[cfg(any(
+        all(target_os = "macos", target_arch = "aarch64"),
+        all(target_os = "linux", target_arch = "x86_64")
+    ))]
+    if let Some(layout) = vm_resources
+        .machine_restore
+        .as_ref()
+        .and_then(|r| r.state.kernel_layout)
+    {
+        layout
+            .validate()
+            .map_err(StartMicrovmError::GuestMemoryMmap)?;
+        return Ok(Payload::RestoredKernel(layout));
+    }
     if let Some(_kernel_bundle) = &vm_resources.kernel_bundle {
         #[cfg(feature = "tee")]
         if vm_resources.qboot_bundle.is_none() || vm_resources.initrd_bundle.is_none() {
@@ -1025,6 +1044,28 @@ pub fn build_microvm_for_arch<A: crate::backend::Architecture>(
             all(target_os = "linux", target_arch = "x86_64")
         ))]
         snapshot_devices_frozen: false,
+        #[cfg(any(
+            all(target_os = "macos", target_arch = "aarch64"),
+            all(target_os = "linux", target_arch = "x86_64")
+        ))]
+        snapshot_kernel_layout: match &payload {
+            Payload::RestoredKernel(layout) => Some(*layout),
+            #[cfg(all(target_arch = "x86_64", not(feature = "tee")))]
+            Payload::KernelMmap => vm_resources.kernel_bundle.as_ref().map(|kernel| {
+                crate::vmm::snapshot::KernelLayout {
+                    guest_addr: kernel.guest_addr,
+                    size: kernel.size as u64,
+                }
+            }),
+            #[cfg(target_arch = "aarch64")]
+            Payload::KernelCopy => vm_resources.kernel_bundle.as_ref().map(|kernel| {
+                crate::vmm::snapshot::KernelLayout {
+                    guest_addr: kernel.guest_addr,
+                    size: kernel.size as u64,
+                }
+            }),
+            _ => None,
+        },
         #[cfg(target_os = "macos")]
         ram_unmapped: false,
         #[cfg(target_os = "macos")]
@@ -1419,6 +1460,13 @@ fn load_payload(
     StartMicrovmError,
 > {
     match payload {
+        #[cfg(any(
+            all(target_os = "macos", target_arch = "aarch64"),
+            all(target_os = "linux", target_arch = "x86_64")
+        ))]
+        Payload::RestoredKernel(_) => Err(StartMicrovmError::GuestMemoryMmap(
+            "snapshot kernel geometry cannot initialize a fresh VM".into(),
+        )),
         #[cfg(any(target_arch = "aarch64", target_arch = "riscv64"))]
         Payload::KernelCopy => {
             let (kernel_entry_addr, kernel_host_addr, kernel_guest_addr, kernel_size) =
@@ -1606,6 +1654,34 @@ pub fn create_guest_memory_for_arch<A: crate::backend::Architecture>(
 
     use crate::backend::MemoryLayout;
     let layout = match payload {
+        #[cfg(any(
+            all(target_os = "macos", target_arch = "aarch64"),
+            all(target_os = "linux", target_arch = "x86_64")
+        ))]
+        Payload::RestoredKernel(kernel) => {
+            kernel
+                .validate()
+                .map_err(StartMicrovmError::GuestMemoryMmap)?;
+            #[cfg(all(target_os = "linux", target_arch = "x86_64"))]
+            if kernel.guest_addr + kernel.size > mem_size as u64
+                || kernel.guest_addr + kernel.size >= crate::arch::MMIO_MEM_START
+            {
+                return Err(StartMicrovmError::KernelDoesNotFit(
+                    kernel.guest_addr,
+                    kernel.size as usize,
+                ));
+            }
+            #[cfg(feature = "tee")]
+            return Err(StartMicrovmError::GuestMemoryMmap(
+                "bundled-kernel restore does not support TEE".into(),
+            ));
+            #[cfg(not(feature = "tee"))]
+            MemoryLayout {
+                bytes: mem_size,
+                kernel: Some((kernel.guest_addr, kernel.size as usize)),
+                ..Default::default()
+            }
+        }
         #[cfg(all(target_arch = "x86_64", not(feature = "tee")))]
         Payload::KernelMmap => {
             let kernel = vm_resources
@@ -1683,6 +1759,11 @@ pub fn create_guest_memory_for_arch<A: crate::backend::Architecture>(
             .as_ref()
             .ok_or(StartMicrovmError::MissingKernelConfig)?;
         arch_mem_regions.push((GuestAddress(kernel.guest_addr), kernel.size));
+        arch_mem_regions.sort_by_key(|region| region.0);
+    }
+    #[cfg(all(target_os = "linux", target_arch = "x86_64", not(feature = "tee")))]
+    if let Payload::RestoredKernel(kernel) = payload {
+        arch_mem_regions.push((GuestAddress(kernel.guest_addr), kernel.size as usize));
         arch_mem_regions.sort_by_key(|region| region.0);
     }
     #[cfg(any(

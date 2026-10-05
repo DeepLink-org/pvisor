@@ -2,16 +2,17 @@
 use crate::{ARTIFACT_CHUNK_BYTES, ArtifactManifest, BlobRef, LeaseKey};
 use anyhow::{Context, ensure};
 use fs2::FileExt;
-use std::os::unix::fs::{MetadataExt, OpenOptionsExt, PermissionsExt};
+use std::os::unix::fs::{OpenOptionsExt, PermissionsExt};
 use std::{
     fs::{self, File, OpenOptions},
     io::{Read, Seek, SeekFrom, Write},
     path::{Path, PathBuf},
-    sync::{
-        Arc,
-        atomic::{AtomicBool, AtomicU64, Ordering},
-    },
+    sync::atomic::{AtomicU64, Ordering},
 };
+
+pub(crate) mod gc;
+mod quota;
+pub(crate) use quota::{PublicationFailure, QuotaExceeded};
 
 static TEMP_ID: AtomicU64 = AtomicU64::new(0);
 pub fn digest(bytes: &[u8]) -> String {
@@ -21,7 +22,13 @@ pub fn digest(bytes: &[u8]) -> String {
 pub struct ArtifactStore {
     root: PathBuf,
     max_bytes: u64,
-    poisoned: Arc<AtomicBool>,
+    quota: std::sync::Arc<quota::Shared>,
+}
+pub(crate) struct ControllerOwner(std::sync::Arc<quota::Shared>);
+impl Drop for ControllerOwner {
+    fn drop(&mut self) {
+        self.0.controller_claimed.store(false, Ordering::Release);
+    }
 }
 pub(crate) const DEFAULT_MAX_ARTIFACT_BYTES: u64 = 8 * 1024 * 1024 * 1024;
 const MAX_OBJECTS: u64 = 1_000_000;
@@ -56,9 +63,12 @@ fn write_usage(file: &mut File, bytes: u64, objects: u64) -> std::io::Result<()>
 }
 
 pub(crate) struct VerifiedArtifacts {
+    pub(crate) checkpoint: Option<crate::CheckpointPublication>,
+    pub(crate) pins: gc::Pins,
     reference: BlobRef,
     key: LeaseKey,
     run: BundleRunIdentity,
+    files: std::collections::BTreeSet<String>,
 }
 #[derive(serde::Deserialize)]
 struct BundleRunIdentity {
@@ -70,6 +80,12 @@ struct BundleRunIdentity {
     exit_code: Option<i32>,
 }
 impl VerifiedArtifacts {
+    pub(crate) fn satisfies(&self, retention: &crate::ArtifactRetention) -> bool {
+        retention
+            .filenames()
+            .iter()
+            .all(|name| self.files.contains(*name))
+    }
     pub(crate) fn matches(
         &self,
         reference: &BlobRef,
@@ -88,7 +104,34 @@ impl VerifiedArtifacts {
             })
     }
 }
+fn read_regular(path: &Path, limit: u64) -> anyhow::Result<Vec<u8>> {
+    let input = OpenOptions::new()
+        .read(true)
+        .custom_flags(libc::O_NOFOLLOW | libc::O_NONBLOCK)
+        .open(path)?;
+    ensure!(
+        input.metadata()?.is_file() && input.metadata()?.len() <= limit,
+        "invalid artifact metadata file"
+    );
+    let mut bytes = Vec::new();
+    input.take(limit + 1).read_to_end(&mut bytes)?;
+    ensure!(
+        bytes.len() as u64 <= limit,
+        "artifact metadata file too large"
+    );
+    Ok(bytes)
+}
 impl ArtifactStore {
+    pub(crate) fn claim_controller(&self) -> anyhow::Result<ControllerOwner> {
+        ensure!(
+            self.quota
+                .controller_claimed
+                .compare_exchange(false, true, Ordering::AcqRel, Ordering::Acquire)
+                .is_ok(),
+            "artifact store already owned by a controller in this process"
+        );
+        Ok(ControllerOwner(self.quota.clone()))
+    }
     pub fn open(root: &Path) -> anyhow::Result<Self> {
         Self::open_with_quota(root, DEFAULT_MAX_ARTIFACT_BYTES)
     }
@@ -107,52 +150,34 @@ impl ArtifactStore {
                 .unwrap_or(Path::new(".")),
         )?
         .sync_all()?;
+        let root = root.canonicalize()?;
+        let quota = quota::open(&root)?;
         let store = Self {
-            root: root.to_owned(),
+            root,
             max_bytes,
-            poisoned: Arc::new(AtomicBool::new(false)),
+            quota,
         };
-        let mut quota = store.quota_file()?;
-        // Rebuild under the same cross-instance writer lock after a crash.
-        // Include abandoned upload inodes; do not delete unrooted evidence.
-        let mut seen = std::collections::HashSet::new();
-        let mut bytes = 0u64;
-        for shard in fs::read_dir(root)? {
-            let shard = shard?;
-            if shard.file_name() == ".capacity" {
-                continue;
-            }
-            let name = shard.file_name();
-            ensure!(
-                name.to_str()
-                    .is_some_and(|s| s.len() == 2 && s.bytes().all(|b| b.is_ascii_hexdigit()))
-                    && fs::symlink_metadata(shard.path())?.is_dir(),
-                "invalid artifact shard"
-            );
-            for entry in fs::read_dir(shard.path())? {
-                let entry = entry?;
-                let metadata = fs::symlink_metadata(entry.path())?;
-                ensure!(
-                    metadata.is_file() && metadata.len() <= ARTIFACT_CHUNK_BYTES as u64,
-                    "invalid artifact object"
-                );
-                if seen.insert((metadata.dev(), metadata.ino())) {
-                    ensure!(
-                        seen.len() as u64 <= MAX_OBJECTS,
-                        "artifact object count exceeds limit"
-                    );
-                    bytes = bytes
-                        .checked_add(metadata.len())
-                        .context("artifact usage overflow")?;
-                }
-            }
-        }
+        let usage = store.storage_usage()?;
         ensure!(
-            bytes <= max_bytes,
+            usage
+                .stored_bytes
+                .checked_add(usage.reserved_bytes)
+                .and_then(|bytes| bytes.checked_add(usage.failed_reserved_bytes))
+                .is_some_and(|bytes| bytes <= max_bytes),
             "existing artifacts exceed configured byte quota; increase quota before restart"
         );
-        write_usage(&mut quota, bytes, seen.len() as u64)?;
-        File::open(root)?.sync_all()?;
+        ensure!(
+            usage
+                .stored_objects
+                .checked_add(usage.reserved_objects)
+                .and_then(|objects| objects.checked_add(usage.failed_reserved_objects))
+                .is_some_and(|objects| objects <= MAX_OBJECTS),
+            "artifact object count exceeds limit"
+        );
+        // Migrate/reconcile the legacy capacity marker under the owner lock.
+        // Publication accounting is shared by all opens in this process.
+        let mut capacity = store.quota_file()?;
+        write_usage(&mut capacity, usage.stored_bytes, usage.stored_objects)?;
         Ok(store)
     }
     fn quota_file(&self) -> anyhow::Result<File> {
@@ -179,6 +204,15 @@ impl ArtifactStore {
             .join(&reference.digest))
     }
     pub fn put(&self, bytes: &[u8]) -> anyhow::Result<BlobRef> {
+        let _barrier = self
+            .quota
+            .gc
+            .barrier
+            .read()
+            .map_err(|_| anyhow::anyhow!("GC barrier unavailable"))?;
+        self.put_unpinned(bytes)
+    }
+    fn put_unpinned(&self, bytes: &[u8]) -> anyhow::Result<BlobRef> {
         ensure!(
             bytes.len() <= ARTIFACT_CHUNK_BYTES,
             "artifact object exceeds chunk limit"
@@ -188,40 +222,39 @@ impl ArtifactStore {
             bytes: bytes.len() as u64,
         };
         let path = self.path(&reference)?;
-        let mut quota = self.quota_file()?;
-        if path.try_exists()? {
-            self.get(&reference)?;
-            return Ok(reference);
-        }
-        if self.poisoned.load(Ordering::Acquire) {
-            return Err(
-                CapacityExceeded("artifact write uncertain; restart to reconcile quota").into(),
-            );
-        }
+        // A legacy interrupted reservation remains fenced until an explicit
+        // open reconciles it against the shared inventory.
+        let mut capacity = self.quota_file()?;
         ensure!(
-            quota.metadata()?.len() == 24,
+            capacity.metadata()?.len() == 24,
             "invalid artifact quota record"
         );
-        let mut usage = [0; 24];
-        quota.read_exact(&mut usage)?;
-        let used = u64::from_le_bytes(usage[..8].try_into().unwrap());
-        let objects = u64::from_le_bytes(usage[8..16].try_into().unwrap());
-        if u64::from_le_bytes(usage[16..].try_into().unwrap()) != 0 {
+        capacity.seek(SeekFrom::Start(16))?;
+        let mut dirty = [0; 8];
+        capacity.read_exact(&mut dirty)?;
+        if u64::from_le_bytes(dirty) != 0 {
             return Err(CapacityExceeded(
                 "artifact reservation uncertain; reopen store to reconcile retained inodes",
             )
             .into());
         }
-        let next = used
-            .checked_add(reference.bytes)
-            .context("artifact quota overflow")?;
-        if next > self.max_bytes || objects >= MAX_OBJECTS {
-            return Err(CapacityExceeded("artifact capacity reached; retain existing evidence and increase quota or perform offline rooted cleanup").into());
-        }
-        // Reserve before creating bytes; a failed/uncertain write fences further
-        // writes by this instance. Startup reconciles actual retained inodes.
-        self.poisoned.store(true, Ordering::Release);
-        reserve_usage(&mut quota, next, objects + 1)?;
+        drop(capacity);
+        let mut reservation =
+            match self
+                .quota
+                .reserve_with_capacity(&reference, &path, self.max_bytes)?
+            {
+                quota::Admission::Existing => {
+                    self.get_unpinned(&reference)?;
+                    return Ok(reference);
+                }
+                quota::Admission::Wait(publication) => {
+                    publication.wait()?;
+                    self.get_unpinned(&reference)?;
+                    return Ok(reference);
+                }
+                quota::Admission::Reserved(reservation) => reservation,
+            };
         let directory = path.parent().unwrap();
         fs::create_dir_all(directory)?;
         ensure!(
@@ -244,15 +277,17 @@ impl ArtifactStore {
                 .custom_flags(libc::O_NOFOLLOW)
                 .open(&temporary)?;
             created = true;
+            reservation.mark_temporary(&temporary);
             file.write_all(bytes)?;
             file.sync_all()?;
             match fs::hard_link(&temporary, &path) {
                 Ok(()) => {}
                 Err(error) if error.kind() == std::io::ErrorKind::AlreadyExists => {
-                    self.get(&reference)?;
+                    self.get_unpinned(&reference)?;
                 }
                 Err(error) => return Err(error.into()),
             }
+            reservation.mark_published();
             File::open(directory)?.sync_all()?;
             Ok(())
         })();
@@ -261,14 +296,28 @@ impl ArtifactStore {
         } else {
             Ok(())
         };
-        published?;
-        removed?;
-        File::open(directory)?.sync_all()?;
-        clear_usage(&mut quota)?;
-        self.poisoned.store(false, Ordering::Release);
+        let outcome = published
+            .and(removed.map_err(Into::into))
+            .and_then(|()| File::open(directory)?.sync_all().map_err(Into::into));
+        reservation.finish(&outcome);
+        // Record a new birth before leaving the publication barrier, even when
+        // fsync failed after a link. Old GC plans cannot delete a replacement.
+        if path.try_exists()? {
+            self.quota.gc.published(&reference)?;
+        }
+        outcome?;
         Ok(reference)
     }
     pub fn get(&self, reference: &BlobRef) -> anyhow::Result<Vec<u8>> {
+        let _barrier = self
+            .quota
+            .gc
+            .barrier
+            .read()
+            .map_err(|_| anyhow::anyhow!("GC barrier unavailable"))?;
+        self.get_unpinned(reference)
+    }
+    fn get_unpinned(&self, reference: &BlobRef) -> anyhow::Result<Vec<u8>> {
         let path = self.path(reference)?;
         ensure!(
             fs::symlink_metadata(path.parent().unwrap())?.is_dir(),
@@ -293,7 +342,16 @@ impl ArtifactStore {
         Ok(bytes)
     }
     pub fn read_manifest(&self, reference: &BlobRef) -> anyhow::Result<ArtifactManifest> {
-        let manifest: ArtifactManifest = serde_json::from_slice(&self.get(reference)?)
+        let _barrier = self
+            .quota
+            .gc
+            .barrier
+            .read()
+            .map_err(|_| anyhow::anyhow!("GC barrier unavailable"))?;
+        self.read_manifest_unpinned(reference)
+    }
+    fn read_manifest_unpinned(&self, reference: &BlobRef) -> anyhow::Result<ArtifactManifest> {
+        let manifest: ArtifactManifest = serde_json::from_slice(&self.get_unpinned(reference)?)
             .context("invalid artifact manifest JSON")?;
         manifest.validate()?;
         Ok(manifest)
@@ -303,7 +361,7 @@ impl ArtifactStore {
         reference: &BlobRef,
         key: &LeaseKey,
     ) -> anyhow::Result<VerifiedArtifacts> {
-        let manifest = self.read_manifest(reference)?;
+        let (manifest, pins) = self.pin_manifest(reference)?;
         ensure!(
             manifest.key == *key,
             "artifacts belong to a different lease"
@@ -313,6 +371,7 @@ impl ArtifactStore {
             "missing native Run Bundle artifact"
         );
         let mut bundle = Vec::new();
+        let mut checkpoint_bytes = Vec::new();
         for file in &manifest.files {
             let mut hash = blake3::Hasher::new();
             for chunk in &file.chunks {
@@ -320,6 +379,13 @@ impl ArtifactStore {
                 hash.update(&bytes);
                 if file.name == "run-bundle.json" {
                     bundle.extend_from_slice(&bytes);
+                }
+                if file.name == "execution-checkpoint.json" {
+                    ensure!(
+                        file.bytes <= ARTIFACT_CHUNK_BYTES as u64,
+                        "checkpoint receipt exceeds limit"
+                    );
+                    checkpoint_bytes.extend_from_slice(&bytes);
                 }
             }
             ensure!(
@@ -337,10 +403,21 @@ impl ArtifactStore {
         }
         let identity: BundleIdentity = serde_json::from_slice(&bundle)?;
         ensure!(identity.schema_version > 0, "invalid Bundle schema version");
+        let checkpoint = if checkpoint_bytes.is_empty() {
+            None
+        } else {
+            let checkpoint: crate::CheckpointPublication =
+                serde_json::from_slice(&checkpoint_bytes)?;
+            checkpoint.validate()?;
+            Some(checkpoint)
+        };
         Ok(VerifiedArtifacts {
+            checkpoint,
+            pins,
             reference: reference.clone(),
             key: key.clone(),
             run: identity.run,
+            files: manifest.files.into_iter().map(|file| file.name).collect(),
         })
     }
 }

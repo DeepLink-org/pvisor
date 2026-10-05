@@ -19,6 +19,31 @@ impl VmmHandle {
         timeout: std::time::Duration,
         action: impl FnOnce(&mut vmm::Vmm) -> Result<T, String>,
     ) -> Result<T, String> {
+        self.snapshot_transaction(timeout, true, action)
+    }
+
+    #[cfg(any(
+        all(target_os = "macos", target_arch = "aarch64"),
+        all(target_os = "linux", target_arch = "x86_64")
+    ))]
+    pub(crate) fn snapshot_frozen<T>(
+        &self,
+        timeout: std::time::Duration,
+        action: impl FnOnce(&mut vmm::Vmm) -> Result<T, String>,
+    ) -> Result<T, String> {
+        self.snapshot_transaction(timeout, false, action)
+    }
+
+    #[cfg(any(
+        all(target_os = "macos", target_arch = "aarch64"),
+        all(target_os = "linux", target_arch = "x86_64")
+    ))]
+    fn snapshot_transaction<T>(
+        &self,
+        timeout: std::time::Duration,
+        resume_source: bool,
+        action: impl FnOnce(&mut vmm::Vmm) -> Result<T, String>,
+    ) -> Result<T, String> {
         let _transition = self
             .transition
             .lock()
@@ -29,14 +54,15 @@ impl VmmHandle {
             .ok_or("invalid snapshot timeout")?;
         {
             let locked = vmm.lock().map_err(|_| "VMM lock poisoned")?;
-            if locked.is_paused()
+            if (resume_source && locked.is_paused())
                 || locked.device_memory_gate().has_prepare()
                 || self
                     .cold_pager_started
                     .load(std::sync::atomic::Ordering::Acquire)
             {
                 return Err(
-                    "snapshot transaction requires a running VM without active RAM pager".into(),
+                    "resumable snapshot requires a running VM; active RAM pagers are unsupported"
+                        .into(),
                 );
             }
         }
@@ -62,9 +88,13 @@ impl VmmHandle {
         }
         let mut locked = vmm.lock().map_err(|_| "VMM lock poisoned")?;
         let result = action(&mut locked);
-        if let Err(error) = locked.resume() {
+        if resume_source {
+            if let Err(error) = locked.resume() {
+                locked.fail_control();
+                return Err(format!("snapshot source resume failed: {error}"));
+            }
+        } else {
             locked.fail_control();
-            return Err(format!("snapshot source resume failed: {error}"));
         }
         result
     }
@@ -129,7 +159,12 @@ impl VmmHandle {
                 .map_err(|error| error.to_string())
         });
         if std::env::var_os("PVISOR_EXPERIMENTAL_MEMORY_METRICS").is_some() {
-            eprintln!("pvisor-cold-quiesce transition_us={transition_us} pause_us={pause_us} gate_us={gate_us} action_us={action_us} resume_us={} elapsed_us={} pid={}", resume_started.elapsed().as_micros(), started.elapsed().as_micros(), std::process::id());
+            eprintln!(
+                "pvisor-cold-quiesce transition_us={transition_us} pause_us={pause_us} gate_us={gate_us} action_us={action_us} resume_us={} elapsed_us={} pid={}",
+                resume_started.elapsed().as_micros(),
+                started.elapsed().as_micros(),
+                std::process::id()
+            );
         }
         if result.is_err() {
             locked.fail_control();

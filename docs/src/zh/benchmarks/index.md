@@ -1,6 +1,6 @@
 # 基准与对比
 
-pVisor VM 启动约 **86 ms**，接近 Docker、Firecracker 与 QEMU microvm 的百毫秒量级。完整修复测试任务为 staged **0.70 秒**、Docker **0.90 秒**、VM **3.97 秒**：暂存可交互，VM 工具路径仍明显落后。十万文件 apply 约 5.5 分钟、Claude/VM 初始化超时也是本版公开的短板。
+pVisor 无镜像 VM 启动约 **110 ms**；同机 Firecracker 启动完整 Ubuntu 为已准备 **5.64 秒**、首次 **9.25 秒**。这减少了短任务的开机等待，工具执行成本与 CLI 兼容性仍需分别看。Docker/QEMU 的历史对照、macOS 数据以及大文件 apply 等短板全部保留。
 
 测量公开复现脚本、样本与失败情况；方案对比标明官方来源和未测范围。方法、环境与样本数见[方法](methodology.md)。
 
@@ -20,7 +20,26 @@ macOS 与 Linux 的测试数据同时保留，按平台、测量日期和制品�
 
 每个数字对应明确的阶段和负载；启动表包含完整 CLI 到标记路径，冷 RAM 代理不是整机物理内存。新产品基准见下方首版结果，未测指标单独标明。
 
-## 数据水位：基线、差距与使用含义 {#reference-position}
+## 默认部署方式：无镜像与完整发行版 {#full-ubuntu}
+
+最新 Linux 对照使用 pVisor `--rootfs host` 与官方 Ubuntu 26.04.1 LTS，启动 N=30、完整任务 N=10；工具、内核与系统服务差异写入方法。Mac 的约 84 ms 启动结果继续独立保留，本轮未测 Mac 完整 Agent Env。
+
+| 问题 | pVisor | 完整 Ubuntu / Firecracker |
+|---|---|---|
+| [新建环境](startup.md#full-ubuntu) | VM P50 110 ms / P95 122 ms | 已准备 P50 5.64 s / P95 6.01 s; 首次启动 P50 9.25 s |
+| [修复测试：启动到结果](agent-tasks.md#full-ubuntu) | VM 4.61 / 5.09 s; staged 0.72 / 0.78 s | 8.51 / 9.11 s |
+| [修复测试：工具内部](agent-tasks.md#full-ubuntu) | VM 4.02 / 4.49 s | 2.30 / 2.69 s |
+| [Codex 工具闭环](agent-tasks.md#full-ubuntu) | VM 11.39 / 13.73 s | 10.81 / 13.49 s |
+
+启动差距反映是否需要开机进入完整发行版，不是纯 VMM 优劣。频繁新建短任务环境可以减少秒级等待；长期复用环境则应关注工具内部性能、文件成本和客户端兼容性。上述任务单元格为 P50/P95，10 次样本仅说明本轮水位，不是尾延迟保证。首次启动的 Ubuntu 尚未安装完整 Agent 工具，下载与安装不含在启动时间中。
+
+[方法与证据](methodology.md#full-ubuntu)
+
+同一完整 Ubuntu 的 QEMU 补测也已完成：q35 / microvm 启动 P50 为 **5.43 / 7.67 秒**，完整修复测试为 **8.12 / 10.33 秒**。每格 N=10、共 80/80 通过，独立于上表批次；[完整结果](agent-tasks.md#full-ubuntu)同时给出内部工具时间和真实 CLI 闭环，避免只用启动数字判断性能。
+
+## 历史受控数据水位：Docker 与最小 VM {#reference-position}
+
+下表使用相同工具制品；Firecracker/QEMU 为裁剪内核、直接 init，pVisor 使用目录。适合观察工具与 Docker 的受控差距；默认无镜像 / 完整 Ubuntu 对照以[上节](#full-ubuntu)为准。旧失败及旧性能数值保留在原批次，不代表新配置的结果。
 
 下表将不同问题分别放在熟悉的尺度上；不把较小的启动数字替代完整任务。新环境 Linux 1,410 个有效样本、另有 320 个资源/退出补测，旧 macOS/Linux 与首版 3,375 个产品样本继续独立保留。
 

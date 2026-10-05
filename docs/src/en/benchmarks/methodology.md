@@ -107,6 +107,78 @@ Recompute with `python3 benchmark/pvisor/summarize_product_v1.py <batch>/report.
 
 Performance describes pinned artifacts, not later parallel changes or other release builds; source was not a clean commit. Workspace lint/tests validate the then-current source, while the pinned CLI is checked by benchmarks and STAGE specifications.
 
+## Complete Ubuntu and image-free pVisor: deployment protocol {#full-ubuntu}
+
+This batch adds the practical cost of a standard distribution environment. Firecracker uses the complete official Ubuntu cloud VM disk, generic distribution kernel and initrd. pVisor VM always uses directories; this batch uses `--rootfs host` to reuse installed host tools. Latest Ubuntu is resolved and pinned to Ubuntu 26.04.1 LTS, release 20260927, from the [official dated snapshot](https://cloud-images.ubuntu.com/releases/resolute/release-20260927/). It is a cloud VM image, rather than a full system assembled from Docker OCI layers.
+
+Ubuntu retains GPT, /boot, EFI partitions, vendor modules, fstab, systemd, cloud-init, SSH, snapd and other services. Only NoCloud static networking, a benchmark unit and Agent applications are added. Stock `7.0.0-34-generic` supports ext4, FUSE and btrfs with `CONFIG_EXT4_FS=y`, `CONFIG_FUSE_FS=y`, and `CONFIG_BTRFS_FS=m`. Firecracker 1.13.1 loads ELF directly, so the official bzImage is decompressed unchanged, without trimming or recompilation. It uses the stock initrd and default virtio MMIO. Boot partitions remain on disk; this path does not execute UEFI/GRUB.
+
+First boot uses a complete template that has not run cloud-init; prepared boot uses a disk template after normal tool installation and initial setup. Each trial clones a private disk and creates a fresh VM without restoring RAM. Launch-to-first-output after full OS readiness, validated task result, and normal zero exit are separate measurements. Ubuntu must prove PID1 is systemd and multi-user/network-online/cloud-final/ssh.socket are active, retaining the failed-unit list every time. No formal sample has failed units. Pre-launch workspace copying/disk cloning is recorded as `prepare_ms`, outside startup and task time.
+
+The host matches the previous controls: Fedora 44, Ryzen 7 9700X, KVM, with frozen CLI SHA256 `1a2db5ad015c5ace40b3c96c7dd0dc94a08b8893de35150bd909554286e2cd3c`. All launcher trees use physical host cores 0 and 1. VMs have 2 vCPU, 2 GiB for startup and 16 GiB for complete tasks; native/staged have no hard memory cap. Host page caches are warm and backend order is randomized per round. Startup uses N=30 per case; published tools/files/clients cells use N=10, with Claude/VM preflight failure at N=0 and 3 warmups per available case. N=10 is exploratory first-version evidence; P95/P99 cannot establish a tail-latency guarantee. The shared desktop retains background activity, with before/after load recorded.
+
+Complete tool tasks reuse the same project, inputs and grading. Rust/Cargo 1.98.1, Claude 2.1.128 and Codex 0.160.0 use the same artifacts. Ubuntu apt provides Python 3.14.4, Node 22.22.1 and Git 2.53.0, differing from host Python 3.14.7, Node 24.18.0 and Git 2.55.0. This compares normal deployment stacks; task differences cannot all be attributed to filesystems or VMMs. CLIs connect to a fixture model service in the same environment and must return actual passing tool results. There is no real inference, paid account, token or Internet-model timing. Codex uniformly uses inner `danger-full-access`; default nested sandbox compatibility is unmeasured.
+
+Firecracker has a TAP and static NIC in private user/network namespaces. A QEMU `-machine none` process supplies user-mode DNS/NAT so Ubuntu default services have working connectivity. There is no second guest VM; helper startup, CPU and RSS are included in the Firecracker group. Host routes and network services are unchanged. Preflight found that dead DNS caused a 30-second snapd wait; formal batches use functionally verified DNS/NAT. Earlier PCI trials hung in device reset during normal reboot and contribute N=0. Default MMIO exits normally with zero status. Firecracker runs without jailer; production security deployment is not assessed.
+
+The successful provisioning step boots QEMU, copies installed Rust/CLI/fixtures, and apt-installs distribution tools in **85.8 seconds**, recorded separately. It excludes the 825 MiB official qcow2 download, format conversion, tool payload creation, host prerequisite installation and failed diagnostic attempts. It is not total deployment cost from an empty machine. pVisor needs no OS image preparation, while still requiring installed host tools.
+
+Image/kernel/initrd hashes and sources are in the [asset manifest](../../assets/benchmarks/full-ubuntu-20261004/assets.json). Official HTTPS SHA256SUMS are checked; GPG signatures are not verified. The full [vendor kernel configuration](../../assets/benchmarks/full-ubuntu-20261004/ubuntu-generic.config) and per-trial proofs are available. The separate archive uses `pvisor-full-ubuntu-reference/v1`, retaining harness snapshots, failures, commands, OS proofs and minimized runtime evidence without pooling with the trimmed-kernel batch. Initial Ubuntu client sampling missed endpoints when the serial prompt/terminal control sequences shared a result line. After fixing the collector, Claude/Codex are each repeated at N=10 with identical parameters. Published client cells use only the follow-up distributions without pooling old samples. The original main report and invalid trials remain available; the [archive manifest](../../assets/benchmarks/full-ubuntu-20261004/manifest.json) records the selected batch per case.
+
+### Reproduce the complete Ubuntu comparison
+
+Requires Linux x86_64, KVM, FUSE, user/network namespaces, Firecracker 1.13.1, QEMU, curl, zstd, e2fsprogs, sfdisk, and installed host Python/Node/Rust/GCC/Git/rg/Claude/Codex. Use fresh output directories; downloads and tool installation require networking. Preparation modifies regular files under its output directory, without changing host services or block devices. Preflight with `--samples 1 --warmups 0` before formal runs. The fixture contains only project/workload inputs, not an OS root directory.
+
+```bash
+python3 benchmark/pvisor/prepare_ubuntu_reference.py \
+  --output target/ubuntu-reference-new
+python3 benchmark/pvisor/ubuntu_baselines.py \
+  --assets target/ubuntu-reference-new --fixture target/ubuntu-reference-new/fixture \
+  --binary /absolute/path/to/frozen/pvisor --output target/ubuntu-ready-new \
+  --backends native,pvisor-staged,pvisor-vm-hostroot,firecracker-ubuntu,firecracker-ubuntu-firstboot \
+  --modes ready --samples 30 --warmups 3
+python3 benchmark/pvisor/ubuntu_baselines.py \
+  --assets target/ubuntu-reference-new --fixture target/ubuntu-reference-new/fixture \
+  --binary /absolute/path/to/frozen/pvisor --output target/ubuntu-workflows-new \
+  --backends native,pvisor-staged,pvisor-vm-hostroot,firecracker-ubuntu \
+  --modes env,filesystem,tools,claude,codex --samples 10 --warmups 3
+python3 benchmark/pvisor/ubuntu_baselines.py \
+  --assets target/ubuntu-reference-new --fixture target/ubuntu-reference-new/fixture \
+  --binary /absolute/path/to/frozen/pvisor --output target/ubuntu-clients-new \
+  --backends firecracker-ubuntu --modes claude,codex --samples 10 --warmups 3
+uv run --no-project --with matplotlib python benchmark/pvisor/render_ubuntu_baselines.py \
+  --report target/ubuntu-ready-new/report.json \
+  --report target/ubuntu-workflows-new/report.json \
+  --report target/ubuntu-clients-new/report.json \
+  --replace-cohort claude/firecracker-ubuntu --replace-cohort codex/firecracker-ubuntu \
+  --assets target/ubuntu-reference-new --output /tmp/full-ubuntu-report-new
+```
+
+[Per-sample CSV](../../assets/benchmarks/full-ubuntu-20261004/samples.csv) · [Distributions and phases](../../assets/benchmarks/full-ubuntu-20261004/summary.json) · [Method and reproduction](methodology.md#full-ubuntu)
+
+See the [dpkg package inventory](../../assets/benchmarks/full-ubuntu-20261004/ubuntu-packages.txt). Formal tasks uniformly place compiler/client temporary files in private workspace `_tmp` to accommodate hostroot read-only `/tmp`. Failed diagnostics are retained outside the new formal distributions.
+
+The frozen binary [source limitations](../../assets/benchmarks/full-ubuntu-20261004/binary-provenance.json), [project input hashes](../../assets/benchmarks/full-ubuntu-20261004/fixture-inputs.json) and [temporary-directory diagnostics](../../assets/benchmarks/full-ubuntu-20261004/diagnostics/ubuntu-workflows-mmio-20261004/diagnostic-status.json) are retained separately. Combined CSV marks published samples with `selected_for_summary` to avoid pooling client follow-ups with previous cohorts.
+
+### QEMU follow-up with complete Ubuntu {#full-ubuntu-qemu}
+
+QEMU 10.2.2 q35 and microvm reuse the same complete Ubuntu Agent disk measured on Firecracker, stock `7.0.0-34-generic` and official initrd, loading the official bzImage directly; UEFI/GRUB are not executed. q35 uses virtio PCI; microvm uses virtio MMIO with optional legacy devices disabled and serial retained. The [official microvm documentation](https://www.qemu.org/docs/master/system/i386/microvm.html) describes direct boot and normal guest exit. Both explicitly select KVM, host CPU and 2 vCPU, with 2 GiB for startup and 16 GiB for tasks, bound to host cores 0 and 1.
+
+Each QEMU process supplies built-in user-mode NAT/DNS; Firecracker needs a separate QEMU `-machine none` helper whose time and RSS are included. Differences therefore cannot all be assigned to VMM or block-device cost. Each trial clones the same template; cases have 3 warmups and N=10, plus a functional preflight. They require the same OS-service readiness, tool checks and normal zero exit as Firecracker. `reboot=t` and `-no-reboot` allow normal termination rather than counting a host kill as success.
+
+The follow-up runs separately on the same host without pooling earlier samples; plotted pVisor/Firecracker distributions come from their previous batches. N=10 supplies an initial budget, not a tail guarantee. Commands, logs, OS proofs and artifact hashes are archived with the results. This command reuses the official Ubuntu prepared above:
+
+```bash
+python3 benchmark/pvisor/ubuntu_baselines.py \
+  --assets target/ubuntu-reference-new --fixture target/ubuntu-reference-new/fixture \
+  --binary /absolute/path/to/frozen/pvisor --output target/ubuntu-qemu-new \
+  --backends qemu-ubuntu,qemu-microvm-ubuntu \
+  --modes ready,tools,claude,codex --samples 10 --warmups 3
+```
+
+
+The follow-up [80 new samples and independent control cohorts](../../assets/benchmarks/full-ubuntu-qemu-20261004/manifest.json) all pass. The prerequisite for disabling PIC/PIT was checked by a [QMP capability query of the KVM host CPU model](../../assets/benchmarks/full-ubuntu-qemu-20261004/qemu-cpu-capabilities.json): the guest model exposes `tsc-deadline`. This is a capability check, not a performance sample.
+
 ## Familiar baselines and complete Agent Env: same-host Linux comparison {#reference-env}
 
 This batch separates first-output latency, working tools, and complete client repair loops. Startup, file operations, complete tools and real CLI timing are distinct. Historical macOS/Linux data remain intact; the new Docker/Firecracker/QEMU matrix is Linux only.

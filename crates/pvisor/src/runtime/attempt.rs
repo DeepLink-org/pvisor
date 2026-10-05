@@ -3,8 +3,8 @@
 use super::implant::{ImplantPlan, OverlayHint};
 use super::overlay::{
     OverlayMount, OverlayRecord, apply_overlay, discard_overlay, hint_from_record,
-    lower_stack_from_config, mount_overlay_record_observed, prepare_overlay_record_mountless,
-    resolve_overlay_workspace, stage_overlay_record,
+    lower_stack_from_config, mount_overlay_record_observed, prepare_execution_overlay_record,
+    prepare_overlay_record_mountless, resolve_overlay_workspace, stage_overlay_record,
 };
 use super::registry::{RunControlServer, RunLease, RunRecord, RunRecordState};
 #[cfg(feature = "gateway")]
@@ -198,11 +198,25 @@ impl AttemptSession {
             .map(|_| self.run_record.clone())
     }
 
-    pub(crate) fn teardown(self, exit_code: Option<i32>, executed: bool) -> AttemptTeardown {
-        self.teardown_inner(exit_code, executed)
+    pub(crate) fn execution_snapshot_store(&self) -> PathBuf {
+        self.run_record.stage_dir().join("execution-snapshots")
     }
 
-    fn teardown_inner(mut self, exit_code: Option<i32>, allow_apply: bool) -> AttemptTeardown {
+    pub(crate) fn teardown(
+        self,
+        exit_code: Option<i32>,
+        executed: bool,
+        hibernated: bool,
+    ) -> AttemptTeardown {
+        self.teardown_inner(exit_code, executed, hibernated)
+    }
+
+    fn teardown_inner(
+        mut self,
+        exit_code: Option<i32>,
+        allow_apply: bool,
+        preserve_backing: bool,
+    ) -> AttemptTeardown {
         let mut errors = Vec::new();
         if let Some(proxy) = self.proxy.take()
             && let Err(error) = proxy.shutdown()
@@ -254,6 +268,7 @@ impl AttemptSession {
         };
 
         if let Some(ref mut rec) = record
+            && !preserve_backing
             && let Err(err) = finalize_overlay(rec, overlay_unmounted, allow_apply)
         {
             errors.push(format!("finalize OverlayFS staging: {err:#}"));
@@ -312,7 +327,7 @@ impl AttemptSession {
     ) -> anyhow::Result<()> {
         let run_id = pvisor_core::RunId::new(self.run_record.run_id.clone());
         let started_at_unix_ms = self.run_record.started_at_unix_ms;
-        let mut teardown = self.teardown_inner(None, false);
+        let mut teardown = self.teardown_inner(None, false, false);
         let mut warnings = Vec::new();
         if let Some(error) = teardown.error_message() {
             warnings.push(format!("attempt teardown after startup failure: {error}"));
@@ -396,6 +411,7 @@ impl AttemptTeardown {
             RunState::Completed => RunRecordState::Completed,
             RunState::Cancelled => RunRecordState::Cancelled,
             RunState::Failed => RunRecordState::Failed,
+            RunState::Hibernated => RunRecordState::Hibernated,
             _ => anyhow::bail!("cannot commit nonterminal Run state {state:?}"),
         };
         self.run_record.write()
@@ -492,7 +508,7 @@ pub(crate) fn prepare_attempt(
     preparation: &super::run::PreparedRun,
     opts: AttemptPrepareOpts<'_>,
 ) -> anyhow::Result<AttemptSession> {
-    let config = opts.config.clone();
+    let mut config = opts.config.clone();
     spec.agent.name = config.agent_id.clone();
     let storage = opts
         .storage
@@ -525,6 +541,8 @@ pub(crate) fn prepare_attempt(
             gateway_enabled: opts.gateway_enabled,
         },
     )?;
+    config.listen = gateway.listen.clone();
+    config.admin_listen = gateway.admin_listen.clone();
 
     spec.metadata.insert(
         crate::executor::sandbox::SANDBOX_PROXY_KEY.into(),
@@ -541,8 +559,13 @@ pub(crate) fn prepare_attempt(
     apply_overlay_override(&mut overlay_cfg, &opts.overlay_override);
 
     crate::util::startup_mark_run("storage.overlay_begin", spec.run_id.as_str());
-    let prepared_overlay =
-        prepare_overlay(&overlay_cfg, &storage, &root_session, preparation.is_krun())?;
+    let prepared_overlay = prepare_overlay(
+        &overlay_cfg,
+        &storage,
+        &root_session,
+        preparation.is_krun(),
+        opts.overlay_override.execution_snapshot.as_ref(),
+    )?;
     crate::util::startup_mark_run("storage.overlay_ready", spec.run_id.as_str());
     let PreparedOverlay {
         lease,
@@ -714,8 +737,13 @@ pub(crate) fn prepare_overlay_attempt(
     let mut overlay_cfg = pvisor_core::overlay::OverlayConfig::default();
     apply_overlay_override(&mut overlay_cfg, &opts.overlay);
     crate::util::startup_mark_run("storage.overlay_begin", spec.run_id.as_str());
-    let prepared_overlay =
-        prepare_overlay(&overlay_cfg, &storage, &root_session, preparation.is_krun())?;
+    let prepared_overlay = prepare_overlay(
+        &overlay_cfg,
+        &storage,
+        &root_session,
+        preparation.is_krun(),
+        opts.overlay.execution_snapshot.as_ref(),
+    )?;
     crate::util::startup_mark_run("storage.overlay_ready", spec.run_id.as_str());
     let PreparedOverlay {
         lease,
@@ -1149,6 +1177,14 @@ fn apply_overlay_override(
         }
         overlay_cfg.enabled = true;
     }
+    if let Some(saved) = &overlay_override.execution_snapshot {
+        overlay_cfg.target = Some(saved.target.display().to_string());
+        overlay_cfg.lower_dirs = overlay_override
+            .lower_dirs
+            .iter()
+            .map(|p| p.display().to_string())
+            .collect();
+    }
 }
 
 fn prepare_overlay(
@@ -1156,6 +1192,7 @@ fn prepare_overlay(
     storage: &Path,
     root_session: &str,
     mountless: bool,
+    execution_snapshot: Option<&super::implant::ExecutionOverlayHint>,
 ) -> anyhow::Result<PreparedOverlay> {
     if !overlay_cfg.enabled && overlay_cfg.target.is_none() {
         return Ok(PreparedOverlay {
@@ -1173,11 +1210,27 @@ fn prepare_overlay(
                 crate::util::persistence_step(root_session, "overlay", "lease_prepare", || {
                     RunLease::acquire_new(&record.stage_dir)
                 })?;
-            let lowers = lower_stack_from_config(overlay_cfg, storage, &mut record, !mountless)?;
+            let lowers = if let Some(saved) = execution_snapshot {
+                anyhow::ensure!(mountless, "execution snapshot backing requires a native VM");
+                record.target = saved.target.clone();
+                record.baseline_lower = saved.baseline_lower.clone();
+                record.excluded_paths = saved.excluded_paths.clone();
+                overlay_cfg
+                    .lower_dirs
+                    .iter()
+                    .map(PathBuf::from)
+                    .collect::<Vec<_>>()
+            } else {
+                lower_stack_from_config(overlay_cfg, storage, &mut record, !mountless)?
+            };
             let (mount, record, fs_metrics) = if mountless {
                 (
                     None,
-                    prepare_overlay_record_mountless(&record, &lowers, root_session)?,
+                    if execution_snapshot.is_some() {
+                        prepare_execution_overlay_record(&record, &lowers, root_session)?
+                    } else {
+                        prepare_overlay_record_mountless(&record, &lowers, root_session)?
+                    },
                     None,
                 )
             } else {
@@ -1507,6 +1560,61 @@ pub(crate) fn apply_implant(process: &mut ProcessInvocation, plan: &ImplantPlan)
 mod tests {
 
     #[test]
+    fn hibernation_retains_partial_workspace_without_auto_apply_or_discard() {
+        for discard in [false, true] {
+            let temporary = tempfile::tempdir().unwrap();
+            let target = temporary.path().join("target");
+            let storage = temporary.path().join("storage");
+            std::fs::create_dir(&target).unwrap();
+            std::fs::write(target.join("value"), b"original").unwrap();
+            let mut spec = pvisor_core::RunSpec::process("hibernated", "agent", "true");
+            let preparation = crate::PVisor::new()
+                .resolve_run(spec.clone())
+                .unwrap()
+                .preparation;
+            let attempt = pvisor_core::AttemptId::new("hibernated-attempt");
+            let mut session =
+                super::prepare_storage_attempt(&mut spec, &preparation, &storage, &attempt, None)
+                    .unwrap();
+            let config = pvisor_core::overlay::OverlayConfig {
+                enabled: true,
+                target: Some(target.display().to_string()),
+                stage_dir: Some(storage.display().to_string()),
+                ..Default::default()
+            };
+            let record = super::resolve_overlay_workspace(&config, &storage, "hibernated")
+                .unwrap()
+                .unwrap();
+            let mut record = super::prepare_overlay_record_mountless(
+                &record,
+                std::slice::from_ref(&target),
+                "hibernated",
+            )
+            .unwrap();
+            std::fs::write(record.upper.path().join("value"), b"partial").unwrap();
+            record.auto_apply = !discard;
+            record.auto_discard = discard;
+            session.overlay_record = Some(record);
+            let mut teardown = session.teardown(None, true, true);
+            assert!(teardown.error_message().is_none());
+            teardown
+                .commit_state(pvisor_core::RunState::Hibernated)
+                .unwrap();
+            let record = crate::RunRecord::read(&storage).unwrap();
+            assert_eq!(record.state, crate::RunRecordState::Hibernated);
+            assert_eq!(
+                record.overlay.as_ref().unwrap().state,
+                pvisor_core::overlay::OverlayState::Staged
+            );
+            assert_eq!(std::fs::read(target.join("value")).unwrap(), b"original");
+            assert_eq!(
+                std::fs::read(record.overlay.unwrap().upper.path().join("value")).unwrap(),
+                b"partial"
+            );
+        }
+    }
+
+    #[test]
     fn finalization_retains_backing_on_unmount_or_startup_failure() {
         let temporary = tempfile::tempdir().unwrap();
         let target = temporary.path().join("target");
@@ -1560,7 +1668,7 @@ mod tests {
             None,
         )
         .unwrap();
-        let mut teardown = session.teardown(None, false);
+        let mut teardown = session.teardown(None, false, false);
         assert!(
             teardown
                 .commit_state(pvisor_core::RunState::Running)

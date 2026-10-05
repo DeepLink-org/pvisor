@@ -7,8 +7,9 @@ mod config;
 mod portable;
 pub mod progress;
 mod protocol;
+mod s3_runtime;
 mod server;
-mod storage;
+pub(crate) mod storage;
 pub(crate) use config::scrub_guest_environment;
 mod transport;
 

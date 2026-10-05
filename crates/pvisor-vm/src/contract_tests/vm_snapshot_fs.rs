@@ -332,6 +332,63 @@ impl Drop for GuestFs {
 }
 
 #[test]
+fn frozen_backing_verification_preserves_writable_handles_and_rejects_changed_originals() {
+    use crate::devices::virtio::DeviceSnapshotState;
+    for fault in ["content", "inode", "root"] {
+        let temp = tempfile::tempdir().unwrap();
+        let root = temp.path().join("original");
+        std::fs::create_dir(&root).unwrap();
+        std::fs::write(root.join("data"), b"frozen writable handle").unwrap();
+        let mut source = GuestFs::new(&root, None);
+        source.request(
+            fuse::Opcode::Init,
+            0,
+            fuse::InitInCompat {
+                major: 7,
+                minor: 31,
+                ..Default::default()
+            }
+            .as_slice(),
+        );
+        let lookup = source.request(fuse::Opcode::Lookup, 1, b"data\0");
+        let inode = u64::from_ne_bytes(lookup[..8].try_into().unwrap());
+        source.request(
+            fuse::Opcode::Open,
+            inode,
+            fuse::OpenIn {
+                flags: libc::O_RDWR as u32,
+                ..Default::default()
+            }
+            .as_slice(),
+        );
+        let mut state = source.freeze();
+        let DeviceSnapshotState::Fs { server, .. } = &mut state.state else {
+            panic!()
+        };
+        let pristine = serde_json::to_vec(server).unwrap();
+        server.verify_frozen_backing().unwrap();
+        assert_eq!(serde_json::to_vec(server).unwrap(), pristine);
+        assert!(server.rebind_owned_copy(&root, &root).is_err());
+        assert_eq!(serde_json::to_vec(server).unwrap(), pristine);
+        match fault {
+            "content" => std::fs::write(root.join("data"), b"changed frozen content").unwrap(),
+            "inode" => {
+                std::fs::rename(root.join("data"), temp.path().join("old-data")).unwrap();
+                std::fs::write(root.join("data"), b"frozen writable handle").unwrap();
+            }
+            "root" => {
+                std::fs::rename(&root, temp.path().join("old-root")).unwrap();
+                std::fs::create_dir(&root).unwrap();
+                std::fs::write(root.join("data"), b"frozen writable handle").unwrap();
+            }
+            _ => unreachable!(),
+        }
+        assert!(server.verify_frozen_backing().is_err(), "{fault}");
+        assert_eq!(serde_json::to_vec(server).unwrap(), pristine);
+    }
+}
+
+#[test]
 fn overlay_rebinds_owned_layers_handles_cookies_and_future_hard_link_copy_up() {
     use crate::devices::virtio::{fs::OverlayConfig, DeviceSnapshotState};
     use pvisor::environment_snapshot::{copy_owned_tree, verify_tree};
@@ -426,6 +483,14 @@ fn overlay_rebinds_owned_layers_handles_cookies_and_future_hard_link_copy_up() {
     };
     let remainder = source.request(fuse::Opcode::Readdir, 1, read_remainder.as_slice());
     let mut state = source.freeze();
+    {
+        let DeviceSnapshotState::Fs { server, .. } = &state.state else {
+            panic!()
+        };
+        let before = serde_json::to_vec(server).unwrap();
+        server.verify_frozen_backing().unwrap();
+        assert_eq!(serde_json::to_vec(server).unwrap(), before);
+    }
     let copied = workspace.path().join("copied");
     let inventory = copy_owned_tree(&original, &copied).unwrap();
     // Rebinding stores canonical owned roots. macOS temporary paths can use
@@ -443,6 +508,25 @@ fn overlay_rebinds_owned_layers_handles_cookies_and_future_hard_link_copy_up() {
         panic!()
     };
     let pristine = serde_json::to_vec(server).unwrap();
+    let changed =
+        pvisor_overlay_core::FileAccessPolicy::new(vec!["private/**".into()], vec![]).unwrap();
+    assert!(server.rebind_overlay_policy(&changed).is_err());
+    assert_eq!(serde_json::to_vec(server).unwrap(), pristine);
+    let mut rebound = server.clone();
+    let mut policy = pvisor_overlay_core::FileAccessPolicy::default();
+    policy.bind_session("restored-run", "restored-attempt", "rootfs");
+    rebound.rebind_overlay_policy(&policy).unwrap();
+    let rebound = serde_json::to_value(&rebound).unwrap();
+    let rebound_policy: pvisor_overlay_core::FileAccessPolicy = serde_json::from_value(
+        rebound["fs"]["state"]["inner"]["state"]["config"]["access_policy"].clone(),
+    )
+    .unwrap();
+    assert!(rebound_policy.same_rules(&pvisor_overlay_core::FileAccessPolicy::default()));
+    assert_eq!(rebound_policy.context().unwrap().run_id, "restored-run");
+    assert_eq!(
+        rebound_policy.context().unwrap().attempt_id,
+        "restored-attempt"
+    );
     assert!(server.rebind_owned_copy(&copied, &copied).is_err());
     assert_eq!(serde_json::to_vec(server).unwrap(), pristine);
     // A failure in a later layer must roll back earlier layer relocation too.
@@ -499,6 +583,54 @@ fn overlay_rebinds_owned_layers_handles_cookies_and_future_hard_link_copy_up() {
         assert_eq!(serde_json::to_vec(&malformed).unwrap(), before);
     }
 
+    let copies: Vec<_> = ["toolkit", "base", "upper", "work", "preimages", "target"]
+        .into_iter()
+        .map(|name| (original.join(name), copied.join(name)))
+        .collect();
+    for shared in [
+        vec![original.join("upper")],
+        vec![original.join("work")],
+        vec![original.join("preimages")],
+        vec![original.join("target")],
+        vec![original.join("base")], // Also the private baseline.
+        vec![original.join("missing")],
+        vec![original.join("toolkit"), original.join("toolkit")],
+    ] {
+        assert!(server
+            .rebind_shared_readonly_layers(&copies, &shared)
+            .is_err());
+        assert_eq!(serde_json::to_vec(server).unwrap(), pristine);
+    }
+    for flags in [libc::O_RDWR, libc::O_WRONLY, libc::O_RDONLY | libc::O_TRUNC] {
+        let mut malformed = serde_json::to_value(&*server).unwrap();
+        fn writable_lower(state: &mut serde_json::Value, flags: i32) {
+            match state["kind"].as_str().unwrap() {
+                "ReadOnly" => writable_lower(&mut state["state"], flags),
+                "Augment" => writable_lower(&mut state["state"]["inner"], flags),
+                "Passthrough" => {
+                    assert!(!state["state"]["handles"].as_array().unwrap().is_empty());
+                    state["state"]["handles"][0]["flags"] = flags.into();
+                }
+                other => panic!("unexpected lower {other}"),
+            }
+        }
+        writable_lower(
+            &mut malformed["fs"]["state"]["inner"]["state"]["layers"][1],
+            flags,
+        );
+        let mut malformed: crate::devices::virtio::fs::snapshot::ServerSnapshot =
+            serde_json::from_value(malformed).unwrap();
+        let before = serde_json::to_vec(&malformed).unwrap();
+        assert!(malformed
+            .rebind_shared_readonly_layers(&copies, &[original.join("toolkit")])
+            .is_err());
+        assert_eq!(serde_json::to_vec(&malformed).unwrap(), before);
+    }
+    let mut shared = server.clone();
+    shared
+        .rebind_shared_readonly_layers(&copies, &[original.join("toolkit")])
+        .unwrap();
+
     server.rebind_owned_copy(&original, &copied).unwrap();
     let mut restored = GuestFs::from_device(make(&copied), Some((mem, state, next)));
     // No new INIT, LOOKUP or OPEN for the old file/directory handles.
@@ -553,6 +685,322 @@ fn overlay_rebinds_owned_layers_handles_cookies_and_future_hard_link_copy_up() {
         panic!()
     };
     server.rebind_owned_copy(&copied, &second).unwrap();
+}
+
+#[test]
+fn shared_lower_restores_keep_handles_cookies_and_hard_link_copy_up_private() {
+    use crate::devices::virtio::{fs::OverlayConfig, DeviceSnapshotState};
+    use pvisor::environment_snapshot::copy_owned_tree;
+    use std::{
+        os::unix::{ffi::OsStrExt, fs::MetadataExt},
+        path::Path,
+    };
+
+    let workspace = tempfile::tempdir().unwrap();
+    let original = workspace.path().join("original");
+    std::fs::create_dir_all(original.join("lower")).unwrap();
+    std::fs::write(original.join("lower/a"), b"0123456789").unwrap();
+    for alias in ["b", "c"] {
+        std::fs::hard_link(original.join("lower/a"), original.join("lower").join(alias)).unwrap();
+    }
+    std::fs::write(original.join("lower/priority"), b"read-only").unwrap();
+    let make = |root: &Path, lower: &Path| {
+        Fs::new(
+            "rootfs".into(),
+            PermissionSemantics::LinuxComplete,
+            None,
+            Arc::new(AtomicI32::new(0)),
+            false,
+            vec![],
+            Some(OverlayConfig {
+                lower_dirs: vec![lower.to_str().unwrap().into()],
+                apply_target: None,
+                baseline_lower: None,
+                baseline_content_index: None,
+                upper_dir: root.join("upper").to_str().unwrap().into(),
+                work_dir: Some(root.join("work").to_str().unwrap().into()),
+                preimage_dir: Some(root.join("preimages").to_str().unwrap().into()),
+                excluded_paths: vec![],
+                access_policy: Default::default(),
+                semantics: PermissionSemantics::LinuxComplete,
+            }),
+        )
+        .unwrap()
+    };
+    let mut source = GuestFs::from_device(make(&original, &original.join("lower")), None);
+    source.request(
+        fuse::Opcode::Init,
+        0,
+        fuse::InitInCompat {
+            major: 7,
+            minor: 31,
+            ..Default::default()
+        }
+        .as_slice(),
+    );
+    let mut open = |name: &[u8], flags: i32| {
+        let entry = source.request(fuse::Opcode::Lookup, 1, name);
+        let inode = u64::from_ne_bytes(entry[..8].try_into().unwrap());
+        let opened = source.request(
+            fuse::Opcode::Open,
+            inode,
+            fuse::OpenIn {
+                flags: flags as u32,
+                ..Default::default()
+            }
+            .as_slice(),
+        );
+        (inode, u64::from_ne_bytes(opened[..8].try_into().unwrap()))
+    };
+    let (inode, handle) = open(b"a\0", libc::O_RDWR);
+    let (priority_inode, priority_handle) = open(b"priority\0", libc::O_RDONLY);
+    let opened = source.request(fuse::Opcode::Opendir, 1, fuse::OpenIn::default().as_slice());
+    let directory = u64::from_ne_bytes(opened[..8].try_into().unwrap());
+    let read_directory = fuse::ReadIn {
+        fh: directory,
+        size: 4096,
+        ..Default::default()
+    };
+    let listing = source.request(fuse::Opcode::Readdir, 1, read_directory.as_slice());
+    let first = fuse::Dirent::from_slice(&listing[..std::mem::size_of::<fuse::Dirent>()]).unwrap();
+    let read_remainder = fuse::ReadIn {
+        offset: first.off,
+        ..read_directory
+    };
+    let remainder = source.request(fuse::Opcode::Readdir, 1, read_remainder.as_slice());
+    let state = source.freeze();
+    let mut memory = vec![0; 0x40000];
+    source.mem.read_slice(&mut memory, GuestAddress(0)).unwrap();
+    let next = source.next;
+    let lower = workspace.path().join("shared-lower");
+    copy_owned_tree(&original.join("lower"), &lower).unwrap();
+    // The fresh runner can retain original read-only roots during freeze. Its
+    // supervisor then binds only those roots to sealed pool copies, preserving
+    // the captured upper/work/journal inode identities and saved guest handles.
+    let mut partial = state.clone();
+    let DeviceSnapshotState::Fs { server, .. } = &mut partial.state else {
+        panic!()
+    };
+    let before = serde_json::to_value(&*server).unwrap();
+    for private in ["upper", "work", "preimages"] {
+        assert!(server
+            .rebind_shared_lower_copies(&[(original.join(private), lower.clone())])
+            .is_err());
+        assert_eq!(serde_json::to_value(&*server).unwrap(), before);
+    }
+    for private in ["upper", "work", "preimages"] {
+        assert!(server
+            .rebind_shared_lower_copies(&[(original.join("lower"), original.join(private))])
+            .is_err());
+        assert_eq!(serde_json::to_value(&*server).unwrap(), before);
+    }
+    assert!(server
+        .rebind_shared_lower_copies(&[(original.join("lower"), workspace.path().to_owned())])
+        .is_err());
+    assert_eq!(serde_json::to_value(&*server).unwrap(), before);
+    server
+        .rebind_shared_lower_copies(&[(original.join("lower"), lower.clone())])
+        .unwrap();
+    let original_upper_inode = std::fs::metadata(original.join("upper/a")).unwrap().ino();
+    let mem = GuestMemoryMmap::from_ranges(&[(GuestAddress(0), 0x40000)]).unwrap();
+    mem.write_slice(&memory, GuestAddress(0)).unwrap();
+    let mut partially_rebound =
+        GuestFs::from_device(make(&original, &lower), Some((mem, partial, next)));
+    assert_eq!(partially_rebound.read(inode, handle), b"3456");
+    assert_eq!(
+        partially_rebound.read(priority_inode, priority_handle),
+        b"d-on"
+    );
+    assert_eq!(
+        partially_rebound.request(fuse::Opcode::Readdir, 1, read_remainder.as_slice()),
+        remainder
+    );
+    assert_eq!(
+        std::fs::metadata(original.join("upper/a")).unwrap().ino(),
+        original_upper_inode
+    );
+    drop(partially_rebound);
+    let branches: Vec<_> = ["first", "second"]
+        .into_iter()
+        .map(|name| {
+            let root = workspace.path().join(name);
+            std::fs::create_dir(&root).unwrap();
+            for private in ["upper", "work", "preimages"] {
+                copy_owned_tree(&original.join(private), &root.join(private)).unwrap();
+            }
+            root
+        })
+        .collect();
+    drop(source);
+    std::fs::remove_dir_all(&original).unwrap();
+    for (root, contents) in branches.iter().zip([b"one", b"two"]) {
+        let mut state = state.clone();
+        let DeviceSnapshotState::Fs { server, .. } = &mut state.state else {
+            panic!()
+        };
+        let copies: Vec<_> = std::iter::once((original.join("lower"), lower.clone()))
+            .chain(
+                ["upper", "work", "preimages"]
+                    .into_iter()
+                    .map(|name| (original.join(name), root.join(name))),
+            )
+            .collect();
+        server
+            .rebind_shared_readonly_layers(&copies, &[original.join("lower")])
+            .unwrap();
+        let mem = GuestMemoryMmap::from_ranges(&[(GuestAddress(0), 0x40000)]).unwrap();
+        mem.write_slice(&memory, GuestAddress(0)).unwrap();
+        let mut restored = GuestFs::from_device(make(root, &lower), Some((mem, state, next)));
+        // Retained descriptors and directory cookies need no new INIT/OPEN.
+        assert_eq!(restored.read(inode, handle), b"3456");
+        assert_eq!(restored.read(priority_inode, priority_handle), b"d-on");
+        assert_eq!(
+            restored.request(fuse::Opcode::Readdir, 1, read_remainder.as_slice()),
+            remainder
+        );
+        for alias in [b"b\0", b"c\0"] {
+            let entry = restored.request(fuse::Opcode::Lookup, 1, alias);
+            let alias_inode = u64::from_ne_bytes(entry[..8].try_into().unwrap());
+            restored.request(
+                fuse::Opcode::Open,
+                alias_inode,
+                fuse::OpenIn {
+                    flags: libc::O_RDWR as u32,
+                    ..Default::default()
+                }
+                .as_slice(),
+            );
+        }
+        let mut write = fuse::WriteIn {
+            fh: handle,
+            size: 3,
+            ..Default::default()
+        }
+        .as_slice()
+        .to_vec();
+        write.extend_from_slice(contents);
+        restored.request(fuse::Opcode::Write, inode, &write);
+        let identity = |name| {
+            std::fs::metadata(root.join("upper").join(name))
+                .unwrap()
+                .ino()
+        };
+        assert_eq!(identity("a"), identity("b"));
+        assert_eq!(identity("a"), identity("c"));
+        assert_ne!(
+            identity("a"),
+            std::fs::metadata(lower.join("a")).unwrap().ino()
+        );
+        assert_eq!(
+            std::fs::read(root.join("upper/b")).unwrap(),
+            [contents.as_slice(), b"3456789"].concat()
+        );
+        // Recapture retains the same authenticated, immutable lower while
+        // upper/work/journal are independently copied. The owned-copy API
+        // still rejects unchanged roots, even when they contain valid data.
+        let mut recaptured = restored.freeze();
+        let mut ram = vec![0; 0x40000];
+        restored.mem.read_slice(&mut ram, GuestAddress(0)).unwrap();
+        let next = restored.next;
+        let child = root.with_extension("recaptured");
+        std::fs::create_dir(&child).unwrap();
+        for private in ["upper", "work", "preimages"] {
+            copy_owned_tree(&root.join(private), &child.join(private)).unwrap();
+        }
+        let copies: Vec<_> = std::iter::once((lower.clone(), lower.clone()))
+            .chain(
+                ["upper", "work", "preimages"]
+                    .into_iter()
+                    .map(|name| (root.join(name), child.join(name))),
+            )
+            .collect();
+        let DeviceSnapshotState::Fs { server, .. } = &mut recaptured.state else {
+            panic!()
+        };
+        let before = serde_json::to_vec(server).unwrap();
+        assert!(server.rebind_owned_layers(&copies).is_err());
+        assert_eq!(serde_json::to_vec(server).unwrap(), before);
+        let mut malformed = serde_json::to_value(&*server).unwrap();
+        fn corrupt_identity(state: &mut serde_json::Value, root: &[u8]) -> bool {
+            match state["kind"].as_str().unwrap() {
+                "ReadOnly" => corrupt_identity(&mut state["state"], root),
+                "Augment" => corrupt_identity(&mut state["state"]["inner"], root),
+                "Overlay" => state["state"]["layers"]
+                    .as_array_mut()
+                    .unwrap()
+                    .iter_mut()
+                    .any(|layer| corrupt_identity(layer, root)),
+                "Passthrough" if state["state"]["root"] == serde_json::json!(root) => {
+                    let inode = &mut state["state"]["inodes"][0]["identity"]["ino"];
+                    *inode = (inode.as_u64().unwrap() + 1).into();
+                    true
+                }
+                "Passthrough" => false,
+                other => panic!("unexpected snapshot layer {other}"),
+            }
+        }
+        assert!(corrupt_identity(
+            &mut malformed["fs"],
+            lower.as_os_str().as_bytes()
+        ));
+        let mut malformed: crate::devices::virtio::fs::snapshot::ServerSnapshot =
+            serde_json::from_value(malformed).unwrap();
+        let malformed_before = serde_json::to_vec(&malformed).unwrap();
+        assert!(malformed
+            .rebind_shared_readonly_layers(&copies, std::slice::from_ref(&lower))
+            .is_err());
+        assert_eq!(serde_json::to_vec(&malformed).unwrap(), malformed_before);
+        server
+            .rebind_shared_readonly_layers(&copies, std::slice::from_ref(&lower))
+            .unwrap();
+        let lower_inode = std::fs::metadata(lower.join("a")).unwrap().ino();
+        let mem = GuestMemoryMmap::from_ranges(&[(GuestAddress(0), 0x40000)]).unwrap();
+        mem.write_slice(&ram, GuestAddress(0)).unwrap();
+        let mut child_vm =
+            GuestFs::from_device(make(&child, &lower), Some((mem, recaptured, next)));
+        assert_eq!(child_vm.read(priority_inode, priority_handle), b"d-on");
+        assert_eq!(child_vm.read(inode, handle), b"3456");
+        assert_eq!(
+            child_vm.request(fuse::Opcode::Readdir, 1, read_remainder.as_slice()),
+            remainder
+        );
+        assert_eq!(
+            std::fs::metadata(lower.join("a")).unwrap().ino(),
+            lower_inode
+        );
+        let mut write = fuse::WriteIn {
+            fh: handle,
+            size: 3,
+            ..Default::default()
+        }
+        .as_slice()
+        .to_vec();
+        write.extend_from_slice(b"new");
+        child_vm.request(fuse::Opcode::Write, inode, &write);
+        assert_eq!(std::fs::read(child.join("upper/b")).unwrap(), b"new3456789");
+        assert_eq!(
+            std::fs::read(root.join("upper/b")).unwrap(),
+            [contents.as_slice(), b"3456789"].concat()
+        );
+    }
+    assert_eq!(
+        std::fs::read(branches[0].join("upper/a")).unwrap(),
+        b"one3456789"
+    );
+    assert_eq!(
+        std::fs::read(branches[1].join("upper/a")).unwrap(),
+        b"two3456789"
+    );
+    assert_ne!(
+        std::fs::metadata(branches[0].join("upper/a"))
+            .unwrap()
+            .ino(),
+        std::fs::metadata(branches[1].join("upper/a"))
+            .unwrap()
+            .ino(),
+    );
+    assert_eq!(std::fs::read(lower.join("a")).unwrap(), b"0123456789");
+    assert_eq!(std::fs::metadata(lower.join("a")).unwrap().nlink(), 3);
 }
 
 #[test]

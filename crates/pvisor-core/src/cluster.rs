@@ -52,6 +52,15 @@ pub struct ExecutionClass {
 #[derive(Debug, Clone, Serialize, Deserialize)]
 #[serde(deny_unknown_fields)]
 pub struct TaskSpec {
+    /// Require verified trace and/or private VM writable-layer retention.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub retain_artifacts: Option<ArtifactRetention>,
+    /// Exact model availability and capture level required for this Attempt.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub gateway: Option<GatewayRequirement>,
+    /// Strict outer field makes older controllers reject explicit QoS requests.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub cpu_qos: Option<crate::CpuQosClass>,
     pub version: u32,
     /// Immutable idempotency key, scoped to this cluster.
     pub id: String,
@@ -70,11 +79,147 @@ pub struct TaskSpec {
     /// Content digest of a registered immutable VM environment template.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub environment: Option<String>,
+    /// Explicitly continue a sealed control observation in a new Run/Attempt.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub restore: Option<ExecutionRestore>,
+}
+impl TaskSpec {
+    pub fn requires_artifacts(&self) -> bool {
+        self.retain_bundle || self.retain_artifacts.is_some()
+    }
+    pub fn validate_artifacts(&self) -> anyhow::Result<()> {
+        if let Some(retention) = &self.retain_artifacts {
+            retention.validate()?;
+            anyhow::ensure!(
+                !(retention.workspace_upper || retention.execution_checkpoint.is_some())
+                    || self.execution
+                        == ExecutionClass {
+                            executor: ExecutorKind::VirtualMachine,
+                            isolation: IsolationKind::VirtualMachine,
+                        },
+                "writable-layer retention requires native VM isolation"
+            );
+        }
+        Ok(())
+    }
+    pub fn validate_gateway(&self) -> anyhow::Result<()> {
+        if let Some(requirement) = &self.gateway {
+            requirement.validate()?;
+            anyhow::ensure!(
+                requirement.models.iter().all(|model| self
+                    .run
+                    .capabilities
+                    .models
+                    .iter()
+                    .any(|pattern| crate::gateway::model_matches(pattern, model))),
+                "required Gateway models must be explicitly authorized in RunSpec capabilities"
+            );
+        }
+        Ok(())
+    }
+    /// Keep explicit CPU QoS visible to strict cluster parsers, including older
+    /// controllers. Never send an optional nested-only requirement over the wire.
+    pub fn validate_cpu_qos(&self) -> anyhow::Result<()> {
+        anyhow::ensure!(
+            self.run.runtime.cpu_qos.is_none() || self.run.runtime.cpu_qos == self.cpu_qos,
+            "RunSpec CPU QoS must match explicit TaskSpec cpu_qos"
+        );
+        anyhow::ensure!(
+            self.cpu_qos.is_none()
+                || self.execution
+                    == ExecutionClass {
+                        executor: ExecutorKind::VirtualMachine,
+                        isolation: IsolationKind::VirtualMachine,
+                    },
+            "CPU QoS requires VM execution"
+        );
+        Ok(())
+    }
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
+#[serde(deny_unknown_fields)]
+pub struct ExecutionRestore {
+    pub task_id: String,
+    pub request_id: String,
+}
+
+pub const MAX_EXECUTION_FORK_BRANCHES: usize = 64;
+/// Bound duplicated specifications and one controller journal commit.
+pub const MAX_EXECUTION_FORK_BYTES: usize = 4 * 1024 * 1024;
+
+/// Explicit identities for a continuation of captured CPU/process state.
+/// Invocation, input, authorization and admission budgets come from the source.
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
+#[serde(deny_unknown_fields)]
+pub struct ExecutionForkBranch {
+    pub task_id: String,
+    pub run_id: crate::RunId,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
+#[serde(deny_unknown_fields)]
+pub struct ExecutionForkRequest {
+    pub version: u32,
+    /// Idempotency key within the source task's fork history.
+    pub request_id: String,
+    /// A sealed checkpoint/completed suspension for fork creation, or a fresh
+    /// checkpoint request ID for the live capture workflow.
+    pub checkpoint_request_id: String,
+    pub branches: Vec<ExecutionForkBranch>,
+}
+
+/// An immutable receipt proves that every branch was committed together.
+/// Branch execution and admission are independent of this creation receipt.
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
+#[serde(deny_unknown_fields)]
+pub struct ExecutionForkRecord {
+    pub version: u32,
+    pub source_task_id: String,
+    pub source_key: LeaseKey,
+    pub request: ExecutionForkRequest,
+    pub checkpoint: crate::operation::ExecutionCheckpoint,
+    pub created_at_ms: u64,
+}
+
+#[derive(Debug, Clone, Copy, Serialize, Deserialize, PartialEq, Eq)]
+#[serde(rename_all = "snake_case")]
+pub enum LiveForkPhase {
+    Capturing,
+    Ready,
+    Failed,
+}
+
+/// Durable capture-to-branch workflow. Ready proves creation, not execution.
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
+#[serde(deny_unknown_fields)]
+pub struct LiveForkRecord {
+    pub version: u32,
+    pub source_task_id: String,
+    pub source_key: LeaseKey,
+    pub request: ExecutionForkRequest,
+    pub phase: LiveForkPhase,
+    pub fork: Option<ExecutionForkRecord>,
+    pub error: Option<String>,
+    pub created_at_ms: u64,
+    pub completed_at_ms: Option<u64>,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
 #[serde(deny_unknown_fields)]
 pub struct WorkerRegistration {
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub checkpoint_storage: Option<CheckpointStorageSupport>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub artifact_export: Option<ArtifactExportSupport>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub gateway: Option<GatewaySupport>,
+    /// Explicit opt-in makes older controllers reject unsupported CPU reports.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub cpu_observation_protocol: Option<u32>,
+    /// Native CPU classes this Worker can actually install. Empty preserves legacy scheduling.
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub cpu_qos_classes: Vec<crate::CpuQosClass>,
     pub version: u32,
     pub id: String,
     /// New UUID on every worker process start; old incarnations cannot renew.
@@ -95,6 +240,86 @@ pub struct WorkerRegistration {
     pub artifact_protocol: Option<u32>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub environment_support: Option<EnvironmentSupport>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub execution_restore_protocol: Option<u32>,
+    /// Direct save-and-stop from paused/offloaded state, without CPU resume.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub parked_execution_suspend_protocol: Option<u32>,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
+pub struct GatewayRequirement {
+    pub version: u32,
+    pub level: crate::gateway::CaptureLevel,
+    /// Exact model IDs; policy patterns remain separately in RunSpec capabilities.
+    pub models: Vec<String>,
+}
+impl GatewayRequirement {
+    pub fn validate(&self) -> anyhow::Result<()> {
+        anyhow::ensure!(
+            self.version == CLUSTER_VERSION,
+            "unsupported Gateway version"
+        );
+        anyhow::ensure!(
+            !self.models.is_empty() && self.models.len() <= 64,
+            "Gateway needs 1..64 models"
+        );
+        for (index, model) in self.models.iter().enumerate() {
+            anyhow::ensure!(
+                !model.trim().is_empty()
+                    && model.len() <= 256
+                    && !model.contains('*')
+                    && !model.chars().any(char::is_control)
+                    && !self.models[..index].contains(model),
+                "invalid or duplicate Gateway model id"
+            );
+        }
+        Ok(())
+    }
+}
+
+/// Public capability omits upstream endpoints and credentials.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
+pub struct GatewaySupport {
+    pub version: u32,
+    pub level: crate::gateway::CaptureLevel,
+    pub model_patterns: Vec<String>,
+}
+impl GatewaySupport {
+    pub fn validate(&self) -> anyhow::Result<()> {
+        anyhow::ensure!(
+            self.version == CLUSTER_VERSION,
+            "unsupported Gateway capability version"
+        );
+        anyhow::ensure!(
+            !self.model_patterns.is_empty() && self.model_patterns.len() <= 128,
+            "Gateway capability needs 1..128 model routes"
+        );
+        for (index, pattern) in self.model_patterns.iter().enumerate() {
+            let stars = pattern.bytes().filter(|b| *b == b'*').count();
+            anyhow::ensure!(
+                !pattern.trim().is_empty()
+                    && pattern.len() <= 256
+                    && !pattern.chars().any(char::is_control)
+                    && (stars == 0
+                        || stars == 1 && (pattern.starts_with('*') || pattern.ends_with('*')))
+                    && !self.model_patterns[..index].contains(pattern),
+                "invalid or duplicate Gateway route pattern"
+            );
+        }
+        Ok(())
+    }
+    pub fn satisfies(&self, requirement: &GatewayRequirement) -> bool {
+        self.version == requirement.version
+            && self.level == requirement.level
+            && requirement.models.iter().all(|model| {
+                self.model_patterns
+                    .iter()
+                    .any(|pattern| crate::gateway::model_matches(pattern, model))
+            })
+    }
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
@@ -176,24 +401,82 @@ pub struct EnvironmentRecord {
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(rename_all = "snake_case")]
 pub enum TaskPhase {
+    /// Committed graph node; predecessors must succeed before admission.
+    WaitingDependencies,
+    /// Identity committed; a matching full checkpoint must arrive before admission.
+    WaitingCheckpoint,
     Queued,
     Leased,
     Running,
     Paused,
     Offloaded,
+    /// Snapshot sealed; native termination/completion is still pending.
+    Suspending,
+    /// Native execution and local artifact sealing ended; delivery lease remains live.
+    RetainingArtifacts,
     Cancelling,
     Succeeded,
     Failed,
     Cancelled,
     Lost,
+    /// Native hibernation is durably complete and all reservations released.
+    Suspended,
 }
 impl TaskPhase {
     pub fn terminal(self) -> bool {
         matches!(
             self,
-            Self::Succeeded | Self::Failed | Self::Cancelled | Self::Lost
+            Self::Succeeded | Self::Failed | Self::Cancelled | Self::Lost | Self::Suspended
         )
     }
+}
+
+/// Immutable, bounded DAG. Dependencies refer to task IDs inside this graph.
+#[derive(Debug, Clone, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
+pub struct TaskGraphSpec {
+    pub version: u32,
+    pub id: String,
+    pub tenant: String,
+    pub nodes: Vec<TaskGraphNode>,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
+pub struct TaskGraphNode {
+    pub task: TaskSpec,
+    #[serde(default)]
+    pub depends_on: Vec<String>,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum TaskGraphPhase {
+    Queued,
+    Running,
+    Cancelling,
+    Succeeded,
+    Failed,
+    Cancelled,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
+pub struct TaskGraphNodeState {
+    pub task_id: String,
+    pub phase: TaskPhase,
+}
+
+/// Node outcomes are the existing fenced task records, never independent runs.
+#[derive(Debug, Clone, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
+pub struct TaskGraphRecord {
+    pub spec: TaskGraphSpec,
+    pub phase: TaskGraphPhase,
+    pub nodes: Vec<TaskGraphNodeState>,
+    pub created_at_ms: u64,
+    pub updated_at_ms: u64,
+    pub cancel_requested_at_ms: Option<u64>,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
@@ -214,10 +497,23 @@ pub struct Lease {
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct TaskRecord {
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub checkpoint_publication: Option<CheckpointPublication>,
+    /// Version of durable upload pinning used for this assignment. Legacy live
+    /// assignments conservatively prevent orphan reclamation during migration.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub artifact_pin_protocol: Option<u32>,
+    /// Native outcome and original artifact receipt survive evidence retirement.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub artifact_retired_at_ms: Option<u64>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub cpu_sample: Option<ReceivedCpuSample>,
     pub spec: TaskSpec,
     pub phase: TaskPhase,
     pub generation: u64,
     pub lease: Option<Lease>,
+    /// Native terminal evidence can be known while artifact delivery is pending;
+    /// only `phase.terminal()` indicates aggregate task completion.
     pub result: Option<RunResult>,
     pub error: Option<String>,
     pub created_at_ms: u64,
@@ -236,6 +532,42 @@ pub struct TaskRecord {
     pub artifacts: Option<BlobRef>,
     #[serde(default)]
     pub artifact_error: Option<String>,
+    /// Ephemeral observation. It never changes lease expiry or admission.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub memory_sample: Option<ReceivedMemorySample>,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
+pub struct AttemptMemorySample {
+    pub key: LeaseKey,
+    pub sequence: u64,
+    /// Monotonic worker age, measured before the report is sent.
+    pub sample_age_ms: u64,
+    pub sample: crate::memory::RunMemorySample,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
+pub struct ReceivedMemorySample {
+    pub report: AttemptMemorySample,
+    pub received_at_ms: u64,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
+pub struct MemoryReportRequest {
+    pub worker_id: String,
+    pub incarnation: String,
+    pub samples: Vec<AttemptMemorySample>,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
+pub struct MemoryReportReceipt {
+    pub accepted: Vec<LeaseKey>,
+    /// Ended/expired leases are ignored, never revived by an observation.
+    pub ignored: Vec<LeaseKey>,
 }
 impl TaskRecord {
     pub fn current_reservation(&self) -> Resources {
@@ -253,13 +585,25 @@ pub enum ControlAction {
     Pause,
     Offload,
     Resume,
+    /// Seal a full owned-overlay snapshot; source execution continues.
+    Checkpoint,
+    /// Seal full state and stop the frozen source; completion releases resources.
+    Suspend,
 }
 impl ControlAction {
-    pub fn operation(self) -> crate::operation::OperationKind {
+    pub fn operation(self, request_id: &str) -> crate::operation::OperationKind {
         match self {
             Self::Pause => crate::operation::OperationKind::RunPause,
             Self::Offload => crate::operation::OperationKind::RunOffload { file: None },
             Self::Resume => crate::operation::OperationKind::RunResume,
+            Self::Checkpoint => crate::operation::OperationKind::RunCheckpoint {
+                request_id: request_id.into(),
+                ram_storage: crate::operation::SnapshotRamStorage::Compressed,
+            },
+            Self::Suspend => crate::operation::OperationKind::RunSuspend {
+                request_id: request_id.into(),
+                ram_storage: crate::operation::SnapshotRamStorage::Compressed,
+            },
         }
     }
 }
@@ -283,6 +627,9 @@ pub struct ControlCommand {
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(tag = "status", rename_all = "snake_case", deny_unknown_fields)]
 pub enum ControlOutcome {
+    Checkpointed {
+        checkpoint: crate::operation::ExecutionCheckpoint,
+    },
     Succeeded {
         state: crate::operation::VmState,
         memory: Option<crate::operation::VmMemory>,
@@ -294,6 +641,15 @@ pub enum ControlOutcome {
 impl ControlOutcome {
     pub fn validate(&self, action: ControlAction) -> anyhow::Result<()> {
         match self {
+            Self::Checkpointed { checkpoint } => {
+                anyhow::ensure!(
+                    matches!(action, ControlAction::Checkpoint | ControlAction::Suspend)
+                        && checkpoint.ram_storage
+                            == crate::operation::SnapshotRamStorage::Compressed,
+                    "checkpoint observation does not match command"
+                );
+                checkpoint.validate()?;
+            }
             Self::Failed { error } => anyhow::ensure!(
                 !error.is_empty() && error.len() <= 8192,
                 "invalid control error"
@@ -303,6 +659,9 @@ impl ControlOutcome {
                     ControlAction::Pause => crate::operation::VmState::Paused,
                     ControlAction::Offload => crate::operation::VmState::Offloaded,
                     ControlAction::Resume => crate::operation::VmState::Running,
+                    ControlAction::Checkpoint | ControlAction::Suspend => {
+                        anyhow::bail!("checkpoint requires a sealed object observation")
+                    }
                 };
                 anyhow::ensure!(
                     *state == expected,
@@ -340,7 +699,7 @@ impl ControlOutcome {
                 cpu_millis: 0,
                 ..full
             },
-            Self::Failed { .. } => current,
+            Self::Failed { .. } | Self::Checkpointed { .. } => current,
         }
     }
 }
@@ -411,6 +770,9 @@ pub struct NodeMeasurements {
     pub cgroup_memory_headroom_bytes: Option<u64>,
     /// Affinity/cpuset intersected with visible ancestor CPU bandwidth limits.
     pub cpu_limit_millis: u64,
+    /// Finite leaf cpu.max, required evidence for explicit CPU overcommit.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub local_cpu_quota_millis: Option<u64>,
     pub cpu_some_avg10_bps: u16,
     pub memory_full_avg10_bps: u16,
 }
@@ -430,6 +792,11 @@ pub enum AdmissionBlock {
 #[serde(deny_unknown_fields)]
 pub struct AdmissionReport {
     pub mode: AdmissionMode,
+    #[serde(
+        default = "cpu_no_overcommit",
+        skip_serializing_if = "cpu_is_not_overcommitted"
+    )]
+    pub cpu_overcommit_bps: u16,
     /// Age uses the worker's monotonic clock, not cross-node wall clocks.
     pub sample_age_ms: u64,
     pub available: Resources,
@@ -437,8 +804,23 @@ pub struct AdmissionReport {
     pub blocked: Vec<AdmissionBlock>,
     pub error: Option<String>,
 }
+fn cpu_no_overcommit() -> u16 {
+    10_000
+}
+fn cpu_is_not_overcommitted(value: &u16) -> bool {
+    *value == 10_000
+}
+
 impl AdmissionReport {
+    pub fn cpu_reservation_limit_millis(&self) -> Option<u64> {
+        let physical = self.measurements.as_ref()?.cpu_limit_millis;
+        u64::try_from(u128::from(physical) * u128::from(self.cpu_overcommit_bps) / 10_000).ok()
+    }
     pub fn validate(&self) -> anyhow::Result<()> {
+        anyhow::ensure!(
+            (10_000..=40_000).contains(&self.cpu_overcommit_bps),
+            "CPU overcommit ratio must be 10000..40000 basis points"
+        );
         anyhow::ensure!(self.blocked.len() <= 6, "too many admission blocks");
         for (index, block) in self.blocked.iter().enumerate() {
             anyhow::ensure!(
@@ -454,7 +836,8 @@ impl AdmissionReport {
         }
         match self.mode {
             AdmissionMode::Reservations => anyhow::ensure!(
-                self.measurements.is_none()
+                self.cpu_overcommit_bps == 10_000
+                    && self.measurements.is_none()
                     && self.error.is_none()
                     && self.blocked.is_empty()
                     && self.sample_age_ms == 0,
@@ -478,6 +861,15 @@ impl AdmissionReport {
                 }
                 if let Some(m) = &self.measurements {
                     anyhow::ensure!(
+                        self.cpu_overcommit_bps == 10_000
+                            || m.local_cpu_quota_millis
+                                .is_some_and(|quota| quota > 0 && m.cpu_limit_millis <= quota),
+                        "CPU overcommit requires a finite local kernel quota"
+                    );
+                    let cpu_reserved_limit = self
+                        .cpu_reservation_limit_millis()
+                        .ok_or_else(|| anyhow::anyhow!("CPU reservation limit overflow"))?;
+                    anyhow::ensure!(
                         m.cpu_some_avg10_bps <= 10_000 && m.memory_full_avg10_bps <= 10_000,
                         "invalid pressure observation"
                     );
@@ -485,7 +877,7 @@ impl AdmissionReport {
                         self.available.memory_bytes <= m.system_memory_available_bytes
                             && m.cgroup_memory_headroom_bytes
                                 .is_none_or(|r| self.available.memory_bytes <= r)
-                            && self.available.cpu_millis <= m.cpu_limit_millis,
+                            && self.available.cpu_millis <= cpu_reserved_limit,
                         "availability exceeds observed limit"
                     );
                 }
@@ -517,10 +909,14 @@ impl AdmissionReport {
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct Assignment {
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub checkpoint_publication: Option<CheckpointPublication>,
     pub spec: TaskSpec,
     pub lease: Lease,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub environment: Option<EnvironmentRecord>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub checkpoint: Option<crate::operation::ExecutionCheckpoint>,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -564,6 +960,294 @@ pub struct Completion {
     pub artifacts: Option<BlobRef>,
     #[serde(default)]
     pub artifact_error: Option<String>,
+}
+
+/// Optional handoff protocol. Older controllers return 404 and retain full charges.
+pub const ARTIFACT_DELIVERY_VERSION: u32 = 1;
+pub const MAX_ARTIFACT_DELIVERIES: usize = 64;
+
+/// Admission budget for bounded chunk upload, retries and terminal evidence.
+/// This is a reservation, not a measured or enforced memory/CPU limit.
+pub fn artifact_delivery_reservation(current: Resources) -> Option<Resources> {
+    let delivery = Resources {
+        slots: 0,
+        memory_bytes: 16 * 1024 * 1024,
+        cpu_millis: 100,
+    };
+    delivery.fits(current).then_some(delivery)
+}
+
+/// Worker asserts that native teardown, mount release, durable terminal outbox
+/// and the joined, durable local spool are complete before sending this request.
+#[derive(Debug, Clone, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
+pub struct NativeDone {
+    pub version: u32,
+    pub key: LeaseKey,
+    pub result: RunResult,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
+pub struct NativeDoneReceipt {
+    pub version: u32,
+    pub key: LeaseKey,
+    pub reserved: Resources,
+}
+
+/// Limits unique published object bytes/count, including concurrent and failed-cleanup reservations.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
+pub struct ArtifactStorageLimits {
+    pub version: u32,
+    pub max_bytes: Option<u64>,
+    pub max_objects: Option<u64>,
+}
+impl Default for ArtifactStorageLimits {
+    fn default() -> Self {
+        Self {
+            version: CLUSTER_VERSION,
+            max_bytes: None,
+            max_objects: None,
+        }
+    }
+}
+impl ArtifactStorageLimits {
+    pub fn validate(&self) -> anyhow::Result<()> {
+        anyhow::ensure!(
+            self.version == CLUSTER_VERSION
+                && self.max_bytes.is_none_or(|limit| limit > 0)
+                && self.max_objects.is_none_or(|limit| limit > 0),
+            "invalid artifact storage limits"
+        );
+        Ok(())
+    }
+}
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
+pub struct ArtifactStorageUsage {
+    pub version: u32,
+    pub limits: ArtifactStorageLimits,
+    pub stored_bytes: u64,
+    pub stored_objects: u64,
+    pub reserved_bytes: u64,
+    pub reserved_objects: u64,
+    /// Conservative reservations retained when an unpublished temporary cannot
+    /// be removed; exclusive startup recovery reclaims them.
+    pub failed_reserved_bytes: u64,
+    pub failed_reserved_objects: u64,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
+pub struct ArtifactGcRequest {
+    pub version: u32,
+    /// Explicitly retire terminal evidence completed strictly before this time.
+    pub retire_before_ms: Option<u64>,
+    pub max_objects: u32,
+}
+impl ArtifactGcRequest {
+    pub fn validate(&self) -> anyhow::Result<()> {
+        anyhow::ensure!(
+            self.version == CLUSTER_VERSION && (1..=4096).contains(&self.max_objects),
+            "invalid artifact GC request"
+        );
+        Ok(())
+    }
+}
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
+pub struct ArtifactRetirement {
+    pub task_id: String,
+    pub generation: u64,
+    pub reference: BlobRef,
+    pub finished_at_ms: u64,
+}
+#[derive(Debug, Clone, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
+pub struct ArtifactGcPlan {
+    pub version: u32,
+    pub id: String,
+    pub created_at_ms: u64,
+    pub expires_at_ms: u64,
+    pub retire: Vec<ArtifactRetirement>,
+    pub objects: Vec<BlobRef>,
+    pub bytes: u64,
+    pub blocked_by_legacy_leases: bool,
+}
+#[derive(Debug, Clone, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
+pub struct ArtifactGcApply {
+    pub version: u32,
+    pub plan_id: String,
+}
+#[derive(Debug, Clone, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
+pub struct ArtifactGcReport {
+    pub version: u32,
+    pub plan_id: String,
+    pub retired_tasks: u64,
+    pub deleted_objects: u64,
+    pub deleted_bytes: u64,
+    pub skipped_objects: u64,
+}
+#[derive(Debug, Clone, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
+pub struct ArtifactDownload {
+    pub version: u32,
+    pub id: String,
+    pub expires_at_ms: u64,
+    pub reference: BlobRef,
+    pub manifest: ArtifactManifest,
+}
+
+pub const ARTIFACT_EXPORT_VERSION: u32 = 1;
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
+pub struct ArtifactRetention {
+    /// Publish a save-and-stop snapshot to a host-configured repository.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub execution_checkpoint: Option<CheckpointRetention>,
+    pub version: u32,
+    pub trace: bool,
+    /// Archive of the private upper, including whiteouts; not a merged rootfs.
+    pub workspace_upper: bool,
+}
+impl ArtifactRetention {
+    pub fn validate(&self) -> anyhow::Result<()> {
+        anyhow::ensure!(
+            self.version == ARTIFACT_EXPORT_VERSION
+                && (self.trace || self.workspace_upper || self.execution_checkpoint.is_some()),
+            "invalid artifact retention requirement"
+        );
+        if let Some(checkpoint) = &self.execution_checkpoint {
+            checkpoint.validate()?;
+        }
+        Ok(())
+    }
+    pub fn filenames(&self) -> Vec<&'static str> {
+        let mut names = vec!["run-bundle.json"];
+        if self.trace {
+            names.push("trace");
+        }
+        if self.workspace_upper {
+            names.push("workspace-upper.tar");
+        }
+        if self.execution_checkpoint.is_some() {
+            names.push("execution-checkpoint.json");
+        }
+        names
+    }
+}
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
+pub struct ArtifactExportSupport {
+    #[serde(default, skip_serializing_if = "std::ops::Not::not")]
+    pub execution_checkpoint: bool,
+    pub version: u32,
+    pub trace: bool,
+    pub workspace_upper: bool,
+}
+impl ArtifactExportSupport {
+    pub fn validate(&self) -> anyhow::Result<()> {
+        anyhow::ensure!(
+            self.version == ARTIFACT_EXPORT_VERSION
+                && (self.trace || self.workspace_upper || self.execution_checkpoint),
+            "invalid artifact export capability"
+        );
+        Ok(())
+    }
+    pub fn satisfies(&self, retention: &ArtifactRetention) -> bool {
+        self.version == retention.version
+            && (retention.execution_checkpoint.is_none() || self.execution_checkpoint)
+            && (!retention.trace || self.trace)
+            && (!retention.workspace_upper || self.workspace_upper)
+    }
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
+pub struct CheckpointRetention {
+    pub version: u32,
+    pub repository: String,
+}
+impl CheckpointRetention {
+    pub fn validate(&self) -> anyhow::Result<()> {
+        anyhow::ensure!(
+            self.version == 1
+                && !self.repository.is_empty()
+                && self.repository.len() <= 128
+                && self
+                    .repository
+                    .bytes()
+                    .all(|b| b.is_ascii_alphanumeric() || b"-_.".contains(&b))
+                && self.repository != "."
+                && self.repository != "..",
+            "invalid checkpoint repository requirement"
+        );
+        Ok(())
+    }
+}
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
+pub struct CheckpointStorageSupport {
+    pub version: u32,
+    pub repository: String,
+    pub publish: bool,
+    pub compatibility: crate::operation::SnapshotCompatibility,
+}
+impl CheckpointStorageSupport {
+    pub fn validate(&self) -> anyhow::Result<()> {
+        CheckpointRetention {
+            version: self.version,
+            repository: self.repository.clone(),
+        }
+        .validate()?;
+        for id in [&self.compatibility.build, &self.compatibility.firmware] {
+            anyhow::ensure!(
+                id.len() == 64
+                    && id
+                        .bytes()
+                        .all(|b| b.is_ascii_digit() || (b'a'..=b'f').contains(&b)),
+                "invalid checkpoint compatibility digest"
+            );
+        }
+        anyhow::ensure!(
+            !self.compatibility.host_boot.is_empty()
+                && self.compatibility.host_boot.len() <= 128
+                && !self.compatibility.profile.is_empty()
+                && self.compatibility.profile.len() <= 128,
+            "invalid checkpoint runtime compatibility"
+        );
+        Ok(())
+    }
+}
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
+pub struct CheckpointPublication {
+    pub version: u32,
+    pub repository: String,
+    pub checkpoint: crate::operation::ExecutionCheckpoint,
+    pub transfer: crate::operation::SnapshotTransfer,
+    pub compatibility: crate::operation::SnapshotCompatibility,
+}
+impl CheckpointPublication {
+    pub fn validate(&self) -> anyhow::Result<()> {
+        self.checkpoint.validate()?;
+        self.transfer.validate()?;
+        CheckpointStorageSupport {
+            version: self.version,
+            repository: self.repository.clone(),
+            publish: false,
+            compatibility: self.compatibility.clone(),
+        }
+        .validate()?;
+        anyhow::ensure!(
+            self.checkpoint.snapshot_id == self.transfer.snapshot_id,
+            "checkpoint publication identity mismatch"
+        );
+        Ok(())
+    }
 }
 
 pub const ARTIFACT_CHUNK_BYTES: usize = 1024 * 1024;
@@ -675,4 +1359,61 @@ pub struct WorkerRecord {
     /// Last report receipt. Retained reports are historical after restart.
     #[serde(default)]
     pub admission_received_at_ms: Option<u64>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub memory_sample: Option<ReceivedNodeMemorySample>,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
+pub struct NodeMemoryReportRequest {
+    pub worker_id: String,
+    pub incarnation: String,
+    pub sequence: u64,
+    pub sample_age_ms: u64,
+    pub sample: crate::memory::NodeMemorySample,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
+pub struct ReceivedNodeMemorySample {
+    pub report: NodeMemoryReportRequest,
+    pub received_at_ms: u64,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
+pub struct NodeMemoryReportReceipt {
+    pub worker_id: String,
+    pub incarnation: String,
+    pub sequence: u64,
+    pub accepted: bool,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
+pub struct AttemptCpuSample {
+    pub key: LeaseKey,
+    pub sequence: u64,
+    pub sample_age_ms: u64,
+    pub sample: crate::cpu::RunCpuSample,
+}
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
+pub struct ReceivedCpuSample {
+    pub report: AttemptCpuSample,
+    pub received_at_ms: u64,
+    pub interval: Option<crate::cpu::CpuIntervalUsage>,
+}
+#[derive(Debug, Clone, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
+pub struct CpuReportRequest {
+    pub worker_id: String,
+    pub incarnation: String,
+    pub samples: Vec<AttemptCpuSample>,
+}
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
+pub struct CpuReportReceipt {
+    pub accepted: Vec<LeaseKey>,
+    pub ignored: Vec<LeaseKey>,
 }

@@ -1,4 +1,5 @@
 use crate::*;
+use anyhow::Context;
 use serde::{Serialize, de::DeserializeOwned};
 use std::time::Duration;
 
@@ -78,10 +79,156 @@ impl Client {
         Ok(record)
     }
     pub async fn submit(&self, spec: &TaskSpec) -> anyhow::Result<TaskRecord> {
+        spec.validate_cpu_qos()?;
+        spec.validate_gateway()?;
+        spec.validate_artifacts()?;
         self.post("/v1/tasks", spec).await
     }
     pub async fn task(&self, id: &str) -> anyhow::Result<TaskRecord> {
         self.get(&format!("/v1/tasks/{id}")).await
+    }
+    pub async fn submit_graph(&self, spec: &TaskGraphSpec) -> anyhow::Result<TaskGraphRecord> {
+        for node in &spec.nodes {
+            node.task.validate_cpu_qos()?;
+            node.task.validate_gateway()?;
+            node.task.validate_artifacts()?;
+        }
+        let record: TaskGraphRecord = self.post("/v1/graphs", spec).await?;
+        Self::validate_graph(&record, &spec.id)?;
+        anyhow::ensure!(
+            serde_json::to_value(&record.spec)? == serde_json::to_value(spec)?,
+            "graph receipt differs from request"
+        );
+        Ok(record)
+    }
+    pub async fn graph(&self, id: &str) -> anyhow::Result<TaskGraphRecord> {
+        let record = self.get(&format!("/v1/graphs/{id}")).await?;
+        Self::validate_graph(&record, id)?;
+        Ok(record)
+    }
+    pub async fn cancel_graph(&self, id: &str) -> anyhow::Result<TaskGraphRecord> {
+        let record = self
+            .post(&format!("/v1/graphs/{id}/cancel"), &serde_json::json!({}))
+            .await?;
+        Self::validate_graph(&record, id)?;
+        Ok(record)
+    }
+    fn validate_graph(record: &TaskGraphRecord, id: &str) -> anyhow::Result<()> {
+        anyhow::ensure!(
+            record.spec.version == CLUSTER_VERSION
+                && record.spec.id == id
+                && !record.nodes.is_empty()
+                && record.nodes.len() == record.spec.nodes.len()
+                && record
+                    .nodes
+                    .iter()
+                    .zip(&record.spec.nodes)
+                    .all(|(state, node)| state.task_id == node.task.id),
+            "graph response differs from request"
+        );
+        Ok(())
+    }
+    pub async fn fork_execution(
+        &self,
+        source: &str,
+        request: &ExecutionForkRequest,
+    ) -> anyhow::Result<ExecutionForkRecord> {
+        let record: ExecutionForkRecord = self
+            .post(&format!("/v1/tasks/{source}/forks"), request)
+            .await?;
+        anyhow::ensure!(
+            record.version == CLUSTER_VERSION
+                && record.source_task_id == source
+                && record.source_key.task_id == source
+                && record.request == *request,
+            "fork receipt differs from request"
+        );
+        record.checkpoint.validate()?;
+        Ok(record)
+    }
+    pub async fn execution_fork(
+        &self,
+        source: &str,
+        request_id: &str,
+    ) -> anyhow::Result<ExecutionForkRecord> {
+        let record: ExecutionForkRecord = self
+            .get(&format!("/v1/tasks/{source}/forks/{request_id}"))
+            .await?;
+        anyhow::ensure!(
+            record.version == CLUSTER_VERSION
+                && record.source_task_id == source
+                && record.source_key.task_id == source
+                && record.request.request_id == request_id,
+            "fork receipt differs from query"
+        );
+        record.checkpoint.validate()?;
+        Ok(record)
+    }
+    pub async fn request_live_fork(
+        &self,
+        source: &str,
+        request: &ExecutionForkRequest,
+    ) -> anyhow::Result<LiveForkRecord> {
+        let record: LiveForkRecord = self
+            .post(&format!("/v1/tasks/{source}/live-forks"), request)
+            .await?;
+        Self::validate_live_fork(&record, source, &request.request_id)?;
+        anyhow::ensure!(record.request == *request, "live fork differs from request");
+        Ok(record)
+    }
+    pub async fn live_fork(
+        &self,
+        source: &str,
+        request_id: &str,
+    ) -> anyhow::Result<LiveForkRecord> {
+        let record: LiveForkRecord = self
+            .get(&format!("/v1/tasks/{source}/live-forks/{request_id}"))
+            .await?;
+        Self::validate_live_fork(&record, source, request_id)?;
+        Ok(record)
+    }
+    fn validate_live_fork(
+        record: &LiveForkRecord,
+        source: &str,
+        request_id: &str,
+    ) -> anyhow::Result<()> {
+        anyhow::ensure!(
+            record.version == CLUSTER_VERSION
+                && record.request.version == CLUSTER_VERSION
+                && record.source_task_id == source
+                && record.source_key.task_id == source
+                && record.request.request_id == request_id,
+            "live fork differs from query"
+        );
+        anyhow::ensure!(
+            match record.phase {
+                LiveForkPhase::Capturing =>
+                    record.fork.is_none()
+                        && record.error.is_none()
+                        && record.completed_at_ms.is_none(),
+                LiveForkPhase::Ready =>
+                    record.fork.is_some()
+                        && record.error.is_none()
+                        && record.completed_at_ms.is_some(),
+                LiveForkPhase::Failed =>
+                    record.fork.is_none()
+                        && record.error.is_some()
+                        && record.completed_at_ms.is_some(),
+            },
+            "inconsistent live fork phase"
+        );
+        if let Some(fork) = &record.fork {
+            anyhow::ensure!(
+                fork.version == CLUSTER_VERSION
+                    && fork.source_task_id == source
+                    && fork.source_key == record.source_key
+                    && fork.request == record.request
+                    && Some(fork.created_at_ms) == record.completed_at_ms,
+                "live fork receipt differs from capture"
+            );
+            fork.checkpoint.validate()?;
+        }
+        Ok(())
     }
     pub async fn cancel(&self, id: &str) -> anyhow::Result<TaskRecord> {
         self.post(&format!("/v1/tasks/{id}/cancel"), &()).await
@@ -94,6 +241,200 @@ impl Client {
     }
     pub async fn poll(&self, request: &PollRequest) -> anyhow::Result<PollResponse> {
         self.post("/v1/workers/poll", request).await
+    }
+    pub async fn report_cpu(&self, request: &CpuReportRequest) -> anyhow::Result<CpuReportReceipt> {
+        let receipt: CpuReportReceipt = self.post("/v1/workers/cpu", request).await?;
+        let mut expected: Vec<_> = request.samples.iter().map(|s| &s.key).collect();
+        let mut actual: Vec<_> = receipt.accepted.iter().chain(&receipt.ignored).collect();
+        let order = |a: &&LeaseKey, b: &&LeaseKey| {
+            (&a.task_id, &a.worker_id, &a.incarnation, a.generation).cmp(&(
+                &b.task_id,
+                &b.worker_id,
+                &b.incarnation,
+                b.generation,
+            ))
+        };
+        expected.sort_by(order);
+        actual.sort_by(order);
+        anyhow::ensure!(
+            expected == actual,
+            "CPU receipt does not match reported leases"
+        );
+        Ok(receipt)
+    }
+    pub async fn report_memory(
+        &self,
+        request: &MemoryReportRequest,
+    ) -> anyhow::Result<MemoryReportReceipt> {
+        let receipt: MemoryReportReceipt = self.post("/v1/workers/memory", request).await?;
+        let mut expected: Vec<_> = request.samples.iter().map(|s| &s.key).collect();
+        let mut actual: Vec<_> = receipt.accepted.iter().chain(&receipt.ignored).collect();
+        let order = |a: &&LeaseKey, b: &&LeaseKey| {
+            (&a.task_id, &a.worker_id, &a.incarnation, a.generation).cmp(&(
+                &b.task_id,
+                &b.worker_id,
+                &b.incarnation,
+                b.generation,
+            ))
+        };
+        expected.sort_by(order);
+        actual.sort_by(order);
+        anyhow::ensure!(
+            expected == actual,
+            "memory receipt does not match reported leases"
+        );
+        Ok(receipt)
+    }
+    pub async fn report_node_memory(
+        &self,
+        request: &NodeMemoryReportRequest,
+    ) -> anyhow::Result<NodeMemoryReportReceipt> {
+        let receipt: NodeMemoryReportReceipt =
+            self.post("/v1/workers/node-memory", request).await?;
+        anyhow::ensure!(
+            receipt.worker_id == request.worker_id
+                && receipt.incarnation == request.incarnation
+                && receipt.sequence == request.sequence,
+            "node memory receipt differs from request"
+        );
+        Ok(receipt)
+    }
+    pub async fn plan_artifact_gc(
+        &self,
+        request: &ArtifactGcRequest,
+    ) -> anyhow::Result<ArtifactGcPlan> {
+        request.validate()?;
+        let plan: ArtifactGcPlan = self.post("/v1/artifact-storage/gc/plan", request).await?;
+        anyhow::ensure!(
+            plan.version == CLUSTER_VERSION
+                && plan.retire.len() <= 256
+                && plan.objects.len() <= request.max_objects as usize,
+            "invalid artifact GC plan"
+        );
+        BlobRef {
+            digest: plan.id.clone(),
+            bytes: 0,
+        }
+        .validate()?;
+        for object in &plan.objects {
+            object.validate()?;
+        }
+        anyhow::ensure!(
+            plan.bytes == plan.objects.iter().map(|o| o.bytes).sum::<u64>(),
+            "invalid artifact GC byte count"
+        );
+        Ok(plan)
+    }
+    pub async fn apply_artifact_gc(&self, plan_id: &str) -> anyhow::Result<ArtifactGcReport> {
+        BlobRef {
+            digest: plan_id.into(),
+            bytes: 0,
+        }
+        .validate()?;
+        let report: ArtifactGcReport = self
+            .post(
+                "/v1/artifact-storage/gc/apply",
+                &ArtifactGcApply {
+                    version: CLUSTER_VERSION,
+                    plan_id: plan_id.into(),
+                },
+            )
+            .await?;
+        anyhow::ensure!(
+            report.version == CLUSTER_VERSION && report.plan_id == plan_id,
+            "invalid artifact GC receipt"
+        );
+        Ok(report)
+    }
+    pub async fn begin_artifact_download(&self, id: &str) -> anyhow::Result<ArtifactDownload> {
+        let download: ArtifactDownload = self
+            .post(
+                &format!("/v1/tasks/{}/artifact-downloads", id),
+                &serde_json::json!({}),
+            )
+            .await?;
+        Self::validate_download(&download, id)?;
+        Ok(download)
+    }
+    pub async fn renew_artifact_download(
+        &self,
+        download: &ArtifactDownload,
+    ) -> anyhow::Result<ArtifactDownload> {
+        let next: ArtifactDownload = self
+            .post(
+                &format!("/v1/artifact-downloads/{}/renew", download.id),
+                &serde_json::json!({}),
+            )
+            .await?;
+        Self::validate_download(&next, &download.manifest.key.task_id)?;
+        anyhow::ensure!(
+            next.id == download.id
+                && next.reference == download.reference
+                && next.manifest == download.manifest,
+            "artifact download changed during renewal"
+        );
+        Ok(next)
+    }
+    pub async fn release_artifact_download(&self, id: &str) -> anyhow::Result<()> {
+        BlobRef {
+            digest: id.into(),
+            bytes: 0,
+        }
+        .validate()?;
+        let _: serde_json::Value = self
+            .post(
+                &format!("/v1/artifact-downloads/{id}/release"),
+                &serde_json::json!({}),
+            )
+            .await?;
+        Ok(())
+    }
+    fn validate_download(download: &ArtifactDownload, task_id: &str) -> anyhow::Result<()> {
+        anyhow::ensure!(
+            download.version == CLUSTER_VERSION && download.manifest.key.task_id == task_id,
+            "invalid artifact download receipt"
+        );
+        BlobRef {
+            digest: download.id.clone(),
+            bytes: 0,
+        }
+        .validate()?;
+        download.reference.validate()?;
+        download.manifest.validate()?;
+        Ok(())
+    }
+    pub async fn update_artifact_storage(
+        &self,
+        limits: &ArtifactStorageLimits,
+    ) -> anyhow::Result<ArtifactStorageUsage> {
+        limits.validate()?;
+        let usage: ArtifactStorageUsage = self.post("/v1/artifact-storage/limits", limits).await?;
+        anyhow::ensure!(
+            usage.version == CLUSTER_VERSION && usage.limits == *limits,
+            "artifact storage policy acknowledgement differs from request"
+        );
+        Ok(usage)
+    }
+    pub async fn artifact_storage(&self) -> anyhow::Result<ArtifactStorageUsage> {
+        let usage: ArtifactStorageUsage = self.get("/v1/artifact-storage").await?;
+        anyhow::ensure!(
+            usage.version == CLUSTER_VERSION,
+            "unsupported artifact storage protocol"
+        );
+        usage.limits.validate()?;
+        Ok(usage)
+    }
+    pub async fn native_done(&self, request: &NativeDone) -> anyhow::Result<NativeDoneReceipt> {
+        let receipt: NativeDoneReceipt = self.post("/v1/workers/native-done", request).await?;
+        anyhow::ensure!(
+            receipt.version == ARTIFACT_DELIVERY_VERSION
+                && receipt.key == request.key
+                && receipt.reserved
+                    == artifact_delivery_reservation(receipt.reserved)
+                        .context("invalid artifact delivery reservation")?,
+            "native handoff acknowledgement differs from request"
+        );
+        Ok(receipt)
     }
     pub async fn complete(&self, completion: &Completion) -> anyhow::Result<TaskRecord> {
         let task: TaskRecord = self.post("/v1/workers/complete", completion).await?;
@@ -159,11 +500,49 @@ impl Client {
         id: &str,
         destination: &std::path::Path,
     ) -> anyhow::Result<ArtifactManifest> {
+        let mut lease = match self.begin_artifact_download(id).await {
+            Ok(download) => Some(download),
+            Err(error)
+                if error
+                    .downcast_ref::<reqwest::Error>()
+                    .and_then(reqwest::Error::status)
+                    == Some(reqwest::StatusCode::NOT_FOUND) =>
+            {
+                None
+            }
+            Err(error) => return Err(error),
+        };
+        let manifest = match &lease {
+            Some(download) => download.manifest.clone(),
+            None => self.artifacts(id).await?,
+        };
+        let result = self
+            .download_pinned(&manifest, destination, &mut lease)
+            .await;
+        if let Some(download) = &lease {
+            let _ = self.release_artifact_download(&download.id).await;
+        }
+        result?;
+        Ok(manifest)
+    }
+    async fn download_pinned(
+        &self,
+        manifest: &ArtifactManifest,
+        destination: &std::path::Path,
+        lease: &mut Option<ArtifactDownload>,
+    ) -> anyhow::Result<()> {
         use std::io::Write;
         use std::os::unix::fs::{DirBuilderExt, OpenOptionsExt};
         static NEXT_DOWNLOAD: std::sync::atomic::AtomicU64 = std::sync::atomic::AtomicU64::new(0);
-        let manifest = self.artifacts(id).await?;
+        let mut renewed = std::time::Instant::now();
         std::fs::create_dir_all(destination)?;
+        for artifact in &manifest.files {
+            anyhow::ensure!(
+                std::fs::symlink_metadata(destination.join(&artifact.name))
+                    .is_err_and(|error| error.kind() == std::io::ErrorKind::NotFound),
+                "artifact destination already exists or is inaccessible"
+            );
+        }
         let temporary = destination.join(format!(
             ".pvisor-download-{}-{}",
             std::process::id(),
@@ -181,6 +560,12 @@ impl Client {
                     .open(&path)?;
                 let mut hash = blake3::Hasher::new();
                 for chunk in &artifact.chunks {
+                    if renewed.elapsed() >= Duration::from_secs(30) {
+                        if let Some(download) = lease.as_ref() {
+                            *lease = Some(self.renew_artifact_download(download).await?);
+                        }
+                        renewed = std::time::Instant::now();
+                    }
                     let bytes = self.artifact_bytes(chunk).await?;
                     hash.update(&bytes);
                     file.write_all(&bytes)?;
@@ -207,7 +592,7 @@ impl Client {
         }
         let _ = std::fs::remove_dir(&temporary);
         downloaded?;
-        Ok(manifest)
+        Ok(())
     }
     pub async fn artifact_bytes(&self, reference: &BlobRef) -> anyhow::Result<Vec<u8>> {
         reference.validate()?;

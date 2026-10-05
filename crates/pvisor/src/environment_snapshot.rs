@@ -25,14 +25,35 @@ use std::{
 mod base;
 pub use base::{BaseReference, SnapshotBase};
 mod blocks;
+mod filesystems;
+pub use filesystems::SharedFilesystemLayer;
+#[cfg(target_os = "linux")]
+mod filesystem_blocks;
+#[cfg(target_os = "linux")]
+pub use filesystem_blocks::{FilesystemBlocks, PrivateFileBlocks};
+mod layers;
+pub(crate) use layers::{CapturedFilesystemLayer, CapturedFilesystemSource};
+pub use layers::{FilesystemLayer, SnapshotLayer};
+#[cfg(not(any(
+    all(target_os = "linux", target_arch = "x86_64"),
+    all(target_os = "macos", target_arch = "aarch64")
+)))]
+pub(crate) use store::NativePublication;
+pub(crate) use store::{NativeLayerCapture, PrivateFilesystemOwner};
 mod lazy;
+mod owned;
 mod store;
+#[cfg(target_os = "linux")]
+mod transfer;
 pub use blocks::RamBlocks;
+pub(crate) use blocks::{PinnedRamBlocks, RamDelta};
 pub use lazy::{RawRamIndex, SnapshotRamMount, SnapshotRamReader};
 pub(crate) use lazy::{serve_ram, watch_mount};
 pub use store::{
     Compatibility, EnvironmentManifest, PendingEnvironment, PublishedEnvironment, SnapshotStore,
 };
+#[cfg(target_os = "linux")]
+pub use transfer::{SnapshotRepository, SnapshotTransfer};
 
 #[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(deny_unknown_fields)]

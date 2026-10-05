@@ -90,13 +90,26 @@ pub(super) fn copy_entry(
         );
     }
     if !metadata.file_type().is_symlink() {
+        // Metadata is installed on a private copy. User xattrs require write
+        // permission, so defer the captured read-only mode until after xattrs.
         fs::set_permissions(
             destination,
-            fs::Permissions::from_mode(metadata.mode() & 0o7777),
+            fs::Permissions::from_mode(if metadata.is_dir() { 0o700 } else { 0o600 }),
         )?;
     }
-    for (name, value) in xattrs(source)? {
-        let name = CString::new(name)?;
+    let attributes = xattrs(source)?;
+    // Installing an access ACL can itself remove owner write permission.
+    // Install it last so read-only ACLs do not prevent other xattr writes.
+    for (name, value) in attributes
+        .iter()
+        .filter(|(name, _)| name != b"system.posix_acl_access")
+        .chain(
+            attributes
+                .iter()
+                .filter(|(name, _)| name == b"system.posix_acl_access"),
+        )
+    {
+        let name = CString::new(name.as_slice())?;
         ensure!(
             unsafe {
                 libc::lsetxattr(
@@ -110,6 +123,12 @@ pub(super) fn copy_entry(
             "copy xattr: {}",
             io::Error::last_os_error()
         );
+    }
+    if !metadata.file_type().is_symlink() {
+        fs::set_permissions(
+            destination,
+            fs::Permissions::from_mode(metadata.mode() & 0o7777),
+        )?;
     }
     let times = [
         libc::timespec {

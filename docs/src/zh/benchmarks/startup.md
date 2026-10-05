@@ -2,7 +2,7 @@
 
 ## 1. 结论
 
-pVisor 启动新 VM 并返回首条命令输出，最新准备环境批次在 macOS / Apple M4 上约 **84 ms**、Linux / Ryzen 7 9700X 上约 **86 ms**，均为 **0.1 秒量级**。使用 2 vCPU / 128 MiB、预制环境与热宿主缓存，不含镜像下载；两平台的历史批次分别保留。
+pVisor 新 VM 返回首条命令输出，在 macOS / Apple M4 上约 **84 ms**、Linux / Ryzen 7 9700X 上约 **110 ms**，均为 **0.1 秒量级**。Linux 同机 Firecracker 启动完整 Ubuntu，已配置环境约 **5.64 秒**、首次启动约 **9.25 秒**；pVisor 直接使用目录，无需系统镜像。各批次配置不同，完整数据分别保留。
 
 ## 2. Motivation
 
@@ -22,7 +22,7 @@ Agent 执行器可能反复创建隔离环境，启动等待会直接影响首�
 
 我们测量从启动 pVisor 到新 VM 执行第一条 shell 命令并返回输出的时间，表中记为 **Ready**。它覆盖宿主准备、VM 启动和命令执行，反映用户发出命令后的启动等待。
 
-**Exit** 从同一起点计到 pVisor 完成退出，包含结果保存等收尾工作。每次测量都创建新 VM；镜像和文件系统已提前准备，宿主缓存已预热。
+**Exit** 从同一起点计到运行时正常退出，包含结果保存和关机等收尾工作。每次创建新 VM，宿主缓存已预热；pVisor 使用目录，参考运行时的镜像下载和制作在计时前完成。完整 Ubuntu 还要求发行版系统服务就绪，其新批次单独给出。
 
 ??? note "精确计时与对照设置（复现用）"
 
@@ -36,10 +36,10 @@ Agent 执行器可能反复创建隔离环境，启动等待会直接影响首�
 |---|---|---|
 | 宿主 | Apple M4，24 GiB RAM | Ryzen 7 9700X，约 30 GiB RAM |
 | 系统 / 架构 | macOS 27.0.1 / ARM64 | Fedora 44 / x86_64 |
-| guest 根目录 | 已准备的 Alpine 3.22.1 | 已准备的 Fedora 根目录 |
+| guest 根目录 | 已准备的 Alpine 3.22.1 目录 | 最新 `--rootfs host`；历史准备 Fedora 目录 |
 | VM 规格 | 1/2/4 vCPU、128/2048 MiB；最新复测为 2 vCPU | 2 vCPU、128/256/2048 MiB |
-| firmware | 官方与裁剪的 libkrunfw 5.6.2 | libkrunfw 5.5.0 |
-| 缓存与镜像准备 | 宿主缓存预热，镜像准备不计时 | 宿主缓存预热，镜像准备不计时 |
+| firmware | 官方与裁剪的 libkrunfw 5.6.2 | 最新静态内置 Linux 6.12.109；早期 libkrunfw 5.5.0 |
+| 缓存与预先准备 | 宿主缓存预热，目录准备在计时前 | 宿主缓存预热，参考镜像下载/准备在计时前 |
 
 硬件、guest 文件系统、firmware 和 CLI 制品分别记录。两组共享计时标准，结果说明各自环境中的启动耗时；跨平台数值不用于单独判断操作系统或虚拟化后端的速度。
 
@@ -84,9 +84,9 @@ Agent 执行器可能反复创建隔离环境，启动等待会直接影响首�
 
 ### 采样、校验与统计
 
-每组正式测量前先预热，正式样本为 100 次；每轮随机排列组别。Ready 与 Exit 分别统计，成功的长尾样本保留。正式测量与细分阶段诊断分批进行，预热不计入结果。
+各组先预热、按轮随机排列，Ready 与 Exit 分别统计，成功长尾保留。macOS 与早期 Linux 主矩阵 N=100，新增部署对照 N=30；细分阶段诊断另列。各表写明 N，预热不计入结果。
 
-每个 pVisor 样本检查运行记录已完成、退出码为零，VM 样本还检查实际隔离为 `virtual_machine`。失败或缺少就绪输出会停止测量，不能计为更快的样本。百分位数反映本批次分布，不保证长期尾延迟或其他机器的表现。
+每个 pVisor 样本检查运行记录已完成、退出码为零，VM 样本还检查实际隔离为 `virtual_machine`。失败或缺少就绪输出不得计入成功分布；历史主矩阵遇失败会停止测量，新的部署对照记录失败并继续其他组。百分位数反映本批次分布，不保证长期尾延迟或其他机器的表现。
 
 ??? note "macOS 配对统计与对照设置"
 
@@ -267,6 +267,34 @@ RunRecord 是执行前的权威状态，不能为了更快把必要持久化改�
 
 ### Linux / KVM {#linux}
 
+#### 无镜像 pVisor 与完整 Ubuntu：实际部署等待 {#full-ubuntu}
+
+**新建短任务 VM 的等待约 0.11 秒；Firecracker 上的完整 Ubuntu 开机进入可执行命令的状态约 5.64–9.25 秒。** 这里的 Ubuntu 来自官方最新云虚拟机发布，固定为 26.04.1 LTS / 20260927。保留原厂 `7.0.0-34-generic` 内核、initrd、模块与系统服务，等待 systemd multi-user、网络、cloud-init 和 SSH socket 就绪后才执行命令。pVisor 使用 `--rootfs host` 和自身内置内核，直接复用宿主工具，不准备系统镜像。
+
+![pVisor and complete Ubuntu startup P50/P95](../../assets/benchmarks/full-ubuntu-qemu-20261004/ubuntu-startup.svg)
+
+Linux / KVM，2 vCPU / 2 GiB、相同宿主两核预算，原批次前五行各 30 次正式样本，QEMU 补测两行各 10 次，均 3 次预热；分别 150/150、20/20 通过。每次创建新 VM，无 RAM 快照或常驻池；宿主磁盘缓存已预热。已配置 Ubuntu 使用安装好工具、完成初次 cloud-init 的磁盘模板；首次启动使用尚未初始化的完整 Ubuntu 模板，预置 NoCloud 网络配置和测量服务，没有安装完整 Agent 工具。首次启动不等于首次下载。
+
+| Backend | N | Ready P50 / P95 / P99 ms | Exit P50 / P95 ms |
+|---|---:|---|---|
+| Native / Fedora | 30 | 1.23 / 1.49 / 1.73 | 1.29 / 1.57 |
+| pVisor staged | 30 | 15.04 / 18.32 / 19.35 | 43.75 / 44.52 |
+| pVisor VM / host | 30 | 109.69 / 121.62 / 141.53 | 173.57 / 193.94 |
+| Firecracker / Ubuntu | 30 | 5644.11 / 6009.57 / 6583.04 | 9234.94 / 9626.10 |
+| Firecracker / Ubuntu first boot | 30 | 9246.65 / 10293.13 / 10322.29 | 12862.17 / 13875.61 |
+| QEMU q35 / Ubuntu | 10 | 5428.90 / 7698.78 / 8968.91 | 9054.86 / 12078.24 |
+| QEMU microvm / Ubuntu | 10 | 7666.69 / 8547.61 / 8706.71 | 11199.06 / 12100.94 |
+
+**QEMU 使用同一完整 Ubuntu，而不是历史裁剪内核。** q35 与 microvm 共用 Firecracker 的原厂内核、initrd、工具和已初始化磁盘模板。这个配置下，最小设备模型并没有消除发行版的秒级开机成本。各组是同机独立批次，QEMU N=10、宿主仍有后台负载，个别波动保留；相近的中位数不支持精细的 VMM 排名。QEMU 首次 cloud-init 尚未补测。
+
+[QEMU CSV](../../assets/benchmarks/full-ubuntu-qemu-20261004/samples.csv) · [QEMU protocol](methodology.md#full-ubuntu-qemu)
+
+**选择含义：** 频繁创建环境、执行一两条命令时，无镜像路径能减少秒级 OS 开机等待；需要完整 Ubuntu 系统服务和发行版环境时，这些秒数是获得该环境的成本。此表比较两种真实部署方式，包含不同内核、初始化路径和文件系统，不能据此声称 libkrun 本身比 Firecracker 快约 50 倍。长任务更应看[任务与工具内部时间](agent-tasks.md#full-ubuntu)，启动差距会被摊薄。
+
+Exit 还包含正常关机：pVisor 中位数 174 ms，Firecracker/Ubuntu 约 9.23 / 12.86 秒。Firecracker/Ubuntu 使用默认 MMIO 设备和原厂 initrd，正常 guest reboot 后 VMM 零退出；每次记录完整 OS 证明且无失败 unit。工作区复制或私有磁盘克隆单列 `prepare_ms`，中位数约 37 / 29 ms，不含在 Ready 内。图采用对数轴，条形 P50、标记 P95；N=30 的 P99 接近最大值，只描述本批次。
+
+[逐样本 CSV](../../assets/benchmarks/full-ubuntu-20261004/samples.csv) · [分布与阶段计时](../../assets/benchmarks/full-ubuntu-20261004/summary.json) · [方法与复现](methodology.md#full-ubuntu) · [运行证据](../../assets/benchmarks/full-ubuntu-20261004/ubuntu-ready-mmio-20261004/evidence.tar.gz)
+
 #### 新 VM 启动结果 {#linux-results}
 
 2 vCPU / 128 MiB 下，中位耗时为 **172.69 ms**，P95 为 **180.37 ms**；256 MiB 的中位耗时约 **175 ms**，2 GiB 约 **220 ms**。本负载仅执行一条输出命令，增大配置内存并未降低启动等待。
@@ -283,7 +311,9 @@ RunRecord 是执行前的权威状态，不能为了更快把必要持久化改�
 
 在这批测量中，新 VM 就绪约需 **0.2 秒**，完成退出约需 **0.23–0.28 秒**；两者应分别评估。这里测的是新建 VM；[快照恢复](vm-memory/index.md#linux-snapshot)的耗时另外记录。没有采集 Linux 的细分启动账本，不能把 macOS 的阶段比例直接套用到 Linux。
 
-#### 熟悉基线：Docker、Firecracker 与两种 QEMU {#reference-startup}
+#### 裁剪内核与直接 init：Docker / Firecracker / QEMU 历史对照 {#reference-startup}
+
+这组 Firecracker/QEMU 使用裁剪内核和静态 init，跳过 Ubuntu 的系统服务启动；73.74 ms 是这条最小路径的结果。完整 Ubuntu 的默认部署对照见[上节](#full-ubuntu)。pVisor 本组使用准备好的工具目录，经 virtio-fs 共享，仍不使用系统镜像。
 
 同机、相同两核执行预算的准备环境中，pVisor VM Ready 中位数 **86.29 ms**，与 Docker **90.12 ms**、QEMU microvm **88.10 ms**接近，Firecracker 为 **73.74 ms**。这给出了“百毫秒量级”的位置：它接近成熟 microVM 路径，并没有全面胜过它们。
 
@@ -367,4 +397,4 @@ python3 benchmark/pvisor/linux_vm_ready.py \
 
 ## 6. 尚未覆盖的场景
 
-Docker、Firecracker、a3s 和真实 Agent 就绪仍未测量。首次镜像准备、磁盘冷缓存、TUI、Gateway、并发密度及服务健康检查，需要独立矩阵。
+Docker、Firecracker、QEMU 和受控 Agent 工具闭环已有同机数据；完整 Ubuntu 的初次启动与部分准备成本也已单列。a3s、真实模型推理、大型项目、公网依赖、磁盘冷缓存、TUI、Gateway、并发密度及应用服务健康检查，仍需要独立矩阵。

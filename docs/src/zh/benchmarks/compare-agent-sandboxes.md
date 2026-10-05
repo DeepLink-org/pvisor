@@ -23,6 +23,8 @@ Agent 自带沙箱适合控制单个 Agent 的工具权限；pVisor 的额外价
 
 ## 完整环境兼容性实测 {#reference-comparison}
 
+本节的 Docker/CLI 数据来自相同工具制品的旧受控批次，pVisor 使用准备目录，不使用镜像。新增默认 `--rootfs host` 与完整 Ubuntu 对照、工具内部时间及本轮客户端通过/失败情况见[完整 Agent Env](agent-tasks.md#full-ubuntu)；配置与样本分别保留。
+
 真实 Claude/Codex CLI 已在 native、staged、Docker、Firecracker、QEMU 完成受控修复测试闭环；Codex 也在 pVisor VM 30/30 通过，Claude/VM 在初始化阶段超时。这不能证明所有客户端支持 pVisor VM。Codex 内部使用统一 `danger-full-access`，Claude 只开放受控 Bash 动作；本轮没有比较各客户端默认沙箱，也没有验证默认内外沙箱叠加。实际耗时、失败与外层边界见[完整工具环境](agent-tasks.md#reference-env)。
 
 

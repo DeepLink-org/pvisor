@@ -5,7 +5,7 @@
     all(target_os = "linux", target_arch = "x86_64")
 ))]
 
-use crate::vmm::snapshot::{MachineRestore, MachineSnapshot, RamMappingSnapshot};
+use crate::vmm::snapshot::{KernelLayout, MachineRestore, MachineSnapshot, RamMappingSnapshot};
 use std::sync::Arc;
 
 fn restore() -> MachineRestore {
@@ -15,6 +15,7 @@ fn restore() -> MachineRestore {
         ram_file: Arc::new(file),
         state: MachineSnapshot {
             version: 1,
+            kernel_layout: None,
             cpus: vec![],
             #[cfg(target_os = "linux")]
             kvm: None,
@@ -63,6 +64,130 @@ fn machine_manifest_rejects_unknown_fields() {
     let mut value = serde_json::to_value(restore().state).unwrap();
     value["ram"][0]["unexpected"] = true.into();
     assert!(serde_json::from_value::<MachineSnapshot>(value).is_err());
+}
+
+#[test]
+fn saved_kernel_geometry_is_optional_but_must_match_captured_ram() {
+    let mut input = restore();
+    let page = unsafe { libc::sysconf(libc::_SC_PAGESIZE) } as u64;
+    input.ram_file.set_len(page * 2).unwrap();
+    input.state.ram = vec![RamMappingSnapshot {
+        base: page,
+        len: page * 2,
+        file_offset: 0,
+    }];
+    let legacy = serde_json::to_value(&input.state).unwrap();
+    assert!(legacy.get("kernel_layout").is_none());
+    assert!(serde_json::from_value::<MachineSnapshot>(legacy)
+        .unwrap()
+        .kernel_layout
+        .is_none());
+    let valid = KernelLayout {
+        guest_addr: page,
+        size: page * 2,
+    };
+    input.state.kernel_layout = Some(valid);
+    input.validate_ram_file().unwrap();
+    let encoded = serde_json::to_value(&input.state).unwrap();
+    assert_eq!(
+        serde_json::from_value::<MachineSnapshot>(encoded.clone())
+            .unwrap()
+            .kernel_layout,
+        Some(valid)
+    );
+    let mut unknown = encoded;
+    unknown["kernel_layout"]["unexpected"] = true.into();
+    assert!(serde_json::from_value::<MachineSnapshot>(unknown).is_err());
+    for kernel in [
+        KernelLayout {
+            guest_addr: 0,
+            ..valid
+        },
+        KernelLayout { size: 0, ..valid },
+        KernelLayout {
+            guest_addr: page + 1,
+            ..valid
+        },
+        KernelLayout {
+            size: page + 1,
+            ..valid
+        },
+        KernelLayout {
+            guest_addr: u64::MAX - page + 1,
+            ..valid
+        },
+        KernelLayout {
+            guest_addr: page * 8,
+            ..valid
+        },
+        KernelLayout {
+            size: page * 3,
+            ..valid
+        },
+    ] {
+        input.state.kernel_layout = Some(kernel);
+        assert!(input.validate_ram_file().is_err(), "{kernel:?}");
+    }
+    // Geometry alone must never authorize a context lacking CPU/KVM state.
+    input.state.kernel_layout = Some(valid);
+    let mut builder =
+        crate::builder::Builder::<crate::backend::NativeBackend>::new(1, 128).unwrap();
+    assert!(builder.machine_restore(input).is_err());
+    assert!(builder.machine_restore(restore()).is_err());
+}
+
+#[cfg(target_os = "linux")]
+#[test]
+fn restore_geometry_rebuilds_exact_layout_without_a_firmware_bundle() {
+    use crate::vmm::{
+        builder::{create_guest_memory, Payload},
+        resources::VmResources,
+    };
+    use vm_memory::{GuestAddress, GuestMemory, GuestMemoryRegion};
+    let page = unsafe { libc::sysconf(libc::_SC_PAGESIZE) } as u64;
+    let kernel = KernelLayout {
+        guest_addr: 16 * 1024 * 1024,
+        size: page,
+    };
+    let mut input = restore();
+    input.state.kernel_layout = Some(kernel);
+    let ranges = [
+        (0, kernel.guest_addr),
+        (kernel.guest_addr, kernel.size),
+        (kernel.guest_addr + kernel.size, 64 * 1024 * 1024),
+    ];
+    let mut offset = 0;
+    input.state.ram = ranges
+        .iter()
+        .map(|&(base, len)| {
+            let region = RamMappingSnapshot {
+                base,
+                len,
+                file_offset: offset,
+            };
+            offset += len;
+            region
+        })
+        .collect();
+    input.ram_file.set_len(offset).unwrap();
+    let mut resources = VmResources::default();
+    resources.machine_restore = Some(Arc::new(input));
+    assert!(resources.kernel_bundle.is_none());
+    let (memory, _, _, _) =
+        create_guest_memory(64, &resources, &Payload::RestoredKernel(kernel)).unwrap();
+    for (region, &(base, len)) in memory.iter().zip(&ranges) {
+        assert_eq!(region.start_addr(), GuestAddress(base));
+        assert_eq!(region.len(), len);
+    }
+    // A different budget must fail the exact topology check, not remap RAM.
+    assert!(create_guest_memory(65, &resources, &Payload::RestoredKernel(kernel)).is_err());
+    // The arch helper otherwise panics or underflows on out-of-budget kernels.
+    assert!(create_guest_memory(1, &resources, &Payload::RestoredKernel(kernel)).is_err());
+    let gap = KernelLayout {
+        guest_addr: 4 * 1024 * 1024 * 1024,
+        size: page,
+    };
+    assert!(create_guest_memory(8192, &resources, &Payload::RestoredKernel(gap)).is_err());
 }
 
 #[test]

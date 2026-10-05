@@ -1,0 +1,2635 @@
+{
+  "schema": "pvisor-full-ubuntu-reference/v1",
+  "recorded_at": "2026-10-04T11:48:11.965670+08:00",
+  "arguments": {
+    "assets": "/home/reiase/workspace/pvisor/target/ubuntu-reference-private-tmp-20261004",
+    "fixture": "/home/reiase/workspace/pvisor/target/reference-env-release-20261004/rootfs/work",
+    "binary": "/home/reiase/workspace/pvisor/target/reference-baselines-controlled-20261004/bin/pvisor",
+    "output": "/home/reiase/workspace/pvisor/target/ubuntu-qemu-complete-20261004",
+    "toolchain": "/home/reiase/.rustup/toolchains/stable-x86_64-unknown-linux-gnu",
+    "samples": "10",
+    "warmups": "3",
+    "backends": "qemu-ubuntu,qemu-microvm-ubuntu",
+    "modes": "ready,tools,claude,codex",
+    "memory_mib": "16384",
+    "cpu_affinity": "0,1",
+    "timeout": "180"
+  },
+  "assets": {
+    "schema": "pvisor-ubuntu-reference-assets/v1",
+    "release": "Ubuntu 26.04 LTS (20260927)",
+    "image_policy": "Only Firecracker consumes Ubuntu; pVisor uses --rootfs host and its own embedded kernel",
+    "assets": {
+      "ubuntu-26.04-server-cloudimg-amd64.img": {
+        "url": "https://cloud-images.ubuntu.com/releases/resolute/release/ubuntu-26.04-server-cloudimg-amd64.img",
+        "sha256": "8800651811af9a85465ad1d552add729947bb16488dddb4a9b5305a3d97332b2",
+        "bytes": 865115136
+      },
+      "ubuntu-26.04-server-cloudimg-amd64-vmlinuz-generic": {
+        "url": "https://cloud-images.ubuntu.com/releases/resolute/release/unpacked/ubuntu-26.04-server-cloudimg-amd64-vmlinuz-generic",
+        "sha256": "7efd88a7facf80874d781ccb2c2421f0aaaa575e3b94760430619e826f490117",
+        "bytes": 17303944
+      },
+      "ubuntu-26.04-server-cloudimg-amd64-initrd-generic": {
+        "url": "https://cloud-images.ubuntu.com/releases/resolute/release/unpacked/ubuntu-26.04-server-cloudimg-amd64-initrd-generic",
+        "sha256": "c9f23b4ac34a20df6a1d344b44bf2597faa48799d814cbc206b3974c6ead5215",
+        "bytes": 72091068
+      }
+    },
+    "kernel_elf_sha256": "72eb0d4df32d685ed24508de3d05842e32004cbc592a2c67b8756967c04522bf",
+    "initrd": "/home/reiase/workspace/pvisor/target/ubuntu-reference-20261004/downloads/ubuntu-26.04-server-cloudimg-amd64-initrd-generic",
+    "root_partuuid": "3b6ccca1-0c96-46be-9ee4-dc45bf129735",
+    "preserved": "Full GPT, /boot, EFI, stock kernel/initrd/modules/services",
+    "sha_verification": "Official HTTPS SHA256SUMS; GPG signature not verified",
+    "provisioning": "QEMU KVM, user networking, native Ubuntu apt tools plus installed Rust/Claude/Codex; outside timings",
+    "provision_seconds": 85.8140148479979,
+    "provisioning_shape": "Untimed QEMU: 1 vCPU host,-rdseed,-rdrand; measured Firecracker VMs: 2 vCPU defaults",
+    "guest_workload_sha256": "a3b120813d58746e9da8594d71a45cdc093ac9bdbad9f4cf0edc741bb9b30fd8",
+    "reproduction_snapshot": "https://cloud-images.ubuntu.com/releases/resolute/release-20260927/",
+    "ubuntu_kernel_version": "7.0.0-34-generic",
+    "kernel_config_sha256": "e75c0adab6020e72844d7431cf801a02b94ed32efc251c3b0fb80c021d065180",
+    "firecracker_transport": "Default virtio MMIO, no PCI; rd.driver.pre=virtio_mmio; reboot=t",
+    "guest_unit_sha256": "3b89c74a3dbba3a51312f074c13fe4ba5badb6090276adb71e95896ff6883481",
+    "temporary_files": "Private /work/_tmp for all complete task tools; host workload uses its own workspace/_tmp",
+    "prepared_template_update": "Only benchmark workload/environment updated offline after clean shutdown; kernel and Ubuntu services unchanged"
+  },
+  "pvisor_sha256": "1a2db5ad015c5ace40b3c96c7dd0dc94a08b8893de35150bd909554286e2cd3c",
+  "driver_sha256": "04b240d48c20e14ab5773cdf76adf4e576ba3ae40ba44d327a1e9ab4cdf76c36",
+  "workload_sha256": "a3b120813d58746e9da8594d71a45cdc093ac9bdbad9f4cf0edc741bb9b30fd8",
+  "network_helper_sha256": "e1920f47d603a117ec5b14cdb6cf93e2816bc9321f8bc9c59c97b8f9e0052be1",
+  "source_commit": "dca96fe127bd14e1f23b6d12657aceaf56d075c1",
+  "source_status": " M benchmark/pvisor/prepare_ubuntu_reference.py\n M benchmark/pvisor/reference_workload.py\n M benchmark/pvisor/ubuntu_baselines.py\n M benchmark/pvisor/ubuntu_guest.sh\n M benchmark/pvisor/ubuntu_vm_network.py\n M crates/pvisor-cluster/README.md\n M crates/pvisor-cluster/src/client.rs\n M crates/pvisor-cluster/src/main.rs\n M crates/pvisor-cluster/src/scheduler.rs\n M crates/pvisor-cluster/src/server.rs\n M crates/pvisor-cluster/tests/scheduler.rs\n M crates/pvisor-cluster/tests/vm_lifecycle.rs\n M crates/pvisor-core/src/cluster.rs\n M crates/pvisor-core/src/execution.rs\n M crates/pvisor-core/src/file_access.rs\n M crates/pvisor-core/src/lib.rs\n M crates/pvisor-core/src/operation.rs\n M crates/pvisor-core/tests/operation_contracts.rs\n M crates/pvisor/src/bin/pvisor-worker.rs\n M crates/pvisor/src/bin/worker/outbox.rs\n M crates/pvisor/src/cli/checkpoint.rs\n M crates/pvisor/src/cli/run.rs\n M crates/pvisor/src/environment_snapshot/lazy.rs\n M crates/pvisor/src/executor/vm/checkpoint.rs\n M crates/pvisor/src/executor/vm/control.rs\n M crates/pvisor/src/executor/vm/mod.rs\n M crates/pvisor/src/executor/vm/supported.rs\n M crates/pvisor/src/executor/vm/unsupported.rs\n M crates/pvisor/src/lib.rs\n M crates/pvisor/src/runtime/attempt.rs\n M crates/pvisor/src/runtime/implant.rs\n M crates/pvisor/src/runtime/mod.rs\n M crates/pvisor/src/runtime/overlay.rs\n M crates/pvisor/src/runtime/registry.rs\n M crates/pvisor/src/runtime/run.rs\n M crates/pvisor/src/session/lifecycle.rs\n M crates/pvisor/tests/cluster_environment_vm.rs\n M crates/pvisor/tests/cluster_execution.rs\n M crates/pvisor/tests/vm_snapshot_fs.rs\n M docs/src/en/benchmarks/agent-tasks.md\n M docs/src/en/benchmarks/compare-agent-sandboxes.md\n M docs/src/en/benchmarks/compare-containers.md\n M docs/src/en/benchmarks/compare-runtimes.md\n M docs/src/en/benchmarks/filesystem.md\n M docs/src/en/benchmarks/index.md\n M docs/src/en/benchmarks/methodology.md\n M docs/src/en/benchmarks/startup.md\n M docs/src/zh/benchmarks/agent-tasks.md\n M docs/src/zh/benchmarks/compare-agent-sandboxes.md\n M docs/src/zh/benchmarks/compare-containers.md\n M docs/src/zh/benchmarks/compare-runtimes.md\n M docs/src/zh/benchmarks/filesystem.md\n M docs/src/zh/benchmarks/index.md\n M docs/src/zh/benchmarks/methodology.md\n M docs/src/zh/benchmarks/startup.md\n M docs/translations.json\n M vendor/krun-devices/src/virtio/fs/overlay.rs\n M vendor/krun-devices/src/virtio/fs/snapshot.rs\n M vendor/krun-devices/src/virtio/mmio.rs\n?? benchmark/pvisor/reference_fixture.py\n?? benchmark/pvisor/render_ubuntu_baselines.py\n?? benchmark/pvisor/test_ubuntu_baselines.py\n?? crates/pvisor-core/src/memory.rs\n?? crates/pvisor/src/bin/worker/memory.rs\n?? crates/pvisor/src/executor/vm/memory.rs\n?? crates/pvisor/src/executor/vm/restore_ram.rs\n?? docs/src/assets/benchmarks/full-ubuntu-20261004/\n",
+  "host_os": "NAME=\"Fedora Linux\"\nVERSION=\"44 (Workstation Edition)\"\nRELEASE_TYPE=stable\nID=fedora\nVERSION_ID=44\nVERSION_CODENAME=\"\"\nPRETTY_NAME=\"Fedora Linux 44 (Workstation Edition)\"\nANSI_COLOR=\"0;38;2;60;110;180\"\nLOGO=fedora-logo-icon\nCPE_NAME=\"cpe:/o:fedoraproject:fedora:44\"\nDEFAULT_HOSTNAME=\"fedora\"\nHOME_URL=\"https://fedoraproject.org/\"\nDOCUMENTATION_URL=\"https://docs.fedoraproject.org/en-US/fedora/f44/\"\nSUPPORT_URL=\"https://ask.fedoraproject.org/\"\nBUG_REPORT_URL=\"https://bugzilla.redhat.com/\"\nREDHAT_BUGZILLA_PRODUCT=\"Fedora\"\nREDHAT_BUGZILLA_PRODUCT_VERSION=44\nREDHAT_SUPPORT_PRODUCT=\"Fedora\"\nREDHAT_SUPPORT_PRODUCT_VERSION=44\nSUPPORT_END=2027-05-19\nVARIANT=\"Workstation Edition\"\nVARIANT_ID=workstation\n",
+  "host_kernel": "7.2.8-200.fc44.x86_64",
+  "firecracker_version": "Firecracker v1.13.1\n\n2026-10-04T11:48:11.987673892 [anonymous-instance:main] Firecracker exiting successfully. exit_code=0",
+  "protocol": {
+    "shape": "2 vCPU; ready 2048 MiB, tasks 16384 MiB; CPUs 0,1",
+    "cache": "Warm host page cache; fresh disk reflink/workspace per trial; no memory snapshot",
+    "image_policy": "pVisor --rootfs host: no image; Firecracker/QEMU complete official Ubuntu image",
+    "task": "Same fixtures and CLI versions; Ubuntu native apt tool builds may differ; private workspace TMPDIR on all backends",
+    "timer": "Launch to task ready/result/exit; clone and provisioning costs recorded separately",
+    "network": "Firecracker: private TAP plus QEMU -machine none DNS/NAT helper; QEMU: built-in user networking; all launcher helpers included in time/RSS; same-guest fixture model, no real inference",
+    "resource": "Owned launcher tree RSS sum sampled every 20 ms; shared pages can be double-counted",
+    "order": "Random backend per round, seed 20261004"
+  },
+  "load_before": [
+    3.90234375,
+    2.4013671875,
+    2.06396484375
+  ],
+  "qemu_version": "QEMU emulator version 10.2.2 (qemu-10.2.2-1.fc44)\nCopyright (c) 2003-2025 Fabrice Bellard and the QEMU Project developers",
+  "qemu_kernel_sha256": "7efd88a7facf80874d781ccb2c2421f0aaaa575e3b94760430619e826f490117",
+  "rows": [
+    {
+      "backend": "qemu-ubuntu",
+      "mode": "ready",
+      "trial": 0,
+      "prepare_ms": 121.119807,
+      "ready_ms": 5106.401233,
+      "os_ready_ms": 5102.399365,
+      "result_ms": 5107.56802,
+      "completion_ms": 8615.700257,
+      "peak_tree_rss_kib": 821876,
+      "result": {
+        "mode": "ready",
+        "correctness": "passed"
+      },
+      "os_proof": {
+        "os_release": "PRETTY_NAME=\"Ubuntu 26.04.1 LTS\"\nNAME=\"Ubuntu\"\nVERSION_ID=\"26.04\"\nVERSION=\"26.04.1 LTS (Resolute Raccoon)\"\nVERSION_CODENAME=resolute\nID=ubuntu\nID_LIKE=debian\nHOME_URL=\"https://www.ubuntu.com/\"\nSUPPORT_URL=\"https://help.ubuntu.com/\"\nBUG_REPORT_URL=\"https://bugs.launchpad.net/ubuntu/\"\nPRIVACY_POLICY_URL=\"https://www.ubuntu.com/legal/terms-and-policies/privacy-policy\"\nUBUNTU_CODENAME=resolute\nLOGO=ubuntu-logo\n",
+        "kernel": "7.0.0-34-generic",
+        "pid1": "systemd",
+        "multi_user": "active",
+        "network_online": "active",
+        "cloud_final": "active",
+        "ssh_socket": "active",
+        "failed_units": ""
+      },
+      "correctness": "passed",
+      "logs": "/home/reiase/workspace/pvisor/target/ubuntu-qemu-complete-20261004/trials/ready-qemu-ubuntu-000"
+    },
+    {
+      "backend": "qemu-microvm-ubuntu",
+      "mode": "ready",
+      "trial": 0,
+      "prepare_ms": 118.607758,
+      "ready_ms": 7453.784288,
+      "os_ready_ms": 7452.446191,
+      "result_ms": 7454.736165,
+      "completion_ms": 11022.430292,
+      "peak_tree_rss_kib": 804932,
+      "result": {
+        "mode": "ready",
+        "correctness": "passed"
+      },
+      "os_proof": {
+        "os_release": "PRETTY_NAME=\"Ubuntu 26.04.1 LTS\"\nNAME=\"Ubuntu\"\nVERSION_ID=\"26.04\"\nVERSION=\"26.04.1 LTS (Resolute Raccoon)\"\nVERSION_CODENAME=resolute\nID=ubuntu\nID_LIKE=debian\nHOME_URL=\"https://www.ubuntu.com/\"\nSUPPORT_URL=\"https://help.ubuntu.com/\"\nBUG_REPORT_URL=\"https://bugs.launchpad.net/ubuntu/\"\nPRIVACY_POLICY_URL=\"https://www.ubuntu.com/legal/terms-and-policies/privacy-policy\"\nUBUNTU_CODENAME=resolute\nLOGO=ubuntu-logo\n",
+        "kernel": "7.0.0-34-generic",
+        "pid1": "systemd",
+        "multi_user": "active",
+        "network_online": "active",
+        "cloud_final": "active",
+        "ssh_socket": "active",
+        "failed_units": ""
+      },
+      "correctness": "passed",
+      "logs": "/home/reiase/workspace/pvisor/target/ubuntu-qemu-complete-20261004/trials/ready-qemu-microvm-ubuntu-000"
+    },
+    {
+      "backend": "qemu-ubuntu",
+      "mode": "ready",
+      "trial": 1,
+      "prepare_ms": 127.304742,
+      "ready_ms": 5403.629611,
+      "os_ready_ms": 5399.364501,
+      "result_ms": 5404.644997,
+      "completion_ms": 9275.373434,
+      "peak_tree_rss_kib": 816312,
+      "result": {
+        "mode": "ready",
+        "correctness": "passed"
+      },
+      "os_proof": {
+        "os_release": "PRETTY_NAME=\"Ubuntu 26.04.1 LTS\"\nNAME=\"Ubuntu\"\nVERSION_ID=\"26.04\"\nVERSION=\"26.04.1 LTS (Resolute Raccoon)\"\nVERSION_CODENAME=resolute\nID=ubuntu\nID_LIKE=debian\nHOME_URL=\"https://www.ubuntu.com/\"\nSUPPORT_URL=\"https://help.ubuntu.com/\"\nBUG_REPORT_URL=\"https://bugs.launchpad.net/ubuntu/\"\nPRIVACY_POLICY_URL=\"https://www.ubuntu.com/legal/terms-and-policies/privacy-policy\"\nUBUNTU_CODENAME=resolute\nLOGO=ubuntu-logo\n",
+        "kernel": "7.0.0-34-generic",
+        "pid1": "systemd",
+        "multi_user": "active",
+        "network_online": "active",
+        "cloud_final": "active",
+        "ssh_socket": "active",
+        "failed_units": ""
+      },
+      "correctness": "passed",
+      "logs": "/home/reiase/workspace/pvisor/target/ubuntu-qemu-complete-20261004/trials/ready-qemu-ubuntu-001"
+    },
+    {
+      "backend": "qemu-microvm-ubuntu",
+      "mode": "ready",
+      "trial": 1,
+      "prepare_ms": 389.726766,
+      "ready_ms": 8746.489814,
+      "os_ready_ms": 8742.872051,
+      "result_ms": 8747.480914,
+      "completion_ms": 12294.878586,
+      "peak_tree_rss_kib": 787880,
+      "result": {
+        "mode": "ready",
+        "correctness": "passed"
+      },
+      "os_proof": {
+        "os_release": "PRETTY_NAME=\"Ubuntu 26.04.1 LTS\"\nNAME=\"Ubuntu\"\nVERSION_ID=\"26.04\"\nVERSION=\"26.04.1 LTS (Resolute Raccoon)\"\nVERSION_CODENAME=resolute\nID=ubuntu\nID_LIKE=debian\nHOME_URL=\"https://www.ubuntu.com/\"\nSUPPORT_URL=\"https://help.ubuntu.com/\"\nBUG_REPORT_URL=\"https://bugs.launchpad.net/ubuntu/\"\nPRIVACY_POLICY_URL=\"https://www.ubuntu.com/legal/terms-and-policies/privacy-policy\"\nUBUNTU_CODENAME=resolute\nLOGO=ubuntu-logo\n",
+        "kernel": "7.0.0-34-generic",
+        "pid1": "systemd",
+        "multi_user": "active",
+        "network_online": "active",
+        "cloud_final": "active",
+        "ssh_socket": "active",
+        "failed_units": ""
+      },
+      "correctness": "passed",
+      "logs": "/home/reiase/workspace/pvisor/target/ubuntu-qemu-complete-20261004/trials/ready-qemu-microvm-ubuntu-001"
+    },
+    {
+      "backend": "qemu-microvm-ubuntu",
+      "mode": "ready",
+      "trial": 2,
+      "prepare_ms": 121.081556,
+      "ready_ms": 7553.090628,
+      "os_ready_ms": 7551.98786,
+      "result_ms": 7554.040902,
+      "completion_ms": 11089.279439,
+      "peak_tree_rss_kib": 796476,
+      "result": {
+        "mode": "ready",
+        "correctness": "passed"
+      },
+      "os_proof": {
+        "os_release": "PRETTY_NAME=\"Ubuntu 26.04.1 LTS\"\nNAME=\"Ubuntu\"\nVERSION_ID=\"26.04\"\nVERSION=\"26.04.1 LTS (Resolute Raccoon)\"\nVERSION_CODENAME=resolute\nID=ubuntu\nID_LIKE=debian\nHOME_URL=\"https://www.ubuntu.com/\"\nSUPPORT_URL=\"https://help.ubuntu.com/\"\nBUG_REPORT_URL=\"https://bugs.launchpad.net/ubuntu/\"\nPRIVACY_POLICY_URL=\"https://www.ubuntu.com/legal/terms-and-policies/privacy-policy\"\nUBUNTU_CODENAME=resolute\nLOGO=ubuntu-logo\n",
+        "kernel": "7.0.0-34-generic",
+        "pid1": "systemd",
+        "multi_user": "active",
+        "network_online": "active",
+        "cloud_final": "active",
+        "ssh_socket": "active",
+        "failed_units": ""
+      },
+      "correctness": "passed",
+      "logs": "/home/reiase/workspace/pvisor/target/ubuntu-qemu-complete-20261004/trials/ready-qemu-microvm-ubuntu-002"
+    },
+    {
+      "backend": "qemu-ubuntu",
+      "mode": "ready",
+      "trial": 2,
+      "prepare_ms": 124.421279,
+      "ready_ms": 5758.316144,
+      "os_ready_ms": 5749.256133,
+      "result_ms": 5759.849967,
+      "completion_ms": 9309.98571,
+      "peak_tree_rss_kib": 809064,
+      "result": {
+        "mode": "ready",
+        "correctness": "passed"
+      },
+      "os_proof": {
+        "os_release": "PRETTY_NAME=\"Ubuntu 26.04.1 LTS\"\nNAME=\"Ubuntu\"\nVERSION_ID=\"26.04\"\nVERSION=\"26.04.1 LTS (Resolute Raccoon)\"\nVERSION_CODENAME=resolute\nID=ubuntu\nID_LIKE=debian\nHOME_URL=\"https://www.ubuntu.com/\"\nSUPPORT_URL=\"https://help.ubuntu.com/\"\nBUG_REPORT_URL=\"https://bugs.launchpad.net/ubuntu/\"\nPRIVACY_POLICY_URL=\"https://www.ubuntu.com/legal/terms-and-policies/privacy-policy\"\nUBUNTU_CODENAME=resolute\nLOGO=ubuntu-logo\n",
+        "kernel": "7.0.0-34-generic",
+        "pid1": "systemd",
+        "multi_user": "active",
+        "network_online": "active",
+        "cloud_final": "active",
+        "ssh_socket": "active",
+        "failed_units": ""
+      },
+      "correctness": "passed",
+      "logs": "/home/reiase/workspace/pvisor/target/ubuntu-qemu-complete-20261004/trials/ready-qemu-ubuntu-002"
+    },
+    {
+      "backend": "qemu-microvm-ubuntu",
+      "mode": "ready",
+      "trial": 3,
+      "prepare_ms": 121.899202,
+      "ready_ms": 7450.705541,
+      "os_ready_ms": 7446.638269,
+      "result_ms": 7451.645595,
+      "completion_ms": 10982.266624,
+      "peak_tree_rss_kib": 804428,
+      "result": {
+        "mode": "ready",
+        "correctness": "passed"
+      },
+      "os_proof": {
+        "os_release": "PRETTY_NAME=\"Ubuntu 26.04.1 LTS\"\nNAME=\"Ubuntu\"\nVERSION_ID=\"26.04\"\nVERSION=\"26.04.1 LTS (Resolute Raccoon)\"\nVERSION_CODENAME=resolute\nID=ubuntu\nID_LIKE=debian\nHOME_URL=\"https://www.ubuntu.com/\"\nSUPPORT_URL=\"https://help.ubuntu.com/\"\nBUG_REPORT_URL=\"https://bugs.launchpad.net/ubuntu/\"\nPRIVACY_POLICY_URL=\"https://www.ubuntu.com/legal/terms-and-policies/privacy-policy\"\nUBUNTU_CODENAME=resolute\nLOGO=ubuntu-logo\n",
+        "kernel": "7.0.0-34-generic",
+        "pid1": "systemd",
+        "multi_user": "active",
+        "network_online": "active",
+        "cloud_final": "active",
+        "ssh_socket": "active",
+        "failed_units": ""
+      },
+      "correctness": "passed",
+      "logs": "/home/reiase/workspace/pvisor/target/ubuntu-qemu-complete-20261004/trials/ready-qemu-microvm-ubuntu-003"
+    },
+    {
+      "backend": "qemu-ubuntu",
+      "mode": "ready",
+      "trial": 3,
+      "prepare_ms": 119.556239,
+      "ready_ms": 5243.754567,
+      "os_ready_ms": 5242.648612,
+      "result_ms": 5244.804747,
+      "completion_ms": 8791.485411,
+      "peak_tree_rss_kib": 810280,
+      "result": {
+        "mode": "ready",
+        "correctness": "passed"
+      },
+      "os_proof": {
+        "os_release": "PRETTY_NAME=\"Ubuntu 26.04.1 LTS\"\nNAME=\"Ubuntu\"\nVERSION_ID=\"26.04\"\nVERSION=\"26.04.1 LTS (Resolute Raccoon)\"\nVERSION_CODENAME=resolute\nID=ubuntu\nID_LIKE=debian\nHOME_URL=\"https://www.ubuntu.com/\"\nSUPPORT_URL=\"https://help.ubuntu.com/\"\nBUG_REPORT_URL=\"https://bugs.launchpad.net/ubuntu/\"\nPRIVACY_POLICY_URL=\"https://www.ubuntu.com/legal/terms-and-policies/privacy-policy\"\nUBUNTU_CODENAME=resolute\nLOGO=ubuntu-logo\n",
+        "kernel": "7.0.0-34-generic",
+        "pid1": "systemd",
+        "multi_user": "active",
+        "network_online": "active",
+        "cloud_final": "active",
+        "ssh_socket": "active",
+        "failed_units": ""
+      },
+      "correctness": "passed",
+      "logs": "/home/reiase/workspace/pvisor/target/ubuntu-qemu-complete-20261004/trials/ready-qemu-ubuntu-003"
+    },
+    {
+      "backend": "qemu-ubuntu",
+      "mode": "ready",
+      "trial": 4,
+      "prepare_ms": 118.628417,
+      "ready_ms": 5239.882057,
+      "os_ready_ms": 5238.707274,
+      "result_ms": 5242.456212,
+      "completion_ms": 8828.410553,
+      "peak_tree_rss_kib": 799028,
+      "result": {
+        "mode": "ready",
+        "correctness": "passed"
+      },
+      "os_proof": {
+        "os_release": "PRETTY_NAME=\"Ubuntu 26.04.1 LTS\"\nNAME=\"Ubuntu\"\nVERSION_ID=\"26.04\"\nVERSION=\"26.04.1 LTS (Resolute Raccoon)\"\nVERSION_CODENAME=resolute\nID=ubuntu\nID_LIKE=debian\nHOME_URL=\"https://www.ubuntu.com/\"\nSUPPORT_URL=\"https://help.ubuntu.com/\"\nBUG_REPORT_URL=\"https://bugs.launchpad.net/ubuntu/\"\nPRIVACY_POLICY_URL=\"https://www.ubuntu.com/legal/terms-and-policies/privacy-policy\"\nUBUNTU_CODENAME=resolute\nLOGO=ubuntu-logo\n",
+        "kernel": "7.0.0-34-generic",
+        "pid1": "systemd",
+        "multi_user": "active",
+        "network_online": "active",
+        "cloud_final": "active",
+        "ssh_socket": "active",
+        "failed_units": ""
+      },
+      "correctness": "passed",
+      "logs": "/home/reiase/workspace/pvisor/target/ubuntu-qemu-complete-20261004/trials/ready-qemu-ubuntu-004"
+    },
+    {
+      "backend": "qemu-microvm-ubuntu",
+      "mode": "ready",
+      "trial": 4,
+      "prepare_ms": 122.752294,
+      "ready_ms": 7732.783716,
+      "os_ready_ms": 7731.84327,
+      "result_ms": 7733.686641,
+      "completion_ms": 11273.463539,
+      "peak_tree_rss_kib": 808988,
+      "result": {
+        "mode": "ready",
+        "correctness": "passed"
+      },
+      "os_proof": {
+        "os_release": "PRETTY_NAME=\"Ubuntu 26.04.1 LTS\"\nNAME=\"Ubuntu\"\nVERSION_ID=\"26.04\"\nVERSION=\"26.04.1 LTS (Resolute Raccoon)\"\nVERSION_CODENAME=resolute\nID=ubuntu\nID_LIKE=debian\nHOME_URL=\"https://www.ubuntu.com/\"\nSUPPORT_URL=\"https://help.ubuntu.com/\"\nBUG_REPORT_URL=\"https://bugs.launchpad.net/ubuntu/\"\nPRIVACY_POLICY_URL=\"https://www.ubuntu.com/legal/terms-and-policies/privacy-policy\"\nUBUNTU_CODENAME=resolute\nLOGO=ubuntu-logo\n",
+        "kernel": "7.0.0-34-generic",
+        "pid1": "systemd",
+        "multi_user": "active",
+        "network_online": "active",
+        "cloud_final": "active",
+        "ssh_socket": "active",
+        "failed_units": ""
+      },
+      "correctness": "passed",
+      "logs": "/home/reiase/workspace/pvisor/target/ubuntu-qemu-complete-20261004/trials/ready-qemu-microvm-ubuntu-004"
+    },
+    {
+      "backend": "qemu-microvm-ubuntu",
+      "mode": "ready",
+      "trial": 5,
+      "prepare_ms": 120.957904,
+      "ready_ms": 7674.318507,
+      "os_ready_ms": 7670.72518,
+      "result_ms": 7675.274091,
+      "completion_ms": 11224.305763,
+      "peak_tree_rss_kib": 797016,
+      "result": {
+        "mode": "ready",
+        "correctness": "passed"
+      },
+      "os_proof": {
+        "os_release": "PRETTY_NAME=\"Ubuntu 26.04.1 LTS\"\nNAME=\"Ubuntu\"\nVERSION_ID=\"26.04\"\nVERSION=\"26.04.1 LTS (Resolute Raccoon)\"\nVERSION_CODENAME=resolute\nID=ubuntu\nID_LIKE=debian\nHOME_URL=\"https://www.ubuntu.com/\"\nSUPPORT_URL=\"https://help.ubuntu.com/\"\nBUG_REPORT_URL=\"https://bugs.launchpad.net/ubuntu/\"\nPRIVACY_POLICY_URL=\"https://www.ubuntu.com/legal/terms-and-policies/privacy-policy\"\nUBUNTU_CODENAME=resolute\nLOGO=ubuntu-logo\n",
+        "kernel": "7.0.0-34-generic",
+        "pid1": "systemd",
+        "multi_user": "active",
+        "network_online": "active",
+        "cloud_final": "active",
+        "ssh_socket": "active",
+        "failed_units": ""
+      },
+      "correctness": "passed",
+      "logs": "/home/reiase/workspace/pvisor/target/ubuntu-qemu-complete-20261004/trials/ready-qemu-microvm-ubuntu-005"
+    },
+    {
+      "backend": "qemu-ubuntu",
+      "mode": "ready",
+      "trial": 5,
+      "prepare_ms": 117.968295,
+      "ready_ms": 5452.689635,
+      "os_ready_ms": 5451.253935,
+      "result_ms": 5453.717243,
+      "completion_ms": 10949.184775,
+      "peak_tree_rss_kib": 832348,
+      "result": {
+        "mode": "ready",
+        "correctness": "passed"
+      },
+      "os_proof": {
+        "os_release": "PRETTY_NAME=\"Ubuntu 26.04.1 LTS\"\nNAME=\"Ubuntu\"\nVERSION_ID=\"26.04\"\nVERSION=\"26.04.1 LTS (Resolute Raccoon)\"\nVERSION_CODENAME=resolute\nID=ubuntu\nID_LIKE=debian\nHOME_URL=\"https://www.ubuntu.com/\"\nSUPPORT_URL=\"https://help.ubuntu.com/\"\nBUG_REPORT_URL=\"https://bugs.launchpad.net/ubuntu/\"\nPRIVACY_POLICY_URL=\"https://www.ubuntu.com/legal/terms-and-policies/privacy-policy\"\nUBUNTU_CODENAME=resolute\nLOGO=ubuntu-logo\n",
+        "kernel": "7.0.0-34-generic",
+        "pid1": "systemd",
+        "multi_user": "active",
+        "network_online": "active",
+        "cloud_final": "active",
+        "ssh_socket": "active",
+        "failed_units": ""
+      },
+      "correctness": "passed",
+      "logs": "/home/reiase/workspace/pvisor/target/ubuntu-qemu-complete-20261004/trials/ready-qemu-ubuntu-005"
+    },
+    {
+      "backend": "qemu-ubuntu",
+      "mode": "ready",
+      "trial": 6,
+      "prepare_ms": 119.271638,
+      "ready_ms": 5426.090106,
+      "os_ready_ms": 5425.104195,
+      "result_ms": 5427.099891,
+      "completion_ms": 8956.858128,
+      "peak_tree_rss_kib": 811244,
+      "result": {
+        "mode": "ready",
+        "correctness": "passed"
+      },
+      "os_proof": {
+        "os_release": "PRETTY_NAME=\"Ubuntu 26.04.1 LTS\"\nNAME=\"Ubuntu\"\nVERSION_ID=\"26.04\"\nVERSION=\"26.04.1 LTS (Resolute Raccoon)\"\nVERSION_CODENAME=resolute\nID=ubuntu\nID_LIKE=debian\nHOME_URL=\"https://www.ubuntu.com/\"\nSUPPORT_URL=\"https://help.ubuntu.com/\"\nBUG_REPORT_URL=\"https://bugs.launchpad.net/ubuntu/\"\nPRIVACY_POLICY_URL=\"https://www.ubuntu.com/legal/terms-and-policies/privacy-policy\"\nUBUNTU_CODENAME=resolute\nLOGO=ubuntu-logo\n",
+        "kernel": "7.0.0-34-generic",
+        "pid1": "systemd",
+        "multi_user": "active",
+        "network_online": "active",
+        "cloud_final": "active",
+        "ssh_socket": "active",
+        "failed_units": ""
+      },
+      "correctness": "passed",
+      "logs": "/home/reiase/workspace/pvisor/target/ubuntu-qemu-complete-20261004/trials/ready-qemu-ubuntu-006"
+    },
+    {
+      "backend": "qemu-microvm-ubuntu",
+      "mode": "ready",
+      "trial": 6,
+      "prepare_ms": 116.888429,
+      "ready_ms": 7659.066239,
+      "os_ready_ms": 7655.44,
+      "result_ms": 7660.150432,
+      "completion_ms": 11173.814399,
+      "peak_tree_rss_kib": 795700,
+      "result": {
+        "mode": "ready",
+        "correctness": "passed"
+      },
+      "os_proof": {
+        "os_release": "PRETTY_NAME=\"Ubuntu 26.04.1 LTS\"\nNAME=\"Ubuntu\"\nVERSION_ID=\"26.04\"\nVERSION=\"26.04.1 LTS (Resolute Raccoon)\"\nVERSION_CODENAME=resolute\nID=ubuntu\nID_LIKE=debian\nHOME_URL=\"https://www.ubuntu.com/\"\nSUPPORT_URL=\"https://help.ubuntu.com/\"\nBUG_REPORT_URL=\"https://bugs.launchpad.net/ubuntu/\"\nPRIVACY_POLICY_URL=\"https://www.ubuntu.com/legal/terms-and-policies/privacy-policy\"\nUBUNTU_CODENAME=resolute\nLOGO=ubuntu-logo\n",
+        "kernel": "7.0.0-34-generic",
+        "pid1": "systemd",
+        "multi_user": "active",
+        "network_online": "active",
+        "cloud_final": "active",
+        "ssh_socket": "active",
+        "failed_units": ""
+      },
+      "correctness": "passed",
+      "logs": "/home/reiase/workspace/pvisor/target/ubuntu-qemu-complete-20261004/trials/ready-qemu-microvm-ubuntu-006"
+    },
+    {
+      "backend": "qemu-ubuntu",
+      "mode": "ready",
+      "trial": 7,
+      "prepare_ms": 118.354716,
+      "ready_ms": 5559.657846,
+      "os_ready_ms": 5558.192712,
+      "result_ms": 5560.686927,
+      "completion_ms": 9125.082577,
+      "peak_tree_rss_kib": 812732,
+      "result": {
+        "mode": "ready",
+        "correctness": "passed"
+      },
+      "os_proof": {
+        "os_release": "PRETTY_NAME=\"Ubuntu 26.04.1 LTS\"\nNAME=\"Ubuntu\"\nVERSION_ID=\"26.04\"\nVERSION=\"26.04.1 LTS (Resolute Raccoon)\"\nVERSION_CODENAME=resolute\nID=ubuntu\nID_LIKE=debian\nHOME_URL=\"https://www.ubuntu.com/\"\nSUPPORT_URL=\"https://help.ubuntu.com/\"\nBUG_REPORT_URL=\"https://bugs.launchpad.net/ubuntu/\"\nPRIVACY_POLICY_URL=\"https://www.ubuntu.com/legal/terms-and-policies/privacy-policy\"\nUBUNTU_CODENAME=resolute\nLOGO=ubuntu-logo\n",
+        "kernel": "7.0.0-34-generic",
+        "pid1": "systemd",
+        "multi_user": "active",
+        "network_online": "active",
+        "cloud_final": "active",
+        "ssh_socket": "active",
+        "failed_units": ""
+      },
+      "correctness": "passed",
+      "logs": "/home/reiase/workspace/pvisor/target/ubuntu-qemu-complete-20261004/trials/ready-qemu-ubuntu-007"
+    },
+    {
+      "backend": "qemu-microvm-ubuntu",
+      "mode": "ready",
+      "trial": 7,
+      "prepare_ms": 120.17831,
+      "ready_ms": 7792.668614,
+      "os_ready_ms": 7788.683696,
+      "result_ms": 7793.680432,
+      "completion_ms": 11327.860864,
+      "peak_tree_rss_kib": 803500,
+      "result": {
+        "mode": "ready",
+        "correctness": "passed"
+      },
+      "os_proof": {
+        "os_release": "PRETTY_NAME=\"Ubuntu 26.04.1 LTS\"\nNAME=\"Ubuntu\"\nVERSION_ID=\"26.04\"\nVERSION=\"26.04.1 LTS (Resolute Raccoon)\"\nVERSION_CODENAME=resolute\nID=ubuntu\nID_LIKE=debian\nHOME_URL=\"https://www.ubuntu.com/\"\nSUPPORT_URL=\"https://help.ubuntu.com/\"\nBUG_REPORT_URL=\"https://bugs.launchpad.net/ubuntu/\"\nPRIVACY_POLICY_URL=\"https://www.ubuntu.com/legal/terms-and-policies/privacy-policy\"\nUBUNTU_CODENAME=resolute\nLOGO=ubuntu-logo\n",
+        "kernel": "7.0.0-34-generic",
+        "pid1": "systemd",
+        "multi_user": "active",
+        "network_online": "active",
+        "cloud_final": "active",
+        "ssh_socket": "active",
+        "failed_units": ""
+      },
+      "correctness": "passed",
+      "logs": "/home/reiase/workspace/pvisor/target/ubuntu-qemu-complete-20261004/trials/ready-qemu-microvm-ubuntu-007"
+    },
+    {
+      "backend": "qemu-microvm-ubuntu",
+      "mode": "ready",
+      "trial": 8,
+      "prepare_ms": 120.187967,
+      "ready_ms": 7595.797412,
+      "os_ready_ms": 7591.928431,
+      "result_ms": 7598.406522,
+      "completion_ms": 11127.261554,
+      "peak_tree_rss_kib": 803924,
+      "result": {
+        "mode": "ready",
+        "correctness": "passed"
+      },
+      "os_proof": {
+        "os_release": "PRETTY_NAME=\"Ubuntu 26.04.1 LTS\"\nNAME=\"Ubuntu\"\nVERSION_ID=\"26.04\"\nVERSION=\"26.04.1 LTS (Resolute Raccoon)\"\nVERSION_CODENAME=resolute\nID=ubuntu\nID_LIKE=debian\nHOME_URL=\"https://www.ubuntu.com/\"\nSUPPORT_URL=\"https://help.ubuntu.com/\"\nBUG_REPORT_URL=\"https://bugs.launchpad.net/ubuntu/\"\nPRIVACY_POLICY_URL=\"https://www.ubuntu.com/legal/terms-and-policies/privacy-policy\"\nUBUNTU_CODENAME=resolute\nLOGO=ubuntu-logo\n",
+        "kernel": "7.0.0-34-generic",
+        "pid1": "systemd",
+        "multi_user": "active",
+        "network_online": "active",
+        "cloud_final": "active",
+        "ssh_socket": "active",
+        "failed_units": ""
+      },
+      "correctness": "passed",
+      "logs": "/home/reiase/workspace/pvisor/target/ubuntu-qemu-complete-20261004/trials/ready-qemu-microvm-ubuntu-008"
+    },
+    {
+      "backend": "qemu-ubuntu",
+      "mode": "ready",
+      "trial": 8,
+      "prepare_ms": 119.427227,
+      "ready_ms": 5431.707671,
+      "os_ready_ms": 5430.711151,
+      "result_ms": 5432.715482,
+      "completion_ms": 8984.644733,
+      "peak_tree_rss_kib": 808016,
+      "result": {
+        "mode": "ready",
+        "correctness": "passed"
+      },
+      "os_proof": {
+        "os_release": "PRETTY_NAME=\"Ubuntu 26.04.1 LTS\"\nNAME=\"Ubuntu\"\nVERSION_ID=\"26.04\"\nVERSION=\"26.04.1 LTS (Resolute Raccoon)\"\nVERSION_CODENAME=resolute\nID=ubuntu\nID_LIKE=debian\nHOME_URL=\"https://www.ubuntu.com/\"\nSUPPORT_URL=\"https://help.ubuntu.com/\"\nBUG_REPORT_URL=\"https://bugs.launchpad.net/ubuntu/\"\nPRIVACY_POLICY_URL=\"https://www.ubuntu.com/legal/terms-and-policies/privacy-policy\"\nUBUNTU_CODENAME=resolute\nLOGO=ubuntu-logo\n",
+        "kernel": "7.0.0-34-generic",
+        "pid1": "systemd",
+        "multi_user": "active",
+        "network_online": "active",
+        "cloud_final": "active",
+        "ssh_socket": "active",
+        "failed_units": ""
+      },
+      "correctness": "passed",
+      "logs": "/home/reiase/workspace/pvisor/target/ubuntu-qemu-complete-20261004/trials/ready-qemu-ubuntu-008"
+    },
+    {
+      "backend": "qemu-microvm-ubuntu",
+      "mode": "ready",
+      "trial": 9,
+      "prepare_ms": 122.119342,
+      "ready_ms": 8304.544268,
+      "os_ready_ms": 8299.083516,
+      "result_ms": 8305.52572,
+      "completion_ms": 11863.896806,
+      "peak_tree_rss_kib": 796260,
+      "result": {
+        "mode": "ready",
+        "correctness": "passed"
+      },
+      "os_proof": {
+        "os_release": "PRETTY_NAME=\"Ubuntu 26.04.1 LTS\"\nNAME=\"Ubuntu\"\nVERSION_ID=\"26.04\"\nVERSION=\"26.04.1 LTS (Resolute Raccoon)\"\nVERSION_CODENAME=resolute\nID=ubuntu\nID_LIKE=debian\nHOME_URL=\"https://www.ubuntu.com/\"\nSUPPORT_URL=\"https://help.ubuntu.com/\"\nBUG_REPORT_URL=\"https://bugs.launchpad.net/ubuntu/\"\nPRIVACY_POLICY_URL=\"https://www.ubuntu.com/legal/terms-and-policies/privacy-policy\"\nUBUNTU_CODENAME=resolute\nLOGO=ubuntu-logo\n",
+        "kernel": "7.0.0-34-generic",
+        "pid1": "systemd",
+        "multi_user": "active",
+        "network_online": "active",
+        "cloud_final": "active",
+        "ssh_socket": "active",
+        "failed_units": ""
+      },
+      "correctness": "passed",
+      "logs": "/home/reiase/workspace/pvisor/target/ubuntu-qemu-complete-20261004/trials/ready-qemu-microvm-ubuntu-009"
+    },
+    {
+      "backend": "qemu-ubuntu",
+      "mode": "ready",
+      "trial": 9,
+      "prepare_ms": 124.240101,
+      "ready_ms": 9286.436233,
+      "os_ready_ms": 9280.975621,
+      "result_ms": 9287.440228,
+      "completion_ms": 13002.009004,
+      "peak_tree_rss_kib": 827192,
+      "result": {
+        "mode": "ready",
+        "correctness": "passed"
+      },
+      "os_proof": {
+        "os_release": "PRETTY_NAME=\"Ubuntu 26.04.1 LTS\"\nNAME=\"Ubuntu\"\nVERSION_ID=\"26.04\"\nVERSION=\"26.04.1 LTS (Resolute Raccoon)\"\nVERSION_CODENAME=resolute\nID=ubuntu\nID_LIKE=debian\nHOME_URL=\"https://www.ubuntu.com/\"\nSUPPORT_URL=\"https://help.ubuntu.com/\"\nBUG_REPORT_URL=\"https://bugs.launchpad.net/ubuntu/\"\nPRIVACY_POLICY_URL=\"https://www.ubuntu.com/legal/terms-and-policies/privacy-policy\"\nUBUNTU_CODENAME=resolute\nLOGO=ubuntu-logo\n",
+        "kernel": "7.0.0-34-generic",
+        "pid1": "systemd",
+        "multi_user": "active",
+        "network_online": "active",
+        "cloud_final": "active",
+        "ssh_socket": "active",
+        "failed_units": ""
+      },
+      "correctness": "passed",
+      "logs": "/home/reiase/workspace/pvisor/target/ubuntu-qemu-complete-20261004/trials/ready-qemu-ubuntu-009"
+    },
+    {
+      "backend": "qemu-ubuntu",
+      "mode": "tools",
+      "trial": 0,
+      "prepare_ms": 122.032741,
+      "ready_ms": 5500.766143,
+      "os_ready_ms": 5449.224477,
+      "result_ms": 8183.516844,
+      "completion_ms": 11798.246145,
+      "peak_tree_rss_kib": 1912104,
+      "result": {
+        "phases_ms": {
+          "inspect": 20.537591,
+          "search": 28.60823,
+          "python-tests": 49.82939,
+          "rust-tests": 1274.360039,
+          "node-install": 959.595982,
+          "node-tests": 342.811618,
+          "diff": 1.954065
+        },
+        "mode": "tools",
+        "worker_ms": 2680.550085,
+        "correctness": "passed"
+      },
+      "os_proof": {
+        "os_release": "PRETTY_NAME=\"Ubuntu 26.04.1 LTS\"\nNAME=\"Ubuntu\"\nVERSION_ID=\"26.04\"\nVERSION=\"26.04.1 LTS (Resolute Raccoon)\"\nVERSION_CODENAME=resolute\nID=ubuntu\nID_LIKE=debian\nHOME_URL=\"https://www.ubuntu.com/\"\nSUPPORT_URL=\"https://help.ubuntu.com/\"\nBUG_REPORT_URL=\"https://bugs.launchpad.net/ubuntu/\"\nPRIVACY_POLICY_URL=\"https://www.ubuntu.com/legal/terms-and-policies/privacy-policy\"\nUBUNTU_CODENAME=resolute\nLOGO=ubuntu-logo\n",
+        "kernel": "7.0.0-34-generic",
+        "pid1": "systemd",
+        "multi_user": "active",
+        "network_online": "active",
+        "cloud_final": "active",
+        "ssh_socket": "active",
+        "failed_units": ""
+      },
+      "correctness": "passed",
+      "logs": "/home/reiase/workspace/pvisor/target/ubuntu-qemu-complete-20261004/trials/tools-qemu-ubuntu-000"
+    },
+    {
+      "backend": "qemu-microvm-ubuntu",
+      "mode": "tools",
+      "trial": 0,
+      "prepare_ms": 118.473597,
+      "ready_ms": 7624.052884,
+      "os_ready_ms": 7558.22333,
+      "result_ms": 10514.891162,
+      "completion_ms": 14110.550578,
+      "peak_tree_rss_kib": 1914668,
+      "result": {
+        "phases_ms": {
+          "inspect": 18.880161,
+          "search": 6.549082,
+          "python-tests": 49.282617,
+          "rust-tests": 1390.685239,
+          "node-install": 971.965362,
+          "node-tests": 446.690645,
+          "diff": 1.538578
+        },
+        "mode": "tools",
+        "worker_ms": 2888.683248,
+        "correctness": "passed"
+      },
+      "os_proof": {
+        "os_release": "PRETTY_NAME=\"Ubuntu 26.04.1 LTS\"\nNAME=\"Ubuntu\"\nVERSION_ID=\"26.04\"\nVERSION=\"26.04.1 LTS (Resolute Raccoon)\"\nVERSION_CODENAME=resolute\nID=ubuntu\nID_LIKE=debian\nHOME_URL=\"https://www.ubuntu.com/\"\nSUPPORT_URL=\"https://help.ubuntu.com/\"\nBUG_REPORT_URL=\"https://bugs.launchpad.net/ubuntu/\"\nPRIVACY_POLICY_URL=\"https://www.ubuntu.com/legal/terms-and-policies/privacy-policy\"\nUBUNTU_CODENAME=resolute\nLOGO=ubuntu-logo\n",
+        "kernel": "7.0.0-34-generic",
+        "pid1": "systemd",
+        "multi_user": "active",
+        "network_online": "active",
+        "cloud_final": "active",
+        "ssh_socket": "active",
+        "failed_units": ""
+      },
+      "correctness": "passed",
+      "logs": "/home/reiase/workspace/pvisor/target/ubuntu-qemu-complete-20261004/trials/tools-qemu-microvm-ubuntu-000"
+    },
+    {
+      "backend": "qemu-ubuntu",
+      "mode": "tools",
+      "trial": 1,
+      "prepare_ms": 120.440138,
+      "ready_ms": 5479.770634,
+      "os_ready_ms": 5424.780982,
+      "result_ms": 8268.821981,
+      "completion_ms": 11862.276011,
+      "peak_tree_rss_kib": 1901540,
+      "result": {
+        "phases_ms": {
+          "inspect": 17.351622,
+          "search": 14.965136,
+          "python-tests": 69.487467,
+          "rust-tests": 1323.075135,
+          "node-install": 986.297906,
+          "node-tests": 370.439274,
+          "diff": 1.719837
+        },
+        "mode": "tools",
+        "worker_ms": 2787.284252,
+        "correctness": "passed"
+      },
+      "os_proof": {
+        "os_release": "PRETTY_NAME=\"Ubuntu 26.04.1 LTS\"\nNAME=\"Ubuntu\"\nVERSION_ID=\"26.04\"\nVERSION=\"26.04.1 LTS (Resolute Raccoon)\"\nVERSION_CODENAME=resolute\nID=ubuntu\nID_LIKE=debian\nHOME_URL=\"https://www.ubuntu.com/\"\nSUPPORT_URL=\"https://help.ubuntu.com/\"\nBUG_REPORT_URL=\"https://bugs.launchpad.net/ubuntu/\"\nPRIVACY_POLICY_URL=\"https://www.ubuntu.com/legal/terms-and-policies/privacy-policy\"\nUBUNTU_CODENAME=resolute\nLOGO=ubuntu-logo\n",
+        "kernel": "7.0.0-34-generic",
+        "pid1": "systemd",
+        "multi_user": "active",
+        "network_online": "active",
+        "cloud_final": "active",
+        "ssh_socket": "active",
+        "failed_units": ""
+      },
+      "correctness": "passed",
+      "logs": "/home/reiase/workspace/pvisor/target/ubuntu-qemu-complete-20261004/trials/tools-qemu-ubuntu-001"
+    },
+    {
+      "backend": "qemu-microvm-ubuntu",
+      "mode": "tools",
+      "trial": 1,
+      "prepare_ms": 120.661181,
+      "ready_ms": 7564.770239,
+      "os_ready_ms": 7513.021818,
+      "result_ms": 10288.46224,
+      "completion_ms": 13871.299082,
+      "peak_tree_rss_kib": 1880480,
+      "result": {
+        "phases_ms": {
+          "inspect": 16.327345,
+          "search": 7.279779,
+          "python-tests": 27.918099,
+          "rust-tests": 1317.868364,
+          "node-install": 939.702456,
+          "node-tests": 407.886229,
+          "diff": 1.266229
+        },
+        "mode": "tools",
+        "worker_ms": 2721.373207,
+        "correctness": "passed"
+      },
+      "os_proof": {
+        "os_release": "PRETTY_NAME=\"Ubuntu 26.04.1 LTS\"\nNAME=\"Ubuntu\"\nVERSION_ID=\"26.04\"\nVERSION=\"26.04.1 LTS (Resolute Raccoon)\"\nVERSION_CODENAME=resolute\nID=ubuntu\nID_LIKE=debian\nHOME_URL=\"https://www.ubuntu.com/\"\nSUPPORT_URL=\"https://help.ubuntu.com/\"\nBUG_REPORT_URL=\"https://bugs.launchpad.net/ubuntu/\"\nPRIVACY_POLICY_URL=\"https://www.ubuntu.com/legal/terms-and-policies/privacy-policy\"\nUBUNTU_CODENAME=resolute\nLOGO=ubuntu-logo\n",
+        "kernel": "7.0.0-34-generic",
+        "pid1": "systemd",
+        "multi_user": "active",
+        "network_online": "active",
+        "cloud_final": "active",
+        "ssh_socket": "active",
+        "failed_units": ""
+      },
+      "correctness": "passed",
+      "logs": "/home/reiase/workspace/pvisor/target/ubuntu-qemu-complete-20261004/trials/tools-qemu-microvm-ubuntu-001"
+    },
+    {
+      "backend": "qemu-ubuntu",
+      "mode": "tools",
+      "trial": 2,
+      "prepare_ms": 121.963772,
+      "ready_ms": 5331.768158,
+      "os_ready_ms": 5282.063632,
+      "result_ms": 8090.595051,
+      "completion_ms": 11676.299044,
+      "peak_tree_rss_kib": 1917920,
+      "result": {
+        "phases_ms": {
+          "inspect": 17.139584,
+          "search": 7.540747,
+          "python-tests": 27.725048,
+          "rust-tests": 1280.979152,
+          "node-install": 990.771545,
+          "node-tests": 427.89442,
+          "diff": 1.434334
+        },
+        "mode": "tools",
+        "worker_ms": 2756.608935,
+        "correctness": "passed"
+      },
+      "os_proof": {
+        "os_release": "PRETTY_NAME=\"Ubuntu 26.04.1 LTS\"\nNAME=\"Ubuntu\"\nVERSION_ID=\"26.04\"\nVERSION=\"26.04.1 LTS (Resolute Raccoon)\"\nVERSION_CODENAME=resolute\nID=ubuntu\nID_LIKE=debian\nHOME_URL=\"https://www.ubuntu.com/\"\nSUPPORT_URL=\"https://help.ubuntu.com/\"\nBUG_REPORT_URL=\"https://bugs.launchpad.net/ubuntu/\"\nPRIVACY_POLICY_URL=\"https://www.ubuntu.com/legal/terms-and-policies/privacy-policy\"\nUBUNTU_CODENAME=resolute\nLOGO=ubuntu-logo\n",
+        "kernel": "7.0.0-34-generic",
+        "pid1": "systemd",
+        "multi_user": "active",
+        "network_online": "active",
+        "cloud_final": "active",
+        "ssh_socket": "active",
+        "failed_units": ""
+      },
+      "correctness": "passed",
+      "logs": "/home/reiase/workspace/pvisor/target/ubuntu-qemu-complete-20261004/trials/tools-qemu-ubuntu-002"
+    },
+    {
+      "backend": "qemu-microvm-ubuntu",
+      "mode": "tools",
+      "trial": 2,
+      "prepare_ms": 120.575551,
+      "ready_ms": 7512.591384,
+      "os_ready_ms": 7442.756744,
+      "result_ms": 10314.669968,
+      "completion_ms": 13901.638833,
+      "peak_tree_rss_kib": 1869000,
+      "result": {
+        "phases_ms": {
+          "inspect": 17.39413,
+          "search": 7.743006,
+          "python-tests": 28.692367,
+          "rust-tests": 1308.39428,
+          "node-install": 972.982064,
+          "node-tests": 460.213513,
+          "diff": 1.399207
+        },
+        "mode": "tools",
+        "worker_ms": 2799.740595,
+        "correctness": "passed"
+      },
+      "os_proof": {
+        "os_release": "PRETTY_NAME=\"Ubuntu 26.04.1 LTS\"\nNAME=\"Ubuntu\"\nVERSION_ID=\"26.04\"\nVERSION=\"26.04.1 LTS (Resolute Raccoon)\"\nVERSION_CODENAME=resolute\nID=ubuntu\nID_LIKE=debian\nHOME_URL=\"https://www.ubuntu.com/\"\nSUPPORT_URL=\"https://help.ubuntu.com/\"\nBUG_REPORT_URL=\"https://bugs.launchpad.net/ubuntu/\"\nPRIVACY_POLICY_URL=\"https://www.ubuntu.com/legal/terms-and-policies/privacy-policy\"\nUBUNTU_CODENAME=resolute\nLOGO=ubuntu-logo\n",
+        "kernel": "7.0.0-34-generic",
+        "pid1": "systemd",
+        "multi_user": "active",
+        "network_online": "active",
+        "cloud_final": "active",
+        "ssh_socket": "active",
+        "failed_units": ""
+      },
+      "correctness": "passed",
+      "logs": "/home/reiase/workspace/pvisor/target/ubuntu-qemu-complete-20261004/trials/tools-qemu-microvm-ubuntu-002"
+    },
+    {
+      "backend": "qemu-microvm-ubuntu",
+      "mode": "tools",
+      "trial": 3,
+      "prepare_ms": 119.815182,
+      "ready_ms": 7475.133106,
+      "os_ready_ms": 7423.621838,
+      "result_ms": 10340.543132,
+      "completion_ms": 13929.023448,
+      "peak_tree_rss_kib": 1907520,
+      "result": {
+        "phases_ms": {
+          "inspect": 23.108461,
+          "search": 15.06322,
+          "python-tests": 50.311923,
+          "rust-tests": 1295.061818,
+          "node-install": 1044.932599,
+          "node-tests": 429.933044,
+          "diff": 1.461274
+        },
+        "mode": "tools",
+        "worker_ms": 2863.064861,
+        "correctness": "passed"
+      },
+      "os_proof": {
+        "os_release": "PRETTY_NAME=\"Ubuntu 26.04.1 LTS\"\nNAME=\"Ubuntu\"\nVERSION_ID=\"26.04\"\nVERSION=\"26.04.1 LTS (Resolute Raccoon)\"\nVERSION_CODENAME=resolute\nID=ubuntu\nID_LIKE=debian\nHOME_URL=\"https://www.ubuntu.com/\"\nSUPPORT_URL=\"https://help.ubuntu.com/\"\nBUG_REPORT_URL=\"https://bugs.launchpad.net/ubuntu/\"\nPRIVACY_POLICY_URL=\"https://www.ubuntu.com/legal/terms-and-policies/privacy-policy\"\nUBUNTU_CODENAME=resolute\nLOGO=ubuntu-logo\n",
+        "kernel": "7.0.0-34-generic",
+        "pid1": "systemd",
+        "multi_user": "active",
+        "network_online": "active",
+        "cloud_final": "active",
+        "ssh_socket": "active",
+        "failed_units": ""
+      },
+      "correctness": "passed",
+      "logs": "/home/reiase/workspace/pvisor/target/ubuntu-qemu-complete-20261004/trials/tools-qemu-microvm-ubuntu-003"
+    },
+    {
+      "backend": "qemu-ubuntu",
+      "mode": "tools",
+      "trial": 3,
+      "prepare_ms": 123.403239,
+      "ready_ms": 5390.035737,
+      "os_ready_ms": 5335.638091,
+      "result_ms": 8173.048263,
+      "completion_ms": 11760.344749,
+      "peak_tree_rss_kib": 1916852,
+      "result": {
+        "phases_ms": {
+          "inspect": 13.662349,
+          "search": 6.338117,
+          "python-tests": 68.972843,
+          "rust-tests": 1250.692362,
+          "node-install": 966.173306,
+          "node-tests": 469.813282,
+          "diff": 1.717753
+        },
+        "mode": "tools",
+        "worker_ms": 2781.015825,
+        "correctness": "passed"
+      },
+      "os_proof": {
+        "os_release": "PRETTY_NAME=\"Ubuntu 26.04.1 LTS\"\nNAME=\"Ubuntu\"\nVERSION_ID=\"26.04\"\nVERSION=\"26.04.1 LTS (Resolute Raccoon)\"\nVERSION_CODENAME=resolute\nID=ubuntu\nID_LIKE=debian\nHOME_URL=\"https://www.ubuntu.com/\"\nSUPPORT_URL=\"https://help.ubuntu.com/\"\nBUG_REPORT_URL=\"https://bugs.launchpad.net/ubuntu/\"\nPRIVACY_POLICY_URL=\"https://www.ubuntu.com/legal/terms-and-policies/privacy-policy\"\nUBUNTU_CODENAME=resolute\nLOGO=ubuntu-logo\n",
+        "kernel": "7.0.0-34-generic",
+        "pid1": "systemd",
+        "multi_user": "active",
+        "network_online": "active",
+        "cloud_final": "active",
+        "ssh_socket": "active",
+        "failed_units": ""
+      },
+      "correctness": "passed",
+      "logs": "/home/reiase/workspace/pvisor/target/ubuntu-qemu-complete-20261004/trials/tools-qemu-ubuntu-003"
+    },
+    {
+      "backend": "qemu-microvm-ubuntu",
+      "mode": "tools",
+      "trial": 4,
+      "prepare_ms": 118.8448,
+      "ready_ms": 7519.140198,
+      "os_ready_ms": 7452.689184,
+      "result_ms": 10316.325719,
+      "completion_ms": 13919.061102,
+      "peak_tree_rss_kib": 1935644,
+      "result": {
+        "phases_ms": {
+          "inspect": 16.050337,
+          "search": 6.515459,
+          "python-tests": 51.011883,
+          "rust-tests": 1340.63717,
+          "node-install": 971.792689,
+          "node-tests": 404.608087,
+          "diff": 1.25614
+        },
+        "mode": "tools",
+        "worker_ms": 2795.495564,
+        "correctness": "passed"
+      },
+      "os_proof": {
+        "os_release": "PRETTY_NAME=\"Ubuntu 26.04.1 LTS\"\nNAME=\"Ubuntu\"\nVERSION_ID=\"26.04\"\nVERSION=\"26.04.1 LTS (Resolute Raccoon)\"\nVERSION_CODENAME=resolute\nID=ubuntu\nID_LIKE=debian\nHOME_URL=\"https://www.ubuntu.com/\"\nSUPPORT_URL=\"https://help.ubuntu.com/\"\nBUG_REPORT_URL=\"https://bugs.launchpad.net/ubuntu/\"\nPRIVACY_POLICY_URL=\"https://www.ubuntu.com/legal/terms-and-policies/privacy-policy\"\nUBUNTU_CODENAME=resolute\nLOGO=ubuntu-logo\n",
+        "kernel": "7.0.0-34-generic",
+        "pid1": "systemd",
+        "multi_user": "active",
+        "network_online": "active",
+        "cloud_final": "active",
+        "ssh_socket": "active",
+        "failed_units": ""
+      },
+      "correctness": "passed",
+      "logs": "/home/reiase/workspace/pvisor/target/ubuntu-qemu-complete-20261004/trials/tools-qemu-microvm-ubuntu-004"
+    },
+    {
+      "backend": "qemu-ubuntu",
+      "mode": "tools",
+      "trial": 4,
+      "prepare_ms": 123.075607,
+      "ready_ms": 5305.263615,
+      "os_ready_ms": 5253.8182,
+      "result_ms": 7989.41946,
+      "completion_ms": 11591.44041,
+      "peak_tree_rss_kib": 1892516,
+      "result": {
+        "phases_ms": {
+          "inspect": 12.67915,
+          "search": 6.860364,
+          "python-tests": 44.922711,
+          "rust-tests": 1202.954896,
+          "node-install": 983.208556,
+          "node-tests": 426.452533,
+          "diff": 1.761926
+        },
+        "mode": "tools",
+        "worker_ms": 2681.578509,
+        "correctness": "passed"
+      },
+      "os_proof": {
+        "os_release": "PRETTY_NAME=\"Ubuntu 26.04.1 LTS\"\nNAME=\"Ubuntu\"\nVERSION_ID=\"26.04\"\nVERSION=\"26.04.1 LTS (Resolute Raccoon)\"\nVERSION_CODENAME=resolute\nID=ubuntu\nID_LIKE=debian\nHOME_URL=\"https://www.ubuntu.com/\"\nSUPPORT_URL=\"https://help.ubuntu.com/\"\nBUG_REPORT_URL=\"https://bugs.launchpad.net/ubuntu/\"\nPRIVACY_POLICY_URL=\"https://www.ubuntu.com/legal/terms-and-policies/privacy-policy\"\nUBUNTU_CODENAME=resolute\nLOGO=ubuntu-logo\n",
+        "kernel": "7.0.0-34-generic",
+        "pid1": "systemd",
+        "multi_user": "active",
+        "network_online": "active",
+        "cloud_final": "active",
+        "ssh_socket": "active",
+        "failed_units": ""
+      },
+      "correctness": "passed",
+      "logs": "/home/reiase/workspace/pvisor/target/ubuntu-qemu-complete-20261004/trials/tools-qemu-ubuntu-004"
+    },
+    {
+      "backend": "qemu-microvm-ubuntu",
+      "mode": "tools",
+      "trial": 5,
+      "prepare_ms": 120.235105,
+      "ready_ms": 7589.811651,
+      "os_ready_ms": 7534.229283,
+      "result_ms": 10412.334926,
+      "completion_ms": 14029.336969,
+      "peak_tree_rss_kib": 1886204,
+      "result": {
+        "phases_ms": {
+          "inspect": 22.190484,
+          "search": 6.861937,
+          "python-tests": 69.583586,
+          "rust-tests": 1310.488829,
+          "node-install": 978.900156,
+          "node-tests": 426.475376,
+          "diff": 1.767326
+        },
+        "mode": "tools",
+        "worker_ms": 2819.989176,
+        "correctness": "passed"
+      },
+      "os_proof": {
+        "os_release": "PRETTY_NAME=\"Ubuntu 26.04.1 LTS\"\nNAME=\"Ubuntu\"\nVERSION_ID=\"26.04\"\nVERSION=\"26.04.1 LTS (Resolute Raccoon)\"\nVERSION_CODENAME=resolute\nID=ubuntu\nID_LIKE=debian\nHOME_URL=\"https://www.ubuntu.com/\"\nSUPPORT_URL=\"https://help.ubuntu.com/\"\nBUG_REPORT_URL=\"https://bugs.launchpad.net/ubuntu/\"\nPRIVACY_POLICY_URL=\"https://www.ubuntu.com/legal/terms-and-policies/privacy-policy\"\nUBUNTU_CODENAME=resolute\nLOGO=ubuntu-logo\n",
+        "kernel": "7.0.0-34-generic",
+        "pid1": "systemd",
+        "multi_user": "active",
+        "network_online": "active",
+        "cloud_final": "active",
+        "ssh_socket": "active",
+        "failed_units": ""
+      },
+      "correctness": "passed",
+      "logs": "/home/reiase/workspace/pvisor/target/ubuntu-qemu-complete-20261004/trials/tools-qemu-microvm-ubuntu-005"
+    },
+    {
+      "backend": "qemu-ubuntu",
+      "mode": "tools",
+      "trial": 5,
+      "prepare_ms": 118.873855,
+      "ready_ms": 5371.434297,
+      "os_ready_ms": 5319.155395,
+      "result_ms": 8112.865409,
+      "completion_ms": 11719.863118,
+      "peak_tree_rss_kib": 1877228,
+      "result": {
+        "phases_ms": {
+          "inspect": 13.326602,
+          "search": 7.694545,
+          "python-tests": 28.407815,
+          "rust-tests": 1314.262609,
+          "node-install": 953.785311,
+          "node-tests": 417.401411,
+          "diff": 1.182513
+        },
+        "mode": "tools",
+        "worker_ms": 2739.060745,
+        "correctness": "passed"
+      },
+      "os_proof": {
+        "os_release": "PRETTY_NAME=\"Ubuntu 26.04.1 LTS\"\nNAME=\"Ubuntu\"\nVERSION_ID=\"26.04\"\nVERSION=\"26.04.1 LTS (Resolute Raccoon)\"\nVERSION_CODENAME=resolute\nID=ubuntu\nID_LIKE=debian\nHOME_URL=\"https://www.ubuntu.com/\"\nSUPPORT_URL=\"https://help.ubuntu.com/\"\nBUG_REPORT_URL=\"https://bugs.launchpad.net/ubuntu/\"\nPRIVACY_POLICY_URL=\"https://www.ubuntu.com/legal/terms-and-policies/privacy-policy\"\nUBUNTU_CODENAME=resolute\nLOGO=ubuntu-logo\n",
+        "kernel": "7.0.0-34-generic",
+        "pid1": "systemd",
+        "multi_user": "active",
+        "network_online": "active",
+        "cloud_final": "active",
+        "ssh_socket": "active",
+        "failed_units": ""
+      },
+      "correctness": "passed",
+      "logs": "/home/reiase/workspace/pvisor/target/ubuntu-qemu-complete-20261004/trials/tools-qemu-ubuntu-005"
+    },
+    {
+      "backend": "qemu-microvm-ubuntu",
+      "mode": "tools",
+      "trial": 6,
+      "prepare_ms": 118.000494,
+      "ready_ms": 7551.399422,
+      "os_ready_ms": 7500.468356,
+      "result_ms": 10383.581696,
+      "completion_ms": 13980.525439,
+      "peak_tree_rss_kib": 1885744,
+      "result": {
+        "phases_ms": {
+          "inspect": 17.9231,
+          "search": 16.277943,
+          "python-tests": 49.787863,
+          "rust-tests": 1341.643893,
+          "node-install": 985.678797,
+          "node-tests": 414.062874,
+          "diff": 1.319769
+        },
+        "mode": "tools",
+        "worker_ms": 2829.826369,
+        "correctness": "passed"
+      },
+      "os_proof": {
+        "os_release": "PRETTY_NAME=\"Ubuntu 26.04.1 LTS\"\nNAME=\"Ubuntu\"\nVERSION_ID=\"26.04\"\nVERSION=\"26.04.1 LTS (Resolute Raccoon)\"\nVERSION_CODENAME=resolute\nID=ubuntu\nID_LIKE=debian\nHOME_URL=\"https://www.ubuntu.com/\"\nSUPPORT_URL=\"https://help.ubuntu.com/\"\nBUG_REPORT_URL=\"https://bugs.launchpad.net/ubuntu/\"\nPRIVACY_POLICY_URL=\"https://www.ubuntu.com/legal/terms-and-policies/privacy-policy\"\nUBUNTU_CODENAME=resolute\nLOGO=ubuntu-logo\n",
+        "kernel": "7.0.0-34-generic",
+        "pid1": "systemd",
+        "multi_user": "active",
+        "network_online": "active",
+        "cloud_final": "active",
+        "ssh_socket": "active",
+        "failed_units": ""
+      },
+      "correctness": "passed",
+      "logs": "/home/reiase/workspace/pvisor/target/ubuntu-qemu-complete-20261004/trials/tools-qemu-microvm-ubuntu-006"
+    },
+    {
+      "backend": "qemu-ubuntu",
+      "mode": "tools",
+      "trial": 6,
+      "prepare_ms": 121.969443,
+      "ready_ms": 5400.651763,
+      "os_ready_ms": 5354.944127,
+      "result_ms": 8031.236013,
+      "completion_ms": 11606.108459,
+      "peak_tree_rss_kib": 1887556,
+      "result": {
+        "phases_ms": {
+          "inspect": 15.754955,
+          "search": 6.802646,
+          "python-tests": 26.342791,
+          "rust-tests": 1309.236395,
+          "node-install": 929.35674,
+          "node-tests": 337.173231,
+          "diff": 1.289733
+        },
+        "mode": "tools",
+        "worker_ms": 2628.468702,
+        "correctness": "passed"
+      },
+      "os_proof": {
+        "os_release": "PRETTY_NAME=\"Ubuntu 26.04.1 LTS\"\nNAME=\"Ubuntu\"\nVERSION_ID=\"26.04\"\nVERSION=\"26.04.1 LTS (Resolute Raccoon)\"\nVERSION_CODENAME=resolute\nID=ubuntu\nID_LIKE=debian\nHOME_URL=\"https://www.ubuntu.com/\"\nSUPPORT_URL=\"https://help.ubuntu.com/\"\nBUG_REPORT_URL=\"https://bugs.launchpad.net/ubuntu/\"\nPRIVACY_POLICY_URL=\"https://www.ubuntu.com/legal/terms-and-policies/privacy-policy\"\nUBUNTU_CODENAME=resolute\nLOGO=ubuntu-logo\n",
+        "kernel": "7.0.0-34-generic",
+        "pid1": "systemd",
+        "multi_user": "active",
+        "network_online": "active",
+        "cloud_final": "active",
+        "ssh_socket": "active",
+        "failed_units": ""
+      },
+      "correctness": "passed",
+      "logs": "/home/reiase/workspace/pvisor/target/ubuntu-qemu-complete-20261004/trials/tools-qemu-ubuntu-006"
+    },
+    {
+      "backend": "qemu-microvm-ubuntu",
+      "mode": "tools",
+      "trial": 7,
+      "prepare_ms": 126.582103,
+      "ready_ms": 7499.164513,
+      "os_ready_ms": 7448.563593,
+      "result_ms": 10360.376763,
+      "completion_ms": 13950.678447,
+      "peak_tree_rss_kib": 1891988,
+      "result": {
+        "phases_ms": {
+          "inspect": 24.996022,
+          "search": 14.765604,
+          "python-tests": 46.313122,
+          "rust-tests": 1346.958475,
+          "node-install": 981.096606,
+          "node-tests": 439.607312,
+          "diff": 1.951451
+        },
+        "mode": "tools",
+        "worker_ms": 2858.898848,
+        "correctness": "passed"
+      },
+      "os_proof": {
+        "os_release": "PRETTY_NAME=\"Ubuntu 26.04.1 LTS\"\nNAME=\"Ubuntu\"\nVERSION_ID=\"26.04\"\nVERSION=\"26.04.1 LTS (Resolute Raccoon)\"\nVERSION_CODENAME=resolute\nID=ubuntu\nID_LIKE=debian\nHOME_URL=\"https://www.ubuntu.com/\"\nSUPPORT_URL=\"https://help.ubuntu.com/\"\nBUG_REPORT_URL=\"https://bugs.launchpad.net/ubuntu/\"\nPRIVACY_POLICY_URL=\"https://www.ubuntu.com/legal/terms-and-policies/privacy-policy\"\nUBUNTU_CODENAME=resolute\nLOGO=ubuntu-logo\n",
+        "kernel": "7.0.0-34-generic",
+        "pid1": "systemd",
+        "multi_user": "active",
+        "network_online": "active",
+        "cloud_final": "active",
+        "ssh_socket": "active",
+        "failed_units": ""
+      },
+      "correctness": "passed",
+      "logs": "/home/reiase/workspace/pvisor/target/ubuntu-qemu-complete-20261004/trials/tools-qemu-microvm-ubuntu-007"
+    },
+    {
+      "backend": "qemu-ubuntu",
+      "mode": "tools",
+      "trial": 7,
+      "prepare_ms": 120.658686,
+      "ready_ms": 5390.680382,
+      "os_ready_ms": 5339.739968,
+      "result_ms": 8123.606639,
+      "completion_ms": 11719.312932,
+      "peak_tree_rss_kib": 1915776,
+      "result": {
+        "phases_ms": {
+          "inspect": 23.699477,
+          "search": 15.670296,
+          "python-tests": 49.61012,
+          "rust-tests": 1290.622603,
+          "node-install": 946.368216,
+          "node-tests": 399.72455,
+          "diff": 1.972701
+        },
+        "mode": "tools",
+        "worker_ms": 2730.619214,
+        "correctness": "passed"
+      },
+      "os_proof": {
+        "os_release": "PRETTY_NAME=\"Ubuntu 26.04.1 LTS\"\nNAME=\"Ubuntu\"\nVERSION_ID=\"26.04\"\nVERSION=\"26.04.1 LTS (Resolute Raccoon)\"\nVERSION_CODENAME=resolute\nID=ubuntu\nID_LIKE=debian\nHOME_URL=\"https://www.ubuntu.com/\"\nSUPPORT_URL=\"https://help.ubuntu.com/\"\nBUG_REPORT_URL=\"https://bugs.launchpad.net/ubuntu/\"\nPRIVACY_POLICY_URL=\"https://www.ubuntu.com/legal/terms-and-policies/privacy-policy\"\nUBUNTU_CODENAME=resolute\nLOGO=ubuntu-logo\n",
+        "kernel": "7.0.0-34-generic",
+        "pid1": "systemd",
+        "multi_user": "active",
+        "network_online": "active",
+        "cloud_final": "active",
+        "ssh_socket": "active",
+        "failed_units": ""
+      },
+      "correctness": "passed",
+      "logs": "/home/reiase/workspace/pvisor/target/ubuntu-qemu-complete-20261004/trials/tools-qemu-ubuntu-007"
+    },
+    {
+      "backend": "qemu-ubuntu",
+      "mode": "tools",
+      "trial": 8,
+      "prepare_ms": 119.33221,
+      "ready_ms": 5377.376128,
+      "os_ready_ms": 5327.349089,
+      "result_ms": 8168.091912,
+      "completion_ms": 11758.528319,
+      "peak_tree_rss_kib": 1925388,
+      "result": {
+        "phases_ms": {
+          "inspect": 22.842533,
+          "search": 14.451836,
+          "python-tests": 49.024685,
+          "rust-tests": 1317.965937,
+          "node-install": 923.981565,
+          "node-tests": 454.903128,
+          "diff": 1.998339
+        },
+        "mode": "tools",
+        "worker_ms": 2788.652001,
+        "correctness": "passed"
+      },
+      "os_proof": {
+        "os_release": "PRETTY_NAME=\"Ubuntu 26.04.1 LTS\"\nNAME=\"Ubuntu\"\nVERSION_ID=\"26.04\"\nVERSION=\"26.04.1 LTS (Resolute Raccoon)\"\nVERSION_CODENAME=resolute\nID=ubuntu\nID_LIKE=debian\nHOME_URL=\"https://www.ubuntu.com/\"\nSUPPORT_URL=\"https://help.ubuntu.com/\"\nBUG_REPORT_URL=\"https://bugs.launchpad.net/ubuntu/\"\nPRIVACY_POLICY_URL=\"https://www.ubuntu.com/legal/terms-and-policies/privacy-policy\"\nUBUNTU_CODENAME=resolute\nLOGO=ubuntu-logo\n",
+        "kernel": "7.0.0-34-generic",
+        "pid1": "systemd",
+        "multi_user": "active",
+        "network_online": "active",
+        "cloud_final": "active",
+        "ssh_socket": "active",
+        "failed_units": ""
+      },
+      "correctness": "passed",
+      "logs": "/home/reiase/workspace/pvisor/target/ubuntu-qemu-complete-20261004/trials/tools-qemu-ubuntu-008"
+    },
+    {
+      "backend": "qemu-microvm-ubuntu",
+      "mode": "tools",
+      "trial": 8,
+      "prepare_ms": 118.781232,
+      "ready_ms": 7518.353089,
+      "os_ready_ms": 7444.937605,
+      "result_ms": 10305.36509,
+      "completion_ms": 13901.649272,
+      "peak_tree_rss_kib": 1882536,
+      "result": {
+        "phases_ms": {
+          "inspect": 18.781747,
+          "search": 7.501473,
+          "python-tests": 27.163878,
+          "rust-tests": 1337.221821,
+          "node-install": 969.983946,
+          "node-tests": 419.762277,
+          "diff": 1.342652
+        },
+        "mode": "tools",
+        "worker_ms": 2785.076011,
+        "correctness": "passed"
+      },
+      "os_proof": {
+        "os_release": "PRETTY_NAME=\"Ubuntu 26.04.1 LTS\"\nNAME=\"Ubuntu\"\nVERSION_ID=\"26.04\"\nVERSION=\"26.04.1 LTS (Resolute Raccoon)\"\nVERSION_CODENAME=resolute\nID=ubuntu\nID_LIKE=debian\nHOME_URL=\"https://www.ubuntu.com/\"\nSUPPORT_URL=\"https://help.ubuntu.com/\"\nBUG_REPORT_URL=\"https://bugs.launchpad.net/ubuntu/\"\nPRIVACY_POLICY_URL=\"https://www.ubuntu.com/legal/terms-and-policies/privacy-policy\"\nUBUNTU_CODENAME=resolute\nLOGO=ubuntu-logo\n",
+        "kernel": "7.0.0-34-generic",
+        "pid1": "systemd",
+        "multi_user": "active",
+        "network_online": "active",
+        "cloud_final": "active",
+        "ssh_socket": "active",
+        "failed_units": ""
+      },
+      "correctness": "passed",
+      "logs": "/home/reiase/workspace/pvisor/target/ubuntu-qemu-complete-20261004/trials/tools-qemu-microvm-ubuntu-008"
+    },
+    {
+      "backend": "qemu-ubuntu",
+      "mode": "tools",
+      "trial": 9,
+      "prepare_ms": 119.753656,
+      "ready_ms": 5335.330267,
+      "os_ready_ms": 5284.439046,
+      "result_ms": 8091.154174,
+      "completion_ms": 11666.79317,
+      "peak_tree_rss_kib": 1880424,
+      "result": {
+        "phases_ms": {
+          "inspect": 12.59897,
+          "search": 6.274468,
+          "python-tests": 45.406586,
+          "rust-tests": 1332.5119,
+          "node-install": 913.547465,
+          "node-tests": 439.132725,
+          "diff": 1.297778
+        },
+        "mode": "tools",
+        "worker_ms": 2753.410361,
+        "correctness": "passed"
+      },
+      "os_proof": {
+        "os_release": "PRETTY_NAME=\"Ubuntu 26.04.1 LTS\"\nNAME=\"Ubuntu\"\nVERSION_ID=\"26.04\"\nVERSION=\"26.04.1 LTS (Resolute Raccoon)\"\nVERSION_CODENAME=resolute\nID=ubuntu\nID_LIKE=debian\nHOME_URL=\"https://www.ubuntu.com/\"\nSUPPORT_URL=\"https://help.ubuntu.com/\"\nBUG_REPORT_URL=\"https://bugs.launchpad.net/ubuntu/\"\nPRIVACY_POLICY_URL=\"https://www.ubuntu.com/legal/terms-and-policies/privacy-policy\"\nUBUNTU_CODENAME=resolute\nLOGO=ubuntu-logo\n",
+        "kernel": "7.0.0-34-generic",
+        "pid1": "systemd",
+        "multi_user": "active",
+        "network_online": "active",
+        "cloud_final": "active",
+        "ssh_socket": "active",
+        "failed_units": ""
+      },
+      "correctness": "passed",
+      "logs": "/home/reiase/workspace/pvisor/target/ubuntu-qemu-complete-20261004/trials/tools-qemu-ubuntu-009"
+    },
+    {
+      "backend": "qemu-microvm-ubuntu",
+      "mode": "tools",
+      "trial": 9,
+      "prepare_ms": 122.169426,
+      "ready_ms": 7560.385636,
+      "os_ready_ms": 7508.632285,
+      "result_ms": 10253.757021,
+      "completion_ms": 13828.483965,
+      "peak_tree_rss_kib": 1900864,
+      "result": {
+        "phases_ms": {
+          "inspect": 18.53768,
+          "search": 6.926167,
+          "python-tests": 26.135294,
+          "rust-tests": 1275.157441,
+          "node-install": 1033.457211,
+          "node-tests": 327.244446,
+          "diff": 1.184826
+        },
+        "mode": "tools",
+        "worker_ms": 2691.25383,
+        "correctness": "passed"
+      },
+      "os_proof": {
+        "os_release": "PRETTY_NAME=\"Ubuntu 26.04.1 LTS\"\nNAME=\"Ubuntu\"\nVERSION_ID=\"26.04\"\nVERSION=\"26.04.1 LTS (Resolute Raccoon)\"\nVERSION_CODENAME=resolute\nID=ubuntu\nID_LIKE=debian\nHOME_URL=\"https://www.ubuntu.com/\"\nSUPPORT_URL=\"https://help.ubuntu.com/\"\nBUG_REPORT_URL=\"https://bugs.launchpad.net/ubuntu/\"\nPRIVACY_POLICY_URL=\"https://www.ubuntu.com/legal/terms-and-policies/privacy-policy\"\nUBUNTU_CODENAME=resolute\nLOGO=ubuntu-logo\n",
+        "kernel": "7.0.0-34-generic",
+        "pid1": "systemd",
+        "multi_user": "active",
+        "network_online": "active",
+        "cloud_final": "active",
+        "ssh_socket": "active",
+        "failed_units": ""
+      },
+      "correctness": "passed",
+      "logs": "/home/reiase/workspace/pvisor/target/ubuntu-qemu-complete-20261004/trials/tools-qemu-microvm-ubuntu-009"
+    },
+    {
+      "backend": "qemu-microvm-ubuntu",
+      "mode": "claude",
+      "trial": 0,
+      "prepare_ms": 120.818474,
+      "ready_ms": 7419.824179,
+      "os_ready_ms": 7367.020449,
+      "result_ms": 11626.668636,
+      "completion_ms": 15238.120048,
+      "peak_tree_rss_kib": 2270072,
+      "result": {
+        "model_requests": 2,
+        "real_inference": false,
+        "grade": "passed",
+        "mode": "claude",
+        "worker_ms": 4205.873433,
+        "correctness": "passed"
+      },
+      "os_proof": {
+        "os_release": "PRETTY_NAME=\"Ubuntu 26.04.1 LTS\"\nNAME=\"Ubuntu\"\nVERSION_ID=\"26.04\"\nVERSION=\"26.04.1 LTS (Resolute Raccoon)\"\nVERSION_CODENAME=resolute\nID=ubuntu\nID_LIKE=debian\nHOME_URL=\"https://www.ubuntu.com/\"\nSUPPORT_URL=\"https://help.ubuntu.com/\"\nBUG_REPORT_URL=\"https://bugs.launchpad.net/ubuntu/\"\nPRIVACY_POLICY_URL=\"https://www.ubuntu.com/legal/terms-and-policies/privacy-policy\"\nUBUNTU_CODENAME=resolute\nLOGO=ubuntu-logo\n",
+        "kernel": "7.0.0-34-generic",
+        "pid1": "systemd",
+        "multi_user": "active",
+        "network_online": "active",
+        "cloud_final": "active",
+        "ssh_socket": "active",
+        "failed_units": ""
+      },
+      "correctness": "passed",
+      "logs": "/home/reiase/workspace/pvisor/target/ubuntu-qemu-complete-20261004/trials/claude-qemu-microvm-ubuntu-000"
+    },
+    {
+      "backend": "qemu-ubuntu",
+      "mode": "claude",
+      "trial": 0,
+      "prepare_ms": 120.632197,
+      "ready_ms": 5291.497491,
+      "os_ready_ms": 5242.946107,
+      "result_ms": 9573.608677,
+      "completion_ms": 13190.189574,
+      "peak_tree_rss_kib": 2276364,
+      "result": {
+        "model_requests": 2,
+        "real_inference": false,
+        "grade": "passed",
+        "mode": "claude",
+        "worker_ms": 4280.820704,
+        "correctness": "passed"
+      },
+      "os_proof": {
+        "os_release": "PRETTY_NAME=\"Ubuntu 26.04.1 LTS\"\nNAME=\"Ubuntu\"\nVERSION_ID=\"26.04\"\nVERSION=\"26.04.1 LTS (Resolute Raccoon)\"\nVERSION_CODENAME=resolute\nID=ubuntu\nID_LIKE=debian\nHOME_URL=\"https://www.ubuntu.com/\"\nSUPPORT_URL=\"https://help.ubuntu.com/\"\nBUG_REPORT_URL=\"https://bugs.launchpad.net/ubuntu/\"\nPRIVACY_POLICY_URL=\"https://www.ubuntu.com/legal/terms-and-policies/privacy-policy\"\nUBUNTU_CODENAME=resolute\nLOGO=ubuntu-logo\n",
+        "kernel": "7.0.0-34-generic",
+        "pid1": "systemd",
+        "multi_user": "active",
+        "network_online": "active",
+        "cloud_final": "active",
+        "ssh_socket": "active",
+        "failed_units": ""
+      },
+      "correctness": "passed",
+      "logs": "/home/reiase/workspace/pvisor/target/ubuntu-qemu-complete-20261004/trials/claude-qemu-ubuntu-000"
+    },
+    {
+      "backend": "qemu-ubuntu",
+      "mode": "claude",
+      "trial": 1,
+      "prepare_ms": 120.911518,
+      "ready_ms": 5309.749169,
+      "os_ready_ms": 5256.305002,
+      "result_ms": 9687.786015,
+      "completion_ms": 15689.535169,
+      "peak_tree_rss_kib": 2247020,
+      "result": {
+        "model_requests": 2,
+        "real_inference": false,
+        "grade": "passed",
+        "mode": "claude",
+        "worker_ms": 4375.585299,
+        "correctness": "passed"
+      },
+      "os_proof": {
+        "os_release": "PRETTY_NAME=\"Ubuntu 26.04.1 LTS\"\nNAME=\"Ubuntu\"\nVERSION_ID=\"26.04\"\nVERSION=\"26.04.1 LTS (Resolute Raccoon)\"\nVERSION_CODENAME=resolute\nID=ubuntu\nID_LIKE=debian\nHOME_URL=\"https://www.ubuntu.com/\"\nSUPPORT_URL=\"https://help.ubuntu.com/\"\nBUG_REPORT_URL=\"https://bugs.launchpad.net/ubuntu/\"\nPRIVACY_POLICY_URL=\"https://www.ubuntu.com/legal/terms-and-policies/privacy-policy\"\nUBUNTU_CODENAME=resolute\nLOGO=ubuntu-logo\n",
+        "kernel": "7.0.0-34-generic",
+        "pid1": "systemd",
+        "multi_user": "active",
+        "network_online": "active",
+        "cloud_final": "active",
+        "ssh_socket": "active",
+        "failed_units": ""
+      },
+      "correctness": "passed",
+      "logs": "/home/reiase/workspace/pvisor/target/ubuntu-qemu-complete-20261004/trials/claude-qemu-ubuntu-001"
+    },
+    {
+      "backend": "qemu-microvm-ubuntu",
+      "mode": "claude",
+      "trial": 1,
+      "prepare_ms": 120.578897,
+      "ready_ms": 7727.024215,
+      "os_ready_ms": 7674.055937,
+      "result_ms": 12639.828404,
+      "completion_ms": 16091.997728,
+      "peak_tree_rss_kib": 2275680,
+      "result": {
+        "model_requests": 2,
+        "real_inference": false,
+        "grade": "passed",
+        "mode": "claude",
+        "worker_ms": 4911.126053,
+        "correctness": "passed"
+      },
+      "os_proof": {
+        "os_release": "PRETTY_NAME=\"Ubuntu 26.04.1 LTS\"\nNAME=\"Ubuntu\"\nVERSION_ID=\"26.04\"\nVERSION=\"26.04.1 LTS (Resolute Raccoon)\"\nVERSION_CODENAME=resolute\nID=ubuntu\nID_LIKE=debian\nHOME_URL=\"https://www.ubuntu.com/\"\nSUPPORT_URL=\"https://help.ubuntu.com/\"\nBUG_REPORT_URL=\"https://bugs.launchpad.net/ubuntu/\"\nPRIVACY_POLICY_URL=\"https://www.ubuntu.com/legal/terms-and-policies/privacy-policy\"\nUBUNTU_CODENAME=resolute\nLOGO=ubuntu-logo\n",
+        "kernel": "7.0.0-34-generic",
+        "pid1": "systemd",
+        "multi_user": "active",
+        "network_online": "active",
+        "cloud_final": "active",
+        "ssh_socket": "active",
+        "failed_units": ""
+      },
+      "correctness": "passed",
+      "logs": "/home/reiase/workspace/pvisor/target/ubuntu-qemu-complete-20261004/trials/claude-qemu-microvm-ubuntu-001"
+    },
+    {
+      "backend": "qemu-ubuntu",
+      "mode": "claude",
+      "trial": 2,
+      "prepare_ms": 130.928345,
+      "ready_ms": 5396.210403,
+      "os_ready_ms": 5280.806857,
+      "result_ms": 9904.142426,
+      "completion_ms": 13513.922559,
+      "peak_tree_rss_kib": 2310232,
+      "result": {
+        "model_requests": 2,
+        "real_inference": false,
+        "grade": "passed",
+        "mode": "claude",
+        "worker_ms": 4507.073135,
+        "correctness": "passed"
+      },
+      "os_proof": {
+        "os_release": "PRETTY_NAME=\"Ubuntu 26.04.1 LTS\"\nNAME=\"Ubuntu\"\nVERSION_ID=\"26.04\"\nVERSION=\"26.04.1 LTS (Resolute Raccoon)\"\nVERSION_CODENAME=resolute\nID=ubuntu\nID_LIKE=debian\nHOME_URL=\"https://www.ubuntu.com/\"\nSUPPORT_URL=\"https://help.ubuntu.com/\"\nBUG_REPORT_URL=\"https://bugs.launchpad.net/ubuntu/\"\nPRIVACY_POLICY_URL=\"https://www.ubuntu.com/legal/terms-and-policies/privacy-policy\"\nUBUNTU_CODENAME=resolute\nLOGO=ubuntu-logo\n",
+        "kernel": "7.0.0-34-generic",
+        "pid1": "systemd",
+        "multi_user": "active",
+        "network_online": "active",
+        "cloud_final": "active",
+        "ssh_socket": "active",
+        "failed_units": ""
+      },
+      "correctness": "passed",
+      "logs": "/home/reiase/workspace/pvisor/target/ubuntu-qemu-complete-20261004/trials/claude-qemu-ubuntu-002"
+    },
+    {
+      "backend": "qemu-microvm-ubuntu",
+      "mode": "claude",
+      "trial": 2,
+      "prepare_ms": 122.420374,
+      "ready_ms": 7420.468783,
+      "os_ready_ms": 7368.205571,
+      "result_ms": 11447.320112,
+      "completion_ms": 15033.666084,
+      "peak_tree_rss_kib": 2257880,
+      "result": {
+        "model_requests": 2,
+        "real_inference": false,
+        "grade": "passed",
+        "mode": "claude",
+        "worker_ms": 4025.754048,
+        "correctness": "passed"
+      },
+      "os_proof": {
+        "os_release": "PRETTY_NAME=\"Ubuntu 26.04.1 LTS\"\nNAME=\"Ubuntu\"\nVERSION_ID=\"26.04\"\nVERSION=\"26.04.1 LTS (Resolute Raccoon)\"\nVERSION_CODENAME=resolute\nID=ubuntu\nID_LIKE=debian\nHOME_URL=\"https://www.ubuntu.com/\"\nSUPPORT_URL=\"https://help.ubuntu.com/\"\nBUG_REPORT_URL=\"https://bugs.launchpad.net/ubuntu/\"\nPRIVACY_POLICY_URL=\"https://www.ubuntu.com/legal/terms-and-policies/privacy-policy\"\nUBUNTU_CODENAME=resolute\nLOGO=ubuntu-logo\n",
+        "kernel": "7.0.0-34-generic",
+        "pid1": "systemd",
+        "multi_user": "active",
+        "network_online": "active",
+        "cloud_final": "active",
+        "ssh_socket": "active",
+        "failed_units": ""
+      },
+      "correctness": "passed",
+      "logs": "/home/reiase/workspace/pvisor/target/ubuntu-qemu-complete-20261004/trials/claude-qemu-microvm-ubuntu-002"
+    },
+    {
+      "backend": "qemu-ubuntu",
+      "mode": "claude",
+      "trial": 3,
+      "prepare_ms": 120.00722,
+      "ready_ms": 5241.28715,
+      "os_ready_ms": 5189.940289,
+      "result_ms": 9310.948096,
+      "completion_ms": 12871.332118,
+      "peak_tree_rss_kib": 2281720,
+      "result": {
+        "model_requests": 2,
+        "real_inference": false,
+        "grade": "passed",
+        "mode": "claude",
+        "worker_ms": 4068.456686,
+        "correctness": "passed"
+      },
+      "os_proof": {
+        "os_release": "PRETTY_NAME=\"Ubuntu 26.04.1 LTS\"\nNAME=\"Ubuntu\"\nVERSION_ID=\"26.04\"\nVERSION=\"26.04.1 LTS (Resolute Raccoon)\"\nVERSION_CODENAME=resolute\nID=ubuntu\nID_LIKE=debian\nHOME_URL=\"https://www.ubuntu.com/\"\nSUPPORT_URL=\"https://help.ubuntu.com/\"\nBUG_REPORT_URL=\"https://bugs.launchpad.net/ubuntu/\"\nPRIVACY_POLICY_URL=\"https://www.ubuntu.com/legal/terms-and-policies/privacy-policy\"\nUBUNTU_CODENAME=resolute\nLOGO=ubuntu-logo\n",
+        "kernel": "7.0.0-34-generic",
+        "pid1": "systemd",
+        "multi_user": "active",
+        "network_online": "active",
+        "cloud_final": "active",
+        "ssh_socket": "active",
+        "failed_units": ""
+      },
+      "correctness": "passed",
+      "logs": "/home/reiase/workspace/pvisor/target/ubuntu-qemu-complete-20261004/trials/claude-qemu-ubuntu-003"
+    },
+    {
+      "backend": "qemu-microvm-ubuntu",
+      "mode": "claude",
+      "trial": 3,
+      "prepare_ms": 121.419897,
+      "ready_ms": 7410.981374,
+      "os_ready_ms": 7359.218275,
+      "result_ms": 11551.576422,
+      "completion_ms": 15169.892838,
+      "peak_tree_rss_kib": 2262484,
+      "result": {
+        "model_requests": 2,
+        "real_inference": false,
+        "grade": "passed",
+        "mode": "claude",
+        "worker_ms": 4139.506496,
+        "correctness": "passed"
+      },
+      "os_proof": {
+        "os_release": "PRETTY_NAME=\"Ubuntu 26.04.1 LTS\"\nNAME=\"Ubuntu\"\nVERSION_ID=\"26.04\"\nVERSION=\"26.04.1 LTS (Resolute Raccoon)\"\nVERSION_CODENAME=resolute\nID=ubuntu\nID_LIKE=debian\nHOME_URL=\"https://www.ubuntu.com/\"\nSUPPORT_URL=\"https://help.ubuntu.com/\"\nBUG_REPORT_URL=\"https://bugs.launchpad.net/ubuntu/\"\nPRIVACY_POLICY_URL=\"https://www.ubuntu.com/legal/terms-and-policies/privacy-policy\"\nUBUNTU_CODENAME=resolute\nLOGO=ubuntu-logo\n",
+        "kernel": "7.0.0-34-generic",
+        "pid1": "systemd",
+        "multi_user": "active",
+        "network_online": "active",
+        "cloud_final": "active",
+        "ssh_socket": "active",
+        "failed_units": ""
+      },
+      "correctness": "passed",
+      "logs": "/home/reiase/workspace/pvisor/target/ubuntu-qemu-complete-20261004/trials/claude-qemu-microvm-ubuntu-003"
+    },
+    {
+      "backend": "qemu-ubuntu",
+      "mode": "claude",
+      "trial": 4,
+      "prepare_ms": 120.533473,
+      "ready_ms": 5240.561896,
+      "os_ready_ms": 5188.61763,
+      "result_ms": 9429.130881,
+      "completion_ms": 13064.698217,
+      "peak_tree_rss_kib": 2272120,
+      "result": {
+        "model_requests": 2,
+        "real_inference": false,
+        "grade": "passed",
+        "mode": "claude",
+        "worker_ms": 4187.194019,
+        "correctness": "passed"
+      },
+      "os_proof": {
+        "os_release": "PRETTY_NAME=\"Ubuntu 26.04.1 LTS\"\nNAME=\"Ubuntu\"\nVERSION_ID=\"26.04\"\nVERSION=\"26.04.1 LTS (Resolute Raccoon)\"\nVERSION_CODENAME=resolute\nID=ubuntu\nID_LIKE=debian\nHOME_URL=\"https://www.ubuntu.com/\"\nSUPPORT_URL=\"https://help.ubuntu.com/\"\nBUG_REPORT_URL=\"https://bugs.launchpad.net/ubuntu/\"\nPRIVACY_POLICY_URL=\"https://www.ubuntu.com/legal/terms-and-policies/privacy-policy\"\nUBUNTU_CODENAME=resolute\nLOGO=ubuntu-logo\n",
+        "kernel": "7.0.0-34-generic",
+        "pid1": "systemd",
+        "multi_user": "active",
+        "network_online": "active",
+        "cloud_final": "active",
+        "ssh_socket": "active",
+        "failed_units": ""
+      },
+      "correctness": "passed",
+      "logs": "/home/reiase/workspace/pvisor/target/ubuntu-qemu-complete-20261004/trials/claude-qemu-ubuntu-004"
+    },
+    {
+      "backend": "qemu-microvm-ubuntu",
+      "mode": "claude",
+      "trial": 4,
+      "prepare_ms": 153.122251,
+      "ready_ms": 10266.467957,
+      "os_ready_ms": 10150.37332,
+      "result_ms": 15231.304788,
+      "completion_ms": 18448.195721,
+      "peak_tree_rss_kib": 2281252,
+      "result": {
+        "model_requests": 2,
+        "real_inference": false,
+        "grade": "passed",
+        "mode": "claude",
+        "worker_ms": 4965.236041,
+        "correctness": "passed"
+      },
+      "os_proof": {
+        "os_release": "PRETTY_NAME=\"Ubuntu 26.04.1 LTS\"\nNAME=\"Ubuntu\"\nVERSION_ID=\"26.04\"\nVERSION=\"26.04.1 LTS (Resolute Raccoon)\"\nVERSION_CODENAME=resolute\nID=ubuntu\nID_LIKE=debian\nHOME_URL=\"https://www.ubuntu.com/\"\nSUPPORT_URL=\"https://help.ubuntu.com/\"\nBUG_REPORT_URL=\"https://bugs.launchpad.net/ubuntu/\"\nPRIVACY_POLICY_URL=\"https://www.ubuntu.com/legal/terms-and-policies/privacy-policy\"\nUBUNTU_CODENAME=resolute\nLOGO=ubuntu-logo\n",
+        "kernel": "7.0.0-34-generic",
+        "pid1": "systemd",
+        "multi_user": "active",
+        "network_online": "active",
+        "cloud_final": "active",
+        "ssh_socket": "active",
+        "failed_units": ""
+      },
+      "correctness": "passed",
+      "logs": "/home/reiase/workspace/pvisor/target/ubuntu-qemu-complete-20261004/trials/claude-qemu-microvm-ubuntu-004"
+    },
+    {
+      "backend": "qemu-ubuntu",
+      "mode": "claude",
+      "trial": 5,
+      "prepare_ms": 120.815038,
+      "ready_ms": 5544.861689,
+      "os_ready_ms": 5454.361035,
+      "result_ms": 9940.598474,
+      "completion_ms": 13539.129499,
+      "peak_tree_rss_kib": 2256684,
+      "result": {
+        "model_requests": 2,
+        "real_inference": false,
+        "grade": "passed",
+        "mode": "claude",
+        "worker_ms": 4394.359561,
+        "correctness": "passed"
+      },
+      "os_proof": {
+        "os_release": "PRETTY_NAME=\"Ubuntu 26.04.1 LTS\"\nNAME=\"Ubuntu\"\nVERSION_ID=\"26.04\"\nVERSION=\"26.04.1 LTS (Resolute Raccoon)\"\nVERSION_CODENAME=resolute\nID=ubuntu\nID_LIKE=debian\nHOME_URL=\"https://www.ubuntu.com/\"\nSUPPORT_URL=\"https://help.ubuntu.com/\"\nBUG_REPORT_URL=\"https://bugs.launchpad.net/ubuntu/\"\nPRIVACY_POLICY_URL=\"https://www.ubuntu.com/legal/terms-and-policies/privacy-policy\"\nUBUNTU_CODENAME=resolute\nLOGO=ubuntu-logo\n",
+        "kernel": "7.0.0-34-generic",
+        "pid1": "systemd",
+        "multi_user": "active",
+        "network_online": "active",
+        "cloud_final": "active",
+        "ssh_socket": "active",
+        "failed_units": ""
+      },
+      "correctness": "passed",
+      "logs": "/home/reiase/workspace/pvisor/target/ubuntu-qemu-complete-20261004/trials/claude-qemu-ubuntu-005"
+    },
+    {
+      "backend": "qemu-microvm-ubuntu",
+      "mode": "claude",
+      "trial": 5,
+      "prepare_ms": 118.567152,
+      "ready_ms": 7582.292025,
+      "os_ready_ms": 7530.514579,
+      "result_ms": 11933.296464,
+      "completion_ms": 15660.551319,
+      "peak_tree_rss_kib": 2263224,
+      "result": {
+        "model_requests": 2,
+        "real_inference": false,
+        "grade": "passed",
+        "mode": "claude",
+        "worker_ms": 4349.610445,
+        "correctness": "passed"
+      },
+      "os_proof": {
+        "os_release": "PRETTY_NAME=\"Ubuntu 26.04.1 LTS\"\nNAME=\"Ubuntu\"\nVERSION_ID=\"26.04\"\nVERSION=\"26.04.1 LTS (Resolute Raccoon)\"\nVERSION_CODENAME=resolute\nID=ubuntu\nID_LIKE=debian\nHOME_URL=\"https://www.ubuntu.com/\"\nSUPPORT_URL=\"https://help.ubuntu.com/\"\nBUG_REPORT_URL=\"https://bugs.launchpad.net/ubuntu/\"\nPRIVACY_POLICY_URL=\"https://www.ubuntu.com/legal/terms-and-policies/privacy-policy\"\nUBUNTU_CODENAME=resolute\nLOGO=ubuntu-logo\n",
+        "kernel": "7.0.0-34-generic",
+        "pid1": "systemd",
+        "multi_user": "active",
+        "network_online": "active",
+        "cloud_final": "active",
+        "ssh_socket": "active",
+        "failed_units": ""
+      },
+      "correctness": "passed",
+      "logs": "/home/reiase/workspace/pvisor/target/ubuntu-qemu-complete-20261004/trials/claude-qemu-microvm-ubuntu-005"
+    },
+    {
+      "backend": "qemu-ubuntu",
+      "mode": "claude",
+      "trial": 6,
+      "prepare_ms": 162.501287,
+      "ready_ms": 6217.027183,
+      "os_ready_ms": 6140.054599,
+      "result_ms": 11471.799674,
+      "completion_ms": 14571.208091,
+      "peak_tree_rss_kib": 2319048,
+      "result": {
+        "model_requests": 2,
+        "real_inference": false,
+        "grade": "passed",
+        "mode": "claude",
+        "worker_ms": 5253.609017,
+        "correctness": "passed"
+      },
+      "os_proof": {
+        "os_release": "PRETTY_NAME=\"Ubuntu 26.04.1 LTS\"\nNAME=\"Ubuntu\"\nVERSION_ID=\"26.04\"\nVERSION=\"26.04.1 LTS (Resolute Raccoon)\"\nVERSION_CODENAME=resolute\nID=ubuntu\nID_LIKE=debian\nHOME_URL=\"https://www.ubuntu.com/\"\nSUPPORT_URL=\"https://help.ubuntu.com/\"\nBUG_REPORT_URL=\"https://bugs.launchpad.net/ubuntu/\"\nPRIVACY_POLICY_URL=\"https://www.ubuntu.com/legal/terms-and-policies/privacy-policy\"\nUBUNTU_CODENAME=resolute\nLOGO=ubuntu-logo\n",
+        "kernel": "7.0.0-34-generic",
+        "pid1": "systemd",
+        "multi_user": "active",
+        "network_online": "active",
+        "cloud_final": "active",
+        "ssh_socket": "active",
+        "failed_units": ""
+      },
+      "correctness": "passed",
+      "logs": "/home/reiase/workspace/pvisor/target/ubuntu-qemu-complete-20261004/trials/claude-qemu-ubuntu-006"
+    },
+    {
+      "backend": "qemu-microvm-ubuntu",
+      "mode": "claude",
+      "trial": 6,
+      "prepare_ms": 164.137963,
+      "ready_ms": 7594.336787,
+      "os_ready_ms": 7538.729623,
+      "result_ms": 12341.753421,
+      "completion_ms": 15977.663547,
+      "peak_tree_rss_kib": 2280900,
+      "result": {
+        "model_requests": 2,
+        "real_inference": false,
+        "grade": "passed",
+        "mode": "claude",
+        "worker_ms": 4745.665782,
+        "correctness": "passed"
+      },
+      "os_proof": {
+        "os_release": "PRETTY_NAME=\"Ubuntu 26.04.1 LTS\"\nNAME=\"Ubuntu\"\nVERSION_ID=\"26.04\"\nVERSION=\"26.04.1 LTS (Resolute Raccoon)\"\nVERSION_CODENAME=resolute\nID=ubuntu\nID_LIKE=debian\nHOME_URL=\"https://www.ubuntu.com/\"\nSUPPORT_URL=\"https://help.ubuntu.com/\"\nBUG_REPORT_URL=\"https://bugs.launchpad.net/ubuntu/\"\nPRIVACY_POLICY_URL=\"https://www.ubuntu.com/legal/terms-and-policies/privacy-policy\"\nUBUNTU_CODENAME=resolute\nLOGO=ubuntu-logo\n",
+        "kernel": "7.0.0-34-generic",
+        "pid1": "systemd",
+        "multi_user": "active",
+        "network_online": "active",
+        "cloud_final": "active",
+        "ssh_socket": "active",
+        "failed_units": ""
+      },
+      "correctness": "passed",
+      "logs": "/home/reiase/workspace/pvisor/target/ubuntu-qemu-complete-20261004/trials/claude-qemu-microvm-ubuntu-006"
+    },
+    {
+      "backend": "qemu-microvm-ubuntu",
+      "mode": "claude",
+      "trial": 7,
+      "prepare_ms": 121.938866,
+      "ready_ms": 7477.960965,
+      "os_ready_ms": 7419.859154,
+      "result_ms": 11053.387735,
+      "completion_ms": 14674.189961,
+      "peak_tree_rss_kib": 2272660,
+      "result": {
+        "model_requests": 2,
+        "real_inference": false,
+        "grade": "passed",
+        "mode": "claude",
+        "worker_ms": 3574.141115,
+        "correctness": "passed"
+      },
+      "os_proof": {
+        "os_release": "PRETTY_NAME=\"Ubuntu 26.04.1 LTS\"\nNAME=\"Ubuntu\"\nVERSION_ID=\"26.04\"\nVERSION=\"26.04.1 LTS (Resolute Raccoon)\"\nVERSION_CODENAME=resolute\nID=ubuntu\nID_LIKE=debian\nHOME_URL=\"https://www.ubuntu.com/\"\nSUPPORT_URL=\"https://help.ubuntu.com/\"\nBUG_REPORT_URL=\"https://bugs.launchpad.net/ubuntu/\"\nPRIVACY_POLICY_URL=\"https://www.ubuntu.com/legal/terms-and-policies/privacy-policy\"\nUBUNTU_CODENAME=resolute\nLOGO=ubuntu-logo\n",
+        "kernel": "7.0.0-34-generic",
+        "pid1": "systemd",
+        "multi_user": "active",
+        "network_online": "active",
+        "cloud_final": "active",
+        "ssh_socket": "active",
+        "failed_units": ""
+      },
+      "correctness": "passed",
+      "logs": "/home/reiase/workspace/pvisor/target/ubuntu-qemu-complete-20261004/trials/claude-qemu-microvm-ubuntu-007"
+    },
+    {
+      "backend": "qemu-ubuntu",
+      "mode": "claude",
+      "trial": 7,
+      "prepare_ms": 122.971463,
+      "ready_ms": 5382.302363,
+      "os_ready_ms": 5327.637327,
+      "result_ms": 9014.630883,
+      "completion_ms": 12615.349062,
+      "peak_tree_rss_kib": 2263388,
+      "result": {
+        "model_requests": 2,
+        "real_inference": false,
+        "grade": "passed",
+        "mode": "claude",
+        "worker_ms": 3631.335814,
+        "correctness": "passed"
+      },
+      "os_proof": {
+        "os_release": "PRETTY_NAME=\"Ubuntu 26.04.1 LTS\"\nNAME=\"Ubuntu\"\nVERSION_ID=\"26.04\"\nVERSION=\"26.04.1 LTS (Resolute Raccoon)\"\nVERSION_CODENAME=resolute\nID=ubuntu\nID_LIKE=debian\nHOME_URL=\"https://www.ubuntu.com/\"\nSUPPORT_URL=\"https://help.ubuntu.com/\"\nBUG_REPORT_URL=\"https://bugs.launchpad.net/ubuntu/\"\nPRIVACY_POLICY_URL=\"https://www.ubuntu.com/legal/terms-and-policies/privacy-policy\"\nUBUNTU_CODENAME=resolute\nLOGO=ubuntu-logo\n",
+        "kernel": "7.0.0-34-generic",
+        "pid1": "systemd",
+        "multi_user": "active",
+        "network_online": "active",
+        "cloud_final": "active",
+        "ssh_socket": "active",
+        "failed_units": ""
+      },
+      "correctness": "passed",
+      "logs": "/home/reiase/workspace/pvisor/target/ubuntu-qemu-complete-20261004/trials/claude-qemu-ubuntu-007"
+    },
+    {
+      "backend": "qemu-microvm-ubuntu",
+      "mode": "claude",
+      "trial": 8,
+      "prepare_ms": 121.92547,
+      "ready_ms": 7486.365312,
+      "os_ready_ms": 7434.874632,
+      "result_ms": 10405.669584,
+      "completion_ms": 14000.156872,
+      "peak_tree_rss_kib": 2245528,
+      "result": {
+        "model_requests": 2,
+        "real_inference": false,
+        "grade": "passed",
+        "mode": "claude",
+        "worker_ms": 2917.11579,
+        "correctness": "passed"
+      },
+      "os_proof": {
+        "os_release": "PRETTY_NAME=\"Ubuntu 26.04.1 LTS\"\nNAME=\"Ubuntu\"\nVERSION_ID=\"26.04\"\nVERSION=\"26.04.1 LTS (Resolute Raccoon)\"\nVERSION_CODENAME=resolute\nID=ubuntu\nID_LIKE=debian\nHOME_URL=\"https://www.ubuntu.com/\"\nSUPPORT_URL=\"https://help.ubuntu.com/\"\nBUG_REPORT_URL=\"https://bugs.launchpad.net/ubuntu/\"\nPRIVACY_POLICY_URL=\"https://www.ubuntu.com/legal/terms-and-policies/privacy-policy\"\nUBUNTU_CODENAME=resolute\nLOGO=ubuntu-logo\n",
+        "kernel": "7.0.0-34-generic",
+        "pid1": "systemd",
+        "multi_user": "active",
+        "network_online": "active",
+        "cloud_final": "active",
+        "ssh_socket": "active",
+        "failed_units": ""
+      },
+      "correctness": "passed",
+      "logs": "/home/reiase/workspace/pvisor/target/ubuntu-qemu-complete-20261004/trials/claude-qemu-microvm-ubuntu-008"
+    },
+    {
+      "backend": "qemu-ubuntu",
+      "mode": "claude",
+      "trial": 8,
+      "prepare_ms": 119.432407,
+      "ready_ms": 5225.187299,
+      "os_ready_ms": 5174.322127,
+      "result_ms": 7924.699688,
+      "completion_ms": 11529.501538,
+      "peak_tree_rss_kib": 2302724,
+      "result": {
+        "model_requests": 2,
+        "real_inference": false,
+        "grade": "passed",
+        "mode": "claude",
+        "worker_ms": 2698.321872,
+        "correctness": "passed"
+      },
+      "os_proof": {
+        "os_release": "PRETTY_NAME=\"Ubuntu 26.04.1 LTS\"\nNAME=\"Ubuntu\"\nVERSION_ID=\"26.04\"\nVERSION=\"26.04.1 LTS (Resolute Raccoon)\"\nVERSION_CODENAME=resolute\nID=ubuntu\nID_LIKE=debian\nHOME_URL=\"https://www.ubuntu.com/\"\nSUPPORT_URL=\"https://help.ubuntu.com/\"\nBUG_REPORT_URL=\"https://bugs.launchpad.net/ubuntu/\"\nPRIVACY_POLICY_URL=\"https://www.ubuntu.com/legal/terms-and-policies/privacy-policy\"\nUBUNTU_CODENAME=resolute\nLOGO=ubuntu-logo\n",
+        "kernel": "7.0.0-34-generic",
+        "pid1": "systemd",
+        "multi_user": "active",
+        "network_online": "active",
+        "cloud_final": "active",
+        "ssh_socket": "active",
+        "failed_units": ""
+      },
+      "correctness": "passed",
+      "logs": "/home/reiase/workspace/pvisor/target/ubuntu-qemu-complete-20261004/trials/claude-qemu-ubuntu-008"
+    },
+    {
+      "backend": "qemu-ubuntu",
+      "mode": "claude",
+      "trial": 9,
+      "prepare_ms": 120.888856,
+      "ready_ms": 5310.335502,
+      "os_ready_ms": 5256.48635,
+      "result_ms": 8245.501611,
+      "completion_ms": 11863.427379,
+      "peak_tree_rss_kib": 2316772,
+      "result": {
+        "model_requests": 2,
+        "real_inference": false,
+        "grade": "passed",
+        "mode": "claude",
+        "worker_ms": 2934.098761,
+        "correctness": "passed"
+      },
+      "os_proof": {
+        "os_release": "PRETTY_NAME=\"Ubuntu 26.04.1 LTS\"\nNAME=\"Ubuntu\"\nVERSION_ID=\"26.04\"\nVERSION=\"26.04.1 LTS (Resolute Raccoon)\"\nVERSION_CODENAME=resolute\nID=ubuntu\nID_LIKE=debian\nHOME_URL=\"https://www.ubuntu.com/\"\nSUPPORT_URL=\"https://help.ubuntu.com/\"\nBUG_REPORT_URL=\"https://bugs.launchpad.net/ubuntu/\"\nPRIVACY_POLICY_URL=\"https://www.ubuntu.com/legal/terms-and-policies/privacy-policy\"\nUBUNTU_CODENAME=resolute\nLOGO=ubuntu-logo\n",
+        "kernel": "7.0.0-34-generic",
+        "pid1": "systemd",
+        "multi_user": "active",
+        "network_online": "active",
+        "cloud_final": "active",
+        "ssh_socket": "active",
+        "failed_units": ""
+      },
+      "correctness": "passed",
+      "logs": "/home/reiase/workspace/pvisor/target/ubuntu-qemu-complete-20261004/trials/claude-qemu-ubuntu-009"
+    },
+    {
+      "backend": "qemu-microvm-ubuntu",
+      "mode": "claude",
+      "trial": 9,
+      "prepare_ms": 120.477247,
+      "ready_ms": 7529.949254,
+      "os_ready_ms": 7478.083213,
+      "result_ms": 10276.625696,
+      "completion_ms": 13882.634389,
+      "peak_tree_rss_kib": 2268860,
+      "result": {
+        "model_requests": 2,
+        "real_inference": false,
+        "grade": "passed",
+        "mode": "claude",
+        "worker_ms": 2745.604699,
+        "correctness": "passed"
+      },
+      "os_proof": {
+        "os_release": "PRETTY_NAME=\"Ubuntu 26.04.1 LTS\"\nNAME=\"Ubuntu\"\nVERSION_ID=\"26.04\"\nVERSION=\"26.04.1 LTS (Resolute Raccoon)\"\nVERSION_CODENAME=resolute\nID=ubuntu\nID_LIKE=debian\nHOME_URL=\"https://www.ubuntu.com/\"\nSUPPORT_URL=\"https://help.ubuntu.com/\"\nBUG_REPORT_URL=\"https://bugs.launchpad.net/ubuntu/\"\nPRIVACY_POLICY_URL=\"https://www.ubuntu.com/legal/terms-and-policies/privacy-policy\"\nUBUNTU_CODENAME=resolute\nLOGO=ubuntu-logo\n",
+        "kernel": "7.0.0-34-generic",
+        "pid1": "systemd",
+        "multi_user": "active",
+        "network_online": "active",
+        "cloud_final": "active",
+        "ssh_socket": "active",
+        "failed_units": ""
+      },
+      "correctness": "passed",
+      "logs": "/home/reiase/workspace/pvisor/target/ubuntu-qemu-complete-20261004/trials/claude-qemu-microvm-ubuntu-009"
+    },
+    {
+      "backend": "qemu-ubuntu",
+      "mode": "codex",
+      "trial": 0,
+      "prepare_ms": 119.013232,
+      "ready_ms": 5179.32308,
+      "os_ready_ms": 5128.832123,
+      "result_ms": 11453.544328,
+      "completion_ms": 13507.392685,
+      "peak_tree_rss_kib": 2264016,
+      "result": {
+        "model_requests": 2,
+        "real_inference": false,
+        "grade": "passed",
+        "mode": "codex",
+        "worker_ms": 6319.623355,
+        "correctness": "passed"
+      },
+      "os_proof": {
+        "os_release": "PRETTY_NAME=\"Ubuntu 26.04.1 LTS\"\nNAME=\"Ubuntu\"\nVERSION_ID=\"26.04\"\nVERSION=\"26.04.1 LTS (Resolute Raccoon)\"\nVERSION_CODENAME=resolute\nID=ubuntu\nID_LIKE=debian\nHOME_URL=\"https://www.ubuntu.com/\"\nSUPPORT_URL=\"https://help.ubuntu.com/\"\nBUG_REPORT_URL=\"https://bugs.launchpad.net/ubuntu/\"\nPRIVACY_POLICY_URL=\"https://www.ubuntu.com/legal/terms-and-policies/privacy-policy\"\nUBUNTU_CODENAME=resolute\nLOGO=ubuntu-logo\n",
+        "kernel": "7.0.0-34-generic",
+        "pid1": "systemd",
+        "multi_user": "active",
+        "network_online": "active",
+        "cloud_final": "active",
+        "ssh_socket": "active",
+        "failed_units": ""
+      },
+      "correctness": "passed",
+      "logs": "/home/reiase/workspace/pvisor/target/ubuntu-qemu-complete-20261004/trials/codex-qemu-ubuntu-000"
+    },
+    {
+      "backend": "qemu-microvm-ubuntu",
+      "mode": "codex",
+      "trial": 0,
+      "prepare_ms": 118.984318,
+      "ready_ms": 7389.258794,
+      "os_ready_ms": 7336.548905,
+      "result_ms": 13587.212246,
+      "completion_ms": 15703.82292,
+      "peak_tree_rss_kib": 2164212,
+      "result": {
+        "model_requests": 2,
+        "real_inference": false,
+        "grade": "passed",
+        "mode": "codex",
+        "worker_ms": 6232.587254,
+        "correctness": "passed"
+      },
+      "os_proof": {
+        "os_release": "PRETTY_NAME=\"Ubuntu 26.04.1 LTS\"\nNAME=\"Ubuntu\"\nVERSION_ID=\"26.04\"\nVERSION=\"26.04.1 LTS (Resolute Raccoon)\"\nVERSION_CODENAME=resolute\nID=ubuntu\nID_LIKE=debian\nHOME_URL=\"https://www.ubuntu.com/\"\nSUPPORT_URL=\"https://help.ubuntu.com/\"\nBUG_REPORT_URL=\"https://bugs.launchpad.net/ubuntu/\"\nPRIVACY_POLICY_URL=\"https://www.ubuntu.com/legal/terms-and-policies/privacy-policy\"\nUBUNTU_CODENAME=resolute\nLOGO=ubuntu-logo\n",
+        "kernel": "7.0.0-34-generic",
+        "pid1": "systemd",
+        "multi_user": "active",
+        "network_online": "active",
+        "cloud_final": "active",
+        "ssh_socket": "active",
+        "failed_units": ""
+      },
+      "correctness": "passed",
+      "logs": "/home/reiase/workspace/pvisor/target/ubuntu-qemu-complete-20261004/trials/codex-qemu-microvm-ubuntu-000"
+    },
+    {
+      "backend": "qemu-microvm-ubuntu",
+      "mode": "codex",
+      "trial": 1,
+      "prepare_ms": 118.802538,
+      "ready_ms": 7355.68107,
+      "os_ready_ms": 7302.721744,
+      "result_ms": 13828.865064,
+      "completion_ms": 15731.961467,
+      "peak_tree_rss_kib": 2184528,
+      "result": {
+        "model_requests": 2,
+        "real_inference": false,
+        "grade": "passed",
+        "mode": "codex",
+        "worker_ms": 6470.17768,
+        "correctness": "passed"
+      },
+      "os_proof": {
+        "os_release": "PRETTY_NAME=\"Ubuntu 26.04.1 LTS\"\nNAME=\"Ubuntu\"\nVERSION_ID=\"26.04\"\nVERSION=\"26.04.1 LTS (Resolute Raccoon)\"\nVERSION_CODENAME=resolute\nID=ubuntu\nID_LIKE=debian\nHOME_URL=\"https://www.ubuntu.com/\"\nSUPPORT_URL=\"https://help.ubuntu.com/\"\nBUG_REPORT_URL=\"https://bugs.launchpad.net/ubuntu/\"\nPRIVACY_POLICY_URL=\"https://www.ubuntu.com/legal/terms-and-policies/privacy-policy\"\nUBUNTU_CODENAME=resolute\nLOGO=ubuntu-logo\n",
+        "kernel": "7.0.0-34-generic",
+        "pid1": "systemd",
+        "multi_user": "active",
+        "network_online": "active",
+        "cloud_final": "active",
+        "ssh_socket": "active",
+        "failed_units": ""
+      },
+      "correctness": "passed",
+      "logs": "/home/reiase/workspace/pvisor/target/ubuntu-qemu-complete-20261004/trials/codex-qemu-microvm-ubuntu-001"
+    },
+    {
+      "backend": "qemu-ubuntu",
+      "mode": "codex",
+      "trial": 1,
+      "prepare_ms": 118.115883,
+      "ready_ms": 5271.065539,
+      "os_ready_ms": 5217.67147,
+      "result_ms": 11778.879585,
+      "completion_ms": 13625.84067,
+      "peak_tree_rss_kib": 2188776,
+      "result": {
+        "model_requests": 2,
+        "real_inference": false,
+        "grade": "passed",
+        "mode": "codex",
+        "worker_ms": 6505.749407,
+        "correctness": "passed"
+      },
+      "os_proof": {
+        "os_release": "PRETTY_NAME=\"Ubuntu 26.04.1 LTS\"\nNAME=\"Ubuntu\"\nVERSION_ID=\"26.04\"\nVERSION=\"26.04.1 LTS (Resolute Raccoon)\"\nVERSION_CODENAME=resolute\nID=ubuntu\nID_LIKE=debian\nHOME_URL=\"https://www.ubuntu.com/\"\nSUPPORT_URL=\"https://help.ubuntu.com/\"\nBUG_REPORT_URL=\"https://bugs.launchpad.net/ubuntu/\"\nPRIVACY_POLICY_URL=\"https://www.ubuntu.com/legal/terms-and-policies/privacy-policy\"\nUBUNTU_CODENAME=resolute\nLOGO=ubuntu-logo\n",
+        "kernel": "7.0.0-34-generic",
+        "pid1": "systemd",
+        "multi_user": "active",
+        "network_online": "active",
+        "cloud_final": "active",
+        "ssh_socket": "active",
+        "failed_units": ""
+      },
+      "correctness": "passed",
+      "logs": "/home/reiase/workspace/pvisor/target/ubuntu-qemu-complete-20261004/trials/codex-qemu-ubuntu-001"
+    },
+    {
+      "backend": "qemu-microvm-ubuntu",
+      "mode": "codex",
+      "trial": 2,
+      "prepare_ms": 118.672234,
+      "ready_ms": 7384.972224,
+      "os_ready_ms": 7334.660231,
+      "result_ms": 13972.248081,
+      "completion_ms": 15696.836669,
+      "peak_tree_rss_kib": 2191576,
+      "result": {
+        "model_requests": 2,
+        "real_inference": false,
+        "grade": "passed",
+        "mode": "codex",
+        "worker_ms": 6635.391728,
+        "correctness": "passed"
+      },
+      "os_proof": {
+        "os_release": "PRETTY_NAME=\"Ubuntu 26.04.1 LTS\"\nNAME=\"Ubuntu\"\nVERSION_ID=\"26.04\"\nVERSION=\"26.04.1 LTS (Resolute Raccoon)\"\nVERSION_CODENAME=resolute\nID=ubuntu\nID_LIKE=debian\nHOME_URL=\"https://www.ubuntu.com/\"\nSUPPORT_URL=\"https://help.ubuntu.com/\"\nBUG_REPORT_URL=\"https://bugs.launchpad.net/ubuntu/\"\nPRIVACY_POLICY_URL=\"https://www.ubuntu.com/legal/terms-and-policies/privacy-policy\"\nUBUNTU_CODENAME=resolute\nLOGO=ubuntu-logo\n",
+        "kernel": "7.0.0-34-generic",
+        "pid1": "systemd",
+        "multi_user": "active",
+        "network_online": "active",
+        "cloud_final": "active",
+        "ssh_socket": "active",
+        "failed_units": ""
+      },
+      "correctness": "passed",
+      "logs": "/home/reiase/workspace/pvisor/target/ubuntu-qemu-complete-20261004/trials/codex-qemu-microvm-ubuntu-002"
+    },
+    {
+      "backend": "qemu-ubuntu",
+      "mode": "codex",
+      "trial": 2,
+      "prepare_ms": 122.871671,
+      "ready_ms": 5228.298141,
+      "os_ready_ms": 5178.010023,
+      "result_ms": 10688.676761,
+      "completion_ms": 13602.988633,
+      "peak_tree_rss_kib": 2227484,
+      "result": {
+        "model_requests": 2,
+        "real_inference": false,
+        "grade": "passed",
+        "mode": "codex",
+        "worker_ms": 5459.220282,
+        "correctness": "passed"
+      },
+      "os_proof": {
+        "os_release": "PRETTY_NAME=\"Ubuntu 26.04.1 LTS\"\nNAME=\"Ubuntu\"\nVERSION_ID=\"26.04\"\nVERSION=\"26.04.1 LTS (Resolute Raccoon)\"\nVERSION_CODENAME=resolute\nID=ubuntu\nID_LIKE=debian\nHOME_URL=\"https://www.ubuntu.com/\"\nSUPPORT_URL=\"https://help.ubuntu.com/\"\nBUG_REPORT_URL=\"https://bugs.launchpad.net/ubuntu/\"\nPRIVACY_POLICY_URL=\"https://www.ubuntu.com/legal/terms-and-policies/privacy-policy\"\nUBUNTU_CODENAME=resolute\nLOGO=ubuntu-logo\n",
+        "kernel": "7.0.0-34-generic",
+        "pid1": "systemd",
+        "multi_user": "active",
+        "network_online": "active",
+        "cloud_final": "active",
+        "ssh_socket": "active",
+        "failed_units": ""
+      },
+      "correctness": "passed",
+      "logs": "/home/reiase/workspace/pvisor/target/ubuntu-qemu-complete-20261004/trials/codex-qemu-ubuntu-002"
+    },
+    {
+      "backend": "qemu-microvm-ubuntu",
+      "mode": "codex",
+      "trial": 3,
+      "prepare_ms": 118.971233,
+      "ready_ms": 7361.317757,
+      "os_ready_ms": 7309.721722,
+      "result_ms": 13770.442687,
+      "completion_ms": 15713.16532,
+      "peak_tree_rss_kib": 2201656,
+      "result": {
+        "model_requests": 2,
+        "real_inference": false,
+        "grade": "passed",
+        "mode": "codex",
+        "worker_ms": 6407.94187,
+        "correctness": "passed"
+      },
+      "os_proof": {
+        "os_release": "PRETTY_NAME=\"Ubuntu 26.04.1 LTS\"\nNAME=\"Ubuntu\"\nVERSION_ID=\"26.04\"\nVERSION=\"26.04.1 LTS (Resolute Raccoon)\"\nVERSION_CODENAME=resolute\nID=ubuntu\nID_LIKE=debian\nHOME_URL=\"https://www.ubuntu.com/\"\nSUPPORT_URL=\"https://help.ubuntu.com/\"\nBUG_REPORT_URL=\"https://bugs.launchpad.net/ubuntu/\"\nPRIVACY_POLICY_URL=\"https://www.ubuntu.com/legal/terms-and-policies/privacy-policy\"\nUBUNTU_CODENAME=resolute\nLOGO=ubuntu-logo\n",
+        "kernel": "7.0.0-34-generic",
+        "pid1": "systemd",
+        "multi_user": "active",
+        "network_online": "active",
+        "cloud_final": "active",
+        "ssh_socket": "active",
+        "failed_units": ""
+      },
+      "correctness": "passed",
+      "logs": "/home/reiase/workspace/pvisor/target/ubuntu-qemu-complete-20261004/trials/codex-qemu-microvm-ubuntu-003"
+    },
+    {
+      "backend": "qemu-ubuntu",
+      "mode": "codex",
+      "trial": 3,
+      "prepare_ms": 118.952809,
+      "ready_ms": 5218.187105,
+      "os_ready_ms": 5166.998461,
+      "result_ms": 11055.533255,
+      "completion_ms": 13605.497878,
+      "peak_tree_rss_kib": 2227084,
+      "result": {
+        "model_requests": 2,
+        "real_inference": false,
+        "grade": "passed",
+        "mode": "codex",
+        "worker_ms": 5839.088505,
+        "correctness": "passed"
+      },
+      "os_proof": {
+        "os_release": "PRETTY_NAME=\"Ubuntu 26.04.1 LTS\"\nNAME=\"Ubuntu\"\nVERSION_ID=\"26.04\"\nVERSION=\"26.04.1 LTS (Resolute Raccoon)\"\nVERSION_CODENAME=resolute\nID=ubuntu\nID_LIKE=debian\nHOME_URL=\"https://www.ubuntu.com/\"\nSUPPORT_URL=\"https://help.ubuntu.com/\"\nBUG_REPORT_URL=\"https://bugs.launchpad.net/ubuntu/\"\nPRIVACY_POLICY_URL=\"https://www.ubuntu.com/legal/terms-and-policies/privacy-policy\"\nUBUNTU_CODENAME=resolute\nLOGO=ubuntu-logo\n",
+        "kernel": "7.0.0-34-generic",
+        "pid1": "systemd",
+        "multi_user": "active",
+        "network_online": "active",
+        "cloud_final": "active",
+        "ssh_socket": "active",
+        "failed_units": ""
+      },
+      "correctness": "passed",
+      "logs": "/home/reiase/workspace/pvisor/target/ubuntu-qemu-complete-20261004/trials/codex-qemu-ubuntu-003"
+    },
+    {
+      "backend": "qemu-ubuntu",
+      "mode": "codex",
+      "trial": 4,
+      "prepare_ms": 118.995659,
+      "ready_ms": 5210.887156,
+      "os_ready_ms": 5159.676662,
+      "result_ms": 10061.885667,
+      "completion_ms": 13576.803661,
+      "peak_tree_rss_kib": 2240200,
+      "result": {
+        "model_requests": 2,
+        "real_inference": false,
+        "grade": "passed",
+        "mode": "codex",
+        "worker_ms": 4849.781149,
+        "correctness": "passed"
+      },
+      "os_proof": {
+        "os_release": "PRETTY_NAME=\"Ubuntu 26.04.1 LTS\"\nNAME=\"Ubuntu\"\nVERSION_ID=\"26.04\"\nVERSION=\"26.04.1 LTS (Resolute Raccoon)\"\nVERSION_CODENAME=resolute\nID=ubuntu\nID_LIKE=debian\nHOME_URL=\"https://www.ubuntu.com/\"\nSUPPORT_URL=\"https://help.ubuntu.com/\"\nBUG_REPORT_URL=\"https://bugs.launchpad.net/ubuntu/\"\nPRIVACY_POLICY_URL=\"https://www.ubuntu.com/legal/terms-and-policies/privacy-policy\"\nUBUNTU_CODENAME=resolute\nLOGO=ubuntu-logo\n",
+        "kernel": "7.0.0-34-generic",
+        "pid1": "systemd",
+        "multi_user": "active",
+        "network_online": "active",
+        "cloud_final": "active",
+        "ssh_socket": "active",
+        "failed_units": ""
+      },
+      "correctness": "passed",
+      "logs": "/home/reiase/workspace/pvisor/target/ubuntu-qemu-complete-20261004/trials/codex-qemu-ubuntu-004"
+    },
+    {
+      "backend": "qemu-microvm-ubuntu",
+      "mode": "codex",
+      "trial": 4,
+      "prepare_ms": 120.174234,
+      "ready_ms": 7424.085705,
+      "os_ready_ms": 7361.656421,
+      "result_ms": 12488.916963,
+      "completion_ms": 15760.063085,
+      "peak_tree_rss_kib": 2202568,
+      "result": {
+        "model_requests": 2,
+        "real_inference": false,
+        "grade": "passed",
+        "mode": "codex",
+        "worker_ms": 5061.2859,
+        "correctness": "passed"
+      },
+      "os_proof": {
+        "os_release": "PRETTY_NAME=\"Ubuntu 26.04.1 LTS\"\nNAME=\"Ubuntu\"\nVERSION_ID=\"26.04\"\nVERSION=\"26.04.1 LTS (Resolute Raccoon)\"\nVERSION_CODENAME=resolute\nID=ubuntu\nID_LIKE=debian\nHOME_URL=\"https://www.ubuntu.com/\"\nSUPPORT_URL=\"https://help.ubuntu.com/\"\nBUG_REPORT_URL=\"https://bugs.launchpad.net/ubuntu/\"\nPRIVACY_POLICY_URL=\"https://www.ubuntu.com/legal/terms-and-policies/privacy-policy\"\nUBUNTU_CODENAME=resolute\nLOGO=ubuntu-logo\n",
+        "kernel": "7.0.0-34-generic",
+        "pid1": "systemd",
+        "multi_user": "active",
+        "network_online": "active",
+        "cloud_final": "active",
+        "ssh_socket": "active",
+        "failed_units": ""
+      },
+      "correctness": "passed",
+      "logs": "/home/reiase/workspace/pvisor/target/ubuntu-qemu-complete-20261004/trials/codex-qemu-microvm-ubuntu-004"
+    },
+    {
+      "backend": "qemu-ubuntu",
+      "mode": "codex",
+      "trial": 5,
+      "prepare_ms": 120.286855,
+      "ready_ms": 5240.059497,
+      "os_ready_ms": 5190.66486,
+      "result_ms": 10020.276776,
+      "completion_ms": 13727.138495,
+      "peak_tree_rss_kib": 2291192,
+      "result": {
+        "model_requests": 2,
+        "real_inference": false,
+        "grade": "passed",
+        "mode": "codex",
+        "worker_ms": 4778.853058,
+        "correctness": "passed"
+      },
+      "os_proof": {
+        "os_release": "PRETTY_NAME=\"Ubuntu 26.04.1 LTS\"\nNAME=\"Ubuntu\"\nVERSION_ID=\"26.04\"\nVERSION=\"26.04.1 LTS (Resolute Raccoon)\"\nVERSION_CODENAME=resolute\nID=ubuntu\nID_LIKE=debian\nHOME_URL=\"https://www.ubuntu.com/\"\nSUPPORT_URL=\"https://help.ubuntu.com/\"\nBUG_REPORT_URL=\"https://bugs.launchpad.net/ubuntu/\"\nPRIVACY_POLICY_URL=\"https://www.ubuntu.com/legal/terms-and-policies/privacy-policy\"\nUBUNTU_CODENAME=resolute\nLOGO=ubuntu-logo\n",
+        "kernel": "7.0.0-34-generic",
+        "pid1": "systemd",
+        "multi_user": "active",
+        "network_online": "active",
+        "cloud_final": "active",
+        "ssh_socket": "active",
+        "failed_units": ""
+      },
+      "correctness": "passed",
+      "logs": "/home/reiase/workspace/pvisor/target/ubuntu-qemu-complete-20261004/trials/codex-qemu-ubuntu-005"
+    },
+    {
+      "backend": "qemu-microvm-ubuntu",
+      "mode": "codex",
+      "trial": 5,
+      "prepare_ms": 123.085391,
+      "ready_ms": 7417.985672,
+      "os_ready_ms": 7364.278116,
+      "result_ms": 11991.041115,
+      "completion_ms": 15602.954657,
+      "peak_tree_rss_kib": 2204144,
+      "result": {
+        "model_requests": 2,
+        "real_inference": false,
+        "grade": "passed",
+        "mode": "codex",
+        "worker_ms": 4571.730174,
+        "correctness": "passed"
+      },
+      "os_proof": {
+        "os_release": "PRETTY_NAME=\"Ubuntu 26.04.1 LTS\"\nNAME=\"Ubuntu\"\nVERSION_ID=\"26.04\"\nVERSION=\"26.04.1 LTS (Resolute Raccoon)\"\nVERSION_CODENAME=resolute\nID=ubuntu\nID_LIKE=debian\nHOME_URL=\"https://www.ubuntu.com/\"\nSUPPORT_URL=\"https://help.ubuntu.com/\"\nBUG_REPORT_URL=\"https://bugs.launchpad.net/ubuntu/\"\nPRIVACY_POLICY_URL=\"https://www.ubuntu.com/legal/terms-and-policies/privacy-policy\"\nUBUNTU_CODENAME=resolute\nLOGO=ubuntu-logo\n",
+        "kernel": "7.0.0-34-generic",
+        "pid1": "systemd",
+        "multi_user": "active",
+        "network_online": "active",
+        "cloud_final": "active",
+        "ssh_socket": "active",
+        "failed_units": ""
+      },
+      "correctness": "passed",
+      "logs": "/home/reiase/workspace/pvisor/target/ubuntu-qemu-complete-20261004/trials/codex-qemu-microvm-ubuntu-005"
+    },
+    {
+      "backend": "qemu-ubuntu",
+      "mode": "codex",
+      "trial": 6,
+      "prepare_ms": 120.483423,
+      "ready_ms": 5237.673724,
+      "os_ready_ms": 5188.692651,
+      "result_ms": 9969.5134,
+      "completion_ms": 13579.338184,
+      "peak_tree_rss_kib": 2264192,
+      "result": {
+        "model_requests": 2,
+        "real_inference": false,
+        "grade": "passed",
+        "mode": "codex",
+        "worker_ms": 4730.586411,
+        "correctness": "passed"
+      },
+      "os_proof": {
+        "os_release": "PRETTY_NAME=\"Ubuntu 26.04.1 LTS\"\nNAME=\"Ubuntu\"\nVERSION_ID=\"26.04\"\nVERSION=\"26.04.1 LTS (Resolute Raccoon)\"\nVERSION_CODENAME=resolute\nID=ubuntu\nID_LIKE=debian\nHOME_URL=\"https://www.ubuntu.com/\"\nSUPPORT_URL=\"https://help.ubuntu.com/\"\nBUG_REPORT_URL=\"https://bugs.launchpad.net/ubuntu/\"\nPRIVACY_POLICY_URL=\"https://www.ubuntu.com/legal/terms-and-policies/privacy-policy\"\nUBUNTU_CODENAME=resolute\nLOGO=ubuntu-logo\n",
+        "kernel": "7.0.0-34-generic",
+        "pid1": "systemd",
+        "multi_user": "active",
+        "network_online": "active",
+        "cloud_final": "active",
+        "ssh_socket": "active",
+        "failed_units": ""
+      },
+      "correctness": "passed",
+      "logs": "/home/reiase/workspace/pvisor/target/ubuntu-qemu-complete-20261004/trials/codex-qemu-ubuntu-006"
+    },
+    {
+      "backend": "qemu-microvm-ubuntu",
+      "mode": "codex",
+      "trial": 6,
+      "prepare_ms": 118.28572,
+      "ready_ms": 7393.168629,
+      "os_ready_ms": 7338.453117,
+      "result_ms": 11930.235128,
+      "completion_ms": 15511.614912,
+      "peak_tree_rss_kib": 2197164,
+      "result": {
+        "model_requests": 2,
+        "real_inference": false,
+        "grade": "passed",
+        "mode": "codex",
+        "worker_ms": 4535.987618,
+        "correctness": "passed"
+      },
+      "os_proof": {
+        "os_release": "PRETTY_NAME=\"Ubuntu 26.04.1 LTS\"\nNAME=\"Ubuntu\"\nVERSION_ID=\"26.04\"\nVERSION=\"26.04.1 LTS (Resolute Raccoon)\"\nVERSION_CODENAME=resolute\nID=ubuntu\nID_LIKE=debian\nHOME_URL=\"https://www.ubuntu.com/\"\nSUPPORT_URL=\"https://help.ubuntu.com/\"\nBUG_REPORT_URL=\"https://bugs.launchpad.net/ubuntu/\"\nPRIVACY_POLICY_URL=\"https://www.ubuntu.com/legal/terms-and-policies/privacy-policy\"\nUBUNTU_CODENAME=resolute\nLOGO=ubuntu-logo\n",
+        "kernel": "7.0.0-34-generic",
+        "pid1": "systemd",
+        "multi_user": "active",
+        "network_online": "active",
+        "cloud_final": "active",
+        "ssh_socket": "active",
+        "failed_units": ""
+      },
+      "correctness": "passed",
+      "logs": "/home/reiase/workspace/pvisor/target/ubuntu-qemu-complete-20261004/trials/codex-qemu-microvm-ubuntu-006"
+    },
+    {
+      "backend": "qemu-ubuntu",
+      "mode": "codex",
+      "trial": 7,
+      "prepare_ms": 121.141514,
+      "ready_ms": 5225.883834,
+      "os_ready_ms": 5174.407943,
+      "result_ms": 9877.622703,
+      "completion_ms": 13459.379993,
+      "peak_tree_rss_kib": 2235932,
+      "result": {
+        "model_requests": 2,
+        "real_inference": false,
+        "grade": "passed",
+        "mode": "codex",
+        "worker_ms": 4650.500387,
+        "correctness": "passed"
+      },
+      "os_proof": {
+        "os_release": "PRETTY_NAME=\"Ubuntu 26.04.1 LTS\"\nNAME=\"Ubuntu\"\nVERSION_ID=\"26.04\"\nVERSION=\"26.04.1 LTS (Resolute Raccoon)\"\nVERSION_CODENAME=resolute\nID=ubuntu\nID_LIKE=debian\nHOME_URL=\"https://www.ubuntu.com/\"\nSUPPORT_URL=\"https://help.ubuntu.com/\"\nBUG_REPORT_URL=\"https://bugs.launchpad.net/ubuntu/\"\nPRIVACY_POLICY_URL=\"https://www.ubuntu.com/legal/terms-and-policies/privacy-policy\"\nUBUNTU_CODENAME=resolute\nLOGO=ubuntu-logo\n",
+        "kernel": "7.0.0-34-generic",
+        "pid1": "systemd",
+        "multi_user": "active",
+        "network_online": "active",
+        "cloud_final": "active",
+        "ssh_socket": "active",
+        "failed_units": ""
+      },
+      "correctness": "passed",
+      "logs": "/home/reiase/workspace/pvisor/target/ubuntu-qemu-complete-20261004/trials/codex-qemu-ubuntu-007"
+    },
+    {
+      "backend": "qemu-microvm-ubuntu",
+      "mode": "codex",
+      "trial": 7,
+      "prepare_ms": 119.438598,
+      "ready_ms": 7943.759797,
+      "os_ready_ms": 7882.521752,
+      "result_ms": 14130.612008,
+      "completion_ms": 16143.696557,
+      "peak_tree_rss_kib": 2228440,
+      "result": {
+        "model_requests": 2,
+        "real_inference": false,
+        "grade": "passed",
+        "mode": "codex",
+        "worker_ms": 6323.420464,
+        "correctness": "passed"
+      },
+      "os_proof": {
+        "os_release": "PRETTY_NAME=\"Ubuntu 26.04.1 LTS\"\nNAME=\"Ubuntu\"\nVERSION_ID=\"26.04\"\nVERSION=\"26.04.1 LTS (Resolute Raccoon)\"\nVERSION_CODENAME=resolute\nID=ubuntu\nID_LIKE=debian\nHOME_URL=\"https://www.ubuntu.com/\"\nSUPPORT_URL=\"https://help.ubuntu.com/\"\nBUG_REPORT_URL=\"https://bugs.launchpad.net/ubuntu/\"\nPRIVACY_POLICY_URL=\"https://www.ubuntu.com/legal/terms-and-policies/privacy-policy\"\nUBUNTU_CODENAME=resolute\nLOGO=ubuntu-logo\n",
+        "kernel": "7.0.0-34-generic",
+        "pid1": "systemd",
+        "multi_user": "active",
+        "network_online": "active",
+        "cloud_final": "active",
+        "ssh_socket": "active",
+        "failed_units": ""
+      },
+      "correctness": "passed",
+      "logs": "/home/reiase/workspace/pvisor/target/ubuntu-qemu-complete-20261004/trials/codex-qemu-microvm-ubuntu-007"
+    },
+    {
+      "backend": "qemu-microvm-ubuntu",
+      "mode": "codex",
+      "trial": 8,
+      "prepare_ms": 126.038226,
+      "ready_ms": 7457.915681,
+      "os_ready_ms": 7382.837301,
+      "result_ms": 12011.24658,
+      "completion_ms": 15603.524213,
+      "peak_tree_rss_kib": 2222816,
+      "result": {
+        "model_requests": 2,
+        "real_inference": false,
+        "grade": "passed",
+        "mode": "codex",
+        "worker_ms": 4552.376407,
+        "correctness": "passed"
+      },
+      "os_proof": {
+        "os_release": "PRETTY_NAME=\"Ubuntu 26.04.1 LTS\"\nNAME=\"Ubuntu\"\nVERSION_ID=\"26.04\"\nVERSION=\"26.04.1 LTS (Resolute Raccoon)\"\nVERSION_CODENAME=resolute\nID=ubuntu\nID_LIKE=debian\nHOME_URL=\"https://www.ubuntu.com/\"\nSUPPORT_URL=\"https://help.ubuntu.com/\"\nBUG_REPORT_URL=\"https://bugs.launchpad.net/ubuntu/\"\nPRIVACY_POLICY_URL=\"https://www.ubuntu.com/legal/terms-and-policies/privacy-policy\"\nUBUNTU_CODENAME=resolute\nLOGO=ubuntu-logo\n",
+        "kernel": "7.0.0-34-generic",
+        "pid1": "systemd",
+        "multi_user": "active",
+        "network_online": "active",
+        "cloud_final": "active",
+        "ssh_socket": "active",
+        "failed_units": ""
+      },
+      "correctness": "passed",
+      "logs": "/home/reiase/workspace/pvisor/target/ubuntu-qemu-complete-20261004/trials/codex-qemu-microvm-ubuntu-008"
+    },
+    {
+      "backend": "qemu-ubuntu",
+      "mode": "codex",
+      "trial": 8,
+      "prepare_ms": 120.392091,
+      "ready_ms": 5237.151345,
+      "os_ready_ms": 5186.117793,
+      "result_ms": 9371.520193,
+      "completion_ms": 13031.581599,
+      "peak_tree_rss_kib": 2223508,
+      "result": {
+        "model_requests": 2,
+        "real_inference": false,
+        "grade": "passed",
+        "mode": "codex",
+        "worker_ms": 4133.354156,
+        "correctness": "passed"
+      },
+      "os_proof": {
+        "os_release": "PRETTY_NAME=\"Ubuntu 26.04.1 LTS\"\nNAME=\"Ubuntu\"\nVERSION_ID=\"26.04\"\nVERSION=\"26.04.1 LTS (Resolute Raccoon)\"\nVERSION_CODENAME=resolute\nID=ubuntu\nID_LIKE=debian\nHOME_URL=\"https://www.ubuntu.com/\"\nSUPPORT_URL=\"https://help.ubuntu.com/\"\nBUG_REPORT_URL=\"https://bugs.launchpad.net/ubuntu/\"\nPRIVACY_POLICY_URL=\"https://www.ubuntu.com/legal/terms-and-policies/privacy-policy\"\nUBUNTU_CODENAME=resolute\nLOGO=ubuntu-logo\n",
+        "kernel": "7.0.0-34-generic",
+        "pid1": "systemd",
+        "multi_user": "active",
+        "network_online": "active",
+        "cloud_final": "active",
+        "ssh_socket": "active",
+        "failed_units": ""
+      },
+      "correctness": "passed",
+      "logs": "/home/reiase/workspace/pvisor/target/ubuntu-qemu-complete-20261004/trials/codex-qemu-ubuntu-008"
+    },
+    {
+      "backend": "qemu-microvm-ubuntu",
+      "mode": "codex",
+      "trial": 9,
+      "prepare_ms": 121.403865,
+      "ready_ms": 7351.235153,
+      "os_ready_ms": 7300.510277,
+      "result_ms": 12133.902847,
+      "completion_ms": 15727.523183,
+      "peak_tree_rss_kib": 2226004,
+      "result": {
+        "model_requests": 2,
+        "real_inference": false,
+        "grade": "passed",
+        "mode": "codex",
+        "worker_ms": 4781.604715,
+        "correctness": "passed"
+      },
+      "os_proof": {
+        "os_release": "PRETTY_NAME=\"Ubuntu 26.04.1 LTS\"\nNAME=\"Ubuntu\"\nVERSION_ID=\"26.04\"\nVERSION=\"26.04.1 LTS (Resolute Raccoon)\"\nVERSION_CODENAME=resolute\nID=ubuntu\nID_LIKE=debian\nHOME_URL=\"https://www.ubuntu.com/\"\nSUPPORT_URL=\"https://help.ubuntu.com/\"\nBUG_REPORT_URL=\"https://bugs.launchpad.net/ubuntu/\"\nPRIVACY_POLICY_URL=\"https://www.ubuntu.com/legal/terms-and-policies/privacy-policy\"\nUBUNTU_CODENAME=resolute\nLOGO=ubuntu-logo\n",
+        "kernel": "7.0.0-34-generic",
+        "pid1": "systemd",
+        "multi_user": "active",
+        "network_online": "active",
+        "cloud_final": "active",
+        "ssh_socket": "active",
+        "failed_units": ""
+      },
+      "correctness": "passed",
+      "logs": "/home/reiase/workspace/pvisor/target/ubuntu-qemu-complete-20261004/trials/codex-qemu-microvm-ubuntu-009"
+    },
+    {
+      "backend": "qemu-ubuntu",
+      "mode": "codex",
+      "trial": 9,
+      "prepare_ms": 122.914081,
+      "ready_ms": 5542.221307,
+      "os_ready_ms": 5482.136369,
+      "result_ms": 10329.635933,
+      "completion_ms": 13910.187638,
+      "peak_tree_rss_kib": 2229356,
+      "result": {
+        "model_requests": 2,
+        "real_inference": false,
+        "grade": "passed",
+        "mode": "codex",
+        "worker_ms": 4786.410336,
+        "correctness": "passed"
+      },
+      "os_proof": {
+        "os_release": "PRETTY_NAME=\"Ubuntu 26.04.1 LTS\"\nNAME=\"Ubuntu\"\nVERSION_ID=\"26.04\"\nVERSION=\"26.04.1 LTS (Resolute Raccoon)\"\nVERSION_CODENAME=resolute\nID=ubuntu\nID_LIKE=debian\nHOME_URL=\"https://www.ubuntu.com/\"\nSUPPORT_URL=\"https://help.ubuntu.com/\"\nBUG_REPORT_URL=\"https://bugs.launchpad.net/ubuntu/\"\nPRIVACY_POLICY_URL=\"https://www.ubuntu.com/legal/terms-and-policies/privacy-policy\"\nUBUNTU_CODENAME=resolute\nLOGO=ubuntu-logo\n",
+        "kernel": "7.0.0-34-generic",
+        "pid1": "systemd",
+        "multi_user": "active",
+        "network_online": "active",
+        "cloud_final": "active",
+        "ssh_socket": "active",
+        "failed_units": ""
+      },
+      "correctness": "passed",
+      "logs": "/home/reiase/workspace/pvisor/target/ubuntu-qemu-complete-20261004/trials/codex-qemu-ubuntu-009"
+    }
+  ],
+  "capabilities": {
+    "ready/qemu-ubuntu": {
+      "state": "available"
+    },
+    "ready/qemu-microvm-ubuntu": {
+      "state": "available"
+    },
+    "tools/qemu-ubuntu": {
+      "state": "available"
+    },
+    "tools/qemu-microvm-ubuntu": {
+      "state": "available"
+    },
+    "claude/qemu-ubuntu": {
+      "state": "available"
+    },
+    "claude/qemu-microvm-ubuntu": {
+      "state": "available"
+    },
+    "codex/qemu-ubuntu": {
+      "state": "available"
+    },
+    "codex/qemu-microvm-ubuntu": {
+      "state": "available"
+    }
+  },
+  "load_after": [
+    3.16357421875,
+    2.8349609375,
+    2.68896484375
+  ]
+}

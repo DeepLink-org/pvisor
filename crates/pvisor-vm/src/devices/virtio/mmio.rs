@@ -78,6 +78,27 @@ pub struct MmioSnapshot {
 }
 
 impl MmioSnapshot {
+    /// Rebind a matching overlay's audit identity without changing its rules.
+    #[cfg(not(any(feature = "tee", feature = "aws-nitro")))]
+    pub fn rebind_filesystem_policy(
+        &mut self,
+        tag: &[u8],
+        policy: &pvisor_overlay_core::FileAccessPolicy,
+    ) -> std::io::Result<bool> {
+        if let super::DeviceSnapshotState::Fs {
+            tag: saved_tag,
+            server,
+            ..
+        } = &mut self.device.state
+        {
+            if saved_tag == tag {
+                server.rebind_overlay_policy(policy)?;
+                return Ok(true);
+            }
+        }
+        Ok(false)
+    }
+
     /// Rebind all backing layers of a matching filesystem to separately
     /// verified full copies. The coordinator requires exactly one match per tag.
     #[cfg(not(any(feature = "tee", feature = "aws-nitro")))]
@@ -100,8 +121,7 @@ impl MmioSnapshot {
         Ok(false)
     }
 
-    /// Rebind all backing layers of a matching filesystem to separately
-    /// verified full copies. The coordinator requires exactly one match per tag.
+    /// Rebind private copies while retaining leased immutable stage bases.
     #[cfg(not(any(feature = "tee", feature = "aws-nitro")))]
     pub fn rebind_filesystem_stage(
         &mut self,
@@ -117,6 +137,66 @@ impl MmioSnapshot {
         {
             if saved_tag == tag {
                 server.rebind_stage(copies, immutable_lowers)?;
+                return Ok(true);
+            }
+        }
+        Ok(false)
+    }
+
+    /// Rebind verified private copies plus explicitly shared read-only lowers.
+    #[cfg(not(any(feature = "tee", feature = "aws-nitro")))]
+    pub fn rebind_filesystem_shared_lowers(
+        &mut self,
+        tag: &[u8],
+        copies: &[(std::path::PathBuf, std::path::PathBuf)],
+        shared_lowers: &[std::path::PathBuf],
+    ) -> std::io::Result<bool> {
+        if let super::DeviceSnapshotState::Fs {
+            tag: saved_tag,
+            server,
+            ..
+        } = &mut self.device.state
+        {
+            if saved_tag == tag {
+                server.rebind_shared_readonly_layers(copies, shared_lowers)?;
+                return Ok(true);
+            }
+        }
+        Ok(false)
+    }
+
+    /// Verify original frozen filesystem identities and content without rebinding.
+    #[cfg(not(any(feature = "tee", feature = "aws-nitro")))]
+    pub fn verify_frozen_filesystem_backing(&self, tag: &[u8]) -> std::io::Result<bool> {
+        if let super::DeviceSnapshotState::Fs {
+            tag: saved_tag,
+            server,
+            ..
+        } = &self.device.state
+        {
+            if saved_tag == tag {
+                server.verify_frozen_backing()?;
+                return Ok(true);
+            }
+        }
+        Ok(false)
+    }
+
+    /// Frozen supervisor relocation of selected immutable lowers only.
+    #[cfg(not(any(feature = "tee", feature = "aws-nitro")))]
+    pub fn rebind_filesystem_lower_copies(
+        &mut self,
+        tag: &[u8],
+        copies: &[(std::path::PathBuf, std::path::PathBuf)],
+    ) -> std::io::Result<bool> {
+        if let super::DeviceSnapshotState::Fs {
+            tag: saved_tag,
+            server,
+            ..
+        } = &mut self.device.state
+        {
+            if saved_tag == tag {
+                server.rebind_shared_lower_copies(copies)?;
                 return Ok(true);
             }
         }

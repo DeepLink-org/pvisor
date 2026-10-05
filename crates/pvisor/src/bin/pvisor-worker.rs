@@ -17,8 +17,18 @@ use tokio::{
     task::JoinSet,
     time::Instant,
 };
+#[path = "worker/artifacts.rs"]
+mod artifacts;
+#[path = "worker/checkpoints.rs"]
+mod checkpoints;
+#[path = "worker/cpu.rs"]
+mod cpu;
 #[path = "worker/environment.rs"]
 mod environment;
+#[path = "worker/gateway.rs"]
+mod gateway;
+#[path = "worker/memory.rs"]
+mod memory;
 #[path = "worker/outbox.rs"]
 mod outbox;
 
@@ -34,6 +44,10 @@ enum Backend {
 #[derive(Clone, Default, serde::Deserialize)]
 #[serde(default, deny_unknown_fields)]
 struct WorkerProfile {
+    checkpoint_storage: Option<checkpoints::Profile>,
+    #[serde(skip)]
+    checkpoints: Option<Arc<checkpoints::Repository>>,
+    gateway: gateway::Profile,
     vm: pvisor::VmSettings,
     container: pvisor::ContainerSettings,
     overlaynet: pvisor::OverlayNetSettings,
@@ -41,7 +55,19 @@ struct WorkerProfile {
     lower_layers: Vec<PathBuf>,
     admission: AdmissionPolicy,
     environments: EnvironmentProfile,
+    memory_sampling: memory::Profile,
+    cpu_qos: CpuQosProfile,
+    cpu_sampling: cpu::Profile,
+    #[cfg(target_os = "linux")]
+    #[serde(skip)]
+    cpu_group: Option<Arc<pvisor::CpuQosGroup>>,
 }
+#[derive(Clone, Default, serde::Deserialize)]
+#[serde(default, deny_unknown_fields)]
+struct CpuQosProfile {
+    enabled: bool,
+}
+
 #[derive(Clone, serde::Deserialize)]
 #[serde(default, deny_unknown_fields)]
 struct EnvironmentProfile {
@@ -110,6 +136,27 @@ struct Active {
     control_revision: u64,
     rejection: Option<AdmissionRejection>,
     retain_bundle: bool,
+    retention: Option<ArtifactRetention>,
+    memory_controls: Option<pvisor::RunControlHandle>,
+}
+
+fn publish_memory_targets(
+    active: &BTreeMap<String, Active>,
+    sender: &Option<watch::Sender<Vec<memory::Target>>>,
+) {
+    if let Some(sender) = sender {
+        sender.send_replace(
+            active
+                .values()
+                .filter_map(|entry| {
+                    Some(memory::Target {
+                        key: entry.key.clone(),
+                        controls: entry.memory_controls.clone()?,
+                    })
+                })
+                .collect(),
+        );
+    }
 }
 
 // HTTP and durable outbox I/O never execute inside the renewal branch.
@@ -119,8 +166,9 @@ enum Delivery {
     Decline(AdmissionRejection),
     Acknowledge(ControlAcknowledgement),
     Complete {
-        completion: Completion,
+        completion: Box<Completion>,
         retain_bundle: bool,
+        retention: Option<ArtifactRetention>,
     },
 }
 impl Delivery {
@@ -148,8 +196,17 @@ impl Delivery {
             Self::Complete {
                 completion,
                 retain_bundle,
+                retention,
             } => {
-                match outbox::save(outbox.clone(), completion.clone(), *retain_bundle, true).await {
+                match outbox::save(
+                    outbox.clone(),
+                    completion.as_ref().clone(),
+                    *retain_bundle,
+                    true,
+                    retention.clone(),
+                )
+                .await
+                {
                     Err(error) => {
                         storage_error = true;
                         Err(error)
@@ -192,6 +249,7 @@ struct DeliveryResult {
 struct TerminalDelivery {
     completion: Completion,
     retain_bundle: bool,
+    retention: Option<ArtifactRetention>,
     durable: bool,
     retry_after: Instant,
 }
@@ -304,10 +362,11 @@ fn resume_allowed(report: &AdmissionReport, used: Resources) -> bool {
                 .blocked
                 .iter()
                 .any(|block| *block != AdmissionBlock::CpuQuota)
-            && report
-                .measurements
-                .as_ref()
-                .is_some_and(|m| used.cpu_millis <= m.cpu_limit_millis))
+            && report.measurements.as_ref().is_some_and(|_| {
+                report
+                    .cpu_reservation_limit_millis()
+                    .is_some_and(|limit| used.cpu_millis <= limit)
+            }))
 }
 
 fn executor(
@@ -321,21 +380,45 @@ fn executor(
             std::env::current_exe()?,
         )?),
         Backend::Container => Arc::new(ContainerExecutor::new(config.container.clone())?),
-        Backend::Vm => {
-            let mut settings = config.vm.clone();
-            // Reservation equals configured guest address space; dynamic sizing
-            // avoids reserving the 2 GiB default for every small agent.
-            ensure!(
-                resources.memory_bytes.is_multiple_of(1024 * 1024),
-                "VM memory budget must be a whole MiB"
-            );
-            settings.memory_mib = u32::try_from(resources.memory_bytes / (1024 * 1024))?;
-            settings.cpus = u16::try_from(resources.cpu_millis.div_ceil(1000))?;
-            settings.ram_backing = None; // every Attempt owns a new backing
-            settings.rootfs_immutable = true;
-            Arc::new(VmExecutor::new(settings)?)
-        }
+        Backend::Vm => Arc::new(with_cpu_controls(
+            VmExecutor::new(vm_settings(config, resources)?)?,
+            config,
+        )),
     })
+}
+
+fn with_cpu_controls(executor: VmExecutor, config: &WorkerProfile) -> VmExecutor {
+    #[cfg(target_os = "linux")]
+    {
+        let executor = if config.cpu_sampling.enabled {
+            executor.with_cpu_observation()
+        } else {
+            executor
+        };
+        if let Some(group) = &config.cpu_group {
+            executor.with_cpu_qos_group(group.clone())
+        } else {
+            executor
+        }
+    }
+    #[cfg(not(target_os = "linux"))]
+    {
+        let _ = config;
+        executor
+    }
+}
+
+fn vm_settings(config: &WorkerProfile, resources: Resources) -> anyhow::Result<pvisor::VmSettings> {
+    let mut settings = config.vm.clone();
+    ensure!(
+        resources.memory_bytes.is_multiple_of(1024 * 1024),
+        "VM memory budget must be a whole MiB"
+    );
+    settings.memory_mib = u32::try_from(resources.memory_bytes / (1024 * 1024))?;
+    settings.cpus = u16::try_from(resources.cpu_millis.div_ceil(1000))?;
+    settings.ram_backing = None;
+    settings.rootfs_immutable = true;
+    Ok(settings)
 }
 
 fn runtime(
@@ -344,7 +427,62 @@ fn runtime(
     assignment: &Assignment,
     storage: &Path,
 ) -> anyhow::Result<PVisor> {
-    let executor = executor(args, config, assignment.spec.resources)?;
+    assignment.spec.validate_cpu_qos()?;
+    assignment.spec.validate_gateway()?;
+    assignment.spec.validate_artifacts()?;
+    ensure!(
+        assignment.spec.cpu_qos.is_none()
+            || (config.cpu_qos.enabled
+                && cfg!(target_os = "linux")
+                && matches!(args.backend, Backend::Vm)),
+        "worker cannot enforce requested CPU QoS"
+    );
+    let (executor, restore_overlay): (Arc<dyn RunExecutor>, Option<pvisor::OverlayHint>) =
+        if let Some(checkpoint) = &assignment.checkpoint {
+            ensure!(
+                assignment.spec.restore.is_some()
+                    && matches!(args.backend, Backend::Vm)
+                    && config.overlaynet.mode == pvisor::OverlayNetMode::Off,
+                "execution restore assignment/profile mismatch"
+            );
+            let state = args.state.canonicalize()?;
+            let store = checkpoint.store.canonicalize()?;
+            if store.starts_with(state.join("checkpoint-imports")) {
+                let publication = assignment
+                    .checkpoint_publication
+                    .as_ref()
+                    .context("imported checkpoint has no controller provenance")?;
+                checkpoints::Repository::validate_import(&state, checkpoint, publication)?;
+            } else {
+                ensure!(
+                    store.starts_with(state.join("tasks"))
+                        && store
+                            .file_name()
+                            .is_some_and(|name| name == "execution-snapshots"),
+                    "execution checkpoint is outside this Worker's owned task storage"
+                );
+                let source = pvisor::RunRecord::read(
+                    store.parent().context("snapshot source storage missing")?,
+                )?;
+                ensure!(
+                    source.run_id == checkpoint.source_run_id
+                        && source.attempt_id.as_deref() == Some(&checkpoint.source_attempt_id),
+                    "execution checkpoint source Run/Attempt storage binding mismatch"
+                );
+            }
+            let (executor, overlay) = VmExecutor::restore(
+                vm_settings(config, assignment.spec.resources)?,
+                checkpoint.clone(),
+                storage,
+            )?;
+            (Arc::new(with_cpu_controls(executor, config)), Some(overlay))
+        } else {
+            ensure!(
+                assignment.spec.restore.is_none(),
+                "execution restore assignment has no checkpoint"
+            );
+            (executor(args, config, assignment.spec.resources)?, None)
+        };
     let descriptor = executor.descriptor();
     ensure!(
         assignment.spec.execution
@@ -375,7 +513,10 @@ fn runtime(
         .network(
             pvisor::NetworkDriverConfig::new(config.overlaynet.mode, network).listen("127.0.0.1:0"),
         );
-    if !config.lower_layers.is_empty() {
+    builder = gateway::attach(builder, &config.gateway, &assignment.spec, storage)?;
+    if let Some(overlay) = restore_overlay {
+        builder = builder.overlay(overlay);
+    } else if !config.lower_layers.is_empty() {
         // Core filesystem rules remain in RunSpec. Host-owned lower layers are
         // shared; writable upper and merged mount are private to each lease.
         builder = builder.overlay(pvisor::OverlayHint {
@@ -396,7 +537,7 @@ struct AttemptRuntime {
 }
 struct PreparedRuntime {
     runtime: PVisor,
-    _mounts: Vec<Arc<pvisor::cache::MountedImage>>,
+    mounts: environment::MountOwners<pvisor::cache::MountedImage>,
 }
 impl AttemptRuntime {
     async fn prepare(
@@ -405,33 +546,78 @@ impl AttemptRuntime {
         storage: &Path,
     ) -> anyhow::Result<PreparedRuntime> {
         let mut profile = (*self.profile).clone();
-        let mounts = match (&assignment.spec.environment, &assignment.environment) {
-            (None, None) => Vec::new(),
-            (Some(digest), Some(record)) => {
-                ensure!(
-                    *digest == record.digest && matches!(self.args.backend, Backend::Vm),
-                    "environment assignment identity/backend mismatch"
-                );
-                ensure!(
-                    profile.lower_layers.is_empty(),
-                    "immutable environment cannot include unversioned worker lower_layers"
-                );
-                let pool = self
-                    .environments
-                    .as_ref()
-                    .context("worker immutable environments are disabled")?;
-                let mounts = pool.prepare(record).await?;
-                profile.vm.rootfs = Some(mounts[0].rootfs().to_owned());
-                profile.vm.image = None;
-                profile.lower_layers = mounts.iter().rev().map(|m| m.rootfs().to_owned()).collect();
-                mounts
+        let mounts = if assignment.checkpoint.is_some() {
+            environment::MountOwners::new()
+        } else {
+            match (&assignment.spec.environment, &assignment.environment) {
+                (None, None) => environment::MountOwners::new(),
+                (Some(digest), Some(record)) => {
+                    ensure!(
+                        *digest == record.digest && matches!(self.args.backend, Backend::Vm),
+                        "environment assignment identity/backend mismatch"
+                    );
+                    ensure!(
+                        profile.lower_layers.is_empty(),
+                        "immutable environment cannot include unversioned worker lower_layers"
+                    );
+                    let pool = self
+                        .environments
+                        .as_ref()
+                        .context("worker immutable environments are disabled")?;
+                    let mounts = pool.prepare(record).await?;
+                    profile.vm.rootfs = Some(mounts.mounts()[0].rootfs().to_owned());
+                    profile.vm.image = None;
+                    profile.lower_layers = mounts
+                        .mounts()
+                        .iter()
+                        .rev()
+                        .map(|m| m.rootfs().to_owned())
+                        .collect();
+                    mounts
+                }
+                _ => anyhow::bail!("environment assignment is incomplete"),
             }
-            _ => anyhow::bail!("environment assignment is incomplete"),
         };
-        Ok(PreparedRuntime {
-            runtime: runtime(&self.args, &profile, assignment, storage)?,
-            _mounts: mounts,
+        let args = self.args.clone();
+        let mut assigned = assignment.clone();
+        if let Some(publication) = &assignment.checkpoint_publication {
+            publication.validate()?;
+            ensure!(
+                assignment.checkpoint.as_ref() == Some(&publication.checkpoint)
+                    && assignment.spec.restore.is_some(),
+                "checkpoint publication does not match restore assignment"
+            );
+            let local = publication
+                .checkpoint
+                .store
+                .canonicalize()
+                .ok()
+                .is_some_and(|store| {
+                    store.starts_with(self.args.state.join("tasks"))
+                        && store
+                            .join("objects")
+                            .join(&publication.checkpoint.snapshot_id)
+                            .is_dir()
+                });
+            if !local {
+                let repository = profile
+                    .checkpoints
+                    .as_ref()
+                    .context("remote checkpoint repository is disabled")?;
+                assigned.checkpoint = Some(repository.import(&self.args.state, publication).await?);
+            }
+        }
+
+        let destination = storage.to_owned();
+        tokio::task::spawn_blocking(move || {
+            // A cancelled preparation must keep its lowers alive until the
+            // blocking runtime construction finishes, even if nobody awaits it.
+            Ok(PreparedRuntime {
+                runtime: runtime(&args, &profile, &assigned, &destination)?,
+                mounts,
+            })
         })
+        .await?
     }
 }
 async fn lease_expired(mut clock: watch::Receiver<Instant>) {
@@ -449,6 +635,8 @@ struct AttemptChannels {
     lease_clock: watch::Receiver<Instant>,
     commands: mpsc::Receiver<ControlCommand>,
     acknowledgements: mpsc::Sender<ControlAcknowledgement>,
+    memory_ready: Option<mpsc::Sender<(LeaseKey, pvisor::RunControlHandle)>>,
+    native_done: mpsc::Sender<NativeDoneReceipt>,
 }
 
 async fn upload_retry(client: &Client, key: &LeaseKey, bytes: Vec<u8>) -> anyhow::Result<BlobRef> {
@@ -459,7 +647,8 @@ async fn upload_retry(client: &Client, key: &LeaseKey, bytes: Vec<u8>) -> anyhow
             Err(error) => {
                 let retry = error.downcast_ref::<reqwest::Error>().is_some_and(|e| {
                     e.status().is_none_or(|s| {
-                        s.is_server_error() || s == reqwest::StatusCode::TOO_MANY_REQUESTS
+                        (s.is_server_error() && s != reqwest::StatusCode::INSUFFICIENT_STORAGE)
+                            || s == reqwest::StatusCode::TOO_MANY_REQUESTS
                     })
                 });
                 if !retry {
@@ -470,66 +659,6 @@ async fn upload_retry(client: &Client, key: &LeaseKey, bytes: Vec<u8>) -> anyhow
             }
         }
     }
-}
-
-async fn retain_bundle(
-    client: &Client,
-    key: &LeaseKey,
-    result: &pvisor_core::RunResult,
-    storage: &Path,
-) -> anyhow::Result<BlobRef> {
-    let storage_owned = storage.to_owned();
-    let run_id = result.run_id.to_string();
-    let attempt_id = result.attempt_id.to_string();
-    let state = result.state;
-    let bytes = tokio::task::spawn_blocking(move || -> anyhow::Result<Vec<u8>> {
-        use std::io::Read;
-        use std::os::unix::fs::OpenOptionsExt;
-        let file = std::fs::OpenOptions::new()
-            .read(true)
-            .custom_flags(libc::O_NOFOLLOW | libc::O_NONBLOCK)
-            .open(storage_owned.join("run-bundle.json"))?;
-        ensure!(
-            file.metadata()?.is_file() && file.metadata()?.len() <= ARTIFACT_FILE_BYTES,
-            "native Run Bundle exceeds artifact limit or is not a file"
-        );
-        let mut bytes = Vec::new();
-        file.take(ARTIFACT_FILE_BYTES + 1).read_to_end(&mut bytes)?;
-        ensure!(
-            bytes.len() as u64 <= ARTIFACT_FILE_BYTES,
-            "native Run Bundle exceeds artifact limit"
-        );
-        let bundle: pvisor::RunBundle = serde_json::from_slice(&bytes)?;
-        ensure!(
-            bundle.schema_version == pvisor::RUN_BUNDLE_SCHEMA_VERSION
-                && bundle.run.run_id == run_id
-                && bundle.run.attempt_id == attempt_id
-                && bundle.run.state == state,
-            "native Run Bundle does not match completed attempt"
-        );
-        Ok(bytes)
-    })
-    .await??;
-    let digest = pvisor_cluster::artifacts::digest(&bytes);
-    let mut chunks = Vec::new();
-    for chunk in bytes.chunks(ARTIFACT_CHUNK_BYTES) {
-        chunks.push(upload_retry(client, key, chunk.to_vec()).await?);
-    }
-    let manifest = ArtifactManifest {
-        version: CLUSTER_VERSION,
-        key: key.clone(),
-        files: vec![ArtifactFile {
-            name: "run-bundle.json".into(),
-            bytes: bytes.len() as u64,
-            digest,
-            chunks,
-        }],
-    };
-    manifest.validate()?;
-    persist(&storage.join("artifact-manifest.json"), &manifest)?;
-    let reference = upload_retry(client, key, serde_json::to_vec(&manifest)?).await?;
-    persist(&storage.join("artifact-reference.json"), &reference)?;
-    Ok(reference)
 }
 
 async fn execute(
@@ -545,19 +674,50 @@ async fn execute(
         mut lease_clock,
         mut commands,
         acknowledgements,
+        memory_ready,
+        native_done,
     } = channels;
-    let requested_bundle = assignment.spec.retain_bundle;
+    let requested_bundle = assignment.spec.requires_artifacts();
+    let retention = assignment.spec.retain_artifacts.clone();
+    let checkpoint_repository = runtime.profile.checkpoints.clone();
+    let checkpoint_filesystem_pool = runtime.profile.vm.snapshot_filesystem_pool.clone();
+    let mut export_journal = None;
+    let mut terminal_control = None;
     let lease_key = assignment.lease.key.clone();
+    let mut mounts = environment::MountOwners::new();
     let result: anyhow::Result<pvisor_core::RunResult> = async {
         ensure!(!*stop.borrow(), "lease ended before environment preparation");
-        let prepared = tokio::select! {
-            prepared = runtime.prepare(&assignment, &storage) => prepared?,
-            _ = stop.changed() => anyhow::bail!("environment preparation cancelled"),
-            _ = lease_expired(lease_clock.clone()) => anyhow::bail!("environment preparation lease expired"),
+        let prepared = {
+          let preparing = runtime.prepare(&assignment, &storage);
+          tokio::pin!(preparing);
+          tokio::select! {
+            prepared = &mut preparing => prepared?,
+            _ = stop.changed() => { let _ = preparing.await; anyhow::bail!("environment preparation cancelled") },
+            _ = lease_expired(lease_clock.clone()) => { let _ = preparing.await; anyhow::bail!("environment preparation lease expired") },
+          }
         };
         let runtime = prepared.runtime;
-        let _mounts = prepared._mounts; // Keep shared lowers through native teardown.
+        export_journal = runtime.journal();
+        mounts = prepared.mounts; // Keep shared lowers through native teardown.
         let mut spec = assignment.spec.run;
+        ensure!(!spec.metadata.contains_key("pvisor.orchestration.artifact_retention"), "task overrides artifact retention provenance");
+        if let Some(retention) = &retention {
+            spec.metadata.insert("pvisor.orchestration.artifact_retention".into(), serde_json::to_value(retention)?);
+        }
+        spec.runtime.cpu_qos = assignment.spec.cpu_qos;
+        ensure!(!spec.metadata.contains_key("pvisor.orchestration.gateway"), "task overrides Gateway provenance");
+        if let Some(requirement) = assignment.spec.gateway {
+            spec.metadata.insert("pvisor.orchestration.gateway".into(), serde_json::to_value(requirement)?);
+        }
+        ensure!(!spec.metadata.contains_key("pvisor.orchestration.checkpoint_publication"), "task overrides checkpoint publication provenance");
+        if let Some(publication) = assignment.checkpoint_publication {
+            spec.metadata.insert("pvisor.orchestration.checkpoint_publication".into(), serde_json::to_value(publication)?);
+        }
+        ensure!(!spec.metadata.contains_key("pvisor.orchestration.execution_restore"), "task overrides execution restore provenance");
+        if let Some(checkpoint) = assignment.checkpoint {
+            spec.metadata.insert("pvisor.lineage".into(), serde_json::json!({"parent_run_id": checkpoint.source_run_id, "checkpoint_id": checkpoint.snapshot_id}));
+            spec.metadata.insert("pvisor.orchestration.execution_restore".into(), serde_json::to_value(checkpoint)?);
+        }
         if let Some(record) = assignment.environment {
             let RunInvocation::Process(process) = &spec.invocation;
             ensure!(!spec.metadata.keys().any(|k| k.starts_with("pvisor.vm.") || k.starts_with("pvisor.orchestration.environment")), "environment task overrides host preparation metadata");
@@ -581,6 +741,9 @@ async fn execute(
         let handle = runtime.run(spec).await?;
         let cancellation = handle.cancellation();
         let controls = handle.controls();
+        if let Some(sender) = memory_ready {
+            let _ = sender.try_send((lease_key.clone(), controls.clone()));
+        }
         let mut halted = *stop.borrow() || Instant::now() >= *lease_clock.borrow();
         if halted {
             cancellation.cancel();
@@ -617,9 +780,11 @@ async fn execute(
                     // Lease expiry interrupts waiting without acknowledging uncertain
                     // effects; cancellation owns the eventual native teardown.
                     let action = command.request.action;
+                    let request_id = command.request.request_id.clone();
                     let operation = async {
                         controls.clone().wait_ready().await?;
-                        controls.control(action.operation()).await
+                        let operation = action.operation(&request_id);
+                        controls.control(operation).await
                     };
                     tokio::pin!(operation);
                     let outcome = tokio::select! {
@@ -630,6 +795,7 @@ async fn execute(
                     };
                     let mut outcome = match outcome {
                         Ok(pvisor_core::operation::Value::Vm { state, memory }) => ControlOutcome::Succeeded { state, memory },
+                        Ok(pvisor_core::operation::Value::ExecutionCheckpoint { checkpoint }) => ControlOutcome::Checkpointed { checkpoint },
                         Ok(_) => ControlOutcome::Failed { error: "native control returned no VM observation".into() },
                         Err(error) => {
                             let mut message = Some(format!("{error:#}"));
@@ -658,6 +824,7 @@ async fn execute(
                 }
             }
         }?;
+        terminal_control = last_acknowledgement;
         // Lossy UTF-8 decoding can expand raw output. Bound the wire form as
         // well as the executor's byte buffer so results remain deliverable.
         bound_text(
@@ -678,6 +845,11 @@ async fn execute(
         Ok(result)
     }
     .await;
+    // Do not publish completion or release controller reservations until the
+    // native teardown and final shared-lower release have both finished. The
+    // blocking join must leave heartbeat and lease timers free to run.
+    let release = mounts.release().await;
+    let result = result.and_then(|result| release.map(|()| result));
     let mut completion = match result {
         Ok(result) => Completion {
             key: lease_key.clone(),
@@ -700,13 +872,69 @@ async fn execute(
     };
     // Native execution has already terminated. Preserve that result before any
     // potentially long/retried upload so restart can publish without re-execution.
-    if requested_bundle
-        && completion.result.is_some()
-        && let Err(error) = outbox::save(outbox.clone(), completion.clone(), true, false).await
-    {
-        eprintln!("worker native terminal outbox write failed: {error:#}");
-    }
+    let native_durable = if requested_bundle && completion.result.is_some() {
+        match outbox::save(
+            outbox.clone(),
+            completion.clone(),
+            true,
+            false,
+            retention.clone(),
+        )
+        .await
+        {
+            Ok(_) => true,
+            Err(error) => {
+                eprintln!("worker native terminal outbox write failed: {error:#}");
+                false
+            }
+        }
+    } else {
+        false
+    };
     if requested_bundle && let Some(result) = &completion.result {
+        let sealed = if *stop.borrow() {
+            Err(anyhow::anyhow!(
+                "bundle retention interrupted by cancellation"
+            ))
+        } else {
+            artifacts::seal_attempt(
+                &completion.key,
+                result,
+                &storage,
+                retention.clone(),
+                export_journal.clone(),
+                checkpoint_repository.clone(),
+                checkpoint_filesystem_pool.clone(),
+            )
+            .await
+        };
+        drop(export_journal.take());
+        if sealed.is_ok() && native_durable && !*stop.borrow() {
+            // A very fast exit after resume can overtake the main-loop ack.
+            // Preserve the observed control result before a handoff can settle
+            // pending controls or clear the local native accounting.
+            let controls_settled = if let Some(acknowledgement) = &terminal_control {
+                tokio::select! {
+                    receipt = client.acknowledge_control(acknowledgement) => receipt.is_ok(),
+                    _ = stop.changed() => false,
+                    _ = lease_expired(lease_clock.clone()) => false,
+                }
+            } else {
+                true
+            };
+            let acknowledged = tokio::select! {
+                receipt = async {
+                    if controls_settled { artifacts::handoff(&client, &completion.key, result).await }
+                    else { None }
+                } => receipt,
+                _ = stop.changed() => None,
+                _ = lease_expired(lease_clock.clone()) => None,
+            };
+            if let Some(receipt) = acknowledged {
+                // Only a matching, durable controller receipt permits local reuse.
+                let _ = native_done.send(receipt).await;
+            }
+        }
         let expired = async {
             loop {
                 let deadline = *lease_clock.borrow();
@@ -716,16 +944,16 @@ async fn execute(
                 }
             }
         };
-        let exported = if *stop.borrow() {
-            Err(anyhow::anyhow!(
+        let exported = match sealed {
+            Err(error) => Err(error),
+            Ok(_) if *stop.borrow() => Err(anyhow::anyhow!(
                 "bundle retention interrupted by cancellation"
-            ))
-        } else {
-            tokio::select! {
-                exported = retain_bundle(&client, &completion.key, result, &storage) => exported,
+            )),
+            Ok(manifest) => tokio::select! {
+                exported = artifacts::upload(&client, &completion.key, &storage, manifest) => exported,
                 _ = stop.changed() => Err(anyhow::anyhow!("bundle retention interrupted by cancellation")),
                 _ = expired => Err(anyhow::anyhow!("bundle retention lease expired")),
-            }
+            },
         };
         match exported {
             Ok(reference) => completion.artifacts = Some(reference),
@@ -736,7 +964,15 @@ async fn execute(
             }
         }
     }
-    if let Err(error) = outbox::save(outbox, completion.clone(), requested_bundle, true).await {
+    if let Err(error) = outbox::save(
+        outbox,
+        completion.clone(),
+        requested_bundle,
+        true,
+        retention.clone(),
+    )
+    .await
+    {
         eprintln!("worker final outbox write failed: {error:#}");
     }
     // Keep evidence even after acknowledgement; the controller journal retains
@@ -797,12 +1033,13 @@ fn main() -> anyhow::Result<()> {
         .block_on(worker_main())
 }
 async fn worker_main() -> anyhow::Result<()> {
-    let args = Args::parse();
+    let mut args = Args::parse();
     ensure!(
         args.poll_ms > 0 && args.poll_ms <= 10_000,
         "poll interval must be 1..10000 ms"
     );
     std::fs::create_dir_all(&args.state)?;
+    args.state = args.state.canonicalize()?;
     let lock = std::fs::OpenOptions::new()
         .create(true)
         .truncate(false)
@@ -812,11 +1049,78 @@ async fn worker_main() -> anyhow::Result<()> {
         .context("worker state already owned")?;
     let client = Client::new(&args.url, args.token.clone())?;
     let outbox = Arc::new(outbox::Outbox::open(&args.state, &args.id, &args.url)?);
-    outbox::recover(outbox.clone(), client.clone(), args.poll_ms).await?;
-    let config: WorkerProfile = match &args.config {
+    let mut config: WorkerProfile = match &args.config {
         Some(path) => toml::from_str(&std::fs::read_to_string(path)?)?,
         None => WorkerProfile::default(),
     };
+    if let Some(pool) = &config.vm.snapshot_filesystem_pool {
+        ensure!(
+            cfg!(all(target_os = "linux", target_arch = "x86_64"))
+                && matches!(args.backend, Backend::Vm)
+                && config.overlaynet.mode == pvisor::OverlayNetMode::Off
+                && config.vm.memory_pool.is_none()
+                && !config.vm.ram_compression
+                && config.vm.ram_backing.is_none(),
+            "immutable snapshot pool requires the private-RAM no-network native Linux VM profile"
+        );
+        ensure!(
+            pool.is_absolute(),
+            "snapshot filesystem pool must be an absolute host path"
+        );
+        std::fs::create_dir_all(pool)?;
+        pvisor::environment_snapshot::SnapshotStore::new(pool)?;
+        config.vm.snapshot_filesystem_pool = Some(pool.canonicalize()?);
+    }
+    if let Some(profile) = &config.checkpoint_storage {
+        ensure!(
+            cfg!(all(target_os = "linux", target_arch = "x86_64"))
+                && matches!(args.backend, Backend::Vm)
+                && config.overlaynet.mode == pvisor::OverlayNetMode::Off
+                && config.vm.memory_pool.is_none()
+                && !config.vm.ram_compression,
+            "checkpoint repository requires a no-network native Linux VM profile"
+        );
+        config.checkpoints = Some(Arc::new(checkpoints::Repository::new(profile, &config.vm)?));
+    }
+    outbox::recover(
+        outbox.clone(),
+        client.clone(),
+        args.poll_ms,
+        config.checkpoints.clone(),
+        config.vm.snapshot_filesystem_pool.clone(),
+    )
+    .await?;
+    config.gateway.validate(config.overlaynet.mode)?;
+    if config.cpu_qos.enabled {
+        ensure!(
+            cfg!(target_os = "linux") && matches!(args.backend, Backend::Vm),
+            "cpu_qos requires a Linux VM worker"
+        );
+        #[cfg(target_os = "linux")]
+        {
+            config.cpu_group =
+                Some(tokio::task::spawn_blocking(pvisor::CpuQosGroup::shared).await??);
+        }
+    }
+    ensure!(
+        (1000..=60_000).contains(&config.cpu_sampling.interval_ms),
+        "CPU sampling interval must be 1000..60000 ms"
+    );
+    ensure!(
+        !config.cpu_sampling.enabled
+            || (cfg!(target_os = "linux") && matches!(args.backend, Backend::Vm)),
+        "cpu_sampling requires a Linux VM worker"
+    );
+    ensure!(
+        (1000..=60_000).contains(&config.memory_sampling.interval_ms),
+        "memory sampling interval must be 1000..60000 ms"
+    );
+    if config.memory_sampling.enabled {
+        ensure!(
+            cfg!(target_os = "linux") && matches!(args.backend, Backend::Vm),
+            "memory_sampling requires a Linux VM worker"
+        );
+    }
     let args = Arc::new(args);
     let config = Arc::new(config);
     let environments = if config.environments.enabled {
@@ -874,7 +1178,51 @@ async fn worker_main() -> anyhow::Result<()> {
             isolation: IsolationKind::VirtualMachine,
         },
     };
+    let uses_memory_pool = config.vm.memory_pool.is_some()
+        || (cfg!(all(target_os = "macos", target_arch = "aarch64"))
+            && std::env::var_os("PVISOR_EXPERIMENTAL_MEMORY_POOL").is_some());
     let registration = WorkerRegistration {
+        checkpoint_storage: config
+            .checkpoints
+            .as_ref()
+            .map(|repository| repository.support.clone()),
+        artifact_export: Some(ArtifactExportSupport {
+            execution_checkpoint: config
+                .checkpoints
+                .as_ref()
+                .is_some_and(|repository| repository.support.publish),
+            version: ARTIFACT_EXPORT_VERSION,
+            trace: true,
+            workspace_upper: matches!(args.backend, Backend::Vm),
+        }),
+        gateway: config.gateway.support(),
+        cpu_observation_protocol: config
+            .cpu_sampling
+            .enabled
+            .then_some(pvisor_core::cpu::CPU_OBSERVATION_PROTOCOL_VERSION),
+        cpu_qos_classes: if config.cpu_qos.enabled {
+            vec![
+                pvisor_core::CpuQosClass::BestEffort,
+                pvisor_core::CpuQosClass::LatencySensitive,
+            ]
+        } else {
+            vec![]
+        },
+        parked_execution_suspend_protocol: (matches!(args.backend, Backend::Vm)
+            && cfg!(all(target_os = "linux", target_arch = "x86_64"))
+            && config.overlaynet.mode == pvisor::OverlayNetMode::Off
+            && !uses_memory_pool
+            && !config.vm.ram_compression)
+            .then_some(CLUSTER_VERSION),
+        execution_restore_protocol: (matches!(args.backend, Backend::Vm)
+            && cfg!(any(
+                all(target_os = "linux", target_arch = "x86_64"),
+                all(target_os = "macos", target_arch = "aarch64")
+            ))
+            && config.overlaynet.mode == pvisor::OverlayNetMode::Off
+            && !uses_memory_pool
+            && !config.vm.ram_compression)
+            .then_some(CLUSTER_VERSION),
         version: CLUSTER_VERSION,
         id: args.id.clone(),
         incarnation: uuid::Uuid::new_v4().to_string(),
@@ -898,11 +1246,16 @@ async fn worker_main() -> anyhow::Result<()> {
             }),
         vm_control_actions: if matches!(args.backend, Backend::Vm) {
             let mut actions = vec![ControlAction::Pause, ControlAction::Resume];
-            let uses_pool = config.vm.memory_pool.is_some()
-                || (cfg!(all(target_os = "macos", target_arch = "aarch64"))
-                    && std::env::var_os("PVISOR_EXPERIMENTAL_MEMORY_POOL").is_some());
-            if !uses_pool {
+            if !uses_memory_pool {
                 actions.push(ControlAction::Offload);
+                if cfg!(any(
+                    all(target_os = "linux", target_arch = "x86_64"),
+                    all(target_os = "macos", target_arch = "aarch64")
+                )) && config.overlaynet.mode == pvisor::OverlayNetMode::Off
+                {
+                    actions.push(ControlAction::Checkpoint);
+                    actions.push(ControlAction::Suspend);
+                }
             }
             actions
         } else {
@@ -926,11 +1279,33 @@ async fn worker_main() -> anyhow::Result<()> {
     let (finished_tx, mut finished_rx) = mpsc::channel::<Completion>(capacity.slots as usize);
     let (acknowledgements_tx, mut acknowledgements_rx) =
         mpsc::channel::<ControlAcknowledgement>(capacity.slots as usize);
+    let (native_done_tx, mut native_done_rx) =
+        mpsc::channel::<NativeDoneReceipt>(capacity.slots as usize);
     let mut active = BTreeMap::<String, Active>::new();
     // Independent of active leases: expiry does not discard delivery ownership.
     let mut terminal = BTreeMap::<String, TerminalDelivery>::new();
     let mut deliveries = JoinSet::<DeliveryResult>::new();
     let mut in_flight = BTreeSet::<String>::new();
+    let (memory_ready_tx, mut memory_ready_rx) =
+        mpsc::channel::<(LeaseKey, pvisor::RunControlHandle)>(capacity.slots as usize);
+    let memory_targets = if config.memory_sampling.enabled {
+        Some(memory::start(
+            client.clone(),
+            &config.memory_sampling,
+            &registration,
+        )?)
+    } else {
+        None
+    };
+    let cpu_targets = if config.cpu_sampling.enabled {
+        Some(cpu::start(
+            client.clone(),
+            &config.cpu_sampling,
+            &registration,
+        )?)
+    } else {
+        None
+    };
     let mut tick = tokio::time::interval(Duration::from_millis(args.poll_ms));
     tick.set_missed_tick_behavior(tokio::time::MissedTickBehavior::Skip);
     let mut watchdog = tokio::time::interval(Duration::from_millis(50));
@@ -946,13 +1321,25 @@ async fn worker_main() -> anyhow::Result<()> {
     loop {
         tokio::select! {
             _ = &mut shutdown, if !stopping => { stopping = true; for entry in active.values() { entry.stop.send_replace(true); } },
+            Some(receipt) = native_done_rx.recv() => {
+                if let Some(entry) = active.get_mut(&receipt.key.task_id) && entry.key == receipt.key && receipt.reserved.fits(entry.resources) {
+                    entry.resources = receipt.reserved;
+                    entry.memory_controls = None;
+                    entry.acknowledgement = None;
+                }
+                publish_memory_targets(&active, &memory_targets);
+                publish_memory_targets(&active, &cpu_targets);
+            },
             Some(completion) = finished_rx.recv() => {
                 if let Some(entry) = active.get_mut(&completion.key.task_id) && entry.key == completion.key {
                     terminal.insert(outbox::key_name(&completion.key), TerminalDelivery {
-                        completion: completion.clone(), retain_bundle: entry.retain_bundle, durable: false, retry_after: Instant::now(),
+                        completion: completion.clone(), retain_bundle: entry.retain_bundle, retention: entry.retention.clone(), durable: false, retry_after: Instant::now(),
                     });
                     entry.native_terminal = true;
+                    entry.memory_controls = None;
                 }
+                publish_memory_targets(&active, &memory_targets);
+                publish_memory_targets(&active, &cpu_targets);
             },
             Some(joined) = deliveries.join_next(), if !deliveries.is_empty() => {
                 let event = joined.context("worker delivery task failed")?;
@@ -997,7 +1384,7 @@ async fn worker_main() -> anyhow::Result<()> {
                                         error: Some("node admission rejected before execution".into()),
                                         artifacts: None, artifact_error: None };
                                     terminal.insert(outbox::key_name(&key), TerminalDelivery {
-                                        completion: completion.clone(), retain_bundle: entry.retain_bundle, durable: false, retry_after: Instant::now(),
+                                        completion: completion.clone(), retain_bundle: entry.retain_bundle, retention: entry.retention.clone(), durable: false, retry_after: Instant::now(),
                                     });
                                     entry.rejection = None;
                                     entry.native_terminal = true;
@@ -1023,11 +1410,21 @@ async fn worker_main() -> anyhow::Result<()> {
                         }
                     }
                 }
+                publish_memory_targets(&active, &memory_targets);
+                publish_memory_targets(&active, &cpu_targets);
+            },
+            Some((key, controls)) = memory_ready_rx.recv() => {
+                if let Some(entry) = active.get_mut(&key.task_id) && entry.key == key && !entry.native_terminal && entry.resources.slots > 0 {
+                    entry.memory_controls = Some(controls);
+                    publish_memory_targets(&active, &memory_targets);
+                    publish_memory_targets(&active, &cpu_targets);
+                }
             },
             Some(acknowledgement) = acknowledgements_rx.recv() => {
                 if let Some(entry) = active.get_mut(&acknowledgement.command.key.task_id)
                     && entry.key == acknowledgement.command.key
-                    && entry.control_revision == acknowledgement.command.revision {
+                    && entry.control_revision == acknowledgement.command.revision
+                    && entry.resources.slots > 0 {
                     entry.resources = acknowledgement.outcome.reservation(entry.full_resources, entry.resources);
                     entry.acknowledgement = Some(acknowledgement);
                 }
@@ -1044,7 +1441,7 @@ async fn worker_main() -> anyhow::Result<()> {
                 }
                 let request = PollRequest { worker_id: registration.id.clone(), incarnation: registration.incarnation.clone(),
                     active: active.values().filter(|a| a.rejection.is_none()).map(|a| a.key.clone()).collect(), available: report.available,
-                    max_assignments: if stopping || terminal.len() >= MAX_DELIVERIES { 0 } else { capacity.slots.min(64) }, admission: Some(report) };
+                    max_assignments: if stopping || terminal.len() >= MAX_DELIVERIES { 0 } else { capacity.slots.min(64).min((capacity.slots as usize + MAX_ARTIFACT_DELIVERIES).saturating_sub(active.len()) as u32) }, admission: Some(report) };
                 let began = Instant::now();
                 // The lease watchdog must remain live while HTTP waits. This
                 // branch awaits only via a nested select that observes expiry.
@@ -1068,7 +1465,7 @@ async fn worker_main() -> anyhow::Result<()> {
                         }
                         for key in response.stop { if let Some(entry) = active.get(&key.task_id) && entry.key == key { entry.stop.send_replace(true); } }
                         for command in response.controls {
-                            if let Some(entry) = active.get_mut(&command.key.task_id) && entry.key == command.key {
+                            if let Some(entry) = active.get_mut(&command.key.task_id) && entry.key == command.key && entry.resources.slots > 0 {
                                 if command.revision < entry.control_revision { continue; }
                                 if command.revision > entry.control_revision {
                                     entry.control_revision = command.revision;
@@ -1096,7 +1493,8 @@ async fn worker_main() -> anyhow::Result<()> {
                             let id = assignment.spec.id.clone();
                             if active.contains_key(&id) { continue; }
                             let resources = assignment.spec.resources;
-                            let retain_bundle = assignment.spec.retain_bundle;
+                            let retain_bundle = assignment.spec.requires_artifacts();
+                            let retention = assignment.spec.retain_artifacts.clone();
                             let key = assignment.lease.key.clone();
                             let storage = args.state.join("tasks").join(format!("{}-{}", id, key.generation));
                             std::fs::create_dir_all(&storage)?;
@@ -1115,10 +1513,12 @@ async fn worker_main() -> anyhow::Result<()> {
                                 let ack_tx = acknowledgements_tx.clone();
                                 let publisher = client.clone();
                                 let pending = outbox.clone();
-                                tokio::spawn(async move { let completion = execute(runtime, assignment, AttemptChannels { stop: stop_rx, lease_clock: lease_rx, commands: commands_rx, acknowledgements: ack_tx }, storage, publisher, pending).await; let _ = tx.send(completion).await; });
+                                let native_done = native_done_tx.clone();
+                                let memory_ready = (memory_targets.is_some() || cpu_targets.is_some()).then(|| memory_ready_tx.clone());
+                                tokio::spawn(async move { let completion = execute(runtime, assignment, AttemptChannels { stop: stop_rx, lease_clock: lease_rx, commands: commands_rx, acknowledgements: ack_tx, memory_ready, native_done }, storage, publisher, pending).await; let _ = tx.send(completion).await; });
                                 None
                             };
-                            active.insert(id, Active { key, resources, full_resources: resources, deadline: began + duration, lease_clock: lease_tx, stop: stop_tx, native_terminal: false, commands: commands_tx, acknowledgement: None, control_revision: 0, rejection, retain_bundle });
+                            active.insert(id, Active { key, resources, full_resources: resources, deadline: began + duration, lease_clock: lease_tx, stop: stop_tx, native_terminal: false, commands: commands_tx, acknowledgement: None, control_revision: 0, rejection, retain_bundle, retention, memory_controls: None });
                         }
                     }
                     Err(error) => eprintln!("worker poll failed: {error:#}"),
@@ -1135,7 +1535,7 @@ async fn worker_main() -> anyhow::Result<()> {
                 }
                 for pending in terminal.values().filter(|pending| Instant::now() >= pending.retry_after) {
                     queue_delivery(Delivery::Complete {
-                        completion: pending.completion.clone(), retain_bundle: pending.retain_bundle,
+                        completion: Box::new(pending.completion.clone()), retain_bundle: pending.retain_bundle, retention: pending.retention.clone(),
                     }, &mut deliveries, &mut in_flight, &client, &outbox);
                 }
             }
@@ -1182,6 +1582,8 @@ mod admission_tests {
             control_revision: 0,
             rejection: None,
             retain_bundle: false,
+            retention: None,
+            memory_controls: None,
         }
     }
     #[tokio::test]
@@ -1194,6 +1596,7 @@ mod admission_tests {
             TerminalDelivery {
                 completion,
                 retain_bundle: false,
+                retention: None,
                 durable: false,
                 retry_after: Instant::now(),
             },
@@ -1274,8 +1677,9 @@ mod admission_tests {
         let mut jobs = JoinSet::new();
         let mut in_flight = BTreeSet::new();
         let delivery = Delivery::Complete {
-            completion: completion.clone(),
+            completion: Box::new(completion.clone()),
             retain_bundle: false,
+            retention: None,
         };
         queue_delivery(
             delivery.clone(),
@@ -1319,6 +1723,7 @@ mod admission_tests {
             TerminalDelivery {
                 completion,
                 retain_bundle: false,
+                retention: None,
                 durable: true,
                 retry_after: Instant::now(),
             },
@@ -1345,6 +1750,7 @@ mod admission_tests {
         let sample = NodeSample {
             started: Instant::now(),
             measurements: Ok(NodeMeasurements {
+                local_cpu_quota_millis: None,
                 system_memory_available_bytes: 4096,
                 cgroup_memory_headroom_bytes: None,
                 cpu_limit_millis: 250,
@@ -1384,12 +1790,33 @@ mod admission_tests {
             cpu_millis: 250,
         };
         let measurements = NodeMeasurements {
+            local_cpu_quota_millis: None,
             system_memory_available_bytes: 4096,
             cgroup_memory_headroom_bytes: None,
             cpu_limit_millis: 250,
             cpu_some_avg10_bps: 0,
             memory_full_avg10_bps: 0,
         };
+        let overcommit = AdmissionPolicy {
+            cpu_overcommit_bps: 20_000,
+            ..policy.clone()
+        };
+        let overcommitted_full = Resources {
+            cpu_millis: 500,
+            ..full
+        };
+        let mut local = measurements.clone();
+        local.local_cpu_quota_millis = Some(250);
+        let doubled = overcommit
+            .report(overcommitted_full, overcommitted_full, 0, Ok(local.clone()))
+            .unwrap();
+        assert_eq!(doubled.available.cpu_millis, 0);
+        assert!(resume_allowed(&doubled, overcommitted_full));
+        local.cpu_some_avg10_bps = overcommit.cpu_some_avg10_limit_bps;
+        let pressured = overcommit
+            .report(overcommitted_full, overcommitted_full, 0, Ok(local))
+            .unwrap();
+        assert!(!resume_allowed(&pressured, overcommitted_full));
         let report = policy
             .report(full, full, 0, Ok(measurements.clone()))
             .unwrap();

@@ -30,6 +30,8 @@ pub struct Pending {
     version: u32,
     pub completion: Completion,
     pub retain_bundle: bool,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub retention: Option<ArtifactRetention>,
     pub ready: bool,
 }
 
@@ -198,7 +200,18 @@ impl Outbox {
     }
 
     fn validate(&self, pending: &Pending) -> anyhow::Result<()> {
+        if let Some(retention) = &pending.retention {
+            retention.validate()?;
+            ensure!(pending.retain_bundle, "extended retention requires export");
+        }
         let completion = &pending.completion;
+        if let Some(cpu) = completion
+            .result
+            .as_ref()
+            .and_then(|r| r.executor_observations.cpu_usage.as_ref())
+        {
+            cpu.validate()?;
+        }
         let key = &completion.key;
         ensure!(
             pending.version == CLUSTER_VERSION
@@ -219,9 +232,13 @@ impl Outbox {
                     pvisor_core::RunState::Completed
                         | pvisor_core::RunState::Failed
                         | pvisor_core::RunState::Cancelled
+                        | pvisor_core::RunState::Hibernated
                 ),
                 "outbox cannot adopt nonterminal native execution"
             );
+            if result.state == pvisor_core::RunState::Hibernated {
+                pvisor_core::operation::ExecutionSuspension::from_result(result)?;
+            }
         }
         ensure!(
             pending.ready
@@ -254,11 +271,13 @@ impl Outbox {
         completion: &Completion,
         retain_bundle: bool,
         ready: bool,
+        retention: Option<ArtifactRetention>,
     ) -> anyhow::Result<Pending> {
         let pending = Pending {
             version: CLUSTER_VERSION,
             completion: completion.clone(),
             retain_bundle,
+            retention,
             ready,
         };
         self.validate(&pending)?;
@@ -283,6 +302,7 @@ impl Outbox {
                 !previous.ready
                     && ready
                     && previous.retain_bundle == retain_bundle
+                    && previous.retention == pending.retention
                     && previous.completion.key == completion.key
                     && serde_json::to_value(&previous.completion.result)?
                         == serde_json::to_value(&completion.result)?
@@ -421,8 +441,9 @@ pub async fn save(
     completion: Completion,
     retain: bool,
     ready: bool,
+    retention: Option<ArtifactRetention>,
 ) -> anyhow::Result<Pending> {
-    tokio::task::spawn_blocking(move || outbox.save(&completion, retain, ready)).await?
+    tokio::task::spawn_blocking(move || outbox.save(&completion, retain, ready, retention)).await?
 }
 pub async fn finish(
     outbox: Arc<Outbox>,
@@ -539,7 +560,13 @@ async fn permitted(rx: &mut watch::Receiver<Lease>, initial: bool) -> anyhow::Re
     }
 }
 
-pub async fn recover(outbox: Arc<Outbox>, client: Client, poll_ms: u64) -> anyhow::Result<()> {
+pub async fn recover(
+    outbox: Arc<Outbox>,
+    client: Client,
+    poll_ms: u64,
+    repository: Option<Arc<super::checkpoints::Repository>>,
+    filesystem_pool: Option<PathBuf>,
+) -> anyhow::Result<()> {
     let entries = tokio::task::spawn_blocking({
         let outbox = outbox.clone();
         move || outbox.scan()
@@ -593,9 +620,31 @@ pub async fn recover(outbox: Arc<Outbox>, client: Client, poll_ms: u64) -> anyho
             let storage = outbox.storage(&entry.completion.key);
             let exported = match permitted(&mut rx, true).await {
                 Err(error) => Err(error),
-                Ok(()) => tokio::select! {
-                    exported = super::retain_bundle(&client, &entry.completion.key, result, &storage) => exported,
-                    denied = permitted(&mut rx, false) => Err(denied.unwrap_err()),
+                Ok(()) => match super::artifacts::seal_attempt(
+                    &entry.completion.key,
+                    result,
+                    &storage,
+                    entry.retention.clone(),
+                    None,
+                    repository.clone(),
+                    filesystem_pool.clone(),
+                )
+                .await
+                {
+                    Err(error) => Err(error),
+                    Ok(manifest) => match permitted(&mut rx, true).await {
+                        Err(error) => Err(error),
+                        Ok(()) => {
+                            tokio::select! {
+                                _ = super::artifacts::handoff(&client, &entry.completion.key, result) => {},
+                                _ = permitted(&mut rx, false) => {},
+                            }
+                            tokio::select! {
+                            exported = super::artifacts::upload(&client, &entry.completion.key, &storage, manifest) => exported,
+                            denied = permitted(&mut rx, false) => Err(denied.unwrap_err()),
+                            }
+                        }
+                    },
                 },
             };
             if let Lease::Unavailable(error) = rx.borrow().clone() {
@@ -611,7 +660,14 @@ pub async fn recover(outbox: Arc<Outbox>, client: Client, poll_ms: u64) -> anyho
                     entry.completion.artifact_error = message;
                 }
             }
-            entry = save(outbox.clone(), entry.completion, entry.retain_bundle, true).await?;
+            entry = save(
+                outbox.clone(),
+                entry.completion,
+                entry.retain_bundle,
+                true,
+                entry.retention.clone(),
+            )
+            .await?;
             let local = entry.completion.clone();
             tokio::task::spawn_blocking(move || persist(&storage.join("completion.json"), &local))
                 .await??;
@@ -666,11 +722,63 @@ mod tests {
     }
 
     #[test]
+    fn hibernation_receipt_survives_restart_and_cannot_be_rebound_to_another_attempt() {
+        use pvisor_core::operation::{
+            ExecutionCheckpoint, ExecutionSuspension, SnapshotRamStorage,
+        };
+        let temp = tempfile::tempdir().unwrap();
+        let outbox = Outbox::open(temp.path(), "worker", "http://controller/").unwrap();
+        let mut completion = terminal();
+        let result = completion.result.as_mut().unwrap();
+        result.state = pvisor_core::RunState::Hibernated;
+        result.exit_code = None;
+        result.value = Some(
+            serde_json::to_value(ExecutionSuspension {
+                request_id: "save-stop".into(),
+                checkpoint: ExecutionCheckpoint {
+                    snapshot_id: "d".repeat(64),
+                    store: "/worker/snapshots".into(),
+                    source_run_id: result.run_id.to_string(),
+                    source_attempt_id: result.attempt_id.to_string(),
+                    created_at_unix_ms: 1,
+                    ram_storage: SnapshotRamStorage::Compressed,
+                },
+            })
+            .unwrap(),
+        );
+        outbox.save(&completion, false, true, None).unwrap();
+        drop(outbox);
+        let outbox = Outbox::open(temp.path(), "worker", "http://controller/").unwrap();
+        let pending = outbox.load().unwrap().remove(0);
+        assert_eq!(
+            serde_json::to_value(&pending.completion).unwrap(),
+            serde_json::to_value(&completion).unwrap()
+        );
+        let mut forged = completion.clone();
+        forged.result.as_mut().unwrap().value.as_mut().unwrap()["checkpoint"]["source_attempt_id"] =
+            "forged".into();
+        assert!(outbox.save(&forged, false, true, None).is_err());
+        assert_eq!(
+            serde_json::to_value(outbox.load().unwrap()[0].completion.clone()).unwrap(),
+            serde_json::to_value(completion).unwrap()
+        );
+        outbox
+            .finish(
+                &pending,
+                Disposition::Accepted {
+                    phase: TaskPhase::Suspended,
+                },
+            )
+            .unwrap();
+        assert!(outbox.load().unwrap().is_empty());
+    }
+
+    #[test]
     fn restart_preserves_native_result_export_transition_and_receipt_crash_window() {
         let temp = tempfile::tempdir().unwrap();
         let outbox = Outbox::open(temp.path(), "worker", "http://controller/").unwrap();
         let native = terminal();
-        outbox.save(&native, true, false).unwrap();
+        outbox.save(&native, true, false, None).unwrap();
         let outbox = Outbox::open(temp.path(), "worker", "http://controller").unwrap();
         let entries = outbox.load().unwrap();
         assert_eq!(entries.len(), 1);
@@ -682,11 +790,11 @@ mod tests {
         assert!(outbox.finish(&entries[0], Disposition::Fenced).is_err());
         let mut exported = native.clone();
         exported.artifact_error = Some("explicit export failure".into());
-        let ready = outbox.save(&exported, true, true).unwrap();
-        assert!(outbox.save(&native, true, false).is_err());
+        let ready = outbox.save(&exported, true, true, None).unwrap();
+        assert!(outbox.save(&native, true, false, None).is_err());
         let mut conflicting = exported.clone();
         conflicting.result.as_mut().unwrap().exit_code = Some(5);
-        assert!(outbox.save(&conflicting, true, true).is_err());
+        assert!(outbox.save(&conflicting, true, true, None).is_err());
         let accepted = Disposition::Accepted {
             phase: TaskPhase::Failed,
         };
@@ -697,8 +805,43 @@ mod tests {
         assert!(outbox.load().unwrap().is_empty());
         outbox.finish(&ready, accepted).unwrap();
         assert!(outbox.finish(&ready, Disposition::Fenced).is_err());
-        assert!(outbox.save(&exported, true, true).is_ok());
+        assert!(outbox.save(&exported, true, true, None).is_ok());
         assert!(outbox.load().unwrap().is_empty());
+    }
+
+    #[test]
+    fn extended_retention_survives_restart_and_cannot_be_downgraded_during_delivery() {
+        let root = tempfile::tempdir().unwrap();
+        let outbox = Outbox::open(root.path(), "worker", "http://controller").unwrap();
+        let native = terminal();
+        let retention = Some(ArtifactRetention {
+            execution_checkpoint: None,
+            version: ARTIFACT_EXPORT_VERSION,
+            trace: true,
+            workspace_upper: true,
+        });
+        outbox
+            .save(&native, true, false, retention.clone())
+            .unwrap();
+        let reopened = Outbox::open(root.path(), "worker", "http://controller").unwrap();
+        let pending = reopened.load().unwrap().remove(0);
+        assert_eq!(pending.retention, retention);
+        let mut failed = native;
+        failed.artifact_error = Some("explicit export failure".into());
+        assert!(reopened.save(&failed, true, true, None).is_err());
+        let ready = reopened
+            .save(&failed, true, true, retention.clone())
+            .unwrap();
+        assert_eq!(ready.retention, retention);
+        reopened
+            .finish(
+                &ready,
+                Disposition::Accepted {
+                    phase: TaskPhase::Failed,
+                },
+            )
+            .unwrap();
+        assert!(reopened.load().unwrap().is_empty());
     }
 
     #[test]
@@ -709,17 +852,17 @@ mod tests {
         assert!(Outbox::open(temp.path(), "worker", "http://another").is_err());
         let mut value = terminal();
         value.result.as_mut().unwrap().state = pvisor_core::RunState::Running;
-        assert!(outbox.save(&value, true, false).is_err());
+        assert!(outbox.save(&value, true, false, None).is_err());
         value = terminal();
         value.key.task_id = "../escape".into();
-        assert!(outbox.save(&value, true, false).is_err());
+        assert!(outbox.save(&value, true, false, None).is_err());
         let native = terminal();
         let path = outbox.pending.join(key_name(&native.key));
         let secret = temp.path().join("secret");
         fs::write(&secret, "unchanged").unwrap();
         std::os::unix::fs::symlink(&secret, &path).unwrap();
         assert!(outbox.load().is_err());
-        assert!(outbox.save(&native, true, false).is_err());
+        assert!(outbox.save(&native, true, false, None).is_err());
         assert_eq!(fs::read_to_string(&secret).unwrap(), "unchanged");
         fs::remove_file(&path).unwrap();
         fs::write(&path, "{partial").unwrap();
@@ -738,7 +881,7 @@ mod tests {
         let temp = tempfile::tempdir().unwrap();
         let outbox = Outbox::open(temp.path(), "worker", "http://controller").unwrap();
         let native = terminal();
-        outbox.save(&native, true, false).unwrap();
+        outbox.save(&native, true, false, None).unwrap();
         let path = outbox.pending.join(key_name(&native.key));
         let before = fs::read(&path).unwrap();
         assert!(persist(&path, &Broken).is_err());
@@ -759,6 +902,7 @@ mod tests {
             let mut completion = terminal();
             completion.key.task_id = format!("task-{index}");
             let entry = Pending {
+                retention: None,
                 version: CLUSTER_VERSION,
                 completion,
                 retain_bundle: false,
@@ -774,7 +918,7 @@ mod tests {
         let restarted = Outbox::open(temp.path(), "worker", "http://controller").unwrap();
         let entries = restarted.load().unwrap();
         assert_eq!(entries.len(), MAX_ENTRIES);
-        assert!(restarted.save(&terminal(), false, true).is_err());
+        assert!(restarted.save(&terminal(), false, true, None).is_err());
         assert!(!restarted.pending.join(key_name(&terminal().key)).exists());
         restarted
             .finish(
@@ -784,7 +928,7 @@ mod tests {
                 },
             )
             .unwrap();
-        restarted.save(&terminal(), false, true).unwrap();
+        restarted.save(&terminal(), false, true, None).unwrap();
         assert_eq!(restarted.load().unwrap().len(), MAX_ENTRIES);
     }
 }

@@ -7,9 +7,11 @@
 #[cfg(unix)]
 pub mod audit;
 pub mod cluster;
+pub mod cpu;
 pub mod event;
 pub mod execution;
 mod file_access;
+pub mod memory;
 pub mod network;
 pub mod operation;
 pub mod overlay;

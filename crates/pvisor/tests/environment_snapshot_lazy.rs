@@ -306,7 +306,7 @@ fn fuse_mount_is_reaped_after_runner_is_killed() {
         let store = SnapshotStore::new(&directory.join("store")).unwrap();
         let id = publish(&store, &source, &bytes(), true);
         let published = store.open_for_restore(&id, &compatibility()).unwrap();
-        let (mount, file) = published
+        let (_mount, file) = published
             .ram_mount(
                 std::path::Path::new(env!("CARGO_BIN_EXE_pvisor")),
                 &directory,

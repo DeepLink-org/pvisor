@@ -27,9 +27,10 @@
 //! `MachineSnapshot` preserves backend state as an opaque serialization payload;
 //! identical Rust API shapes do not promise cross-architecture restore.
 //! Freeze/drain failure parks the VM and requires runner termination. Returning
-//! from a snapshot action resumes the source; cold publication must terminate
-//! the source while frozen. Persistence and atomic rootfs/RAM publication remain
-//! the caller's responsibility. Live handles weakly reference the owning VM.
+//! from a resumable snapshot action resumes the source; save-and-stop capture
+//! remains parked even on rejection and requires runner termination. Persistence
+//! and atomic rootfs/RAM publication remain the caller's responsibility. Live
+//! handles weakly reference the owning VM.
 //!
 //! # Boundary
 //! This module contains declarations and exports only. Implementations and
@@ -114,6 +115,9 @@ pub trait VmConfiguration: Sized {
     /// Construct a configuration; equivalent to `from_config` with explicit sizing.
     fn new(cpus: u8, memory_mib: u32) -> io::Result<Self>;
     fn from_config(config: VmConfig) -> io::Result<Self>;
+    /// Restore sealed, validated machine state. Captured kernel geometry avoids
+    /// loading a fresh firmware payload; legacy states retain the normal loader.
+    fn from_restore(config: VmConfig, restore: MachineRestore) -> io::Result<Self>;
     fn ram_backing(&mut self, file: File) -> io::Result<()>;
     fn embedded_kernel(&mut self, bytes: &[u8], guest_addr: u64, entry_addr: u64)
         -> io::Result<()>;
@@ -162,10 +166,17 @@ pub trait VmControl: Send + Sync {
 
 /// Full-machine capture inside a bounded CPU/device/RAM freeze. Generic actions
 /// retain their result type; this extension deliberately uses static dispatch.
-/// Returning from the action resumes the source, including a failed action.
-/// Freeze failure instead leaves the source parked and requires termination.
+/// The resumable operation thaws the source after successful or rejected actions.
+/// Save-and-stop capture remains parked; freeze failure requires termination.
 pub trait SnapshotControl: VmControl {
     fn with_snapshot_quiesced<T>(
+        &self,
+        timeout: Duration,
+        action: impl FnOnce(&mut FrozenMachine<'_>) -> Result<T, String>,
+    ) -> Result<T, String>;
+    /// Save-and-stop freeze for running, paused or offloaded sources. Returning
+    /// leaves the source parked, including a rejected action; terminate its runner.
+    fn with_snapshot_frozen<T>(
         &self,
         timeout: Duration,
         action: impl FnOnce(&mut FrozenMachine<'_>) -> Result<T, String>,
@@ -177,6 +188,13 @@ pub trait SnapshotControl: VmControl {
 /// filesystem copy in the same freeze; this interface does not publish them.
 pub trait SnapshotCapture {
     fn capture_machine_state(&self, file: &File) -> Result<MachineSnapshot, String>;
+    /// Capture all RAM, or changed blocks against the supervisor-bound immutable
+    /// baseline. A delta inventory is an optimization, never restore authority.
+    fn capture_machine_state_with_ram_delta(
+        &self,
+        file: &File,
+        baseline: Option<&RamDeltaSpec>,
+    ) -> Result<(MachineSnapshot, Option<RamDeltaCapture>), String>;
 }
 
 /// Experimental cold-RAM control. Unavailable backends return an explicit error.
@@ -218,6 +236,27 @@ pub trait FrozenMemory {
 /// Rebinding preserves the old state on error; it does not copy or publish files.
 pub trait SnapshotState {
     fn cpu_count(&self) -> io::Result<usize>;
+    fn has_kernel_layout(&self) -> io::Result<bool>;
+    /// Verify captured inode identities/content while every source writer is frozen.
+    fn verify_frozen_filesystem_backing(&self, tag: &str) -> io::Result<usize>;
+    /// Relocate selected supervisor-verified immutable lowers, retaining private state.
+    fn rebind_filesystem_lower_copies(
+        &mut self,
+        tag: &str,
+        copies: &[(PathBuf, PathBuf)],
+    ) -> io::Result<usize>;
+    /// Restore private copies with pinned, inventory-verified read-only lowers.
+    fn rebind_filesystem_shared_lowers(
+        &mut self,
+        tag: &str,
+        copies: &[(PathBuf, PathBuf)],
+        shared_lowers: &[PathBuf],
+    ) -> io::Result<usize>;
+    fn rebind_filesystem_policy(
+        &mut self,
+        tag: &str,
+        policy: &pvisor_overlay_core::FileAccessPolicy,
+    ) -> io::Result<usize>;
     fn ram_mappings(&self) -> io::Result<Vec<RamMappingSnapshot>>;
     fn rebind_filesystem_copy(
         &mut self,
@@ -393,6 +432,30 @@ pub struct RamMappingSnapshot {
     pub len: u64,
     pub file_offset: u64,
 }
+/// Supervisor-bound immutable MAP_PRIVATE baseline for optional delta capture.
+#[derive(Clone, Debug, PartialEq, Eq, serde::Serialize, serde::Deserialize)]
+#[serde(deny_unknown_fields)]
+pub struct RamDeltaSpec {
+    pub device: u64,
+    pub inode: u64,
+    pub length: u64,
+    pub block_bytes: u32,
+    pub base_sha256: String,
+}
+#[derive(Clone, Debug, PartialEq, Eq, serde::Serialize, serde::Deserialize)]
+#[serde(deny_unknown_fields)]
+pub struct RamDeltaCapture {
+    pub version: u32,
+    pub length: u64,
+    pub block_bytes: u32,
+    pub base_sha256: String,
+    /// Sorted unique changed blocks, including blocks cleared to zero.
+    pub changed_blocks: Vec<u64>,
+}
+pub trait RamDeltaState {
+    fn validate(&self) -> Result<(), String>;
+}
+
 pub struct MachineRestore {
     pub state: MachineSnapshot,
     pub ram_file: Arc<File>,

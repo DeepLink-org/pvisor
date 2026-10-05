@@ -2,7 +2,7 @@
 
 ## 1. Conclusions
 
-Starting a new pVisor VM and returning its first command output takes about **84 ms** on macOS / Apple M4 and **86 ms** on Linux / Ryzen 7 9700X in the latest prepared-environment batches: roughly **0.1 seconds**. These use 2 vCPU / 128 MiB, prebuilt environments and warm host caches, excluding image downloads; both platforms retain their historical batches.
+A new pVisor VM returns its first command output in about **84 ms** on macOS / Apple M4 and **110 ms** on Linux / Ryzen 7 9700X: roughly **0.1 seconds**. On the same Linux host, Firecracker starts complete Ubuntu in **5.64 seconds** after provisioning or **9.25 seconds** on first boot. pVisor uses directories without an OS image. Configurations differ between batches; all evidence is retained separately.
 
 ## 2. Motivation
 
@@ -22,7 +22,7 @@ Optimization must preserve isolation, durable Run records and attestation semant
 
 We measure from launching pVisor until a new VM executes its first shell command and returns output, labeled **Ready** in the tables. This covers host preparation, VM startup and command execution: the startup wait after a user issues a command.
 
-**Exit** runs from the same starting point until pVisor finishes exiting, including result persistence and other finalization work. Every trial creates a new VM; the image and filesystem are prepared in advance, and host caches are warm.
+**Exit** runs from the same starting point until normal runtime exit, including result persistence and shutdown. Every trial creates a fresh VM with warm host caches. pVisor uses directories; reference image download and creation occur before timing. Complete Ubuntu additionally requires distribution services to be ready, with a separate new batch.
 
 ??? note "Precise timing and control settings for reproduction"
 
@@ -36,10 +36,10 @@ We measure from launching pVisor until a new VM executes its first shell command
 |---|---|---|
 | Host | Apple M4, 24 GiB RAM | Ryzen 7 9700X, approximately 30 GiB RAM |
 | System / architecture | macOS 27.0.1 / ARM64 | Fedora 44 / x86_64 |
-| Guest root | Prepared Alpine 3.22.1 | Prepared Fedora root |
+| Guest root | Prepared Alpine 3.22.1 directory | Latest `--rootfs host`; historical prepared Fedora directory |
 | VM shapes | 1/2/4 vCPU, 128/2048 MiB; latest remeasurement uses 2 vCPU | 2 vCPU, 128/256/2048 MiB |
-| Firmware | Official and trimmed libkrunfw 5.6.2 | libkrunfw 5.5.0 |
-| Cache and image preparation | Warm host caches; image preparation excluded | Warm host caches; image preparation excluded |
+| Firmware | Official and trimmed libkrunfw 5.6.2 | Latest static embedded Linux 6.12.109; early libkrunfw 5.5.0 |
+| Cache and preparation | Warm host caches; directories prepared before timing | Warm host caches; reference images downloaded/prepared before timing |
 
 Hardware, guest filesystems, firmware and CLI artifacts are recorded separately. Both datasets share timing boundaries and describe startup in their respective environments; cross-platform figures do not isolate operating-system or virtualization-backend speed.
 
@@ -84,9 +84,9 @@ Hardware, guest filesystems, firmware and CLI artifacts are recorded separately.
 
 ### Sampling, validation and statistics
 
-Each case is warmed up before 100 measured trials, with case order randomized each round. Ready and Exit are summarized separately, and successful tail samples remain included. Main measurements and detailed phase diagnostics run in separate batches; warmups are excluded from results.
+Cases are warmed up and randomly ordered per round, with separate Ready/Exit distributions and successful long tails retained. macOS and the early Linux main matrices use N=100; the new deployment comparison uses N=30. Stage diagnostics are separate. Each table states N, excluding warmups.
 
-Every pVisor sample requires completed records and a zero exit code; VM samples also verify actual `virtual_machine` isolation. Failures or missing readiness output stop measurement and cannot count as faster samples. Percentiles describe the batch rather than guarantee long-term tails or performance on other machines.
+Every pVisor sample requires completed records and a zero exit code; VM samples also verify actual `virtual_machine` isolation. Failures or missing readiness output never enter successful distributions. Historical main matrices stop on failure; the new deployment comparison records failures and continues other cases. Percentiles describe the batch rather than guarantee long-term tails or performance on other machines.
 
 ??? note "macOS paired statistics and control settings"
 
@@ -267,6 +267,34 @@ RunRecord is authoritative state before execution. Required persistence cannot b
 
 ### Linux / KVM {#linux}
 
+#### Image-free pVisor and complete Ubuntu: deployment waiting {#full-ubuntu}
+
+**A fresh short-task VM becomes usable in about 0.11 seconds; complete Ubuntu on Firecracker takes 5.64–9.25 seconds to boot and execute a command.** Ubuntu comes from the latest official cloud VM release, pinned to 26.04.1 LTS / 20260927. Its stock `7.0.0-34-generic` kernel, initrd, modules and services are retained. The command runs after systemd multi-user, networking, cloud-init and the SSH socket are active. pVisor uses `--rootfs host`, its embedded kernel, and installed host tools without preparing an OS image.
+
+![pVisor and complete Ubuntu startup P50/P95](../../assets/benchmarks/full-ubuntu-qemu-20261004/ubuntu-startup.svg)
+
+Linux / KVM, 2 vCPU / 2 GiB, the same two-core host budget, 30 samples for each of the first five rows and 10 for each QEMU follow-up row, all with 3 warmups; the batches pass 150/150 and 20/20 formal startup trials respectively. Every trial creates a fresh VM without a RAM snapshot or resident pool, with warm host disk caches. Prepared Ubuntu uses a disk template with installed tools and completed initial cloud-init. First boot uses an uninitialized complete Ubuntu template with NoCloud networking and the measurement service, without the complete Agent toolset. First boot does not include downloading the image.
+
+| Backend | N | Ready P50 / P95 / P99 ms | Exit P50 / P95 ms |
+|---|---:|---|---|
+| Native / Fedora | 30 | 1.23 / 1.49 / 1.73 | 1.29 / 1.57 |
+| pVisor staged | 30 | 15.04 / 18.32 / 19.35 | 43.75 / 44.52 |
+| pVisor VM / host | 30 | 109.69 / 121.62 / 141.53 | 173.57 / 193.94 |
+| Firecracker / Ubuntu | 30 | 5644.11 / 6009.57 / 6583.04 | 9234.94 / 9626.10 |
+| Firecracker / Ubuntu first boot | 30 | 9246.65 / 10293.13 / 10322.29 | 12862.17 / 13875.61 |
+| QEMU q35 / Ubuntu | 10 | 5428.90 / 7698.78 / 8968.91 | 9054.86 / 12078.24 |
+| QEMU microvm / Ubuntu | 10 | 7666.69 / 8547.61 / 8706.71 | 11199.06 / 12100.94 |
+
+**QEMU boots the same complete Ubuntu, rather than the historical trimmed kernel.** q35 and microvm share Firecracker's stock kernel, initrd, tools and initialized disk template. A minimal device model does not remove seconds of distribution boot in this configuration. These are independent same-host cohorts; QEMU has N=10, background host load remains, and outliers are retained. Similar medians do not support a precise VMM ranking. QEMU first cloud-init boot is unmeasured.
+
+[QEMU CSV](../../assets/benchmarks/full-ubuntu-qemu-20261004/samples.csv) · [QEMU protocol](methodology.md#full-ubuntu-qemu)
+
+**Selection meaning:** Creating environments for one or two commands benefits from avoiding seconds of OS boot. Complete Ubuntu provides distribution services and an independent Ubuntu environment at that startup cost. These are deployment paths with different kernels, initialization and storage; the table does not establish a roughly 50-times VMM advantage for libkrun. For longer jobs, compare [task and internal tool time](agent-tasks.md#full-ubuntu), where boot cost is amortized.
+
+Exit includes normal shutdown: pVisor P50 is 174 ms, Firecracker/Ubuntu about 9.23 / 12.86 seconds. Firecracker/Ubuntu uses default MMIO devices and the stock initrd, with zero VMM exit after guest reboot. Every trial retains full OS proof with no failed units. Workspace copying or private disk cloning is recorded as `prepare_ms`, with medians around 37 / 29 ms outside Ready. The chart uses a logarithmic axis, bars P50 and ticks P95. With N=30, P99 is near the maximum and describes this batch only.
+
+[Per-sample CSV](../../assets/benchmarks/full-ubuntu-20261004/samples.csv) · [Distributions and phases](../../assets/benchmarks/full-ubuntu-20261004/summary.json) · [Method and reproduction](methodology.md#full-ubuntu) · [Runtime evidence](../../assets/benchmarks/full-ubuntu-20261004/ubuntu-ready-mmio-20261004/evidence.tar.gz)
+
 #### New VM startup results {#linux-results}
 
 At 2 vCPU / 128 MiB, median readiness is **172.69 ms** and P95 is **180.37 ms**. Median readiness is approximately **175 ms** at 256 MiB and **220 ms** at 2 GiB. This workload only prints one line; additional configured RAM does not reduce startup waiting.
@@ -283,7 +311,9 @@ Values below are milliseconds, with 100 measured samples per row. Ready ends at 
 
 In this batch, new VMs become ready in about **0.2 seconds**, with exit completion around **0.23–0.28 seconds**. Evaluate those boundaries separately. These are fresh VM launches; [snapshot restoration](vm-memory/index.md#linux-snapshot) is measured separately. Linux has no detailed startup phase accounting in this batch, so macOS phase proportions cannot be applied to it.
 
-#### Familiar baselines: Docker, Firecracker, and both QEMU configurations {#reference-startup}
+#### Trimmed kernel and direct init: historical Docker / Firecracker / QEMU controls {#reference-startup}
+
+These Firecracker/QEMU controls use a trimmed kernel and static init, skipping Ubuntu system-service boot. The 73.74 ms value belongs to that minimal path; see the [complete Ubuntu deployment comparison](#full-ubuntu) above. pVisor in this historical batch uses a prepared tool directory shared through virtio-fs, without an OS image.
 
 With the same two-core host execution budget and prepared environment, pVisor VM Ready P50 is **86.29 ms**, close to Docker **90.12 ms** and QEMU microvm **88.10 ms**; Firecracker measures **73.74 ms**. This locates its hundred-millisecond scale near mature microVM paths, without claiming to beat all of them.
 
@@ -367,4 +397,4 @@ python3 benchmark/pvisor/linux_vm_ready.py \
 
 ## 6. Unmeasured scenarios
 
-Docker, Firecracker, a3s and real Agent readiness remain unmeasured. First image preparation, cold disk caches, TUI, Gateway, concurrent density and service health checks require separate matrices.
+Docker, Firecracker, QEMU and controlled Agent tool loops now have same-host measurements; full Ubuntu first boot and part of preparation are reported separately. a3s, real model inference, large projects, public dependency downloads, cold disk caches, TUI, Gateway, concurrent density and application health checks still require separate matrices.

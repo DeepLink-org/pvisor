@@ -178,6 +178,9 @@ pub enum StdioMode {
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct RuntimeConfig {
+    /// Explicit native Linux VM scheduling class. Unset inherits existing behavior.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub cpu_qos: Option<CpuQosClass>,
     /// Wall-clock limit for one Attempt. `None` means no pVisor deadline.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub timeout_ms: Option<u64>,
@@ -199,6 +202,7 @@ pub struct RuntimeConfig {
 impl Default for RuntimeConfig {
     fn default() -> Self {
         Self {
+            cpu_qos: None,
             timeout_ms: None,
             termination_grace_ms: default_termination_grace_ms(),
             max_output_bytes: default_max_output_bytes(),
@@ -206,6 +210,22 @@ impl Default for RuntimeConfig {
             policy_mode: PolicyMode::Audit,
         }
     }
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum CpuQosClass {
+    BestEffort,
+    LatencySensitive,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
+pub struct CpuQosObservation {
+    pub class: CpuQosClass,
+    /// Linux scheduler policy: SCHED_OTHER=0, SCHED_IDLE=5.
+    pub scheduler_policy: i32,
+    pub core_cookie: Option<u64>,
 }
 
 #[derive(Debug, Clone, Default, PartialEq, Eq, Serialize, Deserialize)]
@@ -455,6 +475,9 @@ pub enum RunState {
     Running,
     Checkpointing,
     Suspended,
+    /// Native execution has exited after sealing a full continuation checkpoint.
+    /// Unlike Suspended (live pause), this Attempt owns no running VM.
+    Hibernated,
     Cancelling,
     Completed,
     Failed,
@@ -463,7 +486,10 @@ pub enum RunState {
 
 impl RunState {
     pub fn is_terminal(self) -> bool {
-        matches!(self, Self::Completed | Self::Failed | Self::Cancelled)
+        matches!(
+            self,
+            Self::Completed | Self::Failed | Self::Cancelled | Self::Hibernated
+        )
     }
 }
 
@@ -702,12 +728,18 @@ impl CapabilityEnforcementPlan {
 #[derive(Debug, Clone, Serialize, Deserialize)]
 #[serde(deny_unknown_fields)]
 pub struct ExecutorObservations {
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub cpu_usage: Option<crate::cpu::TerminalCpuUsage>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub cpu_qos: Option<CpuQosObservation>,
     pub origin: crate::event::Origin,
     pub enforcement: CapabilityEnforcementEvidence,
 }
 impl Default for ExecutorObservations {
     fn default() -> Self {
         Self {
+            cpu_usage: None,
+            cpu_qos: None,
             origin: crate::event::Origin::Runtime,
             enforcement: Default::default(),
         }

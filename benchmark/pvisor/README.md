@@ -35,6 +35,25 @@ Unit-test the report contract without running the suite:
 just test-benchmark
 ```
 
+## Complete Ubuntu and image-free pVisor
+
+`prepare_ubuntu_reference.py` downloads the pinned official Ubuntu cloud VM and
+stock generic kernel/initrd, verifies published SHA256 sums, preserves the whole
+GPT disk and prepares the Agent tools outside measurement. `ubuntu_baselines.py`
+requires systemd, network, cloud-init and SSH socket readiness, correct task results
+and normal zero exit. pVisor always uses `--rootfs host`; it does not use that image.
+Firecracker and QEMU use fresh private disk clones without RAM snapshots.
+
+Select `firecracker-ubuntu`, `firecracker-ubuntu-firstboot`, `qemu-ubuntu` (q35) or
+`qemu-microvm-ubuntu` explicitly. Use new output directories and a fixed pVisor
+binary. Run `--samples 1 --warmups 0` first to check capabilities; failed preflight
+is recorded as N=0, and the driver exit status alone does not certify all cases.
+`render_ubuntu_baselines.py` validates complete batches, archives proof/logs and
+rejects overlapping cohorts unless replacement is explicitly selected.
+
+See the [deployment protocol](../../docs/src/en/benchmarks/methodology.md#full-ubuntu)
+for exact preparation and reproduction commands, timing boundaries and limitations.
+
 ## Sandbox startup and resource occupancy
 
 `startup.py` is a separate Linux benchmark for the three executor levels and

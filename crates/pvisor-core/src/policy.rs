@@ -670,18 +670,7 @@ pub fn is_public_egress_ip(ip: IpAddr) -> bool {
     }
 }
 
-fn model_matches(pattern: &str, model: &str) -> bool {
-    if pattern == "*" {
-        return true;
-    }
-    if let Some(prefix) = pattern.strip_suffix('*') {
-        return !prefix.is_empty() && model.starts_with(prefix);
-    }
-    if let Some(suffix) = pattern.strip_prefix('*') {
-        return !suffix.is_empty() && model.ends_with(suffix);
-    }
-    pattern == model
-}
+use crate::gateway::model_matches;
 
 pub fn is_host_connector_alias(host: &str, address: IpAddr) -> bool {
     if host.parse::<IpAddr>().is_ok() {

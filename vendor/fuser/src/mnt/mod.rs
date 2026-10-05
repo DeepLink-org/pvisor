@@ -13,6 +13,8 @@ mod fuse3_sys;
 
 #[cfg(fuser_mount_impl = "pure-rust")]
 mod fuse_pure;
+#[cfg(fuser_mount_impl = "pure-rust")]
+mod fusermount_channel;
 pub mod mount_options;
 
 #[cfg(any(test, feature = "libfuse"))]

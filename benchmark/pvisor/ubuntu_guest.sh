@@ -51,6 +51,7 @@ else
     export PVISOR_REFERENCE_TOOL_ROOT=/
     export PVISOR_REFERENCE_TOOLCHAIN=/opt/toolchain
     export PVISOR_REFERENCE_HARNESS=/bench/harness
+    export PVISOR_REFERENCE_TMPDIR=/work/_tmp
     /usr/bin/python3 /bench/reference_workload.py --mode "$mode"
 fi
 printf 'REFERENCE_EXIT 0\n'

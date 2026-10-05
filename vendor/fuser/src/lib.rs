@@ -46,6 +46,8 @@ use std::cmp::max;
 #[cfg(feature = "abi-7-13")]
 use std::cmp::min;
 
+#[cfg(target_os = "linux")]
+mod background_shutdown;
 mod channel;
 mod ll;
 mod mnt;

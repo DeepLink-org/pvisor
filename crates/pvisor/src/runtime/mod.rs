@@ -39,7 +39,7 @@ pub(crate) fn apply_process_policies(
     Ok(())
 }
 
-pub use implant::{ImplantPlan, OverlayHint};
+pub use implant::{ExecutionOverlayHint, ImplantPlan, OverlayHint};
 #[cfg(all(test, target_os = "macos"))]
 pub use overlay::apply_overlay;
 pub use overlay::{

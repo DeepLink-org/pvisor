@@ -129,7 +129,7 @@ impl CompressedObject {
         Ok(())
     }
 }
-pub(super) fn identity(bytes: &[u8]) -> ImageId {
+pub(crate) fn identity(bytes: &[u8]) -> ImageId {
     // Domain and decoded length keep this identity separate from PVZRAM image IDs.
     let mut digest = Sha256::new();
     digest.update(b"PVRES1\0\0");

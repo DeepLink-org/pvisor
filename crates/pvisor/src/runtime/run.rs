@@ -120,6 +120,74 @@ pub struct RunControlHandle {
 }
 
 impl RunControlHandle {
+    /// Read-only physical observations never acquire the native control exchange
+    /// lock, modify VM state, or retain snapshot RAM/pager ownership.
+    pub async fn memory_sample(&self) -> pvisor_core::memory::RunMemorySample {
+        let status = self.status.borrow().clone();
+        let started = pvisor_core::unix_now_ms();
+        let result = if status.attempt.executor.kind != pvisor_core::ExecutorKind::VirtualMachine
+            || status.state.is_terminal()
+        {
+            Err(anyhow::anyhow!(
+                "memory observation requires a live native VM"
+            ))
+        } else {
+            self.vm_control.memory_usage().await
+        };
+        let (usage, error) = match result {
+            Ok(usage) => (Some(usage), None),
+            Err(error) => {
+                let mut error = format!("{error:#}");
+                let mut end = error.len().min(1024);
+                while !error.is_char_boundary(end) {
+                    end -= 1;
+                }
+                error.truncate(end);
+                (None, Some(error))
+            }
+        };
+        pvisor_core::memory::RunMemorySample {
+            run_id: status.run_id,
+            attempt_id: status.attempt.attempt_id,
+            sampled_at_unix_ms: started,
+            usage,
+            error,
+        }
+    }
+
+    /// Read-only CPU observations never acquire the native control exchange
+    /// lock, modify VM state, or retain snapshot RAM/pager ownership.
+    pub async fn cpu_sample(&self) -> pvisor_core::cpu::RunCpuSample {
+        let status = self.status.borrow().clone();
+        let started = pvisor_core::unix_now_ms();
+        let result = if status.attempt.executor.kind != pvisor_core::ExecutorKind::VirtualMachine
+            || status.state.is_terminal()
+        {
+            Err(anyhow::anyhow!("CPU observation requires a live native VM"))
+        } else {
+            self.vm_control.cpu_usage().await
+        };
+        let (usage, error) = match result {
+            Ok(usage) => (Some(usage), None),
+            Err(error) => {
+                let mut error = format!("{error:#}");
+                let mut end = error.len().min(1024);
+                while !error.is_char_boundary(end) {
+                    end -= 1;
+                }
+                error.truncate(end);
+                (None, Some(error))
+            }
+        };
+        pvisor_core::cpu::RunCpuSample {
+            run_id: status.run_id,
+            attempt_id: status.attempt.attempt_id,
+            sampled_at_unix_ms: started,
+            usage,
+            error,
+        }
+    }
+
     /// Wait through asynchronous attempt startup without issuing a primitive
     /// before the native control endpoint is usable. Cancellation still fences it.
     pub async fn wait_ready(&mut self) -> anyhow::Result<()> {
@@ -204,15 +272,38 @@ impl RunControlHandle {
                     let state = reply
                         .state
                         .ok_or_else(|| anyhow::anyhow!("VM control returned no state"))?;
-                    let value = Value::Vm {
-                        state,
-                        memory: reply.memory,
+                    let value = if let Some(checkpoint) = reply.checkpoint {
+                        anyhow::ensure!(
+                            checkpoint.source_run_id == operation.run_id
+                                && checkpoint.source_attempt_id
+                                    == status.borrow().attempt.attempt_id.as_str(),
+                            "checkpoint belongs to another attempt"
+                        );
+                        Value::ExecutionCheckpoint { checkpoint }
+                    } else {
+                        Value::Vm {
+                            state,
+                            memory: reply.memory,
+                        }
                     };
                     status.send_modify(|status| {
-                        if matches!(
-                            status.state,
-                            pvisor_core::RunState::Running | pvisor_core::RunState::Suspended
-                        ) {
+                        if matches!(operation.kind, OperationKind::RunSuspend { .. })
+                            && matches!(
+                                status.state,
+                                pvisor_core::RunState::Running | pvisor_core::RunState::Suspended
+                            )
+                        {
+                            status.state = pvisor_core::RunState::Checkpointing;
+                            status.updated_at_unix_ms = crate::unix_now_ms();
+                            status.message =
+                                Some("snapshot sealed; waiting for native termination".into());
+                        }
+                        if !matches!(value, Value::ExecutionCheckpoint { .. })
+                            && matches!(
+                                status.state,
+                                pvisor_core::RunState::Running | pvisor_core::RunState::Suspended
+                            )
+                        {
                             status.state = if state == VmState::Running {
                                 pvisor_core::RunState::Running
                             } else {
@@ -251,6 +342,27 @@ impl RunControlHandle {
 }
 
 impl RunHandle {
+    /// Capture full native CPU/RAM/devices and owned filesystem copies in one
+    /// freeze/publication transaction. The source resumes after durable seal.
+    /// Requires a no-network VM with durable Run storage. This API does not
+    /// suspend the Job or hand execution to another Attempt.
+    pub async fn capture_execution(
+        &self,
+        request_id: impl Into<String>,
+        ram_storage: pvisor_core::operation::SnapshotRamStorage,
+    ) -> anyhow::Result<pvisor_core::operation::ExecutionCheckpoint> {
+        let value = self
+            .control(pvisor_core::operation::OperationKind::RunCheckpoint {
+                request_id: request_id.into(),
+                ram_storage,
+            })
+            .await?;
+        let pvisor_core::operation::Value::ExecutionCheckpoint { checkpoint } = value else {
+            anyhow::bail!("native capture returned no execution checkpoint")
+        };
+        Ok(checkpoint)
+    }
+
     /// Pause every VM vCPU and wait for acknowledgement. Device I/O remains
     /// active and the Run's wall-time deadline continues. Other executors reject
     /// this operation. An uncertain transition cancels the attempt.
@@ -573,6 +685,10 @@ impl Default for PVisor {
 }
 
 impl PVisor {
+    /// Shared fact journal, when the configured sink provides durable storage.
+    pub fn journal(&self) -> Option<crate::trace::Journal> {
+        self.event_sink.journal()
+    }
     pub fn new() -> Self {
         Self::builder().build()
     }
@@ -614,6 +730,13 @@ impl PVisor {
         crate::runtime::apply_process_policies(&mut spec, &descriptor)
             .map_err(PVisorError::Prepare)?;
         let vm_executor = descriptor.kind == pvisor_core::ExecutorKind::VirtualMachine;
+        if spec.runtime.cpu_qos.is_some()
+            && !(cfg!(target_os = "linux") && vm_executor && executor.supports_cpu_qos())
+        {
+            return Err(PVisorError::InvalidSpec(
+                "CPU QoS requires a Linux VM executor".into(),
+            ));
+        }
         let vm_network_executor = vm_executor && executor.supports_vm_network_attachment();
         if self.runtime.vm_network_is_requested()
             && descriptor.isolation == pvisor_core::IsolationKind::VirtualMachine
@@ -1650,6 +1773,25 @@ mod tests {
             })
             .collect::<Vec<_>>();
         assert_eq!(terminal_kinds, vec!["run.failed"]);
+    }
+
+    #[tokio::test]
+    async fn explicit_cpu_qos_rejects_unsupported_executor_before_execution() {
+        let runtime = PVisor::builder()
+            .executors(vec![std::sync::Arc::new(crate::ProcessExecutor::default())])
+            .build();
+        for class in [
+            pvisor_core::CpuQosClass::BestEffort,
+            pvisor_core::CpuQosClass::LatencySensitive,
+        ] {
+            let mut spec = RunSpec::process("unsupported-qos", "test-agent", "/bin/true");
+            spec.runtime.cpu_qos = Some(class);
+            let error = match runtime.run(spec).await {
+                Ok(_) => panic!("unsupported executor accepted explicit CPU QoS"),
+                Err(error) => error,
+            };
+            assert!(matches!(error, PVisorError::InvalidSpec(_)));
+        }
     }
 
     #[cfg(unix)]

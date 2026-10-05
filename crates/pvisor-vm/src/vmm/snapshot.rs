@@ -1,15 +1,46 @@
 //! Restore input for the KVM/HVF builders. Durable publication, build
 //! identity, backing-file sealing and execution ownership belong to the runner.
+mod ram;
+
 use crate::vmm::{CpuSnapshot, Vmm};
-use std::{fs::File, os::unix::fs::FileExt, sync::Arc};
-use vm_memory::{Address, Bytes, GuestAddress, GuestMemory, GuestMemoryMmap, GuestMemoryRegion};
+use std::{fs::File, sync::Arc};
+use vm_memory::{GuestAddress, GuestMemoryMmap};
 
 pub use crate::api::RamMappingSnapshot;
+
+pub use crate::api::{RamDeltaCapture, RamDeltaSpec};
+/// Payload geometry only. A restore never dereferences a fresh kernel pointer:
+/// the captured RAM already includes the complete, possibly modified kernel.
+#[derive(Clone, Copy, Debug, PartialEq, Eq, serde::Serialize, serde::Deserialize)]
+#[serde(deny_unknown_fields)]
+pub struct KernelLayout {
+    pub guest_addr: u64,
+    pub size: u64,
+}
+
+impl KernelLayout {
+    pub fn validate(&self) -> Result<(), String> {
+        let page = unsafe { libc::sysconf(libc::_SC_PAGESIZE) };
+        if page <= 0
+            || self.guest_addr == 0
+            || self.size == 0
+            || !self.guest_addr.is_multiple_of(page as u64)
+            || !self.size.is_multiple_of(page as u64)
+            || self.guest_addr.checked_add(self.size).is_none()
+            || usize::try_from(self.size).is_err()
+        {
+            return Err("invalid snapshot bundled-kernel geometry".into());
+        }
+        Ok(())
+    }
+}
 
 #[derive(Clone, Debug, serde::Serialize, serde::Deserialize)]
 #[serde(deny_unknown_fields)]
 pub struct MachineSnapshot {
     pub version: u32,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub kernel_layout: Option<KernelLayout>,
     pub cpus: Vec<CpuSnapshot>,
     pub devices: Vec<crate::devices::snapshot::BusMappingSnapshot>,
     pub ram: Vec<RamMappingSnapshot>,
@@ -45,7 +76,24 @@ impl MachineRestore {
     }
 
     pub fn validate_ram_file(&self) -> Result<(), String> {
-        crate::memory::validate_snapshot_ram(&self.state.ram, &self.ram_file)
+        crate::memory::validate_snapshot_ram(&self.state.ram, &self.ram_file)?;
+        if let Some(kernel) = self.state.kernel_layout {
+            kernel.validate()?;
+            if !self.state.ram.iter().any(|region| {
+                #[cfg(target_arch = "x86_64")]
+                {
+                    region.base == kernel.guest_addr && region.len == kernel.size
+                }
+                #[cfg(not(target_arch = "x86_64"))]
+                {
+                    region.base <= kernel.guest_addr
+                        && region.base + region.len >= kernel.guest_addr + kernel.size
+                }
+            }) {
+                return Err("snapshot kernel geometry does not match captured RAM".into());
+            }
+        }
+        Ok(())
     }
 
     /// Map sealed RAM without reading it. Host page faults fetch the backing
@@ -60,6 +108,15 @@ impl Vmm {
     /// Capture every CPU/device and copy RAM while the full-machine freeze is
     /// held. File must be a fresh private artifact, never the live RAM backing.
     pub fn capture_machine_state(&self, file: &File) -> Result<MachineSnapshot, String> {
+        self.capture_machine_state_with_ram_delta(file, None)
+            .map(|(state, _)| state)
+    }
+
+    pub fn capture_machine_state_with_ram_delta(
+        &self,
+        file: &File,
+        baseline: Option<&RamDeltaSpec>,
+    ) -> Result<(MachineSnapshot, Option<RamDeltaCapture>), String> {
         self.require_ram_quiesced()?;
         if !self.snapshot_devices_frozen {
             return Err("full machine freeze required".into());
@@ -73,41 +130,21 @@ impl Vmm {
         let kvm = Some(self.vm.save_state().map_err(|e| e.to_string())?);
         #[cfg(all(target_os = "linux", target_arch = "x86_64"))]
         let pio_devices = self.pio_device_manager.io_bus.capture_snapshot_devices()?;
-        let mut ram = Vec::new();
-        let mut file_offset = 0u64;
-        let mut buffer = vec![0; 1024 * 1024];
-        for region in self.guest_memory.iter() {
-            let base = region.start_addr().raw_value();
-            let len = region.len();
-            ram.push(RamMappingSnapshot {
-                base,
-                len,
-                file_offset,
-            });
-            let mut offset = 0;
-            while offset < len {
-                let count = (len - offset).min(buffer.len() as u64) as usize;
-                self.guest_memory
-                    .read_slice(&mut buffer[..count], GuestAddress(base + offset))
-                    .map_err(|e| e.to_string())?;
-                file.write_all_at(&buffer[..count], file_offset + offset)
-                    .map_err(|e| e.to_string())?;
-                offset += count as u64;
-            }
-            file_offset = file_offset
-                .checked_add(len)
-                .ok_or("RAM snapshot size overflow")?;
-        }
+        let (ram, delta) = ram::capture_ram_with_delta(&self.guest_memory, file, baseline)?;
         file.sync_all().map_err(|e| e.to_string())?;
-        Ok(MachineSnapshot {
-            version: 1,
-            cpus,
-            devices,
-            ram,
-            #[cfg(all(target_os = "linux", target_arch = "x86_64"))]
-            kvm,
-            #[cfg(all(target_os = "linux", target_arch = "x86_64"))]
-            pio_devices,
-        })
+        Ok((
+            MachineSnapshot {
+                version: 1,
+                kernel_layout: self.snapshot_kernel_layout,
+                cpus,
+                devices,
+                ram,
+                #[cfg(all(target_os = "linux", target_arch = "x86_64"))]
+                kvm,
+                #[cfg(all(target_os = "linux", target_arch = "x86_64"))]
+                pio_devices,
+            },
+            delta,
+        ))
     }
 }

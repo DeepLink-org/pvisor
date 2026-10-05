@@ -107,6 +107,78 @@ wall 是一项命令从启动到退出的总成本，worker 是内部工具运�
 
 本轮性能针对固定制品，不能代表之后的并行改动或其他发行构建；源码并非干净提交。全仓 lint/test 校验的是当时工作树，固定 CLI 的功能另由 benchmark 与 STAGE 规格验证。
 
+## 完整 Ubuntu 与无镜像 pVisor：部署协议 {#full-ubuntu}
+
+这轮补充常规发行版环境的真实成本。Firecracker 使用官方 Ubuntu cloud VM 的完整磁盘、发行版 generic 内核和 initrd；pVisor VM 始终使用目录，本轮为 `--rootfs host`，复用宿主已安装工具。用户所说的最新 Ubuntu 固定为 Ubuntu 26.04.1 LTS、20260927 发布，使用[官方日期快照](https://cloud-images.ubuntu.com/releases/resolute/release-20260927/)；这是云虚拟机镜像，完整系统不由 Docker OCI 层组装。
+
+Ubuntu 保留 GPT、/boot、EFI 分区、原厂模块、fstab、systemd、cloud-init、SSH、snapd 等服务。只加入 NoCloud 静态网络、测量 unit 和 Agent 应用。原厂 `7.0.0-34-generic` 支持 ext4、FUSE 和 btrfs：配置为 `CONFIG_EXT4_FS=y`、`CONFIG_FUSE_FS=y`、`CONFIG_BTRFS_FS=m`。Firecracker 1.13.1 直接加载 ELF，所以从官方 bzImage 无修改解压 ELF，未裁剪或重编译内核；使用官方 initrd、默认 virtio MMIO。原始启动分区保留，但本路径不执行 UEFI/GRUB。
+
+首次启动基于未运行过 cloud-init 的完整模板；已准备启动基于正常完成工具安装与首次初始化的磁盘模板。每次克隆私有磁盘并新建 VM，不恢复 RAM。计时从启动到完整 OS 就绪后的首条输出、任务结果和正常零退出分别记录；Ubuntu 必须证明 PID1 为 systemd，multi-user/network-online/cloud-final/ssh.socket 均 active，逐次保存失败 unit 列表。正式样本均没有失败 unit。启动前的工作区复制/磁盘克隆记为 `prepare_ms`，不计入启动与任务时间。
+
+宿主与旧对照相同：Fedora 44、Ryzen 7 9700X、KVM，固定 CLI SHA256 `1a2db5ad015c5ace40b3c96c7dd0dc94a08b8893de35150bd909554286e2cd3c`。所有进程树绑定宿主物理核心 0、1；VM 2 vCPU，启动 2 GiB、完整任务 16 GiB；原生和 staged 没有硬内存上限。宿主页缓存预热、每轮随机后端顺序。启动每格 N=30，工具/文件/客户端每个发布格 N=10，Claude/VM 预检失败为 N=0，均 3 次预热；N=10 是首版探索数据，P95/P99 不能支持尾延迟保证。共享桌面保留后台负载，轮前/轮后 load 公开。
+
+完整工具任务复用相同项目、输入和校验。Rust/Cargo 1.98.1、Claude 2.1.128、Codex 0.160.0 使用相同制品；Ubuntu apt 安装的 Python 3.14.4、Node 22.22.1、Git 2.53.0，与宿主 Python 3.14.7、Node 24.18.0、Git 2.55.0 不同。因此这是正常部署栈的比较，不能把任务差值全部归因于文件系统或 VMM。CLI 连接同环境中的受控模型服务，必须传回实际通过的工具结果；无真实推理、付费账户、tokens 或公网模型时延。Codex 统一内部 `danger-full-access`，默认内外沙箱叠加未测。
+
+Firecracker 私有 user/network namespace 内提供 TAP 和静态 NIC；QEMU `-machine none` 进程只转发用户态 DNS/NAT，使 Ubuntu 默认服务能正常联网。没有第二台 guest VM；辅助进程的启动、CPU 和 RSS 全部计入 Firecracker 组。未修改宿主路由或网络服务。预检发现无有效 DNS 会让 snapd 等待 30 秒；正式批次使用经过功能探测的 DNS/NAT。早期 PCI 试跑在正常 reboot 的设备复位中挂起，N=0，不进入发布数据；默认 MMIO 正常零退出。Firecracker 无 jailer，本轮不验收生产安全部署。
+
+从已下载磁盘启动 QEMU、复制本机 Rust/CLI/fixture 并 apt 安装发行版工具的成功配置步骤耗时 **85.8 秒**，单独记录。它不含下载 825 MiB 官方 qcow2、格式转换、制作工具 payload、宿主安装依赖或失败诊断尝试；该秒数不是从空机器部署的总成本。pVisor 无需准备系统镜像，但前提仍是宿主工具已经安装。
+
+镜像、内核、initrd 摘要与来源见[制品清单](../../assets/benchmarks/full-ubuntu-20261004/assets.json)，官方 HTTPS SHA256SUMS 已核对，GPG 签名未验证。完整[原厂内核配置](../../assets/benchmarks/full-ubuntu-20261004/ubuntu-generic.config)与逐样本证明可供检查。独立归档 schema 为 `pvisor-full-ubuntu-reference/v1`；保留采样脚本快照、失败、命令、OS 证明与最小化运行证据，和旧裁剪批次分开，不合并样本。 Ubuntu 客户端最初出现串口提示/终端控制序列与结果行相连而漏记时间终点；解析器修复后，以同参数补测 Claude/Codex 各 N=10，发布表只使用补测分布，不合并旧客户端样本。原主报告和失效样本仍保留；[归档清单](../../assets/benchmarks/full-ubuntu-20261004/manifest.json)逐格记录选用批次。
+
+### 复现完整 Ubuntu 对照
+
+需要 Linux x86_64、KVM、FUSE、user/network namespaces，Firecracker 1.13.1、QEMU、curl、zstd、e2fsprogs、sfdisk，以及宿主 Python/Node/Rust/GCC/Git/rg/Claude/Codex。使用新的输出目录；下载和工具安装需要网络。准备脚本只修改输出目录中的普通文件，无宿主服务或块设备更改。先用 `--samples 1 --warmups 0` 探测，再运行正式批次。fixture 只包含项目与负载输入，不是系统根目录。
+
+```bash
+python3 benchmark/pvisor/prepare_ubuntu_reference.py \
+  --output target/ubuntu-reference-new
+python3 benchmark/pvisor/ubuntu_baselines.py \
+  --assets target/ubuntu-reference-new --fixture target/ubuntu-reference-new/fixture \
+  --binary /absolute/path/to/frozen/pvisor --output target/ubuntu-ready-new \
+  --backends native,pvisor-staged,pvisor-vm-hostroot,firecracker-ubuntu,firecracker-ubuntu-firstboot \
+  --modes ready --samples 30 --warmups 3
+python3 benchmark/pvisor/ubuntu_baselines.py \
+  --assets target/ubuntu-reference-new --fixture target/ubuntu-reference-new/fixture \
+  --binary /absolute/path/to/frozen/pvisor --output target/ubuntu-workflows-new \
+  --backends native,pvisor-staged,pvisor-vm-hostroot,firecracker-ubuntu \
+  --modes env,filesystem,tools,claude,codex --samples 10 --warmups 3
+python3 benchmark/pvisor/ubuntu_baselines.py \
+  --assets target/ubuntu-reference-new --fixture target/ubuntu-reference-new/fixture \
+  --binary /absolute/path/to/frozen/pvisor --output target/ubuntu-clients-new \
+  --backends firecracker-ubuntu --modes claude,codex --samples 10 --warmups 3
+uv run --no-project --with matplotlib python benchmark/pvisor/render_ubuntu_baselines.py \
+  --report target/ubuntu-ready-new/report.json \
+  --report target/ubuntu-workflows-new/report.json \
+  --report target/ubuntu-clients-new/report.json \
+  --replace-cohort claude/firecracker-ubuntu --replace-cohort codex/firecracker-ubuntu \
+  --assets target/ubuntu-reference-new --output /tmp/full-ubuntu-report-new
+```
+
+[逐样本 CSV](../../assets/benchmarks/full-ubuntu-20261004/samples.csv) · [分布与阶段计时](../../assets/benchmarks/full-ubuntu-20261004/summary.json) · [方法与复现](methodology.md#full-ubuntu)
+
+Ubuntu 工具包清单另见[dpkg 记录](../../assets/benchmarks/full-ubuntu-20261004/ubuntu-packages.txt)。正式任务统一将编译与客户端临时文件置于工作区私有 `_tmp`，避免 hostroot 的只读 `/tmp`；失败诊断保留，不计入新的正式分布。
+
+固定二进制的[来源限制](../../assets/benchmarks/full-ubuntu-20261004/binary-provenance.json)、[项目输入摘要](../../assets/benchmarks/full-ubuntu-20261004/fixture-inputs.json)和[临时目录配置诊断](../../assets/benchmarks/full-ubuntu-20261004/diagnostics/ubuntu-workflows-mmio-20261004/diagnostic-status.json)单独保留。汇总 CSV 用 `selected_for_summary` 标明发布表使用的样本，避免把补测与旧客户端样本合并。
+
+### 完整 Ubuntu 的 QEMU 补测 {#full-ubuntu-qemu}
+
+QEMU 10.2.2 的 q35 与 microvm 使用 Firecracker 已测的同一完整 Ubuntu Agent 磁盘、原厂 `7.0.0-34-generic` 和官方 initrd，直接加载官方 bzImage；不执行 UEFI/GRUB。q35 使用 virtio PCI，microvm 使用 virtio MMIO 并关闭可选传统设备，保留串口。[microvm 官方说明](https://www.qemu.org/docs/master/system/i386/microvm.html)列出这种直接启动及 guest 正常退出方式。两者明确指定 KVM、host CPU 和 2 vCPU，启动 2 GiB、任务 16 GiB，绑定宿主核心 0、1。
+
+网络由各 QEMU 进程内的用户态 NAT/DNS 提供；Firecracker 组需要单独的 QEMU `-machine none` 辅助进程，其耗时与 RSS 已计入。因此不能把全部差值当成 VMM 或 block device 的开销。磁盘每次从相同模板克隆，3 次预热、每格 N=10，运行前另做一次功能预检；要求与 Firecracker 相同的 OS 服务就绪、工具校验及正常零退出。`reboot=t` 与 `-no-reboot` 配合，不用宿主强制杀进程冒充成功。
+
+补测在同一宿主上独立执行，不与旧样本合并；图中的 pVisor/Firecracker 是之前的独立批次。N=10 只适合初版预算，不保证尾延迟。完整命令、日志、OS 证明及制品摘要随数据归档。以下命令复用前面准备好的官方 Ubuntu：
+
+```bash
+python3 benchmark/pvisor/ubuntu_baselines.py \
+  --assets target/ubuntu-reference-new --fixture target/ubuntu-reference-new/fixture \
+  --binary /absolute/path/to/frozen/pvisor --output target/ubuntu-qemu-new \
+  --backends qemu-ubuntu,qemu-microvm-ubuntu \
+  --modes ready,tools,claude,codex --samples 10 --warmups 3
+```
+
+
+补测 [80 个新增样本与独立控制批次](../../assets/benchmarks/full-ubuntu-qemu-20261004/manifest.json)全部通过。关闭 PIC/PIT 的前提已通过 [KVM host CPU 的 QMP 能力查询](../../assets/benchmarks/full-ubuntu-qemu-20261004/qemu-cpu-capabilities.json)核对：guest 模型暴露 `tsc-deadline`。这是能力核查，不是性能样本。
+
 ## 熟悉基线与完整 Agent Env：Linux 同机对照 {#reference-env}
 
 这轮回答三个不同问题：环境首条输出有多快、工具能否正常运行、客户端能否完成修复闭环。启动、文件操作、完整工具任务与真实 CLI 分开计时，旧 macOS/Linux 数据原样保留；新的 Docker/Firecracker/QEMU 对照只在 Linux 采集。

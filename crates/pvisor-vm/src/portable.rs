@@ -88,6 +88,11 @@ impl VmConfiguration for VmBuilder {
     fn from_config(config: VmConfig) -> io::Result<Self> {
         Self::new(config.cpus, config.memory_mib)
     }
+    fn from_restore(config: VmConfig, restore: MachineRestore) -> io::Result<Self> {
+        let mut builder = Self::from_config(config)?;
+        builder.machine_restore(restore)?;
+        Ok(builder)
+    }
     fn new(cpus: u8, memory_mib: u32) -> io::Result<Self> {
         Ok(Self {
             inner: crate::builder::Builder::new(cpus, memory_mib)?,
@@ -280,6 +285,27 @@ impl SnapshotControl for VmmHandle {
             Err(unsupported("machine freeze").to_string())
         }
     }
+    fn with_snapshot_frozen<T>(
+        &self,
+        timeout: Duration,
+        action: impl FnOnce(&mut FrozenMachine<'_>) -> Result<T, String>,
+    ) -> Result<T, String> {
+        #[cfg(any(
+            all(target_os = "macos", target_arch = "aarch64"),
+            all(target_os = "linux", target_arch = "x86_64")
+        ))]
+        {
+            self.snapshot_frozen(timeout, |inner| action(&mut FrozenMachine { inner }))
+        }
+        #[cfg(not(any(
+            all(target_os = "macos", target_arch = "aarch64"),
+            all(target_os = "linux", target_arch = "x86_64")
+        )))]
+        {
+            let _ = (timeout, action);
+            Err(unsupported("machine freeze").to_string())
+        }
+    }
 }
 impl ColdRamControl for VmmHandle {
     fn start_cold_pager<S: ColdRamStore + 'static>(
@@ -354,6 +380,35 @@ impl SnapshotCapture for FrozenMachine<'_> {
             Err(unsupported("machine capture").to_string())
         }
     }
+    fn capture_machine_state_with_ram_delta(
+        &self,
+        file: &File,
+        baseline: Option<&RamDeltaSpec>,
+    ) -> Result<(MachineSnapshot, Option<RamDeltaCapture>), String> {
+        #[cfg(any(
+            all(target_os = "macos", target_arch = "aarch64"),
+            all(target_os = "linux", target_arch = "x86_64")
+        ))]
+        {
+            let (state, delta) = self
+                .inner
+                .capture_machine_state_with_ram_delta(file, baseline)?;
+            Ok((
+                MachineSnapshot {
+                    state: serde_json::to_value(state).map_err(|e| e.to_string())?,
+                },
+                delta,
+            ))
+        }
+        #[cfg(not(any(
+            all(target_os = "macos", target_arch = "aarch64"),
+            all(target_os = "linux", target_arch = "x86_64")
+        )))]
+        {
+            let _ = (file, baseline);
+            Err(unsupported("machine capture").to_string())
+        }
+    }
 }
 impl FrozenMemory for FrozenMachine<'_> {
     fn experimental_ram_blocks(&self, bytes: usize) -> Result<Vec<RamBlock>, String> {
@@ -403,6 +458,106 @@ impl FrozenMemory for FrozenMachine<'_> {
     }
 }
 impl SnapshotState for MachineSnapshot {
+    fn has_kernel_layout(&self) -> io::Result<bool> {
+        match self.state.get("kernel_layout") {
+            None | Some(serde_json::Value::Null) => Ok(false),
+            Some(serde_json::Value::Object(_)) => Ok(true),
+            _ => Err(io::Error::new(
+                io::ErrorKind::InvalidData,
+                "invalid snapshot kernel geometry",
+            )),
+        }
+    }
+    fn verify_frozen_filesystem_backing(&self, tag: &str) -> io::Result<usize> {
+        #[cfg(any(
+            all(target_os = "macos", target_arch = "aarch64"),
+            all(target_os = "linux", target_arch = "x86_64")
+        ))]
+        {
+            let mut copy = self.clone();
+            copy.rebind(tag, |device, tag| {
+                device.verify_frozen_filesystem_backing(tag)
+            })
+        }
+        #[cfg(not(any(
+            all(target_os = "macos", target_arch = "aarch64"),
+            all(target_os = "linux", target_arch = "x86_64")
+        )))]
+        {
+            let _ = tag;
+            Err(unsupported("filesystem snapshot rebinding"))
+        }
+    }
+    fn rebind_filesystem_lower_copies(
+        &mut self,
+        tag: &str,
+        copies: &[(PathBuf, PathBuf)],
+    ) -> io::Result<usize> {
+        #[cfg(any(
+            all(target_os = "macos", target_arch = "aarch64"),
+            all(target_os = "linux", target_arch = "x86_64")
+        ))]
+        {
+            self.rebind(tag, |device, tag| {
+                device.rebind_filesystem_lower_copies(tag, copies)
+            })
+        }
+        #[cfg(not(any(
+            all(target_os = "macos", target_arch = "aarch64"),
+            all(target_os = "linux", target_arch = "x86_64")
+        )))]
+        {
+            let _ = (tag, copies);
+            Err(unsupported("filesystem snapshot rebinding"))
+        }
+    }
+    fn rebind_filesystem_shared_lowers(
+        &mut self,
+        tag: &str,
+        copies: &[(PathBuf, PathBuf)],
+        shared_lowers: &[PathBuf],
+    ) -> io::Result<usize> {
+        #[cfg(any(
+            all(target_os = "macos", target_arch = "aarch64"),
+            all(target_os = "linux", target_arch = "x86_64")
+        ))]
+        {
+            self.rebind(tag, |device, tag| {
+                device.rebind_filesystem_shared_lowers(tag, copies, shared_lowers)
+            })
+        }
+        #[cfg(not(any(
+            all(target_os = "macos", target_arch = "aarch64"),
+            all(target_os = "linux", target_arch = "x86_64")
+        )))]
+        {
+            let _ = (tag, copies, shared_lowers);
+            Err(unsupported("filesystem snapshot rebinding"))
+        }
+    }
+    fn rebind_filesystem_policy(
+        &mut self,
+        tag: &str,
+        policy: &pvisor_overlay_core::FileAccessPolicy,
+    ) -> io::Result<usize> {
+        #[cfg(any(
+            all(target_os = "macos", target_arch = "aarch64"),
+            all(target_os = "linux", target_arch = "x86_64")
+        ))]
+        {
+            self.rebind(tag, |device, tag| {
+                device.rebind_filesystem_policy(tag, policy)
+            })
+        }
+        #[cfg(not(any(
+            all(target_os = "macos", target_arch = "aarch64"),
+            all(target_os = "linux", target_arch = "x86_64")
+        )))]
+        {
+            let _ = (tag, policy);
+            Err(unsupported("filesystem snapshot rebinding"))
+        }
+    }
     fn cpu_count(&self) -> io::Result<usize> {
         self.state
             .get("cpus")
@@ -570,5 +725,50 @@ impl RamFileMapping for RamFileMount {
     ) -> io::Result<(Self, File)> {
         crate::ram_file::Mount::new(store, directory)
             .map(|(inner, file)| (Self { _inner: inner }, file))
+    }
+}
+
+impl RamDeltaState for RamDeltaSpec {
+    fn validate(&self) -> Result<(), String> {
+        if self.length == 0
+            || self.length > 64 * 1024 * 1024 * 1024
+            || !self.block_bytes.is_power_of_two()
+            || !(4096..=1024 * 1024).contains(&self.block_bytes)
+            || self.length.div_ceil(u64::from(self.block_bytes)) > 1 << 20
+            || self.base_sha256.len() != 64
+            || !self
+                .base_sha256
+                .bytes()
+                .all(|b| b.is_ascii_digit() || (b'a'..=b'f').contains(&b))
+        {
+            return Err("invalid incremental RAM baseline".into());
+        }
+        Ok(())
+    }
+}
+impl RamDeltaState for RamDeltaCapture {
+    fn validate(&self) -> Result<(), String> {
+        RamDeltaSpec {
+            device: 0,
+            inode: 0,
+            length: self.length,
+            block_bytes: self.block_bytes,
+            base_sha256: self.base_sha256.clone(),
+        }
+        .validate()?;
+        if self.version != 1
+            || self.changed_blocks.len() as u64 > self.length.div_ceil(u64::from(self.block_bytes))
+            || self
+                .changed_blocks
+                .iter()
+                .any(|index| *index >= self.length.div_ceil(u64::from(self.block_bytes)))
+            || self
+                .changed_blocks
+                .windows(2)
+                .any(|pair| pair[0] >= pair[1])
+        {
+            return Err("invalid incremental RAM capture inventory".into());
+        }
+        Ok(())
     }
 }

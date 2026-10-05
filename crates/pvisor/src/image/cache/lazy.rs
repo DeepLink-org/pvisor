@@ -29,6 +29,7 @@ pub(crate) struct LazyMount {
 }
 impl Drop for LazyMount {
     fn drop(&mut self) {
+        crate::util::startup_mark("image.unmount_begin");
         if let Some(session) = self.session.take()
             && let Err(error) = session.unmount()
         {
@@ -39,6 +40,7 @@ impl Drop for LazyMount {
         }
         #[cfg(target_os = "linux")]
         let _ = fs::remove_dir(&self.path);
+        crate::util::startup_mark("image.unmount_ready");
     }
 }
 
@@ -207,8 +209,12 @@ fn mount(filesystem: RemoteFs, _store: &Path) -> anyhow::Result<LazyMount> {
     options.push(MountOption::CUSTOM("backend=fskit".into()));
     let session = Session::new(filesystem, &mountpoint, &options)
         .context("mount lazy image lower (FUSE is required); unset PVISOR_CACHE_BACKEND/PVISOR_CACHE_LOCATION and set PVISOR_CACHE_SERVER=off to use local OCI extraction")?;
+    #[cfg(target_os = "linux")]
+    let session = BackgroundSession::new_interruptible(session)?;
+    #[cfg(not(target_os = "linux"))]
+    let session = BackgroundSession::new(session)?;
     let mount = LazyMount {
-        session: Some(BackgroundSession::new(session)?),
+        session: Some(session),
         path: mountpoint.clone(),
     };
     // FSKit attaches asynchronously after its request loop starts.

@@ -1,6 +1,6 @@
 //! Read-only, authenticated snapshot RAM. Cached FUSE reads are driven by host
 //! page faults; MAP_PRIVATE guest mappings own all subsequent writes.
-use super::{EnvironmentManifest, PendingEnvironment, RamBlocks, SnapshotStore, store::valid_id};
+use super::{EnvironmentManifest, RamBlocks, SnapshotStore, store::valid_id};
 use crate::ram_backing::BLOCK_BYTES;
 #[cfg(target_os = "macos")]
 use anyhow::Context;
@@ -72,10 +72,7 @@ enum Backing {
         file: File,
         index: Option<RawRamIndex>,
     },
-    Compressed {
-        blocks: RamBlocks,
-        references: PendingEnvironment,
-    },
+    Compressed(std::sync::Arc<super::blocks::PinnedRamBlocks>),
 }
 
 /// Owns the backing, including hard links retaining compressed blocks after
@@ -93,12 +90,14 @@ impl SnapshotRamReader {
             path,
             manifest.ram_blocks.as_ref(),
             manifest.ram_index.as_ref(),
+            &manifest.ram_sha256,
         )
     }
     fn from_parts(
         path: &Path,
         blocks: Option<&RamBlocks>,
         index: Option<&RawRamIndex>,
+        ram_sha256: &str,
     ) -> anyhow::Result<Self> {
         let (backing, length) = if let Some(blocks) = blocks {
             blocks.validate()?;
@@ -124,10 +123,11 @@ impl SnapshotRamReader {
                 }
             }
             (
-                Backing::Compressed {
+                Backing::Compressed(std::sync::Arc::new(super::blocks::PinnedRamBlocks {
                     blocks: blocks.clone(),
                     references,
-                },
+                    sha256: ram_sha256.to_owned(),
+                })),
                 blocks.length,
             )
         } else {
@@ -155,6 +155,12 @@ impl SnapshotRamReader {
             cache: lru::LruCache::new(std::num::NonZeroUsize::new(4).unwrap()),
         })
     }
+    pub(crate) fn compressed_base(&self) -> Option<std::sync::Arc<super::blocks::PinnedRamBlocks>> {
+        match &self.backing {
+            Backing::Compressed(base) => Some(base.clone()),
+            Backing::Raw { .. } => None,
+        }
+    }
     pub fn len(&self) -> u64 {
         self.length
     }
@@ -173,9 +179,9 @@ impl SnapshotRamReader {
             let start = (position % BLOCK_BYTES as u64) as usize;
             if !self.cache.contains(&index) {
                 let bytes = match &self.backing {
-                    Backing::Compressed { blocks, references } => {
-                        blocks.read_block(&references.directory().join("ram-blocks"), index)?
-                    }
+                    Backing::Compressed(base) => base
+                        .blocks
+                        .read_block(&base.references.directory().join("ram-blocks"), index)?,
                     Backing::Raw { file, index: seal } => {
                         let block_offset = index as u64 * BLOCK_BYTES as u64;
                         let mut bytes =
@@ -210,6 +216,37 @@ pub struct SnapshotRamMount {
     directory: tempfile::TempDir,
 }
 impl SnapshotRamMount {
+    pub(crate) fn ram_path(&self) -> std::path::PathBuf {
+        self.directory.path().join("ram")
+    }
+
+    /// The ordinary executor owns its pager in the supervisor, whose binary
+    /// enters internal modes before parsing the worker/CLI arguments.
+    pub(crate) fn watch_native_owner_exit(&mut self, executable: &Path) -> io::Result<()> {
+        use std::os::unix::process::CommandExt;
+        if self.watchdog.is_some() {
+            return Err(io::Error::other("RAM exit watchdog already installed"));
+        }
+        let mut child = Command::new(executable)
+            .env_clear()
+            .env(
+                "PATH",
+                std::env::var_os("PATH").unwrap_or_else(|| "/usr/bin:/bin".into()),
+            )
+            .env("PVISOR_VM_RESTORE_RAM_WATCHDOG", self.directory.path())
+            .stdin(Stdio::piped())
+            .stdout(Stdio::null())
+            .stderr(Stdio::inherit())
+            .process_group(0)
+            .spawn()?;
+        let pipe = child
+            .stdin
+            .take()
+            .ok_or_else(|| io::Error::other("missing RAM watchdog pipe"))?;
+        self.watchdog = Some((child, pipe));
+        Ok(())
+    }
+
     pub fn new(reader: SnapshotRamReader, directory: &Path) -> io::Result<(Self, File)> {
         let temporary = tempfile::Builder::new()
             .prefix("ram-mount-")
@@ -225,6 +262,13 @@ impl SnapshotRamMount {
             #[cfg(target_os = "macos")]
             MountOption::CUSTOM("backend=kernel".into()),
         ];
+        #[cfg(target_os = "linux")]
+        let session = BackgroundSession::new_interruptible(fuser::Session::new(
+            RamFs { reader },
+            temporary.path(),
+            &options,
+        )?)?;
+        #[cfg(not(target_os = "linux"))]
         let session = fuser::spawn_mount2(RamFs { reader }, temporary.path(), &options)?;
         let mount = Self {
             session: Some(session),
@@ -279,6 +323,7 @@ impl SnapshotRamMount {
                 mount: temporary.path().as_os_str().as_bytes().to_vec(),
                 blocks: manifest.ram_blocks.clone(),
                 index: manifest.ram_index.clone(),
+                ram_sha256: manifest.ram_sha256.clone(),
             },
         )?;
         spec.as_file_mut().flush()?;
@@ -429,6 +474,7 @@ struct RamServerSpec {
     mount: Vec<u8>,
     blocks: Option<RamBlocks>,
     index: Option<RawRamIndex>,
+    ram_sha256: String,
 }
 /// Private snapshot pager entry point; keep answering faults until its sole
 /// owning runner closes the pipe, including during kernel process teardown.
@@ -464,7 +510,12 @@ pub(crate) fn serve_ram(spec: &Path) -> anyhow::Result<()> {
             && metadata.permissions().mode() & 0o077 == 0,
         "invalid private RAM server mountpoint"
     );
-    let reader = SnapshotRamReader::from_parts(object, spec.blocks.as_ref(), spec.index.as_ref())?;
+    let reader = SnapshotRamReader::from_parts(
+        object,
+        spec.blocks.as_ref(),
+        spec.index.as_ref(),
+        &spec.ram_sha256,
+    )?;
     let options = [
         MountOption::FSName("pvisor-snapshot-ram".into()),
         MountOption::RO,
@@ -518,7 +569,10 @@ fn detach_mount(path: &Path) -> anyhow::Result<()> {
         // Privileged deployments may mount directly without fusermount.
         let detached = unsafe { libc::umount2(native.as_ptr(), libc::MNT_DETACH) } == 0;
         let error = io::Error::last_os_error();
-        if !detached && !matches!(error.raw_os_error(), Some(libc::EINVAL | libc::ENOENT)) {
+        if !detached
+            && !matches!(error.raw_os_error(), Some(libc::EINVAL | libc::ENOENT))
+            && linux_mount_present(path)?
+        {
             let mut result = None;
             for helper in ["fusermount3", "fusermount"] {
                 match Command::new(helper)
@@ -562,6 +616,30 @@ fn detach_mount(path: &Path) -> anyhow::Result<()> {
         Err(error) => return Err(error.into()),
     }
     Ok(())
+}
+
+#[cfg(target_os = "linux")]
+fn linux_mount_present(path: &Path) -> io::Result<bool> {
+    // Linux can return EPERM before checking whether this path is mounted.
+    // Read the kernel table rather than treating an unmount helper's diagnostic
+    // as proof that cleanup is safe. Encode paths as mountinfo does, including
+    // whitespace, backslashes and non-UTF-8 names, without touching the mount.
+    let mut target = Vec::new();
+    for byte in path.as_os_str().as_bytes() {
+        match byte {
+            b' ' => target.extend_from_slice(b"\\040"),
+            b'\t' => target.extend_from_slice(b"\\011"),
+            b'\n' => target.extend_from_slice(b"\\012"),
+            b'\\' => target.extend_from_slice(b"\\134"),
+            byte => target.push(*byte),
+        }
+    }
+    let mounts = fs::read("/proc/self/mountinfo")?;
+    Ok(mounts.split(|byte| *byte == b'\n').any(|line| {
+        line.split(|byte| *byte == b' ')
+            .nth(4)
+            .is_some_and(|mount| mount == target)
+    }))
 }
 
 const ROOT: u64 = 1;

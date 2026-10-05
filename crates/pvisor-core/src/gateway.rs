@@ -1,6 +1,20 @@
 //! Capture configuration records, independent of protocol conversion.
 use serde::{Deserialize, Serialize};
 
+/// The shared routing/policy grammar: exact name, leading/trailing `*`, or `*`.
+pub fn model_matches(pattern: &str, model: &str) -> bool {
+    if pattern == "*" {
+        return true;
+    }
+    if let Some(prefix) = pattern.strip_suffix('*') {
+        return !prefix.is_empty() && model.starts_with(prefix);
+    }
+    if let Some(suffix) = pattern.strip_prefix('*') {
+        return !suffix.is_empty() && model.ends_with(suffix);
+    }
+    pattern == model
+}
+
 /// Controls how much request/response content is written to trajectory records.
 #[derive(Debug, Clone, Copy, Default, PartialEq, Eq, Deserialize, serde::Serialize)]
 #[serde(rename_all = "snake_case")]

@@ -1,0 +1,5 @@
+{
+  "state": "superseded-incomplete-diagnostic",
+  "reason": "Hostroot Rust linker requires private writable TMPDIR; follow-up uses uniform workspace temporary files. Original measured scripts and failures retained.",
+  "formal_task_report": "ubuntu-workflows-private-tmp-20261004"
+}

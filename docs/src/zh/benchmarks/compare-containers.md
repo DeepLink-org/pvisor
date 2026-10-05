@@ -24,6 +24,8 @@ Docker 挂载与容器边界依据 [bind mounts](https://docs.docker.com/engine/
 
 ### 用户能据此判断什么 {#reference-comparison}
 
+本节的 Docker/CLI 数据来自相同工具制品的旧受控批次，pVisor 使用准备目录，不使用镜像。新增默认 `--rootfs host` 与完整 Ubuntu 对照、工具内部时间及本轮客户端通过/失败情况见[完整 Agent Env](agent-tasks.md#full-ubuntu)；配置与样本分别保留。
+
 完整修复测试任务的 P50 为 Docker **0.90 秒**、pVisor staged **0.70 秒**、pVisor VM **3.97 秒**。Docker 的 metadata/read/write 接近原生；staged 读取 64 MiB 多约 16 ms，遍历 2,048 文件多约 175 ms。轻量工具任务中，暂存成本是约数百毫秒的预算；需要独立 guest kernel 时，还要接受目前 VM 工具路径的秒级差距。
 
 这不是同一安全边界的速度排名。staged host 提供改动隔离和证据，可访问视图外宿主；Docker 为 namespace 容器与 writable bind，VM 为独立 guest kernel 和 staged 视图。选择应同时看需要的边界、任务耗时和改动进入原工作区的方式。

@@ -315,6 +315,12 @@ mod tests {
         let kvm = Kvm::new().unwrap();
         let vm = kvm.create_vm().unwrap();
         let vcpu = vm.create_vcpu(0).unwrap();
+        // Match production initialization: KVM validates long-mode EFER bits
+        // against the guest CPUID installed before configuring registers.
+        let cpuid = kvm
+            .get_supported_cpuid(kvm_bindings::KVM_MAX_CPUID_ENTRIES)
+            .unwrap();
+        vcpu.set_cpuid2(&cpuid).unwrap();
         let gm = create_guest_mem();
 
         assert!(vcpu.set_sregs(&Default::default()).is_ok());

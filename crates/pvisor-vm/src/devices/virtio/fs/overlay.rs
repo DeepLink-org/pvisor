@@ -130,6 +130,50 @@ pub struct OverlaySnapshot {
 }
 
 impl OverlaySnapshot {
+    pub(super) fn verify_frozen_backing(&self) -> io::Result<()> {
+        for layer in &self.layers {
+            layer.verify_frozen_backing()?;
+        }
+        // Validate lower origin/upper alias topology too, without changing the
+        // saved snapshot or relaxing any ordinary copied-root checks.
+        let mut copy = self.clone();
+        copy.rebind_roots(|root| Ok(root.to_owned()), &[], true, &[])
+    }
+    pub(super) fn validate_shared_readonly_layers(
+        &self,
+        shared_lowers: &[PathBuf],
+    ) -> io::Result<()> {
+        use super::snapshot::invalid;
+        let mut seen = std::collections::BTreeSet::new();
+        if self.layers.len() != self.config.lower_dirs.len() + 1 {
+            return Err(invalid("overlay snapshot layer count mismatch"));
+        }
+        for source in shared_lowers {
+            if !seen.insert(source) {
+                return Err(invalid("duplicate shared lower binding"));
+            }
+            if std::iter::once(self.config.upper_dir.as_str())
+                .chain(self.config.work_dir.as_deref())
+                .chain(self.config.preimage_dir.as_deref())
+                .chain(self.config.apply_target.as_deref())
+                .chain(self.config.baseline_lower.as_deref())
+                .any(|mutable| {
+                    Path::new(mutable).starts_with(source) || source.starts_with(mutable)
+                })
+            {
+                return Err(invalid("shared lower overlaps a private backing role"));
+            }
+            let index = self
+                .config
+                .lower_dirs
+                .iter()
+                .position(|lower| Path::new(lower) == source)
+                .ok_or_else(|| invalid("shared backing is not a lower layer"))?;
+            self.layers[index + 1].validate_readonly_handles()?;
+        }
+        Ok(())
+    }
+
     pub(super) fn rebind_owned_copy(
         &mut self,
         source: &Path,
@@ -172,12 +216,50 @@ impl OverlaySnapshot {
                 .map(str::to_owned)
                 .ok_or_else(|| invalid("overlay backing path is not UTF-8"))
         };
-        self.rebind_roots(relocate, &[])
+        self.rebind_roots(relocate, &[], false, &[])
+    }
+
+    pub(super) fn validate_shared_lower_copies(
+        &self,
+        copies: &[(PathBuf, PathBuf)],
+    ) -> io::Result<()> {
+        use super::snapshot::invalid;
+        let shared = copies
+            .iter()
+            .map(|(source, _)| source.clone())
+            .collect::<Vec<_>>();
+        self.validate_shared_readonly_layers(&shared)?;
+        for (source, destination) in copies {
+            let destination = destination.canonicalize()?;
+            for other in std::iter::once(self.config.upper_dir.as_str())
+                .chain(self.config.work_dir.as_deref())
+                .chain(self.config.preimage_dir.as_deref())
+                .chain(self.config.apply_target.as_deref())
+                .chain(self.config.baseline_lower.as_deref())
+                .chain(
+                    self.config
+                        .lower_dirs
+                        .iter()
+                        .map(String::as_str)
+                        .filter(|root| Path::new(root) != source),
+                )
+            {
+                let other = Path::new(other);
+                if destination.starts_with(other) || other.starts_with(&destination) {
+                    return Err(invalid(
+                        "shared lower destination overlaps unchanged backing",
+                    ));
+                }
+            }
+        }
+        Ok(())
     }
 
     pub(super) fn rebind_roots(
         &mut self,
         relocate: impl Fn(&str) -> io::Result<String>,
+        shared_lowers: &[PathBuf],
+        preserve_unmapped: bool,
         retained: &[PathBuf],
     ) -> io::Result<()> {
         use super::snapshot::invalid;
@@ -248,7 +330,14 @@ impl OverlaySnapshot {
             if original == copied && retained.iter().any(|root| root == Path::new(original)) {
                 continue;
             }
-            layer.rebind_owned_copy(Path::new(original), Path::new(copied))?;
+            if original == copied && shared_lowers.contains(&PathBuf::from(original)) {
+                layer.retain_readonly_root(Path::new(original))?;
+            } else if original == copied && preserve_unmapped {
+                // Only the explicitly selected read-only lower roots change.
+                // Private data/state was already captured and verified.
+            } else {
+                layer.rebind_owned_copy(Path::new(original), Path::new(copied))?;
+            }
         }
         let mut origins = std::collections::BTreeMap::new();
         let mut rebound_origins = Vec::new();
@@ -311,6 +400,19 @@ impl OverlaySnapshot {
         self.hard_link_origins = rebound_origins;
         Ok(())
     }
+    pub(super) fn rebind_policy(
+        &mut self,
+        policy: &pvisor_overlay_core::FileAccessPolicy,
+    ) -> io::Result<()> {
+        if !self.config.access_policy.same_rules(policy) {
+            return Err(super::snapshot::invalid(
+                "restored filesystem authorization rules changed",
+            ));
+        }
+        self.config.access_policy = policy.clone();
+        Ok(())
+    }
+
     pub(crate) fn contains_inode(&self, inode: u64) -> bool {
         self.nodes.iter().any(|n| n.0 == inode)
             || self.layers.iter().any(|s| s.contains_inode(inode))

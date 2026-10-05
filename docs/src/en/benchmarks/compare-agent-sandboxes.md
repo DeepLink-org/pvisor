@@ -23,6 +23,8 @@ Our representative flow reads, edits, requests a model API, and then encounters 
 
 ## Complete-environment compatibility measurements {#reference-comparison}
 
+Docker/CLI data in this section comes from the earlier shared-tool controlled batch. pVisor uses a prepared directory without an image. The new default `--rootfs host` versus complete Ubuntu comparison, internal tool times and current client pass/failure results are in [full Agent Env](agent-tasks.md#full-ubuntu); configurations and samples remain separate.
+
 Real Claude/Codex CLIs complete controlled repair/test loops on native, staged, Docker, Firecracker and QEMU. Codex also passes 30/30 in pVisor VM, while Claude/VM initialization times out. This does not establish universal client compatibility. Codex uses uniform inner `danger-full-access`; Claude is limited to controlled Bash actions. Default inner sandboxes and their composition with outer isolation are not compared. See the [complete environment](agent-tasks.md#reference-env) for timing, failures and boundaries.
 
 

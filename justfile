@@ -70,14 +70,45 @@ cluster-build:
       codesign --verify --strict "{{ target_dir }}/debug/pvisor-worker"
     fi
 
+# Controller and Worker with Attempt-local model Gateway support.
+cluster-build-gateway:
+    #!/usr/bin/env bash
+    set -euo pipefail
+    cargo build --locked -p pvisor-cluster -p pvisor --features pvisor/gateway --bin pvisor-cluster --bin pvisor-worker
+    if [[ "$(uname -s)" == Darwin ]]; then
+      codesign --force --sign - --entitlements "{{ repo }}/crates/pvisor/macos-hypervisor.entitlements" "{{ target_dir }}/debug/pvisor-worker"
+      codesign --verify --strict "{{ target_dir }}/debug/pvisor-worker"
+    fi
+
 # Controller contracts plus real HTTP/multi-worker execution and failure tests.
 test-cluster:
     just test pvisor-cluster pvisor-core
     cargo nextest run --locked -p pvisor --test cluster_execution --bin pvisor-worker
 
+# Explicit feature build: Worker Gateway, common contracts and native model protocols.
+test-cluster-gateway:
+    cargo nextest run --locked -p pvisor -p pvisor-core -p pvisor-cluster -p pvisor-gateway -p pvisor-journal --features pvisor/gateway
+
+# Each hardware gate owns host timing/resource measurements. Concurrency within
+# a gate remains real; unrelated gates run sequentially to avoid interference.
 # Actual Linux KVM/FUSE environments and remote VM controls; missing devices fail.
 test-cluster-vm:
-    cargo nextest run --locked -p pvisor --test cluster_environment_vm --run-ignored only
+    cargo nextest run --locked -p pvisor --test cluster_environment_vm --run-ignored only --test-threads 1
+
+# Actual model/tool loops in immutable-environment VMs with Attempt-local Gateways.
+test-cluster-vm-gateway:
+    cargo nextest run --locked -p pvisor --features gateway --test cluster_gateway_vm --run-ignored only
+
+# Dedicated user-systemd cgroup with real VM restore, CPU overcommit and cleanup.
+test-cluster-cgroup:
+    PVISOR_TEST_WORKER_SYSTEMD=1 cargo nextest run --locked -p pvisor --test cluster_environment_vm --run-ignored only -E 'test(concurrent_restores_share_physical_ram_baseline_and_keep_private_writes)'
+
+# Explicit paired SMT experiment; independent of correctness/hardware gates.
+bench-cluster-cpu:
+    #!/usr/bin/env bash
+    set -euo pipefail
+    : "${PVISOR_CPU_BENCH_OUT:?set an absolute JSON output path}"
+    cargo nextest run --locked -p pvisor --test cluster_cpu_benchmark --run-ignored only
 
 # Format source files; use fmt-check for a read-only check.
 fmt: fmt-rust fmt-py

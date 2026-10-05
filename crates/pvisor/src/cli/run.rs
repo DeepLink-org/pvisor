@@ -1018,6 +1018,7 @@ async fn run_prepared_spec(args: RunArgs) -> anyhow::Result<i32> {
     let _ = cleanup_result;
     Ok(match output.result.state {
         RunState::Completed => output.result.exit_code.unwrap_or(0),
+        RunState::Hibernated => 0,
         RunState::Cancelled => 130,
         _ => output.result.exit_code.unwrap_or(1),
     })
@@ -1855,6 +1856,7 @@ async fn execute_config(
     }
     Ok(match result.state {
         RunState::Completed => result.exit_code.unwrap_or(0),
+        RunState::Hibernated => 0,
         RunState::Cancelled => 130,
         _ => result.exit_code.unwrap_or(1),
     })
@@ -2814,6 +2816,7 @@ fn resolve_overlay(
     compose.push(base);
     let merged_dir = overlayfs.merged_dir.clone();
     Ok(Some(OverlayHint {
+        execution_snapshot: None,
         access_policy: overlayfs.access_policy.clone(),
         lower_dirs: compose,
         stage_dir: Some(stage.clone()),

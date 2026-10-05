@@ -1,0 +1,28 @@
+[Unit]
+Description=pVisor VM worker %i
+After=network-online.target
+
+[Service]
+Type=exec
+WorkingDirectory=%h
+Environment=PVISOR_CLUSTER_URL=http://127.0.0.1:19800
+Environment=PVISOR_WORKER_SLOTS=2
+Environment=PVISOR_WORKER_MEMORY_BYTES=536870912
+Environment=PVISOR_WORKER_CPU_MILLIS=2000
+EnvironmentFile=%h/.config/pvisor/%i.env
+ExecStart=%h/.local/bin/pvisor-worker --id=%i --backend=vm --url=${PVISOR_CLUSTER_URL} --slots=${PVISOR_WORKER_SLOTS} --memory-bytes=${PVISOR_WORKER_MEMORY_BYTES} --cpu-millis=${PVISOR_WORKER_CPU_MILLIS} --state=%h/.local/state/pvisor/%i --config=%h/.config/pvisor/%i.toml
+UMask=0077
+MemoryAccounting=yes
+MemoryHigh=768M
+MemoryMax=1G
+MemorySwapMax=0
+CPUQuota=100%
+Delegate=no
+KillMode=mixed
+TimeoutStopSec=30s
+OOMPolicy=kill
+Restart=on-failure
+RestartSec=2s
+
+[Install]
+WantedBy=default.target
