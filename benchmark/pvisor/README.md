@@ -388,6 +388,24 @@ restore need the separate `vm_lifecycle_bench` driver with a Python-capable
 rootfs; compressed startup alone does not measure generation commits or cold
 page restoration.
 
+Optional `rg-2048`, `rg-deep-2048`, `git-status-2048` and `npm-offline-32`
+cases use real tools from the supplied rootfs; select them explicitly with
+`--cases`. `rg-parallel-4` searches four disjoint 512-file quarters with four
+single-threaded ripgrep processes, checking all 32 matches and every exit status.
+`read-parallel-4-64mib` checks and reads four disjoint 16-MiB zero-filled files
+with four guest processes. Both request four guest CPUs and 256 MiB RAM. Their
+timers include VM startup, first-open observation, guest exit and CLI result
+persistence; they are not pure filesystem bandwidth measurements.
+
+`--baseline-fs-workers 1 --candidate-fs-workers 4` controls the private host
+dispatch setting for a same-binary experiment and records it in metadata.
+Without these flags the candidate uses its automatic default. The harness does
+not inherit a host worker override. `--filesystem-profile` adds diagnostic
+checkpoints, including inline/pool dispatch counts; instrumented runs are not
+performance acceptance. Place `--output` outside the checked-out repository
+when IDE file watchers would observe thousands of generated trial files, then
+archive reports and per-trial evidence after measurement.
+
 The exit timer uses a blocking wait thread; timeouts apply only to its completion
 event. A Python timeout-based `wait()` can poll at 50-ms intervals and must not
 be used as the exit timestamp.

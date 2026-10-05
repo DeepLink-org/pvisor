@@ -729,16 +729,21 @@ mod tests {
         assert_eq!(pool.limit, 4);
         pool.submit(request(0));
         pool.submit(request(1));
-        waiting.recv_timeout(Duration::from_secs(2)).unwrap();
-        let fast = pool.completed.recv_timeout(Duration::from_secs(2)).unwrap();
-        assert_eq!(fast.request.index, 1);
-        assert_eq!(fast.len, 8);
-        assert!(!gate.try_close().unwrap());
-        // Unblock before joining so an assertion failure cannot hang the test.
+        let started = waiting.recv_timeout(Duration::from_secs(2));
+        let fast = pool.completed.recv_timeout(Duration::from_secs(2));
+        let retained = gate.try_close();
+        // Unblock before every fallible assertion so a regression cannot hang
+        // RequestPool::drop while it joins the deliberately blocked worker.
         resume.send(()).unwrap();
-        let slow = pool.completed.recv_timeout(Duration::from_secs(2)).unwrap();
+        let slow = pool.completed.recv_timeout(Duration::from_secs(2));
         pool.in_flight -= 2;
         drop(pool); // shutdown joins every executing thread
+        started.unwrap();
+        let fast = fast.unwrap();
+        let slow = slow.unwrap();
+        assert_eq!(fast.request.index, 1);
+        assert_eq!(fast.len, 8);
+        assert!(!retained.unwrap());
         assert!(!gate.try_close().unwrap());
         drop((fast, slow));
         assert!(gate.try_close().unwrap());

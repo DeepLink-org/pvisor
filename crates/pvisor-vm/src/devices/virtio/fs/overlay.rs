@@ -1877,7 +1877,10 @@ mod tests {
                 let result = fs.read(ctx, a, ah, &mut writer, 16, 0, None, 0);
                 (result, writer.bytes)
             });
-            entered.recv_timeout(Duration::from_secs(2)).unwrap();
+            if let Err(error) = entered.recv_timeout(Duration::from_secs(2)) {
+                let _ = resume.send(());
+                panic!("backing READ did not reach its blocking point: {error}");
+            }
             scope.spawn(move || {
                 let mut writer = ReadWriter {
                     gate: None,
@@ -1892,8 +1895,6 @@ mod tests {
                 panic!("independent READ serialized behind backing I/O");
             }
             let (result, bytes) = second.unwrap();
-            assert_eq!(result.unwrap(), 6);
-            assert_eq!(bytes, b"second");
             let (released, done) = channel();
             scope.spawn(move || {
                 let result = fs.release(ctx, a, libc::O_RDONLY as u32, ah, false, false, None);
@@ -1901,6 +1902,8 @@ mod tests {
             });
             let premature = done.recv_timeout(Duration::from_millis(20));
             resume.send(()).unwrap();
+            assert_eq!(result.unwrap(), 6);
+            assert_eq!(bytes, b"second");
             assert!(premature.is_err(), "release raced retained backing handle");
             done.recv_timeout(Duration::from_secs(2)).unwrap().unwrap();
             let (result, bytes) = first.join().unwrap();

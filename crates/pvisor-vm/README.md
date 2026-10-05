@@ -109,9 +109,13 @@ Reader/Writer，保留 RAM access lease 直到 used ring 发布完成。禁止�
 FUSE header 只解码一次；INIT/DESTROY 独占 session guard。
 
 OverlayFs 的 READ、LOOKUP、GETATTR、目录查询等可共享 operation guard。
-改名、copy-up、写入、前像首次观察、release 与快照恢复仍使用独占 guard；
+改名、copy-up、写入、OPEN 的内容首次观察、release 与快照恢复仍使用独占 guard；
 读取通过 backing I/O 持有共享 guard，阻止原生句柄提前释放。文件句柄和
 不可变目录项只在查表时持有 handle map 锁，不把整张表锁带入 I/O。
+目录缓存用 `Arc` 持有原生 lookup 引用，借用者在缓存锁外执行 backing I/O；
+淘汰、失效和 clear 仅移除缓存所有权，最后一个借用者离开后才 forget。
+原生 inode 表在同一个 map 锁窗口内固定引用或仲裁插入，防止并发 lookup
+替换已返回的 inode，以及 final forget 与引用固定之间的竞争。
 
 freeze/reset 停止接收新请求，排空已接收请求、回填所有完成结果并 join
 全部 I/O worker 后才能返回。thaw/restore 主动扫描 available ring，不依赖
