@@ -427,9 +427,17 @@ async fn native_agent_gate(idle: bool) {
             2,
             "no guest tool/result request before resume admission"
         );
-        let overridden = admin.inference_wait_record("agent-a").await.unwrap().unwrap();
+        let overridden = admin
+            .inference_wait_record("agent-a")
+            .await
+            .unwrap()
+            .unwrap();
         assert!(overridden.ready && overridden.interrupted && overridden.resume_revision.is_none());
-        let waiting = admin.inference_wait_record("agent-b").await.unwrap().unwrap();
+        let waiting = admin
+            .inference_wait_record("agent-b")
+            .await
+            .unwrap()
+            .unwrap();
         assert!(waiting.ready && waiting.resume_revision.is_some());
         admin.cancel("cpu-competitor").await.unwrap();
         tokio::time::timeout(Duration::from_secs(5), async {

@@ -53,10 +53,18 @@ Implementations must enqueue bounded, fenced cleanup without blocking the
 Gateway's I/O thread, including when an async operation was interrupted after
 an uncertain effect.
 
-The shipped Worker does not yet install a lifecycle. Its durable bounded wait
-state, controller restart recovery and the native CPU release/readmission gate
-remain to be connected. This interface does not provide RAM reclamation or
-networked VM hibernation, and the controlled
+The VM Worker can install the lifecycle with `[gateway] release_cpu_on_idle = true`.
+Its [controller wait protocol](../pvisor-cluster/README.md#cooperative-inference-waits)
+keeps one current wait and four automatic control receipts per task, separately
+from manual control history. Parallel cooperative calls share a bounded group;
+the first ready call wakes the guest, and later calls in that group retain CPU
+admission. Native exit also stops cleanup before artifact delivery starts.
+A Linux KVM/FUSE Agent gate verifies released CPU admission, a competing VM,
+unchanged frozen vCPU counters, manual pause ownership and completed real tools.
+This interface does not provide RAM reclamation or networked VM hibernation.
+Controller-restart recovery is covered by protocol tests; a live networked-VM
+restart/fault gate and parallel-call fault experiments remain to be completed.
+The controlled
 [`model_wait_http`](tests/model_wait_http.rs) tests measure HTTP ordering and
 cancellation rather than VM density. AgentENV's inference-wait lifecycle and
 DSec's independently retained rollout state remain broader implementation

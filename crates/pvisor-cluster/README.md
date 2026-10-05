@@ -144,6 +144,11 @@ Running acknowledgements in memory. Ordinary renewal-only polls neither append
 to the journal nor fsync it. Assignments, accepted task/DAG specifications,
 control/cancel intents and final receipts retain their existing durable contract.
 This also preserves queued tasks that no Worker has received yet.
+When a poll also requests a new assignment or pending control, a definite
+journal quota refusal defers that new work while returning existing renewals.
+Refused expiry commits retain reservations and roots. Uncertain I/O/fsync
+failures still fence the Controller; first terminal/intent commits can still fail
+when metadata storage is full.
 
 After restart, each unfinished historical lease has
 `reconciliation_pending: true`. Its `phase` and deadline are historical hints;
@@ -1649,6 +1654,66 @@ source/left/right continuations. The Worker uses one
 Tokio runtime thread and a three-second lease. Protocol fault tests separately
 exercise replay, torn request/acknowledgement frames, stale receipts, capture
 failure, early completion, cancellation and lease expiry.
+
+## Cooperative inference waits
+
+An opt-in VM Worker profile can release admission CPU while a cooperatively
+idle Agent waits for a model. Enable `release_cpu_on_idle = true` under
+`[gateway]`, alongside `enabled = true`; the agent declares a quiescent call
+using `x-pvisor-inference-idle: true`. This declares whole-guest idleness,
+including tools and background work. Without both settings, forwarding is
+unchanged. The local header is stripped before model-supplier forwarding.
+
+The Attempt-bound Gateway lifecycle groups at most 64 simultaneous cooperative
+calls. It requests one native pause before upstream dispatch; the first ready
+response requests resume for the group. Buffered replies wait for body EOF and
+SSE waits for its first nonempty chunk, rather than early HTTP headers. CPU is
+released only after native pause acknowledgement and reacquired through the
+normal controller and final Worker admission checks before native resume.
+The Gateway delivery barrier then permits the response. Later ready calls in
+the same group retain CPU rather than pausing a guest already processing a reply.
+
+`POST /v1/workers/inference-wait` takes a Worker-authenticated
+`InferenceWaitRequest`: its key binds the full lease, a monotonic wait-group
+revision and the first authorized Gateway call ID; intents are `begin`,
+`ready` and `observe`. The controller keeps one current wait and four bounded
+automatic control receipts per task. Automatic controls never consume the
+4,096-entry manual history, while their command revisions share the same
+monotonic order as manual controls. The Worker likewise retains four automatic
+control evidence files. The finite WAL quota still applies; this does not
+implement WAL compaction. Admin-only `GET /v1/tasks/{id}/inference-wait` returns
+the current record for inspection, without authorizing delivery.
+
+Cancellation before an uncertain Begin creates a durable Ready tombstone;
+a late identical Begin cannot pause the VM. An unissued pause is aborted.
+If pause was already issued, its acknowledgement and the requested resume
+are committed together. Controller restart retains these intentions, but
+default lease reconciliation requires a fresh owning-Worker report before a
+wait can authorize progress. Stale lease/call/revision requests cannot revive
+execution. Cancellation and native termination abort pending wait controls.
+Dropping the last pending group member schedules one cleanup, bounded by
+the execution lifetime and lease. Cleanup stops before retained-artifact
+delivery can keep the lease alive.
+
+A human pause/offload/resume or checkpoint/suspend request revokes automatic
+pause ownership. The wait never overrides it; delivery remains held until an
+authorized running state with full admission is confirmed. An already issued
+transition must settle before a conflicting manual command, as with ordinary
+VM controls. The `pvisor-inference-` request-ID namespace is reserved.
+
+Protocol tests cover CPU competition, cancelled/uncertain publication,
+restart, manual override, stale identities and 2,100 waits (4,200 automatic
+controls) without manual-history exhaustion. The Linux KVM/FUSE
+`cooperative_model_wait_releases_cpu_and_preserves_manual_pause_before_delivery`
+gate runs actual Agent/model/tool loops, observes unchanged frozen vCPU
+counters, admits a third CPU-consuming VM using released budgets, keeps a
+manual pause intact and verifies successful tool results after readmission.
+It uses deterministic model replies and measures ordering and admission,
+not useful-work throughput or Agent density. RAM and slots remain reserved.
+Live-VM controller-restart/parallel-call fault experiments, networked
+hibernation, persistent rollout state and multi-host density remain open gates.
+Upgrade the controller before enabling this profile; older controllers do not
+understand the new endpoint or WAL variant.
 
 ## Worker profiles and scheduling
 

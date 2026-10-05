@@ -661,7 +661,10 @@ impl Client {
         self.post("/v1/workers/inference-wait", request).await
     }
 
-    pub async fn inference_wait_record(&self, id: &str) -> anyhow::Result<Option<InferenceWaitRecord>> {
+    pub async fn inference_wait_record(
+        &self,
+        id: &str,
+    ) -> anyhow::Result<Option<InferenceWaitRecord>> {
         self.get(&format!("/v1/tasks/{id}/inference-wait")).await
     }
 }
