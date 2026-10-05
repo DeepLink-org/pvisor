@@ -165,7 +165,7 @@ Jobs:
   suspend     Save execution state and suspend a Job
   resume      Continue a suspended Job
   fork        Branch from staged files or VM execution state
-  tui         Interactive Job terminal (when installed)
+  checkpoint  Create, list, show, delete, verify, import-base, verify-base, gc
 
 Filesystems:
   inspect     Open a read-only Job filesystem view
@@ -173,14 +173,10 @@ Filesystems:
   apply       Accept selected staged changes
   drop        Discard staged changes
 
-Checkpoints:
-  checkpoint  Create, list, show, delete, verify, import-base, verify-base, gc
-
-Services:
+Extensions:
   service     Deployment lifecycle and cluster/worker/cache/memory-pool
-
-Trajectories:
   replay      Replay an Agent trajectory (when installed)
+  tui         Interactive Job terminal (when installed)
 ```
 
 ## Safe first run {#安全的第一次运行}

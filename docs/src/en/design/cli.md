@@ -62,13 +62,14 @@ The public workflow is simple: start a Job, inspect evidence, then decide what t
 
 ## Core commands and service boundaries
 
-Top-level commands follow the object they operate on: flat Job/workspace operations, with deployments, cluster tasks and node resources grouped under `service`. `replay` creates Jobs from trajectories, and `tui` is an optional interactive frontend. Root help groups commands under Jobs, Filesystems, Checkpoints, Services and Trajectories; installed companions appear in their group. `extensions` has been removed.
+Top-level commands follow the object they operate on: flat Job/workspace operations, with deployments, cluster tasks and node resources grouped under `service`. `replay` creates Jobs from trajectories, and `tui` is an optional interactive frontend. Root help groups commands under Jobs, Filesystems and Extensions. Jobs includes `checkpoint`; Extensions contains `service`, `replay` and `tui`, with optional companions shown when installed. `extensions` has been removed.
 
 | Responsibility | Entry |
 |---|---|
-| Job lifecycle and branches | `run`, `status`, `kill`, `suspend`, `resume`, `fork`, `tui` |
+| Job lifecycle and branches | `run`, `status`, `kill`, `suspend`, `resume`, `fork` |
 | Inspect, review and accept file changes | `inspect`, `review`, `apply`, `drop` |
 | Immutable Job checkpoints | `checkpoint` |
+| Trajectory replay and interactive frontend | `replay`, `tui` |
 | Deployment role lifecycle | `service run/status/restart/stop --config FILE` |
 | Cluster tasks/controls and execution nodes | `service cluster`, `service worker` |
 | Immutable environments and experimental cold pages | `service cache`, `service memory-pool` |

@@ -2,11 +2,13 @@
 
 ## Main conclusions {#conclusions}
 
-**The FUSE/no-stage control is faster than same-batch staged execution, but metadata operations remain substantially slower than native.** Direct host-file access through FUSE takes about **22.04 ms** for traversal, **39.17 ms** for reading 64 MiB and **12.52 ms** for writing 256 files; same-batch staged takes **78.06, 68.56 and 206.40 ms**. This uses a dedicated passthrough benchmark adapter, rather than direct host access or a built-in CLI mode.
+After the stage persistence refactor, host staged write P50 falls **86.4%** and whole-job P50 falls **13.1%**. VM writes improve **42.1% / 40.5%** in two batches, but whole-job gains are **6.2% / 0.9%**, insufficient to establish a stable overall speedup. The first batch's VM tail regression does not recur in the repeat. See the [stage refactor retest](#stage-boundaries).
+
+**The historical same-batch FUSE/no-stage control is faster than same-batch staged execution, but metadata operations remain substantially slower than native.** Direct host-file access through FUSE takes about **22.04 ms** for traversal, **39.17 ms** for reading 64 MiB and **12.52 ms** for writing 256 files; same-batch staged takes **78.06, 68.56 and 206.40 ms**. This uses a dedicated passthrough benchmark adapter, rather than direct host access or a built-in CLI mode.
 
 **In the historical Docker comparison, pVisor staged offline npm installation is close to Docker, and bulk reads add relatively little waiting; small-file and metadata operations are substantially slower.** Reading/verifying 64 MiB takes staged about **48 ms**, Docker **33 ms**. Offline npm takes **223–256 ms**, Docker **231 ms**. Traversal, file creation, Git and search have larger gaps and remain the main weakness in these workloads.
 
-**pVisor VM performance depends on workload: bulk reads and small Cargo builds beat the measured complete Ubuntu VM, while most file-heavy operations are slower.** A 64 MiB read takes about **89 ms**, Firecracker/Ubuntu **116 ms**. Cargo takes **0.55–0.56 s**, Ubuntu **0.97 s**. Traversal, search, small-file writes and npm lag substantially; overall file access is also slower than Docker bind mounts.
+**In the historical Ubuntu comparison, pVisor VM performance depends on workload: bulk reads and small Cargo builds beat the measured complete Ubuntu VM, while most file-heavy operations are slower.** A 64 MiB read takes about **89 ms**, Firecracker/Ubuntu **116 ms**. Cargo takes **0.55–0.56 s**, Ubuntu **0.97 s**. Traversal, search, small-file writes and npm lag substantially; overall file access is also slower than Docker bind mounts.
 
 Staged has the lower tool budget for staging, review and selective application. Choose the VM when an independent guest kernel is needed, allowing for cumulative small-file waiting.
 
@@ -26,7 +28,70 @@ A separate 2026-10-05 batch compares native, direct host, host + FUSE passthroug
 
 ## Data and analysis {#results}
 
-### pVisor versus Docker and complete Ubuntu VMs {#filesystem-service}
+### Current release: performance after the stage refactor {#stage-boundaries}
+
+The baseline is the newer release artifact from the [earlier filesystem-service campaign](../design/filesystem-performance-analysis.md#service-release), rather than the earlier v3. The current worktree was frozen and independently rebuilt in release mode. Both artifacts use opt-level=z, the same tool fixture and firmware, 2 vCPU/4 GiB, CPU affinity 0,1 and warm host caches. Host staged requires rootless_process. Each cell has one preflight, three warmups and 30 measured samples, executed serially in shuffled rounds. Our builds, tests and journal audits do not overlap sampling.
+
+This is an artifact-version comparison including compact preimage logging, default checkpoint durability and concurrent Job control changes; it does not attribute every difference to one switch. First content fingerprints and conflict checks remain. Completion persists the journal, upper data and directories before publishing the seal. Whole-job timing includes this teardown, while worker timing still includes tool execution and validation.
+
+#### Complete same-batch host / VM comparison
+
+P50 milliseconds; negative changes mean less elapsed time. All **150 jobs / 1,050 tool results** pass. One-minute load is **0.90 → 2.69**; host CPUs are shared.
+
+| Operation | Native | Host staged before→after | Host change | VM before→after | VM change |
+|---|---:|---:|---:|---:|---:|
+| Traverse 2,048 files | 4.76 | 77.09 → 77.12 | +0.0% | 156.29 → 166.90 | +6.8% |
+| Read/verify 64 MiB | 32.29 | 67.35 → 67.84 | +0.7% | 117.88 → 117.82 | -0.1% |
+| Write 256 files | 3.82 | 198.32 → 27.05 | -86.4% | 244.50 → 141.59 | -42.1% |
+| git status | 14.79 | 168.44 → 124.37 | -26.2% | 483.05 → 371.58 | -23.1% |
+| Ripgrep | 7.38 | 90.89 → 88.07 | -3.1% | 447.49 → 442.74 | -1.1% |
+| Offline Cargo build | 51.55 | 108.61 → 73.42 | -32.4% | 510.48 → 489.18 | -4.2% |
+| Offline npm install | 170.70 | 258.48 → 228.72 | -11.5% | 1380.36 → 1330.95 | -3.6% |
+| Launch to exit | 449.26 | 1275.68 → 1108.80 | -13.1% | 4344.49 → 4075.58 | -6.2% |
+
+Host writes, Git, Cargo and npm improve; read and metadata medians are essentially unchanged. Host completion P95 is **1,455.90 → 1,255.85 ms**, P99 **1,749.80 → 1,464.08 ms**. VM write P50 falls **42.1%**, but completion P95 is **5,208.52 → 9,302.32 ms**, P99 **6,349.92 → 11,451.90 ms**. Median improvement does not describe the entire distribution. Slow samples cluster in the early rounds, but no profile establishes host interference as their cause; all are retained.
+
+#### Independent VM repeat
+
+The same artifacts and conditions are measured in a separate three-cell native/old-VM/new-VM batch, with 30 samples each: **90 jobs / 630 tool results**, all passing. One-minute load is **0.95 → 2.76**. Its distribution is reported separately, without pooling or replacing the first batch's slow samples. All times below are milliseconds.
+
+| Operation | VM P50 before→after | P50 change | VM P95 before→after | VM P99 before→after |
+|---|---:|---:|---:|---:|
+| Traverse 2,048 files | 161.00 → 164.30 | +2.0% | 202.96 → 203.68 | 204.98 → 208.84 |
+| Read/verify 64 MiB | 118.43 → 117.76 | -0.6% | 124.46 → 139.37 | 130.86 → 157.76 |
+| Write 256 files | 237.11 → 141.07 | -40.5% | 264.50 → 169.41 | 270.88 → 175.19 |
+| git status | 362.67 → 369.09 | +1.8% | 717.95 → 679.49 | 729.71 → 682.14 |
+| Ripgrep | 450.66 → 444.27 | -1.4% | 468.28 → 455.78 | 733.11 → 457.24 |
+| Offline Cargo build | 505.41 → 484.76 | -4.1% | 560.54 → 504.99 | 573.92 → 507.68 |
+| Offline npm install | 1358.17 → 1341.54 | -1.2% | 1430.41 → 1417.88 | 1851.97 → 1714.26 |
+| Launch to exit | 4120.58 → 4082.67 | -0.9% | 4522.12 → 4458.59 | 5113.09 → 4642.61 |
+
+VM write gains recur in both batches, but completion improvement shrinks from **6.2%** to **0.9%** and the Git median gain does not recur. The first batch's tail regression is not reproduced; this does not establish stable tail improvement. The evidence supports overall host staged improvement and faster VM writes, while overall VM gains remain small and inconsistent. Lazy images, Docker, Ubuntu, networking, apply and complete Agent loops were not retested; their historical cohorts remain separate.
+
+#### Validation, artifacts and reproduction
+
+Results, completed state and isolation fields were rechecked for all 240 jobs. After timing, **90 candidate stage journals** were audited for checkpoint policy, seals, complete frame digests, unique first observations, 256 new-file absence records, 2,048 tree-file read observations and the original 64 MiB content digest. The harness deletes workspaces/uppers after verifying lower isolation and upper file count/sizes; journals remain for audit. Audits are outside timing. This is not a physical power-loss experiment.
+
+The initial candidate-VM preflight failed because its Unix socket path was too long. All five cells passed after shortening the output path; the failure is retained and excluded from samples. The main batch is in `target/sb/run`, the independent VM repeat in `target/sb/vr`, and frozen source/build records in `target/stage-doc-benchmark-20261005`.
+
+```bash
+python3 benchmark/pvisor/filesystem_ab.py \
+  --assets target/reference-env-final-20261004 \
+  --baseline target/stage-doc-benchmark-20261005/artifacts/baseline-release \
+  --candidate target/stage-doc-benchmark-20261005/artifacts/candidate-release \
+  --firmware target/p0-filesystem-artifacts-20261005/firmware \
+  --provenance target/stage-doc-benchmark-20261005/build-provenance-release.json \
+  --output target/sb/run --samples 30 --warmups 3 \
+  --cpu-affinity 0,1 --memory-mib 4096 \
+  --baseline-staged-isolation rootless_process \
+  --candidate-staged-isolation rootless_process
+```
+
+For the VM repeat use a new output directory, `--output target/sb/vr --backends pvisor-vm`, leaving other arguments unchanged. Every new run requires a fresh output directory.
+
+[Complete main report](../../assets/benchmarks/stage-boundaries-20261005/local-release.tsv) · [Complete VM repeat](../../assets/benchmarks/stage-boundaries-20261005/vm-repeat.tsv) · [Summary](../../assets/benchmarks/stage-boundaries-20261005/summary.tsv) · [Individual samples](../../assets/benchmarks/stage-boundaries-20261005/samples.tsv) · [Build provenance](../../assets/benchmarks/stage-boundaries-20261005/build-provenance.tsv) · [Journal audit](../../assets/benchmarks/stage-boundaries-20261005/journal-integrity.tsv) · [Raw logs and frozen source changes](../../assets/benchmarks/stage-boundaries-20261005/evidence.tar.gz) · [Manifest](../../assets/benchmarks/stage-boundaries-20261005/manifest.tsv)
+
+### Historical comparison: pVisor versus Docker and complete Ubuntu VMs {#filesystem-service}
 
 Units: **P50 ms; lower is faster**.
 
@@ -40,7 +105,7 @@ Units: **P50 ms; lower is faster**.
 | Offline Cargo build | 52.79–58.71 | 104.21–112.80 | 549.57–563.24 | 56.40 | 969.09 |
 | Offline npm install | 183.46–218.82 | 222.97–256.29 | 1727.04–2260.17 | 231.45 | 1079.89 |
 
-### Same-batch FUSE/no-stage versus staged {#host-direct}
+### Historical same-batch FUSE/no-stage versus staged {#host-direct}
 
 Units: **P50 ms; lower is faster**. All four columns come from one batch, with 30 samples passing correctness checks per cell.
 
@@ -62,13 +127,13 @@ All 30 FUSE samples preserve real mountinfo and LOOKUP/READ/WRITE counters, with
 
 Traversal, Git and search show that FUSE/no-stage retains metadata costs. Staged writes take about **16.5×** this control, so FUSE round trips alone cannot explain the entire gap. Additional costs include differing adapter implementations, copy-up, policy and journal semantics; detailed measurements are needed for attribution. The table compares only tools and verification, excluding mounting, Job startup and unmounting. Raw completion times include those lifecycle steps and cannot be combined directly with historical startup results.
 
-### Against Docker {#reference-fs}
+### Historical analysis: against Docker {#reference-fs}
 
 Docker file operations are near native. Staged npm is in the same range, a 64 MiB read adds about **15 ms**, and Cargo takes about **2×** Docker. Traversal, however, takes about **180 ms** versus Docker **5 ms**; writing 256 files takes **188 ms** versus **4 ms**. Repeated repository scans, output generation and Git/rg accumulate these costs.
 
 VM reads take about **2.7×** Docker; npm takes **1.7–2.3 s** versus Docker **0.23 s**. The measured Docker bind mount has the file/tool speed advantage over historical staged and VM. Docker directly modifies mounted host files, while pVisor staged retains changes until apply; consider that workflow difference too. The FUSE/no-stage batch has no matched Docker measurement, so it does not update Docker ratios.
 
-### Against complete Ubuntu VMs {#full-ubuntu}
+### Historical analysis: against complete Ubuntu VMs {#full-ubuntu}
 
 VM bulk reads and small Cargo builds are faster, so a single multiplier cannot describe tool performance. Traversal takes **0.29–0.31 s** versus Ubuntu **19 ms**; search takes **0.52–0.55 s** versus **20 ms**. In the matched Ubuntu comparison, pVisor VM small-file writes take **134 ms** versus Ubuntu **36 ms**, and npm **2.26 s** versus **1.08 s**.
 

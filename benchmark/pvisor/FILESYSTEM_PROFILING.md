@@ -643,3 +643,24 @@ ordinary, nested-stage and nested-stage pooled snapshots, each covering capture,
 suspend, resume and execution fork. These are correctness checks, not VM timing
 acceptance. Logs and source hashes are indexed by
 `target/stage-boundary-20261005/verification.json`.
+
+## Documented filesystem benchmark retest (2026-10-05)
+
+The documented filesystem-service candidate release is compared with a newly
+frozen/rebuilt current release, using the same fixture, firmware, affinity 0,1,
+2 vCPU/4 GiB, rootless host staging and three warmups/30 samples. Both timing
+batches finish before journal audits; no builds/tests overlap our measurements.
+The five-cell main batch has 150 verified jobs. Host write P50 falls 86.4% and
+completion 13.1%. VM write falls 42.1%, completion 6.2%, but completion P95/P99
+regress. A separate native/old-VM/new-VM repeat has 90 verified jobs: VM write
+falls 40.5%, completion only 0.9%, and the initial tail regression does not recur.
+The evidence supports VM write gains, not stable overall/tail acceleration.
+All valid samples remain in separate distributions. Ninety candidate journals
+pass policy/seal, full-frame and original-content-observation audits afterward.
+
+Frozen source/build records are in `target/stage-doc-benchmark-20261005`; the
+main and repeat reports are `target/sb/run` and `target/sb/vr`. Short output paths
+avoid the new VM control socket's length limit; the failed initial preflight is
+retained and excluded. Public raw reports, journals, source overlay, provenance
+and reproduction commands are linked from the bilingual
+[stage benchmark](../../docs/src/en/benchmarks/filesystem.md#stage-boundaries).

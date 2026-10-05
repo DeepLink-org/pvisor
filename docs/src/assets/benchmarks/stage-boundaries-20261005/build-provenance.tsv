@@ -1,0 +1,17 @@
+path	type	value
+	object	-
+/baseline	object	-
+/baseline/historical_report	string	target/fs-service-benchmark-20261005/local-release/report.json
+/baseline/release_sha256	string	e9bc6f5e4467f40354730f0d9e164fe94ace0118e14967521e694d7e838de6bd
+/baseline/source	string	target/fs-service-benchmark-20261005/source-provenance.json
+/binary_sha256	object	-
+/binary_sha256/baseline	string	e9bc6f5e4467f40354730f0d9e164fe94ace0118e14967521e694d7e838de6bd
+/binary_sha256/candidate	string	20f731082c0125f4323d7c8dc4e16ced0d341981c58f47a944d325bfeae6e135
+/candidate	object	-
+/candidate/build_log	string	build.log
+/candidate/git_head	string	6b5f3ee2413d44f2b85b7d183d9767efbb7f4213
+/candidate/profile	string	release: opt-level=z
+/candidate/source_manifest	string	source-manifest.json
+/candidate/source_status	string	""
+/schema	string	pvisor-stage-doc-build/v1
+/scope	string	Version comparison: documented integrated filesystem-service release versus current frozen stage refactor; not single-function attribution.

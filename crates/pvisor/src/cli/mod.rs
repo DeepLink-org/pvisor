@@ -100,12 +100,18 @@ fn grouped_commands(command: &clap::Command) -> String {
     const GROUPS: &[(&str, &[&str])] = &[
         (
             "Jobs",
-            &["run", "status", "kill", "suspend", "resume", "fork", "tui"],
+            &[
+                "run",
+                "status",
+                "kill",
+                "suspend",
+                "resume",
+                "fork",
+                "checkpoint",
+            ],
         ),
         ("Filesystems", &["inspect", "review", "apply", "drop"]),
-        ("Checkpoints", &["checkpoint"]),
-        ("Services", &["service"]),
-        ("Trajectories", &["replay"]),
+        ("Extensions", &["service", "replay", "tui"]),
         ("Help", &["help"]),
     ];
     let width = command

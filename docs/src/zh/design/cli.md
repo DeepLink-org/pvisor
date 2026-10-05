@@ -73,13 +73,14 @@ pvisor fork last --state workspace --stage ./stage/branch -- codex
 
 ## 核心命令与服务边界
 
-顶层按所操作的对象组织：Job 生命周期与工作区命令保持扁平，部署/集群/节点资源集中在 `service`；`replay` 从轨迹创建 Job，`tui` 是可选交互前端。主帮助按 Jobs、Filesystems、Checkpoints、Services、Trajectories 分组，已安装的伴随命令出现在对应组中。`extensions` 命令已删除。
+顶层按所操作的对象组织：Job 生命周期与工作区命令保持扁平，部署/集群/节点资源集中在 `service`；`replay` 从轨迹创建 Job，`tui` 是可选交互前端。主帮助按 Jobs、Filesystems、Extensions 分组。Jobs 包含 `checkpoint`；Extensions 包含 `service`、`replay`、`tui`，可选伴随命令安装后显示。`extensions` 命令已删除。
 
 | 职责 | 入口 |
 |---|---|
-| 创建、观察、停止、只读检查 Job | `run`、`status`、`kill`、`inspect` |
-| 查看、审查与接受文件变化 | `review`、`apply`、`drop` |
-| Job 不可变检查点 | `checkpoint`、`suspend`、`resume`、`fork` |
+| Job 生命周期与分支 | `run`、`status`、`kill`、`suspend`、`resume`、`fork` |
+| 查看、审查与接受文件变化 | `inspect`、`review`、`apply`、`drop` |
+| Job 不可变检查点 | `checkpoint` |
+| 轨迹回放与交互前端 | `replay`、`tui` |
 | 部署角色生命周期 | `service run/status/restart/stop --config FILE` |
 | 集群任务/控制与执行节点 | `service cluster`、`service worker` |
 | 不可变环境与实验冷页池 | `service cache`、`service memory-pool` |

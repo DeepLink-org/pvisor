@@ -28,7 +28,14 @@ fn discovery_is_inert_and_dispatch_preserves_arguments_and_exit() {
         String::from_utf8_lossy(&list.stderr)
     );
     let help = String::from_utf8_lossy(&list.stdout);
-    assert!(help.contains("\n  tui "), "{help}");
+    let extensions = help
+        .split("Extensions:\n")
+        .nth(1)
+        .unwrap()
+        .split("Help:\n")
+        .next()
+        .unwrap();
+    assert!(extensions.contains("\n  tui "), "{help}");
     assert!(!help.contains("\n  extensions "), "{help}");
     assert!(!marker.exists(), "discovery executed the extension");
     let output = Command::new(&kernel)
@@ -51,14 +58,7 @@ fn kernel_help_discovers_commands_and_default_execution_dispatches_run() {
     let help = String::from_utf8_lossy(&output.stdout);
     assert!(!help.contains("\n  env "));
     assert!(help.contains("execution kernel"));
-    let headings = [
-        "Jobs:",
-        "Filesystems:",
-        "Checkpoints:",
-        "Services:",
-        "Help:",
-        "Options:",
-    ];
+    let headings = ["Jobs:", "Filesystems:", "Extensions:", "Help:", "Options:"];
     let positions: Vec<_> = headings
         .iter()
         .map(|heading| {
@@ -76,18 +76,38 @@ fn kernel_help_discovers_commands_and_default_execution_dispatches_run() {
         .split("Filesystems:\n")
         .next()
         .unwrap();
-    for name in ["run", "status", "kill", "suspend", "resume", "fork"] {
+    for name in [
+        "run",
+        "status",
+        "kill",
+        "suspend",
+        "resume",
+        "fork",
+        "checkpoint",
+    ] {
         assert!(jobs.contains(&format!("  {name} ")), "{jobs}");
     }
+    assert!(!jobs.contains("  tui "), "{jobs}");
     let filesystems = help
         .split("Filesystems:\n")
         .nth(1)
         .unwrap()
-        .split("Checkpoints:\n")
+        .split("Extensions:\n")
         .next()
         .unwrap();
     for name in ["inspect", "review", "apply", "drop"] {
         assert!(filesystems.contains(&format!("  {name} ")), "{filesystems}");
+    }
+    let extensions = help
+        .split("Extensions:\n")
+        .nth(1)
+        .unwrap()
+        .split("Help:\n")
+        .next()
+        .unwrap();
+    assert!(extensions.contains("  service "), "{extensions}");
+    for heading in ["Checkpoints:", "Services:", "Trajectories:"] {
+        assert!(!help.contains(heading), "{help}");
     }
     for args in [vec!["--help"], vec!["-h"], vec!["help"]] {
         let output = Command::new(env!("CARGO_BIN_EXE_pvisor"))

@@ -113,7 +113,7 @@ Jobs:
   suspend     保存执行状态并暂停 Job
   resume      继续暂停的 Job
   fork        从暂存文件或 VM 执行状态创建分支
-  tui         交互式 Job 终端（安装后可见）
+  checkpoint  Create, list, show, delete, verify, import-base, verify-base, gc
 
 Filesystems:
   inspect     只读查看 Job 文件系统
@@ -121,14 +121,10 @@ Filesystems:
   apply       接受选定的暂存变化
   drop        丢弃暂存变化
 
-Checkpoints:
-  checkpoint  Create, list, show, delete, verify, import-base, verify-base, gc
-
-Services:
+Extensions:
   service     部署生命周期与 cluster/worker/cache/memory-pool
-
-Trajectories:
   replay      回放 Agent 轨迹（安装后可见）
+  tui         交互式 Job 终端（安装后可见）
 ```
 
 ## 安全的第一次运行 {#安全的第一次运行}
