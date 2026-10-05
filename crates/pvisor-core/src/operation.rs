@@ -31,6 +31,41 @@ pub enum SnapshotRamStorage {
     Compressed,
 }
 
+/// Runtime compatibility is independent of repository addressing. Host boot is
+/// still an exact requirement; this version does not permit cross-host migration.
+#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
+pub struct SnapshotCompatibility {
+    pub host_boot: String,
+    pub build: String,
+    pub firmware: String,
+    pub profile: String,
+}
+
+/// Immutable repository receipt. Neither endpoint nor credentials are task data.
+#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
+pub struct SnapshotTransfer {
+    pub version: u32,
+    pub snapshot_id: String,
+    pub transfer_id: String,
+}
+impl SnapshotTransfer {
+    pub fn validate(&self) -> Result<()> {
+        ensure!(self.version == 1, "unsupported checkpoint transfer version");
+        for id in [&self.snapshot_id, &self.transfer_id] {
+            ensure!(
+                id.len() == 64
+                    && id
+                        .bytes()
+                        .all(|b| b.is_ascii_digit() || (b'a'..=b'f').contains(&b)),
+                "invalid checkpoint transfer identity"
+            );
+        }
+        Ok(())
+    }
+}
+
 /// A sealed full machine/environment object, distinct from live RAM offload.
 /// Store is a host-local location; this record does not claim portable recovery.
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
@@ -47,15 +82,59 @@ pub struct ExecutionCheckpoint {
 impl ExecutionCheckpoint {
     pub fn validate(&self) -> Result<()> {
         ensure!(
-            self.snapshot_id.len() == 64 && self.snapshot_id.bytes().all(|b| b.is_ascii_digit() || (b'a'..=b'f').contains(&b)),
+            self.snapshot_id.len() == 64
+                && self
+                    .snapshot_id
+                    .bytes()
+                    .all(|b| b.is_ascii_digit() || (b'a'..=b'f').contains(&b)),
             "invalid execution checkpoint identity"
         );
         ensure!(
-            self.store.is_absolute() && !self.source_run_id.trim().is_empty()
-                && !self.source_attempt_id.trim().is_empty() && self.created_at_unix_ms > 0,
+            self.store.is_absolute()
+                && self.store.as_os_str().len() <= 4096
+                && !self.source_run_id.trim().is_empty()
+                && self.source_run_id.len() <= 256
+                && !self.source_attempt_id.trim().is_empty()
+                && self.source_attempt_id.len() <= 256
+                && self.created_at_unix_ms > 0,
             "incomplete execution checkpoint binding"
         );
         Ok(())
+    }
+}
+
+/// Durable native termination evidence for a suspend operation. Stored in the
+/// terminal RunResult's value so completion/outbox recovery cannot lose the
+/// checkpoint when the separate control acknowledgement races VM exit.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
+pub struct ExecutionSuspension {
+    pub request_id: String,
+    pub checkpoint: ExecutionCheckpoint,
+}
+impl ExecutionSuspension {
+    pub fn from_result(result: &crate::RunResult) -> Result<Self> {
+        ensure!(
+            result.state == crate::RunState::Hibernated
+                && result.exit_code.is_none()
+                && result.failure.is_none(),
+            "hibernation requires native termination without a guest exit or failure"
+        );
+        let receipt: Self = serde_json::from_value(
+            result
+                .value
+                .clone()
+                .ok_or_else(|| anyhow::anyhow!("missing suspension receipt"))?,
+        )?;
+        receipt.checkpoint.validate()?;
+        ensure!(
+            !receipt.request_id.trim().is_empty()
+                && receipt.request_id.len() <= 256
+                && receipt.checkpoint.source_run_id == result.run_id.as_str()
+                && receipt.checkpoint.source_attempt_id == result.attempt_id.as_str(),
+            "suspension receipt belongs to another Run/Attempt or request"
+        );
+        Ok(receipt)
     }
 }
 
@@ -109,7 +188,10 @@ impl Outcome {
         Self::Success { value }
     }
     pub fn validate(&self) -> Result<()> {
-        if let Self::Success { value: Value::ExecutionCheckpoint { checkpoint } } = self {
+        if let Self::Success {
+            value: Value::ExecutionCheckpoint { checkpoint },
+        } = self
+        {
             checkpoint.validate()?;
         }
         if let Self::Success {
@@ -213,7 +295,17 @@ pub enum OperationKind {
     #[serde(rename = "run.offload")]
     RunOffload { file: Option<std::path::PathBuf> },
     #[serde(rename = "run.checkpoint")]
-    RunCheckpoint { request_id: String, ram_storage: SnapshotRamStorage },
+    RunCheckpoint {
+        request_id: String,
+        ram_storage: SnapshotRamStorage,
+    },
+    #[serde(rename = "run.suspend")]
+    /// Seal and initiate frozen termination. Reaping is separately evidenced by
+    /// the terminal RunResult's Hibernated state and ExecutionSuspension value.
+    RunSuspend {
+        request_id: String,
+        ram_storage: SnapshotRamStorage,
+    },
     #[serde(rename = "run.execute")]
     RunExecute {
         program: String,
@@ -233,7 +325,15 @@ enum OperationKindWire {
     #[serde(rename = "run.offload")]
     Offload { file: Option<std::path::PathBuf> },
     #[serde(rename = "run.checkpoint")]
-    Checkpoint { request_id: String, ram_storage: SnapshotRamStorage },
+    Checkpoint {
+        request_id: String,
+        ram_storage: SnapshotRamStorage,
+    },
+    #[serde(rename = "run.suspend")]
+    Suspend {
+        request_id: String,
+        ram_storage: SnapshotRamStorage,
+    },
     #[serde(rename = "run.execute")]
     Execute {
         program: String,
@@ -247,7 +347,20 @@ impl From<OperationKindWire> for OperationKind {
             OperationKindWire::Pause {} => Self::RunPause,
             OperationKindWire::Resume {} => Self::RunResume,
             OperationKindWire::Offload { file } => Self::RunOffload { file },
-            OperationKindWire::Checkpoint { request_id, ram_storage } => Self::RunCheckpoint { request_id, ram_storage },
+            OperationKindWire::Checkpoint {
+                request_id,
+                ram_storage,
+            } => Self::RunCheckpoint {
+                request_id,
+                ram_storage,
+            },
+            OperationKindWire::Suspend {
+                request_id,
+                ram_storage,
+            } => Self::RunSuspend {
+                request_id,
+                ram_storage,
+            },
             OperationKindWire::Execute { program, args, cwd } => {
                 Self::RunExecute { program, args, cwd }
             }
@@ -263,12 +376,16 @@ impl OperationKind {
             Self::RunResume => "run.resume",
             Self::RunOffload { .. } => "run.offload",
             Self::RunCheckpoint { .. } => "run.checkpoint",
+            Self::RunSuspend { .. } => "run.suspend",
         }
     }
     pub fn validate(&self) -> Result<()> {
         match self {
-            Self::RunCheckpoint { request_id, .. } => {
-                ensure!(!request_id.trim().is_empty() && request_id.len() <= 256, "checkpoint request id must contain 1..256 bytes");
+            Self::RunCheckpoint { request_id, .. } | Self::RunSuspend { request_id, .. } => {
+                ensure!(
+                    !request_id.trim().is_empty() && request_id.len() <= 256,
+                    "checkpoint request id must contain 1..256 bytes"
+                );
             }
             Self::RunExecute { program, .. } => {
                 ensure!(!program.trim().is_empty(), "empty operation program")
@@ -386,7 +503,10 @@ impl OperationObservation {
                 matches!(
                     (&plan.kind, value),
                     (OperationKind::RunExecute { .. }, Value::Run { .. })
-                        | (OperationKind::RunCheckpoint { .. }, Value::ExecutionCheckpoint { .. })
+                        | (
+                            OperationKind::RunCheckpoint { .. } | OperationKind::RunSuspend { .. },
+                            Value::ExecutionCheckpoint { .. }
+                        )
                         | (
                             OperationKind::RunPause,
                             Value::Vm {
@@ -412,9 +532,17 @@ impl OperationObservation {
                 "outcome does not match operation primitive"
             );
             if let Value::ExecutionCheckpoint { checkpoint } = value {
-                ensure!(checkpoint.source_run_id == plan.run_id, "checkpoint belongs to another Run");
-                if let OperationKind::RunCheckpoint { ram_storage, .. } = &plan.kind {
-                    ensure!(checkpoint.ram_storage == *ram_storage, "checkpoint RAM encoding mismatch");
+                ensure!(
+                    checkpoint.source_run_id == plan.run_id,
+                    "checkpoint belongs to another Run"
+                );
+                if let OperationKind::RunCheckpoint { ram_storage, .. }
+                | OperationKind::RunSuspend { ram_storage, .. } = &plan.kind
+                {
+                    ensure!(
+                        checkpoint.ram_storage == *ram_storage,
+                        "checkpoint RAM encoding mismatch"
+                    );
                 }
             }
         }

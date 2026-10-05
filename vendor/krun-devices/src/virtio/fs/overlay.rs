@@ -34,7 +34,10 @@ const RENAME_EXCHANGE: u32 = 2;
     any(target_os = "macos", target_os = "linux"),
     derive(PartialEq, Eq, serde::Serialize, serde::Deserialize)
 )]
-#[cfg_attr(any(target_os = "macos", target_os = "linux"), serde(deny_unknown_fields))]
+#[cfg_attr(
+    any(target_os = "macos", target_os = "linux"),
+    serde(deny_unknown_fields)
+)]
 pub struct Config {
     pub lower_dirs: Vec<String>,
     #[serde(default)]
@@ -50,12 +53,21 @@ pub struct Config {
 }
 
 #[derive(Clone, Copy, Debug)]
-#[cfg_attr(any(target_os = "macos", target_os = "linux"), derive(serde::Serialize, serde::Deserialize))]
+#[cfg_attr(
+    any(target_os = "macos", target_os = "linux"),
+    derive(serde::Serialize, serde::Deserialize)
+)]
 struct Layer(usize);
 
 #[derive(Clone, Debug)]
-#[cfg_attr(any(target_os = "macos", target_os = "linux"), derive(serde::Serialize, serde::Deserialize))]
-#[cfg_attr(any(target_os = "macos", target_os = "linux"), serde(deny_unknown_fields))]
+#[cfg_attr(
+    any(target_os = "macos", target_os = "linux"),
+    derive(serde::Serialize, serde::Deserialize)
+)]
+#[cfg_attr(
+    any(target_os = "macos", target_os = "linux"),
+    serde(deny_unknown_fields)
+)]
 struct FileHandle {
     overlay_inode: u64,
     layer: Layer,
@@ -64,8 +76,14 @@ struct FileHandle {
 }
 
 #[derive(Clone, Debug)]
-#[cfg_attr(any(target_os = "macos", target_os = "linux"), derive(serde::Serialize, serde::Deserialize))]
-#[cfg_attr(any(target_os = "macos", target_os = "linux"), serde(deny_unknown_fields))]
+#[cfg_attr(
+    any(target_os = "macos", target_os = "linux"),
+    derive(serde::Serialize, serde::Deserialize)
+)]
+#[cfg_attr(
+    any(target_os = "macos", target_os = "linux"),
+    serde(deny_unknown_fields)
+)]
 struct DirectoryItem {
     ino: u64,
     name: Vec<u8>,
@@ -73,7 +91,10 @@ struct DirectoryItem {
 }
 
 #[derive(Clone, Debug)]
-#[cfg_attr(any(target_os = "macos", target_os = "linux"), derive(serde::Serialize, serde::Deserialize))]
+#[cfg_attr(
+    any(target_os = "macos", target_os = "linux"),
+    derive(serde::Serialize, serde::Deserialize)
+)]
 #[cfg_attr(
     any(target_os = "macos", target_os = "linux"),
     serde(tag = "kind", content = "state", deny_unknown_fields)
@@ -105,6 +126,50 @@ pub struct OverlaySnapshot {
 }
 
 impl OverlaySnapshot {
+    pub(super) fn verify_frozen_backing(&self) -> io::Result<()> {
+        for layer in &self.layers {
+            layer.verify_frozen_backing()?;
+        }
+        // Validate lower origin/upper alias topology too, without changing the
+        // saved snapshot or relaxing any ordinary copied-root checks.
+        let mut copy = self.clone();
+        copy.rebind_roots(|root| Ok(root.to_owned()), &[], true)
+    }
+    pub(super) fn validate_shared_readonly_layers(
+        &self,
+        shared_lowers: &[PathBuf],
+    ) -> io::Result<()> {
+        use super::snapshot::invalid;
+        let mut seen = std::collections::BTreeSet::new();
+        if self.layers.len() != self.config.lower_dirs.len() + 1 {
+            return Err(invalid("overlay snapshot layer count mismatch"));
+        }
+        for source in shared_lowers {
+            if !seen.insert(source) {
+                return Err(invalid("duplicate shared lower binding"));
+            }
+            if std::iter::once(self.config.upper_dir.as_str())
+                .chain(self.config.work_dir.as_deref())
+                .chain(self.config.preimage_dir.as_deref())
+                .chain(self.config.apply_target.as_deref())
+                .chain(self.config.baseline_lower.as_deref())
+                .any(|mutable| {
+                    Path::new(mutable).starts_with(source) || source.starts_with(mutable)
+                })
+            {
+                return Err(invalid("shared lower overlaps a private backing role"));
+            }
+            let index = self
+                .config
+                .lower_dirs
+                .iter()
+                .position(|lower| Path::new(lower) == source)
+                .ok_or_else(|| invalid("shared backing is not a lower layer"))?;
+            self.layers[index + 1].validate_readonly_handles()?;
+        }
+        Ok(())
+    }
+
     pub(super) fn rebind_owned_copy(
         &mut self,
         source: &Path,
@@ -147,12 +212,50 @@ impl OverlaySnapshot {
                 .map(str::to_owned)
                 .ok_or_else(|| invalid("overlay backing path is not UTF-8"))
         };
-        self.rebind_roots(relocate)
+        self.rebind_roots(relocate, &[], false)
+    }
+
+    pub(super) fn validate_shared_lower_copies(
+        &self,
+        copies: &[(PathBuf, PathBuf)],
+    ) -> io::Result<()> {
+        use super::snapshot::invalid;
+        let shared = copies
+            .iter()
+            .map(|(source, _)| source.clone())
+            .collect::<Vec<_>>();
+        self.validate_shared_readonly_layers(&shared)?;
+        for (source, destination) in copies {
+            let destination = destination.canonicalize()?;
+            for other in std::iter::once(self.config.upper_dir.as_str())
+                .chain(self.config.work_dir.as_deref())
+                .chain(self.config.preimage_dir.as_deref())
+                .chain(self.config.apply_target.as_deref())
+                .chain(self.config.baseline_lower.as_deref())
+                .chain(
+                    self.config
+                        .lower_dirs
+                        .iter()
+                        .map(String::as_str)
+                        .filter(|root| Path::new(root) != source),
+                )
+            {
+                let other = Path::new(other);
+                if destination.starts_with(other) || other.starts_with(&destination) {
+                    return Err(invalid(
+                        "shared lower destination overlaps unchanged backing",
+                    ));
+                }
+            }
+        }
+        Ok(())
     }
 
     pub(super) fn rebind_roots(
         &mut self,
         relocate: impl Fn(&str) -> io::Result<String>,
+        shared_lowers: &[PathBuf],
+        preserve_unmapped: bool,
     ) -> io::Result<()> {
         use super::snapshot::invalid;
         use std::os::unix::fs::MetadataExt;
@@ -172,13 +275,24 @@ impl OverlaySnapshot {
         config.work_dir = config.work_dir.as_deref().map(&relocate).transpose()?;
         config.preimage_dir = config.preimage_dir.as_deref().map(&relocate).transpose()?;
         config.apply_target = config.apply_target.as_deref().map(&relocate).transpose()?;
-        config.baseline_lower = config.baseline_lower.as_deref().map(&relocate).transpose()?;
+        config.baseline_lower = config
+            .baseline_lower
+            .as_deref()
+            .map(&relocate)
+            .transpose()?;
         let roots = std::iter::once(config.upper_dir.clone())
             .chain(config.lower_dirs.iter().cloned())
             .collect::<Vec<_>>();
         let mut layers = self.layers.clone();
         for ((layer, original), copied) in layers.iter_mut().zip(&original_roots).zip(&roots) {
-            layer.rebind_owned_copy(Path::new(original), Path::new(copied))?;
+            if original == copied && shared_lowers.contains(&PathBuf::from(original)) {
+                layer.retain_readonly_root(Path::new(original))?;
+            } else if original == copied && preserve_unmapped {
+                // Only the explicitly selected read-only lower roots change.
+                // Private data/state was already captured and verified.
+            } else {
+                layer.rebind_owned_copy(Path::new(original), Path::new(copied))?;
+            }
         }
         let mut origins = std::collections::BTreeMap::new();
         let mut rebound_origins = Vec::new();
@@ -236,6 +350,19 @@ impl OverlaySnapshot {
         self.hard_link_origins = rebound_origins;
         Ok(())
     }
+    pub(super) fn rebind_policy(
+        &mut self,
+        policy: &pvisor_overlay_core::FileAccessPolicy,
+    ) -> io::Result<()> {
+        if !self.config.access_policy.same_rules(policy) {
+            return Err(super::snapshot::invalid(
+                "restored filesystem authorization rules changed",
+            ));
+        }
+        self.config.access_policy = policy.clone();
+        Ok(())
+    }
+
     pub(crate) fn contains_inode(&self, inode: u64) -> bool {
         self.nodes.iter().any(|n| n.0 == inode)
             || self.layers.iter().any(|s| s.contains_inode(inode))
@@ -256,7 +383,7 @@ pub struct OverlayFs {
     // use directory-fd-based resolution before relaxing this for throughput.
     operation_lock: Mutex<()>,
     core: OverlayCore,
-        snapshot_config: Config,
+    snapshot_config: Config,
     roots: Vec<PathBuf>,
     layers: Vec<PassthroughFs>,
     inode_alloc: Arc<InodeAllocator>,
@@ -270,12 +397,13 @@ impl OverlayFs {
         Self::build(cfg, inode_alloc, false)
     }
 
-        pub fn open_existing(cfg: Config, inode_alloc: Arc<InodeAllocator>) -> io::Result<Self> {
+    pub fn open_existing(cfg: Config, inode_alloc: Arc<InodeAllocator>) -> io::Result<Self> {
         Self::build(cfg, inode_alloc, true)
     }
 
     fn build(cfg: Config, inode_alloc: Arc<InodeAllocator>, restoring: bool) -> io::Result<Self> {
-        if cfg.lower_dirs.is_empty() || (cfg.baseline_lower.is_some() && cfg.apply_target.is_none()) {
+        if cfg.lower_dirs.is_empty() || (cfg.baseline_lower.is_some() && cfg.apply_target.is_none())
+        {
             return Err(io::Error::from_raw_os_error(libc::EINVAL));
         }
         let lowers = cfg.lower_dirs.iter().map(PathBuf::from).collect::<Vec<_>>();
@@ -283,10 +411,15 @@ impl OverlayFs {
         let work = cfg.work_dir.as_ref().map(PathBuf::from);
         let preimages = cfg.preimage_dir.as_ref().map(PathBuf::from);
         let excluded = cfg.excluded_paths.iter().map(PathBuf::from).collect();
-        let target = cfg.apply_target.as_ref().map(PathBuf::from)
+        let target = cfg
+            .apply_target
+            .as_ref()
+            .map(PathBuf::from)
             .unwrap_or_else(|| lowers.last().unwrap().clone());
         let layout = pvisor_overlay_core::OverlayLayout::with_baseline(
-            lowers.clone(), target, cfg.baseline_lower.as_deref().map(Path::new)
+            lowers.clone(),
+            target,
+            cfg.baseline_lower.as_deref().map(Path::new),
         )?;
         let open = if restoring {
             OverlayCore::open_existing_for_layout
@@ -320,7 +453,7 @@ impl OverlayFs {
         Ok(Self {
             operation_lock: Mutex::new(()),
             core,
-                        snapshot_config: cfg,
+            snapshot_config: cfg,
             roots,
             layers,
             inode_alloc,
@@ -562,7 +695,7 @@ impl FileSystem for OverlayFs {
             next_handle: self.next_handle.load(Ordering::Relaxed),
         }))
     }
-        fn restore_state(&self, state: &super::snapshot::FsSnapshot) -> io::Result<()> {
+    fn restore_state(&self, state: &super::snapshot::FsSnapshot) -> io::Result<()> {
         use super::snapshot::{invalid, FsSnapshot};
         let FsSnapshot::Overlay(state) = state else {
             return Err(invalid("overlay filesystem type mismatch"));

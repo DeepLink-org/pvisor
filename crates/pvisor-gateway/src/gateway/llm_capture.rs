@@ -294,7 +294,7 @@ pub(super) async fn llm_capture(
     let model_policy = model_access_policy(&cfg);
     let model_request = ModelCallRequest {
         run_id: capture_route.root_session.clone().map(RunId::new),
-        attempt_id: None,
+        attempt_id: state.attempt_id.clone().map(pvisor_core::AttemptId::new),
         call_id: call.call_id.clone(),
         client_model: client_model.clone(),
         upstream_model: upstream_model.clone(),

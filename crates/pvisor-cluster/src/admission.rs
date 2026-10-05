@@ -14,6 +14,7 @@ pub struct AdmissionPolicy {
     pub cpu_some_avg10_limit_bps: u16,
     pub memory_full_avg10_limit_bps: u16,
     pub max_sample_age_ms: u64,
+    pub cpu_overcommit_bps: u16,
 }
 impl Default for AdmissionPolicy {
     fn default() -> Self {
@@ -23,11 +24,17 @@ impl Default for AdmissionPolicy {
             cpu_some_avg10_limit_bps: 5000,
             memory_full_avg10_limit_bps: 100,
             max_sample_age_ms: 3000,
+            cpu_overcommit_bps: 10_000,
         }
     }
 }
 impl AdmissionPolicy {
     pub fn validate(&self) -> anyhow::Result<()> {
+        ensure!(
+            (10_000..=40_000).contains(&self.cpu_overcommit_bps)
+                && (self.cpu_overcommit_bps == 10_000 || self.mode == AdmissionMode::LinuxPressure),
+            "CPU overcommit requires Linux pressure admission and a 10000..40000 basis point ratio"
+        );
         ensure!(
             self.cpu_some_avg10_limit_bps > 0 && self.cpu_some_avg10_limit_bps <= 10_000,
             "CPU pressure threshold must be 1..10000 basis points"
@@ -53,6 +60,7 @@ impl AdmissionPolicy {
         self.validate()?;
         let mut report = AdmissionReport {
             mode: self.mode,
+            cpu_overcommit_bps: self.cpu_overcommit_bps,
             sample_age_ms: 0,
             available: capacity.checked_sub(used).context("worker over capacity")?,
             measurements: None,
@@ -63,6 +71,20 @@ impl AdmissionPolicy {
             return Ok(report);
         }
         report.sample_age_ms = sample_age_ms;
+        let sample = sample.and_then(|mut measured| {
+            if self.cpu_overcommit_bps > 10_000
+                && !measured
+                    .local_cpu_quota_millis
+                    .is_some_and(|quota| quota > 0 && measured.cpu_limit_millis <= quota)
+            {
+                return Err("CPU overcommit requires a finite local cpu.max quota".into());
+            }
+            // Preserve the legacy report shape for the default policy.
+            if self.cpu_overcommit_bps == 10_000 {
+                measured.local_cpu_quota_millis = None;
+            }
+            Ok(measured)
+        });
         let measurements = match sample {
             Ok(m) => m,
             Err(mut error) => {
@@ -88,16 +110,20 @@ impl AdmissionPolicy {
             })
             .saturating_sub(self.memory_reserve_bytes);
         report.available.memory_bytes = report.available.memory_bytes.min(headroom);
-        report.available.cpu_millis = report.available.cpu_millis.min(
-            measurements
-                .cpu_limit_millis
-                .saturating_sub(used.cpu_millis),
-        );
+        let reserved_cpu_limit = u64::try_from(
+            u128::from(measurements.cpu_limit_millis) * u128::from(self.cpu_overcommit_bps)
+                / 10_000,
+        )
+        .context("CPU reservation limit overflow")?;
+        report.available.cpu_millis = report
+            .available
+            .cpu_millis
+            .min(reserved_cpu_limit.saturating_sub(used.cpu_millis));
         if headroom == 0 {
             report.blocked.push(AdmissionBlock::MemoryHeadroom);
             report.available.cpu_millis = 0; // offloaded resume can fault RAM in
         }
-        if measurements.cpu_limit_millis <= used.cpu_millis {
+        if reserved_cpu_limit <= used.cpu_millis {
             report.blocked.push(AdmissionBlock::CpuQuota);
         }
         if measurements.cpu_some_avg10_bps >= self.cpu_some_avg10_limit_bps {
@@ -250,7 +276,7 @@ fn kernel_path(text: &str) -> anyhow::Result<PathBuf> {
     Ok(path)
 }
 
-fn cgroup_paths(cgroups: &str, mountinfo: &str) -> anyhow::Result<(PathBuf, PathBuf)> {
+pub(crate) fn cgroup_paths(cgroups: &str, mountinfo: &str) -> anyhow::Result<(PathBuf, PathBuf)> {
     let mut lines = cgroups.lines();
     let path = lines
         .next()
@@ -314,6 +340,7 @@ fn sample_from_proc(proc: &Path) -> anyhow::Result<NodeMeasurements> {
         "resolved cgroup is not a directory"
     );
     let mut cgroup_memory_headroom_bytes: Option<u64> = None;
+    let mut local_cpu_quota_millis = None;
     for depth in 0..=256 {
         ensure!(depth < 256, "cgroup hierarchy too deep");
         // Root groups may omit controller limit files. Missing non-root
@@ -332,6 +359,9 @@ fn sample_from_proc(proc: &Path) -> anyhow::Result<NodeMeasurements> {
         if let Some(max) = optional(&group.join("cpu.max"))?
             && let Some(limit) = cpu_quota(&max)?
         {
+            if depth == 0 {
+                local_cpu_quota_millis = Some(limit);
+            }
             cpu_limit_millis = cpu_limit_millis.min(limit);
         }
         if let Some(set) = optional(&group.join("cpuset.cpus.effective"))?
@@ -358,6 +388,7 @@ fn sample_from_proc(proc: &Path) -> anyhow::Result<NodeMeasurements> {
         system_memory_available_bytes,
         cgroup_memory_headroom_bytes,
         cpu_limit_millis,
+        local_cpu_quota_millis,
         cpu_some_avg10_bps,
         memory_full_avg10_bps,
     })
@@ -366,6 +397,95 @@ fn sample_from_proc(proc: &Path) -> anyhow::Result<NodeMeasurements> {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn explicit_cpu_overcommit_requires_local_quota_and_preserves_pressure_age_and_memory_gates() {
+        let policy = AdmissionPolicy {
+            mode: AdmissionMode::LinuxPressure,
+            cpu_overcommit_bps: 20_000,
+            memory_reserve_bytes: 100,
+            ..Default::default()
+        };
+        let capacity = Resources {
+            slots: 4,
+            cpu_millis: 4000,
+            memory_bytes: 8000,
+        };
+        let used = Resources {
+            slots: 1,
+            cpu_millis: 1000,
+            memory_bytes: 2000,
+        };
+        let measured = NodeMeasurements {
+            system_memory_available_bytes: 6000,
+            cgroup_memory_headroom_bytes: Some(3000),
+            cpu_limit_millis: 1000,
+            local_cpu_quota_millis: Some(1000),
+            cpu_some_avg10_bps: 0,
+            memory_full_avg10_bps: 0,
+        };
+        let report = policy
+            .report(capacity, used, 0, Ok(measured.clone()))
+            .unwrap();
+        assert_eq!(report.available.cpu_millis, 1000);
+        assert_eq!(report.available.memory_bytes, 2900);
+        assert_eq!(report.cpu_reservation_limit_millis(), Some(2000));
+        assert_eq!(report.measurements.as_ref().unwrap().cpu_limit_millis, 1000);
+        let default = AdmissionPolicy {
+            mode: AdmissionMode::LinuxPressure,
+            memory_reserve_bytes: 100,
+            ..Default::default()
+        }
+        .report(capacity, used, 0, Ok(measured.clone()))
+        .unwrap();
+        assert_eq!(default.available.cpu_millis, 0);
+        let legacy = serde_json::to_value(default).unwrap();
+        assert!(legacy.get("cpu_overcommit_bps").is_none());
+        assert!(
+            legacy["measurements"]
+                .get("local_cpu_quota_millis")
+                .is_none()
+        );
+        serde_json::from_value::<AdmissionReport>(legacy)
+            .unwrap()
+            .validate()
+            .unwrap();
+        for case in 0..7 {
+            let mut bad = measured.clone();
+            let mut age = 0;
+            match case {
+                0 => bad.local_cpu_quota_millis = None,
+                1 => bad.local_cpu_quota_millis = Some(0),
+                2 => bad.local_cpu_quota_millis = Some(999),
+                3 => bad.cpu_some_avg10_bps = policy.cpu_some_avg10_limit_bps,
+                4 => bad.memory_full_avg10_bps = policy.memory_full_avg10_limit_bps,
+                5 => bad.cgroup_memory_headroom_bytes = Some(100),
+                _ => age = policy.max_sample_age_ms,
+            }
+            let failed = policy.report(capacity, used, age, Ok(bad)).unwrap();
+            assert_eq!(failed.available.cpu_millis, 0, "case {case}");
+            if case <= 2 {
+                assert!(
+                    failed.error.is_some() && failed.blocked.contains(&AdmissionBlock::ProbeFailed)
+                );
+            }
+        }
+        let mut invalid = policy.clone();
+        invalid.mode = AdmissionMode::Reservations;
+        assert!(invalid.validate().is_err());
+        for ratio in [0, 9999, 40001] {
+            invalid = policy.clone();
+            invalid.cpu_overcommit_bps = ratio;
+            assert!(invalid.validate().is_err());
+        }
+        let mut malformed = report.clone();
+        malformed.available.cpu_millis = 2001;
+        assert!(malformed.validate().is_err());
+        let mut overflow = measured;
+        overflow.cpu_limit_millis = u64::MAX;
+        overflow.local_cpu_quota_millis = Some(u64::MAX);
+        assert!(policy.report(capacity, used, 0, Ok(overflow)).is_err());
+    }
 
     #[test]
     fn kernel_parsers_reject_missing_nonfinite_overflow_and_unsafe_paths() {
@@ -467,6 +587,7 @@ mod tests {
             cpu_millis: 250,
         };
         let measured = NodeMeasurements {
+            local_cpu_quota_millis: None,
             system_memory_available_bytes: 5000,
             cgroup_memory_headroom_bytes: Some(1000),
             cpu_limit_millis: 1000,

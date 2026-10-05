@@ -57,18 +57,7 @@ pub fn resolve_route<'a>(
     })
 }
 
-pub fn model_matches(pattern: &str, model: &str) -> bool {
-    if pattern == "*" {
-        return true;
-    }
-    if let Some(prefix) = pattern.strip_suffix('*') {
-        return !prefix.is_empty() && model.starts_with(prefix);
-    }
-    if let Some(suffix) = pattern.strip_prefix('*') {
-        return !suffix.is_empty() && model.ends_with(suffix);
-    }
-    pattern == model
-}
+pub use pvisor_core::gateway::model_matches;
 
 #[cfg(test)]
 mod tests {

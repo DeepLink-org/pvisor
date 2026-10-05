@@ -595,6 +595,10 @@ pub extern "C" fn krun_create_ctx() -> i32 {
         }
     };
 
+    insert_context(ctx_cfg)
+}
+
+fn insert_context(ctx_cfg: ContextConfig) -> i32 {
     let ctx_id = CTX_IDS.fetch_add(1, Ordering::SeqCst);
     if ctx_id == i32::MAX || CTX_MAP.lock().unwrap().contains_key(&(ctx_id as u32)) {
         // libkrun is not intended to be used as a daemon for managing VMs.
@@ -603,6 +607,26 @@ pub extern "C" fn krun_create_ctx() -> i32 {
     CTX_MAP.lock().unwrap().insert(ctx_id as u32, ctx_cfg);
 
     ctx_id
+}
+
+/// Internal restore-only context. The caller verifies immutable snapshot and
+/// firmware identity first. This constructor never loads libkrunfw or creates
+/// an embedded kernel copy; the validated snapshot supplies all kernel bytes.
+#[cfg(any(all(target_os = "macos", target_arch = "aarch64"), all(target_os = "linux", target_arch = "x86_64")))]
+pub fn krun_create_restore_ctx(restore: vmm::snapshot::MachineRestore) -> Result<i32, String> {
+    if cfg!(any(feature = "tee", feature = "aws-nitro", feature = "efi")) {
+        return Err("restore-only context requires a plain bundled-kernel VM".into());
+    }
+    restore
+        .state
+        .kernel_layout
+        .ok_or("missing snapshot kernel geometry")?
+        .validate()?;
+    restore.validate(restore.state.cpus.len())?;
+    let mut ctx_cfg = ContextConfig::default();
+    ctx_cfg.vmr.snapshot_profile = true;
+    ctx_cfg.vmr.machine_restore = Some(Arc::new(restore));
+    Ok(insert_context(ctx_cfg))
 }
 
 #[no_mangle]
@@ -3206,13 +3230,35 @@ impl VmmHandle {
         timeout: std::time::Duration,
         action: impl FnOnce(&mut vmm::Vmm) -> Result<T, String>,
     ) -> Result<T, String> {
+        self.with_snapshot_transaction(timeout, true, action)
+    }
+
+    /// Freeze a running, paused or Linux offloaded VM for save-and-stop.
+    /// The source cannot resume after this transaction, including on rejection.
+    /// The caller must terminate the runner after publication or any error.
+    #[cfg(any(all(target_os = "macos", target_arch = "aarch64"), all(target_os = "linux", target_arch = "x86_64")))]
+    pub fn with_snapshot_frozen<T>(
+        &self,
+        timeout: std::time::Duration,
+        action: impl FnOnce(&mut vmm::Vmm) -> Result<T, String>,
+    ) -> Result<T, String> {
+        self.with_snapshot_transaction(timeout, false, action)
+    }
+
+    #[cfg(any(all(target_os = "macos", target_arch = "aarch64"), all(target_os = "linux", target_arch = "x86_64")))]
+    fn with_snapshot_transaction<T>(
+        &self,
+        timeout: std::time::Duration,
+        resume_source: bool,
+        action: impl FnOnce(&mut vmm::Vmm) -> Result<T, String>,
+    ) -> Result<T, String> {
         let _transition = self.transition.lock().map_err(|_| "VM transition lock poisoned")?;
         let vmm = self.vmm.upgrade().ok_or("VMM has stopped")?;
         let deadline = std::time::Instant::now().checked_add(timeout).ok_or("invalid snapshot timeout")?;
         {
             let locked = vmm.lock().map_err(|_| "VMM lock poisoned")?;
-            if locked.is_paused() || locked.device_memory_gate().has_prepare() {
-                return Err("snapshot transaction requires a running VM without active RAM pager".into());
+            if (resume_source && locked.is_paused()) || locked.device_memory_gate().has_prepare() {
+                return Err("resumable snapshot requires a running VM; active RAM pagers are unsupported".into());
             }
         }
         loop {
@@ -3234,9 +3280,15 @@ impl VmmHandle {
         }
         let mut locked = vmm.lock().map_err(|_| "VMM lock poisoned")?;
         let result = action(&mut locked);
-        if let Err(error) = locked.resume() {
+        if resume_source {
+            if let Err(error) = locked.resume() {
+                locked.fail_control();
+                return Err(format!("snapshot source resume failed: {error}"));
+            }
+        } else {
+            // Returning from the capture closure does not authorize thawing.
+            // Even a rejected capture must never execute a post-pause command.
             locked.fail_control();
-            return Err(format!("snapshot source resume failed: {error}"));
         }
         result
     }
@@ -3450,11 +3502,21 @@ pub fn krun_start_enter_with_handle(
         None => return -libc::ENOENT,
     };
 
+    #[cfg(any(all(target_os = "macos", target_arch = "aarch64"), all(target_os = "linux", target_arch = "x86_64")))]
+    let snapshot_kernel = ctx_cfg
+        .vmr
+        .machine_restore
+        .as_ref()
+        .is_some_and(|r| r.state.kernel_layout.is_some());
+    #[cfg(not(any(all(target_os = "macos", target_arch = "aarch64"), all(target_os = "linux", target_arch = "x86_64"))))]
+    let snapshot_kernel = false;
+
     #[cfg(not(target_env = "musl"))]
     if ctx_cfg.vmr.external_kernel.is_none()
         && ctx_cfg.vmr.kernel_bundle.is_none()
         && ctx_cfg.vmr.firmware_config.is_none()
         && cfg!(not(feature = "efi"))
+        && !snapshot_kernel
     {
         if let Some(ref krunfw) = ctx_cfg.krunfw {
             if let Err(err) = unsafe { load_krunfw_payload(krunfw, &mut ctx_cfg.vmr) } {
@@ -3472,6 +3534,7 @@ pub fn krun_start_enter_with_handle(
         && ctx_cfg.vmr.kernel_bundle.is_none()
         && ctx_cfg.vmr.firmware_config.is_none()
         && cfg!(not(feature = "efi"))
+        && !snapshot_kernel
     {
         eprintln!("No embedded kernel bundle was configured for this static build");
         return -libc::ENOENT;

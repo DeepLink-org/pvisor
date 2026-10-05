@@ -1,0 +1,38 @@
+{
+  "schema": "pvisor-ubuntu-reference-assets/v1",
+  "release": "Ubuntu 26.04 LTS (20260927)",
+  "image_policy": "Only Firecracker consumes Ubuntu; pVisor uses --rootfs host and its own embedded kernel",
+  "assets": {
+    "ubuntu-26.04-server-cloudimg-amd64.img": {
+      "url": "https://cloud-images.ubuntu.com/releases/resolute/release/ubuntu-26.04-server-cloudimg-amd64.img",
+      "sha256": "8800651811af9a85465ad1d552add729947bb16488dddb4a9b5305a3d97332b2",
+      "bytes": 865115136
+    },
+    "ubuntu-26.04-server-cloudimg-amd64-vmlinuz-generic": {
+      "url": "https://cloud-images.ubuntu.com/releases/resolute/release/unpacked/ubuntu-26.04-server-cloudimg-amd64-vmlinuz-generic",
+      "sha256": "7efd88a7facf80874d781ccb2c2421f0aaaa575e3b94760430619e826f490117",
+      "bytes": 17303944
+    },
+    "ubuntu-26.04-server-cloudimg-amd64-initrd-generic": {
+      "url": "https://cloud-images.ubuntu.com/releases/resolute/release/unpacked/ubuntu-26.04-server-cloudimg-amd64-initrd-generic",
+      "sha256": "c9f23b4ac34a20df6a1d344b44bf2597faa48799d814cbc206b3974c6ead5215",
+      "bytes": 72091068
+    }
+  },
+  "kernel_elf_sha256": "72eb0d4df32d685ed24508de3d05842e32004cbc592a2c67b8756967c04522bf",
+  "initrd": "/home/reiase/workspace/pvisor/target/ubuntu-reference-20261004/downloads/ubuntu-26.04-server-cloudimg-amd64-initrd-generic",
+  "root_partuuid": "3b6ccca1-0c96-46be-9ee4-dc45bf129735",
+  "preserved": "Full GPT, /boot, EFI, stock kernel/initrd/modules/services",
+  "sha_verification": "Official HTTPS SHA256SUMS; GPG signature not verified",
+  "provisioning": "QEMU KVM, user networking, native Ubuntu apt tools plus installed Rust/Claude/Codex; outside timings",
+  "provision_seconds": 85.8140148479979,
+  "provisioning_shape": "Untimed QEMU: 1 vCPU host,-rdseed,-rdrand; measured Firecracker VMs: 2 vCPU defaults",
+  "guest_workload_sha256": "a3b120813d58746e9da8594d71a45cdc093ac9bdbad9f4cf0edc741bb9b30fd8",
+  "reproduction_snapshot": "https://cloud-images.ubuntu.com/releases/resolute/release-20260927/",
+  "ubuntu_kernel_version": "7.0.0-34-generic",
+  "kernel_config_sha256": "e75c0adab6020e72844d7431cf801a02b94ed32efc251c3b0fb80c021d065180",
+  "firecracker_transport": "Default virtio MMIO, no PCI; rd.driver.pre=virtio_mmio; reboot=t",
+  "guest_unit_sha256": "3b89c74a3dbba3a51312f074c13fe4ba5badb6090276adb71e95896ff6883481",
+  "temporary_files": "Private /work/_tmp for all complete task tools; host workload uses its own workspace/_tmp",
+  "prepared_template_update": "Only benchmark workload/environment updated offline after clean shutdown; kernel and Ubuntu services unchanged"
+}

@@ -9,6 +9,10 @@ use std::{
     sync::atomic::{AtomicU64, Ordering},
 };
 
+pub(crate) mod gc;
+mod quota;
+pub(crate) use quota::{PublicationFailure, QuotaExceeded};
+
 static TEMP_ID: AtomicU64 = AtomicU64::new(0);
 pub fn digest(bytes: &[u8]) -> String {
     blake3::hash(bytes).to_hex().to_string()
@@ -16,11 +20,21 @@ pub fn digest(bytes: &[u8]) -> String {
 #[derive(Debug, Clone)]
 pub struct ArtifactStore {
     root: PathBuf,
+    quota: std::sync::Arc<quota::Shared>,
+}
+pub(crate) struct ControllerOwner(std::sync::Arc<quota::Shared>);
+impl Drop for ControllerOwner {
+    fn drop(&mut self) {
+        self.0.controller_claimed.store(false, Ordering::Release);
+    }
 }
 pub(crate) struct VerifiedArtifacts {
+    pub(crate) checkpoint: Option<crate::CheckpointPublication>,
+    pub(crate) pins: gc::Pins,
     reference: BlobRef,
     key: LeaseKey,
     run: BundleRunIdentity,
+    files: std::collections::BTreeSet<String>,
 }
 #[derive(serde::Deserialize)]
 struct BundleRunIdentity {
@@ -32,6 +46,12 @@ struct BundleRunIdentity {
     exit_code: Option<i32>,
 }
 impl VerifiedArtifacts {
+    pub(crate) fn satisfies(&self, retention: &crate::ArtifactRetention) -> bool {
+        retention
+            .filenames()
+            .iter()
+            .all(|name| self.files.contains(*name))
+    }
     pub(crate) fn matches(
         &self,
         reference: &BlobRef,
@@ -50,7 +70,34 @@ impl VerifiedArtifacts {
             })
     }
 }
+fn read_regular(path: &Path, limit: u64) -> anyhow::Result<Vec<u8>> {
+    let input = OpenOptions::new()
+        .read(true)
+        .custom_flags(libc::O_NOFOLLOW | libc::O_NONBLOCK)
+        .open(path)?;
+    ensure!(
+        input.metadata()?.is_file() && input.metadata()?.len() <= limit,
+        "invalid artifact metadata file"
+    );
+    let mut bytes = Vec::new();
+    input.take(limit + 1).read_to_end(&mut bytes)?;
+    ensure!(
+        bytes.len() as u64 <= limit,
+        "artifact metadata file too large"
+    );
+    Ok(bytes)
+}
 impl ArtifactStore {
+    pub(crate) fn claim_controller(&self) -> anyhow::Result<ControllerOwner> {
+        ensure!(
+            self.quota
+                .controller_claimed
+                .compare_exchange(false, true, Ordering::AcqRel, Ordering::Acquire)
+                .is_ok(),
+            "artifact store already owned by a controller in this process"
+        );
+        Ok(ControllerOwner(self.quota.clone()))
+    }
     pub fn open(root: &Path) -> anyhow::Result<Self> {
         fs::create_dir_all(root)?;
         ensure!(
@@ -65,9 +112,9 @@ impl ArtifactStore {
                 .unwrap_or(Path::new(".")),
         )?
         .sync_all()?;
-        Ok(Self {
-            root: root.to_owned(),
-        })
+        let root = root.canonicalize()?;
+        let quota = quota::open(&root)?;
+        Ok(Self { root, quota })
     }
     fn path(&self, reference: &BlobRef) -> anyhow::Result<PathBuf> {
         reference.validate()?;
@@ -77,6 +124,15 @@ impl ArtifactStore {
             .join(&reference.digest))
     }
     pub fn put(&self, bytes: &[u8]) -> anyhow::Result<BlobRef> {
+        let _barrier = self
+            .quota
+            .gc
+            .barrier
+            .read()
+            .map_err(|_| anyhow::anyhow!("GC barrier unavailable"))?;
+        self.put_unpinned(bytes)
+    }
+    fn put_unpinned(&self, bytes: &[u8]) -> anyhow::Result<BlobRef> {
         ensure!(
             bytes.len() <= ARTIFACT_CHUNK_BYTES,
             "artifact object exceeds chunk limit"
@@ -86,10 +142,18 @@ impl ArtifactStore {
             bytes: bytes.len() as u64,
         };
         let path = self.path(&reference)?;
-        if path.try_exists()? {
-            self.get(&reference)?;
-            return Ok(reference);
-        }
+        let mut reservation = match self.quota.reserve(&reference, &path)? {
+            quota::Admission::Existing => {
+                self.get_unpinned(&reference)?;
+                return Ok(reference);
+            }
+            quota::Admission::Wait(publication) => {
+                publication.wait()?;
+                self.get_unpinned(&reference)?;
+                return Ok(reference);
+            }
+            quota::Admission::Reserved(reservation) => reservation,
+        };
         let directory = path.parent().unwrap();
         fs::create_dir_all(directory)?;
         ensure!(
@@ -112,15 +176,17 @@ impl ArtifactStore {
                 .custom_flags(libc::O_NOFOLLOW)
                 .open(&temporary)?;
             created = true;
+            reservation.mark_temporary(&temporary);
             file.write_all(bytes)?;
             file.sync_all()?;
             match fs::hard_link(&temporary, &path) {
                 Ok(()) => {}
                 Err(error) if error.kind() == std::io::ErrorKind::AlreadyExists => {
-                    self.get(&reference)?;
+                    self.get_unpinned(&reference)?;
                 }
                 Err(error) => return Err(error.into()),
             }
+            reservation.mark_published();
             File::open(directory)?.sync_all()?;
             Ok(())
         })();
@@ -129,12 +195,28 @@ impl ArtifactStore {
         } else {
             Ok(())
         };
-        published?;
-        removed?;
-        File::open(directory)?.sync_all()?;
+        let outcome = published
+            .and(removed.map_err(Into::into))
+            .and_then(|()| File::open(directory)?.sync_all().map_err(Into::into));
+        reservation.finish(&outcome);
+        // Record a new birth before leaving the publication barrier, even when
+        // fsync failed after a link. Old GC plans cannot delete a replacement.
+        if path.try_exists()? {
+            self.quota.gc.published(&reference)?;
+        }
+        outcome?;
         Ok(reference)
     }
     pub fn get(&self, reference: &BlobRef) -> anyhow::Result<Vec<u8>> {
+        let _barrier = self
+            .quota
+            .gc
+            .barrier
+            .read()
+            .map_err(|_| anyhow::anyhow!("GC barrier unavailable"))?;
+        self.get_unpinned(reference)
+    }
+    fn get_unpinned(&self, reference: &BlobRef) -> anyhow::Result<Vec<u8>> {
         let path = self.path(reference)?;
         ensure!(
             fs::symlink_metadata(path.parent().unwrap())?.is_dir(),
@@ -159,7 +241,16 @@ impl ArtifactStore {
         Ok(bytes)
     }
     pub fn read_manifest(&self, reference: &BlobRef) -> anyhow::Result<ArtifactManifest> {
-        let manifest: ArtifactManifest = serde_json::from_slice(&self.get(reference)?)
+        let _barrier = self
+            .quota
+            .gc
+            .barrier
+            .read()
+            .map_err(|_| anyhow::anyhow!("GC barrier unavailable"))?;
+        self.read_manifest_unpinned(reference)
+    }
+    fn read_manifest_unpinned(&self, reference: &BlobRef) -> anyhow::Result<ArtifactManifest> {
+        let manifest: ArtifactManifest = serde_json::from_slice(&self.get_unpinned(reference)?)
             .context("invalid artifact manifest JSON")?;
         manifest.validate()?;
         Ok(manifest)
@@ -169,7 +260,7 @@ impl ArtifactStore {
         reference: &BlobRef,
         key: &LeaseKey,
     ) -> anyhow::Result<VerifiedArtifacts> {
-        let manifest = self.read_manifest(reference)?;
+        let (manifest, pins) = self.pin_manifest(reference)?;
         ensure!(
             manifest.key == *key,
             "artifacts belong to a different lease"
@@ -179,6 +270,7 @@ impl ArtifactStore {
             "missing native Run Bundle artifact"
         );
         let mut bundle = Vec::new();
+        let mut checkpoint_bytes = Vec::new();
         for file in &manifest.files {
             let mut hash = blake3::Hasher::new();
             for chunk in &file.chunks {
@@ -186,6 +278,13 @@ impl ArtifactStore {
                 hash.update(&bytes);
                 if file.name == "run-bundle.json" {
                     bundle.extend_from_slice(&bytes);
+                }
+                if file.name == "execution-checkpoint.json" {
+                    ensure!(
+                        file.bytes <= ARTIFACT_CHUNK_BYTES as u64,
+                        "checkpoint receipt exceeds limit"
+                    );
+                    checkpoint_bytes.extend_from_slice(&bytes);
                 }
             }
             ensure!(
@@ -203,10 +302,21 @@ impl ArtifactStore {
         }
         let identity: BundleIdentity = serde_json::from_slice(&bundle)?;
         ensure!(identity.schema_version > 0, "invalid Bundle schema version");
+        let checkpoint = if checkpoint_bytes.is_empty() {
+            None
+        } else {
+            let checkpoint: crate::CheckpointPublication =
+                serde_json::from_slice(&checkpoint_bytes)?;
+            checkpoint.validate()?;
+            Some(checkpoint)
+        };
         Ok(VerifiedArtifacts {
+            checkpoint,
+            pins,
             reference: reference.clone(),
             key: key.clone(),
             run: identity.run,
+            files: manifest.files.into_iter().map(|file| file.name).collect(),
         })
     }
 }

@@ -108,6 +108,20 @@ impl TryFrom<FileAccessWire> for FileAccessPolicy {
 }
 
 impl FileAccessPolicy {
+    /// Compare authorization rules independently of Attempt/audit identities.
+    pub fn same_rules(&self, other: &Self) -> bool {
+        self.rules.allow == other.rules.allow
+            && self.rules.deny == other.rules.deny
+            && self.rules.ask == other.rules.ask
+            && self.rules.warn == other.rules.warn
+            && self.rules.layers.len() == other.rules.layers.len()
+            && self.rules.layers.iter().zip(&other.rules.layers).all(
+                |((scope, policy), (other_scope, other_policy))| {
+                    scope == other_scope && policy.same_rules(other_policy)
+                },
+            )
+    }
+
     pub fn new(deny: Vec<String>, warn: Vec<String>) -> io::Result<Self> {
         Self::new_with_ask(deny, Vec::new(), warn)
     }
@@ -453,6 +467,31 @@ impl FileAccessPolicy {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn same_rules_ignores_only_audit_bindings_and_checks_scoped_authorization() {
+        let mut source = FileAccessPolicy::new(vec!["private/**".into()], vec![]).unwrap();
+        source.bind_session("old", "old-attempt", "rootfs");
+        let mut restored = source.clone();
+        restored.bind_session("new", "new-attempt", "rootfs");
+        assert!(source.same_rules(&restored));
+        assert_ne!(source, restored);
+        let changed = FileAccessPolicy::new(vec!["other/**".into()], vec![]).unwrap();
+        assert!(!source.same_rules(&changed));
+        let mut policies = crate::SessionPolicies::default();
+        policies.user.filesystem = Some(source.clone());
+        policies.workspace.filesystem = Some(changed.clone());
+        let scoped = policies.filesystem(&FileAccessPolicy::default());
+        let mut rebound = scoped.clone();
+        rebound.bind_session("new", "new-attempt", "workspace");
+        assert!(scoped.same_rules(&rebound));
+        assert_ne!(scoped, rebound);
+        policies.workspace.filesystem = Some(FileAccessPolicy::default());
+        assert!(!scoped.same_rules(&policies.filesystem(&FileAccessPolicy::default())));
+        policies.workspace.filesystem = None;
+        policies.session.filesystem = Some(changed);
+        assert!(!scoped.same_rules(&policies.filesystem(&FileAccessPolicy::default())));
+    }
 
     #[test]
     fn projected_rules_share_only_the_attempt_binding_and_persist_as_values() {

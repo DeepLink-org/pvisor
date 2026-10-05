@@ -13,7 +13,19 @@
 
 定位依据 [gVisor](https://gvisor.dev/docs/)、[Firecracker](https://firecracker-microvm.github.io/) 和 [Kata](https://katacontainers.io/) 官方说明。接入状态依据本项目[执行器接口与支持矩阵](../guides/executors/index.md)。
 
+## 完整 Ubuntu 的实际启动与任务成本 {#full-ubuntu}
+
+新增 Firecracker 1.13.1 / 完整 Ubuntu 26.04.1 LTS 对照，使用原厂 `7.0.0-34-generic`、官方 initrd 和正常 systemd 服务。已配置磁盘每次新建 VM 后 Ready P50/P95 为 **5.64 / 6.01 秒**，首次 cloud-init 启动为 **9.25 / 10.29 秒**；无镜像 pVisor hostroot 为 **110 / 122 ms**。相同 2 vCPU / 2 GiB、宿主两核、N=30。
+
+完整修复测试任务为 pVisor VM **4.61 秒**、Ubuntu **8.51 秒**；工具内部则为 **4.02 / 2.30 秒**，每组 N=10、VM 16 GiB。它支持“减少新环境开机等待”，不支持“VMM 本身快约 50 倍”或“工具全面更快”。完整系统服务、内核、工具版本、存储与 stage 语义不同；长期复用 VM 会摊薄开机成本。
+
+QEMU 10.2.2 对同一完整 Ubuntu 的 q35 / microvm 补测：启动 P50 **5.43 / 7.67 秒**，修复测试 **8.12 / 10.33 秒**，每格 N=10、80/80 通过。所有组都新建环境，QEMU 补测与之前的 Firecracker/pVisor 分布独立保留；完整发行版的秒级启动不能用裁剪参考 VM 的毫秒数据替代。
+
+[Startup](startup.md#full-ubuntu) · [Full Agent Env](agent-tasks.md#full-ubuntu) · [Protocol](methodology.md#full-ubuntu)
+
 ## 已测性能：pVisor VM / Firecracker / QEMU {#reference-comparison}
+
+以下保留裁剪内核与静态 init 的旧对照；Firecracker/QEMU 没有启动完整 Ubuntu。旧 Claude/VM 初始化失败属于准备目录配置。新 hostroot / 完整 Ubuntu 结果见[上节](#full-ubuntu)，两批次分别呈现。
 
 新增 Linux 同机、完整工具环境的独立参考 CLI 对照；“未接入 pVisor”与“未测性能”分开陈述。VM 都用 2 vCPU、相同两核预算，shell 128 MiB，工具任务 16 GiB。Firecracker/QEMU 共用内核与 ext4，pVisor 使用自己的内置 firmware/staged virtio-fs。QEMU microvm 与 q35 同时测，配置与所有失败公开。
 

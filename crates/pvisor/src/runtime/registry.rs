@@ -37,7 +37,7 @@ pub fn default_run_home() -> PathBuf {
     std::env::temp_dir().join("pvisor-runs")
 }
 
-/// Provenance for a Run started from a logical checkpoint.
+/// Provenance for a Run started from a logical or full execution checkpoint.
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
 pub struct RunLineage {
     pub parent_run_id: String,
@@ -62,13 +62,14 @@ pub enum RunRecordState {
     Cancelled,
     Failed,
     Terminated,
+    Hibernated,
 }
 
 impl RunRecordState {
     pub fn is_stopped(self) -> bool {
         matches!(
             self,
-            Self::Completed | Self::Cancelled | Self::Failed | Self::Terminated
+            Self::Completed | Self::Cancelled | Self::Failed | Self::Terminated | Self::Hibernated
         )
     }
     pub fn as_str(&self) -> &'static str {
@@ -78,6 +79,7 @@ impl RunRecordState {
             Self::Cancelled => "cancelled",
             Self::Failed => "failed",
             Self::Terminated => "terminated",
+            Self::Hibernated => "hibernated",
         }
     }
 }

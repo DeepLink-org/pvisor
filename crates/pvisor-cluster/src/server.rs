@@ -12,19 +12,50 @@ use axum::{
 use serde::Deserialize;
 use std::sync::{Arc, Mutex};
 
+mod dispatcher;
+
 #[derive(Clone)]
 struct App {
     scheduler: Arc<Mutex<Scheduler>>,
+    dispatcher: Arc<dispatcher::Dispatcher>,
 }
+
+impl App {
+    fn lock(&self) -> anyhow::Result<std::sync::MutexGuard<'_, Scheduler>> {
+        dispatcher::lock(&self.scheduler)
+    }
+}
+
+#[derive(Debug)]
+struct ArtifactsRetired;
+impl std::fmt::Display for ArtifactsRetired {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.write_str("task evidence has been retired")
+    }
+}
+impl std::error::Error for ArtifactsRetired {}
 
 struct ApiError(anyhow::Error);
 impl IntoResponse for ApiError {
     fn into_response(self) -> Response {
-        let status = if self
+        let status = if self.0.downcast_ref::<ArtifactsRetired>().is_some() {
+            StatusCode::GONE
+        } else if self
+            .0
+            .downcast_ref::<crate::artifacts::QuotaExceeded>()
+            .is_some()
+        {
+            StatusCode::INSUFFICIENT_STORAGE
+        } else if self
             .0
             .downcast_ref::<crate::journal::JournalFailure>()
             .is_some()
+            || self.0.downcast_ref::<dispatcher::Overloaded>().is_some()
             || self.0.downcast_ref::<std::io::Error>().is_some()
+            || self
+                .0
+                .downcast_ref::<crate::artifacts::PublicationFailure>()
+                .is_some_and(|error| error.retryable)
         {
             StatusCode::SERVICE_UNAVAILABLE
         } else {
@@ -42,16 +73,7 @@ async fn run<T: Send + 'static>(
     app: App,
     f: impl FnOnce(&mut Scheduler) -> anyhow::Result<T> + Send + 'static,
 ) -> Result<Json<T>, ApiError> {
-    tokio::task::spawn_blocking(move || {
-        let mut scheduler = app
-            .scheduler
-            .lock()
-            .map_err(|_| anyhow::anyhow!("scheduler unavailable"))?;
-        f(&mut scheduler).map(Json)
-    })
-    .await
-    .map_err(|e| ApiError(e.into()))?
-    .map_err(ApiError)
+    app.dispatcher.call(f).await.map(Json).map_err(ApiError)
 }
 
 async fn auth(
@@ -79,26 +101,30 @@ pub fn router(
         admin_token.len() >= 16 && worker_token.len() >= 16 && admin_token != worker_token,
         "use distinct admin/worker tokens with at least 16 characters"
     );
+    let scheduler = Arc::new(Mutex::new(scheduler));
+    let dispatcher = Arc::new(dispatcher::Dispatcher::new(scheduler.clone())?);
+    let weak = Arc::downgrade(&dispatcher);
     let app = App {
-        scheduler: Arc::new(Mutex::new(scheduler)),
+        scheduler,
+        dispatcher,
     };
-    let weak = Arc::downgrade(&app.scheduler);
     tokio::spawn(async move {
         let mut tick = tokio::time::interval(std::time::Duration::from_secs(1));
         loop {
             tick.tick().await;
-            let Some(scheduler) = weak.upgrade() else {
+            let Some(dispatcher) = weak.upgrade() else {
                 break;
             };
-            let result = tokio::task::spawn_blocking(move || {
-                scheduler
-                    .lock()
-                    .map_err(|_| anyhow::anyhow!("scheduler unavailable"))?
-                    .reap(pvisor_core::unix_now_ms())
-            })
-            .await;
-            if !matches!(result, Ok(Ok(_))) {
+            let result = dispatcher.reap().await;
+            if result.is_err() {
                 eprintln!("controller lease reaper failed: {result:?}");
+                if result.as_ref().is_err_and(|error| {
+                    error
+                        .downcast_ref::<crate::journal::JournalFailure>()
+                        .is_some()
+                }) {
+                    break;
+                }
             }
         }
     });
@@ -106,20 +132,47 @@ pub fn router(
         .route("/v1/environments", post(publish_environment))
         .route("/v1/environments/{digest}", get(environment))
         .route("/v1/tasks", post(submit))
+        .route("/v1/graphs", post(submit_graph))
+        .route("/v1/graphs/{id}", get(task_graph))
+        .route("/v1/graphs/{id}/cancel", post(cancel_graph))
         .route("/v1/tasks/{id}", get(task))
         .route("/v1/tasks/{id}/cancel", post(cancel))
         .route("/v1/tasks/{id}/control", post(control))
+        .route("/v1/tasks/{id}/forks", post(fork_execution))
+        .route("/v1/tasks/{id}/forks/{request_id}", get(execution_fork))
+        .route("/v1/tasks/{id}/live-forks", post(request_live_fork))
+        .route("/v1/tasks/{id}/live-forks/{request_id}", get(live_fork))
         .route("/v1/tasks/{id}/artifacts", get(task_artifacts))
+        .route(
+            "/v1/tasks/{id}/artifact-downloads",
+            post(begin_artifact_download),
+        )
+        .route(
+            "/v1/artifact-downloads/{id}/renew",
+            post(renew_artifact_download),
+        )
+        .route(
+            "/v1/artifact-downloads/{id}/release",
+            post(release_artifact_download),
+        )
+        .route("/v1/artifact-storage/gc/plan", post(artifact_gc_plan))
+        .route("/v1/artifact-storage/gc/apply", post(artifact_gc_apply))
         .route("/v1/artifacts/{digest}", get(artifact_bytes))
         .route("/v1/workers", get(workers))
         .route("/v1/workers/{id}/drain", post(drain))
         .route("/v1/counts", get(counts))
+        .route("/v1/artifact-storage", get(artifact_storage))
+        .route("/v1/artifact-storage/limits", post(update_artifact_storage))
         .route_layer(middleware::from_fn_with_state(Arc::new(admin_token), auth));
     let worker = Router::new()
         .route("/v1/workers/register", post(register))
         .route("/v1/workers/poll", post(poll))
+        .route("/v1/workers/memory", post(report_memory))
+        .route("/v1/workers/cpu", post(report_cpu))
+        .route("/v1/workers/node-memory", post(report_node_memory))
         .route("/v1/workers/recover", post(recover))
         .route("/v1/workers/complete", post(complete))
+        .route("/v1/workers/native-done", post(native_done))
         .route("/v1/workers/decline", post(decline))
         .route("/v1/workers/control-ack", post(control_ack))
         .route(
@@ -129,12 +182,14 @@ pub fn router(
         .route_layer(middleware::from_fn_with_state(Arc::new(worker_token), auth));
     Ok(admin
         .merge(worker)
-        .route(
-            "/health",
-            get(|| async { Json(serde_json::json!({"version":CLUSTER_VERSION})) }),
-        )
+        .route("/health", get(health))
         .layer(DefaultBodyLimit::max(4 * 1024 * 1024))
         .with_state(app))
+}
+
+async fn health(State(app): State<App>) -> Result<Json<serde_json::Value>, ApiError> {
+    app.dispatcher.ensure_available().map_err(ApiError)?;
+    Ok(Json(serde_json::json!({"version":CLUSTER_VERSION})))
 }
 
 async fn publish_environment(
@@ -154,6 +209,34 @@ async fn submit(
     Json(spec): Json<TaskSpec>,
 ) -> Result<Json<TaskRecord>, ApiError> {
     run(app, move |s| s.submit(spec, pvisor_core::unix_now_ms())).await
+}
+async fn submit_graph(
+    State(app): State<App>,
+    Json(spec): Json<TaskGraphSpec>,
+) -> Result<Json<TaskGraphRecord>, ApiError> {
+    run(app, move |s| {
+        s.submit_graph(spec, pvisor_core::unix_now_ms())
+    })
+    .await
+}
+async fn task_graph(
+    State(app): State<App>,
+    Path(id): Path<String>,
+) -> Result<Json<TaskGraphRecord>, ApiError> {
+    run(app, move |s| {
+        s.reap(pvisor_core::unix_now_ms())?;
+        s.graph(&id)
+    })
+    .await
+}
+async fn cancel_graph(
+    State(app): State<App>,
+    Path(id): Path<String>,
+) -> Result<Json<TaskGraphRecord>, ApiError> {
+    run(app, move |s| {
+        s.cancel_graph(&id, pvisor_core::unix_now_ms())
+    })
+    .await
 }
 async fn task(
     State(app): State<App>,
@@ -190,6 +273,42 @@ async fn control(
     })
     .await
 }
+async fn fork_execution(
+    State(app): State<App>,
+    Path(id): Path<String>,
+    Json(request): Json<ExecutionForkRequest>,
+) -> Result<Json<ExecutionForkRecord>, ApiError> {
+    run(app, move |s| {
+        s.fork_execution(&id, request, pvisor_core::unix_now_ms())
+    })
+    .await
+}
+async fn execution_fork(
+    State(app): State<App>,
+    Path((id, request_id)): Path<(String, String)>,
+) -> Result<Json<ExecutionForkRecord>, ApiError> {
+    run(app, move |s| s.execution_fork(&id, &request_id)).await
+}
+async fn request_live_fork(
+    State(app): State<App>,
+    Path(id): Path<String>,
+    Json(request): Json<ExecutionForkRequest>,
+) -> Result<Json<LiveForkRecord>, ApiError> {
+    run(app, move |s| {
+        s.request_live_fork(&id, request, pvisor_core::unix_now_ms())
+    })
+    .await
+}
+async fn live_fork(
+    State(app): State<App>,
+    Path((id, request_id)): Path<(String, String)>,
+) -> Result<Json<LiveForkRecord>, ApiError> {
+    run(app, move |s| {
+        s.reap(pvisor_core::unix_now_ms())?;
+        s.live_fork(&id, &request_id)
+    })
+    .await
+}
 async fn control_ack(
     State(app): State<App>,
     Json(acknowledgement): Json<ControlAcknowledgement>,
@@ -205,17 +324,56 @@ async fn poll(
 ) -> Result<Json<PollResponse>, ApiError> {
     run(app, move |s| s.poll(request, pvisor_core::unix_now_ms())).await
 }
+async fn report_cpu(
+    State(app): State<App>,
+    Json(request): Json<CpuReportRequest>,
+) -> Result<Json<CpuReportReceipt>, ApiError> {
+    run(app, move |scheduler| {
+        scheduler.report_cpu(request, pvisor_core::unix_now_ms())
+    })
+    .await
+}
+async fn report_memory(
+    State(app): State<App>,
+    Json(request): Json<MemoryReportRequest>,
+) -> Result<Json<MemoryReportReceipt>, ApiError> {
+    run(app, move |s| {
+        s.report_memory(request, pvisor_core::unix_now_ms())
+    })
+    .await
+}
+async fn report_node_memory(
+    State(app): State<App>,
+    Json(request): Json<NodeMemoryReportRequest>,
+) -> Result<Json<NodeMemoryReportReceipt>, ApiError> {
+    run(app, move |scheduler| {
+        scheduler.report_node_memory(request, pvisor_core::unix_now_ms())
+    })
+    .await
+}
+async fn native_done(
+    State(app): State<App>,
+    Json(request): Json<NativeDone>,
+) -> Result<Json<NativeDoneReceipt>, ApiError> {
+    run(app, move |s| {
+        s.native_done(request, pvisor_core::unix_now_ms())
+    })
+    .await
+}
 async fn complete(
     State(app): State<App>,
     Json(request): Json<Completion>,
 ) -> Result<Json<TaskRecord>, ApiError> {
+    let retry = request.clone();
+    if let Some(receipt) = run(app.clone(), move |s| s.completion_receipt(&retry))
+        .await?
+        .0
+    {
+        return Ok(Json(receipt));
+    }
     let reference = request.artifacts.clone();
     let key = request.key.clone();
-    let store = app
-        .scheduler
-        .lock()
-        .map_err(|_| ApiError(anyhow::anyhow!("scheduler unavailable")))?
-        .artifact_store();
+    let store = run(app.clone(), |s| Ok(s.artifact_store())).await?.0;
     let verified = tokio::task::spawn_blocking(move || {
         reference
             .as_ref()
@@ -238,22 +396,142 @@ async fn recover(
     run(app, move |s| s.recover(request, pvisor_core::unix_now_ms())).await
 }
 
+async fn artifact_gc_plan(
+    State(app): State<App>,
+    Json(request): Json<ArtifactGcRequest>,
+) -> Result<Json<ArtifactGcPlan>, ApiError> {
+    request.validate().map_err(ApiError)?;
+    let store = run(app.clone(), |s| Ok(s.artifact_store())).await?.0;
+    tokio::task::spawn_blocking(move || {
+        let sequence = store.gc_sequence()?;
+        let now = pvisor_core::unix_now_ms();
+        let snapshot = app.lock()?.artifact_gc_snapshot(&request, now)?;
+        store.gc_plan(request, snapshot, sequence, now).map(Json)
+    })
+    .await
+    .map_err(|e| ApiError(e.into()))?
+    .map_err(ApiError)
+}
+async fn artifact_gc_apply(
+    State(app): State<App>,
+    Json(request): Json<ArtifactGcApply>,
+) -> Result<Json<ArtifactGcReport>, ApiError> {
+    if request.version != CLUSTER_VERSION {
+        return Err(ApiError(anyhow::anyhow!(
+            "unsupported artifact GC protocol"
+        )));
+    }
+    let store = run(app.clone(), |s| Ok(s.artifact_store())).await?.0;
+    tokio::task::spawn_blocking(move || {
+        let now = pvisor_core::unix_now_ms();
+        store
+            .apply_gc(&request.plan_id, now, |entries| {
+                app.lock()?.retire_artifacts(entries, now)
+            })
+            .map(Json)
+    })
+    .await
+    .map_err(|e| ApiError(e.into()))?
+    .map_err(ApiError)
+}
+async fn begin_artifact_download(
+    State(app): State<App>,
+    Path(id): Path<String>,
+) -> Result<Json<ArtifactDownload>, ApiError> {
+    let task_id = id.clone();
+    let (store, reference) = run(app.clone(), move |scheduler| {
+        let task = scheduler.task(&task_id)?;
+        if task.artifact_retired_at_ms.is_some() {
+            return Err(ArtifactsRetired.into());
+        }
+        Ok((
+            scheduler.artifact_store(),
+            task.artifacts
+                .ok_or_else(|| anyhow::anyhow!("task has no retained artifacts"))?,
+        ))
+    })
+    .await?
+    .0;
+    tokio::task::spawn_blocking(move || {
+        let download = store.begin_download(&reference, pvisor_core::unix_now_ms())?;
+        let eligible = {
+            let scheduler = app.lock()?;
+            let task = scheduler.task(&id)?;
+            task.artifact_retired_at_ms.is_none() && task.artifacts.as_ref() == Some(&reference)
+        };
+        if !eligible {
+            store.release_download(&download.id)?;
+            return Err(ArtifactsRetired.into());
+        }
+        Ok(Json(download))
+    })
+    .await
+    .map_err(|e| ApiError(e.into()))?
+    .map_err(ApiError)
+}
+async fn renew_artifact_download(
+    State(app): State<App>,
+    Path(id): Path<String>,
+) -> Result<Json<ArtifactDownload>, ApiError> {
+    let store = run(app.clone(), |s| Ok(s.artifact_store())).await?.0;
+    tokio::task::spawn_blocking(move || {
+        store
+            .renew_download(&id, pvisor_core::unix_now_ms())
+            .map(Json)
+    })
+    .await
+    .map_err(|e| ApiError(e.into()))?
+    .map_err(ApiError)
+}
+async fn release_artifact_download(
+    State(app): State<App>,
+    Path(id): Path<String>,
+) -> Result<Json<serde_json::Value>, ApiError> {
+    let store = run(app.clone(), |s| Ok(s.artifact_store())).await?.0;
+    tokio::task::spawn_blocking(move || {
+        store.release_download(&id)?;
+        Ok(Json(serde_json::json!({"released": true})))
+    })
+    .await
+    .map_err(|e| ApiError(e.into()))?
+    .map_err(ApiError)
+}
+
+async fn update_artifact_storage(
+    State(app): State<App>,
+    Json(limits): Json<ArtifactStorageLimits>,
+) -> Result<Json<ArtifactStorageUsage>, ApiError> {
+    let store = run(app.clone(), |s| Ok(s.artifact_store())).await?.0;
+    tokio::task::spawn_blocking(move || store.update_storage_limits(limits).map(Json))
+        .await
+        .map_err(|e| ApiError(e.into()))?
+        .map_err(ApiError)
+}
+async fn artifact_storage(State(app): State<App>) -> Result<Json<ArtifactStorageUsage>, ApiError> {
+    let store = run(app.clone(), |s| Ok(s.artifact_store())).await?.0;
+    tokio::task::spawn_blocking(move || store.storage_usage().map(Json))
+        .await
+        .map_err(|e| ApiError(e.into()))?
+        .map_err(ApiError)
+}
+
 async fn task_artifacts(
     State(app): State<App>,
     Path(id): Path<String>,
 ) -> Result<Json<ArtifactManifest>, ApiError> {
-    let (store, reference) = {
-        let scheduler = app
-            .scheduler
-            .lock()
-            .map_err(|_| ApiError(anyhow::anyhow!("scheduler unavailable")))?;
-        let task = scheduler.task(&id).map_err(ApiError)?;
-        (
+    let (store, reference) = run(app, move |scheduler| {
+        let task = scheduler.task(&id)?;
+        if task.artifact_retired_at_ms.is_some() {
+            return Err(ArtifactsRetired.into());
+        }
+        Ok((
             scheduler.artifact_store(),
             task.artifacts
-                .ok_or_else(|| ApiError(anyhow::anyhow!("task has no retained artifacts")))?,
-        )
-    };
+                .ok_or_else(|| anyhow::anyhow!("task has no retained artifacts"))?,
+        ))
+    })
+    .await?
+    .0;
     tokio::task::spawn_blocking(move || store.read_manifest(&reference).map(Json))
         .await
         .map_err(|e| ApiError(e.into()))?
@@ -269,11 +547,7 @@ async fn artifact_bytes(
     Path(digest): Path<String>,
     Query(size): Query<ArtifactSize>,
 ) -> Result<Bytes, ApiError> {
-    let store = app
-        .scheduler
-        .lock()
-        .map_err(|_| ApiError(anyhow::anyhow!("scheduler unavailable")))?
-        .artifact_store();
+    let store = run(app.clone(), |s| Ok(s.artifact_store())).await?.0;
     tokio::task::spawn_blocking(move || {
         store
             .get(&BlobRef {
@@ -310,6 +584,7 @@ async fn upload_artifact(
     })
     .await?
     .0;
+    let upload_key = key.clone();
     let reference = tokio::task::spawn_blocking(move || {
         let expected = BlobRef {
             digest,
@@ -320,7 +595,7 @@ async fn upload_artifact(
             blake3::hash(&bytes).to_hex().as_str() == expected.digest,
             "uploaded artifact hash mismatch"
         );
-        store.put(&bytes)
+        store.put_for_lease(&upload_key, &bytes)
     })
     .await
     .map_err(|e| ApiError(e.into()))?
@@ -384,8 +659,39 @@ pub fn open(
 #[cfg(test)]
 mod tests {
     use super::*;
+    #[tokio::test]
+    async fn dropping_router_releases_writer_and_reaper_journal_ownership() {
+        let temp = tempfile::tempdir().unwrap();
+        let path = temp.path().join("wal");
+        let scheduler = Scheduler::open(&path, SchedulerConfig::default()).unwrap();
+        let app = router(
+            scheduler,
+            "admin-test-0123456789".into(),
+            "worker-test-0123456789".into(),
+        )
+        .unwrap();
+        tokio::task::yield_now().await;
+        drop(app);
+        tokio::time::timeout(std::time::Duration::from_secs(2), async {
+            loop {
+                if let Ok(reopened) = Scheduler::open(&path, SchedulerConfig::default()) {
+                    break reopened;
+                }
+                tokio::time::sleep(std::time::Duration::from_millis(1)).await;
+            }
+        })
+        .await
+        .unwrap();
+    }
+
     #[test]
     fn uncertain_storage_commit_is_retryable_and_not_a_stale_result_ack() {
+        assert_eq!(
+            ApiError(dispatcher::Overloaded.into())
+                .into_response()
+                .status(),
+            StatusCode::SERVICE_UNAVAILABLE
+        );
         assert_eq!(
             ApiError(crate::journal::JournalFailure.into())
                 .into_response()

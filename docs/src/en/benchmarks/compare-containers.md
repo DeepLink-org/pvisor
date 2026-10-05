@@ -24,6 +24,8 @@ Docker plus a complete Git admission workflow can be sufficient. `git diff` alon
 
 ### What these numbers support {#reference-comparison}
 
+Docker/CLI data in this section comes from the earlier shared-tool controlled batch. pVisor uses a prepared directory without an image. The new default `--rootfs host` versus complete Ubuntu comparison, internal tool times and current client pass/failure results are in [full Agent Env](agent-tasks.md#full-ubuntu); configurations and samples remain separate.
+
 Complete repair/testing P50 is **0.90 s** in Docker, **0.70 s** in pVisor staged, and **3.97 s** in pVisor VM. Docker metadata/read/write remain close to native. Staging adds about 16 ms for 64 MiB reads and 175 ms to traverse 2,048 files. Lightweight staging costs hundreds of milliseconds here; an independent guest kernel currently brings seconds of additional tool-path cost.
 
 This is not a ranking within identical security boundaries. Staged host supplies pending changes/evidence while retaining access outside the workspace. Docker supplies namespaces with a writable bind mount; the VM supplies a guest kernel and staged view. Select using the required boundary, task time and admission workflow together.

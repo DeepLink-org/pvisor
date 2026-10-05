@@ -17,6 +17,7 @@ pub struct InProcessCapture {
     shutdown_tx: Option<oneshot::Sender<()>>,
     join: Option<JoinHandle<Result<()>>>,
     pub listen: String,
+    pub admin_listen: String,
     interception_metrics: InterceptionMetrics,
 }
 
@@ -76,7 +77,12 @@ impl InProcessCapture {
         let join = std::thread::Builder::new()
             .name("pvisor-gateway".into())
             .spawn(move || {
-                let rt = tokio::runtime::Runtime::new().context("tokio runtime")?;
+                // One asynchronous I/O loop per Attempt, rather than a pool of
+                // CPU-count-sized runtime threads for every live sandbox.
+                let rt = tokio::runtime::Builder::new_current_thread()
+                    .enable_all()
+                    .build()
+                    .context("tokio runtime")?;
                 rt.block_on(crate::gateway::serve_with_runtime_control_and_metrics(
                     config,
                     storage,
@@ -89,8 +95,8 @@ impl InProcessCapture {
                         attempt_id: runtime.attempt_id,
                         gateway_enabled: runtime.gateway_enabled,
                     },
-                    Some(Box::new(move || {
-                        let _ = ready_tx.send(());
+                    Some(Box::new(move |listen, admin_listen| {
+                        let _ = ready_tx.send((listen.to_string(), admin_listen.to_string()));
                     })),
                     async {
                         let _ = shutdown_rx.await;
@@ -99,8 +105,8 @@ impl InProcessCapture {
             })
             .context("spawn in-process capture")?;
 
-        match ready_rx.recv_timeout(Duration::from_secs(5)) {
-            Ok(()) => {}
+        let (listen, admin_listen) = match ready_rx.recv_timeout(Duration::from_secs(5)) {
+            Ok(addresses) => addresses,
             Err(std::sync::mpsc::RecvTimeoutError::Disconnected) => {
                 join.join()
                     .map_err(|_| anyhow::anyhow!("in-process capture thread panicked"))??;
@@ -109,12 +115,13 @@ impl InProcessCapture {
             Err(std::sync::mpsc::RecvTimeoutError::Timeout) => {
                 anyhow::bail!("capture proxy did not become ready on http://{listen}");
             }
-        }
+        };
 
         Ok(Self {
             shutdown_tx: Some(shutdown_tx),
             join: Some(join),
             listen,
+            admin_listen,
             interception_metrics,
         })
     }

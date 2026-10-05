@@ -160,9 +160,9 @@ pub async fn serve_with_runtime_control(
             gateway_enabled: true,
         },
         ready.map(|tx| {
-            Box::new(move || {
+            Box::new(move |_, _| {
                 let _ = tx.send(());
-            }) as Box<dyn FnOnce() + Send>
+            }) as Box<dyn FnOnce(std::net::SocketAddr, std::net::SocketAddr) + Send>
         }),
         shutdown,
     )
@@ -175,7 +175,7 @@ pub(crate) async fn serve_with_runtime_control_and_metrics(
     sink: Arc<dyn CaptureEventObserver>,
     stream_markdown: bool,
     runtime_control: GatewayRuntimeControl,
-    ready: Option<Box<dyn FnOnce() + Send>>,
+    ready: Option<Box<dyn FnOnce(std::net::SocketAddr, std::net::SocketAddr) + Send>>,
     shutdown: impl std::future::Future<Output = ()> + Send + 'static,
 ) -> anyhow::Result<()> {
     let admin_listen: std::net::SocketAddr = config.admin_listen.parse().with_context(|| {
@@ -210,14 +210,14 @@ pub(crate) async fn serve_with_runtime_control_and_metrics(
 
 #[allow(clippy::too_many_arguments)]
 async fn serve_with_bound_listeners(
-    config: ProxyConfig,
+    mut config: ProxyConfig,
     storage: impl AsRef<Path>,
     sink: Arc<dyn CaptureEventObserver>,
     stream_markdown: bool,
     runtime_control: GatewayRuntimeControl,
     listener: tokio::net::TcpListener,
     admin_listener: tokio::net::TcpListener,
-    ready: Option<Box<dyn FnOnce() + Send>>,
+    ready: Option<Box<dyn FnOnce(std::net::SocketAddr, std::net::SocketAddr) + Send>>,
     shutdown: impl std::future::Future<Output = ()> + Send + 'static,
 ) -> anyhow::Result<()> {
     let (stop_tx, stop_rx) = tokio::sync::watch::channel(());
@@ -232,6 +232,8 @@ async fn serve_with_bound_listeners(
     let admin_listen = admin_listener
         .local_addr()
         .context("read Gateway admin listen address")?;
+    config.listen = listen.to_string();
+    config.admin_listen = admin_listen.to_string();
     let storage = Arc::new(storage.as_ref().to_path_buf());
     let index_store = SessionIndexStore::open(storage.as_path())?;
     let index = index_store.clone_handle();
@@ -316,7 +318,7 @@ async fn serve_with_bound_listeners(
     });
 
     if let Some(tx) = ready {
-        tx();
+        tx(listen, admin_listen);
     }
     tracing::debug!(target: "pvisor_gateway", "capture LLM proxy on http://{listen}");
     let serve_result = axum::serve(

@@ -260,6 +260,16 @@ impl Session {
         child: &mut tokio::process::Child,
         timeout_ms: Option<u64>,
     ) -> SessionEnd {
+        self.wait_exit(child.wait(), timeout_ms).await
+    }
+
+    /// Preserve exit/cancel/deadline ordering for an executor that observes the
+    /// exited child before reaping it.
+    pub(crate) async fn wait_exit(
+        &self,
+        exit: impl std::future::Future<Output = std::io::Result<std::process::ExitStatus>>,
+        timeout_ms: Option<u64>,
+    ) -> SessionEnd {
         let deadline = async {
             match timeout_ms {
                 Some(ms) => tokio::time::sleep(std::time::Duration::from_millis(ms)).await,
@@ -268,7 +278,7 @@ impl Session {
         };
         let end = tokio::select! {
             biased;
-            status = child.wait() => SessionEnd::Exited(status),
+            status = exit => SessionEnd::Exited(status),
             _ = self.cancel.cancelled() => SessionEnd::Cancelled,
             _ = deadline => SessionEnd::Deadline,
         };
@@ -321,6 +331,14 @@ impl Session {
     }
 
     async fn finalize(&mut self, result: &mut RunResult, invoked: bool) -> Option<AttemptTeardown> {
+        if result.state == RunState::Hibernated
+            && let Err(error) = pvisor_core::operation::ExecutionSuspension::from_result(result)
+        {
+            fail_finalization(
+                result,
+                format!("invalid native suspension evidence: {error:#}"),
+            );
+        }
         if !result.state.is_terminal()
             || (result.state == RunState::Completed && result.failure.is_some())
         {
@@ -360,10 +378,15 @@ impl Session {
                 );
             }
         }
-        let teardown = self
-            .drivers
-            .take()
-            .map(|session| session.teardown(result.exit_code, invoked));
+        crate::util::startup_mark_run("attempt.teardown_begin", self.spec().run_id.as_str());
+        let teardown = self.drivers.take().map(|session| {
+            session.teardown(
+                result.exit_code,
+                invoked,
+                result.state == RunState::Hibernated,
+            )
+        });
+        crate::util::startup_mark_run("attempt.teardown_ready", self.spec().run_id.as_str());
         if let Some(error) = teardown
             .as_ref()
             .and_then(|teardown| teardown.error_message())
@@ -381,9 +404,13 @@ impl Session {
         safe_profile_requested: bool,
     ) {
         result.finished_at_unix_ms = unix_now_ms();
-        if let Some(teardown) = teardown.as_mut() {
-            persist_result(teardown, result, &self.agentctl, safe_profile_requested);
-        }
+        persist_result(
+            &mut teardown,
+            result,
+            &self.agentctl,
+            safe_profile_requested,
+        )
+        .await;
         let warnings_before_observation = result.warnings.len();
         let run_observation = match crate::runtime::operation::observe(
             operation,
@@ -453,14 +480,19 @@ impl Session {
                 .warnings
                 .push(format!("execution completion audit gap: {error:#}"));
         }
-        if result.warnings.len() != warnings_before_observation
-            && let Some(teardown) = teardown.as_mut()
-        {
-            persist_result(teardown, result, &self.agentctl, safe_profile_requested);
+        if result.warnings.len() != warnings_before_observation {
+            persist_result(
+                &mut teardown,
+                result,
+                &self.agentctl,
+                safe_profile_requested,
+            )
+            .await;
         }
         let kind = match result.state {
             RunState::Completed => "run.completed",
             RunState::Cancelled => "run.cancelled",
+            RunState::Hibernated => "run.hibernated",
             _ => "run.failed",
         };
         if let Err(error) = self
@@ -476,9 +508,13 @@ impl Session {
                         .into(),
                 );
             }
-            if let Some(teardown) = teardown.as_mut() {
-                persist_result(teardown, result, &self.agentctl, safe_profile_requested);
-            }
+            persist_result(
+                &mut teardown,
+                result,
+                &self.agentctl,
+                safe_profile_requested,
+            )
+            .await;
             if append_error_kind == crate::EventAppendErrorKind::Rejected
                 && let Err(error) = self
                     .events()
@@ -492,9 +528,13 @@ impl Session {
                 result.warnings.push(format!(
                     "publish finalization failure event failed: {error:#}"
                 ));
-                if let Some(teardown) = teardown.as_mut() {
-                    persist_result(teardown, result, &self.agentctl, safe_profile_requested);
-                }
+                persist_result(
+                    &mut teardown,
+                    result,
+                    &self.agentctl,
+                    safe_profile_requested,
+                )
+                .await;
             }
         }
     }
@@ -561,12 +601,44 @@ fn terminal_payload(
     })
 }
 
-fn persist_result(
+async fn persist_result(
+    teardown: &mut Option<AttemptTeardown>,
+    result: &mut RunResult,
+    agentctl: &crate::AgentCtlControl,
+    safe_profile_requested: bool,
+) {
+    let Some(mut owned) = teardown.take() else {
+        return;
+    };
+    let mut saved = result.clone();
+    let agentctl = agentctl.clone();
+    // Bundle filesystem summaries can block on lazy FUSE lowers or storage.
+    // Keep the async runtime progressing even on a one-thread Worker.
+    // Retain Run ownership through the blocking capture and durable commit.
+    match tokio::task::spawn_blocking(move || {
+        persist_result_blocking(&mut owned, &mut saved, &agentctl, safe_profile_requested);
+        (owned, saved)
+    })
+    .await
+    {
+        Ok((owned, saved)) => {
+            *teardown = Some(owned);
+            *result = saved;
+        }
+        Err(error) => fail_finalization(
+            result,
+            format!("Run Bundle persistence task failed: {error}"),
+        ),
+    }
+}
+
+fn persist_result_blocking(
     teardown: &mut AttemptTeardown,
     result: &mut RunResult,
     agentctl: &crate::AgentCtlControl,
     safe_profile_requested: bool,
 ) {
+    crate::util::startup_mark_run("attempt.bundle_begin", result.run_id.as_str());
     if let Err(error) = teardown.persist(result, agentctl.snapshot(), safe_profile_requested) {
         fail_finalization(result, format!("{error:#}"));
         if let Err(error) = teardown.persist(result, agentctl.snapshot(), safe_profile_requested) {
@@ -580,6 +652,7 @@ fn persist_result(
             }
         }
     }
+    crate::util::startup_mark_run("attempt.bundle_ready", result.run_id.as_str());
 }
 
 fn fail_finalization(result: &mut RunResult, message: String) {

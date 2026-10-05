@@ -59,7 +59,12 @@ pub(crate) struct InodeSnapshot {
 #[cfg(target_os = "linux")]
 #[derive(Clone, Debug, Serialize, Deserialize)]
 #[serde(deny_unknown_fields)]
-pub(crate) struct DirectoryEntrySnapshot { pub ino:u64, pub offset:u64, pub type_:u8, pub name:Vec<u8> }
+pub(crate) struct DirectoryEntrySnapshot {
+    pub ino: u64,
+    pub offset: u64,
+    pub type_: u8,
+    pub name: Vec<u8>,
+}
 #[derive(Clone, Debug, Serialize, Deserialize)]
 #[serde(deny_unknown_fields)]
 pub(crate) struct HandleSnapshot {
@@ -108,47 +113,153 @@ impl FileIdentity {
 }
 
 impl ServerSnapshot {
+    /// Verify the original frozen backing, including exact physical identities
+    /// and saved file contents. This neither relocates roots nor grants sharing
+    /// rights; saved writable handles remain valid only on this same backing.
+    pub fn verify_frozen_backing(&self) -> io::Result<()> {
+        self.fs.verify_frozen_backing()
+    }
+    /// Change only the audit/Attempt binding, preserving every authorization rule.
+    pub fn rebind_overlay_policy(
+        &mut self,
+        policy: &pvisor_overlay_core::FileAccessPolicy,
+    ) -> io::Result<()> {
+        fn rebind(
+            state: &mut FsSnapshot,
+            policy: &pvisor_overlay_core::FileAccessPolicy,
+        ) -> io::Result<()> {
+            match state {
+                FsSnapshot::ReadOnly(inner) | FsSnapshot::Augment { inner, .. } => {
+                    rebind(inner, policy)
+                }
+                FsSnapshot::Overlay(state) => state.rebind_policy(policy),
+                _ => Err(unsupported(
+                    "audit rebinding requires an overlay filesystem",
+                )),
+            }
+        }
+        let mut rebound = self.fs.clone();
+        rebind(&mut rebound, policy)?;
+        self.fs = rebound;
+        Ok(())
+    }
+
     /// Rebind separately verified, exclusively owned copies of every backing
     /// directory. The coordinator must verify full inventories and preserve
     /// cross-directory hard links before calling. No partial or external layer
     /// binding is accepted; failure leaves the original snapshot unchanged.
     pub fn rebind_owned_layers(&mut self, copies: &[(PathBuf, PathBuf)]) -> io::Result<()> {
+        self.rebind_layer_roots(copies, &[], false)
+    }
+
+    /// Explicit shared-lower path: callers verify the entire immutable tree,
+    /// retain durable references, and enforce read-only access in the runner.
+    /// Upper/work/journal/target/baseline roles and writable saved handles may
+    /// never be marked shared. Existing owned-copy rebinding is unchanged.
+    /// An explicitly shared lower may keep its original root during recapture;
+    /// every saved inode must then retain its exact physical identity.
+    pub fn rebind_shared_readonly_layers(
+        &mut self,
+        copies: &[(PathBuf, PathBuf)],
+        shared_lowers: &[PathBuf],
+    ) -> io::Result<()> {
+        fn validate(state: &FsSnapshot, shared_lowers: &[PathBuf]) -> io::Result<()> {
+            match state {
+                FsSnapshot::ReadOnly(inner) | FsSnapshot::Augment { inner, .. } => {
+                    validate(inner, shared_lowers)
+                }
+                FsSnapshot::Overlay(state) => state.validate_shared_readonly_layers(shared_lowers),
+                _ => Err(unsupported("shared lowers require an overlay filesystem")),
+            }
+        }
+        validate(&self.fs, shared_lowers)?;
+        self.rebind_layer_roots(copies, shared_lowers, false)
+    }
+
+    /// Supervisor-side relocation of only verified immutable lowers while the
+    /// VM remains frozen. Unmapped private backing remains exactly unchanged.
+    /// The caller verifies complete source/destination inventories and retains
+    /// the destination owners before calling; saved writable handles are refused.
+    pub fn rebind_shared_lower_copies(&mut self, copies: &[(PathBuf, PathBuf)]) -> io::Result<()> {
+        fn validate(state: &FsSnapshot, copies: &[(PathBuf, PathBuf)]) -> io::Result<()> {
+            match state {
+                FsSnapshot::ReadOnly(inner) | FsSnapshot::Augment { inner, .. } => {
+                    validate(inner, copies)
+                }
+                FsSnapshot::Overlay(state) => state.validate_shared_lower_copies(copies),
+                _ => Err(unsupported(
+                    "shared lower copies require an overlay filesystem",
+                )),
+            }
+        }
+        validate(&self.fs, copies)?;
+        let shared = copies
+            .iter()
+            .map(|(source, _)| source.clone())
+            .collect::<Vec<_>>();
+        self.rebind_layer_roots(copies, &shared, true)
+    }
+
+    fn rebind_layer_roots(
+        &mut self,
+        copies: &[(PathBuf, PathBuf)],
+        shared_lowers: &[PathBuf],
+        preserve_unmapped: bool,
+    ) -> io::Result<()> {
         let mut roots = std::collections::BTreeMap::new();
         let mut destinations = std::collections::BTreeSet::new();
         for (source, destination) in copies {
             if !source.is_absolute()
-                || source.components().any(|part| !matches!(part, Component::RootDir | Component::Normal(_)))
+                || source
+                    .components()
+                    .any(|part| !matches!(part, Component::RootDir | Component::Normal(_)))
             {
                 return Err(invalid("invalid copied layer source binding"));
             }
             let destination = destination.canonicalize()?;
+            let retained = source == &destination && shared_lowers.contains(source);
             if !std::fs::symlink_metadata(&destination)?.is_dir()
-                || destination.starts_with(source)
-                || source.starts_with(&destination)
+                || (!retained
+                    && (destination.starts_with(source) || source.starts_with(&destination)))
                 || !destinations.insert(destination.clone())
                 || roots.insert(source.clone(), destination).is_some()
             {
-                return Err(invalid("copied layer roots must be distinct and independent"));
+                return Err(invalid(
+                    "copied layer roots must be distinct and independent",
+                ));
             }
         }
         if roots.is_empty() {
             return Err(invalid("missing copied layer bindings"));
         }
         let relocate = |path: &str| -> io::Result<String> {
-            roots.get(Path::new(path))
+            roots
+                .get(Path::new(path))
+                .map(PathBuf::as_path)
+                .or_else(|| preserve_unmapped.then_some(Path::new(path)))
                 .ok_or_else(|| invalid("overlay backing has no verified owned copy"))?
-                .to_str().map(str::to_owned)
+                .to_str()
+                .map(str::to_owned)
                 .ok_or_else(|| invalid("copied layer path is not UTF-8"))
         };
-        fn rebind(state: &mut FsSnapshot, relocate: &impl Fn(&str) -> io::Result<String>) -> io::Result<()> {
+        fn rebind(
+            state: &mut FsSnapshot,
+            relocate: &impl Fn(&str) -> io::Result<String>,
+            shared_lowers: &[PathBuf],
+            preserve_unmapped: bool,
+        ) -> io::Result<()> {
             match state {
-                FsSnapshot::ReadOnly(inner) | FsSnapshot::Augment { inner, .. } => rebind(inner, relocate),
-                FsSnapshot::Overlay(state) => state.rebind_roots(relocate),
+                FsSnapshot::ReadOnly(inner) | FsSnapshot::Augment { inner, .. } => {
+                    rebind(inner, relocate, shared_lowers, preserve_unmapped)
+                }
+                FsSnapshot::Overlay(state) => {
+                    state.rebind_roots(relocate, shared_lowers, preserve_unmapped)
+                }
                 _ => Err(unsupported("layer copies require an overlay filesystem")),
             }
         }
         let mut rebound = self.fs.clone();
-        rebind(&mut rebound, &relocate)?;
+        rebind(&mut rebound, &relocate, shared_lowers, preserve_unmapped)?;
         self.fs = rebound;
         Ok(())
     }
@@ -170,11 +281,65 @@ impl ServerSnapshot {
 }
 
 impl FsSnapshot {
-    pub(super) fn rebind_owned_copy(&mut self, source: &Path, destination: &Path) -> io::Result<()> {
+    pub(super) fn verify_frozen_backing(&self) -> io::Result<()> {
+        match self {
+            Self::ReadOnly(inner) | Self::Augment { inner, .. } => inner.verify_frozen_backing(),
+            Self::Overlay(state) => state.verify_frozen_backing(),
+            Self::Passthrough(state) => {
+                let root = Path::new(std::ffi::OsStr::from_bytes(&state.root));
+                let mut copy = self.clone();
+                copy.rebind_verified_layer(root, root, true)
+            }
+            _ => Err(unsupported(
+                "frozen backing verification requires an owned filesystem",
+            )),
+        }
+    }
+    pub(super) fn validate_readonly_handles(&self) -> io::Result<()> {
+        match self {
+            Self::ReadOnly(inner) | Self::Augment { inner, .. } => {
+                inner.validate_readonly_handles()
+            }
+            Self::Passthrough(state) => {
+                if state.handles.iter().any(|handle| {
+                    handle.flags & libc::O_ACCMODE != libc::O_RDONLY
+                        || handle.flags & (libc::O_TRUNC | libc::O_CREAT) != 0
+                }) {
+                    return Err(invalid("shared lower has a writable saved handle"));
+                }
+                Ok(())
+            }
+            _ => Err(unsupported(
+                "shared lower handle validation requires passthrough backing",
+            )),
+        }
+    }
+    pub(super) fn rebind_owned_copy(
+        &mut self,
+        source: &Path,
+        destination: &Path,
+    ) -> io::Result<()> {
+        self.rebind_verified_layer(source, destination, false)
+    }
+
+    /// The coordinator pins/authenticates the complete immutable tree. This
+    /// verifies that every looked-up inode and saved handle still belongs to
+    /// that same root; no copy or writable alias is accepted here.
+    pub(super) fn retain_readonly_root(&mut self, root: &Path) -> io::Result<()> {
+        self.validate_readonly_handles()?;
+        self.rebind_verified_layer(root, root, true)
+    }
+
+    fn rebind_verified_layer(
+        &mut self,
+        source: &Path,
+        destination: &Path,
+        retained: bool,
+    ) -> io::Result<()> {
         use std::os::unix::fs::OpenOptionsExt;
         match self {
             Self::ReadOnly(inner) | Self::Augment { inner, .. } => {
-                inner.rebind_owned_copy(source, destination)
+                inner.rebind_verified_layer(source, destination, retained)
             }
             Self::Passthrough(state) => {
                 // Source may already have been removed. Its canonical path is
@@ -183,7 +348,7 @@ impl FsSnapshot {
                     return Err(invalid("copied filesystem source binding mismatch"));
                 }
                 let root = destination.canonicalize()?;
-                if root == source {
+                if root == source && !retained {
                     return Err(invalid("copied filesystem must have an independent root"));
                 }
                 let mut identities = Vec::with_capacity(state.inodes.len());
@@ -203,6 +368,9 @@ impl FsSnapshot {
                         .custom_flags(pin_flags())
                         .open(&path)?;
                     let identity = FileIdentity::read(&pin)?;
+                    if retained && identity != saved.identity {
+                        return Err(invalid("retained immutable inode identity changed"));
+                    }
                     let kind = identity.mode & u32::from(libc::S_IFMT);
                     let regular = kind == u32::from(libc::S_IFREG);
                     let symlink = kind == u32::from(libc::S_IFLNK);
@@ -248,7 +416,7 @@ impl FsSnapshot {
                 state.root = root.as_os_str().as_bytes().to_vec();
                 Ok(())
             }
-            Self::Overlay(state) => state.rebind_owned_copy(source, destination),
+            Self::Overlay(state) if !retained => state.rebind_owned_copy(source, destination),
             _ => Err(unsupported(
                 "copied filesystem requires a passthrough or owned overlay root",
             )),
@@ -325,6 +493,12 @@ impl FsSnapshot {
 }
 
 pub(crate) fn pin_flags() -> i32 {
-    #[cfg(target_os = "macos")] { libc::O_EVTONLY | libc::O_SYMLINK }
-    #[cfg(target_os = "linux")] { libc::O_PATH | libc::O_NOFOLLOW }
+    #[cfg(target_os = "macos")]
+    {
+        libc::O_EVTONLY | libc::O_SYMLINK
+    }
+    #[cfg(target_os = "linux")]
+    {
+        libc::O_PATH | libc::O_NOFOLLOW
+    }
 }

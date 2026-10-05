@@ -38,6 +38,10 @@ pub trait RunExecutor: Send + Sync {
     fn supports_vm_network_attachment(&self) -> bool {
         false
     }
+    /// Explicit opt-in to native CPU QoS installation and executor observations.
+    fn supports_cpu_qos(&self) -> bool {
+        false
+    }
     async fn execute(&self, session: &crate::Session) -> ExecutorOutput;
 }
 

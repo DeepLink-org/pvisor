@@ -22,6 +22,16 @@ pub struct OverlayHint {
     pub auto_discard: bool,
     /// Reject apply so an immutable image/cache lower cannot be mutated.
     pub protect_target: bool,
+    /// Verified backing from a full execution snapshot. Open it without
+    /// initialization writes and retain its target, baseline and exclusions.
+    pub execution_snapshot: Option<ExecutionOverlayHint>,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct ExecutionOverlayHint {
+    pub target: PathBuf,
+    pub baseline_lower: Option<PathBuf>,
+    pub excluded_paths: Vec<PathBuf>,
 }
 
 /// Environment + cwd plan injected beside the Agent process.

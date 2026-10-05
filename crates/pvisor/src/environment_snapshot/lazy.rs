@@ -1,6 +1,6 @@
 //! Read-only, authenticated snapshot RAM. Cached FUSE reads are driven by host
 //! page faults; MAP_PRIVATE guest mappings own all subsequent writes.
-use super::{EnvironmentManifest, PendingEnvironment, RamBlocks, SnapshotStore, store::valid_id};
+use super::{EnvironmentManifest, SnapshotStore, store::valid_id};
 use crate::ram_backing::BLOCK_BYTES;
 use anyhow::ensure;
 use fuser::{
@@ -67,10 +67,7 @@ enum Backing {
         file: File,
         index: Option<RawRamIndex>,
     },
-    Compressed {
-        blocks: RamBlocks,
-        references: PendingEnvironment,
-    },
+    Compressed(std::sync::Arc<super::blocks::PinnedRamBlocks>),
 }
 
 /// Owns the backing, including hard links retaining compressed blocks after
@@ -108,10 +105,11 @@ impl SnapshotRamReader {
                 }
             }
             (
-                Backing::Compressed {
+                Backing::Compressed(std::sync::Arc::new(super::blocks::PinnedRamBlocks {
                     blocks: blocks.clone(),
                     references,
-                },
+                    sha256: manifest.ram_sha256.clone(),
+                })),
                 blocks.length,
             )
         } else {
@@ -139,6 +137,12 @@ impl SnapshotRamReader {
             cache: lru::LruCache::new(std::num::NonZeroUsize::new(4).unwrap()),
         })
     }
+    pub(crate) fn compressed_base(&self) -> Option<std::sync::Arc<super::blocks::PinnedRamBlocks>> {
+        match &self.backing {
+            Backing::Compressed(base) => Some(base.clone()),
+            Backing::Raw { .. } => None,
+        }
+    }
     pub fn len(&self) -> u64 {
         self.length
     }
@@ -157,9 +161,9 @@ impl SnapshotRamReader {
             let start = (position % BLOCK_BYTES as u64) as usize;
             if !self.cache.contains(&index) {
                 let bytes = match &self.backing {
-                    Backing::Compressed { blocks, references } => {
-                        blocks.read_block(&references.directory().join("ram-blocks"), index)?
-                    }
+                    Backing::Compressed(base) => base
+                        .blocks
+                        .read_block(&base.references.directory().join("ram-blocks"), index)?,
                     Backing::Raw { file, index: seal } => {
                         let block_offset = index as u64 * BLOCK_BYTES as u64;
                         let mut bytes =
@@ -193,6 +197,37 @@ pub struct SnapshotRamMount {
     directory: tempfile::TempDir,
 }
 impl SnapshotRamMount {
+    pub(crate) fn ram_path(&self) -> std::path::PathBuf {
+        self.directory.path().join("ram")
+    }
+
+    /// The ordinary executor owns its pager in the supervisor, whose binary
+    /// enters internal modes before parsing the worker/CLI arguments.
+    pub(crate) fn watch_native_owner_exit(&mut self, executable: &Path) -> io::Result<()> {
+        use std::os::unix::process::CommandExt;
+        if self.watchdog.is_some() {
+            return Err(io::Error::other("RAM exit watchdog already installed"));
+        }
+        let mut child = Command::new(executable)
+            .env_clear()
+            .env(
+                "PATH",
+                std::env::var_os("PATH").unwrap_or_else(|| "/usr/bin:/bin".into()),
+            )
+            .env("PVISOR_VM_RESTORE_RAM_WATCHDOG", self.directory.path())
+            .stdin(Stdio::piped())
+            .stdout(Stdio::null())
+            .stderr(Stdio::inherit())
+            .process_group(0)
+            .spawn()?;
+        let pipe = child
+            .stdin
+            .take()
+            .ok_or_else(|| io::Error::other("missing RAM watchdog pipe"))?;
+        self.watchdog = Some((child, pipe));
+        Ok(())
+    }
+
     pub fn new(reader: SnapshotRamReader, directory: &Path) -> io::Result<(Self, File)> {
         let temporary = tempfile::Builder::new()
             .prefix("ram-mount-")
@@ -208,6 +243,13 @@ impl SnapshotRamMount {
             #[cfg(target_os = "macos")]
             MountOption::CUSTOM("backend=kernel".into()),
         ];
+        #[cfg(target_os = "linux")]
+        let session = BackgroundSession::new_interruptible(fuser::Session::new(
+            RamFs { reader },
+            temporary.path(),
+            &options,
+        )?)?;
+        #[cfg(not(target_os = "linux"))]
         let session = fuser::spawn_mount2(RamFs { reader }, temporary.path(), &options)?;
         let mount = Self {
             session: Some(session),

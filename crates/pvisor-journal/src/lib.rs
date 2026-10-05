@@ -68,7 +68,15 @@ impl Journal {
         let mut file = File::open(path)?;
         FileExt::try_lock_shared(&file)
             .context("close the trace writer before inspecting its journal")?;
-        Ok(scan(&mut file, false)?.1)
+        Ok(scan(&mut file, false, true)?.1)
+    }
+
+    /// Validate a closed durable journal without retaining event payloads.
+    pub fn validate(path: &Path) -> Result<()> {
+        let mut file = File::open(path)?;
+        FileExt::try_lock_shared(&file).context("close the trace writer before validation")?;
+        scan(&mut file, false, false)?;
+        Ok(())
     }
 
     pub fn memory() -> Self {
@@ -115,7 +123,7 @@ impl Journal {
             sync_directory(parent)?;
             (id, Vec::new())
         } else {
-            scan(&mut file, true)?
+            scan(&mut file, true, true)?
         };
         // A full record left by a lost acknowledgement is durable before retry
         // can return a LocalSync receipt, even when its old sync failed.
@@ -256,10 +264,32 @@ impl Journal {
             .map_err(|_| anyhow::anyhow!("journal lock poisoned"))?;
         ensure!(!state.poisoned, "reopen journal after write error");
         if let Some(file) = state.file.as_mut() {
-            Ok(scan(file, false)?.1)
+            Ok(scan(file, false, true)?.1)
         } else {
             Ok(state.memory.clone())
         }
+    }
+
+    /// Copy committed durable bytes while excluding concurrent appenders.
+    /// The caller owns publication/fsync of the destination. Never exports a
+    /// poisoned or volatile journal, and never repairs incomplete data.
+    pub fn snapshot_to(&self, output: &mut impl Write, max_bytes: u64) -> Result<u64> {
+        let mut state = self
+            .state
+            .lock()
+            .map_err(|_| anyhow::anyhow!("journal lock poisoned"))?;
+        ensure!(!state.poisoned, "reopen journal after write error");
+        let file = state
+            .file
+            .as_mut()
+            .context("durable trace export requires a file journal")?;
+        let size = file.metadata()?.len();
+        ensure!(size <= max_bytes, "trace exceeds artifact export limit");
+        file.sync_all()?;
+        file.seek(SeekFrom::Start(0))?;
+        let copied = std::io::copy(&mut file.take(size), output)?;
+        ensure!(copied == size, "trace changed while snapshotting");
+        Ok(copied)
     }
 }
 
@@ -267,7 +297,7 @@ fn digest(event: &Event) -> Result<[u8; 32]> {
     Ok(Sha256::digest(serde_json::to_vec(event)?).into())
 }
 
-fn scan(file: &mut File, repair_tail: bool) -> Result<(String, Vec<Record>)> {
+fn scan(file: &mut File, repair_tail: bool, retain_records: bool) -> Result<(String, Vec<Record>)> {
     file.seek(SeekFrom::Start(0))?;
     let mut reader = BufReader::new(&mut *file);
     let mut line = Vec::new();
@@ -283,6 +313,7 @@ fn scan(file: &mut File, repair_tail: bool) -> Result<(String, Vec<Record>)> {
     let mut valid_bytes = line.len() as u64;
     let mut records = Vec::new();
     let mut ids = BTreeMap::new();
+    let mut offset = 0_u64;
     loop {
         line.clear();
         if read_line(&mut reader, &mut line)? == 0 {
@@ -296,8 +327,7 @@ fn scan(file: &mut File, repair_tail: bool) -> Result<(String, Vec<Record>)> {
             serde_json::from_slice(&line).context("corrupt complete trace record")?;
         record.event.validate()?;
         ensure!(
-            record.position.journal == header.journal
-                && record.position.offset == records.len() as u64,
+            record.position.journal == header.journal && record.position.offset == offset,
             "trace position discontinuity"
         );
         ensure!(
@@ -307,7 +337,10 @@ fn scan(file: &mut File, repair_tail: bool) -> Result<(String, Vec<Record>)> {
         );
         // References to an earlier event can resolve an older forward reference.
         // Check the resulting graph, not timestamps or submission order.
-        records.push(record);
+        if retain_records {
+            records.push(record);
+        }
+        offset += 1;
         valid_bytes += line.len() as u64;
     }
     drop(reader);
@@ -563,6 +596,72 @@ mod tests {
         future::Future,
         task::{Context, Waker},
     };
+
+    #[test]
+    fn durable_snapshot_can_be_read_with_a_live_writer_and_excludes_later_facts() {
+        let root = tempfile::tempdir().unwrap();
+        let source = root.path().join("trace");
+        let journal = Journal::open(&source).unwrap();
+        let trace = Trace::new(journal.clone(), "snapshot-test");
+        let event = || {
+            trace.event(
+                vec!["run".into()],
+                None,
+                None,
+                vec![],
+                Fact::Observation {
+                    domain: "test".into(),
+                    name: "step".into(),
+                    version: 1,
+                    payload: serde_json::json!({"completed":true}),
+                },
+            )
+        };
+        journal.append(event()).unwrap();
+        journal.append(event()).unwrap();
+        let snapshot = root.path().join("snapshot");
+        let mut output = File::create(&snapshot).unwrap();
+        assert!(journal.snapshot_to(&mut output, 0).is_err());
+        assert_eq!(output.metadata().unwrap().len(), 0);
+        let size = journal.snapshot_to(&mut output, 1024 * 1024).unwrap();
+        output.sync_all().unwrap();
+        assert_eq!(size, std::fs::metadata(&source).unwrap().len());
+        assert_eq!(
+            std::fs::read(&snapshot).unwrap(),
+            std::fs::read(&source).unwrap()
+        );
+        journal.append(event()).unwrap();
+        assert_eq!(Journal::read(&snapshot).unwrap().len(), 2);
+        Journal::validate(&snapshot).unwrap();
+        let good = std::fs::read(&snapshot).unwrap();
+        let shifted = String::from_utf8(good.clone())
+            .unwrap()
+            .replacen("\"offset\":0", "\"offset\":1", 1)
+            .into_bytes();
+        let bad_version = String::from_utf8(good.clone())
+            .unwrap()
+            .replace(&format!("pvisor.trace/{VERSION}"), "pvisor.trace/0")
+            .into_bytes();
+        for (index, corrupt) in [good[..good.len() - 1].to_vec(), shifted, bad_version]
+            .into_iter()
+            .enumerate()
+        {
+            let path = root.path().join(format!("corrupt-{index}"));
+            std::fs::write(&path, corrupt).unwrap();
+            assert!(Journal::read(&path).is_err());
+            assert!(Journal::validate(&path).is_err());
+        }
+        assert!(Journal::validate(&source).is_err());
+        assert_eq!(journal.records().unwrap().len(), 3);
+        assert!(Journal::read(&source).is_err());
+        assert!(
+            Journal::memory()
+                .snapshot_to(&mut Vec::new(), 1024)
+                .is_err()
+        );
+        journal.state.lock().unwrap().poisoned = true;
+        assert!(journal.snapshot_to(&mut Vec::new(), 1024 * 1024).is_err());
+    }
 
     #[test]
     fn observed_atomic_write_reports_steps_and_failed_rename_without_leaking_tempfiles() {

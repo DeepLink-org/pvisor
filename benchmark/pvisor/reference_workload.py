@@ -31,15 +31,18 @@ def checked(argv, cwd=None, env=None):
 
 
 def tools_env():
+    temporary = Path(os.environ.get("PVISOR_REFERENCE_TMPDIR", "/tmp"))
+    if "PVISOR_REFERENCE_TMPDIR" in os.environ:
+        temporary.mkdir(parents=True, exist_ok=True)
     return os.environ | {
         "PATH": f"{TOOLCHAIN}/bin:{ROOT}/usr/local/bin:{ROOT}/usr/bin:/bin",
         "RUSTC": str(TOOLCHAIN / "bin/rustc"),
         "GIT_CONFIG_COUNT": "1",
         "GIT_CONFIG_KEY_0": "safe.directory",
         "GIT_CONFIG_VALUE_0": "*",
-        "CARGO_HOME": "/tmp/reference-cargo",
-        "HOME": "/tmp/reference-home",
-        "TMPDIR": "/tmp",
+        "CARGO_HOME": str(temporary / "reference-cargo"),
+        "HOME": str(temporary / "reference-home"),
+        "TMPDIR": str(temporary),
         "CARGO_TARGET_DIR": str(Path.cwd() / "rust/target"),
     }
 

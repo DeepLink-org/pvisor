@@ -1,5 +1,7 @@
 use clap::{Parser, Subcommand, ValueEnum};
-use pvisor_cluster::{client::Client, scheduler::SchedulerConfig};
+use pvisor_cluster::{
+    ArtifactGcRequest, CLUSTER_VERSION, client::Client, scheduler::SchedulerConfig,
+};
 use std::path::PathBuf;
 
 #[derive(Parser)]
@@ -30,9 +32,39 @@ enum Command {
         /// JSON map of tenant names to concurrent Resources limits.
         #[arg(long)]
         quotas: Option<PathBuf>,
+        /// JSON unique-object storage limits; persisted across controller restart.
+        #[arg(long)]
+        artifact_limits: Option<PathBuf>,
     },
     Submit {
         spec: PathBuf,
+    },
+    /// Submit, inspect or cancel a durable task dependency graph.
+    Graph {
+        #[command(subcommand)]
+        command: GraphCommand,
+    },
+    /// Atomically create branches from a sealed full execution checkpoint.
+    Fork {
+        source: String,
+        /// JSON ExecutionForkRequest; reuse its request_id after a timeout.
+        request: PathBuf,
+    },
+    /// Show the durable creation receipt, independent of branch execution.
+    ShowFork {
+        source: String,
+        request_id: String,
+    },
+    /// Capture a running VM and durably create branches after acknowledgement.
+    ForkLive {
+        source: String,
+        /// JSON ExecutionForkRequest with a fresh checkpoint_request_id.
+        request: PathBuf,
+    },
+    /// Show capture progress and the eventual branch creation receipt.
+    ShowLiveFork {
+        source: String,
+        request_id: String,
     },
     /// Register or inspect an immutable native-cache environment template.
     Environment {
@@ -45,7 +77,7 @@ enum Command {
     Cancel {
         id: String,
     },
-    /// Pause, offload, or resume a leased VM. Reuse request-id after timeouts.
+    /// Pause, offload, resume, checkpoint or suspend a VM. Reuse request-id after timeouts.
     Control {
         id: String,
         #[arg(value_enum)]
@@ -62,6 +94,22 @@ enum Command {
     },
     /// Inspect this Linux node's read-only pressure and visible cgroup limits.
     ProbeNode,
+    /// Show unique stored objects, concurrent reservations and persistent limits.
+    ArtifactStorage {
+        /// Persist a new policy online; omit to read current usage.
+        #[arg(long)]
+        limits: Option<PathBuf>,
+    },
+    /// Preview orphan reclamation and optional terminal evidence retirement.
+    ArtifactGc {
+        #[arg(long)]
+        retire_before_ms: Option<u64>,
+        #[arg(long, default_value_t = 4096)]
+        max_objects: u32,
+        /// Apply the immutable server plan ID printed by a previous preview.
+        #[arg(long, conflicts_with = "retire_before_ms")]
+        apply: Option<String>,
+    },
     Drain {
         id: String,
         #[arg(long)]
@@ -73,11 +121,19 @@ enum Action {
     Pause,
     Offload,
     Resume,
+    Checkpoint,
+    Suspend,
 }
 #[derive(Subcommand)]
 enum EnvironmentCommand {
     Publish { template: PathBuf },
     Show { digest: String },
+}
+#[derive(Subcommand)]
+enum GraphCommand {
+    Submit { spec: PathBuf },
+    Show { id: String },
+    Cancel { id: String },
 }
 
 #[tokio::main]
@@ -99,6 +155,7 @@ async fn main() -> anyhow::Result<()> {
         worker_token,
         lease_ms,
         quotas,
+        artifact_limits,
     } = args.command
     {
         let mut config = SchedulerConfig {
@@ -107,6 +164,9 @@ async fn main() -> anyhow::Result<()> {
         };
         if let Some(path) = quotas {
             config.tenant_quotas = serde_json::from_slice(&std::fs::read(path)?)?;
+        }
+        if let Some(path) = artifact_limits {
+            config.artifact_storage_limits = Some(serde_json::from_slice(&std::fs::read(path)?)?);
         }
         let router = pvisor_cluster::server::open(&journal, config, token, worker_token)?;
         let listener = tokio::net::TcpListener::bind(listen).await?;
@@ -120,6 +180,15 @@ async fn main() -> anyhow::Result<()> {
     }
     let client = Client::new(&args.url, token)?;
     let value = match args.command {
+        Command::Graph { command } => serde_json::to_value(match command {
+            GraphCommand::Submit { spec } => {
+                client
+                    .submit_graph(&serde_json::from_slice(&std::fs::read(spec)?)?)
+                    .await?
+            }
+            GraphCommand::Show { id } => client.graph(&id).await?,
+            GraphCommand::Cancel { id } => client.cancel_graph(&id).await?,
+        })?,
         Command::Environment { command } => serde_json::to_value(match command {
             EnvironmentCommand::Publish { template } => {
                 client
@@ -134,7 +203,23 @@ async fn main() -> anyhow::Result<()> {
                 .await?,
         )?,
         Command::Show { id } => serde_json::to_value(client.task(&id).await?)?,
+        Command::Fork { source, request } => serde_json::to_value(
+            client
+                .fork_execution(&source, &serde_json::from_slice(&std::fs::read(request)?)?)
+                .await?,
+        )?,
+        Command::ShowFork { source, request_id } => {
+            serde_json::to_value(client.execution_fork(&source, &request_id).await?)?
+        }
         Command::Cancel { id } => serde_json::to_value(client.cancel(&id).await?)?,
+        Command::ForkLive { source, request } => serde_json::to_value(
+            client
+                .request_live_fork(&source, &serde_json::from_slice(&std::fs::read(request)?)?)
+                .await?,
+        )?,
+        Command::ShowLiveFork { source, request_id } => {
+            serde_json::to_value(client.live_fork(&source, &request_id).await?)?
+        }
         Command::Control {
             id,
             action,
@@ -149,11 +234,37 @@ async fn main() -> anyhow::Result<()> {
                             Action::Pause => pvisor_cluster::ControlAction::Pause,
                             Action::Offload => pvisor_cluster::ControlAction::Offload,
                             Action::Resume => pvisor_cluster::ControlAction::Resume,
+                            Action::Checkpoint => pvisor_cluster::ControlAction::Checkpoint,
+                            Action::Suspend => pvisor_cluster::ControlAction::Suspend,
                         },
                     },
                 )
                 .await?,
         )?,
+        Command::ArtifactGc {
+            retire_before_ms,
+            max_objects,
+            apply,
+        } => match apply {
+            Some(id) => serde_json::to_value(client.apply_artifact_gc(&id).await?)?,
+            None => serde_json::to_value(
+                client
+                    .plan_artifact_gc(&ArtifactGcRequest {
+                        version: CLUSTER_VERSION,
+                        retire_before_ms,
+                        max_objects,
+                    })
+                    .await?,
+            )?,
+        },
+        Command::ArtifactStorage { limits } => serde_json::to_value(match limits {
+            Some(path) => {
+                client
+                    .update_artifact_storage(&serde_json::from_slice(&std::fs::read(path)?)?)
+                    .await?
+            }
+            None => client.artifact_storage().await?,
+        })?,
         Command::Workers => serde_json::to_value(client.workers().await?)?,
         Command::Artifacts { id, out } => serde_json::to_value(match out {
             Some(path) => client.download_artifacts(&id, &path).await?,

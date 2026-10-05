@@ -40,8 +40,12 @@ pub use config::{
 };
 pub use executor::container::ContainerExecutor;
 pub use executor::process::ProcessExecutor;
+#[cfg(target_os = "linux")]
+pub use executor::vm::CpuQosGroup;
 pub use executor::vm::VmExecutor;
 pub use executor::vm::run_internal_if_requested as run_krun_internal_if_requested;
+#[cfg(target_os = "linux")]
+pub use executor::vm::sample_supervisor_memory;
 pub use executor::{ExecutorOutput, RunExecutor};
 pub use pvisor_core::{
     AGENTCTL_ENDPOINT_ENV, AGENTCTL_MAX_FRAME_BYTES, AGENTCTL_TOKEN_ENV, AGENTCTL_TRANSPORT_ENV,
@@ -76,8 +80,8 @@ pub use runtime::run::{
     RunHandle,
 };
 pub use runtime::{
-    ChangeEntry, ChangeEntryType, ChangeKind, ImplantPlan, OverlayHint, RunLineage,
-    RuntimeCapabilities,
+    ChangeEntry, ChangeEntryType, ChangeKind, ExecutionOverlayHint, ImplantPlan, OverlayHint,
+    RunLineage, RuntimeCapabilities,
 };
 pub use util::unix_now_ms;
 

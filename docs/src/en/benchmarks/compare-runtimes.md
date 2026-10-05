@@ -13,7 +13,19 @@ These runtimes provide execution boundaries. pVisor manages Jobs, pending change
 
 Sources: [gVisor](https://gvisor.dev/docs/), [Firecracker](https://firecracker-microvm.github.io/), [Kata](https://katacontainers.io/). Integration evidence: [pVisor executors](../guides/executors/index.md).
 
+## Practical startup and task costs with complete Ubuntu {#full-ubuntu}
+
+The new Firecracker 1.13.1 / complete Ubuntu 26.04.1 LTS comparison uses stock `7.0.0-34-generic`, the official initrd and normal systemd services. Fresh VMs from a prepared disk reach Ready in **5.64 / 6.01 seconds** P50/P95; first cloud-init boot takes **9.25 / 10.29 seconds**. Image-free pVisor hostroot takes **110 / 122 ms**, with the same 2 vCPU / 2 GiB and two host cores, N=30.
+
+Complete repair/testing takes **4.61 s** in pVisor VM and **8.51 s** on Ubuntu; internal tools take **4.02 / 2.30 s**, with N=10 and 16 GiB VMs. This supports reduced new-environment waiting, not a roughly 50-times VMM advantage or universally faster tools. Services, kernels, tool versions, storage and staging differ; reusing VMs amortizes boot cost.
+
+QEMU 10.2.2 q35 / microvm follow-up with the same complete Ubuntu gives startup P50 **5.43 / 7.67 s** and repair/testing **8.12 / 10.33 s**, N=10 per case and 80/80 pass. All create fresh environments; QEMU distributions remain independent of the earlier Firecracker/pVisor batches. Millisecond trimmed-reference boot results cannot replace seconds of complete-distribution startup.
+
+[Startup](startup.md#full-ubuntu) · [Full Agent Env](agent-tasks.md#full-ubuntu) · [Protocol](methodology.md#full-ubuntu)
+
 ## Measured performance: pVisor VM / Firecracker / QEMU {#reference-comparison}
+
+The following historical controls use trimmed kernels and static init, without booting complete Ubuntu on Firecracker/QEMU. The old Claude/VM initialization failure belongs to its prepared-directory configuration. See the [new hostroot / complete Ubuntu results](#full-ubuntu) above; the batches remain separate.
 
 Independent reference CLIs now provide same-host Linux performance measurements; absence of pVisor integration is separate from absence of measurements. VMs use 2 vCPU and the same two-core host budget, 128 MiB for shell startup and 16 GiB for tools. Firecracker/QEMU share a kernel and ext4; pVisor uses embedded firmware and staged virtio-fs. Both QEMU microvm and q35 are measured, with configurations and failures retained.
 

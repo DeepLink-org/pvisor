@@ -28,6 +28,13 @@ impl VmExecutor {
     pub fn settings(&self) -> &VmSettings {
         &self.settings
     }
+    pub fn restore(
+        _settings: VmSettings,
+        _checkpoint: pvisor_core::operation::ExecutionCheckpoint,
+        _storage: &std::path::Path,
+    ) -> anyhow::Result<(Self, crate::OverlayHint)> {
+        anyhow::bail!(UNSUPPORTED_MESSAGE)
+    }
 }
 
 #[async_trait]

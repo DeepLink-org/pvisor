@@ -1,5 +1,5 @@
 #!/usr/bin/env python3
-"""Complete official Ubuntu on Firecracker versus image-free pVisor."""
+"""Complete official Ubuntu on Firecracker/QEMU versus image-free pVisor."""
 
 import argparse
 import json
@@ -24,13 +24,66 @@ BACKENDS = (
     "pvisor-vm-hostroot",
     "firecracker-ubuntu",
     "firecracker-ubuntu-firstboot",
+    "qemu-ubuntu",
+    "qemu-microvm-ubuntu",
 )
+
+
+def qemu_command(args, backend, disk, meta, mode):
+    """Boot the whole Ubuntu GPT disk with its unmodified vendor kernel/initrd."""
+    microvm = backend == "qemu-microvm-ubuntu"
+    kernel = Path(meta["initrd"]).with_name(
+        Path(meta["initrd"]).name.replace("initrd-generic", "vmlinuz-generic")
+    )
+    return [
+        "qemu-system-x86_64",
+        "-no-user-config",
+        "-machine",
+        "microvm,acpi=off,x-option-roms=off,pit=off,pic=off,rtc=off" if microvm else "q35",
+        "-accel",
+        "kvm",
+        "-cpu",
+        "host",
+        "-smp",
+        "2",
+        "-m",
+        str(2048 if mode == "ready" else args.memory_mib),
+        "-nodefaults",
+        "-display",
+        "none",
+        "-serial",
+        "stdio",
+        "-no-reboot",
+        "-kernel",
+        str(kernel),
+        "-initrd",
+        meta["initrd"],
+        "-append",
+        f"console=ttyS0 reboot=t panic=1 rw quiet rd.driver.pre=virtio_mmio root=PARTUUID={meta['root_partuuid']} pvbench.mode={mode}",
+        "-drive",
+        f"file={disk},format=raw,if=none,id=root",
+        "-device",
+        "virtio-blk-device,drive=root" if microvm else "virtio-blk-pci,drive=root",
+        "-netdev",
+        "user,id=net,net=10.77.0.0/24,host=10.77.0.1,dns=10.77.0.3",
+        "-device",
+        ("virtio-net-device" if microvm else "virtio-net-pci")
+        + ",netdev=net,mac=06:00:ac:10:00:02",
+    ]
 
 
 def protocol_line(line):
     """Accept only bare protocol lines or our named journald console records."""
     line = line.rstrip("\r\n")
-    line = re.sub(r"^\[\s*\d+\.\d+\] reference-bench\[\d+\]: ", "", line)
+    # agetty can emit ANSI control sequences immediately before a journal record.
+    line = re.sub(
+        r"\x1b\][^\x1b\x07]*(?:\x07|\x1b\\)|\x1b[P^_X][^\x1b]*\x1b\\|\x1b\[[0-?]*[ -/]*[@-~]",
+        "",
+        line,
+    )
+    line = re.sub(
+        r"^(?:pvisor-ubuntu-reference login: )?\[\s*\d+\.\d+\] reference-bench\[\d+\]: ", "", line
+    )
     return line
 
 
@@ -61,7 +114,7 @@ def run_trial(args, backend, mode, trial):
     root.mkdir(parents=True)
     prep = time.perf_counter_ns()
     work = root / "workspace"
-    vm = backend.startswith("firecracker")
+    vm = backend.startswith(("firecracker", "qemu"))
     if vm:
         work.mkdir()
     else:
@@ -73,6 +126,7 @@ def run_trial(args, backend, mode, trial):
         PVISOR_REFERENCE_TOOL_ROOT="/",
         PVISOR_REFERENCE_TOOLCHAIN=str(args.toolchain),
         PVISOR_REFERENCE_HARNESS=str(args.output / "harness"),
+        PVISOR_REFERENCE_TMPDIR=str(work / "_tmp"),
         GIT_CONFIG_COUNT="1",
         GIT_CONFIG_KEY_0="safe.directory",
         GIT_CONFIG_VALUE_0="*",
@@ -121,6 +175,7 @@ def run_trial(args, backend, mode, trial):
             "PVISOR_REFERENCE_TOOL_ROOT",
             "PVISOR_REFERENCE_TOOLCHAIN",
             "PVISOR_REFERENCE_HARNESS",
+            "PVISOR_REFERENCE_TMPDIR",
         ):
             argv += ["--pass-env", key]
         argv += ["--", *payload]
@@ -139,49 +194,51 @@ def run_trial(args, backend, mode, trial):
             check=True,
         )
         meta = json.loads((args.assets / "assets.json").read_text())
-        cfg = root / "firecracker.json"
-        cfg.write_text(
-            json.dumps(
-                {
-                    "boot-source": {
-                        "kernel_image_path": str(args.assets / "ubuntu-vmlinux"),
-                        "initrd_path": meta["initrd"],
-                        "boot_args": f"console=ttyS0 reboot=k panic=1 rw quiet pvbench.mode={mode}",
+        if backend.startswith("qemu"):
+            argv = qemu_command(args, backend, disk, meta, mode)
+        else:
+            cfg = root / "firecracker.json"
+            cfg.write_text(
+                json.dumps(
+                    {
+                        "boot-source": {
+                            "kernel_image_path": str(args.assets / "ubuntu-vmlinux"),
+                            "initrd_path": meta["initrd"],
+                            "boot_args": f"console=ttyS0 reboot=t panic=1 rw quiet rd.driver.pre=virtio_mmio pvbench.mode={mode}",
+                        },
+                        "drives": [
+                            {
+                                "drive_id": "rootfs",
+                                "path_on_host": str(disk),
+                                "is_root_device": True,
+                                "is_read_only": False,
+                                "partuuid": meta["root_partuuid"],
+                            }
+                        ],
+                        "machine-config": {
+                            "vcpu_count": 2,
+                            "mem_size_mib": 2048 if mode == "ready" else args.memory_mib,
+                        },
+                        "network-interfaces": [
+                            {
+                                "iface_id": "eth0",
+                                "guest_mac": "06:00:ac:10:00:02",
+                                "host_dev_name": "pvbench-tap",
+                            }
+                        ],
                     },
-                    "drives": [
-                        {
-                            "drive_id": "rootfs",
-                            "path_on_host": str(disk),
-                            "is_root_device": True,
-                            "is_read_only": False,
-                            "partuuid": meta["root_partuuid"],
-                        }
-                    ],
-                    "machine-config": {
-                        "vcpu_count": 2,
-                        "mem_size_mib": 2048 if mode == "ready" else args.memory_mib,
-                    },
-                    "network-interfaces": [
-                        {
-                            "iface_id": "eth0",
-                            "guest_mac": "06:00:ac:10:00:02",
-                            "host_dev_name": "pvbench-tap",
-                        }
-                    ],
-                },
-                indent=2,
+                    indent=2,
+                )
+                + "\n"
             )
-            + "\n"
-        )
-        argv = [
-            "bash",
-            str(args.output / "harness/ubuntu_vm_network.sh"),
-            "firecracker",
-            "--enable-pci",
-            "--no-api",
-            "--config-file",
-            str(cfg),
-        ]
+            argv = [
+                "bash",
+                str(args.output / "harness/ubuntu_vm_network.sh"),
+                "firecracker",
+                "--no-api",
+                "--config-file",
+                str(cfg),
+            ]
     else:
         raise ValueError(backend)
     argv = ["taskset", "--cpu-list", args.cpu_affinity, *argv]
@@ -282,6 +339,8 @@ def run_trial(args, backend, mode, trial):
             != ("virtual_machine" if backend == "pvisor-vm-hostroot" else "host_process")
         ):
             raise ValueError("pVisor did not complete in requested isolation mode")
+        if not bundle["safety"]["filesystem_changes_staged"]:
+            raise ValueError("pVisor staging was not enabled")
         if (
             mode in ("tools", "claude", "codex")
             and (work / "python/adder.py").read_text() != "def add(a, b):\n    return a - b\n"
@@ -348,6 +407,7 @@ def main():
         "pvisor_sha256": digest(args.output / "bin/pvisor"),
         "driver_sha256": digest(Path(__file__)),
         "workload_sha256": digest(args.output / "harness/reference_workload.py"),
+        "network_helper_sha256": digest(args.output / "harness/ubuntu_vm_network.py"),
         "source_commit": subprocess.check_output(["git", "rev-parse", "HEAD"], text=True).strip(),
         "source_status": subprocess.check_output(["git", "status", "--porcelain"], text=True),
         "host_os": Path("/etc/os-release").read_text(),
@@ -358,15 +418,30 @@ def main():
         "protocol": {
             "shape": f"2 vCPU; ready 2048 MiB, tasks {args.memory_mib} MiB; CPUs {args.cpu_affinity}",
             "cache": "Warm host page cache; fresh disk reflink/workspace per trial; no memory snapshot",
-            "image_policy": "pVisor --rootfs host: no image; Firecracker complete official Ubuntu image",
-            "task": "Same fixtures and CLI versions; Ubuntu native apt tool builds may differ",
+            "image_policy": "pVisor --rootfs host: no image; Firecracker/QEMU complete official Ubuntu image",
+            "task": "Same fixtures and CLI versions; Ubuntu native apt tool builds may differ; private workspace TMPDIR on all backends",
             "timer": "Launch to task ready/result/exit; clone and provisioning costs recorded separately",
-            "network": "Private TAP/static NIC, no external routing; same-guest fixture model, no real inference",
+            "network": "Firecracker: private TAP plus QEMU -machine none DNS/NAT helper; QEMU: built-in user networking; all launcher helpers included in time/RSS; same-guest fixture model, no real inference",
             "resource": "Owned launcher tree RSS sum sampled every 20 ms; shared pages can be double-counted",
             "order": "Random backend per round, seed 20261004",
         },
         "load_before": os.getloadavg(),
     }
+
+    selected = args.backends.split(",")
+    if any(backend not in BACKENDS for backend in selected):
+        p.error("Unknown backend")
+    if any(backend.startswith("qemu") for backend in selected):
+        meta["qemu_version"] = subprocess.check_output(
+            ["qemu-system-x86_64", "--version"], text=True
+        ).strip()
+        assets = meta["assets"]
+        kernel = Path(assets["initrd"]).with_name(
+            Path(assets["initrd"]).name.replace("initrd-generic", "vmlinuz-generic")
+        )
+        if digest(kernel) != assets["assets"][kernel.name]["sha256"]:
+            raise ValueError("QEMU kernel does not match the official Ubuntu artifact")
+        meta["qemu_kernel_sha256"] = digest(kernel)
 
     def save():
         tmp = args.output / "report.tmp"

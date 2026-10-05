@@ -266,6 +266,10 @@ pub struct VmSettings {
     /// Experimental macOS shared cold-page pool socket. Requires a separately
     /// managed pool; loss of that pool fails dependent VMs. Disabled by default.
     pub memory_pool: Option<PathBuf>,
+    /// Host-owned immutable filesystem pool for native execution checkpoints.
+    /// Must be independent of every VM-writable root and on the Job's volume.
+    /// Linux x86-64 no-network snapshot profile only; omitted keeps owned copies.
+    pub snapshot_filesystem_pool: Option<PathBuf>,
     /// Linux root filesystem exported to the libkrun guest; defaults to host `/`.
     pub rootfs: Option<PathBuf>,
     /// Explicit OCI image used instead of the host root filesystem.
@@ -289,6 +293,7 @@ impl Default for VmSettings {
             ram_backing: None,
             ram_compression: false,
             memory_pool: None,
+            snapshot_filesystem_pool: None,
             rootfs: None,
             image: None,
             image_store: None,

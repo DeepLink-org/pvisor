@@ -1,0 +1,22 @@
+{
+  "version": 1,
+  "id": "trace-task",
+  "tenant": "local",
+  "run": {
+    "run_id": "trace-task",
+    "agent": {"name": "shell"},
+    "invocation": {
+      "kind": "process",
+      "program": "/bin/sh",
+      "args": ["-c", "printf 'trace delivery from distributed pVisor\n'"],
+      "inherit_env": false,
+      "stdin": "null",
+      "stdout": "capture",
+      "stderr": "capture"
+    },
+    "runtime": {"timeout_ms": 10000, "max_output_bytes": 4096}
+  },
+  "execution": {"executor": "process", "isolation": "host_process"},
+  "resources": {"slots": 1, "memory_bytes": 67108864, "cpu_millis": 100},
+  "retain_artifacts": {"version": 1, "trace": true, "workspace_upper": false}
+}

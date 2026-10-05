@@ -264,6 +264,7 @@ fn fuse_faults_restore_ram_and_private_mappings_isolate_forks() {
             ram_file: Arc::new(file),
             state: MachineSnapshot {
                 version: 1,
+                kernel_layout: None,
                 cpus: vec![],
                 devices: vec![],
                 #[cfg(target_os = "linux")]

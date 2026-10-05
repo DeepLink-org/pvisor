@@ -6,17 +6,17 @@ use std::io::{Read, Seek, SeekFrom};
 use std::ops::Range;
 use std::os::unix::fs::OpenOptionsExt;
 use std::path::{Path, PathBuf};
-use std::sync::{Arc, mpsc};
+use std::sync::Arc;
 
 pub(super) const MAX_OBJECT: usize = 64 * 1024 * 1024;
 
 #[derive(Clone)]
-pub(super) enum Storage {
+pub(crate) enum Storage {
     Filesystem(PathBuf),
     S3(Arc<S3>),
 }
 impl Storage {
-    pub(super) fn filesystem(root: PathBuf, create: bool) -> anyhow::Result<Self> {
+    pub(crate) fn filesystem(root: PathBuf, create: bool) -> anyhow::Result<Self> {
         ensure!(
             root.is_absolute(),
             "filesystem cache location must be absolute"
@@ -27,7 +27,7 @@ impl Storage {
         let root = root.canonicalize()?;
         Ok(Self::Filesystem(root))
     }
-    pub(super) fn s3(location: &str) -> anyhow::Result<Self> {
+    pub(crate) fn s3(location: &str) -> anyhow::Result<Self> {
         let remainder = location
             .strip_prefix("s3://")
             .context("expected s3://BUCKET/PREFIX")?;
@@ -63,7 +63,11 @@ impl Storage {
         Ok(self.get_versioned(key)?.map(|object| object.bytes))
     }
     pub(super) fn get_versioned(&self, key: &str) -> anyhow::Result<Option<StoredObject>> {
-        self.read(key, None)
+        self.read(key, None, MAX_OBJECT)
+    }
+    pub(crate) fn get_bounded(&self, key: &str, limit: usize) -> anyhow::Result<Option<Vec<u8>>> {
+        ensure!(limit <= MAX_OBJECT, "invalid cache read limit");
+        Ok(self.read(key, None, limit)?.map(|object| object.bytes))
     }
     pub(super) fn range(&self, key: &str, range: Range<u64>) -> anyhow::Result<Vec<u8>> {
         ensure!(
@@ -72,15 +76,27 @@ impl Storage {
         );
         let expected = (range.end - range.start) as usize;
         let object = self
-            .read(key, Some(range))?
+            .read(key, Some(range), MAX_OBJECT)?
             .context("missing cache object")?;
         ensure!(object.bytes.len() == expected, "truncated cache range");
         Ok(object.bytes)
     }
-    fn read(&self, key: &str, range: Option<Range<u64>>) -> anyhow::Result<Option<StoredObject>> {
+    fn read(
+        &self,
+        key: &str,
+        range: Option<Range<u64>>,
+        limit: usize,
+    ) -> anyhow::Result<Option<StoredObject>> {
         validate_key(key)?;
         match self {
-            Self::S3(s3) => s3.request(key, Operation::Get(range)),
+            Self::S3(s3) => s3.request(
+                key,
+                if range.is_none() && limit != MAX_OBJECT {
+                    Operation::GetBounded(limit)
+                } else {
+                    Operation::Get(range)
+                },
+            ),
             Self::Filesystem(root) => {
                 let path = confined(root, key, false)?;
                 let mut file = match OpenOptions::new()
@@ -103,10 +119,7 @@ impl Storage {
                 } else {
                     file.metadata()?.len()
                 };
-                ensure!(
-                    length <= MAX_OBJECT as u64,
-                    "cache object exceeds size limit"
-                );
+                ensure!(length <= limit as u64, "cache object exceeds size limit");
                 let mut bytes = Vec::new();
                 file.take(length).read_to_end(&mut bytes)?;
                 // A range read must not include the following byte.
@@ -135,7 +148,7 @@ impl Storage {
             result => result,
         }
     }
-    pub(super) fn compare_and_swap(
+    pub(crate) fn compare_and_swap(
         &self,
         key: &str,
         bytes: Vec<u8>,
@@ -215,7 +228,7 @@ impl Storage {
     }
 }
 
-fn validate_key(key: &str) -> anyhow::Result<()> {
+pub(crate) fn validate_key(key: &str) -> anyhow::Result<()> {
     ensure!(
         !key.is_empty()
             && key.split('/').all(|part| !part.is_empty()
@@ -259,8 +272,9 @@ pub(super) struct StoredObject {
     pub(super) bytes: Vec<u8>,
     pub(super) version: UpdateVersion,
 }
-enum Operation {
+pub(super) enum Operation {
     Get(Option<Range<u64>>),
+    GetBounded(usize),
     Put(Vec<u8>, PutMode),
 }
 #[derive(Debug, thiserror::Error)]
@@ -269,90 +283,33 @@ struct Conflict;
 fn conflict() -> anyhow::Error {
     Conflict.into()
 }
-pub(super) fn is_conflict(error: &anyhow::Error) -> bool {
+pub(crate) fn is_conflict(error: &anyhow::Error) -> bool {
     error.downcast_ref::<Conflict>().is_some()
 }
-type ResultSender = mpsc::SyncSender<anyhow::Result<Option<StoredObject>>>;
-struct Job {
-    key: String,
-    operation: Operation,
-    reply: ResultSender,
-}
-pub(super) struct S3 {
-    send: Option<mpsc::SyncSender<Job>>,
-    worker: Option<std::thread::JoinHandle<()>>,
+pub(crate) struct S3 {
+    store: Arc<dyn ObjectStore>,
+    prefix: String,
+    runtime: Arc<super::s3_runtime::Runtime>,
 }
 impl S3 {
-    fn new(store: Arc<dyn ObjectStore>, prefix: String) -> anyhow::Result<Self> {
-        let (send, receive) = mpsc::sync_channel::<Job>(32);
-        let (ready, initialized) = mpsc::sync_channel::<anyhow::Result<()>>(1);
-        let worker = std::thread::Builder::new()
-            .name("pvisor-cache-s3".into())
-            .spawn(move || {
-                let runtime = match tokio::runtime::Builder::new_multi_thread()
-                    .worker_threads(2)
-                    .enable_all()
-                    .build()
-                {
-                    Ok(runtime) => runtime,
-                    Err(error) => {
-                        let _ = ready.send(Err(error.into()));
-                        return;
-                    }
-                };
-                let _ = ready.send(Ok(()));
-                let permits = Arc::new(tokio::sync::Semaphore::new(32));
-                while let Ok(job) = receive.recv() {
-                    let permit = match runtime.block_on(permits.clone().acquire_owned()) {
-                        Ok(permit) => permit,
-                        Err(_) => break,
-                    };
-                    let store = store.clone();
-                    let key = if prefix.is_empty() {
-                        job.key.clone()
-                    } else {
-                        format!("{prefix}/{}", job.key)
-                    };
-                    runtime.spawn(async move {
-                        let _permit = permit;
-                        let result = s3_operation(store.as_ref(), &key, job.operation).await;
-                        let _ = job.reply.send(result);
-                    });
-                }
-                runtime.shutdown_timeout(std::time::Duration::from_secs(10));
-            })?;
-        initialized
-            .recv()
-            .context("S3 cache runtime initialization failed")??;
+    pub(crate) fn new(store: Arc<dyn ObjectStore>, prefix: String) -> anyhow::Result<Self> {
         Ok(Self {
-            send: Some(send),
-            worker: Some(worker),
+            store,
+            prefix,
+            runtime: super::s3_runtime::Runtime::shared()?,
         })
     }
     fn request(&self, key: &str, operation: Operation) -> anyhow::Result<Option<StoredObject>> {
-        let (reply, receive) = mpsc::sync_channel(1);
-        self.send
-            .as_ref()
-            .context("S3 cache worker stopped")?
-            .send(Job {
-                key: key.into(),
-                operation,
-                reply,
-            })
-            .context("S3 cache worker stopped")?;
-        receive.recv().context("S3 cache worker dropped response")?
-    }
-}
-impl Drop for S3 {
-    fn drop(&mut self) {
-        self.send.take();
-        if let Some(worker) = self.worker.take() {
-            let _ = worker.join();
-        }
+        let key = if self.prefix.is_empty() {
+            key.into()
+        } else {
+            format!("{}/{key}", self.prefix)
+        };
+        self.runtime.request(self.store.clone(), key, operation)
     }
 }
 
-async fn s3_operation(
+pub(super) async fn s3_operation(
     store: &dyn ObjectStore,
     key: &str,
     operation: Operation,
@@ -373,7 +330,12 @@ async fn s3_operation(
                 Err(error) => Err(error.into()),
             }
         }
-        Operation::Get(range) => {
+        get @ (Operation::Get(_) | Operation::GetBounded(_)) => {
+            let (range, limit) = match get {
+                Operation::Get(range) => (range, MAX_OBJECT),
+                Operation::GetBounded(limit) => (None, limit),
+                _ => unreachable!(),
+            };
             let expected = range.as_ref().map(|r| (r.end - r.start) as usize);
             let options = GetOptions {
                 range: range.map(GetRange::Bounded),
@@ -382,7 +344,7 @@ async fn s3_operation(
             match store.get_opts(&path, options).await {
                 Ok(result) => {
                     ensure!(
-                        expected.is_some() || result.meta.size <= MAX_OBJECT as u64,
+                        expected.is_some() || result.meta.size <= limit as u64,
                         "cache object exceeds size limit"
                     );
                     let version = UpdateVersion {
@@ -391,7 +353,7 @@ async fn s3_operation(
                     };
                     let bytes = result.bytes().await?;
                     ensure!(
-                        bytes.len() <= MAX_OBJECT && expected.is_none_or(|len| bytes.len() == len),
+                        bytes.len() <= limit && expected.is_none_or(|len| bytes.len() == len),
                         "truncated or oversized cache range"
                     );
                     Ok(Some(StoredObject {
@@ -409,6 +371,75 @@ async fn s3_operation(
 #[cfg(test)]
 mod tests {
     use super::*;
+    #[test]
+    fn many_layer_clients_share_one_io_thread_without_merging_stores_or_namespaces() {
+        let endpoints: [Arc<dyn ObjectStore>; 2] = [
+            Arc::new(object_store::memory::InMemory::new()),
+            Arc::new(object_store::memory::InMemory::new()),
+        ];
+        let clients: Vec<_> = (0..64)
+            .map(|i| {
+                Arc::new(
+                    S3::new(endpoints[i / 32].clone(), format!("team/layer-{}", i % 32)).unwrap(),
+                )
+            })
+            .collect();
+        let runtime = Arc::downgrade(&clients[0].runtime);
+        assert!(
+            clients
+                .iter()
+                .all(|client| Arc::ptr_eq(&clients[0].runtime, &client.runtime))
+        );
+        #[cfg(target_os = "linux")]
+        assert_eq!(
+            std::fs::read_dir("/proc/self/task")
+                .unwrap()
+                .filter(|entry| {
+                    entry
+                        .as_ref()
+                        .ok()
+                        .and_then(|entry| std::fs::read_to_string(entry.path().join("comm")).ok())
+                        .is_some_and(|name| name.trim() == "pvisor-cache-s3")
+                })
+                .count(),
+            1
+        );
+        let ready = Arc::new(std::sync::Barrier::new(clients.len()));
+        let producers: Vec<_> = clients
+            .iter()
+            .enumerate()
+            .map(|(i, client)| {
+                let client = client.clone();
+                let ready = ready.clone();
+                std::thread::spawn(move || {
+                    ready.wait();
+                    let storage = Storage::S3(client);
+                    let value = format!("endpoint-specific layer {i}").into_bytes();
+                    storage.put("v1/chunk", value.clone(), true).unwrap();
+                    assert_eq!(storage.get("v1/chunk").unwrap().unwrap(), value);
+                    assert_eq!(storage.range("v1/chunk", 0..8).unwrap(), b"endpoint");
+                })
+            })
+            .collect();
+        for producer in producers {
+            producer.join().unwrap();
+        }
+        // Check the same keys again after every endpoint's writers finish.
+        for (i, client) in clients.iter().enumerate() {
+            assert_eq!(
+                Storage::S3(client.clone())
+                    .get("v1/chunk")
+                    .unwrap()
+                    .unwrap(),
+                format!("endpoint-specific layer {i}").as_bytes()
+            );
+        }
+        drop(clients);
+        assert!(
+            runtime.upgrade().is_none(),
+            "idle clients must release the shared runtime"
+        );
+    }
     #[tokio::test(flavor = "current_thread")]
     async fn s3_runtime_can_be_owned_and_dropped_from_an_existing_tokio_context() {
         let storage = Storage::S3(Arc::new(

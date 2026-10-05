@@ -10,6 +10,44 @@ use std::{
 use tokio::sync::Mutex;
 
 type Slot<T> = Arc<Mutex<Weak<T>>>;
+
+/// The final FUSE owner can block while unmounting and joining its request
+/// thread. Keep this work off the lease/poll executor, including error and
+/// cancelled-preparation paths.
+pub struct MountOwners<T: Send + Sync + 'static> {
+    mounts: Vec<Arc<T>>,
+}
+impl<T: Send + Sync + 'static> MountOwners<T> {
+    pub fn new() -> Self {
+        Self { mounts: Vec::new() }
+    }
+    pub fn mounts(&self) -> &[Arc<T>] {
+        &self.mounts
+    }
+    pub async fn release(mut self) -> anyhow::Result<()> {
+        let mounts = std::mem::take(&mut self.mounts);
+        if !mounts.is_empty() {
+            tokio::task::spawn_blocking(move || drop(mounts))
+                .await
+                .context("native environment release task failed")?;
+        }
+        Ok(())
+    }
+}
+impl<T: Send + Sync + 'static> Drop for MountOwners<T> {
+    fn drop(&mut self) {
+        let mounts = std::mem::take(&mut self.mounts);
+        if mounts.is_empty() {
+            return;
+        }
+        if let Ok(runtime) = tokio::runtime::Handle::try_current() {
+            runtime.spawn_blocking(move || drop(mounts));
+        } else {
+            drop(mounts);
+        }
+    }
+}
+
 pub struct EnvironmentMounts {
     config: CacheConfig,
     mounts: SharedMounts<MountedImage>,
@@ -46,16 +84,15 @@ impl EnvironmentMounts {
     pub async fn prepare(
         &self,
         record: &EnvironmentRecord,
-    ) -> anyhow::Result<Vec<Arc<MountedImage>>> {
+    ) -> anyhow::Result<MountOwners<MountedImage>> {
         pvisor_cluster::environment::validate(record)?;
-        let mut mounts = Vec::new();
+        let mut mounts = MountOwners::new();
         for layer in record.template.layers() {
-            let mounted = self.layer(&layer.handle).await?;
+            mounts.mounts.push(self.layer(&layer.handle).await?);
             ensure!(
-                mounted.manifest_digest() == layer.manifest_digest,
+                mounts.mounts.last().unwrap().manifest_digest() == layer.manifest_digest,
                 "native cache revision manifest does not match environment template"
             );
-            mounts.push(mounted);
         }
         Ok(mounts)
     }
@@ -116,6 +153,88 @@ impl<T> SharedMounts<T> {
 mod tests {
     use super::*;
     use std::sync::atomic::{AtomicUsize, Ordering};
+
+    struct BlockingMount {
+        async_thread: std::thread::ThreadId,
+        entered: std::sync::mpsc::Sender<()>,
+        release: std::sync::Mutex<std::sync::mpsc::Receiver<()>>,
+    }
+    impl Drop for BlockingMount {
+        fn drop(&mut self) {
+            assert_ne!(std::thread::current().id(), self.async_thread);
+            self.entered.send(()).unwrap();
+            self.release
+                .get_mut()
+                .unwrap()
+                .recv_timeout(std::time::Duration::from_secs(5))
+                .unwrap();
+        }
+    }
+    struct ReleaseOnDrop(std::sync::mpsc::Sender<()>);
+    impl Drop for ReleaseOnDrop {
+        fn drop(&mut self) {
+            let _ = self.0.send(());
+        }
+    }
+
+    #[tokio::test(flavor = "current_thread")]
+    async fn last_mount_release_keeps_the_poll_thread_live_and_waits_for_unmount() {
+        let (entered, observe) = std::sync::mpsc::channel();
+        let (release, gate) = std::sync::mpsc::channel();
+        let release = ReleaseOnDrop(release);
+        let mut mounts = MountOwners::new();
+        mounts.mounts.push(Arc::new(BlockingMount {
+            async_thread: std::thread::current().id(),
+            entered,
+            release: std::sync::Mutex::new(gate),
+        }));
+        let completion = tokio::spawn(mounts.release());
+        tokio::time::timeout(std::time::Duration::from_secs(2), async {
+            loop {
+                if observe.try_recv().is_ok() {
+                    break;
+                }
+                tokio::task::yield_now().await;
+            }
+        })
+        .await
+        .unwrap();
+        // This timer represents the single-thread worker's lease watchdog.
+        tokio::time::sleep(std::time::Duration::from_millis(20)).await;
+        assert!(!completion.is_finished());
+        drop(release);
+        completion.await.unwrap().unwrap();
+    }
+
+    #[tokio::test(flavor = "current_thread")]
+    async fn cancelled_preparation_releases_mounts_without_blocking_the_poll_thread() {
+        let (entered, observe) = std::sync::mpsc::channel();
+        let (release, gate) = std::sync::mpsc::channel();
+        let release = ReleaseOnDrop(release);
+        let mut mounts = MountOwners::new();
+        mounts.mounts.push(Arc::new(BlockingMount {
+            async_thread: std::thread::current().id(),
+            entered,
+            release: std::sync::Mutex::new(gate),
+        }));
+        let (prepared, waiting) = tokio::sync::oneshot::channel();
+        let preparation = tokio::spawn(async move {
+            let _owners = mounts;
+            prepared.send(()).unwrap();
+            std::future::pending::<()>().await;
+        });
+        waiting.await.unwrap();
+        preparation.abort();
+        assert!(preparation.await.unwrap_err().is_cancelled());
+        tokio::time::timeout(std::time::Duration::from_secs(2), async {
+            while observe.try_recv().is_err() {
+                tokio::task::yield_now().await;
+            }
+        })
+        .await
+        .unwrap();
+        drop(release);
+    }
 
     #[tokio::test]
     async fn concurrent_attempts_share_one_mount_and_last_owner_releases_it() {

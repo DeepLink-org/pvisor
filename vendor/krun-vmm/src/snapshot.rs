@@ -1,10 +1,11 @@
 //! Restore input for the KVM/HVF builders. Durable publication, build
 //! identity, backing-file sealing and execution ownership belong to the runner.
+mod ram;
+
 use crate::{CpuSnapshot, Vmm};
-use std::{fs::File, os::unix::fs::FileExt, sync::Arc};
+use std::{fs::File, sync::Arc};
 use vm_memory::{
-    mmap::MmapRegionBuilder, Address, Bytes, FileOffset, GuestAddress, GuestMemory,
-    GuestMemoryMmap, GuestMemoryRegion, GuestRegionMmap,
+    Address, FileOffset, GuestAddress, GuestMemoryMmap, GuestRegionMmap, mmap::MmapRegionBuilder,
 };
 
 #[derive(Clone, Debug, serde::Serialize, serde::Deserialize)]
@@ -15,10 +16,105 @@ pub struct RamMappingSnapshot {
     pub file_offset: u64,
 }
 
+/// Supervisor-bound immutable MAP_PRIVATE baseline. This is an optional
+/// capture optimization, never authority to restore a partial RAM file.
+#[derive(Clone, Debug, PartialEq, Eq, serde::Serialize, serde::Deserialize)]
+#[serde(deny_unknown_fields)]
+pub struct RamDeltaSpec {
+    pub device: u64,
+    pub inode: u64,
+    pub length: u64,
+    pub block_bytes: u32,
+    pub base_sha256: String,
+}
+
+#[derive(Clone, Debug, PartialEq, Eq, serde::Serialize, serde::Deserialize)]
+#[serde(deny_unknown_fields)]
+pub struct RamDeltaCapture {
+    pub version: u32,
+    pub length: u64,
+    pub block_bytes: u32,
+    pub base_sha256: String,
+    /// Sorted unique blocks captured from live memory, including cleared blocks.
+    pub changed_blocks: Vec<u64>,
+}
+impl RamDeltaSpec {
+    pub fn validate(&self) -> Result<(), String> {
+        if self.length == 0
+            || self.length > 64 * 1024 * 1024 * 1024
+            || !self.block_bytes.is_power_of_two()
+            || !(4096..=1024 * 1024).contains(&self.block_bytes)
+            || self.length.div_ceil(u64::from(self.block_bytes)) > 1 << 20
+            || self.base_sha256.len() != 64
+            || !self
+                .base_sha256
+                .bytes()
+                .all(|b| b.is_ascii_digit() || (b'a'..=b'f').contains(&b))
+        {
+            return Err("invalid incremental RAM baseline".into());
+        }
+        Ok(())
+    }
+}
+impl RamDeltaCapture {
+    pub fn validate(&self) -> Result<(), String> {
+        RamDeltaSpec {
+            device: 0,
+            inode: 0,
+            length: self.length,
+            block_bytes: self.block_bytes,
+            base_sha256: self.base_sha256.clone(),
+        }
+        .validate()?;
+        if self.version != 1
+            || self.changed_blocks.len() as u64 > self.length.div_ceil(u64::from(self.block_bytes))
+            || self
+                .changed_blocks
+                .iter()
+                .any(|index| *index >= self.length.div_ceil(u64::from(self.block_bytes)))
+            || self
+                .changed_blocks
+                .windows(2)
+                .any(|pair| pair[0] >= pair[1])
+        {
+            return Err("invalid incremental RAM capture inventory".into());
+        }
+        Ok(())
+    }
+}
+
+/// Payload geometry only. A restore never dereferences a fresh kernel pointer:
+/// the captured RAM already includes the complete, possibly modified kernel.
+#[derive(Clone, Copy, Debug, PartialEq, Eq, serde::Serialize, serde::Deserialize)]
+#[serde(deny_unknown_fields)]
+pub struct KernelLayout {
+    pub guest_addr: u64,
+    pub size: u64,
+}
+
+impl KernelLayout {
+    pub fn validate(&self) -> Result<(), String> {
+        let page = unsafe { libc::sysconf(libc::_SC_PAGESIZE) };
+        if page <= 0
+            || self.guest_addr == 0
+            || self.size == 0
+            || self.guest_addr % page as u64 != 0
+            || self.size % page as u64 != 0
+            || self.guest_addr.checked_add(self.size).is_none()
+            || usize::try_from(self.size).is_err()
+        {
+            return Err("invalid snapshot bundled-kernel geometry".into());
+        }
+        Ok(())
+    }
+}
+
 #[derive(Clone, Debug, serde::Serialize, serde::Deserialize)]
 #[serde(deny_unknown_fields)]
 pub struct MachineSnapshot {
     pub version: u32,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub kernel_layout: Option<KernelLayout>,
     pub cpus: Vec<CpuSnapshot>,
     pub devices: Vec<devices::snapshot::BusMappingSnapshot>,
     pub ram: Vec<RamMappingSnapshot>,
@@ -74,6 +170,22 @@ impl MachineRestore {
         if self.ram_file.metadata().map_err(|e| e.to_string())?.len() != end {
             return Err("RAM snapshot file size mismatch".into());
         }
+        if let Some(kernel) = self.state.kernel_layout {
+            kernel.validate()?;
+            if !self.state.ram.iter().any(|region| {
+                #[cfg(target_arch = "x86_64")]
+                {
+                    region.base == kernel.guest_addr && region.len == kernel.size
+                }
+                #[cfg(not(target_arch = "x86_64"))]
+                {
+                    region.base <= kernel.guest_addr
+                        && region.base + region.len >= kernel.guest_addr + kernel.size
+                }
+            }) {
+                return Err("snapshot kernel geometry does not match captured RAM".into());
+            }
+        }
         Ok(())
     }
 
@@ -124,6 +236,15 @@ impl Vmm {
     /// Capture every CPU/device and copy RAM while the full-machine freeze is
     /// held. File must be a fresh private artifact, never the live RAM backing.
     pub fn capture_machine_state(&self, file: &File) -> Result<MachineSnapshot, String> {
+        self.capture_machine_state_with_ram_delta(file, None)
+            .map(|(state, _)| state)
+    }
+
+    pub fn capture_machine_state_with_ram_delta(
+        &self,
+        file: &File,
+        baseline: Option<&RamDeltaSpec>,
+    ) -> Result<(MachineSnapshot, Option<RamDeltaCapture>), String> {
         self.require_ram_quiesced()?;
         if !self.snapshot_devices_frozen {
             return Err("full machine freeze required".into());
@@ -137,41 +258,21 @@ impl Vmm {
         let kvm = Some(self.vm.save_state().map_err(|e| e.to_string())?);
         #[cfg(all(target_os = "linux", target_arch = "x86_64"))]
         let pio_devices = self.pio_device_manager.io_bus.capture_snapshot_devices()?;
-        let mut ram = Vec::new();
-        let mut file_offset = 0u64;
-        let mut buffer = vec![0; 1024 * 1024];
-        for region in self.guest_memory.iter() {
-            let base = region.start_addr().raw_value();
-            let len = region.len();
-            ram.push(RamMappingSnapshot {
-                base,
-                len,
-                file_offset,
-            });
-            let mut offset = 0;
-            while offset < len {
-                let count = (len - offset).min(buffer.len() as u64) as usize;
-                self.guest_memory
-                    .read_slice(&mut buffer[..count], GuestAddress(base + offset))
-                    .map_err(|e| e.to_string())?;
-                file.write_all_at(&buffer[..count], file_offset + offset)
-                    .map_err(|e| e.to_string())?;
-                offset += count as u64;
-            }
-            file_offset = file_offset
-                .checked_add(len)
-                .ok_or("RAM snapshot size overflow")?;
-        }
+        let (ram, delta) = ram::capture_ram_with_delta(&self.guest_memory, file, baseline)?;
         file.sync_all().map_err(|e| e.to_string())?;
-        Ok(MachineSnapshot {
-            version: 1,
-            cpus,
-            devices,
-            ram,
-            #[cfg(all(target_os = "linux", target_arch = "x86_64"))]
-            kvm,
-            #[cfg(all(target_os = "linux", target_arch = "x86_64"))]
-            pio_devices,
-        })
+        Ok((
+            MachineSnapshot {
+                version: 1,
+                kernel_layout: self.snapshot_kernel_layout,
+                cpus,
+                devices,
+                ram,
+                #[cfg(all(target_os = "linux", target_arch = "x86_64"))]
+                kvm,
+                #[cfg(all(target_os = "linux", target_arch = "x86_64"))]
+                pio_devices,
+            },
+            delta,
+        ))
     }
 }

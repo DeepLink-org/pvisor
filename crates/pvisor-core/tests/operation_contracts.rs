@@ -36,6 +36,84 @@ fn plan() -> Operation {
     }
 }
 
+#[test]
+fn execution_checkpoint_is_bound_to_its_run_encoding_and_capture_operation() {
+    use pvisor_core::operation::{ExecutionCheckpoint, SnapshotRamStorage};
+    let mut operation = plan();
+    operation.rules.clear();
+    operation.kind = OperationKind::RunCheckpoint {
+        request_id: "save-1".into(),
+        ram_storage: SnapshotRamStorage::Compressed,
+    };
+    operation.validate().unwrap();
+    let checkpoint = ExecutionCheckpoint {
+        snapshot_id: "a".repeat(64),
+        store: "/private/snapshots".into(),
+        source_run_id: operation.run_id.clone(),
+        source_attempt_id: "attempt-1".into(),
+        created_at_unix_ms: 1,
+        ram_storage: SnapshotRamStorage::Compressed,
+    };
+    let observation = |checkpoint| OperationObservation {
+        outcome: Outcome::success(Value::ExecutionCheckpoint { checkpoint }),
+        rules: Default::default(),
+        filesystem: None,
+    };
+    observation(checkpoint.clone())
+        .validate(&operation)
+        .unwrap();
+    let mut suspend = operation.clone();
+    suspend.kind = OperationKind::RunSuspend {
+        request_id: "suspend-1".into(),
+        ram_storage: SnapshotRamStorage::Compressed,
+    };
+    let encoded = serde_json::to_string(&suspend.kind).unwrap();
+    assert_eq!(
+        serde_json::from_str::<OperationKind>(&encoded).unwrap(),
+        suspend.kind
+    );
+    observation(checkpoint.clone()).validate(&suspend).unwrap();
+    assert!(
+        serde_json::from_str::<OperationKind>(
+            r#"{"op":"run.suspend","request_id":"one","ram_storage":"raw","extra":true}"#
+        )
+        .is_err()
+    );
+    for corruption in ["run", "encoding", "relative", "identity", "attempt"] {
+        let mut bad = checkpoint.clone();
+        match corruption {
+            "run" => bad.source_run_id = "other".into(),
+            "encoding" => bad.ram_storage = SnapshotRamStorage::Raw,
+            "relative" => bad.store = "relative".into(),
+            "identity" => bad.snapshot_id = "g".repeat(64),
+            "attempt" => bad.source_attempt_id.clear(),
+            _ => unreachable!(),
+        }
+        assert!(
+            observation(bad).validate(&operation).is_err(),
+            "{corruption}"
+        );
+    }
+    operation.kind = OperationKind::RunPause;
+    assert!(observation(checkpoint).validate(&operation).is_err());
+    for request_id in [" ".to_owned(), "x".repeat(257)] {
+        assert!(
+            OperationKind::RunCheckpoint {
+                request_id,
+                ram_storage: SnapshotRamStorage::Raw
+            }
+            .validate()
+            .is_err()
+        );
+    }
+    assert!(
+        serde_json::from_str::<OperationKind>(
+            r#"{"op":"run.checkpoint","request_id":"one","ram_storage":"raw","extra":true}"#
+        )
+        .is_err()
+    );
+}
+
 fn event(data: Fact) -> Event {
     Event {
         version: VERSION,

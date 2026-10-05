@@ -1,6 +1,6 @@
 # Agent tool loop: real CLIs, controlled responses
 
-In a complete Python/Node/Rust environment, repair/testing takes **0.50 s** natively, **0.70 s** with pVisor staged, **0.90 s** in Docker, and **3.97 s** in pVisor VM at P50. Staging adds about 0.20 s; the VM still trails containers and reference VMs. Real Codex loops pass, while Claude Code initialization times out on this pVisor VM artifact.
+Complete repair/testing takes about **4.61 s** in image-free pVisor VM and **8.51 s** on Firecracker / complete Ubuntu; staging takes **0.72 s**. Ubuntu boot affects short jobs, while pVisor retains substantial tool-execution costs: fast startup does not establish leading tools. Claude/VM: initialization timeout / N=0; real Codex tool-loop results follow below.
 
 ## Motivation
 
@@ -8,7 +8,7 @@ To detect interference, first fix tool actions and remove inference/Internet var
 
 ## Experiment design {#interpretation}
 
-Pin client versions, project inputs and local model responses to compare environment/tool costs across native, staged, container and VM paths. Require correct repairs, zero-exit tests, returned real tool results and client completion; staging must preserve the original faulty file. Fake credentials, no inference or paid calls. The complete environment uses 30 samples, 3 warmups and randomized order per case; historical arithmetic tasks use six inputs, three repetitions, no warmups and fixed ordering. Report them separately without pooling distributions.
+Pin client versions, project inputs and local model responses to compare environment/tool costs across native, staged, container and VM paths. Require correct repairs, zero-exit tests, returned real tool results and client completion; staging must preserve the original faulty file. Fake credentials, no inference or paid calls. The complete Ubuntu comparison uses 10 samples per available case; the historical shared-tool environment uses 30, both with 3 warmups and randomized order. Historical arithmetic tasks use six inputs, three repetitions, no warmups and fixed ordering. Report them separately without pooling distributions.
 
 ## macOS
 
@@ -16,7 +16,61 @@ These workloads were measured on Linux; macFUSE/FSKit overhead and capacity rema
 
 ## Linux: 2026-10-04 {#results}
 
-### Complete Agent Env: same host, tools, and familiar baselines {#reference-env}
+### Image-free pVisor and complete Ubuntu: full Agent Env {#full-ubuntu}
+
+pVisor reuses installed host Python/Node/Rust/Git/rg/Claude/Codex without making an OS image. Firecracker/QEMU install distribution tools and the same Rust/Agent CLIs in complete official Ubuntu 26.04.1 LTS. Each trial creates a new environment, then runs the same repair plan and tests. VMs use 2 vCPU / 16 GiB; all groups share the two-core budget and warm host caches, with 10 planned samples, 3 warmups and randomized order; cells state effective N when below 10. Ubuntu Python/Node/Git versions differ from the host; full versions and kernel differences are in the [method](methodology.md#full-ubuntu).
+
+![Complete Ubuntu and image-free pVisor tool loops](../../assets/benchmarks/full-ubuntu-qemu-20261004/ubuntu-workflows.svg)
+
+| Backend | Tool self-check P50/P95 s | Repair/tests P50/P95 s | Claude loop P50/P95 s | Codex loop P50/P95 s |
+|---|---|---|---|---|
+| Native / Fedora | 0.16 / 0.17 | 0.52 / 0.55 | 0.92 / 1.07 | 2.03 / 3.12 |
+| pVisor staged | 0.18 / 0.19 | 0.72 / 0.78 | 1.15 / 1.58 | 2.33 / 2.44 |
+| pVisor VM / host | 1.21 / 1.77 | 4.61 / 5.09 | FAILED / N=0 | 11.39 / 13.73 |
+| Firecracker / Ubuntu | 7.79 / 10.13 | 8.51 / 9.11 | 9.78 / 9.87 | 10.81 / 13.49 |
+| QEMU q35 / Ubuntu | — | 8.12 / 8.23 | 9.50 / 10.78 | 10.20 / 11.63 |
+| QEMU microvm / Ubuntu | — | 10.33 / 10.47 | 11.59 / 14.07 | 13.04 / 14.06 |
+
+The QEMU rows use the same complete Ubuntu template; all 60/60 new formal task samples pass, with N=10 and 3 warmups per case. Standalone version self-check timing is unmeasured (—). QEMU and the earlier pVisor/Firecracker cohorts are separate; the chart does not pool distributions.
+
+**Repair/testing has lower launch-to-result time; tools after boot do not have the same advantage.** Repair/testing is 4.61 s end to end in pVisor VM versus 8.51 s on Firecracker/Ubuntu; internal tool/grading time is 4.02 / 2.30 s respectively. Avoiding complete OS boot reduces waiting; worker time exposes tool/storage costs. If a VM executes multiple tasks, boot is amortized and worker time matters more. Resident pools and sustained throughput are unmeasured.
+
+| Backend | Repair worker P50/P95 s | Peak tree RSS P50/P95 MiB |
+|---|---|---|
+| Native / Fedora | 0.48 / 0.50 | 169.28 / 190.85 |
+| pVisor staged | 0.67 / 0.72 | 209.52 / 248.59 |
+| pVisor VM / host | 4.02 / 4.49 | 729.46 / 756.93 |
+| Firecracker / Ubuntu | 2.30 / 2.69 | 1743.02 / 1766.67 |
+| QEMU q35 / Ubuntu | 2.75 / 2.79 | 1862.13 / 1876.98 |
+| QEMU microvm / Ubuntu | 2.81 / 2.88 | 1844.82 / 1881.06 |
+
+| Phase | Native P50 ms | staged P50 ms | pVisor VM P50 ms | Firecracker Ubuntu P50 ms | QEMU q35 P50 ms | QEMU microvm P50 ms |
+|---|---|---|---|---|---|---|
+| inspect | 3.1 | 18.6 | 74.4 | 17.1 | 16.4 | 18.7 |
+| search | 2.2 | 2.4 | 20.8 | 12.9 | 7.6 | 7.4 |
+| python-tests | 28.0 | 34.2 | 149.7 | 45.3 | 47.2 | 47.8 |
+| rust-tests | 96.5 | 206.7 | 822.3 | 981.6 | 1299.9 | 1327.5 |
+| node-install | 221.9 | 260.9 | 2210.9 | 876.7 | 956.7 | 975.9 |
+| node-tests | 126.3 | 140.3 | 595.2 | 389.6 | 421.9 | 423.1 |
+| diff | 0.9 | 2.8 | 18.6 | 1.2 | 1.7 | 1.4 |
+
+The largest pVisor VM phase is `node-install`, at about 2.21 seconds P50. This identifies a concrete optimization path. Phase medians do not sum to the total median, and ext4/virtio-fs differences do not independently establish the entire cause.
+
+Repair covers inspection, rg search, Python repair, Python/Rust/Node tests, installing 32 local npm dependencies and a diff. CLI columns use real clients with fixed local model responses and require passing test output in the returned model request and normal completion, without simulated CLIs or real inference. Staged/VM trials also verify the unchanged source workspace, completed Bundle and requested executor. All groups use private workspace temporary files to accommodate hostroot read-only `/tmp`. Initial linker failures from the incorrect configuration are retained as diagnostics outside formal distributions.
+
+Claude/VM preflight still exceeds 90 seconds during initialization, with formal N=0. This is not a completed loop or evidence of full compatibility. Firecracker/Ubuntu Claude/Codex values use a separate ten-sample follow-up after correcting serial prompt and terminal control interference, with identical parameters. They are not pooled with the original client samples; collection failures remain archived.
+
+Codex uses uniform inner `danger-full-access`, with the outer runtime supplying its stated boundary; default nested sandbox compatibility is unmeasured. N=10 gives first-version budgets and repeatability, not long-term tail or real-model success guarantees. RSS sums the launcher tree every 20 ms, including separate Firecracker DNS/NAT support; QEMU uses built-in user networking. Shared pages may be counted twice and short peaks missed. Configured 16 GiB is not 16 GiB resident, and short-task RSS does not establish concurrency capacity.
+
+[Per-sample CSV](../../assets/benchmarks/full-ubuntu-20261004/samples.csv) · [Distributions and phases](../../assets/benchmarks/full-ubuntu-20261004/summary.json) · [Method and reproduction](methodology.md#full-ubuntu) · [Runtime evidence](../../assets/benchmarks/full-ubuntu-20261004/ubuntu-workflows-private-tmp-20261004/evidence.tar.gz) · [Ubuntu client follow-up evidence](../../assets/benchmarks/full-ubuntu-20261004/ubuntu-clients-console-v2-20261004/evidence.tar.gz)
+
+Complete-Ubuntu repair/testing takes **8.12 s** on q35 and **10.33 s** on microvm, with internal tools taking **2.75 / 2.81 s**. Image-free pVisor reduces waiting for fresh jobs, while its 4.02 s worker time remains above these complete-Ubuntu paths, a priority when environments are reused. Selecting microvm does not automatically improve complete tasks in this configuration. Networking, devices and exposed CPU features differ; the entire difference cannot be assigned to block devices or FUSE.
+
+[QEMU samples and cohorts](../../assets/benchmarks/full-ubuntu-qemu-20261004/manifest.json) · [QEMU distributions](../../assets/benchmarks/full-ubuntu-qemu-20261004/summary.json) · [QEMU evidence](../../assets/benchmarks/full-ubuntu-qemu-20261004/ubuntu-qemu-complete-20261004/evidence.tar.gz) · [QEMU method](methodology.md#full-ubuntu-qemu)
+
+### Historical controlled environment: shared tools and trimmed reference VMs {#reference-env}
+
+This batch shares tool artifacts to control some version differences. Firecracker/QEMU use trimmed Linux 6.12.109 and static init, without a complete distribution boot. pVisor shares a tool directory through virtio-fs without an image. These results retain Docker and minimal-VM context; see the [complete Ubuntu and image-free hostroot deployment](#full-ubuntu) above.
 
 The deployed environment contains Python 3.14.7, Node 24.18.0/npm, Rust/Cargo 1.98.1, Git, rg, Claude Code 2.1.128, and Codex 0.160.0: about 3.58 GiB and 76,000 files. Native, Docker and VMs use the same tool artifacts, projects and checks. Each case has 30 samples and 3 warmups, a two-core budget, and 2 vCPU / 16 GiB for complete VMs. Full [parameters and boundaries](methodology.md#reference-env) are stated separately.
 

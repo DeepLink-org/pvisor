@@ -103,11 +103,13 @@ Enforcement depends on the executor. Check requested, effective, mechanisms, and
 | Optional `container` fields | `rootfs`, `pvisor_binary`, `platform`, `workdir`, `user` |
 | Each `container.mounts` entry | `source`, `target`, `read_only = false` |
 | `vm` | `memory_mib = 2048`, `cpus = 2`, `rootfs_immutable = false`, `ram_compression = false` |
-| Optional `vm` fields | `rootfs`, `image`, `image_store`, `library_dir`, `ram_backing`, `memory_pool` |
+| Optional `vm` fields | `rootfs`, `image`, `image_store`, `library_dir`, `ram_backing`, `memory_pool`, `snapshot_filesystem_pool` |
 
 `container.platform` accepts `linux-amd64` or `linux-arm64`; `container.network` accepts `host`, `bridge`, or `none`. The injected Linux container binary must match the rootfs architecture and ABI.
 
 VM memory is measured in MiB and CPU count is a positive integer. `ram_backing` retains a RAM file; `ram_compression` enables the corresponding compressed backing. Compressed backing and shared pools on macOS have additional FUSE requirements; see [Memory-sharing design](../design/memory-sharing/index.md).
+
+`[vm].snapshot_filesystem_pool` opts into immutable lower references during native capture of initial and restored VMs, including the first capture of different VMs. After the first seal, the live control connection retains verified owners; subsequent captures authenticate complete original lowers and reuse their sealed pool trees without broader runner access. Workers require an absolute host-owned path on the same volume as task stores, outside all VM-writable roots and snapshot stores. The first miss creates one pool copy per immutable id; concurrent misses serialize per id and hits create no temporary lower copies. Opt-in native v5 snapshots retain private file contents as independently owned 64 KiB compressed frames, reusing unchanged content; restores rebuild private writable inodes with complete metadata and hard-link topology. Live frame owners survive parent retirement/GC. Sealing checks decoded-content identities before compression, fully verifies pool hits and encodes only misses; this also applies to full compressed RAM sealing. Native capture encodes authenticated frozen private roots directly, without an intermediate private-tree copy; import, restore and suspended artifact export never open their recorded original paths. Complete data validation remains; latency/density benefits require measurement. This profile excludes networking, shared memory pools, ordinary RAM compression and explicit RAM backing. Retain the pool with its Job stores or export complete snapshots.
 
 ### Capture and recording
 
@@ -161,6 +163,7 @@ Field names and types are checked against the Rust serde structures during the d
 | `vm.ram_backing` | `Option<PathBuf>` | `unset` | New RAM backing path; existing files rejected; `--vm-ram-backing` |
 | `vm.ram_compression` | `bool` | `false` | Seekable compressed backing; `--vm-ram-compression` |
 | `vm.memory_pool` | `Option<PathBuf>` | `unset` | Experimental macOS pool socket; `--vm-memory-pool` |
+| `vm.snapshot_filesystem_pool` | `Option<PathBuf>` | `unset` | Host-owned immutable snapshot lower pool; Linux x86-64 no-network private-RAM profile; config/SDK only |
 | `vm.rootfs` | `Option<PathBuf>` | `unset` | Linux directory; CLI defaults to host `/` on Linux; `--rootfs` |
 | `vm.image` | `Option<String>` | `unset` | OCI image instead of a rootfs directory; `--rootfs IMAGE` |
 | `vm.image_store` | `Option<PathBuf>` | `unset` | OCI cache path; `--vm-image-store` |

@@ -17,7 +17,7 @@ use std::os::fd::{AsRawFd, FromRawFd, OwnedFd, RawFd};
 use std::path::{Path, PathBuf};
 use tokio::process::Command;
 
-const RUNNER_SPEC_ENV: &str = "PVISOR_KRUN_RUNNER_SPEC";
+pub(super) const RUNNER_SPEC_ENV: &str = "PVISOR_KRUN_RUNNER_SPEC";
 const WORKSPACE_TAG: &str = "pvisor-workspace";
 const NETWORK_FD_ENV: &str = "PVISOR_KRUN_NETWORK_FD";
 const NETWORK_CHILD_FD: RawFd = 198;
@@ -72,10 +72,24 @@ use super::embedded_kernel;
 #[derive(Debug, Clone)]
 pub struct VmExecutor {
     settings: VmSettings,
+    #[cfg(target_os = "linux")]
+    cpu_group: Option<std::sync::Arc<super::cpu_qos::CpuQosGroup>>,
+    #[cfg(target_os = "linux")]
+    observe_cpu: bool,
+    #[cfg(any(
+        all(target_os = "linux", target_arch = "x86_64"),
+        all(target_os = "macos", target_arch = "aarch64")
+    ))]
+    restore: Option<std::sync::Arc<super::checkpoint::PreparedRestore>>,
 }
 
 #[derive(Debug, Serialize, Deserialize)]
 pub(super) struct RunnerSpec {
+    #[serde(default)]
+    pub(super) cpu_qos: Option<pvisor_core::CpuQosClass>,
+    #[cfg(target_os = "linux")]
+    #[serde(default)]
+    cpu_group: Option<super::cpu_qos::GroupBinding>,
     #[serde(default)]
     pub(super) run_id: String,
     pub(super) setup_attestation: PathBuf,
@@ -86,6 +100,10 @@ pub(super) struct RunnerSpec {
     pub(super) cpus: u8,
     pub(super) memory_mib: u32,
     pub(super) library_dir: Option<PathBuf>,
+    #[serde(default)]
+    pub(super) checkpoint: Option<super::checkpoint::LaunchBinding>,
+    #[serde(default)]
+    pub(super) restore: Option<super::checkpoint::RestoreLaunch>,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -173,7 +191,27 @@ fn hide_ram_backing(device: &mut OverlayDeviceSpec, path: &Path) -> anyhow::Resu
 }
 
 impl VmExecutor {
+    /// Derive the actual host/build/firmware restore binding without starting a VM.
+    pub fn checkpoint_compatibility(
+        settings: &VmSettings,
+    ) -> anyhow::Result<crate::environment_snapshot::Compatibility> {
+        #[cfg(all(target_os = "linux", target_env = "musl", target_arch = "x86_64"))]
+        anyhow::ensure!(
+            settings.library_dir.is_none(),
+            "static musl checkpoints use the embedded kernel bundle"
+        );
+        let firmware = settings.library_dir.clone().or_else(bundled_firmware_dir);
+        super::checkpoint::compatibility(firmware.as_deref())
+    }
     pub fn new(mut settings: VmSettings) -> anyhow::Result<Self> {
+        anyhow::ensure!(
+            settings.snapshot_filesystem_pool.is_none()
+                || cfg!(all(target_os = "linux", target_arch = "x86_64"))
+                    && settings.memory_pool.is_none()
+                    && !settings.ram_compression
+                    && settings.ram_backing.is_none(),
+            "immutable snapshot pool requires the private-RAM native Linux x86-64 profile"
+        );
         anyhow::ensure!(
             settings.memory_pool.is_none()
                 || cfg!(all(target_os = "macos", target_arch = "aarch64")),
@@ -224,11 +262,91 @@ impl VmExecutor {
         } else if let Some(directory) = bundled_firmware_dir() {
             settings.library_dir = Some(directory);
         }
-        Ok(Self { settings })
+        Ok(Self {
+            settings,
+            #[cfg(target_os = "linux")]
+            cpu_group: None,
+            #[cfg(target_os = "linux")]
+            observe_cpu: false,
+            #[cfg(any(
+                all(target_os = "linux", target_arch = "x86_64"),
+                all(target_os = "macos", target_arch = "aarch64")
+            ))]
+            restore: None,
+        })
+    }
+
+    /// Prepare a new Attempt from a sealed same-host snapshot. Pair the
+    /// returned overlay with PVisorBuilder::overlay and the same storage path.
+    /// The guest keeps its saved process environment; host identity is new.
+    pub fn restore(
+        settings: VmSettings,
+        checkpoint: pvisor_core::operation::ExecutionCheckpoint,
+        storage: &Path,
+    ) -> anyhow::Result<(Self, crate::OverlayHint)> {
+        #[cfg(any(
+            all(target_os = "linux", target_arch = "x86_64"),
+            all(target_os = "macos", target_arch = "aarch64")
+        ))]
+        {
+            let mut settings = settings;
+            crate::util::create_dir_all_durable(storage)?;
+            settings.rootfs = Some(storage.to_owned());
+            let mut executor = Self::new(settings)?;
+            let (prepared, overlay) = super::checkpoint::native::prepare_restore(
+                checkpoint,
+                &executor.settings,
+                storage,
+            )?;
+            executor.settings.rootfs = Some(
+                prepared
+                    .root
+                    .lowers
+                    .last()
+                    .context("restored root has no lower")?
+                    .clone(),
+            );
+            executor.restore = Some(std::sync::Arc::new(prepared));
+            Ok((executor, overlay))
+        }
+        #[cfg(not(any(
+            all(target_os = "linux", target_arch = "x86_64"),
+            all(target_os = "macos", target_arch = "aarch64")
+        )))]
+        {
+            let _ = (settings, checkpoint, storage);
+            anyhow::bail!("execution restore is unavailable on this architecture")
+        }
     }
 
     pub fn settings(&self) -> &VmSettings {
         &self.settings
+    }
+
+    #[cfg(target_os = "linux")]
+    pub fn with_cpu_qos_group(
+        mut self,
+        group: std::sync::Arc<super::cpu_qos::CpuQosGroup>,
+    ) -> Self {
+        self.cpu_group = Some(group);
+        self
+    }
+
+    #[cfg(target_os = "linux")]
+    pub fn with_cpu_observation(mut self) -> Self {
+        self.observe_cpu = true;
+        self
+    }
+
+    fn ram_backing(&self) -> anyhow::Result<super::control::RamBacking> {
+        #[cfg(any(
+            all(target_os = "linux", target_arch = "x86_64"),
+            all(target_os = "macos", target_arch = "aarch64")
+        ))]
+        if let Some(restore) = &self.restore {
+            return Ok(super::control::RamBacking::restored(restore.clone()));
+        }
+        super::control::RamBacking::create(self.settings.ram_backing.as_deref())
     }
 }
 
@@ -250,6 +368,9 @@ pub(crate) const fn firmware_name() -> &'static str {
         "libkrunfw.so.5"
     }
 }
+
+// Reserved runner status, accepted only alongside a verified suspend receipt.
+const SUSPEND_EXIT_CODE: i32 = 123;
 
 #[async_trait]
 impl RunExecutor for VmExecutor {
@@ -280,9 +401,25 @@ impl RunExecutor for VmExecutor {
         true
     }
 
+    fn supports_cpu_qos(&self) -> bool {
+        cfg!(target_os = "linux")
+    }
+
     async fn execute(&self, context: &Session) -> ExecutorOutput {
         crate::util::startup_mark_run("vm.prepare_begin", context.spec().run_id.as_str());
         let mut spec = context.spec().clone();
+        #[cfg(any(
+            all(target_os = "linux", target_arch = "x86_64"),
+            all(target_os = "macos", target_arch = "aarch64")
+        ))]
+        if let Some(restore) = &self.restore
+            && let Some(target) = &restore.workspace_target
+        {
+            spec.metadata.insert(
+                "pvisor.vm.overlay_target".into(),
+                serde_json::to_value(target).expect("path serialization"),
+            );
+        }
         context
             .transition(
                 RunState::Starting,
@@ -386,14 +523,6 @@ impl RunExecutor for VmExecutor {
         };
         crate::image::cache::scrub_guest_environment(&mut env);
         for key in [
-            crate::AGENTCTL_ENDPOINT_ENV,
-            crate::AGENTCTL_TOKEN_ENV,
-            crate::AGENTCTL_TRANSPORT_ENV,
-            crate::AGENTCTL_VERSION_ENV,
-        ] {
-            env.remove(key);
-        }
-        for key in [
             "DYLD_LIBRARY_PATH",
             "DYLD_FALLBACK_LIBRARY_PATH",
             "LD_LIBRARY_PATH",
@@ -417,6 +546,16 @@ impl RunExecutor for VmExecutor {
             env.insert("TMPDIR".into(), "/tmp".into());
         }
         env.extend(invocation.env.clone());
+        // AgentCtl uses a host Unix socket. Runtime injection into the
+        // invocation must not expose its credentials to the isolated guest.
+        for key in [
+            crate::AGENTCTL_ENDPOINT_ENV,
+            crate::AGENTCTL_TOKEN_ENV,
+            crate::AGENTCTL_TRANSPORT_ENV,
+            crate::AGENTCTL_VERSION_ENV,
+        ] {
+            env.remove(key);
+        }
 
         let temporary = match tempfile::Builder::new().prefix("pvisor-krun-").tempdir() {
             Ok(value) => value,
@@ -546,11 +685,10 @@ impl RunExecutor for VmExecutor {
             }
         };
         crate::util::startup_mark_run("vm.ram_backing_begin", spec.run_id.as_str());
-        let mut ram_backing =
-            match super::control::RamBacking::create(self.settings.ram_backing.as_deref()) {
-                Ok(backing) => backing,
-                Err(error) => return failed_to_start(format!("create VM RAM backing: {error}")),
-            };
+        let mut ram_backing = match self.ram_backing() {
+            Ok(backing) => backing,
+            Err(error) => return failed_to_start(format!("create VM RAM backing: {error}")),
+        };
         if self.settings.ram_compression
             && let Err(error) = ram_backing.enable_compression()
         {
@@ -578,7 +716,93 @@ impl RunExecutor for VmExecutor {
             }
         }
         crate::util::startup_mark_run("vm.ram_backing_ready", spec.run_id.as_str());
-        let runner = RunnerSpec {
+        crate::util::startup_mark_run("vm.checkpoint_binding_begin", spec.run_id.as_str());
+        let checkpoint = if cfg!(any(
+            all(target_os = "linux", target_arch = "x86_64"),
+            all(target_os = "macos", target_arch = "aarch64")
+        )) && !vm_network_enabled
+            && self.settings.memory_pool.is_none()
+        {
+            let prepared = if let Some(drivers) = &context.drivers {
+                let store = drivers.execution_snapshot_store();
+                let run_id = spec.run_id.to_string();
+                let attempt_id = context.attempt_id().to_string();
+                let firmware = self.settings.library_dir.clone();
+                let filesystem_pool = self.settings.snapshot_filesystem_pool.clone();
+                tokio::task::spawn_blocking(move || {
+                    super::checkpoint::binding(
+                        store,
+                        run_id,
+                        attempt_id,
+                        firmware.as_deref(),
+                        filesystem_pool.as_deref(),
+                    )
+                })
+                .await
+                .map_err(anyhow::Error::from)
+                .and_then(|binding| binding.map(Some))
+            } else {
+                Ok(None)
+            };
+            match prepared {
+                Ok(binding) => binding,
+                Err(error) => {
+                    return failed_to_start(format!("bind VM checkpoint store: {error:#}"));
+                }
+            }
+        } else {
+            None
+        };
+        #[cfg(any(
+            all(target_os = "linux", target_arch = "x86_64"),
+            all(target_os = "macos", target_arch = "aarch64")
+        ))]
+        if let Some(binding) = &checkpoint
+            && let Err(error) = super::checkpoint::native::validate_pool_binding(
+                binding,
+                &root_overlay,
+                workspace.as_ref(),
+            )
+        {
+            return failed_to_start(format!("bind immutable snapshot pool: {error:#}"));
+        }
+        if self.settings.snapshot_filesystem_pool.is_some() && checkpoint.is_none() {
+            return failed_to_start(
+                "immutable snapshot pool requires the durable no-network native capture profile"
+                    .into(),
+            );
+        }
+        crate::util::startup_mark_run("vm.checkpoint_binding_ready", spec.run_id.as_str());
+        if let Some(binding) = &checkpoint
+            && let Err(error) = hide_ram_backing(&mut root_overlay, &binding.store).and_then(|()| {
+                workspace
+                    .as_mut()
+                    .map_or(Ok(()), |device| hide_ram_backing(device, &binding.store))
+            })
+        {
+            return failed_to_start(format!("hide execution checkpoint store: {error}"));
+        }
+        #[cfg(target_os = "linux")]
+        let cpu_group = if spec.runtime.cpu_qos == Some(pvisor_core::CpuQosClass::LatencySensitive)
+        {
+            Some(match self.cpu_group.clone() {
+                Some(group) => group,
+                None => {
+                    match tokio::task::spawn_blocking(super::cpu_qos::CpuQosGroup::shared).await {
+                        Ok(Ok(group)) => group,
+                        other => {
+                            return failed_to_start(format!("CPU QoS group creation: {other:?}"));
+                        }
+                    }
+                }
+            })
+        } else {
+            None
+        };
+        let mut runner = RunnerSpec {
+            cpu_qos: spec.runtime.cpu_qos,
+            #[cfg(target_os = "linux")]
+            cpu_group: cpu_group.as_ref().map(|group| group.binding()),
             run_id: spec.run_id.to_string(),
             setup_attestation: attestation.path().to_path_buf(),
             root: root_overlay,
@@ -590,7 +814,44 @@ impl RunExecutor for VmExecutor {
                 .map(|requested| requested.min(self.settings.memory_mib))
                 .unwrap_or(self.settings.memory_mib),
             library_dir: self.settings.library_dir.clone(),
+            checkpoint,
+            restore: None,
         };
+        #[cfg(any(
+            all(target_os = "linux", target_arch = "x86_64"),
+            all(target_os = "macos", target_arch = "aarch64")
+        ))]
+        if let Some(restore) = &self.restore
+            && let Err(error) = apply_restore(&mut runner, restore, context)
+        {
+            return failed_to_start(format!("restore launch contract: {error:#}"));
+        }
+        #[cfg(any(
+            all(target_os = "linux", target_arch = "x86_64"),
+            all(target_os = "macos", target_arch = "aarch64")
+        ))]
+        if let Some(binding) = &mut runner.checkpoint
+            && binding.filesystem_pool.is_some()
+        {
+            binding.readonly_lowers = match super::checkpoint::native::capture_lower_bindings(
+                &runner.root,
+                runner.workspace.as_ref(),
+            ) {
+                Ok(bindings) => bindings,
+                Err(error) => {
+                    return failed_to_start(format!("bind native lower slots: {error:#}"));
+                }
+            };
+            binding.private_roots = match super::checkpoint::native::capture_private_bindings(
+                &runner.root,
+                runner.workspace.as_ref(),
+            ) {
+                Ok(bindings) => bindings,
+                Err(error) => {
+                    return failed_to_start(format!("bind native private slots: {error:#}"));
+                }
+            };
+        }
         crate::util::startup_mark_run("vm.spec_write_begin", spec.run_id.as_str());
         // This private launch message is consumed only by the child spawned below.
         // It is not recovery metadata: complete the write, without disk sync.
@@ -748,13 +1009,92 @@ impl RunExecutor for VmExecutor {
             let limit = spec.runtime.max_output_bytes;
             tokio::spawn(async move { read_limited(stderr, limit).await })
         });
-        context.vm_control.attach(control_host, ram_backing).await;
+        #[cfg(target_os = "linux")]
+        if let Some(pid) = child.id() {
+            context
+                .vm_control
+                .track_native_process(pid, &ram_backing.file);
+        }
+        context
+            .vm_control
+            .attach_with_checkpoint(control_host, ram_backing, runner.checkpoint.clone())
+            .await;
         context.transition(RunState::Running, None).await;
 
+        #[cfg(target_os = "linux")]
+        let mut final_cpu = None;
+        #[cfg(not(target_os = "linux"))]
+        let final_cpu = None;
+        #[cfg(target_os = "linux")]
+        let cpu_exit = if self.observe_cpu {
+            match context.vm_control.cpu_exit_observer() {
+                Ok(observer) => Some(observer),
+                Err(error) => {
+                    final_cpu = Some(pvisor_core::cpu::TerminalCpuUsage::unavailable(format!(
+                        "{error:#}"
+                    )));
+                    None
+                }
+            }
+        } else {
+            None
+        };
+        #[cfg(target_os = "linux")]
+        let mut unreaped = false;
+        #[cfg(target_os = "linux")]
+        let mut end = if let Some(observer) = &cpu_exit {
+            context
+                .wait_exit(
+                    async {
+                        match observer.ready().await {
+                            Ok(status) => {
+                                unreaped = true;
+                                Ok(status)
+                            }
+                            Err(error) => {
+                                final_cpu = Some(pvisor_core::cpu::TerminalCpuUsage::unavailable(
+                                    format!("{error:#}"),
+                                ));
+                                child.wait().await
+                            }
+                        }
+                    },
+                    spec.runtime.timeout_ms,
+                )
+                .await
+        } else {
+            context
+                .wait_child(&mut child, spec.runtime.timeout_ms)
+                .await
+        };
+        #[cfg(target_os = "linux")]
+        if unreaped {
+            // Exit wins before the blocking probe. A deadline during final
+            // observation cannot reclassify an already exited VM.
+            final_cpu = Some(cpu_exit.as_ref().unwrap().sample().await);
+            let waited = child.wait().await;
+            end = match (&end, waited) {
+                (End::Exited(Ok(observed)), Ok(reaped)) if observed != &reaped => {
+                    End::Exited(Err(std::io::Error::other(
+                        "native exit observation differs from authoritative reap",
+                    )))
+                }
+                (_, waited) => End::Exited(waited),
+            };
+        }
+        #[cfg(not(target_os = "linux"))]
         let end = context
             .wait_child(&mut child, spec.runtime.timeout_ms)
             .await;
         if matches!(end, End::Cancelled | End::Deadline) {
+            #[cfg(target_os = "linux")]
+            if let Some(observer) = &cpu_exit {
+                final_cpu = Some(
+                    observer
+                        .terminate(process_group, spec.runtime.termination_grace_ms)
+                        .await,
+                );
+            }
             crate::session::lifecycle::terminate_process_tree(
                 &mut child,
                 process_group,
@@ -762,7 +1102,7 @@ impl RunExecutor for VmExecutor {
             )
             .await;
         }
-        context.vm_control.detach().await;
+        let suspension = context.vm_control.detach().await;
         let transport_stdout = join_capture(stdout_task).await;
         let transport_stderr = join_capture(stderr_task).await;
         let mut output = ProcessOutput::default();
@@ -777,7 +1117,7 @@ impl RunExecutor for VmExecutor {
         // Signals/cancellation can interrupt between configuring the VMM and
         // entering it. Without a normal runner exit we leave enforcement unknown.
         let runner_exited = matches!(&end, End::Exited(Ok(status)) if status.code().is_some_and(|code| code != 125));
-        let (state, exit_code, failure) = match end {
+        let (mut state, mut exit_code, mut failure) = match end {
             End::Cancelled => (RunState::Cancelled, None, None),
             End::Deadline => (
                 RunState::Failed,
@@ -788,6 +1128,11 @@ impl RunExecutor for VmExecutor {
                     retryable: false,
                 }),
             ),
+            End::Exited(Ok(status))
+                if status.code() == Some(SUSPEND_EXIT_CODE) && suspension.is_some() =>
+            {
+                (RunState::Hibernated, None, None)
+            }
             End::Exited(Ok(status)) => guest_exit_outcome(status),
             End::Exited(Err(error)) => (
                 RunState::Failed,
@@ -801,11 +1146,41 @@ impl RunExecutor for VmExecutor {
         };
         // The trusted runner writes only after all VMM devices and confinement
         // controls install successfully. Failed entry clears the receipt.
-        let mut executor_observations = ExecutorObservations::default();
+        let mut executor_observations = ExecutorObservations {
+            cpu_usage: final_cpu,
+            ..Default::default()
+        };
+        let receipt = std::fs::read(attestation.path()).unwrap_or_default();
+        #[cfg(target_os = "linux")]
+        let qos = runner.cpu_qos.and_then(|class| {
+            serde_json::from_slice::<pvisor_core::CpuQosObservation>(&receipt)
+                .ok()
+                .filter(|observation| {
+                    super::cpu_qos::valid(observation, class, runner.cpu_group.as_ref())
+                })
+        });
+        #[cfg(not(target_os = "linux"))]
+        let qos: Option<pvisor_core::CpuQosObservation> = None;
+        let receipt_valid = if runner.cpu_qos.is_some() {
+            qos.is_some()
+        } else {
+            receipt == b"pvisor-vmm-installed-v1\n"
+        };
         if runner_exited
-            && std::fs::read(attestation.path())
-                .is_ok_and(|bytes| bytes == b"pvisor-vmm-installed-v1\n")
+            && runner.cpu_qos.is_some()
+            && !receipt_valid
+            && matches!(state, RunState::Completed | RunState::Hibernated)
         {
+            state = RunState::Failed;
+            exit_code = None;
+            failure = Some(RunFailure {
+                kind: RunFailureKind::Infrastructure,
+                message: "native runner supplied no valid CPU QoS evidence".into(),
+                retryable: false,
+            });
+        }
+        if runner_exited && receipt_valid {
+            executor_observations.cpu_qos = qos;
             executor_observations.origin = pvisor_core::event::Origin::Backend;
             executor_observations.enforcement = CapabilityEnforcementEvidence::default()
                 .enforced(
@@ -841,7 +1216,13 @@ impl RunExecutor for VmExecutor {
             exit_code,
             failure,
             output,
-            value: None,
+            value: if state == RunState::Hibernated {
+                suspension.map(|receipt| {
+                    serde_json::to_value(receipt).expect("validated suspension receipt")
+                })
+            } else {
+                None
+            },
             metrics: BTreeMap::from([(
                 "resource.vm_memory_bytes".into(),
                 f64::from(runner.memory_mib) * 1024.0 * 1024.0,
@@ -850,6 +1231,264 @@ impl RunExecutor for VmExecutor {
             event_stream_ref: None,
             warnings,
         }
+    }
+}
+
+#[cfg(any(
+    all(target_os = "linux", target_arch = "x86_64"),
+    all(target_os = "macos", target_arch = "aarch64")
+))]
+fn apply_restore(
+    runner: &mut RunnerSpec,
+    restore: &super::checkpoint::PreparedRestore,
+    context: &Session,
+) -> anyhow::Result<()> {
+    anyhow::ensure!(
+        runner.cpu_qos == restore.cpu_qos,
+        "restore CPU QoS differs from captured class"
+    );
+    anyhow::ensure!(
+        runner.guest.network.is_none() && context.drivers.is_some(),
+        "restore requires a durable no-network Attempt"
+    );
+    anyhow::ensure!(
+        context.spec().run_id.as_str() != restore.checkpoint.source_run_id,
+        "restore must use a new Run identity and Attempt"
+    );
+    anyhow::ensure!(
+        context.spec().parent_run_id.as_ref().map(|id| id.as_str())
+            == Some(restore.checkpoint.source_run_id.as_str()),
+        "restore parent Run must match the captured source"
+    );
+    let mut expected_guest = runner.guest.clone();
+    let mut saved_guest = restore.guest.clone();
+    for key in [
+        "PVISOR_RUN_ID",
+        "PVISOR_STORAGE",
+        "PVISOR_OVERLAY_STAGE",
+        "PVISOR_OVERLAY_UPPER",
+        "PVISOR_OVERLAY_TARGET",
+        "PVISOR_OVERLAY_ID",
+    ] {
+        expected_guest.env.remove(key);
+        saved_guest.env.remove(key);
+    }
+    anyhow::ensure!(
+        expected_guest.argv == saved_guest.argv,
+        "restore command differs from captured command"
+    );
+    anyhow::ensure!(
+        expected_guest.cwd == saved_guest.cwd && expected_guest.workspace == saved_guest.workspace,
+        "restore guest paths differ from captured paths"
+    );
+    anyhow::ensure!(
+        expected_guest.limits == saved_guest.limits,
+        "restore resource limits differ from captured limits"
+    );
+    anyhow::ensure!(
+        expected_guest.agent == saved_guest.agent,
+        "restore guest agent differs from captured agent"
+    );
+    let changed_keys = expected_guest
+        .env
+        .keys()
+        .chain(saved_guest.env.keys())
+        .filter(|key| expected_guest.env.get(*key) != saved_guest.env.get(*key))
+        .cloned()
+        .collect::<std::collections::BTreeSet<_>>();
+    anyhow::ensure!(
+        changed_keys.is_empty(),
+        "restore projected environment differs at keys: {changed_keys:?}"
+    );
+    let mut root = restore.root.clone();
+    let mut workspace = restore.workspace.clone();
+    anyhow::ensure!(
+        root.access_policy.same_rules(&runner.root.access_policy),
+        "restored root authorization rules changed"
+    );
+    root.access_policy = runner.root.access_policy.clone();
+    if let Some(workspace) = &mut workspace {
+        let current = runner
+            .workspace
+            .as_ref()
+            .context("restored workspace projection missing")?;
+        anyhow::ensure!(
+            workspace.access_policy.same_rules(&current.access_policy),
+            "restored workspace authorization rules changed"
+        );
+        workspace.access_policy = current.access_policy.clone();
+    }
+    runner.root = root;
+    runner.workspace = workspace;
+    runner.workspace_target = restore.workspace_target.clone();
+    runner.guest = restore.guest.clone();
+    runner.restore = Some(restore.launch.clone());
+    Ok(())
+}
+
+#[cfg(any(
+    all(target_os = "linux", target_arch = "x86_64"),
+    all(target_os = "macos", target_arch = "aarch64")
+))]
+fn write_control_reply(
+    control: &mut std::os::unix::net::UnixStream,
+    reply: &super::control::ControlReply,
+) -> anyhow::Result<()> {
+    use std::io::Write;
+    let response = serde_json::to_vec(reply)?;
+    anyhow::ensure!(
+        response.len() <= super::control::MAX_FRAME,
+        "VM control response too large"
+    );
+    control.write_all(&(response.len() as u32).to_be_bytes())?;
+    control.write_all(&response)?;
+    Ok(())
+}
+
+#[cfg(any(
+    all(target_os = "linux", target_arch = "x86_64"),
+    all(target_os = "macos", target_arch = "aarch64")
+))]
+fn capture_checkpoint(
+    spec: &RunnerSpec,
+    handle: &krun::VmmHandle,
+    control: &mut std::os::unix::net::UnixStream,
+    request: super::checkpoint::CaptureRequest,
+) -> super::control::ControlReply {
+    use pvisor_core::operation::{OperationKind, VmState};
+    use std::io::Read;
+    let operation = request.operation;
+    let suspend = matches!(operation, OperationKind::RunSuspend { .. });
+    if !suspend && handle.is_paused().ok() == Some(true) {
+        return super::control::ControlReply {
+            state: Some(VmState::Paused),
+            memory: None,
+            error: Some("checkpoint requires a running source VM".into()),
+            checkpoint: None,
+            capture: None,
+        };
+    }
+    let result = (|| -> Result<_, String> {
+        operation.validate().map_err(|e| e.to_string())?;
+        let (OperationKind::RunCheckpoint { ram_storage, .. }
+        | OperationKind::RunSuspend { ram_storage, .. }) = operation
+        else {
+            return Err("invalid snapshot operation".into());
+        };
+        let binding = spec
+            .checkpoint
+            .as_ref()
+            .ok_or("CAPABILITY_UNSUPPORTED: Job has no durable full-device capture binding")?;
+        if spec.guest.network.is_some() {
+            return Err("CAPABILITY_UNSUPPORTED: network device capture is unavailable".into());
+        }
+        let capture = |vm: &mut krun_vmm::Vmm| {
+            let ready = super::checkpoint::native::capture(
+                spec,
+                vm,
+                &request.directory,
+                ram_storage,
+                request.ram_delta.as_ref(),
+                &request.filesystem_reuse,
+            )
+            .map_err(|e| format!("{e:#}"))?;
+            write_control_reply(
+                control,
+                &super::control::ControlReply {
+                    state: Some(VmState::Paused),
+                    memory: None,
+                    error: None,
+                    checkpoint: None,
+                    capture: Some(ready),
+                },
+            )
+            .unwrap_or_else(|error| {
+                eprintln!("checkpoint supervisor disconnected while frozen: {error}");
+                std::process::exit(1);
+            });
+            let mut length = [0; 4];
+            control.read_exact(&mut length).unwrap_or_else(|error| {
+                eprintln!("checkpoint supervisor disconnected while frozen: {error}");
+                std::process::exit(1);
+            });
+            let length = u32::from_be_bytes(length) as usize;
+            if length > super::control::MAX_FRAME {
+                std::process::exit(1);
+            }
+            let mut bytes = vec![0; length];
+            control
+                .read_exact(&mut bytes)
+                .unwrap_or_else(|_| std::process::exit(1));
+            let commit: super::checkpoint::CommitReply =
+                serde_json::from_slice(&bytes).unwrap_or_else(|_| std::process::exit(1));
+            match (commit.checkpoint, commit.error) {
+                (Some(checkpoint), None) => {
+                    checkpoint
+                        .validate()
+                        .unwrap_or_else(|_| std::process::exit(1));
+                    if checkpoint.store != binding.store
+                        || checkpoint.source_run_id != binding.run_id
+                        || checkpoint.source_attempt_id != binding.attempt_id
+                        || checkpoint.ram_storage != ram_storage
+                    {
+                        std::process::exit(1);
+                    }
+                    if suspend {
+                        // Acknowledgement proves sealing, not exit. The parent
+                        // reaps this process before reporting Hibernated and
+                        // the controller releases capacity only on completion.
+                        write_control_reply(
+                            control,
+                            &super::control::ControlReply {
+                                state: Some(VmState::Paused),
+                                memory: None,
+                                error: None,
+                                checkpoint: Some(checkpoint),
+                                capture: None,
+                            },
+                        )
+                        .unwrap_or_else(|_| std::process::exit(1));
+                        // Exit inside the frozen closure: no device/vCPU thaw
+                        // and no guest instruction after the sealed point.
+                        std::process::exit(SUSPEND_EXIT_CODE);
+                    }
+                    Ok(checkpoint)
+                }
+                (None, Some(error)) => Err(format!("host checkpoint publication failed: {error}")),
+                _ => std::process::exit(1),
+            }
+        };
+        if suspend {
+            handle.with_snapshot_frozen(std::time::Duration::from_secs(30), capture)
+        } else {
+            handle.with_snapshot_quiesced(std::time::Duration::from_secs(30), capture)
+        }
+    })();
+    match result {
+        Ok(checkpoint) => super::control::ControlReply {
+            state: Some(VmState::Running),
+            memory: None,
+            error: None,
+            checkpoint: Some(checkpoint),
+            capture: None,
+        },
+        Err(error) => super::control::ControlReply {
+            // Only a healthy resumed source is a recoverable rejection. A
+            // partial freeze/resume failure stays parked and terminates it.
+            state: (!suspend)
+                .then(|| {
+                    handle
+                        .is_paused()
+                        .ok()
+                        .filter(|paused| !paused)
+                        .map(|_| VmState::Running)
+                })
+                .flatten(),
+            memory: None,
+            error: Some(error),
+            checkpoint: None,
+            capture: None,
+        },
     }
 }
 
@@ -873,6 +1512,14 @@ fn guest_exit_outcome(
 /// Handle the self-exec libkrun runner.
 /// Returns `true` when the current process was consumed by an internal mode.
 pub fn run_internal_if_requested() -> anyhow::Result<bool> {
+    #[cfg(target_os = "linux")]
+    if super::cpu_qos::run_anchor_if_requested()? {
+        return Ok(true);
+    }
+    if let Some(path) = std::env::var_os("PVISOR_VM_RESTORE_RAM_WATCHDOG") {
+        crate::environment_snapshot::watch_mount(Path::new(&path))?;
+        return Ok(true);
+    }
     if let Some(path) = std::env::var_os(RUNNER_SPEC_ENV) {
         crate::util::startup_mark("runner.spec_read_begin");
         let spec: RunnerSpec = serde_json::from_slice(&std::fs::read(&path)?)?;
@@ -884,15 +1531,41 @@ pub fn run_internal_if_requested() -> anyhow::Result<bool> {
 }
 
 fn run_runner(spec: RunnerSpec) -> anyhow::Result<()> {
+    #[cfg(target_os = "linux")]
+    let _cpu_qos = spec
+        .cpu_qos
+        .map(|class| super::cpu_qos::apply(class, spec.cpu_group.as_ref()))
+        .transpose()?;
+    #[cfg(not(target_os = "linux"))]
+    anyhow::ensure!(spec.cpu_qos.is_none(), "CPU QoS requires a Linux VM runner");
     let attestation = std::fs::OpenOptions::new()
         .write(true)
         .open(&spec.setup_attestation)?;
+    #[cfg(any(
+        all(target_os = "linux", target_arch = "x86_64"),
+        all(target_os = "macos", target_arch = "aarch64")
+    ))]
+    let restore = if spec.restore.is_some() {
+        let ram = std::env::var(RAM_FD_ENV)?.parse::<RawFd>()?;
+        anyhow::ensure!(ram == RAM_CHILD_FD, "invalid restore RAM descriptor");
+        if unsafe { libc::fcntl(ram, libc::F_SETFD, libc::FD_CLOEXEC) } < 0 {
+            return Err(std::io::Error::last_os_error().into());
+        }
+        Some(super::checkpoint::native::machine_restore(&spec, unsafe {
+            std::fs::File::from_raw_fd(ram)
+        })?)
+    } else {
+        None
+    };
     #[cfg(target_os = "linux")]
     {
         let mut read_only = spec.root.lowers.clone();
         let mut read_write = vec![spec.root.upper.clone()];
         read_write.extend(spec.root.work.iter().cloned());
         read_write.extend(spec.root.preimages.iter().cloned());
+        if let Some(binding) = &spec.checkpoint {
+            read_write.push(binding.store.clone());
+        }
         if let Some(workspace) = &spec.workspace {
             read_only.extend(workspace.lowers.iter().cloned());
             read_write.push(workspace.upper.clone());
@@ -905,10 +1578,26 @@ fn run_runner(spec: RunnerSpec) -> anyhow::Result<()> {
             spec.library_dir.clone(),
         )?;
     }
-    run_linked_krun(spec, attestation)
+    run_linked_krun(
+        spec,
+        attestation,
+        #[cfg(any(
+            all(target_os = "linux", target_arch = "x86_64"),
+            all(target_os = "macos", target_arch = "aarch64")
+        ))]
+        restore,
+    )
 }
 
-fn run_linked_krun(spec: RunnerSpec, mut attestation: std::fs::File) -> anyhow::Result<()> {
+fn run_linked_krun(
+    spec: RunnerSpec,
+    mut attestation: std::fs::File,
+    #[cfg(any(
+        all(target_os = "linux", target_arch = "x86_64"),
+        all(target_os = "macos", target_arch = "aarch64")
+    ))]
+    mut restore: Option<krun_vmm::snapshot::MachineRestore>,
+) -> anyhow::Result<()> {
     use std::io::Write;
     if std::env::var_os("PVISOR_KRUN_LOG").is_some() {
         check_krun(krun::krun_set_log_level(5), "krun_set_log_level")?;
@@ -916,6 +1605,29 @@ fn run_linked_krun(spec: RunnerSpec, mut attestation: std::fs::File) -> anyhow::
     let workspace_tag = CString::new(WORKSPACE_TAG)?;
     let guest_config = serde_json::to_vec(&spec.guest)?;
     crate::util::startup_mark_run("runner.context_begin", &spec.run_id);
+    #[cfg(any(
+        all(target_os = "linux", target_arch = "x86_64"),
+        all(target_os = "macos", target_arch = "aarch64")
+    ))]
+    let snapshot_kernel = restore
+        .as_ref()
+        .is_some_and(|restore| restore.state.kernel_layout.is_some());
+    #[cfg(any(
+        all(target_os = "linux", target_arch = "x86_64"),
+        all(target_os = "macos", target_arch = "aarch64")
+    ))]
+    let ctx = if snapshot_kernel {
+        check_ctx(
+            krun::krun_create_restore_ctx(restore.take().unwrap()).map_err(anyhow::Error::msg)?,
+            "krun_create_restore_ctx",
+        )?
+    } else {
+        check_ctx(krun::krun_create_ctx(), "krun_create_ctx")?
+    };
+    #[cfg(not(any(
+        all(target_os = "linux", target_arch = "x86_64"),
+        all(target_os = "macos", target_arch = "aarch64")
+    )))]
     let ctx = check_ctx(krun::krun_create_ctx(), "krun_create_ctx")?;
     crate::util::startup_mark_run("runner.context_ready", &spec.run_id);
     let ram = std::env::var(RAM_FD_ENV)?.parse::<RawFd>()?;
@@ -923,27 +1635,41 @@ fn run_linked_krun(spec: RunnerSpec, mut attestation: std::fs::File) -> anyhow::
     if unsafe { libc::fcntl(ram, libc::F_SETFD, libc::FD_CLOEXEC) } < 0 {
         return Err(std::io::Error::last_os_error().into());
     }
-    check_krun(
-        krun::krun_set_ram_backing(ctx, unsafe { std::fs::File::from_raw_fd(ram) }),
-        "krun_set_ram_backing",
-    )?;
+    if spec.restore.is_none() {
+        check_krun(
+            krun::krun_set_ram_backing(ctx, unsafe { std::fs::File::from_raw_fd(ram) }),
+            "krun_set_ram_backing",
+        )?;
+    }
     check_krun(
         krun::krun_set_vm_config(ctx, spec.cpus, spec.memory_mib),
         "krun_set_vm_config",
     )?;
+    #[cfg(any(
+        all(target_os = "linux", target_arch = "x86_64"),
+        all(target_os = "macos", target_arch = "aarch64")
+    ))]
+    if spec.checkpoint.is_some() {
+        check_krun(
+            krun::krun_set_snapshot_profile(ctx),
+            "krun_set_snapshot_profile",
+        )?;
+    }
     #[cfg(all(target_os = "linux", target_env = "musl", target_arch = "x86_64"))]
-    check_krun(
-        unsafe {
-            krun::krun_set_embedded_kernel(
-                ctx,
-                embedded_kernel::KERNEL.as_ptr(),
-                embedded_kernel::KERNEL.len(),
-                embedded_kernel::GUEST_ADDR,
-                embedded_kernel::ENTRY_ADDR,
-            )
-        },
-        "krun_set_embedded_kernel",
-    )?;
+    if !snapshot_kernel {
+        check_krun(
+            unsafe {
+                krun::krun_set_embedded_kernel(
+                    ctx,
+                    embedded_kernel::KERNEL.as_ptr(),
+                    embedded_kernel::KERNEL.len(),
+                    embedded_kernel::GUEST_ADDR,
+                    embedded_kernel::ENTRY_ADDR,
+                )
+            },
+            "krun_set_embedded_kernel",
+        )?;
+    }
     // OverlayFs implements FUSE reads/writes and mmap via the guest page cache;
     // it does not implement FUSE_SETUPMAPPING/removemapping. Advertising a DAX
     // window only allocates device-page metadata during boot (512 MiB before),
@@ -994,9 +1720,25 @@ fn run_linked_krun(spec: RunnerSpec, mut attestation: std::fs::File) -> anyhow::
         "krun_disable_implicit_vsock",
     )?;
     check_krun(krun::krun_add_vsock(ctx, 0), "krun_add_vsock")?;
+    #[cfg(any(
+        all(target_os = "linux", target_arch = "x86_64"),
+        all(target_os = "macos", target_arch = "aarch64")
+    ))]
+    if let Some(restore) = restore {
+        krun::krun_set_machine_restore(ctx, restore).map_err(anyhow::Error::msg)?;
+    }
     crate::util::startup_mark_run("runner.devices_configured", &spec.run_id);
     // Private parent/runner IPC: write visibility is sufficient. The parent
     // accepts the receipt only after a normal exit; it is not recovery metadata.
+    #[cfg(target_os = "linux")]
+    super::cpu_qos::write_attestation(
+        &mut attestation,
+        spec.cpu_qos
+            .map(super::cpu_qos::observe)
+            .transpose()?
+            .as_ref(),
+    )?;
+    #[cfg(not(target_os = "linux"))]
     attestation.write_all(b"pvisor-vmm-installed-v1\n")?;
     crate::util::startup_mark_run("runner.attestation_ready", &spec.run_id);
     let control = std::env::var(CONTROL_FD_ENV)
@@ -1012,6 +1754,9 @@ fn run_linked_krun(spec: RunnerSpec, mut attestation: std::fs::File) -> anyhow::
     crate::util::startup_mark_run("runner.krun_enter", &spec.run_id);
     let started = krun::krun_start_enter_with_handle(ctx, move |handle| {
         crate::util::startup_mark_run("runner.vmm_built", &spec.run_id);
+        if spec.restore.is_some() {
+            handle.resume().map_err(std::io::Error::other)?;
+        }
         #[cfg(all(target_os = "macos", target_arch = "aarch64"))]
         super::pager::start_if_requested(handle.clone())?;
         std::thread::Builder::new()
@@ -1032,6 +1777,12 @@ fn run_linked_krun(spec: RunnerSpec, mut attestation: std::fs::File) -> anyhow::
                     let mut request = vec![0; size];
                     if control.read_exact(&mut request).is_err() {
                         std::process::exit(1);
+                    }
+                    #[cfg(any(all(target_os = "linux", target_arch = "x86_64"), all(target_os = "macos", target_arch = "aarch64")))]
+                    if let Ok(capture) = serde_json::from_slice::<super::checkpoint::CaptureRequest>(&request) {
+                        let reply = capture_checkpoint(&spec, &handle, &mut control, capture);
+                        if write_control_reply(&mut control, &reply).is_err() { std::process::exit(1); }
+                        continue;
                     }
                     use pvisor_core::operation::{OperationKind, VmMemory, VmState};
                     let mut rejection_state = None;
@@ -1063,6 +1814,8 @@ fn run_linked_krun(spec: RunnerSpec, mut attestation: std::fs::File) -> anyhow::
                     };
                     let reply = match result {
                         Ok((state, memory)) => super::control::ControlReply {
+                            checkpoint: None,
+                            capture: None,
                             state: Some(state),
                             memory,
                             error: None,
@@ -1070,6 +1823,8 @@ fn run_linked_krun(spec: RunnerSpec, mut attestation: std::fs::File) -> anyhow::
                         Err(error) => {
                             eprintln!("VM control failed: {error}");
                             super::control::ControlReply {
+                                checkpoint: None,
+                                capture: None,
                                 state: rejection_state,
                                 memory: None,
                                 error: Some(error),

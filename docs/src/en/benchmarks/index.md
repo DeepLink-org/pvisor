@@ -1,6 +1,6 @@
 # Benchmarks and comparisons
 
-pVisor VM starts in about **86 ms**, near Docker, Firecracker and QEMU microvm on a hundred-millisecond scale. Complete repair/testing takes **0.70 s** staged, **0.90 s** in Docker, and **3.97 s** in the VM: interactive staging, with a remaining VM tool-path gap. A roughly 5.5-minute 100,000-file apply and Claude/VM initialization timeout are also published limitations.
+Image-free pVisor VM starts in about **110 ms**; complete Ubuntu on the same-host Firecracker takes **5.64 seconds** prepared or **9.25 seconds** on first boot. This reduces short-task boot waiting; tool cost and CLI compatibility still need separate assessment. Historical Docker/QEMU controls, macOS data and limits such as large-file-count apply remain available.
 
 Measurements publish reproduction scripts, samples and failures; comparisons identify official sources and unmeasured areas. See [methodology](methodology.md).
 
@@ -20,7 +20,26 @@ These datasets cover different workloads and phases, so they do not rank macOS a
 
 Each number describes a specific phase and workload. The startup table includes the full CLI-to-marker path, and cold RAM proxy is not whole-host physical memory. New product measurements appear below, with unmeasured metrics identified separately.
 
-## Performance position: baselines, gaps, and meaning {#reference-position}
+## Default deployment: image-free and complete distribution {#full-ubuntu}
+
+The latest Linux comparison uses pVisor `--rootfs host` and official Ubuntu 26.04.1 LTS, with N=30 startup and N=10 complete tasks. Tool, kernel and service differences are documented. Mac startup around 84 ms remains separate; complete Mac Agent Env tasks are unmeasured here.
+
+| Question | pVisor | Complete Ubuntu / Firecracker |
+|---|---|---|
+| [New environment](startup.md#full-ubuntu) | VM P50 110 ms / P95 122 ms | Prepared P50 5.64 s / P95 6.01 s; first boot P50 9.25 s |
+| [Repair/tests, launch to result](agent-tasks.md#full-ubuntu) | VM 4.61 / 5.09 s; staged 0.72 / 0.78 s | 8.51 / 9.11 s |
+| [Repair/tests, internal worker](agent-tasks.md#full-ubuntu) | VM 4.02 / 4.49 s | 2.30 / 2.69 s |
+| [Codex tool loop](agent-tasks.md#full-ubuntu) | VM 11.39 / 13.73 s | 10.81 / 13.49 s |
+
+Boot differences reflect entering a complete distribution, rather than pure VMM quality. Frequent short-lived environments benefit from avoiding seconds of waiting; reused environments depend more on internal tools, file costs and client compatibility. Task cells show P50/P95 from ten repetitions, not a tail guarantee. First-boot Ubuntu has no complete Agent toolset; download and installation are outside startup time.
+
+[Protocol and evidence](methodology.md#full-ubuntu)
+
+The same complete Ubuntu now has QEMU follow-up measurements: q35 / microvm startup P50 is **5.43 / 7.67 s**, and complete repair/testing is **8.12 / 10.33 s**. N=10 per case, 80/80 pass, separately from the table's cohorts. [Full results](agent-tasks.md#full-ubuntu) include internal tools and real CLI loops so startup alone does not stand in for task performance.
+
+## Historical controlled performance: Docker and minimal VMs {#reference-position}
+
+The following batch shares tool artifacts. Firecracker/QEMU use trimmed kernels and direct init; pVisor uses directories. It supplies controlled Docker/tool context; the [default image-free / complete Ubuntu comparison](#full-ubuntu) is above. Old failures and timings remain within their original batch, rather than representing the new configuration.
 
 Different questions have different familiar scales; bare startup cannot substitute for a complete task. The new Linux environment has 1,410 valid samples plus 320 resource/exit follow-ups. Historical macOS/Linux data and 3,375 first-edition product samples remain separate.
 

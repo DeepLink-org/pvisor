@@ -223,6 +223,7 @@ pub fn resolve_overlay_workspace(
 /// Build an [`OverlayHint`] from a resolved record + full lower stack.
 pub fn hint_from_record(record: &OverlayRecord, lower_dirs: Vec<PathBuf>) -> OverlayHint {
     OverlayHint {
+        execution_snapshot: None,
         access_policy: record.access_policy.clone(),
         lower_dirs,
         stage_dir: Some(record.stage_dir.clone()),
@@ -377,6 +378,23 @@ pub(crate) fn prepare_overlay_record_mountless(
     lower_dirs: &[PathBuf],
     run_id: &str,
 ) -> Result<OverlayRecord, OverlayError> {
+    prepare_overlay_record_mountless_inner(record, lower_dirs, run_id, false)
+}
+
+pub(crate) fn prepare_execution_overlay_record(
+    record: &OverlayRecord,
+    lower_dirs: &[PathBuf],
+    run_id: &str,
+) -> Result<OverlayRecord, OverlayError> {
+    prepare_overlay_record_mountless_inner(record, lower_dirs, run_id, true)
+}
+
+fn prepare_overlay_record_mountless_inner(
+    record: &OverlayRecord,
+    lower_dirs: &[PathBuf],
+    run_id: &str,
+    preserve_existing: bool,
+) -> Result<OverlayRecord, OverlayError> {
     if lower_dirs.is_empty() {
         return Err(OverlayError::MissingTarget);
     }
@@ -394,7 +412,12 @@ pub(crate) fn prepare_overlay_record_mountless(
     .map_err(OverlayError::Prepare)?;
     // Share backing validation and journal initialization with the host adapter.
     crate::util::persistence_step(run_id, "overlay", "backing_and_journal", || {
-        pvisor_overlay_core::OverlayCore::new_for_layout(
+        let open = if preserve_existing {
+            pvisor_overlay_core::OverlayCore::open_existing_for_layout
+        } else {
+            pvisor_overlay_core::OverlayCore::new_for_layout
+        };
+        open(
             layout,
             record.upper.upper_dir.clone(),
             Some(record.upper.work_dir.clone()),

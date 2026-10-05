@@ -222,6 +222,8 @@ pub struct Vmm {
     snapshot_freeze_requested: bool,
     #[cfg(any(all(target_os = "macos", target_arch = "aarch64"), all(target_os = "linux", target_arch = "x86_64")))]
     snapshot_devices_frozen: bool,
+    #[cfg(any(all(target_os = "macos", target_arch = "aarch64"), all(target_os = "linux", target_arch = "x86_64")))]
+    snapshot_kernel_layout: Option<crate::snapshot::KernelLayout>,
     device_memory_gate: Arc<devices::virtio::memory_gate::MemoryGate>,
     #[cfg(target_os = "macos")]
     ram_unmapped: bool,
@@ -251,10 +253,14 @@ impl Vmm {
             return Ok(true);
         }
         if !self.snapshot_freeze_requested {
-            if self.device_memory_gate.is_idle_closed() {
-                return Err("freeze devices before closing RAM gate".into());
+            if self.device_memory_gate.is_idle_closed() && !self.paused {
+                return Err("closed RAM gate requires parked CPUs before snapshot".into());
             }
             self.pause().map_err(|e| format!("pause for snapshot: {e:?}"))?;
+            // Offload leaves workers parked at a closed RAM gate. Let them
+            // finish and return queue ownership before the full-device freeze;
+            // CPUs remain parked throughout and no guest instruction executes.
+            self.device_memory_gate.open();
             self.snapshot_freeze_requested = true;
         }
         if !self.mmio_device_manager.bus.freeze_snapshot_devices()? {
