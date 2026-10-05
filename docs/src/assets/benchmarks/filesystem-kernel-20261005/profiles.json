@@ -1,0 +1,4131 @@
+{
+  "scope": "last cumulative snapshot per pid/component/instance in measured diagnostic jobs; VM may be partial; inclusive spans not added",
+  "rows": [
+    {
+      "source": "baseline/trials/filesystem-pvisor-staged-000/stderr.log",
+      "variant": "baseline",
+      "report": {
+        "schema": 2,
+        "pid": 4046397,
+        "component": "overlay-core",
+        "instance": 1,
+        "inclusive_spans": true,
+        "final_record": true,
+        "measurements": {
+          "copy_up": {
+            "calls": 24,
+            "total_ns": 1738603,
+            "max_ns": 1631094,
+            "latency_buckets": [
+              23,
+              1,
+              0,
+              0,
+              0
+            ],
+            "units": 0
+          },
+          "copy_up_bytes": {
+            "calls": 0,
+            "total_ns": 0,
+            "max_ns": 0,
+            "latency_buckets": [
+              0,
+              0,
+              0,
+              0,
+              0
+            ],
+            "units": 202
+          },
+          "fingerprint": {
+            "calls": 2163,
+            "total_ns": 54047962,
+            "max_ns": 32034202,
+            "latency_buckets": [
+              2162,
+              0,
+              1,
+              0,
+              0
+            ],
+            "units": 0
+          },
+          "fingerprint_bytes": {
+            "calls": 0,
+            "total_ns": 0,
+            "max_ns": 0,
+            "latency_buckets": [
+              0,
+              0,
+              0,
+              0,
+              0
+            ],
+            "units": 69375893
+          },
+          "fingerprint_content": {
+            "calls": 2157,
+            "total_ns": 45694642,
+            "max_ns": 32026568,
+            "latency_buckets": [
+              2156,
+              0,
+              1,
+              0,
+              0
+            ],
+            "units": 0
+          },
+          "fingerprint_metadata": {
+            "calls": 2163,
+            "total_ns": 5137761,
+            "max_ns": 6532,
+            "latency_buckets": [
+              2163,
+              0,
+              0,
+              0,
+              0
+            ],
+            "units": 0
+          },
+          "fingerprint_xattrs": {
+            "calls": 2162,
+            "total_ns": 2376805,
+            "max_ns": 18104,
+            "latency_buckets": [
+              2162,
+              0,
+              0,
+              0,
+              0
+            ],
+            "units": 0
+          },
+          "fingerprinted_paths": {
+            "calls": 0,
+            "total_ns": 0,
+            "max_ns": 0,
+            "latency_buckets": [
+              0,
+              0,
+              0,
+              0,
+              0
+            ],
+            "units": 2163
+          },
+          "journal_create": {
+            "calls": 2705,
+            "total_ns": 18303118,
+            "max_ns": 86612,
+            "latency_buckets": [
+              2705,
+              0,
+              0,
+              0,
+              0
+            ],
+            "units": 0
+          },
+          "journal_fsync": {
+            "calls": 341,
+            "total_ns": 130747221,
+            "max_ns": 7184107,
+            "latency_buckets": [
+              332,
+              9,
+              0,
+              0,
+              0
+            ],
+            "units": 0
+          },
+          "journal_link_attempts": {
+            "calls": 0,
+            "total_ns": 0,
+            "max_ns": 0,
+            "latency_buckets": [
+              0,
+              0,
+              0,
+              0,
+              0
+            ],
+            "units": 548
+          },
+          "journal_lock_wait": {
+            "calls": 5725,
+            "total_ns": 170816,
+            "max_ns": 2114,
+            "latency_buckets": [
+              5725,
+              0,
+              0,
+              0,
+              0
+            ],
+            "units": 0
+          },
+          "journal_lookup": {
+            "calls": 5725,
+            "total_ns": 8683850,
+            "max_ns": 15979,
+            "latency_buckets": [
+              5725,
+              0,
+              0,
+              0,
+              0
+            ],
+            "units": 0
+          },
+          "journal_order": {
+            "calls": 341,
+            "total_ns": 116851463,
+            "max_ns": 2642681,
+            "latency_buckets": [
+              339,
+              2,
+              0,
+              0,
+              0
+            ],
+            "units": 0
+          },
+          "journal_publications": {
+            "calls": 0,
+            "total_ns": 0,
+            "max_ns": 0,
+            "latency_buckets": [
+              0,
+              0,
+              0,
+              0,
+              0
+            ],
+            "units": 2705
+          },
+          "journal_publish": {
+            "calls": 2705,
+            "total_ns": 34929358,
+            "max_ns": 70632,
+            "latency_buckets": [
+              2705,
+              0,
+              0,
+              0,
+              0
+            ],
+            "units": 0
+          },
+          "journal_rename_attempts": {
+            "calls": 0,
+            "total_ns": 0,
+            "max_ns": 0,
+            "latency_buckets": [
+              0,
+              0,
+              0,
+              0,
+              0
+            ],
+            "units": 2157
+          },
+          "journal_serialize": {
+            "calls": 2705,
+            "total_ns": 4067554,
+            "max_ns": 11842,
+            "latency_buckets": [
+              2705,
+              0,
+              0,
+              0,
+              0
+            ],
+            "units": 0
+          },
+          "journal_write": {
+            "calls": 2705,
+            "total_ns": 5637077,
+            "max_ns": 25848,
+            "latency_buckets": [
+              2705,
+              0,
+              0,
+              0,
+              0
+            ],
+            "units": 0
+          },
+          "layer_leaf_stats": {
+            "calls": 0,
+            "total_ns": 0,
+            "max_ns": 0,
+            "latency_buckets": [
+              0,
+              0,
+              0,
+              0,
+              0
+            ],
+            "units": 76606
+          },
+          "layer_parent_stats": {
+            "calls": 0,
+            "total_ns": 0,
+            "max_ns": 0,
+            "latency_buckets": [
+              0,
+              0,
+              0,
+              0,
+              0
+            ],
+            "units": 141379
+          },
+          "list_entries": {
+            "calls": 269,
+            "total_ns": 66384325,
+            "max_ns": 1279297,
+            "latency_buckets": [
+              268,
+              1,
+              0,
+              0,
+              0
+            ],
+            "units": 0
+          },
+          "metadata": {
+            "calls": 14216,
+            "total_ns": 188269967,
+            "max_ns": 576305,
+            "latency_buckets": [
+              14216,
+              0,
+              0,
+              0,
+              0
+            ],
+            "units": 0
+          },
+          "observe_read": {
+            "calls": 4598,
+            "total_ns": 228913526,
+            "max_ns": 32246598,
+            "latency_buckets": [
+              4597,
+              0,
+              1,
+              0,
+              0
+            ],
+            "units": 0
+          },
+          "opaque_probe": {
+            "calls": 13025,
+            "total_ns": 20217688,
+            "max_ns": 77144,
+            "latency_buckets": [
+              13025,
+              0,
+              0,
+              0,
+              0
+            ],
+            "units": 0
+          },
+          "preimage": {
+            "calls": 5725,
+            "total_ns": 399227015,
+            "max_ns": 32205542,
+            "latency_buckets": [
+              5700,
+              24,
+              1,
+              0,
+              0
+            ],
+            "units": 0
+          },
+          "resolve": {
+            "calls": 14572,
+            "total_ns": 169700614,
+            "max_ns": 575904,
+            "latency_buckets": [
+              14572,
+              0,
+              0,
+              0,
+              0
+            ],
+            "units": 0
+          },
+          "resolve_components": {
+            "calls": 0,
+            "total_ns": 0,
+            "max_ns": 0,
+            "latency_buckets": [
+              0,
+              0,
+              0,
+              0,
+              0
+            ],
+            "units": 55651
+          },
+          "unavailable_upper_marker_skips": {
+            "calls": 0,
+            "total_ns": 0,
+            "max_ns": 0,
+            "latency_buckets": [
+              0,
+              0,
+              0,
+              0,
+              0
+            ],
+            "units": 27054
+          },
+          "whiteout_probe": {
+            "calls": 21721,
+            "total_ns": 14608961,
+            "max_ns": 58199,
+            "latency_buckets": [
+              21721,
+              0,
+              0,
+              0,
+              0
+            ],
+            "units": 0
+          }
+        }
+      }
+    },
+    {
+      "source": "baseline/trials/filesystem-pvisor-vm-000/stderr.log",
+      "variant": "baseline",
+      "report": {
+        "schema": 2,
+        "pid": 4046706,
+        "component": "virtio-fs-overlay",
+        "instance": 2,
+        "inclusive_spans": true,
+        "final_record": false,
+        "measurements": {
+          "backing_lookup": {
+            "calls": 7628,
+            "total_ns": 18968250,
+            "max_ns": 29154,
+            "latency_buckets": [
+              7628,
+              0,
+              0,
+              0,
+              0
+            ],
+            "units": 0
+          },
+          "directory_cache_deep_hits": {
+            "calls": 0,
+            "total_ns": 0,
+            "max_ns": 0,
+            "latency_buckets": [
+              0,
+              0,
+              0,
+              0,
+              0
+            ],
+            "units": 5506
+          },
+          "directory_cache_evictions": {
+            "calls": 0,
+            "total_ns": 0,
+            "max_ns": 0,
+            "latency_buckets": [
+              0,
+              0,
+              0,
+              0,
+              0
+            ],
+            "units": 109
+          },
+          "directory_cache_hits": {
+            "calls": 0,
+            "total_ns": 0,
+            "max_ns": 0,
+            "latency_buckets": [
+              0,
+              0,
+              0,
+              0,
+              0
+            ],
+            "units": 1929
+          },
+          "directory_cache_misses": {
+            "calls": 0,
+            "total_ns": 0,
+            "max_ns": 0,
+            "latency_buckets": [
+              0,
+              0,
+              0,
+              0,
+              0
+            ],
+            "units": 365
+          },
+          "entry": {
+            "calls": 4092,
+            "total_ns": 21814393,
+            "max_ns": 78657,
+            "latency_buckets": [
+              4092,
+              0,
+              0,
+              0,
+              0
+            ],
+            "units": 0
+          },
+          "getattr": {
+            "calls": 1550,
+            "total_ns": 40215153,
+            "max_ns": 127027,
+            "latency_buckets": [
+              1550,
+              0,
+              0,
+              0,
+              0
+            ],
+            "units": 0
+          },
+          "inner_inode": {
+            "calls": 6371,
+            "total_ns": 30126458,
+            "max_ns": 78006,
+            "latency_buckets": [
+              6371,
+              0,
+              0,
+              0,
+              0
+            ],
+            "units": 0
+          },
+          "lookup": {
+            "calls": 5940,
+            "total_ns": 201815430,
+            "max_ns": 284571,
+            "latency_buckets": [
+              5940,
+              0,
+              0,
+              0,
+              0
+            ],
+            "units": 0
+          },
+          "open": {
+            "calls": 1356,
+            "total_ns": 62472122,
+            "max_ns": 171550,
+            "latency_buckets": [
+              1356,
+              0,
+              0,
+              0,
+              0
+            ],
+            "units": 0
+          },
+          "opendir": {
+            "calls": 71,
+            "total_ns": 35610294,
+            "max_ns": 1892442,
+            "latency_buckets": [
+              58,
+              13,
+              0,
+              0,
+              0
+            ],
+            "units": 0
+          },
+          "read": {
+            "calls": 6138,
+            "total_ns": 122182355,
+            "max_ns": 7956389,
+            "latency_buckets": [
+              6135,
+              3,
+              0,
+              0,
+              0
+            ],
+            "units": 0
+          },
+          "readdirplus": {
+            "calls": 70,
+            "total_ns": 17476439,
+            "max_ns": 674829,
+            "latency_buckets": [
+              70,
+              0,
+              0,
+              0,
+              0
+            ],
+            "units": 0
+          },
+          "write": {
+            "calls": 531,
+            "total_ns": 3689285,
+            "max_ns": 45926,
+            "latency_buckets": [
+              531,
+              0,
+              0,
+              0,
+              0
+            ],
+            "units": 0
+          }
+        }
+      }
+    },
+    {
+      "source": "baseline/trials/filesystem-pvisor-vm-000/stderr.log",
+      "variant": "baseline",
+      "report": {
+        "schema": 2,
+        "pid": 4046706,
+        "component": "virtio-fs-protocol",
+        "instance": 3,
+        "inclusive_spans": true,
+        "final_record": false,
+        "measurements": {
+          "CREATE": {
+            "calls": 432,
+            "total_ns": 16169095,
+            "max_ns": 139020,
+            "latency_buckets": [
+              432,
+              0,
+              0,
+              0,
+              0
+            ],
+            "units": 0
+          },
+          "FLUSH": {
+            "calls": 1747,
+            "total_ns": 14577027,
+            "max_ns": 10652039,
+            "latency_buckets": [
+              1746,
+              0,
+              1,
+              0,
+              0
+            ],
+            "units": 0
+          },
+          "FORGET": {
+            "calls": 1,
+            "total_ns": 791,
+            "max_ns": 791,
+            "latency_buckets": [
+              1,
+              0,
+              0,
+              0,
+              0
+            ],
+            "units": 0
+          },
+          "GETATTR": {
+            "calls": 1535,
+            "total_ns": 42091072,
+            "max_ns": 133419,
+            "latency_buckets": [
+              1535,
+              0,
+              0,
+              0,
+              0
+            ],
+            "units": 0
+          },
+          "GETXATTR": {
+            "calls": 454,
+            "total_ns": 14457458,
+            "max_ns": 78687,
+            "latency_buckets": [
+              454,
+              0,
+              0,
+              0,
+              0
+            ],
+            "units": 0
+          },
+          "LOOKUP": {
+            "calls": 5913,
+            "total_ns": 210808539,
+            "max_ns": 286776,
+            "latency_buckets": [
+              5913,
+              0,
+              0,
+              0,
+              0
+            ],
+            "units": 0
+          },
+          "MKDIR": {
+            "calls": 6,
+            "total_ns": 300141,
+            "max_ns": 83355,
+            "latency_buckets": [
+              6,
+              0,
+              0,
+              0,
+              0
+            ],
+            "units": 0
+          },
+          "OPEN": {
+            "calls": 1358,
+            "total_ns": 64592699,
+            "max_ns": 174726,
+            "latency_buckets": [
+              1358,
+              0,
+              0,
+              0,
+              0
+            ],
+            "units": 0
+          },
+          "OPENDIR": {
+            "calls": 71,
+            "total_ns": 35713857,
+            "max_ns": 1894365,
+            "latency_buckets": [
+              58,
+              13,
+              0,
+              0,
+              0
+            ],
+            "units": 0
+          },
+          "OTHER": {
+            "calls": 10,
+            "total_ns": 28471,
+            "max_ns": 20187,
+            "latency_buckets": [
+              10,
+              0,
+              0,
+              0,
+              0
+            ],
+            "units": 0
+          },
+          "READ": {
+            "calls": 6147,
+            "total_ns": 132131123,
+            "max_ns": 7961047,
+            "latency_buckets": [
+              6144,
+              3,
+              0,
+              0,
+              0
+            ],
+            "units": 0
+          },
+          "READDIR": {
+            "calls": 107,
+            "total_ns": 492780,
+            "max_ns": 19336,
+            "latency_buckets": [
+              107,
+              0,
+              0,
+              0,
+              0
+            ],
+            "units": 0
+          },
+          "READDIRPLUS": {
+            "calls": 70,
+            "total_ns": 17586965,
+            "max_ns": 676572,
+            "latency_buckets": [
+              70,
+              0,
+              0,
+              0,
+              0
+            ],
+            "units": 0
+          },
+          "READLINK": {
+            "calls": 4,
+            "total_ns": 198100,
+            "max_ns": 72706,
+            "latency_buckets": [
+              4,
+              0,
+              0,
+              0,
+              0
+            ],
+            "units": 0
+          },
+          "RELEASE": {
+            "calls": 1727,
+            "total_ns": 7263918,
+            "max_ns": 53079,
+            "latency_buckets": [
+              1727,
+              0,
+              0,
+              0,
+              0
+            ],
+            "units": 0
+          },
+          "RELEASEDIR": {
+            "calls": 70,
+            "total_ns": 180060,
+            "max_ns": 6843,
+            "latency_buckets": [
+              70,
+              0,
+              0,
+              0,
+              0
+            ],
+            "units": 0
+          },
+          "RENAME": {
+            "calls": 430,
+            "total_ns": 156780408,
+            "max_ns": 716197,
+            "latency_buckets": [
+              430,
+              0,
+              0,
+              0,
+              0
+            ],
+            "units": 0
+          },
+          "WRITE": {
+            "calls": 517,
+            "total_ns": 4461354,
+            "max_ns": 48660,
+            "latency_buckets": [
+              517,
+              0,
+              0,
+              0,
+              0
+            ],
+            "units": 0
+          },
+          "request_bytes": {
+            "calls": 0,
+            "total_ns": 0,
+            "max_ns": 0,
+            "latency_buckets": [
+              0,
+              0,
+              0,
+              0,
+              0
+            ],
+            "units": 2634042
+          }
+        }
+      }
+    },
+    {
+      "source": "baseline/trials/filesystem-pvisor-vm-000/stderr.log",
+      "variant": "baseline",
+      "report": {
+        "schema": 2,
+        "pid": 4046706,
+        "component": "virtio-fs-dispatch",
+        "instance": 4,
+        "inclusive_spans": true,
+        "final_record": false,
+        "measurements": {
+          "admission": {
+            "calls": 20119,
+            "total_ns": 1096482168,
+            "max_ns": 10666005,
+            "latency_buckets": [
+              20095,
+              23,
+              1,
+              0,
+              0
+            ],
+            "units": 0
+          },
+          "inline_requests": {
+            "calls": 0,
+            "total_ns": 0,
+            "max_ns": 0,
+            "latency_buckets": [
+              0,
+              0,
+              0,
+              0,
+              0
+            ],
+            "units": 20271
+          },
+          "pool_requests": {
+            "calls": 0,
+            "total_ns": 0,
+            "max_ns": 0,
+            "latency_buckets": [
+              0,
+              0,
+              0,
+              0,
+              0
+            ],
+            "units": 332
+          },
+          "pool_workers": {
+            "calls": 0,
+            "total_ns": 0,
+            "max_ns": 0,
+            "latency_buckets": [
+              0,
+              0,
+              0,
+              0,
+              0
+            ],
+            "units": 2
+          }
+        }
+      }
+    },
+    {
+      "source": "baseline/trials/filesystem-pvisor-vm-000/stderr.log",
+      "variant": "baseline",
+      "report": {
+        "schema": 2,
+        "pid": 4046706,
+        "component": "overlay-core",
+        "instance": 1,
+        "inclusive_spans": true,
+        "final_record": false,
+        "measurements": {
+          "copy_up": {
+            "calls": 360,
+            "total_ns": 862492,
+            "max_ns": 5751,
+            "latency_buckets": [
+              360,
+              0,
+              0,
+              0,
+              0
+            ],
+            "units": 0
+          },
+          "layer_leaf_stats": {
+            "calls": 0,
+            "total_ns": 0,
+            "max_ns": 0,
+            "latency_buckets": [
+              0,
+              0,
+              0,
+              0,
+              0
+            ],
+            "units": 71991
+          },
+          "layer_parent_stats": {
+            "calls": 0,
+            "total_ns": 0,
+            "max_ns": 0,
+            "latency_buckets": [
+              0,
+              0,
+              0,
+              0,
+              0
+            ],
+            "units": 121132
+          },
+          "list_entries": {
+            "calls": 71,
+            "total_ns": 33949221,
+            "max_ns": 1820839,
+            "latency_buckets": [
+              60,
+              11,
+              0,
+              0,
+              0
+            ],
+            "units": 0
+          },
+          "metadata": {
+            "calls": 10336,
+            "total_ns": 269958502,
+            "max_ns": 146964,
+            "latency_buckets": [
+              10336,
+              0,
+              0,
+              0,
+              0
+            ],
+            "units": 0
+          },
+          "mount_identity_attempts": {
+            "calls": 0,
+            "total_ns": 0,
+            "max_ns": 0,
+            "latency_buckets": [
+              0,
+              0,
+              0,
+              0,
+              0
+            ],
+            "units": 55092
+          },
+          "observe_read": {
+            "calls": 1743,
+            "total_ns": 50775674,
+            "max_ns": 124803,
+            "latency_buckets": [
+              1743,
+              0,
+              0,
+              0,
+              0
+            ],
+            "units": 0
+          },
+          "opaque_probe": {
+            "calls": 11129,
+            "total_ns": 23833385,
+            "max_ns": 50454,
+            "latency_buckets": [
+              11129,
+              0,
+              0,
+              0,
+              0
+            ],
+            "units": 0
+          },
+          "preimage": {
+            "calls": 4972,
+            "total_ns": 255600,
+            "max_ns": 1022,
+            "latency_buckets": [
+              4972,
+              0,
+              0,
+              0,
+              0
+            ],
+            "units": 0
+          },
+          "resolve": {
+            "calls": 11062,
+            "total_ns": 276361920,
+            "max_ns": 146563,
+            "latency_buckets": [
+              11062,
+              0,
+              0,
+              0,
+              0
+            ],
+            "units": 0
+          },
+          "resolve_components": {
+            "calls": 0,
+            "total_ns": 0,
+            "max_ns": 0,
+            "latency_buckets": [
+              0,
+              0,
+              0,
+              0,
+              0
+            ],
+            "units": 59256
+          },
+          "unavailable_upper_marker_skips": {
+            "calls": 0,
+            "total_ns": 0,
+            "max_ns": 0,
+            "latency_buckets": [
+              0,
+              0,
+              0,
+              0,
+              0
+            ],
+            "units": 30863
+          },
+          "whiteout_probe": {
+            "calls": 14805,
+            "total_ns": 17523127,
+            "max_ns": 28874,
+            "latency_buckets": [
+              14805,
+              0,
+              0,
+              0,
+              0
+            ],
+            "units": 0
+          }
+        }
+      }
+    },
+    {
+      "source": "baseline/trials/filesystem-pvisor-vm-000/stderr.log",
+      "variant": "baseline",
+      "report": {
+        "schema": 2,
+        "pid": 4046706,
+        "component": "overlay-core",
+        "instance": 5,
+        "inclusive_spans": true,
+        "final_record": false,
+        "measurements": {
+          "copy_up": {
+            "calls": 20,
+            "total_ns": 932830,
+            "max_ns": 828926,
+            "latency_buckets": [
+              20,
+              0,
+              0,
+              0,
+              0
+            ],
+            "units": 0
+          },
+          "copy_up_bytes": {
+            "calls": 0,
+            "total_ns": 0,
+            "max_ns": 0,
+            "latency_buckets": [
+              0,
+              0,
+              0,
+              0,
+              0
+            ],
+            "units": 202
+          },
+          "fingerprint_bytes": {
+            "calls": 0,
+            "total_ns": 0,
+            "max_ns": 0,
+            "latency_buckets": [
+              0,
+              0,
+              0,
+              0,
+              0
+            ],
+            "units": 69375893
+          },
+          "fingerprint_content": {
+            "calls": 2157,
+            "total_ns": 70258542,
+            "max_ns": 32622740,
+            "latency_buckets": [
+              2155,
+              1,
+              1,
+              0,
+              0
+            ],
+            "units": 0
+          },
+          "fingerprint_metadata": {
+            "calls": 2163,
+            "total_ns": 5000097,
+            "max_ns": 15820,
+            "latency_buckets": [
+              2163,
+              0,
+              0,
+              0,
+              0
+            ],
+            "units": 0
+          },
+          "fingerprint_xattrs": {
+            "calls": 2162,
+            "total_ns": 2983190,
+            "max_ns": 46497,
+            "latency_buckets": [
+              2162,
+              0,
+              0,
+              0,
+              0
+            ],
+            "units": 0
+          },
+          "fingerprinted_paths": {
+            "calls": 0,
+            "total_ns": 0,
+            "max_ns": 0,
+            "latency_buckets": [
+              0,
+              0,
+              0,
+              0,
+              0
+            ],
+            "units": 2163
+          },
+          "journal_log": {
+            "calls": 5671,
+            "total_ns": 265010681,
+            "max_ns": 32722406,
+            "latency_buckets": [
+              5662,
+              8,
+              1,
+              0,
+              0
+            ],
+            "units": 0
+          },
+          "layer_leaf_stats": {
+            "calls": 0,
+            "total_ns": 0,
+            "max_ns": 0,
+            "latency_buckets": [
+              0,
+              0,
+              0,
+              0,
+              0
+            ],
+            "units": 94084
+          },
+          "layer_parent_stats": {
+            "calls": 0,
+            "total_ns": 0,
+            "max_ns": 0,
+            "latency_buckets": [
+              0,
+              0,
+              0,
+              0,
+              0
+            ],
+            "units": 169853
+          },
+          "list_entries": {
+            "calls": 241,
+            "total_ns": 69117406,
+            "max_ns": 1187987,
+            "latency_buckets": [
+              240,
+              1,
+              0,
+              0,
+              0
+            ],
+            "units": 0
+          },
+          "metadata": {
+            "calls": 17698,
+            "total_ns": 338426336,
+            "max_ns": 173063,
+            "latency_buckets": [
+              17698,
+              0,
+              0,
+              0,
+              0
+            ],
+            "units": 0
+          },
+          "mount_identity_attempts": {
+            "calls": 0,
+            "total_ns": 0,
+            "max_ns": 0,
+            "latency_buckets": [
+              0,
+              0,
+              0,
+              0,
+              0
+            ],
+            "units": 53930
+          },
+          "observe_read": {
+            "calls": 4552,
+            "total_ns": 290115440,
+            "max_ns": 32775926,
+            "latency_buckets": [
+              4550,
+              1,
+              1,
+              0,
+              0
+            ],
+            "units": 0
+          },
+          "opaque_probe": {
+            "calls": 16587,
+            "total_ns": 42820768,
+            "max_ns": 46176,
+            "latency_buckets": [
+              16587,
+              0,
+              0,
+              0,
+              0
+            ],
+            "units": 0
+          },
+          "preimage": {
+            "calls": 5671,
+            "total_ns": 266239918,
+            "max_ns": 32722907,
+            "latency_buckets": [
+              5662,
+              8,
+              1,
+              0,
+              0
+            ],
+            "units": 0
+          },
+          "resolve": {
+            "calls": 17737,
+            "total_ns": 328386006,
+            "max_ns": 156352,
+            "latency_buckets": [
+              17737,
+              0,
+              0,
+              0,
+              0
+            ],
+            "units": 0
+          },
+          "resolve_components": {
+            "calls": 0,
+            "total_ns": 0,
+            "max_ns": 0,
+            "latency_buckets": [
+              0,
+              0,
+              0,
+              0,
+              0
+            ],
+            "units": 69384
+          },
+          "unavailable_upper_marker_skips": {
+            "calls": 0,
+            "total_ns": 0,
+            "max_ns": 0,
+            "latency_buckets": [
+              0,
+              0,
+              0,
+              0,
+              0
+            ],
+            "units": 33214
+          },
+          "whiteout_probe": {
+            "calls": 25143,
+            "total_ns": 21512090,
+            "max_ns": 29094,
+            "latency_buckets": [
+              25143,
+              0,
+              0,
+              0,
+              0
+            ],
+            "units": 0
+          }
+        }
+      }
+    },
+    {
+      "source": "baseline/trials/filesystem-pvisor-vm-000/stderr.log",
+      "variant": "baseline",
+      "report": {
+        "schema": 2,
+        "pid": 4046706,
+        "component": "virtio-fs-overlay",
+        "instance": 6,
+        "inclusive_spans": true,
+        "final_record": false,
+        "measurements": {
+          "backing_lookup": {
+            "calls": 13068,
+            "total_ns": 35861151,
+            "max_ns": 9877854,
+            "latency_buckets": [
+              13067,
+              1,
+              0,
+              0,
+              0
+            ],
+            "units": 0
+          },
+          "directory_cache_deep_hits": {
+            "calls": 0,
+            "total_ns": 0,
+            "max_ns": 0,
+            "latency_buckets": [
+              0,
+              0,
+              0,
+              0,
+              0
+            ],
+            "units": 11985
+          },
+          "directory_cache_hits": {
+            "calls": 0,
+            "total_ns": 0,
+            "max_ns": 0,
+            "latency_buckets": [
+              0,
+              0,
+              0,
+              0,
+              0
+            ],
+            "units": 365
+          },
+          "directory_cache_misses": {
+            "calls": 0,
+            "total_ns": 0,
+            "max_ns": 0,
+            "latency_buckets": [
+              0,
+              0,
+              0,
+              0,
+              0
+            ],
+            "units": 131
+          },
+          "entry": {
+            "calls": 7578,
+            "total_ns": 34334864,
+            "max_ns": 9882673,
+            "latency_buckets": [
+              7577,
+              1,
+              0,
+              0,
+              0
+            ],
+            "units": 0
+          },
+          "getattr": {
+            "calls": 743,
+            "total_ns": 14299880,
+            "max_ns": 73507,
+            "latency_buckets": [
+              743,
+              0,
+              0,
+              0,
+              0
+            ],
+            "units": 0
+          },
+          "inner_inode": {
+            "calls": 12483,
+            "total_ns": 50248660,
+            "max_ns": 9880378,
+            "latency_buckets": [
+              12482,
+              1,
+              0,
+              0,
+              0
+            ],
+            "units": 0
+          },
+          "lookup": {
+            "calls": 4002,
+            "total_ns": 124110791,
+            "max_ns": 183953,
+            "latency_buckets": [
+              4002,
+              0,
+              0,
+              0,
+              0
+            ],
+            "units": 0
+          },
+          "open": {
+            "calls": 4245,
+            "total_ns": 328244730,
+            "max_ns": 32838101,
+            "latency_buckets": [
+              4243,
+              1,
+              1,
+              0,
+              0
+            ],
+            "units": 0
+          },
+          "opendir": {
+            "calls": 232,
+            "total_ns": 72918789,
+            "max_ns": 1269169,
+            "latency_buckets": [
+              231,
+              1,
+              0,
+              0,
+              0
+            ],
+            "units": 0
+          },
+          "read": {
+            "calls": 4758,
+            "total_ns": 23157355,
+            "max_ns": 1309003,
+            "latency_buckets": [
+              4757,
+              1,
+              0,
+              0,
+              0
+            ],
+            "units": 0
+          },
+          "readdirplus": {
+            "calls": 235,
+            "total_ns": 68366135,
+            "max_ns": 10251051,
+            "latency_buckets": [
+              234,
+              0,
+              1,
+              0,
+              0
+            ],
+            "units": 0
+          },
+          "write": {
+            "calls": 298,
+            "total_ns": 4436979,
+            "max_ns": 55764,
+            "latency_buckets": [
+              298,
+              0,
+              0,
+              0,
+              0
+            ],
+            "units": 0
+          }
+        }
+      }
+    },
+    {
+      "source": "baseline/trials/filesystem-pvisor-vm-000/stderr.log",
+      "variant": "baseline",
+      "report": {
+        "schema": 2,
+        "pid": 4046706,
+        "component": "virtio-fs-protocol",
+        "instance": 7,
+        "inclusive_spans": true,
+        "final_record": false,
+        "measurements": {
+          "CREATE": {
+            "calls": 283,
+            "total_ns": 128966369,
+            "max_ns": 4141329,
+            "latency_buckets": [
+              279,
+              4,
+              0,
+              0,
+              0
+            ],
+            "units": 0
+          },
+          "FLUSH": {
+            "calls": 4533,
+            "total_ns": 10364456,
+            "max_ns": 796056,
+            "latency_buckets": [
+              4533,
+              0,
+              0,
+              0,
+              0
+            ],
+            "units": 0
+          },
+          "FORGET": {
+            "calls": 13,
+            "total_ns": 9136,
+            "max_ns": 901,
+            "latency_buckets": [
+              13,
+              0,
+              0,
+              0,
+              0
+            ],
+            "units": 0
+          },
+          "FSYNC": {
+            "calls": 3,
+            "total_ns": 1118648,
+            "max_ns": 451763,
+            "latency_buckets": [
+              3,
+              0,
+              0,
+              0,
+              0
+            ],
+            "units": 0
+          },
+          "FSYNCDIR": {
+            "calls": 1,
+            "total_ns": 862,
+            "max_ns": 862,
+            "latency_buckets": [
+              1,
+              0,
+              0,
+              0,
+              0
+            ],
+            "units": 0
+          },
+          "GETATTR": {
+            "calls": 744,
+            "total_ns": 15334508,
+            "max_ns": 140943,
+            "latency_buckets": [
+              744,
+              0,
+              0,
+              0,
+              0
+            ],
+            "units": 0
+          },
+          "GETXATTR": {
+            "calls": 280,
+            "total_ns": 10350070,
+            "max_ns": 102310,
+            "latency_buckets": [
+              280,
+              0,
+              0,
+              0,
+              0
+            ],
+            "units": 0
+          },
+          "LOOKUP": {
+            "calls": 4002,
+            "total_ns": 129756096,
+            "max_ns": 194233,
+            "latency_buckets": [
+              4002,
+              0,
+              0,
+              0,
+              0
+            ],
+            "units": 0
+          },
+          "MKDIR": {
+            "calls": 15,
+            "total_ns": 10258955,
+            "max_ns": 2777003,
+            "latency_buckets": [
+              13,
+              2,
+              0,
+              0,
+              0
+            ],
+            "units": 0
+          },
+          "OPEN": {
+            "calls": 4245,
+            "total_ns": 333905987,
+            "max_ns": 32845846,
+            "latency_buckets": [
+              4243,
+              1,
+              1,
+              0,
+              0
+            ],
+            "units": 0
+          },
+          "OPENDIR": {
+            "calls": 232,
+            "total_ns": 73119682,
+            "max_ns": 1270552,
+            "latency_buckets": [
+              231,
+              1,
+              0,
+              0,
+              0
+            ],
+            "units": 0
+          },
+          "OTHER": {
+            "calls": 3,
+            "total_ns": 498850,
+            "max_ns": 476749,
+            "latency_buckets": [
+              3,
+              0,
+              0,
+              0,
+              0
+            ],
+            "units": 0
+          },
+          "READ": {
+            "calls": 4758,
+            "total_ns": 29307139,
+            "max_ns": 1310906,
+            "latency_buckets": [
+              4757,
+              1,
+              0,
+              0,
+              0
+            ],
+            "units": 0
+          },
+          "READDIR": {
+            "calls": 354,
+            "total_ns": 995918,
+            "max_ns": 57167,
+            "latency_buckets": [
+              354,
+              0,
+              0,
+              0,
+              0
+            ],
+            "units": 0
+          },
+          "READDIRPLUS": {
+            "calls": 235,
+            "total_ns": 68556553,
+            "max_ns": 10251902,
+            "latency_buckets": [
+              234,
+              0,
+              1,
+              0,
+              0
+            ],
+            "units": 0
+          },
+          "READLINK": {
+            "calls": 32,
+            "total_ns": 1156254,
+            "max_ns": 65763,
+            "latency_buckets": [
+              32,
+              0,
+              0,
+              0,
+              0
+            ],
+            "units": 0
+          },
+          "RELEASE": {
+            "calls": 4528,
+            "total_ns": 20133568,
+            "max_ns": 438649,
+            "latency_buckets": [
+              4528,
+              0,
+              0,
+              0,
+              0
+            ],
+            "units": 0
+          },
+          "RELEASEDIR": {
+            "calls": 232,
+            "total_ns": 315489,
+            "max_ns": 6322,
+            "latency_buckets": [
+              232,
+              0,
+              0,
+              0,
+              0
+            ],
+            "units": 0
+          },
+          "RENAME": {
+            "calls": 3,
+            "total_ns": 2212939,
+            "max_ns": 1013852,
+            "latency_buckets": [
+              2,
+              1,
+              0,
+              0,
+              0
+            ],
+            "units": 0
+          },
+          "RMDIR": {
+            "calls": 3,
+            "total_ns": 864233,
+            "max_ns": 355193,
+            "latency_buckets": [
+              3,
+              0,
+              0,
+              0,
+              0
+            ],
+            "units": 0
+          },
+          "SETATTR": {
+            "calls": 5,
+            "total_ns": 196707,
+            "max_ns": 57588,
+            "latency_buckets": [
+              5,
+              0,
+              0,
+              0,
+              0
+            ],
+            "units": 0
+          },
+          "STATFS": {
+            "calls": 13,
+            "total_ns": 262858,
+            "max_ns": 27741,
+            "latency_buckets": [
+              13,
+              0,
+              0,
+              0,
+              0
+            ],
+            "units": 0
+          },
+          "SYMLINK": {
+            "calls": 32,
+            "total_ns": 17880959,
+            "max_ns": 2748079,
+            "latency_buckets": [
+              30,
+              2,
+              0,
+              0,
+              0
+            ],
+            "units": 0
+          },
+          "UNLINK": {
+            "calls": 9,
+            "total_ns": 2761824,
+            "max_ns": 531933,
+            "latency_buckets": [
+              9,
+              0,
+              0,
+              0,
+              0
+            ],
+            "units": 0
+          },
+          "WRITE": {
+            "calls": 298,
+            "total_ns": 4869594,
+            "max_ns": 56215,
+            "latency_buckets": [
+              298,
+              0,
+              0,
+              0,
+              0
+            ],
+            "units": 0
+          },
+          "request_bytes": {
+            "calls": 0,
+            "total_ns": 0,
+            "max_ns": 0,
+            "latency_buckets": [
+              0,
+              0,
+              0,
+              0,
+              0
+            ],
+            "units": 19067850
+          }
+        }
+      }
+    },
+    {
+      "source": "baseline/trials/filesystem-pvisor-vm-000/stderr.log",
+      "variant": "baseline",
+      "report": {
+        "schema": 2,
+        "pid": 4046706,
+        "component": "virtio-fs-dispatch",
+        "instance": 8,
+        "inclusive_spans": true,
+        "final_record": false,
+        "measurements": {
+          "admission": {
+            "calls": 19561,
+            "total_ns": 1177445678,
+            "max_ns": 32895529,
+            "latency_buckets": [
+              19537,
+              22,
+              2,
+              0,
+              0
+            ],
+            "units": 0
+          },
+          "inline_requests": {
+            "calls": 0,
+            "total_ns": 0,
+            "max_ns": 0,
+            "latency_buckets": [
+              0,
+              0,
+              0,
+              0,
+              0
+            ],
+            "units": 24758
+          },
+          "pool_requests": {
+            "calls": 0,
+            "total_ns": 0,
+            "max_ns": 0,
+            "latency_buckets": [
+              0,
+              0,
+              0,
+              0,
+              0
+            ],
+            "units": 98
+          },
+          "pool_workers": {
+            "calls": 0,
+            "total_ns": 0,
+            "max_ns": 0,
+            "latency_buckets": [
+              0,
+              0,
+              0,
+              0,
+              0
+            ],
+            "units": 2
+          }
+        }
+      }
+    },
+    {
+      "source": "candidate/trials/filesystem-pvisor-staged-000/stderr.log",
+      "variant": "candidate",
+      "report": {
+        "schema": 2,
+        "pid": 4046232,
+        "component": "overlay-core",
+        "instance": 1,
+        "inclusive_spans": true,
+        "final_record": true,
+        "measurements": {
+          "copy_up": {
+            "calls": 24,
+            "total_ns": 1635963,
+            "max_ns": 1532009,
+            "latency_buckets": [
+              23,
+              1,
+              0,
+              0,
+              0
+            ],
+            "units": 0
+          },
+          "copy_up_bytes": {
+            "calls": 0,
+            "total_ns": 0,
+            "max_ns": 0,
+            "latency_buckets": [
+              0,
+              0,
+              0,
+              0,
+              0
+            ],
+            "units": 202
+          },
+          "fingerprint": {
+            "calls": 2163,
+            "total_ns": 56353757,
+            "max_ns": 32283808,
+            "latency_buckets": [
+              2161,
+              1,
+              1,
+              0,
+              0
+            ],
+            "units": 0
+          },
+          "fingerprint_bytes": {
+            "calls": 0,
+            "total_ns": 0,
+            "max_ns": 0,
+            "latency_buckets": [
+              0,
+              0,
+              0,
+              0,
+              0
+            ],
+            "units": 69375893
+          },
+          "fingerprint_content": {
+            "calls": 2157,
+            "total_ns": 45897494,
+            "max_ns": 32276404,
+            "latency_buckets": [
+              2156,
+              0,
+              1,
+              0,
+              0
+            ],
+            "units": 0
+          },
+          "fingerprint_metadata": {
+            "calls": 2163,
+            "total_ns": 5040524,
+            "max_ns": 17192,
+            "latency_buckets": [
+              2163,
+              0,
+              0,
+              0,
+              0
+            ],
+            "units": 0
+          },
+          "fingerprint_xattrs": {
+            "calls": 2162,
+            "total_ns": 4512534,
+            "max_ns": 2057950,
+            "latency_buckets": [
+              2161,
+              1,
+              0,
+              0,
+              0
+            ],
+            "units": 0
+          },
+          "fingerprinted_paths": {
+            "calls": 0,
+            "total_ns": 0,
+            "max_ns": 0,
+            "latency_buckets": [
+              0,
+              0,
+              0,
+              0,
+              0
+            ],
+            "units": 2163
+          },
+          "journal_create": {
+            "calls": 2705,
+            "total_ns": 18255499,
+            "max_ns": 658809,
+            "latency_buckets": [
+              2705,
+              0,
+              0,
+              0,
+              0
+            ],
+            "units": 0
+          },
+          "journal_fsync": {
+            "calls": 341,
+            "total_ns": 119361769,
+            "max_ns": 7501509,
+            "latency_buckets": [
+              336,
+              5,
+              0,
+              0,
+              0
+            ],
+            "units": 0
+          },
+          "journal_link_attempts": {
+            "calls": 0,
+            "total_ns": 0,
+            "max_ns": 0,
+            "latency_buckets": [
+              0,
+              0,
+              0,
+              0,
+              0
+            ],
+            "units": 548
+          },
+          "journal_lock_wait": {
+            "calls": 5725,
+            "total_ns": 162934,
+            "max_ns": 411,
+            "latency_buckets": [
+              5725,
+              0,
+              0,
+              0,
+              0
+            ],
+            "units": 0
+          },
+          "journal_lookup": {
+            "calls": 5725,
+            "total_ns": 8395694,
+            "max_ns": 68458,
+            "latency_buckets": [
+              5725,
+              0,
+              0,
+              0,
+              0
+            ],
+            "units": 0
+          },
+          "journal_order": {
+            "calls": 341,
+            "total_ns": 110743815,
+            "max_ns": 2352089,
+            "latency_buckets": [
+              336,
+              5,
+              0,
+              0,
+              0
+            ],
+            "units": 0
+          },
+          "journal_publications": {
+            "calls": 0,
+            "total_ns": 0,
+            "max_ns": 0,
+            "latency_buckets": [
+              0,
+              0,
+              0,
+              0,
+              0
+            ],
+            "units": 2705
+          },
+          "journal_publish": {
+            "calls": 2705,
+            "total_ns": 35064864,
+            "max_ns": 502948,
+            "latency_buckets": [
+              2705,
+              0,
+              0,
+              0,
+              0
+            ],
+            "units": 0
+          },
+          "journal_rename_attempts": {
+            "calls": 0,
+            "total_ns": 0,
+            "max_ns": 0,
+            "latency_buckets": [
+              0,
+              0,
+              0,
+              0,
+              0
+            ],
+            "units": 2157
+          },
+          "journal_serialize": {
+            "calls": 2705,
+            "total_ns": 3964798,
+            "max_ns": 10129,
+            "latency_buckets": [
+              2705,
+              0,
+              0,
+              0,
+              0
+            ],
+            "units": 0
+          },
+          "journal_write": {
+            "calls": 2705,
+            "total_ns": 4997630,
+            "max_ns": 31720,
+            "latency_buckets": [
+              2705,
+              0,
+              0,
+              0,
+              0
+            ],
+            "units": 0
+          },
+          "layer_leaf_stats": {
+            "calls": 0,
+            "total_ns": 0,
+            "max_ns": 0,
+            "latency_buckets": [
+              0,
+              0,
+              0,
+              0,
+              0
+            ],
+            "units": 76606
+          },
+          "layer_parent_stats": {
+            "calls": 0,
+            "total_ns": 0,
+            "max_ns": 0,
+            "latency_buckets": [
+              0,
+              0,
+              0,
+              0,
+              0
+            ],
+            "units": 141379
+          },
+          "list_entries": {
+            "calls": 269,
+            "total_ns": 61475759,
+            "max_ns": 1314634,
+            "latency_buckets": [
+              268,
+              1,
+              0,
+              0,
+              0
+            ],
+            "units": 0
+          },
+          "metadata": {
+            "calls": 14216,
+            "total_ns": 172497770,
+            "max_ns": 536301,
+            "latency_buckets": [
+              14216,
+              0,
+              0,
+              0,
+              0
+            ],
+            "units": 0
+          },
+          "observe_read": {
+            "calls": 4598,
+            "total_ns": 223669366,
+            "max_ns": 32435350,
+            "latency_buckets": [
+              4596,
+              1,
+              1,
+              0,
+              0
+            ],
+            "units": 0
+          },
+          "opaque_probe": {
+            "calls": 13025,
+            "total_ns": 18987028,
+            "max_ns": 77936,
+            "latency_buckets": [
+              13025,
+              0,
+              0,
+              0,
+              0
+            ],
+            "units": 0
+          },
+          "preimage": {
+            "calls": 5725,
+            "total_ns": 379572191,
+            "max_ns": 32401267,
+            "latency_buckets": [
+              5711,
+              13,
+              1,
+              0,
+              0
+            ],
+            "units": 0
+          },
+          "resolve": {
+            "calls": 14572,
+            "total_ns": 156426582,
+            "max_ns": 302445,
+            "latency_buckets": [
+              14572,
+              0,
+              0,
+              0,
+              0
+            ],
+            "units": 0
+          },
+          "resolve_components": {
+            "calls": 0,
+            "total_ns": 0,
+            "max_ns": 0,
+            "latency_buckets": [
+              0,
+              0,
+              0,
+              0,
+              0
+            ],
+            "units": 55651
+          },
+          "unavailable_upper_marker_skips": {
+            "calls": 0,
+            "total_ns": 0,
+            "max_ns": 0,
+            "latency_buckets": [
+              0,
+              0,
+              0,
+              0,
+              0
+            ],
+            "units": 27054
+          },
+          "whiteout_probe": {
+            "calls": 21721,
+            "total_ns": 13498502,
+            "max_ns": 52438,
+            "latency_buckets": [
+              21721,
+              0,
+              0,
+              0,
+              0
+            ],
+            "units": 0
+          }
+        }
+      }
+    },
+    {
+      "source": "candidate/trials/filesystem-pvisor-vm-000/stderr.log",
+      "variant": "candidate",
+      "report": {
+        "schema": 2,
+        "pid": 4046484,
+        "component": "virtio-fs-overlay",
+        "instance": 2,
+        "inclusive_spans": true,
+        "final_record": false,
+        "measurements": {
+          "backing_lookup": {
+            "calls": 8172,
+            "total_ns": 14712406,
+            "max_ns": 24776,
+            "latency_buckets": [
+              8172,
+              0,
+              0,
+              0,
+              0
+            ],
+            "units": 0
+          },
+          "directory_cache_deep_hits": {
+            "calls": 0,
+            "total_ns": 0,
+            "max_ns": 0,
+            "latency_buckets": [
+              0,
+              0,
+              0,
+              0,
+              0
+            ],
+            "units": 5784
+          },
+          "directory_cache_evictions": {
+            "calls": 0,
+            "total_ns": 0,
+            "max_ns": 0,
+            "latency_buckets": [
+              0,
+              0,
+              0,
+              0,
+              0
+            ],
+            "units": 105
+          },
+          "directory_cache_hits": {
+            "calls": 0,
+            "total_ns": 0,
+            "max_ns": 0,
+            "latency_buckets": [
+              0,
+              0,
+              0,
+              0,
+              0
+            ],
+            "units": 1902
+          },
+          "directory_cache_misses": {
+            "calls": 0,
+            "total_ns": 0,
+            "max_ns": 0,
+            "latency_buckets": [
+              0,
+              0,
+              0,
+              0,
+              0
+            ],
+            "units": 361
+          },
+          "entry": {
+            "calls": 4264,
+            "total_ns": 18169788,
+            "max_ns": 63048,
+            "latency_buckets": [
+              4264,
+              0,
+              0,
+              0,
+              0
+            ],
+            "units": 0
+          },
+          "getattr": {
+            "calls": 1737,
+            "total_ns": 30511319,
+            "max_ns": 93855,
+            "latency_buckets": [
+              1737,
+              0,
+              0,
+              0,
+              0
+            ],
+            "units": 0
+          },
+          "inner_inode": {
+            "calls": 6731,
+            "total_ns": 23711059,
+            "max_ns": 61455,
+            "latency_buckets": [
+              6731,
+              0,
+              0,
+              0,
+              0
+            ],
+            "units": 0
+          },
+          "lookup": {
+            "calls": 6113,
+            "total_ns": 162609952,
+            "max_ns": 358880,
+            "latency_buckets": [
+              6113,
+              0,
+              0,
+              0,
+              0
+            ],
+            "units": 0
+          },
+          "open": {
+            "calls": 1356,
+            "total_ns": 54073561,
+            "max_ns": 128831,
+            "latency_buckets": [
+              1356,
+              0,
+              0,
+              0,
+              0
+            ],
+            "units": 0
+          },
+          "opendir": {
+            "calls": 71,
+            "total_ns": 39946129,
+            "max_ns": 2543427,
+            "latency_buckets": [
+              55,
+              16,
+              0,
+              0,
+              0
+            ],
+            "units": 0
+          },
+          "operation_read_lock_wait": {
+            "calls": 15591,
+            "total_ns": 835163,
+            "max_ns": 21360,
+            "latency_buckets": [
+              15591,
+              0,
+              0,
+              0,
+              0
+            ],
+            "units": 0
+          },
+          "operation_write_lock_wait": {
+            "calls": 6066,
+            "total_ns": 257396,
+            "max_ns": 511,
+            "latency_buckets": [
+              6066,
+              0,
+              0,
+              0,
+              0
+            ],
+            "units": 0
+          },
+          "read": {
+            "calls": 6137,
+            "total_ns": 148510316,
+            "max_ns": 29463234,
+            "latency_buckets": [
+              6136,
+              0,
+              1,
+              0,
+              0
+            ],
+            "units": 0
+          },
+          "readdirplus": {
+            "calls": 70,
+            "total_ns": 17641969,
+            "max_ns": 676883,
+            "latency_buckets": [
+              70,
+              0,
+              0,
+              0,
+              0
+            ],
+            "units": 0
+          },
+          "write": {
+            "calls": 625,
+            "total_ns": 2502555,
+            "max_ns": 51947,
+            "latency_buckets": [
+              625,
+              0,
+              0,
+              0,
+              0
+            ],
+            "units": 0
+          }
+        }
+      }
+    },
+    {
+      "source": "candidate/trials/filesystem-pvisor-vm-000/stderr.log",
+      "variant": "candidate",
+      "report": {
+        "schema": 2,
+        "pid": 4046484,
+        "component": "virtio-fs-protocol",
+        "instance": 3,
+        "inclusive_spans": true,
+        "final_record": false,
+        "measurements": {
+          "CREATE": {
+            "calls": 540,
+            "total_ns": 10948037,
+            "max_ns": 276335,
+            "latency_buckets": [
+              540,
+              0,
+              0,
+              0,
+              0
+            ],
+            "units": 0
+          },
+          "FLUSH": {
+            "calls": 1855,
+            "total_ns": 15879859,
+            "max_ns": 12311395,
+            "latency_buckets": [
+              1854,
+              0,
+              1,
+              0,
+              0
+            ],
+            "units": 0
+          },
+          "FORGET": {
+            "calls": 1,
+            "total_ns": 1102,
+            "max_ns": 1102,
+            "latency_buckets": [
+              1,
+              0,
+              0,
+              0,
+              0
+            ],
+            "units": 0
+          },
+          "GETATTR": {
+            "calls": 1751,
+            "total_ns": 32213213,
+            "max_ns": 96210,
+            "latency_buckets": [
+              1751,
+              0,
+              0,
+              0,
+              0
+            ],
+            "units": 0
+          },
+          "GETXATTR": {
+            "calls": 562,
+            "total_ns": 8746727,
+            "max_ns": 60853,
+            "latency_buckets": [
+              562,
+              0,
+              0,
+              0,
+              0
+            ],
+            "units": 0
+          },
+          "LOOKUP": {
+            "calls": 6115,
+            "total_ns": 170239938,
+            "max_ns": 361004,
+            "latency_buckets": [
+              6115,
+              0,
+              0,
+              0,
+              0
+            ],
+            "units": 0
+          },
+          "MKDIR": {
+            "calls": 6,
+            "total_ns": 294708,
+            "max_ns": 74429,
+            "latency_buckets": [
+              6,
+              0,
+              0,
+              0,
+              0
+            ],
+            "units": 0
+          },
+          "OPEN": {
+            "calls": 1358,
+            "total_ns": 56010222,
+            "max_ns": 130494,
+            "latency_buckets": [
+              1358,
+              0,
+              0,
+              0,
+              0
+            ],
+            "units": 0
+          },
+          "OPENDIR": {
+            "calls": 71,
+            "total_ns": 40062098,
+            "max_ns": 2545741,
+            "latency_buckets": [
+              55,
+              16,
+              0,
+              0,
+              0
+            ],
+            "units": 0
+          },
+          "OTHER": {
+            "calls": 10,
+            "total_ns": 31458,
+            "max_ns": 21690,
+            "latency_buckets": [
+              10,
+              0,
+              0,
+              0,
+              0
+            ],
+            "units": 0
+          },
+          "READ": {
+            "calls": 6146,
+            "total_ns": 156898361,
+            "max_ns": 29488541,
+            "latency_buckets": [
+              6145,
+              0,
+              1,
+              0,
+              0
+            ],
+            "units": 0
+          },
+          "READDIR": {
+            "calls": 107,
+            "total_ns": 561240,
+            "max_ns": 20409,
+            "latency_buckets": [
+              107,
+              0,
+              0,
+              0,
+              0
+            ],
+            "units": 0
+          },
+          "READDIRPLUS": {
+            "calls": 70,
+            "total_ns": 17756033,
+            "max_ns": 678526,
+            "latency_buckets": [
+              70,
+              0,
+              0,
+              0,
+              0
+            ],
+            "units": 0
+          },
+          "READLINK": {
+            "calls": 4,
+            "total_ns": 140682,
+            "max_ns": 56856,
+            "latency_buckets": [
+              4,
+              0,
+              0,
+              0,
+              0
+            ],
+            "units": 0
+          },
+          "RELEASE": {
+            "calls": 1867,
+            "total_ns": 6375309,
+            "max_ns": 49111,
+            "latency_buckets": [
+              1867,
+              0,
+              0,
+              0,
+              0
+            ],
+            "units": 0
+          },
+          "RELEASEDIR": {
+            "calls": 70,
+            "total_ns": 260817,
+            "max_ns": 32972,
+            "latency_buckets": [
+              70,
+              0,
+              0,
+              0,
+              0
+            ],
+            "units": 0
+          },
+          "RENAME": {
+            "calls": 539,
+            "total_ns": 162020756,
+            "max_ns": 510563,
+            "latency_buckets": [
+              539,
+              0,
+              0,
+              0,
+              0
+            ],
+            "units": 0
+          },
+          "WRITE": {
+            "calls": 625,
+            "total_ns": 2978326,
+            "max_ns": 54722,
+            "latency_buckets": [
+              625,
+              0,
+              0,
+              0,
+              0
+            ],
+            "units": 0
+          },
+          "request_bytes": {
+            "calls": 0,
+            "total_ns": 0,
+            "max_ns": 0,
+            "latency_buckets": [
+              0,
+              0,
+              0,
+              0,
+              0
+            ],
+            "units": 2972238
+          }
+        }
+      }
+    },
+    {
+      "source": "candidate/trials/filesystem-pvisor-vm-000/stderr.log",
+      "variant": "candidate",
+      "report": {
+        "schema": 2,
+        "pid": 4046484,
+        "component": "virtio-fs-dispatch",
+        "instance": 4,
+        "inclusive_spans": true,
+        "final_record": false,
+        "measurements": {
+          "admission": {
+            "calls": 21227,
+            "total_ns": 992705042,
+            "max_ns": 29614667,
+            "latency_buckets": [
+              21201,
+              24,
+              2,
+              0,
+              0
+            ],
+            "units": 0
+          },
+          "inline_requests": {
+            "calls": 0,
+            "total_ns": 0,
+            "max_ns": 0,
+            "latency_buckets": [
+              0,
+              0,
+              0,
+              0,
+              0
+            ],
+            "units": 21340
+          },
+          "pool_completion_wait": {
+            "calls": 357,
+            "total_ns": 5160098,
+            "max_ns": 310259,
+            "latency_buckets": [
+              357,
+              0,
+              0,
+              0,
+              0
+            ],
+            "units": 0
+          },
+          "pool_queue_wait": {
+            "calls": 357,
+            "total_ns": 12797588,
+            "max_ns": 838244,
+            "latency_buckets": [
+              357,
+              0,
+              0,
+              0,
+              0
+            ],
+            "units": 0
+          },
+          "pool_requests": {
+            "calls": 0,
+            "total_ns": 0,
+            "max_ns": 0,
+            "latency_buckets": [
+              0,
+              0,
+              0,
+              0,
+              0
+            ],
+            "units": 357
+          },
+          "pool_service": {
+            "calls": 357,
+            "total_ns": 10824968,
+            "max_ns": 830731,
+            "latency_buckets": [
+              357,
+              0,
+              0,
+              0,
+              0
+            ],
+            "units": 0
+          },
+          "pool_workers": {
+            "calls": 0,
+            "total_ns": 0,
+            "max_ns": 0,
+            "latency_buckets": [
+              0,
+              0,
+              0,
+              0,
+              0
+            ],
+            "units": 2
+          }
+        }
+      }
+    },
+    {
+      "source": "candidate/trials/filesystem-pvisor-vm-000/stderr.log",
+      "variant": "candidate",
+      "report": {
+        "schema": 2,
+        "pid": 4046484,
+        "component": "overlay-core",
+        "instance": 1,
+        "inclusive_spans": true,
+        "final_record": false,
+        "measurements": {
+          "copy_up": {
+            "calls": 383,
+            "total_ns": 770680,
+            "max_ns": 24525,
+            "latency_buckets": [
+              383,
+              0,
+              0,
+              0,
+              0
+            ],
+            "units": 0
+          },
+          "layer_leaf_stats": {
+            "calls": 0,
+            "total_ns": 0,
+            "max_ns": 0,
+            "latency_buckets": [
+              0,
+              0,
+              0,
+              0,
+              0
+            ],
+            "units": 72608
+          },
+          "layer_parent_stats": {
+            "calls": 0,
+            "total_ns": 0,
+            "max_ns": 0,
+            "latency_buckets": [
+              0,
+              0,
+              0,
+              0,
+              0
+            ],
+            "units": 121768
+          },
+          "list_entries": {
+            "calls": 71,
+            "total_ns": 38020070,
+            "max_ns": 2461543,
+            "latency_buckets": [
+              58,
+              13,
+              0,
+              0,
+              0
+            ],
+            "units": 0
+          },
+          "metadata": {
+            "calls": 10455,
+            "total_ns": 216754983,
+            "max_ns": 109073,
+            "latency_buckets": [
+              10455,
+              0,
+              0,
+              0,
+              0
+            ],
+            "units": 0
+          },
+          "mount_identity_attempts": {
+            "calls": 0,
+            "total_ns": 0,
+            "max_ns": 0,
+            "latency_buckets": [
+              0,
+              0,
+              0,
+              0,
+              0
+            ],
+            "units": 55384
+          },
+          "observe_read": {
+            "calls": 1765,
+            "total_ns": 41124120,
+            "max_ns": 83555,
+            "latency_buckets": [
+              1765,
+              0,
+              0,
+              0,
+              0
+            ],
+            "units": 0
+          },
+          "opaque_probe": {
+            "calls": 11219,
+            "total_ns": 20304741,
+            "max_ns": 36618,
+            "latency_buckets": [
+              11219,
+              0,
+              0,
+              0,
+              0
+            ],
+            "units": 0
+          },
+          "parent_identity_statx_calls": {
+            "calls": 0,
+            "total_ns": 0,
+            "max_ns": 0,
+            "latency_buckets": [
+              0,
+              0,
+              0,
+              0,
+              0
+            ],
+            "units": 63375
+          },
+          "preimage": {
+            "calls": 5062,
+            "total_ns": 189204,
+            "max_ns": 762,
+            "latency_buckets": [
+              5062,
+              0,
+              0,
+              0,
+              0
+            ],
+            "units": 0
+          },
+          "resolve": {
+            "calls": 11227,
+            "total_ns": 221596698,
+            "max_ns": 108773,
+            "latency_buckets": [
+              11227,
+              0,
+              0,
+              0,
+              0
+            ],
+            "units": 0
+          },
+          "resolve_components": {
+            "calls": 0,
+            "total_ns": 0,
+            "max_ns": 0,
+            "latency_buckets": [
+              0,
+              0,
+              0,
+              0,
+              0
+            ],
+            "units": 59874
+          },
+          "unavailable_upper_marker_skips": {
+            "calls": 0,
+            "total_ns": 0,
+            "max_ns": 0,
+            "latency_buckets": [
+              0,
+              0,
+              0,
+              0,
+              0
+            ],
+            "units": 30863
+          },
+          "whiteout_probe": {
+            "calls": 14895,
+            "total_ns": 16237961,
+            "max_ns": 27732,
+            "latency_buckets": [
+              14895,
+              0,
+              0,
+              0,
+              0
+            ],
+            "units": 0
+          }
+        }
+      }
+    },
+    {
+      "source": "candidate/trials/filesystem-pvisor-vm-000/stderr.log",
+      "variant": "candidate",
+      "report": {
+        "schema": 2,
+        "pid": 4046484,
+        "component": "virtio-fs-overlay",
+        "instance": 6,
+        "inclusive_spans": true,
+        "final_record": false,
+        "measurements": {
+          "backing_lookup": {
+            "calls": 13019,
+            "total_ns": 33094369,
+            "max_ns": 9956560,
+            "latency_buckets": [
+              13018,
+              1,
+              0,
+              0,
+              0
+            ],
+            "units": 0
+          },
+          "directory_cache_deep_hits": {
+            "calls": 0,
+            "total_ns": 0,
+            "max_ns": 0,
+            "latency_buckets": [
+              0,
+              0,
+              0,
+              0,
+              0
+            ],
+            "units": 11934
+          },
+          "directory_cache_hits": {
+            "calls": 0,
+            "total_ns": 0,
+            "max_ns": 0,
+            "latency_buckets": [
+              0,
+              0,
+              0,
+              0,
+              0
+            ],
+            "units": 365
+          },
+          "directory_cache_misses": {
+            "calls": 0,
+            "total_ns": 0,
+            "max_ns": 0,
+            "latency_buckets": [
+              0,
+              0,
+              0,
+              0,
+              0
+            ],
+            "units": 131
+          },
+          "entry": {
+            "calls": 7530,
+            "total_ns": 33838306,
+            "max_ns": 9964796,
+            "latency_buckets": [
+              7529,
+              1,
+              0,
+              0,
+              0
+            ],
+            "units": 0
+          },
+          "getattr": {
+            "calls": 738,
+            "total_ns": 14999798,
+            "max_ns": 234748,
+            "latency_buckets": [
+              738,
+              0,
+              0,
+              0,
+              0
+            ],
+            "units": 0
+          },
+          "inner_inode": {
+            "calls": 12435,
+            "total_ns": 45281508,
+            "max_ns": 9963223,
+            "latency_buckets": [
+              12434,
+              1,
+              0,
+              0,
+              0
+            ],
+            "units": 0
+          },
+          "lookup": {
+            "calls": 3960,
+            "total_ns": 109020501,
+            "max_ns": 387143,
+            "latency_buckets": [
+              3960,
+              0,
+              0,
+              0,
+              0
+            ],
+            "units": 0
+          },
+          "open": {
+            "calls": 4245,
+            "total_ns": 265739026,
+            "max_ns": 33759902,
+            "latency_buckets": [
+              4244,
+              0,
+              1,
+              0,
+              0
+            ],
+            "units": 0
+          },
+          "opendir": {
+            "calls": 232,
+            "total_ns": 75632324,
+            "max_ns": 1606308,
+            "latency_buckets": [
+              231,
+              1,
+              0,
+              0,
+              0
+            ],
+            "units": 0
+          },
+          "operation_read_lock_wait": {
+            "calls": 14531,
+            "total_ns": 1055663,
+            "max_ns": 372345,
+            "latency_buckets": [
+              14531,
+              0,
+              0,
+              0,
+              0
+            ],
+            "units": 0
+          },
+          "operation_write_lock_wait": {
+            "calls": 10262,
+            "total_ns": 1494795,
+            "max_ns": 337610,
+            "latency_buckets": [
+              10262,
+              0,
+              0,
+              0,
+              0
+            ],
+            "units": 0
+          },
+          "read": {
+            "calls": 4758,
+            "total_ns": 23892462,
+            "max_ns": 544265,
+            "latency_buckets": [
+              4758,
+              0,
+              0,
+              0,
+              0
+            ],
+            "units": 0
+          },
+          "readdirplus": {
+            "calls": 235,
+            "total_ns": 64232067,
+            "max_ns": 10305411,
+            "latency_buckets": [
+              234,
+              0,
+              1,
+              0,
+              0
+            ],
+            "units": 0
+          },
+          "write": {
+            "calls": 297,
+            "total_ns": 4488241,
+            "max_ns": 51176,
+            "latency_buckets": [
+              297,
+              0,
+              0,
+              0,
+              0
+            ],
+            "units": 0
+          }
+        }
+      }
+    },
+    {
+      "source": "candidate/trials/filesystem-pvisor-vm-000/stderr.log",
+      "variant": "candidate",
+      "report": {
+        "schema": 2,
+        "pid": 4046484,
+        "component": "overlay-core",
+        "instance": 5,
+        "inclusive_spans": true,
+        "final_record": false,
+        "measurements": {
+          "copy_up": {
+            "calls": 20,
+            "total_ns": 1000096,
+            "max_ns": 909307,
+            "latency_buckets": [
+              20,
+              0,
+              0,
+              0,
+              0
+            ],
+            "units": 0
+          },
+          "copy_up_bytes": {
+            "calls": 0,
+            "total_ns": 0,
+            "max_ns": 0,
+            "latency_buckets": [
+              0,
+              0,
+              0,
+              0,
+              0
+            ],
+            "units": 202
+          },
+          "fingerprint_bytes": {
+            "calls": 0,
+            "total_ns": 0,
+            "max_ns": 0,
+            "latency_buckets": [
+              0,
+              0,
+              0,
+              0,
+              0
+            ],
+            "units": 69375893
+          },
+          "fingerprint_content": {
+            "calls": 2157,
+            "total_ns": 58018579,
+            "max_ns": 33637634,
+            "latency_buckets": [
+              2156,
+              0,
+              1,
+              0,
+              0
+            ],
+            "units": 0
+          },
+          "fingerprint_metadata": {
+            "calls": 2163,
+            "total_ns": 4863120,
+            "max_ns": 27091,
+            "latency_buckets": [
+              2163,
+              0,
+              0,
+              0,
+              0
+            ],
+            "units": 0
+          },
+          "fingerprint_xattrs": {
+            "calls": 2162,
+            "total_ns": 2525615,
+            "max_ns": 14527,
+            "latency_buckets": [
+              2162,
+              0,
+              0,
+              0,
+              0
+            ],
+            "units": 0
+          },
+          "fingerprinted_paths": {
+            "calls": 0,
+            "total_ns": 0,
+            "max_ns": 0,
+            "latency_buckets": [
+              0,
+              0,
+              0,
+              0,
+              0
+            ],
+            "units": 2163
+          },
+          "journal_log": {
+            "calls": 5671,
+            "total_ns": 238368889,
+            "max_ns": 33689591,
+            "latency_buckets": [
+              5663,
+              7,
+              1,
+              0,
+              0
+            ],
+            "units": 0
+          },
+          "layer_leaf_stats": {
+            "calls": 0,
+            "total_ns": 0,
+            "max_ns": 0,
+            "latency_buckets": [
+              0,
+              0,
+              0,
+              0,
+              0
+            ],
+            "units": 93844
+          },
+          "layer_parent_stats": {
+            "calls": 0,
+            "total_ns": 0,
+            "max_ns": 0,
+            "latency_buckets": [
+              0,
+              0,
+              0,
+              0,
+              0
+            ],
+            "units": 169649
+          },
+          "list_entries": {
+            "calls": 241,
+            "total_ns": 71598014,
+            "max_ns": 1506512,
+            "latency_buckets": [
+              240,
+              1,
+              0,
+              0,
+              0
+            ],
+            "units": 0
+          },
+          "metadata": {
+            "calls": 17650,
+            "total_ns": 287533422,
+            "max_ns": 195726,
+            "latency_buckets": [
+              17650,
+              0,
+              0,
+              0,
+              0
+            ],
+            "units": 0
+          },
+          "mount_identity_attempts": {
+            "calls": 0,
+            "total_ns": 0,
+            "max_ns": 0,
+            "latency_buckets": [
+              0,
+              0,
+              0,
+              0,
+              0
+            ],
+            "units": 53861
+          },
+          "observe_read": {
+            "calls": 4552,
+            "total_ns": 235648213,
+            "max_ns": 33730327,
+            "latency_buckets": [
+              4551,
+              0,
+              1,
+              0,
+              0
+            ],
+            "units": 0
+          },
+          "opaque_probe": {
+            "calls": 16543,
+            "total_ns": 37370733,
+            "max_ns": 41928,
+            "latency_buckets": [
+              16543,
+              0,
+              0,
+              0,
+              0
+            ],
+            "units": 0
+          },
+          "parent_identity_statx_calls": {
+            "calls": 0,
+            "total_ns": 0,
+            "max_ns": 0,
+            "latency_buckets": [
+              0,
+              0,
+              0,
+              0,
+              0
+            ],
+            "units": 65488
+          },
+          "preimage": {
+            "calls": 5671,
+            "total_ns": 239410536,
+            "max_ns": 33690242,
+            "latency_buckets": [
+              5663,
+              7,
+              1,
+              0,
+              0
+            ],
+            "units": 0
+          },
+          "resolve": {
+            "calls": 17689,
+            "total_ns": 278395283,
+            "max_ns": 128490,
+            "latency_buckets": [
+              17689,
+              0,
+              0,
+              0,
+              0
+            ],
+            "units": 0
+          },
+          "resolve_components": {
+            "calls": 0,
+            "total_ns": 0,
+            "max_ns": 0,
+            "latency_buckets": [
+              0,
+              0,
+              0,
+              0,
+              0
+            ],
+            "units": 69187
+          },
+          "unavailable_upper_marker_skips": {
+            "calls": 0,
+            "total_ns": 0,
+            "max_ns": 0,
+            "latency_buckets": [
+              0,
+              0,
+              0,
+              0,
+              0
+            ],
+            "units": 32998
+          },
+          "whiteout_probe": {
+            "calls": 25099,
+            "total_ns": 19959671,
+            "max_ns": 49983,
+            "latency_buckets": [
+              25099,
+              0,
+              0,
+              0,
+              0
+            ],
+            "units": 0
+          }
+        }
+      }
+    },
+    {
+      "source": "candidate/trials/filesystem-pvisor-vm-000/stderr.log",
+      "variant": "candidate",
+      "report": {
+        "schema": 2,
+        "pid": 4046484,
+        "component": "virtio-fs-protocol",
+        "instance": 7,
+        "inclusive_spans": true,
+        "final_record": false,
+        "measurements": {
+          "CREATE": {
+            "calls": 283,
+            "total_ns": 127722403,
+            "max_ns": 3642257,
+            "latency_buckets": [
+              275,
+              8,
+              0,
+              0,
+              0
+            ],
+            "units": 0
+          },
+          "FLUSH": {
+            "calls": 4533,
+            "total_ns": 7225033,
+            "max_ns": 26479,
+            "latency_buckets": [
+              4533,
+              0,
+              0,
+              0,
+              0
+            ],
+            "units": 0
+          },
+          "FORGET": {
+            "calls": 13,
+            "total_ns": 7592,
+            "max_ns": 751,
+            "latency_buckets": [
+              13,
+              0,
+              0,
+              0,
+              0
+            ],
+            "units": 0
+          },
+          "FSYNC": {
+            "calls": 3,
+            "total_ns": 1287052,
+            "max_ns": 553373,
+            "latency_buckets": [
+              3,
+              0,
+              0,
+              0,
+              0
+            ],
+            "units": 0
+          },
+          "FSYNCDIR": {
+            "calls": 1,
+            "total_ns": 491,
+            "max_ns": 491,
+            "latency_buckets": [
+              1,
+              0,
+              0,
+              0,
+              0
+            ],
+            "units": 0
+          },
+          "GETATTR": {
+            "calls": 739,
+            "total_ns": 16082295,
+            "max_ns": 241250,
+            "latency_buckets": [
+              739,
+              0,
+              0,
+              0,
+              0
+            ],
+            "units": 0
+          },
+          "GETXATTR": {
+            "calls": 280,
+            "total_ns": 9999037,
+            "max_ns": 109374,
+            "latency_buckets": [
+              280,
+              0,
+              0,
+              0,
+              0
+            ],
+            "units": 0
+          },
+          "LOOKUP": {
+            "calls": 3960,
+            "total_ns": 113932785,
+            "max_ns": 388816,
+            "latency_buckets": [
+              3960,
+              0,
+              0,
+              0,
+              0
+            ],
+            "units": 0
+          },
+          "MKDIR": {
+            "calls": 15,
+            "total_ns": 7266313,
+            "max_ns": 1068534,
+            "latency_buckets": [
+              14,
+              1,
+              0,
+              0,
+              0
+            ],
+            "units": 0
+          },
+          "OPEN": {
+            "calls": 4245,
+            "total_ns": 269890201,
+            "max_ns": 33764851,
+            "latency_buckets": [
+              4244,
+              0,
+              1,
+              0,
+              0
+            ],
+            "units": 0
+          },
+          "OPENDIR": {
+            "calls": 232,
+            "total_ns": 75856762,
+            "max_ns": 1608492,
+            "latency_buckets": [
+              231,
+              1,
+              0,
+              0,
+              0
+            ],
+            "units": 0
+          },
+          "OTHER": {
+            "calls": 3,
+            "total_ns": 470688,
+            "max_ns": 437486,
+            "latency_buckets": [
+              3,
+              0,
+              0,
+              0,
+              0
+            ],
+            "units": 0
+          },
+          "READ": {
+            "calls": 4758,
+            "total_ns": 27924887,
+            "max_ns": 545659,
+            "latency_buckets": [
+              4758,
+              0,
+              0,
+              0,
+              0
+            ],
+            "units": 0
+          },
+          "READDIR": {
+            "calls": 354,
+            "total_ns": 1150229,
+            "max_ns": 16401,
+            "latency_buckets": [
+              354,
+              0,
+              0,
+              0,
+              0
+            ],
+            "units": 0
+          },
+          "READDIRPLUS": {
+            "calls": 235,
+            "total_ns": 64456344,
+            "max_ns": 10306634,
+            "latency_buckets": [
+              234,
+              0,
+              1,
+              0,
+              0
+            ],
+            "units": 0
+          },
+          "READLINK": {
+            "calls": 32,
+            "total_ns": 1239663,
+            "max_ns": 84748,
+            "latency_buckets": [
+              32,
+              0,
+              0,
+              0,
+              0
+            ],
+            "units": 0
+          },
+          "RELEASE": {
+            "calls": 4528,
+            "total_ns": 16470857,
+            "max_ns": 342399,
+            "latency_buckets": [
+              4528,
+              0,
+              0,
+              0,
+              0
+            ],
+            "units": 0
+          },
+          "RELEASEDIR": {
+            "calls": 232,
+            "total_ns": 416659,
+            "max_ns": 7394,
+            "latency_buckets": [
+              232,
+              0,
+              0,
+              0,
+              0
+            ],
+            "units": 0
+          },
+          "RENAME": {
+            "calls": 3,
+            "total_ns": 2540932,
+            "max_ns": 1231558,
+            "latency_buckets": [
+              2,
+              1,
+              0,
+              0,
+              0
+            ],
+            "units": 0
+          },
+          "RMDIR": {
+            "calls": 3,
+            "total_ns": 792389,
+            "max_ns": 286084,
+            "latency_buckets": [
+              3,
+              0,
+              0,
+              0,
+              0
+            ],
+            "units": 0
+          },
+          "SETATTR": {
+            "calls": 5,
+            "total_ns": 180928,
+            "max_ns": 59181,
+            "latency_buckets": [
+              5,
+              0,
+              0,
+              0,
+              0
+            ],
+            "units": 0
+          },
+          "STATFS": {
+            "calls": 13,
+            "total_ns": 118943,
+            "max_ns": 13566,
+            "latency_buckets": [
+              13,
+              0,
+              0,
+              0,
+              0
+            ],
+            "units": 0
+          },
+          "SYMLINK": {
+            "calls": 32,
+            "total_ns": 17618538,
+            "max_ns": 4283424,
+            "latency_buckets": [
+              31,
+              1,
+              0,
+              0,
+              0
+            ],
+            "units": 0
+          },
+          "UNLINK": {
+            "calls": 9,
+            "total_ns": 2834941,
+            "max_ns": 711417,
+            "latency_buckets": [
+              9,
+              0,
+              0,
+              0,
+              0
+            ],
+            "units": 0
+          },
+          "WRITE": {
+            "calls": 297,
+            "total_ns": 4829855,
+            "max_ns": 51686,
+            "latency_buckets": [
+              297,
+              0,
+              0,
+              0,
+              0
+            ],
+            "units": 0
+          },
+          "request_bytes": {
+            "calls": 0,
+            "total_ns": 0,
+            "max_ns": 0,
+            "latency_buckets": [
+              0,
+              0,
+              0,
+              0,
+              0
+            ],
+            "units": 19065387
+          }
+        }
+      }
+    },
+    {
+      "source": "candidate/trials/filesystem-pvisor-vm-000/stderr.log",
+      "variant": "candidate",
+      "report": {
+        "schema": 2,
+        "pid": 4046484,
+        "component": "virtio-fs-dispatch",
+        "instance": 8,
+        "inclusive_spans": true,
+        "final_record": false,
+        "measurements": {
+          "admission": {
+            "calls": 19772,
+            "total_ns": 1030643868,
+            "max_ns": 33791000,
+            "latency_buckets": [
+              19751,
+              19,
+              2,
+              0,
+              0
+            ],
+            "units": 0
+          },
+          "inline_requests": {
+            "calls": 0,
+            "total_ns": 0,
+            "max_ns": 0,
+            "latency_buckets": [
+              0,
+              0,
+              0,
+              0,
+              0
+            ],
+            "units": 24743
+          },
+          "pool_completion_wait": {
+            "calls": 65,
+            "total_ns": 1215931,
+            "max_ns": 264303,
+            "latency_buckets": [
+              65,
+              0,
+              0,
+              0,
+              0
+            ],
+            "units": 0
+          },
+          "pool_queue_wait": {
+            "calls": 65,
+            "total_ns": 1667760,
+            "max_ns": 556679,
+            "latency_buckets": [
+              65,
+              0,
+              0,
+              0,
+              0
+            ],
+            "units": 0
+          },
+          "pool_requests": {
+            "calls": 0,
+            "total_ns": 0,
+            "max_ns": 0,
+            "latency_buckets": [
+              0,
+              0,
+              0,
+              0,
+              0
+            ],
+            "units": 65
+          },
+          "pool_service": {
+            "calls": 65,
+            "total_ns": 11980201,
+            "max_ns": 561057,
+            "latency_buckets": [
+              65,
+              0,
+              0,
+              0,
+              0
+            ],
+            "units": 0
+          },
+          "pool_workers": {
+            "calls": 0,
+            "total_ns": 0,
+            "max_ns": 0,
+            "latency_buckets": [
+              0,
+              0,
+              0,
+              0,
+              0
+            ],
+            "units": 2
+          }
+        }
+      }
+    }
+  ]
+}

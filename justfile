@@ -8,14 +8,15 @@ python_paths := "pvisor tests examples conftest.py"
 default:
     @just --list --unsorted
 
-# Build pvisor (debug or release), including macOS Hypervisor signing.
+# Build pvisor (debug, release or performance), including macOS Hypervisor signing.
 build profile="debug":
     #!/usr/bin/env bash
     set -euo pipefail
     case "$1" in
       debug) cargo_profile=dev ;;
       release) cargo_profile=release ;;
-      *) echo "expected debug or release, got: $1" >&2; exit 2 ;;
+      performance) cargo_profile=performance ;;
+      *) echo "expected debug, release or performance, got: $1" >&2; exit 2 ;;
     esac
     python3 scripts/build-pvisor.py --profile "$cargo_profile" --target-dir "{{ target_dir }}"
     for name in pvisor pvisor-cache pvisor-tui pvisor-replay pvisor-memory-pool; do
@@ -97,7 +98,8 @@ test-cluster-vm:
 
 # Actual model/tool loops in immutable-environment VMs with Attempt-local Gateways.
 test-cluster-vm-gateway:
-    cargo nextest run --locked -p pvisor --features gateway --test cluster_gateway_vm --run-ignored only
+    cargo build --locked -p pvisor-cluster --bin pvisor-cluster
+    PVISOR_TEST_CONTROLLER_BINARY="{{ target_dir }}/debug/pvisor-cluster" cargo nextest run --locked -p pvisor --features gateway --test cluster_gateway_vm --run-ignored only --test-threads 1
 
 # Dedicated user-systemd cgroup with real VM restore, CPU overcommit and cleanup.
 test-cluster-cgroup:
@@ -109,6 +111,13 @@ bench-cluster-cpu:
     set -euo pipefail
     : "${PVISOR_CPU_BENCH_OUT:?set an absolute JSON output path}"
     cargo nextest run --locked -p pvisor --test cluster_cpu_benchmark --run-ignored only
+
+# Finite CPU/RAM envelope with result-checked native Agent/model/tool work.
+bench-cluster-inference:
+    #!/usr/bin/env bash
+    set -euo pipefail
+    : "${PVISOR_INFERENCE_BENCH_OUT:?set an absolute JSON output path}"
+    cargo nextest run --locked -p pvisor --features gateway --test cluster_inference_benchmark --run-ignored only --test-threads 1
 
 # Format source files; use fmt-check for a read-only check.
 fmt: fmt-rust fmt-py

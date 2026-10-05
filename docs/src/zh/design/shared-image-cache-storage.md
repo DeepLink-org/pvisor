@@ -4,6 +4,21 @@
 
 v1 把每个镜像的可变状态与文件索引收进自己的 meta 目录，只共享不可变 data 对象。不同镜像不更新同一个引用表、镜像索引或可变打包文件；同一镜像的并发更新在其自身的平台 HEAD 上处理。
 
+## 文件服务接入与 lazy 读取 {#filesystem-access}
+
+v1 存储格式独立于文件系统入口。当前 lazy image 客户端在宿主挂载只读
+FUSE lower，host staged 和 VM 都通过本地路径访问它；普通本地 lower 的
+VM overlay 已直接通过 virtio-fs 服务，不需要宿主 union 挂载。
+
+后续按[统一文件服务与双入口](overlayfs.md#filesystem-service)重构：host
+经宿主 FUSE 入口，VM 经 virtio-fs 入口，二者调用相同远程只读后端。
+VM 不再为 lazy image 建立中间宿主 FUSE 挂载。这个直接接入尚未实现，
+不改变已发布的 v1 数据格式、固定 revision 句柄和校验合同。
+
+后端应保留 stat/list/read、分页索引、硬链接身份与有界内容缓存；首次写入
+仍通过 overlay copy-up 到独立 upper。冷 miss 与其他请求的排队、热读缓存
+命中和完整任务耗时分别测量，减少一层中转不等于已证明整体加速。
+
 ## 完整目录树
 
 ```text

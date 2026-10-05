@@ -1,0 +1,93 @@
+{
+  "schema": "pvisor-cluster-quickstart/v1",
+  "passed": true,
+  "backend": "host",
+  "verified_at_utc": "2026-10-05T04:59:08Z",
+  "max_execution_concurrency": 2,
+  "task_memory_bytes": 67108864,
+  "task_cpu_time_ms": 2000,
+  "gateway": true,
+  "checks": [
+    "kernel memory/CPU/swap caps",
+    "real execution and two-node capability placement",
+    "immutable submission idempotency",
+    "verified Bundle and trace download",
+    "three-node dependency graph",
+    "running cancellation",
+    "drain and resumed admission",
+    "Attempt Gateway model request, forbidden model and credential isolation",
+    "no heartbeat writes; same-key Controller restart reconciliation",
+    "no cgroup OOM; execution reservations released",
+    "online storage policy, evidence retirement and GC"
+  ],
+  "cgroups": {
+    "controller": {
+      "ControlGroup": "/user.slice/user-1000.slice/user@1000.service/app.slice/pvisor-quickstart-2c189a5f0f57-controller.service",
+      "MemoryPeak": "6381568",
+      "CPUUsageNSec": "19601000",
+      "CPUQuotaPerSecUSec": "250ms",
+      "MemoryMax": "268435456",
+      "memory_events": {
+        "low": "0",
+        "high": "0",
+        "max": "0",
+        "oom": "0",
+        "oom_kill": "0",
+        "oom_group_kill": "0",
+        "sock_throttled": "0"
+      }
+    },
+    "worker-a": {
+      "ControlGroup": "/user.slice/user-1000.slice/user@1000.service/app.slice/pvisor-quickstart-2c189a5f0f57-worker-a.service",
+      "MemoryPeak": "24104960",
+      "CPUUsageNSec": "283236000",
+      "CPUQuotaPerSecUSec": "500ms",
+      "MemoryMax": "536870912",
+      "memory_events": {
+        "low": "0",
+        "high": "0",
+        "max": "0",
+        "oom": "0",
+        "oom_kill": "0",
+        "oom_group_kill": "0",
+        "sock_throttled": "0"
+      }
+    },
+    "worker-b": {
+      "ControlGroup": "/user.slice/user-1000.slice/user@1000.service/app.slice/pvisor-quickstart-2c189a5f0f57-worker-b.service",
+      "MemoryPeak": "8052736",
+      "CPUUsageNSec": "84958000",
+      "CPUQuotaPerSecUSec": "500ms",
+      "MemoryMax": "536870912",
+      "memory_events": {
+        "low": "0",
+        "high": "0",
+        "max": "0",
+        "oom": "0",
+        "oom_kill": "0",
+        "oom_group_kill": "0",
+        "sock_throttled": "0"
+      }
+    },
+    "model": {
+      "ControlGroup": "/user.slice/user-1000.slice/user@1000.service/app.slice/pvisor-quickstart-2c189a5f0f57-model.service",
+      "MemoryPeak": "14049280",
+      "CPUUsageNSec": "46508000",
+      "CPUQuotaPerSecUSec": "100ms",
+      "MemoryMax": "134217728",
+      "memory_events": {
+        "low": "0",
+        "high": "0",
+        "max": "0",
+        "oom": "0",
+        "oom_kill": "0",
+        "oom_group_kill": "0",
+        "sock_throttled": "0"
+      }
+    }
+  },
+  "binaries": {
+    "pvisor-cluster": "b153b6abad8d65eae90c1217162fa951ed56c46c5e9f0d0e2a8981e2a1135e53",
+    "pvisor-worker": "c995dd2021af98de82a23068a5527f2ec5933ed1d5fc6ffc4f1fbaec2b2d0e5d"
+  }
+}

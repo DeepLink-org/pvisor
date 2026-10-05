@@ -62,8 +62,11 @@ admission. Native exit also stops cleanup before artifact delivery starts.
 A Linux KVM/FUSE Agent gate verifies released CPU admission, a competing VM,
 unchanged frozen vCPU counters, manual pause ownership and completed real tools.
 This interface does not provide RAM reclamation or networked VM hibernation.
-Controller-restart recovery is covered by protocol tests; a live networked-VM
-restart/fault gate and parallel-call fault experiments remain to be completed.
+Protocol tests and live networked-VM gates cover controller-server restart and
+a separate CLI process receiving SIGKILL after a durable Ready response is lost.
+Within the Worker watchdog, retries preserve native executions, leases and
+held responses. Longer outages and parallel-call fault experiments remain
+to be completed.
 The controlled
 [`model_wait_http`](tests/model_wait_http.rs) tests measure HTTP ordering and
 cancellation rather than VM density. AgentENV's inference-wait lifecycle and

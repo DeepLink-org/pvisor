@@ -4,6 +4,24 @@
 
 V1 keeps each image's mutable state and file indexes in its own meta directory, sharing only immutable data objects. Different images do not update a common reference table, image index, or mutable pack. Concurrent updates of one image are handled at that platform's own HEAD.
 
+## Filesystem entry points and lazy reads {#filesystem-access}
+
+The v1 storage format is independent of filesystem entry points. Today's lazy
+image client mounts a read-only host FUSE lower, accessed through local paths
+by host staged and VMs. VM overlays with ordinary local lowers already serve
+virtio-fs directly without a host union mount.
+
+The proposed [shared filesystem service and two entry points](overlayfs.md#filesystem-service)
+use host FUSE for host tools and virtio-fs for VMs, both calling the same remote
+read-only backend. VMs would no longer create an intermediate host FUSE mount
+for lazy images. Direct access is not implemented yet and does not change the
+published v1 data format, pinned revision handles or verification contracts.
+
+Retain stat/list/read, paged indexes, hard-link identity and bounded content caches
+in the backend. First writes still use overlay copy-up into a private upper.
+Measure cold-miss interference, warm-read cache hits and complete-task time
+separately; removing an intermediate layer does not establish overall acceleration.
+
 ## Complete tree
 
 ```text

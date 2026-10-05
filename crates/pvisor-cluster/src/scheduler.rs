@@ -161,7 +161,6 @@ pub struct Scheduler {
     graph_state: graph::GraphState,
     config: SchedulerConfig,
     journal: Journal,
-    durable_leases: bool,
     /// Replayed assignments are hints, never proof that a Worker has stopped.
     reconciling: BTreeSet<String>,
     // Records contain large inline optional observations. Keep their existing
@@ -221,20 +220,6 @@ fn identifier(value: &str) -> bool {
 
 impl Scheduler {
     pub fn open(path: &Path, config: SchedulerConfig) -> anyhow::Result<Self> {
-        Self::open_with_lease_mode(path, config, false)
-    }
-
-    /// Compatibility mode for deployments requiring the old durable lease
-    /// deadline contract. The default mode reconciles leases with Workers.
-    pub fn open_durable(path: &Path, config: SchedulerConfig) -> anyhow::Result<Self> {
-        Self::open_with_lease_mode(path, config, true)
-    }
-
-    fn open_with_lease_mode(
-        path: &Path,
-        config: SchedulerConfig,
-        durable_leases: bool,
-    ) -> anyhow::Result<Self> {
         ensure!(
             config.lease_duration_ms >= 100 && config.lease_duration_ms <= 300_000,
             "lease duration must be 100..300000 ms"
@@ -259,7 +244,6 @@ impl Scheduler {
             graph_state: graph::GraphState::default(),
             config,
             journal,
-            durable_leases,
             reconciling: BTreeSet::new(),
             tasks: BTreeMap::new(),
             inference_waits: BTreeMap::new(),
@@ -330,17 +314,15 @@ impl Scheduler {
             let (_, pins) = scheduler.artifacts.pin_manifest(reference)?;
             scheduler.retained_pins.insert(id.clone(), pins);
         }
-        if !durable_leases {
-            // Old WALs are readable, but their heartbeat deadlines are not
-            // authority in this mode. A fresh Worker report resolves each key.
-            for (id, task) in &mut scheduler.tasks {
-                if !task.phase.terminal()
-                    && let Some(lease) = &task.lease
-                {
-                    task.reconciliation_pending = true;
-                    scheduler.reconciling.insert(id.clone());
-                    scheduler.expiry.remove(&(lease.expires_at_ms, id.clone()));
-                }
+        // Old WALs remain readable, but their heartbeat deadlines are only
+        // historical hints. A fresh Worker report resolves each owned key.
+        for (id, task) in &mut scheduler.tasks {
+            if !task.phase.terminal()
+                && let Some(lease) = &task.lease
+            {
+                task.reconciliation_pending = true;
+                scheduler.reconciling.insert(id.clone());
+                scheduler.expiry.remove(&(lease.expires_at_ms, id.clone()));
             }
         }
         Ok(scheduler)
@@ -361,7 +343,7 @@ impl Scheduler {
             version: CLUSTER_VERSION,
             changes: changes
                 .iter()
-                .filter(|c| self.durable_leases || !matches!(c, Change::Renew { .. }))
+                .filter(|c| !matches!(c, Change::Renew { .. }))
                 .collect(),
         };
         if !transaction.changes.is_empty() {
@@ -406,8 +388,18 @@ impl Scheduler {
         self.journal.exhaust_quota();
     }
 
-    fn defer_capacity_failure(&self, error: &anyhow::Error) -> bool {
-        !self.durable_leases && error.is::<crate::artifacts::CapacityExceeded>()
+    fn defer_capacity_failure(error: &anyhow::Error) -> bool {
+        error.is::<crate::artifacts::CapacityExceeded>()
+    }
+
+    /// A refused expiry commit retains reservations and roots. Healthy poll
+    /// and outbox recovery must still be able to renew their own exact keys.
+    fn maintain_expiry(&mut self, now: u64) -> anyhow::Result<()> {
+        match self.reap(now) {
+            Ok(_) => Ok(()),
+            Err(error) if Self::defer_capacity_failure(&error) => Ok(()),
+            Err(error) => Err(error),
+        }
     }
 
     fn release(&mut self, id: &str) {
@@ -1718,7 +1710,7 @@ impl Scheduler {
         request: RecoveryRequest,
         now: u64,
     ) -> anyhow::Result<RecoveryResponse> {
-        self.reap(now)?;
+        self.maintain_expiry(now)?;
         let worker = self
             .workers
             .get(&request.worker_id)
@@ -1777,13 +1769,7 @@ impl Scheduler {
     }
 
     pub fn poll(&mut self, mut request: PollRequest, now: u64) -> anyhow::Result<PollResponse> {
-        // A refused expiry commit keeps its old reservation and roots. It
-        // must not prevent other, healthy executions from renewing in memory.
-        if let Err(error) = self.reap(now)
-            && !self.defer_capacity_failure(&error)
-        {
-            return Err(error);
-        }
+        self.maintain_expiry(now)?;
         ensure!(
             request.max_assignments <= self.config.max_batch,
             "batch limit exceeded"
@@ -1893,7 +1879,7 @@ impl Scheduler {
         let redelivered = assignments.len();
         let (controls, available) = match self.issue_controls(&request, &renewed, now) {
             Ok(result) => result,
-            Err(error) if self.defer_capacity_failure(&error) => {
+            Err(error) if Self::defer_capacity_failure(&error) => {
                 return Ok(PollResponse {
                     version: CLUSTER_VERSION,
                     lease_duration_ms: self.config.lease_duration_ms,
@@ -2069,7 +2055,7 @@ impl Scheduler {
             }
         }
         if let Err(error) = committed {
-            if !self.defer_capacity_failure(&error) {
+            if !Self::defer_capacity_failure(&error) {
                 return Err(error);
             }
             // No new assignment was published. Return only previously owned

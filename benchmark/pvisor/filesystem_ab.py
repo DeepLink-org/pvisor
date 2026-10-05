@@ -64,6 +64,13 @@ def main():
     parser.add_argument("--warmups", type=int, default=3)
     parser.add_argument("--cpu-affinity", default="0,1")
     parser.add_argument("--memory-mib", type=int, default=16384)
+    for variant in ("baseline", "candidate"):
+        parser.add_argument(
+            f"--{variant}-staged-isolation",
+            choices=("host_process", "rootless_process"),
+            default="host_process",
+            help="Required observed staged isolation; does not change runtime configuration",
+        )
     parser.add_argument(
         "--profile", action="store_true", help="Diagnostic run; exclude from performance claims"
     )
@@ -100,6 +107,7 @@ def main():
             firmware=firmware,
             cpu_affinity=args.cpu_affinity,
             memory_mib=args.memory_mib,
+            staged_isolation=getattr(args, f"{variant}_staged_isolation", "host_process"),
             docker_root_pid=None,
         )
     validate_binaries(hashes)
@@ -138,6 +146,10 @@ def main():
             "vm_vcpus": 2,
             "vm_memory_mib": args.memory_mib,
             "filesystem_profile": args.profile,
+            "staged_isolation": {
+                variant: configurations[variant].staged_isolation
+                for variant in ("baseline", "candidate")
+            },
             "worker_timing": "operation and correctness check; all seven workloads run in order per job",
             "completion_timing": "launch to process exit; preparation excluded",
             "percentile": "linear interpolation",

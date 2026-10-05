@@ -26,6 +26,69 @@ For example, a compose lower contains `config` B while the host target contains 
 
 OverlayCore does not own FUSE mounts, Run scheduling or the public Event Journal. It uses `pvisor-journal::atomic_write` for metadata, but `apply-ledger.json` is distinct from the [Event Journal](journal.md): the former replaces complete JSON documents; the latter appends event lines.
 
+### Shared filesystem service with two entry points {#filesystem-service}
+
+Host execution connects through a host FUSE mount; VM execution connects directly
+through the guest virtio-fs driver and virtqueues. Both reuse filesystem service
+capabilities, with host staged retaining host execution. FUSE names both the
+request protocol and the host mount entry: virtio-fs uses FUSE requests, but the
+VM service need not send those requests back through host `/dev/fuse`.
+
+The target structure follows. A shared filesystem service and direct remote lower
+are proposed refactors. The existing adapters already share OverlayCore, while
+inode/handle ownership and some I/O operations remain separately implemented.
+
+```mermaid
+flowchart TD
+    H[Host tools] --> HK[Host kernel FUSE]
+    HK --> HA[Host FUSE adapter]
+    G[Guest tools] --> GK[Guest kernel virtio-fs]
+    GK --> VQ[virtqueue]
+    VQ --> VA[VM virtio-fs adapter]
+    HA --> S[Shared filesystem service]
+    VA --> S
+    S --> O[OverlayCore: policy, merge, copy-up, journal]
+    O --> L[Local lower / upper]
+    O -. planned direct backend .-> R[Immutable remote lower]
+    R --> C[Metadata / content cache]
+```
+
+The service receives requests requiring backend work within these exported trees.
+Kernel cache hits can avoid requests; guest procfs, tmpfs and network operations
+do not enter this service merely because of this structure.
+
+| Layer | Shared or retained responsibilities |
+|---|---|
+| Entry adapters | FUSE or virtqueue transport, argument/credential conversion, errno/attribute encoding, mount and queue lifecycle; retain Linux guest and host-platform capability differences |
+| Shared filesystem service | File operations such as lookup/getattr, directory cursors and open/read/write/release, with common object and handle lifetime; invoke OverlayCore for policy, merging and first-touch |
+| Local and remote backends | Local file I/O; immutable image stat/list/read, symlinks, object identity, block verification and caching; mutations remain in each Attempt's private local upper |
+
+The public interface expresses capabilities through file operations, metadata,
+object identities and I/O results rather than `fuser::Reply*`, guest descriptors
+or a mountpoint. Sharing means one implementation and contract, called directly
+inside the host execution process. It requires neither new RPC nor serialization
+of all Runs. Protocol encoding and descriptor/used-ring ownership remain in
+their entry adapters.
+
+VM lazy images should call the remote read-only backend directly, without first
+mounting host lazy FUSE and reading its paths. Today `image/cache/lazy.rs` still
+creates that mount and OverlayCore lowers still primarily depend on local paths;
+the intermediate layer has not been removed. Host tools can reach the same remote
+backend through the host FUSE entry. Preserve immutable handles, hard-link object
+identity, metadata generations and content digests in the backend. Shared image
+caches must not share writable uppers or journals. Storage contracts are in
+[Shared image cache v1](shared-image-cache-storage.md#filesystem-access).
+
+First extract lazy metadata/content access and bounded caches from FUSE callbacks,
+then introduce lower backend interfaces for OverlayCore and progressively gather
+common adapter operations. Each step preserves preimage recording before copy-up,
+permission/alias checks and snapshot restore contracts. Remote misses must not
+hold a service-wide lock and block other Attempts. Compare the existing intermediate
+layer with the direct backend under cold/warm caches, metadata-heavy workloads and
+concurrent tasks; existing benchmarks do not establish this design's gains.
+This refactor covers filesystems and lazy images, leaving the page-fault path of
+[lazy snapshot RAM restore](environment-snapshot.md) as a separate mechanism.
+
 ### Files and their actual relationships {#disk-layout}
 
 ![OverlayCore physical directories, files and projection relationships](../../zh/design/assets/overlaycore-layout.svg)

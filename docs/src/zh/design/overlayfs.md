@@ -26,6 +26,60 @@ Agent 修改工作区时，开发者通常希望先看结果，再决定合入�
 
 OverlayCore 不拥有 FUSE mount、Run 调度或公开 Event Journal。它借用 `pvisor-journal::atomic_write` 持久化元数据，但 `apply-ledger.json` 不是 [Event Journal](journal.md)：前者整体替换 JSON，后者逐行追加事件。
 
+### 统一文件服务与双入口 {#filesystem-service}
+
+host 执行通过宿主 FUSE 挂载接入，VM 执行通过 guest virtio-fs 驱动和
+virtqueue 直接接入。两者复用文件服务能力，host staged 保留宿主执行。
+FUSE 在这里同时指请求协议和宿主挂载入口：virtio-fs 使用 FUSE 请求协议，
+但 VM 服务不需要把请求重新送入宿主 `/dev/fuse`。
+
+目标结构如下。统一文件服务和 remote lower 直接接入是后续重构；现有
+两套适配器已共享 OverlayCore，inode/handle 与部分 I/O 处理仍分别实现。
+
+```mermaid
+flowchart TD
+    H[Host tools] --> HK[Host kernel FUSE]
+    HK --> HA[Host FUSE adapter]
+    G[Guest tools] --> GK[Guest kernel virtio-fs]
+    GK --> VQ[virtqueue]
+    VQ --> VA[VM virtio-fs adapter]
+    HA --> S[Shared filesystem service]
+    VA --> S
+    S --> O[OverlayCore: policy, merge, copy-up, journal]
+    O --> L[Local lower / upper]
+    O -. planned direct backend .-> R[Immutable remote lower]
+    R --> C[Metadata / content cache]
+```
+
+进入服务的是这些导出文件树中需要后端处理的请求。内核缓存命中可以不发
+请求，guest 的 procfs、tmpfs 和网络操作也不因这一结构进入文件服务。
+
+| 层 | 共享或保留的职责 |
+|---|---|
+| 入口适配器 | FUSE 或 virtqueue 收发、请求参数与凭据转换、errno/属性编码、挂载和队列生命周期；保留 Linux guest 与宿主平台能力差异 |
+| 统一文件服务 | lookup/getattr、目录游标、open/read/write/release 等文件操作，共同的对象与 handle 生命周期；调用 OverlayCore 执行策略、合成和首次触达 |
+| 本地与远程后端 | 本地文件 I/O；不可变镜像的 stat/list/read、符号链接、对象身份、内容块校验和缓存；修改仍落入每个 Attempt 独立的本地 upper |
+
+公共接口使用文件操作、元数据、对象身份和读写结果表达能力，不依赖
+`fuser::Reply*`、guest descriptor 或某个挂载点。统一是同一套实现及合同，
+各入口在宿主执行进程内直接调用；不要求新增 RPC 或把全部 Run 串行化。
+协议编码和 descriptor/used-ring 管理仍属于各自入口。
+
+VM 的 lazy image 目标是直接调用远程只读后端，不先挂载宿主 lazy FUSE
+再读取其路径。当前 `image/cache/lazy.rs` 仍创建这个挂载，OverlayCore 的
+lower 仍主要依赖本地路径；该中转尚未移除。host 工具访问 lazy 镜像时，
+可经 host FUSE 入口调用同一远程后端。不可变句柄、硬链接对象身份、元数据
+generation 和内容摘要应在后端保留；共享镜像缓存不共享可写 upper 或 journal。
+镜像存储合同见[共享镜像缓存 v1](shared-image-cache-storage.md#filesystem-access)。
+
+重构先将 lazy 的元数据、内容读取和有界缓存从 FUSE 回调中抽出，再为
+OverlayCore 的 lower 接入后端接口，随后逐步收拢两套适配器的共同操作。
+每一步保留 copy-up 前原像记录、权限/别名检查和快照恢复合同；远端 miss
+不得持有服务全局锁阻塞其他 Attempt。性能比较需分别测旧中转与直接后端的
+冷/热缓存、元数据密集负载和并发任务，现有 benchmark 不证明该方案的收益。
+此重构针对文件系统及 lazy image，不改变[快照 RAM lazy 恢复](environment-snapshot.md)
+的缺页加载路径。
+
 ### 文件布局与实际关系 {#disk-layout}
 
 ![OverlayCore 的物理目录、文件与映射关系](assets/overlaycore-layout.svg)

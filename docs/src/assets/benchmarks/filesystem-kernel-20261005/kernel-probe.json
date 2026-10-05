@@ -1,0 +1,871 @@
+{
+  "schema": "pvisor-filesystem-kernel-probe/v1",
+  "scope": "diagnostic; separate workloads, no acceptance performance claim",
+  "profiled": false,
+  "host_kernel": "7.2.8-200.fc44.x86_64",
+  "load_before": [
+    0.59326171875,
+    1.6435546875,
+    2.05078125
+  ],
+  "cpu_affinity": "0,1",
+  "vm_vcpus": 2,
+  "vm_memory_mib": 16384,
+  "payload_sha256": "35240e4b4f3fe9346b5c5b1f9eabe6ae185ea6595f4e5bcfa0834c97f8c22069",
+  "harness_sha256": "c15bc977da19cf38a9e316d6941284a914cbc307bdd2696c4cfbc4810c6a7e89",
+  "assets_manifest_sha256": "916a0c7fac6bad5b155689c2704e3cc787925758c22447bb16d238264e57a803",
+  "fixture_sha256": "a9d55695d2afb5005b5fe67012393a8db956f5088fcebd4dba23158e7e1c5049",
+  "firmware_sha256": "b61f68dac3ef20a88e1ee387733e4baed2f7c02edac940c8882e0b549dac95e4",
+  "rows": [
+    {
+      "label": "baseline",
+      "backend": "native",
+      "binary_sha256": "c740ec0e87c1053e5ce1c214f668184459ceba70ed229a3cd9e8dddde8cd20ae",
+      "result": {
+        "correctness": "passed",
+        "rows": [
+          {
+            "case": "after_expiry",
+            "trial": 0,
+            "elapsed_ms": 6.077874,
+            "check": {
+              "files": 2048,
+              "bytes": 2095104
+            }
+          },
+          {
+            "case": "immediate_repeat",
+            "trial": 0,
+            "elapsed_ms": 4.435739,
+            "check": {
+              "files": 2048,
+              "bytes": 2095104
+            }
+          },
+          {
+            "case": "after_expiry",
+            "trial": 1,
+            "elapsed_ms": 5.493734,
+            "check": {
+              "files": 2048,
+              "bytes": 2095104
+            }
+          },
+          {
+            "case": "immediate_repeat",
+            "trial": 1,
+            "elapsed_ms": 4.628078,
+            "check": {
+              "files": 2048,
+              "bytes": 2095104
+            }
+          },
+          {
+            "case": "after_expiry",
+            "trial": 2,
+            "elapsed_ms": 5.885115,
+            "check": {
+              "files": 2048,
+              "bytes": 2095104
+            }
+          },
+          {
+            "case": "immediate_repeat",
+            "trial": 2,
+            "elapsed_ms": 4.627908,
+            "check": {
+              "files": 2048,
+              "bytes": 2095104
+            }
+          },
+          {
+            "case": "partitioned_stat",
+            "workers": 1,
+            "trial": 0,
+            "elapsed_ms": 5.141867,
+            "check": {
+              "files": 2048,
+              "bytes": 2095104
+            }
+          },
+          {
+            "case": "partitioned_stat",
+            "workers": 4,
+            "trial": 0,
+            "elapsed_ms": 4.467729,
+            "check": {
+              "files": 2048,
+              "bytes": 2095104
+            }
+          },
+          {
+            "case": "partitioned_stat",
+            "workers": 1,
+            "trial": 1,
+            "elapsed_ms": 4.704411,
+            "check": {
+              "files": 2048,
+              "bytes": 2095104
+            }
+          },
+          {
+            "case": "partitioned_stat",
+            "workers": 4,
+            "trial": 1,
+            "elapsed_ms": 5.521526,
+            "check": {
+              "files": 2048,
+              "bytes": 2095104
+            }
+          },
+          {
+            "case": "partitioned_stat",
+            "workers": 1,
+            "trial": 2,
+            "elapsed_ms": 3.818708,
+            "check": {
+              "files": 2048,
+              "bytes": 2095104
+            }
+          },
+          {
+            "case": "partitioned_stat",
+            "workers": 4,
+            "trial": 2,
+            "elapsed_ms": 5.295794,
+            "check": {
+              "files": 2048,
+              "bytes": 2095104
+            }
+          },
+          {
+            "case": "partial_writes_staged",
+            "elapsed_ms": 1.808576,
+            "check": {
+              "files": 64,
+              "bytes": 524288,
+              "sha256": "2d2c27876d60c37a05a0cf80efee59a0f14cb9e715ef671afe12957ac82f2b22"
+            }
+          },
+          {
+            "case": "local_tmpfs_metadata",
+            "trial": 0,
+            "elapsed_ms": 5.193183,
+            "check": {
+              "files": 2048,
+              "bytes": 2095104
+            }
+          },
+          {
+            "case": "local_tmpfs_metadata",
+            "trial": 1,
+            "elapsed_ms": 4.581451,
+            "check": {
+              "files": 2048,
+              "bytes": 2095104
+            }
+          },
+          {
+            "case": "local_tmpfs_metadata",
+            "trial": 2,
+            "elapsed_ms": 4.364005,
+            "check": {
+              "files": 2048,
+              "bytes": 2095104
+            }
+          },
+          {
+            "case": "partial_writes_local_tmpfs",
+            "elapsed_ms": 0.852421,
+            "check": {
+              "files": 64,
+              "bytes": 524288,
+              "sha256": "2d2c27876d60c37a05a0cf80efee59a0f14cb9e715ef671afe12957ac82f2b22"
+            }
+          }
+        ]
+      }
+    },
+    {
+      "label": "baseline",
+      "backend": "pvisor-staged",
+      "binary_sha256": "c740ec0e87c1053e5ce1c214f668184459ceba70ed229a3cd9e8dddde8cd20ae",
+      "result": {
+        "correctness": "passed",
+        "rows": [
+          {
+            "case": "after_expiry",
+            "trial": 0,
+            "elapsed_ms": 86.219086,
+            "check": {
+              "files": 2048,
+              "bytes": 2095104
+            }
+          },
+          {
+            "case": "immediate_repeat",
+            "trial": 0,
+            "elapsed_ms": 36.64086,
+            "check": {
+              "files": 2048,
+              "bytes": 2095104
+            }
+          },
+          {
+            "case": "after_expiry",
+            "trial": 1,
+            "elapsed_ms": 81.675396,
+            "check": {
+              "files": 2048,
+              "bytes": 2095104
+            }
+          },
+          {
+            "case": "immediate_repeat",
+            "trial": 1,
+            "elapsed_ms": 37.559804,
+            "check": {
+              "files": 2048,
+              "bytes": 2095104
+            }
+          },
+          {
+            "case": "after_expiry",
+            "trial": 2,
+            "elapsed_ms": 80.273329,
+            "check": {
+              "files": 2048,
+              "bytes": 2095104
+            }
+          },
+          {
+            "case": "immediate_repeat",
+            "trial": 2,
+            "elapsed_ms": 34.210904,
+            "check": {
+              "files": 2048,
+              "bytes": 2095104
+            }
+          },
+          {
+            "case": "partitioned_stat",
+            "workers": 1,
+            "trial": 0,
+            "elapsed_ms": 45.288951,
+            "check": {
+              "files": 2048,
+              "bytes": 2095104
+            }
+          },
+          {
+            "case": "partitioned_stat",
+            "workers": 4,
+            "trial": 0,
+            "elapsed_ms": 34.060964,
+            "check": {
+              "files": 2048,
+              "bytes": 2095104
+            }
+          },
+          {
+            "case": "partitioned_stat",
+            "workers": 1,
+            "trial": 1,
+            "elapsed_ms": 43.66005,
+            "check": {
+              "files": 2048,
+              "bytes": 2095104
+            }
+          },
+          {
+            "case": "partitioned_stat",
+            "workers": 4,
+            "trial": 1,
+            "elapsed_ms": 33.443111,
+            "check": {
+              "files": 2048,
+              "bytes": 2095104
+            }
+          },
+          {
+            "case": "partitioned_stat",
+            "workers": 1,
+            "trial": 2,
+            "elapsed_ms": 43.071151,
+            "check": {
+              "files": 2048,
+              "bytes": 2095104
+            }
+          },
+          {
+            "case": "partitioned_stat",
+            "workers": 4,
+            "trial": 2,
+            "elapsed_ms": 33.775401,
+            "check": {
+              "files": 2048,
+              "bytes": 2095104
+            }
+          },
+          {
+            "case": "partial_writes_staged",
+            "elapsed_ms": 66.149346,
+            "check": {
+              "files": 64,
+              "bytes": 524288,
+              "sha256": "2d2c27876d60c37a05a0cf80efee59a0f14cb9e715ef671afe12957ac82f2b22"
+            }
+          },
+          {
+            "case": "local_tmpfs_metadata",
+            "trial": 0,
+            "elapsed_ms": 4.917889,
+            "check": {
+              "files": 2048,
+              "bytes": 2095104
+            }
+          },
+          {
+            "case": "local_tmpfs_metadata",
+            "trial": 1,
+            "elapsed_ms": 4.281592,
+            "check": {
+              "files": 2048,
+              "bytes": 2095104
+            }
+          },
+          {
+            "case": "local_tmpfs_metadata",
+            "trial": 2,
+            "elapsed_ms": 4.086878,
+            "check": {
+              "files": 2048,
+              "bytes": 2095104
+            }
+          },
+          {
+            "case": "partial_writes_local_tmpfs",
+            "elapsed_ms": 0.836642,
+            "check": {
+              "files": 64,
+              "bytes": 524288,
+              "sha256": "2d2c27876d60c37a05a0cf80efee59a0f14cb9e715ef671afe12957ac82f2b22"
+            }
+          }
+        ]
+      }
+    },
+    {
+      "label": "baseline",
+      "backend": "pvisor-vm",
+      "binary_sha256": "c740ec0e87c1053e5ce1c214f668184459ceba70ed229a3cd9e8dddde8cd20ae",
+      "result": {
+        "correctness": "passed",
+        "rows": [
+          {
+            "case": "after_expiry",
+            "trial": 0,
+            "elapsed_ms": 227.852118,
+            "check": {
+              "files": 2048,
+              "bytes": 2095104
+            }
+          },
+          {
+            "case": "immediate_repeat",
+            "trial": 0,
+            "elapsed_ms": 101.541911,
+            "check": {
+              "files": 2048,
+              "bytes": 2095104
+            }
+          },
+          {
+            "case": "after_expiry",
+            "trial": 1,
+            "elapsed_ms": 229.619395,
+            "check": {
+              "files": 2048,
+              "bytes": 2095104
+            }
+          },
+          {
+            "case": "immediate_repeat",
+            "trial": 1,
+            "elapsed_ms": 101.687312,
+            "check": {
+              "files": 2048,
+              "bytes": 2095104
+            }
+          },
+          {
+            "case": "after_expiry",
+            "trial": 2,
+            "elapsed_ms": 239.929879,
+            "check": {
+              "files": 2048,
+              "bytes": 2095104
+            }
+          },
+          {
+            "case": "immediate_repeat",
+            "trial": 2,
+            "elapsed_ms": 102.431926,
+            "check": {
+              "files": 2048,
+              "bytes": 2095104
+            }
+          },
+          {
+            "case": "partitioned_stat",
+            "workers": 1,
+            "trial": 0,
+            "elapsed_ms": 211.66597,
+            "check": {
+              "files": 2048,
+              "bytes": 2095104
+            }
+          },
+          {
+            "case": "partitioned_stat",
+            "workers": 4,
+            "trial": 0,
+            "elapsed_ms": 89.898913,
+            "check": {
+              "files": 2048,
+              "bytes": 2095104
+            }
+          },
+          {
+            "case": "partitioned_stat",
+            "workers": 1,
+            "trial": 1,
+            "elapsed_ms": 200.026719,
+            "check": {
+              "files": 2048,
+              "bytes": 2095104
+            }
+          },
+          {
+            "case": "partitioned_stat",
+            "workers": 4,
+            "trial": 1,
+            "elapsed_ms": 104.823141,
+            "check": {
+              "files": 2048,
+              "bytes": 2095104
+            }
+          },
+          {
+            "case": "partitioned_stat",
+            "workers": 1,
+            "trial": 2,
+            "elapsed_ms": 113.064352,
+            "check": {
+              "files": 2048,
+              "bytes": 2095104
+            }
+          },
+          {
+            "case": "partitioned_stat",
+            "workers": 4,
+            "trial": 2,
+            "elapsed_ms": 94.255395,
+            "check": {
+              "files": 2048,
+              "bytes": 2095104
+            }
+          },
+          {
+            "case": "partial_writes_staged",
+            "elapsed_ms": 98.352111,
+            "check": {
+              "files": 64,
+              "bytes": 524288,
+              "sha256": "2d2c27876d60c37a05a0cf80efee59a0f14cb9e715ef671afe12957ac82f2b22"
+            }
+          },
+          {
+            "case": "local_tmpfs_metadata",
+            "trial": 0,
+            "elapsed_ms": 8.205103,
+            "check": {
+              "files": 2048,
+              "bytes": 2095104
+            }
+          },
+          {
+            "case": "local_tmpfs_metadata",
+            "trial": 1,
+            "elapsed_ms": 4.095584,
+            "check": {
+              "files": 2048,
+              "bytes": 2095104
+            }
+          },
+          {
+            "case": "local_tmpfs_metadata",
+            "trial": 2,
+            "elapsed_ms": 3.813866,
+            "check": {
+              "files": 2048,
+              "bytes": 2095104
+            }
+          },
+          {
+            "case": "partial_writes_local_tmpfs",
+            "elapsed_ms": 3.330512,
+            "check": {
+              "files": 64,
+              "bytes": 524288,
+              "sha256": "2d2c27876d60c37a05a0cf80efee59a0f14cb9e715ef671afe12957ac82f2b22"
+            }
+          }
+        ]
+      }
+    },
+    {
+      "label": "candidate",
+      "backend": "pvisor-staged",
+      "binary_sha256": "189b4de50bd2cc283f49c779a09c7b95887b64d1420bdfae0ac2c20927f23802",
+      "result": {
+        "correctness": "passed",
+        "rows": [
+          {
+            "case": "after_expiry",
+            "trial": 0,
+            "elapsed_ms": 85.078557,
+            "check": {
+              "files": 2048,
+              "bytes": 2095104
+            }
+          },
+          {
+            "case": "immediate_repeat",
+            "trial": 0,
+            "elapsed_ms": 35.242159,
+            "check": {
+              "files": 2048,
+              "bytes": 2095104
+            }
+          },
+          {
+            "case": "after_expiry",
+            "trial": 1,
+            "elapsed_ms": 83.304125,
+            "check": {
+              "files": 2048,
+              "bytes": 2095104
+            }
+          },
+          {
+            "case": "immediate_repeat",
+            "trial": 1,
+            "elapsed_ms": 37.688905,
+            "check": {
+              "files": 2048,
+              "bytes": 2095104
+            }
+          },
+          {
+            "case": "after_expiry",
+            "trial": 2,
+            "elapsed_ms": 79.733551,
+            "check": {
+              "files": 2048,
+              "bytes": 2095104
+            }
+          },
+          {
+            "case": "immediate_repeat",
+            "trial": 2,
+            "elapsed_ms": 34.620989,
+            "check": {
+              "files": 2048,
+              "bytes": 2095104
+            }
+          },
+          {
+            "case": "partitioned_stat",
+            "workers": 1,
+            "trial": 0,
+            "elapsed_ms": 44.097587,
+            "check": {
+              "files": 2048,
+              "bytes": 2095104
+            }
+          },
+          {
+            "case": "partitioned_stat",
+            "workers": 4,
+            "trial": 0,
+            "elapsed_ms": 33.582541,
+            "check": {
+              "files": 2048,
+              "bytes": 2095104
+            }
+          },
+          {
+            "case": "partitioned_stat",
+            "workers": 1,
+            "trial": 1,
+            "elapsed_ms": 43.0066,
+            "check": {
+              "files": 2048,
+              "bytes": 2095104
+            }
+          },
+          {
+            "case": "partitioned_stat",
+            "workers": 4,
+            "trial": 1,
+            "elapsed_ms": 34.280915,
+            "check": {
+              "files": 2048,
+              "bytes": 2095104
+            }
+          },
+          {
+            "case": "partitioned_stat",
+            "workers": 1,
+            "trial": 2,
+            "elapsed_ms": 42.67958,
+            "check": {
+              "files": 2048,
+              "bytes": 2095104
+            }
+          },
+          {
+            "case": "partitioned_stat",
+            "workers": 4,
+            "trial": 2,
+            "elapsed_ms": 34.253624,
+            "check": {
+              "files": 2048,
+              "bytes": 2095104
+            }
+          },
+          {
+            "case": "partial_writes_staged",
+            "elapsed_ms": 65.455271,
+            "check": {
+              "files": 64,
+              "bytes": 524288,
+              "sha256": "2d2c27876d60c37a05a0cf80efee59a0f14cb9e715ef671afe12957ac82f2b22"
+            }
+          },
+          {
+            "case": "local_tmpfs_metadata",
+            "trial": 0,
+            "elapsed_ms": 3.91617,
+            "check": {
+              "files": 2048,
+              "bytes": 2095104
+            }
+          },
+          {
+            "case": "local_tmpfs_metadata",
+            "trial": 1,
+            "elapsed_ms": 3.386931,
+            "check": {
+              "files": 2048,
+              "bytes": 2095104
+            }
+          },
+          {
+            "case": "local_tmpfs_metadata",
+            "trial": 2,
+            "elapsed_ms": 3.372165,
+            "check": {
+              "files": 2048,
+              "bytes": 2095104
+            }
+          },
+          {
+            "case": "partial_writes_local_tmpfs",
+            "elapsed_ms": 0.769366,
+            "check": {
+              "files": 64,
+              "bytes": 524288,
+              "sha256": "2d2c27876d60c37a05a0cf80efee59a0f14cb9e715ef671afe12957ac82f2b22"
+            }
+          }
+        ]
+      }
+    },
+    {
+      "label": "candidate",
+      "backend": "pvisor-vm",
+      "binary_sha256": "189b4de50bd2cc283f49c779a09c7b95887b64d1420bdfae0ac2c20927f23802",
+      "result": {
+        "correctness": "passed",
+        "rows": [
+          {
+            "case": "after_expiry",
+            "trial": 0,
+            "elapsed_ms": 176.58801,
+            "check": {
+              "files": 2048,
+              "bytes": 2095104
+            }
+          },
+          {
+            "case": "immediate_repeat",
+            "trial": 0,
+            "elapsed_ms": 105.108614,
+            "check": {
+              "files": 2048,
+              "bytes": 2095104
+            }
+          },
+          {
+            "case": "after_expiry",
+            "trial": 1,
+            "elapsed_ms": 237.190753,
+            "check": {
+              "files": 2048,
+              "bytes": 2095104
+            }
+          },
+          {
+            "case": "immediate_repeat",
+            "trial": 1,
+            "elapsed_ms": 99.713849,
+            "check": {
+              "files": 2048,
+              "bytes": 2095104
+            }
+          },
+          {
+            "case": "after_expiry",
+            "trial": 2,
+            "elapsed_ms": 233.114004,
+            "check": {
+              "files": 2048,
+              "bytes": 2095104
+            }
+          },
+          {
+            "case": "immediate_repeat",
+            "trial": 2,
+            "elapsed_ms": 149.705566,
+            "check": {
+              "files": 2048,
+              "bytes": 2095104
+            }
+          },
+          {
+            "case": "partitioned_stat",
+            "workers": 1,
+            "trial": 0,
+            "elapsed_ms": 210.421601,
+            "check": {
+              "files": 2048,
+              "bytes": 2095104
+            }
+          },
+          {
+            "case": "partitioned_stat",
+            "workers": 4,
+            "trial": 0,
+            "elapsed_ms": 91.863259,
+            "check": {
+              "files": 2048,
+              "bytes": 2095104
+            }
+          },
+          {
+            "case": "partitioned_stat",
+            "workers": 1,
+            "trial": 1,
+            "elapsed_ms": 164.173339,
+            "check": {
+              "files": 2048,
+              "bytes": 2095104
+            }
+          },
+          {
+            "case": "partitioned_stat",
+            "workers": 4,
+            "trial": 1,
+            "elapsed_ms": 109.326547,
+            "check": {
+              "files": 2048,
+              "bytes": 2095104
+            }
+          },
+          {
+            "case": "partitioned_stat",
+            "workers": 1,
+            "trial": 2,
+            "elapsed_ms": 111.272899,
+            "check": {
+              "files": 2048,
+              "bytes": 2095104
+            }
+          },
+          {
+            "case": "partitioned_stat",
+            "workers": 4,
+            "trial": 2,
+            "elapsed_ms": 79.476841,
+            "check": {
+              "files": 2048,
+              "bytes": 2095104
+            }
+          },
+          {
+            "case": "partial_writes_staged",
+            "elapsed_ms": 69.636788,
+            "check": {
+              "files": 64,
+              "bytes": 524288,
+              "sha256": "2d2c27876d60c37a05a0cf80efee59a0f14cb9e715ef671afe12957ac82f2b22"
+            }
+          },
+          {
+            "case": "local_tmpfs_metadata",
+            "trial": 0,
+            "elapsed_ms": 7.0592,
+            "check": {
+              "files": 2048,
+              "bytes": 2095104
+            }
+          },
+          {
+            "case": "local_tmpfs_metadata",
+            "trial": 1,
+            "elapsed_ms": 3.277302,
+            "check": {
+              "files": 2048,
+              "bytes": 2095104
+            }
+          },
+          {
+            "case": "local_tmpfs_metadata",
+            "trial": 2,
+            "elapsed_ms": 3.237488,
+            "check": {
+              "files": 2048,
+              "bytes": 2095104
+            }
+          },
+          {
+            "case": "partial_writes_local_tmpfs",
+            "elapsed_ms": 2.775724,
+            "check": {
+              "files": 64,
+              "bytes": 524288,
+              "sha256": "2d2c27876d60c37a05a0cf80efee59a0f14cb9e715ef671afe12957ac82f2b22"
+            }
+          }
+        ]
+      }
+    }
+  ],
+  "load_after": [
+    0.65869140625,
+    1.47802734375,
+    1.966796875
+  ]
+}

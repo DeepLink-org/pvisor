@@ -15,6 +15,7 @@ If this is your first time, complete [First run](../start/first-run.md) first.
 | Rerun supported native trajectories | [Replay](replay.md) |
 | Run in CI | [Run agents in CI](ci.md) |
 | Run many agents on one host | [Parallel agents](parallel-agents.md) |
+| Start Cluster and verify tasks/recovery | [Cluster quickstart](cluster/index.md) |
 | RL rollouts | [RL rollouts](rl-rollouts.md) |
 | Diagnose unexpected behavior | [Troubleshooting](troubleshooting.md) |
 

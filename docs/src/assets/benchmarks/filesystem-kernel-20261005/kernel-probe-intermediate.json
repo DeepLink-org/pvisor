@@ -1,0 +1,871 @@
+{
+  "schema": "pvisor-filesystem-kernel-probe/v1",
+  "scope": "diagnostic; separate workloads, no acceptance performance claim",
+  "profiled": false,
+  "host_kernel": "7.2.8-200.fc44.x86_64",
+  "load_before": [
+    1.1767578125,
+    2.0361328125,
+    2.2060546875
+  ],
+  "cpu_affinity": "0,1",
+  "vm_vcpus": 2,
+  "vm_memory_mib": 16384,
+  "payload_sha256": "3af46d0902c06e816a41970a999edd561a8ee7f18ec7a9822d71831f8653a476",
+  "harness_sha256": "d68e101049043a1536f09d76e7684692702486e3b8b5c05f40998c1e6c0cad73",
+  "assets_manifest_sha256": "916a0c7fac6bad5b155689c2704e3cc787925758c22447bb16d238264e57a803",
+  "fixture_sha256": "a9d55695d2afb5005b5fe67012393a8db956f5088fcebd4dba23158e7e1c5049",
+  "firmware_sha256": "b61f68dac3ef20a88e1ee387733e4baed2f7c02edac940c8882e0b549dac95e4",
+  "rows": [
+    {
+      "label": "baseline",
+      "backend": "native",
+      "binary_sha256": "c740ec0e87c1053e5ce1c214f668184459ceba70ed229a3cd9e8dddde8cd20ae",
+      "result": {
+        "correctness": "passed",
+        "rows": [
+          {
+            "case": "after_expiry",
+            "trial": 0,
+            "elapsed_ms": 4.70941,
+            "check": {
+              "files": 2048,
+              "bytes": 2095104
+            }
+          },
+          {
+            "case": "immediate_repeat",
+            "trial": 0,
+            "elapsed_ms": 3.651264,
+            "check": {
+              "files": 2048,
+              "bytes": 2095104
+            }
+          },
+          {
+            "case": "after_expiry",
+            "trial": 1,
+            "elapsed_ms": 5.461604,
+            "check": {
+              "files": 2048,
+              "bytes": 2095104
+            }
+          },
+          {
+            "case": "immediate_repeat",
+            "trial": 1,
+            "elapsed_ms": 3.792379,
+            "check": {
+              "files": 2048,
+              "bytes": 2095104
+            }
+          },
+          {
+            "case": "after_expiry",
+            "trial": 2,
+            "elapsed_ms": 5.960114,
+            "check": {
+              "files": 2048,
+              "bytes": 2095104
+            }
+          },
+          {
+            "case": "immediate_repeat",
+            "trial": 2,
+            "elapsed_ms": 4.626415,
+            "check": {
+              "files": 2048,
+              "bytes": 2095104
+            }
+          },
+          {
+            "case": "partitioned_stat",
+            "workers": 1,
+            "trial": 0,
+            "elapsed_ms": 7.303853,
+            "check": {
+              "files": 2048,
+              "bytes": 2095104
+            }
+          },
+          {
+            "case": "partitioned_stat",
+            "workers": 4,
+            "trial": 0,
+            "elapsed_ms": 5.339145,
+            "check": {
+              "files": 2048,
+              "bytes": 2095104
+            }
+          },
+          {
+            "case": "partitioned_stat",
+            "workers": 1,
+            "trial": 1,
+            "elapsed_ms": 3.688105,
+            "check": {
+              "files": 2048,
+              "bytes": 2095104
+            }
+          },
+          {
+            "case": "partitioned_stat",
+            "workers": 4,
+            "trial": 1,
+            "elapsed_ms": 5.279976,
+            "check": {
+              "files": 2048,
+              "bytes": 2095104
+            }
+          },
+          {
+            "case": "partitioned_stat",
+            "workers": 1,
+            "trial": 2,
+            "elapsed_ms": 4.068002,
+            "check": {
+              "files": 2048,
+              "bytes": 2095104
+            }
+          },
+          {
+            "case": "partitioned_stat",
+            "workers": 4,
+            "trial": 2,
+            "elapsed_ms": 5.965183,
+            "check": {
+              "files": 2048,
+              "bytes": 2095104
+            }
+          },
+          {
+            "case": "partial_writes_staged",
+            "elapsed_ms": 1.631806,
+            "check": {
+              "files": 64,
+              "bytes": 524288,
+              "sha256": "2d2c27876d60c37a05a0cf80efee59a0f14cb9e715ef671afe12957ac82f2b22"
+            }
+          },
+          {
+            "case": "local_tmpfs_metadata",
+            "trial": 0,
+            "elapsed_ms": 5.00934,
+            "check": {
+              "files": 2048,
+              "bytes": 2095104
+            }
+          },
+          {
+            "case": "local_tmpfs_metadata",
+            "trial": 1,
+            "elapsed_ms": 4.29698,
+            "check": {
+              "files": 2048,
+              "bytes": 2095104
+            }
+          },
+          {
+            "case": "local_tmpfs_metadata",
+            "trial": 2,
+            "elapsed_ms": 4.300737,
+            "check": {
+              "files": 2048,
+              "bytes": 2095104
+            }
+          },
+          {
+            "case": "partial_writes_local_tmpfs",
+            "elapsed_ms": 0.86753,
+            "check": {
+              "files": 64,
+              "bytes": 524288,
+              "sha256": "2d2c27876d60c37a05a0cf80efee59a0f14cb9e715ef671afe12957ac82f2b22"
+            }
+          }
+        ]
+      }
+    },
+    {
+      "label": "baseline",
+      "backend": "pvisor-staged",
+      "binary_sha256": "c740ec0e87c1053e5ce1c214f668184459ceba70ed229a3cd9e8dddde8cd20ae",
+      "result": {
+        "correctness": "passed",
+        "rows": [
+          {
+            "case": "after_expiry",
+            "trial": 0,
+            "elapsed_ms": 68.153447,
+            "check": {
+              "files": 2048,
+              "bytes": 2095104
+            }
+          },
+          {
+            "case": "immediate_repeat",
+            "trial": 0,
+            "elapsed_ms": 34.525962,
+            "check": {
+              "files": 2048,
+              "bytes": 2095104
+            }
+          },
+          {
+            "case": "after_expiry",
+            "trial": 1,
+            "elapsed_ms": 81.398639,
+            "check": {
+              "files": 2048,
+              "bytes": 2095104
+            }
+          },
+          {
+            "case": "immediate_repeat",
+            "trial": 1,
+            "elapsed_ms": 34.690288,
+            "check": {
+              "files": 2048,
+              "bytes": 2095104
+            }
+          },
+          {
+            "case": "after_expiry",
+            "trial": 2,
+            "elapsed_ms": 82.392243,
+            "check": {
+              "files": 2048,
+              "bytes": 2095104
+            }
+          },
+          {
+            "case": "immediate_repeat",
+            "trial": 2,
+            "elapsed_ms": 36.238158,
+            "check": {
+              "files": 2048,
+              "bytes": 2095104
+            }
+          },
+          {
+            "case": "partitioned_stat",
+            "workers": 1,
+            "trial": 0,
+            "elapsed_ms": 44.092899,
+            "check": {
+              "files": 2048,
+              "bytes": 2095104
+            }
+          },
+          {
+            "case": "partitioned_stat",
+            "workers": 4,
+            "trial": 0,
+            "elapsed_ms": 34.621471,
+            "check": {
+              "files": 2048,
+              "bytes": 2095104
+            }
+          },
+          {
+            "case": "partitioned_stat",
+            "workers": 1,
+            "trial": 1,
+            "elapsed_ms": 43.553082,
+            "check": {
+              "files": 2048,
+              "bytes": 2095104
+            }
+          },
+          {
+            "case": "partitioned_stat",
+            "workers": 4,
+            "trial": 1,
+            "elapsed_ms": 33.907317,
+            "check": {
+              "files": 2048,
+              "bytes": 2095104
+            }
+          },
+          {
+            "case": "partitioned_stat",
+            "workers": 1,
+            "trial": 2,
+            "elapsed_ms": 43.428178,
+            "check": {
+              "files": 2048,
+              "bytes": 2095104
+            }
+          },
+          {
+            "case": "partitioned_stat",
+            "workers": 4,
+            "trial": 2,
+            "elapsed_ms": 33.701032,
+            "check": {
+              "files": 2048,
+              "bytes": 2095104
+            }
+          },
+          {
+            "case": "partial_writes_staged",
+            "elapsed_ms": 63.529808,
+            "check": {
+              "files": 64,
+              "bytes": 524288,
+              "sha256": "2d2c27876d60c37a05a0cf80efee59a0f14cb9e715ef671afe12957ac82f2b22"
+            }
+          },
+          {
+            "case": "local_tmpfs_metadata",
+            "trial": 0,
+            "elapsed_ms": 4.783308,
+            "check": {
+              "files": 2048,
+              "bytes": 2095104
+            }
+          },
+          {
+            "case": "local_tmpfs_metadata",
+            "trial": 1,
+            "elapsed_ms": 4.090485,
+            "check": {
+              "files": 2048,
+              "bytes": 2095104
+            }
+          },
+          {
+            "case": "local_tmpfs_metadata",
+            "trial": 2,
+            "elapsed_ms": 3.809741,
+            "check": {
+              "files": 2048,
+              "bytes": 2095104
+            }
+          },
+          {
+            "case": "partial_writes_local_tmpfs",
+            "elapsed_ms": 0.787911,
+            "check": {
+              "files": 64,
+              "bytes": 524288,
+              "sha256": "2d2c27876d60c37a05a0cf80efee59a0f14cb9e715ef671afe12957ac82f2b22"
+            }
+          }
+        ]
+      }
+    },
+    {
+      "label": "baseline",
+      "backend": "pvisor-vm",
+      "binary_sha256": "c740ec0e87c1053e5ce1c214f668184459ceba70ed229a3cd9e8dddde8cd20ae",
+      "result": {
+        "correctness": "passed",
+        "rows": [
+          {
+            "case": "after_expiry",
+            "trial": 0,
+            "elapsed_ms": 213.133025,
+            "check": {
+              "files": 2048,
+              "bytes": 2095104
+            }
+          },
+          {
+            "case": "immediate_repeat",
+            "trial": 0,
+            "elapsed_ms": 101.944453,
+            "check": {
+              "files": 2048,
+              "bytes": 2095104
+            }
+          },
+          {
+            "case": "after_expiry",
+            "trial": 1,
+            "elapsed_ms": 235.197202,
+            "check": {
+              "files": 2048,
+              "bytes": 2095104
+            }
+          },
+          {
+            "case": "immediate_repeat",
+            "trial": 1,
+            "elapsed_ms": 101.487708,
+            "check": {
+              "files": 2048,
+              "bytes": 2095104
+            }
+          },
+          {
+            "case": "after_expiry",
+            "trial": 2,
+            "elapsed_ms": 233.828451,
+            "check": {
+              "files": 2048,
+              "bytes": 2095104
+            }
+          },
+          {
+            "case": "immediate_repeat",
+            "trial": 2,
+            "elapsed_ms": 100.636506,
+            "check": {
+              "files": 2048,
+              "bytes": 2095104
+            }
+          },
+          {
+            "case": "partitioned_stat",
+            "workers": 1,
+            "trial": 0,
+            "elapsed_ms": 213.310908,
+            "check": {
+              "files": 2048,
+              "bytes": 2095104
+            }
+          },
+          {
+            "case": "partitioned_stat",
+            "workers": 4,
+            "trial": 0,
+            "elapsed_ms": 104.500657,
+            "check": {
+              "files": 2048,
+              "bytes": 2095104
+            }
+          },
+          {
+            "case": "partitioned_stat",
+            "workers": 1,
+            "trial": 1,
+            "elapsed_ms": 93.873211,
+            "check": {
+              "files": 2048,
+              "bytes": 2095104
+            }
+          },
+          {
+            "case": "partitioned_stat",
+            "workers": 4,
+            "trial": 1,
+            "elapsed_ms": 99.198916,
+            "check": {
+              "files": 2048,
+              "bytes": 2095104
+            }
+          },
+          {
+            "case": "partitioned_stat",
+            "workers": 1,
+            "trial": 2,
+            "elapsed_ms": 170.366208,
+            "check": {
+              "files": 2048,
+              "bytes": 2095104
+            }
+          },
+          {
+            "case": "partitioned_stat",
+            "workers": 4,
+            "trial": 2,
+            "elapsed_ms": 102.104914,
+            "check": {
+              "files": 2048,
+              "bytes": 2095104
+            }
+          },
+          {
+            "case": "partial_writes_staged",
+            "elapsed_ms": 122.871143,
+            "check": {
+              "files": 64,
+              "bytes": 524288,
+              "sha256": "2d2c27876d60c37a05a0cf80efee59a0f14cb9e715ef671afe12957ac82f2b22"
+            }
+          },
+          {
+            "case": "local_tmpfs_metadata",
+            "trial": 0,
+            "elapsed_ms": 6.518578,
+            "check": {
+              "files": 2048,
+              "bytes": 2095104
+            }
+          },
+          {
+            "case": "local_tmpfs_metadata",
+            "trial": 1,
+            "elapsed_ms": 3.357994,
+            "check": {
+              "files": 2048,
+              "bytes": 2095104
+            }
+          },
+          {
+            "case": "local_tmpfs_metadata",
+            "trial": 2,
+            "elapsed_ms": 3.197593,
+            "check": {
+              "files": 2048,
+              "bytes": 2095104
+            }
+          },
+          {
+            "case": "partial_writes_local_tmpfs",
+            "elapsed_ms": 2.883305,
+            "check": {
+              "files": 64,
+              "bytes": 524288,
+              "sha256": "2d2c27876d60c37a05a0cf80efee59a0f14cb9e715ef671afe12957ac82f2b22"
+            }
+          }
+        ]
+      }
+    },
+    {
+      "label": "candidate",
+      "backend": "pvisor-staged",
+      "binary_sha256": "189b4de50bd2cc283f49c779a09c7b95887b64d1420bdfae0ac2c20927f23802",
+      "result": {
+        "correctness": "passed",
+        "rows": [
+          {
+            "case": "after_expiry",
+            "trial": 0,
+            "elapsed_ms": 68.702902,
+            "check": {
+              "files": 2048,
+              "bytes": 2095104
+            }
+          },
+          {
+            "case": "immediate_repeat",
+            "trial": 0,
+            "elapsed_ms": 34.782672,
+            "check": {
+              "files": 2048,
+              "bytes": 2095104
+            }
+          },
+          {
+            "case": "after_expiry",
+            "trial": 1,
+            "elapsed_ms": 81.720469,
+            "check": {
+              "files": 2048,
+              "bytes": 2095104
+            }
+          },
+          {
+            "case": "immediate_repeat",
+            "trial": 1,
+            "elapsed_ms": 34.628743,
+            "check": {
+              "files": 2048,
+              "bytes": 2095104
+            }
+          },
+          {
+            "case": "after_expiry",
+            "trial": 2,
+            "elapsed_ms": 83.514908,
+            "check": {
+              "files": 2048,
+              "bytes": 2095104
+            }
+          },
+          {
+            "case": "immediate_repeat",
+            "trial": 2,
+            "elapsed_ms": 37.124662,
+            "check": {
+              "files": 2048,
+              "bytes": 2095104
+            }
+          },
+          {
+            "case": "partitioned_stat",
+            "workers": 1,
+            "trial": 0,
+            "elapsed_ms": 47.004734,
+            "check": {
+              "files": 2048,
+              "bytes": 2095104
+            }
+          },
+          {
+            "case": "partitioned_stat",
+            "workers": 4,
+            "trial": 0,
+            "elapsed_ms": 34.193902,
+            "check": {
+              "files": 2048,
+              "bytes": 2095104
+            }
+          },
+          {
+            "case": "partitioned_stat",
+            "workers": 1,
+            "trial": 1,
+            "elapsed_ms": 42.657168,
+            "check": {
+              "files": 2048,
+              "bytes": 2095104
+            }
+          },
+          {
+            "case": "partitioned_stat",
+            "workers": 4,
+            "trial": 1,
+            "elapsed_ms": 33.986054,
+            "check": {
+              "files": 2048,
+              "bytes": 2095104
+            }
+          },
+          {
+            "case": "partitioned_stat",
+            "workers": 1,
+            "trial": 2,
+            "elapsed_ms": 43.067996,
+            "check": {
+              "files": 2048,
+              "bytes": 2095104
+            }
+          },
+          {
+            "case": "partitioned_stat",
+            "workers": 4,
+            "trial": 2,
+            "elapsed_ms": 34.167272,
+            "check": {
+              "files": 2048,
+              "bytes": 2095104
+            }
+          },
+          {
+            "case": "partial_writes_staged",
+            "elapsed_ms": 65.125615,
+            "check": {
+              "files": 64,
+              "bytes": 524288,
+              "sha256": "2d2c27876d60c37a05a0cf80efee59a0f14cb9e715ef671afe12957ac82f2b22"
+            }
+          },
+          {
+            "case": "local_tmpfs_metadata",
+            "trial": 0,
+            "elapsed_ms": 4.943366,
+            "check": {
+              "files": 2048,
+              "bytes": 2095104
+            }
+          },
+          {
+            "case": "local_tmpfs_metadata",
+            "trial": 1,
+            "elapsed_ms": 4.091547,
+            "check": {
+              "files": 2048,
+              "bytes": 2095104
+            }
+          },
+          {
+            "case": "local_tmpfs_metadata",
+            "trial": 2,
+            "elapsed_ms": 3.906091,
+            "check": {
+              "files": 2048,
+              "bytes": 2095104
+            }
+          },
+          {
+            "case": "partial_writes_local_tmpfs",
+            "elapsed_ms": 0.775607,
+            "check": {
+              "files": 64,
+              "bytes": 524288,
+              "sha256": "2d2c27876d60c37a05a0cf80efee59a0f14cb9e715ef671afe12957ac82f2b22"
+            }
+          }
+        ]
+      }
+    },
+    {
+      "label": "candidate",
+      "backend": "pvisor-vm",
+      "binary_sha256": "189b4de50bd2cc283f49c779a09c7b95887b64d1420bdfae0ac2c20927f23802",
+      "result": {
+        "correctness": "passed",
+        "rows": [
+          {
+            "case": "after_expiry",
+            "trial": 0,
+            "elapsed_ms": 176.513862,
+            "check": {
+              "files": 2048,
+              "bytes": 2095104
+            }
+          },
+          {
+            "case": "immediate_repeat",
+            "trial": 0,
+            "elapsed_ms": 96.974884,
+            "check": {
+              "files": 2048,
+              "bytes": 2095104
+            }
+          },
+          {
+            "case": "after_expiry",
+            "trial": 1,
+            "elapsed_ms": 233.996916,
+            "check": {
+              "files": 2048,
+              "bytes": 2095104
+            }
+          },
+          {
+            "case": "immediate_repeat",
+            "trial": 1,
+            "elapsed_ms": 99.94922,
+            "check": {
+              "files": 2048,
+              "bytes": 2095104
+            }
+          },
+          {
+            "case": "after_expiry",
+            "trial": 2,
+            "elapsed_ms": 241.321682,
+            "check": {
+              "files": 2048,
+              "bytes": 2095104
+            }
+          },
+          {
+            "case": "immediate_repeat",
+            "trial": 2,
+            "elapsed_ms": 99.422935,
+            "check": {
+              "files": 2048,
+              "bytes": 2095104
+            }
+          },
+          {
+            "case": "partitioned_stat",
+            "workers": 1,
+            "trial": 0,
+            "elapsed_ms": 126.759349,
+            "check": {
+              "files": 2048,
+              "bytes": 2095104
+            }
+          },
+          {
+            "case": "partitioned_stat",
+            "workers": 4,
+            "trial": 0,
+            "elapsed_ms": 94.143456,
+            "check": {
+              "files": 2048,
+              "bytes": 2095104
+            }
+          },
+          {
+            "case": "partitioned_stat",
+            "workers": 1,
+            "trial": 1,
+            "elapsed_ms": 172.910027,
+            "check": {
+              "files": 2048,
+              "bytes": 2095104
+            }
+          },
+          {
+            "case": "partitioned_stat",
+            "workers": 4,
+            "trial": 1,
+            "elapsed_ms": 105.702816,
+            "check": {
+              "files": 2048,
+              "bytes": 2095104
+            }
+          },
+          {
+            "case": "partitioned_stat",
+            "workers": 1,
+            "trial": 2,
+            "elapsed_ms": 163.905368,
+            "check": {
+              "files": 2048,
+              "bytes": 2095104
+            }
+          },
+          {
+            "case": "partitioned_stat",
+            "workers": 4,
+            "trial": 2,
+            "elapsed_ms": 100.460176,
+            "check": {
+              "files": 2048,
+              "bytes": 2095104
+            }
+          },
+          {
+            "case": "partial_writes_staged",
+            "elapsed_ms": 77.895652,
+            "check": {
+              "files": 64,
+              "bytes": 524288,
+              "sha256": "2d2c27876d60c37a05a0cf80efee59a0f14cb9e715ef671afe12957ac82f2b22"
+            }
+          },
+          {
+            "case": "local_tmpfs_metadata",
+            "trial": 0,
+            "elapsed_ms": 7.520002,
+            "check": {
+              "files": 2048,
+              "bytes": 2095104
+            }
+          },
+          {
+            "case": "local_tmpfs_metadata",
+            "trial": 1,
+            "elapsed_ms": 4.40903,
+            "check": {
+              "files": 2048,
+              "bytes": 2095104
+            }
+          },
+          {
+            "case": "local_tmpfs_metadata",
+            "trial": 2,
+            "elapsed_ms": 4.000316,
+            "check": {
+              "files": 2048,
+              "bytes": 2095104
+            }
+          },
+          {
+            "case": "partial_writes_local_tmpfs",
+            "elapsed_ms": 3.464233,
+            "check": {
+              "files": 64,
+              "bytes": 524288,
+              "sha256": "2d2c27876d60c37a05a0cf80efee59a0f14cb9e715ef671afe12957ac82f2b22"
+            }
+          }
+        ]
+      }
+    }
+  ],
+  "load_after": [
+    0.89404296875,
+    1.80126953125,
+    2.1142578125
+  ]
+}

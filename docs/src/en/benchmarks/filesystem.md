@@ -1,6 +1,6 @@
 # Filesystem and development-tool overhead
 
-The latest real VM/FUSE A/B batch (30 samples per cell) puts 2,048-file traversal P50 at **78.25 ms** staged and **195.24 ms** VM. The latest resolver optimization reduces elapsed time by **15.3% / 13.0%** respectively. Launch-to-exit for all seven workloads takes **1.23 s / 4.78 s**, down just **4.5% / 1.1%**; metadata savings reproduce, while overall and tail performance still need improvement.
+The latest two full seven-tool N=30 evaluations cover **300 measured jobs and 2,100 tool measurements**. Same-source VM completion P50 is **5.27 s (-0.5%)**; the same-batch comparison with the published P0 artifact is **5.19 s (+0.4%)**. Stable overall acceleration remains unproven. Same-source VM traversal is **194.35 ms (+3.2%)**; the adapter's 9.6% deep-directory improvement cannot be extrapolated to VM gains. Git improves in some cases while some tails worsen.
 
 ## Motivation
 
@@ -14,7 +14,246 @@ The latest batch randomizes native and both versions of staged and libkrun VM. H
 
 These workloads were measured on Linux; macFUSE/FSKit overhead and capacity remain unmeasured. Existing macOS/HVF results are retained in [VM startup](startup.md) and [VM memory](vm-memory/index.md), and are not substituted for this workload.
 
-## Linux: 2026-10-05, real VM/FUSE A/B baseline {#e2e-baseline}
+## Linux: full kernel-mechanism and concurrency evaluation {#kernel-campaign}
+
+Screening precedes the unchanged seven-tool evaluation below. These are real
+filesystem jobs, not extrapolated adapter timings or three-sample screens.
+Retained changes fuse parent statx queries, share the lock for read-only OPEN,
+and add opt-in lock/pool diagnostics with no clock reads when disabled.
+READDIRPLUS_AUTO and inline metadata dispatch remain; DAX, writeback and
+long-lived caches are not enabled.
+
+### Completed experiments {#kernel-experiments}
+
+| Experiment | Samples and measurement boundary | Results |
+|---|---|---|
+| Real KVM / host FUSE screening | Five candidate comparisons, each with five cells, one warmup and three measurements per cell; includes reruns after implementation corrections | [Screening and decisions](#kernel-screening), [per-screen records](../../assets/benchmarks/filesystem-kernel-20261005/process.json) |
+| Release adapter microbenchmarks | Four lookup/getattr/open/directory PLUS workloads, two warmups and eight measurements per case and artifact; no VM, FUSE mount or preimage journaling | [Final microbenchmarks](../../assets/benchmarks/filesystem-kernel-20261005/micro-final.json) |
+| Cache, concurrency and guest tmpfs controls | Three measurements for traversal and single/four-thread stat; one for partial writes and readback on 64 files | [Control results](#kernel-probes), [raw records](../../assets/benchmarks/filesystem-kernel-20261005/kernel-probe.json) |
+| Same-source full seven-tool A/B | Five cells, three warmups and 30 measurements per cell; 150 jobs and 1,050 tool measurements | [Full distributions and conclusions](#kernel-full) |
+| Same-batch full comparison of published P0 and final candidate | Five additional cells, three warmups and 30 measurements per cell; 150 jobs and 1,050 tool measurements; source and staged isolation types differ | [Historical-artifact rerun](#kernel-history) |
+| Separate profiling and OPEN concurrency regression | One profile measurement per cell, excluded from acceptance timings; regression checks old blocking behavior, new read-only concurrency and retained writable exclusion | [Queue and lock diagnostics](#kernel-probes), [implementation and regression](#kernel-screening) |
+
+The five cells are native, baseline/candidate host FUSE staged, and
+baseline/candidate KVM VM. The earlier P0 modification's N=30 A/B remains
+[separate](#e2e-baseline), outside the latest two rounds' 300 measured jobs.
+DAX, writeback cache, FUSE passthrough, FUSE-over-io_uring, long-lived TTLs and
+replacement with virtiofsd have only been assessed for feasibility; no performance
+A/B has been implemented for them.
+
+### Screening and implementation selection {#kernel-screening}
+
+Each real screen uses five cells, one warmup and three measurements per cell,
+frozen source, firmware and fixtures, with mandatory preflight. Combined
+variants are labeled; separate batches are not single-change comparisons.
+Screens select further work, not tail or whole-task performance claims.
+
+| Candidate | VM traversal P50 change | VM completion P50 change | Decision |
+|---|---:|---:|---|
+| Initial fused statx | +4.8% | +5.9% | Missing upper parents still triggered duplicate fallback queries; fix and rerun |
+| OPEN shared lock + metadata pool on statx | +1.4% | +8.2% | Do not promote this combination; npm +21.8% in this screen |
+| Force READDIRPLUS, disable AUTO | -30.6% | +4.5% | Git +93.6%; do not enable globally |
+| Fused statx + shared OPEN lock before correcting namespace-error fallback | -17.7% | +4.2% | Intermediate version; retain records, correct and rerun |
+| Corrected statx + shared OPEN lock | +5.0% | +1.0% | Correctness passes; use full N=30 for evaluation |
+
+Initially ordinary ENOENT/ENOTDIR also fell back from statx to metadata,
+offsetting some savings on lower queries. The final implementation returns
+those namespace results directly. Unsupported/restricted queries or missing
+fields fall back safely, with no guessed mount ID or native parent reuse.
+Physical ancestor and leaf checks remain, without cross-request attribute or
+permission caching.
+
+A separate release adapter microbenchmark uses two warmups, eight measurements
+and one separate diagnostic per case, without VM, FUSE or preimage journaling.
+Deep-directory P50 is **97.52 → 88.16 ms (-9.6%)**; shallow lookup/open/getattr
+**28.39 → 27.61 ms (-2.8%)**. The final normal fixture has no metadata fallbacks
+and avoids 33,664 separate mount-identity queries in the deep case. This verifies
+reduced duplicate work, not a predicted VM-task gain.
+
+The new regression reproduces read-only OPEN waiting behind independent backing
+READ: it fails the old implementation and passes the shared-lock implementation.
+Writable OPEN still waits and lower content stays unchanged. APPEND/TRUNC,
+non-read-only and kill_priv opens, mutations, release and snapshots remain
+exclusive. Per-path journals still synchronize first observations; handle,
+descriptor RAM-lease, used-ring and freeze-drain contracts remain. All five
+implementation-file hashes match the actual worktree.
+
+### Same-source full seven-tool A/B {#kernel-full}
+
+Both release binaries use frozen `bc08f457` source, differing by the retained
+implementation patch. Each cell has three warmups and 30 measurements:
+**150 measured jobs and 1,050 tool measurements**, all passing original output,
+Run Bundle, isolation, lower-write absence and complete 256-file upper checks.
+Each job has a fresh workspace/upper and runs the seven tools in their original
+order; five cells shuffle with a fixed seed. The retained fixture still writes
+256 × 64 KiB, checks 64 MiB and traverses 2,048 files with the original cargo/npm
+inputs. Host cache is warm; affinity uses physical cores 0,1, VM 2 vCPU/16 GiB,
+and firmware matches P0. Both same-source staged variants are
+**rootless_process**, requiring read/write/non-bypassable boundaries. Published
+P0 staged used host_process; its comparison is separate. CPUs are not exclusive;
+host one-minute load is **2.02 → 2.70**. Units below are ms; negative is faster.
+
+| Workload | Native | Staged before → after | Change | VM before → after | Change |
+|---|---:|---:|---:|---:|---:|
+| metadata | 4.88 | 77.96 → 78.14 | +0.2% | 188.38 → 194.35 | +3.2% |
+| read | 32.62 | 69.39 → 68.94 | -0.7% | 154.14 → 156.15 | +1.3% |
+| write | 3.89 | 202.64 → 202.92 | +0.1% | 252.50 → 254.62 | +0.8% |
+| git | 15.13 | 172.44 → 173.35 | +0.5% | 493.02 → 433.31 | -12.1% |
+| rg | 7.76 | 90.78 → 91.63 | +0.9% | 457.09 → 452.03 | -1.1% |
+| cargo | 55.25 | 116.54 → 114.56 | -1.7% | 734.07 → 719.18 | -2.0% |
+| npm | 175.58 | 267.20 → 263.22 | -1.5% | 1631.39 → 1625.45 | -0.4% |
+| launch to exit | 468.52 | 1345.29 → 1310.05 | -2.6% | 5298.80 → 5273.93 | -0.5% |
+
+The full run does not establish universal acceleration. Staged completion is
+**-2.6%**, VM completion **-0.5%**; VM Git is **-12.1%** in this batch, while
+metadata is **+3.2%**. The adapter's -9.6% must not be reported as VM traversal
+improvement, and Git cannot stand in for npm, writes or the complete task.
+
+| Workload | Staged P95 before → after | VM P95 before → after | Staged after P99 | VM after P99 |
+|---|---:|---:|---:|---:|
+| metadata | 84.63 → 88.98 | 254.15 → 270.13 | 97.68 | 296.52 |
+| read | 85.22 → 85.02 | 197.53 → 201.65 | 86.04 | 214.19 |
+| write | 222.86 → 222.09 | 330.15 → 295.80 | 228.31 | 335.81 |
+| git | 206.08 → 197.27 | 814.82 → 776.87 | 226.71 | 796.34 |
+| rg | 96.04 → 98.05 | 478.63 → 531.83 | 101.09 | 660.30 |
+| cargo | 147.37 → 144.05 | 812.44 → 831.76 | 150.25 | 846.64 |
+| npm | 297.90 → 294.31 | 1909.17 → 1947.07 | 306.96 | 2093.77 |
+| launch to exit | 5633.02 → 3808.26 | 5812.36 → 5766.30 | 5321.95 | 6031.76 |
+
+Tails do not improve together. Candidate VM rg P99 goes **526 → 660 ms**, npm
+**2001 → 2094 ms**, completion **5917 → 6032 ms**, while write tails fall.
+Staged completion tails include a few slow tasks and are not the sum of seven
+worker times. All distributions remain available; this is one full batch on a
+nonexclusive host.
+
+Against same-batch native, candidate VM traversal is **39.8×**, 256-file writes
+**65.4×**, 64 MiB reads **4.8×**, npm **9.3×**. Repeated directory/attribute
+operations, small writes and VM tool execution remain substantial costs.
+
+### Published P0 artifact rerun in the same batch {#kernel-history}
+
+The published pinned P0 candidate (`a1020d4b` plus shared stdio readiness fix)
+is then compared with final P1: again three warmups and 30 measurements per cell,
+an additional **150 measured jobs and 1,050 tool measurements**, all passing
+the same checks. Original fixture, firmware and two-core budget remain; load is
+**0.45 → 3.44**. Units are ms. This is a same-batch artifact comparison with
+*different source bases*, not attribution of every difference to statx or OPEN.
+P0 staged is **host_process**, P1 **rootless_process**; each observed boundary
+is validated strictly.
+
+| Workload | P0 → P1 staged P50 | Change | P0 → P1 VM P50 | Change |
+|---|---:|---:|---:|---:|
+| metadata | 76.26 → 77.26 | +1.3% | 225.02 → 228.47 | +1.5% |
+| read | 68.11 → 68.69 | +0.9% | 121.06 → 120.93 | -0.1% |
+| write | 198.12 → 200.20 | +1.0% | 240.25 → 253.10 | +5.3% |
+| git | 167.50 → 170.04 | +1.5% | 449.65 → 430.24 | -4.3% |
+| rg | 89.01 → 89.85 | +0.9% | 465.98 → 460.27 | -1.2% |
+| cargo | 111.08 → 111.62 | +0.5% | 654.27 → 625.52 | -4.4% |
+| npm | 215.91 → 261.39 | +21.1% | 1662.16 → 1666.95 | +0.3% |
+| launch to exit | 1224.50 → 1290.69 | +5.4% | 5164.78 → 5187.46 | +0.4% |
+
+Second-batch VM completion is **+0.4%**, again without overall acceleration;
+Git is **-4.3%**, writes **+5.3%**. Staged npm is **+21.1%**, versus -1.5% in
+the previous same-source rootless comparison. Different execution boundaries
+and other source changes enter this artifact comparison; it is not a causal
+claim about the filesystem patch. The same P1 artifact traverses in
+**194 / 228 ms** and reads in **156 / 121 ms** across the two batches, demonstrating
+batch sensitivity. Neither faster-batch selection nor percentile pooling is valid.
+
+Original P0 published traversal **195.24 ms** remains below; the identical P0
+artifact measures **225.02 ms** here. Published-to-current differences likewise
+cannot be equated with code gains. Both complete evaluations total
+**300 measured jobs and 2,100 tool measurements**. Evidence supports eliminating
+duplicate parent queries and read-only OPEN serialization, not universal
+end-to-end acceleration.
+
+[Raw published-artifact comparison](../../assets/benchmarks/filesystem-kernel-20261005/full-historical.json) ·
+[Its P50/P95/P99 and protocol](../../assets/benchmarks/filesystem-kernel-20261005/historical-summary.json) ·
+[Both batches' raw sample CSV](../../assets/benchmarks/filesystem-kernel-20261005/samples.csv)
+
+### Cache, concurrency and guest-local controls {#kernel-probes}
+
+The separate diagnostic repeats traversal of the same 2,048-file fixture,
+waiting 1.2 seconds before every expired-cache pass, including after the initial
+rglob. Candidate VM results below are in ms. Tmpfs is verified as `/dev/shm`
+inside the same guest; file preparation is excluded.
+
+| Control | Measurements per group | P50 |
+|---|---:|---:|
+| Expired-cache traversal → immediate repeat | 3 | 233.11 → 105.11 |
+| Single-thread → four-thread partitioned stat | 3 | 164.17 → 91.86 |
+| Traversal on tmpfs in the same guest | 3 | 3.28 |
+| 64 files, eight 1 KiB writes each with readback: shared view → guest tmpfs | 1 | 69.64 → 2.78 |
+
+Immediate repetition shows caching helps, with substantial cumulative cost
+remaining. Overlapping submission reduces waits without proving concurrent Core
+execution. The partial-write control has one sample and is not acceptance
+evidence. Tmpfs excludes virtio-fs, Core, journal and storage latency together;
+the difference cannot all be attributed to transport.
+
+A separate profile batch is excluded from acceptance timings. Last candidate VM
+checkpoints show **21,340 / 24,743 inline** and **357 / 65 pool** requests.
+Pool queue waits total **12.80 / 1.67 ms**; completion-to-used-ring publication
+**5.16 / 1.22 ms**. Combined read/write lock acquisition waits are about
+**1.09 / 2.55 ms**, with individual maxima below **0.38 ms**. This diagnostic
+does not show long lock waits, but excludes guest-to-host admission waiting and
+does not rule out inline serialization. Core checkpoints still show
+**121,768 / 169,649** parent observations and **63,375 / 65,488** fused statx
+queries, with no fallback records. Complete staged profiling records 341 journal
+fsync calls totaling about **119 ms**. VM checkpoints are not final and may have
+different cutoffs. Inclusive spans are not summed; counters are not a complete
+syscall census.
+
+The initial diagnostic stopped because it searched runs only, while --stage
+places the Run Bundle in stage. The failed batch is retained and corrected runs
+use new directories. The intermediate successful batch did not expire initial
+rglob caches; it is kept separately, excluded from final diagnostic timings.
+All normal staged writes remain in upper, with lower unchanged.
+
+### Priorities for further kernel mechanisms {#kernel-paths}
+
+1. **Directory/attribute/negative caches and invalidations.** Repeated traversal
+   remains expensive. Establish immutable or single-owner tree contracts before
+   testing longer TTL and FOPEN_CACHE_DIR. Live lowers allow external host
+   changes, and no active invalidation transport exists; do not extend TTL globally.
+2. **Workload-aware READDIRPLUS and host concurrency.** AUTO already exists,
+   and forced PLUS has tradeoffs. Host fuser uses one synchronous callback loop.
+   VM uses one request and one hiprio queue; short metadata runs inline, and a
+   full pool pauses normal admission. More workers alone do not prove gains;
+   measure queue/lock waits. ASYNC_READ/PARALLEL_DIROPS are already negotiated
+   by the protocol server.
+3. **Writeback cache.** It may coalesce small writes, but requires durable
+   preimages before mutation, dirty-page draining before terminal/export/snapshot,
+   and partial-write/append/truncate correctness.
+   [Kernel I/O modes](https://kernel.org/doc/html/latest/filesystems/fuse/fuse-io.html)
+4. **Data paths and local filesystems.** DAX primarily removes data copies; no
+   DAX A/B is performed here. FUSE-over-io-uring addresses host /dev/fuse, not
+   direct replacement of VM virtqueues. FUSE passthrough needs a backing FD in
+   the same kernel, not a host FD handed to the guest. Guest-local tmpfs or
+   read-only block images/kernel filesystems merit separate evaluation with
+   staging/recording/restore contracts preserved.
+   [DAX](https://docs.kernel.org/filesystems/dax.html) ·
+   [io-uring](https://docs.kernel.org/filesystems/fuse/fuse-io-uring.html) ·
+   [Passthrough](https://docs.kernel.org/filesystems/fuse/fuse-passthrough.html)
+
+Validation passes: **97 Core tests (five skipped)**, **12 overlayfs tests**,
+**294 VM tests (two skipped)**, **25 benchmark tests**, all-targets Clippy for
+three relevant packages and benchmark Ruff. No semspec ledgers/snapshots were
+modified or approved. Evidence includes samples and failures, not only successful
+summaries. These numbers do not update macOS, startup, networking or complete
+Agent-loop measurements.
+
+[Raw same-source report](../../assets/benchmarks/filesystem-kernel-20261005/full-same-source.json) ·
+[Full distributions and protocol](../../assets/benchmarks/filesystem-kernel-20261005/summary.json) ·
+[Screening process](../../assets/benchmarks/filesystem-kernel-20261005/process.json) ·
+[Microbenchmark](../../assets/benchmarks/filesystem-kernel-20261005/micro-final.json) ·
+[Kernel diagnostics](../../assets/benchmarks/filesystem-kernel-20261005/kernel-probe.json) ·
+[Queue and lock diagnostics](../../assets/benchmarks/filesystem-kernel-20261005/profiles.json) ·
+[Source patch](../../assets/benchmarks/filesystem-kernel-20261005/implementation.patch) ·
+[Raw logs and reproduction evidence](../../assets/benchmarks/filesystem-kernel-20261005/evidence.tar.gz) ·
+[Hash manifest](../../assets/benchmarks/filesystem-kernel-20261005/manifest.json)
+
+## Linux: 2026-10-05, P0 real VM/FUSE A/B baseline {#e2e-baseline}
 
 This batch boots actual KVM VMs and mounts actual host FUSE, completing the
 end-to-end check missing from the adapter experiment. Host devices are available;
@@ -131,7 +370,7 @@ python3 benchmark/pvisor/filesystem_ab.py \
 [Separate diagnostics](../../assets/benchmarks/filesystem-ab-20261005/profiles.json) ·
 [Reports, harness, failure and validation logs](../../assets/benchmarks/filesystem-ab-20261005/evidence.tar.gz)
 
-### Observed change from historical to latest {#historical-progress}
+### Retained historical-to-P0 comparison {#historical-progress}
 
 This compares the 2026-10-04 complete-tool-environment N=30 batch with the latest
 candidate N=30 batch: internal tool P50 in ms. Both retain the tool fixture, but

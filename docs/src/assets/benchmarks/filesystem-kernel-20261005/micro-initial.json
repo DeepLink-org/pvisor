@@ -1,0 +1,3304 @@
+{
+  "scope": "adapter only; no guest, FUSE, preimage journal or kernel caching",
+  "cpu_affinity": "0,1",
+  "fixture": "2048 files, 32 directories, 18 bytes; /tmp; fresh adapters per sample",
+  "rows": [
+    {
+      "variant": "baseline",
+      "adapter_profile": null,
+      "case": "lookup_getattr",
+      "core_profile": null,
+      "elapsed_ms": 25.529515,
+      "profiled": false,
+      "scope": "adapter-only, host cache warm, fresh inode tables; no guest kernel/VM",
+      "trial": 0,
+      "warmup": true
+    },
+    {
+      "variant": "baseline",
+      "adapter_profile": null,
+      "case": "lookup_getattr",
+      "core_profile": null,
+      "elapsed_ms": 25.357042,
+      "profiled": false,
+      "scope": "adapter-only, host cache warm, fresh inode tables; no guest kernel/VM",
+      "trial": 1,
+      "warmup": true
+    },
+    {
+      "variant": "baseline",
+      "adapter_profile": null,
+      "case": "lookup_getattr",
+      "core_profile": null,
+      "elapsed_ms": 26.567031,
+      "profiled": false,
+      "scope": "adapter-only, host cache warm, fresh inode tables; no guest kernel/VM",
+      "trial": 2,
+      "warmup": false
+    },
+    {
+      "variant": "baseline",
+      "adapter_profile": null,
+      "case": "lookup_getattr",
+      "core_profile": null,
+      "elapsed_ms": 25.029041,
+      "profiled": false,
+      "scope": "adapter-only, host cache warm, fresh inode tables; no guest kernel/VM",
+      "trial": 3,
+      "warmup": false
+    },
+    {
+      "variant": "baseline",
+      "adapter_profile": null,
+      "case": "lookup_getattr",
+      "core_profile": null,
+      "elapsed_ms": 24.807216999999998,
+      "profiled": false,
+      "scope": "adapter-only, host cache warm, fresh inode tables; no guest kernel/VM",
+      "trial": 4,
+      "warmup": false
+    },
+    {
+      "variant": "baseline",
+      "adapter_profile": null,
+      "case": "lookup_getattr",
+      "core_profile": null,
+      "elapsed_ms": 25.06605,
+      "profiled": false,
+      "scope": "adapter-only, host cache warm, fresh inode tables; no guest kernel/VM",
+      "trial": 5,
+      "warmup": false
+    },
+    {
+      "variant": "baseline",
+      "adapter_profile": null,
+      "case": "lookup_getattr",
+      "core_profile": null,
+      "elapsed_ms": 26.189967000000003,
+      "profiled": false,
+      "scope": "adapter-only, host cache warm, fresh inode tables; no guest kernel/VM",
+      "trial": 6,
+      "warmup": false
+    },
+    {
+      "variant": "baseline",
+      "adapter_profile": null,
+      "case": "lookup_getattr",
+      "core_profile": null,
+      "elapsed_ms": 25.529895,
+      "profiled": false,
+      "scope": "adapter-only, host cache warm, fresh inode tables; no guest kernel/VM",
+      "trial": 7,
+      "warmup": false
+    },
+    {
+      "variant": "baseline",
+      "adapter_profile": null,
+      "case": "lookup_getattr",
+      "core_profile": null,
+      "elapsed_ms": 25.29698,
+      "profiled": false,
+      "scope": "adapter-only, host cache warm, fresh inode tables; no guest kernel/VM",
+      "trial": 8,
+      "warmup": false
+    },
+    {
+      "variant": "baseline",
+      "adapter_profile": null,
+      "case": "lookup_getattr",
+      "core_profile": null,
+      "elapsed_ms": 25.679604,
+      "profiled": false,
+      "scope": "adapter-only, host cache warm, fresh inode tables; no guest kernel/VM",
+      "trial": 9,
+      "warmup": false
+    },
+    {
+      "variant": "baseline",
+      "adapter_profile": {
+        "component": "virtio-fs-overlay",
+        "final_record": false,
+        "inclusive_spans": true,
+        "instance": 1,
+        "measurements": {
+          "backing_lookup": {
+            "calls": 4160,
+            "latency_buckets": [
+              4160,
+              0,
+              0,
+              0,
+              0
+            ],
+            "max_ns": 2174,
+            "total_ns": 2031191,
+            "units": 0
+          },
+          "directory_cache_deep_hits": {
+            "calls": 0,
+            "latency_buckets": [
+              0,
+              0,
+              0,
+              0,
+              0
+            ],
+            "max_ns": 0,
+            "total_ns": 0,
+            "units": 4064
+          },
+          "directory_cache_misses": {
+            "calls": 0,
+            "latency_buckets": [
+              0,
+              0,
+              0,
+              0,
+              0
+            ],
+            "max_ns": 0,
+            "total_ns": 0,
+            "units": 32
+          },
+          "entry": {
+            "calls": 4128,
+            "latency_buckets": [
+              4128,
+              0,
+              0,
+              0,
+              0
+            ],
+            "max_ns": 5491,
+            "total_ns": 4181227,
+            "units": 0
+          },
+          "getattr": {
+            "calls": 2048,
+            "latency_buckets": [
+              2047,
+              1,
+              0,
+              0,
+              0
+            ],
+            "max_ns": 1097609,
+            "total_ns": 14260810,
+            "units": 0
+          },
+          "inner_inode": {
+            "calls": 4128,
+            "latency_buckets": [
+              4128,
+              0,
+              0,
+              0,
+              0
+            ],
+            "max_ns": 5130,
+            "total_ns": 3124949,
+            "units": 0
+          },
+          "lookup": {
+            "calls": 2080,
+            "latency_buckets": [
+              2080,
+              0,
+              0,
+              0,
+              0
+            ],
+            "max_ns": 480186,
+            "total_ns": 15365234,
+            "units": 0
+          }
+        },
+        "pid": 80,
+        "schema": 2
+      },
+      "case": "lookup_getattr",
+      "core_profile": {
+        "component": "overlay-core",
+        "final_record": false,
+        "inclusive_spans": true,
+        "instance": 2,
+        "measurements": {
+          "layer_leaf_stats": {
+            "calls": 0,
+            "latency_buckets": [
+              0,
+              0,
+              0,
+              0,
+              0
+            ],
+            "max_ns": 0,
+            "total_ns": 0,
+            "units": 12352
+          },
+          "layer_parent_stats": {
+            "calls": 0,
+            "latency_buckets": [
+              0,
+              0,
+              0,
+              0,
+              0
+            ],
+            "max_ns": 0,
+            "total_ns": 0,
+            "units": 8192
+          },
+          "metadata": {
+            "calls": 4128,
+            "latency_buckets": [
+              4127,
+              1,
+              0,
+              0,
+              0
+            ],
+            "max_ns": 1093691,
+            "total_ns": 23713477,
+            "units": 0
+          },
+          "mount_identity_attempts": {
+            "calls": 0,
+            "latency_buckets": [
+              0,
+              0,
+              0,
+              0,
+              0
+            ],
+            "max_ns": 0,
+            "total_ns": 0,
+            "units": 4096
+          },
+          "opaque_probe": {
+            "calls": 4128,
+            "latency_buckets": [
+              4128,
+              0,
+              0,
+              0,
+              0
+            ],
+            "max_ns": 9969,
+            "total_ns": 3285141,
+            "units": 0
+          },
+          "resolve": {
+            "calls": 4128,
+            "latency_buckets": [
+              4127,
+              1,
+              0,
+              0,
+              0
+            ],
+            "max_ns": 1093591,
+            "total_ns": 23401499,
+            "units": 0
+          },
+          "resolve_components": {
+            "calls": 0,
+            "latency_buckets": [
+              0,
+              0,
+              0,
+              0,
+              0
+            ],
+            "max_ns": 0,
+            "total_ns": 0,
+            "units": 8224
+          },
+          "unavailable_upper_marker_skips": {
+            "calls": 0,
+            "latency_buckets": [
+              0,
+              0,
+              0,
+              0,
+              0
+            ],
+            "max_ns": 0,
+            "total_ns": 0,
+            "units": 4096
+          },
+          "whiteout_probe": {
+            "calls": 4128,
+            "latency_buckets": [
+              4128,
+              0,
+              0,
+              0,
+              0
+            ],
+            "max_ns": 20649,
+            "total_ns": 2250712,
+            "units": 0
+          }
+        },
+        "pid": 80,
+        "schema": 2
+      },
+      "elapsed_ms": 29.998555,
+      "profiled": true,
+      "scope": "adapter-only, host cache warm, fresh inode tables; no guest kernel/VM",
+      "trial": 10,
+      "warmup": false
+    },
+    {
+      "variant": "baseline",
+      "adapter_profile": null,
+      "case": "lookup_open_getattr",
+      "core_profile": null,
+      "elapsed_ms": 27.902503,
+      "profiled": false,
+      "scope": "adapter-only, host cache warm, fresh inode tables; no guest kernel/VM",
+      "trial": 0,
+      "warmup": true
+    },
+    {
+      "variant": "baseline",
+      "adapter_profile": null,
+      "case": "lookup_open_getattr",
+      "core_profile": null,
+      "elapsed_ms": 26.934877999999998,
+      "profiled": false,
+      "scope": "adapter-only, host cache warm, fresh inode tables; no guest kernel/VM",
+      "trial": 1,
+      "warmup": true
+    },
+    {
+      "variant": "baseline",
+      "adapter_profile": null,
+      "case": "lookup_open_getattr",
+      "core_profile": null,
+      "elapsed_ms": 26.337733,
+      "profiled": false,
+      "scope": "adapter-only, host cache warm, fresh inode tables; no guest kernel/VM",
+      "trial": 2,
+      "warmup": false
+    },
+    {
+      "variant": "baseline",
+      "adapter_profile": null,
+      "case": "lookup_open_getattr",
+      "core_profile": null,
+      "elapsed_ms": 26.872141,
+      "profiled": false,
+      "scope": "adapter-only, host cache warm, fresh inode tables; no guest kernel/VM",
+      "trial": 3,
+      "warmup": false
+    },
+    {
+      "variant": "baseline",
+      "adapter_profile": null,
+      "case": "lookup_open_getattr",
+      "core_profile": null,
+      "elapsed_ms": 27.417197,
+      "profiled": false,
+      "scope": "adapter-only, host cache warm, fresh inode tables; no guest kernel/VM",
+      "trial": 4,
+      "warmup": false
+    },
+    {
+      "variant": "baseline",
+      "adapter_profile": null,
+      "case": "lookup_open_getattr",
+      "core_profile": null,
+      "elapsed_ms": 28.009092,
+      "profiled": false,
+      "scope": "adapter-only, host cache warm, fresh inode tables; no guest kernel/VM",
+      "trial": 5,
+      "warmup": false
+    },
+    {
+      "variant": "baseline",
+      "adapter_profile": null,
+      "case": "lookup_open_getattr",
+      "core_profile": null,
+      "elapsed_ms": 28.403699,
+      "profiled": false,
+      "scope": "adapter-only, host cache warm, fresh inode tables; no guest kernel/VM",
+      "trial": 6,
+      "warmup": false
+    },
+    {
+      "variant": "baseline",
+      "adapter_profile": null,
+      "case": "lookup_open_getattr",
+      "core_profile": null,
+      "elapsed_ms": 26.889974000000002,
+      "profiled": false,
+      "scope": "adapter-only, host cache warm, fresh inode tables; no guest kernel/VM",
+      "trial": 7,
+      "warmup": false
+    },
+    {
+      "variant": "baseline",
+      "adapter_profile": null,
+      "case": "lookup_open_getattr",
+      "core_profile": null,
+      "elapsed_ms": 27.381281,
+      "profiled": false,
+      "scope": "adapter-only, host cache warm, fresh inode tables; no guest kernel/VM",
+      "trial": 8,
+      "warmup": false
+    },
+    {
+      "variant": "baseline",
+      "adapter_profile": null,
+      "case": "lookup_open_getattr",
+      "core_profile": null,
+      "elapsed_ms": 26.777362999999998,
+      "profiled": false,
+      "scope": "adapter-only, host cache warm, fresh inode tables; no guest kernel/VM",
+      "trial": 9,
+      "warmup": false
+    },
+    {
+      "variant": "baseline",
+      "adapter_profile": {
+        "component": "virtio-fs-overlay",
+        "final_record": false,
+        "inclusive_spans": true,
+        "instance": 3,
+        "measurements": {
+          "backing_lookup": {
+            "calls": 4160,
+            "latency_buckets": [
+              4160,
+              0,
+              0,
+              0,
+              0
+            ],
+            "max_ns": 3657,
+            "total_ns": 1996177,
+            "units": 0
+          },
+          "directory_cache_deep_hits": {
+            "calls": 0,
+            "latency_buckets": [
+              0,
+              0,
+              0,
+              0,
+              0
+            ],
+            "max_ns": 0,
+            "total_ns": 0,
+            "units": 4064
+          },
+          "directory_cache_misses": {
+            "calls": 0,
+            "latency_buckets": [
+              0,
+              0,
+              0,
+              0,
+              0
+            ],
+            "max_ns": 0,
+            "total_ns": 0,
+            "units": 32
+          },
+          "entry": {
+            "calls": 2080,
+            "latency_buckets": [
+              2080,
+              0,
+              0,
+              0,
+              0
+            ],
+            "max_ns": 4929,
+            "total_ns": 2128975,
+            "units": 0
+          },
+          "getattr": {
+            "calls": 2048,
+            "latency_buckets": [
+              2048,
+              0,
+              0,
+              0,
+              0
+            ],
+            "max_ns": 982,
+            "total_ns": 459354,
+            "units": 0
+          },
+          "inner_inode": {
+            "calls": 4128,
+            "latency_buckets": [
+              4128,
+              0,
+              0,
+              0,
+              0
+            ],
+            "max_ns": 4649,
+            "total_ns": 3045311,
+            "units": 0
+          },
+          "lookup": {
+            "calls": 2080,
+            "latency_buckets": [
+              2080,
+              0,
+              0,
+              0,
+              0
+            ],
+            "max_ns": 233376,
+            "total_ns": 14925375,
+            "units": 0
+          },
+          "open": {
+            "calls": 2048,
+            "latency_buckets": [
+              2048,
+              0,
+              0,
+              0,
+              0
+            ],
+            "max_ns": 143929,
+            "total_ns": 13868063,
+            "units": 0
+          }
+        },
+        "pid": 80,
+        "schema": 2
+      },
+      "case": "lookup_open_getattr",
+      "core_profile": {
+        "component": "overlay-core",
+        "final_record": false,
+        "inclusive_spans": true,
+        "instance": 4,
+        "measurements": {
+          "layer_leaf_stats": {
+            "calls": 0,
+            "latency_buckets": [
+              0,
+              0,
+              0,
+              0,
+              0
+            ],
+            "max_ns": 0,
+            "total_ns": 0,
+            "units": 12352
+          },
+          "layer_parent_stats": {
+            "calls": 0,
+            "latency_buckets": [
+              0,
+              0,
+              0,
+              0,
+              0
+            ],
+            "max_ns": 0,
+            "total_ns": 0,
+            "units": 8192
+          },
+          "metadata": {
+            "calls": 4128,
+            "latency_buckets": [
+              4128,
+              0,
+              0,
+              0,
+              0
+            ],
+            "max_ns": 231602,
+            "total_ns": 21960787,
+            "units": 0
+          },
+          "mount_identity_attempts": {
+            "calls": 0,
+            "latency_buckets": [
+              0,
+              0,
+              0,
+              0,
+              0
+            ],
+            "max_ns": 0,
+            "total_ns": 0,
+            "units": 4096
+          },
+          "observe_read": {
+            "calls": 2048,
+            "latency_buckets": [
+              2048,
+              0,
+              0,
+              0,
+              0
+            ],
+            "max_ns": 142156,
+            "total_ns": 10486175,
+            "units": 0
+          },
+          "opaque_probe": {
+            "calls": 4128,
+            "latency_buckets": [
+              4128,
+              0,
+              0,
+              0,
+              0
+            ],
+            "max_ns": 18173,
+            "total_ns": 3263422,
+            "units": 0
+          },
+          "resolve": {
+            "calls": 4128,
+            "latency_buckets": [
+              4128,
+              0,
+              0,
+              0,
+              0
+            ],
+            "max_ns": 231512,
+            "total_ns": 21645358,
+            "units": 0
+          },
+          "resolve_components": {
+            "calls": 0,
+            "latency_buckets": [
+              0,
+              0,
+              0,
+              0,
+              0
+            ],
+            "max_ns": 0,
+            "total_ns": 0,
+            "units": 8224
+          },
+          "unavailable_upper_marker_skips": {
+            "calls": 0,
+            "latency_buckets": [
+              0,
+              0,
+              0,
+              0,
+              0
+            ],
+            "max_ns": 0,
+            "total_ns": 0,
+            "units": 4096
+          },
+          "whiteout_probe": {
+            "calls": 4128,
+            "latency_buckets": [
+              4128,
+              0,
+              0,
+              0,
+              0
+            ],
+            "max_ns": 18124,
+            "total_ns": 2203068,
+            "units": 0
+          }
+        },
+        "pid": 80,
+        "schema": 2
+      },
+      "elapsed_ms": 30.936305,
+      "profiled": true,
+      "scope": "adapter-only, host cache warm, fresh inode tables; no guest kernel/VM",
+      "trial": 10,
+      "warmup": false
+    },
+    {
+      "variant": "baseline",
+      "adapter_profile": null,
+      "case": "deep_lookup_open_getattr",
+      "core_profile": null,
+      "elapsed_ms": 124.651101,
+      "profiled": false,
+      "scope": "adapter-only, host cache warm, fresh inode tables; no guest kernel/VM",
+      "trial": 0,
+      "warmup": true
+    },
+    {
+      "variant": "baseline",
+      "adapter_profile": null,
+      "case": "deep_lookup_open_getattr",
+      "core_profile": null,
+      "elapsed_ms": 97.09565500000001,
+      "profiled": false,
+      "scope": "adapter-only, host cache warm, fresh inode tables; no guest kernel/VM",
+      "trial": 1,
+      "warmup": true
+    },
+    {
+      "variant": "baseline",
+      "adapter_profile": null,
+      "case": "deep_lookup_open_getattr",
+      "core_profile": null,
+      "elapsed_ms": 92.956921,
+      "profiled": false,
+      "scope": "adapter-only, host cache warm, fresh inode tables; no guest kernel/VM",
+      "trial": 2,
+      "warmup": false
+    },
+    {
+      "variant": "baseline",
+      "adapter_profile": null,
+      "case": "deep_lookup_open_getattr",
+      "core_profile": null,
+      "elapsed_ms": 93.689177,
+      "profiled": false,
+      "scope": "adapter-only, host cache warm, fresh inode tables; no guest kernel/VM",
+      "trial": 3,
+      "warmup": false
+    },
+    {
+      "variant": "baseline",
+      "adapter_profile": null,
+      "case": "deep_lookup_open_getattr",
+      "core_profile": null,
+      "elapsed_ms": 100.62912,
+      "profiled": false,
+      "scope": "adapter-only, host cache warm, fresh inode tables; no guest kernel/VM",
+      "trial": 4,
+      "warmup": false
+    },
+    {
+      "variant": "baseline",
+      "adapter_profile": null,
+      "case": "deep_lookup_open_getattr",
+      "core_profile": null,
+      "elapsed_ms": 105.032777,
+      "profiled": false,
+      "scope": "adapter-only, host cache warm, fresh inode tables; no guest kernel/VM",
+      "trial": 5,
+      "warmup": false
+    },
+    {
+      "variant": "baseline",
+      "adapter_profile": null,
+      "case": "deep_lookup_open_getattr",
+      "core_profile": null,
+      "elapsed_ms": 99.688554,
+      "profiled": false,
+      "scope": "adapter-only, host cache warm, fresh inode tables; no guest kernel/VM",
+      "trial": 6,
+      "warmup": false
+    },
+    {
+      "variant": "baseline",
+      "adapter_profile": null,
+      "case": "deep_lookup_open_getattr",
+      "core_profile": null,
+      "elapsed_ms": 94.352175,
+      "profiled": false,
+      "scope": "adapter-only, host cache warm, fresh inode tables; no guest kernel/VM",
+      "trial": 7,
+      "warmup": false
+    },
+    {
+      "variant": "baseline",
+      "adapter_profile": null,
+      "case": "deep_lookup_open_getattr",
+      "core_profile": null,
+      "elapsed_ms": 96.673747,
+      "profiled": false,
+      "scope": "adapter-only, host cache warm, fresh inode tables; no guest kernel/VM",
+      "trial": 8,
+      "warmup": false
+    },
+    {
+      "variant": "baseline",
+      "adapter_profile": null,
+      "case": "deep_lookup_open_getattr",
+      "core_profile": null,
+      "elapsed_ms": 92.515969,
+      "profiled": false,
+      "scope": "adapter-only, host cache warm, fresh inode tables; no guest kernel/VM",
+      "trial": 9,
+      "warmup": false
+    },
+    {
+      "variant": "baseline",
+      "adapter_profile": {
+        "component": "virtio-fs-overlay",
+        "final_record": false,
+        "inclusive_spans": true,
+        "instance": 5,
+        "measurements": {
+          "backing_lookup": {
+            "calls": 4608,
+            "latency_buckets": [
+              4608,
+              0,
+              0,
+              0,
+              0
+            ],
+            "max_ns": 3606,
+            "total_ns": 2459269,
+            "units": 0
+          },
+          "directory_cache_deep_hits": {
+            "calls": 0,
+            "latency_buckets": [
+              0,
+              0,
+              0,
+              0,
+              0
+            ],
+            "max_ns": 0,
+            "total_ns": 0,
+            "units": 4064
+          },
+          "directory_cache_hits": {
+            "calls": 0,
+            "latency_buckets": [
+              0,
+              0,
+              0,
+              0,
+              0
+            ],
+            "max_ns": 0,
+            "total_ns": 0,
+            "units": 896
+          },
+          "directory_cache_misses": {
+            "calls": 0,
+            "latency_buckets": [
+              0,
+              0,
+              0,
+              0,
+              0
+            ],
+            "max_ns": 0,
+            "total_ns": 0,
+            "units": 256
+          },
+          "entry": {
+            "calls": 2304,
+            "latency_buckets": [
+              2304,
+              0,
+              0,
+              0,
+              0
+            ],
+            "max_ns": 344744,
+            "total_ns": 3501002,
+            "units": 0
+          },
+          "getattr": {
+            "calls": 2048,
+            "latency_buckets": [
+              2048,
+              0,
+              0,
+              0,
+              0
+            ],
+            "max_ns": 962,
+            "total_ns": 464308,
+            "units": 0
+          },
+          "inner_inode": {
+            "calls": 4352,
+            "latency_buckets": [
+              4352,
+              0,
+              0,
+              0,
+              0
+            ],
+            "max_ns": 29215,
+            "total_ns": 4249059,
+            "units": 0
+          },
+          "lookup": {
+            "calls": 2304,
+            "latency_buckets": [
+              2304,
+              0,
+              0,
+              0,
+              0
+            ],
+            "max_ns": 368187,
+            "total_ns": 52395087,
+            "units": 0
+          },
+          "open": {
+            "calls": 2048,
+            "latency_buckets": [
+              2048,
+              0,
+              0,
+              0,
+              0
+            ],
+            "max_ns": 320859,
+            "total_ns": 47266494,
+            "units": 0
+          }
+        },
+        "pid": 80,
+        "schema": 2
+      },
+      "case": "deep_lookup_open_getattr",
+      "core_profile": {
+        "component": "overlay-core",
+        "final_record": false,
+        "inclusive_spans": true,
+        "instance": 6,
+        "measurements": {
+          "layer_leaf_stats": {
+            "calls": 0,
+            "latency_buckets": [
+              0,
+              0,
+              0,
+              0,
+              0
+            ],
+            "max_ns": 0,
+            "total_ns": 0,
+            "units": 42368
+          },
+          "layer_parent_stats": {
+            "calls": 0,
+            "latency_buckets": [
+              0,
+              0,
+              0,
+              0,
+              0
+            ],
+            "max_ns": 0,
+            "total_ns": 0,
+            "units": 67328
+          },
+          "metadata": {
+            "calls": 4352,
+            "latency_buckets": [
+              4352,
+              0,
+              0,
+              0,
+              0
+            ],
+            "max_ns": 318835,
+            "total_ns": 89979760,
+            "units": 0
+          },
+          "mount_identity_attempts": {
+            "calls": 0,
+            "latency_buckets": [
+              0,
+              0,
+              0,
+              0,
+              0
+            ],
+            "max_ns": 0,
+            "total_ns": 0,
+            "units": 33664
+          },
+          "observe_read": {
+            "calls": 2048,
+            "latency_buckets": [
+              2048,
+              0,
+              0,
+              0,
+              0
+            ],
+            "max_ns": 318976,
+            "total_ns": 43189160,
+            "units": 0
+          },
+          "opaque_probe": {
+            "calls": 4352,
+            "latency_buckets": [
+              4352,
+              0,
+              0,
+              0,
+              0
+            ],
+            "max_ns": 4829,
+            "total_ns": 3640183,
+            "units": 0
+          },
+          "resolve": {
+            "calls": 4352,
+            "latency_buckets": [
+              4352,
+              0,
+              0,
+              0,
+              0
+            ],
+            "max_ns": 318755,
+            "total_ns": 89647256,
+            "units": 0
+          },
+          "resolve_components": {
+            "calls": 0,
+            "latency_buckets": [
+              0,
+              0,
+              0,
+              0,
+              0
+            ],
+            "max_ns": 0,
+            "total_ns": 0,
+            "units": 38016
+          },
+          "unavailable_upper_marker_skips": {
+            "calls": 0,
+            "latency_buckets": [
+              0,
+              0,
+              0,
+              0,
+              0
+            ],
+            "max_ns": 0,
+            "total_ns": 0,
+            "units": 33664
+          },
+          "whiteout_probe": {
+            "calls": 4352,
+            "latency_buckets": [
+              4352,
+              0,
+              0,
+              0,
+              0
+            ],
+            "max_ns": 75151,
+            "total_ns": 2518572,
+            "units": 0
+          }
+        },
+        "pid": 80,
+        "schema": 2
+      },
+      "elapsed_ms": 101.330549,
+      "profiled": true,
+      "scope": "adapter-only, host cache warm, fresh inode tables; no guest kernel/VM",
+      "trial": 10,
+      "warmup": false
+    },
+    {
+      "variant": "baseline",
+      "adapter_profile": null,
+      "case": "directory_plus",
+      "core_profile": null,
+      "elapsed_ms": 22.181526,
+      "profiled": false,
+      "scope": "adapter-only, host cache warm, fresh inode tables; no guest kernel/VM",
+      "trial": 0,
+      "warmup": true
+    },
+    {
+      "variant": "baseline",
+      "adapter_profile": null,
+      "case": "directory_plus",
+      "core_profile": null,
+      "elapsed_ms": 18.712232,
+      "profiled": false,
+      "scope": "adapter-only, host cache warm, fresh inode tables; no guest kernel/VM",
+      "trial": 1,
+      "warmup": true
+    },
+    {
+      "variant": "baseline",
+      "adapter_profile": null,
+      "case": "directory_plus",
+      "core_profile": null,
+      "elapsed_ms": 20.123696,
+      "profiled": false,
+      "scope": "adapter-only, host cache warm, fresh inode tables; no guest kernel/VM",
+      "trial": 2,
+      "warmup": false
+    },
+    {
+      "variant": "baseline",
+      "adapter_profile": null,
+      "case": "directory_plus",
+      "core_profile": null,
+      "elapsed_ms": 19.051926,
+      "profiled": false,
+      "scope": "adapter-only, host cache warm, fresh inode tables; no guest kernel/VM",
+      "trial": 3,
+      "warmup": false
+    },
+    {
+      "variant": "baseline",
+      "adapter_profile": null,
+      "case": "directory_plus",
+      "core_profile": null,
+      "elapsed_ms": 19.562217999999998,
+      "profiled": false,
+      "scope": "adapter-only, host cache warm, fresh inode tables; no guest kernel/VM",
+      "trial": 4,
+      "warmup": false
+    },
+    {
+      "variant": "baseline",
+      "adapter_profile": null,
+      "case": "directory_plus",
+      "core_profile": null,
+      "elapsed_ms": 19.583508,
+      "profiled": false,
+      "scope": "adapter-only, host cache warm, fresh inode tables; no guest kernel/VM",
+      "trial": 5,
+      "warmup": false
+    },
+    {
+      "variant": "baseline",
+      "adapter_profile": null,
+      "case": "directory_plus",
+      "core_profile": null,
+      "elapsed_ms": 18.853185,
+      "profiled": false,
+      "scope": "adapter-only, host cache warm, fresh inode tables; no guest kernel/VM",
+      "trial": 6,
+      "warmup": false
+    },
+    {
+      "variant": "baseline",
+      "adapter_profile": null,
+      "case": "directory_plus",
+      "core_profile": null,
+      "elapsed_ms": 19.287535000000002,
+      "profiled": false,
+      "scope": "adapter-only, host cache warm, fresh inode tables; no guest kernel/VM",
+      "trial": 7,
+      "warmup": false
+    },
+    {
+      "variant": "baseline",
+      "adapter_profile": null,
+      "case": "directory_plus",
+      "core_profile": null,
+      "elapsed_ms": 19.384887,
+      "profiled": false,
+      "scope": "adapter-only, host cache warm, fresh inode tables; no guest kernel/VM",
+      "trial": 8,
+      "warmup": false
+    },
+    {
+      "variant": "baseline",
+      "adapter_profile": null,
+      "case": "directory_plus",
+      "core_profile": null,
+      "elapsed_ms": 21.128521,
+      "profiled": false,
+      "scope": "adapter-only, host cache warm, fresh inode tables; no guest kernel/VM",
+      "trial": 9,
+      "warmup": false
+    },
+    {
+      "variant": "baseline",
+      "adapter_profile": {
+        "component": "virtio-fs-overlay",
+        "final_record": false,
+        "inclusive_spans": true,
+        "instance": 7,
+        "measurements": {
+          "backing_lookup": {
+            "calls": 2112,
+            "latency_buckets": [
+              2112,
+              0,
+              0,
+              0,
+              0
+            ],
+            "max_ns": 2505,
+            "total_ns": 1029761,
+            "units": 0
+          },
+          "directory_cache_deep_hits": {
+            "calls": 0,
+            "latency_buckets": [
+              0,
+              0,
+              0,
+              0,
+              0
+            ],
+            "max_ns": 0,
+            "total_ns": 0,
+            "units": 2016
+          },
+          "directory_cache_misses": {
+            "calls": 0,
+            "latency_buckets": [
+              0,
+              0,
+              0,
+              0,
+              0
+            ],
+            "max_ns": 0,
+            "total_ns": 0,
+            "units": 32
+          },
+          "entry": {
+            "calls": 2080,
+            "latency_buckets": [
+              2080,
+              0,
+              0,
+              0,
+              0
+            ],
+            "max_ns": 4238,
+            "total_ns": 2096138,
+            "units": 0
+          },
+          "inner_inode": {
+            "calls": 2080,
+            "latency_buckets": [
+              2080,
+              0,
+              0,
+              0,
+              0
+            ],
+            "max_ns": 3968,
+            "total_ns": 1583371,
+            "units": 0
+          },
+          "lookup": {
+            "calls": 32,
+            "latency_buckets": [
+              32,
+              0,
+              0,
+              0,
+              0
+            ],
+            "max_ns": 8886,
+            "total_ns": 173867,
+            "units": 0
+          },
+          "opendir": {
+            "calls": 32,
+            "latency_buckets": [
+              32,
+              0,
+              0,
+              0,
+              0
+            ],
+            "max_ns": 437807,
+            "total_ns": 8503852,
+            "units": 0
+          },
+          "readdirplus": {
+            "calls": 32,
+            "latency_buckets": [
+              32,
+              0,
+              0,
+              0,
+              0
+            ],
+            "max_ns": 444289,
+            "total_ns": 12473410,
+            "units": 0
+          }
+        },
+        "pid": 80,
+        "schema": 2
+      },
+      "case": "directory_plus",
+      "core_profile": {
+        "component": "overlay-core",
+        "final_record": false,
+        "inclusive_spans": true,
+        "instance": 8,
+        "measurements": {
+          "layer_leaf_stats": {
+            "calls": 0,
+            "latency_buckets": [
+              0,
+              0,
+              0,
+              0,
+              0
+            ],
+            "max_ns": 0,
+            "total_ns": 0,
+            "units": 8320
+          },
+          "layer_parent_stats": {
+            "calls": 0,
+            "latency_buckets": [
+              0,
+              0,
+              0,
+              0,
+              0
+            ],
+            "max_ns": 0,
+            "total_ns": 0,
+            "units": 8192
+          },
+          "list_entries": {
+            "calls": 32,
+            "latency_buckets": [
+              32,
+              0,
+              0,
+              0,
+              0
+            ],
+            "max_ns": 422649,
+            "total_ns": 7811048,
+            "units": 0
+          },
+          "metadata": {
+            "calls": 2112,
+            "latency_buckets": [
+              2112,
+              0,
+              0,
+              0,
+              0
+            ],
+            "max_ns": 60353,
+            "total_ns": 10239785,
+            "units": 0
+          },
+          "mount_identity_attempts": {
+            "calls": 0,
+            "latency_buckets": [
+              0,
+              0,
+              0,
+              0,
+              0
+            ],
+            "max_ns": 0,
+            "total_ns": 0,
+            "units": 2048
+          },
+          "opaque_probe": {
+            "calls": 2144,
+            "latency_buckets": [
+              2144,
+              0,
+              0,
+              0,
+              0
+            ],
+            "max_ns": 5099,
+            "total_ns": 1622641,
+            "units": 0
+          },
+          "resolve": {
+            "calls": 2112,
+            "latency_buckets": [
+              2112,
+              0,
+              0,
+              0,
+              0
+            ],
+            "max_ns": 60253,
+            "total_ns": 10080580,
+            "units": 0
+          },
+          "resolve_components": {
+            "calls": 0,
+            "latency_buckets": [
+              0,
+              0,
+              0,
+              0,
+              0
+            ],
+            "max_ns": 0,
+            "total_ns": 0,
+            "units": 4160
+          },
+          "unavailable_upper_marker_skips": {
+            "calls": 0,
+            "latency_buckets": [
+              0,
+              0,
+              0,
+              0,
+              0
+            ],
+            "max_ns": 0,
+            "total_ns": 0,
+            "units": 4096
+          },
+          "whiteout_probe": {
+            "calls": 4160,
+            "latency_buckets": [
+              4160,
+              0,
+              0,
+              0,
+              0
+            ],
+            "max_ns": 197389,
+            "total_ns": 2410069,
+            "units": 0
+          }
+        },
+        "pid": 80,
+        "schema": 2
+      },
+      "elapsed_ms": 21.180338,
+      "profiled": true,
+      "scope": "adapter-only, host cache warm, fresh inode tables; no guest kernel/VM",
+      "trial": 10,
+      "warmup": false
+    },
+    {
+      "variant": "selected",
+      "adapter_profile": null,
+      "case": "lookup_getattr",
+      "core_profile": null,
+      "elapsed_ms": 25.346042,
+      "profiled": false,
+      "scope": "adapter-only, host cache warm, fresh inode tables; no guest kernel/VM",
+      "trial": 0,
+      "warmup": true
+    },
+    {
+      "variant": "selected",
+      "adapter_profile": null,
+      "case": "lookup_getattr",
+      "core_profile": null,
+      "elapsed_ms": 26.021663,
+      "profiled": false,
+      "scope": "adapter-only, host cache warm, fresh inode tables; no guest kernel/VM",
+      "trial": 1,
+      "warmup": true
+    },
+    {
+      "variant": "selected",
+      "adapter_profile": null,
+      "case": "lookup_getattr",
+      "core_profile": null,
+      "elapsed_ms": 27.049592,
+      "profiled": false,
+      "scope": "adapter-only, host cache warm, fresh inode tables; no guest kernel/VM",
+      "trial": 2,
+      "warmup": false
+    },
+    {
+      "variant": "selected",
+      "adapter_profile": null,
+      "case": "lookup_getattr",
+      "core_profile": null,
+      "elapsed_ms": 26.448739999999997,
+      "profiled": false,
+      "scope": "adapter-only, host cache warm, fresh inode tables; no guest kernel/VM",
+      "trial": 3,
+      "warmup": false
+    },
+    {
+      "variant": "selected",
+      "adapter_profile": null,
+      "case": "lookup_getattr",
+      "core_profile": null,
+      "elapsed_ms": 25.202014,
+      "profiled": false,
+      "scope": "adapter-only, host cache warm, fresh inode tables; no guest kernel/VM",
+      "trial": 4,
+      "warmup": false
+    },
+    {
+      "variant": "selected",
+      "adapter_profile": null,
+      "case": "lookup_getattr",
+      "core_profile": null,
+      "elapsed_ms": 25.420451,
+      "profiled": false,
+      "scope": "adapter-only, host cache warm, fresh inode tables; no guest kernel/VM",
+      "trial": 5,
+      "warmup": false
+    },
+    {
+      "variant": "selected",
+      "adapter_profile": null,
+      "case": "lookup_getattr",
+      "core_profile": null,
+      "elapsed_ms": 27.815891999999998,
+      "profiled": false,
+      "scope": "adapter-only, host cache warm, fresh inode tables; no guest kernel/VM",
+      "trial": 6,
+      "warmup": false
+    },
+    {
+      "variant": "selected",
+      "adapter_profile": null,
+      "case": "lookup_getattr",
+      "core_profile": null,
+      "elapsed_ms": 25.882073,
+      "profiled": false,
+      "scope": "adapter-only, host cache warm, fresh inode tables; no guest kernel/VM",
+      "trial": 7,
+      "warmup": false
+    },
+    {
+      "variant": "selected",
+      "adapter_profile": null,
+      "case": "lookup_getattr",
+      "core_profile": null,
+      "elapsed_ms": 25.954778,
+      "profiled": false,
+      "scope": "adapter-only, host cache warm, fresh inode tables; no guest kernel/VM",
+      "trial": 8,
+      "warmup": false
+    },
+    {
+      "variant": "selected",
+      "adapter_profile": null,
+      "case": "lookup_getattr",
+      "core_profile": null,
+      "elapsed_ms": 24.800394,
+      "profiled": false,
+      "scope": "adapter-only, host cache warm, fresh inode tables; no guest kernel/VM",
+      "trial": 9,
+      "warmup": false
+    },
+    {
+      "variant": "selected",
+      "adapter_profile": {
+        "component": "virtio-fs-overlay",
+        "final_record": false,
+        "inclusive_spans": true,
+        "instance": 1,
+        "measurements": {
+          "backing_lookup": {
+            "calls": 4160,
+            "latency_buckets": [
+              4160,
+              0,
+              0,
+              0,
+              0
+            ],
+            "max_ns": 2124,
+            "total_ns": 2015717,
+            "units": 0
+          },
+          "directory_cache_deep_hits": {
+            "calls": 0,
+            "latency_buckets": [
+              0,
+              0,
+              0,
+              0,
+              0
+            ],
+            "max_ns": 0,
+            "total_ns": 0,
+            "units": 4064
+          },
+          "directory_cache_misses": {
+            "calls": 0,
+            "latency_buckets": [
+              0,
+              0,
+              0,
+              0,
+              0
+            ],
+            "max_ns": 0,
+            "total_ns": 0,
+            "units": 32
+          },
+          "entry": {
+            "calls": 4128,
+            "latency_buckets": [
+              4128,
+              0,
+              0,
+              0,
+              0
+            ],
+            "max_ns": 2935,
+            "total_ns": 4112112,
+            "units": 0
+          },
+          "getattr": {
+            "calls": 2048,
+            "latency_buckets": [
+              2048,
+              0,
+              0,
+              0,
+              0
+            ],
+            "max_ns": 333533,
+            "total_ns": 13436787,
+            "units": 0
+          },
+          "inner_inode": {
+            "calls": 4128,
+            "latency_buckets": [
+              4128,
+              0,
+              0,
+              0,
+              0
+            ],
+            "max_ns": 2675,
+            "total_ns": 3072713,
+            "units": 0
+          },
+          "lookup": {
+            "calls": 2080,
+            "latency_buckets": [
+              2080,
+              0,
+              0,
+              0,
+              0
+            ],
+            "max_ns": 485957,
+            "total_ns": 15374096,
+            "units": 0
+          },
+          "operation_read_lock_wait": {
+            "calls": 4128,
+            "latency_buckets": [
+              4128,
+              0,
+              0,
+              0,
+              0
+            ],
+            "max_ns": 61,
+            "total_ns": 89892,
+            "units": 0
+          }
+        },
+        "pid": 94,
+        "schema": 2
+      },
+      "case": "lookup_getattr",
+      "core_profile": {
+        "component": "overlay-core",
+        "final_record": false,
+        "inclusive_spans": true,
+        "instance": 2,
+        "measurements": {
+          "layer_leaf_stats": {
+            "calls": 0,
+            "latency_buckets": [
+              0,
+              0,
+              0,
+              0,
+              0
+            ],
+            "max_ns": 0,
+            "total_ns": 0,
+            "units": 12352
+          },
+          "layer_parent_stats": {
+            "calls": 0,
+            "latency_buckets": [
+              0,
+              0,
+              0,
+              0,
+              0
+            ],
+            "max_ns": 0,
+            "total_ns": 0,
+            "units": 8192
+          },
+          "metadata": {
+            "calls": 4128,
+            "latency_buckets": [
+              4128,
+              0,
+              0,
+              0,
+              0
+            ],
+            "max_ns": 484064,
+            "total_ns": 22872568,
+            "units": 0
+          },
+          "mount_identity_attempts": {
+            "calls": 0,
+            "latency_buckets": [
+              0,
+              0,
+              0,
+              0,
+              0
+            ],
+            "max_ns": 0,
+            "total_ns": 0,
+            "units": 4096
+          },
+          "opaque_probe": {
+            "calls": 4128,
+            "latency_buckets": [
+              4128,
+              0,
+              0,
+              0,
+              0
+            ],
+            "max_ns": 156091,
+            "total_ns": 3331228,
+            "units": 0
+          },
+          "parent_identity_metadata_fallbacks": {
+            "calls": 0,
+            "latency_buckets": [
+              0,
+              0,
+              0,
+              0,
+              0
+            ],
+            "max_ns": 0,
+            "total_ns": 0,
+            "units": 4096
+          },
+          "parent_identity_statx_calls": {
+            "calls": 0,
+            "latency_buckets": [
+              0,
+              0,
+              0,
+              0,
+              0
+            ],
+            "max_ns": 0,
+            "total_ns": 0,
+            "units": 8192
+          },
+          "resolve": {
+            "calls": 4128,
+            "latency_buckets": [
+              4128,
+              0,
+              0,
+              0,
+              0
+            ],
+            "max_ns": 483994,
+            "total_ns": 22550176,
+            "units": 0
+          },
+          "resolve_components": {
+            "calls": 0,
+            "latency_buckets": [
+              0,
+              0,
+              0,
+              0,
+              0
+            ],
+            "max_ns": 0,
+            "total_ns": 0,
+            "units": 8224
+          },
+          "unavailable_upper_marker_skips": {
+            "calls": 0,
+            "latency_buckets": [
+              0,
+              0,
+              0,
+              0,
+              0
+            ],
+            "max_ns": 0,
+            "total_ns": 0,
+            "units": 4096
+          },
+          "whiteout_probe": {
+            "calls": 4128,
+            "latency_buckets": [
+              4128,
+              0,
+              0,
+              0,
+              0
+            ],
+            "max_ns": 32721,
+            "total_ns": 2125838,
+            "units": 0
+          }
+        },
+        "pid": 94,
+        "schema": 2
+      },
+      "elapsed_ms": 29.18134,
+      "profiled": true,
+      "scope": "adapter-only, host cache warm, fresh inode tables; no guest kernel/VM",
+      "trial": 10,
+      "warmup": false
+    },
+    {
+      "variant": "selected",
+      "adapter_profile": null,
+      "case": "lookup_open_getattr",
+      "core_profile": null,
+      "elapsed_ms": 30.502354999999998,
+      "profiled": false,
+      "scope": "adapter-only, host cache warm, fresh inode tables; no guest kernel/VM",
+      "trial": 0,
+      "warmup": true
+    },
+    {
+      "variant": "selected",
+      "adapter_profile": null,
+      "case": "lookup_open_getattr",
+      "core_profile": null,
+      "elapsed_ms": 27.59,
+      "profiled": false,
+      "scope": "adapter-only, host cache warm, fresh inode tables; no guest kernel/VM",
+      "trial": 1,
+      "warmup": true
+    },
+    {
+      "variant": "selected",
+      "adapter_profile": null,
+      "case": "lookup_open_getattr",
+      "core_profile": null,
+      "elapsed_ms": 28.466877,
+      "profiled": false,
+      "scope": "adapter-only, host cache warm, fresh inode tables; no guest kernel/VM",
+      "trial": 2,
+      "warmup": false
+    },
+    {
+      "variant": "selected",
+      "adapter_profile": null,
+      "case": "lookup_open_getattr",
+      "core_profile": null,
+      "elapsed_ms": 27.596933,
+      "profiled": false,
+      "scope": "adapter-only, host cache warm, fresh inode tables; no guest kernel/VM",
+      "trial": 3,
+      "warmup": false
+    },
+    {
+      "variant": "selected",
+      "adapter_profile": null,
+      "case": "lookup_open_getattr",
+      "core_profile": null,
+      "elapsed_ms": 30.118959,
+      "profiled": false,
+      "scope": "adapter-only, host cache warm, fresh inode tables; no guest kernel/VM",
+      "trial": 4,
+      "warmup": false
+    },
+    {
+      "variant": "selected",
+      "adapter_profile": null,
+      "case": "lookup_open_getattr",
+      "core_profile": null,
+      "elapsed_ms": 28.089131,
+      "profiled": false,
+      "scope": "adapter-only, host cache warm, fresh inode tables; no guest kernel/VM",
+      "trial": 5,
+      "warmup": false
+    },
+    {
+      "variant": "selected",
+      "adapter_profile": null,
+      "case": "lookup_open_getattr",
+      "core_profile": null,
+      "elapsed_ms": 27.514489,
+      "profiled": false,
+      "scope": "adapter-only, host cache warm, fresh inode tables; no guest kernel/VM",
+      "trial": 6,
+      "warmup": false
+    },
+    {
+      "variant": "selected",
+      "adapter_profile": null,
+      "case": "lookup_open_getattr",
+      "core_profile": null,
+      "elapsed_ms": 27.743125,
+      "profiled": false,
+      "scope": "adapter-only, host cache warm, fresh inode tables; no guest kernel/VM",
+      "trial": 7,
+      "warmup": false
+    },
+    {
+      "variant": "selected",
+      "adapter_profile": null,
+      "case": "lookup_open_getattr",
+      "core_profile": null,
+      "elapsed_ms": 30.672492,
+      "profiled": false,
+      "scope": "adapter-only, host cache warm, fresh inode tables; no guest kernel/VM",
+      "trial": 8,
+      "warmup": false
+    },
+    {
+      "variant": "selected",
+      "adapter_profile": null,
+      "case": "lookup_open_getattr",
+      "core_profile": null,
+      "elapsed_ms": 28.214325,
+      "profiled": false,
+      "scope": "adapter-only, host cache warm, fresh inode tables; no guest kernel/VM",
+      "trial": 9,
+      "warmup": false
+    },
+    {
+      "variant": "selected",
+      "adapter_profile": {
+        "component": "virtio-fs-overlay",
+        "final_record": false,
+        "inclusive_spans": true,
+        "instance": 3,
+        "measurements": {
+          "backing_lookup": {
+            "calls": 4160,
+            "latency_buckets": [
+              4160,
+              0,
+              0,
+              0,
+              0
+            ],
+            "max_ns": 1814,
+            "total_ns": 2038704,
+            "units": 0
+          },
+          "directory_cache_deep_hits": {
+            "calls": 0,
+            "latency_buckets": [
+              0,
+              0,
+              0,
+              0,
+              0
+            ],
+            "max_ns": 0,
+            "total_ns": 0,
+            "units": 4064
+          },
+          "directory_cache_misses": {
+            "calls": 0,
+            "latency_buckets": [
+              0,
+              0,
+              0,
+              0,
+              0
+            ],
+            "max_ns": 0,
+            "total_ns": 0,
+            "units": 32
+          },
+          "entry": {
+            "calls": 2080,
+            "latency_buckets": [
+              2080,
+              0,
+              0,
+              0,
+              0
+            ],
+            "max_ns": 4117,
+            "total_ns": 2150498,
+            "units": 0
+          },
+          "getattr": {
+            "calls": 2048,
+            "latency_buckets": [
+              2048,
+              0,
+              0,
+              0,
+              0
+            ],
+            "max_ns": 712,
+            "total_ns": 594151,
+            "units": 0
+          },
+          "inner_inode": {
+            "calls": 4128,
+            "latency_buckets": [
+              4128,
+              0,
+              0,
+              0,
+              0
+            ],
+            "max_ns": 3787,
+            "total_ns": 3092221,
+            "units": 0
+          },
+          "lookup": {
+            "calls": 2080,
+            "latency_buckets": [
+              2080,
+              0,
+              0,
+              0,
+              0
+            ],
+            "max_ns": 258823,
+            "total_ns": 15440630,
+            "units": 0
+          },
+          "open": {
+            "calls": 2048,
+            "latency_buckets": [
+              2048,
+              0,
+              0,
+              0,
+              0
+            ],
+            "max_ns": 150872,
+            "total_ns": 14081264,
+            "units": 0
+          },
+          "operation_read_lock_wait": {
+            "calls": 6176,
+            "latency_buckets": [
+              6176,
+              0,
+              0,
+              0,
+              0
+            ],
+            "max_ns": 441,
+            "total_ns": 133943,
+            "units": 0
+          },
+          "operation_write_lock_wait": {
+            "calls": 2048,
+            "latency_buckets": [
+              2048,
+              0,
+              0,
+              0,
+              0
+            ],
+            "max_ns": 40,
+            "total_ns": 44470,
+            "units": 0
+          }
+        },
+        "pid": 94,
+        "schema": 2
+      },
+      "case": "lookup_open_getattr",
+      "core_profile": {
+        "component": "overlay-core",
+        "final_record": false,
+        "inclusive_spans": true,
+        "instance": 4,
+        "measurements": {
+          "layer_leaf_stats": {
+            "calls": 0,
+            "latency_buckets": [
+              0,
+              0,
+              0,
+              0,
+              0
+            ],
+            "max_ns": 0,
+            "total_ns": 0,
+            "units": 12352
+          },
+          "layer_parent_stats": {
+            "calls": 0,
+            "latency_buckets": [
+              0,
+              0,
+              0,
+              0,
+              0
+            ],
+            "max_ns": 0,
+            "total_ns": 0,
+            "units": 8192
+          },
+          "metadata": {
+            "calls": 4128,
+            "latency_buckets": [
+              4128,
+              0,
+              0,
+              0,
+              0
+            ],
+            "max_ns": 256759,
+            "total_ns": 22449830,
+            "units": 0
+          },
+          "mount_identity_attempts": {
+            "calls": 0,
+            "latency_buckets": [
+              0,
+              0,
+              0,
+              0,
+              0
+            ],
+            "max_ns": 0,
+            "total_ns": 0,
+            "units": 4096
+          },
+          "observe_read": {
+            "calls": 2048,
+            "latency_buckets": [
+              2048,
+              0,
+              0,
+              0,
+              0
+            ],
+            "max_ns": 148798,
+            "total_ns": 10551909,
+            "units": 0
+          },
+          "opaque_probe": {
+            "calls": 4128,
+            "latency_buckets": [
+              4128,
+              0,
+              0,
+              0,
+              0
+            ],
+            "max_ns": 144199,
+            "total_ns": 3333163,
+            "units": 0
+          },
+          "parent_identity_metadata_fallbacks": {
+            "calls": 0,
+            "latency_buckets": [
+              0,
+              0,
+              0,
+              0,
+              0
+            ],
+            "max_ns": 0,
+            "total_ns": 0,
+            "units": 4096
+          },
+          "parent_identity_statx_calls": {
+            "calls": 0,
+            "latency_buckets": [
+              0,
+              0,
+              0,
+              0,
+              0
+            ],
+            "max_ns": 0,
+            "total_ns": 0,
+            "units": 8192
+          },
+          "resolve": {
+            "calls": 4128,
+            "latency_buckets": [
+              4128,
+              0,
+              0,
+              0,
+              0
+            ],
+            "max_ns": 256659,
+            "total_ns": 22114534,
+            "units": 0
+          },
+          "resolve_components": {
+            "calls": 0,
+            "latency_buckets": [
+              0,
+              0,
+              0,
+              0,
+              0
+            ],
+            "max_ns": 0,
+            "total_ns": 0,
+            "units": 8224
+          },
+          "unavailable_upper_marker_skips": {
+            "calls": 0,
+            "latency_buckets": [
+              0,
+              0,
+              0,
+              0,
+              0
+            ],
+            "max_ns": 0,
+            "total_ns": 0,
+            "units": 4096
+          },
+          "whiteout_probe": {
+            "calls": 4128,
+            "latency_buckets": [
+              4128,
+              0,
+              0,
+              0,
+              0
+            ],
+            "max_ns": 193481,
+            "total_ns": 2342276,
+            "units": 0
+          }
+        },
+        "pid": 94,
+        "schema": 2
+      },
+      "elapsed_ms": 31.414327,
+      "profiled": true,
+      "scope": "adapter-only, host cache warm, fresh inode tables; no guest kernel/VM",
+      "trial": 10,
+      "warmup": false
+    },
+    {
+      "variant": "selected",
+      "adapter_profile": null,
+      "case": "deep_lookup_open_getattr",
+      "core_profile": null,
+      "elapsed_ms": 110.903715,
+      "profiled": false,
+      "scope": "adapter-only, host cache warm, fresh inode tables; no guest kernel/VM",
+      "trial": 0,
+      "warmup": true
+    },
+    {
+      "variant": "selected",
+      "adapter_profile": null,
+      "case": "deep_lookup_open_getattr",
+      "core_profile": null,
+      "elapsed_ms": 86.244073,
+      "profiled": false,
+      "scope": "adapter-only, host cache warm, fresh inode tables; no guest kernel/VM",
+      "trial": 1,
+      "warmup": true
+    },
+    {
+      "variant": "selected",
+      "adapter_profile": null,
+      "case": "deep_lookup_open_getattr",
+      "core_profile": null,
+      "elapsed_ms": 99.069208,
+      "profiled": false,
+      "scope": "adapter-only, host cache warm, fresh inode tables; no guest kernel/VM",
+      "trial": 2,
+      "warmup": false
+    },
+    {
+      "variant": "selected",
+      "adapter_profile": null,
+      "case": "deep_lookup_open_getattr",
+      "core_profile": null,
+      "elapsed_ms": 94.497276,
+      "profiled": false,
+      "scope": "adapter-only, host cache warm, fresh inode tables; no guest kernel/VM",
+      "trial": 3,
+      "warmup": false
+    },
+    {
+      "variant": "selected",
+      "adapter_profile": null,
+      "case": "deep_lookup_open_getattr",
+      "core_profile": null,
+      "elapsed_ms": 95.050077,
+      "profiled": false,
+      "scope": "adapter-only, host cache warm, fresh inode tables; no guest kernel/VM",
+      "trial": 4,
+      "warmup": false
+    },
+    {
+      "variant": "selected",
+      "adapter_profile": null,
+      "case": "deep_lookup_open_getattr",
+      "core_profile": null,
+      "elapsed_ms": 92.689202,
+      "profiled": false,
+      "scope": "adapter-only, host cache warm, fresh inode tables; no guest kernel/VM",
+      "trial": 5,
+      "warmup": false
+    },
+    {
+      "variant": "selected",
+      "adapter_profile": null,
+      "case": "deep_lookup_open_getattr",
+      "core_profile": null,
+      "elapsed_ms": 94.85745800000001,
+      "profiled": false,
+      "scope": "adapter-only, host cache warm, fresh inode tables; no guest kernel/VM",
+      "trial": 6,
+      "warmup": false
+    },
+    {
+      "variant": "selected",
+      "adapter_profile": null,
+      "case": "deep_lookup_open_getattr",
+      "core_profile": null,
+      "elapsed_ms": 97.26443,
+      "profiled": false,
+      "scope": "adapter-only, host cache warm, fresh inode tables; no guest kernel/VM",
+      "trial": 7,
+      "warmup": false
+    },
+    {
+      "variant": "selected",
+      "adapter_profile": null,
+      "case": "deep_lookup_open_getattr",
+      "core_profile": null,
+      "elapsed_ms": 100.942304,
+      "profiled": false,
+      "scope": "adapter-only, host cache warm, fresh inode tables; no guest kernel/VM",
+      "trial": 8,
+      "warmup": false
+    },
+    {
+      "variant": "selected",
+      "adapter_profile": null,
+      "case": "deep_lookup_open_getattr",
+      "core_profile": null,
+      "elapsed_ms": 86.706166,
+      "profiled": false,
+      "scope": "adapter-only, host cache warm, fresh inode tables; no guest kernel/VM",
+      "trial": 9,
+      "warmup": false
+    },
+    {
+      "variant": "selected",
+      "adapter_profile": {
+        "component": "virtio-fs-overlay",
+        "final_record": false,
+        "inclusive_spans": true,
+        "instance": 5,
+        "measurements": {
+          "backing_lookup": {
+            "calls": 4608,
+            "latency_buckets": [
+              4608,
+              0,
+              0,
+              0,
+              0
+            ],
+            "max_ns": 220151,
+            "total_ns": 2704892,
+            "units": 0
+          },
+          "directory_cache_deep_hits": {
+            "calls": 0,
+            "latency_buckets": [
+              0,
+              0,
+              0,
+              0,
+              0
+            ],
+            "max_ns": 0,
+            "total_ns": 0,
+            "units": 4064
+          },
+          "directory_cache_hits": {
+            "calls": 0,
+            "latency_buckets": [
+              0,
+              0,
+              0,
+              0,
+              0
+            ],
+            "max_ns": 0,
+            "total_ns": 0,
+            "units": 896
+          },
+          "directory_cache_misses": {
+            "calls": 0,
+            "latency_buckets": [
+              0,
+              0,
+              0,
+              0,
+              0
+            ],
+            "max_ns": 0,
+            "total_ns": 0,
+            "units": 256
+          },
+          "entry": {
+            "calls": 2304,
+            "latency_buckets": [
+              2304,
+              0,
+              0,
+              0,
+              0
+            ],
+            "max_ns": 36608,
+            "total_ns": 3152337,
+            "units": 0
+          },
+          "getattr": {
+            "calls": 2048,
+            "latency_buckets": [
+              2048,
+              0,
+              0,
+              0,
+              0
+            ],
+            "max_ns": 711,
+            "total_ns": 620645,
+            "units": 0
+          },
+          "inner_inode": {
+            "calls": 4352,
+            "latency_buckets": [
+              4352,
+              0,
+              0,
+              0,
+              0
+            ],
+            "max_ns": 220521,
+            "total_ns": 4483042,
+            "units": 0
+          },
+          "lookup": {
+            "calls": 2304,
+            "latency_buckets": [
+              2304,
+              0,
+              0,
+              0,
+              0
+            ],
+            "max_ns": 576035,
+            "total_ns": 48794921,
+            "units": 0
+          },
+          "open": {
+            "calls": 2048,
+            "latency_buckets": [
+              2048,
+              0,
+              0,
+              0,
+              0
+            ],
+            "max_ns": 384176,
+            "total_ns": 44699131,
+            "units": 0
+          },
+          "operation_read_lock_wait": {
+            "calls": 6400,
+            "latency_buckets": [
+              6400,
+              0,
+              0,
+              0,
+              0
+            ],
+            "max_ns": 60,
+            "total_ns": 137254,
+            "units": 0
+          },
+          "operation_write_lock_wait": {
+            "calls": 2048,
+            "latency_buckets": [
+              2048,
+              0,
+              0,
+              0,
+              0
+            ],
+            "max_ns": 40,
+            "total_ns": 43972,
+            "units": 0
+          }
+        },
+        "pid": 94,
+        "schema": 2
+      },
+      "case": "deep_lookup_open_getattr",
+      "core_profile": {
+        "component": "overlay-core",
+        "final_record": false,
+        "inclusive_spans": true,
+        "instance": 6,
+        "measurements": {
+          "layer_leaf_stats": {
+            "calls": 0,
+            "latency_buckets": [
+              0,
+              0,
+              0,
+              0,
+              0
+            ],
+            "max_ns": 0,
+            "total_ns": 0,
+            "units": 42368
+          },
+          "layer_parent_stats": {
+            "calls": 0,
+            "latency_buckets": [
+              0,
+              0,
+              0,
+              0,
+              0
+            ],
+            "max_ns": 0,
+            "total_ns": 0,
+            "units": 67328
+          },
+          "metadata": {
+            "calls": 4352,
+            "latency_buckets": [
+              4352,
+              0,
+              0,
+              0,
+              0
+            ],
+            "max_ns": 573631,
+            "total_ns": 84083454,
+            "units": 0
+          },
+          "mount_identity_attempts": {
+            "calls": 0,
+            "latency_buckets": [
+              0,
+              0,
+              0,
+              0,
+              0
+            ],
+            "max_ns": 0,
+            "total_ns": 0,
+            "units": 33664
+          },
+          "observe_read": {
+            "calls": 2048,
+            "latency_buckets": [
+              2048,
+              0,
+              0,
+              0,
+              0
+            ],
+            "max_ns": 381722,
+            "total_ns": 40527878,
+            "units": 0
+          },
+          "opaque_probe": {
+            "calls": 4352,
+            "latency_buckets": [
+              4352,
+              0,
+              0,
+              0,
+              0
+            ],
+            "max_ns": 78687,
+            "total_ns": 3730339,
+            "units": 0
+          },
+          "parent_identity_metadata_fallbacks": {
+            "calls": 0,
+            "latency_buckets": [
+              0,
+              0,
+              0,
+              0,
+              0
+            ],
+            "max_ns": 0,
+            "total_ns": 0,
+            "units": 4320
+          },
+          "parent_identity_statx_calls": {
+            "calls": 0,
+            "latency_buckets": [
+              0,
+              0,
+              0,
+              0,
+              0
+            ],
+            "max_ns": 0,
+            "total_ns": 0,
+            "units": 37984
+          },
+          "resolve": {
+            "calls": 4352,
+            "latency_buckets": [
+              4352,
+              0,
+              0,
+              0,
+              0
+            ],
+            "max_ns": 573561,
+            "total_ns": 83728728,
+            "units": 0
+          },
+          "resolve_components": {
+            "calls": 0,
+            "latency_buckets": [
+              0,
+              0,
+              0,
+              0,
+              0
+            ],
+            "max_ns": 0,
+            "total_ns": 0,
+            "units": 38016
+          },
+          "unavailable_upper_marker_skips": {
+            "calls": 0,
+            "latency_buckets": [
+              0,
+              0,
+              0,
+              0,
+              0
+            ],
+            "max_ns": 0,
+            "total_ns": 0,
+            "units": 33664
+          },
+          "whiteout_probe": {
+            "calls": 4352,
+            "latency_buckets": [
+              4352,
+              0,
+              0,
+              0,
+              0
+            ],
+            "max_ns": 276967,
+            "total_ns": 2969259,
+            "units": 0
+          }
+        },
+        "pid": 94,
+        "schema": 2
+      },
+      "elapsed_ms": 95.465252,
+      "profiled": true,
+      "scope": "adapter-only, host cache warm, fresh inode tables; no guest kernel/VM",
+      "trial": 10,
+      "warmup": false
+    },
+    {
+      "variant": "selected",
+      "adapter_profile": null,
+      "case": "directory_plus",
+      "core_profile": null,
+      "elapsed_ms": 20.171063999999998,
+      "profiled": false,
+      "scope": "adapter-only, host cache warm, fresh inode tables; no guest kernel/VM",
+      "trial": 0,
+      "warmup": true
+    },
+    {
+      "variant": "selected",
+      "adapter_profile": null,
+      "case": "directory_plus",
+      "core_profile": null,
+      "elapsed_ms": 19.794271,
+      "profiled": false,
+      "scope": "adapter-only, host cache warm, fresh inode tables; no guest kernel/VM",
+      "trial": 1,
+      "warmup": true
+    },
+    {
+      "variant": "selected",
+      "adapter_profile": null,
+      "case": "directory_plus",
+      "core_profile": null,
+      "elapsed_ms": 20.817281,
+      "profiled": false,
+      "scope": "adapter-only, host cache warm, fresh inode tables; no guest kernel/VM",
+      "trial": 2,
+      "warmup": false
+    },
+    {
+      "variant": "selected",
+      "adapter_profile": null,
+      "case": "directory_plus",
+      "core_profile": null,
+      "elapsed_ms": 19.604947000000003,
+      "profiled": false,
+      "scope": "adapter-only, host cache warm, fresh inode tables; no guest kernel/VM",
+      "trial": 3,
+      "warmup": false
+    },
+    {
+      "variant": "selected",
+      "adapter_profile": null,
+      "case": "directory_plus",
+      "core_profile": null,
+      "elapsed_ms": 20.000085000000002,
+      "profiled": false,
+      "scope": "adapter-only, host cache warm, fresh inode tables; no guest kernel/VM",
+      "trial": 4,
+      "warmup": false
+    },
+    {
+      "variant": "selected",
+      "adapter_profile": null,
+      "case": "directory_plus",
+      "core_profile": null,
+      "elapsed_ms": 20.716653,
+      "profiled": false,
+      "scope": "adapter-only, host cache warm, fresh inode tables; no guest kernel/VM",
+      "trial": 5,
+      "warmup": false
+    },
+    {
+      "variant": "selected",
+      "adapter_profile": null,
+      "case": "directory_plus",
+      "core_profile": null,
+      "elapsed_ms": 19.551558,
+      "profiled": false,
+      "scope": "adapter-only, host cache warm, fresh inode tables; no guest kernel/VM",
+      "trial": 6,
+      "warmup": false
+    },
+    {
+      "variant": "selected",
+      "adapter_profile": null,
+      "case": "directory_plus",
+      "core_profile": null,
+      "elapsed_ms": 19.838223,
+      "profiled": false,
+      "scope": "adapter-only, host cache warm, fresh inode tables; no guest kernel/VM",
+      "trial": 7,
+      "warmup": false
+    },
+    {
+      "variant": "selected",
+      "adapter_profile": null,
+      "case": "directory_plus",
+      "core_profile": null,
+      "elapsed_ms": 20.037686,
+      "profiled": false,
+      "scope": "adapter-only, host cache warm, fresh inode tables; no guest kernel/VM",
+      "trial": 8,
+      "warmup": false
+    },
+    {
+      "variant": "selected",
+      "adapter_profile": null,
+      "case": "directory_plus",
+      "core_profile": null,
+      "elapsed_ms": 19.264001,
+      "profiled": false,
+      "scope": "adapter-only, host cache warm, fresh inode tables; no guest kernel/VM",
+      "trial": 9,
+      "warmup": false
+    },
+    {
+      "variant": "selected",
+      "adapter_profile": {
+        "component": "virtio-fs-overlay",
+        "final_record": false,
+        "inclusive_spans": true,
+        "instance": 7,
+        "measurements": {
+          "backing_lookup": {
+            "calls": 2112,
+            "latency_buckets": [
+              2112,
+              0,
+              0,
+              0,
+              0
+            ],
+            "max_ns": 3016,
+            "total_ns": 1071471,
+            "units": 0
+          },
+          "directory_cache_deep_hits": {
+            "calls": 0,
+            "latency_buckets": [
+              0,
+              0,
+              0,
+              0,
+              0
+            ],
+            "max_ns": 0,
+            "total_ns": 0,
+            "units": 2016
+          },
+          "directory_cache_misses": {
+            "calls": 0,
+            "latency_buckets": [
+              0,
+              0,
+              0,
+              0,
+              0
+            ],
+            "max_ns": 0,
+            "total_ns": 0,
+            "units": 32
+          },
+          "entry": {
+            "calls": 2080,
+            "latency_buckets": [
+              2080,
+              0,
+              0,
+              0,
+              0
+            ],
+            "max_ns": 5821,
+            "total_ns": 2140813,
+            "units": 0
+          },
+          "inner_inode": {
+            "calls": 2080,
+            "latency_buckets": [
+              2080,
+              0,
+              0,
+              0,
+              0
+            ],
+            "max_ns": 5540,
+            "total_ns": 1615379,
+            "units": 0
+          },
+          "lookup": {
+            "calls": 32,
+            "latency_buckets": [
+              32,
+              0,
+              0,
+              0,
+              0
+            ],
+            "max_ns": 8646,
+            "total_ns": 174787,
+            "units": 0
+          },
+          "opendir": {
+            "calls": 32,
+            "latency_buckets": [
+              32,
+              0,
+              0,
+              0,
+              0
+            ],
+            "max_ns": 965031,
+            "total_ns": 8896412,
+            "units": 0
+          },
+          "operation_read_lock_wait": {
+            "calls": 96,
+            "latency_buckets": [
+              96,
+              0,
+              0,
+              0,
+              0
+            ],
+            "max_ns": 100,
+            "total_ns": 2212,
+            "units": 0
+          },
+          "operation_write_lock_wait": {
+            "calls": 32,
+            "latency_buckets": [
+              32,
+              0,
+              0,
+              0,
+              0
+            ],
+            "max_ns": 40,
+            "total_ns": 705,
+            "units": 0
+          },
+          "readdirplus": {
+            "calls": 32,
+            "latency_buckets": [
+              32,
+              0,
+              0,
+              0,
+              0
+            ],
+            "max_ns": 896223,
+            "total_ns": 13771017,
+            "units": 0
+          }
+        },
+        "pid": 94,
+        "schema": 2
+      },
+      "case": "directory_plus",
+      "core_profile": {
+        "component": "overlay-core",
+        "final_record": false,
+        "inclusive_spans": true,
+        "instance": 8,
+        "measurements": {
+          "layer_leaf_stats": {
+            "calls": 0,
+            "latency_buckets": [
+              0,
+              0,
+              0,
+              0,
+              0
+            ],
+            "max_ns": 0,
+            "total_ns": 0,
+            "units": 8320
+          },
+          "layer_parent_stats": {
+            "calls": 0,
+            "latency_buckets": [
+              0,
+              0,
+              0,
+              0,
+              0
+            ],
+            "max_ns": 0,
+            "total_ns": 0,
+            "units": 8192
+          },
+          "list_entries": {
+            "calls": 32,
+            "latency_buckets": [
+              32,
+              0,
+              0,
+              0,
+              0
+            ],
+            "max_ns": 946897,
+            "total_ns": 8208467,
+            "units": 0
+          },
+          "metadata": {
+            "calls": 2112,
+            "latency_buckets": [
+              2112,
+              0,
+              0,
+              0,
+              0
+            ],
+            "max_ns": 500314,
+            "total_ns": 11479252,
+            "units": 0
+          },
+          "mount_identity_attempts": {
+            "calls": 0,
+            "latency_buckets": [
+              0,
+              0,
+              0,
+              0,
+              0
+            ],
+            "max_ns": 0,
+            "total_ns": 0,
+            "units": 2048
+          },
+          "opaque_probe": {
+            "calls": 2144,
+            "latency_buckets": [
+              2144,
+              0,
+              0,
+              0,
+              0
+            ],
+            "max_ns": 5430,
+            "total_ns": 1690467,
+            "units": 0
+          },
+          "parent_identity_metadata_fallbacks": {
+            "calls": 0,
+            "latency_buckets": [
+              0,
+              0,
+              0,
+              0,
+              0
+            ],
+            "max_ns": 0,
+            "total_ns": 0,
+            "units": 2048
+          },
+          "parent_identity_statx_calls": {
+            "calls": 0,
+            "latency_buckets": [
+              0,
+              0,
+              0,
+              0,
+              0
+            ],
+            "max_ns": 0,
+            "total_ns": 0,
+            "units": 4096
+          },
+          "resolve": {
+            "calls": 2112,
+            "latency_buckets": [
+              2112,
+              0,
+              0,
+              0,
+              0
+            ],
+            "max_ns": 500133,
+            "total_ns": 11305890,
+            "units": 0
+          },
+          "resolve_components": {
+            "calls": 0,
+            "latency_buckets": [
+              0,
+              0,
+              0,
+              0,
+              0
+            ],
+            "max_ns": 0,
+            "total_ns": 0,
+            "units": 4160
+          },
+          "unavailable_upper_marker_skips": {
+            "calls": 0,
+            "latency_buckets": [
+              0,
+              0,
+              0,
+              0,
+              0
+            ],
+            "max_ns": 0,
+            "total_ns": 0,
+            "units": 4096
+          },
+          "whiteout_probe": {
+            "calls": 4160,
+            "latency_buckets": [
+              4160,
+              0,
+              0,
+              0,
+              0
+            ],
+            "max_ns": 4979,
+            "total_ns": 2262385,
+            "units": 0
+          }
+        },
+        "pid": 94,
+        "schema": 2
+      },
+      "elapsed_ms": 22.876773999999997,
+      "profiled": true,
+      "scope": "adapter-only, host cache warm, fresh inode tables; no guest kernel/VM",
+      "trial": 10,
+      "warmup": false
+    }
+  ],
+  "summary": {
+    "deep_lookup_open_getattr": {
+      "baseline": {
+        "n": 8,
+        "p50_ms": 95.512961
+      },
+      "selected": {
+        "n": 8,
+        "p50_ms": 94.9537675
+      },
+      "elapsed_change_percent": -0.5854634744283604
+    },
+    "directory_plus": {
+      "baseline": {
+        "n": 8,
+        "p50_ms": 19.473552499999997
+      },
+      "selected": {
+        "n": 8,
+        "p50_ms": 19.919154
+      },
+      "elapsed_change_percent": 2.2882393954570146
+    },
+    "lookup_getattr": {
+      "baseline": {
+        "n": 8,
+        "p50_ms": 25.4134375
+      },
+      "selected": {
+        "n": 8,
+        "p50_ms": 25.918425499999998
+      },
+      "elapsed_change_percent": 1.9870904910049836
+    },
+    "lookup_open_getattr": {
+      "baseline": {
+        "n": 8,
+        "p50_ms": 27.135627500000002
+      },
+      "selected": {
+        "n": 8,
+        "p50_ms": 28.151728
+      },
+      "elapsed_change_percent": 3.7445255319781934
+    }
+  },
+  "provenance": {
+    "baseline": {
+      "rust-build-meta": {
+        "target-directory": "/home/reiase/workspace/pvisor/target/p1-filesystem-build-20261005",
+        "base-output-directories": [
+          "release"
+        ],
+        "non-test-binaries": {},
+        "build-script-out-dirs": {
+          "path+file:///home/reiase/workspace/pvisor/target/p1-filesystem-source-20261005/crates/pvisor-vm#0.3.0": "release/build/pvisor-vm-febd95c015c3faa6/out"
+        },
+        "linked-paths": [
+          "release/build/blake3-3416698dd2902d72/out",
+          "release/build/ring-f149aba4bfc284e9/out",
+          "release/build/zstd-sys-f621cfade88f9ce1/out"
+        ],
+        "platforms": {
+          "host": {
+            "platform": {
+              "triple": "x86_64-unknown-linux-gnu",
+              "target-features": "unknown"
+            },
+            "libdir": {
+              "status": "available",
+              "path": "/home/reiase/.rustup/toolchains/stable-x86_64-unknown-linux-gnu/lib/rustlib/x86_64-unknown-linux-gnu/lib"
+            }
+          },
+          "targets": []
+        },
+        "target-platforms": [
+          {
+            "triple": "x86_64-unknown-linux-gnu",
+            "target-features": "unknown"
+          }
+        ],
+        "target-platform": null
+      },
+      "rust-binaries": {
+        "pvisor-vm": {
+          "binary-id": "pvisor-vm",
+          "binary-name": "pvisor_vm",
+          "package-id": "path+file:///home/reiase/workspace/pvisor/target/p1-filesystem-source-20261005/crates/pvisor-vm#0.3.0",
+          "kind": "lib",
+          "binary-path": "/home/reiase/workspace/pvisor/target/p1-filesystem-artifacts-20261005/micro-baseline",
+          "build-platform": "target"
+        }
+      },
+      "binary_sha256": "c74e831526224dca5726ae50b99ec57c1b84d5a2f58b6e66bd8c817ef7079579"
+    },
+    "selected": {
+      "rust-build-meta": {
+        "target-directory": "/home/reiase/workspace/pvisor/target/p1-filesystem-build-20261005",
+        "base-output-directories": [
+          "release"
+        ],
+        "non-test-binaries": {},
+        "build-script-out-dirs": {
+          "path+file:///home/reiase/workspace/pvisor/target/p1-filesystem-source-20261005/crates/pvisor-vm#0.3.0": "release/build/pvisor-vm-febd95c015c3faa6/out"
+        },
+        "linked-paths": [
+          "release/build/blake3-3416698dd2902d72/out",
+          "release/build/ring-f149aba4bfc284e9/out",
+          "release/build/zstd-sys-f621cfade88f9ce1/out"
+        ],
+        "platforms": {
+          "host": {
+            "platform": {
+              "triple": "x86_64-unknown-linux-gnu",
+              "target-features": "unknown"
+            },
+            "libdir": {
+              "status": "available",
+              "path": "/home/reiase/.rustup/toolchains/stable-x86_64-unknown-linux-gnu/lib/rustlib/x86_64-unknown-linux-gnu/lib"
+            }
+          },
+          "targets": []
+        },
+        "target-platforms": [
+          {
+            "triple": "x86_64-unknown-linux-gnu",
+            "target-features": "unknown"
+          }
+        ],
+        "target-platform": null
+      },
+      "rust-binaries": {
+        "pvisor-vm": {
+          "binary-id": "pvisor-vm",
+          "binary-name": "pvisor_vm",
+          "package-id": "path+file:///home/reiase/workspace/pvisor/target/p1-filesystem-source-20261005/crates/pvisor-vm#0.3.0",
+          "kind": "lib",
+          "binary-path": "/home/reiase/workspace/pvisor/target/p1-filesystem-artifacts-20261005/micro-selected",
+          "build-platform": "target"
+        }
+      },
+      "binary_sha256": "debab97f0111e4a353ff2c2d11ea0ba21a27b51cbfdd875a256fbe7e97999356"
+    }
+  }
+}

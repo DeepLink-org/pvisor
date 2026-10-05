@@ -265,6 +265,81 @@ fn manual_pause_revokes_ownership_and_wait_never_automatically_overrides_it() {
 }
 
 #[test]
+fn restart_requires_fresh_worker_report_before_wait_entry_or_resume_delivery() {
+    let tmp = tempfile::tempdir().unwrap();
+    let path = tmp.path().join("wal");
+    let mut s = open(&path);
+    let lease = start(&mut s);
+    let wait = key(&lease, 1);
+    query(&mut s, &wait, InferenceWaitIntent::Begin);
+    let pause = poll(&mut s, std::slice::from_ref(&lease))
+        .controls
+        .remove(0);
+    ack(&mut s, pause);
+    drop(s);
+
+    // Durable pause evidence alone cannot authorize the Gateway after restart.
+    let mut s = open(&path);
+    assert!(s.task("a").unwrap().reconciliation_pending);
+    let before = s.inference_wait_record("a").unwrap().unwrap();
+    for intent in [
+        InferenceWaitIntent::Begin,
+        InferenceWaitIntent::Ready,
+        InferenceWaitIntent::Observe,
+    ] {
+        assert!(
+            s.inference_wait(
+                InferenceWaitRequest {
+                    key: wait.clone(),
+                    intent,
+                },
+                10,
+            )
+            .is_err()
+        );
+    }
+    assert_eq!(s.inference_wait_record("a").unwrap().unwrap(), before);
+    assert!(
+        poll(&mut s, std::slice::from_ref(&lease))
+            .controls
+            .is_empty()
+    );
+    assert!(query(&mut s, &wait, InferenceWaitIntent::Observe).entered);
+    assert!(!query(&mut s, &wait, InferenceWaitIntent::Ready).delivery_ready);
+    let revision = s
+        .inference_wait_record("a")
+        .unwrap()
+        .unwrap()
+        .resume_revision
+        .unwrap();
+    drop(s);
+
+    // A durable pending resume survives another restart, but must reacquire
+    // admission and receive native acknowledgement before delivering a reply.
+    let mut s = open(&path);
+    assert!(
+        s.inference_wait(
+            InferenceWaitRequest {
+                key: wait.clone(),
+                intent: InferenceWaitIntent::Ready,
+            },
+            10,
+        )
+        .is_err()
+    );
+    assert_eq!(s.task("a").unwrap().current_reservation().cpu_millis, 0);
+    let resume = poll(&mut s, std::slice::from_ref(&lease))
+        .controls
+        .remove(0);
+    assert_eq!(resume.revision, revision);
+    assert_eq!(resume.request.action, ControlAction::Resume);
+    assert_eq!(s.task("a").unwrap().current_reservation(), resources());
+    assert!(!query(&mut s, &wait, InferenceWaitIntent::Observe).delivery_ready);
+    ack(&mut s, resume);
+    assert!(query(&mut s, &wait, InferenceWaitIntent::Observe).delivery_ready);
+}
+
+#[test]
 fn thousands_of_waits_do_not_exhaust_manual_history_and_reject_old_keys_after_restart() {
     let tmp = tempfile::tempdir().unwrap();
     let path = tmp.path().join("wal");

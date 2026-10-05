@@ -16,6 +16,10 @@ import tomllib
 DOCS = Path(__file__).resolve().parents[1] / "docs"
 
 EN_NAV_LABELS = {
+    "Cluster 集群执行": "Cluster execution design",
+    "Cluster 上手": "Cluster quickstart",
+    "Cluster 扩展性": "Cluster scalability",
+    "Cluster 实验问题": "Cluster experiment questions",
     "任务学习路线": "Learning path",
     "首页": "Home", "为什么": "Why pVisor", "开始使用": "Get started",
     "指南": "Guides", "接入你的 Agent": "Connect your agent", "策略": "Policies",

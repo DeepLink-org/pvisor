@@ -134,5 +134,14 @@ panic = "abort"
 [profile.release.build-override]
 strip = "none"
 
+# Runtime-performance alternative to the size-oriented distribution profile.
+# Keep the release ABI/feature settings so the two artifacts can be benchmarked.
+[profile.performance]
+inherits = "release"
+opt-level = 3
+
+[profile.performance.build-override]
+strip = "none"
+
 [patch.crates-io]
 fuser = { path = "vendor/fuser" }

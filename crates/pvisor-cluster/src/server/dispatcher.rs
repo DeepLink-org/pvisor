@@ -322,7 +322,7 @@ mod tests {
         let reply = s
             .poll(request(vec![live.clone()], full, 1), 32_000)
             .unwrap();
-        assert_eq!(reply.renewed, vec![live]);
+        assert_eq!(reply.renewed, vec![live.clone()]);
         assert!(reply.assignments.is_empty());
         assert_eq!(s.task("live").unwrap().lease.unwrap().expires_at_ms, 62_000);
         assert_eq!(s.task("queued").unwrap().phase, TaskPhase::Queued);
@@ -337,6 +337,19 @@ mod tests {
         );
         assert_eq!(std::fs::read(&path).unwrap(), before);
         assert!(s.reap(32_001).is_err());
+        let recovered = s
+            .recover(
+                crate::RecoveryRequest {
+                    worker_id: "w".into(),
+                    incarnation: "i".into(),
+                    completed: vec![live.clone()],
+                },
+                32_002,
+            )
+            .unwrap();
+        assert_eq!(recovered.renewed, vec![live]);
+        assert_eq!(s.task("live").unwrap().lease.unwrap().expires_at_ms, 62_002);
+        assert_eq!(std::fs::read(&path).unwrap(), before);
         assert!(s.ensure_available().is_ok());
     }
 

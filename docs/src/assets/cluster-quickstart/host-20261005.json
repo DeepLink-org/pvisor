@@ -1,0 +1,76 @@
+{
+  "schema": "pvisor-cluster-quickstart/v1",
+  "passed": true,
+  "backend": "host",
+  "verified_at_utc": "2026-10-05T05:04:18Z",
+  "max_execution_concurrency": 2,
+  "task_memory_bytes": 67108864,
+  "task_cpu_time_ms": 2000,
+  "gateway": false,
+  "checks": [
+    "kernel memory/CPU/swap caps",
+    "real execution and two-node capability placement",
+    "immutable submission idempotency",
+    "verified Bundle and trace download",
+    "three-node dependency graph",
+    "running cancellation",
+    "drain and resumed admission",
+    "no heartbeat writes; same-key Controller restart reconciliation",
+    "no cgroup OOM; execution reservations released",
+    "online storage policy, evidence retirement and GC"
+  ],
+  "cgroups": {
+    "controller": {
+      "ControlGroup": "/user.slice/user-1000.slice/user@1000.service/app.slice/pvisor-quickstart-5f646071f428-controller.service",
+      "MemoryPeak": "5394432",
+      "CPUUsageNSec": "17298000",
+      "CPUQuotaPerSecUSec": "250ms",
+      "MemoryMax": "268435456",
+      "memory_events": {
+        "low": "0",
+        "high": "0",
+        "max": "0",
+        "oom": "0",
+        "oom_kill": "0",
+        "oom_group_kill": "0",
+        "sock_throttled": "0"
+      }
+    },
+    "worker-a": {
+      "ControlGroup": "/user.slice/user-1000.slice/user@1000.service/app.slice/pvisor-quickstart-5f646071f428-worker-a.service",
+      "MemoryPeak": "10969088",
+      "CPUUsageNSec": "150710000",
+      "CPUQuotaPerSecUSec": "500ms",
+      "MemoryMax": "536870912",
+      "memory_events": {
+        "low": "0",
+        "high": "0",
+        "max": "0",
+        "oom": "0",
+        "oom_kill": "0",
+        "oom_group_kill": "0",
+        "sock_throttled": "0"
+      }
+    },
+    "worker-b": {
+      "ControlGroup": "/user.slice/user-1000.slice/user@1000.service/app.slice/pvisor-quickstart-5f646071f428-worker-b.service",
+      "MemoryPeak": "8687616",
+      "CPUUsageNSec": "84267000",
+      "CPUQuotaPerSecUSec": "500ms",
+      "MemoryMax": "536870912",
+      "memory_events": {
+        "low": "0",
+        "high": "0",
+        "max": "0",
+        "oom": "0",
+        "oom_kill": "0",
+        "oom_group_kill": "0",
+        "sock_throttled": "0"
+      }
+    }
+  },
+  "binaries": {
+    "pvisor-cluster": "edddeb632b78407975120992caf9ccf92e638620d01a162af661adebe170b8bd",
+    "pvisor-worker": "c995dd2021af98de82a23068a5527f2ec5933ed1d5fc6ffc4f1fbaec2b2d0e5d"
+  }
+}

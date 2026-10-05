@@ -124,6 +124,21 @@ impl Profile {
             started: self.0.as_ref().map(|_| Instant::now()),
         }
     }
+    /// Diagnostic timestamp for an asynchronous stage. Disabled profiling
+    /// performs no clock read.
+    pub fn timestamp(&self) -> Option<Instant> {
+        self.0.as_ref().map(|_| Instant::now())
+    }
+
+    /// Record a stage that started on another thread or at queue admission.
+    pub fn record_since(&self, label: &'static str, started: Option<Instant>) {
+        drop(Span {
+            profile: self,
+            label,
+            started,
+        });
+    }
+
     pub fn add(&self, label: &'static str, units: u64) {
         if let Some(state) = &self.0 {
             let mut measurements = state.measurements.lock().unwrap_or_else(|p| p.into_inner());

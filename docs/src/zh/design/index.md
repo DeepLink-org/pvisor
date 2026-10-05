@@ -3,6 +3,7 @@
 | 领域 | 文档 |
 | --- | --- |
 | 核心职责与执行路径 | [核心架构](architecture.md) |
+| 多 Worker 执行、最终一致性、调度、生命周期与存储 | [Cluster 完整设计](cluster/index.md) |
 | 共享镜像缓存、S3/文件系统目录树与文件索引 | [v1：独立元数据与分页索引](shared-image-cache-storage.md) |
 | VM RAM offload、文件布局与生命周期 | [offload 完整设计](offload/index.md) · [磁盘格式与 schema](offload/disk-layout-and-schema.md) |
 | 完整 VM 环境保存、独立文件副本与跨 runner 恢复 | [完整环境快照 CLI](environment-snapshot.md) |

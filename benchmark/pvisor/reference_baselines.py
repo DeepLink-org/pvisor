@@ -104,6 +104,24 @@ def validate_staged_filesystem(work, stage, expected_bytes):
         raise ValueError("staged written file sizes differ from the workload")
 
 
+def validate_bundle_execution(bundle, backend, staged_isolation="host_process"):
+    assert bundle["run"]["state"] == "completed" and bundle["run"]["exit_code"] == 0
+    expected = (
+        "virtual_machine"
+        if backend == "pvisor-vm"
+        else staged_isolation
+        if backend == "pvisor-staged"
+        else "host_process"
+    )
+    assert bundle["run"]["executor"]["isolation"] == expected
+    if backend in ("pvisor-vm", "pvisor-staged"):
+        assert bundle["safety"]["filesystem_changes_staged"]
+    if backend == "pvisor-staged" and staged_isolation == "rootless_process":
+        assert bundle["safety"]["filesystem_non_bypassable"]
+        assert bundle["safety"]["filesystem_read_non_bypassable"]
+        assert bundle["safety"]["filesystem_write_non_bypassable"]
+
+
 def run_trial(args, metadata, backend, mode, trial):
     root = args.output / "trials" / f"{mode}-{backend}-{trial:03d}"
     root.mkdir(parents=True)
@@ -384,14 +402,14 @@ def run_trial(args, metadata, backend, mode, trial):
         )
         assert len(bundles) == 1
         bundle = json.loads(bundles[0].read_text())
-        assert bundle["run"]["state"] == "completed" and bundle["run"]["exit_code"] == 0
-        assert bundle["run"]["executor"]["isolation"] == (
-            "virtual_machine" if backend == "pvisor-vm" else "host_process"
+        validate_bundle_execution(
+            bundle, backend, getattr(args, "staged_isolation", "host_process")
         )
         if backend in ("pvisor-vm", "pvisor-staged"):
-            assert bundle["safety"]["filesystem_changes_staged"]
             if mode == "filesystem":
-                validate_staged_filesystem(work, stage, result["filesystem"]["write"]["check"]["bytes"])
+                validate_staged_filesystem(
+                    work, stage, result["filesystem"]["write"]["check"]["bytes"]
+                )
         if mode in ("tools", "claude", "codex"):
             assert (
                 (work / "python/adder.py").read_text() == "def add(a, b):\n    return a - b\n"
@@ -441,6 +459,9 @@ def main():
     p.add_argument("--samples", type=int, default=30)
     p.add_argument("--warmups", type=int, default=3)
     p.add_argument("--memory-mib", type=int, default=16384)
+    p.add_argument(
+        "--staged-isolation", choices=("host_process", "rootless_process"), default="host_process"
+    )
     p.add_argument("--docker-root-pid", type=int)
     p.add_argument(
         "--cpu-affinity", default="0,1", help="Common host CPU affinity; empty string disables it"

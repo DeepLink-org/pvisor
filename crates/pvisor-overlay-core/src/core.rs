@@ -293,8 +293,19 @@ fn layer_metadata_with_parents(
                 continue;
             }
             profile.add("layer_parent_stats", 1);
-            match fs::symlink_metadata(&path) {
-                Ok(metadata) if metadata.is_dir() => {
+            let observation = if parents.is_some() {
+                sys::parent_directory_identity(&path, profile)
+            } else {
+                fs::symlink_metadata(&path).map(|metadata| {
+                    metadata.is_dir().then_some(BackingIdentity {
+                        device: metadata.dev(),
+                        inode: metadata.ino(),
+                        mount_id: None,
+                    })
+                })
+            };
+            match observation {
+                Ok(Some(identity)) => {
                     if let Some(checked) = &mut checked_directories {
                         checked.observe(root, index + 1);
                     }
@@ -302,14 +313,10 @@ fn layer_metadata_with_parents(
                         if cfg!(target_os = "linux") {
                             profile.add("mount_identity_attempts", 1);
                         }
-                        parents.push(BackingIdentity {
-                            device: metadata.dev(),
-                            inode: metadata.ino(),
-                            mount_id: sys::metadata_mount_id(&path, &metadata),
-                        });
+                        parents.push(identity);
                     }
                 }
-                Ok(_) => return Ok(LayerMetadata::UnavailableParent),
+                Ok(None) => return Ok(LayerMetadata::UnavailableParent),
                 Err(error) if error.kind() == io::ErrorKind::NotFound => {
                     return Ok(LayerMetadata::UnavailableParent);
                 }
@@ -1817,11 +1824,7 @@ impl OverlayCore {
         result.map(|()| upper)
     }
 
-    fn directory_entries(
-        &self,
-        rel: &Path,
-        check_children: bool,
-    ) -> io::Result<Vec<DirectoryEntry>> {
+    fn collect_directory_names(&self, rel: &Path) -> io::Result<Vec<OsString>> {
         let _span = self.profile.span("list_entries");
         self.require_visible(rel)?;
         let metadata = self.metadata(rel)?;
@@ -1855,6 +1858,81 @@ impl OverlayCore {
                 }
             }
         }
+        let names = names
+            .into_iter()
+            .filter(|name| {
+                !self.is_whiteouted(rel, name)
+                    && Self::child(rel, name).is_ok_and(|child| !self.is_excluded(&child))
+            })
+            .collect::<Vec<_>>();
+        Ok(names)
+    }
+
+    /// Snapshot candidate names only. Callers must check current visibility and
+    /// backing metadata before returning each entry; names are not capabilities.
+    pub fn directory_candidates(&self, rel: &Path) -> io::Result<Vec<OsString>> {
+        let names = self.collect_directory_names(rel)?;
+        if !self.access.has_denials() {
+            return Ok(names);
+        }
+        // Preserve denied hard-link filtering at OPENDIR for protected views.
+        // Unrestricted views can defer all child metadata until enumeration.
+        let mut visible = Vec::with_capacity(names.len());
+        for name in names {
+            let child = Self::child(rel, &name)?;
+            if let Ok(Some(backing)) = self.resolve_component_metadata(&child)
+                && self.require_unaliased_metadata(&backing.metadata).is_ok()
+            {
+                self.require_visible(&child)?;
+                visible.push(name);
+            }
+        }
+        Ok(visible)
+    }
+
+    /// Validate one directory candidate without recording a file read.
+    pub fn directory_entry(&self, rel: &Path, name: &OsStr) -> io::Result<Option<DirectoryEntry>> {
+        Ok(self
+            .directory_entry_for_backing_lookup(rel, name)?
+            .map(|backing| DirectoryEntry {
+                name: name.to_owned(),
+                backing: backing.entry,
+            }))
+    }
+
+    /// Resolve one visible child and its checked parent identities together.
+    pub fn directory_entry_for_backing_lookup(
+        &self,
+        rel: &Path,
+        name: &OsStr,
+    ) -> io::Result<Option<BackingResolution>> {
+        if self.is_whiteouted(rel, name) {
+            return Ok(None);
+        }
+        let child = Self::child(rel, name)?;
+        if self.is_excluded(&child) {
+            return Ok(None);
+        }
+        let mut parents = Vec::with_capacity(child.components().count().saturating_sub(1));
+        match self.resolve_component_metadata_with_parents(&child, Some(&mut parents), None) {
+            Ok(Some(backing)) => {
+                self.require_unaliased_metadata(&backing.metadata)?;
+                self.require_visible(&child)?;
+                Ok(Some(BackingResolution {
+                    entry: backing,
+                    parents,
+                }))
+            }
+            _ => Ok(None),
+        }
+    }
+
+    fn directory_entries(
+        &self,
+        rel: &Path,
+        check_children: bool,
+    ) -> io::Result<Vec<DirectoryEntry>> {
+        let names = self.collect_directory_names(rel)?;
         let mut entries = Vec::with_capacity(names.len());
         for name in names {
             if self.is_whiteouted(rel, &name) {

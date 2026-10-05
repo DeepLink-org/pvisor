@@ -8,9 +8,10 @@ use std::os::fd::AsRawFd;
 use std::sync::atomic::AtomicI32;
 use std::sync::{Arc, RwLock};
 use std::thread;
+use std::time::Instant;
 
 use crate::utils::epoll::{ControlOperation, Epoll, EpollEvent, EventSet};
-use crate::utils::eventfd::{EventFd, EFD_NONBLOCK};
+use crate::utils::eventfd::{EFD_NONBLOCK, EventFd};
 use vm_memory::GuestMemoryMmap;
 
 use super::super::Queue;
@@ -159,9 +160,8 @@ impl Execution {
     }
 }
 
-/// Do not pay a thread handoff for tiny requests or for overlay mutations which
-/// must serialize anyway. Batch expensive independent reads; the inline owner
-/// can still perform short metadata requests while those reads are in flight.
+/// Keep short metadata operations inline to avoid a thread handoff. Directory
+/// enumeration and large reads can use the pool when multiple requests exist.
 fn parallel_candidate(header: &InHeader, body: &Reader) -> bool {
     match header.opcode {
         x if x == Opcode::Read as u32 => body
@@ -183,6 +183,9 @@ struct Request {
     index: u16,
     header: InHeader,
     buffers: OwnedDescriptorChain,
+    // Submit timestamp, replaced by completion-ready timestamp after service.
+    // None when diagnostics are disabled; normal requests read no clock.
+    profile_timestamp: Option<Instant>,
 }
 
 struct Completion {
@@ -201,12 +204,14 @@ struct RequestPool {
     threads: Vec<thread::JoinHandle<()>>,
     in_flight: usize,
     limit: usize,
+    profile: pvisor_overlay_core::profile::Profile,
 }
 
 impl RequestPool {
     fn new(
         handle: impl Fn(&Request) -> usize + Send + Sync + 'static,
         workers: usize,
+        profile: pvisor_overlay_core::profile::Profile,
     ) -> io::Result<Self> {
         let handle = Arc::new(handle);
         let limit = workers * 2;
@@ -222,18 +227,22 @@ impl RequestPool {
             threads: Vec::new(),
             in_flight: 0,
             limit,
+            profile,
         };
         for id in 0..workers {
             let receive = receive.clone();
             let completed = completed.clone();
             let wake = pool.wake.clone();
             let handle = handle.clone();
+            let profile = pool.profile.clone();
             pool.threads
                 .push(
                     thread::Builder::new()
                         .name(format!("fs io {id}"))
                         .spawn(move || {
-                            for request in receive {
+                            for mut request in receive {
+                                profile.record_since("pool_queue_wait", request.profile_timestamp);
+                                let service = profile.span("pool_service");
                                 // A lost worker would make freeze wait forever. Fail the
                                 // isolated VMM rather than publish a successful snapshot.
                                 let len =
@@ -244,6 +253,8 @@ impl RequestPool {
                                         error!("filesystem request worker panicked");
                                         std::process::abort();
                                     });
+                                drop(service);
+                                request.profile_timestamp = profile.timestamp();
                                 if completed.send(Completion { request, len }).is_err() {
                                     break;
                                 }
@@ -258,7 +269,8 @@ impl RequestPool {
         Ok(pool)
     }
 
-    fn submit(&mut self, request: Request) {
+    fn submit(&mut self, mut request: Request) {
+        request.profile_timestamp = self.profile.timestamp();
         assert!(self.in_flight < self.limit);
         // Capacity covers every in-flight request, so the owner never blocks
         // behind I/O and can always service the dedicated high-priority queue.
@@ -465,11 +477,14 @@ impl FsWorker {
             {
                 let _ = self.stop_fd.read();
                 if let Some(pool) = &mut pool {
+                    let mut completed = [false; 2];
                     while pool.in_flight != 0 {
                         let completion = pool.completed.recv().expect("filesystem completion lost");
-                        self.complete(completion);
+                        completed[completion.request.queue] = true;
+                        self.publish_completion(completion);
                         pool.in_flight -= 1;
                     }
+                    self.notify_completed(completed);
                 }
                 // Dropping the pool joins every I/O worker before returning the
                 // parked device to capture_state, reset or offload.
@@ -488,16 +503,29 @@ impl FsWorker {
                 }
             }
             if let Some(pool) = &mut pool {
+                let mut completed = [false; 2];
                 while let Ok(completion) = pool.completed.try_recv() {
-                    self.complete(completion);
+                    completed[completion.request.queue] = true;
+                    self.publish_completion(completion);
                     pool.in_flight -= 1;
                 }
+                self.notify_completed(completed);
             }
             self.service_queues(&mut pool, workers, &epoll);
         }
     }
 
     fn complete(&mut self, completion: Completion) {
+        let index = completion.request.queue;
+        self.publish_completion(completion);
+        let mut completed = [false; 2];
+        completed[index] = true;
+        self.notify_completed(completed);
+    }
+
+    fn publish_completion(&mut self, completion: Completion) {
+        self.dispatch_profile
+            .record_since("pool_completion_wait", completion.request.profile_timestamp);
         let queue = &mut self.queues[completion.request.queue];
         if let Err(error) = queue.add_used(
             &self.execution.mem,
@@ -506,10 +534,23 @@ impl FsWorker {
         ) {
             error!("failed to add filesystem used element: {error}");
         }
-        if queue.needs_notification(&self.execution.mem).unwrap() {
+        // Keep the RAM lease through publication. Only already-ready pool
+        // completions are batched; inline responses still notify immediately.
+        self.dispatch_profile.add("published_completions", 1);
+    }
+
+    fn notify_completed(&mut self, completed: [bool; 2]) {
+        let mut notify = false;
+        for (index, completed) in completed.into_iter().enumerate() {
+            if completed {
+                self.dispatch_profile.add("notification_checks", 1);
+                notify |= self.queues[index].needs_notification(&self.execution.mem).unwrap();
+            }
+        }
+        if notify {
+            self.dispatch_profile.add("used_interrupts", 1);
             self.interrupt.signal_used_queue();
         }
-        // completion drops only after the used ring update and notification.
     }
 
     fn service_queues(&mut self, pool: &mut Option<RequestPool>, workers: usize, epoll: &Epoll) {
@@ -520,7 +561,7 @@ impl FsWorker {
                 self.queues[index]
                     .disable_notification(&self.execution.mem)
                     .unwrap();
-                while index == HPQ_INDEX || pool.as_ref().is_none_or(|p| p.in_flight < p.limit) {
+                loop {
                     let Some(head) = self.queues[index].pop(&self.execution.mem) else {
                         break;
                     };
@@ -560,6 +601,7 @@ impl FsWorker {
                                     index: head_index,
                                     header: InHeader::default(),
                                     buffers,
+                                    profile_timestamp: None,
                                 },
                                 len: 0,
                             });
@@ -571,11 +613,20 @@ impl FsWorker {
                         && parallel_candidate(&header, &reader)
                         && (pool.as_ref().is_some_and(|p| p.in_flight != 0)
                             || !self.queues[index].is_empty(&self.execution.mem));
+                    if parallel && pool.as_ref().is_some_and(|p| p.in_flight == p.limit) {
+                        // Short inline requests may run even at pool capacity.
+                        // Leave an expensive head in the ring rather than
+                        // retaining another RAM lease or overflowing the pool.
+                        self.queues[index].undo_pop();
+                        self.dispatch_profile.add("pool_capacity_stalls", 1);
+                        break;
+                    }
                     let request = Request {
                         queue: index,
                         index: head_index,
                         header,
                         buffers,
+                        profile_timestamp: None,
                     };
                     if parallel {
                         if pool.is_none() {
@@ -583,6 +634,7 @@ impl FsWorker {
                             match RequestPool::new(
                                 move |request| execution.handle(request),
                                 workers,
+                                self.dispatch_profile.clone(),
                             ) {
                                 Ok(new_pool) => {
                                     let fd = new_pool.wake.as_raw_fd();
@@ -630,9 +682,160 @@ impl FsWorker {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::devices::virtio::descriptor_utils::{create_descriptor_chain, DescriptorType};
+    use crate::devices::virtio::descriptor_utils::{DescriptorType, create_descriptor_chain};
     use std::time::Duration;
     use vm_memory::GuestAddress;
+
+    fn queue_worker(mem: GuestMemoryMmap, queues: Vec<Queue>) -> FsWorker {
+        use crate::devices::legacy::DummyIrqChip;
+        let mut worker = FsWorker::new(FsWorkerConfig {
+            queues,
+            queue_evts: (0..2).map(|_| Arc::new(EventFd::new(EFD_NONBLOCK).unwrap())).collect(),
+            interrupt: InterruptTransport::new(DummyIrqChip::new().into(), "test".into()).unwrap(),
+            mem, allow_idmap: false, shm_region: None,
+            passthrough_cfg: None, overlay_cfg: None, read_only: false,
+            virtual_entries: vec![], stop_fd: EventFd::new(EFD_NONBLOCK).unwrap(),
+            exit_code: Arc::new(AtomicI32::new(0)), restoring: false,
+            #[cfg(target_os = "macos")]
+            map_sender: None,
+        }).unwrap();
+        worker.dispatch_profile = pvisor_overlay_core::profile::Profile::enabled("virtio-fs-dispatch");
+        worker
+    }
+
+    #[test]
+    fn full_pool_admits_inline_metadata_but_leaves_expensive_head_in_ring() {
+        use crate::devices::virtio::queue::tests::VirtQueue;
+        use vm_memory::Bytes;
+        let mem = GuestMemoryMmap::from_ranges(&[(GuestAddress(0), 0x10000)]).unwrap();
+        let high = VirtQueue::new(GuestAddress(0), &mem, 8);
+        let normal = VirtQueue::new(GuestAddress(0x400), &mem, 8);
+        for (slot, opcode) in [(0, Opcode::Getattr), (2, Opcode::Opendir)] {
+            let address = 0x4000 + slot as u64 * 0x200;
+            normal.dtable[slot].addr.set(address);
+            normal.dtable[slot].len.set(64);
+            normal.dtable[slot].flags.set(crate::devices::virtio::queue::VIRTQ_DESC_F_NEXT);
+            normal.dtable[slot].next.set((slot + 1) as u16);
+            normal.dtable[slot + 1].addr.set(address + 0x100);
+            normal.dtable[slot + 1].len.set(256);
+            normal.dtable[slot + 1].flags.set(crate::devices::virtio::queue::VIRTQ_DESC_F_WRITE);
+            mem.write_obj(InHeader { len: 64, opcode: opcode as u32, nodeid: 1, ..Default::default() }, GuestAddress(address)).unwrap();
+        }
+        normal.avail.ring[0].set(0);
+        normal.avail.ring[1].set(2);
+        normal.avail.idx.set(2);
+        let mut worker = queue_worker(mem.clone(), vec![high.create_queue(), normal.create_queue()]);
+        let (resume, waiting) = crossbeam_channel::unbounded();
+        let mut full = RequestPool::new(move |_| { waiting.recv().unwrap(); 0 }, 2, Default::default()).unwrap();
+        for index in 0..full.limit {
+            let chain = create_descriptor_chain(&mem, GuestAddress(0x1000 + index as u64 * 0x100),
+                GuestAddress(0x2000 + index as u64 * 0x100),
+                vec![(DescriptorType::Readable, 8), (DescriptorType::Writable, 8)], 0).unwrap();
+            full.submit(Request { queue: REQ_INDEX, index: index as u16, header: InHeader::default(),
+                buffers: OwnedDescriptorChain::new(chain).unwrap(), profile_timestamp: None });
+        }
+        let mut pool = Some(full);
+        worker.service_queues(&mut pool, 2, &Epoll::new().unwrap());
+        for _ in 0..4 { resume.send(()).unwrap(); }
+        let report = worker.dispatch_profile.report().unwrap();
+        drop(pool);
+        assert_eq!(normal.used.idx.get(), 1);
+        assert_eq!(worker.queues[REQ_INDEX].len(&mem), 1);
+        assert_eq!(report.measurements["inline_requests"].units, 1);
+        assert_eq!(report.measurements["pool_capacity_stalls"].units, 1);
+    }
+
+    #[test]
+    fn ready_completions_publish_before_a_single_event_idx_notification_check() {
+        use crate::devices::virtio::queue::tests::VirtQueue;
+        let mem = GuestMemoryMmap::from_ranges(&[(GuestAddress(0), 0x10000)]).unwrap();
+        let high = VirtQueue::new(GuestAddress(0), &mem, 8);
+        let normal = VirtQueue::new(GuestAddress(0x400), &mem, 8);
+        let mut queue = normal.create_queue();
+        queue.set_event_idx(true);
+        let mut worker = queue_worker(mem.clone(), vec![high.create_queue(), queue]);
+        for index in 0..2 {
+            let chain = create_descriptor_chain(&mem, GuestAddress(0x1000 + index as u64 * 0x100),
+                GuestAddress(0x2000 + index as u64 * 0x100),
+                vec![(DescriptorType::Readable, 8), (DescriptorType::Writable, 8)], 0).unwrap();
+            worker.publish_completion(Completion { request: Request { queue: REQ_INDEX, index,
+                header: InHeader::default(), buffers: OwnedDescriptorChain::new(chain).unwrap(),
+                profile_timestamp: None }, len: 8 });
+        }
+        assert_eq!(normal.used.idx.get(), 2);
+        assert!(!worker.dispatch_profile.report().unwrap().measurements.contains_key("notification_checks"));
+        worker.notify_completed([false, true]);
+        let report = worker.dispatch_profile.report().unwrap();
+        assert_eq!(report.measurements["published_completions"].units, 2);
+        assert_eq!(report.measurements["notification_checks"].units, 1);
+        assert_eq!(report.measurements["used_interrupts"].units, 1);
+    }
+
+    #[test]
+    fn pool_eligibility_keeps_short_metadata_and_all_opens_inline() {
+        use super::super::fuse::OpenIn;
+        use vm_memory::Bytes;
+        let mem = GuestMemoryMmap::from_ranges(&[(GuestAddress(0), 0x10000)]).unwrap();
+        let chain = create_descriptor_chain(
+            &mem,
+            GuestAddress(0),
+            GuestAddress(0x100),
+            vec![
+                (
+                    DescriptorType::Readable,
+                    std::mem::size_of::<OpenIn>() as u32,
+                ),
+                (DescriptorType::Writable, 256),
+            ],
+            0,
+        )
+        .unwrap();
+        let buffers = OwnedDescriptorChain::new(chain).unwrap();
+        let (reader, _) = buffers.reader_writer(&mem).unwrap();
+        let header = InHeader {
+            opcode: Opcode::Open as u32,
+            ..Default::default()
+        };
+        for (flags, open_flags, expected) in [
+            (libc::O_RDONLY, 0, false),
+            (libc::O_WRONLY, 0, false),
+            (libc::O_RDWR, 0, false),
+            (libc::O_RDONLY | libc::O_TRUNC, 0, false),
+            (libc::O_RDONLY | libc::O_APPEND, 0, false),
+            (libc::O_RDONLY, super::super::fuse::OPEN_KILL_SUIDGID, false),
+        ] {
+            mem.write_obj(
+                OpenIn {
+                    flags: flags as u32,
+                    open_flags,
+                },
+                GuestAddress(0x100),
+            )
+            .unwrap();
+            assert_eq!(
+                parallel_candidate(&header, &reader),
+                expected,
+                "flags={flags} open_flags={open_flags}"
+            );
+        }
+        for opcode in [Opcode::Lookup, Opcode::Getattr] {
+            assert!(!parallel_candidate(
+                &InHeader {
+                    opcode: opcode as u32,
+                    ..Default::default()
+                },
+                &reader
+            ));
+        }
+        // A short body must not be classified as a large read.
+        assert!(!parallel_candidate(
+            &InHeader {
+                opcode: Opcode::Read as u32,
+                ..Default::default()
+            },
+            &reader
+        ));
+    }
 
     #[test]
     fn guest_header_changes_do_not_replace_an_admitted_request() {
@@ -664,6 +867,7 @@ mod tests {
             index: 0,
             header,
             buffers: OwnedDescriptorChain::new(chain).unwrap(),
+            profile_timestamp: None,
         };
         mem.write_obj(
             InHeader {
@@ -711,6 +915,7 @@ mod tests {
                 index,
                 header: InHeader::default(),
                 buffers: OwnedDescriptorChain::new(chain).unwrap(),
+                profile_timestamp: None,
             }
         };
         let (started, waiting) = crossbeam_channel::bounded(1);
@@ -724,6 +929,7 @@ mod tests {
                 8
             },
             2,
+            pvisor_overlay_core::profile::Profile::default(),
         )
         .unwrap();
         assert_eq!(pool.limit, 4);

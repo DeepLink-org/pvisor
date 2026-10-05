@@ -1,36 +1,33 @@
 # Cluster execution and centralized evidence
 
-When integrating pVisor into a cluster, let the scheduler choose a machine and let pVisor execute the task on that worker and retain a reviewable result. The current CLI provides a local execution entry. Cross-node scheduling, unified identity, and centralized storage require a separate integration layer.
+pVisor implements a cluster execution path with one Controller shard and independent Workers, including capability matching, leases, DAGs, native controls, checkpoints/forks and centralized evidence. [Cluster architecture](../cluster/index.md) defines current mechanisms and failure contracts; research workloads and extension boundaries remain here.
 
-## A task's path through a worker {#worker-flow}
+## A task's path through a Worker {#worker-flow}
 
-1. The scheduler assigns a task ID, versioned workspace input, command, resource budget, and policy.
-2. The worker prepares an independent checkout and an external Stage, then checks executor capabilities.
-3. The worker starts pVisor and saves the exit code, Run ID, and native agent trajectory.
-4. After execution, it collects the Bundle, Stage, logs, and optional Gateway Journal.
-5. The control layer presents results by task ID for acceptance, retry, or discard.
+A caller submits a native RunSpec and pinned input requirements. The Controller accepts the task and assigns an exact lease during Worker polling. After final admission, the Worker prepares an independent environment, executes, retains evidence and uploads/delivers it through a durable outbox. See the [complete task path](../cluster/index.md#task-flow).
 
-Index failures too. Setup failures may have no Bundle; retain scheduler records, exit status, and stderr. Retries receive new attempt IDs and preserve old attempts rather than overwriting failure evidence.
+Worker reports reconstruct the Controller runtime view, with fresh ownership confirmation required after restart. Unknown execution is never automatically rerun elsewhere. Initial task creation, low-frequency control intents and terminal receipts remain persistent. See [state and recovery](../cluster/state-and-recovery.md) for loss and replacement boundaries.
 
-## Boundary between existing interfaces and integration work {#boundary}
+## Implementation and integration boundaries {#boundary}
 
-| Layer | Responsibility |
-| --- | --- |
-| pVisor worker | One execution, staged files, installed-control observations, and task records |
-| Kubernetes, Ray, or a custom scheduler | Queues, node selection, resource reservation, and retry policy |
-| Evidence storage | Artifact upload, indexing, retention, and access permissions |
-| Review and release service | Baseline validation, change selection, merge, and deployment |
+| Layer | Current mechanisms | Integration/validation remaining |
+| --- | --- | --- |
+| pVisor Worker | Native execution, environment layers, Gateway, observations, terminal outbox | Malicious-node trust boundary, local evidence GC, long-running operations |
+| Cluster Controller | Queue, matching, reservations, DAGs, reconciliation, fencing | Multiple shards/HA, tenant identities, online history compaction |
+| Evidence/checkpoint repositories | Local CAS, verified manifests, reference protection, optional FS/S3 snapshot publication/import | Replication, tenant storage quotas, cross-host runtime compatibility/recovery |
+| Kubernetes, Ray or training frameworks | Can call task/lifecycle APIs | GPU/rollout/scaffold coordination and end-to-end recovery |
+| Review/release service | Can read retained evidence | Baseline verification, change selection, business reconciliation, merge and deployment |
 
-Treat local Bundle paths as worker-side references. Uploading JSON does not upload every referenced file, and downloading a Stage does not make it applicable to a different checkout. Central services need artifact packaging and an explicit mapping between paths and baselines.
+Local Run Bundle paths are Worker references; JSON upload does not transfer every file. Downloadable checkpoints do not establish arbitrary-node restore. Environments, snapshots and input versions need explicit compatibility contracts.
 
-## Validate an integration first {#validation}
+## Next experiments {#validation}
 
-Start on two workers with a successful small task, a timeout, and a policy rejection. Check that every attempt can be traced to its input version, outcome, and artifacts, and that interrupted uploads or duplicate submissions cannot overwrite another result.
+Preserve the scope of existing protocol, process and hardware gates, then deploy fixed workloads on independent hosts. Measure useful execution, startup/restore tails, memory density and storage costs. Extend the [concurrent-density methodology](../../benchmarks/density.md); do not extrapolate from single-host empty tasks.
 
-Then test node loss, full disks, revoked credentials, and cancellation. Configure cache permissions by worker and user boundary. Record requested limits and installed controls in evidence, keeping scheduler resource reservations separate.
+Inject permanent node loss, abrupt Controller termination, long partitions, full disks, interrupted uploads, credential revocation and parallel model waits. Each outcome must identify inputs, Task/Run/Attempt, native observations and artifacts. Check unknown side effects and explicit loss resolution; control-plane fencing is not external-effect rollback.
 
 ## Research questions and release conditions {#research}
 
-Cross-node identity and permissions, artifact portability, idempotent retries, centralized cancellation, garbage collection, and capability admission on heterogeneous machines still need validation. Measure throughput, tail latency, and recovery under fixed workloads; single-machine empty tasks cannot establish cluster capacity.
+Further reducing Controller state requires defining reconstruction authority for upstream desired state, bounded Worker terminal inventories and retained manifests. Solve unassigned intents and acknowledged history before treating the Controller as entirely rebuildable. Multiple shards and disaster recovery require a new ownership protocol, not local file locks.
 
-Start from [Parallel agents](../../guides/parallel-agents.md) and consult [Concurrent density](../../benchmarks/density.md) for metrics. A formal cluster interface needs implementation, a version contract, and fault experiments published together.
+Production release also needs node/tenant identities, long-running representative failure/performance experiments, compatibility matrices and operational recovery. See [Cluster operations and validation](../cluster/operations.md) for mechanisms and evolution constraints, [Parallel agents](../../guides/parallel-agents.md) for local workflows, and [RL execution substrate](rl-execution-substrate.md) for training integration.

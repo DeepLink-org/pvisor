@@ -25,9 +25,6 @@ enum Command {
         listen: std::net::SocketAddr,
         #[arg(long, default_value = ".pvisor/cluster/journal")]
         journal: PathBuf,
-        /// Compatibility: persist every lease renewal and trust replayed deadlines.
-        #[arg(long)]
-        durable_leases: bool,
         #[arg(long, env = "PVISOR_CLUSTER_WORKER_TOKEN", hide_env_values = true)]
         worker_token: String,
         #[arg(long, default_value_t = 30_000)]
@@ -166,7 +163,6 @@ async fn main() -> anyhow::Result<()> {
     if let Command::Serve {
         listen,
         journal,
-        durable_leases,
         worker_token,
         lease_ms,
         quotas,
@@ -187,11 +183,7 @@ async fn main() -> anyhow::Result<()> {
         if let Some(path) = artifact_limits {
             config.artifact_storage_limits = Some(serde_json::from_slice(&std::fs::read(path)?)?);
         }
-        let scheduler = if durable_leases {
-            pvisor_cluster::scheduler::Scheduler::open_durable(&journal, config)?
-        } else {
-            pvisor_cluster::scheduler::Scheduler::open(&journal, config)?
-        };
+        let scheduler = pvisor_cluster::scheduler::Scheduler::open(&journal, config)?;
         let router = pvisor_cluster::server::router(scheduler, token, worker_token)?;
         let listener = tokio::net::TcpListener::bind(listen).await?;
         eprintln!("pVisor controller listening on {}", listener.local_addr()?);

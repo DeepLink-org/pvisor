@@ -1,0 +1,1138 @@
+--- a/crates/pvisor-overlay-core/src/core.rs
++++ b/crates/pvisor-overlay-core/src/core.rs
+@@ -293,8 +293,19 @@
+                 continue;
+             }
+             profile.add("layer_parent_stats", 1);
+-            match fs::symlink_metadata(&path) {
+-                Ok(metadata) if metadata.is_dir() => {
++            let observation = if parents.is_some() {
++                sys::parent_directory_identity(&path, profile)
++            } else {
++                fs::symlink_metadata(&path).map(|metadata| {
++                    metadata.is_dir().then_some(BackingIdentity {
++                        device: metadata.dev(),
++                        inode: metadata.ino(),
++                        mount_id: None,
++                    })
++                })
++            };
++            match observation {
++                Ok(Some(identity)) => {
+                     if let Some(checked) = &mut checked_directories {
+                         checked.observe(root, index + 1);
+                     }
+@@ -302,14 +313,10 @@
+                         if cfg!(target_os = "linux") {
+                             profile.add("mount_identity_attempts", 1);
+                         }
+-                        parents.push(BackingIdentity {
+-                            device: metadata.dev(),
+-                            inode: metadata.ino(),
+-                            mount_id: sys::metadata_mount_id(&path, &metadata),
+-                        });
++                        parents.push(identity);
+                     }
+                 }
+-                Ok(_) => return Ok(LayerMetadata::UnavailableParent),
++                Ok(None) => return Ok(LayerMetadata::UnavailableParent),
+                 Err(error) if error.kind() == io::ErrorKind::NotFound => {
+                     return Ok(LayerMetadata::UnavailableParent);
+                 }
+--- a/crates/pvisor-overlay-core/src/sys.rs
++++ b/crates/pvisor-overlay-core/src/sys.rs
+@@ -27,43 +27,91 @@
+     }
+ }
+ 
+-/// Optional mount context for a just-observed parent. Failure or a concurrent
+-/// identity change disables inode reuse rather than supplying a guessed ID.
+-pub(crate) fn metadata_mount_id(path: &Path, metadata: &std::fs::Metadata) -> Option<u64> {
++/// Observe the type and physical identity of one parent without following its
++/// final symlink. Linux obtains the identity and mount context in one statx,
++/// rather than making a second query after symlink_metadata. This is fresh
++/// request-local evidence; it does not cache attributes or confer access.
++pub(crate) fn parent_directory_identity(
++    path: &Path,
++    profile: &crate::profile::Profile,
++) -> io::Result<Option<crate::BackingIdentity>> {
+     #[cfg(target_os = "linux")]
+     {
+-        // Use the kernel ABI: musl's libc bindings do not expose statx.
+-        use linux_raw_sys::general::{STATX_INO, STATX_MNT_ID, statx};
+-        use std::os::unix::fs::MetadataExt;
+-        let path = c_path(path).ok()?;
+-        // SAFETY: zero is a valid initial statx representation; the owned
+-        // path/output remain valid for the duration of the syscall.
+-        let mut stat: statx = unsafe { std::mem::zeroed() };
+-        let rc = unsafe {
+-            libc::syscall(
+-                libc::SYS_statx,
+-                libc::AT_FDCWD,
+-                path.as_ptr(),
+-                libc::AT_SYMLINK_NOFOLLOW,
+-                STATX_MNT_ID | STATX_INO,
+-                &mut stat,
+-            )
+-        };
+-        if rc == 0
+-            && stat.stx_mask & (STATX_MNT_ID | STATX_INO) == STATX_MNT_ID | STATX_INO
+-            && stat.stx_ino == metadata.ino()
+-            && libc::makedev(stat.stx_dev_major, stat.stx_dev_minor) == metadata.dev()
+-        {
+-            Some(stat.stx_mnt_id)
+-        } else {
+-            None
+-        }
++        parent_directory_identity_with(path, profile, |path| {
++            // Use the kernel ABI: musl libc bindings do not expose statx.
++            use linux_raw_sys::general::{STATX_INO, STATX_MNT_ID, STATX_TYPE, statx};
++            // SAFETY: zero initializes the output; path and output remain
++            // valid throughout the syscall. No relaxed synchronization mode.
++            let mut stat: statx = unsafe { std::mem::zeroed() };
++            let rc = unsafe {
++                libc::syscall(
++                    libc::SYS_statx,
++                    libc::AT_FDCWD,
++                    path.as_ptr(),
++                    libc::AT_SYMLINK_NOFOLLOW,
++                    STATX_TYPE | STATX_INO | STATX_MNT_ID,
++                    &mut stat,
++                )
++            };
++            if rc == 0 {
++                Ok(stat)
++            } else {
++                Err(io::Error::last_os_error())
++            }
++        })
+     }
+     #[cfg(not(target_os = "linux"))]
+     {
+-        let _ = (path, metadata);
+-        None
+-    }
++        let _ = profile;
++        parent_directory_identity_from_metadata(path)
++    }
++}
++
++fn parent_directory_identity_from_metadata(
++    path: &Path,
++) -> io::Result<Option<crate::BackingIdentity>> {
++    use std::os::unix::fs::MetadataExt;
++    let metadata = std::fs::symlink_metadata(path)?;
++    Ok(metadata.is_dir().then_some(crate::BackingIdentity {
++        device: metadata.dev(),
++        inode: metadata.ino(),
++        // Without mount evidence Linux native-directory reuse is disabled.
++        mount_id: None,
++    }))
++}
++
++#[cfg(target_os = "linux")]
++fn parent_directory_identity_with(
++    path: &Path,
++    profile: &crate::profile::Profile,
++    query: impl FnOnce(&std::ffi::CStr) -> io::Result<linux_raw_sys::general::statx>,
++) -> io::Result<Option<crate::BackingIdentity>> {
++    use linux_raw_sys::general::{STATX_INO, STATX_MNT_ID, STATX_TYPE};
++    let name = c_path(path)?;
++    profile.add("parent_identity_statx_calls", 1);
++    match query(&name) {
++        Ok(stat) if stat.stx_mask & (STATX_TYPE | STATX_INO) == STATX_TYPE | STATX_INO => {
++            if u32::from(stat.stx_mode) & libc::S_IFMT != libc::S_IFDIR {
++                return Ok(None);
++            }
++            return Ok(Some(crate::BackingIdentity {
++                device: libc::makedev(stat.stx_dev_major, stat.stx_dev_minor),
++                inode: stat.stx_ino,
++                mount_id: (stat.stx_mask & STATX_MNT_ID != 0).then_some(stat.stx_mnt_id),
++            }));
++        }
++        // These are ordinary namespace results, not missing statx support.
++        // Probing an absent upper again would erase the saved lower query.
++        Err(error) if matches!(error.raw_os_error(), Some(libc::ENOENT | libc::ENOTDIR)) => {
++            return Err(error);
++        }
++        _ => {}
++    }
++    // Unsupported kernels, filesystem fields or seccomp restrictions must not
++    // turn a previously accessible directory into an error. Fall back to the
++    // existing metadata operation, preserving its type and error semantics.
++    profile.add("parent_identity_metadata_fallbacks", 1);
++    parent_directory_identity_from_metadata(path)
+ }
+ 
+ /// Publish a complete temporary file without replacing an existing winner.
+@@ -628,3 +676,123 @@
+         assert_eq!(std::fs::read(outside).unwrap(), b"keep");
+     }
+ }
++
++#[cfg(all(test, target_os = "linux"))]
++mod parent_identity_tests {
++    use super::*;
++    use crate::profile::Profile;
++    use std::os::unix::fs::MetadataExt;
++
++    #[test]
++    fn parent_identity_matches_directory_and_rejects_links_and_files() {
++        let temp = tempfile::tempdir().unwrap();
++        let directory = temp.path().join("directory");
++        std::fs::create_dir(&directory).unwrap();
++        let profile = Profile::enabled("parent-identity-test");
++        let identity = parent_directory_identity(&directory, &profile)
++            .unwrap()
++            .unwrap();
++        let metadata = std::fs::symlink_metadata(&directory).unwrap();
++        assert_eq!(identity.device, metadata.dev());
++        assert_eq!(identity.inode, metadata.ino());
++        let link = temp.path().join("link");
++        std::os::unix::fs::symlink(&directory, &link).unwrap();
++        let file = temp.path().join("file");
++        std::fs::write(&file, b"content").unwrap();
++        for path in [&link, &file] {
++            assert!(parent_directory_identity(path, &profile).unwrap().is_none());
++        }
++        std::fs::rename(&directory, temp.path().join("old-directory")).unwrap();
++        std::fs::create_dir(&directory).unwrap();
++        let replaced = parent_directory_identity(&directory, &profile)
++            .unwrap()
++            .unwrap();
++        assert_ne!(identity.inode, replaced.inode);
++        assert_eq!(replaced.inode, directory.symlink_metadata().unwrap().ino());
++        let before = profile.report().unwrap();
++        for (path, errno) in [
++            (temp.path().join("missing"), libc::ENOENT),
++            (file.join("child"), libc::ENOTDIR),
++        ] {
++            assert_eq!(
++                parent_directory_identity(&path, &profile)
++                    .unwrap_err()
++                    .raw_os_error(),
++                Some(errno)
++            );
++        }
++        let after = profile.report().unwrap();
++        assert_eq!(
++            after
++                .measurements
++                .get("parent_identity_metadata_fallbacks")
++                .map(|m| m.units),
++            before
++                .measurements
++                .get("parent_identity_metadata_fallbacks")
++                .map(|m| m.units)
++        );
++    }
++
++    #[test]
++    fn restricted_statx_preserves_metadata_access_and_errors_without_mount_reuse() {
++        let temp = tempfile::tempdir().unwrap();
++        let profile = Profile::enabled("parent-identity-fallback-test");
++        let metadata = temp.path().symlink_metadata().unwrap();
++        for errno in [libc::ENOSYS, libc::EINVAL, libc::EPERM, libc::EACCES] {
++            let identity = parent_directory_identity_with(temp.path(), &profile, |_| {
++                Err(io::Error::from_raw_os_error(errno))
++            })
++            .unwrap()
++            .unwrap();
++            assert_eq!(identity.device, metadata.dev());
++            assert_eq!(identity.inode, metadata.ino());
++            assert_eq!(identity.mount_id, None);
++        }
++        assert_eq!(
++            parent_directory_identity_with(&temp.path().join("missing"), &profile, |_| {
++                Err(io::Error::from_raw_os_error(libc::ENOSYS))
++            })
++            .unwrap_err()
++            .raw_os_error(),
++            Some(libc::ENOENT)
++        );
++        let file = temp.path().join("file");
++        std::fs::write(&file, b"content").unwrap();
++        assert_eq!(
++            parent_directory_identity_with(&file.join("child"), &profile, |_| {
++                Err(io::Error::from_raw_os_error(libc::ENOSYS))
++            })
++            .unwrap_err()
++            .raw_os_error(),
++            Some(libc::ENOTDIR)
++        );
++    }
++
++    #[test]
++    fn missing_statx_fields_fall_back_and_missing_mount_id_never_guesses() {
++        use linux_raw_sys::general::{STATX_INO, STATX_TYPE, statx};
++        let temp = tempfile::tempdir().unwrap();
++        let profile = Profile::default();
++        // SAFETY: the kernel ABI output has a valid zero representation.
++        let empty: statx = unsafe { std::mem::zeroed() };
++        let identity = parent_directory_identity_with(temp.path(), &profile, |_| Ok(empty))
++            .unwrap()
++            .unwrap();
++        assert_eq!(
++            identity.inode,
++            temp.path().symlink_metadata().unwrap().ino()
++        );
++        assert_eq!(identity.mount_id, None);
++        let partial = statx {
++            stx_mask: STATX_TYPE | STATX_INO,
++            stx_mode: libc::S_IFDIR as u16,
++            stx_mnt_id: 42,
++            ..empty
++        };
++        let identity = parent_directory_identity_with(temp.path(), &profile, |_| Ok(partial))
++            .unwrap()
++            .unwrap();
++        assert_eq!(identity.mount_id, None);
++    }
++}
+--- a/crates/pvisor-overlay-core/src/profile.rs
++++ b/crates/pvisor-overlay-core/src/profile.rs
+@@ -124,6 +124,21 @@
+             started: self.0.as_ref().map(|_| Instant::now()),
+         }
+     }
++    /// Diagnostic timestamp for an asynchronous stage. Disabled profiling
++    /// performs no clock read.
++    pub fn timestamp(&self) -> Option<Instant> {
++        self.0.as_ref().map(|_| Instant::now())
++    }
++
++    /// Record a stage that started on another thread or at queue admission.
++    pub fn record_since(&self, label: &'static str, started: Option<Instant>) {
++        drop(Span {
++            profile: self,
++            label,
++            started,
++        });
++    }
++
+     pub fn add(&self, label: &'static str, units: u64) {
+         if let Some(state) = &self.0 {
+             let mut measurements = state.measurements.lock().unwrap_or_else(|p| p.into_inner());
+--- a/crates/pvisor-vm/src/devices/virtio/fs/overlay.rs
++++ b/crates/pvisor-vm/src/devices/virtio/fs/overlay.rs
+@@ -488,6 +488,20 @@
+ 
+     pub fn open_existing(cfg: Config, inode_alloc: Arc<InodeAllocator>) -> io::Result<Self> {
+         Self::build(cfg, inode_alloc, true)
++    }
++
++    fn read_operation(&self) -> io::Result<std::sync::RwLockReadGuard<'_, ()>> {
++        let _wait = self.profile.span("operation_read_lock_wait");
++        self.operation_lock
++            .read()
++            .map_err(|_| io::Error::from_raw_os_error(libc::EIO))
++    }
++
++    fn write_operation(&self) -> io::Result<std::sync::RwLockWriteGuard<'_, ()>> {
++        let _wait = self.profile.span("operation_write_lock_wait");
++        self.operation_lock
++            .write()
++            .map_err(|_| io::Error::from_raw_os_error(libc::EIO))
+     }
+ 
+     fn build(cfg: Config, inode_alloc: Arc<InodeAllocator>, restoring: bool) -> io::Result<Self> {
+@@ -915,7 +929,7 @@
+ 
+ impl FileSystem for OverlayFs {
+     fn capture_state(&self) -> io::Result<super::snapshot::FsSnapshot> {
+-        let _operation = self.operation_lock.write().unwrap();
++        let _operation = self.write_operation().unwrap();
+         self.clear_directory_cache();
+         self.profile.emit_checkpoint();
+         self.core.emit_profile_checkpoint();
+@@ -1027,11 +1041,11 @@
+         )))
+     }
+     fn restore_state(&self, state: &super::snapshot::FsSnapshot) -> io::Result<()> {
+-        use super::snapshot::{invalid, FsSnapshot};
++        use super::snapshot::{FsSnapshot, invalid};
+         let FsSnapshot::Overlay(state) = state else {
+             return Err(invalid("overlay filesystem type mismatch"));
+         };
+-        let _operation = self.operation_lock.write().unwrap();
++        let _operation = self.write_operation().unwrap();
+         if state.config != self.snapshot_config
+             || state.layers.len() != self.layers.len()
+             || state.next_handle == 0
+@@ -1111,10 +1125,7 @@
+     type Handle = u64;
+ 
+     fn init(&self, capable: FsOptions) -> io::Result<FsOptions> {
+-        let _operation = self
+-            .operation_lock
+-            .write()
+-            .map_err(|_| io::Error::from_raw_os_error(libc::EIO))?;
++        let _operation = self.write_operation()?;
+         let mut options = None;
+         for layer in &self.layers {
+             let layer_options = layer.init(capable)?;
+@@ -1132,7 +1143,7 @@
+     }
+ 
+     fn destroy(&self) {
+-        let _operation = self.operation_lock.write().unwrap();
++        let _operation = self.write_operation().unwrap();
+         self.clear_directory_cache();
+         self.handles.lock().unwrap().clear();
+         for layer in &self.layers {
+@@ -1142,10 +1153,7 @@
+ 
+     fn lookup(&self, ctx: Context, parent: u64, name: &CStr) -> io::Result<Entry> {
+         let _span = self.profile.span("lookup");
+-        let _operation = self
+-            .operation_lock
+-            .read()
+-            .map_err(|_| io::Error::from_raw_os_error(libc::EIO))?;
++        let _operation = self.read_operation()?;
+         let path = self.child(parent, name)?;
+         let backing = self
+             .core
+@@ -1162,10 +1170,7 @@
+         handle: Option<u64>,
+     ) -> io::Result<(bindings::stat64, Duration)> {
+         let _span = self.profile.span("getattr");
+-        let _operation = self
+-            .operation_lock
+-            .read()
+-            .map_err(|_| io::Error::from_raw_os_error(libc::EIO))?;
++        let _operation = self.read_operation()?;
+         // GETATTR may omit FH (e.g. stat through /proc/self/fd). An unlinked
+         // inode still belongs to its open file, even after its path is gone.
+         let handle = handle.or_else(|| {
+@@ -1200,10 +1205,7 @@
+         _handle: Option<u64>,
+         valid: SetattrValid,
+     ) -> io::Result<(bindings::stat64, Duration)> {
+-        let _operation = self
+-            .operation_lock
+-            .write()
+-            .map_err(|_| io::Error::from_raw_os_error(libc::EIO))?;
++        let _operation = self.write_operation()?;
+         let path = self.path(inode)?;
+         self.core
+             .prepare_metadata_change(&path)
+@@ -1217,10 +1219,7 @@
+     }
+ 
+     fn readlink(&self, ctx: Context, inode: u64) -> io::Result<Vec<u8>> {
+-        let _operation = self
+-            .operation_lock
+-            .write()
+-            .map_err(|_| io::Error::from_raw_os_error(libc::EIO))?;
++        let _operation = self.write_operation()?;
+         let path = self.path(inode)?;
+         let (layer, inner) = self.observed_inner(ctx, &path)?;
+         let result = self.layers[layer.0].readlink(ctx, inner);
+@@ -1236,10 +1235,7 @@
+         name: &CStr,
+         extensions: Extensions,
+     ) -> io::Result<Entry> {
+-        let _operation = self
+-            .operation_lock
+-            .write()
+-            .map_err(|_| io::Error::from_raw_os_error(libc::EIO))?;
++        let _operation = self.write_operation()?;
+         let path = self.child(parent, name)?;
+         let (upper_parent, upper_name) = self.upper_parent(ctx, &path)?;
+         self.layers[0].symlink(ctx, linkname, upper_parent, &upper_name, extensions)?;
+@@ -1260,10 +1256,7 @@
+         umask: u32,
+         extensions: Extensions,
+     ) -> io::Result<Entry> {
+-        let _operation = self
+-            .operation_lock
+-            .write()
+-            .map_err(|_| io::Error::from_raw_os_error(libc::EIO))?;
++        let _operation = self.write_operation()?;
+         let path = self.child(parent, name)?;
+         let (upper_parent, upper_name) = self.upper_parent(ctx, &path)?;
+         self.layers[0].mknod(
+@@ -1291,10 +1284,7 @@
+         umask: u32,
+         extensions: Extensions,
+     ) -> io::Result<Entry> {
+-        let _operation = self
+-            .operation_lock
+-            .write()
+-            .map_err(|_| io::Error::from_raw_os_error(libc::EIO))?;
++        let _operation = self.write_operation()?;
+         let path = self.child(parent, name)?;
+         let (upper_parent, upper_name) = self.upper_parent(ctx, &path)?;
+         self.layers[0]
+@@ -1308,10 +1298,7 @@
+     }
+ 
+     fn unlink(&self, _ctx: Context, parent: u64, name: &CStr) -> io::Result<()> {
+-        let _operation = self
+-            .operation_lock
+-            .write()
+-            .map_err(|_| io::Error::from_raw_os_error(libc::EIO))?;
++        let _operation = self.write_operation()?;
+         let path = self.child(parent, name)?;
+         self.core.remove(&path, false).map_err(linux_error)?;
+         self.remove_path(&path);
+@@ -1319,10 +1306,7 @@
+     }
+ 
+     fn rmdir(&self, _ctx: Context, parent: u64, name: &CStr) -> io::Result<()> {
+-        let _operation = self
+-            .operation_lock
+-            .write()
+-            .map_err(|_| io::Error::from_raw_os_error(libc::EIO))?;
++        let _operation = self.write_operation()?;
+         let path = self.child(parent, name)?;
+         self.core.remove(&path, true).map_err(linux_error)?;
+         self.remove_path(&path);
+@@ -1338,10 +1322,7 @@
+         newname: &CStr,
+         flags: u32,
+     ) -> io::Result<()> {
+-        let _operation = self
+-            .operation_lock
+-            .write()
+-            .map_err(|_| io::Error::from_raw_os_error(libc::EIO))?;
++        let _operation = self.write_operation()?;
+         let old = self.child(olddir, oldname)?;
+         let new = self.child(newdir, newname)?;
+         match flags {
+@@ -1363,10 +1344,7 @@
+     }
+ 
+     fn link(&self, ctx: Context, inode: u64, newparent: u64, newname: &CStr) -> io::Result<Entry> {
+-        let _operation = self
+-            .operation_lock
+-            .write()
+-            .map_err(|_| io::Error::from_raw_os_error(libc::EIO))?;
++        let _operation = self.write_operation()?;
+         let source = self.path(inode)?;
+         let destination = self.child(newparent, newname)?;
+         self.core
+@@ -1384,13 +1362,23 @@
+         flags: u32,
+     ) -> io::Result<(Option<u64>, OpenOptions)> {
+         let _span = self.profile.span("open");
+-        let _operation = self
+-            .operation_lock
+-            .write()
+-            .map_err(|_| io::Error::from_raw_os_error(libc::EIO))?;
+-        let path = self.path(inode)?;
+         let writing = flags as i32 & libc::O_ACCMODE != libc::O_RDONLY
+             || flags as i32 & (libc::O_APPEND | libc::O_TRUNC) != 0;
++        // Read-only opens observe a stable namespace and insert handles under
++        // their own mutex; they need not exclude independent backing reads.
++        // Privilege changes, copy-up and every writable open remain exclusive.
++        let readonly = !writing && !kill_priv;
++        let _read_operation = if readonly {
++            Some(self.read_operation()?)
++        } else {
++            None
++        };
++        let _write_operation = if readonly {
++            None
++        } else {
++            Some(self.write_operation()?)
++        };
++        let path = self.path(inode)?;
+         let (layer, inner) = if writing {
+             // Symlinks are resolved by guest lookups, never by passthrough.
+             if self
+@@ -1446,10 +1434,7 @@
+         umask: u32,
+         extensions: Extensions,
+     ) -> io::Result<(Entry, Option<u64>, OpenOptions)> {
+-        let _operation = self
+-            .operation_lock
+-            .write()
+-            .map_err(|_| io::Error::from_raw_os_error(libc::EIO))?;
++        let _operation = self.write_operation()?;
+         let path = self.child(parent, name)?;
+         let inode = self.allocate_inode(path.clone());
+         let (upper_parent, upper_name) = self.upper_parent(ctx, &path)?;
+@@ -1491,10 +1476,7 @@
+         flags: u32,
+     ) -> io::Result<usize> {
+         let _span = self.profile.span("read");
+-        let _operation = self
+-            .operation_lock
+-            .read()
+-            .map_err(|_| io::Error::from_raw_os_error(libc::EIO))?;
++        let _operation = self.read_operation()?;
+         self.with_file_handle(handle, |fs, h| {
+             fs.read(ctx, h.inode, h.handle, w, size, offset, lock_owner, flags)
+         })
+@@ -1514,10 +1496,7 @@
+         flags: u32,
+     ) -> io::Result<usize> {
+         let _span = self.profile.span("write");
+-        let _operation = self
+-            .operation_lock
+-            .write()
+-            .map_err(|_| io::Error::from_raw_os_error(libc::EIO))?;
++        let _operation = self.write_operation()?;
+         self.with_file_handle(handle, |fs, h| {
+             fs.write(
+                 ctx,
+@@ -1535,18 +1514,12 @@
+     }
+ 
+     fn flush(&self, ctx: Context, _inode: u64, handle: u64, lock_owner: u64) -> io::Result<()> {
+-        let _operation = self
+-            .operation_lock
+-            .write()
+-            .map_err(|_| io::Error::from_raw_os_error(libc::EIO))?;
++        let _operation = self.write_operation()?;
+         self.with_file_handle(handle, |fs, h| fs.flush(ctx, h.inode, h.handle, lock_owner))
+     }
+ 
+     fn fsync(&self, ctx: Context, _inode: u64, datasync: bool, handle: u64) -> io::Result<()> {
+-        let _operation = self
+-            .operation_lock
+-            .write()
+-            .map_err(|_| io::Error::from_raw_os_error(libc::EIO))?;
++        let _operation = self.write_operation()?;
+         self.with_file_handle(handle, |fs, h| fs.fsync(ctx, h.inode, datasync, h.handle))
+     }
+ 
+@@ -1560,10 +1533,7 @@
+         flock_release: bool,
+         lock_owner: Option<u64>,
+     ) -> io::Result<()> {
+-        let _operation = self
+-            .operation_lock
+-            .write()
+-            .map_err(|_| io::Error::from_raw_os_error(libc::EIO))?;
++        let _operation = self.write_operation()?;
+         let handle = self.handles.lock().unwrap().remove(&handle);
+         match handle {
+             Some(Handle::File(h)) => {
+@@ -1584,10 +1554,7 @@
+     }
+ 
+     fn statfs(&self, ctx: Context, inode: u64) -> io::Result<bindings::statvfs64> {
+-        let _operation = self
+-            .operation_lock
+-            .read()
+-            .map_err(|_| io::Error::from_raw_os_error(libc::EIO))?;
++        let _operation = self.read_operation()?;
+         let path = self.path(inode)?;
+         let layer = self.layer(&path)?;
+         let inner = self.inner_inode(layer, &path, ctx)?;
+@@ -1606,10 +1573,7 @@
+         value: &[u8],
+         flags: u32,
+     ) -> io::Result<()> {
+-        let _operation = self
+-            .operation_lock
+-            .write()
+-            .map_err(|_| io::Error::from_raw_os_error(libc::EIO))?;
++        let _operation = self.write_operation()?;
+         pvisor_overlay_core::validate_guest_xattr(OsStr::from_bytes(name.to_bytes()))
+             .map_err(linux_error)?;
+         let path = self.path(inode)?;
+@@ -1629,10 +1593,7 @@
+         name: &CStr,
+         size: u32,
+     ) -> io::Result<GetxattrReply> {
+-        let _operation = self
+-            .operation_lock
+-            .write()
+-            .map_err(|_| io::Error::from_raw_os_error(libc::EIO))?;
++        let _operation = self.write_operation()?;
+         let path = self.path(inode)?;
+         let (layer, inner) = self.observed_inner(ctx, &path)?;
+         let result = self.layers[layer.0].getxattr(ctx, inner, name, size);
+@@ -1641,10 +1602,7 @@
+     }
+ 
+     fn listxattr(&self, ctx: Context, inode: u64, size: u32) -> io::Result<ListxattrReply> {
+-        let _operation = self
+-            .operation_lock
+-            .write()
+-            .map_err(|_| io::Error::from_raw_os_error(libc::EIO))?;
++        let _operation = self.write_operation()?;
+         let path = self.path(inode)?;
+         let (layer, inner) = self.observed_inner(ctx, &path)?;
+         let result = self.layers[layer.0].listxattr(ctx, inner, size);
+@@ -1653,10 +1611,7 @@
+     }
+ 
+     fn removexattr(&self, ctx: Context, inode: u64, name: &CStr) -> io::Result<()> {
+-        let _operation = self
+-            .operation_lock
+-            .write()
+-            .map_err(|_| io::Error::from_raw_os_error(libc::EIO))?;
++        let _operation = self.write_operation()?;
+         pvisor_overlay_core::validate_guest_xattr(OsStr::from_bytes(name.to_bytes()))
+             .map_err(linux_error)?;
+         let path = self.path(inode)?;
+@@ -1676,10 +1631,7 @@
+         _flags: u32,
+     ) -> io::Result<(Option<u64>, OpenOptions)> {
+         let _span = self.profile.span("opendir");
+-        let _operation = self
+-            .operation_lock
+-            .read()
+-            .map_err(|_| io::Error::from_raw_os_error(libc::EIO))?;
++        let _operation = self.read_operation()?;
+         let path = self.path(inode)?;
+         let mut items = Vec::new();
+         for entry in self.core.list_entries(&path).map_err(linux_error)? {
+@@ -1707,10 +1659,7 @@
+     where
+         F: FnMut(DirEntry) -> io::Result<usize>,
+     {
+-        let _operation = self
+-            .operation_lock
+-            .read()
+-            .map_err(|_| io::Error::from_raw_os_error(libc::EIO))?;
++        let _operation = self.read_operation()?;
+         let items = match self.handles.lock().unwrap().get(&handle) {
+             Some(Handle::Directory(items)) => items.clone(),
+             _ => return Err(io::Error::from_raw_os_error(libc::EBADF)),
+@@ -1742,10 +1691,7 @@
+         F: FnMut(DirEntry, Entry) -> io::Result<usize>,
+     {
+         let _span = self.profile.span("readdirplus");
+-        let _operation = self
+-            .operation_lock
+-            .read()
+-            .map_err(|_| io::Error::from_raw_os_error(libc::EIO))?;
++        let _operation = self.read_operation()?;
+         let items = match self.handles.lock().unwrap().get(&handle) {
+             Some(Handle::Directory(items)) => items.clone(),
+             _ => return Err(io::Error::from_raw_os_error(libc::EBADF)),
+@@ -1770,10 +1716,7 @@
+     }
+ 
+     fn releasedir(&self, _ctx: Context, _inode: u64, _flags: u32, handle: u64) -> io::Result<()> {
+-        let _operation = self
+-            .operation_lock
+-            .write()
+-            .map_err(|_| io::Error::from_raw_os_error(libc::EIO))?;
++        let _operation = self.write_operation()?;
+         match self.handles.lock().unwrap().remove(&handle) {
+             Some(Handle::Directory(_)) => Ok(()),
+             _ => Err(io::Error::from_raw_os_error(libc::EBADF)),
+@@ -1781,10 +1724,7 @@
+     }
+ 
+     fn access(&self, ctx: Context, inode: u64, mask: u32) -> io::Result<()> {
+-        let _operation = self
+-            .operation_lock
+-            .read()
+-            .map_err(|_| io::Error::from_raw_os_error(libc::EIO))?;
++        let _operation = self.read_operation()?;
+         let path = self.path(inode)?;
+         let layer = self.layer(&path)?;
+         let inner = self.inner_inode(layer, &path, ctx)?;
+@@ -1803,10 +1743,7 @@
+         offset: u64,
+         whence: u32,
+     ) -> io::Result<u64> {
+-        let _operation = self
+-            .operation_lock
+-            .write()
+-            .map_err(|_| io::Error::from_raw_os_error(libc::EIO))?;
++        let _operation = self.write_operation()?;
+         self.with_file_handle(handle, |fs, h| {
+             fs.lseek(ctx, h.inode, h.handle, offset, whence)
+         })
+@@ -2017,6 +1954,100 @@
+     }
+ 
+     #[test]
++    fn readonly_open_overlaps_backing_read_but_writable_open_waits() {
++        use std::sync::mpsc::channel;
++        use std::time::Duration;
++        let temp = tempfile::tempdir().unwrap();
++        std::fs::create_dir(temp.path().join("lower")).unwrap();
++        std::fs::write(temp.path().join("lower/a"), b"first").unwrap();
++        std::fs::write(temp.path().join("lower/b"), b"second").unwrap();
++        let fs = parent_cache_fixture(temp.path());
++        fs.init(FsOptions::empty()).unwrap();
++        let ctx = Context {
++            uid: 0,
++            gid: 0,
++            pid: 1,
++        };
++        let a = fs.lookup(ctx, fuse::ROOT_ID, c"a").unwrap().inode;
++        let b = fs.lookup(ctx, fuse::ROOT_ID, c"b").unwrap().inode;
++        let ah = fs
++            .open(ctx, a, false, libc::O_RDONLY as u32)
++            .unwrap()
++            .0
++            .unwrap();
++        let (started, entered) = channel();
++        let (resume, waiting) = channel();
++        let (opened, ready) = channel();
++        let (write_started, write_entered) = channel();
++        let (write_opened, write_ready) = channel();
++        let fs = &fs;
++        std::thread::scope(|scope| {
++            let first = scope.spawn(move || {
++                let mut writer = ReadWriter {
++                    gate: Some((started, waiting)),
++                    bytes: Vec::new(),
++                };
++                fs.read(ctx, a, ah, &mut writer, 16, 0, None, 0).unwrap();
++                assert_eq!(writer.bytes, b"first");
++            });
++            if let Err(error) = entered.recv_timeout(Duration::from_secs(2)) {
++                let _ = resume.send(());
++                panic!("backing READ did not reach its blocking point: {error}");
++            }
++            scope.spawn(move || {
++                opened
++                    .send(fs.open(ctx, b, false, libc::O_RDONLY as u32))
++                    .unwrap();
++            });
++            let readonly = ready.recv_timeout(Duration::from_secs(2));
++            if readonly.is_err() {
++                resume.send(()).unwrap();
++                panic!("independent read-only OPEN serialized behind backing READ");
++            }
++            let bh = match readonly.unwrap() {
++                Ok((Some(handle), _)) => handle,
++                result => {
++                    resume.send(()).unwrap();
++                    panic!("read-only OPEN failed: {result:?}");
++                }
++            };
++            scope.spawn(move || {
++                write_started.send(()).unwrap();
++                write_opened
++                    .send(fs.open(ctx, b, false, libc::O_RDWR as u32))
++                    .unwrap();
++            });
++            if let Err(error) = write_entered.recv_timeout(Duration::from_secs(2)) {
++                resume.send(()).unwrap();
++                panic!("writable OPEN did not start: {error}");
++            }
++            let premature = write_ready.recv_timeout(Duration::from_millis(20));
++            resume.send(()).unwrap();
++            assert!(
++                premature.is_err(),
++                "writable OPEN bypassed the mutation barrier"
++            );
++            let wh = write_ready
++                .recv_timeout(Duration::from_secs(2))
++                .unwrap()
++                .unwrap()
++                .0
++                .unwrap();
++            first.join().unwrap();
++            fs.release(ctx, b, libc::O_RDONLY as u32, bh, false, false, None)
++                .unwrap();
++            fs.release(ctx, b, libc::O_RDWR as u32, wh, false, false, None)
++                .unwrap();
++        });
++        fs.release(ctx, a, libc::O_RDONLY as u32, ah, false, false, None)
++            .unwrap();
++        assert_eq!(
++            std::fs::read(temp.path().join("lower/b")).unwrap(),
++            b"second"
++        );
++    }
++
++    #[test]
+     fn new_stages_use_compact_journals_and_reopening_preserves_both_formats() {
+         let temp = tempfile::tempdir().unwrap();
+         let target = temp.path().join("target");
+@@ -2332,9 +2363,10 @@
+         };
+         let entry = fs.lookup(ctx, fuse::ROOT_ID, c"dir").unwrap();
+         for _ in 0..16 {
+-            assert!(fs
+-                .open(ctx, entry.inode, false, libc::O_WRONLY as u32)
+-                .is_err());
++            assert!(
++                fs.open(ctx, entry.inode, false, libc::O_WRONLY as u32)
++                    .is_err()
++            );
+         }
+         assert!(fs.handles.lock().unwrap().is_empty());
+         let super::super::snapshot::FsSnapshot::Overlay(snapshot) = fs.capture_state().unwrap()
+@@ -2346,10 +2378,12 @@
+                 panic!("expected a native layer");
+             };
+             assert!(native.handles.is_empty());
+-            assert!(native
+-                .inodes
+-                .iter()
+-                .all(|inode| inode.inode == fuse::ROOT_ID));
++            assert!(
++                native
++                    .inodes
++                    .iter()
++                    .all(|inode| inode.inode == fuse::ROOT_ID)
++            );
+         }
+     }
+ 
+@@ -2422,21 +2456,24 @@
+             gid: 0,
+             pid: 1,
+         };
+-        assert!(fs
+-            .lookup(ctx, fuse::ROOT_ID, &CString::new("private.key").unwrap())
+-            .is_err());
++        assert!(
++            fs.lookup(ctx, fuse::ROOT_ID, &CString::new("private.key").unwrap())
++                .is_err()
++        );
+         let alias = fs
+             .lookup(ctx, fuse::ROOT_ID, &CString::new("alias").unwrap())
+             .unwrap();
+-        assert!(fs
+-            .open(ctx, alias.inode, false, libc::O_RDONLY as u32)
+-            .is_err());
++        assert!(
++            fs.open(ctx, alias.inode, false, libc::O_RDONLY as u32)
++                .is_err()
++        );
+         let env = fs
+             .lookup(ctx, fuse::ROOT_ID, &CString::new(".env").unwrap())
+             .unwrap();
+-        assert!(fs
+-            .open(ctx, env.inode, false, libc::O_RDONLY as u32)
+-            .is_ok());
++        assert!(
++            fs.open(ctx, env.inode, false, libc::O_RDONLY as u32)
++                .is_ok()
++        );
+     }
+ 
+     #[test]
+--- a/crates/pvisor-vm/src/devices/virtio/fs/worker.rs
++++ b/crates/pvisor-vm/src/devices/virtio/fs/worker.rs
+@@ -8,9 +8,10 @@
+ use std::sync::atomic::AtomicI32;
+ use std::sync::{Arc, RwLock};
+ use std::thread;
++use std::time::Instant;
+ 
+ use crate::utils::epoll::{ControlOperation, Epoll, EpollEvent, EventSet};
+-use crate::utils::eventfd::{EventFd, EFD_NONBLOCK};
++use crate::utils::eventfd::{EFD_NONBLOCK, EventFd};
+ use vm_memory::GuestMemoryMmap;
+ 
+ use super::super::Queue;
+@@ -159,9 +160,8 @@
+     }
+ }
+ 
+-/// Do not pay a thread handoff for tiny requests or for overlay mutations which
+-/// must serialize anyway. Batch expensive independent reads; the inline owner
+-/// can still perform short metadata requests while those reads are in flight.
++/// Keep short metadata operations inline to avoid a thread handoff. Directory
++/// enumeration and large reads can use the pool when multiple requests exist.
+ fn parallel_candidate(header: &InHeader, body: &Reader) -> bool {
+     match header.opcode {
+         x if x == Opcode::Read as u32 => body
+@@ -183,6 +183,9 @@
+     index: u16,
+     header: InHeader,
+     buffers: OwnedDescriptorChain,
++    // Submit timestamp, replaced by completion-ready timestamp after service.
++    // None when diagnostics are disabled; normal requests read no clock.
++    profile_timestamp: Option<Instant>,
+ }
+ 
+ struct Completion {
+@@ -201,12 +204,14 @@
+     threads: Vec<thread::JoinHandle<()>>,
+     in_flight: usize,
+     limit: usize,
++    profile: pvisor_overlay_core::profile::Profile,
+ }
+ 
+ impl RequestPool {
+     fn new(
+         handle: impl Fn(&Request) -> usize + Send + Sync + 'static,
+         workers: usize,
++        profile: pvisor_overlay_core::profile::Profile,
+     ) -> io::Result<Self> {
+         let handle = Arc::new(handle);
+         let limit = workers * 2;
+@@ -222,18 +227,22 @@
+             threads: Vec::new(),
+             in_flight: 0,
+             limit,
++            profile,
+         };
+         for id in 0..workers {
+             let receive = receive.clone();
+             let completed = completed.clone();
+             let wake = pool.wake.clone();
+             let handle = handle.clone();
++            let profile = pool.profile.clone();
+             pool.threads
+                 .push(
+                     thread::Builder::new()
+                         .name(format!("fs io {id}"))
+                         .spawn(move || {
+-                            for request in receive {
++                            for mut request in receive {
++                                profile.record_since("pool_queue_wait", request.profile_timestamp);
++                                let service = profile.span("pool_service");
+                                 // A lost worker would make freeze wait forever. Fail the
+                                 // isolated VMM rather than publish a successful snapshot.
+                                 let len =
+@@ -244,6 +253,8 @@
+                                         error!("filesystem request worker panicked");
+                                         std::process::abort();
+                                     });
++                                drop(service);
++                                request.profile_timestamp = profile.timestamp();
+                                 if completed.send(Completion { request, len }).is_err() {
+                                     break;
+                                 }
+@@ -258,7 +269,8 @@
+         Ok(pool)
+     }
+ 
+-    fn submit(&mut self, request: Request) {
++    fn submit(&mut self, mut request: Request) {
++        request.profile_timestamp = self.profile.timestamp();
+         assert!(self.in_flight < self.limit);
+         // Capacity covers every in-flight request, so the owner never blocks
+         // behind I/O and can always service the dedicated high-priority queue.
+@@ -498,6 +510,8 @@
+     }
+ 
+     fn complete(&mut self, completion: Completion) {
++        self.dispatch_profile
++            .record_since("pool_completion_wait", completion.request.profile_timestamp);
+         let queue = &mut self.queues[completion.request.queue];
+         if let Err(error) = queue.add_used(
+             &self.execution.mem,
+@@ -560,6 +574,7 @@
+                                     index: head_index,
+                                     header: InHeader::default(),
+                                     buffers,
++                                    profile_timestamp: None,
+                                 },
+                                 len: 0,
+                             });
+@@ -576,6 +591,7 @@
+                         index: head_index,
+                         header,
+                         buffers,
++                        profile_timestamp: None,
+                     };
+                     if parallel {
+                         if pool.is_none() {
+@@ -583,6 +599,7 @@
+                             match RequestPool::new(
+                                 move |request| execution.handle(request),
+                                 workers,
++                                self.dispatch_profile.clone(),
+                             ) {
+                                 Ok(new_pool) => {
+                                     let fd = new_pool.wake.as_raw_fd();
+@@ -630,9 +647,75 @@
+ #[cfg(test)]
+ mod tests {
+     use super::*;
+-    use crate::devices::virtio::descriptor_utils::{create_descriptor_chain, DescriptorType};
++    use crate::devices::virtio::descriptor_utils::{DescriptorType, create_descriptor_chain};
+     use std::time::Duration;
+     use vm_memory::GuestAddress;
++
++    #[test]
++    fn pool_eligibility_keeps_short_metadata_and_all_opens_inline() {
++        use super::super::fuse::OpenIn;
++        use vm_memory::Bytes;
++        let mem = GuestMemoryMmap::from_ranges(&[(GuestAddress(0), 0x10000)]).unwrap();
++        let chain = create_descriptor_chain(
++            &mem,
++            GuestAddress(0),
++            GuestAddress(0x100),
++            vec![
++                (
++                    DescriptorType::Readable,
++                    std::mem::size_of::<OpenIn>() as u32,
++                ),
++                (DescriptorType::Writable, 256),
++            ],
++            0,
++        )
++        .unwrap();
++        let buffers = OwnedDescriptorChain::new(chain).unwrap();
++        let (reader, _) = buffers.reader_writer(&mem).unwrap();
++        let header = InHeader {
++            opcode: Opcode::Open as u32,
++            ..Default::default()
++        };
++        for (flags, open_flags, expected) in [
++            (libc::O_RDONLY, 0, false),
++            (libc::O_WRONLY, 0, false),
++            (libc::O_RDWR, 0, false),
++            (libc::O_RDONLY | libc::O_TRUNC, 0, false),
++            (libc::O_RDONLY | libc::O_APPEND, 0, false),
++            (libc::O_RDONLY, super::super::fuse::OPEN_KILL_SUIDGID, false),
++        ] {
++            mem.write_obj(
++                OpenIn {
++                    flags: flags as u32,
++                    open_flags,
++                },
++                GuestAddress(0x100),
++            )
++            .unwrap();
++            assert_eq!(
++                parallel_candidate(&header, &reader),
++                expected,
++                "flags={flags} open_flags={open_flags}"
++            );
++        }
++        for opcode in [Opcode::Lookup, Opcode::Getattr] {
++            assert!(!parallel_candidate(
++                &InHeader {
++                    opcode: opcode as u32,
++                    ..Default::default()
++                },
++                &reader
++            ));
++        }
++        // A short body must not be classified as a large read.
++        assert!(!parallel_candidate(
++            &InHeader {
++                opcode: Opcode::Read as u32,
++                ..Default::default()
++            },
++            &reader
++        ));
++    }
+ 
+     #[test]
+     fn guest_header_changes_do_not_replace_an_admitted_request() {
+@@ -664,6 +747,7 @@
+             index: 0,
+             header,
+             buffers: OwnedDescriptorChain::new(chain).unwrap(),
++            profile_timestamp: None,
+         };
+         mem.write_obj(
+             InHeader {
+@@ -711,6 +795,7 @@
+                 index,
+                 header: InHeader::default(),
+                 buffers: OwnedDescriptorChain::new(chain).unwrap(),
++                profile_timestamp: None,
+             }
+         };
+         let (started, waiting) = crossbeam_channel::bounded(1);
+@@ -724,6 +809,7 @@
+                 8
+             },
+             2,
++            pvisor_overlay_core::profile::Profile::default(),
+         )
+         .unwrap();
+         assert_eq!(pool.limit, 4);

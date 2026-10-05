@@ -273,7 +273,7 @@ fn cancelled_history_never_consumes_ready_window_and_counts_replay_every_transit
 fn restart_delivery_renews_only_known_terminal_attempts_and_never_redelivers_unknown_work() {
     let temp = tempfile::tempdir().unwrap();
     let path = temp.path().join("journal");
-    let mut s = Scheduler::open_durable(&path, config()).unwrap();
+    let mut s = Scheduler::open(&path, config()).unwrap();
     s.register(worker("node", 2), 0).unwrap();
     s.submit(spec("known"), 0).unwrap();
     s.submit(spec("unknown"), 0).unwrap();
@@ -314,7 +314,7 @@ fn restart_delivery_renews_only_known_terminal_attempts_and_never_redelivers_unk
     assert_eq!(s.task("queued").unwrap().phase, TaskPhase::Queued);
     assert_eq!(s.workers()[0].reserved, resources(2));
     drop(s);
-    let mut s = Scheduler::open_durable(&path, config()).unwrap();
+    let mut s = Scheduler::open(&path, config()).unwrap();
     let mut invalid = request.clone();
     invalid.completed.push(known.clone());
     assert!(s.recover(invalid, 950).is_err());
@@ -323,17 +323,23 @@ fn restart_delivery_renews_only_known_terminal_attempts_and_never_redelivers_unk
     assert!(s.recover(invalid, 950).is_err());
     let next = s.recover(request.clone(), 1100).unwrap();
     assert_eq!(next.renewed, vec![known.clone()]);
-    assert_eq!(s.task("unknown").unwrap().phase, TaskPhase::Lost);
+    assert_eq!(s.task("unknown").unwrap().phase, TaskPhase::Leased);
+    assert!(s.task("unknown").unwrap().reconciliation_pending);
     assert_eq!(
         s.task("unknown").unwrap().lease.as_ref().unwrap().key,
         unknown
     );
     assert_eq!(s.task("queued").unwrap().phase, TaskPhase::Queued);
-    assert_eq!(s.workers()[0].reserved, resources(1));
+    assert_eq!(s.workers()[0].reserved, resources(2));
     let mut fresh = worker("node", 2);
     fresh.incarnation = "epoch-2".into();
     assert!(s.register(fresh.clone(), 1101).is_err());
     s.complete(finish(known), 1102).unwrap();
+    assert!(s.register(fresh.clone(), 1103).is_err());
+    assert_eq!(
+        s.resolve_lost(unknown, 1103).unwrap().phase,
+        TaskPhase::Lost
+    );
     s.register(fresh, 1103).unwrap();
     assert!(s.recover(request, 1104).is_err());
     assert_eq!(s.task("queued").unwrap().phase, TaskPhase::Queued);
@@ -2685,11 +2691,31 @@ fn terminal_outbox_recovery_can_confirm_old_keys_without_reexecuting_them() {
     );
 }
 
+// Exercise historical frames without retaining a legacy writer in production.
+fn append_legacy_renew(path: &std::path::Path, key: &LeaseKey, at: u64, expires: u64) {
+    use std::io::Write;
+    let payload = serde_json::to_vec(&serde_json::json!({
+        "version": CLUSTER_VERSION,
+        "changes": [{"kind": "renew", "worker_id": key.worker_id, "at": at,
+            "expires": expires, "keys": [key], "acknowledged": [key.task_id]}]
+    }))
+    .unwrap();
+    let mut file = std::fs::OpenOptions::new().append(true).open(path).unwrap();
+    writeln!(
+        file,
+        "{} {}",
+        blake3::hash(&payload).to_hex(),
+        std::str::from_utf8(&payload).unwrap()
+    )
+    .unwrap();
+    file.sync_all().unwrap();
+}
+
 #[test]
 fn old_durable_history_migrates_without_trusting_its_last_renewal() {
     let temp = tempfile::tempdir().unwrap();
     let path = temp.path().join("legacy");
-    let mut s = Scheduler::open_durable(&path, config()).unwrap();
+    let mut s = Scheduler::open(&path, config()).unwrap();
     s.register(worker("w", 1), 0).unwrap();
     s.submit(spec("legacy"), 0).unwrap();
     let key = s
@@ -2699,8 +2725,8 @@ fn old_durable_history_migrates_without_trusting_its_last_renewal() {
         .remove(0)
         .lease
         .key;
-    s.poll(poll("w", 0, vec![key.clone()]), 900).unwrap();
     drop(s);
+    append_legacy_renew(&path, &key, 900, 1900);
     let before = std::fs::read(&path).unwrap();
     let mut s = Scheduler::open(&path, config()).unwrap();
     assert_eq!(s.task("legacy").unwrap().phase, TaskPhase::Running);

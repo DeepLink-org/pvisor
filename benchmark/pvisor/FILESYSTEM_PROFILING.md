@@ -24,11 +24,15 @@ of timing comparisons.
 `measurements[label].calls` and `total_ns` describe timed operations;
 `units` describes a separately named work counter, such as `resolve_components`,
 `fingerprint_bytes`, `journal_publications`, or `copy_up_bytes`.
-`layer_parent_stats` and `layer_leaf_stats` count metadata calls inside the
-layer-path helper only. They exclude whiteout/opaque probes, other Core paths,
+`layer_parent_stats` counts parent-observation attempts inside the layer-path
+helper; fused queries can provide type and identity together. `layer_leaf_stats`
+counts leaf metadata calls in that helper. They exclude whiteout/opaque probes, other Core paths,
 native-adapter syscalls, and xattr work: they are not a syscall census.
-`mount_identity_attempts` counts Linux parent mount-context queries when a
-backing-lookup caller asks for identities.
+`mount_identity_attempts` counts successful directory observations for which a
+backing-lookup caller requested Linux mount context. The fused-parent experiment
+also counts `parent_identity_statx_calls` and
+`parent_identity_metadata_fallbacks`: one statx can supply both the type and
+identity, while unsupported/restricted queries fall back without mount reuse.
 
 Journal spans separate lock acquisition (`journal_lock_wait`), destination
 lookup, serialization, temporary-file creation, writing, atomic publication,
@@ -47,8 +51,12 @@ VMM `_exit` or forced termination may omit the final record: a periodic record
 is evidence of work up to that point, not proof of a complete run. A short
 run may have no periodic record. `whiteout_probe` and `opaque_probe` isolate Core namespace-marker checks; opaque includes the marker-file lookup and opaque xattr probes, not only xattr CPU time.
 
-These spans measure server service time;
-they do not independently measure guest scheduling or queue waiting time.
+Core and protocol spans measure inclusive service time. Pool diagnostics add
+`pool_queue_wait` (submission to worker), `pool_service` (worker execution), and
+`pool_completion_wait` (completed worker to used-ring publication). They do not
+measure time before the host accepts a guest request. Adapter
+`operation_read_lock_wait` and `operation_write_lock_wait` measure acquisition,
+not lock hold time. Disabled diagnostics read no timestamps.
 
 Protocol labels distinguish metadata, xattr, rename/unlink, flush, and directory
 release requests as well as reads and writes. In particular, do not attribute
@@ -56,6 +64,77 @@ release requests as well as reads and writes. In particular, do not attribute
 `GETXATTR`, and `FLUSH` separately. The private rootfs and reviewed workspace
 have independent Core/adapter/protocol instances. Inspect both views; a
 workspace-only profile can miss most of a package manager's filesystem work.
+
+## Two-stage optimization campaign (2026-10-05)
+
+The campaign keeps the original seven-workload fixture and the existing
+`filesystem_ab.py` correctness gates. The frozen reference environment is
+`target/reference-env-final-20261004`; its write workload is **256 x 64 KiB**,
+not the current product-v1 60 KiB fixture. Host cache is warm, each job gets a
+fresh workspace/upper, all seven tools run sequentially per environment, and
+VMs use 2 vCPU / 16 GiB on physical host cores `0,1`. This permits workload
+comparison with the published P0 report, while historical batch differences
+remain descriptive rather than causal.
+
+Stage A is screening: use prebuilt release adapter microbenchmarks (2 warmups,
+8 samples, one separate diagnostic), then real FUSE/VM A/B with **1 warmup and
+3 measurements per cell**. Preflight remains mandatory. Each comparison pins
+one mechanism or an explicitly labeled combination; combination results cannot
+attribute costs to one constituent. All five cells are shuffled each round.
+Screening can reject a costly idea, but cannot establish a tail or
+whole-task performance claim. Profile runs are separate and use no acceptance
+timings. Do not compile or run tests concurrently with a timing batch.
+
+The `bc08f457` source archive now defaults staged jobs to `rootless_process`,
+whereas the published P0 artifact used `host_process`. Declare both expected
+isolation types explicitly with `--baseline-staged-isolation` and
+`--candidate-staged-isolation`. These flags only validate observed behavior;
+they do not relax or reconfigure isolation. A declared rootless stage also
+requires the read/write/non-bypassable kernel-boundary flags. The first P1
+preflight stopped on this difference with zero measured samples; retain it.
+Same-source A/B uses rootless for both sides. Historical artifact comparisons
+keep the differing boundaries labeled, especially for host completion time.
+
+Stage B is acceptance: retain the winning implementation, verify correctness,
+and run real native/FUSE/VM A/B with **3 warmups and 30 measurements per cell**.
+Report P50/P95/P99, absolute overhead versus same-batch native, each of the seven
+tools, and complete launch-to-exit time. Retain every successful sample and
+failure. Compare the candidate to the published pinned P0 candidate, and also
+to a same-source baseline to separate incremental benefit from other changes.
+Do not pool earlier percentiles. Repeat noisy or ambiguous whole-task results
+in a second new directory rather than relabeling a screening batch as accepted.
+
+| Hypothesis | Stage A test | Semantic gate / current state |
+|---|---|---|
+| One parent `statx` returns type/inode/device/mount context | Shallow/deep adapter + real A/B; count fused queries/fallbacks | Recheck physical ancestors, reject parent symlinks, preserve errors; unsupported fields/syscalls disable directory reuse |
+| READDIRPLUS without the AUTO heuristic reduces follow-up attributes | Adapter directory case + real metadata/git/rg | READDIRPLUS already negotiated; keep inode lookup/refcount semantics |
+| Parallel metadata dispatch avoids an inline queue bottleneck | Real A/B plus multiclient load; worker-count controls | Snapshot/destroy must drain accepted work, handles stay alive, mutation ordering preserved |
+| Longer attribute/entry/negative/directory caching saves repeated requests | Repeated-pass diagnostic on immutable trees | A live lower permits external changes; no global TTL increase or absence cache without an ownership/invalidations contract |
+| Writeback coalesces small writes | Real write/npm and repeated partial-write diagnostic | First preimage durable before backing mutation; dirty guest pages drained before terminal/export/snapshot; O_APPEND/truncate/read-after-write retained |
+| Guest-local tmpfs/kernel filesystem gives a transport-cost control | Same-guest local-versus-virtiofs diagnostic | Diagnostic only; cannot substitute an unrecorded local write path for the accepted pVisor staging contract |
+
+The baseline scheduler sends directory enumeration and reads >=64 KiB to the
+pool; metadata and small reads run inline. One screening variant also
+permitted LOOKUP, GETATTR and read-only OPEN when multiple requests were outstanding;
+its patch and measurements are retained separately. Overlay operations retain a
+shared/exclusive operation lock, with exclusive mutation sections. Increasing
+worker count alone may add thread handoff without exposing useful parallelism.
+`Server::init` already includes ASYNC_READ and PARALLEL_DIROPS in its default
+supported capabilities; inspecting only the adapter's `init` misses these.
+Measure actual opcode counts, queue wait, service time and lock wait separately;
+inclusive Core spans are not a complete scheduling profile.
+
+Every trial must pin binary/firmware/harness hashes and source/build provenance.
+Archive the source outside a parent Git worktree before applying a patch (or
+use explicit file copies and verify the exact diff); `git -C` in a nested
+archive can silently skip paths. Write changed source files with fresh mtimes:
+preserving an older source timestamp can let Cargo reuse a stale artifact even
+when bytes changed. Wait for each build process to exit before copying its binary. Keep rejected experimental source patches and results in
+the campaign evidence, while production defaults contain only validated changes.
+
+`report.source_commit` identifies the worktree launching the harness, not the
+binary's source. Frozen build source, patch and per-file hashes live under
+`build_provenance`; preserve both records when the live worktree advances.
 
 ## Adapter benchmark
 
@@ -91,6 +170,45 @@ the existing paired `macos_migration.py` harness or Linux reference workloads.
 Keep executable hashes, firmware, filesystem/ownership mode, host/guest cache
 state, raw samples, failures, and correct output. A whole-VM completion time
 must not be compared directly with this adapter time.
+
+## Kernel and concurrency diagnostics
+
+`filesystem_kernel_probe.py` complements the unchanged seven-tool acceptance
+fixture. It checks repeated traversal immediately and after 1.2-second TTL
+expiry, disjoint file partitions with one/four Python threads, and 64 files
+written using eight unbuffered 1 KiB writes each. It reproduces the exact tree
+sizes on verified `/dev/shm` tmpfs inside the same environment. Tmpfs excludes
+virtio-fs/Core/journal work and storage latency; it is an architectural control,
+not a replacement workspace or a measurement of transport alone. Setup is
+outside timers; each output checks all file counts/sizes. Staged partial writes
+must be present in upper and absent from lower. All Run Bundle isolation gates
+remain required. These probes are diagnostics, not extra acceptance samples.
+
+```sh
+python3 benchmark/pvisor/filesystem_kernel_probe.py \
+  --assets target/reference-env-final-20261004 \
+  --firmware target/p0-filesystem-artifacts-20261005/firmware \
+  --binary baseline=/absolute/path/to/pvisor-before \
+  --binary candidate=/absolute/path/to/pvisor-after \
+  --output target/kernel-probe-new
+```
+
+Pass `--profile` only in a separate output directory. Keep the first probe
+failure, any corrected harness and both hashes; do not discard failed controls.
+
+The initial fused-query screen fell back after ordinary ENOENT/ENOTDIR too.
+Missing upper parents then consumed an extra metadata query, cancelling saved
+lower work. The final implementation returns those namespace errors directly,
+while unsupported syscall/fields and permission restrictions still use metadata
+with no mount reuse. The adapter diagnostic verifies zero fallbacks on its
+normal fixture; tests cover unsupported queries, symlinks and directory changes.
+
+READDIRPLUS without AUTO reduced traversal in screening but substantially
+increased Git time; it is archived rather than enabled globally. Broad metadata
+pool dispatch likewise remains an archived experiment. Production retains the
+original dispatch classification and AUTO negotiation, alongside the shared
+read-only OPEN lock and diagnostic queue stages. No new writeback, DAX,
+passthrough or unbounded TTL policy is enabled by these changes.
 
 ## Preserved contracts
 

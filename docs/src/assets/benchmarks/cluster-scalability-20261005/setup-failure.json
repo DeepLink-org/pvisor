@@ -1,0 +1,156 @@
+{
+  "schema": "pvisor-cluster-scalability/v1",
+  "passed": false,
+  "started_at_unix_ms": 1791180900704,
+  "command": [
+    "python3",
+    "benchmark/pvisor/cluster_scalability.py",
+    "--state",
+    "/tmp/pvisor-cluster-scaling-20261005-a",
+    "--output",
+    "/tmp/pvisor-cluster-scaling-20261005-a.json",
+    "--firmware-dir",
+    "/home/reiase/workspace/pvisor/target/libkrunfw/5.5.0-x86_64-unknown-linux-musl",
+    "--sizes",
+    "1",
+    "2",
+    "4",
+    "--repetitions",
+    "5"
+  ],
+  "environment": {
+    "kernel": "Linux-7.2.8-200.fc44.x86_64-x86_64-with-glibc2.43",
+    "cpu": "AMD Ryzen 7 9700X 8-Core Processor",
+    "meminfo_before": "MemTotal:       31980420 kB\nMemFree:         1337836 kB\nMemAvailable:    3130012 kB\nBuffers:             372 kB\nCached:          4499888 kB\nSwapCached:         2360 kB\nActive:          9261192 kB\nInactive:       15018748 kB\nActive(anon):    9093080 kB\nInactive(anon): 13447612 kB\nActive(file):     168112 kB\nInactive(file):  1571136 kB\nUnevictable:        6176 kB\nMlocked:            6176 kB\nSwapTotal:       8388604 kB\nSwapFree:            200 kB\nZswap:                 0 kB\nZswapped:              0 kB\nDirty:               728 kB\nWriteback:            80 kB\nAnonPages:      19783632 kB\nMapped:           503268 kB\nShmem:           2768428 kB\nKReclaimable:     516620 kB\nSlab:            1120012 kB\nSReclaimable:     516620 kB\nSUnreclaim:       603392 kB\nKernelStack:       35852 kB\nPageTables:       329292 kB\nSecPageTables:      4404 kB\nNFS_Unstable:          0 kB\nBounce:                0 kB\nWritebackTmp:          0 kB\nCommitLimit:    24378812 kB\nCommitted_AS:   58880372 kB\nVmallocTotal:   34359738367 kB\nVmallocUsed:      204484 kB\nVmallocChunk:          0 kB\nPercpu:            25856 kB\nHardwareCorrupted:     0 kB\nAnonHugePages:         0 kB\nShmemHugePages:        0 kB\nShmemPmdMapped:        0 kB\nFileHugePages:         0 kB\nFilePmdMapped:         0 kB\nCmaTotal:              0 kB\nCmaFree:               0 kB\nUnaccepted:            0 kB\nBalloon:               0 kB\nGPUActive:       1363152 kB\nGPUReclaim:            0 kB\nHugePages_Total:       0\nHugePages_Free:        0\nHugePages_Rsvd:        0\nHugePages_Surp:        0\nHugepagesize:       2048 kB\nHugetlb:               0 kB\nDirectMap4k:    14406392 kB\nDirectMap2M:    18270208 kB\nDirectMap1G:     1048576 kB\n"
+  },
+  "provenance": {
+    "revision": "87402078a327cbdb011a0675f6e9d659e10c9979",
+    "dirty": " M benchmark/pvisor/FILESYSTEM_PROFILING.md\n M benchmark/pvisor/filesystem_ab.py\n M benchmark/pvisor/reference_baselines.py\n M benchmark/pvisor/test_filesystem_ab.py\n M crates/pvisor-cluster/README.md\n M crates/pvisor-cluster/src/main.rs\n M crates/pvisor-cluster/src/scheduler.rs\n M crates/pvisor-cluster/src/scheduler/inference.rs\n M crates/pvisor-cluster/src/server.rs\n M crates/pvisor-cluster/src/server/dispatcher.rs\n M crates/pvisor-cluster/tests/inference_wait.rs\n M crates/pvisor-cluster/tests/scheduler.rs\n M crates/pvisor-gateway/README.md\n M crates/pvisor-overlay-core/src/core.rs\n M crates/pvisor-overlay-core/src/profile.rs\n M crates/pvisor-overlay-core/src/sys.rs\n M crates/pvisor-vm/README.md\n M crates/pvisor-vm/src/devices/virtio/fs/overlay.rs\n M crates/pvisor-vm/src/devices/virtio/fs/worker.rs\n M crates/pvisor/tests/cluster_gateway_vm.rs\n M docs/README.md\n M docs/src/en/benchmarks/filesystem.md\n M docs/src/en/benchmarks/index.md\n M docs/src/en/design/index.md\n M docs/src/en/design/research/cluster-execution.md\n M docs/src/en/guides/index.md\n M docs/src/zh/benchmarks/filesystem.md\n M docs/src/zh/benchmarks/index.md\n M docs/src/zh/design/index.md\n M docs/src/zh/design/research/cluster-execution.md\n M docs/src/zh/guides/index.md\n M docs/translations.json\n M docs/zensical.toml\n M justfile\n M scripts/build-docs.py\n?? benchmark/pvisor/cluster_scalability.py\n?? benchmark/pvisor/filesystem_kernel_probe.py\n?? crates/pvisor-cluster/measurements/agent-inference-density-20261005-overlapped.json\n?? crates/pvisor-cluster/measurements/agent-inference-density-20261005.json\n?? crates/pvisor/tests/cluster_inference_benchmark.rs\n?? crates/pvisor/tests/common/agent_fixture.rs\n?? crates/pvisor/tests/common/controller_process.rs\n?? docs/src/assets/benchmarks/filesystem-kernel-20261005/\n?? docs/src/assets/cluster-quickstart/\n?? docs/src/en/design/cluster/\n?? docs/src/en/guides/cluster/\n?? docs/src/zh/design/cluster/\n?? docs/src/zh/guides/cluster/\n?? scripts/cluster-quickstart.py\n",
+    "binary_sha256": {
+      "pvisor-worker": "c995dd2021af98de82a23068a5527f2ec5933ed1d5fc6ffc4f1fbaec2b2d0e5d",
+      "pvisor-cluster": "edddeb632b78407975120992caf9ccf92e638620d01a162af661adebe170b8bd"
+    },
+    "runner_sha256": "ffc9c366d883939e557a1508a0e3d4edf73d8411d8eb8415bcf57cb95ed72609",
+    "quickstart_sha256": "b9d34925ec74d06cc17209a8736157f3866ea76f836e45dd9bc7803367c26f1e",
+    "firmware_sha256": "6df51f65d7f99fc22215e69a4236c770b1588ceb6777eca014f92b366517d237"
+  },
+  "conditions": {
+    "sizes": [
+      1,
+      2,
+      4
+    ],
+    "repetitions": 5,
+    "warmup_batches_per_size": 1,
+    "max_simultaneous_guests": 4,
+    "guest_ram_bytes": 134217728,
+    "guest_vcpus": 1,
+    "worker_per_guest": true,
+    "worker_memory_max_bytes": 536870912,
+    "worker_cpu_cores": 0.5,
+    "controller_memory_max_bytes": 268435456,
+    "controller_cpu_cores": 0.25,
+    "swap_max_bytes": 0,
+    "task_cpu_time_ms": 2000,
+    "task_timeout_ms": 60000,
+    "worker_poll_ms": 200,
+    "ready_poll_ms": 20,
+    "plateau_samples": 10,
+    "plateau_sample_interval_ms": 50,
+    "guest_hold_seconds": 6,
+    "startup_definition": "task submit start through guest-created ready marker; includes CLI, HTTP, intent persistence, scheduling and VM start; excludes service/rootfs setup",
+    "memory_definition": "sum of disjoint Controller/Worker cgroup memory.current at simultaneous guest-ready plateau, includes charged file cache; anon/file reported separately; native process PSS also sampled",
+    "cache": "prepared minimal rootfs; one warmup excluded per size; host caches not flushed",
+    "scope": "single shared Linux host; real native KVM shell probes; no model/Gateway traffic or multi-host claim",
+    "launch_rate_note": "N/time-to-all-ready; not useful-work throughput; six-second hold excluded"
+  },
+  "groups": [
+    {
+      "sandboxes": 1,
+      "cgroups": {
+        "controller": {
+          "memory_max": 268435456,
+          "cpu_max": [
+            25000,
+            100000
+          ],
+          "swap_max": 0
+        },
+        "worker-a": {
+          "memory_max": 536870912,
+          "cpu_max": [
+            50000,
+            100000
+          ],
+          "swap_max": 0
+        }
+      }
+    }
+  ],
+  "batches": [
+    {
+      "sandboxes": 1,
+      "repetition": 0,
+      "warmup": true,
+      "passed": false,
+      "baseline": {
+        "controller": {
+          "current_bytes": 5468160,
+          "anon_bytes": 2310144,
+          "file_bytes": 1634304,
+          "cpu": {
+            "usage_usec": 12225,
+            "user_usec": 6655,
+            "system_usec": 5569,
+            "nice_usec": 0,
+            "core_sched.force_idle_usec": 0,
+            "nr_periods": 3,
+            "nr_throttled": 0,
+            "throttled_usec": 0,
+            "nr_bursts": 0,
+            "burst_usec": 0
+          },
+          "events": {
+            "low": 0,
+            "high": 0,
+            "max": 0,
+            "oom": 0,
+            "oom_kill": 0,
+            "oom_group_kill": 0,
+            "sock_throttled": 0
+          }
+        },
+        "worker-a": {
+          "current_bytes": 6643712,
+          "anon_bytes": 4075520,
+          "file_bytes": 1359872,
+          "cpu": {
+            "usage_usec": 32503,
+            "user_usec": 22375,
+            "system_usec": 10128,
+            "nice_usec": 0,
+            "core_sched.force_idle_usec": 0,
+            "nr_periods": 3,
+            "nr_throttled": 0,
+            "throttled_usec": 0,
+            "nr_bursts": 0,
+            "burst_usec": 0
+          },
+          "events": {
+            "low": 0,
+            "high": 0,
+            "max": 0,
+            "oom": 0,
+            "oom_kill": 0,
+            "oom_group_kill": 0,
+            "sock_throttled": 0
+          }
+        }
+      },
+      "tasks": [],
+      "plateau": []
+    }
+  ],
+  "error": "RuntimeError: /tmp/pvisor-cluster-scaling-20261005-a/n1/bin/pvisor-cluster ['submit', '/tmp/pvisor-cluster-scaling-20261005-a/n1/inputs/scale-1-0-a.json']: Error: invalid artifact retention requirement",
+  "finished_at_unix_ms": 1791180901192
+}

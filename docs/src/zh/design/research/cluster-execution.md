@@ -1,36 +1,33 @@
 # 集群执行与集中证据
 
-把 pVisor 接入集群时，最直接的分工是：调度系统决定任务到哪台机器，pVisor 在 worker 上执行任务并留下可评审的结果。现有 CLI 可以作为本地执行入口；跨节点调度、统一身份与集中存储属于需要另外实现的集成层。
+pVisor 已实现一个 Controller shard 与多个独立 Worker 的集群执行路径，包括能力匹配、租约、DAG、原生控制、检查点/分叉和集中证据。当前机制与故障合同以[Cluster 架构设计](../cluster/index.md)为准；这里保留研究场景和扩展边界。
 
-## 一个任务如何经过 worker {#worker-flow}
+## 一个任务如何经过 Worker {#worker-flow}
 
-1. 调度器分配任务 ID、版本固定的工作区输入、命令、资源额度与策略。
-2. worker 准备独立 checkout 和项目外的 Stage，检查该机器的执行器能力。
-3. worker 启动 pVisor，保存退出码、Run ID 和原生 Agent 轨迹。
-4. 任务结束后收集 Bundle、Stage、日志与可选 Gateway Journal。
-5. 控制层按任务 ID 展示结果，评审者决定接受、重试或丢弃。
+调用方提交原生 RunSpec 和固定输入要求，Controller 接受任务并在 Worker poll 时分配精确租约。Worker 最终准入后准备独立环境、执行并留下证据，再通过持久化 outbox 上传和交付。完整顺序见[任务路径](../cluster/index.md#task-flow)。
 
-失败也需要进入证据索引。准备失败可能没有 Bundle，这时保存调度记录、退出状态与 stderr。重试分配新的 attempt ID，保留旧 attempt，避免把失败记录覆盖掉。
+Controller 的运行视图通过 Worker 报告收敛，重启后要求新的归属确认。未知执行不会自动换节点重跑；首次创建任务、低频控制意图与终态回执仍持久化。失联与替代执行的边界见[状态与恢复](../cluster/state-and-recovery.md)。
 
-## 现有接口与集成层的边界 {#boundary}
+## 实现与集成层的边界 {#boundary}
 
-| 层 | 职责 |
-| --- | --- |
-| pVisor worker | 单次执行、文件暂存、实际控制观察、任务记录 |
-| Kubernetes、Ray 或自建调度器 | 队列、节点选择、资源预留、重试策略 |
-| 证据存储 | 产物上传、索引、保留期限与访问权限 |
-| 评审与发布服务 | 验证基线、选择改动、控制合入与部署 |
+| 层 | 当前机制 | 待集成/验证 |
+| --- | --- | --- |
+| pVisor Worker | 原生执行、环境层、Gateway、控制观察、终态 outbox | 恶意节点信任边界、本地证据 GC、长期节点运维 |
+| Cluster Controller | 队列、节点匹配、资源预留、DAG、对账、fencing | 多 shard/HA、每租户身份、在线历史压缩 |
+| 证据与检查点仓库 | 本地 CAS、验证 manifest、引用保护、可选 FS/S3 快照发布与导入 | 复制存储、每租户空间、跨主机运行时兼容与恢复 |
+| Kubernetes、Ray 或训练框架 | 可作为任务与生命周期请求的上层调用方 | GPU/rollout/scaffold 协调与端到端恢复策略 |
+| 评审与发布服务 | 可读取已保留证据 | 基线验证、选择改动、业务核对、合入和部署 |
 
-Run Bundle 中的本地路径应作为 worker 端引用处理。上传一份 JSON 不会自动上传所有文件；下载 Stage 也不代表能在不同 checkout 上直接 apply。集中服务需要打包产物并明确路径与基线的对应关系。
+Run Bundle 本地路径是 Worker 引用；上传 JSON 不代表完整文件上传。检查点可下载也不证明任意节点可恢复；环境、快照和输入版本需要完整的兼容合同。
 
-## 接入时先验证什么 {#validation}
+## 下一阶段实验 {#validation}
 
-先在两台 worker 上执行相同的小任务：成功一次、超时一次、策略拒绝一次。检查每个 attempt 都能定位到输入版本、运行结果与产物，并验证上传中断和重复提交不会覆盖另一份结果。
+先保留现有协议、进程执行和硬件 gate 的验证范围，再在独立主机部署固定工作负载，测量有效执行量、启动/恢复长尾、内存密度和存储成本。方法从[并发密度](../../benchmarks/density.md)扩展，不能从单机空任务外推。
 
-然后测试节点掉线、磁盘满、凭据撤销和任务取消。缓存服务权限按 worker 与用户边界配置；任务额度与实际控制写入证据，队列资源预留单独记录。
+实验注入节点永久失联、Controller 突然终止、长网络分区、磁盘满、上传中断、凭据撤销及并行模型等待。每个结果需能定位输入、Task/Run/Attempt、原生观察与产物；核对未知副作用和显式 lost 处理，不能把控制面 fencing 当作外部效果回滚。
 
 ## 研究问题与发布条件 {#research}
 
-仍需验证跨节点身份与权限、产物可移植性、幂等重试、集中取消、垃圾回收，以及异构机器上的能力准入。吞吐、长尾延迟和失败恢复应在固定工作负载下测量，不能由单机空任务外推。
+进一步缩减 Controller 状态需要明确上层 desired state、Worker 有界 terminal inventory 与保留 manifest 的重建权威，解决未分配意图和已 ACK 历史后再讨论完全可重建 Controller。多 shard 和容灾需要新的 ownership 协议，不能用本地文件锁替代。
 
-从本机并行流程开始可参考[并行 Agent](../../guides/parallel-agents.md)；规模指标见[并发密度](../../benchmarks/density.md)。正式集群接口需要实现、版本契约与故障实验一起发布。
+生产发布还需每节点/租户身份、代表性负载的长期故障与性能实验、兼容矩阵和运维闭环。分项机制与扩展约束见[Cluster 运维与验证](../cluster/operations.md)。本机用法见[并行 Agent](../../guides/parallel-agents.md)，训练集成方向见[RL 执行基座](rl-execution-substrate.md)。

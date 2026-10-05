@@ -35,6 +35,7 @@ impl std::fmt::Display for ArtifactsRetired {
 }
 impl std::error::Error for ArtifactsRetired {}
 
+#[derive(Debug)]
 struct ApiError(anyhow::Error);
 impl IntoResponse for ApiError {
     fn into_response(self) -> Response {
@@ -247,11 +248,7 @@ async fn task_graph(
     State(app): State<App>,
     Path(id): Path<String>,
 ) -> Result<Json<TaskGraphRecord>, ApiError> {
-    run(app, move |s| {
-        s.reap(pvisor_core::unix_now_ms())?;
-        s.graph(&id)
-    })
-    .await
+    run(app, move |s| s.graph(&id)).await
 }
 async fn cancel_graph(
     State(app): State<App>,
@@ -266,11 +263,7 @@ async fn task(
     State(app): State<App>,
     Path(id): Path<String>,
 ) -> Result<Json<TaskRecord>, ApiError> {
-    run(app, move |s| {
-        s.reap(pvisor_core::unix_now_ms())?;
-        s.task(&id)
-    })
-    .await
+    run(app, move |s| s.task(&id)).await
 }
 async fn cancel(
     State(app): State<App>,
@@ -342,11 +335,7 @@ async fn live_fork(
     State(app): State<App>,
     Path((id, request_id)): Path<(String, String)>,
 ) -> Result<Json<LiveForkRecord>, ApiError> {
-    run(app, move |s| {
-        s.reap(pvisor_core::unix_now_ms())?;
-        s.live_fork(&id, &request_id)
-    })
-    .await
+    run(app, move |s| s.live_fork(&id, &request_id)).await
 }
 async fn control_ack(
     State(app): State<App>,
@@ -655,20 +644,12 @@ async fn decline(
     .await
 }
 async fn workers(State(app): State<App>) -> Result<Json<Vec<WorkerRecord>>, ApiError> {
-    run(app, |s| {
-        s.reap(pvisor_core::unix_now_ms())?;
-        Ok(s.workers())
-    })
-    .await
+    run(app, |s| Ok(s.workers())).await
 }
 async fn counts(
     State(app): State<App>,
 ) -> Result<Json<std::collections::BTreeMap<String, usize>>, ApiError> {
-    run(app, |s| {
-        s.reap(pvisor_core::unix_now_ms())?;
-        Ok(s.counts())
-    })
-    .await
+    run(app, |s| Ok(s.counts())).await
 }
 #[derive(Deserialize)]
 struct Drain {
@@ -698,6 +679,119 @@ pub fn open(
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[tokio::test]
+    async fn status_reads_remain_available_at_full_quota_without_reaping_or_writing() {
+        use pvisor_core::{ExecutorKind, IsolationKind, RunInvocation, RunSpec};
+        let temp = tempfile::tempdir().unwrap();
+        let path = temp.path().join("journal");
+        let mut scheduler = Scheduler::open(&path, SchedulerConfig::default()).unwrap();
+        let resources = Resources {
+            slots: 1,
+            memory_bytes: 64 << 20,
+            cpu_millis: 250,
+        };
+        let execution = ExecutionClass {
+            executor: ExecutorKind::Process,
+            isolation: IsolationKind::HostProcess,
+        };
+        let registration: WorkerRegistration = serde_json::from_value(serde_json::json!({
+            "version": CLUSTER_VERSION, "id": "w", "incarnation": "i",
+            "capacity": resources, "execution": [execution], "labels": {}, "cache_keys": []
+        }))
+        .unwrap();
+        scheduler.register(registration, 0).unwrap();
+        let mut run = RunSpec::process("expired", "status", "/bin/true");
+        let RunInvocation::Process(process) = &mut run.invocation;
+        process.inherit_env = false;
+        let spec = TaskSpec {
+            version: CLUSTER_VERSION,
+            id: "expired".into(),
+            tenant: "t".into(),
+            run,
+            execution,
+            resources,
+            labels: Default::default(),
+            cache_keys: vec![],
+            environment: None,
+            gateway: None,
+            cpu_qos: None,
+            restore: None,
+            retain_artifacts: None,
+            retain_bundle: false,
+        };
+        scheduler
+            .submit_graph(
+                TaskGraphSpec {
+                    version: CLUSTER_VERSION,
+                    id: "graph".into(),
+                    tenant: "t".into(),
+                    nodes: vec![TaskGraphNode {
+                        task: spec,
+                        depends_on: vec![],
+                    }],
+                },
+                0,
+            )
+            .unwrap();
+        scheduler
+            .poll(
+                PollRequest {
+                    worker_id: "w".into(),
+                    incarnation: "i".into(),
+                    active: vec![],
+                    available: resources,
+                    max_assignments: 1,
+                    admission: None,
+                },
+                1,
+            )
+            .unwrap();
+        let before = std::fs::read(&path).unwrap();
+        let syncs = scheduler.journal_syncs();
+        scheduler.exhaust_journal_quota();
+        // Exercise the actual handlers without a periodic reaper racing this
+        // deliberately stale lease. Previously GET would attempt a failed WAL
+        // expiry commit and make all monitoring return 507.
+        let scheduler = Arc::new(Mutex::new(scheduler));
+        let app = App {
+            scheduler: scheduler.clone(),
+            dispatcher: Arc::new(dispatcher::Dispatcher::new(scheduler.clone()).unwrap()),
+        };
+        assert_eq!(
+            task(State(app.clone()), Path("expired".into()))
+                .await
+                .unwrap()
+                .0
+                .phase,
+            TaskPhase::Leased
+        );
+        assert_eq!(
+            task_graph(State(app.clone()), Path("graph".into()))
+                .await
+                .unwrap()
+                .0
+                .spec
+                .id,
+            "graph"
+        );
+        assert_eq!(
+            workers(State(app.clone())).await.unwrap().0[0].reserved,
+            resources
+        );
+        assert_eq!(counts(State(app.clone())).await.unwrap().0["leased"], 1);
+        assert!(
+            live_fork(State(app), Path(("expired".into(), "absent".into())))
+                .await
+                .unwrap_err()
+                .0
+                .to_string()
+                .contains("unknown live execution fork")
+        );
+        assert_eq!(std::fs::read(&path).unwrap(), before);
+        assert_eq!(scheduler.lock().unwrap().journal_syncs(), syncs);
+    }
+
     #[tokio::test]
     async fn dropping_router_releases_writer_and_reaper_journal_ownership() {
         let temp = tempfile::tempdir().unwrap();

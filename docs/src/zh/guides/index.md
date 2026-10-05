@@ -15,6 +15,7 @@
 | 重新执行受支持的原生轨迹 | [回放](replay.md) |
 | 在 CI 中运行 | [在 CI 中运行 Agent](ci.md) |
 | 单机多 Agent 并行 | [并行 Agent](parallel-agents.md) |
+| 启动 Cluster、验证任务与恢复 | [Cluster 上手](cluster/index.md) |
 | RL rollout | [RL rollout](rl-rollouts.md) |
 | 排查异常行为 | [故障排查](troubleshooting.md) |
 

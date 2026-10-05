@@ -1,0 +1,55 @@
+{
+  "code_source_hashes_match_frozen_candidate": true,
+  "commands": [
+    {
+      "command": "JUST_TEMPDIR=/tmp just test pvisor-overlay-core",
+      "result": "97 passed, 5 skipped",
+      "log": "pvisor-p1-core-tests-final.log"
+    },
+    {
+      "command": "JUST_TEMPDIR=/tmp just test pvisor-overlayfs",
+      "result": "12 passed",
+      "log": "pvisor-p1-overlayfs-tests.log"
+    },
+    {
+      "command": "JUST_TEMPDIR=/tmp just test pvisor-vm",
+      "result": "294 passed, 2 skipped",
+      "log": "pvisor-p1-vm-full-tests-final.log"
+    },
+    {
+      "command": "cargo clippy --locked -p pvisor-overlay-core -p pvisor-overlayfs -p pvisor-vm --all-targets -- -D warnings",
+      "result": "passed",
+      "log": "pvisor-p1-clippy-final.log"
+    },
+    {
+      "command": "just test-py benchmark/pvisor/test_filesystem_ab.py benchmark/pvisor/test_reference_baselines.py",
+      "result": "25 passed",
+      "log": "pvisor-p1-python-tests-final.log"
+    },
+    {
+      "command": "ruff check (four modified benchmark Python files)",
+      "result": "passed",
+      "log": "pvisor-p1-ruff-final.log"
+    },
+    {
+      "command": "cached Python scripts/build-docs.py",
+      "result": "both strict builds passed with reviewed translations and published evidence links",
+      "log": "pvisor-p1-docs-build-published.log"
+    },
+    {
+      "command": "python3 scripts/check-docs.py --require-recorded",
+      "result": "131 pairs, 411 HTML pages passed",
+      "log": "pvisor-p1-docs-check-published.log"
+    },
+    {
+      "command": "just test-py tests/test_docs.py",
+      "result": "7 passed",
+      "log": "pvisor-p1-docs-tests.log"
+    }
+  ],
+  "measured_full_jobs": 300,
+  "measured_full_tool_results": 2100,
+  "semspec": "No real reviewed ledgers/approved snapshots edited; no approve/revoke run",
+  "archive_exclusions": "Timing binaries, firmware and the full source tar are not embedded. SHA256, frozen commit, exact changed source and patches permit rebuild. Fixture setup is outside timings; prepared inputs retained in target/reference-env-final-20261004.",
+  "docs_check_retries": "Two checks observed incomplete generated pages while output was being updated; retained separately. The sequential check after the completed build passes 131 pairs and 411 HTML pages."
+}

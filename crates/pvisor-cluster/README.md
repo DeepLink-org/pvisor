@@ -1,5 +1,14 @@
 # pVisor distributed control plane
 
+The complete design is maintained in the project documentation:
+[中文](../../docs/src/zh/design/cluster/index.md) ·
+[English](../../docs/src/en/design/cluster/index.md). It covers state authority,
+reconciliation, scheduling, native lifecycle, storage, APIs and operations.
+
+For a verified walkthrough with two single-slot Workers and hard CPU/memory
+limits, start with the [Cluster quickstart](../../docs/src/zh/guides/cluster/index.md)
+([English](../../docs/src/en/guides/cluster/index.md)).
+
 This crate owns durable task submission, worker placement/admission and the
 cluster lease protocol. `pvisor-worker` embeds the existing pVisor execution
 kernel; a cluster task carries the same `RunSpec` and returns the same
@@ -37,7 +46,7 @@ Primary sources inspected on 2026-10-04:
 | Reliable control | fsync-before-ack WAL, fencing, cancellation, expiry, drain, idempotent submit/completion; unstarted rejection/requeue; durable terminal-result outbox and restart export/delivery | Recovery of live execution, disk-full faults, multi-host failure tests |
 | Scalable scheduling | Bounded ready window with cancelled entries removed, indexed phase counts/expiration, batched leases, reservations, tenant quotas; bounded single-writer HTTP queue and fsync-before-response WAL group commit; streaming replay, compact graph topology and boxed task storage; single-controller million-record history and dense-ready validation | Sharding, replicated authority, multi-host admission/load measurements and HTTP/task-throughput benchmarks |
 | Independently versioned base/workspace/toolkit layers | Durable immutable template registry; lease-bound revision handles; VM worker composes native lazy-cache layers with private upper and shared live read mounts; real Linux VM composition/upper isolation gate; independent Worker states fetch pinned read-only S3 layers without publisher storage | Multi-host distribution deployment and measured startup/density benefit; container composition |
-| AgentENV pause/resume | Durable lease-bound desired/observed pause/offload/resume; native controls verified on real Linux VM; CPU reserved before resume; opt-in Gateway async wait and response-delivery barrier with controlled HTTP ordering/cancellation tests | Connect durable bounded inference-wait state and Worker admission; real VM inference-wait/restart gate and multi-host VM lifecycle/fault experiments |
+| AgentENV pause/resume | Durable lease-bound desired/observed pause/offload/resume; bounded inference waits connected to the Attempt Gateway and Worker; real Linux VM gates verify CPU readmission, manual pause ownership and controller SIGKILL/restart with a lost durable Ready response | Parallel-call fault gates; networked RAM reclamation, longer outages and multi-host VM lifecycle experiments |
 | Incremental execution checkpoints, fork and recovery | Full CPU/RAM/device/owned-overlay capture with native forest ownership transfer and direct RAM sealing; Linux compressed incremental RAM recapture of restored VMs with independently retained inherited frames; coordinated save-and-stop of running, paused and offloaded Linux VMs without guest resume; durable live capture/fork handoff and atomic branch creation from sealed checkpoints; same-Worker continuation into new Run/Attempt with lineage, private writable files, shared verified read-only lower copies and private COW RAM; real Linux cold restore after Worker restart; immutable FS/S3 full-checkpoint transport and verified same-host recovery after deletion of the original snapshot object; opt-in Worker publication with durable terminal retry and controller-bound receipts, compatible cross-Worker import after source deletion and controller restart; opt-in native v5 capture retains immutable lower inodes across initial/restored-VM recapture with supervisor-owned seals and slot-bound references; different VMs share lower inodes on their first capture without temporary data copies on pool hits; private file payloads are sealed directly from authenticated frozen roots without an intermediate data-tree copy and retain independent 64 KiB compressed frame references, reusing unchanged content across captures without recompression on verified hits, with native encoding-work counters | Capture-side private filesystem deltas and cross-host runtime compatibility/recovery tests |
 | Dense memory use | VM size from task budget; shared read-only snapshot RAM with private COW writes; bundled-kernel restores skip duplicate firmware loading; sparse RAM capture/publication; opt-in VM/Worker RSS/PSS, system and cgroup memory observations; dedicated user-systemd Worker scope; native hibernation releases all reservations; durable post-teardown artifact delivery reuses execution slots with bounded memory/CPU reservations | Shared-cache/hugetlb coverage, controlled reclaim/memory overcommit and workload density benchmarks |
 | CPU QoS/controlled overcommit | CPU reservations; optional Linux PSI, affinity and visible cgroup v2 CPU/memory admission; opt-in bounded CPU reservation overcommit under a finite local quota; fresh pressure gating of admission/resume; whole-Worker kernel CPU quota; opt-in native BE SCHED_IDLE and shared LS core scheduling group; class-preserving capture/fork/restore; opt-in native per-Attempt live rates and durable final CPU counters; controlled SMT/finite-quota native search experiment | Billing/rollout aggregation, whole-node CPU cost and representative agent workload latency/density benchmarks |
@@ -174,10 +183,15 @@ retries the command. A changed generation/incarnation is rejected. Use the same
 key for an idempotent retry. A replacement Worker incarnation must wait until
 its predecessor's owned executions have been reconciled or resolved.
 
-Existing journal files are readable without conversion. For the previous
-persist-every-renewal behavior use `serve --durable-leases` or
-`Scheduler::open_durable`. Drain unfinished executions before switching back to
-that contract: the default path does not persist current lease deadlines. The
+Existing journal files are readable without conversion; historical renewal
+frames are accepted as hints and require fresh Worker reconciliation. Current
+lease deadlines are reconstructed in memory and are no longer persisted. The
+old `--durable-leases` switch and `Scheduler::open_durable` API have been removed.
+Task, graph, live-fork, Worker and counts queries read the latest derived view
+without triggering expiry commits; the periodic reaper and Worker poll maintain
+expiry. Thus monitoring remains readable at a definite metadata quota limit,
+with normal asynchronous expiry visibility. Terminal outbox recovery also defers
+quota-refused expiry of other executions while renewing its exact known keys. The
 Worker's monotonic lease watchdog remains active; Controller outages beyond its
 local deadline stop execution. This implementation supports a single Controller
 and retains low-frequency metadata persistence, not an entirely stateless task
@@ -308,7 +322,8 @@ Bundle lineage and teardown are checked. This establishes protocol and native
 execution correctness, not model quality or production-scale performance.
 
 Gateway/network-enabled native execution does not yet have the offline-only
-checkpoint continuation guarantee. Automatic inference-wait pause/offload,
+checkpoint continuation guarantee. Cooperative inference waits release CPU;
+automatic inference-wait offload with demonstrated RAM reclamation,
 persistent scaffold/rollout state, external artifact distribution and real-model
 workload density measurements remain separate acceptance work.
 
@@ -1710,8 +1725,24 @@ counters, admits a third CPU-consuming VM using released budgets, keeps a
 manual pause intact and verifies successful tool results after readmission.
 It uses deterministic model replies and measures ordering and admission,
 not useful-work throughput or Agent density. RAM and slots remain reserved.
-Live-VM controller-restart/parallel-call fault experiments, networked
-hibernation, persistent rollout state and multi-host density remain open gates.
+The companion `cooperative_model_wait_survives_controller_restart_with_same_native_execution`
+gate stops the HTTP server, releases its journal authority and reopens the WAL
+while two actual guests await response delivery and a third holds the CPU budget.
+It checks fresh Worker reconciliation, unchanged lease identities and native
+PIDs, preserved manual pause and successful model/tool results after readmission.
+The `cooperative_model_wait_survives_controller_sigkill_with_same_native_execution`
+gate runs the real `pvisor-cluster` CLI as a separate process. Its test proxy
+receives a successfully committed Ready receipt, holds it away from the Worker,
+then discards it as HTTP 503 after the controller receives SIGKILL and restarts.
+Replay preserves pending resume and manual pause ownership; the live Worker
+retries, confirms its original leases and native PIDs, and finishes the actual
+model/tool work after CPU readmission. Artifact gating stays outside the killed
+controller, and the test verifies retained journals, private workspaces and
+binary output through the restarted process. The recipe builds the CLI first;
+each fixture copies both controller and Worker binaries before launch.
+These outages stay within the existing three-second Worker watchdog. Longer
+outages, parallel-call fault experiments, networked hibernation, persistent
+rollout state and multi-host density remain open gates.
 Upgrade the controller before enabling this profile; older controllers do not
 understand the new endpoint or WAL variant.
 
@@ -2157,6 +2188,50 @@ LS latency under contention, throughput and completed-task density still need
 controlled workload benchmarks. Core scheduling can add overhead and does not
 guarantee a performance improvement.
 
+## Measure cooperative Agent execution under a finite resource budget
+
+`just bench-cluster-inference` runs paired single-host native Agent experiments.
+Both arms use the same immutable Python/scaffold layers and checked tool work:
+each guest requests a model reply, writes `multiply(a, b)`, passes three actual
+Python assertions, sends the tool result back and verifies that an unauthorized
+model is denied. Both send the cooperative header; only the Worker profile's
+`release_cpu_on_idle` setting changes between arms. Each arm starts a fresh
+Worker in its own user-systemd service with an enforced 200% CPU quota, 4 GiB
+memory limit and zero swap, plus identical admission capacity of eight slots,
+2 GiB guest RAM and 2,000 CPU millis. Every guest has 256 MiB RAM and one vCPU.
+
+The model fixture supplies deterministic replies with two seconds of latency
+per call. One real tool task without that artificial delay warms each arm's
+mounts and interpreter; its time and CPU cost are excluded from the measured
+eight-task burst. Three blocks alternate ordinary/cooperative arm order.
+Neither a faster run nor a density ratio is a passing threshold: every measured
+task must succeed, report the expected tool output and have a VM executor plan
+and actual native identity evidence. Native PIDs are checked against their
+start ticks, Worker parent and cgroup before counting live processes. Admission
+must stay within its envelope, and cgroup OOM counters must remain unchanged.
+
+```sh
+PVISOR_TEST_LIBKRUNFW_DIR=/absolute/path/to/firmware \
+PVISOR_INFERENCE_BENCH_OUT=/tmp/pvisor-agent-inference.json \
+JUST_TEMPDIR=/tmp just bench-cluster-inference
+```
+
+`PVISOR_INFERENCE_BENCH_BLOCKS` accepts 1..9; the default is three. The JSON
+report retains every arm and task completion, CPU counter deltas, cgroup memory
+and live-process samples, native identities, paired ratios, environment digests,
+Worker/firmware/scaffold hashes and compiled experiment-input hashes. It remains
+`complete: false` if a run fails. Latencies include queueing and 100 ms coordinator
+polling; VM identity telemetry has a one-second interval. Tail quantiles of an
+eight-task arm describe that small sample, not production p95/p99 estimates.
+
+Worker CPU cost includes its native VMMs, FUSE and child processes. The Controller,
+model fixture and publisher run outside that service. Its memory counters measure
+cgroup charges; native RSS sums can count shared pages more than once. The cache
+is warm, and RAM/slots remain reserved during pause. These are measurements of
+result-checked tools with synthetic model latency on one host; real-model quality,
+multi-host density, GPU/trainer cost and networked RAM reclamation remain separate
+acceptance work.
+
 ## Observe actual native VM CPU consumption
 
 Enable cheap CPU observations independently of memory sampling and CPU QoS:
@@ -2380,7 +2455,8 @@ general density claim.
   after acknowledgement. Terminal attempts use a durable outbox for restart
   export/delivery; GC and journal compaction remain pending. A restarted worker
   first drains known terminal evidence, then uses a fresh incarnation and waits
-  for unknown old leases to expire. It never adopts those executions and does
+  for unknown old leases to expire while the Controller remains online, or to
+  be reconciled/explicitly resolved after Controller restart. It never adopts those executions and does
   not prove their processes have stopped.
 * Drain blocks new reservations and lets existing work finish. Stopping the
   worker with SIGINT/SIGTERM requests native cancellation and sends completion
@@ -2624,13 +2700,14 @@ These tests do not exercise filesystem ENOSPC or restore a killed live VM.
 
 Next gates, in dependency order:
 
-1. Connect the [Gateway cooperative wait/delivery lifecycle](../pvisor-gateway/README.md#cooperative-inference-waits)
-   to durable, bounded controller wait state and Attempt-local Worker coordination.
-   Fence waits by lease/call/revision, preserve manual pause ownership, coordinate
-   parallel calls and await native CPU readmission before releasing a reply.
-   Repeated inference calls must not exhaust the 4,096-entry manual control
-   history. Validate controller restart and actual CPU release/readmission on
-   a networked VM; the current HTTP barrier tests do not establish these effects.
+1. Extend the [Gateway cooperative wait/delivery lifecycle](../pvisor-gateway/README.md#cooperative-inference-waits)
+   with parallel-call fault experiments and longer controller outages.
+   The bounded protocol, real Linux VM CPU release/readmission and
+   controller-server restart and process SIGKILL/lost-Ready-response gates are
+   implemented. Restart requires fresh Worker lease reconciliation before
+   response delivery. Extend coverage to uncertain native control acknowledgements
+   and external service failures; current process-fault coverage stays within
+   the existing Worker watchdog.
    Extend VM controls to multi-host fault tests, and validate shared
    caches, hugetlb and deployment-kernel coverage of the memory observations.
    Never release memory merely because a desired state says idle or a single

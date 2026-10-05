@@ -3,6 +3,7 @@
 | Area | Documentation |
 | --- | --- |
 | Core ownership and execution path | [Core architecture](architecture.md) |
+| Multi-Worker execution, eventual consistency, scheduling, lifecycle and storage | [Complete Cluster design](cluster/index.md) |
 | Shared image caches, S3/filesystem trees, and file indexes | [v1: independent metadata and paged indexes](shared-image-cache-storage.md) |
 | VM RAM offload, file layout and lifecycle | [Complete offload design](offload/index.md) · [Disk format and schema](offload/disk-layout-and-schema.md) |
 | Full VM environment saves, independent file copies and restore across runners | [Full environment snapshot CLI](environment-snapshot.md) |

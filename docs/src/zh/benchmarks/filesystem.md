@@ -1,6 +1,6 @@
 # 文件系统与开发工具开销
 
-最新真实 VM/FUSE A/B（每格 30 次）中，2,048 文件遍历的 P50 为 staged **78.25 ms**、VM **195.24 ms**，最近一次路径解析优化分别降低耗时 **15.3% / 13.0%**。七项负载整轮启动到退出为 **1.23 s / 4.78 s**，只下降 **4.5% / 1.1%**；元数据收益已复现，整体与尾延迟仍需改善。
+最新两轮完整七项文件系统 N=30 评测共 **300 个任务、2,100 个工具测量**。同源 A/B 的 VM 整轮 P50 **5.27 s（-0.5%）**，与已发布 P0 制品的同批对照为 **5.19 s（+0.4%）**，尚未证明稳定的整体加速。同源 VM 遍历 **194.35 ms（+3.2%）**；深目录适配层微基准 -9.6% 不能外推为 VM 收益。Git 部分改善，部分尾延迟变慢。
 
 ## Motivation
 
@@ -14,7 +14,212 @@ Agent 经常反复读目录、搜索和修改文件。应同时看到任务本�
 
 本轮在 Linux 实测，以下工作负载没有 macOS 样本；macFUSE/FSKit 开销与并发容量均未测。既有 macOS/HVF 数据继续保留在 [VM 启动时间](startup.md)与[VM 内存报告](vm-memory/index.md)，不移作本页结果。
 
-## Linux：2026-10-05，真实 VM/FUSE A/B 基线 {#e2e-baseline}
+## Linux：内核机制与并发优化完整评测 {#kernel-campaign}
+
+本轮先筛选，再沿用文档中的七项完整负载评测；以下不是适配层时间或三次
+快实验的外推。实际保留的是父目录 statx 查询合并、只读 OPEN 共享锁，以及
+关闭时不读时钟的锁等待/请求池诊断。READDIRPLUS_AUTO 和原有元数据 inline
+分派仍保留，没有启用 DAX、writeback 或长期缓存。
+
+### 已完成的实验 {#kernel-experiments}
+
+| 实验 | 样本与测量边界 | 结果入口 |
+|---|---|---|
+| 真实 KVM / 宿主 FUSE 筛选 | 5 轮候选比较，每轮五格，每格预热 1 次、测量 3 次；包含实现修正后的复测 | [筛选与选择](#kernel-screening)、[逐轮记录](../../assets/benchmarks/filesystem-kernel-20261005/process.json) |
+| release 适配层微基准 | 4 种 lookup/getattr/open/目录 PLUS 负载，每例每制品预热 2 次、测量 8 次；不启动 VM、不挂 FUSE、不记 preimage | [最终微基准](../../assets/benchmarks/filesystem-kernel-20261005/micro-final.json) |
+| 缓存、并发和 guest tmpfs 对照 | 遍历、单/四线程 stat 各测 3 次；64 文件部分写入加读回各测 1 次 | [对照结果](#kernel-probes)、[原始记录](../../assets/benchmarks/filesystem-kernel-20261005/kernel-probe.json) |
+| 同源完整七项 A/B | 五格，每格预热 3 次、测量 30 次；150 个任务、1,050 个工具测量 | [完整分布与结论](#kernel-full) |
+| 已发布 P0 与最终候选的同批完整对照 | 另五格，每格预热 3 次、测量 30 次；150 个任务、1,050 个工具测量；源码和 staged 隔离类型不同 | [历史制品重测](#kernel-history) |
+| 独立 profile 与 OPEN 并发回归 | profile 每格 1 次，不计入验收时间；回归验证旧实现阻塞、新只读锁并行、可写锁仍互斥 | [队列与锁诊断](#kernel-probes)、[实现与回归](#kernel-screening) |
+
+五格为 native、基线/候选宿主 FUSE staged、基线/候选 KVM VM。
+此前 P0 修改的 N=30 A/B [单独保留](#e2e-baseline)，不计入最新两轮的
+300 个任务。DAX、writeback cache、FUSE passthrough、FUSE-over-io_uring、
+长期 TTL 和替换为 virtiofsd 仅研究了可行性，尚未实施性能 A/B。
+
+### 快实验与实现选择 {#kernel-screening}
+
+所有真实筛选均有五格，每格 1 次预热、3 次测量，使用相同固定源码归档、
+firmware 与 fixture，先通过预检。组合实验明确标注，不把不同批次当作
+单变量 A/B。筛选结果只能用于选择下一步，不能证明 P95/P99 或整体收益。
+
+| 候选 | VM 遍历 P50 变化 | VM 整轮 P50 变化 | 决定 |
+|---|---:|---:|---|
+| 初版合并 statx | +4.8% | +5.9% | 缺失 upper 还重复回退查询；修正后再测 |
+| statx 基础上的 OPEN 共享锁 + 元数据线程池组合 | +1.4% | +8.2% | 不升级该组合；npm 本批 +21.8% |
+| 强制 READDIRPLUS，关闭 AUTO | -30.6% | +4.5% | Git +93.6%，不全局启用 |
+| 修正命名空间错误回退前的 statx + OPEN 共享锁 | -17.7% | +4.2% | 中间版本，保留记录，修正后再测 |
+| 修正 statx + OPEN 共享锁 | +5.0% | +1.0% | 正确性通过；交给完整 N=30 判定 |
+
+初版对正常 ENOENT/ENOTDIR 也先 statx 再 metadata，使 absent upper 的额外
+查询抵消部分 lower 查询节省。最终版直接返回这两个命名空间结果；不支持
+statx、受限查询或缺字段才安全回退，回退不猜测 mount ID、不复用原生父目录。
+物理祖先与叶子的检查仍保留，没有引入跨请求属性/权限缓存。
+
+独立 release 适配层微基准每例 2 次预热、8 次测量，再另测一次 profile；
+不启动 VM、不挂 FUSE、不记 preimage。深目录 P50 **97.52 → 88.16 ms
+（-9.6%）**，浅目录 lookup/open/getattr **28.39 → 27.61 ms（-2.8%）**。
+最终诊断中正常 fixture 没有 statx metadata fallback；深目录省去 33,664 次
+独立 mount identity 查询。它证明机制减少重复工作，不能推算 VM 任务收益。
+
+回归测试复现了只读 OPEN 等待独立 backing READ 的旧行为，旧实现失败，
+新共享锁实现通过；可写 OPEN 仍等待，lower 内容不变。带 APPEND/TRUNC、
+非只读或 kill_priv 的 OPEN，修改、release 和快照仍独占。只读首次观察
+继续由逐路径 journal 同步，句柄、descriptor RAM lease、used ring 发布与
+冻结排空的契约保持。候选源码与实际工作树五个实现文件摘要一致。
+
+### 同源完整七项 A/B {#kernel-full}
+
+两份 release 制品来自固定 `bc08f457` 归档，差异为上面的实现补丁。
+每格 3 次预热、30 次测量，共 **150 个任务、1,050 个工具测量**，全部
+通过原有输出、Run Bundle、隔离类型、lower 无写入和 upper 256 文件检查。
+每任务新的 workspace/upper，七项按原顺序执行，五格按固定种子随机交替；
+仍为 256×64 KiB 写入、64 MiB 校验、2,048 文件和原 cargo/npm fixture。
+热宿主缓存、两个物理核 0,1、VM 2 vCPU/16 GiB，firmware 摘要与 P0 一致。
+同源两边 staged 都是 **rootless_process**，同时验证读/写/non-bypassable
+边界；P0 文档的 staged 为 host_process，历史对照另列。亲和性不是独占；
+宿主 1 分钟 load **2.02 → 2.70**。以下单位为 ms，负值表示耗时下降。
+
+| 负载 | 原生 | staged 前→后 | 变化 | VM 前→后 | 变化 |
+|---|---:|---:|---:|---:|---:|
+| metadata | 4.88 | 77.96 → 78.14 | +0.2% | 188.38 → 194.35 | +3.2% |
+| read | 32.62 | 69.39 → 68.94 | -0.7% | 154.14 → 156.15 | +1.3% |
+| write | 3.89 | 202.64 → 202.92 | +0.1% | 252.50 → 254.62 | +0.8% |
+| git | 15.13 | 172.44 → 173.35 | +0.5% | 493.02 → 433.31 | -12.1% |
+| rg | 7.76 | 90.78 → 91.63 | +0.9% | 457.09 → 452.03 | -1.1% |
+| cargo | 55.25 | 116.54 → 114.56 | -1.7% | 734.07 → 719.18 | -2.0% |
+| npm | 175.58 | 267.20 → 263.22 | -1.5% | 1631.39 → 1625.45 | -0.4% |
+| 启动到退出 | 468.52 | 1345.29 → 1310.05 | -2.6% | 5298.80 → 5273.93 | -0.5% |
+
+完整结果没有证明普遍加速。staged 整轮 **-2.6%**，VM 整轮 **-0.5%**；
+VM Git 本批 **-12.1%**，metadata 反而 **+3.2%**。不能把微基准的 -9.6%
+写成 VM 遍历收益，也不能用 Git 一项代表 npm、写入或整个任务。
+
+| 负载 | staged 前→后 P95 | VM 前→后 P95 | staged 候选 P99 | VM 候选 P99 |
+|---|---:|---:|---:|---:|
+| metadata | 84.63 → 88.98 | 254.15 → 270.13 | 97.68 | 296.52 |
+| read | 85.22 → 85.02 | 197.53 → 201.65 | 86.04 | 214.19 |
+| write | 222.86 → 222.09 | 330.15 → 295.80 | 228.31 | 335.81 |
+| git | 206.08 → 197.27 | 814.82 → 776.87 | 226.71 | 796.34 |
+| rg | 96.04 → 98.05 | 478.63 → 531.83 | 101.09 | 660.30 |
+| cargo | 147.37 → 144.05 | 812.44 → 831.76 | 150.25 | 846.64 |
+| npm | 297.90 → 294.31 | 1909.17 → 1947.07 | 306.96 | 2093.77 |
+| 启动到退出 | 5633.02 → 3808.26 | 5812.36 → 5766.30 | 5321.95 | 6031.76 |
+
+P95/P99 没有同步改善：候选 VM rg P99 从 **526 → 660 ms**，npm 从
+**2001 → 2094 ms**，整轮 **5917 → 6032 ms**；write 的尾部则下降。
+staged 完成尾部包含少数较慢任务，且不等于七项 worker 时间之和。
+原始分布全部保留，这仍是非独占宿主上的一次完整批次。
+
+与同批 native 比，候选 VM 遍历约 **39.8 倍**、256 文件写入 **65.4 倍**、
+64 MiB 读取 **4.8 倍**、npm **9.3 倍**。当前主要成本仍是反复目录/属性
+操作、小文件写入和 VM 内工具执行，而不是已经被本轮消除。
+
+### 已发布 P0 制品在同批重测 {#kernel-history}
+
+再将文档发布的固定 P0 候选（`a1020d4b` + 相同 stdio readiness 修复）与
+最终 P1 候选对比：仍是每格 3 次预热、30 次测量，额外 **150 个任务、
+1,050 个工具测量**，全部通过相同检查。沿用原 fixture、firmware 和两核
+预算，负载 **0.45 → 3.44**。单位 ms；这是同批制品对照，两个源码基线
+不同，不能把所有差异归因于 statx 或 OPEN。本轮 P0 staged 实际为
+**host_process**，P1 为 **rootless_process**，两种边界各自严格验证。
+
+| 负载 | P0 → P1 staged P50 | 变化 | P0 → P1 VM P50 | 变化 |
+|---|---:|---:|---:|---:|
+| metadata | 76.26 → 77.26 | +1.3% | 225.02 → 228.47 | +1.5% |
+| read | 68.11 → 68.69 | +0.9% | 121.06 → 120.93 | -0.1% |
+| write | 198.12 → 200.20 | +1.0% | 240.25 → 253.10 | +5.3% |
+| git | 167.50 → 170.04 | +1.5% | 449.65 → 430.24 | -4.3% |
+| rg | 89.01 → 89.85 | +0.9% | 465.98 → 460.27 | -1.2% |
+| cargo | 111.08 → 111.62 | +0.5% | 654.27 → 625.52 | -4.4% |
+| npm | 215.91 → 261.39 | +21.1% | 1662.16 → 1666.95 | +0.3% |
+| 启动到退出 | 1224.50 → 1290.69 | +5.4% | 5164.78 → 5187.46 | +0.4% |
+
+第二批 VM 整轮 **+0.4%**，也未复现整体加速；Git 本批 **-4.3%**、写入
+**+5.3%**。staged npm **+21.1%**，在同源 rootless 两边的上一批仅 -1.5%；
+这里包含执行边界和其他源码变化，不作本轮文件系统补丁的因果结论。
+同一 P1 制品在两批 VM 遍历为 **194 / 228 ms**、读取 **156 / 121 ms**，
+展示了批次条件对分布的影响，不能择取较快一批或合并百分位数。
+
+文档原 P0 批次的 VM 遍历 **195.24 ms** 继续保留；本批同一个 P0 制品为
+**225.02 ms**。因此历史发布数到本轮数的差异，也不能直接当作代码收益。
+两轮完整评测合计 **300 个任务、2,100 个工具测量**。当前证据支持减少
+重复父目录查询、修复只读 OPEN 的串行约束，尚不支持普遍端到端加速。
+
+[已发布制品的原始对照](../../assets/benchmarks/filesystem-kernel-20261005/full-historical.json) ·
+[该批 P50/P95/P99 与协议](../../assets/benchmarks/filesystem-kernel-20261005/historical-summary.json) ·
+[两批逐样本 CSV](../../assets/benchmarks/filesystem-kernel-20261005/samples.csv)
+
+### 缓存、并发和 guest-local 对照 {#kernel-probes}
+
+独立诊断使用相同 2,048 文件 fixture 重跑遍历，所有“过期后”样本在初始
+rglob 之后也等待 1.2 秒。候选 VM 结果如下，单位 ms；tmpfs 已核实为
+同一 guest 的 `/dev/shm`，准备文件不计时。
+
+| 对照 | 每组测量次数 | P50 |
+|---|---:|---:|
+| 缓存过期后遍历 → 立即重复遍历 | 3 | 233.11 → 105.11 |
+| 单线程 → 四线程分片 stat | 3 | 164.17 → 91.86 |
+| 同一 guest tmpfs 上遍历 | 3 | 3.28 |
+| 64 文件各八次 1 KiB 写入加读回校验：共享视图 → guest tmpfs | 1 | 69.64 → 2.78 |
+
+立即重复遍历显示缓存有帮助，但仍有明显累计成本；并发提交降低等待，
+不能证明 Core 并行执行。部分写入对照只有一次，不作验收收益。Tmpfs
+同时排除 virtio-fs、Core、journal 和存储延迟，不能将差额全归因于传输。
+
+另开 profile 批次，不计入验收时间。候选 VM 两个设备的最后检查点为
+**21,340 / 24,743 inline**、**357 / 65 pool**；pool 排队累计
+**12.80 / 1.67 ms**，完成后等待 used-ring 发布 **5.16 / 1.22 ms**。
+读锁加写锁的获取等待分别累计约 **1.09 / 2.55 ms**，最大单次小于
+**0.38 ms**。这次诊断没有显示长锁等待，但不测 guest 发出请求到宿主接收
+之前的等待，也不能排除 inline 串行服务限制。两个 Core 检查点仍有
+**121,768 / 169,649** 次父目录观察，合并 statx **63,375 / 65,488** 次，
+没有 fallback 记录。staged 完整 profile 的 341 次 journal fsync 约
+**119 ms**。VM 检查点非 final、不同实例未必同一截止时刻；inclusive span
+不相加，这些计数不是完整 syscall census。
+
+初次诊断因只在 runs 下找 Run Bundle 而停止，实际 bundle 在 stage；修正
+位置后保留失败批次另开新目录。中间批次的初次遍历尚未等待缓存过期，也
+单独保存，最终诊断不混入这批时间。正常写入都在 upper、lower 未写。
+
+### 后续内核路径优先级 {#kernel-paths}
+
+1. **目录/属性/负查找缓存与失效通知。** 重复遍历仍贵，先为不可变依赖或
+   单方拥有的树建立缓存契约，再验证 TTL 与 FOPEN_CACHE_DIR。live lower
+   允许宿主外部修改，现有通道没有主动失效通知，不全局延长缓存。
+2. **按负载选择 READDIRPLUS 和宿主并发。** AUTO 已存在；强制 PLUS 有取舍。
+   宿主 fuser 的单个请求循环同步执行回调；VM 只有一个普通队列和一个
+   hiprio 队列，短 metadata inline，线程池满时暂停普通队列接收。
+   更换线程池或增加 worker 不自动带来收益，需要测队列和锁等待。
+   ASYNC_READ/PARALLEL_DIROPS 已由协议层默认协商。
+3. **writeback cache。** 可能合并小写入，但必须保证首次修改前 preimage
+   持久化、终结/导出/快照前排空脏页，以及 partial write、append/truncate
+   的正确性。[内核 I/O 说明](https://kernel.org/doc/html/latest/filesystems/fuse/fuse-io.html)
+4. **数据面与本地文件系统。** DAX 主要减少内容拷贝；本轮没有启用或取得
+   DAX A/B。FUSE-over-io-uring 适用宿主 `/dev/fuse`，不是直接替换 VM
+   virtqueue；FUSE passthrough 需要同一内核的 backing FD，也不能直接把
+   宿主 FD 交给 guest。guest-local tmpfs、只读块镜像/内核文件系统可作为
+   下一阶段独立方案，但需要保留 staging/记录/恢复契约。
+   [DAX](https://docs.kernel.org/filesystems/dax.html) ·
+   [io-uring](https://docs.kernel.org/filesystems/fuse/fuse-io-uring.html) ·
+   [passthrough](https://docs.kernel.org/filesystems/fuse/fuse-passthrough.html)
+
+验证：Core **97 项（5 跳过）**、overlayfs **12 项**、VM **294 项（2 跳过）**、
+基准 **25 项**通过；三个相关包的 all-targets Clippy 和基准 Ruff 通过。
+没有修改或批准 semspec ledger/snapshot。完整样本和失败，不只成功摘要，
+保存在下列证据中；macOS、启动、网络和完整 Agent 闭环不由这些数字推算。
+
+[同源原始报告](../../assets/benchmarks/filesystem-kernel-20261005/full-same-source.json) ·
+[完整分布与协议](../../assets/benchmarks/filesystem-kernel-20261005/summary.json) ·
+[筛选过程](../../assets/benchmarks/filesystem-kernel-20261005/process.json) ·
+[微基准](../../assets/benchmarks/filesystem-kernel-20261005/micro-final.json) ·
+[内核诊断](../../assets/benchmarks/filesystem-kernel-20261005/kernel-probe.json) ·
+[队列与锁诊断](../../assets/benchmarks/filesystem-kernel-20261005/profiles.json) ·
+[源码补丁](../../assets/benchmarks/filesystem-kernel-20261005/implementation.patch) ·
+[原始日志与完整复现证据](../../assets/benchmarks/filesystem-kernel-20261005/evidence.tar.gz) ·
+[摘要清单](../../assets/benchmarks/filesystem-kernel-20261005/manifest.json)
+
+## Linux：2026-10-05，P0 真实 VM/FUSE A/B 基线 {#e2e-baseline}
 
 这次启动真实 KVM VM，并挂载真实宿主 FUSE，补齐上轮适配层微基准的
 端到端验证。宿主设备可用，最初沙箱没有暴露 `/dev/kvm` 和 `/dev/fuse`。
@@ -117,7 +322,7 @@ python3 benchmark/pvisor/filesystem_ab.py \
 [独立诊断](../../assets/benchmarks/filesystem-ab-20261005/profiles.json) ·
 [报告、脚本、失败样本与验证日志](../../assets/benchmarks/filesystem-ab-20261005/evidence.tar.gz)
 
-### 历史到最新的实测变化 {#historical-progress}
+### 历史到 P0 的实测变化（保留） {#historical-progress}
 
 以下比较 2026-10-04 完整工具环境 N=30 批次与最新候选 N=30 批次，工具
 内部 P50，单位 ms。二者沿用保留的工具 fixture，但制品、宿主负载和运行

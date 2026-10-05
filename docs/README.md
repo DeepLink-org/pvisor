@@ -168,6 +168,8 @@ state the current public record and keep engineering follow-ups below.
 
 ## Core design
 
+- [Cluster quickstart](src/zh/guides/cluster/index.md): bounded host/VM/Gateway walkthroughs and an executable verifier; [English](src/en/guides/cluster/index.md).
+- [Cluster architecture](src/zh/design/cluster/index.md): Worker-reconciled runtime state, scheduling, native lifecycle, storage, APIs and operational boundaries; [English](src/en/design/cluster/index.md).
 - [Core architecture](src/zh/design/architecture.md): core owns definitions; pvisor owns scheduling and execution; drivers implement actual boundaries.
 - [Operation and Event](src/zh/design/operations-events.md): requests, actual rewrites, Placement, outcomes, causal facts and reconstruction limits.
 - [Design principles](src/zh/design/principles.md): ownership, causality and evidence rules.

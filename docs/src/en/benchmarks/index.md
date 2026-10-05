@@ -4,7 +4,44 @@ Image-free pVisor VM starts in about **110 ms**; complete Ubuntu on the same-hos
 
 Measurements publish reproduction scripts, samples and failures; comparisons identify official sources and unmeasured areas. See [methodology](methodology.md).
 
-## 2026-10-05: actual filesystem optimization gains {#filesystem-optimization}
+## 2026-10-05: full kernel and concurrency evaluation {#filesystem-kernel-optimization}
+
+Two full seven-tool evaluations use three warmups and 30 measurements per cell:
+**300 measured jobs and 2,100 tool measurements**, all passing correctness and
+isolation checks. The table shows the same-source A/B; both staged variants use
+rootless_process. Negative changes mean lower elapsed time.
+
+| Measurement | Staged candidate P50 | Same-source change | VM candidate P50 | Same-source change |
+|---|---:|---:|---:|---:|
+| 2,048-file traversal | 78.14 ms | +0.2% | 194.35 ms | +3.2% |
+| 64 MiB read and validation | 68.94 ms | -0.7% | 156.15 ms | +1.3% |
+| Git status | 173.35 ms | +0.5% | 433.31 ms | -12.1% |
+| 256-file write | 202.92 ms | +0.1% | 254.62 ms | +0.8% |
+| rg search | 91.63 ms | +0.9% | 452.03 ms | -1.1% |
+| cargo build | 114.56 ms | -1.7% | 719.18 ms | -2.0% |
+| Offline npm install | 263.22 ms | -1.5% | 1.63 s | -0.4% |
+| Seven-tool launch to exit | 1.31 s | -2.6% | 5.27 s | -0.5% |
+
+The separate same-batch full comparison with the published P0 artifact records
+VM completion **5.165 → 5.187 s (+0.4%)**, also showing no overall acceleration.
+Source differs, and staged isolation changes from host_process to rootless_process;
+the differences cannot all be attributed to this round's filesystem patch.
+
+The deep adapter microbenchmark improves 9.6%, but full VM acceleration remains
+unproven and traversal does not improve. Some rg/npm/completion tails worsen.
+Forced READDIRPLUS and the broader metadata-pool combination are not promoted.
+Retain fused queries, the read-only OPEN lock fix and separate diagnostics;
+prioritize caches with ownership/invalidation contracts. Original P0 evidence
+below stays separate; percentiles are not pooled.
+
+[Full data and conclusions](filesystem.md#kernel-full) ·
+[Published P0 artifact rerun](filesystem.md#kernel-history) ·
+[Completed experiments and unmeasured scope](filesystem.md#kernel-experiments) ·
+[Screening and implementation](filesystem.md#kernel-screening) ·
+[Cache/concurrency controls](filesystem.md#kernel-probes) ·
+[Further kernel paths](filesystem.md#kernel-paths)
+
+## 2026-10-05: retained P0 filesystem evaluation {#filesystem-optimization}
 
 The latest pinned-artifact KVM/FUSE A/B has three warmups and 30 measurements
 per cell: 150 jobs and 1,050 tool measurements, all correct. The table reports

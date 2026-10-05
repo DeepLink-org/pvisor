@@ -27,43 +27,91 @@ fn cvt(rc: libc::c_int) -> io::Result<()> {
     }
 }
 
-/// Optional mount context for a just-observed parent. Failure or a concurrent
-/// identity change disables inode reuse rather than supplying a guessed ID.
-pub(crate) fn metadata_mount_id(path: &Path, metadata: &std::fs::Metadata) -> Option<u64> {
+/// Observe the type and physical identity of one parent without following its
+/// final symlink. Linux obtains the identity and mount context in one statx,
+/// rather than making a second query after symlink_metadata. This is fresh
+/// request-local evidence; it does not cache attributes or confer access.
+pub(crate) fn parent_directory_identity(
+    path: &Path,
+    profile: &crate::profile::Profile,
+) -> io::Result<Option<crate::BackingIdentity>> {
     #[cfg(target_os = "linux")]
     {
-        // Use the kernel ABI: musl's libc bindings do not expose statx.
-        use linux_raw_sys::general::{STATX_INO, STATX_MNT_ID, statx};
-        use std::os::unix::fs::MetadataExt;
-        let path = c_path(path).ok()?;
-        // SAFETY: zero is a valid initial statx representation; the owned
-        // path/output remain valid for the duration of the syscall.
-        let mut stat: statx = unsafe { std::mem::zeroed() };
-        let rc = unsafe {
-            libc::syscall(
-                libc::SYS_statx,
-                libc::AT_FDCWD,
-                path.as_ptr(),
-                libc::AT_SYMLINK_NOFOLLOW,
-                STATX_MNT_ID | STATX_INO,
-                &mut stat,
-            )
-        };
-        if rc == 0
-            && stat.stx_mask & (STATX_MNT_ID | STATX_INO) == STATX_MNT_ID | STATX_INO
-            && stat.stx_ino == metadata.ino()
-            && libc::makedev(stat.stx_dev_major, stat.stx_dev_minor) == metadata.dev()
-        {
-            Some(stat.stx_mnt_id)
-        } else {
-            None
-        }
+        parent_directory_identity_with(path, profile, |path| {
+            // Use the kernel ABI: musl libc bindings do not expose statx.
+            use linux_raw_sys::general::{STATX_INO, STATX_MNT_ID, STATX_TYPE, statx};
+            // SAFETY: zero initializes the output; path and output remain
+            // valid throughout the syscall. No relaxed synchronization mode.
+            let mut stat: statx = unsafe { std::mem::zeroed() };
+            let rc = unsafe {
+                libc::syscall(
+                    libc::SYS_statx,
+                    libc::AT_FDCWD,
+                    path.as_ptr(),
+                    libc::AT_SYMLINK_NOFOLLOW,
+                    STATX_TYPE | STATX_INO | STATX_MNT_ID,
+                    &mut stat,
+                )
+            };
+            if rc == 0 {
+                Ok(stat)
+            } else {
+                Err(io::Error::last_os_error())
+            }
+        })
     }
     #[cfg(not(target_os = "linux"))]
     {
-        let _ = (path, metadata);
-        None
+        let _ = profile;
+        parent_directory_identity_from_metadata(path)
     }
+}
+
+fn parent_directory_identity_from_metadata(
+    path: &Path,
+) -> io::Result<Option<crate::BackingIdentity>> {
+    use std::os::unix::fs::MetadataExt;
+    let metadata = std::fs::symlink_metadata(path)?;
+    Ok(metadata.is_dir().then_some(crate::BackingIdentity {
+        device: metadata.dev(),
+        inode: metadata.ino(),
+        // Without mount evidence Linux native-directory reuse is disabled.
+        mount_id: None,
+    }))
+}
+
+#[cfg(target_os = "linux")]
+fn parent_directory_identity_with(
+    path: &Path,
+    profile: &crate::profile::Profile,
+    query: impl FnOnce(&std::ffi::CStr) -> io::Result<linux_raw_sys::general::statx>,
+) -> io::Result<Option<crate::BackingIdentity>> {
+    use linux_raw_sys::general::{STATX_INO, STATX_MNT_ID, STATX_TYPE};
+    let name = c_path(path)?;
+    profile.add("parent_identity_statx_calls", 1);
+    match query(&name) {
+        Ok(stat) if stat.stx_mask & (STATX_TYPE | STATX_INO) == STATX_TYPE | STATX_INO => {
+            if u32::from(stat.stx_mode) & libc::S_IFMT != libc::S_IFDIR {
+                return Ok(None);
+            }
+            return Ok(Some(crate::BackingIdentity {
+                device: libc::makedev(stat.stx_dev_major, stat.stx_dev_minor),
+                inode: stat.stx_ino,
+                mount_id: (stat.stx_mask & STATX_MNT_ID != 0).then_some(stat.stx_mnt_id),
+            }));
+        }
+        // These are ordinary namespace results, not missing statx support.
+        // Probing an absent upper again would erase the saved lower query.
+        Err(error) if matches!(error.raw_os_error(), Some(libc::ENOENT | libc::ENOTDIR)) => {
+            return Err(error);
+        }
+        _ => {}
+    }
+    // Unsupported kernels, filesystem fields or seccomp restrictions must not
+    // turn a previously accessible directory into an error. Fall back to the
+    // existing metadata operation, preserving its type and error semantics.
+    profile.add("parent_identity_metadata_fallbacks", 1);
+    parent_directory_identity_from_metadata(path)
 }
 
 /// Publish a complete temporary file without replacing an existing winner.
@@ -626,5 +674,125 @@ mod rooted_tests {
         assert!(file.metadata().unwrap().is_file());
         assert!(prepare_rooted_path(&root, Path::new("opt/pvisor"), true, false).is_err());
         assert_eq!(std::fs::read(outside).unwrap(), b"keep");
+    }
+}
+
+#[cfg(all(test, target_os = "linux"))]
+mod parent_identity_tests {
+    use super::*;
+    use crate::profile::Profile;
+    use std::os::unix::fs::MetadataExt;
+
+    #[test]
+    fn parent_identity_matches_directory_and_rejects_links_and_files() {
+        let temp = tempfile::tempdir().unwrap();
+        let directory = temp.path().join("directory");
+        std::fs::create_dir(&directory).unwrap();
+        let profile = Profile::enabled("parent-identity-test");
+        let identity = parent_directory_identity(&directory, &profile)
+            .unwrap()
+            .unwrap();
+        let metadata = std::fs::symlink_metadata(&directory).unwrap();
+        assert_eq!(identity.device, metadata.dev());
+        assert_eq!(identity.inode, metadata.ino());
+        let link = temp.path().join("link");
+        std::os::unix::fs::symlink(&directory, &link).unwrap();
+        let file = temp.path().join("file");
+        std::fs::write(&file, b"content").unwrap();
+        for path in [&link, &file] {
+            assert!(parent_directory_identity(path, &profile).unwrap().is_none());
+        }
+        std::fs::rename(&directory, temp.path().join("old-directory")).unwrap();
+        std::fs::create_dir(&directory).unwrap();
+        let replaced = parent_directory_identity(&directory, &profile)
+            .unwrap()
+            .unwrap();
+        assert_ne!(identity.inode, replaced.inode);
+        assert_eq!(replaced.inode, directory.symlink_metadata().unwrap().ino());
+        let before = profile.report().unwrap();
+        for (path, errno) in [
+            (temp.path().join("missing"), libc::ENOENT),
+            (file.join("child"), libc::ENOTDIR),
+        ] {
+            assert_eq!(
+                parent_directory_identity(&path, &profile)
+                    .unwrap_err()
+                    .raw_os_error(),
+                Some(errno)
+            );
+        }
+        let after = profile.report().unwrap();
+        assert_eq!(
+            after
+                .measurements
+                .get("parent_identity_metadata_fallbacks")
+                .map(|m| m.units),
+            before
+                .measurements
+                .get("parent_identity_metadata_fallbacks")
+                .map(|m| m.units)
+        );
+    }
+
+    #[test]
+    fn restricted_statx_preserves_metadata_access_and_errors_without_mount_reuse() {
+        let temp = tempfile::tempdir().unwrap();
+        let profile = Profile::enabled("parent-identity-fallback-test");
+        let metadata = temp.path().symlink_metadata().unwrap();
+        for errno in [libc::ENOSYS, libc::EINVAL, libc::EPERM, libc::EACCES] {
+            let identity = parent_directory_identity_with(temp.path(), &profile, |_| {
+                Err(io::Error::from_raw_os_error(errno))
+            })
+            .unwrap()
+            .unwrap();
+            assert_eq!(identity.device, metadata.dev());
+            assert_eq!(identity.inode, metadata.ino());
+            assert_eq!(identity.mount_id, None);
+        }
+        assert_eq!(
+            parent_directory_identity_with(&temp.path().join("missing"), &profile, |_| {
+                Err(io::Error::from_raw_os_error(libc::ENOSYS))
+            })
+            .unwrap_err()
+            .raw_os_error(),
+            Some(libc::ENOENT)
+        );
+        let file = temp.path().join("file");
+        std::fs::write(&file, b"content").unwrap();
+        assert_eq!(
+            parent_directory_identity_with(&file.join("child"), &profile, |_| {
+                Err(io::Error::from_raw_os_error(libc::ENOSYS))
+            })
+            .unwrap_err()
+            .raw_os_error(),
+            Some(libc::ENOTDIR)
+        );
+    }
+
+    #[test]
+    fn missing_statx_fields_fall_back_and_missing_mount_id_never_guesses() {
+        use linux_raw_sys::general::{STATX_INO, STATX_TYPE, statx};
+        let temp = tempfile::tempdir().unwrap();
+        let profile = Profile::default();
+        // SAFETY: the kernel ABI output has a valid zero representation.
+        let empty: statx = unsafe { std::mem::zeroed() };
+        let identity = parent_directory_identity_with(temp.path(), &profile, |_| Ok(empty))
+            .unwrap()
+            .unwrap();
+        assert_eq!(
+            identity.inode,
+            temp.path().symlink_metadata().unwrap().ino()
+        );
+        assert_eq!(identity.mount_id, None);
+        let partial = statx {
+            stx_mask: STATX_TYPE | STATX_INO,
+            stx_mode: libc::S_IFDIR as u16,
+            stx_mnt_id: 42,
+            ..empty
+        };
+        let identity = parent_directory_identity_with(temp.path(), &profile, |_| Ok(partial))
+            .unwrap()
+            .unwrap();
+        assert_eq!(identity.mount_id, None);
     }
 }

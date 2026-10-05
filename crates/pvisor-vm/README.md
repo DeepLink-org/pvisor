@@ -108,8 +108,10 @@ Reader/Writer，保留 RAM access lease 直到 used ring 发布完成。禁止�
 延长 VolatileSlice 的生命周期或新增 unsafe Send 绕过这个契约。
 FUSE header 只解码一次；INIT/DESTROY 独占 session guard。
 
-OverlayFs 的 READ、LOOKUP、GETATTR、目录查询等可共享 operation guard。
-改名、copy-up、写入、OPEN 的内容首次观察、release 与快照恢复仍使用独占 guard；
+OverlayFs 的 READ、LOOKUP、GETATTR、目录查询和只读 OPEN 可共享 operation guard。
+带 O_APPEND/O_TRUNC、非只读或需要 kill_priv 的 OPEN，以及改名、copy-up、
+写入、release 与快照恢复仍使用独占 guard。只读 OPEN 的首次观察继续由
+Core 的逐路径 journal 事务同步，快照必须等待所有 operation guard 释放；
 读取通过 backing I/O 持有共享 guard，阻止原生句柄提前释放。文件句柄和
 不可变目录项只在查表时持有 handle map 锁，不把整张表锁带入 I/O。
 目录缓存用 `Arc` 持有原生 lookup 引用，借用者在缓存锁外执行 backing I/O；

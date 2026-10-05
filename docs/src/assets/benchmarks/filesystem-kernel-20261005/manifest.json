@@ -1,0 +1,55 @@
+{
+  "files": {
+    "docs-build.log": "fb8e37226fb15956907693aa52c8df28ce6d011748085ee9d0d7dc7954d72e2f",
+    "docs-check.log": "fd41c02a329ef1bc5051acacee6510f5712ed0487243d5878766f37dd14e1860",
+    "evidence.tar.gz": "2a0921bb94097f173459d58bfb54fc30f9e020ddc3ff13b86b346a1a0cbf49ca",
+    "failed-isolation-preflight.json": "4e2a9579a6e36eadcaf36399f4f67dd5edd3cc1457027f9e659e23ea6d696679",
+    "full-historical.json": "3aade64b65693f18b5912a4460dee79c2a4a855f78dd87bae9371eb472e5ab92",
+    "full-same-source.json": "bbcda256db2399fff6cd0aa62c52a72081b745d8d274dd0dad4484f37f44270c",
+    "historical-summary.json": "47328f370127b1bdc8e5a2f3da621dda7cb3ae2f0b10e69b9db94484635dfd38",
+    "implementation.patch": "09fc1815991e75bbaa35a386147da5e0336c9fceebb4e09c83a5480f5e3b52c0",
+    "kernel-probe-initial-failure.json": "1895b788ac6add2f708c4c7863ac7b18869e890d4f670116adc388a563ba19a0",
+    "kernel-probe-intermediate.json": "4907a91315e10dd0b9cdea068767dced9bac483e47efa8e6b8b5e77fef59771b",
+    "kernel-probe.json": "a479af2056923edacf31320b477ec085cf8bbdd62a113c99ac54d1bacbb532ee",
+    "micro-final.json": "e6cc8ce898357ccf40c091546c51e2a940c39a2d2a0495b055617ceab1011898",
+    "micro-initial.json": "6c70a41e4e89de1745f5df9bcba28767818a4c181b79495da3df64e74effc257",
+    "process.json": "fe1b33412c6d60511c48313307f9223ab55d42a9543ebd58d478e1bab35b4b67",
+    "profile-report.json": "cb0e8a7c4a8f26381fbcc89e2f4b9f39e0b0d4c54472e7f468fdcf63badabf43",
+    "profiles.json": "2219015b5d9c97f1e01924e2da82845833be222fe5c54b1504f315cabfe006f7",
+    "provenance.json": "254861a8fa84f4af37af8f3e718323dd635bd70815edcfd6ee9b2329dbddbd93",
+    "samples.csv": "ef8dd057865b30b1a64b2748e5534d92b2f5412401f87d6d8e3bd8e5cecd6001",
+    "screen-final.json": "c9249a725cb67565f366a0150ed27a10b4c1892bd45c85a7992671e9d94a17c9",
+    "screen-pool-open.json": "ffe7c2b117920c50ff6c9701ba4670d1181b30e6ee7c8570e199da27d86e2fe9",
+    "screen-readdirplus.json": "6ab931a442ff983c338422e728f11eaf0788e9ed73f884920b367f3461686d7f",
+    "screen-selected-initial.json": "b4a17ddbb0185849b7c926c358c1ea3ca959c8b9628c8b08e6bf0a85fef642e0",
+    "screen-statx.json": "9b4a2cff8f549be5ab0dd7c213e744a65ade751a92c13b8aed29ecf8519838cc",
+    "summary.json": "145e33a62301efbaff46ffe367899846d0b320012a996ff96bafa81804a7cdec",
+    "validation.json": "bc38c762003b2354e37d41bcf70cbb09b338cf665c83b44d803419185493e3e8"
+  },
+  "binary_and_source_provenance": {
+    "source_commit": "bc08f457",
+    "source_archive_sha256": "7773d4952e543c3d9ac1b6a133212faf7cf91fd7dfe9333d54cd42bdf467b5eb",
+    "binary_sha256": {
+      "baseline": "c740ec0e87c1053e5ce1c214f668184459ceba70ed229a3cd9e8dddde8cd20ae",
+      "candidate": "189b4de50bd2cc283f49c779a09c7b95887b64d1420bdfae0ac2c20927f23802"
+    },
+    "change": "Fused parent statx with direct ENOENT/ENOTDIR results, shared read-only OPEN lock and opt-in operation-lock/request-pool diagnostic timing. Original metadata dispatch and READDIRPLUS_AUTO retained.",
+    "patch_sha256": "09fc1815991e75bbaa35a386147da5e0336c9fceebb4e09c83a5480f5e3b52c0",
+    "build_command": "cargo build --locked --release --manifest-path target/p1-filesystem-source-20261005/Cargo.toml --target-dir target/p1-filesystem-build-20261005 -p pvisor --bin pvisor",
+    "source_sha256": {
+      "crates/pvisor-overlay-core/src/core.rs": "86a8013f18124f62edf2c78f49ec5a4d39e111600703e29d92fcfaac23788784",
+      "crates/pvisor-overlay-core/src/sys.rs": "2a87fb3acfd9a7c692191955a5310bdafb789a0ceff318290e58aa9c4646bbb4",
+      "crates/pvisor-overlay-core/src/profile.rs": "1f1476034a66fb34b4708f005c8f1935c2d99cada75c57639d4f62776e3a9dcd",
+      "crates/pvisor-vm/src/devices/virtio/fs/overlay.rs": "ff1ceb4301bc8e244794c0ed6be9f608672397410ce35a1d7fe33aa4b80a88b7",
+      "crates/pvisor-vm/src/devices/virtio/fs/worker.rs": "2463ff456a21fe8533e23777af3f20688c1d317720c5f8d13cf2a05839a25bcd"
+    }
+  },
+  "archive_members": 2500,
+  "reproduction": "Build bc08f457 release baseline, apply implementation.patch outside the parent git worktree with fresh source mtimes, build candidate; use preserved seven-tool fixture/firmware hashes, declared isolation flags and fresh output directories. Benchmarks use warm host cache and nonexclusive affinity 0,1.",
+  "documentation_sha256": {
+    "docs/src/zh/benchmarks/filesystem.md": "72f24797099c9c0cc22962e3ee59ae67e7aea1cd6027c1e912acd02e216b5cbd",
+    "docs/src/zh/benchmarks/index.md": "73d536d8d8f7a0ef141e9e4e7d5c0f2c30ce623d26791d1ee6373b9701adcd0c",
+    "docs/src/en/benchmarks/filesystem.md": "141122ff7a66c6554f49dab434b35d33c18c9b694fe7b304c52fe6c4ee07a77a",
+    "docs/src/en/benchmarks/index.md": "20387fb63ebc8a2ea495a55fbcaca1a8234be9302d7ecc2154f92514ae854268"
+  }
+}

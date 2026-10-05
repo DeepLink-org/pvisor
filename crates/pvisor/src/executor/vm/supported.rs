@@ -1566,6 +1566,29 @@ pub fn run_internal_if_requested() -> anyhow::Result<bool> {
 }
 
 fn run_runner(spec: RunnerSpec) -> anyhow::Result<()> {
+    // Acquire before Landlock and hold until the VM has stopped. Copy restores
+    // use ordinary fingerprints; the original generation is no longer leased.
+    let baseline_owners = if spec.restore.is_none() {
+        std::iter::once(&spec.root)
+            .chain(spec.workspace.iter())
+            .map(lease_overlay_baseline)
+            .collect::<anyhow::Result<Vec<_>>>()?
+    } else {
+        vec![]
+    };
+    let baseline_indexes = baseline_owners
+        .iter()
+        .map(|owner| {
+            owner.as_ref().and_then(|base| {
+                base.content_index()
+                    .map(|(file, sha256)| pvisor_vm::api::BaselineContentIndex {
+                        root: base.root(),
+                        file,
+                        sha256,
+                    })
+            })
+        })
+        .collect::<Vec<_>>();
     #[cfg(target_os = "linux")]
     let _cpu_qos = spec
         .cpu_qos
@@ -1595,6 +1618,12 @@ fn run_runner(spec: RunnerSpec) -> anyhow::Result<()> {
     #[cfg(target_os = "linux")]
     {
         let mut read_only = spec.root.lowers.clone();
+        read_only.extend(
+            baseline_indexes
+                .iter()
+                .flatten()
+                .map(|index| index.file.clone()),
+        );
         let mut read_write = vec![spec.root.upper.clone()];
         read_write.extend(spec.root.work.iter().cloned());
         read_write.extend(spec.root.preimages.iter().cloned());
@@ -1616,6 +1645,7 @@ fn run_runner(spec: RunnerSpec) -> anyhow::Result<()> {
     run_linked_krun(
         spec,
         attestation,
+        &baseline_indexes,
         #[cfg(any(
             all(target_os = "linux", target_arch = "x86_64"),
             all(target_os = "macos", target_arch = "aarch64")
@@ -1624,9 +1654,37 @@ fn run_runner(spec: RunnerSpec) -> anyhow::Result<()> {
     )
 }
 
+fn lease_overlay_baseline(
+    overlay: &OverlayDeviceSpec,
+) -> anyhow::Result<Option<crate::environment_snapshot::SnapshotBase>> {
+    let Some(root) = overlay
+        .baseline_lower
+        .as_ref()
+        .or_else(|| overlay.lowers.last())
+    else {
+        return Ok(None);
+    };
+    let root = root.canonicalize()?;
+    let Some(base) = crate::environment_snapshot::SnapshotBase::lease_root(&root)? else {
+        return Ok(None);
+    };
+    for mutable in std::iter::once(&overlay.upper)
+        .chain(overlay.work.iter())
+        .chain(overlay.preimages.iter())
+        .chain(overlay.apply_target.iter())
+    {
+        let mutable = mutable.canonicalize()?;
+        if root.starts_with(&mutable) || mutable.starts_with(&root) {
+            return Ok(None);
+        }
+    }
+    Ok(Some(base))
+}
+
 fn run_linked_krun(
     spec: RunnerSpec,
     mut attestation: std::fs::File,
+    baseline_indexes: &[Option<pvisor_vm::api::BaselineContentIndex>],
     #[cfg(any(
         all(target_os = "linux", target_arch = "x86_64"),
         all(target_os = "macos", target_arch = "aarch64")
@@ -1684,7 +1742,12 @@ fn run_linked_krun(
     // disabling it would change the captured device configuration.
 
     // OverlayFs cannot service FUSE_SETUPMAPPING; keep DAX disabled.
-    add_vm_overlay(&mut vm, "/dev/root", &spec.root)?;
+    add_vm_overlay(
+        &mut vm,
+        "/dev/root",
+        &spec.root,
+        baseline_indexes.first().cloned().flatten(),
+    )?;
     vm.virtual_file(
         "/dev/root",
         "/.pvisor-guest.json",
@@ -1693,7 +1756,12 @@ fn run_linked_krun(
         true,
     )?;
     if let Some(workspace) = &spec.workspace {
-        add_vm_overlay(&mut vm, WORKSPACE_TAG, workspace)?;
+        add_vm_overlay(
+            &mut vm,
+            WORKSPACE_TAG,
+            workspace,
+            baseline_indexes.get(1).cloned().flatten(),
+        )?;
     }
     if let Some(fd) = std::env::var_os(NETWORK_FD_ENV) {
         let fd = fd
@@ -1852,6 +1920,7 @@ fn add_vm_overlay(
     vm: &mut pvisor_vm::api::VmBuilder,
     tag: &str,
     overlay: &OverlayDeviceSpec,
+    baseline_content_index: Option<pvisor_vm::api::BaselineContentIndex>,
 ) -> anyhow::Result<()> {
     use pvisor_vm::api::{OverlayConfig, PermissionSemantics};
     vm.overlay(
@@ -1863,7 +1932,7 @@ fn add_vm_overlay(
             preimage_dir: overlay.preimages.clone(),
             apply_target: overlay.apply_target.clone(),
             baseline_lower: overlay.baseline_lower.clone(),
-            baseline_content_index: None,
+            baseline_content_index,
             excluded_paths: overlay.excluded.clone(),
             access_policy: overlay.access_policy.clone(),
             semantics: PermissionSemantics::LinuxComplete,

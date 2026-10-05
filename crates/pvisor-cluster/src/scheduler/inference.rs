@@ -125,7 +125,7 @@ impl Scheduler {
             "invalid inference wait identity"
         );
         ensure!(
-            self.valid_key(&key.lease, now),
+            self.reported_key(&key.lease, now),
             "stale inference wait lease"
         );
         ensure!(

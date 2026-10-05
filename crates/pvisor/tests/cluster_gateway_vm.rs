@@ -5,7 +5,7 @@ use pvisor_cluster::{
     scheduler::{Scheduler, SchedulerConfig},
     *,
 };
-use pvisor_core::{ExecutorKind, IsolationKind, RunInvocation, RunSpec};
+use pvisor_core::{ExecutorKind, IsolationKind, RunInvocation};
 use std::{
     collections::BTreeMap,
     fs,
@@ -13,6 +13,11 @@ use std::{
     process::{Child, Command, Stdio},
     time::Duration,
 };
+#[path = "common/agent_fixture.rs"]
+mod agent_fixture;
+use agent_fixture::{python_layer, task};
+#[path = "common/controller_process.rs"]
+mod controller_process;
 #[path = "common/model_service.rs"]
 mod model_service;
 #[path = "common/native_cache.rs"]
@@ -27,105 +32,38 @@ impl Drop for ChildGuard {
     }
 }
 
-fn python_layer(source: &Path, cache: &Path) -> EnvironmentLayer {
-    fn copy_python_sources(source: &Path, target: &Path) {
-        fs::create_dir_all(target).unwrap();
-        for entry in fs::read_dir(source).unwrap() {
-            let entry = entry.unwrap();
-            let name = entry.file_name();
-            if ["site-packages", "__pycache__", "lib-dynload"]
-                .iter()
-                .any(|s| name == *s)
-            {
-                continue;
-            }
-            let metadata = fs::metadata(entry.path()).unwrap();
-            if metadata.is_dir() {
-                copy_python_sources(&entry.path(), &target.join(&name));
-            } else if metadata.is_file() && entry.path().extension().is_some_and(|e| e == "py") {
-                fs::copy(entry.path(), target.join(&name)).unwrap();
-            }
-        }
-    }
-    let output = Command::new("/usr/bin/python3").args(["-c", "import urllib.request,json,subprocess,pathlib,sys,sysconfig,encodings.idna; print(json.dumps({'stdlib':sysconfig.get_path('stdlib'),'extensions':sorted({m.__file__ for m in sys.modules.values() if (getattr(m,'__file__','') or '').endswith('.so')})}))"]).output().unwrap();
-    assert!(
-        output.status.success(),
-        "{}",
-        String::from_utf8_lossy(&output.stderr)
-    );
-    let paths: serde_json::Value = serde_json::from_slice(&output.stdout).unwrap();
-    native_cache::publish_layer_prepared(source, cache, "agent-python", &[], false, |root| {
-        native_cache::copy_program(root, "/usr/bin/python3");
-        let stdlib = Path::new(paths["stdlib"].as_str().unwrap());
-        copy_python_sources(stdlib, &root.join(stdlib.strip_prefix("/").unwrap()));
-        for extension in paths["extensions"].as_array().unwrap() {
-            native_cache::copy_program(root, extension.as_str().unwrap());
-        }
-    })
-}
-
-fn task(id: &str, environment: &str) -> TaskSpec {
-    let mut run = RunSpec::process(id, "test-scaffold", "/usr/bin/python3");
-    let RunInvocation::Process(process) = &mut run.invocation;
-    process.args = vec!["/toolkit/agent.py".into()];
-    process.cwd = Some("/env".into());
-    process.inherit_env = false;
-    process
-        .env
-        .insert("PYTHONDONTWRITEBYTECODE".into(), "1".into());
-    process
-        .env
-        .insert("PVISOR_TEST_BINARY_ARTIFACT".into(), "1".into());
-    run.runtime.timeout_ms = Some(30_000);
-    run.runtime.max_output_bytes = 8192;
-    run.capabilities.models = vec!["test-model".into()];
-    TaskSpec {
-        retain_artifacts: Some(ArtifactRetention {
-            execution_checkpoint: None,
-            version: ARTIFACT_EXPORT_VERSION,
-            trace: true,
-            workspace_upper: true,
-        }),
-        gateway: Some(GatewayRequirement {
-            version: CLUSTER_VERSION,
-            level: pvisor_core::gateway::CaptureLevel::Dialogue,
-            models: vec!["test-model".into()],
-        }),
-        cpu_qos: None,
-        version: CLUSTER_VERSION,
-        id: id.into(),
-        tenant: "agents".into(),
-        run,
-        execution: ExecutionClass {
-            executor: ExecutorKind::VirtualMachine,
-            isolation: IsolationKind::VirtualMachine,
-        },
-        resources: Resources {
-            slots: 1,
-            memory_bytes: 256 * 1024 * 1024,
-            cpu_millis: 1000,
-        },
-        labels: BTreeMap::new(),
-        cache_keys: vec![],
-        retain_bundle: true,
-        environment: Some(environment.into()),
-        restore: None,
-    }
-}
-
 #[tokio::test(flavor = "multi_thread", worker_threads = 4)]
 #[ignore = "requires Linux KVM/FUSE, Python3 and firmware; run just test-cluster-vm-gateway"]
 async fn concurrent_native_agent_model_tool_loops_keep_credentials_trace_and_workspaces_private() {
-    native_agent_gate(false).await;
+    native_agent_gate(false, Restart::None).await;
 }
 
 #[tokio::test(flavor = "multi_thread", worker_threads = 4)]
 #[ignore = "requires Linux KVM/FUSE, Python3 and firmware; run just test-cluster-vm-gateway"]
 async fn cooperative_model_wait_releases_cpu_and_preserves_manual_pause_before_delivery() {
-    native_agent_gate(true).await;
+    native_agent_gate(true, Restart::None).await;
 }
 
-async fn native_agent_gate(idle: bool) {
+#[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+#[ignore = "requires Linux KVM/FUSE, Python3 and firmware; run just test-cluster-vm-gateway"]
+async fn cooperative_model_wait_survives_controller_restart_with_same_native_execution() {
+    native_agent_gate(true, Restart::Server).await;
+}
+
+#[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+#[ignore = "requires Linux KVM/FUSE, Python3, firmware and controller binary; run just test-cluster-vm-gateway"]
+async fn cooperative_model_wait_survives_controller_sigkill_with_same_native_execution() {
+    native_agent_gate(true, Restart::Process).await;
+}
+
+#[derive(Clone, Copy, PartialEq)]
+enum Restart {
+    None,
+    Server,
+    Process,
+}
+
+async fn native_agent_gate(idle: bool, restart: Restart) {
     use std::os::unix::fs::FileTypeExt;
     for device in ["/dev/kvm", "/dev/fuse"] {
         assert!(fs::metadata(device).unwrap().file_type().is_char_device());
@@ -174,19 +112,16 @@ async fn native_agent_gate(idle: bool) {
     .await
     .unwrap();
     let model = model_service::ModelService::start_held().await;
-    let scheduler = Scheduler::open(
-        &root.join("journal"),
-        SchedulerConfig {
-            lease_duration_ms: 3000,
-            artifact_storage_limits: Some(ArtifactStorageLimits {
-                version: CLUSTER_VERSION,
-                max_bytes: Some(128 * 1024 * 1024),
-                max_objects: Some(128),
-            }),
-            ..Default::default()
-        },
-    )
-    .unwrap();
+    let scheduler_config = SchedulerConfig {
+        lease_duration_ms: 3000,
+        artifact_storage_limits: Some(ArtifactStorageLimits {
+            version: CLUSTER_VERSION,
+            max_bytes: Some(128 * 1024 * 1024),
+            max_objects: Some(128),
+        }),
+        ..Default::default()
+    };
+    let scheduler = Scheduler::open(&root.join("journal"), scheduler_config.clone()).unwrap();
     async fn hold_artifact(
         axum::extract::State(mut release): axum::extract::State<tokio::sync::watch::Receiver<bool>>,
         request: axum::extract::Request,
@@ -197,17 +132,58 @@ async fn native_agent_gate(idle: bool) {
         }
         next.run(request).await
     }
-    let (artifact_release, artifact_gate) = tokio::sync::watch::channel(false);
-    let router = pvisor_cluster::server::router(scheduler, ADMIN.into(), WORKER.into())
-        .unwrap()
-        .layer(axum::middleware::from_fn_with_state(
+    fn controller_router(
+        scheduler: Scheduler,
+        artifact_gate: tokio::sync::watch::Receiver<bool>,
+    ) -> axum::Router {
+        gate_artifacts(
+            pvisor_cluster::server::router(scheduler, ADMIN.into(), WORKER.into()).unwrap(),
+            artifact_gate,
+        )
+    }
+    fn gate_artifacts(
+        router: axum::Router,
+        artifact_gate: tokio::sync::watch::Receiver<bool>,
+    ) -> axum::Router {
+        router.layer(axum::middleware::from_fn_with_state(
             artifact_gate,
             hold_artifact,
-        ));
+        ))
+    }
+    let (artifact_release, artifact_gate) = tokio::sync::watch::channel(false);
+    let (mut controller_process, mut ready_failure, router) = if restart == Restart::Process {
+        drop(scheduler);
+        let controller = controller_process::Controller::start(
+            root,
+            Path::new(env!("CARGO_BIN_EXE_pvisor-worker")),
+            scheduler_config.lease_duration_ms,
+            scheduler_config.artifact_storage_limits.as_ref().unwrap(),
+            ADMIN,
+            WORKER,
+        )
+        .await;
+        let (proxy, failure) = controller.proxy();
+        let router = gate_artifacts(proxy, artifact_gate.clone());
+        (Some(controller), Some(failure), router)
+    } else {
+        (
+            None,
+            None,
+            controller_router(scheduler, artifact_gate.clone()),
+        )
+    };
     let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
-    let url = format!("http://{}", listener.local_addr().unwrap());
-    let server = tokio::spawn(async move {
-        axum::serve(listener, router).await.unwrap();
+    let address = listener.local_addr().unwrap();
+    let url = format!("http://{address}");
+    let (stop, shutdown) = tokio::sync::oneshot::channel();
+    let mut server_stop = Some(stop);
+    let mut server = tokio::spawn(async move {
+        axum::serve(listener, router)
+            .with_graceful_shutdown(async {
+                let _ = shutdown.await;
+            })
+            .await
+            .unwrap();
     });
     let admin = Client::new(&url, ADMIN.into()).unwrap();
     let environment = admin
@@ -439,6 +415,128 @@ async fn native_agent_gate(idle: bool) {
             .unwrap()
             .unwrap();
         assert!(waiting.ready && waiting.resume_revision.is_some());
+        if restart != Restart::None {
+            if let Some(failure) = &mut ready_failure {
+                let uncertain = failure.committed().await;
+                assert!(uncertain == overridden.key || uncertain == waiting.key);
+            }
+            let before = [
+                admin.task("agent-a").await.unwrap(),
+                admin.task("agent-b").await.unwrap(),
+                admin.task("cpu-competitor").await.unwrap(),
+            ];
+            if let Some(controller) = &mut controller_process {
+                controller.kill();
+            } else {
+                server_stop.take().unwrap().send(()).unwrap();
+                tokio::time::timeout(Duration::from_secs(1), &mut server)
+                    .await
+                    .expect("controller HTTP shutdown within Worker watchdog")
+                    .unwrap();
+            }
+            let scheduler = tokio::time::timeout(Duration::from_secs(1), async {
+                loop {
+                    if let Ok(scheduler) =
+                        Scheduler::open(&root.join("journal"), scheduler_config.clone())
+                    {
+                        break scheduler;
+                    }
+                    tokio::time::sleep(Duration::from_millis(1)).await;
+                }
+            })
+            .await
+            .expect("old controller releases journal authority");
+            assert_eq!(
+                scheduler.inference_wait_record("agent-a").unwrap(),
+                Some(overridden)
+            );
+            assert_eq!(
+                scheduler.inference_wait_record("agent-b").unwrap(),
+                Some(waiting)
+            );
+            for record in &before {
+                let replayed = scheduler.task(&record.spec.id).unwrap();
+                assert!(replayed.reconciliation_pending);
+                assert_eq!(
+                    replayed.lease.as_ref().unwrap().key,
+                    record.lease.as_ref().unwrap().key
+                );
+                assert_eq!(replayed.current_reservation(), record.current_reservation());
+            }
+            if let Some(controller) = &mut controller_process {
+                drop(scheduler);
+                controller.restart().await;
+                ready_failure.as_ref().unwrap().release_as_failure().await;
+            } else {
+                let router = controller_router(scheduler, artifact_gate.clone());
+                let listener = tokio::net::TcpListener::bind(address).await.unwrap();
+                let (stop, shutdown) = tokio::sync::oneshot::channel();
+                server_stop = Some(stop);
+                server = tokio::spawn(async move {
+                    axum::serve(listener, router)
+                        .with_graceful_shutdown(async {
+                            let _ = shutdown.await;
+                        })
+                        .await
+                        .unwrap();
+                });
+            }
+            tokio::time::timeout(Duration::from_secs(2), async {
+                loop {
+                    let mut confirmed = true;
+                    for record in &before {
+                        let after = admin.task(&record.spec.id).await.unwrap();
+                        assert_eq!(
+                            after.lease.as_ref().unwrap().key,
+                            record.lease.as_ref().unwrap().key
+                        );
+                        if !after.reconciliation_pending {
+                            assert_eq!(after.phase, record.phase);
+                        }
+                        confirmed &= !after.reconciliation_pending;
+                        let before_pid = record
+                            .memory_sample
+                            .as_ref()
+                            .unwrap()
+                            .report
+                            .sample
+                            .usage
+                            .as_ref()
+                            .unwrap()
+                            .pid;
+                        if let Some(usage) = after
+                            .memory_sample
+                            .as_ref()
+                            .and_then(|s| s.report.sample.usage.as_ref())
+                        {
+                            assert_eq!(usage.pid, before_pid);
+                        } else {
+                            confirmed = false;
+                        }
+                    }
+                    if confirmed {
+                        break;
+                    }
+                    tokio::time::sleep(Duration::from_millis(25)).await;
+                }
+            })
+            .await
+            .expect("surviving Worker reconciles native executions");
+            for (index, id) in ["agent-a", "agent-b"].iter().enumerate() {
+                assert!(Path::new(&format!("/proc/{}", native[index].pid)).exists());
+                assert_eq!(vcpu_ticks(native[index].pid), frozen[index]);
+                assert_eq!(
+                    admin
+                        .task(id)
+                        .await
+                        .unwrap()
+                        .current_reservation()
+                        .cpu_millis,
+                    0
+                );
+            }
+            assert_eq!(model.calls.lock().unwrap().len(), 2);
+        }
         admin.cancel("cpu-competitor").await.unwrap();
         tokio::time::timeout(Duration::from_secs(5), async {
             loop {
@@ -713,5 +811,6 @@ async fn native_agent_gate(idle: bool) {
         .join("rootfs-v3/sha256")
         .join(&base.manifest_digest[7..]);
     assert!(!base_root.join("env/answer.py").exists());
+    server_stop.take().unwrap().send(()).unwrap();
     server.abort();
 }

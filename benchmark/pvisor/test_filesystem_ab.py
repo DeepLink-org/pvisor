@@ -2,6 +2,39 @@
 
 import pytest
 from filesystem_ab import WORKLOADS, summarize, validate_binaries
+from reference_baselines import validate_bundle_execution
+
+
+def test_declared_rootless_staging_requires_exact_isolation_and_kernel_boundaries():
+    bundle = {
+        "run": {
+            "state": "completed",
+            "exit_code": 0,
+            "executor": {"isolation": "rootless_process"},
+        },
+        "safety": {
+            "filesystem_changes_staged": True,
+            "filesystem_non_bypassable": True,
+            "filesystem_read_non_bypassable": True,
+            "filesystem_write_non_bypassable": True,
+        },
+    }
+    with pytest.raises(AssertionError):
+        validate_bundle_execution(bundle, "pvisor-staged")
+    validate_bundle_execution(bundle, "pvisor-staged", "rootless_process")
+    for boundary in (
+        "filesystem_non_bypassable",
+        "filesystem_read_non_bypassable",
+        "filesystem_write_non_bypassable",
+    ):
+        bundle["safety"][boundary] = False
+        with pytest.raises(AssertionError):
+            validate_bundle_execution(bundle, "pvisor-staged", "rootless_process")
+        bundle["safety"][boundary] = True
+    bundle["run"]["executor"]["isolation"] = "host_process"
+    with pytest.raises(AssertionError):
+        validate_bundle_execution(bundle, "pvisor-staged", "rootless_process")
+    validate_bundle_execution(bundle, "pvisor-staged")
 
 
 def test_stale_build_or_wrong_manifest_cannot_enter_the_ab_run():

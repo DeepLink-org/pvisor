@@ -50,6 +50,38 @@ pub struct SnapshotBase {
     lease: File,
 }
 impl SnapshotBase {
+    /// Recognize an imported generation and acquire its GC lease. Ordinary
+    /// mutable roots have no receipt. A matching store seal must authenticate
+    /// before its digests can be attached to a VM.
+    pub(crate) fn lease_root(root: &Path) -> anyhow::Result<Option<Self>> {
+        let root = root.canonicalize()?;
+        let Some(directory) = root
+            .parent()
+            .filter(|_| root.file_name() == Some("rootfs".as_ref()))
+        else {
+            return Ok(None);
+        };
+        let Some(bases) = directory
+            .parent()
+            .filter(|p| p.file_name() == Some("bases".as_ref()))
+        else {
+            return Ok(None);
+        };
+        let Some(id) = directory
+            .file_name()
+            .and_then(|s| s.to_str())
+            .filter(|id| valid_id(id).is_ok())
+        else {
+            return Ok(None);
+        };
+        if !directory.join("seal.json").try_exists()? {
+            return Ok(None);
+        }
+        let store = bases.parent().context("base has no snapshot store")?;
+        let _reading = gate(store, false)?;
+        open(store, &BaseReference { id: id.to_owned() }).map(Some)
+    }
+
     pub fn root(&self) -> PathBuf {
         self.directory.join("rootfs")
     }
@@ -256,6 +288,26 @@ pub(super) fn collect(store: &Path) -> anyhow::Result<usize> {
 #[cfg(test)]
 mod tests {
     use super::*;
+    #[test]
+    fn root_discovery_authenticates_the_generation_and_keeps_gc_out() {
+        let temp = tempfile::tempdir().unwrap();
+        let source = temp.path().join("source");
+        fs::create_dir(&source).unwrap();
+        fs::write(source.join("file"), b"content").unwrap();
+        assert!(SnapshotBase::lease_root(&source).unwrap().is_none());
+        let store = SnapshotStore::new(&temp.path().join("store")).unwrap();
+        let base = store.import_base(&source).unwrap();
+        let root = base.root();
+        let lease = SnapshotBase::lease_root(&root).unwrap().unwrap();
+        assert_eq!(lease.content_index(), base.content_index());
+        drop(base);
+        assert_eq!(collect(&store.root).unwrap(), 0);
+        fs::write(root.parent().unwrap().join("seal.json"), b"forged").unwrap();
+        assert!(SnapshotBase::lease_root(&root).is_err());
+        drop(lease);
+        assert_eq!(collect(&store.root).unwrap(), 1);
+    }
+
     #[test]
     fn imported_content_receipts_are_bound_to_the_owned_generation_and_audited() {
         let temp = tempfile::tempdir().unwrap();
