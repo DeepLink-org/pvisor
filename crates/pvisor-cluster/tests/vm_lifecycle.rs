@@ -498,6 +498,9 @@ fn live_capture_preflight_and_partial_request_do_not_publish_control_or_any_chil
     assert!(s.task("left").is_err());
     assert!(s.task("right").is_err());
     assert!(s.task("one").unwrap().controls.is_empty());
+    let key = s.task("one").unwrap().lease.unwrap().key;
+    assert!(s.task("one").unwrap().reconciliation_pending);
+    s.poll(poll(vec![key], Resources::default()), 4).unwrap();
     s.request_live_fork("one", fork_request(), 4).unwrap();
 }
 
@@ -1432,6 +1435,8 @@ fn checkpoint_acknowledgement_keeps_resources_and_is_fenced_durable_and_idempote
             .unwrap(),
         record
     );
+    assert!(s.task("one").unwrap().reconciliation_pending);
+    s.poll(poll(vec![key.clone()], free(&s)), 9).unwrap();
     s.request_control("one", request("paused", ControlAction::Pause), 9)
         .unwrap();
     let pause = s
@@ -2395,6 +2400,16 @@ fn cpu_counters_and_rates_preserve_wal_leases_budgets_and_restart_fencing() {
     drop(scheduler);
     let mut scheduler = Scheduler::open(&journal, config()).unwrap();
     assert!(scheduler.task("one").unwrap().cpu_sample.is_none());
+    assert_eq!(
+        scheduler
+            .report_cpu(cpu_report(&key, 3), 29)
+            .unwrap()
+            .ignored,
+        vec![key.clone()]
+    );
+    scheduler
+        .poll(poll(vec![key.clone()], free(&scheduler)), 30)
+        .unwrap();
     scheduler.report_cpu(cpu_report(&key, 3), 30).unwrap();
     assert!(
         scheduler

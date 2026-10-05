@@ -21,6 +21,47 @@ wire formats are never chained through Chat Completions as an intermediate
 protocol. Derived trajectory views are not part of the online
 protocol-conversion path.
 
+## Cooperative inference waits
+
+An embedding runtime can install an Attempt-bound
+[`ModelWaitLifecycle`](src/model_wait.rs) through
+`InProcessRuntime.model_wait`, or through pVisor's
+`GatewayDriverConfig::model_wait`. The agent opts an individual model call in
+with `x-pvisor-inference-idle: true`, declaring that the whole guest is
+quiescent while this call waits. Ordinary model requests cannot establish that
+other tools or background tasks are idle. An absent or `false` declaration,
+or an absent lifecycle, preserves ordinary forwarding. Duplicate and invalid
+declarations are rejected; this local header never reaches the model supplier.
+
+Gateway reserves an obligation only after model/action authorization and
+credential resolution, and awaits `enter` before dispatching upstream. For a
+buffered reply it waits for the body or a read failure; for SSE it waits for
+the first nonempty body chunk, EOF or a read failure, rather than treating early
+HTTP headers as a completed inference wait. It then awaits `before_delivery`
+before returning response headers or data. The prefetched SSE chunk is fed
+once into the existing translation/capture stream; subsequent chunks remain
+streamed with the existing backpressure and capture limits. Supplier errors
+also cross the delivery barrier before Gateway sends an error response.
+
+The lifecycle must durably bind the wait to its lease, coordinate parallel
+calls, retain pause ownership, reacquire CPU admission and confirm native
+resume. It must never override a human pause or revive a stale lease. Gateway
+does not alter scheduler reservations. A guard exists before either async
+callback starts; entry/delivery failure, a dropped handler and Gateway shutdown
+call its synchronous `cancel` once. Successful delivery disarms this cleanup.
+Implementations must enqueue bounded, fenced cleanup without blocking the
+Gateway's I/O thread, including when an async operation was interrupted after
+an uncertain effect.
+
+The shipped Worker does not yet install a lifecycle. Its durable bounded wait
+state, controller restart recovery and the native CPU release/readmission gate
+remain to be connected. This interface does not provide RAM reclamation or
+networked VM hibernation, and the controlled
+[`model_wait_http`](tests/model_wait_http.rs) tests measure HTTP ordering and
+cancellation rather than VM density. AgentENV's inference-wait lifecycle and
+DSec's independently retained rollout state remain broader implementation
+requirements, documented in the [controller matrix](../pvisor-cluster/README.md).
+
 ## Develop
 
 ```bash

@@ -5,7 +5,7 @@ use pvisor_cluster::{
 use std::path::PathBuf;
 
 #[derive(Parser)]
-#[command(about = "Durable distributed pVisor task controller")]
+#[command(about = "pVisor task controller with Worker-reconciled runtime state")]
 struct Args {
     #[arg(
         long,
@@ -25,6 +25,9 @@ enum Command {
         listen: std::net::SocketAddr,
         #[arg(long, default_value = ".pvisor/cluster/journal")]
         journal: PathBuf,
+        /// Compatibility: persist every lease renewal and trust replayed deadlines.
+        #[arg(long)]
+        durable_leases: bool,
         #[arg(long, env = "PVISOR_CLUSTER_WORKER_TOKEN", hide_env_values = true)]
         worker_token: String,
         #[arg(long, default_value_t = 30_000)]
@@ -82,6 +85,11 @@ enum Command {
     },
     Cancel {
         id: String,
+    },
+    /// Fence an unreachable execution awaiting restart reconciliation; never retry it.
+    ResolveLost {
+        /// JSON LeaseKey copied from the task record; includes generation/incarnation.
+        key: PathBuf,
     },
     /// Pause, offload, resume, checkpoint or suspend a VM. Reuse request-id after timeouts.
     Control {
@@ -158,6 +166,7 @@ async fn main() -> anyhow::Result<()> {
     if let Command::Serve {
         listen,
         journal,
+        durable_leases,
         worker_token,
         lease_ms,
         quotas,
@@ -178,7 +187,12 @@ async fn main() -> anyhow::Result<()> {
         if let Some(path) = artifact_limits {
             config.artifact_storage_limits = Some(serde_json::from_slice(&std::fs::read(path)?)?);
         }
-        let router = pvisor_cluster::server::open(&journal, config, token, worker_token)?;
+        let scheduler = if durable_leases {
+            pvisor_cluster::scheduler::Scheduler::open_durable(&journal, config)?
+        } else {
+            pvisor_cluster::scheduler::Scheduler::open(&journal, config)?
+        };
+        let router = pvisor_cluster::server::router(scheduler, token, worker_token)?;
         let listener = tokio::net::TcpListener::bind(listen).await?;
         eprintln!("pVisor controller listening on {}", listener.local_addr()?);
         axum::serve(listener, router)
@@ -190,6 +204,10 @@ async fn main() -> anyhow::Result<()> {
     }
     let client = Client::new(&args.url, token)?;
     let value = match args.command {
+        Command::ResolveLost { key } => {
+            let key = serde_json::from_slice(&std::fs::read(key)?)?;
+            serde_json::to_value(client.resolve_lost(&key).await?)?
+        }
         Command::Graph { command } => serde_json::to_value(match command {
             GraphCommand::Submit { spec } => {
                 client

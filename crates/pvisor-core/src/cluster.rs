@@ -4,6 +4,9 @@ use crate::{ExecutorKind, IsolationKind, RunResult, RunSpec};
 use serde::{Deserialize, Serialize};
 use std::collections::BTreeMap;
 
+mod inference;
+pub use inference::*;
+
 pub const CLUSTER_VERSION: u32 = 1;
 
 #[derive(Debug, Clone, Copy, Default, PartialEq, Eq, Serialize, Deserialize)]
@@ -497,6 +500,11 @@ pub struct Lease {
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct TaskRecord {
+    /// The persisted execution identity has not yet been confirmed by its
+    /// Worker after Controller restart. The phase is a historical hint until
+    /// this is false; resources remain reserved and execution is not retried.
+    #[serde(default)]
+    pub reconciliation_pending: bool,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub checkpoint_publication: Option<CheckpointPublication>,
     /// Version of durable upload pinning used for this assignment. Legacy live
@@ -745,7 +753,9 @@ pub struct ControlRecord {
 pub struct PollRequest {
     pub worker_id: String,
     pub incarnation: String,
-    /// Keys retained until the controller durably acknowledges completion.
+    /// Complete live inventory for this incarnation, including terminal
+    /// delivery until the Controller durably acknowledges it. Omitted keys may
+    /// be redelivered with the same identity; partial inventories are unsafe.
     pub active: Vec<LeaseKey>,
     /// Local final admission: free capacity can be below the advertised limit.
     pub available: Resources,

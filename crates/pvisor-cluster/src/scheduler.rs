@@ -1,4 +1,5 @@
-//! Single-writer durable shard. Queue lookahead and expiry indexes bound work
+//! Single-writer shard with rebuildable leases and durable task intentions.
+//! Queue lookahead and expiry indexes bound work
 //! by ready/expired tasks, rather than by historical task count.
 use crate::journal::Journal;
 use crate::*;
@@ -9,6 +10,7 @@ use std::path::Path;
 
 mod graph;
 mod indexes;
+mod inference;
 
 #[derive(Debug, Clone)]
 pub struct SchedulerConfig {
@@ -41,6 +43,12 @@ impl Default for SchedulerConfig {
 #[derive(Debug, Clone, Serialize, Deserialize)]
 #[serde(tag = "kind", rename_all = "snake_case")]
 enum Change {
+    InferenceWait {
+        record: InferenceWaitRecord,
+        control: Option<ControlRecord>,
+        /// An unissued pause can be cancelled before it has native effects.
+        abort_pause: bool,
+    },
     ArtifactAuthority {
         id: String,
     },
@@ -153,9 +161,14 @@ pub struct Scheduler {
     graph_state: graph::GraphState,
     config: SchedulerConfig,
     journal: Journal,
+    durable_leases: bool,
+    /// Replayed assignments are hints, never proof that a Worker has stopped.
+    reconciling: BTreeSet<String>,
     // Records contain large inline optional observations. Keep their existing
     // allocation instead of reserving one full record in every B-tree slot.
     tasks: BTreeMap<String, Box<TaskRecord>>,
+    inference_waits: BTreeMap<String, InferenceWaitRecord>,
+    inference_controls: BTreeMap<String, VecDeque<ControlRecord>>,
     run_ids: BTreeSet<String>,
     forks: BTreeMap<(String, String), ExecutionForkRecord>,
     live_forks: BTreeMap<(String, String), LiveForkRecord>,
@@ -208,6 +221,20 @@ fn identifier(value: &str) -> bool {
 
 impl Scheduler {
     pub fn open(path: &Path, config: SchedulerConfig) -> anyhow::Result<Self> {
+        Self::open_with_lease_mode(path, config, false)
+    }
+
+    /// Compatibility mode for deployments requiring the old durable lease
+    /// deadline contract. The default mode reconciles leases with Workers.
+    pub fn open_durable(path: &Path, config: SchedulerConfig) -> anyhow::Result<Self> {
+        Self::open_with_lease_mode(path, config, true)
+    }
+
+    fn open_with_lease_mode(
+        path: &Path,
+        config: SchedulerConfig,
+        durable_leases: bool,
+    ) -> anyhow::Result<Self> {
         ensure!(
             config.lease_duration_ms >= 100 && config.lease_duration_ms <= 300_000,
             "lease duration must be 100..300000 ms"
@@ -232,7 +259,11 @@ impl Scheduler {
             graph_state: graph::GraphState::default(),
             config,
             journal,
+            durable_leases,
+            reconciling: BTreeSet::new(),
             tasks: BTreeMap::new(),
+            inference_waits: BTreeMap::new(),
+            inference_controls: BTreeMap::new(),
             run_ids: BTreeSet::new(),
             forks: BTreeMap::new(),
             live_forks: BTreeMap::new(),
@@ -299,6 +330,19 @@ impl Scheduler {
             let (_, pins) = scheduler.artifacts.pin_manifest(reference)?;
             scheduler.retained_pins.insert(id.clone(), pins);
         }
+        if !durable_leases {
+            // Old WALs are readable, but their heartbeat deadlines are not
+            // authority in this mode. A fresh Worker report resolves each key.
+            for (id, task) in &mut scheduler.tasks {
+                if !task.phase.terminal()
+                    && let Some(lease) = &task.lease
+                {
+                    task.reconciliation_pending = true;
+                    scheduler.reconciling.insert(id.clone());
+                    scheduler.expiry.remove(&(lease.expires_at_ms, id.clone()));
+                }
+            }
+        }
         Ok(scheduler)
     }
 
@@ -306,12 +350,26 @@ impl Scheduler {
         if changes.is_empty() {
             return Ok(());
         }
-        let transaction = Transaction {
+        // Heartbeats, admission observations and lease deadlines are a Worker
+        // derived view. No append, quota charge or fsync on this hot path.
+        #[derive(Serialize)]
+        struct Commit<'a> {
+            version: u32,
+            changes: Vec<&'a Change>,
+        }
+        let transaction = Commit {
             version: CLUSTER_VERSION,
-            changes,
+            changes: changes
+                .iter()
+                .filter(|c| self.durable_leases || !matches!(c, Change::Renew { .. }))
+                .collect(),
         };
-        self.journal.append(&transaction)?;
-        for change in transaction.changes {
+        if !transaction.changes.is_empty() {
+            self.journal.append(&transaction)?;
+        } else {
+            self.journal.ensure_available()?;
+        }
+        for change in changes {
             self.apply(change);
         }
         Ok(())
@@ -343,8 +401,19 @@ impl Scheduler {
         self.journal.fail_sync();
     }
 
+    #[cfg(test)]
+    pub(crate) fn exhaust_journal_quota(&mut self) {
+        self.journal.exhaust_quota();
+    }
+
+    fn defer_capacity_failure(&self, error: &anyhow::Error) -> bool {
+        !self.durable_leases && error.is::<crate::artifacts::CapacityExceeded>()
+    }
+
     fn release(&mut self, id: &str) {
-        let task = &self.tasks[id];
+        self.reconciling.remove(id);
+        let task = self.tasks.get_mut(id).expect("task");
+        task.reconciliation_pending = false;
         if let Some(lease) = &task.lease {
             self.expiry.remove(&(lease.expires_at_ms, id.to_owned()));
             self.active
@@ -394,6 +463,34 @@ impl Scheduler {
 
     fn apply(&mut self, change: Change) {
         match change {
+            Change::InferenceWait {
+                record,
+                control,
+                abort_pause,
+            } => {
+                let id = record.key.lease.task_id.clone();
+                if abort_pause {
+                    let pause = self
+                        .inference_controls
+                        .get_mut(&id)
+                        .expect("wait controls")
+                        .iter_mut()
+                        .find(|c| c.command.revision == record.pause_revision)
+                        .expect("wait pause");
+                    assert_eq!(pause.phase, ControlPhase::Pending);
+                    pause.phase = ControlPhase::Aborted;
+                    pause.completed_at_ms = Some(record.updated_at_ms);
+                }
+                if let Some(control) = control {
+                    let retained = self.inference_controls.entry(id.clone()).or_default();
+                    retained.push_back(control);
+                    while retained.len() > 4 {
+                        assert!(retained.front().expect("control").phase.terminal());
+                        retained.pop_front();
+                    }
+                }
+                self.inference_waits.insert(id, record);
+            }
             Change::ArtifactAuthority { .. } => {}
             Change::GraphSubmitted { spec, tasks, at } => self.apply_graph(spec, tasks, at),
             Change::GraphCancelled { graph_id, at } => self.apply_graph_cancel(&graph_id, at),
@@ -524,7 +621,9 @@ impl Scheduler {
                 worker.admission_received_at_ms = admission.as_ref().map(|_| at);
                 worker.admission = admission.map(|r| *r);
                 for key in keys {
+                    self.reconciling.remove(&key.task_id);
                     let task = self.tasks.get_mut(&key.task_id).expect("task");
+                    task.reconciliation_pending = false;
                     let lease = task.lease.as_mut().expect("lease");
                     self.expiry
                         .remove(&(lease.expires_at_ms, key.task_id.clone()));
@@ -537,6 +636,7 @@ impl Scheduler {
                 }
             }
             Change::Cancel { task_id, at } => {
+                self.interrupt_inference(&task_id, at);
                 // A preceding graph cancellation may already have settled this
                 // blocked descendant in the same transaction.
                 if self.tasks[&task_id].phase.terminal() {
@@ -599,6 +699,7 @@ impl Scheduler {
                 reserved,
                 at,
             } => {
+                self.interrupt_inference(&task_id, at);
                 self.reallocate(&task_id, reserved);
                 let task = self.tasks.get_mut(&task_id).expect("task");
                 if task.phase != TaskPhase::Cancelling {
@@ -644,6 +745,7 @@ impl Scheduler {
                 artifact_error,
                 at,
             } => {
+                self.interrupt_inference(&task_id, at);
                 self.release(&task_id);
                 let task = self.tasks.get_mut(&task_id).expect("task");
                 self.indexes.set_phase(task, phase);
@@ -678,6 +780,7 @@ impl Scheduler {
                 self.settle_dependencies(&task_id, at);
             }
             Change::ControlRequested { task_id, record } => {
+                self.interrupt_inference(&task_id, record.requested_at_ms);
                 self.tasks
                     .get_mut(&task_id)
                     .expect("task")
@@ -686,6 +789,7 @@ impl Scheduler {
             }
             Change::Decline { rejection, at } => {
                 let id = rejection.key.task_id.clone();
+                self.interrupt_inference(&id, at);
                 self.release(&id);
                 let task = self.tasks.get_mut(&id).expect("task");
                 self.indexes.set_phase(task, TaskPhase::Queued);
@@ -715,16 +819,11 @@ impl Scheduler {
                     .checked_sub(self.tasks[&task_id].current_reservation())
                     .expect("control admission");
                 self.reallocate(&task_id, reserved);
-                let task = self.tasks.get_mut(&task_id).expect("task");
-                let record = task
-                    .controls
-                    .iter_mut()
-                    .find(|c| c.command.revision == revision)
-                    .expect("control");
+                let record = self.control_mut(&task_id, revision).expect("control");
                 record.phase = ControlPhase::Issued;
                 record.issued_at_ms = Some(at);
                 record.admission = admission;
-                task.updated_at_ms = at;
+                self.tasks.get_mut(&task_id).expect("task").updated_at_ms = at;
             }
             Change::ControlAcknowledged {
                 acknowledgement,
@@ -757,10 +856,10 @@ impl Scheduler {
                 if let Some(phase) = phase {
                     self.indexes.set_phase(task, phase);
                 }
-                let record = task
-                    .controls
-                    .iter_mut()
-                    .find(|c| c.command == acknowledgement.command)
+                task.updated_at_ms = at;
+                let record = self
+                    .control_mut(id, acknowledgement.command.revision)
+                    .filter(|c| c.command == acknowledgement.command)
                     .expect("control");
                 record.phase = match acknowledgement.outcome {
                     ControlOutcome::Checkpointed { .. } | ControlOutcome::Succeeded { .. } => {
@@ -770,7 +869,6 @@ impl Scheduler {
                 };
                 record.outcome = Some(acknowledgement.outcome);
                 record.completed_at_ms = Some(at);
-                task.updated_at_ms = at;
                 match capture_outcome {
                     Some(ControlOutcome::Checkpointed { checkpoint }) => {
                         self.settle_live_fork(id, Some(checkpoint), None, at)
@@ -1081,6 +1179,7 @@ impl Scheduler {
             "task retention limit reached"
         );
         let task = TaskRecord {
+            reconciliation_pending: false,
             checkpoint_publication: None,
             artifact_pin_protocol: None,
             artifact_retired_at_ms: None,
@@ -1500,7 +1599,7 @@ impl Scheduler {
             ensure!(
                 worker.registration.incarnation == registration.incarnation
                     || self.active[&registration.id].is_empty(),
-                "worker incarnation still owns leases; wait for expiry"
+                "worker incarnation still owns leases; reconcile or explicitly resolve unknown executions"
             );
             ensure!(
                 worker.reserved.fits(registration.capacity),
@@ -1544,7 +1643,7 @@ impl Scheduler {
             return Ok(task.as_ref().clone());
         }
         ensure!(
-            task.phase == TaskPhase::Leased && self.valid_key(&rejection.key, now),
+            task.phase == TaskPhase::Leased && self.reported_key(&rejection.key, now),
             "only an unstarted live assignment can be declined"
         );
         ensure!(
@@ -1557,12 +1656,61 @@ impl Scheduler {
     }
 
     fn valid_key(&self, key: &LeaseKey, now: u64) -> bool {
+        self.reported_key(key, now)
+            && self
+                .tasks
+                .get(&key.task_id)
+                .is_some_and(|t| !t.reconciliation_pending)
+    }
+
+    // Fresh incoming execution evidence may resolve a historical identity;
+    // desired commands and telemetry must first wait for confirmed ownership.
+    fn reported_key(&self, key: &LeaseKey, now: u64) -> bool {
         self.tasks.get(&key.task_id).is_some_and(|t| {
             !t.phase.terminal()
-                && t.lease
-                    .as_ref()
-                    .is_some_and(|l| l.key == *key && l.expires_at_ms > now)
+                && t.lease.as_ref().is_some_and(|l| {
+                    l.key == *key && (t.reconciliation_pending || l.expires_at_ms > now)
+                })
         })
+    }
+
+    /// Explicitly fence an unreachable execution. This never requeues it.
+    /// The caller must resolve possible external effects before submitting a
+    /// replacement task. Matching the complete key prevents stale resolution.
+    pub fn resolve_lost(&mut self, key: LeaseKey, now: u64) -> anyhow::Result<TaskRecord> {
+        let task = self.tasks.get(&key.task_id).context("unknown task")?;
+        ensure!(
+            task.lease.as_ref().is_some_and(|lease| lease.key == key),
+            "stale resolution key"
+        );
+        if task.phase.terminal() {
+            return Ok(task.as_ref().clone());
+        }
+        ensure!(
+            task.reconciliation_pending,
+            "execution is not awaiting reconciliation"
+        );
+        let known = task.result.is_some();
+        let phase = if !known {
+            TaskPhase::Lost
+        } else if task.phase == TaskPhase::Cancelling {
+            TaskPhase::Cancelled
+        } else {
+            TaskPhase::Failed
+        };
+        let change = Change::Finish {
+            checkpoint_publication: None,
+            task_id: key.task_id.clone(),
+            phase,
+            result: task.result.clone().map(Box::new),
+            error: (!known).then(|| "execution explicitly marked lost while awaiting Worker reconciliation; no automatic retry".into()),
+            artifacts: None,
+            artifact_error: known.then(|| "artifact delivery explicitly abandoned; native outcome preserved, no automatic retry".into()),
+            at: now,
+        };
+        let id = key.task_id;
+        self.commit(vec![change])?;
+        self.task(&id)
     }
 
     pub fn recover(
@@ -1599,7 +1747,7 @@ impl Scheduler {
                 "invalid or duplicate recovery key"
             );
             seen.insert(key.task_id.clone());
-            if self.valid_key(key, now) {
+            if self.reported_key(key, now) {
                 renewed.push(key.clone());
                 if self.tasks[&key.task_id].phase == TaskPhase::Cancelling {
                     stop.push(key.clone());
@@ -1629,7 +1777,13 @@ impl Scheduler {
     }
 
     pub fn poll(&mut self, mut request: PollRequest, now: u64) -> anyhow::Result<PollResponse> {
-        self.reap(now)?;
+        // A refused expiry commit keeps its old reservation and roots. It
+        // must not prevent other, healthy executions from renewing in memory.
+        if let Err(error) = self.reap(now)
+            && !self.defer_capacity_failure(&error)
+        {
+            return Err(error);
+        }
         ensure!(
             request.max_assignments <= self.config.max_batch,
             "batch limit exceeded"
@@ -1690,7 +1844,7 @@ impl Scheduler {
                     && seen.insert(key.task_id.clone()),
                 "invalid or duplicate active lease"
             );
-            if self.valid_key(key, now) {
+            if self.reported_key(key, now) {
                 renewed.push(key.clone());
                 if self.tasks[&key.task_id].phase == TaskPhase::Cancelling {
                     stop.push(key.clone());
@@ -1718,12 +1872,15 @@ impl Scheduler {
             admission: request.admission.clone().map(Box::new),
         }])?;
 
-        // Lost assignment responses are redelivered with the same fencing key.
-        // No extra reservation and no second execution for a known key.
+        // A fresh complete inventory from the SAME Worker incarnation permits
+        // lost-response redelivery with the SAME fencing key. Workers keep
+        // completed keys active until receipt and deduplicate active task IDs.
+        // Unreachable Workers never reach this path or free reservations.
         let mut assignments = Vec::new();
         for id in &self.active[&request.worker_id] {
             let task = &self.tasks[id];
-            if task.phase == TaskPhase::Leased && !seen.contains(id) {
+            if task.phase == TaskPhase::Leased && !task.reconciliation_pending && !seen.contains(id)
+            {
                 assignments.push(Assignment {
                     checkpoint_publication: self.task_checkpoint_publication(&task.spec),
                     spec: task.spec.clone(),
@@ -1733,7 +1890,21 @@ impl Scheduler {
                 });
             }
         }
-        let (controls, available) = self.issue_controls(&request, &renewed, now)?;
+        let redelivered = assignments.len();
+        let (controls, available) = match self.issue_controls(&request, &renewed, now) {
+            Ok(result) => result,
+            Err(error) if self.defer_capacity_failure(&error) => {
+                return Ok(PollResponse {
+                    version: CLUSTER_VERSION,
+                    lease_duration_ms: self.config.lease_duration_ms,
+                    assignments,
+                    renewed,
+                    stop,
+                    controls: vec![],
+                });
+            }
+            Err(error) => return Err(error),
+        };
         let worker = &self.workers[&request.worker_id];
         if worker.draining {
             return Ok(PollResponse {
@@ -1897,7 +2068,14 @@ impl Scheduler {
                 self.indexes.ready.push_back(id);
             }
         }
-        committed?;
+        if let Err(error) = committed {
+            if !self.defer_capacity_failure(&error) {
+                return Err(error);
+            }
+            // No new assignment was published. Return only previously owned
+            // keys; the restored ready queue can retry after capacity returns.
+            assignments.truncate(redelivered);
+        }
         Ok(PollResponse {
             version: CLUSTER_VERSION,
             lease_duration_ms: self.config.lease_duration_ms,
@@ -1914,6 +2092,10 @@ impl Scheduler {
         request: ControlRequest,
         now: u64,
     ) -> anyhow::Result<ControlRecord> {
+        ensure!(
+            !request.request_id.starts_with(INFERENCE_CONTROL_PREFIX),
+            "reserved inference control namespace"
+        );
         self.reap(now)?;
         let record = self.prepare_control(id, request, now)?;
         if !self.tasks[id]
@@ -1938,6 +2120,11 @@ impl Scheduler {
         ensure!(
             identifier(&request.request_id),
             "invalid control request id"
+        );
+        ensure!(
+            !request.request_id.starts_with(INFERENCE_CONTROL_PREFIX)
+                || matches!(request.action, ControlAction::Pause | ControlAction::Resume),
+            "reserved inference control namespace"
         );
         let task = self.tasks.get(id).context("unknown task")?;
         if let Some(record) = task
@@ -1978,7 +2165,7 @@ impl Scheduler {
             "worker does not support this VM control action"
         );
         ensure!(
-            task.controls.last().is_none_or(|r| r.phase.terminal()),
+            self.latest_control(id).is_none_or(|r| r.phase.terminal()),
             "another control is still pending"
         );
         ensure!(
@@ -2007,13 +2194,18 @@ impl Scheduler {
             "restored private COW RAM does not support writable-backing offload"
         );
         ensure!(
-            task.controls.len() < 4096,
+            task.controls.len() < 4096
+                || (request.request_id.starts_with(INFERENCE_CONTROL_PREFIX)
+                    && matches!(request.action, ControlAction::Pause | ControlAction::Resume)),
             "control history retention limit reached"
         );
         let record = ControlRecord {
             command: ControlCommand {
                 key: lease.key.clone(),
-                revision: task.controls.len() as u64 + 1,
+                revision: self
+                    .latest_control(id)
+                    .map_or(Some(1), |c| c.command.revision.checked_add(1))
+                    .context("control revision overflow")?,
                 request,
             },
             phase: ControlPhase::Pending,
@@ -2040,9 +2232,8 @@ impl Scheduler {
         for key in renewed {
             let task = &self.tasks[&key.task_id];
             if task.phase != TaskPhase::Cancelling
-                && let Some(record) = task
-                    .controls
-                    .last()
+                && let Some(record) = self
+                    .latest_control(&key.task_id)
                     .filter(|c| c.phase == ControlPhase::Issued)
             {
                 available = available.saturating_sub(record.admission);
@@ -2064,7 +2255,10 @@ impl Scheduler {
             if task.phase == TaskPhase::Cancelling {
                 continue;
             }
-            let Some(record) = task.controls.last().filter(|c| !c.phase.terminal()) else {
+            let Some(record) = self
+                .latest_control(&key.task_id)
+                .filter(|c| !c.phase.terminal())
+            else {
                 continue;
             };
             if record.phase == ControlPhase::Issued {
@@ -2132,10 +2326,9 @@ impl Scheduler {
                 "checkpoint belongs to another native Run"
             );
         }
-        let record = task
-            .controls
-            .iter()
-            .find(|r| r.command == acknowledgement.command)
+        let record = self
+            .control(&key.task_id, acknowledgement.command.revision)
+            .filter(|r| r.command == acknowledgement.command)
             .context("unknown or stale control")?;
         if record.phase == ControlPhase::Succeeded || record.phase == ControlPhase::Failed {
             ensure!(
@@ -2147,7 +2340,7 @@ impl Scheduler {
         ensure!(
             record.phase == ControlPhase::Issued
                 && task.phase != TaskPhase::Cancelling
-                && self.valid_key(key, now),
+                && self.reported_key(key, now),
             "stale or expired control acknowledgement"
         );
         let reserved = acknowledgement
@@ -2155,16 +2348,37 @@ impl Scheduler {
             .reservation(task.spec.resources, task.current_reservation());
         let revision = acknowledgement.command.revision;
         let id = key.task_id.clone();
-        self.commit(vec![Change::ControlAcknowledged {
+        let resume = self
+            .inference_waits
+            .get(&id)
+            .filter(|w| {
+                w.ready
+                    && !w.interrupted
+                    && w.resume_revision.is_none()
+                    && w.pause_revision == revision
+                    && matches!(
+                        acknowledgement.outcome,
+                        ControlOutcome::Succeeded {
+                            state: pvisor_core::VmState::Paused,
+                            ..
+                        }
+                    )
+            })
+            .cloned()
+            .map(|wait| self.inference_resume(wait, now))
+            .transpose()?;
+        let mut changes = vec![Change::ControlAcknowledged {
             acknowledgement,
             reserved,
             at: now,
-        }])?;
-        Ok(self.tasks[&id]
-            .controls
-            .iter()
-            .find(|r| r.command.revision == revision)
-            .unwrap()
+        }];
+        // Cancellation of an issued pause and its native confirmation cannot
+        // leave a crash window between releasing CPU and requesting resume.
+        changes.extend(resume);
+        self.commit(changes)?;
+        Ok(self
+            .control(&id, revision)
+            .expect("control receipt")
             .clone())
     }
 
@@ -2222,6 +2436,10 @@ impl Scheduler {
         now: u64,
     ) -> anyhow::Result<crate::artifacts::gc::Snapshot> {
         request.validate()?;
+        ensure!(
+            self.reconciling.is_empty(),
+            "artifact GC waits for Worker reconciliation or explicit lost resolution"
+        );
         self.reap(now)?;
         let retire: Vec<_> = self
             .retention_age
@@ -2264,6 +2482,10 @@ impl Scheduler {
         entries: &[ArtifactRetirement],
         now: u64,
     ) -> anyhow::Result<BTreeSet<String>> {
+        ensure!(
+            self.reconciling.is_empty(),
+            "artifact GC waits for Worker reconciliation or explicit lost resolution"
+        );
         self.reap(now)?;
         for entry in entries {
             let task = self
@@ -2432,7 +2654,7 @@ impl Scheduler {
             return Ok(task.as_ref().clone());
         }
         ensure!(
-            self.valid_key(&completion.key, now),
+            self.reported_key(&completion.key, now),
             "stale or expired lease"
         );
         ensure!(

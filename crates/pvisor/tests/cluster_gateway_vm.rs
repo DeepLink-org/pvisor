@@ -116,6 +116,16 @@ fn task(id: &str, environment: &str) -> TaskSpec {
 #[tokio::test(flavor = "multi_thread", worker_threads = 4)]
 #[ignore = "requires Linux KVM/FUSE, Python3 and firmware; run just test-cluster-vm-gateway"]
 async fn concurrent_native_agent_model_tool_loops_keep_credentials_trace_and_workspaces_private() {
+    native_agent_gate(false).await;
+}
+
+#[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+#[ignore = "requires Linux KVM/FUSE, Python3 and firmware; run just test-cluster-vm-gateway"]
+async fn cooperative_model_wait_releases_cpu_and_preserves_manual_pause_before_delivery() {
+    native_agent_gate(true).await;
+}
+
+async fn native_agent_gate(idle: bool) {
     use std::os::unix::fs::FileTypeExt;
     for device in ["/dev/kvm", "/dev/fuse"] {
         assert!(fs::metadata(device).unwrap().file_type().is_char_device());
@@ -147,7 +157,14 @@ async fn concurrent_native_agent_model_tool_loops_keep_credentials_trace_and_wor
                 "agent-scaffold",
                 &[(
                     "toolkit/agent.py",
-                    include_str!("fixtures/cluster_agent_loop.py"),
+                    &if idle {
+                        include_str!("fixtures/cluster_agent_loop.py").replace(
+                            "headers={\"Content-Type\":",
+                            "headers={\"x-pvisor-inference-idle\": \"true\", \"Content-Type\":",
+                        )
+                    } else {
+                        include_str!("fixtures/cluster_agent_loop.py").to_owned()
+                    },
                 )],
                 false,
             );
@@ -211,7 +228,7 @@ async fn concurrent_native_agent_model_tool_loops_keep_credentials_trace_and_wor
             .is_file()
     );
     let profile = root.join("worker.toml");
-    fs::write(&profile, format!("[environments]\nenabled = true\n[memory_sampling]\nenabled = true\ninterval_ms = 1000\n[vm]\nlibrary_dir = {}\n[overlaynet]\nmode = 'auto'\n[gateway]\nenabled = true\nlevel = 'dialogue'\n[[gateway.routes]]\nname = '*'\nupstream = {}\napi_key_env = 'PVISOR_TEST_MODEL_KEY'\n", serde_json::to_string(&firmware.to_string_lossy()).unwrap(), serde_json::to_string(&model.base_url).unwrap())).unwrap();
+    fs::write(&profile, format!("[environments]\nenabled = true\n[memory_sampling]\nenabled = true\ninterval_ms = 1000\n[vm]\nlibrary_dir = {}\n[overlaynet]\nmode = 'auto'\n[gateway]\nenabled = true\nrelease_cpu_on_idle = {idle}\nlevel = 'dialogue'\n[[gateway.routes]]\nname = '*'\nupstream = {}\napi_key_env = 'PVISOR_TEST_MODEL_KEY'\n", serde_json::to_string(&firmware.to_string_lossy()).unwrap(), serde_json::to_string(&model.base_url).unwrap())).unwrap();
     let binary = root.join("pvisor-worker");
     fs::copy(env!("CARGO_BIN_EXE_pvisor-worker"), &binary).unwrap();
     let worker_log = root.join("worker.log");
@@ -227,7 +244,7 @@ async fn concurrent_native_agent_model_tool_loops_keep_credentials_trace_and_wor
                 "--poll-ms",
                 "50",
                 "--slots",
-                "2",
+                if idle { "3" } else { "2" },
                 "--cpu-millis",
                 "2000",
             ])
@@ -270,6 +287,7 @@ async fn concurrent_native_agent_model_tool_loops_keep_credentials_trace_and_wor
                 })
                 .collect::<Option<Vec<_>>>();
             if model.calls.lock().unwrap().len() == 2
+                && (!idle || (a.phase == TaskPhase::Paused && b.phase == TaskPhase::Paused))
                 && let Some(usages) = usages
             {
                 assert_ne!(usages[0].pid, usages[1].pid);
@@ -306,7 +324,141 @@ async fn concurrent_native_agent_model_tool_loops_keep_credentials_trace_and_wor
     })
     .await
     .expect("native agent request/identity deadline");
-    model.release();
+    if idle {
+        fn vcpu_ticks(pid: u32) -> BTreeMap<String, u64> {
+            fs::read_dir(format!("/proc/{pid}/task"))
+                .unwrap()
+                .filter_map(|entry| {
+                    let entry = entry.unwrap();
+                    if !fs::read_to_string(entry.path().join("comm"))
+                        .unwrap()
+                        .contains("vcpu")
+                    {
+                        return None;
+                    }
+                    let stat = fs::read_to_string(entry.path().join("stat")).unwrap();
+                    let fields = stat
+                        .rsplit_once(')')
+                        .unwrap()
+                        .1
+                        .split_whitespace()
+                        .collect::<Vec<_>>();
+                    Some((
+                        entry.file_name().to_string_lossy().into_owned(),
+                        fields[11].parse::<u64>().unwrap() + fields[12].parse::<u64>().unwrap(),
+                    ))
+                })
+                .collect()
+        }
+        let frozen = native.iter().map(|u| vcpu_ticks(u.pid)).collect::<Vec<_>>();
+        assert!(frozen.iter().all(|v| !v.is_empty()));
+        assert_eq!(admin.workers().await.unwrap()[0].reserved.cpu_millis, 0);
+        for id in ["agent-a", "agent-b"] {
+            let wait = admin.inference_wait_record(id).await.unwrap().unwrap();
+            assert!(wait.pause_revision > 0 && !wait.ready && !wait.interrupted);
+        }
+        assert_eq!(
+            admin.workers().await.unwrap()[0].reserved.memory_bytes,
+            512 * 1024 * 1024
+        );
+        let mut competitor = task("cpu-competitor", &environment.digest);
+        competitor.gateway = None;
+        competitor.retain_bundle = false;
+        competitor.retain_artifacts = None;
+        competitor.resources.cpu_millis = 2000;
+        let RunInvocation::Process(process) = &mut competitor.run.invocation;
+        process.program = "/bin/sh".into();
+        process.args = vec!["-c".into(), "while :; do :; done".into()];
+        admin.submit(&competitor).await.unwrap();
+        tokio::time::timeout(Duration::from_secs(10), async {
+            loop {
+                let record = admin.task("cpu-competitor").await.unwrap();
+                assert!(!record.phase.terminal(), "{record:?}");
+                if record.phase == TaskPhase::Running
+                    && record
+                        .memory_sample
+                        .as_ref()
+                        .is_some_and(|s| s.report.sample.usage.is_some())
+                {
+                    break;
+                }
+                tokio::time::sleep(Duration::from_millis(25)).await;
+            }
+        })
+        .await
+        .expect("competitor admitted using released CPU");
+        admin
+            .control(
+                "agent-a",
+                &ControlRequest {
+                    request_id: "human-idle-pause".into(),
+                    action: ControlAction::Pause,
+                },
+            )
+            .await
+            .unwrap();
+        tokio::time::timeout(Duration::from_secs(5), async {
+            loop {
+                if admin
+                    .task("agent-a")
+                    .await
+                    .unwrap()
+                    .controls
+                    .last()
+                    .is_some_and(|c| c.phase == ControlPhase::Succeeded)
+                {
+                    break;
+                }
+                tokio::time::sleep(Duration::from_millis(25)).await;
+            }
+        })
+        .await
+        .unwrap();
+        model.release();
+        tokio::time::sleep(Duration::from_millis(300)).await;
+        for (index, id) in ["agent-a", "agent-b"].iter().enumerate() {
+            let record = admin.task(id).await.unwrap();
+            assert_eq!(record.phase, TaskPhase::Paused);
+            assert_eq!(record.current_reservation().cpu_millis, 0);
+            assert_eq!(vcpu_ticks(native[index].pid), frozen[index]);
+        }
+        assert_eq!(
+            model.calls.lock().unwrap().len(),
+            2,
+            "no guest tool/result request before resume admission"
+        );
+        let overridden = admin.inference_wait_record("agent-a").await.unwrap().unwrap();
+        assert!(overridden.ready && overridden.interrupted && overridden.resume_revision.is_none());
+        let waiting = admin.inference_wait_record("agent-b").await.unwrap().unwrap();
+        assert!(waiting.ready && waiting.resume_revision.is_some());
+        admin.cancel("cpu-competitor").await.unwrap();
+        tokio::time::timeout(Duration::from_secs(5), async {
+            loop {
+                if admin.task("cpu-competitor").await.unwrap().phase == TaskPhase::Cancelled {
+                    break;
+                }
+                tokio::time::sleep(Duration::from_millis(25)).await;
+            }
+        })
+        .await
+        .unwrap();
+        assert_eq!(
+            admin.task("agent-a").await.unwrap().phase,
+            TaskPhase::Paused
+        );
+        admin
+            .control(
+                "agent-a",
+                &ControlRequest {
+                    request_id: "human-idle-resume".into(),
+                    action: ControlAction::Resume,
+                },
+            )
+            .await
+            .unwrap();
+    } else {
+        model.release();
+    }
     let staged = tokio::time::timeout(Duration::from_secs(15), async {
         loop {
             let a = admin.task("agent-a").await.unwrap();

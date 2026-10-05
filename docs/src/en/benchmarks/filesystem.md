@@ -1,6 +1,6 @@
 # Filesystem and development-tool overhead
 
-Same-host Docker comparisons put 64 MiB reads at **33 ms** native/Docker versus **49 ms** staged, and traversal of 2,048 files at **5 ms** native/Docker versus **180 ms** staged. Individual reads add tens of milliseconds; dense small-file paths remain costly. VM offline npm takes **1.73 s**, versus **0.23 s** in Docker.
+The latest real VM/FUSE A/B batch (30 samples per cell) puts 2,048-file traversal P50 at **78.25 ms** staged and **195.24 ms** VM. The latest resolver optimization reduces elapsed time by **15.3% / 13.0%** respectively. Launch-to-exit for all seven workloads takes **1.23 s / 4.78 s**, down just **4.5% / 1.1%**; metadata savings reproduce, while overall and tail performance still need improvement.
 
 ## Motivation
 
@@ -8,7 +8,7 @@ Agents repeatedly list, search and modify files. Tool time and full job time tog
 
 ## Experiment design {#interpretation}
 
-Identical inputs across native, host, staged, safe, libkrun VM, rootless Podman/crun and pVisor OCI. Main cells have 3 warmups and 30 measurements with warm host caches. Image/input preparation is excluded. Worker time includes tool execution and validation; wall time includes launch and teardown. metadata/git/rg use 2,048 files in 32 directories; read validates a 64 MiB hash; write creates 256×60 KiB files. cargo builds 64 dependency-free modules and verifies 2016. npm installs 32 local packages offline, without registry access.
+The latest batch randomizes native and both versions of staged and libkrun VM. Historical matrices also include host, safe, Docker, rootless Podman/crun and pVisor OCI. Cells usually have 3 warmups and 30 measurements with warm host caches; the complete Ubuntu follow-up uses N=10, labeled separately. Image/input preparation is excluded. Worker time includes tool execution and validation; wall time includes launch and teardown. metadata/git/rg use 2,048 files in 32 directories; read validates a 64 MiB hash. product-v1 write creates 256×60 KiB files; the complete tool environment and latest A/B retain the 256×64 KiB fixture. cargo builds 64 dependency-free modules and verifies 2016. npm installs 32 local packages offline, without registry access.
 
 ## macOS
 
@@ -22,6 +22,11 @@ the initial sandbox hid `/dev/kvm` and `/dev/fuse`. Both GNU/Linux release binar
 come from the same `a1020d4b` source archive and differ only in OverlayCore's
 `core.rs`. Both include the same guest stdio readiness fix. Binary, firmware,
 source patch and harness hashes are retained.
+
+“After” means this pinned candidate artifact, measuring the incremental benefit
+of skipping marker probes for an unavailable upper. Other optimizations already
+in the archive are shared by both binaries and are outside the A/B difference;
+later commits do not automatically enter these measurements.
 
 Each round shuffles five cells: native and both versions of FUSE staged and VM.
 Each cell has three warmups and 30 measurements: 150 measured jobs and 1,050 tool
@@ -52,6 +57,32 @@ paths. This does not establish improvements for VM git, writes or overall jobs:
 VM write and git became slower in this batch. Small changes and write behavior
 need a quieter-host rerun; a single P50 cannot establish their cause.
 
+### P95 and remaining costs {#optimization-tails}
+
+P95 from the same samples, in ms. Lower medians did not consistently produce
+lower tail latency:
+
+| Workload | FUSE before→after P95 | Change | VM before→after P95 | Change |
+|---|---:|---:|---:|---:|
+| metadata | 112.02 → 107.34 | -4.2% | 344.81 → 322.87 | -6.4% |
+| write | 312.85 → 300.82 | -3.8% | 349.50 → 780.11 | +123.2% |
+| git | 294.83 → 378.19 | +28.3% | 892.72 → 1181.58 | +32.4% |
+| rg | 153.51 → 172.53 | +12.4% | 604.35 → 850.17 | +40.7% |
+| Whole job, launch to exit | 2078.80 → 2152.45 | +3.5% | 6796.10 → 8565.53 | +26.0% |
+
+Candidate staged / VM whole-job P99 is **13.36 s / 10.46 s**, also retained in
+the raw summary. With N=30, a few slow samples influence the tail, and concurrent
+host load remains uncontrolled. These observations need reproduction before
+attributing them to an implementation change. Evidence supports metadata-path
+improvement; overall performance acceptance still needs repeated quieter-host
+batches.
+
+Against same-batch native, candidate staged / VM metadata still takes
+**15.9 / 39.6 times** as long, adding **73 / 190 ms** per traversal. Writing
+256 files still takes **199 / 257 ms**, versus **3.90 ms** native. VM offline
+npm takes **1.50 s**, versus **0.17 s** native. Repeated traversal, small-file
+writes and VM tool execution remain the next optimization targets.
+
 An earlier warmup exited zero and completed writes without any workload stdout
 markers. The harness stopped and retained the failure. The ordinary VM runner now
 declares the named ports required by its actual non-terminal standard descriptors.
@@ -77,7 +108,7 @@ not queue waiting time.
 
 Validation passed: five guest tests, 292 full VM-package tests (two skipped),
 24 executor tests excluding control and 24 benchmark tests, plus guest Clippy and
-benchmark Ruff. The wider executor subset in the current worktree has nine
+benchmark Ruff. The wider executor subset in the worktree at measurement time had nine
 VM-control test failures, retained separately in the validation archive. This
 change does not modify control implementation or count those checks as passed.
 
@@ -99,6 +130,33 @@ python3 benchmark/pvisor/filesystem_ab.py \
 [Protocol, binaries and P50/P95/P99](../../assets/benchmarks/filesystem-ab-20261005/summary.json) ·
 [Separate diagnostics](../../assets/benchmarks/filesystem-ab-20261005/profiles.json) ·
 [Reports, harness, failure and validation logs](../../assets/benchmarks/filesystem-ab-20261005/evidence.tar.gz)
+
+### Observed change from historical to latest {#historical-progress}
+
+This compares the 2026-10-04 complete-tool-environment N=30 batch with the latest
+candidate N=30 batch: internal tool P50 in ms. Both retain the tool fixture, but
+artifacts, host load and run protocols differ. Percentages describe differences
+across batches and cannot establish the controlled causal benefit of all
+optimizations. Use the [same-batch A/B](#e2e-baseline) for the latest change's
+incremental benefit.
+
+| Workload | Historical→latest staged | Across-batch change | Historical→latest VM | Across-batch change |
+|---|---:|---:|---:|---:|
+| metadata | 180.13 → 78.25 | -56.6% | 310.54 → 195.24 | -37.1% |
+| read | 48.77 → 67.82 | +39.1% | 89.27 → 117.90 | +32.1% |
+| write | 189.28 → 198.92 | +5.1% | 144.66 → 257.16 | +77.8% |
+| git | 177.81 → 170.46 | -4.1% | 456.21 → 494.86 | +8.5% |
+| rg | 144.61 → 90.58 | -37.4% | 545.82 → 464.97 | -14.8% |
+| cargo | 112.80 → 110.11 | -2.4% | 549.57 → 512.74 | -6.7% |
+| npm | 222.97 → 217.47 | -2.5% | 1727.04 → 1503.67 | -12.9% |
+
+Existing measurements show lower traversal and search times; reads and writes
+did not improve alongside them. Docker, complete repair tasks and real Agent CLI
+loops were not rerun here. Historical data below retains its original dates and
+artifacts; filesystem percentages cannot predict their latest performance.
+
+[Historical distributions](../../assets/benchmarks/reference-env-20261004/summary.json) ·
+[Latest distributions](../../assets/benchmarks/filesystem-ab-20261005/summary.json)
 
 ## Linux: 2026-10-05, OverlayCore resolution optimization {#resolution-optimization}
 

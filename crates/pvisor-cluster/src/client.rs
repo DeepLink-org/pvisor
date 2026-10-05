@@ -84,6 +84,10 @@ impl Client {
         spec.validate_artifacts()?;
         self.post("/v1/tasks", spec).await
     }
+    pub async fn resolve_lost(&self, key: &LeaseKey) -> anyhow::Result<TaskRecord> {
+        self.post(&format!("/v1/tasks/{}/resolve-lost", key.task_id), key)
+            .await
+    }
     pub async fn task(&self, id: &str) -> anyhow::Result<TaskRecord> {
         self.get(&format!("/v1/tasks/{id}")).await
     }
@@ -648,5 +652,16 @@ impl Client {
         acknowledgement: &ControlAcknowledgement,
     ) -> anyhow::Result<ControlRecord> {
         self.post("/v1/workers/control-ack", acknowledgement).await
+    }
+
+    pub async fn inference_wait(
+        &self,
+        request: &InferenceWaitRequest,
+    ) -> anyhow::Result<InferenceWaitReceipt> {
+        self.post("/v1/workers/inference-wait", request).await
+    }
+
+    pub async fn inference_wait_record(&self, id: &str) -> anyhow::Result<Option<InferenceWaitRecord>> {
+        self.get(&format!("/v1/tasks/{id}/inference-wait")).await
     }
 }

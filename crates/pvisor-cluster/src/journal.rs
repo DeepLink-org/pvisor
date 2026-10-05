@@ -189,6 +189,11 @@ impl Journal {
         // /dev/null accepts writes but fsync fails with EINVAL on Linux.
         self.file = OpenOptions::new().write(true).open("/dev/null").unwrap();
     }
+
+    #[cfg(test)]
+    pub(crate) fn exhaust_quota(&mut self) {
+        self.max_bytes = self.file.metadata().unwrap().len();
+    }
 }
 
 pub(crate) const DEFAULT_MAX_JOURNAL_BYTES: u64 = 1024 * 1024 * 1024;

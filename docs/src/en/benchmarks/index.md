@@ -4,6 +4,32 @@ Image-free pVisor VM starts in about **110 ms**; complete Ubuntu on the same-hos
 
 Measurements publish reproduction scripts, samples and failures; comparisons identify official sources and unmeasured areas. See [methodology](methodology.md).
 
+## 2026-10-05: actual filesystem optimization gains {#filesystem-optimization}
+
+The latest pinned-artifact KVM/FUSE A/B has three warmups and 30 measurements
+per cell: 150 jobs and 1,050 tool measurements, all correct. The table reports
+elapsed changes from the latest OverlayCore resolver modification; both binaries
+share the other existing optimizations.
+
+| Measurement | Staged after P50 | Same-batch change | VM after P50 | Same-batch change |
+|---|---:|---:|---:|---:|
+| 2,048-file traversal | 78.25 ms | -15.3% | 195.24 ms | -13.0% |
+| Git status | 170.46 ms | -10.5% | 494.86 ms | +2.2% |
+| rg search | 90.58 ms | -10.1% | 464.97 ms | -2.5% |
+| 256-file writes | 198.92 ms | -1.2% | 257.16 ms | +5.8% |
+| Seven-workload job, launch to exit | 1.23 s | -4.5% | 4.78 s | -1.1% |
+
+Metadata gains reproduce, but whole-job savings remain modest. Whole-job P95
+is **2.08 → 2.15 s** staged and **6.80 → 8.57 s** VM: tails grew in this batch,
+with concurrent host load requiring a quieter-host rerun. Historical-to-latest
+traversal P50 fell from **180 → 78 ms** staged and **311 → 195 ms** VM, but
+differences across batches cannot all be attributed to code optimizations.
+Complete repair tasks and Agent CLI loops were not remeasured here.
+
+[Full A/B and protocol](filesystem.md#e2e-baseline) ·
+[Tail latency and remaining costs](filesystem.md#optimization-tails) ·
+[Historical-to-latest comparison](filesystem.md#historical-progress)
+
 ## Available measurements
 
 Both macOS and Linux measurements are retained, with separate records for each platform, measurement date and artifact. The VM measurements below are from 2026-10-03; new results are added while earlier batches and raw evidence remain available.

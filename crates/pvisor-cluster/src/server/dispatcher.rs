@@ -200,6 +200,206 @@ mod tests {
     }
 
     #[test]
+    fn renewal_only_group_does_not_touch_storage_or_sync_but_cold_changes_still_fail_closed() {
+        use crate::{PollRequest, WorkerRegistration};
+        let temp = tempfile::tempdir().unwrap();
+        let scheduler = scheduler(&temp.path().join("wal"));
+        let key = {
+            let mut s = lock(&scheduler).unwrap();
+            let spec = task("live");
+            let registration: WorkerRegistration = serde_json::from_value(serde_json::json!({
+                "version": CLUSTER_VERSION, "id": "w", "incarnation": "i",
+                "capacity": spec.resources, "execution": [spec.execution],
+                "labels": {}, "cache_keys": []
+            }))
+            .unwrap();
+            s.register(registration, 0).unwrap();
+            s.submit(spec, 0).unwrap();
+            s.poll(
+                PollRequest {
+                    worker_id: "w".into(),
+                    incarnation: "i".into(),
+                    active: vec![],
+                    available: task("capacity").resources,
+                    max_assignments: 1,
+                    admission: None,
+                },
+                1,
+            )
+            .unwrap()
+            .assignments
+            .remove(0)
+            .lease
+            .key
+        };
+        let syncs = lock(&scheduler).unwrap().journal_syncs();
+        // Any actual append/fsync to the injected sink would fail. A renewal
+        // succeeds through the real dispatcher barrier without touching it.
+        lock(&scheduler).unwrap().fail_journal_sync();
+        let (sender, mut receiver) = mpsc::channel(1);
+        let (cmd, mut reply) = command(move |s| {
+            s.poll(
+                PollRequest {
+                    worker_id: "w".into(),
+                    incarnation: "i".into(),
+                    active: vec![key],
+                    available: Default::default(),
+                    max_assignments: 0,
+                    admission: None,
+                },
+                2,
+            )
+        });
+        sender.try_send(cmd).unwrap();
+        assert!(group(
+            &scheduler,
+            receiver.try_recv().unwrap(),
+            &mut receiver,
+            1,
+            usize::MAX,
+            Duration::from_secs(1)
+        ));
+        assert_eq!(reply.try_recv().unwrap().unwrap().renewed.len(), 1);
+        assert_eq!(lock(&scheduler).unwrap().journal_syncs(), syncs);
+        assert!(lock(&scheduler).unwrap().submit(task("cold"), 3).is_err());
+        assert!(lock(&scheduler).is_err());
+    }
+
+    #[test]
+    fn quota_refusal_defers_expiry_and_new_assignments_without_dropping_live_renewals() {
+        use crate::{PollRequest, WorkerRegistration};
+        let temp = tempfile::tempdir().unwrap();
+        let path = temp.path().join("wal");
+        let scheduler = scheduler(&path);
+        let mut s = lock(&scheduler).unwrap();
+        let full = task("capacity").resources;
+        let triple = Resources {
+            slots: 3,
+            memory_bytes: full.memory_bytes * 3,
+            cpu_millis: full.cpu_millis * 3,
+        };
+        let registration: WorkerRegistration = serde_json::from_value(serde_json::json!({
+            "version": CLUSTER_VERSION, "id": "w", "incarnation": "i",
+            "capacity": triple, "execution": [task("class").execution],
+            "labels": {}, "cache_keys": []
+        }))
+        .unwrap();
+        s.register(registration, 0).unwrap();
+        for id in ["live", "expiring", "queued"] {
+            s.submit(task(id), 0).unwrap();
+        }
+        let request = |active, available, max_assignments| PollRequest {
+            worker_id: "w".into(),
+            incarnation: "i".into(),
+            active,
+            available,
+            max_assignments,
+            admission: None,
+        };
+        let assignments = s.poll(request(vec![], triple, 2), 1).unwrap().assignments;
+        let live = assignments
+            .iter()
+            .find(|a| a.spec.id == "live")
+            .unwrap()
+            .lease
+            .key
+            .clone();
+        s.poll(
+            request(
+                assignments.iter().map(|a| a.lease.key.clone()).collect(),
+                full,
+                0,
+            ),
+            2,
+        )
+        .unwrap();
+        s.poll(request(vec![live.clone()], full, 0), 20_000)
+            .unwrap();
+        let before = std::fs::read(&path).unwrap();
+        s.exhaust_journal_quota();
+        // One other execution expires and a queued task requests the remaining
+        // slot. Neither refused cold transition may suppress this live renew.
+        let reply = s
+            .poll(request(vec![live.clone()], full, 1), 32_000)
+            .unwrap();
+        assert_eq!(reply.renewed, vec![live]);
+        assert!(reply.assignments.is_empty());
+        assert_eq!(s.task("live").unwrap().lease.unwrap().expires_at_ms, 62_000);
+        assert_eq!(s.task("queued").unwrap().phase, TaskPhase::Queued);
+        assert_eq!(s.task("queued").unwrap().generation, 0);
+        assert_eq!(
+            s.workers()[0].reserved,
+            Resources {
+                slots: 2,
+                memory_bytes: full.memory_bytes * 2,
+                cpu_millis: full.cpu_millis * 2,
+            }
+        );
+        assert_eq!(std::fs::read(&path).unwrap(), before);
+        assert!(s.reap(32_001).is_err());
+        assert!(s.ensure_available().is_ok());
+    }
+
+    #[test]
+    fn quota_refusal_keeps_unissued_controls_pending_and_still_renews() {
+        use crate::{ControlAction, ControlPhase, ControlRequest, PollRequest, WorkerRegistration};
+        let temp = tempfile::tempdir().unwrap();
+        let path = temp.path().join("wal");
+        let scheduler = scheduler(&path);
+        let mut s = lock(&scheduler).unwrap();
+        let mut spec = task("vm");
+        spec.execution = ExecutionClass {
+            executor: ExecutorKind::VirtualMachine,
+            isolation: IsolationKind::VirtualMachine,
+        };
+        let full = spec.resources;
+        let registration: WorkerRegistration = serde_json::from_value(serde_json::json!({
+            "version": CLUSTER_VERSION, "id": "w", "incarnation": "i",
+            "capacity": full, "execution": [spec.execution], "labels": {}, "cache_keys": [],
+            "vm_control_protocol": CLUSTER_VERSION, "vm_control_actions": ["pause"]
+        }))
+        .unwrap();
+        s.register(registration, 0).unwrap();
+        s.submit(spec, 0).unwrap();
+        let request = |active| PollRequest {
+            worker_id: "w".into(),
+            incarnation: "i".into(),
+            active,
+            available: full,
+            max_assignments: 1,
+            admission: None,
+        };
+        let key = s
+            .poll(request(vec![]), 1)
+            .unwrap()
+            .assignments
+            .remove(0)
+            .lease
+            .key;
+        s.poll(request(vec![key.clone()]), 2).unwrap();
+        s.request_control(
+            "vm",
+            ControlRequest {
+                request_id: "pause".into(),
+                action: ControlAction::Pause,
+            },
+            3,
+        )
+        .unwrap();
+        let before = std::fs::read(&path).unwrap();
+        s.exhaust_journal_quota();
+        let reply = s.poll(request(vec![key.clone()]), 4).unwrap();
+        assert_eq!(reply.renewed, vec![key]);
+        assert!(reply.controls.is_empty());
+        assert_eq!(
+            s.task("vm").unwrap().controls[0].phase,
+            ControlPhase::Pending
+        );
+        assert_eq!(s.workers()[0].reserved, full);
+        assert_eq!(std::fs::read(&path).unwrap(), before);
+    }
+
+    #[test]
     fn burst_shares_sync_but_keeps_order_conflicts_and_read_barriers() {
         let temp = tempfile::tempdir().unwrap();
         let path = temp.path().join("wal");

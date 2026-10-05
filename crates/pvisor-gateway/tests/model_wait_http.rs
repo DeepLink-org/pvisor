@@ -101,7 +101,14 @@ struct Fixture {
 
 impl Fixture {
     async fn new(stream: bool, status: StatusCode, admission: Admission, install: bool) -> Self {
-        Self::with_controller(stream, status, admission, install, Arc::new(pvisor_core::PolicyControlController)).await
+        Self::with_controller(
+            stream,
+            status,
+            admission,
+            install,
+            Arc::new(pvisor_core::PolicyControlController),
+        )
+        .await
     }
 
     async fn with_controller(
@@ -193,13 +200,26 @@ impl Fixture {
         headers: &[&str],
         model: &str,
     ) -> tokio::task::JoinHandle<reqwest::Response> {
+        self.request_path("/v1/chat/completions", serde_json::json!({"model":model,"stream":stream,"messages":[{"role":"user","content":"hello"}]}), headers)
+    }
+
+    fn request_path(
+        &self,
+        path: &str,
+        body: serde_json::Value,
+        headers: &[&str],
+    ) -> tokio::task::JoinHandle<reqwest::Response> {
         let client = reqwest::Client::builder()
             .no_proxy()
             .timeout(LIMIT)
             .build()
             .unwrap();
-        let mut request = client.post(format!("http://{}/v1/chat/completions", self.proxy.as_ref().unwrap().listen))
-            .json(&serde_json::json!({"model":model,"stream":stream,"messages":[{"role":"user","content":"hello"}]}));
+        let mut request = client
+            .post(format!(
+                "http://{}{path}",
+                self.proxy.as_ref().unwrap().listen
+            ))
+            .json(&body);
         for header in headers {
             request = request.header(INFERENCE_IDLE_HEADER, *header);
         }
@@ -382,15 +402,36 @@ async fn malformed_duplicate_and_unauthorized_calls_never_reserve_or_reach_suppl
     #[derive(Debug)]
     struct DenyModel;
     impl pvisor_core::ControlController for DenyModel {
-        fn authorize(&self, request: pvisor_core::ControlRequest<'_>) -> pvisor_core::ControlTransition {
+        fn authorize(
+            &self,
+            request: pvisor_core::ControlRequest<'_>,
+        ) -> pvisor_core::ControlTransition {
             match request {
-                pvisor_core::ControlRequest::Model { .. } => pvisor_core::ControlTransition::denied(pvisor_core::ControlReason::ModelNotAllowed),
+                pvisor_core::ControlRequest::Model { .. } => {
+                    pvisor_core::ControlTransition::denied(
+                        pvisor_core::ControlReason::ModelNotAllowed,
+                    )
+                }
                 request => pvisor_core::PolicyControlController.authorize(request),
             }
         }
     }
-    let mut denied = Fixture::with_controller(true, StatusCode::OK, Admission::default(), true, Arc::new(DenyModel)).await;
-    assert_eq!(denied.request(true, &["true"], "test-model").await.unwrap().status(), StatusCode::FORBIDDEN);
+    let mut denied = Fixture::with_controller(
+        true,
+        StatusCode::OK,
+        Admission::default(),
+        true,
+        Arc::new(DenyModel),
+    )
+    .await;
+    assert_eq!(
+        denied
+            .request(true, &["true"], "test-model")
+            .await
+            .unwrap()
+            .status(),
+        StatusCode::FORBIDDEN
+    );
     assert!(denied.received.try_recv().is_err());
     assert_eq!(denied.admission.entries.load(Ordering::SeqCst), 0);
 }
@@ -455,5 +496,93 @@ async fn rejected_entry_or_resume_never_delivers_supplier_reply_and_cancels_once
         notified(&fixture.admission.cancelled).await;
         assert_eq!(fixture.admission.cancellations.load(Ordering::SeqCst), 1);
         assert_eq!(fixture.admission.resumes.load(Ordering::SeqCst), 0);
+    }
+}
+
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn supplier_connect_or_body_failure_reacquires_admission_before_gateway_error() {
+    for connect_failure in [true, false] {
+        let mut fixture = Fixture::new(false, StatusCode::OK, Admission::default(), true).await;
+        if connect_failure {
+            fixture.upstream.abort();
+            assert!((&mut fixture.upstream).await.unwrap_err().is_cancelled());
+        }
+        let mut response = fixture.request(false, &["true"], "test-model");
+        notified(&fixture.admission.entered).await;
+        fixture.admission.enter_gate.add_permits(1);
+        if !connect_failure {
+            fixture.upstream_received().await;
+            fixture.chunk(REPLY).await;
+            fixture
+                .body
+                .send(Err(std::io::Error::other("injected supplier failure")))
+                .await
+                .unwrap();
+        }
+        notified(&fixture.admission.delivery).await;
+        assert!(
+            tokio::time::timeout(Duration::from_millis(50), &mut response)
+                .await
+                .is_err()
+        );
+        fixture.admission.resume_gate.add_permits(1);
+        let response = tokio::time::timeout(LIMIT, response)
+            .await
+            .unwrap()
+            .unwrap();
+        assert_eq!(response.status(), StatusCode::BAD_GATEWAY);
+        assert!(!response.text().await.unwrap().contains("chat.completion\""));
+        assert_eq!(fixture.admission.resumes.load(Ordering::SeqCst), 1);
+        assert_eq!(fixture.admission.cancellations.load(Ordering::SeqCst), 0);
+    }
+}
+
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn bridged_messages_stream_and_buffered_reply_preserve_the_delivery_barrier() {
+    for stream in [false, true] {
+        let mut fixture = Fixture::new(stream, StatusCode::OK, Admission::default(), true).await;
+        let mut response = fixture.request_path(
+            "/v1/messages",
+            serde_json::json!({
+                "model":"test-model", "stream":stream, "max_tokens":64,
+                "messages":[{"role":"user","content":"hello"}]
+            }),
+            &["true"],
+        );
+        notified(&fixture.admission.entered).await;
+        fixture.admission.enter_gate.add_permits(1);
+        fixture.upstream_received().await;
+        fixture.chunk(if stream { FIRST } else { REPLY }).await;
+        if !stream {
+            fixture.finish_body();
+        }
+        notified(&fixture.admission.delivery).await;
+        assert!(
+            tokio::time::timeout(Duration::from_millis(50), &mut response)
+                .await
+                .is_err()
+        );
+        fixture.admission.resume_gate.add_permits(1);
+        let response = tokio::time::timeout(LIMIT, response)
+            .await
+            .unwrap()
+            .unwrap();
+        assert_eq!(response.status(), StatusCode::OK);
+        if stream {
+            fixture.chunk(LAST).await;
+            fixture.finish_body();
+        }
+        let text = response.text().await.unwrap();
+        if stream {
+            for event in ["message_start", "content_block_delta", "message_stop"] {
+                assert!(text.contains(event), "{text}");
+            }
+        } else {
+            let value: serde_json::Value = serde_json::from_str(&text).unwrap();
+            assert_eq!(value["type"], "message");
+            assert_eq!(value["content"][0]["text"], "ok");
+        }
+        assert_eq!(fixture.admission.resumes.load(Ordering::SeqCst), 1);
+        assert_eq!(fixture.admission.cancellations.load(Ordering::SeqCst), 0);
     }
 }

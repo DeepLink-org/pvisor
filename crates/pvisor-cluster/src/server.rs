@@ -141,7 +141,9 @@ pub fn router(
         .route("/v1/graphs/{id}/cancel", post(cancel_graph))
         .route("/v1/tasks/{id}", get(task))
         .route("/v1/tasks/{id}/cancel", post(cancel))
+        .route("/v1/tasks/{id}/resolve-lost", post(resolve_lost))
         .route("/v1/tasks/{id}/control", post(control))
+        .route("/v1/tasks/{id}/inference-wait", get(inference_wait_record))
         .route("/v1/tasks/{id}/forks", post(fork_execution))
         .route("/v1/tasks/{id}/forks/{request_id}", get(execution_fork))
         .route("/v1/tasks/{id}/live-forks", post(request_live_fork))
@@ -179,6 +181,7 @@ pub fn router(
         .route("/v1/workers/native-done", post(native_done))
         .route("/v1/workers/decline", post(decline))
         .route("/v1/workers/control-ack", post(control_ack))
+        .route("/v1/workers/inference-wait", post(inference_wait))
         .route(
             "/v1/workers/artifacts/{task_id}/{generation}/{worker_id}/{incarnation}/{digest}",
             post(upload_artifact).layer(DefaultBodyLimit::max(ARTIFACT_CHUNK_BYTES)),
@@ -194,6 +197,23 @@ pub fn router(
 async fn health(State(app): State<App>) -> Result<Json<serde_json::Value>, ApiError> {
     app.dispatcher.ensure_available().map_err(ApiError)?;
     Ok(Json(serde_json::json!({"version":CLUSTER_VERSION})))
+}
+
+async fn inference_wait(
+    State(app): State<App>,
+    Json(request): Json<InferenceWaitRequest>,
+) -> Result<Json<InferenceWaitReceipt>, ApiError> {
+    run(app, move |s| {
+        s.inference_wait(request, pvisor_core::unix_now_ms())
+    })
+    .await
+}
+
+async fn inference_wait_record(
+    State(app): State<App>,
+    Path(id): Path<String>,
+) -> Result<Json<Option<InferenceWaitRecord>>, ApiError> {
+    run(app, move |s| s.inference_wait_record(&id)).await
 }
 
 async fn publish_environment(
@@ -257,6 +277,21 @@ async fn cancel(
     Path(id): Path<String>,
 ) -> Result<Json<TaskRecord>, ApiError> {
     run(app, move |s| s.cancel(&id, pvisor_core::unix_now_ms())).await
+}
+async fn resolve_lost(
+    State(app): State<App>,
+    Path(id): Path<String>,
+    Json(key): Json<LeaseKey>,
+) -> Result<Json<TaskRecord>, ApiError> {
+    if key.task_id != id {
+        return Err(ApiError(anyhow::anyhow!(
+            "resolution task ID differs from key"
+        )));
+    }
+    run(app, move |s| {
+        s.resolve_lost(key, pvisor_core::unix_now_ms())
+    })
+    .await
 }
 async fn register(
     State(app): State<App>,

@@ -2334,3 +2334,85 @@ async fn worker_recovers_lost_completion_ack_after_evidence_gc_without_reexecuti
     );
     server.abort();
 }
+
+#[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+async fn live_worker_reconciles_controller_restart_without_reexecuting_or_writing_heartbeats() {
+    let temp = tempfile::tempdir().unwrap();
+    let (admin, url, server) = controller(temp.path()).await;
+    let marker = temp.path().join("executions");
+    let release = temp.path().join("release");
+    admin.submit(&spec("reconcile-live", &format!(
+        "printf 'once\\n' >> '{}'; while [ ! -f '{}' ]; do sleep 0.05; done; printf completed",
+        marker.display(), release.display(),
+    ))).await.unwrap();
+    let _worker = spawn_worker(&url, "survivor", temp.path());
+    let started = wait(&admin, "reconcile-live", false).await;
+    let key = started.lease.unwrap().key;
+    let original_history = std::fs::read(temp.path().join("journal")).unwrap();
+    // Wait beyond the ORIGINAL assignment deadline. Only memory renewal keeps
+    // this process alive; the historical journal deadline is now stale.
+    tokio::time::sleep(Duration::from_millis(1700)).await;
+    assert_eq!(
+        admin.task("reconcile-live").await.unwrap().phase,
+        TaskPhase::Running
+    );
+    assert_eq!(
+        std::fs::read(temp.path().join("journal")).unwrap(),
+        original_history
+    );
+    server.abort();
+    let _ = server.await;
+    let reopened = tokio::time::timeout(Duration::from_millis(1000), async {
+        loop {
+            match Scheduler::open(
+                &temp.path().join("journal"),
+                SchedulerConfig {
+                    lease_duration_ms: 1500,
+                    ..Default::default()
+                },
+            ) {
+                Ok(s) => break s,
+                Err(error) if error.to_string().contains("already owned") => {
+                    tokio::time::sleep(Duration::from_millis(10)).await;
+                }
+                Err(error) => panic!("recovery failed: {error:#}"),
+            }
+        }
+    })
+    .await
+    .unwrap();
+    assert!(
+        reopened
+            .task("reconcile-live")
+            .unwrap()
+            .reconciliation_pending
+    );
+    let router = pvisor_cluster::server::router(reopened, ADMIN.into(), WORKER.into()).unwrap();
+    let address = url.strip_prefix("http://").unwrap();
+    let listener = tokio::net::TcpListener::bind(address).await.unwrap();
+    let server = tokio::spawn(async move {
+        axum::serve(listener, router).await.unwrap();
+    });
+    let reconciled = tokio::time::timeout(Duration::from_secs(3), async {
+        loop {
+            let task = admin.task("reconcile-live").await.unwrap();
+            if !task.reconciliation_pending && task.phase == TaskPhase::Running {
+                break task;
+            }
+            tokio::time::sleep(Duration::from_millis(20)).await;
+        }
+    })
+    .await
+    .unwrap();
+    assert_eq!(reconciled.lease.unwrap().key, key);
+    assert_eq!(
+        std::fs::read(temp.path().join("journal")).unwrap(),
+        original_history
+    );
+    std::fs::write(release, b"finish").unwrap();
+    let finished = wait(&admin, "reconcile-live", true).await;
+    assert_eq!(finished.phase, TaskPhase::Succeeded);
+    assert_eq!(finished.lease.unwrap().key, key);
+    assert_eq!(std::fs::read_to_string(marker).unwrap(), "once\n");
+    server.abort();
+}

@@ -4,6 +4,10 @@ use super::*;
 use pvisor_core::gateway::{CaptureLevel, ModelRoute};
 
 #[cfg(feature = "gateway")]
+#[path = "inference.rs"]
+pub(super) mod inference;
+
+#[cfg(feature = "gateway")]
 struct ModelController {
     run_id: pvisor_core::RunId,
     allowed_models: Vec<String>,
@@ -38,6 +42,7 @@ pub(super) struct Profile {
     pub enabled: bool,
     pub level: CaptureLevel,
     pub routes: Vec<ModelRoute>,
+    pub release_cpu_on_idle: bool,
 }
 
 impl Profile {
@@ -50,8 +55,8 @@ impl Profile {
     }
     pub fn validate(&self, mode: pvisor::OverlayNetMode) -> anyhow::Result<()> {
         ensure!(
-            self.enabled || self.routes.is_empty(),
-            "Gateway routes require gateway.enabled"
+            self.enabled || (self.routes.is_empty() && !self.release_cpu_on_idle),
+            "Gateway routes and cooperative CPU release require gateway.enabled"
         );
         if !self.enabled {
             return Ok(());
@@ -109,6 +114,9 @@ pub(super) fn attach(
     profile: &Profile,
     task: &TaskSpec,
     storage: &Path,
+    #[cfg(feature = "gateway")] model_wait: Option<
+        Arc<dyn pvisor_gateway::model_wait::ModelWaitLifecycle>,
+    >,
 ) -> anyhow::Result<pvisor::PVisorBuilder> {
     let Some(requirement) = &task.gateway else {
         return Ok(builder);
@@ -122,11 +130,13 @@ pub(super) fn attach(
     );
     #[cfg(feature = "gateway")]
     {
+        let mut driver = pvisor::GatewayDriverConfig::new(profile.proxy(&task.run.agent.name))
+            .output_dir(storage);
+        if let Some(lifecycle) = model_wait {
+            driver = driver.model_wait(lifecycle);
+        }
         Ok(builder
-            .gateway(
-                pvisor::GatewayDriverConfig::new(profile.proxy(&task.run.agent.name))
-                    .output_dir(storage),
-            )
+            .gateway(driver)
             .control_controller(Arc::new(ModelController {
                 run_id: task.run.run_id.clone(),
                 allowed_models: task.run.capabilities.models.clone(),

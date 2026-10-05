@@ -273,7 +273,7 @@ fn cancelled_history_never_consumes_ready_window_and_counts_replay_every_transit
 fn restart_delivery_renews_only_known_terminal_attempts_and_never_redelivers_unknown_work() {
     let temp = tempfile::tempdir().unwrap();
     let path = temp.path().join("journal");
-    let mut s = Scheduler::open(&path, config()).unwrap();
+    let mut s = Scheduler::open_durable(&path, config()).unwrap();
     s.register(worker("node", 2), 0).unwrap();
     s.submit(spec("known"), 0).unwrap();
     s.submit(spec("unknown"), 0).unwrap();
@@ -314,7 +314,7 @@ fn restart_delivery_renews_only_known_terminal_attempts_and_never_redelivers_unk
     assert_eq!(s.task("queued").unwrap().phase, TaskPhase::Queued);
     assert_eq!(s.workers()[0].reserved, resources(2));
     drop(s);
-    let mut s = Scheduler::open(&path, config()).unwrap();
+    let mut s = Scheduler::open_durable(&path, config()).unwrap();
     let mut invalid = request.clone();
     invalid.completed.push(known.clone());
     assert!(s.recover(invalid, 950).is_err());
@@ -746,7 +746,10 @@ fn node_probe_failure_blocks_new_work_but_keeps_renewal_cancellation_and_report_
     assert_eq!(s.workers()[0].admission.as_ref(), Some(&report));
     drop(s);
     let mut s = Scheduler::open(&path, config()).unwrap();
-    assert_eq!(s.workers()[0].admission_received_at_ms, Some(900));
+    // Runtime admission is rebuilt from a fresh Worker report, not replayed.
+    assert!(s.workers()[0].admission_received_at_ms.is_none());
+    assert!(s.workers()[0].admission.is_none());
+    assert!(s.task("one").unwrap().reconciliation_pending);
     s.cancel("one", 901).unwrap();
     assert_eq!(s.poll(request, 902).unwrap().stop, vec![key.clone()]);
     s.complete(finish(key), 903).unwrap();
@@ -2484,4 +2487,232 @@ fn full_artifact_storage_defers_required_tasks_without_stopping_other_work_or_le
         assert_eq!(assignments[0].spec.id, "required");
         assert_eq!(assignments[0].lease.key.generation, 1);
     }
+}
+
+#[test]
+fn reconciled_heartbeats_do_not_grow_history_and_restart_ignores_stale_disk_deadlines() {
+    let temp = tempfile::tempdir().unwrap();
+    let path = temp.path().join("reconciled");
+    let mut s = Scheduler::open(&path, config()).unwrap();
+    s.register(worker("w", 1), 0).unwrap();
+    s.submit(spec("live"), 0).unwrap();
+    let key = s
+        .poll(poll("w", 1, vec![]), 1)
+        .unwrap()
+        .assignments
+        .remove(0)
+        .lease
+        .key;
+    let before = std::fs::read(&path).unwrap();
+    for at in 2..2002 {
+        let response = s.poll(poll("w", 0, vec![key.clone()]), at).unwrap();
+        assert_eq!(response.renewed, vec![key.clone()]);
+        assert!(response.assignments.is_empty());
+    }
+    assert_eq!(std::fs::read(&path).unwrap(), before);
+    assert_eq!(s.task("live").unwrap().phase, TaskPhase::Running);
+    drop(s);
+
+    let mut s = Scheduler::open(&path, config()).unwrap();
+    assert!(s.task("live").unwrap().reconciliation_pending);
+    assert_eq!(s.reap(10_000).unwrap(), 0);
+    assert_eq!(s.workers()[0].reserved, resources(1));
+    let response = s.poll(poll("w", 0, vec![key.clone()]), 10_001).unwrap();
+    assert_eq!(response.renewed, vec![key.clone()]);
+    assert!(response.stop.is_empty());
+    assert!(response.assignments.is_empty());
+    let task = s.task("live").unwrap();
+    assert!(!task.reconciliation_pending);
+    assert_eq!(task.phase, TaskPhase::Running);
+    assert_eq!(task.lease.unwrap().expires_at_ms, 11_001);
+    assert_eq!(std::fs::read(&path).unwrap(), before);
+    // After a fresh report, ordinary in-memory lease expiry still fences it.
+    assert_eq!(s.reap(11_001).unwrap(), 1);
+    assert_eq!(s.task("live").unwrap().phase, TaskPhase::Lost);
+    assert!(
+        s.poll(poll("w", 1, vec![key]), 11_002)
+            .unwrap()
+            .assignments
+            .is_empty()
+    );
+}
+
+#[test]
+fn unreachable_worker_keeps_reservation_until_exact_explicit_resolution() {
+    let temp = tempfile::tempdir().unwrap();
+    let path = temp.path().join("reconciled");
+    let mut s = Scheduler::open(&path, config()).unwrap();
+    s.register(worker("missing", 1), 0).unwrap();
+    s.submit(spec("unknown"), 0).unwrap();
+    let key = s
+        .poll(poll("missing", 1, vec![]), 1)
+        .unwrap()
+        .assignments
+        .remove(0)
+        .lease
+        .key;
+    drop(s);
+    let mut s = Scheduler::open(&path, config()).unwrap();
+    s.register(worker("other", 1), 20_000).unwrap();
+    assert!(
+        s.poll(poll("other", 1, vec![]), 20_001)
+            .unwrap()
+            .assignments
+            .is_empty()
+    );
+    assert_eq!(s.reap(u64::MAX).unwrap(), 0);
+    assert_eq!(
+        s.workers()
+            .iter()
+            .find(|w| w.registration.id == "missing")
+            .unwrap()
+            .reserved,
+        resources(1)
+    );
+    let mut replacement = worker("missing", 1);
+    replacement.incarnation = "new".into();
+    assert!(s.register(replacement.clone(), 20_002).is_err());
+    let mut stale = key.clone();
+    stale.generation += 1;
+    assert!(s.resolve_lost(stale, 20_003).is_err());
+    assert!(s.task("unknown").unwrap().reconciliation_pending);
+    let resolved = s.resolve_lost(key.clone(), 20_004).unwrap();
+    assert_eq!(resolved.phase, TaskPhase::Lost);
+    assert!(!resolved.reconciliation_pending);
+    assert!(resolved.error.unwrap().contains("explicitly marked lost"));
+    assert_eq!(
+        s.resolve_lost(key.clone(), 20_005).unwrap().updated_at_ms,
+        20_004
+    );
+    s.register(replacement, 20_006).unwrap();
+    assert!(
+        s.poll(poll("other", 1, vec![]), 20_007)
+            .unwrap()
+            .assignments
+            .is_empty()
+    );
+    drop(s);
+    let s = Scheduler::open(&path, config()).unwrap();
+    assert_eq!(s.task("unknown").unwrap().phase, TaskPhase::Lost);
+    assert_eq!(s.task("unknown").unwrap().lease.unwrap().key, key);
+}
+
+#[test]
+fn restart_preserves_unsent_cancellation_and_queued_intent_while_rebuilding_runtime() {
+    let temp = tempfile::tempdir().unwrap();
+    let path = temp.path().join("reconciled");
+    let mut s = Scheduler::open(&path, config()).unwrap();
+    s.register(worker("w", 1), 0).unwrap();
+    s.submit(spec("cancelled"), 0).unwrap();
+    let key = s
+        .poll(poll("w", 1, vec![]), 1)
+        .unwrap()
+        .assignments
+        .remove(0)
+        .lease
+        .key;
+    s.submit(spec("queued"), 2).unwrap();
+    s.cancel("cancelled", 3).unwrap();
+    drop(s);
+    let mut s = Scheduler::open(&path, config()).unwrap();
+    assert!(s.task("cancelled").unwrap().reconciliation_pending);
+    assert_eq!(s.task("queued").unwrap().phase, TaskPhase::Queued);
+    let response = s.poll(poll("w", 0, vec![key.clone()]), 20_000).unwrap();
+    assert_eq!(response.stop, vec![key.clone()]);
+    assert_eq!(response.renewed, vec![key.clone()]);
+    assert!(response.assignments.is_empty());
+    assert_eq!(
+        s.complete(finish(key), 20_001).unwrap().phase,
+        TaskPhase::Cancelled
+    );
+    assert_eq!(
+        s.poll(poll("w", 1, vec![]), 20_002)
+            .unwrap()
+            .assignments
+            .remove(0)
+            .spec
+            .id,
+        "queued"
+    );
+}
+
+#[test]
+fn terminal_outbox_recovery_can_confirm_old_keys_without_reexecuting_them() {
+    let temp = tempfile::tempdir().unwrap();
+    let path = temp.path().join("reconciled");
+    let mut s = Scheduler::open(&path, config()).unwrap();
+    s.register(worker("w", 1), 0).unwrap();
+    s.submit(spec("finished"), 0).unwrap();
+    let key = s
+        .poll(poll("w", 1, vec![]), 1)
+        .unwrap()
+        .assignments
+        .remove(0)
+        .lease
+        .key;
+    drop(s);
+    let mut s = Scheduler::open(&path, config()).unwrap();
+    let before = std::fs::read(&path).unwrap();
+    let recovered = s
+        .recover(
+            RecoveryRequest {
+                worker_id: "w".into(),
+                incarnation: "epoch-1".into(),
+                completed: vec![key.clone()],
+            },
+            20_000,
+        )
+        .unwrap();
+    assert_eq!(recovered.renewed, vec![key.clone()]);
+    assert!(!s.task("finished").unwrap().reconciliation_pending);
+    assert_eq!(std::fs::read(&path).unwrap(), before);
+    let completion = finish(key.clone());
+    assert_eq!(
+        s.complete(completion.clone(), 20_001).unwrap().phase,
+        TaskPhase::Failed
+    );
+    drop(s);
+    let mut s = Scheduler::open(&path, config()).unwrap();
+    assert_eq!(
+        s.complete(completion, 20_002).unwrap().updated_at_ms,
+        20_001
+    );
+    assert!(
+        s.poll(poll("w", 1, vec![key.clone()]), 20_003)
+            .unwrap()
+            .assignments
+            .is_empty()
+    );
+}
+
+#[test]
+fn old_durable_history_migrates_without_trusting_its_last_renewal() {
+    let temp = tempfile::tempdir().unwrap();
+    let path = temp.path().join("legacy");
+    let mut s = Scheduler::open_durable(&path, config()).unwrap();
+    s.register(worker("w", 1), 0).unwrap();
+    s.submit(spec("legacy"), 0).unwrap();
+    let key = s
+        .poll(poll("w", 1, vec![]), 1)
+        .unwrap()
+        .assignments
+        .remove(0)
+        .lease
+        .key;
+    s.poll(poll("w", 0, vec![key.clone()]), 900).unwrap();
+    drop(s);
+    let before = std::fs::read(&path).unwrap();
+    let mut s = Scheduler::open(&path, config()).unwrap();
+    assert_eq!(s.task("legacy").unwrap().phase, TaskPhase::Running);
+    assert!(s.task("legacy").unwrap().reconciliation_pending);
+    assert_eq!(s.reap(20_000).unwrap(), 0);
+    let mut stale = key.clone();
+    stale.generation += 1;
+    let reply = s.poll(poll("w", 0, vec![stale.clone()]), 20_001).unwrap();
+    assert_eq!(reply.stop, vec![stale]);
+    assert!(s.task("legacy").unwrap().reconciliation_pending);
+    assert!(reply.assignments.is_empty());
+    s.poll(poll("w", 0, vec![key]), 20_002).unwrap();
+    assert!(!s.task("legacy").unwrap().reconciliation_pending);
+    assert_eq!(std::fs::read(&path).unwrap(), before);
 }

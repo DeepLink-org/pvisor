@@ -446,6 +446,18 @@ async fn real_controller_cli_reports_deduplicated_usage_and_restores_limits_with
     let worker = Client::new(&second_url, WORKER.into()).unwrap();
     assert_eq!(admin.artifact_storage().await.unwrap(), usage);
     assert_eq!(admin.artifact_bytes(&reference).await.unwrap(), b"evidence");
+    assert!(admin.task("storage").await.unwrap().reconciliation_pending);
+    worker
+        .poll(&PollRequest {
+            worker_id: key.worker_id.clone(),
+            incarnation: key.incarnation.clone(),
+            active: vec![key.clone()],
+            available: Resources::default(),
+            max_assignments: 0,
+            admission: None,
+        })
+        .await
+        .unwrap();
     assert_eq!(
         worker
             .upload_artifact(&key, b"evidence".to_vec())
@@ -630,10 +642,8 @@ async fn real_gc_cli_protects_live_uploads_and_downloads_reclaims_quota_and_pres
     let report: ArtifactGcReport =
         serde_json::from_value(cli(&endpoint, &["artifact-gc", "--apply", &preview.id])).unwrap();
     assert_eq!((report.retired_tasks, report.deleted_objects), (1, 1));
-    assert_eq!(
-        worker.poll(&poll).await.unwrap().assignments[0].spec.id,
-        "after-gc"
-    );
+    let assigned = worker.poll(&poll).await.unwrap().assignments.remove(0);
+    assert_eq!(assigned.spec.id, "after-gc");
     assert_eq!(
         admin
             .artifacts("storage")
@@ -667,6 +677,23 @@ async fn real_gc_cli_protects_live_uploads_and_downloads_reclaims_quota_and_pres
     }
     assert_eq!(received, binary);
     admin.release_artifact_download(&download.id).await.unwrap();
+    assert!(admin.task("after-gc").await.unwrap().reconciliation_pending);
+    // This synthetic Worker never executed the assignment. Explicitly resolve
+    // it; stale disk deadlines alone must not authorize destructive GC.
+    assert!(
+        admin
+            .plan_artifact_gc(&ArtifactGcRequest {
+                version: 1,
+                retire_before_ms: None,
+                max_objects: 4096,
+            })
+            .await
+            .is_err()
+    );
+    assert_eq!(
+        admin.resolve_lost(&assigned.lease.key).await.unwrap().phase,
+        TaskPhase::Lost
+    );
     let preview = admin
         .plan_artifact_gc(&ArtifactGcRequest {
             version: 1,

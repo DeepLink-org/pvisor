@@ -426,6 +426,9 @@ fn runtime(
     config: &WorkerProfile,
     assignment: &Assignment,
     storage: &Path,
+    #[cfg(feature = "gateway")] model_wait: Option<
+        Arc<dyn pvisor_gateway::model_wait::ModelWaitLifecycle>,
+    >,
 ) -> anyhow::Result<PVisor> {
     assignment.spec.validate_cpu_qos()?;
     assignment.spec.validate_gateway()?;
@@ -513,7 +516,14 @@ fn runtime(
         .network(
             pvisor::NetworkDriverConfig::new(config.overlaynet.mode, network).listen("127.0.0.1:0"),
         );
-    builder = gateway::attach(builder, &config.gateway, &assignment.spec, storage)?;
+    builder = gateway::attach(
+        builder,
+        &config.gateway,
+        &assignment.spec,
+        storage,
+        #[cfg(feature = "gateway")]
+        model_wait,
+    )?;
     if let Some(overlay) = restore_overlay {
         builder = builder.overlay(overlay);
     } else if !config.lower_layers.is_empty() {
@@ -544,6 +554,9 @@ impl AttemptRuntime {
         &self,
         assignment: &Assignment,
         storage: &Path,
+        #[cfg(feature = "gateway")] model_wait: Option<
+            Arc<dyn pvisor_gateway::model_wait::ModelWaitLifecycle>,
+        >,
     ) -> anyhow::Result<PreparedRuntime> {
         let mut profile = (*self.profile).clone();
         let mounts = if assignment.checkpoint.is_some() {
@@ -613,7 +626,14 @@ impl AttemptRuntime {
             // A cancelled preparation must keep its lowers alive until the
             // blocking runtime construction finishes, even if nobody awaits it.
             Ok(PreparedRuntime {
-                runtime: runtime(&args, &profile, &assigned, &destination)?,
+                runtime: runtime(
+                    &args,
+                    &profile,
+                    &assigned,
+                    &destination,
+                    #[cfg(feature = "gateway")]
+                    model_wait,
+                )?,
                 mounts,
             })
         })
@@ -685,10 +705,20 @@ async fn execute(
     let mut terminal_control = None;
     let lease_key = assignment.lease.key.clone();
     let mut mounts = environment::MountOwners::new();
+    #[cfg(feature = "gateway")]
+    let (inference_finished, inference_liveness) = watch::channel(());
     let result: anyhow::Result<pvisor_core::RunResult> = async {
         ensure!(!*stop.borrow(), "lease ended before environment preparation");
+        #[cfg(feature = "gateway")]
+        let model_wait = if runtime.profile.gateway.release_cpu_on_idle && assignment.spec.gateway.is_some() {
+            Some(Arc::new(gateway::inference::Lifecycle::new(gateway::inference::Binding {
+                client: client.clone(), key: lease_key.clone(), stop: stop.clone(), clock: lease_clock.clone(), live: inference_liveness,
+            }, assignment.spec.run.run_id.clone())) as Arc<dyn pvisor_gateway::model_wait::ModelWaitLifecycle>)
+        } else { None };
         let prepared = {
-          let preparing = runtime.prepare(&assignment, &storage);
+          let preparing = runtime.prepare(&assignment, &storage,
+            #[cfg(feature = "gateway")] model_wait,
+          );
           tokio::pin!(preparing);
           tokio::select! {
             prepared = &mut preparing => prepared?,
@@ -807,7 +837,10 @@ async fn execute(
                         outcome = ControlOutcome::Failed { error: format!("invalid native control observation: {error}") };
                     }
                     let acknowledgement = ControlAcknowledgement { command, outcome };
-                    if let Err(error) = persist(&storage.join(format!("control-{}.json", acknowledgement.command.revision)), &acknowledgement) {
+                    let evidence_name = if acknowledgement.command.request.request_id.starts_with(INFERENCE_CONTROL_PREFIX) {
+                        format!("inference-control-{}.json", acknowledgement.command.revision % 4)
+                    } else { format!("control-{}.json", acknowledgement.command.revision) };
+                    if let Err(error) = persist(&storage.join(evidence_name), &acknowledgement) {
                         eprintln!("worker control evidence write failed: {error:#}");
                         halted = true;
                         cancellation.cancel();
@@ -845,6 +878,8 @@ async fn execute(
         Ok(result)
     }
     .await;
+    #[cfg(feature = "gateway")]
+    let _ = inference_finished.send(());
     // Do not publish completion or release controller reservations until the
     // native teardown and final shared-lower release have both finished. The
     // blocking join must leave heartbeat and lease timers free to run.
@@ -1091,6 +1126,10 @@ async fn worker_main() -> anyhow::Result<()> {
     )
     .await?;
     config.gateway.validate(config.overlaynet.mode)?;
+    ensure!(
+        !config.gateway.release_cpu_on_idle || matches!(args.backend, Backend::Vm),
+        "cooperative CPU release requires a VM Worker"
+    );
     if config.cpu_qos.enabled {
         ensure!(
             cfg!(target_os = "linux") && matches!(args.backend, Backend::Vm),

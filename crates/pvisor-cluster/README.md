@@ -37,7 +37,7 @@ Primary sources inspected on 2026-10-04:
 | Reliable control | fsync-before-ack WAL, fencing, cancellation, expiry, drain, idempotent submit/completion; unstarted rejection/requeue; durable terminal-result outbox and restart export/delivery | Recovery of live execution, disk-full faults, multi-host failure tests |
 | Scalable scheduling | Bounded ready window with cancelled entries removed, indexed phase counts/expiration, batched leases, reservations, tenant quotas; bounded single-writer HTTP queue and fsync-before-response WAL group commit; streaming replay, compact graph topology and boxed task storage; single-controller million-record history and dense-ready validation | Sharding, replicated authority, multi-host admission/load measurements and HTTP/task-throughput benchmarks |
 | Independently versioned base/workspace/toolkit layers | Durable immutable template registry; lease-bound revision handles; VM worker composes native lazy-cache layers with private upper and shared live read mounts; real Linux VM composition/upper isolation gate; independent Worker states fetch pinned read-only S3 layers without publisher storage | Multi-host distribution deployment and measured startup/density benefit; container composition |
-| AgentENV pause/resume | Durable lease-bound desired/observed pause/offload/resume; native controls verified on real Linux VM; CPU reserved before resume | Multi-host VM lifecycle/fault experiments and inference-wait coordination |
+| AgentENV pause/resume | Durable lease-bound desired/observed pause/offload/resume; native controls verified on real Linux VM; CPU reserved before resume; opt-in Gateway async wait and response-delivery barrier with controlled HTTP ordering/cancellation tests | Connect durable bounded inference-wait state and Worker admission; real VM inference-wait/restart gate and multi-host VM lifecycle/fault experiments |
 | Incremental execution checkpoints, fork and recovery | Full CPU/RAM/device/owned-overlay capture with native forest ownership transfer and direct RAM sealing; Linux compressed incremental RAM recapture of restored VMs with independently retained inherited frames; coordinated save-and-stop of running, paused and offloaded Linux VMs without guest resume; durable live capture/fork handoff and atomic branch creation from sealed checkpoints; same-Worker continuation into new Run/Attempt with lineage, private writable files, shared verified read-only lower copies and private COW RAM; real Linux cold restore after Worker restart; immutable FS/S3 full-checkpoint transport and verified same-host recovery after deletion of the original snapshot object; opt-in Worker publication with durable terminal retry and controller-bound receipts, compatible cross-Worker import after source deletion and controller restart; opt-in native v5 capture retains immutable lower inodes across initial/restored-VM recapture with supervisor-owned seals and slot-bound references; different VMs share lower inodes on their first capture without temporary data copies on pool hits; private file payloads are sealed directly from authenticated frozen roots without an intermediate data-tree copy and retain independent 64 KiB compressed frame references, reusing unchanged content across captures without recompression on verified hits, with native encoding-work counters | Capture-side private filesystem deltas and cross-host runtime compatibility/recovery tests |
 | Dense memory use | VM size from task budget; shared read-only snapshot RAM with private COW writes; bundled-kernel restores skip duplicate firmware loading; sparse RAM capture/publication; opt-in VM/Worker RSS/PSS, system and cgroup memory observations; dedicated user-systemd Worker scope; native hibernation releases all reservations; durable post-teardown artifact delivery reuses execution slots with bounded memory/CPU reservations | Shared-cache/hugetlb coverage, controlled reclaim/memory overcommit and workload density benchmarks |
 | CPU QoS/controlled overcommit | CPU reservations; optional Linux PSI, affinity and visible cgroup v2 CPU/memory admission; opt-in bounded CPU reservation overcommit under a finite local quota; fresh pressure gating of admission/resume; whole-Worker kernel CPU quota; opt-in native BE SCHED_IDLE and shared LS core scheduling group; class-preserving capture/fork/restore; opt-in native per-Attempt live rates and durable final CPU counters; controlled SMT/finite-quota native search experiment | Billing/rollout aggregation, whole-node CPU cost and representative agent workload latency/density benchmarks |
@@ -137,6 +137,47 @@ completion or lease expiry. Slots and the full RAM budget remain reserved
 while paused or offloaded. Native `mincore` residency samples do not account
 for all compressed/shared host allocations and are not proof of freed memory.
 
+## Worker-reconciled runtime state
+
+The default Controller keeps heartbeat deadlines, Worker admission reports and
+Running acknowledgements in memory. Ordinary renewal-only polls neither append
+to the journal nor fsync it. Assignments, accepted task/DAG specifications,
+control/cancel intents and final receipts retain their existing durable contract.
+This also preserves queued tasks that no Worker has received yet.
+
+After restart, each unfinished historical lease has
+`reconciliation_pending: true`. Its `phase` and deadline are historical hints;
+resources remain reserved, and the reaper does not infer completion from an old
+on-disk deadline. The Worker's regular poll supplies a complete bounded inventory
+of active keys, including terminal delivery until acknowledgement. Matching
+Worker/incarnation/generation confirms ownership and reconstructs the runtime
+view. An absent unacknowledged assignment can be redelivered to the same Worker
+incarnation with the same key; the Worker deduplicates active task IDs. An
+unreachable Worker does not permit reassignment to another node.
+
+New native control requests, telemetry and artifact uploads wait for confirmed
+ownership. Exact terminal evidence and issued control acknowledgements can be
+accepted during reconciliation. Destructive artifact GC waits until pending
+leases have been reconciled or explicitly resolved; persisted roots and receipts
+remain authoritative during this transition.
+
+For a permanently unavailable Worker, save the task record's complete `lease.key`
+as JSON and run `pvisor-cluster resolve-lost key.json`. The admin API is
+`POST /v1/tasks/{id}/resolve-lost` with that key. It fences the exact execution,
+retains known native outcomes, releases reservations, and never automatically
+retries the command. A changed generation/incarnation is rejected. Use the same
+key for an idempotent retry. A replacement Worker incarnation must wait until
+its predecessor's owned executions have been reconciled or resolved.
+
+Existing journal files are readable without conversion. For the previous
+persist-every-renewal behavior use `serve --durable-leases` or
+`Scheduler::open_durable`. Drain unfinished executions before switching back to
+that contract: the default path does not persist current lease deadlines. The
+Worker's monotonic lease watchdog remains active; Controller outages beyond its
+local deadline stop execution. This implementation supports a single Controller
+and retains low-frequency metadata persistence, not an entirely stateless task
+queue or multi-Controller takeover.
+
 ## Concurrent requests and WAL durability
 
 HTTP scheduling requests use one dedicated writer thread and a queue of up to
@@ -152,7 +193,7 @@ The writer collects requests already waiting in the queue and shares one WAL
 4 MiB of written frames or 2 ms of processing. These are checks between
 operations: a single operation is never split to meet a threshold, and filesystem
 sync time is additional. An idle request receives no deliberate batching delay.
-Read-only groups do not sync. The synchronous `Scheduler` API and the artifact
+Read-only and renewal-only groups do not sync in the default mode. Persistent changes through the synchronous `Scheduler` API and the artifact
 GC retirement callback retain immediate commit durability.
 
 Each transaction keeps its existing checksum and frame boundary; graph creation
@@ -2518,8 +2559,14 @@ These tests do not exercise filesystem ENOSPC or restore a killed live VM.
 
 Next gates, in dependency order:
 
-1. Extend VM controls to multi-host fault tests, connect inference-wait
-   coordination, and validate shared
+1. Connect the [Gateway cooperative wait/delivery lifecycle](../pvisor-gateway/README.md#cooperative-inference-waits)
+   to durable, bounded controller wait state and Attempt-local Worker coordination.
+   Fence waits by lease/call/revision, preserve manual pause ownership, coordinate
+   parallel calls and await native CPU readmission before releasing a reply.
+   Repeated inference calls must not exhaust the 4,096-entry manual control
+   history. Validate controller restart and actual CPU release/readmission on
+   a networked VM; the current HTTP barrier tests do not establish these effects.
+   Extend VM controls to multi-host fault tests, and validate shared
    caches, hugetlb and deployment-kernel coverage of the memory observations.
    Never release memory merely because a desired state says idle or a single
    backing-file residency sample is zero.
