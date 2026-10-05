@@ -1,5 +1,9 @@
 #!/usr/bin/env python3
-"""Reproduce the first product benchmark reports on a Linux host."""
+"""Reproduce the first product benchmark reports on a Linux host.
+
+Runs the v1 suites; each module under v1/ names its own registry entry in
+benchmark/README.md#registry. This driver adds no benchmark of its own.
+"""
 
 import argparse
 from pathlib import Path

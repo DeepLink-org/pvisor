@@ -27,51 +27,6 @@ fn default_post() -> String {
 const DEAD_LETTER_FILENAME: &str = "dead_letter.jsonl";
 const TRAJECTORY_DEAD_LETTER_FILENAME: &str = "trajectory_dead_letter.jsonl";
 
-mod serde_compat {
-    use serde::{Deserialize, Deserializer, Serializer};
-
-    use crate::protocol::ProtocolKind;
-    use crate::provider::ProviderKind;
-
-    pub mod provider {
-        use super::*;
-
-        pub fn serialize<S>(v: &ProviderKind, s: S) -> Result<S::Ok, S::Error>
-        where
-            S: Serializer,
-        {
-            s.serialize_str(v.as_str())
-        }
-
-        pub fn deserialize<'de, D>(d: D) -> Result<ProviderKind, D::Error>
-        where
-            D: Deserializer<'de>,
-        {
-            let s = String::deserialize(d)?;
-            Ok(ProviderKind::parse(&s))
-        }
-    }
-
-    pub mod protocol {
-        use super::*;
-
-        pub fn serialize<S>(v: &ProtocolKind, s: S) -> Result<S::Ok, S::Error>
-        where
-            S: Serializer,
-        {
-            s.serialize_str(v.as_str())
-        }
-
-        pub fn deserialize<'de, D>(d: D) -> Result<ProtocolKind, D::Error>
-        where
-            D: Deserializer<'de>,
-        {
-            let s = String::deserialize(d)?;
-            Ok(ProtocolKind::parse(&s))
-        }
-    }
-}
-
 /// Serializable call context for dead-letter replay.
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
 pub struct DeadLetterContext {
@@ -83,9 +38,7 @@ pub struct DeadLetterContext {
     pub level: CaptureLevel,
     pub client_model: String,
     pub upstream_model: String,
-    #[serde(with = "serde_compat::provider")]
     pub provider: ProviderKind,
-    #[serde(with = "serde_compat::protocol")]
     pub protocol: ProtocolKind,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub client_peer: Option<String>,
@@ -146,7 +99,6 @@ pub enum RespPayload {
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
 pub struct DeadLetterEntry {
     pub timestamp: String,
-    #[serde(alias = "invocation")]
     pub context: DeadLetterContext,
     pub event: SerializableEvent,
     pub error: String,
@@ -740,7 +692,7 @@ mod tests {
     }
 
     #[test]
-    fn dead_letter_context_roundtrips_legacy_string_provider_protocol() {
+    fn dead_letter_context_requires_canonical_provider_and_protocol() {
         let json = r#"{
             "timestamp": "2026-01-01T00:00:00Z",
             "context": {
@@ -755,13 +707,21 @@ mod tests {
                 "level": "dialogue",
                 "client_model": "m",
                 "upstream_model": "m",
-                "provider": "openai",
+                "provider": "openAi",
                 "protocol": "chat_completions"
             },
             "event": {"kind": "cancelled", "status": 499, "bytes_received": 0, "streaming": true},
             "error": "test"
         }"#;
         let entry: DeadLetterEntry = serde_json::from_str(json).unwrap();
+        let value: serde_json::Value = serde_json::from_str(json).unwrap();
+        let mut old = value.clone();
+        old["context"]["provider"] = serde_json::json!("openai");
+        assert!(serde_json::from_value::<DeadLetterEntry>(old).is_err());
+        let mut old = value;
+        let context = old.as_object_mut().unwrap().remove("context").unwrap();
+        old["invocation"] = context;
+        assert!(serde_json::from_value::<DeadLetterEntry>(old).is_err());
         assert_eq!(entry.context.provider, ProviderKind::OpenAi);
         assert_eq!(entry.context.protocol, ProtocolKind::ChatCompletions);
         let ctx = entry.context.to_call_context();

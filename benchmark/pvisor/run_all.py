@@ -1,5 +1,11 @@
 #!/usr/bin/env python3
-"""One-command pVisor startup benchmark with local setup and preflight."""
+"""One-command pVisor startup benchmark with local setup and preflight.
+
+Benchmark: B-STARTUP (benchmark/README.md#b-startup), role user-facing.
+Motivation: users should be able to reproduce the published startup numbers.
+Conclusion sought: the same startup table as startup.md, on the user's host.
+Design: local setup and preflight, then startup.py with the published protocol.
+"""
 
 from __future__ import annotations
 

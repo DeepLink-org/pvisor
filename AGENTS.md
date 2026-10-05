@@ -8,6 +8,20 @@ OverlayNet, replay, and the `pvisor-core` records those components share.
 Prefer targeted build, lint, and test commands over workspace-wide commands
 when a workspace-wide command would pull unrelated crates into scope.
 
+## Directory READMEs
+
+Before changing any file, read the `README.md` of every directory on the path
+from the repository root to that file. A directory README's rules apply to
+everything below it and are not optional context.
+
+## Benchmarks
+
+Any work under `benchmark/`, `docs/src/*/benchmarks/` or
+`docs/src/assets/benchmarks/` must follow `benchmark/README.md`: find the
+benchmark's registry entry before measuring or writing, keep each user page in
+the order conclusions, motivation, experiment design, data and analysis, and
+keep engineering A/B and diagnostic results out of user pages.
+
 ## Test command
 
 Use `just test` as the default validation command. It runs Rust tests through

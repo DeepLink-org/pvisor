@@ -1,4 +1,13 @@
-"""Twenty synthetic native-format prefixes per adapter, three fresh repetitions."""
+"""Twenty synthetic native-format prefixes per adapter, three fresh repetitions.
+
+Benchmark: B-REPLAY (benchmark/README.md#b-replay), role user-facing.
+Motivation: training and reproduction need trajectories restored to the same
+starting point without side effects.
+Conclusion sought: every supported format passes fidelity checks, prepare
+runs no tool and leaves the workspace untouched, and its cost per trajectory.
+Design: fixed native-format samples per adapter; prefix structure, tool
+arguments, observations and workspace state verified.
+"""
 
 import json
 import shutil

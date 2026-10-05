@@ -1,5 +1,11 @@
 #!/usr/bin/env python3
-"""Run and compare the pVisor process-level benchmark suite."""
+"""Run and compare the pVisor process-level benchmark suite.
+
+Benchmark: B-PROCESS (benchmark/README.md#b-process), role engineering A/B.
+Motivation: catch Run startup and Bundle read regressions during development.
+Conclusion sought: no candidate metric regresses past the threshold (15%).
+Design: same host and suite; smoke 2 warmups/10 samples, nightly 10/50.
+"""
 
 from __future__ import annotations
 

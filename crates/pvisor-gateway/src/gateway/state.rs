@@ -50,16 +50,8 @@ pub async fn serve(
     config: ProxyConfig,
     storage: impl AsRef<Path>,
     sink: Arc<dyn CaptureEventObserver>,
-    stream_markdown: bool,
 ) -> anyhow::Result<()> {
-    serve_with_shutdown(
-        config,
-        storage,
-        sink,
-        stream_markdown,
-        std::future::pending(),
-    )
-    .await
+    serve_with_shutdown(config, storage, sink, std::future::pending()).await
 }
 
 /// Run proxy until `shutdown` completes. Optionally signal bind readiness via `ready`.
@@ -67,7 +59,6 @@ pub async fn serve_with_shutdown(
     config: ProxyConfig,
     storage: impl AsRef<Path>,
     sink: Arc<dyn CaptureEventObserver>,
-    stream_markdown: bool,
     shutdown: impl std::future::Future<Output = ()> + Send + 'static,
 ) -> anyhow::Result<()> {
     serve_with_shutdown_and_ready(config, storage, sink, stream_markdown, None, shutdown).await
@@ -77,7 +68,6 @@ pub async fn serve_with_shutdown_and_ready(
     config: ProxyConfig,
     storage: impl AsRef<Path>,
     sink: Arc<dyn CaptureEventObserver>,
-    stream_markdown: bool,
     ready: Option<tokio::sync::oneshot::Sender<()>>,
     shutdown: impl std::future::Future<Output = ()> + Send + 'static,
 ) -> anyhow::Result<()> {
@@ -85,7 +75,6 @@ pub async fn serve_with_shutdown_and_ready(
         config,
         storage,
         sink,
-        stream_markdown,
         Arc::new(PolicyControlController),
         ready,
         shutdown,
@@ -102,7 +91,6 @@ pub async fn serve_with_listeners_and_shutdown(
     mut config: ProxyConfig,
     storage: impl AsRef<Path>,
     sink: Arc<dyn CaptureEventObserver>,
-    stream_markdown: bool,
     listener: tokio::net::TcpListener,
     admin_listener: tokio::net::TcpListener,
     shutdown: impl std::future::Future<Output = ()> + Send + 'static,
@@ -120,7 +108,6 @@ pub async fn serve_with_listeners_and_shutdown(
         config,
         storage,
         sink,
-        stream_markdown,
         GatewayRuntimeControl {
             controller: Arc::new(PolicyControlController),
             interception_metrics: InterceptionMetrics::default(),
@@ -149,7 +136,6 @@ pub async fn serve_with_runtime_control(
     config: ProxyConfig,
     storage: impl AsRef<Path>,
     sink: Arc<dyn CaptureEventObserver>,
-    stream_markdown: bool,
     control_controller: Arc<dyn ControlController>,
     ready: Option<tokio::sync::oneshot::Sender<()>>,
     shutdown: impl std::future::Future<Output = ()> + Send + 'static,
@@ -158,7 +144,6 @@ pub async fn serve_with_runtime_control(
         config,
         storage,
         sink,
-        stream_markdown,
         GatewayRuntimeControl {
             controller: control_controller,
             interception_metrics: InterceptionMetrics::default(),
@@ -181,7 +166,6 @@ pub(crate) async fn serve_with_runtime_control_and_metrics(
     config: ProxyConfig,
     storage: impl AsRef<Path>,
     sink: Arc<dyn CaptureEventObserver>,
-    stream_markdown: bool,
     runtime_control: GatewayRuntimeControl,
     ready: Option<Box<dyn FnOnce(std::net::SocketAddr, std::net::SocketAddr) + Send>>,
     shutdown: impl std::future::Future<Output = ()> + Send + 'static,
@@ -206,7 +190,6 @@ pub(crate) async fn serve_with_runtime_control_and_metrics(
         config,
         storage,
         sink,
-        stream_markdown,
         runtime_control,
         GatewayListeners {
             proxy: listener,
@@ -231,7 +214,6 @@ async fn serve_with_bound_listeners(
     mut config: ProxyConfig,
     storage: impl AsRef<Path>,
     sink: Arc<dyn CaptureEventObserver>,
-    stream_markdown: bool,
     runtime_control: GatewayRuntimeControl,
     listeners: GatewayListeners,
     signals: GatewaySignals<impl std::future::Future<Output = ()> + Send + 'static>,
@@ -271,13 +253,8 @@ async fn serve_with_bound_listeners(
 
     let active_requests = Arc::new(AtomicUsize::new(0));
     let interception_metrics = runtime_control.interception_metrics;
-    let capture_engine = CaptureEngine::new(
-        Arc::clone(&sink),
-        index.clone(),
-        Arc::clone(&storage),
-        stream_markdown,
-    )
-    .await?;
+    let capture_engine =
+        CaptureEngine::new(Arc::clone(&sink), index.clone(), Arc::clone(&storage)).await?;
     let capture_for_shutdown = capture_engine.clone();
     let mut client_builder = reqwest::Client::builder()
         // Redirects must return to the proxy client so every destination

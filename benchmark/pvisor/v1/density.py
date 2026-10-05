@@ -1,3 +1,15 @@
+"""Concurrent environment density, reliability and memory.
+
+Benchmark: B-DENSITY (benchmark/README.md#b-density), role user-facing.
+Motivation: parallel Agents accumulate memory and startup cost; users need
+how many environments one machine sustains.
+Conclusion sought: with X GiB, how many staged and VM environments run
+reliably, memory per environment, and where and how failures begin.
+Design: concurrency sweep 1-128 recording success rate, startup wait, RSS and
+cgroup memory; Podman/Docker as the control; idle and tool-loaded probes
+reported separately; failures reported with resources, never dropped.
+"""
+
 import concurrent.futures
 import resource
 import threading

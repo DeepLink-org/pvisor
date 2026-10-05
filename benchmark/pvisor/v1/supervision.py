@@ -1,3 +1,13 @@
+"""Machine cost of reviewing, selectively applying and dropping changes.
+
+Benchmark: B-SUPERVISION (benchmark/README.md#b-supervision), role user-facing.
+Motivation: besides Agent runtime, users review diffs and decide what lands.
+Conclusion sought: machine time to review N files and apply a subset,
+against a same-batch Git diff workflow; human reading time is out of scope.
+Design: fixed changed-file set; status, review, selective apply and drop
+timed as one flow alongside the Git equivalent.
+"""
+
 import json
 import shutil
 

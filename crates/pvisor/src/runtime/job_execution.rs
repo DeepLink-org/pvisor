@@ -56,7 +56,60 @@ pub(crate) struct Request {
     pub error: Option<String>,
 }
 
+#[derive(Debug, Clone, Copy, Serialize, Deserialize, PartialEq, Eq)]
+#[serde(rename_all = "snake_case")]
+pub(crate) enum JobState {
+    Running,
+    Suspending,
+    Suspended,
+    Restoring,
+    Terminal,
+    Unknown,
+}
+
+impl std::fmt::Display for JobState {
+    fn fmt(&self, formatter: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        formatter.write_str(match self {
+            Self::Running => "running",
+            Self::Suspending => "suspending",
+            Self::Suspended => "suspended",
+            Self::Restoring => "restoring",
+            Self::Terminal => "terminal",
+            Self::Unknown => "unknown",
+        })
+    }
+}
+
+pub(crate) const JOB_SCHEMA_VERSION: u16 = 2;
+
 #[derive(Debug, Clone, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
+pub(crate) struct ResumeRequest {
+    pub stage: PathBuf,
+    pub eager_ram: bool,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
+#[serde(deny_unknown_fields)]
+pub(crate) struct ForkOptions {
+    pub checkpoint: Option<String>,
+    pub stage: Option<PathBuf>,
+    pub name: Option<String>,
+    pub ram_storage: Option<SnapshotRamStorage>,
+    pub eager_ram: bool,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
+pub(crate) struct ForkRequest {
+    pub options: ForkOptions,
+    pub stage: PathBuf,
+    pub job_id: String,
+    pub checkpoint_id: String,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
 pub(crate) struct Job {
     pub version: u16,
     pub run_id: String,
@@ -66,18 +119,13 @@ pub(crate) struct Job {
     pub active_attempt: String,
     pub config: RunConfig,
     pub spec: pvisor_core::RunSpec,
-    /// running, suspending, suspended, restoring, terminal, or unknown.
-    pub state: String,
+    pub state: JobState,
     pub head: Option<String>,
     pub checkpoints: BTreeMap<String, Capture>,
     pub requests: BTreeMap<String, Request>,
-    pub resumes: BTreeMap<String, PathBuf>,
-    #[serde(default)]
-    pub forks: BTreeMap<String, serde_json::Value>,
-    #[serde(default)]
+    pub resumes: BTreeMap<String, ResumeRequest>,
+    pub forks: BTreeMap<String, ForkRequest>,
     pub stores: std::collections::BTreeSet<PathBuf>,
-    #[serde(default)]
-    pub resume_eager_ram: BTreeMap<String, bool>,
 }
 
 impl Job {
@@ -97,7 +145,7 @@ impl Job {
         };
         let job: Self = serde_json::from_slice(&bytes)?;
         ensure!(
-            job.version == 1
+            job.version == JOB_SCHEMA_VERSION
                 && job.root == root
                 && job.root.is_absolute()
                 && job.active_stage.is_absolute()
@@ -168,7 +216,7 @@ pub(crate) fn require_mutable(record: &RunRecord) -> anyhow::Result<()> {
     if let Some(job) = Job::read(record)? {
         ensure!(job.run_id == record.run_id, "execution Job owner mismatch");
         ensure!(
-            job.state == "terminal",
+            job.state == JobState::Terminal,
             "JOB_BUSY: Job {} is {}; kill a suspended Job before changing its workspace",
             job.run_id,
             job.state
@@ -242,19 +290,19 @@ impl Server {
                 ensure!(
                     job.run_id == record.run_id
                         && job.active_stage == stage
-                        && job.state == "restoring",
+                        && job.state == JobState::Restoring,
                     "invalid resumed Job ownership"
                 );
                 job.active_attempt = record
                     .attempt_id
                     .clone()
                     .context("missing Attempt identity")?;
-                job.state = "running".into();
+                job.state = JobState::Running;
                 job.head = None;
                 job
             }
             None => Job {
-                version: 1,
+                version: JOB_SCHEMA_VERSION,
                 run_id: record.run_id.clone(),
                 root: stage.clone(),
                 active_stage: stage.clone(),
@@ -265,14 +313,13 @@ impl Server {
                     .context("missing Attempt identity")?,
                 config,
                 spec,
-                state: "running".into(),
+                state: JobState::Running,
                 head: None,
                 checkpoints: BTreeMap::new(),
                 requests: BTreeMap::new(),
                 resumes: BTreeMap::new(),
                 forks: BTreeMap::new(),
                 stores: Default::default(),
-                resume_eager_ram: Default::default(),
             },
         };
         job.stores.insert(store);
@@ -333,9 +380,9 @@ impl Server {
                 .context("suspend receipt has no Job request")?
                 .checkpoint = Some(id.clone());
             job.head = Some(id);
-            job.state = "suspended".into();
+            job.state = JobState::Suspended;
         } else {
-            job.state = "terminal".into();
+            job.state = JobState::Terminal;
             job.head = None;
         }
         job.write()
@@ -372,7 +419,7 @@ async fn handle_request(
         );
     }
     ensure!(
-        job.state == "running",
+        job.state == JobState::Running,
         "JOB_BUSY: execution state is {}",
         job.state
     );
@@ -397,7 +444,7 @@ async fn handle_request(
         },
     );
     if request.suspend {
-        job.state = "suspending".into();
+        job.state = JobState::Suspending;
     }
     job.write()?;
     drop(lease);
@@ -430,8 +477,8 @@ async fn handle_request(
                 .get_mut(&request.request_id)
                 .context("request disappeared")?
                 .error = Some(format!("{error:#}"));
-            if request.suspend && job.state == "suspending" {
-                job.state = "unknown".into();
+            if request.suspend && job.state == JobState::Suspending {
+                job.state = JobState::Unknown;
             }
             job.write()?;
             Err(error)
@@ -473,18 +520,18 @@ pub(crate) async fn capture(
                 }
                 ensure!(
                     matches!(
-                        current.state.as_str(),
-                        "running" | "suspending" | "suspended"
+                        current.state,
+                        JobState::Running | JobState::Suspending | JobState::Suspended
                     ),
                     "EXECUTION_UNKNOWN: Attempt ended before capture acknowledgement"
                 );
                 tokio::time::sleep(Duration::from_millis(25)).await;
             }
-        } else if job.state == "suspended" {
+        } else if job.state == JobState::Suspended {
             let _lease = job.lock_wait().await?;
             let mut current = job.current()?;
             ensure!(
-                current.state == "suspended",
+                current.state == JobState::Suspended,
                 "JOB_BUSY: suspended head changed during request"
             );
             let checkpoint =
@@ -511,7 +558,7 @@ pub(crate) async fn capture(
             checkpoint
         } else {
             ensure!(
-                job.state == "running",
+                job.state == JobState::Running,
                 "JOB_BUSY: Job execution state is {}",
                 job.state
             );
@@ -547,14 +594,14 @@ pub(crate) async fn capture(
         if suspend {
             loop {
                 let current = job.current()?;
-                if current.state == "suspended"
+                if current.state == JobState::Suspended
                     && current.head.as_deref() == Some(&checkpoint.snapshot_id)
                     && !super::is_live(&current.active_stage)?
                 {
                     break;
                 }
                 ensure!(
-                    matches!(current.state.as_str(), "suspending" | "suspended"),
+                    matches!(current.state, JobState::Suspending | JobState::Suspended),
                     "EXECUTION_UNKNOWN: suspend termination not confirmed ({})",
                     current.state
                 );
@@ -572,12 +619,12 @@ pub(crate) fn terminate_suspended(record: &RunRecord) -> anyhow::Result<bool> {
     };
     let _lease = template.lock()?;
     let mut job = template.current()?;
-    if job.state != "suspended" {
+    if job.state != JobState::Suspended {
         return Ok(false);
     }
     let _attempt = RunLease::acquire(&job.active_stage)?;
     job.head = None;
-    job.state = "terminal".into();
+    job.state = JobState::Terminal;
     job.write()?;
     Ok(true)
 }
@@ -598,7 +645,7 @@ mod tests {
         let mut config = RunConfig::default();
         config.run.executor = RunExecutorKind::Vm;
         let job = Job {
-            version: 1,
+            version: JOB_SCHEMA_VERSION,
             run_id: "job".into(),
             root: root.into(),
             active_stage: root.into(),
@@ -606,14 +653,13 @@ mod tests {
             active_attempt: "attempt-original".into(),
             config,
             spec: pvisor_core::RunSpec::process("job", "probe", "probe"),
-            state: "suspended".into(),
+            state: JobState::Suspended,
             head: None,
             checkpoints: BTreeMap::new(),
             requests: BTreeMap::new(),
             resumes: BTreeMap::new(),
             forks: BTreeMap::new(),
             stores: [root.join("execution-snapshots")].into(),
-            resume_eager_ram: Default::default(),
         };
         job.write().unwrap();
         (record, job)
@@ -633,8 +679,14 @@ mod tests {
     fn suspended_and_uncertain_attempts_cannot_mutate_workspace() {
         let temp = tempfile::tempdir().unwrap();
         let (record, mut job) = fixture(temp.path());
-        for state in ["running", "suspending", "suspended", "restoring", "unknown"] {
-            job.state = state.into();
+        for state in [
+            JobState::Running,
+            JobState::Suspending,
+            JobState::Suspended,
+            JobState::Restoring,
+            JobState::Unknown,
+        ] {
+            job.state = state;
             job.write().unwrap();
             assert!(
                 record
@@ -644,7 +696,7 @@ mod tests {
                     .contains("JOB_BUSY")
             );
         }
-        job.state = "terminal".into();
+        job.state = JobState::Terminal;
         job.write().unwrap();
         record.require_stopped().unwrap();
     }
@@ -655,7 +707,7 @@ mod tests {
         let (record, mut job) = fixture(temp.path());
         let stage = temp.path().join("attempts/new");
         job.active_stage = stage.clone();
-        job.state = "restoring".into();
+        job.state = JobState::Restoring;
         job.write().unwrap();
         assert_eq!(
             RunRecord::read(temp.path()).unwrap().attempt_id.as_deref(),
@@ -684,7 +736,7 @@ mod tests {
         let temp = tempfile::tempdir().unwrap();
         let (_, mut job) = fixture(temp.path());
         let checkpoint = checkpoint(temp.path());
-        job.state = "suspending".into();
+        job.state = JobState::Suspending;
         job.requests.insert(
             "suspend".into(),
             Request {
@@ -709,7 +761,7 @@ mod tests {
         result.exit_code = None;
         server.finish(&result).await.unwrap();
         let current = job.current().unwrap();
-        assert_eq!(current.state, "suspended");
+        assert_eq!(current.state, JobState::Suspended);
         assert_eq!(
             current.head.as_deref(),
             Some(checkpoint.snapshot_id.as_str())
@@ -744,7 +796,7 @@ mod tests {
         let (record, mut job) = fixture(temp.path());
         let checkpoint = checkpoint(temp.path());
         let id = checkpoint.snapshot_id.clone();
-        job.state = "terminal".into();
+        job.state = JobState::Terminal;
         job.checkpoints.insert(
             id.clone(),
             Capture {

@@ -1,5 +1,15 @@
 #!/usr/bin/env python3
-"""Real KVM lazy-image A/B with a local, immutable cache-protocol fixture."""
+"""Real KVM lazy-image A/B with a local, immutable cache-protocol fixture.
+
+Benchmark: B-FS-ENG (benchmark/README.md#b-fs-eng), role engineering A/B.
+Motivation: decide whether a lazy-image path change helps users who run VMs
+on images that are fetched on demand.
+Conclusion sought: cold and warm client-cache differences for traversal,
+reads, large reads and copy-up, with confidence intervals and request counts
+proving both versions fetched the same bytes.
+Design: shuffled version order per round, cold then warm per version, local
+cache fixture on separate cores, no injected latency; not a WAN/S3 test.
+"""
 
 import argparse
 import hashlib

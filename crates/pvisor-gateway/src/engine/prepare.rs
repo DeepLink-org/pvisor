@@ -7,7 +7,7 @@ use pulsing_actor::ActorRef;
 use serde_json::Value;
 
 use super::wire::{StoryCommand, StoryScope, run_enrich};
-use super::{CallContext, CancelEvent, CompleteEvent, DraftEvent, Event, RequestEvent};
+use super::{CallContext, CancelEvent, CompleteEvent, Event, RequestEvent};
 use crate::dialogue_extract::{extract_assistant_text_from_json, extract_assistant_turn_from_sse};
 use crate::runtime::debug;
 use crate::sink::{
@@ -24,7 +24,6 @@ use crate::usage::{
 /// Index + config for the prepare phase (run actor accessed via wire client, not held here).
 pub(crate) struct CapturePreparer {
     pub storage: std::sync::Arc<std::path::PathBuf>,
-    pub stream_markdown: bool,
 }
 
 /// Outcome of prepare — at most one story command to dispatch.
@@ -43,7 +42,12 @@ impl CapturePreparer {
     ) -> Result<PreparedCapture> {
         match event {
             Event::Request(e) => self.prepare_request(run, ctx, e).await,
-            Event::ResponseDraft(e) => self.prepare_draft(ctx, e).await,
+            // Drafts are not part of the canonical event stream.
+            Event::ResponseDraft(_) => Ok(PreparedCapture {
+                ctx: ctx.clone(),
+                backfills: vec![],
+                story_cmd: None,
+            }),
             Event::ResponseComplete(e) => self.prepare_completed(run, ctx, e).await,
             Event::Cancelled(e) => self.prepare_cancelled(ctx, e).await,
         }
@@ -122,45 +126,6 @@ impl CapturePreparer {
         Ok(PreparedCapture {
             ctx: ctx.clone(),
             backfills,
-            story_cmd,
-        })
-    }
-
-    async fn prepare_draft(&self, ctx: &CallContext, event: DraftEvent) -> Result<PreparedCapture> {
-        if !self.stream_markdown || !ctx.level.includes_assistant_text() {
-            return Ok(PreparedCapture {
-                ctx: ctx.clone(),
-                backfills: vec![],
-                story_cmd: None,
-            });
-        }
-        if event.assistant_content.trim().is_empty() {
-            return Ok(PreparedCapture {
-                ctx: ctx.clone(),
-                backfills: vec![],
-                story_cmd: None,
-            });
-        }
-        let rec = llm_response_record_with_content(
-            Some(ctx.route().session_id.clone()),
-            Some(ctx.agent_id().to_string()),
-            crate::sink::LlmResponseContent {
-                status: event.status,
-                payload: &serde_json::json!({ "status": event.status, "draft": true }),
-                streaming: true,
-                assistant_content: Some(event.assistant_content.clone()),
-            },
-            &ctx.call,
-            ctx.level,
-        );
-        let story_cmd = Some(StoryCommand::upsert_draft(
-            StoryScope::from_context(ctx),
-            serde_json::to_vec(&rec)?,
-            event.assistant_content,
-        )?);
-        Ok(PreparedCapture {
-            ctx: ctx.clone(),
-            backfills: vec![],
             story_cmd,
         })
     }

@@ -1,6 +1,13 @@
 #!/usr/bin/env python3
 """Compare pVisor sandbox launch cost across executors and host options.
 
+Benchmark: B-STARTUP (benchmark/README.md#b-startup), role user-facing.
+Motivation: one-shot Agent environments make startup wait part of every task.
+Conclusion sought: how many ms host, staged and VM need before the first
+command runs, relative to native, Docker and lightweight VMs.
+Design: prepared environment, warm caches, matched CPU/memory budget,
+interleaved cases, >=30 samples; ready and launch-to-exit reported separately.
+
 The timed interval is process creation through successful completion of a tiny
 payload. It includes pVisor bookkeeping and teardown; it is a startup proxy,
 not a guest-ready timestamp. Linux /proc sampling is observational and can

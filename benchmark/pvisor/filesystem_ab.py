@@ -1,5 +1,14 @@
 #!/usr/bin/env python3
-"""Compare two pinned pVisor binaries through real FUSE and virtio-fs jobs."""
+"""Compare two pinned pVisor binaries through real FUSE and virtio-fs jobs.
+
+Benchmark: B-FS-ENG (benchmark/README.md#b-fs-eng), role engineering A/B.
+Motivation: decide whether a filesystem change improves or regresses the
+B-FS-TOOLS user conclusion.
+Conclusion sought: per-workload median change with a 95% confidence interval,
+or "no detected difference"; bimodal workloads reported per cluster.
+Design: both binaries built from one frozen source with only the change
+applied, same host and budget, all cells shuffled per round, >=30 samples.
+"""
 
 import argparse
 import json

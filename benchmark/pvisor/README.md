@@ -1,5 +1,10 @@
 # pVisor benchmark
 
+> This directory is the runner manual. What each benchmark must answer, how
+> user pages are structured and which results may be published are defined in
+> [`../README.md`](../README.md); read it first. Every entry script starts with
+> a `Benchmark:` block naming its registry entry.
+
 **Measures the process-level cost of a minimal host Run and of reading its
 durable Run Bundle through `status --json` and `status --review --json`.**
 

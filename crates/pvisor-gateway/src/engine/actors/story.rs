@@ -182,9 +182,6 @@ impl StoryActor {
                     tracing::warn!("post-commit observer diagnostics failed: {error:#}");
                 }
             }
-            // Legacy markdown projection was removed from this crate. Drafts
-            // are intentionally excluded from the canonical event stream.
-            StoryCommand::UpsertDraft { .. } => {}
             StoryCommand::Flush | StoryCommand::Snapshot { .. } | StoryCommand::LocalSnapshot => {
                 unreachable!()
             }

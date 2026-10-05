@@ -1,4 +1,13 @@
-"""Real CLI tool loops with deterministic, local model responses (no inference)."""
+"""Real CLI tool loops with deterministic, local model responses (no inference).
+
+Benchmark: B-AGENT-TASK (benchmark/README.md#b-agent-task), role user-facing.
+Motivation: users need to know whether their Agent CLI works in each mode and
+how long a complete fix-and-test task takes.
+Conclusion sought: per-mode pass/fail of each CLI's controlled tool loop,
+with the failing step named, and end-to-end time of passing runs.
+Design: fixed task, locally replayed model responses, success means the
+task's tests pass; failures counted separately, never timed as samples.
+"""
 
 import json
 import shutil

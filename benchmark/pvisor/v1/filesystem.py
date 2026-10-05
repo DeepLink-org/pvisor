@@ -1,3 +1,9 @@
+"""First-version filesystem suite, retained to reproduce historical reports.
+
+Benchmark: B-FS-TOOLS (benchmark/README.md#b-fs-tools), role user-facing,
+superseded by reference_baselines.py; do not publish new conclusions from it.
+"""
+
 import hashlib
 import json
 import random

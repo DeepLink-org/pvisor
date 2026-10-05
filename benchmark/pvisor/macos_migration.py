@@ -1,6 +1,11 @@
 #!/usr/bin/env python3
 """Interleaved, same-host CLI/VM migration comparison on Apple Silicon.
 
+Benchmark: B-MACOS (benchmark/README.md#b-macos), role user-facing.
+Motivation: users moving a CLI workflow into a macOS VM need its extra wait.
+Conclusion sought: whole-task time of the same CLI flow on host and in a VM.
+Design: interleaved runs, prepared rootfs, identical firmware, warm caches.
+
 Prepared Alpine rootfs, identical firmware and warm host caches. Timings include
 CLI setup and shutdown; successful output and completed VM Bundles are required.
 Large evidence stays in target/, outside the source tree.

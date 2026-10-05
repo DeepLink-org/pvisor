@@ -1,4 +1,4 @@
-//! A read-only, demand-filled FUSE lower for the existing VM/OCI overlays.
+//! Lazy image preparation with separate host FUSE and direct VM ownership.
 use super::backend::RemoteFs;
 use super::{CacheClient, Request as CacheRequest, Response, architecture, hash};
 use crate::image::oci::{ImageStore, PreparedImage};
@@ -16,12 +16,11 @@ use std::time::Duration;
 
 const TTL: Duration = Duration::from_secs(3600);
 
-pub(crate) struct LazyMount {
+pub(crate) struct FuseMount {
     session: Option<BackgroundSession>,
     path: PathBuf,
-    direct: Option<super::direct::DirectImage>,
 }
-impl Drop for LazyMount {
+impl Drop for FuseMount {
     fn drop(&mut self) {
         crate::util::startup_mark("image.unmount_begin");
         if let Some(session) = self.session.take()
@@ -32,7 +31,6 @@ impl Drop for LazyMount {
                 self.path.display()
             ));
         }
-        self.direct.take();
         #[cfg(target_os = "linux")]
         let _ = fs::remove_dir(&self.path);
         crate::util::startup_mark("image.unmount_ready");
@@ -42,7 +40,7 @@ impl Drop for LazyMount {
 pub(crate) fn prepare_vm_image(
     image: &str,
     store: Option<PathBuf>,
-) -> anyhow::Result<(PreparedImage, Option<LazyMount>)> {
+) -> anyhow::Result<(PreparedImage, Option<super::direct::DirectImage>)> {
     let client = CacheClient::discover()?;
     let store = ImageStore::new(store)?;
     let Some(client) = client else {
@@ -70,16 +68,24 @@ pub(crate) fn prepare_vm_image(
     Ok((prepared, Some(mount)))
 }
 
-/// A read-only native-cache mount. Keep it alive through native Run teardown.
-/// Multiple attempts may share one mount and retain separate writable uppers.
+/// Retain the lazy backend for the complete native Run lifetime.
+/// Host consumers own a FUSE mount; VM consumers own a direct attachment.
 pub struct MountedImage {
-    rootfs: PathBuf,
     digest: String,
-    _mount: LazyMount,
+    backing: ImageBacking,
 }
+
+enum ImageBacking {
+    Host(FuseMount),
+    Vm(super::direct::DirectImage),
+}
+
 impl MountedImage {
     pub fn rootfs(&self) -> &Path {
-        &self.rootfs
+        match &self.backing {
+            ImageBacking::Host(mount) => &mount.path,
+            ImageBacking::Vm(image) => image.root(),
+        }
     }
     pub fn manifest_digest(&self) -> &str {
         &self.digest
@@ -104,9 +110,8 @@ pub fn mount_image_handle(
         Some(handle),
     )?;
     Ok(MountedImage {
-        rootfs: prepared.rootfs,
         digest: prepared.digest,
-        _mount: mount,
+        backing: ImageBacking::Host(mount),
     })
 }
 
@@ -116,7 +121,7 @@ fn mount_prepared(
     store: &Path,
     downloads: super::progress::Downloads,
     expected: Option<&str>,
-) -> anyhow::Result<(PreparedImage, LazyMount)> {
+) -> anyhow::Result<(PreparedImage, FuseMount)> {
     let (mut prepared, filesystem) = prepare_remote(client, response, downloads, expected)?;
     let mount = super::progress::loading("mounting lazy rootfs", || mount(filesystem, store))?;
     prepared.rootfs = mount.path.clone();
@@ -129,16 +134,11 @@ fn direct_prepared(
     store: &Path,
     downloads: super::progress::Downloads,
     expected: Option<&str>,
-) -> anyhow::Result<(PreparedImage, LazyMount)> {
+) -> anyhow::Result<(PreparedImage, super::direct::DirectImage)> {
     let (mut prepared, filesystem) = prepare_remote(client, response, downloads, expected)?;
     let direct = super::direct::DirectImage::new(filesystem, store)?;
     prepared.rootfs = direct.root().to_owned();
-    let owner = LazyMount {
-        session: None,
-        path: prepared.rootfs.clone(),
-        direct: Some(direct),
-    };
-    Ok((prepared, owner))
+    Ok((prepared, direct))
 }
 
 pub fn open_image_handle_for_vm(
@@ -159,9 +159,8 @@ pub fn open_image_handle_for_vm(
         Some(handle),
     )?;
     Ok(MountedImage {
-        rootfs: prepared.rootfs,
         digest: prepared.digest,
-        _mount: owner,
+        backing: ImageBacking::Vm(owner),
     })
 }
 
@@ -234,7 +233,7 @@ fn prepare_remote(
     ))
 }
 
-fn mount(filesystem: RemoteFs, _store: &Path) -> anyhow::Result<LazyMount> {
+fn mount(filesystem: RemoteFs, _store: &Path) -> anyhow::Result<FuseMount> {
     #[cfg(target_os = "macos")]
     let mountpoint =
         PathBuf::from("/Volumes").join(format!("pvisor-image-{}", uuid::Uuid::new_v4()));
@@ -261,10 +260,9 @@ fn mount(filesystem: RemoteFs, _store: &Path) -> anyhow::Result<LazyMount> {
     let session = BackgroundSession::new_interruptible(session)?;
     #[cfg(not(target_os = "linux"))]
     let session = BackgroundSession::new(session)?;
-    let mount = LazyMount {
+    let mount = FuseMount {
         session: Some(session),
         path: mountpoint.clone(),
-        direct: None,
     };
     // FSKit attaches asynchronously after its request loop starts.
     #[cfg(target_os = "macos")]

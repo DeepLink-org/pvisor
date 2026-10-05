@@ -21,7 +21,7 @@ async fn session_sink_failure_writes_dead_letter_with_record() {
     let storage = Arc::new(dir.path().to_path_buf());
     let sink = Arc::new(FailingSink);
     let index = SessionIndexStore::open(dir.path()).unwrap().clone_handle();
-    let engine = CaptureEngine::new(sink, index, storage.clone(), false)
+    let engine = CaptureEngine::new(sink, index, storage.clone())
         .await
         .unwrap();
     let ctx = test_context();
@@ -54,7 +54,7 @@ async fn observer_failure_does_not_erase_committed_facts() {
     let dir = tempfile::tempdir().unwrap();
     let storage = Arc::new(dir.path().to_path_buf());
     let index = SessionIndexStore::open(dir.path()).unwrap().clone_handle();
-    let engine = CaptureEngine::new(Arc::new(FailingSink), index, storage, false)
+    let engine = CaptureEngine::new(Arc::new(FailingSink), index, storage)
         .await
         .unwrap();
     engine.spawn_apply(

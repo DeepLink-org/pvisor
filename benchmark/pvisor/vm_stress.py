@@ -1,6 +1,9 @@
 #!/usr/bin/env python3
 """Historical retired-snapshot harness; use an archived binary.
 
+Benchmark: B-VM-MEMORY (benchmark/README.md#b-vm-memory), role historical;
+the snapshot command is retired, so this harness produces no new conclusions.
+
 Linux KVM/FUSE snapshot stress and fault injection; never skips missing hardware.
 
 Use a new output directory and snapshot_stress_guest.rs compiled with panic=abort.

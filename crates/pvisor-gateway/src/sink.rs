@@ -301,7 +301,7 @@ pub fn attach_connection_and_client(
     }
 }
 
-/// Dual-write RFC-0002 `payload.http.*` request wire fields (keeps flat compat keys).
+/// Record RFC-0002 request wire fields under `payload.http`.
 pub fn attach_http_wire_request(
     payload: &mut Value,
     method: &str,
@@ -313,10 +313,6 @@ pub fn attach_http_wire_request(
     let Some(obj) = payload.as_object_mut() else {
         return;
     };
-    obj.insert("method".into(), Value::String(method.to_string()));
-    if let Some(u) = url {
-        obj.insert("url".into(), Value::String(redact_sensitive_url(u)));
-    }
     let http = obj
         .entry("http".to_string())
         .or_insert_with(|| Value::Object(serde_json::Map::new()));
@@ -336,7 +332,7 @@ pub fn attach_http_wire_request(
     }
 }
 
-/// Dual-write RFC-0002 `payload.http.*` response wire fields.
+/// Record RFC-0002 response wire fields under `payload.http`.
 pub fn attach_http_wire_response(
     payload: &mut Value,
     status: u16,
@@ -349,9 +345,6 @@ pub fn attach_http_wire_response(
     let Some(obj) = payload.as_object_mut() else {
         return;
     };
-    if let Some(u) = url {
-        obj.insert("url".into(), Value::String(redact_sensitive_url(u)));
-    }
     let http = obj
         .entry("http".to_string())
         .or_insert_with(|| Value::Object(serde_json::Map::new()));
@@ -775,7 +768,8 @@ mod header_tests {
             Some(&body),
             true,
         );
-        assert_eq!(payload["method"], "POST");
+        assert!(payload.get("method").is_none());
+        assert!(payload.get("url").is_none());
         assert_eq!(payload["http"]["method"], "POST");
         assert_eq!(payload["http"]["path"], "/v1/chat/completions");
         assert_eq!(payload["http"]["url"], "//localhost/v1/chat/completions");

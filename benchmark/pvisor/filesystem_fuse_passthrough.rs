@@ -1,5 +1,7 @@
 //! Benchmark-only host FUSE control: native files, no OverlayCore or journal.
 //! One synchronous fuser loop and its default protocol flags match host staging.
+//! Benchmark: B-FS-ENG (benchmark/README.md#b-fs-eng), role diagnostic; driven
+//! by filesystem_fuse_ab.py as the transport-only lower bound.
 use fuser::*;
 use std::{
     collections::{BTreeSet, HashMap},

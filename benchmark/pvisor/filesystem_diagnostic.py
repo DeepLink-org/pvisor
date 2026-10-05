@@ -1,4 +1,10 @@
-"""Summarize instrumented migration logs; never treat them as performance gates."""
+"""Summarize instrumented migration logs; never treat them as performance gates.
+
+Benchmark: B-FS-ENG (benchmark/README.md#b-fs-eng), role diagnostic.
+Motivation: attribute time to profile spans after an uninstrumented A/B.
+Conclusion sought: span and counter breakdown explaining an observed gap.
+Design: reads profile-enabled batches only; their timings are not published.
+"""
 
 import argparse
 import json

@@ -20,7 +20,6 @@ use crate::runtime::OverlayHint;
 pub struct RunConfig {
     pub run: RunSettings,
     pub container: ContainerSettings,
-    #[serde(alias = "kvm")]
     pub vm: VmSettings,
     /// Process filesystem access policy. This is independent from OverlayFS
     /// change staging and from OverlayNet network policy.
@@ -181,7 +180,6 @@ pub enum RunExecutorKind {
     #[default]
     Host,
     Container,
-    #[serde(alias = "kvm")]
     Vm,
 }
 
@@ -784,18 +782,11 @@ cpus = 4
     }
 
     #[test]
-    fn legacy_kvm_config_deserializes_as_vm() {
-        let config: RunConfig = toml::from_str(
-            r#"
-[run]
-executor = "kvm"
-command = ["agent"]
-
-[kvm]
-rootfs = "/opt/rootfs"
-"#,
-        )
-        .unwrap();
+    fn configuration_requires_canonical_vm_names() {
+        assert!(toml::from_str::<RunConfig>("[run]\nexecutor = \"kvm\"\n").is_err());
+        assert!(toml::from_str::<RunConfig>("[kvm]\nrootfs = \"/opt/rootfs\"\n").is_err());
+        let config: RunConfig =
+            toml::from_str("[run]\nexecutor = \"vm\"\n[vm]\nrootfs = \"/opt/rootfs\"\n").unwrap();
         assert_eq!(config.run.executor, RunExecutorKind::Vm);
         assert_eq!(config.vm.rootfs.as_deref(), Some(Path::new("/opt/rootfs")));
     }

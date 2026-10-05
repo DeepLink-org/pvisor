@@ -1,6 +1,9 @@
 #!/usr/bin/env python3
 """Historical retired-snapshot harness; use an archived binary.
 
+Benchmark: B-VM-MEMORY (benchmark/README.md#b-vm-memory), role historical;
+the snapshot command is retired, so this harness produces no new conclusions.
+
 Real KVM continuation, RAM/FD preservation, private forks and snapshot latency.
 
 Needs a prepared static guest binary built from snapshot_guest.rs. Uses a new

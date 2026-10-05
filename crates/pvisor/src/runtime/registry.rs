@@ -224,7 +224,9 @@ impl RunRecord {
         // The active Attempt owns its own run.json, Bundle and storage lease.
         let active = super::job_execution::Job::read_stage(stage)?;
         let stage = active.as_ref().map_or(stage, |job| {
-            if job.state == "restoring" && !job.active_stage.join(RUN_META_FILENAME).exists() {
+            if job.state == super::job_execution::JobState::Restoring
+                && !job.active_stage.join(RUN_META_FILENAME).exists()
+            {
                 job.previous_stage.as_path()
             } else {
                 job.active_stage.as_path()

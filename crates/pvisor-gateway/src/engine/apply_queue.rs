@@ -283,7 +283,7 @@ mod tests {
         let storage = Arc::new(dir.path().to_path_buf());
         let sink = OrderRecordingSink::new();
         let index = SessionIndexStore::open(dir.path()).unwrap().clone_handle();
-        let engine = CaptureEngine::new(sink.clone(), index, storage.clone(), false)
+        let engine = CaptureEngine::new(sink.clone(), index, storage.clone())
             .await
             .unwrap();
 
@@ -334,7 +334,7 @@ mod tests {
         let dir = tempfile::tempdir().unwrap();
         let storage = Arc::new(dir.path().to_path_buf());
         let index = SessionIndexStore::open(dir.path()).unwrap().clone_handle();
-        let engine = CaptureEngine::new(Arc::new(SlowSink), index, storage, false)
+        let engine = CaptureEngine::new(Arc::new(SlowSink), index, storage)
             .await
             .unwrap();
 

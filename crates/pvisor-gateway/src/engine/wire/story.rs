@@ -1,6 +1,5 @@
 //! Per-story actor commands — one variant per I/O effect.
 
-use anyhow::Result;
 use serde::{Deserialize, Serialize};
 
 use super::super::story::{Story, StoryContext};
@@ -49,12 +48,6 @@ pub(crate) enum StoryCommand {
         /// JSON-encoded [`crate::record::CaptureRecord`].
         record_bytes: Vec<u8>,
     },
-    /// Legacy projection command, retained for wire compatibility. Canonical
-    /// event capture currently ignores drafts; no live markdown writer is installed.
-    UpsertDraft {
-        scope: StoryScope,
-        draft_bytes: Vec<u8>,
-    },
     /// Drain mailbox before shutdown (no I/O).
     Flush,
     /// Read-model snapshot (no I/O).
@@ -85,37 +78,14 @@ impl StoryCommand {
         }
     }
 
-    pub fn upsert_draft(
-        scope: StoryScope,
-        record_bytes: Vec<u8>,
-        assistant_content: String,
-    ) -> Result<Self> {
-        let draft = DraftPayload {
-            record_bytes,
-            assistant_content,
-        };
-        Ok(Self::UpsertDraft {
-            scope,
-            draft_bytes: serde_json::to_vec(&draft)?,
-        })
-    }
-
     pub fn scope(&self) -> &StoryScope {
         match self {
             Self::Restore { scope, .. }
             | Self::PersistRecord { scope, .. }
-            | Self::UpsertDraft { scope, .. }
             | Self::Snapshot { scope } => scope,
             Self::Flush | Self::LocalSnapshot => panic!("command has no scope"),
         }
     }
-}
-
-/// JSON payload for draft upsert: record template (seq assigned in StoryActor) + stream text.
-#[derive(Debug, Serialize, Deserialize)]
-pub(crate) struct DraftPayload {
-    pub record_bytes: Vec<u8>,
-    pub assistant_content: String,
 }
 
 fn stamp_record(bytes: Vec<u8>) -> Vec<u8> {

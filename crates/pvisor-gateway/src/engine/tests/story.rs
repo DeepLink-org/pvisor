@@ -7,7 +7,7 @@ use super::support::*;
 async fn story_snapshot_reflects_applied_turns() {
     let sink = RecordingSink::new();
     let dir = tempfile::tempdir().unwrap();
-    let engine = test_engine(sink.clone(), dir.path(), false).await;
+    let engine = test_engine(sink.clone(), dir.path()).await;
     let ctx = test_context();
     engine
         .apply(
@@ -40,7 +40,7 @@ async fn shutdown_persists_story_snapshots_for_active_stories() {
 
     let sink = RecordingSink::new();
     let dir = tempfile::tempdir().unwrap();
-    let engine = test_engine(sink.clone(), dir.path(), false).await;
+    let engine = test_engine(sink.clone(), dir.path()).await;
     let ctx = test_context();
     engine
         .apply(
@@ -73,7 +73,7 @@ async fn shutdown_drains_spawned_apply_before_snapshot() {
 
     let sink = RecordingSink::new();
     let dir = tempfile::tempdir().unwrap();
-    let engine = test_engine(sink.clone(), dir.path(), false).await;
+    let engine = test_engine(sink.clone(), dir.path()).await;
     let ctx = test_context();
     engine.spawn_apply(
         ctx,
@@ -106,7 +106,7 @@ async fn shutdown_drains_spawned_apply_before_snapshot() {
 async fn flush_persists_dirty_session_index() {
     let sink = RecordingSink::new();
     let dir = tempfile::tempdir().unwrap();
-    let engine = test_engine(sink.clone(), dir.path(), false).await;
+    let engine = test_engine(sink.clone(), dir.path()).await;
     let ctx = test_context();
     engine
         .apply(
@@ -137,7 +137,7 @@ async fn flush_persists_dirty_session_index() {
 async fn flush_drains_spawned_apply_without_sleep() {
     let sink = RecordingSink::new();
     let dir = tempfile::tempdir().unwrap();
-    let engine = test_engine(sink.clone(), dir.path(), false).await;
+    let engine = test_engine(sink.clone(), dir.path()).await;
     let ctx = test_context();
     engine.spawn_apply(
         ctx,

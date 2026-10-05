@@ -1,5 +1,16 @@
 #!/usr/bin/env python3
-"""Measure local familiar runtimes with one prepared complete Agent environment."""
+"""Measure local familiar runtimes with one prepared complete Agent environment.
+
+Benchmark: B-FS-TOOLS (benchmark/README.md#b-fs-tools) and, in tools mode,
+B-AGENT-TASK (benchmark/README.md#b-agent-task); role user-facing.
+Motivation: users choosing a mode need to know how much slower everyday
+tools become compared with native, Docker and lightweight VMs.
+Conclusion sought: per-operation and whole-task wait for pVisor staged/VM
+against native, Docker, Firecracker and QEMU, and which tasks suit each mode.
+Design: one offline tool environment for every runtime, seven fixed workloads,
+matched two-core budget, fresh workspace per job, warmups plus >=30 samples;
+output, isolation and untouched-host checks gate every counted sample.
+"""
 
 import argparse
 import hashlib

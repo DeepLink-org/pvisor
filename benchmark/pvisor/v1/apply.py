@@ -1,3 +1,15 @@
+"""Apply/drop cost, conflict detection and interrupted-apply recovery.
+
+Benchmark: B-APPLY (benchmark/README.md#b-apply), role user-facing.
+Motivation: staged changes pay off only when applied; users need the cost by
+file count and assurance that concurrent host edits are never overwritten.
+Conclusion sought: apply time from 10 to 100,000 files and the scale that
+stays interactive; every injected host edit detected as a conflict; a known
+final state after SIGKILL at each apply phase.
+Design: file-count sweep against same-batch Git patch apply, conflict
+injection before and during apply, kill injection per phase.
+"""
+
 import concurrent.futures
 import json
 import os

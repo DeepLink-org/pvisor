@@ -52,15 +52,7 @@ impl CaptureRuntime {
         sink: Arc<dyn CaptureEventObserver>,
         index: SessionIndexHandle,
         storage: Arc<PathBuf>,
-        stream_markdown: bool,
     ) -> Result<Self> {
-        let old_wal = storage.join(".capture/events.wal.jsonl");
-        if old_wal.exists() && std::fs::metadata(&old_wal)?.len() != 0 {
-            anyhow::bail!(
-                "historical capture WAL contains data: {}; drain it with the previous version before migrating; it will not be silently discarded",
-                old_wal.display()
-            );
-        }
         let system = ActorSystem::builder()
             .mailbox_capacity(STORY_MAILBOX)
             .build()
@@ -81,7 +73,6 @@ impl CaptureRuntime {
             system,
             preparer: Arc::new(CapturePreparer {
                 storage: Arc::clone(&storage),
-                stream_markdown,
             }),
             run,
             story_deps: StoryActorDeps::new(sink, Arc::clone(&storage), journal, index),

@@ -13,7 +13,7 @@ use std::path::{Path, PathBuf};
 pub const CHECKPOINTS_DIR: &str = "checkpoints";
 pub(crate) const SOURCE_CHECKPOINT_PIN: &str = "source-checkpoint.json";
 const CHECKPOINT_FILENAME: &str = "checkpoint.json";
-const CHECKPOINT_SCHEMA_VERSION: u32 = 2;
+const CHECKPOINT_SCHEMA_VERSION: u32 = 3;
 
 #[derive(Debug, Clone, Copy, Serialize, Deserialize, PartialEq, Eq)]
 #[serde(rename_all = "snake_case")]
@@ -27,11 +27,9 @@ pub enum CheckpointConsistency {
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct LogicalCheckpoint {
     pub schema_version: u32,
-    #[serde(default)]
     pub kind: WorkspaceCheckpointKind,
-    #[serde(default)]
+    #[serde(deserialize_with = "Option::<String>::deserialize")]
     pub source_attempt_id: Option<String>,
-    #[serde(default)]
     pub workspace_generation: u64,
     pub checkpoint_id: String,
     pub run_id: String,
@@ -41,19 +39,15 @@ pub struct LogicalCheckpoint {
     pub upper_snapshot: PathBuf,
     pub preimages_snapshot: PathBuf,
     pub target: PathBuf,
-    #[serde(default)]
     pub lower_dirs: Vec<PathBuf>,
-    #[serde(default)]
     pub protect_target: bool,
-    #[serde(default)]
     pub access_policy: pvisor_core::overlay::FileAccessPolicy,
 }
 
-/// Missing kind in schema-2 legacy manifests means workspace, never execution.
-#[derive(Debug, Clone, Copy, Default, Serialize, Deserialize, PartialEq, Eq)]
+/// Explicit discriminator prevents execution manifests from being read as workspace checkpoints.
+#[derive(Debug, Clone, Copy, Serialize, Deserialize, PartialEq, Eq)]
 #[serde(rename_all = "snake_case")]
 pub enum WorkspaceCheckpointKind {
-    #[default]
     Workspace,
 }
 
@@ -794,17 +788,33 @@ mod tests {
     }
 
     #[test]
-    fn legacy_manifests_are_workspace_and_execution_manifests_cannot_be_misread() {
+    fn workspace_manifests_require_current_schema_and_explicit_fields() {
         let temp = tempfile::tempdir().unwrap();
         let record = stopped_record(temp.path());
         record.write().unwrap();
         let cp = create_logical_checkpoint(&record, None).unwrap();
+        for field in [
+            "kind",
+            "source_attempt_id",
+            "workspace_generation",
+            "lower_dirs",
+            "protect_target",
+            "access_policy",
+        ] {
+            let mut json = serde_json::to_value(&cp).unwrap();
+            json.as_object_mut().unwrap().remove(field);
+            assert!(
+                serde_json::from_value::<LogicalCheckpoint>(json).is_err(),
+                "{field}"
+            );
+        }
         let mut json = serde_json::to_value(&cp).unwrap();
-        json.as_object_mut().unwrap().remove("kind");
-        let old: LogicalCheckpoint = serde_json::from_value(json.clone()).unwrap();
-        assert_eq!(old.kind, WorkspaceCheckpointKind::Workspace);
         json["kind"] = serde_json::json!("execution");
         assert!(serde_json::from_value::<LogicalCheckpoint>(json).is_err());
+        let mut json = serde_json::to_value(&cp).unwrap();
+        json["schema_version"] = serde_json::json!(2);
+        fs::write(cp.manifest_path(), serde_json::to_vec(&json).unwrap()).unwrap();
+        assert!(LogicalCheckpoint::read(&cp.manifest_path()).is_err());
     }
 
     #[test]

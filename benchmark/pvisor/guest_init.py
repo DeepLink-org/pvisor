@@ -1,6 +1,11 @@
 #!/usr/bin/env python3
 """Compare C and Rust init under an identical signed pvisor-vm/HVF host runner.
 
+Benchmark: B-STARTUP (benchmark/README.md#b-startup), role engineering A/B.
+Motivation: decide whether an init implementation change affects ready time.
+Conclusion sought: ready-time difference with a confidence interval.
+Design: identical host runner, rootfs and payload; interleaved raw timings.
+
 Requires a prepared Alpine aarch64 rootfs, the previous static C init binary,
 and macOS libkrunfw. Outputs raw interleaved timings plus summary statistics.
 Ready time ends when the same guest payload's marker reaches host stdout.

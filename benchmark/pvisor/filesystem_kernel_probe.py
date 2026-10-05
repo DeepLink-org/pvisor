@@ -1,6 +1,13 @@
 #!/usr/bin/env python3
 """Diagnostic controls for cache expiry, concurrent metadata and guest tmpfs.
 
+Benchmark: B-FS-ENG (benchmark/README.md#b-fs-eng), role diagnostic.
+Motivation: tell whether VM overhead comes from round trips, cache expiry,
+request concurrency or the guest itself.
+Conclusion sought: which kernel-path change would move B-FS-TOOLS the most.
+Design: targeted controls against a guest tmpfs lower bound; never used as
+acceptance timing.
+
 These workloads are deliberately separate from filesystem_ab.py acceptance.
 They do not replace a staged workspace with an unrecorded temporary filesystem.
 """

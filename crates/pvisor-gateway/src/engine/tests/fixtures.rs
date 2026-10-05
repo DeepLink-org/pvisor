@@ -74,17 +74,11 @@ pub(crate) fn test_context() -> CallContext {
 pub(crate) async fn test_engine(
     sink: Arc<RecordingSink>,
     storage: &std::path::Path,
-    stream_markdown: bool,
 ) -> CaptureEngine {
     let index = SessionIndexStore::open(storage).unwrap().clone_handle();
-    CaptureEngine::new(
-        sink,
-        index,
-        Arc::new(storage.to_path_buf()),
-        stream_markdown,
-    )
-    .await
-    .unwrap()
+    CaptureEngine::new(sink, index, Arc::new(storage.to_path_buf()))
+        .await
+        .unwrap()
 }
 
 pub(crate) async fn flush_engine(engine: &CaptureEngine) {

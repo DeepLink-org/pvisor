@@ -1,5 +1,14 @@
 #!/usr/bin/env python3
-"""Matched host native / direct / passthrough FUSE / staged comparison."""
+"""Matched host native / direct / passthrough FUSE / staged comparison.
+
+Benchmark: B-FS-ENG (benchmark/README.md#b-fs-eng), role diagnostic.
+Motivation: separate FUSE transport cost from staging semantics cost.
+Conclusion sought: how much of the staged-to-native gap is transport and how
+much is OverlayCore, persistence and content fingerprints.
+Design: one batch with native, direct host, benchmark-only passthrough FUSE
+and staged; identical fuser version, TTL and mount options. The passthrough
+driver is a lower bound, never a product mode.
+"""
 import argparse
 import csv
 import json

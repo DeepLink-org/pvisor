@@ -1,6 +1,12 @@
 #!/usr/bin/env python3
 """Measure new-VM workload readiness, completion and opt-in host checkpoints.
 
+Benchmark: B-STARTUP (benchmark/README.md#b-startup), role user-facing.
+Motivation: users need the wait from launch until a workload can run in a VM.
+Conclusion sought: ready and completion time of a new VM through the CLI.
+Design: current CLI, completed Run Bundles required; checkpoints are opt-in
+diagnostics and are not mixed into ready/completion distributions.
+
 Prepared rootfs and warm host caches; not image download or cold-disk latency.
 Uses the current CLI and validates completed Run Bundles after timing stops.
 """

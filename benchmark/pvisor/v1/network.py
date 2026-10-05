@@ -1,3 +1,15 @@
+"""Proxy and VM network latency and throughput against native.
+
+Benchmark: B-NETWORK (benchmark/README.md#b-network), role user-facing.
+Motivation: Agents make many small requests and bulk downloads; users need
+the latency and throughput cost of network policy and VM networking.
+Conclusion sought: ms added per small request by the proxy, VM bulk
+throughput as a fraction of native, and whether either matters next to model
+response time.
+Design: local HTTP server, small-request latency and ~32 MiB transfers for
+native, host proxy and VM; no public network; not model API latency.
+"""
+
 import json
 import random
 import shutil

@@ -1,5 +1,13 @@
 #!/usr/bin/env python3
-"""Complete official Ubuntu on Firecracker/QEMU versus image-free pVisor."""
+"""Complete official Ubuntu on Firecracker/QEMU versus image-free pVisor.
+
+Benchmark: B-STARTUP (benchmark/README.md#b-startup), role user-facing.
+Motivation: many users would otherwise boot a full distribution per task.
+Conclusion sought: the seconds a full Ubuntu boot costs and how much an
+image-free pVisor VM avoids; not a VMM ranking under identical OS setups.
+Design: official image, distribution kernel and services retained, private
+disk copy per trial, separate batches never pooled.
+"""
 
 import argparse
 import json

@@ -1,5 +1,14 @@
 #!/usr/bin/env python3
-"""Compare strict/checkpoint stage durability using one pinned binary."""
+"""Compare strict/checkpoint stage durability using one pinned binary.
+
+Benchmark: B-FS-ENG (benchmark/README.md#b-fs-eng), role engineering A/B.
+Motivation: quantify what per-mutation persistence costs users, so the
+default durability policy is chosen on evidence.
+Conclusion sought: per-workload and whole-task difference between strict and
+checkpoint, including the completion seal cost, with confidence intervals.
+Design: one binary, fresh stage per job, modes shuffled per round, >=30
+samples; completion includes sealing; correctness gates unchanged.
+"""
 import argparse
 import csv
 import json

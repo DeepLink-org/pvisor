@@ -6,7 +6,7 @@ use crate::engine::CaptureEngine;
 async fn committed_facts_rebuild_story_without_rewriting_or_notifying() {
     let dir = tempfile::tempdir().unwrap();
     let sink = RecordingSink::new();
-    let engine = test_engine(sink.clone(), dir.path(), false).await;
+    let engine = test_engine(sink.clone(), dir.path()).await;
     engine
         .apply(
             &test_context(),
@@ -28,7 +28,7 @@ async fn committed_facts_rebuild_story_without_rewriting_or_notifying() {
     let path = dir.path().join(".capture/events.trace.jsonl");
     let before = pvisor_journal::Journal::read(&path).unwrap();
     let sink = RecordingSink::new();
-    let engine = test_engine(sink.clone(), dir.path(), false).await;
+    let engine = test_engine(sink.clone(), dir.path()).await;
     let story = engine.story_snapshot(&test_context().story).await.unwrap();
     assert_eq!(story.turns.len(), 1);
     assert!(
@@ -42,7 +42,7 @@ async fn committed_facts_rebuild_story_without_rewriting_or_notifying() {
 #[tokio::test]
 async fn requests_and_responses_share_causal_identity_after_recovery() {
     let dir = tempfile::tempdir().unwrap();
-    let engine = test_engine(RecordingSink::new(), dir.path(), false).await;
+    let engine = test_engine(RecordingSink::new(), dir.path()).await;
     engine
         .apply(
             &test_context(),
@@ -61,7 +61,7 @@ async fn requests_and_responses_share_causal_identity_after_recovery() {
         .await
         .unwrap();
     engine.shutdown().await.unwrap();
-    let engine = test_engine(RecordingSink::new(), dir.path(), false).await;
+    let engine = test_engine(RecordingSink::new(), dir.path()).await;
     engine
         .apply(
             &test_context(),
@@ -87,33 +87,4 @@ async fn requests_and_responses_share_causal_identity_after_recovery() {
     );
     let index = crate::session::index::SessionIndexStore::load(dir.path()).unwrap();
     assert_eq!(index.sessions[0].request_count, 1);
-}
-
-#[tokio::test]
-async fn historical_wal_is_never_silently_ignored() {
-    let dir = tempfile::tempdir().unwrap();
-    std::fs::create_dir(dir.path().join(".capture")).unwrap();
-    let path = dir.path().join(".capture/events.wal.jsonl");
-    std::fs::write(&path, "pending historical data\n").unwrap();
-    let index = crate::session::index::SessionIndexStore::open(dir.path())
-        .unwrap()
-        .clone_handle();
-    let result = CaptureEngine::new(
-        RecordingSink::new(),
-        index,
-        std::sync::Arc::new(dir.path().to_path_buf()),
-        false,
-    )
-    .await;
-    assert!(
-        result
-            .err()
-            .unwrap()
-            .to_string()
-            .contains("previous version")
-    );
-    assert_eq!(
-        std::fs::read_to_string(path).unwrap(),
-        "pending historical data\n"
-    );
 }

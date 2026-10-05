@@ -5,7 +5,7 @@ use super::support::*;
 async fn request_event_appends_single_llm_request() {
     let sink = RecordingSink::new();
     let dir = tempfile::tempdir().unwrap();
-    let engine = test_engine(sink.clone(), dir.path(), false).await;
+    let engine = test_engine(sink.clone(), dir.path()).await;
     let ctx = test_context();
     engine
         .apply(
@@ -34,7 +34,7 @@ async fn request_event_appends_single_llm_request() {
 async fn request_event_projects_original_body_and_typed_understanding() {
     let sink = RecordingSink::new();
     let dir = tempfile::tempdir().unwrap();
-    let engine = test_engine(sink.clone(), dir.path(), false).await;
+    let engine = test_engine(sink.clone(), dir.path()).await;
     let mut ctx = test_context();
     ctx.level = crate::config::CaptureLevel::Full;
     let original = serde_json::json!({
@@ -84,7 +84,7 @@ async fn request_event_projects_original_body_and_typed_understanding() {
 async fn response_event_appends_single_stream_record() {
     let sink = RecordingSink::new();
     let dir = tempfile::tempdir().unwrap();
-    let engine = test_engine(sink.clone(), dir.path(), false).await;
+    let engine = test_engine(sink.clone(), dir.path()).await;
     let mut ctx = test_context();
     ctx.level = crate::config::CaptureLevel::Full;
     engine
@@ -129,7 +129,7 @@ async fn response_event_appends_single_stream_record() {
 async fn draft_event_does_not_append_to_sink() {
     let sink = RecordingSink::new();
     let dir = tempfile::tempdir().unwrap();
-    let engine = test_engine(sink.clone(), dir.path(), true).await;
+    let engine = test_engine(sink.clone(), dir.path()).await;
     let ctx = test_context();
     engine
         .apply(
@@ -149,7 +149,7 @@ async fn draft_event_does_not_append_to_sink() {
 async fn full_capture_redacts_flat_and_wire_request_response_bodies() {
     let sink = RecordingSink::new();
     let dir = tempfile::tempdir().unwrap();
-    let engine = test_engine(sink.clone(), dir.path(), false).await;
+    let engine = test_engine(sink.clone(), dir.path()).await;
     let mut ctx = test_context();
     ctx.level = crate::config::CaptureLevel::Full;
     let body =

@@ -27,7 +27,7 @@ pub use transport::default_endpoint;
 #[cfg(any(target_os = "macos", target_os = "linux"))]
 mod lazy;
 #[cfg(any(target_os = "macos", target_os = "linux"))]
-pub(crate) use lazy::{LazyMount, prepare_vm_image};
+pub(crate) use lazy::prepare_vm_image;
 #[cfg(any(target_os = "macos", target_os = "linux"))]
 pub use lazy::{MountedImage, mount_image_handle, open_image_handle_for_vm};
 
@@ -42,5 +42,5 @@ fn architecture() -> &'static str {
 }
 
 #[cfg(any(target_os = "macos", target_os = "linux"))]
-pub(crate) use direct::{attach_runner_lowers, private_owner as direct_image_owner};
+pub(crate) use direct::{DirectImage, attach_runner_lowers, private_owner as direct_image_owner};
 pub(crate) use network::run_internal_if_requested as run_image_access_internal;

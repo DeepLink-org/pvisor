@@ -1,3 +1,14 @@
+"""Effective isolation per mode, judged by the host's final state.
+
+Benchmark: B-ISOLATION (benchmark/README.md#b-isolation), role user-facing
+(correctness, not performance).
+Motivation: performance numbers mean nothing if isolation did not hold.
+Conclusion sought: a mode-by-behavior table of whether out-of-view reads,
+writes and network access are blocked, against common OCI writable mounts.
+Design: a negative control (must block) and a positive control (must allow)
+for every behavior; host final state is the verdict, not request results.
+"""
+
 import json
 import shutil
 import socket

@@ -1,4 +1,6 @@
 //! Diagnostic driver only: CLI VM jobs always stage their workspace.
+//! Benchmark: B-FS-ENG (benchmark/README.md#b-fs-eng), role diagnostic; driven
+//! by filesystem_stage_ab.py to toggle one staging layer at a time.
 use pvisor_vm::api::{OverlayConfig, PermissionSemantics, VmBuilder, VmConfiguration, VmRuntime};
 use std::path::{Path, PathBuf};
 fn overlay(lower: &Path, stage: &Path) -> OverlayConfig {

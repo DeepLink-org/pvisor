@@ -54,7 +54,6 @@ pub enum TurnKind {
     Dialogue,
     /// Agent-initiated stretch without user text on the opening request (tool loops,
     /// system-only continuations, autonomous work — not limited to tool-call rounds).
-    #[serde(alias = "tool_loop")]
     Autonomous,
     /// Reserved for internal / non-dialogue indexing (currently unused).
     Internal,
@@ -101,8 +100,9 @@ mod tests {
     }
 
     #[test]
-    fn turn_kind_deserializes_legacy_tool_loop_alias() {
-        let kind: TurnKind = serde_json::from_str("\"tool_loop\"").unwrap();
+    fn turn_kind_requires_canonical_autonomous_name() {
+        assert!(serde_json::from_str::<TurnKind>("\"tool_loop\"").is_err());
+        let kind: TurnKind = serde_json::from_str("\"autonomous\"").unwrap();
         assert_eq!(kind, TurnKind::Autonomous);
     }
 }

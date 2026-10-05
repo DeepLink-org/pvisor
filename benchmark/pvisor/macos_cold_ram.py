@@ -1,6 +1,14 @@
 #!/usr/bin/env python3
 """Same-host experimental cold-pager comparison; run without other benchmarks.
 
+Benchmark: B-VM-MEMORY (benchmark/README.md#b-vm-memory), role user-facing.
+Motivation: idle Agent VMs hold memory; users need to know what reclaim
+saves and what the next access costs.
+Conclusion sought: reduction of host physical (or cgroup) memory for an idle
+VM, and the added latency and CPU on first access after restore.
+Design: fresh VM per trial, physical memory as the primary metric, footprint
+only as a proxy, repeated and random data separated, integrity verified.
+
 One private pool and fresh VM per trial. Guest timings exclude the explicit idle
 window. Integrity, successful VM Bundles and actual reclaim/restore are required.
 Small trial counts are diagnostic, not a tight tail-latency acceptance gate.

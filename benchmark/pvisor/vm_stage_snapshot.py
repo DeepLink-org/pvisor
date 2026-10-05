@@ -1,6 +1,9 @@
 #!/usr/bin/env python3
 """Historical retired-snapshot harness; use an archived binary.
 
+Benchmark: B-VM-MEMORY (benchmark/README.md#b-vm-memory), role historical;
+the snapshot command is retired, so this harness produces no new conclusions.
+
 Real stage VM restore gate: eager RAM, guest continuation, FD and private forks.
 
 The static snapshot_guest.rs reads /stage-file-count and creates the fixture

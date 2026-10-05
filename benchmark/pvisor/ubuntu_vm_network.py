@@ -1,6 +1,9 @@
 #!/usr/bin/env python3
 """Private VM LAN with QEMU's user networking, without changing host routes.
 
+Benchmark: B-NETWORK (benchmark/README.md#b-network), role user-facing
+support; supplies reference-VM networking, measures nothing by itself.
+
 QEMU -machine none is only the network helper, not a second guest VM. The TAP
 file descriptor is opened in a private user/network namespace and passed back
 to the host helper, where ordinary outbound sockets provide DNS and NAT.

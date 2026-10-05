@@ -1,6 +1,12 @@
 #!/usr/bin/env python3
 """Paired firmware boot benchmark using the existing signed guest_init runner.
 
+Benchmark: B-STARTUP (benchmark/README.md#b-startup), role diagnostic.
+Motivation: locate which boot stage dominates VM ready time.
+Conclusion sought: per-stage boot time for two firmware builds; feeds design
+analysis only, never the user startup table.
+Design: paired runs on one host, identical guest payload and runner.
+
 Ready is process spawn to the payload marker received by the host. Guest kernel
 init is the dmesg timestamp of Run /init.krun, with early-clock limitations.
 Completion includes the payload's sleep, dmesg collection, sync and shutdown.

@@ -1,5 +1,12 @@
 #!/usr/bin/env python3
-"""Measure Linux/KVM first-command readiness with prepared rootfs and warm caches."""
+"""Measure Linux/KVM first-command readiness with prepared rootfs and warm caches.
+
+Benchmark: B-STARTUP (benchmark/README.md#b-startup), role user-facing.
+Motivation: users choosing the VM mode need its first-command wait on Linux.
+Conclusion sought: VM ready time and its gap to Firecracker/QEMU microvm.
+Design: prepared rootfs, warm caches, matched budget, interleaved samples;
+image preparation is timed separately and never included in ready time.
+"""
 
 from __future__ import annotations
 

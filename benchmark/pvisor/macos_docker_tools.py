@@ -1,5 +1,13 @@
 #!/usr/bin/env python3
-"""Paired macOS VM/Docker host-bind tool workloads with independent worker timing."""
+"""Paired macOS VM/Docker host-bind tool workloads with independent worker timing.
+
+Benchmark: B-MACOS (benchmark/README.md#b-macos), role user-facing.
+Motivation: macOS users compare against Docker Desktop.
+Conclusion sought: pVisor VM versus Docker Desktop for the same tool
+workloads on Apple Silicon.
+Design: same host, interleaved pairs, identical Alpine environment; worker
+and whole-task time reported separately.
+"""
 
 import argparse
 import json
