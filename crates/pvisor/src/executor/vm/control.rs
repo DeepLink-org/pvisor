@@ -254,6 +254,15 @@ impl VmControl {
     }
 
     pub(crate) async fn command(&self, operation: OperationKind) -> anyhow::Result<ControlReply> {
+        anyhow::ensure!(
+            matches!(
+                operation,
+                OperationKind::RunPause
+                    | OperationKind::RunResume
+                    | OperationKind::RunOffload { .. }
+            ),
+            "unsupported live VM control primitive"
+        );
         let control = self.clone();
         match tokio::spawn(async move { control.exchange(operation).await }).await {
             Ok(result) => result,
@@ -341,6 +350,33 @@ mod tests {
     use super::*;
     use std::io::Write;
     use std::os::unix::fs::{PermissionsExt, symlink};
+
+    #[tokio::test]
+    async fn unsupported_checkpoint_never_writes_to_or_cancels_live_connection() {
+        let cancellation = tokio_util::sync::CancellationToken::new();
+        let control = VmControl::new(cancellation.clone());
+        let directory = tempfile::tempdir().unwrap();
+        let (host, mut runner) = UnixStream::pair().unwrap();
+        control
+            .attach(
+                host,
+                RamBacking::create(Some(&directory.path().join("ram"))).unwrap(),
+            )
+            .await;
+        let operation: OperationKind = serde_json::from_value(serde_json::json!({
+            "op": "run.checkpoint", "request_id": "unsupported", "ram_storage": "raw"
+        }))
+        .unwrap();
+        assert!(control.command(operation).await.is_err());
+        assert!(!cancellation.is_cancelled());
+        assert!(
+            tokio::time::timeout(Duration::from_millis(10), runner.read_u32())
+                .await
+                .is_err()
+        );
+        assert!(control.connection.lock().await.is_some());
+        control.detach().await;
+    }
 
     #[test]
     fn backing_is_private_persistent_and_rejects_symlinks_and_missing_parents() {

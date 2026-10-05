@@ -185,6 +185,111 @@ impl GuestFs {
     }
 }
 
+#[test]
+fn batched_requests_survive_freeze_thaw_without_another_guest_kick() {
+    let root = tempfile::tempdir().unwrap();
+    let mut source = GuestFs::new(root.path(), None);
+    let gate = crate::devices::virtio::memory_gate::register(&source.mem);
+    source.request(
+        fuse::Opcode::Init,
+        0,
+        fuse::InitInCompat {
+            major: 7,
+            minor: 31,
+            ..Default::default()
+        }
+        .as_slice(),
+    );
+    let start = source.next;
+    const COUNT: u16 = 16;
+    for index in 0..COUNT {
+        let input_addr = 0x20000 + u64::from(index) * 0x100;
+        let output_addr = 0x28000 + u64::from(index) * 0x100;
+        let payload = fuse::OpenIn::default();
+        let header = fuse::InHeader {
+            len: (std::mem::size_of::<fuse::InHeader>() + payload.as_slice().len()) as u32,
+            opcode: fuse::Opcode::Opendir as u32,
+            nodeid: 1,
+            unique: u64::from(start + index) + 1,
+            pid: 1,
+            ..Default::default()
+        };
+        source
+            .mem
+            .write_slice(header.as_slice(), GuestAddress(input_addr))
+            .unwrap();
+        source
+            .mem
+            .write_slice(
+                payload.as_slice(),
+                GuestAddress(input_addr + header.as_slice().len() as u64),
+            )
+            .unwrap();
+        for (descriptor, addr, len, flags, next) in [
+            (index * 2, input_addr, header.len, 1u16, index * 2 + 1),
+            (index * 2 + 1, output_addr, 0x100, 2, 0),
+        ] {
+            let base = 0x8000 + u64::from(descriptor) * 16;
+            source.mem.write_obj(addr, GuestAddress(base)).unwrap();
+            source.mem.write_obj(len, GuestAddress(base + 8)).unwrap();
+            source
+                .mem
+                .write_obj(flags, GuestAddress(base + 12))
+                .unwrap();
+            source.mem.write_obj(next, GuestAddress(base + 14)).unwrap();
+        }
+        source
+            .mem
+            .write_obj(
+                index * 2,
+                GuestAddress(0xc004 + u64::from((start + index) % 1024) * 2),
+            )
+            .unwrap();
+    }
+    source.next += COUNT;
+    source
+        .mem
+        .write_obj(source.next, GuestAddress(0xc002))
+        .unwrap();
+    source.events[1].write(1).unwrap();
+    let deadline = Instant::now() + Duration::from_secs(3);
+    while source.mem.read_obj::<u16>(GuestAddress(0xd002)).unwrap() == start {
+        assert!(Instant::now() < deadline);
+        std::thread::yield_now();
+    }
+    let _snapshot = source.freeze();
+    assert!(
+        gate.try_close().unwrap(),
+        "freeze retained an in-flight RAM lease"
+    );
+    gate.open();
+    source.fs.thaw().unwrap(); // intentionally no new eventfd kick
+    while source.mem.read_obj::<u16>(GuestAddress(0xd002)).unwrap() != source.next {
+        assert!(Instant::now() < deadline, "thaw lost available descriptors");
+        std::thread::sleep(Duration::from_millis(1));
+    }
+    let mut used = std::collections::BTreeSet::new();
+    for index in 0..COUNT {
+        let response: fuse::OutHeader = source
+            .mem
+            .read_obj(GuestAddress(0x28000 + u64::from(index) * 0x100))
+            .unwrap();
+        assert_eq!(response.error, 0);
+        assert_eq!(response.unique, u64::from(start + index) + 1);
+        let head = source
+            .mem
+            .read_obj::<u32>(GuestAddress(0xd004 + u64::from(start + index) * 8))
+            .unwrap();
+        assert!(used.insert(head), "duplicate completion");
+    }
+    assert_eq!(used, (0..COUNT).map(|i| u32::from(i * 2)).collect());
+    source.fs.reset();
+    assert!(
+        gate.try_close().unwrap(),
+        "reset retained a filesystem worker"
+    );
+}
+
 #[cfg(target_os = "linux")]
 #[test]
 fn unlinked_cached_inode_rejection_identifies_absence_of_application_handles() {

@@ -13,6 +13,9 @@ pub struct SchedulerConfig {
     pub queue_lookahead: usize,
     pub max_batch: u32,
     pub max_tasks: usize,
+    /// Retained WAL bytes; rejects new commits before exhausting host storage.
+    pub max_journal_bytes: u64,
+    pub max_artifact_bytes: u64,
     /// Limits concurrent reservations per tenant. Unlisted tenants have no quota.
     pub tenant_quotas: BTreeMap<String, Resources>,
 }
@@ -23,6 +26,8 @@ impl Default for SchedulerConfig {
             queue_lookahead: 256,
             max_batch: 64,
             max_tasks: 1_000_000,
+            max_journal_bytes: crate::journal::DEFAULT_MAX_JOURNAL_BYTES,
+            max_artifact_bytes: crate::artifacts::DEFAULT_MAX_ARTIFACT_BYTES,
             tenant_quotas: BTreeMap::new(),
         }
     }
@@ -133,8 +138,12 @@ impl Scheduler {
             config.queue_lookahead > 0 && config.max_batch > 0 && config.max_tasks > 0,
             "scheduler limits must be positive"
         );
-        let (journal, transactions) = Journal::open::<Transaction>(path)?;
-        let artifacts = crate::artifacts::ArtifactStore::open(&path.with_extension("artifacts"))?;
+        let (journal, mut transactions) =
+            Journal::open_stream::<Transaction>(path, config.max_journal_bytes)?;
+        let artifacts = crate::artifacts::ArtifactStore::open_with_quota(
+            &path.with_extension("artifacts"),
+            config.max_artifact_bytes,
+        )?;
         let mut scheduler = Self {
             config,
             journal,
@@ -147,7 +156,8 @@ impl Scheduler {
             artifacts,
             environments: BTreeMap::new(),
         };
-        for transaction in transactions {
+        for transaction in transactions.by_ref() {
+            let transaction = transaction?;
             ensure!(
                 transaction.version == CLUSTER_VERSION,
                 "unsupported journal version"
@@ -156,6 +166,13 @@ impl Scheduler {
                 scheduler.apply(change);
             }
         }
+        let valid_end = transactions.valid_end;
+        drop(transactions);
+        ensure!(
+            scheduler.tasks.len() <= scheduler.config.max_tasks,
+            "replayed task history exceeds configured max_tasks"
+        );
+        scheduler.journal.finish_replay(valid_end)?;
         // Replayed submit/decline events can refer to the same queued task.
         // Rebuild from durable state so one batch cannot lease it twice.
         let mut ready: Vec<_> = scheduler

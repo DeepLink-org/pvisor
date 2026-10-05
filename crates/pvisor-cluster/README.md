@@ -180,9 +180,48 @@ completion records remain in worker storage for inspection.
 This exports the Bundle itself. Paths to local traces, workspace files and
 other artifacts inside it remain local references; this is not complete
 workspace export, an execution snapshot, or portable recovery. Object storage
-is controller-local and append-only. Storage quotas, orphan GC, remote
-replication and live execution recovery remain implementation gates. Restart
+is controller-local and append-only. Retained payload bytes now have an explicit
+quota; orphan GC, remote replication and live execution recovery remain
+implementation gates. Restart
 export/delivery of already terminated attempts uses the outbox below.
+
+## Storage bounds
+
+`serve --max-journal-bytes N --max-artifact-bytes N` configures retained WAL and
+artifact payload limits (defaults: 1 GiB and 8 GiB). A WAL frame is bounded to
+16 MiB both while serializing and reading. Restart replays frames one at a time,
+then truncates only a partial final frame after successful replay. Complete
+corruption and oversized frames remain intact and fail closed. Task history
+still retains submission IDs and terminal receipts up to `max_tasks`; WAL
+compaction and history/artifact GC are not implemented by these limits.
+
+Artifact writers share a filesystem quota lock and persist a dirty reservation
+before allocating object bytes. A failed/uncertain reservation fences subsequent
+writers until reopening reconciles retained inodes, including abandoned uploads.
+Existing verified content is deduplicated without another charge. Startup and
+writes also bound the store to one million distinct payload inodes. Quotas cover
+logical payload bytes; they do not include filesystem overhead or other programs.
+
+Capacity rejection is HTTP 507, not a fencing conflict. No existing result,
+artifact or idempotency key is silently deleted. An over-limit existing store
+fails startup with an explicit reason; retain its data and raise the configured
+limit or perform a separately reviewed offline maintenance procedure. Disk I/O
+failures retain their fail-stop behavior.
+
+## Resident worker delivery
+
+Poll/renewal is independent of completion, decline and control-ack delivery.
+A bounded set of at most 16 background jobs performs HTTP and durable outbox I/O;
+exact lease keys and control revisions guard late replies. Pending terminal
+requests remain in a separate resident queue even after their active lease has
+expired. A native terminal reservation is released after acceptance/fencing, or
+expiry once durable delivery ownership is confirmed. Unknown/running attempts
+remain supervised; renewal never revives an expired local deadline.
+
+A terminal backlog of 16 pauses new assignments until delivery progresses.
+Shutdown may leave durable pending evidence for restart rather than wait forever
+on the controller. Persistence uncertainty stops local admission. No retry starts
+the native command again.
 
 ## Worker restart delivery
 

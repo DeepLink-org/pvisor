@@ -163,8 +163,13 @@ impl RunControlHandle {
         );
         kind.validate()?;
         anyhow::ensure!(
-            !matches!(kind, OperationKind::RunExecute { .. }),
-            "run.execute requires PVisor::run"
+            matches!(
+                kind,
+                OperationKind::RunPause
+                    | OperationKind::RunResume
+                    | OperationKind::RunOffload { .. }
+            ),
+            "unsupported live VM control; only pause/resume/offload are available"
         );
         let mut operation = self.control_operation.clone();
         operation.kind = kind.clone();

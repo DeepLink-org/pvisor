@@ -71,7 +71,7 @@ fn identifier(value: &str) -> bool {
             .bytes()
             .all(|b| b.is_ascii_alphanumeric() || b"-_.".contains(&b))
 }
-fn key_name(key: &LeaseKey) -> String {
+pub(super) fn key_name(key: &LeaseKey) -> String {
     format!(
         "{}.json",
         pvisor_cluster::artifacts::digest(&serde_json::to_vec(key).unwrap())

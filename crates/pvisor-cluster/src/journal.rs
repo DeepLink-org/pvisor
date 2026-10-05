@@ -4,7 +4,7 @@ use anyhow::{Context, ensure};
 use fs2::FileExt;
 use serde::{Serialize, de::DeserializeOwned};
 use std::fs::{File, OpenOptions};
-use std::io::{BufRead, BufReader, Seek, SeekFrom, Write};
+use std::io::{BufRead, BufReader, Read, Seek, SeekFrom, Write};
 use std::os::unix::fs::OpenOptionsExt;
 use std::path::Path;
 
@@ -21,9 +21,28 @@ impl std::error::Error for JournalFailure {}
 pub(crate) struct Journal {
     file: File,
     poisoned: bool,
+    max_bytes: u64,
 }
 impl Journal {
+    #[cfg(test)]
     pub fn open<T: DeserializeOwned>(path: &Path) -> anyhow::Result<(Self, Vec<T>)> {
+        let (mut journal, mut replay) = Self::open_stream(path, DEFAULT_MAX_JOURNAL_BYTES)?;
+        let records = replay.by_ref().collect::<anyhow::Result<Vec<T>>>()?;
+        let valid_end = replay.valid_end;
+        drop(replay);
+        journal.finish_replay(valid_end)?;
+        Ok((journal, records))
+    }
+    /// Replay one bounded frame at a time. A malformed complete frame never
+    /// truncates the original WAL; only successful full replay may remove debris.
+    pub fn open_stream<T: DeserializeOwned>(
+        path: &Path,
+        max_bytes: u64,
+    ) -> anyhow::Result<(Self, Replay<T>)> {
+        ensure!(
+            max_bytes >= MAX_FRAME_BYTES as u64,
+            "journal quota must allow one maximum frame"
+        );
         let parent = path
             .parent()
             .filter(|p| !p.as_os_str().is_empty())
@@ -35,51 +54,66 @@ impl Journal {
             .read(true)
             .write(true)
             .mode(0o600)
+            .custom_flags(libc::O_NOFOLLOW | libc::O_NONBLOCK)
             .open(path)?;
         file.try_lock_exclusive()
             .context("controller state is already owned by another process")?;
-        // Persist directory entry as well as transaction contents.
+        ensure!(file.metadata()?.is_file(), "journal must be a regular file");
+        ensure!(
+            file.metadata()?.len() <= max_bytes,
+            "existing journal exceeds configured byte quota; increase the quota before restart"
+        );
         File::open(parent)?.sync_all()?;
-        let mut reader = BufReader::new(file.try_clone()?);
-        let mut records = Vec::new();
-        let mut valid_end = 0;
-        loop {
-            let mut frame = Vec::new();
-            if reader.read_until(b'\n', &mut frame)? == 0 {
-                break;
-            }
-            if frame.last() != Some(&b'\n') {
-                break;
-            }
-            let split = frame
-                .iter()
-                .position(|byte| *byte == b' ')
-                .context("invalid journal frame")?;
-            let checksum = std::str::from_utf8(&frame[..split])?;
-            let payload = &frame[split + 1..frame.len() - 1];
-            ensure!(
-                blake3::hash(payload).to_hex().as_str() == checksum,
-                "journal checksum mismatch at {valid_end}"
-            );
-            records.push(serde_json::from_slice(payload).context("invalid journal transaction")?);
-            valid_end += frame.len() as u64;
-        }
-        drop(reader);
-        file.set_len(valid_end)?;
-        file.sync_all()?;
-        let mut journal = Self {
-            file,
-            poisoned: false,
-        };
-        journal.file.seek(SeekFrom::End(0))?;
-        Ok((journal, records))
+        let reader = BufReader::new(file.try_clone()?);
+        Ok((
+            Self {
+                file,
+                poisoned: false,
+                max_bytes,
+            },
+            Replay {
+                reader,
+                valid_end: 0,
+                done: false,
+                _record: std::marker::PhantomData,
+            },
+        ))
+    }
+    pub fn finish_replay(&mut self, valid_end: u64) -> anyhow::Result<()> {
+        self.file.set_len(valid_end)?;
+        self.file.sync_all()?;
+        self.file.seek(SeekFrom::End(0))?;
+        Ok(())
     }
 
     pub fn append(&mut self, value: &impl Serialize) -> anyhow::Result<()> {
         if self.poisoned {
             return Err(JournalFailure.into());
         }
-        let payload = serde_json::to_vec(value)?;
+        let mut payload = BoundedPayload {
+            bytes: Vec::new(),
+            exceeded: false,
+        };
+        if let Err(error) = serde_json::to_writer(&mut payload, value) {
+            if payload.exceeded {
+                return Err(crate::artifacts::CapacityExceeded(
+                    "journal frame exceeds 16 MiB limit",
+                )
+                .into());
+            }
+            return Err(error.into());
+        }
+        let payload = payload.bytes;
+        let frame_bytes = payload.len() as u64 + 66;
+        if self
+            .file
+            .metadata()?
+            .len()
+            .checked_add(frame_bytes)
+            .is_none_or(|size| size > self.max_bytes)
+        {
+            return Err(crate::artifacts::CapacityExceeded("journal byte quota reached; retain WAL and increase configured quota or perform offline maintenance").into());
+        }
         let mut frame = blake3::hash(&payload).to_hex().as_bytes().to_vec();
         frame.push(b' ');
         frame.extend(payload);
@@ -96,9 +130,144 @@ impl Journal {
     }
 }
 
+pub(crate) const DEFAULT_MAX_JOURNAL_BYTES: u64 = 1024 * 1024 * 1024;
+const MAX_FRAME_BYTES: usize = 16 * 1024 * 1024;
+struct BoundedPayload {
+    bytes: Vec<u8>,
+    exceeded: bool,
+}
+impl Write for BoundedPayload {
+    fn write(&mut self, bytes: &[u8]) -> std::io::Result<usize> {
+        if self
+            .bytes
+            .len()
+            .checked_add(bytes.len())
+            .is_none_or(|size| size > MAX_FRAME_BYTES - 66)
+        {
+            self.exceeded = true;
+            return Err(std::io::Error::other("journal payload exceeds limit"));
+        }
+        self.bytes.extend_from_slice(bytes);
+        Ok(bytes.len())
+    }
+    fn flush(&mut self) -> std::io::Result<()> {
+        Ok(())
+    }
+}
+pub(crate) struct Replay<T> {
+    reader: BufReader<File>,
+    pub valid_end: u64,
+    done: bool,
+    _record: std::marker::PhantomData<T>,
+}
+impl<T: DeserializeOwned> Iterator for Replay<T> {
+    type Item = anyhow::Result<T>;
+    fn next(&mut self) -> Option<Self::Item> {
+        if self.done {
+            return None;
+        }
+        let result = (|| -> anyhow::Result<Option<T>> {
+            let mut frame = Vec::new();
+            (&mut self.reader)
+                .take(MAX_FRAME_BYTES as u64 + 1)
+                .read_until(b'\n', &mut frame)?;
+            ensure!(
+                frame.len() <= MAX_FRAME_BYTES,
+                "journal frame exceeds read bound at {}",
+                self.valid_end
+            );
+            if frame.last() != Some(&b'\n') {
+                return Ok(None);
+            }
+            let split = frame
+                .iter()
+                .position(|byte| *byte == b' ')
+                .context("invalid journal frame")?;
+            ensure!(split == 64, "invalid journal checksum length");
+            let checksum = std::str::from_utf8(&frame[..split])?;
+            let payload = &frame[split + 1..frame.len() - 1];
+            ensure!(
+                blake3::hash(payload).to_hex().as_str() == checksum,
+                "journal checksum mismatch at {}",
+                self.valid_end
+            );
+            let transaction =
+                serde_json::from_slice(payload).context("invalid journal transaction")?;
+            self.valid_end += frame.len() as u64;
+            Ok(Some(transaction))
+        })();
+        match result {
+            Ok(Some(transaction)) => Some(Ok(transaction)),
+            Ok(None) => {
+                self.done = true;
+                None
+            }
+            Err(error) => {
+                self.done = true;
+                Some(Err(error))
+            }
+        }
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
+    #[test]
+    fn oversized_payload_and_full_quota_never_change_committed_wal() {
+        let temp = tempfile::tempdir().unwrap();
+        let path = temp.path().join("journal");
+        let (mut journal, _) = Journal::open::<serde_json::Value>(&path).unwrap();
+        journal
+            .append(&serde_json::json!({"committed": true}))
+            .unwrap();
+        let original = std::fs::read(&path).unwrap();
+        let oversized = "x".repeat(MAX_FRAME_BYTES);
+        assert!(
+            journal
+                .append(&oversized)
+                .unwrap_err()
+                .downcast_ref::<crate::artifacts::CapacityExceeded>()
+                .is_some()
+        );
+        assert_eq!(std::fs::read(&path).unwrap(), original);
+        journal.max_bytes = original.len() as u64 + 1;
+        assert!(
+            journal
+                .append(&0)
+                .unwrap_err()
+                .downcast_ref::<crate::artifacts::CapacityExceeded>()
+                .is_some()
+        );
+        assert_eq!(std::fs::read(&path).unwrap(), original);
+    }
+
+    #[test]
+    fn bounded_stream_preserves_corruption_and_discards_only_partial_tail() {
+        let temp = tempfile::tempdir().unwrap();
+        let path = temp.path().join("journal");
+        let (mut journal, _) = Journal::open::<u64>(&path).unwrap();
+        journal.append(&1u64).unwrap();
+        drop(journal);
+        OpenOptions::new()
+            .append(true)
+            .open(&path)
+            .unwrap()
+            .write_all(b"partial")
+            .unwrap();
+        let (_, records) = Journal::open::<u64>(&path).unwrap();
+        assert_eq!(records, [1]);
+        OpenOptions::new()
+            .append(true)
+            .open(&path)
+            .unwrap()
+            .write_all(b"invalid complete frame\n")
+            .unwrap();
+        let original = std::fs::read(&path).unwrap();
+        assert!(Journal::open::<u64>(&path).is_err());
+        assert_eq!(std::fs::read(&path).unwrap(), original);
+    }
+
     #[test]
     fn failed_append_poisoning_cannot_be_confused_with_a_fencing_conflict() {
         let temp = tempfile::tempdir().unwrap();

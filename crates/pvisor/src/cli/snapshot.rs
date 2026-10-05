@@ -73,6 +73,8 @@ enum Command {
     #[command(hide = true)]
     RamWatchdog { mount: PathBuf },
     #[command(hide = true)]
+    RamServer { spec: PathBuf },
+    #[command(hide = true)]
     SocketWatchdog { directory: PathBuf },
 }
 

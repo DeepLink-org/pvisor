@@ -1022,7 +1022,12 @@ fn run_linked_krun(spec: RunnerSpec, mut attestation: std::fs::File) -> anyhow::
                                 )
                             }) }
                         }
-                        _ => Err("invalid VM control primitive".into()),
+                        Ok(_) => {
+                            rejection_state = handle.is_paused().ok().map(|paused|
+                                if paused { VmState::Paused } else { VmState::Running });
+                            Err("unsupported VM control primitive".into())
+                        }
+                        Err(_) => Err("invalid VM control request".into()),
                     };
                     let reply = match result {
                         Ok((state, memory)) => super::control::ControlReply {

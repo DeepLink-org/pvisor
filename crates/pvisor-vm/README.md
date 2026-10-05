@@ -91,3 +91,39 @@ holds leases until VM exit. The runtime validates overlay topology and saved
 inodes/handles; writable stage roots cannot be retained as immutable lowers.
 Legacy full-tree/layer rebinding remains separate. The trait is available with
 the same signature on every platform; unsupported backends return an error.
+
+
+## virtio-fs 并发与冻结契约
+
+每个文件系统设备仍提供一个普通 request queue 和一个 hiprio queue。
+普通队列对可重叠的大 READ（请求至少 64 KiB）和目录读取，自动启动有界
+blocking I/O 线程池；短元数据请求和需要串行的修改由队列 owner 内联处理。
+完成结果异步返回队列 owner，由 owner 独占 available/used ring 的更新。
+默认 worker 数为宿主可用 CPU 数，上限 4；最多接收 `2 × workers` 个在途请求。
+没有可重叠请求时走内联路径，hiprio 的 FORGET/INTERRUPT 也不占普通线程池容量。
+这里的异步指请求完成与队列分发解耦；文件 I/O 仍使用既有 pread/pwrite。
+
+线程间传递已校验的 descriptor 地址与长度，在执行线程内创建借用的
+Reader/Writer，保留 RAM access lease 直到 used ring 发布完成。禁止通过
+延长 VolatileSlice 的生命周期或新增 unsafe Send 绕过这个契约。
+FUSE header 只解码一次；INIT/DESTROY 独占 session guard。
+
+OverlayFs 的 READ、LOOKUP、GETATTR、目录查询等可共享 operation guard。
+改名、copy-up、写入、前像首次观察、release 与快照恢复仍使用独占 guard；
+读取通过 backing I/O 持有共享 guard，阻止原生句柄提前释放。文件句柄和
+不可变目录项只在查表时持有 handle map 锁，不把整张表锁带入 I/O。
+
+freeze/reset 停止接收新请求，排空已接收请求、回填所有完成结果并 join
+全部 I/O worker 后才能返回。thaw/restore 主动扫描 available ring，不依赖
+guest 再发 kick。正在执行的请求不序列化进入快照；超时由现有 runner
+失败契约处理。公开 `api` 的结构和方法不随平台或 worker 数改变。
+
+宿主诊断变量 `PVISOR_VM_FS_WORKERS=1..8` 可设置每个设备的 worker 上限；
+`1` 禁用线程池分发。生产调用方通常不需要设置。`PVISOR_FS_PROFILE=1`
+会额外记录 `virtio-fs-dispatch` 的 inline/pool 请求数及创建的 worker 数；
+带 profiling 的运行只用于诊断，不作为性能验收。
+
+设计参考 [virtiofsd 的线程池和 EVENT_IDX 处理](https://gitlab.com/virtio-fs/virtiofsd/-/blob/main/src/vhost_user.rs)
+及 [passthrough 的资源持有方式](https://gitlab.com/virtio-fs/virtiofsd/-/blob/main/src/passthrough/mod.rs)。
+本次为 pVisor 内部实现，未复制上游代码。未直接引入 vhost-user、DAX、
+writeback 或上游的工作目录切换；这些机制需要各自的权限、缓存和冻结契约。

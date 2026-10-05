@@ -1,12 +1,16 @@
 //! Durable immutable artifact objects. Bulk I/O stays outside the scheduler lock.
 use crate::{ARTIFACT_CHUNK_BYTES, ArtifactManifest, BlobRef, LeaseKey};
 use anyhow::{Context, ensure};
-use std::os::unix::fs::{OpenOptionsExt, PermissionsExt};
+use fs2::FileExt;
+use std::os::unix::fs::{MetadataExt, OpenOptionsExt, PermissionsExt};
 use std::{
     fs::{self, File, OpenOptions},
-    io::{Read, Write},
+    io::{Read, Seek, SeekFrom, Write},
     path::{Path, PathBuf},
-    sync::atomic::{AtomicU64, Ordering},
+    sync::{
+        Arc,
+        atomic::{AtomicBool, AtomicU64, Ordering},
+    },
 };
 
 static TEMP_ID: AtomicU64 = AtomicU64::new(0);
@@ -16,7 +20,41 @@ pub fn digest(bytes: &[u8]) -> String {
 #[derive(Debug, Clone)]
 pub struct ArtifactStore {
     root: PathBuf,
+    max_bytes: u64,
+    poisoned: Arc<AtomicBool>,
 }
+pub(crate) const DEFAULT_MAX_ARTIFACT_BYTES: u64 = 8 * 1024 * 1024 * 1024;
+const MAX_OBJECTS: u64 = 1_000_000;
+#[derive(Debug)]
+pub(crate) struct CapacityExceeded(pub &'static str);
+impl std::fmt::Display for CapacityExceeded {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.write_str(self.0)
+    }
+}
+impl std::error::Error for CapacityExceeded {}
+fn reserve_usage(file: &mut File, bytes: u64, objects: u64) -> std::io::Result<()> {
+    // Persist the dirty marker before changing counters. All other store
+    // instances must refuse writes after a partial/uncertain reservation.
+    file.seek(SeekFrom::Start(16))?;
+    file.write_all(&1u64.to_le_bytes())?;
+    file.sync_all()?;
+    file.seek(SeekFrom::Start(0))?;
+    file.write_all(&bytes.to_le_bytes())?;
+    file.write_all(&objects.to_le_bytes())?;
+    file.set_len(24)?;
+    file.sync_all()
+}
+fn clear_usage(file: &mut File) -> std::io::Result<()> {
+    file.seek(SeekFrom::Start(16))?;
+    file.write_all(&0u64.to_le_bytes())?;
+    file.sync_all()
+}
+fn write_usage(file: &mut File, bytes: u64, objects: u64) -> std::io::Result<()> {
+    reserve_usage(file, bytes, objects)?;
+    clear_usage(file)
+}
+
 pub(crate) struct VerifiedArtifacts {
     reference: BlobRef,
     key: LeaseKey,
@@ -52,6 +90,10 @@ impl VerifiedArtifacts {
 }
 impl ArtifactStore {
     pub fn open(root: &Path) -> anyhow::Result<Self> {
+        Self::open_with_quota(root, DEFAULT_MAX_ARTIFACT_BYTES)
+    }
+    pub fn open_with_quota(root: &Path, max_bytes: u64) -> anyhow::Result<Self> {
+        ensure!(max_bytes > 0, "artifact quota must be positive");
         fs::create_dir_all(root)?;
         ensure!(
             fs::symlink_metadata(root)?.is_dir(),
@@ -65,9 +107,69 @@ impl ArtifactStore {
                 .unwrap_or(Path::new(".")),
         )?
         .sync_all()?;
-        Ok(Self {
+        let store = Self {
             root: root.to_owned(),
-        })
+            max_bytes,
+            poisoned: Arc::new(AtomicBool::new(false)),
+        };
+        let mut quota = store.quota_file()?;
+        // Rebuild under the same cross-instance writer lock after a crash.
+        // Include abandoned upload inodes; do not delete unrooted evidence.
+        let mut seen = std::collections::HashSet::new();
+        let mut bytes = 0u64;
+        for shard in fs::read_dir(root)? {
+            let shard = shard?;
+            if shard.file_name() == ".capacity" {
+                continue;
+            }
+            let name = shard.file_name();
+            ensure!(
+                name.to_str()
+                    .is_some_and(|s| s.len() == 2 && s.bytes().all(|b| b.is_ascii_hexdigit()))
+                    && fs::symlink_metadata(shard.path())?.is_dir(),
+                "invalid artifact shard"
+            );
+            for entry in fs::read_dir(shard.path())? {
+                let entry = entry?;
+                let metadata = fs::symlink_metadata(entry.path())?;
+                ensure!(
+                    metadata.is_file() && metadata.len() <= ARTIFACT_CHUNK_BYTES as u64,
+                    "invalid artifact object"
+                );
+                if seen.insert((metadata.dev(), metadata.ino())) {
+                    ensure!(
+                        seen.len() as u64 <= MAX_OBJECTS,
+                        "artifact object count exceeds limit"
+                    );
+                    bytes = bytes
+                        .checked_add(metadata.len())
+                        .context("artifact usage overflow")?;
+                }
+            }
+        }
+        ensure!(
+            bytes <= max_bytes,
+            "existing artifacts exceed configured byte quota; increase quota before restart"
+        );
+        write_usage(&mut quota, bytes, seen.len() as u64)?;
+        File::open(root)?.sync_all()?;
+        Ok(store)
+    }
+    fn quota_file(&self) -> anyhow::Result<File> {
+        let file = OpenOptions::new()
+            .create(true)
+            .truncate(false)
+            .read(true)
+            .write(true)
+            .mode(0o600)
+            .custom_flags(libc::O_NOFOLLOW | libc::O_NONBLOCK)
+            .open(self.root.join(".capacity"))?;
+        ensure!(
+            file.metadata()?.is_file(),
+            "artifact quota record must be a regular file"
+        );
+        file.lock_exclusive()?;
+        Ok(file)
     }
     fn path(&self, reference: &BlobRef) -> anyhow::Result<PathBuf> {
         reference.validate()?;
@@ -86,10 +188,40 @@ impl ArtifactStore {
             bytes: bytes.len() as u64,
         };
         let path = self.path(&reference)?;
+        let mut quota = self.quota_file()?;
         if path.try_exists()? {
             self.get(&reference)?;
             return Ok(reference);
         }
+        if self.poisoned.load(Ordering::Acquire) {
+            return Err(
+                CapacityExceeded("artifact write uncertain; restart to reconcile quota").into(),
+            );
+        }
+        ensure!(
+            quota.metadata()?.len() == 24,
+            "invalid artifact quota record"
+        );
+        let mut usage = [0; 24];
+        quota.read_exact(&mut usage)?;
+        let used = u64::from_le_bytes(usage[..8].try_into().unwrap());
+        let objects = u64::from_le_bytes(usage[8..16].try_into().unwrap());
+        if u64::from_le_bytes(usage[16..].try_into().unwrap()) != 0 {
+            return Err(CapacityExceeded(
+                "artifact reservation uncertain; reopen store to reconcile retained inodes",
+            )
+            .into());
+        }
+        let next = used
+            .checked_add(reference.bytes)
+            .context("artifact quota overflow")?;
+        if next > self.max_bytes || objects >= MAX_OBJECTS {
+            return Err(CapacityExceeded("artifact capacity reached; retain existing evidence and increase quota or perform offline rooted cleanup").into());
+        }
+        // Reserve before creating bytes; a failed/uncertain write fences further
+        // writes by this instance. Startup reconciles actual retained inodes.
+        self.poisoned.store(true, Ordering::Release);
+        reserve_usage(&mut quota, next, objects + 1)?;
         let directory = path.parent().unwrap();
         fs::create_dir_all(directory)?;
         ensure!(
@@ -132,6 +264,8 @@ impl ArtifactStore {
         published?;
         removed?;
         File::open(directory)?.sync_all()?;
+        clear_usage(&mut quota)?;
+        self.poisoned.store(false, Ordering::Release);
         Ok(reference)
     }
     pub fn get(&self, reference: &BlobRef) -> anyhow::Result<Vec<u8>> {
@@ -214,6 +348,54 @@ impl ArtifactStore {
 #[cfg(test)]
 mod tests {
     use super::*;
+    #[test]
+    fn uncertain_reservation_fences_other_instances_until_inode_reconciliation() {
+        let temp = tempfile::tempdir().unwrap();
+        let root = temp.path().join("objects");
+        let first = ArtifactStore::open_with_quota(&root, 5).unwrap();
+        first.put(b"abc").unwrap();
+        let second = ArtifactStore::open_with_quota(&root, 5).unwrap();
+        let mut quota = first.quota_file().unwrap();
+        reserve_usage(&mut quota, 5, 2).unwrap();
+        drop(quota);
+        assert!(
+            second
+                .put(b"de")
+                .unwrap_err()
+                .downcast_ref::<CapacityExceeded>()
+                .is_some()
+        );
+        let reconciled = ArtifactStore::open_with_quota(&root, 5).unwrap();
+        assert_eq!(reconciled.put(b"de").unwrap().bytes, 2);
+    }
+
+    #[test]
+    fn byte_quota_survives_reopen_and_deduplication_does_not_consume_capacity() {
+        let temp = tempfile::tempdir().unwrap();
+        let root = temp.path().join("objects");
+        let first = ArtifactStore::open_with_quota(&root, 5).unwrap();
+        let reference = first.put(b"abc").unwrap();
+        let second = ArtifactStore::open_with_quota(&root, 5).unwrap();
+        assert_eq!(second.put(b"abc").unwrap(), reference);
+        assert!(
+            first
+                .put(b"xyz")
+                .unwrap_err()
+                .downcast_ref::<CapacityExceeded>()
+                .is_some()
+        );
+        assert_eq!(second.put(b"de").unwrap().bytes, 2);
+        assert!(first.put(b"f").is_err());
+        assert_eq!(
+            ArtifactStore::open_with_quota(&root, 5)
+                .unwrap()
+                .get(&reference)
+                .unwrap(),
+            b"abc"
+        );
+        assert!(ArtifactStore::open_with_quota(&root, 4).is_err());
+    }
+
     #[test]
     fn publication_is_idempotent_durable_and_checks_corruption_and_symlinks() {
         let temp = tempfile::tempdir().unwrap();

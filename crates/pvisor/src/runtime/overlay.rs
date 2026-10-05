@@ -357,6 +357,7 @@ pub(crate) fn mount_overlay_record_observed(
     config.baseline_lower = record.baseline_lower.clone();
     config.observation = observation;
     config.preimage_dir = Some(record.stage_dir.join("preimages"));
+    select_embedded_backend(&mut config)?;
     let session = mount_embedded_overlay(config).map_err(embedded_mount_error)?;
     wait_merged_ready(&record.merged_dir, &session)
         .map_err(|error| embedded_mount_error(error.into()))?;
@@ -451,6 +452,7 @@ pub fn mount_overlay_record_read_only(
     config.apply_target = Some(record.target.clone());
     config.baseline_lower = record.baseline_lower.clone();
     config.read_only = true;
+    select_embedded_backend(&mut config)?;
     let session = mount_embedded_overlay(config).map_err(embedded_mount_error)?;
     wait_merged_ready(&mountpoint, &session).map_err(|error| embedded_mount_error(error.into()))?;
     Ok(ReadOnlyOverlayMount {
@@ -459,11 +461,31 @@ pub fn mount_overlay_record_read_only(
     })
 }
 
+fn select_embedded_backend(config: &mut OverlayMountConfig) -> Result<(), OverlayError> {
+    #[cfg(target_os = "macos")]
+    if let Some(value) = std::env::var_os("PVISOR_OVERLAY_BACKEND") {
+        let value = value.into_string().map_err(|_| {
+            OverlayError::Prepare(io::Error::other(
+                "PVISOR_OVERLAY_BACKEND must be kernel or fskit",
+            ))
+        })?;
+        if !matches!(value.as_str(), "kernel" | "fskit") {
+            return Err(OverlayError::Prepare(io::Error::other(
+                "PVISOR_OVERLAY_BACKEND must be kernel or fskit",
+            )));
+        }
+        config.backend = Some(value);
+    }
+    #[cfg(not(target_os = "macos"))]
+    let _ = config;
+    Ok(())
+}
+
 fn embedded_mount_error(error: anyhow::Error) -> OverlayError {
     #[cfg(target_os = "macos")]
     {
         OverlayError::Mount(format!(
-            "{error:#}; macOS mounts require macFUSE >= 5.4.0 with its FSKit extension enabled in System Settings > General > Login Items & Extensions > File System Extensions (brew install --cask macfuse); no kernel extension is used. If already enabled, inspect fskit_agent/fskitd logs for extension startup failures"
+            "{error:#}; macOS defaults to macFUSE >= 5.4.0 with its FSKit extension enabled in System Settings > General > Login Items & Extensions > File System Extensions; inspect fskit_agent/fskitd logs if mount readiness fails. PVISOR_OVERLAY_BACKEND=kernel explicitly selects an already-installed and enabled macFUSE kernel backend; no automatic fallback or system extension change is performed"
         ))
     }
     #[cfg(not(target_os = "macos"))]

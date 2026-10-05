@@ -22,6 +22,12 @@ impl IntoResponse for ApiError {
     fn into_response(self) -> Response {
         let status = if self
             .0
+            .downcast_ref::<crate::artifacts::CapacityExceeded>()
+            .is_some()
+        {
+            StatusCode::INSUFFICIENT_STORAGE
+        } else if self
+            .0
             .downcast_ref::<crate::journal::JournalFailure>()
             .is_some()
             || self.0.downcast_ref::<std::io::Error>().is_some()
@@ -384,6 +390,16 @@ pub fn open(
 #[cfg(test)]
 mod tests {
     use super::*;
+    #[test]
+    fn capacity_rejection_is_retryable_storage_failure_not_fencing() {
+        assert_eq!(
+            ApiError(crate::artifacts::CapacityExceeded("full").into())
+                .into_response()
+                .status(),
+            StatusCode::INSUFFICIENT_STORAGE
+        );
+    }
+
     #[test]
     fn uncertain_storage_commit_is_retryable_and_not_a_stale_result_ack() {
         assert_eq!(

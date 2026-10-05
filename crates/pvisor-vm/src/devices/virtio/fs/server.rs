@@ -99,14 +99,16 @@ impl<F: FileSystem + Sync> Server<F> {
 
     pub fn handle_message(
         &self,
-        mut r: Reader,
+        message: (InHeader, Reader),
         w: Writer,
         allow_idmap: bool,
         shm_region: &Option<VirtioShmRegion>,
         exit_code: &Arc<AtomicI32>,
         #[cfg(target_os = "macos")] map_sender: &Option<Sender<WorkerMessage>>,
     ) -> Result<usize> {
-        let in_header: InHeader = r.read_obj().map_err(Error::DecodeMessage)?;
+        // The execution layer decodes the header once before choosing the
+        // session guard. Never reread guest-controlled opcode after admission.
+        let (in_header, r) = message;
 
         let label = match in_header.opcode {
             x if x == Opcode::Lookup as u32 => "LOOKUP",

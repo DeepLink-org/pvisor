@@ -622,6 +622,15 @@ impl PublishedEnvironment {
     pub fn ram_reader(&self) -> anyhow::Result<SnapshotRamReader> {
         SnapshotRamReader::new(&self.path, &self.manifest)
     }
+    /// Fault-serving process independent of the VM's kernel teardown. The
+    /// published lease stays held until the server has acquired backing pins.
+    pub fn ram_mount(
+        &self,
+        executable: &Path,
+        directory: &Path,
+    ) -> std::io::Result<(super::SnapshotRamMount, File)> {
+        super::SnapshotRamMount::external(&self.path, &self.manifest, directory, executable)
+    }
     /// Independent leases must outlive restored VMs, including after object deletion.
     pub fn base_leases(&self) -> anyhow::Result<Vec<super::SnapshotBase>> {
         self.bases

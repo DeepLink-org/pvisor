@@ -7,13 +7,14 @@ use pvisor_cluster::admission::{AdmissionPolicy, sample_linux};
 use pvisor_cluster::{client::Client, *};
 use pvisor_core::{ExecutorKind, IsolationKind, RunInvocation, StdioMode};
 use std::{
-    collections::BTreeMap,
+    collections::{BTreeMap, BTreeSet},
     path::{Path, PathBuf},
     sync::Arc,
     time::Duration,
 };
 use tokio::{
     sync::{mpsc, watch},
+    task::JoinSet,
     time::Instant,
 };
 #[path = "worker/environment.rs"]
@@ -103,12 +104,134 @@ struct Active {
     deadline: Instant,
     lease_clock: watch::Sender<Instant>,
     stop: watch::Sender<bool>,
-    completion: Option<Completion>,
+    native_terminal: bool,
     commands: mpsc::Sender<ControlCommand>,
     acknowledgement: Option<ControlAcknowledgement>,
     control_revision: u64,
     rejection: Option<AdmissionRejection>,
     retain_bundle: bool,
+}
+
+// HTTP and durable outbox I/O never execute inside the renewal branch.
+const MAX_DELIVERIES: usize = 16;
+#[derive(Clone)]
+enum Delivery {
+    Decline(AdmissionRejection),
+    Acknowledge(ControlAcknowledgement),
+    Complete {
+        completion: Completion,
+        retain_bundle: bool,
+    },
+}
+impl Delivery {
+    fn key(&self) -> &LeaseKey {
+        match self {
+            Self::Decline(value) => &value.key,
+            Self::Acknowledge(value) => &value.command.key,
+            Self::Complete { completion, .. } => &completion.key,
+        }
+    }
+    fn id(&self) -> String {
+        let key = outbox::key_name(self.key());
+        match self {
+            Self::Decline(_) => format!("decline-{key}"),
+            Self::Acknowledge(value) => format!("ack-{key}-{}", value.command.revision),
+            Self::Complete { .. } => format!("complete-{key}"),
+        }
+    }
+    async fn send(self, client: Client, outbox: Arc<outbox::Outbox>) -> DeliveryResult {
+        let mut durable = false;
+        let mut storage_error = false;
+        let result = match &self {
+            Self::Decline(value) => client.decline(value).await.map(|_| ()),
+            Self::Acknowledge(value) => client.acknowledge_control(value).await.map(|_| ()),
+            Self::Complete {
+                completion,
+                retain_bundle,
+            } => {
+                match outbox::save(outbox.clone(), completion.clone(), *retain_bundle, true).await {
+                    Err(error) => {
+                        storage_error = true;
+                        Err(error)
+                    }
+                    Ok(pending) => {
+                        durable = true;
+                        let disposition = match client.complete(completion).await {
+                            Ok(task) => Ok(outbox::Disposition::Accepted { phase: task.phase }),
+                            Err(error) if outbox::conflict(&error) => {
+                                Ok(outbox::Disposition::Fenced)
+                            }
+                            Err(error) => Err(error),
+                        };
+                        match disposition {
+                            Err(error) => Err(error),
+                            Ok(disposition) => {
+                                let result = outbox::finish(outbox, pending, disposition).await;
+                                storage_error = result.is_err();
+                                result
+                            }
+                        }
+                    }
+                }
+            }
+        };
+        DeliveryResult {
+            delivery: self,
+            result,
+            durable,
+            storage_error,
+        }
+    }
+}
+struct DeliveryResult {
+    delivery: Delivery,
+    result: anyhow::Result<()>,
+    durable: bool,
+    storage_error: bool,
+}
+struct TerminalDelivery {
+    completion: Completion,
+    retain_bundle: bool,
+    durable: bool,
+    retry_after: Instant,
+}
+fn queue_delivery(
+    delivery: Delivery,
+    jobs: &mut JoinSet<DeliveryResult>,
+    in_flight: &mut BTreeSet<String>,
+    client: &Client,
+    outbox: &Arc<outbox::Outbox>,
+) {
+    let terminal = matches!(delivery, Delivery::Complete { .. });
+    let class_used = in_flight
+        .iter()
+        .filter(|id| id.starts_with("complete-") == terminal)
+        .count();
+    // Reserve half the budget for each failure domain: repeated control errors
+    // cannot starve terminal delivery, and a terminal backlog cannot starve acks.
+    if class_used < MAX_DELIVERIES / 2
+        && jobs.len() < MAX_DELIVERIES
+        && in_flight.insert(delivery.id())
+    {
+        jobs.spawn(delivery.send(client.clone(), outbox.clone()));
+    }
+}
+fn expire_active(
+    active: &mut BTreeMap<String, Active>,
+    terminal: &BTreeMap<String, TerminalDelivery>,
+) {
+    active.retain(|_, entry| {
+        if Instant::now() < entry.deadline {
+            return true;
+        }
+        entry.stop.send_replace(true);
+        // Only a known native terminal with a durable delivery owner can release
+        // its reservation. A running/unknown execution must remain supervised.
+        !(entry.native_terminal
+            && terminal
+                .get(&outbox::key_name(&entry.key))
+                .is_some_and(|pending| pending.durable))
+    });
 }
 
 #[derive(Clone)]
@@ -804,6 +927,10 @@ async fn worker_main() -> anyhow::Result<()> {
     let (acknowledgements_tx, mut acknowledgements_rx) =
         mpsc::channel::<ControlAcknowledgement>(capacity.slots as usize);
     let mut active = BTreeMap::<String, Active>::new();
+    // Independent of active leases: expiry does not discard delivery ownership.
+    let mut terminal = BTreeMap::<String, TerminalDelivery>::new();
+    let mut deliveries = JoinSet::<DeliveryResult>::new();
+    let mut in_flight = BTreeSet::<String>::new();
     let mut tick = tokio::time::interval(Duration::from_millis(args.poll_ms));
     tick.set_missed_tick_behavior(tokio::time::MissedTickBehavior::Skip);
     let mut watchdog = tokio::time::interval(Duration::from_millis(50));
@@ -820,7 +947,82 @@ async fn worker_main() -> anyhow::Result<()> {
         tokio::select! {
             _ = &mut shutdown, if !stopping => { stopping = true; for entry in active.values() { entry.stop.send_replace(true); } },
             Some(completion) = finished_rx.recv() => {
-                if let Some(entry) = active.get_mut(&completion.key.task_id) { entry.completion = Some(completion); }
+                if let Some(entry) = active.get_mut(&completion.key.task_id) && entry.key == completion.key {
+                    terminal.insert(outbox::key_name(&completion.key), TerminalDelivery {
+                        completion: completion.clone(), retain_bundle: entry.retain_bundle, durable: false, retry_after: Instant::now(),
+                    });
+                    entry.native_terminal = true;
+                }
+            },
+            Some(joined) = deliveries.join_next(), if !deliveries.is_empty() => {
+                let event = joined.context("worker delivery task failed")?;
+                in_flight.remove(&event.delivery.id());
+                let key = event.delivery.key().clone();
+                if event.storage_error {
+                    // Do not admit or abandon attempts after an uncertain durable write.
+                    stopping = true;
+                    for entry in active.values() { entry.stop.send_replace(true); }
+                }
+                match event.delivery {
+                    Delivery::Complete { .. } => {
+                        if let Some(pending) = terminal.get_mut(&outbox::key_name(&key)) {
+                            pending.durable |= event.durable;
+                            if event.result.is_err() {
+                                pending.retry_after = Instant::now() + Duration::from_millis(250);
+                            }
+                        }
+                        match event.result {
+                            Ok(()) => {
+                                terminal.remove(&outbox::key_name(&key));
+                                if active.get(&key.task_id).is_some_and(|entry| entry.key == key) {
+                                    active.remove(&key.task_id);
+                                }
+                            }
+                            Err(error) => {
+                                eprintln!("terminal delivery remains pending for {}: {error:#}", key.task_id);
+                                if !event.storage_error && !outbox::retryable(&error) {
+                                    stopping = true;
+                                    for entry in active.values() { entry.stop.send_replace(true); }
+                                }
+                            }
+                        }
+                    }
+                    Delivery::Decline(rejection) => {
+                        if let Some(entry) = active.get_mut(&key.task_id) && entry.key == key {
+                            match event.result {
+                                Ok(()) => { active.remove(&key.task_id); }
+                                Err(error) if outbox::conflict(&error) => {
+                                    // Cancellation won the decline race: no native run began.
+                                    let completion = Completion { key: rejection.key, result: None,
+                                        error: Some("node admission rejected before execution".into()),
+                                        artifacts: None, artifact_error: None };
+                                    terminal.insert(outbox::key_name(&key), TerminalDelivery {
+                                        completion: completion.clone(), retain_bundle: entry.retain_bundle, durable: false, retry_after: Instant::now(),
+                                    });
+                                    entry.rejection = None;
+                                    entry.native_terminal = true;
+                                }
+                                Err(error) => {
+                                    eprintln!("admission rejection delivery failed for {}: {error:#}", key.task_id);
+                                    if Instant::now() >= entry.deadline { active.remove(&key.task_id); }
+                                }
+                            }
+                        }
+                    }
+                    Delivery::Acknowledge(acknowledgement) => {
+                        if let Some(entry) = active.get_mut(&key.task_id)
+                            && entry.key == key && entry.control_revision == acknowledgement.command.revision {
+                            match event.result {
+                                Ok(()) => { entry.acknowledgement = None; }
+                                Err(error) if outbox::conflict(&error) => {
+                                    entry.acknowledgement = None;
+                                    entry.stop.send_replace(true);
+                                }
+                                Err(error) => eprintln!("control acknowledgement delivery failed for {}: {error:#}", key.task_id),
+                            }
+                        }
+                    }
+                }
             },
             Some(acknowledgement) = acknowledgements_rx.recv() => {
                 if let Some(entry) = active.get_mut(&acknowledgement.command.key.task_id)
@@ -831,7 +1033,7 @@ async fn worker_main() -> anyhow::Result<()> {
                 }
             },
             _ = watchdog.tick() => {
-                for entry in active.values() { if Instant::now() >= entry.deadline { entry.stop.send_replace(true); } }
+                expire_active(&mut active, &terminal)
             },
             _ = tick.tick() => {
                 let used = active.values().try_fold(Resources::default(), |r, entry| r.checked_add(entry.resources)).context("worker reservation overflow")?;
@@ -842,7 +1044,7 @@ async fn worker_main() -> anyhow::Result<()> {
                 }
                 let request = PollRequest { worker_id: registration.id.clone(), incarnation: registration.incarnation.clone(),
                     active: active.values().filter(|a| a.rejection.is_none()).map(|a| a.key.clone()).collect(), available: report.available,
-                    max_assignments: if stopping { 0 } else { capacity.slots.min(64) }, admission: Some(report) };
+                    max_assignments: if stopping || terminal.len() >= MAX_DELIVERIES { 0 } else { capacity.slots.min(64) }, admission: Some(report) };
                 let began = Instant::now();
                 // The lease watchdog must remain live while HTTP waits. This
                 // branch awaits only via a nested select that observes expiry.
@@ -851,7 +1053,7 @@ async fn worker_main() -> anyhow::Result<()> {
                 let response = loop {
                     tokio::select! {
                         response = &mut poll => break response,
-                        _ = watchdog.tick() => { for entry in active.values() { if Instant::now() >= entry.deadline { entry.stop.send_replace(true); } } },
+                        _ = watchdog.tick() => { expire_active(&mut active, &terminal) },
                         _ = &mut shutdown, if !stopping => { stopping = true; for entry in active.values() { entry.stop.send_replace(true); } },
                     }
                 };
@@ -862,9 +1064,9 @@ async fn worker_main() -> anyhow::Result<()> {
                         ensure!(args.poll_ms * 3 < response.lease_duration_ms, "poll interval must be below one third of lease duration");
                         admission_lease_limit = Some(response.lease_duration_ms);
                         for key in response.renewed {
-                            if let Some(entry) = active.get_mut(&key.task_id) { entry.deadline = began + duration; entry.lease_clock.send_replace(entry.deadline); }
+                            if let Some(entry) = active.get_mut(&key.task_id) && entry.key == key && Instant::now() < entry.deadline { entry.deadline = began + duration; entry.lease_clock.send_replace(entry.deadline); }
                         }
-                        for key in response.stop { if let Some(entry) = active.get(&key.task_id) { entry.stop.send_replace(true); } }
+                        for key in response.stop { if let Some(entry) = active.get(&key.task_id) && entry.key == key { entry.stop.send_replace(true); } }
                         for command in response.controls {
                             if let Some(entry) = active.get_mut(&command.key.task_id) && entry.key == command.key {
                                 if command.revision < entry.control_revision { continue; }
@@ -916,98 +1118,25 @@ async fn worker_main() -> anyhow::Result<()> {
                                 tokio::spawn(async move { let completion = execute(runtime, assignment, AttemptChannels { stop: stop_rx, lease_clock: lease_rx, commands: commands_rx, acknowledgements: ack_tx }, storage, publisher, pending).await; let _ = tx.send(completion).await; });
                                 None
                             };
-                            active.insert(id, Active { key, resources, full_resources: resources, deadline: began + duration, lease_clock: lease_tx, stop: stop_tx, completion: None, commands: commands_tx, acknowledgement: None, control_revision: 0, rejection, retain_bundle });
+                            active.insert(id, Active { key, resources, full_resources: resources, deadline: began + duration, lease_clock: lease_tx, stop: stop_tx, native_terminal: false, commands: commands_tx, acknowledgement: None, control_revision: 0, rejection, retain_bundle });
                         }
                     }
                     Err(error) => eprintln!("worker poll failed: {error:#}"),
                 }
-                // Declines are only created before runtime.run and are omitted
-                // from the active-key acknowledgement. They safely requeue the
-                // same task with a new generation; uncertain executions never do.
-                let rejections: Vec<_> = active.values().filter_map(|a| a.rejection.clone()).collect();
-                for rejection in rejections {
-                    let id = rejection.key.task_id.clone();
-                    let delivery = client.decline(&rejection);
-                    tokio::pin!(delivery);
-                    let response = loop {
-                        tokio::select! {
-                            response = &mut delivery => break response,
-                            _ = watchdog.tick() => { for entry in active.values() { if Instant::now() >= entry.deadline { entry.stop.send_replace(true); } } },
-                            _ = &mut shutdown, if !stopping => { stopping = true; for entry in active.values() { entry.stop.send_replace(true); } },
-                        }
-                    };
-                    match response {
-                        Ok(_) => { active.remove(&id); },
-                        Err(error) if error.downcast_ref::<reqwest::Error>().and_then(|e| e.status()) == Some(reqwest::StatusCode::CONFLICT) => {
-                            if let Some(entry) = active.get_mut(&id) {
-                                // Cancellation may have won the decline race.
-                                // This completion confirms no native run began.
-                                entry.rejection = None;
-                                entry.completion = Some(Completion { key: rejection.key.clone(), result: None, error: Some("node admission rejected before execution".into()), artifacts: None, artifact_error: None });
-                                persist(&args.state.join("tasks").join(format!("{}-{}", id, entry.key.generation)).join("completion.json"), entry.completion.as_ref().unwrap())?;
-                            }
-                        },
-                        Err(error) => {
-                            eprintln!("admission rejection delivery failed for {id}: {error:#}");
-                            if active.get(&id).is_some_and(|entry| Instant::now() >= entry.deadline) { active.remove(&id); }
-                        },
+                // Bounded detached I/O; none of these requests can delay the
+                // next poll/renewal. Exact keys/revisions fence late responses.
+                for entry in active.values() {
+                    if let Some(rejection) = &entry.rejection {
+                        queue_delivery(Delivery::Decline(rejection.clone()), &mut deliveries, &mut in_flight, &client, &outbox);
+                    }
+                    if let Some(acknowledgement) = &entry.acknowledgement {
+                        queue_delivery(Delivery::Acknowledge(acknowledgement.clone()), &mut deliveries, &mut in_flight, &client, &outbox);
                     }
                 }
-                let acknowledgements: Vec<_> = active.values().filter_map(|a| a.acknowledgement.clone()).collect();
-                for acknowledgement in acknowledgements {
-                    let id = acknowledgement.command.key.task_id.clone();
-                    let delivery = client.acknowledge_control(&acknowledgement);
-                    tokio::pin!(delivery);
-                    let response = loop {
-                        tokio::select! {
-                            response = &mut delivery => break response,
-                            _ = watchdog.tick() => { for entry in active.values() { if Instant::now() >= entry.deadline { entry.stop.send_replace(true); } } },
-                            _ = &mut shutdown, if !stopping => { stopping = true; for entry in active.values() { entry.stop.send_replace(true); } },
-                        }
-                    };
-                    match response {
-                        Ok(_) => { if let Some(entry) = active.get_mut(&id) { entry.acknowledgement = None; } },
-                        Err(error) if error.downcast_ref::<reqwest::Error>().and_then(|e| e.status()) == Some(reqwest::StatusCode::CONFLICT) => {
-                            if let Some(entry) = active.get_mut(&id) { entry.acknowledgement = None; entry.stop.send_replace(true); }
-                        },
-                        Err(error) => eprintln!("control acknowledgement delivery failed for {id}: {error:#}"),
-                    }
-                }
-                // Deliver completed evidence independently of task execution.
-                // Retain reservations until the controller acknowledges it.
-                let completions: Vec<_> = active.values().filter_map(|a| a.completion.clone()).collect();
-                for completion in completions {
-                    let id = completion.key.task_id.clone();
-                    let deadline = active[&id].deadline;
-                    let pending = match outbox::save(outbox.clone(), completion.clone(), active[&id].retain_bundle, true).await {
-                        Ok(pending) => pending,
-                        Err(error) => {
-                            eprintln!("completion delivery waiting for durable outbox: {error:#}");
-                            stopping = true;
-                            for entry in active.values() { entry.stop.send_replace(true); }
-                            continue;
-                        },
-                    };
-                    let delivery = client.complete(&completion);
-                    tokio::pin!(delivery);
-                    let response = loop {
-                        tokio::select! {
-                            response = &mut delivery => break response,
-                            _ = watchdog.tick() => { for entry in active.values() { if Instant::now() >= entry.deadline { entry.stop.send_replace(true); } } },
-                            _ = &mut shutdown, if !stopping => { stopping = true; for entry in active.values() { entry.stop.send_replace(true); } },
-                        }
-                    };
-                    match response {
-                        Ok(task) => {
-                            outbox::finish(outbox.clone(), pending, outbox::Disposition::Accepted { phase: task.phase }).await?;
-                            active.remove(&id);
-                        },
-                        Err(error) if error.downcast_ref::<reqwest::Error>().and_then(|e| e.status()) == Some(reqwest::StatusCode::CONFLICT) => {
-                            outbox::finish(outbox.clone(), pending, outbox::Disposition::Fenced).await?;
-                            eprintln!("controller fenced completion for {id}; retained local evidence"); active.remove(&id);
-                        },
-                        Err(error) => { eprintln!("completion delivery failed for {id}: {error:#}"); if Instant::now() >= deadline { active.remove(&id); } },
-                    }
+                for pending in terminal.values().filter(|pending| Instant::now() >= pending.retry_after) {
+                    queue_delivery(Delivery::Complete {
+                        completion: pending.completion.clone(), retain_bundle: pending.retain_bundle,
+                    }, &mut deliveries, &mut in_flight, &client, &outbox);
                 }
             }
         }
@@ -1021,6 +1150,186 @@ async fn worker_main() -> anyhow::Result<()> {
 #[cfg(test)]
 mod admission_tests {
     use super::*;
+    fn terminal_fixture() -> Completion {
+        Completion {
+            key: LeaseKey {
+                task_id: "task".into(),
+                generation: 1,
+                worker_id: "worker".into(),
+                incarnation: "incarnation".into(),
+            },
+            result: None,
+            error: Some("native stopped".into()),
+            artifacts: None,
+            artifact_error: None,
+        }
+    }
+    fn terminal_active(completion: &Completion) -> Active {
+        let (stop, _) = watch::channel(false);
+        let deadline = Instant::now();
+        let (lease_clock, _) = watch::channel(deadline);
+        let (commands, _) = mpsc::channel(1);
+        Active {
+            key: completion.key.clone(),
+            resources: Resources::default(),
+            full_resources: Resources::default(),
+            deadline,
+            lease_clock,
+            stop,
+            native_terminal: true,
+            commands,
+            acknowledgement: None,
+            control_revision: 0,
+            rejection: None,
+            retain_bundle: false,
+        }
+    }
+    #[tokio::test]
+    async fn terminal_delivery_outlives_active_expiry_only_after_durable_save() {
+        let completion = terminal_fixture();
+        let key = outbox::key_name(&completion.key);
+        let mut active = BTreeMap::from([("task".into(), terminal_active(&completion))]);
+        let mut terminal = BTreeMap::from([(
+            key.clone(),
+            TerminalDelivery {
+                completion,
+                retain_bundle: false,
+                durable: false,
+                retry_after: Instant::now(),
+            },
+        )]);
+        expire_active(&mut active, &terminal);
+        assert_eq!(
+            active.len(),
+            1,
+            "uncertain persistence must retain ownership"
+        );
+        terminal.get_mut(&key).unwrap().durable = true;
+        expire_active(&mut active, &terminal);
+        assert!(active.is_empty());
+        assert_eq!(
+            terminal.len(),
+            1,
+            "expiry must not discard retry responsibility"
+        );
+    }
+    #[tokio::test]
+    async fn slow_terminal_http_does_not_block_renewal_and_can_retry_after_expiry() {
+        use axum::{Json, Router, http::StatusCode, routing::post};
+        use tokio::sync::Notify;
+        let entered = Arc::new(Notify::new());
+        let release = Arc::new(Notify::new());
+        let failed = Arc::new(std::sync::atomic::AtomicBool::new(false));
+        let app = Router::new()
+            .route(
+                "/v1/workers/complete",
+                post({
+                    let entered = entered.clone();
+                    let release = release.clone();
+                    let failed = failed.clone();
+                    move || {
+                        let entered = entered.clone();
+                        let release = release.clone();
+                        let failed = failed.clone();
+                        async move {
+                            if !failed.swap(true, std::sync::atomic::Ordering::SeqCst) {
+                                entered.notify_one();
+                                release.notified().await;
+                                (
+                                    StatusCode::SERVICE_UNAVAILABLE,
+                                    Json(serde_json::json!({"error":"retry"})),
+                                )
+                            } else {
+                                (
+                                    StatusCode::CONFLICT,
+                                    Json(serde_json::json!({"error":"fenced"})),
+                                )
+                            }
+                        }
+                    }
+                }),
+            )
+            .route(
+                "/v1/workers/poll",
+                post(|| async {
+                    Json(PollResponse {
+                        version: CLUSTER_VERSION,
+                        lease_duration_ms: 30_000,
+                        assignments: vec![],
+                        renewed: vec![],
+                        stop: vec![],
+                        controls: vec![],
+                    })
+                }),
+            );
+        let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
+        let url = format!("http://{}", listener.local_addr().unwrap());
+        let server = tokio::spawn(async move {
+            axum::serve(listener, app).await.unwrap();
+        });
+        let client = Client::new(&url, "test".into()).unwrap();
+        let directory = tempfile::tempdir().unwrap();
+        let outbox = Arc::new(outbox::Outbox::open(directory.path(), "worker", &url).unwrap());
+        let completion = terminal_fixture();
+        let mut jobs = JoinSet::new();
+        let mut in_flight = BTreeSet::new();
+        let delivery = Delivery::Complete {
+            completion: completion.clone(),
+            retain_bundle: false,
+        };
+        queue_delivery(
+            delivery.clone(),
+            &mut jobs,
+            &mut in_flight,
+            &client,
+            &outbox,
+        );
+        queue_delivery(
+            delivery.clone(),
+            &mut jobs,
+            &mut in_flight,
+            &client,
+            &outbox,
+        );
+        assert_eq!(jobs.len(), 1, "one in-flight delivery per exact key");
+        tokio::time::timeout(Duration::from_secs(2), entered.notified())
+            .await
+            .unwrap();
+        tokio::time::timeout(
+            Duration::from_secs(1),
+            client.poll(&PollRequest {
+                worker_id: "worker".into(),
+                incarnation: "incarnation".into(),
+                active: vec![completion.key.clone()],
+                available: Resources::default(),
+                max_assignments: 0,
+                admission: None,
+            }),
+        )
+        .await
+        .unwrap()
+        .unwrap();
+        release.notify_one();
+        let event = jobs.join_next().await.unwrap().unwrap();
+        assert!(event.result.is_err() && event.durable && !event.storage_error);
+        in_flight.remove(&event.delivery.id());
+        let mut active = BTreeMap::from([("task".into(), terminal_active(&completion))]);
+        let terminal = BTreeMap::from([(
+            outbox::key_name(&completion.key),
+            TerminalDelivery {
+                completion,
+                retain_bundle: false,
+                durable: true,
+                retry_after: Instant::now(),
+            },
+        )]);
+        expire_active(&mut active, &terminal);
+        assert!(active.is_empty());
+        queue_delivery(delivery, &mut jobs, &mut in_flight, &client, &outbox);
+        assert!(jobs.join_next().await.unwrap().unwrap().result.is_ok());
+        server.abort();
+    }
+
     #[tokio::test(start_paused = true)]
     async fn final_node_admission_uses_the_stricter_lease_sample_age_limit() {
         let policy = AdmissionPolicy {

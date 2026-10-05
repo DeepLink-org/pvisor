@@ -11,7 +11,7 @@ use std::os::unix::ffi::OsStrExt;
 use std::os::unix::fs::MetadataExt;
 use std::path::{Path, PathBuf};
 use std::sync::atomic::{AtomicU64, Ordering};
-use std::sync::{Arc, Mutex};
+use std::sync::{Arc, Mutex, RwLock};
 use std::time::Duration;
 
 use pvisor_overlay_core::{BackingIdentity, BackingResolution, OverlayCore};
@@ -105,7 +105,7 @@ struct DirectoryItem {
 )]
 enum Handle {
     File(FileHandle),
-    Directory(Vec<DirectoryItem>),
+    Directory(Arc<Vec<DirectoryItem>>),
 }
 
 #[derive(Default)]
@@ -326,9 +326,31 @@ impl OverlaySnapshot {
     }
 }
 
+/// Own one native lookup reference. A borrower retains the inode even if its
+/// cache entry is invalidated/evicted before the backing syscall completes.
+struct DirectoryReference {
+    fs: Arc<PassthroughFs>,
+    inode: u64,
+}
+impl Drop for DirectoryReference {
+    fn drop(&mut self) {
+        if self.inode != fuse::ROOT_ID {
+            self.fs.forget(
+                Context {
+                    uid: 0,
+                    gid: 0,
+                    pid: 0,
+                },
+                self.inode,
+                1,
+            );
+        }
+    }
+}
+
 struct CachedDirectory {
     identity: BackingIdentity,
-    inode: u64,
+    reference: Arc<DirectoryReference>,
     used: u64,
 }
 
@@ -340,13 +362,14 @@ struct DirectoryCache {
 
 pub struct OverlayFs {
     profile: pvisor_overlay_core::profile::Profile,
-    // ponytail: serialize requests so guest renames cannot race path checks/open;
-    // use directory-fd-based resolution before relaxing this for throughput.
-    operation_lock: Mutex<()>,
+    // Readers may overlap, but guest namespace changes, copy-up and handle
+    // release remain exclusive. Hold the guard through backing I/O: cloning
+    // numeric handle IDs alone would not pin the native handle against release.
+    operation_lock: RwLock<()>,
     core: OverlayCore,
     snapshot_config: Config,
     roots: Vec<PathBuf>,
-    layers: Vec<PassthroughFs>,
+    layers: Vec<Arc<PassthroughFs>>,
     // Owns one lookup reference per entry, never attributes or policy results.
     // Checked against fresh Core parent identities before every use.
     directory_cache: Mutex<DirectoryCache>,
@@ -414,6 +437,7 @@ impl OverlayFs {
                     },
                     inode_alloc.clone(),
                 )
+                .map(Arc::new)
             })
             .collect::<io::Result<Vec<_>>>()?;
         let mut nodes = Nodes::default();
@@ -421,7 +445,7 @@ impl OverlayFs {
         nodes.by_path.insert(PathBuf::new(), fuse::ROOT_ID);
         Ok(Self {
             profile: pvisor_overlay_core::profile::Profile::from_env("virtio-fs-overlay"),
-            operation_lock: Mutex::new(()),
+            operation_lock: RwLock::new(()),
             core,
             snapshot_config: cfg,
             roots,
@@ -521,6 +545,70 @@ impl OverlayFs {
         self.inner_entry_with_parents(layer, path, ctx, &[])
     }
 
+    fn cached_directory(
+        &self,
+        key: &(usize, PathBuf),
+        identity: BackingIdentity,
+    ) -> Option<Arc<DirectoryReference>> {
+        let (reference, stale) = {
+            let mut cache = self.directory_cache.lock().unwrap();
+            cache.clock = cache.clock.saturating_add(1);
+            let used = cache.clock;
+            match cache.entries.get_mut(key) {
+                Some(directory) if directory.identity == identity => {
+                    directory.used = used;
+                    (Some(directory.reference.clone()), None)
+                }
+                Some(_) => (None, cache.entries.remove(key)),
+                None => (None, None),
+            }
+        };
+        if stale.is_some() {
+            self.profile.add("directory_cache_invalidations", 1);
+        }
+        // Native forget and close may take other locks; never run under the
+        // directory-cache lock, including replacement and capacity eviction.
+        drop(stale);
+        reference
+    }
+
+    fn cache_directory(
+        &self,
+        key: (usize, PathBuf),
+        identity: BackingIdentity,
+        reference: Arc<DirectoryReference>,
+    ) {
+        let (replaced, evicted) = {
+            let mut cache = self.directory_cache.lock().unwrap();
+            cache.clock = cache.clock.saturating_add(1);
+            let used = cache.clock;
+            let replaced = cache.entries.insert(
+                key,
+                CachedDirectory {
+                    identity,
+                    reference,
+                    used,
+                },
+            );
+            let evicted = if cache.entries.len() > DIRECTORY_CACHE_CAPACITY {
+                let oldest = cache
+                    .entries
+                    .iter()
+                    .min_by_key(|(_, directory)| directory.used)
+                    .map(|(key, _)| key.clone())
+                    .expect("nonempty directory cache");
+                cache.entries.remove(&oldest)
+            } else {
+                None
+            };
+            (replaced, evicted)
+        };
+        if evicted.is_some() {
+            self.profile.add("directory_cache_evictions", 1);
+        }
+        drop((replaced, evicted));
+    }
+
     fn inner_entry_with_parents(
         &self,
         layer: Layer,
@@ -532,30 +620,25 @@ impl OverlayFs {
         let fs = &self.layers[layer.0];
         let mut inode = fuse::ROOT_ID;
         let mut temporary_reference = false;
+        let mut held_directory = None;
         let mut result = None;
         let mut prefix = PathBuf::new();
-        let mut cache = (!parents.is_empty()
+        let cacheable = !parents.is_empty()
             && parents.len() + 1 == path.components().count()
             && parents
                 .iter()
-                .all(|identity| cfg!(target_os = "macos") || identity.mount_id.is_some()))
-        .then(|| self.directory_cache.lock().unwrap());
-        // Core has freshly checked every physical ancestor for this request.
-        // A matching deepest directory therefore lets us start at its held
-        // inode directly; walking all cached prefixes adds no validation.
-        // Cache misses still take the complete lookup/identity path below.
-        let start = if let (Some(cache), Some(identity), Some(parent)) =
-            (&mut cache, parents.last(), path.parent())
-        {
-            cache.clock = cache.clock.saturating_add(1);
-            let used = cache.clock;
-            if let Some(directory) = cache
-                .entries
-                .get_mut(&(layer.0, parent.to_path_buf()))
-                .filter(|directory| directory.identity == *identity)
-            {
-                inode = directory.inode;
-                directory.used = used;
+                .all(|id| cfg!(target_os = "macos") || id.mount_id.is_some());
+        // Core freshly validated every physical ancestor. Keep a strong native
+        // inode reference while using the deepest matching directory, without
+        // holding the cache map lock across lookup, getattr or forget.
+        let start = if cacheable {
+            let key = (
+                layer.0,
+                path.parent().expect("validated parent count").to_path_buf(),
+            );
+            if let Some(reference) = self.cached_directory(&key, *parents.last().unwrap()) {
+                inode = reference.inode;
+                held_directory = Some(reference);
                 self.profile.add("directory_cache_deep_hits", 1);
                 parents.len()
             } else {
@@ -565,34 +648,22 @@ impl OverlayFs {
             0
         };
         for (index, component) in path.components().enumerate().skip(start) {
-            let key = if cache.is_some() && index < parents.len() {
+            let key = if cacheable && index < parents.len() {
                 prefix.push(component.as_os_str());
                 Some((layer.0, prefix.clone()))
             } else {
                 None
             };
-            if let (Some(cache), Some(identity), Some(key)) =
-                (&mut cache, parents.get(index), key.as_ref())
-            {
-                cache.clock = cache.clock.saturating_add(1);
-                let used = cache.clock;
-                if let Some(directory) = cache
-                    .entries
-                    .get_mut(key)
-                    .filter(|directory| directory.identity == *identity)
-                {
+            if let (Some(identity), Some(key)) = (parents.get(index), key.as_ref()) {
+                if let Some(reference) = self.cached_directory(key, *identity) {
                     if temporary_reference {
                         fs.forget(ctx, inode, 1);
                     }
-                    inode = directory.inode;
-                    directory.used = used;
+                    inode = reference.inode;
+                    held_directory = Some(reference);
                     temporary_reference = false;
                     self.profile.add("directory_cache_hits", 1);
                     continue;
-                }
-                if let Some(stale) = cache.entries.remove(key) {
-                    fs.forget(ctx, stale.inode, 1);
-                    self.profile.add("directory_cache_invalidations", 1);
                 }
                 self.profile.add("directory_cache_misses", 1);
             }
@@ -604,11 +675,12 @@ impl OverlayFs {
             if temporary_reference {
                 fs.forget(ctx, inode, 1);
             }
+            held_directory = None; // the backing lookup no longer uses its parent
             let entry = entry?;
             inode = entry.inode;
             temporary_reference = inode != fuse::ROOT_ID;
             let matching_parent = parents.get(index).filter(|identity| {
-                cache.is_some()
+                cacheable
                     && **identity
                         == BackingIdentity {
                             device: entry.attr.st_dev as _,
@@ -616,31 +688,18 @@ impl OverlayFs {
                             mount_id: fs.lookup_mount_id(inode),
                         }
             });
-            if let (Some(cache), Some(identity), Some(key)) = (&mut cache, matching_parent, key) {
-                if cache.entries.len() == DIRECTORY_CACHE_CAPACITY {
-                    let oldest = cache
-                        .entries
-                        .iter()
-                        .min_by_key(|(_, directory)| directory.used)
-                        .map(|(key, _)| key.clone())
-                        .unwrap();
-                    let directory = cache.entries.remove(&oldest).unwrap();
-                    self.layers[oldest.0].forget(ctx, directory.inode, 1);
-                    self.profile.add("directory_cache_evictions", 1);
-                }
-                let used = cache.clock;
-                cache.entries.insert(
-                    key,
-                    CachedDirectory {
-                        identity: *identity,
-                        inode,
-                        used,
-                    },
-                );
-                temporary_reference = false;
+            if let (Some(identity), Some(key)) = (matching_parent, key) {
+                let reference = Arc::new(DirectoryReference {
+                    fs: fs.clone(),
+                    inode,
+                });
+                self.cache_directory(key, *identity, reference.clone());
+                held_directory = Some(reference);
+                temporary_reference = false; // ownership transferred to the Arc
             }
             result = Some(entry);
         }
+        drop(held_directory);
         if let Some(entry) = result {
             return Ok(entry);
         }
@@ -696,18 +755,8 @@ impl OverlayFs {
     }
 
     fn clear_directory_cache(&self) {
-        let mut cache = self.directory_cache.lock().unwrap();
-        for ((layer, _), directory) in cache.entries.drain() {
-            self.layers[layer].forget(
-                Context {
-                    uid: 0,
-                    gid: 0,
-                    pid: 0,
-                },
-                directory.inode,
-                1,
-            );
-        }
+        let entries = std::mem::take(&mut self.directory_cache.lock().unwrap().entries);
+        drop(entries); // final directory references release outside the map lock
     }
 
     fn writable_inner(&self, ctx: Context, path: &Path) -> io::Result<u64> {
@@ -747,11 +796,13 @@ impl OverlayFs {
         id: u64,
         f: impl FnOnce(&PassthroughFs, &FileHandle) -> io::Result<T>,
     ) -> io::Result<T> {
-        let handles = self.handles.lock().unwrap();
-        match handles.get(&id) {
-            Some(Handle::File(handle)) => f(&self.layers[handle.layer.0], handle),
-            _ => Err(io::Error::from_raw_os_error(libc::EBADF)),
-        }
+        // Every caller holds an operation guard, so release cannot remove the
+        // backing handle while this small map lookup is followed by I/O.
+        let handle = match self.handles.lock().unwrap().get(&id) {
+            Some(Handle::File(handle)) => handle.clone(),
+            _ => return Err(io::Error::from_raw_os_error(libc::EBADF)),
+        };
+        f(&self.layers[handle.layer.0], &handle)
     }
 
     fn dtype(mode: u32) -> u32 {
@@ -762,7 +813,7 @@ impl OverlayFs {
 
 impl FileSystem for OverlayFs {
     fn capture_state(&self) -> io::Result<super::snapshot::FsSnapshot> {
-        let _operation = self.operation_lock.lock().unwrap();
+        let _operation = self.operation_lock.write().unwrap();
         self.clear_directory_cache();
         self.profile.emit_checkpoint();
         self.core.emit_profile_checkpoint();
@@ -852,7 +903,7 @@ impl FileSystem for OverlayFs {
                 layers: self
                     .layers
                     .iter()
-                    .map(FileSystem::capture_state)
+                    .map(|layer| layer.capture_state())
                     .collect::<io::Result<_>>()?,
                 nodes: self
                     .nodes
@@ -878,7 +929,7 @@ impl FileSystem for OverlayFs {
         let FsSnapshot::Overlay(state) = state else {
             return Err(invalid("overlay filesystem type mismatch"));
         };
-        let _operation = self.operation_lock.lock().unwrap();
+        let _operation = self.operation_lock.write().unwrap();
         if state.config != self.snapshot_config
             || state.layers.len() != self.layers.len()
             || state.next_handle == 0
@@ -960,7 +1011,7 @@ impl FileSystem for OverlayFs {
     fn init(&self, capable: FsOptions) -> io::Result<FsOptions> {
         let _operation = self
             .operation_lock
-            .lock()
+            .write()
             .map_err(|_| io::Error::from_raw_os_error(libc::EIO))?;
         let mut options = None;
         for layer in &self.layers {
@@ -979,6 +1030,7 @@ impl FileSystem for OverlayFs {
     }
 
     fn destroy(&self) {
+        let _operation = self.operation_lock.write().unwrap();
         self.clear_directory_cache();
         self.handles.lock().unwrap().clear();
         for layer in &self.layers {
@@ -990,7 +1042,7 @@ impl FileSystem for OverlayFs {
         let _span = self.profile.span("lookup");
         let _operation = self
             .operation_lock
-            .lock()
+            .read()
             .map_err(|_| io::Error::from_raw_os_error(libc::EIO))?;
         let path = self.child(parent, name)?;
         let backing = self
@@ -1010,7 +1062,7 @@ impl FileSystem for OverlayFs {
         let _span = self.profile.span("getattr");
         let _operation = self
             .operation_lock
-            .lock()
+            .read()
             .map_err(|_| io::Error::from_raw_os_error(libc::EIO))?;
         // GETATTR may omit FH (e.g. stat through /proc/self/fd). An unlinked
         // inode still belongs to its open file, even after its path is gone.
@@ -1048,7 +1100,7 @@ impl FileSystem for OverlayFs {
     ) -> io::Result<(bindings::stat64, Duration)> {
         let _operation = self
             .operation_lock
-            .lock()
+            .write()
             .map_err(|_| io::Error::from_raw_os_error(libc::EIO))?;
         let path = self.path(inode)?;
         self.core
@@ -1065,7 +1117,7 @@ impl FileSystem for OverlayFs {
     fn readlink(&self, ctx: Context, inode: u64) -> io::Result<Vec<u8>> {
         let _operation = self
             .operation_lock
-            .lock()
+            .write()
             .map_err(|_| io::Error::from_raw_os_error(libc::EIO))?;
         let path = self.path(inode)?;
         let (layer, inner) = self.observed_inner(ctx, &path)?;
@@ -1084,7 +1136,7 @@ impl FileSystem for OverlayFs {
     ) -> io::Result<Entry> {
         let _operation = self
             .operation_lock
-            .lock()
+            .write()
             .map_err(|_| io::Error::from_raw_os_error(libc::EIO))?;
         let path = self.child(parent, name)?;
         let (upper_parent, upper_name) = self.upper_parent(ctx, &path)?;
@@ -1108,7 +1160,7 @@ impl FileSystem for OverlayFs {
     ) -> io::Result<Entry> {
         let _operation = self
             .operation_lock
-            .lock()
+            .write()
             .map_err(|_| io::Error::from_raw_os_error(libc::EIO))?;
         let path = self.child(parent, name)?;
         let (upper_parent, upper_name) = self.upper_parent(ctx, &path)?;
@@ -1139,7 +1191,7 @@ impl FileSystem for OverlayFs {
     ) -> io::Result<Entry> {
         let _operation = self
             .operation_lock
-            .lock()
+            .write()
             .map_err(|_| io::Error::from_raw_os_error(libc::EIO))?;
         let path = self.child(parent, name)?;
         let (upper_parent, upper_name) = self.upper_parent(ctx, &path)?;
@@ -1156,7 +1208,7 @@ impl FileSystem for OverlayFs {
     fn unlink(&self, _ctx: Context, parent: u64, name: &CStr) -> io::Result<()> {
         let _operation = self
             .operation_lock
-            .lock()
+            .write()
             .map_err(|_| io::Error::from_raw_os_error(libc::EIO))?;
         let path = self.child(parent, name)?;
         self.core.remove(&path, false).map_err(linux_error)?;
@@ -1167,7 +1219,7 @@ impl FileSystem for OverlayFs {
     fn rmdir(&self, _ctx: Context, parent: u64, name: &CStr) -> io::Result<()> {
         let _operation = self
             .operation_lock
-            .lock()
+            .write()
             .map_err(|_| io::Error::from_raw_os_error(libc::EIO))?;
         let path = self.child(parent, name)?;
         self.core.remove(&path, true).map_err(linux_error)?;
@@ -1186,7 +1238,7 @@ impl FileSystem for OverlayFs {
     ) -> io::Result<()> {
         let _operation = self
             .operation_lock
-            .lock()
+            .write()
             .map_err(|_| io::Error::from_raw_os_error(libc::EIO))?;
         let old = self.child(olddir, oldname)?;
         let new = self.child(newdir, newname)?;
@@ -1211,7 +1263,7 @@ impl FileSystem for OverlayFs {
     fn link(&self, ctx: Context, inode: u64, newparent: u64, newname: &CStr) -> io::Result<Entry> {
         let _operation = self
             .operation_lock
-            .lock()
+            .write()
             .map_err(|_| io::Error::from_raw_os_error(libc::EIO))?;
         let source = self.path(inode)?;
         let destination = self.child(newparent, newname)?;
@@ -1232,7 +1284,7 @@ impl FileSystem for OverlayFs {
         let _span = self.profile.span("open");
         let _operation = self
             .operation_lock
-            .lock()
+            .write()
             .map_err(|_| io::Error::from_raw_os_error(libc::EIO))?;
         let path = self.path(inode)?;
         let writing = flags as i32 & libc::O_ACCMODE != libc::O_RDONLY
@@ -1294,7 +1346,7 @@ impl FileSystem for OverlayFs {
     ) -> io::Result<(Entry, Option<u64>, OpenOptions)> {
         let _operation = self
             .operation_lock
-            .lock()
+            .write()
             .map_err(|_| io::Error::from_raw_os_error(libc::EIO))?;
         let path = self.child(parent, name)?;
         let inode = self.allocate_inode(path.clone());
@@ -1339,7 +1391,7 @@ impl FileSystem for OverlayFs {
         let _span = self.profile.span("read");
         let _operation = self
             .operation_lock
-            .lock()
+            .read()
             .map_err(|_| io::Error::from_raw_os_error(libc::EIO))?;
         self.with_file_handle(handle, |fs, h| {
             fs.read(ctx, h.inode, h.handle, w, size, offset, lock_owner, flags)
@@ -1362,7 +1414,7 @@ impl FileSystem for OverlayFs {
         let _span = self.profile.span("write");
         let _operation = self
             .operation_lock
-            .lock()
+            .write()
             .map_err(|_| io::Error::from_raw_os_error(libc::EIO))?;
         self.with_file_handle(handle, |fs, h| {
             fs.write(
@@ -1383,7 +1435,7 @@ impl FileSystem for OverlayFs {
     fn flush(&self, ctx: Context, _inode: u64, handle: u64, lock_owner: u64) -> io::Result<()> {
         let _operation = self
             .operation_lock
-            .lock()
+            .write()
             .map_err(|_| io::Error::from_raw_os_error(libc::EIO))?;
         self.with_file_handle(handle, |fs, h| fs.flush(ctx, h.inode, h.handle, lock_owner))
     }
@@ -1391,7 +1443,7 @@ impl FileSystem for OverlayFs {
     fn fsync(&self, ctx: Context, _inode: u64, datasync: bool, handle: u64) -> io::Result<()> {
         let _operation = self
             .operation_lock
-            .lock()
+            .write()
             .map_err(|_| io::Error::from_raw_os_error(libc::EIO))?;
         self.with_file_handle(handle, |fs, h| fs.fsync(ctx, h.inode, datasync, h.handle))
     }
@@ -1408,7 +1460,7 @@ impl FileSystem for OverlayFs {
     ) -> io::Result<()> {
         let _operation = self
             .operation_lock
-            .lock()
+            .write()
             .map_err(|_| io::Error::from_raw_os_error(libc::EIO))?;
         let handle = self.handles.lock().unwrap().remove(&handle);
         match handle {
@@ -1432,7 +1484,7 @@ impl FileSystem for OverlayFs {
     fn statfs(&self, ctx: Context, inode: u64) -> io::Result<bindings::statvfs64> {
         let _operation = self
             .operation_lock
-            .lock()
+            .read()
             .map_err(|_| io::Error::from_raw_os_error(libc::EIO))?;
         let path = self.path(inode)?;
         let layer = self.layer(&path)?;
@@ -1454,7 +1506,7 @@ impl FileSystem for OverlayFs {
     ) -> io::Result<()> {
         let _operation = self
             .operation_lock
-            .lock()
+            .write()
             .map_err(|_| io::Error::from_raw_os_error(libc::EIO))?;
         pvisor_overlay_core::validate_guest_xattr(OsStr::from_bytes(name.to_bytes()))
             .map_err(linux_error)?;
@@ -1477,7 +1529,7 @@ impl FileSystem for OverlayFs {
     ) -> io::Result<GetxattrReply> {
         let _operation = self
             .operation_lock
-            .lock()
+            .write()
             .map_err(|_| io::Error::from_raw_os_error(libc::EIO))?;
         let path = self.path(inode)?;
         let (layer, inner) = self.observed_inner(ctx, &path)?;
@@ -1489,7 +1541,7 @@ impl FileSystem for OverlayFs {
     fn listxattr(&self, ctx: Context, inode: u64, size: u32) -> io::Result<ListxattrReply> {
         let _operation = self
             .operation_lock
-            .lock()
+            .write()
             .map_err(|_| io::Error::from_raw_os_error(libc::EIO))?;
         let path = self.path(inode)?;
         let (layer, inner) = self.observed_inner(ctx, &path)?;
@@ -1501,7 +1553,7 @@ impl FileSystem for OverlayFs {
     fn removexattr(&self, ctx: Context, inode: u64, name: &CStr) -> io::Result<()> {
         let _operation = self
             .operation_lock
-            .lock()
+            .write()
             .map_err(|_| io::Error::from_raw_os_error(libc::EIO))?;
         pvisor_overlay_core::validate_guest_xattr(OsStr::from_bytes(name.to_bytes()))
             .map_err(linux_error)?;
@@ -1524,7 +1576,7 @@ impl FileSystem for OverlayFs {
         let _span = self.profile.span("opendir");
         let _operation = self
             .operation_lock
-            .lock()
+            .read()
             .map_err(|_| io::Error::from_raw_os_error(libc::EIO))?;
         let path = self.path(inode)?;
         let mut items = Vec::new();
@@ -1537,7 +1589,7 @@ impl FileSystem for OverlayFs {
                 type_: Self::dtype(entry.backing.metadata.mode()),
             });
         }
-        let handle = self.allocate_handle(Handle::Directory(items));
+        let handle = self.allocate_handle(Handle::Directory(Arc::new(items)));
         Ok((Some(handle), OpenOptions::empty()))
     }
 
@@ -1555,11 +1607,10 @@ impl FileSystem for OverlayFs {
     {
         let _operation = self
             .operation_lock
-            .lock()
+            .read()
             .map_err(|_| io::Error::from_raw_os_error(libc::EIO))?;
-        let handles = self.handles.lock().unwrap();
-        let items = match handles.get(&handle) {
-            Some(Handle::Directory(items)) => items,
+        let items = match self.handles.lock().unwrap().get(&handle) {
+            Some(Handle::Directory(items)) => items.clone(),
             _ => return Err(io::Error::from_raw_os_error(libc::EBADF)),
         };
         for (index, item) in items.iter().enumerate().skip(offset as usize) {
@@ -1591,11 +1642,10 @@ impl FileSystem for OverlayFs {
         let _span = self.profile.span("readdirplus");
         let _operation = self
             .operation_lock
-            .lock()
+            .read()
             .map_err(|_| io::Error::from_raw_os_error(libc::EIO))?;
-        let handles = self.handles.lock().unwrap();
-        let items = match handles.get(&handle) {
-            Some(Handle::Directory(items)) => items,
+        let items = match self.handles.lock().unwrap().get(&handle) {
+            Some(Handle::Directory(items)) => items.clone(),
             _ => return Err(io::Error::from_raw_os_error(libc::EBADF)),
         };
         for (index, item) in items.iter().enumerate().skip(offset as usize) {
@@ -1620,7 +1670,7 @@ impl FileSystem for OverlayFs {
     fn releasedir(&self, _ctx: Context, _inode: u64, _flags: u32, handle: u64) -> io::Result<()> {
         let _operation = self
             .operation_lock
-            .lock()
+            .write()
             .map_err(|_| io::Error::from_raw_os_error(libc::EIO))?;
         match self.handles.lock().unwrap().remove(&handle) {
             Some(Handle::Directory(_)) => Ok(()),
@@ -1631,7 +1681,7 @@ impl FileSystem for OverlayFs {
     fn access(&self, ctx: Context, inode: u64, mask: u32) -> io::Result<()> {
         let _operation = self
             .operation_lock
-            .lock()
+            .read()
             .map_err(|_| io::Error::from_raw_os_error(libc::EIO))?;
         let path = self.path(inode)?;
         let layer = self.layer(&path)?;
@@ -1653,7 +1703,7 @@ impl FileSystem for OverlayFs {
     ) -> io::Result<u64> {
         let _operation = self
             .operation_lock
-            .lock()
+            .write()
             .map_err(|_| io::Error::from_raw_os_error(libc::EIO))?;
         self.with_file_handle(handle, |fs, h| {
             fs.lseek(ctx, h.inode, h.handle, offset, whence)
@@ -1664,6 +1714,111 @@ impl FileSystem for OverlayFs {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    struct ReadWriter {
+        gate: Option<(std::sync::mpsc::Sender<()>, std::sync::mpsc::Receiver<()>)>,
+        bytes: Vec<u8>,
+    }
+    impl io::Write for ReadWriter {
+        fn write(&mut self, bytes: &[u8]) -> io::Result<usize> {
+            self.bytes.extend_from_slice(bytes);
+            Ok(bytes.len())
+        }
+        fn flush(&mut self) -> io::Result<()> {
+            Ok(())
+        }
+    }
+    impl ZeroCopyWriter for ReadWriter {
+        fn write_from(
+            &mut self,
+            file: &std::fs::File,
+            count: usize,
+            off: u64,
+        ) -> io::Result<usize> {
+            use std::os::unix::fs::FileExt;
+            if let Some((started, resume)) = self.gate.take() {
+                started.send(()).unwrap();
+                resume.recv().unwrap();
+            }
+            let mut bytes = vec![0; count];
+            let len = file.read_at(&mut bytes, off)?;
+            self.bytes.extend_from_slice(&bytes[..len]);
+            Ok(len)
+        }
+    }
+    #[test]
+    fn reads_overlap_but_release_waits_for_backing_io() {
+        use std::sync::mpsc::channel;
+        use std::time::Duration;
+        let temp = tempfile::tempdir().unwrap();
+        std::fs::create_dir(temp.path().join("lower")).unwrap();
+        std::fs::write(temp.path().join("lower/a"), b"first").unwrap();
+        std::fs::write(temp.path().join("lower/b"), b"second").unwrap();
+        let fs = parent_cache_fixture(temp.path());
+        fs.init(FsOptions::empty()).unwrap();
+        let ctx = Context {
+            uid: 0,
+            gid: 0,
+            pid: 1,
+        };
+        let a = fs.lookup(ctx, fuse::ROOT_ID, c"a").unwrap().inode;
+        let b = fs.lookup(ctx, fuse::ROOT_ID, c"b").unwrap().inode;
+        let ah = fs
+            .open(ctx, a, false, libc::O_RDONLY as u32)
+            .unwrap()
+            .0
+            .unwrap();
+        let bh = fs
+            .open(ctx, b, false, libc::O_RDONLY as u32)
+            .unwrap()
+            .0
+            .unwrap();
+        let (started, entered) = channel();
+        let (resume, waiting) = channel();
+        let (finished, completed) = channel();
+        let fs = &fs;
+        std::thread::scope(|scope| {
+            let first = scope.spawn(move || {
+                let mut writer = ReadWriter {
+                    gate: Some((started, waiting)),
+                    bytes: Vec::new(),
+                };
+                let result = fs.read(ctx, a, ah, &mut writer, 16, 0, None, 0);
+                (result, writer.bytes)
+            });
+            entered.recv_timeout(Duration::from_secs(2)).unwrap();
+            scope.spawn(move || {
+                let mut writer = ReadWriter {
+                    gate: None,
+                    bytes: Vec::new(),
+                };
+                let result = fs.read(ctx, b, bh, &mut writer, 16, 0, None, 0);
+                finished.send((result, writer.bytes)).unwrap();
+            });
+            let second = completed.recv_timeout(Duration::from_secs(2));
+            if second.is_err() {
+                resume.send(()).unwrap();
+                panic!("independent READ serialized behind backing I/O");
+            }
+            let (result, bytes) = second.unwrap();
+            assert_eq!(result.unwrap(), 6);
+            assert_eq!(bytes, b"second");
+            let (released, done) = channel();
+            scope.spawn(move || {
+                let result = fs.release(ctx, a, libc::O_RDONLY as u32, ah, false, false, None);
+                released.send(result).unwrap();
+            });
+            let premature = done.recv_timeout(Duration::from_millis(20));
+            resume.send(()).unwrap();
+            assert!(premature.is_err(), "release raced retained backing handle");
+            done.recv_timeout(Duration::from_secs(2)).unwrap().unwrap();
+            let (result, bytes) = first.join().unwrap();
+            assert_eq!(result.unwrap(), 5);
+            assert_eq!(bytes, b"first");
+        });
+        fs.release(ctx, b, libc::O_RDONLY as u32, bh, false, false, None)
+            .unwrap();
+    }
 
     #[test]
     fn new_stages_use_compact_journals_and_reopening_preserves_both_formats() {
@@ -1821,7 +1976,11 @@ mod tests {
         std::fs::write(lower.join("private/secret"), b"secret").unwrap();
         std::os::unix::fs::symlink("old", lower.join("allowed/link")).unwrap();
         let fs = parent_cache_fixture(temp.path());
-        let ctx = Context { uid: 0, gid: 0, pid: 1 };
+        let ctx = Context {
+            uid: 0,
+            gid: 0,
+            pid: 1,
+        };
         let parent = fs.lookup(ctx, fuse::ROOT_ID, c"allowed").unwrap();
         let link = fs.lookup(ctx, parent.inode, c"link").unwrap();
         assert_eq!(fs.readlink(ctx, link.inode).unwrap(), b"old");
@@ -1831,8 +1990,20 @@ mod tests {
         assert_eq!(fs.readlink(ctx, link.inode).unwrap(), b"replacement");
         std::fs::remove_file(lower.join("allowed/link")).unwrap();
         std::fs::hard_link(lower.join("private/secret"), lower.join("allowed/link")).unwrap();
-        assert_eq!(fs.getxattr(ctx, link.inode, c"user.test", 0).err().unwrap().raw_os_error(), Some(libc::EACCES));
-        assert_eq!(fs.listxattr(ctx, link.inode, 0).err().unwrap().raw_os_error(), Some(libc::EACCES));
+        assert_eq!(
+            fs.getxattr(ctx, link.inode, c"user.test", 0)
+                .err()
+                .unwrap()
+                .raw_os_error(),
+            Some(libc::EACCES)
+        );
+        assert_eq!(
+            fs.listxattr(ctx, link.inode, 0)
+                .err()
+                .unwrap()
+                .raw_os_error(),
+            Some(libc::EACCES)
+        );
         fs.destroy();
     }
 
@@ -1844,7 +2015,11 @@ mod tests {
         std::fs::write(lower.join("allowed/a/b/file"), b"old").unwrap();
         let mut fs = parent_cache_fixture(temp.path());
         fs.profile = pvisor_overlay_core::profile::Profile::enabled("deep-cache-test");
-        let ctx = Context { uid: 0, gid: 0, pid: 1 };
+        let ctx = Context {
+            uid: 0,
+            gid: 0,
+            pid: 1,
+        };
         let path = Path::new("allowed/a/b/file");
         let inode = fs.allocate_inode(path.to_path_buf());
         assert_eq!(fs.entry(ctx, path, inode).unwrap().attr.st_size, 3);
@@ -1861,7 +2036,10 @@ mod tests {
         std::fs::rename(lower.join("allowed/a"), lower.join("moved-a")).unwrap();
         std::os::unix::fs::symlink(lower.join("moved-a"), lower.join("allowed/a")).unwrap();
         assert!(fs.entry(ctx, path, inode).is_err());
-        assert_eq!(fs.profile.report().unwrap().measurements["directory_cache_deep_hits"].units, 2);
+        assert_eq!(
+            fs.profile.report().unwrap().measurements["directory_cache_deep_hits"].units,
+            2
+        );
         fs.destroy();
     }
 

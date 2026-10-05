@@ -28,8 +28,8 @@ mod blocks;
 mod lazy;
 mod store;
 pub use blocks::RamBlocks;
-pub(crate) use lazy::watch_mount;
 pub use lazy::{RawRamIndex, SnapshotRamMount, SnapshotRamReader};
+pub(crate) use lazy::{serve_ram, watch_mount};
 pub use store::{
     Compatibility, EnvironmentManifest, PendingEnvironment, PublishedEnvironment, SnapshotStore,
 };

@@ -1,7 +1,5 @@
 use super::{Args, Command, RamStorage};
-use crate::environment_snapshot::{
-    BaseReference, Compatibility, SnapshotRamMount, SnapshotStore, file_hash,
-};
+use crate::environment_snapshot::{BaseReference, Compatibility, SnapshotStore, file_hash};
 use anyhow::{Context, ensure};
 use pvisor_guest::GuestConfig;
 use pvisor_vm::api::{MachineRestore, MachineSnapshot, OverlayConfig, PermissionSemantics};
@@ -255,6 +253,9 @@ fn launch(spec: Launch) -> anyhow::Result<()> {
     Ok(())
 }
 pub(super) fn run(args: Args) -> anyhow::Result<()> {
+    if let Command::RamServer { spec } = &args.command {
+        return crate::environment_snapshot::serve_ram(spec);
+    }
     if let Command::RamWatchdog { mount } = &args.command {
         return crate::environment_snapshot::watch_mount(mount);
     }
@@ -396,7 +397,10 @@ pub(super) fn run(args: Args) -> anyhow::Result<()> {
             println!("{}", store.collect_abandoned()?);
             Ok(())
         }
-        Command::Runner { .. } | Command::RamWatchdog { .. } | Command::SocketWatchdog { .. } => {
+        Command::Runner { .. }
+        | Command::RamWatchdog { .. }
+        | Command::RamServer { .. }
+        | Command::SocketWatchdog { .. } => {
             unreachable!()
         }
     }
@@ -507,10 +511,9 @@ fn runner(spec: Launch) -> anyhow::Result<()> {
                 .ram_file()
                 .context("verify/materialize snapshot RAM")?
         } else {
-            let (mut mount, ram_file) =
-                SnapshotRamMount::new(snapshot.ram_reader()?, &spec.directory)
-                    .context("mount on-demand snapshot RAM")?;
-            mount.watch_runner_exit(&std::env::current_exe()?)?;
+            let (mount, ram_file) = snapshot
+                .ram_mount(&std::env::current_exe()?, &spec.directory)
+                .context("start independent on-demand RAM server")?;
             ram_mount = Some(mount);
             ram_file
         };

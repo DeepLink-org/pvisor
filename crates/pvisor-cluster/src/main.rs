@@ -30,6 +30,12 @@ enum Command {
         /// JSON map of tenant names to concurrent Resources limits.
         #[arg(long)]
         quotas: Option<PathBuf>,
+        /// Maximum retained controller WAL size; no history is silently deleted.
+        #[arg(long, default_value_t = 1024 * 1024 * 1024)]
+        max_journal_bytes: u64,
+        /// Maximum retained artifact payload bytes (including orphan uploads).
+        #[arg(long, default_value_t = 8 * 1024 * 1024 * 1024)]
+        max_artifact_bytes: u64,
     },
     Submit {
         spec: PathBuf,
@@ -99,10 +105,14 @@ async fn main() -> anyhow::Result<()> {
         worker_token,
         lease_ms,
         quotas,
+        max_journal_bytes,
+        max_artifact_bytes,
     } = args.command
     {
         let mut config = SchedulerConfig {
             lease_duration_ms: lease_ms,
+            max_journal_bytes,
+            max_artifact_bytes,
             ..Default::default()
         };
         if let Some(path) = quotas {

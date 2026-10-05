@@ -183,6 +183,82 @@ impl<'a> DescriptorChainConsumer<'a> {
     }
 }
 
+/// A descriptor plan that can cross threads without extending a guest-memory
+/// borrow. Addresses are captured once by the queue owner; volatile slices are
+/// created only inside the receiving thread. Retain this plan through add_used:
+/// its RAM lease also prevents the cold-page pager replacing these mappings.
+pub(crate) struct OwnedDescriptorChain {
+    memory_access: Option<std::sync::Arc<super::memory_gate::Access>>,
+    readable: Vec<(GuestAddress, u32)>,
+    writable: Vec<(GuestAddress, u32)>,
+}
+
+impl OwnedDescriptorChain {
+    pub(crate) fn new(mut chain: DescriptorChain<'_>) -> Result<Self> {
+        let mut plan = Self {
+            memory_access: chain.memory_access.clone(),
+            readable: Vec::new(),
+            writable: Vec::new(),
+        };
+        let mut writing = false;
+        loop {
+            if chain.is_write_only() {
+                writing = true;
+                plan.writable.push((chain.addr, chain.len));
+            } else if writing {
+                return Err(Error::InvalidChain);
+            } else {
+                plan.readable.push((chain.addr, chain.len));
+            }
+            // has_next() masks the NEXT flag at the TTL limit. Reject cycles
+            // and truncated chains instead of accepting a partial request.
+            if chain.flags & super::queue::VIRTQ_DESC_F_NEXT == 0 {
+                break;
+            }
+            chain = chain.next_descriptor().ok_or(Error::InvalidChain)?;
+        }
+        Ok(plan)
+    }
+
+    pub(crate) fn reader_writer<'a>(
+        &self,
+        mem: &'a GuestMemoryMmap,
+    ) -> Result<(Reader<'a>, Writer<'a>)> {
+        let consumer = |ranges: &[(GuestAddress, u32)]| {
+            let mut total_len = 0usize;
+            let buffers = ranges
+                .iter()
+                .map(|&(addr, len)| {
+                    total_len = total_len
+                        .checked_add(len as usize)
+                        .ok_or(Error::DescriptorChainOverflow)?;
+                    let region = mem.find_region(addr).ok_or(Error::FindMemoryRegion)?;
+                    let offset = addr
+                        .checked_sub(region.start_addr().raw_value())
+                        .ok_or(Error::InvalidChain)?;
+                    region
+                        .deref()
+                        .get_slice(offset.raw_value() as usize, len as usize)
+                        .map_err(Error::VolatileMemoryError)
+                })
+                .collect::<Result<VecDeque<VolatileSlice<'a>>>>()?;
+            Ok(DescriptorChainConsumer {
+                memory_access: self.memory_access.clone(),
+                buffers,
+                bytes_consumed: 0,
+            })
+        };
+        Ok((
+            Reader {
+                buffer: consumer(&self.readable)?,
+            },
+            Writer {
+                buffer: consumer(&self.writable)?,
+            },
+        ))
+    }
+}
+
 /// Provides high-level interface over the sequence of memory regions
 /// defined by readable descriptors in the descriptor chain.
 ///
@@ -551,6 +627,81 @@ pub fn create_descriptor_chain(
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn owned_plan_captures_addresses_and_keeps_ram_pinned_across_threads() {
+        let mem = GuestMemoryMmap::from_ranges(&[(GuestAddress(0), 0x10000)]).unwrap();
+        let gate = super::super::memory_gate::register(&mem);
+        let chain = create_descriptor_chain(
+            &mem,
+            GuestAddress(0),
+            GuestAddress(0x100),
+            vec![(DescriptorType::Readable, 8), (DescriptorType::Writable, 8)],
+            0,
+        )
+        .unwrap();
+        mem.write_slice(b"original", GuestAddress(0x100)).unwrap();
+        let plan = OwnedDescriptorChain::new(chain).unwrap();
+        // A driver changing its descriptor table after admission must not
+        // redirect the worker's I/O to a different address.
+        mem.write_obj(0x200u64, GuestAddress(0)).unwrap();
+        mem.write_slice(b"replaced", GuestAddress(0x200)).unwrap();
+        assert!(!gate.try_close().unwrap());
+        let copied_mem = mem.clone();
+        let plan = std::thread::spawn(move || {
+            let (mut reader, mut writer) = plan.reader_writer(&copied_mem).unwrap();
+            let mut bytes = [0u8; 8];
+            reader.read_exact(&mut bytes).unwrap();
+            assert_eq!(&bytes, b"original");
+            writer.write_all(&bytes).unwrap();
+            drop((reader, writer));
+            plan
+        })
+        .join()
+        .unwrap();
+        let mut bytes = [0u8; 8];
+        mem.read_slice(&mut bytes, GuestAddress(0x108)).unwrap();
+        assert_eq!(&bytes, b"original");
+        // Worker completion alone is insufficient: the owner still has to
+        // publish the used element before dropping this retained lease.
+        assert!(!gate.try_close().unwrap());
+        drop(plan);
+        assert!(gate.try_close().unwrap());
+    }
+
+    #[test]
+    fn owned_plan_rejects_reordered_and_cyclic_chains() {
+        let mem = GuestMemoryMmap::from_ranges(&[(GuestAddress(0), 0x10000)]).unwrap();
+        let chain = create_descriptor_chain(
+            &mem,
+            GuestAddress(0),
+            GuestAddress(0x100),
+            vec![(DescriptorType::Writable, 8), (DescriptorType::Readable, 8)],
+            0,
+        )
+        .unwrap();
+        assert!(matches!(
+            OwnedDescriptorChain::new(chain),
+            Err(Error::InvalidChain)
+        ));
+        let mut chain = create_descriptor_chain(
+            &mem,
+            GuestAddress(0),
+            GuestAddress(0x100),
+            vec![(DescriptorType::Readable, 8)],
+            0,
+        )
+        .unwrap();
+        chain.flags |= VIRTQ_DESC_F_NEXT;
+        chain.next = 0;
+        // Cycle the underlying descriptor as well as the captured head.
+        mem.write_obj(VIRTQ_DESC_F_NEXT, GuestAddress(12)).unwrap();
+        mem.write_obj(0u16, GuestAddress(14)).unwrap();
+        assert!(matches!(
+            OwnedDescriptorChain::new(chain),
+            Err(Error::InvalidChain)
+        ));
+    }
 
     #[test]
     fn reader_test_simple_chain() {

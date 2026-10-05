@@ -244,7 +244,6 @@ fn lazy_restore_rejects_invalid_index_lengths_digests_and_format_combinations() 
 #[test]
 #[ignore = "requires /dev/fuse or macFUSE; run with nextest --run-ignored only"]
 fn fuse_faults_restore_ram_and_private_mappings_isolate_forks() {
-    use pvisor::environment_snapshot::SnapshotRamMount;
     use pvisor_vm::api::{MachineRestore, MachineSnapshot};
     use std::sync::Arc;
     use vm_memory::{Bytes, GuestAddress};
@@ -256,10 +255,11 @@ fn fuse_faults_restore_ram_and_private_mappings_isolate_forks() {
         let bytes = bytes()[..3 * 65536].to_vec();
         let id = publish(&store, &source, &bytes, compressed);
         let published = store.open_for_restore(&id, &compatibility()).unwrap();
-        let (mut mount, file) =
-            SnapshotRamMount::new(published.ram_reader().unwrap(), directory.path()).unwrap();
-        mount
-            .watch_runner_exit(std::path::Path::new(env!("CARGO_BIN_EXE_pvisor")))
+        let (mount, file) = published
+            .ram_mount(
+                std::path::Path::new(env!("CARGO_BIN_EXE_pvisor")),
+                directory.path(),
+            )
             .unwrap();
         let restore = MachineRestore {
             ram_file: Arc::new(file),
@@ -293,7 +293,6 @@ fn fuse_faults_restore_ram_and_private_mappings_isolate_forks() {
 #[test]
 #[ignore = "requires /dev/fuse; exercises runner SIGKILL cleanup"]
 fn fuse_mount_is_reaped_after_runner_is_killed() {
-    use pvisor::environment_snapshot::SnapshotRamMount;
     use std::{
         os::fd::AsRawFd,
         process::{Command, Stdio},
@@ -307,10 +306,11 @@ fn fuse_mount_is_reaped_after_runner_is_killed() {
         let store = SnapshotStore::new(&directory.join("store")).unwrap();
         let id = publish(&store, &source, &bytes(), true);
         let published = store.open_for_restore(&id, &compatibility()).unwrap();
-        let (mut mount, file) =
-            SnapshotRamMount::new(published.ram_reader().unwrap(), &directory).unwrap();
-        mount
-            .watch_runner_exit(std::path::Path::new(env!("CARGO_BIN_EXE_pvisor")))
+        let (mount, file) = published
+            .ram_mount(
+                std::path::Path::new(env!("CARGO_BIN_EXE_pvisor")),
+                &directory,
+            )
             .unwrap();
         drop(published);
         let path = fs::read_link(format!("/proc/self/fd/{}", file.as_raw_fd())).unwrap();

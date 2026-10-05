@@ -50,6 +50,23 @@ DEFAULT_CASES = tuple(CASES)
 CASES.update(
     {
         "rg-2048": (2, 256, False, 'test "$(rg --no-config -l needle fixture | wc -l)" -eq 32'),
+        "read-parallel-4-64mib": (
+            4,
+            256,
+            False,
+            "pids=''; for worker in 0 1 2 3; do "
+            '(test "$(stat -c %s fixture/data$worker)" -eq 16777216; '
+            "dd if=fixture/data$worker of=/dev/null bs=65536 2>/dev/null) & "
+            'pids="$pids $!"; done; for pid in $pids; do wait "$pid"; done',
+        ),
+        "rg-parallel-4": (
+            4,
+            256,
+            False,
+            "pids=''; for worker in 0 1 2 3; do "
+            '(test "$(rg --threads 1 --no-config -l needle fixture/q$worker | wc -l)" -eq 8) & '
+            'pids="$pids $!"; done; for pid in $pids; do wait "$pid"; done',
+        ),
         "rg-deep-2048": (
             2,
             256,
@@ -84,10 +101,10 @@ def sha(path):
     return hashlib.sha256(path.read_bytes()).hexdigest()
 
 
-def create_fixture(root, *, depth):
-    """Exactly 2048 files/32 matches; only directory depth changes."""
+def create_fixture(root, *, depth, files=2048):
+    """One match every 64 files; directory depth does not change contents."""
     root.mkdir()
-    for i in range(2048):
+    for i in range(files):
         directory = root / f"d{i // 64:02}"
         for level in range(1, depth):
             directory /= f"l{level}"
@@ -95,6 +112,13 @@ def create_fixture(root, *, depth):
         (directory / f"f{i:04}.txt").write_text(
             ("needle" if i % 64 == 0 else "ordinary") + " payload\n"
         )
+
+
+def create_parallel_fixture(root):
+    """Four disjoint 512-file quarters: equal total work, no shared guest pages."""
+    root.mkdir()
+    for quarter in range(4):
+        create_fixture(root / f"q{quarter}", depth=1, files=512)
 
 
 def create_git_fixture(root):
@@ -202,13 +226,19 @@ def trial(args, variant, case, batch, round_id):
         "metadata-deep-2048",
         "search-deep-2048",
         "rg-2048",
+        "rg-parallel-4",
+        "read-parallel-4-64mib",
         "rg-deep-2048",
         "rg-deep-partial-upper-2048",
         "git-status-2048",
         "npm-offline-32",
     ):
         fixture_name = (
-            "fixture-git"
+            "fixture-read"
+            if case == "read-parallel-4-64mib"
+            else "fixture-parallel"
+            if case == "rg-parallel-4"
+            else "fixture-git"
             if case == "git-status-2048"
             else "fixture-npm"
             if case == "npm-offline-32"
@@ -227,6 +257,9 @@ def trial(args, variant, case, batch, round_id):
         PVISOR_PERSISTENCE_TIMING="1" if diagnostic_timing else "0",
         PVISOR_FS_PROFILE="1" if getattr(args, "filesystem_profile", False) else "0",
     )
+    workers = getattr(args, f"{variant}_fs_workers", None)
+    if workers is not None:
+        env["PVISOR_VM_FS_WORKERS"] = str(workers)
     command = [
         str(getattr(args, variant)),
         "run",
@@ -332,6 +365,8 @@ def main():
     parser = argparse.ArgumentParser(description=__doc__)
     for name in ("baseline", "candidate", "rootfs", "firmware", "output"):
         parser.add_argument("--" + name, type=Path, required=True)
+    for variant in ("baseline", "candidate"):
+        parser.add_argument(f"--{variant}-fs-workers", type=int, choices=range(1, 9))
     parser.add_argument("--samples", type=int, default=30)
     parser.add_argument("--warmups", type=int, default=3)
     parser.add_argument("--batches", type=int, default=3)
@@ -362,6 +397,14 @@ def main():
     create_fixture(args.output / "fixture", depth=1)
     if any("-deep-" in case for case in selected):
         create_fixture(args.output / "fixture-deep", depth=8)
+    if "read-parallel-4-64mib" in selected:
+        root = args.output / "fixture-read"
+        root.mkdir()
+        for worker in range(4):
+            with (root / f"data{worker}").open("wb") as file:
+                file.truncate(16 * 1024 * 1024)
+    if "rg-parallel-4" in selected:
+        create_parallel_fixture(args.output / "fixture-parallel")
     if "git-status-2048" in selected:
         create_git_fixture(args.output / "fixture-git")
     if "npm-offline-32" in selected:
@@ -377,6 +420,10 @@ def main():
             seed=args.seed,
             diagnostic_timing=args.diagnostic_timing,
             filesystem_profile=args.filesystem_profile,
+            fs_workers={
+                variant: getattr(args, f"{variant}_fs_workers")
+                for variant in ("baseline", "candidate")
+            },
             exit_timer="blocking wait thread; timeout only on completion event",
             host_cache="warm; no eviction",
             cases={k: CASES[k] for k in selected},
