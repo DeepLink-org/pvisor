@@ -32,24 +32,25 @@ fn cvt(rc: libc::c_int) -> io::Result<()> {
 pub(crate) fn metadata_mount_id(path: &Path, metadata: &std::fs::Metadata) -> Option<u64> {
     #[cfg(target_os = "linux")]
     {
+        // Use the kernel ABI: musl's libc bindings do not expose statx.
+        use linux_raw_sys::general::{STATX_INO, STATX_MNT_ID, statx};
         use std::os::unix::fs::MetadataExt;
         let path = c_path(path).ok()?;
         // SAFETY: zero is a valid initial statx representation; the owned
         // path/output remain valid for the duration of the syscall.
-        let mut stat: libc::statx = unsafe { std::mem::zeroed() };
+        let mut stat: statx = unsafe { std::mem::zeroed() };
         let rc = unsafe {
             libc::syscall(
                 libc::SYS_statx,
                 libc::AT_FDCWD,
                 path.as_ptr(),
                 libc::AT_SYMLINK_NOFOLLOW,
-                libc::STATX_MNT_ID | libc::STATX_INO,
+                STATX_MNT_ID | STATX_INO,
                 &mut stat,
             )
         };
         if rc == 0
-            && stat.stx_mask & (libc::STATX_MNT_ID | libc::STATX_INO)
-                == libc::STATX_MNT_ID | libc::STATX_INO
+            && stat.stx_mask & (STATX_MNT_ID | STATX_INO) == STATX_MNT_ID | STATX_INO
             && stat.stx_ino == metadata.ino()
             && libc::makedev(stat.stx_dev_major, stat.stx_dev_minor) == metadata.dev()
         {
@@ -80,13 +81,14 @@ pub(crate) fn publish_no_replace(source: &Path, destination: &Path) -> io::Resul
     #[cfg(target_os = "linux")]
     // SAFETY: both paths remain valid NUL-terminated strings during the call.
     let result = cvt(unsafe {
-        libc::renameat2(
+        libc::syscall(
+            libc::SYS_renameat2,
             libc::AT_FDCWD,
             source_c.as_ptr(),
             libc::AT_FDCWD,
             destination_c.as_ptr(),
             libc::RENAME_NOREPLACE,
-        )
+        ) as libc::c_int
     });
     #[cfg(not(any(target_os = "macos", target_os = "linux")))]
     let result: io::Result<()> = {

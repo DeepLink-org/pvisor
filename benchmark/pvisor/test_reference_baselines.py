@@ -1,7 +1,7 @@
 """Reject fast failure and markers that did not complete an Agent tool loop."""
 
 import pytest
-from reference_baselines import validate_guest_output
+from reference_baselines import validate_guest_output, validate_staged_filesystem
 from reference_workload import grade_returned
 
 
@@ -100,3 +100,25 @@ def test_claude_tool_result_must_succeed(error):
         )
         is not error
     )
+
+
+@pytest.mark.parametrize("fault", [None, "lower-write", "missing-upper", "truncated-upper"])
+@pytest.mark.parametrize("file_kib", [60, 64])
+def test_successful_workload_still_requires_staged_writes(tmp_path, fault, file_kib):
+    work, stage = tmp_path / "work", tmp_path / "stage"
+    written = stage / "upper/_fs/written"
+    written.mkdir(parents=True)
+    for i in range(256):
+        with (written / f"{i:04d}").open("wb") as file:
+            file.truncate(file_kib * 1024)
+    if fault == "lower-write":
+        (work / "_fs/written").mkdir(parents=True)
+    elif fault == "missing-upper":
+        (written / "0000").unlink()
+    elif fault == "truncated-upper":
+        (written / "0000").write_bytes(b"incomplete")
+    if fault:
+        with pytest.raises(ValueError):
+            validate_staged_filesystem(work, stage, file_kib * 1024 * 256)
+    else:
+        validate_staged_filesystem(work, stage, file_kib * 1024 * 256)

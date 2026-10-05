@@ -1,0 +1,126 @@
+{
+  "affinity": "4",
+  "build_has_debug_assertions": false,
+  "cpu_model": "AMD Ryzen 7 9700X 8-Core Processor",
+  "executable_blake3": "5701dd1a3c49cc714a928ceb4aaa2b46b083d47f4531130296b82fa9f6c9134d",
+  "filesystem_note": "temporary local WAL; fsync issued; storage medium and host load affect timings",
+  "memory_note": "whole process RSS/HWM includes controller, ID fixture, allocator retention and transient reference indexes; HWM accumulates across phases/rows; use a separate process per size and mode for comparisons; replay uses a warm local WAL",
+  "protocol_version": 1,
+  "recorded_at_unix_ms": 1791168216319,
+  "reference_note": "former counts algorithm on the same authoritative TaskRecords without cloning; no former controller throughput claim; cancelled-window reference omits WAL and admission",
+  "rows": [
+    {
+      "cancelled_history": 999999,
+      "controller_plus_id_fixture_memory_before_reference": {
+        "VmHWM_kib": 6697752,
+        "VmRSS_kib": 6697552,
+        "VmSize_kib": 6699252
+      },
+      "current_poll_us_including_wal_and_admission": 811,
+      "current_polls_until_assignment": 1,
+      "final_counts": {
+        "cancelled": 999999,
+        "failed": 1
+      },
+      "full_task_record_scan_reference": {
+        "maximum": 138450431.0,
+        "minimum": 129108624.0,
+        "n": 20,
+        "p50": 134203904.0,
+        "p95": 138249091.8,
+        "sorted_samples": [
+          129108624.0,
+          131467516.0,
+          131481623.0,
+          131565179.0,
+          131970255.0,
+          132242734.0,
+          132626150.0,
+          132882217.0,
+          133783850.0,
+          133954899.0,
+          134452909.0,
+          135317894.0,
+          135597175.0,
+          135891674.0,
+          137886979.0,
+          138163435.0,
+          138166431.0,
+          138222315.0,
+          138238495.0,
+          138450431.0
+        ],
+        "unit": "ns_per_call"
+      },
+      "indexed_counts": {
+        "maximum": 201.88,
+        "minimum": 115.61,
+        "n": 20,
+        "p50": 169.47,
+        "p95": 191.9715,
+        "sorted_samples": [
+          115.61,
+          115.62,
+          115.91,
+          117.22,
+          117.32,
+          117.72,
+          117.72,
+          118.72,
+          119.63,
+          167.42,
+          171.52,
+          176.33,
+          177.83,
+          184.95,
+          187.85,
+          188.15,
+          188.65,
+          188.66,
+          191.45,
+          201.88
+        ],
+        "unit": "ns_per_call"
+      },
+      "indexed_counts_batches_per_sample": 100,
+      "legacy_cancelled_entries_visited": 999999,
+      "legacy_empty_lookahead_windows": 3906,
+      "max_journal_bytes": 4096000000,
+      "memory_after_replay_with_fixture": {
+        "VmHWM_kib": 6755028,
+        "VmRSS_kib": 6715792,
+        "VmSize_kib": 6717176
+      },
+      "prepared_us": 16979810,
+      "queue_lookahead": 256,
+      "ready_tasks_before_poll": 1,
+      "reopen_us": 16089927,
+      "replay_fencing_verified": true,
+      "replay_probe_assigned_task": null,
+      "scan_reference_batches_per_sample": 1,
+      "tasks": 1000000,
+      "wal_bytes_after_completion": 2026425297,
+      "wal_bytes_after_replay_probe": 2026425493,
+      "wal_bytes_before_poll": 2026424170
+    }
+  ],
+  "rust_type_size_bytes": {
+    "boxed_task_record": 8,
+    "run_spec": 1912,
+    "task_record": 4040,
+    "task_spec": 2184
+  },
+  "schema": "pvisor-controller-history-load/v3",
+  "scope": "single-controller durable typed API; synthetic task graphs; no execution",
+  "source_blake3": {
+    "../../Cargo.lock": "2b2af81dcc3708bf45f86df161da8003082ff3358de3d3bc23e56c9f1326f6f5",
+    "../../Cargo.toml": "20744c130f641f452d4a90d68bcba5ddbfc75cb4cdb2140c3afe75236486ec6f",
+    "Cargo.toml": "ba5054465e778c049a227f7f2d3c5d40628d802f11e899dc9c9423e976b078b6",
+    "examples/scheduler_load.rs": "76cffc04845c29d0081924a35ed58527ec0b1311a74151c3230dd4cbafcaab46",
+    "src/journal.rs": "59b0aa19ecfcbd90bfea4c52d27f4eaaabaa46df9649f69b3b45eea21a17b31f",
+    "src/scheduler.rs": "b95c037f4585cae1ecd5cf668070effc22e4143a56137c3a67686856fbe9cb84",
+    "src/scheduler/graph.rs": "a4cdf3df0a857277d86584317d035ab60b3115e98f87445e933061d924100976",
+    "src/scheduler/indexes.rs": "ed86d6cd9e36fb8984b1b4e603c03fcc5349fdf6793a2a31978b1ec2a480deb0"
+  },
+  "source_identity_unchanged_during_measurement": true
+}

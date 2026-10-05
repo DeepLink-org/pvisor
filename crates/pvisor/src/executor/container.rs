@@ -190,10 +190,6 @@ impl ContainerExecutor {
         let requested_user = parse_user(self.settings.user.as_deref())?;
         let host_uid = unsafe { libc::geteuid() };
         let host_gid = unsafe { libc::getegid() };
-        anyhow::ensure!(
-            requested_user == (0, 0),
-            "non-root container users require subordinate UID/GID mappings; refusing to run as root"
-        );
         let process_user = requested_user;
         namespaces.insert(0, serde_json::json!({"type":"user"}));
         let resources = serde_json::json!({"memory": limits.memory_bytes.map(|v| serde_json::json!({"limit":v})), "pids": limits.processes.map(|v| serde_json::json!({"limit":v}))});
@@ -212,23 +208,29 @@ impl ContainerExecutor {
             ("/dev/null", 1, 3), ("/dev/zero", 1, 5), ("/dev/random", 1, 8),
             ("/dev/urandom", 1, 9), ("/dev/tty", 5, 0),
         ].into_iter().map(|(path, major, minor)| serde_json::json!({"path":path,"type":"c","major":major,"minor":minor,"fileMode":438,"uid":0,"gid":0})).collect::<Vec<_>>();
-        // Rootless runtimes require a mapping for UID/GID 0 whenever a user
-        // namespace is enabled (even when the requested process user is not
-        // root). Map the caller's host identity to container root, and add a
-        // separate mapping for an explicitly requested non-root user.
-        // A single contiguous range avoids duplicate host IDs (which Linux
-        // rejects when writing uid_map/gid_map) while covering arbitrary
-        // explicit container users such as 1000:1000.
-        let mapping_size = 1u32;
-        let uid_mappings =
-            vec![serde_json::json!({"containerID":0,"hostID":host_uid,"size":mapping_size})];
-        let gid_mappings =
-            vec![serde_json::json!({"containerID":0,"hostID":host_gid,"size":mapping_size})];
+        // Keep the workload mapped to the caller so declared writable mounts
+        // and the private delegated control directory retain their ownership.
+        // A non-root workload also needs a separate, authorized mapping for
+        // namespace root; never silently replace its requested identity.
+        let (uid_mappings, gid_mappings) = if requested_user == (0, 0) {
+            (
+                mapping_entries(0, host_uid, host_uid),
+                mapping_entries(0, host_gid, host_gid),
+            )
+        } else {
+            // The runtime's outer namespace maps 0 to the caller and 1 to an
+            // authorized subordinate ID. The inner container then maps the
+            // requested workload identity back to the caller, and root to 1.
+            (
+                mapping_entries(requested_user.0, 0, 1),
+                mapping_entries(requested_user.1, 0, 1),
+            )
+        };
         let cfg = serde_json::json!({"ociVersion":"1.0.2","process":{"terminal":false,"cwd":workdir.as_deref().unwrap_or(Path::new("/")),"args":[GUEST_PVISOR,"run","--executor","host","--stdio","capture","--spec",format!("{GUEST_CONTROL_DIR}/{SPEC_FILENAME}"),"--result-file",format!("{GUEST_CONTROL_DIR}/{RESULT_FILENAME}" )],"env":env_json,"user":{"uid":process_user.0,"gid":process_user.1}},"root":{"path":rootfs,"readonly":self.settings.read_only_rootfs},"mounts":mounts_json,"linux":{"namespaces":namespaces,"resources":resources,"devices":devices,"uidMappings":uid_mappings,"gidMappings":gid_mappings},"annotations":{"io.pvisor.run_id":run_id,"io.pvisor.attempt_id":attempt_id}});
         crate::util::write_private_json(&config, &cfg)?;
         let state = control_dir.join("oci-state");
         fs::create_dir_all(&state)?;
-        let mut command = self.runtime_command(&state);
+        let mut command = self.runtime_command(&state)?;
         command
             .arg("run")
             .arg("--bundle")
@@ -243,19 +245,44 @@ impl ContainerExecutor {
         Ok(command)
     }
 
-    fn runtime_command(&self, state_root: &Path) -> Command {
-        let mut command = Command::new(&self.settings.runtime);
+    fn runtime_command(&self, state_root: &Path) -> anyhow::Result<Command> {
+        let mut command = if parse_user(self.settings.user.as_deref())? == (0, 0) {
+            Command::new(&self.settings.runtime)
+        } else {
+            let host_uid = unsafe { libc::geteuid() };
+            let host_gid = unsafe { libc::getegid() };
+            let root_uid = authorized_subordinate_id(host_uid, Path::new("/etc/subuid"))?;
+            let root_gid = authorized_subordinate_id(host_gid, Path::new("/etc/subgid"))?;
+            // runc chowns its anonymous stdio pipes to the container root ID
+            // before starting the inner namespace. Give the runtime CHOWN in
+            // an outer user namespace covering only the caller and one
+            // authorized subordinate identity; host privileges stay unchanged.
+            let mut command = Command::new("unshare");
+            command.args([
+                "--user".into(),
+                format!("--map-users=0:{host_uid}:1"),
+                format!("--map-users=1:{root_uid}:1"),
+                format!("--map-groups=0:{host_gid}:1"),
+                format!("--map-groups=1:{root_gid}:1"),
+                "--setuid=0".into(),
+                "--setgid=0".into(),
+                "--".into(),
+            ]);
+            command
+                .arg(&self.settings.runtime)
+                .args(["--rootless", "true"]);
+            command
+        };
         command.arg("--root").arg(state_root).kill_on_drop(true);
-        command
+        Ok(command)
     }
 
     async fn runtime_operation(&self, state_root: &Path, args: &[&str]) -> Option<String> {
-        match tokio::time::timeout(
-            Duration::from_secs(2),
-            self.runtime_command(state_root).args(args).output(),
-        )
-        .await
-        {
+        let mut command = match self.runtime_command(state_root) {
+            Ok(command) => command,
+            Err(error) => return Some(format!("OCI {}: {error:#}", args.join(" "))),
+        };
+        match tokio::time::timeout(Duration::from_secs(2), command.args(args).output()).await {
             Ok(Ok(output)) if output.status.success() => None,
             Ok(Ok(output)) => Some(format!(
                 "OCI {} failed ({}): {}",
@@ -594,6 +621,75 @@ fn valid_env_name(key: &str) -> bool {
     !key.is_empty() && !key.contains(['=', '\0'])
 }
 
+fn mapping_entries(requested: u32, host: u32, namespace_root: u32) -> Vec<serde_json::Value> {
+    if requested == 0 {
+        return vec![serde_json::json!({"containerID":0,"hostID":host,"size":1})];
+    }
+    vec![
+        serde_json::json!({"containerID":0,"hostID":namespace_root,"size":1}),
+        serde_json::json!({"containerID":requested,"hostID":host,"size":1}),
+    ]
+}
+
+fn subordinate_id(entries: &str, username: &str, owner: u32, host: u32) -> Option<u32> {
+    let owner = owner.to_string();
+    entries.lines().find_map(|line| {
+        let mut fields = line.split(':');
+        let account = fields.next()?;
+        if account != username && account != owner {
+            return None;
+        }
+        let start = fields.next()?.parse::<u32>().ok()?;
+        let count = fields.next()?.parse::<u32>().ok()?;
+        if fields.next().is_some() || count == 0 || start.checked_add(count - 1).is_none() {
+            return None;
+        }
+        if start != host {
+            Some(start)
+        } else if count > 1 {
+            start.checked_add(1)
+        } else {
+            None
+        }
+    })
+}
+
+fn authorized_subordinate_id(host: u32, path: &Path) -> anyhow::Result<u32> {
+    let owner = unsafe { libc::geteuid() };
+    // Use the system account database, rather than an inherited USER variable,
+    // to find the owner of the kernel-authorized subordinate ranges.
+    let mut passwd: libc::passwd = unsafe { std::mem::zeroed() };
+    let mut result = std::ptr::null_mut();
+    let mut buffer = vec![0u8; 16384];
+    let status = unsafe {
+        libc::getpwuid_r(
+            owner,
+            &mut passwd,
+            buffer.as_mut_ptr().cast(),
+            buffer.len(),
+            &mut result,
+        )
+    };
+    let username = if status == 0 && !result.is_null() {
+        unsafe { std::ffi::CStr::from_ptr(passwd.pw_name) }.to_str()?
+    } else {
+        ""
+    };
+    let entries = fs::read_to_string(path).map_err(|error| {
+        anyhow::anyhow!(
+            "non-root container user requires {}: {error}",
+            path.display()
+        )
+    })?;
+    let root = subordinate_id(&entries, username, owner, host).ok_or_else(|| {
+        anyhow::anyhow!(
+            "non-root container user requires an authorized range in {} for UID {owner}",
+            path.display()
+        )
+    })?;
+    Ok(root)
+}
+
 fn parse_user(value: Option<&str>) -> anyhow::Result<(u32, u32)> {
     let Some(value) = value else {
         return Ok((0, 0));
@@ -678,7 +774,9 @@ mod tests {
         assert!(!image.join("opt").exists());
         fs::write(private.join("unchanged"), b"changed").unwrap();
         assert_eq!(fs::read(image.join("unchanged")).unwrap(), b"cache");
-        let command = executor.runtime_command(Path::new("/private-state"));
+        let command = executor
+            .runtime_command(Path::new("/private-state"))
+            .unwrap();
         assert_eq!(
             command.as_std().get_args().collect::<Vec<_>>(),
             vec![
@@ -771,6 +869,39 @@ mod tests {
                 ..ContainerSettings::default()
             })
             .is_ok()
+        );
+    }
+
+    #[test]
+    fn non_root_mappings_preserve_workload_identity_and_mount_ownership() {
+        assert_eq!(
+            mapping_entries(1000, 1234, 524288),
+            vec![
+                serde_json::json!({"containerID":0,"hostID":524288,"size":1}),
+                serde_json::json!({"containerID":1000,"hostID":1234,"size":1}),
+            ]
+        );
+        assert_eq!(mapping_entries(0, 1234, 524288).len(), 1);
+        assert_eq!(
+            subordinate_id("other:1:65536\nuser:524288:65536", "user", 1234, 1234),
+            Some(524288)
+        );
+        assert_eq!(
+            subordinate_id("1234:524288:1", "user", 1234, 1234),
+            Some(524288)
+        );
+        assert_eq!(subordinate_id("user:1234:1", "user", 1234, 1234), None);
+        assert_eq!(
+            subordinate_id("user:1234:2", "user", 1234, 1234),
+            Some(1235)
+        );
+        assert_eq!(
+            subordinate_id("user:4294967295:2", "user", 1234, 1234),
+            None
+        );
+        assert_eq!(
+            subordinate_id("other:524288:65536", "user", 1234, 1234),
+            None
         );
     }
 

@@ -5,8 +5,9 @@ use std::fs::{self, File, OpenOptions};
 use std::io::{self, Read};
 use std::os::fd::{AsRawFd, FromRawFd};
 use std::os::unix::process::CommandExt;
-use std::path::Path;
+use std::path::{Path, PathBuf};
 use std::process::{Command, Stdio};
+use std::time::{Duration, Instant};
 
 fn check(result: libc::c_int) -> io::Result<()> {
     if result < 0 {
@@ -48,7 +49,60 @@ fn mount_with_options(
     check(result)
 }
 
-fn initialize() -> io::Result<()> {
+fn named_stdio_ports(directory: &Path) -> io::Result<[Option<PathBuf>; 3]> {
+    let mut ports = [None, None, None];
+    let entries = match fs::read_dir(directory) {
+        Ok(entries) => entries,
+        Err(error) if error.kind() == io::ErrorKind::NotFound => return Ok(ports),
+        Err(error) => return Err(error),
+    };
+    for entry in entries {
+        let entry = entry?;
+        let name = match fs::read_to_string(entry.path().join("name")) {
+            Ok(name) => name,
+            // The console's unnamed port has no name attribute. Named ports
+            // also lack it until the host's PORT_NAME message is processed.
+            Err(error) if error.kind() == io::ErrorKind::NotFound => continue,
+            Err(error) => return Err(error),
+        };
+        let fd = match name.trim() {
+            "krun-stdin" => 0,
+            "krun-stdout" => 1,
+            "krun-stderr" => 2,
+            _ => continue,
+        };
+        ports[fd] = Some(Path::new("/dev").join(entry.file_name()));
+    }
+    Ok(ports)
+}
+
+fn wait_stdio_ports(
+    directory: &Path,
+    required: Option<[bool; 3]>,
+    timeout: Duration,
+) -> io::Result<[Option<PathBuf>; 3]> {
+    let deadline = Instant::now() + timeout;
+    loop {
+        let ports = named_stdio_ports(directory)?;
+        if required.is_none_or(|required| {
+            required
+                .iter()
+                .zip(&ports)
+                .all(|(needed, port)| !needed || port.is_some())
+        }) {
+            return Ok(ports);
+        }
+        if Instant::now() >= deadline {
+            return Err(io::Error::new(
+                io::ErrorKind::TimedOut,
+                "required virtio console ports did not become ready",
+            ));
+        }
+        std::thread::sleep(Duration::from_millis(1));
+    }
+}
+
+fn initialize(stdio_ports: Option<[bool; 3]>) -> io::Result<()> {
     let restricted = libc::MS_NODEV | libc::MS_NOEXEC | libc::MS_NOSUID | libc::MS_RELATIME;
     for (source, target, kind, flags) in [
         ("devtmpfs", "/dev", "devtmpfs", libc::MS_RELATIME),
@@ -83,21 +137,15 @@ fn initialize() -> io::Result<()> {
     unsafe {
         libc::ioctl(0, libc::TIOCSCTTY, 1);
     }
-    for entry in fs::read_dir("/sys/class/virtio-ports")? {
-        let entry = entry?;
-        let name = match fs::read_to_string(entry.path().join("name")) {
-            Ok(name) => name,
-            // The console's unnamed port has no name attribute.
-            Err(error) if error.kind() == io::ErrorKind::NotFound => continue,
-            Err(error) => return Err(error),
-        };
-        let fd = match name.trim() {
-            "krun-stdin" => 0,
-            "krun-stdout" => 1,
-            "krun-stderr" => 2,
-            _ => continue,
-        };
-        redirect(fd, &Path::new("/dev").join(entry.file_name()))?;
+    let ports = wait_stdio_ports(
+        Path::new("/sys/class/virtio-ports"),
+        stdio_ports,
+        Duration::from_secs(5),
+    )?;
+    for (fd, port) in ports.iter().enumerate() {
+        if let Some(port) = port {
+            redirect(fd as libc::c_int, port)?;
+        }
     }
     // Interactive streams use the canonical tty; captured ports remain separate.
     for fd in 0..3 {
@@ -266,7 +314,7 @@ fn run() -> io::Result<i32> {
     }
     let config: GuestConfig = serde_json::from_slice(&bytes)?;
     config.command()?; // Validate before any configuration side effects.
-    initialize()?;
+    initialize(config.stdio_ports)?;
     if let Some(scratch) = &config.temporary_filesystem {
         // Never cover image contents or an existing guest mount. Only this
         // newly created directory may become the private scratch filesystem.
@@ -335,6 +383,53 @@ pub fn main() {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn stdio_waits_for_late_port_names_and_new_ports() {
+        let directory = tempfile::tempdir().unwrap();
+        let class = directory.path().join("virtio-ports");
+        fs::create_dir(&class).unwrap();
+        // The unnamed console exists first. A named port can exist before
+        // its name attribute, and another port can be added later still.
+        fs::create_dir(class.join("vport0p0")).unwrap();
+        fs::create_dir(class.join("vport0p1")).unwrap();
+        let publish = class.clone();
+        let worker = std::thread::spawn(move || {
+            std::thread::sleep(Duration::from_millis(10));
+            fs::write(publish.join("vport0p1/name"), "krun-stdout\n").unwrap();
+            std::thread::sleep(Duration::from_millis(10));
+            fs::create_dir(publish.join("vport0p2")).unwrap();
+            fs::write(publish.join("vport0p2/name"), "krun-stderr\n").unwrap();
+        });
+        let ports =
+            wait_stdio_ports(&class, Some([false, true, true]), Duration::from_secs(2)).unwrap();
+        worker.join().unwrap();
+        assert_eq!(
+            ports,
+            [
+                None,
+                Some("/dev/vport0p1".into()),
+                Some("/dev/vport0p2".into())
+            ]
+        );
+    }
+
+    #[test]
+    fn required_missing_port_fails_instead_of_using_the_console() {
+        let directory = tempfile::tempdir().unwrap();
+        let error = wait_stdio_ports(directory.path(), Some([false, true, false]), Duration::ZERO)
+            .unwrap_err();
+        assert_eq!(error.kind(), io::ErrorKind::TimedOut);
+        assert_eq!(
+            wait_stdio_ports(
+                &directory.path().join("not-created"),
+                Some([false; 3]),
+                Duration::ZERO,
+            )
+            .unwrap(),
+            [None, None, None]
+        );
+    }
 
     #[test]
     fn workload_preserves_exit_signal_and_limits() {

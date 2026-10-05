@@ -93,10 +93,6 @@ fn normalize_default_run(mut args: Vec<OsString>) -> Vec<OsString> {
 pub fn main() -> anyhow::Result<()> {
     crate::diagnostics::init_inherited();
     terminal::init_child_context();
-    crate::util::startup_mark("process.entry");
-    if crate::run_krun_internal_if_requested()? {
-        return Ok(());
-    }
     match crate::sandbox::run_internal_if_requested() {
         Ok(true) => return Ok(()),
         Ok(false) => {}
@@ -104,6 +100,13 @@ pub fn main() -> anyhow::Result<()> {
             eprintln!("pVisor local sandbox setup failed: {error:#}");
             std::process::exit(crate::sandbox::SANDBOX_SETUP_EXIT_CODE);
         }
+    }
+    // The trusted sandbox launcher is part of the parent's Run, not another
+    // CLI invocation. Its cleared workload environment must not create a
+    // duplicate startup record or override the parent's logging preference.
+    crate::util::startup_mark("process.entry");
+    if crate::run_krun_internal_if_requested()? {
+        return Ok(());
     }
     let args: Vec<OsString> = std::env::args_os().collect();
     if let Some(name) = args.get(1).and_then(|arg| arg.to_str()) {

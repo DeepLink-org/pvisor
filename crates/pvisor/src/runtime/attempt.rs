@@ -1046,9 +1046,9 @@ fn start_vm_network(
     Ok(Arc::new(std::sync::Mutex::new(Some(VmNetworkAttachment {
         guest_stream,
         backend,
-        enforcing: opts.network.mode != pvisor_overlaynet::NetworkMode::Public
-            || !opts.network.deny_rules.is_empty()
-            || !opts.network.limits.is_empty(),
+        // Even a public policy is enforced at the guest's only network device:
+        // the guest cannot bypass smoltcp by opening a host socket.
+        enforcing: true,
     }))))
 }
 

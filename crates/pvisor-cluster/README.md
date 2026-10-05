@@ -35,7 +35,7 @@ Primary sources inspected on 2026-10-04:
 | Distributed user task execution | HTTP submit/show/cancel, durable atomic dependency graphs, multi-worker process execution, common RunSpec/RunResult; remote native Bundle, trace and private VM writable-layer retention; Attempt-local Gateway and model/tool Agent loop | Multi-host workload, persistent scaffold state, external artifact distribution |
 | Backend/isolation selection | Exact execution class and label matching; host/rootless/container/VM workers; real HTTP-dispatched VM execution on Linux | Multi-host VM/container execution and host-policy failure experiments |
 | Reliable control | fsync-before-ack WAL, fencing, cancellation, expiry, drain, idempotent submit/completion; unstarted rejection/requeue; durable terminal-result outbox and restart export/delivery | Recovery of live execution, disk-full faults, multi-host failure tests |
-| Scalable scheduling | Bounded ready window, indexed expiration, batched leases, reservations, tenant quotas; bounded single-writer HTTP queue and fsync-before-response WAL group commit | Sharding, replicated authority, admission/load measurements and large-scale benchmarks |
+| Scalable scheduling | Bounded ready window with cancelled entries removed, indexed phase counts/expiration, batched leases, reservations, tenant quotas; bounded single-writer HTTP queue and fsync-before-response WAL group commit; streaming replay, compact graph topology and boxed task storage; single-controller million-record history and dense-ready validation | Sharding, replicated authority, multi-host admission/load measurements and HTTP/task-throughput benchmarks |
 | Independently versioned base/workspace/toolkit layers | Durable immutable template registry; lease-bound revision handles; VM worker composes native lazy-cache layers with private upper and shared live read mounts; real Linux VM composition/upper isolation gate; independent Worker states fetch pinned read-only S3 layers without publisher storage | Multi-host distribution deployment and measured startup/density benefit; container composition |
 | AgentENV pause/resume | Durable lease-bound desired/observed pause/offload/resume; native controls verified on real Linux VM; CPU reserved before resume | Multi-host VM lifecycle/fault experiments and inference-wait coordination |
 | Incremental execution checkpoints, fork and recovery | Full CPU/RAM/device/owned-overlay capture with native forest ownership transfer and direct RAM sealing; Linux compressed incremental RAM recapture of restored VMs with independently retained inherited frames; coordinated save-and-stop of running, paused and offloaded Linux VMs without guest resume; durable live capture/fork handoff and atomic branch creation from sealed checkpoints; same-Worker continuation into new Run/Attempt with lineage, private writable files, shared verified read-only lower copies and private COW RAM; real Linux cold restore after Worker restart; immutable FS/S3 full-checkpoint transport and verified same-host recovery after deletion of the original snapshot object; opt-in Worker publication with durable terminal retry and controller-bound receipts, compatible cross-Worker import after source deletion and controller restart; opt-in native v5 capture retains immutable lower inodes across initial/restored-VM recapture with supervisor-owned seals and slot-bound references; different VMs share lower inodes on their first capture without temporary data copies on pool hits; private file payloads are sealed directly from authenticated frozen roots without an intermediate data-tree copy and retain independent 64 KiB compressed frame references, reusing unchanged content across captures without recompression on verified hits, with native encoding-work counters | Capture-side private filesystem deltas and cross-host runtime compatibility/recovery tests |
@@ -2289,6 +2289,85 @@ exposes the protocol version. Both roles are trusted deployment services.
 TLS termination and node/tenant credential issuance are deployment work still
 to implement. The HTTP request limit is 4 MiB; the single shard retains at most
 one million task records by default.
+
+## Controller history load and restart memory
+
+The scheduler retains one authoritative `TaskRecord` per task. Its private
+B-tree stores the existing boxed allocation from WAL submission, rather than
+reserving the complete record in every node slot. On the measured Linux amd64
+build, `TaskRecord` is 4,040 bytes, while its boxed pointer is 8 bytes. The public
+Core records, JSON and transaction format are unchanged. Phase counts are
+derived incrementally, and terminal/cancelled tasks are removed from the ready
+index. Replay rejects a task-budget overrun before proceeding to later
+transactions or repairing the WAL tail. It releases the replay-built ready
+index before rebuilding deterministic `(updated_at_ms, task_id)` order.
+
+The [history-load example](examples/scheduler_load.rs) exercises cancelled
+history plus live work, or a dense all-ready queue. It checks aggregate counts
+against the former full-record scan on the same authoritative records, verifies
+that reads do not change the WAL, completes one synthetic assignment and
+reopens durable state. Version 3 also checks resumed scheduling: terminal work
+does not reappear and the next queued task retains the restart order. Source
+identities must remain unchanged during a measurement.
+
+The 2026-10-05 paired layout measurements used the repository's release profile
+(`opt-level=z`, thin LTO), CPU affinity 4, a local NVMe WAL and a separate process
+for each size/mode. Each binary was copied before execution; the provenance
+records retain executable/source hashes and commands. The boxed build's source
+hashes were checked before/after compilation and execution. The baseline is the
+immediately preceding streaming-replay/compact-graph implementation, not the
+older clone-based v1 reference.
+
+| One million retained tasks | Inline record layout: RSS after replay | Boxed layout: RSS after replay | RSS reduction |
+| --- | ---: | ---: | ---: |
+| 999,999 cancelled and one ready | 9.56 GiB | 6.40 GiB | 33.0% |
+| All initially ready | 9.76 GiB | 6.61 GiB | 32.2% |
+
+These are whole-process readings, including the synthetic ID fixture and
+allocator retention, rather than isolated live-record heap sizes. Dense-mode
+process high water fell from 9.84 GiB to 6.61 GiB; the high water includes all
+phases, not only replay. The observations are individual local runs, with
+changing host load, not confidence intervals. Replay wall time improved in the
+history run (23.85 to 16.09 seconds) but regressed in the dense run (15.93 to
+22.97 seconds); these data do not establish a restart-speed improvement.
+
+On the boxed million-history fixture, median indexed counts took 169 ns per
+call versus 134 ms for the full-record scan; both returned the same two phase
+counts. This compares only the monitoring algorithm. A first assignment arrived
+in one poll without visiting cancelled entries. A single durable poll, a small
+phase-count read and warm local replay do not measure HTTP throughput, native
+VM execution, cold-storage recovery or useful Agent density. Default policy and
+optional-observation layouts still contribute substantial retained memory.
+
+Raw evidence: [inline history](measurements/controller-indexes-20261005-v2-history-1000000.json),
+[inline dense](measurements/controller-indexes-20261005-v2-dense-1000000.json),
+[baseline provenance](measurements/controller-indexes-20261005-v2-provenance.json),
+[boxed history](measurements/controller-indexes-20261005-v3-history-1000000.json),
+[boxed dense](measurements/controller-indexes-20261005-v3-dense-1000000.json) and
+[boxed provenance](measurements/controller-indexes-20261005-v3-provenance.json).
+The smaller 1,000/10,000/100,000-task measurements are retained alongside them.
+An interrupted boxed million-history attempt produced no validated output;
+the provenance records this separately from the successful resumed runs.
+
+For comparable local measurements, choose an allowed CPU and use a fresh
+output path for each invocation:
+
+```sh
+cargo build --locked -p pvisor-cluster --example scheduler_load --release
+mkdir -p target/controller-wal-scratch
+TMPDIR="$PWD/target/controller-wal-scratch" taskset -c 4 \
+  target/release/examples/scheduler_load --tasks 1000000 --ready 1 \
+  --samples 20 --indexed-batch 100 --output /tmp/controller-history.json
+TMPDIR="$PWD/target/controller-wal-scratch" taskset -c 4 \
+  target/release/examples/scheduler_load --tasks 1000000 --ready all \
+  --samples 20 --indexed-batch 100 --output /tmp/controller-dense.json
+```
+
+The example explicitly raises its finite WAL ceiling to at least
+`tasks * 4096` bytes. A million-task graph fixture writes about 1.9 GiB and
+exceeds the production default 1 GiB ceiling. It is not evidence that production
+storage limits should be removed. Temporary trees are removed on normal exit;
+an interrupted process may leave its own WAL fixture behind.
 
 ## Validation and next implementation gates
 

@@ -705,6 +705,8 @@ printf 'network:%s\n' "$PVISOR_SANDBOX_NETWORK"
             "capture",
             "--stage",
             temporary.path().join("stage").to_str().unwrap(),
+            "--filesystem",
+            "host",
             "--overlaynet-deny-all",
             "--pass-env",
             "HOST_PORT",

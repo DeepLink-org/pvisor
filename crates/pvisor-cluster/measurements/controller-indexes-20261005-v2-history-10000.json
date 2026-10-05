@@ -1,0 +1,114 @@
+{
+  "affinity": "4",
+  "build_has_debug_assertions": false,
+  "cpu_model": "AMD Ryzen 7 9700X 8-Core Processor",
+  "executable_blake3": "6766e032849213bd0cef8bab3e5be81e1d4f0cb8ac626f9bfc601dce81e085ef",
+  "filesystem_note": "temporary local WAL; fsync issued; storage medium and host load affect timings",
+  "protocol_version": 1,
+  "recorded_at_unix_ms": 1791167219878,
+  "reference_note": "former counts algorithm on the same authoritative TaskRecords without cloning; no former controller throughput claim; cancelled-window reference omits WAL and admission",
+  "rows": [
+    {
+      "cancelled_history": 9999,
+      "controller_plus_id_fixture_memory_before_reference": {
+        "VmHWM_kib": 104740,
+        "VmRSS_kib": 104740,
+        "VmSize_kib": 106576
+      },
+      "current_poll_us_including_wal_and_admission": 835,
+      "current_polls_until_assignment": 1,
+      "final_counts": {
+        "cancelled": 9999,
+        "failed": 1
+      },
+      "full_task_record_scan_reference": {
+        "maximum": 582116.0,
+        "minimum": 467242.0,
+        "n": 20,
+        "p50": 469080.5,
+        "p95": 481151.9000000001,
+        "sorted_samples": [
+          467242.0,
+          467262.0,
+          467603.0,
+          467663.0,
+          467763.0,
+          468074.0,
+          468394.0,
+          468544.0,
+          468574.0,
+          469066.0,
+          469095.0,
+          469206.0,
+          469436.0,
+          470909.0,
+          471039.0,
+          471270.0,
+          471310.0,
+          471440.0,
+          475838.0,
+          582116.0
+        ],
+        "unit": "ns_per_call"
+      },
+      "indexed_counts": {
+        "maximum": 172.73,
+        "minimum": 133.55,
+        "n": 20,
+        "p50": 135.89999999999998,
+        "p95": 164.54100000000003,
+        "sorted_samples": [
+          133.55,
+          134.45,
+          134.65,
+          135.15,
+          135.35,
+          135.45,
+          135.46,
+          135.75,
+          135.85,
+          135.85,
+          135.95,
+          136.06,
+          136.06,
+          136.36,
+          136.45,
+          137.25,
+          142.16,
+          144.47,
+          164.11,
+          172.73
+        ],
+        "unit": "ns_per_call"
+      },
+      "indexed_counts_batches_per_sample": 100,
+      "legacy_cancelled_entries_visited": 9999,
+      "legacy_empty_lookahead_windows": 39,
+      "max_journal_bytes": 1073741824,
+      "memory_after_replay_with_fixture": {
+        "VmHWM_kib": 108084,
+        "VmRSS_kib": 108084,
+        "VmSize_kib": 109624
+      },
+      "prepared_us": 198736,
+      "queue_lookahead": 256,
+      "ready_tasks_before_poll": 1,
+      "reopen_us": 166681,
+      "replay_fencing_verified": true,
+      "scan_reference_batches_per_sample": 1,
+      "tasks": 10000,
+      "wal_bytes_after_completion": 20265882,
+      "wal_bytes_before_poll": 20264755
+    }
+  ],
+  "schema": "pvisor-controller-history-load/v2",
+  "scope": "single-controller durable typed API; synthetic task graphs; no execution",
+  "source_blake3": {
+    "../../Cargo.lock": "2b2af81dcc3708bf45f86df161da8003082ff3358de3d3bc23e56c9f1326f6f5",
+    "examples/scheduler_load.rs": "39aa2ebaafdb097126de7a9aaf1854f675ecdb31ed6652750b659d8683b89d8c",
+    "src/journal.rs": "59b0aa19ecfcbd90bfea4c52d27f4eaaabaa46df9649f69b3b45eea21a17b31f",
+    "src/scheduler.rs": "6d17783e5a398f88aa93eba44abd6e5b08895f0eba10b89567bafdbf3fece1f2",
+    "src/scheduler/graph.rs": "a4cdf3df0a857277d86584317d035ab60b3115e98f87445e933061d924100976",
+    "src/scheduler/indexes.rs": "d1d5ad2d38d33049ba91d5211b23748ce7f2e9b57b8836c466dc5c06ffe830fd"
+  }
+}

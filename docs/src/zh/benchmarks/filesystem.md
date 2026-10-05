@@ -14,6 +14,48 @@ Agent 经常反复读目录、搜索和修改文件。应同时看到任务本�
 
 本轮在 Linux 实测，以下工作负载没有 macOS 样本；macFUSE/FSKit 开销与并发容量均未测。既有 macOS/HVF 数据继续保留在 [VM 启动时间](startup.md)与[VM 内存报告](vm-memory/index.md)，不移作本页结果。
 
+## Linux：2026-10-05，OverlayCore 路径解析优化 {#resolution-optimization}
+
+本次只测 release 模式的 virtio-fs OverlayFs 适配层，不启动 VM、不挂载
+宿主 FUSE，也不记录 preimage journal。输入位于 `/tmp` tmpfs：32 个目录、
+每目录 64 个 18 B 文件；深目录案例的父目录深度为 8。每轮使用新的 inode
+表，宿主缓存为热缓存，创建输入和适配器不计时。
+
+保存优化前后的测试可执行制品，用 nextest 的 binaries metadata 交替运行
+三个批次，顺序为旧→新、新→旧、旧→新。每格每批次 2 次预热、8 次无
+profiling 测量，另有 1 次诊断；表中 P50 只来自每版本的 24 次无 profiling
+样本。CPU 未固定亲和性，二进制摘要和各批次中位数保存在原始汇总中。
+
+| 适配层操作，2,048 文件 | 优化前 P50 ms | 优化后 P50 ms | 耗时下降 |
+|---|---:|---:|---:|
+| lookup + getattr | 35.15 | 26.35 | 25.0% |
+| lookup + open + getattr + release | 37.61 | 28.07 | 25.4% |
+| 深目录 lookup + open + getattr + release | 170.51 | 96.85 | 43.2% |
+| opendir + readdirplus + releasedir | 29.00 | 20.24 | 30.2% |
+
+修改位于共享 OverlayCore：候选 upper 的物理父目录刚被检查为不存在或
+非目录时，直接跳过该候选的 whiteout/opaque 标记探测。没有跨请求缓存
+属性或不存在结果，后续路径组件和最终物理祖先仍重新检查。深目录诊断中，
+whiteout 与 opaque 探测各从 38,016 次降至 4,352 次。标记不会通过 upper
+祖先符号链接影响 lower 可见性；新增测试还验证同一遍历中新出现的 upper
+目录与 whiteout，以及请求之间的 upper 内容变化。
+
+Core/host 适配层 106 项测试和 virtio-fs/descriptor/文件系统快照 57 项
+测试通过，三个相关包的 Clippy 全 targets 检查通过。环境没有 `/dev/kvm`
+和 `/dev/fuse`，VM 全包测试在依赖 KVM 的 CPU 初始化测试处失败；真实
+VM/FUSE 端到端、journal/文件内容读写和 macOS 性能未测。两个制品之间
+工作区另有 VM 重构，适配层案例不执行 UART/VMM/CPU 初始化；制品摘要
+是本次测量身份依据。以上降幅不能替代下方历史工具工作负载的重新测量。
+
+复现单版本适配层测量：
+
+```bash
+cargo nextest run --locked --release -p pvisor-vm \
+  --run-ignored only --no-capture -E 'test(small_file_adapter_benchmark)'
+```
+
+[逐样本与诊断计数](../../assets/benchmarks/overlay-resolution-20261005/samples.json) · [制品、协议与汇总](../../assets/benchmarks/overlay-resolution-20261005/summary.json)
+
 ## Linux：2026-10-04 {#results}
 
 ### 完整 Ubuntu 的工具内部对照 {#full-ubuntu}

@@ -3109,6 +3109,7 @@ dependencies = [
  "libc",
  "serde",
  "serde_json",
+ "tempfile",
 ]
 
 [[package]]
@@ -3136,6 +3137,7 @@ dependencies = [
  "fs2",
  "globset",
  "libc",
+ "linux-raw-sys 0.12.1",
  "log",
  "pvisor-core",
  "pvisor-journal",

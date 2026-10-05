@@ -1,3 +1,7 @@
+#[cfg(not(any(
+    all(target_os = "linux", target_env = "musl", target_arch = "x86_64"),
+    all(target_os = "macos", target_arch = "x86_64")
+)))]
 use pvisor_vm::api::RuntimeSupport;
 mod safe;
 
@@ -164,7 +168,7 @@ pub struct RunArgs {
     #[arg(long, value_name = "FILE")]
     result_file: Option<PathBuf>,
 
-    /// Changeset directory; defaults to persistent Job storage for review and apply/drop.
+    /// Changeset directory; requests a private filesystem view unless --filesystem host is set.
     #[arg(long, value_name = "PATH")]
     stage: Option<PathBuf>,
 
@@ -1465,6 +1469,7 @@ async fn execute_config(
     }
     let mut json_writer = None;
     let event_sink: Arc<dyn crate::EventSink> = if config.gateway.mode == GatewayMode::Capture
+        || config.overlaynet.mode == OverlayNetMode::Proxy
         || config.record.destination.is_some()
     {
         let destination = config
@@ -1489,7 +1494,7 @@ async fn execute_config(
 
     let executor: Arc<dyn RunExecutor> = match config.run.executor {
         #[cfg(target_os = "linux")]
-        RunExecutorKind::Host if safe || filesystem_isolated || network_namespace_required => {
+        RunExecutorKind::Host => {
             // The --safe/--ask preset demands its boundary; the independent
             // --filesystem/--overlaynet policies stay best-effort and fall
             // back to the host process with a warning.
@@ -1517,7 +1522,7 @@ async fn execute_config(
             }
         }
         #[cfg(target_os = "macos")]
-        RunExecutorKind::Host if safe || filesystem_isolated || network_namespace_required => {
+        RunExecutorKind::Host => {
             match ProcessExecutor::seatbelt_with_launcher(std::env::current_exe()?) {
                 Ok(executor) => Arc::new(executor),
                 Err(error) if safe => {
@@ -1538,6 +1543,7 @@ async fn execute_config(
         }
         #[cfg(not(any(target_os = "linux", target_os = "macos")))]
         RunExecutorKind::Host if filesystem_isolated => Arc::new(ProcessExecutor::default()),
+        #[cfg(not(any(target_os = "linux", target_os = "macos")))]
         RunExecutorKind::Host => Arc::new(ProcessExecutor::default()),
         RunExecutorKind::Container => Arc::new(ContainerExecutor::new(config.container.clone())?),
         RunExecutorKind::Vm => {
@@ -2118,6 +2124,10 @@ fn warn_safe_preset(config: &RunConfig, args: &RunArgs) {
 
 fn apply_cli(config: &mut RunConfig, args: RunArgs) -> anyhow::Result<()> {
     if let Some(path) = args.stage.clone() {
+        // A staged command needs a private filesystem view to prevent writes
+        // through the original workspace or host /tmp. Explicit CLI policy
+        // still takes precedence below.
+        config.filesystem = FilesystemMode::Sandbox;
         config
             .overlayfs
             .get_or_insert_with(OverlayFsSettings::default)
@@ -3433,6 +3443,32 @@ sandbox = "required""#
         apply_cli(&mut config, args).unwrap();
         assert_eq!(config.filesystem, FilesystemMode::Host);
         assert_eq!(config.overlaynet.policy, OverlayNetPolicy::Deny);
+    }
+
+    #[test]
+    fn stage_requests_a_private_filesystem_unless_explicitly_overridden() {
+        for network in [None, Some("--overlaynet-deny-all")] {
+            for filesystem in [None, Some("host")] {
+                let mut args = vec!["--stage", "/tmp/stage"];
+                if let Some(network) = network {
+                    args.push(network);
+                }
+                if let Some(filesystem) = filesystem {
+                    args.extend(["--filesystem", filesystem]);
+                }
+                args.extend(["--", "true"]);
+                let mut config = RunConfig::default();
+                apply_run_options(&mut config, preset_args(&args)).unwrap();
+                assert_eq!(
+                    config.filesystem,
+                    if filesystem.is_some() {
+                        FilesystemMode::Host
+                    } else {
+                        FilesystemMode::Sandbox
+                    }
+                );
+            }
+        }
     }
 
     #[test]

@@ -14,6 +14,53 @@ Identical inputs across native, host, staged, safe, libkrun VM, rootless Podman/
 
 These workloads were measured on Linux; macFUSE/FSKit overhead and capacity remain unmeasured. Existing macOS/HVF results are retained in [VM startup](startup.md) and [VM memory](vm-memory/index.md), and are not substituted for this workload.
 
+## Linux: 2026-10-05, OverlayCore resolution optimization {#resolution-optimization}
+
+This release-mode experiment measures only the virtio-fs OverlayFs adapter,
+without a VM, host FUSE mount or preimage journal. Fixtures live on `/tmp`
+tmpfs: 32 directories with 64 files of 18 B each; deep paths have eight parent
+components. Each trial has fresh inode tables and warm host caches. Fixture and
+adapter construction are excluded from timing.
+
+Preserved baseline and candidate test binaries were run through nextest binaries
+metadata in three alternating batches: old→new, new→old, old→new. Each case and
+batch has two warmups, eight unprofiled samples and one diagnostic sample. P50
+uses only the 24 unprofiled samples per version. CPU affinity was not pinned;
+binary digests and individual batch medians are retained in the raw summary.
+
+| Adapter operation, 2,048 files | Before P50 ms | After P50 ms | Elapsed reduction |
+|---|---:|---:|---:|
+| lookup + getattr | 35.15 | 26.35 | 25.0% |
+| lookup + open + getattr + release | 37.61 | 28.07 | 25.4% |
+| Deep lookup + open + getattr + release | 170.51 | 96.85 | 43.2% |
+| opendir + readdirplus + releasedir | 29.00 | 20.24 | 30.2% |
+
+The shared OverlayCore now skips whiteout/opaque probes when this candidate's
+physical upper parent was just found missing or non-directory. Attributes and
+absence are not cached across requests; later components and final physical
+ancestors are still checked afresh. Deep-path diagnostic counts fell from 38,016
+to 4,352 for each marker probe. Markers behind upper ancestor symlinks cannot
+hide lower entries. New tests also cover upper directories and whiteouts appearing
+within a walk and upper content changes between requests.
+
+All 106 Core/host-adapter tests and 57 virtio-fs/descriptor/filesystem-snapshot
+tests passed, as did Clippy for all targets of the three relevant packages. This
+environment has neither `/dev/kvm` nor `/dev/fuse`; full VM-package testing fails
+at KVM-dependent CPU initialization. Actual VM/FUSE end-to-end performance,
+journaling, file payload I/O and macOS were not measured. Unrelated VM refactors
+also occurred between builds; this adapter case does not execute UART/VMM/CPU
+initialization. Binary digests identify the measured artifacts. These reductions
+do not replace new measurements of the historical tool workloads below.
+
+Reproduce one version's adapter measurement:
+
+```bash
+cargo nextest run --locked --release -p pvisor-vm \
+  --run-ignored only --no-capture -E 'test(small_file_adapter_benchmark)'
+```
+
+[Samples and diagnostic counts](../../assets/benchmarks/overlay-resolution-20261005/samples.json) · [Artifacts, protocol and summary](../../assets/benchmarks/overlay-resolution-20261005/summary.json)
+
 ## Linux: 2026-10-04 {#results}
 
 ### Tool execution inside complete Ubuntu {#full-ubuntu}

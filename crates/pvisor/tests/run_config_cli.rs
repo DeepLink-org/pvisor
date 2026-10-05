@@ -173,6 +173,13 @@ fn network_run_uses_the_current_workspace_and_external_run_home() {
     let bundle = RunBundle::read(&run_dir).expect("read generated Run Bundle");
     assert_eq!(bundle.run.exit_code, Some(0));
     assert!(bundle.network.interception.is_some());
+    let capture = bundle
+        .artifacts
+        .iter()
+        .find(|artifact| artifact.kind == "capture")
+        .expect("proxy run retains its event journal");
+    let journal = pvisor_journal::Journal::open(&capture.path.join("events.trace.jsonl")).unwrap();
+    assert!(!journal.records().unwrap().is_empty());
 }
 
 #[test]

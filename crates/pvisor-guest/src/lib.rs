@@ -35,6 +35,10 @@ pub struct GuestConfig {
     pub network: Option<NetworkConfig>,
     #[serde(default)]
     pub agent: Option<Vec<String>>,
+    /// Named virtio-console ports required for stdin, stdout and stderr.
+    /// The runner fills this from its actual descriptors before booting.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub stdio_ports: Option<[bool; 3]>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub temporary_filesystem: Option<TemporaryFilesystem>,
 }

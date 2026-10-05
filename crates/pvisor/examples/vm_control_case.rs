@@ -98,13 +98,28 @@ async fn run() -> anyhow::Result<()> {
     let stage = root.join("vm-stage");
     let explicit = mode != "offload";
     let backing = root.join("startup.ram");
+    let library_dir = std::env::var_os("PVISOR_CASE_VM_LIBRARY_DIR").map(Into::into);
+    #[cfg(not(any(
+        all(target_os = "linux", target_env = "musl", target_arch = "x86_64"),
+        all(target_os = "macos", target_arch = "x86_64")
+    )))]
+    let library_dir = if library_dir.is_none() {
+        use pvisor_vm::api::RuntimeSupport;
+        Some(
+            tokio::task::spawn_blocking(|| pvisor_vm::api::VmPlatform::prepare_firmware(None))
+                .await
+                .context("VM firmware preparation task failed")??,
+        )
+    } else {
+        library_dir
+    };
     let settings = VmSettings {
         rootfs: Some(
             std::env::var_os("PVISOR_CASE_ROOTFS")
                 .context("PVISOR_CASE_ROOTFS required")?
                 .into(),
         ),
-        library_dir: std::env::var_os("PVISOR_CASE_VM_LIBRARY_DIR").map(Into::into),
+        library_dir,
         ram_backing: Some(backing.clone()),
         ram_compression: mode == "compressed",
         memory_mib: 256,
@@ -235,7 +250,7 @@ async fn run() -> anyhow::Result<()> {
         handle.cancel();
     }
     let result = handle.wait().await?;
-    check?;
+    check.with_context(|| format!("VM run result: {result:?}"))?;
     ensure!(
         result.state == RunState::Completed && result.exit_code == Some(0),
         "guest failed: {result:?}"

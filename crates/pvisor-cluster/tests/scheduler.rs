@@ -1642,6 +1642,96 @@ fn incomplete_graph_commit_recovery_publishes_all_nodes_or_none() {
 }
 
 #[test]
+fn replay_retention_limit_stops_before_later_frames_without_repairing_the_wal() {
+    use std::io::Write;
+
+    for grouped in [false, true] {
+        let temp = tempfile::tempdir().unwrap();
+        let path = temp.path().join("journal");
+        let mut settings = config();
+        settings.max_tasks = 4;
+        let mut scheduler = Scheduler::open(&path, settings.clone()).unwrap();
+        scheduler.submit(spec("first"), 0).unwrap();
+        if grouped {
+            scheduler
+                .submit_graph(
+                    graph_spec("roots", &[("third", &[]), ("second", &[]), ("fourth", &[])]),
+                    1,
+                )
+                .unwrap();
+        } else {
+            for id in ["third", "second", "fourth"] {
+                scheduler.submit(spec(id), 1).unwrap();
+            }
+        }
+        let expected: BTreeMap<_, _> = scheduler
+            .task_records()
+            .map(|task| (task.spec.id.clone(), serde_json::to_value(task).unwrap()))
+            .collect();
+        drop(scheduler);
+        let committed = std::fs::read(&path).unwrap();
+        std::fs::OpenOptions::new()
+            .append(true)
+            .open(&path)
+            .unwrap()
+            .write_all(b"invalid complete later frame\n")
+            .unwrap();
+        let unchanged = std::fs::read(&path).unwrap();
+        let mut limited = settings.clone();
+        limited.max_tasks = 2;
+        let error = Scheduler::open(&path, limited.clone()).err().unwrap();
+        // Stop at the task budget, before parsing any subsequent transaction.
+        assert!(
+            error.to_string().contains("replayed task history"),
+            "{error}"
+        );
+        assert_eq!(std::fs::read(&path).unwrap(), unchanged);
+        assert!(Scheduler::open(&path, settings.clone()).is_err());
+        assert_eq!(std::fs::read(&path).unwrap(), unchanged);
+
+        // A refused restart must also preserve an otherwise repairable tail.
+        std::fs::write(&path, &committed).unwrap();
+        std::fs::OpenOptions::new()
+            .append(true)
+            .open(&path)
+            .unwrap()
+            .write_all(b"partial tail")
+            .unwrap();
+        let unchanged = std::fs::read(&path).unwrap();
+        assert!(Scheduler::open(&path, limited).is_err());
+        assert_eq!(std::fs::read(&path).unwrap(), unchanged);
+
+        let mut reopened = Scheduler::open(&path, settings).unwrap();
+        assert_eq!(std::fs::read(&path).unwrap(), committed);
+        assert_eq!(
+            reopened
+                .task_records()
+                .map(|task| (task.spec.id.clone(), serde_json::to_value(task).unwrap()))
+                .collect::<BTreeMap<_, _>>(),
+            expected
+        );
+        reopened.register(worker("node", 4), 2).unwrap();
+        let assignments = reopened
+            .poll(poll("node", 4, vec![]), 3)
+            .unwrap()
+            .assignments;
+        assert_eq!(assignments.len(), 4);
+        assert_eq!(
+            assignments
+                .iter()
+                .map(|assignment| assignment.spec.id.as_str())
+                .collect::<Vec<_>>(),
+            ["first", "fourth", "second", "third"]
+        );
+        let active = assignments.into_iter().map(|a| a.lease.key).collect();
+        let renewed = reopened.poll(poll("node", 0, active), 4).unwrap();
+        assert_eq!(renewed.renewed.len(), 4);
+        assert!(renewed.assignments.is_empty());
+        assert_eq!(reopened.counts(), BTreeMap::from([("running".into(), 4)]));
+    }
+}
+
+#[test]
 fn graph_retention_budget_counts_all_nodes_and_long_failure_chains_do_not_recurse() {
     let temp = tempfile::tempdir().unwrap();
     let path = temp.path().join("journal");

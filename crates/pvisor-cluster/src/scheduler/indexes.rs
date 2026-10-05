@@ -10,7 +10,7 @@ impl super::Scheduler {
     /// Read-only records in task-ID order. Full enumeration is linear in
     /// retained history; counts() is the aggregate monitoring hot path.
     pub fn task_records(&self) -> impl ExactSizeIterator<Item = &TaskRecord> {
-        self.tasks.values()
+        self.tasks.values().map(Box::as_ref)
     }
 }
 

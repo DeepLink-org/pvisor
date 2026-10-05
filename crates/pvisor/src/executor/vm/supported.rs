@@ -1408,6 +1408,9 @@ fn capture_checkpoint(
             return Err("CAPABILITY_UNSUPPORTED: network device capture is unavailable".into());
         }
         let capture = |vm: &mut pvisor_vm::api::FrozenMachine<'_>| {
+            // Entering this closure proves the device workers and CPUs are
+            // frozen. Keep this boundary separate from native capture I/O.
+            crate::util::startup_mark_run("checkpoint.native_capture_begin", &binding.run_id);
             let ready = super::checkpoint::native::capture(
                 spec,
                 vm,
@@ -1417,6 +1420,7 @@ fn capture_checkpoint(
                 &request.filesystem_reuse,
             )
             .map_err(|e| format!("{e:#}"))?;
+            crate::util::startup_mark_run("checkpoint.native_capture_ready", &binding.run_id);
             write_control_reply(
                 control,
                 &super::control::ControlReply {
@@ -1446,6 +1450,7 @@ fn capture_checkpoint(
                 .unwrap_or_else(|_| std::process::exit(1));
             let commit: super::checkpoint::CommitReply =
                 serde_json::from_slice(&bytes).unwrap_or_else(|_| std::process::exit(1));
+            crate::util::startup_mark_run("checkpoint.commit_received", &binding.run_id);
             match (commit.checkpoint, commit.error) {
                 (Some(checkpoint), None) => {
                     checkpoint
@@ -1473,6 +1478,10 @@ fn capture_checkpoint(
                             },
                         )
                         .unwrap_or_else(|_| std::process::exit(1));
+                        crate::util::startup_mark_run(
+                            "checkpoint.suspend_ack_sent",
+                            &binding.run_id,
+                        );
                         // Exit inside the frozen closure: no device/vCPU thaw
                         // and no guest instruction after the sealed point.
                         std::process::exit(SUSPEND_EXIT_CODE);
@@ -1483,6 +1492,7 @@ fn capture_checkpoint(
                 _ => std::process::exit(1),
             }
         };
+        crate::util::startup_mark_run("checkpoint.freeze_begin", &binding.run_id);
         if suspend {
             handle.with_snapshot_frozen(std::time::Duration::from_secs(30), capture)
         } else {
@@ -1627,7 +1637,14 @@ fn run_linked_krun(
     if std::env::var_os("PVISOR_KRUN_LOG").is_some() {
         pvisor_vm::api::VmPlatform::init_logging("trace");
     }
-    let guest_config = serde_json::to_vec(&spec.guest)?;
+    let mut guest = spec.guest.clone();
+    // Virtio-console port names arrive asynchronously. Tell PID 1 which
+    // non-terminal streams must be ready before it launches the workload.
+    guest.stdio_ports = Some(std::array::from_fn(|fd| {
+        // SAFETY: isatty only queries this runner's standard descriptor.
+        unsafe { libc::isatty(fd as libc::c_int) != 1 }
+    }));
+    let guest_config = serde_json::to_vec(&guest)?;
     crate::util::startup_mark_run("runner.context_begin", &spec.run_id);
     #[cfg(any(
         all(target_os = "linux", target_arch = "x86_64"),
@@ -1896,6 +1913,7 @@ fn guest_config(
             gateway: pvisor_overlaynet::vm::ROUTER_IPV4.octets(),
         }),
         agent: None,
+        stdio_ports: None,
         temporary_filesystem: None,
     }
 }

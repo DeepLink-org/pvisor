@@ -556,9 +556,17 @@ impl VmControl {
         } else {
             10
         };
+        let checkpoint_run_id = connection
+            .checkpoint
+            .as_ref()
+            .filter(|_| capture_directory.is_some())
+            .map(|binding| binding.run_id.clone());
         let result = tokio::time::timeout(Duration::from_secs(budget), async {
             connection.stream.write_u32(request.len() as u32).await?;
             connection.stream.write_all(&request).await?;
+            if let Some(run_id) = &checkpoint_run_id {
+                crate::util::startup_mark_run("checkpoint.request_sent", run_id);
+            }
             let mut reply = read_reply(&mut connection.stream).await?;
             let mut committed = None;
             if let Some(ready) = reply.capture.take() {
@@ -596,6 +604,9 @@ impl VmControl {
                     unreachable!()
                 };
                 let request_id = request_id.clone();
+                let run_id = binding.run_id.clone();
+                // Include blocking-pool queue time as well as publication work.
+                crate::util::startup_mark_run("checkpoint.host_publication_begin", &run_id);
                 let published = tokio::task::spawn_blocking(
                     move || -> anyhow::Result<anyhow::Result<SealedCapture>> {
                         let _private_pin = private_pin;
@@ -631,6 +642,7 @@ impl VmControl {
                     },
                 )
                 .await??;
+                crate::util::startup_mark_run("checkpoint.host_publication_done", &run_id);
                 if let Ok(sealed) = &published {
                     connection.filesystem_lowers = sealed.lowers.clone();
                     connection.private_files = sealed.private_files.clone();
@@ -650,9 +662,12 @@ impl VmControl {
                     bytes.len() <= MAX_FRAME,
                     "checkpoint commit response too large"
                 );
+                crate::util::startup_mark_run("checkpoint.commit_begin", &run_id);
                 connection.stream.write_u32(bytes.len() as u32).await?;
                 connection.stream.write_all(&bytes).await?;
+                crate::util::startup_mark_run("checkpoint.commit_sent", &run_id);
                 reply = read_reply(&mut connection.stream).await?;
+                crate::util::startup_mark_run("checkpoint.ack_received", &run_id);
                 committed = commit.checkpoint;
                 anyhow::ensure!(
                     reply.capture.is_none(),

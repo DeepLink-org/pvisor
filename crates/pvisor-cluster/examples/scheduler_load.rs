@@ -109,6 +109,29 @@ fn memory() -> Value {
     json!(fields)
 }
 
+fn source_hashes() -> anyhow::Result<BTreeMap<String, String>> {
+    let manifest = PathBuf::from(env!("CARGO_MANIFEST_DIR"));
+    let mut hashes = BTreeMap::new();
+    for file in [
+        "src/scheduler.rs",
+        "src/scheduler/graph.rs",
+        "src/scheduler/indexes.rs",
+        "src/journal.rs",
+        "examples/scheduler_load.rs",
+        "Cargo.toml",
+        "../../Cargo.toml",
+        "../../Cargo.lock",
+    ] {
+        hashes.insert(
+            file.into(),
+            blake3::hash(&std::fs::read(manifest.join(file))?)
+                .to_hex()
+                .to_string(),
+        );
+    }
+    Ok(hashes)
+}
+
 fn experiment(total: usize, args: &Args) -> anyhow::Result<Value> {
     let ready = if args.ready == "all" {
         total
@@ -298,9 +321,10 @@ fn experiment(total: usize, args: &Args) -> anyhow::Result<Value> {
     .filter(|(_, count)| *count > 0)
     .collect();
     ensure!(scheduler.counts() == final_counts, "terminal counts differ");
+    let wal_bytes_after_completion = std::fs::metadata(&path)?.len();
     drop(scheduler);
     let start = Instant::now();
-    let reopened = Scheduler::open(&path, config.clone())?;
+    let mut reopened = Scheduler::open(&path, config.clone())?;
     let reopen_us = start.elapsed().as_micros();
     ensure!(reopened.counts() == final_counts, "replay counts differ");
     ensure!(
@@ -312,10 +336,44 @@ fn experiment(total: usize, args: &Args) -> anyhow::Result<Value> {
         "replay lost fencing identity"
     );
     let replay_memory = memory();
+    // Exercise the rebuilt queue, rather than proving only aggregate replay.
+    // The completed key must not reappear; equal-time queued tasks retain the
+    // deterministic task-ID order used by production restart.
+    let response = reopened.poll(
+        PollRequest {
+            worker_id: "node".into(),
+            incarnation: "epoch".into(),
+            active: vec![],
+            available: task("budget").resources,
+            max_assignments: 1,
+            admission: None,
+        },
+        6,
+    )?;
+    let replay_probe_assigned_task = response
+        .assignments
+        .first()
+        .map(|assignment| assignment.spec.id.clone());
+    ensure!(
+        response.assignments.len() == usize::from(ready > 1)
+            && replay_probe_assigned_task.as_deref() == (ready > 1).then_some("ready-0000001"),
+        "replayed queue reassigned terminal work or changed restart order"
+    );
+    ensure!(
+        reopened.task("ready-0000000")?.phase == TaskPhase::Failed
+            && reopened
+                .task("ready-0000000")?
+                .lease
+                .as_ref()
+                .is_some_and(|lease| lease.key == key),
+        "replay probe changed the completed fencing identity"
+    );
+    let wal_bytes_after_replay_probe = std::fs::metadata(&path)?.len();
     drop(reopened);
     Ok(
         json!({"tasks":total, "cancelled_history":history, "ready_tasks_before_poll":ready,
-        "prepared_us":prepared_us, "wal_bytes_before_poll":wal_bytes, "wal_bytes_after_completion":std::fs::metadata(&path)?.len(),
+        "prepared_us":prepared_us, "wal_bytes_before_poll":wal_bytes, "wal_bytes_after_completion":wal_bytes_after_completion,
+        "wal_bytes_after_replay_probe":wal_bytes_after_replay_probe, "replay_probe_assigned_task":replay_probe_assigned_task,
         "indexed_counts":distribution(indexed), "full_task_record_scan_reference":distribution(scanned),
         "scan_reference_batches_per_sample":1, "indexed_counts_batches_per_sample":args.indexed_batch,
         "max_journal_bytes":config.max_journal_bytes, "queue_lookahead":config.queue_lookahead,
@@ -342,39 +400,31 @@ fn main() -> anyhow::Result<()> {
         "invalid sample or batch count"
     );
     ensure!(!args.output.exists(), "output already exists");
+    let sources_before = source_hashes()?;
     let mut rows = Vec::new();
     for total in &args.tasks {
         eprintln!("scheduler-load: preparing {total} retained records");
         rows.push(experiment(*total, &args)?);
         eprintln!("scheduler-load: verified {total} records, counts and durable replay");
     }
-    let manifest = PathBuf::from(env!("CARGO_MANIFEST_DIR"));
-    let mut source_hashes = BTreeMap::new();
-    for file in [
-        "src/scheduler.rs",
-        "src/scheduler/graph.rs",
-        "src/scheduler/indexes.rs",
-        "src/journal.rs",
-        "examples/scheduler_load.rs",
-        "../../Cargo.lock",
-    ] {
-        source_hashes.insert(
-            file,
-            blake3::hash(&std::fs::read(manifest.join(file))?)
-                .to_hex()
-                .to_string(),
-        );
-    }
+    ensure!(
+        source_hashes()? == sources_before,
+        "source identity changed during measurement; refusing to publish results"
+    );
     let executable_hash = blake3::hash(&std::fs::read(std::env::current_exe()?)?)
         .to_hex()
         .to_string();
-    let report = json!({"schema":"pvisor-controller-history-load/v2", "scope":"single-controller durable typed API; synthetic task graphs; no execution",
+    let report = json!({"schema":"pvisor-controller-history-load/v3", "scope":"single-controller durable typed API; synthetic task graphs; no execution",
         "protocol_version":CLUSTER_VERSION, "build_has_debug_assertions":cfg!(debug_assertions),
-        "recorded_at_unix_ms":pvisor_core::unix_now_ms(), "source_blake3":source_hashes, "executable_blake3":executable_hash,
+        "recorded_at_unix_ms":pvisor_core::unix_now_ms(), "source_blake3":sources_before, "executable_blake3":executable_hash,
+        "source_identity_unchanged_during_measurement":true,
+        "rust_type_size_bytes":{"task_record":std::mem::size_of::<TaskRecord>(), "boxed_task_record":std::mem::size_of::<Box<TaskRecord>>(),
+            "task_spec":std::mem::size_of::<TaskSpec>(), "run_spec":std::mem::size_of::<RunSpec>()},
         "cpu_model":std::fs::read_to_string("/proc/cpuinfo").ok().and_then(|text| text.lines().find_map(|line| line.strip_prefix("model name\t: ").map(str::to_owned))),
         "affinity":std::fs::read_to_string("/proc/self/status").ok().and_then(|text| text.lines().find_map(|line| line.strip_prefix("Cpus_allowed_list:\t").map(str::to_owned))),
         "filesystem_note":"temporary local WAL; fsync issued; storage medium and host load affect timings",
         "reference_note":"former counts algorithm on the same authoritative TaskRecords without cloning; no former controller throughput claim; cancelled-window reference omits WAL and admission",
+        "memory_note":"whole process RSS/HWM includes controller, ID fixture, allocator retention and transient reference indexes; HWM accumulates across phases/rows; use a separate process per size and mode for comparisons; replay uses a warm local WAL",
         "rows":rows});
     use std::io::Write;
     let mut output = std::fs::OpenOptions::new()

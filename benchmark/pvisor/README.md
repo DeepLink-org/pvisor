@@ -623,6 +623,35 @@ the injection rather than becoming a successful sample.
 
 ## Familiar runtimes and the complete Agent tool environment
 
+`filesystem_ab.py` compares two pinned GNU/Linux pVisor binaries using the
+prepared reference tool environment. It runs native once per round and both
+versions through real host FUSE and VM virtio-fs, shuffling all five cases per
+round. Every job uses a fresh workspace and stage and runs metadata, read,
+write, git, rg, cargo and offline npm. The report separates each tool's internal
+time from launch-to-exit completion time. Failed preflight, missing samples,
+incorrect output, unexpected isolation or writes escaping into lower fail the
+run; staged upper must contain all 256 written files with the workload's sizes.
+
+```bash
+python3 benchmark/pvisor/filesystem_ab.py \
+  --assets target/reference-env-final-20261004 \
+  --baseline /absolute/path/to/pvisor-before \
+  --candidate /absolute/path/to/pvisor-after \
+  --firmware /absolute/path/to/libkrunfw-directory \
+  --output target/filesystem-ab-new \
+  --cpu-affinity 0,1 --samples 30 --warmups 3
+```
+
+Choose two allowed physical cores. The default VM configuration is 2 vCPU and
+16 GiB; this provides the address space required by the Node/V8 workload.
+The runner copies binaries, firmware and its harness and records their hashes.
+`--provenance` optionally includes a source/build manifest and verifies that its
+binary hashes match. Use `--samples 1 --warmups 0` for preflight and `--profile`
+only for a separate diagnostic batch; instrumented timings must not enter the
+uninstrumented performance comparison. Build both binaries from the same source
+snapshot with only the proposed change applied between builds; commit labels
+alone do not identify binaries built from a changing worktree.
+
 `reference_baselines.py` measures native, pVisor host/staged/VM, a **private
 rootless Docker Engine**, Firecracker PCI, QEMU q35, and QEMU microvm on Linux.
 It runs a first-command probe, seven-tool self-check, seven filesystem/tool

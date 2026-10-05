@@ -153,7 +153,9 @@ pub struct Scheduler {
     graph_state: graph::GraphState,
     config: SchedulerConfig,
     journal: Journal,
-    tasks: BTreeMap<String, TaskRecord>,
+    // Records contain large inline optional observations. Keep their existing
+    // allocation instead of reserving one full record in every B-tree slot.
+    tasks: BTreeMap<String, Box<TaskRecord>>,
     run_ids: BTreeSet<String>,
     forks: BTreeMap<(String, String), ExecutionForkRecord>,
     live_forks: BTreeMap<(String, String), LiveForkRecord>,
@@ -261,14 +263,14 @@ impl Scheduler {
                     authority = Some(id.clone());
                 }
                 scheduler.apply(change);
+                ensure!(
+                    scheduler.tasks.len() <= scheduler.config.max_tasks,
+                    "replayed task history exceeds configured max_tasks"
+                );
             }
         }
         let valid_end = transactions.valid_end;
         drop(transactions);
-        ensure!(
-            scheduler.tasks.len() <= scheduler.config.max_tasks,
-            "replayed task history exceeds configured max_tasks"
-        );
         scheduler.journal.finish_replay(valid_end)?;
         scheduler
             .artifacts
@@ -283,6 +285,8 @@ impl Scheduler {
         }
         // Replayed submit/decline events can refer to the same queued task.
         // Rebuild from durable state so one batch cannot lease it twice.
+        // Release the replay-built index before allocating its replacement.
+        drop(std::mem::take(&mut scheduler.indexes.ready));
         let mut ready: Vec<_> = scheduler
             .tasks
             .values()
@@ -400,7 +404,7 @@ impl Scheduler {
                 self.run_ids.insert(task.spec.run.run_id.to_string());
                 let previous = self.tasks.get(&task.spec.id).map(|task| task.phase);
                 self.indexes.insert(&task, previous);
-                self.tasks.insert(task.spec.id.clone(), *task);
+                self.tasks.insert(task.spec.id.clone(), task);
             }
             Change::LiveForkRequested {
                 record,
@@ -1032,7 +1036,7 @@ impl Scheduler {
                 serde_json::to_value(&existing.spec)? == serde_json::to_value(&spec)?,
                 "idempotency conflict: task id already has a different specification"
             );
-            return Ok(existing.clone());
+            return Ok(existing.as_ref().clone());
         }
         ensure!(
             !self.run_ids.contains(spec.run.run_id.as_str()),
@@ -1537,7 +1541,7 @@ impl Scheduler {
             && previous.key == rejection.key
         {
             ensure!(previous == &rejection, "conflicting admission rejection");
-            return Ok(task.clone());
+            return Ok(task.as_ref().clone());
         }
         ensure!(
             task.phase == TaskPhase::Leased && self.valid_key(&rejection.key, now),
@@ -1549,7 +1553,7 @@ impl Scheduler {
         );
         let id = rejection.key.task_id.clone();
         self.commit(vec![Change::Decline { rejection, at: now }])?;
-        Ok(self.tasks[&id].clone())
+        Ok(self.tasks[&id].as_ref().clone())
     }
 
     fn valid_key(&self, key: &LeaseKey, now: u64) -> bool {
@@ -2173,7 +2177,7 @@ impl Scheduler {
                 at: now,
             }])?;
         }
-        Ok(self.tasks[id].clone())
+        Ok(self.tasks[id].as_ref().clone())
     }
 
     pub fn complete(&mut self, completion: Completion, now: u64) -> anyhow::Result<TaskRecord> {
@@ -2209,7 +2213,7 @@ impl Scheduler {
                 && task.artifact_error == completion.artifact_error,
             "stale or conflicting completion"
         );
-        Ok(Some(task.clone()))
+        Ok(Some(task.as_ref().clone()))
     }
 
     pub(crate) fn artifact_gc_snapshot(
@@ -2425,7 +2429,7 @@ impl Scheduler {
                     && task.artifact_error == completion.artifact_error,
                 "stale or conflicting completion"
             );
-            return Ok(task.clone());
+            return Ok(task.as_ref().clone());
         }
         ensure!(
             self.valid_key(&completion.key, now),
@@ -2513,7 +2517,7 @@ impl Scheduler {
             );
         }
         if native_only && task.result.is_some() {
-            return Ok(task.clone());
+            return Ok(task.as_ref().clone());
         }
         if native_only {
             ensure!(
@@ -2585,7 +2589,7 @@ impl Scheduler {
                 at: now,
             });
             self.commit(changes)?;
-            return Ok(self.tasks[&id].clone());
+            return Ok(self.tasks[&id].as_ref().clone());
         }
         let phase =
             if task.phase == TaskPhase::Cancelling {
@@ -2620,7 +2624,7 @@ impl Scheduler {
         if let Some(verified) = verified {
             self.retained_pins.insert(id.clone(), verified.pins);
         }
-        Ok(self.tasks[&id].clone())
+        Ok(self.tasks[&id].as_ref().clone())
     }
 
     pub fn reap(&mut self, now: u64) -> anyhow::Result<usize> {
@@ -2638,7 +2642,10 @@ impl Scheduler {
     }
 
     pub fn task(&self, id: &str) -> anyhow::Result<TaskRecord> {
-        self.tasks.get(id).cloned().context("unknown task")
+        self.tasks
+            .get(id)
+            .map(|task| task.as_ref().clone())
+            .context("unknown task")
     }
 
     /// Bounded ephemeral observations: do not renew leases, write WAL records,

@@ -532,6 +532,7 @@ async fn concurrent_restores_share_physical_ram_baseline_and_keep_private_writes
         &original.id,
         "pause-during-telemetry",
         ControlAction::Pause,
+        &worker_log,
     )
     .await;
     controlled(
@@ -539,6 +540,7 @@ async fn concurrent_restores_share_physical_ram_baseline_and_keep_private_writes
         &original.id,
         "resume-during-telemetry",
         ControlAction::Resume,
+        &worker_log,
     )
     .await;
     delay_telemetry.store(false, std::sync::atomic::Ordering::SeqCst);
@@ -563,6 +565,7 @@ async fn concurrent_restores_share_physical_ram_baseline_and_keep_private_writes
         &original.id,
         "pause-during-node-telemetry",
         ControlAction::Pause,
+        &worker_log,
     )
     .await;
     controlled(
@@ -570,6 +573,7 @@ async fn concurrent_restores_share_physical_ram_baseline_and_keep_private_writes
         &original.id,
         "resume-during-node-telemetry",
         ControlAction::Resume,
+        &worker_log,
     )
     .await;
     delay_node.store(false, std::sync::atomic::Ordering::SeqCst);
@@ -622,7 +626,14 @@ async fn concurrent_restores_share_physical_ram_baseline_and_keep_private_writes
             .rss_bytes
             > 0
     );
-    let sealed = controlled(&admin, &original.id, "share-point", ControlAction::Suspend).await;
+    let sealed = controlled(
+        &admin,
+        &original.id,
+        "share-point",
+        ControlAction::Suspend,
+        &worker_log,
+    )
+    .await;
     let Some(ControlOutcome::Checkpointed { checkpoint }) = sealed.outcome else {
         panic!("no sealed RAM snapshot")
     };
@@ -800,8 +811,22 @@ async fn concurrent_restores_share_physical_ram_baseline_and_keep_private_writes
             "two running VMs must retain their full logical CPU budget under the one-CPU unit quota"
         );
     }
-    controlled(&admin, &first.id, "pause-first", ControlAction::Pause).await;
-    controlled(&admin, &second.id, "pause-second", ControlAction::Pause).await;
+    controlled(
+        &admin,
+        &first.id,
+        "pause-first",
+        ControlAction::Pause,
+        &worker_log,
+    )
+    .await;
+    controlled(
+        &admin,
+        &second.id,
+        "pause-second",
+        ControlAction::Pause,
+        &worker_log,
+    )
+    .await;
     let first_memory = measured_memory(&admin, &first.id, pvisor_core::unix_now_ms()).await;
     let second_memory = measured_memory(
         &admin,
@@ -924,7 +949,14 @@ async fn concurrent_restores_share_physical_ram_baseline_and_keep_private_writes
     .await
     .unwrap();
     fs::write(first_upper.join("env/finish"), b"go\n").unwrap();
-    controlled(&admin, &first.id, "resume-first", ControlAction::Resume).await;
+    controlled(
+        &admin,
+        &first.id,
+        "resume-first",
+        ControlAction::Resume,
+        &worker_log,
+    )
+    .await;
     let done = finished(&admin, &first.id).await;
     assert_eq!(done.phase, TaskPhase::Succeeded, "{done:?}");
     assert!(
@@ -981,7 +1013,14 @@ async fn concurrent_restores_share_physical_ram_baseline_and_keep_private_writes
     );
     assert!(ram_path.exists());
     fs::write(second_upper.join("env/finish"), b"go\n").unwrap();
-    controlled(&admin, &second.id, "resume-second", ControlAction::Resume).await;
+    controlled(
+        &admin,
+        &second.id,
+        "resume-second",
+        ControlAction::Resume,
+        &worker_log,
+    )
+    .await;
     let done = finished(&admin, &second.id).await;
     assert_eq!(done.phase, TaskPhase::Succeeded, "{done:?}");
     assert_eq!(
@@ -1043,6 +1082,7 @@ async fn concurrent_restores_share_physical_ram_baseline_and_keep_private_writes
             &stopping.id,
             "pause-before-stop",
             ControlAction::Pause,
+            &worker_log,
         )
         .await;
         let live = measured_memory(&admin, &stopping.id, pvisor_core::unix_now_ms()).await;
@@ -1472,7 +1512,7 @@ async fn parked_vms_suspend_without_cpu_readmission_or_guest_progress_and_restor
             &worker_log,
         )
         .await;
-        controlled(&admin, &original.id, "park", action).await;
+        controlled(&admin, &original.id, "park", action, &worker_log).await;
         let held = Resources {
             cpu_millis: 0,
             ..original.resources
@@ -1497,7 +1537,14 @@ async fn parked_vms_suspend_without_cpu_readmission_or_guest_progress_and_restor
             admin.workers().await.unwrap()[0].reserved,
             held.checked_add(competitor.resources).unwrap()
         );
-        let sealed = controlled(&admin, &original.id, "suspend", ControlAction::Suspend).await;
+        let sealed = controlled(
+            &admin,
+            &original.id,
+            "suspend",
+            ControlAction::Suspend,
+            &worker_log,
+        )
+        .await;
         let Some(ControlOutcome::Checkpointed { checkpoint }) = sealed.outcome else {
             panic!("parked source was not sealed")
         };
@@ -1595,7 +1642,7 @@ async fn parked_vms_suspend_without_cpu_readmission_or_guest_progress_and_restor
             &worker_log,
         )
         .await;
-        controlled(&admin, &rejected.id, "park", action).await;
+        controlled(&admin, &rejected.id, "park", action, &worker_log).await;
         fs::write(rejected_upper.join("env/continue"), b"go\n").unwrap();
         let pending = rejected_directory.join("execution-snapshots/pending");
         fs::rename(&pending, pending.with_file_name("blocked-pending")).unwrap();
@@ -1843,36 +1890,104 @@ async fn guest_ready(client: &Client, id: &str, marker: &Path, worker_log: &Path
     .expect("guest readiness deadline");
 }
 
+fn control_failure_log(worker_log: &Path) -> String {
+    let contents = match fs::read_to_string(worker_log) {
+        Ok(contents) => contents,
+        Err(error) => return format!("worker log {}: {error}", worker_log.display()),
+    };
+    // The fixture's TempDir is removed during panic unwinding. Retain just its
+    // diagnostic log, without keeping VM state or child processes alive.
+    let saved = (|| -> std::io::Result<std::path::PathBuf> {
+        let mut file = tempfile::Builder::new()
+            .prefix("pvisor-vm-control-failure-")
+            .suffix(".log")
+            .tempfile()?;
+        std::io::Write::write_all(&mut file, contents.as_bytes())?;
+        file.keep()
+            .map(|(_, path)| path)
+            .map_err(|error| error.error)
+    })();
+    let saved = match saved {
+        Ok(path) => path.display().to_string(),
+        Err(error) => format!("could not preserve log: {error}"),
+    };
+    format!(
+        "worker log {} (preserved: {saved})\n{contents}",
+        worker_log.display()
+    )
+}
+
 async fn controlled(
     client: &Client,
     id: &str,
     request_id: &str,
     action: ControlAction,
+    worker_log: &Path,
 ) -> ControlRecord {
     let request = ControlRequest {
         request_id: request_id.into(),
         action,
     };
-    client.control(id, &request).await.unwrap();
+    client.control(id, &request).await.unwrap_or_else(|error| {
+        panic!(
+            "remote native control {id}/{request_id} rejected: {error}\n{}",
+            control_failure_log(worker_log)
+        )
+    });
     let observed = tokio::time::timeout(Duration::from_secs(30), async {
         loop {
-            let task = client.task(id).await.unwrap();
+            let task = client.task(id).await.unwrap_or_else(|error| {
+                panic!(
+                    "remote native control {id}/{request_id} observation failed: {error}\n{}",
+                    control_failure_log(worker_log)
+                )
+            });
             let record = task
                 .controls
                 .iter()
                 .find(|c| c.command.request == request)
-                .unwrap();
+                .unwrap_or_else(|| {
+                    panic!(
+                        "remote native control {id}/{request_id} missing: {task:?}\n{}",
+                        control_failure_log(worker_log)
+                    )
+                });
             if record.phase.terminal() {
-                assert_eq!(record.phase, ControlPhase::Succeeded, "{task:?}");
+                assert_eq!(
+                    record.phase,
+                    ControlPhase::Succeeded,
+                    "{task:?}\n{}",
+                    control_failure_log(worker_log)
+                );
                 break record.clone();
             }
-            assert!(!task.phase.terminal(), "{task:?}");
+            assert!(
+                !task.phase.terminal(),
+                "{task:?}\n{}",
+                control_failure_log(worker_log)
+            );
             tokio::time::sleep(Duration::from_millis(50)).await;
         }
     })
     .await
-    .unwrap_or_else(|error| panic!("remote native control {id}/{request_id} deadline: {error}"));
-    assert_eq!(client.control(id, &request).await.unwrap(), observed);
+    .unwrap_or_else(|error| {
+        panic!(
+            "remote native control {id}/{request_id} deadline: {error}\n{}",
+            control_failure_log(worker_log)
+        )
+    });
+    let replayed = client.control(id, &request).await.unwrap_or_else(|error| {
+        panic!(
+            "remote native control {id}/{request_id} retry rejected: {error}\n{}",
+            control_failure_log(worker_log)
+        )
+    });
+    assert_eq!(
+        replayed,
+        observed,
+        "remote native control {id}/{request_id} retry changed\n{}",
+        control_failure_log(worker_log)
+    );
     observed
 }
 
@@ -2115,7 +2230,14 @@ async fn concurrent_vm_environments_preserve_layers_private_writes_and_remote_li
     )
     .await;
     let key = admin.task("controlled").await.unwrap().lease.unwrap().key;
-    let paused = controlled(&admin, "controlled", "pause", ControlAction::Pause).await;
+    let paused = controlled(
+        &admin,
+        "controlled",
+        "pause",
+        ControlAction::Pause,
+        &worker_log,
+    )
+    .await;
     assert!(matches!(
         paused.outcome,
         Some(ControlOutcome::Succeeded {
@@ -2132,7 +2254,14 @@ async fn concurrent_vm_environments_preserve_layers_private_writes_and_remote_li
         TaskPhase::Paused
     );
     assert_eq!(admin.workers().await.unwrap()[0].reserved, held);
-    let offloaded = controlled(&admin, "controlled", "offload", ControlAction::Offload).await;
+    let offloaded = controlled(
+        &admin,
+        "controlled",
+        "offload",
+        ControlAction::Offload,
+        &worker_log,
+    )
+    .await;
     let Some(ControlOutcome::Succeeded {
         state: pvisor_core::VmState::Offloaded,
         memory: Some(memory),
@@ -2197,7 +2326,14 @@ async fn concurrent_vm_environments_preserve_layers_private_writes_and_remote_li
             .phase,
         TaskPhase::Cancelled
     );
-    let resumed = controlled(&admin, "controlled", "resume", ControlAction::Resume).await;
+    let resumed = controlled(
+        &admin,
+        "controlled",
+        "resume",
+        ControlAction::Resume,
+        &worker_log,
+    )
+    .await;
     assert!(matches!(
         resumed.outcome,
         Some(ControlOutcome::Succeeded {
@@ -2515,6 +2651,7 @@ async fn ordinary_vm_job_seals_cpu_ram_and_owned_layers_before_resuming_source()
         "snapshot",
         "seal-owned-machine",
         ControlAction::Checkpoint,
+        &worker_log,
     )
     .await;
     let Some(ControlOutcome::Checkpointed { checkpoint }) = observed.outcome else {
@@ -2746,6 +2883,7 @@ async fn ordinary_vm_job_seals_cpu_ram_and_owned_layers_before_resuming_source()
         "snapshot-restored",
         "capture-restored-machine",
         ControlAction::Checkpoint,
+        &worker_log,
     )
     .await;
     let Some(ControlOutcome::Checkpointed {
@@ -2769,6 +2907,7 @@ async fn ordinary_vm_job_seals_cpu_ram_and_owned_layers_before_resuming_source()
         "snapshot-restored",
         "pause-restored",
         ControlAction::Pause,
+        &worker_log,
     )
     .await;
     assert_eq!(admin.workers().await.unwrap()[0].reserved.cpu_millis, 0);
@@ -2777,6 +2916,7 @@ async fn ordinary_vm_job_seals_cpu_ram_and_owned_layers_before_resuming_source()
         "snapshot-restored",
         "resume-restored",
         ControlAction::Resume,
+        &worker_log,
     )
     .await;
     assert_eq!(
@@ -3127,6 +3267,7 @@ async fn live_capture_fork(cpu_qos: bool) {
             "live-source",
             "cpu-upload-pause",
             ControlAction::Pause,
+            &worker_log,
         )
         .await;
         tokio::time::sleep(Duration::from_millis(3100)).await;
@@ -3150,6 +3291,7 @@ async fn live_capture_fork(cpu_qos: bool) {
             "live-source",
             "cpu-upload-resume",
             ControlAction::Resume,
+            &worker_log,
         )
         .await;
         assert_eq!(
@@ -3393,6 +3535,7 @@ async fn live_capture_fork(cpu_qos: bool) {
             &branch.task_id,
             "prove-native-pause",
             ControlAction::Pause,
+            &worker_log,
         )
         .await;
         controlled(
@@ -3400,6 +3543,7 @@ async fn live_capture_fork(cpu_qos: bool) {
             &branch.task_id,
             "prove-native-resume",
             ControlAction::Resume,
+            &worker_log,
         )
         .await;
     }
@@ -4445,6 +4589,7 @@ async fn worker_checkpoint_publication_recovers_after_crash_and_restores_on_an_i
         "remote-source",
         "seed-immutable-lowers",
         ControlAction::Checkpoint,
+        &root.join("source-worker.log"),
     )
     .await;
     let Some(ControlOutcome::Checkpointed { checkpoint: first }) = first.outcome else {
@@ -4821,6 +4966,7 @@ async fn worker_checkpoint_publication_recovers_after_crash_and_restores_on_an_i
         &fresh.id,
         "first-capture-pool-hit",
         ControlAction::Checkpoint,
+        &root.join("source-worker.log"),
     )
     .await;
     let Some(ControlOutcome::Checkpointed {
@@ -5113,6 +5259,7 @@ async fn worker_checkpoint_publication_recovers_after_crash_and_restores_on_an_i
         "remote-branch",
         "derive-after-import",
         ControlAction::Checkpoint,
+        &root.join("target-worker.log"),
     )
     .await;
     let Some(ControlOutcome::Checkpointed {

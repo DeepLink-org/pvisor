@@ -91,6 +91,19 @@ def pin_private_docker_tree(root_pid, docker_host, affinity):
                 pass
 
 
+def validate_staged_filesystem(work, stage, expected_bytes):
+    """Successful guest writes must stay in the staged view."""
+    if (work / "_fs/written").exists():
+        raise ValueError("staged filesystem writes reached the lower workspace")
+    written = stage / "upper/_fs/written"
+    if {p.name for p in written.iterdir()} != {f"{i:04d}" for i in range(256)}:
+        raise ValueError("expected all 256 written files in the stage upper")
+    if expected_bytes <= 0 or expected_bytes % 256:
+        raise ValueError("invalid workload written byte count")
+    if any(not p.is_file() or p.stat().st_size != expected_bytes // 256 for p in written.iterdir()):
+        raise ValueError("staged written file sizes differ from the workload")
+
+
 def run_trial(args, metadata, backend, mode, trial):
     root = args.output / "trials" / f"{mode}-{backend}-{trial:03d}"
     root.mkdir(parents=True)
@@ -377,6 +390,8 @@ def run_trial(args, metadata, backend, mode, trial):
         )
         if backend in ("pvisor-vm", "pvisor-staged"):
             assert bundle["safety"]["filesystem_changes_staged"]
+            if mode == "filesystem":
+                validate_staged_filesystem(work, stage, result["filesystem"]["write"]["check"]["bytes"])
         if mode in ("tools", "claude", "codex"):
             assert (
                 (work / "python/adder.py").read_text() == "def add(a, b):\n    return a - b\n"
