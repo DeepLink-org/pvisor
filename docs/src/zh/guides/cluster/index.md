@@ -9,6 +9,8 @@
 | [VM 与模型 Gateway](vm-and-gateway.md) | 真实 VM 控制/分叉、离线模型接入、正式模型配置 |
 | [完整设计](../../design/cluster/index.md) | 状态权威、协议、实现与扩展约束 |
 
+统一 Controller、Worker 与节点资源服务的部署入口见[统一服务指南](service.md)。本页仍保留独立服务的任务、对账与存储验收流程。
+
 ## 前置条件与资源预算 {#prerequisites}
 
 从仓库根目录操作。需要 Linux、Bash、Python 3.11+、Rust/Cargo、just、`/bin/sh`、`/bin/sleep`、cgroup v2 和运行中的用户 systemd manager；构建依赖按[安装](../../start/installation.md)准备。VM 额外需要 x86-64、KVM/FUSE、`ldd` 与明确的固件目录，见[VM 准备](vm-and-gateway.md#vm)。

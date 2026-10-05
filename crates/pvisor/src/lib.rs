@@ -15,12 +15,17 @@ pub mod session;
 pub mod trace;
 pub use session::Session;
 
+mod cache_budget;
 mod config;
 #[doc(hidden)]
 pub mod diagnostics;
 mod executor;
 mod image;
+#[cfg(any(target_os = "macos", all(target_os = "linux", target_arch = "x86_64")))]
+pub mod node;
 pub mod ram_backing;
+#[cfg(any(target_os = "macos", all(target_os = "linux", target_arch = "x86_64")))]
+pub mod service;
 
 #[doc(hidden)]
 pub use executor::sandbox;

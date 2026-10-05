@@ -1,5 +1,8 @@
 # 0006：文件快照保存 stage，复用不可变基底
 
+> CLI 更新：独立 `pvisor snapshot` 已删除。以下旧接口/测量属于记录中的历史制品，不是当前可执行指南；当前入口与能力范围见[CLI 参考](../../reference/cli.md)。
+
+
 **状态：accepted，首版 CLI profile 已实现。** 2026-10-04。manifest v4/v5 与 `pvisor snapshot` 已保存完整 stage 和独占基底引用；旧 v1–v3 完整环境恢复继续支持。普通 Job checkpoint transport、workspace 接入和 stage/RAM 增量保存仍未实现。
 
 ## 背景

@@ -7,6 +7,8 @@ import json
 import statistics
 from pathlib import Path
 
+from evidence_tsv import load as load_evidence
+
 import matplotlib
 
 matplotlib.use("Agg")
@@ -84,7 +86,7 @@ def summarize_execution(report):
 def summarize_controller(data):
     rows = []
     for size in [1000, 10000, 100000, 1000000]:
-        report = json.loads((data / f"controller-history-{size}.json").read_text())
+        report = load_evidence(data / f"controller-history-{size}.tsv")
         assert report["source_identity_unchanged_during_measurement"]
         r = report["rows"][0]
         assert r["tasks"] == size and r["ready_tasks_before_poll"] == 1
@@ -144,7 +146,7 @@ def main():
             "axes.labelcolor": "#475569",
         }
     )
-    report = json.loads((args.data_dir / "vm.json").read_text())
+    report = load_evidence(args.data_dir / "vm.tsv")
     execution = summarize_execution(report)
     control = summarize_controller(args.data_dir)
     csv_write(output / "vm-summary.csv", execution)

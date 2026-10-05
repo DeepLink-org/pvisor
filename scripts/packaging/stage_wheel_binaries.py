@@ -20,7 +20,7 @@ from typing import Any, Mapping
 
 ROOT = Path(__file__).resolve().parents[2]
 WHEEL_DATA = ROOT / "target" / "wheel-data"
-EXPECTED_BINARIES = ("pvisor", "pvisor-cache", "pvisor-tui", "pvisor-replay", "pvisor-memory-pool")
+EXPECTED_BINARIES = ("pvisor", "pvisor-cache", "pvisor-tui", "pvisor-replay", "pvisor-memory-pool", "pvisor-cluster", "pvisor-worker")
 SUPPORTED_TARGETS = {
     "x86_64-unknown-linux-musl",
     "aarch64-apple-darwin",
@@ -149,7 +149,7 @@ def _cargo_command(options: BuildOptions, *, shim_vm: bool = False) -> list[str]
     if shim_vm:
         command.extend(("--bin", "containerd-shim-pvisor-v2", "--features", "vm"))
     else:
-        command.extend(("-p", "pvisor-tui", "-p", "pvisor-replay", "--bins", "--features", "pvisor/gateway"))
+        command.extend(("-p", "pvisor-tui", "-p", "pvisor-replay", "-p", "pvisor-cluster", "--bins", "--features", "pvisor/gateway"))
     if target is not None:
         command.extend(("--target", target))
     if options.target_dir is not None:
@@ -165,12 +165,35 @@ def _cargo_command(options: BuildOptions, *, shim_vm: bool = False) -> list[str]
     return command
 
 
+def _prepare_zig_file_limit() -> None:
+    import resource
+
+    # Thin-LTO links open thousands of object files. Cargo's job limit does not
+    # reduce the descriptors needed by an individual Zig linker process.
+    soft, hard = resource.getrlimit(resource.RLIMIT_NOFILE)
+    desired = 16_384
+    if soft == resource.RLIM_INFINITY or soft >= desired:
+        return
+    available = desired if hard == resource.RLIM_INFINITY else min(desired, hard)
+    if available <= soft:
+        return
+    try:
+        resource.setrlimit(resource.RLIMIT_NOFILE, (available, hard))
+    except (OSError, ValueError) as error:
+        raise RuntimeError(
+            f"Cannot raise the Zig build open-file limit from {soft} to {available} "
+            f"(hard limit {hard}); increase the build process's open-file limit"
+        ) from error
+    print(f"Zig build open-file limit: {soft} -> {available}", file=sys.stderr)
+
+
 def _build(options: BuildOptions, *, shim_vm: bool = False) -> dict[str, Path]:
     command = _cargo_command(options, shim_vm=shim_vm)
     expected = ("containerd-shim-pvisor-v2",) if shim_vm else EXPECTED_BINARIES
     print(f"Building native CLI: {shlex.join(command)}", file=sys.stderr)
     build_env = os.environ.copy()
     if command[1] == "zigbuild":
+        _prepare_zig_file_limit()
         if not build_env.get("PVISOR_KRUNFW_KERNEL_BUNDLE") and not build_env.get(
             "PVISOR_KRUNFW_PATH"
         ):

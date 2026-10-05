@@ -378,6 +378,39 @@ def test_cargo_command_selects_static_musl_on_linux(monkeypatch):
 
 
 @pytest.mark.parametrize(
+    "soft,hard,expected_soft",
+    [(1024, 32_768, 16_384), (1024, 4096, 4096), (32_768, 32_768, 32_768)],
+)
+def test_zig_linker_inherits_file_limit_without_changing_callers_limit(
+    soft, hard, expected_soft
+):
+    resource = pytest.importorskip("resource")
+    caller_limits = resource.getrlimit(resource.RLIMIT_NOFILE)
+    if caller_limits[1] != resource.RLIM_INFINITY and caller_limits[1] < hard:
+        pytest.skip("test requires a sufficient open-file hard limit")
+    # Lower limits only in a disposable build process, then observe what its
+    # linker child inherits. The calling shell/pytest limit must stay intact.
+    code = (
+        "import json, resource, subprocess, sys\n"
+        f"sys.path.insert(0, {str(ROOT / 'scripts/packaging')!r})\n"
+        "from stage_wheel_binaries import _prepare_zig_file_limit\n"
+        f"resource.setrlimit(resource.RLIMIT_NOFILE, ({soft}, {hard}))\n"
+        "_prepare_zig_file_limit()\n"
+        "child = subprocess.check_output([sys.executable, '-c', "
+        "'import json, resource; print(json.dumps(resource.getrlimit(resource.RLIMIT_NOFILE)))'])\n"
+        "print(child.decode().strip())\n"
+    )
+    result = subprocess.run(
+        [sys.executable, "-c", code], capture_output=True, text=True, check=True, timeout=30
+    )
+
+    import json
+
+    assert json.loads(result.stdout) == [expected_soft, hard]
+    assert resource.getrlimit(resource.RLIMIT_NOFILE) == caller_limits
+
+
+@pytest.mark.parametrize(
     "headers,dynamic",
     [
         ("INTERP", ""),

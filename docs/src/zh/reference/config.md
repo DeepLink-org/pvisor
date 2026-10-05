@@ -103,7 +103,7 @@ pvisor inspect ../stage-config-001 -- cat result.txt
 | `container` 可选字段 | `rootfs`、`pvisor_binary`、`platform`、`workdir`、`user` |
 | `container.mounts` 每项 | `source`、`target`，`read_only = false` |
 | `vm` | `memory_mib = 2048`，`cpus = 2`，`rootfs_immutable = false`，`ram_compression = false` |
-| `vm` 可选字段 | `rootfs`、`image`、`image_store`、`library_dir`、`ram_backing`、`memory_pool`、`snapshot_filesystem_pool` |
+| `vm` 可选字段 | `rootfs`、`image`、`image_store`、`library_dir`、`ram_backing`、`memory_pool`、`node_socket`、`snapshot_filesystem_pool` |
 
 `container.platform` 取 `linux-amd64` 或 `linux-arm64`；`container.network` 取 `host`、`bridge` 或 `none`。Linux container 的注入二进制必须与 rootfs 的架构和 ABI 匹配。
 
@@ -164,6 +164,7 @@ VM 的内存以 MiB 为单位，CPU 是正整数。`ram_backing` 保存 RAM 文�
 | `vm.ram_compression` | `bool` | `false` | Seekable 压缩 backing；`--vm-ram-compression` |
 | `vm.memory_pool` | `Option<PathBuf>` | `未设置` | 实验性 macOS pool socket；`--vm-memory-pool` |
 | `vm.snapshot_filesystem_pool` | `Option<PathBuf>` | `未设置` | 宿主管理的不可变快照 lower 池；仅 Linux x86-64 无网络私有 RAM 配置；通过配置或 SDK 设置 |
+| `vm.node_socket` | `Option<PathBuf>` | `未设置` | 同宿主 node 资源服务 socket；恢复时保留共享只读 RAM backing 的引用，直到 native VM 退出；通过配置或 SDK 设置 |
 | `vm.rootfs` | `Option<PathBuf>` | `未设置` | Linux 根目录；Linux CLI 默认宿主 `/`；`--rootfs` |
 | `vm.image` | `Option<String>` | `未设置` | OCI 镜像，替代 rootfs 目录；`--rootfs IMAGE` |
 | `vm.image_store` | `Option<PathBuf>` | `未设置` | OCI 缓存路径；`--vm-image-store` |

@@ -1,7 +1,10 @@
 # 以 Job 为核心的检查点与分叉命令设计
 
+> CLI 更新：独立 `pvisor snapshot` 已删除。以下旧接口/测量属于记录中的历史制品，不是当前可执行指南；当前入口与能力范围见[CLI 参考](../reference/cli.md)。
+
+
 > 状态：分阶段实现中。2026-10-03。工作区检查点与命令管理已接入；普通 Job 的完整 execution 保存/恢复仍未接通。
-> 用户已接受该设计，并追加约束：`run` 尽可能不变。当前 `pvisor snapshot` 仍是独立 VM 入口；本文定义其接入 Job 生命周期后的目标接口。完整快照、持久压缩去重和私有副本分叉的已有实现作为底座，不因此宣称普通 Job 已可保存。
+> 用户已接受该设计，并追加约束：`run` 尽可能不变。独立 `pvisor snapshot` 已删除；本文保留完整执行能力接入 Job 生命周期的目标接口。完整快照、持久压缩去重和私有副本分叉的已有实现作为底座，不因此宣称普通 Job 已可保存。
 
 ## 1. 对象与基本约束
 
@@ -95,7 +98,7 @@ pvisor run [现有运行、策略、记录与资源选项] \
 
 run 的参数解析、默认 executor、命令与环境、CPU/内存、stdio、TUI、策略安装、stage 选择与结果接受语义尽可能保持。它不因“以后可能保存”而静默关闭 DAX、网络或设备，不把 rootfs 改成另一种视图，也不默认开启压缩/pager或完整复制所有输入。
 
-首版支持矩阵仍限定经过验收的配置；完整快照、Run/Attempt/Bundle、stage、文件版本与前像归属接通后才声明对应能力。当前独立 snapshot runner 不构成普通 Job 已接通的依据。
+首版支持矩阵仍限定经过验收的配置；完整快照、Run/Attempt/Bundle、stage、文件版本与前像归属接通后才声明对应能力。历史独立 snapshot runner 不构成普通 Job 已接通的依据。
 
 保存请求分两层检查：启动时记录静态能力；操作时核对动态条件（活跃连接、文件句柄、设备在途访问、兼容性、空间和执行权）。不满足时返回具体原因，保留原 Job 继续执行；不能重启工作负载来补装能力，也不能静默降低隔离政策。
 
@@ -324,7 +327,7 @@ pvisor apply ./stage/task --all
 4. 交付execution create/fork的capture-and-continue事务，共用捕获实现；stage私有复制为基线，增量和COW在后端逐步优化。
 5. 交付checkpoint引用、删除/GC及历史选择。改变内部布局时保留旧Job读取能力，不能直接把旧逻辑checkpoint解释成execution。
 6. `status --review`保留为review兼容入口。`fork --checkpoint`保留，但要求checkpoint类型匹配显式state。
-7. 当前snapshot命令保留一个迁移窗口并告知它的独立实例边界，不映射为新Job而伪造记录。新Job流程闭合后，从主要帮助页移除并转为隐藏旧入口；旧对象导入需显式校验兼容性、来源与文件接受信息。
+7. 独立 snapshot 命令已删除，不保留隐藏 legacy 前端。旧对象仍由存储 SDK 验证兼容性、来源与引用，不伪造普通 Job 记录；迁移能力需明确验收。
 
 迁移阶段不提供看似统一、实际绕过stage的run别名。每条新命令开放前须有Job生命周期、文件接受和真实VM验收；未支持的平台/配置返回能力错误。
 
@@ -372,6 +375,6 @@ Job与Attempt记录可以增加版本化、兼容读取的能力和生命周期�
 2. 通过现有控制通道和 supervisor 实现 capture-and-continue、源 runner 退出确认、suspended head 与新 Attempt 的执行权交接。
 3. execution checkpoint 的 Job 归属、共享内容引用、删除/全库 GC、恢复失败持久状态及真实 Job VM 验收。
 
-旧 `snapshot` 继续保留迁移窗口，其完整副本对象没有被伪装成 Job checkpoint。普通 Job 完整执行路径通过验收后，才从主帮助中隐藏旧入口。
+旧 `snapshot` 命令已删除，其完整副本存储对象仍由底层 SDK 使用，没有被转换成 Job checkpoint。普通 Job 的完整执行恢复仍取决于 execution profile 的能力与验收。
 
 本轮验证：`just fmt` 通过；核心与 TUI 在启用 Gateway 下的严格 Clippy 通过；`just test pvisor` 最终 319 项通过、4 项跳过。新增测试包括真实文件分叉、前像复制、分支引用与 drop 保留、重复请求、损坏 manifest 和能力拒绝无状态改变。测试期间发现并修正既有 vsock 用例对后台 worker 调度的错误假设，改为检查队列完成和实际 RST 内容；内存诊断用例曾因页状态变动返回 WouldBlock，随后回归通过。没有以这些测试宣称普通 Job 完整 VM 保存/恢复已验收。

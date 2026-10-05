@@ -1,12 +1,12 @@
 use crate::sys;
 use pvisor_core::overlay::{PathFingerprint, PathPreimage, XattrFingerprint};
 use sha2::{Digest, Sha256};
-use std::collections::{BTreeSet, HashMap};
+use std::collections::{BTreeMap, BTreeSet, HashMap};
 use std::ffi::{OsStr, OsString};
 use std::fs::{self, File, Metadata, OpenOptions};
 use std::io::{self, Read, Write};
 use std::os::unix::ffi::{OsStrExt, OsStringExt};
-use std::os::unix::fs::{MetadataExt, OpenOptionsExt, PermissionsExt};
+use std::os::unix::fs::{FileTypeExt, MetadataExt, OpenOptionsExt, PermissionsExt};
 use std::path::{Component, Path, PathBuf};
 use std::sync::Mutex;
 use std::sync::atomic::{AtomicU64, Ordering};
@@ -23,7 +23,7 @@ const PREIMAGE_FORMAT: &[u8] = b"{\"pvisor_preimage_format\":2}\n";
 
 fn compact_preimages(directory: &Path) -> io::Result<bool> {
     let marker = directory.join("entries").join(PREIMAGE_FORMAT_NAME);
-    match fs::symlink_metadata(&marker) {
+    match crate::backend::symlink_metadata(&marker) {
         Ok(metadata) => {
             if !metadata.is_file() {
                 return Err(error(libc::EINVAL));
@@ -37,7 +37,7 @@ fn compact_preimages(directory: &Path) -> io::Result<bool> {
             if bytes != PREIMAGE_FORMAT {
                 return Err(error(libc::EINVAL));
             }
-            for entry in fs::read_dir(directory.join("entries"))? {
+            for entry in crate::backend::read_dir(directory.join("entries"))? {
                 let entry = entry?;
                 if entry.path().extension() == Some(OsStr::new("json"))
                     && entry.file_name() != OsStr::new(PREIMAGE_FORMAT_NAME)
@@ -48,11 +48,11 @@ fn compact_preimages(directory: &Path) -> io::Result<bool> {
                     ));
                 }
             }
-            fs::symlink_metadata(directory.join(PREIMAGE_LOG_NAME))?;
+            crate::backend::symlink_metadata(directory.join(PREIMAGE_LOG_NAME))?;
             Ok(true)
         }
         Err(error) if error.kind() == io::ErrorKind::NotFound => {
-            match fs::symlink_metadata(directory.join(PREIMAGE_LOG_NAME)) {
+            match crate::backend::symlink_metadata(directory.join(PREIMAGE_LOG_NAME)) {
                 Ok(_) => Err(io::Error::new(
                     io::ErrorKind::InvalidData,
                     "compact preimage log has no format marker",
@@ -210,7 +210,7 @@ fn error(errno: i32) -> io::Error {
 }
 
 fn exists(path: &Path) -> bool {
-    fs::symlink_metadata(path).is_ok()
+    crate::backend::symlink_metadata(path).is_ok()
 }
 
 /// A candidate layer must not follow symlinks in any relative ancestor,
@@ -294,9 +294,10 @@ fn layer_metadata_with_parents(
             }
             profile.add("layer_parent_stats", 1);
             let observation = if parents.is_some() {
-                sys::parent_directory_identity(&path, profile)
+                crate::backend::prepare_metadata(&path)
+                    .and_then(|()| sys::parent_directory_identity(&path, profile))
             } else {
-                fs::symlink_metadata(&path).map(|metadata| {
+                crate::backend::symlink_metadata(&path).map(|metadata| {
                     metadata.is_dir().then_some(BackingIdentity {
                         device: metadata.dev(),
                         inode: metadata.ino(),
@@ -330,7 +331,7 @@ fn layer_metadata_with_parents(
         root.join(rel)
     };
     profile.add("layer_leaf_stats", 1);
-    match fs::symlink_metadata(&path) {
+    match crate::backend::symlink_metadata(&path) {
         Ok(metadata) => {
             if metadata.is_dir()
                 && let Some(checked) = &mut checked_directories
@@ -430,8 +431,27 @@ fn fingerprint_with_index(
     };
     drop(metadata_span);
     let xattrs_span = profile.span("fingerprint_xattrs");
-    let xattrs = Some(fingerprint_xattrs(&path)?);
+    let (xattrs, saved_identity) = fingerprint_xattrs(&path)?;
+    let xattrs = Some(xattrs);
     drop(xattrs_span);
+    let remote = crate::backend::attributes(&path)?;
+    let native_mode = saved_identity.map_or(metadata.mode(), |a| {
+        let kind = metadata.mode() & 0o170000;
+        if a.mode & 0o170000 == 0 {
+            kind | a.mode
+        } else {
+            a.mode
+        }
+    });
+    let mode = remote
+        .as_ref()
+        .map_or(native_mode, |a| a.kind.mode() | u32::from(a.perm));
+    let uid = remote
+        .as_ref()
+        .map_or(saved_identity.map_or(metadata.uid(), |a| a.uid), |a| a.uid);
+    let gid = remote
+        .as_ref()
+        .map_or(saved_identity.map_or(metadata.gid(), |a| a.gid), |a| a.gid);
     let kind = metadata.file_type();
     if kind.is_file() {
         let _content_span = profile.span("fingerprint_content");
@@ -441,6 +461,7 @@ fn fingerprint_with_index(
             digest
         } else {
             let mut digest = Sha256::new();
+            crate::backend::materialize_file(&path)?;
             let mut file = OpenOptions::new()
                 .read(true)
                 .custom_flags(libc::O_NOFOLLOW)
@@ -458,48 +479,58 @@ fn fingerprint_with_index(
         };
         return Ok(PathFingerprint::File {
             sha256,
-            mode: metadata.mode(),
-            uid: metadata.uid(),
-            gid: metadata.gid(),
+            mode,
+            uid,
+            gid,
             xattrs,
         });
     }
     if kind.is_dir() {
+        let (mtime_seconds, mtime_nanoseconds) = remote
+            .as_ref()
+            .map_or((metadata.mtime(), metadata.mtime_nsec()), |a| {
+                sys::unix_timestamp(a.mtime)
+            });
         return Ok(PathFingerprint::Directory {
-            mode: metadata.mode(),
-            uid: metadata.uid(),
-            gid: metadata.gid(),
-            mtime_seconds: metadata.mtime(),
-            mtime_nanoseconds: metadata.mtime_nsec(),
+            mode,
+            uid,
+            gid,
+            mtime_seconds,
+            mtime_nanoseconds,
             xattrs,
         });
     }
     if kind.is_symlink() {
         return Ok(PathFingerprint::Symlink {
-            target: fs::read_link(&path)?.into_os_string().into_vec(),
-            uid: metadata.uid(),
-            gid: metadata.gid(),
+            target: crate::backend::read_link(&path)?
+                .into_os_string()
+                .into_vec(),
+            uid,
+            gid,
             xattrs,
         });
     }
     Ok(PathFingerprint::Other {
-        mode: metadata.mode(),
-        uid: metadata.uid(),
-        gid: metadata.gid(),
+        mode,
+        uid,
+        gid,
         rdev: metadata.rdev(),
         xattrs,
     })
 }
 
-fn fingerprint_xattrs(path: &Path) -> io::Result<XattrFingerprint> {
+fn fingerprint_xattrs(
+    path: &Path,
+) -> io::Result<(XattrFingerprint, Option<crate::backend::UnixIdentity>)> {
     let names = match sys::list_xattrs(path) {
         Ok(names) => names,
         Err(error) if error.raw_os_error() == Some(libc::ENOTSUP) => {
-            return Ok(XattrFingerprint::Unsupported);
+            return Ok((XattrFingerprint::Unsupported, None));
         }
         Err(error) => return Err(error),
     };
     let mut entries = Vec::new();
+    let mut identity = None;
     for name in names {
         let name = OsStr::from_bytes(&name);
         if OPAQUE_XATTRS
@@ -509,10 +540,13 @@ fn fingerprint_xattrs(path: &Path) -> io::Result<XattrFingerprint> {
             continue;
         }
         let value = sys::get_xattr(path, name)?;
+        if name == OsStr::new("user.containers.override_stat") {
+            identity = Some(crate::backend::UnixIdentity::parse(&value)?);
+        }
         entries.push((name.as_bytes().to_vec(), sha256_hex(&value)));
     }
     entries.sort();
-    Ok(XattrFingerprint::Values { entries })
+    Ok((XattrFingerprint::Values { entries }, identity))
 }
 
 /// Load first observations. Entries for mutated paths are synced before mutation.
@@ -521,7 +555,7 @@ pub fn load_preimages(directory: &Path) -> io::Result<Vec<PathPreimage>> {
         return crate::preimage_log::PreimageLog::read(&directory.join(PREIMAGE_LOG_NAME));
     }
     let entries = directory.join("entries");
-    let iterator = match fs::read_dir(&entries) {
+    let iterator = match crate::backend::read_dir(&entries) {
         Ok(iterator) => iterator,
         Err(error) if error.kind() == io::ErrorKind::NotFound => return Ok(Vec::new()),
         Err(error) => return Err(error),
@@ -695,14 +729,16 @@ impl OverlayCore {
         if initialize {
             fs::create_dir_all(&upper)?;
         }
-        let upper_was_empty = fs::read_dir(&upper)?.next().is_none();
+        let upper_was_empty = crate::backend::read_dir(&upper)?.next().is_none();
         let compact = if matches!(mode, BuildMode::Compact) && upper_was_empty {
             match preimage_dir.as_ref() {
-                Some(directory) => match fs::symlink_metadata(directory.join("entries")) {
-                    Err(error) if error.kind() == io::ErrorKind::NotFound => true,
-                    Ok(_) => false,
-                    Err(error) => return Err(error),
-                },
+                Some(directory) => {
+                    match crate::backend::symlink_metadata(directory.join("entries")) {
+                        Err(error) if error.kind() == io::ErrorKind::NotFound => true,
+                        Ok(_) => false,
+                        Err(error) => return Err(error),
+                    }
+                }
                 None => false,
             }
         } else {
@@ -752,7 +788,7 @@ impl OverlayCore {
             }
         }
         if let Some(work) = &work {
-            for entry in fs::read_dir(work)? {
+            for entry in crate::backend::read_dir(work)? {
                 let entry = entry?;
                 if initialize
                     && entry
@@ -761,7 +797,7 @@ impl OverlayCore {
                         .starts_with(TEMP_PREFIX.as_bytes())
                 {
                     let path = entry.path();
-                    if fs::symlink_metadata(&path)?.is_dir() {
+                    if crate::backend::symlink_metadata(&path)?.is_dir() {
                         fs::remove_dir_all(path)?;
                     } else {
                         fs::remove_file(path)?;
@@ -773,7 +809,7 @@ impl OverlayCore {
             if initialize {
                 fs::create_dir_all(directory.join("entries"))?;
             } else {
-                fs::read_dir(directory.join("entries"))?;
+                crate::backend::read_dir(directory.join("entries"))?;
             }
             if initialize && upper_was_empty && !preimage_journal_is_complete(directory) {
                 let marker = directory.join(PREIMAGE_COMPLETE_MARKER);
@@ -799,7 +835,7 @@ impl OverlayCore {
             .map(|directory| {
                 if compact_preimages(directory)? {
                     // A registered log must exist. Never recreate a lost journal.
-                    fs::symlink_metadata(directory.join(PREIMAGE_LOG_NAME))?;
+                    crate::backend::symlink_metadata(directory.join(PREIMAGE_LOG_NAME))?;
                     crate::preimage_log::PreimageLog::open(&directory.join(PREIMAGE_LOG_NAME))
                         .map(|log| Some(Mutex::new(log)))
                 } else {
@@ -823,10 +859,10 @@ impl OverlayCore {
             preimage_lock: Mutex::new(BTreeSet::new()),
         };
         if initialize
-            && fs::read_dir(&core.upper)?.next().is_none()
+            && crate::backend::read_dir(&core.upper)?.next().is_none()
             && let Some(root) = core.layout.lowers.first()
         {
-            let metadata = fs::symlink_metadata(root)?;
+            let metadata = crate::backend::symlink_metadata(root)?;
             core.copy_metadata(root, &core.upper, &metadata)?;
         }
         if compact {
@@ -865,8 +901,10 @@ impl OverlayCore {
         let Some(directory) = self.preimage_dir.as_ref() else {
             return Ok(self);
         };
-        if fs::read_dir(directory.join("entries"))?.next().is_some()
-            || fs::read_dir(&self.upper)?.any(|entry| {
+        if crate::backend::read_dir(directory.join("entries"))?
+            .next()
+            .is_some()
+            || crate::backend::read_dir(&self.upper)?.any(|entry| {
                 entry.map_or(true, |entry| {
                     entry.file_name() != OsStr::new(ROOT_METADATA_NAME)
                 })
@@ -953,7 +991,7 @@ impl OverlayCore {
                         && layer_path(root, relative).ok().flatten().as_ref() == Some(path)
                 })
             });
-            let meta = fs::symlink_metadata(path)?;
+            let meta = crate::backend::symlink_metadata(path)?;
             if !owned
                 || !meta.is_file()
                 || meta.nlink() < 2
@@ -985,7 +1023,7 @@ impl OverlayCore {
                     return Err(error(libc::EINVAL));
                 }
                 let path = layer_path(&self.upper, relative)?.ok_or_else(|| error(libc::ENOENT))?;
-                let metadata = fs::symlink_metadata(&path)?;
+                let metadata = crate::backend::symlink_metadata(&path)?;
                 let current = (metadata.dev(), metadata.ino());
                 if !metadata.is_file() || identity.is_some_and(|expected| expected != current) {
                     return Err(error(libc::EINVAL));
@@ -1089,7 +1127,7 @@ impl OverlayCore {
             .join("entries")
             .join(format!("{}.json", sha256_hex(path_bytes)));
         let lookup = self.profile.span("journal_lookup");
-        let existing = fs::symlink_metadata(&destination);
+        let existing = crate::backend::symlink_metadata(&destination);
         drop(lookup);
         match existing {
             Ok(metadata) => {
@@ -1292,14 +1330,19 @@ impl OverlayCore {
     // require scanning every lower and tracking external changes to avoid alias bypasses.
     fn require_unaliased(&self, path: &Path) -> io::Result<()> {
         if self.access.has_denials() {
-            let metadata = fs::symlink_metadata(path)?;
-            self.require_unaliased_metadata(&metadata)?;
+            let metadata = crate::backend::symlink_metadata(path)?;
+            if crate::backend::link_count(path, metadata.nlink())? > 1 && metadata.is_file() {
+                return Err(error(libc::EACCES));
+            }
         }
         Ok(())
     }
 
-    fn require_unaliased_metadata(&self, metadata: &Metadata) -> io::Result<()> {
-        if self.access.has_denials() && metadata.is_file() && metadata.nlink() > 1 {
+    fn require_unaliased_metadata(&self, path: &Path, metadata: &Metadata) -> io::Result<()> {
+        if self.access.has_denials()
+            && metadata.is_file()
+            && crate::backend::link_count(path, metadata.nlink())? > 1
+        {
             return Err(error(libc::EACCES));
         }
         Ok(())
@@ -1316,14 +1359,14 @@ impl OverlayCore {
         let mut names = BTreeSet::new();
         for root in std::iter::once(&self.upper).chain(&self.layout.lowers) {
             if old.ancestors().skip(1).any(|parent| {
-                fs::symlink_metadata(root.join(parent)).is_ok_and(|meta| !meta.is_dir())
+                crate::backend::symlink_metadata(root.join(parent)).is_ok_and(|meta| !meta.is_dir())
             }) {
                 continue;
             }
             let path = root.join(old);
-            match fs::symlink_metadata(&path) {
+            match crate::backend::symlink_metadata(&path) {
                 Ok(metadata) if metadata.is_dir() => {
-                    for entry in fs::read_dir(path)? {
+                    for entry in crate::backend::read_dir(path)? {
                         let name = entry?.file_name();
                         if !Self::is_whiteout_name(&name) {
                             names.insert(name);
@@ -1508,7 +1551,7 @@ impl OverlayCore {
                     path: self.upper.clone(),
                     is_upper: true,
                 },
-                metadata: fs::symlink_metadata(&self.upper)?,
+                metadata: crate::backend::symlink_metadata(&self.upper)?,
                 layer: 0,
             }));
         }
@@ -1541,7 +1584,7 @@ impl OverlayCore {
             else {
                 return Ok(None);
             };
-            self.require_unaliased_metadata(&item.metadata)?;
+            self.require_unaliased_metadata(&item.resolved.path, &item.metadata)?;
             if index + 1 != count && !item.metadata.is_dir() {
                 return Err(error(libc::ENOTDIR));
             }
@@ -1669,25 +1712,34 @@ impl OverlayCore {
         destination: &Path,
         metadata: &Metadata,
     ) -> io::Result<()> {
+        let remote = crate::backend::attributes(source)?;
+        let uid = remote.as_ref().map_or(metadata.uid(), |a| a.uid);
+        let gid = remote.as_ref().map_or(metadata.gid(), |a| a.gid);
+        let mode = remote
+            .as_ref()
+            .map_or(metadata.mode(), |a| a.kind.mode() | u32::from(a.perm));
         let nofollow = metadata.file_type().is_symlink();
-        if let Err(err) = sys::chown(destination, metadata.uid(), metadata.gid(), nofollow)
+        if let Err(err) = sys::chown(destination, uid, gid, nofollow)
             && !ignorable_ownership_error(&err)
         {
             return Err(err);
         }
         if !nofollow {
-            fs::set_permissions(
-                destination,
-                fs::Permissions::from_mode(metadata.mode() & 0o7777),
-            )?;
+            fs::set_permissions(destination, fs::Permissions::from_mode(mode & 0o7777))?;
         }
         if let Err(err) = sys::copy_xattrs(source, destination)
             && !ignorable_metadata_error(&err)
         {
             return Err(err);
         }
-        let atime = sys::unix_time(metadata.atime(), metadata.atime_nsec());
-        let mtime = sys::unix_time(metadata.mtime(), metadata.mtime_nsec());
+        let atime = remote.as_ref().map_or_else(
+            || sys::unix_time(metadata.atime(), metadata.atime_nsec()),
+            |a| a.atime,
+        );
+        let mtime = remote.as_ref().map_or_else(
+            || sys::unix_time(metadata.mtime(), metadata.mtime_nsec()),
+            |a| a.mtime,
+        );
         if let Err(err) = sys::set_times(destination, Some(atime), Some(mtime), nofollow)
             && !ignorable_metadata_error(&err)
         {
@@ -1707,13 +1759,13 @@ impl OverlayCore {
             current.push(component.as_os_str());
             let upper = self.upper_path(&current);
             if exists(&upper) {
-                if !fs::symlink_metadata(&upper)?.is_dir() {
+                if !crate::backend::symlink_metadata(&upper)?.is_dir() {
                     return Err(error(libc::ENOTDIR));
                 }
                 continue;
             }
             let resolved = self.resolve(&current).ok_or_else(|| error(libc::ENOENT))?;
-            let metadata = fs::symlink_metadata(&resolved.path)?;
+            let metadata = crate::backend::symlink_metadata(&resolved.path)?;
             if !metadata.is_dir() {
                 return Err(error(libc::ENOTDIR));
             }
@@ -1751,7 +1803,7 @@ impl OverlayCore {
             return Ok(resolved.path);
         }
         self.ensure_upper_parents(rel)?;
-        let metadata = fs::symlink_metadata(&resolved.path)?;
+        let metadata = crate::backend::symlink_metadata(&resolved.path)?;
         let parent = upper.parent().ok_or_else(|| error(libc::EINVAL))?;
         let temporary = self.temporary_path(parent);
         let result = (|| {
@@ -1760,10 +1812,11 @@ impl OverlayCore {
             if kind.is_dir() {
                 fs::create_dir(&temporary)?;
             } else if kind.is_symlink() {
-                std::os::unix::fs::symlink(fs::read_link(&resolved.path)?, &temporary)?;
+                std::os::unix::fs::symlink(crate::backend::read_link(&resolved.path)?, &temporary)?;
             } else if kind.is_file() {
                 let identity = (metadata.dev(), metadata.ino());
-                let existing = if metadata.nlink() > 1 {
+                let existing = if crate::backend::link_count(&resolved.path, metadata.nlink())? > 1
+                {
                     self.copied_hard_links.lock().ok().and_then(|links| {
                         links
                             .get(&identity)?
@@ -1784,6 +1837,7 @@ impl OverlayCore {
                         .create_new(true)
                         .mode(metadata.mode() & 0o7777);
                     let mut destination = options.open(&temporary)?;
+                    crate::backend::materialize_file(&resolved.path)?;
                     let mut source = OpenOptions::new()
                         .read(true)
                         .custom_flags(libc::O_NOFOLLOW)
@@ -1799,7 +1853,7 @@ impl OverlayCore {
             }
             fs::rename(&temporary, &upper)?;
             if metadata.is_file()
-                && metadata.nlink() > 1
+                && crate::backend::link_count(&resolved.path, metadata.nlink())? > 1
                 && let Ok(mut links) = self.copied_hard_links.lock()
             {
                 links
@@ -1824,68 +1878,100 @@ impl OverlayCore {
         result.map(|()| upper)
     }
 
-    fn collect_directory_names(&self, rel: &Path) -> io::Result<Vec<OsString>> {
+    fn collect_directory_items<T>(
+        &self,
+        rel: &Path,
+        mut item: impl FnMut(fs::DirEntry) -> io::Result<T>,
+    ) -> io::Result<Vec<(OsString, T)>> {
         let _span = self.profile.span("list_entries");
         self.require_visible(rel)?;
         let metadata = self.metadata(rel)?;
         if !metadata.is_dir() {
             return Err(error(libc::ENOTDIR));
         }
-        let mut names = BTreeSet::new();
+        let mut names = BTreeMap::new();
         if !self.is_opaque(rel) {
             for lower in &self.layout.lowers {
                 let Some(directory) = layer_path(lower, rel)? else {
                     continue;
                 };
-                if !fs::symlink_metadata(&directory)?.is_dir() {
+                if !crate::backend::symlink_metadata(&directory)?.is_dir() {
                     continue;
                 }
-                for entry in fs::read_dir(directory)? {
+                for entry in crate::backend::read_dir(directory)? {
                     let entry = entry?;
                     let name = entry.file_name();
-                    if !Self::is_whiteout_name(&name) {
-                        names.insert(name);
+                    if !Self::is_whiteout_name(&name)
+                        && let std::collections::btree_map::Entry::Vacant(slot) = names.entry(name)
+                    {
+                        slot.insert(item(entry)?);
                     }
                 }
             }
         }
         if let Some(directory) = layer_path(&self.upper, rel)? {
-            for entry in fs::read_dir(directory)? {
+            for entry in crate::backend::read_dir(directory)? {
                 let entry = entry?;
                 let name = entry.file_name();
                 if !Self::is_whiteout_name(&name) {
-                    names.insert(name);
+                    names.insert(name, item(entry)?);
                 }
             }
         }
-        let names = names
-            .into_iter()
-            .filter(|name| {
-                !self.is_whiteouted(rel, name)
-                    && Self::child(rel, name).is_ok_and(|child| !self.is_excluded(&child))
-            })
-            .collect::<Vec<_>>();
-        Ok(names)
+        Ok(names.into_iter().collect())
     }
 
-    /// Snapshot candidate names only. Callers must check current visibility and
-    /// backing metadata before returning each entry; names are not capabilities.
-    pub fn directory_candidates(&self, rel: &Path) -> io::Result<Vec<OsString>> {
-        let names = self.collect_directory_names(rel)?;
-        if !self.access.has_denials() {
-            return Ok(names);
-        }
-        // Preserve denied hard-link filtering at OPENDIR for protected views.
-        // Unrestricted views can defer all child metadata until enumeration.
-        let mut visible = Vec::with_capacity(names.len());
-        for name in names {
+    fn collect_directory_names(&self, rel: &Path) -> io::Result<Vec<OsString>> {
+        Ok(self
+            .collect_directory_items(rel, |_| Ok(()))?
+            .into_iter()
+            .map(|(name, ())| name)
+            .collect())
+    }
+
+    /// Snapshot names and directory types without allocating child inodes or
+    /// reading full child metadata. Types have the same snapshot semantics as
+    /// plain READDIR; attribute-bearing replies must resolve fresh metadata.
+    pub fn directory_candidates(&self, rel: &Path) -> io::Result<Vec<(OsString, u32)>> {
+        let candidates = self.collect_directory_items(rel, |entry| {
+            let kind = entry.file_type()?;
+            Ok(if kind.is_dir() {
+                libc::DT_DIR
+            } else if kind.is_file() {
+                libc::DT_REG
+            } else if kind.is_symlink() {
+                libc::DT_LNK
+            } else if kind.is_fifo() {
+                libc::DT_FIFO
+            } else if kind.is_socket() {
+                libc::DT_SOCK
+            } else if kind.is_block_device() {
+                libc::DT_BLK
+            } else if kind.is_char_device() {
+                libc::DT_CHR
+            } else {
+                libc::DT_UNKNOWN
+            } as u32)
+        })?;
+        let mut visible = Vec::with_capacity(candidates.len());
+        for (name, type_) in candidates {
             let child = Self::child(rel, &name)?;
-            if let Ok(Some(backing)) = self.resolve_component_metadata(&child)
-                && self.require_unaliased_metadata(&backing.metadata).is_ok()
-            {
-                self.require_visible(&child)?;
-                visible.push(name);
+            if self.is_whiteouted(rel, &name) || self.is_excluded(&child) {
+                continue;
             }
+            // Protected views still filter denied hard links at OPENDIR.
+            if self.access.has_denials() {
+                if let Ok(Some(backing)) = self.resolve_component_metadata(&child)
+                    && self
+                        .require_unaliased_metadata(&backing.resolved.path, &backing.metadata)
+                        .is_ok()
+                {
+                    self.require_visible(&child)?;
+                } else {
+                    continue;
+                }
+            }
+            visible.push((name, type_));
         }
         Ok(visible)
     }
@@ -1916,7 +2002,7 @@ impl OverlayCore {
         let mut parents = Vec::with_capacity(child.components().count().saturating_sub(1));
         match self.resolve_component_metadata_with_parents(&child, Some(&mut parents), None) {
             Ok(Some(backing)) => {
-                self.require_unaliased_metadata(&backing.metadata)?;
+                self.require_unaliased_metadata(&backing.resolved.path, &backing.metadata)?;
                 self.require_visible(&child)?;
                 Ok(Some(BackingResolution {
                     entry: backing,
@@ -1945,7 +2031,9 @@ impl OverlayCore {
             // Match name filtering: denied/failed children are hidden. Never
             // convert an inaccessible child into an observed absence.
             if let Ok(Some(backing)) = self.resolve_component_metadata(&child)
-                && self.require_unaliased_metadata(&backing.metadata).is_ok()
+                && self
+                    .require_unaliased_metadata(&backing.resolved.path, &backing.metadata)
+                    .is_ok()
             {
                 if check_children {
                     self.require_visible(&child)?;
@@ -2106,7 +2194,7 @@ impl OverlayCore {
             self.require_tree_access(rel, rel)?;
         }
         let resolved = self.resolve(rel).ok_or_else(|| error(libc::ENOENT))?;
-        let metadata = fs::symlink_metadata(&resolved.path)?;
+        let metadata = crate::backend::symlink_metadata(&resolved.path)?;
         if directory {
             if !metadata.is_dir() {
                 return Err(error(libc::ENOTDIR));
@@ -2170,7 +2258,7 @@ impl OverlayCore {
             return Err(error(libc::EEXIST));
         }
         let source_meta = self.metadata(old)?;
-        let destination_meta = fs::symlink_metadata(&destination.path)?;
+        let destination_meta = crate::backend::symlink_metadata(&destination.path)?;
         match (source_meta.is_dir(), destination_meta.is_dir()) {
             (true, false) => return Err(error(libc::ENOTDIR)),
             (false, true) => return Err(error(libc::EISDIR)),
@@ -2183,7 +2271,7 @@ impl OverlayCore {
     }
 
     fn remove_physical(path: &Path) -> io::Result<()> {
-        if fs::symlink_metadata(path)?.is_dir() {
+        if crate::backend::symlink_metadata(path)?.is_dir() {
             fs::remove_dir_all(path)
         } else {
             fs::remove_file(path)
@@ -2420,7 +2508,7 @@ mod tests {
         fs::create_dir_all(base.join("dir")).unwrap();
         fs::write(base.join("dir/file"), b"original").unwrap();
         // Linux case-sensitive filesystems have no such alias to preserve.
-        if fs::symlink_metadata(base.join("DIR/FILE")).is_err() {
+        if crate::backend::symlink_metadata(base.join("DIR/FILE")).is_err() {
             return;
         }
         let digest = sha256_hex(b"original");
@@ -2714,7 +2802,12 @@ mod tests {
             let entries = load_preimages(&journal).unwrap();
             assert_eq!(entries.len(), 1);
             assert_eq!(entries[0].state, original);
-            assert_eq!(fs::read_dir(journal.join("entries")).unwrap().count(), 1);
+            assert_eq!(
+                crate::backend::read_dir(journal.join("entries"))
+                    .unwrap()
+                    .count(),
+                1
+            );
             fs::write(
                 loser.copy_up(Path::new("value")).unwrap(),
                 b"stale agent edit",
@@ -3171,7 +3264,10 @@ mod tests {
             .expect("read");
         assert_eq!(contents, b"payload");
         assert_eq!(
-            fs::symlink_metadata(&copied).expect("meta").mode() & 0o777,
+            crate::backend::symlink_metadata(&copied)
+                .expect("meta")
+                .mode()
+                & 0o777,
             0o751
         );
         if xattr_supported {
@@ -3740,7 +3836,7 @@ mod backing_resolution_tests {
             .zip(&resolved.parents)
         {
             path.push(component);
-            let metadata = fs::symlink_metadata(&path).unwrap();
+            let metadata = crate::backend::symlink_metadata(&path).unwrap();
             assert_eq!(
                 (identity.device, identity.inode),
                 (metadata.dev(), metadata.ino())
@@ -3807,7 +3903,7 @@ mod backing_resolution_tests {
             std::os::unix::fs::symlink("replacement", lower.join(rel)).unwrap();
             let backing = core.observe_read_for_backing_lookup(rel).unwrap();
             assert_eq!(
-                fs::read_link(backing.entry.resolved.path).unwrap(),
+                crate::backend::read_link(backing.entry.resolved.path).unwrap(),
                 Path::new("replacement")
             );
             if journaled {
@@ -3978,7 +4074,7 @@ mod backing_resolution_tests {
         assert_eq!(backing.entry.layer, 2);
         assert_eq!(backing.parents.len(), 2);
         for (identity, path) in backing.parents.iter().zip(["tree", "tree/branch"]) {
-            let metadata = fs::symlink_metadata(last.join(path)).unwrap();
+            let metadata = crate::backend::symlink_metadata(last.join(path)).unwrap();
             assert_eq!(identity.device, metadata.dev());
             assert_eq!(identity.inode, metadata.ino());
         }

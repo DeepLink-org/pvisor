@@ -15,14 +15,36 @@ pub(super) struct SharedRam {
     pub base: Option<Arc<crate::environment_snapshot::PinnedRamBlocks>>,
     // Drop the file before unmounting. PreparedRestore and its native mappings
     // must keep this entire owner alive until the runner is reaped.
-    _mount: SnapshotRamMount,
+    _mount: Option<SnapshotRamMount>,
+    _node: Option<crate::node::Pin>,
 }
 
 pub(super) fn acquire(
     store: &Path,
     snapshot_id: &str,
     published: &PublishedEnvironment,
+    node_socket: Option<&Path>,
+    filesystem_pool: Option<&Path>,
 ) -> anyhow::Result<Arc<SharedRam>> {
+    if let Some(socket) = node_socket {
+        // The caller already authenticated this publication; the service also
+        // checks it before looking up its cross-Worker owner.
+        let pin = crate::node::Pin::ram(
+            socket,
+            store,
+            snapshot_id,
+            published.manifest().compatibility.clone(),
+            filesystem_pool.map(Path::to_path_buf),
+        )?;
+        let file = std::fs::OpenOptions::new().read(true).open(pin.path())?;
+        return Ok(Arc::new(SharedRam {
+            path: pin.path().into(),
+            file: Arc::new(file),
+            base: published.ram_reader()?.compressed_base(),
+            _mount: None,
+            _node: Some(pin),
+        }));
+    }
     static MOUNTS: OnceLock<Mounts<(PathBuf, String), SharedRam>> = OnceLock::new();
     // The caller opens/validates the published reference on every restore,
     // before cache lookup. A live mount cannot authorize a deleted snapshot.
@@ -41,7 +63,8 @@ pub(super) fn acquire(
                 file: Arc::new(file),
                 path: mount.ram_path(),
                 base,
-                _mount: mount,
+                _mount: Some(mount),
+                _node: None,
             })
         })
 }

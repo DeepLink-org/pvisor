@@ -1,5 +1,7 @@
 #!/usr/bin/env python3
-"""Real KVM continuation, RAM/FD preservation, private forks and snapshot latency.
+"""Historical retired-snapshot harness; use an archived binary.
+
+Real KVM continuation, RAM/FD preservation, private forks and snapshot latency.
 
 Needs a prepared static guest binary built from snapshot_guest.rs. Uses a new
 output directory and a private copy of the CLI to pin compatibility identity.
@@ -27,6 +29,9 @@ parser.add_argument("--warmups", type=int, default=2)
 parser.add_argument("--memory", type=int, default=256)
 parser.add_argument("--cpus", type=int, default=2)
 args = parser.parse_args()
+legacy_help = subprocess.run([str(args.binary.resolve()), "snapshot", "--help"], capture_output=True, timeout=10)
+if legacy_help.returncode != 0:
+    parser.error("this historical harness requires an archived binary exposing the retired snapshot command")
 assert args.samples > 0 and args.warmups >= 0
 out = args.output.resolve()
 out.mkdir()

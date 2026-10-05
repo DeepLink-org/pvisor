@@ -27,4 +27,5 @@ review_project/
 review/
 tools/experiments/
 crates/pvisor-vm/upstream/
-docs/src/assets/benchmarks/full-ubuntu-qemu-20261004/ubuntu-workflows-private-tmp-20261004/evidence.tar.gz
+*.tar.gz
+*.log

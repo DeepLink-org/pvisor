@@ -1,5 +1,7 @@
 #!/usr/bin/env python3
-"""Linux KVM/FUSE snapshot stress and fault injection; never skips missing hardware.
+"""Historical retired-snapshot harness; use an archived binary.
+
+Linux KVM/FUSE snapshot stress and fault injection; never skips missing hardware.
 
 Use a new output directory and snapshot_stress_guest.rs compiled with panic=abort.
 Every launch, fault and assertion is journaled, including failures. The seed picks
@@ -40,6 +42,9 @@ def ipc_path(directory):
 
 class Harness:
     def __init__(self, args):
+        legacy_help = subprocess.run([str(args.binary.resolve()), "snapshot", "--help"], capture_output=True, timeout=10)
+        if legacy_help.returncode != 0:
+            raise ValueError("this historical harness requires an archived binary exposing the retired snapshot command")
         self.args = args
         self.root = args.output.resolve()
         self.root.mkdir(mode=0o700)

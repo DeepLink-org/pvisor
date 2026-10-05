@@ -1,5 +1,8 @@
 # 0006: Snapshot stages and reuse immutable bases
 
+> CLI update: the standalone `pvisor snapshot` entry is removed. Old interfaces/measurements below belong to their historical artifacts, not current executable instructions. See [CLI reference](../../reference/cli.md) for current entries and capability boundaries.
+
+
 **Status: accepted, initial CLI profile implemented.** 2026-10-04. Manifest v4/v5 and `pvisor snapshot` now persist complete stages with owned base references. Existing v1–v3 full-environment restore stays supported. Ordinary Job checkpoint transport, workspace integration and incremental stage/RAM persistence remain future work.
 
 ## Context

@@ -1,5 +1,5 @@
 #!/usr/bin/env python3
-"""Exercise the actual pvisor product CLI with a Linux command workload."""
+"""Historical standalone snapshot harness; requires an explicit archived binary."""
 import argparse
 import hashlib
 import json
@@ -16,15 +16,18 @@ ROOT = Path(__file__).resolve().parents[1]
 
 def main():
     parser = argparse.ArgumentParser()
+    parser.add_argument('--binary', type=Path, required=True, help='archived pvisor binary exposing the retired snapshot CLI')
     parser.add_argument('--ram-storage', choices=['raw', 'compressed'], default='raw')
     parser.add_argument('--fork', action='store_true')
     parser.add_argument('--eager-ram', action='store_true')
     args = parser.parse_args()
-    subprocess.run(['cargo', 'build', '-p', 'pvisor', '--bin', 'pvisor', '--locked', '--offline'], cwd=ROOT, check=True)
+    check = subprocess.run([str(args.binary.resolve()), 'snapshot', '--help'], capture_output=True, timeout=10)
+    if check.returncode != 0:
+        parser.error('this historical harness requires an archived binary with the retired snapshot command')
     with tempfile.TemporaryDirectory(prefix='pvisor-cli-snapshot-') as directory:
         base = Path(directory)
         binary = base / 'pvisor'
-        shutil.copyfile(ROOT/'target/debug/pvisor', binary)
+        shutil.copyfile(args.binary.resolve(), binary)
         binary.chmod(0o700)
         subprocess.run(['codesign', '--force', '--sign', '-', '--entitlements', str(ROOT/'crates/pvisor/macos-hypervisor.entitlements'), str(binary)], check=True)
         source = base/'input-rootfs'

@@ -1,0 +1,1284 @@
+--- a/Cargo.toml
++++ b/Cargo.toml
+@@ -134,5 +134,14 @@
+ [profile.release.build-override]
+ strip = "none"
+ 
++# Runtime-performance alternative to the size-oriented distribution profile.
++# Keep the release ABI/feature settings so the two artifacts can be benchmarked.
++[profile.performance]
++inherits = "release"
++opt-level = 3
++
++[profile.performance.build-override]
++strip = "none"
++
+ [patch.crates-io]
+ fuser = { path = "vendor/fuser" }
+--- a/justfile
++++ b/justfile
+@@ -8,14 +8,15 @@
+ default:
+     @just --list --unsorted
+ 
+-# Build pvisor (debug or release), including macOS Hypervisor signing.
++# Build pvisor (debug, release or performance), including macOS Hypervisor signing.
+ build profile="debug":
+     #!/usr/bin/env bash
+     set -euo pipefail
+     case "$1" in
+       debug) cargo_profile=dev ;;
+       release) cargo_profile=release ;;
+-      *) echo "expected debug or release, got: $1" >&2; exit 2 ;;
++      performance) cargo_profile=performance ;;
++      *) echo "expected debug, release or performance, got: $1" >&2; exit 2 ;;
+     esac
+     python3 scripts/build-pvisor.py --profile "$cargo_profile" --target-dir "{{ target_dir }}"
+     for name in pvisor pvisor-cache pvisor-tui pvisor-replay pvisor-memory-pool; do
+--- a/crates/pvisor-overlay-core/src/core.rs
++++ b/crates/pvisor-overlay-core/src/core.rs
+@@ -1,12 +1,12 @@
+ use crate::sys;
+ use pvisor_core::overlay::{PathFingerprint, PathPreimage, XattrFingerprint};
+ use sha2::{Digest, Sha256};
+-use std::collections::{BTreeSet, HashMap};
++use std::collections::{BTreeMap, BTreeSet, HashMap};
+ use std::ffi::{OsStr, OsString};
+ use std::fs::{self, File, Metadata, OpenOptions};
+ use std::io::{self, Read, Write};
+ use std::os::unix::ffi::{OsStrExt, OsStringExt};
+-use std::os::unix::fs::{MetadataExt, OpenOptionsExt, PermissionsExt};
++use std::os::unix::fs::{FileTypeExt, MetadataExt, OpenOptionsExt, PermissionsExt};
+ use std::path::{Component, Path, PathBuf};
+ use std::sync::Mutex;
+ use std::sync::atomic::{AtomicU64, Ordering};
+@@ -1824,18 +1824,18 @@
+         result.map(|()| upper)
+     }
+ 
+-    fn directory_entries(
++    fn collect_directory_items<T>(
+         &self,
+         rel: &Path,
+-        check_children: bool,
+-    ) -> io::Result<Vec<DirectoryEntry>> {
++        mut item: impl FnMut(fs::DirEntry) -> io::Result<T>,
++    ) -> io::Result<Vec<(OsString, T)>> {
+         let _span = self.profile.span("list_entries");
+         self.require_visible(rel)?;
+         let metadata = self.metadata(rel)?;
+         if !metadata.is_dir() {
+             return Err(error(libc::ENOTDIR));
+         }
+-        let mut names = BTreeSet::new();
++        let mut names = BTreeMap::new();
+         if !self.is_opaque(rel) {
+             for lower in &self.layout.lowers {
+                 let Some(directory) = layer_path(lower, rel)? else {
+@@ -1847,8 +1847,10 @@
+                 for entry in fs::read_dir(directory)? {
+                     let entry = entry?;
+                     let name = entry.file_name();
+-                    if !Self::is_whiteout_name(&name) {
+-                        names.insert(name);
++                    if !Self::is_whiteout_name(&name)
++                        && let std::collections::btree_map::Entry::Vacant(slot) = names.entry(name)
++                    {
++                        slot.insert(item(entry)?);
+                     }
+                 }
+             }
+@@ -1858,10 +1860,109 @@
+                 let entry = entry?;
+                 let name = entry.file_name();
+                 if !Self::is_whiteout_name(&name) {
+-                    names.insert(name);
++                    names.insert(name, item(entry)?);
+                 }
+             }
+         }
++        Ok(names.into_iter().collect())
++    }
++
++    fn collect_directory_names(&self, rel: &Path) -> io::Result<Vec<OsString>> {
++        Ok(self
++            .collect_directory_items(rel, |_| Ok(()))?
++            .into_iter()
++            .map(|(name, ())| name)
++            .collect())
++    }
++
++    /// Snapshot names and directory types without allocating child inodes or
++    /// reading full child metadata. Types have the same snapshot semantics as
++    /// plain READDIR; attribute-bearing replies must resolve fresh metadata.
++    pub fn directory_candidates(&self, rel: &Path) -> io::Result<Vec<(OsString, u32)>> {
++        let candidates = self.collect_directory_items(rel, |entry| {
++            let kind = entry.file_type()?;
++            Ok(if kind.is_dir() {
++                libc::DT_DIR
++            } else if kind.is_file() {
++                libc::DT_REG
++            } else if kind.is_symlink() {
++                libc::DT_LNK
++            } else if kind.is_fifo() {
++                libc::DT_FIFO
++            } else if kind.is_socket() {
++                libc::DT_SOCK
++            } else if kind.is_block_device() {
++                libc::DT_BLK
++            } else if kind.is_char_device() {
++                libc::DT_CHR
++            } else {
++                libc::DT_UNKNOWN
++            } as u32)
++        })?;
++        let mut visible = Vec::with_capacity(candidates.len());
++        for (name, type_) in candidates {
++            let child = Self::child(rel, &name)?;
++            if self.is_whiteouted(rel, &name) || self.is_excluded(&child) {
++                continue;
++            }
++            // Protected views still filter denied hard links at OPENDIR.
++            if self.access.has_denials() {
++                if let Ok(Some(backing)) = self.resolve_component_metadata(&child)
++                    && self.require_unaliased_metadata(&backing.metadata).is_ok()
++                {
++                    self.require_visible(&child)?;
++                } else {
++                    continue;
++                }
++            }
++            visible.push((name, type_));
++        }
++        Ok(visible)
++    }
++
++    /// Validate one directory candidate without recording a file read.
++    pub fn directory_entry(&self, rel: &Path, name: &OsStr) -> io::Result<Option<DirectoryEntry>> {
++        Ok(self
++            .directory_entry_for_backing_lookup(rel, name)?
++            .map(|backing| DirectoryEntry {
++                name: name.to_owned(),
++                backing: backing.entry,
++            }))
++    }
++
++    /// Resolve one visible child and its checked parent identities together.
++    pub fn directory_entry_for_backing_lookup(
++        &self,
++        rel: &Path,
++        name: &OsStr,
++    ) -> io::Result<Option<BackingResolution>> {
++        if self.is_whiteouted(rel, name) {
++            return Ok(None);
++        }
++        let child = Self::child(rel, name)?;
++        if self.is_excluded(&child) {
++            return Ok(None);
++        }
++        let mut parents = Vec::with_capacity(child.components().count().saturating_sub(1));
++        match self.resolve_component_metadata_with_parents(&child, Some(&mut parents), None) {
++            Ok(Some(backing)) => {
++                self.require_unaliased_metadata(&backing.metadata)?;
++                self.require_visible(&child)?;
++                Ok(Some(BackingResolution {
++                    entry: backing,
++                    parents,
++                }))
++            }
++            _ => Ok(None),
++        }
++    }
++
++    fn directory_entries(
++        &self,
++        rel: &Path,
++        check_children: bool,
++    ) -> io::Result<Vec<DirectoryEntry>> {
++        let names = self.collect_directory_names(rel)?;
+         let mut entries = Vec::with_capacity(names.len());
+         for name in names {
+             if self.is_whiteouted(rel, &name) {
+--- a/crates/pvisor/src/environment_snapshot/base.rs
++++ b/crates/pvisor/src/environment_snapshot/base.rs
+@@ -50,6 +50,38 @@
+     lease: File,
+ }
+ impl SnapshotBase {
++    /// Recognize an imported generation and acquire its GC lease. Ordinary
++    /// mutable roots have no receipt. A matching store seal must authenticate
++    /// before its digests can be attached to a VM.
++    pub(crate) fn lease_root(root: &Path) -> anyhow::Result<Option<Self>> {
++        let root = root.canonicalize()?;
++        let Some(directory) = root
++            .parent()
++            .filter(|_| root.file_name() == Some("rootfs".as_ref()))
++        else {
++            return Ok(None);
++        };
++        let Some(bases) = directory
++            .parent()
++            .filter(|p| p.file_name() == Some("bases".as_ref()))
++        else {
++            return Ok(None);
++        };
++        let Some(id) = directory
++            .file_name()
++            .and_then(|s| s.to_str())
++            .filter(|id| valid_id(id).is_ok())
++        else {
++            return Ok(None);
++        };
++        if !directory.join("seal.json").try_exists()? {
++            return Ok(None);
++        }
++        let store = bases.parent().context("base has no snapshot store")?;
++        let _reading = gate(store, false)?;
++        open(store, &BaseReference { id: id.to_owned() }).map(Some)
++    }
++
+     pub fn root(&self) -> PathBuf {
+         self.directory.join("rootfs")
+     }
+@@ -257,6 +289,26 @@
+ mod tests {
+     use super::*;
+     #[test]
++    fn root_discovery_authenticates_the_generation_and_keeps_gc_out() {
++        let temp = tempfile::tempdir().unwrap();
++        let source = temp.path().join("source");
++        fs::create_dir(&source).unwrap();
++        fs::write(source.join("file"), b"content").unwrap();
++        assert!(SnapshotBase::lease_root(&source).unwrap().is_none());
++        let store = SnapshotStore::new(&temp.path().join("store")).unwrap();
++        let base = store.import_base(&source).unwrap();
++        let root = base.root();
++        let lease = SnapshotBase::lease_root(&root).unwrap().unwrap();
++        assert_eq!(lease.content_index(), base.content_index());
++        drop(base);
++        assert_eq!(collect(&store.root).unwrap(), 0);
++        fs::write(root.parent().unwrap().join("seal.json"), b"forged").unwrap();
++        assert!(SnapshotBase::lease_root(&root).is_err());
++        drop(lease);
++        assert_eq!(collect(&store.root).unwrap(), 1);
++    }
++
++    #[test]
+     fn imported_content_receipts_are_bound_to_the_owned_generation_and_audited() {
+         let temp = tempfile::tempdir().unwrap();
+         let source = temp.path().join("source");
+--- a/crates/pvisor/src/executor/vm/supported.rs
++++ b/crates/pvisor/src/executor/vm/supported.rs
+@@ -1566,6 +1566,29 @@
+ }
+ 
+ fn run_runner(spec: RunnerSpec) -> anyhow::Result<()> {
++    // Acquire before Landlock and hold until the VM has stopped. Copy restores
++    // use ordinary fingerprints; the original generation is no longer leased.
++    let baseline_owners = if spec.restore.is_none() {
++        std::iter::once(&spec.root)
++            .chain(spec.workspace.iter())
++            .map(lease_overlay_baseline)
++            .collect::<anyhow::Result<Vec<_>>>()?
++    } else {
++        vec![]
++    };
++    let baseline_indexes = baseline_owners
++        .iter()
++        .map(|owner| {
++            owner.as_ref().and_then(|base| {
++                base.content_index()
++                    .map(|(file, sha256)| pvisor_vm::api::BaselineContentIndex {
++                        root: base.root(),
++                        file,
++                        sha256,
++                    })
++            })
++        })
++        .collect::<Vec<_>>();
+     #[cfg(target_os = "linux")]
+     let _cpu_qos = spec
+         .cpu_qos
+@@ -1595,6 +1618,12 @@
+     #[cfg(target_os = "linux")]
+     {
+         let mut read_only = spec.root.lowers.clone();
++        read_only.extend(
++            baseline_indexes
++                .iter()
++                .flatten()
++                .map(|index| index.file.clone()),
++        );
+         let mut read_write = vec![spec.root.upper.clone()];
+         read_write.extend(spec.root.work.iter().cloned());
+         read_write.extend(spec.root.preimages.iter().cloned());
+@@ -1616,6 +1645,7 @@
+     run_linked_krun(
+         spec,
+         attestation,
++        &baseline_indexes,
+         #[cfg(any(
+             all(target_os = "linux", target_arch = "x86_64"),
+             all(target_os = "macos", target_arch = "aarch64")
+@@ -1624,9 +1654,37 @@
+     )
+ }
+ 
++fn lease_overlay_baseline(
++    overlay: &OverlayDeviceSpec,
++) -> anyhow::Result<Option<crate::environment_snapshot::SnapshotBase>> {
++    let Some(root) = overlay
++        .baseline_lower
++        .as_ref()
++        .or_else(|| overlay.lowers.last())
++    else {
++        return Ok(None);
++    };
++    let root = root.canonicalize()?;
++    let Some(base) = crate::environment_snapshot::SnapshotBase::lease_root(&root)? else {
++        return Ok(None);
++    };
++    for mutable in std::iter::once(&overlay.upper)
++        .chain(overlay.work.iter())
++        .chain(overlay.preimages.iter())
++        .chain(overlay.apply_target.iter())
++    {
++        let mutable = mutable.canonicalize()?;
++        if root.starts_with(&mutable) || mutable.starts_with(&root) {
++            return Ok(None);
++        }
++    }
++    Ok(Some(base))
++}
++
+ fn run_linked_krun(
+     spec: RunnerSpec,
+     mut attestation: std::fs::File,
++    baseline_indexes: &[Option<pvisor_vm::api::BaselineContentIndex>],
+     #[cfg(any(
+         all(target_os = "linux", target_arch = "x86_64"),
+         all(target_os = "macos", target_arch = "aarch64")
+@@ -1684,7 +1742,12 @@
+     // disabling it would change the captured device configuration.
+ 
+     // OverlayFs cannot service FUSE_SETUPMAPPING; keep DAX disabled.
+-    add_vm_overlay(&mut vm, "/dev/root", &spec.root)?;
++    add_vm_overlay(
++        &mut vm,
++        "/dev/root",
++        &spec.root,
++        baseline_indexes.first().cloned().flatten(),
++    )?;
+     vm.virtual_file(
+         "/dev/root",
+         "/.pvisor-guest.json",
+@@ -1693,7 +1756,12 @@
+         true,
+     )?;
+     if let Some(workspace) = &spec.workspace {
+-        add_vm_overlay(&mut vm, WORKSPACE_TAG, workspace)?;
++        add_vm_overlay(
++            &mut vm,
++            WORKSPACE_TAG,
++            workspace,
++            baseline_indexes.get(1).cloned().flatten(),
++        )?;
+     }
+     if let Some(fd) = std::env::var_os(NETWORK_FD_ENV) {
+         let fd = fd
+@@ -1852,6 +1920,7 @@
+     vm: &mut pvisor_vm::api::VmBuilder,
+     tag: &str,
+     overlay: &OverlayDeviceSpec,
++    baseline_content_index: Option<pvisor_vm::api::BaselineContentIndex>,
+ ) -> anyhow::Result<()> {
+     use pvisor_vm::api::{OverlayConfig, PermissionSemantics};
+     vm.overlay(
+@@ -1863,7 +1932,7 @@
+             preimage_dir: overlay.preimages.clone(),
+             apply_target: overlay.apply_target.clone(),
+             baseline_lower: overlay.baseline_lower.clone(),
+-            baseline_content_index: None,
++            baseline_content_index,
+             excluded_paths: overlay.excluded.clone(),
+             access_policy: overlay.access_policy.clone(),
+             semantics: PermissionSemantics::LinuxComplete,
+@@ -1972,6 +2041,34 @@
+ 
+ #[cfg(test)]
+ mod tests {
++    #[test]
++    fn baseline_receipt_lease_requires_an_imported_readonly_generation() {
++        let temp = tempfile::tempdir().unwrap();
++        let source = temp.path().join("source");
++        let upper = temp.path().join("upper");
++        let target = temp.path().join("target");
++        for directory in [&source, &upper, &target] {
++            std::fs::create_dir(directory).unwrap();
++        }
++        std::fs::write(source.join("file"), b"content").unwrap();
++        let mut overlay: OverlayDeviceSpec = serde_json::from_value(serde_json::json!({
++            "lowers": [source], "upper": upper, "preimages": temp.path().join("not-yet-created")
++        }))
++        .unwrap();
++        assert!(lease_overlay_baseline(&overlay).unwrap().is_none());
++        overlay.preimages = None;
++        let store =
++            crate::environment_snapshot::SnapshotStore::new(&temp.path().join("store")).unwrap();
++        let base = store.import_base(&source).unwrap();
++        overlay.lowers = vec![base.root()];
++        overlay.baseline_lower = Some(base.root());
++        overlay.apply_target = Some(target);
++        let lease = lease_overlay_baseline(&overlay).unwrap().unwrap();
++        assert_eq!(lease.content_index(), base.content_index());
++        overlay.apply_target = Some(base.root());
++        assert!(lease_overlay_baseline(&overlay).unwrap().is_none());
++    }
++
+     #[test]
+     fn runner_checkpoint_binding_is_optional_and_roundtrips() {
+         let legacy = serde_json::json!({
+--- a/crates/pvisor-vm/src/devices/virtio/fs/overlay.rs
++++ b/crates/pvisor-vm/src/devices/virtio/fs/overlay.rs
+@@ -4,7 +4,7 @@
+ //! platform passthrough implementation is retained for Linux permission
+ //! emulation and for the actual FUSE request I/O on each resolved layer.
+ 
+-use std::collections::HashMap;
++use std::collections::{BTreeSet, HashMap};
+ use std::ffi::{CStr, CString, OsStr};
+ use std::io;
+ use std::os::unix::ffi::OsStrExt;
+@@ -106,12 +106,23 @@
+ enum Handle {
+     File(FileHandle),
+     Directory(Arc<Vec<DirectoryItem>>),
++    // Keep the old Directory variant for snapshots with materialized entries.
++    // New handles defer metadata/inode work until the caller consumes a page.
++    DirectoryNames {
++        parent: u64,
++        names: Arc<Vec<Vec<u8>>>,
++        #[serde(default)]
++        types: Arc<Vec<u32>>,
++    },
+ }
+ 
+ #[derive(Default)]
+ struct Nodes {
+     by_inode: HashMap<u64, PathBuf>,
++    // Retain constant-time lookups on the hot path. The separate component-ordered
++    // index makes namespace updates visit only the affected subtree.
+     by_path: HashMap<PathBuf, u64>,
++    ordered_paths: BTreeSet<PathBuf>,
+ }
+ 
+ #[derive(Clone, Debug, serde::Serialize, serde::Deserialize)]
+@@ -301,21 +312,14 @@
+         config.work_dir = config.work_dir.as_deref().map(&relocate).transpose()?;
+         config.preimage_dir = config.preimage_dir.as_deref().map(&relocate).transpose()?;
+         config.apply_target = config.apply_target.as_deref().map(&relocate).transpose()?;
+-        if let Some(index) = &mut config.baseline_content_index {
+-            if !retained.iter().any(|root| root == &index.root) {
+-                index.root = PathBuf::from(relocate(
+-                    index
+-                        .root
+-                        .to_str()
+-                        .ok_or_else(|| invalid("baseline index root is not UTF-8"))?,
+-                )?);
+-                index.file = PathBuf::from(relocate(
+-                    index
+-                        .file
+-                        .to_str()
+-                        .ok_or_else(|| invalid("baseline index path is not UTF-8"))?,
+-                )?);
+-            }
++        if config
++            .baseline_content_index
++            .as_ref()
++            .is_some_and(|index| !retained.iter().any(|root| root == &index.root))
++        {
++            // A copied generation has no lease on the original receipt. Its
++            // fingerprints remain identical, but must read the copied bytes.
++            config.baseline_content_index = None;
+         }
+         config.baseline_lower = config
+             .baseline_lower
+@@ -559,6 +563,7 @@
+         let mut nodes = Nodes::default();
+         nodes.by_inode.insert(fuse::ROOT_ID, PathBuf::new());
+         nodes.by_path.insert(PathBuf::new(), fuse::ROOT_ID);
++        nodes.ordered_paths.insert(PathBuf::new());
+         Ok(Self {
+             profile: pvisor_overlay_core::profile::Profile::from_env("virtio-fs-overlay"),
+             operation_lock: RwLock::new(()),
+@@ -595,6 +600,7 @@
+             return *inode;
+         }
+         let inode = self.inode_alloc.next();
++        nodes.ordered_paths.insert(path.clone());
+         nodes.by_path.insert(path.clone(), inode);
+         nodes.by_inode.insert(inode, path);
+         inode
+@@ -603,12 +609,14 @@
+     fn remove_path(&self, prefix: &Path) {
+         let mut nodes = self.nodes.lock().unwrap();
+         let paths = nodes
+-            .by_path
+-            .keys()
+-            .filter(|path| *path == prefix || path.starts_with(prefix))
++            .ordered_paths
++            .range(prefix.to_path_buf()..)
++            .take_while(|path| path.starts_with(prefix))
+             .cloned()
+             .collect::<Vec<_>>();
++        self.profile.add("nodes_removed", paths.len() as u64);
+         for path in paths {
++            nodes.ordered_paths.remove(&path);
+             if let Some(inode) = nodes.by_path.remove(&path) {
+                 nodes.by_inode.remove(&inode);
+             }
+@@ -618,23 +626,27 @@
+     fn remap_path(&self, old: &Path, new: &Path) {
+         let mut nodes = self.nodes.lock().unwrap();
+         let changes = nodes
+-            .by_path
+-            .iter()
+-            .filter(|(path, _)| *path == old || path.starts_with(old))
+-            .map(|(path, inode)| {
++            .ordered_paths
++            .range(old.to_path_buf()..)
++            .take_while(|path| path.starts_with(old))
++            .map(|path| {
++                let inode = nodes.by_path[path];
+                 let suffix = path.strip_prefix(old).unwrap();
+                 let replacement = if suffix.as_os_str().is_empty() {
+                     new.to_path_buf()
+                 } else {
+                     new.join(suffix)
+                 };
+-                (path.clone(), replacement, *inode)
++                (path.clone(), replacement, inode)
+             })
+             .collect::<Vec<_>>();
++        self.profile.add("nodes_remapped", changes.len() as u64);
+         for (old_path, _, _) in &changes {
++            nodes.ordered_paths.remove(old_path);
+             nodes.by_path.remove(old_path);
+         }
+         for (_, new_path, inode) in changes {
++            nodes.ordered_paths.insert(new_path.clone());
+             nodes.by_path.insert(new_path.clone(), inode);
+             nodes.by_inode.insert(inode, new_path);
+         }
+@@ -1041,7 +1053,7 @@
+         )))
+     }
+     fn restore_state(&self, state: &super::snapshot::FsSnapshot) -> io::Result<()> {
+-        use super::snapshot::{FsSnapshot, invalid};
++        use super::snapshot::{invalid, FsSnapshot};
+         let FsSnapshot::Overlay(state) = state else {
+             return Err(invalid("overlay filesystem type mismatch"));
+         };
+@@ -1056,6 +1068,7 @@
+         let mut nodes = Nodes::default();
+         for (inode, path) in &state.nodes {
+             let path = PathBuf::from(OsStr::from_bytes(path));
++            nodes.ordered_paths.insert(path.clone());
+             if *inode == 0
+                 || path
+                     .components()
+@@ -1085,6 +1098,27 @@
+                             .any(|h| h.handle == file.handle && h.inode == file.inode)
+                     {
+                         return Err(invalid("overlay handle without backing inode"));
++                    }
++                }
++                Handle::DirectoryNames {
++                    parent,
++                    names,
++                    types,
++                } => {
++                    if !nodes.by_inode.contains_key(parent)
++                        || (!types.is_empty() && types.len() != names.len())
++                        || types
++                            .iter()
++                            .any(|type_| !matches!(*type_, 0 | 1 | 2 | 4 | 6 | 8 | 10 | 12))
++                        || names.iter().any(|name| {
++                            name.is_empty()
++                                || name.contains(&0)
++                                || name.contains(&b'/')
++                                || name == b"."
++                                || name == b".."
++                        })
++                    {
++                        return Err(invalid("invalid lazy directory cookie"));
+                     }
+                 }
+                 Handle::Directory(entries) => {
+@@ -1633,17 +1667,18 @@
+         let _span = self.profile.span("opendir");
+         let _operation = self.read_operation()?;
+         let path = self.path(inode)?;
+-        let mut items = Vec::new();
+-        for entry in self.core.list_entries(&path).map_err(linux_error)? {
+-            let child = OverlayCore::child(&path, &entry.name).map_err(linux_error)?;
+-            let child_inode = self.allocate_inode(child);
+-            items.push(DirectoryItem {
+-                ino: child_inode,
+-                name: entry.name.as_bytes().to_vec(),
+-                type_: Self::dtype(entry.backing.metadata.mode()),
+-            });
+-        }
+-        let handle = self.allocate_handle(Handle::Directory(Arc::new(items)));
++        let (names, types): (Vec<_>, Vec<_>) = self
++            .core
++            .directory_candidates(&path)
++            .map_err(linux_error)?
++            .into_iter()
++            .map(|(name, type_)| (name.as_bytes().to_vec(), type_))
++            .unzip();
++        let handle = self.allocate_handle(Handle::DirectoryNames {
++            parent: inode,
++            names: Arc::new(names),
++            types: Arc::new(types),
++        });
+         Ok((Some(handle), OpenOptions::empty()))
+     }
+ 
+@@ -1660,6 +1695,43 @@
+         F: FnMut(DirEntry) -> io::Result<usize>,
+     {
+         let _operation = self.read_operation()?;
++        let directory = self.handles.lock().unwrap().get(&handle).cloned();
++        if let Some(Handle::DirectoryNames {
++            parent,
++            names,
++            types,
++        }) = directory
++        {
++            let directory = self.path(parent)?;
++            for (index, name) in names.iter().enumerate().skip(offset as usize) {
++                let path =
++                    OverlayCore::child(&directory, OsStr::from_bytes(name)).map_err(linux_error)?;
++                let type_ = if let Some(type_) = types.get(index) {
++                    *type_
++                } else {
++                    // Older name-only handles retain their checked fallback.
++                    let Some(entry) = self
++                        .core
++                        .directory_entry(&directory, OsStr::from_bytes(name))
++                        .map_err(linux_error)?
++                    else {
++                        continue;
++                    };
++                    Self::dtype(entry.backing.metadata.mode())
++                };
++                let ino = self.allocate_inode(path);
++                if add_entry(DirEntry {
++                    ino,
++                    offset: (index + 1) as u64,
++                    type_,
++                    name,
++                })? == 0
++                {
++                    break;
++                }
++            }
++            return Ok(());
++        }
+         let items = match self.handles.lock().unwrap().get(&handle) {
+             Some(Handle::Directory(items)) => items.clone(),
+             _ => return Err(io::Error::from_raw_os_error(libc::EBADF)),
+@@ -1692,6 +1764,36 @@
+     {
+         let _span = self.profile.span("readdirplus");
+         let _operation = self.read_operation()?;
++        let directory = self.handles.lock().unwrap().get(&handle).cloned();
++        if let Some(Handle::DirectoryNames { parent, names, .. }) = directory {
++            let directory = self.path(parent)?;
++            for (index, name) in names.iter().enumerate().skip(offset as usize) {
++                let path =
++                    OverlayCore::child(&directory, OsStr::from_bytes(name)).map_err(linux_error)?;
++                let Some(backing) = self
++                    .core
++                    .directory_entry_for_backing_lookup(&directory, OsStr::from_bytes(name))
++                    .map_err(linux_error)?
++                else {
++                    continue;
++                };
++                let inode = self.allocate_inode(path.clone());
++                let entry = self.entry_on_backing(ctx, &path, inode, &backing)?;
++                if add_entry(
++                    DirEntry {
++                        ino: inode,
++                        offset: (index + 1) as u64,
++                        type_: Self::dtype(backing.entry.metadata.mode()),
++                        name,
++                    },
++                    entry,
++                )? == 0
++                {
++                    break;
++                }
++            }
++            return Ok(());
++        }
+         let items = match self.handles.lock().unwrap().get(&handle) {
+             Some(Handle::Directory(items)) => items.clone(),
+             _ => return Err(io::Error::from_raw_os_error(libc::EBADF)),
+@@ -1718,7 +1820,7 @@
+     fn releasedir(&self, _ctx: Context, _inode: u64, _flags: u32, handle: u64) -> io::Result<()> {
+         let _operation = self.write_operation()?;
+         match self.handles.lock().unwrap().remove(&handle) {
+-            Some(Handle::Directory(_)) => Ok(()),
++            Some(Handle::Directory(_) | Handle::DirectoryNames { .. }) => Ok(()),
+             _ => Err(io::Error::from_raw_os_error(libc::EBADF)),
+         }
+     }
+@@ -2147,6 +2249,214 @@
+     }
+ 
+     #[test]
++    fn copied_snapshot_discards_receipts_from_the_original_generation() {
++        use sha2::{Digest, Sha256};
++        let temp = tempfile::tempdir().unwrap();
++        let source = temp.path().join("source");
++        let copied = temp.path().join("copied");
++        std::fs::create_dir_all(source.join("lower")).unwrap();
++        std::fs::write(source.join("lower/file"), b"content").unwrap();
++        let mut fs = parent_cache_fixture(&source);
++        let digest = |bytes: &[u8]| {
++            Sha256::digest(bytes)
++                .iter()
++                .map(|byte| format!("{byte:02x}"))
++                .collect::<String>()
++        };
++        let content_digest = digest(b"content");
++        let index = pvisor_overlay_core::encode_content_index([(
++            Path::new("file"),
++            content_digest.as_str(),
++        )])
++        .unwrap();
++        let receipt = temp.path().join("content-index.bin");
++        std::fs::write(&receipt, &index).unwrap();
++        let index = crate::api::BaselineContentIndex {
++            root: source.join("lower"),
++            file: receipt,
++            sha256: digest(&index),
++        };
++        fs.core = fs
++            .core
++            .with_immutable_content_index(&index.root, index.file.clone(), &index.sha256)
++            .unwrap();
++        fs.snapshot_config.baseline_content_index = Some(index);
++        let super::super::snapshot::FsSnapshot::Overlay(mut snapshot) = fs.capture_state().unwrap()
++        else {
++            panic!("expected overlay");
++        };
++        pvisor::environment_snapshot::copy_owned_tree(&source, &copied).unwrap();
++        snapshot.rebind_owned_copy(&source, &copied).unwrap();
++        assert!(snapshot.config.baseline_content_index.is_none());
++        let restored =
++            OverlayFs::open_existing(snapshot.config.clone(), Arc::new(InodeAllocator::new()))
++                .unwrap();
++        restored.init(FsOptions::empty()).unwrap();
++        restored
++            .restore_state(&super::super::snapshot::FsSnapshot::Overlay(snapshot))
++            .unwrap();
++        assert_eq!(restored.core.metadata(Path::new("file")).unwrap().len(), 7);
++    }
++
++    #[test]
++    fn subtree_index_keeps_component_siblings_and_inode_identities() {
++        let temp = tempfile::tempdir().unwrap();
++        std::fs::create_dir(temp.path().join("lower")).unwrap();
++        let fs = parent_cache_fixture(temp.path());
++        let paths = ["a", "a/x", "a/x/y", "a-b", "a0", "ab/x", "z"];
++        let inodes = paths.map(|path| fs.allocate_inode(PathBuf::from(path)));
++        fs.remap_path(Path::new("a"), Path::new("renamed"));
++        for (index, path) in paths.iter().enumerate() {
++            let expected = if index < 3 {
++                path.replacen('a', "renamed", 1)
++            } else {
++                path.to_string()
++            };
++            assert_eq!(fs.path(inodes[index]).unwrap(), PathBuf::from(expected));
++        }
++        fs.remove_path(Path::new("renamed/x"));
++        assert!(fs.path(inodes[1]).is_err());
++        assert!(fs.path(inodes[2]).is_err());
++        for index in [0, 3, 4, 5, 6] {
++            assert!(fs.path(inodes[index]).is_ok());
++        }
++        let nodes = fs.nodes.lock().unwrap();
++        assert_eq!(nodes.by_path.len(), nodes.by_inode.len());
++        assert_eq!(nodes.by_path.len(), nodes.ordered_paths.len());
++        for path in &nodes.ordered_paths {
++            assert!(nodes.by_path.contains_key(path));
++        }
++        for (path, inode) in &nodes.by_path {
++            assert_eq!(nodes.by_inode.get(inode), Some(path));
++        }
++    }
++
++    #[test]
++    fn directory_cookie_survives_partial_reads_deletion_and_snapshot_restore() {
++        let temp = tempfile::tempdir().unwrap();
++        let lower = temp.path().join("lower");
++        std::fs::create_dir(&lower).unwrap();
++        for name in ["a", "b", "c"] {
++            std::fs::write(lower.join(name), name).unwrap();
++        }
++        let fs = parent_cache_fixture(temp.path());
++        let ctx = Context {
++            uid: 0,
++            gid: 0,
++            pid: 1,
++        };
++        let handle = fs.opendir(ctx, fuse::ROOT_ID, 0).unwrap().0.unwrap();
++        assert_eq!(
++            fs.nodes.lock().unwrap().by_inode.len(),
++            1,
++            "OPENDIR must not allocate every child inode"
++        );
++        let mut first = Vec::new();
++        fs.readdir(ctx, fuse::ROOT_ID, handle, 4096, 0, |entry| {
++            if !first.is_empty() {
++                return Ok(0);
++            }
++            first.push((entry.name.to_vec(), entry.offset));
++            Ok(1)
++        })
++        .unwrap();
++        assert_eq!(first, vec![(b"a".to_vec(), 1)]);
++        fs.unlink(ctx, fuse::ROOT_ID, c"b").unwrap();
++        std::fs::write(lower.join("d"), b"new entry after OPENDIR").unwrap();
++        let snapshot = fs.capture_state().unwrap();
++        let restored =
++            OverlayFs::open_existing(fs.snapshot_config.clone(), Arc::new(InodeAllocator::new()))
++                .unwrap();
++        restored.init(FsOptions::empty()).unwrap();
++        restored.restore_state(&snapshot).unwrap();
++        let mut remaining = Vec::new();
++        restored
++            .readdirplus(ctx, fuse::ROOT_ID, handle, 4096, 1, |entry, attr| {
++                assert_eq!(attr.attr.st_size, 1);
++                remaining.push((entry.name.to_vec(), entry.offset));
++                Ok(1)
++            })
++            .unwrap();
++        assert_eq!(remaining, vec![(b"c".to_vec(), 3)]);
++        restored.releasedir(ctx, fuse::ROOT_ID, 0, handle).unwrap();
++        assert_eq!(
++            restored
++                .readdir(ctx, fuse::ROOT_ID, handle, 4096, 0, |_| Ok(1))
++                .unwrap_err()
++                .raw_os_error(),
++            Some(libc::EBADF)
++        );
++    }
++
++    #[test]
++    fn plain_directory_types_preserve_layer_priority_without_child_inode_allocation() {
++        let temp = tempfile::tempdir().unwrap();
++        let lower = temp.path().join("lower");
++        std::fs::create_dir(&lower).unwrap();
++        std::fs::write(lower.join("a"), b"file").unwrap();
++        std::os::unix::fs::symlink("a", lower.join("link")).unwrap();
++        let fs = parent_cache_fixture(temp.path());
++        std::fs::create_dir(fs.core.upper().join("a")).unwrap();
++        let ctx = Context {
++            uid: 0,
++            gid: 0,
++            pid: 1,
++        };
++        let handle = fs.opendir(ctx, fuse::ROOT_ID, 0).unwrap().0.unwrap();
++        assert_eq!(fs.nodes.lock().unwrap().by_inode.len(), 1);
++        // Plain READDIR retains the type snapshot. READDIRPLUS must still
++        // resolve the changed object, rather than treating types as metadata.
++        std::fs::remove_dir(fs.core.upper().join("a")).unwrap();
++        let mut plain = Vec::new();
++        fs.readdir(ctx, fuse::ROOT_ID, handle, 4096, 0, |entry| {
++            plain.push((entry.name.to_vec(), entry.type_));
++            Ok(1)
++        })
++        .unwrap();
++        assert_eq!(
++            plain,
++            vec![
++                (b"a".to_vec(), libc::DT_DIR as u32),
++                (b"link".to_vec(), libc::DT_LNK as u32)
++            ]
++        );
++        let mut plus = Vec::new();
++        fs.readdirplus(ctx, fuse::ROOT_ID, handle, 4096, 0, |entry, attr| {
++            plus.push((
++                entry.name.to_vec(),
++                entry.type_,
++                attr.attr.st_mode & libc::S_IFMT,
++            ));
++            Ok(1)
++        })
++        .unwrap();
++        assert_eq!(
++            plus,
++            vec![
++                (b"a".to_vec(), libc::DT_REG as u32, libc::S_IFREG),
++                (b"link".to_vec(), libc::DT_LNK as u32, libc::S_IFLNK)
++            ]
++        );
++        let mut snapshot = fs.capture_state().unwrap();
++        let super::super::snapshot::FsSnapshot::Overlay(state) = &mut snapshot else {
++            panic!("overlay snapshot");
++        };
++        let (_, Handle::DirectoryNames { types, .. }) = state
++            .handles
++            .iter_mut()
++            .find(|(id, _)| *id == handle)
++            .unwrap()
++        else {
++            panic!("lazy directory handle");
++        };
++        *types = Arc::new(vec![libc::DT_REG as u32]);
++        assert!(
++            fs.restore_state(&snapshot).is_err(),
++            "reject misaligned type snapshots"
++        );
++    }
++
++    #[test]
+     fn readdirplus_preserves_fresh_attributes_offsets_and_alias_denials() {
+         let temp = tempfile::tempdir().unwrap();
+         let lower = temp.path().join("lower");
+@@ -2363,10 +2673,9 @@
+         };
+         let entry = fs.lookup(ctx, fuse::ROOT_ID, c"dir").unwrap();
+         for _ in 0..16 {
+-            assert!(
+-                fs.open(ctx, entry.inode, false, libc::O_WRONLY as u32)
+-                    .is_err()
+-            );
++            assert!(fs
++                .open(ctx, entry.inode, false, libc::O_WRONLY as u32)
++                .is_err());
+         }
+         assert!(fs.handles.lock().unwrap().is_empty());
+         let super::super::snapshot::FsSnapshot::Overlay(snapshot) = fs.capture_state().unwrap()
+@@ -2378,12 +2687,10 @@
+                 panic!("expected a native layer");
+             };
+             assert!(native.handles.is_empty());
+-            assert!(
+-                native
+-                    .inodes
+-                    .iter()
+-                    .all(|inode| inode.inode == fuse::ROOT_ID)
+-            );
++            assert!(native
++                .inodes
++                .iter()
++                .all(|inode| inode.inode == fuse::ROOT_ID));
+         }
+     }
+ 
+@@ -2456,24 +2763,21 @@
+             gid: 0,
+             pid: 1,
+         };
+-        assert!(
+-            fs.lookup(ctx, fuse::ROOT_ID, &CString::new("private.key").unwrap())
+-                .is_err()
+-        );
++        assert!(fs
++            .lookup(ctx, fuse::ROOT_ID, &CString::new("private.key").unwrap())
++            .is_err());
+         let alias = fs
+             .lookup(ctx, fuse::ROOT_ID, &CString::new("alias").unwrap())
+             .unwrap();
+-        assert!(
+-            fs.open(ctx, alias.inode, false, libc::O_RDONLY as u32)
+-                .is_err()
+-        );
++        assert!(fs
++            .open(ctx, alias.inode, false, libc::O_RDONLY as u32)
++            .is_err());
+         let env = fs
+             .lookup(ctx, fuse::ROOT_ID, &CString::new(".env").unwrap())
+             .unwrap();
+-        assert!(
+-            fs.open(ctx, env.inode, false, libc::O_RDONLY as u32)
+-                .is_ok()
+-        );
++        assert!(fs
++            .open(ctx, env.inode, false, libc::O_RDONLY as u32)
++            .is_ok());
+     }
+ 
+     #[test]
+--- a/crates/pvisor-vm/src/devices/virtio/fs/worker.rs
++++ b/crates/pvisor-vm/src/devices/virtio/fs/worker.rs
+@@ -11,7 +11,7 @@
+ use std::time::Instant;
+ 
+ use crate::utils::epoll::{ControlOperation, Epoll, EpollEvent, EventSet};
+-use crate::utils::eventfd::{EFD_NONBLOCK, EventFd};
++use crate::utils::eventfd::{EventFd, EFD_NONBLOCK};
+ use vm_memory::GuestMemoryMmap;
+ 
+ use super::super::Queue;
+@@ -477,11 +477,14 @@
+             {
+                 let _ = self.stop_fd.read();
+                 if let Some(pool) = &mut pool {
++                    let mut completed = [false; 2];
+                     while pool.in_flight != 0 {
+                         let completion = pool.completed.recv().expect("filesystem completion lost");
+-                        self.complete(completion);
++                        completed[completion.request.queue] = true;
++                        self.publish_completion(completion);
+                         pool.in_flight -= 1;
+                     }
++                    self.notify_completed(completed);
+                 }
+                 // Dropping the pool joins every I/O worker before returning the
+                 // parked device to capture_state, reset or offload.
+@@ -500,16 +503,27 @@
+                 }
+             }
+             if let Some(pool) = &mut pool {
++                let mut completed = [false; 2];
+                 while let Ok(completion) = pool.completed.try_recv() {
+-                    self.complete(completion);
++                    completed[completion.request.queue] = true;
++                    self.publish_completion(completion);
+                     pool.in_flight -= 1;
+                 }
++                self.notify_completed(completed);
+             }
+             self.service_queues(&mut pool, workers, &epoll);
+         }
+     }
+ 
+     fn complete(&mut self, completion: Completion) {
++        let index = completion.request.queue;
++        self.publish_completion(completion);
++        let mut completed = [false; 2];
++        completed[index] = true;
++        self.notify_completed(completed);
++    }
++
++    fn publish_completion(&mut self, completion: Completion) {
+         self.dispatch_profile
+             .record_since("pool_completion_wait", completion.request.profile_timestamp);
+         let queue = &mut self.queues[completion.request.queue];
+@@ -520,10 +534,25 @@
+         ) {
+             error!("failed to add filesystem used element: {error}");
+         }
+-        if queue.needs_notification(&self.execution.mem).unwrap() {
++        // Keep the RAM lease through publication. Only already-ready pool
++        // completions are batched; inline responses still notify immediately.
++        self.dispatch_profile.add("published_completions", 1);
++    }
++
++    fn notify_completed(&mut self, completed: [bool; 2]) {
++        let mut notify = false;
++        for (index, completed) in completed.into_iter().enumerate() {
++            if completed {
++                self.dispatch_profile.add("notification_checks", 1);
++                notify |= self.queues[index]
++                    .needs_notification(&self.execution.mem)
++                    .unwrap();
++            }
++        }
++        if notify {
++            self.dispatch_profile.add("used_interrupts", 1);
+             self.interrupt.signal_used_queue();
+         }
+-        // completion drops only after the used ring update and notification.
+     }
+ 
+     fn service_queues(&mut self, pool: &mut Option<RequestPool>, workers: usize, epoll: &Epoll) {
+@@ -534,7 +563,7 @@
+                 self.queues[index]
+                     .disable_notification(&self.execution.mem)
+                     .unwrap();
+-                while index == HPQ_INDEX || pool.as_ref().is_none_or(|p| p.in_flight < p.limit) {
++                loop {
+                     let Some(head) = self.queues[index].pop(&self.execution.mem) else {
+                         break;
+                     };
+@@ -586,6 +615,14 @@
+                         && parallel_candidate(&header, &reader)
+                         && (pool.as_ref().is_some_and(|p| p.in_flight != 0)
+                             || !self.queues[index].is_empty(&self.execution.mem));
++                    if parallel && pool.as_ref().is_some_and(|p| p.in_flight == p.limit) {
++                        // Short inline requests may run even at pool capacity.
++                        // Leave an expensive head in the ring rather than
++                        // retaining another RAM lease or overflowing the pool.
++                        self.queues[index].undo_pop();
++                        self.dispatch_profile.add("pool_capacity_stalls", 1);
++                        break;
++                    }
+                     let request = Request {
+                         queue: index,
+                         index: head_index,
+@@ -647,9 +684,157 @@
+ #[cfg(test)]
+ mod tests {
+     use super::*;
+-    use crate::devices::virtio::descriptor_utils::{DescriptorType, create_descriptor_chain};
++    use crate::devices::virtio::descriptor_utils::{create_descriptor_chain, DescriptorType};
+     use std::time::Duration;
+     use vm_memory::GuestAddress;
++
++    fn queue_worker(mem: GuestMemoryMmap, queues: Vec<Queue>) -> FsWorker {
++        use crate::devices::legacy::DummyIrqChip;
++        let mut worker = FsWorker::new(FsWorkerConfig {
++            queues,
++            queue_evts: (0..2)
++                .map(|_| Arc::new(EventFd::new(EFD_NONBLOCK).unwrap()))
++                .collect(),
++            interrupt: InterruptTransport::new(DummyIrqChip::new().into(), "test".into()).unwrap(),
++            mem,
++            allow_idmap: false,
++            shm_region: None,
++            passthrough_cfg: None,
++            overlay_cfg: None,
++            read_only: false,
++            virtual_entries: vec![],
++            stop_fd: EventFd::new(EFD_NONBLOCK).unwrap(),
++            exit_code: Arc::new(AtomicI32::new(0)),
++            restoring: false,
++            #[cfg(target_os = "macos")]
++            map_sender: None,
++        })
++        .unwrap();
++        worker.dispatch_profile =
++            pvisor_overlay_core::profile::Profile::enabled("virtio-fs-dispatch");
++        worker
++    }
++
++    #[test]
++    fn full_pool_admits_inline_metadata_but_leaves_expensive_head_in_ring() {
++        use crate::devices::virtio::queue::tests::VirtQueue;
++        use vm_memory::Bytes;
++        let mem = GuestMemoryMmap::from_ranges(&[(GuestAddress(0), 0x10000)]).unwrap();
++        let high = VirtQueue::new(GuestAddress(0), &mem, 8);
++        let normal = VirtQueue::new(GuestAddress(0x400), &mem, 8);
++        for (slot, opcode) in [(0, Opcode::Getattr), (2, Opcode::Opendir)] {
++            let address = 0x4000 + slot as u64 * 0x200;
++            normal.dtable[slot].addr.set(address);
++            normal.dtable[slot].len.set(64);
++            normal.dtable[slot]
++                .flags
++                .set(crate::devices::virtio::queue::VIRTQ_DESC_F_NEXT);
++            normal.dtable[slot].next.set((slot + 1) as u16);
++            normal.dtable[slot + 1].addr.set(address + 0x100);
++            normal.dtable[slot + 1].len.set(256);
++            normal.dtable[slot + 1]
++                .flags
++                .set(crate::devices::virtio::queue::VIRTQ_DESC_F_WRITE);
++            mem.write_obj(
++                InHeader {
++                    len: 64,
++                    opcode: opcode as u32,
++                    nodeid: 1,
++                    ..Default::default()
++                },
++                GuestAddress(address),
++            )
++            .unwrap();
++        }
++        normal.avail.ring[0].set(0);
++        normal.avail.ring[1].set(2);
++        normal.avail.idx.set(2);
++        let mut worker = queue_worker(
++            mem.clone(),
++            vec![high.create_queue(), normal.create_queue()],
++        );
++        let (resume, waiting) = crossbeam_channel::unbounded();
++        let mut full = RequestPool::new(
++            move |_| {
++                waiting.recv().unwrap();
++                0
++            },
++            2,
++            Default::default(),
++        )
++        .unwrap();
++        for index in 0..full.limit {
++            let chain = create_descriptor_chain(
++                &mem,
++                GuestAddress(0x1000 + index as u64 * 0x100),
++                GuestAddress(0x2000 + index as u64 * 0x100),
++                vec![(DescriptorType::Readable, 8), (DescriptorType::Writable, 8)],
++                0,
++            )
++            .unwrap();
++            full.submit(Request {
++                queue: REQ_INDEX,
++                index: index as u16,
++                header: InHeader::default(),
++                buffers: OwnedDescriptorChain::new(chain).unwrap(),
++                profile_timestamp: None,
++            });
++        }
++        let mut pool = Some(full);
++        worker.service_queues(&mut pool, 2, &Epoll::new().unwrap());
++        for _ in 0..4 {
++            resume.send(()).unwrap();
++        }
++        let report = worker.dispatch_profile.report().unwrap();
++        drop(pool);
++        assert_eq!(normal.used.idx.get(), 1);
++        assert_eq!(worker.queues[REQ_INDEX].len(&mem), 1);
++        assert_eq!(report.measurements["inline_requests"].units, 1);
++        assert_eq!(report.measurements["pool_capacity_stalls"].units, 1);
++    }
++
++    #[test]
++    fn ready_completions_publish_before_a_single_event_idx_notification_check() {
++        use crate::devices::virtio::queue::tests::VirtQueue;
++        let mem = GuestMemoryMmap::from_ranges(&[(GuestAddress(0), 0x10000)]).unwrap();
++        let high = VirtQueue::new(GuestAddress(0), &mem, 8);
++        let normal = VirtQueue::new(GuestAddress(0x400), &mem, 8);
++        let mut queue = normal.create_queue();
++        queue.set_event_idx(true);
++        let mut worker = queue_worker(mem.clone(), vec![high.create_queue(), queue]);
++        for index in 0..2 {
++            let chain = create_descriptor_chain(
++                &mem,
++                GuestAddress(0x1000 + index as u64 * 0x100),
++                GuestAddress(0x2000 + index as u64 * 0x100),
++                vec![(DescriptorType::Readable, 8), (DescriptorType::Writable, 8)],
++                0,
++            )
++            .unwrap();
++            worker.publish_completion(Completion {
++                request: Request {
++                    queue: REQ_INDEX,
++                    index,
++                    header: InHeader::default(),
++                    buffers: OwnedDescriptorChain::new(chain).unwrap(),
++                    profile_timestamp: None,
++                },
++                len: 8,
++            });
++        }
++        assert_eq!(normal.used.idx.get(), 2);
++        assert!(!worker
++            .dispatch_profile
++            .report()
++            .unwrap()
++            .measurements
++            .contains_key("notification_checks"));
++        worker.notify_completed([false, true]);
++        let report = worker.dispatch_profile.report().unwrap();
++        assert_eq!(report.measurements["published_completions"].units, 2);
++        assert_eq!(report.measurements["notification_checks"].units, 1);
++        assert_eq!(report.measurements["used_interrupts"].units, 1);
++    }
+ 
+     #[test]
+     fn pool_eligibility_keeps_short_metadata_and_all_opens_inline() {

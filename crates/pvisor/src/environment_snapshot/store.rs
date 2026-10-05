@@ -530,7 +530,7 @@ impl SnapshotStore {
     /// stage file content. External/manual writes to published payloads are
     /// unsupported. Use open/open_for_restore for a fresh full content audit.
     /// The reference gate must remain held through materialization.
-    pub(crate) fn open_owned_stage_for_restore(
+    pub fn open_owned_stage_for_restore(
         &self,
         id: &str,
         expected: &Compatibility,
@@ -590,37 +590,6 @@ impl SnapshotStore {
                 Ok(base)
             })
             .collect()
-    }
-    /// Startup preflight only: authenticates metadata without scanning payloads.
-    /// This is not a restore capability and carries no payload/base lease.
-    /// The runner must open/validate the object before creating an instance.
-    pub(crate) fn restore_metadata(
-        &self,
-        id: &str,
-        expected: &Compatibility,
-    ) -> anyhow::Result<(EnvironmentManifest, Vec<u8>)> {
-        let _reference = gate(&self.root, false)?;
-        let manifest = self.read_manifest(id, expected)?;
-        let machine = self.read_machine(id, &manifest)?;
-        Ok((manifest, machine))
-    }
-
-    fn read_manifest(
-        &self,
-        id: &str,
-        expected: &Compatibility,
-    ) -> anyhow::Result<EnvironmentManifest> {
-        valid_id(id)?;
-        let path = self.root.join("objects").join(id);
-        ensure!(
-            fs::symlink_metadata(&path)?.is_dir(),
-            "invalid environment object"
-        );
-        read_environment_manifest(&path, id, expected)
-    }
-
-    fn read_machine(&self, id: &str, manifest: &EnvironmentManifest) -> anyhow::Result<Vec<u8>> {
-        read_environment_machine(&self.root.join("objects").join(id), manifest)
     }
     /// Read the digest-bound profile; callers still perform full compatibility validation.
     pub fn profile(&self, id: &str) -> anyhow::Result<String> {
@@ -1613,7 +1582,7 @@ impl PublishedEnvironment {
     /// Reuse the inventory checked at open; source metadata/topology are
     /// checked again after copy, as is the destination. Data-copy
     /// fallback validates destination content. No immutable base is copied.
-    pub(crate) fn materialize_owned_stage(&self, destination: &Path) -> anyhow::Result<()> {
+    pub fn materialize_owned_stage(&self, destination: &Path) -> anyhow::Result<()> {
         ensure!(
             self.manifest.stage_bases.is_some(),
             "full snapshot is not a stage snapshot"

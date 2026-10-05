@@ -270,6 +270,9 @@ pub struct VmSettings {
     /// Must be independent of every VM-writable root and on the Job's volume.
     /// Linux x86-64 no-network snapshot profile only; omitted keeps owned copies.
     pub snapshot_filesystem_pool: Option<PathBuf>,
+    /// Optional same-host node resource service. Restore pins a shared read-only
+    /// RAM backing there until native teardown; service loss is not transparent.
+    pub node_socket: Option<PathBuf>,
     /// Linux root filesystem exported to the libkrun guest; defaults to host `/`.
     pub rootfs: Option<PathBuf>,
     /// Explicit OCI image used instead of the host root filesystem.
@@ -294,6 +297,7 @@ impl Default for VmSettings {
             ram_compression: false,
             memory_pool: None,
             snapshot_filesystem_pool: None,
+            node_socket: None,
             rootfs: None,
             image: None,
             image_store: None,

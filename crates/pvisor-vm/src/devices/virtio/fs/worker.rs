@@ -11,7 +11,7 @@ use std::thread;
 use std::time::Instant;
 
 use crate::utils::epoll::{ControlOperation, Epoll, EpollEvent, EventSet};
-use crate::utils::eventfd::{EFD_NONBLOCK, EventFd};
+use crate::utils::eventfd::{EventFd, EFD_NONBLOCK};
 use vm_memory::GuestMemoryMmap;
 
 use super::super::Queue;
@@ -544,7 +544,9 @@ impl FsWorker {
         for (index, completed) in completed.into_iter().enumerate() {
             if completed {
                 self.dispatch_profile.add("notification_checks", 1);
-                notify |= self.queues[index].needs_notification(&self.execution.mem).unwrap();
+                notify |= self.queues[index]
+                    .needs_notification(&self.execution.mem)
+                    .unwrap();
             }
         }
         if notify {
@@ -682,7 +684,7 @@ impl FsWorker {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::devices::virtio::descriptor_utils::{DescriptorType, create_descriptor_chain};
+    use crate::devices::virtio::descriptor_utils::{create_descriptor_chain, DescriptorType};
     use std::time::Duration;
     use vm_memory::GuestAddress;
 
@@ -690,16 +692,26 @@ mod tests {
         use crate::devices::legacy::DummyIrqChip;
         let mut worker = FsWorker::new(FsWorkerConfig {
             queues,
-            queue_evts: (0..2).map(|_| Arc::new(EventFd::new(EFD_NONBLOCK).unwrap())).collect(),
+            queue_evts: (0..2)
+                .map(|_| Arc::new(EventFd::new(EFD_NONBLOCK).unwrap()))
+                .collect(),
             interrupt: InterruptTransport::new(DummyIrqChip::new().into(), "test".into()).unwrap(),
-            mem, allow_idmap: false, shm_region: None,
-            passthrough_cfg: None, overlay_cfg: None, read_only: false,
-            virtual_entries: vec![], stop_fd: EventFd::new(EFD_NONBLOCK).unwrap(),
-            exit_code: Arc::new(AtomicI32::new(0)), restoring: false,
+            mem,
+            allow_idmap: false,
+            shm_region: None,
+            passthrough_cfg: None,
+            overlay_cfg: None,
+            read_only: false,
+            virtual_entries: vec![],
+            stop_fd: EventFd::new(EFD_NONBLOCK).unwrap(),
+            exit_code: Arc::new(AtomicI32::new(0)),
+            restoring: false,
             #[cfg(target_os = "macos")]
             map_sender: None,
-        }).unwrap();
-        worker.dispatch_profile = pvisor_overlay_core::profile::Profile::enabled("virtio-fs-dispatch");
+        })
+        .unwrap();
+        worker.dispatch_profile =
+            pvisor_overlay_core::profile::Profile::enabled("virtio-fs-dispatch");
         worker
     }
 
@@ -714,29 +726,65 @@ mod tests {
             let address = 0x4000 + slot as u64 * 0x200;
             normal.dtable[slot].addr.set(address);
             normal.dtable[slot].len.set(64);
-            normal.dtable[slot].flags.set(crate::devices::virtio::queue::VIRTQ_DESC_F_NEXT);
+            normal.dtable[slot]
+                .flags
+                .set(crate::devices::virtio::queue::VIRTQ_DESC_F_NEXT);
             normal.dtable[slot].next.set((slot + 1) as u16);
             normal.dtable[slot + 1].addr.set(address + 0x100);
             normal.dtable[slot + 1].len.set(256);
-            normal.dtable[slot + 1].flags.set(crate::devices::virtio::queue::VIRTQ_DESC_F_WRITE);
-            mem.write_obj(InHeader { len: 64, opcode: opcode as u32, nodeid: 1, ..Default::default() }, GuestAddress(address)).unwrap();
+            normal.dtable[slot + 1]
+                .flags
+                .set(crate::devices::virtio::queue::VIRTQ_DESC_F_WRITE);
+            mem.write_obj(
+                InHeader {
+                    len: 64,
+                    opcode: opcode as u32,
+                    nodeid: 1,
+                    ..Default::default()
+                },
+                GuestAddress(address),
+            )
+            .unwrap();
         }
         normal.avail.ring[0].set(0);
         normal.avail.ring[1].set(2);
         normal.avail.idx.set(2);
-        let mut worker = queue_worker(mem.clone(), vec![high.create_queue(), normal.create_queue()]);
+        let mut worker = queue_worker(
+            mem.clone(),
+            vec![high.create_queue(), normal.create_queue()],
+        );
         let (resume, waiting) = crossbeam_channel::unbounded();
-        let mut full = RequestPool::new(move |_| { waiting.recv().unwrap(); 0 }, 2, Default::default()).unwrap();
+        let mut full = RequestPool::new(
+            move |_| {
+                waiting.recv().unwrap();
+                0
+            },
+            2,
+            Default::default(),
+        )
+        .unwrap();
         for index in 0..full.limit {
-            let chain = create_descriptor_chain(&mem, GuestAddress(0x1000 + index as u64 * 0x100),
+            let chain = create_descriptor_chain(
+                &mem,
+                GuestAddress(0x1000 + index as u64 * 0x100),
                 GuestAddress(0x2000 + index as u64 * 0x100),
-                vec![(DescriptorType::Readable, 8), (DescriptorType::Writable, 8)], 0).unwrap();
-            full.submit(Request { queue: REQ_INDEX, index: index as u16, header: InHeader::default(),
-                buffers: OwnedDescriptorChain::new(chain).unwrap(), profile_timestamp: None });
+                vec![(DescriptorType::Readable, 8), (DescriptorType::Writable, 8)],
+                0,
+            )
+            .unwrap();
+            full.submit(Request {
+                queue: REQ_INDEX,
+                index: index as u16,
+                header: InHeader::default(),
+                buffers: OwnedDescriptorChain::new(chain).unwrap(),
+                profile_timestamp: None,
+            });
         }
         let mut pool = Some(full);
         worker.service_queues(&mut pool, 2, &Epoll::new().unwrap());
-        for _ in 0..4 { resume.send(()).unwrap(); }
+        for _ in 0..4 {
+            resume.send(()).unwrap();
+        }
         let report = worker.dispatch_profile.report().unwrap();
         drop(pool);
         assert_eq!(normal.used.idx.get(), 1);
@@ -755,15 +803,32 @@ mod tests {
         queue.set_event_idx(true);
         let mut worker = queue_worker(mem.clone(), vec![high.create_queue(), queue]);
         for index in 0..2 {
-            let chain = create_descriptor_chain(&mem, GuestAddress(0x1000 + index as u64 * 0x100),
+            let chain = create_descriptor_chain(
+                &mem,
+                GuestAddress(0x1000 + index as u64 * 0x100),
                 GuestAddress(0x2000 + index as u64 * 0x100),
-                vec![(DescriptorType::Readable, 8), (DescriptorType::Writable, 8)], 0).unwrap();
-            worker.publish_completion(Completion { request: Request { queue: REQ_INDEX, index,
-                header: InHeader::default(), buffers: OwnedDescriptorChain::new(chain).unwrap(),
-                profile_timestamp: None }, len: 8 });
+                vec![(DescriptorType::Readable, 8), (DescriptorType::Writable, 8)],
+                0,
+            )
+            .unwrap();
+            worker.publish_completion(Completion {
+                request: Request {
+                    queue: REQ_INDEX,
+                    index,
+                    header: InHeader::default(),
+                    buffers: OwnedDescriptorChain::new(chain).unwrap(),
+                    profile_timestamp: None,
+                },
+                len: 8,
+            });
         }
         assert_eq!(normal.used.idx.get(), 2);
-        assert!(!worker.dispatch_profile.report().unwrap().measurements.contains_key("notification_checks"));
+        assert!(!worker
+            .dispatch_profile
+            .report()
+            .unwrap()
+            .measurements
+            .contains_key("notification_checks"));
         worker.notify_completed([false, true]);
         let report = worker.dispatch_profile.report().unwrap();
         assert_eq!(report.measurements["published_completions"].units, 2);

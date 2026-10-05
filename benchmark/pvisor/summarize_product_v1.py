@@ -4,7 +4,6 @@
 import argparse
 import collections
 import csv
-import json
 from pathlib import Path
 
 from bench import percentile
@@ -22,7 +21,7 @@ def summarize(paths):
         "requested_state",
     )
     for path in paths:
-        value = json.loads(path.read_text())
+        value = load_evidence(path)
         groups = collections.defaultdict(list)
         for row in value["rows"]:
             if row.get("correctness") != "passed":
@@ -58,7 +57,7 @@ def summarize(paths):
                     continue
                 output.append(
                     dict(
-                        batch=path.parent.name if path.name == "report.json" else path.stem,
+                        batch=path.parent.name if path.stem == "report" else path.stem,
                         **dict(zip(dimensions, key)),
                         metric=metric,
                         n=len(values),
@@ -74,7 +73,7 @@ def summarize(paths):
                 continue
             output.append(
                 dict(
-                    batch=path.parent.name if path.name == "report.json" else path.stem,
+                    batch=path.parent.name if path.stem == "report" else path.stem,
                     suite="capability",
                     workload=capability,
                     state=details["state"],

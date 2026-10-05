@@ -19,7 +19,7 @@ build profile="debug":
       *) echo "expected debug, release or performance, got: $1" >&2; exit 2 ;;
     esac
     python3 scripts/build-pvisor.py --profile "$cargo_profile" --target-dir "{{ target_dir }}"
-    for name in pvisor pvisor-cache pvisor-tui pvisor-replay pvisor-memory-pool; do
+    for name in pvisor pvisor-cache pvisor-tui pvisor-replay pvisor-memory-pool pvisor-cluster pvisor-worker; do
       binary="{{ target_dir }}/$1/$name"
       test -x "$binary"
       if [[ "$(uname -s)" == Darwin ]]; then
@@ -34,7 +34,7 @@ install-cli: (build "release")
     set -euo pipefail
     install_root="${CARGO_INSTALL_ROOT:-${CARGO_HOME:-$HOME/.cargo}}"
     mkdir -p "$install_root/bin"
-    for binary in pvisor pvisor-cache pvisor-tui pvisor-replay pvisor-memory-pool; do
+    for binary in pvisor pvisor-cache pvisor-tui pvisor-replay pvisor-memory-pool pvisor-cluster pvisor-worker; do
       install -m 755 "{{ target_dir }}/release/$binary" "$install_root/bin/$binary"
     done
 
@@ -70,6 +70,25 @@ cluster-build:
       codesign --force --sign - --entitlements "{{ repo }}/crates/pvisor/macos-hypervisor.entitlements" "{{ target_dir }}/debug/pvisor-worker"
       codesign --verify --strict "{{ target_dir }}/debug/pvisor-worker"
     fi
+
+# Unified service component set, with optional Worker Gateway support.
+service-build:
+    #!/usr/bin/env bash
+    set -euo pipefail
+    cargo build --locked -p pvisor -p pvisor-cluster --bin pvisor --bin pvisor-cache --bin pvisor-worker --bin pvisor-cluster --bin pvisor-memory-pool --features pvisor/gateway
+    if [[ "$(uname -s)" == Darwin ]]; then
+      for name in pvisor pvisor-worker pvisor-memory-pool; do
+        codesign --force --sign - --entitlements "{{ repo }}/crates/pvisor/macos-hypervisor.entitlements" "{{ target_dir }}/debug/$name"
+      done
+    fi
+
+# Real service lifecycle and same-host read-only backing ownership; no guest VMs.
+test-service: service-build
+    cargo nextest run --locked -p pvisor --features gateway --test service_execution --run-ignored all -E 'not test(native_vm_workers)' --test-threads 1
+
+# Two real KVM/FUSE VMs, each 128 MiB/one vCPU in a separately capped Worker.
+test-service-vm: service-build
+    cargo nextest run --locked -p pvisor --features gateway --test service_execution --run-ignored only -E 'test(native_vm_workers)' --test-threads 1
 
 # Controller and Worker with Attempt-local model Gateway support.
 cluster-build-gateway:
@@ -276,19 +295,8 @@ test-hvf-cold-restore:
 test-vm-snapshot-state:
     python3 scripts/check-vm-snapshot-state.py --target-dir "{{ target_dir }}"
 
-# Linux hardware gate: concurrent snapshots, memory/FD integrity and injected crashes.
+# Historical standalone snapshot gate: the current CLI no longer exposes it.
+# Use archived binaries with benchmark/pvisor/vm_stress.py to reproduce old evidence.
 test-vm-stress output cycles="5" forks="4" seed="1":
-    #!/usr/bin/env bash
-    set -euo pipefail
-    test "$(uname -s)" = Linux
-    test "$(uname -m)" = x86_64
-    test -r /dev/kvm && test -w /dev/kvm
-    test -r /dev/fuse && test -w /dev/fuse
-    cargo build --release --locked -p pvisor --bin pvisor --target-dir "{{ target_dir }}"
-    stress_guest=$(mktemp "{{ target_dir }}/snapshot-stress-guest.XXXXXX")
-    trap 'rm -f "$stress_guest"' EXIT
-    rustc --target x86_64-unknown-linux-musl -C opt-level=2 -C panic=abort \
-      "{{ repo }}/benchmark/pvisor/snapshot_stress_guest.rs" -o "$stress_guest"
-    python3 "{{ repo }}/benchmark/pvisor/vm_stress.py" \
-      --binary "{{ target_dir }}/release/pvisor" --guest "$stress_guest" \
-      --output "$1" --cycles "$2" --forks "$3" --seed "$4"
+    @echo 'Standalone snapshot CLI is removed. Use an archived binary for vm_stress.py; current capped environment-sharing gate: just test-service-vm.' >&2
+    @exit 2

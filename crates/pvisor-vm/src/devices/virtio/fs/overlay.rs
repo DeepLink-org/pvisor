@@ -4,7 +4,7 @@
 //! platform passthrough implementation is retained for Linux permission
 //! emulation and for the actual FUSE request I/O on each resolved layer.
 
-use std::collections::{BTreeMap, HashMap};
+use std::collections::{BTreeSet, HashMap};
 use std::ffi::{CStr, CString, OsStr};
 use std::io;
 use std::os::unix::ffi::OsStrExt;
@@ -14,6 +14,7 @@ use std::sync::atomic::{AtomicU64, Ordering};
 use std::sync::{Arc, Mutex, RwLock};
 use std::time::Duration;
 
+use pvisor_overlay_core::{backend, service::FilesystemService};
 use pvisor_overlay_core::{BackingIdentity, BackingResolution, OverlayCore};
 
 use super::super::linux_errno::linux_error;
@@ -77,6 +78,8 @@ struct FileHandle {
     layer: Layer,
     inode: u64,
     handle: u64,
+    #[serde(default)]
+    relative_path: Vec<u8>,
 }
 
 #[derive(Clone, Debug)]
@@ -108,15 +111,21 @@ enum Handle {
     Directory(Arc<Vec<DirectoryItem>>),
     // Keep the old Directory variant for snapshots with materialized entries.
     // New handles defer metadata/inode work until the caller consumes a page.
-    DirectoryNames { parent: u64, names: Arc<Vec<Vec<u8>>> },
+    DirectoryNames {
+        parent: u64,
+        names: Arc<Vec<Vec<u8>>>,
+        #[serde(default)]
+        types: Arc<Vec<u32>>,
+    },
 }
 
 #[derive(Default)]
 struct Nodes {
     by_inode: HashMap<u64, PathBuf>,
-    // Path ordering compares components: a subtree occupies a contiguous range.
-    // Namespace updates visit only that range, not every inode in the device.
-    by_path: BTreeMap<PathBuf, u64>,
+    // Retain constant-time lookups on the hot path. The separate component-ordered
+    // index makes namespace updates visit only the affected subtree.
+    by_path: HashMap<PathBuf, u64>,
+    ordered_paths: BTreeSet<PathBuf>,
 }
 
 #[derive(Clone, Debug, serde::Serialize, serde::Deserialize)]
@@ -306,9 +315,11 @@ impl OverlaySnapshot {
         config.work_dir = config.work_dir.as_deref().map(&relocate).transpose()?;
         config.preimage_dir = config.preimage_dir.as_deref().map(&relocate).transpose()?;
         config.apply_target = config.apply_target.as_deref().map(&relocate).transpose()?;
-        if config.baseline_content_index.as_ref().is_some_and(|index| {
-            !retained.iter().any(|root| root == &index.root)
-        }) {
+        if config
+            .baseline_content_index
+            .as_ref()
+            .is_some_and(|index| !retained.iter().any(|root| root == &index.root))
+        {
             // A copied generation has no lease on the original receipt. Its
             // fingerprints remain identical, but must read the copied bytes.
             config.baseline_content_index = None;
@@ -464,7 +475,8 @@ pub struct OverlayFs {
     // release remain exclusive. Hold the guard through backing I/O: cloning
     // numeric handle IDs alone would not pin the native handle against release.
     operation_lock: RwLock<()>,
-    core: OverlayCore,
+    core: FilesystemService,
+    virtual_metadata: bool,
     snapshot_config: Config,
     roots: Vec<PathBuf>,
     layers: Vec<Arc<PassthroughFs>>,
@@ -526,7 +538,7 @@ impl OverlayFs {
             OverlayCore::new_for_layout_with_compact_preimages
         };
         let core = open(layout, upper.clone(), work, excluded, preimages)?;
-        let core = core.with_access_policy(&cfg.access_policy);
+        let core = FilesystemService::new(core).with_access_policy(&cfg.access_policy);
         let core = if let Some(index) = &cfg.baseline_content_index {
             core.with_immutable_content_index(&index.root, index.file.clone(), &index.sha256)?
         } else {
@@ -555,7 +567,20 @@ impl OverlayFs {
         let mut nodes = Nodes::default();
         nodes.by_inode.insert(fuse::ROOT_ID, PathBuf::new());
         nodes.by_path.insert(PathBuf::new(), fuse::ROOT_ID);
+        nodes.ordered_paths.insert(PathBuf::new());
+        let virtual_metadata = roots.iter().try_fold(false, |found, root| {
+            backend::attributes(root).map(|attr| {
+                found
+                    || attr.is_some()
+                    || pvisor_overlay_core::sys::get_xattr(
+                        root,
+                        OsStr::new("user.containers.override_stat"),
+                    )
+                    .is_ok()
+            })
+        })?;
         Ok(Self {
+            virtual_metadata,
             profile: pvisor_overlay_core::profile::Profile::from_env("virtio-fs-overlay"),
             operation_lock: RwLock::new(()),
             core,
@@ -591,6 +616,7 @@ impl OverlayFs {
             return *inode;
         }
         let inode = self.inode_alloc.next();
+        nodes.ordered_paths.insert(path.clone());
         nodes.by_path.insert(path.clone(), inode);
         nodes.by_inode.insert(inode, path);
         inode
@@ -599,13 +625,14 @@ impl OverlayFs {
     fn remove_path(&self, prefix: &Path) {
         let mut nodes = self.nodes.lock().unwrap();
         let paths = nodes
-            .by_path
+            .ordered_paths
             .range(prefix.to_path_buf()..)
-            .take_while(|(path, _)| path.starts_with(prefix))
-            .map(|(path, _)| path.clone())
+            .take_while(|path| path.starts_with(prefix))
+            .cloned()
             .collect::<Vec<_>>();
         self.profile.add("nodes_removed", paths.len() as u64);
         for path in paths {
+            nodes.ordered_paths.remove(&path);
             if let Some(inode) = nodes.by_path.remove(&path) {
                 nodes.by_inode.remove(&inode);
             }
@@ -615,24 +642,27 @@ impl OverlayFs {
     fn remap_path(&self, old: &Path, new: &Path) {
         let mut nodes = self.nodes.lock().unwrap();
         let changes = nodes
-            .by_path
+            .ordered_paths
             .range(old.to_path_buf()..)
-            .take_while(|(path, _)| path.starts_with(old))
-            .map(|(path, inode)| {
+            .take_while(|path| path.starts_with(old))
+            .map(|path| {
+                let inode = nodes.by_path[path];
                 let suffix = path.strip_prefix(old).unwrap();
                 let replacement = if suffix.as_os_str().is_empty() {
                     new.to_path_buf()
                 } else {
                     new.join(suffix)
                 };
-                (path.clone(), replacement, *inode)
+                (path.clone(), replacement, inode)
             })
             .collect::<Vec<_>>();
         self.profile.add("nodes_remapped", changes.len() as u64);
         for (old_path, _, _) in &changes {
+            nodes.ordered_paths.remove(old_path);
             nodes.by_path.remove(old_path);
         }
         for (_, new_path, inode) in changes {
+            nodes.ordered_paths.insert(new_path.clone());
             nodes.by_path.insert(new_path.clone(), inode);
             nodes.by_inode.insert(inode, new_path);
         }
@@ -855,6 +885,7 @@ impl OverlayFs {
         if entry.inode != fuse::ROOT_ID {
             self.layers[layer.0].forget(ctx, entry.inode, 1);
         }
+        self.backing_attributes(&backing.entry.resolved.path, &mut entry.attr)?;
         entry.inode = inode;
         entry.attr.st_ino = inode as _;
         Ok(entry)
@@ -866,6 +897,48 @@ impl OverlayFs {
             .metadata_for_backing_lookup(path)
             .map_err(linux_error)?;
         self.entry_on_backing(ctx, path, inode, &backing)
+    }
+
+    fn backing_attributes(&self, path: &Path, attr: &mut bindings::stat64) -> io::Result<()> {
+        if let Some(remote) = backend::attributes(path).map_err(linux_error)? {
+            attr.st_mode = (remote.kind.mode() | u32::from(remote.perm)) as _;
+            attr.st_uid = remote.uid;
+            attr.st_gid = remote.gid;
+            attr.st_nlink = remote.nlink as _;
+            attr.st_size = remote.size as _;
+            attr.st_blocks = remote.blocks as _;
+            attr.st_rdev = remote.rdev as _;
+            let (sec, nsec) = pvisor_overlay_core::sys::unix_timestamp(remote.atime);
+            attr.st_atime = sec as _;
+            attr.st_atime_nsec = nsec as _;
+            let (sec, nsec) = pvisor_overlay_core::sys::unix_timestamp(remote.mtime);
+            attr.st_mtime = sec as _;
+            attr.st_mtime_nsec = nsec as _;
+            let (sec, nsec) = pvisor_overlay_core::sys::unix_timestamp(remote.ctime);
+            attr.st_ctime = sec as _;
+            attr.st_ctime_nsec = nsec as _;
+        }
+        #[cfg(target_os = "linux")]
+        if self.virtual_metadata && backend::attributes(path).map_err(linux_error)?.is_none() {
+            // Copy-up retains the source's virtual ownership when an unprivileged
+            // host cannot chown the native upper. Native mode/size/times stay live.
+            if let Ok(bytes) = pvisor_overlay_core::sys::get_xattr(
+                path,
+                OsStr::new("user.containers.override_stat"),
+            ) {
+                let identity = backend::UnixIdentity::parse(&bytes).map_err(linux_error)?;
+                attr.st_uid = identity.uid;
+                attr.st_gid = identity.gid;
+                #[allow(clippy::unnecessary_cast)] // mode_t differs by platform
+                let mode = if identity.mode & 0o170000 == 0 {
+                    (attr.st_mode as u32 & 0o170000) | identity.mode
+                } else {
+                    identity.mode
+                };
+                attr.st_mode = mode as _;
+            }
+        }
+        Ok(())
     }
 
     fn clear_directory_cache(&self) {
@@ -928,6 +1001,9 @@ impl OverlayFs {
 impl FileSystem for OverlayFs {
     fn capture_state(&self) -> io::Result<super::snapshot::FsSnapshot> {
         let _operation = self.write_operation().unwrap();
+        for root in self.roots.iter().skip(1) {
+            backend::materialize_tree(root)?;
+        }
         self.clear_directory_cache();
         self.profile.emit_checkpoint();
         self.core.emit_profile_checkpoint();
@@ -1039,7 +1115,7 @@ impl FileSystem for OverlayFs {
         )))
     }
     fn restore_state(&self, state: &super::snapshot::FsSnapshot) -> io::Result<()> {
-        use super::snapshot::{FsSnapshot, invalid};
+        use super::snapshot::{invalid, FsSnapshot};
         let FsSnapshot::Overlay(state) = state else {
             return Err(invalid("overlay filesystem type mismatch"));
         };
@@ -1054,6 +1130,7 @@ impl FileSystem for OverlayFs {
         let mut nodes = Nodes::default();
         for (inode, path) in &state.nodes {
             let path = PathBuf::from(OsStr::from_bytes(path));
+            nodes.ordered_paths.insert(path.clone());
             if *inode == 0
                 || path
                     .components()
@@ -1072,6 +1149,8 @@ impl FileSystem for OverlayFs {
             }
             match handle {
                 Handle::File(file) => {
+                    OverlayCore::validate_rel(Path::new(OsStr::from_bytes(&file.relative_path)))
+                        .map_err(|_| invalid("invalid file handle relative path"))?;
                     let Some(FsSnapshot::Passthrough(layer)) = state.layers.get(file.layer.0)
                     else {
                         return Err(invalid("invalid file handle layer"));
@@ -1085,10 +1164,24 @@ impl FileSystem for OverlayFs {
                         return Err(invalid("overlay handle without backing inode"));
                     }
                 }
-                Handle::DirectoryNames { parent, names } => {
-                    if !nodes.by_inode.contains_key(parent) || names.iter().any(|name|
-                        name.is_empty() || name.contains(&0) || name.contains(&b'/')
-                        || name == b"." || name == b"..") {
+                Handle::DirectoryNames {
+                    parent,
+                    names,
+                    types,
+                } => {
+                    if !nodes.by_inode.contains_key(parent)
+                        || (!types.is_empty() && types.len() != names.len())
+                        || types
+                            .iter()
+                            .any(|type_| !matches!(*type_, 0 | 1 | 2 | 4 | 6 | 8 | 10 | 12))
+                        || names.iter().any(|name| {
+                            name.is_empty()
+                                || name.contains(&0)
+                                || name.contains(&b'/')
+                                || name == b"."
+                                || name == b".."
+                        })
+                    {
                         return Err(invalid("invalid lazy directory cookie"));
                     }
                 }
@@ -1194,6 +1287,16 @@ impl FileSystem for OverlayFs {
                     return Err(io::Error::from_raw_os_error(libc::EBADF));
                 }
                 let (mut attr, timeout) = fs.getattr(ctx, h.inode, Some(h.handle))?;
+                let path = self.roots[h.layer.0].join(OsStr::from_bytes(&h.relative_path));
+                #[allow(clippy::unnecessary_cast)] // native dev_t differs by platform
+                let same_object = h.layer.0 != 0
+                    || !self.virtual_metadata
+                    || std::fs::symlink_metadata(&path).is_ok_and(|metadata| {
+                        metadata.ino() == attr.st_ino as u64 && metadata.dev() == attr.st_dev as u64
+                    });
+                if same_object {
+                    self.backing_attributes(&path, &mut attr)?;
+                }
                 attr.st_ino = inode as _;
                 Ok((attr, timeout))
             });
@@ -1216,9 +1319,49 @@ impl FileSystem for OverlayFs {
             .prepare_metadata_change(&path)
             .map_err(linux_error)?;
         let inner = self.writable_inner(ctx, &path)?;
+        #[cfg(target_os = "linux")]
+        let previous = if self.virtual_metadata {
+            Some(self.entry(ctx, &path, inode)?.attr)
+        } else {
+            None
+        };
+        let requested = attr;
         let result = self.layers[0].setattr(ctx, inner, attr, None, valid);
         self.layers[0].forget(ctx, inner, 1);
         let (mut attr, timeout) = result?;
+        #[cfg(target_os = "linux")]
+        if let Some(previous) = previous {
+            if pvisor_overlay_core::sys::get_xattr(
+                &self.core.upper_path(&path),
+                OsStr::new("user.containers.override_stat"),
+            )
+            .is_ok()
+            {
+                if !valid.contains(SetattrValid::MODE) {
+                    attr.st_mode = previous.st_mode;
+                }
+                attr.st_uid = if valid.contains(SetattrValid::UID) {
+                    requested.st_uid
+                } else {
+                    previous.st_uid
+                };
+                attr.st_gid = if valid.contains(SetattrValid::GID) {
+                    requested.st_gid
+                } else {
+                    previous.st_gid
+                };
+                let value = format!("{}:{}:0{:o}", attr.st_uid, attr.st_gid, attr.st_mode);
+                pvisor_overlay_core::sys::set_xattr(
+                    &self.core.upper_path(&path),
+                    OsStr::new("user.containers.override_stat"),
+                    value.as_bytes(),
+                    0,
+                )
+                .map_err(linux_error)?;
+            }
+        }
+        #[cfg(target_os = "macos")]
+        let _ = requested;
         attr.st_ino = inode as _;
         Ok((attr, timeout))
     }
@@ -1424,6 +1567,7 @@ impl FileSystem for OverlayFs {
             layer,
             inode: inner,
             handle,
+            relative_path: path.as_os_str().as_bytes().to_vec(),
         }));
         Ok((Some(id), options))
     }
@@ -1465,6 +1609,7 @@ impl FileSystem for OverlayFs {
             layer: Layer(0),
             inode: inner_inode,
             handle,
+            relative_path: path.as_os_str().as_bytes().to_vec(),
         }));
         Ok((entry, Some(id), options))
     }
@@ -1474,7 +1619,7 @@ impl FileSystem for OverlayFs {
         ctx: Context,
         _inode: u64,
         handle: u64,
-        w: W,
+        mut w: W,
         size: u32,
         offset: u64,
         lock_owner: Option<u64>,
@@ -1483,7 +1628,17 @@ impl FileSystem for OverlayFs {
         let _span = self.profile.span("read");
         let _operation = self.read_operation()?;
         self.with_file_handle(handle, |fs, h| {
-            fs.read(ctx, h.inode, h.handle, w, size, offset, lock_owner, flags)
+            let backing = self.roots[h.layer.0].join(OsStr::from_bytes(&h.relative_path));
+            if let Some(bytes) = self
+                .core
+                .read_remote(&backing, offset, size)
+                .map_err(linux_error)?
+            {
+                w.write_all(&bytes)?;
+                Ok(bytes.len())
+            } else {
+                fs.read(ctx, h.inode, h.handle, w, size, offset, lock_owner, flags)
+            }
         })
     }
 
@@ -1638,9 +1793,18 @@ impl FileSystem for OverlayFs {
         let _span = self.profile.span("opendir");
         let _operation = self.read_operation()?;
         let path = self.path(inode)?;
-        let names = self.core.directory_candidates(&path).map_err(linux_error)?
-            .into_iter().map(|name| name.as_bytes().to_vec()).collect();
-        let handle = self.allocate_handle(Handle::DirectoryNames { parent: inode, names: Arc::new(names) });
+        let (names, types): (Vec<_>, Vec<_>) = self
+            .core
+            .directory_candidates(&path)
+            .map_err(linux_error)?
+            .into_iter()
+            .map(|(name, type_)| (name.as_bytes().to_vec(), type_))
+            .unzip();
+        let handle = self.allocate_handle(Handle::DirectoryNames {
+            parent: inode,
+            names: Arc::new(names),
+            types: Arc::new(types),
+        });
         Ok((Some(handle), OpenOptions::empty()))
     }
 
@@ -1658,14 +1822,39 @@ impl FileSystem for OverlayFs {
     {
         let _operation = self.read_operation()?;
         let directory = self.handles.lock().unwrap().get(&handle).cloned();
-        if let Some(Handle::DirectoryNames { parent, names }) = directory {
+        if let Some(Handle::DirectoryNames {
+            parent,
+            names,
+            types,
+        }) = directory
+        {
             let directory = self.path(parent)?;
             for (index, name) in names.iter().enumerate().skip(offset as usize) {
-                let Some(entry) = self.core.directory_entry(&directory, OsStr::from_bytes(name)).map_err(linux_error)? else { continue; };
-                let path = OverlayCore::child(&directory, &entry.name).map_err(linux_error)?;
+                let path =
+                    OverlayCore::child(&directory, OsStr::from_bytes(name)).map_err(linux_error)?;
+                let type_ = if let Some(type_) = types.get(index) {
+                    *type_
+                } else {
+                    // Older name-only handles retain their checked fallback.
+                    let Some(entry) = self
+                        .core
+                        .directory_entry(&directory, OsStr::from_bytes(name))
+                        .map_err(linux_error)?
+                    else {
+                        continue;
+                    };
+                    Self::dtype(entry.backing.metadata.mode())
+                };
                 let ino = self.allocate_inode(path);
-                if add_entry(DirEntry { ino, offset: (index + 1) as u64,
-                    type_: Self::dtype(entry.backing.metadata.mode()), name })? == 0 { break; }
+                if add_entry(DirEntry {
+                    ino,
+                    offset: (index + 1) as u64,
+                    type_,
+                    name,
+                })? == 0
+                {
+                    break;
+                }
             }
             return Ok(());
         }
@@ -1702,15 +1891,32 @@ impl FileSystem for OverlayFs {
         let _span = self.profile.span("readdirplus");
         let _operation = self.read_operation()?;
         let directory = self.handles.lock().unwrap().get(&handle).cloned();
-        if let Some(Handle::DirectoryNames { parent, names }) = directory {
+        if let Some(Handle::DirectoryNames { parent, names, .. }) = directory {
             let directory = self.path(parent)?;
             for (index, name) in names.iter().enumerate().skip(offset as usize) {
-                let path = OverlayCore::child(&directory, OsStr::from_bytes(name)).map_err(linux_error)?;
-                let Some(backing) = self.core.directory_entry_for_backing_lookup(&directory, OsStr::from_bytes(name)).map_err(linux_error)? else { continue; };
+                let path =
+                    OverlayCore::child(&directory, OsStr::from_bytes(name)).map_err(linux_error)?;
+                let Some(backing) = self
+                    .core
+                    .directory_entry_for_backing_lookup(&directory, OsStr::from_bytes(name))
+                    .map_err(linux_error)?
+                else {
+                    continue;
+                };
                 let inode = self.allocate_inode(path.clone());
                 let entry = self.entry_on_backing(ctx, &path, inode, &backing)?;
-                if add_entry(DirEntry { ino: inode, offset: (index + 1) as u64,
-                    type_: Self::dtype(backing.entry.metadata.mode()), name }, entry)? == 0 { break; }
+                if add_entry(
+                    DirEntry {
+                        ino: inode,
+                        offset: (index + 1) as u64,
+                        type_: Self::dtype(backing.entry.metadata.mode()),
+                        name,
+                    },
+                    entry,
+                )? == 0
+                {
+                    break;
+                }
             }
             return Ok(());
         }
@@ -1748,6 +1954,31 @@ impl FileSystem for OverlayFs {
     fn access(&self, ctx: Context, inode: u64, mask: u32) -> io::Result<()> {
         let _operation = self.read_operation()?;
         let path = self.path(inode)?;
+        if self.virtual_metadata {
+            let attr = self.entry(ctx, &path, inode)?.attr;
+            // mode_t is u16 on macOS and u32 on Linux.
+            #[allow(clippy::unnecessary_cast)]
+            let mode = attr.st_mode as u32;
+            let requested = mask & 7;
+            let allowed = if ctx.uid == 0 {
+                if mode & 0o111 != 0 || mode & 0o170000 == 0o040000 {
+                    7
+                } else {
+                    6
+                }
+            } else if ctx.uid == attr.st_uid {
+                (mode >> 6) & 7
+            } else if ctx.gid == attr.st_gid {
+                (mode >> 3) & 7
+            } else {
+                mode & 7
+            };
+            return if requested & !allowed == 0 {
+                Ok(())
+            } else {
+                Err(io::Error::from_raw_os_error(libc::EACCES))
+            };
+        }
         let layer = self.layer(&path)?;
         let inner = self.inner_inode(layer, &path, ctx)?;
         let result = self.layers[layer.0].access(ctx, inner, mask);
@@ -1767,6 +1998,10 @@ impl FileSystem for OverlayFs {
     ) -> io::Result<u64> {
         let _operation = self.write_operation()?;
         self.with_file_handle(handle, |fs, h| {
+            backend::materialize_file(
+                &self.roots[h.layer.0].join(OsStr::from_bytes(&h.relative_path)),
+            )
+            .map_err(linux_error)?;
             fs.lseek(ctx, h.inode, h.handle, offset, whence)
         })
     }
@@ -2169,6 +2404,56 @@ mod tests {
     }
 
     #[test]
+    fn copied_snapshot_discards_receipts_from_the_original_generation() {
+        use sha2::{Digest, Sha256};
+        let temp = tempfile::tempdir().unwrap();
+        let source = temp.path().join("source");
+        let copied = temp.path().join("copied");
+        std::fs::create_dir_all(source.join("lower")).unwrap();
+        std::fs::write(source.join("lower/file"), b"content").unwrap();
+        let mut fs = parent_cache_fixture(&source);
+        let digest = |bytes: &[u8]| {
+            Sha256::digest(bytes)
+                .iter()
+                .map(|byte| format!("{byte:02x}"))
+                .collect::<String>()
+        };
+        let content_digest = digest(b"content");
+        let index = pvisor_overlay_core::encode_content_index([(
+            Path::new("file"),
+            content_digest.as_str(),
+        )])
+        .unwrap();
+        let receipt = temp.path().join("content-index.bin");
+        std::fs::write(&receipt, &index).unwrap();
+        let index = crate::api::BaselineContentIndex {
+            root: source.join("lower"),
+            file: receipt,
+            sha256: digest(&index),
+        };
+        fs.core = fs
+            .core
+            .with_immutable_content_index(&index.root, index.file.clone(), &index.sha256)
+            .unwrap();
+        fs.snapshot_config.baseline_content_index = Some(index);
+        let super::super::snapshot::FsSnapshot::Overlay(mut snapshot) = fs.capture_state().unwrap()
+        else {
+            panic!("expected overlay");
+        };
+        pvisor::environment_snapshot::copy_owned_tree(&source, &copied).unwrap();
+        snapshot.rebind_owned_copy(&source, &copied).unwrap();
+        assert!(snapshot.config.baseline_content_index.is_none());
+        let restored =
+            OverlayFs::open_existing(snapshot.config.clone(), Arc::new(InodeAllocator::new()))
+                .unwrap();
+        restored.init(FsOptions::empty()).unwrap();
+        restored
+            .restore_state(&super::super::snapshot::FsSnapshot::Overlay(snapshot))
+            .unwrap();
+        assert_eq!(restored.core.metadata(Path::new("file")).unwrap().len(), 7);
+    }
+
+    #[test]
     fn subtree_index_keeps_component_siblings_and_inode_identities() {
         let temp = tempfile::tempdir().unwrap();
         std::fs::create_dir(temp.path().join("lower")).unwrap();
@@ -2177,7 +2462,11 @@ mod tests {
         let inodes = paths.map(|path| fs.allocate_inode(PathBuf::from(path)));
         fs.remap_path(Path::new("a"), Path::new("renamed"));
         for (index, path) in paths.iter().enumerate() {
-            let expected = if index < 3 { path.replacen('a', "renamed", 1) } else { path.to_string() };
+            let expected = if index < 3 {
+                path.replacen('a', "renamed", 1)
+            } else {
+                path.to_string()
+            };
             assert_eq!(fs.path(inodes[index]).unwrap(), PathBuf::from(expected));
         }
         fs.remove_path(Path::new("renamed/x"));
@@ -2188,6 +2477,10 @@ mod tests {
         }
         let nodes = fs.nodes.lock().unwrap();
         assert_eq!(nodes.by_path.len(), nodes.by_inode.len());
+        assert_eq!(nodes.by_path.len(), nodes.ordered_paths.len());
+        for path in &nodes.ordered_paths {
+            assert!(nodes.by_path.contains_key(path));
+        }
         for (path, inode) in &nodes.by_path {
             assert_eq!(nodes.by_inode.get(inode), Some(path));
         }
@@ -2198,33 +2491,124 @@ mod tests {
         let temp = tempfile::tempdir().unwrap();
         let lower = temp.path().join("lower");
         std::fs::create_dir(&lower).unwrap();
-        for name in ["a", "b", "c"] { std::fs::write(lower.join(name), name).unwrap(); }
+        for name in ["a", "b", "c"] {
+            std::fs::write(lower.join(name), name).unwrap();
+        }
         let fs = parent_cache_fixture(temp.path());
-        let ctx = Context { uid: 0, gid: 0, pid: 1 };
+        let ctx = Context {
+            uid: 0,
+            gid: 0,
+            pid: 1,
+        };
         let handle = fs.opendir(ctx, fuse::ROOT_ID, 0).unwrap().0.unwrap();
-        assert_eq!(fs.nodes.lock().unwrap().by_inode.len(), 1, "OPENDIR must not allocate every child inode");
+        assert_eq!(
+            fs.nodes.lock().unwrap().by_inode.len(),
+            1,
+            "OPENDIR must not allocate every child inode"
+        );
         let mut first = Vec::new();
         fs.readdir(ctx, fuse::ROOT_ID, handle, 4096, 0, |entry| {
-            if !first.is_empty() { return Ok(0); }
+            if !first.is_empty() {
+                return Ok(0);
+            }
             first.push((entry.name.to_vec(), entry.offset));
             Ok(1)
-        }).unwrap();
+        })
+        .unwrap();
         assert_eq!(first, vec![(b"a".to_vec(), 1)]);
         fs.unlink(ctx, fuse::ROOT_ID, c"b").unwrap();
         std::fs::write(lower.join("d"), b"new entry after OPENDIR").unwrap();
         let snapshot = fs.capture_state().unwrap();
-        let restored = OverlayFs::open_existing(fs.snapshot_config.clone(), Arc::new(InodeAllocator::new())).unwrap();
+        let restored =
+            OverlayFs::open_existing(fs.snapshot_config.clone(), Arc::new(InodeAllocator::new()))
+                .unwrap();
         restored.init(FsOptions::empty()).unwrap();
         restored.restore_state(&snapshot).unwrap();
         let mut remaining = Vec::new();
-        restored.readdirplus(ctx, fuse::ROOT_ID, handle, 4096, 1, |entry, attr| {
-            assert_eq!(attr.attr.st_size, 1);
-            remaining.push((entry.name.to_vec(), entry.offset));
-            Ok(1)
-        }).unwrap();
+        restored
+            .readdirplus(ctx, fuse::ROOT_ID, handle, 4096, 1, |entry, attr| {
+                assert_eq!(attr.attr.st_size, 1);
+                remaining.push((entry.name.to_vec(), entry.offset));
+                Ok(1)
+            })
+            .unwrap();
         assert_eq!(remaining, vec![(b"c".to_vec(), 3)]);
         restored.releasedir(ctx, fuse::ROOT_ID, 0, handle).unwrap();
-        assert_eq!(restored.readdir(ctx, fuse::ROOT_ID, handle, 4096, 0, |_| Ok(1)).unwrap_err().raw_os_error(), Some(libc::EBADF));
+        assert_eq!(
+            restored
+                .readdir(ctx, fuse::ROOT_ID, handle, 4096, 0, |_| Ok(1))
+                .unwrap_err()
+                .raw_os_error(),
+            Some(libc::EBADF)
+        );
+    }
+
+    #[test]
+    fn plain_directory_types_preserve_layer_priority_without_child_inode_allocation() {
+        let temp = tempfile::tempdir().unwrap();
+        let lower = temp.path().join("lower");
+        std::fs::create_dir(&lower).unwrap();
+        std::fs::write(lower.join("a"), b"file").unwrap();
+        std::os::unix::fs::symlink("a", lower.join("link")).unwrap();
+        let fs = parent_cache_fixture(temp.path());
+        std::fs::create_dir(fs.core.upper().join("a")).unwrap();
+        let ctx = Context {
+            uid: 0,
+            gid: 0,
+            pid: 1,
+        };
+        let handle = fs.opendir(ctx, fuse::ROOT_ID, 0).unwrap().0.unwrap();
+        assert_eq!(fs.nodes.lock().unwrap().by_inode.len(), 1);
+        // Plain READDIR retains the type snapshot. READDIRPLUS must still
+        // resolve the changed object, rather than treating types as metadata.
+        std::fs::remove_dir(fs.core.upper().join("a")).unwrap();
+        let mut plain = Vec::new();
+        fs.readdir(ctx, fuse::ROOT_ID, handle, 4096, 0, |entry| {
+            plain.push((entry.name.to_vec(), entry.type_));
+            Ok(1)
+        })
+        .unwrap();
+        assert_eq!(
+            plain,
+            vec![
+                (b"a".to_vec(), libc::DT_DIR as u32),
+                (b"link".to_vec(), libc::DT_LNK as u32)
+            ]
+        );
+        let mut plus = Vec::new();
+        fs.readdirplus(ctx, fuse::ROOT_ID, handle, 4096, 0, |entry, attr| {
+            plus.push((
+                entry.name.to_vec(),
+                entry.type_,
+                attr.attr.st_mode & libc::S_IFMT,
+            ));
+            Ok(1)
+        })
+        .unwrap();
+        assert_eq!(
+            plus,
+            vec![
+                (b"a".to_vec(), libc::DT_REG as u32, libc::S_IFREG),
+                (b"link".to_vec(), libc::DT_LNK as u32, libc::S_IFLNK)
+            ]
+        );
+        let mut snapshot = fs.capture_state().unwrap();
+        let super::super::snapshot::FsSnapshot::Overlay(state) = &mut snapshot else {
+            panic!("overlay snapshot");
+        };
+        let (_, Handle::DirectoryNames { types, .. }) = state
+            .handles
+            .iter_mut()
+            .find(|(id, _)| *id == handle)
+            .unwrap()
+        else {
+            panic!("lazy directory handle");
+        };
+        *types = Arc::new(vec![libc::DT_REG as u32]);
+        assert!(
+            fs.restore_state(&snapshot).is_err(),
+            "reject misaligned type snapshots"
+        );
     }
 
     #[test]
@@ -2444,10 +2828,9 @@ mod tests {
         };
         let entry = fs.lookup(ctx, fuse::ROOT_ID, c"dir").unwrap();
         for _ in 0..16 {
-            assert!(
-                fs.open(ctx, entry.inode, false, libc::O_WRONLY as u32)
-                    .is_err()
-            );
+            assert!(fs
+                .open(ctx, entry.inode, false, libc::O_WRONLY as u32)
+                .is_err());
         }
         assert!(fs.handles.lock().unwrap().is_empty());
         let super::super::snapshot::FsSnapshot::Overlay(snapshot) = fs.capture_state().unwrap()
@@ -2459,12 +2842,10 @@ mod tests {
                 panic!("expected a native layer");
             };
             assert!(native.handles.is_empty());
-            assert!(
-                native
-                    .inodes
-                    .iter()
-                    .all(|inode| inode.inode == fuse::ROOT_ID)
-            );
+            assert!(native
+                .inodes
+                .iter()
+                .all(|inode| inode.inode == fuse::ROOT_ID));
         }
     }
 
@@ -2537,24 +2918,21 @@ mod tests {
             gid: 0,
             pid: 1,
         };
-        assert!(
-            fs.lookup(ctx, fuse::ROOT_ID, &CString::new("private.key").unwrap())
-                .is_err()
-        );
+        assert!(fs
+            .lookup(ctx, fuse::ROOT_ID, &CString::new("private.key").unwrap())
+            .is_err());
         let alias = fs
             .lookup(ctx, fuse::ROOT_ID, &CString::new("alias").unwrap())
             .unwrap();
-        assert!(
-            fs.open(ctx, alias.inode, false, libc::O_RDONLY as u32)
-                .is_err()
-        );
+        assert!(fs
+            .open(ctx, alias.inode, false, libc::O_RDONLY as u32)
+            .is_err());
         let env = fs
             .lookup(ctx, fuse::ROOT_ID, &CString::new(".env").unwrap())
             .unwrap();
-        assert!(
-            fs.open(ctx, env.inode, false, libc::O_RDONLY as u32)
-                .is_ok()
-        );
+        assert!(fs
+            .open(ctx, env.inode, false, libc::O_RDONLY as u32)
+            .is_ok());
     }
 
     #[test]
@@ -2779,6 +3157,135 @@ mod tests {
             )
             .unwrap();
         assert_ne!(entry.inode, virtual_inode);
+    }
+    #[test]
+    fn direct_lower_reads_virtual_bytes_and_keeps_guest_metadata_through_copy_up() {
+        use pvisor_overlay_core::backend::{
+            BackendAttachment, FileAttr, FileType, ReadOnlyBackend,
+        };
+        use std::os::unix::fs::PermissionsExt;
+        struct Image {
+            root: PathBuf,
+        }
+        impl ReadOnlyBackend for Image {
+            fn prepare_metadata(&self, relative: &Path) -> io::Result<()> {
+                std::fs::symlink_metadata(self.root.join(relative)).map(|_| ())
+            }
+            fn prepare_directory(&self, relative: &Path) -> io::Result<()> {
+                self.prepare_metadata(relative)
+            }
+            fn attributes(&self, relative: &Path) -> io::Result<FileAttr> {
+                let metadata = std::fs::symlink_metadata(self.root.join(relative))?;
+                let time = std::time::UNIX_EPOCH + Duration::from_secs(1000);
+                Ok(FileAttr {
+                    ino: metadata.ino(),
+                    size: metadata.len(),
+                    blocks: metadata.len().div_ceil(512),
+                    atime: time,
+                    mtime: time,
+                    ctime: time,
+                    crtime: time,
+                    kind: if metadata.is_dir() {
+                        FileType::Directory
+                    } else {
+                        FileType::RegularFile
+                    },
+                    perm: 0o755,
+                    uid: 1234,
+                    gid: 2345,
+                    nlink: 1,
+                    rdev: 0,
+                    blksize: 4096,
+                    flags: 0,
+                })
+            }
+            fn read_at(&self, _relative: &Path, offset: u64, size: u32) -> io::Result<Vec<u8>> {
+                let data = b"real image data";
+                let start = (offset as usize).min(data.len());
+                Ok(data[start..start.saturating_add(size as usize).min(data.len())].to_vec())
+            }
+            fn materialize_file(&self, relative: &Path) -> io::Result<()> {
+                if !relative.as_os_str().is_empty() {
+                    std::fs::write(self.root.join(relative), b"real image data")?;
+                }
+                Ok(())
+            }
+            fn materialize_tree(&self, _relative: &Path) -> io::Result<()> {
+                self.materialize_file(Path::new("file"))
+            }
+        }
+        let temp = tempfile::tempdir().unwrap();
+        let lower = temp.path().join("lower");
+        std::fs::create_dir(&lower).unwrap();
+        std::fs::write(lower.join("file"), [0; 15]).unwrap();
+        std::fs::set_permissions(lower.join("file"), std::fs::Permissions::from_mode(0o600))
+            .unwrap();
+        let _attachment = BackendAttachment::new(
+            &lower,
+            Arc::new(Image {
+                root: lower.clone(),
+            }),
+        )
+        .unwrap();
+        let fs = parent_cache_fixture(temp.path());
+        let ctx = Context {
+            uid: 0,
+            gid: 0,
+            pid: 1,
+        };
+        let entry = fs.lookup(ctx, fuse::ROOT_ID, c"file").unwrap();
+        assert_eq!(entry.attr.st_uid, 1234);
+        assert_eq!(entry.attr.st_gid, 2345);
+        assert_eq!(entry.attr.st_mode as u32 & 0o7777, 0o755);
+        fs.access(ctx, entry.inode, libc::X_OK as u32).unwrap();
+        assert!(fs
+            .access(
+                Context {
+                    uid: 3456,
+                    gid: 3456,
+                    pid: 1
+                },
+                entry.inode,
+                libc::W_OK as u32
+            )
+            .is_err());
+        let handle = fs
+            .open(ctx, entry.inode, false, libc::O_RDONLY as u32)
+            .unwrap()
+            .0
+            .unwrap();
+        let mut writer = ReadWriter {
+            gate: None,
+            bytes: vec![],
+        };
+        assert_eq!(
+            fs.read(ctx, entry.inode, handle, &mut writer, 15, 0, None, 0)
+                .unwrap(),
+            15
+        );
+        assert_eq!(writer.bytes, b"real image data");
+        let (attr, _) = fs.getattr(ctx, entry.inode, Some(handle)).unwrap();
+        assert_eq!(attr.st_uid, 1234);
+        fs.core.copy_up(Path::new("file")).unwrap();
+        assert_eq!(
+            std::fs::read(temp.path().join("upper/file")).unwrap(),
+            b"real image data"
+        );
+        let mut writer = ReadWriter {
+            gate: None,
+            bytes: vec![],
+        };
+        fs.read(ctx, entry.inode, handle, &mut writer, 15, 0, None, 0)
+            .unwrap();
+        assert_eq!(
+            writer.bytes, b"real image data",
+            "the opened lower identity survives copy-up"
+        );
+        fs.capture_state().unwrap();
+        assert_eq!(
+            std::fs::read(lower.join("file")).unwrap(),
+            b"real image data"
+        );
     }
 }
 /// Adapter-only benchmark: no VM boot or guest/kernel cache. Use nextest

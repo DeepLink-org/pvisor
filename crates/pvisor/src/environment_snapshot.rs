@@ -412,6 +412,9 @@ fn copy_tree<const SEALED: bool>(
     destination: &Path,
     expected: Option<&TreeInventory>,
 ) -> anyhow::Result<TreeInventory> {
+    if !SEALED {
+        pvisor_overlay_core::backend::materialize_tree(source)?;
+    }
     let profile = pvisor_overlay_core::profile::Profile::from_env(if SEALED {
         "sealed-stage-copy"
     } else {

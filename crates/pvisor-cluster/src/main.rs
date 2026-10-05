@@ -5,7 +5,10 @@ use pvisor_cluster::{
 use std::path::PathBuf;
 
 #[derive(Parser)]
-#[command(about = "pVisor task controller with Worker-reconciled runtime state")]
+#[command(
+    version,
+    about = "pVisor task controller with Worker-reconciled runtime state"
+)]
 struct Args {
     #[arg(
         long,

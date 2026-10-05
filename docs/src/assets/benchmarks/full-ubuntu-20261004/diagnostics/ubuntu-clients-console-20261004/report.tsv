@@ -1,0 +1,252 @@
+path	type	value
+	object	-
+/arguments	object	-
+/arguments/assets	string	/home/reiase/workspace/pvisor/target/ubuntu-reference-private-tmp-20261004
+/arguments/backends	string	firecracker-ubuntu
+/arguments/binary	string	/home/reiase/workspace/pvisor/target/reference-baselines-controlled-20261004/bin/pvisor
+/arguments/cpu_affinity	string	0,1
+/arguments/fixture	string	/home/reiase/workspace/pvisor/target/reference-env-release-20261004/rootfs/work
+/arguments/memory_mib	string	16384
+/arguments/modes	string	claude,codex
+/arguments/output	string	/home/reiase/workspace/pvisor/target/ubuntu-clients-console-20261004
+/arguments/samples	string	10
+/arguments/timeout	string	180
+/arguments/toolchain	string	/home/reiase/.rustup/toolchains/stable-x86_64-unknown-linux-gnu
+/arguments/warmups	string	3
+/assets	object	-
+/assets/assets	object	-
+/assets/assets/ubuntu-26.04-server-cloudimg-amd64-initrd-generic	object	-
+/assets/assets/ubuntu-26.04-server-cloudimg-amd64-initrd-generic/bytes	integer	72091068
+/assets/assets/ubuntu-26.04-server-cloudimg-amd64-initrd-generic/sha256	string	c9f23b4ac34a20df6a1d344b44bf2597faa48799d814cbc206b3974c6ead5215
+/assets/assets/ubuntu-26.04-server-cloudimg-amd64-initrd-generic/url	string	https://cloud-images.ubuntu.com/releases/resolute/release/unpacked/ubuntu-26.04-server-cloudimg-amd64-initrd-generic
+/assets/assets/ubuntu-26.04-server-cloudimg-amd64-vmlinuz-generic	object	-
+/assets/assets/ubuntu-26.04-server-cloudimg-amd64-vmlinuz-generic/bytes	integer	17303944
+/assets/assets/ubuntu-26.04-server-cloudimg-amd64-vmlinuz-generic/sha256	string	7efd88a7facf80874d781ccb2c2421f0aaaa575e3b94760430619e826f490117
+/assets/assets/ubuntu-26.04-server-cloudimg-amd64-vmlinuz-generic/url	string	https://cloud-images.ubuntu.com/releases/resolute/release/unpacked/ubuntu-26.04-server-cloudimg-amd64-vmlinuz-generic
+/assets/assets/ubuntu-26.04-server-cloudimg-amd64.img	object	-
+/assets/assets/ubuntu-26.04-server-cloudimg-amd64.img/bytes	integer	865115136
+/assets/assets/ubuntu-26.04-server-cloudimg-amd64.img/sha256	string	8800651811af9a85465ad1d552add729947bb16488dddb4a9b5305a3d97332b2
+/assets/assets/ubuntu-26.04-server-cloudimg-amd64.img/url	string	https://cloud-images.ubuntu.com/releases/resolute/release/ubuntu-26.04-server-cloudimg-amd64.img
+/assets/firecracker_transport	string	Default virtio MMIO, no PCI; rd.driver.pre=virtio_mmio; reboot=t
+/assets/guest_unit_sha256	string	3b89c74a3dbba3a51312f074c13fe4ba5badb6090276adb71e95896ff6883481
+/assets/guest_workload_sha256	string	a3b120813d58746e9da8594d71a45cdc093ac9bdbad9f4cf0edc741bb9b30fd8
+/assets/image_policy	string	Only Firecracker consumes Ubuntu; pVisor uses --rootfs host and its own embedded kernel
+/assets/initrd	string	/home/reiase/workspace/pvisor/target/ubuntu-reference-20261004/downloads/ubuntu-26.04-server-cloudimg-amd64-initrd-generic
+/assets/kernel_config_sha256	string	e75c0adab6020e72844d7431cf801a02b94ed32efc251c3b0fb80c021d065180
+/assets/kernel_elf_sha256	string	72eb0d4df32d685ed24508de3d05842e32004cbc592a2c67b8756967c04522bf
+/assets/prepared_template_update	string	Only benchmark workload/environment updated offline after clean shutdown; kernel and Ubuntu services unchanged
+/assets/preserved	string	Full GPT, /boot, EFI, stock kernel/initrd/modules/services
+/assets/provision_seconds	float	85.8140148479979
+/assets/provisioning	string	QEMU KVM, user networking, native Ubuntu apt tools plus installed Rust/Claude/Codex; outside timings
+/assets/provisioning_shape	string	Untimed QEMU: 1 vCPU host,-rdseed,-rdrand; measured Firecracker VMs: 2 vCPU defaults
+/assets/release	string	Ubuntu 26.04 LTS (20260927)
+/assets/reproduction_snapshot	string	https://cloud-images.ubuntu.com/releases/resolute/release-20260927/
+/assets/root_partuuid	string	3b6ccca1-0c96-46be-9ee4-dc45bf129735
+/assets/schema	string	pvisor-ubuntu-reference-assets/v1
+/assets/sha_verification	string	Official HTTPS SHA256SUMS; GPG signature not verified
+/assets/temporary_files	string	Private /work/_tmp for all complete task tools; host workload uses its own workspace/_tmp
+/assets/ubuntu_kernel_version	string	7.0.0-34-generic
+/capabilities	object	-
+/capabilities/claude~1firecracker-ubuntu	object	-
+/capabilities/claude~1firecracker-ubuntu/failures	array	-
+/capabilities/claude~1firecracker-ubuntu/failures/0	object	-
+/capabilities/claude~1firecracker-ubuntu/failures/0/reason	string	firecracker-ubuntu/claude: exit=0; logs: /home/reiase/workspace/pvisor/target/ubuntu-clients-console-20261004/trials/claude-firecracker-ubuntu-000; ce-bench[1217]: REFERENCE_RESULT {\"model_requests\": 2, \"real_inference\": false, \"grade\": \"passed\", \"mode\": \"claude\", \"worker_ms\": 5023.078225, \"correctness\": \"passed\"}\r\n[   13.814818] reference-bench[1208]: REFERENCE_EXIT 0\r\n\u001b[!p\u001b]104\u001b\\\u001b[0m\u001b[?7h\u001b[1G\u001b[0J\u001b[6n\u001b[32766;32766H\u001b[6n\u001b]3008;end=6e14ad0530c640dcbcea60b5ec8d03c1\u001b\\\u001b]3008;end=fcd659115500449ba3385238f1e2640a\u001b\\\u001b[6n\u001b[32766;32766H\u001b[6n\u001b[!p\u001b]104\u001b\\\u001b[0m\u001b[?7h\u001b[1G\u001b[0J[   16.932712] reboot: Restarting system\r\n2026-10-04T11:20:53.772532787 [anonymous-instance:fc_vcpu 0] Received KVM_EXIT_SHUTDOWN signal\n2026-10-04T11:20:53.772560800 [anonymous-instance:main] Vmm is stopping.\n2026-10-04T11:20:53.772673951 [anonymous-instance:main] Vmm is stopping.\n2026-10-04T11:20:53.865822802 [anonymous-instance:main] Firecracker exiting successfully. exit_code=0\n qemu-system-x86_64: warning: hub 0 with no nics\nqemu-system-x86_64: terminating on signal 15 from pid 1782436 (python3)\n
+/capabilities/claude~1firecracker-ubuntu/failures/0/trial	integer	0
+/capabilities/claude~1firecracker-ubuntu/state	string	available
+/driver_sha256	string	38a13e33384e3c6adccfd833f099fba8c37f89471e8d96349bb656a9723e630e
+/firecracker_version	string	Firecracker v1.13.1\n\n2026-10-04T11:19:41.508731211 [anonymous-instance:main] Firecracker exiting successfully. exit_code=0
+/host_kernel	string	7.2.8-200.fc44.x86_64
+/host_os	string	NAME=\"Fedora Linux\"\nVERSION=\"44 (Workstation Edition)\"\nRELEASE_TYPE=stable\nID=fedora\nVERSION_ID=44\nVERSION_CODENAME=\"\"\nPRETTY_NAME=\"Fedora Linux 44 (Workstation Edition)\"\nANSI_COLOR=\"0;38;2;60;110;180\"\nLOGO=fedora-logo-icon\nCPE_NAME=\"cpe:/o:fedoraproject:fedora:44\"\nDEFAULT_HOSTNAME=\"fedora\"\nHOME_URL=\"https://fedoraproject.org/\"\nDOCUMENTATION_URL=\"https://docs.fedoraproject.org/en-US/fedora/f44/\"\nSUPPORT_URL=\"https://ask.fedoraproject.org/\"\nBUG_REPORT_URL=\"https://bugzilla.redhat.com/\"\nREDHAT_BUGZILLA_PRODUCT=\"Fedora\"\nREDHAT_BUGZILLA_PRODUCT_VERSION=44\nREDHAT_SUPPORT_PRODUCT=\"Fedora\"\nREDHAT_SUPPORT_PRODUCT_VERSION=44\nSUPPORT_END=2027-05-19\nVARIANT=\"Workstation Edition\"\nVARIANT_ID=workstation\n
+/load_after	array	-
+/load_after/0	float	2.78515625
+/load_after/1	float	2.7080078125
+/load_after/2	float	2.44970703125
+/load_before	array	-
+/load_before/0	float	1.96533203125
+/load_before/1	float	2.3037109375
+/load_before/2	float	2.28662109375
+/network_helper_sha256	string	e1920f47d603a117ec5b14cdb6cf93e2816bc9321f8bc9c59c97b8f9e0052be1
+/protocol	object	-
+/protocol/cache	string	Warm host page cache; fresh disk reflink/workspace per trial; no memory snapshot
+/protocol/image_policy	string	pVisor --rootfs host: no image; Firecracker complete official Ubuntu image
+/protocol/network	string	Private TAP/static NIC plus QEMU -machine none DNS/NAT helper; helper included in time/RSS; same-guest fixture model, no real inference
+/protocol/order	string	Random backend per round, seed 20261004
+/protocol/resource	string	Owned launcher tree RSS sum sampled every 20 ms; shared pages can be double-counted
+/protocol/shape	string	2 vCPU; ready 2048 MiB, tasks 16384 MiB; CPUs 0,1
+/protocol/task	string	Same fixtures and CLI versions; Ubuntu native apt tool builds may differ; private workspace TMPDIR on all backends
+/protocol/timer	string	Launch to task ready/result/exit; clone and provisioning costs recorded separately
+/pvisor_sha256	string	1a2db5ad015c5ace40b3c96c7dd0dc94a08b8893de35150bd909554286e2cd3c
+/recorded_at	string	2026-10-04T11:19:41.487864+08:00
+/rows	array	-
+/rows/0	object	-
+/rows/0/backend	string	firecracker-ubuntu
+/rows/0/completion_ms	float	13584.956488
+/rows/0/correctness	string	passed
+/rows/0/logs	string	/home/reiase/workspace/pvisor/target/ubuntu-clients-console-20261004/trials/claude-firecracker-ubuntu-001
+/rows/0/mode	string	claude
+/rows/0/os_proof	object	-
+/rows/0/os_proof/cloud_final	string	active
+/rows/0/os_proof/failed_units	string	""
+/rows/0/os_proof/kernel	string	7.0.0-34-generic
+/rows/0/os_proof/multi_user	string	active
+/rows/0/os_proof/network_online	string	active
+/rows/0/os_proof/os_release	string	PRETTY_NAME=\"Ubuntu 26.04.1 LTS\"\nNAME=\"Ubuntu\"\nVERSION_ID=\"26.04\"\nVERSION=\"26.04.1 LTS (Resolute Raccoon)\"\nVERSION_CODENAME=resolute\nID=ubuntu\nID_LIKE=debian\nHOME_URL=\"https://www.ubuntu.com/\"\nSUPPORT_URL=\"https://help.ubuntu.com/\"\nBUG_REPORT_URL=\"https://bugs.launchpad.net/ubuntu/\"\nPRIVACY_POLICY_URL=\"https://www.ubuntu.com/legal/terms-and-policies/privacy-policy\"\nUBUNTU_CODENAME=resolute\nLOGO=ubuntu-logo\n
+/rows/0/os_proof/pid1	string	systemd
+/rows/0/os_proof/ssh_socket	string	active
+/rows/0/os_ready_ms	float	6293.860337
+/rows/0/peak_tree_rss_kib	integer	2180552
+/rows/0/prepare_ms	float	119.726749
+/rows/0/ready_ms	float	6343.977504
+/rows/0/result	object	-
+/rows/0/result/correctness	string	passed
+/rows/0/result/grade	string	passed
+/rows/0/result/mode	string	claude
+/rows/0/result/model_requests	integer	2
+/rows/0/result/real_inference	boolean	false
+/rows/0/result/worker_ms	float	3572.446757
+/rows/0/result_ms	float	9917.118646
+/rows/0/trial	integer	1
+/rows/1	object	-
+/rows/1/backend	string	firecracker-ubuntu
+/rows/1/completion_ms	float	13553.160021
+/rows/1/correctness	string	passed
+/rows/1/logs	string	/home/reiase/workspace/pvisor/target/ubuntu-clients-console-20261004/trials/claude-firecracker-ubuntu-002
+/rows/1/mode	string	claude
+/rows/1/os_proof	object	-
+/rows/1/os_proof/cloud_final	string	active
+/rows/1/os_proof/failed_units	string	""
+/rows/1/os_proof/kernel	string	7.0.0-34-generic
+/rows/1/os_proof/multi_user	string	active
+/rows/1/os_proof/network_online	string	active
+/rows/1/os_proof/os_release	string	PRETTY_NAME=\"Ubuntu 26.04.1 LTS\"\nNAME=\"Ubuntu\"\nVERSION_ID=\"26.04\"\nVERSION=\"26.04.1 LTS (Resolute Raccoon)\"\nVERSION_CODENAME=resolute\nID=ubuntu\nID_LIKE=debian\nHOME_URL=\"https://www.ubuntu.com/\"\nSUPPORT_URL=\"https://help.ubuntu.com/\"\nBUG_REPORT_URL=\"https://bugs.launchpad.net/ubuntu/\"\nPRIVACY_POLICY_URL=\"https://www.ubuntu.com/legal/terms-and-policies/privacy-policy\"\nUBUNTU_CODENAME=resolute\nLOGO=ubuntu-logo\n
+/rows/1/os_proof/pid1	string	systemd
+/rows/1/os_proof/ssh_socket	string	active
+/rows/1/os_ready_ms	float	6218.816493
+/rows/1/peak_tree_rss_kib	integer	2185576
+/rows/1/prepare_ms	float	123.126985
+/rows/1/ready_ms	float	6267.062588
+/rows/1/result	object	-
+/rows/1/result/correctness	string	passed
+/rows/1/result/grade	string	passed
+/rows/1/result/mode	string	claude
+/rows/1/result/model_requests	integer	2
+/rows/1/result/real_inference	boolean	false
+/rows/1/result/worker_ms	float	3585.782601
+/rows/1/result_ms	float	9853.40149
+/rows/1/trial	integer	2
+/rows/2	object	-
+/rows/2/backend	string	firecracker-ubuntu
+/rows/2/completion_ms	float	13435.790621
+/rows/2/correctness	string	passed
+/rows/2/logs	string	/home/reiase/workspace/pvisor/target/ubuntu-clients-console-20261004/trials/claude-firecracker-ubuntu-003
+/rows/2/mode	string	claude
+/rows/2/os_proof	object	-
+/rows/2/os_proof/cloud_final	string	active
+/rows/2/os_proof/failed_units	string	""
+/rows/2/os_proof/kernel	string	7.0.0-34-generic
+/rows/2/os_proof/multi_user	string	active
+/rows/2/os_proof/network_online	string	active
+/rows/2/os_proof/os_release	string	PRETTY_NAME=\"Ubuntu 26.04.1 LTS\"\nNAME=\"Ubuntu\"\nVERSION_ID=\"26.04\"\nVERSION=\"26.04.1 LTS (Resolute Raccoon)\"\nVERSION_CODENAME=resolute\nID=ubuntu\nID_LIKE=debian\nHOME_URL=\"https://www.ubuntu.com/\"\nSUPPORT_URL=\"https://help.ubuntu.com/\"\nBUG_REPORT_URL=\"https://bugs.launchpad.net/ubuntu/\"\nPRIVACY_POLICY_URL=\"https://www.ubuntu.com/legal/terms-and-policies/privacy-policy\"\nUBUNTU_CODENAME=resolute\nLOGO=ubuntu-logo\n
+/rows/2/os_proof/pid1	string	systemd
+/rows/2/os_proof/ssh_socket	string	active
+/rows/2/os_ready_ms	float	6192.781117
+/rows/2/peak_tree_rss_kib	integer	2180744
+/rows/2/prepare_ms	float	120.837853
+/rows/2/ready_ms	float	6246.859977
+/rows/2/result	object	-
+/rows/2/result/correctness	string	passed
+/rows/2/result/grade	string	passed
+/rows/2/result/mode	string	claude
+/rows/2/result/model_requests	integer	2
+/rows/2/result/real_inference	boolean	false
+/rows/2/result/worker_ms	float	3529.577928
+/rows/2/result_ms	float	9777.346269
+/rows/2/trial	integer	3
+/rows/3	object	-
+/rows/3/backend	string	firecracker-ubuntu
+/rows/3/completion_ms	float	13535.651326
+/rows/3/correctness	string	passed
+/rows/3/logs	string	/home/reiase/workspace/pvisor/target/ubuntu-clients-console-20261004/trials/claude-firecracker-ubuntu-004
+/rows/3/mode	string	claude
+/rows/3/os_proof	object	-
+/rows/3/os_proof/cloud_final	string	active
+/rows/3/os_proof/failed_units	string	""
+/rows/3/os_proof/kernel	string	7.0.0-34-generic
+/rows/3/os_proof/multi_user	string	active
+/rows/3/os_proof/network_online	string	active
+/rows/3/os_proof/os_release	string	PRETTY_NAME=\"Ubuntu 26.04.1 LTS\"\nNAME=\"Ubuntu\"\nVERSION_ID=\"26.04\"\nVERSION=\"26.04.1 LTS (Resolute Raccoon)\"\nVERSION_CODENAME=resolute\nID=ubuntu\nID_LIKE=debian\nHOME_URL=\"https://www.ubuntu.com/\"\nSUPPORT_URL=\"https://help.ubuntu.com/\"\nBUG_REPORT_URL=\"https://bugs.launchpad.net/ubuntu/\"\nPRIVACY_POLICY_URL=\"https://www.ubuntu.com/legal/terms-and-policies/privacy-policy\"\nUBUNTU_CODENAME=resolute\nLOGO=ubuntu-logo\n
+/rows/3/os_proof/pid1	string	systemd
+/rows/3/os_proof/ssh_socket	string	active
+/rows/3/os_ready_ms	float	6192.823225
+/rows/3/peak_tree_rss_kib	integer	2187328
+/rows/3/prepare_ms	float	119.103657
+/rows/3/ready_ms	float	6243.855349
+/rows/3/result	object	-
+/rows/3/result/correctness	string	passed
+/rows/3/result/grade	string	passed
+/rows/3/result/mode	string	claude
+/rows/3/result/model_requests	integer	2
+/rows/3/result/real_inference	boolean	false
+/rows/3/result/worker_ms	float	3631.722446
+/rows/3/result_ms	float	9875.980525
+/rows/3/trial	integer	4
+/rows/4	object	-
+/rows/4/backend	string	firecracker-ubuntu
+/rows/4/completion_ms	float	13538.537632
+/rows/4/correctness	string	passed
+/rows/4/logs	string	/home/reiase/workspace/pvisor/target/ubuntu-clients-console-20261004/trials/claude-firecracker-ubuntu-005
+/rows/4/mode	string	claude
+/rows/4/os_proof	object	-
+/rows/4/os_proof/cloud_final	string	active
+/rows/4/os_proof/failed_units	string	""
+/rows/4/os_proof/kernel	string	7.0.0-34-generic
+/rows/4/os_proof/multi_user	string	active
+/rows/4/os_proof/network_online	string	active
+/rows/4/os_proof/os_release	string	PRETTY_NAME=\"Ubuntu 26.04.1 LTS\"\nNAME=\"Ubuntu\"\nVERSION_ID=\"26.04\"\nVERSION=\"26.04.1 LTS (Resolute Raccoon)\"\nVERSION_CODENAME=resolute\nID=ubuntu\nID_LIKE=debian\nHOME_URL=\"https://www.ubuntu.com/\"\nSUPPORT_URL=\"https://help.ubuntu.com/\"\nBUG_REPORT_URL=\"https://bugs.launchpad.net/ubuntu/\"\nPRIVACY_POLICY_URL=\"https://www.ubuntu.com/legal/terms-and-policies/privacy-policy\"\nUBUNTU_CODENAME=resolute\nLOGO=ubuntu-logo\n
+/rows/4/os_proof/pid1	string	systemd
+/rows/4/os_proof/ssh_socket	string	active
+/rows/4/os_ready_ms	float	6238.60936
+/rows/4/peak_tree_rss_kib	integer	2180860
+/rows/4/prepare_ms	float	118.653106
+/rows/4/ready_ms	float	6289.8804
+/rows/4/result	object	-
+/rows/4/result/correctness	string	passed
+/rows/4/result/grade	string	passed
+/rows/4/result/mode	string	claude
+/rows/4/result/model_requests	integer	2
+/rows/4/result/real_inference	boolean	false
+/rows/4/result/worker_ms	float	3581.452859
+/rows/4/result_ms	float	9872.007631
+/rows/4/trial	integer	5
+/rows/5	object	-
+/rows/5/backend	string	firecracker-ubuntu
+/rows/5/completion_ms	float	13486.260656
+/rows/5/correctness	string	passed
+/rows/5/logs	string	/home/reiase/workspace/pvisor/target/ubuntu-clients-console-20261004/trials/claude-firecracker-ubuntu-006
+/rows/5/mode	string	claude
+/rows/5/os_proof	object	-
+/rows/5/os_proof/cloud_final	string	active
+/rows/5/os_proof/failed_units	string	""
+/rows/5/os_proof/kernel	string	7.0.0-34-generic
+/rows/5/os_proof/multi_user	string	active
+/rows/5/os_proof/network_online	string	active
+/rows/5/os_proof/os_release	string	PRETTY_NAME=\"Ubuntu 26.04.1 LTS\"\nNAME=\"Ubuntu\"\nVERSION_ID=\"26.04\"\nVERSION=\"26.04.1 LTS (Resolute Raccoon)\"\nVERSION_CODENAME=resolute\nID=ubuntu\nID_LIKE=debian\nHOME_URL=\"https://www.ubuntu.com/\"\nSUPPORT_URL=\"https://help.ubuntu.com/\"\nBUG_REPORT_URL=\"https://bugs.launchpad.net/ubuntu/\"\nPRIVACY_POLICY_URL=\"https://www.ubuntu.com/legal/terms-and-policies/privacy-policy\"\nUBUNTU_CODENAME=resolute\nLOGO=ubuntu-logo\n
+/rows/5/os_proof/pid1	string	systemd
+/rows/5/os_proof/ssh_socket	string	active
+/rows/5/os_ready_ms	float	6189.680762
+/rows/5/peak_tree_rss_kib	integer	2195308
+/rows/5/prepare_ms	float	118.758132
+/rows/5/ready_ms	float	6243.777124
+/rows/5/result	object	-
+/rows/5/result/correctness	string	passed
+/rows/5/result/grade	string	passed
+/rows/5/result/mode	string	claude
+/rows/5/result/model_requests	integer	2
+/rows/5/result/real_inference	boolean	false
+/rows/5/result/worker_ms	float	3569.914408
+/rows/5/result_ms	float	9817.999895
+/rows/5/trial	integer	6
+/schema	string	pvisor-full-ubuntu-reference/v1
+/source_commit	string	dca96fe127bd14e1f23b6d12657aceaf56d075c1
+/source_status	string	 M benchmark/pvisor/prepare_ubuntu_reference.py\n M benchmark/pvisor/reference_workload.py\n M benchmark/pvisor/ubuntu_baselines.py\n M benchmark/pvisor/ubuntu_guest.sh\n M benchmark/pvisor/ubuntu_vm_network.py\n M crates/pvisor-cluster/README.md\n M crates/pvisor-cluster/src/main.rs\n M crates/pvisor-cluster/src/scheduler.rs\n M crates/pvisor-cluster/tests/scheduler.rs\n M crates/pvisor-cluster/tests/vm_lifecycle.rs\n M crates/pvisor-core/src/cluster.rs\n M crates/pvisor-core/src/execution.rs\n M crates/pvisor-core/src/file_access.rs\n M crates/pvisor-core/src/operation.rs\n M crates/pvisor-core/tests/operation_contracts.rs\n M crates/pvisor/src/bin/pvisor-worker.rs\n M crates/pvisor/src/bin/worker/outbox.rs\n M crates/pvisor/src/cli/checkpoint.rs\n M crates/pvisor/src/cli/run.rs\n M crates/pvisor/src/environment_snapshot/lazy.rs\n M crates/pvisor/src/executor/vm/checkpoint.rs\n M crates/pvisor/src/executor/vm/control.rs\n M crates/pvisor/src/executor/vm/mod.rs\n M crates/pvisor/src/executor/vm/supported.rs\n M crates/pvisor/src/executor/vm/unsupported.rs\n M crates/pvisor/src/lib.rs\n M crates/pvisor/src/runtime/attempt.rs\n M crates/pvisor/src/runtime/implant.rs\n M crates/pvisor/src/runtime/mod.rs\n M crates/pvisor/src/runtime/overlay.rs\n M crates/pvisor/src/runtime/registry.rs\n M crates/pvisor/src/runtime/run.rs\n M crates/pvisor/src/session/lifecycle.rs\n M crates/pvisor/tests/cluster_environment_vm.rs\n M crates/pvisor/tests/cluster_execution.rs\n M crates/pvisor/tests/vm_snapshot_fs.rs\n M vendor/krun-devices/src/virtio/fs/overlay.rs\n M vendor/krun-devices/src/virtio/fs/snapshot.rs\n M vendor/krun-devices/src/virtio/mmio.rs\n?? benchmark/pvisor/reference_fixture.py\n?? benchmark/pvisor/render_ubuntu_baselines.py\n?? benchmark/pvisor/test_ubuntu_baselines.py\n
+/workload_sha256	string	a3b120813d58746e9da8594d71a45cdc093ac9bdbad9f4cf0edc741bb9b30fd8

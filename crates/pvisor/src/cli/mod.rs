@@ -5,7 +5,6 @@ pub mod extensions;
 mod product;
 mod run;
 pub mod runtime;
-mod snapshot;
 #[cfg(unix)]
 pub mod terminal;
 mod trajectory;
@@ -50,18 +49,44 @@ enum Command {
     Fork(run::ForkArgs),
     /// Open a read-only shell or run a command against a Job filesystem view.
     Inspect(runtime::InspectArgs),
-    /// Legacy independent full-copy VM snapshot tools.
-    Snapshot(snapshot::Args),
     /// List installed executable extensions and their descriptions.
     Extensions,
+    #[cfg(any(target_os = "macos", all(target_os = "linux", target_arch = "x86_64")))]
+    /// Manage deployments, cluster tasks and shared node resources.
+    Service(crate::service::ServiceArgs),
     #[command(external_subcommand)]
     External(Vec<OsString>),
 }
 
 fn root_command() -> anyhow::Result<clap::Command> {
-    let mut command = Cli::command().after_help("Use pvisor -- COMMAND for default execution. Independent tools are discovered from companion commands alongside pvisor.");
+    let mut command = Cli::command().after_help("Jobs: run, status, kill, inspect.\nChanges: review, apply, drop.\nCheckpoints: checkpoint, suspend, resume, fork.\nServices: service run/status/restart/stop; service cluster/worker/cache/memory-pool.\nUse pvisor -- COMMAND for default execution. Optional Job tools are discovered alongside pvisor.");
     for (_, manifest) in extensions::discover()? {
         command = command.subcommand(clap::Command::new(manifest.name).about(manifest.description));
+    }
+    for (order, name) in [
+        "run",
+        "status",
+        "kill",
+        "inspect",
+        "review",
+        "apply",
+        "drop",
+        "checkpoint",
+        "suspend",
+        "resume",
+        "fork",
+        "service",
+        "replay",
+        "tui",
+        "extensions",
+        "help",
+    ]
+    .into_iter()
+    .enumerate()
+    {
+        if command.find_subcommand(name).is_some() {
+            command = command.mut_subcommand(name, |sub| sub.display_order(order));
+        }
     }
     Ok(command)
 }
@@ -72,6 +97,9 @@ fn normalize_default_run(mut args: Vec<OsString>) -> Vec<OsString> {
         && ![
             "cache",
             "memory-pool",
+            "cluster",
+            "worker",
+            "snapshot",
             "tui",
             "replay",
             "env",
@@ -110,6 +138,24 @@ pub fn main() -> anyhow::Result<()> {
     }
     let args: Vec<OsString> = std::env::args_os().collect();
     if let Some(name) = args.get(1).and_then(|arg| arg.to_str()) {
+        reject_retired_command(name);
+        #[cfg(any(target_os = "macos", all(target_os = "linux", target_arch = "x86_64")))]
+        if name == "service"
+            && let Some(tool) = args.get(2).and_then(|arg| arg.to_str())
+            && extensions::is_service_tool(tool)
+        {
+            return extensions::dispatch(tool, &args[3..]);
+        }
+        #[cfg(any(target_os = "macos", all(target_os = "linux", target_arch = "x86_64")))]
+        if name == "help"
+            && args.get(2).is_some_and(|arg| arg == "service")
+            && let Some(tool) = args.get(3).and_then(|arg| arg.to_str())
+            && extensions::is_service_tool(tool)
+        {
+            let mut tool_args = args[4..].to_vec();
+            tool_args.push("--help".into());
+            return extensions::dispatch(tool, &tool_args);
+        }
         if !extensions::BUILTINS.contains(&name)
             && let Some((path, _)) = extensions::find(name)?
         {
@@ -119,6 +165,7 @@ pub fn main() -> anyhow::Result<()> {
             && let Some(target) = args.get(2).and_then(|arg| arg.to_str())
             && !extensions::BUILTINS.contains(&target)
         {
+            reject_retired_command(target);
             return extensions::dispatch(target, &["--help".into()]);
         }
     }
@@ -139,7 +186,8 @@ pub fn main() -> anyhow::Result<()> {
     let parsed = Cli::from_arg_matches(&command.get_matches_from(args.clone()))?;
     crate::util::startup_mark("cli.parsed");
     match parsed.command {
-        Command::Snapshot(args) => snapshot::run(args)?,
+        #[cfg(any(target_os = "macos", all(target_os = "linux", target_arch = "x86_64")))]
+        Command::Service(args) => tokio::runtime::Runtime::new()?.block_on(crate::service::run(args))?,
         Command::Run(run) => {
             if !terminal::is_child() {
                 let audit = run.audit_requested()?;
@@ -186,6 +234,19 @@ pub fn main() -> anyhow::Result<()> {
         )?,
     }
     Ok(())
+}
+
+fn reject_retired_command(name: &str) {
+    let message = if extensions::is_service_tool(name) {
+        format!("`pvisor {name}` was removed; use `pvisor service {name}`")
+    } else if name == "snapshot" {
+        "`pvisor snapshot` was removed; use Job-scoped `checkpoint`, `suspend`, `resume` and `fork` with a supported execution profile".into()
+    } else {
+        return;
+    };
+    Cli::command()
+        .error(clap::error::ErrorKind::InvalidSubcommand, message)
+        .exit();
 }
 
 fn finish(code: i32) {

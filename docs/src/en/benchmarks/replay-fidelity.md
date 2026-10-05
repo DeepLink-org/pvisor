@@ -1,8 +1,10 @@
 # Replay fidelity: native prefixes and zero-execution preparation
 
-The first version checks six native trajectory formats, prefix boundaries, exact tool arguments and zero-execution prepare-only behavior. It found and fixed Codex/OpenCode executing historical commands in prepare-only; regression checks cover both reported counts and workspace side effects.
+## Main conclusions {#conclusions}
 
-## Motivation
+Prefix preparation passes for six pinned trajectory formats at P50 of about **5–5.5 ms**. Prepare-only executes no tools and leaves the workspace unchanged. This supports binding tasks to historical observations; it does not restore arbitrary remote connections or establish identical model next actions or compatibility with every newer CLI format.
+
+## Motivation {#motivation}
 
 Replay depends on correct boundaries, arguments and historical observations as well as parseable structure. Preparation must not silently execute commands.
 
@@ -10,11 +12,9 @@ Replay depends on correct boundaries, arguments and historical observations as w
 
 Twenty synthetic two-tool-batch trajectories per adapter, after-step=1, three repetitions: 60 per adapter. Require one batch/one call, exact command arguments, replayed_tool_calls=0 and an empty workspace. Format profiles are pinned and differ from installed CLI versions. No model requests or tool execution; timing covers prefix preparation.
 
-## macOS
+These results are from Linux/x86_64; matching macOS workloads are unmeasured. Linked reports pin artifacts, cache conditions and samples.
 
-These workloads were measured on Linux; macFUSE/FSKit overhead and capacity remain unmeasured. Existing macOS/HVF results are retained in [VM startup](startup.md) and [VM memory](vm-memory/index.md), and are not substituted for this workload.
-
-## Linux: 2026-10-04 {#results}
+## Data and analysis {#results}
 
 | Adapter | Pinned format profile | Passed/planned | Preparation P50/P95/P99 ms |
 |---|---|---|---|
@@ -25,28 +25,12 @@ These workloads were measured on Linux; macFUSE/FSKit overhead and capacity rema
 | openhands | openhands/0.53.0/native-replay-v1 | 60/60 | 5.18 / 6.10 / 7.97 |
 | pi-agent | pi-agent/0.83.0/native-rpc-events-v1 | 60/60 | 5.25 / 6.08 / 7.41 |
 
-### Finding and repair
+### Scope {#acceptance}
 
-The old generic path executed historical tools before checking PrepareOnly while reporting zero. The workspace side-effect assertion caught it. Mode is now checked before the tool loop. New Codex/OpenCode JSONL regression also preserves historical observations. **128/128** tests pass through `just test pvisor-replay`. The repaired replay executable has its own archived hash, separate from the pvisor CLI used for the other measurements.
+Synthetic trajectories validate prefix structure, boundaries and arguments, not identical model next actions or rewards. Real sessions, newer CLIs, long prefixes, token costs and remote-connection recovery are unmeasured.
 
-Prefixes pass only if structure, boundaries and arguments all validate; model reply similarity is not used as a substitute.
-## Limits and next measurements {#acceptance}
+### Data sources and reproduction {#run}
 
-This does not measure next-action or reward agreement. Synthetic prefixes do not cover all real sessions, new client versions or long conversations. Model branching, reconstructed-environment reward, actual token cost and long-prefix latency remain unmeasured. Existing design/history remains in [replay design](../design/replay.md); these pass counts are not model fidelity.
+[Configuration and sampling](methodology.md#product-v1) · [Manifest](../../assets/benchmarks/product-v1-20261004/manifest.tsv) · [Samples CSV](../../assets/benchmarks/product-v1-20261004/samples.csv) · [Raw evidence](../../assets/benchmarks/product-v1-20261004/evidence.tar.gz)
 
-## Reproduction and evidence {#run}
-
-Run from the repository root with a new output directory. This dynamic firmware entry requires the GNU/Linux CLI; static musl builds use a different firmware entry. This host has Linux, KVM/FUSE/user namespaces, Python 3.14, Rust/GCC, Git/rg, Node 24/npm and Podman/crun. The agent suite also needs the Claude/Codex CLIs.
-
-```bash
-python3 benchmark/pvisor/product_v1.py \
-  --binary /absolute/path/to/gnu-linux/pvisor \
-  --firmware /absolute/path/to/libkrunfw-directory \
-  --replay-binary /absolute/path/to/pvisor-replay \
-  --output target/product-benchmark-new \
-  --suites replay --samples 3 --warmups 0
-```
-
-Start with `--samples 1 --warmups 0` to check prerequisites. Workloads and correctness assertions live in `benchmark/pvisor/v1/`. Reports pin binaries, firmware and harness source with hashes. Failed operations never enter performance distributions. Effective sample counts are stated per page; P95/P99 from small samples describe this batch rather than production tail probabilities.
-
-[Environment, artifacts and method](methodology.md#product-v1) · [Batch manifest](../../assets/benchmarks/product-v1-20261004/manifest.json) · [Per-sample CSV](../../assets/benchmarks/product-v1-20261004/samples.csv) · [Raw reports and diagnostic logs](../../assets/benchmarks/product-v1-20261004/evidence.tar.gz). Reports retain dirty source status; executable SHA256 identifies the measured artifact. The archive excludes large rootfs/binaries and reproducible workspace payloads, while retaining input hashes and each batch's harness.
+Reproduction commands and prerequisites are in the [technical methodology record](../design/benchmark-methodology-evidence.md).

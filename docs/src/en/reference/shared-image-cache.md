@@ -1,6 +1,6 @@
 # Shared image cache and storage backends
 
-`pvisor cache` reuses OCI image content through server, filesystem, or S3 backends. In server mode, `pvisor cache serve` exposes existing OCI image storage as a read-only file service. Clients never receive host filesystem paths. Images are prepared once on the server and addressed by the resolved platform manifest SHA-256 digest. Existing storage validates blobs, applies layers and handles whiteouts. File queries never access registries.
+`pvisor service cache` reuses OCI image content through server, filesystem, or S3 backends. In server mode, `pvisor service cache serve` exposes existing OCI image storage as a read-only file service. Clients never receive host filesystem paths. Images are prepared once on the server and addressed by the resolved platform manifest SHA-256 digest. Existing storage validates blobs, applies layers and handles whiteouts. File queries never access registries.
 
 ## Choose a backend
 
@@ -19,11 +19,11 @@ CLI --backend, --location, and --image-store override environment values and wor
 ### Filesystem: publish once, read from independent processes
 
 ```sh
-pvisor cache --backend filesystem --location /mnt/pvisor-cache \
+pvisor service cache --backend filesystem --location /mnt/pvisor-cache \
   --image-store /tmp/pvisor-publish publish alpine:latest
-pvisor cache --backend filesystem --location /mnt/pvisor-cache \
+pvisor service cache --backend filesystem --location /mnt/pvisor-cache \
   --read-only prepare alpine:latest
-pvisor cache --backend filesystem --location /mnt/pvisor-cache \
+pvisor service cache --backend filesystem --location /mnt/pvisor-cache \
   --read-only read pvisor-v1:YOUR_IMAGE_KEY:linux-amd64:YOUR_REVISION etc/os-release
 ```
 
@@ -36,12 +36,12 @@ export AWS_DEFAULT_REGION=ap-southeast-1
 # Supply AWS credentials through environment variables or workload roles.
 export PVISOR_CACHE_BACKEND=s3
 export PVISOR_CACHE_LOCATION=s3://your-bucket/pvisor-cache
-pvisor cache --image-store /tmp/pvisor-publish publish alpine:latest
+pvisor service cache --image-store /tmp/pvisor-publish publish alpine:latest
 
 # Workers only need GetObject access to this prefix.
 export PVISOR_CACHE_READ_ONLY=true
-pvisor cache prepare alpine:latest
-pvisor cache read pvisor-v1:YOUR_IMAGE_KEY:linux-amd64:YOUR_REVISION etc/os-release
+pvisor service cache prepare alpine:latest
+pvisor service cache read pvisor-v1:YOUR_IMAGE_KEY:linux-amd64:YOUR_REVISION etc/os-release
 pvisor run --executor vm --rootfs image=alpine:latest -- /bin/sh
 ```
 
@@ -56,15 +56,15 @@ export AWS_ACCESS_KEY_ID=YOUR_ACCESS_KEY
 export AWS_SECRET_ACCESS_KEY=YOUR_SECRET_KEY
 export PVISOR_CACHE_BACKEND=s3
 export PVISOR_CACHE_LOCATION=s3://your-bucket/pvisor-cache
-pvisor cache prepare alpine:latest
+pvisor service cache prepare alpine:latest
 ```
 
 ### Image splitting and upload tool
 
-`pvisor cache publish IMAGE` is the explicit publishing command. It pulls the selected platform's OCI manifest and layers from a registry, applies layers and whiteouts locally, walks the merged image filesystem, and uploads the file index and content blocks. Reuse existing local OCI staging through `--image-store` or `PVISOR_IMAGE_STORE`; staging can be removed after upload.
+`pvisor service cache publish IMAGE` is the explicit publishing command. It pulls the selected platform's OCI manifest and layers from a registry, applies layers and whiteouts locally, walks the merged image filesystem, and uploads the file index and content blocks. Reuse existing local OCI staging through `--image-store` or `PVISOR_IMAGE_STORE`; staging can be removed after upload.
 
 ```sh
-PVISOR_CACHE_READ_ONLY=false pvisor cache publish alpine:latest \
+PVISOR_CACHE_READ_ONLY=false pvisor service cache publish alpine:latest \
   --backend s3 --location s3://your-bucket/pvisor-cache \
   --architecture amd64 --image-store /tmp/pvisor-publish
 ```
@@ -114,7 +114,7 @@ Implementation lives in `crates/pvisor/src/image/cache/`:
 ```text
 cache/
 ├── mod.rs              # Public entry and module assembly
-├── cli.rs              # pvisor cache subcommands
+├── cli.rs              # pvisor service cache subcommands
 ├── protocol.rs         # Request/response types, framing and content hashes
 ├── transport.rs        # Unix/TCP endpoints, streams and timeouts
 ├── client.rs           # Backend discovery and validated requests
@@ -126,7 +126,10 @@ cache/
 ├── server/
 │   ├── metadata.rs     # Server metadata and directory LRU caches
 │   └── tests.rs        # Protocol/confinement/client-server tests
-├── lazy.rs             # FUSE mounts, block cache and client metadata cache
+├── backend.rs          # Transport-neutral metadata, block reads and bounded caches
+├── direct.rs           # VM lower metadata projection and runner attachment
+├── network.rs          # Pinned read-only host access for isolated runners
+├── lazy.rs             # Host FUSE adapter
 ├── lazy/
 │   └── tests.rs        # Lazy filesystem and cache reuse tests
 └── progress.rs         # Image totals and loading/transfer progress
@@ -138,16 +141,16 @@ cache/
 
 ```sh
 # 终端 1：前台服务端，使用默认的按用户 Unix socket 与 OCI 存储
-pvisor cache serve
+pvisor service cache serve
 
 # 终端 2：使用同一个默认 socket
-pvisor cache prepare alpine:latest
+pvisor service cache prepare alpine:latest
 # 即使处于五分钟 tag 缓存窗口内也强制刷新 registry：
-pvisor cache prepare alpine:latest --refresh
+pvisor service cache prepare alpine:latest --refresh
 # 从 JSON 结果复制 digest：
-pvisor cache list sha256:YOUR_MANIFEST_DIGEST
-pvisor cache stat sha256:YOUR_MANIFEST_DIGEST etc/os-release
-pvisor cache read sha256:YOUR_MANIFEST_DIGEST etc/os-release
+pvisor service cache list sha256:YOUR_MANIFEST_DIGEST
+pvisor service cache stat sha256:YOUR_MANIFEST_DIGEST etc/os-release
+pvisor service cache read sha256:YOUR_MANIFEST_DIGEST etc/os-release
 ```
 
 `PVISOR_CACHE_SERVER` selects the endpoint for client/server; `cache serve --listen` overrides it on the server. The default is `unix://<dirs::cache_dir()>/pvisor/cache.sock`:
@@ -163,13 +166,13 @@ When no filesystem/S3 backend is selected and `pvisor run --executor vm --rootfs
 
 An explicit `PVISOR_CACHE_SERVER` requires the service. `PVISOR_CACHE_SERVER=off` forces local preparation. Explicit directory rootfs and native containers retain their behavior.
 
-The client mounts an immutable read-only FUSE lower (macFUSE FSKit on macOS, FUSE on Linux), retaining the existing writable VM upper. Metadata is fetched on demand and cached in memory for the mount. When the server advertises `metadata_generation`, validated stat responses (including absent paths) and directory pages also persist at `<user-cache>/pvisor/metadata/v1/<endpoint-hash>/<manifest-digest>/<generation-hash>/`. They survive VM exit; corrupt entries are fetched again. Older servers without generation remain memory-only. Generation includes server root identity/change time, invalidating metadata with old host inode numbers after root reconstruction. Prepared roots must remain immutable; in-place modification is unsupported.
+VM clients attach an immutable read-only lower directly to the virtio-fs service, retaining their writable upper without an intermediate host FUSE mount. Host tools retain the FUSE adapter over the same backend. Metadata is fetched on demand and cached in memory for the backend lifetime. When the server advertises `metadata_generation`, validated stat responses (including absent paths) and directory pages also persist at `<user-cache>/pvisor/metadata/v1/<endpoint-hash>/<manifest-digest>/<generation-hash>/`. They survive VM exit; corrupt entries are fetched again. Older servers without generation remain memory-only. Generation includes server root identity/change time, invalidating metadata with old host inode numbers after root reconstruction. Prepared roots must remain immutable; in-place modification is unsupported.
 
 Content uses 1 MiB blocks at `<user-cache>/pvisor/blocks/<endpoint-hash>/<read-handle-hash>/`, keyed by file/block. `<user-cache>` is `~/Library/Caches` on macOS and `$XDG_CACHE_HOME` (usually `~/.cache`) on Linux. This is independent of `--image-store`/`PVISOR_IMAGE_STORE`. Small files use one unpadded block; large files fetch only accessed blocks.
 
-Each mount retains validated content in a per-file memory cache capped at 64 MiB/4096 blocks with FIFO eviction. Hot reads copy the requested slice without reopening/rehashing disk blocks. Memory misses revalidate disk content; disk corruption cannot alter already validated in-memory bytes. Validated new blocks publish atomically and use file locks for local process sharing; corrupt blocks are fetched again. There are no sparse placeholder files. Kernel readahead may fetch adjacent bytes; copy-up may read entire files. The client does not extract the full image.
+Each backend retains validated content in a per-file memory cache capped at 64 MiB/4096 blocks with FIFO eviction. Hot reads copy the requested slice without reopening/rehashing disk blocks. Memory misses revalidate disk content; disk corruption cannot alter already validated in-memory bytes. Validated new blocks publish atomically and use file locks for local process sharing; corrupt blocks are fetched again. VMs maintain a private metadata projection with sparse placeholders, but guest READ uses backend content instead of placeholder holes. Kernel readahead may fetch adjacent bytes; copy-up and file digests require complete originals, and complete checkpoints or self-contained exports populate the full tree. Ordinary lazy reads do not extract the complete image.
 
-The FUSE mount remains until VM completion, then unmounts; cached blocks remain. Cached content survives service failure, but missing blocks return I/O errors. Digest/endpoint stay fixed for a Run with no mid-run registry fallback. Cache endpoint/token are removed from implicitly inherited guest environment.
+Direct backends stay attached until VM completion, then release their private projections; host FUSE mounts remain until their users exit. Cached blocks remain. Cached content survives service failure, but missing blocks return I/O errors. Digest/endpoint stay fixed for a Run with no mid-run registry fallback. Cache endpoint/token are removed from implicitly inherited guest environment.
 
 Before responding to `prepare`, the server still fully prepares an uncached image. This is client-side lazy loading, not lazy OCI layer extraction on the server. FUSE adapters and existing virtio-fs workers handle requests synchronously, so a miss can delay unrelated filesystem requests. There is no explicit vCPU pause. Disk quotas/eviction, original OCI xattrs and asynchronous virtio-fs completion are outside this implementation.
 
@@ -182,7 +185,7 @@ For remote servers, use authenticated loopback TCP through SSH:
 ```sh
 # 服务端：通过你的密钥管理/命令行设置一个强共享密钥。
 export PVISOR_CACHE_TOKEN='YOUR_RANDOM_SECRET'
-pvisor cache serve --listen tcp://127.0.0.1:7447
+pvisor service cache serve --listen tcp://127.0.0.1:7447
 
 # 客户端机器上，保持该隧道运行：
 ssh -N -L 7447:127.0.0.1:7447 your-server
@@ -190,7 +193,7 @@ ssh -N -L 7447:127.0.0.1:7447 your-server
 # 客户端 shell，使用同一密钥：
 export PVISOR_CACHE_TOKEN='YOUR_RANDOM_SECRET'
 export PVISOR_CACHE_SERVER=tcp://127.0.0.1:7447
-pvisor cache prepare alpine:latest
+pvisor service cache prepare alpine:latest
 ```
 
 TCP requires a nonempty token and literal loopback IP endpoints. There is no built-in TLS; use SSH encryption. Tokens grant all cache operations, including preparing new images. This is a trusted shared service rather than a public multitenant API. Unix clients must also supply tokens when configured on the server.
@@ -245,13 +248,13 @@ Server memory caches share up to 4096 stat responses and 128 sorted directory in
 
 There are 16 request/file workers and up to 16 queued connections; excess connections close and clients may retry. Authenticated prepare uses a separate two-worker pool with 16 queued requests; full queues return explicit busy errors. Registry/extraction work does not occupy file workers. Request reads have a five-second inactivity timeout; response reads/writes retain 300 seconds; TCP connects have 10 seconds. Long preparation may outlive a disconnected client; retry is safe. Shutdown does not gracefully cancel individual OCI downloads. Existing image storage governs registry limits/cache eviction; v1 adds no quotas or eviction.
 
-There are no vCPU pause/resume messages. Downloading happens in host FUSE services outside the sandboxed VM runner.
+There are no vCPU pause/resume messages. VM requests are handled inside the isolated runner; filesystem and Unix socket caches are accessed directly. Linux TCP/S3 downloads use a private Unix socket to a host access process, preserving runner network isolation. It permits only the bound immutable image's stat/list/read, rejecting prepare, open and other images. Credential descriptors stay in the hidden private owner, and the access process terminates during VM teardown. Host FUSE continues fetching content on the host.
 
 ## Backend validation
 
 `just test pvisor` includes server compatibility, independent filesystem/S3 CLI processes, read-only access, corruption refusal, and configuration precedence. The local S3 fixture independently verifies SigV4, including temporary session tokens, without real accounts, public requests, or an external daemon.
 
-On Linux x86_64 with KVM/FUSE and the static musl guest target, run the real VM acceptance check:
+On Linux x86_64 with KVM and the static musl guest target, run the real VM acceptance check:
 
 ```sh
 cargo nextest run --locked -p pvisor --test cache_backends --run-ignored ignored-only

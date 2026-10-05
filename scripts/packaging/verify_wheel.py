@@ -13,7 +13,7 @@ import zipfile
 from email.parser import BytesParser
 from pathlib import Path
 
-EXPECTED_BINARIES = ("pvisor", "pvisor-cache", "pvisor-tui", "pvisor-replay", "pvisor-memory-pool")
+EXPECTED_BINARIES = ("pvisor", "pvisor-cache", "pvisor-tui", "pvisor-replay", "pvisor-memory-pool", "pvisor-cluster", "pvisor-worker")
 FIRMWARE_NAMES = ("libkrunfw.so.5", "libkrunfw.5.dylib")
 
 

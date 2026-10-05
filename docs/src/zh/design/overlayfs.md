@@ -33,8 +33,9 @@ virtqueue 直接接入。两者复用文件服务能力，host staged 保留宿�
 FUSE 在这里同时指请求协议和宿主挂载入口：virtio-fs 使用 FUSE 请求协议，
 但 VM 服务不需要把请求重新送入宿主 `/dev/fuse`。
 
-目标结构如下。统一文件服务和 remote lower 直接接入是后续重构；现有
-两套适配器已共享 OverlayCore，inode/handle 与部分 I/O 处理仍分别实现。
+当前结构如下。host FUSE 和 VM virtio-fs 适配器使用
+`pvisor-overlay-core::service::FilesystemService`，共享 OverlayCore 操作与
+后端读取。协议 inode/handle 表、目录游标和平台权限处理仍由各入口管理。
 
 ```mermaid
 flowchart TD
@@ -47,7 +48,7 @@ flowchart TD
     VA --> S
     S --> O[OverlayCore: policy, merge, copy-up, journal]
     O --> L[Local lower / upper]
-    O -. planned direct backend .-> R[Immutable remote lower]
+    O --> R[Immutable remote lower]
     R --> C[Metadata / content cache]
 ```
 
@@ -57,26 +58,41 @@ flowchart TD
 | 层 | 共享或保留的职责 |
 |---|---|
 | 入口适配器 | FUSE 或 virtqueue 收发、请求参数与凭据转换、errno/属性编码、挂载和队列生命周期；保留 Linux guest 与宿主平台能力差异 |
-| 统一文件服务 | lookup/getattr、目录游标、open/read/write/release 等文件操作，共同的对象与 handle 生命周期；调用 OverlayCore 执行策略、合成和首次触达 |
+| 统一文件服务 | 通过 OverlayCore 共享路径解析、目录合成、权限/别名策略、原像记录与 copy-up；统一本地和远程读取合同 |
 | 本地与远程后端 | 本地文件 I/O；不可变镜像的 stat/list/read、符号链接、对象身份、内容块校验和缓存；修改仍落入每个 Attempt 独立的本地 upper |
 
 公共接口使用文件操作、元数据、对象身份和读写结果表达能力，不依赖
 `fuser::Reply*`、guest descriptor 或某个挂载点。统一是同一套实现及合同，
-各入口在宿主执行进程内直接调用；不要求新增 RPC 或把全部 Run 串行化。
-协议编码和 descriptor/used-ring 管理仍属于各自入口。
+各入口在宿主执行进程内直接调用；不要求新增文件系统 RPC 或把全部 Run 串行化。
+协议编码、inode/handle 表和 descriptor/used-ring 管理仍属于各自入口。
 
-VM 的 lazy image 目标是直接调用远程只读后端，不先挂载宿主 lazy FUSE
-再读取其路径。当前 `image/cache/lazy.rs` 仍创建这个挂载，OverlayCore 的
-lower 仍主要依赖本地路径；该中转尚未移除。host 工具访问 lazy 镜像时，
-可经 host FUSE 入口调用同一远程后端。不可变句柄、硬链接对象身份、元数据
-generation 和内容摘要应在后端保留；共享镜像缓存不共享可写 upper 或 journal。
+VM 的 lazy image 已直接调用远程只读后端，不再建立中间宿主 FUSE 挂载。
+`image/cache/backend.rs` 提供与 FUSE 无关的元数据、按块读取和有界缓存，
+`lazy.rs` 保留 host FUSE 适配器，`direct.rs` 将后端接入 VM lower。
+普通本地 lower 和 VM staged workspace 继续经 virtio-fs 直接服务；host
+staged 仍通过宿主 FUSE 执行。不可变句柄、硬链接对象身份、元数据 generation
+和内容摘要由后端保留；共享镜像缓存不共享可写 upper 或 journal。
 镜像存储合同见[共享镜像缓存 v1](shared-image-cache-storage.md#filesystem-access)。
 
-重构先将 lazy 的元数据、内容读取和有界缓存从 FUSE 回调中抽出，再为
-OverlayCore 的 lower 接入后端接口，随后逐步收拢两套适配器的共同操作。
-每一步保留 copy-up 前原像记录、权限/别名检查和快照恢复合同；远端 miss
-不得持有服务全局锁阻塞其他 Attempt。性能比较需分别测旧中转与直接后端的
-冷/热缓存、元数据密集负载和并发任务，现有 benchmark 不证明该方案的收益。
+直接后端建立私有元数据投影，以保留现有本地 inode/FD、路径检查和快照合同。
+投影是普通目录及稀疏占位文件，没有 FUSE 挂载；guest 属性来自镜像元数据，
+READ 内容通过后端按需取块，不读取占位文件中的空洞。copy-up 和文件摘要
+需要原始内容时才填充本地文件；完整文件系统快照和自包含目录导出会补齐全树，
+因此这些操作可能下载尚未访问的文件。服务端已打开的 lower handle 在 copy-up 后
+仍指向原始只读内容；guest 的 inode 页缓存继续遵循内核的缓存语义。后端描述文件保存在 guest lower 之外，并从 workspace
+视图隐藏；VM runner 在收紧宿主文件访问前重新接入后端。
+
+Linux runner 保持独立网络命名空间。本地文件和 Unix socket 缓存直接访问；
+TCP/S3 通过只允许固定镜像 stat/list/read 的私有宿主访问通道获取缓存内容，
+不把存储凭据或宿主网络权限交给 guest。该通道使用已有缓存协议，与
+virtio-fs 文件服务入口分开，随 VM teardown 释放。
+
+内容读取不持有服务全局锁或元数据表锁，缓存 miss 仅锁住相应的内容块。
+测试覆盖跨块与热缓存读取、硬链接 copy-up、guest 属性、打开句柄、完整目录
+导出及 runner 接入。两套入口的协议状态尚未全部收拢；后续可以继续统一
+共同操作，但应保留平台权限和描述符语义。[重构后评测](filesystem-performance-analysis.md#filesystem-service)
+已覆盖本地完整负载和 lazy 冷/热缓存：读路径有局部收益，元数据和 copy-up
+出现回归，尚未显示普遍端到端加速；并发任务容量未在这批测量中验证。
 此重构针对文件系统及 lazy image，不改变[快照 RAM lazy 恢复](environment-snapshot.md)
 的缺页加载路径。
 

@@ -1,40 +1,42 @@
 # Comparison: Docker / devcontainer
 
-Docker plus Git is a capable development workflow. pVisor adds pending changes, preimage checks before apply, selective admission and records of observed controls. If a reliable worktree/patch review pipeline already exists, the value is whether those steps should become one protocol.
+## Main conclusions {#conclusions}
 
-## Scope
+**Docker bind-mount file access is near native and ahead of pVisor's staged path; measured short staged repair tasks are close to Docker and slightly faster.** Same-tool repair/tests take **0.70 s** staged, **0.90 s** Docker and **3.97 s** pVisor VM. pVisor's value is retained changes, conflict checks and selective application; “faster than Docker across the board” would be inaccurate.
 
-The 2026-10-04 follow-up measures a private, user-owned rootless Docker Engine 29.7.2 on the same Linux host, despite an inaccessible system daemon. It uses the same Python/Node/Rust/Claude/Codex artifacts, projects and two-core budget with prepared images. Earlier Podman/crun data remain separate. Docker Desktop, devcontainer extensions and remote environments are unmeasured.
+Established Docker + worktree/Git review pipelines remain useful. Consider staged when multiple Agents or non-Git directories need one application protocol.
 
-| Configuration | Where edits happen | Admission protection | Suitable use |
-|---|---|---|---|
-| Docker + writable bind | Host files change immediately | Review and rollback require an additional workflow | Trusted tasks needing reproducible dependencies |
-| Docker writable layer/volume | Container layer or volume | Export files, patches or commits and merge separately | Independent or remote workspaces |
-| devcontainer | Configured mounts/volumes and tools | Combine with Git, worktrees and PRs | Standard team development environments |
-| Docker + independent worktree + Git | Independent files; original workspace can remain intact | Patch checks and three-way merge; caller owns retries and workspace management | An established Git review pipeline |
-| pVisor staged Job | Upper stage pending until apply | Preimage conflicts, selective apply/drop and transaction recovery | Shared review across agents or non-Git directories |
+## Motivation {#motivation}
 
-Sources: Docker [bind mounts](https://docs.docker.com/engine/storage/bind-mounts/), [security](https://docs.docker.com/engine/security/), and the [devcontainer specification](https://containers.dev/). Git workflows must also handle untracked/binary files, permissions, symlinks and concurrent edits.
+Containers supply tool environments, while mounts decide whether changes immediately reach the host. Review, export, conflict handling and application also contribute to final workflow cost.
 
-## Costs and workflow differences
+## Experiment design {#interpretation}
 
-[Filesystem measurements](filesystem.md) compare identical tools and inputs; image preparation is excluded. [Apply/drop](apply.md) measures scale and conflict rejection. Check the Bundle's staging scope: a container mount is not automatically staged.
+Linux same-host comparisons share two cores, Python/Node/Rust/Agent tools and inputs. Docker Engine 29.7.2 is rootless, with prepared images, running daemon and writable bind mount. Cells have three warmups and 30 samples. Complete tasks include launch-to-verified-result; file operations exclude startup. Results use pinned pVisor artifacts and have not all been rerun with current integrated filesystem artifacts. Docker Desktop, devcontainer plugins and overlay2 workloads are unmeasured.
 
-Docker plus a complete Git admission workflow can be sufficient. `git diff` alone cannot retract changes already made through a writable bind mount or produce pVisor's observed-capability record. pVisor's process, staging and recording costs buy that shared workflow.
+| Configuration | Change location and review workflow |
+|---|---|
+| Docker writable bind mount | Mounted host files change directly; independent worktrees can be added |
+| Docker writable layer / volume | Changes stay in the layer or volume; export, patches or commits handle application |
+| devcontainer | Configured mounts or volumes, with Git/PR review workflows |
+| pVisor staged | Stage retains changes before apply; selective paths and preimage conflict checks |
 
-### What these numbers support {#reference-comparison}
+See Docker's [bind-mount documentation](https://docs.docker.com/engine/storage/bind-mounts/) for default host writes and the [devcontainer specification](https://containers.dev/) for configuration.
 
-Docker/CLI data in this section comes from the earlier shared-tool controlled batch. pVisor uses a prepared directory without an image. The new default `--rootfs host` versus complete Ubuntu comparison, internal tool times and current client pass/failure results are in [full Agent Env](agent-tasks.md#full-ubuntu); configurations and samples remain separate.
+## Data and analysis {#results}
 
-Complete repair/testing P50 is **0.90 s** in Docker, **0.70 s** in pVisor staged, and **3.97 s** in pVisor VM. Docker metadata/read/write remain close to native. Staging adds about 16 ms for 64 MiB reads and 175 ms to traverse 2,048 files. Lightweight staging costs hundreds of milliseconds here; an independent guest kernel currently brings seconds of additional tool-path cost.
+### Same-tool tasks {#reference-comparison}
 
-This is not a ranking within identical security boundaries. Staged host supplies pending changes/evidence while retaining access outside the workspace. Docker supplies namespaces with a writable bind mount; the VM supplies a guest kernel and staged view. Select using the required boundary, task time and admission workflow together.
+| Operation | pVisor staged P50 | Docker P50 | pVisor VM P50 |
+|---|---:|---:|---:|
+| Repair and tests | 0.70 s | 0.90 s | 3.97 s |
+| Controlled Claude tool loop | 1.07 s | 1.23 s | Initialization timeout / N=0 |
+| Controlled Codex tool loop | 2.25 s | 6.26 s | 10.93 s |
+| Read/verify 64 MiB | 48.77 ms | 33.24 ms | 89.27 ms |
+| Traverse 2,048 files | 180.13 ms | 5.06 ms | 310.54 ms |
 
-Real clients add costs: Claude takes **1.23 s** in Docker and **1.07 s** staged; Codex takes **6.26 s** in Docker, **2.25 s** staged, and **10.93 s** in the VM. Claude/VM initialization times out and has no successful latency sample. These are fixed tools and controlled responses. Real inference, default client inner sandboxes and Docker writable-layer/overlay2 file workloads remain unmeasured.
+Staged short repair is about 0.20 s quicker, while Docker individual file operations remain near native and staged metadata costs more. Client initialization and tool combinations affect overall results; individual file speed does not replace complete-task measurements. CLIs use controlled responses without inference, rather than comparing default built-in sandboxes.
 
-[Complete environment/distributions](agent-tasks.md#reference-env) · [File operations](filesystem.md#reference-fs) · [Memory scope/configuration](methodology.md#reference-env)
+pVisor VM has an independent guest kernel; staged host, Docker namespaces and VMs have different boundaries. Consider [isolation](isolation-tests.md) and [apply costs](apply.md). [Filesystem performance](filesystem.md) provides current measurements; these are not combined with this table's Docker timings into precise ratios.
 
-
-## Corrections
-
-Submit configuration, image digest and reproduction to [pVisor issues](https://github.com/DeepLink-org/pvisor/issues). Docker writable-layer/overlay2 and Docker Desktop samples are welcome; this measures only Linux rootless Engine with bind mounts.
+[Complete tasks and distributions](agent-tasks.md#reference-env) · [Same-tool file data](filesystem.md#reference-fs) · [Protocol and artifacts](methodology.md#reference-env)

@@ -1,7 +1,7 @@
 """Reject fast failure and markers that did not complete an Agent tool loop."""
 
 import pytest
-from reference_baselines import validate_guest_output, validate_staged_filesystem
+from reference_baselines import validate_direct_filesystem, validate_guest_output, validate_staged_filesystem
 from reference_workload import grade_returned
 
 
@@ -11,6 +11,24 @@ def guest(mode="tools", exit_code=0, correctness="passed"):
 
 def test_guest_accepts_successful_task_and_shutdown():
     validate_guest_output(guest(), "tools")
+
+
+@pytest.mark.parametrize("fault", [None, "missing-file", "truncated-file"])
+def test_direct_control_requires_writes_in_workspace(tmp_path, fault):
+    written = tmp_path / "_fs/written"
+    written.mkdir(parents=True)
+    for i in range(256):
+        with (written / f"{i:04d}").open("wb") as file:
+            file.truncate(64 * 1024)
+    if fault == "missing-file":
+        (written / "0000").unlink()
+    elif fault == "truncated-file":
+        (written / "0000").write_bytes(b"incomplete")
+    if fault:
+        with pytest.raises(ValueError):
+            validate_direct_filesystem(tmp_path, 256 * 64 * 1024)
+    else:
+        validate_direct_filesystem(tmp_path, 256 * 64 * 1024)
 
 
 @pytest.mark.parametrize(

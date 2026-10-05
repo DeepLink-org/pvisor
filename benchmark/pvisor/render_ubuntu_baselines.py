@@ -4,11 +4,11 @@
 import argparse
 import csv
 import json
-import shutil
 from collections import defaultdict
 from pathlib import Path
 
 from bench import percentile
+from evidence_tsv import copy_evidence, load as load_evidence, migrate, resolve
 from render_reference_baselines import export_evidence
 
 LABELS = {
@@ -212,12 +212,12 @@ def main():
     out.mkdir(parents=True, exist_ok=True)
     summaries, metadata, samples, selected = {}, {}, [], {}
     for report_path in args.report:
-        report = json.loads(report_path.read_text())
+        report = load_evidence(report_path)
         validate_complete(report)
         batch = report_path.parent.name
         target = out / batch
         target.mkdir(exist_ok=True)
-        shutil.copy2(report_path, target / "report.json")
+        copy_evidence(report_path, target / "report.json")
         summary = summarize(report)
         overlap = summaries.keys() & summary.keys()
         if overlap - set(args.replace_cohort):
@@ -225,7 +225,7 @@ def main():
         summaries.update(summary)
         selected.update({key: batch for key in summary})
         metadata[batch] = {
-            "report": batch + "/report.json",
+            "report": batch + "/report.tsv",
             "rows": len(report["rows"]),
             "capabilities": report["capabilities"],
         }
@@ -287,9 +287,10 @@ def main():
         "provision.log",
     ):
         source = args.assets / name
-        if source.exists():
-            shutil.copy2(source, out / name)
+        if resolve(source).exists():
+            copy_evidence(source, out / name)
     plot(summaries, out)
+    migrate(out, replace=True)
     print(out)
 
 

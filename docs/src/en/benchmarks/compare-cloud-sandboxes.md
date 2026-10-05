@@ -1,28 +1,32 @@
 # Comparison: cloud sandboxes
 
-Local pVisor fits existing repositories and tools. E2B, Daytona and Modal supply remote environments and elastic capacity. This first edition compares deployment and cost boundaries; it contains no measured cloud startup or ranking against local CLI timings.
+## Main conclusions {#conclusions}
 
-## Scope
+**pVisor suits existing local repositories and toolchains; E2B, Daytona and Modal suit remote environment provisioning and managed capacity.** Matching cloud latency and billing data are unavailable, so pVisor cannot be claimed faster or cheaper.
 
-Official documentation and billing checked on 2026-10-04. No cloud accounts were called, environments provisioned or paid credits consumed. SDK versions, regions and billing configurations remain unmeasured. Local evidence is in [startup](startup.md), [filesystem](filesystem.md) and [density](density.md).
+Prepared local pVisor VM startup takes about **0.1 s**, staged short repair about **0.7 s**. Remote execution also needs upload, preparation, execution and result return; environment creation alone does not describe that cost.
 
-| Option | Workspace/tools | Capacity, lifecycle and cost | Suitable use |
-|---|---|---|---|
-| Local pVisor | Host paths or prepared OCI/VM rootfs; configured shares and stage/apply | Host CPU/RAM/disk and operations; measured capacity on this host | Private repositories, local dependencies and changes returned to the same workspace |
-| E2B | Remote SDK execution, templates and file transfer | Managed sandboxes, pause/resume; compute billed per second with plan resource/concurrency limits | Independent execution environments within a product |
-| Daytona | SDK-managed remote sandboxes, images and file synchronization | Managed lifecycle; per-second billing with compute/storage configuration | Persistent remote agent workspaces |
-| Modal | Images, Volumes and uploaded files; gVisor/VM runtimes | Managed capacity; requested resources/time and minimum allocation affect billing | Existing Modal compute, inference and batch pipelines |
+## Motivation {#motivation}
 
-Sources: [E2B](https://docs.e2b.dev/), [billing](https://docs.e2b.dev/billing); [Daytona](https://www.daytona.io/docs/en/), [pricing](https://www.daytona.io/pricing); [Modal](https://modal.com/docs/guide/sandboxes), [resources/pricing](https://modal.com/docs/guide/sandbox-resources).
+Local/cloud choice depends on repository location, existing tools, elastic capacity and returning changes to the workspace, as well as startup.
 
-## Data and admission
+## Experiment design {#interpretation}
 
-Remote execution transfers required code, inputs and credentials to the execution location. Cross-border transfer depends on region, account and contract; confirm locality, retention and deletion. Local execution retains workspace files on the host, but model APIs, tools and external record destinations can still transmit data.
+This compares deployment approaches. Performance evidence is local only; no cloud sandbox was created. SDK, region, account, caches, latency and bills are unmeasured. Official sources describe provisioning rather than supplying advertised numbers for rankings.
 
-For a local Rust/npm workload, measure image build, upload, environment creation, caches, execution, download and local admission separately. Remote snapshots or pause/resume do not automatically provide conflict-safe admission into the local directory; callers need a merge protocol, potentially pVisor staging.
+| Option | Execution/preparation | User workflow |
+|---|---|---|
+| Local pVisor | Host directories or prepared rootfs, stage/apply | Local resources, dependencies and operations |
+| E2B | SDK-operated remote sandboxes, templates and files | Templates, uploads, result return and local application |
+| Daytona | SDK-managed remote development sandboxes | Preparation, synchronization and result application |
+| Modal | SDK-created sandboxes, images and storage | Dependency images, data access and pipeline integration |
 
-Model cost as resource-seconds plus storage/network/plan charges and inference. Include depreciation, power, idle capacity and operations locally. Without account billing experiments, this page makes no cheapest-provider claim. Evaluate cloud for burst capacity and remote multi-user APIs; evaluate local for host dependencies and short feedback loops.
+Official sources: [E2B](https://docs.e2b.dev/), [Daytona](https://www.daytona.io/docs/en/), [Modal Sandboxes](https://modal.com/docs/guide/sandboxes).
 
-## Corrections
+## Data and analysis {#results}
 
-Send region, SDK version, billing configuration, date and complete timing stages to [pVisor issues](https://github.com/DeepLink-org/pvisor/issues). Label provider-reported numbers separately from controlled measurements.
+[Startup](startup.md), [tasks](agent-tasks.md) and [density](density.md) provide local short-task budgets, without establishing managed-service capacity or availability.
+
+A matched task comparison should record builds, uploads, creation, dependency caches, execution, downloads and application. Persistent environments amortize preparation; repeated large-repository uploads can increase remote waiting. Cloud snapshots or pause/resume do not automatically provide conflict handling for local directories.
+
+Costs include resource time, storage/network, subscriptions and models; local costs also include hardware and operations. Without billing experiments, the choice is conditional: evaluate managed services for remote APIs and burst capacity, and pVisor for existing local dependencies and short feedback loops.

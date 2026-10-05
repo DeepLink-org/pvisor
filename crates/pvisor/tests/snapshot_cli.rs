@@ -1,131 +1,19 @@
+//! Retired snapshot entry and native RAM helper regressions.
 use std::process::Command;
 
 #[test]
-fn snapshot_is_a_discoverable_builtin_without_companions() {
-    let binary = env!("CARGO_BIN_EXE_pvisor");
-    let root = Command::new(binary)
-        .arg("--help")
-        .env("PATH", "")
+fn retired_snapshot_is_rejected_without_creating_a_store() {
+    let temporary = tempfile::tempdir().unwrap();
+    let store = temporary.path().join("must-not-be-created");
+    let output = Command::new(env!("CARGO_BIN_EXE_pvisor"))
+        .args(["snapshot", "--store"])
+        .arg(&store)
+        .args(["run", "--name", "a", "--rootfs", "/unused", "--", "bash"])
         .output()
         .unwrap();
-    assert!(root.status.success());
-    assert!(String::from_utf8_lossy(&root.stdout).contains("  snapshot "));
-    let help = Command::new(binary)
-        .args(["snapshot", "--help"])
-        .env("PATH", "")
-        .output()
-        .unwrap();
-    assert!(help.status.success());
-    let text = String::from_utf8_lossy(&help.stdout);
-    for command in ["run", "save", "restore", "list", "delete", "gc"] {
-        assert!(text.contains(&format!("  {command} ")), "{text}");
-    }
-    assert!(!text.contains("  runner "));
-    assert!(!text.contains("  ram-watchdog "));
-    assert!(!text.contains("  socket-watchdog "));
-    assert!(text.contains("fork"), "{text}");
-}
-
-#[test]
-fn invalid_resources_and_conflicting_launch_modes_fail_before_side_effects() {
-    let directory = tempfile::tempdir().unwrap();
-    let store = directory.path().join("must-not-be-created");
-    for arguments in [
-        vec![
-            "run", "--name", "a", "--rootfs", "/unused", "--cpus", "0", "--", "bash",
-        ],
-        vec![
-            "run", "--name", "a", "--rootfs", "/unused", "--memory", "0", "--", "bash",
-        ],
-        vec!["run", "--name", "a", "--rootfs", "/unused"],
-        vec![
-            "run",
-            "--name",
-            "a",
-            "--rootfs",
-            "/unused",
-            "--ram-storage",
-            "invalid",
-            "--",
-            "bash",
-        ],
-        vec![
-            "run",
-            "--name",
-            "a",
-            "--rootfs",
-            "/unused",
-            "--native-init",
-            "--",
-            "bash",
-        ],
-    ] {
-        let output = Command::new(env!("CARGO_BIN_EXE_pvisor"))
-            .args(["snapshot", "--store"])
-            .arg(&store)
-            .args(arguments)
-            .output()
-            .unwrap();
-        assert_eq!(
-            output.status.code(),
-            Some(2),
-            "{}",
-            String::from_utf8_lossy(&output.stderr)
-        );
-        assert!(!store.exists());
-    }
-}
-
-#[cfg(any(
-    all(target_os = "linux", target_arch = "x86_64"),
-    all(target_os = "macos", target_arch = "aarch64")
-))]
-#[test]
-fn socket_watchdog_reaps_on_eof_and_preserves_replaced_regular_files() {
-    use sha2::{Digest, Sha256};
-    use std::{
-        fs,
-        os::unix::{fs::DirBuilderExt, net::UnixListener},
-        process::Stdio,
-    };
-    let directory = tempfile::tempdir().unwrap();
-    let directory = directory.path().canonicalize().unwrap();
-    let parent = std::path::PathBuf::from(format!("/tmp/pvisor-snapshots-{}", unsafe {
-        libc::geteuid()
-    }));
-    match fs::DirBuilder::new().mode(0o700).create(&parent) {
-        Ok(()) => {}
-        Err(error) if error.kind() == std::io::ErrorKind::AlreadyExists => {}
-        Err(error) => panic!("{error}"),
-    }
-    let digest = Sha256::digest(directory.as_os_str().as_encoded_bytes());
-    let name: String = digest[..16].iter().map(|b| format!("{b:02x}")).collect();
-    let socket = parent.join(format!("{name}.sock"));
-    for replaced in [false, true] {
-        let listener = UnixListener::bind(&socket).unwrap();
-        let mut child = Command::new(env!("CARGO_BIN_EXE_pvisor"))
-            .args(["snapshot", "socket-watchdog"])
-            .arg(&directory)
-            .stdin(Stdio::piped())
-            .stdout(Stdio::null())
-            .stderr(Stdio::piped())
-            .spawn()
-            .unwrap();
-        if replaced {
-            fs::remove_file(&socket).unwrap();
-            fs::write(&socket, b"replacement must survive").unwrap();
-        }
-        drop(child.stdin.take());
-        let result = child.wait_with_output().unwrap();
-        assert_eq!(result.status.success(), !replaced);
-        if replaced {
-            assert_eq!(fs::read(&socket).unwrap(), b"replacement must survive");
-            fs::remove_file(&socket).unwrap();
-        } else {
-            assert!(!socket.exists());
-        }
-        drop(listener);
-    }
+    assert_eq!(output.status.code(), Some(2));
+    assert!(String::from_utf8_lossy(&output.stderr).contains("was removed"));
+    assert!(!store.exists());
 }
 
 #[cfg(any(
@@ -138,8 +26,10 @@ fn ram_watchdog_cleans_an_already_detached_private_directory() {
     let mount = temp.path().join("ram-mount-watchdog-test");
     std::fs::create_dir(&mount).unwrap();
     let result = std::process::Command::new(env!("CARGO_BIN_EXE_pvisor"))
-        .args(["snapshot", "ram-watchdog"])
-        .arg(mount.canonicalize().unwrap())
+        .env(
+            "PVISOR_VM_RESTORE_RAM_WATCHDOG",
+            mount.canonicalize().unwrap(),
+        )
         .stdin(std::process::Stdio::null())
         .output()
         .unwrap();
@@ -149,4 +39,57 @@ fn ram_watchdog_cleans_an_already_detached_private_directory() {
         String::from_utf8_lossy(&result.stderr)
     );
     assert!(!mount.exists());
+}
+
+#[cfg(any(
+    all(target_os = "linux", target_arch = "x86_64"),
+    all(target_os = "macos", target_arch = "aarch64")
+))]
+#[test]
+#[ignore = "real FUSE pager gate, no VMs"]
+fn external_ram_pager_survives_object_deletion_without_snapshot_cli() {
+    use pvisor::environment_snapshot::{Compatibility, SnapshotStore};
+    use std::{
+        fs,
+        io::{Read, Write},
+    };
+    for compressed in [false, true] {
+        let temporary = tempfile::tempdir().unwrap();
+        let source = temporary.path().join("source");
+        fs::create_dir(&source).unwrap();
+        let store = SnapshotStore::new(&temporary.path().join("store")).unwrap();
+        let compatibility = Compatibility {
+            host_boot: "test".into(),
+            build: "test".into(),
+            firmware: "test".into(),
+            profile: "test".into(),
+        };
+        let bytes: Vec<_> = (0..131072).map(|offset| (offset % 251) as u8).collect();
+        let pending = store.begin().unwrap();
+        pending.create_ram().unwrap().write_all(&bytes).unwrap();
+        let id = if compressed {
+            pending
+                .publish_compressed(&source, b"machine", compatibility.clone())
+                .unwrap()
+        } else {
+            pending
+                .publish(&source, b"machine", compatibility.clone())
+                .unwrap()
+        };
+        let published = store.open_for_restore(&id, &compatibility).unwrap();
+        let mounts = temporary.path().join("mounts");
+        fs::create_dir(&mounts).unwrap();
+        let (mount, mut file) = published
+            .ram_mount(std::path::Path::new(env!("CARGO_BIN_EXE_pvisor")), &mounts)
+            .unwrap();
+        drop(published);
+        store.delete(&id).unwrap();
+        store.collect_abandoned().unwrap();
+        let mut output = Vec::new();
+        file.read_to_end(&mut output).unwrap();
+        assert_eq!(output, bytes);
+        drop(file);
+        drop(mount);
+        assert_eq!(fs::read_dir(&mounts).unwrap().count(), 0);
+    }
 }

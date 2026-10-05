@@ -8,7 +8,7 @@ pVisor 当前选择在宿主侧处理冷块：观察哪些 RAM 块暂时没有 C
 
 收益取决于三个条件：内容是否重复、是否可压缩，以及冷窗口是否足够长。每次观察会改变 guest 访问权限，每次恢复都要付出传输、校验和重映射成本。写密集或频繁扫描整个工作集的负载可能很快抵消冷态收益。内存与执行延迟必须一起衡量。
 
-本文描述 2026-10-03 工作树中的 macOS / Apple Silicon 实验实现，默认关闭。首版提供前台 `pvisor memory-pool` 服务及显式 CLI/SDK 接入，仍无池重启恢复或完整物理内存收益验收。旧的逐轮设计记录保留在仓库 `docs/macos-memory-sharing.md`，原始证据保留在 `review_project/06-evidence/macos-memory/`；本文按当前机制组织，实验数字只对应记录中的执行版本。
+本文描述 2026-10-03 工作树中的 macOS / Apple Silicon 实验实现，默认关闭。首版提供前台 `pvisor service memory-pool` 服务及显式 CLI/SDK 接入，仍无池重启恢复或完整物理内存收益验收。旧的逐轮设计记录保留在仓库 `docs/macos-memory-sharing.md`，原始证据保留在 `review_project/06-evidence/macos-memory/`；本文按当前机制组织，实验数字只对应记录中的执行版本。
 
 ## 2. 核心设计 {#core-design}
 
@@ -250,7 +250,7 @@ RAM＋pool 代理为两 runner 的 `resident_bytes + pending_file_bytes` 之和�
 
 ```bash
 mkdir -m 700 /tmp/pvisor-memory-pool-v1
-pvisor memory-pool /tmp/pvisor-memory-pool-v1/pool.sock
+pvisor service memory-pool /tmp/pvisor-memory-pool-v1/pool.sock
 ```
 
 在其他终端启动 VM，使用同一个 socket；也可直接运行 `pvisor-memory-pool`：

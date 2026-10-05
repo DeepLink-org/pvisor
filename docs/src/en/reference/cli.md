@@ -10,6 +10,21 @@ Full command examples for Host, OCI VM and transparent host-rootfs VM
 are in
 [Run workloads with pVisor](../guides/executors/index.md).
 
+## Service commands {#service}
+
+Top-level commands operate Jobs. Deployments, cluster tasks and shared node resources use `service`. `run/status/restart/stop --config FILE` manage a deployment and its roles; resource tools retain their original arguments after the corresponding subcommand:
+
+```bash
+pvisor service --help
+pvisor service cluster --help
+pvisor service worker --help
+pvisor service cache --help
+pvisor service memory-pool --help
+pvisor help service cluster submit
+```
+
+Top-level `cluster`, `worker`, `cache` and `memory-pool` have been removed, with explicit migration errors; `snapshot` is removed. Tool help/errors show nested invocation names rather than silently treating retired names as host workloads. Default execution remains `pvisor -- COMMAND`. See the [unified service guide](../guides/cluster/service.md) for configuration, budgets and acceptance, and the [command model](../design/cli.md) for responsibilities.
+
 ## Find the command you need
 
 - **Run a command:** start with [`pvisor run`](../start/first-run.md), then use
@@ -251,8 +266,8 @@ still requires the source Job lease, so these operations refuse a running source
 `fork JOB --state execution` currently return `CAPABILITY_UNSUPPORTED` without
 changing Job state. Overlay/DAX, temporary root filesystem layers and Attempt
 handoff for ordinary VM Jobs are not yet connected to full save/restore. The
-existing standalone `snapshot` workflow remains available; its objects are not
-Job checkpoints within a stage. See [Job checkpoint design](../design/job-checkpoint-cli.md#10-当前实现与验收边界)
+standalone `snapshot` command has been removed. Its storage objects are not
+automatically converted into Job checkpoints, and removing the entry does not expand ordinary Job execution capabilities. See [Job checkpoint design](../design/job-checkpoint-cli.md#10-当前实现与验收边界)
 for the implementation scope.
 
 ## `--safe` parameter preset {#safe-参数预设}
@@ -751,7 +766,7 @@ retains compact Run/Overlay metadata, the apply ledger and capture artifacts.
 
 ### Shared image file cache
 
-`pvisor cache serve` runs the OCI file service in the foreground;
+`pvisor service cache serve` runs the OCI file service in the foreground;
 `cache prepare IMAGE`, `cache list DIGEST [PATH]`, `cache stat DIGEST PATH` and
 `cache read DIGEST PATH` reach it through `PVISOR_CACHE_SERVER`. The default is
 the `pvisor/cache.sock` Unix socket under the user cache directory. The server
@@ -768,4 +783,4 @@ and the native container executor keep their current behavior. See the
 limits and SSH remote access.
 
 
-Experimental macOS memory-pool entry points are `pvisor memory-pool SOCKET` and `pvisor run --vm-memory-pool SOCKET`. Keep the pool running: stopping it fails dependent VMs. See [first-version memory sharing integration](../design/memory-sharing/index.md#v1-integration) for configuration, budgets and usage.
+Experimental macOS memory-pool entry points are `pvisor service memory-pool SOCKET` and `pvisor run --vm-memory-pool SOCKET`. Keep the pool running: stopping it fails dependent VMs. See [first-version memory sharing integration](../design/memory-sharing/index.md#v1-integration) for configuration, budgets and usage.

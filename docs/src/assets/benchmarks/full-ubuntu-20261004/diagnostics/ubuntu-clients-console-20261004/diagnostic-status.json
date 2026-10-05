@@ -1,4 +1,0 @@
-{
-  "state": "superseded-incomplete-diagnostic",
-  "reason": "agetty DCS terminal capability request also prefixes journal lines; collector corrected and checked against every recorded Ubuntu serial protocol line."
-}

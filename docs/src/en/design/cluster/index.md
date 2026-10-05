@@ -13,6 +13,7 @@ Use the [Cluster quickstart](../../guides/cluster/index.md) for setup and step-b
 | Execution lifecycle | [Native controls, inference waits and forks](lifecycle.md): when is CPU released? When can a reply reach the Agent? |
 | Storage | [Metadata, artifacts and reclamation](storage.md): commit barriers, outbox, checkpoint publication and GC |
 | Sharing and lazy loading | [Shared working sets and lazy loading](shared-working-set.md): existing reuse, target costs, cache budgets and questions to freeze before experiments |
+| Service consolidation | [Consolidating Cache, Memory Pool and Cluster services](server-consolidation.md): unified node resources/deployment with data-authority and restart boundaries |
 | Interfaces and operations | [Protocol, deployment and failure handling](operations.md): APIs, configuration, recovery, validation and evolution |
 
 ## Layers and responsibilities {#architecture}

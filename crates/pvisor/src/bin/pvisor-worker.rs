@@ -84,7 +84,10 @@ impl Default for EnvironmentProfile {
 }
 
 #[derive(Clone, Parser)]
-#[command(about = "Execute distributed tasks with the host-local pVisor kernel")]
+#[command(
+    version,
+    about = "Execute distributed tasks with the host-local pVisor kernel"
+)]
 struct Args {
     #[arg(
         long,
@@ -104,6 +107,12 @@ struct Args {
     /// Host-owned TOML worker profile supplies rootfs, layers, network and cache settings.
     #[arg(long)]
     config: Option<PathBuf>,
+    /// Same-host shared environment/RAM owner service; host-managed socket.
+    #[arg(long)]
+    node_socket: Option<PathBuf>,
+    /// Experimental Apple Silicon cold RAM pool, managed independently of Controller.
+    #[arg(long)]
+    memory_pool: Option<PathBuf>,
     #[arg(long, default_value_t = 16)]
     slots: u32,
     #[arg(long, default_value_t = 8 * 1024 * 1024 * 1024)]
@@ -547,7 +556,7 @@ struct AttemptRuntime {
 }
 struct PreparedRuntime {
     runtime: PVisor,
-    mounts: environment::MountOwners<pvisor::cache::MountedImage>,
+    mounts: environment::MountOwners<environment::ImageOwner>,
 }
 impl AttemptRuntime {
     async fn prepare(
@@ -559,6 +568,9 @@ impl AttemptRuntime {
         >,
     ) -> anyhow::Result<PreparedRuntime> {
         let mut profile = (*self.profile).clone();
+        if self.args.node_socket.is_some() {
+            profile.vm.node_socket = self.args.node_socket.clone();
+        }
         let mounts = if assignment.checkpoint.is_some() {
             environment::MountOwners::new()
         } else {
@@ -1088,6 +1100,17 @@ async fn worker_main() -> anyhow::Result<()> {
         Some(path) => toml::from_str(&std::fs::read_to_string(path)?)?,
         None => WorkerProfile::default(),
     };
+    if args.node_socket.is_some() {
+        config.vm.node_socket = args.node_socket.clone();
+    }
+    if let Some(pool) = &args.memory_pool {
+        ensure!(
+            cfg!(all(target_os = "macos", target_arch = "aarch64"))
+                && matches!(args.backend, Backend::Vm),
+            "managed cold pool requires an Apple Silicon VM Worker"
+        );
+        config.vm.memory_pool = Some(pool.clone());
+    }
     if let Some(pool) = &config.vm.snapshot_filesystem_pool {
         ensure!(
             cfg!(all(target_os = "linux", target_arch = "x86_64"))
@@ -1174,6 +1197,9 @@ async fn worker_main() -> anyhow::Result<()> {
         Some(Arc::new(environment::EnvironmentMounts::new(
             &args.state,
             config.environments.max_layers,
+            args.node_socket
+                .as_deref()
+                .or(config.vm.node_socket.as_deref()),
         )?))
     } else {
         None

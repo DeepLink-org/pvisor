@@ -1,0 +1,22 @@
+path	type	value
+	object	-
+/cargo	string	cargo 1.98.1 (797e8a9bc 2026-08-05)
+/commands	object	-
+/commands/fmt	string	just fmt
+/commands/isolated_tests	string	CARGO_TARGET_DIR=target/optimization-five-20261005/build-candidate just --justfile target/optimization-five-20261005/source-candidate/justfile test pvisor-overlay-core pvisor-vm pvisor
+/commands/lint	string	cargo clippy --locked -p pvisor-overlay-core -p pvisor-vm -p pvisor --all-targets -- -D warnings
+/commands/worktree_tests	string	just test pvisor-overlay-core pvisor-vm pvisor
+/fmt	string	passed
+/isolated_tests	object	-
+/isolated_tests/passed	integer	877
+/isolated_tests/skipped	integer	31
+/lint	string	passed
+/rustc	string	rustc 1.98.1 (48a229cea 2026-09-01)
+/scope	string	Optimization benchmark excludes concurrent lazy-cache/backend work. Worktree checks also cover its integration.
+/vm_cases	object	-
+/vm_cases/passed	integer	6
+/vm_cases/review	string	UNREVIEWED
+/vm_cases/skipped	integer	0
+/worktree_tests	object	-
+/worktree_tests/passed	integer	890
+/worktree_tests/skipped	integer	34

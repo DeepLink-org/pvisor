@@ -10,8 +10,11 @@ Does not own review, apply, drop, or Run lifecycle.
 [`pvisor`](../pvisor/README.md) links this crate as a
 library, owns the FUSE request thread, and commits whiteouts through
 `apply_overlay`. Portable, FUSE-neutral overlay mechanics live in
-`pvisor-overlay-core` (used by libkrun virtio-fs without a host FUSE
-mount).
+`pvisor-overlay-core::service::FilesystemService`, also used by VM virtio-fs
+without a host FUSE mount. VM lazy images attach the shared remote read-only
+backend directly; host lazy images retain a FUSE adapter over that backend.
+Protocol inode/handle ownership and platform permission handling remain in
+their entry adapters.
 
 Whiteouts match pVisor's `apply_overlay`, so review → apply works the same
 across host FUSE and virtio-fs.

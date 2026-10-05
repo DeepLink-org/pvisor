@@ -1,0 +1,6 @@
+path	type	value
+	object	-
+/earlier_recorded_source_commit	string	944e32fcf30e71c37c67848ccf2ac4428cdfb053
+/pvisor_sha256	string	1a2db5ad015c5ace40b3c96c7dd0dc94a08b8893de35150bd909554286e2cd3c
+/shared_binary	string	Same frozen executable as reference-env-20261004/report.json
+/source_limitation	string	Dirty parallel development; recorded repository HEAD is not proof of an exact clean binary build commit. Binary SHA256 identifies the measured artifact.

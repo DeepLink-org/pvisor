@@ -6,21 +6,25 @@ V1 keeps each image's mutable state and file indexes in its own meta directory, 
 
 ## Filesystem entry points and lazy reads {#filesystem-access}
 
-The v1 storage format is independent of filesystem entry points. Today's lazy
-image client mounts a read-only host FUSE lower, accessed through local paths
-by host staged and VMs. VM overlays with ordinary local lowers already serve
-virtio-fs directly without a host union mount.
+The v1 storage format is independent of filesystem entry points. The
+[shared service and two entry points](overlayfs.md#filesystem-service) are now
+connected: host tools retain a read-only host FUSE lower, while VMs call the same
+remote read-only backend through virtio-fs without an intermediate host FUSE mount.
+Local lowers and VM staged workspaces also serve virtio-fs directly; host staged
+retains host execution. This refactor preserves the published v1 format, pinned
+revision handles and verification contracts.
 
-The proposed [shared filesystem service and two entry points](overlayfs.md#filesystem-service)
-use host FUSE for host tools and virtio-fs for VMs, both calling the same remote
-read-only backend. VMs would no longer create an intermediate host FUSE mount
-for lazy images. Direct access is not implemented yet and does not change the
-published v1 data format, pinned revision handles or verification contracts.
+`backend.rs` retains stat/list/read, paged indexes, hard-link identity and bounded
+content caches; `lazy.rs` handles host FUSE callbacks, and `direct.rs` provides the
+private VM metadata projection and runner attachment. The projection has no FUSE
+mount, and small reads fetch only their intersected content blocks. First writes
+copy up the complete original file into a private upper. Complete checkpoints and
+self-contained tree exports populate the full image and may trigger additional
+downloads. Content misses hold neither a service-wide lock nor the metadata map.
 
-Retain stat/list/read, paged indexes, hard-link identity and bounded content caches
-in the backend. First writes still use overlay copy-up into a private upper.
-Measure cold-miss interference, warm-read cache hits and complete-task time
-separately; removing an intermediate layer does not establish overall acceleration.
+No performance A/B data exists yet for this direct backend. Measure cold-miss
+interference, warm-read cache hits and complete-task time separately; removing
+an intermediate layer does not establish overall acceleration.
 
 ## Complete tree
 

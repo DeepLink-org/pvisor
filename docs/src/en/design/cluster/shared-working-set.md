@@ -1,6 +1,6 @@
 # Shared working sets and lazy loading
 
-The resource direction is: **pay once for immutable environments and shareable baselines, and pay incremental costs for actual access and private modification**. This connects existing environment caches, Linux native restore and scheduling, and proposes experiment/engineering priorities. It does not claim these mechanisms are already unified or performance-validated.
+The resource direction is: **pay once for immutable environments and shareable baselines, and pay incremental costs for actual access and private modification**. Node ownership and retained-payload budgets are now connected as described in [service consolidation](server-consolidation.md); the text distinguishes implemented mechanisms, future extensions and outstanding performance acceptance.
 
 ## Distinguish three benefits {#principles}
 
@@ -14,9 +14,9 @@ Prioritize immutable sharing with known identity and ownership. Arbitrary anonym
 
 | Path | Existing mechanism | Current boundary |
 |---|---|---|
-| Immutable environment lower | Worker `EnvironmentMounts` deduplicates concurrent handle preparation and reuses an `Arc<MountedImage>`; tasks have private uppers | Registry is inside one Worker; final release unmounts it, without a bounded long-lived warm owner |
-| Image lazy cache | On-demand file reads; client blocks capped at 64 MiB/4096 entries; paged metadata uses 64 KiB pages and a 256-page LRU; cross-image content CAS | Caps are distributed across mounts/loaded images, rather than one node budget; some path/directory metadata remains retained and disk reclamation is incomplete |
-| Linux native restore | Same supervisor/store/snapshot ID reuses a read-only RAM inode; guest mappings use `MAP_PRIVATE` COW | Registry does not span independent Workers; ordinary boot does not enter this path automatically, and restore retains compatibility/no-network profile requirements |
+| Immutable environment lower | A configured node socket shares same-identity mounts across Workers, with bounded connection pins/strong warming and task-private uppers | Without Node, Worker-local `Arc<MountedImage>` reuse remains; live takeover after node failure is unsupported |
+| Image lazy cache | Demand reads, local 64 MiB/4096-block caps, 64 KiB metadata pages/256-page LRU and cross-image content CAS | Node aggregates retained blocks, metadata pages and decoded RAM; complete metadata, scratch, external Arcs and kernel pages are excluded; disk reclamation needs a separate policy |
+| Linux native restore | Node identity uses sealed ID/compatibility to share one read-only RAM inode across Workers and authorized stores; guest mappings use `MAP_PRIVATE` COW | Without Node, reuse remains supervisor-local; ordinary boot bypasses RAM restore, and compatibility/no-network profile requirements remain |
 | Snapshot RAM lazy reader | Faults validate/decode blocks on demand; a small cache retains four decoded blocks, with kernel page cache providing primary decoded reuse | First-access costs need measurement; legacy raw formats without block indexes can still require full validation |
 | Cache affinity | Controller ranks a bounded candidate window by `cache_keys` and environment-layer matches | Reports currently originate from static `--cache-key`, rather than measured residency, complete block hit rates or global shortest-readiness placement |
 | Cold RAM compression pool | A separate experimental mechanism for deduplication and cold-page restoration | `vm.memory_pool` explicitly requires macOS/Apple Silicon; this is not evidence of a background cold-page pool in Linux Cluster |
@@ -44,9 +44,9 @@ Keep logical RAM reservations, physical occupancy and reclaimable caches separat
 
 ## Engineering connections to complete {#integration}
 
-**Start with reuse inside a Worker, then evaluate a node owner spanning Workers.** Same-environment tasks share read-only mounts; compatible forks reuse RAM owners. Future node-owner keys need store/version, platform/compatibility and access scope. Bounded strong ownership keeps selected objects warm, while active pins protect live objects; final release and GC retain current contracts. Writable shared mappings are not a shortcut.
+**Validate connected cross-Worker node ownership.** Tasks with the same environment share a read-only mount; compatible restorations share a read-only RAM owner. Environment identity includes handle/digest and RAM identity includes sealed ID/compatibility. Each acquire validates authorized stores/publication, then connection pins protect active objects and bounded strong references keep them warm. Release follows normal teardown; GC retains its existing publication-root/pin contract, without writable shared mappings. See the [unified service guide](../../guides/cluster/service.md) for deployment.
 
-**Aggregate local cache caps into a node budget.** Account for metadata, content blocks, RAM decoded caches, kernel residency, scratch and in-flight I/O. Bound controllable caches, mount counts and transient work; manage kernel page cache through host caps and observation without claiming precise userspace control. Warm mounts need byte/count/TTL or eviction policies instead of retaining another cache per task.
+**Extend payload-budget coverage and observation.** Node already aggregates retained cache payload, owner count and preparation concurrency; delegated cgroups cap complete process memory. Account for metadata, content blocks, RAM decoded caches, kernel residency, scratch and in-flight I/O. Bound controllable caches, mount counts and transient work; manage kernel page cache through host caps and observation without claiming precise userspace control. Warm mounts need byte/count/TTL or eviction policies instead of retaining another cache per task.
 
 **Reuse object identity and coalesce identical misses.** Measure repeated downloads/decodes of the same valid object, distinguishing existing file-lock reuse, per-mount hot caching and cross-revision sharing. New single-flight needs keys, cancellation, retry, budgets and ownership. Corrupt bytes remain rejected, and cache cannot resurrect revoked publication references.
 
@@ -85,8 +85,10 @@ Report steady-state gains, initial-use costs and reuse counts needed to break ev
 
 ## Priority {#priority}
 
-Start with **S1 existing shared RAM/owner reuse** and **S2 existing environment lazy loading** to establish benefits from available mechanisms. Use S3 to explain concurrent bottlenecks before deciding whether node warming, prefetch and dynamic hints warrant implementation. Finally validate combined gains in [fixed-budget useful-work experiment Q3](../../benchmarks/cluster-questions.md#q3).
+Start with **S1 existing shared RAM/owner reuse** and **S2 existing environment lazy loading** to establish benefits from available mechanisms. Use S3 to explain concurrent bottlenecks before deciding whether node warming, prefetch and dynamic hints warrant implementation. Finally validate combined gains in [fixed-budget useful-work experiment Q3](../cluster-benchmark-plan.md#q3).
 
 Earlier minimal-directory-rootfs, fresh-boot, independent-Worker probes specify neither immutable environments nor restore references, bypassing S1/S2's core paths. Retain them as base-cost controls; they neither establish nor refute sharing/lazy benefits.
 
 Related contracts: [image cache](../../reference/shared-image-cache.md), [shared image storage](../shared-image-cache-storage.md), [cold RAM pool](../memory-sharing/index.md), [lifecycle](lifecycle.md) and [admission](scheduling.md). Their support boundaries remain separate.
+
+See [service consolidation](server-consolidation.md) for unified node owners, budgets and deployment, distinguishing refetchable caches from indispensable active RAM and preserving independent Controller restart boundaries.

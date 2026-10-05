@@ -34,9 +34,10 @@ capabilities, with host staged retaining host execution. FUSE names both the
 request protocol and the host mount entry: virtio-fs uses FUSE requests, but the
 VM service need not send those requests back through host `/dev/fuse`.
 
-The target structure follows. A shared filesystem service and direct remote lower
-are proposed refactors. The existing adapters already share OverlayCore, while
-inode/handle ownership and some I/O operations remain separately implemented.
+The current structure follows. Host FUSE and VM virtio-fs adapters use
+`pvisor-overlay-core::service::FilesystemService`, sharing OverlayCore operations
+and backend reads. Protocol inode/handle tables, directory cursors and platform
+permission handling remain in their entry adapters.
 
 ```mermaid
 flowchart TD
@@ -49,7 +50,7 @@ flowchart TD
     VA --> S
     S --> O[OverlayCore: policy, merge, copy-up, journal]
     O --> L[Local lower / upper]
-    O -. planned direct backend .-> R[Immutable remote lower]
+    O --> R[Immutable remote lower]
     R --> C[Metadata / content cache]
 ```
 
@@ -60,32 +61,53 @@ do not enter this service merely because of this structure.
 | Layer | Shared or retained responsibilities |
 |---|---|
 | Entry adapters | FUSE or virtqueue transport, argument/credential conversion, errno/attribute encoding, mount and queue lifecycle; retain Linux guest and host-platform capability differences |
-| Shared filesystem service | File operations such as lookup/getattr, directory cursors and open/read/write/release, with common object and handle lifetime; invoke OverlayCore for policy, merging and first-touch |
+| Shared filesystem service | Share path resolution, directory merging, permission/alias policy, preimages and copy-up through OverlayCore; provide one contract for local and remote reads |
 | Local and remote backends | Local file I/O; immutable image stat/list/read, symlinks, object identity, block verification and caching; mutations remain in each Attempt's private local upper |
 
 The public interface expresses capabilities through file operations, metadata,
 object identities and I/O results rather than `fuser::Reply*`, guest descriptors
 or a mountpoint. Sharing means one implementation and contract, called directly
-inside the host execution process. It requires neither new RPC nor serialization
-of all Runs. Protocol encoding and descriptor/used-ring ownership remain in
-their entry adapters.
+inside the host execution process. It requires neither a new filesystem RPC nor serialization
+of all Runs. Protocol encoding, inode/handle tables and descriptor/used-ring ownership remain
+in their entry adapters.
 
-VM lazy images should call the remote read-only backend directly, without first
-mounting host lazy FUSE and reading its paths. Today `image/cache/lazy.rs` still
-creates that mount and OverlayCore lowers still primarily depend on local paths;
-the intermediate layer has not been removed. Host tools can reach the same remote
-backend through the host FUSE entry. Preserve immutable handles, hard-link object
-identity, metadata generations and content digests in the backend. Shared image
-caches must not share writable uppers or journals. Storage contracts are in
+VM lazy images now call the remote read-only backend directly, without an
+intermediate host FUSE mount. `image/cache/backend.rs` provides transport-neutral
+metadata, block reads and bounded caches; `lazy.rs` retains the host FUSE adapter,
+and `direct.rs` attaches the backend to VM lowers. Ordinary local lowers and
+VM staged workspaces continue serving virtio-fs directly; host staged execution
+continues through host FUSE. The backend preserves immutable handles, hard-link
+identity, metadata generations and content digests. Shared image caches do not
+share writable uppers or journals. Storage contracts are in
 [Shared image cache v1](shared-image-cache-storage.md#filesystem-access).
 
-First extract lazy metadata/content access and bounded caches from FUSE callbacks,
-then introduce lower backend interfaces for OverlayCore and progressively gather
-common adapter operations. Each step preserves preimage recording before copy-up,
-permission/alias checks and snapshot restore contracts. Remote misses must not
-hold a service-wide lock and block other Attempts. Compare the existing intermediate
-layer with the direct backend under cold/warm caches, metadata-heavy workloads and
-concurrent tasks; existing benchmarks do not establish this design's gains.
+The direct backend creates a private metadata projection to retain existing local
+inode/FD, path checks and snapshot contracts. It consists of ordinary directories
+and sparse placeholder files, with no FUSE mount. Guest attributes come from image
+metadata, and READ fetches blocks through the backend instead of reading placeholder
+holes. Copy-up and file digests materialize original bytes when needed; complete
+filesystem checkpoints and self-contained tree exports populate the entire image,
+so these operations may download unvisited files. An opened server-side lower handle retains
+its original read-only content after copy-up; guest inode page caching retains
+its kernel semantics. The backend descriptor stays outside
+the guest lower and is hidden from workspace views. The VM runner reattaches the
+backend before restricting host filesystem access.
+
+Linux runners retain private network namespaces. Filesystem and Unix socket caches
+are accessed directly; TCP/S3 cache fetches use private host access restricted to
+the pinned image's stat/list/read, without exposing credentials or host networking
+to guests. This channel uses the existing cache protocol, separately from the
+virtio-fs filesystem entry, and terminates during VM teardown.
+
+Content reads hold neither a service-wide lock nor the metadata map lock; a cache
+miss locks only its content block. Tests cover cross-block and warm reads, hard-link
+copy-up, guest attributes, open handles, complete tree exports and runner attachment.
+Protocol state is not fully shared between adapters; further common operations can
+be gathered while retaining platform permission and descriptor semantics.
+[Filesystem measurements](filesystem-performance-analysis.md#filesystem-service) cover
+local workloads and lazy cold/warm caches; version A/B shows localized read gains
+and metadata/copy-up regressions, without a general end-to-end speedup. Concurrent
+task capacity has not been validated in those measurements.
 This refactor covers filesystems and lazy images, leaving the page-fault path of
 [lazy snapshot RAM restore](environment-snapshot.md) as a separate mechanism.
 

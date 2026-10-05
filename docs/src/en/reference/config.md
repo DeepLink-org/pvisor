@@ -103,7 +103,7 @@ Enforcement depends on the executor. Check requested, effective, mechanisms, and
 | Optional `container` fields | `rootfs`, `pvisor_binary`, `platform`, `workdir`, `user` |
 | Each `container.mounts` entry | `source`, `target`, `read_only = false` |
 | `vm` | `memory_mib = 2048`, `cpus = 2`, `rootfs_immutable = false`, `ram_compression = false` |
-| Optional `vm` fields | `rootfs`, `image`, `image_store`, `library_dir`, `ram_backing`, `memory_pool`, `snapshot_filesystem_pool` |
+| Optional `vm` fields | `rootfs`, `image`, `image_store`, `library_dir`, `ram_backing`, `memory_pool`, `node_socket`, `snapshot_filesystem_pool` |
 
 `container.platform` accepts `linux-amd64` or `linux-arm64`; `container.network` accepts `host`, `bridge`, or `none`. The injected Linux container binary must match the rootfs architecture and ABI.
 
@@ -164,6 +164,7 @@ Field names and types are checked against the Rust serde structures during the d
 | `vm.ram_compression` | `bool` | `false` | Seekable compressed backing; `--vm-ram-compression` |
 | `vm.memory_pool` | `Option<PathBuf>` | `unset` | Experimental macOS pool socket; `--vm-memory-pool` |
 | `vm.snapshot_filesystem_pool` | `Option<PathBuf>` | `unset` | Host-owned immutable snapshot lower pool; Linux x86-64 no-network private-RAM profile; config/SDK only |
+| `vm.node_socket` | `Option<PathBuf>` | `unset` | Same-host node resource socket; restored shared read-only RAM stays pinned until native VM exit; config/SDK only |
 | `vm.rootfs` | `Option<PathBuf>` | `unset` | Linux directory; CLI defaults to host `/` on Linux; `--rootfs` |
 | `vm.image` | `Option<String>` | `unset` | OCI image instead of a rootfs directory; `--rootfs IMAGE` |
 | `vm.image_store` | `Option<PathBuf>` | `unset` | OCI cache path; `--vm-image-store` |

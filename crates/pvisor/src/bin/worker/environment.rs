@@ -1,6 +1,6 @@
 //! Shared read-only revision mounts; each native attempt has its own upper.
 use anyhow::{Context, ensure};
-use pvisor::cache::{CacheBackend, CacheConfig, MountedImage, mount_image_handle};
+use pvisor::cache::{CacheBackend, CacheConfig, MountedImage, open_image_handle_for_vm};
 use pvisor_cluster::EnvironmentRecord;
 use std::{
     collections::BTreeMap,
@@ -49,33 +49,61 @@ impl<T: Send + Sync + 'static> Drop for MountOwners<T> {
 }
 
 pub struct EnvironmentMounts {
-    config: CacheConfig,
+    config: Option<CacheConfig>,
+    node_socket: Option<std::path::PathBuf>,
     mounts: SharedMounts<MountedImage>,
 }
+pub enum ImageOwner {
+    Local(Arc<MountedImage>),
+    Node(pvisor::node::Pin),
+}
+impl ImageOwner {
+    pub fn rootfs(&self) -> &Path {
+        match self {
+            Self::Local(image) => image.rootfs(),
+            Self::Node(pin) => pin.rootfs(),
+        }
+    }
+    pub fn manifest_digest(&self) -> &str {
+        match self {
+            Self::Local(image) => image.manifest_digest(),
+            Self::Node(pin) => pin.manifest_digest(),
+        }
+    }
+}
 impl EnvironmentMounts {
-    pub fn new(storage: &Path, limit: usize) -> anyhow::Result<Self> {
+    pub fn new(storage: &Path, limit: usize, node_socket: Option<&Path>) -> anyhow::Result<Self> {
         ensure!(
             (1..=4096).contains(&limit),
             "environment mount limit must be 1..4096"
         );
-        let mut config = CacheConfig::from_env()?;
-        ensure!(
-            matches!(config.backend, CacheBackend::Filesystem | CacheBackend::S3),
-            "immutable environments require the filesystem or S3 native cache backend"
-        );
-        config.read_only = true;
-        config.image_store = Some(storage.join("environment-mounts"));
+        let config = if node_socket.is_some() {
+            None
+        } else {
+            let mut config = CacheConfig::from_env()?;
+            ensure!(
+                matches!(config.backend, CacheBackend::Filesystem | CacheBackend::S3),
+                "immutable environments require the filesystem or S3 native cache backend"
+            );
+            config.read_only = true;
+            config.image_store = Some(storage.join("environment-mounts"));
+            Some(config)
+        };
         Ok(Self {
             config,
+            node_socket: node_socket.map(Path::to_path_buf),
             mounts: SharedMounts::new(limit),
         })
     }
     async fn layer(&self, handle: &str) -> anyhow::Result<Arc<MountedImage>> {
         self.mounts
             .get(handle, || async {
-                let config = self.config.clone();
+                let config = self
+                    .config
+                    .clone()
+                    .context("local environment cache is disabled")?;
                 let handle = handle.to_owned();
-                tokio::task::spawn_blocking(move || mount_image_handle(config, &handle))
+                tokio::task::spawn_blocking(move || open_image_handle_for_vm(config, &handle))
                     .await
                     .context("native cache mount task failed")?
             })
@@ -84,11 +112,26 @@ impl EnvironmentMounts {
     pub async fn prepare(
         &self,
         record: &EnvironmentRecord,
-    ) -> anyhow::Result<MountOwners<MountedImage>> {
+    ) -> anyhow::Result<MountOwners<ImageOwner>> {
         pvisor_cluster::environment::validate(record)?;
         let mut mounts = MountOwners::new();
         for layer in record.template.layers() {
-            mounts.mounts.push(self.layer(&layer.handle).await?);
+            let owner = if let Some(socket) = &self.node_socket {
+                let (socket, handle, digest) = (
+                    socket.clone(),
+                    layer.handle.clone(),
+                    layer.manifest_digest.clone(),
+                );
+                ImageOwner::Node(
+                    tokio::task::spawn_blocking(move || {
+                        pvisor::node::Pin::image(&socket, &handle, &digest)
+                    })
+                    .await??,
+                )
+            } else {
+                ImageOwner::Local(self.layer(&layer.handle).await?)
+            };
+            mounts.mounts.push(Arc::new(owner));
             ensure!(
                 mounts.mounts.last().unwrap().manifest_digest() == layer.manifest_digest,
                 "native cache revision manifest does not match environment template"

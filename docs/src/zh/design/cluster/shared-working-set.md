@@ -1,6 +1,6 @@
 # 共享工作集与惰性加载
 
-本文把 Cluster 的资源利用方向明确为：**不可变环境与可共享基底只付一次成本，任务只为实际访问和私有修改付增量成本**。它连接已有环境缓存、Linux 原生恢复和调度机制，并提出下一轮实验与工程顺序；不是这些机制已经统一落地或获得性能验收的声明。
+本文把 Cluster 的资源利用方向明确为：**不可变环境与可共享基底只付一次成本，任务只为实际访问和私有修改付增量成本**。它连接已有环境缓存、Linux 原生恢复和调度机制，并提出下一轮实验与工程顺序；节点 owner 与 retained payload 总预算已按[服务整合设计](server-consolidation.md)接通；下面仍区分已实现机制、待扩展能力和未完成的性能验收。
 
 ## 分清三种收益 {#principles}
 
@@ -14,9 +14,9 @@
 
 | 路径 | 已有机制 | 当前边界 |
 |---|---|---|
-| 不可变环境 lower | Worker `EnvironmentMounts` 按 handle 并发去重、复用同一 `Arc<MountedImage>`，任务各有 private upper | 注册表位于单个 Worker；最后持有者退出后卸载，没有有界的长期保温 owner |
-| 镜像 lazy cache | 文件按需读取，客户端内容块上限 64 MiB/4096 条；分页索引默认 64 KiB 页、256 页 LRU；内容跨镜像 CAS 共享 | 内存上限分布在 mount/loaded-image，尚不是一个节点总预算；部分路径/目录元数据持续保留，磁盘容量回收也未闭环 |
-| Linux native restore | 相同 supervisor、store 与 snapshot ID 复用同一只读 RAM inode；guest 使用 `MAP_PRIVATE` COW | 注册表不跨独立 Worker；普通新启动不自动经过这条路径，restore 仍受兼容性/无网络等 profile 合同限制 |
+| 不可变环境 lower | 配置 node socket 后跨 Worker 共用同身份 mount，连接 pin 与强引用保温有界，任务各有 private upper | 未接入 Node 时保留 Worker 内 `Arc<MountedImage>` 复用；节点故障不支持 live 接管 |
+| 镜像 lazy cache | 文件按需读取，客户端内容块上限 64 MiB/4096 条；分页索引默认 64 KiB 页、256 页 LRU；内容跨镜像 CAS 共享 | Node 统一热块、分页 metadata 与 decoded RAM 的 retained payload 额度；完整 metadata、scratch、外部 Arc 和 kernel pages 不在该计数内；磁盘容量回收仍需单独策略 |
+| Linux native restore | Node 按封存 ID/compatibility 跨 Worker 与授权 store 复用只读 RAM inode；guest 使用 `MAP_PRIVATE` COW | 未接入 Node 时复用仅在 supervisor 内；普通新启动不经过 RAM restore，兼容性/无网络 profile 合同不变 |
 | 快照 RAM lazy reader | RAM fault 按块校验/解码，小缓存保留四个 decoded 块，kernel page cache承担主要 decoded 复用 | 读取和解码的首次访问代价需测；旧 raw 格式没有块索引时仍可能需要完整校验 |
 | 缓存亲和 | Controller 在有界候选窗口中按 `cache_keys` 与环境 layer handle 命中数排序 | Worker 当前上报来自静态 `--cache-key`；不是实测页驻留、完整块命中率或跨节点最短就绪时间调度 |
 | 冷 RAM 压缩池 | 独立的实验性内容去重与冷页恢复机制 | `vm.memory_pool` 显式限制 macOS/Apple Silicon；不能作为当前 Linux Cluster 已具备后台冷页池的证据 |
@@ -44,9 +44,9 @@ M(N) = base services
 
 ## 应补上的工程连接 {#integration}
 
-**先做 Worker 内复用，再评估跨 Worker 的节点 owner。**同环境的任务先共用只读 mount；兼容 fork先复用同一 RAM owner。后续 node owner的身份需包含 store/版本、平台/compatibility 和访问范围，以有界强引用保温，active pin保护存活对象；最后释放和 GC仍遵守已有 owner 合同。不要通过放开可写映射实现“共享”。
+**验证已接入的跨 Worker 节点 owner。**同环境任务共用只读 mount；兼容恢复共用只读 RAM owner。环境身份包含 handle/digest，RAM 身份包含封存 ID/compatibility；每次申请校验授权 store 与有效发布，再用连接 pin 保护活动对象、有界强引用保温。正常 teardown 后释放，GC 仍遵守已有提交根与 pin 合同；不放开可写映射。部署方式见[统一服务指南](../../guides/cluster/service.md)。
 
-**把多个局部缓存上限汇总成节点预算。**统计 metadata、内容块、RAM decoded cache、kernel驻留、临时解码和在途 I/O。节点预算至少约束可管理的缓存、mount 数和在途峰值；kernel页缓存通过宿主内核限额与观察管理，不能承诺完全由用户态 cache 精确控制。保温 mount应有字节/数量/TTL或驱逐策略，而不是每个任务多保留一个缓存。
+**扩展现有 payload 预算的覆盖与观测。**Node 已统一 retained cache payload、owner 数和准备并发；完整进程内存仍由 delegated cgroup 封顶。统计 metadata、内容块、RAM decoded cache、kernel驻留、临时解码和在途 I/O。节点预算至少约束可管理的缓存、mount 数和在途峰值；kernel页缓存通过宿主内核限额与观察管理，不能承诺完全由用户态 cache 精确控制。保温 mount应有字节/数量/TTL或驱逐策略，而不是每个任务多保留一个缓存。
 
 **按对象身份复用并合并相同 miss。**先测多个 task是否在读同一个有效对象时产生重复下载/解码，区分已有文件锁复用、per-mount热缓存和跨 revision共享。新增 single-flight需要明确 key、请求取消、错误重试、预算和 owner生命周期；错误数据仍须拒绝，热缓存不能复活已撤销的发布引用。
 
@@ -85,8 +85,10 @@ S1 的 eager/shared等消融组合目前没有完整公开开关，必须先建�
 
 ## 优先级 {#priority}
 
-先做 **S1 现有共享 RAM/owner复用**和 **S2 现有环境 lazy路径**，确定 pVisor实际已有机制的收益。随后用 S3解释并发瓶颈，再决定节点保温、预取与动态cache hint是否值得实现。最后在[固定预算有效工作实验 Q3](../../benchmarks/cluster-questions.md#q3)中验证整套机制的组合收益。
+先做 **S1 现有共享 RAM/owner复用**和 **S2 现有环境 lazy路径**，确定 pVisor实际已有机制的收益。随后用 S3解释并发瓶颈，再决定节点保温、预取与动态cache hint是否值得实现。最后在[固定预算有效工作实验 Q3](../cluster-benchmark-plan.md#q3)中验证整套机制的组合收益。
 
 上一轮最小目录rootfs、全新VM启动、每VM独立Worker的探针没有指定不可变环境或恢复引用，绕开了 S1/S2 的核心路径；保留为基础成本参照，不能用它否定或证明共享与惰性加载收益。
 
 相关合同见[镜像cache](../../reference/shared-image-cache.md)、[共享镜像存储](../shared-image-cache-storage.md)、[冷RAM池](../memory-sharing/index.md)、[生命周期](lifecycle.md)及[资源准入](scheduling.md)；这些不同路径的支持范围仍分别成立。
+
+服务如何收敛见[Cache、Memory Pool 与 Cluster 服务整合](server-consolidation.md)：统一节点 owner、预算和部署入口，区分可重取 cache 与不可丢失的活动 RAM，并保留 Controller 独立重启边界。

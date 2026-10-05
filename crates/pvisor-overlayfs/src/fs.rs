@@ -6,6 +6,7 @@ use fuser::{
     ReplyWrite, ReplyXattr, Request, TimeOrNow,
 };
 use pvisor_core::overlay::FileAccessPolicy;
+use pvisor_overlay_core::service::FilesystemService;
 use pvisor_overlay_core::{OverlayCore, sys};
 use std::collections::{BTreeSet, HashMap};
 use std::ffi::{OsStr, OsString};
@@ -30,6 +31,7 @@ struct OpenFile {
     ino: u64,
     path: PathBuf,
     flags: i32,
+    backing: PathBuf,
 }
 impl std::ops::Deref for OpenFile {
     type Target = File;
@@ -53,7 +55,7 @@ struct DirectoryEntry {
 }
 
 pub struct OverlayFs {
-    core: OverlayCore,
+    core: FilesystemService,
     read_only: bool,
     private_root: bool,
     access_policy: FileAccessPolicy,
@@ -140,7 +142,7 @@ impl OverlayFs {
         self
     }
 
-    fn open_inode(&mut self, ino: u64, flags: i32) -> io::Result<File> {
+    fn open_inode_with_backing(&mut self, ino: u64, flags: i32) -> io::Result<(File, PathBuf)> {
         // FSKit may send O_RDWR even for a read. A read-only inspection must
         // never copy lower files into the persistent upper merely by opening.
         let flags = if self.read_only {
@@ -158,7 +160,13 @@ impl OverlayFs {
         } else {
             self.node_path(ino)?
         };
-        self.open_path(&path, flags)
+        self.open_path_with_backing(&path, flags)
+    }
+
+    #[cfg(test)]
+    fn open_inode(&mut self, ino: u64, flags: i32) -> io::Result<File> {
+        self.open_inode_with_backing(ino, flags)
+            .map(|(file, _)| file)
     }
 
     pub fn with_observation(mut self, observation: Option<crate::FsMetrics>) -> Self {
@@ -216,7 +224,7 @@ impl OverlayFs {
         let mut by_path = HashMap::new();
         by_path.insert(PathBuf::new(), FUSE_ROOT_ID);
         Ok(Self {
-            core,
+            core: FilesystemService::new(core),
             read_only: false,
             private_root: false,
             access_policy: FileAccessPolicy::default(),
@@ -538,7 +546,13 @@ impl OverlayFs {
         Ok(entries)
     }
 
+    #[cfg(test)]
     fn open_path(&self, path: &Path, flags: i32) -> io::Result<File> {
+        self.open_path_with_backing(path, flags)
+            .map(|(file, _)| file)
+    }
+
+    fn open_path_with_backing(&self, path: &Path, flags: i32) -> io::Result<(File, PathBuf)> {
         let writing = flags & libc::O_ACCMODE != libc::O_RDONLY
             || flags & (libc::O_APPEND | libc::O_TRUNC) != 0;
         let real = if writing {
@@ -565,7 +579,7 @@ impl OverlayFs {
                             | libc::O_TRUNC
                             | libc::O_APPEND),
             );
-        options.open(real)
+        options.open(&real).map(|file| (file, real))
     }
 }
 
@@ -945,7 +959,7 @@ impl Filesystem for OverlayFs {
 
     fn open(&mut self, _request: &Request<'_>, ino: u64, flags: i32, reply: ReplyOpen) {
         let observed_path = self.node_path(ino).ok();
-        let result = self.open_inode(ino, flags);
+        let result = self.open_inode_with_backing(ino, flags);
         self.observe_result(
             observed_path.as_deref(),
             "open",
@@ -954,12 +968,13 @@ impl Filesystem for OverlayFs {
             flags & libc::O_TRUNC != 0,
         );
         match result {
-            Ok(file) => {
+            Ok((file, backing)) => {
                 let handle = self.allocate_handle();
                 self.open_files.insert(
                     handle,
                     OpenFile {
                         file,
+                        backing,
                         ino,
                         path: observed_path.unwrap_or_default(),
                         flags,
@@ -1010,7 +1025,9 @@ impl Filesystem for OverlayFs {
             return;
         };
         let mut data = vec![0; size as usize];
-        let result = file.read_at(&mut data, offset as u64);
+        let result = self
+            .core
+            .read_at(&file.backing, &file.file, &mut data, offset as u64);
         self.observe_result(
             observed_path.as_deref(),
             "read",
@@ -1393,6 +1410,9 @@ impl Filesystem for OverlayFs {
                     OpenFile {
                         file,
                         ino: attr.ino,
+                        backing: self
+                            .core
+                            .upper_path(observed_path.as_deref().unwrap_or_else(|| Path::new(""))),
                         path: observed_path.unwrap_or_default(),
                         flags,
                     },
@@ -1697,11 +1717,14 @@ mod tests {
         let path = PathBuf::from("file");
         let ino = overlay.allocate_inode(path.clone(), &overlay.core.metadata(&path).unwrap());
         overlay.retain_lookup(ino);
-        let file = overlay.open_inode(ino, libc::O_RDONLY).unwrap();
+        let (file, backing) = overlay
+            .open_inode_with_backing(ino, libc::O_RDONLY)
+            .unwrap();
         overlay.open_files.insert(
             1,
             OpenFile {
                 file,
+                backing,
                 ino,
                 path: path.clone(),
                 flags: libc::O_RDONLY,

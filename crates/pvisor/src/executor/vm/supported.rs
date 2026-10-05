@@ -585,6 +585,22 @@ impl RunExecutor for VmExecutor {
         if let Err(error) = protect_overlay_backing(&mut root_overlay, workspace.as_ref()) {
             return failed_to_start(error.to_string());
         }
+        let direct_owners = root_overlay
+            .lowers
+            .iter()
+            .chain(workspace.iter().flat_map(|view| view.lowers.iter()))
+            .filter_map(|lower| crate::image::cache::direct_image_owner(lower).map(Path::to_owned))
+            .collect::<Vec<_>>();
+        for owner in direct_owners {
+            if let Err(error) = hide_ram_backing(&mut root_overlay, &owner).and_then(|()| {
+                if let Some(workspace) = &mut workspace {
+                    hide_ram_backing(workspace, &owner)?;
+                }
+                Ok(())
+            }) {
+                return failed_to_start(format!("hide private image backend: {error:#}"));
+            }
+        }
         let vm_network_enabled = context
             .spec()
             .metadata
@@ -1547,12 +1563,19 @@ fn guest_exit_outcome(
 /// Handle the self-exec libkrun runner.
 /// Returns `true` when the current process was consumed by an internal mode.
 pub fn run_internal_if_requested() -> anyhow::Result<bool> {
+    if crate::image::cache::run_image_access_internal()? {
+        return Ok(true);
+    }
     #[cfg(target_os = "linux")]
     if super::cpu_qos::run_anchor_if_requested()? {
         return Ok(true);
     }
     if let Some(path) = std::env::var_os("PVISOR_VM_RESTORE_RAM_WATCHDOG") {
         crate::environment_snapshot::watch_mount(Path::new(&path))?;
+        return Ok(true);
+    }
+    if let Some(path) = std::env::var_os("PVISOR_VM_RESTORE_RAM_SERVER") {
+        crate::environment_snapshot::serve_ram(Path::new(&path))?;
         return Ok(true);
     }
     if let Some(path) = std::env::var_os(RUNNER_SPEC_ENV) {
@@ -1566,6 +1589,13 @@ pub fn run_internal_if_requested() -> anyhow::Result<bool> {
 }
 
 fn run_runner(spec: RunnerSpec) -> anyhow::Result<()> {
+    let direct_lowers = crate::image::cache::attach_runner_lowers(
+        spec.root.lowers.iter().chain(
+            spec.workspace
+                .iter()
+                .flat_map(|workspace| workspace.lowers.iter()),
+        ),
+    )?;
     // Acquire before Landlock and hold until the VM has stopped. Copy restores
     // use ordinary fingerprints; the original generation is no longer leased.
     let baseline_owners = if spec.restore.is_none() {
@@ -1618,6 +1648,7 @@ fn run_runner(spec: RunnerSpec) -> anyhow::Result<()> {
     #[cfg(target_os = "linux")]
     {
         let mut read_only = spec.root.lowers.clone();
+        read_only.extend(direct_lowers.read_only.iter().cloned());
         read_only.extend(
             baseline_indexes
                 .iter()
@@ -1625,6 +1656,7 @@ fn run_runner(spec: RunnerSpec) -> anyhow::Result<()> {
                 .map(|index| index.file.clone()),
         );
         let mut read_write = vec![spec.root.upper.clone()];
+        read_write.extend(direct_lowers.read_write.iter().cloned());
         read_write.extend(spec.root.work.iter().cloned());
         read_write.extend(spec.root.preimages.iter().cloned());
         if let Some(binding) = &spec.checkpoint {
@@ -2041,6 +2073,34 @@ fn guest_path_in_root(root: &Path, target: &Path) -> anyhow::Result<PathBuf> {
 
 #[cfg(test)]
 mod tests {
+    #[test]
+    fn baseline_receipt_lease_requires_an_imported_readonly_generation() {
+        let temp = tempfile::tempdir().unwrap();
+        let source = temp.path().join("source");
+        let upper = temp.path().join("upper");
+        let target = temp.path().join("target");
+        for directory in [&source, &upper, &target] {
+            std::fs::create_dir(directory).unwrap();
+        }
+        std::fs::write(source.join("file"), b"content").unwrap();
+        let mut overlay: OverlayDeviceSpec = serde_json::from_value(serde_json::json!({
+            "lowers": [source], "upper": upper, "preimages": temp.path().join("not-yet-created")
+        }))
+        .unwrap();
+        assert!(lease_overlay_baseline(&overlay).unwrap().is_none());
+        overlay.preimages = None;
+        let store =
+            crate::environment_snapshot::SnapshotStore::new(&temp.path().join("store")).unwrap();
+        let base = store.import_base(&source).unwrap();
+        overlay.lowers = vec![base.root()];
+        overlay.baseline_lower = Some(base.root());
+        overlay.apply_target = Some(target);
+        let lease = lease_overlay_baseline(&overlay).unwrap().unwrap();
+        assert_eq!(lease.content_index(), base.content_index());
+        overlay.apply_target = Some(base.root());
+        assert!(lease_overlay_baseline(&overlay).unwrap().is_none());
+    }
+
     #[test]
     fn runner_checkpoint_binding_is_optional_and_roundtrips() {
         let legacy = serde_json::json!({

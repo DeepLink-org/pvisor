@@ -15,7 +15,7 @@ It is not an Agent framework, an OCI runtime, or an operating system.
 OverlayFS, OverlayNet, Gateway, and AgentCtl are pVisor runtime drivers.
 `pvisor-core` defines Operations, Events and cross-component contracts. This crate
 owns Session lifecycle, scheduling, policy adaptation and execution. Job lifecycle
-commands are built into `pvisor`; cache, TUI and replay are executable extensions
+commands are built into `pvisor`; cluster/worker/cache/memory-pool tools are grouped under `pvisor service`, while TUI and replay are optional Job frontends
 found beside it.
 Guest injection uses the core `pvisor` execution runtime.
 

@@ -1,5 +1,7 @@
 #!/usr/bin/env python3
-"""KVM gate: fault cold RAM after delete/gc, then save and restore a COW VM.
+"""Historical retired-snapshot harness; use an archived binary.
+
+KVM gate: fault cold RAM after delete/gc, then save and restore a COW VM.
 
 This is a correctness check, not a latency distribution. Uses the same static
 snapshot_guest.rs binary as vm_snapshot.py and requires usable KVM and FUSE.
@@ -20,6 +22,9 @@ parser.add_argument("--binary", type=Path, required=True)
 parser.add_argument("--guest", type=Path, required=True)
 parser.add_argument("--output", type=Path, required=True)
 args = parser.parse_args()
+legacy_help = subprocess.run([str(args.binary.resolve()), "snapshot", "--help"], capture_output=True, timeout=10)
+if legacy_help.returncode != 0:
+    parser.error("this historical harness requires an archived binary exposing the retired snapshot command")
 out = args.output.resolve()
 out.mkdir(mode=0o700)
 binary = out / "pvisor"

@@ -82,6 +82,7 @@ async fn main() -> anyhow::Result<()> {
     let mut workers = JoinSet::new();
     let mut connections = BTreeMap::new();
     let mut next = 0u64;
+    let mut draining = false;
     let mut terminate = tokio::signal::unix::signal(tokio::signal::unix::SignalKind::terminate())?;
     println!(
         "{}",
@@ -92,6 +93,7 @@ async fn main() -> anyhow::Result<()> {
             tokio::select! {
                 result = listener.accept() => {
                     let (stream, _) = result?;
+                    if draining { continue; }
                     if stream.peer_cred()?.uid() != unsafe { libc::geteuid() } { continue; }
                     let Ok(permit) = slots.clone().try_acquire_owned() else { continue; };
                     let stream = stream.into_std()?;
@@ -110,9 +112,10 @@ async fn main() -> anyhow::Result<()> {
                     let (id, result) = result.context("pool worker panicked")?;
                     connections.remove(&id);
                     if let Err(error) = result { eprintln!("pool connection ended: {error}"); }
+                    if draining && connections.is_empty() { break; }
                 }
-                result = tokio::signal::ctrl_c() => { result?; break; }
-                _ = terminate.recv() => break,
+                result = tokio::signal::ctrl_c() => { result?; draining = true; if connections.is_empty() { break; } }
+                _ = terminate.recv() => { draining = true; if connections.is_empty() { break; } },
             }
         }
         Ok(())

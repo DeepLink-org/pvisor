@@ -60,13 +60,35 @@ Embedded callers can use the cooperative AgentCtl protocol to quiesce participat
 
 The public workflow is simple: start a Job, inspect evidence, then decide what to do with staged effects. See [Executors](../guides/executors/index.md) for provider behavior and [CLI reference](../reference/cli.md) for all options.
 
-## Core commands and companion tools
+## Core commands and service boundaries
 
-`pvisor` includes `run`, `status`, `review`, `checkpoint`, `kill`, `inspect`, `fork`, `apply`, `drop`, help and `extensions`. Installing the core alone supports ordinary runs and file acceptance. `suspend/resume` provide capability checks; full execution checkpoints for ordinary Jobs are not yet connected.
+Top-level commands follow the object they operate on: flat Job/workspace operations, with deployments, cluster tasks and node resources grouped under `service`. `replay` creates Jobs from trajectories, `tui` is an optional interactive frontend, and `extensions` lists only optional top-level tools.
 
-`pvisor-tui` and `pvisor-replay` belong to their respective crates and depend on core; core does not depend on them. The `pvisor-cache` frontend remains in the core package because executors use OCI and lazy caches. Wheels install four binaries together.
+| Responsibility | Entry |
+|---|---|
+| Create, observe, stop and inspect Jobs read-only | `run`, `status`, `kill`, `inspect` |
+| Review and accept file changes | `review`, `apply`, `drop` |
+| Job checkpoints and branches | `checkpoint`, `suspend`, `resume`, `fork` |
+| Deployment role lifecycle | `service run/status/restart/stop --config FILE` |
+| Cluster tasks/controls and execution nodes | `service cluster`, `service worker` |
+| Immutable environments and experimental cold pages | `service cache`, `service memory-pool` |
 
-Companion names/descriptions come from a static table. Discovery checks only the three first-party tools beside the core binary, without searching PATH, scanning manifests, computing binary digests or passing launcher evidence. The installation directory and executables must belong to the current user or root, must not be group/world writable, and must not be symbolic links. Unix `exec` preserves arguments, stdio, signals and exit codes. Companion tools cannot override core commands. `pvisor help NAME` supports companions; `run --tui` and interactive approval delegate to TUI.
+`status --review` remains an existing shortcut; `review` remains the detailed review entry. `run --tui` is the primary interactive path, with top-level `tui` retained for explicit frontend invocation. No additional `job` command layer is introduced, avoiding duplicate syntax for the same Job operations.
+
+The four resource commands are removed from the top level and keep their arguments under service. Retired forms return explicit migration errors instead of becoming host workloads through default execution. The standalone `snapshot` frontend is removed; storage/restore SDKs and private RAM helpers remain, without expanding ordinary Job execution capture capabilities.
+
+```bash
+pvisor service --help
+pvisor service cluster --help
+pvisor service worker --help
+pvisor service cache --help
+pvisor service memory-pool --help
+pvisor help service cluster submit
+```
+
+Seven installed artifacts are `pvisor`, `pvisor-cluster`, `pvisor-worker`, `pvisor-cache`, `pvisor-memory-pool`, `pvisor-replay` and `pvisor-tui`. Resource companions implement service subcommands. The standalone core still manages Jobs; a missing companion yields an explicit service-tool error. Supervisor/data roles retain separate processes, so CLI consolidation does not merge failure boundaries.
+
+Tools come from a static table and only a trusted installation directory; discovery neither searches PATH nor executes companions. The directory/executables belong to the current user or root, must not be group/world writable, and reject symlinks. Unix `exec` preserves argv, stdio, signals and exit codes. Tool `--help`/`--version` arguments pass through unchanged, and tools cannot shadow Job commands. See the [unified service guide](../guides/cluster/service.md) for deployment and budgets.
 
 The default core build excludes Gateway. Use `--features gateway` for capture; wheel builds enable it. Without capture, OverlayNet still authorizes and forwards ordinary explicit proxy traffic. Requesting uncompiled capture or Gateway debug capabilities returns an error.
 

@@ -1,0 +1,45 @@
+path	type	value
+	object	-
+/archive_exclusions	string	Timing binaries, firmware and the full source tar are not embedded. SHA256, frozen commit, exact changed source and patches permit rebuild. Fixture setup is outside timings; prepared inputs retained in target/reference-env-final-20261004.
+/code_source_hashes_match_frozen_candidate	boolean	true
+/commands	array	-
+/commands/0	object	-
+/commands/0/command	string	JUST_TEMPDIR=/tmp just test pvisor-overlay-core
+/commands/0/log	string	pvisor-p1-core-tests-final.log
+/commands/0/result	string	97 passed, 5 skipped
+/commands/1	object	-
+/commands/1/command	string	JUST_TEMPDIR=/tmp just test pvisor-overlayfs
+/commands/1/log	string	pvisor-p1-overlayfs-tests.log
+/commands/1/result	string	12 passed
+/commands/2	object	-
+/commands/2/command	string	JUST_TEMPDIR=/tmp just test pvisor-vm
+/commands/2/log	string	pvisor-p1-vm-full-tests-final.log
+/commands/2/result	string	294 passed, 2 skipped
+/commands/3	object	-
+/commands/3/command	string	cargo clippy --locked -p pvisor-overlay-core -p pvisor-overlayfs -p pvisor-vm --all-targets -- -D warnings
+/commands/3/log	string	pvisor-p1-clippy-final.log
+/commands/3/result	string	passed
+/commands/4	object	-
+/commands/4/command	string	just test-py benchmark/pvisor/test_filesystem_ab.py benchmark/pvisor/test_reference_baselines.py
+/commands/4/log	string	pvisor-p1-python-tests-final.log
+/commands/4/result	string	25 passed
+/commands/5	object	-
+/commands/5/command	string	ruff check (four modified benchmark Python files)
+/commands/5/log	string	pvisor-p1-ruff-final.log
+/commands/5/result	string	passed
+/commands/6	object	-
+/commands/6/command	string	cached Python scripts/build-docs.py
+/commands/6/log	string	pvisor-p1-docs-build-published.log
+/commands/6/result	string	both strict builds passed with reviewed translations and published evidence links
+/commands/7	object	-
+/commands/7/command	string	python3 scripts/check-docs.py --require-recorded
+/commands/7/log	string	pvisor-p1-docs-check-published.log
+/commands/7/result	string	131 pairs, 411 HTML pages passed
+/commands/8	object	-
+/commands/8/command	string	just test-py tests/test_docs.py
+/commands/8/log	string	pvisor-p1-docs-tests.log
+/commands/8/result	string	7 passed
+/docs_check_retries	string	Two checks observed incomplete generated pages while output was being updated; retained separately. The sequential check after the completed build passes 131 pairs and 411 HTML pages.
+/measured_full_jobs	integer	300
+/measured_full_tool_results	integer	2100
+/semspec	string	No real reviewed ledgers/approved snapshots edited; no approve/revoke run

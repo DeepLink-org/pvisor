@@ -13,6 +13,7 @@ pVisor Cluster 把同一套 `RunSpec` / `RunResult` 执行语义扩展到多 Wor
 | 执行生命周期 | [原生控制、推理等待与分叉](lifecycle.md)：暂停何时释放 CPU？回复何时可以交给 Agent？ |
 | 存储 | [元数据、产物与回收](storage.md)：提交屏障、outbox、检查点发布与 GC |
 | 共享与惰性加载 | [共享工作集与惰性加载](shared-working-set.md)：现有复用、目标成本、cache预算与先验实验问题 |
+| 服务整合 | [Cache、Memory Pool 与 Cluster 服务整合](server-consolidation.md)：统一节点资源与部署入口，保留数据权威和重启边界 |
 | 接口与运维 | [协议、部署与故障处理](operations.md)：API、配置、恢复步骤、验证与扩展方向 |
 
 ## 分层与组件职责 {#architecture}

@@ -155,6 +155,16 @@ pub fn sample_linux() -> anyhow::Result<NodeMeasurements> {
     sample_from_proc(Path::new("/proc"))
 }
 
+/// Resolve this process's cgroup v2 directory in its visible mount namespace.
+/// Read-only; callers separately verify delegation before changing it.
+pub fn current_cgroup_v2() -> anyhow::Result<PathBuf> {
+    cgroup_paths(
+        &read(Path::new("/proc/self/cgroup"))?,
+        &read(Path::new("/proc/self/mountinfo"))?,
+    )
+    .map(|(group, _)| group)
+}
+
 fn read(path: &Path) -> anyhow::Result<String> {
     std::fs::read_to_string(path).with_context(|| format!("read {}", path.display()))
 }

@@ -1,5 +1,7 @@
 #!/usr/bin/env python3
-"""Real stage VM restore gate: eager RAM, guest continuation, FD and private forks.
+"""Historical retired-snapshot harness; use an archived binary.
+
+Real stage VM restore gate: eager RAM, guest continuation, FD and private forks.
 
 The static snapshot_guest.rs reads /stage-file-count and creates the fixture
 inside the writable stage. Timing includes CLI startup; heartbeat must differ
@@ -38,6 +40,9 @@ def main():
         help="validate guest startup and request, without saving/restoring",
     )
     args = parser.parse_args()
+    legacy_help = subprocess.run([str(args.binary.resolve()), "snapshot", "--help"], capture_output=True, timeout=10)
+    if legacy_help.returncode != 0:
+        parser.error("this historical harness requires an archived binary exposing the retired snapshot command")
     if args.samples < 1 or args.warmups < 0 or not 0 <= args.files <= 8192:
         parser.error("invalid samples, warmups or files")
     out = args.output.resolve()

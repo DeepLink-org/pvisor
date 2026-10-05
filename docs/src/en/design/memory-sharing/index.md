@@ -8,7 +8,7 @@ pVisor's current approach handles cold blocks on the host: observe RAM ranges wi
 
 The benefit depends on content duplication, compressibility and the length of cold windows. Observation changes guest access permissions, and restoration costs transport, validation and remapping. Write-heavy workloads or repeated full-working-set scans may consume the initial savings quickly. Memory and execution latency must be evaluated together.
 
-This document describes the experimental macOS / Apple Silicon working-tree implementation on 2026-10-03. It is disabled by default. The first version provides a foreground `pvisor memory-pool` service and explicit CLI/SDK integration; recovery after pool restart and whole-system physical-memory acceptance remain incomplete. Historical iterations remain in repository file `docs/macos-memory-sharing.md`, and raw evidence in `review_project/06-evidence/macos-memory/`. This page describes current mechanisms; measurements apply to the execution versions recorded with each dataset.
+This document describes the experimental macOS / Apple Silicon working-tree implementation on 2026-10-03. It is disabled by default. The first version provides a foreground `pvisor service memory-pool` service and explicit CLI/SDK integration; recovery after pool restart and whole-system physical-memory acceptance remain incomplete. Historical iterations remain in repository file `docs/macos-memory-sharing.md`, and raw evidence in `review_project/06-evidence/macos-memory/`. This page describes current mechanisms; measurements apply to the execution versions recorded with each dataset.
 
 ## 2. Core design {#core-design}
 
@@ -250,7 +250,7 @@ Create a private directory and run the foreground pool in one terminal. If the d
 
 ```bash
 mkdir -m 700 /tmp/pvisor-memory-pool-v1
-pvisor memory-pool /tmp/pvisor-memory-pool-v1/pool.sock
+pvisor service memory-pool /tmp/pvisor-memory-pool-v1/pool.sock
 ```
 
 Start VMs in other terminals with the same socket. The service can also be invoked directly as `pvisor-memory-pool`:

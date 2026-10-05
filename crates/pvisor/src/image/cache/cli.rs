@@ -1,4 +1,4 @@
-//! `pvisor cache` command definitions and dispatch.
+//! `pvisor service cache` command definitions and dispatch.
 use super::server::serve;
 use super::transport::TOKEN_ENV;
 use super::{CacheBackend, CacheClient, CacheConfig, MAX_READ, Request, architecture};

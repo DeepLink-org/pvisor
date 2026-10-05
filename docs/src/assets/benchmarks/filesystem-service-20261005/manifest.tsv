@@ -1,0 +1,68 @@
+path	type	value
+	object	-
+/candidate_source_commit	string	d8c9311669bd35e008d66bc8445924e928fff6f4
+/candidate_source_dirty	boolean	true
+/evidence_archive_scope	string	Hash-verified frozen source inputs, provenance, exact harness, formal reports and launcher logs, retained smoke reports. Excludes build outputs, executable artifacts, image caches, rootfs and workspace payloads.
+/files	object	-
+/files/build-provenance-performance.json	string	abb5f6ac05c78f8d2be7e270f81edcbcc7c8ae7fea2e6e6783fc481513c80516
+/files/build-provenance-release.json	string	a798483ec24bdfacb4bb5b57fe23a7aeff1beea11da64bfe8acebf337e673c48
+/files/evidence.tar.gz	string	1b2d644fc99c7d08f3fb7d0ac2f2d8e9c5688656fca0ef0dd1f41ff45047eb9a
+/files/lazy-performance.json	string	db90b79537c6801d3fb1c331f59b2d29077ca9cf70c5fa62ef598da6132f59ee
+/files/lazy-vm.svg	string	c07ed4132d6337b0c5f6365942053601ec0510b2e59e9716a3c2513bdf60b27c
+/files/local-performance.json	string	0b0ee457cfeec2e8df1f6660573161d6cc0817983532f52bdb4ce7399323f324
+/files/local-release.json	string	788d7f06c82a4eb4fadc1f0f902552a176e9b28d7439b8b61867b2328b98bef0
+/files/local-vm.svg	string	62cc8ba53a1a99bd09ebd9372e735d4d8fd3d9fcd45032a889311ab0d82d2e6c
+/files/patch-binary-files.json	string	37517e5f3dc66819f61f5a7bb8ace1921282415f10551d2defa5c3eb0985b570
+/files/samples.csv	string	b078914b8a3eb0939c7d9a4fa6bca4347858854aa336c141de1405b923fa3f45
+/files/source-provenance.json	string	543550002ada960439c0eafbcbe558e94534b41eb097073e87ff01c927ebb693
+/files/summary.json	string	9a7f2e9a80d0f9d6e2e6fd07a49a3c7743cc75cacf41b12d46cc65acfe7a1b0a
+/files/version.patch	string	edb5a1f3bf1f9c24d62f41b9516fdcbf43f5fedf84e08fb496025331dbc30fcf
+/measured_jobs	integer	420
+/measurement_scope	string	Local operation and lazy cache-protocol fixture measurements. No matched current Docker, production-cache, TCP/S3 or WAN rerun.
+/operation_measurements	integer	2820
+/protocol	object	-
+/protocol/lazy-performance	object	-
+/protocol/lazy-performance/cache	string	fresh client disk cache for cold; same cache for following warm VM; warm host page cache; fresh guest, projection and upper each launch
+/protocol/lazy-performance/completion	string	CLI launch to exit, includes guest's fixed 1.2-second TTL wait
+/protocol/lazy-performance/correctness	string	guest checks including 32 rootfs copy-ups, Run Bundle VM isolation, staged workspace write, untouched immutable source
+/protocol/lazy-performance/memory_mib	integer	4096
+/protocol/lazy-performance/order	string	variant order shuffled each round with seed 20261005; cold then warm per variant
+/protocol/lazy-performance/samples	integer	30
+/protocol/lazy-performance/server	string	local Python Unix-socket cache v1 fixture, no artificial latency, verifies content hashes; not a WAN or S3 performance test
+/protocol/lazy-performance/vm_vcpus	integer	2
+/protocol/lazy-performance/warmups	integer	3
+/protocol/lazy-performance/worker	string	operation plus content/attribute checks; startup excluded
+/protocol/local-performance	object	-
+/protocol/local-performance/cache	string	warm; no eviction; fresh workspace and stage for every job
+/protocol/local-performance/completion_timing	string	launch to process exit; preparation excluded
+/protocol/local-performance/correctness	string	all workload checks, Run Bundle isolation, lower write absence and upper file count/size required
+/protocol/local-performance/cpu_affinity	string	0,1
+/protocol/local-performance/filesystem_profile	boolean	false
+/protocol/local-performance/order	string	all five cells shuffled each round; seed 20261005
+/protocol/local-performance/percentile	string	linear interpolation
+/protocol/local-performance/samples	integer	30
+/protocol/local-performance/staged_isolation	object	-
+/protocol/local-performance/staged_isolation/baseline	string	rootless_process
+/protocol/local-performance/staged_isolation/candidate	string	rootless_process
+/protocol/local-performance/vm_memory_mib	integer	4096
+/protocol/local-performance/vm_vcpus	integer	2
+/protocol/local-performance/warmups	integer	3
+/protocol/local-performance/worker_timing	string	operation and correctness check; all seven workloads run in order per job
+/protocol/local-release	object	-
+/protocol/local-release/cache	string	warm; no eviction; fresh workspace and stage for every job
+/protocol/local-release/completion_timing	string	launch to process exit; preparation excluded
+/protocol/local-release/correctness	string	all workload checks, Run Bundle isolation, lower write absence and upper file count/size required
+/protocol/local-release/cpu_affinity	string	0,1
+/protocol/local-release/filesystem_profile	boolean	false
+/protocol/local-release/order	string	all five cells shuffled each round; seed 20261005
+/protocol/local-release/percentile	string	linear interpolation
+/protocol/local-release/samples	integer	30
+/protocol/local-release/staged_isolation	object	-
+/protocol/local-release/staged_isolation/baseline	string	rootless_process
+/protocol/local-release/staged_isolation/candidate	string	rootless_process
+/protocol/local-release/vm_memory_mib	integer	4096
+/protocol/local-release/vm_vcpus	integer	2
+/protocol/local-release/warmups	integer	3
+/protocol/local-release/worker_timing	string	operation and correctness check; all seven workloads run in order per job
+/schema	string	pvisor-filesystem-performance-evidence/v1
+/source_tree_sha256	string	796d85a5bc9707e77a70b1eedc8fa758308c25feb388ef2d9aaca0e07dcfdb81

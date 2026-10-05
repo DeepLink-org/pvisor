@@ -217,8 +217,9 @@ request. It is not a cross-request cache or permission capability. Merged
 directory entries retain visibility, whiteout, opaque, and alias checks;
 attribute-bearing enumeration still authorizes ask-protected children.
 Adapters reuse metadata and the last passthrough lookup's Entry, but do not
-cache live host attributes indefinitely. Directory snapshot wire format and
-device freeze/restore contracts are unchanged.
+cache live host attributes indefinitely. Existing materialized directory
+snapshots remain readable; new name/type directory cookies are described below.
+Device freeze/restore contracts are preserved.
 
 The VM adapter retains at most 256 native parent-directory lookup references.
 `metadata_for_backing_lookup` supplies request-local physical identities from
@@ -338,3 +339,176 @@ Rust `File::sync_all` uses `F_FULLFSYNC` on Apple. Owned-tree copy now fsyncs ea
 ## Real-tool paired cases on Apple Silicon
 
 Explicit `--cases rg-2048,rg-deep-2048,git-status-2048,npm-offline-32` requires a guest rootfs with Linux ARM64 rg, git, Node and npm. The default BusyBox cases are unchanged. Git fixture creation/commit and copies are outside the timer. Npm uses 32 local-file packages, `--offline --ignore-scripts`, an isolated guest cache, and verifies every installed module result; this is not registry download/unpack or lifecycle-script coverage. Tool executable and APK package-manifest digests are recorded when available. Run a separate one-sample smoke before timing. Both compared binaries must have compatible guest address-space policy; startup failures are not speed samples.
+
+## Indexed paths, lazy directories, admission and immutable receipts
+
+The five-item optimization campaign is recorded under
+`target/optimization-five-20261005`, with reviewable reports, source patch and
+validation logs in [the evidence directory](../../docs/src/assets/benchmarks/filesystem-optimizations-20261005/).
+Its baseline was copied before these edits;
+the candidate applies only the seven relevant source/build files to that copy.
+Concurrent lazy-cache/backend work is excluded from the comparison. Source and
+artifact SHA-256 values are in `build-provenance-v3.json`; the frozen source trees
+and build/test logs are retained alongside the reports.
+
+The implementation changes are:
+
+- **1.** Overlay inode paths retain `HashMap` lookups and add a component-ordered
+   `BTreeSet` for subtree updates. Rename/unlink start a
+   range at the affected path and stop at the end of its subtree, instead of
+   scanning every known inode. Profile counters `nodes_remapped` and
+   `nodes_removed` count affected entries. Inode identities and sibling paths
+   remain intact across directory renames.
+- **2.** `just build performance` builds `target/performance/pvisor` with `opt-level=3`
+   and the release profile's LTO/ABI settings. The size-oriented release profile
+   remains available for a controlled build comparison.
+- **4.** New directory handles store names, directory type hints and stable offsets,
+   then allocate inodes as each page is consumed. Plain `READDIR` uses the captured
+   types, as the previous materialized handles did, without full child metadata
+   queries. `READDIRPLUS` checks fresh attributes and policy and reuses that
+   resolution's parent identities. Views with deny rules still validate children
+   at open time to preserve hard-link filtering. Type hints grant no backing-file
+   access. Old materialized and name-only directory cookies remain readable.
+- **5.** A full I/O pool admits inline metadata until the next expensive request at the
+   ring head; that head is returned to the ring with `undo_pop`. The pool remains
+   bounded, with at most one additional descriptor held temporarily by the owner.
+   Already-ready completions share a notification check/interrupt; inline replies
+   notify immediately. No timer delays replies. Counters `pool_capacity_stalls`,
+   `published_completions`, `notification_checks` and `used_interrupts` distinguish
+   admission pressure from completion batching.
+- **6.** Cold VM launch recognizes authenticated imported bases, holds their GC leases
+   for the VM lifetime, and attaches digest-bound content receipts before entering
+   Landlock. Only the receipt file is added as read-only host access. Mutable roots
+   retain live fingerprints. A copied snapshot drops the original generation's
+   receipt and fingerprints its own bytes; retained imported bases keep their
+   existing leased receipt path.
+
+The isolated candidate passes `just test pvisor-overlay-core pvisor-vm pvisor`
+(877 passed, 31 skipped) and targeted Clippy with `-D warnings`. The integrated
+worktree also passed the targeted tests (890 passed, 34 skipped), Clippy and
+`just fmt`. The six real KVM cases S-DOC-057 through S-DOC-062 passed with the
+isolated release CLI/SDK driver; review status remains UNREVIEWED. Regression tests
+cover component-prefix siblings, partial directory reads and cookie restoration,
+fresh attributes and denied aliases, full-pool inline admission, batched EVENT_IDX
+notification, authenticated GC leases, and copied-generation receipt fallback.
+
+Acceptance uses the frozen seven-workload environment, 2 vCPU / 4 GiB, affinity
+`0,1`, rootless staged isolation for both artifacts, 3 warmups and 30 samples per
+cell. `accept-code-v3-4g/report.json` compares original and optimized release builds;
+`accept-profile-v3-4g/report.json` compares optimized release and performance builds.
+The mutable fixture does not exercise receipt reuse, so these workload timings
+cannot quantify item 6. Correctness gates verify tool results, Run Bundle
+isolation, untouched lowers and expected upper contents before accepting timing.
+
+The earlier 16 GiB `accept-profile` run terminated a trial with SIGKILL and is
+incomplete; no cause such as kernel OOM is established. Its failure evidence is
+retained. The smaller memory budget applies equally to both variants in the new
+campaigns; do not mix their samples with the 16 GiB campaign. Earlier directory
+implementations regressed Git status, so their results are retained separately
+from the final name/type snapshot implementation. Whole-job results compare the
+combined changes and do not establish how much each individual mechanism saves.
+
+The final release comparison observed the following VM worker-time medians
+(milliseconds). These are combined-change measurements, not per-mechanism
+attribution:
+
+| Workload | Original release | Optimized release | Change |
+| --- | ---: | ---: | ---: |
+| Whole-job completion | 4416.25 | 4236.61 | -4.07% |
+| metadata | 194.21 | 169.20 | -12.88% |
+| read | 119.64 | 118.28 | -1.13% |
+| write | 235.28 | 244.97 | +4.12% |
+| git | 404.79 | 382.24 | -5.57% |
+| rg | 466.45 | 452.79 | -2.93% |
+| cargo | 518.92 | 526.55 | +1.47% |
+| npm | 1504.83 | 1395.37 | -7.27% |
+
+Negative changes mean less time. Whole-job completion includes startup and
+teardown and is distinct from individual worker times. VM completion P95
+increased 2.35%; Git P99 increased 25.50%. The default release change therefore
+does not establish a tail-latency improvement. Staged completion P50 changed
+-0.26%, consistent with the adapter-specific nature of most changes. The write
+and Cargo medians increased 4.12% and 1.47%, respectively. With 30 samples, P99
+is strongly affected by individual trials; retain all raw samples.
+
+The independent build-profile comparison uses the same final source. Its VM
+medians are below; its release samples belong to this comparison and must not be
+combined with the original-release comparison above.
+
+| Metric | Optimized release | Performance | Change |
+| --- | ---: | ---: | ---: |
+| Whole-job completion | 4233.32 | 3839.44 | -9.30% |
+| metadata | 154.31 | 149.17 | -3.33% |
+| read | 117.99 | 117.12 | -0.74% |
+| write | 246.94 | 221.11 | -10.46% |
+| git | 499.61 | 331.47 | -33.65% |
+| rg | 444.72 | 391.12 | -12.05% |
+| cargo | 511.36 | 467.37 | -8.60% |
+| npm | 1350.94 | 1242.92 | -8.00% |
+
+Performance-profile VM completion P95 decreased 7.88% and P99 decreased 6.90%.
+Staged completion P50 decreased 6.25%, but its P99 increased 8.54%; individual
+workload tails also varied. The executable grows from 14.87 MiB to 18.59 MiB
+(+24.96%). Use `just build performance` when that size tradeoff is acceptable.
+These timings cover this fixed Linux/KVM fixture, not every workload or platform.
+
+Final raw samples and provenance are preserved in
+[the release comparison](../../docs/src/assets/benchmarks/filesystem-optimizations-20261005/code-v3-4g.tsv),
+[the build-profile comparison](../../docs/src/assets/benchmarks/filesystem-optimizations-20261005/profile-v3-4g.tsv)
+and [the manifest](../../docs/src/assets/benchmarks/filesystem-optimizations-20261005/manifest.tsv).
+
+
+## Shared filesystem service and direct lazy-image version evaluation
+
+The new integrated source is frozen under `target/fs-service-benchmark-20261005`.
+The comparison baseline is the archived, already optimized v3 artifact above,
+not an unoptimized P0 build. Source and binary hashes distinguish the frozen
+new worktree from the harness-launch Git status. Concurrent cluster/service
+changes are included in the new version, so this is not a single-function A/B.
+
+Run the unchanged `filesystem_ab.py` with matched release or performance
+artifacts, 2 vCPU / 4 GiB, affinity `0,1`, three warmups and 30 measurements.
+Both staged variants require `--baseline-staged-isolation rootless_process`
+and `--candidate-staged-isolation rootless_process`. These seven workloads use
+local rootfs and do not exercise removal of the lazy-image host FUSE mount.
+
+`filesystem_lazy_ab.py` separately supplies an immutable cache-v1 Unix-socket
+fixture using the frozen development rootfs. Both binaries use performance
+builds. The server has affinity `2,3`; the VM and runner have `0,1`. Each shuffled
+version pair runs first with fresh client disk caches, then with those caches
+reused and a new guest/projection/upper. Host page caches remain warm. There is
+no artificial network latency; this is not a production Rust server or TCP/S3
+throughput measurement. Preflight and three warmups are excluded from 30 samples
+per cell. The guest's fixed 1.2-second TTL wait is excluded from operation times
+and included in whole-job completion. Immediate repeated operations do not
+guarantee that every attribute remains in the kernel cache.
+
+The fixture verifies traversal of 2,048 × 1,023-byte files in 32 directories,
+open/read/close of all files, 64 MiB SHA256, 32 small-file rootfs copy-ups, staged
+workspace writes, VM Run Bundle isolation, and unchanged immutable source.
+Mount sampling requires a host FUSE mount for the archived baseline and no
+image-store host FUSE mount for the new version. Request counts demonstrate
+identical cold content and zero warm content downloads. Download diagnostics
+remain enabled equally for both artifacts. The first preflight's incorrect
+fixture byte count is retained as failed evidence; corrected runs are separate.
+
+```bash
+python3 benchmark/pvisor/filesystem_lazy_ab.py \
+  --assets target/reference-env-final-20261004 \
+  --baseline target/fs-service-benchmark-20261005/artifacts/baseline-performance \
+  --candidate target/fs-service-benchmark-20261005/artifacts/candidate-performance \
+  --firmware target/p0-filesystem-artifacts-20261005/firmware \
+  --output target/fs-service-benchmark-20261005/lazy-repeat \
+  --samples 30 --warmups 3 --cpu-affinity 0,1 --server-affinity 2,3
+```
+
+The new release local-VM whole-job P50 is 4,152.52 ms (+3.26%), despite traversal
+P50 of 157.57 ms (-6.50%). Lazy warm-cache open/read and bulk read improve 8.60%
+and 6.65%, while traversal rises 13.71% and 32-file copy-up rises 151.65%.
+Lazy whole-job P50 rises 2.29% cold and 0.64% warm. Removing the extra mount does
+not establish general acceleration. The experiment does not separately profile
+metadata projection, materialization, preimage and synchronization costs.
+
+Full results and historical context are in the [benchmark article](../../docs/src/en/design/filesystem-performance-analysis.md#filesystem-service).
+Public raw reports and provenance are preserved in [the evidence directory](../../docs/src/assets/benchmarks/filesystem-service-20261005/).
+`plot_filesystem_service.py` renders the standalone SVG figures from those reports.

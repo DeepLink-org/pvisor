@@ -1,6 +1,6 @@
 # 共享镜像缓存与存储后端
 
-`pvisor cache` 通过服务器、文件系统或 S3 复用 OCI 镜像内容。服务器模式的 `pvisor cache serve` 把已有 OCI 存储暴露为只读文件服务。客户端不会收到宿主文件系统路径。镜像在服务端准备一次，之后以其解析后的平台 manifest 的 SHA-256 摘要寻址。现有存储负责 blob 校验、层应用和白障（whiteout）处理。文件查询不访问 registry。
+`pvisor service cache` 通过服务器、文件系统或 S3 复用 OCI 镜像内容。服务器模式的 `pvisor service cache serve` 把已有 OCI 存储暴露为只读文件服务。客户端不会收到宿主文件系统路径。镜像在服务端准备一次，之后以其解析后的平台 manifest 的 SHA-256 摘要寻址。现有存储负责 blob 校验、层应用和白障（whiteout）处理。文件查询不访问 registry。
 
 ## 选择后端
 
@@ -19,11 +19,11 @@
 ### 文件系统：发布一次，独立进程读取
 
 ```sh
-pvisor cache --backend filesystem --location /mnt/pvisor-cache \
+pvisor service cache --backend filesystem --location /mnt/pvisor-cache \
   --image-store /tmp/pvisor-publish publish alpine:latest
-pvisor cache --backend filesystem --location /mnt/pvisor-cache \
+pvisor service cache --backend filesystem --location /mnt/pvisor-cache \
   --read-only prepare alpine:latest
-pvisor cache --backend filesystem --location /mnt/pvisor-cache \
+pvisor service cache --backend filesystem --location /mnt/pvisor-cache \
   --read-only read pvisor-v1:YOUR_IMAGE_KEY:linux-amd64:YOUR_REVISION etc/os-release
 ```
 
@@ -36,12 +36,12 @@ export AWS_DEFAULT_REGION=ap-southeast-1
 # Supply AWS credentials through environment variables or workload roles.
 export PVISOR_CACHE_BACKEND=s3
 export PVISOR_CACHE_LOCATION=s3://your-bucket/pvisor-cache
-pvisor cache --image-store /tmp/pvisor-publish publish alpine:latest
+pvisor service cache --image-store /tmp/pvisor-publish publish alpine:latest
 
 # Workers only need GetObject access to this prefix.
 export PVISOR_CACHE_READ_ONLY=true
-pvisor cache prepare alpine:latest
-pvisor cache read pvisor-v1:YOUR_IMAGE_KEY:linux-amd64:YOUR_REVISION etc/os-release
+pvisor service cache prepare alpine:latest
+pvisor service cache read pvisor-v1:YOUR_IMAGE_KEY:linux-amd64:YOUR_REVISION etc/os-release
 pvisor run --executor vm --rootfs image=alpine:latest -- /bin/sh
 ```
 
@@ -56,15 +56,15 @@ export AWS_ACCESS_KEY_ID=YOUR_ACCESS_KEY
 export AWS_SECRET_ACCESS_KEY=YOUR_SECRET_KEY
 export PVISOR_CACHE_BACKEND=s3
 export PVISOR_CACHE_LOCATION=s3://your-bucket/pvisor-cache
-pvisor cache prepare alpine:latest
+pvisor service cache prepare alpine:latest
 ```
 
 ### 镜像拆分与上传工具
 
-`pvisor cache publish IMAGE` 是显式发布入口：从 registry 拉取所选平台的 OCI manifest 和层，在本地应用层与 whiteout，遍历合并后的镜像文件，再上传文件索引和内容块。已有的本地 OCI 暂存可通过 `--image-store` 或 `PVISOR_IMAGE_STORE` 复用；上传后可以删除暂存目录。
+`pvisor service cache publish IMAGE` 是显式发布入口：从 registry 拉取所选平台的 OCI manifest 和层，在本地应用层与 whiteout，遍历合并后的镜像文件，再上传文件索引和内容块。已有的本地 OCI 暂存可通过 `--image-store` 或 `PVISOR_IMAGE_STORE` 复用；上传后可以删除暂存目录。
 
 ```sh
-PVISOR_CACHE_READ_ONLY=false pvisor cache publish alpine:latest \
+PVISOR_CACHE_READ_ONLY=false pvisor service cache publish alpine:latest \
   --backend s3 --location s3://your-bucket/pvisor-cache \
   --architecture amd64 --image-store /tmp/pvisor-publish
 ```
@@ -114,7 +114,7 @@ S3 实际流量包括控制对象、元数据页和完整数据块。现有 TUI 
 ```text
 cache/
 ├── mod.rs              # 公共入口与模块装配
-├── cli.rs              # pvisor cache 子命令
+├── cli.rs              # pvisor service cache 子命令
 ├── protocol.rs         # 请求/响应类型、分帧、内容哈希
 ├── transport.rs        # Unix/TCP 端点、流、超时
 ├── client.rs           # 后端发现与校验后的请求
@@ -126,7 +126,10 @@ cache/
 ├── server/
 │   ├── metadata.rs     # 服务端元数据与目录 LRU 缓存
 │   └── tests.rs        # 协议、受限访问与客户端/服务端测试
-├── lazy.rs             # FUSE 挂载、块缓存与客户端元数据缓存
+├── backend.rs          # 入口无关的元数据、按块读取与有界缓存
+├── direct.rs           # VM lower 元数据投影和 runner 接入
+├── network.rs          # 隔离 runner 的固定镜像只读联网通道
+├── lazy.rs             # host FUSE 适配器
 ├── lazy/
 │   └── tests.rs        # 懒加载文件系统与缓存复用测试
 └── progress.rs         # 镜像总量与加载/下载进度
@@ -138,16 +141,16 @@ cache/
 
 ```sh
 # 终端 1：前台服务端，使用默认的按用户 Unix socket 与 OCI 存储
-pvisor cache serve
+pvisor service cache serve
 
 # 终端 2：使用同一个默认 socket
-pvisor cache prepare alpine:latest
+pvisor service cache prepare alpine:latest
 # 即使处于五分钟 tag 缓存窗口内也强制刷新 registry：
-pvisor cache prepare alpine:latest --refresh
+pvisor service cache prepare alpine:latest --refresh
 # 从 JSON 结果复制 digest：
-pvisor cache list sha256:YOUR_MANIFEST_DIGEST
-pvisor cache stat sha256:YOUR_MANIFEST_DIGEST etc/os-release
-pvisor cache read sha256:YOUR_MANIFEST_DIGEST etc/os-release
+pvisor service cache list sha256:YOUR_MANIFEST_DIGEST
+pvisor service cache stat sha256:YOUR_MANIFEST_DIGEST etc/os-release
+pvisor service cache read sha256:YOUR_MANIFEST_DIGEST etc/os-release
 ```
 
 `PVISOR_CACHE_SERVER` 为客户端和服务端选择端点。服务端用 `cache serve --listen` 覆盖它。没有覆盖时端点为 `unix://<dirs::cache_dir()>/pvisor/cache.sock`：
@@ -164,12 +167,12 @@ pvisor cache read sha256:YOUR_MANIFEST_DIGEST etc/os-release
 
 显式设置 `PVISOR_CACHE_SERVER` 时要求该服务可用。设置 `PVISOR_CACHE_SERVER=off` 强制本地准备。显式 rootfs 目录和原生容器执行保持原有行为。
 
-客户端挂载一个不可变的只读 FUSE lower（macOS 用 macFUSE FSKit；Linux 用 FUSE），保留现有的 VM 可写 upper。元数据按需获取，并在挂载期间保留在内存中。当服务端通告 `metadata_generation` 时，校验过的 stat 响应（包括缺失路径）和目录页也会持久化到
+VM 客户端将不可变只读 lower 直接接入 virtio-fs 文件服务，保留现有的可写 upper，不建立中间宿主 FUSE 挂载。host 工具仍通过 FUSE 适配器访问同一后端。元数据按需获取，并在后端使用期间保留在内存中。当服务端通告 `metadata_generation` 时，校验过的 stat 响应（包括缺失路径）和目录页也会持久化到
 `<user-cache>/pvisor/metadata/v1/<endpoint-hash>/<manifest-digest>/<generation-hash>/`。
 它们在 VM 退出后仍然存在；损坏条目会被重新获取。不提供 generation 的旧服务端保持此前的仅内存行为。generation 包含服务端根目录的身份和变更时间，因此重建解包后的 root 会使包含旧宿主 inode 号的元数据失效。已准备的 root 必须保持不可变；不支持在其下就地修改。内容以 1 MiB 块获取到 `<user-cache>/pvisor/blocks/<endpoint-hash>/<read-handle-hash>/`，
-按文件/块为键。macOS 上 `<user-cache>` 为 `~/Library/Caches`；Linux 上为 `$XDG_CACHE_HOME`，通常为 `~/.cache`。此块缓存独立于 `--image-store` 和 `PVISOR_IMAGE_STORE`。小文件占用一个不填充的块；大文件只获取被访问的块。每次挂载都会在按文件为键的内存缓存中保留已校验内容，上限 64 MiB 和 4096 块，FIFO 淘汰。热读只复制请求的切片，不重新打开或重新哈希磁盘块。内存未命中时，磁盘块会再次校验；磁盘损坏不会改变已校验并保留在内存中的字节。新块经校验和后原子发布，并通过文件锁在本地进程间共享；损坏的磁盘块会被重新获取。不暴露稀疏占位文件。内核正常预读可能获取相邻字节，copy-up 可能读取整个文件。客户端不提取完整镜像。
+按文件/块为键。macOS 上 `<user-cache>` 为 `~/Library/Caches`；Linux 上为 `$XDG_CACHE_HOME`，通常为 `~/.cache`。此块缓存独立于 `--image-store` 和 `PVISOR_IMAGE_STORE`。小文件占用一个不填充的块；大文件只获取被访问的块。每个后端都会在按文件为键的内存缓存中保留已校验内容，上限 64 MiB 和 4096 块，FIFO 淘汰。热读只复制请求的切片，不重新打开或重新哈希磁盘块。内存未命中时，磁盘块会再次校验；磁盘损坏不会改变已校验并保留在内存中的字节。新块经校验和后原子发布，并通过文件锁在本地进程间共享；损坏的磁盘块会被重新获取。VM 维护私有元数据投影和稀疏占位文件，但 guest READ 使用后端内容，不读取空洞。内核预读可能获取相邻字节，copy-up 和文件摘要需要完整原文件，完整快照或自包含目录导出会补齐全树；普通按需读取不提取完整镜像。
 
-FUSE 挂载在 VM 运行结束前一直存在，随后卸载；缓存的块保留。服务失败后缓存数据仍可读取，但缺失的块会以 I/O 错误失败。摘要和端点在一次运行期间固定；运行中途不会回退到 registry。缓存端点/令牌会从隐式继承的 guest 环境变量中移除。
+直接后端在 VM 运行期间保持接入，结束后释放私有投影；host FUSE 的挂载则保持到使用者退出。缓存的块保留。服务失败后缓存数据仍可读取，但缺失的块会以 I/O 错误失败。摘要和端点在一次运行期间固定；运行中途不会回退到 registry。缓存端点/令牌会从隐式继承的 guest 环境变量中移除。
 
 服务端在应答 `prepare` 前仍会完整准备未缓存的镜像。这是客户端侧的懒加载，不是服务端的惰性 OCI 层解包。FUSE 适配器和现有 virtio-fs worker 目前同步处理请求：一次缓存未命中可能延迟无关的文件系统请求。不使用显式 vCPU 暂停。磁盘缓存配额/淘汰、原始 OCI xattr 和异步 virtio-fs 完成不在此实现中加入。
 
@@ -182,7 +185,7 @@ Unix socket 权限为 0600，并要求两端为同一有效用户。锁可防止
 ```sh
 # 服务端：通过你的密钥管理/命令行设置一个强共享密钥。
 export PVISOR_CACHE_TOKEN='YOUR_RANDOM_SECRET'
-pvisor cache serve --listen tcp://127.0.0.1:7447
+pvisor service cache serve --listen tcp://127.0.0.1:7447
 
 # 客户端机器上，保持该隧道运行：
 ssh -N -L 7447:127.0.0.1:7447 your-server
@@ -190,7 +193,7 @@ ssh -N -L 7447:127.0.0.1:7447 your-server
 # 客户端 shell，使用同一密钥：
 export PVISOR_CACHE_TOKEN='YOUR_RANDOM_SECRET'
 export PVISOR_CACHE_SERVER=tcp://127.0.0.1:7447
-pvisor cache prepare alpine:latest
+pvisor service cache prepare alpine:latest
 ```
 
 TCP 要求非空令牌，且只接受字面 loopback IP 端点。没有内置 TLS；请用 SSH 做传输加密。令牌授予所有缓存操作，包括准备新镜像，因此这是受信任的共享服务，不是公共多租户 API。若为 Unix 服务端配置了令牌，Unix 客户端也必须提供。
@@ -247,13 +250,13 @@ TCP 要求非空令牌，且只接受字面 loopback IP 端点。没有内置 TL
 
 服务端有 16 个请求/文件 worker，最多 16 个排队连接。多余连接会被关闭；客户端可以重试。带认证的 prepare 请求转入单独的 2 worker 池，队列 16 个请求；满时服务端返回显式 busy 错误。registry 等待与解包不占用文件 worker。入站请求读取有五秒不活动超时；响应读写保留 300 秒超时，TCP 连接有 10 秒超时。长时间准备可能比断开的客户端活得更久；重试是安全的。关闭时不会优雅取消单个 OCI 下载。registry 下载限制和缓存淘汰沿用现有镜像存储；v1 不增加配额或淘汰。
 
-不存在 vCPU 暂停/恢复消息。下载发生在宿主侧 FUSE 服务端，在沙箱化的 VM runner 进程之外。
+不存在 vCPU 暂停/恢复消息。VM 文件服务在隔离 runner 中处理请求，本地文件与 Unix socket 缓存直接访问。Linux 的 TCP/S3 下载经私有 Unix socket 委托给宿主访问进程，以保留 runner 的网络隔离；通道只允许固定不可变镜像的 stat/list/read，禁止 prepare、open 和其他镜像。凭据描述文件保存在隐藏的私有 owner 中，访问进程随 VM teardown 终止。host FUSE 入口继续在宿主获取缓存内容。
 
 ## 验证后端
 
 `just test pvisor` 包含服务器兼容性、文件系统/S3 独立 CLI 读写、只读权限、损坏拒绝与配置优先级检查。S3 本地夹具独立验算 SigV4（包括临时会话令牌），不使用真实账号、公网请求或外部 daemon。
 
-有 KVM/FUSE 与静态 musl guest target 的 Linux x86_64 主机可以执行真实 VM 验收：
+有 KVM 与静态 musl guest target 的 Linux x86_64 主机可以执行真实 VM 验收：
 
 ```sh
 cargo nextest run --locked -p pvisor --test cache_backends --run-ignored ignored-only

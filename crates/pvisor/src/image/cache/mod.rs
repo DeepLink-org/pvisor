@@ -1,9 +1,12 @@
 //! Shared OCI cache with server, filesystem, and S3 storage backends.
 //! See docs/src/zh/reference/shared-image-cache.md for storage layout and lifecycle.
 
+mod backend;
 mod cli;
 mod client;
 mod config;
+mod direct;
+mod network;
 mod portable;
 pub mod progress;
 mod protocol;
@@ -24,9 +27,9 @@ pub use transport::default_endpoint;
 #[cfg(any(target_os = "macos", target_os = "linux"))]
 mod lazy;
 #[cfg(any(target_os = "macos", target_os = "linux"))]
-pub(crate) use lazy::{LazyMount, prepare_image};
+pub(crate) use lazy::{LazyMount, prepare_vm_image};
 #[cfg(any(target_os = "macos", target_os = "linux"))]
-pub use lazy::{MountedImage, mount_image_handle};
+pub use lazy::{MountedImage, mount_image_handle, open_image_handle_for_vm};
 
 pub const SERVER_ENV: &str = "PVISOR_CACHE_SERVER";
 
@@ -37,3 +40,7 @@ fn architecture() -> &'static str {
         other => other,
     }
 }
+
+#[cfg(any(target_os = "macos", target_os = "linux"))]
+pub(crate) use direct::{attach_runner_lowers, private_owner as direct_image_owner};
+pub(crate) use network::run_internal_if_requested as run_image_access_internal;

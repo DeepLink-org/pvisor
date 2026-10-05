@@ -1,8 +1,10 @@
 # Proxy and VM TCP overhead
 
-Local HTTP request P50 is about 0.95 ms native, 1.24 ms through the host proxy and 3.83 ms in the VM. Streaming first-body-byte P50 is 1.10, 1.37 and 4.57 ms. Latency costs are milliseconds; bulk-transfer throughput falls more substantially.
+## Main conclusions {#conclusions}
 
-## Motivation
+Local 1 KiB HTTP request P50 is **0.95 ms** native, **1.24 ms** through the pVisor host proxy and **3.83 ms** in the VM. A 32 MiB transfer reaches about **869, 417 and 155 MiB/s**, respectively. Small-request proxy overhead is modest; VM bulk-transfer overhead is more pronounced. These are not Internet model-response timings.
+
+## Motivation {#motivation}
 
 Models can stream for seconds while tools issue many short requests and downloads. Separate request latency, throughput and process startup to assess the networking cost.
 
@@ -10,20 +12,18 @@ Models can stream for seconds while tools issue many short requests and download
 
 Same-host IP HTTP origin; no Internet/TLS/DNS. Each path has 3 warmups and 30 batches. Small: 256×1 KiB, concurrency 8, a new connection per request, 7,680 requests per path. Bulk: 32 MiB. Stream: 10 chunks, 2 ms apart. Lengths/hashes are validated. First body byte is not model TTFT. VM uses auto TCP; host/OCI use proxy; Podman uses host networking.
 
-## macOS
+These results are from Linux/x86_64; matching macOS workloads are unmeasured. Linked reports pin artifacts, cache conditions and samples.
 
-These workloads were measured on Linux; macFUSE/FSKit overhead and capacity remain unmeasured. Existing macOS/HVF results are retained in [VM startup](startup.md) and [VM memory](vm-memory/index.md), and are not substituted for this workload.
+## Data and analysis {#results}
 
-## Linux: 2026-10-04 {#results}
-
-| Batch | Backend | Batches | 1 KiB P50/P95/P99 ms | 32 MiB P50 MiB/s | Stream first body P50/P95/P99 ms |
+| Network configuration | Backend | Batches | 1 KiB P50/P95/P99 ms | 32 MiB P50 MiB/s | Stream first body P50/P95/P99 ms |
 |---|---|---|---|---|---|
-| main | native | 30 | 0.95/1.42/4.67 | 869.4 | 1.10/1.20/1.40 |
-| main | host | 30 | 1.24/2.42/7.16 | 416.8 | 1.37/1.63/1.69 |
-| main | vm | 30 | 3.83/8.63/17.36 | 154.7 | 4.57/5.19/6.44 |
-| OCI follow-up | native | 30 | 0.99/1.44/4.85 | 861.4 | 1.07/1.18/1.18 |
-| OCI follow-up | podman | 30 | 1.01/1.43/9.07 | 853.7 | 3.53/3.60/3.64 |
-| OCI follow-up | container | 30 | 1.30/2.30/10.06 | 811.0 | 3.78/3.98/4.05 |
+| proxy / VM | native | 30 | 0.95/1.42/4.67 | 869.4 | 1.10/1.20/1.40 |
+| proxy / VM | host | 30 | 1.24/2.42/7.16 | 416.8 | 1.37/1.63/1.69 |
+| proxy / VM | vm | 30 | 3.83/8.63/17.36 | 154.7 | 4.57/5.19/6.44 |
+| host-network OCI | native | 30 | 0.99/1.44/4.85 | 861.4 | 1.07/1.18/1.18 |
+| host-network OCI | podman | 30 | 1.01/1.43/9.07 | 853.7 | 3.53/3.60/3.64 |
+| host-network OCI | pVisor OCI | 30 | 1.30/2.30/10.06 | 811.0 | 3.78/3.98/4.05 |
 
 ### Analysis and denial checks
 
@@ -36,23 +36,12 @@ Native HTTP is the baseline without the pVisor path; Podman/crun is a measured o
 
 Bulk downloads differ: at the measured rates, transferring 32 MiB takes about 37 ms natively and 207 ms through VM. Many local requests, dependency downloads, and model streams are different workloads. The new [complete Docker tool-environment comparison](agent-tasks.md#reference-env) uses network none; its task timings do not establish Docker bridge or Internet performance.
 
-## Limits and next measurements {#acceptance}
+### Scope {#acceptance}
 
-Nested requests may be correlated; no independent-request confidence interval is claimed. OCI follow-up is kept separate. Host networking does not measure Docker bridge/CNI. UDP/IPv6/QUIC, real model SSE, TLS interception and public API variability are outside this batch.
+Internet, TLS, DNS and real-model latency are unmeasured. Local first byte is not model TTFT; network paths differ from host-network OCI boundaries.
 
-## Reproduction and evidence {#run}
+### Data sources and reproduction {#run}
 
-Run from the repository root with a new output directory. This dynamic firmware entry requires the GNU/Linux CLI; static musl builds use a different firmware entry. This host has Linux, KVM/FUSE/user namespaces, Python 3.14, Rust/GCC, Git/rg, Node 24/npm and Podman/crun. The agent suite also needs the Claude/Codex CLIs.
+[Configuration and sampling](methodology.md#product-v1) · [Manifest](../../assets/benchmarks/product-v1-20261004/manifest.tsv) · [Samples CSV](../../assets/benchmarks/product-v1-20261004/samples.csv) · [Raw evidence](../../assets/benchmarks/product-v1-20261004/evidence.tar.gz)
 
-```bash
-python3 benchmark/pvisor/product_v1.py \
-  --binary /absolute/path/to/gnu-linux/pvisor \
-  --firmware /absolute/path/to/libkrunfw-directory \
-  --replay-binary /absolute/path/to/pvisor-replay \
-  --output target/product-benchmark-new \
-  --suites network --samples 30 --warmups 3 --network-backends native,host,vm
-```
-
-Start with `--samples 1 --warmups 0` to check prerequisites. Workloads and correctness assertions live in `benchmark/pvisor/v1/`. Reports pin binaries, firmware and harness source with hashes. Failed operations never enter performance distributions. Effective sample counts are stated per page; P95/P99 from small samples describe this batch rather than production tail probabilities.
-
-[Environment, artifacts and method](methodology.md#product-v1) · [Batch manifest](../../assets/benchmarks/product-v1-20261004/manifest.json) · [Per-sample CSV](../../assets/benchmarks/product-v1-20261004/samples.csv) · [Raw reports and diagnostic logs](../../assets/benchmarks/product-v1-20261004/evidence.tar.gz). Reports retain dirty source status; executable SHA256 identifies the measured artifact. The archive excludes large rootfs/binaries and reproducible workspace payloads, while retaining input hashes and each batch's harness.
+Reproduction commands and prerequisites are in the [technical methodology record](../design/benchmark-methodology-evidence.md).

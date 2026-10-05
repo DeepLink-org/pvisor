@@ -1,0 +1,45 @@
+path	type	value
+	object	-
+/failures	string	setup-failure.json records rejected invalid retention (trace=false); no task accepted/no VM executed; corrected to trace=true; all 42 accepted real VM probes in vm.json passed
+/measurement_date	string	2026-10-05
+/schema	string	pvisor-cluster-scalability-archive/v1
+/scope	string	No >4 guest test was run for this archive. Historical Controller tests create records only, not sandboxes. Neither series establishes multi-host or production Agent throughput.
+/sha256	object	-
+/sha256/controller-history-1000.json	string	0cbe7a6ffa5e8f24f2d9a579c766d9f1bc38ee00ba936ece0987355f0a16d33b
+/sha256/controller-history-10000.json	string	3b02659bb49ef704ac982ab3c2a9e2834d41f1de70301527154669d4af4ec51a
+/sha256/controller-history-100000.json	string	a0f3b9018b595bc84c42302e222debe71f7bf62384a165d2a976143ca10136fe
+/sha256/controller-history-1000000.json	string	00ad80b7f2d79f8ef4c3b6ad4e3e4447cb08d9ef05accfacabfae3047f72b289
+/sha256/controller-provenance.json	string	b898e416a64b037fbf7cf2ac02d596a30b9e9b081a529a4e3f7f878fec77a989
+/sha256/controller-summary.csv	string	977526658baaa478e89e4d98c9a3d3b129ecf6211c3859c64e0b26e8721721b7
+/sha256/controller.png	string	68c06ef9ae35bf0e742264de3eeae2570e303a22f1247a19e7b76741e49ab342
+/sha256/controller.svg	string	0f877f206f7a24048a9d536d83c1e06bb31bd459f010b4a98df7ca3ab337a666
+/sha256/execution.png	string	3a605952acb565bd020a6aa6245164b9207da841e69617064ecd3933409324a4
+/sha256/execution.svg	string	4437cef0333dc3857b5f92b5ffbfbd9da83039b313a2076bf99bd85bb38dec37
+/sha256/measure-source.py	string	71b720865f3dcb713ce8fe71dce0b25e3b76770146f55751add76cff1172e643
+/sha256/plot-source.py	string	c0cbe268392f830a2db9a9d96c19dd08e3b409d6d09ebe33f4ed58cd38cd6b64
+/sha256/quickstart-source.py	string	b9d34925ec74d06cc17209a8736157f3866ea76f836e45dd9bc7803367c26f1e
+/sha256/setup-failure.json	string	3f772584b6e1f57081e37b22c7a2f17d6173ba81bd9d0492ba8be38611c76e16
+/sha256/vm-summary.csv	string	031b2165b8f29cb81a09ea111776281cfe8cffe013f6ca269874249eb34ee5e7
+/sha256/vm.json	string	9e761521642a3a9aabea8f931761c3056c57f84ad01b722e53e1a685864e5208
+/source_snapshots	string	*-source.py preserve measurement and rendering identity; use repository paths to execute them
+/sources	object	-
+/sources/controller	string	archived 2026-10-05 v3 synthetic typed API reports; not rerun
+/sources/vm	string	new real KVM experiment; 1, 2, 4 simultaneous guests
+/validation	object	-
+/validation/caps	string	kernel memory.max, cpu.max and memory.swap.max checked for every service
+/validation/cleanup	string	all experiment services stopped; no active pvisor-quickstart services after run
+/validation/documentation	object	-
+/validation/documentation/bilingual_pairs	integer	132
+/validation/documentation/checks	string	strict translation revisions, links, anchors, images, locale navigation/search, callouts, code blocks; passed
+/validation/documentation/html_pages	integer	413
+/validation/documentation/isolated_build	boolean	true
+/validation/maximum_concurrent_guests	integer	4
+/validation/measured_vm_runs	integer	35
+/validation/native_identity	string	one KVM process per Worker at simultaneous guest-ready plateau; PID/start time and guest marker recorded
+/validation/oom_count	integer	0
+/validation/python_docs_tests	object	-
+/validation/python_docs_tests/command	string	UV_CACHE_DIR=/tmp/pvisor-docs-uv-cache UV_NO_SYNC=1 just --tempdir /tmp test-py tests/test_docs.py
+/validation/python_docs_tests/passed	integer	7
+/validation/real_vm_runs_passed	integer	42
+/validation/script_lint	string	ruff check and format --check passed
+/validation/statistics	string	independently recomputed using NumPy; median, linear-interpolated P95, memory and launch rates matched

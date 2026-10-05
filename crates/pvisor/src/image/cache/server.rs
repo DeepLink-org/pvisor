@@ -489,7 +489,7 @@ pub(super) fn serve(
             }
         });
     }
-    eprintln!("pvisor cache listening on {address}");
+    eprintln!("pvisor service cache listening on {address}");
     match listener {
         Listener::Unix(listener, _lock) => {
             for stream in listener.incoming() {

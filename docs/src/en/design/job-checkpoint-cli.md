@@ -1,7 +1,10 @@
 # Job-centered checkpoint and fork command design
 
+> CLI update: the standalone `pvisor snapshot` entry is removed. Old interfaces/measurements below belong to their historical artifacts, not current executable instructions. See [CLI reference](../reference/cli.md) for current entries and capability boundaries.
+
+
 > Status: implementation in stages. 2026-10-03. Workspace checkpoints and command management are connected; full execution save/restore for ordinary Jobs is not yet connected.
-> The user accepted this design and added a constraint: keep `run` as unchanged as possible. Current `pvisor snapshot` remains a standalone VM entry point; this design defines its target interface after integration with the Job lifecycle. Existing full snapshots, persistent compression/deduplication and private-copy forks provide the foundation, without implying ordinary Jobs can already be saved.
+> The user accepted this design and added a constraint: keep `run` as unchanged as possible. The standalone `pvisor snapshot` entry is removed; this design retains the target interface for complete execution integration with the Job lifecycle. Existing full snapshots, persistent compression/deduplication and private-copy forks provide the foundation, without implying ordinary Jobs can already be saved.
 
 ## 1. Objects and basic constraints
 
@@ -95,7 +98,7 @@ Keep existing `--vm/--executor`, `--rootfs`, `--safe`, `--mount`, networking and
 
 Preserve run argument parsing, default executor, command and environment, CPU/memory, stdio, TUI, policy installation, stage selection and result acceptance semantics as far as possible. Potential future saving must not silently disable DAX, networking or devices, change the rootfs view, enable compression/paging by default or fully copy all inputs.
 
-The initial support matrix remains limited to validated configurations. Declare capabilities only after full snapshots, Run/Attempt/Bundle, stage, file versions and preimage ownership are connected. The current standalone snapshot runner does not establish that ordinary Jobs are connected.
+The initial support matrix remains limited to validated configurations. Declare capabilities only after full snapshots, Run/Attempt/Bundle, stage, file versions and preimage ownership are connected. The historical standalone snapshot runner does not establish that ordinary Jobs are connected.
 
 Save requests use two checks: record static capabilities at startup, then check dynamic conditions at operation time (active connections, file handles, in-flight device access, compatibility, space and execution ownership). If conditions are unmet, return specific reasons while keeping the original Job running. Do not restart the workload to retrofit capabilities or silently reduce isolation policy.
 
@@ -323,7 +326,7 @@ pvisor apply ./stage/task --all
 4. Deliver capture-and-continue transactions for execution create/fork, sharing capture implementation. Private stage copies form the baseline; optimize incremental capture and COW in backends over time.
 5. Deliver checkpoint references, deletion/GC and historical selection. Preserve reading of old Jobs when changing internal layout; do not interpret old logical checkpoints as execution checkpoints.
 6. Retain `status --review` as a compatible review entry point. Retain `fork --checkpoint`, requiring checkpoint kind to match explicit state.
-7. Keep current snapshot commands for a migration window and explain their standalone instance boundary; do not map them to new Jobs with fabricated records. Once the new Job workflow is complete, remove them from primary help and retain a hidden legacy entry point. Importing old objects requires explicit validation of compatibility, source and file acceptance information.
+7. The standalone snapshot command is removed, without a hidden legacy frontend. Storage SDKs still validate compatibility, provenance and references for old objects; no ordinary Job records are fabricated. Migration capability needs explicit acceptance.
 
 During migration, do not offer run aliases that appear unified but bypass the stage. Before exposing each new command, require Job lifecycle, file acceptance and real VM validation; unsupported platforms/configurations return capability errors.
 
@@ -370,6 +373,6 @@ Full execution state still requires:
 2. Using the existing control channel and supervisor for capture-and-continue, source runner exit confirmation, suspended head and execution-ownership handoff to a new Attempt.
 3. Execution checkpoint Job ownership, shared content references, deletion/store-wide GC, persistent restore failure state and real Job VM validation.
 
-Legacy `snapshot` remains during the migration window; its full-copy objects have not been disguised as Job checkpoints. Hide its old entry point from primary help only after the ordinary Job full execution path passes acceptance.
+The legacy `snapshot` command has been removed. Its full-copy storage objects remain available to the underlying SDK and have not been converted into Job checkpoints. Complete execution restoration for ordinary Jobs still depends on execution-profile capability and acceptance.
 
 Validation for this iteration: `just fmt` passed; strict Clippy for core and TUI with Gateway enabled passed; the final `just test pvisor` run passed 319 tests and skipped 4. New tests cover real file forks, preimage copies, branch references retained through drop, duplicate requests, corrupt manifests and capability refusal without state changes. Testing identified and corrected an existing vsock test's faulty assumption about background worker scheduling; it now checks queue completion and actual RST content. A memory diagnostic test once returned WouldBlock after page state changed, then passed regression testing. These tests do not establish acceptance of full VM save/restore for ordinary Jobs.

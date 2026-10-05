@@ -71,20 +71,35 @@ pvisor fork last --state workspace --stage ./stage/branch -- codex
 公共工作流保持简单：启动 Job，检查 Evidence，然后明确决定 staged effect 的去向。Provider
 行为见[执行环境](../guides/executors/index.md)，完整选项见 [CLI 参考](../reference/cli.md)。
 
-## 核心命令与伴随工具
+## 核心命令与服务边界
 
-`pvisor` 内置 `run`、`status`、`review`、`checkpoint`、`kill`、`inspect`、`fork`、`apply`、`drop`，
-另提供帮助与 `extensions` 列表。单独安装核心即可管理普通运行和文件接受。`suspend/resume` 已提供能力检查入口，普通 Job 的完整执行检查点当前尚未接通。
+顶层按所操作的对象组织：Job 生命周期与工作区命令保持扁平，部署/集群/节点资源集中在 `service`；`replay` 从轨迹创建 Job，`tui` 是可选交互前端，`extensions` 只列顶层可选工具。
 
-`pvisor-tui` 属于 `pvisor-tui`，`pvisor-replay` 属于 `pvisor-replay`；
-它们依赖核心，核心不依赖它们。`pvisor-cache` 前端仍在核心包中，因为 OCI 与懒加载缓存
-仍由执行器使用。wheel 安装四个二进制到同一目录。
+| 职责 | 入口 |
+|---|---|
+| 创建、观察、停止、只读检查 Job | `run`、`status`、`kill`、`inspect` |
+| 审查与接受文件变化 | `review`、`apply`、`drop` |
+| Job 检查点与分支 | `checkpoint`、`suspend`、`resume`、`fork` |
+| 部署角色生命周期 | `service run/status/restart/stop --config FILE` |
+| 集群任务/控制与执行节点 | `service cluster`、`service worker` |
+| 不可变环境与实验冷页池 | `service cache`、`service memory-pool` |
 
-伴随命令的名称与描述来自静态表。只查核心同目录的三个第一方命令，不搜索 PATH，
-不扫描二进制 manifest，不计算文件摘要或传递启动器 evidence。
-安装目录与可执行文件仍须归当前用户或 root 所有，且不得 group/world 可写；拒绝符号链接。
-派发使用 Unix `exec`，保留参数、stdio、信号与退出码，伴随命令不能覆盖核心命令。
-`pvisor help NAME` 支持伴随工具；`run --tui` 和交互式审批转交 TUI。
+`status --review` 保留为已存在的快捷形式；`review` 仍是详细审查入口。`run --tui` 是主要交互路径，顶层 `tui` 保留显式前端调用。暂不引入另一个 `job` 命令层，避免让相同 Job 操作形成两套语法。
+
+四个资源命令从顶层移除，原参数保持在 service 下。旧写法明确报迁移错误，不会被默认执行当成宿主程序。独立 `snapshot` 前端已删除，存储/恢复 SDK 和内部 RAM helper 保留；它不自动扩大普通 Job 的完整执行保存能力。
+
+```bash
+pvisor service --help
+pvisor service cluster --help
+pvisor service worker --help
+pvisor service cache --help
+pvisor service memory-pool --help
+pvisor help service cluster submit
+```
+
+同目录的七个制品为 `pvisor`、`pvisor-cluster`、`pvisor-worker`、`pvisor-cache`、`pvisor-memory-pool`、`pvisor-replay`、`pvisor-tui`。资源 companion 是 service 子命令的实现；单独核心仍可管理 Job，没有安装对应 companion 时服务工具明确报错。Supervisor 与数据角色保留独立进程，CLI 合并不改变故障边界。
+
+工具来自静态表，只查可信安装目录，不搜索 PATH 或执行 discovery。安装目录与可执行文件归当前用户或 root 所有，不得 group/world 可写，拒绝符号链接。Unix `exec` 保留参数、stdio、信号和退出码；子命令自己的 `--help`/`--version` 原样转交，工具不能覆盖 Job 命令。部署与预算见[统一服务指南](../guides/cluster/service.md)。
 
 核心默认构建不包含 Gateway。启用捕获使用 `--features gateway`；wheel 构建启用该 feature。
 无捕获时，普通显式代理仍由 OverlayNet 授权与转发。请求未编译的捕获或 Gateway debug 能力会报错。
@@ -94,4 +109,4 @@ Attempt 生命周期由 Session 管理；AgentCtl 保留工作负载协作职责
 具体执行与终态处理见[核心架构](architecture.md)，记录与失败语义见 [Operation 与 Event](operations-events.md)。
 
 
-完整 VM 快照接入 Job 的目标接口见[Job 检查点与分叉 CLI 设计稿](job-checkpoint-cli.md)。工作区命令已接入，完整执行保存/恢复仍在实现中；已交付范围和限制见设计的第 10 节。当前独立 `pvisor snapshot` 入口的使用边界见[完整环境快照 CLI](environment-snapshot.md)，不能与普通 Job 命令混用。
+完整 VM 快照接入 Job 的目标接口见[Job 检查点与分叉 CLI 设计稿](job-checkpoint-cli.md)。工作区命令已接入，完整执行保存/恢复仍在实现中；已交付范围和限制见设计的第 10 节。独立 snapshot 已删除；[完整环境快照与迁移](environment-snapshot.md)说明存储 SDK 和历史证据的边界。

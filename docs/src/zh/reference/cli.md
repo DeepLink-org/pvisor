@@ -6,6 +6,21 @@ Job 是 pVisor 面向用户的核心对象；`pvisor run` 创建 Job，其余扁
 Host、OCI VM 和透明 host-rootfs VM 的完整命令示例见
 [使用 pVisor 运行工作负载](../guides/executors/index.md)。
 
+## Service 命令 {#service}
+
+顶层命令操作 Job；部署、集群与节点共享资源使用 `service`。`run/status/restart/stop --config FILE` 管理整套配置与角色；资源工具保留原参数形式，放在对应子命令后：
+
+```bash
+pvisor service --help
+pvisor service cluster --help
+pvisor service worker --help
+pvisor service cache --help
+pvisor service memory-pool --help
+pvisor help service cluster submit
+```
+
+旧顶层 `cluster`、`worker`、`cache`、`memory-pool` 已移除，明确报迁移错误；`snapshot` 已删除。工具帮助与错误显示嵌套命令名，不把旧名字静默当作 host workload。默认执行继续使用 `pvisor -- COMMAND`。配置、预算与部署验收见[统一服务指南](../guides/cluster/service.md)，整体职责见[命令模型](../design/cli.md)。
+
 ## 按任务查找命令
 
 - **运行命令：** 从[`pvisor run`](../start/first-run.md)开始，再用 `status --review`、
@@ -168,7 +183,7 @@ pvisor checkpoint gc ./stage/task --json
 `suspend JOB`、`resume JOB`、`checkpoint create JOB --kind execution` 和
 `fork JOB --state execution` 目前会明确返回 `CAPABILITY_UNSUPPORTED`，不改变 Job 状态。
 普通 VM Job 的 Overlay/DAX、临时根文件层和 Attempt 交接尚未接入完整保存/恢复。
-已有独立 `snapshot` 工作流继续保留；它的对象不等同于 stage 中的 Job 检查点。
+独立 `snapshot` 命令已删除；底层存储对象不自动转换成 Job 检查点，删除入口也不会扩大普通 Job 的 execution 能力。
 详细实现范围见[Job 检查点设计](../design/job-checkpoint-cli.md#10-当前实现与验收边界)。
 
 ## `--safe` 参数预设 {#safe-参数预设}
@@ -579,7 +594,7 @@ staging 数据，但保留紧凑的 Run/Overlay 元数据、apply ledger 和 cap
 
 ### 共享镜像文件缓存
 
-`pvisor cache serve` 在前台提供 OCI 镜像文件服务；`cache prepare IMAGE`、
+`pvisor service cache serve` 在前台提供 OCI 镜像文件服务；`cache prepare IMAGE`、
 `cache list DIGEST [PATH]`、`cache stat DIGEST PATH` 和 `cache read DIGEST PATH`
 通过 `PVISOR_CACHE_SERVER` 访问它。默认使用用户缓存目录下的
 `pvisor/cache.sock` Unix socket。服务端可用 `--image-store DIR`
@@ -592,4 +607,4 @@ VM 镜像启动会自动探测默认 socket；服务可用时，将远程镜像�
 完整协议、限制和 SSH 远程访问方式见 [共享镜像缓存协议](shared-image-cache.md)。
 
 
-实验性 macOS 内存池入口为 `pvisor memory-pool SOCKET` 与 `pvisor run --vm-memory-pool SOCKET`。池需要保持运行，停止会使依赖 VM 失败；配置、预算和使用步骤见[共享内存首版接入](../design/memory-sharing/index.md#v1-integration)。
+实验性 macOS 内存池入口为 `pvisor service memory-pool SOCKET` 与 `pvisor run --vm-memory-pool SOCKET`。池需要保持运行，停止会使依赖 VM 失败；配置、预算和使用步骤见[共享内存首版接入](../design/memory-sharing/index.md#v1-integration)。

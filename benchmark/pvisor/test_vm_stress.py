@@ -11,7 +11,11 @@ def test_missing_hardware_is_failure_with_a_retained_report(tmp_path, monkeypatc
     guest = tmp_path / "guest"
     guest.write_bytes(b"guest-identity")
     binary = tmp_path / "binary"
-    binary.write_text("#!/bin/sh\nexit 1\n")
+    # Pass the archived-CLI compatibility check, then exercise the hardware
+    # failure path below without starting a real guest or snapshot command.
+    binary.write_text(
+        '#!/bin/sh\nif [ "$1" = snapshot ] && [ "$2" = --help ]; then exit 0; fi\nexit 1\n'
+    )
     binary.chmod(0o755)
     harness = Harness(
         SimpleNamespace(

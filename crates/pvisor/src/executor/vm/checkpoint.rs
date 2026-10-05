@@ -1442,6 +1442,8 @@ pub(super) mod native {
             &checkpoint.store,
             &checkpoint.snapshot_id,
             &published,
+            settings.node_socket.as_deref(),
+            settings.snapshot_filesystem_pool.as_deref(),
         )?;
         let ram = ram_owner.file.clone();
         pvisor_vm::api::MachineRestore {

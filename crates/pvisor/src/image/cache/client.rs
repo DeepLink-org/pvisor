@@ -19,8 +19,50 @@ pub struct CacheClient {
     pub(super) endpoint: String,
     token: Option<String>,
     direct: Option<PortableCache>,
+    binding: ClientBinding,
+}
+
+/// Private host-side runner handoff. Never include this in a guest view.
+#[derive(Clone, serde::Serialize, serde::Deserialize)]
+#[serde(deny_unknown_fields)]
+pub(super) struct ClientBinding {
+    address: String,
+    token: Option<String>,
+    local_store: Option<std::path::PathBuf>,
+    read_only: bool,
+}
+impl ClientBinding {
+    pub(super) fn needs_host_network(&self) -> bool {
+        self.address.starts_with("s3://") || matches!(endpoint(&self.address), Ok(Endpoint::Tcp(_)))
+    }
+    pub(super) fn unix(socket: &std::path::Path) -> Self {
+        Self {
+            address: format!("unix://{}", socket.display()),
+            token: None,
+            local_store: None,
+            read_only: false,
+        }
+    }
 }
 impl CacheClient {
+    pub(super) fn local_objects_directory(&self) -> Option<std::path::PathBuf> {
+        self.direct.as_ref()?;
+        dirs::cache_dir().map(|root| {
+            root.join("pvisor/cache-v1/objects")
+                .join(&hash(self.endpoint.as_bytes())[7..])
+        })
+    }
+    pub(super) fn binding(&self) -> ClientBinding {
+        self.binding.clone()
+    }
+    pub(super) fn from_binding(binding: ClientBinding) -> anyhow::Result<Self> {
+        Self::configured(
+            binding.address,
+            binding.token,
+            binding.local_store,
+            binding.read_only,
+        )
+    }
     pub fn from_env() -> anyhow::Result<Self> {
         Self::from_config(CacheConfig::from_env()?)
     }
@@ -42,6 +84,12 @@ impl CacheClient {
         local_store: Option<std::path::PathBuf>,
         read_only: bool,
     ) -> anyhow::Result<Self> {
+        let binding = ClientBinding {
+            address: address.clone(),
+            token: token.clone(),
+            local_store: local_store.clone(),
+            read_only,
+        };
         let direct = if let Some(path) = address.strip_prefix("file://") {
             Some(PortableCache::new(
                 Storage::filesystem(path.into(), !read_only)?,
@@ -75,6 +123,7 @@ impl CacheClient {
             endpoint: address,
             token,
             direct: direct.map(|cache| cache.with_local_objects(local_objects)),
+            binding,
         })
     }
     /// Discover the default socket, or require an explicitly configured service.
@@ -159,7 +208,7 @@ impl CacheClient {
                     .map_err(CacheConnectError)
                     .with_context(|| {
                         format!(
-                            "connect cache {}; start `pvisor cache serve`",
+                            "connect cache {}; start `pvisor service cache serve`",
                             self.endpoint
                         )
                     })?,

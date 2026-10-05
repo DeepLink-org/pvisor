@@ -1276,10 +1276,11 @@ async fn execute_config(
             .context("VM image must be explicitly configured")?;
         let store = config.vm.image_store.clone();
         run_log!("pVisor image: resolving {image}");
-        let (prepared, mount) =
-            tokio::task::spawn_blocking(move || crate::image::cache::prepare_image(&image, store))
-                .await
-                .context("OCI image preparation task failed")??;
+        let (prepared, mount) = tokio::task::spawn_blocking(move || {
+            crate::image::cache::prepare_vm_image(&image, store)
+        })
+        .await
+        .context("OCI image preparation task failed")??;
         _image_mount = mount;
         run_log!(
             "pVisor image: {} ({})",

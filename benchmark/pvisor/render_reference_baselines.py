@@ -4,11 +4,11 @@
 import argparse
 import csv
 import json
-import shutil
 import tarfile
 from pathlib import Path
 
 from bench import percentile
+from evidence_tsv import copy_evidence, load as load_evidence, migrate, resolve
 
 BACKENDS = [
     "native",
@@ -238,7 +238,7 @@ def main():
     p.add_argument("--assets", type=Path, required=True)
     p.add_argument("--followup-report", type=Path, action="append", default=[])
     args = p.parse_args()
-    report = json.loads(args.report.read_text())
+    report = load_evidence(args.report)
     for row in report["rows"]:
         if row["correctness"] != "passed":
             raise ValueError("failed workloads cannot enter the latency distribution")
@@ -255,10 +255,10 @@ def main():
     summary = summarize(report)
     (args.output / "summary.json").write_text(json.dumps(summary, indent=2) + "\n")
     (args.output / "report.json").write_text(json.dumps(report, indent=2) + "\n")
-    shutil.copy2(args.report, args.output / "report.original.json")
+    copy_evidence(args.report, args.output / "report.original.json")
     for name in ("assets.json", "tool-identities.json", "kernel.config"):
-        if (args.assets / name).is_file():
-            shutil.copy2(args.assets / name, args.output / name)
+        if resolve(args.assets / name).is_file():
+            copy_evidence(args.assets / name, args.output / name)
     fields = [
         "mode",
         "backend",
@@ -281,23 +281,24 @@ def main():
     export_evidence(args.report.parent, args.output)
     figures(summary, args.output)
     for source in args.followup_report:
-        followup = json.loads(source.read_text())
+        followup = load_evidence(source)
         if "summary" not in followup or any(
             row["correctness"] != "passed" for row in followup["rows"]
         ):
             raise ValueError(f"incomplete or incorrect follow-up: {source}")
         dest = args.output / "followups" / source.parent.name
         dest.mkdir(parents=True, exist_ok=False)
-        shutil.copy2(source, dest / "report.json")
+        copy_evidence(source, dest / "report.json")
         (dest / "summary.json").write_text(json.dumps(summarize(followup), indent=2) + "\n")
         with (dest / "samples.csv").open("w", newline="") as f:
             writer = csv.DictWriter(f, fieldnames=fields)
             writer.writeheader()
             writer.writerows({k: row[k] for k in fields} for row in followup["rows"])
         audit = source.parent / "docker-process-audit.json"
-        if audit.is_file():
-            shutil.copy2(audit, dest / audit.name)
+        if resolve(audit).is_file():
+            copy_evidence(audit, dest / audit.name)
         export_evidence(source.parent, dest)
+    migrate(args.output)
     print("Exported", len(report["rows"]), "successful samples to", args.output)
 
 

@@ -9,6 +9,8 @@ Start a Controller and two Workers on Linux, submit shell tasks, download eviden
 | [VMs and model Gateway](vm-and-gateway.md) | Native VM controls/forks, offline models and provider configuration |
 | [Complete design](../../design/cluster/index.md) | Authority, protocols, implementation and evolution constraints |
 
+For one deployment entry managing Controller, Workers and node resources, see the [unified service guide](service.md). This page retains the independent-service task, reconciliation and storage acceptance workflow.
+
 ## Prerequisites and resource budget {#prerequisites}
 
 Run from the repository root. You need Linux, Bash, Python 3.11+, Rust/Cargo, just, `/bin/sh`, `/bin/sleep`, cgroup v2 and a running user systemd manager. Prepare build dependencies using [Installation](../../start/installation.md). VMs also need x86-64, KVM/FUSE, `ldd` and an explicit firmware directory; see [VM preparation](vm-and-gateway.md#vm).

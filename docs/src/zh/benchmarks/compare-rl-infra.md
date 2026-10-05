@@ -1,30 +1,36 @@
 # 对比：Agent RL rollout 基础设施
 
-pVisor 适合作为 rollout 的执行与证据层：每个尝试有独立环境、改动、轨迹和恢复入口。训练算法、模型服务、reward 与集群调度仍由训练系统负责。第一版能判断本机执行成本和回放契约，还不能给出完整 RL 训练吞吐提升。
+## 主要结论 {#conclusions}
 
-## 比较范围（2026-10-04）
+**pVisor 可提供每次尝试的执行、暂存、轨迹与恢复单元，但没有完整 RL 训练吞吐领先的证据。** 本机启动、工具任务与快照成本可用于预算；它们不能推导每秒有效 rollout 或训练成本降低比例。
 
-| 方案 | 主职责 | 与 pVisor 的关系 |
+已有 OpenHands/SWE-Gym/verl 管线可以继续使用；需要跨 Agent 统一工作区与执行证据时评估 pVisor。模型服务、任务、reward 和训练调度仍由训练系统负责。
+
+## Motivation {#motivation}
+
+一次 rollout 不仅是创建 sandbox，还包括工具执行、模型等待、测试验证、失败重试及保存样本。比较基础设施需要看每个有效结果的总成本。
+
+## 实验设计 {#interpretation}
+
+本章测量本机执行与回放契约，没有执行完整 SWE-Gym/verl 训练对照，也没有比较不同论文成功率。官方项目用于说明职责，专用集成未验收就不称为兼容。
+
+| 工具 | 职责与比较范围 |
+|---|---|
+| OpenHands runtime | Agent 工具环境；Docker sandbox 可挂载本地仓库 |
+| SWE-Gym | 仓库任务、可执行环境、测试验证及 Agent/verifier 训练 |
+| verl | 训练、rollout 与模型资源协调 |
+| pVisor | Job、stage、轨迹、回放与 VM checkpoint/fork；不替代训练算法 |
+
+依据 [OpenHands](https://docs.openhands.dev/openhands/usage/sandboxes/docker)、[SWE-Gym](https://github.com/SWE-Gym/SWE-Gym)、[verl](https://verl.readthedocs.io/en/latest/)。
+
+## 实验数据和分析 {#results}
+
+| 成本项 | 可用证据 | 可支持的用途 |
 |---|---|---|
-| OpenHands sandbox/runtime | 执行 Agent 工具、提供工作环境；官方 Docker sandbox 可挂载本地仓库 | 可以比较执行与工作区边界；pVisor 的 OpenHands 回放适配器有固定版本契约，不能推断最新 OpenHands 全兼容 |
-| SWE-Gym | 真实仓库任务、可执行环境和测试验证，训练 Agent 与 verifier | 提供任务和 reward 语义；pVisor 可管理每次尝试的执行与证据，本版未完成 SWE-Gym 实验集成 |
-| verl 等训练框架 | 训练、rollout、模型与计算资源协调 | pVisor 可由 rollout worker 调用；不替代优化器、采样器或训练调度，本版无经验证的专用 verl connector |
-| pVisor | Job 生命周期、stage、Gateway 轨迹、回放、VM snapshot/fork | 提供有记录的执行单元，训练方负责模型、任务、reward 和批量编排 |
+| [启动](startup.md) | 本地 VM 约 0.1 s | 估算一次性环境等待 |
+| [工具任务](agent-tasks.md) | staged 短修复约 0.7 s，VM 约 4 s | 按执行边界估算工具预算 |
+| [前缀准备](replay-fidelity.md) | 固定六种格式约 5–5.5 ms | 准备已记录历史；不证明模型下一动作相同 |
+| [完整快照](vm-memory/index.md#linux-snapshot) | raw 保存/恢复约 0.71/0.93 s | 判断恢复分支的固定成本 |
+| [并发密度](density.md) | 空闲环境探针 | 估算基础占用；不等于有效 rollout 吞吐 |
 
-对照依据 [OpenHands Docker sandbox](https://docs.openhands.dev/openhands/usage/sandboxes/docker)、[SWE-Gym 项目](https://github.com/SWE-Gym/SWE-Gym)、[verl 文档](https://verl.readthedocs.io/en/latest/)。这些能力比较没有采用不同论文的任务成功率来排名。
-
-## 一次 rollout 的集成路径
-
-调度方准备固定任务与 rootfs → 创建独立 pVisor Run → 将模型请求经过 Gateway（如需轨迹）→ 执行测试并保存 reward → 保留 Bundle 和 stage → 失败时选择工具回放或 VM checkpoint fork → 将结果与训练样本绑定。所有子进程、共享目录和模型 endpoint 都应进入清楚的边界配置。
-
-工具回放重新执行历史操作并获取新观察；VM checkpoint 恢复 CPU/RAM 与相应设备、文件状态。二者代价和兼容范围不同，不应把任意 API 请求、远程服务连接或模型状态都称为可恢复。[回放保真度](replay-fidelity.md)区分前缀重建与真实模型下一动作；[VM 快照](vm-memory/index.md)给出保存与恢复代价。
-
-## 性能规划
-
-先用[并发密度](density.md)估算空闲环境成本，再加入真实编译、测试、模型等待、轨迹 I/O 与任务文件规模。1 秒占用探针的并发数不等于每秒有效 rollout 数。需要记录任务成功率、失败重试、每个有效样本耗时和总资源，才能判断对训练预算的实际收益。
-
-当前可用性应分为：本机执行/暂存与快照有实测；适配器契约有测试；完整 SWE-Gym/verl 训练 throughput 未测。已有成熟的 OpenHands/SWE-Gym 管线可以继续使用，需要跨 Agent 统一恢复与证据时再评估 pVisor。
-
-## 更正
-
-通过 [pVisor issues](https://github.com/DeepLink-org/pvisor/issues) 提交训练框架版本、模型、任务集、并发配置和原始样本；新增集成需附执行边界与 reward 记录。
+工具回放重新执行操作，VM checkpoint 恢复 CPU/RAM 及对应设备/文件状态，不能把所有远端连接都视为可恢复。真实训练仍需测任务成功率、失败重试、总资源与每个有效样本耗时；当前数据没有回答 pVisor 是否比完整 RL 管线更快。

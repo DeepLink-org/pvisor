@@ -16,9 +16,15 @@ pub(crate) const BUILTINS: &[&str] = &[
     "fork",
     "inspect",
     "extensions",
-    "snapshot",
+    "service",
     "help",
 ];
+
+pub(crate) const SERVICE_TOOLS: &[&str] = &["cluster", "worker", "cache", "memory-pool"];
+
+pub(crate) fn is_service_tool(name: &str) -> bool {
+    SERVICE_TOOLS.contains(&name)
+}
 
 #[derive(Debug, Clone, serde::Serialize)]
 pub struct Companion {
@@ -27,6 +33,14 @@ pub struct Companion {
 }
 
 const COMMANDS: &[Companion] = &[
+    Companion {
+        name: "cluster",
+        description: "Submit tasks or serve the cluster Controller",
+    },
+    Companion {
+        name: "worker",
+        description: "Execute cluster tasks on this node",
+    },
     Companion {
         name: "memory-pool",
         description: "Serve the experimental shared VM cold-page pool",
@@ -91,6 +105,7 @@ pub fn find(name: &str) -> anyhow::Result<Option<(PathBuf, Companion)>> {
 pub fn discover() -> anyhow::Result<Vec<(PathBuf, Companion)>> {
     COMMANDS
         .iter()
+        .filter(|command| !is_service_tool(command.name))
         .filter_map(|command| find(command.name).transpose())
         .collect()
 }
@@ -114,7 +129,18 @@ pub(crate) fn execute(path: PathBuf, args: &[OsString]) -> anyhow::Result<()> {
         "extension is outside the installation"
     );
     check_executable(&path)?;
-    Err(std::process::Command::new(path).args(args).exec().into())
+    let mut command = std::process::Command::new(&path);
+    if let Some(name) = path
+        .file_name()
+        .and_then(|name| name.to_str())
+        .and_then(|name| name.strip_prefix("pvisor-"))
+        && is_service_tool(name)
+    {
+        // Clap derives its displayed invocation from argv[0]; keep nested tool
+        // help/errors in the public namespace without rewriting tool options.
+        command.arg0(format!("pvisor service {name}"));
+    }
+    Err(command.args(args).exec().into())
 }
 
 #[cfg(test)]

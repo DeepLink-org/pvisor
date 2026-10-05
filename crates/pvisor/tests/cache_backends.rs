@@ -395,10 +395,9 @@ fn filesystem_cli_and_explicit_options_use_the_same_daemonless_contract() {
 
 #[cfg(all(target_os = "linux", target_arch = "x86_64"))]
 #[test]
-#[ignore = "requires /dev/kvm, /dev/fuse and the static musl guest target"]
+#[ignore = "requires /dev/kvm and the static musl guest target"]
 fn vm_reads_daemonless_filesystem_and_s3_images_without_projecting_storage_credentials() {
     assert!(Path::new("/dev/kvm").exists(), "KVM is required");
-    assert!(Path::new("/dev/fuse").exists(), "FUSE is required");
     let guest_temp = tempfile::tempdir().unwrap();
     let guest_source = guest_temp.path().join("guest.rs");
     fs::write(
@@ -471,7 +470,14 @@ fn main() {
         fs::remove_dir_all(source).unwrap();
         s3.read_only.store(true, Ordering::Relaxed);
         let config = tmp.path().join("vm.toml");
-        fs::write(&config, "[run]\ninherit_env = true\n").unwrap();
+        let mut configuration = "[run]\ninherit_env = true\n".to_owned();
+        if let Some(directory) = std::env::var_os("PVISOR_TEST_LIBKRUNFW_DIR") {
+            configuration.push_str(&format!(
+                "[vm]\nlibrary_dir = {}\n",
+                serde_json::to_string(&directory.to_string_lossy()).unwrap()
+            ));
+        }
+        fs::write(&config, configuration).unwrap();
         let workspace = tmp.path().join("workspace");
         fs::create_dir(&workspace).unwrap();
         let job = tmp.path().join("job");

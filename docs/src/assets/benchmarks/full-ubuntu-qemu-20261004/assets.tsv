@@ -1,0 +1,36 @@
+path	type	value
+	object	-
+/assets	object	-
+/assets/ubuntu-26.04-server-cloudimg-amd64-initrd-generic	object	-
+/assets/ubuntu-26.04-server-cloudimg-amd64-initrd-generic/bytes	integer	72091068
+/assets/ubuntu-26.04-server-cloudimg-amd64-initrd-generic/sha256	string	c9f23b4ac34a20df6a1d344b44bf2597faa48799d814cbc206b3974c6ead5215
+/assets/ubuntu-26.04-server-cloudimg-amd64-initrd-generic/url	string	https://cloud-images.ubuntu.com/releases/resolute/release/unpacked/ubuntu-26.04-server-cloudimg-amd64-initrd-generic
+/assets/ubuntu-26.04-server-cloudimg-amd64-vmlinuz-generic	object	-
+/assets/ubuntu-26.04-server-cloudimg-amd64-vmlinuz-generic/bytes	integer	17303944
+/assets/ubuntu-26.04-server-cloudimg-amd64-vmlinuz-generic/sha256	string	7efd88a7facf80874d781ccb2c2421f0aaaa575e3b94760430619e826f490117
+/assets/ubuntu-26.04-server-cloudimg-amd64-vmlinuz-generic/url	string	https://cloud-images.ubuntu.com/releases/resolute/release/unpacked/ubuntu-26.04-server-cloudimg-amd64-vmlinuz-generic
+/assets/ubuntu-26.04-server-cloudimg-amd64.img	object	-
+/assets/ubuntu-26.04-server-cloudimg-amd64.img/bytes	integer	865115136
+/assets/ubuntu-26.04-server-cloudimg-amd64.img/sha256	string	8800651811af9a85465ad1d552add729947bb16488dddb4a9b5305a3d97332b2
+/assets/ubuntu-26.04-server-cloudimg-amd64.img/url	string	https://cloud-images.ubuntu.com/releases/resolute/release/ubuntu-26.04-server-cloudimg-amd64.img
+/firecracker_transport	string	Default virtio MMIO, no PCI; rd.driver.pre=virtio_mmio; reboot=t
+/guest_unit_sha256	string	3b89c74a3dbba3a51312f074c13fe4ba5badb6090276adb71e95896ff6883481
+/guest_workload_sha256	string	a3b120813d58746e9da8594d71a45cdc093ac9bdbad9f4cf0edc741bb9b30fd8
+/image_policy	string	Firecracker and QEMU consume this complete official Ubuntu image; pVisor uses --rootfs host without an image
+/initrd	string	/home/reiase/workspace/pvisor/target/ubuntu-reference-20261004/downloads/ubuntu-26.04-server-cloudimg-amd64-initrd-generic
+/kernel_config_sha256	string	e75c0adab6020e72844d7431cf801a02b94ed32efc251c3b0fb80c021d065180
+/kernel_elf_sha256	string	72eb0d4df32d685ed24508de3d05842e32004cbc592a2c67b8756967c04522bf
+/original_image_policy	string	Only Firecracker consumes Ubuntu; pVisor uses --rootfs host and its own embedded kernel
+/prepared_template_update	string	Only benchmark workload/environment updated offline after clean shutdown; kernel and Ubuntu services unchanged
+/preserved	string	Full GPT, /boot, EFI, stock kernel/initrd/modules/services
+/provision_seconds	float	85.8140148479979
+/provisioning	string	QEMU KVM, user networking, native Ubuntu apt tools plus installed Rust/Claude/Codex; outside timings
+/provisioning_shape	string	Untimed QEMU: 1 vCPU host,-rdseed,-rdrand; measured Firecracker VMs: 2 vCPU defaults
+/release	string	Ubuntu 26.04 LTS (20260927)
+/reproduction_snapshot	string	https://cloud-images.ubuntu.com/releases/resolute/release-20260927/
+/reuse_note	string	Same prepared OS artifacts, now reused by the independent QEMU follow-up; unchanged kernel/disk content.
+/root_partuuid	string	3b6ccca1-0c96-46be-9ee4-dc45bf129735
+/schema	string	pvisor-ubuntu-reference-assets/v1
+/sha_verification	string	Official HTTPS SHA256SUMS; GPG signature not verified
+/temporary_files	string	Private /work/_tmp for all complete task tools; host workload uses its own workspace/_tmp
+/ubuntu_kernel_version	string	7.0.0-34-generic

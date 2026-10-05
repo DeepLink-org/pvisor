@@ -41,7 +41,11 @@ struct Header {
     root: u64,
     bytes: u64,
 }
-type PageCache = Mutex<LruCache<(String, u64), Arc<Vec<u8>>>>;
+struct CachedPage {
+    bytes: Arc<Vec<u8>>,
+    _charge: Option<crate::cache_budget::Charge>,
+}
+type PageCache = Mutex<LruCache<(String, u64), CachedPage>>;
 struct Pages {
     storage: Storage,
     handle: Handle,
@@ -107,8 +111,8 @@ impl Pages {
     }
     fn page(&self, name: &str, id: u64) -> anyhow::Result<Arc<Vec<u8>>> {
         let key = (name.to_string(), id);
-        if let Some(bytes) = self.cache.lock().unwrap().get(&key).cloned() {
-            return Ok(bytes);
+        if let Some(page) = self.cache.lock().unwrap().get(&key) {
+            return Ok(page.bytes.clone());
         }
         let expected = self
             .hashes
@@ -145,7 +149,18 @@ impl Pages {
             bytes
         };
         let bytes = Arc::new(bytes);
-        self.cache.lock().unwrap().put(key, bytes.clone());
+        let mut cache = self.cache.lock().unwrap();
+        if let Ok(charge) =
+            crate::cache_budget::reserve_replacing(bytes.len(), || cache.pop_lru().is_some())
+        {
+            cache.put(
+                key,
+                CachedPage {
+                    bytes: bytes.clone(),
+                    _charge: charge,
+                },
+            );
+        }
         Ok(bytes)
     }
     fn read(&self, name: &str, offset: u64, len: usize) -> anyhow::Result<Vec<u8>> {

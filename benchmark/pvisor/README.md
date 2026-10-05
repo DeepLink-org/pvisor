@@ -729,3 +729,44 @@ Use the same frozen binary, assets and CPU selection. Resource follow-ups use
 `--modes tools --samples 10 --warmups 1`; precise-exit follow-ups use
 `--modes ready --samples 30 --warmups 3`, each in a new output directory. Omit
 `--followup-report` if none was collected. Never pool percentiles across batches.
+
+## Published evidence format
+
+Reports under `docs/src/assets/benchmarks/` use typed, line-oriented TSV
+(`path`, `type`, `value`). JSON Pointer paths preserve nested keys and array
+positions; explicit types preserve integers/floats, null and empty containers.
+Strings escape control characters and trailing spaces so every record occupies
+one physical line and produces no Git trailing-whitespace warning.
+
+`conversion.tsv` records original JSON byte hashes, converted TSV hashes and
+canonical value hashes. Historical manifests keep their original names and
+hashes; use the conversion index to locate a renamed attachment. CSV samples,
+figures, archived harnesses and runtime protocols are retained.
+
+```bash
+python3 benchmark/pvisor/evidence_tsv.py check docs/src/assets/benchmarks
+python3 benchmark/pvisor/evidence_tsv.py convert \
+  target/experiment/report.json target/publication/report.tsv
+python3 benchmark/pvisor/evidence_tsv.py convert \
+  target/publication/report.tsv /tmp/report.json
+```
+
+For an existing publication tree, convert and inspect first, then retire its
+JSON copies into a verified original-byte backup:
+
+```bash
+python3 benchmark/pvisor/evidence_tsv.py migrate target/publication --keep-json
+python3 benchmark/pvisor/evidence_tsv.py check target/publication --allow-json
+python3 benchmark/pvisor/evidence_tsv.py retire target/publication \
+  --backup-dir target/publication-json-originals
+```
+
+The plotting scripts, `summarize_product_v1.py`, and reference/Ubuntu exporters
+accept TSV and runtime JSON. Exporters publish TSV automatically. Frozen harness
+copies in old evidence archives retain their exact bytes; tools using `json.loads`
+can consume a reconstructed JSON copy in a temporary directory. Reconstructed
+JSON is semantically equivalent, but its byte hash can differ from the original
+formatting; this migration's exact originals are retained separately in
+`target/benchmark-json-originals-20261005/`.
+
+See the [format contract](../../docs/src/en/benchmarks/methodology.md#evidence-format).

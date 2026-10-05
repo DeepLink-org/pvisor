@@ -1,40 +1,42 @@
 # 对比：Docker / devcontainer
 
-Docker 加 Git 能组成很好的开发环境。pVisor 补充的是运行期间保留改动、apply 前检查原工作区、选择性合入，以及记录实际限制。已有可靠的 worktree/patch 审查流水线时，是否引入 pVisor，取决于这些流程是否值得统一。
+## 主要结论 {#conclusions}
 
-## 比较范围
+**Docker bind mount 的文件访问接近原生，优于 pVisor 的暂存路径；pVisor staged 的已测短修复任务则与 Docker 接近且略快。** 同工具环境修复/测试为 staged **0.70 s**、Docker **0.90 s**；pVisor VM 为 **3.97 s**，明显更慢。pVisor 的选型价值是统一保留改动、冲突检查与选择性合入，不能以“全面比 Docker 快”概括。
 
-2026-10-04 新增本用户私有 rootless Docker Engine 29.7.2 同机实测；系统 daemon 不可访问不再阻止对照。Linux 使用同套 Python/Node/Rust/Claude/Codex、相同项目和两核预算，镜像已准备。旧 Podman/crun 批次单独保留。Docker Desktop、devcontainer 启动插件与远程开发环境没有实测，不外推 Linux Engine 数据。
+已有可靠 Docker + worktree/Git 审查流程时，可以继续沿用；需要多个 Agent 或非 Git 目录共用合入协议时，staged 值得评估。
 
-| 配置 | 文件修改在哪里发生 | 合入时的保护 | 适用场景 |
-|---|---|---|---|
-| Docker + writable bind mount | 宿主挂载文件即时变化 | 需要另外组织审查和回滚 | 可信开发任务，环境可复现即可 |
-| Docker writable layer / 独立卷 | 容器层或卷内 | 导出文件、补丁或提交后自行合并 | 工作区本来就远程或独立 |
-| devcontainer | 按配置选择挂载、卷和工具链 | 可与 Git、worktree、PR 流程组合 | 团队标准开发环境 |
-| Docker + 独立 worktree + git diff/apply | 独立 worktree，宿主原目录可保持不变 | Git 可做 patch 检查、三方合并；调用方负责工作区和重试协议 | 已有成熟 Git 审查流程 |
-| pVisor staged Job | 上层 stage；宿主原目录在 apply 前保留 | preimage 冲突检测、按路径 apply/drop、事务恢复；见实测 | 多 Agent 或非 Git 目录需要统一审查协议 |
+## Motivation {#motivation}
 
-Docker 挂载与容器边界依据 [bind mounts](https://docs.docker.com/engine/storage/bind-mounts/) 和 [Engine security](https://docs.docker.com/engine/security/)；devcontainer 的定位依据[开放规范](https://containers.dev/)。Git 工作流仍应检查未跟踪文件、二进制、权限、符号链接及并行修改，不能只查看默认 `git diff` 的输出。
+容器提供工具环境，但工作区怎样挂载决定改动是否即时抵达宿主。比较速度时，审查、导出、冲突处理和合入所需的流程也影响最终成本。
 
-## 性能与实际差别
+## 实验设计 {#interpretation}
 
-[文件系统测量](filesystem.md)使用相同输入与工具，对比原生、Podman、pVisor OCI 和各文件视图；镜像准备不计入任务耗时。[apply/drop](apply.md)单独测文件数量增长与冲突拒绝。容器后端存在不表示每种 mount 都进入 stage；确认 Run Bundle 中的暂存范围。
+Linux 同机、两核预算、相同 Python/Node/Rust/Agent 工具与输入；Docker Engine 29.7.2 rootless、镜像和 daemon 已准备，使用 writable bind mount。每格 3 次预热、30 次测量；完整任务包含启动到校验结果，文件操作不含启动。数据使用报告固定的 pVisor 制品，未与当前文件系统集成制品全面重测。Docker Desktop、devcontainer 插件和 overlay2 工作负载未测。
 
-“Docker 加 git diff 够不够”的答案是：已有完整审查/合并协议时可以够。只增加 `git diff` 不能自动撤回已写入 bind mount 的修改，也不会生成 pVisor 的执行能力观察记录。pVisor 的收益来自这些工作流，代价是相应的进程、暂存和记录开销。
+| 配置 | 修改位置与审查方式 |
+|---|---|
+| Docker writable bind mount | 挂载的宿主文件直接变化；可另用独立 worktree |
+| Docker writable layer / volume | 修改在层或卷；通过导出、补丁或提交合入 |
+| devcontainer | 按配置挂载或使用卷，可组合 Git/PR 审查 |
+| pVisor staged | stage 保留改动，apply 前原目录不变；按路径合入及 preimage 冲突检查 |
 
-### 用户能据此判断什么 {#reference-comparison}
+Docker 默认 bind 写入宿主的语义见[官方说明](https://docs.docker.com/engine/storage/bind-mounts/)，devcontainer 配置见[开放规范](https://containers.dev/)。
 
-本节的 Docker/CLI 数据来自相同工具制品的旧受控批次，pVisor 使用准备目录，不使用镜像。新增默认 `--rootfs host` 与完整 Ubuntu 对照、工具内部时间及本轮客户端通过/失败情况见[完整 Agent Env](agent-tasks.md#full-ubuntu)；配置与样本分别保留。
+## 实验数据和分析 {#results}
 
-完整修复测试任务的 P50 为 Docker **0.90 秒**、pVisor staged **0.70 秒**、pVisor VM **3.97 秒**。Docker 的 metadata/read/write 接近原生；staged 读取 64 MiB 多约 16 ms，遍历 2,048 文件多约 175 ms。轻量工具任务中，暂存成本是约数百毫秒的预算；需要独立 guest kernel 时，还要接受目前 VM 工具路径的秒级差距。
+### 同工具任务 {#reference-comparison}
 
-这不是同一安全边界的速度排名。staged host 提供改动隔离和证据，可访问视图外宿主；Docker 为 namespace 容器与 writable bind，VM 为独立 guest kernel 和 staged 视图。选择应同时看需要的边界、任务耗时和改动进入原工作区的方式。
+| 操作 | pVisor staged P50 | Docker P50 | pVisor VM P50 |
+|---|---:|---:|---:|
+| 修复并测试 | 0.70 s | 0.90 s | 3.97 s |
+| Claude 受控工具闭环 | 1.07 s | 1.23 s | 初始化超时 / N=0 |
+| Codex 受控工具闭环 | 2.25 s | 6.26 s | 10.93 s |
+| 读取并校验 64 MiB | 48.77 ms | 33.24 ms | 89.27 ms |
+| 遍历 2,048 文件 | 180.13 ms | 5.06 ms | 310.54 ms |
 
-真实客户端也有额外成本：Claude 为 Docker **1.23 秒**、staged **1.07 秒**；Codex 为 Docker **6.26 秒**、staged **2.25 秒**、VM **10.93 秒**。Claude/VM 初始化超时，不能列成更快样本。这里是受控模型和固定工具动作，真实推理、默认客户端内部沙箱、Docker writable layer/overlay2 文件负载都没有测。
+短修复任务 staged 少约 0.20 s；但逐文件操作中，Docker 接近原生，staged 的元数据成本更高。客户端初始化和工具组合会改变总体结果，单项文件速度不能替代完整任务。CLI 使用受控响应，排除模型推理，不是默认内置沙箱对照。
 
-[完整环境与分布](agent-tasks.md#reference-env) · [文件操作](filesystem.md#reference-fs) · [内存范围与配置](methodology.md#reference-env)
+pVisor VM 提供独立 guest kernel，staged host、Docker namespace 和 VM 的边界并不相同。选择要结合[隔离验证](isolation-tests.md)和[apply 成本](apply.md)。当前文件系统数据见[文件系统性能](filesystem.md)，不将其与这里的 Docker 数字混算精确倍数。
 
-
-## 更正
-
-通过 [pVisor issues](https://github.com/DeepLink-org/pvisor/issues) 提供配置、镜像摘要及命令；欢迎补充 Docker writable layer/overlay2 与 Docker Desktop 样本，本版只实测 Linux rootless Engine + bind mount。
+[完整任务与分布](agent-tasks.md#reference-env) · [同工具文件数据](filesystem.md#reference-fs) · [协议与制品](methodology.md#reference-env)

@@ -6,18 +6,20 @@ v1 把每个镜像的可变状态与文件索引收进自己的 meta 目录，�
 
 ## 文件服务接入与 lazy 读取 {#filesystem-access}
 
-v1 存储格式独立于文件系统入口。当前 lazy image 客户端在宿主挂载只读
-FUSE lower，host staged 和 VM 都通过本地路径访问它；普通本地 lower 的
-VM overlay 已直接通过 virtio-fs 服务，不需要宿主 union 挂载。
+v1 存储格式独立于文件系统入口。[统一文件服务与双入口](overlayfs.md#filesystem-service)
+已接入：host 工具保留只读宿主 FUSE lower，VM 则通过 virtio-fs 直接调用
+同一远程只读后端，不再为 lazy image 建立中间宿主 FUSE 挂载。本地 lower
+与 VM staged workspace 也直接通过 virtio-fs 服务；host staged 保留宿主执行。
+该重构不改变已发布的 v1 数据格式、固定 revision 句柄和校验合同。
 
-后续按[统一文件服务与双入口](overlayfs.md#filesystem-service)重构：host
-经宿主 FUSE 入口，VM 经 virtio-fs 入口，二者调用相同远程只读后端。
-VM 不再为 lazy image 建立中间宿主 FUSE 挂载。这个直接接入尚未实现，
-不改变已发布的 v1 数据格式、固定 revision 句柄和校验合同。
+`backend.rs` 保留 stat/list/read、分页索引、硬链接身份与有界内容缓存，
+`lazy.rs` 负责 host FUSE 回调，`direct.rs` 提供 VM 私有元数据投影和 runner
+接入。投影不挂载 FUSE；小范围读取仍只获取相应的内容块。首次写入通过
+copy-up 获取完整原文件并写入独立 upper；完整快照和自包含目录导出补齐全树，
+可能触发额外下载。内容 miss 不占用服务全局锁或元数据表锁。
 
-后端应保留 stat/list/read、分页索引、硬链接身份与有界内容缓存；首次写入
-仍通过 overlay copy-up 到独立 upper。冷 miss 与其他请求的排队、热读缓存
-命中和完整任务耗时分别测量，减少一层中转不等于已证明整体加速。
+此次直接后端尚无性能 A/B 数据。冷 miss 对其他请求的影响、热读缓存命中
+和完整任务耗时应分别测量，减少一层中转不等于已证明整体加速。
 
 ## 完整目录树
 

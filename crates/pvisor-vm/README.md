@@ -23,6 +23,14 @@ API 中的 `PermissionSemantics`、`RamReclaim`、`RamMappingSnapshot` 和内存
 
 源码来自 libkrun 1.19.3 组件及仓库已有适配；来源、许可证和既有同步记录保存在 `provenance/`。底层操作系统 FFI 与固件数据 ABI 仍是私有边界，不属于公开 VM 控制接口。
 
+VM 文件系统经 guest virtio-fs 和 virtqueue 直接调用宿主 runner 内的
+`pvisor-overlay-core::service::FilesystemService`。host FUSE 使用同一服务；
+VM staged 和 lazy image 均不建立中间宿主文件系统 FUSE 挂载。lazy 镜像的
+元数据、按块校验读取和缓存由 `pvisor` 的 `image/cache/backend.rs` 提供，
+通过私有元数据投影保留现有本地 FD、路径检查与快照合同。该投影没有挂载，
+文件内容通过后端读取；copy-up 和完整快照导出会补齐所需内容。
+协议 inode/handle 表和平台权限仍留在入口适配器中。
+
 ## 核心接口模型
 
 所有定义集中在 `src/api.rs`，实现集中在私有适配器中。文件系统配置使用 `PathBuf`，UTF-8 校验及内部设备格式转换由运行时完成。

@@ -192,6 +192,12 @@ pub fn unix_time(seconds: i64, nanoseconds: i64) -> SystemTime {
     base + std::time::Duration::from_nanos(nanoseconds as u64)
 }
 
+pub fn unix_timestamp(time: SystemTime) -> (i64, i64) {
+    let value = timespec(time);
+    #[allow(clippy::unnecessary_cast)]
+    (value.tv_sec as i64, value.tv_nsec as i64)
+}
+
 pub fn set_times(
     path: &Path,
     atime: Option<SystemTime>,

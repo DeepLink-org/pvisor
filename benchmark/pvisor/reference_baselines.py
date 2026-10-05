@@ -104,18 +104,33 @@ def validate_staged_filesystem(work, stage, expected_bytes):
         raise ValueError("staged written file sizes differ from the workload")
 
 
-def validate_bundle_execution(bundle, backend, staged_isolation="host_process"):
+def validate_direct_filesystem(work, expected_bytes):
+    """A direct-write control must actually publish all writes to its workspace."""
+    written = work / "_fs/written"
+    if {p.name for p in written.iterdir()} != {f"{i:04d}" for i in range(256)}:
+        raise ValueError("expected all 256 written files in the direct workspace")
+    if expected_bytes <= 0 or expected_bytes % 256:
+        raise ValueError("invalid workload written byte count")
+    if any(not p.is_file() or p.stat().st_size != expected_bytes // 256 for p in written.iterdir()):
+        raise ValueError("direct written file sizes differ from the workload")
+
+
+def validate_bundle_execution(bundle, backend, staged_isolation="host_process", host_isolation="host_process"):
     assert bundle["run"]["state"] == "completed" and bundle["run"]["exit_code"] == 0
     expected = (
         "virtual_machine"
         if backend == "pvisor-vm"
         else staged_isolation
         if backend == "pvisor-staged"
+        else host_isolation
+        if backend == "pvisor-host"
         else "host_process"
     )
     assert bundle["run"]["executor"]["isolation"] == expected
     if backend in ("pvisor-vm", "pvisor-staged"):
         assert bundle["safety"]["filesystem_changes_staged"]
+    if backend == "pvisor-host":
+        assert not bundle["safety"]["filesystem_changes_staged"]
     if backend == "pvisor-staged" and staged_isolation == "rootless_process":
         assert bundle["safety"]["filesystem_non_bypassable"]
         assert bundle["safety"]["filesystem_read_non_bypassable"]
@@ -185,6 +200,17 @@ def run_trial(args, metadata, backend, mode, trial):
             image,
             *payload[1:],
         ]
+    elif backend.startswith("sdk-vm-"):
+        launch = root / "guest.json"
+        launch.write_text(json.dumps({
+            "argv": ["/usr/bin/python3", "/bench/reference_workload.py", "--mode", mode],
+            "env": {"PATH": "/opt/toolchain/bin:/usr/local/bin:/usr/bin:/bin", "HOME": "/root",
+                    "PYTHONDONTWRITEBYTECODE": "1", "PVISOR_REFERENCE_TMPDIR": "/dev/shm/reference"},
+            "cwd": "/work", "workspace": "/work", "stdio_ports": [True, True, True],
+        }))
+        argv = [str(args.sdk_driver), backend.removeprefix("sdk-vm-"),
+                str(args.sdk_rootfs), str(work), str(stage), str(launch)]
+        env["LD_LIBRARY_PATH"] = str(args.firmware)
     elif backend.startswith("pvisor"):
         argv = [
             str(args.output / "bin/pvisor"),
@@ -394,6 +420,19 @@ def run_trial(args, metadata, backend, mode, trial):
         )
     )
     assert result["correctness"] == "passed" and result["mode"] == mode
+    if backend.startswith("sdk-vm-"):
+        # The built-in pvisor guest reports workload status by root ioctl;
+        # successful VMM exit above and the unique result are both required.
+        if "Kernel panic" in output:
+            raise ValueError("SDK guest kernel panicked")
+        expected_bytes = result["filesystem"]["write"]["check"]["bytes"]
+        if backend == "sdk-vm-overlay":
+            validate_staged_filesystem(work, stage, expected_bytes)
+        else:
+            validate_direct_filesystem(work, expected_bytes)
+        row_stage = "overlay" if backend == "sdk-vm-overlay" else "passthrough"
+    else:
+        row_stage = None
     if isvm:
         validate_guest_output(output, mode)
     if backend.startswith("pvisor"):
@@ -403,7 +442,8 @@ def run_trial(args, metadata, backend, mode, trial):
         assert len(bundles) == 1
         bundle = json.loads(bundles[0].read_text())
         validate_bundle_execution(
-            bundle, backend, getattr(args, "staged_isolation", "host_process")
+            bundle, backend, getattr(args, "staged_isolation", "host_process"),
+            getattr(args, "host_isolation", "host_process"),
         )
         if backend in ("pvisor-vm", "pvisor-staged"):
             if mode == "filesystem":
@@ -432,6 +472,10 @@ def run_trial(args, metadata, backend, mode, trial):
         "correctness": "passed",
         "logs": str(root),
     }
+    if mode == "filesystem" and backend in ("native", "pvisor-host"):
+        validate_direct_filesystem(work, result["filesystem"]["write"]["check"]["bytes"])
+    if row_stage:
+        row["workspace_transport"] = row_stage
     for name in ("_model-requests.json", "_cli-output.json"):
         for directory in (work, stage / "upper"):
             if (directory / name).exists():
