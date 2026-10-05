@@ -206,7 +206,7 @@ execution fork 不接受替换命令。指定历史检查点时可以保持父 J
 
 当前支持 Linux x86_64 和 macOS ARM64 的原生无网络、私有 RAM profile；宿主根目录 `/`、联网设备、共享内存池、可写 RAM backing 和冷页压缩不在这个恢复合同内。`run` 不为保存能力自动关闭网络、DAX 或改变 rootfs；用 `status JOB --json` 查看能力与拒绝原因。恢复要求相同宿主启动、pVisor binary 和固件，不能跨宿主或跨版本恢复。
 
-当 stage 位于工作区内，检查点存储自动放在 guest backing 之外，并记录 Job 归属。捕获保存 guest 可见文件，排除 guest 已隐藏的 stage 管理目录；可见文件的内容、元数据及硬链接校验仍然完整。
+当 stage 位于工作区内，检查点存储自动放在 guest backing 之外，并记录 Job 归属。必要时恢复副本也使用独立目录，Attempt 记录保留路径供审查和 apply 使用。捕获保存 guest 可见文件，排除 guest 已隐藏的 stage 管理目录；可见文件的内容、元数据及硬链接校验仍然完整。
 
 暂停期间拒绝 `apply/drop` 和工作区捕获；先 `kill JOB` 可撤销恢复权，保留历史检查点，再处理文件变化。execution 检查点的 `list/show/delete` 与工作区检查点共用入口；删除会检查 suspended head、分支引用及存储租约。分支引用保守保留，尚无 Job 删除/归档接口来释放它们。GC 回收本 Job 存储中的未发布事务、删除残留和未引用 RAM 内容，不删除已发布检查点，也不是跨 Job/Cluster 的全库清理。
 

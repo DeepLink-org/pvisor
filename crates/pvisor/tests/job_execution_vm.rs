@@ -66,6 +66,20 @@ fn wait_for<T>(mut action: impl FnMut() -> Option<T>) -> T {
         std::thread::sleep(Duration::from_millis(25));
     }
 }
+fn native_stderr(stage: &Path) -> String {
+    let result = (|| -> Option<String> {
+        let record = pvisor::RunRecord::read(stage).ok()?;
+        let value: serde_json::Value =
+            serde_json::from_slice(&fs::read(record.stage_dir().join("run-bundle.json")).ok()?)
+                .ok()?;
+        value
+            .pointer("/run/output/stderr")?
+            .as_str()
+            .map(|text| text.chars().take(4096).collect())
+    })();
+    result.unwrap_or_default()
+}
+
 fn counter(stage: &Path) -> Option<u64> {
     let record = pvisor::RunRecord::read(stage).ok()?;
     let upper = &record.overlay.as_ref()?.upper.upper_dir;
@@ -93,7 +107,23 @@ fn native_job_nested_stage_chunked_filesystems_preserve_guest_projection() {
 }
 
 fn acceptance(nested: bool, pooled: bool) {
-    let temp = tempfile::tempdir().unwrap();
+    struct Artifacts(Option<tempfile::TempDir>);
+    impl Artifacts {
+        fn path(&self) -> &Path {
+            self.0.as_ref().unwrap().path()
+        }
+    }
+    impl Drop for Artifacts {
+        fn drop(&mut self) {
+            if std::env::var("PVISOR_TEST_KEEP_JOB_ARTIFACTS").as_deref() == Ok("1") {
+                eprintln!(
+                    "native Job artifacts: {}",
+                    self.0.take().unwrap().keep().display()
+                );
+            }
+        }
+    }
+    let temp = Artifacts(Some(tempfile::tempdir().unwrap()));
     let rootfs = temp.path().join("rootfs");
     for directory in ["bin", "dev", "proc", "tmp"] {
         fs::create_dir_all(rootfs.join(directory)).unwrap();
@@ -363,8 +393,9 @@ int main(void) {
     wait_for(|| {
         if let Some(status) = source.child.try_wait().unwrap() {
             panic!(
-                "resume exited {status}: {}",
-                fs::read_to_string(&resume_log).unwrap()
+                "resume exited {status}: {}\nNative stderr: {}",
+                fs::read_to_string(&resume_log).unwrap(),
+                native_stderr(&stage)
             );
         }
         counter(&stage).filter(|current| *current > frozen)

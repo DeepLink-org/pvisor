@@ -1624,6 +1624,22 @@ fn execution_store_location(
             .join("pvisor-execution-snapshots")
             .join(run_id),
     ];
+    if roots.iter().any(|root| stage.starts_with(root)) {
+        // A nested stage cannot host its own backing copies. Prefer the nearest
+        // outside ancestor, retaining the stage's filesystem where possible.
+        // Directory link counts can differ between filesystems, so moving an
+        // otherwise exact copy to the default run home can violate restoration.
+        let mut ancestor = stage.parent();
+        while let Some(parent) = ancestor {
+            if roots.iter().all(|root| !parent.starts_with(root)) {
+                if parent.parent().is_some() {
+                    candidates.insert(0, parent.join("pvisor-execution-snapshots").join(run_id));
+                }
+                break;
+            }
+            ancestor = parent.parent();
+        }
+    }
     if let Some(pool) = &config.vm.snapshot_filesystem_pool {
         // Pooled snapshots need hard-linked references on the pool's volume.
         // Prefer a sibling store while keeping it outside guest-visible roots.

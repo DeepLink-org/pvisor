@@ -634,3 +634,12 @@ Nested spans and cumulative checkpoints must not be added. This is a host FUSE
 performance comparison; real VM lifecycle checks do not establish VM speedups.
 The completed-marker, corruption and recovery tests are not physical power-loss
 experiments.
+
+Final validation passed 982 Rust tests across Core, OverlayCore, FUSE, VM and
+pVisor, 48 Python documentation/harness tests, targeted Clippy and two explicit
+Linux FUSE roundtrips. All 14 existing STAGE semspec cases passed without changing
+their approval state. Three real KVM Job lifecycle cases passed separately:
+ordinary, nested-stage and nested-stage pooled snapshots, each covering capture,
+suspend, resume and execution fork. These are correctness checks, not VM timing
+acceptance. Logs and source hashes are indexed by
+`target/stage-boundary-20261005/verification.json`.

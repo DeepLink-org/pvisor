@@ -90,7 +90,18 @@ mod tests {
         let copied =
             super::super::copy_guest_tree(&source, &temp.path().join("copy"), &excluded).unwrap();
         assert_eq!(copied, expected);
-        assert!(!temp.path().join("copy/stage").exists());
+        assert!(temp.path().join("copy/stage").is_dir());
+        assert_eq!(
+            fs::read_dir(temp.path().join("copy/stage"))
+                .unwrap()
+                .count(),
+            0
+        );
+        use std::os::unix::fs::MetadataExt;
+        assert_eq!(
+            fs::metadata(&source).unwrap().nlink(),
+            fs::metadata(temp.path().join("copy")).unwrap().nlink()
+        );
         fs::write(source.join("stage/control"), b"updated host receipt").unwrap();
         assert_eq!(
             super::super::inventory_projected(&source, &excluded).unwrap(),

@@ -424,7 +424,12 @@ impl FsSnapshot {
                         || regular != saved.digest.is_some()
                         || symlink != saved.link_target.is_some()
                     {
-                        return Err(invalid("copied filesystem metadata mismatch"));
+                        return Err(invalid(&format!(
+                            "copied filesystem metadata mismatch at {}: saved {:?}, copied {:?}",
+                            path.display(),
+                            saved.identity,
+                            identity
+                        )));
                     }
                     if regular
                         && Some(file_digest(

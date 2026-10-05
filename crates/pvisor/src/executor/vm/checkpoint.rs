@@ -1350,7 +1350,34 @@ pub(super) mod native {
         );
         let preparation = storage.join("execution-restore");
         fs::create_dir(&preparation).context("Attempt restore preparation already exists")?;
-        let rootfs = preparation.join("rootfs");
+        // V5 captures retain authenticated original backing paths. A Job stage
+        // inside those roots cannot also contain their independent restored
+        // copies. Keep control metadata in the Attempt and place this owned
+        // forest beside sealed objects, outside every original source. Retain
+        // it after VM exit for review/apply, just like ordinary stage uppers.
+        let rootfs = if std::iter::once(&saved.root)
+            .chain(saved.workspace.iter())
+            .flat_map(|device| {
+                device
+                    .lowers
+                    .iter()
+                    .chain(std::iter::once(&device.upper))
+                    .chain(device.work.iter())
+                    .chain(device.preimages.iter())
+                    .chain(device.apply_target.iter())
+                    .chain(device.baseline_lower.iter())
+            })
+            .any(|root| preparation.starts_with(root) || root.starts_with(&preparation))
+        {
+            let forest = checkpoint
+                .store
+                .join("restored-attempts")
+                .join(uuid::Uuid::new_v4().to_string());
+            crate::util::create_dir_all_durable(&forest)?;
+            forest.join("rootfs")
+        } else {
+            preparation.join("rootfs")
+        };
         fs::create_dir(&rootfs)?;
         let references = preparation.join("filesystem-references");
         crate::util::create_dir_all_durable(&references)?;
@@ -1558,12 +1585,29 @@ pub(super) mod native {
                 .filter(|source| original.lowers.contains(source))
                 .cloned()
                 .collect::<Vec<_>>();
+            // Each device validates only its own backing. Another device may
+            // retain an immutable lower at the same physical root; passing that
+            // identity binding without its sharing authorization rejects an
+            // otherwise valid restore (rootfs and workspace have separate roles).
+            let backing = std::iter::once(&original.upper)
+                .chain(original.lowers.iter())
+                .chain(original.work.iter())
+                .chain(original.preimages.iter())
+                .chain(original.apply_target.iter())
+                .chain(original.baseline_lower.iter())
+                .collect::<std::collections::BTreeSet<_>>();
+            let copies = launch
+                .copies
+                .iter()
+                .filter(|(source, _)| backing.contains(source))
+                .cloned()
+                .collect::<Vec<_>>();
             let count = if shared.is_empty() {
-                saved.state.rebind_filesystem_layers(name, &launch.copies)?
+                saved.state.rebind_filesystem_layers(name, &copies)?
             } else {
                 saved
                     .state
-                    .rebind_filesystem_shared_lowers(name, &launch.copies, &shared)?
+                    .rebind_filesystem_shared_lowers(name, &copies, &shared)?
             };
             ensure!(count == 1, "restore requires exactly one {name} filesystem");
             ensure!(

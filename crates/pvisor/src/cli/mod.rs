@@ -89,9 +89,9 @@ fn root_command() -> anyhow::Result<clap::Command> {
     command.build();
     let groups = grouped_commands(&command);
     Ok(command
-        .before_help(groups)
+        .before_help(groups.trim_end().to_owned())
         .after_help("Use pvisor -- COMMAND for default execution. Use pvisor help COMMAND for command details.")
-        .help_template("{about}\n\n{usage-heading} {usage}\n\n{before-help}Options:\n{options}\n\n{after-help}\n"))
+        .help_template("{about}\n\n{usage-heading} {usage}\n\n{before-help}Options:\n{options}{after-help}\n"))
 }
 
 /// Display descriptions from the registered commands, including installed

@@ -358,7 +358,11 @@ fn inventory_projected_with_hash<const DEDUPLICATE: bool>(
             xattrs: xattrs(path)?,
             acl: acl(path)?,
         });
-        if metadata.is_dir() {
+        let hidden_directory = excluded.iter().any(|excluded| {
+            path.strip_prefix(root)
+                .is_ok_and(|relative| relative.starts_with(excluded))
+        });
+        if metadata.is_dir() && !hidden_directory {
             let mut children = fs::read_dir(path)?.collect::<std::io::Result<Vec<_>>>()?;
             children.sort_by_key(|entry| entry.file_name());
             for child in children {
@@ -367,7 +371,8 @@ fn inventory_projected_with_hash<const DEDUPLICATE: bool>(
                         .path()
                         .strip_prefix(root)
                         .is_ok_and(|relative| relative.starts_with(path))
-                }) {
+                }) && !child.file_type()?.is_dir()
+                {
                     continue;
                 }
                 visit::<DEDUPLICATE>(root, &child.path(), entries, links, hash, excluded)?;
@@ -428,7 +433,6 @@ fn copy_owned_tree_checked(
 ) -> anyhow::Result<TreeInventory> {
     copy_tree::<false>(source, destination, expected, &[])
 }
-#[allow(clippy::too_many_arguments)]
 pub(crate) fn copy_guest_tree(
     source: &Path,
     destination: &Path,
@@ -503,7 +507,12 @@ fn copy_tree<const SEALED: bool>(
             root: &Path,
             excluded: &[std::path::PathBuf],
         ) -> anyhow::Result<()> {
-            if metadata.is_dir() {
+            let hidden_directory = excluded.iter().any(|excluded| {
+                source
+                    .strip_prefix(root)
+                    .is_ok_and(|relative| relative.starts_with(excluded))
+            });
+            if metadata.is_dir() && !hidden_directory {
                 for child in fs::read_dir(source)? {
                     let child = child?;
                     let source = child.path();
@@ -511,7 +520,8 @@ fn copy_tree<const SEALED: bool>(
                         source
                             .strip_prefix(root)
                             .is_ok_and(|relative| relative.starts_with(path))
-                    }) {
+                    }) && !child.file_type()?.is_dir()
+                    {
                         continue;
                     }
                     let target = destination.join(child.file_name());
@@ -532,7 +542,9 @@ fn copy_tree<const SEALED: bool>(
                         excluded,
                     )?;
                 }
-            } else if let Some(first) = links.get(&(metadata.dev(), metadata.ino())) {
+            } else if !metadata.is_dir()
+                && let Some(first) = links.get(&(metadata.dev(), metadata.ino()))
+            {
                 let _span = profile.span("hardlink");
                 fs::hard_link(first, destination)?;
                 return Ok(());
