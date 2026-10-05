@@ -227,7 +227,7 @@ impl RunControlHandle {
         use pvisor_core::operation::{OperationKind, Value, VmState};
         anyhow::ensure!(
             self.status.borrow().attempt.executor.kind == pvisor_core::ExecutorKind::VirtualMachine,
-            "pause/resume/offload require a VM executor"
+            "live VM controls require a VM executor"
         );
         kind.validate()?;
         anyhow::ensure!(
@@ -236,8 +236,10 @@ impl RunControlHandle {
                 OperationKind::RunPause
                     | OperationKind::RunResume
                     | OperationKind::RunOffload { .. }
+                    | OperationKind::RunCheckpoint { .. }
+                    | OperationKind::RunSuspend { .. }
             ),
-            "unsupported live VM control; only pause/resume/offload are available"
+            "unsupported live VM control primitive"
         );
         let mut operation = self.control_operation.clone();
         operation.kind = kind.clone();

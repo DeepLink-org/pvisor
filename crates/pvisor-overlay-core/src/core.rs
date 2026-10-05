@@ -220,7 +220,25 @@ pub(crate) fn layer_path(root: &Path, rel: &Path) -> io::Result<Option<PathBuf>>
 }
 
 fn layer_metadata(root: &Path, rel: &Path) -> io::Result<Option<(PathBuf, Metadata)>> {
-    layer_metadata_with_parents(root, rel, None, &crate::profile::Profile::default(), None)
+    Ok(
+        layer_metadata_with_parents(root, rel, None, &crate::profile::Profile::default(), None)?
+            .into_entry(),
+    )
+}
+
+enum LayerMetadata {
+    Entry(PathBuf, Metadata),
+    MissingLeaf,
+    UnavailableParent,
+}
+
+impl LayerMetadata {
+    fn into_entry(self) -> Option<(PathBuf, Metadata)> {
+        match self {
+            Self::Entry(path, metadata) => Some((path, metadata)),
+            Self::MissingLeaf | Self::UnavailableParent => None,
+        }
+    }
 }
 
 // One monotonically extending logical path per walk. Only successful physical
@@ -252,7 +270,7 @@ fn layer_metadata_with_parents(
     mut parents: Option<&mut Vec<BackingIdentity>>,
     profile: &crate::profile::Profile,
     mut checked_directories: Option<&mut CheckedDirectories>,
-) -> io::Result<Option<(PathBuf, Metadata)>> {
+) -> io::Result<LayerMetadata> {
     OverlayCore::validate_rel(rel)?;
     if let Some(parents) = &mut parents {
         parents.clear();
@@ -291,8 +309,10 @@ fn layer_metadata_with_parents(
                         });
                     }
                 }
-                Ok(_) => return Ok(None),
-                Err(error) if error.kind() == io::ErrorKind::NotFound => return Ok(None),
+                Ok(_) => return Ok(LayerMetadata::UnavailableParent),
+                Err(error) if error.kind() == io::ErrorKind::NotFound => {
+                    return Ok(LayerMetadata::UnavailableParent);
+                }
                 Err(error) => return Err(error),
             }
         }
@@ -310,9 +330,9 @@ fn layer_metadata_with_parents(
             {
                 checked.observe(root, rel.components().count());
             }
-            Ok(Some((path, metadata)))
+            Ok(LayerMetadata::Entry(path, metadata))
         }
-        Err(error) if error.kind() == io::ErrorKind::NotFound => Ok(None),
+        Err(error) if error.kind() == io::ErrorKind::NotFound => Ok(LayerMetadata::MissingLeaf),
         Err(error) => Err(error),
     }
 }
@@ -1387,26 +1407,38 @@ impl OverlayCore {
         mut parents: Option<&mut Vec<BackingIdentity>>,
         mut checked_directories: Option<&mut CheckedDirectories>,
     ) -> io::Result<Option<ResolvedMetadata>> {
-        if let Some((path, metadata)) = layer_metadata_with_parents(
+        match layer_metadata_with_parents(
             &self.upper,
             rel,
             parents.as_deref_mut(),
             &self.profile,
             checked_directories.as_deref_mut(),
         )? {
-            return Ok(Some(ResolvedMetadata {
-                resolved: Resolved {
-                    path,
-                    is_upper: true,
-                },
-                metadata,
-                layer: 0,
-            }));
-        }
-        let name = rel.file_name().ok_or_else(|| error(libc::EINVAL))?;
-        let parent = rel.parent().unwrap_or_else(|| Path::new(""));
-        if self.is_whiteouted(parent, name) || self.is_opaque(parent) {
-            return Ok(None);
+            LayerMetadata::Entry(path, metadata) => {
+                return Ok(Some(ResolvedMetadata {
+                    resolved: Resolved {
+                        path,
+                        is_upper: true,
+                    },
+                    metadata,
+                    layer: 0,
+                }));
+            }
+            LayerMetadata::MissingLeaf => {
+                let name = rel.file_name().ok_or_else(|| error(libc::EINVAL))?;
+                let parent = rel.parent().unwrap_or_else(|| Path::new(""));
+                if self.is_whiteouted(parent, name) || self.is_opaque(parent) {
+                    return Ok(None);
+                }
+            }
+            LayerMetadata::UnavailableParent => {
+                // This candidate's ancestors were just checked. A missing or
+                // non-directory parent cannot contain an overlay marker; in
+                // particular, never probe markers through an ancestor symlink.
+                // Do not retain absence: the next component/request and the
+                // final physical-parent check still inspect the upper afresh.
+                self.profile.add("unavailable_upper_marker_skips", 1);
+            }
         }
         for (index, lower) in self.layout.lowers.iter().enumerate() {
             if let Some((path, metadata)) = layer_metadata_with_parents(
@@ -1415,7 +1447,9 @@ impl OverlayCore {
                 parents.as_deref_mut(),
                 &self.profile,
                 checked_directories.as_deref_mut(),
-            )? {
+            )?
+            .into_entry()
+            {
                 return Ok(Some(ResolvedMetadata {
                     resolved: Resolved {
                         path,
@@ -3474,6 +3508,72 @@ fn resolved_metadata_and_directory_entries_preserve_layer_and_visibility() {
 #[cfg(test)]
 mod backing_resolution_tests {
     use super::*;
+
+    #[test]
+    fn missing_upper_parents_skip_markers_without_caching_absence() {
+        let temp = tempfile::tempdir().unwrap();
+        let lower = temp.path().join("lower");
+        let upper = temp.path().join("upper");
+        fs::create_dir_all(lower.join("a/b")).unwrap();
+        fs::write(lower.join("a/b/file"), b"lower").unwrap();
+        let profile = crate::profile::Profile::enabled("missing-upper");
+        let core = OverlayCore::new(vec![lower], upper.clone(), None)
+            .unwrap()
+            .with_profile(profile.clone());
+        let path = Path::new("a/b/file");
+        assert_eq!(core.metadata_resolved(path).unwrap().layer, 1);
+        let measurements = profile.report().unwrap().measurements;
+        assert_eq!(measurements["unavailable_upper_marker_skips"].units, 2);
+        assert_eq!(measurements["whiteout_probe"].calls, 1);
+        assert_eq!(measurements["opaque_probe"].calls, 1);
+
+        // A new upper directory must be visible even within the same walk.
+        let result = core
+            .resolve_metadata_walk::<true>(path, None, |prefix| {
+                if prefix == Path::new("a") {
+                    fs::create_dir_all(upper.join("a/b"))?;
+                    fs::write(upper.join("a/b/.wh.file"), b"")?;
+                }
+                Ok(())
+            })
+            .unwrap();
+        assert!(result.is_none());
+        assert_eq!(
+            core.metadata(path).unwrap_err().raw_os_error(),
+            Some(libc::ENOENT)
+        );
+        fs::remove_file(upper.join("a/b/.wh.file")).unwrap();
+        fs::write(upper.join("a/b/file"), b"upper content").unwrap();
+        assert_eq!(core.metadata_resolved(path).unwrap().layer, 0);
+    }
+
+    #[test]
+    fn markers_behind_upper_ancestor_symlinks_do_not_hide_lower_files() {
+        let temp = tempfile::tempdir().unwrap();
+        let lower = temp.path().join("lower");
+        let upper = temp.path().join("upper");
+        let outside = temp.path().join("outside");
+        fs::create_dir_all(lower.join("a/b")).unwrap();
+        fs::create_dir_all(outside.join("b")).unwrap();
+        fs::write(lower.join("a/b/file"), b"lower").unwrap();
+        fs::write(outside.join("b/.wh.file"), b"").unwrap();
+        fs::write(outside.join("b/.wh..wh..opq"), b"").unwrap();
+        let core = OverlayCore::new(vec![lower], upper.clone(), None).unwrap();
+        fs::create_dir(upper.join("a")).unwrap();
+        let path = Path::new("a/b/file");
+        let entry = core
+            .resolve_metadata_walk::<true>(path, None, |prefix| {
+                if prefix == Path::new("a") {
+                    fs::remove_dir(upper.join("a"))?;
+                    std::os::unix::fs::symlink(&outside, upper.join("a"))?;
+                }
+                Ok(())
+            })
+            .unwrap()
+            .unwrap();
+        assert_eq!(entry.layer, 1);
+        assert_eq!(fs::read(entry.resolved.path).unwrap(), b"lower");
+    }
 
     #[test]
     fn partial_upper_reuses_successful_prefixes_but_rechecks_final_parents() {

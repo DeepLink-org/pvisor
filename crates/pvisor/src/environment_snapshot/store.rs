@@ -270,18 +270,11 @@ fn validate_environment(
     Ok((manifest, layers))
 }
 
-fn validate_environment_checked(
+fn read_environment_manifest(
     path: &Path,
     id: &str,
     expected: &Compatibility,
-    lazy: bool,
-    pool: &Path,
-    owned_stage: bool,
-) -> anyhow::Result<(
-    EnvironmentManifest,
-    Vec<super::SharedFilesystemLayer>,
-    Vec<u8>,
-)> {
+) -> anyhow::Result<EnvironmentManifest> {
     let bytes = fs::read(path.join("manifest.json"))?;
     ensure!(digest(&bytes) == id, "environment manifest digest mismatch");
     let manifest: EnvironmentManifest = serde_json::from_slice(&bytes)?;
@@ -304,6 +297,34 @@ fn validate_environment_checked(
     manifest.validate_filesystem_format()?;
     valid_id(&manifest.ram_sha256)?;
     valid_id(&manifest.machine_sha256)?;
+    Ok(manifest)
+}
+
+fn read_environment_machine(
+    path: &Path,
+    manifest: &EnvironmentManifest,
+) -> anyhow::Result<Vec<u8>> {
+    let machine = fs::read(path.join("machine.json"))?;
+    ensure!(
+        digest(&machine) == manifest.machine_sha256,
+        "environment machine digest mismatch"
+    );
+    Ok(machine)
+}
+
+fn validate_environment_checked(
+    path: &Path,
+    id: &str,
+    expected: &Compatibility,
+    lazy: bool,
+    pool: &Path,
+    owned_stage: bool,
+) -> anyhow::Result<(
+    EnvironmentManifest,
+    Vec<super::SharedFilesystemLayer>,
+    Vec<u8>,
+)> {
+    let manifest = read_environment_manifest(path, id, expected)?;
     if let Some(index) = &manifest.ram_index {
         index.validate()?;
         let meta = fs::symlink_metadata(path.join("ram.bin"))?;
@@ -331,11 +352,7 @@ fn validate_environment_checked(
             "environment RAM digest mismatch"
         );
     }
-    let machine = fs::read(path.join("machine.json"))?;
-    ensure!(
-        digest(&machine) == manifest.machine_sha256,
-        "environment machine digest mismatch"
-    );
+    let machine = read_environment_machine(path, &manifest)?;
     if owned_stage {
         ensure!(
             manifest.stage_bases.is_some(),
@@ -599,38 +616,11 @@ impl SnapshotStore {
             fs::symlink_metadata(&path)?.is_dir(),
             "invalid environment object"
         );
-        let bytes = fs::read(path.join("manifest.json"))?;
-        ensure!(digest(&bytes) == id, "environment manifest digest mismatch");
-        let manifest: EnvironmentManifest = serde_json::from_slice(&bytes)?;
-        ensure!(
-            matches!(
-                (manifest.version, &manifest.ram_blocks, &manifest.ram_index),
-                (1, None, None)
-                    | (2, Some(_), None)
-                    | (3, None, Some(_))
-                    | (4, Some(_), None)
-                    | (4, None, Some(_))
-                    | (5, Some(_), None)
-                    | (5, None, Some(_))
-            ) && manifest.compatibility == *expected
-                && (manifest.version != 5
-                    || cfg!(target_os = "linux")
-                    || manifest.stage_bases.is_some()),
-            "environment compatibility mismatch"
-        );
-        manifest.validate_filesystem_format()?;
-        valid_id(&manifest.ram_sha256)?;
-        valid_id(&manifest.machine_sha256)?;
-        Ok(manifest)
+        read_environment_manifest(&path, id, expected)
     }
 
     fn read_machine(&self, id: &str, manifest: &EnvironmentManifest) -> anyhow::Result<Vec<u8>> {
-        let machine = fs::read(self.root.join("objects").join(id).join("machine.json"))?;
-        ensure!(
-            digest(&machine) == manifest.machine_sha256,
-            "environment machine digest mismatch"
-        );
-        Ok(machine)
+        read_environment_machine(&self.root.join("objects").join(id), manifest)
     }
     /// Read the digest-bound profile; callers still perform full compatibility validation.
     pub fn profile(&self, id: &str) -> anyhow::Result<String> {

@@ -663,20 +663,35 @@ impl RunExecutor for VmExecutor {
         let memory_mib = requested_memory_mib
             .map(|requested| requested.min(self.settings.memory_mib))
             .unwrap_or(self.settings.memory_mib);
-        let scratch_path = PathBuf::from(format!("/.pvisor-tmp-{}", spec.run_id));
+        let scratch = pvisor_guest::TemporaryFilesystem {
+            path: PathBuf::from(format!("/.pvisor-tmp-{}", spec.run_id)),
+            size_bytes: (u64::from(memory_mib) * 1024 * 1024 / 4).min(64 * 1024 * 1024),
+        };
+        #[cfg(any(
+            all(target_os = "linux", target_arch = "x86_64"),
+            all(target_os = "macos", target_arch = "aarch64")
+        ))]
+        let scratch = match &self.restore {
+            // The restored process and mount still use their captured path,
+            // including after a fork is captured again under a new Run ID.
+            Some(restore) => restore.guest.temporary_filesystem.clone(),
+            None => Some(scratch),
+        };
+        #[cfg(not(any(
+            all(target_os = "linux", target_arch = "x86_64"),
+            all(target_os = "macos", target_arch = "aarch64")
+        )))]
+        let scratch = Some(scratch);
         if !invocation.env.contains_key("TMPDIR")
+            && let Some(scratch) = scratch
             && guest.workspace.as_ref().is_none_or(|workspace| {
-                !scratch_path.starts_with(workspace) && !workspace.starts_with(&scratch_path)
+                !scratch.path.starts_with(workspace) && !workspace.starts_with(&scratch.path)
             })
         {
-            let path = scratch_path;
             guest
                 .env
-                .insert("TMPDIR".into(), path.to_string_lossy().into_owned());
-            guest.temporary_filesystem = Some(pvisor_guest::TemporaryFilesystem {
-                path,
-                size_bytes: (u64::from(memory_mib) * 1024 * 1024 / 4).min(64 * 1024 * 1024),
-            });
+                .insert("TMPDIR".into(), scratch.path.to_string_lossy().into_owned());
+            guest.temporary_filesystem = Some(scratch);
         }
         if let Err(error) = guest.command() {
             return failed_to_start(error.to_string());
@@ -1294,6 +1309,11 @@ fn apply_restore(
         expected_guest.agent == saved_guest.agent,
         "restore guest agent differs from captured agent"
     );
+    anyhow::ensure!(
+        serde_json::to_value(&expected_guest.temporary_filesystem)?
+            == serde_json::to_value(&saved_guest.temporary_filesystem)?,
+        "restore temporary filesystem differs from captured configuration"
+    );
     let changed_keys = expected_guest
         .env
         .keys()
@@ -1642,7 +1662,9 @@ fn run_linked_krun(
     if spec.checkpoint.is_some() {
         vm.snapshot_profile()?;
     }
-    vm.disable_implicit_init()?;
+    // Both cold launch and restore configure the same built-in supervisor.
+    // Restore verifies its virtual inode and restores the saved consumed state;
+    // disabling it would change the captured device configuration.
 
     // OverlayFs cannot service FUSE_SETUPMAPPING; keep DAX disabled.
     add_vm_overlay(&mut vm, "/dev/root", &spec.root)?;

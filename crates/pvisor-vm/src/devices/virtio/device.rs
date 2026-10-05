@@ -12,6 +12,19 @@ use crate::devices::virtio::AsAny;
 use crate::utils::eventfd::EventFd;
 use vm_memory::GuestMemoryMmap;
 
+/// Read the available configuration bytes, leaving any trailing destination bytes intact.
+pub(super) fn read_config_space(config: &[u8], offset: u64, data: &mut [u8]) {
+    let config_len = config.len() as u64;
+    if offset >= config_len {
+        error!("Failed to read config space");
+        return;
+    }
+    if let Some(end) = offset.checked_add(data.len() as u64) {
+        let bytes = &config[offset as usize..end.min(config_len) as usize];
+        data[..bytes.len()].copy_from_slice(bytes);
+    }
+}
+
 /// Configuration for a single virtqueue.
 /// This is used by devices to declare their queue requirements,
 /// and by the transport to construct the actual queues.
@@ -224,5 +237,27 @@ impl<F: Fn() + Send> VmmExitObserver for F {
 impl std::fmt::Debug for dyn VirtioDevice {
     fn fmt(&self, f: &mut std::fmt::Formatter) -> std::fmt::Result {
         write!(f, "VirtioDevice type {}", self.device_type())
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::read_config_space;
+
+    #[test]
+    fn config_reads_preserve_bytes_outside_the_available_range() {
+        let config = [1, 2, 3, 4];
+        let mut data = [0xaa; 4];
+        read_config_space(&config, 1, &mut data);
+        assert_eq!(data, [2, 3, 4, 0xaa]);
+
+        for offset in [config.len() as u64, u64::MAX] {
+            let mut data = [0xaa; 4];
+            read_config_space(&config, offset, &mut data);
+            assert_eq!(data, [0xaa; 4]);
+        }
+        read_config_space(&[], 0, &mut data);
+        assert_eq!(data, [2, 3, 4, 0xaa]);
+        read_config_space(&config, 1, &mut []);
     }
 }

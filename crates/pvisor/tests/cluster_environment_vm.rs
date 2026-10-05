@@ -178,9 +178,24 @@ fn maps_libkrunfw(pid: u32) -> bool {
         })
 }
 
-async fn restored_vm_pids(worker_pid: u32, store: &Path, worker_log: &Path) -> [u32; 2] {
+async fn restored_vm_pids(
+    worker_pid: u32,
+    store: &Path,
+    worker_log: &Path,
+    client: &Client,
+    tasks: [&str; 2],
+) -> [u32; 2] {
     tokio::time::timeout(Duration::from_secs(15), async {
         loop {
+            for id in tasks {
+                let task = client.task(id).await.unwrap();
+                assert!(
+                    !task.phase.terminal(),
+                    "restored task {id} terminated before RAM mapping: error={:?}, result={:?}",
+                    task.error,
+                    task.result
+                );
+            }
             // Tokio can spawn runners from any thread. The other child is the
             // mount watchdog; only native VMMs map the snapshot RAM inode.
             let mut pids = std::collections::BTreeSet::new();
@@ -673,8 +688,14 @@ async fn concurrent_restores_share_physical_ram_baseline_and_keep_private_writes
             .unwrap(),
         receipt
     );
-    let [first_pid, second_pid] =
-        restored_vm_pids(worker_pid, &checkpoint.store, &worker_log).await;
+    let [first_pid, second_pid] = restored_vm_pids(
+        worker_pid,
+        &checkpoint.store,
+        &worker_log,
+        &admin,
+        [&first.id, &second.id],
+    )
+    .await;
     assert_ne!(first_pid, second_pid);
     let first_directory = root.join("worker/tasks/shared-first-1");
     let second_directory = root.join("worker/tasks/shared-second-1");
@@ -3321,8 +3342,14 @@ async fn live_capture_fork(cpu_qos: bool) {
         branch_uppers.push(upper);
     }
     assert_ne!(branch_uppers[0], branch_uppers[1]);
-    let [left_pid, right_pid] =
-        restored_vm_pids(_worker.0.id(), &checkpoint.store, &worker_log).await;
+    let [left_pid, right_pid] = restored_vm_pids(
+        _worker.0.id(),
+        &checkpoint.store,
+        &worker_log,
+        &admin,
+        ["live-left", "live-right"],
+    )
+    .await;
     assert_ne!(left_pid, right_pid);
     if let Some(cookie) = ls_cookie {
         for pid in [left_pid, right_pid] {

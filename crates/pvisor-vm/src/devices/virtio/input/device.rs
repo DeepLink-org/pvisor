@@ -1,5 +1,3 @@
-use std::cmp;
-use std::io::Write;
 use std::thread::JoinHandle;
 
 use crate::utils::eventfd::{EventFd, EFD_NONBLOCK};
@@ -180,19 +178,8 @@ impl VirtioDevice for Input {
         &defs::QUEUE_CONFIG
     }
 
-    fn read_config(&self, offset: u64, mut data: &mut [u8]) {
-        let cfg_slice = self.cfg.bytes();
-        let cfg_len = cfg_slice.len() as u64;
-
-        if offset >= cfg_len {
-            error!("Failed to read config space");
-            return;
-        }
-        if let Some(end) = offset.checked_add(data.len() as u64) {
-            // This write can't fail, offset and end are checked against config_len.
-            data.write_all(&cfg_slice[offset as usize..cmp::min(end, cfg_len) as usize])
-                .unwrap();
-        }
+    fn read_config(&self, offset: u64, data: &mut [u8]) {
+        super::super::device::read_config_space(self.cfg.bytes(), offset, data);
     }
 
     fn write_config(&mut self, offset: u64, data: &[u8]) {
