@@ -46,6 +46,8 @@ pub struct Config {
     pub apply_target: Option<String>,
     #[serde(default)]
     pub baseline_lower: Option<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub baseline_content_index: Option<crate::api::BaselineContentIndex>,
     pub upper_dir: String,
     pub work_dir: Option<String>,
     pub preimage_dir: Option<String>,
@@ -217,6 +219,22 @@ impl OverlaySnapshot {
         config.work_dir = config.work_dir.as_deref().map(&relocate).transpose()?;
         config.preimage_dir = config.preimage_dir.as_deref().map(&relocate).transpose()?;
         config.apply_target = config.apply_target.as_deref().map(&relocate).transpose()?;
+        if let Some(index) = &mut config.baseline_content_index {
+            if !retained.iter().any(|root| root == &index.root) {
+                index.root = PathBuf::from(relocate(
+                    index
+                        .root
+                        .to_str()
+                        .ok_or_else(|| invalid("baseline index root is not UTF-8"))?,
+                )?);
+                index.file = PathBuf::from(relocate(
+                    index
+                        .file
+                        .to_str()
+                        .ok_or_else(|| invalid("baseline index path is not UTF-8"))?,
+                )?);
+            }
+        }
         config.baseline_lower = config
             .baseline_lower
             .as_deref()
@@ -281,6 +299,11 @@ impl OverlaySnapshot {
             config.excluded_paths.iter().map(PathBuf::from).collect(),
             config.preimage_dir.as_ref().map(PathBuf::from),
         )?;
+        let core = if let Some(index) = &config.baseline_content_index {
+            core.with_immutable_content_index(&index.root, index.file.clone(), &index.sha256)?
+        } else {
+            core
+        };
         core.restore_hard_links(&hard_links)?;
         self.config = config;
         self.layers = layers;
@@ -365,10 +388,15 @@ impl OverlayFs {
         let open = if restoring {
             OverlayCore::open_existing_for_layout
         } else {
-            OverlayCore::new_for_layout
+            OverlayCore::new_for_layout_with_compact_preimages
         };
-        let core = open(layout, upper.clone(), work, excluded, preimages)?
-            .with_access_policy(&cfg.access_policy);
+        let core = open(layout, upper.clone(), work, excluded, preimages)?;
+        let core = core.with_access_policy(&cfg.access_policy);
+        let core = if let Some(index) = &cfg.baseline_content_index {
+            core.with_immutable_content_index(&index.root, index.file.clone(), &index.sha256)?
+        } else {
+            core
+        };
 
         let mut roots = Vec::with_capacity(lowers.len() + 1);
         roots.push(upper);
@@ -512,7 +540,31 @@ impl OverlayFs {
                 .iter()
                 .all(|identity| cfg!(target_os = "macos") || identity.mount_id.is_some()))
         .then(|| self.directory_cache.lock().unwrap());
-        for (index, component) in path.components().enumerate() {
+        // Core has freshly checked every physical ancestor for this request.
+        // A matching deepest directory therefore lets us start at its held
+        // inode directly; walking all cached prefixes adds no validation.
+        // Cache misses still take the complete lookup/identity path below.
+        let start = if let (Some(cache), Some(identity), Some(parent)) =
+            (&mut cache, parents.last(), path.parent())
+        {
+            cache.clock = cache.clock.saturating_add(1);
+            let used = cache.clock;
+            if let Some(directory) = cache
+                .entries
+                .get_mut(&(layer.0, parent.to_path_buf()))
+                .filter(|directory| directory.identity == *identity)
+            {
+                inode = directory.inode;
+                directory.used = used;
+                self.profile.add("directory_cache_deep_hits", 1);
+                parents.len()
+            } else {
+                0
+            }
+        } else {
+            0
+        };
+        for (index, component) in path.components().enumerate().skip(start) {
             let key = if cache.is_some() && index < parents.len() {
                 prefix.push(component.as_os_str());
                 Some((layer.0, prefix.clone()))
@@ -607,6 +659,16 @@ impl OverlayFs {
         Ok(self.inner_entry(layer, path, ctx)?.inode)
     }
 
+    fn observed_inner(&self, ctx: Context, path: &Path) -> io::Result<(Layer, u64)> {
+        let backing = self
+            .core
+            .observe_read_for_backing_lookup(path)
+            .map_err(linux_error)?;
+        let layer = Layer(backing.entry.layer);
+        let entry = self.inner_entry_with_parents(layer, path, ctx, &backing.parents)?;
+        Ok((layer, entry.inode))
+    }
+
     fn entry_on_backing(
         &self,
         ctx: Context,
@@ -656,7 +718,14 @@ impl OverlayFs {
     }
 
     fn upper_parent(&self, ctx: Context, path: &Path) -> io::Result<(u64, CString)> {
-        self.core.prepare_create(path).map_err(linux_error)?;
+        self.core
+            .prepare_create(path)
+            .inspect_err(|error| {
+                if std::env::var("PVISOR_FS_PROFILE").as_deref() == Ok("1") {
+                    log::error!("overlay create preparation failed: {error}");
+                }
+            })
+            .map_err(linux_error)?;
         let parent = path.parent().unwrap_or_else(|| Path::new(""));
         let name = path
             .file_name()
@@ -898,7 +967,15 @@ impl FileSystem for OverlayFs {
             let layer_options = layer.init(capable)?;
             options = Some(options.map_or(layer_options, |current| current & layer_options));
         }
-        Ok(options.unwrap_or_else(FsOptions::empty))
+        let mut options = options.unwrap_or_else(FsOptions::empty);
+        // Directory handles and enumeration belong to OverlayFs, not native
+        // layers. macOS passthrough does not advertise these capabilities.
+        let directory_options = FsOptions::DO_READDIRPLUS | FsOptions::READDIRPLUS_AUTO;
+        options.remove(directory_options);
+        if capable.contains(FsOptions::DO_READDIRPLUS) {
+            options |= capable & directory_options;
+        }
+        Ok(options)
     }
 
     fn destroy(&self) {
@@ -991,9 +1068,7 @@ impl FileSystem for OverlayFs {
             .lock()
             .map_err(|_| io::Error::from_raw_os_error(libc::EIO))?;
         let path = self.path(inode)?;
-        self.core.observe_read(&path).map_err(linux_error)?;
-        let layer = self.layer(&path)?;
-        let inner = self.inner_inode(layer, &path, ctx)?;
+        let (layer, inner) = self.observed_inner(ctx, &path)?;
         let result = self.layers[layer.0].readlink(ctx, inner);
         self.layers[layer.0].forget(ctx, inner, 1);
         result
@@ -1068,7 +1143,9 @@ impl FileSystem for OverlayFs {
             .map_err(|_| io::Error::from_raw_os_error(libc::EIO))?;
         let path = self.child(parent, name)?;
         let (upper_parent, upper_name) = self.upper_parent(ctx, &path)?;
-        self.layers[0].mkdir(ctx, upper_parent, &upper_name, mode, umask, extensions)?;
+        self.layers[0]
+            .mkdir(ctx, upper_parent, &upper_name, mode, umask, extensions)
+            .inspect_err(|error| log::error!("overlay native mkdir failed: {error}"))?;
         if upper_parent != fuse::ROOT_ID {
             self.layers[0].forget(ctx, upper_parent, 1);
         }
@@ -1403,9 +1480,7 @@ impl FileSystem for OverlayFs {
             .lock()
             .map_err(|_| io::Error::from_raw_os_error(libc::EIO))?;
         let path = self.path(inode)?;
-        self.core.observe_read(&path).map_err(linux_error)?;
-        let layer = self.layer(&path)?;
-        let inner = self.inner_inode(layer, &path, ctx)?;
+        let (layer, inner) = self.observed_inner(ctx, &path)?;
         let result = self.layers[layer.0].getxattr(ctx, inner, name, size);
         self.layers[layer.0].forget(ctx, inner, 1);
         result
@@ -1417,9 +1492,7 @@ impl FileSystem for OverlayFs {
             .lock()
             .map_err(|_| io::Error::from_raw_os_error(libc::EIO))?;
         let path = self.path(inode)?;
-        self.core.observe_read(&path).map_err(linux_error)?;
-        let layer = self.layer(&path)?;
-        let inner = self.inner_inode(layer, &path, ctx)?;
+        let (layer, inner) = self.observed_inner(ctx, &path)?;
         let result = self.layers[layer.0].listxattr(ctx, inner, size);
         self.layers[layer.0].forget(ctx, inner, 1);
         result
@@ -1592,12 +1665,64 @@ impl FileSystem for OverlayFs {
 mod tests {
     use super::*;
 
+    #[test]
+    fn new_stages_use_compact_journals_and_reopening_preserves_both_formats() {
+        let temp = tempfile::tempdir().unwrap();
+        let target = temp.path().join("target");
+        std::fs::create_dir(&target).unwrap();
+        std::fs::write(target.join("file"), b"original").unwrap();
+        for legacy in [false, true] {
+            let stage = temp.path().join(format!("stage-{legacy}"));
+            let journal = stage.join("preimages");
+            let cfg = Config {
+                lower_dirs: vec![target.to_str().unwrap().into()],
+                apply_target: None,
+                baseline_lower: None,
+                baseline_content_index: None,
+                upper_dir: stage.join("upper").to_str().unwrap().into(),
+                work_dir: None,
+                preimage_dir: Some(journal.to_str().unwrap().into()),
+                excluded_paths: vec![],
+                access_policy: Default::default(),
+                semantics: passthrough::PermissionSemantics::LinuxComplete,
+            };
+            if legacy {
+                let core = OverlayCore::new_with_exclusions_and_preimages(
+                    vec![target.clone()],
+                    stage.join("upper"),
+                    None,
+                    vec![],
+                    Some(journal.clone()),
+                )
+                .unwrap();
+                core.observe_read(Path::new("file")).unwrap();
+            }
+            let fs = OverlayFs::new(cfg.clone(), Arc::new(InodeAllocator::new())).unwrap();
+            fs.core.observe_read(Path::new("file")).unwrap();
+            let original = pvisor_overlay_core::load_preimages(&journal).unwrap();
+            assert_eq!(original.len(), 1);
+            assert_eq!(journal.join("log-v2").exists(), !legacy);
+            assert_eq!(journal.join("entries/format-v2.json").exists(), !legacy);
+            drop(fs);
+            let restored = OverlayFs::open_existing(cfg, Arc::new(InodeAllocator::new())).unwrap();
+            std::fs::write(target.join("file"), b"later host edit").unwrap();
+            restored.core.observe_read(Path::new("file")).unwrap();
+            restored.core.copy_up(Path::new("file")).unwrap();
+            assert_eq!(
+                pvisor_overlay_core::load_preimages(&journal).unwrap()[0].state,
+                original[0].state
+            );
+            std::fs::write(target.join("file"), b"original").unwrap();
+        }
+    }
+
     fn parent_cache_fixture(root: &Path) -> OverlayFs {
         let fs = OverlayFs::new(
             Config {
                 lower_dirs: vec![root.join("lower").to_string_lossy().into_owned()],
                 apply_target: None,
                 baseline_lower: None,
+                baseline_content_index: None,
                 upper_dir: root.join("upper").to_string_lossy().into_owned(),
                 work_dir: None,
                 preimage_dir: None,
@@ -1614,6 +1739,130 @@ mod tests {
         .unwrap();
         fs.init(FsOptions::empty()).unwrap();
         fs
+    }
+
+    #[test]
+    fn overlay_negotiates_its_directory_capabilities_independently_of_layers() {
+        let directory = FsOptions::DO_READDIRPLUS | FsOptions::READDIRPLUS_AUTO;
+        for capable in [
+            FsOptions::empty(),
+            FsOptions::READDIRPLUS_AUTO,
+            FsOptions::DO_READDIRPLUS,
+            directory,
+        ] {
+            let temp = tempfile::tempdir().unwrap();
+            std::fs::create_dir(temp.path().join("lower")).unwrap();
+            let fs = parent_cache_fixture(temp.path());
+            let negotiated = fs.init(capable).unwrap();
+            let expected = if capable.contains(FsOptions::DO_READDIRPLUS) {
+                capable & directory
+            } else {
+                FsOptions::empty()
+            };
+            assert_eq!(negotiated & directory, expected);
+            fs.destroy();
+        }
+    }
+
+    #[test]
+    fn readdirplus_preserves_fresh_attributes_offsets_and_alias_denials() {
+        let temp = tempfile::tempdir().unwrap();
+        let lower = temp.path().join("lower");
+        std::fs::create_dir_all(lower.join("private")).unwrap();
+        std::fs::write(lower.join("a"), b"old").unwrap();
+        std::fs::write(lower.join("b"), b"data").unwrap();
+        std::fs::write(lower.join("private/secret"), b"secret").unwrap();
+        let fs = parent_cache_fixture(temp.path());
+        fs.init(FsOptions::DO_READDIRPLUS | FsOptions::READDIRPLUS_AUTO)
+            .unwrap();
+        let ctx = Context {
+            uid: 0,
+            gid: 0,
+            pid: 1,
+        };
+        let handle = fs.opendir(ctx, fuse::ROOT_ID, 0).unwrap().0.unwrap();
+        std::fs::write(lower.join("a"), b"changed").unwrap();
+        let mut accepted = Vec::new();
+        fs.readdirplus(ctx, fuse::ROOT_ID, handle, 4096, 0, |dir, entry| {
+            if !accepted.is_empty() {
+                return Ok(0);
+            }
+            assert_eq!(dir.ino, entry.inode);
+            accepted.push((dir.name.to_vec(), dir.offset, entry.attr.st_size));
+            Ok(1)
+        })
+        .unwrap();
+        assert_eq!(accepted, vec![(b"a".to_vec(), 1, 7)]);
+        let mut remaining = Vec::new();
+        fs.readdirplus(ctx, fuse::ROOT_ID, handle, 4096, 1, |dir, entry| {
+            remaining.push((dir.name.to_vec(), dir.offset, entry.attr.st_size));
+            Ok(1)
+        })
+        .unwrap();
+        assert_eq!(remaining, vec![(b"b".to_vec(), 2, 4)]);
+        std::fs::remove_file(lower.join("b")).unwrap();
+        std::fs::hard_link(lower.join("private/secret"), lower.join("b")).unwrap();
+        let error = fs
+            .readdirplus(ctx, fuse::ROOT_ID, handle, 4096, 1, |_, _| {
+                panic!("denied alias must not return attributes")
+            })
+            .unwrap_err();
+        assert_eq!(error.raw_os_error(), Some(libc::EACCES));
+        fs.releasedir(ctx, fuse::ROOT_ID, 0, handle).unwrap();
+        fs.destroy();
+    }
+
+    #[test]
+    fn observed_backing_follows_live_parent_replacement_and_rejects_aliases() {
+        let temp = tempfile::tempdir().unwrap();
+        let lower = temp.path().join("lower");
+        std::fs::create_dir_all(lower.join("allowed")).unwrap();
+        std::fs::create_dir_all(lower.join("private")).unwrap();
+        std::fs::write(lower.join("private/secret"), b"secret").unwrap();
+        std::os::unix::fs::symlink("old", lower.join("allowed/link")).unwrap();
+        let fs = parent_cache_fixture(temp.path());
+        let ctx = Context { uid: 0, gid: 0, pid: 1 };
+        let parent = fs.lookup(ctx, fuse::ROOT_ID, c"allowed").unwrap();
+        let link = fs.lookup(ctx, parent.inode, c"link").unwrap();
+        assert_eq!(fs.readlink(ctx, link.inode).unwrap(), b"old");
+        std::fs::rename(lower.join("allowed"), lower.join("old-allowed")).unwrap();
+        std::fs::create_dir(lower.join("allowed")).unwrap();
+        std::os::unix::fs::symlink("replacement", lower.join("allowed/link")).unwrap();
+        assert_eq!(fs.readlink(ctx, link.inode).unwrap(), b"replacement");
+        std::fs::remove_file(lower.join("allowed/link")).unwrap();
+        std::fs::hard_link(lower.join("private/secret"), lower.join("allowed/link")).unwrap();
+        assert_eq!(fs.getxattr(ctx, link.inode, c"user.test", 0).err().unwrap().raw_os_error(), Some(libc::EACCES));
+        assert_eq!(fs.listxattr(ctx, link.inode, 0).err().unwrap().raw_os_error(), Some(libc::EACCES));
+        fs.destroy();
+    }
+
+    #[test]
+    fn deepest_cached_parent_uses_fresh_ancestors_and_file_attributes() {
+        let temp = tempfile::tempdir().unwrap();
+        let lower = temp.path().join("lower");
+        std::fs::create_dir_all(lower.join("allowed/a/b")).unwrap();
+        std::fs::write(lower.join("allowed/a/b/file"), b"old").unwrap();
+        let mut fs = parent_cache_fixture(temp.path());
+        fs.profile = pvisor_overlay_core::profile::Profile::enabled("deep-cache-test");
+        let ctx = Context { uid: 0, gid: 0, pid: 1 };
+        let path = Path::new("allowed/a/b/file");
+        let inode = fs.allocate_inode(path.to_path_buf());
+        assert_eq!(fs.entry(ctx, path, inode).unwrap().attr.st_size, 3);
+        std::fs::write(lower.join(path), b"fresh attributes").unwrap();
+        assert_eq!(fs.entry(ctx, path, inode).unwrap().attr.st_size, 16);
+        let report = fs.profile.report().unwrap();
+        assert_eq!(report.measurements["directory_cache_deep_hits"].units, 1);
+        // Replace ancestors while retaining the deepest directory's identity.
+        // The cached inode remains useful only after a fresh complete Core walk.
+        std::fs::rename(lower.join("allowed"), lower.join("old-allowed")).unwrap();
+        std::fs::create_dir_all(lower.join("allowed/a")).unwrap();
+        std::fs::rename(lower.join("old-allowed/a/b"), lower.join("allowed/a/b")).unwrap();
+        assert_eq!(fs.entry(ctx, path, inode).unwrap().attr.st_size, 16);
+        std::fs::rename(lower.join("allowed/a"), lower.join("moved-a")).unwrap();
+        std::os::unix::fs::symlink(lower.join("moved-a"), lower.join("allowed/a")).unwrap();
+        assert!(fs.entry(ctx, path, inode).is_err());
+        assert_eq!(fs.profile.report().unwrap().measurements["directory_cache_deep_hits"].units, 2);
+        fs.destroy();
     }
 
     #[test]
@@ -1737,6 +1986,7 @@ mod tests {
                 lower_dirs: vec!["/lower".into()],
                 apply_target: None,
                 baseline_lower: None,
+                baseline_content_index: None,
                 upper_dir: "/upper".into(),
                 work_dir: None,
                 preimage_dir: None,
@@ -1777,6 +2027,7 @@ mod tests {
                 lower_dirs: vec![lower.to_string_lossy().into_owned()],
                 apply_target: None,
                 baseline_lower: None,
+                baseline_content_index: None,
                 upper_dir: temp.path().join("upper").to_string_lossy().into_owned(),
                 work_dir: None,
                 preimage_dir: None,
@@ -1827,6 +2078,7 @@ mod tests {
                 lower_dirs: vec![lower.to_string_lossy().into_owned()],
                 apply_target: None,
                 baseline_lower: None,
+                baseline_content_index: None,
                 upper_dir: upper.to_string_lossy().into_owned(),
                 work_dir: Some(work.to_string_lossy().into_owned()),
                 preimage_dir: None,
@@ -1911,6 +2163,7 @@ mod tests {
                     lower_dirs: vec![lower.to_string_lossy().into_owned()],
                     apply_target: None,
                     baseline_lower: None,
+                    baseline_content_index: None,
                     upper_dir: upper.to_string_lossy().into_owned(),
                     work_dir: None,
                     preimage_dir: None,
@@ -2005,6 +2258,7 @@ mod tests {
                 lower_dirs: vec![lower.to_string_lossy().into_owned()],
                 apply_target: None,
                 baseline_lower: None,
+                baseline_content_index: None,
                 upper_dir: upper.to_string_lossy().into_owned(),
                 work_dir: None,
                 preimage_dir: None,
@@ -2073,6 +2327,7 @@ fn small_file_adapter_benchmark() {
                     lower_dirs: vec![backing_root.to_string_lossy().into_owned()],
                     apply_target: None,
                     baseline_lower: None,
+                    baseline_content_index: None,
                     upper_dir: temp
                         .path()
                         .join(format!("upper-{case}-{trial}"))

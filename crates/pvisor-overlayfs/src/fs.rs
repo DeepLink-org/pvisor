@@ -723,12 +723,8 @@ impl Filesystem for OverlayFs {
     fn readlink(&mut self, _request: &Request<'_>, ino: u64, reply: ReplyData) {
         let observed_path = self.node_path(ino).ok();
         let result = self.node_path(ino).and_then(|path| {
-            self.core.observe_read(&path)?;
-            let resolved = self
-                .core
-                .resolve(&path)
-                .ok_or_else(|| io::Error::from_raw_os_error(libc::ENOENT))?;
-            fs::read_link(resolved.path)
+            let backing = self.core.observe_read_resolved(&path)?;
+            fs::read_link(backing.resolved.path)
         });
         self.observe_result(observed_path.as_deref(), "readlink", &result, 0, false);
         match result {
@@ -1308,12 +1304,8 @@ impl Filesystem for OverlayFs {
     ) {
         let observed_path = self.node_path(ino).ok();
         let result = self.node_path(ino).and_then(|path| {
-            self.core.observe_read(&path)?;
-            let real = self
-                .core
-                .resolve(&path)
-                .ok_or_else(|| io::Error::from_raw_os_error(libc::ENOENT))?;
-            sys::get_xattr(&real.path, name)
+            let backing = self.core.observe_read_resolved(&path)?;
+            sys::get_xattr(&backing.resolved.path, name)
         });
         self.observe_result(observed_path.as_deref(), "getxattr", &result, 0, false);
         match result {
@@ -1326,12 +1318,8 @@ impl Filesystem for OverlayFs {
 
     fn listxattr(&mut self, _request: &Request<'_>, ino: u64, size: u32, reply: ReplyXattr) {
         let result = self.node_path(ino).and_then(|path| {
-            self.core.observe_read(&path)?;
-            let real = self
-                .core
-                .resolve(&path)
-                .ok_or_else(|| io::Error::from_raw_os_error(libc::ENOENT))?;
-            let names = sys::list_xattrs(&real.path)?;
+            let backing = self.core.observe_read_resolved(&path)?;
+            let names = sys::list_xattrs(&backing.resolved.path)?;
             let mut encoded = Vec::new();
             for name in names {
                 encoded.extend_from_slice(&name);

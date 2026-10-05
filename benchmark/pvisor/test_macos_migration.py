@@ -9,7 +9,7 @@ import macos_migration as bench
 import pytest
 
 
-def run_fake_trial(tmp_path, monkeypatch, run_record):
+def run_fake_trial(tmp_path, monkeypatch, run_record, *, filesystem_profile=False):
     output = tmp_path / "output"
     output.mkdir()
     clock = SimpleNamespace(now=0)
@@ -25,6 +25,7 @@ def run_fake_trial(tmp_path, monkeypatch, run_record):
         returncode = 0
 
         def __init__(self, command, **kwargs):
+            assert kwargs["env"]["PVISOR_FS_PROFILE"] == ("1" if filesystem_profile else "0")
             home = bench.Path(kwargs["env"]["PVISOR_RUN_HOME"])
             bundle = home / "run-test" / "run-bundle.json"
             bundle.parent.mkdir(parents=True)
@@ -46,15 +47,18 @@ def run_fake_trial(tmp_path, monkeypatch, run_record):
         baseline=tmp_path / "baseline",
         rootfs=tmp_path / "rootfs",
         firmware=tmp_path / "firmware",
+        filesystem_profile=filesystem_profile,
     )
     return bench.trial(args, "baseline", "startup-1cpu-128", 0, 0)
 
 
-def test_completion_records_exit_without_polling_quantization(tmp_path, monkeypatch):
+@pytest.mark.parametrize("filesystem_profile", [False, True])
+def test_completion_records_exit_without_polling_quantization(tmp_path, monkeypatch, filesystem_profile):
     row = run_fake_trial(
         tmp_path,
         monkeypatch,
         dict(state="completed", exit_code=0, executor=dict(isolation="virtual_machine")),
+        filesystem_profile=filesystem_profile,
     )
     assert row["ready_ms"] == 2
     assert row["completion_ms"] == 4
@@ -74,3 +78,13 @@ def test_completion_records_exit_without_polling_quantization(tmp_path, monkeypa
 def test_fast_invalid_bundle_is_not_a_performance_sample(tmp_path, monkeypatch, run_record):
     with pytest.raises(RuntimeError):
         run_fake_trial(tmp_path, monkeypatch, run_record)
+
+
+@pytest.mark.parametrize("depth", [1, 8])
+def test_fixture_depth_changes_paths_without_changing_workload(tmp_path, depth):
+    root = tmp_path / "fixture"
+    bench.create_fixture(root, depth=depth)
+    files = list(root.rglob("*.txt"))
+    assert len(files) == 2048
+    assert sum("needle" in path.read_text() for path in files) == 32
+    assert {len(path.relative_to(root).parts) - 1 for path in files} == {depth}

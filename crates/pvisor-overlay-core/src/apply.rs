@@ -1040,14 +1040,9 @@ fn apply_prepared_target(
                     path: path.as_os_str().as_bytes().to_vec(),
                     state,
                 };
-                atomic_write(
-                    &record
-                        .stage_dir
-                        .join("preimages/entries")
-                        .join(format!("{}.json", path_digest(path))),
-                    &serde_json::to_vec(&preimage)
-                        .map_err(|error| OverlayError::Persist(error.to_string()))?,
-                    0o600,
+                crate::core::persist_directory_preimage(
+                    &record.stage_dir.join("preimages"),
+                    preimage,
                 )
                 .map_err(|error| OverlayError::Persist(error.to_string()))?;
             }
@@ -2148,6 +2143,12 @@ mod tests {
 
     #[test]
     fn selective_apply_retains_pending_changes_and_can_repeat() {
+        for compact in [false, true] {
+            selective_apply_with_format(compact);
+        }
+    }
+
+    fn selective_apply_with_format(compact: bool) {
         let tmp = tempdir().unwrap();
         let target = tmp.path().join("target");
         let stage = tmp.path().join("stage");
@@ -2164,6 +2165,11 @@ mod tests {
             Some(stage.join("preimages")),
         )
         .unwrap();
+        let core = if compact {
+            core.with_compact_preimages().unwrap()
+        } else {
+            core
+        };
         fs::write(core.copy_up(Path::new("src/a.txt")).unwrap(), b"new-a").unwrap();
         fs::write(core.copy_up(Path::new("src/b.txt")).unwrap(), b"new-b").unwrap();
         core.remove(Path::new("gone.txt"), false).unwrap();
@@ -2269,7 +2275,10 @@ mod tests {
 
     #[test]
     fn directory_replacement_checks_descendants_and_recovers_after_mutation() {
-        for operation in ["delete", "rename", "replace", "opaque"] {
+        for (operation, compact) in ["delete", "rename", "replace", "opaque"]
+            .into_iter()
+            .flat_map(|operation| [false, true].map(|compact| (operation, compact)))
+        {
             let tmp = tempdir().unwrap();
             let target = tmp.path().join("target");
             let stage = tmp.path().join("stage");
@@ -2284,6 +2293,11 @@ mod tests {
                 Some(stage.join("preimages")),
             )
             .unwrap();
+            let core = if compact {
+                core.with_compact_preimages().unwrap()
+            } else {
+                core
+            };
             if operation == "rename" {
                 core.rename(Path::new("dir"), Path::new("moved"), false)
                     .unwrap();

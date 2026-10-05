@@ -66,6 +66,8 @@ RAM 文件的 FUSE 挂载、readiness、mmap 缓存 I/O 和卸载顺序由私有
 
 `GuestCommand` 配合禁用 implicit init 的自定义 init；普通 Rust supervisor 继续使用 `/.pvisor-guest.json`。参数和环境不会继承宿主值，拒绝不支持的引号、控制字符、保留环境键及超长命令。`NetworkOptions` 显式控制自定义 init 的 DHCP，请求不会开启 TSI。`network` 默认关闭 DHCP。
 
+Rust supervisor 的可选私有 tmpfs 契约见 [pvisor-guest](../pvisor-guest/README.md)。容量属于已有 guest RAM 预算，工作区 stage 与临时 RAM 数据面分别管理；执行器默认策略不改变本 crate 的跨平台 API 定义。
+
 静态 x86_64 musl 的内核提取、无损打包、加载全部在本 crate 内完成；既有 `PVISOR_KRUNFW_PATH` / `PVISOR_KRUNFW_KERNEL_BUNDLE` 构建输入保持兼容。`VmRuntime::run` 自动安装构建内置内核；`VmPlatform::embedded_kernel` 提供不可变共享字节和启动地址用于身份绑定。固件的版本、校验、缓存、下载和平台产物处理集中在本 crate 内；调用方决定何时授权并调用阻塞的准备操作，负责宿主隔离和证据存储。
 
 为保持已有 Run/证据协议兼容，部分记录标识、trace stage、环境变量和 runner 参数保留历史 `krun` 命名；它们不再调用原 C API。既有原始基准证据保持原样，不能当成新实现的验证结果。

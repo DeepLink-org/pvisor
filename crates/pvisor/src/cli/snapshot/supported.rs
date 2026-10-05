@@ -220,7 +220,18 @@ fn firmware_directory() -> anyhow::Result<PathBuf> {
     }
 }
 fn launch(spec: Launch) -> anyhow::Result<()> {
-    let path = spec.directory.join("launch.json");
+    // Restore payload validation belongs to the runner. Keep the launch spec
+    // outside the final instance until that validation succeeds. Reuse the
+    // pending writer lease so GC can reap a launch interrupted by SIGKILL.
+    let pending = if spec.restore.is_some() {
+        Some(SnapshotStore::new(&spec.store)?.begin()?)
+    } else {
+        None
+    };
+    let path = pending
+        .as_ref()
+        .map(|pending| pending.directory().join("launch.json"))
+        .unwrap_or_else(|| spec.directory.join("launch.json"));
     fs::write(&path, serde_json::to_vec(&spec)?)?;
     let status = std::process::Command::new(std::env::current_exe()?)
         .args(["snapshot", "runner"])
@@ -334,15 +345,16 @@ pub(super) fn run(args: Args) -> anyhow::Result<()> {
             eager_ram,
         } => {
             let firmware = firmware_directory()?;
-            // Validate before allocating a new instance directory.
+            // Authenticate startup metadata only. The runner validates the
+            // payload under its own lease before allocating an instance.
             let profile = store.profile(&id)?;
             ensure!(
                 profile == FULL_PROFILE || profile == STAGE_PROFILE,
                 "unsupported CLI snapshot profile"
             );
-            let published = store.open_for_restore(&id, &compatibility(&firmware, &profile)?)?;
-            let base = published
-                .manifest()
+            let binding = compatibility(&firmware, &profile)?;
+            let (manifest, machine) = store.restore_metadata(&id, &binding)?;
+            let base = manifest
                 .stage_bases
                 .as_ref()
                 .map(|bases| {
@@ -350,13 +362,12 @@ pub(super) fn run(args: Args) -> anyhow::Result<()> {
                     Ok(bases[0].clone())
                 })
                 .transpose()?;
-            let saved: Saved = serde_json::from_slice(&published.machine_bytes()?)?;
+            let saved: Saved = serde_json::from_slice(&machine)?;
             ensure!(
                 saved.exclusions == exclusions(),
                 "unsupported resource contract mismatch"
             );
-            let directory = new_instance(&root, &name)?;
-            drop(published);
+            let directory = instance(&root, &name)?;
             launch(Launch {
                 store: root,
                 directory,
@@ -392,13 +403,6 @@ pub(super) fn run(args: Args) -> anyhow::Result<()> {
 }
 
 fn runner(spec: Launch) -> anyhow::Result<()> {
-    let lease = OpenOptions::new()
-        .create(true)
-        .truncate(false)
-        .read(true)
-        .write(true)
-        .open(spec.directory.join("execution.lock"))?;
-    fs2::FileExt::try_lock_exclusive(&lease).context("instance already running")?;
     let store = SnapshotStore::new(&spec.store)?;
     let binding = compatibility(
         &spec.firmware,
@@ -411,17 +415,61 @@ fn runner(spec: Launch) -> anyhow::Result<()> {
     let published = spec
         .restore
         .as_deref()
-        .map(|id| store.open_for_restore(id, &binding))
+        .map(|id| {
+            if spec.base.is_some() {
+                store.open_owned_stage_for_restore(id, &binding)
+            } else {
+                store.open_for_restore(id, &binding)
+            }
+        })
         .transpose()?;
+    let saved = published
+        .as_ref()
+        .map(|snapshot| -> anyhow::Result<Saved> {
+            ensure!(
+                snapshot.manifest().stage_bases.as_deref()
+                    == spec.base.as_ref().map(std::slice::from_ref),
+                "snapshot base binding mismatch"
+            );
+            let saved: Saved = serde_json::from_slice(&snapshot.machine_bytes()?)?;
+            ensure!(
+                saved.cpus == spec.cpus
+                    && saved.memory == spec.memory
+                    && saved.ram_storage == spec.ram_storage
+                    && serde_json::to_value(&saved.guest)? == serde_json::to_value(&spec.guest)?
+                    && saved.exclusions == exclusions(),
+                "snapshot launch contract mismatch"
+            );
+            Ok(saved)
+        })
+        .transpose()?;
+    if spec.restore.is_some() {
+        let name = spec
+            .directory
+            .file_name()
+            .and_then(OsStr::to_str)
+            .context("invalid restore instance name")?;
+        ensure!(
+            instance(&spec.store, name)? == spec.directory,
+            "invalid restore instance path"
+        );
+        new_instance(&spec.store, name)?;
+        fs::write(
+            spec.directory.join("launch.json"),
+            serde_json::to_vec(&spec)?,
+        )?;
+    }
+    let lease = OpenOptions::new()
+        .create(true)
+        .truncate(false)
+        .read(true)
+        .write(true)
+        .open(spec.directory.join("execution.lock"))?;
+    fs2::FileExt::try_lock_exclusive(&lease).context("instance already running")?;
     let root = spec.directory.join("rootfs");
     let bases = if let Some(snapshot) = &published {
-        ensure!(
-            snapshot.manifest().stage_bases.as_deref()
-                == spec.base.as_ref().map(std::slice::from_ref),
-            "snapshot base binding mismatch"
-        );
         if spec.base.is_some() {
-            snapshot.materialize_stage(&root)?;
+            snapshot.materialize_owned_stage(&root)?;
         } else {
             snapshot.materialize(&root)?;
         }
@@ -438,14 +486,7 @@ fn runner(spec: Launch) -> anyhow::Result<()> {
     // the guest-ready callback drops the published object's store-wide gate.
     let mut ram_mount = None;
     let restore = if let Some(snapshot) = &published {
-        let mut saved: Saved = serde_json::from_slice(&snapshot.machine_bytes()?)?;
-        ensure!(
-            saved.cpus == spec.cpus
-                && saved.memory == spec.memory
-                && saved.ram_storage == spec.ram_storage
-                && saved.exclusions == exclusions(),
-            "snapshot launch contract mismatch"
-        );
+        let mut saved = saved.context("missing checked snapshot state")?;
         let old = Path::new(OsStr::from_bytes(&snapshot.manifest().source_root));
         let count = if bases.is_empty() {
             saved
@@ -493,6 +534,14 @@ fn runner(spec: Launch) -> anyhow::Result<()> {
     if bases.is_empty() {
         vm.filesystem("/dev/root", &root, 0)?;
     } else {
+        let baseline_content_index = bases.last().and_then(|base| {
+            base.content_index()
+                .map(|(file, sha256)| pvisor_vm::api::BaselineContentIndex {
+                    root: base.root(),
+                    file,
+                    sha256,
+                })
+        });
         vm.overlay(
             "/dev/root",
             OverlayConfig {
@@ -502,6 +551,7 @@ fn runner(spec: Launch) -> anyhow::Result<()> {
                 preimage_dir: Some(root.join("preimages")),
                 apply_target: None,
                 baseline_lower: None,
+                baseline_content_index,
                 excluded_paths: Vec::new(),
                 access_policy: Default::default(),
                 semantics: PermissionSemantics::LinuxComplete,
@@ -602,4 +652,63 @@ fn runner(spec: Launch) -> anyhow::Result<()> {
     });
     drop(ram_mount);
     result.map_err(Into::into)
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn restore_payload_validation_precedes_instance_creation() {
+        let temp = tempfile::tempdir().unwrap();
+        let firmware = temp.path().join("firmware");
+        fs::create_dir(&firmware).unwrap();
+        fs::write(
+            firmware.join(pvisor_vm::api::VmPlatform::firmware_name()),
+            b"fixture",
+        )
+        .unwrap();
+        let binding = compatibility(&firmware, STAGE_PROFILE).unwrap();
+        let root = temp.path().join("store");
+        let store = SnapshotStore::new(&root).unwrap();
+        let base_source = temp.path().join("base");
+        fs::create_dir(&base_source).unwrap();
+        let base = store.import_base(&base_source).unwrap();
+        let base_reference = base.reference().clone();
+        let stage = temp.path().join("stage");
+        for part in ["upper", "work", "preimages"] {
+            fs::create_dir_all(stage.join(part)).unwrap();
+        }
+        let pending = store.begin().unwrap();
+        pending.create_ram().unwrap().write_all(b"RAM").unwrap();
+        let id = pending
+            .publish_stage(&stage, &[base], b"unparsed-machine", binding.clone(), false)
+            .unwrap();
+        fs::write(
+            root.join("objects").join(&id).join("rootfs/upper/extra"),
+            b"unexpected",
+        )
+        .unwrap();
+        // Preflight is deliberately not a payload-validation capability.
+        assert!(store.restore_metadata(&id, &binding).is_ok());
+        let directory = instance(&root, "rejected").unwrap();
+        let error = runner(Launch {
+            store: root,
+            directory: directory.clone(),
+            firmware,
+            restore: Some(id),
+            cpus: 2,
+            memory: 256,
+            ram_storage: RamStorage::Raw,
+            guest: None,
+            base: Some(base_reference),
+            eager_ram: true,
+        })
+        .unwrap_err();
+        assert!(
+            error.to_string().contains("unexpected file in cloned tree"),
+            "{error:#}"
+        );
+        assert!(!directory.exists());
+    }
 }

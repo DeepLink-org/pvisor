@@ -14,6 +14,13 @@ Records on stderr start with `pvisor-fs-profile ` followed by JSON. Use
 `pid`, `component`, and `instance` together to identify an independent profile.
 Each record is a cumulative snapshot, not a delta; do not add consecutive
 records. Timed stages are inclusive, so do not sum parent and child times.
+Schema 2 retains the earlier counters and adds `max_ns` (largest completed
+inclusive span) and `latency_buckets` (counts in <=1 ms, <=10 ms, <=100 ms,
+<=1 s, >1 s buckets, in this order). Schema-1 artifacts have neither field;
+do not treat missing fields as zero. Buckets are cumulative counts, not
+percentile estimates. A maximum is wall time, not CPU time or proof of an
+I/O cause. Diagnostic logging itself can perturb parent spans; keep it out
+of timing comparisons.
 `measurements[label].calls` and `total_ns` describe timed operations;
 `units` describes a separately named work counter, such as `resolve_components`,
 `fingerprint_bytes`, `journal_publications`, or `copy_up_bytes`.
@@ -38,8 +45,17 @@ Filesystem snapshot capture emits a checkpoint. Normal destruction emits
 `final_record=true`; periodic/capture records have `final_record=false`.
 VMM `_exit` or forced termination may omit the final record: a periodic record
 is evidence of work up to that point, not proof of a complete run. A short
-run may have no periodic record. These spans measure server service time;
+run may have no periodic record. `whiteout_probe` and `opaque_probe` isolate Core namespace-marker checks; opaque includes the marker-file lookup and opaque xattr probes, not only xattr CPU time.
+
+These spans measure server service time;
 they do not independently measure guest scheduling or queue waiting time.
+
+Protocol labels distinguish metadata, xattr, rename/unlink, flush, and directory
+release requests as well as reads and writes. In particular, do not attribute
+`OTHER` to flushing: inspect a profile from a binary that labels `RENAME`,
+`GETXATTR`, and `FLUSH` separately. The private rootfs and reviewed workspace
+have independent Core/adapter/protocol instances. Inspect both views; a
+workspace-only profile can miss most of a package manager's filesystem work.
 
 ## Adapter benchmark
 
@@ -129,6 +145,10 @@ promising power-loss durability until promoted by a mutation.
 For whole-VM paired runs, place `macos_migration.py --output` outside the
 checkout (e.g. in `/private/tmp` on the same volume). Generating thousands of
 files under `target/` can still trigger editor watchers despite Git ignores.
+`--filesystem-profile` explicitly enables aggregate filesystem checkpoints and
+records the option in protocol metadata. Use it only for separate diagnostic
+runs, not uninstrumented performance acceptance; inherited profiling variables
+are otherwise disabled by the harness.
 Retain all samples, including batches that fail the regression threshold;
 do not pool percentiles across batches. `--seed` permits an independent order;
 `--diagnostic-timing` retains CLI startup/persistence stages and explicitly
@@ -151,3 +171,52 @@ The clone time excludes policy, durable publication, JSON journal, and later
 apply comparison, so it is only a lower bound for an owned-preimage design.
 No production journal path changes. Unsupported clone filesystems fail the
 manual benchmark; do not silently replace the measurement with data copying.
+
+
+### Deep directory VM workloads
+
+`macos_migration.py` includes `metadata-deep-2048` and `search-deep-2048`. They retain the shallow workload's 2048 file contents and 32 search matches, changing only relative directory depth from 1 to 8. Fixture setup is outside the measured process interval. Search uses the supplied guest's `grep`, not ripgrep; no git/npm or Agent compatibility claim follows from these cases. Keep all paired samples and report each experiment separately, including P99 counterexamples. Do not run fixture checks, compilation, or other validation concurrently with a timing campaign.
+
+
+Fingerprint spans distinguish `fingerprint_metadata` (layer resolution),
+`fingerprint_xattrs`, and `fingerprint_content` (open/read/hash/encode).
+They are inclusive sub-stages of `fingerprint`; content is not hash CPU time.
+
+
+### READDIRPLUS capability verification
+
+OverlayFs negotiates its own DO_READDIRPLUS/READDIRPLUS_AUTO capabilities independently of native layers. The macOS native passthrough capability set previously hid the overlay implementation. Compare protocol checkpoints separately from uninstrumented paired timing; retain only the last cumulative record per pid/component/instance. The 2026-10-05 30-pair results and exact scope are recorded in [the mechanism report](../../review_project/05-strategy/vm-performance-design/filesystem-readdirplus.md).
+
+
+### Cloned destination verification
+
+`cloned_destination_verification_paired_benchmark` is an ignored release lib test comparing full destination inventory with metadata/topology inventory whose contents are proven by kernel COW. It uses 3 warmups, 15 pairs and alternating order. Run after building the release test binary, with no concurrent compilation/tests. This measures verification only, excluding copy/fsync/source scans/VM restore. Production skips destination content reads only if all regular files have confirmed clone success (macOS WAS_CLONED or Linux FICLONE); any fallback retains full destination hashing. See [the evidence and ownership contract](../../review_project/05-strategy/vm-performance-design/filesystem-cow-verification.md).
+
+
+### Leased stage materialization
+
+`owned_stage_materialization_paired_benchmark` compares the public strict method with the internal immutable leased-stage restore used by the CLI. Each call includes copying, metadata and fsync; publication/open and post-call full verification are outside timing. Run the ignored test in a prebuilt release lib test binary with 3 warmups/15 alternating pairs. The ownership contract excludes external store edits during the lease; public strict APIs retain source content audits. [Results](../../review_project/05-strategy/vm-performance-design/filesystem-owned-stage.md) show that removing source hashing barely improves the 2050-small-file case, so copy/metadata/sync must be measured separately next.
+
+
+### Stage copy breakdown
+
+Set `PVISOR_FS_PROFILE=1` and run the prebuilt release lib test `owned_stage_materialization_diagnostic --ignored --nocapture`. `sealed-stage-copy` and `owned-tree-copy` report inclusive source inventory, native copy, privileged-mode metadata compensation, destination open/fsync and destination inventory. Use final records, never sum a parent span with children or cumulative checkpoints. Clone/fallback counters confirm which proof path ran. These are instrumented diagnostics, not uninstrumented acceptance medians. See [the breakdown and removed duplicate metadata work](../../review_project/05-strategy/vm-performance-design/filesystem-copy-breakdown.md).
+
+
+### macOS persistence barriers
+
+Rust `File::sync_all` uses `F_FULLFSYNC` on Apple. Owned-tree copy now fsyncs each destination inode and completes with one final parent `sync_all` to drain the same device. Linux is unchanged. `destination_sync` includes inode open/flush; `parent_sync` includes the final full barrier. Never interpret an inode flush alone as durable completion. [Verification and timing](../../review_project/05-strategy/vm-performance-design/filesystem-batched-sync.md) distinguish new-binary strict/leased pairs from historical independent before/after campaigns.
+
+
+### Real stage VM gate
+
+`vm_stage_snapshot.py` uses `snapshot_guest.rs` with a base marker `/stage-file-count`. The guest creates small files in the writable stage and checks their contents after restore. Run with eager raw RAM to isolate this gate from FUSE availability. Heartbeat must differ from the sealed value; full guest check and host fork write-isolation checks are separate. Report forks by index, since two restores within one trial are correlated. See [the native HVF evidence](../../review_project/05-strategy/vm-performance-design/filesystem-stage-vm.md).
+
+
+### Journal ordering diagnosis
+
+`vm_stage_snapshot.py --diagnostic-profile` explicitly marks instrumentation and preserves opt-in records. `journal_order` includes the macOS ordering barrier or unsupported-capability full-sync fallback; `journal_fsync` remains the final durable directory boundary. Use last cumulative checkpoints and retain failed trials separately from successful rechecks. [The implementation and unresolved startup failure](../../review_project/05-strategy/vm-performance-design/filesystem-journal-order.md) include exact scopes; later success does not erase an exit-125 trial.
+
+## Real-tool paired cases on Apple Silicon
+
+Explicit `--cases rg-2048,rg-deep-2048,git-status-2048,npm-offline-32` requires a guest rootfs with Linux ARM64 rg, git, Node and npm. The default BusyBox cases are unchanged. Git fixture creation/commit and copies are outside the timer. Npm uses 32 local-file packages, `--offline --ignore-scripts`, an isolated guest cache, and verifies every installed module result; this is not registry download/unpack or lifecycle-script coverage. Tool executable and APK package-manifest digests are recorded when available. Run a separate one-sample smoke before timing. Both compared binaries must have compatible guest address-space policy; startup failures are not speed samples.

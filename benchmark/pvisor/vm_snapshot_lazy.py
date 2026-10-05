@@ -86,6 +86,7 @@ try:
         store = base / "store"
         source = base / "input"
         source.mkdir()
+        (source / "dev").mkdir()
         shutil.copy2(args.guest.resolve(), source / "init.krun")
         process = start(
             store,

@@ -763,16 +763,18 @@ impl Subscriber for Vmm {
             // The exit code set up by the guest takes preference over the one reported
             // by either a vcpu or the i8042 controller. An unexplained successful
             // VM shutdown is a bootstrap failure, never a successful workload.
-            let vcpu_exit_code = self
-                .vcpus_handles
-                .iter()
-                .find_map(|handle| match handle.response_receiver().try_recv() {
+            let vcpu_exit_code = self.vcpus_handles.iter().find_map(|handle| {
+                match handle.response_receiver().try_recv() {
                     Ok(VcpuResponse::Exited(exit_code)) => Some(exit_code),
                     _ => None,
-                })
-                .unwrap_or(FC_EXIT_CODE_OK);
+                }
+            });
             let vmm_exit_code = self.exit_code.load(Ordering::SeqCst);
-            let exit_code = shutdown_exit_code(vmm_exit_code, vcpu_exit_code);
+            if vmm_exit_code == i32::MAX {
+                error!("VM shutdown without workload status: vcpu_exit={vcpu_exit_code:?}");
+            }
+            let exit_code =
+                shutdown_exit_code(vmm_exit_code, vcpu_exit_code.unwrap_or(FC_EXIT_CODE_OK));
             self.stop(exit_code);
         } else {
             error!("Spurious EventManager event for handler: Vmm");

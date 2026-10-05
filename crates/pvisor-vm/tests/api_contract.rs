@@ -163,6 +163,7 @@ fn invalid_overlay_path_does_not_poison_the_builder() {
         preimage_dir: None,
         apply_target: None,
         baseline_lower: None,
+        baseline_content_index: None,
         excluded_paths: vec![],
         access_policy: Default::default(),
         semantics: api::PermissionSemantics::LinuxComplete,
@@ -173,6 +174,19 @@ fn invalid_overlay_path_does_not_poison_the_builder() {
         .push(std::ffi::OsString::from_vec(vec![0xff]).into());
     assert_eq!(
         builder.overlay("workspace", overlay, 0).unwrap_err().kind(),
+        std::io::ErrorKind::InvalidInput
+    );
+    let mut invalid_index = valid.clone();
+    invalid_index.baseline_content_index = Some(api::BaselineContentIndex {
+        root: std::ffi::OsString::from_vec(vec![0xff]).into(),
+        file: root.path().join("index"),
+        sha256: "00".repeat(32),
+    });
+    assert_eq!(
+        builder
+            .overlay("workspace", invalid_index, 0)
+            .unwrap_err()
+            .kind(),
         std::io::ErrorKind::InvalidInput
     );
     builder.overlay("workspace", valid, 0).unwrap();

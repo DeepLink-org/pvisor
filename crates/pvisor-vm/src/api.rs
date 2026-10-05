@@ -348,6 +348,21 @@ pub enum PermissionSemantics {
     /// and store permission bits on the host instead of in extended attributes.
     LinuxSimplified,
 }
+/// Content receipts for an exclusively owned immutable baseline generation.
+/// `root` must be the overlay's apply baseline, and `file` must be its sealed
+/// import index with this SHA-256 digest. Keep the generation lease alive for
+/// the VM lifetime; prohibit all external writes. This is not a mutable-file
+/// cache. The runtime loads/checks the bounded index lazily on first mutation,
+/// and continues checking fresh metadata and xattrs. Missing/corrupt receipts
+/// fail before upper mutation. Retained baselines retain their index on restore.
+#[derive(Clone, Debug, PartialEq, Eq, serde::Serialize, serde::Deserialize)]
+#[serde(deny_unknown_fields)]
+pub struct BaselineContentIndex {
+    pub root: PathBuf,
+    pub file: PathBuf,
+    pub sha256: String,
+}
+
 #[derive(Clone, Debug)]
 /// Host paths retain their native representation. The runtime validates UTF-8
 /// atomically before replacing configuration for the backend that requires it.
@@ -358,6 +373,7 @@ pub struct OverlayConfig {
     pub preimage_dir: Option<PathBuf>,
     pub apply_target: Option<PathBuf>,
     pub baseline_lower: Option<PathBuf>,
+    pub baseline_content_index: Option<BaselineContentIndex>,
     pub excluded_paths: Vec<PathBuf>,
     pub access_policy: pvisor_overlay_core::FileAccessPolicy,
     pub semantics: PermissionSemantics,

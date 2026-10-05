@@ -1,7 +1,7 @@
 use crate::sys;
 use pvisor_core::overlay::{PathFingerprint, PathPreimage, XattrFingerprint};
 use sha2::{Digest, Sha256};
-use std::collections::{BTreeSet, HashMap, HashSet};
+use std::collections::{BTreeSet, HashMap};
 use std::ffi::{OsStr, OsString};
 use std::fs::{self, File, Metadata, OpenOptions};
 use std::io::{self, Read, Write};
@@ -16,6 +16,75 @@ pub const OPAQUE_NAME: &str = ".wh..wh..opq";
 pub const ROOT_METADATA_NAME: &str = ".wh..pvisor-root-metadata";
 const TEMP_PREFIX: &str = ".wh..pvisor-copyup-";
 const PREIMAGE_COMPLETE_MARKER: &str = "complete-v1";
+const PREIMAGE_LOG_NAME: &str = "log-v2";
+const PREIMAGE_FORMAT_NAME: &str = "format-v2.json";
+// Intentionally not a PathPreimage: legacy readers must reject this format.
+const PREIMAGE_FORMAT: &[u8] = b"{\"pvisor_preimage_format\":2}\n";
+
+fn compact_preimages(directory: &Path) -> io::Result<bool> {
+    let marker = directory.join("entries").join(PREIMAGE_FORMAT_NAME);
+    match fs::symlink_metadata(&marker) {
+        Ok(metadata) => {
+            if !metadata.is_file() {
+                return Err(error(libc::EINVAL));
+            }
+            let mut file = OpenOptions::new()
+                .read(true)
+                .custom_flags(libc::O_NOFOLLOW)
+                .open(&marker)?;
+            let mut bytes = Vec::new();
+            Read::by_ref(&mut file).take(1024).read_to_end(&mut bytes)?;
+            if bytes != PREIMAGE_FORMAT {
+                return Err(error(libc::EINVAL));
+            }
+            for entry in fs::read_dir(directory.join("entries"))? {
+                let entry = entry?;
+                if entry.path().extension() == Some(OsStr::new("json"))
+                    && entry.file_name() != OsStr::new(PREIMAGE_FORMAT_NAME)
+                {
+                    return Err(io::Error::new(
+                        io::ErrorKind::InvalidData,
+                        "mixed preimage journal formats",
+                    ));
+                }
+            }
+            fs::symlink_metadata(directory.join(PREIMAGE_LOG_NAME))?;
+            Ok(true)
+        }
+        Err(error) if error.kind() == io::ErrorKind::NotFound => {
+            match fs::symlink_metadata(directory.join(PREIMAGE_LOG_NAME)) {
+                Ok(_) => Err(io::Error::new(
+                    io::ErrorKind::InvalidData,
+                    "compact preimage log has no format marker",
+                )),
+                Err(error) if error.kind() == io::ErrorKind::NotFound => Ok(false),
+                Err(error) => Err(error),
+            }
+        }
+        Err(error) => Err(error),
+    }
+}
+
+pub(crate) fn persist_directory_preimage(
+    directory: &Path,
+    preimage: PathPreimage,
+) -> io::Result<()> {
+    if compact_preimages(directory)? {
+        crate::preimage_log::PreimageLog::open(&directory.join(PREIMAGE_LOG_NAME))?
+            .applied_directory(preimage)
+    } else {
+        let destination = directory
+            .join("entries")
+            .join(format!("{}.json", sha256_hex(&preimage.path)));
+        let body = serde_json::to_vec(&preimage)
+            .map_err(|error| io::Error::new(io::ErrorKind::InvalidData, error))?;
+        pvisor_journal::atomic_write(&destination, &body, 0o600).map_err(io::Error::other)
+    }
+}
+
+#[cfg(test)]
+#[path = "journal_benchmark.rs"]
+mod journal_benchmark;
 pub(crate) const OPAQUE_XATTRS: [&str; 3] = [
     "trusted.overlay.opaque",
     "user.overlay.opaque",
@@ -120,6 +189,7 @@ impl OverlayLayout {
 pub struct OverlayCore {
     profile: crate::profile::Profile,
     layout: OverlayLayout,
+    content_index: Option<crate::content_index::ContentIndex>,
     upper: PathBuf,
     work: Option<PathBuf>,
     excluded: BTreeSet<PathBuf>,
@@ -129,6 +199,7 @@ pub struct OverlayCore {
     copied_hard_links: Mutex<HashMap<(u64, u64), Vec<PathBuf>>>,
     hard_link_sources: Mutex<HashMap<(u64, u64), PathBuf>>,
     preimage_dir: Option<PathBuf>,
+    preimage_log: Option<Mutex<crate::preimage_log::PreimageLog>>,
     // Read observations are published without fsync. Before the first upper
     // mutation, their file and directory are synced under this lock.
     preimage_lock: Mutex<BTreeSet<PathBuf>>,
@@ -152,30 +223,62 @@ fn layer_metadata(root: &Path, rel: &Path) -> io::Result<Option<(PathBuf, Metada
     layer_metadata_with_parents(root, rel, None, &crate::profile::Profile::default(), None)
 }
 
+// One monotonically extending logical path per walk. Only successful physical
+// directories advance a layer's checked prefix; absence is never retained.
+// Final resolution bypasses this state entirely.
+#[derive(Default)]
+struct CheckedDirectories(Vec<(PathBuf, usize)>);
+
+impl CheckedDirectories {
+    fn depth(&self, root: &Path) -> usize {
+        self.0
+            .iter()
+            .find(|(path, _)| path == root)
+            .map_or(0, |(_, depth)| *depth)
+    }
+
+    fn observe(&mut self, root: &Path, depth: usize) {
+        if let Some((_, previous)) = self.0.iter_mut().find(|(path, _)| path == root) {
+            *previous = (*previous).max(depth);
+        } else {
+            self.0.push((root.to_path_buf(), depth));
+        }
+    }
+}
+
 fn layer_metadata_with_parents(
     root: &Path,
     rel: &Path,
     mut parents: Option<&mut Vec<BackingIdentity>>,
     profile: &crate::profile::Profile,
-    mut checked_directories: Option<&mut HashSet<PathBuf>>,
+    mut checked_directories: Option<&mut CheckedDirectories>,
 ) -> io::Result<Option<(PathBuf, Metadata)>> {
     OverlayCore::validate_rel(rel)?;
     if let Some(parents) = &mut parents {
         parents.clear();
     }
     let mut path = root.to_path_buf();
-    if let Some(parent) = rel.parent().filter(|parent| {
-        !checked_directories
-            .as_ref()
-            .is_some_and(|checked| checked.contains(&root.join(parent)))
-    }) {
-        for component in parent.components() {
+    let checked_depth = checked_directories
+        .as_ref()
+        .map_or(0, |checked| checked.depth(root));
+    if let Some(parent) = rel
+        .parent()
+        .filter(|parent| parent.components().count() > checked_depth)
+    {
+        for (index, component) in parent.components().enumerate() {
             path.push(component.as_os_str());
+            // A partially populated upper can have checked ancestors but a
+            // missing immediate parent. Reuse the successful checks too,
+            // rather than statting the entire prefix again. Final resolution
+            // passes no cache and still rechecks every physical ancestor.
+            if index < checked_depth {
+                continue;
+            }
             profile.add("layer_parent_stats", 1);
             match fs::symlink_metadata(&path) {
                 Ok(metadata) if metadata.is_dir() => {
                     if let Some(checked) = &mut checked_directories {
-                        checked.insert(path.clone());
+                        checked.observe(root, index + 1);
                     }
                     if let Some(parents) = &mut parents {
                         if cfg!(target_os = "linux") {
@@ -205,7 +308,7 @@ fn layer_metadata_with_parents(
             if metadata.is_dir()
                 && let Some(checked) = &mut checked_directories
             {
-                checked.insert(path.clone());
+                checked.observe(root, rel.components().count());
             }
             Ok(Some((path, metadata)))
         }
@@ -216,10 +319,23 @@ fn layer_metadata_with_parents(
 
 /// The same opaque interpretation is used for the merged view and apply plan.
 pub fn is_opaque_directory(path: &Path) -> bool {
-    exists(&path.join(OPAQUE_NAME))
-        || OPAQUE_XATTRS
-            .iter()
-            .any(|name| sys::get_xattr(path, OsStr::new(name)).is_ok_and(|value| value == b"y"))
+    if exists(&path.join(OPAQUE_NAME)) {
+        return true;
+    }
+    // Fresh, no-follow enumeration replaces three absent-attribute probes.
+    // Never retain names between requests. Some backends allow getxattr while
+    // listxattr fails, so enumeration failure preserves the original probes.
+    let names = match sys::list_xattrs(path) {
+        Ok(names) => Some(names),
+        Err(error) if error.kind() == io::ErrorKind::NotFound => return false,
+        Err(_) => None,
+    };
+    OPAQUE_XATTRS.iter().any(|name| {
+        names
+            .as_ref()
+            .is_none_or(|names| names.iter().any(|listed| listed == name.as_bytes()))
+            && sys::get_xattr(path, OsStr::new(name)).is_ok_and(|value| value == b"y")
+    })
 }
 
 pub fn validate_guest_xattr(name: &OsStr) -> io::Result<()> {
@@ -246,9 +362,12 @@ fn ignorable_ownership_error(err: &io::Error) -> bool {
 }
 
 fn sha256_hex(bytes: &[u8]) -> String {
+    hex_digest(&Sha256::digest(bytes))
+}
+
+pub(crate) fn hex_digest(digest: &[u8]) -> String {
     use std::fmt::Write as _;
 
-    let digest = Sha256::digest(bytes);
     let mut encoded = String::with_capacity(digest.len() * 2);
     for byte in digest {
         let _ = write!(&mut encoded, "{byte:02x}");
@@ -266,45 +385,52 @@ fn fingerprint_profiled(
     rel: &Path,
     profile: &crate::profile::Profile,
 ) -> io::Result<PathFingerprint> {
+    fingerprint_with_index(root, rel, profile, None)
+}
+
+fn fingerprint_with_index(
+    root: &Path,
+    rel: &Path,
+    profile: &crate::profile::Profile,
+    index: Option<&crate::content_index::ContentIndex>,
+) -> io::Result<PathFingerprint> {
     OverlayCore::validate_rel(rel)?;
-    let Some(path) = layer_path(root, rel)? else {
+    // The layer helper already checks ancestors and returns fresh no-follow
+    // leaf metadata. Do not immediately stat the same leaf a second time.
+    let metadata_span = profile.span("fingerprint_metadata");
+    let Some((path, metadata)) = layer_metadata(root, rel)? else {
         return Ok(PathFingerprint::Absent);
     };
-    let metadata = match fs::symlink_metadata(&path) {
-        Ok(metadata) => metadata,
-        Err(error)
-            if matches!(
-                error.kind(),
-                io::ErrorKind::NotFound | io::ErrorKind::NotADirectory
-            ) =>
-        {
-            return Ok(PathFingerprint::Absent);
-        }
-        Err(error) => return Err(error),
-    };
+    drop(metadata_span);
+    let xattrs_span = profile.span("fingerprint_xattrs");
     let xattrs = Some(fingerprint_xattrs(&path)?);
+    drop(xattrs_span);
     let kind = metadata.file_type();
     if kind.is_file() {
-        let mut digest = Sha256::new();
-        let mut file = OpenOptions::new()
-            .read(true)
-            .custom_flags(libc::O_NOFOLLOW)
-            .open(&path)?;
-        let mut buffer = [0u8; 64 * 1024];
-        loop {
-            let read = file.read(&mut buffer)?;
-            if read == 0 {
-                break;
+        let _content_span = profile.span("fingerprint_content");
+        let sha256 = if let Some(index) = index {
+            let digest = index.lookup_with_metadata(root, rel, &metadata)?;
+            profile.add("fingerprint_content_reused", 1);
+            digest
+        } else {
+            let mut digest = Sha256::new();
+            let mut file = OpenOptions::new()
+                .read(true)
+                .custom_flags(libc::O_NOFOLLOW)
+                .open(&path)?;
+            let mut buffer = [0u8; 64 * 1024];
+            loop {
+                let read = file.read(&mut buffer)?;
+                if read == 0 {
+                    break;
+                }
+                profile.add("fingerprint_bytes", read as u64);
+                digest.update(&buffer[..read]);
             }
-            profile.add("fingerprint_bytes", read as u64);
-            digest.update(&buffer[..read]);
-        }
+            hex_digest(&digest.finalize())
+        };
         return Ok(PathFingerprint::File {
-            sha256: digest
-                .finalize()
-                .iter()
-                .map(|byte| format!("{byte:02x}"))
-                .collect(),
+            sha256,
             mode: metadata.mode(),
             uid: metadata.uid(),
             gid: metadata.gid(),
@@ -364,6 +490,9 @@ fn fingerprint_xattrs(path: &Path) -> io::Result<XattrFingerprint> {
 
 /// Load first observations. Entries for mutated paths are synced before mutation.
 pub fn load_preimages(directory: &Path) -> io::Result<Vec<PathPreimage>> {
+    if compact_preimages(directory)? {
+        return crate::preimage_log::PreimageLog::read(&directory.join(PREIMAGE_LOG_NAME));
+    }
     let entries = directory.join("entries");
     let iterator = match fs::read_dir(&entries) {
         Ok(iterator) => iterator,
@@ -391,6 +520,10 @@ pub fn preimage_journal_is_complete(directory: &Path) -> bool {
 
 /// Consume journal entries after their corresponding target paths commit.
 pub fn remove_preimages(directory: &Path, paths: &[PathBuf]) -> io::Result<()> {
+    if compact_preimages(directory)? {
+        return crate::preimage_log::PreimageLog::open(&directory.join(PREIMAGE_LOG_NAME))?
+            .consume(paths);
+    }
     let entries = directory.join("entries");
     for path in paths {
         OverlayCore::validate_rel(path)?;
@@ -407,6 +540,13 @@ pub fn remove_preimages(directory: &Path, paths: &[PathBuf]) -> io::Result<()> {
         Err(error) if error.kind() == io::ErrorKind::NotFound => Ok(()),
         Err(error) => Err(error),
     }
+}
+
+#[derive(Clone, Copy)]
+enum BuildMode {
+    Legacy,
+    Compact,
+    Existing,
 }
 
 impl OverlayCore {
@@ -453,7 +593,35 @@ impl OverlayCore {
         excluded: Vec<PathBuf>,
         preimage_dir: Option<PathBuf>,
     ) -> io::Result<Self> {
-        Self::build_for_layout(layout, upper, work, excluded, preimage_dir, true)
+        Self::build_for_layout(
+            layout,
+            upper,
+            work,
+            excluded,
+            preimage_dir,
+            BuildMode::Legacy,
+        )
+    }
+
+    /// Initialize an exclusively owned fresh stage using compact observations.
+    /// Existing journals and nonempty uppers retain their original format.
+    /// Initialization orders the completeness marker before the compact log's
+    /// durable publication rather than fully syncing a transient legacy format.
+    pub fn new_for_layout_with_compact_preimages(
+        layout: OverlayLayout,
+        upper: PathBuf,
+        work: Option<PathBuf>,
+        excluded: Vec<PathBuf>,
+        preimage_dir: Option<PathBuf>,
+    ) -> io::Result<Self> {
+        Self::build_for_layout(
+            layout,
+            upper,
+            work,
+            excluded,
+            preimage_dir,
+            BuildMode::Compact,
+        )
     }
 
     /// Open a snapshot's existing backing without initialization writes, root
@@ -478,7 +646,14 @@ impl OverlayCore {
         excluded: Vec<PathBuf>,
         preimage_dir: Option<PathBuf>,
     ) -> io::Result<Self> {
-        Self::build_for_layout(layout, upper, work, excluded, preimage_dir, false)
+        Self::build_for_layout(
+            layout,
+            upper,
+            work,
+            excluded,
+            preimage_dir,
+            BuildMode::Existing,
+        )
     }
 
     fn build_for_layout(
@@ -487,12 +662,25 @@ impl OverlayCore {
         work: Option<PathBuf>,
         excluded: Vec<PathBuf>,
         preimage_dir: Option<PathBuf>,
-        initialize: bool,
+        mode: BuildMode,
     ) -> io::Result<Self> {
+        let initialize = !matches!(mode, BuildMode::Existing);
         if initialize {
             fs::create_dir_all(&upper)?;
         }
         let upper_was_empty = fs::read_dir(&upper)?.next().is_none();
+        let compact = if matches!(mode, BuildMode::Compact) && upper_was_empty {
+            match preimage_dir.as_ref() {
+                Some(directory) => match fs::symlink_metadata(directory.join("entries")) {
+                    Err(error) if error.kind() == io::ErrorKind::NotFound => true,
+                    Ok(_) => false,
+                    Err(error) => return Err(error),
+                },
+                None => false,
+            }
+        } else {
+            false
+        };
         if let Some(work) = &work {
             if initialize {
                 fs::create_dir_all(work)?;
@@ -568,13 +756,35 @@ impl OverlayCore {
                     .mode(0o600)
                     .open(marker)?;
                 file.write_all(b"pvisor-overlay-preimage-journal-v1\n")?;
-                file.sync_all()?;
-                File::open(directory)?.sync_all()?;
+                if compact {
+                    // No stage is exposed yet. The compact log publication below
+                    // drains these ordered writes before construction succeeds.
+                    sys::order_before_publish(&file)?;
+                    sys::order_before_publish(&File::open(directory)?)?;
+                } else {
+                    file.sync_all()?;
+                    File::open(directory)?.sync_all()?;
+                }
             }
         }
+        let preimage_log = preimage_dir
+            .as_ref()
+            .map(|directory| {
+                if compact_preimages(directory)? {
+                    // A registered log must exist. Never recreate a lost journal.
+                    fs::symlink_metadata(directory.join(PREIMAGE_LOG_NAME))?;
+                    crate::preimage_log::PreimageLog::open(&directory.join(PREIMAGE_LOG_NAME))
+                        .map(|log| Some(Mutex::new(log)))
+                } else {
+                    Ok(None)
+                }
+            })
+            .transpose()?
+            .flatten();
         let core = Self {
             profile: crate::profile::Profile::from_env("overlay-core"),
             layout,
+            content_index: None,
             upper,
             work,
             excluded,
@@ -582,6 +792,7 @@ impl OverlayCore {
             hard_link_sources: Mutex::new(HashMap::new()),
             access: crate::FileAccessPolicy::default(),
             preimage_dir,
+            preimage_log,
             preimage_lock: Mutex::new(BTreeSet::new()),
         };
         if initialize
@@ -591,7 +802,84 @@ impl OverlayCore {
             let metadata = fs::symlink_metadata(root)?;
             core.copy_metadata(root, &core.upper, &metadata)?;
         }
-        Ok(core)
+        if compact {
+            core.with_compact_preimages()
+        } else {
+            Ok(core)
+        }
+    }
+
+    /// Reuse verified import digests from an exclusively owned immutable baseline.
+    /// `root` must identify this Core's apply baseline. The caller retains the
+    /// generation lease and prohibits guest, host and external writes to it.
+    /// The index is digest-checked lazily at first file fingerprint. Metadata and
+    /// xattrs remain fresh; mutable apply targets never use this index.
+    pub fn with_immutable_content_index(
+        mut self,
+        root: &Path,
+        index: PathBuf,
+        sha256: &str,
+    ) -> io::Result<Self> {
+        if fs::canonicalize(root)? != fs::canonicalize(self.layout.baseline())? {
+            return Err(error(libc::EINVAL));
+        }
+        self.content_index = Some(crate::content_index::ContentIndex::new(index, sha256)?);
+        Ok(self)
+    }
+
+    /// Select compact observations before exposing a fresh stage to any writer.
+    /// The caller must exclusively own stage initialization; this does not
+    /// migrate an existing journal. Reopening automatically preserves its format.
+    /// Legacy readers reject the format marker instead of losing observations.
+    pub fn with_compact_preimages(mut self) -> io::Result<Self> {
+        if self.preimage_log.is_some() || self.preimage_dir.is_none() {
+            return Ok(self);
+        }
+        let Some(directory) = self.preimage_dir.as_ref() else {
+            return Ok(self);
+        };
+        if fs::read_dir(directory.join("entries"))?.next().is_some()
+            || fs::read_dir(&self.upper)?.any(|entry| {
+                entry.map_or(true, |entry| {
+                    entry.file_name() != OsStr::new(ROOT_METADATA_NAME)
+                })
+            })
+        {
+            return Err(io::Error::new(
+                io::ErrorKind::InvalidInput,
+                "compact preimages require a fresh stage",
+            ));
+        }
+        let log = crate::preimage_log::PreimageLog::open(&directory.join(PREIMAGE_LOG_NAME))?;
+        if !crate::preimage_log::PreimageLog::read(&directory.join(PREIMAGE_LOG_NAME))?.is_empty() {
+            return Err(error(libc::EINVAL));
+        }
+        // The log open above has already persisted entries' parent binding.
+        // Publish only complete marker bytes, without repeating directory
+        // preparation or a full file drain before the final directory drain.
+        let entries = directory.join("entries");
+        let temporary = entries.join(format!(
+            ".format-v2.{}-{}.tmp",
+            std::process::id(),
+            TEMP_ID.fetch_add(1, Ordering::Relaxed)
+        ));
+        let result = (|| {
+            let mut file = OpenOptions::new()
+                .write(true)
+                .create_new(true)
+                .mode(0o600)
+                .open(&temporary)?;
+            file.write_all(PREIMAGE_FORMAT)?;
+            sys::order_before_publish(&file)?;
+            sys::publish_no_replace(&temporary, &entries.join(PREIMAGE_FORMAT_NAME))?;
+            File::open(&entries)?.sync_all()
+        })();
+        if result.is_err() {
+            let _ = fs::remove_file(&temporary);
+        }
+        result?;
+        self.preimage_log = Some(Mutex::new(log));
+        Ok(self)
     }
 
     /// Preserve copy-up hard-link groups across a VM runner replacement.
@@ -742,6 +1030,27 @@ impl OverlayCore {
             return Ok(());
         };
         Self::validate_rel(rel)?;
+        if let Some(log) = &self.preimage_log {
+            let _span = self.profile.span("journal_log");
+            return log
+                .lock()
+                .map_err(|_| io::Error::other("preimage log lock poisoned"))?
+                .observe(rel, durable, || {
+                    after_missing()?;
+                    if observed_absent {
+                        Ok(PathFingerprint::Absent)
+                    } else {
+                        let state = fingerprint_with_index(
+                            self.layout.baseline(),
+                            rel,
+                            &self.profile,
+                            self.content_index.as_ref(),
+                        )?;
+                        self.profile.add("fingerprinted_paths", 1);
+                        Ok(state)
+                    }
+                });
+        }
         let lock_wait = self.profile.span("journal_lock_wait");
         let mut synced = self
             .preimage_lock
@@ -762,7 +1071,7 @@ impl OverlayCore {
                 }
                 if durable && !synced.contains(rel) {
                     let file = Self::verified_preimage_file(&destination, rel)?;
-                    self.sync_preimage(&file)?;
+                    self.order_preimage(&file)?;
                     self.sync_preimage(&File::open(directory.join("entries"))?)?;
                     synced.insert(rel.to_path_buf());
                 }
@@ -781,7 +1090,12 @@ impl OverlayCore {
                 PathFingerprint::Absent
             } else {
                 let _span = self.profile.span("fingerprint");
-                let result = fingerprint_profiled(self.layout.baseline(), rel, &self.profile)?;
+                let result = fingerprint_with_index(
+                    self.layout.baseline(),
+                    rel,
+                    &self.profile,
+                    self.content_index.as_ref(),
+                )?;
                 self.profile.add("fingerprinted_paths", 1);
                 result
             },
@@ -809,7 +1123,7 @@ impl OverlayCore {
                 file.write_all(&body)?;
             }
             if durable {
-                self.sync_preimage(&file)?;
+                self.order_preimage(&file)?;
             }
             // Publish without replacement even if another core instance uses
             // the same stage. A race must never replace its first observation.
@@ -833,7 +1147,7 @@ impl OverlayCore {
                     // before mutation rather than just syncing our loser.
                     let winner = Self::verified_preimage_file(&destination, rel)?;
                     if durable {
-                        self.sync_preimage(&winner)?;
+                        self.order_preimage(&winner)?;
                     }
                     let _span = self.profile.span("journal_cleanup");
                     fs::remove_file(&temporary)?;
@@ -852,9 +1166,18 @@ impl OverlayCore {
         result
     }
 
+    fn order_preimage(&self, file: &File) -> io::Result<()> {
+        let _span = self.profile.span("journal_order");
+        sys::order_before_publish(file).inspect_err(|error| {
+            log::error!("preimage ordering failed: {error}");
+        })
+    }
+
     fn sync_preimage(&self, file: &File) -> io::Result<()> {
         let _span = self.profile.span("journal_fsync");
-        file.sync_all()
+        file.sync_all().inspect_err(|error| {
+            log::error!("preimage durable sync failed: {error}");
+        })
     }
 
     fn verified_preimage_file(destination: &Path, rel: &Path) -> io::Result<File> {
@@ -874,6 +1197,13 @@ impl OverlayCore {
     }
 
     fn record_logical_tree_mapping(&self, source: &Path, destination: &Path) -> io::Result<()> {
+        // This traversal exists only to capture descendant preimages. Views
+        // without a journal (including the private VM rootfs) have none to
+        // capture. Namespace and access checks belong to the caller and remain
+        // necessary independently of whether observations are recorded.
+        if self.preimage_dir.is_none() {
+            return Ok(());
+        }
         self.record_preimage(destination)?;
         if !self.metadata(source)?.is_dir() {
             return Ok(());
@@ -1038,10 +1368,12 @@ impl OverlayCore {
     }
 
     fn is_whiteouted(&self, parent: &Path, name: &OsStr) -> bool {
+        let _span = self.profile.span("whiteout_probe");
         exists(&self.whiteout_path(parent, name))
     }
 
     pub fn is_opaque(&self, rel: &Path) -> bool {
+        let _span = self.profile.span("opaque_probe");
         is_opaque_directory(&self.upper_path(rel))
     }
 
@@ -1053,7 +1385,7 @@ impl OverlayCore {
         &self,
         rel: &Path,
         mut parents: Option<&mut Vec<BackingIdentity>>,
-        mut checked_directories: Option<&mut HashSet<PathBuf>>,
+        mut checked_directories: Option<&mut CheckedDirectories>,
     ) -> io::Result<Option<ResolvedMetadata>> {
         if let Some((path, metadata)) = layer_metadata_with_parents(
             &self.upper,
@@ -1147,7 +1479,7 @@ impl OverlayCore {
         // The final component rechecks ALL physical ancestors, including
         // those in losing layers; neither attributes nor absence are cached.
         // This retains the existing non-atomic host namespace contract.
-        let mut checked = (REUSE_DIRECTORIES && count > 2).then(HashSet::new);
+        let mut checked = (REUSE_DIRECTORIES && count > 2).then(CheckedDirectories::default);
         for (index, component) in rel.components().enumerate() {
             self.profile.add("resolve_components", 1);
             current.push(component.as_os_str());
@@ -1214,21 +1546,50 @@ impl OverlayCore {
         Ok(BackingResolution { entry, parents })
     }
 
+    /// Record a read observation and return this request's fresh backing.
+    /// The final object may be a symlink; consumers must not follow it.
+    /// Live journals retain publication followed by a fresh resolution, while
+    /// frozen/no-journal views resolve once. No attributes are cached.
+    pub fn observe_read_resolved(&self, rel: &Path) -> io::Result<ResolvedMetadata> {
+        self.prepare_read_with_parents(rel, None, false)
+    }
+
+    /// Record a read observation and return freshly resolved backing metadata
+    /// and parents for that same request. Unlike `prepare_file_read`, the final
+    /// object may be a symlink: readlink/xattr adapters must not follow it.
+    /// Live observations retain preimage publication and a subsequent fresh
+    /// resolution; no-journal/frozen views resolve only once. The result is
+    /// request-local and must not authorize later requests or cache attributes.
+    pub fn observe_read_for_backing_lookup(&self, rel: &Path) -> io::Result<BackingResolution> {
+        let mut parents = Vec::with_capacity(rel.components().count().saturating_sub(1));
+        let entry = self.prepare_read_with_parents(rel, Some(&mut parents), false)?;
+        Ok(BackingResolution { entry, parents })
+    }
+
     fn prepare_file_read_with_parents(
         &self,
         rel: &Path,
         parents: Option<&mut Vec<BackingIdentity>>,
     ) -> io::Result<ResolvedMetadata> {
+        self.prepare_read_with_parents(rel, parents, true)
+    }
+
+    fn prepare_read_with_parents(
+        &self,
+        rel: &Path,
+        parents: Option<&mut Vec<BackingIdentity>>,
+        reject_symlink: bool,
+    ) -> io::Result<ResolvedMetadata> {
         let _span = self.profile.span("observe_read");
         if !self.layout.frozen_baseline && self.preimage_dir.is_some() {
             let before = self.metadata_resolved(rel)?;
-            if before.metadata.file_type().is_symlink() {
+            if reject_symlink && before.metadata.file_type().is_symlink() {
                 return Err(error(libc::ELOOP));
             }
             self.capture_preimage(rel, false)?;
         }
         let backing = self.metadata_resolved_with_parents(rel, parents)?;
-        if backing.metadata.file_type().is_symlink() {
+        if reject_symlink && backing.metadata.file_type().is_symlink() {
             return Err(error(libc::ELOOP));
         }
         Ok(backing)
@@ -1910,6 +2271,156 @@ impl OverlayCore {
 #[cfg(test)]
 mod tests {
     #[test]
+    fn opaque_probes_observe_live_attributes_and_do_not_follow_xattr_links() {
+        use super::*;
+        let temp = tempfile::tempdir().unwrap();
+        let directory = temp.path().join("directory");
+        fs::create_dir(&directory).unwrap();
+        assert!(!is_opaque_directory(&directory));
+        assert!(!is_opaque_directory(&temp.path().join("missing")));
+        let link = temp.path().join("link");
+        std::os::unix::fs::symlink(&directory, &link).unwrap();
+        for name in OPAQUE_XATTRS {
+            let name = OsStr::new(name);
+            match sys::set_xattr(&directory, name, b"y", 0) {
+                Ok(()) => {}
+                Err(error) if ignorable_metadata_error(&error) => continue,
+                Err(error) => panic!("set opaque attribute: {error}"),
+            }
+            assert!(is_opaque_directory(&directory));
+            assert!(!is_opaque_directory(&link));
+            sys::set_xattr(&directory, name, b"x", 0).unwrap();
+            assert!(!is_opaque_directory(&directory));
+            sys::remove_xattr(&directory, name).unwrap();
+            assert!(!is_opaque_directory(&directory));
+        }
+        fs::write(directory.join(OPAQUE_NAME), b"").unwrap();
+        assert!(is_opaque_directory(&directory));
+        fs::remove_file(directory.join(OPAQUE_NAME)).unwrap();
+        assert!(!is_opaque_directory(&directory));
+    }
+
+    #[test]
+    fn immutable_receipts_preserve_native_case_aliases_without_content_scans() {
+        use super::*;
+        let temp = tempfile::tempdir().unwrap();
+        let base = temp.path().join("base");
+        fs::create_dir_all(base.join("dir")).unwrap();
+        fs::write(base.join("dir/file"), b"original").unwrap();
+        // Linux case-sensitive filesystems have no such alias to preserve.
+        if fs::symlink_metadata(base.join("DIR/FILE")).is_err() {
+            return;
+        }
+        let digest = sha256_hex(b"original");
+        let bytes =
+            crate::encode_content_index([(Path::new("dir/file"), digest.as_str())]).unwrap();
+        let index = temp.path().join("index");
+        fs::write(&index, &bytes).unwrap();
+        let journal = temp.path().join("preimages");
+        let mut core = OverlayCore::new_with_exclusions_and_preimages(
+            vec![base.clone()],
+            temp.path().join("upper"),
+            None,
+            vec![],
+            Some(journal.clone()),
+        )
+        .unwrap()
+        .with_immutable_content_index(&base, index, &sha256_hex(&bytes))
+        .unwrap();
+        core.profile = crate::profile::Profile::enabled("case-alias-test");
+        core.record_preimage(Path::new("DIR/FILE")).unwrap();
+        assert_eq!(
+            load_preimages(&journal).unwrap()[0].state,
+            fingerprint_at(&base, Path::new("DIR/FILE")).unwrap()
+        );
+        assert!(
+            !core
+                .profile
+                .report()
+                .unwrap()
+                .measurements
+                .contains_key("fingerprint_bytes")
+        );
+    }
+
+    #[test]
+    fn immutable_receipts_preserve_preimages_without_reading_file_content() {
+        use super::*;
+        let temp = tempfile::tempdir().unwrap();
+        let target = temp.path().join("target");
+        let baseline = temp.path().join("baseline");
+        fs::create_dir(&target).unwrap();
+        fs::create_dir(&baseline).unwrap();
+        for root in [&target, &baseline] {
+            fs::write(root.join("file"), vec![0x5a; 128 * 1024]).unwrap();
+        }
+        let expected = fingerprint_at(&baseline, Path::new("file")).unwrap();
+        let PathFingerprint::File { sha256, .. } = &expected else {
+            unreachable!()
+        };
+        let bytes = crate::encode_content_index([(Path::new("file"), sha256.as_str())]).unwrap();
+        let index = temp.path().join("index");
+        fs::write(&index, &bytes).unwrap();
+        let digest = sha256_hex(&bytes);
+        for compact in [false, true] {
+            let journal = temp.path().join(format!("preimages-{compact}"));
+            let core = OverlayCore::new_for_layout(
+                OverlayLayout::with_baseline(
+                    vec![baseline.clone()],
+                    target.clone(),
+                    Some(&baseline),
+                )
+                .unwrap(),
+                temp.path().join(format!("upper-{compact}")),
+                None,
+                vec![],
+                Some(journal.clone()),
+            )
+            .unwrap();
+            let mut core = if compact {
+                core.with_compact_preimages().unwrap()
+            } else {
+                core
+            };
+            core = core
+                .with_immutable_content_index(&baseline, index.clone(), &digest)
+                .unwrap();
+            core.profile = crate::profile::Profile::enabled("receipt-test");
+            core.record_preimage(Path::new("file")).unwrap();
+            assert_eq!(load_preimages(&journal).unwrap()[0].state, expected);
+            let report = core.profile.report().unwrap();
+            assert!(!report.measurements.contains_key("fingerprint_bytes"));
+            assert_eq!(report.measurements["fingerprint_content_reused"].units, 1);
+            fs::write(target.join("file"), b"external edit").unwrap();
+            assert!(!expected.matches(&fingerprint_at(&target, Path::new("file")).unwrap()));
+        }
+        let core = OverlayCore::new(
+            vec![baseline.clone()],
+            temp.path().join("wrong-upper"),
+            None,
+        )
+        .unwrap();
+        assert!(
+            core.with_immutable_content_index(&target, index.clone(), &digest)
+                .is_err()
+        );
+        fs::write(&index, b"corrupt receipt").unwrap();
+        let upper = temp.path().join("corrupt-upper");
+        let core = OverlayCore::new_with_exclusions_and_preimages(
+            vec![baseline.clone()],
+            upper.clone(),
+            None,
+            vec![],
+            Some(temp.path().join("corrupt-preimages")),
+        )
+        .unwrap()
+        .with_immutable_content_index(&baseline, index, &digest)
+        .unwrap();
+        assert!(core.copy_up(Path::new("file")).is_err());
+        assert!(!upper.join("file").exists());
+    }
+
+    #[test]
     fn negative_observation_remains_absent_when_host_creates_before_publication() {
         use super::*;
         let temp = tempfile::tempdir().unwrap();
@@ -1943,11 +2454,113 @@ mod tests {
             PathFingerprint::Absent
         );
     }
+
+    #[test]
+    fn compact_journal_reopens_consumes_and_persists_apply_directory_baselines() {
+        use super::*;
+        let temp = tempfile::tempdir().unwrap();
+        let target = temp.path().join("target");
+        fs::create_dir(&target).unwrap();
+        fs::write(target.join("file"), b"original").unwrap();
+        fs::create_dir(target.join("dir")).unwrap();
+        let upper = temp.path().join("upper");
+        let journal = temp.path().join("preimages");
+        let core = OverlayCore::new_with_exclusions_and_preimages(
+            vec![target.clone()],
+            upper.clone(),
+            None,
+            vec![],
+            Some(journal.clone()),
+        )
+        .unwrap()
+        .with_compact_preimages()
+        .unwrap();
+        core.observe_read(Path::new("file")).unwrap();
+        let first = load_preimages(&journal).unwrap();
+        assert_eq!(first.len(), 1);
+        // This is exactly the legacy reader's schema conversion. It must fail.
+        assert!(
+            serde_json::from_slice::<PathPreimage>(
+                &fs::read(journal.join("entries").join(PREIMAGE_FORMAT_NAME)).unwrap()
+            )
+            .is_err()
+        );
+        remove_preimages(&journal, &[PathBuf::from("file")]).unwrap();
+        fs::write(target.join("file"), b"changed").unwrap();
+        core.observe_read(Path::new("file")).unwrap();
+        assert!(
+            !load_preimages(&journal).unwrap()[0]
+                .state
+                .matches(&first[0].state)
+        );
+        drop(core);
+        let core = OverlayCore::open_existing_for_layout(
+            OverlayLayout::new(vec![target.clone()], target.clone()).unwrap(),
+            upper,
+            None,
+            vec![],
+            Some(journal.clone()),
+        )
+        .unwrap();
+        assert!(core.preimage_log.is_some());
+        core.record_preimage(Path::new("file")).unwrap();
+        persist_directory_preimage(
+            &journal,
+            PathPreimage {
+                path: b"dir".to_vec(),
+                state: fingerprint_at(&target, Path::new("dir")).unwrap(),
+            },
+        )
+        .unwrap();
+        assert_eq!(load_preimages(&journal).unwrap().len(), 2);
+        fs::remove_file(journal.join(PREIMAGE_LOG_NAME)).unwrap();
+        assert!(load_preimages(&journal).is_err());
+        assert!(remove_preimages(&journal, &[PathBuf::from("file")]).is_err());
+        assert!(!journal.join(PREIMAGE_LOG_NAME).exists());
+    }
+
+    #[test]
+    fn compact_journal_rejects_migration_and_mixed_formats() {
+        use super::*;
+        let temp = tempfile::tempdir().unwrap();
+        let target = temp.path().join("target");
+        fs::create_dir(&target).unwrap();
+        fs::write(target.join("file"), b"original").unwrap();
+        for compact in [false, true] {
+            let journal = temp.path().join(format!("preimages-{compact}"));
+            let core = OverlayCore::new_with_exclusions_and_preimages(
+                vec![target.clone()],
+                temp.path().join(format!("upper-{compact}")),
+                None,
+                vec![],
+                Some(journal.clone()),
+            )
+            .unwrap();
+            let core = if compact {
+                core.with_compact_preimages().unwrap()
+            } else {
+                core
+            };
+            core.observe_read(Path::new("file")).unwrap();
+            if compact {
+                fs::write(journal.join("entries/legacy.json"), b"{}").unwrap();
+                assert!(load_preimages(&journal).is_err());
+                fs::remove_file(journal.join("entries/legacy.json")).unwrap();
+                fs::remove_file(journal.join("entries").join(PREIMAGE_FORMAT_NAME)).unwrap();
+                assert!(load_preimages(&journal).is_err());
+                assert!(remove_preimages(&journal, &[PathBuf::from("file")]).is_err());
+            } else {
+                assert!(core.with_compact_preimages().is_err());
+                assert_eq!(load_preimages(&journal).unwrap().len(), 1);
+            }
+        }
+    }
     #[test]
     fn two_cores_never_replace_the_first_observation_when_publication_races() {
         use super::*;
         use crate::apply::{OverlayRecord, OverlayState, OverlayUpper, apply_overlay};
-        for durable_loser in [false, true] {
+        for (durable_loser, compact) in [(false, false), (true, false), (false, true), (true, true)]
+        {
             let temp = tempfile::tempdir().unwrap();
             let target = temp.path().join("target");
             let stage = temp.path().join("stage");
@@ -1963,6 +2576,11 @@ mod tests {
                 Some(journal.clone()),
             )
             .unwrap();
+            let loser = if compact {
+                loser.with_compact_preimages().unwrap()
+            } else {
+                loser
+            };
             let winner = OverlayCore::new_with_exclusions_and_preimages(
                 vec![target.clone()],
                 temp.path().join("other-upper"),
@@ -2709,6 +3327,44 @@ mod tests {
     }
 
     #[test]
+    fn logical_tree_observations_only_traverse_when_a_journal_exists() {
+        let temporary = tempfile::tempdir().unwrap();
+        let target = temporary.path().join("target");
+        fs::create_dir_all(target.join("source/nested")).unwrap();
+        fs::write(target.join("source/nested/file"), b"original").unwrap();
+        for journaled in [false, true] {
+            let journal = temporary.path().join("preimages");
+            let mut core = OverlayCore::new_with_exclusions_and_preimages(
+                vec![target.clone()],
+                temporary.path().join(format!("upper-{journaled}")),
+                None,
+                vec![],
+                journaled.then(|| journal.clone()),
+            )
+            .unwrap();
+            core.profile = crate::profile::Profile::enabled("tree-observation-test");
+            core.record_logical_tree_mapping(Path::new("source"), Path::new("moved"))
+                .unwrap();
+            let report = core.profile.report().unwrap();
+            if journaled {
+                let entries = load_preimages(&journal).unwrap();
+                assert_eq!(entries.len(), 3);
+                for path in ["moved", "moved/nested", "moved/nested/file"] {
+                    assert!(entries.iter().any(|entry| {
+                        entry.relative_path() == Path::new(path)
+                            && entry.state == PathFingerprint::Absent
+                    }));
+                }
+                assert!(report.measurements["metadata"].calls >= 3);
+            } else {
+                assert!(!report.measurements.contains_key("metadata"));
+                assert!(!report.measurements.contains_key("resolve"));
+                assert!(!journal.exists());
+            }
+        }
+    }
+
+    #[test]
     fn preimage_journal_covers_create_remove_and_rename_destinations() {
         let temporary = tempfile::tempdir().unwrap();
         let target = temporary.path().join("target");
@@ -2820,6 +3476,49 @@ mod backing_resolution_tests {
     use super::*;
 
     #[test]
+    fn partial_upper_reuses_successful_prefixes_but_rechecks_final_parents() {
+        let temp = tempfile::tempdir().unwrap();
+        let lower = temp.path().join("lower");
+        let upper = temp.path().join("upper");
+        fs::create_dir_all(lower.join("a/b/c/d/e/f")).unwrap();
+        fs::create_dir_all(upper.join("a/b")).unwrap();
+        fs::write(lower.join("a/b/c/d/e/f/file"), b"content").unwrap();
+        let profile = crate::profile::Profile::enabled("partial-upper");
+        let core = OverlayCore::new(vec![lower], upper.clone(), None)
+            .unwrap()
+            .with_profile(profile.clone());
+        let path = Path::new("a/b/c/d/e/f/file");
+        let mut parents = Vec::new();
+        let entry = core
+            .resolve_metadata_walk::<true>(path, Some(&mut parents), |_| Ok(()))
+            .unwrap()
+            .unwrap();
+        assert_eq!(entry.layer, 1);
+        assert_eq!(parents.len(), 6);
+        // Six selected-layer final checks, three losing-upper final checks,
+        // two initial lower checks, and three fresh missing-prefix probes.
+        assert_eq!(
+            profile.report().unwrap().measurements["layer_parent_stats"].units,
+            14
+        );
+        let outside = temp.path().join("outside");
+        fs::create_dir_all(outside.join("b/c/d/e/f")).unwrap();
+        fs::write(outside.join("b/c/d/e/f/file"), b"outside").unwrap();
+        let result = core
+            .resolve_metadata_walk::<true>(path, None, |prefix| {
+                if prefix == Path::new("a/b/c/d/e/f") {
+                    fs::rename(upper.join("a"), upper.join("old-a"))?;
+                    std::os::unix::fs::symlink(&outside, upper.join("a"))?;
+                }
+                Ok(())
+            })
+            .unwrap()
+            .unwrap();
+        assert_eq!(result.layer, 1);
+        assert_eq!(result.metadata.len(), 7);
+    }
+
+    #[test]
     fn deep_walk_rechecks_final_physical_ancestors_after_host_replacement() {
         let temp = tempfile::tempdir().unwrap();
         let lower = temp.path().join("lower");
@@ -2880,6 +3579,79 @@ mod backing_resolution_tests {
                 .unwrap()
                 .len(),
             15
+        );
+    }
+
+    #[test]
+    fn observed_backing_preserves_symlinks_and_first_live_observations() {
+        let temp = tempfile::tempdir().unwrap();
+        let lower = temp.path().join("lower");
+        fs::create_dir_all(lower.join("a/b")).unwrap();
+        fs::write(lower.join("a/b/file"), b"original").unwrap();
+        std::os::unix::fs::symlink("file", lower.join("a/b/link")).unwrap();
+        for journaled in [false, true] {
+            fs::remove_file(lower.join("a/b/link")).unwrap();
+            std::os::unix::fs::symlink("file", lower.join("a/b/link")).unwrap();
+            let journal = temp.path().join("journal");
+            let mut core = OverlayCore::new_with_exclusions_and_preimages(
+                vec![lower.clone()],
+                temp.path().join(format!("upper-{journaled}")),
+                None,
+                vec![],
+                journaled.then(|| journal.clone()),
+            )
+            .unwrap();
+            core.profile = crate::profile::Profile::enabled("observed-backing-test");
+            let rel = Path::new("a/b/link");
+            let original = fingerprint_at(&lower, rel).unwrap();
+            let direct = core.observe_read_resolved(rel).unwrap();
+            assert!(direct.metadata.file_type().is_symlink());
+            assert_eq!(direct.layer, 1);
+            let backing = core.observe_read_for_backing_lookup(rel).unwrap();
+            assert!(backing.entry.metadata.file_type().is_symlink());
+            assert_eq!(backing.entry.layer, 1);
+            assert_eq!(backing.parents.len(), 2);
+            assert!(
+                !core
+                    .profile
+                    .report()
+                    .unwrap()
+                    .measurements
+                    .contains_key("fingerprint_bytes")
+            );
+            if !journaled {
+                assert_eq!(
+                    core.profile.report().unwrap().measurements["resolve"].calls,
+                    2
+                );
+            }
+            fs::remove_file(lower.join(rel)).unwrap();
+            std::os::unix::fs::symlink("replacement", lower.join(rel)).unwrap();
+            let backing = core.observe_read_for_backing_lookup(rel).unwrap();
+            assert_eq!(
+                fs::read_link(backing.entry.resolved.path).unwrap(),
+                Path::new("replacement")
+            );
+            if journaled {
+                let entries = load_preimages(&journal).unwrap();
+                assert_eq!(entries.len(), 1);
+                assert_eq!(entries[0].state, original);
+            }
+        }
+    }
+
+    #[test]
+    fn file_fingerprint_retains_persisted_sha256_encoding() {
+        let temp = tempfile::tempdir().unwrap();
+        fs::write(temp.path().join("file"), b"abc").unwrap();
+        let PathFingerprint::File { sha256, .. } =
+            fingerprint_at(temp.path(), Path::new("file")).unwrap()
+        else {
+            panic!("expected file fingerprint")
+        };
+        assert_eq!(
+            sha256,
+            "ba7816bf8f01cfea414140de5dae2223b00361a396177a9cb410ff61f20015ad"
         );
     }
 

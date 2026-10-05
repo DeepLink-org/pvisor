@@ -17,22 +17,35 @@ fn check(result: libc::c_int) -> io::Result<()> {
 }
 
 fn mount(source: &str, target: &Path, kind: &str, flags: libc::c_ulong) -> io::Result<()> {
+    match mount_with_options(source, target, kind, flags, None) {
+        Err(error) if error.raw_os_error() == Some(libc::EBUSY) => Ok(()),
+        result => result,
+    }
+}
+
+fn mount_with_options(
+    source: &str,
+    target: &Path,
+    kind: &str,
+    flags: libc::c_ulong,
+    options: Option<&str>,
+) -> io::Result<()> {
     let source = CString::new(source)?;
     let target = CString::new(target.as_os_str().as_encoded_bytes())?;
     let kind = CString::new(kind)?;
+    let options = options.map(CString::new).transpose()?;
     let result = unsafe {
         libc::mount(
             source.as_ptr(),
             target.as_ptr(),
             kind.as_ptr(),
             flags,
-            std::ptr::null(),
+            options
+                .as_ref()
+                .map_or(std::ptr::null(), |options| options.as_ptr().cast()),
         )
     };
-    if result < 0 && io::Error::last_os_error().raw_os_error() != Some(libc::EBUSY) {
-        return Err(io::Error::last_os_error());
-    }
-    Ok(())
+    check(result)
 }
 
 fn initialize() -> io::Result<()> {
@@ -254,6 +267,18 @@ fn run() -> io::Result<i32> {
     let config: GuestConfig = serde_json::from_slice(&bytes)?;
     config.command()?; // Validate before any configuration side effects.
     initialize()?;
+    if let Some(scratch) = &config.temporary_filesystem {
+        // Never cover image contents or an existing guest mount. Only this
+        // newly created directory may become the private scratch filesystem.
+        fs::create_dir(&scratch.path)?;
+        mount_with_options(
+            "tmpfs",
+            &scratch.path,
+            "tmpfs",
+            libc::MS_NODEV | libc::MS_NOSUID | libc::MS_RELATIME,
+            Some(&format!("size={},mode=1777", scratch.size_bytes)),
+        )?;
+    }
     if let Some(target) = &config.workspace {
         mount("pvisor-workspace", target, "virtiofs", 0)?;
     }

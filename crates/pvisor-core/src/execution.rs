@@ -212,6 +212,8 @@ impl Default for RuntimeConfig {
 pub struct ResourceLimits {
     /// Aggregate resident-memory budget when the executor has a process-tree
     /// controller; otherwise an address-space limit may be used and reported.
+    /// VM execution sizes guest RAM (rounded to MiB, capped by VM settings);
+    /// it does not additionally cap the guest process's virtual address space.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub memory_bytes: Option<u64>,
     /// Maximum number of processes/threads admitted for the Run.

@@ -46,6 +46,30 @@ fn published_object_survives_source_removal_and_has_private_worktrees() {
 }
 
 #[test]
+fn restore_consumes_authenticated_machine_bytes() {
+    let directory = tempfile::tempdir().unwrap();
+    let source = directory.path().join("source");
+    fs::create_dir(&source).unwrap();
+    let root = directory.path().join("store");
+    let store = SnapshotStore::new(&root).unwrap();
+    let pending = store.begin().unwrap();
+    pending.create_ram().unwrap().write_all(b"RAM").unwrap();
+    let id = pending
+        .publish(&source, b"machine-state", compatibility())
+        .unwrap();
+    let snapshot = store.open_for_restore(&id, &compatibility()).unwrap();
+    // Fault injection: a host writer after validation must not substitute
+    // unauthenticated machine state into this already opened restore.
+    fs::write(
+        root.join("objects").join(&id).join("machine.json"),
+        b"corrupt",
+    )
+    .unwrap();
+    assert_eq!(snapshot.machine_bytes().unwrap(), b"machine-state");
+    assert!(store.open_for_restore(&id, &compatibility()).is_err());
+}
+
+#[test]
 fn unpublished_failures_are_cleaned_and_never_openable() {
     let directory = tempfile::tempdir().unwrap();
     let root = directory.path().join("store");

@@ -45,7 +45,8 @@ pub(super) fn copy_entry(
     source: &Path,
     destination: &Path,
     metadata: &fs::Metadata,
-) -> anyhow::Result<()> {
+) -> anyhow::Result<bool> {
+    let mut cloned = false;
     if metadata.is_file() {
         let mut input = fs::OpenOptions::new()
             .read(true)
@@ -60,7 +61,8 @@ pub(super) fn copy_entry(
         // offset moves. Only capability/geometry failures permit fallback;
         // storage, permission and I/O failures must still abort publication.
         let rc = unsafe { libc::ioctl(output.as_raw_fd(), libc::FICLONE, input.as_raw_fd()) };
-        if rc != 0 {
+        cloned = rc == 0;
+        if !cloned {
             let error = io::Error::last_os_error();
             ensure!(
                 matches!(
@@ -131,5 +133,5 @@ pub(super) fn copy_entry(
         "copy timestamps: {}",
         io::Error::last_os_error()
     );
-    Ok(())
+    Ok(cloned)
 }

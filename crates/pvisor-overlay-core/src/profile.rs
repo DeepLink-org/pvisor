@@ -17,7 +17,23 @@ static NEXT_INSTANCE: AtomicU64 = AtomicU64::new(1);
 pub struct Measurement {
     pub calls: u64,
     pub total_ns: u64,
+    /// Largest completed span; inclusive, like total_ns.
+    pub max_ns: u64,
+    /// Counts in <=1 ms, <=10 ms, <=100 ms, <=1 s, >1 s buckets.
+    /// These are cumulative counts, not percentile estimates.
+    pub latency_buckets: [u64; 5],
     pub units: u64,
+}
+
+impl Measurement {
+    fn observe_ns(&mut self, elapsed: u64) {
+        const LIMITS_NS: [u64; 4] = [1_000_000, 10_000_000, 100_000_000, 1_000_000_000];
+        self.calls = self.calls.saturating_add(1);
+        self.total_ns = self.total_ns.saturating_add(elapsed);
+        self.max_ns = self.max_ns.max(elapsed);
+        let bucket = LIMITS_NS.partition_point(|limit| elapsed > *limit);
+        self.latency_buckets[bucket] = self.latency_buckets[bucket].saturating_add(1);
+    }
 }
 
 #[derive(Clone, Debug, Serialize)]
@@ -43,7 +59,7 @@ struct State {
 impl State {
     fn report(&self) -> ProfileReport {
         ProfileReport {
-            schema: 1,
+            schema: 2,
             pid: std::process::id(),
             component: self.component.clone(),
             instance: self.instance,
@@ -136,8 +152,7 @@ impl Drop for Span<'_> {
             let elapsed = started.elapsed().as_nanos().min(u64::MAX as u128) as u64;
             let mut measurements = state.measurements.lock().unwrap_or_else(|p| p.into_inner());
             let value = measurements.entry(self.label).or_default();
-            value.calls = value.calls.saturating_add(1);
-            value.total_ns = value.total_ns.saturating_add(elapsed);
+            value.observe_ns(elapsed);
             drop(measurements);
             // VMM shutdown can use _exit, bypassing destructors. Periodic
             // cumulative records retain evidence without logging every request.
@@ -160,6 +175,33 @@ impl Drop for Span<'_> {
 mod tests {
     use super::*;
     #[test]
+    fn latency_buckets_preserve_boundaries_and_large_outliers() {
+        let durations = [
+            0,
+            1_000_000,
+            1_000_001,
+            10_000_000,
+            10_000_001,
+            100_000_000,
+            100_000_001,
+            1_000_000_000,
+            1_000_000_001,
+        ];
+        let mut measurement = Measurement::default();
+        for duration in durations {
+            measurement.observe_ns(duration);
+        }
+        assert_eq!(measurement.calls, durations.len() as u64);
+        assert_eq!(measurement.total_ns, durations.iter().sum::<u64>());
+        assert_eq!(measurement.max_ns, 1_000_000_001);
+        assert_eq!(measurement.latency_buckets, [2, 2, 2, 2, 1]);
+        measurement.observe_ns(u64::MAX);
+        assert_eq!(measurement.max_ns, u64::MAX);
+        assert_eq!(measurement.total_ns, u64::MAX);
+        assert_eq!(measurement.latency_buckets, [2, 2, 2, 2, 2]);
+    }
+
+    #[test]
     fn disabled_and_shared_profiles_preserve_counts() {
         let disabled = Profile::default();
         disabled.add("bytes", 7);
@@ -174,6 +216,15 @@ mod tests {
         let report = profile.report().unwrap();
         assert_eq!(report.measurements["bytes"].units, 18);
         assert_eq!(report.measurements["read"].calls, 2);
+        assert_eq!(
+            report.measurements["read"]
+                .latency_buckets
+                .iter()
+                .sum::<u64>(),
+            2
+        );
+        assert!(report.measurements["read"].max_ns <= report.measurements["read"].total_ns);
+        assert_eq!(report.schema, 2);
         assert!(report.inclusive_spans);
     }
 }

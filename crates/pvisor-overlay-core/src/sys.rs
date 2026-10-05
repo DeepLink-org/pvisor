@@ -233,6 +233,18 @@ fn xattr_buffer<F>(mut call: F) -> io::Result<Vec<u8>>
 where
     F: FnMut(*mut libc::c_void, usize) -> libc::ssize_t,
 {
+    // Most name lists and values fit here. Read them directly rather than
+    // making a size-query syscall for every tiny attribute. ERANGE retains
+    // the existing dynamically sized path; all other failures stay failures.
+    let mut small = [0u8; 256];
+    let actual = call(small.as_mut_ptr().cast(), small.len());
+    if actual >= 0 {
+        return Ok(small[..actual as usize].to_vec());
+    }
+    let error = io::Error::last_os_error();
+    if error.raw_os_error() != Some(libc::ERANGE) {
+        return Err(error);
+    }
     let needed = call(std::ptr::null_mut(), 0);
     if needed < 0 {
         return Err(io::Error::last_os_error());
@@ -354,6 +366,26 @@ pub fn copy_xattrs(source: &Path, destination: &Path) -> io::Result<()> {
     Ok(())
 }
 
+/// Order a preimage's data before publishing its directory entry. This is not
+/// durable completion: the caller MUST full-sync the entries directory before
+/// permitting mutation. Unsupported Apple barriers retain the old full drain.
+pub fn order_before_publish(file: &File) -> io::Result<()> {
+    #[cfg(target_os = "macos")]
+    loop {
+        if unsafe { libc::fcntl(file.as_raw_fd(), libc::F_BARRIERFSYNC) } == 0 {
+            return Ok(());
+        }
+        let error = io::Error::last_os_error();
+        match error.raw_os_error() {
+            Some(libc::EINTR) => continue,
+            Some(libc::EINVAL | libc::ENOTSUP | libc::ENOSYS) => return file.sync_all(),
+            _ => return Err(error),
+        }
+    }
+    #[cfg(not(target_os = "macos"))]
+    file.sync_all()
+}
+
 pub fn fsync(file: &File, datasync: bool) -> io::Result<()> {
     if datasync {
         file.sync_data()
@@ -457,6 +489,34 @@ pub fn set_flags(path: &Path, flags: u32) -> io::Result<()> {
 
 #[cfg(test)]
 mod tests {
+    #[test]
+    fn xattrs_preserve_empty_small_large_values_and_large_name_lists() {
+        use super::*;
+        let temp = tempfile::tempdir().unwrap();
+        let path = temp.path().join("file");
+        std::fs::write(&path, b"content").unwrap();
+        let name = OsStr::new("user.pvisor-buffer");
+        for size in [0, 1, 256, 257, 4096] {
+            let value: Vec<u8> = (0..size).map(|i| (i % 251) as u8).collect();
+            set_xattr(&path, name, &value, 0).unwrap();
+            assert_eq!(get_xattr(&path, name).unwrap(), value);
+        }
+        let names: Vec<String> = (0..40)
+            .map(|i| format!("user.pvisor-buffer-long-name-{i:03}"))
+            .collect();
+        for name in &names {
+            set_xattr(&path, OsStr::new(name), b"value", 0).unwrap();
+        }
+        let listed = list_xattrs(&path).unwrap();
+        assert!(listed.iter().map(|name| name.len() + 1).sum::<usize>() > 256);
+        for name in &names {
+            assert!(listed.iter().any(|item| item == name.as_bytes()));
+        }
+        remove_xattr(&path, name).unwrap();
+        assert!(get_xattr(&path, name).is_err());
+        assert!(list_xattrs(&temp.path().join("missing")).is_err());
+    }
+
     use super::*;
     #[test]
     fn publication_consumes_source_and_preserves_existing_winner() {

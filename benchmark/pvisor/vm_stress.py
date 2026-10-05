@@ -185,6 +185,7 @@ class Harness:
         store = base / "store"
         source = base / "input"
         source.mkdir()
+        (source / "dev").mkdir()
         shutil.copy2(self.guest, source / "init.krun")
         vm = self.start(
             store,

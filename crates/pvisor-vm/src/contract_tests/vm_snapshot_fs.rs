@@ -252,6 +252,7 @@ fn overlay_rebinds_owned_layers_handles_cookies_and_future_hard_link_copy_up() {
         ],
         apply_target: Some(root.join("target").to_str().unwrap().into()),
         baseline_lower: Some(root.join("base").to_str().unwrap().into()),
+        baseline_content_index: None,
         upper_dir: root.join("upper").to_str().unwrap().into(),
         work_dir: Some(root.join("work").to_str().unwrap().into()),
         preimage_dir: Some(root.join("preimages").to_str().unwrap().into()),
@@ -676,6 +677,7 @@ fn overlay_preserves_directory_cookies_and_consumed_virtual_names() {
                 lower_dirs: vec![lower.path().to_str().unwrap().into()],
                 apply_target: None,
                 baseline_lower: None,
+                baseline_content_index: None,
                 upper_dir: upper.path().to_str().unwrap().into(),
                 work_dir: None,
                 preimage_dir: None,
@@ -870,6 +872,7 @@ fn virtiofs_content_open_preserves_target_preimage_across_restore_and_composed_l
                 ],
                 apply_target: Some(target.to_str().unwrap().into()),
                 baseline_lower: baseline_lower.as_ref().map(|p| p.to_str().unwrap().into()),
+                baseline_content_index: None,
                 upper_dir: stage.join("upper").to_str().unwrap().into(),
                 work_dir: Some(stage.join("work").to_str().unwrap().into()),
                 preimage_dir: Some(stage.join("preimages").to_str().unwrap().into()),
@@ -994,6 +997,21 @@ fn overlay_stage_retains_lower_and_restores_open_handles_and_future_alias_copy_u
     std::fs::hard_link(base.join("a"), base.join("b")).unwrap();
     std::fs::write(base.join("gone"), b"whiteout me").unwrap();
     let base = base.canonicalize().unwrap();
+    let content_index = temp.path().join("content-index.bin");
+    let receipts = ["a", "b", "gone"].map(|name| {
+        (
+            std::path::PathBuf::from(name),
+            pvisor::environment_snapshot::file_hash(&base.join(name)).unwrap(),
+        )
+    });
+    let bytes = pvisor_overlay_core::encode_content_index(
+        receipts
+            .iter()
+            .map(|(path, digest)| (path.as_path(), digest.as_str())),
+    )
+    .unwrap();
+    std::fs::write(&content_index, bytes).unwrap();
+    let index_sha256 = pvisor::environment_snapshot::file_hash(&content_index).unwrap();
     let stage = temp.path().join("stage");
     std::fs::create_dir(&stage).unwrap();
     let stage = stage.canonicalize().unwrap();
@@ -1012,6 +1030,11 @@ fn overlay_stage_retains_lower_and_restores_open_handles_and_future_alias_copy_u
                 preimage_dir: Some(stage.join("preimages").to_str().unwrap().into()),
                 apply_target: None,
                 baseline_lower: None,
+                baseline_content_index: Some(crate::api::BaselineContentIndex {
+                    root: base.clone(),
+                    file: content_index.clone(),
+                    sha256: index_sha256.clone(),
+                }),
                 excluded_paths: vec![],
                 access_policy: Default::default(),
                 semantics: PermissionSemantics::LinuxComplete,

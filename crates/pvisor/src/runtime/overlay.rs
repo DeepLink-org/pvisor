@@ -394,7 +394,7 @@ pub(crate) fn prepare_overlay_record_mountless(
     .map_err(OverlayError::Prepare)?;
     // Share backing validation and journal initialization with the host adapter.
     crate::util::persistence_step(run_id, "overlay", "backing_and_journal", || {
-        pvisor_overlay_core::OverlayCore::new_for_layout(
+        pvisor_overlay_core::OverlayCore::new_for_layout_with_compact_preimages(
             layout,
             record.upper.upper_dir.clone(),
             Some(record.upper.work_dir.clone()),
@@ -645,10 +645,47 @@ mod tests {
         let prepared = prepare_overlay_record_mountless(&record, &[lower], "test-run").unwrap();
         assert!(prepared.upper.path().is_dir());
         assert!(stage.join("work").is_dir());
+        assert!(stage.join("preimages/entries/format-v2.json").is_file());
+        prepare_overlay_record_mountless(
+            &prepared,
+            std::slice::from_ref(&prepared.target),
+            "test-reopen",
+        )
+        .unwrap();
+        assert!(stage.join("preimages/entries/format-v2.json").is_file());
         assert!(!prepared.merged_dir.exists());
         assert_eq!(
             load_overlay_record(&stage).unwrap().state,
             OverlayState::Active
+        );
+        let legacy_stage = tmp.path().join("legacy-stage");
+        let legacy = OverlayRecord {
+            upper: OverlayUpper {
+                upper_dir: legacy_stage.join("upper"),
+                work_dir: legacy_stage.join("work"),
+            },
+            stage_dir: legacy_stage.clone(),
+            merged_dir: legacy_stage.join("merged"),
+            ..record
+        };
+        pvisor_overlay_core::OverlayCore::new_with_exclusions_and_preimages(
+            vec![legacy.target.clone()],
+            legacy.upper.upper_dir.clone(),
+            Some(legacy.upper.work_dir.clone()),
+            Vec::new(),
+            Some(legacy_stage.join("preimages")),
+        )
+        .unwrap();
+        prepare_overlay_record_mountless(
+            &legacy,
+            std::slice::from_ref(&legacy.target),
+            "legacy-reopen",
+        )
+        .unwrap();
+        assert!(
+            !legacy_stage
+                .join("preimages/entries/format-v2.json")
+                .exists()
         );
     }
 

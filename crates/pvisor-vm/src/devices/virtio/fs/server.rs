@@ -120,6 +120,25 @@ impl<F: FileSystem + Sync> Server<F> {
             x if x == Opcode::Create as u32 => "CREATE",
             x if x == Opcode::Fsync as u32 => "FSYNC",
             x if x == Opcode::Release as u32 => "RELEASE",
+            x if x == Opcode::Setattr as u32 => "SETATTR",
+            x if x == Opcode::Readlink as u32 => "READLINK",
+            x if x == Opcode::Symlink as u32 => "SYMLINK",
+            x if x == Opcode::Mkdir as u32 => "MKDIR",
+            x if x == Opcode::Flush as u32 => "FLUSH",
+            x if x == Opcode::Access as u32 => "ACCESS",
+            x if x == Opcode::Forget as u32 => "FORGET",
+            x if x == Opcode::Fsyncdir as u32 => "FSYNCDIR",
+            x if x == Opcode::Setxattr as u32 => "SETXATTR",
+            x if x == Opcode::Getxattr as u32 => "GETXATTR",
+            x if x == Opcode::Listxattr as u32 => "LISTXATTR",
+            x if x == Opcode::Removexattr as u32 => "REMOVEXATTR",
+            x if x == Opcode::Unlink as u32 => "UNLINK",
+            x if x == Opcode::Rmdir as u32 => "RMDIR",
+            x if x == Opcode::Rename as u32 => "RENAME",
+            x if x == Opcode::Rename2 as u32 => "RENAME2",
+            x if x == Opcode::Statfs as u32 => "STATFS",
+            x if x == Opcode::BatchForget as u32 => "BATCHFORGET",
+            x if x == Opcode::Releasedir as u32 => "RELEASEDIR",
             _ => "OTHER",
         };
         let _span = self.profile.span(label);
@@ -230,11 +249,17 @@ impl<F: FileSystem + Sync> Server<F> {
 
         let name = bytes_to_cstr(buf.as_ref())?;
 
+        debug!(
+            "lookup unique={} parent={} name={name:?}",
+            in_header.unique, in_header.nodeid
+        );
+
         match self
             .fs
             .lookup(Context::from(in_header), in_header.nodeid.into(), name)
         {
             Ok(entry) => {
+                debug!("lookup unique={} inode={}", in_header.unique, entry.inode);
                 let out = EntryOut::from(entry);
 
                 reply_ok(Some(out), None, in_header.unique, w)
@@ -1512,6 +1537,7 @@ fn reply_ok<T: ByteValued>(
 }
 
 fn reply_error(e: io::Error, unique: u64, mut w: Writer) -> Result<usize> {
+    debug!("reply error unique={unique} errno={:?}", e.raw_os_error());
     let header = OutHeader {
         len: size_of::<OutHeader>() as u32,
         error: -e.raw_os_error().unwrap_or(libc::EIO),

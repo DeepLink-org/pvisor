@@ -1,7 +1,7 @@
 //! Atomic environment objects with raw or durable compressed RAM. VM freezing belongs to the executor.
 use super::{
     RamBlocks, RawRamIndex, SnapshotRamReader, TreeInventory, blocks, copy_owned_tree,
-    copy_owned_tree_checked, file_hash, native_path, verify_tree,
+    copy_owned_tree_checked, copy_sealed_tree, file_hash, native_path, verify_tree,
 };
 use anyhow::{Context, ensure};
 use serde::{Deserialize, Serialize};
@@ -54,6 +54,9 @@ pub struct PendingEnvironment {
 pub struct PublishedEnvironment {
     path: PathBuf,
     manifest: EnvironmentManifest,
+    // Consume exactly the state authenticated at open, without a second file
+    // read between verification and deserialization by the restore caller.
+    machine: Vec<u8>,
     // Permanent store lock is outside removable objects. This guard holds a
     // shared reference until RAM/state/worktree preparation is complete.
     _reference: File,
@@ -154,7 +157,7 @@ impl SnapshotStore {
         })
     }
     pub fn open(&self, id: &str, expected: &Compatibility) -> anyhow::Result<PublishedEnvironment> {
-        self.open_checked(id, expected, false)
+        self.open_checked(id, expected, false, false)
     }
 
     /// Validate seals and inventories now; verify indexed RAM on first access.
@@ -164,7 +167,21 @@ impl SnapshotStore {
         id: &str,
         expected: &Compatibility,
     ) -> anyhow::Result<PublishedEnvironment> {
-        self.open_checked(id, expected, true)
+        self.open_checked(id, expected, true, false)
+    }
+
+    /// Warm restore of a locally published, store-owned immutable stage.
+    /// Publication authenticates content; this open checks the bound manifest,
+    /// machine state, base pins and stage metadata/topology without rereading
+    /// stage file content. External/manual writes to published payloads are
+    /// unsupported. Use open/open_for_restore for a fresh full content audit.
+    /// The reference gate must remain held through materialization.
+    pub(crate) fn open_owned_stage_for_restore(
+        &self,
+        id: &str,
+        expected: &Compatibility,
+    ) -> anyhow::Result<PublishedEnvironment> {
+        self.open_checked(id, expected, true, true)
     }
 
     fn open_checked(
@@ -172,35 +189,12 @@ impl SnapshotStore {
         id: &str,
         expected: &Compatibility,
         lazy: bool,
+        owned_stage: bool,
     ) -> anyhow::Result<PublishedEnvironment> {
         valid_id(id)?;
         let reference = gate(&self.root, false)?;
         let path = self.root.join("objects").join(id);
-        ensure!(
-            fs::symlink_metadata(&path)?.is_dir(),
-            "invalid environment object"
-        );
-        let bytes = fs::read(path.join("manifest.json"))?;
-        ensure!(digest(&bytes) == id, "environment manifest digest mismatch");
-        let manifest: EnvironmentManifest = serde_json::from_slice(&bytes)?;
-        ensure!(
-            matches!(
-                (
-                    manifest.version,
-                    &manifest.ram_blocks,
-                    &manifest.ram_index,
-                    &manifest.stage_bases
-                ),
-                (1, None, None, None)
-                    | (2, Some(_), None, None)
-                    | (3, None, Some(_), None)
-                    | (4, None, Some(_), Some(_))
-                    | (5, Some(_), None, Some(_))
-            ) && manifest.compatibility == *expected,
-            "environment compatibility mismatch"
-        );
-        valid_id(&manifest.ram_sha256)?;
-        valid_id(&manifest.machine_sha256)?;
+        let manifest = self.read_manifest(id, expected)?;
         if let Some(index) = &manifest.ram_index {
             index.validate()?;
             let meta = fs::symlink_metadata(path.join("ram.bin"))?;
@@ -228,11 +222,16 @@ impl SnapshotStore {
                 "environment RAM digest mismatch"
             );
         }
-        ensure!(
-            file_hash(&path.join("machine.json"))? == manifest.machine_sha256,
-            "environment machine digest mismatch"
-        );
-        verify_tree(&path.join("rootfs"), &manifest.filesystem)?;
+        let machine = self.read_machine(id, &manifest)?;
+        if owned_stage {
+            ensure!(
+                manifest.stage_bases.is_some(),
+                "owned restore requires a stage snapshot"
+            );
+            super::verify_tree_metadata(&path.join("rootfs"), &manifest.filesystem)?;
+        } else {
+            verify_tree(&path.join("rootfs"), &manifest.filesystem)?;
+        }
         let bases = if let Some(references) = &manifest.stage_bases {
             ensure!(!references.is_empty(), "stage snapshot has no base");
             let mut ids = std::collections::BTreeSet::new();
@@ -251,9 +250,68 @@ impl SnapshotStore {
         Ok(PublishedEnvironment {
             path,
             manifest,
+            machine,
             _reference: reference,
             bases,
         })
+    }
+
+    /// Startup preflight only: authenticates metadata without scanning payloads.
+    /// This is not a restore capability and carries no payload/base lease.
+    /// The runner must open/validate the object before creating an instance.
+    pub(crate) fn restore_metadata(
+        &self,
+        id: &str,
+        expected: &Compatibility,
+    ) -> anyhow::Result<(EnvironmentManifest, Vec<u8>)> {
+        let _reference = gate(&self.root, false)?;
+        let manifest = self.read_manifest(id, expected)?;
+        let machine = self.read_machine(id, &manifest)?;
+        Ok((manifest, machine))
+    }
+
+    fn read_manifest(
+        &self,
+        id: &str,
+        expected: &Compatibility,
+    ) -> anyhow::Result<EnvironmentManifest> {
+        valid_id(id)?;
+        let path = self.root.join("objects").join(id);
+        ensure!(
+            fs::symlink_metadata(&path)?.is_dir(),
+            "invalid environment object"
+        );
+        let bytes = fs::read(path.join("manifest.json"))?;
+        ensure!(digest(&bytes) == id, "environment manifest digest mismatch");
+        let manifest: EnvironmentManifest = serde_json::from_slice(&bytes)?;
+        ensure!(
+            matches!(
+                (
+                    manifest.version,
+                    &manifest.ram_blocks,
+                    &manifest.ram_index,
+                    &manifest.stage_bases
+                ),
+                (1, None, None, None)
+                    | (2, Some(_), None, None)
+                    | (3, None, Some(_), None)
+                    | (4, None, Some(_), Some(_))
+                    | (5, Some(_), None, Some(_))
+            ) && manifest.compatibility == *expected,
+            "environment compatibility mismatch"
+        );
+        valid_id(&manifest.ram_sha256)?;
+        valid_id(&manifest.machine_sha256)?;
+        Ok(manifest)
+    }
+
+    fn read_machine(&self, id: &str, manifest: &EnvironmentManifest) -> anyhow::Result<Vec<u8>> {
+        let machine = fs::read(self.root.join("objects").join(id).join("machine.json"))?;
+        ensure!(
+            digest(&machine) == manifest.machine_sha256,
+            "environment machine digest mismatch"
+        );
+        Ok(machine)
     }
     /// Read the digest-bound profile; callers still perform full compatibility validation.
     pub fn profile(&self, id: &str) -> anyhow::Result<String> {
@@ -344,7 +402,7 @@ impl SnapshotStore {
 }
 
 impl PendingEnvironment {
-    pub(super) fn directory(&self) -> &Path {
+    pub(crate) fn directory(&self) -> &Path {
         self.staging.path()
     }
     pub fn create_ram(&self) -> anyhow::Result<File> {
@@ -533,7 +591,7 @@ impl PublishedEnvironment {
         &self.manifest
     }
     pub fn machine_bytes(&self) -> anyhow::Result<Vec<u8>> {
-        Ok(fs::read(self.path.join("machine.json"))?)
+        Ok(self.machine.clone())
     }
     pub fn ram_file(&self) -> anyhow::Result<File> {
         if let Some(blocks) = &self.manifest.ram_blocks {
@@ -586,6 +644,27 @@ impl PublishedEnvironment {
         );
         self.copy_payload(destination)
     }
+    /// Internal warm restore from a store-owned immutable published payload. The
+    /// store owns its sealed tree and exposes no writable payload descriptor;
+    /// this borrow keeps the reference gate held through copying. External
+    /// writers/manual store edits during the lease are unsupported, as with
+    /// SnapshotBase. Use materialize_stage for a fresh full content audit.
+    /// Reuse the inventory checked at open; source metadata/topology are
+    /// checked again after copy, as is the destination. Data-copy
+    /// fallback validates destination content. No immutable base is copied.
+    pub(crate) fn materialize_owned_stage(&self, destination: &Path) -> anyhow::Result<()> {
+        ensure!(
+            self.manifest.stage_bases.is_some(),
+            "full snapshot is not a stage snapshot"
+        );
+        copy_sealed_tree(
+            &self.path.join("rootfs"),
+            destination,
+            &self.manifest.filesystem,
+        )?;
+        Ok(())
+    }
+
     fn copy_payload(&self, destination: &Path) -> anyhow::Result<()> {
         copy_owned_tree_checked(
             &self.path.join("rootfs"),
@@ -593,5 +672,171 @@ impl PublishedEnvironment {
             Some(&self.manifest.filesystem),
         )?;
         Ok(())
+    }
+}
+
+#[cfg(test)]
+mod owned_stage_tests {
+    use super::*;
+
+    fn fixture(temp: &Path, count: usize, bytes: usize) -> (SnapshotStore, String, Compatibility) {
+        let base = temp.join("base");
+        fs::create_dir(&base).unwrap();
+        let stage = temp.join("stage");
+        for part in ["upper", "work", "preimages"] {
+            fs::create_dir_all(stage.join(part)).unwrap();
+        }
+        let content = vec![0x5a; bytes];
+        for index in 0..count {
+            fs::write(stage.join(format!("upper/{index:04}")), &content).unwrap();
+        }
+        fs::write(stage.join("work/state"), b"metadata").unwrap();
+        fs::write(stage.join("preimages/entry"), b"preimage").unwrap();
+        let store = SnapshotStore::new(&temp.join("store")).unwrap();
+        let base = store.import_base(&base).unwrap();
+        let binding = Compatibility {
+            host_boot: "boot".into(),
+            build: "build".into(),
+            firmware: "firmware".into(),
+            profile: "stage".into(),
+        };
+        let pending = store.begin().unwrap();
+        pending
+            .create_ram()
+            .unwrap()
+            .write_all(&[7; 65536])
+            .unwrap();
+        let id = pending
+            .publish_stage(&stage, &[base], b"machine", binding.clone(), false)
+            .unwrap();
+        (store, id, binding)
+    }
+
+    #[test]
+    fn owned_stage_restore_retains_lease_and_branch_independence() {
+        let temp = tempfile::tempdir().unwrap();
+        let (store, id, binding) = fixture(temp.path(), 2, 16);
+        let snapshot = store.open_owned_stage_for_restore(&id, &binding).unwrap();
+        let first = temp.path().join("first");
+        let second = temp.path().join("second");
+        snapshot.materialize_owned_stage(&first).unwrap();
+        assert!(store.delete(&id).is_err());
+        snapshot.materialize_owned_stage(&second).unwrap();
+        super::super::verify_tree(&first, &snapshot.manifest.filesystem).unwrap();
+        super::super::verify_tree(&second, &snapshot.manifest.filesystem).unwrap();
+        fs::write(first.join("upper/0000"), b"branch changes").unwrap();
+        assert_eq!(fs::read(second.join("upper/0000")).unwrap(), vec![0x5a; 16]);
+        assert_eq!(fs::read(second.join("work/state")).unwrap(), b"metadata");
+        assert_eq!(
+            fs::read(second.join("preimages/entry")).unwrap(),
+            b"preimage"
+        );
+        drop(snapshot);
+        store.delete(&id).unwrap();
+        assert_eq!(fs::read(second.join("upper/0000")).unwrap(), vec![0x5a; 16]);
+    }
+
+    #[test]
+    fn owned_stage_restore_rejects_structure_changes_and_cleans_destination() {
+        let temp = tempfile::tempdir().unwrap();
+        let (store, id, binding) = fixture(temp.path(), 2, 16);
+        let snapshot = store.open_for_restore(&id, &binding).unwrap();
+        // Metadata checking still catches this unsupported external edit.
+        fs::write(snapshot.path.join("rootfs/upper/unexpected"), b"extra").unwrap();
+        let destination = temp.path().join("branch");
+        assert!(snapshot.materialize_owned_stage(&destination).is_err());
+        assert!(!destination.exists());
+        assert!(store.open_owned_stage_for_restore(&id, &binding).is_err());
+    }
+
+    #[test]
+    #[ignore = "manual paired immutable stage open measurement"]
+    fn owned_stage_open_paired_benchmark() {
+        use std::time::Instant;
+        for (name, count, bytes) in [("small-2048", 2048, 16), ("large-128", 128, 1024 * 1024)] {
+            let temp = tempfile::tempdir().unwrap();
+            let (store, id, binding) = fixture(temp.path(), count, bytes);
+            for round in 0..18 {
+                let mut elapsed = [0u128; 2];
+                let order = if round % 2 == 0 {
+                    [false, true]
+                } else {
+                    [true, false]
+                };
+                for owned in order {
+                    let start = Instant::now();
+                    let snapshot = if owned {
+                        store.open_owned_stage_for_restore(&id, &binding).unwrap()
+                    } else {
+                        store.open_for_restore(&id, &binding).unwrap()
+                    };
+                    elapsed[usize::from(owned)] = start.elapsed().as_nanos();
+                    assert_eq!(snapshot.machine_bytes().unwrap(), b"machine");
+                    assert!(store.delete(&id).is_err());
+                    drop(snapshot);
+                }
+                if round >= 3 {
+                    println!(
+                        "PVISOR_STAGE_OPEN_BENCH {}",
+                        serde_json::json!({
+                            "case": name, "round": round - 3,
+                            "strict_ns": elapsed[0], "owned_ns": elapsed[1],
+                            "files": count + 2, "bytes": count * bytes + 16,
+                        })
+                    );
+                }
+            }
+        }
+    }
+
+    #[test]
+    #[ignore = "manual opt-in complete stage copy profiling"]
+    fn owned_stage_materialization_diagnostic() {
+        let temp = tempfile::tempdir_in("/private/tmp").unwrap();
+        let (store, id, binding) = fixture(temp.path(), 2048, 16);
+        let snapshot = store.open_for_restore(&id, &binding).unwrap();
+        let branch = temp.path().join("branch");
+        snapshot.materialize_owned_stage(&branch).unwrap();
+        super::super::verify_tree(&branch, &snapshot.manifest.filesystem).unwrap();
+    }
+
+    #[test]
+    #[ignore = "manual paired complete stage materialization measurement"]
+    fn owned_stage_materialization_paired_benchmark() {
+        use std::time::Instant;
+        for (name, count, bytes) in [("small-2048", 2048, 16), ("large-128", 128, 1024 * 1024)] {
+            let temp = tempfile::tempdir_in("/private/tmp").unwrap();
+            let (store, id, binding) = fixture(temp.path(), count, bytes);
+            let snapshot = store.open_for_restore(&id, &binding).unwrap();
+            for round in 0..18 {
+                let mut elapsed = [0u128; 2];
+                let order = if round % 2 == 0 {
+                    [false, true]
+                } else {
+                    [true, false]
+                };
+                for owned in order {
+                    let branch = temp.path().join(format!("branch-{round}-{owned}"));
+                    let start = Instant::now();
+                    if owned {
+                        snapshot.materialize_owned_stage(&branch).unwrap();
+                    } else {
+                        snapshot.materialize_stage(&branch).unwrap();
+                    }
+                    elapsed[usize::from(owned)] = start.elapsed().as_nanos();
+                    super::super::verify_tree(&branch, &snapshot.manifest.filesystem).unwrap();
+                    fs::remove_dir_all(branch).unwrap();
+                }
+                if round >= 3 {
+                    println!(
+                        "PVISOR_STAGE_MATERIALIZE_BENCH {}",
+                        serde_json::json!({
+                            "case": name, "round": round - 3, "strict_ns": elapsed[0], "owned_ns": elapsed[1],
+                            "files": count + 2, "bytes": count * bytes + 16,
+                        })
+                    );
+                }
+            }
+        }
     }
 }

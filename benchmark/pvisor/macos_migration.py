@@ -30,6 +30,8 @@ CASES = {
     "startup-2cpu-2048": (2, 2048, False, ":"),
     "metadata-2048": (2, 256, False, 'test "$(find fixture -type f | wc -l)" -eq 2048'),
     "search-2048": (2, 256, False, 'test "$(grep -rl needle fixture | wc -l)" -eq 32'),
+    "metadata-deep-2048": (2, 256, False, 'test "$(find fixture -type f | wc -l)" -eq 2048'),
+    "search-deep-2048": (2, 256, False, 'test "$(grep -rl needle fixture | wc -l)" -eq 32'),
     "write-read-32mib": (
         2,
         256,
@@ -44,57 +46,102 @@ CASES = {
     ),
     "compressed-startup": (2, 256, True, ":"),
 }
+DEFAULT_CASES = tuple(CASES)
+CASES.update(
+    {
+        "rg-2048": (2, 256, False, 'test "$(rg --no-config -l needle fixture | wc -l)" -eq 32'),
+        "rg-deep-2048": (
+            2,
+            256,
+            False,
+            'test "$(rg --no-config -l needle fixture | wc -l)" -eq 32',
+        ),
+        "rg-deep-partial-upper-2048": (
+            2,
+            256,
+            False,
+            'for d in fixture/d*; do mkdir -p "$d/l1/new-stage"; done; '
+            'test "$(find fixture -type f | wc -l)" -eq 2048; '
+            'test "$(rg --no-config -l needle fixture | wc -l)" -eq 32',
+        ),
+        "git-status-2048": (
+            2,
+            256,
+            False,
+            'result="$(git -c safe.directory=\'*\' -C fixture status --porcelain --untracked-files=all)"; test -z "$result"',
+        ),
+        "npm-offline-32": (
+            2,
+            256,
+            False,
+            'cd fixture; npm install --offline --ignore-scripts --no-audit --no-fund --package-lock=false --cache /tmp/pvisor-npm-cache; node -e \'const fs=require("fs"); if(fs.readdirSync("node_modules").filter(n=>!n.startsWith(".")).length!==32)process.exit(1); for(let i=0;i<32;i++){if(require("p"+i)!==i)process.exit(2)}\'',
+        ),
+    }
+)
 
 
 def sha(path):
     return hashlib.sha256(path.read_bytes()).hexdigest()
 
 
-def trial(args, variant, case, batch, round_id):
-    cpus, memory, compressed, payload = CASES[case]
-    work = args.output / "trials" / f"b{batch}-{round_id}-{case}-{variant}"
-    work.mkdir(parents=True)
-    (work / "config-home").mkdir()
-    if case in ("metadata-2048", "search-2048"):
-        shutil.copytree(args.output / "fixture", work / "fixture")
+def create_fixture(root, *, depth):
+    """Exactly 2048 files/32 matches; only directory depth changes."""
+    root.mkdir()
+    for i in range(2048):
+        directory = root / f"d{i // 64:02}"
+        for level in range(1, depth):
+            directory /= f"l{level}"
+        directory.mkdir(parents=True, exist_ok=True)
+        (directory / f"f{i:04}.txt").write_text(
+            ("needle" if i % 64 == 0 else "ordinary") + " payload\n"
+        )
+
+
+def create_git_fixture(root):
+    create_fixture(root, depth=1)
     env = {k: os.environ[k] for k in ("PATH", "HOME", "TMPDIR") if k in os.environ}
-    run_home = args.output / "run-storage" / work.name
-    diagnostic_timing = getattr(args, "diagnostic_timing", False)
-    env.update(
-        PVISOR_RUN_HOME=str(run_home),
-        XDG_CONFIG_HOME=str(work / "config-home"),
-        PVISOR_STARTUP_TIMING="1" if diagnostic_timing else "0",
-        PVISOR_PERSISTENCE_TIMING="1" if diagnostic_timing else "0",
+    env.update(GIT_CONFIG_NOSYSTEM="1", GIT_CONFIG_GLOBAL=os.devnull)
+    prefix = ["git", "-c", "core.hooksPath=/dev/null"]
+    for args in (
+        ["init", "-q", "--template="],
+        ["add", "."],
+        [
+            "-c",
+            "user.name=Benchmark",
+            "-c",
+            "user.email=benchmark@invalid",
+            "commit",
+            "-qm",
+            "fixture",
+        ],
+    ):
+        subprocess.run(prefix + args, cwd=root, env=env, check=True, stdout=subprocess.DEVNULL)
+
+
+def create_npm_fixture(root):
+    root.mkdir()
+    dependencies = {}
+    for i in range(32):
+        package = root / "local" / f"p{i}"
+        package.mkdir(parents=True)
+        (package / "package.json").write_text(
+            json.dumps(dict(name=f"p{i}", version="1.0.0", main="m0.js"))
+        )
+        for j in range(16):
+            (package / f"m{j}.js").write_text(f"module.exports = {i + j};\n")
+        dependencies[f"p{i}"] = f"file:local/p{i}"
+    (root / "package.json").write_text(
+        json.dumps(dict(name="fixture", version="1.0.0", dependencies=dependencies))
     )
-    command = [
-        str(getattr(args, variant)),
-        "run",
-        "--no-agent-defaults",
-        "--overlaynet",
-        "off",
-        "--stdio",
-        "inherit",
-        "--timeout",
-        "30s",
-        "--vm",
-        "--rootfs",
-        str(args.rootfs),
-        "--vm-library-dir",
-        str(args.firmware),
-        "--cpu",
-        str(cpus),
-        "--memory",
-        f"{memory}MiB",
-    ]
-    if compressed:
-        command.append("--vm-ram-compression")
-    command += ["--", "/bin/sh", "-ec", payload + "; printf 'PVISOR_BENCH_READY\\n'"]
+
+
+def measure_process(command, *, cwd, env, work):
     ready, ended, stdout, stderr = [], [], [], []
     done = threading.Event()
     started = time.monotonic_ns()
     process = subprocess.Popen(
         command,
-        cwd=work,
+        cwd=cwd,
         env=env,
         stdin=subprocess.DEVNULL,
         stdout=subprocess.PIPE,
@@ -134,7 +181,78 @@ def trial(args, variant, case, batch, round_id):
         (work / "stdout.log").write_bytes(b"".join(stdout))
         (work / "stderr.log").write_bytes(b"".join(stderr))
     if process.returncode != 0 or len(ready) != 1:
-        raise RuntimeError(f"failed {case}/{variant}, exit={process.returncode}; see {work}")
+        raise RuntimeError(f"failed process, exit={process.returncode}; see {work}")
+    return (
+        (ready[0] - started) / 1e6,
+        (ended[0] - started) / 1e6,
+        stdout,
+        stderr,
+        process.returncode,
+    )
+
+
+def trial(args, variant, case, batch, round_id):
+    cpus, memory, compressed, payload = CASES[case]
+    work = args.output / "trials" / f"b{batch}-{round_id}-{case}-{variant}"
+    work.mkdir(parents=True)
+    (work / "config-home").mkdir()
+    if case in (
+        "metadata-2048",
+        "search-2048",
+        "metadata-deep-2048",
+        "search-deep-2048",
+        "rg-2048",
+        "rg-deep-2048",
+        "rg-deep-partial-upper-2048",
+        "git-status-2048",
+        "npm-offline-32",
+    ):
+        fixture_name = (
+            "fixture-git"
+            if case == "git-status-2048"
+            else "fixture-npm"
+            if case == "npm-offline-32"
+            else "fixture-deep"
+            if "-deep-" in case
+            else "fixture"
+        )
+        shutil.copytree(args.output / fixture_name, work / "fixture")
+    env = {k: os.environ[k] for k in ("PATH", "HOME", "TMPDIR") if k in os.environ}
+    run_home = args.output / "run-storage" / work.name
+    diagnostic_timing = getattr(args, "diagnostic_timing", False)
+    env.update(
+        PVISOR_RUN_HOME=str(run_home),
+        XDG_CONFIG_HOME=str(work / "config-home"),
+        PVISOR_STARTUP_TIMING="1" if diagnostic_timing else "0",
+        PVISOR_PERSISTENCE_TIMING="1" if diagnostic_timing else "0",
+        PVISOR_FS_PROFILE="1" if getattr(args, "filesystem_profile", False) else "0",
+    )
+    command = [
+        str(getattr(args, variant)),
+        "run",
+        "--no-agent-defaults",
+        "--overlaynet",
+        "off",
+        "--stdio",
+        "inherit",
+        "--timeout",
+        "30s",
+        "--vm",
+        "--rootfs",
+        str(args.rootfs),
+        "--vm-library-dir",
+        str(args.firmware),
+        "--cpu",
+        str(cpus),
+        "--memory",
+        f"{memory}MiB",
+    ]
+    if compressed:
+        command.append("--vm-ram-compression")
+    command += ["--", "/bin/sh", "-ec", payload + "; printf 'PVISOR_BENCH_READY\\n'"]
+    ready_ms, completion_ms, stdout, stderr, exit_code = measure_process(
+        command, cwd=work, env=env, work=work
+    )
     bundles = [
         Path(line.removeprefix("Run Bundle: ")).parent
         for line in b"".join(stderr).decode(errors="replace").splitlines()
@@ -159,10 +277,10 @@ def trial(args, variant, case, batch, round_id):
         round=round_id,
         variant=variant,
         case=case,
-        ready_ms=(ready[0] - started) / 1e6,
-        completion_ms=(ended[0] - started) / 1e6,
+        ready_ms=ready_ms,
+        completion_ms=completion_ms,
         observed_isolation=isolation,
-        exit=process.returncode,
+        exit=exit_code,
         work=str(work),
     )
 
@@ -217,12 +335,18 @@ def main():
     parser.add_argument("--samples", type=int, default=30)
     parser.add_argument("--warmups", type=int, default=3)
     parser.add_argument("--batches", type=int, default=3)
-    parser.add_argument("--cases", default=",".join(CASES))
+    parser.add_argument("--cases", default=",".join(DEFAULT_CASES))
     parser.add_argument("--regression-threshold", type=float, default=15)
     parser.add_argument("--seed", type=int, default=20261004)
     parser.add_argument(
-        "--diagnostic-timing", action="store_true",
+        "--diagnostic-timing",
+        action="store_true",
         help="retain CLI startup/persistence stage timings; report as an instrumented diagnostic",
+    )
+    parser.add_argument(
+        "--filesystem-profile",
+        action="store_true",
+        help="retain aggregate filesystem checkpoints; instrumented runs are not performance acceptance",
     )
     args = parser.parse_args()
     if platform.system() != "Darwin" or platform.machine() != "arm64":
@@ -235,14 +359,13 @@ def main():
     for name in ("baseline", "candidate", "rootfs", "firmware", "output"):
         setattr(args, name, getattr(args, name).resolve())
     args.output.mkdir(exist_ok=False)
-    fixture = args.output / "fixture"
-    fixture.mkdir()
-    for i in range(2048):
-        directory = fixture / f"d{i // 64:02}"
-        directory.mkdir(exist_ok=True)
-        (directory / f"f{i:04}.txt").write_text(
-            ("needle" if i % 64 == 0 else "ordinary") + " payload\n"
-        )
+    create_fixture(args.output / "fixture", depth=1)
+    if any("-deep-" in case for case in selected):
+        create_fixture(args.output / "fixture-deep", depth=8)
+    if "git-status-2048" in selected:
+        create_git_fixture(args.output / "fixture-git")
+    if "npm-offline-32" in selected:
+        create_npm_fixture(args.output / "fixture-npm")
     metadata = dict(
         schema="pvisor-macos-migration/v1",
         platform=platform.platform(),
@@ -253,6 +376,7 @@ def main():
             threshold_percent=args.regression_threshold,
             seed=args.seed,
             diagnostic_timing=args.diagnostic_timing,
+            filesystem_profile=args.filesystem_profile,
             exit_timer="blocking wait thread; timeout only on completion event",
             host_cache="warm; no eviction",
             cases={k: CASES[k] for k in selected},
@@ -269,6 +393,15 @@ def main():
             )
         },
     )
+    tools = {"rg": "usr/bin/rg", "git": "usr/bin/git", "node": "usr/bin/node", "npm": "usr/bin/npm"}
+    metadata["guest_tools_sha256"] = {
+        name: sha(args.rootfs / relative)
+        for name, relative in tools.items()
+        if (args.rootfs / relative).is_file()
+    }
+    packages = args.rootfs / "lib/apk/db/installed"
+    if packages.is_file():
+        metadata["rootfs_packages_sha256"] = sha(packages)
     (args.output / "metadata.json").write_text(json.dumps(metadata, indent=2) + "\n")
     rng, rows = random.Random(args.seed), []
     with (args.output / "samples.jsonl").open("w") as log:

@@ -11,7 +11,10 @@ use anyhow::{Context, ensure};
 use serde::{Deserialize, Serialize};
 use std::{
     fs::{self, File, OpenOptions},
-    os::unix::fs::{MetadataExt, OpenOptionsExt},
+    os::unix::{
+        ffi::OsStrExt,
+        fs::{MetadataExt, OpenOptionsExt},
+    },
     path::{Path, PathBuf},
 };
 
@@ -26,6 +29,8 @@ pub struct BaseReference {
 struct Seal {
     version: u32,
     inventory_sha256: String,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    content_index_sha256: Option<String>,
     device: u64,
     inode: u64,
     mtime: i64,
@@ -41,6 +46,7 @@ pub struct SnapshotBase {
     store: PathBuf,
     directory: PathBuf,
     reference: BaseReference,
+    content_index_sha256: Option<String>,
     lease: File,
 }
 impl SnapshotBase {
@@ -55,9 +61,21 @@ impl SnapshotBase {
             store: self.store.clone(),
             directory: self.directory.clone(),
             reference: self.reference.clone(),
+            content_index_sha256: self.content_index_sha256.clone(),
             lease: self.lease.try_clone()?,
         })
     }
+    /// A digest-bound receipt file built from the verified import inventory.
+    /// Only attach it to this base's lower; keep this lease alive while using it.
+    /// Old imported generations have no index and retain ordinary fingerprints.
+    pub fn content_index(&self) -> Option<(PathBuf, String)> {
+        // open already verified the seal. Reuse its receipt under this lease;
+        // do not reopen/recheck the same metadata merely to attach the index.
+        self.content_index_sha256
+            .as_ref()
+            .map(|digest| (self.directory.join("content-index.bin"), digest.clone()))
+    }
+
     pub fn verify(&self) -> anyhow::Result<()> {
         let seal = check(&self.directory, &self.reference)?;
         let bytes = fs::read(self.directory.join("inventory.json"))?;
@@ -66,6 +84,13 @@ impl SnapshotBase {
             "base inventory digest mismatch"
         );
         let inventory: TreeInventory = serde_json::from_slice(&bytes)?;
+        if let Some(expected) = &seal.content_index_sha256 {
+            let index = fs::read(self.directory.join("content-index.bin"))?;
+            ensure!(
+                digest(&index) == *expected,
+                "base content index digest mismatch"
+            );
+        }
         verify_tree(&self.root(), &inventory)
     }
     pub(super) fn pin(&self, store: &Path, destination: &Path) -> anyhow::Result<()> {
@@ -96,6 +121,9 @@ fn check(directory: &Path, reference: &BaseReference) -> anyhow::Result<Seal> {
     let seal: Seal = serde_json::from_slice(&bytes)?;
     ensure!(seal.version == 1, "unsupported base seal");
     valid_id(&seal.inventory_sha256)?;
+    if let Some(digest) = &seal.content_index_sha256 {
+        valid_id(digest)?;
+    }
     let root = fs::symlink_metadata(directory.join("rootfs"))?;
     ensure!(
         root.is_dir()
@@ -122,7 +150,7 @@ fn check(directory: &Path, reference: &BaseReference) -> anyhow::Result<Seal> {
 pub(super) fn open(store: &Path, reference: &BaseReference) -> anyhow::Result<SnapshotBase> {
     valid_id(&reference.id)?;
     let directory = store.join("bases").join(&reference.id);
-    check(&directory, reference).context("immutable stage base unavailable")?;
+    let seal = check(&directory, reference).context("immutable stage base unavailable")?;
     let lease = OpenOptions::new()
         .read(true)
         .write(true)
@@ -134,6 +162,7 @@ pub(super) fn open(store: &Path, reference: &BaseReference) -> anyhow::Result<Sn
         store: store.to_owned(),
         directory,
         reference: reference.clone(),
+        content_index_sha256: seal.content_index_sha256,
         lease,
     })
 }
@@ -144,12 +173,26 @@ impl SnapshotStore {
     pub fn import_base(&self, source: &Path) -> anyhow::Result<SnapshotBase> {
         let pending = self.begin()?;
         let inventory = copy_owned_tree(source, &pending.directory().join("rootfs"))?;
+        let index = pvisor_overlay_core::encode_content_index(
+            inventory.entries.iter().filter_map(|entry| {
+                if let super::TreeObject::File { sha256, .. } = &entry.object {
+                    Some((
+                        Path::new(std::ffi::OsStr::from_bytes(&entry.path)),
+                        sha256.as_str(),
+                    ))
+                } else {
+                    None
+                }
+            }),
+        )?;
+        write_synced(&pending.directory().join("content-index.bin"), &index)?;
         let bytes = serde_json::to_vec(&inventory)?;
         write_synced(&pending.directory().join("inventory.json"), &bytes)?;
         let root = fs::symlink_metadata(pending.directory().join("rootfs"))?;
         let seal = Seal {
             version: 1,
             inventory_sha256: digest(&bytes),
+            content_index_sha256: Some(digest(&index)),
             device: root.dev(),
             inode: root.ino(),
             mtime: root.mtime(),
@@ -208,4 +251,52 @@ pub(super) fn collect(store: &Path) -> anyhow::Result<usize> {
     }
     File::open(store.join("bases"))?.sync_all()?;
     Ok(removed)
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    #[test]
+    fn imported_content_receipts_are_bound_to_the_owned_generation_and_audited() {
+        let temp = tempfile::tempdir().unwrap();
+        let source = temp.path().join("source");
+        fs::create_dir(&source).unwrap();
+        fs::write(source.join("file"), b"original").unwrap();
+        let store = SnapshotStore::new(&temp.path().join("store")).unwrap();
+        let base = store.import_base(&source).unwrap();
+        let (index, sha256) = base.content_index().unwrap();
+        fs::write(source.join("file"), b"later source edit").unwrap();
+        let journal = temp.path().join("preimages");
+        let core = pvisor_overlay_core::OverlayCore::new_with_exclusions_and_preimages(
+            vec![base.root()],
+            temp.path().join("upper"),
+            None,
+            vec![],
+            Some(journal.clone()),
+        )
+        .unwrap()
+        .with_immutable_content_index(&base.root(), index.clone(), &sha256)
+        .unwrap();
+        let copied = core.copy_up(Path::new("file")).unwrap();
+        assert_eq!(fs::read(copied).unwrap(), b"original");
+        assert_eq!(
+            pvisor_overlay_core::load_preimages(&journal).unwrap()[0].state,
+            pvisor_overlay_core::fingerprint_at(&base.root(), Path::new("file")).unwrap()
+        );
+        base.verify().unwrap();
+        fs::write(index, b"corrupted index").unwrap();
+        assert!(
+            base.verify()
+                .unwrap_err()
+                .to_string()
+                .contains("content index digest mismatch")
+        );
+    }
+    #[test]
+    fn legacy_seals_without_content_receipts_keep_their_serialized_shape() {
+        let bytes = br#"{"version":1,"inventory_sha256":"0000000000000000000000000000000000000000000000000000000000000000","device":1,"inode":2,"mtime":3,"mtime_nsec":4,"ctime":5,"ctime_nsec":6}"#;
+        let seal: Seal = serde_json::from_slice(bytes).unwrap();
+        assert!(seal.content_index_sha256.is_none());
+        assert_eq!(serde_json::to_vec(&seal).unwrap(), bytes);
+    }
 }

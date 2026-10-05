@@ -1,7 +1,10 @@
 //! Portable overlay filesystem semantics shared by host FUSE and libkrun virtio-fs.
 
 pub mod apply;
+mod content_index;
 mod core;
+pub use content_index::encode_content_index;
+pub mod preimage_log;
 pub mod profile;
 pub mod sys;
 

@@ -167,6 +167,14 @@ impl VmConfiguration for VmBuilder {
                     preimage_dir: overlay.preimage_dir.as_deref().map(path).transpose()?,
                     apply_target: overlay.apply_target.as_deref().map(path).transpose()?,
                     baseline_lower: overlay.baseline_lower.as_deref().map(path).transpose()?,
+                    baseline_content_index: overlay
+                        .baseline_content_index
+                        .map(|index| {
+                            path(&index.root)?;
+                            path(&index.file)?;
+                            Ok::<_, io::Error>(index)
+                        })
+                        .transpose()?,
                     excluded_paths: overlay
                         .excluded_paths
                         .iter()

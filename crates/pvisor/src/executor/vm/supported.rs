@@ -506,7 +506,7 @@ impl RunExecutor for VmExecutor {
                 }
             }
         }
-        let guest = guest_config(
+        let mut guest = guest_config(
             &invocation.program,
             &invocation.args,
             env,
@@ -515,15 +515,33 @@ impl RunExecutor for VmExecutor {
             &spec.runtime.resource_limits,
             vm_network_enabled,
         );
-        if let Err(error) = guest.command() {
-            return failed_to_start(error.to_string());
-        }
         let requested_memory_mib = spec
             .runtime
             .resource_limits
             .memory_bytes
             .map(|bytes| bytes.div_ceil(1024 * 1024).max(1))
             .and_then(|mib| u32::try_from(mib).ok());
+        let memory_mib = requested_memory_mib
+            .map(|requested| requested.min(self.settings.memory_mib))
+            .unwrap_or(self.settings.memory_mib);
+        let scratch_path = PathBuf::from(format!("/.pvisor-tmp-{}", spec.run_id));
+        if !invocation.env.contains_key("TMPDIR")
+            && guest.workspace.as_ref().is_none_or(|workspace| {
+                !scratch_path.starts_with(workspace) && !workspace.starts_with(&scratch_path)
+            })
+        {
+            let path = scratch_path;
+            guest
+                .env
+                .insert("TMPDIR".into(), path.to_string_lossy().into_owned());
+            guest.temporary_filesystem = Some(pvisor_guest::TemporaryFilesystem {
+                path,
+                size_bytes: (u64::from(memory_mib) * 1024 * 1024 / 4).min(64 * 1024 * 1024),
+            });
+        }
+        if let Err(error) = guest.command() {
+            return failed_to_start(error.to_string());
+        }
         let attestation = match tempfile::NamedTempFile::new_in(temporary.path()) {
             Ok(file) => file,
             Err(error) => {
@@ -571,9 +589,7 @@ impl RunExecutor for VmExecutor {
             workspace_target: workspace_target.clone(),
             guest,
             cpus: self.settings.cpus as u8,
-            memory_mib: requested_memory_mib
-                .map(|requested| requested.min(self.settings.memory_mib))
-                .unwrap_or(self.settings.memory_mib),
+            memory_mib,
             library_dir: self.settings.library_dir.clone(),
             checkpoint: None,
         };
@@ -737,9 +753,11 @@ impl RunExecutor for VmExecutor {
         context.vm_control.attach(control_host, ram_backing).await;
         context.transition(RunState::Running, None).await;
 
+        crate::util::startup_mark_run("vm.wait_begin", spec.run_id.as_str());
         let end = context
             .wait_child(&mut child, spec.runtime.timeout_ms)
             .await;
+        crate::util::startup_mark_run("vm.wait_done", spec.run_id.as_str());
         if matches!(end, End::Cancelled | End::Deadline) {
             crate::session::lifecycle::terminate_process_tree(
                 &mut child,
@@ -751,6 +769,7 @@ impl RunExecutor for VmExecutor {
         context.vm_control.detach().await;
         let transport_stdout = join_capture(stdout_task).await;
         let transport_stderr = join_capture(stderr_task).await;
+        crate::util::startup_mark_run("vm.transport_drained", spec.run_id.as_str());
         let mut output = ProcessOutput::default();
         if let Some(captured) = transport_stdout {
             output.stdout = Some(captured.text);
@@ -819,6 +838,7 @@ impl RunExecutor for VmExecutor {
             tracing::warn!(%error, "failed to stop VM smoltcp backend");
             warnings.push(format!("failed to stop VM smoltcp backend: {error:#}"));
         }
+        crate::util::startup_mark_run("vm.output_ready", spec.run_id.as_str());
         ExecutorOutput {
             executor_observations,
 
@@ -1062,6 +1082,7 @@ fn add_vm_overlay(
             preimage_dir: overlay.preimages.clone(),
             apply_target: overlay.apply_target.clone(),
             baseline_lower: overlay.baseline_lower.clone(),
+            baseline_content_index: None,
             excluded_paths: overlay.excluded.clone(),
             access_policy: overlay.access_policy.clone(),
             semantics: PermissionSemantics::LinuxComplete,
@@ -1081,8 +1102,11 @@ fn guest_config(
     network: bool,
 ) -> pvisor_guest::GuestConfig {
     let mut rlimits = BTreeMap::new();
+    // The memory budget sizes guest RAM in the runner specification. It is an
+    // aggregate physical-memory boundary, not a guest virtual-address limit:
+    // runtimes such as V8 reserve large sparse address ranges without using
+    // corresponding RAM. Applying the same bytes as RLIMIT_AS rejects them.
     for (name, value) in [
-        ("RLIMIT_AS", limits.memory_bytes),
         ("RLIMIT_NPROC", limits.processes),
         (
             "RLIMIT_CPU",
@@ -1108,6 +1132,7 @@ fn guest_config(
             gateway: pvisor_overlaynet::vm::ROUTER_IPV4.octets(),
         }),
         agent: None,
+        temporary_filesystem: None,
     }
 }
 
@@ -1311,7 +1336,7 @@ mod tests {
             true,
         );
         assert_eq!(config.limits["RLIMIT_NOFILE"], (32, 32));
-        assert_eq!(config.limits["RLIMIT_AS"], (4097, 4097));
+        assert!(!config.limits.contains_key("RLIMIT_AS"));
         assert_eq!(config.limits["RLIMIT_CPU"], (2, 2));
         assert!(config.network.is_some());
     }
