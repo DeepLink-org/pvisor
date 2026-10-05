@@ -9,12 +9,12 @@
 | [启动一个已准备环境](startup.md#reference-startup) | VM 首条输出约 86 ms，Docker 90 ms、Firecracker 74 ms、QEMU microvm 88 ms | 与轻量 VM、Docker 处于同一百毫秒量级 |
 | [启动完整发行版](startup.md#full-ubuntu) | 无镜像 VM 约 110 ms；完整 Ubuntu 的 Firecracker/QEMU 约 5–8 s | 减少短任务开机等待；不是相同 OS 配置下的 VMM 排名 |
 | [修复并运行测试](agent-tasks.md#reference-env) | staged 0.70 s，Docker 0.90 s；VM 3.97 s，QEMU microvm 1.85 s | staged 适合交互式工具任务；VM 工具执行更慢 |
-| [文件访问](filesystem.md) | staged npm 接近 Docker；VM 读取快于所测 Ubuntu，小文件操作明显更慢 | 小文件、元数据和写入是明显短板；需要暂存时接受额外成本 |
+| [文件访问](filesystem.md) | 七项工具任务 staged 1.11 s、VM 4.08 s；Docker 0.97 s、Firecracker 2.37 s、QEMU microvm 1.77 s | staged 的交互等待更短；VM 提供独立 guest kernel，需预留更多工具执行时间 |
 | [审查后合入](apply.md) | 10 文件约 15 ms，1,000 文件约 0.84 s；10 万文件约 5.5 min | 适合小批交互合入；大批量合入慢于同批 Git patch |
 | [网络](network.md) | 本地小请求 host proxy 1.24 ms、原生 0.95 ms；VM 大块传输约 155 MiB/s、原生 869 MiB/s | 小请求代理开销较小，VM 批量传输有明显差距 |
 | [CLI 兼容性](agent-tasks.md) | Codex 的受控工具闭环通过；Claude/VM 初始化超时 | 使用 VM 前核对具体客户端和配置 |
 
-这些数字来自各主题的固定配置。文件系统采用完整工具环境的 Docker 与 Ubuntu 横向对照；不同配置的样本和百分位数独立保留，具体制品见关联报告。
+这些数字来自各主题的固定配置。文件系统主表对比原生、host staged、VM、Docker、Firecracker 和两种 QEMU 配置的本地开发工具负载；不同配置的样本和百分位数独立保留，具体制品见关联报告。
 
 ## Motivation {#motivation}
 

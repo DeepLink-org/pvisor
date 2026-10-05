@@ -663,4 +663,4 @@ main and repeat reports are `target/sb/run` and `target/sb/vr`. Short output pat
 avoid the new VM control socket's length limit; the failed initial preflight is
 retained and excluded. Public raw reports, journals, source overlay, provenance
 and reproduction commands are linked from the bilingual
-[stage benchmark](../../docs/src/en/benchmarks/filesystem.md#stage-boundaries).
+[stage benchmark](../../docs/src/en/benchmarks/filesystem.md#results).

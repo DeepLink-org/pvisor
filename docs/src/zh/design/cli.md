@@ -87,7 +87,7 @@ pvisor fork last --state workspace --stage ./stage/branch -- codex
 
 `status --review` 保留为已存在的快捷形式；`review` 仍是详细审查入口。`run --tui` 是主要交互路径，顶层 `tui` 保留显式前端调用。暂不引入另一个 `job` 命令层，避免让相同 Job 操作形成两套语法。
 
-四个资源命令从顶层移除，原参数保持在 service 下。旧写法明确报迁移错误，不会被默认执行当成宿主程序。独立 `snapshot` 前端已删除；原生完整捕获、恢复和存储管理进入普通 Job 命令，能力由实际 VM profile 决定。
+资源工具使用 `service` 子命令。原生执行状态捕获、恢复和存储管理使用 Job 命令，能力由实际 VM profile 决定。当前命令以外的名称按普通默认执行规则处理，不保留旧命令别名或迁移处理逻辑。
 
 ```bash
 pvisor service --help

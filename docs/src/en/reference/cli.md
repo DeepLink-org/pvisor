@@ -23,7 +23,7 @@ pvisor service memory-pool --help
 pvisor help service cluster submit
 ```
 
-Top-level `cluster`, `worker`, `cache` and `memory-pool` have been removed, with explicit migration errors; `snapshot` is removed. Tool help/errors show nested invocation names rather than silently treating retired names as host workloads. Default execution remains `pvisor -- COMMAND`. See the [unified service guide](../guides/cluster/service.md) for configuration, budgets and acceptance, and the [command model](../design/cli.md) for responsibilities.
+Use `service cluster/worker/cache/memory-pool` for resource tools; tool help and errors show these nested invocation names. Names outside the current commands follow default execution rules, without retired-command aliases or migration handlers. Use `pvisor -- COMMAND` for explicit default execution. See the [unified service guide](../guides/cluster/service.md) for configuration, budgets and acceptance, and the [command model](../design/cli.md) for responsibilities.
 
 ## Find the command you need
 

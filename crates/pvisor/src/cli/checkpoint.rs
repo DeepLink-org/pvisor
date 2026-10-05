@@ -1,4 +1,4 @@
-//! Job-scoped checkpoint management. This never launches the legacy snapshot runner.
+//! Job-scoped workspace and execution checkpoint management.
 use crate::runtime::checkpoint::{
     checkpoint_branch_refs, collect_workspace_transactions, create_workspace_request,
     delete_checkpoint, list_checkpoints, resolve_checkpoint,
@@ -187,8 +187,8 @@ enum CheckpointCommand {
     },
 }
 
-/// Static capability for the ordinary Job executor, distinct from the legacy
-/// independently owned full-copy VM profile. Never infer support from OS alone.
+/// Check the Job configuration before admitting native execution checkpoints.
+/// Platform support alone does not guarantee that this Job can be restored.
 pub(crate) fn execution_blocker(record: &RunRecord) -> Option<String> {
     let job = match job_execution::job(record) {
         Ok(job) => job,

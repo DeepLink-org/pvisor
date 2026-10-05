@@ -27,12 +27,14 @@ See official [gVisor](https://gvisor.dev/docs/), [Firecracker](https://firecrack
 
 ### Minimal reference environments {#reference-comparison}
 
-| Runtime | First output P50 ms | Repair/tests P50 s | Codex loop P50 s |
-|---|---:|---:|---:|
-| pVisor VM | 86.29 | 3.97 | 10.93 |
-| Firecracker PCI | 73.74 | 2.25 | 7.83 |
-| QEMU q35 | 218.12 | 1.98 | 7.69 |
-| QEMU microvm | 88.10 | 1.85 | 7.67 |
+| Runtime | First output P50 ms | Repair/tests P50 s | Codex loop P50 s | Seven-tool filesystem task P50 s |
+|---|---:|---:|---:|---:|
+| pVisor VM | 86.29 | 3.97 | 10.93 | 4.08 |
+| Firecracker PCI | 73.74 | 2.25 | 7.83 | 2.37 |
+| QEMU q35 | 218.12 | 1.98 | 7.69 | 1.82 |
+| QEMU microvm | 88.10 | 1.85 | 7.67 | 1.77 |
+
+The seven-tool filesystem task includes launch, tool execution and exit. pVisor uses the latest release measurement from 2026-10-05 (2 vCPU / 4 GiB); Firecracker/QEMU use reference measurements from 2026-10-04 (2 vCPU / 16 GiB), with 30 samples each. This workload differs from repair/tests and the Codex loop; the other three columns retain their own measurements. See [filesystem comparisons](filesystem.md) for individual operations and P95.
 
 Startup is in the same range, while pVisor VM tools and complete Codex loops are slower. Claude passes on reference VMs but times out initializing on pVisor VM. Kernels, virtio-fs/ext4, guests and networks differ; the table does not isolate libkrun as the sole cause.
 

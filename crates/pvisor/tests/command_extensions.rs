@@ -121,15 +121,13 @@ fn kernel_help_discovers_commands_and_default_execution_dispatches_run() {
         }
     }
 
-    let removed = Command::new(env!("CARGO_BIN_EXE_pvisor"))
-        .arg("env")
-        .env("PATH", "")
+    let help_command = Command::new(env!("CARGO_BIN_EXE_pvisor"))
+        .args(["help", "help"])
         .output()
         .unwrap();
-    assert!(!removed.status.success());
-    assert!(
-        String::from_utf8_lossy(&removed.stderr).contains("pvisor-env extension is not installed")
-    );
+    assert!(help_command.status.success());
+    assert!(String::from_utf8_lossy(&help_command.stdout).contains("Usage: pvisor help"));
+
     for name in [
         "run", "service", "apply", "drop", "status", "kill", "fork", "inspect",
     ] {
@@ -148,7 +146,7 @@ fn kernel_help_discovers_commands_and_default_execution_dispatches_run() {
 }
 
 #[test]
-fn service_tools_are_nested_and_retired_commands_never_execute_a_workload() {
+fn service_tools_are_nested_and_preserve_arguments_and_exit() {
     let temporary = tempfile::tempdir().unwrap();
     let kernel = temporary.path().join("pvisor");
     fs::copy(env!("CARGO_BIN_EXE_pvisor"), &kernel).unwrap();
@@ -177,16 +175,6 @@ fn service_tools_are_nested_and_retired_commands_never_execute_a_workload() {
         "extensions",
     ] {
         assert!(!help.contains(&format!("\n  {name} ")), "{help}");
-        let output = Command::new(&kernel)
-            .args([name, "--help"])
-            .env("PATH", temporary.path())
-            .output()
-            .unwrap();
-        assert_eq!(output.status.code(), Some(2));
-        assert!(String::from_utf8_lossy(&output.stderr).contains("was removed"));
-        assert!(!marker.exists(), "retired command was executed");
-        let output = Command::new(&kernel).args(["help", name]).output().unwrap();
-        assert_eq!(output.status.code(), Some(2));
     }
     let list = Command::new(&kernel).arg("--help").output().unwrap();
     assert!(list.status.success());
@@ -237,7 +225,7 @@ fn service_tools_are_nested_and_retired_commands_never_execute_a_workload() {
         assert_eq!(output.status.code(), Some(42));
         assert_eq!(output.stdout, b"submit\n--help\n");
     }
-    // A retired name is still a valid workload when explicitly placed after --.
+    // Explicit default execution remains available.
     let output = Command::new(&kernel)
         .args(["--", "/bin/sh", "-c", "printf explicit-workload"])
         .output()
@@ -266,7 +254,7 @@ fn isolated_core_keeps_job_commands_and_runs_without_extensions() {
         assert!(!help.contains(&format!("\n  {name} ")), "{help}");
     }
     let output = Command::new(&kernel)
-        .args(["run", "--", "/bin/sh", "-c", "printf standalone-kernel"])
+        .args(["/bin/sh", "-c", "printf standalone-kernel"])
         .env("PATH", temporary.path())
         .output()
         .unwrap();
@@ -309,7 +297,12 @@ fn path_cannot_supply_companions_and_unknown_commands_are_not_discovered() {
             .output()
             .unwrap();
         assert!(!output.status.success());
-        assert!(String::from_utf8_lossy(&output.stderr).contains("extension is not installed"));
+        let error = String::from_utf8_lossy(&output.stderr);
+        if name == "tui" {
+            assert!(error.contains("extension is not installed"), "{error}");
+        } else {
+            assert!(!error.contains("was removed"), "{error}");
+        }
     }
     fs::copy(
         untrusted.path().join("pvisor-probe"),
@@ -321,5 +314,40 @@ fn path_cannot_supply_companions_and_unknown_commands_are_not_discovered() {
     let help = String::from_utf8_lossy(&output.stdout);
     for name in ["tui", "probe", "extensions"] {
         assert!(!help.contains(&format!("\n  {name} ")), "{help}");
+    }
+}
+
+#[test]
+fn unregistered_names_follow_default_execution_without_command_aliases() {
+    let temporary = tempfile::tempdir().unwrap();
+    let kernel = temporary.path().join("pvisor");
+    fs::copy(env!("CARGO_BIN_EXE_pvisor"), &kernel).unwrap();
+    for name in [
+        "snapshot",
+        "extensions",
+        "cluster",
+        "worker",
+        "cache",
+        "memory-pool",
+        "env",
+        "ir",
+        "trace",
+        "job",
+    ] {
+        let workload = temporary.path().join(name);
+        fs::write(&workload, "#!/bin/sh\nprintf '%s\\n' \"$@\"\nexit 42\n").unwrap();
+        fs::set_permissions(&workload, fs::Permissions::from_mode(0o755)).unwrap();
+        let output = Command::new(&kernel)
+            .args([name, "space argument", "--literal", ""])
+            .env("PATH", temporary.path())
+            .output()
+            .unwrap();
+        assert_eq!(
+            output.status.code(),
+            Some(42),
+            "{name}: {}",
+            String::from_utf8_lossy(&output.stderr)
+        );
+        assert_eq!(output.stdout, b"space argument\n--literal\n\n", "{name}");
     }
 }

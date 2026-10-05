@@ -76,7 +76,7 @@ Top-level commands follow the object they operate on: flat Job/workspace operati
 
 `status --review` remains an existing shortcut; `review` remains the detailed review entry. `run --tui` is the primary interactive path, with top-level `tui` retained for explicit frontend invocation. No additional `job` command layer is introduced, avoiding duplicate syntax for the same Job operations.
 
-The four resource commands are removed from the top level and keep their arguments under service. Retired forms return explicit migration errors instead of becoming host workloads through default execution. The standalone `snapshot` frontend is removed; native full capture, restoration and storage management now use Job commands, with support determined by the VM profile.
+Resource tools use `service` subcommands. Native execution capture, restoration and storage management use Job commands, with support determined by the VM profile. Names outside the current commands follow ordinary default execution rules; no retired-command aliases or migration handlers are retained.
 
 ```bash
 pvisor service --help

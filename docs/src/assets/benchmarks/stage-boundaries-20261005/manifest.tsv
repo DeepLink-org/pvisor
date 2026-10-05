@@ -3,6 +3,7 @@ path	type	value
 /audited_candidate_journals	integer	90
 /files	object	-
 /files/build-provenance.tsv	string	9e145b8ebeabbb89d987f39d46d316ac69d58a8d9ebc4579c813a7769234a4f1
+/files/current.tsv	string	c0265339ad832fd39778eed1a094b92ce0489bbf10d81f7c5dbbbe5a7619017a
 /files/evidence.tar.gz	string	014bfa121120681f5f84357d11d54afd2fcbf0ee1a802bc7723d47276371049b
 /files/journal-integrity.tsv	string	fb336f642f6d711d8ec77aeaf364e829473175d26c128b2f9ce67a645f72acbf
 /files/local-release.tsv	string	594e19b5cc315e158c789d7fe32fea8d23e4b83399efea9b45362e95fe038b0f

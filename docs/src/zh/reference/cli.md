@@ -19,7 +19,7 @@ pvisor service memory-pool --help
 pvisor help service cluster submit
 ```
 
-旧顶层 `cluster`、`worker`、`cache`、`memory-pool` 已移除，明确报迁移错误；`snapshot` 已删除。工具帮助与错误显示嵌套命令名，不把旧名字静默当作 host workload。默认执行继续使用 `pvisor -- COMMAND`。配置、预算与部署验收见[统一服务指南](../guides/cluster/service.md)，整体职责见[命令模型](../design/cli.md)。
+资源工具使用 `service cluster/worker/cache/memory-pool`，工具帮助与错误显示对应的嵌套命令名。当前命令以外的名称按默认执行规则处理，不保留旧命令别名或迁移处理逻辑。使用 `pvisor -- COMMAND` 显式执行程序。配置、预算与部署验收见[统一服务指南](../guides/cluster/service.md)，整体职责见[命令模型](../design/cli.md)。
 
 ## 按任务查找命令
 

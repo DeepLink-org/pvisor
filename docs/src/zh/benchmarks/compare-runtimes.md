@@ -27,12 +27,14 @@ Linux 同机、相同两核预算、2 vCPU；轻量启动 128 MiB，工具任务
 
 ### 最小参考环境 {#reference-comparison}
 
-| Runtime | First output P50 ms | Repair/tests P50 s | Codex loop P50 s |
-|---|---:|---:|---:|
-| pVisor VM | 86.29 | 3.97 | 10.93 |
-| Firecracker PCI | 73.74 | 2.25 | 7.83 |
-| QEMU q35 | 218.12 | 1.98 | 7.69 |
-| QEMU microvm | 88.10 | 1.85 | 7.67 |
+| Runtime | First output P50 ms | Repair/tests P50 s | Codex loop P50 s | Seven-tool filesystem task P50 s |
+|---|---:|---:|---:|---:|
+| pVisor VM | 86.29 | 3.97 | 10.93 | 4.08 |
+| Firecracker PCI | 73.74 | 2.25 | 7.83 | 2.37 |
+| QEMU q35 | 218.12 | 1.98 | 7.69 | 1.82 |
+| QEMU microvm | 88.10 | 1.85 | 7.67 | 1.77 |
+
+七项文件系统任务列包含启动、工具运行和退出；pVisor 使用 2026-10-05 的最新 release 实测（2 vCPU / 4 GiB），Firecracker/QEMU 使用 2026-10-04 的参考实测（2 vCPU / 16 GiB），各 30 次采样。该列与修复/测试、Codex 闭环是不同负载；其余三列保留各自实测，不用文件系统结果替代。逐项工具耗时和 P95 见[文件系统对比](filesystem.md)。
 
 启动处于同一量级，pVisor VM 的工具和 Codex 完整闭环更慢。Claude 在参考 VM 通过，在 pVisor VM 初始化超时。内核、virtio-fs/ext4、guest 与网络配置都不同，表格不能证明性能差的唯一原因是 libkrun。
 

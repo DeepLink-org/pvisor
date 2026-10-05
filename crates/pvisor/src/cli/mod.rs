@@ -62,30 +62,6 @@ fn root_command() -> anyhow::Result<clap::Command> {
     for (_, manifest) in extensions::discover()? {
         command = command.subcommand(clap::Command::new(manifest.name).about(manifest.description));
     }
-    for (order, name) in [
-        "run",
-        "status",
-        "kill",
-        "inspect",
-        "review",
-        "apply",
-        "drop",
-        "checkpoint",
-        "suspend",
-        "resume",
-        "fork",
-        "service",
-        "replay",
-        "tui",
-        "help",
-    ]
-    .into_iter()
-    .enumerate()
-    {
-        if command.find_subcommand(name).is_some() {
-            command = command.mut_subcommand(name, |sub| sub.display_order(order));
-        }
-    }
     command.build();
     let groups = grouped_commands(&command);
     Ok(command
@@ -141,27 +117,11 @@ fn grouped_commands(command: &clap::Command) -> String {
     output
 }
 
-fn normalize_default_run(mut args: Vec<OsString>) -> Vec<OsString> {
+fn normalize_default_run(mut args: Vec<OsString>, command: &clap::Command) -> Vec<OsString> {
     if let Some(first) = args.get(1).and_then(|arg| arg.to_str())
-        && !extensions::BUILTINS.contains(&first)
-        && ![
-            "cache",
-            "memory-pool",
-            "cluster",
-            "worker",
-            "snapshot",
-            "tui",
-            "replay",
-            "env",
-            "ir",
-            "trace",
-            "job",
-            "--help",
-            "-h",
-            "--version",
-            "-V",
-        ]
-        .contains(&first)
+        && command.find_subcommand(first).is_none()
+        && !extensions::is_root_command(first)
+        && !["--help", "-h", "--version", "-V"].contains(&first)
     {
         args.insert(1, "run".into());
     }
@@ -187,8 +147,9 @@ pub fn main() -> anyhow::Result<()> {
         return Ok(());
     }
     let args: Vec<OsString> = std::env::args_os().collect();
+    let mut core_command = Cli::command();
+    core_command.build();
     if let Some(name) = args.get(1).and_then(|arg| arg.to_str()) {
-        reject_retired_command(name);
         #[cfg(any(target_os = "macos", all(target_os = "linux", target_arch = "x86_64")))]
         if name == "service"
             && let Some(tool) = args.get(2).and_then(|arg| arg.to_str())
@@ -206,20 +167,19 @@ pub fn main() -> anyhow::Result<()> {
             tool_args.push("--help".into());
             return extensions::dispatch(tool, &tool_args);
         }
-        if !extensions::BUILTINS.contains(&name)
+        if extensions::is_root_command(name)
             && let Some((path, _)) = extensions::find(name)?
         {
             return extensions::execute(path, &args[2..]);
         }
         if name == "help"
             && let Some(target) = args.get(2).and_then(|arg| arg.to_str())
-            && !extensions::BUILTINS.contains(&target)
+            && extensions::is_root_command(target)
         {
-            reject_retired_command(target);
             return extensions::dispatch(target, &["--help".into()]);
         }
     }
-    let args = normalize_default_run(args);
+    let args = normalize_default_run(args, &core_command);
     if args.len() == 1 {
         root_command()?.print_long_help()?;
         println!();
@@ -231,7 +191,7 @@ pub fn main() -> anyhow::Result<()> {
     {
         root_command()?
     } else {
-        Cli::command()
+        core_command
     };
     let parsed = Cli::from_arg_matches(&command.get_matches_from(args.clone()))?;
     crate::util::startup_mark("cli.parsed");
@@ -290,21 +250,6 @@ pub fn main() -> anyhow::Result<()> {
         )?,
     }
     Ok(())
-}
-
-fn reject_retired_command(name: &str) {
-    let message = if extensions::is_service_tool(name) {
-        format!("`pvisor {name}` was removed; use `pvisor service {name}`")
-    } else if name == "extensions" {
-        "`pvisor extensions` was removed; use `pvisor --help` to see available commands".into()
-    } else if name == "snapshot" {
-        "`pvisor snapshot` was removed; use Job-scoped `checkpoint`, `suspend`, `resume` and `fork` with a supported execution profile".into()
-    } else {
-        return;
-    };
-    Cli::command()
-        .error(clap::error::ErrorKind::InvalidSubcommand, message)
-        .exit();
 }
 
 fn finish(code: i32) {

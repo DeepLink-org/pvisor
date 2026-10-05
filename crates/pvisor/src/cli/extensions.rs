@@ -3,35 +3,13 @@ use std::ffi::OsString;
 use std::os::unix::fs::MetadataExt;
 use std::path::{Path, PathBuf};
 
-pub(crate) const BUILTINS: &[&str] = &[
-    "run",
-    "apply",
-    "drop",
-    "status",
-    "review",
-    "checkpoint",
-    "suspend",
-    "resume",
-    "kill",
-    "fork",
-    "inspect",
-    "service",
-    "help",
-];
-
-pub(crate) const SERVICE_TOOLS: &[&str] = &["cluster", "worker", "cache", "memory-pool"];
-
-pub(crate) fn is_service_tool(name: &str) -> bool {
-    SERVICE_TOOLS.contains(&name)
-}
-
 #[derive(Debug, Clone, serde::Serialize)]
 pub struct Companion {
     pub name: &'static str,
     pub description: &'static str,
 }
 
-const COMMANDS: &[Companion] = &[
+const SERVICE_COMMANDS: &[Companion] = &[
     Companion {
         name: "cluster",
         description: "Submit tasks or serve the cluster Controller",
@@ -48,6 +26,9 @@ const COMMANDS: &[Companion] = &[
         name: "cache",
         description: "Prepare or query OCI caches backed by a server, filesystem, or S3",
     },
+];
+
+const ROOT_COMMANDS: &[Companion] = &[
     Companion {
         name: "replay",
         description: "Replay an agent-native trajectory",
@@ -57,6 +38,21 @@ const COMMANDS: &[Companion] = &[
         description: "Run a Job in an interactive terminal",
     },
 ];
+
+pub(crate) fn is_service_tool(name: &str) -> bool {
+    SERVICE_COMMANDS.iter().any(|command| command.name == name)
+}
+
+pub(crate) fn is_root_command(name: &str) -> bool {
+    ROOT_COMMANDS.iter().any(|command| command.name == name)
+}
+
+fn companion(name: &str) -> Option<&'static Companion> {
+    ROOT_COMMANDS
+        .iter()
+        .chain(SERVICE_COMMANDS)
+        .find(|command| command.name == name)
+}
 
 fn check_trust(metadata: &std::fs::Metadata) -> anyhow::Result<()> {
     anyhow::ensure!(
@@ -84,7 +80,7 @@ fn check_executable(path: &Path) -> anyhow::Result<()> {
 }
 
 pub fn find(name: &str) -> anyhow::Result<Option<(PathBuf, Companion)>> {
-    let Some(command) = COMMANDS.iter().find(|command| command.name == name) else {
+    let Some(command) = companion(name) else {
         return Ok(None);
     };
     let path = installation_directory()?.join(format!("pvisor-{name}"));
@@ -102,9 +98,8 @@ pub fn find(name: &str) -> anyhow::Result<Option<(PathBuf, Companion)>> {
 }
 
 pub fn discover() -> anyhow::Result<Vec<(PathBuf, Companion)>> {
-    COMMANDS
+    ROOT_COMMANDS
         .iter()
-        .filter(|command| !is_service_tool(command.name))
         .filter_map(|command| find(command.name).transpose())
         .collect()
 }
