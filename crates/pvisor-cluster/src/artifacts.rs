@@ -63,7 +63,6 @@ fn write_usage(file: &mut File, bytes: u64, objects: u64) -> std::io::Result<()>
 }
 
 pub(crate) struct VerifiedArtifacts {
-    pub(crate) checkpoint: Option<crate::CheckpointPublication>,
     pub(crate) pins: gc::Pins,
     reference: BlobRef,
     key: LeaseKey,
@@ -371,7 +370,6 @@ impl ArtifactStore {
             "missing native Run Bundle artifact"
         );
         let mut bundle = Vec::new();
-        let mut checkpoint_bytes = Vec::new();
         for file in &manifest.files {
             let mut hash = blake3::Hasher::new();
             for chunk in &file.chunks {
@@ -379,13 +377,6 @@ impl ArtifactStore {
                 hash.update(&bytes);
                 if file.name == "run-bundle.json" {
                     bundle.extend_from_slice(&bytes);
-                }
-                if file.name == "execution-checkpoint.json" {
-                    ensure!(
-                        file.bytes <= ARTIFACT_CHUNK_BYTES as u64,
-                        "checkpoint receipt exceeds limit"
-                    );
-                    checkpoint_bytes.extend_from_slice(&bytes);
                 }
             }
             ensure!(
@@ -403,16 +394,7 @@ impl ArtifactStore {
         }
         let identity: BundleIdentity = serde_json::from_slice(&bundle)?;
         ensure!(identity.schema_version > 0, "invalid Bundle schema version");
-        let checkpoint = if checkpoint_bytes.is_empty() {
-            None
-        } else {
-            let checkpoint: crate::CheckpointPublication =
-                serde_json::from_slice(&checkpoint_bytes)?;
-            checkpoint.validate()?;
-            Some(checkpoint)
-        };
         Ok(VerifiedArtifacts {
-            checkpoint,
             pins,
             reference: reference.clone(),
             key: key.clone(),

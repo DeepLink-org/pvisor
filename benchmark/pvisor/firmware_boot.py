@@ -1,7 +1,7 @@
 #!/usr/bin/env python3
 """Paired firmware boot benchmark using the existing signed guest_init runner.
 
-Benchmark: B-STARTUP (benchmark/README.md#b-startup), role diagnostic.
+Benchmark: B-STARTUP-DIAG (benchmark/README.md#b-startup-diag), role diagnostic.
 Motivation: locate which boot stage dominates VM ready time.
 Conclusion sought: per-stage boot time for two firmware builds; feeds design
 analysis only, never the user startup table.

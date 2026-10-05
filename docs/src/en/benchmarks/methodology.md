@@ -24,11 +24,11 @@ Downloads, benchmark compilation, image import and input copying are excluded. T
 
 ### Distributions and failures
 
-Cohorts are not pooled, and slow samples are not removed after measurement. Failures and invalid outputs are counted separately and never treated as zero latency. Capacity guards are not completed jobs. P95 is descriptive: it is omitted below 30 samples. P99 is omitted below 100 samples; small cohorts do not support stable tail-latency claims.
+Cohorts are not pooled, and slow samples are not removed after measurement. Failures and invalid outputs are counted separately and never treated as zero latency. Capacity guards are not completed jobs. P95 is descriptive: it is omitted below 30 samples. Public P99 is omitted; small cohorts do not support stable tail-latency claims.
 
 Separated clusters are reported with counts and individual medians. The descriptive split rule is in the [runner manual](https://github.com/DeepLink-org/pvisor/blob/main/benchmark/pvisor/README.md); it establishes no cause. Engineering A/B percentage claims need a 95% bootstrap interval for the median difference; user pages do not narrate optimization work.
 
-### Isolation and resources
+### Isolation and resources {#reference-resources}
 
 Docker writable bind mounts write directly to the host; pVisor staging retains changes until apply. Firecracker/QEMU use private ext4, while pVisor VM uses virtio-fs with different kernels and devices. This is not a pure VMM or production-security ranking. Standalone staging boundaries follow actual records and [isolation checks](isolation-tests.md).
 
@@ -61,3 +61,7 @@ Engineering A/B, instrumented profiles and diagnostic probes remain in [technica
 Markdown holds derived user-facing tables, with downloadable CSVs beside each article. Raw reports, individual samples, logs, artifact manifests and frozen harnesses live in the relevant directory’s `.data/`, ignored by Git and excluded from the site. CSV downloads contain derived statistics and source summaries, rather than claiming to contain raw samples.
 
 See the [runner manual](https://github.com/DeepLink-org/pvisor/blob/main/benchmark/pvisor/README.md) for reproduction and retention rules.
+
+### Downloads and reproduction {#run}
+
+[Derived table CSV](methodology.csv) · [Evidence source summary](evidence-sources.csv) · [Comparison method](methodology.md) · [Runner manual](https://github.com/DeepLink-org/pvisor/blob/main/benchmark/pvisor/README.md)

@@ -2,7 +2,7 @@
 
 ## Main conclusions {#conclusions}
 
-**Prefix preparation passes for six pinned trajectory formats at P50 of about **5–5.5 ms**. Prepare-only executes no tools and leaves the workspace unchanged. This supports binding tasks to historical observations; it does not restore arbitrary remote connections or establish identical model next actions or compatibility with every newer CLI format.**
+**Prefix preparation passes for six pinned trajectory formats at P50 of about 5–5.5 ms. Prepare-only executes no tools and leaves the workspace unchanged. This supports binding tasks to historical observations; it does not restore arbitrary remote connections or establish identical model next actions or compatibility with every newer CLI format.**
 
 | Need | Selection implication |
 |---|---|
@@ -24,6 +24,10 @@ Tables identify pinned artifacts and measurement dates. Failed or invalid sample
 
 ## Data and analysis {#results}
 
+Industry references are each Agent’s native resume/replay and prefix preparation in RL pipelines. These checks validate preparation for pinned native formats, without ranking those systems on matched trajectories or measuring fidelity of subsequent model execution.
+
+Measured on 2026-10-04; configurations retain separate samples. P50 is the median.
+
 | Adapter | Pinned format profile | Passed/planned | Preparation P50/P95 ms |
 |---|---|---|---|
 | claude-code | claude-code/2.1.220/native-resume-v1 | 60/60 | 5.03 / 5.62 |
@@ -37,3 +41,6 @@ Tables identify pinned artifacts and measurement dates. Failed or invalid sample
 
 Synthetic trajectories validate prefix structure, boundaries and arguments, not identical model next actions or rewards. Real sessions, newer CLIs, long prefixes, token costs and remote-connection recovery are unmeasured.
 
+### Downloads and reproduction {#run}
+
+[Derived table CSV](replay-fidelity.csv) · [Evidence source summary](evidence-sources.csv) · [Comparison method](methodology.md) · [Runner manual](https://github.com/DeepLink-org/pvisor/blob/main/benchmark/pvisor/README.md)

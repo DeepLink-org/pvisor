@@ -35,8 +35,24 @@
 
 ### 已测 CLI 闭环 {#reference-comparison}
 
+固定版本、同工具环境，单位 P50 s；各可用格 N=30，3 次预热，2026-10-04。不是默认内置沙箱的对照。
+
+| 执行环境 | Claude 工具闭环 | Codex 工具闭环 |
+|---|---:|---:|
+| Native | 0.82 | 1.97 |
+| pVisor host staged | 1.07 | 2.25 |
+| pVisor VM | FAILED / N=0 | 10.93 |
+| Docker rootless | 1.23 | 6.26 |
+| Firecracker PCI | 3.03 | 7.83 |
+| QEMU q35 | 2.67 | 7.69 |
+| QEMU microvm | 2.71 | 7.67 |
+
 Claude 在 native/staged/Docker/参考 VM 上各 30/30 通过，pVisor VM 初始化超过 90 s，正式 N=0。Codex 全部八组各 30/30 通过。固定响应排除了推理时间；结果只证明指定工具路径和版本可用。
 
 暂存适合先审查再合入的流程：执行后可以按路径 apply/drop，宿主并行修改相同文件时拒绝冲突。内置沙箱也可组合 Git/worktree，不因缺少 pVisor 协议而缺少审查能力。单独 stage 不自动限制宿主视图外访问。
 
 [任务数据与兼容性](agent-tasks.md#reference-env) · [合入成本](apply.md) · [执行器边界](../guides/executors/index.md)
+
+### 数据下载与复现 {#run}
+
+[整理后的表格 CSV](compare-agent-sandboxes.csv) · [证据来源摘要](evidence-sources.csv) · [比较方法](methodology.md) · [复现手册](https://github.com/DeepLink-org/pvisor/blob/main/benchmark/pvisor/README.md)

@@ -1,0 +1,204 @@
+source_document,section,source_conditions,table_context,row,metric,value
+index.md,Main conclusions {#conclusions},"<a id=""experiment-design""></a>
+
+B-VM-MEMORY uses Apple M4, 24 GiB RAM and macOS/HVF. Pool-on and pool-off configurations each run two VMs, each writing 64 MiB of repetitive compressible data: 40 parameter-matrix runs and four extended 2 GiB observations. Recovery checks data integrity while observing guest residency, pool/inflight data, footprint and CPU.
+
+One matrix attempt timed out during process sampling; it remains in the source summary and is not a latency sample.
+
+The RAM proxy combines guest residency and pool/inflight data; it is not net physical memory for the system or a cgroup. The table summarizes observation windows, rather than P50 or confidence intervals. Sample counts do not support tail-latency conclusions. Random data, real tool working sets and matched Docker/Firecracker/QEMU comparisons remain unmeasured.","**Existing data does not establish lower system-wide physical memory than Docker, Firecracker or QEMU; evaluate cold-page reclamation with your working set and recovery budget.** Repetitive-data macOS probes observe lower cold guest-page residency, but the pool also consumes memory. Reduced residency does not establish capacity for more Agents.",Many idle environments; first-access waiting is acceptable,Selection implication,Measure net physical memory and recovery with the actual working set
+index.md,Main conclusions {#conclusions},"<a id=""experiment-design""></a>
+
+B-VM-MEMORY uses Apple M4, 24 GiB RAM and macOS/HVF. Pool-on and pool-off configurations each run two VMs, each writing 64 MiB of repetitive compressible data: 40 parameter-matrix runs and four extended 2 GiB observations. Recovery checks data integrity while observing guest residency, pool/inflight data, footprint and CPU.
+
+One matrix attempt timed out during process sampling; it remains in the source summary and is not a latency sample.
+
+The RAM proxy combines guest residency and pool/inflight data; it is not net physical memory for the system or a cgroup. The table summarizes observation windows, rather than P50 or confidence intervals. Sample counts do not support tail-latency conclusions. Random data, real tool working sets and matched Docker/Firecracker/QEMU comparisons remain unmeasured.","**Existing data does not establish lower system-wide physical memory than Docker, Firecracker or QEMU; evaluate cold-page reclamation with your working set and recovery budget.** Repetitive-data macOS probes observe lower cold guest-page residency, but the pool also consumes memory. Reduced residency does not establish capacity for more Agents.","Active builds, random or incompressible data",Selection implication,Repetitive-data probes do not establish a benefit
+index.md,Main conclusions {#conclusions},"<a id=""experiment-design""></a>
+
+B-VM-MEMORY uses Apple M4, 24 GiB RAM and macOS/HVF. Pool-on and pool-off configurations each run two VMs, each writing 64 MiB of repetitive compressible data: 40 parameter-matrix runs and four extended 2 GiB observations. Recovery checks data integrity while observing guest residency, pool/inflight data, footprint and CPU.
+
+One matrix attempt timed out during process sampling; it remains in the source summary and is not a latency sample.
+
+The RAM proxy combines guest residency and pool/inflight data; it is not net physical memory for the system or a cgroup. The table summarizes observation windows, rather than P50 or confidence intervals. Sample counts do not support tail-latency conclusions. Random data, real tool working sets and matched Docker/Firecracker/QEMU comparisons remain unmeasured.","**Existing data does not establish lower system-wide physical memory than Docker, Firecracker or QEMU; evaluate cold-page reclamation with your working set and recovery budget.** Repetitive-data macOS probes observe lower cold guest-page residency, but the pool also consumes memory. Reduced residency does not establish capacity for more Agents.",Compare capacity with Docker / Firecracker / QEMU,Selection implication,No matching net-physical-memory ranking
+index.md,Observed residency changes {#measurements},"<a id=""experiment-design""></a>
+
+B-VM-MEMORY uses Apple M4, 24 GiB RAM and macOS/HVF. Pool-on and pool-off configurations each run two VMs, each writing 64 MiB of repetitive compressible data: 40 parameter-matrix runs and four extended 2 GiB observations. Recovery checks data integrity while observing guest residency, pool/inflight data, footprint and CPU.
+
+One matrix attempt timed out during process sampling; it remains in the source summary and is not a latency sample.
+
+The RAM proxy combines guest residency and pool/inflight data; it is not net physical memory for the system or a cgroup. The table summarizes observation windows, rather than P50 or confidence intervals. Sample counts do not support tail-latency conclusions. Random data, real tool working sets and matched Docker/Firecracker/QEMU comparisons remain unmeasured.","Units are MiB; two VMs per group. The 256/512 MiB rows retain summaries of two paired repetitions. The 2 GiB row is the median of time observations in the 60–90 s window across two extended repetitions (58 observations per setting, correlated within each run). Configurations and windows remain separate.",256 MiB,Window after all guests are ready,18–33 s
+index.md,Observed residency changes {#measurements},"<a id=""experiment-design""></a>
+
+B-VM-MEMORY uses Apple M4, 24 GiB RAM and macOS/HVF. Pool-on and pool-off configurations each run two VMs, each writing 64 MiB of repetitive compressible data: 40 parameter-matrix runs and four extended 2 GiB observations. Recovery checks data integrity while observing guest residency, pool/inflight data, footprint and CPU.
+
+One matrix attempt timed out during process sampling; it remains in the source summary and is not a latency sample.
+
+The RAM proxy combines guest residency and pool/inflight data; it is not net physical memory for the system or a cgroup. The table summarizes observation windows, rather than P50 or confidence intervals. Sample counts do not support tail-latency conclusions. Random data, real tool working sets and matched Docker/Firecracker/QEMU comparisons remain unmeasured.","Units are MiB; two VMs per group. The 256/512 MiB rows retain summaries of two paired repetitions. The 2 GiB row is the median of time observations in the 60–90 s window across two extended repetitions (58 observations per setting, correlated within each run). Configurations and windows remain separate.",256 MiB,Pool-off RAM proxy,231
+index.md,Observed residency changes {#measurements},"<a id=""experiment-design""></a>
+
+B-VM-MEMORY uses Apple M4, 24 GiB RAM and macOS/HVF. Pool-on and pool-off configurations each run two VMs, each writing 64 MiB of repetitive compressible data: 40 parameter-matrix runs and four extended 2 GiB observations. Recovery checks data integrity while observing guest residency, pool/inflight data, footprint and CPU.
+
+One matrix attempt timed out during process sampling; it remains in the source summary and is not a latency sample.
+
+The RAM proxy combines guest residency and pool/inflight data; it is not net physical memory for the system or a cgroup. The table summarizes observation windows, rather than P50 or confidence intervals. Sample counts do not support tail-latency conclusions. Random data, real tool working sets and matched Docker/Firecracker/QEMU comparisons remain unmeasured.","Units are MiB; two VMs per group. The 256/512 MiB rows retain summaries of two paired repetitions. The 2 GiB row is the median of time observations in the 60–90 s window across two extended repetitions (58 observations per setting, correlated within each run). Configurations and windows remain separate.",256 MiB,Pool-on RAM proxy,27
+index.md,Observed residency changes {#measurements},"<a id=""experiment-design""></a>
+
+B-VM-MEMORY uses Apple M4, 24 GiB RAM and macOS/HVF. Pool-on and pool-off configurations each run two VMs, each writing 64 MiB of repetitive compressible data: 40 parameter-matrix runs and four extended 2 GiB observations. Recovery checks data integrity while observing guest residency, pool/inflight data, footprint and CPU.
+
+One matrix attempt timed out during process sampling; it remains in the source summary and is not a latency sample.
+
+The RAM proxy combines guest residency and pool/inflight data; it is not net physical memory for the system or a cgroup. The table summarizes observation windows, rather than P50 or confidence intervals. Sample counts do not support tail-latency conclusions. Random data, real tool working sets and matched Docker/Firecracker/QEMU comparisons remain unmeasured.","Units are MiB; two VMs per group. The 256/512 MiB rows retain summaries of two paired repetitions. The 2 GiB row is the median of time observations in the 60–90 s window across two extended repetitions (58 observations per setting, correlated within each run). Configurations and windows remain separate.",512 MiB,Window after all guests are ready,18–33 s
+index.md,Observed residency changes {#measurements},"<a id=""experiment-design""></a>
+
+B-VM-MEMORY uses Apple M4, 24 GiB RAM and macOS/HVF. Pool-on and pool-off configurations each run two VMs, each writing 64 MiB of repetitive compressible data: 40 parameter-matrix runs and four extended 2 GiB observations. Recovery checks data integrity while observing guest residency, pool/inflight data, footprint and CPU.
+
+One matrix attempt timed out during process sampling; it remains in the source summary and is not a latency sample.
+
+The RAM proxy combines guest residency and pool/inflight data; it is not net physical memory for the system or a cgroup. The table summarizes observation windows, rather than P50 or confidence intervals. Sample counts do not support tail-latency conclusions. Random data, real tool working sets and matched Docker/Firecracker/QEMU comparisons remain unmeasured.","Units are MiB; two VMs per group. The 256/512 MiB rows retain summaries of two paired repetitions. The 2 GiB row is the median of time observations in the 60–90 s window across two extended repetitions (58 observations per setting, correlated within each run). Configurations and windows remain separate.",512 MiB,Pool-off RAM proxy,243
+index.md,Observed residency changes {#measurements},"<a id=""experiment-design""></a>
+
+B-VM-MEMORY uses Apple M4, 24 GiB RAM and macOS/HVF. Pool-on and pool-off configurations each run two VMs, each writing 64 MiB of repetitive compressible data: 40 parameter-matrix runs and four extended 2 GiB observations. Recovery checks data integrity while observing guest residency, pool/inflight data, footprint and CPU.
+
+One matrix attempt timed out during process sampling; it remains in the source summary and is not a latency sample.
+
+The RAM proxy combines guest residency and pool/inflight data; it is not net physical memory for the system or a cgroup. The table summarizes observation windows, rather than P50 or confidence intervals. Sample counts do not support tail-latency conclusions. Random data, real tool working sets and matched Docker/Firecracker/QEMU comparisons remain unmeasured.","Units are MiB; two VMs per group. The 256/512 MiB rows retain summaries of two paired repetitions. The 2 GiB row is the median of time observations in the 60–90 s window across two extended repetitions (58 observations per setting, correlated within each run). Configurations and windows remain separate.",512 MiB,Pool-on RAM proxy,61
+index.md,Observed residency changes {#measurements},"<a id=""experiment-design""></a>
+
+B-VM-MEMORY uses Apple M4, 24 GiB RAM and macOS/HVF. Pool-on and pool-off configurations each run two VMs, each writing 64 MiB of repetitive compressible data: 40 parameter-matrix runs and four extended 2 GiB observations. Recovery checks data integrity while observing guest residency, pool/inflight data, footprint and CPU.
+
+One matrix attempt timed out during process sampling; it remains in the source summary and is not a latency sample.
+
+The RAM proxy combines guest residency and pool/inflight data; it is not net physical memory for the system or a cgroup. The table summarizes observation windows, rather than P50 or confidence intervals. Sample counts do not support tail-latency conclusions. Random data, real tool working sets and matched Docker/Firecracker/QEMU comparisons remain unmeasured.","Units are MiB; two VMs per group. The 256/512 MiB rows retain summaries of two paired repetitions. The 2 GiB row is the median of time observations in the 60–90 s window across two extended repetitions (58 observations per setting, correlated within each run). Configurations and windows remain separate.",2 GiB,Window after all guests are ready,60–90 s
+index.md,Observed residency changes {#measurements},"<a id=""experiment-design""></a>
+
+B-VM-MEMORY uses Apple M4, 24 GiB RAM and macOS/HVF. Pool-on and pool-off configurations each run two VMs, each writing 64 MiB of repetitive compressible data: 40 parameter-matrix runs and four extended 2 GiB observations. Recovery checks data integrity while observing guest residency, pool/inflight data, footprint and CPU.
+
+One matrix attempt timed out during process sampling; it remains in the source summary and is not a latency sample.
+
+The RAM proxy combines guest residency and pool/inflight data; it is not net physical memory for the system or a cgroup. The table summarizes observation windows, rather than P50 or confidence intervals. Sample counts do not support tail-latency conclusions. Random data, real tool working sets and matched Docker/Firecracker/QEMU comparisons remain unmeasured.","Units are MiB; two VMs per group. The 256/512 MiB rows retain summaries of two paired repetitions. The 2 GiB row is the median of time observations in the 60–90 s window across two extended repetitions (58 observations per setting, correlated within each run). Configurations and windows remain separate.",2 GiB,Pool-off RAM proxy,309
+index.md,Observed residency changes {#measurements},"<a id=""experiment-design""></a>
+
+B-VM-MEMORY uses Apple M4, 24 GiB RAM and macOS/HVF. Pool-on and pool-off configurations each run two VMs, each writing 64 MiB of repetitive compressible data: 40 parameter-matrix runs and four extended 2 GiB observations. Recovery checks data integrity while observing guest residency, pool/inflight data, footprint and CPU.
+
+One matrix attempt timed out during process sampling; it remains in the source summary and is not a latency sample.
+
+The RAM proxy combines guest residency and pool/inflight data; it is not net physical memory for the system or a cgroup. The table summarizes observation windows, rather than P50 or confidence intervals. Sample counts do not support tail-latency conclusions. Random data, real tool working sets and matched Docker/Firecracker/QEMU comparisons remain unmeasured.","Units are MiB; two VMs per group. The 256/512 MiB rows retain summaries of two paired repetitions. The 2 GiB row is the median of time observations in the 60–90 s window across two extended repetitions (58 observations per setting, correlated within each run). Configurations and windows remain separate.",2 GiB,Pool-on RAM proxy,124
+index.md,First access and CPU cost,"<a id=""experiment-design""></a>
+
+B-VM-MEMORY uses Apple M4, 24 GiB RAM and macOS/HVF. Pool-on and pool-off configurations each run two VMs, each writing 64 MiB of repetitive compressible data: 40 parameter-matrix runs and four extended 2 GiB observations. Recovery checks data integrity while observing guest residency, pool/inflight data, footprint and CPU.
+
+One matrix attempt timed out during process sampling; it remains in the source summary and is not a latency sample.
+
+The RAM proxy combines guest residency and pool/inflight data; it is not net physical memory for the system or a cgroup. The table summarizes observation windows, rather than P50 or confidence intervals. Sample counts do not support tail-latency conclusions. Random data, real tool working sets and matched Docker/Firecracker/QEMU comparisons remain unmeasured.","Independent 2026-10-03 repetitive-data matrix: two paired repetitions per profile, two VMs per run. Values are retained paired-summary observations, not tail estimates or real-tool latency. Units: ms for first read, seconds for measured CPU.",256 MiB,"First read, pool off ms",23.27
+index.md,First access and CPU cost,"<a id=""experiment-design""></a>
+
+B-VM-MEMORY uses Apple M4, 24 GiB RAM and macOS/HVF. Pool-on and pool-off configurations each run two VMs, each writing 64 MiB of repetitive compressible data: 40 parameter-matrix runs and four extended 2 GiB observations. Recovery checks data integrity while observing guest residency, pool/inflight data, footprint and CPU.
+
+One matrix attempt timed out during process sampling; it remains in the source summary and is not a latency sample.
+
+The RAM proxy combines guest residency and pool/inflight data; it is not net physical memory for the system or a cgroup. The table summarizes observation windows, rather than P50 or confidence intervals. Sample counts do not support tail-latency conclusions. Random data, real tool working sets and matched Docker/Firecracker/QEMU comparisons remain unmeasured.","Independent 2026-10-03 repetitive-data matrix: two paired repetitions per profile, two VMs per run. Values are retained paired-summary observations, not tail estimates or real-tool latency. Units: ms for first read, seconds for measured CPU.",256 MiB,"First read, pool on ms",176.92
+index.md,First access and CPU cost,"<a id=""experiment-design""></a>
+
+B-VM-MEMORY uses Apple M4, 24 GiB RAM and macOS/HVF. Pool-on and pool-off configurations each run two VMs, each writing 64 MiB of repetitive compressible data: 40 parameter-matrix runs and four extended 2 GiB observations. Recovery checks data integrity while observing guest residency, pool/inflight data, footprint and CPU.
+
+One matrix attempt timed out during process sampling; it remains in the source summary and is not a latency sample.
+
+The RAM proxy combines guest residency and pool/inflight data; it is not net physical memory for the system or a cgroup. The table summarizes observation windows, rather than P50 or confidence intervals. Sample counts do not support tail-latency conclusions. Random data, real tool working sets and matched Docker/Firecracker/QEMU comparisons remain unmeasured.","Independent 2026-10-03 repetitive-data matrix: two paired repetitions per profile, two VMs per run. Values are retained paired-summary observations, not tail estimates or real-tool latency. Units: ms for first read, seconds for measured CPU.",256 MiB,"CPU, pool off s",1.90
+index.md,First access and CPU cost,"<a id=""experiment-design""></a>
+
+B-VM-MEMORY uses Apple M4, 24 GiB RAM and macOS/HVF. Pool-on and pool-off configurations each run two VMs, each writing 64 MiB of repetitive compressible data: 40 parameter-matrix runs and four extended 2 GiB observations. Recovery checks data integrity while observing guest residency, pool/inflight data, footprint and CPU.
+
+One matrix attempt timed out during process sampling; it remains in the source summary and is not a latency sample.
+
+The RAM proxy combines guest residency and pool/inflight data; it is not net physical memory for the system or a cgroup. The table summarizes observation windows, rather than P50 or confidence intervals. Sample counts do not support tail-latency conclusions. Random data, real tool working sets and matched Docker/Firecracker/QEMU comparisons remain unmeasured.","Independent 2026-10-03 repetitive-data matrix: two paired repetitions per profile, two VMs per run. Values are retained paired-summary observations, not tail estimates or real-tool latency. Units: ms for first read, seconds for measured CPU.",256 MiB,"CPU, pool on s",6.59
+index.md,First access and CPU cost,"<a id=""experiment-design""></a>
+
+B-VM-MEMORY uses Apple M4, 24 GiB RAM and macOS/HVF. Pool-on and pool-off configurations each run two VMs, each writing 64 MiB of repetitive compressible data: 40 parameter-matrix runs and four extended 2 GiB observations. Recovery checks data integrity while observing guest residency, pool/inflight data, footprint and CPU.
+
+One matrix attempt timed out during process sampling; it remains in the source summary and is not a latency sample.
+
+The RAM proxy combines guest residency and pool/inflight data; it is not net physical memory for the system or a cgroup. The table summarizes observation windows, rather than P50 or confidence intervals. Sample counts do not support tail-latency conclusions. Random data, real tool working sets and matched Docker/Firecracker/QEMU comparisons remain unmeasured.","Independent 2026-10-03 repetitive-data matrix: two paired repetitions per profile, two VMs per run. Values are retained paired-summary observations, not tail estimates or real-tool latency. Units: ms for first read, seconds for measured CPU.",512 MiB,"First read, pool off ms",22.08
+index.md,First access and CPU cost,"<a id=""experiment-design""></a>
+
+B-VM-MEMORY uses Apple M4, 24 GiB RAM and macOS/HVF. Pool-on and pool-off configurations each run two VMs, each writing 64 MiB of repetitive compressible data: 40 parameter-matrix runs and four extended 2 GiB observations. Recovery checks data integrity while observing guest residency, pool/inflight data, footprint and CPU.
+
+One matrix attempt timed out during process sampling; it remains in the source summary and is not a latency sample.
+
+The RAM proxy combines guest residency and pool/inflight data; it is not net physical memory for the system or a cgroup. The table summarizes observation windows, rather than P50 or confidence intervals. Sample counts do not support tail-latency conclusions. Random data, real tool working sets and matched Docker/Firecracker/QEMU comparisons remain unmeasured.","Independent 2026-10-03 repetitive-data matrix: two paired repetitions per profile, two VMs per run. Values are retained paired-summary observations, not tail estimates or real-tool latency. Units: ms for first read, seconds for measured CPU.",512 MiB,"First read, pool on ms",168.92
+index.md,First access and CPU cost,"<a id=""experiment-design""></a>
+
+B-VM-MEMORY uses Apple M4, 24 GiB RAM and macOS/HVF. Pool-on and pool-off configurations each run two VMs, each writing 64 MiB of repetitive compressible data: 40 parameter-matrix runs and four extended 2 GiB observations. Recovery checks data integrity while observing guest residency, pool/inflight data, footprint and CPU.
+
+One matrix attempt timed out during process sampling; it remains in the source summary and is not a latency sample.
+
+The RAM proxy combines guest residency and pool/inflight data; it is not net physical memory for the system or a cgroup. The table summarizes observation windows, rather than P50 or confidence intervals. Sample counts do not support tail-latency conclusions. Random data, real tool working sets and matched Docker/Firecracker/QEMU comparisons remain unmeasured.","Independent 2026-10-03 repetitive-data matrix: two paired repetitions per profile, two VMs per run. Values are retained paired-summary observations, not tail estimates or real-tool latency. Units: ms for first read, seconds for measured CPU.",512 MiB,"CPU, pool off s",2.63
+index.md,First access and CPU cost,"<a id=""experiment-design""></a>
+
+B-VM-MEMORY uses Apple M4, 24 GiB RAM and macOS/HVF. Pool-on and pool-off configurations each run two VMs, each writing 64 MiB of repetitive compressible data: 40 parameter-matrix runs and four extended 2 GiB observations. Recovery checks data integrity while observing guest residency, pool/inflight data, footprint and CPU.
+
+One matrix attempt timed out during process sampling; it remains in the source summary and is not a latency sample.
+
+The RAM proxy combines guest residency and pool/inflight data; it is not net physical memory for the system or a cgroup. The table summarizes observation windows, rather than P50 or confidence intervals. Sample counts do not support tail-latency conclusions. Random data, real tool working sets and matched Docker/Firecracker/QEMU comparisons remain unmeasured.","Independent 2026-10-03 repetitive-data matrix: two paired repetitions per profile, two VMs per run. Values are retained paired-summary observations, not tail estimates or real-tool latency. Units: ms for first read, seconds for measured CPU.",512 MiB,"CPU, pool on s",7.75
+index.md,Evidence compared with existing tools {#linux-lifecycle},"<a id=""experiment-design""></a>
+
+B-VM-MEMORY uses Apple M4, 24 GiB RAM and macOS/HVF. Pool-on and pool-off configurations each run two VMs, each writing 64 MiB of repetitive compressible data: 40 parameter-matrix runs and four extended 2 GiB observations. Recovery checks data integrity while observing guest residency, pool/inflight data, footprint and CPU.
+
+One matrix attempt timed out during process sampling; it remains in the source summary and is not a latency sample.
+
+The RAM proxy combines guest residency and pool/inflight data; it is not net physical memory for the system or a cgroup. The table summarizes observation windows, rather than P50 or confidence intervals. Sample counts do not support tail-latency conclusions. Random data, real tool working sets and matched Docker/Firecracker/QEMU comparisons remain unmeasured.",Lower guest residency comes with first-access waiting and CPU work; it does not establish a net physical-memory benefit.,pVisor macOS cold-page pool,Net physical memory for a matched working set,No complete net-savings result
+index.md,Evidence compared with existing tools {#linux-lifecycle},"<a id=""experiment-design""></a>
+
+B-VM-MEMORY uses Apple M4, 24 GiB RAM and macOS/HVF. Pool-on and pool-off configurations each run two VMs, each writing 64 MiB of repetitive compressible data: 40 parameter-matrix runs and four extended 2 GiB observations. Recovery checks data integrity while observing guest residency, pool/inflight data, footprint and CPU.
+
+One matrix attempt timed out during process sampling; it remains in the source summary and is not a latency sample.
+
+The RAM proxy combines guest residency and pool/inflight data; it is not net physical memory for the system or a cgroup. The table summarizes observation windows, rather than P50 or confidence intervals. Sample counts do not support tail-latency conclusions. Random data, real tool working sets and matched Docker/Firecracker/QEMU comparisons remain unmeasured.",Lower guest residency comes with first-access waiting and CPU work; it does not establish a net physical-memory benefit.,pVisor macOS cold-page pool,Tool time after recovery,Repetitive-data probes; real tools unmeasured
+index.md,Evidence compared with existing tools {#linux-lifecycle},"<a id=""experiment-design""></a>
+
+B-VM-MEMORY uses Apple M4, 24 GiB RAM and macOS/HVF. Pool-on and pool-off configurations each run two VMs, each writing 64 MiB of repetitive compressible data: 40 parameter-matrix runs and four extended 2 GiB observations. Recovery checks data integrity while observing guest residency, pool/inflight data, footprint and CPU.
+
+One matrix attempt timed out during process sampling; it remains in the source summary and is not a latency sample.
+
+The RAM proxy combines guest residency and pool/inflight data; it is not net physical memory for the system or a cgroup. The table summarizes observation windows, rather than P50 or confidence intervals. Sample counts do not support tail-latency conclusions. Random data, real tool working sets and matched Docker/Firecracker/QEMU comparisons remain unmeasured.",Lower guest residency comes with first-access waiting and CPU work; it does not establish a net physical-memory benefit.,pVisor macOS cold-page pool,Available comparison,Pool-on/off residency observations
+index.md,Evidence compared with existing tools {#linux-lifecycle},"<a id=""experiment-design""></a>
+
+B-VM-MEMORY uses Apple M4, 24 GiB RAM and macOS/HVF. Pool-on and pool-off configurations each run two VMs, each writing 64 MiB of repetitive compressible data: 40 parameter-matrix runs and four extended 2 GiB observations. Recovery checks data integrity while observing guest residency, pool/inflight data, footprint and CPU.
+
+One matrix attempt timed out during process sampling; it remains in the source summary and is not a latency sample.
+
+The RAM proxy combines guest residency and pool/inflight data; it is not net physical memory for the system or a cgroup. The table summarizes observation windows, rather than P50 or confidence intervals. Sample counts do not support tail-latency conclusions. Random data, real tool working sets and matched Docker/Firecracker/QEMU comparisons remain unmeasured.",Lower guest residency comes with first-access waiting and CPU work; it does not establish a net physical-memory benefit.,Docker / Podman,Net physical memory for a matched working set,Unmeasured
+index.md,Evidence compared with existing tools {#linux-lifecycle},"<a id=""experiment-design""></a>
+
+B-VM-MEMORY uses Apple M4, 24 GiB RAM and macOS/HVF. Pool-on and pool-off configurations each run two VMs, each writing 64 MiB of repetitive compressible data: 40 parameter-matrix runs and four extended 2 GiB observations. Recovery checks data integrity while observing guest residency, pool/inflight data, footprint and CPU.
+
+One matrix attempt timed out during process sampling; it remains in the source summary and is not a latency sample.
+
+The RAM proxy combines guest residency and pool/inflight data; it is not net physical memory for the system or a cgroup. The table summarizes observation windows, rather than P50 or confidence intervals. Sample counts do not support tail-latency conclusions. Random data, real tool working sets and matched Docker/Firecracker/QEMU comparisons remain unmeasured.",Lower guest residency comes with first-access waiting and CPU work; it does not establish a net physical-memory benefit.,Docker / Podman,Tool time after recovery,Unmeasured
+index.md,Evidence compared with existing tools {#linux-lifecycle},"<a id=""experiment-design""></a>
+
+B-VM-MEMORY uses Apple M4, 24 GiB RAM and macOS/HVF. Pool-on and pool-off configurations each run two VMs, each writing 64 MiB of repetitive compressible data: 40 parameter-matrix runs and four extended 2 GiB observations. Recovery checks data integrity while observing guest residency, pool/inflight data, footprint and CPU.
+
+One matrix attempt timed out during process sampling; it remains in the source summary and is not a latency sample.
+
+The RAM proxy combines guest residency and pool/inflight data; it is not net physical memory for the system or a cgroup. The table summarizes observation windows, rather than P50 or confidence intervals. Sample counts do not support tail-latency conclusions. Random data, real tool working sets and matched Docker/Firecracker/QEMU comparisons remain unmeasured.",Lower guest residency comes with first-access waiting and CPU work; it does not establish a net physical-memory benefit.,Docker / Podman,Available comparison,"[Idle concurrency](../density.md), a different metric"
+index.md,Evidence compared with existing tools {#linux-lifecycle},"<a id=""experiment-design""></a>
+
+B-VM-MEMORY uses Apple M4, 24 GiB RAM and macOS/HVF. Pool-on and pool-off configurations each run two VMs, each writing 64 MiB of repetitive compressible data: 40 parameter-matrix runs and four extended 2 GiB observations. Recovery checks data integrity while observing guest residency, pool/inflight data, footprint and CPU.
+
+One matrix attempt timed out during process sampling; it remains in the source summary and is not a latency sample.
+
+The RAM proxy combines guest residency and pool/inflight data; it is not net physical memory for the system or a cgroup. The table summarizes observation windows, rather than P50 or confidence intervals. Sample counts do not support tail-latency conclusions. Random data, real tool working sets and matched Docker/Firecracker/QEMU comparisons remain unmeasured.",Lower guest residency comes with first-access waiting and CPU work; it does not establish a net physical-memory benefit.,Firecracker / QEMU,Net physical memory for a matched working set,Unmeasured
+index.md,Evidence compared with existing tools {#linux-lifecycle},"<a id=""experiment-design""></a>
+
+B-VM-MEMORY uses Apple M4, 24 GiB RAM and macOS/HVF. Pool-on and pool-off configurations each run two VMs, each writing 64 MiB of repetitive compressible data: 40 parameter-matrix runs and four extended 2 GiB observations. Recovery checks data integrity while observing guest residency, pool/inflight data, footprint and CPU.
+
+One matrix attempt timed out during process sampling; it remains in the source summary and is not a latency sample.
+
+The RAM proxy combines guest residency and pool/inflight data; it is not net physical memory for the system or a cgroup. The table summarizes observation windows, rather than P50 or confidence intervals. Sample counts do not support tail-latency conclusions. Random data, real tool working sets and matched Docker/Firecracker/QEMU comparisons remain unmeasured.",Lower guest residency comes with first-access waiting and CPU work; it does not establish a net physical-memory benefit.,Firecracker / QEMU,Tool time after recovery,Unmeasured
+index.md,Evidence compared with existing tools {#linux-lifecycle},"<a id=""experiment-design""></a>
+
+B-VM-MEMORY uses Apple M4, 24 GiB RAM and macOS/HVF. Pool-on and pool-off configurations each run two VMs, each writing 64 MiB of repetitive compressible data: 40 parameter-matrix runs and four extended 2 GiB observations. Recovery checks data integrity while observing guest residency, pool/inflight data, footprint and CPU.
+
+One matrix attempt timed out during process sampling; it remains in the source summary and is not a latency sample.
+
+The RAM proxy combines guest residency and pool/inflight data; it is not net physical memory for the system or a cgroup. The table summarizes observation windows, rather than P50 or confidence intervals. Sample counts do not support tail-latency conclusions. Random data, real tool working sets and matched Docker/Firecracker/QEMU comparisons remain unmeasured.",Lower guest residency comes with first-access waiting and CPU work; it does not establish a net physical-memory benefit.,Firecracker / QEMU,Available comparison,"[Startup and tool tasks](../compare-runtimes.md), not a memory measurement"

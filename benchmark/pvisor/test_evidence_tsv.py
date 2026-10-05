@@ -192,7 +192,7 @@ def test_product_summary_accepts_tsv_without_changing_statistics(tmp_path):
 
 @pytest.mark.parametrize("publisher", ["render_reference_baselines", "render_ubuntu_baselines"])
 @pytest.mark.parametrize("input_format", ["json", "tsv"])
-def test_publishers_keep_runtime_input_and_publish_tsv_only(
+def test_publishers_keep_raw_evidence_local_and_publish_derived_csv(
     tmp_path, monkeypatch, publisher, input_format
 ):
     import importlib
@@ -242,8 +242,16 @@ def test_publishers_keep_runtime_input_and_publish_tsv_only(
     module.main()
     assert source.exists()
     assert not list(output.rglob("*.json"))
-    assert load(output / "assets.tsv") == {"schema": "fixture"}
-    assert load(output / "summary.tsv") == module.summarize(report)
-    assert check(output) >= 3
+    raw = output / ".data"
+    assert (output / "summary.csv").is_file()
+    assert not list(output.glob("*.tsv"))
+    assert not (output / "samples.csv").exists()
+    with (output / "summary.csv").open() as stream:
+        rows = list(csv.DictReader(stream))
+    assert rows and all(row["p95_reference"] == "" for row in rows)
+    assert "p99" not in rows[0]
+    assert load(raw / "assets.tsv") == {"schema": "fixture"}
+    assert load(raw / "summary.tsv") == module.summarize(report)
+    assert check(raw) >= 3
     if publisher == "render_ubuntu_baselines":
-        assert load(output / "manifest.tsv")["batches"]["batch"]["report"] == "batch/report.tsv"
+        assert load(raw / "manifest.tsv")["batches"]["batch"]["report"] == "batch/report.tsv"

@@ -118,8 +118,6 @@ enum Change {
         at: u64,
     },
     Finish {
-        #[serde(default, skip_serializing_if = "Option::is_none")]
-        checkpoint_publication: Option<CheckpointPublication>,
         task_id: String,
         phase: TaskPhase,
         result: Option<Box<pvisor_core::RunResult>>,
@@ -677,7 +675,6 @@ impl Scheduler {
                 };
                 let result = task.result.take().map(Box::new);
                 self.apply(Change::Finish {
-                    checkpoint_publication: None,
                     task_id, phase, result,
                     error: (!known).then(|| "lease expired; execution outcome unknown, no automatic retry".into()),
                     artifacts: None,
@@ -728,7 +725,6 @@ impl Scheduler {
                 }
             }
             Change::Finish {
-                checkpoint_publication,
                 task_id,
                 phase,
                 result,
@@ -744,7 +740,6 @@ impl Scheduler {
                 task.result = result.map(|r| *r);
                 task.error = error;
                 task.artifacts = artifacts;
-                task.checkpoint_publication = checkpoint_publication;
                 if let Some(reference) = &task.artifacts {
                     self.retained.insert(task_id.clone(), reference.clone());
                     self.retention_age.insert((at, task_id.clone()));
@@ -976,46 +971,19 @@ impl Scheduler {
             .map(|(_, checkpoint)| checkpoint.clone()))
     }
 
-    fn task_checkpoint_publication(&self, spec: &TaskSpec) -> Option<CheckpointPublication> {
-        let restore = spec.restore.as_ref()?;
-        let source = self.tasks.get(&restore.task_id)?;
-        let publication = source.checkpoint_publication.as_ref()?;
-        let observation = source.controls.iter().find(|record| {
-            record.command.request.request_id == restore.request_id
-                && record.phase == ControlPhase::Succeeded
-        })?;
-        let ControlOutcome::Checkpointed { checkpoint } = observation.outcome.as_ref()? else {
-            return None;
-        };
-        (publication.checkpoint == *checkpoint).then(|| publication.clone())
-    }
 
     fn restore_fits(
         &self,
         spec: &TaskSpec,
         registration: &WorkerRegistration,
     ) -> anyhow::Result<bool> {
-        let Some((source, checkpoint)) = self.restore_observation(spec)? else {
+        let Some((source, _)) = self.restore_observation(spec)? else {
             return Ok(true);
         };
         if registration.execution_restore_protocol != Some(CLUSTER_VERSION) {
             return Ok(false);
         }
-        if source.worker_id == registration.id {
-            return Ok(true);
-        }
-        Ok(self
-            .task_checkpoint_publication(spec)
-            .is_some_and(|publication| {
-                publication.checkpoint == *checkpoint
-                    && registration
-                        .checkpoint_storage
-                        .as_ref()
-                        .is_some_and(|support| {
-                            support.repository == publication.repository
-                                && support.compatibility == publication.compatibility
-                        })
-            }))
+        Ok(source.worker_id == registration.id)
     }
 
     pub fn submit(&mut self, spec: TaskSpec, now: u64) -> anyhow::Result<TaskRecord> {
@@ -1054,13 +1022,6 @@ impl Scheduler {
         spec.validate_cpu_qos()?;
         spec.validate_gateway()?;
         spec.validate_artifacts()?;
-        ensure!(
-            !spec
-                .run
-                .metadata
-                .contains_key("pvisor.orchestration.checkpoint_publication"),
-            "task overrides checkpoint publication provenance"
-        );
         ensure!(
             !spec
                 .run
@@ -1172,7 +1133,6 @@ impl Scheduler {
         );
         let task = TaskRecord {
             reconciliation_pending: false,
-            checkpoint_publication: None,
             artifact_pin_protocol: None,
             artifact_retired_at_ms: None,
             spec,
@@ -1552,26 +1512,8 @@ impl Scheduler {
         if let Some(support) = &registration.gateway {
             support.validate()?;
         }
-        if let Some(support) = &registration.checkpoint_storage {
-            support.validate()?;
-            ensure!(
-                registration.execution_restore_protocol == Some(CLUSTER_VERSION),
-                "checkpoint repository requires native restore support"
-            );
-        }
         if let Some(support) = &registration.artifact_export {
             support.validate()?;
-            ensure!(
-                !support.execution_checkpoint
-                    || registration
-                        .checkpoint_storage
-                        .as_ref()
-                        .is_some_and(|storage| storage.publish)
-                        && registration
-                            .vm_control_actions
-                            .contains(&ControlAction::Suspend),
-                "checkpoint export requires a writable repository and native suspend support"
-            );
             ensure!(
                 registration.artifact_protocol == Some(CLUSTER_VERSION),
                 "extended artifact export requires native Bundle protocol"
@@ -1691,7 +1633,6 @@ impl Scheduler {
             TaskPhase::Failed
         };
         let change = Change::Finish {
-            checkpoint_publication: None,
             task_id: key.task_id.clone(),
             phase,
             result: task.result.clone().map(Box::new),
@@ -1868,7 +1809,6 @@ impl Scheduler {
             if task.phase == TaskPhase::Leased && !task.reconciliation_pending && !seen.contains(id)
             {
                 assignments.push(Assignment {
-                    checkpoint_publication: self.task_checkpoint_publication(&task.spec),
                     spec: task.spec.clone(),
                     lease: task.lease.clone().unwrap(),
                     environment: self.task_environment(&task.spec),
@@ -1984,18 +1924,6 @@ impl Scheduler {
                     .cpu_qos
                     .is_some_and(|class| !registration.cpu_qos_classes.contains(&class))
                 || !self.restore_fits(spec, &registration)?
-                || spec
-                    .retain_artifacts
-                    .as_ref()
-                    .and_then(|retention| retention.execution_checkpoint.as_ref())
-                    .is_some_and(|requirement| {
-                        registration
-                            .checkpoint_storage
-                            .as_ref()
-                            .is_none_or(|support| {
-                                !support.publish || support.repository != requirement.repository
-                            })
-                    })
                 || !quota_fits
                 || (spec.requires_artifacts()
                     && registration.artifact_protocol != Some(CLUSTER_VERSION))
@@ -2035,7 +1963,6 @@ impl Scheduler {
                 delta.checked_add(spec.resources).unwrap(),
             );
             assignments.push(Assignment {
-                checkpoint_publication: self.task_checkpoint_publication(spec),
                 spec: spec.clone(),
                 lease: lease.clone(),
                 environment: self.task_environment(spec),
@@ -2587,30 +2514,7 @@ impl Scheduler {
                 verified.as_ref().is_none_or(|v| v.satisfies(retention)),
                 "retained artifacts omit requested trace or writable layer"
             );
-            ensure!(
-                retention.execution_checkpoint.is_none()
-                    || verified.as_ref().is_none_or(|v| v.checkpoint.is_some()),
-                "retained artifacts omit a valid checkpoint publication"
-            );
-        }
-        if let Some(publication) = verified.as_ref().and_then(|v| v.checkpoint.as_ref()) {
-            let requirement = task
-                .spec
-                .retain_artifacts
-                .as_ref()
-                .and_then(|r| r.execution_checkpoint.as_ref())
-                .context("unrequested checkpoint publication")?;
-            let receipt = pvisor_core::operation::ExecutionSuspension::from_result(
-                completion
-                    .result
-                    .as_ref()
-                    .context("checkpoint publication has no native result")?,
-            )?;
-            ensure!(
-                publication.repository == requirement.repository
-                    && publication.checkpoint == receipt.checkpoint,
-                "checkpoint publication contradicts native suspension or repository requirement"
-            );
+
         }
         if native_only {
             ensure!(
@@ -2819,7 +2723,6 @@ impl Scheduler {
             };
         let id = completion.key.task_id;
         changes.push(Change::Finish {
-            checkpoint_publication: verified.as_ref().and_then(|v| v.checkpoint.clone()),
             task_id: id.clone(),
             phase,
             result: completion.result.map(Box::new),

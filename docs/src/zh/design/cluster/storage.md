@@ -44,7 +44,7 @@ Worker 的 `STATE/tasks/TASK-GENERATION` 保存 assignment、原生执行记录�
 
 ## Controller 产物 CAS {#artifacts}
 
-产物目录由 `journal.with_extension("artifacts")` 推导，内容以 BLAKE3 digest 和字节长度引用。小 manifest 指向分块对象，可保留 native Bundle、trace、VM 私有 writable layer 和可选 checkpoint publication。只上传 Bundle JSON 不会自动上传本地路径指向的文件。
+产物目录由 `journal.with_extension("artifacts")` 推导，内容以 BLAKE3 digest 和字节长度引用。小 manifest 指向分块对象，可保留 native Bundle、trace、VM 私有 writable layer 。只上传 Bundle JSON 不会自动上传本地路径指向的文件。
 
 上传绑定完整 key 并建立 durable lease pins；大对象 I/O 在调度锁外执行，关键发布前后重查资格。完成时验证 manifest、对象 hash/length、要求的文件、导出能力和原生 Run/Attempt 身份；不信任 Worker 任意声明的远端路径。
 
@@ -54,9 +54,9 @@ Worker 的 `STATE/tasks/TASK-GENERATION` 保存 assignment、原生执行记录�
 
 ## 检查点存储与原子性边界 {#checkpoints}
 
-Worker 的可选 FS/S3 snapshot repository 与 Controller artifact CAS 分工不同：前者存放可导入的完整封存执行对象，后者存放租约绑定的证据和发布引用。不可变 checkpoint manifest 对全部引用进行验证，上传、发布引用、Controller 回执与原生恢复不构成一个跨存储事务。
+完整执行检查点保存在源 Worker 的本地 SnapshotStore；Controller artifact CAS 只保存租约绑定的 Bundle、trace 和私有文件变更证据，不分发执行检查点。检查点封存、Controller 控制回执与本地恢复是不同提交点。
 
-重试依赖内容不可变、完整性校验和 outbox；取消或失联时保留已经发生的原生观察。检查点可读并不证明目标节点兼容，见[检查点生命周期](lifecycle.md#checkpoint)。
+重试依赖内容不可变、完整性校验和 outbox；取消或失联时保留已经发生的原生观察。检查点可读并不证明本地运行时兼容，见[检查点生命周期](lifecycle.md#checkpoint)。
 
 ## GC 根与计划执行 {#gc}
 
@@ -76,4 +76,4 @@ GC 使用 preview/plan → apply 两步。plan ID 不可变、5 分钟有效，�
 
 待对账期间拒绝整个 shard 的 destructive plan/apply，是当前保守策略。它避免资源收敛前的漏根，也意味着一个长期失联 Worker 可以拖延全局回收；后续细化必须先证明根完整性，不能直接删掉这个门槛。
 
-实现位置为 `journal.rs`、`server/dispatcher.rs`、`artifacts.rs`、`artifacts/{quota,gc}.rs` 及 Worker `bin/worker/{outbox,artifacts,checkpoints}.rs`。
+实现位置为 `journal.rs`、`server/dispatcher.rs`、`artifacts.rs`、`artifacts/{quota,gc}.rs` 及 Worker `bin/worker/{outbox,artifacts}.rs`。

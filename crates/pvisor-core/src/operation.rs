@@ -42,30 +42,6 @@ pub struct SnapshotCompatibility {
     pub profile: String,
 }
 
-/// Immutable repository receipt. Neither endpoint nor credentials are task data.
-#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
-#[serde(deny_unknown_fields)]
-pub struct SnapshotTransfer {
-    pub version: u32,
-    pub snapshot_id: String,
-    pub transfer_id: String,
-}
-impl SnapshotTransfer {
-    pub fn validate(&self) -> Result<()> {
-        ensure!(self.version == 1, "unsupported checkpoint transfer version");
-        for id in [&self.snapshot_id, &self.transfer_id] {
-            ensure!(
-                id.len() == 64
-                    && id
-                        .bytes()
-                        .all(|b| b.is_ascii_digit() || (b'a'..=b'f').contains(&b)),
-                "invalid checkpoint transfer identity"
-            );
-        }
-        Ok(())
-    }
-}
-
 /// A sealed full machine/environment object, distinct from live RAM offload.
 /// Store is a host-local location; this record does not claim portable recovery.
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]

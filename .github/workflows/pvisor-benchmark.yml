@@ -118,6 +118,6 @@ jobs:
         uses: actions/upload-artifact@v4
         with:
           name: pvisor-benchmark-${{ github.run_id }}
-          path: ${{ runner.temp }}/pvisor-benchmark
+          path: ${{ runner.temp }}/.data/pvisor-benchmark
           retention-days: 30
           if-no-files-found: error

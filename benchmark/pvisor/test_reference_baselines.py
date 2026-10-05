@@ -159,3 +159,13 @@ def test_successful_workload_still_requires_staged_writes(tmp_path, fault, file_
             validate_staged_filesystem(work, stage, file_kib * 1024 * 256)
     else:
         validate_staged_filesystem(work, stage, file_kib * 1024 * 256)
+
+
+def test_one_registered_benchmark_per_invocation():
+    from reference_baselines import benchmark_for_modes
+    assert benchmark_for_modes('ready') == 'B-STARTUP'
+    assert benchmark_for_modes('env,tools,claude,codex') == 'B-AGENT-TASK'
+    with pytest.raises(ValueError,match='one benchmark ID'):
+        benchmark_for_modes('ready,filesystem')
+    with pytest.raises(ValueError,match='unknown'):
+        benchmark_for_modes('typo')

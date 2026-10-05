@@ -1,79 +1,78 @@
 # 开发工具在 pVisor、Docker 和轻量 VM 中要等多久？
 
-**pVisor host staged 的离线 npm 安装与 Docker 接近，写入 256 个文件约 27 ms；pVisor VM 在 Git、搜索和 npm 等文件密集型负载上慢于所测 Firecracker、QEMU。** 下表将 pVisor 的最新实测与容器、轻量 VM 和完整 Ubuntu VM 放在一起，便于按任务判断性能水位。
+## 主要结论 {#conclusions}
 
-## 工具耗时 {#reference-fs}
+**rootless pVisor host 工具执行接近原生；staged 增加文件访问与保留改动成本。七项工具任务中，pVisor VM 比所测 Firecracker/QEMU 配置等待更长。Docker VFS 创建较贵，即使 bind mount 内工具较快。**
 
-以下为 **P50 ms**，越低越快。每项包含工具运行和结果校验，排除环境启动与收尾。pVisor 和原生列取 2026-10-05 实测；Docker、Firecracker 和 QEMU 列取 2026-10-04 参考环境实测。相同负载、同机两核预算，各列 3 次预热、30 次采样；pVisor VM 为 **2 vCPU / 4 GiB**，参考 VM 为 **2 vCPU / 16 GiB**。配置和批次不同，表中呈现各自测得的性能，不是只切换运行时的严格 A/B。
+| 需求 | 选型含义 |
+|---|---|
+| 本机工具与保留改动 | 评估 rootless host/staged |
+| 需要独立 guest 内核 | 预算完整 VM 工具时间 |
+| 已有容器/Git 工作流 | 比较成本与审查语义 |
 
-| 操作 | 原生 | pVisor host staged | pVisor VM | Docker bind mount | Firecracker PCI | QEMU q35 | QEMU microvm |
-|---|---:|---:|---:|---:|---:|---:|---:|
-| 遍历 2,048 个文件 | 4.76 | 77.12 | 166.90 | 5.06 | 21.60 | 14.89 | 18.07 |
-| 读取并校验 64 MiB | 32.29 | 67.84 | 117.82 | 33.24 | 81.63 | 39.21 | 40.72 |
-| 写入 256 个文件 | 3.82 | 27.05 | 141.59 | 3.95 | 43.68 | 5.26 | 5.20 |
-| git status | 14.79 | 124.37 | 371.58 | 16.07 | 129.37 | 86.26 | 123.93 |
-| rg 搜索 | 7.38 | 88.07 | 442.74 | 8.03 | 15.41 | 12.19 | 12.58 |
-| Cargo 离线编译 | 51.55 | 73.42 | 489.18 | 56.40 | 354.65 | 324.62 | 366.10 |
-| npm 离线安装 | 170.70 | 228.72 | 1330.95 | 231.45 | 556.70 | 603.25 | 614.88 |
+## Motivation {#motivation}
 
-Docker 的文件访问接近原生。host staged 的 npm 安装约 **229 ms**，Docker **231 ms**；小型 Cargo 编译约 **73 ms**，Docker **56 ms**。目录遍历、Git 和搜索仍有明显额外等待。pVisor VM 的 npm 约 **1.33 s**，轻量 Firecracker/QEMU 约 **0.56–0.61 s**；搜索约 **443 ms**，参考 VM **12–15 ms**。需要频繁执行这些工具时，应将执行时间与[启动时间](startup.md)、暂存审查需求一起考虑。
+仓库遍历、搜索、编译与装依赖构成许多 Agent 工具循环。选型需同时考虑这些成本、启动和审查。
 
-### 完整 Ubuntu VM 对照 {#full-ubuntu}
+## 实验设计 {#interpretation}
 
-完整 Ubuntu 使用发行版内核、initrd、systemd 和私有 ext4，Firecracker 为 2 vCPU / 16 GiB、3 次预热、10 次采样（2026-10-04）。以下沿用相同七项负载，pVisor 列取上表最新实测；单位仍为 **P50 ms**。
+共享 Linux/x86_64 宿主，AMD Ryzen 7 9700X，Fedora 内核 7.2.8-200.fc44.x86_64。启动进程树及专用 Docker daemon 固定到宿主 CPU 0,1；guest 为 2 vCPU。host/staged 使用 rootless_process。Shell VM 为 128 MiB，工具 VM 为 16 GiB。原生/Docker 不限内存：控制 CPU 与 guest 配置内存，不是相同资源限制的对照。工具与输入已准备，每次新建工作区、热缓存，3 次预热、60 次正式采样；按固定种子随机交错后端。构建、下载及输入复制不计时。
 
-| 操作 | pVisor host staged | pVisor VM | Firecracker / Ubuntu |
-|---|---:|---:|---:|
-| 遍历 2,048 个文件 | 77.12 | 166.90 | 18.64 |
-| 读取并校验 64 MiB | 67.84 | 117.82 | 115.51 |
-| 写入 256 个文件 | 27.05 | 141.59 | 36.07 |
-| git status | 124.37 | 371.58 | 136.50 |
-| rg 搜索 | 88.07 | 442.74 | 20.40 |
-| Cargo 离线编译 | 73.42 | 489.18 | 969.09 |
-| npm 离线安装 | 228.72 | 1330.95 | 1079.89 |
+Docker Engine 29.7.2 使用专用 rootless VFS daemon 与可写 bind mount，结果不代表 overlay2 或 Docker Desktop。Firecracker 1.13.1 PCI 不使用 jailer；QEMU 10.2.2 分别使用 q35/microvm、私有 ext4。pVisor VM 使用 virtio-fs 和不同内核。内核、存储、设备及暂存语义均有差异，不能把差距单独归因于 VMM 或 FUSE。
 
-pVisor VM 的小型 Cargo 编译比所测 Ubuntu VM 快，但遍历、搜索和小文件写入更慢。完整发行版的启动另见[Ubuntu 启动对照](startup.md#full-ubuntu)；QEMU 的完整 Ubuntu 修复/测试与 CLI 闭环见[运行时对比](compare-runtimes.md#full-ubuntu)，该配置没有这七项文件系统操作的实测。
+负载：32 个目录中 2,048 文件；64 MiB 读取及 SHA256 校验；256 × 64 KiB 写入；git status；rg；64 个无外部依赖 Cargo 模块；32 个离线 npm 包。单项含校验、不含启动/退出；Completion 包含七项及退出。大型仓库、冷磁盘、联网 registry 与并发吞吐未测。
 
-## 完整任务等待 {#results}
+## 实验数据和分析 {#results}
 
-下表计时包含启动、按顺序运行全部七项操作及收尾落盘，排除镜像准备和输入复制。单位为 **秒**。P95 表示约 95% 的样本在该时间内完成。
+### 七项工具操作 {#reference-fs}
 
-| 执行模式 | P50 | P95 |
-|---|---:|---:|
-| 原生 | 0.45 | 0.52 |
-| pVisor host staged | 1.11 | 1.26 |
-| pVisor VM | 4.08 | 9.30 |
-| pVisor VM，独立采样 | 4.08 | 4.46 |
-| Docker bind mount | 0.97 | 1.19 |
-| Firecracker PCI | 2.37 | 2.46 |
-| QEMU q35 | 1.82 | 2.37 |
-| QEMU microvm | 1.77 | 2.15 |
+测于 2026-10-05，每后端 60/60 有效、正式失败 0。检查输出与退出；暂存模式额外检查原文件未修改、改动完整保留。通过校验的慢样本全部保留，不按耗时剔除。P95 仅为观察参考。按[比较方法](methodology.md)中的预定规则识别出分离簇时，展示各簇中位数及占 60 次的数量，替代单个 P50。
 
-Docker 和参考 VM 行使用上表的 2026-10-04 配置，包含各自启动与退出；不含镜像准备和输入复制。
+单位 ms；通常为 P50，分离簇展示各簇中位数与数量。
 
-VM 两组测量的中位耗时接近，但较慢任务的等待时间波动较大。交互式流程或任务超时配置应留出余量，不能将 **4.08 s** 当作每次执行的上限。两组样本分别统计。
+| 操作 | Native | pVisor host | pVisor staged | pVisor VM | Docker rootless / VFS | Firecracker PCI | QEMU q35 | QEMU microvm |
+|---|---|---|---|---|---|---|---|---|
+| 遍历 2,048 文件 | 4.68 | 4.69 | 74.90 | 227.11 | 5.03 | 23.30 | 24.99 | 27.76 |
+| 读取并校验 64 MiB | 33.28 | 32.53 | 68.85 | 154.80 | 32.48 | 81.30 | 39.16 (15/60); 106.63 (45/60) | 41.63 (13/60); 105.45 (47/60) |
+| 写入 256 文件 | 3.69 | 3.68 | 27.10 | 159.80 | 3.69 (54/60); 6.80 (6/60) | 43.83 | 5.26 (15/60); 45.30 (45/60) | 5.45 (14/60); 45.22 (46/60) |
+| git status | 15.35 | 15.91 | 123.95 | 425.74 | 17.55 | 123.36 | 90.22 | 157.20 |
+| Ripgrep 搜索 | 8.56 | 8.81 | 91.29 | 460.88 | 9.99 | 14.39 | 14.53 | 15.11 |
+| 离线 Cargo 编译 | 57.21 (41/60); 144.26 (19/60) | 84.40 | 142.29 | 852.03 | 190.13 | 371.36 | 419.54 | 454.21 |
+| 离线 npm 安装 | 190.34 | 198.23 | 263.19 | 1662.23 | 273.68 | 565.52 | 583.35 | 619.69 |
 
-## 选择执行模式 {#conclusions}
+Docker bind mount 单项计时不含 VFS 创建。staged/VM 保留改动供审查，可写 bind 则直接修改挂载目录。目录扫描、Git 与工具加载仍增加交互等待；此对照不能确定某一层是唯一原因。
 
-| 需求 | 选择 | 需要考虑的成本 |
-|---|---|---|
-| 在宿主执行工具，保留改动供审查和合入 | host staged | 本页完整任务约 1.11 s；仓库扫描、Git 和搜索比原生慢 |
-| 使用独立 guest kernel，同时保留工作区改动 | VM | 本页完整任务约 4.08 s；工具启动、Git、编译和依赖安装等待更长 |
+### 启动到退出 {#complete-task}
 
-host staged 和 VM 都将工作区改动保留到 apply；隔离要求应结合[执行边界](../security/executor-boundaries.md)和[隔离验证](isolation-tests.md)选择。合入本身的耗时见[apply/drop](apply.md)。真实修复与测试流程见[完整工具任务](agent-tasks.md)。
+单位秒；P95 仅作观察参考，不是耗时上界。
 
-## 测试条件 {#interpretation}
+| Backend | Valid / failed | Completion P50 s | Completion P95 s |
+|---|---|---|---|
+| Native | 60 / 0 | 0.51 | 0.70 |
+| pVisor host | 60 / 0 | 0.57 | 0.79 |
+| pVisor staged | 60 / 0 | 1.29 | 1.58 |
+| pVisor VM | 60 / 0 | 6.66 | 8.00 |
+| Docker rootless / VFS | 60 / 0 | 5.68 | 6.76 |
+| Firecracker PCI | 60 / 0 | 2.16 | 2.35 |
+| QEMU q35 | 60 / 0 | 2.44 | 2.75 |
+| QEMU microvm | 60 / 0 | 2.45 | 2.79 |
 
-pVisor 测试使用 Linux、本地 release、热宿主缓存。host 测试使用两核预算；pVisor VM 为 **2 vCPU / 4 GiB**。每组预热 3 次，采样 30 次。host staged 使用 rootless 执行边界；所有计入样本的任务均通过输出校验，暂存模式还验证宿主原文件未被写入。
+### 完整 Ubuntu 文件操作 {#full-ubuntu}
 
-负载为 2,048 个文件、32 个目录；读取并校验 64 MiB SHA256；写入 256 × 64 KiB；Cargo 编译 64 个无外部依赖模块；npm 安装 32 个本地包。各次执行使用新的工作区，依赖与工具已准备，测试期间不访问公网。
+独立的 2026-10-04 Firecracker/Ubuntu 样本组，2 vCPU / 16 GiB、N=10、3 次预热。单位 P50 ms；OS/工具/存储不同，不合并分布。QEMU/Ubuntu 没有七项操作实测。
 
-这些结果适用于小型、离线、热缓存开发负载。大型仓库、冷磁盘、真实 npm registry 和多任务吞吐需要按自己的任务测量。宿主 CPU 非独占，较慢样本的耗时尤其可能变化。
+| Operation | Firecracker / Ubuntu P50 ms |
+|---|---|
+| 遍历 2,048 文件 | 18.64 |
+| 读取并校验 64 MiB | 115.51 |
+| 写入 256 文件 | 36.07 |
+| git status | 136.50 |
+| Ripgrep 搜索 | 20.40 |
+| 离线 Cargo 编译 | 969.09 |
+| 离线 npm 安装 | 1079.89 |
 
-固定制品与测量日期按表注明。失败与校验不通过的样本不计入成功耗时，失败数量单列；既有数据没有事先的宿主干扰剔除规则，所有通过校验的慢样本保留。30 次及更少采样的 P95 仅为观察参考，不给 P99 或稳定尾延迟承诺。
+[Startup](startup.md) · [Repair tasks](agent-tasks.md) · [Apply/drop](apply.md)
 
-## 数据来源 {#run}
+### 数据下载与复现 {#run}
 
-pVisor 与原生测量日期：**2026-10-05**，使用同一批次；Docker、Firecracker、QEMU 与完整 Ubuntu 的参考数据测于 **2026-10-04**。pVisor VM 的独立采样单列展示，各批次不合并百分位数。
-
- ·  ·  · [测试方法与制品](methodology.md)
+[整理后的表格 CSV](filesystem.csv) · [运行时统计](runtime-summary.csv) · [来源与制品](runtime-provenance.csv) · [证据来源摘要](evidence-sources.csv) · [比较方法](methodology.md) · [复现手册](https://github.com/DeepLink-org/pvisor/blob/main/benchmark/pvisor/README.md)

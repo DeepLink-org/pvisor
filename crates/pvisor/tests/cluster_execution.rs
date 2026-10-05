@@ -490,7 +490,6 @@ async fn worker_restart_finishes_interrupted_bundle_upload_and_renews_only_termi
     );
     task.retain_bundle = true;
     task.retain_artifacts = Some(ArtifactRetention {
-        execution_checkpoint: None,
         version: ARTIFACT_EXPORT_VERSION,
         trace: true,
         workspace_upper: false,
@@ -890,7 +889,6 @@ async fn artifact_http_requires_live_lease_exact_hash_bounded_body_and_separate_
     let task = spec("wire-artifacts", "true");
     worker
         .register(&WorkerRegistration {
-            checkpoint_storage: None,
             artifact_export: None,
             gateway: None,
             cpu_observation_protocol: None,
@@ -1261,7 +1259,6 @@ async fn worker_credentials_cannot_submit_or_read_tenant_tasks() {
     }
     worker
         .register(&WorkerRegistration {
-            checkpoint_storage: None,
             artifact_export: None,
             gateway: None,
             cpu_observation_protocol: None,
@@ -1380,7 +1377,6 @@ async fn vm_control_wire_protocol_enforces_roles_and_resume_admission() {
     let capacity = task.resources;
     worker
         .register(&WorkerRegistration {
-            checkpoint_storage: None,
             artifact_export: None,
             gateway: None,
             cpu_observation_protocol: None,
@@ -1875,7 +1871,6 @@ async fn cluster_worker_gateway_runs_agent_model_tool_loop_with_private_credenti
     let mut task = spec("agent-gateway", "unused");
     task.retain_bundle = true;
     task.retain_artifacts = Some(ArtifactRetention {
-        execution_checkpoint: None,
         version: ARTIFACT_EXPORT_VERSION,
         trace: true,
         workspace_upper: false,
@@ -2172,7 +2167,6 @@ async fn artifact_storage_quota_ends_upload_preserves_native_success_and_never_r
         &format!("printf x >> '{}'; printf native-done", marker.display()),
     );
     task.retain_artifacts = Some(ArtifactRetention {
-        execution_checkpoint: None,
         version: ARTIFACT_EXPORT_VERSION,
         trace: true,
         workspace_upper: false,

@@ -55,9 +55,9 @@ Environment templates combine architecture with ordered, pinned base/workspace/t
 
 A full execution checkpoint differs from an offload file. It seals CPU, RAM, devices and a complete owned-overlay inventory, validating original inode identities, open handles, directory cookies and other restore conditions. Continuation and fork establish lineage for new Run/Attempt identities. Missing, modified or incompatible snapshots are rejected.
 
-Optional FS/S3 repositories publish immutable full checkpoints and manifests. Workers verify and import them, then restore with independent writable trees and private COW RAM. Shared verified read-only lowers and RAM frames reduce duplication; sparse/compressed storage and native v5 lower pools remain executor mechanisms.
+Checkpoints remain in the source Worker's local execution storage. Restore and fork placement stays on the Worker owning that checkpoint, with independent writable trees and private COW RAM. Shared verified read-only lowers and RAM frames reduce duplication; sparse/compressed storage and native v5 lower pools remain executor mechanisms.
 
-Compatibility includes execution protocol, architecture, native format/profile and runtime environment. A repository or manifest does not establish compatibility with arbitrary hosts. Existing gates cover cold imports by independent same-host Workers and recovery after source deletion; cross-host runtime compatibility and recovery need separate validation.
+Restore verifies execution protocol, architecture, native format/profile and runtime environment. The source Worker's local storage must remain available. Cross-node checkpoint publication, import and restore placement are not provided.
 
 ## Sealed forks and live forks {#fork}
 
@@ -68,7 +68,7 @@ Compatibility includes execution protocol, architecture, native format/profile a
 
 A request supports 1–64 branches, a 4 MiB transaction and the task-retention limit. Branches use distinct Task/Run/Attempt identities and preserve lineage. Each branch reserves resources separately; shared RAM is not a zero budget. A live-fork source may continue. Capture requests and ACKs bind source/key/revision; retry does not create duplicate branches.
 
-Checkpoint acceptance, branch creation and cold restore are separate commit points. Interrupted repository publication is retried through Worker terminal delivery. Creation receipts and snapshot publications do not prove native restore success.
+Checkpoint acceptance, branch creation and cold restore are separate commit points. A branch-creation receipt does not prove native restore success. An unavailable source Worker or local checkpoint does not authorize placement on another Worker.
 
 ## Lifecycle and integration boundaries {#integration}
 

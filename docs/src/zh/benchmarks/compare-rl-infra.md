@@ -18,7 +18,7 @@
 
 ## 实验设计 {#interpretation}
 
-本章测量本机执行与回放契约，没有执行完整 SWE-Gym/verl 训练对照，也没有比较不同论文成功率。官方项目用于说明职责，专用集成未验收就不称为兼容。
+已测本机执行与回放契约，没有执行完整 SWE-Gym/verl 训练对照，也没有比较不同论文成功率。官方项目用于说明职责，专用集成未验收就不称为兼容。
 
 | 工具 | 职责与比较范围 |
 |---|---|
@@ -33,11 +33,17 @@
 
 ## 实验数据和分析 {#results}
 
+以下只列 pVisor 的本机支撑数据，各主题的样本数、固定制品与测量日期见链接。OpenHands、SWE-Gym、verl 的完整训练吞吐和有效样本成本未测，不做速度排名。
+
 | 成本项 | 可用证据 | 可支持的用途 |
 |---|---|---|
 | [启动](startup.md) | 本地 VM 约 0.1 s | 估算一次性环境等待 |
-| [工具任务](agent-tasks.md) | staged 短修复约 0.7 s，VM 约 4 s | 按执行边界估算工具预算 |
+| [工具任务](agent-tasks.md) | 修复到退出，staged 0.68 s；VM 3.25 s；N=60，2026-10-06 | 按执行边界估算工具预算 |
 | [前缀准备](replay-fidelity.md) | 固定六种格式约 5–5.5 ms | 准备已记录历史；不证明模型下一动作相同 |
 | [并发密度](density.md) | 空闲环境探针 | 估算基础占用；不等于有效 rollout 吞吐 |
 
 工具回放重新执行操作，VM checkpoint 恢复 CPU/RAM 及对应设备/文件状态，不能把所有远端连接都视为可恢复。真实训练仍需测任务成功率、失败重试、总资源与每个有效样本耗时；当前数据没有回答 pVisor 是否比完整 RL 管线更快。
+
+### 数据下载与复现 {#run}
+
+[整理后的表格 CSV](compare-rl-infra.csv) · [证据来源摘要](evidence-sources.csv) · [比较方法](methodology.md) · [复现手册](https://github.com/DeepLink-org/pvisor/blob/main/benchmark/pvisor/README.md)

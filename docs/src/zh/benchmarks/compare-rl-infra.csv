@@ -1,0 +1,181 @@
+source_document,section,source_conditions,table_context,row,metric,value
+compare-rl-infra.md,Main conclusions {#conclusions},"This chapter measures local execution and replay contracts, not complete SWE-Gym/verl training comparisons or success rates across papers. Official projects describe responsibilities; unaccepted dedicated integrations are not claimed compatible.
+
+| Tool | Responsibility and scope |
+|---|---|
+| OpenHands runtime | Agent tool environments; Docker sandbox can mount local repositories |
+| SWE-Gym | Repository tasks, executable environments, verification and Agent/verifier training |
+| verl | Training, rollout and model resource coordination |
+| pVisor | Jobs, stages, trajectories, replay and VM checkpoint/fork; not a training algorithm |
+
+Sources: [OpenHands](https://docs.openhands.dev/openhands/usage/sandboxes/docker), [SWE-Gym](https://github.com/SWE-Gym/SWE-Gym), [verl](https://verl.readthedocs.io/en/latest/).
+
+Tables identify pinned artifacts and measurement dates. Failed or invalid samples are excluded from successful timings and counted separately. Existing measurements have no predefined host-interference filter; all slow valid samples are retained. P95 from 30 or fewer samples is descriptive only; no P99 or stable tail-latency claim is made.","Existing OpenHands/SWE-Gym/verl pipelines remain useful. Consider pVisor for common workspaces and execution evidence across Agents. Training systems still own models, tasks, rewards and scheduling.",Existing OpenHands / SWE-Gym / verl,Selection implication,Keep task and training layers
+compare-rl-infra.md,Main conclusions {#conclusions},"This chapter measures local execution and replay contracts, not complete SWE-Gym/verl training comparisons or success rates across papers. Official projects describe responsibilities; unaccepted dedicated integrations are not claimed compatible.
+
+| Tool | Responsibility and scope |
+|---|---|
+| OpenHands runtime | Agent tool environments; Docker sandbox can mount local repositories |
+| SWE-Gym | Repository tasks, executable environments, verification and Agent/verifier training |
+| verl | Training, rollout and model resource coordination |
+| pVisor | Jobs, stages, trajectories, replay and VM checkpoint/fork; not a training algorithm |
+
+Sources: [OpenHands](https://docs.openhands.dev/openhands/usage/sandboxes/docker), [SWE-Gym](https://github.com/SWE-Gym/SWE-Gym), [verl](https://verl.readthedocs.io/en/latest/).
+
+Tables identify pinned artifacts and measurement dates. Failed or invalid samples are excluded from successful timings and counted separately. Existing measurements have no predefined host-interference filter; all slow valid samples are retained. P95 from 30 or fewer samples is descriptive only; no P99 or stable tail-latency claim is made.","Existing OpenHands/SWE-Gym/verl pipelines remain useful. Consider pVisor for common workspaces and execution evidence across Agents. Training systems still own models, tasks, rewards and scheduling.",Unified execution records and staging,Selection implication,Evaluate pVisor as an execution layer
+compare-rl-infra.md,Main conclusions {#conclusions},"This chapter measures local execution and replay contracts, not complete SWE-Gym/verl training comparisons or success rates across papers. Official projects describe responsibilities; unaccepted dedicated integrations are not claimed compatible.
+
+| Tool | Responsibility and scope |
+|---|---|
+| OpenHands runtime | Agent tool environments; Docker sandbox can mount local repositories |
+| SWE-Gym | Repository tasks, executable environments, verification and Agent/verifier training |
+| verl | Training, rollout and model resource coordination |
+| pVisor | Jobs, stages, trajectories, replay and VM checkpoint/fork; not a training algorithm |
+
+Sources: [OpenHands](https://docs.openhands.dev/openhands/usage/sandboxes/docker), [SWE-Gym](https://github.com/SWE-Gym/SWE-Gym), [verl](https://verl.readthedocs.io/en/latest/).
+
+Tables identify pinned artifacts and measurement dates. Failed or invalid samples are excluded from successful timings and counted separately. Existing measurements have no predefined host-interference filter; all slow valid samples are retained. P95 from 30 or fewer samples is descriptive only; no P99 or stable tail-latency claim is made.","Existing OpenHands/SWE-Gym/verl pipelines remain useful. Consider pVisor for common workspaces and execution evidence across Agents. Training systems still own models, tasks, rewards and scheduling.",Training throughput and cost,Selection implication,No complete training comparison is available
+compare-rl-infra.md,Experiment design {#interpretation},"This chapter measures local execution and replay contracts, not complete SWE-Gym/verl training comparisons or success rates across papers. Official projects describe responsibilities; unaccepted dedicated integrations are not claimed compatible.
+
+| Tool | Responsibility and scope |
+|---|---|
+| OpenHands runtime | Agent tool environments; Docker sandbox can mount local repositories |
+| SWE-Gym | Repository tasks, executable environments, verification and Agent/verifier training |
+| verl | Training, rollout and model resource coordination |
+| pVisor | Jobs, stages, trajectories, replay and VM checkpoint/fork; not a training algorithm |
+
+Sources: [OpenHands](https://docs.openhands.dev/openhands/usage/sandboxes/docker), [SWE-Gym](https://github.com/SWE-Gym/SWE-Gym), [verl](https://verl.readthedocs.io/en/latest/).
+
+Tables identify pinned artifacts and measurement dates. Failed or invalid samples are excluded from successful timings and counted separately. Existing measurements have no predefined host-interference filter; all slow valid samples are retained. P95 from 30 or fewer samples is descriptive only; no P99 or stable tail-latency claim is made.","This chapter measures local execution and replay contracts, not complete SWE-Gym/verl training comparisons or success rates across papers. Official projects describe responsibilities; unaccepted dedicated integrations are not claimed compatible.",OpenHands runtime,Responsibility and scope,Agent tool environments; Docker sandbox can mount local repositories
+compare-rl-infra.md,Experiment design {#interpretation},"This chapter measures local execution and replay contracts, not complete SWE-Gym/verl training comparisons or success rates across papers. Official projects describe responsibilities; unaccepted dedicated integrations are not claimed compatible.
+
+| Tool | Responsibility and scope |
+|---|---|
+| OpenHands runtime | Agent tool environments; Docker sandbox can mount local repositories |
+| SWE-Gym | Repository tasks, executable environments, verification and Agent/verifier training |
+| verl | Training, rollout and model resource coordination |
+| pVisor | Jobs, stages, trajectories, replay and VM checkpoint/fork; not a training algorithm |
+
+Sources: [OpenHands](https://docs.openhands.dev/openhands/usage/sandboxes/docker), [SWE-Gym](https://github.com/SWE-Gym/SWE-Gym), [verl](https://verl.readthedocs.io/en/latest/).
+
+Tables identify pinned artifacts and measurement dates. Failed or invalid samples are excluded from successful timings and counted separately. Existing measurements have no predefined host-interference filter; all slow valid samples are retained. P95 from 30 or fewer samples is descriptive only; no P99 or stable tail-latency claim is made.","This chapter measures local execution and replay contracts, not complete SWE-Gym/verl training comparisons or success rates across papers. Official projects describe responsibilities; unaccepted dedicated integrations are not claimed compatible.",SWE-Gym,Responsibility and scope,"Repository tasks, executable environments, verification and Agent/verifier training"
+compare-rl-infra.md,Experiment design {#interpretation},"This chapter measures local execution and replay contracts, not complete SWE-Gym/verl training comparisons or success rates across papers. Official projects describe responsibilities; unaccepted dedicated integrations are not claimed compatible.
+
+| Tool | Responsibility and scope |
+|---|---|
+| OpenHands runtime | Agent tool environments; Docker sandbox can mount local repositories |
+| SWE-Gym | Repository tasks, executable environments, verification and Agent/verifier training |
+| verl | Training, rollout and model resource coordination |
+| pVisor | Jobs, stages, trajectories, replay and VM checkpoint/fork; not a training algorithm |
+
+Sources: [OpenHands](https://docs.openhands.dev/openhands/usage/sandboxes/docker), [SWE-Gym](https://github.com/SWE-Gym/SWE-Gym), [verl](https://verl.readthedocs.io/en/latest/).
+
+Tables identify pinned artifacts and measurement dates. Failed or invalid samples are excluded from successful timings and counted separately. Existing measurements have no predefined host-interference filter; all slow valid samples are retained. P95 from 30 or fewer samples is descriptive only; no P99 or stable tail-latency claim is made.","This chapter measures local execution and replay contracts, not complete SWE-Gym/verl training comparisons or success rates across papers. Official projects describe responsibilities; unaccepted dedicated integrations are not claimed compatible.",verl,Responsibility and scope,"Training, rollout and model resource coordination"
+compare-rl-infra.md,Experiment design {#interpretation},"This chapter measures local execution and replay contracts, not complete SWE-Gym/verl training comparisons or success rates across papers. Official projects describe responsibilities; unaccepted dedicated integrations are not claimed compatible.
+
+| Tool | Responsibility and scope |
+|---|---|
+| OpenHands runtime | Agent tool environments; Docker sandbox can mount local repositories |
+| SWE-Gym | Repository tasks, executable environments, verification and Agent/verifier training |
+| verl | Training, rollout and model resource coordination |
+| pVisor | Jobs, stages, trajectories, replay and VM checkpoint/fork; not a training algorithm |
+
+Sources: [OpenHands](https://docs.openhands.dev/openhands/usage/sandboxes/docker), [SWE-Gym](https://github.com/SWE-Gym/SWE-Gym), [verl](https://verl.readthedocs.io/en/latest/).
+
+Tables identify pinned artifacts and measurement dates. Failed or invalid samples are excluded from successful timings and counted separately. Existing measurements have no predefined host-interference filter; all slow valid samples are retained. P95 from 30 or fewer samples is descriptive only; no P99 or stable tail-latency claim is made.","This chapter measures local execution and replay contracts, not complete SWE-Gym/verl training comparisons or success rates across papers. Official projects describe responsibilities; unaccepted dedicated integrations are not claimed compatible.",pVisor,Responsibility and scope,"Jobs, stages, trajectories, replay and VM checkpoint/fork; not a training algorithm"
+compare-rl-infra.md,Data and analysis {#results},"This chapter measures local execution and replay contracts, not complete SWE-Gym/verl training comparisons or success rates across papers. Official projects describe responsibilities; unaccepted dedicated integrations are not claimed compatible.
+
+| Tool | Responsibility and scope |
+|---|---|
+| OpenHands runtime | Agent tool environments; Docker sandbox can mount local repositories |
+| SWE-Gym | Repository tasks, executable environments, verification and Agent/verifier training |
+| verl | Training, rollout and model resource coordination |
+| pVisor | Jobs, stages, trajectories, replay and VM checkpoint/fork; not a training algorithm |
+
+Sources: [OpenHands](https://docs.openhands.dev/openhands/usage/sandboxes/docker), [SWE-Gym](https://github.com/SWE-Gym/SWE-Gym), [verl](https://verl.readthedocs.io/en/latest/).
+
+Tables identify pinned artifacts and measurement dates. Failed or invalid samples are excluded from successful timings and counted separately. Existing measurements have no predefined host-interference filter; all slow valid samples are retained. P95 from 30 or fewer samples is descriptive only; no P99 or stable tail-latency claim is made.","These are local pVisor supporting measurements; linked topics provide counts, pinned artifacts and dates. Complete training throughput and valid-sample cost for OpenHands, SWE-Gym and verl are unmeasured, without a speed ranking.",[Startup](startup.md),Evidence,Local VM about 0.1 s
+compare-rl-infra.md,Data and analysis {#results},"This chapter measures local execution and replay contracts, not complete SWE-Gym/verl training comparisons or success rates across papers. Official projects describe responsibilities; unaccepted dedicated integrations are not claimed compatible.
+
+| Tool | Responsibility and scope |
+|---|---|
+| OpenHands runtime | Agent tool environments; Docker sandbox can mount local repositories |
+| SWE-Gym | Repository tasks, executable environments, verification and Agent/verifier training |
+| verl | Training, rollout and model resource coordination |
+| pVisor | Jobs, stages, trajectories, replay and VM checkpoint/fork; not a training algorithm |
+
+Sources: [OpenHands](https://docs.openhands.dev/openhands/usage/sandboxes/docker), [SWE-Gym](https://github.com/SWE-Gym/SWE-Gym), [verl](https://verl.readthedocs.io/en/latest/).
+
+Tables identify pinned artifacts and measurement dates. Failed or invalid samples are excluded from successful timings and counted separately. Existing measurements have no predefined host-interference filter; all slow valid samples are retained. P95 from 30 or fewer samples is descriptive only; no P99 or stable tail-latency claim is made.","These are local pVisor supporting measurements; linked topics provide counts, pinned artifacts and dates. Complete training throughput and valid-sample cost for OpenHands, SWE-Gym and verl are unmeasured, without a speed ranking.",[Startup](startup.md),Supported use,Disposable-environment waiting budget
+compare-rl-infra.md,Data and analysis {#results},"This chapter measures local execution and replay contracts, not complete SWE-Gym/verl training comparisons or success rates across papers. Official projects describe responsibilities; unaccepted dedicated integrations are not claimed compatible.
+
+| Tool | Responsibility and scope |
+|---|---|
+| OpenHands runtime | Agent tool environments; Docker sandbox can mount local repositories |
+| SWE-Gym | Repository tasks, executable environments, verification and Agent/verifier training |
+| verl | Training, rollout and model resource coordination |
+| pVisor | Jobs, stages, trajectories, replay and VM checkpoint/fork; not a training algorithm |
+
+Sources: [OpenHands](https://docs.openhands.dev/openhands/usage/sandboxes/docker), [SWE-Gym](https://github.com/SWE-Gym/SWE-Gym), [verl](https://verl.readthedocs.io/en/latest/).
+
+Tables identify pinned artifacts and measurement dates. Failed or invalid samples are excluded from successful timings and counted separately. Existing measurements have no predefined host-interference filter; all slow valid samples are retained. P95 from 30 or fewer samples is descriptive only; no P99 or stable tail-latency claim is made.","These are local pVisor supporting measurements; linked topics provide counts, pinned artifacts and dates. Complete training throughput and valid-sample cost for OpenHands, SWE-Gym and verl are unmeasured, without a speed ranking.",[Tool tasks](agent-tasks.md),Evidence,"Repair completion, staged 0.68 s; VM 3.25 s; N=60, 2026-10-06"
+compare-rl-infra.md,Data and analysis {#results},"This chapter measures local execution and replay contracts, not complete SWE-Gym/verl training comparisons or success rates across papers. Official projects describe responsibilities; unaccepted dedicated integrations are not claimed compatible.
+
+| Tool | Responsibility and scope |
+|---|---|
+| OpenHands runtime | Agent tool environments; Docker sandbox can mount local repositories |
+| SWE-Gym | Repository tasks, executable environments, verification and Agent/verifier training |
+| verl | Training, rollout and model resource coordination |
+| pVisor | Jobs, stages, trajectories, replay and VM checkpoint/fork; not a training algorithm |
+
+Sources: [OpenHands](https://docs.openhands.dev/openhands/usage/sandboxes/docker), [SWE-Gym](https://github.com/SWE-Gym/SWE-Gym), [verl](https://verl.readthedocs.io/en/latest/).
+
+Tables identify pinned artifacts and measurement dates. Failed or invalid samples are excluded from successful timings and counted separately. Existing measurements have no predefined host-interference filter; all slow valid samples are retained. P95 from 30 or fewer samples is descriptive only; no P99 or stable tail-latency claim is made.","These are local pVisor supporting measurements; linked topics provide counts, pinned artifacts and dates. Complete training throughput and valid-sample cost for OpenHands, SWE-Gym and verl are unmeasured, without a speed ranking.",[Tool tasks](agent-tasks.md),Supported use,Tool budget by execution boundary
+compare-rl-infra.md,Data and analysis {#results},"This chapter measures local execution and replay contracts, not complete SWE-Gym/verl training comparisons or success rates across papers. Official projects describe responsibilities; unaccepted dedicated integrations are not claimed compatible.
+
+| Tool | Responsibility and scope |
+|---|---|
+| OpenHands runtime | Agent tool environments; Docker sandbox can mount local repositories |
+| SWE-Gym | Repository tasks, executable environments, verification and Agent/verifier training |
+| verl | Training, rollout and model resource coordination |
+| pVisor | Jobs, stages, trajectories, replay and VM checkpoint/fork; not a training algorithm |
+
+Sources: [OpenHands](https://docs.openhands.dev/openhands/usage/sandboxes/docker), [SWE-Gym](https://github.com/SWE-Gym/SWE-Gym), [verl](https://verl.readthedocs.io/en/latest/).
+
+Tables identify pinned artifacts and measurement dates. Failed or invalid samples are excluded from successful timings and counted separately. Existing measurements have no predefined host-interference filter; all slow valid samples are retained. P95 from 30 or fewer samples is descriptive only; no P99 or stable tail-latency claim is made.","These are local pVisor supporting measurements; linked topics provide counts, pinned artifacts and dates. Complete training throughput and valid-sample cost for OpenHands, SWE-Gym and verl are unmeasured, without a speed ranking.",[Prefix preparation](replay-fidelity.md),Evidence,Six pinned formats about 5–5.5 ms
+compare-rl-infra.md,Data and analysis {#results},"This chapter measures local execution and replay contracts, not complete SWE-Gym/verl training comparisons or success rates across papers. Official projects describe responsibilities; unaccepted dedicated integrations are not claimed compatible.
+
+| Tool | Responsibility and scope |
+|---|---|
+| OpenHands runtime | Agent tool environments; Docker sandbox can mount local repositories |
+| SWE-Gym | Repository tasks, executable environments, verification and Agent/verifier training |
+| verl | Training, rollout and model resource coordination |
+| pVisor | Jobs, stages, trajectories, replay and VM checkpoint/fork; not a training algorithm |
+
+Sources: [OpenHands](https://docs.openhands.dev/openhands/usage/sandboxes/docker), [SWE-Gym](https://github.com/SWE-Gym/SWE-Gym), [verl](https://verl.readthedocs.io/en/latest/).
+
+Tables identify pinned artifacts and measurement dates. Failed or invalid samples are excluded from successful timings and counted separately. Existing measurements have no predefined host-interference filter; all slow valid samples are retained. P95 from 30 or fewer samples is descriptive only; no P99 or stable tail-latency claim is made.","These are local pVisor supporting measurements; linked topics provide counts, pinned artifacts and dates. Complete training throughput and valid-sample cost for OpenHands, SWE-Gym and verl are unmeasured, without a speed ranking.",[Prefix preparation](replay-fidelity.md),Supported use,Prepare recorded history; not identical model next actions
+compare-rl-infra.md,Data and analysis {#results},"This chapter measures local execution and replay contracts, not complete SWE-Gym/verl training comparisons or success rates across papers. Official projects describe responsibilities; unaccepted dedicated integrations are not claimed compatible.
+
+| Tool | Responsibility and scope |
+|---|---|
+| OpenHands runtime | Agent tool environments; Docker sandbox can mount local repositories |
+| SWE-Gym | Repository tasks, executable environments, verification and Agent/verifier training |
+| verl | Training, rollout and model resource coordination |
+| pVisor | Jobs, stages, trajectories, replay and VM checkpoint/fork; not a training algorithm |
+
+Sources: [OpenHands](https://docs.openhands.dev/openhands/usage/sandboxes/docker), [SWE-Gym](https://github.com/SWE-Gym/SWE-Gym), [verl](https://verl.readthedocs.io/en/latest/).
+
+Tables identify pinned artifacts and measurement dates. Failed or invalid samples are excluded from successful timings and counted separately. Existing measurements have no predefined host-interference filter; all slow valid samples are retained. P95 from 30 or fewer samples is descriptive only; no P99 or stable tail-latency claim is made.","These are local pVisor supporting measurements; linked topics provide counts, pinned artifacts and dates. Complete training throughput and valid-sample cost for OpenHands, SWE-Gym and verl are unmeasured, without a speed ranking.",[Concurrency density](density.md),Evidence,Idle-environment probes
+compare-rl-infra.md,Data and analysis {#results},"This chapter measures local execution and replay contracts, not complete SWE-Gym/verl training comparisons or success rates across papers. Official projects describe responsibilities; unaccepted dedicated integrations are not claimed compatible.
+
+| Tool | Responsibility and scope |
+|---|---|
+| OpenHands runtime | Agent tool environments; Docker sandbox can mount local repositories |
+| SWE-Gym | Repository tasks, executable environments, verification and Agent/verifier training |
+| verl | Training, rollout and model resource coordination |
+| pVisor | Jobs, stages, trajectories, replay and VM checkpoint/fork; not a training algorithm |
+
+Sources: [OpenHands](https://docs.openhands.dev/openhands/usage/sandboxes/docker), [SWE-Gym](https://github.com/SWE-Gym/SWE-Gym), [verl](https://verl.readthedocs.io/en/latest/).
+
+Tables identify pinned artifacts and measurement dates. Failed or invalid samples are excluded from successful timings and counted separately. Existing measurements have no predefined host-interference filter; all slow valid samples are retained. P95 from 30 or fewer samples is descriptive only; no P99 or stable tail-latency claim is made.","These are local pVisor supporting measurements; linked topics provide counts, pinned artifacts and dates. Complete training throughput and valid-sample cost for OpenHands, SWE-Gym and verl are unmeasured, without a speed ranking.",[Concurrency density](density.md),Supported use,"Baseline occupancy, not effective rollout throughput"

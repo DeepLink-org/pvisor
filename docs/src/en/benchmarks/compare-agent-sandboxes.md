@@ -35,8 +35,24 @@ Tables identify pinned artifacts and measurement dates. Failed or invalid sample
 
 ### Measured CLI loops {#reference-comparison}
 
+Pinned clients in one tool environment; P50 seconds, N=30 and 3 warmups per available cell, 2026-10-04. This does not compare default built-in sandboxes.
+
+| Execution environment | Claude tool loop | Codex tool loop |
+|---|---:|---:|
+| Native | 0.82 | 1.97 |
+| pVisor host staged | 1.07 | 2.25 |
+| pVisor VM | FAILED / N=0 | 10.93 |
+| Docker rootless | 1.23 | 6.26 |
+| Firecracker PCI | 3.03 | 7.83 |
+| QEMU q35 | 2.67 | 7.69 |
+| QEMU microvm | 2.71 | 7.67 |
+
 Claude passes 30/30 on native/staged/Docker/reference VMs; pVisor VM initialization exceeds 90 s, formal N=0. Codex passes 30/30 across all eight groups. Fixed responses exclude inference; results establish only the specific tool paths and versions.
 
 Staging supports review before application: apply/drop paths selectively, rejecting conflicts when the host changes the same file. Built-in sandboxes can also use Git/worktrees for review without pVisor's protocol. Standalone stage does not automatically restrict outside-view host access.
 
 [Task data and compatibility](agent-tasks.md#reference-env) · [Apply costs](apply.md) · [Executor boundaries](../guides/executors/index.md)
+
+### Downloads and reproduction {#run}
+
+[Derived table CSV](compare-agent-sandboxes.csv) · [Evidence source summary](evidence-sources.csv) · [Comparison method](methodology.md) · [Runner manual](https://github.com/DeepLink-org/pvisor/blob/main/benchmark/pvisor/README.md)

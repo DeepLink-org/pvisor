@@ -526,24 +526,7 @@ macOS/HVF 的回收数据见本页[共享冷页结果](#matrix)。本轮 Linux �
 
 ### Linux/KVM：复现与原始证据 {#linux-evidence}
 
-```bash
-just test pvisor pvisor-core pvisor-overlayfs pvisor-overlay-core
-just test-py
-just vm-cases
-cargo build --release --locked -p pvisor --bin pvisor --example vm_lifecycle_bench
-
-target/release/examples/vm_lifecycle_bench \
-  --rootfs / --firmware /path/to/libkrunfw-directory \
-  --output target/vm-lifecycle-new --memory 256 --cpus 2 \
-  --samples 30 --warmups 3 --long-pause-seconds 60
-# Add --compressed to measure FUSE-backed RAM compression.
-
-rustc --target x86_64-unknown-linux-musl -C opt-level=2 \
-  benchmark/pvisor/snapshot_guest.rs -o /tmp/snapshot-guest
-python3 benchmark/pvisor/vm_snapshot.py \
-  --output target/vm-snapshot-new --binary /path/to/archived/pvisor-with-snapshot \
-  --guest /tmp/snapshot-guest --samples 10 --warmups 2
-```
+独立 snapshot CLI 的 runner 已清理；固定制品的原始记录保存在本地 `.data/`，不再提供当前版本的复现命令。
 
 传入已准备好的 guest rootfs 与 firmware 目录。完整快照 benchmark 的 output 必须是新目录，脚本复制 CLI 固定制品身份；每次保留私有 store、独立日志和正确性结果。源码/制品准备及编译时间不计入采样。
 

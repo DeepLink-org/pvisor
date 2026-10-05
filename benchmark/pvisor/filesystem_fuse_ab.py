@@ -1,7 +1,7 @@
 #!/usr/bin/env python3
 """Matched host native / direct / passthrough FUSE / staged comparison.
 
-Benchmark: B-FS-ENG (benchmark/README.md#b-fs-eng), role diagnostic.
+Benchmark: B-FS-DIAG (benchmark/README.md#b-fs-diag), role diagnostic.
 Motivation: separate FUSE transport cost from staging semantics cost.
 Conclusion sought: how much of the staged-to-native gap is transport and how
 much is OverlayCore, persistence and content fingerprints.

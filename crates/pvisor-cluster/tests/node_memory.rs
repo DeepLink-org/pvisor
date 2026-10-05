@@ -10,7 +10,6 @@ use pvisor_core::{
 
 fn registration() -> WorkerRegistration {
     WorkerRegistration {
-        checkpoint_storage: None,
         artifact_export: None,
         gateway: None,
         cpu_observation_protocol: None,

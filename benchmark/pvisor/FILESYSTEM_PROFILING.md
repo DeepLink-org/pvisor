@@ -330,12 +330,12 @@ Rust `File::sync_all` uses `F_FULLFSYNC` on Apple. Owned-tree copy now fsyncs ea
 
 ### Real stage VM gate
 
-`vm_stage_snapshot.py` uses `snapshot_guest.rs` with a base marker `/stage-file-count`. The guest creates small files in the writable stage and checks their contents after restore. Run with eager raw RAM to isolate this gate from FUSE availability. Heartbeat must differ from the sealed value; full guest check and host fork write-isolation checks are separate. Report forks by index, since two restores within one trial are correlated. See [the native HVF evidence](../../review_project/05-strategy/vm-performance-design/filesystem-stage-vm.md).
+the archived stage-snapshot harness uses its archived guest source with a base marker `/stage-file-count`. The guest creates small files in the writable stage and checks their contents after restore. Run with eager raw RAM to isolate this gate from FUSE availability. Heartbeat must differ from the sealed value; full guest check and host fork write-isolation checks are separate. Report forks by index, since two restores within one trial are correlated. See [the native HVF evidence](../../review_project/05-strategy/vm-performance-design/filesystem-stage-vm.md).
 
 
 ### Journal ordering diagnosis
 
-`vm_stage_snapshot.py --diagnostic-profile` explicitly marks instrumentation and preserves opt-in records. `journal_order` includes the macOS ordering barrier or unsupported-capability full-sync fallback; `journal_fsync` remains the final durable directory boundary. Use last cumulative checkpoints and retain failed trials separately from successful rechecks. [The implementation and unresolved startup failure](../../review_project/05-strategy/vm-performance-design/filesystem-journal-order.md) include exact scopes; later success does not erase an exit-125 trial.
+The archived stage-snapshot diagnostic explicitly marks instrumentation and preserves opt-in records. `journal_order` includes the macOS ordering barrier or unsupported-capability full-sync fallback; `journal_fsync` remains the final durable directory boundary. Use last cumulative checkpoints and retain failed trials separately from successful rechecks. [The implementation and unresolved startup failure](../../review_project/05-strategy/vm-performance-design/filesystem-journal-order.md) include exact scopes; later success does not erase an exit-125 trial.
 
 ## Real-tool paired cases on Apple Silicon
 

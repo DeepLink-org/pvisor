@@ -258,17 +258,7 @@ pub(super) fn write_synced(path: &Path, bytes: &[u8]) -> anyhow::Result<()> {
     Ok(())
 }
 
-fn validate_environment(
-    path: &Path,
-    id: &str,
-    expected: &Compatibility,
-    lazy: bool,
-    pool: &Path,
-) -> anyhow::Result<(EnvironmentManifest, Vec<super::SharedFilesystemLayer>)> {
-    let (manifest, layers, _) =
-        validate_environment_checked(path, id, expected, lazy, pool, false)?;
-    Ok((manifest, layers))
-}
+
 
 fn read_environment_manifest(
     path: &Path,
@@ -709,90 +699,11 @@ impl Drop for PendingEnvironment {
 }
 
 impl PendingEnvironment {
-    #[cfg(target_os = "linux")]
-    pub(super) fn import_filesystem_blocks(
-        &self,
-        manifest: &EnvironmentManifest,
-    ) -> anyhow::Result<()> {
-        if let Some(expected) = &manifest.filesystem_blocks {
-            let source = self.staging.path().join("rootfs");
-            let captured = super::FilesystemBlocks::capture(
-                &self.filesystem_pool,
-                &source,
-                &manifest.filesystem,
-                &self.staging.path().join("filesystem-blocks"),
-            )?;
-            ensure!(
-                &captured == expected,
-                "imported private filesystem block inventory mismatch"
-            );
-            super::layers::remove_private_tree(&source)?;
-        }
-        Ok(())
-    }
-    #[cfg(target_os = "linux")]
-    pub(super) fn import_filesystem_layers(
-        &self,
-        layers: &[FilesystemLayer],
-    ) -> anyhow::Result<()> {
-        if layers.is_empty() {
-            return Ok(());
-        }
-        let references = self.staging.path().join("filesystem-references");
-        fs::create_dir(&references)?;
-        fs::set_permissions(
-            self.staging.path().join("rootfs"),
-            fs::Permissions::from_mode(0o700),
-        )?;
-        for layer in layers {
-            let source = self
-                .staging
-                .path()
-                .join("rootfs")
-                .join(std::ffi::OsStr::from_bytes(&layer.path));
-            let owner =
-                super::filesystems::adopt(&self.filesystem_pool, &source, layer, &references)?;
-            drop(owner);
-            if source.try_exists()? {
-                super::layers::remove_private_tree(&source)?;
-            }
-        }
-        Ok(())
-    }
-    #[cfg(target_os = "linux")]
-    pub(super) fn share_imported_ram(&self, blocks: &RamBlocks) -> anyhow::Result<()> {
-        blocks.share_imported(&self.store, &self.staging.path().join("ram-blocks"))
-    }
 
-    #[cfg(target_os = "linux")]
-    pub(super) fn commit_import(&self, id: &str, expected: &Compatibility) -> anyhow::Result<()> {
-        valid_id(id)?;
-        validate_environment(
-            self.staging.path(),
-            id,
-            expected,
-            false,
-            &self.filesystem_pool,
-        )?;
-        File::open(self.staging.path())?.sync_all()?;
-        let _publishing = gate(&self.store, true)?;
-        let destination = self.store.join("objects").join(id);
-        match fs::symlink_metadata(&destination) {
-            Ok(metadata) => {
-                ensure!(metadata.is_dir(), "invalid existing environment object");
-                validate_environment(&destination, id, expected, false, &self.filesystem_pool)?;
-            }
-            Err(error) if error.kind() == std::io::ErrorKind::NotFound => {
-                fs::remove_file(self.staging.path().join("writer.lock"))?;
-                // Exclusive publication gate excludes another publisher/collector.
-                fs::rename(self.staging.path(), &destination)?;
-            }
-            Err(error) => return Err(error.into()),
-        }
-        File::open(self.store.join("objects"))?.sync_all()?;
-        File::open(self.store.join("pending"))?.sync_all()?;
-        Ok(())
-    }
+
+
+
+
     pub(crate) fn directory(&self) -> &Path {
         self.staging.path()
     }
@@ -1209,7 +1120,7 @@ impl PendingEnvironment {
                 retained.push(owner);
                 filesystem_layers.push(layer);
             }
-            super::transfer::restore_metadata(&destination, &root)?;
+            super::linux::restore_metadata(&destination, &root)?;
             File::open(&destination)?.sync_all()?;
             filesystem = super::inventory(&destination)?;
             super::layers::complete_inventory(&filesystem, &filesystem_layers)?;
@@ -1448,6 +1359,7 @@ impl PublishedEnvironment {
             .transpose()
     }
     #[cfg(target_os = "linux")]
+    #[cfg(test)]
     pub(super) fn directory(&self) -> &Path {
         &self.path
     }
@@ -1522,7 +1434,7 @@ impl PublishedEnvironment {
                         &destination.join(std::ffi::OsStr::from_bytes(&layer.path)),
                     )?;
                 }
-                super::transfer::restore_metadata(
+                super::linux::restore_metadata(
                     destination,
                     &self.manifest.filesystem.entries[0],
                 )?;
@@ -1703,30 +1615,7 @@ impl PublishedEnvironment {
         Ok(self.path.join("rootfs").join(path))
     }
 
-    #[cfg(target_os = "linux")]
-    pub(super) fn verify_filesystems(&self) -> anyhow::Result<()> {
-        if let Some(blocks) = &self.manifest.filesystem_blocks {
-            ensure!(
-                !self.path.join("rootfs").try_exists()?,
-                "packed filesystem cannot retain private tree data"
-            );
-            blocks.verify(
-                &self.path.join("filesystem-blocks"),
-                &self.manifest.filesystem,
-            )?;
-        } else {
-            verify_tree(&self.path.join("rootfs"), &self.manifest.filesystem)?;
-        }
-        for layer in &self.manifest.filesystem_layers {
-            let owner = self
-                ._layers
-                .iter()
-                .find(|owner| owner.id == layer.id)
-                .context("missing immutable layer owner")?;
-            verify_tree(owner.root(), &layer.filesystem)?;
-        }
-        Ok(())
-    }
+
 
     fn layer(&self, relative: &Path) -> anyhow::Result<(PathBuf, TreeInventory)> {
         use super::{TreeEntry, TreeObject};

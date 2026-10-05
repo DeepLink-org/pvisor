@@ -49,14 +49,17 @@ def write_csv(path, rows):
         writer.writerows(rows)
 
 
-def publish(report_path, output):
+def publish(report_path, output, modes=None):
     report = json.loads(report_path.read_text())
     output.mkdir(parents=True, exist_ok=True)
     rows = report['rows']
     if any(row.get('correctness') != 'passed' for row in rows):
         raise ValueError('incorrect rows cannot be published')
     records = []
-    for mode in report['arguments']['modes'].split(','):
+    selected_modes = modes or report['arguments']['modes'].split(',')
+    if set(selected_modes) - set(report['arguments']['modes'].split(',')):
+        raise ValueError('requested workload absent from report')
+    for mode in selected_modes:
         for backend in report['arguments']['backends'].split(','):
             selected = [r for r in rows if r['mode'] == mode and r['backend'] == backend]
             capability = report['capabilities'][f'{mode}/{backend}']
@@ -79,10 +82,10 @@ def publish(report_path, output):
     write_csv(output/'runtime-summary.csv', records)
     provenance = [{'field':key,'value':str(report.get(key,''))} for key in
                   ['recorded_at','source_commit','pvisor_sha256','kernel_sha256','bzimage_sha256',
-                   'driver_sha256','workload_sha256','host_kernel','docker_version','firecracker_version','qemu-system-x86_64_version']]
+                   'driver_sha256','workload_sha256','host_kernel','host_cpu_model','docker_storage_driver','docker_version','firecracker_version','qemu-system-x86_64_version']]
     provenance += [{'field':'report_sha256','value':hashlib.sha256(report_path.read_bytes()).hexdigest()},
-                   {'field':'raw_location','value':str(report_path)},
-                   {'field':'arguments','value':json.dumps(report['arguments'],sort_keys=True)},
+                   {'field':'raw_location','value':'benchmark/.data/'+report_path.parent.name+'/'+report_path.name},
+                   {'field':'arguments','value':json.dumps({k:report['arguments'][k] for k in ['modes','backends','samples','warmups','memory_mib','cpu_affinity','seed','host_isolation','staged_isolation'] if k in report['arguments']},sort_keys=True)},
                    {'field':'statistics','value':'batches separate; P95 descriptive at N>=30; no P99; separated clusters replace P50'},
                    {'field':'split_rule','value':'both clusters >=max(5,10% N); largest gap >=20% median and >3x median adjacent gap; cluster medians >=1.5x'}]
     write_csv(output/'runtime-provenance.csv', provenance)
@@ -105,12 +108,42 @@ def write_derived_summary(path, summary):
     if rows:write_csv(path,rows)
 
 
+def publish_markdown_tables(source, output):
+    """Derived, reviewable table cells, not a second raw-report format."""
+    rows=[]
+    heading=''
+    context=''
+    text=source.read_text()
+    design=text.split('{#interpretation}',1)[-1].split('\n## ',1)[0].strip()
+    lines=text.splitlines()
+    i=0
+    while i<len(lines):
+        line=lines[i]
+        if line.startswith('#'):heading=line.lstrip('#').strip()
+        if (line.startswith('|') and i+1<len(lines)
+                and lines[i+1].startswith('|---')):
+            columns=[v.strip() for v in line.strip('|').split('|')]
+            i+=2
+            while i<len(lines) and lines[i].startswith('|'):
+                cells=[v.strip() for v in lines[i].strip('|').split('|')]
+                if len(cells)!=len(columns):raise ValueError(f'inconsistent table in {source}')
+                for label,value in zip(columns[1:],cells[1:]):
+                    rows.append(dict(source_document=source.name,section=heading,source_conditions=design,table_context=context,row=cells[0],metric=label,value=value))
+                i+=1
+            continue
+        if line.strip() and not line.startswith(('|','#')):context=line.strip()
+        i+=1
+    if not rows:raise ValueError(f'no derived tables in {source}')
+    write_csv(output,rows)
+
+
 def main():
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument('--report',type=Path,required=True)
     parser.add_argument('--output',type=Path,required=True)
+    parser.add_argument('--modes',help='publish only these complete independent workloads')
     args=parser.parse_args()
-    publish(args.report,args.output)
+    publish(args.report,args.output,args.modes.split(',') if args.modes else None)
 
 
 if __name__=='__main__':

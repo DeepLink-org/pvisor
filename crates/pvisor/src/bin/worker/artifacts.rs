@@ -373,7 +373,6 @@ fn prepare(
     result: &pvisor_core::RunResult,
     retention: Option<&ArtifactRetention>,
     journal: Option<&pvisor::trace::Journal>,
-    repository: Option<&checkpoints::Repository>,
     filesystem_pool: Option<&Path>,
 ) -> anyhow::Result<ArtifactManifest> {
     let names = retention.map_or_else(|| vec!["run-bundle.json"], ArtifactRetention::filenames);
@@ -433,16 +432,6 @@ fn prepare(
                 archive_upper(storage, &bundle, &staging.join("workspace-upper.tar"))?;
             }
         }
-        if let Some(requirement) =
-            retention.and_then(|retention| retention.execution_checkpoint.as_ref())
-        {
-            let publication = repository
-                .context("worker checkpoint repository is disabled")?
-                .publish(storage, result, requirement)?;
-            let output = create(&staging.join("execution-checkpoint.json"))?;
-            serde_json::to_writer(&output, &publication)?;
-            seal(output)?;
-        }
         let manifest = ArtifactManifest {
             version: CLUSTER_VERSION,
             key: key.clone(),
@@ -473,33 +462,19 @@ pub(super) async fn seal_attempt(
     storage: &Path,
     retention: Option<ArtifactRetention>,
     journal: Option<pvisor::trace::Journal>,
-    repository: Option<Arc<checkpoints::Repository>>,
     filesystem_pool: Option<PathBuf>,
 ) -> anyhow::Result<ArtifactManifest> {
-    let permit = if retention
-        .as_ref()
-        .is_some_and(|retention| retention.execution_checkpoint.is_some())
-    {
-        match &repository {
-            Some(repository) => Some(repository.permit().await?),
-            None => None,
-        }
-    } else {
-        None
-    };
     tokio::task::spawn_blocking({
         let storage = storage.to_owned();
         let key = key.clone();
         let result = result.clone();
         move || {
-            let _permit = permit;
             prepare(
                 &storage,
                 &key,
                 &result,
                 retention.as_ref(),
                 journal.as_ref(),
-                repository.as_deref(),
                 filesystem_pool.as_deref(),
             )
         }

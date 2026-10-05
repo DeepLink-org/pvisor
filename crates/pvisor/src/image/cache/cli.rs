@@ -28,7 +28,7 @@ pub struct CacheArgs {
 
 #[derive(Debug, Subcommand)]
 enum CacheCommand {
-    /// Serve cached OCI files (foreground; Unix socket by default).
+    /// Serve immutable image revisions (foreground; Unix socket by default).
     Serve {
         /// unix:///absolute/path or tcp://127.0.0.1:PORT. Defaults to CACHE_SERVER.
         #[arg(long)]
@@ -53,7 +53,7 @@ enum CacheCommand {
     },
     /// List one directory page. Paths are relative to the image root.
     List {
-        /// image_handle from prepare/publish (or a server manifest digest).
+        /// Immutable image_handle from prepare/publish.
         digest: String,
         path: Option<PathBuf>,
         #[arg(long, default_value_t = 0)]
@@ -61,7 +61,7 @@ enum CacheCommand {
     },
     /// Show file attributes without following symlinks.
     Stat {
-        /// image_handle from prepare/publish (or a server manifest digest).
+        /// Immutable image_handle from prepare/publish.
         digest: String,
         path: PathBuf,
     },

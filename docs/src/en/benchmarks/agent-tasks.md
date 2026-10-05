@@ -2,61 +2,73 @@
 
 ## Main conclusions {#conclusions}
 
-**pVisor staged short tool tasks are near native and beat Docker in the measured complete repair; VM tool execution is slower than Docker and minimal reference VMs.** Same-tool repair/test P50 is staged **0.70 s**, native **0.50 s**, Docker **0.90 s**, VM **3.97 s**, and QEMU microvm **1.85 s**. Staging/review adds hundreds of milliseconds here.
-
-Image-free VMs return short tasks sooner than new complete Ubuntu environments, but their tools run more slowly once started. **Controlled Codex loops pass; Claude initialization times out in pVisor VM.** Client compatibility also matters.
+**Rootless host/staged provide shorter repair/test waiting than the measured pVisor VM. Fast VM boot does not remove tool cost. Pinned CLI tests pass controlled Codex loops, while Claude initialization fails in the measured pVisor VM configuration.**
 
 | Need | Selection implication |
 |---|---|
-| Trusted tasks needing staged review | Evaluate host staged |
-| Independent guest kernel | Allow VM tool execution time |
-| Claude Code in a VM | Check the specific version first |
+| Local tools and retained edits | Evaluate rootless host/staged |
+| Independent guest kernel | Budget complete VM tool time |
+| Existing container/Git workflow | Compare costs and required review semantics |
 
 ## Motivation {#motivation}
 
-Bare startup time does not describe an Agent editing files, installing dependencies and testing. Fixed tool plans and model responses isolate environment overhead and CLI functionality before considering model quality and variance.
+An Agent edits files and runs tests after startup. Fixed repair plans isolate environment cost; real client loops separately check compatibility before real-model variance.
 
 ## Experiment design {#interpretation}
 
-Real Claude Code 2.1.128 / Codex CLI 0.160.0 use local controlled responses and fake credentials, without inference. Tasks inspect/search a repository, repair Python, run Python/Rust/Node tests, install 32 offline npm packages and generate a diff. Actual passing tests must return to the model service; clients must finish and staged originals remain unchanged.
+Shared Linux/x86_64 host, AMD Ryzen 7 9700X, Fedora kernel 7.2.8-200.fc44.x86_64. Launch trees and the private Docker daemon are pinned to host CPUs 0,1; guests have 2 vCPU. Host/staged use rootless_process. Shell VMs use 128 MiB; tool VMs use 16 GiB. Native/Docker memory is not capped: this controls CPU and configured guest RAM, not identical resource enforcement. Tools and inputs are prepared; each run gets a fresh workspace, warm caches, three warmups and 60 measured trials, with seeded randomized backend order. Builds, downloads and input copying are excluded.
 
-Linux same-tool cells have three warmups and 30 samples; complete Ubuntu cells have N=10 and three warmups. Both use two cores, 2 vCPU / 16 GiB VMs and warm host caches. Complete Ubuntu changes tool versions and storage paths; tables remain separate. Task timing ends at verified results and excludes preparation; worker covers internal tools/checks. Codex uses inner `danger-full-access`, without validating default nested sandboxes. Matching macOS and real-model tasks are unmeasured.
+Docker Engine 29.7.2 uses a private rootless VFS daemon and writable bind mounts. This does not represent overlay2 or Docker Desktop. Firecracker 1.13.1 PCI runs without jailer; QEMU 10.2.2 uses q35/microvm with private ext4. pVisor VM uses virtio-fs and a different kernel. Kernel, storage, devices and staging semantics remain configuration differences; these results do not isolate the VMM or FUSE alone.
 
-Tables identify pinned artifacts and measurement dates. Failed or invalid samples are excluded from successful timings and counted separately. Existing measurements have no predefined host-interference filter; all slow valid samples are retained. P95 from 30 or fewer samples is descriptive only; no P99 or stable tail-latency claim is made.
+The plan inspects/searches a repository, fixes Python, runs Python/Rust/Node tests, installs 32 offline npm packages and generates a diff. Result ends at checked returned results; Completion includes process exit. Tests and expected edits must pass. Real-model success, large repositories and persistent-pool throughput are unmeasured.
 
 ## Data and analysis {#results}
 
-### Same-tool environments: native, Docker and minimal VMs {#reference-env}
+### Fixed repair/test plan {#reference-env}
 
-| Backend | Tool self-check P50/P95 s | Repair/tests P50/P95 s | Claude loop P50/P95 s | Codex loop P50/P95 s |
+Measured 2026-10-06, 60/60 valid trials per backend, zero measured failures. Outputs and exits are checked; staged trials additionally check unchanged originals and complete retained edits. All valid slow samples are retained; no timing-based exclusions. P95 is descriptive. Separated clusters show each median and count out of 60 instead of one P50, using the predefined rule in [methodology](methodology.md).
+
+| Backend | Valid / failed | Result P50 s | Completion P50 s | Completion P95 s |
 |---|---|---|---|---|
-| Native | 0.15 / 0.17 | 0.50 / 0.78 | 0.82 / 0.88 | 1.97 / 2.49 |
-| pVisor host | 0.16 / 0.17 | 0.50 / 0.61 | 0.85 / 0.91 | 1.94 / 2.25 |
-| pVisor staged | 0.17 / 0.19 | 0.70 / 1.10 | 1.07 / 1.27 | 2.25 / 2.44 |
-| pVisor VM | 1.40 / 1.52 | 3.97 / 6.79 | FAILED / N=0 | 10.93 / 12.93 |
-| Docker rootless | 0.46 / 0.53 | 0.90 / 1.45 | 1.23 / 1.33 | 6.26 / 6.59 |
-| Firecracker PCI | 1.48 / 1.59 | 2.25 / 3.13 | 3.03 / 3.21 | 7.83 / 8.47 |
-| QEMU q35 | 0.92 / 1.09 | 1.98 / 3.11 | 2.67 / 3.67 | 7.69 / 8.46 |
-| QEMU microvm | 0.85 / 1.07 | 1.85 / 2.48 | 2.71 / 3.29 | 7.67 / 8.34 |
+| Native | 60 / 0 | 0.45 | 0.45 | 0.47 |
+| pVisor host | 60 / 0 | 0.46 | 0.47 | 0.56 |
+| pVisor staged | 60 / 0 | 0.57 | 0.68 | 0.73 |
+| pVisor VM | 60 / 0 | 3.11 | 3.25 | 4.14 |
+| Docker rootless / VFS | 60 / 0 | 4.03 | 5.15 | 6.38 |
+| Firecracker PCI | 60 / 0 | 2.01 | 2.06 | 3.00 |
+| QEMU q35 | 60 / 0 | 1.29 | 1.33 | 1.65 |
+| QEMU microvm | 60 / 0 | 1.23 | 1.27 | 1.77 |
 
-Staged repair finishes about **0.20 s** before Docker, with different change/isolation semantics from Docker's writable bind. VM repair is about **4.4×** Docker; npm installation is a major waiting stage at **1.74 s**. Fast startup does not eliminate tool-path overhead.
+Full completion includes tool execution and exit; Docker VFS creation is included. Individual tools are in [filesystem comparisons](filesystem.md).
 
-Claude passes 30/30 on native, staged, Docker and all three reference VMs, but pVisor VM initialization exceeds 90 s, formal N=0. Codex passes 30/30 across all eight groups. Absolute timings across CLIs do not rank model speed; controlled responses do not establish unchanged real-model success rates.
+### Real CLI compatibility {#cli-compatibility}
 
-### Image-free VMs and complete Ubuntu {#full-ubuntu}
+Independent 2026-10-04 cohorts: Claude Code 2.1.128 / Codex CLI 0.160.0, N=30 successful trials per available cell, three warmups, two cores / 16 GiB. Units: launch-to-result P50 seconds. Local deterministic responses and fake credentials exclude inference. Codex uses `danger-full-access`, not default nested-sandbox behavior.
 
-| Backend | Tool self-check P50/P95 s | Repair/tests P50/P95 s | Claude loop P50/P95 s | Codex loop P50/P95 s |
-|---|---|---|---|---|
-| Native / Fedora | 0.16 / 0.17 | 0.52 / 0.55 | 0.92 / 1.07 | 2.03 / 3.12 |
-| pVisor staged | 0.18 / 0.19 | 0.72 / 0.78 | 1.15 / 1.58 | 2.33 / 2.44 |
-| pVisor VM / host | 1.21 / 1.77 | 4.61 / 5.09 | FAILED / N=0 | 11.39 / 13.73 |
-| Firecracker / Ubuntu | 7.79 / 10.13 | 8.51 / 9.11 | 9.78 / 9.87 | 10.81 / 13.49 |
-| QEMU q35 / Ubuntu | — | 8.12 / 8.23 | 9.50 / 10.78 | 10.20 / 11.63 |
-| QEMU microvm / Ubuntu | — | 10.33 / 10.47 | 11.59 / 14.07 | 13.04 / 14.06 |
+| Backend | Claude loop P50 s | Codex loop P50 s |
+|---|---|---|
+| Native | 0.82 | 1.97 |
+| pVisor host | 0.85 | 1.94 |
+| pVisor staged | 1.07 | 2.25 |
+| pVisor VM | FAILED / N=0 | 10.93 |
+| Docker rootless | 1.23 | 6.26 |
+| Firecracker PCI | 3.03 | 7.83 |
+| QEMU q35 | 2.67 | 7.69 |
+| QEMU microvm | 2.71 | 7.67 |
 
-pVisor VM repair takes **4.61 s** from launch to result versus **8.51 s** for Firecracker/Ubuntu; internal tools alone take **4.02/2.30 s**. Reduced boot waiting helps disposable short tasks; reused environments depend more on tool speed. QEMU rows are separate N=10 cohorts using the same Ubuntu template, without pooled distributions. Reports retain phase timing and memory scope.
+Codex passes all eight groups (30/30 each). Claude passes available groups (30/30), but pVisor VM exceeds the 90 s initialization deadline in preflight and has no formal latency samples. These are version-pinned observations, not claims about every newer client.
 
-### Scope {#acceptance}
+### Complete Ubuntu deployment {#full-ubuntu}
 
-These comparisons use their pinned pVisor artifacts and have not all been rerun alongside current filesystem artifacts. Large repositories, real inference, Internet dependencies, persistent-pool throughput and SWE-bench success rates are unmeasured. [Current filesystem results](filesystem.md) provide the latest local operation timings.
+Independent 2026-10-04, two cores / 16 GiB, N=10 and three warmups. Different OS initialization/tools/storage; P50 launch-to-result seconds, without a pure VMM ranking.
 
+| Deployment | Repair result P50 s |
+|---|---|
+| pVisor VM / host tools | 4.61 |
+| Firecracker / Ubuntu | 8.51 |
+| QEMU q35 / Ubuntu | 8.12 |
+| QEMU microvm / Ubuntu | 10.33 |
+
+### Downloads and reproduction {#run}
+
+[Derived table CSV](agent-tasks.csv) · [Runtime statistics](runtime-summary.csv) · [Sources and artifacts](runtime-provenance.csv) · [Evidence source summary](evidence-sources.csv) · [Method](methodology.md) · [Runner manual](https://github.com/DeepLink-org/pvisor/blob/main/benchmark/pvisor/README.md)

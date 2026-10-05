@@ -26,7 +26,7 @@ impl PortableCache {
             .0)
     }
     #[cfg(test)]
-    pub(super) fn publish(
+    pub(in crate::image::cache) fn publish(
         &self,
         store: &ImageStore,
         image: &PreparedImage,
@@ -82,7 +82,7 @@ impl PortableCache {
         let mut entries = Vec::new();
         let mut pending = vec![Vec::new()];
         while let Some(path) = pending.pop() {
-            let (metadata, _) = super::super::server::handle(
+            let (metadata, _) = super::super::source::handle(
                 store,
                 Request::Stat {
                     digest: image.digest.clone(),
@@ -92,7 +92,7 @@ impl PortableCache {
             if matches!(&metadata,Response::Metadata{kind,..} if kind=="directory") {
                 let mut offset = 0;
                 loop {
-                    let (response, _) = super::super::server::handle(
+                    let (response, _) = super::super::source::handle(
                         store,
                         Request::List {
                             digest: image.digest.clone(),
@@ -166,9 +166,9 @@ impl PortableCache {
                     .checked_add(*size)
                     .context("image size overflow")?;
                 let (parent, name) =
-                    super::super::server::parent(store, &image.digest, &entry.path)?;
+                    super::super::source::parent(store, &image.digest, &entry.path)?;
                 let mut file =
-                    super::super::server::open_child(&parent, OsStr::from_bytes(&name), false)?;
+                    super::super::source::open_child(&parent, OsStr::from_bytes(&name), false)?;
                 let mut hash_file = Sha256::new();
                 let mut remaining = *size;
                 let mut chunks = Vec::new();

@@ -2,7 +2,7 @@
 
 ## Main conclusions {#conclusions}
 
-**In idle probes, all **128 staged jobs complete** with about **1.56 GiB** combined RSS; all **32 minimal-shell VM jobs complete** with about **3.02 GiB**. Podman also completes 128 jobs under the corresponding conditions, with longer launch delays. Some high-concurrency safe and full-tool OCI cases fail. These describe idle occupancy and reliability, not real-Agent throughput or a capacity guarantee.**
+**In idle probes, all 128 staged jobs complete with about 1.56 GiB combined RSS; all 32 minimal-shell VM jobs complete with about 3.02 GiB. Podman also completes 128 jobs under the corresponding conditions, with longer launch delays. Some high-concurrency safe and full-tool OCI cases fail. These describe idle occupancy and reliability, not real-Agent throughput or a capacity guarantee.**
 
 | Need | Selection implication |
 |---|---|
@@ -23,6 +23,8 @@ These results are from Linux/x86_64; matching macOS workloads are unmeasured. Li
 Tables identify pinned artifacts and measurement dates. Failed or invalid samples are excluded from successful timings and counted separately. Existing measurements have no predefined host-interference filter; all slow valid samples are retained. P95 from 30 or fewer samples is descriptive only; no P99 or stable tail-latency claim is made.
 
 ## Data and analysis {#results}
+
+Measured on 2026-10-04; configurations retain separate samples. P50 is the median.
 
 | Environment | Backend | Concurrency | Completed/attempted | Full batches | RSS P50 MiB | CPU P50 ms/job | Job P50/P95 ms |
 |---|---|---|---|---|---|---|---|
@@ -57,7 +59,12 @@ The tools rootfs is about 749 MiB. pVisor OCI copies a private environment per J
 
 Native shell and Podman/crun provide familiar occupancy baselines. Success at concurrency 128 answers whether these idle processes can be maintained together. It does not answer whether 128 tasks using Python, Node, Rust, and Agent CLIs can run together. A 2 vCPU/128 MiB idle VM does not represent the active working set of a complete tool environment.
 
-Single-task latency and actual process-tree RSS for the complete environment are in the [Agent environment comparison](agent-tasks.md#reference-env). The new Docker resource data includes its private daemon's fixed cost; it cannot be ranked directly against these Podman RSS figures, which may omit background processes. Plan concurrency from your task working set, then measure success and completion time. No complete-Agent capacity claim at concurrency 128 is published.
+Single-task latency for the complete environment is in the [Agent environment comparison](agent-tasks.md#reference-env). These Podman RSS scopes may omit background processes and do not establish a total physical-memory ranking. Plan concurrency from your task working set, then measure success and completion time. No complete-Agent capacity claim at concurrency 128 is published.
 
 ### Scope {#acceptance}
 
+Idle occupancy does not establish active tool capacity; process-tree RSS is not total physical memory.
+
+### Downloads and reproduction {#run}
+
+[Derived table CSV](density.csv) · [Evidence source summary](evidence-sources.csv) · [Comparison method](methodology.md) · [Runner manual](https://github.com/DeepLink-org/pvisor/blob/main/benchmark/pvisor/README.md)

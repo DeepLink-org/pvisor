@@ -1,7 +1,7 @@
 #!/usr/bin/env python3
 """Separate host staging, VM workspace staging and VM rootfs OverlayFS costs.
 
-Benchmark: B-FS-ENG (benchmark/README.md#b-fs-eng), role diagnostic.
+Benchmark: B-FS-DIAG (benchmark/README.md#b-fs-diag), role diagnostic.
 Motivation: locate which staging layer contributes VM tool overhead.
 Conclusion sought: cost attributed to host staging, VM workspace staging and
 VM rootfs overlay for the same workloads.

@@ -540,24 +540,7 @@ macOS/HVF reclamation measurements are in this page's [shared cold-page results]
 
 ### Linux/KVM: reproduction and raw evidence {#linux-evidence}
 
-```bash
-just test pvisor pvisor-core pvisor-overlayfs pvisor-overlay-core
-just test-py
-just vm-cases
-cargo build --release --locked -p pvisor --bin pvisor --example vm_lifecycle_bench
-
-target/release/examples/vm_lifecycle_bench \
-  --rootfs / --firmware /path/to/libkrunfw-directory \
-  --output target/vm-lifecycle-new --memory 256 --cpus 2 \
-  --samples 30 --warmups 3 --long-pause-seconds 60
-# Add --compressed to measure FUSE-backed RAM compression.
-
-rustc --target x86_64-unknown-linux-musl -C opt-level=2 \
-  benchmark/pvisor/snapshot_guest.rs -o /tmp/snapshot-guest
-python3 benchmark/pvisor/vm_snapshot.py \
-  --output target/vm-snapshot-new --binary /path/to/archived/pvisor-with-snapshot \
-  --guest /tmp/snapshot-guest --samples 10 --warmups 2
-```
+The standalone snapshot runners are removed. Pinned-artifact records remain in local `.data/`; these are not reproduction commands for current versions.
 
 Supply a prepared guest rootfs and firmware directory. The complete snapshot benchmark requires a new output directory and copies the CLI to pin compatibility identity. It retains each private store, separate logs and correctness result. Source/artifact preparation and compilation are excluded from timings.
 

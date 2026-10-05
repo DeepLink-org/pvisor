@@ -2,46 +2,51 @@
 
 ## Main conclusions {#conclusions}
 
-**pVisor offers inexpensive staging and review workflows and fast local VM startup; execution of file-heavy VM tasks remains its main performance weakness.** Choose by total task time, isolation boundary and how changes reach the original workspace.
+**Evaluate rootless host/staged for local tools and reviewed edits. pVisor VM starts in the lightweight-VM range but file-heavy tasks take longer than the measured Firecracker/QEMU configurations. Choose using complete task waiting, isolation and how edits reach the original directory.**
 
-| User question | pVisor's measured position | Selection implication |
-|---|---|---|
-| [Launch a prepared environment](startup.md#reference-startup) | VM first output about 86 ms; Docker 90 ms, Firecracker 74 ms, QEMU microvm 88 ms | In the same hundred-millisecond range as lightweight VMs and Docker |
-| [Boot a full distribution](startup.md#full-ubuntu) | Image-free VM about 110 ms; Firecracker/QEMU with complete Ubuntu about 5–8 s | Less startup waiting for short tasks; not a ranking of VMMs with identical OS configurations |
-| [Repair and run tests](agent-tasks.md#reference-env) | Staged 0.70 s, Docker 0.90 s; VM 3.97 s, QEMU microvm 1.85 s | Staged fits interactive tool tasks; VM tool execution is slower |
-| [Access files](filesystem.md) | Seven-tool task: staged 1.11 s, VM 4.08 s; Docker 0.97 s, Firecracker 2.37 s, QEMU microvm 1.77 s | Shorter interactive waits with staged; allow more tool time for a VM with its independent guest kernel |
-| [Apply reviewed changes](apply.md) | Ten files about 15 ms, 1,000 about 0.84 s, 100,000 about 5.5 min | Suitable for small interactive submissions; large batches slower than matched Git patch |
-| [Network](network.md) | Local host-proxy request 1.24 ms, native 0.95 ms; VM bulk transfer about 155 MiB/s, native 869 MiB/s | Modest small-request proxy overhead; significant VM bulk-transfer gap |
-| [CLI compatibility](agent-tasks.md) | Controlled Codex tool loop passes; Claude/VM initialization times out | Check the specific client and configuration before choosing the VM |
-
-Numbers belong to each topic's fixed configuration. The filesystem main table compares native, host staged, VM, Docker, Firecracker and both QEMU configurations on development-tool workloads. Samples and percentiles remain separate across configurations; linked reports pin artifacts.
+| Need | Selection implication |
+|---|---|
+| Local tools and retained edits | Evaluate rootless host/staged |
+| Independent guest kernel | Budget complete VM tool time |
+| Existing container/Git workflow | Compare costs and required review semantics |
 
 ## Motivation {#motivation}
 
-Agent costs extend beyond startup. Tools read repositories, install dependencies and run tests; their outputs then need review and application. Containers, VMs, built-in Agent sandboxes and cloud environments offer different boundaries. This chapter helps decide whether pVisor's speed and workflow suit a task.
+Agent costs include tools, dependencies, tests and review beyond startup. Containers, VMs, built-in Agent sandboxes and managed cloud environments offer different boundaries and workflows. These measurements support workload-specific choices.
 
 ## Experiment design {#interpretation}
 
-Measurements separate first useful output, tool execution, complete tasks and cleanup/exit. Inputs and checks are fixed; image and tool preparation are recorded separately. Failed and unmeasured cases do not become zero-latency samples. Linux local references include native execution, Docker/rootless Podman, Firecracker, QEMU and pVisor modes. macOS/HVF startup and memory results are separate. [Methodology](methodology.md) records configurations, sample sizes and evidence identity.
+Shared Linux/x86_64 host, AMD Ryzen 7 9700X, Fedora kernel 7.2.8-200.fc44.x86_64. Launch trees and the private Docker daemon are pinned to host CPUs 0,1; guests have 2 vCPU. Host/staged use rootless_process. Shell VMs use 128 MiB; tool VMs use 16 GiB. Native/Docker memory is not capped: this controls CPU and configured guest RAM, not identical resource enforcement. Tools and inputs are prepared; each run gets a fresh workspace, warm caches, three warmups and 60 measured trials, with seeded randomized backend order. Builds, downloads and input copying are excluded.
 
-Full distributions and minimal VMs answer deployment waiting and prepared-environment costs, respectively. Real CLIs use controlled model responses to exclude inference and Internet variance; they do not establish real-model success rates. Isolation and file-change semantics are also comparison conditions.
+Docker Engine 29.7.2 uses a private rootless VFS daemon and writable bind mounts. This does not represent overlay2 or Docker Desktop. Firecracker 1.13.1 PCI runs without jailer; QEMU 10.2.2 uses q35/microvm with private ext4. pVisor VM uses virtio-fs and a different kernel. Kernel, storage, devices and staging semantics remain configuration differences; these results do not isolate the VMM or FUSE alone.
+
+Each topic defines correctness and timing. Complete Ubuntu, macOS, apply/network and version-pinned CLIs retain separate cohorts and counts. Unmeasured cloud, gVisor/Kata, memory savings and complete RL throughput do not receive numeric rankings.
 
 ## Data and analysis {#results}
 
-### Choose by workload
+### Measured levels
 
-For trusted local tasks needing review, staged is a useful starting point: complete repair fits a subsecond budget near native and costs less than a VM. With an established Docker + worktree/Git review workflow, Docker has the file-access advantage; pVisor's value depends on unified staging, conflict protection and execution records.
+Startup/filesystem: 2026-10-05, repair: 2026-10-06, N=60/backend/workload, failures=0; P50 or separated cluster medians with counts. Apply: 2026-10-04, N=30/10/3 for 10/1,000/100,000 files. Network: 2026-10-04, 30 batches. CLIs: independent pinned versions.
 
-When an independent guest kernel is needed, pVisor VM starts in the lightweight-VM range without booting a full distribution. npm, Git, search and file creation still accumulate substantial costs. For reused environments, prioritize tool time. Cloud scaling, matching gVisor/Kata performance and real RL-training throughput lack measurements, so no numeric ranking is offered.
+| Question | Measured level | Selection implication |
+|---|---|---|
+| [Prepared startup](startup.md) | pVisor VM 99.76 ms; Firecracker 74.74 ms; QEMU microvm 86.60 ms | Lightweight-VM startup range |
+| [Repair through exit](agent-tasks.md) | staged 0.68 s; VM 3.25 s; QEMU microvm 1.27 s | Complete tool waiting matters |
+| [Seven tools through exit](filesystem.md) | staged 1.29 s; VM 6.66 s; Firecracker 2.16 s | VM tool/file costs remain substantial |
+| [Apply](apply.md) | 10: 15.01 ms; 1,000: 836.38 ms; 100,000: 330.40 s | Git patch is faster; semantics differ |
+| [Network](network.md) | host proxy 1.24 ms; native 0.95 ms / local request | Budget VM bulk transfer separately |
+| [Agent CLIs](agent-tasks.md#cli-compatibility) | Pinned Codex passes; Claude/VM initialization timeout | Check the exact client version |
+
+Docker VFS creation is expensive in this configuration, while bind-mount operation times remain useful. These totals do not rank overlay2 or Docker Desktop. Full Ubuntu boot is a different deployment choice. Raw evidence stays local; each topic links derived tables and source summaries.
 
 ### Measurement topics
 
-[VM startup](startup.md) · [Filesystem](filesystem.md) · [Complete Agent tasks](agent-tasks.md) · [Network](network.md) · [Apply/drop](apply.md) · [VM memory and snapshots](vm-memory/index.md) · [Concurrency density](density.md) · [Cluster scaling](cluster-scalability.md) · [Supervision cost](supervision-cost.md) · [Isolation](isolation-tests.md) · [Replay fidelity](replay-fidelity.md)
+[Startup](startup.md) · [Filesystem](filesystem.md) · [Agent tasks](agent-tasks.md) · [Network](network.md) · [Apply/drop](apply.md) · [VM memory](vm-memory/index.md) · [Density](density.md) · [Cluster](cluster-scalability.md) · [Review](supervision-cost.md) · [Isolation](isolation-tests.md) · [Replay](replay-fidelity.md)
 
-### Tool comparisons
+### Existing tool comparisons
 
-[Docker/devcontainer](compare-containers.md) · [Isolation runtimes](compare-runtimes.md) · [Built-in Agent sandboxes](compare-agent-sandboxes.md) · [Cloud sandboxes](compare-cloud-sandboxes.md) · [RL infrastructure](compare-rl-infra.md)
+[Docker/devcontainer](compare-containers.md) · [Firecracker/QEMU/gVisor/Kata](compare-runtimes.md) · [Agent sandboxes](compare-agent-sandboxes.md) · [E2B/Daytona/Modal](compare-cloud-sandboxes.md) · [Agent RL infrastructure](compare-rl-infra.md)
 
-### Evidence and technical analysis
+### Downloads and reproduction {#run}
 
-Each topic links samples and artifact digests. Optimization experiments, historical A/B comparisons and reproduction details are retained in [filesystem analysis](../design/filesystem-performance-analysis.md), [startup analysis](../design/vm-startup-performance-analysis.md), [memory analysis](../design/vm-memory-performance-analysis.md) and [protocol evidence](../design/benchmark-methodology-evidence.md).
+[Derived table CSV](index.csv) · [Runtime statistics](runtime-summary.csv) · [Sources and artifacts](runtime-provenance.csv) · [Evidence source summary](evidence-sources.csv) · [Method](methodology.md) · [Runner manual](https://github.com/DeepLink-org/pvisor/blob/main/benchmark/pvisor/README.md)

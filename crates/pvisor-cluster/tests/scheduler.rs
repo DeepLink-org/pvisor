@@ -42,7 +42,6 @@ fn spec(id: &str) -> TaskSpec {
 }
 fn worker(id: &str, slots: u32) -> WorkerRegistration {
     WorkerRegistration {
-        checkpoint_storage: None,
         artifact_export: None,
         gateway: None,
         cpu_observation_protocol: None,
@@ -1938,7 +1937,6 @@ fn requested_trace_requires_extended_capability_and_a_verified_manifest_with_all
     let mut s = Scheduler::open(&path, config()).unwrap();
     let mut task = spec("extended-export");
     task.retain_artifacts = Some(ArtifactRetention {
-        execution_checkpoint: None,
         version: ARTIFACT_EXPORT_VERSION,
         trace: true,
         workspace_upper: false,
@@ -1963,7 +1961,6 @@ fn requested_trace_requires_extended_capability_and_a_verified_manifest_with_all
     );
     assert_eq!(s.workers()[0].reserved, Resources::default());
     registration.artifact_export = Some(ArtifactExportSupport {
-        execution_checkpoint: false,
         version: ARTIFACT_EXPORT_VERSION,
         trace: true,
         workspace_upper: false,
@@ -2032,19 +2029,16 @@ fn invalid_export_requirements_and_capabilities_never_commit_or_read_host_worksp
     let before = std::fs::metadata(&path).unwrap().len();
     for retention in [
         ArtifactRetention {
-            execution_checkpoint: None,
             version: ARTIFACT_EXPORT_VERSION + 1,
             trace: true,
             workspace_upper: false,
         },
         ArtifactRetention {
-            execution_checkpoint: None,
             version: ARTIFACT_EXPORT_VERSION,
             trace: false,
             workspace_upper: false,
         },
         ArtifactRetention {
-            execution_checkpoint: None,
             version: ARTIFACT_EXPORT_VERSION,
             trace: false,
             workspace_upper: true,
@@ -2062,7 +2056,6 @@ fn invalid_export_requirements_and_capabilities_never_commit_or_read_host_worksp
     assert!(s.submit(task, 0).is_err());
     let mut node = worker("unsupported", 1);
     node.artifact_export = Some(ArtifactExportSupport {
-        execution_checkpoint: false,
         version: ARTIFACT_EXPORT_VERSION,
         trace: true,
         workspace_upper: false,

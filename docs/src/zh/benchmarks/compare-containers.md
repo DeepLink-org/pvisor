@@ -2,9 +2,7 @@
 
 ## 主要结论 {#conclusions}
 
-**Docker bind mount 的文件访问接近原生，优于 pVisor 的暂存路径；pVisor staged 的已测短修复任务则与 Docker 接近且略快。** 同工具环境修复/测试为 staged **0.70 s**、Docker **0.90 s**；pVisor VM 为 **3.97 s**，明显更慢。pVisor 的选型价值是统一保留改动、冲突检查与选择性合入，不能以“全面比 Docker 快”概括。
-
-已有可靠 Docker + worktree/Git 审查流程时，可以继续沿用；需要多个 Agent 或非 Git 目录共用合入协议时，staged 值得评估。
+**已有 Docker + worktree/Git 工作流满足需求时可继续使用。pVisor staged 提供保留改动和选择性合入，但增加文件访问成本。所测 Docker VFS 创建成本不代表 overlay2 或 Docker Desktop。**
 
 | 需求 | 选型含义 |
 |---|---|
@@ -18,33 +16,40 @@
 
 ## 实验设计 {#interpretation}
 
-Linux 同机、两核预算、相同 Python/Node/Rust/Agent 工具与输入；Docker Engine 29.7.2 rootless、镜像和 daemon 已准备，使用 writable bind mount。每格 3 次预热、30 次测量；完整任务包含启动到校验结果，文件操作不含启动。数据使用报告固定的 pVisor 制品，未与当前文件系统集成制品全面重测。Docker Desktop、devcontainer 插件和 overlay2 工作负载未测。
+共享 Linux/x86_64 宿主，AMD Ryzen 7 9700X，Fedora 内核 7.2.8-200.fc44.x86_64。启动进程树及专用 Docker daemon 固定到宿主 CPU 0,1；guest 为 2 vCPU。host/staged 使用 rootless_process。Shell VM 为 128 MiB，工具 VM 为 16 GiB。原生/Docker 不限内存：控制 CPU 与 guest 配置内存，不是相同资源限制的对照。工具与输入已准备，每次新建工作区、热缓存，3 次预热、60 次正式采样；按固定种子随机交错后端。构建、下载及输入复制不计时。
 
-| 配置 | 修改位置与审查方式 |
-|---|---|
-| Docker writable bind mount | 挂载的宿主文件直接变化；可另用独立 worktree |
-| Docker writable layer / volume | 修改在层或卷；通过导出、补丁或提交合入 |
-| devcontainer | 按配置挂载或使用卷，可组合 Git/PR 审查 |
-| pVisor staged | stage 保留改动，apply 前原目录不变；按路径合入及 preimage 冲突检查 |
+Docker Engine 29.7.2 使用专用 rootless VFS daemon 与可写 bind mount，结果不代表 overlay2 或 Docker Desktop。Firecracker 1.13.1 PCI 不使用 jailer；QEMU 10.2.2 分别使用 q35/microvm、私有 ext4。pVisor VM 使用 virtio-fs 和不同内核。内核、存储、设备及暂存语义均有差异，不能把差距单独归因于 VMM 或 FUSE。
 
-Docker 默认 bind 写入宿主的语义见[官方说明](https://docs.docker.com/engine/storage/bind-mounts/)，devcontainer 配置见[开放规范](https://containers.dev/)。
-
-固定制品与测量日期按表注明。失败与校验不通过的样本不计入成功耗时，失败数量单列；既有数据没有事先的宿主干扰剔除规则，所有通过校验的慢样本保留。30 次及更少采样的 P95 仅为观察参考，不给 P99 或稳定尾延迟承诺。
+均使用新建、经校验的 fixture。单项不含启动/退出，完整任务包含二者。devcontainer 插件、overlay2、Docker Desktop 与对等 Git 审查耗时未测。
 
 ## 实验数据和分析 {#results}
 
-### 同工具任务 {#reference-comparison}
+### 本机任务与文件 {#reference-comparison}
 
-| 操作 | pVisor staged P50 | Docker P50 | pVisor VM P50 |
-|---|---:|---:|---:|
-| 修复并测试 | 0.70 s | 0.90 s | 3.97 s |
-| Claude 受控工具闭环 | 1.07 s | 1.23 s | 初始化超时 / N=0 |
-| Codex 受控工具闭环 | 2.25 s | 6.26 s | 10.93 s |
-| 读取并校验 64 MiB | 48.77 ms | 33.24 ms | 89.27 ms |
-| 遍历 2,048 文件 | 180.13 ms | 5.06 ms | 310.54 ms |
+启动/文件系统：2026-10-05；修复：2026-10-06。独立负载各 N=60、失败 0、3 次预热。通常为 P50，分离簇展示中位数与数量；不跨负载合并。
 
-短修复任务 staged 少约 0.20 s；但逐文件操作中，Docker 接近原生，staged 的元数据成本更高。客户端初始化和工具组合会改变总体结果，单项文件速度不能替代完整任务。CLI 使用受控响应，排除模型推理，不是默认内置沙箱对照。
+| Operation | Unit | Native | pVisor staged | Docker rootless / VFS | pVisor VM |
+|---|---|---|---|---|---|
+| 首条输出 | ms | 1.24 | 24.99 | 3380.93 | 99.76 |
+| 修复到退出 | s | 0.45 | 0.68 | 5.15 | 3.25 |
+| 七项工具到退出 | s | 0.51 | 1.29 | 5.68 | 6.66 |
+| 遍历 2,048 文件 | ms | 4.68 | 74.90 | 5.03 | 227.11 |
+| 读校验 64 MiB | ms | 33.28 | 68.85 | 32.48 | 154.80 |
+| 离线 npm 安装 | ms | 190.34 | 263.19 | 273.68 | 1662.23 |
 
-pVisor VM 提供独立 guest kernel，staged host、Docker namespace 和 VM 的边界并不相同。选择要结合[隔离验证](isolation-tests.md)和[apply 成本](apply.md)。当前文件系统数据见[文件系统性能](filesystem.md)，不将其与这里的 Docker 数字混算精确倍数。
+Bind mount 工具访问可以较快，而 VFS 创建较慢。复用容器可摊薄创建成本，一次性环境仍须支付。staged 原文件直到 apply 才修改。
 
-[完整任务与分布](agent-tasks.md#reference-env) · [同工具文件数据](filesystem.md#reference-fs) · [协议与制品](methodology.md#reference-env)
+### 改动工作流
+
+| 配置 | 改动/审查工作流 |
+|---|---|
+| Docker 可写 bind | 直接改宿主文件；可另加独立 worktree |
+| Docker layer / volume | 通过导出、patch 或 commit 合入 |
+| devcontainer | 按配置挂载/volume，配合 Git/PR 审查 |
+| pVisor staged | 保留改动、路径选择、preimage 冲突校验 |
+
+官方 [Docker bind mount 文档](https://docs.docker.com/engine/storage/bind-mounts/)说明默认宿主写入；[devcontainer 规范](https://containers.dev/)说明配置。除工具速度，还应比较[隔离](isolation-tests.md)与[apply](apply.md)。固定版本 [Agent CLI 测试](agent-tasks.md#cli-compatibility)使用受控响应，不排名默认内置 sandbox。
+
+### 数据下载与复现 {#run}
+
+[整理后的表格 CSV](compare-containers.csv) · [运行时统计](runtime-summary.csv) · [来源与制品](runtime-provenance.csv) · [证据来源摘要](evidence-sources.csv) · [比较方法](methodology.md) · [复现手册](https://github.com/DeepLink-org/pvisor/blob/main/benchmark/pvisor/README.md)

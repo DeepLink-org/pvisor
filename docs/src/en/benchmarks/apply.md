@@ -2,7 +2,7 @@
 
 ## Main conclusions {#conclusions}
 
-**Small changes fit interactive review: about **15 ms** for ten files and **0.84 s** for 1,000. Applying 100,000 files takes about **5.5 minutes**, unsuitable for frequent large submissions. Git patch is substantially faster in the same comparison; pVisor adds preimage conflict checks, persistence and recovery.**
+**Small changes fit interactive review: about 15 ms for ten files and 0.84 s for 1,000. Applying 100,000 files takes about 5.5 minutes, unsuitable for frequent large submissions. Git patch is substantially faster in the same comparison; pVisor adds preimage conflict checks, persistence and recovery.**
 
 | Need | Selection implication |
 |---|---|
@@ -16,13 +16,17 @@ Staging must eventually support safe submission: preserve concurrent host edits 
 
 ## Experiment design {#interpretation}
 
-Actual staged tasks overwrite existing text files. Lower content and upper count are verified before timing. Measurements cover only the apply/drop CLI, excluding stage generation and per-file validation. N=30/10 for 10/1,000/100,000 files. One warmup per action for smaller groups, none for 100,000. Three large stages are prepared concurrently; timed operations run sequentially. Conflict changes the first host file and requires refusal with all other targets unchanged.
+Actual staged tasks overwrite existing text files. Lower content and upper count are verified before timing. Measurements cover only the apply/drop CLI, excluding stage generation and per-file validation. N=30/10/3 for 10/1,000/100,000 files. One warmup per action for smaller groups, none for 100,000. Three large stages are prepared concurrently; timed operations run sequentially. Conflict changes the first host file and requires refusal with all other targets unchanged.
 
 These results are from Linux/x86_64; matching macOS workloads are unmeasured. Linked reports pin artifacts, cache conditions and samples.
 
 Tables identify pinned artifacts and measurement dates. Failed or invalid samples are excluded from successful timings and counted separately. Existing measurements have no predefined host-interference filter; all slow valid samples are retained. P95 from 30 or fewer samples is descriptive only; no P99 or stable tail-latency claim is made.
 
 ## Data and analysis {#results}
+
+For 10 files (N=30), the second value is descriptive P95. The 1,000-file (N=10) and 100,000-file (N=3) rows show only P50. Recovery injections (N=3) also show medians only, without tail estimates.
+
+Measured on 2026-10-04; configurations retain separate samples. P50 is the median.
 
 | Files | Operation | N | P50 / P95 ms |
 |---|---|---|---|
@@ -64,7 +68,7 @@ Inject SIGKILL at prepared, target_applied or committed, then rerun and verify t
 
 ### What the Git patch baseline means {#baseline-meaning}
 
-`git apply` on the same inputs is a familiar cost baseline: about 0.73 ms for 10 files and 13.61 ms for 1,000, versus 15 ms and 836 ms for pVisor apply—roughly 21× and 61×. Absolute budgets matter more: tens of milliseconds for a small edit, seconds for a thousand-file merge, and minutes for a hundred thousand files.
+`git apply` on the same inputs is a familiar cost baseline: about 0.73 ms for 10 files and 13.61 ms for 1,000, versus 15 ms and 836 ms for pVisor apply. Absolute budgets matter more: tens of milliseconds for a small edit, seconds for a thousand-file merge, and minutes for a hundred thousand files.
 
 Git patch, copying, and pVisor apply have different workflows. This compares the measured cost of the same text updates, without claiming identical transactions. Consider whether preimage checks, selective merging, and crash recovery are requirements of the workflow. Large batches currently carry a clear performance cost.
 
@@ -72,3 +76,6 @@ Git patch, copying, and pVisor apply have different workflows. This compares the
 
 SIGKILL recovery does not measure power loss, filesystem corruption or lost disk writes. All file types, symlinks and metadata combinations are not covered. Large projects should budget by submission size; ten-file results do not extrapolate to a million files.
 
+### Downloads and reproduction {#run}
+
+[Derived table CSV](apply.csv) · [Evidence source summary](evidence-sources.csv) · [Comparison method](methodology.md) · [Runner manual](https://github.com/DeepLink-org/pvisor/blob/main/benchmark/pvisor/README.md)

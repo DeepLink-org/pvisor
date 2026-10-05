@@ -2,9 +2,7 @@
 
 ## Main conclusions {#conclusions}
 
-**With more Workers and CPU budget, 1–4 lightweight VMs become ready in parallel, with approximately proportional memory growth.** Four VMs have readiness P50 **4.38 s** and combined service cgroup memory about **343 MiB**. This does not establish fixed-budget Agent throughput or a ranking against other cluster tools.
-
-Control-plane counting costs about **0.13–0.29 µs**, while retained history remains expensive: a million records use about **6.39 GiB** process/fixture RSS and **16 s** hot-log replay. Fast queries do not imply unlimited historical-state scaling.
+**Valid-task throughput at a fixed total budget remains unmeasured, with no matching Kubernetes or Ray ranking.** Lightweight VM readiness and retained-history costs provide initial resource context.
 
 | Need | Selection implication |
 |---|---|
@@ -28,29 +26,35 @@ Tables identify pinned artifacts and measurement dates. Failed or invalid sample
 
 ### Lightweight VM readiness and memory {#execution}
 
-| Simultaneously live VMs | Total memory P50 | Per-VM readiness P50 | Observed P95 | Burst launch rate |
-|---|---:|---:|---:|---:|
-| 1 | 92.93 MiB | 3.807 s | 3.893 s | 0.261 guests/s |
-| 2 | 178.00 MiB | 3.789 s | 3.993 s | 0.525 guests/s |
-| 4 | 342.96 MiB | 4.383 s | 4.686 s | 0.901 guests/s |
+2026-10-05, five batches per size; medians. Units are in the headers. Readiness is not a completed tool task.
 
-![VM scaling](../../assets/benchmarks/cluster-scalability-20261005/execution.svg)
+| Simultaneously live VMs | Total memory P50 | Per-VM readiness P50 | Burst launch rate |
+|---|---:|---:|---:|
+| 1 | 92.93 MiB | 3.807 s | 0.261 guests/s |
+| 2 | 178.00 MiB | 3.789 s | 0.525 guests/s |
+| 4 | 342.96 MiB | 4.383 s | 0.901 guests/s |
 
-From one to four VMs, memory is 3.69×, readiness P50 grows 15.1%, and batch rate is 3.45×. These apply only to lightweight probes with increasing resources, not fixed-host capacity, shared-RAM savings or real build/model throughput. Observed ranges are not confidence intervals.
+
+Total resources grow with Worker count. These readiness results do not establish throughput scaling at a fixed budget; matching task-completion comparisons with Kubernetes and Ray remain unmeasured.
 
 ### Retained history: queries, memory and recovery {#controller}
 
-| Retained task records | Indexed counts P50 | Full-scan algorithm reference P50 | Process + ID fixture RSS | Intent/receipt journal | Warm replay |
-|---|---:|---:|---:|---:|---:|
-| 1,000 | 202.83 ns | 0.068 ms | 12.13 MiB | 1.93 MiB | 0.079 s |
-| 10,000 | 286.78 ns | 5.254 ms | 70.59 MiB | 19.33 MiB | 0.388 s |
-| 100,000 | 129.40 ns | 20.789 ms | 658.82 MiB | 193.25 MiB | 1.744 s |
-| 1,000,000 | 169.47 ns | 134.204 ms | 6,540.58 MiB | 1,932.55 MiB | 16.090 s |
+| Retained task records | Indexed counts P50 | Process + ID fixture RSS | Intent/receipt journal | Warm replay |
+|---|---:|---:|---:|---:|
+| 1,000 | 202.83 ns | 12.13 MiB | 1.93 MiB | 0.079 s |
+| 10,000 | 286.78 ns | 70.59 MiB | 19.33 MiB | 0.388 s |
+| 100,000 | 129.40 ns | 658.82 MiB | 193.25 MiB | 1.744 s |
+| 1,000,000 | 169.47 ns | 6,540.58 MiB | 1,932.55 MiB | 16.090 s |
 
-![Controller history costs](../../assets/benchmarks/cluster-scalability-20261005/controller.svg)
 
-The full scan is an algorithm reference over identical data, not old Controller throughput. RSS includes ID fixtures and allocator retention; replay rebuilds control records without cross-host Worker reconciliation. Larger deployments also need bounded history and complete-recovery measurements.
+RSS includes the ID fixture and retained allocator memory. Replay restores control records, excluding cross-host Worker reconciliation. Larger deployments need bounded retention and complete recovery measurements.
 
-### Scope and sources {#limits}
+### Comparison with existing schedulers {#limits}
 
- ·  ·  ·  · [Protocol and reproduction](../design/cluster-performance-analysis.md)
+ · [Protocol and reproduction](../design/cluster-performance-analysis.md)
+
+Kubernetes and Ray are references for actual task scheduling, but matching tasks at a fixed total budget and shared success criteria remain unmeasured. Valid-result scaling still needs measurement; readiness and history costs cannot substitute for it.
+
+### Downloads and reproduction {#run}
+
+[Derived table CSV](cluster-scalability.csv) · [Evidence source summary](evidence-sources.csv) · [Comparison method](methodology.md) · [Runner manual](https://github.com/DeepLink-org/pvisor/blob/main/benchmark/pvisor/README.md)

@@ -188,7 +188,7 @@ impl FilesystemBlocks {
         Ok((inventory, index, stats))
     }
     pub(super) fn validate(&self, tree: &TreeInventory) -> anyhow::Result<()> {
-        super::transfer::validate_tree_metadata(tree)?;
+        super::linux::validate_tree_metadata(tree)?;
         ensure!(
             self.version == 1 && tree.entries.len() <= 65_536,
             "invalid private filesystem inventory"
@@ -240,14 +240,7 @@ impl FilesystemBlocks {
         Ok(())
     }
 
-    pub(super) fn capture(
-        pool: &Path,
-        source: &Path,
-        tree: &TreeInventory,
-        references: &Path,
-    ) -> anyhow::Result<Self> {
-        Self::capture_with_stats(pool, source, tree, references).map(|(index, _)| index)
-    }
+
 
     pub(super) fn capture_with_stats(
         pool: &Path,
@@ -264,7 +257,7 @@ impl FilesystemBlocks {
         references: &Path,
         excluded: &[std::path::PathBuf],
     ) -> anyhow::Result<(Self, CaptureStats)> {
-        super::transfer::validate_tree_metadata(tree)?;
+        super::linux::validate_tree_metadata(tree)?;
         ensure!(
             tree.entries.len() <= 65_536,
             "private filesystem exceeds inventory limit"
@@ -505,7 +498,7 @@ impl FilesystemBlocks {
             }
             for (entry, relative) in selected.iter().rev() {
                 let path = destination.join(OsStr::from_bytes(relative));
-                super::transfer::restore_metadata(&path, entry)?;
+                super::linux::restore_metadata(&path, entry)?;
                 if !matches!(entry.object, TreeObject::Symlink { .. }) {
                     File::open(&path)?.sync_all()?;
                 }

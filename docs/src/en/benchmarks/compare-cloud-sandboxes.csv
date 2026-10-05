@@ -1,0 +1,313 @@
+source_document,section,source_conditions,table_context,row,metric,value
+compare-cloud-sandboxes.md,Main conclusions {#conclusions},"This compares deployment approaches. Performance evidence is local only; no cloud sandbox was created. SDK, region, account, caches, latency and bills are unmeasured. Official sources describe provisioning rather than supplying advertised numbers for rankings.
+
+| Option | Execution/preparation | User workflow |
+|---|---|---|
+| Local pVisor | Host directories or prepared rootfs, stage/apply | Local resources, dependencies and operations |
+| E2B | SDK-operated remote sandboxes, templates and files | Templates, uploads, result return and local application |
+| Daytona | SDK-managed remote development sandboxes | Preparation, synchronization and result application |
+| Modal | SDK-created sandboxes, images and storage | Dependency images, data access and pipeline integration |
+
+Official sources: [E2B](https://docs.e2b.dev/), [Daytona](https://www.daytona.io/docs/en/), [Modal Sandboxes](https://modal.com/docs/guide/sandboxes).
+
+Tables identify pinned artifacts and measurement dates. Failed or invalid samples are excluded from successful timings and counted separately. Existing measurements have no predefined host-interference filter; all slow valid samples are retained. P95 from 30 or fewer samples is descriptive only; no P99 or stable tail-latency claim is made.","**pVisor suits existing local repositories and toolchains; E2B, Daytona and Modal suit remote environment provisioning and managed capacity.** Matching cloud latency and billing data are unavailable, so pVisor cannot be claimed faster or cheaper.",Local repository and tools are ready,Selection implication,Evaluate pVisor local feedback time
+compare-cloud-sandboxes.md,Main conclusions {#conclusions},"This compares deployment approaches. Performance evidence is local only; no cloud sandbox was created. SDK, region, account, caches, latency and bills are unmeasured. Official sources describe provisioning rather than supplying advertised numbers for rankings.
+
+| Option | Execution/preparation | User workflow |
+|---|---|---|
+| Local pVisor | Host directories or prepared rootfs, stage/apply | Local resources, dependencies and operations |
+| E2B | SDK-operated remote sandboxes, templates and files | Templates, uploads, result return and local application |
+| Daytona | SDK-managed remote development sandboxes | Preparation, synchronization and result application |
+| Modal | SDK-created sandboxes, images and storage | Dependency images, data access and pipeline integration |
+
+Official sources: [E2B](https://docs.e2b.dev/), [Daytona](https://www.daytona.io/docs/en/), [Modal Sandboxes](https://modal.com/docs/guide/sandboxes).
+
+Tables identify pinned artifacts and measurement dates. Failed or invalid samples are excluded from successful timings and counted separately. Existing measurements have no predefined host-interference filter; all slow valid samples are retained. P95 from 30 or fewer samples is descriptive only; no P99 or stable tail-latency claim is made.","**pVisor suits existing local repositories and toolchains; E2B, Daytona and Modal suit remote environment provisioning and managed capacity.** Matching cloud latency and billing data are unavailable, so pVisor cannot be claimed faster or cheaper.",Remote environments and managed capacity,Selection implication,"Evaluate E2B, Daytona and Modal"
+compare-cloud-sandboxes.md,Main conclusions {#conclusions},"This compares deployment approaches. Performance evidence is local only; no cloud sandbox was created. SDK, region, account, caches, latency and bills are unmeasured. Official sources describe provisioning rather than supplying advertised numbers for rankings.
+
+| Option | Execution/preparation | User workflow |
+|---|---|---|
+| Local pVisor | Host directories or prepared rootfs, stage/apply | Local resources, dependencies and operations |
+| E2B | SDK-operated remote sandboxes, templates and files | Templates, uploads, result return and local application |
+| Daytona | SDK-managed remote development sandboxes | Preparation, synchronization and result application |
+| Modal | SDK-created sandboxes, images and storage | Dependency images, data access and pipeline integration |
+
+Official sources: [E2B](https://docs.e2b.dev/), [Daytona](https://www.daytona.io/docs/en/), [Modal Sandboxes](https://modal.com/docs/guide/sandboxes).
+
+Tables identify pinned artifacts and measurement dates. Failed or invalid samples are excluded from successful timings and counted separately. Existing measurements have no predefined host-interference filter; all slow valid samples are retained. P95 from 30 or fewer samples is descriptive only; no P99 or stable tail-latency claim is made.","**pVisor suits existing local repositories and toolchains; E2B, Daytona and Modal suit remote environment provisioning and managed capacity.** Matching cloud latency and billing data are unavailable, so pVisor cannot be claimed faster or cheaper.",Compare costs or speed,Selection implication,Requires same-region end-to-end measurements
+compare-cloud-sandboxes.md,Experiment design {#interpretation},"This compares deployment approaches. Performance evidence is local only; no cloud sandbox was created. SDK, region, account, caches, latency and bills are unmeasured. Official sources describe provisioning rather than supplying advertised numbers for rankings.
+
+| Option | Execution/preparation | User workflow |
+|---|---|---|
+| Local pVisor | Host directories or prepared rootfs, stage/apply | Local resources, dependencies and operations |
+| E2B | SDK-operated remote sandboxes, templates and files | Templates, uploads, result return and local application |
+| Daytona | SDK-managed remote development sandboxes | Preparation, synchronization and result application |
+| Modal | SDK-created sandboxes, images and storage | Dependency images, data access and pipeline integration |
+
+Official sources: [E2B](https://docs.e2b.dev/), [Daytona](https://www.daytona.io/docs/en/), [Modal Sandboxes](https://modal.com/docs/guide/sandboxes).
+
+Tables identify pinned artifacts and measurement dates. Failed or invalid samples are excluded from successful timings and counted separately. Existing measurements have no predefined host-interference filter; all slow valid samples are retained. P95 from 30 or fewer samples is descriptive only; no P99 or stable tail-latency claim is made.","This compares deployment approaches. Performance evidence is local only; no cloud sandbox was created. SDK, region, account, caches, latency and bills are unmeasured. Official sources describe provisioning rather than supplying advertised numbers for rankings.",Local pVisor,Execution/preparation,"Host directories or prepared rootfs, stage/apply"
+compare-cloud-sandboxes.md,Experiment design {#interpretation},"This compares deployment approaches. Performance evidence is local only; no cloud sandbox was created. SDK, region, account, caches, latency and bills are unmeasured. Official sources describe provisioning rather than supplying advertised numbers for rankings.
+
+| Option | Execution/preparation | User workflow |
+|---|---|---|
+| Local pVisor | Host directories or prepared rootfs, stage/apply | Local resources, dependencies and operations |
+| E2B | SDK-operated remote sandboxes, templates and files | Templates, uploads, result return and local application |
+| Daytona | SDK-managed remote development sandboxes | Preparation, synchronization and result application |
+| Modal | SDK-created sandboxes, images and storage | Dependency images, data access and pipeline integration |
+
+Official sources: [E2B](https://docs.e2b.dev/), [Daytona](https://www.daytona.io/docs/en/), [Modal Sandboxes](https://modal.com/docs/guide/sandboxes).
+
+Tables identify pinned artifacts and measurement dates. Failed or invalid samples are excluded from successful timings and counted separately. Existing measurements have no predefined host-interference filter; all slow valid samples are retained. P95 from 30 or fewer samples is descriptive only; no P99 or stable tail-latency claim is made.","This compares deployment approaches. Performance evidence is local only; no cloud sandbox was created. SDK, region, account, caches, latency and bills are unmeasured. Official sources describe provisioning rather than supplying advertised numbers for rankings.",Local pVisor,User workflow,"Local resources, dependencies and operations"
+compare-cloud-sandboxes.md,Experiment design {#interpretation},"This compares deployment approaches. Performance evidence is local only; no cloud sandbox was created. SDK, region, account, caches, latency and bills are unmeasured. Official sources describe provisioning rather than supplying advertised numbers for rankings.
+
+| Option | Execution/preparation | User workflow |
+|---|---|---|
+| Local pVisor | Host directories or prepared rootfs, stage/apply | Local resources, dependencies and operations |
+| E2B | SDK-operated remote sandboxes, templates and files | Templates, uploads, result return and local application |
+| Daytona | SDK-managed remote development sandboxes | Preparation, synchronization and result application |
+| Modal | SDK-created sandboxes, images and storage | Dependency images, data access and pipeline integration |
+
+Official sources: [E2B](https://docs.e2b.dev/), [Daytona](https://www.daytona.io/docs/en/), [Modal Sandboxes](https://modal.com/docs/guide/sandboxes).
+
+Tables identify pinned artifacts and measurement dates. Failed or invalid samples are excluded from successful timings and counted separately. Existing measurements have no predefined host-interference filter; all slow valid samples are retained. P95 from 30 or fewer samples is descriptive only; no P99 or stable tail-latency claim is made.","This compares deployment approaches. Performance evidence is local only; no cloud sandbox was created. SDK, region, account, caches, latency and bills are unmeasured. Official sources describe provisioning rather than supplying advertised numbers for rankings.",E2B,Execution/preparation,"SDK-operated remote sandboxes, templates and files"
+compare-cloud-sandboxes.md,Experiment design {#interpretation},"This compares deployment approaches. Performance evidence is local only; no cloud sandbox was created. SDK, region, account, caches, latency and bills are unmeasured. Official sources describe provisioning rather than supplying advertised numbers for rankings.
+
+| Option | Execution/preparation | User workflow |
+|---|---|---|
+| Local pVisor | Host directories or prepared rootfs, stage/apply | Local resources, dependencies and operations |
+| E2B | SDK-operated remote sandboxes, templates and files | Templates, uploads, result return and local application |
+| Daytona | SDK-managed remote development sandboxes | Preparation, synchronization and result application |
+| Modal | SDK-created sandboxes, images and storage | Dependency images, data access and pipeline integration |
+
+Official sources: [E2B](https://docs.e2b.dev/), [Daytona](https://www.daytona.io/docs/en/), [Modal Sandboxes](https://modal.com/docs/guide/sandboxes).
+
+Tables identify pinned artifacts and measurement dates. Failed or invalid samples are excluded from successful timings and counted separately. Existing measurements have no predefined host-interference filter; all slow valid samples are retained. P95 from 30 or fewer samples is descriptive only; no P99 or stable tail-latency claim is made.","This compares deployment approaches. Performance evidence is local only; no cloud sandbox was created. SDK, region, account, caches, latency and bills are unmeasured. Official sources describe provisioning rather than supplying advertised numbers for rankings.",E2B,User workflow,"Templates, uploads, result return and local application"
+compare-cloud-sandboxes.md,Experiment design {#interpretation},"This compares deployment approaches. Performance evidence is local only; no cloud sandbox was created. SDK, region, account, caches, latency and bills are unmeasured. Official sources describe provisioning rather than supplying advertised numbers for rankings.
+
+| Option | Execution/preparation | User workflow |
+|---|---|---|
+| Local pVisor | Host directories or prepared rootfs, stage/apply | Local resources, dependencies and operations |
+| E2B | SDK-operated remote sandboxes, templates and files | Templates, uploads, result return and local application |
+| Daytona | SDK-managed remote development sandboxes | Preparation, synchronization and result application |
+| Modal | SDK-created sandboxes, images and storage | Dependency images, data access and pipeline integration |
+
+Official sources: [E2B](https://docs.e2b.dev/), [Daytona](https://www.daytona.io/docs/en/), [Modal Sandboxes](https://modal.com/docs/guide/sandboxes).
+
+Tables identify pinned artifacts and measurement dates. Failed or invalid samples are excluded from successful timings and counted separately. Existing measurements have no predefined host-interference filter; all slow valid samples are retained. P95 from 30 or fewer samples is descriptive only; no P99 or stable tail-latency claim is made.","This compares deployment approaches. Performance evidence is local only; no cloud sandbox was created. SDK, region, account, caches, latency and bills are unmeasured. Official sources describe provisioning rather than supplying advertised numbers for rankings.",Daytona,Execution/preparation,SDK-managed remote development sandboxes
+compare-cloud-sandboxes.md,Experiment design {#interpretation},"This compares deployment approaches. Performance evidence is local only; no cloud sandbox was created. SDK, region, account, caches, latency and bills are unmeasured. Official sources describe provisioning rather than supplying advertised numbers for rankings.
+
+| Option | Execution/preparation | User workflow |
+|---|---|---|
+| Local pVisor | Host directories or prepared rootfs, stage/apply | Local resources, dependencies and operations |
+| E2B | SDK-operated remote sandboxes, templates and files | Templates, uploads, result return and local application |
+| Daytona | SDK-managed remote development sandboxes | Preparation, synchronization and result application |
+| Modal | SDK-created sandboxes, images and storage | Dependency images, data access and pipeline integration |
+
+Official sources: [E2B](https://docs.e2b.dev/), [Daytona](https://www.daytona.io/docs/en/), [Modal Sandboxes](https://modal.com/docs/guide/sandboxes).
+
+Tables identify pinned artifacts and measurement dates. Failed or invalid samples are excluded from successful timings and counted separately. Existing measurements have no predefined host-interference filter; all slow valid samples are retained. P95 from 30 or fewer samples is descriptive only; no P99 or stable tail-latency claim is made.","This compares deployment approaches. Performance evidence is local only; no cloud sandbox was created. SDK, region, account, caches, latency and bills are unmeasured. Official sources describe provisioning rather than supplying advertised numbers for rankings.",Daytona,User workflow,"Preparation, synchronization and result application"
+compare-cloud-sandboxes.md,Experiment design {#interpretation},"This compares deployment approaches. Performance evidence is local only; no cloud sandbox was created. SDK, region, account, caches, latency and bills are unmeasured. Official sources describe provisioning rather than supplying advertised numbers for rankings.
+
+| Option | Execution/preparation | User workflow |
+|---|---|---|
+| Local pVisor | Host directories or prepared rootfs, stage/apply | Local resources, dependencies and operations |
+| E2B | SDK-operated remote sandboxes, templates and files | Templates, uploads, result return and local application |
+| Daytona | SDK-managed remote development sandboxes | Preparation, synchronization and result application |
+| Modal | SDK-created sandboxes, images and storage | Dependency images, data access and pipeline integration |
+
+Official sources: [E2B](https://docs.e2b.dev/), [Daytona](https://www.daytona.io/docs/en/), [Modal Sandboxes](https://modal.com/docs/guide/sandboxes).
+
+Tables identify pinned artifacts and measurement dates. Failed or invalid samples are excluded from successful timings and counted separately. Existing measurements have no predefined host-interference filter; all slow valid samples are retained. P95 from 30 or fewer samples is descriptive only; no P99 or stable tail-latency claim is made.","This compares deployment approaches. Performance evidence is local only; no cloud sandbox was created. SDK, region, account, caches, latency and bills are unmeasured. Official sources describe provisioning rather than supplying advertised numbers for rankings.",Modal,Execution/preparation,"SDK-created sandboxes, images and storage"
+compare-cloud-sandboxes.md,Experiment design {#interpretation},"This compares deployment approaches. Performance evidence is local only; no cloud sandbox was created. SDK, region, account, caches, latency and bills are unmeasured. Official sources describe provisioning rather than supplying advertised numbers for rankings.
+
+| Option | Execution/preparation | User workflow |
+|---|---|---|
+| Local pVisor | Host directories or prepared rootfs, stage/apply | Local resources, dependencies and operations |
+| E2B | SDK-operated remote sandboxes, templates and files | Templates, uploads, result return and local application |
+| Daytona | SDK-managed remote development sandboxes | Preparation, synchronization and result application |
+| Modal | SDK-created sandboxes, images and storage | Dependency images, data access and pipeline integration |
+
+Official sources: [E2B](https://docs.e2b.dev/), [Daytona](https://www.daytona.io/docs/en/), [Modal Sandboxes](https://modal.com/docs/guide/sandboxes).
+
+Tables identify pinned artifacts and measurement dates. Failed or invalid samples are excluded from successful timings and counted separately. Existing measurements have no predefined host-interference filter; all slow valid samples are retained. P95 from 30 or fewer samples is descriptive only; no P99 or stable tail-latency claim is made.","This compares deployment approaches. Performance evidence is local only; no cloud sandbox was created. SDK, region, account, caches, latency and bills are unmeasured. Official sources describe provisioning rather than supplying advertised numbers for rankings.",Modal,User workflow,"Dependency images, data access and pipeline integration"
+compare-cloud-sandboxes.md,Data and analysis {#results},"This compares deployment approaches. Performance evidence is local only; no cloud sandbox was created. SDK, region, account, caches, latency and bills are unmeasured. Official sources describe provisioning rather than supplying advertised numbers for rankings.
+
+| Option | Execution/preparation | User workflow |
+|---|---|---|
+| Local pVisor | Host directories or prepared rootfs, stage/apply | Local resources, dependencies and operations |
+| E2B | SDK-operated remote sandboxes, templates and files | Templates, uploads, result return and local application |
+| Daytona | SDK-managed remote development sandboxes | Preparation, synchronization and result application |
+| Modal | SDK-created sandboxes, images and storage | Dependency images, data access and pipeline integration |
+
+Official sources: [E2B](https://docs.e2b.dev/), [Daytona](https://www.daytona.io/docs/en/), [Modal Sandboxes](https://modal.com/docs/guide/sandboxes).
+
+Tables identify pinned artifacts and measurement dates. Failed or invalid samples are excluded from successful timings and counted separately. Existing measurements have no predefined host-interference filter; all slow valid samples are retained. P95 from 30 or fewer samples is descriptive only; no P99 or stable tail-latency claim is made.","Local baseline: two cores, 128 MiB shell VMs / 16 GiB repair VMs, prepared tools and warm caches, startup 2026-10-05 / repair 2026-10-06, N=60 and 3 warmups per available cell. Cloud services have no task measurements.",pVisor staged,First output P50 ms,24.99
+compare-cloud-sandboxes.md,Data and analysis {#results},"This compares deployment approaches. Performance evidence is local only; no cloud sandbox was created. SDK, region, account, caches, latency and bills are unmeasured. Official sources describe provisioning rather than supplying advertised numbers for rankings.
+
+| Option | Execution/preparation | User workflow |
+|---|---|---|
+| Local pVisor | Host directories or prepared rootfs, stage/apply | Local resources, dependencies and operations |
+| E2B | SDK-operated remote sandboxes, templates and files | Templates, uploads, result return and local application |
+| Daytona | SDK-managed remote development sandboxes | Preparation, synchronization and result application |
+| Modal | SDK-created sandboxes, images and storage | Dependency images, data access and pipeline integration |
+
+Official sources: [E2B](https://docs.e2b.dev/), [Daytona](https://www.daytona.io/docs/en/), [Modal Sandboxes](https://modal.com/docs/guide/sandboxes).
+
+Tables identify pinned artifacts and measurement dates. Failed or invalid samples are excluded from successful timings and counted separately. Existing measurements have no predefined host-interference filter; all slow valid samples are retained. P95 from 30 or fewer samples is descriptive only; no P99 or stable tail-latency claim is made.","Local baseline: two cores, 128 MiB shell VMs / 16 GiB repair VMs, prepared tools and warm caches, startup 2026-10-05 / repair 2026-10-06, N=60 and 3 warmups per available cell. Cloud services have no task measurements.",pVisor staged,Repair completion P50 s,0.68
+compare-cloud-sandboxes.md,Data and analysis {#results},"This compares deployment approaches. Performance evidence is local only; no cloud sandbox was created. SDK, region, account, caches, latency and bills are unmeasured. Official sources describe provisioning rather than supplying advertised numbers for rankings.
+
+| Option | Execution/preparation | User workflow |
+|---|---|---|
+| Local pVisor | Host directories or prepared rootfs, stage/apply | Local resources, dependencies and operations |
+| E2B | SDK-operated remote sandboxes, templates and files | Templates, uploads, result return and local application |
+| Daytona | SDK-managed remote development sandboxes | Preparation, synchronization and result application |
+| Modal | SDK-created sandboxes, images and storage | Dependency images, data access and pipeline integration |
+
+Official sources: [E2B](https://docs.e2b.dev/), [Daytona](https://www.daytona.io/docs/en/), [Modal Sandboxes](https://modal.com/docs/guide/sandboxes).
+
+Tables identify pinned artifacts and measurement dates. Failed or invalid samples are excluded from successful timings and counted separately. Existing measurements have no predefined host-interference filter; all slow valid samples are retained. P95 from 30 or fewer samples is descriptive only; no P99 or stable tail-latency claim is made.","Local baseline: two cores, 128 MiB shell VMs / 16 GiB repair VMs, prepared tools and warm caches, startup 2026-10-05 / repair 2026-10-06, N=60 and 3 warmups per available cell. Cloud services have no task measurements.",pVisor staged,Evidence status,Local N=60 / failed=0
+compare-cloud-sandboxes.md,Data and analysis {#results},"This compares deployment approaches. Performance evidence is local only; no cloud sandbox was created. SDK, region, account, caches, latency and bills are unmeasured. Official sources describe provisioning rather than supplying advertised numbers for rankings.
+
+| Option | Execution/preparation | User workflow |
+|---|---|---|
+| Local pVisor | Host directories or prepared rootfs, stage/apply | Local resources, dependencies and operations |
+| E2B | SDK-operated remote sandboxes, templates and files | Templates, uploads, result return and local application |
+| Daytona | SDK-managed remote development sandboxes | Preparation, synchronization and result application |
+| Modal | SDK-created sandboxes, images and storage | Dependency images, data access and pipeline integration |
+
+Official sources: [E2B](https://docs.e2b.dev/), [Daytona](https://www.daytona.io/docs/en/), [Modal Sandboxes](https://modal.com/docs/guide/sandboxes).
+
+Tables identify pinned artifacts and measurement dates. Failed or invalid samples are excluded from successful timings and counted separately. Existing measurements have no predefined host-interference filter; all slow valid samples are retained. P95 from 30 or fewer samples is descriptive only; no P99 or stable tail-latency claim is made.","Local baseline: two cores, 128 MiB shell VMs / 16 GiB repair VMs, prepared tools and warm caches, startup 2026-10-05 / repair 2026-10-06, N=60 and 3 warmups per available cell. Cloud services have no task measurements.",pVisor VM,First output P50 ms,99.76
+compare-cloud-sandboxes.md,Data and analysis {#results},"This compares deployment approaches. Performance evidence is local only; no cloud sandbox was created. SDK, region, account, caches, latency and bills are unmeasured. Official sources describe provisioning rather than supplying advertised numbers for rankings.
+
+| Option | Execution/preparation | User workflow |
+|---|---|---|
+| Local pVisor | Host directories or prepared rootfs, stage/apply | Local resources, dependencies and operations |
+| E2B | SDK-operated remote sandboxes, templates and files | Templates, uploads, result return and local application |
+| Daytona | SDK-managed remote development sandboxes | Preparation, synchronization and result application |
+| Modal | SDK-created sandboxes, images and storage | Dependency images, data access and pipeline integration |
+
+Official sources: [E2B](https://docs.e2b.dev/), [Daytona](https://www.daytona.io/docs/en/), [Modal Sandboxes](https://modal.com/docs/guide/sandboxes).
+
+Tables identify pinned artifacts and measurement dates. Failed or invalid samples are excluded from successful timings and counted separately. Existing measurements have no predefined host-interference filter; all slow valid samples are retained. P95 from 30 or fewer samples is descriptive only; no P99 or stable tail-latency claim is made.","Local baseline: two cores, 128 MiB shell VMs / 16 GiB repair VMs, prepared tools and warm caches, startup 2026-10-05 / repair 2026-10-06, N=60 and 3 warmups per available cell. Cloud services have no task measurements.",pVisor VM,Repair completion P50 s,3.25
+compare-cloud-sandboxes.md,Data and analysis {#results},"This compares deployment approaches. Performance evidence is local only; no cloud sandbox was created. SDK, region, account, caches, latency and bills are unmeasured. Official sources describe provisioning rather than supplying advertised numbers for rankings.
+
+| Option | Execution/preparation | User workflow |
+|---|---|---|
+| Local pVisor | Host directories or prepared rootfs, stage/apply | Local resources, dependencies and operations |
+| E2B | SDK-operated remote sandboxes, templates and files | Templates, uploads, result return and local application |
+| Daytona | SDK-managed remote development sandboxes | Preparation, synchronization and result application |
+| Modal | SDK-created sandboxes, images and storage | Dependency images, data access and pipeline integration |
+
+Official sources: [E2B](https://docs.e2b.dev/), [Daytona](https://www.daytona.io/docs/en/), [Modal Sandboxes](https://modal.com/docs/guide/sandboxes).
+
+Tables identify pinned artifacts and measurement dates. Failed or invalid samples are excluded from successful timings and counted separately. Existing measurements have no predefined host-interference filter; all slow valid samples are retained. P95 from 30 or fewer samples is descriptive only; no P99 or stable tail-latency claim is made.","Local baseline: two cores, 128 MiB shell VMs / 16 GiB repair VMs, prepared tools and warm caches, startup 2026-10-05 / repair 2026-10-06, N=60 and 3 warmups per available cell. Cloud services have no task measurements.",pVisor VM,Evidence status,Local N=60 / failed=0
+compare-cloud-sandboxes.md,Data and analysis {#results},"This compares deployment approaches. Performance evidence is local only; no cloud sandbox was created. SDK, region, account, caches, latency and bills are unmeasured. Official sources describe provisioning rather than supplying advertised numbers for rankings.
+
+| Option | Execution/preparation | User workflow |
+|---|---|---|
+| Local pVisor | Host directories or prepared rootfs, stage/apply | Local resources, dependencies and operations |
+| E2B | SDK-operated remote sandboxes, templates and files | Templates, uploads, result return and local application |
+| Daytona | SDK-managed remote development sandboxes | Preparation, synchronization and result application |
+| Modal | SDK-created sandboxes, images and storage | Dependency images, data access and pipeline integration |
+
+Official sources: [E2B](https://docs.e2b.dev/), [Daytona](https://www.daytona.io/docs/en/), [Modal Sandboxes](https://modal.com/docs/guide/sandboxes).
+
+Tables identify pinned artifacts and measurement dates. Failed or invalid samples are excluded from successful timings and counted separately. Existing measurements have no predefined host-interference filter; all slow valid samples are retained. P95 from 30 or fewer samples is descriptive only; no P99 or stable tail-latency claim is made.","Local baseline: two cores, 128 MiB shell VMs / 16 GiB repair VMs, prepared tools and warm caches, startup 2026-10-05 / repair 2026-10-06, N=60 and 3 warmups per available cell. Cloud services have no task measurements.",E2B,First output P50 ms,—
+compare-cloud-sandboxes.md,Data and analysis {#results},"This compares deployment approaches. Performance evidence is local only; no cloud sandbox was created. SDK, region, account, caches, latency and bills are unmeasured. Official sources describe provisioning rather than supplying advertised numbers for rankings.
+
+| Option | Execution/preparation | User workflow |
+|---|---|---|
+| Local pVisor | Host directories or prepared rootfs, stage/apply | Local resources, dependencies and operations |
+| E2B | SDK-operated remote sandboxes, templates and files | Templates, uploads, result return and local application |
+| Daytona | SDK-managed remote development sandboxes | Preparation, synchronization and result application |
+| Modal | SDK-created sandboxes, images and storage | Dependency images, data access and pipeline integration |
+
+Official sources: [E2B](https://docs.e2b.dev/), [Daytona](https://www.daytona.io/docs/en/), [Modal Sandboxes](https://modal.com/docs/guide/sandboxes).
+
+Tables identify pinned artifacts and measurement dates. Failed or invalid samples are excluded from successful timings and counted separately. Existing measurements have no predefined host-interference filter; all slow valid samples are retained. P95 from 30 or fewer samples is descriptive only; no P99 or stable tail-latency claim is made.","Local baseline: two cores, 128 MiB shell VMs / 16 GiB repair VMs, prepared tools and warm caches, startup 2026-10-05 / repair 2026-10-06, N=60 and 3 warmups per available cell. Cloud services have no task measurements.",E2B,Repair completion P50 s,—
+compare-cloud-sandboxes.md,Data and analysis {#results},"This compares deployment approaches. Performance evidence is local only; no cloud sandbox was created. SDK, region, account, caches, latency and bills are unmeasured. Official sources describe provisioning rather than supplying advertised numbers for rankings.
+
+| Option | Execution/preparation | User workflow |
+|---|---|---|
+| Local pVisor | Host directories or prepared rootfs, stage/apply | Local resources, dependencies and operations |
+| E2B | SDK-operated remote sandboxes, templates and files | Templates, uploads, result return and local application |
+| Daytona | SDK-managed remote development sandboxes | Preparation, synchronization and result application |
+| Modal | SDK-created sandboxes, images and storage | Dependency images, data access and pipeline integration |
+
+Official sources: [E2B](https://docs.e2b.dev/), [Daytona](https://www.daytona.io/docs/en/), [Modal Sandboxes](https://modal.com/docs/guide/sandboxes).
+
+Tables identify pinned artifacts and measurement dates. Failed or invalid samples are excluded from successful timings and counted separately. Existing measurements have no predefined host-interference filter; all slow valid samples are retained. P95 from 30 or fewer samples is descriptive only; no P99 or stable tail-latency claim is made.","Local baseline: two cores, 128 MiB shell VMs / 16 GiB repair VMs, prepared tools and warm caches, startup 2026-10-05 / repair 2026-10-06, N=60 and 3 warmups per available cell. Cloud services have no task measurements.",E2B,Evidence status,Unmeasured
+compare-cloud-sandboxes.md,Data and analysis {#results},"This compares deployment approaches. Performance evidence is local only; no cloud sandbox was created. SDK, region, account, caches, latency and bills are unmeasured. Official sources describe provisioning rather than supplying advertised numbers for rankings.
+
+| Option | Execution/preparation | User workflow |
+|---|---|---|
+| Local pVisor | Host directories or prepared rootfs, stage/apply | Local resources, dependencies and operations |
+| E2B | SDK-operated remote sandboxes, templates and files | Templates, uploads, result return and local application |
+| Daytona | SDK-managed remote development sandboxes | Preparation, synchronization and result application |
+| Modal | SDK-created sandboxes, images and storage | Dependency images, data access and pipeline integration |
+
+Official sources: [E2B](https://docs.e2b.dev/), [Daytona](https://www.daytona.io/docs/en/), [Modal Sandboxes](https://modal.com/docs/guide/sandboxes).
+
+Tables identify pinned artifacts and measurement dates. Failed or invalid samples are excluded from successful timings and counted separately. Existing measurements have no predefined host-interference filter; all slow valid samples are retained. P95 from 30 or fewer samples is descriptive only; no P99 or stable tail-latency claim is made.","Local baseline: two cores, 128 MiB shell VMs / 16 GiB repair VMs, prepared tools and warm caches, startup 2026-10-05 / repair 2026-10-06, N=60 and 3 warmups per available cell. Cloud services have no task measurements.",Daytona,First output P50 ms,—
+compare-cloud-sandboxes.md,Data and analysis {#results},"This compares deployment approaches. Performance evidence is local only; no cloud sandbox was created. SDK, region, account, caches, latency and bills are unmeasured. Official sources describe provisioning rather than supplying advertised numbers for rankings.
+
+| Option | Execution/preparation | User workflow |
+|---|---|---|
+| Local pVisor | Host directories or prepared rootfs, stage/apply | Local resources, dependencies and operations |
+| E2B | SDK-operated remote sandboxes, templates and files | Templates, uploads, result return and local application |
+| Daytona | SDK-managed remote development sandboxes | Preparation, synchronization and result application |
+| Modal | SDK-created sandboxes, images and storage | Dependency images, data access and pipeline integration |
+
+Official sources: [E2B](https://docs.e2b.dev/), [Daytona](https://www.daytona.io/docs/en/), [Modal Sandboxes](https://modal.com/docs/guide/sandboxes).
+
+Tables identify pinned artifacts and measurement dates. Failed or invalid samples are excluded from successful timings and counted separately. Existing measurements have no predefined host-interference filter; all slow valid samples are retained. P95 from 30 or fewer samples is descriptive only; no P99 or stable tail-latency claim is made.","Local baseline: two cores, 128 MiB shell VMs / 16 GiB repair VMs, prepared tools and warm caches, startup 2026-10-05 / repair 2026-10-06, N=60 and 3 warmups per available cell. Cloud services have no task measurements.",Daytona,Repair completion P50 s,—
+compare-cloud-sandboxes.md,Data and analysis {#results},"This compares deployment approaches. Performance evidence is local only; no cloud sandbox was created. SDK, region, account, caches, latency and bills are unmeasured. Official sources describe provisioning rather than supplying advertised numbers for rankings.
+
+| Option | Execution/preparation | User workflow |
+|---|---|---|
+| Local pVisor | Host directories or prepared rootfs, stage/apply | Local resources, dependencies and operations |
+| E2B | SDK-operated remote sandboxes, templates and files | Templates, uploads, result return and local application |
+| Daytona | SDK-managed remote development sandboxes | Preparation, synchronization and result application |
+| Modal | SDK-created sandboxes, images and storage | Dependency images, data access and pipeline integration |
+
+Official sources: [E2B](https://docs.e2b.dev/), [Daytona](https://www.daytona.io/docs/en/), [Modal Sandboxes](https://modal.com/docs/guide/sandboxes).
+
+Tables identify pinned artifacts and measurement dates. Failed or invalid samples are excluded from successful timings and counted separately. Existing measurements have no predefined host-interference filter; all slow valid samples are retained. P95 from 30 or fewer samples is descriptive only; no P99 or stable tail-latency claim is made.","Local baseline: two cores, 128 MiB shell VMs / 16 GiB repair VMs, prepared tools and warm caches, startup 2026-10-05 / repair 2026-10-06, N=60 and 3 warmups per available cell. Cloud services have no task measurements.",Daytona,Evidence status,Unmeasured
+compare-cloud-sandboxes.md,Data and analysis {#results},"This compares deployment approaches. Performance evidence is local only; no cloud sandbox was created. SDK, region, account, caches, latency and bills are unmeasured. Official sources describe provisioning rather than supplying advertised numbers for rankings.
+
+| Option | Execution/preparation | User workflow |
+|---|---|---|
+| Local pVisor | Host directories or prepared rootfs, stage/apply | Local resources, dependencies and operations |
+| E2B | SDK-operated remote sandboxes, templates and files | Templates, uploads, result return and local application |
+| Daytona | SDK-managed remote development sandboxes | Preparation, synchronization and result application |
+| Modal | SDK-created sandboxes, images and storage | Dependency images, data access and pipeline integration |
+
+Official sources: [E2B](https://docs.e2b.dev/), [Daytona](https://www.daytona.io/docs/en/), [Modal Sandboxes](https://modal.com/docs/guide/sandboxes).
+
+Tables identify pinned artifacts and measurement dates. Failed or invalid samples are excluded from successful timings and counted separately. Existing measurements have no predefined host-interference filter; all slow valid samples are retained. P95 from 30 or fewer samples is descriptive only; no P99 or stable tail-latency claim is made.","Local baseline: two cores, 128 MiB shell VMs / 16 GiB repair VMs, prepared tools and warm caches, startup 2026-10-05 / repair 2026-10-06, N=60 and 3 warmups per available cell. Cloud services have no task measurements.",Modal,First output P50 ms,—
+compare-cloud-sandboxes.md,Data and analysis {#results},"This compares deployment approaches. Performance evidence is local only; no cloud sandbox was created. SDK, region, account, caches, latency and bills are unmeasured. Official sources describe provisioning rather than supplying advertised numbers for rankings.
+
+| Option | Execution/preparation | User workflow |
+|---|---|---|
+| Local pVisor | Host directories or prepared rootfs, stage/apply | Local resources, dependencies and operations |
+| E2B | SDK-operated remote sandboxes, templates and files | Templates, uploads, result return and local application |
+| Daytona | SDK-managed remote development sandboxes | Preparation, synchronization and result application |
+| Modal | SDK-created sandboxes, images and storage | Dependency images, data access and pipeline integration |
+
+Official sources: [E2B](https://docs.e2b.dev/), [Daytona](https://www.daytona.io/docs/en/), [Modal Sandboxes](https://modal.com/docs/guide/sandboxes).
+
+Tables identify pinned artifacts and measurement dates. Failed or invalid samples are excluded from successful timings and counted separately. Existing measurements have no predefined host-interference filter; all slow valid samples are retained. P95 from 30 or fewer samples is descriptive only; no P99 or stable tail-latency claim is made.","Local baseline: two cores, 128 MiB shell VMs / 16 GiB repair VMs, prepared tools and warm caches, startup 2026-10-05 / repair 2026-10-06, N=60 and 3 warmups per available cell. Cloud services have no task measurements.",Modal,Repair completion P50 s,—
+compare-cloud-sandboxes.md,Data and analysis {#results},"This compares deployment approaches. Performance evidence is local only; no cloud sandbox was created. SDK, region, account, caches, latency and bills are unmeasured. Official sources describe provisioning rather than supplying advertised numbers for rankings.
+
+| Option | Execution/preparation | User workflow |
+|---|---|---|
+| Local pVisor | Host directories or prepared rootfs, stage/apply | Local resources, dependencies and operations |
+| E2B | SDK-operated remote sandboxes, templates and files | Templates, uploads, result return and local application |
+| Daytona | SDK-managed remote development sandboxes | Preparation, synchronization and result application |
+| Modal | SDK-created sandboxes, images and storage | Dependency images, data access and pipeline integration |
+
+Official sources: [E2B](https://docs.e2b.dev/), [Daytona](https://www.daytona.io/docs/en/), [Modal Sandboxes](https://modal.com/docs/guide/sandboxes).
+
+Tables identify pinned artifacts and measurement dates. Failed or invalid samples are excluded from successful timings and counted separately. Existing measurements have no predefined host-interference filter; all slow valid samples are retained. P95 from 30 or fewer samples is descriptive only; no P99 or stable tail-latency claim is made.","Local baseline: two cores, 128 MiB shell VMs / 16 GiB repair VMs, prepared tools and warm caches, startup 2026-10-05 / repair 2026-10-06, N=60 and 3 warmups per available cell. Cloud services have no task measurements.",Modal,Evidence status,Unmeasured

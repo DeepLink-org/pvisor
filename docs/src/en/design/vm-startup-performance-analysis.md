@@ -309,7 +309,7 @@ Values below are milliseconds, with 100 measured samples per row. Ready ends at 
 | KVM / 2 vCPU / 256 MiB | 175.41 | 183.74 | 186.86 | 233.99 | 254.13 |
 | KVM / 2 vCPU / 2048 MiB | 220.47 | 228.20 | 231.22 | 284.08 | 294.39 |
 
-In this batch, new VMs become ready in about **0.2 seconds**, with exit completion around **0.23–0.28 seconds**. Evaluate those boundaries separately. These are fresh VM launches; [snapshot restoration](../benchmarks/vm-memory/index.md#linux-snapshot) is measured separately. Linux has no detailed startup phase accounting in this batch, so macOS phase proportions cannot be applied to it.
+In this batch, new VMs become ready in about **0.2 seconds**, with exit completion around **0.23–0.28 seconds**. Evaluate those boundaries separately. These are fresh VM launches; [snapshot restoration](vm-memory-performance-analysis.md#linux-snapshot) is measured separately. Linux has no detailed startup phase accounting in this batch, so macOS phase proportions cannot be applied to it.
 
 #### Trimmed kernel and direct init: historical Docker / Firecracker / QEMU controls {#reference-startup}
 

@@ -24,11 +24,11 @@ B-STARTUP、B-FS-TOOLS、B-AGENT-TASK 使用相同离线工具和固定输入，
 
 ### 分布与失败
 
-不合并批次，不事后剔除慢样本。失败与校验不通过单列，不能计作零耗时。未执行的容量 guard 不能当成完成任务。P95 只是所测样本的观察参考，少于 30 次不展示，少于 100 次不展示 P99；小样本不给稳定尾延迟结论。
+不合并批次，不事后剔除慢样本。失败与校验不通过单列，不能计作零耗时。未执行的容量 guard 不能当成完成任务。P95 只是所测样本的观察参考，少于 30 次不展示，公开统计不展示 P99；小样本不给稳定尾延迟结论。
 
 存在分离簇时分别展示比例和各簇中位数。复测的描述性分簇规则在[运行手册](https://github.com/DeepLink-org/pvisor/blob/main/benchmark/pvisor/README.md)中给出，不据此推断原因。工程 A/B 的百分比变化需配中位数差异的 95% bootstrap 区间；用户页不展示优化过程。
 
-### 隔离与资源
+### 隔离与资源 {#reference-resources}
 
 Docker writable bind mount 直接写宿主；pVisor staged 保留改动到 apply。Firecracker/QEMU 使用私有 ext4，pVisor VM 使用 virtio-fs，内核与设备不同；对照不是纯 VMM 或生产安全排名。独立 stage 的隔离能力以实际记录和[隔离校验](isolation-tests.md)为准。
 
@@ -61,3 +61,7 @@ q35 和 microvm 使用同一 Ubuntu 模板；样本和百分位数与其他批�
 Markdown 保存面向用户的加工表格，每篇附可下载的同目录 CSV。原始报告、逐次样本、日志、制品清单和冻结 harness 放在相关目录的 `.data/`，被 Git 忽略，也不发布到站点。CSV 只保留整理后的统计和来源摘要，不能伪装成原始样本。
 
 复现与来源保留规则见[运行手册](https://github.com/DeepLink-org/pvisor/blob/main/benchmark/pvisor/README.md)。
+
+### 数据下载与复现 {#run}
+
+[整理后的表格 CSV](methodology.csv) · [证据来源摘要](evidence-sources.csv) · [比较方法](methodology.md) · [复现手册](https://github.com/DeepLink-org/pvisor/blob/main/benchmark/pvisor/README.md)

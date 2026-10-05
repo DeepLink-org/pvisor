@@ -48,7 +48,6 @@ fn start(s: &mut Scheduler, id: &str, at: u64) -> LeaseKey {
     if s.workers().is_empty() {
         s.register(
             WorkerRegistration {
-                checkpoint_storage: None,
                 version: CLUSTER_VERSION,
                 id: "node".into(),
                 incarnation: "epoch".into(),

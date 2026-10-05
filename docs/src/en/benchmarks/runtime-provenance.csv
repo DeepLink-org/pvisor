@@ -1,0 +1,51 @@
+batch,field,value
+r2,recorded_at,2026-10-05T23:14:41.511659+08:00
+r2,source_commit,df7d6436827e79cab3636ee78f9f466c48939b25
+r2,pvisor_sha256,3bfd9aca23890c990c4e0c93dacdf58dff833c01f31f628fe4f23e4c060d54df
+r2,kernel_sha256,aa55fa2dbe2762a55020182560fabd16562d565392505b1986fc51326c741f3d
+r2,bzimage_sha256,99de4727b274d92232bd67f9e62b9744e67e99ca89d1bdb09a55e2deb7c80619
+r2,driver_sha256,e2c4e0e80df6dc2434305bb4f685bdc87cd06e056d0402729dcbc5c47ce26f6d
+r2,workload_sha256,a3b120813d58746e9da8594d71a45cdc093ac9bdbad9f4cf0edc741bb9b30fd8
+r2,host_kernel,7.2.8-200.fc44.x86_64
+r2,docker_version,"Docker version 29.7.2, build 1.fc44"
+r2,firecracker_version,"Firecracker v1.13.1
+
+2026-10-05T23:14:41.568485398 [anonymous-instance:main] Firecracker exiting successfully. exit_code=0"
+r2,qemu-system-x86_64_version,"QEMU emulator version 10.2.2 (qemu-10.2.2-1.fc44)
+Copyright (c) 2003-2025 Fabrice Bellard and the QEMU Project developers"
+r2,report_sha256,cd407e3e83d56a34037a2477680c13697b3c66e8deaf3bfe29bc5478758cfe1e
+r2,raw_location,benchmark/.data/r2/report.json
+r2,arguments,"{""backends"": ""native,pvisor-host,pvisor-staged,pvisor-vm,docker,firecracker,qemu,qemu-microvm"", ""cpu_affinity"": ""0,1"", ""host_isolation"": ""rootless_process"", ""memory_mib"": ""16384"", ""modes"": ""ready,filesystem,tools"", ""samples"": ""60"", ""seed"": ""20261005"", ""staged_isolation"": ""rootless_process"", ""warmups"": ""3""}"
+r2,statistics,batches separate; P95 descriptive at N>=30; no P99; separated clusters replace P50
+r2,split_rule,"both clusters >=max(5,10% N); largest gap >=20% median and >3x median adjacent gap; cluster medians >=1.5x"
+r3-tools,recorded_at,2026-10-06T00:26:01.611614+08:00
+r3-tools,source_commit,e0547318d7afdcea53764628c111e6640bae4c55
+r3-tools,pvisor_sha256,3bfd9aca23890c990c4e0c93dacdf58dff833c01f31f628fe4f23e4c060d54df
+r3-tools,kernel_sha256,aa55fa2dbe2762a55020182560fabd16562d565392505b1986fc51326c741f3d
+r3-tools,bzimage_sha256,99de4727b274d92232bd67f9e62b9744e67e99ca89d1bdb09a55e2deb7c80619
+r3-tools,driver_sha256,d3efb88b1d4f7e6e1b165098d788e556a11135904a36f8737286166a7ceb8019
+r3-tools,workload_sha256,a3b120813d58746e9da8594d71a45cdc093ac9bdbad9f4cf0edc741bb9b30fd8
+r3-tools,host_kernel,7.2.8-200.fc44.x86_64
+r3-tools,host_cpu_model,AMD Ryzen 7 9700X 8-Core Processor
+r3-tools,docker_storage_driver,vfs
+r3-tools,docker_version,"Docker version 29.7.2, build 1.fc44"
+r3-tools,firecracker_version,"Firecracker v1.13.1
+
+2026-10-06T00:26:01.678125510 [anonymous-instance:main] Firecracker exiting successfully. exit_code=0"
+r3-tools,qemu-system-x86_64_version,"QEMU emulator version 10.2.2 (qemu-10.2.2-1.fc44)
+Copyright (c) 2003-2025 Fabrice Bellard and the QEMU Project developers"
+r3-tools,report_sha256,c54faa4efdb54375c104f66709e4bca256b4fab1c30a788eed28acb6bafb8da6
+r3-tools,raw_location,benchmark/.data/r3-tools/report.json
+r3-tools,arguments,"{""backends"": ""native,pvisor-host,pvisor-staged,pvisor-vm,docker,firecracker,qemu,qemu-microvm"", ""cpu_affinity"": ""0,1"", ""host_isolation"": ""rootless_process"", ""memory_mib"": ""16384"", ""modes"": ""tools"", ""samples"": ""60"", ""seed"": ""20261005"", ""staged_isolation"": ""rootless_process"", ""warmups"": ""3""}"
+r3-tools,statistics,batches separate; P95 descriptive at N>=30; no P99; separated clusters replace P50
+r3-tools,split_rule,"both clusters >=max(5,10% N); largest gap >=20% median and >3x median adjacent gap; cluster medians >=1.5x"
+r2,binary_source_commit,df7d6436827e79cab3636ee78f9f466c48939b25
+r2,binary_source_patch,gateway-only resolve_proxy import is cfg-gated; no runtime behavior change
+r2,source_manifest_sha256,f2e02943b9503744bc45f242c6a1d9f73d00dc81c209082381756a400a1655a2
+r2,source_commit_scope,source_commit records runner worktree HEAD; binary_source_commit identifies the frozen product
+r2,docker_storage_driver,vfs
+r2,host_cpu_model,AMD Ryzen 7 9700X 8-Core Processor
+r3-tools,binary_source_commit,df7d6436827e79cab3636ee78f9f466c48939b25
+r3-tools,binary_source_patch,gateway-only resolve_proxy import is cfg-gated; no runtime behavior change
+r3-tools,source_manifest_sha256,f2e02943b9503744bc45f242c6a1d9f73d00dc81c209082381756a400a1655a2
+r3-tools,source_commit_scope,source_commit records runner worktree HEAD; binary_source_commit identifies the frozen product

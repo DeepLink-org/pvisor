@@ -44,7 +44,7 @@ Timeouts, lost ACKs and Worker restart retry the same key. Receipts persist befo
 
 ## Controller artifact CAS {#artifacts}
 
-The artifact directory is derived through `journal.with_extension("artifacts")`. Objects use BLAKE3 digest and byte length references. Small manifests reference chunks and can retain native Bundles, traces, private VM writable layers and optional checkpoint publications. Uploading Bundle JSON alone does not transfer files named by its local paths.
+The artifact directory is derived through `journal.with_extension("artifacts")`. Objects use BLAKE3 digest and byte length references. Small manifests reference chunks and can retain native Bundles, traces, private VM writable layers. Uploading Bundle JSON alone does not transfer files named by its local paths.
 
 Uploads bind the complete key and establish durable lease pins. Bulk I/O occurs outside the scheduling lock, with eligibility rechecked around critical publication. Completion verifies manifest/object hashes and lengths, required files, export capability and native Run/Attempt identity, rather than trusting arbitrary reported paths.
 
@@ -54,9 +54,9 @@ The log retains a unique artifact authority bound to the store. Restore must pre
 
 ## Checkpoint storage and atomicity boundaries {#checkpoints}
 
-The Worker's optional FS/S3 snapshot repository differs from the Controller artifact CAS. The former stores complete sealed execution objects for import; the latter stores lease-bound evidence and publication references. Immutable checkpoint manifests validate every reference. Uploads, publication references, Controller receipts and native restores do not form one cross-storage transaction.
+Full execution checkpoints remain in the source Worker's local SnapshotStore. The Controller artifact CAS retains lease-bound Bundles, traces and private filesystem evidence, without distributing execution checkpoints. Checkpoint sealing, Controller control receipts and local restore are separate commit points.
 
-Retries depend on immutability, integrity checks and the outbox. Cancellation or loss preserves native observations already made. A readable checkpoint does not establish target-node compatibility; see [checkpoint lifecycle](lifecycle.md#checkpoint).
+Retries depend on immutability, integrity checks and the outbox. Cancellation or loss preserves native observations already made. A readable checkpoint does not establish local runtime compatibility; see [checkpoint lifecycle](lifecycle.md#checkpoint).
 
 ## GC roots and plan application {#gc}
 
@@ -76,4 +76,4 @@ Downloads have explicit protection leases, five minutes by default, renewable wi
 
 Pending reconciliation blocks destructive plan/apply for the entire shard. This conservative policy prevents missing roots before ownership converges, but one permanently unreachable Worker can delay global reclamation. Refinement must establish complete roots before removing the gate.
 
-Implementation resides in `journal.rs`, `server/dispatcher.rs`, `artifacts.rs`, `artifacts/{quota,gc}.rs` and Worker `bin/worker/{outbox,artifacts,checkpoints}.rs`.
+Implementation resides in `journal.rs`, `server/dispatcher.rs`, `artifacts.rs`, `artifacts/{quota,gc}.rs` and Worker `bin/worker/{outbox,artifacts}.rs`.

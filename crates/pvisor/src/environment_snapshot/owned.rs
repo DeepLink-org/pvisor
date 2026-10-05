@@ -540,7 +540,7 @@ mod tests {
     #[cfg(target_os = "linux")]
     fn native_layered_publication_retains_lower_inodes_after_complete_parent_store_deletion() {
         use crate::environment_snapshot::{
-            CapturedFilesystemLayer, NativeLayerCapture, SnapshotRepository,
+            CapturedFilesystemLayer, NativeLayerCapture,
         };
         for compressed in [false, true] {
             let temp = tempfile::tempdir().unwrap();
@@ -662,33 +662,9 @@ mod tests {
                     .exists()
             );
             assert_eq!(inventory(&lower).unwrap(), expected_lower);
-            let remote = tempfile::tempdir().unwrap();
-            let receipt = SnapshotRepository::filesystem(remote.path(), false)
-                .unwrap()
-                .publish(&published)
-                .unwrap();
-            drop(published);
-            temp.close().unwrap();
-            let receiver = tempfile::tempdir().unwrap();
-            let receiver_store = SnapshotStore::new(&receiver.path().join("snapshot")).unwrap();
-            SnapshotRepository::filesystem(remote.path(), true)
-                .unwrap()
-                .import(&receiver_store, &receipt, &compatibility())
-                .unwrap();
-            let imported = receiver_store.open(&id, &compatibility()).unwrap();
-            assert_eq!(
-                fs::read(
-                    imported
-                        .owned_layer_path(Path::new("lower"))
-                        .unwrap()
-                        .join("unvisited/file")
-                )
-                .unwrap(),
-                b"complete native lower"
-            );
-            assert_eq!(imported.machine_bytes().unwrap(), b"native child machine");
+            assert_eq!(published.machine_bytes().unwrap(), b"native child machine");
             let mut ram = Vec::new();
-            imported.ram_file().unwrap().read_to_end(&mut ram).unwrap();
+            published.ram_file().unwrap().read_to_end(&mut ram).unwrap();
             assert_eq!(ram, b"native RAM");
         }
     }
@@ -837,42 +813,11 @@ mod tests {
                 .read_to_end(&mut actual)
                 .unwrap();
             assert_eq!(actual, expected);
-            #[cfg(target_os = "linux")]
-            let remote = {
-                let directory = tempfile::tempdir().unwrap();
-                let repository =
-                    super::super::SnapshotRepository::filesystem(directory.path(), false).unwrap();
-                let receipt = repository.publish(&published).unwrap();
-                (directory, receipt)
-            };
             drop(published);
             store.delete(&id).unwrap();
             store.collect_abandoned().unwrap();
             assert_eq!(fs::read_dir(root.join("content")).unwrap().count(), 0);
-            #[cfg(target_os = "linux")]
-            {
-                drop(ram);
-                child.close().unwrap();
-                let repository =
-                    super::super::SnapshotRepository::filesystem(remote.0.path(), true).unwrap();
-                let replica = tempfile::tempdir().unwrap();
-                let imported = SnapshotStore::new(&replica.path().join("store")).unwrap();
-                repository
-                    .import(&imported, &remote.1, &compatibility())
-                    .unwrap();
-                let published = imported.open(&id, &compatibility()).unwrap();
-                let mut actual = Vec::new();
-                published
-                    .ram_file()
-                    .unwrap()
-                    .read_to_end(&mut actual)
-                    .unwrap();
-                assert_eq!(
-                    actual, expected,
-                    "transport must retain the self-contained delta child"
-                );
-                assert_eq!(published.machine_bytes().unwrap(), b"delta-machine");
-            }
+
         }
     }
 

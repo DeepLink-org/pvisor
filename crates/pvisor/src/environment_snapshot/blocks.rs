@@ -61,44 +61,7 @@ pub(super) fn read_object(path: &Path) -> anyhow::Result<CompressedObject> {
     Ok(CompressedObject::from_frame(&bytes)?)
 }
 impl RamBlocks {
-    #[cfg(target_os = "linux")]
-    pub(super) fn share_imported(&self, store: &Path, references: &Path) -> anyhow::Result<()> {
-        let _publishing = super::store::gate(store, false)?;
-        let mut seen = std::collections::BTreeSet::new();
-        for block in &self.blocks {
-            if !seen.insert(&block.id) {
-                continue;
-            }
-            let reference = references.join(&block.id);
-            let imported = read_object(&reference)?;
-            let mut decoded = vec![0; block.length as usize];
-            ensure!(
-                id(&imported) == block.id && imported.length() == decoded.len(),
-                "imported RAM identity mismatch"
-            );
-            imported.restore(&mut decoded)?;
-            let content = store.join("content").join(&block.id);
-            match fs::hard_link(&reference, &content) {
-                Ok(()) => {}
-                Err(error) if error.kind() == std::io::ErrorKind::AlreadyExists => {
-                    let existing = read_object(&content)?;
-                    let mut bytes = vec![0; decoded.len()];
-                    ensure!(
-                        id(&existing) == block.id && existing.length() == bytes.len(),
-                        "RAM content identity mismatch"
-                    );
-                    existing.restore(&mut bytes)?;
-                    ensure!(bytes == decoded, "RAM content collision or corruption");
-                    fs::remove_file(&reference)?;
-                    fs::hard_link(&content, &reference)?;
-                }
-                Err(error) => return Err(error.into()),
-            }
-        }
-        File::open(store.join("content"))?.sync_all()?;
-        File::open(references)?.sync_all()?;
-        Ok(())
-    }
+
 
     pub(super) fn validate(&self) -> anyhow::Result<()> {
         ensure!(

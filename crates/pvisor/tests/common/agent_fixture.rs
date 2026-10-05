@@ -58,7 +58,6 @@ pub(crate) fn task(id: &str, environment: &str) -> TaskSpec {
     run.capabilities.models = vec!["test-model".into()];
     TaskSpec {
         retain_artifacts: Some(ArtifactRetention {
-            execution_checkpoint: None,
             version: ARTIFACT_EXPORT_VERSION,
             trace: true,
             workspace_upper: true,

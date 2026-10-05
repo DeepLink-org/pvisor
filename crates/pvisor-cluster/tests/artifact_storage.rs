@@ -75,7 +75,6 @@ fn class() -> ExecutionClass {
 async fn lease(admin: &Client, worker: &Client) -> LeaseKey {
     worker
         .register(&WorkerRegistration {
-            checkpoint_storage: None,
             version: CLUSTER_VERSION,
             id: "node".into(),
             incarnation: "epoch".into(),
@@ -213,7 +212,6 @@ async fn concurrent_http_commits_and_fenced_leases_survive_two_controller_sigkil
                     execution_restore_protocol: None,
                     parked_execution_suspend_protocol: None,
                     environment_support: None,
-                    checkpoint_storage: None,
                 })
                 .await
                 .unwrap();

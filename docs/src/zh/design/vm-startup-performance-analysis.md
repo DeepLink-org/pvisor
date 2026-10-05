@@ -309,7 +309,7 @@ Exit 还包含正常关机：pVisor 中位数 174 ms，Firecracker/Ubuntu 约 9.
 | KVM / 2 vCPU / 256 MiB | 175.41 | 183.74 | 186.86 | 233.99 | 254.13 |
 | KVM / 2 vCPU / 2048 MiB | 220.47 | 228.20 | 231.22 | 284.08 | 294.39 |
 
-在这批测量中，新 VM 就绪约需 **0.2 秒**，完成退出约需 **0.23–0.28 秒**；两者应分别评估。这里测的是新建 VM；[快照恢复](../benchmarks/vm-memory/index.md#linux-snapshot)的耗时另外记录。没有采集 Linux 的细分启动账本，不能把 macOS 的阶段比例直接套用到 Linux。
+在这批测量中，新 VM 就绪约需 **0.2 秒**，完成退出约需 **0.23–0.28 秒**；两者应分别评估。这里测的是新建 VM；[快照恢复](vm-memory-performance-analysis.md#linux-snapshot)的耗时另外记录。没有采集 Linux 的细分启动账本，不能把 macOS 的阶段比例直接套用到 Linux。
 
 #### 裁剪内核与直接 init：Docker / Firecracker / QEMU 历史对照 {#reference-startup}
 

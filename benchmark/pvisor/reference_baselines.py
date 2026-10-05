@@ -1,8 +1,10 @@
 #!/usr/bin/env python3
 """Measure local familiar runtimes with one prepared complete Agent environment.
 
-Benchmark: B-FS-TOOLS (benchmark/README.md#b-fs-tools) and, in tools mode,
-B-AGENT-TASK (benchmark/README.md#b-agent-task); role user-facing.
+Benchmark: B-STARTUP (benchmark/README.md#b-startup) in ready mode;
+B-FS-TOOLS (benchmark/README.md#b-fs-tools) in filesystem mode;
+B-AGENT-TASK (benchmark/README.md#b-agent-task) in env/tools/CLI modes.
+Role: user-facing. One invocation serves one registered benchmark ID.
 Motivation: users choosing a mode need to know how much slower everyday
 tools become compared with native, Docker and lightweight VMs.
 Conclusion sought: per-operation and whole-task wait for pVisor staged/VM
@@ -29,6 +31,21 @@ from zoneinfo import ZoneInfo
 
 from bench import percentile
 from v1.density import snapshot
+
+
+BENCHMARK_IDS = {"ready": "B-STARTUP", "filesystem": "B-FS-TOOLS",
+                 "env": "B-AGENT-TASK", "tools": "B-AGENT-TASK",
+                 "claude": "B-AGENT-TASK", "codex": "B-AGENT-TASK"}
+
+
+def benchmark_for_modes(modes):
+    selected = modes.split(",")
+    if any(mode not in BENCHMARK_IDS for mode in selected):
+        raise ValueError("unknown workload")
+    ids = {BENCHMARK_IDS[mode] for mode in selected}
+    if len(ids) != 1:
+        raise ValueError("run one benchmark ID per invocation; use separate output directories")
+    return ids.pop()
 
 
 def digest(path):
@@ -536,7 +553,7 @@ def main():
         "--backends",
         default="native,pvisor-host,pvisor-staged,pvisor-vm,docker,firecracker,qemu,qemu-microvm",
     )
-    p.add_argument("--modes", default="ready,env,filesystem,tools,claude,codex")
+    p.add_argument("--modes", default="filesystem")
     p.add_argument("--samples", type=int, default=30)
     p.add_argument("--seed", type=int, default=20261005)
     p.add_argument("--warmups", type=int, default=3)
@@ -550,6 +567,12 @@ def main():
         "--cpu-affinity", default="0,1", help="Common host CPU affinity; empty string disables it"
     )
     args = p.parse_args()
+    try:
+        benchmark_id = benchmark_for_modes(args.modes)
+    except ValueError as error:
+        p.error(str(error))
+    if args.samples < 1 or args.warmups < 0:
+        p.error("samples must be positive and warmups nonnegative")
     if args.cpu_affinity and "docker" in args.backends.split(",") and not args.docker_root_pid:
         p.error(
             "CPU-controlled Docker measurement requires --docker-root-pid for the private daemon"
@@ -568,9 +591,8 @@ def main():
     )
     metadata = {
         "schema": "pvisor-reference-environment/v1",
-        "benchmark_ids": {"ready": "B-STARTUP", "env": "B-AGENT-TASK",
-                          "filesystem": "B-FS-TOOLS", "tools": "B-AGENT-TASK",
-                          "claude": "B-AGENT-TASK", "codex": "B-AGENT-TASK"},
+        "benchmark_id": benchmark_id,
+        "benchmark_ids": {mode: BENCHMARK_IDS[mode] for mode in args.modes.split(",")},
         "recorded_at": datetime.now(ZoneInfo("Asia/Shanghai")).isoformat(),
         "arguments": {k: str(v) for k, v in vars(args).items()},
         "assets": json.loads((args.assets / "assets.json").read_text()),
@@ -604,6 +626,14 @@ def main():
         metadata[tool + "_version"] = subprocess.run(
             [tool, "--version"], capture_output=True, text=True
         ).stdout.strip()
+    metadata["host_cpu_model"] = next(
+        (line.split(":", 1)[1].strip() for line in Path("/proc/cpuinfo").read_text().splitlines()
+         if line.startswith("model name")), "unknown")
+    if "docker" in args.backends.split(","):
+        driver = subprocess.run(
+            ["docker", "--host", args.docker_host, "info", "--format", "{{.Driver}}"],
+            capture_output=True, text=True, timeout=30)
+        metadata["docker_storage_driver"] = driver.stdout.strip() if driver.returncode == 0 else "unavailable"
     rows = []
     caps = {}
     rng = random.Random(args.seed)

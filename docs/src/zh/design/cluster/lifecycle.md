@@ -55,9 +55,9 @@ Agent 声明 quiescent call
 
 完整执行检查点与 offload 文件有不同语义。检查点封存 CPU、RAM、设备与完整 owned-overlay inventory，验证原始 inode 身份、打开句柄与目录 cookie 等恢复条件；继续执行和 fork 为新的 Run/Attempt 建立 lineage。缺失、被篡改或不兼容的快照拒绝恢复。
 
-可选 FS/S3 仓库发布不可变完整检查点及 manifest，Worker 验证并导入，再以独立可写树和私有 COW RAM 恢复。共享已验证只读 lower 与 RAM 帧减少重复内容；稀疏/压缩存储和原生 v5 下层池的细节由执行器负责。
+检查点保存在源 Worker 的本地执行存储。恢复和分叉固定到拥有该检查点的 Worker，并创建独立可写树和私有 COW RAM。共享已验证只读 lower 与 RAM 帧减少重复内容；稀疏/压缩存储和原生 v5 下层池的细节由执行器负责。
 
-节点兼容性包括执行协议、架构、原生格式/配置与运行环境；指定仓库或拿到 manifest 并不自动证明任意主机兼容。当前已有同主机独立 Worker 冷导入/源删除后的恢复门槛，跨主机运行时兼容与恢复仍需独立验证。
+恢复校验执行协议、架构、原生格式/配置与运行环境。源 Worker 的本地存储必须保留；不提供跨节点检查点发布、导入或恢复调度。
 
 ## 封存分叉与运行中分叉 {#fork}
 
@@ -68,7 +68,7 @@ Agent 声明 quiescent call
 
 一个请求允许 1–64 个分支、4 MiB 事务和 task-retention 限额。分支使用独立 Task/Run/Attempt 身份，保持 lineage；每个分支分别计费资源，不能把共享 RAM 当作零预算。live fork 的源可以继续运行，捕获请求及 ACK 以 source/key/revision 绑定，重试不会重复创建分支。
 
-检查点提交、分支建立和冷恢复是不同提交点。跨仓库发布中断由 Worker 终态交付重试处理；创建回执与 snapshot publication 都不能代表原生 restore 已成功。
+检查点提交、分支建立和冷恢复是不同提交点。分支创建回执不代表原生 restore 已成功；源 Worker 丢失或本地检查点不可用时，不转移到其他 Worker。
 
 ## 生命周期与集成边界 {#integration}
 

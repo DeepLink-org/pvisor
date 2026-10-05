@@ -2,7 +2,7 @@
 
 ## 主要结论 {#conclusions}
 
-**空闲探针中，staged 的 **128 路全部完成**，RSS 合计约 **1.56 GiB**；最小 shell VM 的 **32 路全部完成**，RSS 合计约 **3.02 GiB**。同条件 Podman 的 128 路也全部完成，但启动等待更长。safe 和完整工具 OCI 的部分高并发出现失败。这是空闲环境的占用与可靠性，不是真实 Agent 吞吐或容量承诺。**
+**空闲探针中，staged 的 128 路全部完成，RSS 合计约 1.56 GiB；最小 shell VM 的 32 路全部完成，RSS 合计约 3.02 GiB。同条件 Podman 的 128 路也全部完成，但启动等待更长。safe 和完整工具 OCI 的部分高并发出现失败。这是空闲环境的占用与可靠性，不是真实 Agent 吞吐或容量承诺。**
 
 | 需求 | 选型含义 |
 |---|---|
@@ -23,6 +23,8 @@
 固定制品与测量日期按表注明。失败与校验不通过的样本不计入成功耗时，失败数量单列；既有数据没有事先的宿主干扰剔除规则，所有通过校验的慢样本保留。30 次及更少采样的 P95 仅为观察参考，不给 P99 或稳定尾延迟承诺。
 
 ## 实验数据和分析 {#results}
+
+测量日期 2026-10-04；各表按配置保留独立样本，P50 为中位数。
 
 | Environment | Backend | Concurrency | Completed/attempted | Full batches | RSS P50 MiB | CPU P50 ms/job | Job P50/P95 ms |
 |---|---|---|---|---|---|---|---|
@@ -57,9 +59,12 @@ safe 128 路为 **638/640** 成功，失败是 `Address already in use`：临时
 
 这里的原生 shell 和 Podman/crun 给出熟悉的占用基线，128 路成功回答的是“能否同时维持这些空闲进程”。它不能回答“能否同时运行 128 个带 Python、Node、Rust 和 Agent CLI 的任务”。2 vCPU/128 MiB 的空闲 VM 也不能代表完整工具环境的活跃工作集。
 
-完整工具环境的单任务延迟与实际进程树 RSS 见 [Agent 环境对比](agent-tasks.md#reference-env)。新 Docker 资源数据包含私有 daemon 的固定成本，不能与这里可能漏掉后台进程的 Podman RSS 直接排名。并发规划应使用自己的任务工作集，再测成功率和完成时间；当前未发布完整 Agent 的 128 路容量承诺。
+完整工具环境的单任务延迟见 [Agent 环境对比](agent-tasks.md#reference-env)。这些 Podman RSS 范围可能漏掉后台进程，不建立整机物理内存排名。并发规划应使用自己的任务工作集，再测成功率和完成时间；当前未发布完整 Agent 的 128 路容量承诺。
 
 ### 适用边界 {#acceptance}
 
 共享桌面有编辑器和后台进程，所测配置不是专用性能机或最大容量搜索。主批次 VM 内存 guard 比较保守；配置对照按单路实测 RSS×1.5、至少 128 MiB/Job，另留 2 GiB 再决定是否运行。RSS 求和会重复计算共享页；不是 PSS 或系统总内存。Podman 的后台进程可能不全在被跟踪的父子树中，CPU/RSS 不能据此做严格总资源排名。
 
+### 数据下载与复现 {#run}
+
+[整理后的表格 CSV](density.csv) · [证据来源摘要](evidence-sources.csv) · [比较方法](methodology.md) · [复现手册](https://github.com/DeepLink-org/pvisor/blob/main/benchmark/pvisor/README.md)

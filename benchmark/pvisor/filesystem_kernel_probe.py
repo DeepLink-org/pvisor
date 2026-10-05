@@ -1,7 +1,7 @@
 #!/usr/bin/env python3
 """Diagnostic controls for cache expiry, concurrent metadata and guest tmpfs.
 
-Benchmark: B-FS-ENG (benchmark/README.md#b-fs-eng), role diagnostic.
+Benchmark: B-FS-DIAG (benchmark/README.md#b-fs-diag), role diagnostic.
 Motivation: tell whether VM overhead comes from round trips, cache expiry,
 request concurrency or the guest itself.
 Conclusion sought: which kernel-path change would move B-FS-TOOLS the most.

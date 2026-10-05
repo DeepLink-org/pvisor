@@ -65,10 +65,7 @@ impl Storage {
     pub(super) fn get_versioned(&self, key: &str) -> anyhow::Result<Option<StoredObject>> {
         self.read(key, None, MAX_OBJECT)
     }
-    pub(crate) fn get_bounded(&self, key: &str, limit: usize) -> anyhow::Result<Option<Vec<u8>>> {
-        ensure!(limit <= MAX_OBJECT, "invalid cache read limit");
-        Ok(self.read(key, None, limit)?.map(|object| object.bytes))
-    }
+
     pub(super) fn range(&self, key: &str, range: Range<u64>) -> anyhow::Result<Vec<u8>> {
         ensure!(
             range.end > range.start && range.end - range.start <= MAX_OBJECT as u64,

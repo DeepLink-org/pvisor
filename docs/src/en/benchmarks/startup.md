@@ -2,79 +2,65 @@
 
 ## Main conclusions {#conclusions}
 
-**pVisor VM starts in the same hundred-millisecond range as Docker and QEMU microvm; minimal Firecracker is slightly faster.** Prepared-environment first-output P50 is **86, 90, 88 and 74 ms**, respectively. pVisor host/staged takes about **6/15 ms**, suited to lighter local tasks.
-
-Against complete Ubuntu boot, image-free pVisor VM takes about **110 ms**, while Firecracker/QEMU takes **5–8 s**, reducing short-task startup waiting. These are different deployment approaches, kernels, services and initialization paths. See [task performance](agent-tasks.md) for tool and complete-task costs.
+**Prepared pVisor VM first output is 99.76 ms, versus Firecracker 74.74 ms and QEMU microvm 86.60 ms. Rootless host/staged start sooner. Include process exit and actual tools when budgeting short tasks.**
 
 | Need | Selection implication |
 |---|---|
-| Frequent short local tasks | Host/staged have a smaller startup budget |
-| Independent guest kernel | Budget VM startup and tool time |
-| Full Ubuntu services | Budget a complete distribution boot |
+| Local tools and retained edits | Evaluate rootless host/staged |
+| Independent guest kernel | Budget complete VM tool time |
+| Existing container/Git workflow | Compare costs and required review semantics |
 
 ## Motivation {#motivation}
 
-Startup waiting directly affects frequent disposable Agent environments. Persistent environments amortize it. First output, complete CLI exit and working tools are different budgets.
+Disposable environments repeatedly pay startup cost. First useful output and process exit differ; persistent pools amortize them.
 
 ## Experiment design {#interpretation}
 
-Ready starts before host command launch and ends at useful output; Exit ends at process termination. Downloads, installation, templates and per-trial copying are excluded. Each task creates a fresh environment, without RAM snapshots or persistent pools; host caches are warm.
+Shared Linux/x86_64 host, AMD Ryzen 7 9700X, Fedora kernel 7.2.8-200.fc44.x86_64. Launch trees and the private Docker daemon are pinned to host CPUs 0,1; guests have 2 vCPU. Host/staged use rootless_process. Shell VMs use 128 MiB; tool VMs use 16 GiB. Native/Docker memory is not capped: this controls CPU and configured guest RAM, not identical resource enforcement. Tools and inputs are prepared; each run gets a fresh workspace, warm caches, three warmups and 60 measured trials, with seeded randomized backend order. Builds, downloads and input copying are excluded.
 
-Linux minimal environments share a two-core budget, 2 vCPU / 128 MiB and tool artifacts, with three warmups, 30 samples per cell and randomized order. Firecracker/QEMU use trimmed kernels and static init; Docker's daemon is running. Complete Ubuntu uses a generic kernel, initrd and systemd, with 2 vCPU / 2 GiB; Firecracker/pVisor N=30 and separate QEMU N=10. Shared-host caches, background load and configuration differences limit fine rankings. [Methodology](methodology.md) pins artifacts and conditions.
+Docker Engine 29.7.2 uses a private rootless VFS daemon and writable bind mounts. This does not represent overlay2 or Docker Desktop. Firecracker 1.13.1 PCI runs without jailer; QEMU 10.2.2 uses q35/microvm with private ext4. pVisor VM uses virtio-fs and a different kernel. Kernel, storage, devices and staging semantics remain configuration differences; these results do not isolate the VMM or FUSE alone.
 
-Tables identify pinned artifacts and measurement dates. Failed or invalid samples are excluded from successful timings and counted separately. Existing measurements have no predefined host-interference filter; all slow valid samples are retained. P95 from 30 or fewer samples is descriptive only; no P99 or stable tail-latency claim is made.
+Ready ends at the checked shell marker; Exit at process termination. These are fresh starts without RAM snapshots or pools. Full Agent CLI readiness, cold disks and cross-platform rankings are outside this probe.
 
 ## Data and analysis {#results}
 
-### Prepared environments: lightweight startup {#reference-startup}
+### Prepared environments {#reference-startup}
 
-| Backend | N | Ready P50 / P95 ms |
-|---|---|---|
-| Native | 30 | 1.20 / 1.42 |
-| pVisor host | 30 | 6.10 / 6.65 |
-| pVisor staged | 30 | 14.68 / 15.94 |
-| pVisor VM | 30 | 86.29 / 92.99 |
-| Docker rootless | 30 | 90.12 / 101.13 |
-| Firecracker PCI | 30 | 73.74 / 79.06 |
-| QEMU q35 | 30 | 218.12 / 235.27 |
-| QEMU microvm | 30 | 88.10 / 103.42 |
+Measured 2026-10-05, 60/60 valid trials per backend, zero measured failures. Outputs and exits are checked; staged trials additionally check unchanged originals and complete retained edits. All valid slow samples are retained; no timing-based exclusions. P95 is descriptive. Separated clusters show each median and count out of 60 instead of one P50, using the predefined rule in [methodology](methodology.md).
 
-pVisor VM, Docker and QEMU microvm have close medians; a few milliseconds do not establish a stable lead. Heavier q35 devices do not represent QEMU's minimum startup path. pVisor's kernel/virtio-fs and reference ext4 differ: this compares complete command paths.
+<a id="reference-exit"></a>
 
-![Prepared-environment first output](../../assets/benchmarks/reference-env-20261004/reference-startup.svg)
+| Backend | Valid / failed | Ready P50 ms | Ready P95 ms | Exit P50 ms | Exit P95 ms |
+|---|---|---|---|---|---|
+| Native | 60 / 0 | 1.24 | 1.57 | 1.31 | 1.65 |
+| pVisor host | 60 / 0 | 12.22 | 13.67 | 23.82 | 24.56 |
+| pVisor staged | 60 / 0 | 24.99 | 27.93 | 33.77 | 54.32 |
+| pVisor VM | 60 / 0 | 99.76 | 110.86 | 155.02 | 176.06 |
+| Docker rootless / VFS | 60 / 0 | 3380.93 | 3622.36 | 4487.13 | 4724.50 |
+| Firecracker PCI | 60 / 0 | 74.74 | 81.13 | 99.62 | 107.00 |
+| QEMU q35 | 60 / 0 | 213.89 | 223.19 | 239.82 | 254.20 |
+| QEMU microvm | 60 / 0 | 86.60 | 101.41 | 110.03 | 123.08 |
 
-### Complete distributions: deployment waiting {#full-ubuntu}
+VFS container creation includes writable-layer copying. Its seconds-scale launch cost does not establish typical Docker startup performance. Reused environments amortize creation.
 
-| Backend | N | Ready P50 / P95 ms | Exit P50 / P95 ms |
-|---|---:|---|---|
-| Native / Fedora | 30 | 1.23 / 1.49 | 1.29 / 1.57 |
-| pVisor staged | 30 | 15.04 / 18.32 | 43.75 / 44.52 |
-| pVisor VM / host | 30 | 109.69 / 121.62 | 173.57 / 193.94 |
-| Firecracker / Ubuntu | 30 | 5644.11 / 6009.57 | 9234.94 / 9626.10 |
-| Firecracker / Ubuntu first boot | 30 | 9246.65 / 10293.13 | 12862.17 / 13875.61 |
-| QEMU q35 / Ubuntu | 10 | 5428.90 / 7698.78 | 9054.86 / 12078.24 |
-| QEMU microvm / Ubuntu | 10 | 7666.69 / 8547.61 | 11199.06 / 12100.94 |
+### Complete Ubuntu deployment {#full-ubuntu}
 
-Image-free pVisor uses tool directories directly, reducing full-OS boot waiting. For Ubuntu services and a distribution environment, the seconds above are the cost of obtaining that environment. First cloud-init excludes initial downloading. Complete Ubuntu shares a disk template; QEMU rows form a separate cohort, without pooled distributions. This does not establish “libkrun is 50 times faster than Firecracker.”
+Independent 2026-10-04 cohorts, two cores / 2 GiB, warm caches and three warmups. P50 ms; pVisor/Firecracker N=30, QEMU separate N=10. Ubuntu uses a distribution kernel, initrd, systemd and cloud-init, while pVisor reuses host tool directories.
 
-![Complete-distribution and image-free deployment](../../assets/benchmarks/full-ubuntu-qemu-20261004/ubuntu-startup.svg)
+| Deployment | N | Ready P50 ms | Exit P50 ms |
+|---|---|---|---|
+| pVisor VM / host tools | 30 | 109.69 | 173.57 |
+| Firecracker / Ubuntu | 30 | 5644.11 | 9234.94 |
+| Firecracker / Ubuntu first boot | 30 | 9246.65 | 12862.17 |
+| QEMU q35 / Ubuntu | 10 | 5428.90 | 9054.86 |
+| QEMU microvm / Ubuntu | 10 | 7666.69 | 11199.06 |
 
-### First output and cleanup/exit {#reference-exit}
-
-| Backend | Ready P50/P95 ms | Exit P50/P95 ms |
-|---|---|---|
-| Native | 1.27 / 1.99 | 1.35 / 2.05 |
-| pVisor host | 5.98 / 9.91 | 13.23 / 15.78 |
-| pVisor staged | 14.61 / 21.83 | 43.52 / 47.36 |
-| pVisor VM | 88.46 / 142.99 | 153.11 / 207.68 |
-| Docker rootless | 94.29 / 237.58 | 123.38 / 286.71 |
-| Firecracker PCI | 74.18 / 92.76 | 101.82 / 121.81 |
-| QEMU q35 | 219.74 / 306.82 | 248.39 / 338.34 |
-| QEMU microvm | 87.42 / 170.44 | 116.09 / 199.42 |
-
-This independent 30-sample table uses dedicated process waiting for precise exit. VM first output takes about **88 ms**, complete exit **153 ms**; cleanup and recording have a budget too. Ready does not mean a real CLI has initialized or can repair a project.
+This answers deployment waiting with different OS configurations, not a pure VMM ranking.
 
 ### macOS / HVF {#macos}
 
-On Apple M4, pVisor VM with 2 vCPU / 128 MiB has first-output P50 **84.35 ms**, P95 **112.14 ms**, across 100 measured samples. Matching macOS Docker/Firecracker/QEMU comparisons are unavailable. Linux and macOS results are not ranked together.
+Independent Apple M4, 2 vCPU / 128 MiB, N=100: first-output P50 84.35 ms, descriptive P95 112.14 ms. Matching macOS Docker/Firecracker/QEMU comparisons are unavailable.
 
+### Downloads and reproduction {#run}
+
+[Derived table CSV](startup.csv) · [Runtime statistics](runtime-summary.csv) · [Sources and artifacts](runtime-provenance.csv) · [Evidence source summary](evidence-sources.csv) · [Method](methodology.md) · [Runner manual](https://github.com/DeepLink-org/pvisor/blob/main/benchmark/pvisor/README.md)

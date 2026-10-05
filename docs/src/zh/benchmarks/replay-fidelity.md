@@ -2,7 +2,7 @@
 
 ## 主要结论 {#conclusions}
 
-**六种固定版本轨迹格式的前缀准备全部通过校验，P50 约 **5–5.5 ms**，prepare-only 不执行工具、不修改工作区。该能力适合绑定任务与历史观测；它不等于恢复任意远程连接，也不证明模型下一步动作或所有新版 CLI 格式保持一致。**
+**六种固定版本轨迹格式的前缀准备全部通过校验，P50 约 5–5.5 ms，prepare-only 不执行工具、不修改工作区。该能力适合绑定任务与历史观测；它不等于恢复任意远程连接，也不证明模型下一步动作或所有新版 CLI 格式保持一致。**
 
 | 需求 | 选型含义 |
 |---|---|
@@ -24,6 +24,10 @@
 
 ## 实验数据和分析 {#results}
 
+业界参照是各 Agent 的原生 resume/replay，以及 RL 管线自己的前缀准备。以下验证固定原生格式的准备契约；没有对这些系统做同轨迹耗时排名，也没有测完整模型继续执行的一致率。
+
+测量日期 2026-10-04；各表按配置保留独立样本，P50 为中位数。
+
 | Adapter | Pinned format profile | Passed/planned | Preparation P50/P95 ms |
 |---|---|---|---|
 | claude-code | claude-code/2.1.220/native-resume-v1 | 60/60 | 5.03 / 5.62 |
@@ -37,3 +41,6 @@
 
 合成轨迹验证前缀结构、边界与参数，不代表模型下一动作或 reward 一致率。真实会话、新版 CLI、长前缀、token 成本和远端连接恢复未测。
 
+### 数据下载与复现 {#run}
+
+[整理后的表格 CSV](replay-fidelity.csv) · [证据来源摘要](evidence-sources.csv) · [比较方法](methodology.md) · [复现手册](https://github.com/DeepLink-org/pvisor/blob/main/benchmark/pvisor/README.md)

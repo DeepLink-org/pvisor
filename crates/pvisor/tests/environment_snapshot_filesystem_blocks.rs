@@ -1,5 +1,5 @@
 #![cfg(target_os = "linux")]
-use pvisor::environment_snapshot::{Compatibility, SnapshotRepository, SnapshotStore, inventory};
+use pvisor::environment_snapshot::{Compatibility, SnapshotStore, inventory};
 use std::{
     fs,
     io::Write,
@@ -9,10 +9,6 @@ use std::{
     },
     path::Path,
 };
-#[path = "common/s3.rs"]
-#[allow(dead_code)] // Shared fixture also exposes faults used by other suites.
-mod s3;
-
 fn compatibility() -> Compatibility {
     Compatibility {
         host_boot: "private-blocks-boot".into(),
@@ -233,93 +229,6 @@ fn private_children_share_unchanged_frames_and_restore_independent_inodes_after_
     child_store.delete(&child_id).unwrap();
     child_store.collect_abandoned().unwrap();
     assert_eq!(fs::read_dir(pool.join("content")).unwrap().count(), 0);
-}
-
-fn roundtrip(signed_s3: bool, compressed: bool) {
-    let temp = tempfile::tempdir().unwrap();
-    let root = temp.path().canonicalize().unwrap();
-    let source = root.join("source");
-    make_source(&source);
-    let expected = inventory(&source).unwrap();
-    let publisher =
-        SnapshotStore::with_filesystem_pool(&root.join("publisher"), &root.join("publisher-pool"))
-            .unwrap();
-    let id = publish(&publisher, &source, compressed);
-    let snapshot = publisher.open(&id, &compatibility()).unwrap();
-    let remote = signed_s3.then(s3::MockS3::start);
-    let repository = if let Some(remote) = &remote {
-        let client = object_store::aws::AmazonS3Builder::new()
-            .with_bucket_name("cache-bucket")
-            .with_region("us-east-1")
-            .with_access_key_id("AKIATEST")
-            .with_secret_access_key("test-secret")
-            .with_token("test-token")
-            .with_endpoint(&remote.endpoint)
-            .with_allow_http(true)
-            .build()
-            .unwrap();
-        SnapshotRepository::object_store(std::sync::Arc::new(client), "team", false).unwrap()
-    } else {
-        SnapshotRepository::filesystem(&root.join("remote"), false).unwrap()
-    };
-    let receipt = repository.publish(&snapshot).unwrap();
-    let original = fs::read(
-        root.join(if root.join("publisher").exists() {
-            "publisher/objects"
-        } else {
-            "store/objects"
-        })
-        .join(&id)
-        .join("manifest.json"),
-    )
-    .unwrap();
-    drop(snapshot);
-    drop(publisher);
-    fs::remove_dir_all(root.join("publisher")).unwrap();
-    fs::remove_dir_all(root.join("publisher-pool")).unwrap();
-    fs::remove_dir_all(&source).unwrap();
-    let receiver =
-        SnapshotStore::with_filesystem_pool(&root.join("receiver"), &root.join("receiver-pool"))
-            .unwrap();
-    repository
-        .import(&receiver, &receipt, &compatibility())
-        .unwrap();
-    let imported = receiver.open(&id, &compatibility()).unwrap();
-    assert_eq!(
-        fs::read(
-            root.join("receiver/objects")
-                .join(&id)
-                .join("manifest.json")
-        )
-        .unwrap(),
-        original
-    );
-    assert!(
-        !root
-            .join("receiver/objects")
-            .join(&id)
-            .join("rootfs")
-            .exists()
-    );
-    imported.materialize(&root.join("restored")).unwrap();
-    assert_eq!(inventory(&root.join("restored")).unwrap(), expected);
-    assert_eq!(repository.publish(&imported).unwrap(), receipt);
-    drop(imported);
-    repository
-        .import(&receiver, &receipt, &compatibility())
-        .unwrap();
-    if let Some(remote) = remote {
-        assert!(remote.gets.load(std::sync::atomic::Ordering::SeqCst) > 0);
-        assert!(remote.puts.load(std::sync::atomic::Ordering::SeqCst) > 0);
-    }
-}
-#[test]
-fn raw_private_filesystem_blocks_transfer_without_publisher_storage() {
-    roundtrip(false, false);
-}
-#[test]
-fn compressed_private_filesystem_blocks_signed_s3_transfer_without_publisher_storage() {
-    roundtrip(true, true);
 }
 
 #[test]

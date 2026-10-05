@@ -105,8 +105,7 @@ def summarize(report):
     return result
 
 
-def write_derived_summary(public_output / "summary.csv", summaries)
-    plot(summaries, public_output):
+def plot(summaries, out):
     import matplotlib
 
     matplotlib.use("Agg")

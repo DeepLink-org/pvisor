@@ -1,7 +1,7 @@
 #!/usr/bin/env python3
 """Compare C and Rust init under an identical signed pvisor-vm/HVF host runner.
 
-Benchmark: B-STARTUP (benchmark/README.md#b-startup), role engineering A/B.
+Benchmark: B-STARTUP-ENG (benchmark/README.md#b-startup-eng), role engineering A/B.
 Motivation: decide whether an init implementation change affects ready time.
 Conclusion sought: ready-time difference with a confidence interval.
 Design: identical host runner, rootfs and payload; interleaved raw timings.
@@ -33,7 +33,7 @@ def main():
     parser.add_argument("--c-init", type=Path, required=True)
     parser.add_argument("--rootfs", type=Path, required=True)
     parser.add_argument("--firmware", type=Path, required=True)
-    parser.add_argument("--output", type=Path, default=Path("target/guest-init-benchmark"))
+    parser.add_argument("--output", type=Path, default=Path("benchmark/pvisor/.data/guest-init"))
     parser.add_argument("--iterations", type=int, default=50)
     parser.add_argument("--warmup", type=int, default=5)
     args = parser.parse_args()

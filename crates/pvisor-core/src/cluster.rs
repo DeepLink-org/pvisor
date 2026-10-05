@@ -94,7 +94,7 @@ impl TaskSpec {
         if let Some(retention) = &self.retain_artifacts {
             retention.validate()?;
             anyhow::ensure!(
-                !(retention.workspace_upper || retention.execution_checkpoint.is_some())
+                !retention.workspace_upper
                     || self.execution
                         == ExecutionClass {
                             executor: ExecutorKind::VirtualMachine,
@@ -211,8 +211,6 @@ pub struct LiveForkRecord {
 #[derive(Debug, Clone, Serialize, Deserialize)]
 #[serde(deny_unknown_fields)]
 pub struct WorkerRegistration {
-    #[serde(default, skip_serializing_if = "Option::is_none")]
-    pub checkpoint_storage: Option<CheckpointStorageSupport>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub artifact_export: Option<ArtifactExportSupport>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
@@ -505,8 +503,6 @@ pub struct TaskRecord {
     /// this is false; resources remain reserved and execution is not retried.
     #[serde(default)]
     pub reconciliation_pending: bool,
-    #[serde(default, skip_serializing_if = "Option::is_none")]
-    pub checkpoint_publication: Option<CheckpointPublication>,
     /// Version of durable upload pinning used for this assignment. Legacy live
     /// assignments conservatively prevent orphan reclamation during migration.
     #[serde(default, skip_serializing_if = "Option::is_none")]
@@ -919,8 +915,6 @@ impl AdmissionReport {
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct Assignment {
-    #[serde(default, skip_serializing_if = "Option::is_none")]
-    pub checkpoint_publication: Option<CheckpointPublication>,
     pub spec: TaskSpec,
     pub lease: Lease,
     #[serde(default, skip_serializing_if = "Option::is_none")]
@@ -1115,9 +1109,6 @@ pub const ARTIFACT_EXPORT_VERSION: u32 = 1;
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(deny_unknown_fields)]
 pub struct ArtifactRetention {
-    /// Publish a save-and-stop snapshot to a host-configured repository.
-    #[serde(default, skip_serializing_if = "Option::is_none")]
-    pub execution_checkpoint: Option<CheckpointRetention>,
     pub version: u32,
     pub trace: bool,
     /// Archive of the private upper, including whiteouts; not a merged rootfs.
@@ -1127,12 +1118,9 @@ impl ArtifactRetention {
     pub fn validate(&self) -> anyhow::Result<()> {
         anyhow::ensure!(
             self.version == ARTIFACT_EXPORT_VERSION
-                && (self.trace || self.workspace_upper || self.execution_checkpoint.is_some()),
+                && (self.trace || self.workspace_upper),
             "invalid artifact retention requirement"
         );
-        if let Some(checkpoint) = &self.execution_checkpoint {
-            checkpoint.validate()?;
-        }
         Ok(())
     }
     pub fn filenames(&self) -> Vec<&'static str> {
@@ -1143,17 +1131,12 @@ impl ArtifactRetention {
         if self.workspace_upper {
             names.push("workspace-upper.tar");
         }
-        if self.execution_checkpoint.is_some() {
-            names.push("execution-checkpoint.json");
-        }
         names
     }
 }
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(deny_unknown_fields)]
 pub struct ArtifactExportSupport {
-    #[serde(default, skip_serializing_if = "std::ops::Not::not")]
-    pub execution_checkpoint: bool,
     pub version: u32,
     pub trace: bool,
     pub workspace_upper: bool,
@@ -1162,101 +1145,15 @@ impl ArtifactExportSupport {
     pub fn validate(&self) -> anyhow::Result<()> {
         anyhow::ensure!(
             self.version == ARTIFACT_EXPORT_VERSION
-                && (self.trace || self.workspace_upper || self.execution_checkpoint),
+                && (self.trace || self.workspace_upper),
             "invalid artifact export capability"
         );
         Ok(())
     }
     pub fn satisfies(&self, retention: &ArtifactRetention) -> bool {
         self.version == retention.version
-            && (retention.execution_checkpoint.is_none() || self.execution_checkpoint)
             && (!retention.trace || self.trace)
             && (!retention.workspace_upper || self.workspace_upper)
-    }
-}
-
-#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
-#[serde(deny_unknown_fields)]
-pub struct CheckpointRetention {
-    pub version: u32,
-    pub repository: String,
-}
-impl CheckpointRetention {
-    pub fn validate(&self) -> anyhow::Result<()> {
-        anyhow::ensure!(
-            self.version == 1
-                && !self.repository.is_empty()
-                && self.repository.len() <= 128
-                && self
-                    .repository
-                    .bytes()
-                    .all(|b| b.is_ascii_alphanumeric() || b"-_.".contains(&b))
-                && self.repository != "."
-                && self.repository != "..",
-            "invalid checkpoint repository requirement"
-        );
-        Ok(())
-    }
-}
-#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
-#[serde(deny_unknown_fields)]
-pub struct CheckpointStorageSupport {
-    pub version: u32,
-    pub repository: String,
-    pub publish: bool,
-    pub compatibility: crate::operation::SnapshotCompatibility,
-}
-impl CheckpointStorageSupport {
-    pub fn validate(&self) -> anyhow::Result<()> {
-        CheckpointRetention {
-            version: self.version,
-            repository: self.repository.clone(),
-        }
-        .validate()?;
-        for id in [&self.compatibility.build, &self.compatibility.firmware] {
-            anyhow::ensure!(
-                id.len() == 64
-                    && id
-                        .bytes()
-                        .all(|b| b.is_ascii_digit() || (b'a'..=b'f').contains(&b)),
-                "invalid checkpoint compatibility digest"
-            );
-        }
-        anyhow::ensure!(
-            !self.compatibility.host_boot.is_empty()
-                && self.compatibility.host_boot.len() <= 128
-                && !self.compatibility.profile.is_empty()
-                && self.compatibility.profile.len() <= 128,
-            "invalid checkpoint runtime compatibility"
-        );
-        Ok(())
-    }
-}
-#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
-#[serde(deny_unknown_fields)]
-pub struct CheckpointPublication {
-    pub version: u32,
-    pub repository: String,
-    pub checkpoint: crate::operation::ExecutionCheckpoint,
-    pub transfer: crate::operation::SnapshotTransfer,
-    pub compatibility: crate::operation::SnapshotCompatibility,
-}
-impl CheckpointPublication {
-    pub fn validate(&self) -> anyhow::Result<()> {
-        self.checkpoint.validate()?;
-        self.transfer.validate()?;
-        CheckpointStorageSupport {
-            version: self.version,
-            repository: self.repository.clone(),
-            publish: false,
-            compatibility: self.compatibility.clone(),
-        }
-        .validate()?;
-        anyhow::ensure!(
-            self.checkpoint.snapshot_id == self.transfer.snapshot_id,
-            "checkpoint publication identity mismatch"
-        );
-        Ok(())
     }
 }
 

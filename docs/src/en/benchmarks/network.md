@@ -2,7 +2,7 @@
 
 ## Main conclusions {#conclusions}
 
-**Local 1 KiB HTTP request P50 is **0.95 ms** native, **1.24 ms** through the pVisor host proxy and **3.83 ms** in the VM. A 32 MiB transfer reaches about **869, 417 and 155 MiB/s**, respectively. Small-request proxy overhead is modest; VM bulk-transfer overhead is more pronounced. These are not Internet model-response timings.**
+**Local 1 KiB HTTP request P50 is 0.95 ms native, 1.24 ms through the pVisor host proxy and 3.83 ms in the VM. A 32 MiB transfer reaches about 869, 417 and 155 MiB/s, respectively. Small-request proxy overhead is modest; VM bulk-transfer overhead is more pronounced. These are not Internet model-response timings.**
 
 | Need | Selection implication |
 |---|---|
@@ -24,6 +24,8 @@ Tables identify pinned artifacts and measurement dates. Failed or invalid sample
 
 ## Data and analysis {#results}
 
+Measured on 2026-10-04; configurations retain separate samples. P50 is the median.
+
 | Network configuration | Backend | Batches | 1 KiB P50/P95 ms | 32 MiB P50 MiB/s | Stream first body P50/P95 ms |
 |---|---|---|---|---|---|
 | proxy / VM | native | 30 | 0.95/1.42 | 869.4 | 1.10/1.20 |
@@ -40,11 +42,14 @@ Host adds about 0.29 ms to small-request P50; VM adds about 2.88 ms. Main-batch 
 Host deny-all with a private network namespace and VM deny-all each blocked direct sockets **30/30**, with non-bypassable networking confirmed in the Bundle. Ordinary host proxy enforcement is cooperative and direct sockets can bypass it. Fast denials are correctness checks rather than throughput results.
 ### Read the numbers as requests and downloads {#baseline-meaning}
 
-Native HTTP is the baseline without the pVisor path; Podman/crun is a measured ordinary OCI path. Host proxy adds about 0.29 ms per small request, and VM about 2.88 ms. If an external service itself takes 100 ms, these additions alone would be about 0.3% and 2.9%. That is an illustrative assumption, not an Internet or model API measurement.
+Native HTTP is the baseline without the pVisor path; Podman/crun is a measured ordinary OCI path. Host proxy adds about 0.29 ms per small request, and VM about 2.88 ms.
 
-Bulk downloads differ: at the measured rates, transferring 32 MiB takes about 37 ms natively and 207 ms through VM. Many local requests, dependency downloads, and model streams are different workloads. The new [complete Docker tool-environment comparison](agent-tasks.md#reference-env) uses network none; its task timings do not establish Docker bridge or Internet performance.
+Bulk downloads differ: at the measured rates, transferring 32 MiB takes about 37 ms natively and 207 ms through VM. Many local requests, dependency downloads, and model streams are different workloads. The [complete Docker tool-environment comparison](agent-tasks.md#reference-env) uses network none; its task timings do not establish Docker bridge or Internet performance.
 
 ### Scope {#acceptance}
 
 Internet, TLS, DNS and real-model latency are unmeasured. Local first byte is not model TTFT; network paths differ from host-network OCI boundaries.
 
+### Downloads and reproduction {#run}
+
+[Derived table CSV](network.csv) · [Evidence source summary](evidence-sources.csv) · [Comparison method](methodology.md) · [Runner manual](https://github.com/DeepLink-org/pvisor/blob/main/benchmark/pvisor/README.md)

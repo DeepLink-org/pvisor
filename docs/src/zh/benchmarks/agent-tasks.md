@@ -1,62 +1,74 @@
-# 修复与测试任务要多久，Agent CLI 能否完成？
+# 完整修复任务要多久，Agent CLI 能否正常完成？
 
 ## 主要结论 {#conclusions}
 
-**pVisor staged 的短工具任务接近原生，且在已测完整修复任务中快于 Docker；pVisor VM 的工具执行慢于 Docker 和最小参考 VM。** 同工具环境修复/测试 P50 为 staged **0.70 s**、原生 **0.50 s**、Docker **0.90 s**；VM **3.97 s**、QEMU microvm **1.85 s**。需要暂存审查时，staged 的额外等待约为数百毫秒。
-
-无镜像 VM 比完整 Ubuntu 的新环境更早返回短任务结果，但进入环境后的工具执行更慢。**Codex 的受控工具闭环通过；Claude 在 pVisor VM 初始化超时**，选型还需要核对客户端兼容性。
+**所测 rootless host/staged 修复与测试等待短于 pVisor VM；较快的 VM 启动不能消除工具成本。固定版本 CLI 测试中 Codex 受控闭环通过，Claude 在所测 pVisor VM 配置中初始化失败。**
 
 | 需求 | 选型含义 |
 |---|---|
-| 可信任务，需要暂存审查 | 优先评估 host staged |
-| 需要独立 guest kernel | 预留 VM 的工具执行时间 |
-| 使用 Claude Code / VM | 先核对指定版本兼容性 |
+| 本机工具与保留改动 | 评估 rootless host/staged |
+| 需要独立 guest 内核 | 预算完整 VM 工具时间 |
+| 已有容器/Git 工作流 | 比较成本与审查语义 |
 
 ## Motivation {#motivation}
 
-裸启动时间不能代表一次 Agent 修改、安装依赖、跑测试的总等待。固定工具计划和模型响应，可以先判断环境本身的开销及 CLI 是否正常工作，再考虑真实模型的质量与波动。
+Agent 启动后还要改文件和运行测试。固定修复计划隔离环境成本；真实客户端闭环另外检查兼容性，再考虑真实模型波动。
 
 ## 实验设计 {#interpretation}
 
-使用真实 Claude Code 2.1.128 / Codex CLI 0.160.0，本地受控响应与假凭据，无模型推理。任务检查仓库、搜索、修复 Python，再运行 Python/Rust/Node 测试、离线安装 32 个 npm 包和生成 diff。要求实际测试结果回传模型服务、客户端完成、暂存原目录未改动。
+共享 Linux/x86_64 宿主，AMD Ryzen 7 9700X，Fedora 内核 7.2.8-200.fc44.x86_64。启动进程树及专用 Docker daemon 固定到宿主 CPU 0,1；guest 为 2 vCPU。host/staged 使用 rootless_process。Shell VM 为 128 MiB，工具 VM 为 16 GiB。原生/Docker 不限内存：控制 CPU 与 guest 配置内存，不是相同资源限制的对照。工具与输入已准备，每次新建工作区、热缓存，3 次预热、60 次正式采样；按固定种子随机交错后端。构建、下载及输入复制不计时。
 
-Linux 同工具环境各格 3 次预热、30 次测量；完整 Ubuntu 各格 N=10、3 次预热；均两核预算、VM 2 vCPU / 16 GiB、热宿主缓存。工具版本与存储路径在完整 Ubuntu 对照中不同，两表独立呈现。任务计时从启动到校验结果，不含镜像/工具准备；worker 只计内部工具与校验。Codex 内层统一为 `danger-full-access`，不验证默认嵌套沙箱。对应 macOS 与真实模型任务尚未测量。
+Docker Engine 29.7.2 使用专用 rootless VFS daemon 与可写 bind mount，结果不代表 overlay2 或 Docker Desktop。Firecracker 1.13.1 PCI 不使用 jailer；QEMU 10.2.2 分别使用 q35/microvm、私有 ext4。pVisor VM 使用 virtio-fs 和不同内核。内核、存储、设备及暂存语义均有差异，不能把差距单独归因于 VMM 或 FUSE。
 
-固定制品与测量日期按表注明。失败与校验不通过的样本不计入成功耗时，失败数量单列；既有数据没有事先的宿主干扰剔除规则，所有通过校验的慢样本保留。30 次及更少采样的 P95 仅为观察参考，不给 P99 或稳定尾延迟承诺。
+计划检查/搜索仓库、修复 Python、运行 Python/Rust/Node 测试、安装 32 个离线 npm 包并生成 diff。Result 截止到校验后的结果返回，Completion 含进程退出；测试与预期改动须通过。真实模型成功率、大型仓库及持久池吞吐未测。
 
 ## 实验数据和分析 {#results}
 
-### 同工具环境：原生、Docker 与最小 VM {#reference-env}
+### 固定修复与测试计划 {#reference-env}
 
-| Backend | Tool self-check P50/P95 s | Repair/tests P50/P95 s | Claude loop P50/P95 s | Codex loop P50/P95 s |
+测于 2026-10-06，每后端 60/60 有效、正式失败 0。检查输出与退出；暂存模式额外检查原文件未修改、改动完整保留。通过校验的慢样本全部保留，不按耗时剔除。P95 仅为观察参考。按[比较方法](methodology.md)中的预定规则识别出分离簇时，展示各簇中位数及占 60 次的数量，替代单个 P50。
+
+| Backend | Valid / failed | Result P50 s | Completion P50 s | Completion P95 s |
 |---|---|---|---|---|
-| Native | 0.15 / 0.17 | 0.50 / 0.78 | 0.82 / 0.88 | 1.97 / 2.49 |
-| pVisor host | 0.16 / 0.17 | 0.50 / 0.61 | 0.85 / 0.91 | 1.94 / 2.25 |
-| pVisor staged | 0.17 / 0.19 | 0.70 / 1.10 | 1.07 / 1.27 | 2.25 / 2.44 |
-| pVisor VM | 1.40 / 1.52 | 3.97 / 6.79 | FAILED / N=0 | 10.93 / 12.93 |
-| Docker rootless | 0.46 / 0.53 | 0.90 / 1.45 | 1.23 / 1.33 | 6.26 / 6.59 |
-| Firecracker PCI | 1.48 / 1.59 | 2.25 / 3.13 | 3.03 / 3.21 | 7.83 / 8.47 |
-| QEMU q35 | 0.92 / 1.09 | 1.98 / 3.11 | 2.67 / 3.67 | 7.69 / 8.46 |
-| QEMU microvm | 0.85 / 1.07 | 1.85 / 2.48 | 2.71 / 3.29 | 7.67 / 8.34 |
+| Native | 60 / 0 | 0.45 | 0.45 | 0.47 |
+| pVisor host | 60 / 0 | 0.46 | 0.47 | 0.56 |
+| pVisor staged | 60 / 0 | 0.57 | 0.68 | 0.73 |
+| pVisor VM | 60 / 0 | 3.11 | 3.25 | 4.14 |
+| Docker rootless / VFS | 60 / 0 | 4.03 | 5.15 | 6.38 |
+| Firecracker PCI | 60 / 0 | 2.01 | 2.06 | 3.00 |
+| QEMU q35 | 60 / 0 | 1.29 | 1.33 | 1.65 |
+| QEMU microvm | 60 / 0 | 1.23 | 1.27 | 1.77 |
 
-staged 比 Docker 的修复任务少约 **0.20 s**，但它与 Docker writable bind 的修改和隔离语义不同。VM 的修复任务约为 Docker **4.4 倍**，npm 安装是主要等待阶段，约 **1.74 s**；启动快没有消除工具路径成本。
+完整完成包含工具执行与退出，Docker VFS 创建计入总时间。单项工具见[文件系统对照](filesystem.md)。
 
-Claude 在原生、staged、Docker 和三个参考 VM 上各 30/30 通过，pVisor VM 初始化超过 90 s，正式 N=0。Codex 八组各 30/30 通过。不同 CLI 的绝对耗时不代表模型速度；固定响应也不能证明真实模型成功率不变。
+### 真实 CLI 兼容性 {#cli-compatibility}
 
-### 无镜像 VM 与完整 Ubuntu {#full-ubuntu}
+独立的 2026-10-04 样本组：Claude Code 2.1.128 / Codex CLI 0.160.0，可用组各 N=30、3 次预热、两核 / 16 GiB。单位为启动到结果 P50 秒。本地确定性响应与假凭据排除模型推理。Codex 使用 `danger-full-access`，不是默认嵌套 sandbox 行为。
 
-| Backend | Tool self-check P50/P95 s | Repair/tests P50/P95 s | Claude loop P50/P95 s | Codex loop P50/P95 s |
-|---|---|---|---|---|
-| Native / Fedora | 0.16 / 0.17 | 0.52 / 0.55 | 0.92 / 1.07 | 2.03 / 3.12 |
-| pVisor staged | 0.18 / 0.19 | 0.72 / 0.78 | 1.15 / 1.58 | 2.33 / 2.44 |
-| pVisor VM / host | 1.21 / 1.77 | 4.61 / 5.09 | FAILED / N=0 | 11.39 / 13.73 |
-| Firecracker / Ubuntu | 7.79 / 10.13 | 8.51 / 9.11 | 9.78 / 9.87 | 10.81 / 13.49 |
-| QEMU q35 / Ubuntu | — | 8.12 / 8.23 | 9.50 / 10.78 | 10.20 / 11.63 |
-| QEMU microvm / Ubuntu | — | 10.33 / 10.47 | 11.59 / 14.07 | 13.04 / 14.06 |
+| Backend | Claude loop P50 s | Codex loop P50 s |
+|---|---|---|
+| Native | 0.82 | 1.97 |
+| pVisor host | 0.85 | 1.94 |
+| pVisor staged | 1.07 | 2.25 |
+| pVisor VM | FAILED / N=0 | 10.93 |
+| Docker rootless | 1.23 | 6.26 |
+| Firecracker PCI | 3.03 | 7.83 |
+| QEMU q35 | 2.67 | 7.69 |
+| QEMU microvm | 2.71 | 7.67 |
 
-pVisor VM 修复任务从启动到结果约 **4.61 s**，Firecracker/Ubuntu **8.51 s**；只计内部工具则分别 **4.02/2.30 s**。减少开机等待有利于一次性短任务，长期复用环境时工具速度更重要。QEMU 两行是同一 Ubuntu 模板的独立 N=10 批次，不合并分布。原始报告保留阶段计时与内存范围。
+Codex 八组均通过，各 30/30。Claude 可用组均 30/30，但 pVisor VM 预检超过 90 秒初始化期限，无正式耗时样本。这是固定版本观察，不代表所有新版客户端。
 
-### 数据范围 {#acceptance}
+### 完整 Ubuntu 部署 {#full-ubuntu}
 
-这些对照使用各自固定的 pVisor 制品，未随当前文件系统制品全部重测。大型仓库、真实推理、公网依赖、长期池化吞吐与 SWE-bench 成功率没有对应结果。[当前文件系统](filesystem.md)另给最新本地操作数据。
+独立的 2026-10-04 数据，两核 / 16 GiB、N=10、3 次预热。OS 初始化/工具/存储不同，单位为启动到结果 P50 秒，不进行纯 VMM 排名。
 
+| Deployment | Repair result P50 s |
+|---|---|
+| pVisor VM / host tools | 4.61 |
+| Firecracker / Ubuntu | 8.51 |
+| QEMU q35 / Ubuntu | 8.12 |
+| QEMU microvm / Ubuntu | 10.33 |
+
+### 数据下载与复现 {#run}
+
+[整理后的表格 CSV](agent-tasks.csv) · [运行时统计](runtime-summary.csv) · [来源与制品](runtime-provenance.csv) · [证据来源摘要](evidence-sources.csv) · [比较方法](methodology.md) · [复现手册](https://github.com/DeepLink-org/pvisor/blob/main/benchmark/pvisor/README.md)

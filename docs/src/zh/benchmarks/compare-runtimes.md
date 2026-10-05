@@ -2,9 +2,7 @@
 
 ## 主要结论 {#conclusions}
 
-**pVisor VM 的轻量启动接近 Firecracker/QEMU microvm，工具任务目前更慢。** 同工具修复/测试 P50 为 pVisor **3.97 s**、Firecracker **2.25 s**、QEMU microvm **1.85 s**。无镜像 pVisor 比启动完整 Ubuntu 更早返回短任务结果，优势来自减少完整系统启动等待。
-
-gVisor/Kata 没有同机性能数据。pVisor 当前 VM 基座为 libkrun；独立测过 Firecracker/QEMU 不表示它们已接入为 pVisor executor。
+**pVisor VM 启动处于轻量 VM 量级，但所测修复与七项工具任务比 Firecracker、QEMU 等待更长。应结合完整执行与保留改动成本选型；gVisor/Kata 没有同条件排名。**
 
 | 需求 | 选型含义 |
 |---|---|
@@ -18,36 +16,51 @@ gVisor/Kata 没有同机性能数据。pVisor 当前 VM 基座为 libkrun；独�
 
 ## 实验设计 {#interpretation}
 
-Linux 同机、相同两核预算、2 vCPU；轻量启动 128 MiB，工具任务 16 GiB，N=30、3 次预热。Firecracker 1.13.1 PCI 无 jailer，QEMU 10.2.2 分别用 q35/microvm，裁剪内核与静态 init。完整 Ubuntu 独立配置采用发行版内核、initrd 和 systemd，启动 2 GiB，Firecracker N=30、QEMU N=10。结果不混成相同安全或 OS 配置下的排名。
+共享 Linux/x86_64 宿主，AMD Ryzen 7 9700X，Fedora 内核 7.2.8-200.fc44.x86_64。启动进程树及专用 Docker daemon 固定到宿主 CPU 0,1；guest 为 2 vCPU。host/staged 使用 rootless_process。Shell VM 为 128 MiB，工具 VM 为 16 GiB。原生/Docker 不限内存：控制 CPU 与 guest 配置内存，不是相同资源限制的对照。工具与输入已准备，每次新建工作区、热缓存，3 次预热、60 次正式采样；按固定种子随机交错后端。构建、下载及输入复制不计时。
 
-| 基座 | 执行方式 | pVisor 状态 |
-|---|---|---|
-| libkrun | 本机 Linux guest VM | 当前集成 VM 后端 |
-| Firecracker / QEMU | 独立 VMM | 已测参考 CLI，未作为集成 executor 验收 |
-| gVisor | 应用内核处理系统接口，提供 runsc | 未建立本机性能对照或专用后端验收 |
-| Kata | VM 支持容器工作流 | 未接入验收或同机测量 |
+Docker Engine 29.7.2 使用专用 rootless VFS daemon 与可写 bind mount，结果不代表 overlay2 或 Docker Desktop。Firecracker 1.13.1 PCI 不使用 jailer；QEMU 10.2.2 分别使用 q35/microvm、私有 ext4。pVisor VM 使用 virtio-fs 和不同内核。内核、存储、设备及暂存语义均有差异，不能把差距单独归因于 VMM 或 FUSE。
 
-官方定位见 [gVisor](https://gvisor.dev/docs/)、[Firecracker](https://firecracker-microvm.github.io/) 和 [Kata](https://katacontainers.io/)；pVisor 支持范围见[执行器](../guides/executors/index.md)。
-
-固定制品与测量日期按表注明。失败与校验不通过的样本不计入成功耗时，失败数量单列；既有数据没有事先的宿主干扰剔除规则，所有通过校验的慢样本保留。30 次及更少采样的 P95 仅为观察参考，不给 P99 或稳定尾延迟承诺。
+输出、暂存与退出必须校验。对照已准备环境，不是相同 OS 或安全加固程度的排名。
 
 ## 实验数据和分析 {#results}
 
-### 最小参考环境 {#reference-comparison}
+### 轻量 VM 等待 {#reference-comparison}
 
-| Runtime | First output P50 ms | Repair/tests P50 s | Codex loop P50 s | Seven-tool filesystem task P50 s |
-|---|---:|---:|---:|---:|
-| pVisor VM | 86.29 | 3.97 | 10.93 | 4.08 |
-| Firecracker PCI | 73.74 | 2.25 | 7.83 | 2.37 |
-| QEMU q35 | 218.12 | 1.98 | 7.69 | 1.82 |
-| QEMU microvm | 88.10 | 1.85 | 7.67 | 1.77 |
+启动/文件系统：2026-10-05；修复：2026-10-06。各独立负载/后端 N=60、失败 0、3 次预热。单位与计时边界见表头。通常为 P50，分离簇展示各簇中位数与数量；不跨批次合并分布。
 
-七项文件系统任务列包含启动、工具运行和退出；pVisor 使用 2026-10-05 的最新 release 实测（2 vCPU / 4 GiB），Firecracker/QEMU 使用 2026-10-04 的参考实测（2 vCPU / 16 GiB），各 30 次采样。该列与修复/测试、Codex 闭环是不同负载；其余三列保留各自实测，不用文件系统结果替代。逐项工具耗时和 P95 见[文件系统对比](filesystem.md)。
+| Runtime | Valid / failed | Ready P50 ms | Repair completion P50 s | Seven-tool completion P50 s |
+|---|---|---|---|---|
+| pVisor VM | 60 / 0 | 99.76 | 3.25 | 6.66 |
+| Firecracker PCI | 60 / 0 | 74.74 | 2.06 | 2.16 |
+| QEMU q35 | 60 / 0 | 213.89 | 1.33 | 2.44 |
+| QEMU microvm | 60 / 0 | 86.60 | 1.27 | 2.45 |
 
-启动处于同一量级，pVisor VM 的工具和 Codex 完整闭环更慢。Claude 在参考 VM 通过，在 pVisor VM 初始化超时。内核、virtio-fs/ext4、guest 与网络配置都不同，表格不能证明性能差的唯一原因是 libkrun。
+复用环境摊薄启动后，工具时间更影响反馈速度。内核与文件系统路径有差异，不能把成本唯一归因于 libkrun。[启动](startup.md)、[文件系统](filesystem.md)与[修复/CLI 检查](agent-tasks.md)给出详细数据。
+
+### 执行范围
+
+| 运行时 | 执行范围 | 测量状态 |
+|---|---|---|
+| pVisor / libkrun | 集成 guest VM + stage/apply | 本机对照如下 |
+| Firecracker / QEMU | 独立 VMM CLI | 对照测量，不是 pVisor 集成后端 |
+| gVisor | 应用内核 / runsc | 同条件性能未测 |
+| Kata | VM 支持容器工作流 | 同条件性能未测 |
+
+官方说明：[gVisor](https://gvisor.dev/docs/)、[Firecracker](https://firecracker-microvm.github.io/)、[Kata](https://katacontainers.io/)。pVisor 已验收后端见[执行器](../guides/executors/index.md)。
 
 ### 完整 Ubuntu 部署 {#full-ubuntu}
 
-pVisor 无镜像 Ready 约 **110 ms**，完整 Ubuntu 的 Firecracker **5.64 s**、QEMU q35 **5.43 s**、microvm **7.67 s**。修复/测试任务分别 **4.61、8.51、8.12、10.33 s**；pVisor 的工具内部为 **4.02 s**，参考 Ubuntu VM **2.30–2.81 s**。一次性短任务可减少开机等待；常驻环境不能仅凭启动数据选型。
+独立的 2026-10-04 数据，两核。启动：2 GiB，pVisor/Firecracker N=30、QEMU N=10；修复：16 GiB、N=10。统计 P50，OS 初始化/工具/存储不同。
 
-数据使用各报告固定制品，没有随当前文件系统集成制品全面重测。[启动](startup.md) · [完整任务与兼容性](agent-tasks.md) · [方法](methodology.md)
+| Deployment | Ready P50 ms | Repair result P50 s |
+|---|---|---|
+| pVisor VM / host tools | 109.69 | 4.61 |
+| Firecracker / Ubuntu | 5644.11 | 8.51 |
+| QEMU q35 / Ubuntu | 5428.90 | 8.12 |
+| QEMU microvm / Ubuntu | 7666.69 | 10.33 |
+
+此表描述部署等待，不是纯 VMM 排名。
+
+### 数据下载与复现 {#run}
+
+[整理后的表格 CSV](compare-runtimes.csv) · [运行时统计](runtime-summary.csv) · [来源与制品](runtime-provenance.csv) · [证据来源摘要](evidence-sources.csv) · [比较方法](methodology.md) · [复现手册](https://github.com/DeepLink-org/pvisor/blob/main/benchmark/pvisor/README.md)

@@ -564,7 +564,6 @@ pub async fn recover(
     outbox: Arc<Outbox>,
     client: Client,
     poll_ms: u64,
-    repository: Option<Arc<super::checkpoints::Repository>>,
     filesystem_pool: Option<PathBuf>,
 ) -> anyhow::Result<()> {
     let entries = tokio::task::spawn_blocking({
@@ -626,7 +625,6 @@ pub async fn recover(
                     &storage,
                     entry.retention.clone(),
                     None,
-                    repository.clone(),
                     filesystem_pool.clone(),
                 )
                 .await
@@ -815,7 +813,6 @@ mod tests {
         let outbox = Outbox::open(root.path(), "worker", "http://controller").unwrap();
         let native = terminal();
         let retention = Some(ArtifactRetention {
-            execution_checkpoint: None,
             version: ARTIFACT_EXPORT_VERSION,
             trace: true,
             workspace_upper: true,

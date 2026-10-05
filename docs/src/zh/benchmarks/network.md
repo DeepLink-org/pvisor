@@ -2,7 +2,7 @@
 
 ## 主要结论 {#conclusions}
 
-**本地 1 KiB HTTP 请求 P50 为原生 **0.95 ms**、pVisor 宿主代理 **1.24 ms**、VM **3.83 ms**。32 MiB 传输吞吐分别约 **869、417、155 MiB/s**。代理的小请求增量较小，VM 的批量传输成本更明显；这些结果不代表公网模型响应时间。**
+**本地 1 KiB HTTP 请求 P50 为原生 0.95 ms、pVisor 宿主代理 1.24 ms、VM 3.83 ms。32 MiB 传输吞吐分别约 869、417、155 MiB/s。代理的小请求增量较小，VM 的批量传输成本更明显；这些结果不代表公网模型响应时间。**
 
 | 需求 | 选型含义 |
 |---|---|
@@ -23,6 +23,8 @@
 固定制品与测量日期按表注明。失败与校验不通过的样本不计入成功耗时，失败数量单列；既有数据没有事先的宿主干扰剔除规则，所有通过校验的慢样本保留。30 次及更少采样的 P95 仅为观察参考，不给 P99 或稳定尾延迟承诺。
 
 ## 实验数据和分析 {#results}
+
+测量日期 2026-10-04；各表按配置保留独立样本，P50 为中位数。
 
 | Network configuration | Backend | Batches | 1 KiB P50/P95 ms | 32 MiB P50 MiB/s | Stream first body P50/P95 ms |
 |---|---|---|---|---|---|
@@ -48,3 +50,6 @@ host deny-all 的私有网络命名空间和 VM deny-all 各 **30/30** 次阻止
 
 没有公网、TLS、DNS 或真实模型延迟对照；本地首字节不等于模型 TTFT。网络路径与 host-network OCI 的边界不同。
 
+### 数据下载与复现 {#run}
+
+[整理后的表格 CSV](network.csv) · [证据来源摘要](evidence-sources.csv) · [比较方法](methodology.md) · [复现手册](https://github.com/DeepLink-org/pvisor/blob/main/benchmark/pvisor/README.md)

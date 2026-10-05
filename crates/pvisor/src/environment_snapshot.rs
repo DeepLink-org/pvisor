@@ -43,8 +43,6 @@ pub(crate) use store::{NativeLayerCapture, PrivateFilesystemOwner};
 mod lazy;
 mod owned;
 mod store;
-#[cfg(target_os = "linux")]
-mod transfer;
 pub use blocks::RamBlocks;
 pub(crate) use blocks::{PinnedRamBlocks, RamDelta};
 pub use lazy::{RawRamIndex, SnapshotRamMount, SnapshotRamReader};
@@ -52,8 +50,6 @@ pub(crate) use lazy::{serve_ram, watch_mount};
 pub use store::{
     Compatibility, EnvironmentManifest, PendingEnvironment, PublishedEnvironment, SnapshotStore,
 };
-#[cfg(target_os = "linux")]
-pub use transfer::{SnapshotRepository, SnapshotTransfer};
 
 #[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(deny_unknown_fields)]

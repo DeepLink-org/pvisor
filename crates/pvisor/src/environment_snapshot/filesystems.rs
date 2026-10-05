@@ -438,7 +438,7 @@ pub(super) fn adopt(
         fs::set_permissions(source, fs::Permissions::from_mode(0o700))?;
         fs::rename(source, temporary.path().join("tree"))?;
         File::open(source.parent().context("missing staging parent")?)?.sync_all()?;
-        super::transfer::restore_metadata(
+        super::linux::restore_metadata(
             &temporary.path().join("tree"),
             &layer.filesystem.entries[0],
         )?;

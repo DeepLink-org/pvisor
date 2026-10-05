@@ -282,7 +282,6 @@ fn experiment(total: usize, args: &Args) -> anyhow::Result<Value> {
             execution_restore_protocol: None,
             parked_execution_suspend_protocol: None,
             environment_support: None,
-            checkpoint_storage: None,
         },
         3,
     )?;

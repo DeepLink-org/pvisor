@@ -19,8 +19,6 @@ use tokio::{
 };
 #[path = "worker/artifacts.rs"]
 mod artifacts;
-#[path = "worker/checkpoints.rs"]
-mod checkpoints;
 #[path = "worker/cpu.rs"]
 mod cpu;
 #[path = "worker/environment.rs"]
@@ -44,9 +42,6 @@ enum Backend {
 #[derive(Clone, Default, serde::Deserialize)]
 #[serde(default, deny_unknown_fields)]
 struct WorkerProfile {
-    checkpoint_storage: Option<checkpoints::Profile>,
-    #[serde(skip)]
-    checkpoints: Option<Arc<checkpoints::Repository>>,
     gateway: gateway::Profile,
     vm: pvisor::VmSettings,
     container: pvisor::ContainerSettings,
@@ -459,13 +454,6 @@ fn runtime(
             );
             let state = args.state.canonicalize()?;
             let store = checkpoint.store.canonicalize()?;
-            if store.starts_with(state.join("checkpoint-imports")) {
-                let publication = assignment
-                    .checkpoint_publication
-                    .as_ref()
-                    .context("imported checkpoint has no controller provenance")?;
-                checkpoints::Repository::validate_import(&state, checkpoint, publication)?;
-            } else {
                 ensure!(
                     store.starts_with(state.join("tasks"))
                         && store
@@ -481,7 +469,6 @@ fn runtime(
                         && source.attempt_id.as_deref() == Some(&checkpoint.source_attempt_id),
                     "execution checkpoint source Run/Attempt storage binding mismatch"
                 );
-            }
             let (executor, overlay) = VmExecutor::restore(
                 vm_settings(config, assignment.spec.resources)?,
                 checkpoint.clone(),
@@ -604,34 +591,7 @@ impl AttemptRuntime {
             }
         };
         let args = self.args.clone();
-        let mut assigned = assignment.clone();
-        if let Some(publication) = &assignment.checkpoint_publication {
-            publication.validate()?;
-            ensure!(
-                assignment.checkpoint.as_ref() == Some(&publication.checkpoint)
-                    && assignment.spec.restore.is_some(),
-                "checkpoint publication does not match restore assignment"
-            );
-            let local = publication
-                .checkpoint
-                .store
-                .canonicalize()
-                .ok()
-                .is_some_and(|store| {
-                    store.starts_with(self.args.state.join("tasks"))
-                        && store
-                            .join("objects")
-                            .join(&publication.checkpoint.snapshot_id)
-                            .is_dir()
-                });
-            if !local {
-                let repository = profile
-                    .checkpoints
-                    .as_ref()
-                    .context("remote checkpoint repository is disabled")?;
-                assigned.checkpoint = Some(repository.import(&self.args.state, publication).await?);
-            }
-        }
+        let assigned = assignment.clone();
 
         let destination = storage.to_owned();
         tokio::task::spawn_blocking(move || {
@@ -711,7 +671,6 @@ async fn execute(
     } = channels;
     let requested_bundle = assignment.spec.requires_artifacts();
     let retention = assignment.spec.retain_artifacts.clone();
-    let checkpoint_repository = runtime.profile.checkpoints.clone();
     let checkpoint_filesystem_pool = runtime.profile.vm.snapshot_filesystem_pool.clone();
     let mut export_journal = None;
     let mut terminal_control = None;
@@ -750,10 +709,6 @@ async fn execute(
         ensure!(!spec.metadata.contains_key("pvisor.orchestration.gateway"), "task overrides Gateway provenance");
         if let Some(requirement) = assignment.spec.gateway {
             spec.metadata.insert("pvisor.orchestration.gateway".into(), serde_json::to_value(requirement)?);
-        }
-        ensure!(!spec.metadata.contains_key("pvisor.orchestration.checkpoint_publication"), "task overrides checkpoint publication provenance");
-        if let Some(publication) = assignment.checkpoint_publication {
-            spec.metadata.insert("pvisor.orchestration.checkpoint_publication".into(), serde_json::to_value(publication)?);
         }
         ensure!(!spec.metadata.contains_key("pvisor.orchestration.execution_restore"), "task overrides execution restore provenance");
         if let Some(checkpoint) = assignment.checkpoint {
@@ -950,7 +905,6 @@ async fn execute(
                 &storage,
                 retention.clone(),
                 export_journal.clone(),
-                checkpoint_repository.clone(),
                 checkpoint_filesystem_pool.clone(),
             )
             .await
@@ -1129,22 +1083,10 @@ async fn worker_main() -> anyhow::Result<()> {
         pvisor::environment_snapshot::SnapshotStore::new(pool)?;
         config.vm.snapshot_filesystem_pool = Some(pool.canonicalize()?);
     }
-    if let Some(profile) = &config.checkpoint_storage {
-        ensure!(
-            cfg!(all(target_os = "linux", target_arch = "x86_64"))
-                && matches!(args.backend, Backend::Vm)
-                && config.overlaynet.mode == pvisor::OverlayNetMode::Off
-                && config.vm.memory_pool.is_none()
-                && !config.vm.ram_compression,
-            "checkpoint repository requires a no-network native Linux VM profile"
-        );
-        config.checkpoints = Some(Arc::new(checkpoints::Repository::new(profile, &config.vm)?));
-    }
     outbox::recover(
         outbox.clone(),
         client.clone(),
         args.poll_ms,
-        config.checkpoints.clone(),
         config.vm.snapshot_filesystem_pool.clone(),
     )
     .await?;
@@ -1247,15 +1189,7 @@ async fn worker_main() -> anyhow::Result<()> {
         || (cfg!(all(target_os = "macos", target_arch = "aarch64"))
             && std::env::var_os("PVISOR_EXPERIMENTAL_MEMORY_POOL").is_some());
     let registration = WorkerRegistration {
-        checkpoint_storage: config
-            .checkpoints
-            .as_ref()
-            .map(|repository| repository.support.clone()),
         artifact_export: Some(ArtifactExportSupport {
-            execution_checkpoint: config
-                .checkpoints
-                .as_ref()
-                .is_some_and(|repository| repository.support.publish),
             version: ARTIFACT_EXPORT_VERSION,
             trace: true,
             workspace_upper: matches!(args.backend, Backend::Vm),

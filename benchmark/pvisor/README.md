@@ -44,10 +44,10 @@ python3 benchmark/pvisor/reference_baselines.py \
   --docker-root-pid 12345 --cpu-affinity 0,1 \
   --memory-mib 16384 --host-isolation rootless_process \
   --staged-isolation rootless_process \
-  --modes ready,filesystem,tools --samples 60 --warmups 3 --seed 20261005
+  --modes filesystem --samples 60 --warmups 3 --seed 20261005
 ```
 
-Run `--samples 1 --warmups 0` into a separate new directory first. Every group requires valid outputs, declared isolation and complete staged writes; original host inputs must remain unchanged for staged jobs. `ready` measures first output, `filesystem` runs seven checked operations, and `tools` performs the fixed repair/test/diff plan. Each row records its benchmark ID. `claude,codex` are separate real-CLI workloads with deterministic local responses, not real inference or default nested-sandbox rankings. Failures make the runner exit nonzero after unaffected cases finish.
+Run `--samples 1 --warmups 0` into a separate new directory first. Run `--modes ready`, `--modes filesystem` and `--modes tools` separately, each with its own output directory and benchmark ID. `env,tools,claude,codex` share B-AGENT-TASK and may be selected together. Every group requires valid outputs, declared isolation and complete staged writes; original host inputs must remain unchanged for staged jobs. `ready` measures first output, `filesystem` runs seven checked operations, and `tools` performs the fixed repair/test/diff plan. Each row records its benchmark ID. `claude,codex` are separate real-CLI workloads with deterministic local responses, not real inference or default nested-sandbox rankings. Failures make the runner exit nonzero after unaffected cases finish.
 
 Tool preparation needs Linux x86_64, KVM, FUSE, user namespaces, a GNU pVisor CLI, firmware, Docker/Firecracker/QEMU, the Rust musl target, Git/rg/Python/Node/GCC and e2fsprogs. CLI modes also need their installed clients. Input copying, kernel builds, image import and downloads are outside timers. First output, result return and process exit are separate metrics. Record binary/source/harness digests, host kernel and tool identities with every run.
 
@@ -87,7 +87,7 @@ B-STARTUP uses `vm_ready.py`; B-MACOS uses `macos_docker_tools.py` for Docker De
 
 ## Engineering and diagnostics
 
-B-FS-ENG runners remain active: `filesystem_ab.py`, `filesystem_fuse_ab.py`, `filesystem_stage_ab.py`, `filesystem_stage_durability.py`, `filesystem_lazy_ab.py`, `filesystem_kernel_probe.py` and `filesystem_diagnostic.py`. The FUSE passthrough adapter is a diagnostic control without staging semantics, not a production mode. Record each engineering run’s ID and keep raw output in `.data/`; publish only when it changes a user conclusion, after a matching user-facing comparison.
+B-FS-ENG engineering runners and B-FS-DIAG diagnostic helpers remain active: `filesystem_ab.py`, `filesystem_fuse_ab.py`, `filesystem_stage_ab.py`, `filesystem_stage_durability.py`, `filesystem_lazy_ab.py`, `filesystem_kernel_probe.py` and `filesystem_diagnostic.py`. The FUSE passthrough adapter is a diagnostic control without staging semantics, not a production mode. Record each engineering run’s ID and keep raw output in `.data/`; publish only when it changes a user conclusion, after a matching user-facing comparison.
 
 ```bash
 python3 benchmark/pvisor/filesystem_ab.py \
@@ -99,7 +99,7 @@ python3 benchmark/pvisor/filesystem_ab.py \
   --cpu-affinity 0,1 --samples 30 --warmups 3
 ```
 
-Build frozen sources with only the proposed change between versions; report paired median differences with bootstrap confidence intervals. Instrumented profile runs remain separate from performance samples. `firmware_boot.py` and `guest_init.py` are startup diagnostics. `evidence_tsv.py` can read/write legacy raw formats locally; its format does not make a report suitable for public download.
+Build frozen sources with only the proposed change between versions; report paired median differences with bootstrap confidence intervals. Instrumented profile runs remain separate from performance samples. `firmware_boot.py` serves B-STARTUP-DIAG; `guest_init.py` serves B-STARTUP-ENG. `evidence_tsv.py` can read/write legacy raw formats locally; its format does not make a report suitable for public download.
 
 ## CI regression gate
 

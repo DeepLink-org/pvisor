@@ -126,7 +126,7 @@ Design: 负载、对照、控制变量与有效样本判据。
   - 环境和镜像预先准备好，准备时间单独记录；热缓存与冷镜像分成两组。
   - 统一 CPU 和内存预算，随机交替执行，每格至少 30 个样本。
   - 完整 Ubuntu 只作为"完整 OS 启动成本"的对照，不与最小 VM 做 VMM 排名。
-- **入口脚本：** `startup.py`、`linux_vm_ready.py`、`vm_ready.py`、`run_all.py`、`ubuntu_baselines.py`；诊断用 `firmware_boot.py`、`guest_init.py`。
+- **入口脚本：** `startup.py`、`linux_vm_ready.py`、`vm_ready.py`、`run_all.py`、`ubuntu_baselines.py`；启动工程实验与诊断见下列独立条目。
 
 ### B-FS-TOOLS：开发工具在各执行模式下要多花多少时间 {#b-fs-tools}
 
@@ -143,10 +143,10 @@ Design: 负载、对照、控制变量与有效样本判据。
   - 不能回答的问题：大型仓库、冷磁盘、真实 registry 和并发吞吐。
 - **入口脚本：** `reference_baselines.py`（跨运行时对照）。
 
-### B-FS-ENG：文件系统改动的工程 A/B 与成本分解 {#b-fs-eng}
+### B-FS-ENG：文件系统改动的工程 A/B {#b-fs-eng}
 
 - **文档：** `docs/src/*/design/filesystem-performance-analysis.md`
-- **角色：** engineering A/B 与 diagnostic
+- **角色：** engineering A/B
 - **Motivation：** 开发者需要判断一次文件系统改动是否让 B-FS-TOOLS 的用户结论变好，并定位时间花在哪一层（传输、OverlayCore、持久化、内容指纹）。
 - **想要的结论：** "改动 X 让负载 Y 的中位数变化 Z%（95% 置信区间），其余负载未检出差异"；以及"staged 与 FUSE 直通之间的差距中，持久化占 A ms，内容指纹占 B ms，路径解析占 C ms"。
 - **实验设计：**
@@ -154,7 +154,31 @@ Design: 负载、对照、控制变量与有效样本判据。
   - 分解实验在同一批次内对照原生、FUSE 直通和 staged，同时打开 profile 计数器另跑一批；带计数器的批次不计入计时结论。
   - lazy 镜像、stage 持久化策略、内核缓存探针各自独立成批。
   - 只有当结果改变了 B-FS-TOOLS 的用户结论时，才更新 `filesystem.md`。
-- **入口脚本：** `filesystem_ab.py`、`filesystem_fuse_ab.py`、`filesystem_stage_ab.py`、`filesystem_stage_durability.py`、`filesystem_lazy_ab.py`、`filesystem_kernel_probe.py`、`filesystem_diagnostic.py`。
+- **入口脚本：** `filesystem_ab.py`、`filesystem_stage_durability.py`、`filesystem_lazy_ab.py`。
+
+### B-FS-DIAG：文件系统请求成本分解 {#b-fs-diag}
+
+- **角色：** diagnostic
+- **Motivation：** 定位 FUSE 传输、OverlayCore、持久化、内容指纹和缓存路径的成本。
+- **想要的结论：** 请求与 inclusive span 的成本分解，不能相加为精确归因，不作为用户性能数据。
+- **实验设计：** 独立诊断批次，直通 FUSE 仅为不含暂存语义的下限；插桩计时与正式性能采样分开。
+- **入口脚本：** `filesystem_fuse_ab.py`、`filesystem_stage_ab.py`、`filesystem_kernel_probe.py`、`filesystem_diagnostic.py`。
+
+### B-STARTUP-ENG：初始化实现的工程 A/B {#b-startup-eng}
+
+- **角色：** engineering A/B
+- **Motivation：** 判断 guest init 实现变化是否改变启动等待。
+- **想要的结论：** 同输入就绪中位数差异及 95% bootstrap 区间。
+- **实验设计：** 相同 runner、rootfs 与 payload，随机交错实现，不作为跨产品用户对照。
+- **入口脚本：** `guest_init.py`。
+
+### B-STARTUP-DIAG：固件启动阶段诊断 {#b-startup-diag}
+
+- **角色：** diagnostic
+- **Motivation：** 定位内核和初始化阶段对就绪时间的贡献。
+- **想要的结论：** 各阶段计时及计时边界，不作为用户启动水位。
+- **实验设计：** 固定 guest payload 与 runner；早期内核时钟和收尾时间分别解释。
+- **入口脚本：** `firmware_boot.py`。
 
 ### B-AGENT-TASK：一次完整的 Agent 修复任务要多久，主流 CLI 能否正常运行 {#b-agent-task}
 
@@ -267,7 +291,16 @@ Design: 负载、对照、控制变量与有效样本判据。
 - **Motivation：** macOS 用户的对照对象通常是 Docker Desktop。他们需要知道在 Apple Silicon 上，pVisor VM 的工具执行和启动相对 Docker 如何。
 - **想要的结论：** "在 Apple Silicon 上，pVisor VM 与 Docker Desktop 在相同工具负载下的耗时对比"。
 - **实验设计：** 同机随机交替执行，使用相同的 Alpine 环境和工具负载，分别计时 worker 耗时和完整任务耗时。
-- **入口脚本：** `macos_docker_tools.py`、`macos_migration.py`。
+- **入口脚本：** `macos_docker_tools.py`。迁移版本 A/B 另属 B-MACOS-ENG。
+
+### B-MACOS-ENG：macOS CLI 迁移的工程对照 {#b-macos-eng}
+
+- **文档：** 技术分析与工程报告，不进入用户页正文。
+- **角色：** engineering A/B
+- **Motivation：** 开发者需要防止 CLI 迁移导致启动、文件工具或冷页恢复回归。
+- **想要的结论：** 同机两个冻结版本的配对中位数差异与 95% 置信区间。
+- **实验设计：** 相同 rootfs、firmware 与预算，随机交替、检查输出与隔离；诊断另列。
+- **入口脚本：** `macos_migration.py`。
 
 ### B-COMPARE：与其他工具的对比页 {#b-compare}
 

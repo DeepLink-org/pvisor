@@ -1,6 +1,6 @@
 use super::*;
 use crate::image::cache::protocol::{Envelope, read_frame, write_frame};
-use crate::image::cache::server::handle;
+use crate::image::cache::source::handle;
 use crate::image::oci::ImageStore;
 use std::os::unix::net::UnixListener;
 use std::sync::{

@@ -2,7 +2,7 @@
 
 ## Main conclusions {#conclusions}
 
-**Choose the isolation boundary before comparing speed. Standalone `--stage` retains workspace changes while allowing access outside the view. Tested safe mode and prepared VM rootfs block outside reads/writes. An OCI writable workspace mount changes host files directly, so its speed is not a comparison with identical staging semantics.**
+**Choose the isolation boundary before comparing speed. The measured host_process + `--stage` retains workspace changes while allowing access outside the view. Tested safe mode and prepared VM rootfs block outside reads/writes. An OCI writable workspace mount changes host files directly, so its speed is not a comparison with identical staging semantics.**
 
 | Need | Selection implication |
 |---|---|
@@ -16,9 +16,9 @@ Every performance result must correspond to its actual boundary. Negative contro
 
 ## Experiment design {#interpretation}
 
-Fresh fixtures probe absolute paths, symlinks, /proc/self/root, traversal, Unix sockets and lower-workspace aliases. Host/staged deliberately provide negative controls. Inspect original host content and Bundle observed isolation/staging, not just syscall return values. VM uses a prepared tools rootfs here, unlike filesystem timing with host rootfs `/`.
+Fresh fixtures probe absolute paths, symlinks, /proc/self/root, traversal, Unix sockets and lower-workspace aliases. Host/staged deliberately provide negative controls. Inspect original host content and Bundle observed isolation/staging, not just syscall return values. The isolation matrix uses a prepared tool rootfs; other rootfs and path grants require their own checks.
 
-These results are from Linux/x86_64; matching macOS workloads are unmeasured. Linked reports pin artifacts, cache conditions and samples.
+The matrix uses pinned Linux/x86_64 artifacts and declared configurations from 2026-10-04, rather than asserting every newer default. See [executor boundaries](../security/executor-boundaries.md) for current defaults. Matching macOS workloads are unmeasured.
 
 Tables identify pinned artifacts and measurement dates. Failed or invalid samples are excluded from successful timings and counted separately. Existing measurements have no predefined host-interference filter; all slow valid samples are retained. P95 from 30 or fewer samples is descriptive only; no P99 or stable tail-latency claim is made.
 
@@ -27,7 +27,7 @@ Tables identify pinned artifacts and measurement dates. Failed or invalid sample
 | Profile | Host outside readable | Host outside written | Host lower alias written | Workspace staged |
 |---|---|---|---|---|
 | host | True | True | True | False |
-| staged | True | True | True | True |
+| staged / host_process | True | True | True | True |
 | safe | False | False | False | True |
 | vm | False | False | False | True |
 | container | False | False | True | False |
@@ -42,3 +42,6 @@ Direct-socket denials appear in [network](network.md); submission/conflicts/inte
 
 These checks cover the listed file-access and exit cases, not kernel-vulnerability or escape audits. Mounts, network and rootfs configuration determine boundaries; standalone stage is not a complete sandbox.
 
+### Downloads and reproduction {#run}
+
+[Derived table CSV](isolation-tests.csv) · [Evidence source summary](evidence-sources.csv) · [Comparison method](methodology.md) · [Runner manual](https://github.com/DeepLink-org/pvisor/blob/main/benchmark/pvisor/README.md)

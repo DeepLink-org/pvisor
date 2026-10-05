@@ -1,47 +1,52 @@
-# pVisor 与已有方案相比，适合哪些任务？
+# pVisor 相比业界已有方案处于什么水位？
 
 ## 主要结论 {#conclusions}
 
-**pVisor 的优势是低成本获得暂存与审查工作流，以及快速启动本地 VM；文件密集型 VM 任务的执行速度仍是主要短板。** 选择时应同时看任务总耗时、隔离边界与改动合入方式。
+**本机工具与改动审查可评估 rootless host/staged。pVisor VM 启动处于轻量 VM 量级，但文件密集任务比所测 Firecracker/QEMU 配置等待更长。选型需结合完整任务等待、隔离和改动如何写回原目录。**
 
-| 用户关心的问题 | pVisor 的性能位置 | 选型含义 |
-|---|---|---|
-| [启动一个已准备环境](startup.md#reference-startup) | VM 首条输出约 86 ms，Docker 90 ms、Firecracker 74 ms、QEMU microvm 88 ms | 与轻量 VM、Docker 处于同一百毫秒量级 |
-| [启动完整发行版](startup.md#full-ubuntu) | 无镜像 VM 约 110 ms；完整 Ubuntu 的 Firecracker/QEMU 约 5–8 s | 减少短任务开机等待；不是相同 OS 配置下的 VMM 排名 |
-| [修复并运行测试](agent-tasks.md#reference-env) | staged 0.70 s，Docker 0.90 s；VM 3.97 s，QEMU microvm 1.85 s | staged 适合交互式工具任务；VM 工具执行更慢 |
-| [文件访问](filesystem.md) | 七项工具任务 staged 1.11 s、VM 4.08 s；Docker 0.97 s、Firecracker 2.37 s、QEMU microvm 1.77 s | staged 的交互等待更短；VM 提供独立 guest kernel，需预留更多工具执行时间 |
-| [审查后合入](apply.md) | 10 文件约 15 ms，1,000 文件约 0.84 s；10 万文件约 5.5 min | 适合小批交互合入；大批量合入慢于同批 Git patch |
-| [网络](network.md) | 本地小请求 host proxy 1.24 ms、原生 0.95 ms；VM 大块传输约 155 MiB/s、原生 869 MiB/s | 小请求代理开销较小，VM 批量传输有明显差距 |
-| [CLI 兼容性](agent-tasks.md) | Codex 的受控工具闭环通过；Claude/VM 初始化超时 | 使用 VM 前核对具体客户端和配置 |
-
-这些数字来自各主题的固定配置。文件系统主表对比原生、host staged、VM、Docker、Firecracker 和两种 QEMU 配置的本地开发工具负载；不同配置的样本和百分位数独立保留，具体制品见关联报告。
+| 需求 | 选型含义 |
+|---|---|
+| 本机工具与保留改动 | 评估 rootless host/staged |
+| 需要独立 guest 内核 | 预算完整 VM 工具时间 |
+| 已有容器/Git 工作流 | 比较成本与审查语义 |
 
 ## Motivation {#motivation}
 
-运行 Agent 的成本不仅是启动。工具会读取仓库、安装依赖、执行测试，最后还需要审查和合入结果。容器、VM、Agent 内置沙箱和云端环境提供不同边界，本章帮助读者判断 pVisor 的速度与工作流是否适合自己的任务。
+Agent 成本除了启动，还有工具、依赖、测试和审查。容器、VM、Agent 内置 sandbox 与托管云环境提供不同边界和工作流。这些测量支持按负载选型。
 
 ## 实验设计 {#interpretation}
 
-性能实验区分首条有效输出、工具执行、完整任务和清理退出。输入与校验固定，准备镜像和工具的时间独立记录；失败和未测项目不会作为零耗时样本。Linux 本地对照使用同机原生、Docker/rootless Podman、Firecracker、QEMU，以及 pVisor 各执行模式。macOS/HVF 的启动与内存数据单独报告。[基准方法](methodology.md)说明配置、样本数和原始数据身份。
+共享 Linux/x86_64 宿主，AMD Ryzen 7 9700X，Fedora 内核 7.2.8-200.fc44.x86_64。启动进程树及专用 Docker daemon 固定到宿主 CPU 0,1；guest 为 2 vCPU。host/staged 使用 rootless_process。Shell VM 为 128 MiB，工具 VM 为 16 GiB。原生/Docker 不限内存：控制 CPU 与 guest 配置内存，不是相同资源限制的对照。工具与输入已准备，每次新建工作区、热缓存，3 次预热、60 次正式采样；按固定种子随机交错后端。构建、下载及输入复制不计时。
 
-完整发行版与最小 VM 分别回答部署等待和已准备环境成本。真实 CLI 使用受控模型响应，排除模型推理与公网波动；这些结果不等于真实模型成功率。隔离边界和文件修改语义也属于比较条件。
+Docker Engine 29.7.2 使用专用 rootless VFS daemon 与可写 bind mount，结果不代表 overlay2 或 Docker Desktop。Firecracker 1.13.1 PCI 不使用 jailer；QEMU 10.2.2 分别使用 q35/microvm、私有 ext4。pVisor VM 使用 virtio-fs 和不同内核。内核、存储、设备及暂存语义均有差异，不能把差距单独归因于 VMM 或 FUSE。
+
+各主题定义正确性与计时。完整 Ubuntu、macOS、apply/网络与固定版本 CLI 保留独立样本组及数量。未测云端、gVisor/Kata、内存净收益及完整 RL 吞吐，不给数值排名。
 
 ## 实验数据和分析 {#results}
 
-### 按场景选择
+### 实测水位
 
-可信本地任务且需要审查改动，可以优先考虑 staged：完整修复任务接近原生的秒以下预算，比 VM 更轻。已有成熟 Docker + worktree/Git 审查流程时，Docker 的文件访问更有优势，是否引入 pVisor 取决于统一暂存、冲突保护和执行记录是否有价值。
+启动/文件系统：2026-10-05，修复：2026-10-06，各后端/负载 N=60、失败 0；通常为 P50，分离簇展示中位数与数量。合入：2026-10-04，10/1,000/100,000 文件分别 N=30/10/3。网络：2026-10-04、30 个批次。CLI：独立固定版本。
 
-需要独立 guest kernel 时，pVisor VM 的启动属于轻量 VM 水平，无须启动完整发行版。不过 npm、Git、搜索和文件创建的累计成本明显，长时间复用环境时应重点看工具时间。云端服务的扩展能力、gVisor/Kata 的同机性能及真实 RL 训练吞吐没有对应实测，不做数值排名。
+| 问题 | 实测水位 | 选型含义 |
+|---|---|---|
+| [已准备环境启动](startup.md) | pVisor VM 99.76 ms; Firecracker 74.74 ms; QEMU microvm 86.60 ms | 轻量 VM 启动量级 |
+| [修复到退出](agent-tasks.md) | staged 0.68 s; VM 3.25 s; QEMU microvm 1.27 s | 关注完整工具等待 |
+| [七项工具到退出](filesystem.md) | staged 1.29 s; VM 6.66 s; Firecracker 2.16 s | VM 工具/文件成本明显 |
+| [合入](apply.md) | 10: 15.01 ms; 1,000: 836.38 ms; 100,000: 330.40 s | Git patch 较快；语义不同 |
+| [网络](network.md) | host proxy 1.24 ms; native 0.95 ms / local request | 另行预算 VM 大块传输 |
+| [Agent CLI](agent-tasks.md#cli-compatibility) | 固定版本 Codex 通过；Claude/VM 初始化超时 | 核验具体客户端版本 |
+
+所测 Docker VFS 配置的创建较贵，但 bind mount 单项工具计时仍有参考意义。总耗时不排名 overlay2 或 Docker Desktop。完整 Ubuntu 开机属于不同部署选择。原始证据留在本地；各主题链接加工表格和来源摘要。
 
 ### 测量主题
 
-[VM 启动](startup.md) · [文件系统](filesystem.md) · [完整 Agent 任务](agent-tasks.md) · [网络](network.md) · [apply/drop](apply.md) · [VM 内存与快照](vm-memory/index.md) · [并发密度](density.md) · [Cluster 扩展性](cluster-scalability.md) · [监督成本](supervision-cost.md) · [隔离验证](isolation-tests.md) · [回放保真度](replay-fidelity.md)
+[Startup](startup.md) · [Filesystem](filesystem.md) · [Agent tasks](agent-tasks.md) · [Network](network.md) · [Apply/drop](apply.md) · [VM memory](vm-memory/index.md) · [Density](density.md) · [Cluster](cluster-scalability.md) · [Review](supervision-cost.md) · [Isolation](isolation-tests.md) · [Replay](replay-fidelity.md)
 
-### 工具对比
+### 业界方案对照
 
-[Docker/devcontainer](compare-containers.md) · [隔离运行时](compare-runtimes.md) · [Agent 自带沙箱](compare-agent-sandboxes.md) · [云端沙箱](compare-cloud-sandboxes.md) · [RL 基础设施](compare-rl-infra.md)
+[Docker/devcontainer](compare-containers.md) · [Firecracker/QEMU/gVisor/Kata](compare-runtimes.md) · [Agent sandboxes](compare-agent-sandboxes.md) · [E2B/Daytona/Modal](compare-cloud-sandboxes.md) · [Agent RL infrastructure](compare-rl-infra.md)
 
-### 数据与技术分析
+### 数据下载与复现 {#run}
 
-各主题链接原始样本和制品摘要。优化实验、历史 A/B 与复现细节保存在[文件系统技术分析](../design/filesystem-performance-analysis.md)、[启动技术分析](../design/vm-startup-performance-analysis.md)、[内存技术分析](../design/vm-memory-performance-analysis.md)和[协议记录](../design/benchmark-methodology-evidence.md)。
+[整理后的表格 CSV](index.csv) · [运行时统计](runtime-summary.csv) · [来源与制品](runtime-provenance.csv) · [证据来源摘要](evidence-sources.csv) · [比较方法](methodology.md) · [复现手册](https://github.com/DeepLink-org/pvisor/blob/main/benchmark/pvisor/README.md)

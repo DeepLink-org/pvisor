@@ -2,7 +2,7 @@
 
 ## Main conclusions {#conclusions}
 
-**Reviewing 20 files, applying ten and dropping the other ten takes about **25 ms** at machine-side P50. That cost suits interactive use. Human reading and decision time is unmeasured, so no percentage reduction in supervision time is established. Git/diff workflows can also batch review.**
+**Reviewing 20 files, applying ten and dropping the other ten takes about 25 ms at machine-side P50. That cost suits interactive use. Human reading and decision time is unmeasured, so no percentage reduction in supervision time is established. Git/diff workflows can also batch review.**
 
 | Need | Selection implication |
 |---|---|
@@ -24,6 +24,13 @@ Tables identify pinned artifacts and measurement dates. Failed or invalid sample
 
 ## Data and analysis {#results}
 
+| Workflow | Fixed 20-file review and selective application | Human reading time |
+|---|---|---|
+| pVisor review / apply / drop | Measured; steps below | Unmeasured |
+| Git diff / worktree / patch | Equivalent workflow unmeasured | Unmeasured |
+
+Step timings are P50 / descriptive P95 milliseconds; N=30, no warmups, 2026-10-04.
+
 | Step | N | P50 / P95 ms |
 |---|---|---|
 | review_ms | 30 | 3.21 / 7.95 |
@@ -44,3 +51,6 @@ The familiar reference workflow is inspecting changes with Git/diff and selectin
 
 Human reading/decision time and real-team review success are unmeasured. Machine timings do not establish a percentage labor saving.
 
+### Downloads and reproduction {#run}
+
+[Derived table CSV](supervision-cost.csv) · [Evidence source summary](evidence-sources.csv) · [Comparison method](methodology.md) · [Runner manual](https://github.com/DeepLink-org/pvisor/blob/main/benchmark/pvisor/README.md)

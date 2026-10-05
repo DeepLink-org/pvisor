@@ -21,3 +21,16 @@ def test_invalid_or_incomplete_evidence_is_rejected(tmp_path):
     raw=tmp_path/'report.json';raw.write_text(json.dumps(report))
     with pytest.raises(ValueError,match='incomplete'):publish(raw,tmp_path/'public')
     with pytest.raises(ValueError):distribution([float('nan')])
+
+
+def test_explicit_selection_publishes_only_complete_workloads(tmp_path):
+    report={'rows':[{'mode':'ready','backend':'native','trial':0,'correctness':'passed',
+                     'ready_ms':1,'result_ms':1,'completion_ms':2}],
+            'arguments':{'modes':'ready,tools','backends':'native','samples':'1'},
+            'capabilities':{'ready/native':{'state':'available'},'tools/native':{'state':'available'}},
+            'benchmark_ids':{'ready':'B-STARTUP','tools':'B-AGENT-TASK'}}
+    raw=tmp_path/'report.json';raw.write_text(json.dumps(report))
+    with pytest.raises(ValueError,match='incomplete'):publish(raw,tmp_path/'all')
+    rows=publish(raw,tmp_path/'selected',['ready'])
+    assert {r['mode'] for r in rows}=={'ready'}
+    assert all(r['n']==1 for r in rows)

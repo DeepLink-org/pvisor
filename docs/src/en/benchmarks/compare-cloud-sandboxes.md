@@ -4,8 +4,6 @@
 
 **pVisor suits existing local repositories and toolchains; E2B, Daytona and Modal suit remote environment provisioning and managed capacity.** Matching cloud latency and billing data are unavailable, so pVisor cannot be claimed faster or cheaper.
 
-Prepared local pVisor VM startup takes about **0.1 s**, staged short repair about **0.7 s**. Remote execution also needs upload, preparation, execution and result return; environment creation alone does not describe that cost.
-
 | Need | Selection implication |
 |---|---|
 | Local repository and tools are ready | Evaluate pVisor local feedback time |
@@ -33,8 +31,22 @@ Tables identify pinned artifacts and measurement dates. Failed or invalid sample
 
 ## Data and analysis {#results}
 
+Local baseline: two cores, 128 MiB shell VMs / 16 GiB repair VMs, prepared tools and warm caches, startup 2026-10-05 / repair 2026-10-06, N=60 and 3 warmups per available cell. Cloud services have no task measurements.
+
+| Tool | First output P50 ms | Repair completion P50 s | Evidence status |
+|---|---:|---:|---|
+| pVisor staged | 24.99 | 0.68 | Local N=60 / failed=0 |
+| pVisor VM | 99.76 | 3.25 | Local N=60 / failed=0 |
+| E2B | — | — | Unmeasured |
+| Daytona | — | — | Unmeasured |
+| Modal | — | — | Unmeasured |
+
 [Startup](startup.md), [tasks](agent-tasks.md) and [density](density.md) provide local short-task budgets, without establishing managed-service capacity or availability.
 
 A matched task comparison should record builds, uploads, creation, dependency caches, execution, downloads and application. Persistent environments amortize preparation; repeated large-repository uploads can increase remote waiting. Cloud snapshots or pause/resume do not automatically provide conflict handling for local directories.
 
 Costs include resource time, storage/network, subscriptions and models; local costs also include hardware and operations. Without billing experiments, the choice is conditional: evaluate managed services for remote APIs and burst capacity, and pVisor for existing local dependencies and short feedback loops.
+
+### Downloads and reproduction {#run}
+
+[Derived table CSV](compare-cloud-sandboxes.csv) · [Runtime statistics](runtime-summary.csv) · [Sources and artifacts](runtime-provenance.csv) · [Evidence source summary](evidence-sources.csv) · [Method](methodology.md) · [Runner manual](https://github.com/DeepLink-org/pvisor/blob/main/benchmark/pvisor/README.md)

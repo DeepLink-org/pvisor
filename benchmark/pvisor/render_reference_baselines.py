@@ -110,6 +110,11 @@ def figures(summary, out):
     ]
 
     def panel(ax, mode, metric, title, scale, unit):
+        if mode not in summary:
+            ax.text(0.5, 0.5, "Not measured", ha="center", va="center", transform=ax.transAxes)
+            ax.set_title(title, loc="left", weight="bold")
+            ax.set_axis_off()
+            return
         data = summary[mode]
         for y, backend in enumerate(BACKENDS):
             entry = data[backend]
@@ -154,7 +159,7 @@ def figures(summary, out):
         panel(ax, mode, metric, title, 1000, "Seconds")
     fig.legend(handles=legend, loc="lower center", ncol=2)
     fig.suptitle(
-        "Same environment and two physical host cores · 30 samples per available case",
+        "Same environment and two physical host cores · sample counts in summary.csv",
         weight="bold",
     )
     fig.tight_layout(rect=[0, 0.035, 1, 0.97])
