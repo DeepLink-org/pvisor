@@ -113,6 +113,7 @@ def main():
                 "tool_cache": {name: os.environ.get(name) for name in (
                     "TMPDIR", "HOME", "CARGO_HOME", "NODE_COMPILE_CACHE", "NODE_DISABLE_COMPILE_CACHE", "NODE_OPTIONS"
                 )},
+                "tool_scratch": os.environ.get('PVISOR_REFERENCE_TOOL_SCRATCH', 'executor'),
             }
         ),
         flush=True,

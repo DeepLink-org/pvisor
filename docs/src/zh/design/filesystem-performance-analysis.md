@@ -1,48 +1,106 @@
 # 文件系统性能：技术分析与实验记录
 
-## 当前制品的独立计数器诊断 {#current-counters}
+## 冻结制品的独立计数器诊断 {#current-counters}
 
-测于 2026-10-06，CPU 0,1，VM 2 vCPU/16 GiB，输入与固件对应[用户工具对照](../benchmarks/filesystem.md)。诊断制品来自同一冻结源码，加上独立副本的目录链接数校验修复与 profiling 退出收尾；源码和二进制摘要单独保存，没有与正式计时的二进制混合采样。七项文件工具和固定修复各测 staged/VM 三次，共十二个有效任务，失败 0；启用 profile 和启动计时，耗时不进入用户性能分布。
+测于 2026-10-06，CPU 0,1，VM 2 vCPU/16 GiB，使用已核验的冻结 CLI、源码、工具输入和固件。七项文件工具和固定修复各测 staged/VM 三次，共十二个有效任务，失败 0；共享输入的完整字节清单在前后相同。保留执行器默认 TMPDIR，每任务使用新的私有空工具缓存；七项工具的 Cargo 临时文件和产物留在独立工作区。stderr 直接写入普通文件，避免非阻塞管道在大段 profile 输出时返回 EAGAIN。启用 profile 和启动计时，耗时不进入[用户性能分布](../benchmarks/filesystem.md)。
 
-每次 staged 有 5/5 个 final 实例，VM 有 13/13 个 final 实例，覆盖 rootfs 和工作区。以 PID、component、instance 区分累计记录，只保留每实例最后一份，不把中间快照加起来。**表中计数完整，但 inclusive span 会嵌套、跨 worker 重叠，不能相加得到总耗时或瓶颈占比。**
+每次 staged 有 5/5 个 final 实例，VM 有 13/13 个 final 实例，共 108 个，覆盖 rootfs、工作区和 supervisor。以 PID、component、instance 区分记录，只保留每实例最后一份累计快照。源码中的 rootfs/workspace 创建顺序确定 scope；VMM 与 supervisor 的同号实例不能混合。**Inclusive span 会嵌套、跨 worker 重叠，不能相加得到总耗时或瓶颈占比。**
 
-| Workload / mode | Metric | Median calls | Median inclusive ms |
-| --- | --- | ---: | ---: |
-| Seven tools / staged | OverlayCore resolve | 14,462 | 140.53 |
-| Seven tools / staged | preimage | 5,720 | 66.93 |
-| Seven tools / staged | fingerprint_content | 2,157 | 43.58 |
-| Seven tools / VM | OverlayCore resolve | 25,019 | 447.48 |
-| Seven tools / VM | preimage | 11,367 | 83.28 |
-| Seven tools / VM | fingerprint_content | 2,157 | 48.76 |
-| Seven tools / VM | virtio-fs LOOKUP | 9,412 | 268.72 |
-| Seven tools / VM | virtio-fs READ | 10,896 | 123.26 |
-| Repair / staged | OverlayCore resolve | 3,162 | 27.69 |
-| Repair / VM | OverlayCore resolve | 14,512 | 290.70 |
-| Repair / VM | preimage | 7,472 | 11.28 |
+| Workload / mode | Filesystem | Metric | Median calls | Median inclusive ms |
+| --- | --- | --- | ---: | ---: |
+| Seven tools / staged | workspace | OverlayCore resolve | 14,978 | 144.67 |
+| Seven tools / staged | workspace | OverlayCore observe_read | 4,853 | 162.74 |
+| Seven tools / staged | workspace | OverlayCore fingerprint_content | 2,157 | 43.26 |
+| Seven tools / staged | workspace | journal sync | 5 | 3.07 |
+| Seven tools / VM | workspace | OverlayCore resolve | 15,146 | 234.64 |
+| Seven tools / VM | workspace | OverlayCore observe_read | 4,840 | 224.98 |
+| Seven tools / VM | workspace | OverlayCore fingerprint_content | 2,157 | 64.13 |
+| Seven tools / VM | workspace | journal sync | 5 | 2.12 |
+| Seven tools / VM | rootfs | OverlayCore resolve | 6,790 | 184.66 |
+| Seven tools / VM | rootfs | virtio-fs LOOKUP | 4,802 | 166.51 |
+| Seven tools / VM | rootfs | virtio-fs READ | 6,132 | 643.31 |
+| Repair / staged | workspace | OverlayCore resolve | 3,126 | 29.45 |
+| Repair / VM | workspace | OverlayCore resolve | 2,858 | 39.80 |
+| Repair / VM | rootfs | OverlayCore resolve | 6,672 | 180.76 |
+
+七项工具的 VM `dispatch/admission` 在 rootfs 和工作区分别为 1,260.54 ms、898.64 ms；它围住整个 `service_queues`，包含 inline 执行，不能称为纯排队或传输。对应 `pool_queue_wait` 为 13.62 ms、4.09 ms，仍不能将不同 worker 的等待相加为任务耗时。
+
+七项工具的 `fingerprint_bytes` 中位数为 69,375,893 B，固定修复为 11,286 B，staged/VM 相同。源码在 live lower 的首次内容观察中计算 SHA256；普通 stat/lookup 不触发普通文件内容哈希，frozen baseline 跳过读取日志。Checkpoint 策略将日志持久化移到完成边界；当前七项工具工作区 journal sync 为五次，表中同步 span 约 2–3 ms，计数不支持把逐文件 preimage fsync 当作当前最大的已证实原因。可变 fixture 没有验证 content receipt 复用，也未将读取指纹改成 metadata-only。
+
+默认缓存路径下，六个 VM 诊断中 rootfs CREATE、RENAME、WRITE 均为零，完整 final 记录支持零请求计数。rootfs READ 仍约六千次；其 span 包括服务、锁和调度，不能直接解释为磁盘或传输等待。路径解析、读取观察、工具加载和缓存写入应分别调查。修复任务的读指纹数据量很小，但 rootfs 解析仍有成本；[可执行映射探针](#exec-mapping)仅说明短进程的映射路径差异。DAX、长期属性缓存及单一函数的因果收益尚未验证，需要保持访问与暂存语义的工程 A/B 和独立正式计时。
+
+[整理后的计数 CSV](filesystem-counters.csv)保留每 filesystem scope 的三次统计、调用范围、完整覆盖和来源摘要；原始日志、冻结 harness、构建回执及整理脚本保存在本地 `.data/`。相同二进制此前使用管道捕获的诊断有五次 VM 因 stderr EAGAIN 打印 panic 中止；失败证据保留，不计入此表。普通文件捕获仅用于诊断，不能据两种捕获条件的差值推导性能收益。复现见[计数器手册](https://github.com/DeepLink-org/pvisor/blob/main/benchmark/pvisor/README.md#engineering-and-diagnostics)。
 
 
-VM 的 `dispatch/admission` 在七项工具和修复任务中分别记录 1,546.67 ms 和 1,058.40 ms。代码中的 span 围住整个 `service_queues`，包含 inline 请求执行，不能称为纯排队、传输或 CPU 成本。
+## npm 编译缓存带来的 rootfs 请求 {#node-cache}
 
-七项工具的 `fingerprint_bytes` 中位数为 69,375,893 B，固定修复为 11,286 B，staged/VM 相同。对应源码仍在 live lower 的首次内容观察中计算 SHA256；普通 stat/lookup 不触发普通文件的内容哈希，frozen baseline 则跳过读取日志。Checkpoint 策略将日志持久化移到完成边界，没有将可变 lower 的读取指纹改成 metadata-only。这组可变 fixture 没有显示 content receipt 复用；计数不能量化不可变镜像的收益。修复任务中读指纹的数据量很小，应与工具加载和路径请求分别归因。
+**七项工具负载中的 537 次 rootfs 重命名来自 Node/npm 编译缓存。** Linux、CPU 0,1、guest 2 vCPU/16 GiB；相同冻结 CLI、工具输入和固件，以固定种子随机交替默认缓存与禁用缓存。`npm --version` 和完整七项工具分别使用六个独立新 VM，每个条件三次；共十二个成功 VM、156 个 final 文件系统实例。两组都有相同的 Node 状态探针和事后缓存清点，启用 profile 与 strace，不报告正式耗时或性能收益。
 
-路径解析与 rootfs/workspace 的大量请求值得优先调查；现有计数不支持把逐文件 preimage fsync 当作当前最大的已证实原因。[独立执行映射探针](#exec-mapping)显示映射路径对短进程启动有明显影响。下一步分开 inline/worker 服务、队列等待与通知计数，并对保持同样暂存语义的缓存做工程 A/B。DAX 和单一函数的因果贡献尚未验证；优化收益需要独立正式计时和置信区间。
+下表是每条件三个 VM 的中位计数；表中各项三次的最小值和最大值均与中位数相同。rootfs 与 workspace 分开，按 PID、组件和实例识别，不能把 supervisor 与 VMM 的同号实例混合。
 
-[整理后的计数统计 CSV](filesystem-counters.csv)保留三次中位数、完整覆盖、独立制品/源码与原始报告摘要；原始日志保存在本地 `.data/`。复现见[计数器手册](https://github.com/DeepLink-org/pvisor/blob/main/benchmark/pvisor/README.md#engineering-and-diagnostics)。
+| 负载 | Node 编译缓存 | 实际缓存文件 | rootfs CREATE | rootfs RENAME | rootfs WRITE |
+| --- | --- | ---: | ---: | ---: | ---: |
+| npm --version | 默认启用 | 70 | 70 | 70 | 70 |
+| npm --version | 禁用 | 0 | 0 | 0 | 0 |
+| 七项工具 | 默认启用 | 537 | 538 | 537 | 623 |
+| 七项工具 | 禁用 | 0 | 1 | 0 | 86 |
+
+Node API 确认默认组缓存目录为 `/tmp/node-compile-cache`，禁用组状态为 `DISABLED`。strace 中成功的缓存重命名路径位于 VM 的 `root-upper/tmp/node-compile-cache`，数量与 rootfs RENAME、copy-up 和实际缓存文件数一致。完整工具负载的输出、256 个写入文件全部字节、未修改的 lower 清单及运行记录均通过检查；共享输入在前后保持一致。关闭缓存只用于请求归因，不是产品优化或用户配置建议，也不能将 537 次请求换算为已验证的毫秒收益。
+
+独立文件系统计数还应覆盖工具缓存，而不只是工作区写入。正式对照需要声明缓存是否跨任务复用、是否为空，以及所在存储；热页缓存与 Node 编译缓存是不同条件。任务内两次 npm 调用可以复用缓存，但不能让不同后端或不同任务意外共享。工作区内的私有空缓存是一个可控口径，不代表所有执行器默认临时目录的性能。
+
+[整理后的缓存请求 CSV](filesystem-node-cache.csv)提供每条件样本数、计数范围、final 覆盖和二进制、源码、输入、tracer、原始报告摘要。原始系统调用、状态输出及审核脚本保存在本地 `.data/`，不与用户任务耗时合并。
+
+保留 pVisor 默认临时目录的独立诊断同样使用六个新 VM、两个条件各三次，78 个文件系统实例都有 final 记录。guest 内 `statfs` 返回 `0x01021994`，确认是实际 tmpfs；默认启用组每次仍产生 537 个缓存文件，而 rootfs CREATE、RENAME、WRITE 都为零。禁用组三项也为零，缓存文件为零。完整工具输出和写入校验通过。这个结果证明缓存生成可以留在默认 tmpfs 中；旧 workload 的 `tools_env()` 把执行器提供的 TMPDIR 覆盖为 `/tmp`，将缓存写入转移到 rootfs overlay。诊断次数有限且有插桩，不能据此声称端到端加速；默认临时目录与工作区存储控制需要分别正式采样。
+
+[默认临时目录请求 CSV](filesystem-executor-scratch.csv)保留独立样本与来源关联，不与 `/tmp` 诊断合并统计。
+
+## FUSE 请求与 stage 服务端成本 {#fuse-lower-bound}
+
+四个宿主条件使用同一份核验并冻结的 CLI 和七项工具输入：原生、host 直通、独立重建的 FUSE 直通驱动和 staged。四次预检及三轮随机交替任务全部通过，共十六次。每次逐字节核验 256 个写入文件；staged 的 lower 路径、模式和内容保持不变。直通执行只允许 fixture 中经过核验的工具链路径重写和 Git 索引 stat 信息刷新，索引的全部路径、模式和对象摘要保持一致。每任务空缓存保留执行器 TMPDIR。
+
+驱动使用相同冻结 vendored fuser 字节、release 配置、同步请求循环和一秒 TTL，不启用 writeback 或 keep_cache。它跳过 OverlayCore、访问策略、copy-up 和 preimage 日志，因此是传输对照下限。下表为三个独立插桩任务的请求数中位数，不含预检：
+
+| 工作区请求 | FUSE 直通 | staged host FUSE |
+| --- | ---: | ---: |
+| lookup | 3,059 | 3,057 |
+| getattr | 452 | 451 |
+| read | 5,014 | 5,014 |
+| write | 290 | 290 |
+| readdir | 464 | 465 |
+
+这五类已计数回调的数量相近。stage 额外执行内部服务工作：14,975 次 OverlayCore resolve 的 inclusive span 中位数为 143.52 ms，4,853 次读观察为 164.30 ms，2,157 次内容指纹为 45.15 ms。这些 span 嵌套、重叠，不能相加或换算为任务耗时占比。这支持把路径解析和读观察成本与内核请求流量分开测试；它不证明直通驱动提供等价语义，也不构成产品提速结论。
+
+[整理后的 FUSE 请求与服务计数](filesystem-fuse-counters.csv)保留计数范围、组件/实例作用域，以及 CLI、驱动、源码、输入和审计摘要。插桩和抽样资源观察的任务耗时不进入用户延迟表；未知的进程生命周期保留为未知。原始证据放在 `.data/`，复现方式见 benchmark README。
+
+## Stage 持久化计数 {#durability-counters}
+
+独立批次使用相同核验后的 CLI 和工具输入，对照 native、strict、checkpoint。三次预检和三轮随机交替任务通过，共十二次。所有 staged 任务都有要求的策略标记和完成 seal，lower 完整清单不变、写入字节完整，五个文件系统实例均有 final 记录。下表为三个独立插桩任务的单任务中位数，不与 FUSE 直通批次合并。
+
+| 日志操作 | strict 次数 | checkpoint 次数 | strict inclusive ms | checkpoint inclusive ms |
+| --- | ---: | ---: | ---: | ---: |
+| append | 2,703 | 2,703 | 8.78 | 5.97 |
+| transaction | 8,686 | 8,686 | 329.44 | 18.53 |
+| sync | 340 | 5 | 313.08 | 3.23 |
+
+Linux 每个日志 `sync` span 都调用日志文件的 `sync_all`；目录及其他文件的同步不在此计数内。strict 每任务为 339–340 次，checkpoint 均为五次。transaction 包含同步，耗时不能与 sync 相加。这明确定位了 strict 模式下可观的持久化服务成本。checkpoint 仍记录相同的 2,703 次 append 并检查结束 seal；任务结束前允许日志未同步。这些检查不证明任意崩溃窗口的保证等价，插桩 span 也不证明未插桩任务延迟有同等幅度的下降。工程入口将计时批次独立留存，至少三十轮时输出分布分簇与配对区间。
+
+[整理后的持久化计数](filesystem-durability-counters.csv)包含所有组件实例、计数范围及源码/输入/审计摘要。原始报告、stdout/stderr、输出清单和失败的发布审计尝试留在本地 `.data/`。
 
 ## 可执行文件映射的独立诊断 {#exec-mapping}
 
-相同 `rg --version` 的 ELF、loader 和全部动态库，分别从 virtio-fs 文件与 executable memfd 执行。Linux、CPU 0,1，guest 2 vCPU/1 GiB；每种条件三个独立新 VM，每个 VM 执行 50 次，顺序随机交错。十二个 VM、600 次调用全部输出校验通过，每个 VM 的 13 个文件系统实例都有 final 记录。构建、输入、固件和原始输出摘要保留在证据目录；这是启用 profile 的诊断，不进入用户任务性能表。
+相同 `rg --version` 的 ELF、loader 和全部动态库，分别从 virtio-fs 文件与 executable memfd 执行。Linux、继承宿主 CPU 0,1 亲和性，guest 配置为 2 vCPU/1 GiB；每种条件三个独立新 VM，每个 VM 执行 50 次，顺序随机交错。十二个 VM、600 次调用全部输出校验通过，每个 VM 的 13 个文件系统实例都有 final 记录。完整预备输入在执行前后校验通过；保留的工作区路径、副本字节、命令、输出及 profile 通过独立审计。profile stderr 直接写入普通文件。构建、输入、固件和原始输出摘要保留在证据目录；这是启用 profile 的诊断，不进入用户任务性能表，也不证明全部后代进程完整生命周期的 CPU 放置。
 
 | 准备来源 | 执行映射 | 首次启动中位数 ms | 重复启动中位数 ms | 重复启动 major faults |
 | --- | --- | ---: | ---: | ---: |
-| 原始文件 | virtio-fs | 6.16 | 5.04 | 37 |
-| 原始文件 | memfd | 1.45 | 0.71 | 0 |
-| 独立 inode 副本 | virtio-fs | 7.54 | 5.08 | 37 |
-| 独立 inode 副本 | memfd | 1.50 | 0.72 | 0 |
+| 原始文件 | virtio-fs | 6.48 | 5.10 | 37 |
+| 原始文件 | memfd | 1.56 | 0.73 | 0 |
+| 独立 inode 副本 | virtio-fs | 7.93 | 5.07 | 37 |
+| 独立 inode 副本 | memfd | 1.27 | 0.73 | 0 |
 
 首次启动统计三个 VM 的第一调用；重复启动先取每 VM 后续 49 次的中位数，再取三个 VM 的中位数，不能把调用数当作独立样本数。两组都先复制并哈希校验相同输入、继承相同 fd；guest `/dev/shm` 保持 noexec。原始文件准备会预热原 inode；副本准备从不同 inode 读取相同字节，但共同的 Python 准备仍预热解释器及部分库，不能称为完全冷启动。
 
-重复启动的映射差距约 4.3 ms，同时 major faults 从 37 变为 0，支持优先调查可执行文件映射与缺页服务。major fault 计数不等于物理磁盘读取次数；这组替换同时改变了文件映射、路径访问及加载器的请求路径，不能把差距全部归因于 FUSE 传输或 DAX 缺失，也不能按完整 Agent 任务的进程数直接外推收益。生产实现需要保持访问策略、暂存观察与证据语义，再进行独立正式计时。
+重复启动的映射差距约 4.4 ms，同时 major faults 从 37 变为 0，支持优先调查可执行文件映射与缺页服务。major fault 计数不等于物理磁盘读取次数；这组替换同时改变了文件映射、路径访问及加载器的请求路径，不能把差距全部归因于 FUSE 传输或 DAX 缺失，也不能按完整 Agent 任务的进程数直接外推收益。生产实现需要保持访问策略、暂存观察与证据语义，再进行独立正式计时。
 
 [整理后的执行统计 CSV](filesystem-exec-summary.csv) · [来源与测量边界 CSV](filesystem-exec-provenance.csv)。原始报告、逐 VM 输出、审核和整理脚本保存在本地 `benchmark/.data/`。
 
@@ -80,7 +138,7 @@ Agent 经常反复读目录、搜索和修改文件。应同时看到任务本�
 
 ## 实验设计 {#interpretation}
 
-最新批次随机交替 native 与优化前/后的 staged、libkrun VM；历史矩阵另含 host、safe、Docker、rootless Podman/crun 与 pVisor OCI。每格通常 3 次预热、30 次测量，热宿主缓存；完整 Ubuntu 补测为 N=10，分别标注。准备镜像和复制输入不计时。worker 包含工具运行与输出校验；wall 包含启动到退出。metadata/git/rg 使用 2,048 文件、32 目录；read 校验 64 MiB SHA256；product-v1 write 写 256×60 KiB，完整工具环境与最新 A/B 使用保留的 256×64 KiB fixture。cargo 编译 64 个无外部依赖的小模块并验证结果 2016；npm 离线安装 32 个本地包，不访问 registry。
+最新批次随机交替 native 与优化前/后的 staged、libkrun VM；历史矩阵另含 host、safe、Docker、rootless Podman/crun 与 pVisor OCI。每格通常 3 次预热、30 次测量，热宿主缓存；完整 Ubuntu 补测为 N=10，分别标注。准备镜像和复制输入不计时。worker 包含工具运行与输出校验；wall 包含启动到退出。metadata/git/rg 使用 2,048 文件、32 目录；read 校验 64 MiB SHA256；product-v1 和完整工具环境的 write 均写 256×64 KiB，共 16 MiB；各批次仍按配置分别统计。cargo 编译 64 个无外部依赖的小模块并验证结果 2016；npm 离线安装 32 个本地包，不访问 registry。
 
 ## macOS
 
@@ -487,7 +545,7 @@ OverlayCore 的 `core.rs` 不同；二者都加入相同的 guest stdio 端口�
 正确性检查通过。每个任务使用新的 workspace/upper，在同一个环境中按顺序
 执行七种负载；输入复制不计时。宿主缓存为热缓存，CPU 亲和性固定在两个
 物理核 `0,1`，VM 为 2 vCPU、16 GiB。保留的历史工具环境 fixture 写入
-256×64 KiB，共 16 MiB；这与当前 product-v1 的 60 KiB 文件不同，不合并
+256×64 KiB，共 16 MiB，与 product-v1 写入字节数相同；不同配置不合并
 历史百分位数。宿主有并行任务，1 分钟 load average 从 10.38 降至 3.06；
 固定亲和性是共同预算，不是独占 CPU。以下是单批筛查数据。
 

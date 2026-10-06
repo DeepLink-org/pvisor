@@ -270,6 +270,49 @@ def test_budget_requires_explicit_cpu_placement_before_launch(tmp_path):
         reference_budget(args)
 
 
+def test_diagnostic_preserves_large_nonblocking_stderr_without_pipe_failure(tmp_path, monkeypatch):
+    import sys
+    from types import SimpleNamespace
+    import reference_baselines as runner
+
+    assets = tmp_path / 'assets'
+    (assets / 'rootfs/work').mkdir(parents=True)
+    args = SimpleNamespace(output=tmp_path / 'output', assets=assets,
+                           resource_budget=None, cpu_affinity='', docker_root_pid=None,
+                           resource_observation='off', diagnostic_timing=True,
+                           diagnostic_stderr_file=True)
+    payload = b'profile bytes\x00\xff\n' * 65536
+    original = runner.subprocess.Popen
+
+    def launch(argv, **kwargs):
+        if argv[0] == 'cp':
+            return original(argv, **kwargs)
+        assert kwargs['stderr'] != runner.subprocess.PIPE
+        script = (
+            "import os;os.set_blocking(2,False);"
+            f"assert os.write(2,{payload[:16]!r}*65536)=={len(payload)};"
+            "print('REFERENCE_READY',flush=True);"
+            "print('REFERENCE_RESULT {\"mode\":\"ready\",\"correctness\":\"passed\"}',flush=True)"
+        )
+        return original([sys.executable, '-c', script], **kwargs)
+
+    monkeypatch.setattr(runner.subprocess, 'Popen', launch)
+    row = runner.run_trial(args, {'assets': {'docker_image': 'unused'}}, 'native', 'ready', 0)
+    assert row['correctness'] == 'passed'
+    assert row['stderr_capture'] == 'regular-file diagnostic'
+    assert (args.output / 'trials/ready-native-000/stderr.log').read_bytes() == payload
+
+
+def test_regular_file_stderr_cannot_change_formal_timing(tmp_path):
+    from types import SimpleNamespace
+    import reference_baselines as runner
+
+    args = SimpleNamespace(output=tmp_path / 'output', diagnostic_stderr_file=True)
+    with pytest.raises(ValueError, match='diagnostic only'):
+        runner.run_trial(args, {}, 'native', 'ready', 0)
+    assert not args.output.exists()
+
+
 def test_observed_budget_violation_cannot_be_published_as_unknown(tmp_path, monkeypatch):
     import json
     from types import SimpleNamespace

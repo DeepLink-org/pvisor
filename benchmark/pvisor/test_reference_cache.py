@@ -5,6 +5,7 @@ import os
 import py_compile
 import subprocess
 import sys
+from pathlib import Path
 
 import pytest
 
@@ -71,15 +72,16 @@ def tool_result(mode='filesystem'):
                  NODE_DISABLE_COMPILE_CACHE=None, NODE_OPTIONS=None)
     value = dict(mode=mode, workspace='/work', tool_cache=cache)
     if mode == 'filesystem':
-        value['filesystem'] = {name: {'tool_cache': dict(cache)}
+        value['filesystem'] = {name: {'tool_cache': dict(cache), 'tool_scratch': 'workspace'}
                                for name in ('metadata', 'read', 'write', 'git', 'rg', 'cargo', 'npm')}
     if mode == 'env':
-        value['versions'] = {'node_compile_cache': dict(status='ALREADY_ENABLED', directory=cache['NODE_COMPILE_CACHE'])}
+        value['versions'] = {'node_compile_cache': dict(status='ALREADY_ENABLED', directory=cache['NODE_COMPILE_CACHE'] + '/v24.18.0-x64-cf738c9d-1000')}
     return value
 
 
 def test_task_local_cache_is_shared_only_within_one_task(tmp_path, monkeypatch):
     monkeypatch.chdir(tmp_path)
+    monkeypatch.setenv('PVISOR_REFERENCE_TOOL_SCRATCH', 'workspace')
     for name, value in dict(NODE_DISABLE_COMPILE_CACHE='1', NODE_COMPILE_CACHE='/foreign',
                             NODE_COMPILE_CACHE_PORTABLE='1', NODE_OPTIONS='--jitless',
                             PVISOR_REFERENCE_TMPDIR='/dev/shm/foreign', TMPDIR='/tmp',
@@ -119,6 +121,7 @@ def test_preexisting_task_cache_is_rejected_before_workload(tmp_path, monkeypatc
 
 def test_cache_cannot_follow_a_foreign_symlink(tmp_path, monkeypatch):
     monkeypatch.chdir(tmp_path)
+    monkeypatch.setenv('PVISOR_REFERENCE_TOOL_SCRATCH', 'workspace')
     (tmp_path / '_reference_tmp').symlink_to(tmp_path / 'outside')
     with pytest.raises(ValueError, match='symlink'):
         reference_workload.tools_env()
@@ -155,14 +158,102 @@ def test_unequal_or_unverified_task_cache_is_rejected(fault):
         validate_tool_cache(value)
 
 
-@pytest.mark.parametrize('fault', ['missing', 'disabled', 'different-directory'])
+@pytest.mark.parametrize('fault', ['missing', 'disabled', 'different-directory', 'parent-escape', 'arbitrary-child', 'nested-child'])
 def test_actual_node_capability_is_required(fault):
     value = tool_result('env')
     if fault == 'missing':
         del value['versions']['node_compile_cache']
     elif fault == 'disabled':
         value['versions']['node_compile_cache']['status'] = 'DISABLED'
-    else:
+    elif fault == 'different-directory':
         value['versions']['node_compile_cache']['directory'] = '/tmp/cache'
+    else:
+        suffix = {'parent-escape': '/../v24.18.0-x64-hash-1000', 'arbitrary-child': '/foreign',
+                  'nested-child': '/nested/v24.18.0-x64-hash-1000'}[fault]
+        value['versions']['node_compile_cache']['directory'] = value['tool_cache']['NODE_COMPILE_CACHE'] + suffix
     with pytest.raises(ValueError, match='actual Node'):
         validate_tool_cache(value)
+
+
+def test_executor_cache_preserves_tmpdir_and_starts_fresh_per_task(tmp_path, monkeypatch):
+    parent = tmp_path / 'executor-tmp'
+    parent.mkdir()
+    work = tmp_path / 'work'
+    work.mkdir()
+    monkeypatch.chdir(work)
+    monkeypatch.setenv('TMPDIR', str(parent))
+    monkeypatch.setenv('PVISOR_REFERENCE_TOOL_SCRATCH', 'executor')
+    first = reference_workload.tools_env()
+    private = Path(first['TMPDIR'])
+    assert private.parent == parent / '.data'
+    assert private.name.startswith('pvisor-reference-')
+    assert list(private.iterdir()) == []
+    assert not (work / '_reference_tmp').exists()
+    (private / 'retained-state').write_text('only this task')
+    assert reference_workload.tools_env()['TMPDIR'] == str(private)
+    next_work = tmp_path / 'next'
+    next_work.mkdir()
+    monkeypatch.chdir(next_work)
+    second = Path(reference_workload.tools_env()['TMPDIR'])
+    assert second != private and second.parent == private.parent
+    assert list(second.iterdir()) == []
+
+
+def test_nested_tool_action_reuses_only_explicit_private_cache(tmp_path, monkeypatch):
+    private = tmp_path / '.data/pvisor-reference-abcdefgh'
+    private.mkdir(parents=True)
+    (private / 'same-task').write_text('private')
+    monkeypatch.chdir(tmp_path)
+    monkeypatch.setenv('PVISOR_REFERENCE_TOOL_SCRATCH', 'executor')
+    monkeypatch.setenv('PVISOR_REFERENCE_CACHE_DIRECTORY', str(private))
+    assert reference_workload.tools_env()['TMPDIR'] == str(private)
+    assert (private / 'same-task').read_text() == 'private'
+
+
+@pytest.mark.parametrize('fault', ['relative', 'foreign-name', 'symlink-parent', 'unknown-policy', 'inherited-foreign'])
+def test_invalid_executor_scratch_is_rejected(tmp_path, monkeypatch, fault):
+    monkeypatch.chdir(tmp_path)
+    monkeypatch.setenv('PVISOR_REFERENCE_TOOL_SCRATCH', 'executor')
+    monkeypatch.setenv('TMPDIR', str(tmp_path))
+    if fault == 'relative':
+        monkeypatch.setenv('TMPDIR', 'relative')
+    elif fault == 'foreign-name':
+        monkeypatch.setenv('PVISOR_REFERENCE_CACHE_DIRECTORY', str(tmp_path))
+    elif fault == 'symlink-parent':
+        (tmp_path / '.data').symlink_to(tmp_path / 'foreign')
+    elif fault == 'unknown-policy':
+        monkeypatch.setenv('PVISOR_REFERENCE_TOOL_SCRATCH', 'unknown')
+    else:
+        monkeypatch.setenv('PVISOR_REFERENCE_CACHE_DIRECTORY', '/tmp/foreign-cache')
+    with pytest.raises(ValueError):
+        reference_workload.tools_env()
+
+
+def test_new_jobs_cannot_accept_missing_or_wrong_scratch_policy():
+    value = tool_result()
+    with pytest.raises(ValueError, match='declared experiment'):
+        validate_tool_cache(value, 'executor')
+    value['tool_scratch'] = 'workspace'
+    validate_tool_cache(value, 'workspace')
+    del value['filesystem']['npm']['tool_scratch']
+    with pytest.raises(ValueError, match='child scratch policy'):
+        validate_tool_cache(value, 'workspace')
+
+
+def test_executor_policy_requires_private_directory_and_actual_storage_type():
+    value = tool_result('env')
+    value['tool_scratch'] = 'executor'
+    old = value['tool_cache']['TMPDIR']
+    new = '/.pvisor-tmp-run-test/.data/pvisor-reference-abcdefgh'
+    value['tool_cache'] = {k: v.replace(old, new) if isinstance(v, str) else v for k, v in value['tool_cache'].items()}
+    probe = value['versions']['node_compile_cache']
+    probe['directory'] = probe['directory'].replace(old, new)
+    probe['filesystem_type'] = 0x01021994
+    validate_tool_cache(value, 'executor')
+    probe['filesystem_type'] = None
+    with pytest.raises(ValueError, match='storage type'):
+        validate_tool_cache(value, 'executor')
+    probe['filesystem_type'] = 0x01021994
+    value['tool_cache']['TMPDIR'] = '/tmp'
+    with pytest.raises(ValueError, match='fresh private'):
+        validate_tool_cache(value, 'executor')

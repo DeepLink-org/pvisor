@@ -22,6 +22,8 @@ All backends share offline tools and fixed inputs, with a new workspace per tria
 
 The fixed plan inspects/searches the repository, fixes Python, runs Python/Rust/Node tests, installs 32 offline npm packages and generates a diff. Result ends at checked returned results; Completion includes exit. Tests and expected edits must pass. The tool plan does not measure model inference or establish compatibility of real Agent CLIs.
 
+These samples do not verify equal Node/npm compile-cache state across backends. A fresh workspace does not establish an empty tool cache. Complete-task differences include each configuration's cache behavior; they cannot all be attributed to staging or the VMM.
+
 ## Data and analysis {#results}
 
 Measured on 2026-10-06: each fixed-plan backend has 60/60 valid samples and zero measured failures; environment/CLI counts and preflight failures are listed separately. Outputs, exit and execution records must pass validation; staging also requires unchanged host originals and complete retained changes. Every valid slow sample is kept, with no timing-based exclusions. Tables normally show P50; separated distributions show cluster medians and counts. P95 is descriptive only. Raw reports, binaries and input/source manifests stay in ignored `.data/`; public CSVs retain workload, cohort and provenance associations.

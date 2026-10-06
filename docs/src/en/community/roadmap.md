@@ -12,6 +12,23 @@ See [Trust ladder](../why/trust-ladder.md) for the levels and scale axes. The ta
 
 Before adding a public feature, provide implementation, validation scenarios, limitations and release notes. Define compatibility and acceptance before changing data contracts, boundaries or public commands.
 
+## Small-file delivery for lazy images {#lazy-image-small-files}
+
+Planned: automatically pack small files during image build/publication to reduce remote requests and cold-read waits for S3-backed lazy images. No implementation or performance acceptance results are available yet. See [shared image cache V1](../design/shared-image-cache-storage.md) for the current format and limitations, and [Lazy Image V2](../design/lazy-image-v2.md) for the detailed proposal on directory packing, deterministic bucketing and two-level indexes.
+
+Design direction:
+
+- Preserve independent file paths, permissions, hardlinks, symlinks and xattrs. Group physical contents into immutable packs by access locality, such as package or directory, with indexes locating offsets and lengths.
+- Separate object size, read/compression block size and cache granularity. Support range reads and independently decompressible blocks without requiring full-pack download or decompression.
+- Combine local metadata caching, adjacent-read coalescing, bounded prefetch and concurrent-miss coalescing. Packing objects while retaining one request per file does not complete the optimization.
+- Preserve cross-image content sharing rather than repacking common dependencies for every image; keep on-demand chunk reads for large files. Evaluate reusable Nydus/EROFS capabilities before extending the custom format.
+
+Acceptance criteria:
+
+- Compare independent small-file objects, per-file range reads within packs, and packs with read coalescing/caching. Cover cold metadata, cold content, warm caches and concurrent tasks separately.
+- Use Python imports, Node.js dependency loading, directory/attribute scans and real builds/tests. Record first useful tool call, complete-task time and P95/P99, request counts, downloaded bytes, read amplification, cache occupancy, packing time and total cost. Include first-publication costs and evaluate low-reuse environments separately. Register experiments and follow benchmark publication rules without assuming a speedup percentage.
+- Verify file semantics, copy-up, change delivery, content integrity and remote-failure behavior. Before changing the format, define compatibility/migration for existing image handles and checkpoint dependencies, plus pack retention and safe reclamation boundaries.
+
 ## Single-node daemon {#daemon}
 
 The [daemon](../guides/daemon/index.md) has VM-only `NativeRuntime` embedding pVisor in detached supervisors for the partial OpenSandbox 1.1.0 profile. The daemon executable and required native flags are integrated. Stage/apply and checkpoint/fork APIs are not implemented; node/cache/pool sharing is not automatically acquired. Bootstrap/images are not supplied or end-to-end validated; there is no SDK-conformance or density evidence. Controller/Worker and the Cluster task SDK are retired.

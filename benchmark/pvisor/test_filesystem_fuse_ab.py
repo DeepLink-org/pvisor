@@ -1,6 +1,10 @@
 """A purported FUSE control must prove both mounting and actual data service."""
 import json
+import sys
+from pathlib import Path
 import pytest
+import filesystem_fuse_ab
+from reference_baselines import digest
 from reference_baselines import validate_passthrough_output
 
 
@@ -33,3 +37,42 @@ def test_bypass_or_partial_data_service_is_rejected(fault):
         value = evidence({fields[fault]: 0})
     with pytest.raises(ValueError):
         validate_passthrough_output(value)
+
+
+@pytest.mark.parametrize('fault',['preflight','final-input'])
+def test_failed_control_retains_report_and_always_checks_final_inputs(tmp_path,monkeypatch,fault):
+    assets=tmp_path/'assets';(assets/'rootfs/bench/harness/v1').mkdir(parents=True)
+    (assets/'assets.json').write_text('{}')
+    for p in [assets/'rootfs/bench/reference_workload.py',assets/'rootfs/bench/harness/v1/workload.py']:p.write_text('fixture')
+    product=tmp_path/'product';product.mkdir();binary=product/'pvisor';binary.write_bytes(b'product')
+    receipt=product/'build-receipt.json';receipt.write_text('{}');(product/'source-manifest.json').write_text('[]')
+    driver_root=tmp_path/'driver';driver_root.mkdir();driver=driver_root/'fuse-passthrough';driver.write_bytes(b'driver')
+    driver_receipt=driver_root/'build-receipt.json';driver_receipt.write_text('{}')
+    (driver_root/'source-manifest.json').write_text('[]');(driver_root/'source').mkdir()
+    output=tmp_path/'.data/cohort';checks=[];trials=[]
+    inputs=dict(binary_build=dict(pvisor_sha256=digest(binary)),driver_build={},reference={})
+    def verify(args):
+        checks.append(args.assets)
+        if len(checks)==2 and fault=='final-input':raise ValueError('changed final input')
+        return inputs
+    def run(args,metadata,backend,mode,trial):
+        trials.append((backend,trial))
+        if fault=='preflight' and backend=='pvisor-fuse':raise ValueError('not actual FUSE')
+        return dict(backend=backend,trial=trial,completion_ms=10,ready_ms=1,
+                    result={'filesystem':{op:{'worker_ms':2} for op in filesystem_fuse_ab.WORKLOADS}})
+    monkeypatch.setattr(filesystem_fuse_ab,'verified_inputs',verify)
+    monkeypatch.setattr(filesystem_fuse_ab,'verify_driver_receipt',lambda *args:{})
+    monkeypatch.setattr(filesystem_fuse_ab,'run_trial',run)
+    monkeypatch.setattr(sys,'argv',['fuse-probe','--assets',str(assets),'--binary',str(binary),'--build-receipt',str(receipt),
+                                  '--fuse-driver',str(driver),'--driver-build-receipt',str(driver_receipt),
+                                  '--output',str(output),'--samples','1','--warmups','0'])
+    with pytest.raises(SystemExit) as error:filesystem_fuse_ab.main()
+    assert error.value.code==1 and len(checks)==2
+    report=json.loads((output/'report.json').read_text());assert report['state']=='failed'
+    assert 'summary' not in report and not (output/'summary.tsv').exists()
+    if fault=='preflight':
+        assert len(report['rows'])==0 and len(trials)==4
+        assert report['input_final_verification']['state']=='passed'
+    else:
+        assert len(report['rows'])==4 and len(trials)==8
+        assert report['input_final_verification']['state']=='failed'

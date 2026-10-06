@@ -25,6 +25,7 @@ import traceback
 
 from filesystem_diagnostic import summarize_trial, write_counter_csv
 from reference_baselines import digest, verified_build_receipt, validate_bundle_execution
+from reference_inputs import verify_reference_inputs
 from run_all import ldd_paths
 
 PAYLOAD=r'''
@@ -72,22 +73,47 @@ def prepare_copies(work, inputs):
 
 
 def run_owned_probe(command, work, env, root, timeout=150):
-    process=subprocess.Popen(command,cwd=work,env=env,stdout=subprocess.PIPE,
-        stderr=subprocess.PIPE,start_new_session=True)
-    timed_out=False
-    try:
-        stdout,stderr=process.communicate(timeout=timeout)
-    except BaseException as error:
-        try:os.killpg(process.pid,signal.SIGKILL)
-        except ProcessLookupError:pass
-        stdout,stderr=process.communicate()
-        timed_out=isinstance(error,subprocess.TimeoutExpired)
-        (root/'stdout.log').write_bytes(stdout);(root/'stderr.log').write_bytes(stderr)
-        (root/'command.json').write_text(json.dumps(dict(argv=command,exit=process.returncode,timed_out=timed_out))+'\n')
-        raise
-    (root/'stdout.log').write_bytes(stdout);(root/'stderr.log').write_bytes(stderr)
-    (root/'command.json').write_text(json.dumps(dict(argv=command,exit=process.returncode,timed_out=False))+'\n')
+    # Diagnostic only: a nonblocking pipe can abort Rust profile printing on
+    # EAGAIN. Preserve complete bytes without changing formal timing capture.
+    with (root/'stderr.log').open('wb') as stderr_file:
+        process=subprocess.Popen(command,cwd=work,env=env,stdout=subprocess.PIPE,
+            stderr=stderr_file,start_new_session=True)
+        try:
+            stdout,_=process.communicate(timeout=timeout)
+        except BaseException as error:
+            try:os.killpg(process.pid,signal.SIGKILL)
+            except ProcessLookupError:pass
+            stdout,_=process.communicate()
+            (root/'stdout.log').write_bytes(stdout)
+            (root/'command.json').write_text(json.dumps(dict(argv=command,exit=process.returncode,timed_out=isinstance(error,subprocess.TimeoutExpired),stderr_capture='regular-file diagnostic'))+'\n')
+            raise
+    stderr=(root/'stderr.log').read_bytes()
+    (root/'stdout.log').write_bytes(stdout)
+    (root/'command.json').write_text(json.dumps(dict(argv=command,exit=process.returncode,timed_out=False,stderr_capture='regular-file diagnostic'))+'\n')
     return subprocess.CompletedProcess(command,process.returncode,stdout,stderr)
+
+
+def verified_probe_inputs(args):
+    """Hash full prepared inputs outside diagnostic exec timers."""
+    verified_build_receipt(args.build_receipt,args.binary)
+    return dict(reference=verify_reference_inputs(args.assets),
+                firmware_sha256=digest(args.firmware/'libkrunfw.so.5'),
+                binary_sha256=digest(args.binary),
+                build_receipt_sha256=digest(args.build_receipt),
+                source_manifest_sha256=digest(args.build_receipt.parent/'source-manifest.json'),
+                tool_sha256=digest(args.tool))
+
+
+def verify_final_inputs(args, initial, inputs):
+    actual=verified_probe_inputs(args)
+    if actual!=initial:raise ValueError('diagnostic inputs changed after execution')
+    if digest(args.output/'bin/pvisor')!=initial['binary_sha256']:
+        raise ValueError('frozen diagnostic binary changed')
+    if digest(args.output/'firmware/libkrunfw.so.5')!=initial['firmware_sha256']:
+        raise ValueError('frozen diagnostic firmware changed')
+    if any(digest(Path(item['path']))!=item['sha256'] for item in inputs):
+        raise ValueError('host tool or library changed after execution')
+    return actual
 
 
 def elf_interpreter(path):
@@ -116,6 +142,8 @@ def main():
     sources=args.preparation_sources.split(',')
     if not sources or len(sources)!=len(set(sources)) or set(sources)-{'original','duplicate'}:parser.error('invalid preparation sources')
     for name in ('assets','binary','build_receipt','firmware','output','tool'):setattr(args,name,getattr(args,name).resolve())
+    if '.data' not in args.output.parts:parser.error('raw diagnostic output must be under .data')
+    initial_inputs=verified_probe_inputs(args)
     receipt=verified_build_receipt(args.build_receipt,args.binary)
     interpreter=elf_interpreter(args.tool)
     libraries=sorted(p for p in ldd_paths(args.tool) if p.resolve()!=interpreter.resolve())
@@ -129,17 +157,20 @@ def main():
         library_path=':'.join(sorted({str(p.parent) for p in libraries})),calls=args.calls,
         expected_stdout=subprocess.check_output([str(args.tool),'--version'],text=True))
     args.output.mkdir(parents=True,exist_ok=False);(args.output/'bin').mkdir();shutil.copy2(args.binary,args.output/'bin/pvisor')
+    (args.output/'firmware').mkdir();shutil.copy2(args.firmware/'libkrunfw.so.5',args.output/'firmware/libkrunfw.so.5')
     shutil.copy2(args.build_receipt,args.output/'build-receipt.json')
     shutil.copy2(args.build_receipt.parent/'source-manifest.json',args.output/'source-manifest.json')
     shutil.copytree(Path(__file__).parent,args.output/'harness',ignore=shutil.ignore_patterns('.data','__pycache__','.pytest_cache'))
     report=dict(benchmark_id='B-FS-DIAG',role='diagnostic',recorded_at=dt.datetime.now(dt.timezone.utc).isoformat(),binary_build=receipt,
         host_kernel=os.uname().release,firmware_sha256=digest(args.firmware/'libkrunfw.so.5'),input_manifest_sha256=digest(args.assets/'input-manifest.json'),
-        inputs=config,payload_sha256=__import__('hashlib').sha256(PAYLOAD.encode()).hexdigest(),harness_sha256=digest(Path(__file__)),
+        inputs=config,input_verification=initial_inputs,payload_sha256=__import__('hashlib').sha256(PAYLOAD.encode()).hexdigest(),harness_sha256=digest(Path(__file__)),
         arguments={k:str(v) if isinstance(v,Path) else v for k,v in vars(args).items()},
         protocol=dict(resources='same host affinity, two guest vCPU, 1 GiB guest RAM',
             order='seeded paired cases in independent fresh VMs',preparation='both arms copy/hash identical files into memfds before timed exec; pass same fd set',
             cache='warm host inputs, fresh guest; original preparation warms original inodes; duplicate preparation reads distinct workspace inodes; common Python loader/libraries remain warm; first call and subsequent calls separate; not completely cold startup',
             security='noexec tmpfs unchanged; unavailable executable memfd reported as failure, no policy relaxation',
+            resource_scope='inherited host affinity and guest vCPU/RAM configuration; no complete descendant lifetime or cross-backend budget claim',
+            stderr_capture='regular-file diagnostic; complete bytes retained; separate cohort from pipe capture',
             counters='independent instrumented runs only; include identical preparation and all exec calls; inclusive spans not additive; final coverage required'),rows=[],failures=[])
     def save():
         temporary=args.output/'report.tmp';temporary.write_text(json.dumps(report,indent=2)+'\n');temporary.replace(args.output/'report.json')
@@ -151,9 +182,10 @@ def main():
             trial_config=config|dict(case=case,preparation_source=source)
             (work/'input.json').write_text(json.dumps(trial_config)+'\n')
             command=['taskset','--cpu-list',args.cpu_affinity,str(args.output/'bin/pvisor'),'run','--no-agent-defaults','--overlaynet','off',
-                '--stdio','inherit','--timeout','120s','--vm','--rootfs',str(args.assets/'rootfs'),'--vm-library-dir',str(args.firmware),
+                '--stdio','inherit','--timeout','120s','--vm','--rootfs',str(args.assets/'rootfs'),'--vm-library-dir',str(args.output/'firmware'),
                 '--cpu','2','--memory','1GiB','--stage',str(root/'stage'),'--','/usr/bin/python3','-c',PAYLOAD]
-            env=os.environ.copy()|{'PVISOR_FS_PROFILE':'1','PVISOR_STARTUP_TIMING':'0','PVISOR_RUN_HOME':str(root/'runs'),'XDG_CONFIG_HOME':str(root/'config')}
+            env=os.environ.copy()|{'PVISOR_FS_PROFILE':'1','PVISOR_STARTUP_TIMING':'0','PVISOR_RUN_HOME':str(root/'runs'),'XDG_CONFIG_HOME':str(root/'config'),
+                'PYTHONDONTWRITEBYTECODE':'1','PYTHONPYCACHEPREFIX':'/__pvisor_reference_no_pyc__'}
             env.pop('PVISOR_TEST_ALLOW_NO_USERNS',None)
             env.pop('PVISOR_VM_FS_WORKERS',None)
             for key in list(env):
@@ -172,6 +204,13 @@ def main():
                 report['rows'].append(row)
             except Exception as error:report['failures'].append(dict(case=case,preparation_source=source,trial=trial,error=str(error),traceback=traceback.format_exc(),logs=str(root)))
             save();print(trial,source,case,flush=True)
+    try:
+        report['input_final_verification']=dict(state='passed',**verify_final_inputs(args,initial_inputs,inputs))
+    except Exception as error:
+        report['input_final_verification']=dict(state='failed',error=str(error))
+        report['failures'].append(dict(phase='final-input-verification',error=str(error),traceback=traceback.format_exc()))
+    report['state']='passed' if len(report['rows'])==args.samples*len(sources)*2 and not report['failures'] else 'failed'
+    save()
     write_counter_csv(report['rows'],args.output/'counter-summary.csv')
     if report['failures']:raise SystemExit(1)
 

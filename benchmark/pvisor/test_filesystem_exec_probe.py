@@ -2,6 +2,8 @@ import struct
 import json
 import signal
 import subprocess
+import sys
+from types import SimpleNamespace
 import pytest
 import filesystem_exec_probe
 from filesystem_exec_probe import elf_interpreter, prepare_copies, run_owned_probe
@@ -44,6 +46,7 @@ def test_probe_timeout_kills_owned_group_and_retains_partial_evidence(tmp_path, 
             return b'partial guest output',b'partial filesystem counters'
     def launch(command, **kwargs):
         assert kwargs['start_new_session'] is True
+        kwargs['stderr'].write(b'partial filesystem counters')
         return Process()
     monkeypatch.setattr(filesystem_exec_probe.subprocess,'Popen',launch)
     monkeypatch.setattr(filesystem_exec_probe.os,'killpg',lambda pid,sig:calls.append((pid,sig)))
@@ -52,3 +55,34 @@ def test_probe_timeout_kills_owned_group_and_retains_partial_evidence(tmp_path, 
     assert (tmp_path/'stdout.log').read_bytes()==b'partial guest output'
     assert (tmp_path/'stderr.log').read_bytes()==b'partial filesystem counters'
     assert json.loads((tmp_path/'command.json').read_text())['timed_out'] is True
+
+
+def test_nonblocking_large_profile_retains_all_original_bytes(tmp_path):
+    payload=b'profile record\xff\n'*65536
+    code="import os; os.set_blocking(2,False); data=b'profile record\\xff\\n'*65536; offset=0\nwhile offset<len(data): offset+=os.write(2,data[offset:])\nprint('checked result')"
+    result=run_owned_probe([sys.executable,'-c',code],tmp_path,None,tmp_path)
+    assert result.returncode==0
+    assert result.stdout==b'checked result\n'
+    assert result.stderr==payload
+    assert (tmp_path/'stderr.log').read_bytes()==payload
+    assert json.loads((tmp_path/'command.json').read_text())['stderr_capture']=='regular-file diagnostic'
+
+
+@pytest.mark.parametrize('changed', ['prepared-input', 'binary', 'firmware', 'library'])
+def test_final_gate_rejects_changed_inputs(tmp_path,monkeypatch,changed):
+    (tmp_path/'bin').mkdir();(tmp_path/'firmware').mkdir()
+    binary=tmp_path/'bin/pvisor';binary.write_bytes(b'frozen binary')
+    firmware=tmp_path/'firmware/libkrunfw.so.5';firmware.write_bytes(b'frozen firmware')
+    library=tmp_path/'library';library.write_bytes(b'original library')
+    initial=dict(binary_sha256=digest(binary),firmware_sha256=digest(firmware),reference={'files':3})
+    actual=dict(initial)
+    inputs=[dict(path=str(library),sha256=digest(library))]
+    args=SimpleNamespace(output=tmp_path)
+    monkeypatch.setattr(filesystem_exec_probe,'verified_probe_inputs',lambda _:actual)
+    assert filesystem_exec_probe.verify_final_inputs(args,initial,inputs)==initial
+    if changed=='prepared-input':actual['reference']={'files':4}
+    elif changed=='binary':binary.write_bytes(b'replaced binary')
+    elif changed=='firmware':firmware.write_bytes(b'replaced firmware')
+    else:library.write_bytes(b'replaced library')
+    with pytest.raises(ValueError,match='changed'):
+        filesystem_exec_probe.verify_final_inputs(args,initial,inputs)

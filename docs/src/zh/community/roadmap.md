@@ -12,6 +12,23 @@
 
 新增公开功能前，应具备实现入口、验证场景、限制说明和发布记录。改变数据契约、执行边界或公开命令时，先明确兼容策略和验收方式。
 
+## 惰性镜像的小文件供给优化 {#lazy-image-small-files}
+
+计划中：在镜像构建／发布时自动合并小文件，降低 S3-backed 惰性镜像的远端请求数和冷读取等待；尚无实现或性能验收结果。现有格式与限制见[共享镜像缓存 V1](../design/shared-image-cache-storage.md)，目录打包、确定性分桶与两级索引的详细提案见 [Lazy Image V2](../design/lazy-image-v2.md)。
+
+设计方向：
+
+- 文件路径、权限、hardlink、symlink 和 xattr 保持独立语义；物理内容按 package／目录等访问局部性组织到不可变 pack，以索引定位 offset 和 length。
+- 区分对象大小、读取／压缩块大小与缓存粒度；支持范围读取和独立块解压，不要求整体下载或解压 pack。
+- 配合本地元数据缓存、相邻读取合并、有界预取及并发 miss 合并；仅合并对象而逐文件请求，不算完成优化。
+- 保留跨镜像内容共享，避免每发布一个镜像就重打公共依赖；大文件继续按需分块读取。先评估 Nydus／EROFS 的可复用能力，再决定是否扩展自有格式。
+
+验收标准：
+
+- 对比独立小文件对象、pack 内逐文件范围读取、pack 加读取合并／缓存三种策略；分别覆盖冷元数据、冷内容、暖缓存和多任务并发。
+- 使用 Python import、Node.js 依赖加载、目录／属性扫描及真实编译／测试；记录首次有效工具调用、完整任务耗时及 P95/P99、请求数、下载字节、读放大、缓存占用、打包耗时与总成本。首次发布成本须入账，低复用环境单独评估；按 benchmark registry 与发布规则建立实验，不预设提升百分比。
+- 验证文件语义、copy-up、变更交付、内容完整性与远端故障行为；格式变更前明确旧镜像 handle、checkpoint 依赖的兼容／迁移策略，以及 pack 引用保留与安全回收边界。
+
 ## 单机 daemon {#daemon}
 
 [Daemon](../guides/daemon/index.md) 的部分 OpenSandbox 1.1.0 profile 已有 VM-only `NativeRuntime`，在独立 supervisor 中嵌入 pVisor；daemon 可执行入口与必需原生参数已接入。Stage/apply 与 checkpoint/fork API 未实现，也不自动获取 node/cache/pool 共享资源。Bootstrap／镜像未提供或端到端验证，没有 SDK 兼容或密度证据。Controller/Worker 与 Cluster 任务 SDK 已退役。

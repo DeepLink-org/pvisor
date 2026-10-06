@@ -31,6 +31,7 @@ def main():
     parser.add_argument('--backends', default='pvisor-staged,pvisor-vm')
     parser.add_argument('--cpu-affinity', default='0,1')
     parser.add_argument('--memory-mib', type=int, default=16384)
+    parser.add_argument('--tool-scratch', choices=('executor', 'workspace'), default='executor')
     parser.add_argument('--resource-budget', type=Path)
     parser.add_argument('--budget-memory-mib', type=int, default=16384)
     parser.add_argument('--budget-cpu-placement', choices=('affinity', 'cpuset'), default='affinity')
@@ -54,6 +55,7 @@ def main():
     args.staged_isolation = args.host_isolation = 'rootless_process'
     args.docker_root_pid = None
     args.diagnostic_timing = True
+    args.diagnostic_stderr_file = True
     args.resource_observation = 'off'
     os.environ['PVISOR_FS_PROFILE'] = '1'
     metadata = dict(benchmark_id='B-FS-DIAG', role='diagnostic',
@@ -68,7 +70,9 @@ def main():
         harness_file_sha256={str(path.relative_to(args.output / 'harness')): digest(path)
                              for path in sorted((args.output / 'harness').rglob('*')) if path.is_file()},
         protocol=dict(diagnostic_timing=True, filesystem_profile=True, samples=args.samples,
+            stderr_capture='regular-file diagnostic; no pipe backpressure; formal timing unchanged',
             cpu_affinity=args.cpu_affinity, memory_mib=args.memory_mib,
+            tool_scratch=args.tool_scratch,
             resource_observation=args.resource_observation,
             rss_scope='not sampled; unknown, never zero',
             interpretation='Instrumented runs only. Spans inclusive, snapshots cumulative. Partial records provide lower bounds, not complete-run totals.'),

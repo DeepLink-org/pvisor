@@ -20,3 +20,10 @@ def test_summary_preserves_every_sample_and_tool():
 def test_summary_rejects_incomplete_matrix():
     with pytest.raises(ValueError, match="incomplete matrix"):
         summarize([row("direct", 10)], ["direct", "staged"], 1)
+
+
+def test_small_cohorts_have_no_tail_quantiles():
+    timings=summarize([row('direct',10)],['direct'],1)['direct']['timings_ms']
+    assert all(set(value)=={'p50'} for value in timings.values())
+    timings=summarize([row('direct',i+1) for i in range(30)],['direct'],30)['direct']['timings_ms']
+    assert all(set(value)=={'p50','p95'} for value in timings.values())

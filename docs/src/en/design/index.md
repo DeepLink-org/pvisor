@@ -4,7 +4,7 @@
 | --- | --- |
 | Core ownership and execution path | [Core architecture](architecture.md) |
 | Single-node sandbox admission, lifecycle, recovery and storage | [Daemon design](daemon/index.md) |
-| Shared image caches, S3/filesystem trees, and file indexes | [v1: independent metadata and paged indexes](shared-image-cache-storage.md) |
+| Shared image caches, S3/filesystem trees, and file indexes | [V1: current implementation](shared-image-cache-storage.md) · [Lazy Image V2: directory packing and on-demand index proposal](lazy-image-v2.md) |
 | Memory optimization architecture, principles, and tradeoffs | [Overall design](memory-optimization/index.md) · [Deduplication](memory-optimization/deduplication.md) · [Offload](memory-optimization/offload.md) · [Compression](memory-optimization/compression.md) |
 | Full VM environment saves, independent file copies and restore across runners | [Full environment snapshot CLI](environment-snapshot.md) |
 | Experimental mechanisms and evidence boundaries for memory optimization | [Experimental proof of concept](memory-optimization/proof-of-concept.md) |

@@ -58,6 +58,7 @@ def test_changed_inputs_fail_after_preserving_collected_counters(invocation, mon
 
     def run(args, _, backend, mode, trial):
         assert args.resource_observation == 'off'
+        assert args.diagnostic_stderr_file is True
         directory = args.output / 'trials/example'
         directory.mkdir(parents=True)
         profile = dict(schema=2, pid=1, component='core', instance=1, final_record=True,

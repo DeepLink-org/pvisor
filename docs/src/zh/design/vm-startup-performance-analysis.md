@@ -1,5 +1,35 @@
 # VM 启动：技术分析与实验记录
 
+## 当前通用与裁剪内核的能力检查 {#kernel-capabilities}
+
+**裁剪配置通过了工作区暂存、开发工具、IPv4 HTTP 和执行快照恢复的这些检查。** 使用当前 CLI、相同 Linux 6.12.109 源码、补丁和 compact 打包实现，两种配置分别重建固件。冻结源码的 79 个输入文件和两份实际构建输入在前后通过完整摘要校验；CLI 的 1,063 个产品源码和依赖文件与当前工作树相同。测于 2026-10-06，Linux/KVM、CPU 0,1、配置 2 vCPU，工具预检采样资源；这些能力检查不作为正式计时。
+
+下表是每种配置通过次数/执行次数，合计 60 次独立 VM 执行，失败 0。Shell、七项工具和固定修复各两次；网络与恢复各条件三次，顺序按固定种子随机交替。
+
+| 能力检查 | 通用配置 | 裁剪配置 | 实际校验 |
+| --- | ---: | ---: | --- |
+| Shell 就绪并正常退出 | 2/2 | 2/2 | 唯一就绪/结果标记、零退出、VM 执行记录 |
+| 七项开发工具 | 2/2 | 2/2 | 工具结果；256 × 64 KiB 写入全部字节 |
+| 固定修复任务 | 2/2 | 2/2 | Python/Rust/Node 测试；保留的修复内容 |
+| HTTP 小请求 | 3/3 | 3/3 | 每次 256 个 1 KiB 响应及 SHA256，服务端请求数 |
+| HTTP 大文件 | 3/3 | 3/3 | 每次 32 MiB 全部内容 SHA256 |
+| 流式 HTTP | 3/3 | 3/3 | 十个事件的完整内容及 SHA256 |
+| 拒绝直连 | 3/3 | 3/3 | 同一服务的直连被拒绝，服务端未收到请求 |
+| 可压缩内存 / raw 恢复 | 3/3 | 3/3 | 同一 token，恢复后扫描并校验全部 64 MiB |
+| 可压缩内存 / compressed 恢复 | 3/3 | 3/3 | 同一 token，恢复后扫描并校验全部 64 MiB |
+| 随机内存 / raw 恢复 | 3/3 | 3/3 | 同一 token，恢复后扫描并校验全部 64 MiB |
+| 随机内存 / compressed 恢复 | 3/3 | 3/3 | 同一 token，恢复后扫描并校验全部 64 MiB |
+
+工具预检的 12 个 lower 完整清单保持不变，四次写入共 1,024 个文件、64 MiB，全部字节经独立审计；测试结果由冻结 harness 执行校验，事后独立核验保留的修复文件。网络服务位于同一宿主，允许请求有正控制，拒绝条件检查直接 socket；没有公网和模型请求。恢复的 24 个执行 token 各自唯一，原始 stdout、暂停状态、恢复结果和 OOM 事件经独立核验。共享工具输入和内存 fixture 在前后保持一致。
+
+Shell 使用 128 MiB guest RAM，工具使用 16 GiB，网络使用 1 GiB；它们处于已有 16 GiB 私有父预算。恢复使用 256 MiB guest RAM，每次新建 2 GiB、零 swap、200% CPU 的服务。工具预检采样进程，网络核验协调进程和父预算，恢复核验服务预算并采样内存。CPU 使用亲和性，未证明每个短生命周期线程的完整放置，未知观测保留；这些检查不支持统一严格资源限制下的排名或容量结论。
+
+### 实际构建的内核选项 {#built-kernel-options}
+
+两种配置都启用 SMP、KVM guest、CPU mitigations、seccomp/filter、namespaces、virtio-mmio、virtio-fs、virtio-net、IPv4。裁剪配置关闭 PCI、ACPI、guest security/SELinux 和 audit；两者仍启用 `CONFIG_BLOCK`，不能将设备裁剪概括成所有块设备基础设施都消失。配置变化不构成相同加固程度的对照。这里只验证上述 HTTP 和私有内存恢复负载，没有建立完整设备、TLS/DNS/UDP/IPv6、安全逃逸或 SDK 状态恢复的兼容性保证，也没有证明启动、物理内存或密度收益。
+
+[整理后的能力检查 CSV](kernel-capabilities.csv) · [实际配置选项 CSV](kernel-config-capabilities.csv)。两批独立原始报告、逐次输出、快照、输入清单、构建与审核回执保留在本地 `.data/`；CSV 保留批次时间、样本数和摘要关联。复现见[内核配置实验手册](https://github.com/DeepLink-org/pvisor/blob/main/benchmark/pvisor/README.md#paired-kernel-configuration-experiment)。启动与完整任务收益需使用当前 CLI 另跑正式配对计时，不能由能力通过或文件尺寸推出。
+
 ## 1. 结论
 
 pVisor 新 VM 返回首条命令输出，在 macOS / Apple M4 上约 **84 ms**、Linux / Ryzen 7 9700X 上约 **110 ms**，均为 **0.1 秒量级**。Linux 同机 Firecracker 启动完整 Ubuntu，已配置环境约 **5.64 秒**、首次启动约 **9.25 秒**；pVisor 直接使用目录，无需系统镜像。各批次配置不同，完整数据分别保留。

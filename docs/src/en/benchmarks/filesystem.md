@@ -22,6 +22,8 @@ All backends share offline tools and fixed inputs, with a new workspace per tria
 
 The workload traverses 2,048 files in 32 directories, reads and SHA256-checks 64 MiB, writes 256 × 64 KiB, runs git status and rg, compiles 64 dependency-free Cargo modules and installs 32 offline npm packages. Operations include validation but exclude launch/exit; the complete task includes all seven and exit. Large repositories, cold disks, online registries and concurrent throughput are unmeasured.
 
+These samples do not verify equal Node/npm compile-cache state across backends. A fresh workspace does not establish an empty tool cache. npm and complete-task differences include each configuration's cache behavior; they cannot all be attributed to FUSE, staging or the VMM.
+
 ## Data and analysis {#results}
 
 Measured on 2026-10-06: each backend/workload has 60/60 valid samples and zero measured failures. Outputs, exit and execution records must pass validation; staging also requires unchanged host originals and all 256 upper files with the expected sizes. Complete written bytes were not independently checked. Every valid slow sample is kept, with no timing-based exclusions. Tables normally show P50; separated distributions show cluster medians and counts. P95 is descriptive only. Raw reports, binaries and input/source manifests stay in ignored `.data/`; public CSVs retain workload, cohort and provenance associations.

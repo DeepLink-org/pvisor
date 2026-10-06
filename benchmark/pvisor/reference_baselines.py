@@ -11,10 +11,12 @@ Conclusion sought: per-operation and whole-task wait for pVisor staged/VM
 against native, Docker, Firecracker and QEMU, and which tasks suit each mode.
 Design: one offline tool environment for every runtime, seven fixed workloads,
 matched two-core budget, fresh workspace per job, warmups plus >=30 samples;
-output, isolation and untouched-host checks gate every counted sample.
+fresh task caches under executor TMPDIR by default, workspace cache control
+separate; output, isolation and untouched-host checks gate every counted sample.
 """
 
 import argparse
+from contextlib import nullcontext
 import hashlib
 import json
 import os
@@ -107,12 +109,26 @@ def validate_python_cache(result):
             raise ValueError('filesystem child did not enforce the common bytecode cache policy')
 
 
-def validate_tool_cache(result):
+def validate_tool_cache(result, expected_scratch=None):
     """Require fresh task-local scratch, with the same child environment."""
     workspace = result.get('workspace')
     if not isinstance(workspace, str) or not Path(workspace).is_absolute():
         raise ValueError('missing absolute tool workspace')
-    temporary = Path(workspace) / '_reference_tmp'
+    # Missing policy is accepted only for independent audits of retained
+    # workspace-policy evidence. New jobs pass an explicit expected policy.
+    policy = result.get('tool_scratch', 'workspace')
+    if policy not in ('executor', 'workspace') or (expected_scratch is not None and result.get('tool_scratch') != expected_scratch):
+        raise ValueError('tool scratch policy differs from the declared experiment')
+    if policy == 'workspace':
+        temporary = Path(workspace) / '_reference_tmp'
+    else:
+        value = result.get('tool_cache', {}).get('TMPDIR')
+        if not isinstance(value, str):
+            raise ValueError('missing task-local executor scratch')
+        temporary = Path(value)
+        if (not temporary.is_absolute() or '..' in temporary.parts or temporary.parent.name != '.data'
+                or not re.fullmatch(r'pvisor-reference-[A-Za-z0-9_-]{6,}', temporary.name)):
+            raise ValueError('executor scratch is not a fresh private task directory')
     expected = dict(TMPDIR=str(temporary), HOME=str(temporary / 'reference-home'),
                     CARGO_HOME=str(temporary / 'reference-cargo'),
                     NODE_COMPILE_CACHE=str(temporary / 'node-compile-cache'),
@@ -122,10 +138,20 @@ def validate_tool_cache(result):
     for operation in result.get('filesystem', {}).values():
         if operation.get('tool_cache') != expected:
             raise ValueError('filesystem child did not inherit task-local tool caches')
+        if operation.get('tool_scratch', 'workspace' if expected_scratch is None else None) != policy:
+            raise ValueError('filesystem child scratch policy differs')
     if result.get('mode') == 'env':
         probe = result.get('versions', {}).get('node_compile_cache', {})
-        if probe.get('status') not in ('ENABLED', 'ALREADY_ENABLED') or probe.get('directory') != expected['NODE_COMPILE_CACHE']:
+        directory = probe.get('directory')
+        base = Path(expected['NODE_COMPILE_CACHE'])
+        valid_directory = (isinstance(directory, str) and '..' not in Path(directory).parts
+                           and (directory == str(base) or
+                                (Path(directory).parent == base and
+                                 re.fullmatch(r'v\d+\.\d+\.\d+-[A-Za-z0-9_-]+', Path(directory).name))))
+        if probe.get('status') not in ('ENABLED', 'ALREADY_ENABLED') or not valid_directory:
             raise ValueError('actual Node compile cache did not use the task-local directory')
+        if expected_scratch is not None and (type(probe.get('filesystem_type')) is not int or probe['filesystem_type'] <= 0):
+            raise ValueError('actual Node cache storage type is unknown')
 
 
 def validate_guest_output(output, mode):
@@ -257,6 +283,9 @@ def validate_passthrough_output(output):
 
 
 def run_trial(args, metadata, backend, mode, trial):
+    diagnostic_stderr = getattr(args, 'diagnostic_stderr_file', False)
+    if diagnostic_stderr and not getattr(args, 'diagnostic_timing', False):
+        raise ValueError('regular-file stderr capture is diagnostic only')
     root = args.output / "trials" / f"{mode}-{backend}-{trial:03d}"
     root.mkdir(parents=True)
     work = root / "workspace"
@@ -282,7 +311,9 @@ def run_trial(args, metadata, backend, mode, trial):
         GIT_CONFIG_VALUE_0="*",
         PYTHONDONTWRITEBYTECODE="1",
         PYTHONPYCACHEPREFIX="/__pvisor_reference_no_pyc__",
+        PVISOR_REFERENCE_TOOL_SCRATCH=getattr(args, 'tool_scratch', 'executor'),
     )
+    env.pop('PVISOR_REFERENCE_CACHE_DIRECTORY', None)
     env.pop("PVISOR_TEST_ALLOW_NO_USERNS", None)
     image = metadata["assets"]["docker_image"]
     rootfs = args.assets / "rootfs"
@@ -322,6 +353,8 @@ def run_trial(args, metadata, backend, mode, trial):
             "PYTHONDONTWRITEBYTECODE=1",
             "--env",
             "PYTHONPYCACHEPREFIX=/__pvisor_reference_no_pyc__",
+            "--env",
+            "PVISOR_REFERENCE_TOOL_SCRATCH=" + env['PVISOR_REFERENCE_TOOL_SCRATCH'],
             "--workdir",
             "/work",
             "--mount",
@@ -340,7 +373,8 @@ def run_trial(args, metadata, backend, mode, trial):
         launch.write_text(json.dumps({
             "argv": ["/usr/bin/python3", "/bench/reference_workload.py", "--mode", mode],
             "env": {"PATH": "/opt/toolchain/bin:/usr/local/bin:/usr/bin:/bin", "HOME": "/root",
-                    "PYTHONDONTWRITEBYTECODE": "1", "PYTHONPYCACHEPREFIX": "/__pvisor_reference_no_pyc__"},
+                    "PYTHONDONTWRITEBYTECODE": "1", "PYTHONPYCACHEPREFIX": "/__pvisor_reference_no_pyc__",
+                    "PVISOR_REFERENCE_TOOL_SCRATCH": env['PVISOR_REFERENCE_TOOL_SCRATCH']},
             "cwd": "/work", "workspace": "/work", "stdio_ports": [True, True, True],
         }))
         argv = [str(args.sdk_driver), backend.removeprefix("sdk-vm-"),
@@ -355,6 +389,8 @@ def run_trial(args, metadata, backend, mode, trial):
             "PYTHONDONTWRITEBYTECODE",
             "--pass-env",
             "PYTHONPYCACHEPREFIX",
+            "--pass-env",
+            "PVISOR_REFERENCE_TOOL_SCRATCH",
             "--overlaynet",
             "off",
             "--stdio",
@@ -396,7 +432,7 @@ def run_trial(args, metadata, backend, mode, trial):
         subprocess.run(
             ["cp", "--reflink=auto", str(args.assets / "agent-env.ext4"), str(disk)], check=True
         )
-        boot = f"console=ttyS0 reboot=k panic=1 pci=off root=/dev/vda rw init=/bench/init quiet pvbench.mode={mode}"
+        boot = f"console=ttyS0 reboot=k panic=1 pci=off root=/dev/vda rw init=/bench/init quiet pvbench.mode={mode} pvbench.scratch={getattr(args, 'tool_scratch', 'executor')}"
         mem = 128 if mode == "ready" else args.memory_mib
         if backend == "firecracker":
             boot = boot.replace(" pci=off", "")
@@ -482,15 +518,19 @@ def run_trial(args, metadata, backend, mode, trial):
     budget_violations = []
     print(f"Launch {mode}/{backend}, trial {trial}: {json.dumps(argv)}", flush=True)
     start = time.perf_counter_ns()
-    proc = subprocess.Popen(
-        argv,
-        cwd=work,
-        env=env,
-        stdin=subprocess.DEVNULL,
-        stdout=subprocess.PIPE,
-        stderr=subprocess.PIPE,
-        start_new_session=True,
-    )
+    # Profile records can exceed a nonblocking pipe's capacity. Keep diagnostic
+    # stderr bytes in a regular file; formal timing retains its original pipe.
+    with ((root / 'stderr.log').open('wb') if diagnostic_stderr
+          else nullcontext(subprocess.PIPE)) as stderr_target:
+        proc = subprocess.Popen(
+            argv,
+            cwd=work,
+            env=env,
+            stdin=subprocess.DEVNULL,
+            stdout=subprocess.PIPE,
+            stderr=stderr_target,
+            start_new_session=True,
+        )
 
     def stdout():
         for line in proc.stdout:
@@ -562,8 +602,9 @@ def run_trial(args, metadata, backend, mode, trial):
     threads = [
         threading.Thread(target=waiter),
         threading.Thread(target=stdout),
-        threading.Thread(target=lambda: err.append(proc.stderr.read())),
     ]
+    if not diagnostic_stderr:
+        threads.append(threading.Thread(target=lambda: err.append(proc.stderr.read())))
     if observation_mode == 'sampled':
         threads.append(threading.Thread(target=monitor))
     for t in threads:
@@ -577,15 +618,19 @@ def run_trial(args, metadata, backend, mode, trial):
         for t in threads:
             t.join()
         proc.stdout.close()
-        proc.stderr.close()
+        if proc.stderr is not None:
+            proc.stderr.close()
     ended = exit_ns[0]
     usage_after = resource.getrusage(resource.RUSAGE_CHILDREN) if usage_before else None
     output = b"".join(out).decode(errors="replace")
-    error = b"".join(err).decode(errors="replace")
+    error = ((root / 'stderr.log').read_bytes() if diagnostic_stderr
+             else b"".join(err)).decode(errors="replace")
     (root / "stdout.log").write_text(output)
-    (root / "stderr.log").write_text(error)
+    if not diagnostic_stderr:
+        (root / "stderr.log").write_text(error)
     (root / "command.json").write_text(
-        json.dumps({"argv": argv, "exit": proc.returncode, "prepare_ms": prep_ms}, indent=2)
+        json.dumps({"argv": argv, "exit": proc.returncode, "prepare_ms": prep_ms,
+                    "stderr_capture": 'regular-file diagnostic' if diagnostic_stderr else 'pipe'}, indent=2)
     )
     budget_record = None
     if budget is not None:
@@ -621,7 +666,7 @@ def run_trial(args, metadata, backend, mode, trial):
     assert result["correctness"] == "passed" and result["mode"] == mode
     if mode != "ready":
         validate_python_cache(result)
-        validate_tool_cache(result)
+        validate_tool_cache(result, getattr(args, 'tool_scratch', 'executor'))
     fuse_stats = None
     if backend == "pvisor-fuse":
         fuse_stats = validate_passthrough_output(output)
@@ -679,6 +724,7 @@ def run_trial(args, metadata, backend, mode, trial):
         "result": result,
         "correctness": "passed",
         "logs": str(root),
+        "stderr_capture": 'regular-file diagnostic' if diagnostic_stderr else 'pipe',
     }
     if usage_before is not None:
         row["waited_child_resources"] = {
@@ -725,6 +771,8 @@ def main():
     p.add_argument('--resource-observation', choices=('off', 'sampled'), default='off',
                    help='Periodic PID/thread/RSS scanning changes timing; use sampled only in separate capability/resource probes')
     p.add_argument("--memory-mib", type=int, default=16384)
+    p.add_argument('--tool-scratch', choices=('executor', 'workspace'), default='executor',
+                   help='Fresh tool caches under executor TMPDIR (default), or a separate workspace-storage control')
     p.add_argument(
         "--staged-isolation", choices=("host_process", "rootless_process"), default="host_process"
     )
@@ -813,7 +861,7 @@ def main():
         "protocol": {
             "cache": "warm; no eviction",
             "python_cache": "missing /__pvisor_reference_no_pyc__ prefix, no bytecode writes; actual parent/child flags required",
-            "tool_cache": "fresh task-local _reference_tmp on workspace storage; Node compile cache enabled; no cross-task Node/HOME/Cargo cache",
+            "tool_cache": f"fresh task-local {args.tool_scratch} scratch; Node compile cache enabled; no cross-task Node/HOME/Cargo cache",
             "resource_observation": args.resource_observation,
             "image_preparation": "excluded from timed job; measured separately",
             "vm_shape": f"2 vCPU; shell ready 128 MiB; complete environment {args.memory_mib} MiB configured RAM",

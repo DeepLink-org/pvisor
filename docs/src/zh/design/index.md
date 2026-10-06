@@ -4,7 +4,7 @@
 | --- | --- |
 | 核心职责与执行路径 | [核心架构](architecture.md) |
 | 单节点 sandbox 准入、生命周期、恢复与存储 | [Daemon 设计](daemon/index.md) |
-| 共享镜像缓存、S3/文件系统目录树与文件索引 | [v1：独立元数据与分页索引](shared-image-cache-storage.md) |
+| 共享镜像缓存、S3/文件系统目录树与文件索引 | [V1：当前实现](shared-image-cache-storage.md) · [Lazy Image V2：目录打包与按需索引提案](lazy-image-v2.md) |
 | 内存优化的架构、理念与权衡 | [总体设计](memory-optimization/index.md) · [内存去重](memory-optimization/deduplication.md) · [内存卸载](memory-optimization/offload.md) · [内存压缩](memory-optimization/compression.md) |
 | 完整 VM 环境保存、独立文件副本与跨 runner 恢复 | [完整环境快照 CLI](environment-snapshot.md) |
 | 内存优化的实验机制与证据边界 | [实验性概念验证](memory-optimization/proof-of-concept.md) |

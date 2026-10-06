@@ -57,6 +57,11 @@ fn main() {
         .split_whitespace()
         .find_map(|arg| arg.strip_prefix("pvbench.mode="))
         .unwrap_or("ready");
+    let scratch = cmdline
+        .split_whitespace()
+        .find_map(|arg| arg.strip_prefix("pvbench.scratch="))
+        .unwrap_or("executor");
+    assert!(matches!(scratch, "executor" | "workspace"));
     let mut command = if mode == "ready" {
         let mut cmd = Command::new("/bin/sh");
         cmd.args(["-c", "printf 'REFERENCE_READY\\nREFERENCE_RESULT {\"mode\":\"ready\",\"correctness\":\"passed\"}\\n'"]);
@@ -72,6 +77,7 @@ fn main() {
         .env("HOME", "/root")
         .env("PYTHONDONTWRITEBYTECODE", "1")
         .env("PYTHONPYCACHEPREFIX", "/__pvisor_reference_no_pyc__")
+        .env("PVISOR_REFERENCE_TOOL_SCRATCH", scratch)
         .status()
         .expect("payload");
     println!("REFERENCE_EXIT {}", status.code().unwrap_or(255));

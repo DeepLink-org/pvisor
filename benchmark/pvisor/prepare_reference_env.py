@@ -319,7 +319,7 @@ def main():
         ).strip(),
         "kernel_config_sha256": hashlib.sha256((out / "kernel.config").read_bytes()).hexdigest(),
         "preparation_scope": "offline copying installed tools, image import and ext4 creation; excludes package download and kernel compilation",
-        "cache_policy": "no pyc reads/writes via absent Python prefix; fresh task-local _reference_tmp on workspace storage, including enabled Node compile cache, HOME and Cargo; actual parent/child environments required",
+        "cache_policy": "no pyc reads/writes via absent Python prefix; fresh task-local caches under executor TMPDIR by default, workspace-storage control explicit; enabled Node compile cache/private HOME/Cargo; actual parent/child environments required",
         "setup_wall_ms_scope": "through image/ext4 preparation; input manifest hashing is recorded separately",
     }
     (out / "assets.json").write_text(json.dumps(metadata, indent=2) + "\n")

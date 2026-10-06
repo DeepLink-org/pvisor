@@ -1,11 +1,11 @@
 field,value
 benchmark_id,B-FS-DIAG
 role,diagnostic
-report_sha256,faaa26f94d7ae0c491e78ee6cae9d7cfe1141707341f8485be7cc6e4d21aca45
-audit_sha256,3a8edbed1e7ac27df7352cb41a6e7732017f811837667bd2477ff4f09d28a042
-input_manifest_sha256,1ddcf28fb142744aeb3f8c778558a276ea42bd7a51c51c1b87e02a0d920d91c9
+report_sha256,de82100040a98b690aefebe58279c663954ab379d550b77576d0a15cb74747c1
+audit_sha256,c153ccb7c916e2646de429304c21696126bee02914e7a608b9a68ff08977999e
+input_manifest_sha256,358ca833b32ed7ef60b6333cc873a77a531a9f8076e5419cb57b4e629185013f
 firmware_sha256,b61f68dac3ef20a88e1ee387733e4baed2f7c02edac940c8882e0b549dac95e4
-harness_sha256,a65c05549ee836525351624bbd8f0e7ace35a3da8e2f7ae47e4a4754faed7b34
-binary_sha256,9f7f80b7421b00ff66f7a60cb5dd2bdc6a3ea756bceec7a63b5a1d28cdbdf23a
-source_manifest_sha256,0a22adeecf92fe693a9e719613079ab0fbfa4de2b1141e43ceec6f73642c46e5
-protocol,"{""cache"": ""warm host inputs, fresh guest; original preparation warms original inodes; duplicate preparation reads distinct workspace inodes; common Python loader/libraries remain warm; first call and subsequent calls separate; not completely cold startup"", ""counters"": ""independent instrumented runs only; include identical preparation and all exec calls; inclusive spans not additive; final coverage required"", ""order"": ""seeded paired cases in independent fresh VMs"", ""preparation"": ""both arms copy/hash identical files into memfds before timed exec; pass same fd set"", ""resources"": ""same host affinity, two guest vCPU, 1 GiB guest RAM"", ""security"": ""noexec tmpfs unchanged; unavailable executable memfd reported as failure, no policy relaxation""}"
+harness_sha256,25705f5700cf7bc72622393dc1dcac798f57e4b63a932247746e5d3189f8e437
+binary_sha256,1a7144081fdbf55047ae57df6dcc13a9e57bb7107f568a17f2b5f209aa2d6f17
+source_manifest_sha256,7ef73174e02879122a410fe291867e3c8c08f4a1c944c69eb4aded7f521e1b7f
+protocol,"{""cache"": ""warm host inputs, fresh guest; original preparation warms original inodes; duplicate preparation reads distinct workspace inodes; common Python loader/libraries remain warm; first call and subsequent calls separate; not completely cold startup"", ""counters"": ""independent instrumented runs only; include identical preparation and all exec calls; inclusive spans not additive; final coverage required"", ""order"": ""seeded paired cases in independent fresh VMs"", ""preparation"": ""both arms copy/hash identical files into memfds before timed exec; pass same fd set"", ""resource_scope"": ""inherited host affinity and guest vCPU/RAM configuration; no complete descendant lifetime or cross-backend budget claim"", ""resources"": ""same host affinity, two guest vCPU, 1 GiB guest RAM"", ""security"": ""noexec tmpfs unchanged; unavailable executable memfd reported as failure, no policy relaxation"", ""stderr_capture"": ""regular-file diagnostic; complete bytes retained; separate cohort from pipe capture""}"

@@ -2,6 +2,8 @@
 
 > Status: implemented. Filesystem/S3 caches use this v1 format: independently managed image metadata, shared file contents, and paged indexes. This is the sole cache implementation; online/offline GC tooling is not implemented.
 
+See the [Lazy Image V2 design proposal](lazy-image-v2.md) for future small-file packing. The proposal is not implemented and does not change the V1 format or current interfaces described here.
+
 V1 keeps each image's mutable state and file indexes in its own meta directory, sharing only immutable data objects. Different images do not update a common reference table, image index, or mutable pack. Concurrent updates of one image are handled at that platform's own HEAD.
 
 ## Filesystem entry points and lazy reads {#filesystem-access}

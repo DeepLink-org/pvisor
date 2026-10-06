@@ -175,6 +175,10 @@ Use `--resource-observation sampled` only for separate capability/resource probe
 
 Prepared rootfs bytecode is archived before tar/image/disk construction. Every Python payload uses `PYTHONDONTWRITEBYTECODE=1` and the absent `PYTHONPYCACHEPREFIX=/__pvisor_reference_no_pyc__`; disabling writes alone still permits loading existing host bytecode. Both variables pass explicitly through pVisor `--pass-env`. Actual parent and filesystem-child flags must match. The runner verifies complete input file bytes, permissions and symlink targets before warmups and after sampling, with directory permissions for newly generated manifests. Independently compare OCI contents and guest-disk contents with the common rootfs; an immutable image ID alone does not establish equality. Failed input gates retain their reports and cannot supply formal performance results.
 
+`--tool-scratch executor` is the default: preserve each executor's provided `TMPDIR` (native fallback `/tmp`) and create an empty private `.data/pvisor-reference-*` directory under it. Private HOME, the fixed repair’s Cargo home and an enabled Node compile cache use that directory; nothing reuses another task's cache. The `env` preflight records Node's actual API status, base/version directory and `statfs` storage type. Different default temporary storage is part of the configuration cost, not a pure VMM comparison. Node environment overrides and inherited reference-cache markers from the host are removed; nested tool actions may reuse only their current task's explicit directory. Parent and all seven workers must report the declared scratch policy and matching environments. The seven-operation Cargo subprocess instead uses fresh workspace-local `_cargo-home`, `_tmp` and `_cargo-target` directories in every backend; worker cache fields describe the inherited environment, not this Cargo override. The fixed repair may reuse its cache between npm calls within one task; persistent shared caches are outside this policy.
+
+`--tool-scratch workspace` is a separate storage control using `_reference_tmp` in each fresh workspace. Existing fixture caches and foreign/symlink directories fail before sampling. Keep executor-default and workspace controls in different outputs and statistics; page-cache warmth is also separate. Do not overwrite an executor-provided tmpfs path with `/tmp` or present the workspace control as default product performance. Reprepare inputs when changing the harness or cache policy, and rerun full OCI/ext4 equivalence gates before preflight.
+
 The registered write operation creates 256 files of exactly 64 KiB each. Complete byte validation occurs after the operation timer and remains included in task completion; direct and staged host outputs are independently reread. Successful workspaces, stage uppers and reference-VM disks remain under the trial directory for publication audits. Check available storage before a complete cohort; reflink/sparse copies can acquire private blocks during execution. Changed workload or cache policies require fresh prepared rootfs/image/disk inputs and their equivalence audits.
 
 ### Rebuilding and repeating the complete matrix
@@ -324,13 +328,34 @@ python3 benchmark/pvisor/kernel_comparison.py \
   --output benchmark/.data/kernel-preflight --samples 1 --warmups 0
 ```
 
-Build only after unrelated timing ends. After all shell/tool preflight conditions pass, run into a fresh short `.data/` directory with 30 samples and three warmups. Configuration A/B is engineering evidence, separate from user runtime rankings. Report removed guest device/LSM capabilities and validate networking/suspend/restore separately; shell startup alone establishes none of those capabilities. The paired bootstrap compares matching rounds, and separated distributions remain separate.
+Build only after unrelated timing ends. After all shell/tool preflight conditions pass, run into a fresh short `.data/` directory with 30 samples and three warmups. Configuration A/B is engineering evidence, separate from user runtime rankings. The runner verifies every frozen firmware source/build-input byte, actual firmware/kernel/config identities and required enabled kernel options, then checks the complete shared tool inputs before and after all tasks, including failed warmups. Raw outputs must stay under `.data/`. Default tool caches preserve executor TMPDIR; select `--tool-scratch workspace` only as a separate control. An established private parent can be declared with `--resource-budget`, `--budget-memory-mib`, `--budget-cpu-placement` and `--resource-observation`; sampled live checks retain unknown lifetimes and do not establish complete CPU placement or capacity. Keep measured binary source identity separate from runner HEAD. Report removed guest device/LSM capabilities and validate networking/suspend/restore separately; shell startup alone establishes none of those capabilities. Capability checks should retain three independent repetitions per condition: checked local small/bulk/stream HTTP and a deny-all direct-socket negative control, plus raw/compressed snapshots of repeated/random private memory with the same token and full checksum after restore. Use the versioned `v1/network_worker.py`, network origin and `vm_memory.py`/`memory_probe.rs` helpers, retaining exact commands/source/input manifests; tiny capability cohorts do not provide network latency, physical-memory or density rankings. The paired bootstrap compares matching rounds, and separated distributions remain separate.
 
 ## Engineering and diagnostics
 
 B-FS-ENG engineering runners and B-FS-DIAG diagnostic helpers remain active: `filesystem_ab.py`, `filesystem_fuse_ab.py`, `filesystem_stage_ab.py`, `filesystem_stage_durability.py`, `filesystem_lazy_ab.py`, `filesystem_kernel_probe.py` and `filesystem_diagnostic.py`. The FUSE passthrough adapter is a diagnostic control without staging semantics, not a production mode. Record each engineering run’s ID and keep raw output in `.data/`; publish only when it changes a user conclusion, after a matching user-facing comparison.
 
 After formal timing completes, `filesystem_counters.py` collects independent filesystem and fixed-repair diagnostics from the same verified current binary and inputs:
+
+`prepare_fuse_driver.py` builds a standalone release control offline from frozen vendored fuser and a fixed libc dependency. Pass `--fuser-source`, `--product-lock` and `--product-manifest` from the measured product's frozen source when it differs from the worktree. It retains the Cargo lock, source inventory, compiler commands and binary receipt; preparation performs no measurements.
+
+```bash
+python3 benchmark/pvisor/prepare_fuse_driver.py --output benchmark/.data/fuse-driver-new
+python3 benchmark/pvisor/filesystem_fuse_ab.py \
+  --assets /absolute/path/to/reference-assets \
+  --binary /absolute/path/to/frozen/pvisor \
+  --build-receipt /absolute/path/to/product/build-receipt.json \
+  --fuse-driver benchmark/.data/fuse-driver-new/bin/fuse-passthrough \
+  --driver-build-receipt benchmark/.data/fuse-driver-new/build-receipt.json \
+  --output benchmark/.data/fuse-counters-new --profiles --samples 3 --warmups 0
+python3 benchmark/pvisor/filesystem_stage_durability.py \
+  --assets /absolute/path/to/reference-assets \
+  --binary /absolute/path/to/frozen/pvisor \
+  --build-receipt /absolute/path/to/product/build-receipt.json \
+  --firmware /absolute/path/to/firmware \
+  --output benchmark/.data/durability-counters-new --profiles --samples 3 --warmups 0
+```
+
+Both runners gate the complete input inventory before and after execution, preserve failures and failed preflights, and require the frozen current CLI source receipt. The passthrough runner also verifies the complete driver source receipt and exact fuser bytes against the product manifest. Native/direct workloads may rewrite the fixture toolchain path and refresh Git index stat data; retained input bytes and indexed paths/modes/object IDs must otherwise remain unchanged. Staged lower inventories remain exact. The durability runner checks requested policy and completion seal for preflights, warmups and accepted tasks. Default caches preserve executor TMPDIR; `--tool-scratch workspace` is a separate control. `--profiles` uses regular-file stderr and produces independent diagnostic records; omit it for separate uninstrumented observations. Durability timing uses B-FS-ENG, at least thirty paired rounds with three warmups and distribution/interval reporting; its profile mode uses B-FS-DIAG. No P99 is produced. Supply a verified private parent with `--resource-budget` and matching budget options when available; sampled observations retain unknown lifetimes and do not prove strict placement. These controls do not update cross-runtime user tables.
 
 ```bash
 python3 benchmark/pvisor/filesystem_counters.py \
@@ -342,7 +367,7 @@ python3 benchmark/pvisor/filesystem_counters.py \
   --modes filesystem,tools --samples 3 --cpu-affinity 0,1
 ```
 
-The report records startup phases, child CPU/page-fault/context-switch counters, and filesystem measurements; `counter-summary.csv` is the derived request/span inventory. Each filesystem identity includes PID, component and instance. Repeated cumulative records replace earlier snapshots rather than being added. Missing final records are explicit lower bounds; missing maximum latency is unknown, not zero. Inclusive spans and overlapping workers cannot be summed into total task time. Investigate every relevant rootfs and workspace instance before attributing a tool's delay. These results belong in technical analyses, not user latency tables.
+The collector retains complete harness/build/source receipts and verifies the full input inventory before and after jobs. It records startup phases, child CPU/page-fault/context-switch counters, and filesystem measurements; `counter-summary.csv` is the derived request/span inventory. Pass `--resource-budget`, `--budget-memory-mib` and `--budget-cpu-placement` when using a verified private parent; the matching mode still needs complete inheritance evidence before a resource claim. Diagnostic stderr is captured directly in a regular file and retained byte-for-byte: a nonblocking pipe can return EAGAIN during large profile writes and trigger a Rust printing panic. This capture is restricted to diagnostic jobs; formal timing keeps its existing capture. A result followed by an aborted process is still failed, and a new capture condition starts a separate cohort while keeping the failed evidence. RSS sampling is disabled, with missing RSS kept unknown. Each filesystem identity includes PID, component and instance. Repeated cumulative records replace earlier snapshots rather than being added. Missing final records are explicit lower bounds; missing maximum latency is unknown, not zero. Inclusive spans and overlapping workers cannot be summed into total task time. Investigate every relevant rootfs and workspace instance before attributing a tool's delay. These results belong in technical analyses, not user latency tables.
 
 ```bash
 python3 benchmark/pvisor/filesystem_ab.py \
@@ -424,6 +449,8 @@ python3 benchmark/pvisor/filesystem_exec_probe.py \
   --output benchmark/.data/exec-probe-new \
   --samples 3 --calls 50 --cpu-affinity 0,1
 ```
+
+Raw output must use a fresh `.data/` directory. The runner verifies the complete prepared input inventory before and after all conditions, freezes the CLI and firmware, and rechecks host tool/library bytes. Final verification failures retain the measured rows and make the cohort fail. Profile stderr goes directly to a regular file, with all original bytes retained; this starts a separate capture condition from earlier pipe-captured diagnostics. Host affinity and guest CPU/RAM configuration do not prove complete descendant lifetime placement or identical cross-runtime budgets.
 
 Run only after formal timing ends. Preserve complete source/input receipts and every request identity/final span; inclusive counters cannot be summed into transport or CPU cost. Keep results in technical filesystem analysis and derived diagnostic CSVs, separate from user performance tables.
 

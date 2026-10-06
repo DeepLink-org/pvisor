@@ -1,48 +1,106 @@
 # Filesystem performance: technical analysis and experiment records
 
-## Independent counters for the current artifacts {#current-counters}
+## Independent counters for pinned artifacts {#current-counters}
 
-Measured on 2026-10-06, CPUs 0,1, VM 2 vCPU/16 GiB; inputs and firmware correspond to the [user tool comparison](../benchmarks/filesystem.md). The diagnostic artifact uses the same frozen source with owned-copy directory link-count validation and profiling-exit fixes. Its source/binary digests are retained separately; samples are not pooled with the formal timing binary. Seven-tool and fixed-repair workloads each run three times in staged/VM modes: twelve valid jobs, zero failures. Profiles and startup timing are enabled; these times do not enter user performance distributions.
+Measured on 2026-10-06, CPUs 0,1, VM 2 vCPU/16 GiB, with verified frozen CLI, source, tool inputs and firmware. Seven-tool and fixed-repair workloads each run three times in staged/VM modes: twelve valid jobs, zero failures. Complete shared-input byte inventories are identical before and after. Executor-provided TMPDIR is preserved, with a fresh private empty tool cache per task; seven-operation Cargo temporary files and outputs remain in each independent workspace. Diagnostic stderr goes directly to a regular file, avoiding EAGAIN from nonblocking pipes during large profile writes. Profiles and startup timing are enabled; these times do not enter [user performance distributions](../benchmarks/filesystem.md).
 
-Every staged trial has 5/5 final instances, every VM trial 13/13, covering rootfs and workspace. Records are distinguished by PID, component and instance, retaining only the last cumulative snapshot per instance. **Counts are complete, but inclusive spans nest and overlap across workers. They cannot be summed into total runtime or a bottleneck percentage.**
+Every staged trial has 5/5 final instances, every VM 13/13, totaling 108 across rootfs, workspace and supervisor. Records use PID, component and instance, retaining only each instance's last cumulative snapshot. Frozen source construction order establishes rootfs/workspace scope; matching instance numbers in supervisor and VMM cannot be pooled. **Inclusive spans nest and overlap across workers, so they cannot be summed into total runtime or a bottleneck percentage.**
 
-| Workload / mode | Metric | Median calls | Median inclusive ms |
-| --- | --- | ---: | ---: |
-| Seven tools / staged | OverlayCore resolve | 14,462 | 140.53 |
-| Seven tools / staged | preimage | 5,720 | 66.93 |
-| Seven tools / staged | fingerprint_content | 2,157 | 43.58 |
-| Seven tools / VM | OverlayCore resolve | 25,019 | 447.48 |
-| Seven tools / VM | preimage | 11,367 | 83.28 |
-| Seven tools / VM | fingerprint_content | 2,157 | 48.76 |
-| Seven tools / VM | virtio-fs LOOKUP | 9,412 | 268.72 |
-| Seven tools / VM | virtio-fs READ | 10,896 | 123.26 |
-| Repair / staged | OverlayCore resolve | 3,162 | 27.69 |
-| Repair / VM | OverlayCore resolve | 14,512 | 290.70 |
-| Repair / VM | preimage | 7,472 | 11.28 |
+| Workload / mode | Filesystem | Metric | Median calls | Median inclusive ms |
+| --- | --- | --- | ---: | ---: |
+| Seven tools / staged | workspace | OverlayCore resolve | 14,978 | 144.67 |
+| Seven tools / staged | workspace | OverlayCore observe_read | 4,853 | 162.74 |
+| Seven tools / staged | workspace | OverlayCore fingerprint_content | 2,157 | 43.26 |
+| Seven tools / staged | workspace | journal sync | 5 | 3.07 |
+| Seven tools / VM | workspace | OverlayCore resolve | 15,146 | 234.64 |
+| Seven tools / VM | workspace | OverlayCore observe_read | 4,840 | 224.98 |
+| Seven tools / VM | workspace | OverlayCore fingerprint_content | 2,157 | 64.13 |
+| Seven tools / VM | workspace | journal sync | 5 | 2.12 |
+| Seven tools / VM | rootfs | OverlayCore resolve | 6,790 | 184.66 |
+| Seven tools / VM | rootfs | virtio-fs LOOKUP | 4,802 | 166.51 |
+| Seven tools / VM | rootfs | virtio-fs READ | 6,132 | 643.31 |
+| Repair / staged | workspace | OverlayCore resolve | 3,126 | 29.45 |
+| Repair / VM | workspace | OverlayCore resolve | 2,858 | 39.80 |
+| Repair / VM | rootfs | OverlayCore resolve | 6,672 | 180.76 |
+
+Seven-tool VM `dispatch/admission` records 1,260.54 ms for rootfs and 898.64 ms for workspace. It surrounds all of `service_queues`, including inline execution, and is not pure queueing or transport. Corresponding `pool_queue_wait` spans are 13.62 ms and 4.09 ms; waits from different workers still cannot be summed into task time.
+
+Median `fingerprint_bytes` is 69,375,893 B for seven tools and 11,286 B for fixed repair, identical in staged/VM modes. The source hashes live-lower content on its first observation; ordinary stat/lookup does not hash regular files, and a frozen baseline skips read journaling. Checkpoint durability moves journal persistence to completion. The current seven-tool workspace journal syncs five times, with roughly 2–3 ms in the displayed sync spans; these counts do not establish per-file preimage fsync as the current dominant cost. This mutable fixture does not validate content-receipt reuse or replace read fingerprints with metadata-only observations.
+
+All six VM diagnostics have zero rootfs CREATE, RENAME and WRITE requests with default scratch, supported by complete final records. Rootfs READ still totals roughly six thousand requests; its spans include service, locking and scheduling and cannot be read as disk or transport wait. Investigate path resolution, read observation, tool loading and cache writes separately. Repair reads hash little data but still incur rootfs resolution; the [execution-mapping probe](#exec-mapping) establishes only a short-process mapping-path difference. DAX, long attribute caching and individual functions' causal gains remain unverified, requiring engineering A/B that preserves access/staging semantics and independent formal timing.
+
+The [derived counter CSV](filesystem-counters.csv) retains three-run statistics and call ranges per filesystem scope, complete coverage and source digests. Original logs, frozen harness, build receipts and the summary script stay in local `.data/`. An earlier pipe-captured diagnostic with the same binary had five VM aborts from stderr EAGAIN printing panics; failed evidence is retained and excluded from this table. Regular-file capture is diagnostic only, and differences between capture conditions do not establish performance gains; see the [counter manual](https://github.com/DeepLink-org/pvisor/blob/main/benchmark/pvisor/README.md#engineering-and-diagnostics).
 
 
-VM `dispatch/admission` records 1,546.67 ms for seven tools and 1,058.40 ms for repair. Its source span surrounds all of `service_queues`, including inline request execution. It is not pure queueing, transport or CPU time.
+## Rootfs requests from the npm compile cache {#node-cache}
 
-Median `fingerprint_bytes` is 69,375,893 B for seven tools and 11,286 B for fixed repair, identical in staged/VM modes. The corresponding source still computes SHA256 at the first content observation of live lower files; ordinary stat/lookup does not hash regular-file content, while a frozen baseline skips read journaling. Checkpoint durability moves journal persistence to the completion boundary; it does not replace mutable-lower read fingerprints with metadata-only observations. This mutable fixture shows no content-receipt reuse and cannot quantify immutable-image gains. Read fingerprints cover little data in the repair task and need separate attribution from tool loading and path requests.
+**The seven-tool workload's 537 rootfs renames come from Node/npm compile-cache creation.** Linux, CPUs 0,1, guest 2 vCPU/16 GiB; the same frozen CLI, tool inputs and firmware alternate default and disabled caches in seeded randomized order. `npm --version` and the complete seven-tool workload each use six independent fresh VMs, three per condition: twelve successful VMs with 156 final filesystem instances. Both arms include the same Node status probe and subsequent cache inventory. Profiling and strace are enabled; no formal latency or performance gain is reported.
 
-Path resolution and numerous rootfs/workspace requests merit investigation; the counters do not establish per-file preimage fsync as the current dominant cost. The [independent execution-mapping probe](#exec-mapping) shows a substantial mapping-path effect on short-process startup. Next, separate inline/worker service, queue waits and notifications, and run cache engineering A/B while preserving staging semantics. DAX and individual functions' causal contributions remain unverified. Independent formal timing and confidence intervals must establish optimization gains.
+The table gives median counts across three VMs per condition. Every displayed count has the same minimum, median and maximum. Rootfs and workspace remain separate, identified by PID, component and instance; matching instance numbers in the supervisor and VMM must not be pooled.
 
-The [derived counter statistics CSV](filesystem-counters.csv) retains three-run medians, complete coverage and separate binary/source/report digests. Raw logs stay in local `.data/`; see the [counter manual](https://github.com/DeepLink-org/pvisor/blob/main/benchmark/pvisor/README.md#engineering-and-diagnostics).
+| Workload | Node compile cache | Actual cache files | Rootfs CREATE | Rootfs RENAME | Rootfs WRITE |
+| --- | --- | ---: | ---: | ---: | ---: |
+| npm --version | Default enabled | 70 | 70 | 70 | 70 |
+| npm --version | Disabled | 0 | 0 | 0 | 0 |
+| Seven tools | Default enabled | 537 | 538 | 537 | 623 |
+| Seven tools | Disabled | 0 | 1 | 0 | 86 |
+
+The Node API confirms `/tmp/node-compile-cache` in the default arm and `DISABLED` in the other. Successful strace renames use the VM's `root-upper/tmp/node-compile-cache` paths, with counts matching rootfs RENAME, copy-up and actual cache files. Complete-tool outputs, every byte of all 256 written files, unchanged lower inventories and execution records pass validation; shared inputs are identical before and after. Disabling caching is a request-attribution control, not a product optimization or user configuration recommendation. The 537 requests cannot be converted into a verified millisecond gain.
+
+Independent filesystem counters need to cover tool caches as well as workspace writes. Formal comparisons must declare whether caches persist between tasks, whether they start empty and which storage they use. Warm page caches and Node compile caches are separate conditions. Two npm calls within one task may reuse their cache; different backends and tasks must not accidentally share one. An empty private cache in workspace storage is a controlled policy, not a measurement of every executor's default temporary storage.
+
+The [derived cache-request CSV](filesystem-node-cache.csv) gives sample counts, count ranges, final coverage and binary, source, input, tracer and raw-report digests. Original syscalls, status output and audit scripts stay in local `.data/`, separate from user task latencies.
+
+A separate diagnostic preserving pVisor's default temporary directory uses six fresh VMs, three per condition, with final records for all 78 filesystem instances. Guest `statfs` returns `0x01021994`, confirming actual tmpfs. The enabled arm still creates 537 cache files every time, with zero rootfs CREATE, RENAME and WRITE requests. The disabled arm also has zero of those requests and zero cache files. Complete-tool outputs and written bytes pass validation. This establishes that cache creation can stay in default tmpfs. The older workload's `tools_env()` replaced the executor-provided TMPDIR with `/tmp`, moving cache writes into the rootfs overlay. These small instrumented diagnostics do not establish an end-to-end speedup; default temporary storage and the workspace-storage control need separate formal sampling.
+
+The [default-temporary-storage request CSV](filesystem-executor-scratch.csv) retains independent samples and provenance, without pooling them with the `/tmp` diagnostic.
+
+## FUSE requests and staging service costs {#fuse-lower-bound}
+
+Four host conditions use the same verified pinned CLI and seven-tool inputs: native, direct host, a separately rebuilt passthrough FUSE driver and staged. Four preflights and three randomly interleaved rounds pass, totaling sixteen tasks. Every task's 256 written files are checked byte-for-byte; staged lower paths, modes and contents remain unchanged. Direct execution may rewrite only the fixture's verified toolchain path and refresh Git index stat information, with all indexed paths, modes and object IDs unchanged. Fresh caches preserve executor TMPDIR.
+
+The driver uses the same frozen vendored fuser bytes, release profile, synchronous request loop and one-second TTL, without writeback or keep_cache. It omits OverlayCore, access policy, copy-up and preimage logging, so it is a transport-control lower bound. The following are request-count medians across three independent profiled tasks, excluding preflights:
+
+| Workspace request | Passthrough FUSE | Staged host FUSE |
+| --- | ---: | ---: |
+| lookup | 3,059 | 3,057 |
+| getattr | 452 | 451 |
+| read | 5,014 | 5,014 |
+| write | 290 | 290 |
+| readdir | 464 | 465 |
+
+These five measured callback classes have similar counts. Staged adds internal service work: 14,975 OverlayCore resolves with a median inclusive span of 143.52 ms, 4,853 read observations with 164.30 ms, and 2,157 content fingerprints with 45.15 ms. They nest and overlap, so they cannot be added or assigned percentages of task time. This supports testing resolution and read-observation costs separately from kernel request traffic. It does not show the passthrough driver offers equivalent semantics or establish a product speedup.
+
+[Derived FUSE request and service counters](filesystem-fuse-counters.csv) retain count ranges, component/instance scope and CLI, driver, source, input and audit digests. Instrumentation and sampled resource observations prevent these task times from entering user latency tables; unknown process lifetimes remain unknown. Raw evidence stays in `.data/`; reproduction is documented in the benchmark README.
+
+## Stage durability counters {#durability-counters}
+
+A separate batch uses the same verified CLI and tool inputs with native, strict and checkpoint conditions. Three preflights and three randomized rounds pass, totaling twelve tasks. All staged tasks have the requested policy marker and completed seal, unchanged lower inventories, complete written bytes and five final filesystem instances. The table gives per-task medians across three independent profiled trials; it is not pooled with the FUSE-control batch.
+
+| Journal operation | strict calls | checkpoint calls | strict inclusive ms | checkpoint inclusive ms |
+| --- | ---: | ---: | ---: | ---: |
+| append | 2,703 | 2,703 | 8.78 | 5.97 |
+| transaction | 8,686 | 8,686 | 329.44 | 18.53 |
+| sync | 340 | 5 | 313.08 | 3.23 |
+
+On Linux each logged `sync` span invokes the journal file's `sync_all`; other directory/file synchronization is outside this counter. Strict has 339–340 such calls per task, checkpoint exactly five. The transaction span includes synchronization, so its time cannot be added to the sync span. This identifies persistence as a substantial strict-mode service cost. Checkpoint still records the same 2,703 appends and checks the completion seal; it permits an unsynced log before completion. These checks do not establish arbitrary crash-window equivalence, and profiled spans do not prove the same reduction in uninstrumented task latency. The engineering runner retains separate timing cohorts, distribution splits and paired intervals for at least thirty rounds.
+
+[Derived durability counters](filesystem-durability-counters.csv) include all component instances, count ranges and source/input/audit digests. Raw reports, original stdout/stderr, output inventories and failed publication-audit attempts stay locally under `.data/`.
 
 ## Independent executable-mapping diagnostic {#exec-mapping}
 
-Identical ELF, loader and all dynamic-library bytes for `rg --version` execute through virtio-fs files or executable memfds. Linux, CPUs 0,1, guest 2 vCPU/1 GiB; each condition uses three independent fresh VMs with 50 calls per VM, in randomized interleaved order. All twelve VMs and 600 calls pass output checks; every VM has final records for all 13 filesystem instances. Build, input, firmware and raw-output digests stay in evidence. These profiled diagnostic runs do not enter user task-performance tables.
+Identical ELF, loader and all dynamic-library bytes for `rg --version` execute through virtio-fs files or executable memfds. Linux, inherited host affinity 0,1, guest configured with 2 vCPU/1 GiB; each condition uses three independent fresh VMs with 50 calls per VM, in randomized interleaved order. All twelve VMs and 600 calls pass output checks; every VM has final records for all 13 filesystem instances. The complete prepared input inventory passes verification before and after execution; retained workspace paths, copy bytes, commands, output and profiles pass an independent audit. Profile stderr is captured directly into a regular file. Build, input, firmware and raw-output digests stay in evidence. These profiled diagnostic runs do not enter user task-performance tables or establish complete descendant lifetime CPU placement.
 
 | Preparation source | Execution mapping | First-exec median ms | Repeated-exec median ms | Repeated-exec major faults |
 | --- | --- | ---: | ---: | ---: |
-| Original files | virtio-fs | 6.16 | 5.04 | 37 |
-| Original files | memfd | 1.45 | 0.71 | 0 |
-| Independent-inode copies | virtio-fs | 7.54 | 5.08 | 37 |
-| Independent-inode copies | memfd | 1.50 | 0.72 | 0 |
+| Original files | virtio-fs | 6.48 | 5.10 | 37 |
+| Original files | memfd | 1.56 | 0.73 | 0 |
+| Independent-inode copies | virtio-fs | 7.93 | 5.07 | 37 |
+| Independent-inode copies | memfd | 1.27 | 0.73 | 0 |
 
 First-exec statistics use the first call in each of three VMs. Repeated-exec statistics take each VM's median over its remaining 49 calls, then the median across three VMs; calls are not independent samples. Both arms copy and hash-check identical inputs and inherit the same fds; guest `/dev/shm` remains noexec. Original preparation prewarms original inodes; duplicate preparation reads identical bytes from separate inodes. Common Python preparation still warms its interpreter and some libraries, so this is not completely cold startup.
 
-The repeated-exec mapping gap is about 4.3 ms, accompanied by major faults changing from 37 to zero. This supports investigating executable mapping and fault service first. Major faults do not equal physical disk reads. The substitution changes file mapping, path access and loader request paths together; it cannot attribute the whole gap to FUSE transport or missing DAX, or extrapolate gains by multiplying a complete Agent task's process count. Production changes need to preserve access policy, staging observations and evidence semantics before independent formal timing.
+The repeated-exec mapping gap is about 4.4 ms, accompanied by major faults changing from 37 to zero. This supports investigating executable mapping and fault service first. Major faults do not equal physical disk reads. The substitution changes file mapping, path access and loader request paths together; it cannot attribute the whole gap to FUSE transport or missing DAX, or extrapolate gains by multiplying a complete Agent task's process count. Production changes need to preserve access policy, staging observations and evidence semantics before independent formal timing.
 
 [Derived execution statistics CSV](filesystem-exec-summary.csv) · [Provenance and measurement boundaries CSV](filesystem-exec-provenance.csv). Raw reports, per-VM output, audit and the publication script stay in local `benchmark/.data/`.
 
@@ -80,7 +138,7 @@ Agents repeatedly list, search and modify files. Tool time and full job time tog
 
 ## Experiment design {#interpretation}
 
-The latest batch randomizes native and both versions of staged and libkrun VM. Historical matrices also include host, safe, Docker, rootless Podman/crun and pVisor OCI. Cells usually have 3 warmups and 30 measurements with warm host caches; the complete Ubuntu follow-up uses N=10, labeled separately. Image/input preparation is excluded. Worker time includes tool execution and validation; wall time includes launch and teardown. metadata/git/rg use 2,048 files in 32 directories; read validates a 64 MiB hash. product-v1 write creates 256×60 KiB files; the complete tool environment and latest A/B retain the 256×64 KiB fixture. cargo builds 64 dependency-free modules and verifies 2016. npm installs 32 local packages offline, without registry access.
+The latest batch randomizes native and both versions of staged and libkrun VM. Historical matrices also include host, safe, Docker, rootless Podman/crun and pVisor OCI. Cells usually have 3 warmups and 30 measurements with warm host caches; the complete Ubuntu follow-up uses N=10, labeled separately. Image/input preparation is excluded. Worker time includes tool execution and validation; wall time includes launch and teardown. metadata/git/rg use 2,048 files in 32 directories; read validates a 64 MiB hash. product-v1 and the complete tool environment both write 256×64 KiB files, totaling 16 MiB; each cohort remains separate by configuration. cargo builds 64 dependency-free modules and verifies 2016. npm installs 32 local packages offline, without registry access.
 
 ## macOS
 
@@ -547,8 +605,8 @@ Each cell has three warmups and 30 measurements: 150 measured jobs and 1,050 too
 measurements, all correct. Every job has a fresh workspace/upper and executes the
 seven workloads in order in one environment. Fixture copying is excluded. Host
 caches are warm; all launch trees use physical host cores `0,1`; VMs have 2 vCPU
-and 16 GiB. The pinned historical fixture writes 256×64 KiB (16 MiB), unlike the
-current product-v1 60 KiB files. Historical percentiles are not pooled. Concurrent
+and 16 GiB. The pinned historical fixture and product-v1 workload both write
+256×64 KiB (16 MiB). Historical percentiles are not pooled. Concurrent
 host activity remained: one-minute load average fell from 10.38 to 3.06. Affinity
 is a shared execution budget, not exclusive CPUs. This is one screening batch.
 

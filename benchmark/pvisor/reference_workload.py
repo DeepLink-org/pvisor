@@ -6,6 +6,7 @@ import json
 import os
 import subprocess
 import sys
+import tempfile
 import threading
 import time
 from http.server import ThreadingHTTPServer
@@ -17,6 +18,7 @@ WORKLOAD = Path(__file__).resolve()
 HARNESS = Path(os.environ.get("PVISOR_REFERENCE_HARNESS", WORKLOAD.parent / "harness"))
 sys.path.insert(0, str(HARNESS))
 from v1 import agent as fixture_model  # noqa: E402 - also loaded inside the guest rootfs
+TASK_SCRATCHES = {}
 
 
 def checked(argv, cwd=None, env=None):
@@ -31,10 +33,37 @@ def checked(argv, cwd=None, env=None):
 
 
 def tools_env():
-    temporary = Path.cwd() / "_reference_tmp"
-    if temporary.is_symlink():
-        raise ValueError('task-local tool cache cannot be a symlink')
-    temporary.mkdir(exist_ok=True)
+    policy = os.environ.get('PVISOR_REFERENCE_TOOL_SCRATCH', 'executor')
+    if policy not in ('executor', 'workspace'):
+        raise ValueError('unknown tool scratch policy')
+    inherited = os.environ.get('PVISOR_REFERENCE_CACHE_DIRECTORY')
+    if inherited:
+        temporary = Path(inherited)
+        if (not temporary.is_absolute() or '..' in temporary.parts or temporary.is_symlink()
+                or not temporary.is_dir() or temporary.stat().st_uid != os.getuid()
+                or (policy == 'executor' and (temporary.parent.name != '.data'
+                    or not temporary.name.startswith('pvisor-reference-')))
+                or (policy == 'workspace' and temporary != Path.cwd() / '_reference_tmp')):
+            raise ValueError('invalid inherited task cache')
+    elif policy == 'workspace':
+        temporary = Path.cwd() / "_reference_tmp"
+        if temporary.is_symlink():
+            raise ValueError('task-local tool cache cannot be a symlink')
+        temporary.mkdir(exist_ok=True)
+    else:
+        base = Path(os.environ.get('TMPDIR', '/tmp'))
+        if not base.is_absolute() or '..' in base.parts:
+            raise ValueError('executor temporary directory must be absolute')
+        key = (str(Path.cwd()), str(base))
+        if key not in TASK_SCRATCHES:
+            parent = base / '.data'
+            if parent.is_symlink():
+                raise ValueError('tool scratch parent cannot be a symlink')
+            parent.mkdir(mode=0o700, exist_ok=True)
+            if parent.stat().st_uid != os.getuid():
+                raise ValueError('tool scratch parent belongs to another user')
+            TASK_SCRATCHES[key] = Path(tempfile.mkdtemp(prefix='pvisor-reference-', dir=parent))
+        temporary = TASK_SCRATCHES[key]
     env = {k: v for k, v in os.environ.items() if k not in (
         "NODE_DISABLE_COMPILE_CACHE", "NODE_COMPILE_CACHE", "NODE_COMPILE_CACHE_PORTABLE", "NODE_OPTIONS"
     )}
@@ -48,6 +77,8 @@ def tools_env():
         "HOME": str(temporary / "reference-home"),
         "TMPDIR": str(temporary),
         "NODE_COMPILE_CACHE": str(temporary / "node-compile-cache"),
+        "PVISOR_REFERENCE_TOOL_SCRATCH": policy,
+        "PVISOR_REFERENCE_CACHE_DIRECTORY": str(temporary),
         "CARGO_TARGET_DIR": str(Path.cwd() / "rust/target"),
     }
 
@@ -77,7 +108,8 @@ def probe():
         [str(ROOT / "usr/bin/node"), "-e",
          "const m=require('node:module'),r=m.enableCompileCache();"
          "console.log(JSON.stringify({status:Object.entries(m.constants.compileCacheStatus)"
-         ".find(([k,v])=>v===r.status)[0],directory:r.directory??null}));"], env=env
+         ".find(([k,v])=>v===r.status)[0],directory:r.directory??null,"
+         "filesystem_type:require('node:fs').statfsSync(process.env.TMPDIR).type}));"], env=env
     ))
     print("REFERENCE_ENV_READY " + json.dumps(versions), flush=True)
     return versions
@@ -290,7 +322,8 @@ def main():
     result.update(
         mode=args.mode, worker_ms=(time.perf_counter_ns() - started) / 1e6,
         correctness="passed", python_cache=python_cache,
-        workspace=str(Path.cwd()), tool_cache=tool_cache(tools_env())
+        workspace=str(Path.cwd()), tool_cache=tool_cache(tools_env()),
+        tool_scratch=os.environ.get('PVISOR_REFERENCE_TOOL_SCRATCH', 'executor')
     )
     print("REFERENCE_RESULT " + json.dumps(result), flush=True)
 

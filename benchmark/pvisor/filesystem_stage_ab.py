@@ -35,7 +35,7 @@ def summarize(rows, backends, samples):
         values.update({mode: [row["result"]["filesystem"][mode]["worker_ms"]
                               for row in selected] for mode in WORKLOADS})
         results[backend] = {"n": len(selected), "timings_ms": {
-            key: {f"p{q}": percentile(items, q) for q in (50, 95, 99)}
+            key: {f"p{q}": percentile(items, q) for q in ((50,95) if samples>=30 else (50,))}
             for key, items in values.items()}}
     return results
 

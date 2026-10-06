@@ -1,5 +1,35 @@
 # VM startup: technical analysis and experiment records
 
+## Capability checks for current generic and trimmed kernels {#kernel-capabilities}
+
+**The trimmed configuration passes these staged-workspace, development-tool, IPv4 HTTP and execution-snapshot restoration checks.** Tests use the current CLI and two firmware variants rebuilt from identical Linux 6.12.109 sources, patches and compact packaging implementation. Complete digests verify all 79 frozen source inputs and both actual build input trees before and after; the CLI's 1,063 product source/dependency files match the current worktree. Measured on 2026-10-06, Linux/KVM, host CPUs 0,1 and 2 configured vCPUs. Tool preflights sample resources; these capability checks do not provide formal timings.
+
+The table gives passes/attempts per configuration: 60 independent VM executions, zero failures. Shell, seven-tool and fixed-repair checks run twice per variant; every network/restore condition runs three times, with seeded randomized alternating order.
+
+| Capability check | Generic config | Trimmed config | Actual validation |
+| --- | ---: | ---: | --- |
+| Shell readiness and normal exit | 2/2 | 2/2 | Unique ready/result markers, zero exit, VM execution record |
+| Seven development tools | 2/2 | 2/2 | Tool outputs; every byte of 256 × 64 KiB writes |
+| Fixed repair task | 2/2 | 2/2 | Python/Rust/Node tests; retained repaired contents |
+| Small HTTP requests | 3/3 | 3/3 | 256 × 1 KiB responses and SHA256 per run; origin request count |
+| Bulk HTTP | 3/3 | 3/3 | SHA256 of the complete 32 MiB response |
+| Streaming HTTP | 3/3 | 3/3 | Complete ten-event contents and SHA256 |
+| Denied direct connection | 3/3 | 3/3 | Direct socket denied to the same origin; no request received |
+| Compressible memory / raw restore | 3/3 | 3/3 | Same token; scan/checksum of all 64 MiB after restore |
+| Compressible memory / compressed restore | 3/3 | 3/3 | Same token; scan/checksum of all 64 MiB after restore |
+| Random memory / raw restore | 3/3 | 3/3 | Same token; scan/checksum of all 64 MiB after restore |
+| Random memory / compressed restore | 3/3 | 3/3 | Same token; scan/checksum of all 64 MiB after restore |
+
+All twelve tool-preflight lower inventories remain unchanged. Four write checks produce 1,024 files totaling 64 MiB, with every byte independently audited. The frozen harness checks child tests, and retained repaired files are independently inspected afterward. The HTTP origin runs on the same host; allowed requests provide positive controls and deny conditions test direct sockets. No public-network or model requests are used. All 24 restored execution tokens are unique; original stdout, suspended state, restore results and OOM events are independently audited. Shared tool inputs and memory fixtures remain identical before and after.
+
+Shell uses 128 MiB guest RAM, tools 16 GiB and networking 1 GiB, under an existing private 16 GiB parent budget. Restore uses 256 MiB guest RAM in a fresh 2 GiB, zero-swap, 200% CPU service per execution. Tool preflights sample processes; network checks verify the coordinator/parent budget, while restore checks verify service limits and sample memory. CPU placement uses affinity; complete placement over every short thread lifetime is unproven, and unknown observations remain explicit. These checks do not establish rankings or capacity under uniform strict resource enforcement.
+
+### Actual built kernel options {#built-kernel-options}
+
+Both configurations enable SMP, KVM guest, CPU mitigations, seccomp/filter, namespaces, virtio-mmio, virtio-fs, virtio-net and IPv4. Trimming disables PCI, ACPI, guest security/SELinux and audit. Both still enable `CONFIG_BLOCK`, so device trimming cannot be described as removing all block infrastructure. Configuration differences do not establish identical hardening. Validation covers the listed HTTP and private-memory restore workloads, without a complete device, TLS/DNS/UDP/IPv6, escape-resistance or SDK-state restoration guarantee. It establishes no startup, physical-memory or density gain.
+
+[Derived capability CSV](kernel-capabilities.csv) · [Actual configuration options CSV](kernel-config-capabilities.csv). The two independent raw reports, individual outputs, snapshots, input manifests and build/audit receipts stay in local `.data/`; CSVs retain cohort timestamps, sample counts and digest associations. See the [kernel configuration experiment manual](https://github.com/DeepLink-org/pvisor/blob/main/benchmark/pvisor/README.md#paired-kernel-configuration-experiment). Startup and complete-task gains need separate formal paired timing with the current CLI; capability passes or file sizes cannot establish them.
+
 ## 1. Conclusions
 
 A new pVisor VM returns its first command output in about **84 ms** on macOS / Apple M4 and **110 ms** on Linux / Ryzen 7 9700X: roughly **0.1 seconds**. On the same Linux host, Firecracker starts complete Ubuntu in **5.64 seconds** after provisioning or **9.25 seconds** on first boot. pVisor uses directories without an OS image. Configurations differ between batches; all evidence is retained separately.

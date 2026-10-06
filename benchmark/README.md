@@ -138,6 +138,7 @@ Design: 负载、对照、控制变量与有效样本判据。
   - 七项负载：2,048 个文件的遍历、64 MiB 读取并校验、256 个文件写入、git status、rg、小型 Cargo 编译、离线 npm 安装。每项代表一类常见的 Agent 工具操作。
   - 对照组为原生、Docker bind mount、Firecracker、QEMU（q35 和 microvm），以及 pVisor host staged 和 VM。
   - 所有组使用相同的工具环境、相同的两核预算和相同的 VM 内存；每次执行使用新的工作区。
+  - 工具缓存每任务从空目录开始，默认保留执行器提供的 TMPDIR，在其中创建私有 HOME 与启用的 Node 编译缓存；七项工具中的 Cargo 使用工作区内独立的 `_cargo-home`、`_tmp` 和 `_cargo-target`，固定修复中的 Cargo 使用任务临时目录。记录实际缓存目录与文件系统类型。各执行器的默认临时存储差异是配置成本的一部分，不解释为纯 VMM 成本。工作区存储缓存是显式控制条件，与默认口径分开采样和统计。
   - 分别报告每项工具耗时和完整任务耗时（包括启动与收尾）。
   - 每个样本都要校验工具输出；暂存模式还要校验宿主原文件未被写入、upper 内容完整。
   - 不能回答的问题：大型仓库、冷磁盘、真实 registry 和并发吞吐。
@@ -162,7 +163,7 @@ Design: 负载、对照、控制变量与有效样本判据。
 - **Motivation：** 定位 FUSE 传输、OverlayCore、持久化、内容指纹和缓存路径的成本。
 - **想要的结论：** 请求与 inclusive span 的成本分解，不能相加为精确归因，不作为用户性能数据。
 - **实验设计：** 独立诊断批次，直通 FUSE 仅为不含暂存语义的下限；插桩计时与正式性能采样分开。
-- **入口脚本：** `filesystem_fuse_ab.py`、`filesystem_stage_ab.py`、`filesystem_kernel_probe.py`、`filesystem_exec_probe.py`、`filesystem_counters.py`、`filesystem_diagnostic.py`。`filesystem_exec_probe.py` 在新 VM 中比较相同可执行文件、loader 和全部动态库从 virtio-fs 与匿名 RAM 执行；两组都先复制并校验所有输入、传递相同 fd，避免将准备成本混入 exec。准备来源分为原始文件和独立副本：前者预热原 inode，后者从工作区独立 inode 读入相同字节，保留原工具文件首次映射的机会；共同的 Python 准备仍会预热解释器及部分共享库，不能称为完全冷启动。首个 exec 与后续重复 exec 分开，且不由热路径的零差异否定首次映射成本。guest `/dev/shm` 保持 noexec，使用显式 executable memfd；不重挂载或放宽策略。独立 VM 的完整计数器包含相同准备与指定次数 exec，差异用于请求归因，不能当作完整 Agent 启动水位。
+- **入口脚本：** `filesystem_fuse_ab.py`、`filesystem_stage_ab.py`、`filesystem_kernel_probe.py`、`filesystem_exec_probe.py`、`filesystem_counters.py`、`filesystem_diagnostic.py`。`filesystem_stage_durability.py --profiles` 也服务此诊断条目；不开启 profile 时服务 B-FS-ENG。`filesystem_exec_probe.py` 在新 VM 中比较相同可执行文件、loader 和全部动态库从 virtio-fs 与匿名 RAM 执行；两组都先复制并校验所有输入、传递相同 fd，避免将准备成本混入 exec。准备来源分为原始文件和独立副本：前者预热原 inode，后者从工作区独立 inode 读入相同字节，保留原工具文件首次映射的机会；共同的 Python 准备仍会预热解释器及部分共享库，不能称为完全冷启动。首个 exec 与后续重复 exec 分开，且不由热路径的零差异否定首次映射成本。guest `/dev/shm` 保持 noexec，使用显式 executable memfd；不重挂载或放宽策略。独立 VM 的完整计数器包含相同准备与指定次数 exec，差异用于请求归因，不能当作完整 Agent 启动水位。
 
 ### B-STARTUP-ENG：初始化实现的工程 A/B {#b-startup-eng}
 
