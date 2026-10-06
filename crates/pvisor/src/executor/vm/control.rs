@@ -1,5 +1,6 @@
 //! Attempt-local VM controls and the live file backing owned by the supervisor.
 
+use anyhow::Context;
 use pvisor_core::operation::{OperationKind, VmMemory, VmState};
 use pvisor_vm::api::{RamFileMapping, RamFileMount};
 use serde::{Deserialize, Serialize};
@@ -135,21 +136,30 @@ impl RamBacking {
         self.layers.as_deref()
     }
 
+    // Called only after validating the runner's writeback/reclaim acknowledgement.
+    // The connection remains exclusively held: no resume can reopen RAM writers
+    // until the host has committed staging and finished its own cache advice.
     async fn finish_offload(&self) -> anyhow::Result<()> {
         let logical = self.file.clone();
         let physical = self.storage.clone();
         let layers = self.layers.clone();
         let commit_store = self.compression_store.clone();
         tokio::task::spawn_blocking(move || {
-            // The VMM has paused CPUs and closed/drained device RAM access.
-            // Drain kernel writeback first; compression runs outside the FUSE thread.
-            logical.sync_all()?;
+            // Runner acknowledgement fixes the CPU/device RAM epoch, but is not
+            // compressed publication. Drain logical writeback before committing
+            // staging, outside the FUSE thread to avoid reentrant store locking.
+            logical
+                .sync_all()
+                .context("offload host RAM writeback failed")?;
             if let Some(store) = commit_store {
                 store
                     .lock()
                     .map_err(|_| std::io::Error::other("RAM store lock poisoned"))?
-                    .sync_all()?;
+                    .sync_all()
+                    .context("offload compressed RAM commit failed")?;
             }
+            // Encoding can repopulate file caches after the runner's resident
+            // sample. This is host cache advice, not a new VM reclaim measurement.
             #[cfg(target_os = "linux")]
             {
                 use std::os::fd::AsRawFd;
@@ -157,7 +167,7 @@ impl RamBacking {
                     libc::posix_fadvise(physical.as_raw_fd(), 0, 0, libc::POSIX_FADV_DONTNEED)
                 };
                 if error != 0 {
-                    return Err(std::io::Error::from_raw_os_error(error));
+                    return Err(std::io::Error::from_raw_os_error(error).into());
                 }
                 if let Some(directory) = layers {
                     for entry in std::fs::read_dir(directory)? {
@@ -179,16 +189,17 @@ impl RamBacking {
                             libc::posix_fadvise(file.as_raw_fd(), 0, 0, libc::POSIX_FADV_DONTNEED)
                         };
                         if error != 0 {
-                            return Err(std::io::Error::from_raw_os_error(error));
+                            return Err(std::io::Error::from_raw_os_error(error).into());
                         }
                     }
                 }
             }
             #[cfg(not(target_os = "linux"))]
             let _ = (physical, layers);
-            Ok::<_, std::io::Error>(())
+            Ok::<_, anyhow::Error>(())
         })
-        .await??;
+        .await
+        .context("offload host commit task failed")??;
         Ok(())
     }
 
@@ -700,7 +711,6 @@ impl VmControl {
             };
             anyhow::ensure!(reply.state == Some(expected), "unexpected VM control state");
             if expected == VmState::Offloaded {
-                connection.backing.finish_offload().await?;
                 let memory = reply
                     .memory
                     .as_mut()
@@ -739,6 +749,12 @@ impl VmControl {
                 }
             };
             pvisor_core::operation::Outcome::success(value).validate()?;
+            if expected == VmState::Offloaded {
+                // A valid runner report acknowledges RAM writeback/reclaim only.
+                // Publish completion after the host compressed head is committed;
+                // any failure or timeout here must take the fail-stop path below.
+                connection.backing.finish_offload().await?;
+            }
             if let OperationKind::RunSuspend { request_id, .. } = &operation {
                 connection.suspension = Some(pvisor_core::operation::ExecutionSuspension {
                     request_id: request_id.clone(),
@@ -1163,6 +1179,200 @@ mod tests {
             assert!(control.connection.lock().await.is_none());
             assert!(cancellation.is_cancelled());
         }
+    }
+
+    // Exercise real compressed publication without requiring a FUSE mount or VM.
+    // Logical writeback is represented by a regular file; adapter writes are
+    // staged directly, as they would be by the FUSE writeback callback.
+    fn staged_compressed_backing(directory: &Path) -> RamBacking {
+        let mut backing = RamBacking::create(Some(&directory.join("manifest"))).unwrap();
+        let layers = directory.join("layers");
+        std::fs::create_dir(&layers).unwrap();
+        let mut store = crate::ram_backing::CompressedRam::create(
+            backing.storage.try_clone().unwrap(),
+            &layers,
+        )
+        .unwrap();
+        store.set_len(4096).unwrap();
+        store.write_at(0, b"guest RAM").unwrap();
+        assert!(store.head_id().is_none());
+        backing.file = Arc::new(File::create(directory.join("logical")).unwrap());
+        backing.compression_store = Some(Arc::new(std::sync::Mutex::new(store)));
+        backing.layers = Some(layers);
+        backing
+    }
+
+    fn offload_ack() -> ControlReply {
+        ControlReply {
+            state: Some(VmState::Offloaded),
+            memory: Some(VmMemory {
+                backing_file: "/untrusted/runner-path".into(),
+                backed_bytes: 4096,
+                resident_before_bytes: Some(4096),
+                resident_after_bytes: Some(0),
+            }),
+            error: None,
+            checkpoint: None,
+            capture: None,
+        }
+    }
+
+    #[tokio::test]
+    async fn invalid_offload_report_never_commits_compressed_staging() {
+        for fault in ["missing", "empty", "checkpoint"] {
+            let directory = tempfile::tempdir().unwrap();
+            let backing = staged_compressed_backing(directory.path());
+            let store = backing.compression_store.clone().unwrap();
+            let cancellation = CancellationToken::new();
+            let control = VmControl::new(cancellation.clone());
+            let (host, mut runner) = UnixStream::pair().unwrap();
+            control.attach(host, backing).await;
+            let peer = tokio::spawn(async move {
+                assert_eq!(
+                    read_request(&mut runner).await,
+                    OperationKind::RunOffload { file: None }
+                );
+                let mut reply = offload_ack();
+                match fault {
+                    "missing" => reply.memory = None,
+                    "empty" => reply.memory.as_mut().unwrap().backed_bytes = 0,
+                    "checkpoint" => {
+                        reply.checkpoint = Some(pvisor_core::operation::ExecutionCheckpoint {
+                            store: "/snapshots".into(),
+                            source_run_id: "run".into(),
+                            source_attempt_id: "attempt".into(),
+                            snapshot_id: "invalid".into(),
+                            created_at_unix_ms: 1,
+                            ram_storage: pvisor_core::operation::SnapshotRamStorage::Raw,
+                        });
+                    }
+                    _ => unreachable!(),
+                }
+                send_reply(&mut runner, reply).await;
+            });
+            assert!(
+                control
+                    .command(OperationKind::RunOffload { file: None })
+                    .await
+                    .is_err(),
+                "{fault}"
+            );
+            peer.await.unwrap();
+            assert!(store.lock().unwrap().head_id().is_none(), "{fault}");
+            assert!(cancellation.is_cancelled(), "{fault}");
+            assert!(control.connection.lock().await.is_none(), "{fault}");
+        }
+    }
+
+    #[tokio::test]
+    async fn compressed_commit_failure_cancels_attempt_and_closes_control() {
+        let directory = tempfile::tempdir().unwrap();
+        let backing = staged_compressed_backing(directory.path());
+        let store = backing.compression_store.clone().unwrap();
+        // Staging remains open, but generation publication has nowhere to write.
+        std::fs::remove_dir_all(backing.layers.as_ref().unwrap()).unwrap();
+        let cancellation = CancellationToken::new();
+        let control = VmControl::new(cancellation.clone());
+        let (host, mut runner) = UnixStream::pair().unwrap();
+        control.attach(host, backing).await;
+        let peer = tokio::spawn(async move {
+            assert_eq!(
+                read_request(&mut runner).await,
+                OperationKind::RunOffload { file: None }
+            );
+            send_reply(&mut runner, offload_ack()).await;
+            let mut byte = [0];
+            assert_eq!(runner.read(&mut byte).await.unwrap(), 0);
+        });
+        let error = control
+            .command(OperationKind::RunOffload { file: None })
+            .await
+            .unwrap_err();
+        assert!(error.to_string().contains("compressed RAM commit failed"));
+        assert!(cancellation.is_cancelled());
+        assert!(control.connection.lock().await.is_none());
+        assert!(store.lock().unwrap().head_id().is_none());
+        assert!(control.command(OperationKind::RunResume).await.is_err());
+        tokio::time::timeout(Duration::from_secs(5), peer)
+            .await
+            .unwrap()
+            .unwrap();
+    }
+
+    #[tokio::test]
+    async fn runner_ack_does_not_complete_offload_or_allow_resume_before_commit() {
+        let directory = tempfile::tempdir().unwrap();
+        let backing = staged_compressed_backing(directory.path());
+        let store = backing.compression_store.clone().unwrap();
+        let cancellation = CancellationToken::new();
+        let control = VmControl::new(cancellation.clone());
+        let (host, mut runner) = UnixStream::pair().unwrap();
+        control.attach(host, backing).await;
+        let (locked_tx, locked_rx) = tokio::sync::oneshot::channel();
+        let (release_tx, release_rx) = tokio::sync::oneshot::channel();
+        let blocker = tokio::task::spawn_blocking({
+            let store = store.clone();
+            move || {
+                let _guard = store.lock().unwrap();
+                locked_tx.send(()).unwrap();
+                release_rx.blocking_recv().unwrap();
+            }
+        });
+        locked_rx.await.unwrap();
+        let mut offload = tokio::spawn({
+            let control = control.clone();
+            async move {
+                control
+                    .command(OperationKind::RunOffload { file: None })
+                    .await
+            }
+        });
+        assert_eq!(
+            read_request(&mut runner).await,
+            OperationKind::RunOffload { file: None }
+        );
+        send_reply(&mut runner, offload_ack()).await;
+        let resume = tokio::spawn({
+            let control = control.clone();
+            async move { control.command(OperationKind::RunResume).await }
+        });
+        assert!(
+            tokio::time::timeout(Duration::from_millis(30), &mut offload)
+                .await
+                .is_err()
+        );
+        assert!(
+            tokio::time::timeout(Duration::from_millis(30), runner.read_u32())
+                .await
+                .is_err()
+        );
+        // Dropping the waiter must not abandon host publication or its RAM owner.
+        offload.abort();
+        assert!(offload.await.unwrap_err().is_cancelled());
+        release_tx.send(()).unwrap();
+        blocker.await.unwrap();
+        assert_eq!(read_request(&mut runner).await, OperationKind::RunResume);
+        let reopened = crate::ram_backing::CompressedRam::open(
+            File::open(directory.path().join("manifest")).unwrap(),
+        )
+        .unwrap();
+        assert!(reopened.head_id().is_some());
+        let mut bytes = [0; 9];
+        reopened.read_at(0, &mut bytes).unwrap();
+        assert_eq!(&bytes, b"guest RAM");
+        send_reply(
+            &mut runner,
+            ControlReply {
+                state: Some(VmState::Running),
+                memory: None,
+                error: None,
+                checkpoint: None,
+                capture: None,
+            },
+        )
+        .await;
+        resume.await.unwrap().unwrap();
+        assert!(!cancellation.is_cancelled());
     }
 
     async fn read_request(runner: &mut UnixStream) -> OperationKind {

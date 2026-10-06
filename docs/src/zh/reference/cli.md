@@ -523,6 +523,15 @@ backing 文件。省略时，在用户缓存下创建并在正常退出时删除
 Rust `RunHandle::pause/resume/offload` 支持 VM 控制；offload 的新目标路径
 限于当前 backing 的同一文件系统，返回实际驻留页采样。文件不是完整 VM
 快照；此实现尚未编译或运行验收。
+
+### VM RAM 去重建议 {#vm-ram-dedup}
+
+`--vm-ram-dedup` 设置 `[vm].ram_dedup = true` 并选择 VM executor。默认值为 `false`；省略该参数会保留配置值。这是对跨工作负载内容共享风险的显式启用，不承诺节省。它不能与 `--vm-memory-pool` / `vm.memory_pool`、`--vm-ram-compression` / `vm.ram_compression` 或 `PVISOR_EXPERIMENTAL_MEMORY_POOL` 组合。
+
+runner 显式调用 `handle.advise_ram_dedup()`，将尽力而为的建议安装报告写入 stderr；建议失败不阻止执行。Linux 建议覆盖普通私有匿名 RAM 与恢复的私有 COW 映射。live `MAP_SHARED` RAM 被跳过，不转换映射；macOS 对其他条件合格的映射报告不支持。`accepted_bytes` 表示这些区间的建议被接受，不是已合并字节、节省或 KSM scanner 已启用。不修改宿主全局 KSM 参数，不需要新服务。资格检查、快照所有权和验证范围见[当前接入与验证基础](../design/memory-optimization/deduplication.md#direction)。
+
+### VM rootfs 与 executor 边界 {#vm-rootfs}
+
 `--rootfs image=<IMAGE>` 选择该 executor，并直接拉取 OCI/Docker 镜像，不调用 Docker、
 Podman 或 Buildah。未提供显式 rootfs 或镜像时，Linux 上默认通过 virtiofs 和
 OverlayFS 使用宿主 `/`，保留宿主运行环境、PATH 和 HOME，不拉取镜像。

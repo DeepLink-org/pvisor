@@ -672,6 +672,14 @@ Reclaim reports sampled residency, not guaranteed zero RAM. The file is not a
 complete VM snapshot. This implementation has not been compiled or validated at
 runtime.
 
+### VM RAM dedup advice {#vm-ram-dedup}
+
+`--vm-ram-dedup` sets `[vm].ram_dedup = true` and selects the VM executor. The default is `false`; omitting the flag preserves a configured value. This is an explicit opt-in to cross-workload content-sharing risks, not a promise of savings. It cannot be combined with `--vm-memory-pool` / `vm.memory_pool`, `--vm-ram-compression` / `vm.ram_compression`, or `PVISOR_EXPERIMENTAL_MEMORY_POOL`.
+
+The runner calls `handle.advise_ram_dedup()` explicitly and writes a best-effort installation report to stderr; advice failure does not stop execution. Linux advice covers ordinary private anonymous RAM and restored private COW mappings. Live `MAP_SHARED` RAM is skipped without mapping conversion; macOS reports unsupported for otherwise eligible mappings. `accepted_bytes` means advice was accepted for those ranges, not merged bytes, savings or an enabled KSM scanner. No global KSM settings change and no new service is required. See [current integration and evidence](../design/memory-optimization/deduplication.md#direction) for eligibility, snapshot ownership and validation limits.
+
+### VM rootfs and executor boundaries {#vm-rootfs}
+
 `--rootfs image=IMAGE` selects this executor and pulls an
 OCI/Docker image directly, without invoking Docker, Podman or Buildah. When no
 explicit rootfs or image is supplied, Linux uses the host `/` through virtiofs

@@ -10,8 +10,8 @@ use pvisor_core::{
     ExecutorObservations, ExecutorPlan, IsolationKind, ProcessOutput, ResourceLimits, RunFailure,
     RunFailureKind, RunInvocation, RunState,
 };
+use pvisor_vm::api::{RamDedupControl, SnapshotControl, VmControl};
 use pvisor_vm::api::{RuntimeSupport, VmConfiguration, VmRuntime};
-use pvisor_vm::api::{SnapshotControl, VmControl};
 use serde::{Deserialize, Serialize};
 use std::collections::BTreeMap;
 use std::os::fd::{AsRawFd, FromRawFd, OwnedFd, RawFd};
@@ -97,6 +97,8 @@ pub(super) struct RunnerSpec {
     pub(super) guest: pvisor_guest::GuestConfig,
     pub(super) cpus: u8,
     pub(super) memory_mib: u32,
+    #[serde(default)]
+    pub(super) ram_dedup: bool,
     pub(super) library_dir: Option<PathBuf>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub(super) checkpoint: Option<super::checkpoint::LaunchBinding>,
@@ -268,6 +270,7 @@ impl VmExecutor {
         super::checkpoint::compatibility(firmware.as_deref())
     }
     pub fn new(mut settings: VmSettings) -> anyhow::Result<Self> {
+        settings.validate_ram_dedup()?;
         anyhow::ensure!(
             settings.snapshot_filesystem_pool.is_none()
                 || cfg!(all(target_os = "linux", target_arch = "x86_64"))
@@ -925,6 +928,7 @@ impl RunExecutor for VmExecutor {
             guest,
             cpus: self.settings.cpus as u8,
             memory_mib,
+            ram_dedup: self.settings.ram_dedup,
             library_dir: self.settings.library_dir.clone(),
             checkpoint,
             restore: None,
@@ -1920,6 +1924,17 @@ fn run_linked_krun(
     crate::util::startup_mark_run("runner.krun_enter", &spec.run_id);
     let started = vm.run( move |handle| {
         crate::util::startup_mark_run("runner.vmm_built", &spec.run_id);
+        if spec.ram_dedup {
+            match handle.advise_ram_dedup() {
+                Ok(report) => eprintln!(
+                    "VM RAM dedup advice installation: accepted_bytes={} (not merged bytes or savings), mappings={:?}",
+                    report.accepted_bytes, report.mappings
+                ),
+                Err(error) => eprintln!(
+                    "VM RAM dedup advice installation failed; continuing VM: {error}"
+                ),
+            }
+        }
         if spec.restore.is_some() {
             handle.resume().map_err(std::io::Error::other)?;
         }
@@ -2198,9 +2213,11 @@ mod tests {
         });
         let mut spec: RunnerSpec = serde_json::from_value(legacy.clone()).unwrap();
         assert!(spec.checkpoint.is_none());
+        assert!(!spec.ram_dedup);
         let encoded = serde_json::to_value(&spec).unwrap();
         assert!(encoded.get("checkpoint").is_none());
 
+        spec.ram_dedup = true;
         spec.checkpoint = Some(super::super::checkpoint::LaunchBinding {
             store: "/private/snapshots".into(),
             filesystem_pool: None,
@@ -2219,6 +2236,30 @@ mod tests {
         let decoded: RunnerSpec = serde_json::from_value(encoded.clone()).unwrap();
         assert_eq!(serde_json::to_value(&decoded).unwrap(), encoded);
         assert_eq!(decoded.checkpoint.unwrap().attempt_id, "attempt");
+        assert!(decoded.ram_dedup);
+    }
+
+    #[test]
+    fn executor_rejects_conflicting_ram_dedup_strategies() {
+        for settings in [
+            VmSettings {
+                ram_dedup: true,
+                ram_compression: true,
+                ..Default::default()
+            },
+            VmSettings {
+                ram_dedup: true,
+                memory_pool: Some("/private/pool/socket".into()),
+                ..Default::default()
+            },
+        ] {
+            assert!(
+                VmExecutor::new(settings)
+                    .unwrap_err()
+                    .to_string()
+                    .contains("vm.ram_dedup")
+            );
+        }
     }
 
     #[test]

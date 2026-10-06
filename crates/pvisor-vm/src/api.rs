@@ -164,6 +164,61 @@ pub trait VmControl: Send + Sync {
     fn offload_ram(&self) -> Result<RamReclaim, String>;
 }
 
+/// Explicit, optional RAM deduplication; independent of `VmControl` mocks.
+/// Transitions serialize with other handle operations. Advice never replaces a
+/// mapping, changes its backing, pauses the VM or makes an advice failure fatal.
+/// Only ordinary private RAM is eligible, including anonymous pages created by
+/// writes to private file mappings. Shared mappings and device/huge-page windows
+/// are skipped. macOS reports unsupported through the same API.
+///
+/// Successful advice is asynchronous registration, NOT evidence of scanning,
+/// merged bytes, physical savings, or an enabled host KSM scanner. No global
+/// sysfs settings are read or changed. The caller authorizes sharing and its
+/// side-channel/trust-domain implications; KSM has no per-pVisor domain selector.
+/// Any accepted mapping excludes cold-pager/device preparation for this VM's
+/// remaining lifetime. Repeated calls are permitted; there is no automatic
+/// opt-in or hot switch to a different optimization strategy.
+/// `Err` denotes a stopped VM or poisoned control lock; unavailable advice and
+/// strategy conflicts are reported per mapping, leaving the healthy VM usable.
+pub trait RamDedupControl: Send + Sync {
+    fn advise_ram_dedup(&self) -> Result<RamDedupReport, String>;
+}
+
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct RamDedupReport {
+    /// Sum of mapping lengths accepted by this call, not merged bytes. Repeated
+    /// calls can accept the same bytes again; do not sum reports as savings.
+    pub accepted_bytes: u64,
+    pub mappings: Vec<RamDedupMapping>,
+}
+
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct RamDedupMapping {
+    pub guest_address: u64,
+    pub length: u64,
+    pub status: RamDedupStatus,
+}
+
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub enum RamDedupStatus {
+    Accepted,
+    Skipped(RamDedupSkipReason),
+    Unsupported { errno: Option<i32>, reason: String },
+    Error { errno: Option<i32>, reason: String },
+}
+
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum RamDedupSkipReason {
+    DeviceWindow,
+    SharedMapping,
+    NotPrivate,
+    HugePages,
+    NotWritable,
+    Unaligned,
+    ColdPagerActive,
+    DevicePreparationActive,
+}
+
 /// Full-machine capture inside a bounded CPU/device/RAM freeze. Generic actions
 /// retain their result type; this extension deliberately uses static dispatch.
 /// The resumable operation thaws the source after successful or rejected actions.

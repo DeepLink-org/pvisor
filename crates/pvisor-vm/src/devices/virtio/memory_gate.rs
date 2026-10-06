@@ -9,6 +9,7 @@ struct State {
     closed: bool,
     active: usize,
     prepare: Option<Arc<MemoryPrepare>>,
+    dedup_advised: bool,
 }
 /// Prepare RAM before any queue access, including descriptor-table reads.
 /// A preparation error terminates the isolated VMM process: queue APIs cannot
@@ -45,6 +46,9 @@ impl MemoryGate {
             .state
             .lock()
             .map_err(|_| "device memory gate poisoned")?;
+        if prepare.is_some() && state.dedup_advised {
+            return Err("device RAM preparation is incompatible with RAM dedup advice");
+        }
         if !state.closed || state.active != 0 {
             return Err("device RAM preparation requires a drained gate");
         }
@@ -84,6 +88,24 @@ impl MemoryGate {
     }
     pub fn has_prepare(&self) -> bool {
         self.state.lock().unwrap().prepare.is_some()
+    }
+    pub(crate) fn has_dedup_advice(&self) -> bool {
+        self.state.lock().unwrap().dedup_advised
+    }
+    /// Hold the strategy lock across registration so prepare cannot activate
+    /// between eligibility checking and the first accepted mapping. Advice is
+    /// safe with live CPU/device accesses; it does not replace their mappings.
+    pub(crate) fn advise_dedup<T>(
+        &self,
+        action: impl FnOnce(bool) -> (T, bool),
+    ) -> Result<T, &'static str> {
+        let mut state = self
+            .state
+            .lock()
+            .map_err(|_| "device memory gate poisoned")?;
+        let (report, accepted) = action(state.prepare.is_some());
+        state.dedup_advised |= accepted;
+        Ok(report)
     }
     #[cfg(test)]
     fn enter(self: &Arc<Self>) -> Arc<Access> {

@@ -119,12 +119,14 @@ pvisor inspect ../stage-config-001 -- cat result.txt
 | `container` | `runtime = "crun"`，`image = ""`，`network = "host"`，`read_only_rootfs = false`，`mounts = []` |
 | `container` 可选字段 | `rootfs`、`pvisor_binary`、`platform`、`workdir`、`user` |
 | `container.mounts` 每项 | `source`、`target`，`read_only = false` |
-| `vm` | `memory_mib = 2048`，`cpus = 2`，`rootfs_immutable = false`，`ram_compression = false` |
+| `vm` | `memory_mib = 2048`，`cpus = 2`，`rootfs_immutable = false`，`ram_compression = false`，`ram_dedup = false` |
 | `vm` 可选字段 | `rootfs`、`image`、`image_store`、`library_dir`、`ram_backing`、`memory_pool`、`node_socket`、`snapshot_filesystem_pool` |
 
 `container.platform` 取 `linux-amd64` 或 `linux-arm64`；`container.network` 取 `host`、`bridge` 或 `none`。Linux container 的注入二进制必须与 rootfs 的架构和 ABI 匹配。
 
 VM 的内存以 MiB 为单位，CPU 是正整数。`ram_backing` 保存 RAM 文件；`ram_compression` 启用相应的压缩 backing。macOS 的压缩 backing 与共享池有额外 FUSE 条件，见[内存共享概念验证](../design/memory-optimization/proof-of-concept.md)。
+
+`[vm].ram_dedup = true` 在使用 VM executor 时请求尽力而为的宿主 RAM 去重建议；`--vm-ram-dedup` 还会选择该 executor。它与 `memory_pool`、`ram_compression` 及 `PVISOR_EXPERIMENTAL_MEMORY_POOL` 互斥。Linux 建议面向普通私有匿名 RAM 与恢复的私有 COW 映射；live `MAP_SHARED` RAM 被跳过，不转换映射。macOS 对其他条件合格的映射报告不支持。runner 将安装报告写入 stderr，建议失败仍继续运行；`accepted_bytes` 不是已合并字节、节省，也不证明扫描已启用。不修改全局 KSM 参数或增设服务。启用前先核对[去重边界与共享风险](../design/memory-optimization/deduplication.md#direction)。
 
 `[vm].snapshot_filesystem_pool` 为首次启动及从快照恢复的 VM capture 启用不可变 lower 引用，也覆盖不同 VM 的首次 capture。首次 seal 后，控制连接持有已验证的 owner；后续 capture 验证完整原 lower 并复用已封存的 pool 树，不扩大 runner 的访问范围。原生调用方应使用宿主管理的绝对路径，与 Job store 位于同一卷，并处于所有 VM 可写根和快照 store 之外。首次缓存未命中时，每个不可变摘要创建一棵 pool 树；并发未命中按摘要串行，命中不产生临时 lower 副本。此选项启用的原生 v5 快照以独立持有的 64 KiB 压缩块保留私有文件内容，复用未变化的内容；恢复时重建私有可写 inode，并保留完整元数据及硬链接关系。运行中的块 owner 在父快照退役和 GC 后仍然有效。封存先按解码后的内容标识查找 pool 块，命中时完整校验并直接复用，仅未命中才压缩；完整 RAM 压缩封存也使用这一路径。原生 capture 直接编码经过宿主认证的冻结私有目录，不再产生中间私有数据树；导入、恢复和暂停任务的文件导出均不打开记录中的原始私有路径。完整数据校验仍保留；延迟和密度收益需要实测。此配置不支持网络、共享内存池、普通 RAM 压缩及显式 RAM backing。备份须保留 pool 与相关 Job store，或导出完整快照。
 
@@ -179,6 +181,7 @@ VM 的内存以 MiB 为单位，CPU 是正整数。`ram_backing` 保存 RAM 文�
 | `container.mounts[].read_only` | `bool` | `false` | 只读 bind mount |
 | `vm.ram_backing` | `Option<PathBuf>` | `未设置` | 新建 RAM backing 路径；拒绝已有文件；`--vm-ram-backing` |
 | `vm.ram_compression` | `bool` | `false` | Seekable 压缩 backing；`--vm-ram-compression` |
+| `vm.ram_dedup` | `bool` | `false` | 显式启用尽力而为的宿主 RAM 去重建议；`--vm-ram-dedup` 选择 VM；与内存池/压缩互斥；接受建议不等于节省 |
 | `vm.memory_pool` | `Option<PathBuf>` | `未设置` | 实验性 macOS pool socket；`--vm-memory-pool` |
 | `vm.snapshot_filesystem_pool` | `Option<PathBuf>` | `未设置` | 宿主管理的不可变快照 lower 池；仅 Linux x86-64 无网络私有 RAM 配置；通过配置或 SDK 设置 |
 | `vm.node_socket` | `Option<PathBuf>` | `未设置` | 同宿主 node 资源服务 socket；恢复时保留共享只读 RAM backing 的引用，直到 native VM 退出；通过配置或 SDK 设置 |

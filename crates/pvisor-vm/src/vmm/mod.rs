@@ -708,6 +708,10 @@ impl Vmm {
         &self.guest_memory
     }
 
+    pub(crate) fn ram_device_window_start(&self) -> u64 {
+        self.arch_memory_info.shm_start_addr
+    }
+
     /// Injects CTRL+ALT+DEL keystroke combo in the i8042 device.
     #[cfg(target_arch = "x86_64")]
     pub fn send_ctrl_alt_del(&mut self) -> Result<()> {

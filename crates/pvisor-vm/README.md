@@ -44,6 +44,7 @@ VM staged 和 lazy image 均不建立中间宿主文件系统 FUSE 挂载。lazy
 | `SnapshotControl` | `VmmHandle` | 在完整冻结窗口执行带类型返回值的动作 |
 | `SnapshotCapture` | `FrozenMachine` | 捕获 CPU、RAM 和设备状态；冻结 guard 不可逃逸 |
 | `ColdRamControl` | `VmmHandle` | 冷 RAM worker、冻结、驻留查询和缺页处理 |
+| `RamDedupControl` | `VmmHandle` | 显式 Linux KSM advice 与逐映射安装结果 |
 | `ColdRamStore` | 宿主存储适配器 | 不可变 block 的发布、校验恢复和引用释放 |
 | `RamFileMapping` | `RamFileMount` | mmap 兼容 RAM 文件与 FUSE 生命周期 |
 | `RamFileStore` | 宿主存储适配器 | 有界暂存 I/O，与代际发布区分 |
@@ -71,6 +72,8 @@ CLI 执行器、containerd shim、暂停/恢复、快照、checkpoint、RAM page
 RAM 文件的 FUSE 挂载、readiness、mmap 缓存 I/O 和卸载顺序由私有 `ram_file` 模块管理。`RamFileStore` 接收宿主的暂存存储实现；`RamFileMount` 只公开所有权与挂载契约。压缩代际提交和持久化发布由宿主存储层负责。
 
 冷 RAM pager 的状态机、采样/发布窗口、回收线程及 CPU/设备缺页恢复也在本 crate 内。`ColdRamStore` 是外部存储适配契约：pVisor 只负责 pool 连接授权、存储传输和产品诊断目录，VM 指针与映射状态不越过边界。`ColdRamOptions` 在所有平台都存在；不支持的后端返回明确错误，重复启动同一 VM 的 pager 会被拒绝。
+
+`RamDedupControl::advise_ram_dedup()` 仅显式登记适合的普通私有 RAM（匿名映射及私有文件 COW 候选），跳过 shared、hugetlb 和设备窗口，不替换映射、不更改全局 sysfs，也不自动启用。`RamDedupReport` 逐映射区分 accepted、skipped、unsupported 和 error；`accepted_bytes` 只表示本次建议被接受的区域长度，不是已合并字节或实际节省。macOS 对候选报告 unsupported。调用与 VM transition 串行化，任一登记成功后，本 VM 生命周期内拒绝启动冷 pager 或安装 device prepare；反向也跳过已启动 pager/prepare 的 VM。建议不可用不暂停或破坏健康 VM；共享信任域和侧信道授权由调用方负责。现有私有 COW RAM 的 reclaim 拒绝逻辑保持不变。
 
 `GuestCommand` 配合禁用 implicit init 的自定义 init；普通 Rust supervisor 继续使用 `/.pvisor-guest.json`。参数和环境不会继承宿主值，拒绝不支持的引号、控制字符、保留环境键及超长命令。`NetworkOptions` 显式控制自定义 init 的 DHCP，请求不会开启 TSI。`network` 默认关闭 DHCP。
 

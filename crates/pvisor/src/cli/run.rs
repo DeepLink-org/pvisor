@@ -345,6 +345,9 @@ struct VmOverrides {
     /// Commit RAM as Seekable base/delta generations (requires FUSE/macFUSE).
     #[arg(long = "vm-ram-compression")]
     vm_ram_compression: bool,
+    /// Opt in to host RAM dedup and cross-workload sharing risks; shared live RAM is skipped, private restored COW is eligible. Advice is not merged bytes.
+    #[arg(long = "vm-ram-dedup")]
+    vm_ram_dedup: bool,
     /// Experimental macOS cold-page sharing; pool loss fails dependent VMs.
     #[arg(long = "vm-memory-pool", value_name = "SOCKET")]
     vm_memory_pool: Option<PathBuf>,
@@ -2129,6 +2132,7 @@ fn apply_cli(config: &mut RunConfig, args: RunArgs) -> anyhow::Result<()> {
 
     let enables_vm = rootfs_source.is_some()
         || args.vm.vm_ram_compression
+        || args.vm.vm_ram_dedup
         || args.vm.vm_memory_pool.is_some()
         || args.vm.vm_ram_backing.is_some()
         || args.vm.vm_image_store.is_some()
@@ -2152,6 +2156,9 @@ fn apply_cli(config: &mut RunConfig, args: RunArgs) -> anyhow::Result<()> {
     }
     if args.vm.vm_ram_compression {
         config.vm.ram_compression = true;
+    }
+    if args.vm.vm_ram_dedup {
+        config.vm.ram_dedup = true;
     }
     if let Some(value) = args.run.cpu {
         config.vm.cpus = value;
@@ -2377,6 +2384,7 @@ fn validate_vm_rootfs_platform(config: &RunConfig) -> anyhow::Result<()> {
 }
 
 fn validate(config: &RunConfig, safe: bool) -> anyhow::Result<()> {
+    config.vm.validate_ram_dedup()?;
     anyhow::ensure!(
         cfg!(feature = "gateway")
             || (config.gateway.mode == GatewayMode::Off && !config.gateway.debug),
@@ -2841,6 +2849,45 @@ mod tests {
         let encoded = toml::to_string(&config).unwrap();
         let decoded: RunConfig = toml::from_str(&encoded).unwrap();
         assert_eq!(decoded.vm.memory_pool, config.vm.memory_pool);
+    }
+
+    #[test]
+    fn ram_dedup_is_explicit_selects_vm_and_preserves_config() {
+        let mut config = RunConfig::default();
+        apply_run_options(&mut config, preset_args(&["--", "true"])).unwrap();
+        assert!(!config.vm.ram_dedup);
+        apply_run_options(&mut config, preset_args(&["--vm-ram-dedup", "--", "true"])).unwrap();
+        assert_eq!(config.run.executor, RunExecutorKind::Vm);
+        assert!(config.vm.ram_dedup);
+        apply_run_options(&mut config, preset_args(&["--", "true"])).unwrap();
+        assert!(config.vm.ram_dedup);
+        let decoded: RunConfig = toml::from_str(&toml::to_string(&config).unwrap()).unwrap();
+        assert_eq!(decoded.vm, config.vm);
+    }
+
+    #[test]
+    fn ram_dedup_conflicts_are_rejected_before_execution() {
+        for option in ["--vm-ram-compression", "--vm-memory-pool"] {
+            let values = if option == "--vm-memory-pool" {
+                vec![
+                    "--vm-ram-dedup",
+                    option,
+                    "/private/pool/socket",
+                    "--",
+                    "true",
+                ]
+            } else {
+                vec!["--vm-ram-dedup", option, "--", "true"]
+            };
+            let mut config = RunConfig::default();
+            apply_run_options(&mut config, preset_args(&values)).unwrap();
+            assert!(
+                validate(&config, false)
+                    .unwrap_err()
+                    .to_string()
+                    .contains("vm.ram_dedup")
+            );
+        }
     }
 
     #[test]

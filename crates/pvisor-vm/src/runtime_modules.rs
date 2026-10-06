@@ -55,6 +55,8 @@ mod handle;
 mod memory;
 #[path = "portable.rs"]
 mod portable;
+#[path = "ram_dedup.rs"]
+mod ram_dedup;
 
 #[cfg(test)]
 #[path = "kernel_bundle.rs"]

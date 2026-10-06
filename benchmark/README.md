@@ -305,6 +305,14 @@ Design: 负载、对照、控制变量与有效样本判据。
   - 每次试验使用新的 VM，并校验数据完整性。
 - **入口脚本：** `macos_cold_ram.py`（Apple Silicon live cold-page pool）、`vm_memory.py`（当前 Job API 的 Linux raw/compressed execution suspend/resume）、`live_vm_memory.py`（当前 SDK 的 Linux whole-VM offload，使用 `vm_live_memory_bench` example）。Linux 使用独立受限 cgroup，包含 backing/cache、捕获与恢复进程；报告 active、suspended 和恢复阶段、数据完整性与 CPU 成本。SDK offload 每个样本创建新的 VM，重复数据与确定性随机数据、raw 与压缩 backing 随机配对；记录完整 cgroup 的 anon/file/kernel 与 CPU，校验恢复后的全部数据和可变状态。执行快照、whole-VM offload 与运行中自动冷页压缩分别报告；单 VM 回收量不能替代密度实验，不恢复退役的独立 snapshot CLI。
 
+### B-MEMORY-DIAG：去重登记、COW 与文件回收的机制验证 {#b-memory-diag}
+
+- **角色：** diagnostic；结果不进入用户 benchmark 正文。
+- **Motivation：** 在没有 KVM/FUSE 或没有启用 KSM 扫描的宿主上，区分区域建议登记、不可变基线共享、私有写入隔离和原始 backing 回收，避免把登记字节或进程 RSS 当成实际去重收益。
+- **想要的结论：** 给出当前宿主上 advice 安装状态、每映射 smaps 的 PSS/KSM 字节、COW 完整性、原始文件回收后的驻留与读回校验；缺少真实 VM 或扫描器时明确记为未测。
+- **实验设计：** 三次独立 64 MiB 映射试验；同 inode 双私有基线、相同内容双匿名映射和单共享磁盘文件分别测量。固定非零重复页、完整字节校验；记录内核、文件系统、KSM 全局状态、来源摘要及命令。禁止改变宿主全局 KSM 设置。smaps PSS 仅描述选定映射，不代表整机净节省；不报告尾延迟或生产密度。
+- **入口：** `crates/pvisor-vm/src/ram_dedup.rs` 中 Linux ignored `memory_diagnostic` 测试，使用显式 `cargo test --ignored --nocapture` 特殊诊断 runner。原始数据保留在 `benchmark/pvisor/.data/`；复现命令与机制报告见该目录的 README。
+
 ### B-CLUSTER：增加机器和资源后，能否得到更多有效结果 {#b-cluster}
 
 - **文档：** `cluster-scalability.md`

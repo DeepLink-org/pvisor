@@ -39,9 +39,15 @@ KSM 不合并文件 page cache；当前 `MAP_SHARED` live backing 不能只添�
 
 同一区域首版不叠加 KSM 与用户态冷回收，避免先合并再复制压缩的重复工作。独特但可压缩的冷内容见[内存压缩](compression.md)。
 
-## 实现方向与验证基础 {#direction}
+## 当前接入与验证基础 {#direction}
 
-先复用已有快照私有 COW 映射，完善同一不可变基线的跨实例复用；随后增加 Linux 的区域建议和安装结果。可选优化不可用时保持原有私有内存，不承诺固定节省率或扫描期限。
+`[vm].ram_dedup` 是默认关闭的布尔字段；`--vm-ram-dedup` 启用它并选择 VM executor。runner 在 VM 启动时显式调用 `handle.advise_ram_dedup()`，将尽力而为的建议安装报告写入 stderr；建议失败不阻止 VM 继续运行。入口见 [CLI](../../reference/cli.md#vm-ram-dedup) 与[配置参考](../../reference/config.md#all-fields)。
+
+Linux 上，普通私有匿名 RAM 与从快照恢复的私有 COW 映射可接受 `MADV_MERGEABLE`。live `MAP_SHARED` RAM 被跳过，不转换为私有或匿名映射。设备窗口、huge-page、不可写或未对齐映射被排除；活跃冷页回收或设备准备也会阻止建议。macOS 对其他条件合格的映射报告不支持。报告按映射记录接受、跳过、不支持或错误状态；`accepted_bytes` 仅统计建议被接受的区间字节数，不是已合并字节、内存节省，也不证明 KSM scanner 已启用。pVisor 不修改宿主全局 KSM 参数，不启动新服务。
+
+`ram_dedup` 与 `vm.memory_pool`、`vm.ram_compression` 及旧的 `PVISOR_EXPERIMENTAL_MEMORY_POOL` 启用方式互斥。建议保持快照基线、私有写入和各实例独立持有的 backing 引用，不接管状态的唯一副本。跨工作负载内容共享风险要求显式启用；建议不可用时保留原有映射，不承诺固定节省率或扫描期限。
+
+当前单元测试覆盖默认关闭、配置往返、CLI 选择 executor、冲突拒绝、资格检查与部分接受报告、字节与地址不变，以及恢复 COW 的写入隔离和 backing 生命周期。测试允许真实建议不可用，不要求 scanner 运行；它们不等于生产验收，也不是合并量、节省或密度的实测证据。
 
 [概念验证](proof-of-concept.md#correctness-evidence)保留共享基线、独立写入和引用生命周期的探针；[冷页池](proof-of-concept.md#ownership)证明的是编码对象共享，不是活跃页共享。现有映射机制和实验不能直接推导出新后端已完成生产验收。
 

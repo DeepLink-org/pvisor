@@ -261,6 +261,10 @@ pub struct VmSettings {
     /// Commit RAM as Seekable base/delta generations through a cached FUSE adapter. Requires
     /// /dev/fuse on Linux or the macFUSE kernel backend on Apple Silicon.
     pub ram_compression: bool,
+    /// Opt in to host RAM dedup advice and its cross-workload sharing risks.
+    /// Only private RAM is eligible (including restored COW); live shared RAM
+    /// is skipped. Accepted advice is not evidence of merged bytes or savings.
+    pub ram_dedup: bool,
     /// Experimental macOS shared cold-page pool socket. Requires a separately
     /// managed pool; loss of that pool fails dependent VMs. Disabled by default.
     pub memory_pool: Option<PathBuf>,
@@ -288,11 +292,27 @@ pub struct VmSettings {
     pub cpus: u16,
 }
 
+impl VmSettings {
+    pub(crate) fn validate_ram_dedup(&self) -> anyhow::Result<()> {
+        anyhow::ensure!(
+            !self.ram_dedup || (!self.ram_compression && self.memory_pool.is_none()),
+            "vm.ram_dedup cannot be combined with vm.memory_pool or vm.ram_compression"
+        );
+        #[cfg(all(target_os = "macos", target_arch = "aarch64"))]
+        anyhow::ensure!(
+            !self.ram_dedup || std::env::var_os("PVISOR_EXPERIMENTAL_MEMORY_POOL").is_none(),
+            "vm.ram_dedup cannot be combined with PVISOR_EXPERIMENTAL_MEMORY_POOL"
+        );
+        Ok(())
+    }
+}
+
 impl Default for VmSettings {
     fn default() -> Self {
         Self {
             ram_backing: None,
             ram_compression: false,
+            ram_dedup: false,
             memory_pool: None,
             snapshot_filesystem_pool: None,
             node_socket: None,
@@ -763,6 +783,42 @@ cpus = 4
         let encoded = toml::to_string_pretty(&config).unwrap();
         let decoded: RunConfig = toml::from_str(&encoded).unwrap();
         assert_eq!(decoded.vm, config.vm);
+    }
+
+    #[test]
+    fn ram_dedup_defaults_off_and_roundtrips() {
+        assert!(!VmSettings::default().ram_dedup);
+        let legacy: RunConfig = toml::from_str("[vm]\ncpus = 1\n").unwrap();
+        assert!(!legacy.vm.ram_dedup);
+        let config: RunConfig = toml::from_str("[vm]\nram_dedup = true\n").unwrap();
+        assert!(config.vm.ram_dedup);
+        let decoded: RunConfig = toml::from_str(&toml::to_string(&config).unwrap()).unwrap();
+        assert_eq!(decoded.vm, config.vm);
+    }
+
+    #[test]
+    fn ram_dedup_rejects_other_ram_strategies() {
+        for settings in [
+            VmSettings {
+                ram_dedup: true,
+                ram_compression: true,
+                ..Default::default()
+            },
+            VmSettings {
+                ram_dedup: true,
+                memory_pool: Some("/private/pool/socket".into()),
+                ..Default::default()
+            },
+        ] {
+            assert!(
+                settings
+                    .validate_ram_dedup()
+                    .unwrap_err()
+                    .to_string()
+                    .contains("vm.ram_dedup")
+            );
+        }
+        assert!(VmSettings::default().validate_ram_dedup().is_ok());
     }
 
     #[test]

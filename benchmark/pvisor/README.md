@@ -2,6 +2,19 @@
 
 Read [the benchmark registry and writing rules](../README.md) before measuring or publishing. User questions, controls and roles belong to that registry; this manual owns commands and retention. Entry scripts carry `Benchmark:` declarations. Preparation, publication and plotting helpers serve their caller’s ID.
 
+## Memory mechanism diagnostic
+
+`B-MEMORY-DIAG` uses the Linux-only ignored `ram_dedup::tests::memory_diagnostic` test in `pvisor-vm`. It checks same-inode private baseline sharing, COW isolation and reference lifetime, optional KSM registration, and raw disk-backed reclaim without KVM/FUSE. It requires KSM `run=0` and never changes global settings. Use a fresh output directory and retain the log and source/binary receipts; registration is not measured merging, and mapping RSS/PSS is not whole-machine savings.
+
+```sh
+mkdir -p benchmark/pvisor/.data/memory-diagnostic-new
+cargo test -p pvisor-vm --lib ram_dedup::tests::memory_diagnostic -- \
+  --exact --ignored --nocapture --test-threads=1 --format terse \
+  > benchmark/pvisor/.data/memory-diagnostic-new/raw.log 2>&1
+```
+
+The explicit `cargo test` invocation is the special diagnostic runner, not the default conventional validation command. [The retained mechanism report](MEMORY_DIAGNOSTIC_REPORT.md) contains the actual 2026-10-06 commands, settings, derived results and limitations. Its diagnostic results do not populate B-VM-MEMORY user-facing benchmark pages.
+
 ## Data and publication
 
 Apply sampling honors `--samples` and `--warmups` at every file count, including 100,000 files. Use explicit smaller values in a separate preflight output; file count never silently reduces formal rounds. Fresh stages and Git patches are prepared outside the application timer. Large sweeps can take hours; retain failures and partial reports instead of filling conditions from previous runs.

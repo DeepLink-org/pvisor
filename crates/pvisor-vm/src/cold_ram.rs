@@ -416,6 +416,16 @@ pub(crate) fn start<S: ColdRamStore + 'static>(
             .vmm
             .upgrade()
             .ok_or_else(|| io::Error::other("VMM has stopped"))?;
+        if _live
+            .lock()
+            .map_err(|_| io::Error::other("VMM lock poisoned"))?
+            .device_memory_gate()
+            .has_dedup_advice()
+        {
+            return Err(io::Error::other(
+                "cold RAM pager is incompatible with RAM dedup advice",
+            ));
+        }
         handle
             .cold_pager_started
             .compare_exchange(false, true, Ordering::AcqRel, Ordering::Acquire)
