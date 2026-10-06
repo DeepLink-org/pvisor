@@ -31,10 +31,14 @@ def checked(argv, cwd=None, env=None):
 
 
 def tools_env():
-    temporary = Path(os.environ.get("PVISOR_REFERENCE_TMPDIR", "/tmp"))
-    if "PVISOR_REFERENCE_TMPDIR" in os.environ:
-        temporary.mkdir(parents=True, exist_ok=True)
-    return os.environ | {
+    temporary = Path.cwd() / "_reference_tmp"
+    if temporary.is_symlink():
+        raise ValueError('task-local tool cache cannot be a symlink')
+    temporary.mkdir(exist_ok=True)
+    env = {k: v for k, v in os.environ.items() if k not in (
+        "NODE_DISABLE_COMPILE_CACHE", "NODE_COMPILE_CACHE", "NODE_COMPILE_CACHE_PORTABLE", "NODE_OPTIONS"
+    )}
+    return env | {
         "PATH": f"{TOOLCHAIN}/bin:{ROOT}/usr/local/bin:{ROOT}/usr/bin:/bin",
         "RUSTC": str(TOOLCHAIN / "bin/rustc"),
         "GIT_CONFIG_COUNT": "1",
@@ -43,8 +47,15 @@ def tools_env():
         "CARGO_HOME": str(temporary / "reference-cargo"),
         "HOME": str(temporary / "reference-home"),
         "TMPDIR": str(temporary),
+        "NODE_COMPILE_CACHE": str(temporary / "node-compile-cache"),
         "CARGO_TARGET_DIR": str(Path.cwd() / "rust/target"),
     }
+
+
+def tool_cache(env):
+    return {name: env.get(name) for name in (
+        "TMPDIR", "HOME", "CARGO_HOME", "NODE_COMPILE_CACHE", "NODE_DISABLE_COMPILE_CACHE", "NODE_OPTIONS"
+    )}
 
 
 def probe():
@@ -62,6 +73,12 @@ def probe():
         }.items()
     }
     versions["kernel"] = os.uname().release
+    versions["node_compile_cache"] = json.loads(checked(
+        [str(ROOT / "usr/bin/node"), "-e",
+         "const m=require('node:module'),r=m.enableCompileCache();"
+         "console.log(JSON.stringify({status:Object.entries(m.constants.compileCacheStatus)"
+         ".find(([k,v])=>v===r.status)[0],directory:r.directory??null}));"], env=env
+    ))
     print("REFERENCE_ENV_READY " + json.dumps(versions), flush=True)
     return versions
 
@@ -244,6 +261,14 @@ def main():
     parser = argparse.ArgumentParser()
     parser.add_argument("--mode", required=True)
     args = parser.parse_args()
+    temporary = Path("_reference_tmp")
+    if args.mode != "tool-action" and (temporary.exists() or temporary.is_symlink()):
+        raise ValueError('task-local tool cache must be absent before the workload')
+    python_cache = dict(dont_write_bytecode=sys.dont_write_bytecode,
+                        prefix=sys.pycache_prefix,
+                        prefix_exists=Path('/__pvisor_reference_no_pyc__').exists())
+    if python_cache != dict(dont_write_bytecode=True, prefix='/__pvisor_reference_no_pyc__', prefix_exists=False):
+        raise ValueError('common Python bytecode cache policy is not active')
     if args.mode == "tool-action":
         pipeline()
         print("REFERENCE_GRADE_PASS", flush=True)
@@ -263,7 +288,9 @@ def main():
     else:
         raise ValueError(args.mode)
     result.update(
-        mode=args.mode, worker_ms=(time.perf_counter_ns() - started) / 1e6, correctness="passed"
+        mode=args.mode, worker_ms=(time.perf_counter_ns() - started) / 1e6,
+        correctness="passed", python_cache=python_cache,
+        workspace=str(Path.cwd()), tool_cache=tool_cache(tools_env())
     )
     print("REFERENCE_RESULT " + json.dumps(result), flush=True)
 

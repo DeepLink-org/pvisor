@@ -200,6 +200,18 @@ def test_disappeared_thread_is_unknown(fixture):
         budget.processes([123])
 
 
+def test_affinity_violation_retains_offending_thread_identity(fixture):
+    budget, _, task = affinity_fixture(fixture)
+    (task / 'task/124/status').write_text('Cpus_allowed_list: 0-15\n')
+    with pytest.raises(BudgetViolation) as caught:
+        budget.processes([123])
+    assert caught.value.evidence == dict(
+        pid=123, start_ticks=42, process_name='worker ) name',
+        tid=124, thread_start_ticks=42, thread_name='worker ) name',
+        cgroup='/private.slice/worker.service', expected_cgroup='/private.slice',
+        cpus=list(range(16)), declared_cpus=[0, 1])
+
+
 def test_reject_threads_created_during_affinity_observation(fixture, monkeypatch):
     budget, _, task = affinity_fixture(fixture)
     original = Path.read_text
@@ -226,8 +238,11 @@ def test_reject_affinity_changed_within_thread_observation(fixture, monkeypatch)
         return text
 
     monkeypatch.setattr(Path, 'read_text', read)
-    with pytest.raises(ValueError):
+    with pytest.raises(BudgetViolation) as caught:
         budget.processes([123])
+
+    assert caught.value.evidence['tid'] == 123
+    assert caught.value.evidence['cpus'] == list(range(16))
 
 
 def test_individually_pinned_threads_remain_inside_shared_cpu_budget(fixture):

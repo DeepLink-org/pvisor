@@ -13,6 +13,10 @@ from pathlib import Path, PurePosixPath
 class BudgetViolation(ValueError):
     """An observed constraint or live process does not satisfy the budget."""
 
+    def __init__(self, message, *, evidence=None):
+        super().__init__(message)
+        self.evidence = evidence or {}
+
 
 class ObservationChanged(ValueError):
     """A process exited or changed while its scope was being observed."""
@@ -123,12 +127,14 @@ class ResourceBudget:
         if type(pid) is not int or pid <= 0:
             raise ValueError('invalid PID')
         proc = self.proc_root / str(pid)
+        names = {}
 
         def identity(directory=proc, expected_pid=pid):
             text = (directory / 'stat').read_text()
             prefix, fields = text.rsplit(') ', 1)
             if prefix.split(' (', 1)[0] != str(expected_pid):
                 raise ValueError('process stat PID does not match')
+            names[expected_pid] = prefix.split(' (', 1)[1]
             fields = fields.split()
             if fields[0] in ('Z', 'X', 'x'):
                 raise ObservationChanged('process already exited')
@@ -165,12 +171,20 @@ class ResourceBudget:
                     raise BudgetViolation('thread escaped whole-parent budget')
                 observed_cpus = allowed_cpus(task)
                 if not observed_cpus or not observed_cpus <= self.cpus:
-                    raise BudgetViolation('thread CPU affinity escaped declared CPU IDs')
+                    raise BudgetViolation('thread CPU affinity escaped declared CPU IDs', evidence=dict(
+                        pid=pid, start_ticks=started, process_name=names[pid],
+                        tid=tid, thread_start_ticks=task_started, thread_name=names[tid],
+                        cgroup=str(task_path), expected_cgroup=str(expected),
+                        cpus=sorted(observed_cpus), declared_cpus=sorted(self.cpus)))
                 final_identity = identity(task, tid)
                 final_path = unified_path((task / 'cgroup').read_text())
                 final_cpus = allowed_cpus(task)
                 if not final_path.is_relative_to(expected) or not final_cpus <= self.cpus:
-                    raise BudgetViolation('thread escaped cgroup or affinity during witness')
+                    raise BudgetViolation('thread escaped cgroup or affinity during witness', evidence=dict(
+                        pid=pid, start_ticks=started, process_name=names[pid],
+                        tid=tid, thread_start_ticks=final_identity, thread_name=names[tid],
+                        cgroup=str(final_path), expected_cgroup=str(expected),
+                        cpus=sorted(final_cpus), declared_cpus=sorted(self.cpus)))
                 if (final_identity != task_started
                         or final_path != task_path or final_cpus != observed_cpus):
                     raise ObservationChanged('thread identity, cgroup or affinity changed during witness')

@@ -1,0 +1,12 @@
+field,value
+cohort,6sup2
+recorded_at,2026-10-06T16:12:43.375659+08:00
+report_sha256,62ddd9de8f70df8c10e8b1c0f5f6a316673094404f22460c6906331620a8b749
+binary_sha256,1a7144081fdbf55047ae57df6dcc13a9e57bb7107f568a17f2b5f209aa2d6f17
+source_manifest_sha256,7ef73174e02879122a410fe291867e3c8c08f4a1c944c69eb4aded7f521e1b7f
+audit_sha256,1b4ba2d3c9661a6fcfd31cef360c12e4d0eb9c4577fba93f9163c8dde7b7cf17
+protocol,"{""controls"": ""prepared stage and Git worktree with identical contents; private-view creation and task execution excluded"", ""exclusions"": ""retain all valid slow samples; failed output/content/boundary checks retained separately"", ""files"": 20, ""git_binary"": ""/usr/bin/git"", ""git_binary_sha256"": ""86c21d0ccccfb45c107c213b693d1132413959f71c6b0a4165f07c5072d47b34"", ""git_version"": ""git version 2.55.0"", ""human_participants"": 0, ""human_time_measured"": false, ""ordering"": ""seeded shuffled backend conditions per paired round"", ""review"": ""full original/edited content of every file, not names or JSON metadata"", ""samples"": 30, ""selected"": 10, ""timing"": ""sum of complete review, selected patch extraction/check/apply where needed, and disposal command times; fixture/output validation excluded"", ""warmups"": 3}"
+platform,Linux-7.2.8-200.fc44.x86_64-x86_64-with-glibc2.43
+cpu,AMD Ryzen 7 9700X 8-Core Processor
+cpu_affinity,"0,1"
+memory_limit,no benchmark-specific host memory cap

@@ -16,7 +16,7 @@ Agent tool loops traverse, read, write, search, compile and install dependencies
 
 ## Experiment design {#interpretation}
 
-Linux x86_64, AMD Ryzen 7 9700X, Fedora 7.2.8-200.fc44.x86_64. Launched process trees and the private Docker daemon are pinned to CPUs 0,1. VMs use 2 vCPU, 128 MiB for the shell probe and 16 GiB for tools. Native/Docker memory is uncapped: this is a CPU-controlled task comparison, not a capacity comparison under identical memory limits. Host/staged use rootless_process.
+Linux x86_64, AMD Ryzen 7 9700X, Fedora 7.2.8-200.fc44.x86_64. Tool payloads and the private Docker daemon are pinned to CPUs 0,1; container initialization affinity over its complete lifetime is unverified. VMs use 2 vCPU, 128 MiB for the shell probe and 16 GiB for tools. Native/Docker memory is uncapped, so these results do not establish capacity under identical resource limits. Host/staged use rootless_process.
 
 All backends share offline tools and fixed inputs, with a new workspace per trial. Warm caches, three warmups and 60 measured samples per cell; backends alternate in seeded randomized order. Preparation, builds, image import and fixture resets are outside timing; complete tasks include launch and exit. Docker Engine 29.7.2 uses a private rootless **overlay2** daemon, the classic image store and writable bind mounts. Firecracker 1.13.1 PCI runs without jailer; QEMU 10.2.2 uses q35/microvm and private ext4. pVisor VM uses virtio-fs and its own firmware. Kernels, storage and staging semantics differ: these are task costs for the stated configurations, not pure VMM or security rankings.
 
@@ -24,7 +24,7 @@ The workload traverses 2,048 files in 32 directories, reads and SHA256-checks 64
 
 ## Data and analysis {#results}
 
-Measured on 2026-10-06: each backend/workload has 60/60 valid samples and zero measured failures. Outputs, exit and execution records must pass validation; staging also requires unchanged host originals and complete retained changes. Every valid slow sample is kept, with no timing-based exclusions. Tables normally show P50; separated distributions show cluster medians and counts. P95 is descriptive only. Raw reports, binaries and input/source manifests stay in ignored `.data/`; public CSVs retain workload, cohort and provenance associations.
+Measured on 2026-10-06: each backend/workload has 60/60 valid samples and zero measured failures. Outputs, exit and execution records must pass validation; staging also requires unchanged host originals and all 256 upper files with the expected sizes. Complete written bytes were not independently checked. Every valid slow sample is kept, with no timing-based exclusions. Tables normally show P50; separated distributions show cluster medians and counts. P95 is descriptive only. Raw reports, binaries and input/source manifests stay in ignored `.data/`; public CSVs retain workload, cohort and provenance associations.
 
 ### Seven tool operations {#reference-fs}
 

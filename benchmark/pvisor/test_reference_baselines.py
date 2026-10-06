@@ -18,17 +18,22 @@ def test_guest_accepts_successful_task_and_shutdown():
     validate_guest_output(guest(), "tools")
 
 
-@pytest.mark.parametrize("fault", [None, "missing-file", "truncated-file"])
+@pytest.mark.parametrize("fault", [None, "missing-file", "truncated-file", "wrong-content", "symlink"])
 def test_direct_control_requires_writes_in_workspace(tmp_path, fault):
     written = tmp_path / "_fs/written"
     written.mkdir(parents=True)
     for i in range(256):
-        with (written / f"{i:04d}").open("wb") as file:
-            file.truncate(64 * 1024)
+        pattern = b"pvisor-workload\n"
+        (written / f"{i:04d}").write_bytes((pattern * 4370)[:64 * 1024])
     if fault == "missing-file":
         (written / "0000").unlink()
     elif fault == "truncated-file":
         (written / "0000").write_bytes(b"incomplete")
+    elif fault == "wrong-content":
+        (written / "0000").write_bytes(b"x" * (64 * 1024))
+    elif fault == "symlink":
+        (written / "0000").unlink()
+        (written / "0000").symlink_to("0001")
     if fault:
         with pytest.raises(ValueError):
             validate_direct_filesystem(tmp_path, 256 * 64 * 1024)
@@ -139,22 +144,24 @@ def test_claude_tool_result_must_succeed(error):
     )
 
 
-@pytest.mark.parametrize("fault", [None, "lower-write", "missing-upper", "truncated-upper"])
+@pytest.mark.parametrize("fault", [None, "lower-write", "missing-upper", "truncated-upper", "wrong-content"])
 @pytest.mark.parametrize("file_kib", [60, 64])
 def test_successful_workload_still_requires_staged_writes(tmp_path, fault, file_kib):
     work, stage = tmp_path / "work", tmp_path / "stage"
     written = stage / "upper/_fs/written"
     written.mkdir(parents=True)
     for i in range(256):
-        with (written / f"{i:04d}").open("wb") as file:
-            file.truncate(file_kib * 1024)
+        pattern = b"pvisor-workload\n"
+        (written / f"{i:04d}").write_bytes((pattern * 4370)[:file_kib * 1024])
     if fault == "lower-write":
         (work / "_fs/written").mkdir(parents=True)
     elif fault == "missing-upper":
         (written / "0000").unlink()
     elif fault == "truncated-upper":
         (written / "0000").write_bytes(b"incomplete")
-    if fault:
+    elif fault == "wrong-content":
+        (written / "0000").write_bytes(b"x" * (file_kib * 1024))
+    if fault or file_kib != 64:
         with pytest.raises(ValueError):
             validate_staged_filesystem(work, stage, file_kib * 1024 * 256)
     else:
@@ -233,6 +240,27 @@ def test_budget_oom_rejects_successful_native_command_and_retains_scene(tmp_path
     assert (trial / 'workspace/retained-input').read_text() == 'required original evidence'
 
 
+def test_unobserved_timing_does_not_scan_processes_or_report_zero_rss(tmp_path, monkeypatch):
+    from types import SimpleNamespace
+    import reference_baselines as runner
+
+    assets = tmp_path / 'assets'
+    (assets / 'rootfs/work').mkdir(parents=True)
+    args = SimpleNamespace(output=tmp_path / 'output', assets=assets,
+                           resource_budget=None, cpu_affinity='', docker_root_pid=None,
+                           resource_observation='off')
+
+    def reject_scan(*args, **kwargs):
+        raise AssertionError('periodic process scan perturbed the timing')
+
+    monkeypatch.setattr(runner, 'snapshot', reject_scan)
+    row = runner.run_trial(args, {'assets': {'docker_image': 'unused'}}, 'native', 'ready', 0)
+    assert row['correctness'] == 'passed'
+    assert row['resource_observation'] == 'off'
+    assert row['peak_tree_rss_kib'] is None
+    assert 'unknown' in row['memory_scope']
+
+
 def test_budget_requires_explicit_cpu_placement_before_launch(tmp_path):
     from types import SimpleNamespace
     from reference_baselines import reference_budget
@@ -262,7 +290,8 @@ def test_observed_budget_violation_cannot_be_published_as_unknown(tmp_path, monk
             return {'witnesses': [{'pid': pid} for pid in pids]}
 
         def witness_all_members(self, pids):
-            raise BudgetViolation('controlled negative: shim escaped parent')
+            raise BudgetViolation('controlled negative: shim escaped parent',
+                                  evidence={'pid': 123, 'tid': 124, 'cpus': [0, 1, 2]})
 
     monkeypatch.setattr(runner, 'reference_budget', lambda _: EscapedBudget())
     original = runner.subprocess.Popen
@@ -281,6 +310,7 @@ def test_observed_budget_violation_cannot_be_published_as_unknown(tmp_path, monk
     trial = args.output / 'trials/ready-native-000'
     record = json.loads((trial / 'resource-budget.json').read_text())
     assert record['violations']
+    assert record['violations'][0]['evidence'] == {'pid': 123, 'tid': 124, 'cpus': [0, 1, 2]}
     assert record['unknown_observations'] == []
     assert json.loads((trial / 'command.json').read_text())['exit'] == 0
     assert (trial / 'workspace').exists()

@@ -2,45 +2,48 @@
 
 ## 主要结论 {#conclusions}
 
-**六种固定版本轨迹格式的前缀准备全部通过校验，P50 约 5–5.5 ms，prepare-only 不执行工具、不修改工作区。该能力适合绑定任务与历史观测；它不等于恢复任意远程连接，也不证明模型下一步动作或所有新版 CLI 格式保持一致。**
+**七种固定版本轨迹格式各通过 60/60 次前缀校验，prepare-only 不执行工具、不修改工作区。多数格式出现分离的耗时簇：较低簇中位数约 6–7 ms，较高簇约 11–16 ms。适合把任务绑定到历史工具观测；真实模型继续执行的一致率尚未测量。**
 
 | 需求 | 选型含义 |
 |---|---|
-| 绑定已记录的工具历史 | 使用固定格式的 prefix 准备 |
-| 恢复实际文件状态 | 另行恢复任务环境 |
-| 预测下一步动作或 reward | 没有相应一致率实测 |
+| 准备跨 Agent 的历史工具上下文 | 使用经过校验的固定格式适配器 |
+| 恢复实际文件状态 | 单独恢复任务环境；前缀准备不重放文件修改 |
+| 比较原生 resume 或 RL 管线的速度 | 尚无同轨迹计时对照，不能据此排名 |
 
 ## Motivation {#motivation}
 
-训练或复现任务时，轨迹结构正确还不够：边界、工具参数和历史观测也要保留。准备阶段尤其不应偷偷执行命令。
+训练和复现需要在准确的历史边界继续任务。丢失工具观测或混入下一步动作，会改变模型看到的上下文；准备时重新执行工具，还可能产生额外副作用。这决定了历史轨迹能否作为可靠的任务输入。
 
 ## 实验设计 {#interpretation}
 
-每 adapter 20 个合成轨迹，2 个工具批次，选 after-step=1；3 次独立重复，每 adapter 60 次。要求 manifest 边界是 1 批/1 call、命令参数精确保留、replayed_tool_calls=0 且工作区为空。固定格式版本见表，不等同于本机 CLI 版本。无模型请求，也不执行工具；计时是 prefix 准备。
+每个适配器使用 20 条合成原生格式轨迹，每条有两个工具批次，选择 `after-step=1`、`prepare-only`。重复三次，每次用固定种子打乱适配器与任务顺序，共 420 次。固定格式版本见表，与安装的 Agent CLI 版本分开。
 
-这些结果来自 Linux/x86_64；macOS 的对应负载未测。每项数字的制品、缓存条件与样本保存在关联报告中。
+有效样本必须保留源轨迹摘要、完整第一批的命令参数和历史观测，排除第二批动作，报告 `replayed_tool_calls=0`、Agent 未启动，且工作区中预置文件的内容和文件集合不变。独立发布审计复查全部保留的命令、原生前缀和工作区证据。失败单列，不当作零耗时。
 
-固定制品与测量日期按表注明。失败与校验不通过的样本不计入成功耗时，失败数量单列；既有数据没有事先的宿主干扰剔除规则，所有通过校验的慢样本保留。30 次及更少采样的 P95 仅为观察参考，不给 P99 或稳定尾延迟承诺。
+环境是 Linux/x86_64、AMD Ryzen 7 9700X、内核 7.2.8-200.fc44；进程固定到 CPU 0、1，没有 benchmark 专用宿主内存上限。宿主缓存不清空，replay 不执行预热，保留全部有效慢样本，没有事后干扰剔除。计时从 CLI 启动到 prepare-only 退出，包含进程启动和收尾，排除输入生成及事后审计；不发生模型请求或工具执行。
+
+原生 Agent resume 和 RL 管线的前缀准备是相关选项，但没有作为同轨迹、同预算的计时对照。实验验证固定格式的准备契约，不验证完整会话恢复、模型下一动作或 reward 一致率。
 
 ## 实验数据和分析 {#results}
 
-业界参照是各 Agent 的原生 resume/replay，以及 RL 管线自己的前缀准备。以下验证固定原生格式的准备契约；没有对这些系统做同轨迹耗时排名，也没有测完整模型继续执行的一致率。
+测量日期：2026-10-06。每个适配器 N=60，全部通过；单位 ms。分离簇分别列比例和中位数，P95 为整个适配器分布的观察参考，不承诺稳定尾延迟。
 
-测量日期 2026-10-04；各表按配置保留独立样本，P50 为中位数。
+| 适配器 | 固定格式版本 | 通过 / 计划（失败） | 较低簇：比例；中位数 ms | 较高簇：比例；中位数 ms | P95 参考 ms |
+|---|---|---:|---|---|---:|
+| claude-code | claude-code/2.1.220/native-resume-v1 | 60/60 (0) | 52/60 (86.7%); 6.51 | 8/60 (13.3%); 16.24 | 17.07 |
+| codex | codex/0.149.0/native-responses-jsonl-v1 | 60/60 (0) | 49/60 (81.7%); 6.59 | 11/60 (18.3%); 14.91 | 17.82 |
+| opencode | opencode/1.17.7/native-events-jsonl-v1 | 60/60 (0) | 51/60 (85.0%); 6.52 | 9/60 (15.0%); 15.20 | 15.31 |
+| mini-swe-agent | mini-swe-agent/2.4.6/native-messages-v1 | 60/60 (0) | 60/60 (100%); 6.75 | — | 14.84 |
+| openhands | openhands/0.53.0/native-replay-v1 | 60/60 (0) | 45/60 (75.0%); 6.22 | 15/60 (25.0%); 11.44 | 15.01 |
+| pi-agent | pi-agent/0.83.0/native-rpc-events-v1 | 60/60 (0) | 47/60 (78.3%); 6.07 | 13/60 (21.7%); 11.15 | 15.07 |
+| swe-agent | swe-agent/1.1.0/replay-then-live-v1 | 60/60 (0) | 51/60 (85.0%); 6.55 | 9/60 (15.0%); 14.97 | 15.20 |
 
-| Adapter | Pinned format profile | Passed/planned | Preparation P50/P95 ms |
-|---|---|---|---|
-| claude-code | claude-code/2.1.220/native-resume-v1 | 60/60 | 5.03 / 5.62 |
-| codex | codex/0.149.0/native-responses-jsonl-v1 | 60/60 | 5.05 / 5.49 |
-| opencode | opencode/1.17.7/native-events-jsonl-v1 | 60/60 | 5.16 / 5.42 |
-| mini-swe-agent | mini-swe-agent/2.4.6/native-messages-v1 | 60/60 | 5.48 / 6.76 |
-| openhands | openhands/0.53.0/native-replay-v1 | 60/60 | 5.18 / 6.10 |
-| pi-agent | pi-agent/0.83.0/native-rpc-events-v1 | 60/60 | 5.25 / 6.08 |
+Mini-SWE-Agent 未触发分簇规则，该行列出全体样本的 P50。分簇是描述性判定：两簇各至少占 10%，最大相邻间隔至少为整体中位数的 20%、且超过相邻间隔中位数的三倍，两簇中位数至少相差 1.5 倍；它不证明慢簇的成因。有效慢样本全部保留，因此不宜把准备成本概括为固定的几毫秒。
 
 ### 适用边界 {#acceptance}
 
-合成轨迹验证前缀结构、边界与参数，不代表模型下一动作或 reward 一致率。真实会话、新版 CLI、长前缀、token 成本和远端连接恢复未测。
+这些结果支持固定短前缀的结构、参数和观测保真。真实会话、新版 CLI、长前缀、token 成本、macOS、远端连接恢复及后续模型执行未测。需要工具重放或实际环境恢复时，应另行验证其正确性和成本。
 
 ### 数据下载与复现 {#run}
 
-[整理后的表格 CSV](replay-fidelity.csv) · [证据来源摘要](evidence-sources.csv) · [比较方法](methodology.md) · [复现手册](https://github.com/DeepLink-org/pvisor/blob/main/benchmark/pvisor/README.md)
+[加工数据 CSV](replay-fidelity.csv) · [制品与审计来源 CSV](replay-provenance.csv) · [证据来源摘要](evidence-sources.csv) · [比较方法](methodology.md) · [复现手册](https://github.com/DeepLink-org/pvisor/blob/main/benchmark/pvisor/README.md)

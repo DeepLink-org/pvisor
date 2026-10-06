@@ -8,11 +8,11 @@ Design: twenty identical changed files, ten selected, prepared private stage or
 Git worktree; full content diff and every final byte checked, randomized rounds.
 """
 import random
-import shutil
 import traceback
+from shutil import which
 
 from .apply import prepare
-from .common import checked
+from .common import checked, digest
 
 
 def validate_review(text, count=20):
@@ -39,7 +39,8 @@ def staged_trial(ctx, trial):
         review_ms=review_ms,apply_ms=apply_ms,drop_ms=drop_ms,wall_ms=review_ms+apply_ms+drop_ms,
         files_reviewed=20,files_applied=10,files_dropped=10,content_review_complete=True,correctness='passed',logs=str(root))
     if trial>=0:ctx.record(row)
-    shutil.rmtree(work);shutil.rmtree(stage/'upper',ignore_errors=True)
+    # Retain the final target for independent publication checks. Drop is the
+    # measured product operation; removing the fixture is not part of its cost.
 
 
 def git_trial(ctx, trial):
@@ -64,11 +65,15 @@ def git_trial(ctx, trial):
         wall_ms=review_ms+selection_ms+check_ms+apply_ms+drop_ms,files_reviewed=20,files_applied=10,files_dropped=10,
         content_review_complete=True,correctness='passed',logs=str(root))
     if trial>=0:ctx.record(row)
-    shutil.rmtree(work)
+    # The removed worktree is the measured disposal; retain its final target.
 
 
 def run(ctx):
+    git_binary = which('git')
+    if git_binary is None:
+        raise ValueError('Git baseline executable unavailable')
     ctx.metadata['supervision_protocol']=dict(human_participants=0,human_time_measured=False,files=20,selected=10,
+        git_binary=git_binary,git_binary_sha256=digest(git_binary),git_version=checked([git_binary,'--version']).stdout.strip(),
         controls='prepared stage and Git worktree with identical contents; private-view creation and task execution excluded',
         review='full original/edited content of every file, not names or JSON metadata',
         timing='sum of complete review, selected patch extraction/check/apply where needed, and disposal command times; fixture/output validation excluded',

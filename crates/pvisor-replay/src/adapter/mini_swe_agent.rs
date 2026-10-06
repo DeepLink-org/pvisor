@@ -77,8 +77,9 @@ fn build_mini_plan(request: &PlaybackRequest) -> Result<ReplayPlan, ReplayError>
             continue;
         }
         let mut observations = Vec::new();
-        for candidate in messages.iter().skip(message_index + 1) {
-            if !mini_calls(candidate, message_index + 1 + observations.len())?.is_empty() {
+        let mut observation_end = message_index;
+        for (candidate_index, candidate) in messages.iter().enumerate().skip(message_index + 1) {
+            if !mini_calls(candidate, candidate_index)?.is_empty() {
                 break;
             }
             if matches!(
@@ -87,6 +88,7 @@ fn build_mini_plan(request: &PlaybackRequest) -> Result<ReplayPlan, ReplayError>
             ) || candidate.get("type").and_then(Value::as_str) == Some("function_call_output")
             {
                 observations.push(candidate);
+                observation_end = candidate_index;
                 if observations.len() == native_calls.len() {
                     break;
                 }
@@ -132,7 +134,7 @@ fn build_mini_plan(request: &PlaybackRequest) -> Result<ReplayPlan, ReplayError>
                 .and_then(Value::as_str)
                 .unwrap_or_default()
                 .to_owned(),
-            native: json!({"message_index": message_index}),
+            native: json!({"message_index": message_index, "observation_end": observation_end}),
         });
     }
     check_boundary(request.after_step, batches.len())?;
@@ -291,9 +293,18 @@ fn run_mini(
     context: &RunContext<'_>,
     journal: &mut Journal,
 ) -> Result<ReplayOutcome, ReplayError> {
-    let boundary = plan.batches.last().unwrap().native["message_index"]
+    // A prepare-only artifact must include every result of the selected batch.
+    // Live replay continues to reconstruct fresh results through the SDK bridge.
+    let boundary_key = if context.request.mode == ReplayMode::PrepareOnly {
+        "observation_end"
+    } else {
+        "message_index"
+    };
+    let boundary = plan.batches.last().unwrap().native[boundary_key]
         .as_u64()
-        .unwrap() as usize;
+        .ok_or_else(|| {
+            ReplayError::trajectory("mini-swe-agent batch lost native prefix boundary")
+        })? as usize;
     let mut prepared = plan.native.clone();
     prepared["messages"] =
         Value::Array(plan.native["messages"].as_array().unwrap()[..=boundary].to_vec());

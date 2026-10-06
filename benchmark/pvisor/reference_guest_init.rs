@@ -71,6 +71,7 @@ fn main() {
         .env("PATH", "/opt/toolchain/bin:/usr/local/bin:/usr/bin:/bin")
         .env("HOME", "/root")
         .env("PYTHONDONTWRITEBYTECODE", "1")
+        .env("PYTHONPYCACHEPREFIX", "/__pvisor_reference_no_pyc__")
         .status()
         .expect("payload");
     println!("REFERENCE_EXIT {}", status.code().unwrap_or(255));

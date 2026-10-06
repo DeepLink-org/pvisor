@@ -1,0 +1,9 @@
+field,value
+cohort,6replay2
+recorded_at,2026-10-06T15:56:58.179280+08:00
+report_sha256,4ea890aafc5c7471ebbe48c42dc9d8817f4253b5892bfdfd47df5cc669eee217
+replay_binary_sha256,b6bc22eea1d790dc313d76e334bb9b56f1269842e6fd1ce7e545453a47cceeb4
+source_manifest_sha256,7ef73174e02879122a410fe291867e3c8c08f4a1c944c69eb4aded7f521e1b7f
+audit_sha256,899d5324f779fba8ba5907537e958e03f46ec6e2fe06641190402dea88aa5c40
+cpu_affinity,"0,1"
+memory_limit,no benchmark-specific host memory cap

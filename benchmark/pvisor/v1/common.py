@@ -195,6 +195,7 @@ class Context:
         runenv = self.env | (env or {})
         if is_podman:
             runenv["HOME"] = os.environ["HOME"]
+        print(f"Run command in {cwd}: {json.dumps(argv)}", flush=True)
         started = time.perf_counter_ns()
         try:
             process = subprocess.Popen(

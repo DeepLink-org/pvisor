@@ -2,12 +2,12 @@
 
 ## 主要结论 {#conclusions}
 
-**每次新建任务工作区，在 10,000 个文件中修改 20 个、合入 10 个，pVisor stage 的完整机器流程 P50 为 141 ms，Git worktree 为 248 ms，btrfs reflink 副本为 343 ms。stage 适合大工作区的稀疏改动；100 文件的小工作区使用 Git 更省时。**
+**每次新建任务工作区，在 10,000 个文件中修改 20 个、合入 10 个，pVisor stage 的完整机器流程 P50 为 141 ms，Git worktree 为 248 ms，btrfs reflink 副本为 343 ms。stage 适合大工作区的稀疏改动；小工作区 Git 更省时。另一个独立实验中，预备好的 20 文件视图只做审查、合入和丢弃，stage P50 为 27.71 ms，Git 为 4.69 ms。**
 
 | 用户场景 | 选型含义 |
 |---|---|
 | 大工作区、少量改动、任务工作区用后丢弃 | stage 减少创建、扫描和清理整棵工作区的成本 |
-| 小工作区或已准备并复用的 Git worktree | 小工作区 Git 较快；复用工作区未测 |
+| 小工作区或已准备并复用的 Git worktree | 小工作区及 20 文件预备视图的审查流程 Git 较快；长期复用未测 |
 | 估算人工监督成本 | 机器流程不包含人的阅读和判断时间 |
 
 ## Motivation {#motivation}
@@ -26,6 +26,8 @@ Linux/x86_64、AMD Ryzen 7 9700X、Fedora 内核 7.2.8-200.fc44.x86_64、btrfs�
 
 这个固定的文件修改任务不含模型推理、编译或人的阅读时间；Git/reflink 执行是原生进程，不提供相同隔离。冲突测试不覆盖 Git 检查与写入之间的竞态，也不比较崩溃恢复与持久化保证。不能据此给容器、VM 或安全性排名。
 
+另一个独立实验只测已准备视图的审查成本：20 个小文本文件已经完成相同修改，查看全部原始/修改内容，合入前 10 个并丢弃其余 10 个。stage 计时包含 `status --review --diff`、选择性 `apply` 和 `drop`；Git 包含完整 diff、选中 patch 提取、`git apply --check`、apply 和 worktree 移除。工作区创建、任务执行、fixture 和校验均在计时之外。Git 2.55.0 的可执行文件在采样前记录摘要，stage 的冻结制品来源单列；每组 30 次、3 次预热，CPU 0、1，热缓存，无专用宿主内存上限。全部 60 个正式样本通过内容、选择结果和执行边界检查，最终工作区保留供独立审计；没有速度剔除。两个实验分别统计，预备视图的审查成本不计入上面的完整流程表。
+
 ## 实验数据和分析 {#results}
 
 ### 完整任务成本 {#baseline-meaning}
@@ -38,6 +40,19 @@ Linux/x86_64、AMD Ryzen 7 9700X、Fedora 内核 7.2.8-200.fc44.x86_64、btrfs�
 | 10,000 | 140.82 / 144.38 | 248.10 / 253.89 | 343.00 / 349.73 |
 
 10,000 文件条件下，stage 与 Git 的中位数差为 **-107.27 ms, 95% CI [-109.02, -105.60]**；与 reflink 的差为 **-202.18 ms, 95% CI [-204.49, -199.81]**。区间来自按随机交替采样轮次配对的 5,000 次 bootstrap，支持 stage 在该场景中更快。100 文件时 stage 与 Git 的差为 **+86.99 ms, 95% CI [+77.28, +87.57]**，与 reflink 的差为 **+85.36 ms, 95% CI [+75.45, +85.86]**，支持小工作区原生流程更快。
+
+### 预备视图的审查成本 {#prepared-review}
+
+2026-10-06 的独立同批对照；20 个小文本文件，合入 10 个、丢弃 10 个，N=30/格，失败 0。单位 ms，P95 仅作观察参考，各格未触发分簇规则。
+
+| 步骤 | pVisor stage P50 / P95 | Git worktree P50 / P95 |
+|---|---:|---:|
+| 完整内容审查 | 6.51 / 7.42 | 1.28 / 1.47 |
+| 选择、检查并合入 10 个文件 | 17.42 / 19.25 | 2.53 / 3.52 |
+| 丢弃其余结果 | 3.60 / 3.87 | 0.86 / 1.07 |
+| 逐样本流程合计 | 27.71 / 29.48 | 4.69 / 5.86 |
+
+总耗时的 stage-minus-Git 中位数差为 **+23.02 ms，95% CI [22.49, 23.49]**，来自按采样轮次配对的 5,000 次 bootstrap，支持 Git 在该小型预备视图中更快。步骤中位数不能直接相加得到流程中位数；人工阅读时间未测。选择 stage 的理由是执行边界、暂存和审查接口，单独的小改动审查流程没有速度优势。
 
 ### 成本落在哪些步骤
 
@@ -66,4 +81,4 @@ stage 的工具执行和合入仍有额外成本，但创建独立视图、按�
 
 ### 数据下载与复现 {#run}
 
-[整理后的表格 CSV](supervision-cost.csv) · [各步骤统计](workflow-summary.csv) · [差异与置信区间](workflow-comparisons.csv) · [来源与制品](workflow-provenance.csv) · [证据来源摘要](evidence-sources.csv) · [比较方法](methodology.md) · [复现手册](https://github.com/DeepLink-org/pvisor/blob/main/benchmark/pvisor/README.md)
+[整理后的表格 CSV](supervision-cost.csv) · [各步骤统计](workflow-summary.csv) · [差异与置信区间](workflow-comparisons.csv) · [来源与制品](workflow-provenance.csv) · [预备视图各步骤](supervision-summary.csv) · [预备视图配对差异](supervision-comparisons.csv) · [预备视图来源](supervision-provenance.csv) · [证据来源摘要](evidence-sources.csv) · [比较方法](methodology.md) · [复现手册](https://github.com/DeepLink-org/pvisor/blob/main/benchmark/pvisor/README.md)
