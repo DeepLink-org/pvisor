@@ -14,7 +14,7 @@ Before adding a public feature, provide implementation, validation scenarios, li
 
 ## Single-node daemon {#daemon}
 
-The [daemon](../guides/daemon/index.md) manages local image sandboxes through a partial OpenSandbox 1.1.0 profile. Controller/Worker scheduling and the Cluster task SDK are retired. Native Jobs, VM checkpoints/local forks and node/cache/memory-pool services remain separate; daemon-native VM integration is not delivered. The prepared execd/egress image contract still needs end-to-end validation, including capability-free egress under `cap-drop=ALL`.
+The [daemon](../guides/daemon/index.md) has VM-only `NativeRuntime` embedding pVisor in detached supervisors for the partial OpenSandbox 1.1.0 profile. The daemon executable and required native flags are integrated. Stage/apply and checkpoint/fork APIs are not implemented; node/cache/pool sharing is not automatically acquired. Bootstrap/images are not supplied or end-to-end validated; there is no SDK-conformance or density evidence. Controller/Worker and the Cluster task SDK are retired.
 
 ## L2 and L3 milestones
 

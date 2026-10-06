@@ -134,7 +134,7 @@ async fn open(config: Config, runtime: &Arc<FakeRuntime>) -> Arc<Daemon> {
 
 fn request_json() -> Value {
     json!({
-        "image": {"uri": "registry.example.test/opensandbox/execd:fixture"},
+        "image": {"uri": "execd-fixture"},
         "entrypoint": ["tail", "-f", "/dev/null"],
         "resourceLimits": {"cpu": "1", "memory": "64Mi"},
         "timeout": 600,
@@ -174,10 +174,7 @@ async fn persistent_sandbox_create_pause_resume_delete() {
         assert_eq!(state.creates, 1);
         let spec = &state.specs[0];
         assert_eq!(spec.id, sandbox.id);
-        assert_eq!(
-            spec.image,
-            "registry.example.test/opensandbox/execd:fixture"
-        );
+        assert_eq!(spec.image, "execd-fixture");
         assert_eq!(spec.entrypoint, sandbox.entrypoint);
         assert_eq!(spec.cpu_millis, 1000);
         assert_eq!(spec.memory_bytes, 64 * MIB);
@@ -617,20 +614,70 @@ async fn invalid_runtime_spec_is_rejected_before_admission_and_runtime_calls() {
     let directory = tempfile::tempdir().unwrap();
     let runtime = Arc::new(FakeRuntime::default());
     let daemon = open(config(&directory), &runtime).await;
-    let mut invalid_env = request_json();
-    invalid_env["env"] = json!({"1INVALID": "fixture-value"});
-    let mut one_byte_memory = request_json();
-    one_byte_memory["resourceLimits"]["memory"] = json!("1");
+    let mut invalid = Vec::new();
+    for image in [
+        "../host",
+        "execd/../../host",
+        "/rootfs",
+        ".hidden",
+        "registry.example.test/opensandbox/execd:fixture",
+        "https://registry.example.test/opensandbox/execd:fixture",
+    ] {
+        let mut payload = request_json();
+        payload["image"]["uri"] = json!(image);
+        invalid.push((payload, "image must be a local prepared-image key"));
+    }
+    for key in ["1INVALID", "PVISOR_KRUN_RUNNER_SPEC", "AGENTCTL_CONTROL"] {
+        let mut payload = request_json();
+        payload["env"] = json!({(key): "fixture-value"});
+        let message = if key == "1INVALID" {
+            "invalid guest environment key"
+        } else {
+            "reserved native control environment key"
+        };
+        invalid.push((payload, message));
+    }
+    for (cpu, message) in [
+        ("9m", "native CPU quota must be at least 10 millicores"),
+        ("8001m", "native profile supports at most eight CPU quotas"),
+    ] {
+        let mut payload = request_json();
+        payload["resourceLimits"]["cpu"] = json!(cpu);
+        invalid.push((payload, message));
+    }
+    for memory in ["1", "6291455", "4294967296Mi"] {
+        let mut payload = request_json();
+        payload["resourceLimits"]["memory"] = json!(memory);
+        invalid.push((payload, "native memory limit is not representable"));
+    }
 
-    for payload in [invalid_env, one_byte_memory] {
+    for (payload, message) in invalid {
         let request: CreateRequest = serde_json::from_value(payload).unwrap();
-        // Both inputs pass request parsing/validation; validate_spec must reject them.
-        request.clone().validate(86400).unwrap_or_else(|error| {
+        // These inputs pass wire validation; native validation must reject them
+        // before even oversized resource requests reach node admission.
+        let validated = request.clone().validate(86400).unwrap_or_else(|error| {
             panic!("fixture rejected before runtime spec validation: {error}")
         });
+        let spec = RuntimeSpec {
+            id: format!("sb-{}", uuid::Uuid::new_v4()),
+            image: validated.image.uri,
+            entrypoint: validated.entrypoint,
+            env: validated.env,
+            cpu_millis: validated.cpu_millis,
+            memory_bytes: validated.memory_bytes,
+        };
+        let validation_error = crate::runtime::validate_spec(&spec).unwrap_err();
+        assert!(
+            validation_error.to_string().contains(message),
+            "{validation_error}"
+        );
         let error = daemon.create(request).await.unwrap_err();
         assert_eq!(error.status, 400);
         assert_eq!(error.code, "INVALID_REQUEST");
+        assert_eq!(
+            error.message,
+            "invalid runtime image, argv, environment or resource limits"
+        );
         assert!(daemon.list().await.unwrap().is_empty());
         assert!(daemon.registry.lock().await.sandboxes.is_empty());
         assert!(daemon.operations.lock().await.is_empty());
@@ -656,4 +703,26 @@ async fn invalid_runtime_spec_is_rejected_before_admission_and_runtime_calls() {
     create(&daemon).await;
     assert_eq!(daemon.list().await.unwrap().len(), 2);
     assert_eq!(runtime.state.lock().unwrap().creates, 2);
+}
+
+#[tokio::test]
+async fn native_guest_environment_is_preserved_without_container_restrictions() {
+    let directory = tempfile::tempdir().unwrap();
+    let runtime = Arc::new(FakeRuntime::default());
+    let daemon = open(config(&directory), &runtime).await;
+    let mut payload = request_json();
+    payload["env"] = json!({
+        "PATH": "/guest/bin:/usr/bin",
+        "LD_PRELOAD": "/guest/lib/fixture.so",
+        "CONTAINER_HOST": "unix:///guest/podman.sock",
+        "GUEST_VALUE": "literal $HOME; no host expansion"
+    });
+    let request: CreateRequest = serde_json::from_value(payload).unwrap();
+    let expected_env = request.env.clone();
+    let sandbox = daemon.create(request).await.unwrap();
+    assert_eq!(sandbox.status.state, "Running");
+    let state = runtime.state.lock().unwrap();
+    assert_eq!(state.creates, 1);
+    assert_eq!(state.specs[0].image, "execd-fixture");
+    assert_eq!(state.specs[0].env, expected_env);
 }

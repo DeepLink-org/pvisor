@@ -169,7 +169,7 @@ state the current public record and keep engineering follow-ups below.
 ## Core design
 
 - [Daemon quickstart](src/zh/guides/daemon/index.md): single-node sandbox management, the pinned OpenSandbox API profile and prepared-image prerequisites; [English](src/en/guides/daemon/index.md).
-- [Daemon architecture](src/zh/design/daemon/index.md): local admission, lifecycle, durable ownership, APIs and recovery boundaries; native Job/VM execution remains separate; [English](src/en/design/daemon/index.md).
+- [Daemon architecture](src/zh/design/daemon/index.md): local admission, lifecycle, durable ownership, APIs and recovery boundaries; per-sandbox supervisors embed native pVisor VM execution; [English](src/en/design/daemon/index.md).
 - [Core architecture](src/zh/design/architecture.md): core owns definitions; pvisor owns scheduling and execution; drivers implement actual boundaries.
 - [Operation and Event](src/zh/design/operations-events.md): requests, actual rewrites, Placement, outcomes, causal facts and reconstruction limits.
 - [Design principles](src/zh/design/principles.md): ownership, causality and evidence rules.

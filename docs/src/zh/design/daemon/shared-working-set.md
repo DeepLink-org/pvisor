@@ -1,6 +1,6 @@
 # 共享工作集与按需加载
 
-按身份复用不可变内容，同时显式计算实际访问与私有修改的成本。原生 pVisor 缓存与 node 资源提供这一路径的机制；外部 Podman daemon **未**获取这些资源，也未验证其密度收益。
+按身份复用不可变内容，同时显式计算实际访问与私有修改的成本。原生 pVisor 缓存与 node 资源提供这一路径的机制；原生 VM daemon **未**获取这些资源，也未验证其密度收益。
 
 ## 三种不同机制 {#principles}
 
@@ -19,7 +19,7 @@
 | 原生 Linux RAM 恢复 | 经授权的 sealed 身份／兼容性与共享只读 inode，guest 私有 COW 映射 | 普通新启动绕过 RAM restore；仍要求兼容原生 profile |
 | Snapshot lazy reader | 缺页时校验／解码块，decoded cache 有界 | 保留首次访问成本；旧 raw 格式可能要求完整校验 |
 | 实验冷 RAM pool | Session 引用与冷页恢复 | `vm.memory_pool` 要求 macOS/Apple Silicon，不是 Linux daemon 功能 |
-| 外部 Podman daemon | 本机预置容器镜像 | 未接入原生 node socket、RAM restore、lazy snapshot 或 cold pool |
+| NativeRuntime daemon | 独立不可变 rootfs、VM 私有写入 | 无自动 node socket 获取、RAM restore、lazy snapshot 或 cold-pool 集成 |
 
 其他源码区域：`image/cache/lazy.rs`、`image/cache/portable/binary.rs`、`executor/vm/restore_ram.rs`、`environment_snapshot/lazy.rs` 与 `pvisor-vm/src/memory.rs`。原生 node acquire 校验授权 store、发布与兼容性，不以缓存存在替代权威。
 
@@ -43,13 +43,13 @@
 
 连接 pin 保护活动不可变挂载／backing，直到原生 runner 已回收。最后释放后才能拆除或有界 warming。同身份准备串行，慢 I/O 不占用全局 map 锁。可重新获取的 decoded cache 可以驱逐，活动 owner 或私有冷 RAM 唯一剩余副本不能视为缓存。
 
-未来原生 daemon 适配器需要显式 acquire/release、取消、兼容输入交接、清理、证据和预算合同。将 node 服务与 daemon 一起打包不等于完成适配器。通用 warm-template Agent 恢复尚不可用，来源 command/input/environment/policy 绑定与原生 no-network 恢复限制仍适用。
+为已有原生运行时接入 node 共享需要显式 acquire/release、取消、兼容输入交接、清理、证据和预算合同。将 node 服务与 daemon 一起打包不等于完成适配器。通用 warm-template Agent 恢复尚不可用，来源 command/input/environment/policy 绑定与原生 no-network 恢复限制仍适用。
 
 有界关键页预取、进一步合并同对象 miss、扩展完整 metadata/scratch 记账是可能后续工作。Daemon 没有主机亲和策略或 placement hint 协议，主机选择属于外部编排。
 
 ## 证据问题 {#experiments}
 
-没有新测量或 PASS 声明。原生路径实验与未来 daemon 适配器评估分开：
+没有新测量或 PASS 声明。原生路径实验与 daemon node 共享集成评估分开：
 
 | 问题 | 必要对照与观察 |
 | --- | --- |

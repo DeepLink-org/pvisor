@@ -11,16 +11,16 @@
 
 ## 前提条件 {#prerequisites}
 
-使用 Linux、rootless Podman、cgroup v2，以及已委派的 CPU、memory、PID controllers。daemon 要求可信的 Podman 可执行文件绝对路径，在绑定 API 前检查运行时；不满足条件会失败，不退化为宿主执行或无资源限制的容器。
+要求 Linux x86_64、可用 `/dev/kvm`、可信绝对路径，以及可写、已委派且启用 CPU/memory/PID controller 与 `cgroup.kill` 的 cgroup v2 层级。前置检查验证真实 controller 写入和 KVM API；没有 host、OCI 命令或 registry-pull 降级。
 
-可工作的沙箱还需要**预先准备在本机的镜像**，包含真实 OpenSandbox 1.1.0 execd 和 egress 服务。daemon 不拉取镜像。普通发行版镜像、只运行 sleep 的容器或一个 upstream 镜像名称，都不满足这个契约。
+镜像是可信本机 `images_dir/<key>.json` manifest，不是 registry reference。字段包括绝对路径的独立 Linux `rootfs`（不能是宿主 `/` 或与 daemon 状态重叠）、绝对路径的 guest bootstrap `entrypoint` argv、可选 `cmd`、可选 `env` 与可选绝对路径 firmware `library_dir`。请求的工作负载 argv（为空则使用 `cmd`）追加到 `entrypoint`，请求 env 覆盖 manifest env，不继承宿主环境，也不经 shell 插值。
 
 !!! warning
-    固定版本的 upstream 默认 egress 组件会安装 iptables 重定向，不能原样运行在此后端的 `cap-drop=ALL` 下。当前没有经过端到端验证的 prepared-image 配方。你可以安装并启动生命周期 API，但在准备真实的无 capability execd/egress 部署前，不应期待普通 SDK `Sandbox.create()` 通过就绪检查。要求见[镜像契约](boundaries.md#images)。
+    Bootstrap 与镜像配方**未提供，也未经端到端验证**。旧容器的 `cap-drop=ALL` 限制不适用于此原生 VM 后端；upstream 镜像名称不是原生 bootstrap/vsock 适配器。不提供假就绪，也没有 SDK 兼容或密度证据。 见[镜像契约](boundaries.md#images)。
 
 ## 安装可执行文件 {#install}
 
-在准备部署的 revision checkout 中，先安装 Rust/Cargo，再执行：
+源码安装使用选定 revision 与[原生构建前提](../../community/development.md)。以下命令不是已验证安装配方：
 
 ```bash
 cargo install --locked --path crates/pvisor-daemon --bin pvisor-daemon
@@ -32,21 +32,24 @@ pvisor-daemon protocol
 
 ## 启动 API {#start}
 
-选择 checkout 外的私有持久状态目录，以拥有已准备 Podman 镜像的非 root 账户运行。密钥只生成一次，保存在服务受保护的秘密存储中，重启时复用同一值：
+`serve` 使用已实现且必需的 `--images-dir` 与 `--cgroup-root` 构造 `NativeRuntime`。Cargo 链接 `pvisor` 与 `pvisor-core`；同步 `main` 在参数解析或 Tokio 之前调用 `pvisor::run_krun_internal_if_requested()`，随后派发隐藏的 `native-supervisor --sandbox-dir ABSOLUTE_PATH` 命令。下方部署示例使用当前 CLI，但不提供或验证 guest bootstrap、SDK 兼容或密度。
 
 ```bash
 export OPEN_SANDBOX_API_KEY="$(openssl rand -hex 32)"
 pvisor-daemon serve \
-  --podman /usr/bin/podman \
+  --images-dir /srv/pvi \
+  --cgroup-root /sys/fs/cgroup/pvd \
   --listen 127.0.0.1:8080 \
-  --state "$HOME/.local/state/pvisor/daemon" \
+  --state /run/user/1000/pvd \
   --max-sandboxes 32 \
   --cpu-millis 4000 \
   --memory-bytes 8589934592 \
   --max-timeout-seconds 86400
 ```
 
-如果可信 Podman 安装在其他位置，替换 `/usr/bin/podman` 的绝对路径。前台进程通过运行时检查后报告监听地址。这里最多准入 32 个沙箱、四个 CPU 单位及合计 8 GiB 的硬内存限制，不等价于整机 8 GiB 物理内存上限。为 daemon、辅助进程与缓存留出余量，并另行配置宿主监督。
+运行时路径使用绝对路径，daemon 重启时保持不变。状态路径保持短，例如 `/run/user/1000/pvd`：逐 sandbox 的 `control.sock` 必须短于 104 字节，vsock Unix socket 也有路径长度限制。保留状态；此 `/run` 示例不保证跨注销／重启持久化，VM 不能跨宿主重启存活。`/sys/fs/cgroup/pvd` 必须是真实委派层级，不能是普通目录。
+
+选择 checkout 外的私有状态目录。API key 只生成一次，保存在受保护的服务秘密存储中，重启时复用同一值。示例最多准入 32 条记录、四个 CPU 单位和总计 8 GiB 硬内存限制，不是已测全节点物理上限；为 daemon/cache/宿主留余量，另行配置宿主监督。
 
 在第二个 shell 中使用同一份受保护 API key 查询生命周期 API：
 
@@ -67,8 +70,10 @@ daemon 检查真实 execd 的 `/ping`、`/ready` 和 egress 的 `/healthz` 后�
 
 默认只监听 loopback。对外访问前，在可信反向代理上配置 TLS，并用 `--public-endpoint HOST:PORT` 指定外部路由可达的 authority，不带 scheme 或路径。通配监听与开发用的零端口绑定也要求显式正确的 public endpoint。认证见[端点认证](operations.md#endpoints)。
 
+已有记录的 `sandboxes.json` 若缺少原生 `owner.json` marker，会在既有 store 独占锁内被拒绝：它可能仍持有活动 Podman 容器。使用全新原生状态并保留／清理旧部署，或通过旧 Podman daemon 删除全部 sandbox、确认清理后，再用已清空的 registry 切换后端。不要删除 registry 条目、预留或所有权状态，也不要伪造原生 marker 绕过检查。原生 daemon 不会把这些容器接管为 Missing 或静默释放其预留。
+
 ## 从 Cluster 迁移 {#migration}
 
 旧 Cluster 任务/客户端 SDK、Controller/Worker 注册、放置、DAG、lease 续期、完成 outbox 和 artifact 退役命令都不是 daemon 接口。不要把旧 task JSON、`worker.toml`、Controller 凭据或 journal 作为 daemon 输入。分布式任务历史没有自动转成沙箱状态的路径。
 
-退役旧部署前保留所需结果。用全新状态目录启动 daemon，把调用方迁移到受支持的 OpenSandbox 生命周期接口。原生 `pvisor run`、VM 执行、本机 checkpoint/fork 及 node/cache/memory-pool 服务独立保留，并未接入此 daemon 后端。清理与重启语义见[运维](operations.md)。
+退役部署前保留旧结果，为 OpenSandbox profile 使用新状态。`NativeRuntime` 已接入原生 VM 执行；stage/apply 与 checkpoint/fork API 未实现，也不自动获取 node/cache/pool 共享资源。见[运维](operations.md)。

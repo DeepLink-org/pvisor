@@ -5,7 +5,7 @@
 对应一条内部 Run 记录。为保持兼容，磁盘上的 `run-*` ID、`run.json` 和 Run Bundle
 名称保持不变。
 
-[单节点 daemon](daemon/index.md) 则通过外部 Podman 管理 OpenSandbox profile 的 `sb-*` sandbox 记录。这些 ID 不代表 Job/Run/Attempt 记录、stage/apply、检查点或 Run Bundle 证据。下列原生 Job 语义不会自动由 daemon 提供；跨主机工作流身份属于外部编排。
+[单节点 daemon](daemon/index.md) 通过 VM-only NativeRuntime 管理 OpenSandbox profile 的 `sb-*` sandbox。私有 supervisor 记录把 generation 绑定到原生 Run/Attempt ID；sandbox ID 不是公开 Job ID。API 不实现 stage/apply、checkpoint 或 Run Bundle 导出。它嵌入原生执行，但不自动暴露下列 Job 工作流；跨主机身份属于外部编排。
 
 ## Operation：核心处理对象
 

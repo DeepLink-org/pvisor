@@ -74,9 +74,9 @@ just install-cli
 
 ## 单独安装单机 daemon {#daemon}
 
-需要一台 Linux 主机上的 OpenSandbox 兼容生命周期 API 时，按 [daemon 安装与启动](../guides/daemon/index.md)操作。新 `pvisor-daemon` 是单独从源码安装的可执行文件；不要假设已有 Python wheel 包含它或可直接使用的沙箱镜像。它使用外部 rootless Podman 和部分 OpenSandbox 1.1.0 profile，不是原生 VM executor。
+需要一台 Linux 主机上的 OpenSandbox 兼容生命周期 API 时，按 [daemon 安装与启动](../guides/daemon/index.md)操作。新 `pvisor-daemon` 是单独从源码安装的可执行文件；不要假设已有 Python wheel 包含它或可直接使用的沙箱镜像。其部分 OpenSandbox 1.1.0 profile 已有 VM-only NativeRuntime，在 Linux x86_64/KVM 与委派 cgroup v2 上嵌入 pVisor；可执行入口已接入原生运行时构造，同步内部 VM 派发先于 Tokio。
 
-可工作的 SDK 沙箱需要本机 prepared image，包含真实 execd 与无 capability egress。upstream 默认 egress 与 `cap-drop=ALL` 冲突；目前没有经过端到端验证的镜像配方。只启动 API 不证明 SDK 就绪。Controller/Worker 与 Cluster 任务 SDK 已退役，跨节点编排交给外部调度器。
+可工作的沙箱需要可信本机 manifest/rootfs，以及经 guest CID 3 vsock bridge 连接的真实 execd/egress。Bootstrap 与镜像配方未提供或端到端验证；启动 API 不建立 SDK 兼容或密度证据。Stage/apply 与 checkpoint API 未实现，也不自动获取 node 共享。Controller/Worker 与 Cluster SDK 已退役；跨节点编排属于外部调度器。
 
 ## 4. 需要时启用 VM 或 OCI 执行
 

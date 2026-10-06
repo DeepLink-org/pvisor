@@ -2,19 +2,23 @@
 
 ## Main conclusions {#conclusions}
 
+**Editing an unchanged target during a 10,000-file apply produces an explicit conflict in all three valid injections, preserving every external edit. Some files may already have been applied: conflict refusal is not whole-batch rollback, and a finite probe does not establish safety for arbitrary concurrent writes.**
+
 **Small changes fit interactive review: about 15 ms for ten files and 0.84 s for 1,000. Applying 100,000 files takes about 5.5 minutes, unsuitable for frequent large submissions. Git patch is substantially faster in the same comparison; pVisor adds preimage conflict checks, persistence and recovery.**
 
 | Need | Selection implication |
 |---|---|
 | Interactive application of a few files | pVisor apply fits |
 | Large text updates with a Git workflow | Git patches provide a performance reference |
-| Concurrent host edits | Check conflict detection and interruption recovery |
+| Host may edit the same files during apply | The tested window detects conflicts; still avoid overlapping writes and inspect partial application after refusal |
 
 ## Motivation {#motivation}
 
 Staging must eventually support safe submission: preserve concurrent host edits and recover interrupted commits, alongside acceptable performance.
 
 ## Experiment design {#interpretation}
+
+Concurrent-write conflicts use a separate current frozen artifact in three independent Linux trials, each with 10,000 existing text files. After observing a real target write, the probe pauses its own apply process, confirms a Prepared ledger, writes and fsyncs external content into an unchanged file, then resumes the process. Success requires both explicit conflict refusal and preservation of the external content; missed windows do not pass. This is a correctness test, not a latency measurement, and does not cover every race between a final check and rename.
 
 Actual staged tasks overwrite existing text files. Lower content and upper count are verified before timing. Measurements cover only the apply/drop CLI, excluding stage generation and per-file validation. N=30/10/3 for 10/1,000/100,000 files. One warmup per action for smaller groups, none for 100,000. Three large stages are prepared concurrently; timed operations run sequentially. Conflict changes the first host file and requires refusal with all other targets unchanged.
 
@@ -53,6 +57,16 @@ Small batches fit interactive review; 1,000 files approach a second and 100,000 
 Copy writes into an empty directory. Git apply updates equivalent text files but lacks the pVisor stage-cleanup/preimage/ledger/recovery protocol. They are cost controls with different semantics. Small and large batches retain separate provenance.
 
 The 100,000-file stage emitted `trace append rejected: event exceeds size limit`. Target/ledger/conflict checks passed, but complete filesystem audit coverage is not claimed.
+
+### Host edits during apply {#concurrent-conflicts}
+
+Measured on 2026-10-06, with all three trials hitting real target-write windows. One file had already been applied, while the injected file still held its original content. After resuming, apply refused with an explicit conflict, preserved the external edit and left the ledger Prepared with complete upper contents retained. Each injection, final outcome, all target contents and the upper were independently checked after completion.
+
+| Check | Valid injections | Conflicts detected | External edits preserved | Silent overwrites |
+| --- | ---: | ---: | ---: | ---: |
+| Edit an unchanged file during a 10,000-file apply | 3 | 3 | 3 | 0 |
+
+This verifies edit detection after actual target writes and before the edited file is published. It does not cover every race between the final check and rename or make the whole apply atomic. Already-applied entries are not rolled back automatically; stop external writes to the same files before resolving a conflict, and inspect targets and the Prepared ledger. This independent correctness experiment is not pooled with the pinned-artifact timing table above. The [derived conflict results CSV](apply-concurrent-conflicts.csv) records current artifact, report and audit digests. Complete targets, stages, injection records and output stay in local `.data/`.
 
 ### SIGKILL recovery
 

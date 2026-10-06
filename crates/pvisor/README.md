@@ -84,7 +84,10 @@ while retaining existing data owners.
 empty legacy sections/lists. There is no implicit migration to a new scheduler.
 `pvisor service daemon ...` passes arguments unchanged to a trusted, separately
 installed `pvisor-daemon` beside `pvisor`; it does not add a daemon role to this
-configuration, link a daemon dependency, or imply native executor integration.
+configuration or link a daemon dependency. The daemon's VM-only `NativeRuntime`
+embeds this crate in detached supervisor subprocesses. The daemon CLI is wired
+to that runtime; companion dispatch does not automatically acquire node sharing
+resources. The daemon API has no stage/apply or checkpoint/fork implementation.
 
 Cluster-only tests and fixtures are retired. Local service tests retain delegated
 limits, cleanup, shared image pins and shared RAM/COW ownership fences. The
@@ -100,9 +103,11 @@ daemon separately; the old `test-service` / `test-service-vm` recipes are absent
 The ignored local gates need explicit selection in a future root test recipe;
 their environment requirements remain in the test annotations. Install
 `pvisor-daemon` beside `pvisor` if companion dispatch is desired. The root
-Cluster alias and daemon legacy feature have been removed; the daemon builds
-independently, without a Rust dependency on this crate. Packaging includes both
-executables, but common installation does not establish native backend integration.
+Cluster alias and daemon legacy feature have been removed; the daemon remains
+a separate executable. Cargo links `pvisor` and `pvisor-core`; synchronous internal
+VM dispatch runs before Tokio, and hidden supervisor dispatch is implemented.
+Packaging includes both executables, but does
+not supply or validate the prepared-image bootstrap, SDK conformance or density.
 See the [daemon boundary](../pvisor-daemon/README.md).
 
 ## Develop

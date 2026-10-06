@@ -1,6 +1,6 @@
 # Daemon and native service entry points
 
-Run `pvisor-daemon` independently for the OpenSandbox lifecycle API. Keep native node, image-cache and memory-pool services with the native pVisor Jobs that use them. A common CLI entry point does not mean a common runtime or state store.
+Run `pvisor-daemon` independently for the OpenSandbox lifecycle API. Keep native node, image-cache and memory-pool services with the native pVisor Jobs that use them. Sandbox supervisors embed the native runtime, but API state and node resource ownership remain separate.
 
 ## Start the daemon directly {#daemon}
 
@@ -13,7 +13,7 @@ pvisor-daemon serve --help
 
 `OPEN_SANDBOX_API_KEY` configures lifecycle authentication. Listener, public endpoint, persistent state and admission budgets are daemon options; `RunConfig`, `RunSpec`, native service TOML and old Worker profiles are not daemon configuration. Keep its state separate from native Job/node/cache/pool state.
 
-The daemon has no dependency on the native executor crate and does not attach native node owners or cold-page pools to Podman sandboxes. Its pause/resume acts on container cgroups, not VM RAM backing. Normal shutdown leaves its owned sandboxes for restart, so a service restart is not sandbox cleanup.
+VM-only supervisors embed pVisor and retain RunHandles across daemon restart. Pause/resume uses acknowledged live vCPU controls on the same Attempt, not cgroup freeze or a snapshot. Node owners/cold pools are not automatically acquired. Cargo and the executable integrate native runtime construction and hidden supervisor dispatch; synchronous internal VM dispatch runs before Tokio. See [startup](index.md#start).
 
 ## Native node, cache and memory pool {#native}
 
@@ -36,6 +36,6 @@ Use the [shared image cache reference](../../reference/shared-image-cache.md) fo
 
 Run each service under its owning host account with private persistent state and protected credentials. Install trusted companions alongside the matching native CLI when using companion dispatch; do not assume PATH discovery or wheel inclusion. Configure service restart policy and host resource caps separately from sandbox admission sums.
 
-For the daemon, require rootless Podman and delegated CPU/memory/PID controllers. Put TLS at a trusted reverse proxy before external access and set the correct `--public-endpoint HOST:PORT`. Native node/cache/pool access controls remain their own protocol contracts; daemon API keys do not authorize them.
+Requires Linux x86_64, usable `/dev/kvm`, trusted absolute paths and a writable delegated cgroup v2 hierarchy with enabled CPU/memory/PID controllers and `cgroup.kill`. Preflight checks real controller writes and the KVM API; there is no host, OCI command or registry-pull fallback. Use TLS and the correct `--public-endpoint HOST:PORT` for external access. Daemon keys do not authorize node/cache/pool services.
 
 Old Controller/Worker restart, drain, registration and VM-sharing acceptance records describe the retired deployment, not validation of this daemon or its companion wiring. See [runtime boundaries](boundaries.md) and [operations](operations.md) for the new supported scope.

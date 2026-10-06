@@ -21,7 +21,7 @@ pvisor service cache --help
 pvisor service memory-pool --help
 ```
 
-Use `service cache/memory-pool` for the native resource tools. `service daemon` passes arguments unchanged to a separately installed, matching adjacent `pvisor-daemon`; check `pvisor service --help` when using an older build. The daemon can always be invoked directly after separate installation; follow the [daemon installation guide](../guides/daemon/index.md). It does not integrate native VM, checkpoint/fork or stage/apply. Controller/Worker task tools and their configuration are retired. See [service entry points](../guides/daemon/service.md) for native node/cache/pool ownership and deployment boundaries.
+Use `service cache/memory-pool` for the native resource tools. `service daemon` passes arguments unchanged to a separately installed, matching adjacent `pvisor-daemon`; check `pvisor service --help` when using an older build. The daemon can always be invoked directly after separate installation; follow the [daemon installation guide](../guides/daemon/index.md). NativeRuntime embeds VM execution; the daemon executable and required native flags are integrated, checkpoint/fork and stage/apply APIs are absent, and node sharing is not automatically acquired. Controller/Worker task tools and their configuration are retired. See [service entry points](../guides/daemon/service.md) for native node/cache/pool ownership and deployment boundaries.
 
 Names outside the current commands follow default execution rules, without retired-command aliases or migration handlers. Use `pvisor -- COMMAND` for explicit default execution.
 

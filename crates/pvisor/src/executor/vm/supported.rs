@@ -70,6 +70,7 @@ compile_error!("static musl VM support currently targets x86_64 only");
 #[derive(Debug, Clone)]
 pub struct VmExecutor {
     settings: VmSettings,
+    vsock_ports: BTreeMap<u32, PathBuf>,
     #[cfg(target_os = "linux")]
     cpu_group: Option<std::sync::Arc<super::cpu_qos::CpuQosGroup>>,
     #[cfg(target_os = "linux")]
@@ -83,6 +84,8 @@ pub struct VmExecutor {
 
 #[derive(Debug, Serialize, Deserialize)]
 pub(super) struct RunnerSpec {
+    #[serde(default)]
+    vsock_ports: BTreeMap<u32, PathBuf>,
     #[serde(default)]
     pub(super) cpu_qos: Option<pvisor_core::CpuQosClass>,
     #[cfg(target_os = "linux")]
@@ -333,6 +336,7 @@ impl VmExecutor {
         }
         Ok(Self {
             settings,
+            vsock_ports: BTreeMap::new(),
             #[cfg(target_os = "linux")]
             cpu_group: None,
             #[cfg(target_os = "linux")]
@@ -343,6 +347,40 @@ impl VmExecutor {
             ))]
             restore: None,
         })
+    }
+
+    /// Publish explicit host Unix listeners connected to guest AF_VSOCK ports.
+    /// The guest must supply the listening service; this never enables TSI or
+    /// substitutes a host service. Live published ports cannot be checkpointed.
+    pub fn with_vsock_ports(mut self, ports: BTreeMap<u32, PathBuf>) -> anyhow::Result<Self> {
+        #[cfg(any(
+            all(target_os = "linux", target_arch = "x86_64"),
+            all(target_os = "macos", target_arch = "aarch64")
+        ))]
+        anyhow::ensure!(
+            self.restore.is_none(),
+            "vsock publication cannot modify a restored VM"
+        );
+        for (port, path) in &ports {
+            anyhow::ensure!(*port > 0 && path.is_absolute(), "invalid vsock publication");
+            anyhow::ensure!(
+                path.as_os_str().len() < 104,
+                "vsock socket path is too long"
+            );
+            match std::fs::symlink_metadata(path) {
+                Err(error) if error.kind() == std::io::ErrorKind::NotFound => {}
+                Err(error) => return Err(error.into()),
+                Ok(_) => anyhow::bail!("vsock socket path already exists"),
+            }
+            anyhow::ensure!(
+                path.parent().is_some_and(Path::is_dir),
+                "vsock socket parent is missing"
+            );
+        }
+        let unique = ports.values().collect::<std::collections::BTreeSet<_>>();
+        anyhow::ensure!(unique.len() == ports.len(), "duplicate vsock socket path");
+        self.vsock_ports = ports;
+        Ok(self)
     }
 
     /// Prepare a new Attempt from a sealed same-host snapshot. Pair the
@@ -833,6 +871,7 @@ impl RunExecutor for VmExecutor {
             all(target_os = "linux", target_arch = "x86_64"),
             all(target_os = "macos", target_arch = "aarch64")
         )) && !vm_network_enabled
+            && self.vsock_ports.is_empty()
             && self.settings.memory_pool.is_none()
         {
             let prepared = if let Some(drivers) = &context.drivers {
@@ -917,6 +956,7 @@ impl RunExecutor for VmExecutor {
             None
         };
         let mut runner = RunnerSpec {
+            vsock_ports: self.vsock_ports.clone(),
             cpu_qos: spec.runtime.cpu_qos,
             #[cfg(target_os = "linux")]
             cpu_group: cpu_group.as_ref().map(|group| group.binding()),
@@ -1745,6 +1785,13 @@ fn run_runner(spec: RunnerSpec) -> anyhow::Result<()> {
         read_write.extend(direct_lowers.read_write.iter().cloned());
         read_write.extend(spec.root.work.iter().cloned());
         read_write.extend(spec.root.preimages.iter().cloned());
+        // Published sockets have their own private directory; grant only those
+        // parents rather than the embedder's entire control/state directory.
+        read_write.extend(
+            spec.vsock_ports
+                .values()
+                .filter_map(|path| path.parent().map(Path::to_owned)),
+        );
         if let Some(binding) = &spec.checkpoint {
             read_write.push(binding.store.clone());
         }
@@ -1895,7 +1942,10 @@ fn run_linked_krun(
             pvisor_overlaynet::vm::VM_MAC,
         )?;
     }
-    // The Rust builder installs only zero-feature vsock, never implicit TSI.
+    // Explicit AF_VSOCK listeners preserve zero-feature vsock: no implicit TSI.
+    for (port, path) in &spec.vsock_ports {
+        vm.vsock_port(*port, path.clone(), true)?;
+    }
 
     crate::util::startup_mark_run("runner.devices_configured", &spec.run_id);
     // Private parent/runner IPC: write visibility is sufficient. The parent

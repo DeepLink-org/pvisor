@@ -42,6 +42,13 @@ impl VmExecutor {
         anyhow::bail!(UNSUPPORTED_MESSAGE)
     }
 
+    pub fn with_vsock_ports(
+        self,
+        _ports: std::collections::BTreeMap<u32, std::path::PathBuf>,
+    ) -> anyhow::Result<Self> {
+        anyhow::bail!(UNSUPPORTED_MESSAGE)
+    }
+
     pub fn settings(&self) -> &VmSettings {
         &self.settings
     }

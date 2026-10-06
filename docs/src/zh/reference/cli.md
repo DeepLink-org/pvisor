@@ -17,7 +17,7 @@ pvisor service cache --help
 pvisor service memory-pool --help
 ```
 
-原生资源工具使用 `service cache/memory-pool`。`service daemon` 将参数原样派发到单独安装、同目录的匹配 `pvisor-daemon`；使用旧构建时以 `pvisor service --help` 为准。daemon 单独安装后也可直接调用，步骤见 [daemon 安装指南](../guides/daemon/index.md)。它不集成原生 VM、checkpoint/fork 或 stage/apply。Controller/Worker 任务工具及其配置已退役。原生 node/cache/pool 所有权与部署边界见 [Service 入口](../guides/daemon/service.md)。
+原生资源工具使用 `service cache/memory-pool`。`service daemon` 将参数原样派发到单独安装、同目录的匹配 `pvisor-daemon`；使用旧构建时以 `pvisor service --help` 为准。daemon 单独安装后也可直接调用，步骤见 [daemon 安装指南](../guides/daemon/index.md)。NativeRuntime 嵌入 VM 执行；daemon 可执行入口与必需原生参数已接入，checkpoint/fork 与 stage/apply API 未实现，也不自动获取 node 共享。Controller/Worker 任务工具及其配置已退役。原生 node/cache/pool 所有权与部署边界见 [Service 入口](../guides/daemon/service.md)。
 
 当前命令以外的名称按默认执行规则处理，不保留旧命令别名或迁移处理逻辑。使用 `pvisor -- COMMAND` 显式执行程序。
 

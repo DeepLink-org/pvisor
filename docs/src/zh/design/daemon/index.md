@@ -8,8 +8,8 @@
 调用方／外部编排
   → OpenSandbox 生命周期 HTTP API
   → daemon：本机准入 + 持久 registry + 每 sandbox 生命周期锁
-  → Runtime 适配器 → 外部 rootless Podman
-  → 预制镜像：工作负载 + 真实 execd + 无 capability 的 egress 服务
+  → NativeRuntime → 嵌入 pvisor 的独立 supervisor → 仅 VM
+  → 预制镜像：工作负载 + 真实 execd + 带 guest CID 3 vsock bridge 的 egress 服务
 调用方 → daemon 端点代理 → 预制服务
 ```
 
@@ -17,21 +17,22 @@
 | --- | --- | --- |
 | 调用方 | 工作负载、预制镜像、输入版本、重试与业务副作用 | 从超时推断执行没有发生 |
 | Daemon | 本机准入、归属、意图、运行时对账、TTL、鉴权端点 | 跨主机调度或训练事务 |
-| 外部 Podman | 容器执行、cgroup 控制、namespace、原生观察 | pVisor Job 暂存、VM 检查点或模型证据 |
+| 原生 supervisor | 嵌入 pVisor/VM、RunHandle、已确认 vCPU 控制、cgroup 身份、vsock bridge | Stage/apply/checkpoint API 或自动 node 共享 |
 | 预制镜像 | 监督 argv，初始化并鉴权 execd/egress | 替代生命周期 API 授权 |
-| 原生 pVisor 执行器与 node 资源 | 独立的 Job/VM 语义与不可变 backing 所有权 | 自动接入该 daemon |
+| 原生 pVisor | Supervisor 嵌入 VM 执行；公开 Job 工作流仍独立 | 自动暴露 stage/checkpoint API |
+| 原生 node 资源 | 独立的不可变 backing 所有权 | 自动 daemon 获取／共享 |
 
-Daemon crate 使用 `Runtime` trait，不依赖已依赖本包的 `pvisor`，避免循环依赖。当前唯一后端是外部 rootless Podman，没有 host 降级或原生 VM 后端。
+Runtime trait 当前只有 VM-only NativeRuntime。独立 supervisor 嵌入 `pvisor::PVisor`，只配置 VmExecutor，跨 daemon 重启保留 RunHandle。没有 host/OCI/pull 降级。Cargo 与可执行入口已接入：`serve` 使用必需的 `--images-dir`/`--cgroup-root` 构造 NativeRuntime；同步内部 VM 派发先于 Tokio，隐藏 supervisor 命令已派发。见[运维](operations.md#deployment)。
 
 ## 创建与访问 {#task-flow}
 
 1. 校验镜像、argv、环境、metadata、CPU/内存硬限制与可选 TTL。在准入前拒绝不支持的控制。
 2. 串行更新 registry 时检查本机容量，持久写入随机 `sb-*` 身份、预留与 `Pending` 记录。
-3. 持有该 sandbox 的生命周期锁，创建并启动带标签的容器，核对资源设置和真实服务就绪状态。
+3. 持久化原生 preparation/identity，安装身份绑定的 cgroup 限制，在 exec 前将子进程放入该 cgroup，启动独立 supervisor，验证已确认的 live VM 控制与真实服务就绪。
 4. 原生创建成功后才持久化 `Running`。失败创建的清理已确认时释放记录；清理不确定时保留身份与预留。
 5. 通过 daemon 解析支持的服务端点。查询对账原生状态；删除先持久化意图，确认原生对象不存在后才释放容量。
 
-这是 sandbox 管理，不是任务／结果协议。Sandbox ID 不代表 Job/Run/Attempt 身份，也不意味着存在 Run Bundle。
+这是 sandbox 管理，不是任务／结果协议。私有运行时记录将 generation 绑定到原生 Run/Attempt ID，但 `sb-*` 不是公开 Job ID，API 不暴露 Job review、checkpoint 或 Run Bundle 导出。
 
 ## 设计入口 {#documents}
 
@@ -49,6 +50,6 @@ Daemon crate 使用 `Runtime` trait，不依赖已依赖本包的 `pvisor`，避
 
 部分 API profile 固定为 **OpenSandbox 1.1.0**、`release-1.1.0`、commit `b1a29cf93a823a95913f7943010febb3f29de05c`。这不代表完整 API 或未修改 SDK 的端到端兼容。预制 execd/egress 镜像合同尚无已验证的端到端配方，见[运维](operations.md#image-contract)。
 
-原生 VM、stage/apply、checkpoint/fork、offload、Gateway 推理等待协调和 node 资源获取均未接入该后端。旧 Cluster 测量属于已退役分布式实现，不是 daemon 性能证据。Daemon 密度优势和全节点物理内存收益均未验证。
+运行时已接入原生 VM 执行。Stage/apply、checkpoint/fork 和 offload API、Gateway 推理等待协调与自动 node 资源获取未实现。旧 Cluster 结果不验证 daemon SDK 兼容、性能或密度，也没有全节点物理内存收益证据。
 
-实现归属：`crates/pvisor-daemon/src/daemon/{models,store,mod,api}.rs`、`runtime.rs` 和 `main.rs`。由 legacy feature 隔离的模块是过渡代码，不属于该架构。
+实现归属：`crates/pvisor-daemon/src/daemon/{models,store,mod,api}.rs`、`runtime.rs` 和 `main.rs`。已退役 Cluster 实现不属于该架构。

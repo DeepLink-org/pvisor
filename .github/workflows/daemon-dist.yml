@@ -17,7 +17,7 @@ jobs:
   build:
     name: Daemon / Linux x86_64 (static musl)
     runs-on: ubuntu-latest
-    timeout-minutes: 30
+    timeout-minutes: 45
     steps:
       - uses: actions/checkout@v4
       - uses: ./.github/actions/setup-build-env
@@ -34,9 +34,9 @@ jobs:
         run: |
           python scripts/ci/set_nightly_local_version.py "$LOCAL_VERSION"
           cargo metadata --format-version 1 >/dev/null
-      # Explicit package/bin, in its own invocation: no native executor or firmware.
-      - name: Build standalone daemon
-        run: cargo zigbuild --release --locked -p pvisor-daemon --bin pvisor-daemon --no-default-features --target x86_64-unknown-linux-musl
+      # Embeds pvisor's VM, guest supervisor and libkrunfw kernel; no CLI back-link.
+      - name: Build native daemon
+        run: just daemon-build release
       - name: Verify static binary and CLI
         shell: bash
         run: |
@@ -54,8 +54,10 @@ jobs:
         run: |
           mkdir -p dist target/daemon-dist
           install -m 755 target/x86_64-unknown-linux-musl/release/pvisor-daemon target/daemon-dist/pvisor-daemon
-          cp deploy/systemd/pvisor-daemon.service deploy/systemd/daemon.env.example target/daemon-dist/
-          tar -C target/daemon-dist -czf dist/pvisor-daemon-linux-x86_64.tar.gz pvisor-daemon pvisor-daemon.service daemon.env.example
+          cp deploy/systemd/pvisor-daemon.service deploy/systemd/daemon.env.example deploy/systemd/INSTALL.md target/daemon-dist/
+          printf '%s\n' 'Embedded libkrunfw 5.5.0 kernel' 'source: https://github.com/libkrun/libkrunfw/releases/download/v5.5.0/libkrunfw-x86_64.tgz' 'licenses: GPL-2.0-only (Linux kernel), LGPL-2.1-only (library)' > target/daemon-dist/libkrunfw.SOURCE
+          cp LICENSE NOTICE target/daemon-dist/
+          tar -C target/daemon-dist -czf dist/pvisor-daemon-linux-x86_64.tar.gz pvisor-daemon pvisor-daemon.service daemon.env.example INSTALL.md libkrunfw.SOURCE LICENSE NOTICE
           sha256sum dist/pvisor-daemon-linux-x86_64.tar.gz > dist/pvisor-daemon-linux-x86_64.tar.gz.sha256
       - uses: actions/upload-artifact@v4
         with:

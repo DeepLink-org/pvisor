@@ -73,8 +73,12 @@ of `last`.
 pVisor focuses on bounded, recoverable, checkable execution and high sandbox
 density on a single machine. Native Jobs retain the run-review-apply workflow;
 the separate `pvisor-daemon` provides a partial OpenSandbox 1.1.0 API profile
-through an external rootless Podman backend. Native VM execution and staging
-are not yet wired into that daemon, and its density has not been measured.
+through a VM-only `NativeRuntime` that embeds pVisor in detached supervisor
+subprocesses. The runtime is implemented for Linux x86_64/KVM with delegated
+cgroup v2, with the daemon CLI integrated. Prepared-image bootstrap
+is neither supplied nor end-to-end validated. The daemon API does not implement
+stage/apply or checkpoints, does not automatically acquire node sharing resources,
+and has no SDK-conformance or density evidence.
 Cross-node placement, workflows and retries belong to external orchestrators
 such as Kubernetes or Ray, not a pVisor Cluster control plane.
 

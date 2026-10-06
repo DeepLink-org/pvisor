@@ -27,7 +27,7 @@ def test_unmatched_apply_binaries_cannot_establish_optimization_gain(mutation):
     left,right,before,after=fixture()
     if mutation=='compiler':right['rustc']='different compiler'
     elif mutation=='dependency':after[2]['sha256']='changed dependency'
-        elif mutation=='unrelated-source':after[1]['sha256']='changed unrelated source'
+    elif mutation=='unrelated-source':after[1]['sha256']='changed unrelated source'
     elif mutation=='inventory':after.pop()
     elif mutation=='identical':right['pvisor_sha256']='old'
     elif mutation=='no-apply':after[0]['sha256']='old'

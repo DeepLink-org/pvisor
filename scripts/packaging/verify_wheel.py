@@ -25,6 +25,15 @@ COMPANION_BINARIES = EXPECTED_BINARIES[1:-1]
 FIRMWARE_NAMES = ("libkrunfw.so.5", "libkrunfw.5.dylib")
 
 
+def expected_binaries(wheel: Path) -> tuple[str, ...]:
+    name = wheel.name.lower()
+    if "macosx" in name and "arm64" in name:
+        return EXPECTED_BINARIES[:-1]
+    if "linux" in name and "x86_64" in name:
+        return EXPECTED_BINARIES
+    raise RuntimeError(f"unsupported wheel platform: {wheel.name}")
+
+
 def _assert_static_linux(name: str, executable: Path) -> None:
     headers = _run(["readelf", "-W", "-l", str(executable)])
     dynamic = _run(["readelf", "-W", "-d", str(executable)])
@@ -51,7 +60,12 @@ def _wheel_contents(
             raise RuntimeError("wheel METADATA has no Version")
 
         scripts: dict[str, zipfile.ZipInfo] = {}
-        for name in EXPECTED_BINARIES:
+        expected = expected_binaries(wheel)
+        if "pvisor-daemon" not in expected and any(
+            name.endswith("/scripts/pvisor-daemon") for name in archive.namelist()
+        ):
+            raise RuntimeError("pvisor-daemon is supported only in Linux x86_64 wheels")
+        for name in expected:
             matches = [
                 info
                 for info in archive.infolist()
@@ -169,7 +183,7 @@ def install_smoke(wheel: Path, version: str) -> None:
         env = os.environ.copy()
         env.pop("PVISOR_BIN", None)
         env["PATH"] = os.pathsep.join((str(scripts), env.get("PATH", "")))
-        for name in EXPECTED_BINARIES:
+        for name in expected_binaries(wheel):
             executable = scripts / name
             if not executable.is_file() or not os.access(executable, os.X_OK):
                 raise RuntimeError(
@@ -182,10 +196,10 @@ def install_smoke(wheel: Path, version: str) -> None:
                 )
             _run([str(executable), "--help"], env=env)
 
-        # Verify both the standalone daemon and its service passthrough.
-        _run([str(scripts / "pvisor-daemon"), "serve", "--help"], env=env)
-        _run([str(scripts / "pvisor-daemon"), "protocol"], env=env)
-        _run([str(scripts / "pvisor"), "service", "daemon", "protocol"], env=env)
+        if "pvisor-daemon" in expected_binaries(wheel):
+            _run([str(scripts / "pvisor-daemon"), "serve", "--help"], env=env)
+            _run([str(scripts / "pvisor-daemon"), "protocol"], env=env)
+            _run([str(scripts / "pvisor"), "service", "daemon", "protocol"], env=env)
         _run([str(scripts / "pvisor"), "run", "--help"], env=env)
         for binary in COMPANION_BINARIES:
             name = binary.removeprefix("pvisor-")

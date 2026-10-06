@@ -19,10 +19,12 @@ build profile="debug":
       *) echo "expected debug, release or performance, got: $1" >&2; exit 2 ;;
     esac
     python3 scripts/build-pvisor.py --profile "$cargo_profile" --target-dir "{{ target_dir }}"
-    for name in pvisor pvisor-cache pvisor-tui pvisor-replay pvisor-memory-pool pvisor-daemon; do
+    names=(pvisor pvisor-cache pvisor-tui pvisor-replay pvisor-memory-pool)
+    if [[ "$(uname -s)-$(uname -m)" == Linux-x86_64 ]]; then names+=(pvisor-daemon); fi
+    for name in "${names[@]}"; do
       binary="{{ target_dir }}/$1/$name"
       test -x "$binary"
-      if [[ "$(uname -s)" == Darwin && "$name" != pvisor-daemon ]]; then
+      if [[ "$(uname -s)" == Darwin ]]; then
         codesign --force --sign - --entitlements "{{ repo }}/crates/pvisor/macos-hypervisor.entitlements" "$binary"
         codesign --verify --strict "$binary"
       fi
@@ -34,7 +36,9 @@ install-cli: (build "release")
     set -euo pipefail
     install_root="${CARGO_INSTALL_ROOT:-${CARGO_HOME:-$HOME/.cargo}}"
     mkdir -p "$install_root/bin"
-    for binary in pvisor pvisor-cache pvisor-tui pvisor-replay pvisor-memory-pool pvisor-daemon; do
+    binaries=(pvisor pvisor-cache pvisor-tui pvisor-replay pvisor-memory-pool)
+    if [[ "$(uname -s)-$(uname -m)" == Linux-x86_64 ]]; then binaries+=(pvisor-daemon); fi
+    for binary in "${binaries[@]}"; do
       install -m 755 "{{ target_dir }}/release/$binary" "$install_root/bin/$binary"
     done
 
@@ -61,15 +65,21 @@ wheel profile="release":
 check:
     cargo check --locked -p pvisor
 
-# Standalone daemon: no native executor, firmware or Hypervisor entitlement.
-daemon-build:
-    cargo build --locked -p pvisor-daemon --bin pvisor-daemon --no-default-features --target-dir "{{ target_dir }}"
-
-# Install a standalone release daemon without building the native CLI.
-daemon-install:
+# Linux x86_64 daemon embeds pvisor's VM/guest/kernel via the shared musl/Zig pipeline.
+daemon-build profile="debug":
     #!/usr/bin/env bash
     set -euo pipefail
-    cargo build --release --locked -p pvisor-daemon --bin pvisor-daemon --no-default-features --target-dir "{{ target_dir }}"
+    case "$1" in
+      debug) cargo_profile=dev ;;
+      release|performance) cargo_profile="$1" ;;
+      *) echo "expected debug, release or performance, got: $1" >&2; exit 2 ;;
+    esac
+    python3 scripts/packaging/build_daemon.py --profile "$cargo_profile" --target-dir "{{ target_dir }}"
+
+# Install the native Linux daemon without building companion CLI executables.
+daemon-install: (daemon-build "release")
+    #!/usr/bin/env bash
+    set -euo pipefail
     install_root="${CARGO_INSTALL_ROOT:-${CARGO_HOME:-$HOME/.cargo}}"
     mkdir -p "$install_root/bin"
     install -m 755 "{{ target_dir }}/release/pvisor-daemon" "$install_root/bin/pvisor-daemon"
@@ -78,17 +88,8 @@ daemon-install:
 test-daemon:
     just test pvisor-daemon
 
-# Local node/cache/memory-pool components, plus the independently built daemon.
-service-build:
-    #!/usr/bin/env bash
-    set -euo pipefail
-    cargo build --locked -p pvisor --bin pvisor --bin pvisor-cache --bin pvisor-memory-pool --features pvisor/gateway --target-dir "{{ target_dir }}"
-    just daemon-build
-    if [[ "$(uname -s)" == Darwin ]]; then
-      for name in pvisor pvisor-memory-pool; do
-        codesign --force --sign - --entitlements "{{ repo }}/crates/pvisor/macos-hypervisor.entitlements" "{{ target_dir }}/debug/$name"
-      done
-    fi
+# Local service components through the native pipeline (daemon on Linux only).
+service-build: build
 
 
 # Format source files; use fmt-check for a read-only check.

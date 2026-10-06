@@ -16,10 +16,10 @@ pVisor 是 Operation 的处理核心：接收操作请求，根据策略决定�
 | `pvisor-overlaynet` | 网络解析、代理转发和 VM 网络接入；落实 core 定义的策略 |
 | `pvisor-guest` | VM 内 PID 1 与命令启动契约 |
 | `pvisor-gateway` | 可选的模型协议路由、转换和调用观察 |
-| `pvisor-daemon` | 独立的单节点 sandbox 准入、持久归属、Podman 生命周期与端点代理 |
+| `pvisor-daemon` | 独立的单节点 sandbox 准入、持久归属、原生 VM supervisor 生命周期与端点代理 |
 | `pvisor-tui`、`pvisor-replay` | 依赖 pvisor 的终端前端与 Agent 轨迹回放工具 |
 
-[Daemon](daemon/index.md) 通过外部 rootless Podman 提供独立 sandbox 路径，不是分布式调度器，也不是原生 `PVisor::run` 路径。原生 VM、stage/apply、Gateway 与 node 资源尚未接入该后端。原生 node 资源仍是独立本机服务，见[职责收敛](daemon/responsibility-convergence.md)。主机选择与业务工作流属于外部编排。
+[Daemon](daemon/index.md) 使用 VM-only NativeRuntime：独立 supervisor 嵌入 `PVisor::run`，跨 daemon 重启保留 RunHandle。它不是分布式调度器。可执行入口通过原生 CLI 设置构造 NativeRuntime；stage/apply、checkpoint/fork 和 Gateway API 未实现，也不自动获取 node 共享。见[职责收敛](daemon/responsibility-convergence.md)。主机选择和工作流属于外部编排。
 
 core 不拥有执行循环，也不启动进程或打开控制 socket。pvisor 实现 AgentCtl 客户端／服务端和审批 socket；驱动实现各自的文件、网络与隔离边界。默认核心不依赖 Gateway、TUI 或 replay，捕获通过 `gateway` feature 启用。
 

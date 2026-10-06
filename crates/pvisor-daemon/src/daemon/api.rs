@@ -727,7 +727,7 @@ mod tests {
 
     fn create_payload(metadata: Value) -> Value {
         json!({
-            "image": {"uri": "registry.example.test/opensandbox/execd:fixture"},
+            "image": {"uri": "execd-fixture"},
             "entrypoint": ["tail", "-f", "/dev/null"],
             "resourceLimits": {"cpu": "1", "memory": "64Mi"},
             "timeout": 600,
@@ -1061,6 +1061,68 @@ mod tests {
         .await;
         assert_eq!(status, StatusCode::NOT_FOUND);
         assert_error(&error, "NOT_FOUND");
+    }
+
+    #[tokio::test]
+    async fn http_native_image_keys_are_rejected_before_runtime_and_capacity_admission() {
+        let fixture = RouteFixture::open().await;
+        // Invalid images remain bad requests even when every admission slot is occupied.
+        for admitted in [0, 8] {
+            if admitted == 8 {
+                for _ in 0..8 {
+                    create_over_http(&fixture.app, json!({})).await;
+                }
+                let (status, _, error) = exchange(
+                    &fixture.app,
+                    Method::POST,
+                    "/v1/sandboxes",
+                    AUTH,
+                    Body::from(create_payload(json!({})).to_string()),
+                )
+                .await;
+                assert_eq!(status, StatusCode::TOO_MANY_REQUESTS);
+                assert_error(&error, "CAPACITY_EXCEEDED");
+            }
+            for image in [
+                "../host",
+                "execd/../../host",
+                "/rootfs",
+                ".hidden",
+                "registry.example.test/opensandbox/execd:fixture",
+                "https://registry.example.test/opensandbox/execd:fixture",
+            ] {
+                let mut payload = create_payload(json!({}));
+                payload["image"]["uri"] = json!(image);
+                let (status, _, error) = exchange(
+                    &fixture.app,
+                    Method::POST,
+                    "/v1/sandboxes",
+                    AUTH,
+                    Body::from(payload.to_string()),
+                )
+                .await;
+                assert_eq!(status, StatusCode::BAD_REQUEST, "{image}: {error}");
+                assert_error(&error, "INVALID_REQUEST");
+                assert_eq!(
+                    error["message"],
+                    "invalid runtime image, argv, environment or resource limits"
+                );
+                assert_eq!(fixture.runtime.creates.load(Ordering::SeqCst), admitted);
+                assert_eq!(fixture.runtime.sandboxes.lock().unwrap().len(), admitted);
+                assert_eq!(fixture.runtime.endpoints.load(Ordering::SeqCst), 0);
+                let (status, _, list) = exchange(
+                    &fixture.app,
+                    Method::GET,
+                    "/v1/sandboxes",
+                    AUTH,
+                    Body::empty(),
+                )
+                .await;
+                assert_eq!(status, StatusCode::OK);
+                assert_eq!(list["items"].as_array().unwrap().len(), admitted);
+                assert_eq!(list["pagination"]["totalItems"], json!(admitted));
+            }
+        }
     }
 
     #[tokio::test]

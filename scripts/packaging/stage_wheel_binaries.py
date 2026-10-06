@@ -146,6 +146,8 @@ def _cargo_command(
         if options.target is not None or sys.platform == "linux"
         else None
     )
+    if daemon and target != "x86_64-unknown-linux-musl":
+        raise RuntimeError("pvisor-daemon is supported only on Linux x86_64 (static musl)")
     command = [
         "cargo",
         "zigbuild" if target == "x86_64-unknown-linux-musl" else "build",
@@ -200,10 +202,15 @@ def _prepare_zig_file_limit() -> None:
     print(f"Zig build open-file limit: {soft} -> {available}", file=sys.stderr)
 
 
+def expected_binaries(options: BuildOptions) -> tuple[str, ...]:
+    return NATIVE_BINARIES if _is_macos(options) else EXPECTED_BINARIES
+
+
 def _build(options: BuildOptions, *, shim_vm: bool = False) -> dict[str, Path]:
     artifacts = _build_component(options, shim_vm=shim_vm)
-    if not shim_vm:
-        # Separate Cargo invocation prevents native legacy features reaching the daemon.
+    if not shim_vm and not _is_macos(options):
+        # Keep package selection separate; the daemon embeds pvisor's VM library,
+        # while the CLI discovers the daemon executable without linking it back.
         artifacts.update(_build_component(options, daemon=True))
     return artifacts
 
@@ -223,10 +230,8 @@ def _build_component(
     build_env = os.environ.copy()
     if command[1] == "zigbuild":
         _prepare_zig_file_limit()
-        if (
-            not daemon
-            and not build_env.get("PVISOR_KRUNFW_KERNEL_BUNDLE")
-            and not build_env.get("PVISOR_KRUNFW_PATH")
+        if not build_env.get("PVISOR_KRUNFW_KERNEL_BUNDLE") and not build_env.get(
+            "PVISOR_KRUNFW_PATH"
         ):
             build_env["PVISOR_KRUNFW_PATH"] = str(_firmware_source(options)[0])
     process = subprocess.Popen(
@@ -383,7 +388,7 @@ def stage_wheel_binaries(options: BuildOptions) -> Path:
     staged.mkdir()
 
     try:
-        for name in EXPECTED_BINARIES:
+        for name in expected_binaries(options):
             source = artifacts[name]
             destination = staged / name
             shutil.copy2(source, destination)

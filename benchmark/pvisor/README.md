@@ -17,6 +17,8 @@ The explicit `cargo test` invocation is the special diagnostic runner, not the d
 
 ## Data and publication
 
+`publish_apply_concurrency.py --report benchmark/.data/concurrent-new/report.json --output docs/src/en/benchmarks` audits three planned B-APPLY mid-write probes separately from latency. It verifies retained build/harness receipts, each injection and outcome, final target contents, ledger and conflict stderr. Missing or duplicate trials are rejected; missed windows remain unknown, and silent overwrites remain failures. Run after the probe exits; publish the matching CSV beside both locale articles. This does not establish protection against every race between a final check and rename.
+
 Apply sampling honors `--samples` and `--warmups` at every file count, including 100,000 files. Use explicit smaller values in a separate preflight output; file count never silently reduces formal rounds. Fresh stages and Git patches are prepared outside the application timer. Large sweeps can take hours; retain failures and partial reports instead of filling conditions from previous runs.
 
 Keep raw reports, per-trial samples, stdout/stderr, failures, input hashes, binaries and frozen harnesses in `.data/`. The repository ignores that directory at every depth. A new output directory is required for every run; retain slow valid samples and failed preflights. Do not build, run other tests or sample unrelated workloads during measurement.

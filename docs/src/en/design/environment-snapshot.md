@@ -14,7 +14,7 @@ pvisor fork last --state workspace --stage ./stage/branch -- codex
 
 The former save maps to suspend; resume continues the current head, while fork --state execution --checkpoint ID restores history or creates branches. Former run uses ordinary run --executor vm; list/delete/gc and base import/verification belong to Job checkpoint commands. Native VMs with no network devices, private RAM and owned complete rootfs support capture-and-continue and full restoration; ordinary run configuration is not changed automatically. See the [CLI reference](../reference/cli.md#full-vm-execution-checkpoints) for entries and limits, and [Job checkpoint design](job-checkpoint-cli.md#10-当前实现与验收边界) for handoff.
 
-The [single-node daemon](daemon/index.md) manages external rootless Podman sandboxes, not native VM capture/restore. Its pause/resume is container freeze/unfreeze; snapshot, checkpoint/fork, stage/apply and offload are not wired into that backend. Do not use retired Cluster controls as the current snapshot entry.
+The [single-node daemon](daemon/index.md) uses native VM execution, but does not implement capture/restore APIs. Its pause/resume is acknowledged live vCPU control on the same Attempt, not cgroup freeze or a snapshot. Snapshot, checkpoint/fork, stage/apply and offload APIs remain absent. Do not use retired Cluster controls as snapshot entries.
 
 Native node backing ownership remains separate from daemon lifecycle; see [responsibility convergence](daemon/responsibility-convergence.md).
 

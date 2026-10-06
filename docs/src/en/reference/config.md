@@ -42,16 +42,21 @@ Proxy deny applies to traffic reaching the proxy; this example does not establis
 
 | Option | Default / meaning |
 | --- | --- |
-| `--podman PATH` | Required trusted absolute rootless Podman executable path |
+| `--images-dir PATH` | Required: trusted directory of local `<key>.json` manifests |
+| `--cgroup-root PATH` | Required: writable delegated cgroup v2 with CPU/memory/PID enabled and `cgroup.kill` |
 | `--listen ADDRESS` | `127.0.0.1:8080` |
 | `--public-endpoint HOST:PORT` | Externally routed authority without scheme/path; required behind a proxy and for wildcard/port-zero listeners |
-| `--state PATH` | `.pvisor/daemon`; use a private persistent directory |
+| `--state PATH` | `.pvisor/daemon`; resolves to canonical runtime state. Use a short absolute private path, e.g. `/run/user/1000/pvd` |
 | `--max-sandboxes N` | 32 local sandboxes |
 | `--cpu-millis N` | 4000; sum of admitted hard CPU limits, thousandths of one CPU |
 | `--memory-bytes N` | 8589934592; sum of admitted hard memory limits, not node-wide physical memory |
 | `--max-timeout-seconds N` | 86400; maximum creation TTL, configurable from 60 seconds to one year |
 
-Old `[controller]`, `[[workers]]`, Worker profiles and Cluster task JSON are not daemon inputs. Native node/cache/memory-pool configuration remains separate. No daemon option selects native VM, checkpoint/fork, stage/apply, global DAG or distributed leases.
+Old `[controller]`, `[[workers]]`, Worker profiles and Cluster task JSON are not daemon inputs. Native node/cache/pool configuration remains separate. NativeRuntime is VM-only; checkpoint/fork, stage/apply, global DAG and distributed lease APIs are absent.
+
+`serve` constructs NativeRuntime with the required `--images-dir` and `--cgroup-root` options. Cargo links `pvisor`/`pvisor-core`, and synchronous internal VM dispatch runs before argument parsing or Tokio. The hidden supervisor command is implemented. Images/cgroup paths are canonicalized; relative state resolves against the startup working directory and runtime state is canonicalized. Use short absolute paths in deployments and keep them unchanged on restart.
+
+Keep all runtime paths absolute and unchanged on daemon restart. Per-sandbox `control.sock` must be shorter than 104 bytes; vsock Unix sockets also have path limits. `/run/user/1000/pvd` is a short state example, not a promise of persistence across logout/reboot. VMs cannot survive host reboot.
 
 ## Field navigation (current implementation)
 

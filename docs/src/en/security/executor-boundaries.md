@@ -20,9 +20,9 @@ Each executor provides the protection below per capability dimension. Every stat
 
 ## Single-node daemon boundary {#daemon}
 
-The table describes native `pvisor run` executors, not `pvisor-daemon`. The daemon's current external rootless Podman backend shares the host kernel, installs private namespaces/no-new-privileges/`cap-drop=ALL` and resource limits, and requires prepared execd/egress services. It has no native VM, stage/apply, checkpoint/fork or pVisor network-policy integration. Unsupported network-policy requests are rejected; rootless slirp4netns is not deny-all egress.
+The table describes requested controls for native Jobs, not the daemon API. VM-only NativeRuntime embeds pVisor in detached supervisors with independent immutable guest rootfs and private writes; delegated cgroup v2 caps the supervisor/VM tree. Stage/apply and checkpoint/fork APIs are not implemented, and node sharing is not automatically acquired. OpenSandbox network-policy options are rejected; native OverlayNet outbound networking is not a deny-all claim.
 
-Trust the host account, Podman configuration/hooks and prepared image. Other local users may reach native published loopback ports: daemon endpoint authentication alone does not protect those ports. Real upstream service authentication and host network controls are required for that risk. No hostile multi-user isolation or security-audit claim is made. See [daemon runtime boundaries](../guides/daemon/boundaries.md) for the image contract and current upstream egress capability conflict.
+Trust the host account, daemon/firmware and prepared image. Private state and same-UID IPC do not defend against hostile host-UID/root code. Other local users may reach loopback publications: use genuine service authentication and host controls. No hostile multi-user or security-audit assurance is claimed. See [daemon runtime boundaries](../guides/daemon/boundaries.md) for the unsupplied/unvalidated bootstrap and real-service checks.
 
 ## Reading the table
 

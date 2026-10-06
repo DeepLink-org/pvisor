@@ -1,6 +1,6 @@
 # Local state and restart recovery
 
-Restart with the same private state directory and compatible runtime configuration to retain native ownership and unresolved reservations. A stored state is the last durable observation, not proof that a container survived.
+Restart with the same private state directory and compatible runtime configuration to retain native ownership and unresolved reservations. A stored state is the last durable observation, not proof that a VM survived.
 
 ## Authority and identity {#authority}
 
@@ -10,9 +10,11 @@ Restart with the same private state directory and compatible runtime configurati
 | Sandbox identity, image/argv/env/metadata, resources, TTL and endpoint token | Durable record | Preserve intentions, access identity and conservative capacity |
 | Running/Paused/Terminated | Native runtime observation | Inspect registered objects and update changed observations |
 | `Stopping` | Durable deletion intent | Retry delete; inspection cannot overwrite it |
-| Actual container and service readiness | Podman and prepared services | Registry contents cannot recreate them |
+| Actual VM and service readiness | Native supervisor, VM controls, kernel cgroup and real services | Registry cannot recreate them |
 
-One daemon exclusively locks `daemon.lock`. Sandbox IDs use random UUIDs and are never reused. Every native operation checks owner/sandbox labels; registry ownership is local, not remote leader election or protection against the trusted host account.
+One daemon exclusively locks `daemon.lock`. Private IPC authenticates same-UID peers plus owner, sandbox ID, generation and secret token; durable identity binds boot ID and cgroup device/inode. IDs are never reused or relaunched. Lost IPC is uncertainty, not Missing or cleanup proof. Durable deletion intent and the supervisor exclusive lock fence late launch; cleanup uses identity-bound `cgroup.kill`, never a persisted PID or PID-based kill, and confirms an empty cgroup plus released lock before capacity release. Replaced or missing same-boot cgroups without durable tombstone proof do not prove absence.
+
+An occupied `sandboxes.json` without the native `owner.json` marker is rejected under the existing exclusive store lock: it may still own live Podman containers. Use fresh native state while preserving and cleaning up the old deployment, or delete every sandbox through the old Podman daemon and confirm cleanup before switching backends with the emptied registry. Never erase registry entries, reservations or ownership state, or fabricate a native marker to bypass this guard. The native daemon neither adopts those containers as Missing nor silently releases their reservations.
 
 ## Startup reconciliation {#reconcile}
 
@@ -22,7 +24,9 @@ One daemon exclusively locks `daemon.lock`. Sandbox IDs use random UUIDs and are
 4. Map native Running/Paused/Stopped/Missing to `Running`/`Paused`/`Terminated`/`Failed`. A missing sandbox remains visible and reserved until explicit deletion.
 5. Report deferred reconciliation errors without inventing successful cleanup. Start maintenance to retry expired/pending deletion.
 
-Normal shutdown leaves containers and records for restart. The list API returns last durable observations; GET reconciles native state. Maintenance is a deletion loop, not continuous native-process monitoring. Startup does not discover/adopt unknown containers or recreate missing workloads.
+Normal daemon shutdown leaves detached supervisors/VMs and records. Restart reconnects private IPC, not a recreated VM or new Attempt; loss of IPC preserves uncertainty. GET reconciles while list returns durable observations. Startup does not adopt unknown VMs or relaunch missing/crashed workloads; host reboot cannot retain a live VM.
+
+Cleanup validates durable owner/ID/generation and boot/cgroup bindings independently of launch resources: it does not require the original rootfs or firmware directory to remain present or guest argv/env/resource settings to pass launch validation. After proving native absence and acquiring the owner lock, it durably publishes `tombstone.json`, removes the empty owned cgroup and reclaims private run storage, live RAM backing, temporary overlays/specs, sockets and secret-bearing identity/observation records. A minimal directory retains the tombstone, owner lock and lifecycle markers to fence ID reuse. Interrupted reclamation resumes from the tombstone, including after cgroup removal; errors retain the reservation. Missing/replaced same-boot cgroups without this durable proof still do not authorize absence. See [storage](storage.md#gc).
 
 ## Uncertainty and recovery {#failures}
 

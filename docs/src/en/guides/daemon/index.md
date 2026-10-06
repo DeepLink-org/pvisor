@@ -11,16 +11,16 @@ Install `pvisor-daemon` to manage image-based sandboxes on one Linux host throug
 
 ## Prerequisites {#prerequisites}
 
-Use Linux with rootless Podman, cgroup v2 and delegated CPU, memory and PID controllers. The daemon requires a trusted absolute Podman executable path and checks the runtime before binding the API. It fails rather than falling back to host execution or uncapped containers.
+Requires Linux x86_64, usable `/dev/kvm`, trusted absolute paths and a writable delegated cgroup v2 hierarchy with enabled CPU/memory/PID controllers and `cgroup.kill`. Preflight checks real controller writes and the KVM API; there is no host, OCI command or registry-pull fallback.
 
-A working sandbox also requires a **locally preprovisioned image** with real OpenSandbox 1.1.0 execd and an egress service. The daemon never pulls images. A stock distribution image, a sleeping container or an upstream image name alone does not satisfy this contract.
+Images are trusted local `images_dir/<key>.json` manifests, not registry references. Fields are absolute independent Linux `rootfs` (never host `/` or overlapping daemon state), absolute guest bootstrap `entrypoint` argv, optional `cmd`, optional `env` and optional absolute firmware `library_dir`. Requested workload argv (or `cmd` if empty) is appended to `entrypoint`; request env overrides manifest env, without host environment inheritance or shell interpolation.
 
 !!! warning
-    The pinned upstream default egress component installs iptables redirects and cannot run unchanged with this backend's `cap-drop=ALL`. No end-to-end prepared-image recipe has been validated. You can install and start the lifecycle API, but do not expect ordinary SDK `Sandbox.create()` readiness until you have a genuine capability-free execd/egress deployment. See the [image contract](boundaries.md#images).
+    The bootstrap and image recipe are **not supplied or end-to-end validated**. The old container `cap-drop=ALL` restriction does not describe this native VM backend; an upstream image name is not a native bootstrap/vsock adapter. No fake readiness, SDK-conformance or density evidence is provided. See [image contract](boundaries.md#images).
 
 ## Install the executable {#install}
 
-From a checkout of the revision you intend to deploy, with Rust/Cargo installed:
+Source installation uses the selected revision and [native build prerequisites](../../community/development.md). These commands are not a validated installation recipe:
 
 ```bash
 cargo install --locked --path crates/pvisor-daemon --bin pvisor-daemon
@@ -32,21 +32,24 @@ pvisor-daemon protocol
 
 ## Start the API {#start}
 
-Choose a private persistent state directory outside the checkout. Run as the non-root account that owns the prepared Podman images. Generate a secret once, retain it in your service's protected secret storage, and use the same value on restart:
+`serve` constructs `NativeRuntime` using the implemented, required `--images-dir` and `--cgroup-root` flags. Cargo links `pvisor` and `pvisor-core`; synchronous `main` calls `pvisor::run_krun_internal_if_requested()` before argument parsing or Tokio, then dispatches the hidden `native-supervisor --sandbox-dir ABSOLUTE_PATH` command. The deployment example below uses the current CLI, but does not supply or validate the guest bootstrap, SDK conformance or density.
 
 ```bash
 export OPEN_SANDBOX_API_KEY="$(openssl rand -hex 32)"
 pvisor-daemon serve \
-  --podman /usr/bin/podman \
+  --images-dir /srv/pvi \
+  --cgroup-root /sys/fs/cgroup/pvd \
   --listen 127.0.0.1:8080 \
-  --state "$HOME/.local/state/pvisor/daemon" \
+  --state /run/user/1000/pvd \
   --max-sandboxes 32 \
   --cpu-millis 4000 \
   --memory-bytes 8589934592 \
   --max-timeout-seconds 86400
 ```
 
-Replace `/usr/bin/podman` if your trusted installation uses another absolute path. The foreground process reports its listening address after runtime checks. The budgets admit up to 32 sandboxes, four CPU units and 8 GiB of summed hard memory limits; they do not establish an 8 GiB node-wide physical-memory cap. Leave headroom for daemon, helpers and caches, and configure host supervision separately.
+Keep runtime paths absolute and unchanged across daemon restarts. Use short state paths such as `/run/user/1000/pvd`: per-sandbox `control.sock` must be shorter than 104 bytes, and vsock Unix sockets also have path limits. Retain state; this `/run` example does not promise persistence across logout/reboot, and VMs cannot survive host reboot. `/sys/fs/cgroup/pvd` must be a real delegated hierarchy, not an ordinary directory.
+
+Choose a private state directory outside the checkout. Generate the API key once and keep the same value in protected service secret storage on restart. The example admits at most 32 records, four CPU units and 8 GiB of summed hard memory limits, not a measured whole-node physical cap; leave daemon/cache/host headroom and configure host supervision separately.
 
 In a second shell with the same protected API key, query the lifecycle API:
 
@@ -67,8 +70,10 @@ The daemon verifies execd `/ping`, `/ready` and egress `/healthz` before treatin
 
 Bind loopback by default. Before external access, configure TLS at a trusted reverse proxy and set `--public-endpoint HOST:PORT` to the externally routed authority, without scheme or path. Wildcard listeners and port-zero development bindings also require an explicit correct public endpoint. Follow [endpoint authentication](operations.md#endpoints).
 
+An occupied `sandboxes.json` without the native `owner.json` marker is rejected under the existing exclusive store lock: it may still own live Podman containers. Use fresh native state while preserving and cleaning up the old deployment, or delete every sandbox through the old Podman daemon and confirm cleanup before switching backends with the emptied registry. Never erase registry entries, reservations or ownership state, or fabricate a native marker to bypass this guard. The native daemon neither adopts those containers as Missing nor silently releases their reservations.
+
 ## Migration from Cluster {#migration}
 
 The old Cluster task/client SDK, Controller/Worker registration, placement, DAG, lease renewal, completion outbox and artifact-retirement commands are not the daemon interface. Do not reuse old task JSON, `worker.toml`, Controller credentials or journals as daemon input. There is no automatic conversion of distributed task history into sandbox state.
 
-Preserve any old results you need before retiring the old deployment. Start the daemon with a new state directory and migrate callers to the supported OpenSandbox lifecycle profile. Native `pvisor run`, VM execution, local checkpoint/fork and node/cache/memory-pool services remain separate; they are not wired into this daemon backend. See [operations](operations.md) for cleanup and restart behavior.
+Preserve old results before retiring the deployment and use new state for the OpenSandbox profile. Native VM execution is wired in `NativeRuntime`; stage/apply and checkpoint/fork APIs are not implemented, and node/cache/pool sharing is not automatically acquired. See [operations](operations.md).

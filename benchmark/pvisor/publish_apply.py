@@ -93,7 +93,7 @@ def publish(path, output):
     provenance=[dict(field=key,value=json.dumps(value,sort_keys=True) if isinstance(value,(dict,list)) else value)
         for key,value in (identity|dict(benchmark_id='B-APPLY',host_platform=report['platform'],cpu=report['cpu'],
             protocol=report['apply_protocol'],crash_protocol=report['crash_protocol'],
-            conflict_scope='external edit before apply only; mid-apply external edits are a separate unmeasured probe')).items()]
+            conflict_scope='this timing cohort tests external edits before apply; mid-apply external edits require a separate retained correctness cohort and audit')).items()]
     output.mkdir(parents=True,exist_ok=True)
     for name,rows in [('apply.csv',summary),('apply-recovery.csv',recovery),('apply-comparisons.csv',comparisons),('apply-provenance.csv',provenance)]:write_csv(output/name,rows)
     return summary,recovery,comparisons

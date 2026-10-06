@@ -75,22 +75,21 @@ jobs:
       - run: just test-py
 
   daemon:
-    name: Standalone daemon / ${{ matrix.os }}
-    runs-on: ${{ matrix.os }}
-    timeout-minutes: 20
-    strategy:
-      matrix:
-        os: [ubuntu-latest, macos-latest]
+    name: Native daemon / Linux x86_64
+    runs-on: ubuntu-latest
+    timeout-minutes: 45
     steps:
       - uses: actions/checkout@v4
       - uses: ./.github/actions/setup-build-env
         with:
           rust: "true"
+          static-musl: "true"
           install-nextest: "true"
       - uses: Swatinem/rust-cache@v2
         with:
           shared-key: ci-daemon
-      # No native executor build, firmware, legacy-cluster or HVF signing.
+      # Shared native pipeline prepares the embedded kernel and Rust guest.
+      # Conventional tests are not an end-to-end KVM/prepared-image deployment gate.
       - run: just daemon-build
       - run: just test-daemon
 

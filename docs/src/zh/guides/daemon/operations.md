@@ -1,6 +1,6 @@
 # 单机 daemon 运维
 
-重启时保留同一个私有状态目录和兼容的 Podman 配置。daemon 持有本机沙箱记录与删除意图，不恢复分布式任务，也不重放全局 DAG。
+重启时保留同一个私有状态目录和不变的原生运行时绝对路径／cgroup 身份。daemon 持有本机沙箱记录与删除意图，不恢复分布式任务，也不重放全局 DAG。
 
 ## 查询与删除 {#lifecycle}
 
@@ -11,8 +11,8 @@
 | `GET /v1/sandboxes` | 最近持久化的观察；支持重复 state 筛选、SDK 编码的 metadata 与 page/pageSize |
 | `GET /v1/sandboxes/{id}` | 与本机原生状态核对该沙箱 |
 | `DELETE /v1/sandboxes/{id}` | 确认原生删除后才释放预留；成功返回 204 |
-| `POST /v1/sandboxes/{id}/pause` | 确认原生 cgroup freeze；202 空响应体 |
-| `POST /v1/sandboxes/{id}/resume` | 确认原生 cgroup unfreeze；202 空响应体 |
+| `POST /v1/sandboxes/{id}/pause` | 确认已确认的 live vCPU pause；202 空响应体 |
+| `POST /v1/sandboxes/{id}/resume` | 确认已确认的 live vCPU resume；202 空响应体 |
 | `POST /v1/sandboxes/{id}/renew-expiration` | 用未来 RFC3339 时间 `expiresAt` 延长已有 TTL |
 
 将 `{id}` 替换为创建/列表返回的 sandbox ID。HTTP 断开不会取消已接受的操作。不同沙箱有独立生命周期锁；同一沙箱的控制与连接建立串行协调。
@@ -21,7 +21,7 @@
 
 ## 端点认证 {#endpoints}
 
-通过 `GET /v1/sandboxes/{id}/endpoints/44772` 解析 execd，端口 `18080` 解析 egress。返回的 authority 不含 URL scheme，流量经过 daemon，不直接指向容器 loopback 端口。
+通过 `GET /v1/sandboxes/{id}/endpoints/44772` 解析 execd，端口 `18080` 解析 egress。返回的 authority 不含 URL scheme，流量经过 daemon，不直接指向supervisor loopback 发布。
 
 - 设置 `use_server_proxy=true` 时，路由请求使用生命周期 `OPEN-SANDBOX-API-KEY` header 认证。
 - 默认模式在端点 `headers` 中提供随机、沙箱范围的 `X-PVISOR-SANDBOX-TOKEN`。客户端必须保留这些 header；该 token 不授权生命周期操作或访问其他沙箱。
@@ -39,20 +39,25 @@
 
 ## 重启与状态所有权 {#restart}
 
-一个 daemon 独占锁定自己的私有状态目录。在原生创建/控制之前持久化 owner identity 与记录。原生操作核验 owner/sandbox labels，随机 sandbox ID 不复用；labels 不能防御同一宿主 UID 下的其他进程。
+一个 daemon 独占私有状态；原生创建／控制前持久化 owner 身份。私有 IPC 校验同 UID peer、owner、sandbox ID、generation 与秘密 token；持久身份绑定 boot ID 和 cgroup device/inode。ID 不复用、不重新启动。IPC 丢失表示不确定，不是 Missing 或清理证据。持久删除意图与 supervisor 独占锁阻止迟到启动；清理使用身份绑定的 `cgroup.kill`，不保存 PID 或按 PID kill，确认 cgroup 为空且 owner 锁释放后才释放容量。同一 boot 下没有持久 tombstone 证据的 cgroup 被替换或丢失不证明对象不存在。
 
 待删除意图跨重启保留，不会被原生观察覆盖。删除状态未知时保留预留。原生沙箱丢失后仍以 Failed 显示，直到显式删除。maintenance 重试过期/待删除项；列表不是持续的原生进程监控，查询特定沙箱时使用 GET 核对。
 
 不要删状态来修复错误，也不要让两个 daemon 共用它。状态保存原生所有权与未解决预留；把旧 Controller journal 搬进来不会迁移历史。注册表受配置容量和 16 MiB 上限约束，不是无限保留的分布式任务档案，也不是 Run Bundle/artifact store。
 
+删除／对账可在原 rootfs 或 firmware 缺失时继续基于 tombstone 的清理，回收空的所属 cgroup 和私有 run/RAM/temp/socket／秘密记录，保留最小 ID 屏障。回收错误保留预留供重试；不要自行删除 tombstone 或 registry 状态。见[存储](../../design/daemon/storage.md#gc)。
+
+已有记录的 `sandboxes.json` 若缺少原生 `owner.json` marker，会在既有 store 独占锁内被拒绝：它可能仍持有活动 Podman 容器。使用全新原生状态并保留／清理旧部署，或通过旧 Podman daemon 删除全部 sandbox、确认清理后，再用已清空的 registry 切换后端。不要删除 registry 条目、预留或所有权状态，也不要伪造原生 marker 绕过检查。原生 daemon 不会把这些容器接管为 Missing 或静默释放其预留。
+
 ## 排障 {#troubleshooting}
 
 | 现象 | 检查 |
 | --- | --- |
-| 绑定前启动失败 | Linux、可信 Podman 绝对路径、rootless、cgroup v2 与委派 CPU/memory/PID controllers |
+| 绑定前启动失败 | Linux x86_64/KVM、短绝对状态路径、可信 manifest 和真实委派 cgroup v2 |
+| 已有记录的 registry 缺原生 `owner.json` | 保留旧状态／容器；使用全新原生状态，或通过旧 Podman daemon 清理全部 sandbox 后切换 |
 | 状态目录忙 | 其他 daemon 持有独占锁；不要删锁或状态绕过 |
 | 镜像不可用 | 先在本机准备镜像；不支持自动 pull 或 image auth |
-| SDK 创建无法就绪 | 真实 execd 初始化与 `/ping`/`/ready`、egress `/healthz` 及无 capability egress；普通镜像不够 |
+| SDK 创建无法就绪 | 真实 execd 初始化与 `/ping`/`/ready`、egress `/healthz` 及 guest CID 3 的 44772/18080 vsock bridge；普通 rootfs 不够 |
 | 外部端点不可达 | TLS 代理路由、domain/protocol、`--public-endpoint` 与端点提供的 headers |
 | 失败/pause 后准入仍满 | Failed/uncertain/paused 保留硬预留；查询并确认删除 |
 | 过期沙箱仍存在 | 清理是 best effort；检查 daemon 在线时间、生命周期锁与原生清理错误 |

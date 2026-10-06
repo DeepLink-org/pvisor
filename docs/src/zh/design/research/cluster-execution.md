@@ -4,7 +4,7 @@
 
 ## 本机执行基础 {#execution-flow}
 
-普通 `pvisor run` 通过原生执行器、可选暂存与 Gateway 管理 Job/Run/Attempt 并生成执行记录。[单节点 daemon](../daemon/index.md) 则拥有本机 Podman sandbox 准入、生命周期、TTL 和服务端点。部分 OpenSandbox profile 不自动提供原生 Job 语义、VM restore、stage/apply、offload 或集中 Run Bundle。
+普通 `pvisor run` 通过原生执行器、可选暂存与 Gateway 管理 Job/Run/Attempt 并生成执行记录。[单节点 daemon](../daemon/index.md) 则拥有本机原生 VM sandbox 准入、生命周期、TTL 和服务端点。部分 OpenSandbox profile 不自动提供原生 Job 语义、VM restore、stage/apply、offload 或集中 Run Bundle。
 
 原生 node 资源可以在一台主机上保留不可变环境／backing 所有权，独立于 daemon。它们不跨机器共享物理 RAM，也未接入 daemon 后端，见[共享工作集](../daemon/shared-working-set.md)。
 
@@ -15,7 +15,7 @@
 | 层 | 当前职责 | 待集成／验证 |
 | --- | --- | --- |
 | 原生 pVisor 执行 | Job 生命周期、执行器控制、暂存、可选 Gateway 与记录 | 编排适配器和代表性工作负载验收 |
-| Sandbox daemon | 本机 Podman 准入、持久归属、生命周期与预制服务代理 | 已验证镜像／SDK profile；按需增加原生执行适配器 |
+| Sandbox daemon | NativeRuntime VM 准入、持久 supervisor 归属、生命周期与真实服务代理 | Bootstrap 提供／验证与 SDK profile；没有 stage/checkpoint API 或密度证据 |
 | 原生 node 资源 | 本机不可变所有权、pin 与有界 warming | Daemon 接入、完整瞬时记账和工作负载测量 |
 | 外部编排 | 主机选择、队列、依赖、重试与租户 | 显式执行／证据交接及业务副作用核对 |
 | 证据／检查点仓库 | 原生完整性、发布与保留合同 | 集中收集、授权、复制与跨主机兼容性 |
